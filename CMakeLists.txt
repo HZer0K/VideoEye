@@ -15,11 +15,29 @@ endif()
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -DDEBUG")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 
-# 查找依赖包
-find_package(FFmpeg REQUIRED COMPONENTS avcodec avformat avutil swscale swresample)
+# 添加自定义 CMake 模块路径
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
+# 查找依赖包 - 使用 pkg-config
+find_package(PkgConfig REQUIRED)
+
+# FFmpeg
+pkg_check_modules(FFmpeg REQUIRED
+    libavcodec
+    libavformat
+    libavutil
+    libswscale
+    libswresample
+)
+
+# OpenCV
 find_package(OpenCV REQUIRED COMPONENTS core imgproc objdetect)
+
+# Qt6
 find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets Charts)
-find_package(SDL2 REQUIRED)
+
+# SDL2
+pkg_check_modules(SDL2 REQUIRED sdl2)
 
 # 设置输出目录
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -45,7 +63,6 @@ add_executable(${PROJECT_NAME}
     ${UI_SOURCES}
     ${UTILS_SOURCES}
     ${HEADERS}
-    resources/resources.qrc
 )
 
 # 包含目录
@@ -54,7 +71,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/ui
     ${CMAKE_CURRENT_SOURCE_DIR}/utils
-    ${FFMPEG_INCLUDE_DIRS}
+    ${FFmpeg_INCLUDE_DIRS}
     ${OpenCV_INCLUDE_DIRS}
     ${SDL2_INCLUDE_DIRS}
 )
@@ -65,9 +82,9 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Qt6::Multimedia
     Qt6::MultimediaWidgets
     Qt6::Charts
-    ${FFMPEG_LIBRARIES}
+    ${FFmpeg_LIBRARIES}
     ${OpenCV_LIBS}
-    SDL2::SDL2
+    ${SDL2_LIBRARIES}
 )
 
 # 编译定义

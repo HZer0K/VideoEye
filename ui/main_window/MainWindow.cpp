@@ -112,9 +112,9 @@ void MainWindow::SetupMenuBar() {
     
     // 播放菜单
     QMenu* play_menu = menu_bar_->addMenu(tr("播放"));
-    play_menu->addAction(tr("播放"), this, &MainWindow::OnPlay, QKeySequence::MediaPlay);
-    play_menu->addAction(tr("暂停"), this, &MainWindow::OnPause, QKeySequence::MediaPause);
-    play_menu->addAction(tr("停止"), this, &MainWindow::OnStop, QKeySequence::MediaStop);
+    play_menu->addAction(tr("播放"), this, &MainWindow::OnPlay, QKeySequence(Qt::Key_Space));
+    play_menu->addAction(tr("暂停"), this, &MainWindow::OnPause);
+    play_menu->addAction(tr("停止"), this, &MainWindow::OnStop, QKeySequence(Qt::Key_Escape));
     
     // 分析菜单
     QMenu* analysis_menu = menu_bar_->addMenu(tr("分析"));

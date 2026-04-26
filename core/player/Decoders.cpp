@@ -1,5 +1,6 @@
 #include "Decoders.h"
 #include <iostream>
+#include <cstring>
 
 namespace videoeye {
 namespace player {
