@@ -224,12 +224,22 @@ void MediaPlayer::DecodeThread() {
         // 视频解码
         if (packet->stream_index == video_stream_index_ && video_decoder_) {
             if (video_decoder_->DecodePacket(packet, frame_data)) {
+                // 验证帧数据有效性 (防止崩溃)
+                if (frame_data.width <= 0 || frame_data.height <= 0 || !frame_data.data[0]) {
+                    LOG_WARN("跳过无效帧数据");
+                    av_packet_unref(packet);
+                    continue;
+                }
+                
                 // 转换为QImage并发出信号
                 // 这里需要YUV到RGB的转换,简化处理
                 QImage qimage(frame_data.width, frame_data.height, QImage::Format_RGB32);
-                emit FrameReady(qimage);
                 
-                // 实时分析
+                if (!qimage.isNull()) {
+                    emit FrameReady(qimage);
+                }
+                
+                // 实时分析 (仅帧有效时)
                 if (analysis_enabled_) {
                     // 流分析 (每个包)
                     stream_analyzer_.AnalyzePacket(packet, format_ctx_);
@@ -237,17 +247,25 @@ void MediaPlayer::DecodeThread() {
                     // 每隔10帧进行一次帧分析 (降低CPU占用)
                     analysis_frame_counter_++;
                     if (analysis_frame_counter_ % 10 == 0) {
-                        // 直方图分析
+                        // 直方图分析 (添加异常处理)
                         if (histogram_enabled_) {
-                            auto hist = frame_analyzer_.ComputeHistogram(frame_data);
-                            emit HistogramReady(hist);
+                            try {
+                                auto hist = frame_analyzer_.ComputeHistogram(frame_data);
+                                emit HistogramReady(hist);
+                            } catch (const std::exception& e) {
+                                LOG_ERROR("直方图分析失败: " + std::string(e.what()));
+                            }
                         }
                         
-                        // 人脸检测
+                        // 人脸检测 (添加异常处理)
                         if (face_detection_enabled_) {
-                            auto faces = face_detector_.DetectFaces(frame_data);
-                            if (!faces.empty()) {
-                                emit FaceDetectionReady(faces);
+                            try {
+                                auto faces = face_detector_.DetectFaces(frame_data);
+                                if (!faces.empty()) {
+                                    emit FaceDetectionReady(faces);
+                                }
+                            } catch (const std::exception& e) {
+                                LOG_ERROR("人脸检测失败: " + std::string(e.what()));
                             }
                         }
                         
