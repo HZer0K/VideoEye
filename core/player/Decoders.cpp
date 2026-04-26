@@ -2,6 +2,10 @@
 #include <iostream>
 #include <cstring>
 
+extern "C" {
+#include <libavutil/pixdesc.h>
+}
+
 namespace videoeye {
 namespace player {
 
@@ -81,21 +85,43 @@ bool VideoDecoder::DecodePacket(AVPacket* packet, model::FrameData& output_frame
     }
     
     // 复制帧数据
+    // 先清理旧数据
+    for (int i = 0; i < 8; ++i) {
+        if (output_frame.data[i]) {
+            delete[] output_frame.data[i];
+            output_frame.data[i] = nullptr;
+        }
+        output_frame.linesize[i] = 0;
+    }
+
     output_frame.width = frame_->width;
     output_frame.height = frame_->height;
     output_frame.format = frame_->format;
     output_frame.pts = frame_->pts;
-    output_frame.timestamp = frame_->pts * av_q2d(codec_ctx_->time_base);
-    
+    output_frame.timestamp = frame_->pts == AV_NOPTS_VALUE ? 0.0
+                                                           : frame_->pts * av_q2d(codec_ctx_->time_base);
+
+    const AVPixFmtDescriptor* desc =
+        av_pix_fmt_desc_get(static_cast<AVPixelFormat>(frame_->format));
+
     for (int i = 0; i < 8; ++i) {
-        output_frame.linesize[i] = frame_->linesize[i];
-        if (frame_->data[i] && frame_->linesize[i] > 0) {
-            int size = frame_->linesize[i] * frame_->height;
-            if (!output_frame.data[i]) {
-                output_frame.data[i] = new uint8_t[size];
-            }
-            std::memcpy(output_frame.data[i], frame_->data[i], size);
+        if (!frame_->data[i] || frame_->linesize[i] <= 0) {
+            continue;
         }
+
+        int plane_height = frame_->height;
+        if (desc && (i == 1 || i == 2)) {
+            plane_height = AV_CEIL_RSHIFT(frame_->height, desc->log2_chroma_h);
+        }
+
+        int size = frame_->linesize[i] * plane_height;
+        if (size <= 0) {
+            continue;
+        }
+
+        output_frame.linesize[i] = frame_->linesize[i];
+        output_frame.data[i] = new uint8_t[size];
+        std::memcpy(output_frame.data[i], frame_->data[i], size);
     }
     
     return true;

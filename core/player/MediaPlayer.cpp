@@ -19,13 +19,11 @@ MediaPlayer::~MediaPlayer() {
 }
 
 bool MediaPlayer::Open(const QString& url) {
+    Stop();
+
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    // 停止当前播放
-    if (state_ != model::PlayerState::Idle && state_ != model::PlayerState::Stopped) {
-        Stop();
-    }
-    
+    Cleanup();
+
     current_url_ = url;
     should_stop_ = false;
     
@@ -110,15 +108,31 @@ bool MediaPlayer::Open(const QString& url) {
 }
 
 void MediaPlayer::Play() {
+    if (!format_ctx_) {
+        emit Error("No media opened");
+        return;
+    }
+
     if (state_ == model::PlayerState::Playing) {
         return;
     }
-    
-    state_ = model::PlayerState::Playing;
+
+    if (state_ == model::PlayerState::Paused) {
+        should_stop_ = false;
+        state_ = model::PlayerState::Playing;
+        emit StateChanged(state_);
+        cv_.notify_one();
+        return;
+    }
+
+    if (decode_thread_.joinable()) {
+        decode_thread_.join();
+    }
+
     should_stop_ = false;
+    state_ = model::PlayerState::Playing;
     emit StateChanged(state_);
-    
-    // 启动解码线程
+
     decode_thread_ = std::thread(&MediaPlayer::DecodeThread, this);
 }
 
@@ -135,7 +149,8 @@ void MediaPlayer::Stop() {
     state_ = model::PlayerState::Stopped;
     cv_.notify_one();
     
-    if (decode_thread_.joinable()) {
+    if (decode_thread_.joinable() &&
+        decode_thread_.get_id() != std::this_thread::get_id()) {
         decode_thread_.join();
     }
     

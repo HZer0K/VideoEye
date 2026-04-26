@@ -8,6 +8,7 @@
 #include <QMessageBox>
 #include <QApplication>
 #include <QStyle>
+#include <QSignalBlocker>
 
 namespace videoeye {
 namespace ui {
@@ -209,7 +210,9 @@ void MainWindow::OnExit() {
 }
 
 void MainWindow::OnPlay() {
-    player_->EnableAnalysis(true);  // 启用分析
+    if (player_) {
+        player_->Play();
+    }
 }
 
 void MainWindow::OnPause() {
@@ -262,6 +265,7 @@ void MainWindow::OnFrameReady(const QImage& frame) {
 }
 
 void MainWindow::OnPositionChanged(int position_ms, int duration_ms) {
+    QSignalBlocker blocker(seek_slider_);
     seek_slider_->setRange(0, duration_ms);
     seek_slider_->setValue(position_ms);
     
