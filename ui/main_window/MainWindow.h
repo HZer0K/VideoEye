@@ -1,0 +1,83 @@
+#pragma once
+
+#include <QMainWindow>
+#include <QLabel>
+#include <QPushButton>
+#include <QSlider>
+#include <QProgressBar>
+#include <QTextEdit>
+#include <QTabWidget>
+#include <QMenuBar>
+#include <QToolBar>
+#include <QStatusBar>
+
+#include "core/player/MediaPlayer.h"
+
+namespace videoeye {
+namespace ui {
+
+// 主窗口类
+class MainWindow : public QMainWindow {
+    Q_OBJECT
+    
+public:
+    explicit MainWindow(QWidget* parent = nullptr);
+    ~MainWindow();
+    
+private slots:
+    // 文件菜单
+    void OnOpenFile();
+    void OnOpenURL();
+    void OnExit();
+    
+    // 播放控制
+    void OnPlay();
+    void OnPause();
+    void OnStop();
+    void OnSeek(int value);
+    
+    // 播放器信号处理
+    void OnStateChanged(model::PlayerState state);
+    void OnFrameReady(const QImage& frame);
+    void OnPositionChanged(int position_ms, int duration_ms);
+    void OnError(const QString& message);
+    void OnPlaybackFinished();
+    
+    // 分析功能
+    void OnStreamAnalysis();
+    void OnFaceDetection();
+    void OnHistogramAnalysis();
+    
+private:
+    // 初始化UI
+    void SetupUI();
+    void SetupMenuBar();
+    void SetupToolBar();
+    void SetupStatusBar();
+    void SetupConnections();
+    
+    // 更新UI状态
+    void UpdateUIState();
+    
+    // 成员变量
+    player::MediaPlayer* player_;
+    
+    // UI组件
+    QLabel* video_label_;           // 视频显示
+    QTabWidget* tab_widget_;        // 标签页
+    QSlider* seek_slider_;          // 进度条
+    QPushButton* play_button_;      // 播放按钮
+    QPushButton* pause_button_;     // 暂停按钮
+    QPushButton* stop_button_;      // 停止按钮
+    QLabel* time_label_;            // 时间显示
+    QLabel* info_label_;            // 信息标签
+    QTextEdit* info_text_;          // 详细信息文本框
+    
+    // 菜单和工具栏
+    QMenuBar* menu_bar_;
+    QToolBar* tool_bar_;
+    QStatusBar* status_bar_;
+};
+
+} // namespace ui
+} // namespace videoeye
