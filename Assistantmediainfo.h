@@ -3,9 +3,9 @@
  * 
  * VideoEye
  *
- * À×Ïöæè Lei Xiaohua
+ * é›·éœ„éª… Lei Xiaohua
  * leixiaohua1020@126.com
- * ÖĞ¹ú´«Ã½´óÑ§/Êı×ÖµçÊÓ¼¼Êõ
+ * ä¸­å›½ä¼ åª’å¤§å­¦/æ•°å­—ç”µè§†æŠ€æœ¯
  * Communication University of China / Digital TV Technology
  * http://blog.csdn.net/leixiaohua1020
  *
@@ -14,7 +14,7 @@
 #pragma once
 
 
-// Assistantmediainfo ¶Ô»°¿ò
+// Assistantmediainfo å¯¹è¯æ¡†
 #include "resource.h"
 #include "stdafx.h"
 #include "MediaInfoDLL.h"
@@ -26,19 +26,19 @@ class Assistantmediainfo : public CDialogEx
 	DECLARE_DYNAMIC(Assistantmediainfo)
 
 public:
-	Assistantmediainfo(CWnd* pParent = NULL);   // ±ê×¼¹¹Ôìº¯Êı
+	Assistantmediainfo(CWnd* pParent = NULL);   // æ ‡å‡†æ„é€ å‡½æ•°
 	virtual ~Assistantmediainfo();
 
-// ¶Ô»°¿òÊı¾İ
+// å¯¹è¯æ¡†æ•°æ®
 	enum { IDD = IDD_ASSISTANTMEDIAINFO };
 
 protected:
-	virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV Ö§³Ö
-	//×Ô¼ºÌí¼ÓµÄ
+	virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV æ”¯æŒ
+	//è‡ªå·±æ·»åŠ çš„
 	virtual BOOL OnInitDialog();
 	BOOL mediainfo();
 	CString fileurl;
-	//ÒªÏÔÊ¾µÄĞÅÏ¢
+	//è¦æ˜¾ç¤ºçš„ä¿¡æ¯
 	CString To_Display;
 	DECLARE_MESSAGE_MAP()
 public:

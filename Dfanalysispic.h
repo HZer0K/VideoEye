@@ -3,9 +3,9 @@
  * 
  * VideoEye
  *
- * À×Ïöæè Lei Xiaohua
+ * é›·éœ„éª… Lei Xiaohua
  * leixiaohua1020@126.com
- * ÖĞ¹ú´«Ã½´óÑ§/Êı×ÖµçÊÓ¼¼Êõ
+ * ä¸­å›½ä¼ åª’å¤§å­¦/æ•°å­—ç”µè§†æŠ€æœ¯
  * Communication University of China / Digital TV Technology
  * http://blog.csdn.net/leixiaohua1020
  *
@@ -14,7 +14,7 @@
 #pragma once
 
 #include "Dfanalysis.h"
-// Dfanalysispic ¶Ô»°¿ò
+// Dfanalysispic å¯¹è¯æ¡†
 class Dfanalysis;
 
 class Dfanalysispic : public CDialogEx
@@ -22,19 +22,19 @@ class Dfanalysispic : public CDialogEx
 	DECLARE_DYNAMIC(Dfanalysispic)
 
 protected:
-	virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV Ö§³Ö
+	virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV æ”¯æŒ
 
 	DECLARE_MESSAGE_MAP()
 public:
-	Dfanalysispic(CWnd* pParent = NULL);   // ±ê×¼¹¹Ôìº¯Êı
+	Dfanalysispic(CWnd* pParent = NULL);   // æ ‡å‡†æ„é€ å‡½æ•°
 	virtual ~Dfanalysispic();
 
-	// ¶Ô»°¿òÊı¾İ
+	// å¯¹è¯æ¡†æ•°æ®
 	enum { IDD = IDD_DFANALYSIS_PIC };
 
 	virtual BOOL OnInitDialog();
 
-	//µ±´°¿ÚÒÆ¶¯µÄÊ±ºò£¬ĞèÒªÖØ»æ£¬ÖØĞÂµ÷ÓÃº¯Êı
+	//å½“çª—å£ç§»åŠ¨çš„æ—¶å€™ï¼Œéœ€è¦é‡ç»˜ï¼Œé‡æ–°è°ƒç”¨å‡½æ•°
 	Dfanalysis *dfanalysisdlg;
 
 	afx_msg void OnPaint();

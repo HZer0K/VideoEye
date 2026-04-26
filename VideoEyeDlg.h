@@ -3,16 +3,16 @@
  * 
  * VideoEye
  *
- * À×Ïöæè Lei Xiaohua
+ * é›·éœ„éª… Lei Xiaohua
  * leixiaohua1020@126.com
- * ÖĞ¹ú´«Ã½´óÑ§/Êı×ÖµçÊÓ¼¼Êõ
+ * ä¸­å›½ä¼ åª’å¤§å­¦/æ•°å­—ç”µè§†æŠ€æœ¯
  * Communication University of China / Digital TV Technology
  * http://blog.csdn.net/leixiaohua1020
  *
  */
 
 
-// VideoEyeDlg.h : Í·ÎÄ¼ş
+// VideoEyeDlg.h : å¤´æ–‡ä»¶
 //
 
 #pragma once
@@ -22,7 +22,7 @@
 
 #include "ve_play.h"
 
-//ÏµÍ³¶Ô»°¿ò
+//ç³»ç»Ÿå¯¹è¯æ¡†
 #include "Welcome.h"
 #include "InputList.h"
 #include "Videodecode.h"
@@ -34,33 +34,33 @@
 #include "Optplayer.h"
 #include "Dfanalysis.h"
 
-//¶àÏß³Ì
+//å¤šçº¿ç¨‹
 UINT Thread_Play(LPVOID lpParam);
-//´æ´¢²¥·ÅµØÖ·
+//å­˜å‚¨æ’­æ”¾åœ°å€
 
 
-// CVideoEyeDlg ¶Ô»°¿ò
+// CVideoEyeDlg å¯¹è¯æ¡†
 class CVideoEyeDlg : public CDialogEx
 {
-// ¹¹Ôì
+// æ„é€ 
 public:
-	CVideoEyeDlg(CWnd* pParent = NULL);	// ±ê×¼¹¹Ôìº¯Êı
+	CVideoEyeDlg(CWnd* pParent = NULL);	// æ ‡å‡†æ„é€ å‡½æ•°
 
-// ¶Ô»°¿òÊı¾İ
+// å¯¹è¯æ¡†æ•°æ®
 	enum { IDD = IDD_INTERNETVE };
 
 	protected:
-	virtual void DoDataExchange(CDataExchange* pDX);	// DDX/DDV Ö§³Ö
+	virtual void DoDataExchange(CDataExchange* pDX);	// DDX/DDV æ”¯æŒ
 
 
-// ÊµÏÖ
+// å®ç°
 protected:
 	CWinThread *pThreadPlay;
 
 
 	HICON m_hIcon;
 
-	// Éú³ÉµÄÏûÏ¢Ó³Éäº¯Êı
+	// ç”Ÿæˆçš„æ¶ˆæ¯æ˜ å°„å‡½æ•°
 	virtual BOOL OnInitDialog();
 	afx_msg void OnSysCommand(UINT nID, LPARAM lParam);
 	afx_msg void OnPaint();
@@ -69,7 +69,7 @@ protected:
 
 	virtual BOOL PreTranslateMessage(MSG* pMsg);
 public:
-	//×Ô»æ°´Å¥
+	//è‡ªç»˜æŒ‰é’®
 	CBitmapButton okbutton;
 	CBitmapButton seek_bbutton;
 	CBitmapButton seek_fbutton;
@@ -114,7 +114,7 @@ public:
 	CEdit m_input_format;
 	CEdit m_input_protocol;
 
-	//¶Ô»°¿ò¶ÔÏó--------
+	//å¯¹è¯æ¡†å¯¹è±¡--------
 
 	InputList *inputlist;
 	Videodecode *videodecode;
@@ -225,7 +225,7 @@ public:
 	afx_msg void OnRawanalysisB();
 	afx_msg void OnTopmostAlways();
 	afx_msg void OnTopmostNever();
-	//ÊÇ·ñ´¦ÓÚ²¥·Å½×¶Î
+	//æ˜¯å¦å¤„äºæ’­æ”¾é˜¶æ®µ
 	int is_playing;
 //	afx_msg void OnSpecialAbout();
 	afx_msg void OnLangCn();
