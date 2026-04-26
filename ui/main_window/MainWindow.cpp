@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "ui/analysis_panel/AnalysisPanel.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
@@ -85,13 +86,9 @@ void MainWindow::SetupUI() {
     info_layout->addWidget(info_text_);
     tab_widget_->addTab(info_tab, tr("流信息"));
     
-    // 分析结果标签页
-    QWidget* analysis_tab = new QWidget();
-    QVBoxLayout* analysis_layout = new QVBoxLayout(analysis_tab);
-    QLabel* analysis_label = new QLabel(tr("分析结果将在此显示"), analysis_tab);
-    analysis_label->setAlignment(Qt::AlignCenter);
-    analysis_layout->addWidget(analysis_label);
-    tab_widget_->addTab(analysis_tab, tr("分析结果"));
+    // 分析面板标签页 (集成分析功能)
+    analysis_panel_ = new ui::AnalysisPanel(this);
+    tab_widget_->addTab(analysis_panel_, tr("分析面板"));
     
     main_layout->addWidget(tab_widget_);
     
@@ -118,9 +115,13 @@ void MainWindow::SetupMenuBar() {
     
     // 分析菜单
     QMenu* analysis_menu = menu_bar_->addMenu(tr("分析"));
-    analysis_menu->addAction(tr("流分析"), this, &MainWindow::OnStreamAnalysis);
-    analysis_menu->addAction(tr("人脸检测"), this, &MainWindow::OnFaceDetection);
-    analysis_menu->addAction(tr("直方图分析"), this, &MainWindow::OnHistogramAnalysis);
+    analysis_menu->addAction(tr("启用分析"), this, [this]() {
+        if (player_) {
+            player_->EnableAnalysis(!player_->IsAnalysisEnabled());
+            info_label_->setText(player_->IsAnalysisEnabled() ? 
+                tr("分析功能已启用") : tr("分析功能已禁用"));
+        }
+    });
     
     // 帮助菜单
     QMenu* help_menu = menu_bar_->addMenu(tr("帮助"));
@@ -143,7 +144,7 @@ void MainWindow::SetupStatusBar() {
 }
 
 void MainWindow::SetupConnections() {
-    // 播放器信号连接
+    // 播放器信号连接 - 基本功能
     connect(player_, &player::MediaPlayer::StateChanged,
             this, &MainWindow::OnStateChanged);
     connect(player_, &player::MediaPlayer::FrameReady,
@@ -154,6 +155,14 @@ void MainWindow::SetupConnections() {
             this, &MainWindow::OnError);
     connect(player_, &player::MediaPlayer::PlaybackFinished,
             this, &MainWindow::OnPlaybackFinished);
+    
+    // 播放器信号连接 - 分析功能 (实时分析)
+    connect(player_, &player::MediaPlayer::StreamStatsReady,
+            analysis_panel_, &ui::AnalysisPanel::UpdateStreamStats);
+    connect(player_, &player::MediaPlayer::HistogramReady,
+            analysis_panel_, &ui::AnalysisPanel::UpdateHistogram);
+    connect(player_, &player::MediaPlayer::FaceDetectionReady,
+            analysis_panel_, &ui::AnalysisPanel::UpdateFaceDetection);
     
     // 控件信号连接
     connect(play_button_, &QPushButton::clicked, this, &MainWindow::OnPlay);
@@ -200,7 +209,7 @@ void MainWindow::OnExit() {
 }
 
 void MainWindow::OnPlay() {
-    player_->Play();
+    player_->EnableAnalysis(true);  // 启用分析
 }
 
 void MainWindow::OnPause() {
@@ -281,16 +290,24 @@ void MainWindow::OnPlaybackFinished() {
     info_label_->setText(tr("播放完成"));
 }
 
-void MainWindow::OnStreamAnalysis() {
-    info_label_->setText(tr("流分析功能开发中..."));
+void MainWindow::OnStreamStatsUpdate(const analyzer::StreamStats& stats) {
+    // 更新状态栏显示关键信息
+    QString status = QString("FPS: %1 | 码率: %2 Kbps | 关键帧: %3")
+        .arg(stats.current_fps, 0, 'f', 1)
+        .arg(stats.current_bitrate_bps / 1000)
+        .arg(stats.key_frame_count);
+    status_bar_->showMessage(status);
 }
 
-void MainWindow::OnFaceDetection() {
-    info_label_->setText(tr("人脸检测功能开发中..."));
+void MainWindow::OnHistogramUpdate(const analyzer::HistogramData& hist) {
+    // 直方图数据已由分析面板处理，这里可以做其他处理
 }
 
-void MainWindow::OnHistogramAnalysis() {
-    info_label_->setText(tr("直方图分析功能开发中..."));
+void MainWindow::OnFaceDetectionUpdate(const std::vector<analyzer::FaceInfo>& faces) {
+    // 人脸检测结果已由分析面板处理，这里可以做其他处理
+    if (!faces.empty()) {
+        info_label_->setText(tr("检测到 %1 张人脸").arg(faces.size()));
+    }
 }
 
 } // namespace ui

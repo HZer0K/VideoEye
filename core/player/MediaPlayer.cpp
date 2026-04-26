@@ -1,4 +1,5 @@
 #include "MediaPlayer.h"
+#include "utils/Logger.h"
 #include <QFileInfo>
 #include <iostream>
 
@@ -165,6 +166,34 @@ void MediaPlayer::SetVolume(int volume) {
     volume_ = std::max(0, std::min(100, volume));
 }
 
+void MediaPlayer::EnableAnalysis(bool enable) {
+    analysis_enabled_ = enable;
+    if (enable) {
+        stream_analyzer_.Start();
+        LOG_INFO("已启用视频分析");
+    } else {
+        stream_analyzer_.Stop();
+        LOG_INFO("已禁用视频分析");
+    }
+}
+
+void MediaPlayer::SetFaceDetectionEnabled(bool enable) {
+    face_detection_enabled_ = enable;
+    if (enable && face_detector_.GetTotalDetections() == 0) {
+        // 初始化人脸检测器
+        // 注意：需要从资源路径加载
+        LOG_INFO("人脸检测已启用");
+    }
+}
+
+void MediaPlayer::SetHistogramEnabled(bool enable) {
+    histogram_enabled_ = enable;
+}
+
+analyzer::StreamStats MediaPlayer::GetCurrentStats() const {
+    return stream_analyzer_.GetStats();
+}
+
 void MediaPlayer::DecodeThread() {
     AVPacket* packet = av_packet_alloc();
     model::FrameData frame_data;
@@ -199,6 +228,34 @@ void MediaPlayer::DecodeThread() {
                 // 这里需要YUV到RGB的转换,简化处理
                 QImage qimage(frame_data.width, frame_data.height, QImage::Format_RGB32);
                 emit FrameReady(qimage);
+                
+                // 实时分析
+                if (analysis_enabled_) {
+                    // 流分析 (每个包)
+                    stream_analyzer_.AnalyzePacket(packet, format_ctx_);
+                    
+                    // 每隔10帧进行一次帧分析 (降低CPU占用)
+                    analysis_frame_counter_++;
+                    if (analysis_frame_counter_ % 10 == 0) {
+                        // 直方图分析
+                        if (histogram_enabled_) {
+                            auto hist = frame_analyzer_.ComputeHistogram(frame_data);
+                            emit HistogramReady(hist);
+                        }
+                        
+                        // 人脸检测
+                        if (face_detection_enabled_) {
+                            auto faces = face_detector_.DetectFaces(frame_data);
+                            if (!faces.empty()) {
+                                emit FaceDetectionReady(faces);
+                            }
+                        }
+                        
+                        // 发送流统计 (每秒一次)
+                        auto stats = stream_analyzer_.GetStats();
+                        emit StreamStatsReady(stats);
+                    }
+                }
             }
         }
         

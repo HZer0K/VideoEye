@@ -14,6 +14,9 @@ extern "C" {
 
 #include "core/player/Decoders.h"
 #include "core/model/FrameData.h"
+#include "core/analyzer/StreamAnalyzer.h"
+#include "core/analyzer/FrameAnalyzer.h"
+#include "core/analyzer/FaceDetector.h"
 
 namespace videoeye {
 namespace player {
@@ -43,6 +46,16 @@ public:
     void SetVolume(int volume);
     int GetVolume() const { return volume_; }
     
+    // 分析控制
+    void EnableAnalysis(bool enable);
+    bool IsAnalysisEnabled() const { return analysis_enabled_; }
+    void SetFaceDetectionEnabled(bool enable);
+    void SetHistogramEnabled(bool enable);
+    
+    // 获取分析器
+    analyzer::StreamAnalyzer& GetStreamAnalyzer() { return stream_analyzer_; }
+    analyzer::StreamStats GetCurrentStats() const;
+    
 signals:
     // 状态改变信号
     void StateChanged(model::PlayerState state);
@@ -58,6 +71,11 @@ signals:
     
     // 播放完成信号
     void PlaybackFinished();
+    
+    // 分析数据信号
+    void StreamStatsReady(const analyzer::StreamStats& stats);
+    void HistogramReady(const analyzer::HistogramData& hist);
+    void FaceDetectionReady(const std::vector<analyzer::FaceInfo>& faces);
     
 private:
     // 解码线程
@@ -89,6 +107,15 @@ private:
     int volume_ = 100;
     
     QString current_url_;
+    
+    // 分析器
+    analyzer::StreamAnalyzer stream_analyzer_;
+    analyzer::FrameAnalyzer frame_analyzer_;
+    analyzer::FaceDetector face_detector_;
+    bool analysis_enabled_ = false;
+    bool face_detection_enabled_ = false;
+    bool histogram_enabled_ = false;
+    int analysis_frame_counter_ = 0;  // 用于控制分析频率
 };
 
 } // namespace player

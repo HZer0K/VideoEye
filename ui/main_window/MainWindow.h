@@ -12,6 +12,7 @@
 #include <QStatusBar>
 
 #include "core/player/MediaPlayer.h"
+#include "ui/analysis_panel/AnalysisPanel.h"
 
 namespace videoeye {
 namespace ui {
@@ -43,10 +44,10 @@ private slots:
     void OnError(const QString& message);
     void OnPlaybackFinished();
     
-    // 分析功能
-    void OnStreamAnalysis();
-    void OnFaceDetection();
-    void OnHistogramAnalysis();
+    // 分析功能槽函数 (MediaPlayer信号)
+    void OnStreamStatsUpdate(const analyzer::StreamStats& stats);
+    void OnHistogramUpdate(const analyzer::HistogramData& hist);
+    void OnFaceDetectionUpdate(const std::vector<analyzer::FaceInfo>& faces);
     
 private:
     // 初始化UI
@@ -72,6 +73,9 @@ private:
     QLabel* time_label_;            // 时间显示
     QLabel* info_label_;            // 信息标签
     QTextEdit* info_text_;          // 详细信息文本框
+    
+    // 分析面板
+    ui::AnalysisPanel* analysis_panel_;  // 分析面板
     
     // 菜单和工具栏
     QMenuBar* menu_bar_;
