@@ -5,6 +5,12 @@
 #include <cstdint>
 #include <iostream>
 
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavcodec/version.h>
+#include <libswscale/swscale.h>
+}
+
 namespace videoeye {
 namespace player {
 
@@ -35,6 +41,15 @@ bool MediaPlayer::Open(const QString& url) {
 
     current_url_ = url;
     should_stop_ = false;
+
+    const unsigned header_avcodec_major = LIBAVCODEC_VERSION_MAJOR;
+    const unsigned runtime_avcodec_major = static_cast<unsigned>(avcodec_version() >> 16);
+    if (header_avcodec_major != runtime_avcodec_major) {
+        emit Error(QString("FFmpeg libavcodec 版本不匹配：编译期头文件=%1，运行期库=%2。请清理build并确保使用同一套FFmpeg开发包/运行库。")
+                       .arg(header_avcodec_major)
+                       .arg(runtime_avcodec_major));
+        return false;
+    }
     
     qDebug() << "[OPEN-5] 调用 avformat_open_input";
     
@@ -93,11 +108,13 @@ bool MediaPlayer::Open(const QString& url) {
     // 这个函数会安全地查找最佳流，避免直接访问可能无效的codecpar
     qDebug() << "[OPEN-10.2] 使用av_find_best_stream查找视频流";
     
-    video_stream_index_ = av_find_best_stream(format_ctx_, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    const AVCodec* best_video_codec = nullptr;
+    video_stream_index_ = av_find_best_stream(format_ctx_, AVMEDIA_TYPE_VIDEO, -1, -1, &best_video_codec, 0);
     qDebug() << "[OPEN-11] 视频流索引:" << video_stream_index_;
     
     qDebug() << "[OPEN-10.3] 使用av_find_best_stream查找音频流";
-    audio_stream_index_ = av_find_best_stream(format_ctx_, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    const AVCodec* best_audio_codec = nullptr;
+    audio_stream_index_ = av_find_best_stream(format_ctx_, AVMEDIA_TYPE_AUDIO, -1, -1, &best_audio_codec, 0);
     qDebug() << "[OPEN-12] 音频流索引:" << audio_stream_index_;
     
     qDebug() << "[OPEN-13] video_stream_index:" << video_stream_index_;
@@ -118,7 +135,17 @@ bool MediaPlayer::Open(const QString& url) {
         
         // 手动创建codec context，绕过有问题的codecpar
         AVStream* video_stream = format_ctx_->streams[video_stream_index_];
-        const AVCodec* video_codec = avcodec_find_decoder(video_stream->codecpar->codec_id);
+        if (!video_stream || !video_stream->codecpar) {
+            qDebug() << "[OPEN-ERROR] 视频stream或codecpar为空";
+            emit Error("Video codec parameters not available");
+            Cleanup();
+            return false;
+        }
+
+        const AVCodec* video_codec = best_video_codec;
+        if (!video_codec) {
+            video_codec = avcodec_find_decoder(video_stream->codecpar->codec_id);
+        }
         
         if (!video_codec) {
             qDebug() << "[OPEN-ERROR] 找不到视频解码器";
@@ -224,11 +251,14 @@ bool MediaPlayer::Open(const QString& url) {
     qDebug() << "[OPEN-22] 填充流信息";
     // 填充流信息
     stream_info_.filename = url.toStdString();
-    stream_info_.format_name = format_ctx_->iformat->name;
+    stream_info_.format_name = (format_ctx_->iformat && format_ctx_->iformat->name) ? format_ctx_->iformat->name : "";
     stream_info_.duration_ms = format_ctx_->duration != AV_NOPTS_VALUE ? 
                                format_ctx_->duration / 1000 : 0;
-    stream_info_.video_fps = video_stream_index_ >= 0 ? 
-                            av_q2d(format_ctx_->streams[video_stream_index_]->avg_frame_rate) : 0;
+    if (video_stream_index_ >= 0 && format_ctx_->streams && format_ctx_->streams[video_stream_index_]) {
+        stream_info_.video_fps = av_q2d(format_ctx_->streams[video_stream_index_]->avg_frame_rate);
+    } else {
+        stream_info_.video_fps = 0;
+    }
     stream_info_.video_bitrate = format_ctx_->bit_rate;
     
     duration_ms_ = stream_info_.duration_ms;
@@ -349,6 +379,10 @@ analyzer::StreamStats MediaPlayer::GetCurrentStats() const {
 void MediaPlayer::DecodeThread() {
     AVPacket* packet = av_packet_alloc();
     model::FrameData frame_data;
+    SwsContext* sws_ctx = nullptr;
+    int sws_src_w = 0;
+    int sws_src_h = 0;
+    int sws_src_fmt = AV_PIX_FMT_NONE;
     
     while (!should_stop_) {
         // 暂停状态检查
@@ -383,12 +417,45 @@ void MediaPlayer::DecodeThread() {
                     continue;
                 }
                 
-                // 转换为QImage并发出信号
-                // 这里需要YUV到RGB的转换,简化处理
-                QImage qimage(frame_data.width, frame_data.height, QImage::Format_RGB32);
-                
-                if (!qimage.isNull()) {
-                    emit FrameReady(qimage);
+                if (frame_data.format >= 0) {
+                    if (sws_src_w != frame_data.width ||
+                        sws_src_h != frame_data.height ||
+                        sws_src_fmt != frame_data.format) {
+                        sws_src_w = frame_data.width;
+                        sws_src_h = frame_data.height;
+                        sws_src_fmt = frame_data.format;
+                    }
+
+                    sws_ctx = sws_getCachedContext(
+                        sws_ctx,
+                        frame_data.width,
+                        frame_data.height,
+                        static_cast<AVPixelFormat>(frame_data.format),
+                        frame_data.width,
+                        frame_data.height,
+                        AV_PIX_FMT_BGRA,
+                        SWS_BILINEAR,
+                        nullptr,
+                        nullptr,
+                        nullptr);
+                }
+
+                if (sws_ctx) {
+                    QImage qimage(frame_data.width, frame_data.height, QImage::Format_ARGB32);
+                    if (!qimage.isNull()) {
+                        uint8_t* dst_slices[4] = {qimage.bits(), nullptr, nullptr, nullptr};
+                        int dst_linesize[4] = {qimage.bytesPerLine(), 0, 0, 0};
+
+                        sws_scale(sws_ctx,
+                                  frame_data.data,
+                                  frame_data.linesize,
+                                  0,
+                                  frame_data.height,
+                                  dst_slices,
+                                  dst_linesize);
+
+                        emit FrameReady(qimage);
+                    }
                 }
                 
                 // 实时分析 (仅帧有效时)
@@ -437,6 +504,10 @@ void MediaPlayer::DecodeThread() {
         av_packet_unref(packet);
     }
     
+    if (sws_ctx) {
+        sws_freeContext(sws_ctx);
+        sws_ctx = nullptr;
+    }
     av_packet_free(&packet);
 }
 

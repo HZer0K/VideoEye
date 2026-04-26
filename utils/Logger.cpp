@@ -9,7 +9,7 @@ namespace videoeye {
 namespace utils {
 
 Logger::Logger()
-    : current_level_(LogLevel::DEBUG)
+    : current_level_(LogLevel::Debug)
     , output_to_console_(true) {
 }
 
@@ -30,7 +30,7 @@ void Logger::SetLevel(LogLevel level) {
 }
 
 void Logger::Debug(const std::string& message, const std::string& module) {
-    Log(LogLevel::DEBUG, message, module);
+    Log(LogLevel::Debug, message, module);
 }
 
 void Logger::Info(const std::string& message, const std::string& module) {
@@ -83,7 +83,7 @@ bool Logger::SetLogFile(const std::string& filename) {
 
 std::string Logger::LevelToString(LogLevel level) {
     switch (level) {
-        case LogLevel::DEBUG:     return "DEBUG";
+        case LogLevel::Debug:     return "DEBUG";
         case LogLevel::INFO:      return "INFO";
         case LogLevel::WARNING:   return "WARN";
         case LogLevel::ERROR_LEVEL: return "ERROR";

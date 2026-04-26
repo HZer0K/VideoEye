@@ -211,6 +211,12 @@ bool AudioDecoder::Initialize(AVCodecParameters* codec_params) {
     
     sample_rate_ = codec_ctx_->sample_rate;
     channels_ = codec_ctx_->ch_layout.nb_channels;
+    if (channels_ <= 0) {
+        channels_ = codec_params->ch_layout.nb_channels;
+    }
+    if (channels_ <= 0) {
+        channels_ = 2;
+    }
     
     // 初始化重采样上下文
     swr_ctx_ = swr_alloc();
@@ -219,14 +225,26 @@ bool AudioDecoder::Initialize(AVCodecParameters* codec_params) {
         return false;
     }
     
-    // 设置重采样参数 (转换为 stereo, s16)
-    av_channel_layout_default(&codec_ctx_->ch_layout, channels_);
+    AVChannelLayout in_layout{};
+    if (codec_ctx_->ch_layout.nb_channels > 0) {
+        if (av_channel_layout_copy(&in_layout, &codec_ctx_->ch_layout) < 0) {
+            av_channel_layout_default(&in_layout, channels_);
+        }
+    } else {
+        av_channel_layout_default(&in_layout, channels_);
+    }
+
+    AVChannelLayout out_layout{};
+    av_channel_layout_default(&out_layout, channels_);
+
     swr_alloc_set_opts2(&swr_ctx_,
-                        &codec_ctx_->ch_layout, AV_SAMPLE_FMT_S16, codec_ctx_->sample_rate,
-                        &codec_ctx_->ch_layout, codec_ctx_->sample_fmt, codec_ctx_->sample_rate,
+                        &out_layout, AV_SAMPLE_FMT_S16, sample_rate_ > 0 ? sample_rate_ : 44100,
+                        &in_layout, codec_ctx_->sample_fmt, sample_rate_ > 0 ? sample_rate_ : 44100,
                         0, nullptr);
     
     ret = swr_init(swr_ctx_);
+    av_channel_layout_uninit(&in_layout);
+    av_channel_layout_uninit(&out_layout);
     if (ret < 0) {
         std::cerr << "Failed to initialize resample context" << std::endl;
         return false;
@@ -260,6 +278,9 @@ bool AudioDecoder::DecodePacket(AVPacket* packet, uint8_t* output_buffer, int bu
     // 重采样
     uint8_t* output_ptrs[8] = {output_buffer, nullptr, nullptr, nullptr, 
                                 nullptr, nullptr, nullptr, nullptr};
+    if (channels_ <= 0) {
+        return false;
+    }
     output_size = swr_convert(swr_ctx_, output_ptrs, buffer_size / (channels_ * 2),
                               (const uint8_t**)frame_->data, frame_->nb_samples);
     

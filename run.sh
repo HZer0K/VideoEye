@@ -34,8 +34,11 @@ echo "====================================="
 # 设置 Qt 平台
 export QT_QPA_PLATFORM=xcb
 
-# 强制使用正确版本的FFmpeg（避免系统旧版本干扰）
-export LD_PRELOAD=/usr/local/lib/libavformat.so.62:/usr/local/lib/libavcodec.so.62:/usr/local/lib/libavutil.so.60:/usr/local/lib/libswscale.so.9:/usr/local/lib/libswresample.so.6
+if [ -n "$VIDEOEYE_FFMPEG_LD_PRELOAD" ]; then
+    export LD_PRELOAD="$VIDEOEYE_FFMPEG_LD_PRELOAD"
+else
+    unset LD_PRELOAD
+fi
 
 # 运行程序
 cd "$BUILD_DIR"

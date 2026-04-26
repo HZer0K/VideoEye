@@ -212,6 +212,9 @@ void MainWindow::OnOpenFile() {
         
         info_text_->setText(info_str);
         qDebug() << "[10] setText()完成";
+
+        qDebug() << "[11] 自动开始播放";
+        player_->Play();
     } else {
         qDebug() << "[ERROR] Open失败";
     }

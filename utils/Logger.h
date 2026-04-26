@@ -10,7 +10,7 @@ namespace utils {
 
 // 日志级别枚举
 enum class LogLevel {
-    DEBUG = 0,
+    Debug = 0,
     INFO = 1,
     WARNING = 2,
     ERROR_LEVEL = 3,
