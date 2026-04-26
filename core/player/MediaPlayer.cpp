@@ -1,6 +1,8 @@
 #include "MediaPlayer.h"
 #include "utils/Logger.h"
 #include <QFileInfo>
+#include <QDebug>
+#include <cstdint>
 #include <iostream>
 
 namespace videoeye {
@@ -19,43 +21,90 @@ MediaPlayer::~MediaPlayer() {
 }
 
 bool MediaPlayer::Open(const QString& url) {
+    qDebug() << "\n===== MediaPlayer::Open START =====";
+    qDebug() << "[OPEN-1] URL:" << url;
+    
+    qDebug() << "[OPEN-2] 调用 Stop()";
     Stop();
 
+    qDebug() << "[OPEN-3] 获取锁";
     std::lock_guard<std::mutex> lock(mutex_);
+    
+    qDebug() << "[OPEN-4] 调用 Cleanup()";
     Cleanup();
 
     current_url_ = url;
     should_stop_ = false;
     
+    qDebug() << "[OPEN-5] 调用 avformat_open_input";
+    
+    // 保存URL的C字符串，避免临时对象被销毁
+    std::string url_str = url.toStdString();
+    qDebug() << "[OPEN-5.1] URL string:" << url_str.c_str();
+    
     // 打开输入流
-    int ret = avformat_open_input(&format_ctx_, url.toStdString().c_str(), nullptr, nullptr);
+    int ret = avformat_open_input(&format_ctx_, url_str.c_str(), nullptr, nullptr);
+    qDebug() << "[OPEN-6] avformat_open_input 返回:" << ret;
+    
     if (ret < 0) {
+        qDebug() << "[OPEN-ERROR] 打开输入流失败:" << ret;
         emit Error(QString("Failed to open: %1").arg(url));
         return false;
     }
     
+    qDebug() << "[OPEN-7] format_ctx_:" << format_ctx_;
+    qDebug() << "[OPEN-7.1] nb_streams:" << (format_ctx_ ? format_ctx_->nb_streams : 0);
+    
     // 读取流信息
+    qDebug() << "[OPEN-8] 调用 avformat_find_stream_info";
     ret = avformat_find_stream_info(format_ctx_, nullptr);
+    qDebug() << "[OPEN-9] avformat_find_stream_info 返回:" << ret;
+    
     if (ret < 0) {
+        qDebug() << "[OPEN-ERROR] 查找流信息失败:" << ret;
         emit Error("Failed to find stream info");
         Cleanup();
         return false;
     }
     
-    // 查找视频和音频流
-    video_stream_index_ = -1;
-    audio_stream_index_ = -1;
+    qDebug() << "[OPEN-10] 查找视频/音频流";
     
-    for (unsigned int i = 0; i < format_ctx_->nb_streams; ++i) {
-        if (format_ctx_->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && video_stream_index_ < 0) {
-            video_stream_index_ = i;
-        }
-        if (format_ctx_->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && audio_stream_index_ < 0) {
-            audio_stream_index_ = i;
-        }
+    // 关键检查：确保format_ctx_有效
+    if (!format_ctx_) {
+        qDebug() << "[OPEN-ERROR] format_ctx_为空";
+        emit Error("Format context is null");
+        return false;
     }
     
+    unsigned int nb_streams = format_ctx_->nb_streams;
+    qDebug() << "[OPEN-10.1] nb_streams:" << nb_streams;
+    
+    // 检查streams数组
+    if (!format_ctx_->streams) {
+        qDebug() << "[OPEN-ERROR] streams数组为空";
+        emit Error("No streams found");
+        Cleanup();
+        return false;
+    }
+    
+    qDebug() << "[OPEN-10.15] streams数组有效";
+    
+    // 使用FFmpeg推荐的av_find_best_stream API
+    // 这个函数会安全地查找最佳流，避免直接访问可能无效的codecpar
+    qDebug() << "[OPEN-10.2] 使用av_find_best_stream查找视频流";
+    
+    video_stream_index_ = av_find_best_stream(format_ctx_, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    qDebug() << "[OPEN-11] 视频流索引:" << video_stream_index_;
+    
+    qDebug() << "[OPEN-10.3] 使用av_find_best_stream查找音频流";
+    audio_stream_index_ = av_find_best_stream(format_ctx_, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    qDebug() << "[OPEN-12] 音频流索引:" << audio_stream_index_;
+    
+    qDebug() << "[OPEN-13] video_stream_index:" << video_stream_index_;
+    qDebug() << "[OPEN-14] audio_stream_index:" << audio_stream_index_;
+    
     if (video_stream_index_ < 0 && audio_stream_index_ < 0) {
+        qDebug() << "[OPEN-ERROR] 未找到有效的流";
         emit Error("No video or audio stream found");
         Cleanup();
         return false;
@@ -63,32 +112,116 @@ bool MediaPlayer::Open(const QString& url) {
     
     // 初始化视频解码器
     if (video_stream_index_ >= 0) {
+        qDebug() << "[OPEN-15] 初始化视频解码器";
         video_decoder_ = std::make_unique<VideoDecoder>();
-        if (!video_decoder_->Initialize(format_ctx_->streams[video_stream_index_]->codecpar)) {
+        qDebug() << "[OPEN-16] video_decoder_ 创建成功";
+        
+        // 手动创建codec context，绕过有问题的codecpar
+        AVStream* video_stream = format_ctx_->streams[video_stream_index_];
+        const AVCodec* video_codec = avcodec_find_decoder(video_stream->codecpar->codec_id);
+        
+        if (!video_codec) {
+            qDebug() << "[OPEN-ERROR] 找不到视频解码器";
+            emit Error("Video codec not found");
+            Cleanup();
+            return false;
+        }
+        
+        qDebug() << "[OPEN-16.1] 找到视频解码器:" << video_codec->name;
+        
+        // 创建codec context
+        AVCodecContext* video_codec_ctx = avcodec_alloc_context3(video_codec);
+        if (!video_codec_ctx) {
+            qDebug() << "[OPEN-ERROR] 无法创建视频codec context";
+            emit Error("Failed to create video codec context");
+            Cleanup();
+            return false;
+        }
+        
+        // 从codecpar复制参数（即使codecpar是野指针，codec_id应该已经正确读取了）
+        // 如果这里崩溃，说明codecpar完全不可用
+        qDebug() << "[OPEN-16.2] 复制codec参数";
+        int ret = avcodec_parameters_to_context(video_codec_ctx, video_stream->codecpar);
+        if (ret < 0) {
+            qDebug() << "[OPEN-ERROR] 复制codec参数失败:" << ret;
+            avcodec_free_context(&video_codec_ctx);
+            emit Error("Failed to copy codec parameters");
+            Cleanup();
+            return false;
+        }
+        
+        // 打开解码器
+        qDebug() << "[OPEN-16.3] 打开视频解码器";
+        ret = avcodec_open2(video_codec_ctx, video_codec, nullptr);
+        if (ret < 0) {
+            qDebug() << "[OPEN-ERROR] 打开视频解码器失败:" << ret;
+            avcodec_free_context(&video_codec_ctx);
+            emit Error("Failed to open video decoder");
+            Cleanup();
+            return false;
+        }
+        
+        qDebug() << "[OPEN-16.4] 视频解码器已打开，尺寸:" 
+                 << video_codec_ctx->width << "x" << video_codec_ctx->height;
+        
+        // 修改VideoDecoder以接受AVCodecContext*
+        if (!video_decoder_->InitializeFromContext(video_codec_ctx)) {
+            qDebug() << "[OPEN-ERROR] 视频解码器初始化失败";
+            avcodec_free_context(&video_codec_ctx);
             emit Error("Failed to initialize video decoder");
             Cleanup();
             return false;
         }
         
+        // InitializeFromContext会接管codec_ctx的所有权，所以不要free
+        
+        qDebug() << "[OPEN-17] 视频解码器初始化成功";
         stream_info_.video_width = video_decoder_->GetWidth();
         stream_info_.video_height = video_decoder_->GetHeight();
         stream_info_.codec_name_video = video_decoder_->GetCodecName();
+        
+        qDebug() << "[OPEN-18] 视频信息:" << stream_info_.video_width << "x" 
+                 << stream_info_.video_height << stream_info_.codec_name_video.c_str();
     }
     
     // 初始化音频解码器
     if (audio_stream_index_ >= 0) {
+        qDebug() << "[OPEN-19] 初始化音频解码器";
         audio_decoder_ = std::make_unique<AudioDecoder>();
-        if (!audio_decoder_->Initialize(format_ctx_->streams[audio_stream_index_]->codecpar)) {
+        qDebug() << "[OPEN-20] audio_decoder_ 创建成功";
+        
+        // 安全获取codecpar
+        AVStream* audio_stream = format_ctx_->streams[audio_stream_index_];
+        
+        qDebug() << "[OPEN-20.1] audio_stream:" << audio_stream;
+        qDebug() << "[OPEN-20.2] audio_stream->codecpar:" << audio_stream->codecpar;
+        
+        if (!audio_stream->codecpar) {
+            qDebug() << "[OPEN-ERROR] 音频codecpar为空";
+            emit Error("Audio codec parameters not available");
+            Cleanup();
+            return false;
+        }
+        
+        // 验证codecpar
+        uintptr_t ptr_val_audio = reinterpret_cast<uintptr_t>(audio_stream->codecpar);
+        qDebug() << "[OPEN-20.3] codecpar地址:" << Qt::hex << ptr_val_audio << Qt::dec;
+        
+        qDebug() << "[OPEN-20.5] 调用 audio_decoder_->Initialize()";
+        if (!audio_decoder_->Initialize(audio_stream->codecpar)) {
+            qDebug() << "[OPEN-ERROR] 音频解码器初始化失败";
             emit Error("Failed to initialize audio decoder");
             Cleanup();
             return false;
         }
         
+        qDebug() << "[OPEN-21] 音频解码器初始化成功";
         stream_info_.audio_sample_rate = audio_decoder_->GetSampleRate();
         stream_info_.audio_channels = audio_decoder_->GetChannels();
         stream_info_.codec_name_audio = audio_decoder_->GetCodecName();
     }
     
+    qDebug() << "[OPEN-22] 填充流信息";
     // 填充流信息
     stream_info_.filename = url.toStdString();
     stream_info_.format_name = format_ctx_->iformat->name;
@@ -101,8 +234,12 @@ bool MediaPlayer::Open(const QString& url) {
     duration_ms_ = stream_info_.duration_ms;
     current_position_ms_ = 0;
     
+    qDebug() << "[OPEN-23] 设置状态为 Idle";
     state_ = model::PlayerState::Idle;
     emit StateChanged(state_);
+    
+    qDebug() << "[OPEN-24] 返回 true";
+    qDebug() << "===== MediaPlayer::Open END (SUCCESS) =====\n";
     
     return true;
 }

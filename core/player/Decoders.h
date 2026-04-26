@@ -29,6 +29,9 @@ public:
     // 初始化解码器
     bool Initialize(AVCodecParameters* codec_params);
     
+    // 从已有的AVCodecContext初始化（接管所有权）
+    bool InitializeFromContext(AVCodecContext* codec_ctx);
+    
     // 解码一帧
     bool DecodePacket(AVPacket* packet, model::FrameData& output_frame);
     

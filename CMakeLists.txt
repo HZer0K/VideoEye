@@ -76,6 +76,11 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${SDL2_INCLUDE_DIRS}
 )
 
+# 设置运行时库路径（确保使用正确版本的FFmpeg）
+set(CMAKE_BUILD_RPATH "/usr/local/lib")
+set(CMAKE_INSTALL_RPATH "/usr/local/lib")
+set(CMAKE_BUILD_RPATH_USE_ORIGIN ON)
+
 # 链接库
 target_link_libraries(${PROJECT_NAME} PRIVATE
     Qt6::Widgets
@@ -85,6 +90,12 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     ${FFmpeg_LIBRARIES}
     ${OpenCV_LIBS}
     ${SDL2_LIBRARIES}
+)
+
+# 设置运行时库路径（确保使用正确版本的FFmpeg）
+set_target_properties(${PROJECT_NAME} PROPERTIES
+    BUILD_RPATH "${FFmpeg_LIBRARY_DIRS}"
+    INSTALL_RPATH "${FFmpeg_LIBRARY_DIRS}"
 )
 
 # 编译定义

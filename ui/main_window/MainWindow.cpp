@@ -9,6 +9,7 @@
 #include <QApplication>
 #include <QStyle>
 #include <QSignalBlocker>
+#include <QDebug>
 
 namespace videoeye {
 namespace ui {
@@ -173,22 +174,49 @@ void MainWindow::SetupConnections() {
 }
 
 void MainWindow::OnOpenFile() {
+    qDebug() << "\n========== OnOpenFile START ==========";
+    
     QString filename = QFileDialog::getOpenFileName(this,
         tr("打开媒体文件"), "",
         tr("媒体文件 (*.mp4 *.avi *.mkv *.flv *.ts *.mp3 *.aac *.wav);;所有文件 (*)"));
     
+    qDebug() << "[1] 选择的文件:" << filename;
+    
     if (filename.isEmpty()) {
+        qDebug() << "[1.5] 文件名为空，返回";
         return;
     }
     
-    if (player_->Open(filename)) {
+    qDebug() << "[2] 检查player_指针:" << player_;
+    if (!player_) {
+        qDebug() << "[ERROR] player_为空!";
+        return;
+    }
+    
+    qDebug() << "[3] 调用 player_->Open()";
+    bool open_result = player_->Open(filename);
+    qDebug() << "[4] player_->Open() 返回:" << open_result;
+    
+    if (open_result) {
+        qDebug() << "[5] 更新UI - info_label_";
         info_label_->setText(tr("已打开: %1").arg(filename));
         status_bar_->showMessage(tr("已打开: %1").arg(filename));
         
-        // 显示流信息
+        qDebug() << "[6] 获取流信息";
         auto info = player_->GetStreamInfo();
-        info_text_->setText(QString::fromStdString(info.ToString()));
+        qDebug() << "[7] 流信息获取成功，filename:" << QString::fromStdString(info.filename);
+        
+        qDebug() << "[8] 调用 info_text_->setText()";
+        QString info_str = QString::fromStdString(info.ToString());
+        qDebug() << "[9] ToString()完成，长度:" << info_str.length();
+        
+        info_text_->setText(info_str);
+        qDebug() << "[10] setText()完成";
+    } else {
+        qDebug() << "[ERROR] Open失败";
     }
+    
+    qDebug() << "========== OnOpenFile END ==========\n";
 }
 
 void MainWindow::OnOpenURL() {

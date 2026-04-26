@@ -61,6 +61,28 @@ bool VideoDecoder::Initialize(AVCodecParameters* codec_params) {
     return true;
 }
 
+bool VideoDecoder::InitializeFromContext(AVCodecContext* codec_ctx) {
+    // 接管已打开的codec context的所有权
+    codec_ctx_ = codec_ctx;
+    
+    if (!codec_ctx_) {
+        std::cerr << "Invalid codec context" << std::endl;
+        return false;
+    }
+    
+    // 分配帧缓冲区
+    frame_ = av_frame_alloc();
+    if (!frame_) {
+        std::cerr << "Failed to allocate frame" << std::endl;
+        return false;
+    }
+    
+    width_ = codec_ctx_->width;
+    height_ = codec_ctx_->height;
+    
+    return true;
+}
+
 bool VideoDecoder::DecodePacket(AVPacket* packet, model::FrameData& output_frame) {
     if (!codec_ctx_ || !frame_) {
         return false;
