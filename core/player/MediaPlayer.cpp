@@ -678,7 +678,7 @@ bool MediaPlayer::Open(const QString& url) {
 
     const int64_t duration_ms = (format_ctx_->duration != AV_NOPTS_VALUE) ? (format_ctx_->duration / 1000) : 0;
     duration_ms_ = static_cast<int>(duration_ms);
-    current_position_ms_ = 0;
+    current_position_ms_.store(0);
 
     stream_info_.extractor.complete_name = stream_info_.filename;
     if (format_ctx_->iformat) {
@@ -920,7 +920,7 @@ void MediaPlayer::Stop() {
         decode_thread_.join();
     }
     
-    current_position_ms_ = 0;
+    current_position_ms_.store(0);
     emit StateChanged(state_);
 }
 
@@ -939,8 +939,8 @@ void MediaPlayer::Seek(int position_ms) {
         return;
     }
     
-    current_position_ms_ = position_ms;
-    emit PositionChanged(current_position_ms_, duration_ms_);
+    current_position_ms_.store(position_ms);
+    emit PositionChanged(current_position_ms_.load(), duration_ms_);
 }
 
 void MediaPlayer::SetVolume(int volume) {
@@ -1472,8 +1472,8 @@ void MediaPlayer::DecodeThread() {
         
         // 播放位置跟随主时钟流, 为后续接入真实音频时钟保留一致语义。
         if (packet->stream_index == clock_stream_index && std::isfinite(packet_ts_sec)) {
-            current_position_ms_ = static_cast<int>(packet_ts_sec * 1000.0);
-            emit PositionChanged(current_position_ms_, duration_ms_);
+            current_position_ms_.store(static_cast<int>(packet_ts_sec * 1000.0));
+            emit PositionChanged(current_position_ms_.load(), duration_ms_);
         }
         
         // 视频解码
@@ -1613,7 +1613,7 @@ void MediaPlayer::DecodeThread() {
                             }
                         }
 
-                        double ts = current_position_ms_ / 1000.0;
+                        double ts = current_position_ms_.load() / 1000.0;
                         if (std::isfinite(packet_ts_sec)) {
                             ts = packet_ts_sec;
                         }

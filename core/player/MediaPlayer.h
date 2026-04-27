@@ -40,7 +40,7 @@ public:
     model::PlayerState GetState() const { return state_; }
     model::StreamInfo GetStreamInfo() const { return stream_info_; }
     int GetDuration() const { return duration_ms_; }
-    int GetCurrentPosition() const { return current_position_ms_; }
+    int GetCurrentPosition() const { return current_position_ms_.load(); }
     
     // 音量控制 (0-100)
     void SetVolume(int volume);
@@ -119,7 +119,7 @@ private:
     
     model::StreamInfo stream_info_;
     int duration_ms_ = 0;
-    int current_position_ms_ = 0;
+    std::atomic<int> current_position_ms_{0};
     int volume_ = 100;
     
     QString current_url_;
