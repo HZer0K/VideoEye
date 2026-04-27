@@ -22,6 +22,7 @@
 #include <QByteArray>
 #include <QRegularExpression>
 #include <QtGlobal>
+#include <cmath>
 
 namespace videoeye {
 namespace ui {
@@ -42,6 +43,7 @@ MainWindow::MainWindow(QWidget* parent)
     SetupStatusBar();
     SetupConnections();
     UpdateMinimumWindowSize();
+    audio_vis_timer_.start();
     QTimer::singleShot(0, this, [this]() {
         UpdateMinimumWindowSize();
         EnforceSplitterSizes();
@@ -823,6 +825,9 @@ void MainWindow::OnStop() {
     video_label_->setStyleSheet("background-color: black; color: white; font-size: 20px;");
     audio_level_history_.clear();
     audio_only_mode_ = false;
+    audio_vis_last_render_ms_ = -1;
+    audio_vis_smoothed_ = 0.0;
+    audio_vis_target_ = 0.0;
     showing_raw_image_ = false;
     if (export_progress_dialog_ && export_progress_dialog_->isVisible()) {
         player_->CancelVideoFrameExport();
@@ -921,6 +926,9 @@ void MainWindow::OnFaceDetectionUpdate(const std::vector<analyzer::FaceInfo>& fa
 void MainWindow::OnMediaModeChanged(bool has_video) {
     audio_only_mode_ = !has_video;
     audio_level_history_.clear();
+    audio_vis_last_render_ms_ = -1;
+    audio_vis_smoothed_ = 0.0;
+    audio_vis_target_ = 0.0;
     if (audio_only_mode_) {
         video_label_->clear();
         video_label_->setStyleSheet("background-color: black;");
@@ -932,6 +940,29 @@ void MainWindow::OnAudioLevelReady(double level, double timestamp_seconds) {
         return;
     }
 
+    audio_vis_target_ = std::clamp(level, 0.0, 1.0);
+    if (!audio_vis_timer_.isValid()) {
+        audio_vis_timer_.start();
+        audio_vis_last_render_ms_ = -1;
+    }
+
+    static constexpr qint64 kFrameIntervalMs = 33;
+    const qint64 now_ms = audio_vis_timer_.elapsed();
+    if (audio_vis_last_render_ms_ >= 0 && (now_ms - audio_vis_last_render_ms_) < kFrameIntervalMs) {
+        return;
+    }
+
+    const double dt = (audio_vis_last_render_ms_ >= 0)
+                          ? (static_cast<double>(now_ms - audio_vis_last_render_ms_) / 1000.0)
+                          : (static_cast<double>(kFrameIntervalMs) / 1000.0);
+    audio_vis_last_render_ms_ = now_ms;
+
+    const double tau_attack = 0.05;
+    const double tau_release = 0.20;
+    const double tau = (audio_vis_target_ > audio_vis_smoothed_) ? tau_attack : tau_release;
+    const double alpha = 1.0 - std::exp(-dt / std::max(1e-6, tau));
+    audio_vis_smoothed_ = audio_vis_smoothed_ + (audio_vis_target_ - audio_vis_smoothed_) * std::clamp(alpha, 0.0, 1.0);
+
     const int w = std::max(1, video_label_->width());
     const int h = std::max(1, video_label_->height());
 
@@ -939,7 +970,7 @@ void MainWindow::OnAudioLevelReady(double level, double timestamp_seconds) {
     if (audio_level_history_.size() >= kMaxHistory) {
         audio_level_history_.pop_front();
     }
-    audio_level_history_.push_back(level);
+    audio_level_history_.push_back(audio_vis_smoothed_);
 
     QImage img(w, h, QImage::Format_ARGB32);
     img.fill(Qt::black);
@@ -971,7 +1002,7 @@ void MainWindow::OnAudioLevelReady(double level, double timestamp_seconds) {
                      Qt::AlignLeft | Qt::AlignVCenter,
                      QString("t=%1s  level=%2")
                          .arg(timestamp_seconds, 0, 'f', 3)
-                         .arg(level, 0, 'f', 3));
+                         .arg(audio_vis_smoothed_, 0, 'f', 3));
 
     video_label_->setPixmap(QPixmap::fromImage(img));
 }

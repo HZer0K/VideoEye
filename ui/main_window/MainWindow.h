@@ -16,6 +16,7 @@
 #include <QSplitter>
 #include <QRect>
 #include <QProgressDialog>
+#include <QElapsedTimer>
 #include <deque>
 
 #include "core/player/MediaPlayer.h"
@@ -118,6 +119,10 @@ protected:
     bool enforcing_geometry_ = false;
     bool audio_only_mode_ = false;
     std::deque<double> audio_level_history_;
+    QElapsedTimer audio_vis_timer_;
+    qint64 audio_vis_last_render_ms_ = -1;
+    double audio_vis_smoothed_ = 0.0;
+    double audio_vis_target_ = 0.0;
     bool showing_raw_image_ = false;
 };
 
