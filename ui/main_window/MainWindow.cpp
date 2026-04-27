@@ -3,6 +3,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
+#include <QSplitter>
 #include <QFileDialog>
 #include <QInputDialog>
 #include <QMessageBox>
@@ -10,13 +11,18 @@
 #include <QStyle>
 #include <QSignalBlocker>
 #include <QDebug>
+#include <QTabBar>
+#include <QTimer>
 
 namespace videoeye {
 namespace ui {
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
-    , player_(nullptr) {
+    , player_(nullptr)
+    , splitter_(nullptr)
+    , bottom_widget_(nullptr)
+    , control_group_(nullptr) {
     
     // 创建播放器实例
     player_ = new player::MediaPlayer(this);
@@ -26,9 +32,15 @@ MainWindow::MainWindow(QWidget* parent)
     SetupToolBar();
     SetupStatusBar();
     SetupConnections();
-    
+    UpdateMinimumWindowSize();
+    QTimer::singleShot(0, this, [this]() {
+        UpdateMinimumWindowSize();
+        EnforceSplitterSizes();
+    });
+
     setWindowTitle(tr("VideoEye 2.0 - 视频流分析软件"));
     resize(1200, 800);
+    last_geometry_ = geometry();
 }
 
 MainWindow::~MainWindow() {
@@ -43,60 +55,242 @@ void MainWindow::SetupUI() {
     setCentralWidget(central_widget);
     
     QVBoxLayout* main_layout = new QVBoxLayout(central_widget);
+    main_layout->setContentsMargins(0, 0, 0, 0);
+    
+    splitter_ = new QSplitter(Qt::Vertical, central_widget);
+    splitter_->setChildrenCollapsible(false);
+    main_layout->addWidget(splitter_);
     
     // 视频显示区域
-    video_label_ = new QLabel(this);
-    video_label_->setMinimumSize(800, 450);
+    video_label_ = new QLabel(splitter_);
+    video_label_->setMinimumSize(1, 1);
+    video_label_->setMinimumHeight(160);
+    video_label_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     video_label_->setStyleSheet("background-color: black;");
     video_label_->setAlignment(Qt::AlignCenter);
     video_label_->setText(tr("视频显示区域"));
     video_label_->setStyleSheet("background-color: black; color: white; font-size: 20px;");
-    main_layout->addWidget(video_label_);
     
+    bottom_widget_ = new QWidget(splitter_);
+    bottom_widget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
+    QVBoxLayout* bottom_layout = new QVBoxLayout(bottom_widget_);
+    bottom_layout->setContentsMargins(6, 6, 6, 6);
+
     // 控制面板
-    QGroupBox* control_group = new QGroupBox(tr("播放控制"), this);
-    QHBoxLayout* control_layout = new QHBoxLayout(control_group);
+    control_group_ = new QGroupBox(tr("播放控制"), bottom_widget_);
+    QHBoxLayout* control_layout = new QHBoxLayout(control_group_);
     
     // 播放控制按钮
-    play_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), tr("播放"), this);
-    pause_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPause), tr("暂停"), this);
-    stop_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaStop), tr("停止"), this);
+    play_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), tr("播放"), control_group_);
+    pause_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPause), tr("暂停"), control_group_);
+    stop_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaStop), tr("停止"), control_group_);
     
     control_layout->addWidget(play_button_);
     control_layout->addWidget(pause_button_);
     control_layout->addWidget(stop_button_);
     
     // 进度条
-    seek_slider_ = new QSlider(Qt::Horizontal, this);
+    seek_slider_ = new QSlider(Qt::Horizontal, control_group_);
     seek_slider_->setRange(0, 0);
     control_layout->addWidget(seek_slider_, 1);
     
     // 时间显示
-    time_label_ = new QLabel(tr("00:00 / 00:00"), this);
+    time_label_ = new QLabel(tr("00:00 / 00:00"), control_group_);
     control_layout->addWidget(time_label_);
-    
-    main_layout->addWidget(control_group);
-    
+
+    control_group_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    const int control_h = control_group_->sizeHint().height();
+    control_group_->setFixedHeight(control_h);
+        
     // 信息面板
-    tab_widget_ = new QTabWidget(this);
+    tab_widget_ = new QTabWidget(bottom_widget_);
+    tab_widget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    const int tabbar_h = tab_widget_->tabBar()->sizeHint().height();
+    tab_widget_->setMinimumHeight(tabbar_h);
     
     // 流信息标签页
-    QWidget* info_tab = new QWidget();
+    QWidget* info_tab = new QWidget(tab_widget_);
     QVBoxLayout* info_layout = new QVBoxLayout(info_tab);
     info_text_ = new QTextEdit(info_tab);
     info_text_->setReadOnly(true);
+    info_text_->setMinimumHeight(0);
+    info_text_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     info_layout->addWidget(info_text_);
     tab_widget_->addTab(info_tab, tr("流信息"));
     
     // 分析面板标签页 (集成分析功能)
-    analysis_panel_ = new ui::AnalysisPanel(this);
+    analysis_panel_ = new ui::AnalysisPanel(tab_widget_);
+    analysis_panel_->setMinimumHeight(0);
+    analysis_panel_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     tab_widget_->addTab(analysis_panel_, tr("分析面板"));
     
-    main_layout->addWidget(tab_widget_);
-    
-    // 底部信息栏
-    info_label_ = new QLabel(tr("就绪"), this);
-    main_layout->addWidget(info_label_);
+    bottom_layout->addWidget(control_group_, 0);
+    bottom_layout->addWidget(tab_widget_, 1);
+
+    bottom_widget_->setMinimumHeight(control_h
+        + tabbar_h
+        + bottom_layout->contentsMargins().top()
+        + bottom_layout->contentsMargins().bottom()
+        + bottom_layout->spacing());
+
+    splitter_->addWidget(video_label_);
+    splitter_->addWidget(bottom_widget_);
+
+    splitter_->setCollapsible(0, false);
+    splitter_->setCollapsible(1, false);
+    splitter_->setStretchFactor(0, 3);
+    splitter_->setStretchFactor(1, 2);
+    splitter_->setSizes({600, 400});
+
+    connect(splitter_, &QSplitter::splitterMoved, this, [this](int, int) {
+        if (!splitter_ || !bottom_widget_) {
+            return;
+        }
+        const int bottom_min = bottom_widget_->minimumHeight();
+        QList<int> sizes = splitter_->sizes();
+        if (sizes.size() != 2) {
+            return;
+        }
+        if (sizes[1] < bottom_min) {
+            sizes[0] = std::max(0, sizes[0] - (bottom_min - sizes[1]));
+            sizes[1] = bottom_min;
+            splitter_->setSizes(sizes);
+        }
+    });
+}
+
+void MainWindow::UpdateMinimumWindowSize() {
+    const int video_min = video_label_ ? video_label_->minimumHeight() : 160;
+    int bottom_min = 0;
+    if (bottom_widget_) {
+        bottom_min = bottom_widget_->minimumHeight();
+        if (bottom_min <= 0) {
+            bottom_min = bottom_widget_->minimumSizeHint().height();
+        }
+    }
+
+    int bars = 0;
+    if (menuBar()) {
+        bars += menuBar()->sizeHint().height();
+    }
+    if (tool_bar_) {
+        bars += tool_bar_->sizeHint().height();
+    }
+    if (statusBar()) {
+        bars += statusBar()->sizeHint().height();
+    }
+
+    int min_height = bars + bottom_min + video_min + 20;
+
+    int min_width = 0;
+    if (control_group_) {
+        min_width = control_group_->minimumSizeHint().width();
+        if (min_width < control_group_->sizeHint().width()) {
+            min_width = control_group_->sizeHint().width();
+        }
+    }
+    if (min_width < 900) {
+        min_width = 900;
+    }
+
+    setMinimumSize(min_width, min_height);
+    if (auto* cw = centralWidget()) {
+        cw->setMinimumWidth(min_width);
+        cw->setMinimumHeight(min_height);
+    }
+    if (splitter_) {
+        splitter_->setMinimumWidth(min_width);
+        splitter_->setMinimumHeight(min_height);
+    }
+}
+
+void MainWindow::EnforceSplitterSizes() {
+    if (!splitter_ || !bottom_widget_) {
+        return;
+    }
+    const int bottom_min = bottom_widget_->minimumHeight();
+    const int video_min = video_label_ ? video_label_->minimumHeight() : 160;
+    QList<int> sizes = splitter_->sizes();
+    if (sizes.size() != 2) {
+        return;
+    }
+    bool changed = false;
+    if (sizes[1] < bottom_min) {
+        sizes[1] = bottom_min;
+        changed = true;
+    }
+    if (sizes[0] < video_min) {
+        sizes[0] = video_min;
+        changed = true;
+    }
+    if (changed) {
+        splitter_->setSizes(sizes);
+    }
+}
+
+void MainWindow::showEvent(QShowEvent* event) {
+    QMainWindow::showEvent(event);
+    UpdateMinimumWindowSize();
+    EnforceSplitterSizes();
+    last_geometry_ = geometry();
+}
+
+void MainWindow::resizeEvent(QResizeEvent* event) {
+    QMainWindow::resizeEvent(event);
+    EnforceSplitterSizes();
+
+    if (enforcing_geometry_) {
+        last_geometry_ = geometry();
+        return;
+    }
+
+    const QSize min_sz = minimumSize();
+    QRect g = geometry();
+
+    int target_w = g.width();
+    int target_h = g.height();
+    int target_x = g.x();
+    int target_y = g.y();
+
+    const QRect old_g = last_geometry_.isValid() ? last_geometry_ : g;
+
+    const bool left_moved = g.left() != old_g.left();
+    const bool right_moved = g.right() != old_g.right();
+    const bool top_moved = g.top() != old_g.top();
+    const bool bottom_moved = g.bottom() != old_g.bottom();
+
+    const bool anchor_right = left_moved && !right_moved;
+    const bool anchor_bottom = top_moved && !bottom_moved;
+
+    if (target_w < min_sz.width()) {
+        target_w = min_sz.width();
+        if (anchor_right) {
+            target_x = g.right() - target_w + 1;
+        }
+    }
+
+    if (target_h < min_sz.height()) {
+        target_h = min_sz.height();
+        if (anchor_bottom) {
+            target_y = g.bottom() - target_h + 1;
+        }
+    }
+
+    if (target_w != g.width() || target_h != g.height() || target_x != g.x() || target_y != g.y()) {
+        enforcing_geometry_ = true;
+        setGeometry(target_x, target_y, target_w, target_h);
+        enforcing_geometry_ = false;
+        g = geometry();
+    }
+
+    last_geometry_ = g;
+}
+
+void MainWindow::moveEvent(QMoveEvent* event) {
+    QMainWindow::moveEvent(event);
+    if (!enforcing_geometry_) {
+        last_geometry_ = geometry();
+    }
 }
 
 void MainWindow::SetupMenuBar() {
@@ -120,7 +314,7 @@ void MainWindow::SetupMenuBar() {
     analysis_menu->addAction(tr("启用分析"), this, [this]() {
         if (player_) {
             player_->EnableAnalysis(!player_->IsAnalysisEnabled());
-            info_label_->setText(player_->IsAnalysisEnabled() ? 
+            statusBar()->showMessage(player_->IsAnalysisEnabled() ? 
                 tr("分析功能已启用") : tr("分析功能已禁用"));
         }
     });
@@ -200,8 +394,7 @@ void MainWindow::OnOpenFile() {
     
     if (open_result) {
         qDebug() << "[5] 更新UI - info_label_";
-        info_label_->setText(tr("已打开: %1").arg(filename));
-        status_bar_->showMessage(tr("已打开: %1").arg(filename));
+        statusBar()->showMessage(tr("已打开: %1").arg(filename));
         if (current_media_label_) {
             current_media_label_->setText(filename);
         }
@@ -235,7 +428,7 @@ void MainWindow::OnOpenURL() {
     
     if (ok && !url.isEmpty()) {
         if (player_->Open(url)) {
-            info_label_->setText(tr("已打开: %1").arg(url));
+            statusBar()->showMessage(tr("已打开: %1").arg(url));
             if (current_media_label_) {
                 current_media_label_->setText(url);
             }
@@ -291,8 +484,7 @@ void MainWindow::OnStateChanged(model::PlayerState state) {
             break;
     }
     
-    info_label_->setText(state_text);
-    status_bar_->showMessage(state_text);
+    statusBar()->showMessage(state_text);
 }
 
 void MainWindow::OnFrameReady(const QImage& frame) {
@@ -329,7 +521,7 @@ void MainWindow::OnError(const QString& message) {
 
 void MainWindow::OnPlaybackFinished() {
     OnStop();
-    info_label_->setText(tr("播放完成"));
+    statusBar()->showMessage(tr("播放完成"));
 }
 
 void MainWindow::OnStreamStatsUpdate(const analyzer::StreamStats& stats) {
@@ -348,7 +540,7 @@ void MainWindow::OnHistogramUpdate(const analyzer::HistogramData& hist) {
 void MainWindow::OnFaceDetectionUpdate(const std::vector<analyzer::FaceInfo>& faces) {
     // 人脸检测结果已由分析面板处理，这里可以做其他处理
     if (!faces.empty()) {
-        info_label_->setText(tr("检测到 %1 张人脸").arg(faces.size()));
+        statusBar()->showMessage(tr("检测到 %1 张人脸").arg(faces.size()));
     }
 }
 

@@ -10,6 +10,9 @@
 #include <QMenuBar>
 #include <QToolBar>
 #include <QStatusBar>
+#include <QGroupBox>
+#include <QSplitter>
+#include <QRect>
 
 #include "core/player/MediaPlayer.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
@@ -56,6 +59,13 @@ private:
     void SetupToolBar();
     void SetupStatusBar();
     void SetupConnections();
+    void UpdateMinimumWindowSize();
+    void EnforceSplitterSizes();
+
+protected:
+    void showEvent(QShowEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
+    void moveEvent(QMoveEvent* event) override;
     
     // 更新UI状态
     void UpdateUIState();
@@ -65,13 +75,15 @@ private:
     
     // UI组件
     QLabel* video_label_;           // 视频显示
+    QSplitter* splitter_;           // 主分割器
+    QWidget* bottom_widget_;        // 下半区容器
+    QGroupBox* control_group_;      // 播放控制容器
     QTabWidget* tab_widget_;        // 标签页
     QSlider* seek_slider_;          // 进度条
     QPushButton* play_button_;      // 播放按钮
     QPushButton* pause_button_;     // 暂停按钮
     QPushButton* stop_button_;      // 停止按钮
     QLabel* time_label_;            // 时间显示
-    QLabel* info_label_;            // 信息标签
     QTextEdit* info_text_;          // 详细信息文本框
     QLabel* current_media_label_;   // 顶部显示当前媒体路径
     
@@ -82,6 +94,9 @@ private:
     QMenuBar* menu_bar_;
     QToolBar* tool_bar_;
     QStatusBar* status_bar_;
+
+    QRect last_geometry_;
+    bool enforcing_geometry_ = false;
 };
 
 } // namespace ui
