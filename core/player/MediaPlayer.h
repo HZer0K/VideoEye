@@ -82,7 +82,7 @@ signals:
     void HistogramReady(const analyzer::HistogramData& hist);
     void FaceDetectionReady(const std::vector<analyzer::FaceInfo>& faces);
     void VideoFrameListReset();
-    void VideoFrameInfoReady(int index, int frame_type, qint64 pts, double timestamp_seconds);
+    void VideoFrameInfoReady(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds);
     void MediaModeChanged(bool has_video);
     void AudioLevelReady(double level, double timestamp_seconds);
     void VideoFrameExportStarted(int total_frames);

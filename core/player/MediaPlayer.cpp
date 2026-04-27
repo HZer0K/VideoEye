@@ -1421,6 +1421,7 @@ void MediaPlayer::DecodeThread() {
                     }
                     emit VideoFrameInfoReady(video_frame_index_++,
                                              static_cast<int>(video_decoder_->GetLastPictureType()),
+                                             (packet->flags & AV_PKT_FLAG_KEY) != 0,
                                              static_cast<qint64>(frame_data.pts),
                                              ts);
                 }
