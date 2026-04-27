@@ -54,7 +54,7 @@ public:
     void SetHistogramEnabled(bool enable);
 
     // 视频帧导出
-    void StartVideoFrameExport(const QString& output_dir, const QString& format, int jpg_quality = 90);
+    void StartVideoFrameExport(const QString& output_dir, const QString& format, int jpg_quality = 90, int frame_interval = 1);
     void CancelVideoFrameExport();
     
     // 获取分析器
@@ -88,6 +88,7 @@ signals:
     void VideoFrameExportStarted(int total_frames);
     void VideoFrameExportProgress(int exported_frames);
     void VideoFrameExportFinished(const QString& output_dir);
+    void VideoFrameExportCanceled(int exported_frames, const QString& output_dir);
     void VideoFrameExportError(const QString& message);
     
 private:
@@ -95,7 +96,7 @@ private:
     void DecodeThread();
     void VideoDecodeThread();
     void AudioDecodeThread();
-    void ExportVideoFramesWorker(QString url, QString output_dir, QString format, int jpg_quality);
+    void ExportVideoFramesWorker(QString url, QString output_dir, QString format, int jpg_quality, int frame_interval);
     
     // 清理资源
     void Cleanup();

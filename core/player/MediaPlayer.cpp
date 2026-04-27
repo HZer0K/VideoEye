@@ -899,7 +899,7 @@ analyzer::StreamStats MediaPlayer::GetCurrentStats() const {
     return stream_analyzer_.GetStats();
 }
 
-void MediaPlayer::StartVideoFrameExport(const QString& output_dir, const QString& format, int jpg_quality) {
+void MediaPlayer::StartVideoFrameExport(const QString& output_dir, const QString& format, int jpg_quality, int frame_interval) {
     CancelVideoFrameExport();
 
     if (current_url_.isEmpty()) {
@@ -922,7 +922,7 @@ void MediaPlayer::StartVideoFrameExport(const QString& output_dir, const QString
     export_cancel_ = false;
     const QString url = current_url_;
     export_thread_ = std::thread(&MediaPlayer::ExportVideoFramesWorker, this,
-                                 url, output_dir, format.toLower(), jpg_quality);
+                                 url, output_dir, format.toLower(), jpg_quality, std::max(1, frame_interval));
 }
 
 void MediaPlayer::CancelVideoFrameExport() {
@@ -933,7 +933,7 @@ void MediaPlayer::CancelVideoFrameExport() {
     export_cancel_ = false;
 }
 
-void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QString format, int jpg_quality) {
+void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QString format, int jpg_quality, int frame_interval) {
     AVFormatContext* fmt = nullptr;
     AVCodecContext* dec_ctx = nullptr;
     SwsContext* sws = nullptr;
@@ -1018,6 +1018,9 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
             }
         }
     }
+    if (total_frames > 0 && frame_interval > 1) {
+        total_frames = (total_frames + frame_interval - 1) / frame_interval;
+    }
     emit VideoFrameExportStarted(total_frames);
     const AVCodec* codec = best_video_codec ? best_video_codec : avcodec_find_decoder(vs->codecpar->codec_id);
     if (!codec) {
@@ -1065,6 +1068,7 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
     }
 
     int exported = 0;
+    int decoded_index = 0;
     int sws_src_w = 0;
     int sws_src_h = 0;
     int sws_src_fmt = AV_PIX_FMT_NONE;
@@ -1085,6 +1089,16 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
         }
         if (src->width <= 0 || src->height <= 0 || src->format < 0) {
             return true;
+        }
+
+        int64_t pts = src->pts;
+        if (pts == AV_NOPTS_VALUE) {
+            pts = src->best_effort_timestamp;
+        }
+        int64_t ts_ms = -1;
+        if (pts != AV_NOPTS_VALUE && vs && vs->time_base.den != 0) {
+            const double ts = pts * av_q2d(vs->time_base);
+            ts_ms = static_cast<int64_t>(ts * 1000.0 + 0.5);
         }
 
         if (sws_src_w != src->width || sws_src_h != src->height || sws_src_fmt != src->format) {
@@ -1116,7 +1130,14 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
             int dst_linesize[4] = {static_cast<int>(img.bytesPerLine()), 0, 0, 0};
             sws_scale(sws, src->data, src->linesize, 0, height, dst_slices, dst_linesize);
 
-            const QString filename = QString("frame_%1.jpg").arg(exported, 8, 10, QChar('0'));
+            QString filename = QString("frame_%1").arg(decoded_index, 8, 10, QChar('0'));
+            if (pts != AV_NOPTS_VALUE) {
+                filename += QString("_pts_%1").arg(static_cast<qint64>(pts));
+            }
+            if (ts_ms >= 0) {
+                filename += QString("_tsms_%1").arg(static_cast<qint64>(ts_ms));
+            }
+            filename += ".jpg";
             const QString path = QDir(output_dir).filePath(filename);
             if (!img.save(path, "JPG", jpg_quality)) {
                 emit VideoFrameExportError(QString("Failed to save jpg: %1").arg(path));
@@ -1140,7 +1161,14 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
             int dst_linesize[4] = {width * 3, 0, 0, 0};
             sws_scale(sws, src->data, src->linesize, 0, height, dst_data, dst_linesize);
 
-            const QString filename = QString("frame_%1.rgb").arg(exported, 8, 10, QChar('0'));
+            QString filename = QString("frame_%1").arg(decoded_index, 8, 10, QChar('0'));
+            if (pts != AV_NOPTS_VALUE) {
+                filename += QString("_pts_%1").arg(static_cast<qint64>(pts));
+            }
+            if (ts_ms >= 0) {
+                filename += QString("_tsms_%1").arg(static_cast<qint64>(ts_ms));
+            }
+            filename += ".rgb";
             const QString path = QDir(output_dir).filePath(filename);
             if (!write_file(path, buf.data(), static_cast<int>(buf.size()))) {
                 emit VideoFrameExportError(QString("Failed to write rgb: %1").arg(path));
@@ -1166,7 +1194,14 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
             int dst_linesize[4] = {width, width / 2, width / 2, 0};
             sws_scale(sws, src->data, src->linesize, 0, height, dst_data, dst_linesize);
 
-            const QString filename = QString("frame_%1.yuv").arg(exported, 8, 10, QChar('0'));
+            QString filename = QString("frame_%1").arg(decoded_index, 8, 10, QChar('0'));
+            if (pts != AV_NOPTS_VALUE) {
+                filename += QString("_pts_%1").arg(static_cast<qint64>(pts));
+            }
+            if (ts_ms >= 0) {
+                filename += QString("_tsms_%1").arg(static_cast<qint64>(ts_ms));
+            }
+            filename += ".yuv";
             const QString path = QDir(output_dir).filePath(filename);
             if (!write_file(path, buf.data(), static_cast<int>(buf.size()))) {
                 emit VideoFrameExportError(QString("Failed to write yuv: %1").arg(path));
@@ -1203,12 +1238,14 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
                 break;
             }
 
-            if (!export_one_frame(frame)) {
-                cleanup();
-                return;
+            decoded_index++;
+            if (frame_interval <= 1 || ((decoded_index - 1) % frame_interval) == 0) {
+                if (!export_one_frame(frame)) {
+                    cleanup();
+                    return;
+                }
+                exported++;
             }
-
-            exported++;
             if (exported % 25 == 0) {
                 emit VideoFrameExportProgress(exported);
             }
@@ -1227,12 +1264,14 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
                 break;
             }
 
-            if (!export_one_frame(frame)) {
-                cleanup();
-                return;
+            decoded_index++;
+            if (frame_interval <= 1 || ((decoded_index - 1) % frame_interval) == 0) {
+                if (!export_one_frame(frame)) {
+                    cleanup();
+                    return;
+                }
+                exported++;
             }
-
-            exported++;
             if (exported % 25 == 0) {
                 emit VideoFrameExportProgress(exported);
             }
@@ -1240,9 +1279,11 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
         }
     }
 
+    emit VideoFrameExportProgress(exported);
     if (!export_cancel_) {
-        emit VideoFrameExportProgress(exported);
         emit VideoFrameExportFinished(output_dir);
+    } else {
+        emit VideoFrameExportCanceled(exported, output_dir);
     }
     cleanup();
 }

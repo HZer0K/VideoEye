@@ -427,6 +427,16 @@ void MainWindow::SetupConnections() {
             this, &MainWindow::OnVideoFrameExportProgress);
     connect(player_, &player::MediaPlayer::VideoFrameExportFinished,
             this, &MainWindow::OnVideoFrameExportFinished);
+    connect(player_, &player::MediaPlayer::VideoFrameExportCanceled,
+            this, [this](int exported_frames, const QString& output_dir) {
+                if (export_progress_dialog_) {
+                    export_progress_dialog_->reset();
+                    export_progress_dialog_->hide();
+                }
+                const QString msg = tr("已取消导出：已导出 %1 帧\n输出目录：%2").arg(exported_frames).arg(output_dir);
+                statusBar()->showMessage(msg);
+                QMessageBox::information(this, tr("导出已取消"), msg);
+            });
     connect(player_, &player::MediaPlayer::VideoFrameExportError,
             this, &MainWindow::OnVideoFrameExportError);
     connect(player_, &player::MediaPlayer::VideoFrameExportStarted,
@@ -604,8 +614,15 @@ void MainWindow::OnExportVideoFrames() {
         }
     }
 
+    const int interval = QInputDialog::getInt(this, tr("抽帧间隔"),
+                                              tr("每 N 帧导出 1 帧 (N>=1):"),
+                                              1, 1, 1000000, 1, &ok);
+    if (!ok) {
+        return;
+    }
+
     statusBar()->showMessage(tr("开始导出视频帧..."));
-    player_->StartVideoFrameExport(dir, format, quality);
+    player_->StartVideoFrameExport(dir, format, quality, interval);
 }
 
 void MainWindow::OnExit() {
