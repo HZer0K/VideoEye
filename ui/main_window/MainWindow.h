@@ -69,6 +69,7 @@ private:
     void SetupToolBar();
     void SetupStatusBar();
     void SetupConnections();
+    bool LoadRawImageFile(const QString& filename);
     void UpdateMinimumWindowSize();
     void EnforceSplitterSizes();
 
@@ -117,6 +118,7 @@ protected:
     bool enforcing_geometry_ = false;
     bool audio_only_mode_ = false;
     std::deque<double> audio_level_history_;
+    bool showing_raw_image_ = false;
 };
 
 } // namespace ui

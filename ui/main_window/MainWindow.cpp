@@ -17,6 +17,10 @@
 #include <QPainter>
 #include <algorithm>
 #include <QProgressDialog>
+#include <QFileInfo>
+#include <QFile>
+#include <QByteArray>
+#include <QtGlobal>
 
 namespace videoeye {
 namespace ui {
@@ -475,7 +479,7 @@ void MainWindow::OnOpenFile() {
     
     QString filename = QFileDialog::getOpenFileName(this,
         tr("打开媒体文件"), "",
-        tr("媒体文件 (*.mp4 *.avi *.mkv *.flv *.ts *.mp3 *.aac *.wav);;所有文件 (*)"));
+        tr("媒体文件 (*.mp4 *.avi *.mkv *.flv *.ts *.mp3 *.aac *.wav *.yuv *.rgb);;所有文件 (*)"));
     
     qDebug() << "[1] 选择的文件:" << filename;
     
@@ -490,6 +494,25 @@ void MainWindow::OnOpenFile() {
         return;
     }
     
+    const QString suffix = QFileInfo(filename).suffix().toLower();
+    if (suffix == "yuv" || suffix == "rgb") {
+        qDebug() << "[3] 打开原始图像文件:" << suffix;
+        OnStop();
+        showing_raw_image_ = true;
+        current_media_url_.clear();
+        if (!LoadRawImageFile(filename)) {
+            statusBar()->showMessage(tr("打开失败: %1").arg(filename));
+            return;
+        }
+        statusBar()->showMessage(tr("已打开图像: %1").arg(filename));
+        if (current_media_label_) {
+            current_media_label_->setText(filename);
+        }
+        info_text_->setPlainText(tr("Raw Image: %1").arg(filename));
+        return;
+    }
+
+    showing_raw_image_ = false;
     qDebug() << "[3] 调用 player_->Open()";
     bool open_result = player_->Open(filename);
     qDebug() << "[4] player_->Open() 返回:" << open_result;
@@ -589,8 +612,118 @@ void MainWindow::OnExit() {
     close();
 }
 
+bool MainWindow::LoadRawImageFile(const QString& filename) {
+    const QString suffix = QFileInfo(filename).suffix().toLower();
+    if (suffix != "yuv" && suffix != "rgb") {
+        return false;
+    }
+
+    bool ok = false;
+    const int width = QInputDialog::getInt(this, tr("图像宽度"),
+                                           tr("请输入宽度(px):"),
+                                           1920, 1, 16384, 1, &ok);
+    if (!ok) {
+        return false;
+    }
+    const int height = QInputDialog::getInt(this, tr("图像高度"),
+                                            tr("请输入高度(px):"),
+                                            1080, 1, 16384, 1, &ok);
+    if (!ok) {
+        return false;
+    }
+
+    QFile file(filename);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, tr("打开失败"), tr("无法读取文件: %1").arg(filename));
+        return false;
+    }
+    const QByteArray data = file.readAll();
+    file.close();
+
+    if (suffix == "rgb") {
+        const qint64 expected = static_cast<qint64>(width) * static_cast<qint64>(height) * 3;
+        if (data.size() != expected) {
+            QMessageBox::warning(this, tr("尺寸不匹配"),
+                                 tr("RGB24 原始数据大小不匹配。\n期望: %1 字节\n实际: %2 字节")
+                                     .arg(expected)
+                                     .arg(data.size()));
+            return false;
+        }
+
+        QImage img(reinterpret_cast<const uchar*>(data.constData()),
+                   width, height, width * 3, QImage::Format_RGB888);
+        QImage copy = img.copy();
+        QPixmap pixmap = QPixmap::fromImage(copy);
+        video_label_->setPixmap(pixmap.scaled(video_label_->size(),
+                                              Qt::KeepAspectRatio,
+                                              Qt::SmoothTransformation));
+        return true;
+    }
+
+    if (suffix == "yuv") {
+        if ((width % 2) != 0 || (height % 2) != 0) {
+            QMessageBox::warning(this, tr("尺寸不支持"),
+                                 tr("当前仅支持 YUV420P(I420)，宽高必须为偶数。"));
+            return false;
+        }
+
+        const qint64 y_size = static_cast<qint64>(width) * static_cast<qint64>(height);
+        const qint64 uv_size = y_size / 4;
+        const qint64 expected = y_size + uv_size + uv_size;
+        if (data.size() != expected) {
+            QMessageBox::warning(this, tr("尺寸不匹配"),
+                                 tr("YUV420P 原始数据大小不匹配。\n期望: %1 字节\n实际: %2 字节")
+                                     .arg(expected)
+                                     .arg(data.size()));
+            return false;
+        }
+
+        const uchar* y_plane = reinterpret_cast<const uchar*>(data.constData());
+        const uchar* u_plane = y_plane + y_size;
+        const uchar* v_plane = u_plane + uv_size;
+
+        QImage img(width, height, QImage::Format_RGB888);
+        for (int j = 0; j < height; ++j) {
+            uchar* row = img.scanLine(j);
+            const int uv_j = (j / 2) * (width / 2);
+            for (int i = 0; i < width; ++i) {
+                const int y_idx = j * width + i;
+                const int uv_idx = uv_j + (i / 2);
+
+                const int Y = static_cast<int>(y_plane[y_idx]);
+                const int U = static_cast<int>(u_plane[uv_idx]) - 128;
+                const int V = static_cast<int>(v_plane[uv_idx]) - 128;
+
+                int R = Y + static_cast<int>(1.402 * V);
+                int G = Y - static_cast<int>(0.344136 * U + 0.714136 * V);
+                int B = Y + static_cast<int>(1.772 * U);
+
+                R = qBound(0, R, 255);
+                G = qBound(0, G, 255);
+                B = qBound(0, B, 255);
+
+                row[i * 3 + 0] = static_cast<uchar>(R);
+                row[i * 3 + 1] = static_cast<uchar>(G);
+                row[i * 3 + 2] = static_cast<uchar>(B);
+            }
+        }
+
+        QPixmap pixmap = QPixmap::fromImage(img);
+        video_label_->setPixmap(pixmap.scaled(video_label_->size(),
+                                              Qt::KeepAspectRatio,
+                                              Qt::SmoothTransformation));
+        return true;
+    }
+
+    return false;
+}
+
 void MainWindow::OnPlay() {
     if (player_) {
+        if (showing_raw_image_) {
+            statusBar()->showMessage(tr("当前为图像文件，无法播放"));
+            return;
+        }
         const auto state = player_->GetState();
         if ((state == model::PlayerState::Idle ||
              state == model::PlayerState::Stopped ||
@@ -616,6 +749,7 @@ void MainWindow::OnStop() {
     video_label_->setStyleSheet("background-color: black; color: white; font-size: 20px;");
     audio_level_history_.clear();
     audio_only_mode_ = false;
+    showing_raw_image_ = false;
     if (export_progress_dialog_ && export_progress_dialog_->isVisible()) {
         player_->CancelVideoFrameExport();
         export_progress_dialog_->reset();
