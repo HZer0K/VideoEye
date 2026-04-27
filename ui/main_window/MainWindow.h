@@ -15,6 +15,7 @@
 #include <QGroupBox>
 #include <QSplitter>
 #include <QRect>
+#include <QProgressDialog>
 #include <deque>
 
 #include "core/player/MediaPlayer.h"
@@ -36,6 +37,7 @@ private slots:
     void OnOpenFile();
     void OnOpenURL();
     void OnExit();
+    void OnExportVideoFrames();
     
     // 播放控制
     void OnPlay();
@@ -56,6 +58,9 @@ private slots:
     void OnFaceDetectionUpdate(const std::vector<analyzer::FaceInfo>& faces);
     void OnMediaModeChanged(bool has_video);
     void OnAudioLevelReady(double level, double timestamp_seconds);
+    void OnVideoFrameExportProgress(int exported_frames);
+    void OnVideoFrameExportFinished(const QString& output_dir);
+    void OnVideoFrameExportError(const QString& message);
     
 private:
     // 初始化UI
@@ -104,6 +109,9 @@ protected:
     QAction* frame_analysis_action_ = nullptr;
     QAction* histogram_action_ = nullptr;
     QAction* face_detection_action_ = nullptr;
+    QAction* export_frames_action_ = nullptr;
+    QProgressDialog* export_progress_dialog_ = nullptr;
+    int export_total_frames_ = 0;
 
     QRect last_geometry_;
     bool enforcing_geometry_ = false;

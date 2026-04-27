@@ -52,6 +52,10 @@ public:
     void SetFrameTypeAnalysisEnabled(bool enable);
     void SetFaceDetectionEnabled(bool enable);
     void SetHistogramEnabled(bool enable);
+
+    // 视频帧导出
+    void StartVideoFrameExport(const QString& output_dir, const QString& format, int jpg_quality = 90);
+    void CancelVideoFrameExport();
     
     // 获取分析器
     analyzer::StreamAnalyzer& GetStreamAnalyzer() { return stream_analyzer_; }
@@ -81,12 +85,17 @@ signals:
     void VideoFrameInfoReady(int index, int frame_type, qint64 pts, double timestamp_seconds);
     void MediaModeChanged(bool has_video);
     void AudioLevelReady(double level, double timestamp_seconds);
+    void VideoFrameExportStarted(int total_frames);
+    void VideoFrameExportProgress(int exported_frames);
+    void VideoFrameExportFinished(const QString& output_dir);
+    void VideoFrameExportError(const QString& message);
     
 private:
     // 解码线程
     void DecodeThread();
     void VideoDecodeThread();
     void AudioDecodeThread();
+    void ExportVideoFramesWorker(QString url, QString output_dir, QString format, int jpg_quality);
     
     // 清理资源
     void Cleanup();
@@ -103,6 +112,7 @@ private:
     int audio_stream_index_ = -1;
     
     std::thread decode_thread_;
+    std::thread export_thread_;
     std::mutex mutex_;
     std::condition_variable cv_;
     
@@ -112,6 +122,7 @@ private:
     int volume_ = 100;
     
     QString current_url_;
+    std::atomic<bool> export_cancel_ = false;
     
     // 分析器
     analyzer::StreamAnalyzer stream_analyzer_;

@@ -8,6 +8,9 @@
 #include <cmath>
 #include <vector>
 #include <chrono>
+#include <limits>
+#include <QDir>
+#include <QFile>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -17,6 +20,7 @@ extern "C" {
 #include <libavutil/avutil.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/dict.h>
+#include <libavutil/imgutils.h>
 #include <libavutil/mastering_display_metadata.h>
 #include <libavutil/pixdesc.h>
 }
@@ -286,6 +290,7 @@ MediaPlayer::MediaPlayer(QObject* parent)
 }
 
 MediaPlayer::~MediaPlayer() {
+    CancelVideoFrameExport();
     Stop();
     Cleanup();
     avformat_network_deinit();
@@ -892,6 +897,354 @@ void MediaPlayer::SetHistogramEnabled(bool enable) {
 
 analyzer::StreamStats MediaPlayer::GetCurrentStats() const {
     return stream_analyzer_.GetStats();
+}
+
+void MediaPlayer::StartVideoFrameExport(const QString& output_dir, const QString& format, int jpg_quality) {
+    CancelVideoFrameExport();
+
+    if (current_url_.isEmpty()) {
+        emit VideoFrameExportError("No media opened");
+        return;
+    }
+    if (output_dir.isEmpty()) {
+        emit VideoFrameExportError("Output directory is empty");
+        return;
+    }
+
+    QDir dir(output_dir);
+    if (!dir.exists()) {
+        if (!dir.mkpath(".")) {
+            emit VideoFrameExportError(QString("Failed to create output directory: %1").arg(output_dir));
+            return;
+        }
+    }
+
+    export_cancel_ = false;
+    const QString url = current_url_;
+    export_thread_ = std::thread(&MediaPlayer::ExportVideoFramesWorker, this,
+                                 url, output_dir, format.toLower(), jpg_quality);
+}
+
+void MediaPlayer::CancelVideoFrameExport() {
+    export_cancel_ = true;
+    if (export_thread_.joinable()) {
+        export_thread_.join();
+    }
+    export_cancel_ = false;
+}
+
+void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QString format, int jpg_quality) {
+    AVFormatContext* fmt = nullptr;
+    AVCodecContext* dec_ctx = nullptr;
+    SwsContext* sws = nullptr;
+    AVPacket* pkt = nullptr;
+    AVFrame* frame = nullptr;
+
+    auto cleanup = [&]() {
+        if (sws) {
+            sws_freeContext(sws);
+            sws = nullptr;
+        }
+        if (frame) {
+            av_frame_free(&frame);
+            frame = nullptr;
+        }
+        if (pkt) {
+            av_packet_free(&pkt);
+            pkt = nullptr;
+        }
+        if (dec_ctx) {
+            avcodec_free_context(&dec_ctx);
+            dec_ctx = nullptr;
+        }
+        if (fmt) {
+            avformat_close_input(&fmt);
+            fmt = nullptr;
+        }
+    };
+
+    std::string url_str = url.toStdString();
+    if (avformat_open_input(&fmt, url_str.c_str(), nullptr, nullptr) < 0) {
+        emit VideoFrameExportError(QString("Failed to open: %1").arg(url));
+        cleanup();
+        return;
+    }
+    if (avformat_find_stream_info(fmt, nullptr) < 0) {
+        emit VideoFrameExportError("Failed to find stream info");
+        cleanup();
+        return;
+    }
+
+    const AVCodec* best_video_codec = nullptr;
+    int vindex = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, &best_video_codec, 0);
+    if (vindex >= 0 && fmt->streams && fmt->streams[vindex] &&
+        (fmt->streams[vindex]->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
+        int candidate = -1;
+        for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+            AVStream* s = fmt->streams[i];
+            if (!s || s->codecpar->codec_type != AVMEDIA_TYPE_VIDEO) {
+                continue;
+            }
+            if (s->disposition & AV_DISPOSITION_ATTACHED_PIC) {
+                continue;
+            }
+            candidate = static_cast<int>(i);
+            break;
+        }
+        vindex = candidate;
+        best_video_codec = nullptr;
+        if (vindex >= 0 && fmt->streams && fmt->streams[vindex] && fmt->streams[vindex]->codecpar) {
+            best_video_codec = avcodec_find_decoder(fmt->streams[vindex]->codecpar->codec_id);
+        }
+    }
+
+    if (vindex < 0 || !fmt->streams || !fmt->streams[vindex] || !fmt->streams[vindex]->codecpar) {
+        emit VideoFrameExportError("No video stream found");
+        cleanup();
+        return;
+    }
+
+    AVStream* vs = fmt->streams[vindex];
+    int total_frames = 0;
+    if (vs->nb_frames > 0) {
+        total_frames = static_cast<int>(vs->nb_frames);
+    } else if (fmt->duration > 0) {
+        const double duration_sec = static_cast<double>(fmt->duration) / AV_TIME_BASE;
+        const double fps = av_q2d(vs->avg_frame_rate);
+        if (duration_sec > 0.0 && fps > 0.0) {
+            const double est = duration_sec * fps;
+            if (est > 0.0 && est < static_cast<double>(std::numeric_limits<int>::max())) {
+                total_frames = static_cast<int>(est + 0.5);
+            }
+        }
+    }
+    emit VideoFrameExportStarted(total_frames);
+    const AVCodec* codec = best_video_codec ? best_video_codec : avcodec_find_decoder(vs->codecpar->codec_id);
+    if (!codec) {
+        emit VideoFrameExportError("Video codec not found");
+        cleanup();
+        return;
+    }
+
+    dec_ctx = avcodec_alloc_context3(codec);
+    if (!dec_ctx) {
+        emit VideoFrameExportError("Failed to alloc codec context");
+        cleanup();
+        return;
+    }
+    if (avcodec_parameters_to_context(dec_ctx, vs->codecpar) < 0) {
+        emit VideoFrameExportError("Failed to copy codec parameters");
+        cleanup();
+        return;
+    }
+    if (vs->time_base.den != 0) {
+        dec_ctx->pkt_timebase = vs->time_base;
+        dec_ctx->time_base = vs->time_base;
+    }
+    if (avcodec_open2(dec_ctx, codec, nullptr) < 0) {
+        emit VideoFrameExportError("Failed to open video decoder");
+        cleanup();
+        return;
+    }
+
+    pkt = av_packet_alloc();
+    frame = av_frame_alloc();
+    if (!pkt || !frame) {
+        emit VideoFrameExportError("Failed to alloc packet/frame");
+        cleanup();
+        return;
+    }
+
+    const bool as_jpg = (format == "jpg" || format == "jpeg");
+    const bool as_rgb = (format == "rgb");
+    const bool as_yuv = (format == "yuv");
+    if (!as_jpg && !as_rgb && !as_yuv) {
+        emit VideoFrameExportError("Unsupported format (use jpg/rgb/yuv)");
+        cleanup();
+        return;
+    }
+
+    int exported = 0;
+    int sws_src_w = 0;
+    int sws_src_h = 0;
+    int sws_src_fmt = AV_PIX_FMT_NONE;
+
+    auto write_file = [&](const QString& path, const uint8_t* data, int size) -> bool {
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly)) {
+            return false;
+        }
+        const qint64 wrote = f.write(reinterpret_cast<const char*>(data), size);
+        f.close();
+        return wrote == size;
+    };
+
+    auto export_one_frame = [&](AVFrame* src) -> bool {
+        if (export_cancel_) {
+            return false;
+        }
+        if (src->width <= 0 || src->height <= 0 || src->format < 0) {
+            return true;
+        }
+
+        if (sws_src_w != src->width || sws_src_h != src->height || sws_src_fmt != src->format) {
+            sws_src_w = src->width;
+            sws_src_h = src->height;
+            sws_src_fmt = src->format;
+        }
+
+        const int width = src->width;
+        const int height = src->height;
+
+        if (as_jpg) {
+            sws = sws_getCachedContext(sws,
+                                       width, height, static_cast<AVPixelFormat>(src->format),
+                                       width, height, AV_PIX_FMT_BGRA,
+                                       SWS_BILINEAR, nullptr, nullptr, nullptr);
+            if (!sws) {
+                emit VideoFrameExportError("Failed to init sws for jpg");
+                return false;
+            }
+
+            QImage img(width, height, QImage::Format_ARGB32);
+            if (img.isNull()) {
+                emit VideoFrameExportError("Failed to alloc QImage");
+                return false;
+            }
+
+            uint8_t* dst_slices[4] = {img.bits(), nullptr, nullptr, nullptr};
+            int dst_linesize[4] = {static_cast<int>(img.bytesPerLine()), 0, 0, 0};
+            sws_scale(sws, src->data, src->linesize, 0, height, dst_slices, dst_linesize);
+
+            const QString filename = QString("frame_%1.jpg").arg(exported, 8, 10, QChar('0'));
+            const QString path = QDir(output_dir).filePath(filename);
+            if (!img.save(path, "JPG", jpg_quality)) {
+                emit VideoFrameExportError(QString("Failed to save jpg: %1").arg(path));
+                return false;
+            }
+            return true;
+        }
+
+        if (as_rgb) {
+            sws = sws_getCachedContext(sws,
+                                       width, height, static_cast<AVPixelFormat>(src->format),
+                                       width, height, AV_PIX_FMT_RGB24,
+                                       SWS_BILINEAR, nullptr, nullptr, nullptr);
+            if (!sws) {
+                emit VideoFrameExportError("Failed to init sws for rgb");
+                return false;
+            }
+
+            std::vector<uint8_t> buf(static_cast<size_t>(width) * static_cast<size_t>(height) * 3);
+            uint8_t* dst_data[4] = {buf.data(), nullptr, nullptr, nullptr};
+            int dst_linesize[4] = {width * 3, 0, 0, 0};
+            sws_scale(sws, src->data, src->linesize, 0, height, dst_data, dst_linesize);
+
+            const QString filename = QString("frame_%1.rgb").arg(exported, 8, 10, QChar('0'));
+            const QString path = QDir(output_dir).filePath(filename);
+            if (!write_file(path, buf.data(), static_cast<int>(buf.size()))) {
+                emit VideoFrameExportError(QString("Failed to write rgb: %1").arg(path));
+                return false;
+            }
+            return true;
+        }
+
+        if (as_yuv) {
+            sws = sws_getCachedContext(sws,
+                                       width, height, static_cast<AVPixelFormat>(src->format),
+                                       width, height, AV_PIX_FMT_YUV420P,
+                                       SWS_BILINEAR, nullptr, nullptr, nullptr);
+            if (!sws) {
+                emit VideoFrameExportError("Failed to init sws for yuv");
+                return false;
+            }
+
+            const size_t y_size = static_cast<size_t>(width) * static_cast<size_t>(height);
+            const size_t uv_size = y_size / 4;
+            std::vector<uint8_t> buf(y_size + uv_size + uv_size);
+            uint8_t* dst_data[4] = {buf.data(), buf.data() + y_size, buf.data() + y_size + uv_size, nullptr};
+            int dst_linesize[4] = {width, width / 2, width / 2, 0};
+            sws_scale(sws, src->data, src->linesize, 0, height, dst_data, dst_linesize);
+
+            const QString filename = QString("frame_%1.yuv").arg(exported, 8, 10, QChar('0'));
+            const QString path = QDir(output_dir).filePath(filename);
+            if (!write_file(path, buf.data(), static_cast<int>(buf.size()))) {
+                emit VideoFrameExportError(QString("Failed to write yuv: %1").arg(path));
+                return false;
+            }
+            return true;
+        }
+
+        return true;
+    };
+
+    while (!export_cancel_) {
+        int r = av_read_frame(fmt, pkt);
+        if (r < 0) {
+            break;
+        }
+        if (pkt->stream_index != vindex) {
+            av_packet_unref(pkt);
+            continue;
+        }
+
+        if (avcodec_send_packet(dec_ctx, pkt) < 0) {
+            av_packet_unref(pkt);
+            continue;
+        }
+        av_packet_unref(pkt);
+
+        while (!export_cancel_) {
+            r = avcodec_receive_frame(dec_ctx, frame);
+            if (r == AVERROR(EAGAIN) || r == AVERROR_EOF) {
+                break;
+            }
+            if (r < 0) {
+                break;
+            }
+
+            if (!export_one_frame(frame)) {
+                cleanup();
+                return;
+            }
+
+            exported++;
+            if (exported % 25 == 0) {
+                emit VideoFrameExportProgress(exported);
+            }
+            av_frame_unref(frame);
+        }
+    }
+
+    if (!export_cancel_) {
+        avcodec_send_packet(dec_ctx, nullptr);
+        while (!export_cancel_) {
+            int r = avcodec_receive_frame(dec_ctx, frame);
+            if (r == AVERROR_EOF || r == AVERROR(EAGAIN)) {
+                break;
+            }
+            if (r < 0) {
+                break;
+            }
+
+            if (!export_one_frame(frame)) {
+                cleanup();
+                return;
+            }
+
+            exported++;
+            if (exported % 25 == 0) {
+                emit VideoFrameExportProgress(exported);
+            }
+            av_frame_unref(frame);
+        }
+    }
+
+    if (!export_cancel_) {
+        emit VideoFrameExportProgress(exported);
+        emit VideoFrameExportFinished(output_dir);
+    }
+    cleanup();
 }
 
 void MediaPlayer::DecodeThread() {

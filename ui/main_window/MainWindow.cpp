@@ -16,6 +16,7 @@
 #include <QFontDatabase>
 #include <QPainter>
 #include <algorithm>
+#include <QProgressDialog>
 
 namespace videoeye {
 namespace ui {
@@ -307,6 +308,7 @@ void MainWindow::SetupMenuBar() {
     QMenu* file_menu = menu_bar_->addMenu(tr("文件"));
     file_menu->addAction(tr("打开文件"), this, &MainWindow::OnOpenFile, QKeySequence::Open);
     file_menu->addAction(tr("打开URL"), this, &MainWindow::OnOpenURL, QKeySequence("Ctrl+U"));
+    export_frames_action_ = file_menu->addAction(tr("导出视频帧..."), this, &MainWindow::OnExportVideoFrames);
     file_menu->addSeparator();
     file_menu->addAction(tr("退出"), this, &MainWindow::OnExit, QKeySequence::Quit);
     
@@ -417,6 +419,37 @@ void MainWindow::SetupConnections() {
             this, &MainWindow::OnMediaModeChanged);
     connect(player_, &player::MediaPlayer::AudioLevelReady,
             this, &MainWindow::OnAudioLevelReady);
+    connect(player_, &player::MediaPlayer::VideoFrameExportProgress,
+            this, &MainWindow::OnVideoFrameExportProgress);
+    connect(player_, &player::MediaPlayer::VideoFrameExportFinished,
+            this, &MainWindow::OnVideoFrameExportFinished);
+    connect(player_, &player::MediaPlayer::VideoFrameExportError,
+            this, &MainWindow::OnVideoFrameExportError);
+    connect(player_, &player::MediaPlayer::VideoFrameExportStarted,
+            this, [this](int total_frames) {
+                export_total_frames_ = total_frames;
+                if (!export_progress_dialog_) {
+                    export_progress_dialog_ = new QProgressDialog(tr("正在导出视频帧..."),
+                                                                  tr("终止"),
+                                                                  0,
+                                                                  total_frames > 0 ? total_frames : 0,
+                                                                  this);
+                    export_progress_dialog_->setWindowModality(Qt::ApplicationModal);
+                    export_progress_dialog_->setAutoClose(false);
+                    export_progress_dialog_->setAutoReset(false);
+                    connect(export_progress_dialog_, &QProgressDialog::canceled, this, [this]() {
+                        if (player_) {
+                            statusBar()->showMessage(tr("正在终止导出..."));
+                            player_->CancelVideoFrameExport();
+                        }
+                    });
+                } else {
+                    export_progress_dialog_->setMaximum(total_frames > 0 ? total_frames : 0);
+                }
+                export_progress_dialog_->setValue(0);
+                export_progress_dialog_->setLabelText(tr("正在导出视频帧..."));
+                export_progress_dialog_->show();
+            });
     
     // 播放器信号连接 - 分析功能 (实时分析)
     connect(player_, &player::MediaPlayer::StreamStatsReady,
@@ -507,6 +540,51 @@ void MainWindow::OnOpenURL() {
     }
 }
 
+void MainWindow::OnExportVideoFrames() {
+    if (!player_) {
+        return;
+    }
+    if (current_media_url_.isEmpty()) {
+        QMessageBox::information(this, tr("提示"), tr("请先打开一个视频文件"));
+        return;
+    }
+    if (export_progress_dialog_ && export_progress_dialog_->isVisible()) {
+        QMessageBox::information(this, tr("提示"), tr("正在导出中，请先终止或等待完成"));
+        return;
+    }
+
+    const QString dir = QFileDialog::getExistingDirectory(this, tr("选择导出目录"), "");
+    if (dir.isEmpty()) {
+        return;
+    }
+
+    bool ok = false;
+    const QStringList items = {
+        "jpg",
+        "yuv",
+        "rgb"
+    };
+    const QString format = QInputDialog::getItem(this, tr("导出格式"),
+                                                 tr("选择导出格式:"),
+                                                 items, 0, false, &ok);
+    if (!ok || format.isEmpty()) {
+        return;
+    }
+
+    int quality = 90;
+    if (format == "jpg") {
+        quality = QInputDialog::getInt(this, tr("JPG质量"),
+                                       tr("JPG质量(1-100):"),
+                                       90, 1, 100, 1, &ok);
+        if (!ok) {
+            return;
+        }
+    }
+
+    statusBar()->showMessage(tr("开始导出视频帧..."));
+    player_->StartVideoFrameExport(dir, format, quality);
+}
+
 void MainWindow::OnExit() {
     close();
 }
@@ -538,6 +616,11 @@ void MainWindow::OnStop() {
     video_label_->setStyleSheet("background-color: black; color: white; font-size: 20px;");
     audio_level_history_.clear();
     audio_only_mode_ = false;
+    if (export_progress_dialog_ && export_progress_dialog_->isVisible()) {
+        player_->CancelVideoFrameExport();
+        export_progress_dialog_->reset();
+        export_progress_dialog_->hide();
+    }
 }
 
 void MainWindow::OnSeek(int value) {
@@ -683,6 +766,37 @@ void MainWindow::OnAudioLevelReady(double level, double timestamp_seconds) {
                          .arg(level, 0, 'f', 3));
 
     video_label_->setPixmap(QPixmap::fromImage(img));
+}
+
+void MainWindow::OnVideoFrameExportProgress(int exported_frames) {
+    if (export_progress_dialog_) {
+        if (export_total_frames_ > 0) {
+            export_progress_dialog_->setMaximum(export_total_frames_);
+            export_progress_dialog_->setValue(std::min(exported_frames, export_total_frames_));
+        } else {
+            export_progress_dialog_->setMaximum(0);
+            export_progress_dialog_->setValue(0);
+        }
+        export_progress_dialog_->setLabelText(tr("已导出 %1 帧").arg(exported_frames));
+    }
+    statusBar()->showMessage(tr("已导出 %1 帧").arg(exported_frames));
+}
+
+void MainWindow::OnVideoFrameExportFinished(const QString& output_dir) {
+    if (export_progress_dialog_) {
+        export_progress_dialog_->reset();
+        export_progress_dialog_->hide();
+    }
+    statusBar()->showMessage(tr("导出完成: %1").arg(output_dir));
+}
+
+void MainWindow::OnVideoFrameExportError(const QString& message) {
+    if (export_progress_dialog_) {
+        export_progress_dialog_->reset();
+        export_progress_dialog_->hide();
+    }
+    statusBar()->showMessage(tr("导出失败: %1").arg(message));
+    QMessageBox::warning(this, tr("导出失败"), message);
 }
 
 } // namespace ui
