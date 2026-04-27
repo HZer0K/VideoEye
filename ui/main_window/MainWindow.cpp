@@ -13,6 +13,7 @@
 #include <QDebug>
 #include <QTabBar>
 #include <QTimer>
+#include <QFontDatabase>
 
 namespace videoeye {
 namespace ui {
@@ -113,6 +114,8 @@ void MainWindow::SetupUI() {
     QVBoxLayout* info_layout = new QVBoxLayout(info_tab);
     info_text_ = new QTextEdit(info_tab);
     info_text_->setReadOnly(true);
+    info_text_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    info_text_->setLineWrapMode(QTextEdit::NoWrap);
     info_text_->setMinimumHeight(0);
     info_text_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     info_layout->addWidget(info_text_);
@@ -408,7 +411,7 @@ void MainWindow::OnOpenFile() {
         QString info_str = QString::fromStdString(info.ToString());
         qDebug() << "[9] ToString()完成，长度:" << info_str.length();
         
-        info_text_->setText(info_str);
+        info_text_->setPlainText(info_str);
         qDebug() << "[10] setText()完成";
 
         qDebug() << "[11] 自动开始播放";
