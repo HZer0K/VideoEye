@@ -34,11 +34,14 @@ void StreamAnalyzer::Stop() {
 }
 
 void StreamAnalyzer::AnalyzePacket(const AVPacket* packet, const AVFormatContext* format_ctx) {
-    if (!packet || !is_analyzing_) {
+    if (!packet) {
         return;
     }
     
     std::lock_guard<std::mutex> lock(mutex_);
+    if (!is_analyzing_) {
+        return;
+    }
     
     // 更新基本统计
     stats_.total_packets++;
@@ -48,12 +51,16 @@ void StreamAnalyzer::AnalyzePacket(const AVPacket* packet, const AVFormatContext
     
     // 区分视频和音频包
     if (format_ctx) {
-        if (packet->stream_index < format_ctx->nb_streams) {
-            AVCodecParameters* codec_params = format_ctx->streams[packet->stream_index]->codecpar;
-            if (codec_params->codec_type == AVMEDIA_TYPE_VIDEO) {
-                stats_.video_packets++;
-            } else if (codec_params->codec_type == AVMEDIA_TYPE_AUDIO) {
-                stats_.audio_packets++;
+        const int idx = packet->stream_index;
+        if (idx >= 0 && idx < static_cast<int>(format_ctx->nb_streams) && format_ctx->streams) {
+            AVStream* stream = format_ctx->streams[idx];
+            if (stream && stream->codecpar) {
+                AVCodecParameters* codec_params = stream->codecpar;
+                if (codec_params->codec_type == AVMEDIA_TYPE_VIDEO) {
+                    stats_.video_packets++;
+                } else if (codec_params->codec_type == AVMEDIA_TYPE_AUDIO) {
+                    stats_.audio_packets++;
+                }
             }
         }
     }
@@ -124,11 +131,10 @@ void StreamAnalyzer::Reset() {
 }
 
 void StreamAnalyzer::AnalyzeVideoFrame(AVPictureType type) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!is_analyzing_) {
         return;
     }
-
-    std::lock_guard<std::mutex> lock(mutex_);
     stats_.total_video_frames++;
 
     switch (type) {
