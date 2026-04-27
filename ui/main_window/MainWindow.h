@@ -39,6 +39,8 @@ private slots:
     void OnOpenURL();
     void OnExit();
     void OnExportVideoFrames();
+    void OnPrevRawFrame();
+    void OnNextRawFrame();
     
     // 播放控制
     void OnPlay();
@@ -71,6 +73,8 @@ private:
     void SetupStatusBar();
     void SetupConnections();
     bool LoadRawImageFile(const QString& filename);
+    bool ShowRawFrame(int frame_index);
+    void UpdateRawNavigationState();
     void UpdateMinimumWindowSize();
     void EnforceSplitterSizes();
 
@@ -95,6 +99,8 @@ protected:
     QPushButton* play_button_;      // 播放按钮
     QPushButton* pause_button_;     // 暂停按钮
     QPushButton* stop_button_;      // 停止按钮
+    QPushButton* prev_frame_button_;
+    QPushButton* next_frame_button_;
     QLabel* time_label_;            // 时间显示
     QTextEdit* info_text_;          // 详细信息文本框
     QLabel* current_media_label_;   // 顶部显示当前媒体路径
@@ -124,6 +130,13 @@ protected:
     double audio_vis_smoothed_ = 0.0;
     double audio_vis_target_ = 0.0;
     bool showing_raw_image_ = false;
+    QString raw_image_path_;
+    QString raw_pixel_format_;
+    int raw_width_ = 0;
+    int raw_height_ = 0;
+    qint64 raw_frame_size_ = 0;
+    int raw_total_frames_ = 0;
+    int raw_current_frame_ = 0;
 };
 
 } // namespace ui
