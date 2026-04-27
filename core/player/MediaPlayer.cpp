@@ -939,6 +939,7 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
     SwsContext* sws = nullptr;
     AVPacket* pkt = nullptr;
     AVFrame* frame = nullptr;
+    AVFrame* export_frame = nullptr;
 
     auto cleanup = [&]() {
         if (sws) {
@@ -948,6 +949,10 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
         if (frame) {
             av_frame_free(&frame);
             frame = nullptr;
+        }
+        if (export_frame) {
+            av_frame_free(&export_frame);
+            export_frame = nullptr;
         }
         if (pkt) {
             av_packet_free(&pkt);
@@ -1061,10 +1066,19 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
     const bool as_jpg = (format == "jpg" || format == "jpeg");
     const bool as_rgb = (format == "rgb");
     const bool as_yuv = (format == "yuv");
+    const AVPixelFormat export_pix_fmt = as_rgb ? AV_PIX_FMT_RGB24 : (as_yuv ? AV_PIX_FMT_YUV420P : AV_PIX_FMT_NONE);
     if (!as_jpg && !as_rgb && !as_yuv) {
         emit VideoFrameExportError("Unsupported format (use jpg/rgb/yuv)");
         cleanup();
         return;
+    }
+    if (export_pix_fmt != AV_PIX_FMT_NONE) {
+        export_frame = av_frame_alloc();
+        if (!export_frame) {
+            emit VideoFrameExportError("Failed to alloc export frame");
+            cleanup();
+            return;
+        }
     }
 
     int exported = 0;
@@ -1072,6 +1086,11 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
     int sws_src_w = 0;
     int sws_src_h = 0;
     int sws_src_fmt = AV_PIX_FMT_NONE;
+    int export_dst_w = 0;
+    int export_dst_h = 0;
+    AVPixelFormat export_dst_fmt = AV_PIX_FMT_NONE;
+    int export_buffer_size = 0;
+    std::vector<uint8_t> export_buffer;
 
     auto write_file = [&](const QString& path, const uint8_t* data, int size) -> bool {
         QFile f(path);
@@ -1081,6 +1100,44 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
         const qint64 wrote = f.write(reinterpret_cast<const char*>(data), size);
         f.close();
         return wrote == size;
+    };
+
+    auto ensure_export_buffer = [&](int width, int height) -> bool {
+        if (!export_frame || export_pix_fmt == AV_PIX_FMT_NONE) {
+            return true;
+        }
+        if (export_dst_w == width && export_dst_h == height && export_dst_fmt == export_pix_fmt &&
+            !export_buffer.empty()) {
+            return true;
+        }
+
+        export_buffer_size = av_image_get_buffer_size(export_pix_fmt, width, height, 1);
+        if (export_buffer_size <= 0) {
+            emit VideoFrameExportError("Failed to calc export buffer size");
+            return false;
+        }
+
+        export_buffer.resize(static_cast<size_t>(export_buffer_size));
+        av_frame_unref(export_frame);
+        export_frame->format = export_pix_fmt;
+        export_frame->width = width;
+        export_frame->height = height;
+        const int fill_ret = av_image_fill_arrays(export_frame->data,
+                                                  export_frame->linesize,
+                                                  export_buffer.data(),
+                                                  export_pix_fmt,
+                                                  width,
+                                                  height,
+                                                  1);
+        if (fill_ret < 0) {
+            emit VideoFrameExportError("Failed to setup export frame buffer");
+            return false;
+        }
+        export_frame->extended_data = export_frame->data;
+        export_dst_w = width;
+        export_dst_h = height;
+        export_dst_fmt = export_pix_fmt;
+        return true;
     };
 
     auto export_one_frame = [&](AVFrame* src) -> bool {
@@ -1147,6 +1204,9 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
         }
 
         if (as_rgb) {
+            if (!ensure_export_buffer(width, height)) {
+                return false;
+            }
             sws = sws_getCachedContext(sws,
                                        width, height, static_cast<AVPixelFormat>(src->format),
                                        width, height, AV_PIX_FMT_RGB24,
@@ -1156,10 +1216,7 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
                 return false;
             }
 
-            std::vector<uint8_t> buf(static_cast<size_t>(width) * static_cast<size_t>(height) * 3);
-            uint8_t* dst_data[4] = {buf.data(), nullptr, nullptr, nullptr};
-            int dst_linesize[4] = {width * 3, 0, 0, 0};
-            sws_scale(sws, src->data, src->linesize, 0, height, dst_data, dst_linesize);
+            sws_scale(sws, src->data, src->linesize, 0, height, export_frame->data, export_frame->linesize);
 
             QString filename = QString("frame_%1").arg(decoded_index, 8, 10, QChar('0'));
             if (pts != AV_NOPTS_VALUE) {
@@ -1170,7 +1227,7 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
             }
             filename += ".rgb";
             const QString path = QDir(output_dir).filePath(filename);
-            if (!write_file(path, buf.data(), static_cast<int>(buf.size()))) {
+            if (!write_file(path, export_buffer.data(), export_buffer_size)) {
                 emit VideoFrameExportError(QString("Failed to write rgb: %1").arg(path));
                 return false;
             }
@@ -1178,6 +1235,9 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
         }
 
         if (as_yuv) {
+            if (!ensure_export_buffer(width, height)) {
+                return false;
+            }
             sws = sws_getCachedContext(sws,
                                        width, height, static_cast<AVPixelFormat>(src->format),
                                        width, height, AV_PIX_FMT_YUV420P,
@@ -1187,12 +1247,7 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
                 return false;
             }
 
-            const size_t y_size = static_cast<size_t>(width) * static_cast<size_t>(height);
-            const size_t uv_size = y_size / 4;
-            std::vector<uint8_t> buf(y_size + uv_size + uv_size);
-            uint8_t* dst_data[4] = {buf.data(), buf.data() + y_size, buf.data() + y_size + uv_size, nullptr};
-            int dst_linesize[4] = {width, width / 2, width / 2, 0};
-            sws_scale(sws, src->data, src->linesize, 0, height, dst_data, dst_linesize);
+            sws_scale(sws, src->data, src->linesize, 0, height, export_frame->data, export_frame->linesize);
 
             QString filename = QString("frame_%1").arg(decoded_index, 8, 10, QChar('0'));
             if (pts != AV_NOPTS_VALUE) {
@@ -1203,7 +1258,7 @@ void MediaPlayer::ExportVideoFramesWorker(QString url, QString output_dir, QStri
             }
             filename += ".yuv";
             const QString path = QDir(output_dir).filePath(filename);
-            if (!write_file(path, buf.data(), static_cast<int>(buf.size()))) {
+            if (!write_file(path, export_buffer.data(), export_buffer_size)) {
                 emit VideoFrameExportError(QString("Failed to write yuv: %1").arg(path));
                 return false;
             }
