@@ -105,6 +105,8 @@ bool VideoDecoder::DecodePacket(AVPacket* packet, model::FrameData& output_frame
         std::cerr << "Error receiving frame from decoder" << std::endl;
         return false;
     }
+
+    last_pict_type_ = frame_->pict_type;
     
     // 复制帧数据
     // 先清理旧数据
@@ -119,9 +121,19 @@ bool VideoDecoder::DecodePacket(AVPacket* packet, model::FrameData& output_frame
     output_frame.width = frame_->width;
     output_frame.height = frame_->height;
     output_frame.format = frame_->format;
-    output_frame.pts = frame_->pts;
-    output_frame.timestamp = frame_->pts == AV_NOPTS_VALUE ? 0.0
-                                                           : frame_->pts * av_q2d(codec_ctx_->time_base);
+    if (frame_->pts != AV_NOPTS_VALUE) {
+        output_frame.pts = frame_->pts;
+    } else if (frame_->best_effort_timestamp != AV_NOPTS_VALUE) {
+        output_frame.pts = frame_->best_effort_timestamp;
+    } else {
+        output_frame.pts = AV_NOPTS_VALUE;
+    }
+
+    if (output_frame.pts != AV_NOPTS_VALUE && codec_ctx_->time_base.den != 0) {
+        output_frame.timestamp = output_frame.pts * av_q2d(codec_ctx_->time_base);
+    } else {
+        output_frame.timestamp = 0.0;
+    }
 
     const AVPixFmtDescriptor* desc =
         av_pix_fmt_desc_get(static_cast<AVPixelFormat>(frame_->format));

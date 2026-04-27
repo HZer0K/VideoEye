@@ -39,6 +39,7 @@ void AnalysisPanel::SetupUI() {
     tab_widget_ = new QTabWidget(this);
     
     SetupStreamTab();
+    SetupFrameTab();
     SetupHistogramTab();
     SetupFaceTab();
     
@@ -63,7 +64,7 @@ void AnalysisPanel::SetupStreamTab() {
     QGroupBox* stats_group = new QGroupBox(tr("流统计信息"), stream_tab_);
     QVBoxLayout* stats_layout = new QVBoxLayout(stats_group);
     
-    stats_table_ = new QTableWidget(12, 2, stats_group);
+    stats_table_ = new QTableWidget(14, 2, stats_group);
     stats_table_->setHorizontalHeaderLabels({"参数", "值"});
     stats_table_->setColumnWidth(0, 150);
     stats_table_->verticalHeader()->setVisible(false);
@@ -72,7 +73,8 @@ void AnalysisPanel::SetupStreamTab() {
     QStringList labels = {
         "总数据包数", "总字节数", "视频帧数", "音频帧数",
         "当前帧率", "平均帧率", "当前码率", "平均码率",
-        "峰值码率", "GOP长度", "I帧数量", "分析时长"
+        "峰值码率", "GOP长度", "I帧数量", "P帧数量",
+        "B帧数量", "分析时长"
     };
     
     for (int i = 0; i < labels.size(); ++i) {
@@ -109,6 +111,31 @@ void AnalysisPanel::SetupStreamTab() {
     // 初始化图表数据系列
     bitrate_series_ = new QLineSeries();
     fps_series_ = new QLineSeries();
+}
+
+void AnalysisPanel::SetupFrameTab() {
+    frame_tab_ = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(frame_tab_);
+    
+    QGroupBox* table_group = new QGroupBox(tr("视频帧信息"), frame_tab_);
+    QVBoxLayout* table_layout = new QVBoxLayout(table_group);
+    
+    frame_table_ = new QTableWidget(0, 4, table_group);
+    frame_table_->setHorizontalHeaderLabels({"序号", "帧类型", "时间戳(s)", "PTS"});
+    frame_table_->verticalHeader()->setVisible(false);
+    frame_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    frame_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    frame_table_->setSelectionMode(QAbstractItemView::SingleSelection);
+    frame_table_->setSortingEnabled(false);
+    frame_table_->horizontalHeader()->setStretchLastSection(true);
+    frame_table_->setColumnWidth(0, 80);
+    frame_table_->setColumnWidth(1, 80);
+    frame_table_->setColumnWidth(2, 140);
+    
+    table_layout->addWidget(frame_table_);
+    layout->addWidget(table_group);
+    
+    tab_widget_->addTab(frame_tab_, tr("视频帧"));
 }
 
 void AnalysisPanel::SetupHistogramTab() {
@@ -175,11 +202,13 @@ void AnalysisPanel::UpdateStreamStats(const analyzer::StreamStats& stats) {
     stats_table_->setItem(7, 1, new QTableWidgetItem(QString::number(stats.avg_bitrate_bps / 1000) + " Kbps"));
     stats_table_->setItem(8, 1, new QTableWidgetItem(QString::number(stats.peak_bitrate_bps / 1000) + " Kbps"));
     stats_table_->setItem(9, 1, new QTableWidgetItem(QString::number(stats.gop_size)));
-    stats_table_->setItem(10, 1, new QTableWidgetItem(QString::number(stats.key_frame_count)));
+    stats_table_->setItem(10, 1, new QTableWidgetItem(QString::number(stats.i_frame_count)));
+    stats_table_->setItem(11, 1, new QTableWidgetItem(QString::number(stats.p_frame_count)));
+    stats_table_->setItem(12, 1, new QTableWidgetItem(QString::number(stats.b_frame_count)));
     
     auto duration = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - stats.start_time);
-    stats_table_->setItem(11, 1, new QTableWidgetItem(
+    stats_table_->setItem(13, 1, new QTableWidgetItem(
         QString::number(duration.count()) + " s"));
     
     // 更新图表
@@ -212,6 +241,35 @@ void AnalysisPanel::UpdateFaceDetection(const std::vector<analyzer::FaceInfo>& f
         face_table_->setItem(i, 3, new QTableWidgetItem(
             QString("%1x%2").arg(face.bounding_box.width).arg(face.bounding_box.height)));
     }
+}
+
+void AnalysisPanel::ResetVideoFrameList() {
+    if (frame_table_) {
+        frame_table_->setRowCount(0);
+    }
+}
+
+void AnalysisPanel::AppendVideoFrameInfo(int index, int frame_type, qint64 pts, double timestamp_seconds) {
+    if (!frame_table_) {
+        return;
+    }
+
+    QString type = "?";
+    if (frame_type == AV_PICTURE_TYPE_I) {
+        type = "I";
+    } else if (frame_type == AV_PICTURE_TYPE_P) {
+        type = "P";
+    } else if (frame_type == AV_PICTURE_TYPE_B) {
+        type = "B";
+    }
+
+    const int row = frame_table_->rowCount();
+    frame_table_->insertRow(row);
+    frame_table_->setItem(row, 0, new QTableWidgetItem(QString::number(index)));
+    frame_table_->setItem(row, 1, new QTableWidgetItem(type));
+    frame_table_->setItem(row, 2, new QTableWidgetItem(QString::number(timestamp_seconds, 'f', 3)));
+    frame_table_->setItem(row, 3, new QTableWidgetItem(QString::number(pts)));
+    frame_table_->scrollToBottom();
 }
 
 void AnalysisPanel::UpdateBitrateChart(const analyzer::StreamStats& stats) {

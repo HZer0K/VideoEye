@@ -123,6 +123,30 @@ void StreamAnalyzer::Reset() {
     LOG_INFO("流分析器已重置");
 }
 
+void StreamAnalyzer::AnalyzeVideoFrame(AVPictureType type) {
+    if (!is_analyzing_) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    stats_.total_video_frames++;
+
+    switch (type) {
+    case AV_PICTURE_TYPE_I:
+        stats_.i_frame_count++;
+        break;
+    case AV_PICTURE_TYPE_P:
+        stats_.p_frame_count++;
+        break;
+    case AV_PICTURE_TYPE_B:
+        stats_.b_frame_count++;
+        break;
+    default:
+        stats_.other_frame_count++;
+        break;
+    }
+}
+
 std::vector<PacketInfo> StreamAnalyzer::GetRecentPackets(int count) const {
     std::lock_guard<std::mutex> lock(mutex_);
     
@@ -224,6 +248,8 @@ std::string StreamStats::ToString() const {
     
     oss << "GOP 大小: " << gop_size << " (最大: " << max_gop_size << ")" << std::endl;
     oss << "关键帧数: " << key_frame_count << std::endl;
+    oss << "帧类型: I=" << i_frame_count << " P=" << p_frame_count << " B=" << b_frame_count
+        << " 其他=" << other_frame_count << std::endl;
     oss << std::endl;
     
     oss << "包大小: 平均 " << avg_packet_size << " B, 最大 " 

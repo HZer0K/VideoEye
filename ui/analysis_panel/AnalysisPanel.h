@@ -36,6 +36,8 @@ public slots:
     void UpdateStreamStats(const analyzer::StreamStats& stats);
     void UpdateHistogram(const analyzer::HistogramData& hist);
     void UpdateFaceDetection(const std::vector<analyzer::FaceInfo>& faces);
+    void ResetVideoFrameList();
+    void AppendVideoFrameInfo(int index, int frame_type, qint64 pts, double timestamp_seconds);
     
     // 导出报告
     void OnExportReport();
@@ -44,6 +46,7 @@ private:
     // 初始化UI
     void SetupUI();
     void SetupStreamTab();
+    void SetupFrameTab();
     void SetupHistogramTab();
     void SetupFaceTab();
     
@@ -62,6 +65,9 @@ private:
     QChartView* bitrate_chart_;
     QChartView* fps_chart_;
     QChartView* gop_chart_;
+
+    QWidget* frame_tab_;
+    QTableWidget* frame_table_;
     
     // 直方图标签页
     QWidget* histogram_tab_;

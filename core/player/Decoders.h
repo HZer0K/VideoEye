@@ -39,6 +39,7 @@ public:
     std::string GetCodecName() const;
     int GetWidth() const { return width_; }
     int GetHeight() const { return height_; }
+    AVPictureType GetLastPictureType() const { return last_pict_type_; }
     
     // 关闭解码器
     void Close();
@@ -48,6 +49,7 @@ private:
     AVFrame* frame_ = nullptr;
     int width_ = 0;
     int height_ = 0;
+    AVPictureType last_pict_type_ = AV_PICTURE_TYPE_NONE;
 };
 
 // 音频解码器类

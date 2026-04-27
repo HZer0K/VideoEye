@@ -48,6 +48,13 @@ struct StreamStats {
     int current_gop_size = 0;
     int max_gop_size = 0;
     int key_frame_count = 0;
+
+    // 视频帧类型统计
+    int total_video_frames = 0;
+    int i_frame_count = 0;
+    int p_frame_count = 0;
+    int b_frame_count = 0;
+    int other_frame_count = 0;
     
     // 包大小统计
     int avg_packet_size = 0;
@@ -95,6 +102,8 @@ public:
     
     // 获取码率历史
     std::vector<int> GetBitrateHistory() const { return bitrate_history_; }
+
+    void AnalyzeVideoFrame(AVPictureType type);
     
 private:
     // 计算帧率

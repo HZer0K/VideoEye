@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <iostream>
 #include <sstream>
+#include <cmath>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -303,6 +304,8 @@ bool MediaPlayer::Open(const QString& url) {
 
     current_url_ = url;
     should_stop_ = false;
+    video_frame_index_ = 0;
+    emit VideoFrameListReset();
 
     const unsigned header_avcodec_major = LIBAVCODEC_VERSION_MAJOR;
     const unsigned runtime_avcodec_major = static_cast<unsigned>(avcodec_version() >> 16);
@@ -437,6 +440,11 @@ bool MediaPlayer::Open(const QString& url) {
             emit Error("Failed to copy codec parameters");
             Cleanup();
             return false;
+        }
+
+        if (video_stream->time_base.den != 0) {
+            video_codec_ctx->pkt_timebase = video_stream->time_base;
+            video_codec_ctx->time_base = video_stream->time_base;
         }
         
         // 打开解码器
@@ -783,9 +791,15 @@ void MediaPlayer::EnableAnalysis(bool enable) {
         stream_analyzer_.Start();
         LOG_INFO("已启用视频分析");
     } else {
+        histogram_enabled_ = false;
+        face_detection_enabled_ = false;
         stream_analyzer_.Stop();
         LOG_INFO("已禁用视频分析");
     }
+}
+
+void MediaPlayer::SetFrameTypeAnalysisEnabled(bool enable) {
+    frame_type_analysis_enabled_ = enable;
 }
 
 void MediaPlayer::SetFaceDetectionEnabled(bool enable) {
@@ -886,11 +900,32 @@ void MediaPlayer::DecodeThread() {
                         emit FrameReady(qimage);
                     }
                 }
+
+                if (frame_type_analysis_enabled_) {
+                    double ts = frame_data.timestamp;
+                    if ((ts == 0.0 || std::isnan(ts) || std::isinf(ts)) && format_ctx_ && video_stream_index_ >= 0) {
+                        AVStream* vs = format_ctx_->streams[video_stream_index_];
+                        if (vs && vs->time_base.den != 0) {
+                            int64_t pts = frame_data.pts;
+                            if (pts == AV_NOPTS_VALUE && packet->pts != AV_NOPTS_VALUE) {
+                                pts = packet->pts;
+                            }
+                            if (pts != AV_NOPTS_VALUE) {
+                                ts = pts * av_q2d(vs->time_base);
+                            }
+                        }
+                    }
+                    emit VideoFrameInfoReady(video_frame_index_++,
+                                             static_cast<int>(video_decoder_->GetLastPictureType()),
+                                             static_cast<qint64>(frame_data.pts),
+                                             ts);
+                }
                 
                 // 实时分析 (仅帧有效时)
                 if (analysis_enabled_) {
                     // 流分析 (每个包)
                     stream_analyzer_.AnalyzePacket(packet, format_ctx_);
+                    stream_analyzer_.AnalyzeVideoFrame(video_decoder_->GetLastPictureType());
                     
                     // 每隔10帧进行一次帧分析 (降低CPU占用)
                     analysis_frame_counter_++;

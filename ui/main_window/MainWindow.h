@@ -11,6 +11,7 @@
 #include <QMenuBar>
 #include <QToolBar>
 #include <QStatusBar>
+#include <QAction>
 #include <QGroupBox>
 #include <QSplitter>
 #include <QRect>
@@ -96,6 +97,10 @@ protected:
     QMenuBar* menu_bar_;
     QToolBar* tool_bar_;
     QStatusBar* status_bar_;
+    QAction* stream_analysis_action_ = nullptr;
+    QAction* frame_analysis_action_ = nullptr;
+    QAction* histogram_action_ = nullptr;
+    QAction* face_detection_action_ = nullptr;
 
     QRect last_geometry_;
     bool enforcing_geometry_ = false;

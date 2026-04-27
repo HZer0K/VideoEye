@@ -78,7 +78,9 @@ void MainWindow::SetupUI() {
     bottom_layout->setContentsMargins(6, 6, 6, 6);
 
     // 控制面板
-    control_group_ = new QGroupBox(tr("播放控制"), bottom_widget_);
+    control_group_ = new QGroupBox(bottom_widget_);
+    control_group_->setTitle(QString());
+    control_group_->setFlat(true);
     QHBoxLayout* control_layout = new QHBoxLayout(control_group_);
     
     // 播放控制按钮
@@ -306,20 +308,74 @@ void MainWindow::SetupMenuBar() {
     file_menu->addSeparator();
     file_menu->addAction(tr("退出"), this, &MainWindow::OnExit, QKeySequence::Quit);
     
-    // 播放菜单
-    QMenu* play_menu = menu_bar_->addMenu(tr("播放"));
-    play_menu->addAction(tr("播放"), this, &MainWindow::OnPlay, QKeySequence(Qt::Key_Space));
-    play_menu->addAction(tr("暂停"), this, &MainWindow::OnPause);
-    play_menu->addAction(tr("停止"), this, &MainWindow::OnStop, QKeySequence(Qt::Key_Escape));
-    
     // 分析菜单
     QMenu* analysis_menu = menu_bar_->addMenu(tr("分析"));
-    analysis_menu->addAction(tr("启用分析"), this, [this]() {
-        if (player_) {
-            player_->EnableAnalysis(!player_->IsAnalysisEnabled());
-            statusBar()->showMessage(player_->IsAnalysisEnabled() ? 
-                tr("分析功能已启用") : tr("分析功能已禁用"));
+    stream_analysis_action_ = analysis_menu->addAction(tr("流分析"));
+    stream_analysis_action_->setCheckable(true);
+    stream_analysis_action_->setChecked(false);
+    
+    frame_analysis_action_ = analysis_menu->addAction(tr("视频帧分析"));
+    frame_analysis_action_->setCheckable(true);
+    frame_analysis_action_->setChecked(false);
+    
+    histogram_action_ = analysis_menu->addAction(tr("直方图"));
+    histogram_action_->setCheckable(true);
+    histogram_action_->setChecked(false);
+    histogram_action_->setEnabled(false);
+    
+    face_detection_action_ = analysis_menu->addAction(tr("人脸检测"));
+    face_detection_action_->setCheckable(true);
+    face_detection_action_->setChecked(false);
+    face_detection_action_->setEnabled(false);
+
+    connect(stream_analysis_action_, &QAction::toggled, this, [this](bool enabled) {
+        if (!player_) {
+            return;
         }
+        player_->EnableAnalysis(enabled);
+        histogram_action_->setEnabled(enabled);
+        face_detection_action_->setEnabled(enabled);
+
+        if (!enabled) {
+            player_->SetHistogramEnabled(false);
+            player_->SetFaceDetectionEnabled(false);
+            statusBar()->showMessage(tr("流分析已禁用"));
+            return;
+        }
+
+        player_->SetHistogramEnabled(histogram_action_->isChecked());
+        player_->SetFaceDetectionEnabled(face_detection_action_->isChecked());
+        statusBar()->showMessage(tr("流分析已启用"));
+    });
+
+    connect(frame_analysis_action_, &QAction::toggled, this, [this](bool enabled) {
+        if (!player_) {
+            return;
+        }
+        player_->SetFrameTypeAnalysisEnabled(enabled);
+        statusBar()->showMessage(enabled ? tr("视频帧分析已启用") : tr("视频帧分析已禁用"));
+    });
+
+    connect(histogram_action_, &QAction::toggled, this, [this](bool enabled) {
+        if (!player_) {
+            return;
+        }
+        if (enabled && !stream_analysis_action_->isChecked()) {
+            stream_analysis_action_->setChecked(true);
+        }
+        player_->SetHistogramEnabled(enabled && stream_analysis_action_->isChecked());
+        statusBar()->showMessage(enabled ? tr("直方图分析已启用") : tr("直方图分析已禁用"));
+    });
+
+    connect(face_detection_action_, &QAction::toggled, this, [this](bool enabled) {
+        if (!player_) {
+            return;
+        }
+        if (enabled && !stream_analysis_action_->isChecked()) {
+            stream_analysis_action_->setChecked(true);
+        }
+        player_->SetFaceDetectionEnabled(enabled && stream_analysis_action_->isChecked());
+        statusBar()->showMessage(enabled ? tr("人脸检测已启用") : tr("人脸检测已禁用"));
     });
     
     // 帮助菜单
@@ -363,6 +419,10 @@ void MainWindow::SetupConnections() {
             analysis_panel_, &ui::AnalysisPanel::UpdateHistogram);
     connect(player_, &player::MediaPlayer::FaceDetectionReady,
             analysis_panel_, &ui::AnalysisPanel::UpdateFaceDetection);
+    connect(player_, &player::MediaPlayer::VideoFrameListReset,
+            analysis_panel_, &ui::AnalysisPanel::ResetVideoFrameList);
+    connect(player_, &player::MediaPlayer::VideoFrameInfoReady,
+            analysis_panel_, &ui::AnalysisPanel::AppendVideoFrameInfo);
     
     // 控件信号连接
     connect(play_button_, &QPushButton::clicked, this, &MainWindow::OnPlay);
