@@ -20,6 +20,7 @@
 #include <QFileInfo>
 #include <QFile>
 #include <QByteArray>
+#include <QRegularExpression>
 #include <QtGlobal>
 
 namespace videoeye {
@@ -489,7 +490,7 @@ void MainWindow::OnOpenFile() {
     
     QString filename = QFileDialog::getOpenFileName(this,
         tr("打开媒体文件"), "",
-        tr("媒体文件 (*.mp4 *.avi *.mkv *.flv *.ts *.mp3 *.aac *.wav *.yuv *.rgb);;所有文件 (*)"));
+        tr("媒体文件 (*.mp4 *.avi *.mkv *.flv *.ts *.mp3 *.aac *.wav *.yuv *.nv12 *.rgb);;所有文件 (*)"));
     
     qDebug() << "[1] 选择的文件:" << filename;
     
@@ -505,7 +506,7 @@ void MainWindow::OnOpenFile() {
     }
     
     const QString suffix = QFileInfo(filename).suffix().toLower();
-    if (suffix == "yuv" || suffix == "rgb") {
+    if (suffix == "yuv" || suffix == "nv12" || suffix == "rgb") {
         qDebug() << "[3] 打开原始图像文件:" << suffix;
         OnStop();
         showing_raw_image_ = true;
@@ -631,20 +632,51 @@ void MainWindow::OnExit() {
 
 bool MainWindow::LoadRawImageFile(const QString& filename) {
     const QString suffix = QFileInfo(filename).suffix().toLower();
-    if (suffix != "yuv" && suffix != "rgb") {
+    if (suffix != "yuv" && suffix != "nv12" && suffix != "rgb") {
         return false;
+    }
+
+    int default_width = 1920;
+    int default_height = 1080;
+    {
+        const QString name = QFileInfo(filename).fileName().toLower();
+        QRegularExpression re_wh(R"((\d{2,5})\s*[xX]\s*(\d{2,5}))");
+        QRegularExpressionMatch m = re_wh.match(name);
+        if (m.hasMatch()) {
+            bool ok_w = false;
+            bool ok_h = false;
+            const int w = m.captured(1).toInt(&ok_w);
+            const int h = m.captured(2).toInt(&ok_h);
+            if (ok_w && ok_h && w > 0 && h > 0) {
+                default_width = w;
+                default_height = h;
+            }
+        } else {
+            QRegularExpression re_w_h(R"(w(\d{2,5}).*h(\d{2,5}))", QRegularExpression::CaseInsensitiveOption);
+            m = re_w_h.match(name);
+            if (m.hasMatch()) {
+                bool ok_w = false;
+                bool ok_h = false;
+                const int w = m.captured(1).toInt(&ok_w);
+                const int h = m.captured(2).toInt(&ok_h);
+                if (ok_w && ok_h && w > 0 && h > 0) {
+                    default_width = w;
+                    default_height = h;
+                }
+            }
+        }
     }
 
     bool ok = false;
     const int width = QInputDialog::getInt(this, tr("图像宽度"),
                                            tr("请输入宽度(px):"),
-                                           1920, 1, 16384, 1, &ok);
+                                           default_width, 1, 16384, 1, &ok);
     if (!ok) {
         return false;
     }
     const int height = QInputDialog::getInt(this, tr("图像高度"),
                                             tr("请输入高度(px):"),
-                                            1080, 1, 16384, 1, &ok);
+                                            default_height, 1, 16384, 1, &ok);
     if (!ok) {
         return false;
     }
@@ -677,39 +709,64 @@ bool MainWindow::LoadRawImageFile(const QString& filename) {
         return true;
     }
 
-    if (suffix == "yuv") {
+    if (suffix == "yuv" || suffix == "nv12") {
         if ((width % 2) != 0 || (height % 2) != 0) {
             QMessageBox::warning(this, tr("尺寸不支持"),
-                                 tr("当前仅支持 YUV420P(I420)，宽高必须为偶数。"));
+                                 tr("YUV420 仅支持偶数宽高。"));
             return false;
         }
 
+        const QString lower_name = QFileInfo(filename).fileName().toLower();
+        const QString default_format = (suffix == "nv12" || lower_name.contains("nv12")) ? "NV12" : "YUV420P(I420)";
+        const QStringList formats = {"YUV420P(I420)", "NV12"};
+        const QString selected = QInputDialog::getItem(this, tr("YUV格式"),
+                                                       tr("选择YUV格式:"),
+                                                       formats,
+                                                       formats.indexOf(default_format),
+                                                       false, &ok);
+        if (!ok || selected.isEmpty()) {
+            return false;
+        }
+
+        const bool is_nv12 = (selected == "NV12");
+
         const qint64 y_size = static_cast<qint64>(width) * static_cast<qint64>(height);
-        const qint64 uv_size = y_size / 4;
-        const qint64 expected = y_size + uv_size + uv_size;
+        const qint64 expected = is_nv12 ? (y_size + y_size / 2) : (y_size + y_size / 4 + y_size / 4);
         if (data.size() != expected) {
             QMessageBox::warning(this, tr("尺寸不匹配"),
-                                 tr("YUV420P 原始数据大小不匹配。\n期望: %1 字节\n实际: %2 字节")
+                                 tr("%1 原始数据大小不匹配。\n期望: %2 字节\n实际: %3 字节")
+                                     .arg(is_nv12 ? "NV12" : "YUV420P(I420)")
                                      .arg(expected)
                                      .arg(data.size()));
             return false;
         }
 
         const uchar* y_plane = reinterpret_cast<const uchar*>(data.constData());
-        const uchar* u_plane = y_plane + y_size;
-        const uchar* v_plane = u_plane + uv_size;
+        const uchar* uv_plane = y_plane + y_size;
+        const qint64 uv_size = y_size / 4;
+        const uchar* u_plane = is_nv12 ? nullptr : uv_plane;
+        const uchar* v_plane = is_nv12 ? nullptr : (uv_plane + uv_size);
 
         QImage img(width, height, QImage::Format_RGB888);
         for (int j = 0; j < height; ++j) {
             uchar* row = img.scanLine(j);
-            const int uv_j = (j / 2) * (width / 2);
+            const int uv_j_i420 = (j / 2) * (width / 2);
+            const int uv_j_nv12 = (j / 2) * width;
             for (int i = 0; i < width; ++i) {
                 const int y_idx = j * width + i;
-                const int uv_idx = uv_j + (i / 2);
 
                 const int Y = static_cast<int>(y_plane[y_idx]);
-                const int U = static_cast<int>(u_plane[uv_idx]) - 128;
-                const int V = static_cast<int>(v_plane[uv_idx]) - 128;
+                int U = 0;
+                int V = 0;
+                if (is_nv12) {
+                    const int uv_idx = uv_j_nv12 + (i / 2) * 2;
+                    U = static_cast<int>(uv_plane[uv_idx]) - 128;
+                    V = static_cast<int>(uv_plane[uv_idx + 1]) - 128;
+                } else {
+                    const int uv_idx = uv_j_i420 + (i / 2);
+                    U = static_cast<int>(u_plane[uv_idx]) - 128;
+                    V = static_cast<int>(v_plane[uv_idx]) - 128;
+                }
 
                 int R = Y + static_cast<int>(1.402 * V);
                 int G = Y - static_cast<int>(0.344136 * U + 0.714136 * V);
