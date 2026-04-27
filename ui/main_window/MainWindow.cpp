@@ -135,9 +135,10 @@ void MainWindow::SetupMenuBar() {
 
 void MainWindow::SetupToolBar() {
     tool_bar_ = addToolBar(tr("工具栏"));
-    tool_bar_->addAction(play_button_->text(), this, &MainWindow::OnPlay);
-    tool_bar_->addAction(pause_button_->text(), this, &MainWindow::OnPause);
-    tool_bar_->addAction(stop_button_->text(), this, &MainWindow::OnStop);
+    current_media_label_ = new QLabel(tr("未选择媒体"), this);
+    current_media_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    current_media_label_->setMinimumWidth(600);
+    tool_bar_->addWidget(current_media_label_);
 }
 
 void MainWindow::SetupStatusBar() {
@@ -201,6 +202,9 @@ void MainWindow::OnOpenFile() {
         qDebug() << "[5] 更新UI - info_label_";
         info_label_->setText(tr("已打开: %1").arg(filename));
         status_bar_->showMessage(tr("已打开: %1").arg(filename));
+        if (current_media_label_) {
+            current_media_label_->setText(filename);
+        }
         
         qDebug() << "[6] 获取流信息";
         auto info = player_->GetStreamInfo();
@@ -232,6 +236,9 @@ void MainWindow::OnOpenURL() {
     if (ok && !url.isEmpty()) {
         if (player_->Open(url)) {
             info_label_->setText(tr("已打开: %1").arg(url));
+            if (current_media_label_) {
+                current_media_label_->setText(url);
+            }
         }
     }
 }

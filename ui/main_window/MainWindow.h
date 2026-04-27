@@ -73,6 +73,7 @@ private:
     QLabel* time_label_;            // 时间显示
     QLabel* info_label_;            // 信息标签
     QTextEdit* info_text_;          // 详细信息文本框
+    QLabel* current_media_label_;   // 顶部显示当前媒体路径
     
     // 分析面板
     ui::AnalysisPanel* analysis_panel_;  // 分析面板
