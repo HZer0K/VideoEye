@@ -14,6 +14,8 @@
 #include <QTabBar>
 #include <QTimer>
 #include <QFontDatabase>
+#include <QPainter>
+#include <algorithm>
 
 namespace videoeye {
 namespace ui {
@@ -411,6 +413,10 @@ void MainWindow::SetupConnections() {
             this, &MainWindow::OnError);
     connect(player_, &player::MediaPlayer::PlaybackFinished,
             this, &MainWindow::OnPlaybackFinished);
+    connect(player_, &player::MediaPlayer::MediaModeChanged,
+            this, &MainWindow::OnMediaModeChanged);
+    connect(player_, &player::MediaPlayer::AudioLevelReady,
+            this, &MainWindow::OnAudioLevelReady);
     
     // 播放器信号连接 - 分析功能 (实时分析)
     connect(player_, &player::MediaPlayer::StreamStatsReady,
@@ -530,6 +536,8 @@ void MainWindow::OnStop() {
     video_label_->clear();
     video_label_->setText(tr("视频显示区域"));
     video_label_->setStyleSheet("background-color: black; color: white; font-size: 20px;");
+    audio_level_history_.clear();
+    audio_only_mode_ = false;
 }
 
 void MainWindow::OnSeek(int value) {
@@ -617,6 +625,64 @@ void MainWindow::OnFaceDetectionUpdate(const std::vector<analyzer::FaceInfo>& fa
     if (!faces.empty()) {
         statusBar()->showMessage(tr("检测到 %1 张人脸").arg(faces.size()));
     }
+}
+
+void MainWindow::OnMediaModeChanged(bool has_video) {
+    audio_only_mode_ = !has_video;
+    audio_level_history_.clear();
+    if (audio_only_mode_) {
+        video_label_->clear();
+        video_label_->setStyleSheet("background-color: black;");
+    }
+}
+
+void MainWindow::OnAudioLevelReady(double level, double timestamp_seconds) {
+    if (!audio_only_mode_) {
+        return;
+    }
+
+    const int w = std::max(1, video_label_->width());
+    const int h = std::max(1, video_label_->height());
+
+    static constexpr size_t kMaxHistory = 90;
+    if (audio_level_history_.size() >= kMaxHistory) {
+        audio_level_history_.pop_front();
+    }
+    audio_level_history_.push_back(level);
+
+    QImage img(w, h, QImage::Format_ARGB32);
+    img.fill(Qt::black);
+
+    QPainter painter(&img);
+    painter.setRenderHint(QPainter::Antialiasing, false);
+
+    const int mid_y = h / 2;
+    painter.setPen(QColor(60, 60, 60));
+    painter.drawLine(0, mid_y, w, mid_y);
+
+    const int n = static_cast<int>(audio_level_history_.size());
+    if (n > 0) {
+        const double bar_w = static_cast<double>(w) / n;
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(0, 220, 120));
+
+        for (int i = 0; i < n; ++i) {
+            const double v = std::clamp(audio_level_history_[static_cast<size_t>(i)], 0.0, 1.0);
+            const int amp = static_cast<int>(v * (h * 0.45));
+            const int x0 = static_cast<int>(i * bar_w);
+            const int bw = std::max(1, static_cast<int>(bar_w) - 1);
+            painter.drawRect(x0, mid_y - amp, bw, amp * 2);
+        }
+    }
+
+    painter.setPen(QColor(220, 220, 220));
+    painter.drawText(QRect(8, 8, w - 16, 24),
+                     Qt::AlignLeft | Qt::AlignVCenter,
+                     QString("t=%1s  level=%2")
+                         .arg(timestamp_seconds, 0, 'f', 3)
+                         .arg(level, 0, 'f', 3));
+
+    video_label_->setPixmap(QPixmap::fromImage(img));
 }
 
 } // namespace ui

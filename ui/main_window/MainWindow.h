@@ -15,6 +15,7 @@
 #include <QGroupBox>
 #include <QSplitter>
 #include <QRect>
+#include <deque>
 
 #include "core/player/MediaPlayer.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
@@ -53,6 +54,8 @@ private slots:
     void OnStreamStatsUpdate(const analyzer::StreamStats& stats);
     void OnHistogramUpdate(const analyzer::HistogramData& hist);
     void OnFaceDetectionUpdate(const std::vector<analyzer::FaceInfo>& faces);
+    void OnMediaModeChanged(bool has_video);
+    void OnAudioLevelReady(double level, double timestamp_seconds);
     
 private:
     // 初始化UI
@@ -104,6 +107,8 @@ protected:
 
     QRect last_geometry_;
     bool enforcing_geometry_ = false;
+    bool audio_only_mode_ = false;
+    std::deque<double> audio_level_history_;
 };
 
 } // namespace ui

@@ -6,6 +6,8 @@
 #include <iostream>
 #include <sstream>
 #include <cmath>
+#include <vector>
+#include <chrono>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -391,6 +393,79 @@ bool MediaPlayer::Open(const QString& url) {
         Cleanup();
         return false;
     }
+    
+    bool has_video = (video_stream_index_ >= 0);
+    if (video_stream_index_ >= 0 && format_ctx_->streams && format_ctx_->streams[video_stream_index_]) {
+        AVStream* vs = format_ctx_->streams[video_stream_index_];
+        if (vs && (vs->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
+            has_video = false;
+            
+            if (vs->codecpar && vs->attached_pic.data && vs->attached_pic.size > 0) {
+                const AVCodec* cover_codec = avcodec_find_decoder(vs->codecpar->codec_id);
+                if (cover_codec) {
+                    AVCodecContext* cover_ctx = avcodec_alloc_context3(cover_codec);
+                    if (cover_ctx) {
+                        if (avcodec_parameters_to_context(cover_ctx, vs->codecpar) >= 0) {
+                            if (vs->time_base.den != 0) {
+                                cover_ctx->pkt_timebase = vs->time_base;
+                                cover_ctx->time_base = vs->time_base;
+                            }
+                            
+                            if (avcodec_open2(cover_ctx, cover_codec, nullptr) >= 0) {
+                                VideoDecoder cover_decoder;
+                                if (cover_decoder.InitializeFromContext(cover_ctx)) {
+                                    model::FrameData cover_frame;
+                                    if (cover_decoder.DecodePacket(&vs->attached_pic, cover_frame)) {
+                                        if (cover_frame.width > 0 && cover_frame.height > 0 && cover_frame.data[0]) {
+                                            SwsContext* cover_sws = sws_getCachedContext(
+                                                nullptr,
+                                                cover_frame.width,
+                                                cover_frame.height,
+                                                static_cast<AVPixelFormat>(cover_frame.format),
+                                                cover_frame.width,
+                                                cover_frame.height,
+                                                AV_PIX_FMT_BGRA,
+                                                SWS_BILINEAR,
+                                                nullptr,
+                                                nullptr,
+                                                nullptr);
+                                            
+                                            if (cover_sws) {
+                                                QImage cover_img(cover_frame.width, cover_frame.height, QImage::Format_ARGB32);
+                                                if (!cover_img.isNull()) {
+                                                    uint8_t* dst_slices[4] = {cover_img.bits(), nullptr, nullptr, nullptr};
+                                                    int dst_linesize[4] = {static_cast<int>(cover_img.bytesPerLine()), 0, 0, 0};
+                                                    sws_scale(cover_sws,
+                                                              cover_frame.data,
+                                                              cover_frame.linesize,
+                                                              0,
+                                                              cover_frame.height,
+                                                              dst_slices,
+                                                              dst_linesize);
+                                                    emit FrameReady(cover_img);
+                                                }
+                                                sws_freeContext(cover_sws);
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    avcodec_free_context(&cover_ctx);
+                                }
+                            } else {
+                                avcodec_free_context(&cover_ctx);
+                            }
+                        } else {
+                            avcodec_free_context(&cover_ctx);
+                        }
+                    }
+                }
+            }
+            
+            video_stream_index_ = -1;
+        }
+    }
+    
+    emit MediaModeChanged(has_video);
     
     // 初始化视频解码器
     if (video_stream_index_ >= 0) {
@@ -826,12 +901,23 @@ void MediaPlayer::DecodeThread() {
     int sws_src_w = 0;
     int sws_src_h = 0;
     int sws_src_fmt = AV_PIX_FMT_NONE;
+    std::vector<uint8_t> audio_buffer(192000);
+    
+    const bool enable_pacing = (video_stream_index_ < 0);
+    bool clock_started = false;
+    double clock_first_ts = 0.0;
+    auto clock_wall_start = std::chrono::steady_clock::now();
     
     while (!should_stop_) {
         // 暂停状态检查
         if (state_ == model::PlayerState::Paused) {
+            const auto pause_begin = std::chrono::steady_clock::now();
             std::unique_lock<std::mutex> lock(mutex_);
             cv_.wait(lock, [this] { return state_ != model::PlayerState::Paused || should_stop_; });
+            const auto pause_end = std::chrono::steady_clock::now();
+            if (enable_pacing && clock_started) {
+                clock_wall_start += (pause_end - pause_begin);
+            }
             continue;
         }
         
@@ -842,12 +928,36 @@ void MediaPlayer::DecodeThread() {
             emit PlaybackFinished();
             break;
         }
+
+        int64_t pkt_ts = (packet->pts != AV_NOPTS_VALUE) ? packet->pts : packet->dts;
+        if (enable_pacing && pkt_ts != AV_NOPTS_VALUE && format_ctx_ && packet->stream_index >= 0 &&
+            packet->stream_index < static_cast<int>(format_ctx_->nb_streams)) {
+            AVRational tb = format_ctx_->streams[packet->stream_index]->time_base;
+            if (tb.den != 0) {
+                const double media_ts = pkt_ts * av_q2d(tb);
+                if (!clock_started) {
+                    clock_started = true;
+                    clock_first_ts = media_ts;
+                    clock_wall_start = std::chrono::steady_clock::now();
+                } else if (media_ts >= clock_first_ts) {
+                    const auto target = clock_wall_start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                        std::chrono::duration<double>(media_ts - clock_first_ts));
+                    const auto now = std::chrono::steady_clock::now();
+                    if (target > now) {
+                        std::this_thread::sleep_for(target - now);
+                    }
+                }
+            }
+        }
         
         // 更新当前位置
-        if (packet->pts != AV_NOPTS_VALUE) {
+        if (pkt_ts != AV_NOPTS_VALUE && format_ctx_ && packet->stream_index >= 0 &&
+            packet->stream_index < static_cast<int>(format_ctx_->nb_streams)) {
             AVRational time_base = format_ctx_->streams[packet->stream_index]->time_base;
-            current_position_ms_ = packet->pts * av_q2d(time_base) * 1000;
-            emit PositionChanged(current_position_ms_, duration_ms_);
+            if (time_base.den != 0) {
+                current_position_ms_ = pkt_ts * av_q2d(time_base) * 1000;
+                emit PositionChanged(current_position_ms_, duration_ms_);
+            }
         }
         
         // 视频解码
@@ -962,7 +1072,46 @@ void MediaPlayer::DecodeThread() {
         
         // 音频解码
         if (packet->stream_index == audio_stream_index_ && audio_decoder_) {
-            // 音频解码逻辑
+            if (video_stream_index_ < 0) {
+                int out_size = 0;
+                if (audio_decoder_->DecodePacket(packet, audio_buffer.data(),
+                                                 static_cast<int>(audio_buffer.size()), out_size)) {
+                    if (out_size >= static_cast<int>(sizeof(int16_t))) {
+                        const int16_t* samples = reinterpret_cast<const int16_t*>(audio_buffer.data());
+                        const int sample_count = out_size / static_cast<int>(sizeof(int16_t));
+
+                        long double sumsq = 0.0;
+                        for (int i = 0; i < sample_count; ++i) {
+                            const long double s = static_cast<long double>(samples[i]);
+                            sumsq += s * s;
+                        }
+
+                        double level = 0.0;
+                        if (sample_count > 0) {
+                            level = std::sqrt(static_cast<double>(sumsq / sample_count)) / 32768.0;
+                            if (level < 0.0) {
+                                level = 0.0;
+                            } else if (level > 1.0) {
+                                level = 1.0;
+                            }
+                        }
+
+                        double ts = current_position_ms_ / 1000.0;
+                        if (format_ctx_ && audio_stream_index_ >= 0 &&
+                            audio_stream_index_ < static_cast<int>(format_ctx_->nb_streams)) {
+                            AVStream* as = format_ctx_->streams[audio_stream_index_];
+                            if (as && as->time_base.den != 0) {
+                                const int64_t pts = (packet->pts != AV_NOPTS_VALUE) ? packet->pts : packet->dts;
+                                if (pts != AV_NOPTS_VALUE) {
+                                    ts = pts * av_q2d(as->time_base);
+                                }
+                            }
+                        }
+
+                        emit AudioLevelReady(level, ts);
+                    }
+                }
+            }
         }
         
         av_packet_unref(packet);
