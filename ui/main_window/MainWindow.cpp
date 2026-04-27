@@ -320,11 +320,11 @@ void MainWindow::SetupMenuBar() {
     
     // 文件菜单
     QMenu* file_menu = menu_bar_->addMenu(tr("文件"));
-    file_menu->addAction(tr("打开文件"), this, &MainWindow::OnOpenFile, QKeySequence::Open);
-    file_menu->addAction(tr("打开URL"), this, &MainWindow::OnOpenURL, QKeySequence("Ctrl+U"));
+    file_menu->addAction(tr("打开文件"), QKeySequence::Open, this, &MainWindow::OnOpenFile);
+    file_menu->addAction(tr("打开URL"), QKeySequence("Ctrl+U"), this, &MainWindow::OnOpenURL);
     export_frames_action_ = file_menu->addAction(tr("导出视频帧..."), this, &MainWindow::OnExportVideoFrames);
     file_menu->addSeparator();
-    file_menu->addAction(tr("退出"), this, &MainWindow::OnExit, QKeySequence::Quit);
+    file_menu->addAction(tr("退出"), QKeySequence::Quit, this, &MainWindow::OnExit);
     
     // 分析菜单
     QMenu* analysis_menu = menu_bar_->addMenu(tr("分析"));
