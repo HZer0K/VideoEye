@@ -70,11 +70,13 @@ bool VideoDecoder::InitializeFromContext(AVCodecContext* codec_ctx) {
         return false;
     }
     
-    // 分配帧缓冲区
-    frame_ = av_frame_alloc();
+    // 分配帧缓冲区（构造函数已分配；这里避免覆盖导致泄漏）
     if (!frame_) {
-        std::cerr << "Failed to allocate frame" << std::endl;
-        return false;
+        frame_ = av_frame_alloc();
+        if (!frame_) {
+            std::cerr << "Failed to allocate frame" << std::endl;
+            return false;
+        }
     }
     
     width_ = codec_ctx_->width;
