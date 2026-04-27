@@ -398,6 +398,7 @@ void MainWindow::OnOpenFile() {
         if (current_media_label_) {
             current_media_label_->setText(filename);
         }
+        current_media_url_ = filename;
         
         qDebug() << "[6] 获取流信息";
         auto info = player_->GetStreamInfo();
@@ -432,6 +433,7 @@ void MainWindow::OnOpenURL() {
             if (current_media_label_) {
                 current_media_label_->setText(url);
             }
+            current_media_url_ = url;
         }
     }
 }
@@ -442,6 +444,16 @@ void MainWindow::OnExit() {
 
 void MainWindow::OnPlay() {
     if (player_) {
+        const auto state = player_->GetState();
+        if ((state == model::PlayerState::Idle ||
+             state == model::PlayerState::Stopped ||
+             state == model::PlayerState::Error) &&
+            !current_media_url_.isEmpty()) {
+            if (!player_->Open(current_media_url_)) {
+                statusBar()->showMessage(tr("打开失败: %1").arg(current_media_url_));
+                return;
+            }
+        }
         player_->Play();
     }
 }

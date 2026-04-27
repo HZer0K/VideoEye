@@ -6,6 +6,7 @@
 #include <QSlider>
 #include <QProgressBar>
 #include <QTextEdit>
+#include <QString>
 #include <QTabWidget>
 #include <QMenuBar>
 #include <QToolBar>
@@ -86,6 +87,7 @@ protected:
     QLabel* time_label_;            // 时间显示
     QTextEdit* info_text_;          // 详细信息文本框
     QLabel* current_media_label_;   // 顶部显示当前媒体路径
+    QString current_media_url_;
     
     // 分析面板
     ui::AnalysisPanel* analysis_panel_;  // 分析面板
