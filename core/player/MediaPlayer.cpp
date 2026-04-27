@@ -130,6 +130,46 @@ static std::string FormatDurationMs(int64_t ms) {
     return oss.str();
 }
 
+static int64_t DurationMsFromFormat(const AVFormatContext* format_ctx) {
+    if (!format_ctx) {
+        return 0;
+    }
+
+    int64_t best_ms = 0;
+    if (format_ctx->duration != AV_NOPTS_VALUE && format_ctx->duration > 0) {
+        best_ms = av_rescale(format_ctx->duration, 1000, AV_TIME_BASE);
+    }
+
+    if (format_ctx->streams && format_ctx->nb_streams > 0) {
+        const AVRational kMsBase{1, 1000};
+        for (unsigned i = 0; i < format_ctx->nb_streams; ++i) {
+            const AVStream* s = format_ctx->streams[i];
+            if (!s || s->time_base.den == 0) {
+                continue;
+            }
+            if (s->duration == AV_NOPTS_VALUE || s->duration <= 0) {
+                continue;
+            }
+            const int64_t ms = av_rescale_q(s->duration, s->time_base, kMsBase);
+            if (ms > best_ms) {
+                best_ms = ms;
+            }
+        }
+    }
+
+    return best_ms;
+}
+
+static int ClampMsToInt(int64_t ms) {
+    if (ms <= 0) {
+        return 0;
+    }
+    if (ms > std::numeric_limits<int>::max()) {
+        return std::numeric_limits<int>::max();
+    }
+    return static_cast<int>(ms);
+}
+
 static std::string FormatBitrate(int64_t bps) {
     if (bps <= 0) {
         return {};
@@ -676,8 +716,8 @@ bool MediaPlayer::Open(const QString& url) {
     qDebug() << "[OPEN-22] 填充流信息";
     stream_info_.filename = url.toStdString();
 
-    const int64_t duration_ms = (format_ctx_->duration != AV_NOPTS_VALUE) ? (format_ctx_->duration / 1000) : 0;
-    duration_ms_ = static_cast<int>(duration_ms);
+    const int64_t duration_ms = DurationMsFromFormat(format_ctx_);
+    duration_ms_ = ClampMsToInt(duration_ms);
     current_position_ms_.store(0);
 
     stream_info_.extractor.complete_name = stream_info_.filename;

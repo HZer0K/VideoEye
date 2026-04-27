@@ -32,6 +32,8 @@ class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow();
+
+    bool OpenMedia(const QString& source, bool autoplay = true);
     
 private slots:
     // 文件菜单

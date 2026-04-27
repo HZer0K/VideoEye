@@ -111,14 +111,7 @@ bool VideoDecoder::DecodePacket(AVPacket* packet, model::FrameData& output_frame
     last_pict_type_ = frame_->pict_type;
     
     // 复制帧数据
-    // 先清理旧数据
-    for (int i = 0; i < 8; ++i) {
-        if (output_frame.data[i]) {
-            delete[] output_frame.data[i];
-            output_frame.data[i] = nullptr;
-        }
-        output_frame.linesize[i] = 0;
-    }
+    output_frame.Clear();
 
     output_frame.width = frame_->width;
     output_frame.height = frame_->height;
@@ -156,8 +149,9 @@ bool VideoDecoder::DecodePacket(AVPacket* packet, model::FrameData& output_frame
         }
 
         output_frame.linesize[i] = frame_->linesize[i];
-        output_frame.data[i] = new uint8_t[size];
-        std::memcpy(output_frame.data[i], frame_->data[i], size);
+        output_frame.owned[i].resize(size);
+        std::memcpy(output_frame.owned[i].data(), frame_->data[i], size);
+        output_frame.data[i] = output_frame.owned[i].data();
     }
     
     return true;

@@ -509,60 +509,7 @@ void MainWindow::OnOpenFile() {
         qDebug() << "[1.5] 文件名为空，返回";
         return;
     }
-    
-    qDebug() << "[2] 检查player_指针:" << player_;
-    if (!player_) {
-        qDebug() << "[ERROR] player_为空!";
-        return;
-    }
-    
-    const QString suffix = QFileInfo(filename).suffix().toLower();
-    if (suffix == "yuv" || suffix == "nv12" || suffix == "rgb" ||
-        suffix == "bgr" || suffix == "yuy2" || suffix == "raw") {
-        qDebug() << "[3] 打开原始图像文件:" << suffix;
-        OnStop();
-        showing_raw_image_ = true;
-        current_media_url_.clear();
-        if (!LoadRawImageFile(filename)) {
-            statusBar()->showMessage(tr("打开失败: %1").arg(filename));
-            return;
-        }
-        statusBar()->showMessage(tr("已打开图像: %1").arg(filename));
-        if (current_media_label_) {
-            current_media_label_->setText(filename);
-        }
-        return;
-    }
-
-    showing_raw_image_ = false;
-    qDebug() << "[3] 调用 player_->Open()";
-    bool open_result = player_->Open(filename);
-    qDebug() << "[4] player_->Open() 返回:" << open_result;
-    
-    if (open_result) {
-        qDebug() << "[5] 更新UI - info_label_";
-        statusBar()->showMessage(tr("已打开: %1").arg(filename));
-        if (current_media_label_) {
-            current_media_label_->setText(filename);
-        }
-        current_media_url_ = filename;
-        
-        qDebug() << "[6] 获取流信息";
-        auto info = player_->GetStreamInfo();
-        qDebug() << "[7] 流信息获取成功，filename:" << QString::fromStdString(info.filename);
-        
-        qDebug() << "[8] 调用 info_text_->setText()";
-        QString info_str = QString::fromStdString(info.ToString());
-        qDebug() << "[9] ToString()完成，长度:" << info_str.length();
-        
-        info_text_->setPlainText(info_str);
-        qDebug() << "[10] setText()完成";
-
-        qDebug() << "[11] 自动开始播放";
-        player_->Play();
-    } else {
-        qDebug() << "[ERROR] Open失败";
-    }
+    OpenMedia(filename, true);
     
     qDebug() << "========== OnOpenFile END ==========\n";
 }
@@ -575,14 +522,56 @@ void MainWindow::OnOpenURL() {
                                         "rtmp://", &ok);
     
     if (ok && !url.isEmpty()) {
-        if (player_->Open(url)) {
-            statusBar()->showMessage(tr("已打开: %1").arg(url));
-            if (current_media_label_) {
-                current_media_label_->setText(url);
-            }
-            current_media_url_ = url;
-        }
+        OpenMedia(url, true);
     }
+}
+
+bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
+    if (source.isEmpty()) {
+        return false;
+    }
+    if (!player_) {
+        return false;
+    }
+
+    OnStop();
+
+    const QString suffix = QFileInfo(source).suffix().toLower();
+    if (suffix == "yuv" || suffix == "nv12" || suffix == "rgb" ||
+        suffix == "bgr" || suffix == "yuy2" || suffix == "raw") {
+        showing_raw_image_ = true;
+        current_media_url_.clear();
+        if (!LoadRawImageFile(source)) {
+            statusBar()->showMessage(tr("打开失败: %1").arg(source));
+            return false;
+        }
+        statusBar()->showMessage(tr("已打开图像: %1").arg(source));
+        if (current_media_label_) {
+            current_media_label_->setText(source);
+        }
+        return true;
+    }
+
+    showing_raw_image_ = false;
+    const bool open_result = player_->Open(source);
+    if (!open_result) {
+        statusBar()->showMessage(tr("打开失败: %1").arg(source));
+        return false;
+    }
+
+    statusBar()->showMessage(tr("已打开: %1").arg(source));
+    if (current_media_label_) {
+        current_media_label_->setText(source);
+    }
+    current_media_url_ = source;
+
+    auto info = player_->GetStreamInfo();
+    info_text_->setPlainText(QString::fromStdString(info.ToString()));
+
+    if (autoplay) {
+        player_->Play();
+    }
+    return true;
 }
 
 void MainWindow::OnExportVideoFrames() {
@@ -1203,18 +1192,3 @@ void MainWindow::OnVideoFrameExportError(const QString& message) {
 
 } // namespace ui
 } // namespace videoeye
-
-// main函数
-int main(int argc, char* argv[]) {
-    QApplication app(argc, argv);
-    
-    // 设置应用程序信息
-    app.setApplicationName("VideoEye");
-    app.setApplicationVersion("2.0.0");
-    app.setOrganizationName("VideoEye Team");
-    
-    videoeye::ui::MainWindow window;
-    window.show();
-    
-    return app.exec();
-}

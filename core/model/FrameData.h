@@ -2,6 +2,9 @@
 
 #include <string>
 #include <memory>
+#include <array>
+#include <vector>
+#include <cstdint>
 
 namespace videoeye {
 namespace model {
@@ -100,8 +103,11 @@ struct FrameData {
     int format = -1;
     int64_t pts = 0;
     double timestamp = 0.0;
+
+    std::array<std::vector<uint8_t>, 8> owned;
     
     ~FrameData();
+    void Clear();
     void CopyFrom(const FrameData& other);
 };
 
