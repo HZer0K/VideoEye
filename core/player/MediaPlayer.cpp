@@ -1391,7 +1391,7 @@ void MediaPlayer::DecodeThread() {
                     QImage qimage(frame_data.width, frame_data.height, QImage::Format_ARGB32);
                     if (!qimage.isNull()) {
                         uint8_t* dst_slices[4] = {qimage.bits(), nullptr, nullptr, nullptr};
-                        int dst_linesize[4] = {qimage.bytesPerLine(), 0, 0, 0};
+                        int dst_linesize[4] = {static_cast<int>(qimage.bytesPerLine()), 0, 0, 0};
 
                         sws_scale(sws_ctx,
                                   frame_data.data,
