@@ -28,6 +28,88 @@ extern "C" {
 namespace videoeye {
 namespace player {
 
+namespace {
+
+using SteadyClock = std::chrono::steady_clock;
+
+double PacketTimestampSeconds(const AVFormatContext* format_ctx, const AVPacket* packet) {
+    if (!format_ctx || !packet || packet->stream_index < 0 ||
+        packet->stream_index >= static_cast<int>(format_ctx->nb_streams)) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+
+    AVStream* stream = format_ctx->streams[packet->stream_index];
+    if (!stream || stream->time_base.den == 0) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+
+    const int64_t pts = (packet->pts != AV_NOPTS_VALUE) ? packet->pts : packet->dts;
+    if (pts == AV_NOPTS_VALUE) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+
+    return pts * av_q2d(stream->time_base);
+}
+
+int SelectPlaybackClockStreamIndex(int audio_stream_index, int video_stream_index) {
+    // 预留音频主时钟语义: 当前有音频流时优先跟随音频时间线。
+    if (audio_stream_index >= 0) {
+        return audio_stream_index;
+    }
+    return video_stream_index;
+}
+
+struct PlaybackClock {
+    void Reset() {
+        started = false;
+        first_media_ts = 0.0;
+        wall_start = SteadyClock::now();
+    }
+
+    void OnPaused(const SteadyClock::duration& paused_for) {
+        if (started) {
+            wall_start += paused_for;
+        }
+    }
+
+    void Sync(double media_ts) {
+        if (!std::isfinite(media_ts)) {
+            return;
+        }
+        if (!started) {
+            started = true;
+            first_media_ts = media_ts;
+            wall_start = SteadyClock::now();
+        }
+    }
+
+    void PaceTo(double media_ts) {
+        if (!std::isfinite(media_ts)) {
+            return;
+        }
+        if (!started) {
+            Sync(media_ts);
+            return;
+        }
+        if (media_ts < first_media_ts) {
+            return;
+        }
+
+        const auto target = wall_start + std::chrono::duration_cast<SteadyClock::duration>(
+            std::chrono::duration<double>(media_ts - first_media_ts));
+        const auto now = SteadyClock::now();
+        if (target > now) {
+            std::this_thread::sleep_for(target - now);
+        }
+    }
+
+    bool started = false;
+    double first_media_ts = 0.0;
+    SteadyClock::time_point wall_start = SteadyClock::now();
+};
+
+} // namespace
+
 static std::string FormatDurationMs(int64_t ms) {
     if (ms <= 0) {
         return {};
@@ -1352,20 +1434,20 @@ void MediaPlayer::DecodeThread() {
     int sws_src_fmt = AV_PIX_FMT_NONE;
     std::vector<uint8_t> audio_buffer(192000);
     
-    const bool enable_pacing = (video_stream_index_ < 0);
-    bool clock_started = false;
-    double clock_first_ts = 0.0;
-    auto clock_wall_start = std::chrono::steady_clock::now();
+    const int clock_stream_index = SelectPlaybackClockStreamIndex(audio_stream_index_, video_stream_index_);
+    const bool enable_pacing = (video_stream_index_ < 0 && clock_stream_index >= 0);
+    PlaybackClock playback_clock;
+    playback_clock.Reset();
     
     while (!should_stop_) {
         // 暂停状态检查
         if (state_ == model::PlayerState::Paused) {
-            const auto pause_begin = std::chrono::steady_clock::now();
+            const auto pause_begin = SteadyClock::now();
             std::unique_lock<std::mutex> lock(mutex_);
             cv_.wait(lock, [this] { return state_ != model::PlayerState::Paused || should_stop_; });
-            const auto pause_end = std::chrono::steady_clock::now();
-            if (enable_pacing && clock_started) {
-                clock_wall_start += (pause_end - pause_begin);
+            const auto pause_end = SteadyClock::now();
+            if (enable_pacing) {
+                playback_clock.OnPaused(pause_end - pause_begin);
             }
             continue;
         }
@@ -1378,35 +1460,20 @@ void MediaPlayer::DecodeThread() {
             break;
         }
 
-        int64_t pkt_ts = (packet->pts != AV_NOPTS_VALUE) ? packet->pts : packet->dts;
-        if (enable_pacing && pkt_ts != AV_NOPTS_VALUE && format_ctx_ && packet->stream_index >= 0 &&
-            packet->stream_index < static_cast<int>(format_ctx_->nb_streams)) {
-            AVRational tb = format_ctx_->streams[packet->stream_index]->time_base;
-            if (tb.den != 0) {
-                const double media_ts = pkt_ts * av_q2d(tb);
-                if (!clock_started) {
-                    clock_started = true;
-                    clock_first_ts = media_ts;
-                    clock_wall_start = std::chrono::steady_clock::now();
-                } else if (media_ts >= clock_first_ts) {
-                    const auto target = clock_wall_start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                        std::chrono::duration<double>(media_ts - clock_first_ts));
-                    const auto now = std::chrono::steady_clock::now();
-                    if (target > now) {
-                        std::this_thread::sleep_for(target - now);
-                    }
-                }
+        const int64_t pkt_ts = (packet->pts != AV_NOPTS_VALUE) ? packet->pts : packet->dts;
+        const double packet_ts_sec = PacketTimestampSeconds(format_ctx_, packet);
+        if (packet->stream_index == clock_stream_index) {
+            if (enable_pacing) {
+                playback_clock.PaceTo(packet_ts_sec);
+            } else {
+                playback_clock.Sync(packet_ts_sec);
             }
         }
         
-        // 更新当前位置
-        if (pkt_ts != AV_NOPTS_VALUE && format_ctx_ && packet->stream_index >= 0 &&
-            packet->stream_index < static_cast<int>(format_ctx_->nb_streams)) {
-            AVRational time_base = format_ctx_->streams[packet->stream_index]->time_base;
-            if (time_base.den != 0) {
-                current_position_ms_ = pkt_ts * av_q2d(time_base) * 1000;
-                emit PositionChanged(current_position_ms_, duration_ms_);
-            }
+        // 播放位置跟随主时钟流, 为后续接入真实音频时钟保留一致语义。
+        if (packet->stream_index == clock_stream_index && std::isfinite(packet_ts_sec)) {
+            current_position_ms_ = static_cast<int>(packet_ts_sec * 1000.0);
+            emit PositionChanged(current_position_ms_, duration_ms_);
         }
         
         // 视频解码
@@ -1547,15 +1614,8 @@ void MediaPlayer::DecodeThread() {
                         }
 
                         double ts = current_position_ms_ / 1000.0;
-                        if (format_ctx_ && audio_stream_index_ >= 0 &&
-                            audio_stream_index_ < static_cast<int>(format_ctx_->nb_streams)) {
-                            AVStream* as = format_ctx_->streams[audio_stream_index_];
-                            if (as && as->time_base.den != 0) {
-                                const int64_t pts = (packet->pts != AV_NOPTS_VALUE) ? packet->pts : packet->dts;
-                                if (pts != AV_NOPTS_VALUE) {
-                                    ts = pts * av_q2d(as->time_base);
-                                }
-                            }
+                        if (std::isfinite(packet_ts_sec)) {
+                            ts = packet_ts_sec;
                         }
 
                         emit AudioLevelReady(level, ts);
