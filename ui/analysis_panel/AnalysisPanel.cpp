@@ -13,20 +13,27 @@
 namespace videoeye {
 namespace ui {
 
+namespace {
+constexpr int kUiFlushIntervalMs = 120;
+constexpr int kMaxChartSamples = 300;
+}
+
 AnalysisPanel::AnalysisPanel(QWidget* parent)
     : QWidget(parent)
+    , bitrate_chart_object_(nullptr)
+    , fps_chart_object_(nullptr)
     , bitrate_series_(nullptr)
-    , fps_series_(nullptr) {
+    , fps_series_(nullptr)
+    , bitrate_axis_x_(nullptr)
+    , bitrate_axis_y_(nullptr)
+    , fps_axis_x_(nullptr)
+    , fps_axis_y_(nullptr) {
     
     SetupUI();
     
-    // 设置定时器用于定时更新
     update_timer_ = new QTimer(this);
-    connect(update_timer_, &QTimer::timeout, this, [this]() {
-        // 定时刷新显示
-        update();
-    });
-    update_timer_->start(1000); // 每秒更新
+    connect(update_timer_, &QTimer::timeout, this, &AnalysisPanel::FlushPendingUiUpdates);
+    update_timer_->start(kUiFlushIntervalMs);
     
     LOG_INFO("分析面板已初始化");
 }
@@ -111,9 +118,41 @@ void AnalysisPanel::SetupStreamTab() {
     
     tab_widget_->addTab(stream_tab_, tr("流分析"));
     
-    // 初始化图表数据系列
-    bitrate_series_ = new QLineSeries();
-    fps_series_ = new QLineSeries();
+    bitrate_series_ = new QLineSeries(this);
+    bitrate_chart_object_ = new QChart();
+    bitrate_chart_object_->setTitle(tr("码率变化 (Kbps)"));
+    bitrate_chart_object_->legend()->hide();
+    bitrate_chart_object_->addSeries(bitrate_series_);
+    bitrate_axis_x_ = new QValueAxis(this);
+    bitrate_axis_y_ = new QValueAxis(this);
+    bitrate_axis_x_->setLabelFormat("%d");
+    bitrate_axis_y_->setLabelFormat("%.0f");
+    bitrate_axis_y_->setMin(0.0);
+    bitrate_axis_y_->setMax(1.0);
+    bitrate_chart_object_->addAxis(bitrate_axis_x_, Qt::AlignBottom);
+    bitrate_chart_object_->addAxis(bitrate_axis_y_, Qt::AlignLeft);
+    bitrate_series_->attachAxis(bitrate_axis_x_);
+    bitrate_series_->attachAxis(bitrate_axis_y_);
+    bitrate_chart_->setChart(bitrate_chart_object_);
+    bitrate_chart_->setRenderHint(QPainter::Antialiasing);
+
+    fps_series_ = new QLineSeries(this);
+    fps_chart_object_ = new QChart();
+    fps_chart_object_->setTitle(tr("帧率变化 (FPS)"));
+    fps_chart_object_->legend()->hide();
+    fps_chart_object_->addSeries(fps_series_);
+    fps_axis_x_ = new QValueAxis(this);
+    fps_axis_y_ = new QValueAxis(this);
+    fps_axis_x_->setLabelFormat("%d");
+    fps_axis_y_->setLabelFormat("%.1f");
+    fps_axis_y_->setMin(0.0);
+    fps_axis_y_->setMax(1.0);
+    fps_chart_object_->addAxis(fps_axis_x_, Qt::AlignBottom);
+    fps_chart_object_->addAxis(fps_axis_y_, Qt::AlignLeft);
+    fps_series_->attachAxis(fps_axis_x_);
+    fps_series_->attachAxis(fps_axis_y_);
+    fps_chart_->setChart(fps_chart_object_);
+    fps_chart_->setRenderHint(QPainter::Antialiasing);
 }
 
 void AnalysisPanel::SetupFrameTab() {
@@ -226,30 +265,8 @@ void AnalysisPanel::SetupFaceTab() {
 
 void AnalysisPanel::UpdateStreamStats(const analyzer::StreamStats& stats) {
     current_stats_ = stats;
-    
-    // 更新表格
-    stats_table_->setItem(0, 1, new QTableWidgetItem(QString::number(stats.total_packets)));
-    stats_table_->setItem(1, 1, new QTableWidgetItem(QString::number(stats.total_bytes)));
-    stats_table_->setItem(2, 1, new QTableWidgetItem(QString::number(stats.video_packets)));
-    stats_table_->setItem(3, 1, new QTableWidgetItem(QString::number(stats.audio_packets)));
-    stats_table_->setItem(4, 1, new QTableWidgetItem(QString::number(stats.current_fps, 'f', 2)));
-    stats_table_->setItem(5, 1, new QTableWidgetItem(QString::number(stats.avg_fps, 'f', 2)));
-    stats_table_->setItem(6, 1, new QTableWidgetItem(QString::number(stats.current_bitrate_bps / 1000) + " Kbps"));
-    stats_table_->setItem(7, 1, new QTableWidgetItem(QString::number(stats.avg_bitrate_bps / 1000) + " Kbps"));
-    stats_table_->setItem(8, 1, new QTableWidgetItem(QString::number(stats.peak_bitrate_bps / 1000) + " Kbps"));
-    stats_table_->setItem(9, 1, new QTableWidgetItem(QString::number(stats.gop_size)));
-    stats_table_->setItem(10, 1, new QTableWidgetItem(QString::number(stats.i_frame_count)));
-    stats_table_->setItem(11, 1, new QTableWidgetItem(QString::number(stats.p_frame_count)));
-    stats_table_->setItem(12, 1, new QTableWidgetItem(QString::number(stats.b_frame_count)));
-    
-    auto duration = std::chrono::duration_cast<std::chrono::seconds>(
-        std::chrono::steady_clock::now() - stats.start_time);
-    stats_table_->setItem(13, 1, new QTableWidgetItem(
-        QString::number(duration.count()) + " s"));
-    
-    // 更新图表
-    UpdateBitrateChart(stats);
-    UpdateFPSChart(stats);
+    pending_stream_stats_ = stats;
+    has_pending_stream_stats_ = true;
 }
 
 void AnalysisPanel::UpdateHistogram(const analyzer::HistogramData& hist) {
@@ -282,8 +299,17 @@ void AnalysisPanel::UpdateFaceDetection(const std::vector<analyzer::FaceInfo>& f
 void AnalysisPanel::ResetVideoFrameList() {
     frame_records_.clear();
     gop_summaries_.clear();
-    RebuildFrameTable();
-    RebuildGopTable();
+    frame_table_synced_record_count_ = 0;
+    gop_table_synced_count_ = 0;
+    frame_table_dirty_ = false;
+    gop_table_dirty_ = false;
+    frame_summary_dirty_ = true;
+    if (frame_table_) {
+        frame_table_->setRowCount(0);
+    }
+    if (gop_table_) {
+        gop_table_->setRowCount(0);
+    }
     UpdateFrameSummary();
 }
 
@@ -314,6 +340,8 @@ void AnalysisPanel::AppendVideoFrameInfo(int index, int frame_type, bool is_key_
     }
 
     frame_records_.push_back(record);
+    frame_table_dirty_ = true;
+    frame_summary_dirty_ = true;
 
     if (gop_summaries_.empty() || record.gop_position == 1) {
         GopSummary summary;
@@ -348,36 +376,7 @@ void AnalysisPanel::AppendVideoFrameInfo(int index, int frame_type, bool is_key_
             summary.b_count++;
         }
     }
-
-    if (MatchesFrameFilter(record)) {
-        const int row = frame_table_->rowCount();
-        frame_table_->insertRow(row);
-        frame_table_->setItem(row, 0, new QTableWidgetItem(QString::number(record.index)));
-        frame_table_->setItem(row, 1, new QTableWidgetItem(FrameTypeToString(record.frame_type)));
-        frame_table_->setItem(row, 2, new QTableWidgetItem(record.is_key_frame ? tr("是") : tr("否")));
-        frame_table_->setItem(row, 3, new QTableWidgetItem(QString::number(record.timestamp_seconds, 'f', 3)));
-        frame_table_->setItem(row, 4, new QTableWidgetItem(QString::number(record.pts)));
-        frame_table_->setItem(row, 5, new QTableWidgetItem(QString::number(record.gop_index)));
-        frame_table_->setItem(row, 6, new QTableWidgetItem(QString::number(record.gop_position)));
-        frame_table_->scrollToBottom();
-    }
-
-    const GopSummary& latest_gop = gop_summaries_.back();
-    const int gop_row = latest_gop.gop_index - 1;
-    if (gop_table_->rowCount() <= gop_row) {
-        gop_table_->insertRow(gop_row);
-    }
-    gop_table_->setItem(gop_row, 0, new QTableWidgetItem(QString::number(latest_gop.gop_index)));
-    gop_table_->setItem(gop_row, 1, new QTableWidgetItem(QString::number(latest_gop.start_frame)));
-    gop_table_->setItem(gop_row, 2, new QTableWidgetItem(QString::number(latest_gop.end_frame)));
-    gop_table_->setItem(gop_row, 3, new QTableWidgetItem(QString::number(latest_gop.start_ts, 'f', 3)));
-    gop_table_->setItem(gop_row, 4, new QTableWidgetItem(QString::number(latest_gop.end_ts, 'f', 3)));
-    gop_table_->setItem(gop_row, 5, new QTableWidgetItem(QString::number(latest_gop.total_frames)));
-    gop_table_->setItem(gop_row, 6, new QTableWidgetItem(QString::number(latest_gop.i_count)));
-    gop_table_->setItem(gop_row, 7, new QTableWidgetItem(QString::number(latest_gop.p_count)));
-    gop_table_->setItem(gop_row, 8, new QTableWidgetItem(QString::number(latest_gop.b_count)));
-
-    UpdateFrameSummary();
+    gop_table_dirty_ = true;
 }
 
 QString AnalysisPanel::FrameTypeToString(int frame_type) const {
@@ -413,21 +412,16 @@ void AnalysisPanel::RebuildFrameTable() {
         return;
     }
 
+    frame_table_->setUpdatesEnabled(false);
     frame_table_->setRowCount(0);
     for (const auto& record : frame_records_) {
         if (!MatchesFrameFilter(record)) {
             continue;
         }
-        const int row = frame_table_->rowCount();
-        frame_table_->insertRow(row);
-        frame_table_->setItem(row, 0, new QTableWidgetItem(QString::number(record.index)));
-        frame_table_->setItem(row, 1, new QTableWidgetItem(FrameTypeToString(record.frame_type)));
-        frame_table_->setItem(row, 2, new QTableWidgetItem(record.is_key_frame ? tr("是") : tr("否")));
-        frame_table_->setItem(row, 3, new QTableWidgetItem(QString::number(record.timestamp_seconds, 'f', 3)));
-        frame_table_->setItem(row, 4, new QTableWidgetItem(QString::number(record.pts)));
-        frame_table_->setItem(row, 5, new QTableWidgetItem(QString::number(record.gop_index)));
-        frame_table_->setItem(row, 6, new QTableWidgetItem(QString::number(record.gop_position)));
+        AppendFrameRowToTable(record);
     }
+    frame_table_->setUpdatesEnabled(true);
+    frame_table_synced_record_count_ = frame_records_.size();
 }
 
 void AnalysisPanel::RebuildGopTable() {
@@ -435,20 +429,15 @@ void AnalysisPanel::RebuildGopTable() {
         return;
     }
 
+    gop_table_->setUpdatesEnabled(false);
     gop_table_->setRowCount(0);
     for (const auto& summary : gop_summaries_) {
         const int row = gop_table_->rowCount();
         gop_table_->insertRow(row);
-        gop_table_->setItem(row, 0, new QTableWidgetItem(QString::number(summary.gop_index)));
-        gop_table_->setItem(row, 1, new QTableWidgetItem(QString::number(summary.start_frame)));
-        gop_table_->setItem(row, 2, new QTableWidgetItem(QString::number(summary.end_frame)));
-        gop_table_->setItem(row, 3, new QTableWidgetItem(QString::number(summary.start_ts, 'f', 3)));
-        gop_table_->setItem(row, 4, new QTableWidgetItem(QString::number(summary.end_ts, 'f', 3)));
-        gop_table_->setItem(row, 5, new QTableWidgetItem(QString::number(summary.total_frames)));
-        gop_table_->setItem(row, 6, new QTableWidgetItem(QString::number(summary.i_count)));
-        gop_table_->setItem(row, 7, new QTableWidgetItem(QString::number(summary.p_count)));
-        gop_table_->setItem(row, 8, new QTableWidgetItem(QString::number(summary.b_count)));
+        UpdateGopRowInTable(row, summary);
     }
+    gop_table_->setUpdatesEnabled(true);
+    gop_table_synced_count_ = gop_summaries_.size();
 }
 
 void AnalysisPanel::UpdateFrameSummary() {
@@ -520,36 +509,167 @@ void AnalysisPanel::OnFrameFilterChanged() {
     UpdateFrameSummary();
 }
 
+void AnalysisPanel::FlushPendingUiUpdates() {
+    if (has_pending_stream_stats_) {
+        RefreshStreamStatsUi(pending_stream_stats_);
+        has_pending_stream_stats_ = false;
+    }
+    if (frame_table_dirty_) {
+        FlushPendingFrameTableUpdates();
+        frame_table_dirty_ = false;
+    }
+    if (gop_table_dirty_) {
+        FlushPendingGopTableUpdates();
+        gop_table_dirty_ = false;
+    }
+    if (frame_summary_dirty_) {
+        UpdateFrameSummary();
+        frame_summary_dirty_ = false;
+    }
+}
+
+void AnalysisPanel::FlushPendingFrameTableUpdates() {
+    if (!frame_table_) {
+        return;
+    }
+
+    frame_table_->setUpdatesEnabled(false);
+    for (size_t i = frame_table_synced_record_count_; i < frame_records_.size(); ++i) {
+        if (!MatchesFrameFilter(frame_records_[i])) {
+            continue;
+        }
+        AppendFrameRowToTable(frame_records_[i]);
+    }
+    frame_table_->setUpdatesEnabled(true);
+    frame_table_synced_record_count_ = frame_records_.size();
+
+    if (frame_table_->rowCount() > 0) {
+        frame_table_->scrollToBottom();
+    }
+}
+
+void AnalysisPanel::FlushPendingGopTableUpdates() {
+    if (!gop_table_ || gop_summaries_.empty()) {
+        return;
+    }
+
+    gop_table_->setUpdatesEnabled(false);
+    while (gop_table_synced_count_ < gop_summaries_.size()) {
+        gop_table_->insertRow(static_cast<int>(gop_table_synced_count_));
+        UpdateGopRowInTable(static_cast<int>(gop_table_synced_count_), gop_summaries_[gop_table_synced_count_]);
+        ++gop_table_synced_count_;
+    }
+
+    const int last_row = static_cast<int>(gop_summaries_.size()) - 1;
+    UpdateGopRowInTable(last_row, gop_summaries_.back());
+    gop_table_->setUpdatesEnabled(true);
+}
+
+void AnalysisPanel::RefreshStreamStatsUi(const analyzer::StreamStats& stats) {
+    if (!stats_table_) {
+        return;
+    }
+
+    SetTableItemText(stats_table_, 0, 1, QString::number(stats.total_packets));
+    SetTableItemText(stats_table_, 1, 1, QString::number(stats.total_bytes));
+    SetTableItemText(stats_table_, 2, 1, QString::number(stats.video_packets));
+    SetTableItemText(stats_table_, 3, 1, QString::number(stats.audio_packets));
+    SetTableItemText(stats_table_, 4, 1, QString::number(stats.current_fps, 'f', 2));
+    SetTableItemText(stats_table_, 5, 1, QString::number(stats.avg_fps, 'f', 2));
+    SetTableItemText(stats_table_, 6, 1, QString::number(stats.current_bitrate_bps / 1000) + " Kbps");
+    SetTableItemText(stats_table_, 7, 1, QString::number(stats.avg_bitrate_bps / 1000) + " Kbps");
+    SetTableItemText(stats_table_, 8, 1, QString::number(stats.peak_bitrate_bps / 1000) + " Kbps");
+    SetTableItemText(stats_table_, 9, 1, QString::number(stats.gop_size));
+    SetTableItemText(stats_table_, 10, 1, QString::number(stats.i_frame_count));
+    SetTableItemText(stats_table_, 11, 1, QString::number(stats.p_frame_count));
+    SetTableItemText(stats_table_, 12, 1, QString::number(stats.b_frame_count));
+
+    const auto duration = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - stats.start_time);
+    SetTableItemText(stats_table_, 13, 1, QString::number(duration.count()) + " s");
+
+    const qreal bitrate_kbps = stats.current_bitrate_bps / 1000.0;
+    const qreal fps = stats.current_fps;
+    bitrate_chart_values_.push_back(bitrate_kbps);
+    fps_chart_values_.push_back(fps);
+    if (bitrate_chart_values_.size() > kMaxChartSamples) {
+        bitrate_chart_values_.pop_front();
+    }
+    if (fps_chart_values_.size() > kMaxChartSamples) {
+        fps_chart_values_.pop_front();
+    }
+
+    bitrate_series_->append(stream_chart_sample_index_, bitrate_kbps);
+    fps_series_->append(stream_chart_sample_index_, fps);
+    if (bitrate_series_->count() > kMaxChartSamples) {
+        bitrate_series_->removePoints(0, bitrate_series_->count() - kMaxChartSamples);
+    }
+    if (fps_series_->count() > kMaxChartSamples) {
+        fps_series_->removePoints(0, fps_series_->count() - kMaxChartSamples);
+    }
+
+    const int x_min = std::max(0, stream_chart_sample_index_ - kMaxChartSamples + 1);
+    const int x_max = std::max(1, stream_chart_sample_index_);
+    bitrate_axis_x_->setRange(x_min, x_max);
+    fps_axis_x_->setRange(x_min, x_max);
+
+    qreal bitrate_max = 1.0;
+    for (qreal value : bitrate_chart_values_) {
+        bitrate_max = std::max(bitrate_max, value);
+    }
+    qreal fps_max = 1.0;
+    for (qreal value : fps_chart_values_) {
+        fps_max = std::max(fps_max, value);
+    }
+    bitrate_axis_y_->setRange(0.0, bitrate_max * 1.1);
+    fps_axis_y_->setRange(0.0, fps_max * 1.1);
+
+    ++stream_chart_sample_index_;
+}
+
+void AnalysisPanel::SetTableItemText(QTableWidget* table, int row, int column, const QString& text) {
+    if (!table) {
+        return;
+    }
+
+    QTableWidgetItem* item = table->item(row, column);
+    if (!item) {
+        item = new QTableWidgetItem();
+        table->setItem(row, column, item);
+    }
+    item->setText(text);
+}
+
+void AnalysisPanel::AppendFrameRowToTable(const VideoFrameRecord& record) {
+    const int row = frame_table_->rowCount();
+    frame_table_->insertRow(row);
+    SetTableItemText(frame_table_, row, 0, QString::number(record.index));
+    SetTableItemText(frame_table_, row, 1, FrameTypeToString(record.frame_type));
+    SetTableItemText(frame_table_, row, 2, record.is_key_frame ? tr("是") : tr("否"));
+    SetTableItemText(frame_table_, row, 3, QString::number(record.timestamp_seconds, 'f', 3));
+    SetTableItemText(frame_table_, row, 4, QString::number(record.pts));
+    SetTableItemText(frame_table_, row, 5, QString::number(record.gop_index));
+    SetTableItemText(frame_table_, row, 6, QString::number(record.gop_position));
+}
+
+void AnalysisPanel::UpdateGopRowInTable(int row, const GopSummary& summary) {
+    SetTableItemText(gop_table_, row, 0, QString::number(summary.gop_index));
+    SetTableItemText(gop_table_, row, 1, QString::number(summary.start_frame));
+    SetTableItemText(gop_table_, row, 2, QString::number(summary.end_frame));
+    SetTableItemText(gop_table_, row, 3, QString::number(summary.start_ts, 'f', 3));
+    SetTableItemText(gop_table_, row, 4, QString::number(summary.end_ts, 'f', 3));
+    SetTableItemText(gop_table_, row, 5, QString::number(summary.total_frames));
+    SetTableItemText(gop_table_, row, 6, QString::number(summary.i_count));
+    SetTableItemText(gop_table_, row, 7, QString::number(summary.p_count));
+    SetTableItemText(gop_table_, row, 8, QString::number(summary.b_count));
+}
+
 void AnalysisPanel::UpdateBitrateChart(const analyzer::StreamStats& stats) {
-    // 创建或更新码率图表
-    QChart* chart = new QChart();
-    chart->setTitle(tr("码率变化 (Kbps)"));
-    chart->legend()->hide();
-    
-    QLineSeries* series = new QLineSeries();
-    // 这里应该保存历史数据，现在简单示例
-    series->append(0, stats.current_bitrate_bps / 1000.0);
-    
-    chart->addSeries(series);
-    chart->createDefaultAxes();
-    
-    bitrate_chart_->setChart(chart);
-    bitrate_chart_->setRenderHint(QPainter::Antialiasing);
+    Q_UNUSED(stats);
 }
 
 void AnalysisPanel::UpdateFPSChart(const analyzer::StreamStats& stats) {
-    QChart* chart = new QChart();
-    chart->setTitle(tr("帧率变化 (FPS)"));
-    chart->legend()->hide();
-    
-    QLineSeries* series = new QLineSeries();
-    series->append(0, stats.current_fps);
-    
-    chart->addSeries(series);
-    chart->createDefaultAxes();
-    
-    fps_chart_->setChart(chart);
-    fps_chart_->setRenderHint(QPainter::Antialiasing);
+    Q_UNUSED(stats);
 }
 
 void AnalysisPanel::UpdateGOPChart(const analyzer::StreamStats& stats) {

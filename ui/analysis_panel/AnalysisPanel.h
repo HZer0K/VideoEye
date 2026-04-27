@@ -16,6 +16,8 @@
 #include <QTableWidget>
 #include <QTimer>
 #include <QComboBox>
+#include <QtCharts/QValueAxis>
+#include <deque>
 #include <vector>
 
 #include "core/analyzer/StreamAnalyzer.h"
@@ -79,6 +81,13 @@ private:
     void UpdateFrameSummary();
     QString FrameTypeToString(int frame_type) const;
     bool MatchesFrameFilter(const VideoFrameRecord& record) const;
+    void FlushPendingUiUpdates();
+    void FlushPendingFrameTableUpdates();
+    void FlushPendingGopTableUpdates();
+    void RefreshStreamStatsUi(const analyzer::StreamStats& stats);
+    void SetTableItemText(QTableWidget* table, int row, int column, const QString& text);
+    void AppendFrameRowToTable(const VideoFrameRecord& record);
+    void UpdateGopRowInTable(int row, const GopSummary& summary);
     void OnExportFrameCsv();
     void OnFrameFilterChanged();
     
@@ -119,8 +128,14 @@ private:
     QPushButton* export_button_;
     
     // 图表数据系列
+    QChart* bitrate_chart_object_;
+    QChart* fps_chart_object_;
     QLineSeries* bitrate_series_;
     QLineSeries* fps_series_;
+    QValueAxis* bitrate_axis_x_;
+    QValueAxis* bitrate_axis_y_;
+    QValueAxis* fps_axis_x_;
+    QValueAxis* fps_axis_y_;
     
     // 定时器
     QTimer* update_timer_;
@@ -131,6 +146,16 @@ private:
     std::vector<analyzer::FaceInfo> current_faces_;
     std::vector<VideoFrameRecord> frame_records_;
     std::vector<GopSummary> gop_summaries_;
+    analyzer::StreamStats pending_stream_stats_;
+    bool has_pending_stream_stats_ = false;
+    bool frame_table_dirty_ = false;
+    bool gop_table_dirty_ = false;
+    bool frame_summary_dirty_ = false;
+    size_t frame_table_synced_record_count_ = 0;
+    size_t gop_table_synced_count_ = 0;
+    int stream_chart_sample_index_ = 0;
+    std::deque<qreal> bitrate_chart_values_;
+    std::deque<qreal> fps_chart_values_;
 };
 
 } // namespace ui
