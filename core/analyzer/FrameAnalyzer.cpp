@@ -2,6 +2,10 @@
 #include "utils/Logger.h"
 #include <numeric>
 
+extern "C" {
+#include <libavutil/pixfmt.h>
+}
+
 namespace videoeye {
 namespace analyzer {
 
@@ -172,27 +176,45 @@ cv::Mat FrameAnalyzer::FrameDataToMat(const model::FrameData& frame) {
 }
 
 cv::Mat FrameAnalyzer::YuvToRgb(const model::FrameData& frame) {
-    if (frame.data[0] == nullptr || frame.width == 0 || frame.height == 0) {
+    if (frame.width <= 0 || frame.height <= 0 || !frame.data[0] || !frame.data[1] || !frame.data[2]) {
         return cv::Mat();
     }
-    
-    cv::Mat yuv_frame;
-    
-    // 假设是 YUV420P 格式
-    int y_size = frame.width * frame.height;
-    int uv_size = y_size / 4;
-    
+    if (frame.linesize[0] <= 0 || frame.linesize[1] <= 0 || frame.linesize[2] <= 0) {
+        return cv::Mat();
+    }
+    if ((frame.width % 2) != 0 || (frame.height % 2) != 0) {
+        return cv::Mat();
+    }
+
+    const auto pix_fmt = static_cast<AVPixelFormat>(frame.format);
+    if (pix_fmt != AV_PIX_FMT_YUV420P && pix_fmt != AV_PIX_FMT_YUVJ420P) {
+        return cv::Mat();
+    }
+
+    const int w = frame.width;
+    const int h = frame.height;
+    const int y_size = w * h;
+    const int uv_w = w / 2;
+    const int uv_h = h / 2;
+    const int uv_size = uv_w * uv_h;
+
     std::vector<uchar> yuv_data(y_size + 2 * uv_size);
-    std::memcpy(yuv_data.data(), frame.data[0], y_size);
-    std::memcpy(yuv_data.data() + y_size, frame.data[1], uv_size);
-    std::memcpy(yuv_data.data() + y_size + uv_size, frame.data[2], uv_size);
-    
-    yuv_frame = cv::Mat(frame.height * 3 / 2, frame.width, CV_8UC1, yuv_data.data());
-    
+    uchar* dst_y = yuv_data.data();
+    uchar* dst_u = dst_y + y_size;
+    uchar* dst_v = dst_u + uv_size;
+
+    for (int y = 0; y < h; ++y) {
+        std::memcpy(dst_y + y * w, frame.data[0] + y * frame.linesize[0], w);
+    }
+    for (int y = 0; y < uv_h; ++y) {
+        std::memcpy(dst_u + y * uv_w, frame.data[1] + y * frame.linesize[1], uv_w);
+        std::memcpy(dst_v + y * uv_w, frame.data[2] + y * frame.linesize[2], uv_w);
+    }
+
+    cv::Mat yuv_frame(h * 3 / 2, w, CV_8UC1, yuv_data.data());
     cv::Mat rgb_frame;
     cv::cvtColor(yuv_frame, rgb_frame, cv::COLOR_YUV2BGR_I420);
-    
-    return rgb_frame.clone();
+    return rgb_frame;
 }
 
 cv::Mat FrameAnalyzer::NormalizeImage(const cv::Mat& image) {
