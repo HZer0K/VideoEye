@@ -16,10 +16,14 @@ VideoEye 是一款开源的视频流分析软件,支持多种视频输入源(HTT
 ### 核心功能
 - 🎬 **多源输入**: 支持 HTTP、RTMP、RTSP 协议及本地文件
 - 🎥 **实时播放**: 流畅的视频播放体验
-- 📊 **流分析**: 实时分析视频码流信息
-- 🔍 **帧分析**: 支持直方图、边缘检测等分析
-- 👤 **人脸检测**: 基于 OpenCV 的实时人脸检测
+- 📊 **流分析**: 实时分析码流统计信息与可视化曲线
+- 🧩 **视频帧分析**: 单独标签页显示 I/P/B 帧类型、序号、PTS、时间戳（追加显示不覆盖）
+- 🔍 **帧分析**: 直方图分析（可选）
+- 👤 **人脸检测**: 基于 OpenCV 的实时人脸检测（可选）
+- 🎵 **纯音频律动**: 打开仅音频文件时在视频区域显示音频律动
 - 📈 **数据可视化**: 图表化展示分析结果
+- 🖼️ **导出每一帧**: 支持将视频的每一帧导出为 JPG / RGB / YUV
+- 🧾 **打开原始图像**: 支持直接打开 .yuv / .rgb 原始图像（需输入宽高）
 
 ### 技术特性
 - ✅ 现代化 C++17 代码
@@ -144,6 +148,26 @@ VideoEye/
 3. **播放控制**: 使用底部控制栏的播放/暂停/停止按钮
 4. **查看信息**: 在"流信息"标签页查看详细的流信息
 
+### 分析面板
+
+- 菜单 `分析` 提供开关：流分析 / 视频帧分析 / 直方图 / 人脸检测
+- 分析面板包含标签页：流分析 / 视频帧 / 直方图 / 人脸检测
+
+### 导出视频帧
+
+1. 打开一个包含视频流的媒体文件
+2. 点击 `文件` -> `导出视频帧...`
+3. 选择输出目录与导出格式（jpg / rgb / yuv）
+4. 支持显示导出进度并可随时终止
+
+### 打开 .yuv / .rgb 原始图像
+
+1. 点击 `文件` -> `打开文件`，选择 `.yuv` 或 `.rgb`
+2. 输入宽度与高度
+3. 支持格式：
+   - `.rgb`: RGB24（RGB888，packed）
+   - `.yuv`: YUV420P（I420：Y + U + V，宽高必须为偶数）
+
 ### 快捷键
 
 | 快捷键 | 功能 |
@@ -230,10 +254,9 @@ genhtml coverage.info --output-directory coverage_report
 
 本项目采用 MIT 协议 - 查看 [LICENSE](LICENSE) 文件了解详情
 
-## 👥 作者
+## 👥 原项目
 
 - **雷霄骅 Lei Xiaohua** - 初始作者 - [leixiaohua1020](https://github.com/leixiaohua1020)
-- **VideoEye 社区** - 维护者
 
 ## 🙏 致谢
 
@@ -242,11 +265,6 @@ genhtml coverage.info --output-directory coverage_report
 - [OpenCV](https://opencv.org/) - 计算机视觉库
 - [SDL](https://www.libsdl.org/) - 多媒体库
 
-## 📞 联系方式
-
-- 项目主页: <https://github.com/yourusername/VideoEye>
-- 问题反馈: <https://github.com/yourusername/VideoEye/issues>
-- 邮箱: your-email@example.com
 
 ---
 
