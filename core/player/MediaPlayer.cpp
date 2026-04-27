@@ -1433,6 +1433,7 @@ void MediaPlayer::DecodeThread() {
     int sws_src_h = 0;
     int sws_src_fmt = AV_PIX_FMT_NONE;
     std::vector<uint8_t> audio_buffer(192000);
+    int last_emitted_position_ms = -1;
     
     const int clock_stream_index = SelectPlaybackClockStreamIndex(audio_stream_index_, video_stream_index_);
     const bool enable_pacing = (video_stream_index_ < 0 && clock_stream_index >= 0);
@@ -1473,7 +1474,15 @@ void MediaPlayer::DecodeThread() {
         // 播放位置跟随主时钟流, 为后续接入真实音频时钟保留一致语义。
         if (packet->stream_index == clock_stream_index && std::isfinite(packet_ts_sec)) {
             current_position_ms_.store(static_cast<int>(packet_ts_sec * 1000.0));
-            emit PositionChanged(current_position_ms_.load(), duration_ms_);
+            const int pos = current_position_ms_.load();
+            int diff = pos - last_emitted_position_ms;
+            if (diff < 0) {
+                diff = -diff;
+            }
+            if (last_emitted_position_ms < 0 || diff >= 100) {
+                last_emitted_position_ms = pos;
+                emit PositionChanged(pos, duration_ms_);
+            }
         }
         
         // 视频解码
