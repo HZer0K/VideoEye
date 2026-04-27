@@ -3,6 +3,10 @@
 #include <iomanip>
 #include <sstream>
 
+extern "C" {
+#include <libavutil/pixdesc.h>
+}
+
 namespace videoeye {
 namespace model {
 
@@ -101,13 +105,30 @@ void FrameData::CopyFrom(const FrameData& other) {
     pts = other.pts;
     timestamp = other.timestamp;
     
+    const AVPixFmtDescriptor* desc =
+        av_pix_fmt_desc_get(static_cast<AVPixelFormat>(other.format));
+
     for (int i = 0; i < 8; ++i) {
+        if (data[i]) {
+            delete[] data[i];
+            data[i] = nullptr;
+        }
+
         linesize[i] = other.linesize[i];
         if (other.data[i] && other.linesize[i] > 0) {
-            if (!data[i]) {
-                data[i] = new uint8_t[linesize[i] * height];
+            int plane_height = other.height;
+            if (desc && (i == 1 || i == 2)) {
+                const int shift = desc->log2_chroma_h;
+                if (shift > 0) {
+                    plane_height = (other.height + (1 << shift) - 1) >> shift;
+                }
             }
-            std::memcpy(data[i], other.data[i], linesize[i] * height);
+
+            const int size = other.linesize[i] * plane_height;
+            if (size > 0) {
+                data[i] = new uint8_t[size];
+                std::memcpy(data[i], other.data[i], size);
+            }
         }
     }
 }
