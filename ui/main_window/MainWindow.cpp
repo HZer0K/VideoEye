@@ -501,7 +501,7 @@ void MainWindow::OnOpenFile() {
     
     QString filename = QFileDialog::getOpenFileName(this,
         tr("打开媒体文件"), "",
-        tr("媒体文件 (*.mp4 *.avi *.mkv *.flv *.ts *.mp3 *.aac *.wav *.yuv *.nv12 *.rgb *.bgr *.yuy2 *.raw);;所有文件 (*)"));
+        tr("媒体文件 (*.mp4 *.avi *.mkv *.flv *.ts *.mp3 *.aac *.wav *.pcm *.yuv *.nv12 *.rgb *.bgr *.yuy2 *.raw);;所有文件 (*)"));
     
     qDebug() << "[1] 选择的文件:" << filename;
     
@@ -552,6 +552,38 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
         return true;
     }
 
+    if (suffix == "pcm") {
+        QString demuxer_name;
+        int sample_rate = 44100;
+        int channels = 2;
+        if (!PromptForPcmSettings(demuxer_name, sample_rate, channels)) {
+            statusBar()->showMessage(tr("已取消打开 PCM: %1").arg(source));
+            return false;
+        }
+
+        showing_raw_image_ = false;
+        const bool open_result = player_->OpenRawPcm(source, demuxer_name, sample_rate, channels);
+        if (!open_result) {
+            statusBar()->showMessage(tr("打开 PCM 失败: %1").arg(source));
+            return false;
+        }
+
+        statusBar()->showMessage(tr("已打开 PCM: %1").arg(source));
+        if (current_media_label_) {
+            current_media_label_->setText(
+                tr("%1 [PCM %2, %3 Hz, %4 ch]").arg(source, demuxer_name).arg(sample_rate).arg(channels));
+        }
+        current_media_url_ = source;
+
+        auto info = player_->GetStreamInfo();
+        info_text_->setPlainText(QString::fromStdString(info.ToString()));
+
+        if (autoplay) {
+            player_->Play();
+        }
+        return true;
+    }
+
     showing_raw_image_ = false;
     const bool open_result = player_->Open(source);
     if (!open_result) {
@@ -571,6 +603,60 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
     if (autoplay) {
         player_->Play();
     }
+    return true;
+}
+
+bool MainWindow::PromptForPcmSettings(QString& demuxer_name, int& sample_rate, int& channels) {
+    struct PcmFormatOption {
+        const char* label;
+        const char* demuxer;
+    };
+
+    const std::vector<PcmFormatOption> formats = {
+        {"s16le (16-bit little-endian)", "pcm_s16le"},
+        {"s16be (16-bit big-endian)", "pcm_s16be"},
+        {"u8 (8-bit unsigned)", "pcm_u8"},
+        {"s24le (24-bit little-endian)", "pcm_s24le"},
+        {"s24be (24-bit big-endian)", "pcm_s24be"},
+        {"s32le (32-bit little-endian)", "pcm_s32le"},
+        {"f32le (32-bit float little-endian)", "pcm_f32le"},
+        {"f32be (32-bit float big-endian)", "pcm_f32be"}
+    };
+
+    QStringList labels;
+    for (const auto& format : formats) {
+        labels << QString::fromLatin1(format.label);
+    }
+
+    bool ok = false;
+    const QString selected = QInputDialog::getItem(
+        this, tr("PCM 参数"), tr("采样格式:"), labels, 0, false, &ok);
+    if (!ok || selected.isEmpty()) {
+        return false;
+    }
+
+    for (const auto& format : formats) {
+        if (selected == QString::fromLatin1(format.label)) {
+            demuxer_name = QString::fromLatin1(format.demuxer);
+            break;
+        }
+    }
+    if (demuxer_name.isEmpty()) {
+        return false;
+    }
+
+    sample_rate = QInputDialog::getInt(
+        this, tr("PCM 参数"), tr("采样率 (Hz):"), sample_rate, 8000, 384000, 1000, &ok);
+    if (!ok) {
+        return false;
+    }
+
+    channels = QInputDialog::getInt(
+        this, tr("PCM 参数"), tr("声道数:"), channels, 1, 8, 1, &ok);
+    if (!ok) {
+        return false;
+    }
+
     return true;
 }
 

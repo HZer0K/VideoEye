@@ -31,6 +31,7 @@ public:
     
     // 播放控制
     bool Open(const QString& url);
+    bool OpenRawPcm(const QString& url, const QString& demuxer_name, int sample_rate, int channels);
     void Play();
     void Pause();
     void Stop();
@@ -97,6 +98,7 @@ private:
     void VideoDecodeThread();
     void AudioDecodeThread();
     void ExportVideoFramesWorker(QString url, QString output_dir, QString format, int jpg_quality, int frame_interval);
+    bool OpenInternal(const QString& url, const AVInputFormat* input_format, AVDictionary* input_options);
     
     // 清理资源
     void Cleanup();

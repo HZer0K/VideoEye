@@ -75,6 +75,7 @@ private:
     void SetupStatusBar();
     void SetupConnections();
     bool LoadRawImageFile(const QString& filename);
+    bool PromptForPcmSettings(QString& demuxer_name, int& sample_rate, int& channels);
     bool ShowRawFrame(int frame_index);
     void UpdateRawNavigationState();
     void UpdateMinimumWindowSize();

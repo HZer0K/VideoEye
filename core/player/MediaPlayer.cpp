@@ -174,6 +174,68 @@ static int ClampMsToInt(int64_t ms) {
     return static_cast<int>(ms);
 }
 
+static int BitsPerSampleForCodec(AVCodecID codec_id) {
+    switch (codec_id) {
+    case AV_CODEC_ID_PCM_U8:
+    case AV_CODEC_ID_PCM_S8:
+        return 8;
+    case AV_CODEC_ID_PCM_S16LE:
+    case AV_CODEC_ID_PCM_S16BE:
+    case AV_CODEC_ID_PCM_U16LE:
+    case AV_CODEC_ID_PCM_U16BE:
+        return 16;
+    case AV_CODEC_ID_PCM_S24LE:
+    case AV_CODEC_ID_PCM_S24BE:
+    case AV_CODEC_ID_PCM_U24LE:
+    case AV_CODEC_ID_PCM_U24BE:
+        return 24;
+    case AV_CODEC_ID_PCM_S32LE:
+    case AV_CODEC_ID_PCM_S32BE:
+    case AV_CODEC_ID_PCM_U32LE:
+    case AV_CODEC_ID_PCM_U32BE:
+    case AV_CODEC_ID_PCM_F32LE:
+    case AV_CODEC_ID_PCM_F32BE:
+        return 32;
+    case AV_CODEC_ID_PCM_F64LE:
+    case AV_CODEC_ID_PCM_F64BE:
+        return 64;
+    default:
+        return 0;
+    }
+}
+
+static int64_t EstimateRawPcmDurationMs(const QString& url, const AVCodecParameters* codecpar) {
+    if (!codecpar || codecpar->sample_rate <= 0) {
+        return 0;
+    }
+
+    int channels = codecpar->ch_layout.nb_channels;
+    if (channels <= 0) {
+        channels = 1;
+    }
+
+    int bits_per_sample = codecpar->bits_per_coded_sample;
+    if (bits_per_sample <= 0) {
+        bits_per_sample = BitsPerSampleForCodec(codecpar->codec_id);
+    }
+    if (bits_per_sample <= 0) {
+        return 0;
+    }
+
+    const QFileInfo fi(url);
+    if (!fi.exists() || !fi.isFile()) {
+        return 0;
+    }
+
+    const int64_t bytes_per_second =
+        static_cast<int64_t>(codecpar->sample_rate) * channels * bits_per_sample / 8;
+    if (bytes_per_second <= 0) {
+        return 0;
+    }
+
+    return (fi.size() * 1000LL) / bytes_per_second;
+}
+
 static std::string FormatBitrate(int64_t bps) {
     if (bps <= 0) {
         return {};
@@ -423,6 +485,23 @@ MediaPlayer::~MediaPlayer() {
 }
 
 bool MediaPlayer::Open(const QString& url) {
+    return OpenInternal(url, nullptr, nullptr);
+}
+
+bool MediaPlayer::OpenRawPcm(const QString& url, const QString& demuxer_name, int sample_rate, int channels) {
+    const AVInputFormat* input_format = av_find_input_format(demuxer_name.toUtf8().constData());
+    if (!input_format) {
+        emit Error(QString("Unsupported PCM format: %1").arg(demuxer_name));
+        return false;
+    }
+
+    AVDictionary* input_options = nullptr;
+    av_dict_set(&input_options, "sample_rate", QByteArray::number(sample_rate).constData(), 0);
+    av_dict_set(&input_options, "channels", QByteArray::number(channels).constData(), 0);
+    return OpenInternal(url, input_format, input_options);
+}
+
+bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_format, AVDictionary* input_options) {
     qDebug() << "\n===== MediaPlayer::Open START =====";
     qDebug() << "[OPEN-1] URL:" << url;
     
@@ -456,7 +535,11 @@ bool MediaPlayer::Open(const QString& url) {
     qDebug() << "[OPEN-5.1] URL string:" << url_str.c_str();
     
     // 打开输入流
-    int ret = avformat_open_input(&format_ctx_, url_str.c_str(), nullptr, nullptr);
+    AVDictionary* open_options = input_options;
+    int ret = avformat_open_input(&format_ctx_, url_str.c_str(), input_format, open_options ? &open_options : nullptr);
+    if (open_options) {
+        av_dict_free(&open_options);
+    }
     qDebug() << "[OPEN-6] avformat_open_input 返回:" << ret;
     
     if (ret < 0) {
@@ -720,7 +803,10 @@ bool MediaPlayer::Open(const QString& url) {
     qDebug() << "[OPEN-22] 填充流信息";
     stream_info_.filename = url.toStdString();
 
-    const int64_t duration_ms = DurationMsFromFormat(format_ctx_);
+    int64_t duration_ms = DurationMsFromFormat(format_ctx_);
+    if (duration_ms <= 0 && audio_stream_index_ >= 0 && format_ctx_->streams && format_ctx_->streams[audio_stream_index_]) {
+        duration_ms = EstimateRawPcmDurationMs(url, format_ctx_->streams[audio_stream_index_]->codecpar);
+    }
     duration_ms_ = ClampMsToInt(duration_ms);
     current_position_ms_.store(0);
 
@@ -893,7 +979,15 @@ bool MediaPlayer::Open(const QString& url) {
         }
         stream_info_.audio.codec_id = FourCC(ap->codec_tag);
         stream_info_.audio.duration = stream_info_.extractor.duration;
-        stream_info_.audio.bit_rate = FormatBitrate(ap->bit_rate);
+        int64_t audio_bit_rate = ap->bit_rate;
+        if (audio_bit_rate <= 0 && ap->sample_rate > 0 && ap->ch_layout.nb_channels > 0) {
+            const int bits_per_sample = ap->bits_per_coded_sample > 0 ? ap->bits_per_coded_sample
+                                                                      : BitsPerSampleForCodec(ap->codec_id);
+            if (bits_per_sample > 0) {
+                audio_bit_rate = static_cast<int64_t>(ap->sample_rate) * ap->ch_layout.nb_channels * bits_per_sample;
+            }
+        }
+        stream_info_.audio.bit_rate = FormatBitrate(audio_bit_rate);
         if (ap->sample_rate > 0) {
             stream_info_.audio.sampling_rate = std::to_string(ap->sample_rate / 1000.0) + " kHz";
         }
