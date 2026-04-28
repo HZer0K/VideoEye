@@ -1481,8 +1481,25 @@ void MediaPlayer::DecodeThread() {
     
     const int clock_stream_index = SelectPlaybackClockStreamIndex(audio_stream_index_, video_stream_index_);
     const bool enable_pacing = (clock_stream_index >= 0);
+    const bool frame_paced_video = (clock_stream_index >= 0 && clock_stream_index == video_stream_index_);
     PlaybackClock playback_clock;
     playback_clock.Reset();
+
+    auto emit_position_if_needed = [&](double ts_sec) {
+        if (!std::isfinite(ts_sec)) {
+            return;
+        }
+        current_position_ms_.store(static_cast<int>(ts_sec * 1000.0));
+        const int pos = current_position_ms_.load();
+        int diff = pos - last_emitted_position_ms;
+        if (diff < 0) {
+            diff = -diff;
+        }
+        if (last_emitted_position_ms < 0 || diff >= 100) {
+            last_emitted_position_ms = pos;
+            emit PositionChanged(pos, duration_ms_);
+        }
+    };
     
     while (!should_stop_) {
         // 暂停状态检查
@@ -1507,137 +1524,136 @@ void MediaPlayer::DecodeThread() {
 
         const int64_t pkt_ts = (packet->pts != AV_NOPTS_VALUE) ? packet->pts : packet->dts;
         const double packet_ts_sec = PacketTimestampSeconds(format_ctx_, packet);
-        if (packet->stream_index == clock_stream_index) {
+        if (packet->stream_index == clock_stream_index && !frame_paced_video) {
             playback_clock.PaceTo(packet_ts_sec);
         }
         
         // 播放位置跟随主时钟流, 为后续接入真实音频时钟保留一致语义。
-        if (packet->stream_index == clock_stream_index && std::isfinite(packet_ts_sec)) {
-            current_position_ms_.store(static_cast<int>(packet_ts_sec * 1000.0));
-            const int pos = current_position_ms_.load();
-            int diff = pos - last_emitted_position_ms;
-            if (diff < 0) {
-                diff = -diff;
-            }
-            if (last_emitted_position_ms < 0 || diff >= 100) {
-                last_emitted_position_ms = pos;
-                emit PositionChanged(pos, duration_ms_);
-            }
+        if (packet->stream_index == clock_stream_index && !frame_paced_video) {
+            emit_position_if_needed(packet_ts_sec);
         }
         
         // 视频解码
         if (packet->stream_index == video_stream_index_ && video_decoder_) {
-            if (video_decoder_->DecodePacket(packet, frame_data)) {
-                if (format_ctx_ && video_stream_index_ >= 0) {
-                    AVStream* vs = format_ctx_->streams[video_stream_index_];
-                    if (vs && vs->time_base.den != 0 && frame_data.pts != AV_NOPTS_VALUE) {
-                        frame_data.timestamp = frame_data.pts * av_q2d(vs->time_base);
-                    }
-                }
-
-                // 验证帧数据有效性 (防止崩溃)
-                if (frame_data.width <= 0 || frame_data.height <= 0 || !frame_data.data[0]) {
-                    LOG_WARN("跳过无效帧数据");
-                    av_packet_unref(packet);
-                    continue;
-                }
-                
-                if (frame_data.format >= 0) {
-                    if (sws_src_w != frame_data.width ||
-                        sws_src_h != frame_data.height ||
-                        sws_src_fmt != frame_data.format) {
-                        sws_src_w = frame_data.width;
-                        sws_src_h = frame_data.height;
-                        sws_src_fmt = frame_data.format;
-                    }
-
-                    sws_ctx = sws_getCachedContext(
-                        sws_ctx,
-                        frame_data.width,
-                        frame_data.height,
-                        static_cast<AVPixelFormat>(frame_data.format),
-                        frame_data.width,
-                        frame_data.height,
-                        AV_PIX_FMT_BGRA,
-                        SWS_BILINEAR,
-                        nullptr,
-                        nullptr,
-                        nullptr);
-                }
-
-                if (sws_ctx) {
-                    QImage qimage(frame_data.width, frame_data.height, QImage::Format_ARGB32);
-                    if (!qimage.isNull()) {
-                        uint8_t* dst_slices[4] = {qimage.bits(), nullptr, nullptr, nullptr};
-                        int dst_linesize[4] = {static_cast<int>(qimage.bytesPerLine()), 0, 0, 0};
-
-                        sws_scale(sws_ctx,
-                                  frame_data.data,
-                                  frame_data.linesize,
-                                  0,
-                                  frame_data.height,
-                                  dst_slices,
-                                  dst_linesize);
-
-                        emit FrameReady(qimage);
-                    }
-                }
-
-                if (frame_type_analysis_enabled_) {
-                    double ts = frame_data.timestamp;
-                    if ((ts == 0.0 || std::isnan(ts) || std::isinf(ts)) && format_ctx_ && video_stream_index_ >= 0) {
+            if (video_decoder_->SendPacket(packet)) {
+                while (!should_stop_ && video_decoder_->ReceiveFrame(frame_data)) {
+                    double frame_ts = frame_data.timestamp;
+                    if (format_ctx_ && video_stream_index_ >= 0) {
                         AVStream* vs = format_ctx_->streams[video_stream_index_];
-                        if (vs && vs->time_base.den != 0) {
-                            int64_t pts = frame_data.pts;
-                            if (pts == AV_NOPTS_VALUE && packet->pts != AV_NOPTS_VALUE) {
-                                pts = packet->pts;
-                            }
-                            if (pts != AV_NOPTS_VALUE) {
-                                ts = pts * av_q2d(vs->time_base);
-                            }
+                        if (vs && vs->time_base.den != 0 && frame_data.pts != AV_NOPTS_VALUE) {
+                            frame_ts = frame_data.pts * av_q2d(vs->time_base);
+                            frame_data.timestamp = frame_ts;
                         }
                     }
-                    emit VideoFrameInfoReady(video_frame_index_++,
-                                             static_cast<int>(video_decoder_->GetLastPictureType()),
-                                             (packet->flags & AV_PKT_FLAG_KEY) != 0,
-                                             static_cast<qint64>(frame_data.pts),
-                                             ts);
-                }
-                
-                // 实时分析 (仅帧有效时)
-                if (analysis_enabled_) {
-                    // 流分析 (每个包)
-                    stream_analyzer_.AnalyzePacket(packet, format_ctx_);
-                    stream_analyzer_.AnalyzeVideoFrame(video_decoder_->GetLastPictureType());
-                    
-                    // 每隔10帧进行一次帧分析 (降低CPU占用)
-                    analysis_frame_counter_++;
-                    if (analysis_frame_counter_ % 10 == 0) {
-                        // 直方图分析 (添加异常处理)
-                        if (histogram_enabled_) {
-                            try {
-                                auto hist = frame_analyzer_.ComputeHistogram(frame_data);
-                                emit HistogramReady(hist);
-                            } catch (const std::exception& e) {
-                                LOG_ERROR("直方图分析失败: " + std::string(e.what()));
-                            }
+
+                    if (frame_paced_video) {
+                        playback_clock.PaceTo(frame_ts);
+                        emit_position_if_needed(frame_ts);
+                    }
+
+                    // 验证帧数据有效性 (防止崩溃)
+                    if (frame_data.width <= 0 || frame_data.height <= 0 || !frame_data.data[0]) {
+                        LOG_WARN("跳过无效帧数据");
+                        continue;
+                    }
+
+                    if (frame_data.format >= 0) {
+                        if (sws_src_w != frame_data.width ||
+                            sws_src_h != frame_data.height ||
+                            sws_src_fmt != frame_data.format) {
+                            sws_src_w = frame_data.width;
+                            sws_src_h = frame_data.height;
+                            sws_src_fmt = frame_data.format;
                         }
-                        
-                        // 人脸检测 (添加异常处理)
-                        if (face_detection_enabled_) {
-                            try {
-                                auto faces = face_detector_.DetectFaces(frame_data);
-                                if (!faces.empty()) {
-                                    emit FaceDetectionReady(faces);
+
+                        sws_ctx = sws_getCachedContext(
+                            sws_ctx,
+                            frame_data.width,
+                            frame_data.height,
+                            static_cast<AVPixelFormat>(frame_data.format),
+                            frame_data.width,
+                            frame_data.height,
+                            AV_PIX_FMT_BGRA,
+                            SWS_BILINEAR,
+                            nullptr,
+                            nullptr,
+                            nullptr);
+                    }
+
+                    if (sws_ctx) {
+                        QImage qimage(frame_data.width, frame_data.height, QImage::Format_ARGB32);
+                        if (!qimage.isNull()) {
+                            uint8_t* dst_slices[4] = {qimage.bits(), nullptr, nullptr, nullptr};
+                            int dst_linesize[4] = {static_cast<int>(qimage.bytesPerLine()), 0, 0, 0};
+
+                            sws_scale(sws_ctx,
+                                      frame_data.data,
+                                      frame_data.linesize,
+                                      0,
+                                      frame_data.height,
+                                      dst_slices,
+                                      dst_linesize);
+
+                            emit FrameReady(qimage);
+                        }
+                    }
+
+                    if (frame_type_analysis_enabled_) {
+                        double ts = frame_data.timestamp;
+                        if ((ts == 0.0 || std::isnan(ts) || std::isinf(ts)) && format_ctx_ && video_stream_index_ >= 0) {
+                            AVStream* vs = format_ctx_->streams[video_stream_index_];
+                            if (vs && vs->time_base.den != 0) {
+                                int64_t pts = frame_data.pts;
+                                if (pts == AV_NOPTS_VALUE && packet->pts != AV_NOPTS_VALUE) {
+                                    pts = packet->pts;
                                 }
-                            } catch (const std::exception& e) {
-                                LOG_ERROR("人脸检测失败: " + std::string(e.what()));
+                                if (pts != AV_NOPTS_VALUE) {
+                                    ts = pts * av_q2d(vs->time_base);
+                                }
                             }
                         }
+                        emit VideoFrameInfoReady(video_frame_index_++,
+                                                 static_cast<int>(video_decoder_->GetLastPictureType()),
+                                                 (packet->flags & AV_PKT_FLAG_KEY) != 0,
+                                                 static_cast<qint64>(frame_data.pts),
+                                                 ts);
+                    }
+
+                    // 实时分析 (仅帧有效时)
+                    if (analysis_enabled_) {
+                        // 流分析 (每个包)
+                        stream_analyzer_.AnalyzePacket(packet, format_ctx_);
+                        stream_analyzer_.AnalyzeVideoFrame(video_decoder_->GetLastPictureType());
                         
-                        // 发送流统计 (每秒一次)
-                        auto stats = stream_analyzer_.GetStats();
-                        emit StreamStatsReady(stats);
+                        // 每隔10帧进行一次帧分析 (降低CPU占用)
+                        analysis_frame_counter_++;
+                        if (analysis_frame_counter_ % 10 == 0) {
+                            // 直方图分析 (添加异常处理)
+                            if (histogram_enabled_) {
+                                try {
+                                    auto hist = frame_analyzer_.ComputeHistogram(frame_data);
+                                    emit HistogramReady(hist);
+                                } catch (const std::exception& e) {
+                                    LOG_ERROR("直方图分析失败: " + std::string(e.what()));
+                                }
+                            }
+                            
+                            // 人脸检测 (添加异常处理)
+                            if (face_detection_enabled_) {
+                                try {
+                                    auto faces = face_detector_.DetectFaces(frame_data);
+                                    if (!faces.empty()) {
+                                        emit FaceDetectionReady(faces);
+                                    }
+                                } catch (const std::exception& e) {
+                                    LOG_ERROR("人脸检测失败: " + std::string(e.what()));
+                                }
+                            }
+
+                            // 发送流统计 (每秒一次)
+                            auto stats = stream_analyzer_.GetStats();
+                            emit StreamStatsReady(stats);
+                        }
                     }
                 }
             }

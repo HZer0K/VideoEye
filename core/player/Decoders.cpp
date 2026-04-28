@@ -85,23 +85,31 @@ bool VideoDecoder::InitializeFromContext(AVCodecContext* codec_ctx) {
     return true;
 }
 
-bool VideoDecoder::DecodePacket(AVPacket* packet, model::FrameData& output_frame) {
+bool VideoDecoder::SendPacket(AVPacket* packet) {
     if (!codec_ctx_ || !frame_) {
         return false;
     }
-    
-    // 发送数据包到解码器
+
     int ret = avcodec_send_packet(codec_ctx_, packet);
     if (ret < 0) {
+        if (ret == AVERROR(EAGAIN)) {
+            return false;
+        }
         std::cerr << "Error sending packet to decoder" << std::endl;
         return false;
     }
-    
-    // 接收解码后的帧
-    ret = avcodec_receive_frame(codec_ctx_, frame_);
+
+    return true;
+}
+
+bool VideoDecoder::ReceiveFrame(model::FrameData& output_frame) {
+    if (!codec_ctx_ || !frame_) {
+        return false;
+    }
+
+    int ret = avcodec_receive_frame(codec_ctx_, frame_);
     if (ret < 0) {
-        if (ret == AVERROR(EAGAIN)) {
-            // 需要更多数据
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
             return false;
         }
         std::cerr << "Error receiving frame from decoder" << std::endl;
@@ -155,6 +163,13 @@ bool VideoDecoder::DecodePacket(AVPacket* packet, model::FrameData& output_frame
     }
     
     return true;
+}
+
+bool VideoDecoder::DecodePacket(AVPacket* packet, model::FrameData& output_frame) {
+    if (!SendPacket(packet)) {
+        return false;
+    }
+    return ReceiveFrame(output_frame);
 }
 
 std::string VideoDecoder::GetCodecName() const {

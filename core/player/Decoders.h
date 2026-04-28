@@ -31,6 +31,10 @@ public:
     
     // 从已有的AVCodecContext初始化（接管所有权）
     bool InitializeFromContext(AVCodecContext* codec_ctx);
+
+    // 解码流程拆分：先送包，再持续取出所有可用帧。
+    bool SendPacket(AVPacket* packet);
+    bool ReceiveFrame(model::FrameData& output_frame);
     
     // 解码一帧
     bool DecodePacket(AVPacket* packet, model::FrameData& output_frame);
