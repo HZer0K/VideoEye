@@ -506,6 +506,10 @@ void MainWindow::SetupConnections() {
             analysis_panel_, &ui::AnalysisPanel::ResetTimelineEventList);
     connect(player_, &player::MediaPlayer::TimelineEventReady,
             analysis_panel_, &ui::AnalysisPanel::AppendTimelineEvent);
+    connect(player_, &player::MediaPlayer::AudioVisualizationReset,
+            analysis_panel_, &ui::AnalysisPanel::ResetAudioVisualization);
+    connect(player_, &player::MediaPlayer::AudioVisualizationReady,
+            analysis_panel_, &ui::AnalysisPanel::AppendAudioVisualization);
     
     // 控件信号连接
     connect(play_button_, &QPushButton::clicked, this, &MainWindow::OnPlay);

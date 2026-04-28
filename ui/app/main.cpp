@@ -3,6 +3,7 @@
 #include <QTimer>
 
 #include "core/model/AnalysisEvent.h"
+#include "core/model/AudioVisualizationFrame.h"
 #include "core/model/PacketInfo.h"
 #include "core/model/SyncSample.h"
 #include "core/model/TimelineEvent.h"
@@ -15,6 +16,7 @@ int main(int argc, char* argv[]) {
     app.setApplicationVersion("2.0.0");
     app.setOrganizationName("VideoEye Team");
 
+    qRegisterMetaType<videoeye::model::AudioVisualizationFrame>("videoeye::model::AudioVisualizationFrame");
     qRegisterMetaType<videoeye::model::PacketInfo>("videoeye::model::PacketInfo");
     qRegisterMetaType<videoeye::model::AnalysisEvent>("videoeye::model::AnalysisEvent");
     qRegisterMetaType<videoeye::model::SyncSample>("videoeye::model::SyncSample");

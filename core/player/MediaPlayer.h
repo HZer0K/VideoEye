@@ -16,6 +16,7 @@ extern "C" {
 
 #include "core/player/Decoders.h"
 #include "core/model/AnalysisEvent.h"
+#include "core/model/AudioVisualizationFrame.h"
 #include "core/model/FrameData.h"
 #include "core/model/PacketInfo.h"
 #include "core/model/SyncSample.h"
@@ -101,6 +102,8 @@ signals:
     void SyncSampleReady(const model::SyncSample& sample);
     void TimelineEventListReset();
     void TimelineEventReady(const model::TimelineEvent& event);
+    void AudioVisualizationReset();
+    void AudioVisualizationReady(const model::AudioVisualizationFrame& frame);
     void MediaModeChanged(bool has_video);
     void AudioLevelReady(double level, double timestamp_seconds);
     void VideoFrameExportStarted(int total_frames);
@@ -122,6 +125,9 @@ private:
     void EmitSyncSample(double audio_timestamp_seconds, double video_timestamp_seconds, bool audio_anchor);
     void EmitTimelineEvent(const QString& category, double timestamp_seconds,
                            const QString& label, const QString& detail = QString());
+    void EmitAudioVisualizationFrame(const int16_t* samples, int sample_count,
+                                     int sample_rate, int channels,
+                                     double timestamp_seconds, double level);
     
     // 清理资源
     void Cleanup();
@@ -165,6 +171,7 @@ private:
     int analysis_event_index_ = 0;
     int sync_sample_index_ = 0;
     int timeline_event_index_ = 0;
+    int audio_visualization_index_ = 0;
     std::map<int, double> last_packet_ts_by_stream_;
     std::map<int, bool> missing_packet_ts_reported_;
     std::map<int, bool> missing_audio_pts_reported_;

@@ -2,10 +2,12 @@
 #include "utils/Logger.h"
 #include <QFileInfo>
 #include <QDebug>
+#include <algorithm>
 #include <cstdint>
 #include <iostream>
 #include <sstream>
 #include <cmath>
+#include <complex>
 #include <vector>
 #include <chrono>
 #include <limits>
@@ -29,6 +31,9 @@ namespace videoeye {
 namespace player {
 
 namespace {
+constexpr int kWaveformPointCount = 128;
+constexpr int kSpectrumBinCount = 32;
+constexpr double kPi = 3.14159265358979323846;
 
 using SteadyClock = std::chrono::steady_clock;
 
@@ -522,6 +527,63 @@ void MediaPlayer::EmitTimelineEvent(const QString& category, double timestamp_se
     emit TimelineEventReady(event);
 }
 
+void MediaPlayer::EmitAudioVisualizationFrame(const int16_t* samples, int sample_count,
+                                              int sample_rate, int channels,
+                                              double timestamp_seconds, double level) {
+    if (!samples || sample_count <= 0 || channels <= 0) {
+        return;
+    }
+
+    model::AudioVisualizationFrame frame;
+    frame.index = audio_visualization_index_++;
+    frame.timestamp_seconds = timestamp_seconds;
+    frame.level = level;
+    frame.sample_rate = sample_rate;
+    frame.channels = channels;
+
+    const int frame_count = sample_count / channels;
+    if (frame_count <= 0) {
+        return;
+    }
+
+    const int waveform_points = std::min(kWaveformPointCount, frame_count);
+    frame.waveform_points.reserve(waveform_points);
+    for (int i = 0; i < waveform_points; ++i) {
+        const int frame_index = (i * frame_count) / waveform_points;
+        const int sample_index = frame_index * channels;
+        double mono = 0.0;
+        for (int ch = 0; ch < channels; ++ch) {
+            mono += static_cast<double>(samples[sample_index + ch]) / 32768.0;
+        }
+        mono /= static_cast<double>(channels);
+        frame.waveform_points.push_back(std::clamp(mono, -1.0, 1.0));
+    }
+
+    const int fft_size = std::min(frame_count, 256);
+    if (fft_size >= 8) {
+        frame.spectrum_bins.reserve(kSpectrumBinCount);
+        for (int bin = 0; bin < kSpectrumBinCount; ++bin) {
+            const double normalized_bin = static_cast<double>(bin) / static_cast<double>(kSpectrumBinCount);
+            const int k = std::min(fft_size / 2 - 1, std::max(0, static_cast<int>(normalized_bin * (fft_size / 2 - 1))));
+            std::complex<double> acc(0.0, 0.0);
+            for (int n = 0; n < fft_size; ++n) {
+                const int sample_index = n * channels;
+                double mono = 0.0;
+                for (int ch = 0; ch < channels; ++ch) {
+                    mono += static_cast<double>(samples[sample_index + ch]) / 32768.0;
+                }
+                mono /= static_cast<double>(channels);
+                const double angle = -2.0 * kPi * static_cast<double>(k * n) / static_cast<double>(fft_size);
+                acc += std::complex<double>(mono * std::cos(angle), mono * std::sin(angle));
+            }
+            const double magnitude = std::abs(acc) / static_cast<double>(fft_size);
+            frame.spectrum_bins.push_back(magnitude);
+        }
+    }
+
+    emit AudioVisualizationReady(frame);
+}
+
 MediaPlayer::~MediaPlayer() {
     CancelVideoFrameExport();
     Stop();
@@ -567,6 +629,7 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     analysis_event_index_ = 0;
     sync_sample_index_ = 0;
     timeline_event_index_ = 0;
+    audio_visualization_index_ = 0;
     audio_timeline_sample_counter_ = 0;
     last_packet_ts_by_stream_.clear();
     missing_packet_ts_reported_.clear();
@@ -579,6 +642,7 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     emit AnalysisEventListReset();
     emit SyncSampleListReset();
     emit TimelineEventListReset();
+    emit AudioVisualizationReset();
 
     const unsigned header_avcodec_major = LIBAVCODEC_VERSION_MAJOR;
     const unsigned runtime_avcodec_major = static_cast<unsigned>(avcodec_version() >> 16);
@@ -1970,6 +2034,12 @@ void MediaPlayer::DecodeThread() {
                     }
 
                     emit AudioLevelReady(level, ts);
+                    EmitAudioVisualizationFrame(samples,
+                                                sample_count,
+                                                audio_decoder_->GetLastFrameSampleRate(),
+                                                std::max(1, audio_decoder_->GetLastFrameChannels()),
+                                                ts,
+                                                level);
                 }
             }
         }
