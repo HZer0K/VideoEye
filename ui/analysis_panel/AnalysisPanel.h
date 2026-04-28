@@ -25,6 +25,7 @@
 #include "core/analyzer/FaceDetector.h"
 #include "core/model/AnalysisEvent.h"
 #include "core/model/PacketInfo.h"
+#include "core/model/SyncSample.h"
 
 namespace videoeye {
 namespace ui {
@@ -51,6 +52,8 @@ public slots:
     void AppendPacketInfo(const model::PacketInfo& packet_info);
     void ResetAnalysisEventList();
     void AppendAnalysisEvent(const model::AnalysisEvent& event_info);
+    void ResetSyncSampleList();
+    void AppendSyncSample(const model::SyncSample& sample);
     
     // 导出报告
     void OnExportReport();
@@ -113,6 +116,14 @@ private:
         QString detail;
     };
 
+    struct SyncSampleRecord {
+        int index = 0;
+        double audio_timestamp_seconds = 0.0;
+        double video_timestamp_seconds = 0.0;
+        double diff_ms = 0.0;
+        bool audio_anchor = false;
+    };
+
     // 初始化UI
     void SetupUI();
     void SetupStreamTab();
@@ -120,6 +131,7 @@ private:
     void SetupAudioFrameTab();
     void SetupPacketTab();
     void SetupEventTab();
+    void SetupSyncTab();
     void SetupHistogramTab();
     void SetupFaceTab();
     void RebuildFrameTable();
@@ -127,10 +139,12 @@ private:
     void RebuildAudioFrameTable();
     void RebuildPacketTable();
     void RebuildEventTable();
+    void RebuildSyncTable();
     void UpdateFrameSummary();
     void UpdateAudioFrameSummary();
     void UpdatePacketSummary();
     void UpdateEventSummary();
+    void UpdateSyncSummary();
     QString FrameTypeToString(int frame_type) const;
     QString PacketFlagsToString(int flags) const;
     bool MatchesFrameFilter(const VideoFrameRecord& record) const;
@@ -140,17 +154,20 @@ private:
     void FlushPendingAudioFrameTableUpdates();
     void FlushPendingPacketTableUpdates();
     void FlushPendingEventTableUpdates();
+    void FlushPendingSyncTableUpdates();
     void RefreshStreamStatsUi(const analyzer::StreamStats& stats);
     void SetTableItemText(QTableWidget* table, int row, int column, const QString& text);
     void AppendFrameRowToTable(const VideoFrameRecord& record);
     void AppendAudioFrameRowToTable(const AudioFrameRecord& record);
     void AppendPacketRowToTable(const PacketRecord& record);
     void AppendEventRowToTable(const AnalysisEventRecord& record);
+    void AppendSyncRowToTable(const SyncSampleRecord& record);
     void UpdateGopRowInTable(int row, const GopSummary& summary);
     void OnExportFrameCsv();
     void OnExportAudioFrameCsv();
     void OnExportPacketCsv();
     void OnExportEventCsv();
+    void OnExportSyncCsv();
     void OnFrameFilterChanged();
     
     // 更新图表
@@ -158,6 +175,7 @@ private:
     void UpdateFPSChart(const analyzer::StreamStats& stats);
     void UpdateGOPChart(const analyzer::StreamStats& stats);
     void UpdateHistogramChart(const analyzer::HistogramData& hist);
+    void UpdateSyncChart();
     
     // 成员变量
     QTabWidget* tab_widget_;
@@ -190,6 +208,12 @@ private:
     QLabel* event_summary_label_;
     QTableWidget* event_table_;
     QPushButton* export_event_csv_button_;
+
+    QWidget* sync_tab_;
+    QLabel* sync_summary_label_;
+    QChartView* sync_chart_;
+    QTableWidget* sync_table_;
+    QPushButton* export_sync_csv_button_;
     
     // 直方图标签页
     QWidget* histogram_tab_;
@@ -209,10 +233,13 @@ private:
     QChart* fps_chart_object_;
     QLineSeries* bitrate_series_;
     QLineSeries* fps_series_;
+    QLineSeries* sync_series_;
     QValueAxis* bitrate_axis_x_;
     QValueAxis* bitrate_axis_y_;
     QValueAxis* fps_axis_x_;
     QValueAxis* fps_axis_y_;
+    QValueAxis* sync_axis_x_;
+    QValueAxis* sync_axis_y_;
     
     // 定时器
     QTimer* update_timer_;
@@ -225,6 +252,7 @@ private:
     std::vector<AudioFrameRecord> audio_frame_records_;
     std::vector<PacketRecord> packet_records_;
     std::vector<AnalysisEventRecord> analysis_event_records_;
+    std::vector<SyncSampleRecord> sync_sample_records_;
     std::vector<GopSummary> gop_summaries_;
     analyzer::StreamStats pending_stream_stats_;
     bool has_pending_stream_stats_ = false;
@@ -237,14 +265,18 @@ private:
     bool packet_summary_dirty_ = false;
     bool event_table_dirty_ = false;
     bool event_summary_dirty_ = false;
+    bool sync_table_dirty_ = false;
+    bool sync_summary_dirty_ = false;
     size_t frame_table_synced_record_count_ = 0;
     size_t gop_table_synced_count_ = 0;
     size_t audio_frame_table_synced_record_count_ = 0;
     size_t packet_table_synced_record_count_ = 0;
     size_t event_table_synced_record_count_ = 0;
+    size_t sync_table_synced_record_count_ = 0;
     int stream_chart_sample_index_ = 0;
     std::deque<qreal> bitrate_chart_values_;
     std::deque<qreal> fps_chart_values_;
+    std::deque<qreal> sync_chart_values_;
 };
 
 } // namespace ui

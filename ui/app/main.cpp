@@ -4,6 +4,7 @@
 
 #include "core/model/AnalysisEvent.h"
 #include "core/model/PacketInfo.h"
+#include "core/model/SyncSample.h"
 #include "ui/main_window/MainWindow.h"
 
 int main(int argc, char* argv[]) {
@@ -15,6 +16,7 @@ int main(int argc, char* argv[]) {
 
     qRegisterMetaType<videoeye::model::PacketInfo>("videoeye::model::PacketInfo");
     qRegisterMetaType<videoeye::model::AnalysisEvent>("videoeye::model::AnalysisEvent");
+    qRegisterMetaType<videoeye::model::SyncSample>("videoeye::model::SyncSample");
 
     videoeye::ui::MainWindow window;
     window.show();

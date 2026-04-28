@@ -498,6 +498,10 @@ void MainWindow::SetupConnections() {
             analysis_panel_, &ui::AnalysisPanel::ResetAnalysisEventList);
     connect(player_, &player::MediaPlayer::AnalysisEventReady,
             analysis_panel_, &ui::AnalysisPanel::AppendAnalysisEvent);
+    connect(player_, &player::MediaPlayer::SyncSampleListReset,
+            analysis_panel_, &ui::AnalysisPanel::ResetSyncSampleList);
+    connect(player_, &player::MediaPlayer::SyncSampleReady,
+            analysis_panel_, &ui::AnalysisPanel::AppendSyncSample);
     
     // 控件信号连接
     connect(play_button_, &QPushButton::clicked, this, &MainWindow::OnPlay);

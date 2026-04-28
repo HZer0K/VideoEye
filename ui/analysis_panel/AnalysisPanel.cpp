@@ -24,10 +24,13 @@ AnalysisPanel::AnalysisPanel(QWidget* parent)
     , fps_chart_object_(nullptr)
     , bitrate_series_(nullptr)
     , fps_series_(nullptr)
+    , sync_series_(nullptr)
     , bitrate_axis_x_(nullptr)
     , bitrate_axis_y_(nullptr)
     , fps_axis_x_(nullptr)
-    , fps_axis_y_(nullptr) {
+    , fps_axis_y_(nullptr)
+    , sync_axis_x_(nullptr)
+    , sync_axis_y_(nullptr) {
     
     SetupUI();
     
@@ -53,6 +56,7 @@ void AnalysisPanel::SetupUI() {
     SetupAudioFrameTab();
     SetupPacketTab();
     SetupEventTab();
+    SetupSyncTab();
     SetupHistogramTab();
     SetupFaceTab();
     
@@ -333,6 +337,64 @@ void AnalysisPanel::SetupEventTab() {
     connect(export_event_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportEventCsv);
 }
 
+void AnalysisPanel::SetupSyncTab() {
+    sync_tab_ = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(sync_tab_);
+
+    QHBoxLayout* toolbar_layout = new QHBoxLayout();
+    sync_summary_label_ = new QLabel(tr("样本数: 0 | 平均偏移: 0.00 ms | 最大偏移: 0.00 ms"), sync_tab_);
+    toolbar_layout->addWidget(sync_summary_label_, 1);
+
+    export_sync_csv_button_ = new QPushButton(tr("导出 CSV"), sync_tab_);
+    toolbar_layout->addWidget(export_sync_csv_button_);
+    layout->addLayout(toolbar_layout);
+
+    QGroupBox* chart_group = new QGroupBox(tr("音视频时间差"), sync_tab_);
+    QVBoxLayout* chart_layout = new QVBoxLayout(chart_group);
+    sync_chart_ = new QChartView(sync_tab_);
+    sync_chart_->setMinimumHeight(220);
+    chart_layout->addWidget(sync_chart_);
+    layout->addWidget(chart_group);
+
+    QGroupBox* table_group = new QGroupBox(tr("同步样本"), sync_tab_);
+    QVBoxLayout* table_layout = new QVBoxLayout(table_group);
+    sync_table_ = new QTableWidget(0, 5, table_group);
+    sync_table_->setHorizontalHeaderLabels({"序号", "音频时间(s)", "视频时间(s)", "差值(ms)", "锚点"});
+    sync_table_->verticalHeader()->setVisible(false);
+    sync_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    sync_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    sync_table_->setSelectionMode(QAbstractItemView::SingleSelection);
+    sync_table_->setSortingEnabled(false);
+    sync_table_->horizontalHeader()->setStretchLastSection(true);
+    sync_table_->setColumnWidth(0, 80);
+    sync_table_->setColumnWidth(1, 120);
+    sync_table_->setColumnWidth(2, 120);
+    sync_table_->setColumnWidth(3, 120);
+    table_layout->addWidget(sync_table_);
+    layout->addWidget(table_group);
+
+    tab_widget_->addTab(sync_tab_, tr("同步分析"));
+
+    sync_series_ = new QLineSeries(this);
+    QChart* sync_chart_object = new QChart();
+    sync_chart_object->setTitle(tr("A-V 差值 (ms)"));
+    sync_chart_object->legend()->hide();
+    sync_chart_object->addSeries(sync_series_);
+    sync_axis_x_ = new QValueAxis(this);
+    sync_axis_y_ = new QValueAxis(this);
+    sync_axis_x_->setLabelFormat("%d");
+    sync_axis_y_->setLabelFormat("%.0f");
+    sync_axis_y_->setRange(-1.0, 1.0);
+    sync_chart_object->addAxis(sync_axis_x_, Qt::AlignBottom);
+    sync_chart_object->addAxis(sync_axis_y_, Qt::AlignLeft);
+    sync_series_->attachAxis(sync_axis_x_);
+    sync_series_->attachAxis(sync_axis_y_);
+    sync_chart_->setChart(sync_chart_object);
+    sync_chart_->setRenderHint(QPainter::Antialiasing);
+
+    connect(export_sync_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportSyncCsv);
+}
+
 void AnalysisPanel::SetupHistogramTab() {
     histogram_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(histogram_tab_);
@@ -466,6 +528,27 @@ void AnalysisPanel::ResetAnalysisEventList() {
     UpdateEventSummary();
 }
 
+void AnalysisPanel::ResetSyncSampleList() {
+    sync_sample_records_.clear();
+    sync_table_synced_record_count_ = 0;
+    sync_table_dirty_ = false;
+    sync_summary_dirty_ = true;
+    sync_chart_values_.clear();
+    if (sync_table_) {
+        sync_table_->setRowCount(0);
+    }
+    if (sync_series_) {
+        sync_series_->clear();
+    }
+    if (sync_axis_x_) {
+        sync_axis_x_->setRange(0, 1);
+    }
+    if (sync_axis_y_) {
+        sync_axis_y_->setRange(-1.0, 1.0);
+    }
+    UpdateSyncSummary();
+}
+
 void AnalysisPanel::AppendVideoFrameInfo(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds) {
     if (!frame_table_ || !gop_table_) {
         return;
@@ -594,6 +677,23 @@ void AnalysisPanel::AppendAnalysisEvent(const model::AnalysisEvent& event_info) 
     event_summary_dirty_ = true;
 }
 
+void AnalysisPanel::AppendSyncSample(const model::SyncSample& sample) {
+    if (!sync_table_) {
+        return;
+    }
+
+    SyncSampleRecord record;
+    record.index = sample.index;
+    record.audio_timestamp_seconds = sample.audio_timestamp_seconds;
+    record.video_timestamp_seconds = sample.video_timestamp_seconds;
+    record.diff_ms = sample.diff_ms;
+    record.audio_anchor = sample.audio_anchor;
+
+    sync_sample_records_.push_back(record);
+    sync_table_dirty_ = true;
+    sync_summary_dirty_ = true;
+}
+
 QString AnalysisPanel::FrameTypeToString(int frame_type) const {
     if (frame_type == AV_PICTURE_TYPE_I) {
         return "I";
@@ -717,6 +817,21 @@ void AnalysisPanel::RebuildEventTable() {
     event_table_synced_record_count_ = analysis_event_records_.size();
 }
 
+void AnalysisPanel::RebuildSyncTable() {
+    if (!sync_table_) {
+        return;
+    }
+
+    sync_table_->setUpdatesEnabled(false);
+    sync_table_->setRowCount(0);
+    for (const auto& record : sync_sample_records_) {
+        AppendSyncRowToTable(record);
+    }
+    sync_table_->setUpdatesEnabled(true);
+    sync_table_synced_record_count_ = sync_sample_records_.size();
+    UpdateSyncChart();
+}
+
 void AnalysisPanel::UpdateFrameSummary() {
     if (!frame_summary_label_) {
         return;
@@ -813,6 +928,31 @@ void AnalysisPanel::UpdateEventSummary() {
             .arg(error_count)
             .arg(warning_count)
             .arg(info_count));
+}
+
+void AnalysisPanel::UpdateSyncSummary() {
+    if (!sync_summary_label_) {
+        return;
+    }
+
+    if (sync_sample_records_.empty()) {
+        sync_summary_label_->setText(tr("样本数: 0 | 平均偏移: 0.00 ms | 最大偏移: 0.00 ms"));
+        return;
+    }
+
+    double abs_sum = 0.0;
+    double max_abs = 0.0;
+    for (const auto& record : sync_sample_records_) {
+        const double abs_diff = std::abs(record.diff_ms);
+        abs_sum += abs_diff;
+        max_abs = std::max(max_abs, abs_diff);
+    }
+
+    sync_summary_label_->setText(
+        tr("样本数: %1 | 平均偏移: %2 ms | 最大偏移: %3 ms")
+            .arg(sync_sample_records_.size())
+            .arg(abs_sum / static_cast<double>(sync_sample_records_.size()), 0, 'f', 2)
+            .arg(max_abs, 0, 'f', 2));
 }
 
 void AnalysisPanel::OnExportFrameCsv() {
@@ -966,6 +1106,41 @@ void AnalysisPanel::OnExportEventCsv() {
     QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
 }
 
+void AnalysisPanel::OnExportSyncCsv() {
+    if (sync_sample_records_.empty()) {
+        QMessageBox::information(this, tr("提示"), tr("当前没有可导出的同步分析数据。"));
+        return;
+    }
+
+    const QString filename = QFileDialog::getSaveFileName(
+        this,
+        tr("导出同步分析 CSV"),
+        QString("videoeye_sync_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
+        tr("CSV 文件 (*.csv);;所有文件 (*)"));
+    if (filename.isEmpty()) {
+        return;
+    }
+
+    QFile file(filename);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件:\n%1").arg(filename));
+        return;
+    }
+
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    out << "index,audio_timestamp_seconds,video_timestamp_seconds,diff_ms,anchor\n";
+    for (const auto& record : sync_sample_records_) {
+        out << record.index << ','
+            << QString::number(record.audio_timestamp_seconds, 'f', 6) << ','
+            << QString::number(record.video_timestamp_seconds, 'f', 6) << ','
+            << QString::number(record.diff_ms, 'f', 3) << ','
+            << '"' << (record.audio_anchor ? tr("音频") : tr("视频")) << '"' << '\n';
+    }
+
+    QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
+}
+
 void AnalysisPanel::OnFrameFilterChanged() {
     RebuildFrameTable();
     UpdateFrameSummary();
@@ -996,6 +1171,10 @@ void AnalysisPanel::FlushPendingUiUpdates() {
         FlushPendingEventTableUpdates();
         event_table_dirty_ = false;
     }
+    if (sync_table_dirty_) {
+        FlushPendingSyncTableUpdates();
+        sync_table_dirty_ = false;
+    }
     if (frame_summary_dirty_) {
         UpdateFrameSummary();
         frame_summary_dirty_ = false;
@@ -1011,6 +1190,10 @@ void AnalysisPanel::FlushPendingUiUpdates() {
     if (event_summary_dirty_) {
         UpdateEventSummary();
         event_summary_dirty_ = false;
+    }
+    if (sync_summary_dirty_) {
+        UpdateSyncSummary();
+        sync_summary_dirty_ = false;
     }
 }
 
@@ -1099,6 +1282,24 @@ void AnalysisPanel::FlushPendingEventTableUpdates() {
 
     if (event_table_->rowCount() > 0) {
         event_table_->scrollToBottom();
+    }
+}
+
+void AnalysisPanel::FlushPendingSyncTableUpdates() {
+    if (!sync_table_) {
+        return;
+    }
+
+    sync_table_->setUpdatesEnabled(false);
+    for (size_t i = sync_table_synced_record_count_; i < sync_sample_records_.size(); ++i) {
+        AppendSyncRowToTable(sync_sample_records_[i]);
+    }
+    sync_table_->setUpdatesEnabled(true);
+    sync_table_synced_record_count_ = sync_sample_records_.size();
+    UpdateSyncChart();
+
+    if (sync_table_->rowCount() > 0) {
+        sync_table_->scrollToBottom();
     }
 }
 
@@ -1228,6 +1429,16 @@ void AnalysisPanel::AppendEventRowToTable(const AnalysisEventRecord& record) {
     SetTableItemText(event_table_, row, 7, record.detail);
 }
 
+void AnalysisPanel::AppendSyncRowToTable(const SyncSampleRecord& record) {
+    const int row = sync_table_->rowCount();
+    sync_table_->insertRow(row);
+    SetTableItemText(sync_table_, row, 0, QString::number(record.index));
+    SetTableItemText(sync_table_, row, 1, QString::number(record.audio_timestamp_seconds, 'f', 3));
+    SetTableItemText(sync_table_, row, 2, QString::number(record.video_timestamp_seconds, 'f', 3));
+    SetTableItemText(sync_table_, row, 3, QString::number(record.diff_ms, 'f', 3));
+    SetTableItemText(sync_table_, row, 4, record.audio_anchor ? tr("音频") : tr("视频"));
+}
+
 void AnalysisPanel::UpdateGopRowInTable(int row, const GopSummary& summary) {
     SetTableItemText(gop_table_, row, 0, QString::number(summary.gop_index));
     SetTableItemText(gop_table_, row, 1, QString::number(summary.start_frame));
@@ -1271,6 +1482,31 @@ void AnalysisPanel::UpdateHistogramChart(const analyzer::HistogramData& hist) {
     
     histogram_chart_->setChart(chart);
     histogram_chart_->setRenderHint(QPainter::Antialiasing);
+}
+
+void AnalysisPanel::UpdateSyncChart() {
+    if (!sync_series_ || !sync_axis_x_ || !sync_axis_y_) {
+        return;
+    }
+
+    sync_series_->clear();
+    sync_chart_values_.clear();
+    const int start = std::max(0, static_cast<int>(sync_sample_records_.size()) - kMaxChartSamples);
+    for (int i = start; i < static_cast<int>(sync_sample_records_.size()); ++i) {
+        const qreal diff = static_cast<qreal>(sync_sample_records_[i].diff_ms);
+        sync_series_->append(sync_sample_records_[i].index, diff);
+        sync_chart_values_.push_back(diff);
+    }
+
+    const int x_min = sync_sample_records_.empty() ? 0 : sync_sample_records_[start].index;
+    const int x_max = sync_sample_records_.empty() ? 1 : sync_sample_records_.back().index;
+    sync_axis_x_->setRange(x_min, std::max(x_min + 1, x_max));
+
+    qreal max_abs = 1.0;
+    for (qreal value : sync_chart_values_) {
+        max_abs = std::max(max_abs, std::abs(value));
+    }
+    sync_axis_y_->setRange(-max_abs * 1.1, max_abs * 1.1);
 }
 
 void AnalysisPanel::OnExportReport() {

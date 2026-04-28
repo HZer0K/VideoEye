@@ -492,6 +492,20 @@ void MediaPlayer::EmitAnalysisEvent(const QString& severity, const QString& type
     emit AnalysisEventReady(event_info);
 }
 
+void MediaPlayer::EmitSyncSample(double audio_timestamp_seconds, double video_timestamp_seconds, bool audio_anchor) {
+    if (!std::isfinite(audio_timestamp_seconds) || !std::isfinite(video_timestamp_seconds)) {
+        return;
+    }
+
+    model::SyncSample sample;
+    sample.index = sync_sample_index_++;
+    sample.audio_timestamp_seconds = audio_timestamp_seconds;
+    sample.video_timestamp_seconds = video_timestamp_seconds;
+    sample.diff_ms = (audio_timestamp_seconds - video_timestamp_seconds) * 1000.0;
+    sample.audio_anchor = audio_anchor;
+    emit SyncSampleReady(sample);
+}
+
 MediaPlayer::~MediaPlayer() {
     CancelVideoFrameExport();
     Stop();
@@ -535,13 +549,17 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     audio_frame_index_ = 0;
     packet_index_ = 0;
     analysis_event_index_ = 0;
+    sync_sample_index_ = 0;
     last_packet_ts_by_stream_.clear();
     missing_packet_ts_reported_.clear();
     missing_audio_pts_reported_.clear();
+    last_video_sync_ts_ = std::numeric_limits<double>::quiet_NaN();
+    last_audio_sync_ts_ = std::numeric_limits<double>::quiet_NaN();
     emit VideoFrameListReset();
     emit AudioFrameListReset();
     emit PacketListReset();
     emit AnalysisEventListReset();
+    emit SyncSampleListReset();
 
     const unsigned header_avcodec_major = LIBAVCODEC_VERSION_MAJOR;
     const unsigned runtime_avcodec_major = static_cast<unsigned>(avcodec_version() >> 16);
@@ -1724,6 +1742,11 @@ void MediaPlayer::DecodeThread() {
                         emit_position_if_needed(frame_ts);
                     }
 
+                    last_video_sync_ts_ = frame_ts;
+                    if (std::isfinite(last_audio_sync_ts_)) {
+                        EmitSyncSample(last_audio_sync_ts_, last_video_sync_ts_, false);
+                    }
+
                     // 验证帧数据有效性 (防止崩溃)
                     if (frame_data.width <= 0 || frame_data.height <= 0 || !frame_data.data[0]) {
                         LOG_WARN("跳过无效帧数据");
@@ -1874,6 +1897,11 @@ void MediaPlayer::DecodeThread() {
                                              audio_decoder_->GetLastFrameSampleRate(),
                                              audio_decoder_->GetLastFrameChannels(),
                                              out_size);
+
+                    last_audio_sync_ts_ = ts;
+                    if (std::isfinite(last_video_sync_ts_)) {
+                        EmitSyncSample(last_audio_sync_ts_, last_video_sync_ts_, true);
+                    }
 
                     if (analysis_enabled_) {
                         stream_analyzer_.AnalyzeAudioFrame();

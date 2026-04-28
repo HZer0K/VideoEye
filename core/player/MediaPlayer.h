@@ -5,6 +5,7 @@
 #include <QImage>
 #include <memory>
 #include <atomic>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <thread>
@@ -17,6 +18,7 @@ extern "C" {
 #include "core/model/AnalysisEvent.h"
 #include "core/model/FrameData.h"
 #include "core/model/PacketInfo.h"
+#include "core/model/SyncSample.h"
 #include "core/analyzer/StreamAnalyzer.h"
 #include "core/analyzer/FrameAnalyzer.h"
 #include "core/analyzer/FaceDetector.h"
@@ -94,6 +96,8 @@ signals:
     void PacketInfoReady(const model::PacketInfo& packet_info);
     void AnalysisEventListReset();
     void AnalysisEventReady(const model::AnalysisEvent& event_info);
+    void SyncSampleListReset();
+    void SyncSampleReady(const model::SyncSample& sample);
     void MediaModeChanged(bool has_video);
     void AudioLevelReady(double level, double timestamp_seconds);
     void VideoFrameExportStarted(int total_frames);
@@ -112,6 +116,7 @@ private:
     void EmitAnalysisEvent(const QString& severity, const QString& type, int stream_index,
                            qint64 pts, double timestamp_seconds,
                            const QString& summary, const QString& detail = QString());
+    void EmitSyncSample(double audio_timestamp_seconds, double video_timestamp_seconds, bool audio_anchor);
     
     // 清理资源
     void Cleanup();
@@ -153,9 +158,12 @@ private:
     int audio_frame_index_ = 0;
     int packet_index_ = 0;
     int analysis_event_index_ = 0;
+    int sync_sample_index_ = 0;
     std::map<int, double> last_packet_ts_by_stream_;
     std::map<int, bool> missing_packet_ts_reported_;
     std::map<int, bool> missing_audio_pts_reported_;
+    double last_video_sync_ts_ = std::numeric_limits<double>::quiet_NaN();
+    double last_audio_sync_ts_ = std::numeric_limits<double>::quiet_NaN();
 };
 
 } // namespace player
