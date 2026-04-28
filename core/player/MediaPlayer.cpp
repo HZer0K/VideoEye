@@ -517,7 +517,9 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     current_url_ = url;
     should_stop_ = false;
     video_frame_index_ = 0;
+    audio_frame_index_ = 0;
     emit VideoFrameListReset();
+    emit AudioFrameListReset();
 
     const unsigned header_avcodec_major = LIBAVCODEC_VERSION_MAJOR;
     const unsigned runtime_avcodec_major = static_cast<unsigned>(avcodec_version() >> 16);
@@ -1755,37 +1757,67 @@ void MediaPlayer::DecodeThread() {
         
         // 音频解码
         if (packet->stream_index == audio_stream_index_ && audio_decoder_) {
-            if (video_stream_index_ < 0) {
+            if (audio_decoder_->SendPacket(packet)) {
                 int out_size = 0;
-                if (audio_decoder_->DecodePacket(packet, audio_buffer.data(),
-                                                 static_cast<int>(audio_buffer.size()), out_size)) {
-                    if (out_size >= static_cast<int>(sizeof(int16_t))) {
-                        const int16_t* samples = reinterpret_cast<const int16_t*>(audio_buffer.data());
-                        const int sample_count = out_size / static_cast<int>(sizeof(int16_t));
-
-                        long double sumsq = 0.0;
-                        for (int i = 0; i < sample_count; ++i) {
-                            const long double s = static_cast<long double>(samples[i]);
-                            sumsq += s * s;
-                        }
-
-                        double level = 0.0;
-                        if (sample_count > 0) {
-                            level = std::sqrt(static_cast<double>(sumsq / sample_count)) / 32768.0;
-                            if (level < 0.0) {
-                                level = 0.0;
-                            } else if (level > 1.0) {
-                                level = 1.0;
-                            }
-                        }
-
-                        double ts = current_position_ms_.load() / 1000.0;
-                        if (std::isfinite(packet_ts_sec)) {
+                while (audio_decoder_->ReceiveFrame(audio_buffer.data(),
+                                                    static_cast<int>(audio_buffer.size()),
+                                                    out_size)) {
+                    const qint64 frame_pts = static_cast<qint64>(audio_decoder_->GetLastFramePts());
+                    double ts = current_position_ms_.load() / 1000.0;
+                    if (format_ctx_ && audio_stream_index_ >= 0) {
+                        AVStream* as = format_ctx_->streams[audio_stream_index_];
+                        if (as && as->time_base.den != 0 && frame_pts != AV_NOPTS_VALUE) {
+                            ts = frame_pts * av_q2d(as->time_base);
+                        } else if (std::isfinite(packet_ts_sec)) {
                             ts = packet_ts_sec;
                         }
-
-                        emit AudioLevelReady(level, ts);
+                    } else if (std::isfinite(packet_ts_sec)) {
+                        ts = packet_ts_sec;
                     }
+
+                    emit AudioFrameInfoReady(audio_frame_index_++,
+                                             frame_pts,
+                                             ts,
+                                             audio_decoder_->GetLastFrameSampleCount(),
+                                             audio_decoder_->GetLastFrameSampleRate(),
+                                             audio_decoder_->GetLastFrameChannels(),
+                                             out_size);
+
+                    if (analysis_enabled_) {
+                        stream_analyzer_.AnalyzeAudioFrame();
+                        if (video_stream_index_ < 0) {
+                            analysis_frame_counter_++;
+                            if (analysis_frame_counter_ % 10 == 0) {
+                                auto stats = stream_analyzer_.GetStats();
+                                emit StreamStatsReady(stats);
+                            }
+                        }
+                    }
+
+                    if (out_size < static_cast<int>(sizeof(int16_t))) {
+                        continue;
+                    }
+
+                    const int16_t* samples = reinterpret_cast<const int16_t*>(audio_buffer.data());
+                    const int sample_count = out_size / static_cast<int>(sizeof(int16_t));
+
+                    long double sumsq = 0.0;
+                    for (int i = 0; i < sample_count; ++i) {
+                        const long double s = static_cast<long double>(samples[i]);
+                        sumsq += s * s;
+                    }
+
+                    double level = 0.0;
+                    if (sample_count > 0) {
+                        level = std::sqrt(static_cast<double>(sumsq / sample_count)) / 32768.0;
+                        if (level < 0.0) {
+                            level = 0.0;
+                        } else if (level > 1.0) {
+                            level = 1.0;
+                        }
+                    }
+
+                    emit AudioLevelReady(level, ts);
                 }
             }
         }

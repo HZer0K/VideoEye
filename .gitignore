@@ -1,5 +1,6 @@
 # 构建目录
 build/
+build-debug/
 cmake-build-*/
 out/
 

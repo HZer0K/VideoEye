@@ -50,6 +50,7 @@ void AnalysisPanel::SetupUI() {
     
     SetupStreamTab();
     SetupFrameTab();
+    SetupAudioFrameTab();
     SetupHistogramTab();
     SetupFaceTab();
     
@@ -213,6 +214,44 @@ void AnalysisPanel::SetupFrameTab() {
     connect(export_frame_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportFrameCsv);
 }
 
+void AnalysisPanel::SetupAudioFrameTab() {
+    audio_frame_tab_ = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(audio_frame_tab_);
+
+    QHBoxLayout* toolbar_layout = new QHBoxLayout();
+    audio_frame_summary_label_ = new QLabel(tr("总音频帧数: 0 | 总样本数: 0 | 总字节数: 0"), audio_frame_tab_);
+    toolbar_layout->addWidget(audio_frame_summary_label_, 1);
+
+    export_audio_frame_csv_button_ = new QPushButton(tr("导出 CSV"), audio_frame_tab_);
+    toolbar_layout->addWidget(export_audio_frame_csv_button_);
+    layout->addLayout(toolbar_layout);
+
+    QGroupBox* table_group = new QGroupBox(tr("音频帧信息"), audio_frame_tab_);
+    QVBoxLayout* table_layout = new QVBoxLayout(table_group);
+
+    audio_frame_table_ = new QTableWidget(0, 7, table_group);
+    audio_frame_table_->setHorizontalHeaderLabels({"序号", "时间戳(s)", "PTS", "样本数", "采样率(Hz)", "声道数", "字节数"});
+    audio_frame_table_->verticalHeader()->setVisible(false);
+    audio_frame_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    audio_frame_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    audio_frame_table_->setSelectionMode(QAbstractItemView::SingleSelection);
+    audio_frame_table_->setSortingEnabled(false);
+    audio_frame_table_->horizontalHeader()->setStretchLastSection(true);
+    audio_frame_table_->setColumnWidth(0, 80);
+    audio_frame_table_->setColumnWidth(1, 140);
+    audio_frame_table_->setColumnWidth(2, 120);
+    audio_frame_table_->setColumnWidth(3, 100);
+    audio_frame_table_->setColumnWidth(4, 120);
+    audio_frame_table_->setColumnWidth(5, 90);
+
+    table_layout->addWidget(audio_frame_table_);
+    layout->addWidget(table_group);
+
+    tab_widget_->addTab(audio_frame_tab_, tr("音频帧"));
+
+    connect(export_audio_frame_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportAudioFrameCsv);
+}
+
 void AnalysisPanel::SetupHistogramTab() {
     histogram_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(histogram_tab_);
@@ -313,6 +352,17 @@ void AnalysisPanel::ResetVideoFrameList() {
     UpdateFrameSummary();
 }
 
+void AnalysisPanel::ResetAudioFrameList() {
+    audio_frame_records_.clear();
+    audio_frame_table_synced_record_count_ = 0;
+    audio_frame_table_dirty_ = false;
+    audio_frame_summary_dirty_ = true;
+    if (audio_frame_table_) {
+        audio_frame_table_->setRowCount(0);
+    }
+    UpdateAudioFrameSummary();
+}
+
 void AnalysisPanel::AppendVideoFrameInfo(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds) {
     if (!frame_table_ || !gop_table_) {
         return;
@@ -379,6 +429,26 @@ void AnalysisPanel::AppendVideoFrameInfo(int index, int frame_type, bool is_key_
     gop_table_dirty_ = true;
 }
 
+void AnalysisPanel::AppendAudioFrameInfo(int index, qint64 pts, double timestamp_seconds,
+                                         int sample_count, int sample_rate, int channels, int byte_count) {
+    if (!audio_frame_table_) {
+        return;
+    }
+
+    AudioFrameRecord record;
+    record.index = index;
+    record.pts = pts;
+    record.timestamp_seconds = timestamp_seconds;
+    record.sample_count = sample_count;
+    record.sample_rate = sample_rate;
+    record.channels = channels;
+    record.byte_count = byte_count;
+
+    audio_frame_records_.push_back(record);
+    audio_frame_table_dirty_ = true;
+    audio_frame_summary_dirty_ = true;
+}
+
 QString AnalysisPanel::FrameTypeToString(int frame_type) const {
     if (frame_type == AV_PICTURE_TYPE_I) {
         return "I";
@@ -440,6 +510,20 @@ void AnalysisPanel::RebuildGopTable() {
     gop_table_synced_count_ = gop_summaries_.size();
 }
 
+void AnalysisPanel::RebuildAudioFrameTable() {
+    if (!audio_frame_table_) {
+        return;
+    }
+
+    audio_frame_table_->setUpdatesEnabled(false);
+    audio_frame_table_->setRowCount(0);
+    for (const auto& record : audio_frame_records_) {
+        AppendAudioFrameRowToTable(record);
+    }
+    audio_frame_table_->setUpdatesEnabled(true);
+    audio_frame_table_synced_record_count_ = audio_frame_records_.size();
+}
+
 void AnalysisPanel::UpdateFrameSummary() {
     if (!frame_summary_label_) {
         return;
@@ -465,6 +549,25 @@ void AnalysisPanel::UpdateFrameSummary() {
             .arg(visible_count)
             .arg(key_count)
             .arg(gop_summaries_.size()));
+}
+
+void AnalysisPanel::UpdateAudioFrameSummary() {
+    if (!audio_frame_summary_label_) {
+        return;
+    }
+
+    long long total_samples = 0;
+    long long total_bytes = 0;
+    for (const auto& record : audio_frame_records_) {
+        total_samples += record.sample_count;
+        total_bytes += record.byte_count;
+    }
+
+    audio_frame_summary_label_->setText(
+        tr("总音频帧数: %1 | 总样本数: %2 | 总字节数: %3")
+            .arg(audio_frame_records_.size())
+            .arg(total_samples)
+            .arg(total_bytes));
 }
 
 void AnalysisPanel::OnExportFrameCsv() {
@@ -504,6 +607,43 @@ void AnalysisPanel::OnExportFrameCsv() {
     QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
 }
 
+void AnalysisPanel::OnExportAudioFrameCsv() {
+    if (audio_frame_records_.empty()) {
+        QMessageBox::information(this, tr("提示"), tr("当前没有可导出的音频帧数据。"));
+        return;
+    }
+
+    const QString filename = QFileDialog::getSaveFileName(
+        this,
+        tr("导出音频帧 CSV"),
+        QString("videoeye_audio_frames_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
+        tr("CSV 文件 (*.csv);;所有文件 (*)"));
+    if (filename.isEmpty()) {
+        return;
+    }
+
+    QFile file(filename);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件:\n%1").arg(filename));
+        return;
+    }
+
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    out << "index,timestamp_seconds,pts,sample_count,sample_rate,channels,byte_count\n";
+    for (const auto& record : audio_frame_records_) {
+        out << record.index << ','
+            << QString::number(record.timestamp_seconds, 'f', 6) << ','
+            << record.pts << ','
+            << record.sample_count << ','
+            << record.sample_rate << ','
+            << record.channels << ','
+            << record.byte_count << '\n';
+    }
+
+    QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
+}
+
 void AnalysisPanel::OnFrameFilterChanged() {
     RebuildFrameTable();
     UpdateFrameSummary();
@@ -522,9 +662,17 @@ void AnalysisPanel::FlushPendingUiUpdates() {
         FlushPendingGopTableUpdates();
         gop_table_dirty_ = false;
     }
+    if (audio_frame_table_dirty_) {
+        FlushPendingAudioFrameTableUpdates();
+        audio_frame_table_dirty_ = false;
+    }
     if (frame_summary_dirty_) {
         UpdateFrameSummary();
         frame_summary_dirty_ = false;
+    }
+    if (audio_frame_summary_dirty_) {
+        UpdateAudioFrameSummary();
+        audio_frame_summary_dirty_ = false;
     }
 }
 
@@ -565,6 +713,23 @@ void AnalysisPanel::FlushPendingGopTableUpdates() {
     gop_table_->setUpdatesEnabled(true);
 }
 
+void AnalysisPanel::FlushPendingAudioFrameTableUpdates() {
+    if (!audio_frame_table_) {
+        return;
+    }
+
+    audio_frame_table_->setUpdatesEnabled(false);
+    for (size_t i = audio_frame_table_synced_record_count_; i < audio_frame_records_.size(); ++i) {
+        AppendAudioFrameRowToTable(audio_frame_records_[i]);
+    }
+    audio_frame_table_->setUpdatesEnabled(true);
+    audio_frame_table_synced_record_count_ = audio_frame_records_.size();
+
+    if (audio_frame_table_->rowCount() > 0) {
+        audio_frame_table_->scrollToBottom();
+    }
+}
+
 void AnalysisPanel::RefreshStreamStatsUi(const analyzer::StreamStats& stats) {
     if (!stats_table_) {
         return;
@@ -572,8 +737,8 @@ void AnalysisPanel::RefreshStreamStatsUi(const analyzer::StreamStats& stats) {
 
     SetTableItemText(stats_table_, 0, 1, QString::number(stats.total_packets));
     SetTableItemText(stats_table_, 1, 1, QString::number(stats.total_bytes));
-    SetTableItemText(stats_table_, 2, 1, QString::number(stats.video_packets));
-    SetTableItemText(stats_table_, 3, 1, QString::number(stats.audio_packets));
+    SetTableItemText(stats_table_, 2, 1, QString::number(stats.total_video_frames));
+    SetTableItemText(stats_table_, 3, 1, QString::number(stats.total_audio_frames));
     SetTableItemText(stats_table_, 4, 1, QString::number(stats.current_fps, 'f', 2));
     SetTableItemText(stats_table_, 5, 1, QString::number(stats.avg_fps, 'f', 2));
     SetTableItemText(stats_table_, 6, 1, QString::number(stats.current_bitrate_bps / 1000) + " Kbps");
@@ -650,6 +815,18 @@ void AnalysisPanel::AppendFrameRowToTable(const VideoFrameRecord& record) {
     SetTableItemText(frame_table_, row, 4, QString::number(record.pts));
     SetTableItemText(frame_table_, row, 5, QString::number(record.gop_index));
     SetTableItemText(frame_table_, row, 6, QString::number(record.gop_position));
+}
+
+void AnalysisPanel::AppendAudioFrameRowToTable(const AudioFrameRecord& record) {
+    const int row = audio_frame_table_->rowCount();
+    audio_frame_table_->insertRow(row);
+    SetTableItemText(audio_frame_table_, row, 0, QString::number(record.index));
+    SetTableItemText(audio_frame_table_, row, 1, QString::number(record.timestamp_seconds, 'f', 3));
+    SetTableItemText(audio_frame_table_, row, 2, QString::number(record.pts));
+    SetTableItemText(audio_frame_table_, row, 3, QString::number(record.sample_count));
+    SetTableItemText(audio_frame_table_, row, 4, QString::number(record.sample_rate));
+    SetTableItemText(audio_frame_table_, row, 5, QString::number(record.channels));
+    SetTableItemText(audio_frame_table_, row, 6, QString::number(record.byte_count));
 }
 
 void AnalysisPanel::UpdateGopRowInTable(int row, const GopSummary& summary) {

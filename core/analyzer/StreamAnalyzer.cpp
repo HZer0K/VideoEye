@@ -153,6 +153,14 @@ void StreamAnalyzer::AnalyzeVideoFrame(AVPictureType type) {
     }
 }
 
+void StreamAnalyzer::AnalyzeAudioFrame() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!is_analyzing_) {
+        return;
+    }
+    stats_.total_audio_frames++;
+}
+
 std::vector<PacketInfo> StreamAnalyzer::GetRecentPackets(int count) const {
     std::lock_guard<std::mutex> lock(mutex_);
     
@@ -245,6 +253,7 @@ std::string StreamStats::ToString() const {
     oss << "总包数: " << total_packets << std::endl;
     oss << "总字节数: " << (total_bytes / 1024) << " KB" << std::endl;
     oss << "视频包: " << video_packets << ", 音频包: " << audio_packets << std::endl;
+    oss << "视频帧: " << total_video_frames << ", 音频帧: " << total_audio_frames << std::endl;
     oss << std::endl;
     
     oss << "帧率: " << current_fps << " fps (平均: " << avg_fps << " fps)" << std::endl;

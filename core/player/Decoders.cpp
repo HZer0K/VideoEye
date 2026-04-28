@@ -276,28 +276,45 @@ bool AudioDecoder::Initialize(AVCodecParameters* codec_params) {
     return true;
 }
 
-bool AudioDecoder::DecodePacket(AVPacket* packet, uint8_t* output_buffer, int buffer_size, int& output_size) {
+bool AudioDecoder::SendPacket(AVPacket* packet) {
     if (!codec_ctx_ || !frame_ || !swr_ctx_) {
         return false;
     }
-    
-    // 发送数据包
+
     int ret = avcodec_send_packet(codec_ctx_, packet);
     if (ret < 0) {
+        if (ret == AVERROR(EAGAIN)) {
+            return false;
+        }
         std::cerr << "Error sending audio packet" << std::endl;
         return false;
     }
-    
-    // 接收帧
-    ret = avcodec_receive_frame(codec_ctx_, frame_);
+
+    return true;
+}
+
+bool AudioDecoder::ReceiveFrame(uint8_t* output_buffer, int buffer_size, int& output_size) {
+    if (!codec_ctx_ || !frame_ || !swr_ctx_) {
+        return false;
+    }
+
+    int ret = avcodec_receive_frame(codec_ctx_, frame_);
     if (ret < 0) {
-        if (ret == AVERROR(EAGAIN)) {
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
             return false;
         }
         std::cerr << "Error receiving audio frame" << std::endl;
         return false;
     }
-    
+
+    last_frame_pts_ = frame_->pts;
+    if (last_frame_pts_ == AV_NOPTS_VALUE) {
+        last_frame_pts_ = frame_->best_effort_timestamp;
+    }
+    last_frame_sample_count_ = frame_->nb_samples;
+    last_frame_sample_rate_ = frame_->sample_rate > 0 ? frame_->sample_rate : sample_rate_;
+    last_frame_channels_ = frame_->ch_layout.nb_channels > 0 ? frame_->ch_layout.nb_channels : channels_;
+
     // 重采样
     uint8_t* output_ptrs[8] = {output_buffer, nullptr, nullptr, nullptr, 
                                 nullptr, nullptr, nullptr, nullptr};
@@ -313,8 +330,16 @@ bool AudioDecoder::DecodePacket(AVPacket* packet, uint8_t* output_buffer, int bu
     }
     
     output_size *= channels_ * 2; // 转换为字节数
+    last_output_size_ = output_size;
     
     return true;
+}
+
+bool AudioDecoder::DecodePacket(AVPacket* packet, uint8_t* output_buffer, int buffer_size, int& output_size) {
+    if (!SendPacket(packet)) {
+        return false;
+    }
+    return ReceiveFrame(output_buffer, buffer_size, output_size);
 }
 
 std::string AudioDecoder::GetCodecName() const {

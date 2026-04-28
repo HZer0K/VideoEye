@@ -42,6 +42,9 @@ public slots:
     void UpdateFaceDetection(const std::vector<analyzer::FaceInfo>& faces);
     void ResetVideoFrameList();
     void AppendVideoFrameInfo(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds);
+    void ResetAudioFrameList();
+    void AppendAudioFrameInfo(int index, qint64 pts, double timestamp_seconds,
+                              int sample_count, int sample_rate, int channels, int byte_count);
     
     // 导出报告
     void OnExportReport();
@@ -70,25 +73,41 @@ private:
         int key_count = 0;
     };
 
+    struct AudioFrameRecord {
+        int index = 0;
+        qint64 pts = 0;
+        double timestamp_seconds = 0.0;
+        int sample_count = 0;
+        int sample_rate = 0;
+        int channels = 0;
+        int byte_count = 0;
+    };
+
     // 初始化UI
     void SetupUI();
     void SetupStreamTab();
     void SetupFrameTab();
+    void SetupAudioFrameTab();
     void SetupHistogramTab();
     void SetupFaceTab();
     void RebuildFrameTable();
     void RebuildGopTable();
+    void RebuildAudioFrameTable();
     void UpdateFrameSummary();
+    void UpdateAudioFrameSummary();
     QString FrameTypeToString(int frame_type) const;
     bool MatchesFrameFilter(const VideoFrameRecord& record) const;
     void FlushPendingUiUpdates();
     void FlushPendingFrameTableUpdates();
     void FlushPendingGopTableUpdates();
+    void FlushPendingAudioFrameTableUpdates();
     void RefreshStreamStatsUi(const analyzer::StreamStats& stats);
     void SetTableItemText(QTableWidget* table, int row, int column, const QString& text);
     void AppendFrameRowToTable(const VideoFrameRecord& record);
+    void AppendAudioFrameRowToTable(const AudioFrameRecord& record);
     void UpdateGopRowInTable(int row, const GopSummary& summary);
     void OnExportFrameCsv();
+    void OnExportAudioFrameCsv();
     void OnFrameFilterChanged();
     
     // 更新图表
@@ -113,6 +132,11 @@ private:
     QTableWidget* frame_table_;
     QPushButton* export_frame_csv_button_;
     QTableWidget* gop_table_;
+
+    QWidget* audio_frame_tab_;
+    QLabel* audio_frame_summary_label_;
+    QTableWidget* audio_frame_table_;
+    QPushButton* export_audio_frame_csv_button_;
     
     // 直方图标签页
     QWidget* histogram_tab_;
@@ -145,14 +169,18 @@ private:
     analyzer::HistogramData current_hist_;
     std::vector<analyzer::FaceInfo> current_faces_;
     std::vector<VideoFrameRecord> frame_records_;
+    std::vector<AudioFrameRecord> audio_frame_records_;
     std::vector<GopSummary> gop_summaries_;
     analyzer::StreamStats pending_stream_stats_;
     bool has_pending_stream_stats_ = false;
     bool frame_table_dirty_ = false;
     bool gop_table_dirty_ = false;
     bool frame_summary_dirty_ = false;
+    bool audio_frame_table_dirty_ = false;
+    bool audio_frame_summary_dirty_ = false;
     size_t frame_table_synced_record_count_ = 0;
     size_t gop_table_synced_count_ = 0;
+    size_t audio_frame_table_synced_record_count_ = 0;
     int stream_chart_sample_index_ = 0;
     std::deque<qreal> bitrate_chart_values_;
     std::deque<qreal> fps_chart_values_;

@@ -84,6 +84,9 @@ signals:
     void FaceDetectionReady(const std::vector<analyzer::FaceInfo>& faces);
     void VideoFrameListReset();
     void VideoFrameInfoReady(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds);
+    void AudioFrameListReset();
+    void AudioFrameInfoReady(int index, qint64 pts, double timestamp_seconds,
+                             int sample_count, int sample_rate, int channels, int byte_count);
     void MediaModeChanged(bool has_video);
     void AudioLevelReady(double level, double timestamp_seconds);
     void VideoFrameExportStarted(int total_frames);
@@ -137,6 +140,7 @@ private:
     bool histogram_enabled_ = false;
     int analysis_frame_counter_ = 0;  // 用于控制分析频率
     int video_frame_index_ = 0;
+    int audio_frame_index_ = 0;
 };
 
 } // namespace player

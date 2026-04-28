@@ -51,6 +51,7 @@ struct StreamStats {
 
     // 视频帧类型统计
     int total_video_frames = 0;
+    int total_audio_frames = 0;
     int i_frame_count = 0;
     int p_frame_count = 0;
     int b_frame_count = 0;
@@ -104,6 +105,7 @@ public:
     std::vector<int> GetBitrateHistory() const { return bitrate_history_; }
 
     void AnalyzeVideoFrame(AVPictureType type);
+    void AnalyzeAudioFrame();
     
 private:
     // 计算帧率
