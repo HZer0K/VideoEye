@@ -3,7 +3,12 @@
   /home/hxk/project/VideoEye/VideoEye/core/analyzer/FaceDetector.h \
   /home/hxk/project/VideoEye/VideoEye/core/analyzer/FrameAnalyzer.h \
   /home/hxk/project/VideoEye/VideoEye/core/analyzer/StreamAnalyzer.h \
+  /home/hxk/project/VideoEye/VideoEye/core/model/AnalysisEvent.h \
+  /home/hxk/project/VideoEye/VideoEye/core/model/AudioVisualizationFrame.h \
   /home/hxk/project/VideoEye/VideoEye/core/model/FrameData.h \
+  /home/hxk/project/VideoEye/VideoEye/core/model/PacketInfo.h \
+  /home/hxk/project/VideoEye/VideoEye/core/model/SyncSample.h \
+  /home/hxk/project/VideoEye/VideoEye/core/model/TimelineEvent.h \
   /usr/include/alloca.h \
   /usr/include/asm-generic/errno-base.h \
   /usr/include/asm-generic/errno.h \
@@ -452,13 +457,16 @@
   /usr/include/x86_64-linux-gnu/qt6/QtCharts/qxyseries.h \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/QList \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/QMargins \
+  /usr/include/x86_64-linux-gnu/qt6/QtCore/QMetaType \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/QObject \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/QRect \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/QSize \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/QSizeF \
+  /usr/include/x86_64-linux-gnu/qt6/QtCore/QString \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/QStringList \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/QTimer \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/QVariant \
+  /usr/include/x86_64-linux-gnu/qt6/QtCore/QVector \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/qabstractitemmodel.h \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/qalgorithms.h \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/qanystringview.h \
@@ -552,6 +560,7 @@
   /usr/include/x86_64-linux-gnu/qt6/QtCore/qutf8stringview.h \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/qvariant.h \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/qvarlengtharray.h \
+  /usr/include/x86_64-linux-gnu/qt6/QtCore/qvector.h \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/qversiontagging.h \
   /usr/include/x86_64-linux-gnu/qt6/QtGui/QBrush \
   /usr/include/x86_64-linux-gnu/qt6/QtGui/QFont \

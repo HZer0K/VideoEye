@@ -3,7 +3,12 @@
   /home/hxk/project/VideoEye/VideoEye/core/analyzer/FaceDetector.h \
   /home/hxk/project/VideoEye/VideoEye/core/analyzer/FrameAnalyzer.h \
   /home/hxk/project/VideoEye/VideoEye/core/analyzer/StreamAnalyzer.h \
+  /home/hxk/project/VideoEye/VideoEye/core/model/AnalysisEvent.h \
+  /home/hxk/project/VideoEye/VideoEye/core/model/AudioVisualizationFrame.h \
   /home/hxk/project/VideoEye/VideoEye/core/model/FrameData.h \
+  /home/hxk/project/VideoEye/VideoEye/core/model/PacketInfo.h \
+  /home/hxk/project/VideoEye/VideoEye/core/model/SyncSample.h \
+  /home/hxk/project/VideoEye/VideoEye/core/model/TimelineEvent.h \
   /home/hxk/project/VideoEye/VideoEye/core/player/Decoders.h \
   /usr/include/alloca.h \
   /usr/include/asm-generic/errno-base.h \
@@ -425,8 +430,10 @@
   /usr/include/x86_64-linux-gnu/c++/12/bits/time_members.h \
   /usr/include/x86_64-linux-gnu/gnu/stubs-64.h \
   /usr/include/x86_64-linux-gnu/gnu/stubs.h \
+  /usr/include/x86_64-linux-gnu/qt6/QtCore/QMetaType \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/QObject \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/QString \
+  /usr/include/x86_64-linux-gnu/qt6/QtCore/QVector \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/qalgorithms.h \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/qanystringview.h \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/qarraydata.h \
@@ -496,6 +503,7 @@
   /usr/include/x86_64-linux-gnu/qt6/QtCore/qtmetamacros.h \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/qtypeinfo.h \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/qutf8stringview.h \
+  /usr/include/x86_64-linux-gnu/qt6/QtCore/qvector.h \
   /usr/include/x86_64-linux-gnu/qt6/QtCore/qversiontagging.h \
   /usr/include/x86_64-linux-gnu/qt6/QtGui/QImage \
   /usr/include/x86_64-linux-gnu/qt6/QtGui/qcolor.h \
