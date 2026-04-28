@@ -19,6 +19,7 @@ extern "C" {
 #include "core/model/FrameData.h"
 #include "core/model/PacketInfo.h"
 #include "core/model/SyncSample.h"
+#include "core/model/TimelineEvent.h"
 #include "core/analyzer/StreamAnalyzer.h"
 #include "core/analyzer/FrameAnalyzer.h"
 #include "core/analyzer/FaceDetector.h"
@@ -98,6 +99,8 @@ signals:
     void AnalysisEventReady(const model::AnalysisEvent& event_info);
     void SyncSampleListReset();
     void SyncSampleReady(const model::SyncSample& sample);
+    void TimelineEventListReset();
+    void TimelineEventReady(const model::TimelineEvent& event);
     void MediaModeChanged(bool has_video);
     void AudioLevelReady(double level, double timestamp_seconds);
     void VideoFrameExportStarted(int total_frames);
@@ -117,6 +120,8 @@ private:
                            qint64 pts, double timestamp_seconds,
                            const QString& summary, const QString& detail = QString());
     void EmitSyncSample(double audio_timestamp_seconds, double video_timestamp_seconds, bool audio_anchor);
+    void EmitTimelineEvent(const QString& category, double timestamp_seconds,
+                           const QString& label, const QString& detail = QString());
     
     // 清理资源
     void Cleanup();
@@ -159,11 +164,13 @@ private:
     int packet_index_ = 0;
     int analysis_event_index_ = 0;
     int sync_sample_index_ = 0;
+    int timeline_event_index_ = 0;
     std::map<int, double> last_packet_ts_by_stream_;
     std::map<int, bool> missing_packet_ts_reported_;
     std::map<int, bool> missing_audio_pts_reported_;
     double last_video_sync_ts_ = std::numeric_limits<double>::quiet_NaN();
     double last_audio_sync_ts_ = std::numeric_limits<double>::quiet_NaN();
+    int audio_timeline_sample_counter_ = 0;
 };
 
 } // namespace player

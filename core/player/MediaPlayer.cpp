@@ -490,6 +490,7 @@ void MediaPlayer::EmitAnalysisEvent(const QString& severity, const QString& type
     event_info.summary = summary;
     event_info.detail = detail;
     emit AnalysisEventReady(event_info);
+    EmitTimelineEvent(QStringLiteral("事件"), timestamp_seconds, summary, detail);
 }
 
 void MediaPlayer::EmitSyncSample(double audio_timestamp_seconds, double video_timestamp_seconds, bool audio_anchor) {
@@ -504,6 +505,21 @@ void MediaPlayer::EmitSyncSample(double audio_timestamp_seconds, double video_ti
     sample.diff_ms = (audio_timestamp_seconds - video_timestamp_seconds) * 1000.0;
     sample.audio_anchor = audio_anchor;
     emit SyncSampleReady(sample);
+}
+
+void MediaPlayer::EmitTimelineEvent(const QString& category, double timestamp_seconds,
+                                    const QString& label, const QString& detail) {
+    if (!std::isfinite(timestamp_seconds)) {
+        return;
+    }
+
+    model::TimelineEvent event;
+    event.index = timeline_event_index_++;
+    event.category = category;
+    event.timestamp_seconds = timestamp_seconds;
+    event.label = label;
+    event.detail = detail;
+    emit TimelineEventReady(event);
 }
 
 MediaPlayer::~MediaPlayer() {
@@ -550,6 +566,8 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     packet_index_ = 0;
     analysis_event_index_ = 0;
     sync_sample_index_ = 0;
+    timeline_event_index_ = 0;
+    audio_timeline_sample_counter_ = 0;
     last_packet_ts_by_stream_.clear();
     missing_packet_ts_reported_.clear();
     missing_audio_pts_reported_.clear();
@@ -560,6 +578,7 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     emit PacketListReset();
     emit AnalysisEventListReset();
     emit SyncSampleListReset();
+    emit TimelineEventListReset();
 
     const unsigned header_avcodec_major = LIBAVCODEC_VERSION_MAJOR;
     const unsigned runtime_avcodec_major = static_cast<unsigned>(avcodec_version() >> 16);
@@ -1803,6 +1822,8 @@ void MediaPlayer::DecodeThread() {
 
                     if (frame_type_analysis_enabled_) {
                         double ts = frame_data.timestamp;
+                        const int emitted_index = video_frame_index_;
+                        const bool is_key_frame = (packet->flags & AV_PKT_FLAG_KEY) != 0;
                         if ((ts == 0.0 || std::isnan(ts) || std::isinf(ts)) && format_ctx_ && video_stream_index_ >= 0) {
                             AVStream* vs = format_ctx_->streams[video_stream_index_];
                             if (vs && vs->time_base.den != 0) {
@@ -1817,9 +1838,14 @@ void MediaPlayer::DecodeThread() {
                         }
                         emit VideoFrameInfoReady(video_frame_index_++,
                                                  static_cast<int>(video_decoder_->GetLastPictureType()),
-                                                 (packet->flags & AV_PKT_FLAG_KEY) != 0,
+                                                 is_key_frame,
                                                  static_cast<qint64>(frame_data.pts),
                                                  ts);
+                        if (is_key_frame) {
+                            EmitTimelineEvent(QStringLiteral("视频关键帧"),
+                                              ts,
+                                              QStringLiteral("关键帧 #%1").arg(emitted_index));
+                        }
                     }
 
                     // 实时分析 (仅帧有效时)
@@ -1897,6 +1923,12 @@ void MediaPlayer::DecodeThread() {
                                              audio_decoder_->GetLastFrameSampleRate(),
                                              audio_decoder_->GetLastFrameChannels(),
                                              out_size);
+                    ++audio_timeline_sample_counter_;
+                    if (audio_timeline_sample_counter_ % 20 == 0) {
+                        EmitTimelineEvent(QStringLiteral("音频采样"),
+                                          ts,
+                                          QStringLiteral("音频帧 #%1").arg(audio_frame_index_ - 1));
+                    }
 
                     last_audio_sync_ts_ = ts;
                     if (std::isfinite(last_video_sync_ts_)) {

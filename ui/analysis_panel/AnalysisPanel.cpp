@@ -25,12 +25,17 @@ AnalysisPanel::AnalysisPanel(QWidget* parent)
     , bitrate_series_(nullptr)
     , fps_series_(nullptr)
     , sync_series_(nullptr)
+    , timeline_video_series_(nullptr)
+    , timeline_audio_series_(nullptr)
+    , timeline_event_series_(nullptr)
     , bitrate_axis_x_(nullptr)
     , bitrate_axis_y_(nullptr)
     , fps_axis_x_(nullptr)
     , fps_axis_y_(nullptr)
     , sync_axis_x_(nullptr)
-    , sync_axis_y_(nullptr) {
+    , sync_axis_y_(nullptr)
+    , timeline_axis_x_(nullptr)
+    , timeline_axis_y_(nullptr) {
     
     SetupUI();
     
@@ -57,6 +62,7 @@ void AnalysisPanel::SetupUI() {
     SetupPacketTab();
     SetupEventTab();
     SetupSyncTab();
+    SetupTimelineTab();
     SetupHistogramTab();
     SetupFaceTab();
     
@@ -395,6 +401,78 @@ void AnalysisPanel::SetupSyncTab() {
     connect(export_sync_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportSyncCsv);
 }
 
+void AnalysisPanel::SetupTimelineTab() {
+    timeline_tab_ = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(timeline_tab_);
+
+    QHBoxLayout* toolbar_layout = new QHBoxLayout();
+    timeline_summary_label_ = new QLabel(tr("事件数: 0 | 视频关键帧: 0 | 音频采样: 0 | 异常事件: 0"), timeline_tab_);
+    toolbar_layout->addWidget(timeline_summary_label_, 1);
+
+    export_timeline_csv_button_ = new QPushButton(tr("导出 CSV"), timeline_tab_);
+    toolbar_layout->addWidget(export_timeline_csv_button_);
+    layout->addLayout(toolbar_layout);
+
+    QGroupBox* chart_group = new QGroupBox(tr("统一时间轴"), timeline_tab_);
+    QVBoxLayout* chart_layout = new QVBoxLayout(chart_group);
+    timeline_chart_ = new QChartView(timeline_tab_);
+    timeline_chart_->setMinimumHeight(220);
+    chart_layout->addWidget(timeline_chart_);
+    layout->addWidget(chart_group);
+
+    QGroupBox* table_group = new QGroupBox(tr("时间轴事件"), timeline_tab_);
+    QVBoxLayout* table_layout = new QVBoxLayout(table_group);
+    timeline_table_ = new QTableWidget(0, 5, table_group);
+    timeline_table_->setHorizontalHeaderLabels({"序号", "类别", "时间戳(s)", "标签", "详情"});
+    timeline_table_->verticalHeader()->setVisible(false);
+    timeline_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    timeline_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    timeline_table_->setSelectionMode(QAbstractItemView::SingleSelection);
+    timeline_table_->setSortingEnabled(false);
+    timeline_table_->horizontalHeader()->setStretchLastSection(true);
+    timeline_table_->setColumnWidth(0, 80);
+    timeline_table_->setColumnWidth(1, 100);
+    timeline_table_->setColumnWidth(2, 120);
+    timeline_table_->setColumnWidth(3, 200);
+    table_layout->addWidget(timeline_table_);
+    layout->addWidget(table_group);
+
+    tab_widget_->addTab(timeline_tab_, tr("统一时间轴"));
+
+    timeline_video_series_ = new QLineSeries(this);
+    timeline_video_series_->setName(tr("视频关键帧"));
+    timeline_video_series_->setPointsVisible(true);
+    timeline_audio_series_ = new QLineSeries(this);
+    timeline_audio_series_->setName(tr("音频采样"));
+    timeline_audio_series_->setPointsVisible(true);
+    timeline_event_series_ = new QLineSeries(this);
+    timeline_event_series_->setName(tr("异常事件"));
+    timeline_event_series_->setPointsVisible(true);
+
+    QChart* timeline_chart_object = new QChart();
+    timeline_chart_object->setTitle(tr("统一时间轴"));
+    timeline_chart_object->addSeries(timeline_video_series_);
+    timeline_chart_object->addSeries(timeline_audio_series_);
+    timeline_chart_object->addSeries(timeline_event_series_);
+    timeline_axis_x_ = new QValueAxis(this);
+    timeline_axis_y_ = new QValueAxis(this);
+    timeline_axis_x_->setLabelFormat("%.2f");
+    timeline_axis_y_->setRange(0.5, 3.5);
+    timeline_axis_y_->setTickCount(4);
+    timeline_chart_object->addAxis(timeline_axis_x_, Qt::AlignBottom);
+    timeline_chart_object->addAxis(timeline_axis_y_, Qt::AlignLeft);
+    timeline_video_series_->attachAxis(timeline_axis_x_);
+    timeline_video_series_->attachAxis(timeline_axis_y_);
+    timeline_audio_series_->attachAxis(timeline_axis_x_);
+    timeline_audio_series_->attachAxis(timeline_axis_y_);
+    timeline_event_series_->attachAxis(timeline_axis_x_);
+    timeline_event_series_->attachAxis(timeline_axis_y_);
+    timeline_chart_->setChart(timeline_chart_object);
+    timeline_chart_->setRenderHint(QPainter::Antialiasing);
+
+    connect(export_timeline_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportTimelineCsv);
+}
+
 void AnalysisPanel::SetupHistogramTab() {
     histogram_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(histogram_tab_);
@@ -549,6 +627,32 @@ void AnalysisPanel::ResetSyncSampleList() {
     UpdateSyncSummary();
 }
 
+void AnalysisPanel::ResetTimelineEventList() {
+    timeline_event_records_.clear();
+    timeline_table_synced_record_count_ = 0;
+    timeline_table_dirty_ = false;
+    timeline_summary_dirty_ = true;
+    if (timeline_table_) {
+        timeline_table_->setRowCount(0);
+    }
+    if (timeline_video_series_) {
+        timeline_video_series_->clear();
+    }
+    if (timeline_audio_series_) {
+        timeline_audio_series_->clear();
+    }
+    if (timeline_event_series_) {
+        timeline_event_series_->clear();
+    }
+    if (timeline_axis_x_) {
+        timeline_axis_x_->setRange(0.0, 1.0);
+    }
+    if (timeline_axis_y_) {
+        timeline_axis_y_->setRange(0.5, 3.5);
+    }
+    UpdateTimelineSummary();
+}
+
 void AnalysisPanel::AppendVideoFrameInfo(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds) {
     if (!frame_table_ || !gop_table_) {
         return;
@@ -694,6 +798,23 @@ void AnalysisPanel::AppendSyncSample(const model::SyncSample& sample) {
     sync_summary_dirty_ = true;
 }
 
+void AnalysisPanel::AppendTimelineEvent(const model::TimelineEvent& event) {
+    if (!timeline_table_) {
+        return;
+    }
+
+    TimelineEventRecord record;
+    record.index = event.index;
+    record.category = event.category;
+    record.timestamp_seconds = event.timestamp_seconds;
+    record.label = event.label;
+    record.detail = event.detail;
+
+    timeline_event_records_.push_back(record);
+    timeline_table_dirty_ = true;
+    timeline_summary_dirty_ = true;
+}
+
 QString AnalysisPanel::FrameTypeToString(int frame_type) const {
     if (frame_type == AV_PICTURE_TYPE_I) {
         return "I";
@@ -832,6 +953,21 @@ void AnalysisPanel::RebuildSyncTable() {
     UpdateSyncChart();
 }
 
+void AnalysisPanel::RebuildTimelineTable() {
+    if (!timeline_table_) {
+        return;
+    }
+
+    timeline_table_->setUpdatesEnabled(false);
+    timeline_table_->setRowCount(0);
+    for (const auto& record : timeline_event_records_) {
+        AppendTimelineRowToTable(record);
+    }
+    timeline_table_->setUpdatesEnabled(true);
+    timeline_table_synced_record_count_ = timeline_event_records_.size();
+    UpdateTimelineChart();
+}
+
 void AnalysisPanel::UpdateFrameSummary() {
     if (!frame_summary_label_) {
         return;
@@ -953,6 +1089,32 @@ void AnalysisPanel::UpdateSyncSummary() {
             .arg(sync_sample_records_.size())
             .arg(abs_sum / static_cast<double>(sync_sample_records_.size()), 0, 'f', 2)
             .arg(max_abs, 0, 'f', 2));
+}
+
+void AnalysisPanel::UpdateTimelineSummary() {
+    if (!timeline_summary_label_) {
+        return;
+    }
+
+    int video_count = 0;
+    int audio_count = 0;
+    int event_count = 0;
+    for (const auto& record : timeline_event_records_) {
+        if (record.category == tr("视频关键帧")) {
+            video_count++;
+        } else if (record.category == tr("音频采样")) {
+            audio_count++;
+        } else if (record.category == tr("事件")) {
+            event_count++;
+        }
+    }
+
+    timeline_summary_label_->setText(
+        tr("事件数: %1 | 视频关键帧: %2 | 音频采样: %3 | 异常事件: %4")
+            .arg(timeline_event_records_.size())
+            .arg(video_count)
+            .arg(audio_count)
+            .arg(event_count));
 }
 
 void AnalysisPanel::OnExportFrameCsv() {
@@ -1141,6 +1303,41 @@ void AnalysisPanel::OnExportSyncCsv() {
     QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
 }
 
+void AnalysisPanel::OnExportTimelineCsv() {
+    if (timeline_event_records_.empty()) {
+        QMessageBox::information(this, tr("提示"), tr("当前没有可导出的时间轴数据。"));
+        return;
+    }
+
+    const QString filename = QFileDialog::getSaveFileName(
+        this,
+        tr("导出统一时间轴 CSV"),
+        QString("videoeye_timeline_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
+        tr("CSV 文件 (*.csv);;所有文件 (*)"));
+    if (filename.isEmpty()) {
+        return;
+    }
+
+    QFile file(filename);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件:\n%1").arg(filename));
+        return;
+    }
+
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    out << "index,category,timestamp_seconds,label,detail\n";
+    for (const auto& record : timeline_event_records_) {
+        out << record.index << ','
+            << '"' << record.category << '"' << ','
+            << QString::number(record.timestamp_seconds, 'f', 6) << ','
+            << '"' << record.label << '"' << ','
+            << '"' << record.detail << '"' << '\n';
+    }
+
+    QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
+}
+
 void AnalysisPanel::OnFrameFilterChanged() {
     RebuildFrameTable();
     UpdateFrameSummary();
@@ -1175,6 +1372,10 @@ void AnalysisPanel::FlushPendingUiUpdates() {
         FlushPendingSyncTableUpdates();
         sync_table_dirty_ = false;
     }
+    if (timeline_table_dirty_) {
+        FlushPendingTimelineTableUpdates();
+        timeline_table_dirty_ = false;
+    }
     if (frame_summary_dirty_) {
         UpdateFrameSummary();
         frame_summary_dirty_ = false;
@@ -1194,6 +1395,10 @@ void AnalysisPanel::FlushPendingUiUpdates() {
     if (sync_summary_dirty_) {
         UpdateSyncSummary();
         sync_summary_dirty_ = false;
+    }
+    if (timeline_summary_dirty_) {
+        UpdateTimelineSummary();
+        timeline_summary_dirty_ = false;
     }
 }
 
@@ -1300,6 +1505,24 @@ void AnalysisPanel::FlushPendingSyncTableUpdates() {
 
     if (sync_table_->rowCount() > 0) {
         sync_table_->scrollToBottom();
+    }
+}
+
+void AnalysisPanel::FlushPendingTimelineTableUpdates() {
+    if (!timeline_table_) {
+        return;
+    }
+
+    timeline_table_->setUpdatesEnabled(false);
+    for (size_t i = timeline_table_synced_record_count_; i < timeline_event_records_.size(); ++i) {
+        AppendTimelineRowToTable(timeline_event_records_[i]);
+    }
+    timeline_table_->setUpdatesEnabled(true);
+    timeline_table_synced_record_count_ = timeline_event_records_.size();
+    UpdateTimelineChart();
+
+    if (timeline_table_->rowCount() > 0) {
+        timeline_table_->scrollToBottom();
     }
 }
 
@@ -1439,6 +1662,16 @@ void AnalysisPanel::AppendSyncRowToTable(const SyncSampleRecord& record) {
     SetTableItemText(sync_table_, row, 4, record.audio_anchor ? tr("音频") : tr("视频"));
 }
 
+void AnalysisPanel::AppendTimelineRowToTable(const TimelineEventRecord& record) {
+    const int row = timeline_table_->rowCount();
+    timeline_table_->insertRow(row);
+    SetTableItemText(timeline_table_, row, 0, QString::number(record.index));
+    SetTableItemText(timeline_table_, row, 1, record.category);
+    SetTableItemText(timeline_table_, row, 2, QString::number(record.timestamp_seconds, 'f', 3));
+    SetTableItemText(timeline_table_, row, 3, record.label);
+    SetTableItemText(timeline_table_, row, 4, record.detail);
+}
+
 void AnalysisPanel::UpdateGopRowInTable(int row, const GopSummary& summary) {
     SetTableItemText(gop_table_, row, 0, QString::number(summary.gop_index));
     SetTableItemText(gop_table_, row, 1, QString::number(summary.start_frame));
@@ -1507,6 +1740,45 @@ void AnalysisPanel::UpdateSyncChart() {
         max_abs = std::max(max_abs, std::abs(value));
     }
     sync_axis_y_->setRange(-max_abs * 1.1, max_abs * 1.1);
+}
+
+void AnalysisPanel::UpdateTimelineChart() {
+    if (!timeline_video_series_ || !timeline_audio_series_ || !timeline_event_series_ ||
+        !timeline_axis_x_ || !timeline_axis_y_) {
+        return;
+    }
+
+    timeline_video_series_->clear();
+    timeline_audio_series_->clear();
+    timeline_event_series_->clear();
+
+    if (timeline_event_records_.empty()) {
+        timeline_axis_x_->setRange(0.0, 1.0);
+        timeline_axis_y_->setRange(0.5, 3.5);
+        return;
+    }
+
+    const int start = std::max(0, static_cast<int>(timeline_event_records_.size()) - kMaxChartSamples);
+    double min_ts = timeline_event_records_[start].timestamp_seconds;
+    double max_ts = timeline_event_records_[start].timestamp_seconds;
+    for (int i = start; i < static_cast<int>(timeline_event_records_.size()); ++i) {
+        const auto& record = timeline_event_records_[i];
+        if (record.category == tr("视频关键帧")) {
+            timeline_video_series_->append(record.timestamp_seconds, 3.0);
+        } else if (record.category == tr("音频采样")) {
+            timeline_audio_series_->append(record.timestamp_seconds, 2.0);
+        } else {
+            timeline_event_series_->append(record.timestamp_seconds, 1.0);
+        }
+        min_ts = std::min(min_ts, record.timestamp_seconds);
+        max_ts = std::max(max_ts, record.timestamp_seconds);
+    }
+
+    if (min_ts == max_ts) {
+        max_ts += 0.001;
+    }
+    timeline_axis_x_->setRange(min_ts, max_ts);
+    timeline_axis_y_->setRange(0.5, 3.5);
 }
 
 void AnalysisPanel::OnExportReport() {
