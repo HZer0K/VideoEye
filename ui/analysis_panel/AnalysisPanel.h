@@ -23,6 +23,7 @@
 #include "core/analyzer/StreamAnalyzer.h"
 #include "core/analyzer/FrameAnalyzer.h"
 #include "core/analyzer/FaceDetector.h"
+#include "core/model/AnalysisEvent.h"
 #include "core/model/PacketInfo.h"
 
 namespace videoeye {
@@ -48,6 +49,8 @@ public slots:
                               int sample_count, int sample_rate, int channels, int byte_count);
     void ResetPacketList();
     void AppendPacketInfo(const model::PacketInfo& packet_info);
+    void ResetAnalysisEventList();
+    void AppendAnalysisEvent(const model::AnalysisEvent& event_info);
     
     // 导出报告
     void OnExportReport();
@@ -99,21 +102,35 @@ private:
         double timestamp_seconds = 0.0;
     };
 
+    struct AnalysisEventRecord {
+        int index = 0;
+        QString severity;
+        QString type;
+        int stream_index = -1;
+        qint64 pts = 0;
+        double timestamp_seconds = 0.0;
+        QString summary;
+        QString detail;
+    };
+
     // 初始化UI
     void SetupUI();
     void SetupStreamTab();
     void SetupFrameTab();
     void SetupAudioFrameTab();
     void SetupPacketTab();
+    void SetupEventTab();
     void SetupHistogramTab();
     void SetupFaceTab();
     void RebuildFrameTable();
     void RebuildGopTable();
     void RebuildAudioFrameTable();
     void RebuildPacketTable();
+    void RebuildEventTable();
     void UpdateFrameSummary();
     void UpdateAudioFrameSummary();
     void UpdatePacketSummary();
+    void UpdateEventSummary();
     QString FrameTypeToString(int frame_type) const;
     QString PacketFlagsToString(int flags) const;
     bool MatchesFrameFilter(const VideoFrameRecord& record) const;
@@ -122,15 +139,18 @@ private:
     void FlushPendingGopTableUpdates();
     void FlushPendingAudioFrameTableUpdates();
     void FlushPendingPacketTableUpdates();
+    void FlushPendingEventTableUpdates();
     void RefreshStreamStatsUi(const analyzer::StreamStats& stats);
     void SetTableItemText(QTableWidget* table, int row, int column, const QString& text);
     void AppendFrameRowToTable(const VideoFrameRecord& record);
     void AppendAudioFrameRowToTable(const AudioFrameRecord& record);
     void AppendPacketRowToTable(const PacketRecord& record);
+    void AppendEventRowToTable(const AnalysisEventRecord& record);
     void UpdateGopRowInTable(int row, const GopSummary& summary);
     void OnExportFrameCsv();
     void OnExportAudioFrameCsv();
     void OnExportPacketCsv();
+    void OnExportEventCsv();
     void OnFrameFilterChanged();
     
     // 更新图表
@@ -165,6 +185,11 @@ private:
     QLabel* packet_summary_label_;
     QTableWidget* packet_table_;
     QPushButton* export_packet_csv_button_;
+
+    QWidget* event_tab_;
+    QLabel* event_summary_label_;
+    QTableWidget* event_table_;
+    QPushButton* export_event_csv_button_;
     
     // 直方图标签页
     QWidget* histogram_tab_;
@@ -199,6 +224,7 @@ private:
     std::vector<VideoFrameRecord> frame_records_;
     std::vector<AudioFrameRecord> audio_frame_records_;
     std::vector<PacketRecord> packet_records_;
+    std::vector<AnalysisEventRecord> analysis_event_records_;
     std::vector<GopSummary> gop_summaries_;
     analyzer::StreamStats pending_stream_stats_;
     bool has_pending_stream_stats_ = false;
@@ -209,10 +235,13 @@ private:
     bool audio_frame_summary_dirty_ = false;
     bool packet_table_dirty_ = false;
     bool packet_summary_dirty_ = false;
+    bool event_table_dirty_ = false;
+    bool event_summary_dirty_ = false;
     size_t frame_table_synced_record_count_ = 0;
     size_t gop_table_synced_count_ = 0;
     size_t audio_frame_table_synced_record_count_ = 0;
     size_t packet_table_synced_record_count_ = 0;
+    size_t event_table_synced_record_count_ = 0;
     int stream_chart_sample_index_ = 0;
     std::deque<qreal> bitrate_chart_values_;
     std::deque<qreal> fps_chart_values_;

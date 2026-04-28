@@ -5,6 +5,7 @@
 #include <QImage>
 #include <memory>
 #include <atomic>
+#include <map>
 #include <mutex>
 #include <thread>
 
@@ -13,6 +14,7 @@ extern "C" {
 }
 
 #include "core/player/Decoders.h"
+#include "core/model/AnalysisEvent.h"
 #include "core/model/FrameData.h"
 #include "core/model/PacketInfo.h"
 #include "core/analyzer/StreamAnalyzer.h"
@@ -90,6 +92,8 @@ signals:
                              int sample_count, int sample_rate, int channels, int byte_count);
     void PacketListReset();
     void PacketInfoReady(const model::PacketInfo& packet_info);
+    void AnalysisEventListReset();
+    void AnalysisEventReady(const model::AnalysisEvent& event_info);
     void MediaModeChanged(bool has_video);
     void AudioLevelReady(double level, double timestamp_seconds);
     void VideoFrameExportStarted(int total_frames);
@@ -105,6 +109,9 @@ private:
     void AudioDecodeThread();
     void ExportVideoFramesWorker(QString url, QString output_dir, QString format, int jpg_quality, int frame_interval);
     bool OpenInternal(const QString& url, const AVInputFormat* input_format, AVDictionary* input_options);
+    void EmitAnalysisEvent(const QString& severity, const QString& type, int stream_index,
+                           qint64 pts, double timestamp_seconds,
+                           const QString& summary, const QString& detail = QString());
     
     // 清理资源
     void Cleanup();
@@ -145,6 +152,10 @@ private:
     int video_frame_index_ = 0;
     int audio_frame_index_ = 0;
     int packet_index_ = 0;
+    int analysis_event_index_ = 0;
+    std::map<int, double> last_packet_ts_by_stream_;
+    std::map<int, bool> missing_packet_ts_reported_;
+    std::map<int, bool> missing_audio_pts_reported_;
 };
 
 } // namespace player

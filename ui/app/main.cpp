@@ -1,6 +1,9 @@
 #include <QApplication>
+#include <QMetaType>
 #include <QTimer>
 
+#include "core/model/AnalysisEvent.h"
+#include "core/model/PacketInfo.h"
 #include "ui/main_window/MainWindow.h"
 
 int main(int argc, char* argv[]) {
@@ -9,6 +12,9 @@ int main(int argc, char* argv[]) {
     app.setApplicationName("VideoEye");
     app.setApplicationVersion("2.0.0");
     app.setOrganizationName("VideoEye Team");
+
+    qRegisterMetaType<videoeye::model::PacketInfo>("videoeye::model::PacketInfo");
+    qRegisterMetaType<videoeye::model::AnalysisEvent>("videoeye::model::AnalysisEvent");
 
     videoeye::ui::MainWindow window;
     window.show();
@@ -20,4 +26,3 @@ int main(int argc, char* argv[]) {
 
     return app.exec();
 }
-

@@ -477,6 +477,21 @@ MediaPlayer::MediaPlayer(QObject* parent)
     avformat_network_init();
 }
 
+void MediaPlayer::EmitAnalysisEvent(const QString& severity, const QString& type, int stream_index,
+                                    qint64 pts, double timestamp_seconds,
+                                    const QString& summary, const QString& detail) {
+    model::AnalysisEvent event_info;
+    event_info.index = analysis_event_index_++;
+    event_info.severity = severity;
+    event_info.type = type;
+    event_info.stream_index = stream_index;
+    event_info.pts = pts;
+    event_info.timestamp_seconds = timestamp_seconds;
+    event_info.summary = summary;
+    event_info.detail = detail;
+    emit AnalysisEventReady(event_info);
+}
+
 MediaPlayer::~MediaPlayer() {
     CancelVideoFrameExport();
     Stop();
@@ -519,9 +534,14 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     video_frame_index_ = 0;
     audio_frame_index_ = 0;
     packet_index_ = 0;
+    analysis_event_index_ = 0;
+    last_packet_ts_by_stream_.clear();
+    missing_packet_ts_reported_.clear();
+    missing_audio_pts_reported_.clear();
     emit VideoFrameListReset();
     emit AudioFrameListReset();
     emit PacketListReset();
+    emit AnalysisEventListReset();
 
     const unsigned header_avcodec_major = LIBAVCODEC_VERSION_MAJOR;
     const unsigned runtime_avcodec_major = static_cast<unsigned>(avcodec_version() >> 16);
@@ -1639,6 +1659,41 @@ void MediaPlayer::DecodeThread() {
         packet_info.pos = packet->pos;
         packet_info.timestamp_seconds = packet_ts_sec;
         emit PacketInfoReady(packet_info);
+        if (!std::isfinite(packet_ts_sec)) {
+            if (!missing_packet_ts_reported_[packet->stream_index]) {
+                missing_packet_ts_reported_[packet->stream_index] = true;
+                EmitAnalysisEvent(tr("警告"),
+                                  tr("缺失时间戳"),
+                                  packet->stream_index,
+                                  static_cast<qint64>(pkt_ts),
+                                  packet_ts_sec,
+                                  tr("数据包缺少有效时间戳"),
+                                  tr("该流存在 PTS/DTS 缺失的数据包，后续同步与定位可能不准确。"));
+            }
+        } else {
+            auto it = last_packet_ts_by_stream_.find(packet->stream_index);
+            if (it != last_packet_ts_by_stream_.end()) {
+                const double delta_sec = packet_ts_sec - it->second;
+                if (delta_sec < -0.001) {
+                    EmitAnalysisEvent(tr("错误"),
+                                      tr("时间戳回退"),
+                                      packet->stream_index,
+                                      static_cast<qint64>(pkt_ts),
+                                      packet_ts_sec,
+                                      tr("检测到非单调递增的包时间戳"),
+                                      tr("当前时间戳早于上一包，可能存在封装异常、乱序或损坏。"));
+                } else if (delta_sec > 2.0) {
+                    EmitAnalysisEvent(tr("警告"),
+                                      tr("时间戳跳变"),
+                                      packet->stream_index,
+                                      static_cast<qint64>(pkt_ts),
+                                      packet_ts_sec,
+                                      tr("检测到较大的包时间戳跳变"),
+                                      tr("相邻包时间差超过 2 秒，可能出现断流、裁切或时间基异常。"));
+                }
+            }
+            last_packet_ts_by_stream_[packet->stream_index] = packet_ts_sec;
+        }
         if (analysis_enabled_) {
             stream_analyzer_.AnalyzePacket(packet, format_ctx_);
         }
@@ -1672,6 +1727,13 @@ void MediaPlayer::DecodeThread() {
                     // 验证帧数据有效性 (防止崩溃)
                     if (frame_data.width <= 0 || frame_data.height <= 0 || !frame_data.data[0]) {
                         LOG_WARN("跳过无效帧数据");
+                        EmitAnalysisEvent(tr("错误"),
+                                          tr("无效视频帧"),
+                                          video_stream_index_,
+                                          static_cast<qint64>(frame_data.pts),
+                                          frame_data.timestamp,
+                                          tr("检测到无效视频帧"),
+                                          tr("视频帧的宽高或数据指针无效，已被跳过。"));
                         continue;
                     }
 
@@ -1784,6 +1846,16 @@ void MediaPlayer::DecodeThread() {
                                                     out_size)) {
                     const qint64 frame_pts = static_cast<qint64>(audio_decoder_->GetLastFramePts());
                     double ts = current_position_ms_.load() / 1000.0;
+                    if (frame_pts == AV_NOPTS_VALUE && !missing_audio_pts_reported_[audio_stream_index_]) {
+                        missing_audio_pts_reported_[audio_stream_index_] = true;
+                        EmitAnalysisEvent(tr("警告"),
+                                          tr("音频帧缺失PTS"),
+                                          audio_stream_index_,
+                                          frame_pts,
+                                          ts,
+                                          tr("检测到缺少 PTS 的音频帧"),
+                                          tr("音频帧将退回使用包时间戳或当前位置，可能影响精确同步分析。"));
+                    }
                     if (format_ctx_ && audio_stream_index_ >= 0) {
                         AVStream* as = format_ctx_->streams[audio_stream_index_];
                         if (as && as->time_base.den != 0 && frame_pts != AV_NOPTS_VALUE) {

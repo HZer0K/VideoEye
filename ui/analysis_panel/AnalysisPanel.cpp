@@ -52,6 +52,7 @@ void AnalysisPanel::SetupUI() {
     SetupFrameTab();
     SetupAudioFrameTab();
     SetupPacketTab();
+    SetupEventTab();
     SetupHistogramTab();
     SetupFaceTab();
     
@@ -293,6 +294,45 @@ void AnalysisPanel::SetupPacketTab() {
     connect(export_packet_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportPacketCsv);
 }
 
+void AnalysisPanel::SetupEventTab() {
+    event_tab_ = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(event_tab_);
+
+    QHBoxLayout* toolbar_layout = new QHBoxLayout();
+    event_summary_label_ = new QLabel(tr("总事件数: 0 | 错误: 0 | 警告: 0 | 信息: 0"), event_tab_);
+    toolbar_layout->addWidget(event_summary_label_, 1);
+
+    export_event_csv_button_ = new QPushButton(tr("导出 CSV"), event_tab_);
+    toolbar_layout->addWidget(export_event_csv_button_);
+    layout->addLayout(toolbar_layout);
+
+    QGroupBox* table_group = new QGroupBox(tr("异常事件"), event_tab_);
+    QVBoxLayout* table_layout = new QVBoxLayout(table_group);
+
+    event_table_ = new QTableWidget(0, 8, table_group);
+    event_table_->setHorizontalHeaderLabels({"序号", "级别", "类型", "流索引", "时间戳(s)", "PTS", "摘要", "详情"});
+    event_table_->verticalHeader()->setVisible(false);
+    event_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    event_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    event_table_->setSelectionMode(QAbstractItemView::SingleSelection);
+    event_table_->setSortingEnabled(false);
+    event_table_->horizontalHeader()->setStretchLastSection(true);
+    event_table_->setColumnWidth(0, 80);
+    event_table_->setColumnWidth(1, 90);
+    event_table_->setColumnWidth(2, 120);
+    event_table_->setColumnWidth(3, 80);
+    event_table_->setColumnWidth(4, 120);
+    event_table_->setColumnWidth(5, 120);
+    event_table_->setColumnWidth(6, 240);
+
+    table_layout->addWidget(event_table_);
+    layout->addWidget(table_group);
+
+    tab_widget_->addTab(event_tab_, tr("异常事件"));
+
+    connect(export_event_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportEventCsv);
+}
+
 void AnalysisPanel::SetupHistogramTab() {
     histogram_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(histogram_tab_);
@@ -415,6 +455,17 @@ void AnalysisPanel::ResetPacketList() {
     UpdatePacketSummary();
 }
 
+void AnalysisPanel::ResetAnalysisEventList() {
+    analysis_event_records_.clear();
+    event_table_synced_record_count_ = 0;
+    event_table_dirty_ = false;
+    event_summary_dirty_ = true;
+    if (event_table_) {
+        event_table_->setRowCount(0);
+    }
+    UpdateEventSummary();
+}
+
 void AnalysisPanel::AppendVideoFrameInfo(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds) {
     if (!frame_table_ || !gop_table_) {
         return;
@@ -521,6 +572,26 @@ void AnalysisPanel::AppendPacketInfo(const model::PacketInfo& packet_info) {
     packet_records_.push_back(record);
     packet_table_dirty_ = true;
     packet_summary_dirty_ = true;
+}
+
+void AnalysisPanel::AppendAnalysisEvent(const model::AnalysisEvent& event_info) {
+    if (!event_table_) {
+        return;
+    }
+
+    AnalysisEventRecord record;
+    record.index = event_info.index;
+    record.severity = event_info.severity;
+    record.type = event_info.type;
+    record.stream_index = event_info.stream_index;
+    record.pts = event_info.pts;
+    record.timestamp_seconds = event_info.timestamp_seconds;
+    record.summary = event_info.summary;
+    record.detail = event_info.detail;
+
+    analysis_event_records_.push_back(record);
+    event_table_dirty_ = true;
+    event_summary_dirty_ = true;
 }
 
 QString AnalysisPanel::FrameTypeToString(int frame_type) const {
@@ -632,6 +703,20 @@ void AnalysisPanel::RebuildPacketTable() {
     packet_table_synced_record_count_ = packet_records_.size();
 }
 
+void AnalysisPanel::RebuildEventTable() {
+    if (!event_table_) {
+        return;
+    }
+
+    event_table_->setUpdatesEnabled(false);
+    event_table_->setRowCount(0);
+    for (const auto& record : analysis_event_records_) {
+        AppendEventRowToTable(record);
+    }
+    event_table_->setUpdatesEnabled(true);
+    event_table_synced_record_count_ = analysis_event_records_.size();
+}
+
 void AnalysisPanel::UpdateFrameSummary() {
     if (!frame_summary_label_) {
         return;
@@ -702,6 +787,32 @@ void AnalysisPanel::UpdatePacketSummary() {
             .arg(video_packets)
             .arg(audio_packets)
             .arg(other_packets));
+}
+
+void AnalysisPanel::UpdateEventSummary() {
+    if (!event_summary_label_) {
+        return;
+    }
+
+    int error_count = 0;
+    int warning_count = 0;
+    int info_count = 0;
+    for (const auto& record : analysis_event_records_) {
+        if (record.severity == tr("错误")) {
+            error_count++;
+        } else if (record.severity == tr("警告")) {
+            warning_count++;
+        } else {
+            info_count++;
+        }
+    }
+
+    event_summary_label_->setText(
+        tr("总事件数: %1 | 错误: %2 | 警告: %3 | 信息: %4")
+            .arg(analysis_event_records_.size())
+            .arg(error_count)
+            .arg(warning_count)
+            .arg(info_count));
 }
 
 void AnalysisPanel::OnExportFrameCsv() {
@@ -817,6 +928,44 @@ void AnalysisPanel::OnExportPacketCsv() {
     QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
 }
 
+void AnalysisPanel::OnExportEventCsv() {
+    if (analysis_event_records_.empty()) {
+        QMessageBox::information(this, tr("提示"), tr("当前没有可导出的异常事件数据。"));
+        return;
+    }
+
+    const QString filename = QFileDialog::getSaveFileName(
+        this,
+        tr("导出异常事件 CSV"),
+        QString("videoeye_events_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
+        tr("CSV 文件 (*.csv);;所有文件 (*)"));
+    if (filename.isEmpty()) {
+        return;
+    }
+
+    QFile file(filename);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件:\n%1").arg(filename));
+        return;
+    }
+
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    out << "index,severity,type,stream_index,timestamp_seconds,pts,summary,detail\n";
+    for (const auto& record : analysis_event_records_) {
+        out << record.index << ','
+            << '"' << record.severity << '"' << ','
+            << '"' << record.type << '"' << ','
+            << record.stream_index << ','
+            << QString::number(record.timestamp_seconds, 'f', 6) << ','
+            << record.pts << ','
+            << '"' << record.summary << '"' << ','
+            << '"' << record.detail << '"' << '\n';
+    }
+
+    QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
+}
+
 void AnalysisPanel::OnFrameFilterChanged() {
     RebuildFrameTable();
     UpdateFrameSummary();
@@ -843,6 +992,10 @@ void AnalysisPanel::FlushPendingUiUpdates() {
         FlushPendingPacketTableUpdates();
         packet_table_dirty_ = false;
     }
+    if (event_table_dirty_) {
+        FlushPendingEventTableUpdates();
+        event_table_dirty_ = false;
+    }
     if (frame_summary_dirty_) {
         UpdateFrameSummary();
         frame_summary_dirty_ = false;
@@ -854,6 +1007,10 @@ void AnalysisPanel::FlushPendingUiUpdates() {
     if (packet_summary_dirty_) {
         UpdatePacketSummary();
         packet_summary_dirty_ = false;
+    }
+    if (event_summary_dirty_) {
+        UpdateEventSummary();
+        event_summary_dirty_ = false;
     }
 }
 
@@ -925,6 +1082,23 @@ void AnalysisPanel::FlushPendingPacketTableUpdates() {
 
     if (packet_table_->rowCount() > 0) {
         packet_table_->scrollToBottom();
+    }
+}
+
+void AnalysisPanel::FlushPendingEventTableUpdates() {
+    if (!event_table_) {
+        return;
+    }
+
+    event_table_->setUpdatesEnabled(false);
+    for (size_t i = event_table_synced_record_count_; i < analysis_event_records_.size(); ++i) {
+        AppendEventRowToTable(analysis_event_records_[i]);
+    }
+    event_table_->setUpdatesEnabled(true);
+    event_table_synced_record_count_ = analysis_event_records_.size();
+
+    if (event_table_->rowCount() > 0) {
+        event_table_->scrollToBottom();
     }
 }
 
@@ -1039,6 +1213,19 @@ void AnalysisPanel::AppendPacketRowToTable(const PacketRecord& record) {
     SetTableItemText(packet_table_, row, 6, QString::number(record.size));
     SetTableItemText(packet_table_, row, 7, PacketFlagsToString(record.flags));
     SetTableItemText(packet_table_, row, 8, QString::number(record.pos));
+}
+
+void AnalysisPanel::AppendEventRowToTable(const AnalysisEventRecord& record) {
+    const int row = event_table_->rowCount();
+    event_table_->insertRow(row);
+    SetTableItemText(event_table_, row, 0, QString::number(record.index));
+    SetTableItemText(event_table_, row, 1, record.severity);
+    SetTableItemText(event_table_, row, 2, record.type);
+    SetTableItemText(event_table_, row, 3, QString::number(record.stream_index));
+    SetTableItemText(event_table_, row, 4, QString::number(record.timestamp_seconds, 'f', 3));
+    SetTableItemText(event_table_, row, 5, QString::number(record.pts));
+    SetTableItemText(event_table_, row, 6, record.summary);
+    SetTableItemText(event_table_, row, 7, record.detail);
 }
 
 void AnalysisPanel::UpdateGopRowInTable(int row, const GopSummary& summary) {
