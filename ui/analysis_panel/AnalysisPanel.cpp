@@ -51,6 +51,7 @@ void AnalysisPanel::SetupUI() {
     SetupStreamTab();
     SetupFrameTab();
     SetupAudioFrameTab();
+    SetupPacketTab();
     SetupHistogramTab();
     SetupFaceTab();
     
@@ -252,6 +253,46 @@ void AnalysisPanel::SetupAudioFrameTab() {
     connect(export_audio_frame_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportAudioFrameCsv);
 }
 
+void AnalysisPanel::SetupPacketTab() {
+    packet_tab_ = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(packet_tab_);
+
+    QHBoxLayout* toolbar_layout = new QHBoxLayout();
+    packet_summary_label_ = new QLabel(tr("总包数: 0 | 视频包: 0 | 音频包: 0 | 其他包: 0"), packet_tab_);
+    toolbar_layout->addWidget(packet_summary_label_, 1);
+
+    export_packet_csv_button_ = new QPushButton(tr("导出 CSV"), packet_tab_);
+    toolbar_layout->addWidget(export_packet_csv_button_);
+    layout->addLayout(toolbar_layout);
+
+    QGroupBox* table_group = new QGroupBox(tr("数据包信息"), packet_tab_);
+    QVBoxLayout* table_layout = new QVBoxLayout(table_group);
+
+    packet_table_ = new QTableWidget(0, 9, table_group);
+    packet_table_->setHorizontalHeaderLabels({"序号", "流索引", "时间戳(s)", "PTS", "DTS", "时长", "大小", "标记", "文件偏移"});
+    packet_table_->verticalHeader()->setVisible(false);
+    packet_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    packet_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    packet_table_->setSelectionMode(QAbstractItemView::SingleSelection);
+    packet_table_->setSortingEnabled(false);
+    packet_table_->horizontalHeader()->setStretchLastSection(true);
+    packet_table_->setColumnWidth(0, 80);
+    packet_table_->setColumnWidth(1, 80);
+    packet_table_->setColumnWidth(2, 120);
+    packet_table_->setColumnWidth(3, 120);
+    packet_table_->setColumnWidth(4, 120);
+    packet_table_->setColumnWidth(5, 100);
+    packet_table_->setColumnWidth(6, 90);
+    packet_table_->setColumnWidth(7, 120);
+
+    table_layout->addWidget(packet_table_);
+    layout->addWidget(table_group);
+
+    tab_widget_->addTab(packet_tab_, tr("包分析"));
+
+    connect(export_packet_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportPacketCsv);
+}
+
 void AnalysisPanel::SetupHistogramTab() {
     histogram_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(histogram_tab_);
@@ -363,6 +404,17 @@ void AnalysisPanel::ResetAudioFrameList() {
     UpdateAudioFrameSummary();
 }
 
+void AnalysisPanel::ResetPacketList() {
+    packet_records_.clear();
+    packet_table_synced_record_count_ = 0;
+    packet_table_dirty_ = false;
+    packet_summary_dirty_ = true;
+    if (packet_table_) {
+        packet_table_->setRowCount(0);
+    }
+    UpdatePacketSummary();
+}
+
 void AnalysisPanel::AppendVideoFrameInfo(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds) {
     if (!frame_table_ || !gop_table_) {
         return;
@@ -449,6 +501,28 @@ void AnalysisPanel::AppendAudioFrameInfo(int index, qint64 pts, double timestamp
     audio_frame_summary_dirty_ = true;
 }
 
+void AnalysisPanel::AppendPacketInfo(const model::PacketInfo& packet_info) {
+    if (!packet_table_) {
+        return;
+    }
+
+    PacketRecord record;
+    record.index = packet_info.index;
+    record.stream_index = packet_info.stream_index;
+    record.stream_type = packet_info.stream_type;
+    record.pts = static_cast<qint64>(packet_info.pts);
+    record.dts = static_cast<qint64>(packet_info.dts);
+    record.duration = static_cast<qint64>(packet_info.duration);
+    record.size = packet_info.size;
+    record.flags = packet_info.flags;
+    record.pos = static_cast<qint64>(packet_info.pos);
+    record.timestamp_seconds = packet_info.timestamp_seconds;
+
+    packet_records_.push_back(record);
+    packet_table_dirty_ = true;
+    packet_summary_dirty_ = true;
+}
+
 QString AnalysisPanel::FrameTypeToString(int frame_type) const {
     if (frame_type == AV_PICTURE_TYPE_I) {
         return "I";
@@ -460,6 +534,26 @@ QString AnalysisPanel::FrameTypeToString(int frame_type) const {
         return "B";
     }
     return "?";
+}
+
+QString AnalysisPanel::PacketFlagsToString(int flags) const {
+    QStringList values;
+    if ((flags & AV_PKT_FLAG_KEY) != 0) {
+        values << tr("KEY");
+    }
+    if ((flags & AV_PKT_FLAG_CORRUPT) != 0) {
+        values << tr("CORRUPT");
+    }
+    if ((flags & AV_PKT_FLAG_DISCARD) != 0) {
+        values << tr("DISCARD");
+    }
+    if ((flags & AV_PKT_FLAG_TRUSTED) != 0) {
+        values << tr("TRUSTED");
+    }
+    if ((flags & AV_PKT_FLAG_DISPOSABLE) != 0) {
+        values << tr("DISPOSABLE");
+    }
+    return values.isEmpty() ? tr("-") : values.join('|');
 }
 
 bool AnalysisPanel::MatchesFrameFilter(const VideoFrameRecord& record) const {
@@ -524,6 +618,20 @@ void AnalysisPanel::RebuildAudioFrameTable() {
     audio_frame_table_synced_record_count_ = audio_frame_records_.size();
 }
 
+void AnalysisPanel::RebuildPacketTable() {
+    if (!packet_table_) {
+        return;
+    }
+
+    packet_table_->setUpdatesEnabled(false);
+    packet_table_->setRowCount(0);
+    for (const auto& record : packet_records_) {
+        AppendPacketRowToTable(record);
+    }
+    packet_table_->setUpdatesEnabled(true);
+    packet_table_synced_record_count_ = packet_records_.size();
+}
+
 void AnalysisPanel::UpdateFrameSummary() {
     if (!frame_summary_label_) {
         return;
@@ -568,6 +676,32 @@ void AnalysisPanel::UpdateAudioFrameSummary() {
             .arg(audio_frame_records_.size())
             .arg(total_samples)
             .arg(total_bytes));
+}
+
+void AnalysisPanel::UpdatePacketSummary() {
+    if (!packet_summary_label_) {
+        return;
+    }
+
+    int video_packets = 0;
+    int audio_packets = 0;
+    int other_packets = 0;
+    for (const auto& record : packet_records_) {
+        if (record.stream_type == AVMEDIA_TYPE_VIDEO) {
+            video_packets++;
+        } else if (record.stream_type == AVMEDIA_TYPE_AUDIO) {
+            audio_packets++;
+        } else {
+            other_packets++;
+        }
+    }
+
+    packet_summary_label_->setText(
+        tr("总包数: %1 | 视频包: %2 | 音频包: %3 | 其他包: %4")
+            .arg(packet_records_.size())
+            .arg(video_packets)
+            .arg(audio_packets)
+            .arg(other_packets));
 }
 
 void AnalysisPanel::OnExportFrameCsv() {
@@ -644,6 +778,45 @@ void AnalysisPanel::OnExportAudioFrameCsv() {
     QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
 }
 
+void AnalysisPanel::OnExportPacketCsv() {
+    if (packet_records_.empty()) {
+        QMessageBox::information(this, tr("提示"), tr("当前没有可导出的包分析数据。"));
+        return;
+    }
+
+    const QString filename = QFileDialog::getSaveFileName(
+        this,
+        tr("导出包分析 CSV"),
+        QString("videoeye_packets_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
+        tr("CSV 文件 (*.csv);;所有文件 (*)"));
+    if (filename.isEmpty()) {
+        return;
+    }
+
+    QFile file(filename);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件:\n%1").arg(filename));
+        return;
+    }
+
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    out << "index,stream_index,timestamp_seconds,pts,dts,duration,size,flags,file_pos\n";
+    for (const auto& record : packet_records_) {
+        out << record.index << ','
+            << record.stream_index << ','
+            << QString::number(record.timestamp_seconds, 'f', 6) << ','
+            << record.pts << ','
+            << record.dts << ','
+            << record.duration << ','
+            << record.size << ','
+            << '"' << PacketFlagsToString(record.flags) << '"' << ','
+            << record.pos << '\n';
+    }
+
+    QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
+}
+
 void AnalysisPanel::OnFrameFilterChanged() {
     RebuildFrameTable();
     UpdateFrameSummary();
@@ -666,6 +839,10 @@ void AnalysisPanel::FlushPendingUiUpdates() {
         FlushPendingAudioFrameTableUpdates();
         audio_frame_table_dirty_ = false;
     }
+    if (packet_table_dirty_) {
+        FlushPendingPacketTableUpdates();
+        packet_table_dirty_ = false;
+    }
     if (frame_summary_dirty_) {
         UpdateFrameSummary();
         frame_summary_dirty_ = false;
@@ -673,6 +850,10 @@ void AnalysisPanel::FlushPendingUiUpdates() {
     if (audio_frame_summary_dirty_) {
         UpdateAudioFrameSummary();
         audio_frame_summary_dirty_ = false;
+    }
+    if (packet_summary_dirty_) {
+        UpdatePacketSummary();
+        packet_summary_dirty_ = false;
     }
 }
 
@@ -727,6 +908,23 @@ void AnalysisPanel::FlushPendingAudioFrameTableUpdates() {
 
     if (audio_frame_table_->rowCount() > 0) {
         audio_frame_table_->scrollToBottom();
+    }
+}
+
+void AnalysisPanel::FlushPendingPacketTableUpdates() {
+    if (!packet_table_) {
+        return;
+    }
+
+    packet_table_->setUpdatesEnabled(false);
+    for (size_t i = packet_table_synced_record_count_; i < packet_records_.size(); ++i) {
+        AppendPacketRowToTable(packet_records_[i]);
+    }
+    packet_table_->setUpdatesEnabled(true);
+    packet_table_synced_record_count_ = packet_records_.size();
+
+    if (packet_table_->rowCount() > 0) {
+        packet_table_->scrollToBottom();
     }
 }
 
@@ -827,6 +1025,20 @@ void AnalysisPanel::AppendAudioFrameRowToTable(const AudioFrameRecord& record) {
     SetTableItemText(audio_frame_table_, row, 4, QString::number(record.sample_rate));
     SetTableItemText(audio_frame_table_, row, 5, QString::number(record.channels));
     SetTableItemText(audio_frame_table_, row, 6, QString::number(record.byte_count));
+}
+
+void AnalysisPanel::AppendPacketRowToTable(const PacketRecord& record) {
+    const int row = packet_table_->rowCount();
+    packet_table_->insertRow(row);
+    SetTableItemText(packet_table_, row, 0, QString::number(record.index));
+    SetTableItemText(packet_table_, row, 1, QString::number(record.stream_index));
+    SetTableItemText(packet_table_, row, 2, QString::number(record.timestamp_seconds, 'f', 3));
+    SetTableItemText(packet_table_, row, 3, QString::number(record.pts));
+    SetTableItemText(packet_table_, row, 4, QString::number(record.dts));
+    SetTableItemText(packet_table_, row, 5, QString::number(record.duration));
+    SetTableItemText(packet_table_, row, 6, QString::number(record.size));
+    SetTableItemText(packet_table_, row, 7, PacketFlagsToString(record.flags));
+    SetTableItemText(packet_table_, row, 8, QString::number(record.pos));
 }
 
 void AnalysisPanel::UpdateGopRowInTable(int row, const GopSummary& summary) {

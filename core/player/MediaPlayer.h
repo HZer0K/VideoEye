@@ -14,6 +14,7 @@ extern "C" {
 
 #include "core/player/Decoders.h"
 #include "core/model/FrameData.h"
+#include "core/model/PacketInfo.h"
 #include "core/analyzer/StreamAnalyzer.h"
 #include "core/analyzer/FrameAnalyzer.h"
 #include "core/analyzer/FaceDetector.h"
@@ -87,6 +88,8 @@ signals:
     void AudioFrameListReset();
     void AudioFrameInfoReady(int index, qint64 pts, double timestamp_seconds,
                              int sample_count, int sample_rate, int channels, int byte_count);
+    void PacketListReset();
+    void PacketInfoReady(const model::PacketInfo& packet_info);
     void MediaModeChanged(bool has_video);
     void AudioLevelReady(double level, double timestamp_seconds);
     void VideoFrameExportStarted(int total_frames);
@@ -141,6 +144,7 @@ private:
     int analysis_frame_counter_ = 0;  // 用于控制分析频率
     int video_frame_index_ = 0;
     int audio_frame_index_ = 0;
+    int packet_index_ = 0;
 };
 
 } // namespace player

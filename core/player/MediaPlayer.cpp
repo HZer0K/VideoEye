@@ -518,8 +518,10 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     should_stop_ = false;
     video_frame_index_ = 0;
     audio_frame_index_ = 0;
+    packet_index_ = 0;
     emit VideoFrameListReset();
     emit AudioFrameListReset();
+    emit PacketListReset();
 
     const unsigned header_avcodec_major = LIBAVCODEC_VERSION_MAJOR;
     const unsigned runtime_avcodec_major = static_cast<unsigned>(avcodec_version() >> 16);
@@ -1620,6 +1622,26 @@ void MediaPlayer::DecodeThread() {
 
         const int64_t pkt_ts = (packet->pts != AV_NOPTS_VALUE) ? packet->pts : packet->dts;
         const double packet_ts_sec = PacketTimestampSeconds(format_ctx_, packet);
+        model::PacketInfo packet_info;
+        packet_info.index = packet_index_++;
+        packet_info.stream_index = packet->stream_index;
+        if (format_ctx_ && packet->stream_index >= 0 &&
+            packet->stream_index < static_cast<int>(format_ctx_->nb_streams) &&
+            format_ctx_->streams[packet->stream_index] &&
+            format_ctx_->streams[packet->stream_index]->codecpar) {
+            packet_info.stream_type = format_ctx_->streams[packet->stream_index]->codecpar->codec_type;
+        }
+        packet_info.pts = packet->pts;
+        packet_info.dts = packet->dts;
+        packet_info.duration = packet->duration;
+        packet_info.size = packet->size;
+        packet_info.flags = packet->flags;
+        packet_info.pos = packet->pos;
+        packet_info.timestamp_seconds = packet_ts_sec;
+        emit PacketInfoReady(packet_info);
+        if (analysis_enabled_) {
+            stream_analyzer_.AnalyzePacket(packet, format_ctx_);
+        }
         if (packet->stream_index == clock_stream_index && !frame_paced_video) {
             playback_clock.PaceTo(packet_ts_sec);
         }
@@ -1717,8 +1739,6 @@ void MediaPlayer::DecodeThread() {
 
                     // 实时分析 (仅帧有效时)
                     if (analysis_enabled_) {
-                        // 流分析 (每个包)
-                        stream_analyzer_.AnalyzePacket(packet, format_ctx_);
                         stream_analyzer_.AnalyzeVideoFrame(video_decoder_->GetLastPictureType());
                         
                         // 每隔10帧进行一次帧分析 (降低CPU占用)

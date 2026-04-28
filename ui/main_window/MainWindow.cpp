@@ -490,6 +490,10 @@ void MainWindow::SetupConnections() {
             analysis_panel_, &ui::AnalysisPanel::ResetAudioFrameList);
     connect(player_, &player::MediaPlayer::AudioFrameInfoReady,
             analysis_panel_, &ui::AnalysisPanel::AppendAudioFrameInfo);
+    connect(player_, &player::MediaPlayer::PacketListReset,
+            analysis_panel_, &ui::AnalysisPanel::ResetPacketList);
+    connect(player_, &player::MediaPlayer::PacketInfoReady,
+            analysis_panel_, &ui::AnalysisPanel::AppendPacketInfo);
     
     // 控件信号连接
     connect(play_button_, &QPushButton::clicked, this, &MainWindow::OnPlay);
