@@ -52,11 +52,15 @@ double PacketTimestampSeconds(const AVFormatContext* format_ctx, const AVPacket*
 }
 
 int SelectPlaybackClockStreamIndex(int audio_stream_index, int video_stream_index) {
-    // 预留音频主时钟语义: 当前有音频流时优先跟随音频时间线。
+    // 当前并没有真实音频输出设备参与同步，UI 以视频显示为主，
+    // 因此存在视频流时优先使用视频时钟来节流，避免按解码速度“倍速播放”。
+    if (video_stream_index >= 0) {
+        return video_stream_index;
+    }
     if (audio_stream_index >= 0) {
         return audio_stream_index;
     }
-    return video_stream_index;
+    return -1;
 }
 
 struct PlaybackClock {
@@ -1476,7 +1480,7 @@ void MediaPlayer::DecodeThread() {
     int last_emitted_position_ms = -1;
     
     const int clock_stream_index = SelectPlaybackClockStreamIndex(audio_stream_index_, video_stream_index_);
-    const bool enable_pacing = (video_stream_index_ < 0 && clock_stream_index >= 0);
+    const bool enable_pacing = (clock_stream_index >= 0);
     PlaybackClock playback_clock;
     playback_clock.Reset();
     
@@ -1504,11 +1508,7 @@ void MediaPlayer::DecodeThread() {
         const int64_t pkt_ts = (packet->pts != AV_NOPTS_VALUE) ? packet->pts : packet->dts;
         const double packet_ts_sec = PacketTimestampSeconds(format_ctx_, packet);
         if (packet->stream_index == clock_stream_index) {
-            if (enable_pacing) {
-                playback_clock.PaceTo(packet_ts_sec);
-            } else {
-                playback_clock.Sync(packet_ts_sec);
-            }
+            playback_clock.PaceTo(packet_ts_sec);
         }
         
         // 播放位置跟随主时钟流, 为后续接入真实音频时钟保留一致语义。
@@ -1528,6 +1528,13 @@ void MediaPlayer::DecodeThread() {
         // 视频解码
         if (packet->stream_index == video_stream_index_ && video_decoder_) {
             if (video_decoder_->DecodePacket(packet, frame_data)) {
+                if (format_ctx_ && video_stream_index_ >= 0) {
+                    AVStream* vs = format_ctx_->streams[video_stream_index_];
+                    if (vs && vs->time_base.den != 0 && frame_data.pts != AV_NOPTS_VALUE) {
+                        frame_data.timestamp = frame_data.pts * av_q2d(vs->time_base);
+                    }
+                }
+
                 // 验证帧数据有效性 (防止崩溃)
                 if (frame_data.width <= 0 || frame_data.height <= 0 || !frame_data.data[0]) {
                     LOG_WARN("跳过无效帧数据");
