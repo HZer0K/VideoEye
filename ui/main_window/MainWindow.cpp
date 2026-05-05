@@ -1072,11 +1072,17 @@ void MainWindow::OnPlayPause() {
     }
 }
 
-void MainWindow::OnStop() {
-    player_->Stop();
+void MainWindow::ResetVideoUI() {
     video_label_->clear();
     video_label_->setText(tr("视频显示区域"));
     video_label_->setStyleSheet("background-color: black; color: white; font-size: 20px;");
+    seek_slider_->setValue(0);
+    seek_slider_->setRange(0, 0);
+    time_label_->setText(tr("00:00 / 00:00"));
+}
+
+void MainWindow::OnStop() {
+    // 清理其他状态（不立即清理视频UI，让OnStateChanged统一处理）
     audio_level_history_.clear();
     audio_only_mode_ = false;
     audio_vis_last_render_ms_ = -1;
@@ -1091,6 +1097,12 @@ void MainWindow::OnStop() {
     raw_total_frames_ = 0;
     raw_current_frame_ = 0;
     UpdateRawNavigationState();
+    
+    // 停止播放器，会触发OnStateChanged(Stopped)来清理视频UI
+    if (player_) {
+        player_->Stop();
+    }
+    
     if (export_progress_dialog_ && export_progress_dialog_->isVisible()) {
         player_->CancelVideoFrameExport();
         export_progress_dialog_->reset();
@@ -1123,6 +1135,10 @@ void MainWindow::OnStateChanged(model::PlayerState state) {
             break;
         case model::PlayerState::Stopped:
             state_text = tr("已停止");
+            // 停止状态下清理UI，确保最后一帧被清除
+            QMetaObject::invokeMethod(this, [this]() {
+                ResetVideoUI();
+            }, Qt::QueuedConnection);
             break;
         case model::PlayerState::Error:
             state_text = tr("错误");
@@ -1142,6 +1158,11 @@ void MainWindow::OnStateChanged(model::PlayerState state) {
 }
 
 void MainWindow::OnFrameReady(const QImage& frame) {
+    // 如果播放器已停止，忽略帧更新
+    if (player_ && player_->GetState() == model::PlayerState::Stopped) {
+        return;
+    }
+    
     QPixmap pixmap = QPixmap::fromImage(frame);
     video_label_->setPixmap(pixmap.scaled(video_label_->size(), 
                                           Qt::KeepAspectRatio,
@@ -1149,6 +1170,11 @@ void MainWindow::OnFrameReady(const QImage& frame) {
 }
 
 void MainWindow::OnPositionChanged(int position_ms, int duration_ms) {
+    // 如果播放器已停止，忽略位置更新
+    if (player_ && player_->GetState() == model::PlayerState::Stopped) {
+        return;
+    }
+    
     QSignalBlocker blocker(seek_slider_);
     seek_slider_->setRange(0, duration_ms);
     seek_slider_->setValue(position_ms);

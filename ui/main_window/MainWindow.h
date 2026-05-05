@@ -87,6 +87,7 @@ protected:
     
     // 更新UI状态
     void UpdateUIState();
+    void ResetVideoUI();  // 重置视频显示UI
     
     // 成员变量
     player::MediaPlayer* player_;
