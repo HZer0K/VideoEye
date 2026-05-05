@@ -45,8 +45,7 @@ private slots:
     void OnNextRawFrame();
     
     // 播放控制
-    void OnPlay();
-    void OnPause();
+    void OnPlayPause();
     void OnStop();
     void OnSeek(int value);
     
@@ -99,8 +98,7 @@ protected:
     QGroupBox* control_group_;      // 播放控制容器
     QTabWidget* tab_widget_;        // 标签页
     QSlider* seek_slider_;          // 进度条
-    QPushButton* play_button_;      // 播放按钮
-    QPushButton* pause_button_;     // 暂停按钮
+    QPushButton* play_pause_button_; // 播放/暂停按钮
     QPushButton* stop_button_;      // 停止按钮
     QPushButton* prev_frame_button_;
     QPushButton* next_frame_button_;

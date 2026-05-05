@@ -94,14 +94,15 @@ void MainWindow::SetupUI() {
     QHBoxLayout* control_layout = new QHBoxLayout(control_group_);
     
     // 播放控制按钮
-    play_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), tr("播放"), control_group_);
-    pause_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPause), tr("暂停"), control_group_);
+    play_pause_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), tr("播放"), control_group_);
     stop_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaStop), tr("停止"), control_group_);
     prev_frame_button_ = new QPushButton(tr("上一帧"), control_group_);
     next_frame_button_ = new QPushButton(tr("下一帧"), control_group_);
     
-    control_layout->addWidget(play_button_);
-    control_layout->addWidget(pause_button_);
+    play_pause_button_->setObjectName("playPauseButton");
+    play_pause_button_->setToolTip(tr("播放/暂停"));
+    
+    control_layout->addWidget(play_pause_button_);
     control_layout->addWidget(stop_button_);
     control_layout->addWidget(prev_frame_button_);
     control_layout->addWidget(next_frame_button_);
@@ -512,8 +513,7 @@ void MainWindow::SetupConnections() {
             analysis_panel_, &ui::AnalysisPanel::AppendAudioVisualization);
     
     // 控件信号连接
-    connect(play_button_, &QPushButton::clicked, this, &MainWindow::OnPlay);
-    connect(pause_button_, &QPushButton::clicked, this, &MainWindow::OnPause);
+    connect(play_pause_button_, &QPushButton::clicked, this, &MainWindow::OnPlayPause);
     connect(stop_button_, &QPushButton::clicked, this, &MainWindow::OnStop);
     connect(prev_frame_button_, &QPushButton::clicked, this, &MainWindow::OnPrevRawFrame);
     connect(next_frame_button_, &QPushButton::clicked, this, &MainWindow::OnNextRawFrame);
@@ -1025,11 +1025,8 @@ void MainWindow::UpdateRawNavigationState() {
         next_frame_button_->setVisible(raw_mode);
         next_frame_button_->setEnabled(raw_mode && raw_current_frame_ + 1 < raw_total_frames_);
     }
-    if (play_button_) {
-        play_button_->setEnabled(!raw_mode);
-    }
-    if (pause_button_) {
-        pause_button_->setEnabled(!raw_mode);
+    if (play_pause_button_) {
+        play_pause_button_->setEnabled(!raw_mode);
     }
 
     if (raw_mode) {
@@ -1044,28 +1041,35 @@ void MainWindow::UpdateRawNavigationState() {
     }
 }
 
-void MainWindow::OnPlay() {
-    if (player_) {
-        if (showing_raw_image_) {
-            statusBar()->showMessage(tr("当前为图像文件，无法播放"));
+void MainWindow::OnPlayPause() {
+    if (!player_) {
+        return;
+    }
+    
+    if (showing_raw_image_) {
+        statusBar()->showMessage(tr("当前为图像文件，无法播放"));
+        return;
+    }
+    
+    const auto state = player_->GetState();
+    
+    // 如果处于Idle/Stopped/Error状态，先打开媒体
+    if ((state == model::PlayerState::Idle ||
+         state == model::PlayerState::Stopped ||
+         state == model::PlayerState::Error) &&
+        !current_media_url_.isEmpty()) {
+        if (!player_->Open(current_media_url_)) {
+            statusBar()->showMessage(tr("打开失败: %1").arg(current_media_url_));
             return;
         }
-        const auto state = player_->GetState();
-        if ((state == model::PlayerState::Idle ||
-             state == model::PlayerState::Stopped ||
-             state == model::PlayerState::Error) &&
-            !current_media_url_.isEmpty()) {
-            if (!player_->Open(current_media_url_)) {
-                statusBar()->showMessage(tr("打开失败: %1").arg(current_media_url_));
-                return;
-            }
-        }
+    }
+    
+    // 根据当前状态切换播放/暂停
+    if (state == model::PlayerState::Playing) {
+        player_->Pause();
+    } else {
         player_->Play();
     }
-}
-
-void MainWindow::OnPause() {
-    player_->Pause();
 }
 
 void MainWindow::OnStop() {
@@ -1126,6 +1130,15 @@ void MainWindow::OnStateChanged(model::PlayerState state) {
     }
     
     statusBar()->showMessage(state_text);
+    
+    // 更新播放/暂停按钮的图标和文本
+    if (state == model::PlayerState::Playing) {
+        play_pause_button_->setIcon(style()->standardIcon(QStyle::SP_MediaPause));
+        play_pause_button_->setText(tr("暂停"));
+    } else {
+        play_pause_button_->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+        play_pause_button_->setText(tr("播放"));
+    }
 }
 
 void MainWindow::OnFrameReady(const QImage& frame) {
