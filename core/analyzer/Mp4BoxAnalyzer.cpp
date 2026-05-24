@@ -30,9 +30,22 @@ public:
         node.size = static_cast<uint64_t>(size);
         node.depth = node_stack_.size();
 
+        // 记录 trak 上下文
+        if (node.type == "trak") {
+            trak_nesting_++;
+        }
+        // 进入 trak 子原子时，沿用当前 trak 上下文
+        if (trak_nesting_ > 0 && node.type == "tkhd") {
+            inside_tkhd_ = true;
+        }
+        if (trak_nesting_ > 0 && node.type == "hdlr") {
+            inside_hdlr_ = true;
+        }
+
         // 记录版本和标志作为字段
         if (version != 0 || flags != 0) {
             model::Mp4BoxNode::Field f;
+            // 将 version/flags 设为第一组字段
             f.name = "version";
             f.value = QString::number(version);
             node.fields.push_back(f);
@@ -54,11 +67,21 @@ public:
 
         model::Mp4BoxNode node = node_stack_.pop();
 
+        // 退出 trak 上下文
+        if (node.type == "trak") {
+            trak_nesting_--;
+            if (trak_nesting_ == 0) {
+                current_track_id_ = 0;
+                current_track_type_.clear();
+            }
+        }
+        if (node.type == "tkhd") inside_tkhd_ = false;
+        if (node.type == "hdlr") inside_hdlr_ = false;
+
         // 收集该 Box 的入口数据到 track_tables_
         CollectEntryData(node);
 
         if (node_stack_.isEmpty()) {
-            // 根节点，添加到结果
             result_.box_tree.push_back(node);
         } else {
             node_stack_.top().children.push_back(node);
@@ -144,6 +167,14 @@ public:
 
 private:
     void AddFieldCommon(const char* name, const QString& value) {
+        // 追踪 trak 上下文: tkhd.id → current_track_id_, hdlr.handler_type → current_track_type_
+        if (inside_tkhd_ && name && strcmp(name, "id") == 0) {
+            current_track_id_ = value.toInt();
+        }
+        if (inside_hdlr_ && name && strcmp(name, "handler_type") == 0) {
+            current_track_type_ = value;
+        }
+
         if (tracking_entries_) {
             if (in_entry_object_) {
                 // stts/stsc: 命名条目字段
@@ -216,6 +247,8 @@ private:
             CollectStscFromFields(node);
         } else if (node.type == "stsz") {
             CollectStszFromFields(node);
+        } else if (node.type == "stss") {
+            CollectStssFromFields(node);
         }
     }
 
@@ -364,6 +397,28 @@ private:
         }
     }
 
+    void CollectStssFromFields(const model::Mp4BoxNode& node) {
+        model::TrackBoxTables tables;
+        tables.track_id = current_track_id_;
+        tables.track_type = current_track_type_;
+        for (const auto& f : node.fields) {
+            if (f.name.startsWith("entry[")) {
+                auto parts = f.value.split(", ");
+                model::StssEntry entry;
+                for (const auto& p : parts) {
+                    auto kv = p.split('=');
+                    if (kv.size() == 2 && kv[0] == "sample_number") {
+                        entry.sample_number = kv[1].toUInt();
+                    }
+                }
+                tables.stss_entries.push_back(entry);
+            }
+        }
+        if (!tables.stss_entries.isEmpty()) {
+            ConsolidateAndAddTable(std::move(tables));
+        }
+    }
+
     model::Mp4BoxAnalysisResult& result_;
     QStack<model::Mp4BoxNode> node_stack_;
     QString current_array_name_;
@@ -375,6 +430,9 @@ private:
     // 当前 trak 上下文
     int current_track_id_ = 0;
     QString current_track_type_;
+    int trak_nesting_ = 0;      // trak 嵌套深度
+    bool inside_tkhd_ = false;  // 当前在 tkhd 原子内
+    bool inside_hdlr_ = false;  // 当前在 hdlr 原子内
 };
 
 // ============================================================

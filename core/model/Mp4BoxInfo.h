@@ -52,6 +52,11 @@ struct StszEntry {
     uint32_t sample_size = 0;
 };
 
+// stss: Sync Sample (关键帧列表)
+struct StssEntry {
+    uint32_t sample_number = 0;
+};
+
 // 每个 Track 的 Box 表数据
 struct TrackBoxTables {
     int track_id = 0;
@@ -61,6 +66,7 @@ struct TrackBoxTables {
     QVector<Co64Entry> co64_entries;
     QVector<StscEntry> stsc_entries;
     QVector<StszEntry> stsz_entries;
+    QVector<StssEntry> stss_entries;  // stss: 关键帧列表
     uint32_t stsz_default_size = 0;
     uint32_t stsz_sample_count = 0;
 };

@@ -311,6 +311,8 @@ private:
     QTableWidget* stco_table_;
     QTableWidget* stsc_table_;
     QTableWidget* stsz_table_;
+    QTableWidget* co64_table_;
+    QTableWidget* stss_table_;
     QLabel* mp4_box_summary_label_;
     model::Mp4BoxAnalysisResult current_box_result_;
     

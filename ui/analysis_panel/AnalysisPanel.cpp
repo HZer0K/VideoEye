@@ -668,9 +668,11 @@ void AnalysisPanel::SetupMp4BoxTab() {
     QGroupBox* tree_group = new QGroupBox(tr("Box 树结构"), splitter);
     QVBoxLayout* tree_layout = new QVBoxLayout(tree_group);
     box_tree_widget_ = new QTreeWidget(tree_group);
-    box_tree_widget_->setHeaderLabels({tr("Box 类型"), tr("大小 (字节)"), tr("偏移")});
+    box_tree_widget_->setHeaderLabels({tr("Box 类型"), tr("大小 (字节)"), tr("偏移"), tr("关键属性")});
     box_tree_widget_->setColumnWidth(0, 160);
     box_tree_widget_->setColumnWidth(1, 120);
+    box_tree_widget_->setColumnWidth(2, 100);
+    box_tree_widget_->setColumnWidth(3, 280);
     box_tree_widget_->setAlternatingRowColors(true);
     tree_layout->addWidget(box_tree_widget_);
     splitter->addWidget(tree_group);
@@ -718,6 +720,26 @@ void AnalysisPanel::SetupMp4BoxTab() {
     stsz_layout->addWidget(stsz_table_);
     box_detail_tabs_->addTab(stsz_widget, tr("stsz (Sample Size)"));
     
+    // stss 表
+    QWidget* stss_widget = new QWidget();
+    QVBoxLayout* stss_layout = new QVBoxLayout(stss_widget);
+    stss_table_ = new QTableWidget(0, 2, stss_widget);
+    stss_table_->setHorizontalHeaderLabels({tr("索引"), tr("关键帧样本号")});
+    stss_table_->horizontalHeader()->setStretchLastSection(true);
+    stss_table_->setAlternatingRowColors(true);
+    stss_layout->addWidget(stss_table_);
+    box_detail_tabs_->addTab(stss_widget, tr("stss (Sync Sample)"));
+    
+    // co64 表
+    QWidget* co64_widget = new QWidget();
+    QVBoxLayout* co64_layout = new QVBoxLayout(co64_widget);
+    co64_table_ = new QTableWidget(0, 2, co64_widget);
+    co64_table_->setHorizontalHeaderLabels({tr("索引"), tr("Chunk 偏移 (64位)")});
+    co64_table_->horizontalHeader()->setStretchLastSection(true);
+    co64_table_->setAlternatingRowColors(true);
+    co64_layout->addWidget(co64_table_);
+    box_detail_tabs_->addTab(co64_widget, tr("co64 (64-bit Chunk)"));
+    
     splitter->addWidget(box_detail_tabs_);
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 2);
@@ -737,7 +759,8 @@ void AnalysisPanel::SetupMp4BoxTab() {
 // 前向声明辅助函数
 static void PopulateMp4BoxTablesImpl(const model::Mp4BoxAnalysisResult& result,
                                        QTableWidget* stts_table, QTableWidget* stco_table,
-                                       QTableWidget* stsc_table, QTableWidget* stsz_table);
+                                       QTableWidget* stsc_table, QTableWidget* stsz_table,
+                                       QTableWidget* co64_table, QTableWidget* stss_table);
 
 void AnalysisPanel::OnMp4BoxAnalysisReady(const model::Mp4BoxAnalysisResult& result) {
     if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
@@ -779,12 +802,31 @@ void AnalysisPanel::OnMp4BoxAnalysisReady(const model::Mp4BoxAnalysisResult& res
             
             // 添加字段信息作为 tooltip
             QString tooltip;
+            QString key_props;  // 关键属性摘要
             for (const auto& f : node.fields) {
                 if (!tooltip.isEmpty()) tooltip += "\n";
                 tooltip += f.name + ": " + f.value;
+                // 只展示关键字段在列中
+                if (f.name == "handler_type" || f.name == "id" ||
+                    f.name == "timescale" || f.name == "duration" ||
+                    f.name == "width" || f.name == "height" ||
+                    f.name == "sample_rate" || f.name == "channel_count" ||
+                    f.name == "entry_count" || f.name == "sample_size" ||
+                    f.name == "sample_count" || f.name == "major_brand" ||
+                    f.name == "language" || f.name == "handler_name" ||
+                    f.name == "balance" || f.name == "graphics_mode" ||
+                    f.name.startsWith("entry_count")) {
+                    if (!key_props.isEmpty()) key_props += " | ";
+                    key_props += f.name + "=" + f.value;
+                }
             }
             if (!tooltip.isEmpty()) {
                 items->setToolTip(0, tooltip);
+                items->setToolTip(1, tooltip);
+                items->setToolTip(2, tooltip);
+            }
+            if (!key_props.isEmpty()) {
+                items->setText(3, key_props);
             }
             
             if (parent) {
@@ -801,86 +843,134 @@ void AnalysisPanel::OnMp4BoxAnalysisReady(const model::Mp4BoxAnalysisResult& res
         root->setText(0, node.type);
         root->setText(1, QString::number(node.size));
         QString tooltip;
+        QString key_props;
         for (const auto& f : node.fields) {
             if (!tooltip.isEmpty()) tooltip += "\n";
             tooltip += f.name + ": " + f.value;
+            if (f.name == "major_brand" || f.name == "minor_version" ||
+                f.name.startsWith("compatible_brand")) {
+                if (!key_props.isEmpty()) key_props += " | ";
+                key_props += f.name + "=" + f.value;
+            }
         }
         if (!tooltip.isEmpty()) root->setToolTip(0, tooltip);
+        if (!key_props.isEmpty()) root->setText(3, key_props);
         box_tree_widget_->addTopLevelItem(root);
         addNodes(root, node.children);
     }
     box_tree_widget_->expandAll();
     
     // 填充 Track 表数据
-    // 将多个 Track 的数据合并展示，用 Track ID 列区分
-    PopulateMp4BoxTablesImpl(result, stts_table_, stco_table_, stsc_table_, stsz_table_);
+    PopulateMp4BoxTablesImpl(result, stts_table_, stco_table_, stsc_table_,
+                             stsz_table_, co64_table_, stss_table_);
 }
 
 // 辅助方法: 填充 MP4 Box 详情表
 static void PopulateMp4BoxTablesImpl(const model::Mp4BoxAnalysisResult& result,
                                        QTableWidget* stts_table, QTableWidget* stco_table,
-                                       QTableWidget* stsc_table, QTableWidget* stsz_table) {
+                                       QTableWidget* stsc_table, QTableWidget* stsz_table,
+                                       QTableWidget* co64_table, QTableWidget* stss_table) {
     stts_table->setRowCount(0);
     stco_table->setRowCount(0);
     stsc_table->setRowCount(0);
     stsz_table->setRowCount(0);
+    stss_table->setRowCount(0);
+    co64_table->setRowCount(0);
     
     for (const auto& track : result.track_tables) {
+        // 添加 Track 分隔行
+        auto addTrackHeader = [](QTableWidget* table, const QString& text) {
+            const int row = table->rowCount();
+            table->insertRow(row);
+            auto* item = new QTableWidgetItem(text);
+            QFont f = item->font();
+            f.setBold(true);
+            item->setFont(f);
+            table->setItem(row, 0, item);
+        };
+
         // stts
-        for (int i = 0; i < track.stts_entries.size(); ++i) {
-            const int row = stts_table->rowCount();
-            stts_table->insertRow(row);
-            stts_table->setItem(row, 0, new QTableWidgetItem(QString::number(i)));
-            stts_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.stts_entries[i].sample_count)));
-            stts_table->setItem(row, 2, new QTableWidgetItem(QString::number(track.stts_entries[i].sample_delta)));
+        if (!track.stts_entries.isEmpty()) {
+            addTrackHeader(stts_table, QString("Track %1 (%2)").arg(track.track_id).arg(track.track_type));
+            for (int i = 0; i < track.stts_entries.size(); ++i) {
+                const int row = stts_table->rowCount();
+                stts_table->insertRow(row);
+                stts_table->setItem(row, 0, new QTableWidgetItem(QString::number(i)));
+                stts_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.stts_entries[i].sample_count)));
+                stts_table->setItem(row, 2, new QTableWidgetItem(QString::number(track.stts_entries[i].sample_delta)));
+            }
         }
         
         // stco
-        for (int i = 0; i < track.stco_entries.size(); ++i) {
-            const int row = stco_table->rowCount();
-            stco_table->insertRow(row);
-            stco_table->setItem(row, 0, new QTableWidgetItem(QString::number(i)));
-            stco_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.stco_entries[i].chunk_offset)));
+        if (!track.stco_entries.isEmpty()) {
+            addTrackHeader(stco_table, QString("Track %1 (%2)").arg(track.track_id).arg(track.track_type));
+            for (int i = 0; i < track.stco_entries.size(); ++i) {
+                const int row = stco_table->rowCount();
+                stco_table->insertRow(row);
+                stco_table->setItem(row, 0, new QTableWidgetItem(QString::number(i)));
+                stco_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.stco_entries[i].chunk_offset)));
+            }
         }
         
-        // co64 (如果有, 也加到 stco 表)
-        for (int i = 0; i < track.co64_entries.size(); ++i) {
-            const int row = stco_table->rowCount();
-            stco_table->insertRow(row);
-            stco_table->setItem(row, 0, new QTableWidgetItem(QString("co64[%1]").arg(i)));
-            stco_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.co64_entries[i].chunk_offset)));
+        // co64 (单独表格显示 64-bit chunk offset)
+        if (!track.co64_entries.isEmpty()) {
+            addTrackHeader(co64_table, QString("Track %1 (%2)").arg(track.track_id).arg(track.track_type));
+            for (int i = 0; i < track.co64_entries.size(); ++i) {
+                const int row = co64_table->rowCount();
+                co64_table->insertRow(row);
+                co64_table->setItem(row, 0, new QTableWidgetItem(QString::number(i)));
+                co64_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.co64_entries[i].chunk_offset)));
+            }
         }
         
         // stsc
-        for (int i = 0; i < track.stsc_entries.size(); ++i) {
-            const int row = stsc_table->rowCount();
-            stsc_table->insertRow(row);
-            stsc_table->setItem(row, 0, new QTableWidgetItem(QString::number(i)));
-            stsc_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.stsc_entries[i].first_chunk)));
-            stsc_table->setItem(row, 2, new QTableWidgetItem(QString::number(track.stsc_entries[i].samples_per_chunk)));
-            stsc_table->setItem(row, 3, new QTableWidgetItem(QString::number(track.stsc_entries[i].sample_description_index)));
+        if (!track.stsc_entries.isEmpty()) {
+            addTrackHeader(stsc_table, QString("Track %1 (%2)").arg(track.track_id).arg(track.track_type));
+            for (int i = 0; i < track.stsc_entries.size(); ++i) {
+                const int row = stsc_table->rowCount();
+                stsc_table->insertRow(row);
+                stsc_table->setItem(row, 0, new QTableWidgetItem(QString::number(i)));
+                stsc_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.stsc_entries[i].first_chunk)));
+                stsc_table->setItem(row, 2, new QTableWidgetItem(QString::number(track.stsc_entries[i].samples_per_chunk)));
+                stsc_table->setItem(row, 3, new QTableWidgetItem(QString::number(track.stsc_entries[i].sample_description_index)));
+            }
         }
         
         // stsz
-        if (track.stsz_default_size > 0 && track.stsz_entries.isEmpty()) {
-            // 固定大小模式
-            const int row = stsz_table->rowCount();
-            stsz_table->insertRow(row);
-            stsz_table->setItem(row, 0, new QTableWidgetItem("0"));
-            stsz_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.stsz_default_size)));
-            stsz_table->setItem(row, 2, new QTableWidgetItem(QString("固定大小, %1 个样本").arg(track.stsz_sample_count)));
-        } else {
-            for (int i = 0; i < track.stsz_entries.size(); ++i) {
+        if (!track.stsz_entries.isEmpty() || track.stsz_default_size > 0) {
+            addTrackHeader(stsz_table, QString("Track %1 (%2)").arg(track.track_id).arg(track.track_type));
+            if (track.stsz_default_size > 0 && track.stsz_entries.isEmpty()) {
+                // 固定大小模式
                 const int row = stsz_table->rowCount();
                 stsz_table->insertRow(row);
-                stsz_table->setItem(row, 0, new QTableWidgetItem(QString::number(i)));
-                stsz_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.stsz_entries[i].sample_size)));
+                stsz_table->setItem(row, 0, new QTableWidgetItem("0"));
+                stsz_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.stsz_default_size)));
+                stsz_table->setItem(row, 2, new QTableWidgetItem(QString("固定大小, %1 个样本").arg(track.stsz_sample_count)));
+            } else {
+                for (int i = 0; i < track.stsz_entries.size(); ++i) {
+                    const int row = stsz_table->rowCount();
+                    stsz_table->insertRow(row);
+                    stsz_table->setItem(row, 0, new QTableWidgetItem(QString::number(i)));
+                    stsz_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.stsz_entries[i].sample_size)));
+                }
+            }
+        }
+
+        // stss (关键帧列表)
+        if (!track.stss_entries.isEmpty()) {
+            addTrackHeader(stss_table, QString("Track %1 (%2)").arg(track.track_id).arg(track.track_type));
+            for (int i = 0; i < track.stss_entries.size(); ++i) {
+                const int row = stss_table->rowCount();
+                stss_table->insertRow(row);
+                stss_table->setItem(row, 0, new QTableWidgetItem(QString::number(i)));
+                stss_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.stss_entries[i].sample_number)));
             }
         }
     }
     
     // 更新列宽自适应
-    for (auto* table : {stts_table, stco_table, stsc_table, stsz_table}) {
+    for (auto* table : {stts_table, stco_table, stsc_table, stsz_table,
+                        co64_table, stss_table}) {
         table->resizeColumnsToContents();
     }
 }
