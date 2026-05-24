@@ -119,6 +119,12 @@ protected:
     QAction* frame_analysis_action_ = nullptr;
     QAction* histogram_action_ = nullptr;
     QAction* face_detection_action_ = nullptr;
+    QAction* audio_frame_action_ = nullptr;
+    QAction* packet_action_ = nullptr;
+    QAction* event_action_ = nullptr;
+    QAction* sync_action_ = nullptr;
+    QAction* timeline_action_ = nullptr;
+    QAction* audio_vis_action_ = nullptr;
     QAction* export_frames_action_ = nullptr;
     QProgressDialog* export_progress_dialog_ = nullptr;
     int export_total_frames_ = 0;

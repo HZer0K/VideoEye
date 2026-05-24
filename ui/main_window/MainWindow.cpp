@@ -329,56 +329,122 @@ void MainWindow::SetupMenuBar() {
     
     // 分析菜单
     QMenu* analysis_menu = menu_bar_->addMenu(tr("分析"));
-    stream_analysis_action_ = analysis_menu->addAction(tr("流分析"));
+    
+    // 组1: 基础分析
+    stream_analysis_action_ = analysis_menu->addAction(tr("流统计"));
     stream_analysis_action_->setCheckable(true);
     stream_analysis_action_->setChecked(false);
+    stream_analysis_action_->setToolTip(tr("码率/帧率/GOP 等流级别统计信息"));
     
-    frame_analysis_action_ = analysis_menu->addAction(tr("视频帧分析"));
+    frame_analysis_action_ = analysis_menu->addAction(tr("视频帧"));
     frame_analysis_action_->setCheckable(true);
     frame_analysis_action_->setChecked(false);
+    frame_analysis_action_->setToolTip(tr("视频帧类型分析 (I/P/B 帧)"));
+    
+    analysis_menu->addSeparator();
+    
+    // 组2: 详情分析
+    audio_frame_action_ = analysis_menu->addAction(tr("音频帧"));
+    audio_frame_action_->setCheckable(true);
+    audio_frame_action_->setChecked(false);
+    
+    packet_action_ = analysis_menu->addAction(tr("数据包"));
+    packet_action_->setCheckable(true);
+    packet_action_->setChecked(false);
+    packet_action_->setToolTip(tr("数据包级别分析，大量数据时可能影响性能"));
+    
+    event_action_ = analysis_menu->addAction(tr("事件"));
+    event_action_->setCheckable(true);
+    event_action_->setChecked(false);
+    
+    sync_action_ = analysis_menu->addAction(tr("同步"));
+    sync_action_->setCheckable(true);
+    sync_action_->setChecked(false);
+    sync_action_->setToolTip(tr("音视频同步偏差分析"));
+    
+    timeline_action_ = analysis_menu->addAction(tr("时间线"));
+    timeline_action_->setCheckable(true);
+    timeline_action_->setChecked(false);
+    
+    analysis_menu->addSeparator();
+    
+    // 组3: 高性能分析
+    audio_vis_action_ = analysis_menu->addAction(tr("音频可视化"));
+    audio_vis_action_->setCheckable(true);
+    audio_vis_action_->setChecked(false);
+    audio_vis_action_->setToolTip(tr("音频波形/频谱可视化 (FFT计算)"));
     
     histogram_action_ = analysis_menu->addAction(tr("直方图"));
     histogram_action_->setCheckable(true);
     histogram_action_->setChecked(false);
-    histogram_action_->setEnabled(false);
+    histogram_action_->setToolTip(tr("帧直方图分析，每帧图像处理"));
     
     face_detection_action_ = analysis_menu->addAction(tr("人脸检测"));
     face_detection_action_->setCheckable(true);
     face_detection_action_->setChecked(false);
-    face_detection_action_->setEnabled(false);
+    face_detection_action_->setToolTip(tr("人脸检测 (CPU密集)"));
 
+    // 流统计: 控制 StreamAnalyzer 生命周期
     connect(stream_analysis_action_, &QAction::toggled, this, [this](bool enabled) {
-        if (!player_) {
-            return;
-        }
+        if (!player_) return;
         player_->EnableAnalysis(enabled);
-        histogram_action_->setEnabled(enabled);
-        face_detection_action_->setEnabled(enabled);
-
-        if (!enabled) {
+        if (enabled) {
+            statusBar()->showMessage(tr("流统计已启用"));
+        } else {
             player_->SetHistogramEnabled(false);
             player_->SetFaceDetectionEnabled(false);
-            statusBar()->showMessage(tr("流分析已禁用"));
-            return;
+            histogram_action_->setChecked(false);
+            face_detection_action_->setChecked(false);
+            statusBar()->showMessage(tr("流统计已禁用"));
         }
-
-        player_->SetHistogramEnabled(histogram_action_->isChecked());
-        player_->SetFaceDetectionEnabled(face_detection_action_->isChecked());
-        statusBar()->showMessage(tr("流分析已启用"));
     });
 
     connect(frame_analysis_action_, &QAction::toggled, this, [this](bool enabled) {
-        if (!player_) {
-            return;
-        }
+        if (!player_) return;
         player_->SetFrameTypeAnalysisEnabled(enabled);
         statusBar()->showMessage(enabled ? tr("视频帧分析已启用") : tr("视频帧分析已禁用"));
     });
 
+    // 详情分析连接
+    connect(audio_frame_action_, &QAction::toggled, this, [this](bool enabled) {
+        if (!player_) return;
+        player_->SetAudioFrameAnalysisEnabled(enabled);
+        statusBar()->showMessage(enabled ? tr("音频帧分析已启用") : tr("音频帧分析已禁用"));
+    });
+
+    connect(packet_action_, &QAction::toggled, this, [this](bool enabled) {
+        if (!player_) return;
+        player_->SetPacketAnalysisEnabled(enabled);
+        statusBar()->showMessage(enabled ? tr("数据包分析已启用") : tr("数据包分析已禁用"));
+    });
+
+    connect(event_action_, &QAction::toggled, this, [this](bool enabled) {
+        if (!player_) return;
+        player_->SetEventAnalysisEnabled(enabled);
+        statusBar()->showMessage(enabled ? tr("事件分析已启用") : tr("事件分析已禁用"));
+    });
+
+    connect(sync_action_, &QAction::toggled, this, [this](bool enabled) {
+        if (!player_) return;
+        player_->SetSyncAnalysisEnabled(enabled);
+        statusBar()->showMessage(enabled ? tr("音视频同步分析已启用") : tr("音视频同步分析已禁用"));
+    });
+
+    connect(timeline_action_, &QAction::toggled, this, [this](bool enabled) {
+        if (!player_) return;
+        player_->SetTimelineAnalysisEnabled(enabled);
+        statusBar()->showMessage(enabled ? tr("时间线分析已启用") : tr("时间线分析已禁用"));
+    });
+
+    // 高性能分析连接（直方图和人脸检测依赖流统计）
+    connect(audio_vis_action_, &QAction::toggled, this, [this](bool enabled) {
+        if (!player_) return;
+        player_->SetAudioVisualizationEnabled(enabled);
+        statusBar()->showMessage(enabled ? tr("音频可视化已启用") : tr("音频可视化已禁用"));
+    });
+
     connect(histogram_action_, &QAction::toggled, this, [this](bool enabled) {
-        if (!player_) {
-            return;
-        }
+        if (!player_) return;
         if (enabled && !stream_analysis_action_->isChecked()) {
             stream_analysis_action_->setChecked(true);
         }
@@ -387,9 +453,7 @@ void MainWindow::SetupMenuBar() {
     });
 
     connect(face_detection_action_, &QAction::toggled, this, [this](bool enabled) {
-        if (!player_) {
-            return;
-        }
+        if (!player_) return;
         if (enabled && !stream_analysis_action_->isChecked()) {
             stream_analysis_action_->setChecked(true);
         }
