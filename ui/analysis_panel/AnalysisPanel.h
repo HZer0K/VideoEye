@@ -22,6 +22,7 @@
 #include <QtCharts/QValueAxis>
 #include <deque>
 #include <vector>
+#include <string>
 
 #include "core/analyzer/StreamAnalyzer.h"
 #include "core/analyzer/FrameAnalyzer.h"
@@ -60,6 +61,9 @@ public:
     
     // 检查某个分析功能是否启用
     bool IsFeatureEnabled(AnalysisFeature feature) const;
+    
+    // 设置当前视频文件路径 (供导出报告使用)
+    void SetCurrentVideoPath(const QString& path) { current_video_path_ = path.toStdString(); }
     
 signals:
     // 分析功能开关变化信号 (供 MainWindow 连接 MediaPlayer)
@@ -229,6 +233,8 @@ private:
     void OnExportSyncCsv();
     void OnExportTimelineCsv();
     void OnExportAudioVisualizationCsv();
+    void OnExportHistogramCsv();
+    void OnExportMp4Box();
     void OnFrameFilterChanged();
     
     // 更新图表
@@ -309,7 +315,9 @@ private:
     model::Mp4BoxAnalysisResult current_box_result_;
     
     // 控制按钮
-    QPushButton* export_button_;
+    QPushButton* export_button_;          // 流统计导出 (HTML/JSON/TXT)
+    QPushButton* export_histogram_button_;
+    QPushButton* export_mp4_box_button_;
     
     // 图表数据系列
     QChart* bitrate_chart_object_;
@@ -377,6 +385,9 @@ private:
     std::deque<qreal> bitrate_chart_values_;
     std::deque<qreal> fps_chart_values_;
     std::deque<qreal> sync_chart_values_;
+    
+    // 当前视频文件路径 (供导出报告使用)
+    std::string current_video_path_;
 };
 
 } // namespace ui

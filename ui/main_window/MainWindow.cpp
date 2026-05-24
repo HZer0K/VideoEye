@@ -577,6 +577,7 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
                 tr("%1 [PCM %2, %3 Hz, %4 ch]").arg(source, demuxer_name).arg(sample_rate).arg(channels));
         }
         current_media_url_ = source;
+        analysis_panel_->SetCurrentVideoPath(source);
 
         auto info = player_->GetStreamInfo();
         info_text_->setPlainText(QString::fromStdString(info.ToString()));
@@ -599,6 +600,7 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
         current_media_label_->setText(source);
     }
     current_media_url_ = source;
+    analysis_panel_->SetCurrentVideoPath(source);
 
     auto info = player_->GetStreamInfo();
     info_text_->setPlainText(QString::fromStdString(info.ToString()));

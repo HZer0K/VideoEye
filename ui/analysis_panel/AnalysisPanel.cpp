@@ -1,10 +1,12 @@
 #include "AnalysisPanel.h"
 #include "utils/Logger.h"
+#include "utils/ReportExporter.h"
 #include <QGroupBox>
 #include <QSplitter>
 #include <QHeaderView>
 #include <QDateTime>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFile>
 #include <QMessageBox>
 #include <QTextStream>
@@ -12,6 +14,7 @@
 #include <QCheckBox>
 #include <QtCharts>
 #include <algorithm>
+#include <functional>
 
 namespace videoeye {
 namespace ui {
@@ -112,15 +115,7 @@ void AnalysisPanel::SetupUI() {
     
     main_layout->addWidget(tab_widget_);
     
-    // 底部按钮
-    QHBoxLayout* button_layout = new QHBoxLayout();
-    export_button_ = new QPushButton(tr("导出分析报告"), this);
-    button_layout->addStretch();
-    button_layout->addWidget(export_button_);
-    main_layout->addLayout(button_layout);
-    
-    // 连接信号
-    connect(export_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportReport);
+    // 连接信号 - 移除了底部全局导出按钮，导出功能分散到各 Tab
 }
 
 bool AnalysisPanel::IsFeatureEnabled(AnalysisFeature feature) const {
@@ -243,6 +238,13 @@ void AnalysisPanel::SetupStreamTab() {
     fps_series_->attachAxis(fps_axis_y_);
     fps_chart_->setChart(fps_chart_object_);
     fps_chart_->setRenderHint(QPainter::Antialiasing);
+    
+    // 导出报告按钮
+    export_button_ = new QPushButton(tr("导出分析报告"), stream_tab_);
+    export_button_->setToolTip(tr("将当前流统计信息导出为 HTML/JSON/TXT 报告"));
+    layout->addWidget(export_button_, 0, Qt::AlignRight);
+    
+    connect(export_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportReport);
 }
 
 void AnalysisPanel::SetupFrameTab() {
@@ -639,7 +641,14 @@ void AnalysisPanel::SetupHistogramTab() {
     
     layout->addWidget(hist_group);
     
+    // 导出按钮
+    export_histogram_button_ = new QPushButton(tr("导出直方图数据"), histogram_tab_);
+    export_histogram_button_->setToolTip(tr("将直方图通道数据导出为 CSV"));
+    layout->addWidget(export_histogram_button_, 0, Qt::AlignRight);
+    
     tab_widget_->addTab(histogram_tab_, tr("直方图"));
+    
+    connect(export_histogram_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportHistogramCsv);
 }
 
 void AnalysisPanel::SetupMp4BoxTab() {
@@ -715,7 +724,14 @@ void AnalysisPanel::SetupMp4BoxTab() {
     
     layout->addWidget(splitter);
     
+    // 导出按钮
+    export_mp4_box_button_ = new QPushButton(tr("导出 Box 数据"), mp4_box_tab_);
+    export_mp4_box_button_->setToolTip(tr("将 Box 树结构和表格数据导出为文本文件"));
+    layout->addWidget(export_mp4_box_button_, 0, Qt::AlignRight);
+    
     tab_widget_->addTab(mp4_box_tab_, tr("MP4 Box"));
+    
+    connect(export_mp4_box_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportMp4Box);
 }
 
 // 前向声明辅助函数
@@ -1820,6 +1836,142 @@ void AnalysisPanel::OnExportAudioVisualizationCsv() {
     QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
 }
 
+void AnalysisPanel::OnExportHistogramCsv() {
+    if (current_hist_.bins == 0 || current_hist_.red_channel.empty()) {
+        QMessageBox::information(this, tr("提示"), tr("当前没有可导出的直方图数据。"));
+        return;
+    }
+
+    const QString filename = QFileDialog::getSaveFileName(
+        this,
+        tr("导出直方图数据 CSV"),
+        QString("videoeye_histogram_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
+        tr("CSV 文件 (*.csv);;所有文件 (*)"));
+    if (filename.isEmpty()) return;
+
+    QFile file(filename);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件:\n%1").arg(filename));
+        return;
+    }
+
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    out << "bin,red,green,blue,gray\n";
+    for (int i = 0; i < current_hist_.bins && i < static_cast<int>(current_hist_.red_channel.size()); ++i) {
+        out << i << ','
+            << QString::number(current_hist_.red_channel[i], 'f', 6) << ','
+            << QString::number(current_hist_.green_channel[i], 'f', 6) << ','
+            << QString::number(current_hist_.blue_channel[i], 'f', 6) << ','
+            << QString::number(current_hist_.gray_channel[i], 'f', 6) << '\n';
+    }
+
+    QMessageBox::information(this, tr("成功"), tr("直方图数据已导出到:\n%1").arg(filename));
+}
+
+void AnalysisPanel::OnExportMp4Box() {
+    if (!current_box_result_.valid || current_box_result_.box_tree.isEmpty()) {
+        QMessageBox::information(this, tr("提示"), tr("当前没有可导出的 MP4 Box 数据。"));
+        return;
+    }
+
+    const QString filename = QFileDialog::getSaveFileName(
+        this,
+        tr("导出 MP4 Box 数据"),
+        QString("videoeye_boxes_%1.txt").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
+        tr("文本文件 (*.txt);;所有文件 (*)"));
+    if (filename.isEmpty()) return;
+
+    QFile file(filename);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件:\n%1").arg(filename));
+        return;
+    }
+
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+
+    // 导出 Box 树结构
+    out << "========================================\n";
+    out << "  MP4 Box 树结构\n";
+    out << "========================================\n\n";
+
+    std::function<void(const QVector<model::Mp4BoxNode>&, int)> printTree;
+    printTree = [&](const QVector<model::Mp4BoxNode>& nodes, int depth) {
+        for (const auto& node : nodes) {
+            QString indent(depth * 2, ' ');
+            out << indent << node.type
+                << " | size=" << node.size
+                << " | offset=" << node.offset << '\n';
+            printTree(node.children, depth + 1);
+        }
+    };
+    printTree(current_box_result_.box_tree, 0);
+
+    // 导出各 Track 的表格数据
+    for (const auto& track : current_box_result_.track_tables) {
+        out << "\n--- Track: " << track.track_type
+            << " (ID=" << track.track_id << ") ---\n\n";
+
+        // stts
+        if (!track.stts_entries.isEmpty()) {
+            out << "stts (Time-to-Sample):\n";
+            out << "  Index\tSampleCount\tSampleDelta\n";
+            for (int i = 0; i < track.stts_entries.size(); ++i) {
+                out << "  " << i << "\t"
+                    << track.stts_entries[i].sample_count << "\t"
+                    << track.stts_entries[i].sample_delta << '\n';
+            }
+            out << '\n';
+        }
+
+        // stco
+        if (!track.stco_entries.isEmpty()) {
+            out << "stco (Chunk Offset):\n";
+            out << "  Index\tChunkOffset\n";
+            for (int i = 0; i < track.stco_entries.size(); ++i) {
+                out << "  " << i << "\t"
+                    << track.stco_entries[i].chunk_offset << '\n';
+            }
+            out << '\n';
+        }
+
+        // stsc
+        if (!track.stsc_entries.isEmpty()) {
+            out << "stsc (Sample-to-Chunk):\n";
+            out << "  Index\tFirstChunk\tSamplesPerChunk\tSampleDescIndex\n";
+            for (int i = 0; i < track.stsc_entries.size(); ++i) {
+                out << "  " << i << "\t"
+                    << track.stsc_entries[i].first_chunk << "\t"
+                    << track.stsc_entries[i].samples_per_chunk << "\t"
+                    << track.stsc_entries[i].sample_description_index << '\n';
+            }
+            out << '\n';
+        }
+
+        // stsz
+        if (!track.stsz_entries.isEmpty()) {
+            out << "stsz (Sample Size):\n";
+            out << "  Index\tSize";
+            if (track.stsz_entries.size() > 1) {
+                out << "\t[0]constant=" << track.stsz_entries[0].sample_size;
+            }
+            out << '\n';
+            for (int i = 0; i < track.stsz_entries.size(); ++i) {
+                out << "  " << i << "\t"
+                    << track.stsz_entries[i].sample_size << '\n';
+            }
+            out << '\n';
+        }
+    }
+
+    out << "========================================\n";
+    out << "  报告结束\n";
+    out << "========================================\n";
+
+    QMessageBox::information(this, tr("成功"), tr("MP4 Box 数据已导出到:\n%1").arg(filename));
+}
+
 void AnalysisPanel::OnFrameFilterChanged() {
     RebuildFrameTable();
     UpdateFrameSummary();
@@ -2318,7 +2470,7 @@ void AnalysisPanel::OnExportReport() {
         this,
         tr("导出分析报告"),
         QString("videoeye_report_%1.html").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
-        tr("HTML文件 (*.html);;文本文件 (*.txt);;所有文件 (*)"));
+        tr("HTML文件 (*.html);;JSON文件 (*.json);;文本文件 (*.txt);;所有文件 (*)"));
     
     if (filename.isEmpty()) {
         return;
@@ -2326,7 +2478,39 @@ void AnalysisPanel::OnExportReport() {
     
     LOG_INFO("导出分析报告: " + filename.toStdString());
     
-    QMessageBox::information(this, tr("成功"), tr("分析报告已导出到:\n%1").arg(filename));
+    bool success = false;
+    const QString ext = QFileInfo(filename).suffix().toLower();
+    const std::string fname = filename.toStdString();
+    
+    // 将 deque 数据转换为 vector 供导出 API 使用
+    std::vector<double> fps_history(fps_chart_values_.begin(), fps_chart_values_.end());
+    std::vector<int> bitrate_history;
+    bitrate_history.reserve(bitrate_chart_values_.size());
+    for (qreal v : bitrate_chart_values_) {
+        bitrate_history.push_back(static_cast<int>(v * 1000)); // Kbps → bps
+    }
+    
+    if (ext == "html") {
+        success = utils::ReportExporter::ExportHTMLReport(
+            fname, current_stats_, fps_history, bitrate_history, current_video_path_);
+    } else if (ext == "json") {
+        success = utils::ReportExporter::ExportJSON(
+            fname, current_stats_, current_video_path_);
+    } else if (ext == "txt") {
+        success = utils::ReportExporter::ExportTextReport(
+            fname, current_stats_, current_video_path_);
+    } else {
+        // 未知扩展名，默认生成 HTML
+        filename += ".html";
+        success = utils::ReportExporter::ExportHTMLReport(
+            filename.toStdString(), current_stats_, fps_history, bitrate_history, current_video_path_);
+    }
+    
+    if (success) {
+        QMessageBox::information(this, tr("成功"), tr("分析报告已导出到:\n%1").arg(filename));
+    } else {
+        QMessageBox::warning(this, tr("错误"), tr("导出分析报告失败:\n%1").arg(filename));
+    }
 }
 
 } // namespace ui
