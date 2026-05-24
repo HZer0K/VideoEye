@@ -253,7 +253,7 @@ void AnalysisPanel::SetupFrameTab() {
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
     toolbar_layout->addWidget(new QLabel(tr("筛选:"), frame_tab_));
     frame_filter_combo_ = new QComboBox(frame_tab_);
-    frame_filter_combo_->addItems({tr("全部帧"), tr("仅 I 帧"), tr("仅关键帧")});
+    frame_filter_combo_->addItems({tr("全部帧"), tr("仅 I 帧")});
     toolbar_layout->addWidget(frame_filter_combo_);
 
     frame_summary_label_ = new QLabel(tr("总帧数: 0 | 显示: 0 | GOP: 0"), frame_tab_);
@@ -1102,8 +1102,6 @@ bool AnalysisPanel::MatchesFrameFilter(const VideoFrameRecord& record) const {
     switch (frame_filter_combo_->currentIndex()) {
     case 1:
         return record.frame_type == AV_PICTURE_TYPE_I;
-    case 2:
-        return record.is_key_frame;
     default:
         return true;
     }
