@@ -18,7 +18,27 @@ namespace ui {
 namespace {
 constexpr int kUiFlushIntervalMs = 120;
 constexpr int kMaxChartSamples = 300;
+constexpr size_t kMaxFrameRecords = 50000;
+constexpr size_t kMaxAudioFrameRecords = 30000;
+constexpr size_t kMaxPacketRecords = 10000;
+constexpr size_t kMaxEventRecords = 5000;
+constexpr size_t kMaxSyncRecords = 5000;
+constexpr size_t kMaxTimelineRecords = 5000;
+
+// 裁剪记录向量到指定上限，移除最早的多余记录并重置表格
+template<typename T>
+void TrimRecords(std::vector<T>& records, size_t& synced_count,
+                 QTableWidget* table, bool& table_dirty, size_t max_count) {
+    if (records.size() <= max_count) return;
+    const size_t remove_count = records.size() - max_count;
+    records.erase(records.begin(), records.begin() + remove_count);
+    if (table) {
+        table->setRowCount(0);
+    }
+    synced_count = 0;
+    table_dirty = true;
 }
+} // namespace
 
 AnalysisPanel::AnalysisPanel(QWidget* parent)
     : QWidget(parent)
@@ -863,6 +883,17 @@ void AnalysisPanel::AppendVideoFrameInfo(int index, int frame_type, bool is_key_
     frame_records_.push_back(record);
     frame_table_dirty_ = true;
     frame_summary_dirty_ = true;
+    {
+        const size_t old_size = frame_records_.size();
+        TrimRecords(frame_records_, frame_table_synced_record_count_, frame_table_, frame_table_dirty_, kMaxFrameRecords);
+        if (frame_records_.size() != old_size) {
+            // 帧记录被裁剪时同步清理GOP数据
+            gop_summaries_.clear();
+            gop_table_synced_count_ = 0;
+            if (gop_table_) gop_table_->setRowCount(0);
+            gop_table_dirty_ = true;
+        }
+    }
 
     if (gop_summaries_.empty() || record.gop_position == 1) {
         GopSummary summary;
@@ -898,6 +929,7 @@ void AnalysisPanel::AppendVideoFrameInfo(int index, int frame_type, bool is_key_
         }
     }
     gop_table_dirty_ = true;
+    TrimRecords(gop_summaries_, gop_table_synced_count_, gop_table_, gop_table_dirty_, kMaxFrameRecords / 10);
 }
 
 void AnalysisPanel::AppendAudioFrameInfo(int index, qint64 pts, double timestamp_seconds,
@@ -920,6 +952,7 @@ void AnalysisPanel::AppendAudioFrameInfo(int index, qint64 pts, double timestamp
     audio_frame_records_.push_back(record);
     audio_frame_table_dirty_ = true;
     audio_frame_summary_dirty_ = true;
+    TrimRecords(audio_frame_records_, audio_frame_table_synced_record_count_, audio_frame_table_, audio_frame_table_dirty_, kMaxAudioFrameRecords);
 }
 
 void AnalysisPanel::AppendPacketInfo(const model::PacketInfo& packet_info) {
@@ -944,6 +977,7 @@ void AnalysisPanel::AppendPacketInfo(const model::PacketInfo& packet_info) {
     packet_records_.push_back(record);
     packet_table_dirty_ = true;
     packet_summary_dirty_ = true;
+    TrimRecords(packet_records_, packet_table_synced_record_count_, packet_table_, packet_table_dirty_, kMaxPacketRecords);
 }
 
 void AnalysisPanel::AppendAnalysisEvent(const model::AnalysisEvent& event_info) {
@@ -966,6 +1000,7 @@ void AnalysisPanel::AppendAnalysisEvent(const model::AnalysisEvent& event_info) 
     analysis_event_records_.push_back(record);
     event_table_dirty_ = true;
     event_summary_dirty_ = true;
+    TrimRecords(analysis_event_records_, event_table_synced_record_count_, event_table_, event_table_dirty_, kMaxEventRecords);
 }
 
 void AnalysisPanel::AppendSyncSample(const model::SyncSample& sample) {
@@ -985,6 +1020,7 @@ void AnalysisPanel::AppendSyncSample(const model::SyncSample& sample) {
     sync_sample_records_.push_back(record);
     sync_table_dirty_ = true;
     sync_summary_dirty_ = true;
+    TrimRecords(sync_sample_records_, sync_table_synced_record_count_, sync_table_, sync_table_dirty_, kMaxSyncRecords);
 }
 
 void AnalysisPanel::AppendTimelineEvent(const model::TimelineEvent& event) {
@@ -1004,6 +1040,7 @@ void AnalysisPanel::AppendTimelineEvent(const model::TimelineEvent& event) {
     timeline_event_records_.push_back(record);
     timeline_table_dirty_ = true;
     timeline_summary_dirty_ = true;
+    TrimRecords(timeline_event_records_, timeline_table_synced_record_count_, timeline_table_, timeline_table_dirty_, kMaxTimelineRecords);
 }
 
 void AnalysisPanel::AppendAudioVisualization(const model::AudioVisualizationFrame& frame) {
@@ -1623,6 +1660,9 @@ void AnalysisPanel::OnFrameFilterChanged() {
 }
 
 void AnalysisPanel::FlushPendingUiUpdates() {
+    // 面板不可见时跳过UI刷新以节省CPU
+    if (!isVisible()) return;
+
     if (has_pending_stream_stats_) {
         RefreshStreamStatsUi(pending_stream_stats_);
         has_pending_stream_stats_ = false;

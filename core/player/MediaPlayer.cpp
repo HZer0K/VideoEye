@@ -1997,7 +1997,7 @@ void MediaPlayer::DecodeThread() {
                                                  out_size);
                     }
                     ++audio_timeline_sample_counter_;
-                    if (audio_timeline_sample_counter_ % 20 == 0) {
+                    if (audio_timeline_sample_counter_ % 100 == 0) {
                         EmitTimelineEvent(QStringLiteral("音频采样"),
                                           ts,
                                           QStringLiteral("音频帧 #%1").arg(audio_frame_index_ - 1));
