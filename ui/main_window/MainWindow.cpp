@@ -412,8 +412,6 @@ void MainWindow::SetupConnections() {
             analysis_panel_, &ui::AnalysisPanel::UpdateStreamStats);
     connect(player_, &player::MediaPlayer::HistogramReady,
             analysis_panel_, &ui::AnalysisPanel::UpdateHistogram);
-    connect(player_, &player::MediaPlayer::FaceDetectionReady,
-            analysis_panel_, &ui::AnalysisPanel::UpdateFaceDetection);
     connect(player_, &player::MediaPlayer::VideoFrameListReset,
             analysis_panel_, &ui::AnalysisPanel::ResetVideoFrameList);
     connect(player_, &player::MediaPlayer::VideoFrameInfoReady,
@@ -458,7 +456,6 @@ void MainWindow::SetupConnections() {
                     player_->EnableAnalysis(enabled);
                     if (!enabled) {
                         player_->SetHistogramEnabled(false);
-                        player_->SetFaceDetectionEnabled(false);
                     }
                     break;
                 case AF::VideoFrame:
@@ -467,10 +464,6 @@ void MainWindow::SetupConnections() {
                 case AF::Histogram:
                     if (enabled) player_->EnableAnalysis(true);
                     player_->SetHistogramEnabled(enabled);
-                    break;
-                case AF::FaceDetect:
-                    if (enabled) player_->EnableAnalysis(true);
-                    player_->SetFaceDetectionEnabled(enabled);
                     break;
                 case AF::AudioFrame:
                     player_->SetAudioFrameAnalysisEnabled(enabled);
@@ -1201,13 +1194,6 @@ void MainWindow::OnStreamStatsUpdate(const analyzer::StreamStats& stats) {
 
 void MainWindow::OnHistogramUpdate(const analyzer::HistogramData& hist) {
     // 直方图数据已由分析面板处理，这里可以做其他处理
-}
-
-void MainWindow::OnFaceDetectionUpdate(const std::vector<analyzer::FaceInfo>& faces) {
-    // 人脸检测结果已由分析面板处理，这里可以做其他处理
-    if (!faces.empty()) {
-        statusBar()->showMessage(tr("检测到 %1 张人脸").arg(faces.size()));
-    }
 }
 
 void MainWindow::OnMediaModeChanged(bool has_video) {

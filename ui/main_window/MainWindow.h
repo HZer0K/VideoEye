@@ -59,7 +59,6 @@ private slots:
     // 分析功能槽函数 (MediaPlayer信号)
     void OnStreamStatsUpdate(const analyzer::StreamStats& stats);
     void OnHistogramUpdate(const analyzer::HistogramData& hist);
-    void OnFaceDetectionUpdate(const std::vector<analyzer::FaceInfo>& faces);
     void OnMediaModeChanged(bool has_video);
     void OnAudioLevelReady(double level, double timestamp_seconds);
     void OnVideoFrameExportProgress(int exported_frames);

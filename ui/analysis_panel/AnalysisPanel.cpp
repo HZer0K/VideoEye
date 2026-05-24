@@ -77,7 +77,6 @@ AnalysisPanel::AnalysisPanel(QWidget* parent)
     feature_enabled_[AnalysisFeature::Timeline] = false;
     feature_enabled_[AnalysisFeature::AudioVis] = false;
     feature_enabled_[AnalysisFeature::Histogram] = false;
-    feature_enabled_[AnalysisFeature::FaceDetect] = false;
     
     SetupUI();
     
@@ -109,7 +108,6 @@ void AnalysisPanel::SetupUI() {
     SetupTimelineTab();
     SetupAudioVisualizationTab();
     SetupHistogramTab();
-    SetupFaceTab();
     SetupMp4BoxTab();
     
     main_layout->addWidget(tab_widget_);
@@ -148,7 +146,7 @@ QWidget* AnalysisPanel::CreateToggleHeader(AnalysisFeature feature, const QStrin
     toggle->setToolTip(tr("启用或禁用该分析功能，关闭可降低 CPU 占用"));
     hlayout->addWidget(toggle);
     
-    // 直方图和 FaceDetect 开启时需要确保 StreamAnalyzer 已启动
+    // 直方图开启时需要确保 StreamAnalyzer 已启动
     connect(toggle, &QCheckBox::toggled, this, [this, feature](bool checked) {
         feature_enabled_[feature] = checked;
         emit AnalysisFeatureToggled(static_cast<int>(feature), checked);
@@ -644,41 +642,6 @@ void AnalysisPanel::SetupHistogramTab() {
     tab_widget_->addTab(histogram_tab_, tr("直方图"));
 }
 
-void AnalysisPanel::SetupFaceTab() {
-    face_tab_ = new QWidget();
-    QVBoxLayout* layout = new QVBoxLayout(face_tab_);
-    layout->addWidget(CreateToggleHeader(AnalysisFeature::FaceDetect, tr("人脸检测"), face_tab_));
-    
-    // 人脸计数
-    face_count_label_ = new QLabel(tr("检测到人脸数: 0"), face_tab_);
-    face_count_label_->setStyleSheet("font-size: 16px; font-weight: bold;");
-    layout->addWidget(face_count_label_);
-    
-    // 人脸详情表格
-    QGroupBox* face_group = new QGroupBox(tr("人脸详细信息"), face_tab_);
-    QVBoxLayout* face_layout = new QVBoxLayout(face_group);
-    
-    face_table_ = new QTableWidget(0, 4, face_group);
-    face_table_->setHorizontalHeaderLabels({"序号", "置信度", "位置", "大小"});
-    face_table_->horizontalHeader()->setStretchLastSection(true);
-    face_layout->addWidget(face_table_);
-    
-    layout->addWidget(face_group);
-    
-    // 人脸图像显示
-    QGroupBox* image_group = new QGroupBox(tr("人脸预览"), face_tab_);
-    QVBoxLayout* image_layout = new QVBoxLayout(image_group);
-    face_image_label_ = new QLabel(tr("暂无人脸图像"), image_group);
-    face_image_label_->setAlignment(Qt::AlignCenter);
-    face_image_label_->setMinimumHeight(300);
-    face_image_label_->setStyleSheet("background-color: #f0f0f0;");
-    image_layout->addWidget(face_image_label_);
-    
-    layout->addWidget(image_group);
-    
-    tab_widget_->addTab(face_tab_, tr("人脸检测"));
-}
-
 void AnalysisPanel::SetupMp4BoxTab() {
     mp4_box_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(mp4_box_tab_);
@@ -919,30 +882,6 @@ void AnalysisPanel::UpdateHistogram(const analyzer::HistogramData& hist) {
         !feature_enabled_.value(AnalysisFeature::Histogram, true)) return;
     current_hist_ = hist;
     UpdateHistogramChart(hist);
-}
-
-void AnalysisPanel::UpdateFaceDetection(const std::vector<analyzer::FaceInfo>& faces) {
-    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
-        !feature_enabled_.value(AnalysisFeature::FaceDetect, true)) return;
-    current_faces_ = faces;
-    
-    // 更新计数
-    face_count_label_->setText(tr("检测到人脸数: %1").arg(faces.size()));
-    
-    // 更新表格
-    face_table_->setRowCount(faces.size());
-    
-    for (size_t i = 0; i < faces.size(); ++i) {
-        const auto& face = faces[i];
-        
-        face_table_->setItem(i, 0, new QTableWidgetItem(QString::number(i + 1)));
-        face_table_->setItem(i, 1, new QTableWidgetItem(
-            QString::number(face.confidence, 'f', 2)));
-        face_table_->setItem(i, 2, new QTableWidgetItem(
-            QString("(%1, %2)").arg(face.bounding_box.x).arg(face.bounding_box.y)));
-        face_table_->setItem(i, 3, new QTableWidgetItem(
-            QString("%1x%2").arg(face.bounding_box.width).arg(face.bounding_box.height)));
-    }
 }
 
 void AnalysisPanel::ResetVideoFrameList() {

@@ -5,7 +5,6 @@
 
 #include "core/analyzer/StreamAnalyzer.h"
 #include "core/analyzer/FrameAnalyzer.h"
-#include "core/analyzer/FaceDetector.h"
 
 namespace videoeye {
 namespace utils {

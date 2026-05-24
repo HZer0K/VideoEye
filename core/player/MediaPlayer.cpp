@@ -1232,7 +1232,6 @@ void MediaPlayer::EnableAnalysis(bool enable) {
         LOG_INFO("已启用视频分析");
     } else {
         histogram_enabled_ = false;
-        face_detection_enabled_ = false;
         stream_analyzer_.Stop();
         LOG_INFO("已禁用视频分析");
     }
@@ -1240,15 +1239,6 @@ void MediaPlayer::EnableAnalysis(bool enable) {
 
 void MediaPlayer::SetFrameTypeAnalysisEnabled(bool enable) {
     frame_type_analysis_enabled_ = enable;
-}
-
-void MediaPlayer::SetFaceDetectionEnabled(bool enable) {
-    face_detection_enabled_ = enable;
-    if (enable && face_detector_.GetTotalDetections() == 0) {
-        // 初始化人脸检测器
-        // 注意：需要从资源路径加载
-        LOG_INFO("人脸检测已启用");
-    }
 }
 
 void MediaPlayer::SetHistogramEnabled(bool enable) {
@@ -1944,18 +1934,6 @@ void MediaPlayer::DecodeThread() {
                                     emit HistogramReady(hist);
                                 } catch (const std::exception& e) {
                                     LOG_ERROR("直方图分析失败: " + std::string(e.what()));
-                                }
-                            }
-                            
-                            // 人脸检测 (添加异常处理)
-                            if (face_detection_enabled_) {
-                                try {
-                                    auto faces = face_detector_.DetectFaces(frame_data);
-                                    if (!faces.empty()) {
-                                        emit FaceDetectionReady(faces);
-                                    }
-                                } catch (const std::exception& e) {
-                                    LOG_ERROR("人脸检测失败: " + std::string(e.what()));
                                 }
                             }
 

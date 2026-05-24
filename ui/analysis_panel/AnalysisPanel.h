@@ -25,7 +25,6 @@
 
 #include "core/analyzer/StreamAnalyzer.h"
 #include "core/analyzer/FrameAnalyzer.h"
-#include "core/analyzer/FaceDetector.h"
 #include "core/model/AnalysisEvent.h"
 #include "core/model/AudioVisualizationFrame.h"
 #include "core/model/PacketInfo.h"
@@ -53,7 +52,6 @@ public:
         Timeline,      // 时间线
         AudioVis,      // 音频可视化
         Histogram,     // 直方图
-        FaceDetect,    // 人脸检测
         Mp4Box         // MP4 Box 分析
     };
 
@@ -71,7 +69,6 @@ public slots:
     // 更新统计数据
     void UpdateStreamStats(const analyzer::StreamStats& stats);
     void UpdateHistogram(const analyzer::HistogramData& hist);
-    void UpdateFaceDetection(const std::vector<analyzer::FaceInfo>& faces);
     void ResetVideoFrameList();
     void AppendVideoFrameInfo(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds);
     void ResetAudioFrameList();
@@ -189,7 +186,6 @@ private:
     void SetupTimelineTab();
     void SetupAudioVisualizationTab();
     void SetupHistogramTab();
-    void SetupFaceTab();
     void SetupMp4BoxTab();
     void RebuildFrameTable();
     void RebuildGopTable();
@@ -301,12 +297,6 @@ private:
     QWidget* histogram_tab_;
     QChartView* histogram_chart_;
     
-    // 人脸检测标签页
-    QWidget* face_tab_;
-    QLabel* face_count_label_;
-    QTableWidget* face_table_;
-    QLabel* face_image_label_;
-    
     // MP4 Box 分析标签页
     QWidget* mp4_box_tab_;
     QTreeWidget* box_tree_widget_;
@@ -351,7 +341,6 @@ private:
     // 当前数据
     analyzer::StreamStats current_stats_;
     analyzer::HistogramData current_hist_;
-    std::vector<analyzer::FaceInfo> current_faces_;
     std::vector<VideoFrameRecord> frame_records_;
     std::vector<AudioFrameRecord> audio_frame_records_;
     std::vector<PacketRecord> packet_records_;
