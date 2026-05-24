@@ -24,6 +24,8 @@ extern "C" {
 #include "core/analyzer/StreamAnalyzer.h"
 #include "core/analyzer/FrameAnalyzer.h"
 #include "core/analyzer/FaceDetector.h"
+#include "core/analyzer/Mp4BoxAnalyzer.h"
+#include "core/model/Mp4BoxInfo.h"
 
 namespace videoeye {
 namespace player {
@@ -66,6 +68,7 @@ public:
     void SetSyncAnalysisEnabled(bool enable) { sync_analysis_enabled_ = enable; }
     void SetTimelineAnalysisEnabled(bool enable) { timeline_analysis_enabled_ = enable; }
     void SetAudioVisualizationEnabled(bool enable) { audio_visualization_enabled_ = enable; }
+    void SetMp4BoxAnalysisEnabled(bool enable) { mp4_box_analysis_enabled_ = enable; }
 
     // 视频帧导出
     void StartVideoFrameExport(const QString& output_dir, const QString& format, int jpg_quality = 90, int frame_interval = 1);
@@ -112,6 +115,7 @@ signals:
     void AudioVisualizationReady(const model::AudioVisualizationFrame& frame);
     void MediaModeChanged(bool has_video);
     void AudioLevelReady(double level, double timestamp_seconds);
+    void Mp4BoxAnalysisReady(const videoeye::model::Mp4BoxAnalysisResult& result);
     void VideoFrameExportStarted(int total_frames);
     void VideoFrameExportProgress(int exported_frames);
     void VideoFrameExportFinished(const QString& output_dir);
@@ -166,6 +170,7 @@ private:
     analyzer::StreamAnalyzer stream_analyzer_;
     analyzer::FrameAnalyzer frame_analyzer_;
     analyzer::FaceDetector face_detector_;
+    analyzer::Mp4BoxAnalyzer mp4_box_analyzer_;
     bool analysis_enabled_ = false;
     bool frame_type_analysis_enabled_ = false;
     bool face_detection_enabled_ = false;
@@ -176,6 +181,7 @@ private:
     bool sync_analysis_enabled_ = false;
     bool timeline_analysis_enabled_ = false;
     bool audio_visualization_enabled_ = false;
+    bool mp4_box_analysis_enabled_ = true; // 默认开启
     int analysis_frame_counter_ = 0;  // 用于控制分析频率
     int video_frame_index_ = 0;
     int audio_frame_index_ = 0;

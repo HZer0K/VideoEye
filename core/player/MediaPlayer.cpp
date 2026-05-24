@@ -480,6 +480,9 @@ MediaPlayer::MediaPlayer(QObject* parent)
     : QObject(parent) {
     // 注册FFmpeg格式
     avformat_network_init();
+    
+    // 注册自定义元类型
+    qRegisterMetaType<model::Mp4BoxAnalysisResult>("model::Mp4BoxAnalysisResult");
 }
 
 void MediaPlayer::EmitAnalysisEvent(const QString& severity, const QString& type, int stream_index,
@@ -1136,6 +1139,14 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     
     qDebug() << "[OPEN-24] 返回 true";
     qDebug() << "===== MediaPlayer::Open END (SUCCESS) =====\n";
+    
+    // 触发 MP4 Box 分析 (如果文件是 MP4/MOV 格式)
+    if (mp4_box_analysis_enabled_) {
+        model::Mp4BoxAnalysisResult box_result;
+        if (mp4_box_analyzer_.AnalyzeFile(url, box_result)) {
+            emit Mp4BoxAnalysisReady(box_result);
+        }
+    }
     
     return true;
 }
@@ -2074,6 +2085,8 @@ void MediaPlayer::Cleanup() {
     
     video_stream_index_ = -1;
     audio_stream_index_ = -1;
+    
+    mp4_box_analyzer_.Reset();
 }
 
 } // namespace player

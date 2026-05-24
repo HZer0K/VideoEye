@@ -74,6 +74,14 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets Charts
 # SDL2
 pkg_check_modules(SDL2 REQUIRED sdl2)
 
+# Bento4 Core library
+set(BENTO4_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/Bento4/Source/C++/Core")
+file(GLOB BENTO4_SOURCES "${BENTO4_DIR}/*.cpp")
+file(GLOB BENTO4_CRYPTO_SOURCES "${BENTO4_DIR}/../Crypto/*.cpp")
+file(GLOB BENTO4_CODECS_SOURCES "${BENTO4_DIR}/../Codecs/*.cpp")
+file(GLOB BENTO4_METADATA_SOURCES "${BENTO4_DIR}/../MetaData/*.cpp")
+file(GLOB BENTO4_SYSTEM_SOURCES "${BENTO4_DIR}/../System/StdC/*.cpp")
+
 # 设置输出目录
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -97,6 +105,11 @@ add_executable(${PROJECT_NAME}
     ${CORE_SOURCES}
     ${UI_SOURCES}
     ${UTILS_SOURCES}
+    ${BENTO4_SOURCES}
+    ${BENTO4_CRYPTO_SOURCES}
+    ${BENTO4_CODECS_SOURCES}
+    ${BENTO4_METADATA_SOURCES}
+    ${BENTO4_SYSTEM_SOURCES}
     ${HEADERS}
 )
 
@@ -106,6 +119,11 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/ui
     ${CMAKE_CURRENT_SOURCE_DIR}/utils
+    ${BENTO4_DIR}
+    ${BENTO4_DIR}/../MetaData
+    ${BENTO4_DIR}/../Codecs
+    ${BENTO4_DIR}/../Crypto
+    ${BENTO4_DIR}/../Adapters
     ${FFmpeg_INCLUDE_DIRS}
     ${OpenCV_INCLUDE_DIRS}
     ${SDL2_INCLUDE_DIRS}

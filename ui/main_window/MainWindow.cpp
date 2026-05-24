@@ -443,6 +443,10 @@ void MainWindow::SetupConnections() {
     connect(player_, &player::MediaPlayer::AudioVisualizationReady,
             analysis_panel_, &ui::AnalysisPanel::AppendAudioVisualization);
     
+    // MP4 Box 分析信号
+    connect(player_, &player::MediaPlayer::Mp4BoxAnalysisReady,
+            analysis_panel_, &ui::AnalysisPanel::OnMp4BoxAnalysisReady);
+    
     // 面板开关信号 -> MediaPlayer 控制
     connect(analysis_panel_, &ui::AnalysisPanel::AnalysisFeatureToggled,
             this, [this](int feature, bool enabled) {
@@ -485,6 +489,9 @@ void MainWindow::SetupConnections() {
                     break;
                 case AF::AudioVis:
                     player_->SetAudioVisualizationEnabled(enabled);
+                    break;
+                case AF::Mp4Box:
+                    player_->SetMp4BoxAnalysisEnabled(enabled);
                     break;
                 default:
                     break;

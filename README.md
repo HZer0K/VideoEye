@@ -25,6 +25,7 @@ VideoEye 是一款开源的视频流分析软件,支持多种视频输入源(HTT
 - 📈 **数据可视化**: 图表化展示分析结果
 - 🖼️ **导出每一帧**: 支持将视频的每一帧导出为 JPG / RGB / YUV
 - 🧾 **打开原始图像**: 支持直接打开 .yuv / .rgb 原始图像（需输入宽高）
+- 📦 **MP4 Box 分析**: 基于 [Bento4](https://github.com/axiomatic-systems/Bento4) 引擎解析 MP4 容器格式，展示完整 Box 树（ftyp/moov/trak/stbl 等）并提取 stts/stco/stsc/stsz 等关键表的明细数据
 
 ### 技术特性
 - ✅ 现代化 C++17 代码
@@ -41,6 +42,7 @@ VideoEye 是一款开源的视频流分析软件,支持多种视频输入源(HTT
 | 多媒体 | FFmpeg | 6.0+ |
 | 计算机视觉 | OpenCV | 4.8+ |
 | 音频输出 | SDL 2 | 2.0+ |
+| MP4容器解析 | Bento4 | 1.6+ |
 | 构建系统 | CMake | 3.20+ |
 | 编程语言 | C++ | C++17 |
 
@@ -88,6 +90,9 @@ cd vcpkg
 git clone https://github.com/yourusername/VideoEye.git
 cd VideoEye
 
+# 初始化第三方依赖 (Bento4 submodule)
+git submodule update --init --recursive
+
 # 创建构建目录
 mkdir build && cd build
 
@@ -125,15 +130,19 @@ VideoEye/
 │   ├── analyzer/           # 分析引擎
 │   │   ├── StreamAnalyzer.cpp/h   # 流分析
 │   │   ├── FrameAnalyzer.cpp/h    # 帧分析
-│   │   └── FaceDetector.cpp/h     # 人脸检测
+│   │   ├── FaceDetector.cpp/h     # 人脸检测
+│   │   └── Mp4BoxAnalyzer.cpp/h   # MP4 Box 分析 (基于 Bento4)
 │   ├── io/                 # 输入输出
 │   └── model/              # 数据模型
+│       └── Mp4BoxInfo.h          # MP4 Box 数据结构
 ├── ui/                     # UI层
 │   ├── main_window/        # 主窗口
 │   ├── player_controls/    # 播放控制
 │   └── analysis_panel/     # 分析面板
 ├── utils/                  # 工具类
 ├── tests/                  # 测试
+├── third_party/            # 第三方库
+│   └── Bento4/             # Bento4 MP4 解析引擎 (submodule)
 ├── resources/              # 资源文件
 ├── cmake/                  # CMake配置
 ├── CMakeLists.txt          # 主CMake文件
@@ -152,7 +161,9 @@ VideoEye/
 ### 分析面板
 
 - 菜单 `分析` 提供开关：流分析 / 视频帧分析 / 直方图 / 人脸检测
-- 分析面板包含标签页：流分析 / 视频帧 / 音频帧 / 包分析 / 异常事件 / 同步分析 / 统一时间轴 / 音频可视化 / 直方图 / 人脸检测
+- 分析面板包含标签页：流分析 / 视频帧 / 音频帧 / 包分析 / 异常事件 / 同步分析 / 统一时间轴 / 音频可视化 / 直方图 / 人脸检测 / **MP4 Box**
+- 每个标签页顶部配有独立的「启用分析」开关，可灵活关闭单个功能以降低性能开销
+- **MP4 Box** 标签页：打开 MP4/MOV 文件后自动解析，左侧展示 **Box 树**（ftyp → moov → trak → stbl → stts/stco/stsc/stsz...），右侧以表格展示各 Box 的详细入口数据
 
 ### 音频分析复现脚本
 
@@ -275,6 +286,7 @@ genhtml coverage.info --output-directory coverage_report
 - [Qt](https://www.qt.io/) - 跨平台GUI框架
 - [OpenCV](https://opencv.org/) - 计算机视觉库
 - [SDL](https://www.libsdl.org/) - 多媒体库
+- [Bento4](https://github.com/axiomatic-systems/Bento4) - MP4 容器解析库 (GPL-2.0)
 
 
 ---

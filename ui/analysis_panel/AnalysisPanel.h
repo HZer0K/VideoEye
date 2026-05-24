@@ -10,6 +10,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QTabWidget>
+#include <QTreeWidget>
 #include <QLabel>
 #include <QPushButton>
 #include <QTextEdit>
@@ -30,6 +31,7 @@
 #include "core/model/PacketInfo.h"
 #include "core/model/SyncSample.h"
 #include "core/model/TimelineEvent.h"
+#include "core/model/Mp4BoxInfo.h"
 
 namespace videoeye {
 namespace ui {
@@ -51,7 +53,8 @@ public:
         Timeline,      // 时间线
         AudioVis,      // 音频可视化
         Histogram,     // 直方图
-        FaceDetect     // 人脸检测
+        FaceDetect,    // 人脸检测
+        Mp4Box         // MP4 Box 分析
     };
 
     explicit AnalysisPanel(QWidget* parent = nullptr);
@@ -84,6 +87,7 @@ public slots:
     void AppendTimelineEvent(const model::TimelineEvent& event);
     void ResetAudioVisualization();
     void AppendAudioVisualization(const model::AudioVisualizationFrame& frame);
+    void OnMp4BoxAnalysisReady(const model::Mp4BoxAnalysisResult& result);
     
     // 导出报告
     void OnExportReport();
@@ -186,6 +190,7 @@ private:
     void SetupAudioVisualizationTab();
     void SetupHistogramTab();
     void SetupFaceTab();
+    void SetupMp4BoxTab();
     void RebuildFrameTable();
     void RebuildGopTable();
     void RebuildAudioFrameTable();
@@ -301,6 +306,17 @@ private:
     QLabel* face_count_label_;
     QTableWidget* face_table_;
     QLabel* face_image_label_;
+    
+    // MP4 Box 分析标签页
+    QWidget* mp4_box_tab_;
+    QTreeWidget* box_tree_widget_;
+    QTabWidget* box_detail_tabs_;
+    QTableWidget* stts_table_;
+    QTableWidget* stco_table_;
+    QTableWidget* stsc_table_;
+    QTableWidget* stsz_table_;
+    QLabel* mp4_box_summary_label_;
+    model::Mp4BoxAnalysisResult current_box_result_;
     
     // 控制按钮
     QPushButton* export_button_;
