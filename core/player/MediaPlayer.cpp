@@ -485,6 +485,7 @@ MediaPlayer::MediaPlayer(QObject* parent)
 void MediaPlayer::EmitAnalysisEvent(const QString& severity, const QString& type, int stream_index,
                                     qint64 pts, double timestamp_seconds,
                                     const QString& summary, const QString& detail) {
+    if (!event_analysis_enabled_) return;
     model::AnalysisEvent event_info;
     event_info.index = analysis_event_index_++;
     event_info.severity = severity;
@@ -499,6 +500,7 @@ void MediaPlayer::EmitAnalysisEvent(const QString& severity, const QString& type
 }
 
 void MediaPlayer::EmitSyncSample(double audio_timestamp_seconds, double video_timestamp_seconds, bool audio_anchor) {
+    if (!sync_analysis_enabled_) return;
     if (!std::isfinite(audio_timestamp_seconds) || !std::isfinite(video_timestamp_seconds)) {
         return;
     }
@@ -514,6 +516,7 @@ void MediaPlayer::EmitSyncSample(double audio_timestamp_seconds, double video_ti
 
 void MediaPlayer::EmitTimelineEvent(const QString& category, double timestamp_seconds,
                                     const QString& label, const QString& detail) {
+    if (!timeline_analysis_enabled_) return;
     if (!std::isfinite(timestamp_seconds)) {
         return;
     }
@@ -530,6 +533,7 @@ void MediaPlayer::EmitTimelineEvent(const QString& category, double timestamp_se
 void MediaPlayer::EmitAudioVisualizationFrame(const int16_t* samples, int sample_count,
                                               int sample_rate, int channels,
                                               double timestamp_seconds, double level) {
+    if (!audio_visualization_enabled_) return;
     if (!samples || sample_count <= 0 || channels <= 0) {
         return;
     }
@@ -637,12 +641,12 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     last_video_sync_ts_ = std::numeric_limits<double>::quiet_NaN();
     last_audio_sync_ts_ = std::numeric_limits<double>::quiet_NaN();
     emit VideoFrameListReset();
-    emit AudioFrameListReset();
-    emit PacketListReset();
-    emit AnalysisEventListReset();
-    emit SyncSampleListReset();
-    emit TimelineEventListReset();
-    emit AudioVisualizationReset();
+    if (audio_frame_analysis_enabled_) emit AudioFrameListReset();
+    if (packet_analysis_enabled_) emit PacketListReset();
+    if (event_analysis_enabled_) emit AnalysisEventListReset();
+    if (sync_analysis_enabled_) emit SyncSampleListReset();
+    if (timeline_analysis_enabled_) emit TimelineEventListReset();
+    if (audio_visualization_enabled_) emit AudioVisualizationReset();
 
     const unsigned header_avcodec_major = LIBAVCODEC_VERSION_MAJOR;
     const unsigned runtime_avcodec_major = static_cast<unsigned>(avcodec_version() >> 16);
@@ -1743,23 +1747,26 @@ void MediaPlayer::DecodeThread() {
 
         const int64_t pkt_ts = (packet->pts != AV_NOPTS_VALUE) ? packet->pts : packet->dts;
         const double packet_ts_sec = PacketTimestampSeconds(format_ctx_, packet);
-        model::PacketInfo packet_info;
-        packet_info.index = packet_index_++;
-        packet_info.stream_index = packet->stream_index;
-        if (format_ctx_ && packet->stream_index >= 0 &&
-            packet->stream_index < static_cast<int>(format_ctx_->nb_streams) &&
-            format_ctx_->streams[packet->stream_index] &&
-            format_ctx_->streams[packet->stream_index]->codecpar) {
-            packet_info.stream_type = format_ctx_->streams[packet->stream_index]->codecpar->codec_type;
+        
+        if (packet_analysis_enabled_) {
+            model::PacketInfo packet_info;
+            packet_info.index = packet_index_++;
+            packet_info.stream_index = packet->stream_index;
+            if (format_ctx_ && packet->stream_index >= 0 &&
+                packet->stream_index < static_cast<int>(format_ctx_->nb_streams) &&
+                format_ctx_->streams[packet->stream_index] &&
+                format_ctx_->streams[packet->stream_index]->codecpar) {
+                packet_info.stream_type = format_ctx_->streams[packet->stream_index]->codecpar->codec_type;
+            }
+            packet_info.pts = packet->pts;
+            packet_info.dts = packet->dts;
+            packet_info.duration = packet->duration;
+            packet_info.size = packet->size;
+            packet_info.flags = packet->flags;
+            packet_info.pos = packet->pos;
+            packet_info.timestamp_seconds = packet_ts_sec;
+            emit PacketInfoReady(packet_info);
         }
-        packet_info.pts = packet->pts;
-        packet_info.dts = packet->dts;
-        packet_info.duration = packet->duration;
-        packet_info.size = packet->size;
-        packet_info.flags = packet->flags;
-        packet_info.pos = packet->pos;
-        packet_info.timestamp_seconds = packet_ts_sec;
-        emit PacketInfoReady(packet_info);
         if (!std::isfinite(packet_ts_sec)) {
             if (!missing_packet_ts_reported_[packet->stream_index]) {
                 missing_packet_ts_reported_[packet->stream_index] = true;
@@ -1980,13 +1987,15 @@ void MediaPlayer::DecodeThread() {
                         ts = packet_ts_sec;
                     }
 
-                    emit AudioFrameInfoReady(audio_frame_index_++,
-                                             frame_pts,
-                                             ts,
-                                             audio_decoder_->GetLastFrameSampleCount(),
-                                             audio_decoder_->GetLastFrameSampleRate(),
-                                             audio_decoder_->GetLastFrameChannels(),
-                                             out_size);
+                    if (audio_frame_analysis_enabled_) {
+                        emit AudioFrameInfoReady(audio_frame_index_++,
+                                                 frame_pts,
+                                                 ts,
+                                                 audio_decoder_->GetLastFrameSampleCount(),
+                                                 audio_decoder_->GetLastFrameSampleRate(),
+                                                 audio_decoder_->GetLastFrameChannels(),
+                                                 out_size);
+                    }
                     ++audio_timeline_sample_counter_;
                     if (audio_timeline_sample_counter_ % 20 == 0) {
                         EmitTimelineEvent(QStringLiteral("音频采样"),

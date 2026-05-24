@@ -60,6 +60,12 @@ public:
     void SetFrameTypeAnalysisEnabled(bool enable);
     void SetFaceDetectionEnabled(bool enable);
     void SetHistogramEnabled(bool enable);
+    void SetAudioFrameAnalysisEnabled(bool enable) { audio_frame_analysis_enabled_ = enable; }
+    void SetPacketAnalysisEnabled(bool enable) { packet_analysis_enabled_ = enable; }
+    void SetEventAnalysisEnabled(bool enable) { event_analysis_enabled_ = enable; }
+    void SetSyncAnalysisEnabled(bool enable) { sync_analysis_enabled_ = enable; }
+    void SetTimelineAnalysisEnabled(bool enable) { timeline_analysis_enabled_ = enable; }
+    void SetAudioVisualizationEnabled(bool enable) { audio_visualization_enabled_ = enable; }
 
     // 视频帧导出
     void StartVideoFrameExport(const QString& output_dir, const QString& format, int jpg_quality = 90, int frame_interval = 1);
@@ -164,6 +170,12 @@ private:
     bool frame_type_analysis_enabled_ = false;
     bool face_detection_enabled_ = false;
     bool histogram_enabled_ = false;
+    bool audio_frame_analysis_enabled_ = false;
+    bool packet_analysis_enabled_ = false;
+    bool event_analysis_enabled_ = false;
+    bool sync_analysis_enabled_ = false;
+    bool timeline_analysis_enabled_ = false;
+    bool audio_visualization_enabled_ = false;
     int analysis_frame_counter_ = 0;  // 用于控制分析频率
     int video_frame_index_ = 0;
     int audio_frame_index_ = 0;

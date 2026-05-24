@@ -7,6 +7,8 @@
 #include <QFile>
 #include <QMessageBox>
 #include <QTextStream>
+#include <QFrame>
+#include <QStyle>
 #include <QtCharts>
 #include <algorithm>
 
@@ -16,6 +18,48 @@ namespace ui {
 namespace {
 constexpr int kUiFlushIntervalMs = 120;
 constexpr int kMaxChartSamples = 300;
+
+// 开关按钮样式
+const QString kToggleBtnCheckedStyle = 
+    "QPushButton {"
+    "  background-color: #3a7bd5;"
+    "  color: white;"
+    "  border: 1px solid #2a6bc5;"
+    "  border-radius: 4px;"
+    "  padding: 2px 8px;"
+    "  font-size: 12px;"
+    "  font-weight: bold;"
+    "}"
+    "QPushButton:hover {"
+    "  background-color: #4a8be5;"
+    "}";
+
+const QString kToggleBtnChildCheckedStyle = 
+    "QPushButton {"
+    "  background-color: #5a9be5;"
+    "  color: white;"
+    "  border: 1px solid #4a8bd5;"
+    "  border-radius: 4px;"
+    "  padding: 2px 8px;"
+    "  font-size: 11px;"
+    "}"
+    "QPushButton:hover {"
+    "  background-color: #6aabe5;"
+    "}";
+
+const QString kToggleBtnUncheckedStyle = 
+    "QPushButton {"
+    "  background-color: #f0f0f0;"
+    "  color: #666;"
+    "  border: 1px solid #ccc;"
+    "  border-radius: 4px;"
+    "  padding: 2px 8px;"
+    "  font-size: 11px;"
+    "}"
+    "QPushButton:hover {"
+    "  background-color: #e0e0e0;"
+    "  border-color: #aaa;"
+    "}";
 }
 
 AnalysisPanel::AnalysisPanel(QWidget* parent)
@@ -41,7 +85,21 @@ AnalysisPanel::AnalysisPanel(QWidget* parent)
     , waveform_axis_x_(nullptr)
     , waveform_axis_y_(nullptr)
     , spectrum_axis_x_(nullptr)
-    , spectrum_axis_y_(nullptr) {
+    , spectrum_axis_y_(nullptr)
+    , toggle_bar_(nullptr) {
+    
+    // 默认启用: 基础功能, 关闭: 高性能分析
+    feature_enabled_[AnalysisFeature::Master] = true;
+    feature_enabled_[AnalysisFeature::StreamStats] = true;
+    feature_enabled_[AnalysisFeature::VideoFrame] = true;
+    feature_enabled_[AnalysisFeature::AudioFrame] = false;
+    feature_enabled_[AnalysisFeature::Packet] = false;
+    feature_enabled_[AnalysisFeature::Event] = false;
+    feature_enabled_[AnalysisFeature::SyncSample] = false;
+    feature_enabled_[AnalysisFeature::Timeline] = false;
+    feature_enabled_[AnalysisFeature::AudioVis] = false;
+    feature_enabled_[AnalysisFeature::Histogram] = false;
+    feature_enabled_[AnalysisFeature::FaceDetect] = false;
     
     SetupUI();
     
@@ -58,6 +116,11 @@ AnalysisPanel::~AnalysisPanel() {
 
 void AnalysisPanel::SetupUI() {
     QVBoxLayout* main_layout = new QVBoxLayout(this);
+    main_layout->setContentsMargins(2, 2, 2, 2);
+    main_layout->setSpacing(4);
+    
+    // 顶部开关工具栏
+    SetupToggleBar();
     
     // 创建标签页
     tab_widget_ = new QTabWidget(this);
@@ -84,6 +147,114 @@ void AnalysisPanel::SetupUI() {
     
     // 连接信号
     connect(export_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportReport);
+}
+
+void AnalysisPanel::SetupToggleBar() {
+    toggle_bar_ = new QWidget(this);
+    QHBoxLayout* toggle_layout = new QHBoxLayout(toggle_bar_);
+    toggle_layout->setContentsMargins(0, 0, 0, 0);
+    toggle_layout->setSpacing(2);
+    
+    // 辅助函数: 创建分组分割线
+    auto addSeparator = [&]() {
+        QFrame* sep = new QFrame(toggle_bar_);
+        sep->setFrameShape(QFrame::VLine);
+        sep->setFrameShadow(QFrame::Sunken);
+        sep->setStyleSheet("color: #ccc; margin: 2px 4px;");
+        toggle_layout->addWidget(sep);
+    };
+    
+    // 辅助函数: 创建开关按钮
+    auto addToggle = [&](AnalysisFeature feature, const QString& text, const QString& tooltip) {
+        QPushButton* btn = new QPushButton(text, toggle_bar_);
+        btn->setCheckable(true);
+        btn->setChecked(feature_enabled_.value(feature, true));
+        btn->setToolTip(tooltip);
+        btn->setFixedHeight(24);
+        btn->setCursor(Qt::PointingHandCursor);
+        btn->setStyleSheet(btn->isChecked() ? kToggleBtnCheckedStyle : kToggleBtnUncheckedStyle);
+        toggle_buttons_[feature] = btn;
+        toggle_layout->addWidget(btn);
+        
+        connect(btn, &QPushButton::clicked, this, [this, feature]() {
+            OnToggleFeature(feature);
+        });
+    };
+    
+    // 组1 - 基础控制
+    addToggle(AnalysisFeature::Master, tr("全局"), tr("全局分析开关"));
+    addSeparator();
+    addToggle(AnalysisFeature::StreamStats, tr("流统计"), tr("流级别统计信息 (码率/帧率/GOP)"));
+    addToggle(AnalysisFeature::VideoFrame, tr("视频帧"), tr("视频帧类型分析 (I/P/B 帧)"));
+    addSeparator();
+    
+    // 组2 - 详情分析
+    addToggle(AnalysisFeature::AudioFrame, tr("音频帧"), tr("音频帧详细信息"));
+    addToggle(AnalysisFeature::Packet, tr("数据包"), tr("数据包级别分析 (可能产生大量数据)"));
+    addToggle(AnalysisFeature::Event, tr("事件"), tr("分析事件记录"));
+    addToggle(AnalysisFeature::SyncSample, tr("同步"), tr("音视频同步偏差分析"));
+    addToggle(AnalysisFeature::Timeline, tr("时间线"), tr("时间线事件标记"));
+    addSeparator();
+    
+    // 组3 - 高性能分析
+    addToggle(AnalysisFeature::AudioVis, tr("音频可视化"), tr("音频波形/频谱可视化 (FFT计算)"));
+    addToggle(AnalysisFeature::Histogram, tr("直方图"), tr("帧直方图分析 (每帧图像处理)"));
+    addToggle(AnalysisFeature::FaceDetect, tr("人脸检测"), tr("人脸检测 (CPU密集)"));
+    
+    toggle_layout->addStretch();
+    
+    // 将开关栏插入到主布局顶部
+    QVBoxLayout* main_layout = qobject_cast<QVBoxLayout*>(layout());
+    if (main_layout) {
+        main_layout->insertWidget(0, toggle_bar_);
+    }
+}
+
+bool AnalysisPanel::IsFeatureEnabled(AnalysisFeature feature) const {
+    return feature_enabled_.value(feature, true);
+}
+
+void AnalysisPanel::OnToggleFeature(AnalysisFeature feature) {
+    if (feature == AnalysisFeature::Master) {
+        // 全局开关: 切换所有功能
+        bool new_state = !feature_enabled_[AnalysisFeature::Master];
+        feature_enabled_[AnalysisFeature::Master] = new_state;
+        for (auto it = feature_enabled_.begin(); it != feature_enabled_.end(); ++it) {
+            if (it.key() != AnalysisFeature::Master) {
+                it.value() = new_state;
+            }
+        }
+        // 更新按钮样式
+        for (auto it = toggle_buttons_.begin(); it != toggle_buttons_.end(); ++it) {
+            QPushButton* btn = it.value();
+            if (it.key() == AnalysisFeature::Master) {
+                btn->setChecked(new_state);
+                btn->setStyleSheet(new_state ? kToggleBtnCheckedStyle : kToggleBtnUncheckedStyle);
+            } else {
+                btn->setChecked(new_state);
+                btn->setStyleSheet(new_state ? kToggleBtnChildCheckedStyle : kToggleBtnUncheckedStyle);
+            }
+        }
+        // 发射信号
+        emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::Master), new_state);
+        for (auto it = feature_enabled_.begin(); it != feature_enabled_.end(); ++it) {
+            if (it.key() != AnalysisFeature::Master) {
+                emit AnalysisFeatureToggled(static_cast<int>(it.key()), it.value());
+            }
+        }
+    } else {
+        // 单个开关
+        bool new_state = !feature_enabled_[feature];
+        feature_enabled_[feature] = new_state;
+        
+        QPushButton* btn = toggle_buttons_.value(feature);
+        if (btn) {
+            btn->setChecked(new_state);
+            btn->setStyleSheet(new_state ? kToggleBtnChildCheckedStyle : kToggleBtnUncheckedStyle);
+        }
+        
+        emit AnalysisFeatureToggled(static_cast<int>(feature), new_state);
+    }
 }
 
 void AnalysisPanel::SetupStreamTab() {
@@ -599,17 +770,23 @@ void AnalysisPanel::SetupFaceTab() {
 }
 
 void AnalysisPanel::UpdateStreamStats(const analyzer::StreamStats& stats) {
+    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
+        !feature_enabled_.value(AnalysisFeature::StreamStats, true)) return;
     current_stats_ = stats;
     pending_stream_stats_ = stats;
     has_pending_stream_stats_ = true;
 }
 
 void AnalysisPanel::UpdateHistogram(const analyzer::HistogramData& hist) {
+    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
+        !feature_enabled_.value(AnalysisFeature::Histogram, true)) return;
     current_hist_ = hist;
     UpdateHistogramChart(hist);
 }
 
 void AnalysisPanel::UpdateFaceDetection(const std::vector<analyzer::FaceInfo>& faces) {
+    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
+        !feature_enabled_.value(AnalysisFeature::FaceDetect, true)) return;
     current_faces_ = faces;
     
     // 更新计数
@@ -632,6 +809,8 @@ void AnalysisPanel::UpdateFaceDetection(const std::vector<analyzer::FaceInfo>& f
 }
 
 void AnalysisPanel::ResetVideoFrameList() {
+    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
+        !feature_enabled_.value(AnalysisFeature::VideoFrame, true)) return;
     frame_records_.clear();
     gop_summaries_.clear();
     frame_table_synced_record_count_ = 0;
@@ -649,6 +828,8 @@ void AnalysisPanel::ResetVideoFrameList() {
 }
 
 void AnalysisPanel::ResetAudioFrameList() {
+    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
+        !feature_enabled_.value(AnalysisFeature::AudioFrame, true)) return;
     audio_frame_records_.clear();
     audio_frame_table_synced_record_count_ = 0;
     audio_frame_table_dirty_ = false;
@@ -660,6 +841,8 @@ void AnalysisPanel::ResetAudioFrameList() {
 }
 
 void AnalysisPanel::ResetPacketList() {
+    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
+        !feature_enabled_.value(AnalysisFeature::Packet, true)) return;
     packet_records_.clear();
     packet_table_synced_record_count_ = 0;
     packet_table_dirty_ = false;
@@ -671,6 +854,8 @@ void AnalysisPanel::ResetPacketList() {
 }
 
 void AnalysisPanel::ResetAnalysisEventList() {
+    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
+        !feature_enabled_.value(AnalysisFeature::Event, true)) return;
     analysis_event_records_.clear();
     event_table_synced_record_count_ = 0;
     event_table_dirty_ = false;
@@ -682,6 +867,8 @@ void AnalysisPanel::ResetAnalysisEventList() {
 }
 
 void AnalysisPanel::ResetSyncSampleList() {
+    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
+        !feature_enabled_.value(AnalysisFeature::SyncSample, true)) return;
     sync_sample_records_.clear();
     sync_table_synced_record_count_ = 0;
     sync_table_dirty_ = false;
@@ -703,6 +890,8 @@ void AnalysisPanel::ResetSyncSampleList() {
 }
 
 void AnalysisPanel::ResetTimelineEventList() {
+    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
+        !feature_enabled_.value(AnalysisFeature::Timeline, true)) return;
     timeline_event_records_.clear();
     timeline_table_synced_record_count_ = 0;
     timeline_table_dirty_ = false;
@@ -729,6 +918,8 @@ void AnalysisPanel::ResetTimelineEventList() {
 }
 
 void AnalysisPanel::ResetAudioVisualization() {
+    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
+        !feature_enabled_.value(AnalysisFeature::AudioVis, true)) return;
     has_audio_visualization_record_ = false;
     audio_visualization_dirty_ = false;
     audio_visualization_record_ = AudioVisualizationRecord();
@@ -754,6 +945,8 @@ void AnalysisPanel::ResetAudioVisualization() {
 }
 
 void AnalysisPanel::AppendVideoFrameInfo(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds) {
+    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
+        !feature_enabled_.value(AnalysisFeature::VideoFrame, true)) return;
     if (!frame_table_ || !gop_table_) {
         return;
     }
@@ -821,6 +1014,8 @@ void AnalysisPanel::AppendVideoFrameInfo(int index, int frame_type, bool is_key_
 
 void AnalysisPanel::AppendAudioFrameInfo(int index, qint64 pts, double timestamp_seconds,
                                          int sample_count, int sample_rate, int channels, int byte_count) {
+    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
+        !feature_enabled_.value(AnalysisFeature::AudioFrame, true)) return;
     if (!audio_frame_table_) {
         return;
     }
@@ -840,6 +1035,8 @@ void AnalysisPanel::AppendAudioFrameInfo(int index, qint64 pts, double timestamp
 }
 
 void AnalysisPanel::AppendPacketInfo(const model::PacketInfo& packet_info) {
+    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
+        !feature_enabled_.value(AnalysisFeature::Packet, true)) return;
     if (!packet_table_) {
         return;
     }
@@ -862,6 +1059,8 @@ void AnalysisPanel::AppendPacketInfo(const model::PacketInfo& packet_info) {
 }
 
 void AnalysisPanel::AppendAnalysisEvent(const model::AnalysisEvent& event_info) {
+    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
+        !feature_enabled_.value(AnalysisFeature::Event, true)) return;
     if (!event_table_) {
         return;
     }
@@ -882,6 +1081,8 @@ void AnalysisPanel::AppendAnalysisEvent(const model::AnalysisEvent& event_info) 
 }
 
 void AnalysisPanel::AppendSyncSample(const model::SyncSample& sample) {
+    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
+        !feature_enabled_.value(AnalysisFeature::SyncSample, true)) return;
     if (!sync_table_) {
         return;
     }
@@ -899,6 +1100,8 @@ void AnalysisPanel::AppendSyncSample(const model::SyncSample& sample) {
 }
 
 void AnalysisPanel::AppendTimelineEvent(const model::TimelineEvent& event) {
+    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
+        !feature_enabled_.value(AnalysisFeature::Timeline, true)) return;
     if (!timeline_table_) {
         return;
     }
@@ -916,6 +1119,8 @@ void AnalysisPanel::AppendTimelineEvent(const model::TimelineEvent& event) {
 }
 
 void AnalysisPanel::AppendAudioVisualization(const model::AudioVisualizationFrame& frame) {
+    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
+        !feature_enabled_.value(AnalysisFeature::AudioVis, true)) return;
     if (!waveform_chart_ || !spectrum_chart_) {
         return;
     }

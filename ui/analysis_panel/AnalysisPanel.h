@@ -16,6 +16,8 @@
 #include <QTableWidget>
 #include <QTimer>
 #include <QComboBox>
+#include <QMap>
+#include <QFrame>
 #include <QtCharts/QValueAxis>
 #include <deque>
 #include <vector>
@@ -37,8 +39,30 @@ class AnalysisPanel : public QWidget {
     Q_OBJECT
     
 public:
+    // 分析功能开关枚举
+    enum class AnalysisFeature {
+        Master,        // 全局主开关
+        StreamStats,   // 流统计
+        VideoFrame,    // 视频帧
+        AudioFrame,    // 音频帧
+        Packet,        // 数据包
+        Event,         // 分析事件
+        SyncSample,    // 音视频同步
+        Timeline,      // 时间线
+        AudioVis,      // 音频可视化
+        Histogram,     // 直方图
+        FaceDetect     // 人脸检测
+    };
+
     explicit AnalysisPanel(QWidget* parent = nullptr);
     ~AnalysisPanel();
+    
+    // 检查某个分析功能是否启用
+    bool IsFeatureEnabled(AnalysisFeature feature) const;
+    
+signals:
+    // 分析功能开关变化信号 (供 MainWindow 连接 MediaPlayer)
+    void AnalysisFeatureToggled(int feature, bool enabled);
     
 public slots:
     // 更新统计数据
@@ -150,6 +174,8 @@ private:
 
     // 初始化UI
     void SetupUI();
+    void SetupToggleBar();
+    void OnToggleFeature(AnalysisFeature feature);
     void SetupStreamTab();
     void SetupFrameTab();
     void SetupAudioFrameTab();
@@ -212,6 +238,11 @@ private:
     void UpdateSyncChart();
     void UpdateTimelineChart();
     void UpdateAudioVisualizationCharts();
+    
+    // 分析功能开关
+    QMap<AnalysisFeature, bool> feature_enabled_;
+    QMap<AnalysisFeature, QPushButton*> toggle_buttons_;
+    QWidget* toggle_bar_;
     
     // 成员变量
     QTabWidget* tab_widget_;

@@ -512,6 +512,42 @@ void MainWindow::SetupConnections() {
     connect(player_, &player::MediaPlayer::AudioVisualizationReady,
             analysis_panel_, &ui::AnalysisPanel::AppendAudioVisualization);
     
+    // 面板开关信号 -> MediaPlayer 控制
+    connect(analysis_panel_, &ui::AnalysisPanel::AnalysisFeatureToggled,
+            this, [this](int feature, bool enabled) {
+                using AF = ui::AnalysisPanel::AnalysisFeature;
+                AF feat = static_cast<AF>(feature);
+                if (!player_) return;
+                switch (feat) {
+                case AF::Histogram:
+                    player_->SetHistogramEnabled(enabled);
+                    break;
+                case AF::FaceDetect:
+                    player_->SetFaceDetectionEnabled(enabled);
+                    break;
+                case AF::AudioFrame:
+                    player_->SetAudioFrameAnalysisEnabled(enabled);
+                    break;
+                case AF::Packet:
+                    player_->SetPacketAnalysisEnabled(enabled);
+                    break;
+                case AF::Event:
+                    player_->SetEventAnalysisEnabled(enabled);
+                    break;
+                case AF::SyncSample:
+                    player_->SetSyncAnalysisEnabled(enabled);
+                    break;
+                case AF::Timeline:
+                    player_->SetTimelineAnalysisEnabled(enabled);
+                    break;
+                case AF::AudioVis:
+                    player_->SetAudioVisualizationEnabled(enabled);
+                    break;
+                default:
+                    break;
+                }
+            });
+    
     // 控件信号连接
     connect(play_pause_button_, &QPushButton::clicked, this, &MainWindow::OnPlayPause);
     connect(stop_button_, &QPushButton::clicked, this, &MainWindow::OnStop);
