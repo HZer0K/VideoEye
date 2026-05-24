@@ -7,8 +7,8 @@
 #include <QFile>
 #include <QMessageBox>
 #include <QTextStream>
-#include <QFrame>
-#include <QStyle>
+#include <QHBoxLayout>
+#include <QCheckBox>
 #include <QtCharts>
 #include <algorithm>
 
@@ -18,48 +18,6 @@ namespace ui {
 namespace {
 constexpr int kUiFlushIntervalMs = 120;
 constexpr int kMaxChartSamples = 300;
-
-// 开关按钮样式
-const QString kToggleBtnCheckedStyle = 
-    "QPushButton {"
-    "  background-color: #3a7bd5;"
-    "  color: white;"
-    "  border: 1px solid #2a6bc5;"
-    "  border-radius: 4px;"
-    "  padding: 2px 8px;"
-    "  font-size: 12px;"
-    "  font-weight: bold;"
-    "}"
-    "QPushButton:hover {"
-    "  background-color: #4a8be5;"
-    "}";
-
-const QString kToggleBtnChildCheckedStyle = 
-    "QPushButton {"
-    "  background-color: #5a9be5;"
-    "  color: white;"
-    "  border: 1px solid #4a8bd5;"
-    "  border-radius: 4px;"
-    "  padding: 2px 8px;"
-    "  font-size: 11px;"
-    "}"
-    "QPushButton:hover {"
-    "  background-color: #6aabe5;"
-    "}";
-
-const QString kToggleBtnUncheckedStyle = 
-    "QPushButton {"
-    "  background-color: #f0f0f0;"
-    "  color: #666;"
-    "  border: 1px solid #ccc;"
-    "  border-radius: 4px;"
-    "  padding: 2px 8px;"
-    "  font-size: 11px;"
-    "}"
-    "QPushButton:hover {"
-    "  background-color: #e0e0e0;"
-    "  border-color: #aaa;"
-    "}";
 }
 
 AnalysisPanel::AnalysisPanel(QWidget* parent)
@@ -85,8 +43,7 @@ AnalysisPanel::AnalysisPanel(QWidget* parent)
     , waveform_axis_x_(nullptr)
     , waveform_axis_y_(nullptr)
     , spectrum_axis_x_(nullptr)
-    , spectrum_axis_y_(nullptr)
-    , toggle_bar_(nullptr) {
+    , spectrum_axis_y_(nullptr) {
     
     // 默认启用: 基础功能, 关闭: 高性能分析
     feature_enabled_[AnalysisFeature::Master] = true;
@@ -119,9 +76,6 @@ void AnalysisPanel::SetupUI() {
     main_layout->setContentsMargins(2, 2, 2, 2);
     main_layout->setSpacing(4);
     
-    // 顶部开关工具栏
-    SetupToggleBar();
-    
     // 创建标签页
     tab_widget_ = new QTabWidget(this);
     
@@ -149,117 +103,42 @@ void AnalysisPanel::SetupUI() {
     connect(export_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportReport);
 }
 
-void AnalysisPanel::SetupToggleBar() {
-    toggle_bar_ = new QWidget(this);
-    QHBoxLayout* toggle_layout = new QHBoxLayout(toggle_bar_);
-    toggle_layout->setContentsMargins(0, 0, 0, 0);
-    toggle_layout->setSpacing(2);
-    
-    // 辅助函数: 创建分组分割线
-    auto addSeparator = [&]() {
-        QFrame* sep = new QFrame(toggle_bar_);
-        sep->setFrameShape(QFrame::VLine);
-        sep->setFrameShadow(QFrame::Sunken);
-        sep->setStyleSheet("color: #ccc; margin: 2px 4px;");
-        toggle_layout->addWidget(sep);
-    };
-    
-    // 辅助函数: 创建开关按钮
-    auto addToggle = [&](AnalysisFeature feature, const QString& text, const QString& tooltip) {
-        QPushButton* btn = new QPushButton(text, toggle_bar_);
-        btn->setCheckable(true);
-        btn->setChecked(feature_enabled_.value(feature, true));
-        btn->setToolTip(tooltip);
-        btn->setFixedHeight(24);
-        btn->setCursor(Qt::PointingHandCursor);
-        btn->setStyleSheet(btn->isChecked() ? kToggleBtnCheckedStyle : kToggleBtnUncheckedStyle);
-        toggle_buttons_[feature] = btn;
-        toggle_layout->addWidget(btn);
-        
-        connect(btn, &QPushButton::clicked, this, [this, feature]() {
-            OnToggleFeature(feature);
-        });
-    };
-    
-    // 组1 - 基础控制
-    addToggle(AnalysisFeature::Master, tr("全局"), tr("全局分析开关"));
-    addSeparator();
-    addToggle(AnalysisFeature::StreamStats, tr("流统计"), tr("流级别统计信息 (码率/帧率/GOP)"));
-    addToggle(AnalysisFeature::VideoFrame, tr("视频帧"), tr("视频帧类型分析 (I/P/B 帧)"));
-    addSeparator();
-    
-    // 组2 - 详情分析
-    addToggle(AnalysisFeature::AudioFrame, tr("音频帧"), tr("音频帧详细信息"));
-    addToggle(AnalysisFeature::Packet, tr("数据包"), tr("数据包级别分析 (可能产生大量数据)"));
-    addToggle(AnalysisFeature::Event, tr("事件"), tr("分析事件记录"));
-    addToggle(AnalysisFeature::SyncSample, tr("同步"), tr("音视频同步偏差分析"));
-    addToggle(AnalysisFeature::Timeline, tr("时间线"), tr("时间线事件标记"));
-    addSeparator();
-    
-    // 组3 - 高性能分析
-    addToggle(AnalysisFeature::AudioVis, tr("音频可视化"), tr("音频波形/频谱可视化 (FFT计算)"));
-    addToggle(AnalysisFeature::Histogram, tr("直方图"), tr("帧直方图分析 (每帧图像处理)"));
-    addToggle(AnalysisFeature::FaceDetect, tr("人脸检测"), tr("人脸检测 (CPU密集)"));
-    
-    toggle_layout->addStretch();
-    
-    // 将开关栏插入到主布局顶部
-    QVBoxLayout* main_layout = qobject_cast<QVBoxLayout*>(layout());
-    if (main_layout) {
-        main_layout->insertWidget(0, toggle_bar_);
-    }
-}
-
 bool AnalysisPanel::IsFeatureEnabled(AnalysisFeature feature) const {
     return feature_enabled_.value(feature, true);
 }
 
-void AnalysisPanel::OnToggleFeature(AnalysisFeature feature) {
-    if (feature == AnalysisFeature::Master) {
-        // 全局开关: 切换所有功能
-        bool new_state = !feature_enabled_[AnalysisFeature::Master];
-        feature_enabled_[AnalysisFeature::Master] = new_state;
-        for (auto it = feature_enabled_.begin(); it != feature_enabled_.end(); ++it) {
-            if (it.key() != AnalysisFeature::Master) {
-                it.value() = new_state;
-            }
-        }
-        // 更新按钮样式
-        for (auto it = toggle_buttons_.begin(); it != toggle_buttons_.end(); ++it) {
-            QPushButton* btn = it.value();
-            if (it.key() == AnalysisFeature::Master) {
-                btn->setChecked(new_state);
-                btn->setStyleSheet(new_state ? kToggleBtnCheckedStyle : kToggleBtnUncheckedStyle);
-            } else {
-                btn->setChecked(new_state);
-                btn->setStyleSheet(new_state ? kToggleBtnChildCheckedStyle : kToggleBtnUncheckedStyle);
-            }
-        }
-        // 发射信号
-        emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::Master), new_state);
-        for (auto it = feature_enabled_.begin(); it != feature_enabled_.end(); ++it) {
-            if (it.key() != AnalysisFeature::Master) {
-                emit AnalysisFeatureToggled(static_cast<int>(it.key()), it.value());
-            }
-        }
-    } else {
-        // 单个开关
-        bool new_state = !feature_enabled_[feature];
-        feature_enabled_[feature] = new_state;
-        
-        QPushButton* btn = toggle_buttons_.value(feature);
-        if (btn) {
-            btn->setChecked(new_state);
-            btn->setStyleSheet(new_state ? kToggleBtnChildCheckedStyle : kToggleBtnUncheckedStyle);
-        }
-        
-        emit AnalysisFeatureToggled(static_cast<int>(feature), new_state);
-    }
+QWidget* AnalysisPanel::CreateToggleHeader(AnalysisFeature feature, const QString& title, QWidget* parent) {
+    QWidget* header = new QWidget(parent);
+    QHBoxLayout* hlayout = new QHBoxLayout(header);
+    hlayout->setContentsMargins(0, 0, 0, 4);
+    
+    QLabel* title_label = new QLabel(title, header);
+    QFont title_font = title_label->font();
+    title_font.setBold(true);
+    title_font.setPointSize(title_font.pointSize() + 1);
+    title_label->setFont(title_font);
+    hlayout->addWidget(title_label);
+    
+    hlayout->addStretch();
+    
+    QCheckBox* toggle = new QCheckBox(tr("启用分析"), header);
+    toggle->setChecked(feature_enabled_.value(feature, true));
+    toggle->setToolTip(tr("启用或禁用该分析功能，关闭可降低 CPU 占用"));
+    hlayout->addWidget(toggle);
+    
+    // 直方图和 FaceDetect 开启时需要确保 StreamAnalyzer 已启动
+    connect(toggle, &QCheckBox::toggled, this, [this, feature](bool checked) {
+        feature_enabled_[feature] = checked;
+        emit AnalysisFeatureToggled(static_cast<int>(feature), checked);
+    });
+    
+    return header;
 }
 
 void AnalysisPanel::SetupStreamTab() {
     stream_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(stream_tab_);
+    layout->addWidget(CreateToggleHeader(AnalysisFeature::StreamStats, tr("流统计"), stream_tab_));
     
     // 统计信息表格
     QGroupBox* stats_group = new QGroupBox(tr("流统计信息"), stream_tab_);
@@ -349,6 +228,7 @@ void AnalysisPanel::SetupStreamTab() {
 void AnalysisPanel::SetupFrameTab() {
     frame_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(frame_tab_);
+    layout->addWidget(CreateToggleHeader(AnalysisFeature::VideoFrame, tr("视频帧"), frame_tab_));
 
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
     toolbar_layout->addWidget(new QLabel(tr("筛选:"), frame_tab_));
@@ -407,6 +287,7 @@ void AnalysisPanel::SetupFrameTab() {
 void AnalysisPanel::SetupAudioFrameTab() {
     audio_frame_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(audio_frame_tab_);
+    layout->addWidget(CreateToggleHeader(AnalysisFeature::AudioFrame, tr("音频帧"), audio_frame_tab_));
 
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
     audio_frame_summary_label_ = new QLabel(tr("总音频帧数: 0 | 总样本数: 0 | 总字节数: 0"), audio_frame_tab_);
@@ -445,6 +326,7 @@ void AnalysisPanel::SetupAudioFrameTab() {
 void AnalysisPanel::SetupPacketTab() {
     packet_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(packet_tab_);
+    layout->addWidget(CreateToggleHeader(AnalysisFeature::Packet, tr("数据包"), packet_tab_));
 
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
     packet_summary_label_ = new QLabel(tr("总包数: 0 | 视频包: 0 | 音频包: 0 | 其他包: 0"), packet_tab_);
@@ -485,6 +367,7 @@ void AnalysisPanel::SetupPacketTab() {
 void AnalysisPanel::SetupEventTab() {
     event_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(event_tab_);
+    layout->addWidget(CreateToggleHeader(AnalysisFeature::Event, tr("事件"), event_tab_));
 
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
     event_summary_label_ = new QLabel(tr("总事件数: 0 | 错误: 0 | 警告: 0 | 信息: 0"), event_tab_);
@@ -524,6 +407,7 @@ void AnalysisPanel::SetupEventTab() {
 void AnalysisPanel::SetupSyncTab() {
     sync_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(sync_tab_);
+    layout->addWidget(CreateToggleHeader(AnalysisFeature::SyncSample, tr("同步分析"), sync_tab_));
 
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
     sync_summary_label_ = new QLabel(tr("样本数: 0 | 平均偏移: 0.00 ms | 最大偏移: 0.00 ms"), sync_tab_);
@@ -582,6 +466,7 @@ void AnalysisPanel::SetupSyncTab() {
 void AnalysisPanel::SetupTimelineTab() {
     timeline_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(timeline_tab_);
+    layout->addWidget(CreateToggleHeader(AnalysisFeature::Timeline, tr("时间线"), timeline_tab_));
 
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
     timeline_summary_label_ = new QLabel(tr("事件数: 0 | 视频关键帧: 0 | 音频采样: 0 | 异常事件: 0"), timeline_tab_);
@@ -654,6 +539,7 @@ void AnalysisPanel::SetupTimelineTab() {
 void AnalysisPanel::SetupAudioVisualizationTab() {
     audio_visualization_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(audio_visualization_tab_);
+    layout->addWidget(CreateToggleHeader(AnalysisFeature::AudioVis, tr("音频可视化"), audio_visualization_tab_));
 
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
     audio_visualization_summary_label_ = new QLabel(
@@ -722,6 +608,7 @@ void AnalysisPanel::SetupAudioVisualizationTab() {
 void AnalysisPanel::SetupHistogramTab() {
     histogram_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(histogram_tab_);
+    layout->addWidget(CreateToggleHeader(AnalysisFeature::Histogram, tr("直方图"), histogram_tab_));
     
     QGroupBox* hist_group = new QGroupBox(tr("直方图分析"), histogram_tab_);
     QVBoxLayout* hist_layout = new QVBoxLayout(hist_group);
@@ -738,6 +625,7 @@ void AnalysisPanel::SetupHistogramTab() {
 void AnalysisPanel::SetupFaceTab() {
     face_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(face_tab_);
+    layout->addWidget(CreateToggleHeader(AnalysisFeature::FaceDetect, tr("人脸检测"), face_tab_));
     
     // 人脸计数
     face_count_label_ = new QLabel(tr("检测到人脸数: 0"), face_tab_);

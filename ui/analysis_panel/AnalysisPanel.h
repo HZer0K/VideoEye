@@ -16,8 +16,8 @@
 #include <QTableWidget>
 #include <QTimer>
 #include <QComboBox>
+#include <QCheckBox>
 #include <QMap>
-#include <QFrame>
 #include <QtCharts/QValueAxis>
 #include <deque>
 #include <vector>
@@ -174,8 +174,8 @@ private:
 
     // 初始化UI
     void SetupUI();
-    void SetupToggleBar();
-    void OnToggleFeature(AnalysisFeature feature);
+    // 在每个标签页中创建带开关的标题栏
+    QWidget* CreateToggleHeader(AnalysisFeature feature, const QString& title, QWidget* parent);
     void SetupStreamTab();
     void SetupFrameTab();
     void SetupAudioFrameTab();
@@ -241,8 +241,6 @@ private:
     
     // 分析功能开关
     QMap<AnalysisFeature, bool> feature_enabled_;
-    QMap<AnalysisFeature, QPushButton*> toggle_buttons_;
-    QWidget* toggle_bar_;
     
     // 成员变量
     QTabWidget* tab_widget_;
