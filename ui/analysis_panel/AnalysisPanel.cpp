@@ -2052,7 +2052,12 @@ void AnalysisPanel::OnExportMp4Box() {
             QString indent(depth * 2, ' ');
             out << indent << node.type
                 << " | size=" << node.size
-                << " | offset=" << node.offset << '\n';
+                << " | offset=" << node.offset;
+            // 输出字段信息（handler type、version、flags 等）
+            for (const auto& f : node.fields) {
+                out << " | " << f.name << "=" << f.value;
+            }
+            out << '\n';
             printTree(node.children, depth + 1);
         }
     };
@@ -2100,16 +2105,43 @@ void AnalysisPanel::OnExportMp4Box() {
         }
 
         // stsz
-        if (!track.stsz_entries.isEmpty()) {
+        if (!track.stsz_entries.isEmpty() || track.stsz_default_size > 0) {
             out << "stsz (Sample Size):\n";
-            out << "  Index\tSize";
-            if (track.stsz_entries.size() > 1) {
-                out << "\t[0]constant=" << track.stsz_entries[0].sample_size;
+            if (track.stsz_default_size > 0 && track.stsz_entries.isEmpty()) {
+                out << "  ConstantSize=" << track.stsz_default_size
+                    << " (all " << track.stsz_sample_count << " samples)\n";
+            } else {
+                out << "  Index\tSize";
+                if (track.stsz_default_size > 0) {
+                    out << "\t[default=" << track.stsz_default_size << "]";
+                }
+                out << '\n';
+                for (int i = 0; i < track.stsz_entries.size(); ++i) {
+                    out << "  " << i << "\t"
+                        << track.stsz_entries[i].sample_size << '\n';
+                }
             }
             out << '\n';
-            for (int i = 0; i < track.stsz_entries.size(); ++i) {
+        }
+
+        // stss (关键帧列表)
+        if (!track.stss_entries.isEmpty()) {
+            out << "stss (Sync Sample / Key Frames):\n";
+            out << "  Index\tSampleNumber\n";
+            for (int i = 0; i < track.stss_entries.size(); ++i) {
                 out << "  " << i << "\t"
-                    << track.stsz_entries[i].sample_size << '\n';
+                    << track.stss_entries[i].sample_number << '\n';
+            }
+            out << '\n';
+        }
+
+        // co64 (64-bit Chunk Offset)
+        if (!track.co64_entries.isEmpty()) {
+            out << "co64 (64-bit Chunk Offset):\n";
+            out << "  Index\tChunkOffset\n";
+            for (int i = 0; i < track.co64_entries.size(); ++i) {
+                out << "  " << i << "\t"
+                    << track.co64_entries[i].chunk_offset << '\n';
             }
             out << '\n';
         }
