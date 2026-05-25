@@ -96,8 +96,10 @@ AnalysisPanel::~AnalysisPanel() {
 
 void AnalysisPanel::SetupUI() {
     QVBoxLayout* main_layout = new QVBoxLayout(this);
-    main_layout->setContentsMargins(2, 2, 2, 2);
+    main_layout->setContentsMargins(4, 4, 4, 4);
     main_layout->setSpacing(4);
+    
+    setMinimumSize(500, 300);
     
     // 创建标签页
     tab_widget_ = new QTabWidget(this);
@@ -150,6 +152,14 @@ QWidget* AnalysisPanel::CreateToggleHeader(AnalysisFeature feature, const QStrin
     return header;
 }
 
+void AnalysisPanel::AddTabWithScroll(QWidget* tab_widget, const QString& title) {
+    QScrollArea* scroll = new QScrollArea();
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidget(tab_widget);
+    tab_widget_->addTab(scroll, title);
+}
+
 void AnalysisPanel::SetupStreamTab() {
     stream_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(stream_tab_);
@@ -162,6 +172,8 @@ void AnalysisPanel::SetupStreamTab() {
     stats_table_ = new QTableWidget(14, 2, stats_group);
     stats_table_->setHorizontalHeaderLabels({"参数", "值"});
     stats_table_->setColumnWidth(0, 150);
+    stats_table_->setMinimumWidth(300);
+    stats_table_->setMinimumHeight(200);
     stats_table_->verticalHeader()->setVisible(false);
     
     // 填充初始数据
@@ -188,6 +200,7 @@ void AnalysisPanel::SetupStreamTab() {
     QVBoxLayout* bitrate_layout = new QVBoxLayout(bitrate_group);
     bitrate_chart_ = new QChartView();
     bitrate_chart_->setMinimumHeight(200);
+    bitrate_chart_->setMinimumWidth(280);
     bitrate_layout->addWidget(bitrate_chart_);
     charts_layout->addWidget(bitrate_group);
     
@@ -196,12 +209,13 @@ void AnalysisPanel::SetupStreamTab() {
     QVBoxLayout* fps_layout = new QVBoxLayout(fps_group);
     fps_chart_ = new QChartView();
     fps_chart_->setMinimumHeight(200);
+    fps_chart_->setMinimumWidth(280);
     fps_layout->addWidget(fps_chart_);
     charts_layout->addWidget(fps_group);
     
     layout->addLayout(charts_layout);
     
-    tab_widget_->addTab(stream_tab_, tr("流分析"));
+    AddTabWithScroll(stream_tab_, tr("流分析"));
     
     bitrate_series_ = new QLineSeries(this);
     bitrate_chart_object_ = new QChart();
@@ -276,11 +290,14 @@ void AnalysisPanel::SetupFrameTab() {
     frame_table_->setSelectionMode(QAbstractItemView::SingleSelection);
     frame_table_->setSortingEnabled(false);
     frame_table_->horizontalHeader()->setStretchLastSection(true);
-    frame_table_->setColumnWidth(0, 80);
-    frame_table_->setColumnWidth(1, 80);
-    frame_table_->setColumnWidth(2, 80);
-    frame_table_->setColumnWidth(3, 140);
-    frame_table_->setColumnWidth(5, 80);
+    frame_table_->horizontalHeader()->setMinimumSectionSize(40);
+    frame_table_->setColumnWidth(0, 60);
+    frame_table_->setColumnWidth(1, 70);
+    frame_table_->setColumnWidth(2, 70);
+    frame_table_->setColumnWidth(3, 100);
+    frame_table_->setColumnWidth(5, 60);
+    frame_table_->setMinimumWidth(400);
+    frame_table_->setMinimumHeight(120);
     
     table_layout->addWidget(frame_table_);
     layout->addWidget(table_group);
@@ -295,10 +312,12 @@ void AnalysisPanel::SetupFrameTab() {
     gop_table_->setSelectionMode(QAbstractItemView::SingleSelection);
     gop_table_->setSortingEnabled(false);
     gop_table_->horizontalHeader()->setStretchLastSection(true);
+    gop_table_->setMinimumWidth(500);
+    gop_table_->setMinimumHeight(120);
     gop_layout->addWidget(gop_table_);
     layout->addWidget(gop_group);
     
-    tab_widget_->addTab(frame_tab_, tr("视频帧"));
+    AddTabWithScroll(frame_tab_, tr("视频帧"));
 
     connect(frame_filter_combo_, &QComboBox::currentIndexChanged, this, [this](int) {
         OnFrameFilterChanged();
@@ -330,17 +349,20 @@ void AnalysisPanel::SetupAudioFrameTab() {
     audio_frame_table_->setSelectionMode(QAbstractItemView::SingleSelection);
     audio_frame_table_->setSortingEnabled(false);
     audio_frame_table_->horizontalHeader()->setStretchLastSection(true);
-    audio_frame_table_->setColumnWidth(0, 80);
-    audio_frame_table_->setColumnWidth(1, 140);
-    audio_frame_table_->setColumnWidth(2, 120);
+    audio_frame_table_->horizontalHeader()->setMinimumSectionSize(50);
+    audio_frame_table_->setColumnWidth(0, 60);
+    audio_frame_table_->setColumnWidth(1, 100);
+    audio_frame_table_->setColumnWidth(2, 100);
     audio_frame_table_->setColumnWidth(3, 100);
     audio_frame_table_->setColumnWidth(4, 120);
     audio_frame_table_->setColumnWidth(5, 90);
+    audio_frame_table_->setMinimumWidth(550);
+    audio_frame_table_->setMinimumHeight(120);
 
     table_layout->addWidget(audio_frame_table_);
     layout->addWidget(table_group);
 
-    tab_widget_->addTab(audio_frame_tab_, tr("音频帧"));
+    AddTabWithScroll(audio_frame_tab_, tr("音频帧"));
 
     connect(export_audio_frame_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportAudioFrameCsv);
 }
@@ -369,19 +391,22 @@ void AnalysisPanel::SetupPacketTab() {
     packet_table_->setSelectionMode(QAbstractItemView::SingleSelection);
     packet_table_->setSortingEnabled(false);
     packet_table_->horizontalHeader()->setStretchLastSection(true);
-    packet_table_->setColumnWidth(0, 80);
-    packet_table_->setColumnWidth(1, 80);
-    packet_table_->setColumnWidth(2, 120);
-    packet_table_->setColumnWidth(3, 120);
-    packet_table_->setColumnWidth(4, 120);
+    packet_table_->horizontalHeader()->setMinimumSectionSize(50);
+    packet_table_->setColumnWidth(0, 60);
+    packet_table_->setColumnWidth(1, 70);
+    packet_table_->setColumnWidth(2, 100);
+    packet_table_->setColumnWidth(3, 100);
+    packet_table_->setColumnWidth(4, 100);
     packet_table_->setColumnWidth(5, 100);
     packet_table_->setColumnWidth(6, 90);
     packet_table_->setColumnWidth(7, 120);
+    packet_table_->setMinimumWidth(600);
+    packet_table_->setMinimumHeight(120);
 
     table_layout->addWidget(packet_table_);
     layout->addWidget(table_group);
 
-    tab_widget_->addTab(packet_tab_, tr("包分析"));
+    AddTabWithScroll(packet_tab_, tr("包分析"));
 
     connect(export_packet_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportPacketCsv);
 }
@@ -410,18 +435,21 @@ void AnalysisPanel::SetupEventTab() {
     event_table_->setSelectionMode(QAbstractItemView::SingleSelection);
     event_table_->setSortingEnabled(false);
     event_table_->horizontalHeader()->setStretchLastSection(true);
-    event_table_->setColumnWidth(0, 80);
-    event_table_->setColumnWidth(1, 90);
-    event_table_->setColumnWidth(2, 120);
-    event_table_->setColumnWidth(3, 80);
-    event_table_->setColumnWidth(4, 120);
-    event_table_->setColumnWidth(5, 120);
-    event_table_->setColumnWidth(6, 240);
+    event_table_->horizontalHeader()->setMinimumSectionSize(50);
+    event_table_->setColumnWidth(0, 60);
+    event_table_->setColumnWidth(1, 70);
+    event_table_->setColumnWidth(2, 90);
+    event_table_->setColumnWidth(3, 70);
+    event_table_->setColumnWidth(4, 100);
+    event_table_->setColumnWidth(5, 100);
+    event_table_->setColumnWidth(6, 200);
+    event_table_->setMinimumWidth(550);
+    event_table_->setMinimumHeight(120);
 
     table_layout->addWidget(event_table_);
     layout->addWidget(table_group);
 
-    tab_widget_->addTab(event_tab_, tr("异常事件"));
+    AddTabWithScroll(event_tab_, tr("异常事件"));
 
     connect(export_event_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportEventCsv);
 }
@@ -443,6 +471,7 @@ void AnalysisPanel::SetupSyncTab() {
     QVBoxLayout* chart_layout = new QVBoxLayout(chart_group);
     sync_chart_ = new QChartView(sync_tab_);
     sync_chart_->setMinimumHeight(220);
+    sync_chart_->setMinimumWidth(280);
     chart_layout->addWidget(sync_chart_);
     layout->addWidget(chart_group);
 
@@ -460,10 +489,12 @@ void AnalysisPanel::SetupSyncTab() {
     sync_table_->setColumnWidth(1, 120);
     sync_table_->setColumnWidth(2, 120);
     sync_table_->setColumnWidth(3, 120);
+    sync_table_->setMinimumWidth(360);
+    sync_table_->setMinimumHeight(120);
     table_layout->addWidget(sync_table_);
     layout->addWidget(table_group);
 
-    tab_widget_->addTab(sync_tab_, tr("同步分析"));
+    AddTabWithScroll(sync_tab_, tr("同步分析"));
 
     sync_series_ = new QLineSeries(this);
     QChart* sync_chart_object = new QChart();
@@ -502,6 +533,7 @@ void AnalysisPanel::SetupTimelineTab() {
     QVBoxLayout* chart_layout = new QVBoxLayout(chart_group);
     timeline_chart_ = new QChartView(timeline_tab_);
     timeline_chart_->setMinimumHeight(220);
+    timeline_chart_->setMinimumWidth(280);
     chart_layout->addWidget(timeline_chart_);
     layout->addWidget(chart_group);
 
@@ -519,10 +551,12 @@ void AnalysisPanel::SetupTimelineTab() {
     timeline_table_->setColumnWidth(1, 100);
     timeline_table_->setColumnWidth(2, 120);
     timeline_table_->setColumnWidth(3, 200);
+    timeline_table_->setMinimumWidth(400);
+    timeline_table_->setMinimumHeight(120);
     table_layout->addWidget(timeline_table_);
     layout->addWidget(table_group);
 
-    tab_widget_->addTab(timeline_tab_, tr("统一时间轴"));
+    AddTabWithScroll(timeline_tab_, tr("统一时间轴"));
 
     timeline_video_series_ = new QLineSeries(this);
     timeline_video_series_->setName(tr("视频关键帧"));
@@ -577,6 +611,7 @@ void AnalysisPanel::SetupAudioVisualizationTab() {
     QVBoxLayout* waveform_layout = new QVBoxLayout(waveform_group);
     waveform_chart_ = new QChartView(audio_visualization_tab_);
     waveform_chart_->setMinimumHeight(220);
+    waveform_chart_->setMinimumWidth(280);
     waveform_layout->addWidget(waveform_chart_);
     layout->addWidget(waveform_group);
 
@@ -584,10 +619,11 @@ void AnalysisPanel::SetupAudioVisualizationTab() {
     QVBoxLayout* spectrum_layout = new QVBoxLayout(spectrum_group);
     spectrum_chart_ = new QChartView(audio_visualization_tab_);
     spectrum_chart_->setMinimumHeight(220);
+    spectrum_chart_->setMinimumWidth(280);
     spectrum_layout->addWidget(spectrum_chart_);
     layout->addWidget(spectrum_group);
 
-    tab_widget_->addTab(audio_visualization_tab_, tr("音频可视化"));
+    AddTabWithScroll(audio_visualization_tab_, tr("音频可视化"));
 
     waveform_series_ = new QLineSeries(this);
     QChart* waveform_chart_object = new QChart();
@@ -636,7 +672,8 @@ void AnalysisPanel::SetupHistogramTab() {
     QVBoxLayout* hist_layout = new QVBoxLayout(hist_group);
     
     histogram_chart_ = new QChartView();
-    histogram_chart_->setMinimumHeight(400);
+    histogram_chart_->setMinimumHeight(200);
+    histogram_chart_->setMinimumWidth(400);
     hist_layout->addWidget(histogram_chart_);
     
     layout->addWidget(hist_group);
@@ -646,7 +683,7 @@ void AnalysisPanel::SetupHistogramTab() {
     export_histogram_button_->setToolTip(tr("将直方图通道数据导出为 CSV"));
     layout->addWidget(export_histogram_button_, 0, Qt::AlignRight);
     
-    tab_widget_->addTab(histogram_tab_, tr("直方图"));
+    AddTabWithScroll(histogram_tab_, tr("直方图"));
     
     connect(export_histogram_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportHistogramCsv);
 }
@@ -669,11 +706,14 @@ void AnalysisPanel::SetupMp4BoxTab() {
     QVBoxLayout* tree_layout = new QVBoxLayout(tree_group);
     box_tree_widget_ = new QTreeWidget(tree_group);
     box_tree_widget_->setHeaderLabels({tr("Box 类型"), tr("大小 (字节)"), tr("偏移"), tr("关键属性")});
-    box_tree_widget_->setColumnWidth(0, 160);
-    box_tree_widget_->setColumnWidth(1, 120);
-    box_tree_widget_->setColumnWidth(2, 100);
-    box_tree_widget_->setColumnWidth(3, 280);
+    box_tree_widget_->setColumnWidth(0, 130);
+    box_tree_widget_->setColumnWidth(1, 100);
+    box_tree_widget_->setColumnWidth(2, 80);
+    box_tree_widget_->columnAt(3);
+    box_tree_widget_->header()->setStretchLastSection(true);
+    box_tree_widget_->header()->setMinimumSectionSize(60);
     box_tree_widget_->setAlternatingRowColors(true);
+    box_tree_widget_->setMinimumWidth(360);
     tree_layout->addWidget(box_tree_widget_);
     splitter->addWidget(tree_group);
     
@@ -686,7 +726,10 @@ void AnalysisPanel::SetupMp4BoxTab() {
     stts_table_ = new QTableWidget(0, 3, stts_widget);
     stts_table_->setHorizontalHeaderLabels({tr("索引"), tr("样本计数"), tr("样本增量 (timescale)")});
     stts_table_->horizontalHeader()->setStretchLastSection(true);
+    stts_table_->horizontalHeader()->setMinimumSectionSize(60);
     stts_table_->setAlternatingRowColors(true);
+    stts_table_->setMinimumWidth(250);
+    stts_table_->setMinimumHeight(100);
     stts_layout->addWidget(stts_table_);
     box_detail_tabs_->addTab(stts_widget, tr("stts (Time-to-Sample)"));
     
@@ -696,7 +739,10 @@ void AnalysisPanel::SetupMp4BoxTab() {
     stco_table_ = new QTableWidget(0, 2, stco_widget);
     stco_table_->setHorizontalHeaderLabels({tr("索引"), tr("Chunk 偏移")});
     stco_table_->horizontalHeader()->setStretchLastSection(true);
+    stco_table_->horizontalHeader()->setMinimumSectionSize(60);
     stco_table_->setAlternatingRowColors(true);
+    stco_table_->setMinimumWidth(200);
+    stco_table_->setMinimumHeight(100);
     stco_layout->addWidget(stco_table_);
     box_detail_tabs_->addTab(stco_widget, tr("stco (Chunk Offset)"));
     
@@ -706,7 +752,10 @@ void AnalysisPanel::SetupMp4BoxTab() {
     stsc_table_ = new QTableWidget(0, 4, stsc_widget);
     stsc_table_->setHorizontalHeaderLabels({tr("索引"), tr("首个 Chunk"), tr("每 Chunk 样本数"), tr("样本描述索引")});
     stsc_table_->horizontalHeader()->setStretchLastSection(true);
+    stsc_table_->horizontalHeader()->setMinimumSectionSize(60);
     stsc_table_->setAlternatingRowColors(true);
+    stsc_table_->setMinimumWidth(300);
+    stsc_table_->setMinimumHeight(100);
     stsc_layout->addWidget(stsc_table_);
     box_detail_tabs_->addTab(stsc_widget, tr("stsc (Sample-to-Chunk)"));
     
@@ -716,7 +765,10 @@ void AnalysisPanel::SetupMp4BoxTab() {
     stsz_table_ = new QTableWidget(0, 3, stsz_widget);
     stsz_table_->setHorizontalHeaderLabels({tr("索引"), tr("样本大小 (字节)"), tr("备注")});
     stsz_table_->horizontalHeader()->setStretchLastSection(true);
+    stsz_table_->horizontalHeader()->setMinimumSectionSize(60);
     stsz_table_->setAlternatingRowColors(true);
+    stsz_table_->setMinimumWidth(250);
+    stsz_table_->setMinimumHeight(100);
     stsz_layout->addWidget(stsz_table_);
     box_detail_tabs_->addTab(stsz_widget, tr("stsz (Sample Size)"));
     
@@ -726,7 +778,10 @@ void AnalysisPanel::SetupMp4BoxTab() {
     stss_table_ = new QTableWidget(0, 2, stss_widget);
     stss_table_->setHorizontalHeaderLabels({tr("索引"), tr("关键帧样本号")});
     stss_table_->horizontalHeader()->setStretchLastSection(true);
+    stss_table_->horizontalHeader()->setMinimumSectionSize(60);
     stss_table_->setAlternatingRowColors(true);
+    stss_table_->setMinimumWidth(200);
+    stss_table_->setMinimumHeight(100);
     stss_layout->addWidget(stss_table_);
     box_detail_tabs_->addTab(stss_widget, tr("stss (Sync Sample)"));
     
@@ -736,13 +791,18 @@ void AnalysisPanel::SetupMp4BoxTab() {
     co64_table_ = new QTableWidget(0, 2, co64_widget);
     co64_table_->setHorizontalHeaderLabels({tr("索引"), tr("Chunk 偏移 (64位)")});
     co64_table_->horizontalHeader()->setStretchLastSection(true);
+    co64_table_->horizontalHeader()->setMinimumSectionSize(60);
     co64_table_->setAlternatingRowColors(true);
+    co64_table_->setMinimumWidth(200);
+    co64_table_->setMinimumHeight(100);
     co64_layout->addWidget(co64_table_);
     box_detail_tabs_->addTab(co64_widget, tr("co64 (64-bit Chunk)"));
     
     splitter->addWidget(box_detail_tabs_);
     splitter->setStretchFactor(0, 1);
-    splitter->setStretchFactor(1, 2);
+    splitter->setStretchFactor(1, 3);
+    splitter->setMinimumWidth(540);
+    splitter->setChildrenCollapsible(false);
     
     layout->addWidget(splitter);
     
@@ -751,7 +811,7 @@ void AnalysisPanel::SetupMp4BoxTab() {
     export_mp4_box_button_->setToolTip(tr("将 Box 树结构和表格数据导出为文本文件"));
     layout->addWidget(export_mp4_box_button_, 0, Qt::AlignRight);
     
-    tab_widget_->addTab(mp4_box_tab_, tr("MP4 Box"));
+    AddTabWithScroll(mp4_box_tab_, tr("MP4 Box"));
     
     connect(export_mp4_box_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportMp4Box);
 }

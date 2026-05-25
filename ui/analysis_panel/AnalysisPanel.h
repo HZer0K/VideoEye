@@ -18,6 +18,7 @@
 #include <QTimer>
 #include <QComboBox>
 #include <QCheckBox>
+#include <QScrollArea>
 #include <QMap>
 #include <QtCharts/QValueAxis>
 #include <deque>
@@ -181,6 +182,8 @@ private:
     void SetupUI();
     // 在每个标签页中创建带开关的标题栏
     QWidget* CreateToggleHeader(AnalysisFeature feature, const QString& title, QWidget* parent);
+    // 将标签页内容包裹 QScrollArea 防止缩放重叠
+    void AddTabWithScroll(QWidget* tab_widget, const QString& title);
     void SetupStreamTab();
     void SetupFrameTab();
     void SetupAudioFrameTab();

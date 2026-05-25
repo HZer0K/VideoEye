@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QWindow>
 #include <QLabel>
 #include <QPushButton>
 #include <QSlider>
@@ -77,12 +78,10 @@ private:
     bool ShowRawFrame(int frame_index);
     void UpdateRawNavigationState();
     void UpdateMinimumWindowSize();
-    void EnforceSplitterSizes();
 
 protected:
     void showEvent(QShowEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
-    void moveEvent(QMoveEvent* event) override;
     
     // 更新UI状态
     void UpdateUIState();
@@ -118,8 +117,6 @@ protected:
     QProgressDialog* export_progress_dialog_ = nullptr;
     int export_total_frames_ = 0;
 
-    QRect last_geometry_;
-    bool enforcing_geometry_ = false;
     bool audio_only_mode_ = false;
     std::deque<double> audio_level_history_;
     QElapsedTimer audio_vis_timer_;

@@ -4,6 +4,7 @@
 #include <QHBoxLayout>
 #include <QGroupBox>
 #include <QSplitter>
+#include <QScrollArea>
 #include <QFileDialog>
 #include <QInputDialog>
 #include <QMessageBox>
@@ -44,14 +45,9 @@ MainWindow::MainWindow(QWidget* parent)
     SetupConnections();
     UpdateMinimumWindowSize();
     audio_vis_timer_.start();
-    QTimer::singleShot(0, this, [this]() {
-        UpdateMinimumWindowSize();
-        EnforceSplitterSizes();
-    });
 
     setWindowTitle(tr("VideoEye 2.0 - 视频流分析软件"));
     resize(1200, 800);
-    last_geometry_ = geometry();
 }
 
 MainWindow::~MainWindow() {
@@ -74,8 +70,7 @@ void MainWindow::SetupUI() {
     
     // 视频显示区域
     video_label_ = new QLabel(splitter_);
-    video_label_->setMinimumSize(1, 1);
-    video_label_->setMinimumHeight(160);
+    video_label_->setMinimumSize(320, 160);
     video_label_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     video_label_->setStyleSheet("background-color: black;");
     video_label_->setAlignment(Qt::AlignCenter);
@@ -83,9 +78,10 @@ void MainWindow::SetupUI() {
     video_label_->setStyleSheet("background-color: black; color: white; font-size: 20px;");
     
     bottom_widget_ = new QWidget(splitter_);
-    bottom_widget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
+    bottom_widget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     QVBoxLayout* bottom_layout = new QVBoxLayout(bottom_widget_);
-    bottom_layout->setContentsMargins(6, 6, 6, 6);
+    bottom_layout->setContentsMargins(4, 2, 4, 4);
+    bottom_layout->setSpacing(4);
 
     // 控制面板
     control_group_ = new QGroupBox(bottom_widget_);
@@ -121,37 +117,39 @@ void MainWindow::SetupUI() {
 
     control_group_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     const int control_h = control_group_->sizeHint().height();
-    control_group_->setFixedHeight(control_h);
+    control_group_->setFixedHeight(control_h + 6);
         
     // 信息面板
     tab_widget_ = new QTabWidget(bottom_widget_);
-    tab_widget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    tab_widget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     const int tabbar_h = tab_widget_->tabBar()->sizeHint().height();
-    tab_widget_->setMinimumHeight(tabbar_h);
+    tab_widget_->setMinimumHeight(tabbar_h + 250);
     
-    // 流信息标签页
+    // 流信息标签页 (包裹 QScrollArea 防止缩放溢出)
     QWidget* info_tab = new QWidget(tab_widget_);
     QVBoxLayout* info_layout = new QVBoxLayout(info_tab);
-    info_text_ = new QTextEdit(info_tab);
+    QScrollArea* info_scroll = new QScrollArea(info_tab);
+    info_scroll->setWidgetResizable(true);
+    info_scroll->setFrameShape(QFrame::NoFrame);
+    info_text_ = new QTextEdit(info_scroll);
     info_text_->setReadOnly(true);
     info_text_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     info_text_->setLineWrapMode(QTextEdit::NoWrap);
-    info_text_->setMinimumHeight(0);
-    info_text_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
-    info_layout->addWidget(info_text_);
+    info_text_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    info_scroll->setWidget(info_text_);
+    info_layout->addWidget(info_scroll);
     tab_widget_->addTab(info_tab, tr("流信息"));
     
     // 分析面板标签页 (集成分析功能)
     analysis_panel_ = new ui::AnalysisPanel(tab_widget_);
-    analysis_panel_->setMinimumHeight(0);
-    analysis_panel_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+    analysis_panel_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     tab_widget_->addTab(analysis_panel_, tr("分析面板"));
     
     bottom_layout->addWidget(control_group_, 0);
     bottom_layout->addWidget(tab_widget_, 1);
 
     bottom_widget_->setMinimumHeight(control_h
-        + tabbar_h
+        + tab_widget_->minimumHeight()
         + bottom_layout->contentsMargins().top()
         + bottom_layout->contentsMargins().bottom()
         + bottom_layout->spacing());
@@ -217,102 +215,24 @@ void MainWindow::UpdateMinimumWindowSize() {
     }
 
     setMinimumSize(min_width, min_height);
-    if (auto* cw = centralWidget()) {
-        cw->setMinimumWidth(min_width);
-        cw->setMinimumHeight(min_height);
-    }
-    if (splitter_) {
-        splitter_->setMinimumWidth(min_width);
-        splitter_->setMinimumHeight(min_height);
-    }
-}
-
-void MainWindow::EnforceSplitterSizes() {
-    if (!splitter_ || !bottom_widget_) {
-        return;
-    }
-    const int bottom_min = bottom_widget_->minimumHeight();
-    const int video_min = video_label_ ? video_label_->minimumHeight() : 160;
-    QList<int> sizes = splitter_->sizes();
-    if (sizes.size() != 2) {
-        return;
-    }
-    bool changed = false;
-    if (sizes[1] < bottom_min) {
-        sizes[1] = bottom_min;
-        changed = true;
-    }
-    if (sizes[0] < video_min) {
-        sizes[0] = video_min;
-        changed = true;
-    }
-    if (changed) {
-        splitter_->setSizes(sizes);
+    if (windowHandle()) {
+        windowHandle()->setMinimumSize(QSize(min_width, min_height));
     }
 }
 
 void MainWindow::showEvent(QShowEvent* event) {
     QMainWindow::showEvent(event);
     UpdateMinimumWindowSize();
-    EnforceSplitterSizes();
-    last_geometry_ = geometry();
 }
 
 void MainWindow::resizeEvent(QResizeEvent* event) {
     QMainWindow::resizeEvent(event);
-    EnforceSplitterSizes();
-
-    if (enforcing_geometry_) {
-        last_geometry_ = geometry();
-        return;
-    }
-
+    // 本机 WM 在拖拽中完全无视所有尺寸约束，必须强制 resize 阻止缩成一线
+    UpdateMinimumWindowSize();
     const QSize min_sz = minimumSize();
-    QRect g = geometry();
-
-    int target_w = g.width();
-    int target_h = g.height();
-    int target_x = g.x();
-    int target_y = g.y();
-
-    const QRect old_g = last_geometry_.isValid() ? last_geometry_ : g;
-
-    const bool left_moved = g.left() != old_g.left();
-    const bool right_moved = g.right() != old_g.right();
-    const bool top_moved = g.top() != old_g.top();
-    const bool bottom_moved = g.bottom() != old_g.bottom();
-
-    const bool anchor_right = left_moved && !right_moved;
-    const bool anchor_bottom = top_moved && !bottom_moved;
-
-    if (target_w < min_sz.width()) {
-        target_w = min_sz.width();
-        if (anchor_right) {
-            target_x = g.right() - target_w + 1;
-        }
-    }
-
-    if (target_h < min_sz.height()) {
-        target_h = min_sz.height();
-        if (anchor_bottom) {
-            target_y = g.bottom() - target_h + 1;
-        }
-    }
-
-    if (target_w != g.width() || target_h != g.height() || target_x != g.x() || target_y != g.y()) {
-        enforcing_geometry_ = true;
-        setGeometry(target_x, target_y, target_w, target_h);
-        enforcing_geometry_ = false;
-        g = geometry();
-    }
-
-    last_geometry_ = g;
-}
-
-void MainWindow::moveEvent(QMoveEvent* event) {
-    QMainWindow::moveEvent(event);
-    if (!enforcing_geometry_) {
-        last_geometry_ = geometry();
+    const QSize cur_sz = size();
+    if (cur_sz.width() < min_sz.width() || cur_sz.height() < min_sz.height()) {
+        resize(cur_sz.expandedTo(min_sz));
     }
 }
 
