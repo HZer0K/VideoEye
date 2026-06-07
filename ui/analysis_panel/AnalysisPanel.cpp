@@ -726,15 +726,9 @@ void AnalysisPanel::SetupMp4BoxTab() {
         "  padding: 2px 4px;"
         "  border-bottom: 1px solid #e8e8e8;"
         "}"
-        "QTreeWidget::branch:has-children:!has-siblings:closed,"
-        "QTreeWidget::branch:closed:has-children:has-siblings {"
-        "  border-image: none;"
-        "  image: none;"
-        "}"
-        "QTreeWidget::branch:open:has-children:!has-siblings,"
-        "QTreeWidget::branch:open:has-children:has-siblings {"
-        "  border-image: none;"
-        "  image: none;"
+        "QTreeWidget::item:selected {"
+        "  color: #000;"
+        "  background-color: #b8d4f0;"
         "}"
     );
     box_tree_widget_->setMinimumWidth(360);
@@ -872,6 +866,7 @@ void AnalysisPanel::SetupEbmlTab() {
     ebml_tree_->setIndentation(16);
     ebml_tree_->setStyleSheet(
         "QTreeWidget::item { padding: 1px 3px; font-size: 11px; }"
+        "QTreeWidget::item:selected { color: #000; background-color: #b8d4f0; }"
     );
     leftLayout->addWidget(ebml_tree_);
     splitter->addWidget(leftPanel);
