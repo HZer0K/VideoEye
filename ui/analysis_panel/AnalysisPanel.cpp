@@ -713,6 +713,27 @@ void AnalysisPanel::SetupMp4BoxTab() {
     box_tree_widget_->header()->setStretchLastSection(true);
     box_tree_widget_->header()->setMinimumSectionSize(60);
     box_tree_widget_->setAlternatingRowColors(true);
+    box_tree_widget_->setAnimated(true);
+    box_tree_widget_->setIndentation(20);
+    box_tree_widget_->setStyleSheet(
+        "QTreeWidget {"
+        "  show-decoration-selected: 1;"
+        "}"
+        "QTreeWidget::item {"
+        "  padding: 2px 4px;"
+        "  border-bottom: 1px solid #e8e8e8;"
+        "}"
+        "QTreeWidget::branch:has-children:!has-siblings:closed,"
+        "QTreeWidget::branch:closed:has-children:has-siblings {"
+        "  border-image: none;"
+        "  image: none;"
+        "}"
+        "QTreeWidget::branch:open:has-children:!has-siblings,"
+        "QTreeWidget::branch:open:has-children:has-siblings {"
+        "  border-image: none;"
+        "  image: none;"
+        "}"
+    );
     box_tree_widget_->setMinimumWidth(360);
     tree_layout->addWidget(box_tree_widget_);
     splitter->addWidget(tree_group);
@@ -852,69 +873,82 @@ void AnalysisPanel::OnMp4BoxAnalysisReady(const model::Mp4BoxAnalysisResult& res
     // 填充 Box 树
     box_tree_widget_->clear();
     
-    std::function<void(QTreeWidgetItem*, const QVector<model::Mp4BoxNode>&)> addNodes;
-    addNodes = [&](QTreeWidgetItem* parent, const QVector<model::Mp4BoxNode>& nodes) {
-        for (const auto& node : nodes) {
-            auto items = new QTreeWidgetItem();
-            items->setText(0, node.type);
-            items->setText(1, QString::number(node.size));
-            items->setData(1, Qt::UserRole, static_cast<qulonglong>(node.size));
-            
-            // 添加字段信息作为 tooltip
-            QString tooltip;
-            QString key_props;  // 关键属性摘要
-            for (const auto& f : node.fields) {
-                if (!tooltip.isEmpty()) tooltip += "\n";
-                tooltip += f.name + ": " + f.value;
-                // 只展示关键字段在列中
-                if (f.name == "handler_type" || f.name == "id" ||
-                    f.name == "timescale" || f.name == "duration" ||
-                    f.name == "width" || f.name == "height" ||
-                    f.name == "sample_rate" || f.name == "channel_count" ||
-                    f.name == "entry_count" || f.name == "sample_size" ||
-                    f.name == "sample_count" || f.name == "major_brand" ||
-                    f.name == "language" || f.name == "handler_name" ||
-                    f.name == "balance" || f.name == "graphics_mode" ||
-                    f.name.startsWith("entry_count")) {
-                    if (!key_props.isEmpty()) key_props += " | ";
-                    key_props += f.name + "=" + f.value;
-                }
-            }
-            if (!tooltip.isEmpty()) {
-                items->setToolTip(0, tooltip);
-                items->setToolTip(1, tooltip);
-                items->setToolTip(2, tooltip);
-            }
-            if (!key_props.isEmpty()) {
-                items->setText(3, key_props);
-            }
-            
-            if (parent) {
-                parent->addChild(items);
-            } else {
-                box_tree_widget_->addTopLevelItem(items);
-            }
-            addNodes(items, node.children);
-        }
+    // 深度对应的背景色 (浅色梯度，层次清晰)
+    static const QColor kDepthColors[] = {
+        QColor("#f0f4ff"),  // depth 0 - 淡蓝
+        QColor("#f5f5f5"),  // depth 1 - 浅灰
+        QColor("#fffff0"),  // depth 2 - 淡黄
+        QColor("#f0fff0"),  // depth 3 - 淡绿
+        QColor("#fff0f5"),  // depth 4 - 淡粉
+        QColor("#f0ffff"),  // depth 5 - 淡青
+        QColor("#faf5f0"),  // depth 6 - 淡橙
     };
+    constexpr int kColorCount = sizeof(kDepthColors) / sizeof(kDepthColors[0]);
     
-    for (const auto& node : result.box_tree) {
-        auto root = new QTreeWidgetItem();
-        root->setText(0, node.type);
-        root->setText(1, QString::number(node.size));
+    auto makeItem = [&](const model::Mp4BoxNode& node) -> QTreeWidgetItem* {
+        auto item = new QTreeWidgetItem();
+        item->setText(0, node.type);
+        item->setText(1, QString::number(node.size));
+        item->setData(1, Qt::UserRole, static_cast<qulonglong>(node.size));
+        
+        // 偏移列 (十六进制)
+        item->setText(2, QString("0x%1").arg(node.offset, 0, 16));
+        
+        // 深度层次背景色
+        int depth = static_cast<int>(node.depth);
+        QColor bg = kDepthColors[depth % kColorCount];
+        for (int col = 0; col < 4; ++col) {
+            item->setBackground(col, bg);
+        }
+        
+        // 字段信息: tooltip + 关键属性摘要
         QString tooltip;
         QString key_props;
         for (const auto& f : node.fields) {
             if (!tooltip.isEmpty()) tooltip += "\n";
             tooltip += f.name + ": " + f.value;
-            if (f.name == "major_brand" || f.name == "minor_version" ||
-                f.name.startsWith("compatible_brand")) {
+            if (f.name == "handler_type" || f.name == "id" ||
+                f.name == "timescale" || f.name == "duration" ||
+                f.name == "width" || f.name == "height" ||
+                f.name == "sample_rate" || f.name == "channel_count" ||
+                f.name == "entry_count" || f.name == "sample_size" ||
+                f.name == "sample_count" || f.name == "major_brand" ||
+                f.name == "minor_version" ||
+                f.name == "language" || f.name == "handler_name" ||
+                f.name == "balance" || f.name == "graphics_mode" ||
+                f.name.startsWith("compatible_brand") ||
+                f.name.startsWith("entry_count")) {
                 if (!key_props.isEmpty()) key_props += " | ";
                 key_props += f.name + "=" + f.value;
             }
         }
-        if (!tooltip.isEmpty()) root->setToolTip(0, tooltip);
-        if (!key_props.isEmpty()) root->setText(3, key_props);
+        if (!tooltip.isEmpty()) {
+            item->setToolTip(0, tooltip);
+            item->setToolTip(1, tooltip);
+            item->setToolTip(2, tooltip);
+            item->setToolTip(3, tooltip);
+        }
+        if (!key_props.isEmpty()) {
+            item->setText(3, key_props);
+        }
+        return item;
+    };
+    
+    std::function<void(QTreeWidgetItem*, const QVector<model::Mp4BoxNode>&)> addNodes;
+    addNodes = [&](QTreeWidgetItem* parent, const QVector<model::Mp4BoxNode>& nodes) {
+        for (const auto& node : nodes) {
+            auto item = makeItem(node);
+            if (parent) {
+                parent->addChild(item);
+            } else {
+                box_tree_widget_->addTopLevelItem(item);
+            }
+            addNodes(item, node.children);
+        }
+    };
+    
+    for (const auto& node : result.box_tree) {
+        auto root = makeItem(node);
         box_tree_widget_->addTopLevelItem(root);
         addNodes(root, node.children);
     }

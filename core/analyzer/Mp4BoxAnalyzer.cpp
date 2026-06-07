@@ -28,7 +28,9 @@ public:
         model::Mp4BoxNode node;
         node.type = QString::fromLatin1(name);
         node.size = static_cast<uint64_t>(size);
+        node.offset = next_offset_;
         node.depth = node_stack_.size();
+        next_offset_ += node.size;
 
         // 记录 trak 上下文
         if (node.type == "trak") {
@@ -421,6 +423,7 @@ private:
 
     model::Mp4BoxAnalysisResult& result_;
     QStack<model::Mp4BoxNode> node_stack_;
+    uint64_t next_offset_ = 0;     // 追踪当前 Box 的文件偏移
     QString current_array_name_;
     bool tracking_entries_ = false;
     bool in_entry_object_ = false;
