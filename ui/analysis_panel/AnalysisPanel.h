@@ -33,6 +33,7 @@
 #include "core/model/SyncSample.h"
 #include "core/model/TimelineEvent.h"
 #include "core/model/Mp4BoxInfo.h"
+#include "core/model/EbmlInfo.h"
 
 namespace videoeye {
 namespace ui {
@@ -90,6 +91,7 @@ public slots:
     void ResetAudioVisualization();
     void AppendAudioVisualization(const model::AudioVisualizationFrame& frame);
     void OnMp4BoxAnalysisReady(const model::Mp4BoxAnalysisResult& result);
+    void OnEbmlAnalysisReady(const model::EbmlAnalysisResult& result);
     
     // 导出报告
     void OnExportReport();
@@ -194,6 +196,7 @@ private:
     void SetupAudioVisualizationTab();
     void SetupHistogramTab();
     void SetupMp4BoxTab();
+    void SetupEbmlTab();
     void RebuildFrameTable();
     void RebuildGopTable();
     void RebuildAudioFrameTable();
@@ -318,6 +321,17 @@ private:
     QTableWidget* stss_table_;
     QLabel* mp4_box_summary_label_;
     model::Mp4BoxAnalysisResult current_box_result_;
+    
+    // MKV/WebM (EBML) 结构分析标签页
+    QWidget* ebml_tab_;
+    QTreeWidget* ebml_tree_;
+    QLabel* ebml_summary_label_;
+    model::EbmlAnalysisResult current_ebml_result_;
+    QPushButton* export_ebml_button_;
+    QTabWidget* ebml_detail_tabs_;
+    QTableWidget* ebml_track_table_;
+    QTableWidget* ebml_cue_table_;
+    QTableWidget* ebml_block_table_;
     
     // 控制按钮
     QPushButton* export_button_;          // 流统计导出 (HTML/JSON/TXT)

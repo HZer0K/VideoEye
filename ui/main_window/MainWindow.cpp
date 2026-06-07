@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
+#include "core/model/EbmlInfo.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
@@ -541,6 +542,14 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
         } else {
             mediainfo_text_->setPlainText(tr("(无法解析媒体信息)"));
         }
+    }
+
+    // EBML/MKV/WebM 结构分析
+    {
+        analyzer::EbmlAnalyzer ea;
+        model::EbmlAnalysisResult er;
+        ea.Analyze(source, er);
+        analysis_panel_->OnEbmlAnalysisReady(er);
     }
 
     if (autoplay) {

@@ -23,6 +23,7 @@
 #include "core/player/MediaPlayer.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "core/analyzer/MediaInfoAnalyzer.h"
+#include "core/analyzer/EbmlAnalyzer.h"
 
 namespace videoeye {
 namespace ui {
