@@ -552,6 +552,9 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
         analysis_panel_->OnEbmlAnalysisReady(er);
     }
 
+    // 同步已启用的分析功能到播放器 (复选框默认勾选但未触发信号)
+    analysis_panel_->EmitInitialFeatureStates();
+
     if (autoplay) {
         player_->Play();
     }

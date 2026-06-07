@@ -125,6 +125,25 @@ bool AnalysisPanel::IsFeatureEnabled(AnalysisFeature feature) const {
     return feature_enabled_.value(feature, true);
 }
 
+void AnalysisPanel::EmitInitialFeatureStates() {
+    // 对每个启用状态的 feature 重新发射信号 (除了 Master 和 Mp4Box)
+    static const AnalysisFeature kFeatures[] = {
+        AnalysisFeature::StreamStats,
+        AnalysisFeature::VideoFrame,
+        AnalysisFeature::AudioFrame,
+        AnalysisFeature::Packet,
+        AnalysisFeature::Event,
+        AnalysisFeature::SyncSample,
+        AnalysisFeature::Timeline,
+        AnalysisFeature::AudioVis,
+        AnalysisFeature::Histogram,
+    };
+    for (auto feat : kFeatures) {
+        bool enabled = feature_enabled_.value(feat, true);
+        emit AnalysisFeatureToggled(static_cast<int>(feat), enabled);
+    }
+}
+
 QWidget* AnalysisPanel::CreateToggleHeader(AnalysisFeature feature, const QString& title, QWidget* parent) {
     QWidget* header = new QWidget(parent);
     QHBoxLayout* hlayout = new QHBoxLayout(header);
@@ -164,13 +183,29 @@ void AnalysisPanel::AddTabWithScroll(QWidget* tab_widget, const QString& title) 
 void AnalysisPanel::SetupStreamTab() {
     stream_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(stream_tab_);
-    layout->addWidget(CreateToggleHeader(AnalysisFeature::StreamStats, tr("流统计"), stream_tab_));
-    
-    // 统计信息表格
-    QGroupBox* stats_group = new QGroupBox(tr("流统计信息"), stream_tab_);
-    QVBoxLayout* stats_layout = new QVBoxLayout(stats_group);
-    
-    stats_table_ = new QTableWidget(14, 2, stats_group);
+    layout->setContentsMargins(4, 2, 4, 4);
+    layout->setSpacing(4);
+
+    // 流统计信息标题 + 启用分析复选框 同一行
+    {
+        QWidget* row = new QWidget(stream_tab_);
+        QHBoxLayout* rl = new QHBoxLayout(row);
+        rl->setContentsMargins(0, 0, 0, 0);
+        QLabel* title = new QLabel(tr("流统计信息"), row);
+        rl->addWidget(title);
+        rl->addStretch();
+        QCheckBox* toggle = new QCheckBox(tr("启用分析"), row);
+        toggle->setChecked(feature_enabled_.value(AnalysisFeature::StreamStats, true));
+        connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
+            feature_enabled_[AnalysisFeature::StreamStats] = checked;
+            emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::StreamStats), checked);
+        });
+        rl->addWidget(toggle);
+        layout->addWidget(row);
+    }
+
+    // 统计信息表格 (无标题，标题已在上行)
+    stats_table_ = new QTableWidget(14, 2, stream_tab_);
     stats_table_->setHorizontalHeaderLabels({"参数", "值"});
     stats_table_->setColumnWidth(0, 150);
     stats_table_->setMinimumWidth(300);
@@ -190,8 +225,7 @@ void AnalysisPanel::SetupStreamTab() {
         stats_table_->setItem(i, 1, new QTableWidgetItem("0"));
     }
     
-    stats_layout->addWidget(stats_table_);
-    layout->addWidget(stats_group);
+    layout->addWidget(stats_table_);
     
     // 图表区域
     QHBoxLayout* charts_layout = new QHBoxLayout();
@@ -265,7 +299,8 @@ void AnalysisPanel::SetupStreamTab() {
 void AnalysisPanel::SetupFrameTab() {
     frame_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(frame_tab_);
-    layout->addWidget(CreateToggleHeader(AnalysisFeature::VideoFrame, tr("视频帧"), frame_tab_));
+    layout->setContentsMargins(4, 2, 4, 4);
+    layout->setSpacing(4);
 
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
     toolbar_layout->addWidget(new QLabel(tr("筛选:"), frame_tab_));
@@ -278,6 +313,15 @@ void AnalysisPanel::SetupFrameTab() {
 
     export_frame_csv_button_ = new QPushButton(tr("导出 CSV"), frame_tab_);
     toolbar_layout->addWidget(export_frame_csv_button_);
+
+    QCheckBox* toggle = new QCheckBox(tr("启用分析"), frame_tab_);
+    toggle->setChecked(feature_enabled_.value(AnalysisFeature::VideoFrame, true));
+    connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
+        feature_enabled_[AnalysisFeature::VideoFrame] = checked;
+        emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::VideoFrame), checked);
+    });
+    toolbar_layout->addWidget(toggle);
+
     layout->addLayout(toolbar_layout);
     
     QGroupBox* table_group = new QGroupBox(tr("视频帧信息"), frame_tab_);
@@ -329,7 +373,8 @@ void AnalysisPanel::SetupFrameTab() {
 void AnalysisPanel::SetupAudioFrameTab() {
     audio_frame_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(audio_frame_tab_);
-    layout->addWidget(CreateToggleHeader(AnalysisFeature::AudioFrame, tr("音频帧"), audio_frame_tab_));
+    layout->setContentsMargins(4, 2, 4, 4);
+    layout->setSpacing(4);
 
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
     audio_frame_summary_label_ = new QLabel(tr("总音频帧数: 0 | 总样本数: 0 | 总字节数: 0"), audio_frame_tab_);
@@ -337,6 +382,14 @@ void AnalysisPanel::SetupAudioFrameTab() {
 
     export_audio_frame_csv_button_ = new QPushButton(tr("导出 CSV"), audio_frame_tab_);
     toolbar_layout->addWidget(export_audio_frame_csv_button_);
+
+    QCheckBox* toggle = new QCheckBox(tr("启用分析"), audio_frame_tab_);
+    toggle->setChecked(feature_enabled_.value(AnalysisFeature::AudioFrame, true));
+    connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
+        feature_enabled_[AnalysisFeature::AudioFrame] = checked;
+        emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::AudioFrame), checked);
+    });
+    toolbar_layout->addWidget(toggle);
     layout->addLayout(toolbar_layout);
 
     QGroupBox* table_group = new QGroupBox(tr("音频帧信息"), audio_frame_tab_);
@@ -371,7 +424,8 @@ void AnalysisPanel::SetupAudioFrameTab() {
 void AnalysisPanel::SetupPacketTab() {
     packet_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(packet_tab_);
-    layout->addWidget(CreateToggleHeader(AnalysisFeature::Packet, tr("数据包"), packet_tab_));
+    layout->setContentsMargins(4, 2, 4, 4);
+    layout->setSpacing(4);
 
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
     packet_summary_label_ = new QLabel(tr("总包数: 0 | 视频包: 0 | 音频包: 0 | 其他包: 0"), packet_tab_);
@@ -379,6 +433,14 @@ void AnalysisPanel::SetupPacketTab() {
 
     export_packet_csv_button_ = new QPushButton(tr("导出 CSV"), packet_tab_);
     toolbar_layout->addWidget(export_packet_csv_button_);
+
+    QCheckBox* toggle = new QCheckBox(tr("启用分析"), packet_tab_);
+    toggle->setChecked(feature_enabled_.value(AnalysisFeature::Packet, true));
+    connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
+        feature_enabled_[AnalysisFeature::Packet] = checked;
+        emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::Packet), checked);
+    });
+    toolbar_layout->addWidget(toggle);
     layout->addLayout(toolbar_layout);
 
     QGroupBox* table_group = new QGroupBox(tr("数据包信息"), packet_tab_);
@@ -415,7 +477,8 @@ void AnalysisPanel::SetupPacketTab() {
 void AnalysisPanel::SetupEventTab() {
     event_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(event_tab_);
-    layout->addWidget(CreateToggleHeader(AnalysisFeature::Event, tr("事件"), event_tab_));
+    layout->setContentsMargins(4, 2, 4, 4);
+    layout->setSpacing(4);
 
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
     event_summary_label_ = new QLabel(tr("总事件数: 0 | 错误: 0 | 警告: 0 | 信息: 0"), event_tab_);
@@ -423,6 +486,14 @@ void AnalysisPanel::SetupEventTab() {
 
     export_event_csv_button_ = new QPushButton(tr("导出 CSV"), event_tab_);
     toolbar_layout->addWidget(export_event_csv_button_);
+
+    QCheckBox* toggle = new QCheckBox(tr("启用分析"), event_tab_);
+    toggle->setChecked(feature_enabled_.value(AnalysisFeature::Event, true));
+    connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
+        feature_enabled_[AnalysisFeature::Event] = checked;
+        emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::Event), checked);
+    });
+    toolbar_layout->addWidget(toggle);
     layout->addLayout(toolbar_layout);
 
     QGroupBox* table_group = new QGroupBox(tr("异常事件"), event_tab_);
@@ -458,7 +529,8 @@ void AnalysisPanel::SetupEventTab() {
 void AnalysisPanel::SetupSyncTab() {
     sync_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(sync_tab_);
-    layout->addWidget(CreateToggleHeader(AnalysisFeature::SyncSample, tr("同步分析"), sync_tab_));
+    layout->setContentsMargins(4, 2, 4, 4);
+    layout->setSpacing(4);
 
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
     sync_summary_label_ = new QLabel(tr("样本数: 0 | 平均偏移: 0.00 ms | 最大偏移: 0.00 ms"), sync_tab_);
@@ -466,6 +538,14 @@ void AnalysisPanel::SetupSyncTab() {
 
     export_sync_csv_button_ = new QPushButton(tr("导出 CSV"), sync_tab_);
     toolbar_layout->addWidget(export_sync_csv_button_);
+
+    QCheckBox* toggle = new QCheckBox(tr("启用分析"), sync_tab_);
+    toggle->setChecked(feature_enabled_.value(AnalysisFeature::SyncSample, true));
+    connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
+        feature_enabled_[AnalysisFeature::SyncSample] = checked;
+        emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::SyncSample), checked);
+    });
+    toolbar_layout->addWidget(toggle);
     layout->addLayout(toolbar_layout);
 
     QGroupBox* chart_group = new QGroupBox(tr("音视频时间差"), sync_tab_);
@@ -520,7 +600,8 @@ void AnalysisPanel::SetupSyncTab() {
 void AnalysisPanel::SetupTimelineTab() {
     timeline_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(timeline_tab_);
-    layout->addWidget(CreateToggleHeader(AnalysisFeature::Timeline, tr("时间线"), timeline_tab_));
+    layout->setContentsMargins(4, 2, 4, 4);
+    layout->setSpacing(4);
 
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
     timeline_summary_label_ = new QLabel(tr("事件数: 0 | 视频关键帧: 0 | 音频采样: 0 | 异常事件: 0"), timeline_tab_);
@@ -528,6 +609,14 @@ void AnalysisPanel::SetupTimelineTab() {
 
     export_timeline_csv_button_ = new QPushButton(tr("导出 CSV"), timeline_tab_);
     toolbar_layout->addWidget(export_timeline_csv_button_);
+
+    QCheckBox* toggle = new QCheckBox(tr("启用分析"), timeline_tab_);
+    toggle->setChecked(feature_enabled_.value(AnalysisFeature::Timeline, true));
+    connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
+        feature_enabled_[AnalysisFeature::Timeline] = checked;
+        emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::Timeline), checked);
+    });
+    toolbar_layout->addWidget(toggle);
     layout->addLayout(toolbar_layout);
 
     QGroupBox* chart_group = new QGroupBox(tr("统一时间轴"), timeline_tab_);
@@ -596,7 +685,8 @@ void AnalysisPanel::SetupTimelineTab() {
 void AnalysisPanel::SetupAudioVisualizationTab() {
     audio_visualization_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(audio_visualization_tab_);
-    layout->addWidget(CreateToggleHeader(AnalysisFeature::AudioVis, tr("音频可视化"), audio_visualization_tab_));
+    layout->setContentsMargins(4, 2, 4, 4);
+    layout->setSpacing(4);
 
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
     audio_visualization_summary_label_ = new QLabel(
@@ -606,6 +696,14 @@ void AnalysisPanel::SetupAudioVisualizationTab() {
 
     export_audio_visualization_csv_button_ = new QPushButton(tr("导出 CSV"), audio_visualization_tab_);
     toolbar_layout->addWidget(export_audio_visualization_csv_button_);
+
+    QCheckBox* toggle = new QCheckBox(tr("启用分析"), audio_visualization_tab_);
+    toggle->setChecked(feature_enabled_.value(AnalysisFeature::AudioVis, true));
+    connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
+        feature_enabled_[AnalysisFeature::AudioVis] = checked;
+        emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::AudioVis), checked);
+    });
+    toolbar_layout->addWidget(toggle);
     layout->addLayout(toolbar_layout);
 
     QGroupBox* waveform_group = new QGroupBox(tr("音频波形"), audio_visualization_tab_);
@@ -667,7 +765,8 @@ void AnalysisPanel::SetupAudioVisualizationTab() {
 void AnalysisPanel::SetupHistogramTab() {
     histogram_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(histogram_tab_);
-    layout->addWidget(CreateToggleHeader(AnalysisFeature::Histogram, tr("直方图"), histogram_tab_));
+    layout->setContentsMargins(4, 2, 4, 4);
+    layout->setSpacing(4);
     
     QGroupBox* hist_group = new QGroupBox(tr("直方图分析"), histogram_tab_);
     QVBoxLayout* hist_layout = new QVBoxLayout(hist_group);
@@ -679,10 +778,22 @@ void AnalysisPanel::SetupHistogramTab() {
     
     layout->addWidget(hist_group);
     
-    // 导出按钮
-    export_histogram_button_ = new QPushButton(tr("导出直方图数据"), histogram_tab_);
-    export_histogram_button_->setToolTip(tr("将直方图通道数据导出为 CSV"));
-    layout->addWidget(export_histogram_button_, 0, Qt::AlignRight);
+    // 导出按钮 + 启用分析 同一行
+    {
+        QHBoxLayout* toolbar_layout = new QHBoxLayout();
+        toolbar_layout->addStretch();
+        export_histogram_button_ = new QPushButton(tr("导出直方图数据"), histogram_tab_);
+        toolbar_layout->addWidget(export_histogram_button_);
+
+        QCheckBox* toggle = new QCheckBox(tr("启用分析"), histogram_tab_);
+        toggle->setChecked(feature_enabled_.value(AnalysisFeature::Histogram, true));
+        connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
+            feature_enabled_[AnalysisFeature::Histogram] = checked;
+            emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::Histogram), checked);
+        });
+        toolbar_layout->addWidget(toggle);
+        layout->addLayout(toolbar_layout);
+    }
     
     AddTabWithScroll(histogram_tab_, tr("直方图"));
     

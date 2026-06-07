@@ -67,6 +67,9 @@ public:
     // 设置当前视频文件路径 (供导出报告使用)
     void SetCurrentVideoPath(const QString& path) { current_video_path_ = path.toStdString(); }
     
+    // 重新发射所有启用状态的开关信号 (用于文件打开后同步播放器状态)
+    void EmitInitialFeatureStates();
+    
 signals:
     // 分析功能开关变化信号 (供 MainWindow 连接 MediaPlayer)
     void AnalysisFeatureToggled(int feature, bool enabled);
