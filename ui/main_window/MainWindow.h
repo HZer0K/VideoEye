@@ -22,6 +22,7 @@
 
 #include "core/player/MediaPlayer.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
+#include "core/analyzer/MediaInfoAnalyzer.h"
 
 namespace videoeye {
 namespace ui {
@@ -102,7 +103,7 @@ protected:
     QPushButton* prev_frame_button_;
     QPushButton* next_frame_button_;
     QLabel* time_label_;            // 时间显示
-    QTextEdit* info_text_;          // 详细信息文本框
+    QTextEdit* mediainfo_text_;     // MediaInfo 媒体信息文本框
     QLabel* current_media_label_;   // 顶部显示当前媒体路径
     QString current_media_url_;
     

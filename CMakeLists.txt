@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(VideoEye VERSION 2.0.0 LANGUAGES CXX)
+project(VideoEye VERSION 2.0.0 LANGUAGES C CXX)
 
 # 设置C++标准为C++17
 set(CMAKE_CXX_STANDARD 17)
@@ -74,6 +74,12 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets Charts
 # SDL2
 pkg_check_modules(SDL2 REQUIRED sdl2)
 
+# ZLIB (MediaInfoLib 依赖)
+find_package(ZLIB REQUIRED)
+
+# MediaInfo 第三方库 (源码集成, 方便客制化)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party/mediainfo ${CMAKE_BINARY_DIR}/libmediainfo)
+
 # Bento4 Core library
 set(BENTO4_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/Bento4/Source/C++/Core")
 file(GLOB BENTO4_SOURCES "${BENTO4_DIR}/*.cpp")
@@ -119,6 +125,8 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/ui
     ${CMAKE_CURRENT_SOURCE_DIR}/utils
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/MediaInfoLib/Source
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/MediaInfoLib/Source/MediaInfoDLL
     ${BENTO4_DIR}
     ${BENTO4_DIR}/../MetaData
     ${BENTO4_DIR}/../Codecs
@@ -138,6 +146,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     ${FFmpeg_LIBRARIES}
     ${OpenCV_LIBS}
     ${SDL2_LIBRARIES}
+    mediainfo
+    zen
 )
 
 set_target_properties(${PROJECT_NAME} PROPERTIES

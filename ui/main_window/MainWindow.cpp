@@ -125,20 +125,23 @@ void MainWindow::SetupUI() {
     const int tabbar_h = tab_widget_->tabBar()->sizeHint().height();
     tab_widget_->setMinimumHeight(tabbar_h + 250);
     
-    // 流信息标签页 (包裹 QScrollArea 防止缩放溢出)
-    QWidget* info_tab = new QWidget(tab_widget_);
-    QVBoxLayout* info_layout = new QVBoxLayout(info_tab);
-    QScrollArea* info_scroll = new QScrollArea(info_tab);
-    info_scroll->setWidgetResizable(true);
-    info_scroll->setFrameShape(QFrame::NoFrame);
-    info_text_ = new QTextEdit(info_scroll);
-    info_text_->setReadOnly(true);
-    info_text_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-    info_text_->setLineWrapMode(QTextEdit::NoWrap);
-    info_text_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    info_scroll->setWidget(info_text_);
-    info_layout->addWidget(info_scroll);
-    tab_widget_->addTab(info_tab, tr("流信息"));
+    // MediaInfo 媒体信息标签页
+    QWidget* mediainfo_tab = new QWidget(tab_widget_);
+    QVBoxLayout* mediainfo_layout = new QVBoxLayout(mediainfo_tab);
+    QScrollArea* mediainfo_scroll = new QScrollArea(mediainfo_tab);
+    mediainfo_scroll->setWidgetResizable(true);
+    mediainfo_scroll->setFrameShape(QFrame::NoFrame);
+    mediainfo_text_ = new QTextEdit(mediainfo_scroll);
+    mediainfo_text_->setReadOnly(true);
+    mediainfo_text_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    mediainfo_text_->setLineWrapMode(QTextEdit::NoWrap);
+    mediainfo_text_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    mediainfo_scroll->setWidget(mediainfo_text_);
+    mediainfo_layout->addWidget(mediainfo_scroll);
+    tab_widget_->addTab(mediainfo_tab, tr("媒体信息"));
+    
+    // 设置默认提示
+    mediainfo_text_->setPlainText(tr("请打开一个媒体文件以查看详细信息"));
     
     // 分析面板标签页 (集成分析功能)
     analysis_panel_ = new ui::AnalysisPanel(tab_widget_);
@@ -472,6 +475,7 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
         if (current_media_label_) {
             current_media_label_->setText(source);
         }
+        mediainfo_text_->setPlainText(tr("(原始图像文件，无 MediaInfo 数据)"));
         return true;
     }
 
@@ -499,8 +503,15 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
         current_media_url_ = source;
         analysis_panel_->SetCurrentVideoPath(source);
 
-        auto info = player_->GetStreamInfo();
-        info_text_->setPlainText(QString::fromStdString(info.ToString()));
+        // MediaInfo 解析 PCM
+        {
+            analyzer::MediaInfoAnalyzer mi;
+            if (mi.Open(source)) {
+                mediainfo_text_->setPlainText(mi.GetCompleteInfo());
+            } else {
+                mediainfo_text_->setPlainText(tr("(无法解析 PCM 媒体信息)"));
+            }
+        }
 
         if (autoplay) {
             player_->Play();
@@ -522,8 +533,15 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
     current_media_url_ = source;
     analysis_panel_->SetCurrentVideoPath(source);
 
-    auto info = player_->GetStreamInfo();
-    info_text_->setPlainText(QString::fromStdString(info.ToString()));
+    // MediaInfo 解析
+    {
+        analyzer::MediaInfoAnalyzer mi;
+        if (mi.Open(source)) {
+            mediainfo_text_->setPlainText(mi.GetCompleteInfo());
+        } else {
+            mediainfo_text_->setPlainText(tr("(无法解析媒体信息)"));
+        }
+    }
 
     if (autoplay) {
         player_->Play();
@@ -771,7 +789,7 @@ bool MainWindow::LoadRawImageFile(const QString& filename) {
     raw_current_frame_ = 0;
 
     const qint64 remain = file_size % frame_size;
-    info_text_->setPlainText(
+    mediainfo_text_->setPlainText(
         tr("Raw Image Sequence\n"
            "File: %1\n"
            "Format: %2\n"

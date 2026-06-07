@@ -19,6 +19,7 @@ VideoEye 是一款开源的视频流分析软件,支持多种视频输入源(HTT
 - 📊 **流分析**: 实时分析码流统计信息与可视化曲线
 - 🧩 **视频帧分析**: 单独标签页显示 I/P/B 帧类型、序号、PTS、时间戳（追加显示不覆盖）
 - 🔍 **帧分析**: 直方图分析（可选）
+- 📋 **媒体信息**: 使用 [MediaInfo](https://github.com/MediaArea/MediaInfoLib) 显示完整的媒体文件元数据（格式、编码、码率、分辨率、音轨、字幕等）
 - 🎵 **纯音频律动**: 打开仅音频文件时在视频区域显示音频律动
 - 🎶 **音频波形与频谱**: 在分析面板实时查看音频波形快照与频谱快照
 - 📈 **数据可视化**: 图表化展示分析结果
@@ -39,6 +40,7 @@ VideoEye 是一款开源的视频流分析软件,支持多种视频输入源(HTT
 |------|------|------|
 | GUI框架 | Qt 6 | 6.0+ |
 | 多媒体 | FFmpeg | 6.0+ |
+| 媒体元数据 | MediaInfoLib | 26.05 (源码集成) |
 | 计算机视觉 | OpenCV | 4.8+ |
 | 音频输出 | SDL 2 | 2.0+ |
 | MP4容器解析 | Bento4 | 1.6+ |
@@ -92,6 +94,12 @@ cd VideoEye
 # 初始化第三方依赖 (Bento4 submodule)
 git submodule update --init --recursive
 
+# 拉取 MediaInfoLib 及 ZenLib 源码 (源码集成，方便客制化)
+cd third_party
+git clone --depth 1 https://github.com/MediaArea/ZenLib.git
+git clone --depth 1 https://github.com/MediaArea/MediaInfoLib.git
+cd ..
+
 # 创建构建目录
 mkdir build && cd build
 
@@ -129,6 +137,7 @@ VideoEye/
 │   ├── analyzer/           # 分析引擎
 │   │   ├── StreamAnalyzer.cpp/h   # 流分析
 │   │   ├── FrameAnalyzer.cpp/h    # 帧分析
+│   │   ├── MediaInfoAnalyzer.cpp/h # MediaInfo 封装
 │   │   └── Mp4BoxAnalyzer.cpp/h   # MP4 Box 分析 (基于 Bento4)
 │   ├── io/                 # 输入输出
 │   └── model/              # 数据模型
@@ -140,7 +149,10 @@ VideoEye/
 ├── utils/                  # 工具类
 ├── tests/                  # 测试
 ├── third_party/            # 第三方库
-│   └── Bento4/             # Bento4 MP4 解析引擎 (submodule)
+│   ├── Bento4/             # Bento4 MP4 解析引擎 (submodule)
+│   ├── MediaInfoLib/       # MediaInfoLib 源码 (需手动拉取)
+│   ├── ZenLib/             # ZenLib 源码 (MediaInfo 依赖, 需手动拉取)
+│   └── mediainfo/          # MediaInfo 编译集成 CMakeLists
 ├── resources/              # 资源文件
 ├── cmake/                  # CMake配置
 ├── CMakeLists.txt          # 主CMake文件
@@ -154,7 +166,8 @@ VideoEye/
 1. **打开文件**: 点击"文件" -> "打开文件" 或按 `Ctrl+O`
 2. **打开网络流**: 点击"文件" -> "打开URL" 输入 RTMP/RTSP/HTTP 地址
 3. **播放控制**: 使用底部控制栏的播放/暂停/停止按钮
-4. **查看信息**: 在"流信息"标签页查看详细的流信息
+4. **查看信息**: 在"媒体信息"标签页查看 MediaInfo 解析的完整文件元数据
+5. **分析面板**: 在"分析面板"标签页查看实时流分析图表、帧信息、MP4 Box 等
 
 ### 分析面板
 
@@ -284,6 +297,8 @@ genhtml coverage.info --output-directory coverage_report
 - [Qt](https://www.qt.io/) - 跨平台GUI框架
 - [OpenCV](https://opencv.org/) - 计算机视觉库
 - [SDL](https://www.libsdl.org/) - 多媒体库
+- [MediaInfoLib](https://github.com/MediaArea/MediaInfoLib) - 媒体元数据解析库 (BSD-2-Clause)
+- [ZenLib](https://github.com/MediaArea/ZenLib) - 跨平台基础库 (MediaInfo 依赖)
 - [Bento4](https://github.com/axiomatic-systems/Bento4) - MP4 容器解析库 (GPL-2.0)
 
 
