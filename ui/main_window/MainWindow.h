@@ -19,6 +19,7 @@
 #include <QProgressDialog>
 #include <QElapsedTimer>
 #include <deque>
+#include <QImage>
 
 #include "core/player/MediaPlayer.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
@@ -64,6 +65,7 @@ private slots:
     void OnHistogramUpdate(const analyzer::HistogramData& hist);
     void OnMediaModeChanged(bool has_video);
     void OnAudioLevelReady(double level, double timestamp_seconds);
+    void OnAudioVisualizationForDisplay(const model::AudioVisualizationFrame& frame);
     void OnVideoFrameExportProgress(int exported_frames);
     void OnVideoFrameExportFinished(const QString& output_dir);
     void OnVideoFrameExportError(const QString& message);
@@ -80,6 +82,7 @@ private:
     bool ShowRawFrame(int frame_index);
     void UpdateRawNavigationState();
     void UpdateMinimumWindowSize();
+    void RenderAudioVisualization(double timestamp_seconds);
 
 protected:
     void showEvent(QShowEvent* event) override;
@@ -120,11 +123,16 @@ protected:
     int export_total_frames_ = 0;
 
     bool audio_only_mode_ = false;
+    QImage album_cover_;
     std::deque<double> audio_level_history_;
+    std::deque<double> spectrum_history_;
     QElapsedTimer audio_vis_timer_;
     qint64 audio_vis_last_render_ms_ = -1;
     double audio_vis_smoothed_ = 0.0;
     double audio_vis_target_ = 0.0;
+    QVector<double> latest_spectrum_bins_;
+    QVector<double> latest_waveform_points_;
+    QVector<double> smoothed_spectrum_bins_;
     bool showing_raw_image_ = false;
     QString raw_image_path_;
     QString raw_pixel_format_;

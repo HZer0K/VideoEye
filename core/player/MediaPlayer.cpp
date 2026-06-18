@@ -31,8 +31,8 @@ namespace videoeye {
 namespace player {
 
 namespace {
-constexpr int kWaveformPointCount = 128;
-constexpr int kSpectrumBinCount = 32;
+constexpr int kWaveformPointCount = 256;
+constexpr int kSpectrumBinCount = 64;
 constexpr double kPi = 3.14159265358979323846;
 
 using SteadyClock = std::chrono::steady_clock;
@@ -536,7 +536,6 @@ void MediaPlayer::EmitTimelineEvent(const QString& category, double timestamp_se
 void MediaPlayer::EmitAudioVisualizationFrame(const int16_t* samples, int sample_count,
                                               int sample_rate, int channels,
                                               double timestamp_seconds, double level) {
-    if (!audio_visualization_enabled_) return;
     if (!samples || sample_count <= 0 || channels <= 0) {
         return;
     }
@@ -566,7 +565,7 @@ void MediaPlayer::EmitAudioVisualizationFrame(const int16_t* samples, int sample
         frame.waveform_points.push_back(std::clamp(mono, -1.0, 1.0));
     }
 
-    const int fft_size = std::min(frame_count, 256);
+    const int fft_size = std::min(frame_count, 512);
     if (fft_size >= 8) {
         frame.spectrum_bins.reserve(kSpectrumBinCount);
         for (int bin = 0; bin < kSpectrumBinCount; ++bin) {
@@ -580,10 +579,13 @@ void MediaPlayer::EmitAudioVisualizationFrame(const int16_t* samples, int sample
                     mono += static_cast<double>(samples[sample_index + ch]) / 32768.0;
                 }
                 mono /= static_cast<double>(channels);
+                // Hann window for better frequency resolution
+                const double window = 0.5 * (1.0 - std::cos(2.0 * kPi * n / (fft_size - 1)));
+                mono *= window;
                 const double angle = -2.0 * kPi * static_cast<double>(k * n) / static_cast<double>(fft_size);
                 acc += std::complex<double>(mono * std::cos(angle), mono * std::sin(angle));
             }
-            const double magnitude = std::abs(acc) / static_cast<double>(fft_size);
+            const double magnitude = std::abs(acc) / static_cast<double>(fft_size) * 2.0;
             frame.spectrum_bins.push_back(magnitude);
         }
     }
@@ -649,7 +651,7 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     if (event_analysis_enabled_) emit AnalysisEventListReset();
     if (sync_analysis_enabled_) emit SyncSampleListReset();
     if (timeline_analysis_enabled_) emit TimelineEventListReset();
-    if (audio_visualization_enabled_) emit AudioVisualizationReset();
+    emit AudioVisualizationReset();
 
     const unsigned header_avcodec_major = LIBAVCODEC_VERSION_MAJOR;
     const unsigned runtime_avcodec_major = static_cast<unsigned>(avcodec_version() >> 16);
