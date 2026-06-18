@@ -65,7 +65,6 @@ public:
     void SetEventAnalysisEnabled(bool enable) { event_analysis_enabled_ = enable; }
     void SetSyncAnalysisEnabled(bool enable) { sync_analysis_enabled_ = enable; }
     void SetTimelineAnalysisEnabled(bool enable) { timeline_analysis_enabled_ = enable; }
-    void SetAudioVisualizationEnabled(bool enable) { audio_visualization_enabled_ = enable; }
     void SetMp4BoxAnalysisEnabled(bool enable) { mp4_box_analysis_enabled_ = enable; }
 
     // 视频帧导出
@@ -108,7 +107,6 @@ signals:
     void SyncSampleReady(const model::SyncSample& sample);
     void TimelineEventListReset();
     void TimelineEventReady(const model::TimelineEvent& event);
-    void AudioVisualizationReset();
     void AudioVisualizationReady(const model::AudioVisualizationFrame& frame);
     void MediaModeChanged(bool has_video);
     void AudioLevelReady(double level, double timestamp_seconds);
@@ -175,7 +173,6 @@ private:
     bool event_analysis_enabled_ = false;
     bool sync_analysis_enabled_ = false;
     bool timeline_analysis_enabled_ = false;
-    bool audio_visualization_enabled_ = false;
     bool mp4_box_analysis_enabled_ = true; // 默认开启
     int analysis_frame_counter_ = 0;  // 用于控制分析频率
     int video_frame_index_ = 0;

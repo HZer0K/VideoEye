@@ -651,7 +651,6 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     if (event_analysis_enabled_) emit AnalysisEventListReset();
     if (sync_analysis_enabled_) emit SyncSampleListReset();
     if (timeline_analysis_enabled_) emit TimelineEventListReset();
-    emit AudioVisualizationReset();
 
     const unsigned header_avcodec_major = LIBAVCODEC_VERSION_MAJOR;
     const unsigned runtime_avcodec_major = static_cast<unsigned>(avcodec_version() >> 16);

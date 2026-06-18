@@ -28,7 +28,6 @@
 #include "core/analyzer/StreamAnalyzer.h"
 #include "core/analyzer/FrameAnalyzer.h"
 #include "core/model/AnalysisEvent.h"
-#include "core/model/AudioVisualizationFrame.h"
 #include "core/model/PacketInfo.h"
 #include "core/model/SyncSample.h"
 #include "core/model/TimelineEvent.h"
@@ -53,7 +52,6 @@ public:
         Event,         // 分析事件
         SyncSample,    // 音视频同步
         Timeline,      // 时间线
-        AudioVis,      // 音频可视化
         Histogram,     // 直方图
         Mp4Box         // MP4 Box 分析
     };
@@ -91,8 +89,6 @@ public slots:
     void AppendSyncSample(const model::SyncSample& sample);
     void ResetTimelineEventList();
     void AppendTimelineEvent(const model::TimelineEvent& event);
-    void ResetAudioVisualization();
-    void AppendAudioVisualization(const model::AudioVisualizationFrame& frame);
     void OnMp4BoxAnalysisReady(const model::Mp4BoxAnalysisResult& result);
     void OnEbmlAnalysisReady(const model::EbmlAnalysisResult& result);
     
@@ -173,16 +169,6 @@ private:
         QString detail;
     };
 
-    struct AudioVisualizationRecord {
-        int index = 0;
-        double timestamp_seconds = 0.0;
-        double level = 0.0;
-        int sample_rate = 0;
-        int channels = 0;
-        QVector<double> waveform_points;
-        QVector<double> spectrum_bins;
-    };
-
     // 初始化UI
     void SetupUI();
     // 在每个标签页中创建带开关的标题栏
@@ -196,7 +182,6 @@ private:
     void SetupEventTab();
     void SetupSyncTab();
     void SetupTimelineTab();
-    void SetupAudioVisualizationTab();
     void SetupHistogramTab();
     void SetupMp4BoxTab();
     void SetupEbmlTab();
@@ -213,7 +198,6 @@ private:
     void UpdateEventSummary();
     void UpdateSyncSummary();
     void UpdateTimelineSummary();
-    void UpdateAudioVisualizationSummary();
     QString FrameTypeToString(int frame_type) const;
     QString PacketFlagsToString(int flags) const;
     bool MatchesFrameFilter(const VideoFrameRecord& record) const;
@@ -225,7 +209,6 @@ private:
     void FlushPendingEventTableUpdates();
     void FlushPendingSyncTableUpdates();
     void FlushPendingTimelineTableUpdates();
-    void FlushPendingAudioVisualization();
     void RefreshStreamStatsUi(const analyzer::StreamStats& stats);
     void SetTableItemText(QTableWidget* table, int row, int column, const QString& text);
     void AppendFrameRowToTable(const VideoFrameRecord& record);
@@ -241,7 +224,6 @@ private:
     void OnExportEventCsv();
     void OnExportSyncCsv();
     void OnExportTimelineCsv();
-    void OnExportAudioVisualizationCsv();
     void OnExportHistogramCsv();
     void OnExportMp4Box();
     void OnFrameFilterChanged();
@@ -253,7 +235,6 @@ private:
     void UpdateHistogramChart(const analyzer::HistogramData& hist);
     void UpdateSyncChart();
     void UpdateTimelineChart();
-    void UpdateAudioVisualizationCharts();
     
     // 分析功能开关
     QMap<AnalysisFeature, bool> feature_enabled_;
@@ -301,12 +282,6 @@ private:
     QChartView* timeline_chart_;
     QTableWidget* timeline_table_;
     QPushButton* export_timeline_csv_button_;
-
-    QWidget* audio_visualization_tab_;
-    QLabel* audio_visualization_summary_label_;
-    QChartView* waveform_chart_;
-    QChartView* spectrum_chart_;
-    QPushButton* export_audio_visualization_csv_button_;
     
     // 直方图标签页
     QWidget* histogram_tab_;
@@ -350,8 +325,6 @@ private:
     QLineSeries* timeline_video_series_;
     QLineSeries* timeline_audio_series_;
     QLineSeries* timeline_event_series_;
-    QLineSeries* waveform_series_;
-    QLineSeries* spectrum_series_;
     QValueAxis* bitrate_axis_x_;
     QValueAxis* bitrate_axis_y_;
     QValueAxis* fps_axis_x_;
@@ -360,10 +333,6 @@ private:
     QValueAxis* sync_axis_y_;
     QValueAxis* timeline_axis_x_;
     QValueAxis* timeline_axis_y_;
-    QValueAxis* waveform_axis_x_;
-    QValueAxis* waveform_axis_y_;
-    QValueAxis* spectrum_axis_x_;
-    QValueAxis* spectrum_axis_y_;
     
     // 定时器
     QTimer* update_timer_;
@@ -377,7 +346,6 @@ private:
     std::vector<AnalysisEventRecord> analysis_event_records_;
     std::vector<SyncSampleRecord> sync_sample_records_;
     std::vector<TimelineEventRecord> timeline_event_records_;
-    AudioVisualizationRecord audio_visualization_record_;
     std::vector<GopSummary> gop_summaries_;
     analyzer::StreamStats pending_stream_stats_;
     bool has_pending_stream_stats_ = false;
@@ -394,8 +362,6 @@ private:
     bool sync_summary_dirty_ = false;
     bool timeline_table_dirty_ = false;
     bool timeline_summary_dirty_ = false;
-    bool audio_visualization_dirty_ = false;
-    bool has_audio_visualization_record_ = false;
     size_t frame_table_synced_record_count_ = 0;
     size_t gop_table_synced_count_ = 0;
     size_t audio_frame_table_synced_record_count_ = 0;

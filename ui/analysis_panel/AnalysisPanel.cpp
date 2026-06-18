@@ -54,8 +54,6 @@ AnalysisPanel::AnalysisPanel(QWidget* parent)
     , timeline_video_series_(nullptr)
     , timeline_audio_series_(nullptr)
     , timeline_event_series_(nullptr)
-    , waveform_series_(nullptr)
-    , spectrum_series_(nullptr)
     , bitrate_axis_x_(nullptr)
     , bitrate_axis_y_(nullptr)
     , fps_axis_x_(nullptr)
@@ -63,11 +61,7 @@ AnalysisPanel::AnalysisPanel(QWidget* parent)
     , sync_axis_x_(nullptr)
     , sync_axis_y_(nullptr)
     , timeline_axis_x_(nullptr)
-    , timeline_axis_y_(nullptr)
-    , waveform_axis_x_(nullptr)
-    , waveform_axis_y_(nullptr)
-    , spectrum_axis_x_(nullptr)
-    , spectrum_axis_y_(nullptr) {
+    , timeline_axis_y_(nullptr) {
     
     // 默认启用: 基础功能, 关闭: 高性能分析
     feature_enabled_[AnalysisFeature::Master] = true;
@@ -78,7 +72,6 @@ AnalysisPanel::AnalysisPanel(QWidget* parent)
     feature_enabled_[AnalysisFeature::Event] = false;
     feature_enabled_[AnalysisFeature::SyncSample] = false;
     feature_enabled_[AnalysisFeature::Timeline] = false;
-    feature_enabled_[AnalysisFeature::AudioVis] = false;
     feature_enabled_[AnalysisFeature::Histogram] = false;
     
     SetupUI();
@@ -111,7 +104,6 @@ void AnalysisPanel::SetupUI() {
     SetupEventTab();
     SetupSyncTab();
     SetupTimelineTab();
-    SetupAudioVisualizationTab();
     SetupHistogramTab();
     SetupMp4BoxTab();
     SetupEbmlTab();
@@ -135,7 +127,6 @@ void AnalysisPanel::EmitInitialFeatureStates() {
         AnalysisFeature::Event,
         AnalysisFeature::SyncSample,
         AnalysisFeature::Timeline,
-        AnalysisFeature::AudioVis,
         AnalysisFeature::Histogram,
     };
     for (auto feat : kFeatures) {
@@ -680,86 +671,6 @@ void AnalysisPanel::SetupTimelineTab() {
     timeline_chart_->setRenderHint(QPainter::Antialiasing);
 
     connect(export_timeline_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportTimelineCsv);
-}
-
-void AnalysisPanel::SetupAudioVisualizationTab() {
-    audio_visualization_tab_ = new QWidget();
-    QVBoxLayout* layout = new QVBoxLayout(audio_visualization_tab_);
-    layout->setContentsMargins(4, 2, 4, 4);
-    layout->setSpacing(4);
-
-    QHBoxLayout* toolbar_layout = new QHBoxLayout();
-    audio_visualization_summary_label_ = new QLabel(
-        tr("暂无音频可视化数据 | 电平: 0.000 | 采样率: 0 Hz | 声道: 0"),
-        audio_visualization_tab_);
-    toolbar_layout->addWidget(audio_visualization_summary_label_, 1);
-
-    export_audio_visualization_csv_button_ = new QPushButton(tr("导出 CSV"), audio_visualization_tab_);
-    toolbar_layout->addWidget(export_audio_visualization_csv_button_);
-
-    QCheckBox* toggle = new QCheckBox(tr("启用分析"), audio_visualization_tab_);
-    toggle->setChecked(feature_enabled_.value(AnalysisFeature::AudioVis, true));
-    connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
-        feature_enabled_[AnalysisFeature::AudioVis] = checked;
-        emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::AudioVis), checked);
-    });
-    toolbar_layout->addWidget(toggle);
-    layout->addLayout(toolbar_layout);
-
-    QGroupBox* waveform_group = new QGroupBox(tr("音频波形"), audio_visualization_tab_);
-    QVBoxLayout* waveform_layout = new QVBoxLayout(waveform_group);
-    waveform_chart_ = new QChartView(audio_visualization_tab_);
-    waveform_chart_->setMinimumHeight(220);
-    waveform_chart_->setMinimumWidth(280);
-    waveform_layout->addWidget(waveform_chart_);
-    layout->addWidget(waveform_group);
-
-    QGroupBox* spectrum_group = new QGroupBox(tr("音频频谱"), audio_visualization_tab_);
-    QVBoxLayout* spectrum_layout = new QVBoxLayout(spectrum_group);
-    spectrum_chart_ = new QChartView(audio_visualization_tab_);
-    spectrum_chart_->setMinimumHeight(220);
-    spectrum_chart_->setMinimumWidth(280);
-    spectrum_layout->addWidget(spectrum_chart_);
-    layout->addWidget(spectrum_group);
-
-    AddTabWithScroll(audio_visualization_tab_, tr("音频可视化"));
-
-    waveform_series_ = new QLineSeries(this);
-    QChart* waveform_chart_object = new QChart();
-    waveform_chart_object->setTitle(tr("波形快照"));
-    waveform_chart_object->legend()->hide();
-    waveform_chart_object->addSeries(waveform_series_);
-    waveform_axis_x_ = new QValueAxis(this);
-    waveform_axis_y_ = new QValueAxis(this);
-    waveform_axis_x_->setLabelFormat("%d");
-    waveform_axis_y_->setLabelFormat("%.2f");
-    waveform_axis_y_->setRange(-1.0, 1.0);
-    waveform_chart_object->addAxis(waveform_axis_x_, Qt::AlignBottom);
-    waveform_chart_object->addAxis(waveform_axis_y_, Qt::AlignLeft);
-    waveform_series_->attachAxis(waveform_axis_x_);
-    waveform_series_->attachAxis(waveform_axis_y_);
-    waveform_chart_->setChart(waveform_chart_object);
-    waveform_chart_->setRenderHint(QPainter::Antialiasing);
-
-    spectrum_series_ = new QLineSeries(this);
-    QChart* spectrum_chart_object = new QChart();
-    spectrum_chart_object->setTitle(tr("频谱快照"));
-    spectrum_chart_object->legend()->hide();
-    spectrum_chart_object->addSeries(spectrum_series_);
-    spectrum_axis_x_ = new QValueAxis(this);
-    spectrum_axis_y_ = new QValueAxis(this);
-    spectrum_axis_x_->setLabelFormat("%d");
-    spectrum_axis_y_->setLabelFormat("%.3f");
-    spectrum_axis_y_->setRange(0.0, 1.0);
-    spectrum_chart_object->addAxis(spectrum_axis_x_, Qt::AlignBottom);
-    spectrum_chart_object->addAxis(spectrum_axis_y_, Qt::AlignLeft);
-    spectrum_series_->attachAxis(spectrum_axis_x_);
-    spectrum_series_->attachAxis(spectrum_axis_y_);
-    spectrum_chart_->setChart(spectrum_chart_object);
-    spectrum_chart_->setRenderHint(QPainter::Antialiasing);
-
-    connect(export_audio_visualization_csv_button_, &QPushButton::clicked,
-            this, &AnalysisPanel::OnExportAudioVisualizationCsv);
 }
 
 void AnalysisPanel::SetupHistogramTab() {
@@ -1560,33 +1471,6 @@ void AnalysisPanel::ResetTimelineEventList() {
     UpdateTimelineSummary();
 }
 
-void AnalysisPanel::ResetAudioVisualization() {
-    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
-        !feature_enabled_.value(AnalysisFeature::AudioVis, true)) return;
-    has_audio_visualization_record_ = false;
-    audio_visualization_dirty_ = false;
-    audio_visualization_record_ = AudioVisualizationRecord();
-    if (waveform_series_) {
-        waveform_series_->clear();
-    }
-    if (spectrum_series_) {
-        spectrum_series_->clear();
-    }
-    if (waveform_axis_x_) {
-        waveform_axis_x_->setRange(0, 1);
-    }
-    if (waveform_axis_y_) {
-        waveform_axis_y_->setRange(-1.0, 1.0);
-    }
-    if (spectrum_axis_x_) {
-        spectrum_axis_x_->setRange(0, 1);
-    }
-    if (spectrum_axis_y_) {
-        spectrum_axis_y_->setRange(0.0, 1.0);
-    }
-    UpdateAudioVisualizationSummary();
-}
-
 void AnalysisPanel::AppendVideoFrameInfo(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds) {
     if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
         !feature_enabled_.value(AnalysisFeature::VideoFrame, true)) return;
@@ -1776,24 +1660,6 @@ void AnalysisPanel::AppendTimelineEvent(const model::TimelineEvent& event) {
     timeline_table_dirty_ = true;
     timeline_summary_dirty_ = true;
     TrimRecords(timeline_event_records_, timeline_table_synced_record_count_, timeline_table_, timeline_table_dirty_, kMaxTimelineRecords);
-}
-
-void AnalysisPanel::AppendAudioVisualization(const model::AudioVisualizationFrame& frame) {
-    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
-        !feature_enabled_.value(AnalysisFeature::AudioVis, true)) return;
-    if (!waveform_chart_ || !spectrum_chart_) {
-        return;
-    }
-
-    audio_visualization_record_.index = frame.index;
-    audio_visualization_record_.timestamp_seconds = frame.timestamp_seconds;
-    audio_visualization_record_.level = frame.level;
-    audio_visualization_record_.sample_rate = frame.sample_rate;
-    audio_visualization_record_.channels = frame.channels;
-    audio_visualization_record_.waveform_points = frame.waveform_points;
-    audio_visualization_record_.spectrum_bins = frame.spectrum_bins;
-    has_audio_visualization_record_ = true;
-    audio_visualization_dirty_ = true;
 }
 
 QString AnalysisPanel::FrameTypeToString(int frame_type) const {
@@ -2096,28 +1962,6 @@ void AnalysisPanel::UpdateTimelineSummary() {
             .arg(event_count));
 }
 
-void AnalysisPanel::UpdateAudioVisualizationSummary() {
-    if (!audio_visualization_summary_label_) {
-        return;
-    }
-
-    if (!has_audio_visualization_record_) {
-        audio_visualization_summary_label_->setText(
-            tr("暂无音频可视化数据 | 电平: 0.000 | 采样率: 0 Hz | 声道: 0"));
-        return;
-    }
-
-    audio_visualization_summary_label_->setText(
-        tr("快照 #%1 | 时间戳: %2 s | 电平: %3 | 采样率: %4 Hz | 声道: %5 | 波形点: %6 | 频谱桶: %7")
-            .arg(audio_visualization_record_.index)
-            .arg(audio_visualization_record_.timestamp_seconds, 0, 'f', 3)
-            .arg(audio_visualization_record_.level, 0, 'f', 3)
-            .arg(audio_visualization_record_.sample_rate)
-            .arg(audio_visualization_record_.channels)
-            .arg(audio_visualization_record_.waveform_points.size())
-            .arg(audio_visualization_record_.spectrum_bins.size()));
-}
-
 void AnalysisPanel::OnExportFrameCsv() {
     if (frame_records_.empty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有可导出的帧分析数据。"));
@@ -2339,54 +2183,6 @@ void AnalysisPanel::OnExportTimelineCsv() {
     QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
 }
 
-void AnalysisPanel::OnExportAudioVisualizationCsv() {
-    if (!has_audio_visualization_record_) {
-        QMessageBox::information(this, tr("提示"), tr("当前没有可导出的音频可视化数据。"));
-        return;
-    }
-
-    const QString filename = QFileDialog::getSaveFileName(
-        this,
-        tr("导出音频可视化 CSV"),
-        QString("videoeye_audio_visual_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
-        tr("CSV 文件 (*.csv);;所有文件 (*)"));
-    if (filename.isEmpty()) {
-        return;
-    }
-
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件:\n%1").arg(filename));
-        return;
-    }
-
-    QTextStream out(&file);
-    out.setEncoding(QStringConverter::Utf8);
-    out << "section,index,timestamp_seconds,level,sample_rate,channels,point_index,value\n";
-    for (int i = 0; i < audio_visualization_record_.waveform_points.size(); ++i) {
-        out << "waveform,"
-            << audio_visualization_record_.index << ','
-            << QString::number(audio_visualization_record_.timestamp_seconds, 'f', 6) << ','
-            << QString::number(audio_visualization_record_.level, 'f', 6) << ','
-            << audio_visualization_record_.sample_rate << ','
-            << audio_visualization_record_.channels << ','
-            << i << ','
-            << QString::number(audio_visualization_record_.waveform_points[i], 'f', 6) << '\n';
-    }
-    for (int i = 0; i < audio_visualization_record_.spectrum_bins.size(); ++i) {
-        out << "spectrum,"
-            << audio_visualization_record_.index << ','
-            << QString::number(audio_visualization_record_.timestamp_seconds, 'f', 6) << ','
-            << QString::number(audio_visualization_record_.level, 'f', 6) << ','
-            << audio_visualization_record_.sample_rate << ','
-            << audio_visualization_record_.channels << ','
-            << i << ','
-            << QString::number(audio_visualization_record_.spectrum_bins[i], 'f', 6) << '\n';
-    }
-
-    QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
-}
-
 void AnalysisPanel::OnExportHistogramCsv() {
     if (current_hist_.bins == 0 || current_hist_.red_channel.empty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有可导出的直方图数据。"));
@@ -2596,10 +2392,6 @@ void AnalysisPanel::FlushPendingUiUpdates() {
         FlushPendingTimelineTableUpdates();
         timeline_table_dirty_ = false;
     }
-    if (audio_visualization_dirty_) {
-        FlushPendingAudioVisualization();
-        audio_visualization_dirty_ = false;
-    }
     if (frame_summary_dirty_) {
         UpdateFrameSummary();
         frame_summary_dirty_ = false;
@@ -2748,11 +2540,6 @@ void AnalysisPanel::FlushPendingTimelineTableUpdates() {
     if (timeline_table_->rowCount() > 0) {
         timeline_table_->scrollToBottom();
     }
-}
-
-void AnalysisPanel::FlushPendingAudioVisualization() {
-    UpdateAudioVisualizationCharts();
-    UpdateAudioVisualizationSummary();
 }
 
 void AnalysisPanel::RefreshStreamStatsUi(const analyzer::StreamStats& stats) {
@@ -3008,44 +2795,6 @@ void AnalysisPanel::UpdateTimelineChart() {
     }
     timeline_axis_x_->setRange(min_ts, max_ts);
     timeline_axis_y_->setRange(0.5, 3.5);
-}
-
-void AnalysisPanel::UpdateAudioVisualizationCharts() {
-    if (!waveform_series_ || !spectrum_series_ ||
-        !waveform_axis_x_ || !waveform_axis_y_ ||
-        !spectrum_axis_x_ || !spectrum_axis_y_) {
-        return;
-    }
-
-    waveform_series_->clear();
-    spectrum_series_->clear();
-
-    if (!has_audio_visualization_record_) {
-        waveform_axis_x_->setRange(0, 1);
-        waveform_axis_y_->setRange(-1.0, 1.0);
-        spectrum_axis_x_->setRange(0, 1);
-        spectrum_axis_y_->setRange(0.0, 1.0);
-        return;
-    }
-
-    for (int i = 0; i < audio_visualization_record_.waveform_points.size(); ++i) {
-        waveform_series_->append(i, audio_visualization_record_.waveform_points[i]);
-    }
-    for (int i = 0; i < audio_visualization_record_.spectrum_bins.size(); ++i) {
-        spectrum_series_->append(i, audio_visualization_record_.spectrum_bins[i]);
-    }
-
-    const int waveform_max_x = std::max(1, static_cast<int>(audio_visualization_record_.waveform_points.size()) - 1);
-    const int spectrum_max_x = std::max(1, static_cast<int>(audio_visualization_record_.spectrum_bins.size()) - 1);
-    waveform_axis_x_->setRange(0, waveform_max_x);
-    waveform_axis_y_->setRange(-1.0, 1.0);
-    spectrum_axis_x_->setRange(0, spectrum_max_x);
-
-    qreal spectrum_max = 1.0;
-    for (double value : audio_visualization_record_.spectrum_bins) {
-        spectrum_max = std::max(spectrum_max, static_cast<qreal>(value));
-    }
-    spectrum_axis_y_->setRange(0.0, spectrum_max * 1.1);
 }
 
 void AnalysisPanel::OnExportReport() {

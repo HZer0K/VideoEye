@@ -364,10 +364,6 @@ void MainWindow::SetupConnections() {
             analysis_panel_, &ui::AnalysisPanel::ResetTimelineEventList);
     connect(player_, &player::MediaPlayer::TimelineEventReady,
             analysis_panel_, &ui::AnalysisPanel::AppendTimelineEvent);
-    connect(player_, &player::MediaPlayer::AudioVisualizationReset,
-            analysis_panel_, &ui::AnalysisPanel::ResetAudioVisualization);
-    connect(player_, &player::MediaPlayer::AudioVisualizationReady,
-            analysis_panel_, &ui::AnalysisPanel::AppendAudioVisualization);
     
     // MP4 Box 分析信号
     connect(player_, &player::MediaPlayer::Mp4BoxAnalysisReady,
@@ -407,9 +403,6 @@ void MainWindow::SetupConnections() {
                     break;
                 case AF::Timeline:
                     player_->SetTimelineAnalysisEnabled(enabled);
-                    break;
-                case AF::AudioVis:
-                    player_->SetAudioVisualizationEnabled(enabled);
                     break;
                 case AF::Mp4Box:
                     player_->SetMp4BoxAnalysisEnabled(enabled);
