@@ -72,6 +72,7 @@ AnalysisPanel::AnalysisPanel(QWidget* parent)
     feature_enabled_[AnalysisFeature::Event] = false;
     feature_enabled_[AnalysisFeature::SyncSample] = false;
     feature_enabled_[AnalysisFeature::Timeline] = false;
+    feature_enabled_[AnalysisFeature::AudioLoudness] = true;
     feature_enabled_[AnalysisFeature::Histogram] = false;
     
     SetupUI();
@@ -104,6 +105,7 @@ void AnalysisPanel::SetupUI() {
     SetupEventTab();
     SetupSyncTab();
     SetupTimelineTab();
+    SetupAudioLoudnessTab();
     SetupHistogramTab();
     SetupMp4BoxTab();
     SetupEbmlTab();
@@ -127,6 +129,7 @@ void AnalysisPanel::EmitInitialFeatureStates() {
         AnalysisFeature::Event,
         AnalysisFeature::SyncSample,
         AnalysisFeature::Timeline,
+        AnalysisFeature::AudioLoudness,
         AnalysisFeature::Histogram,
     };
     for (auto feat : kFeatures) {
@@ -671,6 +674,135 @@ void AnalysisPanel::SetupTimelineTab() {
     timeline_chart_->setRenderHint(QPainter::Antialiasing);
 
     connect(export_timeline_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportTimelineCsv);
+}
+
+void AnalysisPanel::SetupAudioLoudnessTab() {
+    audio_loudness_tab_ = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(audio_loudness_tab_);
+    layout->setContentsMargins(4, 2, 4, 4);
+    layout->setSpacing(4);
+
+    QHBoxLayout* toolbar_layout = new QHBoxLayout();
+    loudness_summary_label_ = new QLabel(
+        tr("音频响度 | LUFS: -70.0 | Peak dBFS: -70.0 | True Peak: -70.0 dBTP"),
+        audio_loudness_tab_);
+    toolbar_layout->addWidget(loudness_summary_label_, 1);
+
+    QCheckBox* toggle = new QCheckBox(tr("启用监测"), audio_loudness_tab_);
+    toggle->setChecked(feature_enabled_.value(AnalysisFeature::AudioLoudness, true));
+    connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
+        feature_enabled_[AnalysisFeature::AudioLoudness] = checked;
+        emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::AudioLoudness), checked);
+    });
+    toolbar_layout->addWidget(toggle);
+    layout->addLayout(toolbar_layout);
+
+    // 响度历史图
+    loudness_series_ = new QLineSeries(this);
+    loudness_series_->setName(tr("Momentary LUFS"));
+    peak_series_ = new QLineSeries(this);
+    peak_series_->setName(tr("Peak dBFS"));
+
+    loudness_chart_object_ = new QChart();
+    loudness_chart_object_->setTitle(tr("响度历史"));
+    loudness_chart_object_->addSeries(loudness_series_);
+    loudness_chart_object_->addSeries(peak_series_);
+    loudness_chart_object_->legend()->setVisible(true);
+    loudness_chart_object_->legend()->setAlignment(Qt::AlignBottom);
+
+    loudness_axis_x_ = new QValueAxis(this);
+    loudness_axis_x_->setLabelFormat("%d");
+    loudness_axis_x_->setTitleText(tr("帧"));
+    loudness_axis_y_ = new QValueAxis(this);
+    loudness_axis_y_->setLabelFormat("%.0f");
+    loudness_axis_y_->setTitleText(tr("dB"));
+    loudness_axis_y_->setRange(-70.0, 6.0);
+
+    loudness_chart_object_->addAxis(loudness_axis_x_, Qt::AlignBottom);
+    loudness_chart_object_->addAxis(loudness_axis_y_, Qt::AlignLeft);
+    loudness_series_->attachAxis(loudness_axis_x_);
+    loudness_series_->attachAxis(loudness_axis_y_);
+    peak_series_->attachAxis(loudness_axis_x_);
+    peak_series_->attachAxis(loudness_axis_y_);
+
+    loudness_chart_ = new QChartView(audio_loudness_tab_);
+    loudness_chart_->setChart(loudness_chart_object_);
+    loudness_chart_->setRenderHint(QPainter::Antialiasing);
+    loudness_chart_->setMinimumHeight(220);
+    loudness_chart_->setMinimumWidth(280);
+    layout->addWidget(loudness_chart_);
+
+    AddTabWithScroll(audio_loudness_tab_, tr("音频响度"));
+}
+
+void AnalysisPanel::UpdateAudioLoudness(const model::AudioVisualizationFrame& frame) {
+    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
+        !feature_enabled_.value(AnalysisFeature::AudioLoudness, true)) return;
+    if (!loudness_summary_label_ || !loudness_series_ || !peak_series_) return;
+
+    // 新文件时重置累计状态
+    if (frame.index == 0) {
+        loudness_history_.clear();
+        peak_history_.clear();
+        integrated_lufs_ = -70.0;
+        loudness_range_lu_ = 0.0;
+        max_true_peak_dbtp_ = -70.0;
+        max_peak_dbfs_ = -70.0;
+        loudness_sample_count_ = 0;
+        loudness_sum_ = 0.0;
+    }
+
+    const double lufs = frame.loudness_momentary_lufs;
+    const double peak = frame.peak_dbfs;
+    const double tp = frame.true_peak_dbtp;
+
+    // 累计统计
+    ++loudness_sample_count_;
+    if (lufs > -70.0) {
+        // 线性域累加用于 integrated LUFS
+        loudness_sum_ += std::pow(10.0, (lufs + 0.691) / 10.0);
+    }
+    if (peak > max_peak_dbfs_) max_peak_dbfs_ = peak;
+    if (tp > max_true_peak_dbtp_) max_true_peak_dbtp_ = tp;
+
+    // Integrated LUFS
+    if (loudness_sample_count_ > 0 && loudness_sum_ > 1e-10) {
+        double mean_sq = loudness_sum_ / static_cast<double>(loudness_sample_count_);
+        integrated_lufs_ = -0.691 + 10.0 * std::log10(mean_sq);
+    }
+
+    // LRA (简化：最高和最低响度之差)
+    if (!loudness_history_.empty()) {
+        double max_lufs = *std::max_element(loudness_history_.begin(), loudness_history_.end());
+        double min_lufs = *std::min_element(loudness_history_.begin(), loudness_history_.end());
+        loudness_range_lu_ = max_lufs - min_lufs;
+    }
+
+    // 历史数据 (保留最近 200 个样本)
+    constexpr size_t kMaxHistory = 200;
+    loudness_history_.push_back(lufs);
+    peak_history_.push_back(peak);
+    while (loudness_history_.size() > kMaxHistory) loudness_history_.pop_front();
+    while (peak_history_.size() > kMaxHistory) peak_history_.pop_front();
+
+    // 更新图表
+    loudness_series_->clear();
+    peak_series_->clear();
+    for (size_t i = 0; i < loudness_history_.size(); ++i) {
+        loudness_series_->append(static_cast<qreal>(i), loudness_history_[i]);
+        peak_series_->append(static_cast<qreal>(i), peak_history_[i]);
+    }
+    loudness_axis_x_->setRange(0, static_cast<qreal>(loudness_history_.size()));
+
+    // 摘要文本
+    loudness_summary_label_->setText(
+        tr("Momentary: %1 LUFS | Peak: %2 dBFS | True Peak: %3 dBTP | "
+           "Integrated: %4 LUFS | LRA: %5 LU")
+            .arg(lufs, 0, 'f', 1)
+            .arg(peak, 0, 'f', 1)
+            .arg(tp, 0, 'f', 1)
+            .arg(integrated_lufs_, 0, 'f', 1)
+            .arg(loudness_range_lu_, 0, 'f', 1));
 }
 
 void AnalysisPanel::SetupHistogramTab() {

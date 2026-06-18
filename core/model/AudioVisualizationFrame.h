@@ -14,6 +14,10 @@ struct AudioVisualizationFrame {
     int channels = 0;
     QVector<double> waveform_points;
     QVector<double> spectrum_bins;
+    // 响度指标
+    double loudness_momentary_lufs = -70.0;  // 400ms 窗口 LUFS
+    double peak_dbfs = -70.0;                // 峰值 dBFS
+    double true_peak_dbtp = -70.0;           // 真实峰值 dBTP
 };
 
 } // namespace model

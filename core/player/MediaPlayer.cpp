@@ -590,6 +590,60 @@ void MediaPlayer::EmitAudioVisualizationFrame(const int16_t* samples, int sample
         }
     }
 
+    // 响度指标计算
+    // 1. Peak dBFS
+    int16_t max_abs = 0;
+    for (int i = 0; i < sample_count; ++i) {
+        int16_t abs_val = std::abs(samples[i]);
+        if (abs_val > max_abs) max_abs = abs_val;
+    }
+    if (max_abs > 0) {
+        frame.peak_dbfs = 20.0 * std::log10(static_cast<double>(max_abs) / 32768.0);
+    } else {
+        frame.peak_dbfs = -70.0;
+    }
+
+    // 2. Momentary LUFS (简化 EBU R128: 对单声道混缩信号的均方值应用公式)
+    double sum_sq = 0.0;
+    for (int i = 0; i < frame_count; ++i) {
+        double mono = 0.0;
+        for (int ch = 0; ch < channels; ++ch) {
+            mono += static_cast<double>(samples[i * channels + ch]) / 32768.0;
+        }
+        mono /= static_cast<double>(channels);
+        sum_sq += mono * mono;
+    }
+    double mean_sq = sum_sq / static_cast<double>(frame_count);
+    if (mean_sq > 1e-10) {
+        frame.loudness_momentary_lufs = -0.691 + 10.0 * std::log10(mean_sq);
+    } else {
+        frame.loudness_momentary_lufs = -70.0;
+    }
+
+    // 3. True Peak dBTP (4x 过采样)
+    double true_peak = 0.0;
+    for (int i = 0; i < frame_count - 1; ++i) {
+        double s0 = 0.0, s1 = 0.0;
+        for (int ch = 0; ch < channels; ++ch) {
+            s0 += static_cast<double>(samples[i * channels + ch]) / 32768.0;
+            s1 += static_cast<double>(samples[(i + 1) * channels + ch]) / 32768.0;
+        }
+        s0 /= channels;
+        s1 /= channels;
+        // 简单插值的 4x 过采样
+        for (int k = 0; k < 4; ++k) {
+            double t = k / 4.0;
+            double interp = s0 * (1.0 - t) + s1 * t;
+            double abs_interp = std::abs(interp);
+            if (abs_interp > true_peak) true_peak = abs_interp;
+        }
+    }
+    if (true_peak > 1e-10) {
+        frame.true_peak_dbtp = 20.0 * std::log10(true_peak);
+    } else {
+        frame.true_peak_dbtp = -70.0;
+    }
+
     emit AudioVisualizationReady(frame);
 }
 

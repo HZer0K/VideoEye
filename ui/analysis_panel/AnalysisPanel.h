@@ -20,6 +20,8 @@
 #include <QCheckBox>
 #include <QScrollArea>
 #include <QMap>
+#include <QVariantList>
+#include <QVariantMap>
 #include <QtCharts/QValueAxis>
 #include <deque>
 #include <vector>
@@ -28,6 +30,7 @@
 #include "core/analyzer/StreamAnalyzer.h"
 #include "core/analyzer/FrameAnalyzer.h"
 #include "core/model/AnalysisEvent.h"
+#include "core/model/AudioVisualizationFrame.h"
 #include "core/model/PacketInfo.h"
 #include "core/model/SyncSample.h"
 #include "core/model/TimelineEvent.h"
@@ -52,6 +55,7 @@ public:
         Event,         // 分析事件
         SyncSample,    // 音视频同步
         Timeline,      // 时间线
+        AudioLoudness, // 音频响度监测
         Histogram,     // 直方图
         Mp4Box         // MP4 Box 分析
     };
@@ -91,6 +95,7 @@ public slots:
     void AppendTimelineEvent(const model::TimelineEvent& event);
     void OnMp4BoxAnalysisReady(const model::Mp4BoxAnalysisResult& result);
     void OnEbmlAnalysisReady(const model::EbmlAnalysisResult& result);
+    void UpdateAudioLoudness(const model::AudioVisualizationFrame& frame);
     
     // 导出报告
     void OnExportReport();
@@ -182,6 +187,7 @@ private:
     void SetupEventTab();
     void SetupSyncTab();
     void SetupTimelineTab();
+    void SetupAudioLoudnessTab();
     void SetupHistogramTab();
     void SetupMp4BoxTab();
     void SetupEbmlTab();
@@ -282,6 +288,24 @@ private:
     QChartView* timeline_chart_;
     QTableWidget* timeline_table_;
     QPushButton* export_timeline_csv_button_;
+    
+    // 音频响度监测标签页
+    QWidget* audio_loudness_tab_;
+    QLabel* loudness_summary_label_;
+    QChartView* loudness_chart_;
+    QChart* loudness_chart_object_;
+    QLineSeries* loudness_series_;
+    QLineSeries* peak_series_;
+    QValueAxis* loudness_axis_x_;
+    QValueAxis* loudness_axis_y_;
+    std::deque<double> loudness_history_;     // LUFS 历史
+    std::deque<double> peak_history_;         // dBFS 历史
+    double integrated_lufs_ = -70.0;
+    double loudness_range_lu_ = 0.0;
+    double max_true_peak_dbtp_ = -70.0;
+    double max_peak_dbfs_ = -70.0;
+    int loudness_sample_count_ = 0;
+    double loudness_sum_ = 0.0;
     
     // 直方图标签页
     QWidget* histogram_tab_;
