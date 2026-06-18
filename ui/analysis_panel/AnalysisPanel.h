@@ -373,6 +373,8 @@ private:
     std::vector<GopSummary> gop_summaries_;
     analyzer::StreamStats pending_stream_stats_;
     bool has_pending_stream_stats_ = false;
+    bool has_pending_histogram_ = false;
+    analyzer::HistogramData pending_histogram_;
     bool frame_table_dirty_ = false;
     bool gop_table_dirty_ = false;
     bool frame_summary_dirty_ = false;

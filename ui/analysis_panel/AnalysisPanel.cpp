@@ -819,9 +819,7 @@ void AnalysisPanel::SetupHistogramTab() {
     histogram_chart_->setMinimumWidth(400);
     hist_layout->addWidget(histogram_chart_);
     
-    layout->addWidget(hist_group);
-    
-    // 导出按钮 + 启用分析 同一行
+    // 导出按钮 + 启用分析 同一行 (放在图表上方，确保始终可见)
     {
         QHBoxLayout* toolbar_layout = new QHBoxLayout();
         toolbar_layout->addStretch();
@@ -837,6 +835,8 @@ void AnalysisPanel::SetupHistogramTab() {
         toolbar_layout->addWidget(toggle);
         layout->addLayout(toolbar_layout);
     }
+    
+    layout->addWidget(hist_group);
     
     AddTabWithScroll(histogram_tab_, tr("直方图"));
     
@@ -1491,7 +1491,9 @@ void AnalysisPanel::UpdateHistogram(const analyzer::HistogramData& hist) {
     if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
         !feature_enabled_.value(AnalysisFeature::Histogram, true)) return;
     current_hist_ = hist;
-    UpdateHistogramChart(hist);
+    // 延迟到主线程 FlushPendingUiUpdates 中更新图表,避免在解码线程操作 GUI
+    pending_histogram_ = hist;
+    has_pending_histogram_ = true;
 }
 
 void AnalysisPanel::ResetVideoFrameList() {
@@ -2495,6 +2497,10 @@ void AnalysisPanel::FlushPendingUiUpdates() {
     if (has_pending_stream_stats_) {
         RefreshStreamStatsUi(pending_stream_stats_);
         has_pending_stream_stats_ = false;
+    }
+    if (has_pending_histogram_) {
+        UpdateHistogramChart(pending_histogram_);
+        has_pending_histogram_ = false;
     }
     if (frame_table_dirty_) {
         FlushPendingFrameTableUpdates();
