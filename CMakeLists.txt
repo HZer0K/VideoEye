@@ -36,8 +36,8 @@ pkg_check_modules(SDL2 REQUIRED sdl2)
 # ZLIB (MediaInfoLib 依赖)
 find_package(ZLIB REQUIRED)
 
-# MediaInfo 第三方库 (源码集成, 方便客制化)
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party/mediainfo ${CMAKE_BINARY_DIR}/libmediainfo)
+# MediaInfo 第三方库 (ZenLib + MediaInfoLib 源码集成, 方便客制化)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party ${CMAKE_BINARY_DIR}/third_party)
 
 # Bento4 Core library
 set(BENTO4_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/Bento4/Source/C++/Core")
@@ -84,8 +84,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/ui
     ${CMAKE_CURRENT_SOURCE_DIR}/utils
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/MediaInfoLib/Source
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/MediaInfoLib/Source/MediaInfoDLL
     ${BENTO4_DIR}
     ${BENTO4_DIR}/../MetaData
     ${BENTO4_DIR}/../Codecs
