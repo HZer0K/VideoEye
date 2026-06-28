@@ -34,15 +34,27 @@ VideoEye/
 │   │   ├── styles/               # 样式
 │   │   └── translations/         # 翻译
 │   └── cmake/                     # CMake 模块
+│       └── BuildFFmpeg.cmake     # FFmpeg 源码编译模块
+│
+├── 📚 第三方库
+│   └── third_party/
+│       ├── Bento4/                # Bento4 MP4 解析引擎 (submodule)
+│       ├── FFmpeg/                # FFmpeg 8.1 源码 (源码编译集成)
+│       ├── MediaInfoLib/          # MediaInfoLib 源码 (源码集成)
+│       ├── ZenLib/                # ZenLib 源码 (MediaInfo 依赖)
+│       └── mediainfo/             # MediaInfo 编译集成 CMakeLists
 │
 ├── 📚 Legacy 目录
 │   └── legacy/                    # 旧版代码归档 📦
 │
 ├── 🛠️ 工具脚本
-│   └── run.sh                     # 快速启动脚本
+│   ├── run.sh                     # 快速启动脚本
+│   └── scripts/                   # 辅助脚本
 │
 └── 🏗️ 构建输出
-    └── build/                     # 编译输出 (git忽略)
+    ├── build/                     # 编译输出 (git忽略)
+    ├── build-release/             # Release 编译输出 (git忽略)
+    └── build-debug/               # Debug 编译输出 (git忽略)
 ```
 
 ---

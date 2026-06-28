@@ -1,6 +1,7 @@
 # 构建目录
 build/
 build-debug/
+build-release/
 cmake-build-*/
 out/
 
@@ -12,26 +13,46 @@ out/
 *~
 .DS_Store
 
-# CMake文件
+# CMake生成文件
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 Makefile
-*.cmake
 
 # 编译产物
 *.o
 *.so
+*.so.*
 *.a
 *.dll
 *.exe
 *.dylib
+*.obj
+*.lib
+*.exp
 
-# Qt文件
+# Qt生成文件
 .moc
 .uic
 .rcc
 qrc_*.cpp
+moc_*.cpp
+ui_*.h
+
+# FFmpeg 源码构建产物 (BUILD_IN_SOURCE)
+third_party/FFmpeg/config.h
+third_party/FFmpeg/config.mak
+third_party/FFmpeg/config_components.h
+third_party/FFmpeg/ffbuild/
+third_party/FFmpeg/libav*/*.o
+third_party/FFmpeg/libsw*/*.o
+third_party/FFmpeg/compat/
+third_party/FFmpeg/ffversion.h
+third_party/FFmpeg/libavcodec/*.so*
+third_party/FFmpeg/libavformat/*.so*
+third_party/FFmpeg/libavutil/*.so*
+third_party/FFmpeg/libswscale/*.so*
+third_party/FFmpeg/libswresample/*.so*
 
 # 测试覆盖率
 *.gcda

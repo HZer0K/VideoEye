@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![C++](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://isocpp.org/)
 [![Qt](https://img.shields.io/badge/Qt-6-green.svg)](https://www.qt.io/)
-[![FFmpeg](https://img.shields.io/badge/FFmpeg-6.0-red.svg)](https://ffmpeg.org/)
+[![FFmpeg](https://img.shields.io/badge/FFmpeg-8.1-red.svg)](https://ffmpeg.org/)
 
 ## 项目简介
 
@@ -39,7 +39,7 @@ VideoEye 是一款开源的视频流分析软件,支持多种视频输入源(HTT
 | 组件 | 技术 | 版本 |
 |------|------|------|
 | GUI框架 | Qt 6 | 6.0+ |
-| 多媒体 | FFmpeg | 6.0+ |
+| 多媒体 | FFmpeg | 8.1 (源码编译) |
 | 媒体元数据 | MediaInfoLib | 26.05 (源码集成) |
 | 计算机视觉 | OpenCV | 4.8+ |
 | 音频输出 | SDL 2 | 2.0+ |
@@ -54,17 +54,19 @@ VideoEye 是一款开源的视频流分析软件,支持多种视频输入源(HTT
 ```bash
 sudo apt update
 sudo apt install -y \
-    build-essential cmake \
+    build-essential cmake nasm yasm \
     qt6-base-dev qt6-multimedia-dev qt6-charts-dev \
-    libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
     libopencv-dev \
     libsdl2-dev
 ```
 
+> **注意**: FFmpeg 8.1 从源码编译集成，无需安装系统 FFmpeg 包。
+> 编译 FFmpeg 需要 `nasm` 或 `yasm` 汇编器。
+
 ### macOS
 
 ```bash
-brew install cmake qt@6 ffmpeg opencv sdl2
+brew install cmake nasm yasm qt@6 opencv sdl2
 ```
 
 ### Windows
@@ -78,8 +80,8 @@ cd vcpkg
 ./bootstrap-vcpkg.bat  # Windows
 # ./bootstrap-vcpkg.sh  # Linux/macOS
 
-# 安装依赖
-./vcpkg install ffmpeg opencv4 sdl2 qt6-base qt6-multimedia qt6-charts
+# 安装依赖 (FFmpeg 从源码编译，无需 vcpkg 安装)
+./vcpkg install opencv4 sdl2 qt6-base qt6-multimedia qt6-charts
 ```
 
 ## 🔨 构建指南
@@ -98,6 +100,9 @@ git submodule update --init --recursive
 cd third_party
 git clone --depth 1 https://github.com/MediaArea/ZenLib.git
 git clone --depth 1 https://github.com/MediaArea/MediaInfoLib.git
+
+# 拉取 FFmpeg 8.1 源码 (源码编译集成)
+git clone --depth 1 --branch n8.1 https://git.ffmpeg.org/ffmpeg.git FFmpeg
 cd ..
 
 # 创建构建目录
@@ -106,7 +111,7 @@ mkdir build && cd build
 # 配置项目
 cmake .. -DCMAKE_BUILD_TYPE=Release
 
-# 编译
+# 编译 (FFmpeg 会自动从源码编译)
 make -j$(nproc)  # Linux/macOS
 # 或者使用 Ninja
 # cmake .. -G Ninja && ninja
@@ -114,6 +119,9 @@ make -j$(nproc)  # Linux/macOS
 # 运行
 ./bin/VideoEye
 ```
+
+> **提示**: 首次构建会自动编译 FFmpeg 8.1 共享库（约 2-5 分钟），后续构建会跳过已完成的步骤。
+> 也可以使用项目根目录的 `build.sh` 脚本一键构建：`./build.sh release`
 
 ### Visual Studio (Windows)
 
@@ -150,11 +158,14 @@ VideoEye/
 ├── tests/                  # 测试
 ├── third_party/            # 第三方库
 │   ├── Bento4/             # Bento4 MP4 解析引擎 (submodule)
+│   ├── FFmpeg/             # FFmpeg 8.1 源码 (源码编译集成)
 │   ├── MediaInfoLib/       # MediaInfoLib 源码 (需手动拉取)
 │   ├── ZenLib/             # ZenLib 源码 (MediaInfo 依赖, 需手动拉取)
 │   └── mediainfo/          # MediaInfo 编译集成 CMakeLists
 ├── resources/              # 资源文件
 ├── cmake/                  # CMake配置
+│   └── BuildFFmpeg.cmake   # FFmpeg 源码编译模块
+├── build.sh                # Linux 一键构建脚本
 ├── CMakeLists.txt          # 主CMake文件
 └── README.md
 ```

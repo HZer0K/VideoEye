@@ -15,6 +15,17 @@ echo "构建类型: ${BUILD_TYPE}"
 echo "构建目录: ${BUILD_DIR}"
 echo "====================================="
 
+# 检查 FFmpeg 源码是否存在
+if [ ! -f "third_party/FFmpeg/configure" ]; then
+    echo "FFmpeg 源码未找到，正在克隆 FFmpeg n8.1..."
+    git clone --depth 1 --branch n8.1 https://git.ffmpeg.org/ffmpeg.git third_party/FFmpeg
+    if [ $? -ne 0 ]; then
+        echo "❌ FFmpeg 克隆失败!"
+        exit 1
+    fi
+    echo "✅ FFmpeg n8.1 克隆完成"
+fi
+
 # 创建构建目录
 mkdir -p ${BUILD_DIR}
 cd ${BUILD_DIR}
