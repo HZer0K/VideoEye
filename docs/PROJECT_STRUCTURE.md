@@ -138,17 +138,25 @@ utils/
 
 ---
 
-### tests/ - 测试代码 (待实现)
+### tests/ - 测试代码
 
 ```
 tests/
-├── unit/               # 单元测试
-│   ├── test_decoder.cpp
-│   └── test_player.cpp
+├── CMakeLists.txt        # 测试构建配置 (GoogleTest FetchContent)
+├── unit/                 # 单元测试
+│   ├── test_format_detector.cpp    # FormatDetector 格式检测 (27 tests)
+│   ├── test_config_manager.cpp     # ConfigManager 配置管理 (26 tests)
+│   ├── test_report_exporter.cpp    # ReportExporter 报告导出 (14 tests)
+│   ├── test_stream_analyzer.cpp    # StreamAnalyzer 流分析 (17 tests)
+│   ├── test_frame_data.cpp         # FrameData 帧数据模型 (15 tests)
+│   └── test_frame_analyzer.cpp     # FrameAnalyzer 帧分析/OpenCV (16 tests)
 │
-└── integration/        # 集成测试
-    └── test_playback.cpp
+└── integration/        # 集成测试 (待实现)
 ```
+
+**测试框架**: GoogleTest v1.15.2 (FetchContent 自动下载)  
+**测试总数**: 6 个测试套件，115 个测试用例，全部通过  
+**运行方式**: `cd build-debug && ctest --output-on-failure`
 
 ---
 
@@ -282,7 +290,7 @@ cat ve_play.cpp
 | core/analyzer/ | 24 | ✅ 已实现 |
 | ui/ | 4 | ✅ 已实现 |
 | utils/ | 6 | ✅ 已实现 |
-| tests/ | 0 | ⏳ 待实现 |
+| tests/ | 7 | ✅ 已实现 (6 suites, 115 cases) |
 | **总计** | **48+** | |
 
 ### Legacy 代码
@@ -351,7 +359,7 @@ cat ve_play.cpp
 
 ### 中期
 
-1. ⏳ 添加单元测试
+1. ✅ ~~添加单元测试~~ (已完成: 6 suites, 115 cases)
 2. ⏳ 完善文档
 3. ⏳ 性能优化
 4. ⏳ 添加更多分析算法

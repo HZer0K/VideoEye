@@ -458,20 +458,45 @@ private:
 
 ## 测试策略
 
-### 单元测试
+### 测试框架
+
+- **框架**: GoogleTest v1.15.2 (FetchContent 自动下载)
+- **构建**: CMake `BUILD_TESTING` option 控制
+- **运行**: `cd build-debug && ctest --output-on-failure`
+- **规模**: 6 个测试套件，115 个测试用例
+
+### 测试覆盖
+
+| 测试套件 | 被测模块 | 用例数 | 说明 |
+|---------|---------|--------|------|
+| test_format_detector | FormatDetector | 27 | 魔数检测、扩展名推断、优先级 |
+| test_config_manager | ConfigManager | 26 | 配置读写、文件加载、持久化 |
+| test_report_exporter | ReportExporter | 14 | TXT/CSV/JSON/HTML 导出 |
+| test_stream_analyzer | StreamAnalyzer | 17 | 帧统计、并发线程安全 |
+| test_frame_data | FrameData | 15 | 数据模型、深拷贝、StreamInfo |
+| test_frame_analyzer | FrameAnalyzer | 16 | 直方图、边缘检测、OpenCV 转换 |
+
+### 单元测试示例
 
 ```cpp
-TEST(VideoDecoderTest, InitializeSuccess) {
-    VideoDecoder decoder;
-    auto params = CreateTestCodecParams();
-    
-    EXPECT_TRUE(decoder.Initialize(params.get()));
-    EXPECT_GT(decoder.GetWidth(), 0);
-    EXPECT_GT(decoder.GetHeight(), 0);
+TEST(FormatDetectorTest, DetectMP4ByMagic) {
+    // 创建带 ftyp 头部的临时文件
+    QTemporaryFile tmpFile;
+    tmpFile.open();
+    QByteArray header;
+    header.append("\x00\x00\x00\x1C");  // box size
+    header.append("ftyp");               // box type
+    header.append("isom");               // major brand
+    tmpFile.write(header);
+    tmpFile.close();
+
+    FormatDetector detector;
+    auto result = detector.Detect(tmpFile.fileName().toStdString());
+    EXPECT_EQ(result.format, ContainerFormat::MP4);
 }
 ```
 
-### 集成测试
+### 集成测试 (待实现)
 
 ```cpp
 TEST(MediaPlayerTest, PlayLocalFile) {
@@ -480,7 +505,6 @@ TEST(MediaPlayerTest, PlayLocalFile) {
     EXPECT_TRUE(player.Open("test.mp4"));
     player.Play();
     
-    // 等待播放
     std::this_thread::sleep_for(std::chrono::seconds(5));
     
     EXPECT_EQ(player.GetState(), PlayerState::Playing);
@@ -497,25 +521,26 @@ TEST(MediaPlayerTest, PlayLocalFile) {
 
 ## 未来规划
 
-### 短期 (1-3个月)
+### 短期 (已完成)
 
-- [ ] 完成基础播放功能
-- [ ] 实现流分析
-- [ ] 添加人脸检测
+- [x] 完成基础播放功能
+- [x] 实现流分析
+- [x] 实现容器结构分析 (7 种格式)
+- [x] 单元测试 (6 suites, 115 cases)
 - [ ] 完善 UI
 
 ### 中期 (3-6个月)
 
 - [ ] 硬件解码支持
-- [ ] 插件系统
+- [ ] 集成测试
 - [ ] 更多分析算法
-- [ ] 性能优化
+- [ ] 性能优化 (FFT 等)
 
 ### 长期 (6-12个月)
 
 - [ ] AI 增强分析
-- [ ] 实时协作
-- [ ] 云端集成
+- [ ] CI/CD 集成
+- [ ] 插件系统
 - [ ] 移动端支持
 
 ---

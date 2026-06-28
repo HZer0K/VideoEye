@@ -127,6 +127,13 @@ install(TARGETS ${PROJECT_NAME}
     RUNTIME DESTINATION bin
 )
 
+# 测试支持
+option(BUILD_TESTING "构建单元测试" ON)
+if(BUILD_TESTING)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
 # 复制资源文件
 install(DIRECTORY resources/
     DESTINATION share/VideoEye/resources

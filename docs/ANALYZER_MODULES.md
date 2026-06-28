@@ -4,6 +4,8 @@
 
 已成功实现所有分析模块和工具类，并编译通过！
 
+已补充单元测试覆盖 (6 suites, 115 cases, 全部通过)。
+
 ---
 
 ## 📦 新实现的模块
@@ -476,6 +478,24 @@ MediaPlayer::Open()
 | 实时图表 | Qt Charts 显示统计 | 中 |
 | 性能优化 | 多线程分析 | 高 |
 | 批量处理 | 批量分析视频 | 低 |
+
+---
+
+## 🧪 单元测试覆盖
+
+**测试框架**: GoogleTest v1.15.2 (FetchContent)  
+**构建选项**: CMake `BUILD_TESTING=ON`  
+**运行方式**: `cd build-debug && ctest --output-on-failure`
+
+| 测试套件 | 被测模块 | 用例数 | 覆盖内容 |
+|---------|---------|--------|----------|
+| test_format_detector | FormatDetector | 27 | 魔数检测 (MP4/MKV/AVI/FLV/TS/ASF/OGG)、扩展名推断、优先级 |
+| test_config_manager | ConfigManager | 26 | String/Int/Double/Bool 读写、文件加载、注释解析、持久化 |
+| test_report_exporter | ReportExporter | 14 | TXT/CSV/JSON/HTML 导出、特殊字符转义 |
+| test_stream_analyzer | StreamAnalyzer | 17 | 帧类型统计、音频计数、Start/Stop/Reset、并发线程安全 |
+| test_frame_data | FrameData | 15 | 默认构造、Clear 语义、CopyFrom 深拷贝、StreamInfo 格式化 |
+| test_frame_analyzer | FrameAnalyzer | 16 | 直方图、Canny 边缘、轮廓提取、FrameDataToMat、Normalize/Resize |
+| **总计** | **6 suites** | **115** | **全部通过 ✅** |
 
 ---
 

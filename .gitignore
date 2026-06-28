@@ -62,10 +62,22 @@ third_party/Bento4/**/*.o
 third_party/ZenLib/Project/CMake/CMakeFiles/
 third_party/MediaInfoLib/Project/CMake/CMakeFiles/
 
+# 测试构建产物
+*_test
+*_tests
+test_*
+*_test_runner
+
 # 测试覆盖率
 *.gcda
 *.gcno
 coverage/
+
+# GoogleTest 缓存 (FetchContent)
+build-debug/_deps/googletest-*
+build-debug/_deps/gtest-*
+build-release/_deps/googletest-*
+build-release/_deps/gtest-*
 
 # 日志文件
 *.log
