@@ -15,6 +15,10 @@ extern "C" {
 }
 
 #include "core/player/Decoders.h"
+#include "core/player/PlaybackClock.h"
+#include "core/player/StreamInfoExtractor.h"
+#include "core/player/AudioVisualizer.h"
+#include "core/player/VideoFrameExporter.h"
 #include "core/model/AnalysisEvent.h"
 #include "core/model/AudioVisualizationFrame.h"
 #include "core/model/FrameData.h"
@@ -79,19 +83,10 @@ public:
     analyzer::StreamStats GetCurrentStats() const;
     
 signals:
-    // 状态改变信号
     void StateChanged(model::PlayerState state);
-    
-    // 视频帧就绪信号
     void FrameReady(const QImage& frame);
-    
-    // 播放进度更新信号
     void PositionChanged(int position_ms, int duration_ms);
-    
-    // 错误信号
     void Error(const QString& message);
-    
-    // 播放完成信号
     void PlaybackFinished();
     
     // 分析数据信号
@@ -124,9 +119,6 @@ signals:
 private:
     // 解码线程
     void DecodeThread();
-    void VideoDecodeThread();
-    void AudioDecodeThread();
-    void ExportVideoFramesWorker(QString url, QString output_dir, QString format, int jpg_quality, int frame_interval);
     bool OpenInternal(const QString& url, const AVInputFormat* input_format, AVDictionary* input_options);
     void EmitAnalysisEvent(const QString& severity, const QString& type, int stream_index,
                            qint64 pts, double timestamp_seconds,
@@ -134,42 +126,43 @@ private:
     void EmitSyncSample(double audio_timestamp_seconds, double video_timestamp_seconds, bool audio_anchor);
     void EmitTimelineEvent(const QString& category, double timestamp_seconds,
                            const QString& label, const QString& detail = QString());
-    void EmitAudioVisualizationFrame(const int16_t* samples, int sample_count,
-                                     int sample_rate, int channels,
-                                     double timestamp_seconds, double level);
-    
-    // 清理资源
+    void EmitAudioVisualization(const AudioVisualizationResult& vis_result,
+                                int sample_rate, int channels, double timestamp_seconds, double level);
     void Cleanup();
     
-    // 成员变量
+    // 状态
     std::atomic<model::PlayerState> state_ = model::PlayerState::Idle;
     std::atomic<bool> should_stop_ = false;
     
+    // FFmpeg 上下文
     AVFormatContext* format_ctx_ = nullptr;
     std::unique_ptr<VideoDecoder> video_decoder_;
     std::unique_ptr<AudioDecoder> audio_decoder_;
-    
     int video_stream_index_ = -1;
     int audio_stream_index_ = -1;
     
+    // 线程
     std::thread decode_thread_;
-    std::thread export_thread_;
     std::mutex mutex_;
     std::condition_variable cv_;
     
+    // 播放信息
     model::StreamInfo stream_info_;
     int duration_ms_ = 0;
     std::atomic<int> current_position_ms_{0};
     int volume_ = 100;
-    
     QString current_url_;
-    std::atomic<bool> export_cancel_ = false;
     
     // 分析器
     analyzer::StreamAnalyzer stream_analyzer_;
     analyzer::FrameAnalyzer frame_analyzer_;
     analyzer::Mp4BoxAnalyzer mp4_box_analyzer_;
     analyzer::ContainerStructureAnalyzer container_analyzer_;
+    StreamInfoExtractor stream_info_extractor_;
+    AudioVisualizer audio_visualizer_;
+    std::unique_ptr<VideoFrameExporter> frame_exporter_;
+    
+    // 分析开关
     bool analysis_enabled_ = false;
     bool frame_type_analysis_enabled_ = false;
     bool histogram_enabled_ = false;
@@ -178,9 +171,10 @@ private:
     bool event_analysis_enabled_ = false;
     bool sync_analysis_enabled_ = false;
     bool timeline_analysis_enabled_ = false;
-    bool mp4_box_analysis_enabled_ = true; // 默认开启
-    bool container_structure_enabled_ = true; // 默认开启
-    int analysis_frame_counter_ = 0;  // 用于控制分析频率
+    bool container_structure_enabled_ = true;
+    
+    // 分析索引/状态
+    int analysis_frame_counter_ = 0;
     int video_frame_index_ = 0;
     int audio_frame_index_ = 0;
     int packet_index_ = 0;
