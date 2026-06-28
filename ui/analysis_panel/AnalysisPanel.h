@@ -19,6 +19,7 @@
 #include <QComboBox>
 #include <QCheckBox>
 #include <QScrollArea>
+#include <QStackedWidget>
 #include <QMap>
 #include <QVariantList>
 #include <QVariantMap>
@@ -36,6 +37,7 @@
 #include "core/model/TimelineEvent.h"
 #include "core/model/Mp4BoxInfo.h"
 #include "core/model/EbmlInfo.h"
+#include "core/model/ContainerStructureInfo.h"
 
 namespace videoeye {
 namespace ui {
@@ -57,7 +59,7 @@ public:
         Timeline,      // 时间线
         AudioLoudness, // 音频响度监测
         Histogram,     // 直方图
-        Mp4Box         // MP4 Box 分析
+        ContainerStructure  // 文件结构分析
     };
 
     explicit AnalysisPanel(QWidget* parent = nullptr);
@@ -93,8 +95,7 @@ public slots:
     void AppendSyncSample(const model::SyncSample& sample);
     void ResetTimelineEventList();
     void AppendTimelineEvent(const model::TimelineEvent& event);
-    void OnMp4BoxAnalysisReady(const model::Mp4BoxAnalysisResult& result);
-    void OnEbmlAnalysisReady(const model::EbmlAnalysisResult& result);
+    void OnContainerStructureReady(const model::ContainerStructureResult& result);
     void UpdateAudioLoudness(const model::AudioVisualizationFrame& frame);
     
     // 导出报告
@@ -189,8 +190,7 @@ private:
     void SetupTimelineTab();
     void SetupAudioLoudnessTab();
     void SetupHistogramTab();
-    void SetupMp4BoxTab();
-    void SetupEbmlTab();
+    void SetupContainerStructureTab();
     void RebuildFrameTable();
     void RebuildGopTable();
     void RebuildAudioFrameTable();
@@ -232,6 +232,7 @@ private:
     void OnExportTimelineCsv();
     void OnExportHistogramCsv();
     void OnExportMp4Box();
+    void OnExportContainerStructure();
     void OnFrameFilterChanged();
     
     // 更新图表
@@ -311,34 +312,34 @@ private:
     QWidget* histogram_tab_;
     QChartView* histogram_chart_;
     
-    // MP4 Box 分析标签页
-    QWidget* mp4_box_tab_;
-    QTreeWidget* box_tree_widget_;
-    QTabWidget* box_detail_tabs_;
+    // 统一文件结构分析标签页
+    QWidget* container_tab_;
+    QLabel* container_title_label_;       // 动态标题
+    QLabel* container_summary_label_;
+    QTreeWidget* container_tree_;         // 通用结构树
+    QStackedWidget* container_detail_stack_;  // 右侧详情区
+    // Page 0: 通用信息
+    QTableWidget* container_stream_table_;
+    QTableWidget* container_metadata_table_;
+    // Page 1: MP4 专用
+    QTabWidget* mp4_detail_tabs_;
     QTableWidget* stts_table_;
     QTableWidget* stco_table_;
     QTableWidget* stsc_table_;
     QTableWidget* stsz_table_;
     QTableWidget* co64_table_;
     QTableWidget* stss_table_;
-    QLabel* mp4_box_summary_label_;
-    model::Mp4BoxAnalysisResult current_box_result_;
-    
-    // MKV/WebM (EBML) 结构分析标签页
-    QWidget* ebml_tab_;
-    QTreeWidget* ebml_tree_;
-    QLabel* ebml_summary_label_;
-    model::EbmlAnalysisResult current_ebml_result_;
-    QPushButton* export_ebml_button_;
+    // Page 2: EBML 专用
     QTabWidget* ebml_detail_tabs_;
     QTableWidget* ebml_track_table_;
     QTableWidget* ebml_cue_table_;
     QTableWidget* ebml_block_table_;
+    QPushButton* export_container_button_;
+    model::ContainerStructureResult current_container_result_;
     
     // 控制按钮
     QPushButton* export_button_;          // 流统计导出 (HTML/JSON/TXT)
     QPushButton* export_histogram_button_;
-    QPushButton* export_mp4_box_button_;
     
     // 图表数据系列
     QChart* bitrate_chart_object_;

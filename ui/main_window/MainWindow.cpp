@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "core/model/EbmlInfo.h"
+#include "core/model/ContainerStructureInfo.h"
 #include "core/model/AudioVisualizationFrame.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -247,7 +248,7 @@ void MainWindow::SetupMenuBar() {
     
     // 文件菜单
     QMenu* file_menu = menu_bar_->addMenu(tr("文件"));
-    file_menu->addAction(tr("打开文件"), QKeySequence::Open, this, &MainWindow::OnOpenFile);
+    file_menu->addAction(tr("打开本地文件"), QKeySequence::Open, this, &MainWindow::OnOpenFile);
     file_menu->addAction(tr("打开URL"), QKeySequence("Ctrl+U"), this, &MainWindow::OnOpenURL);
     export_frames_action_ = file_menu->addAction(tr("导出视频帧..."), this, &MainWindow::OnExportVideoFrames);
     file_menu->addSeparator();
@@ -367,9 +368,9 @@ void MainWindow::SetupConnections() {
     connect(player_, &player::MediaPlayer::TimelineEventReady,
             analysis_panel_, &ui::AnalysisPanel::AppendTimelineEvent);
     
-    // MP4 Box 分析信号
-    connect(player_, &player::MediaPlayer::Mp4BoxAnalysisReady,
-            analysis_panel_, &ui::AnalysisPanel::OnMp4BoxAnalysisReady);
+    // 统一容器结构分析信号
+    connect(player_, &player::MediaPlayer::ContainerStructureReady,
+            analysis_panel_, &ui::AnalysisPanel::OnContainerStructureReady);
     
     // 面板开关信号 -> MediaPlayer 控制
     connect(analysis_panel_, &ui::AnalysisPanel::AnalysisFeatureToggled,
@@ -409,8 +410,8 @@ void MainWindow::SetupConnections() {
                 case AF::AudioLoudness:
                     // 音频响度复用 AudioVisualization 数据流，无需单独控制
                     break;
-                case AF::Mp4Box:
-                    player_->SetMp4BoxAnalysisEnabled(enabled);
+                case AF::ContainerStructure:
+                    player_->SetContainerStructureEnabled(enabled);
                     break;
                 default:
                     break;
@@ -544,14 +545,6 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
         } else {
             mediainfo_text_->setPlainText(tr("(无法解析媒体信息)"));
         }
-    }
-
-    // EBML/MKV/WebM 结构分析
-    {
-        analyzer::EbmlAnalyzer ea;
-        model::EbmlAnalysisResult er;
-        ea.Analyze(source, er);
-        analysis_panel_->OnEbmlAnalysisReady(er);
     }
 
     // 同步已启用的分析功能到播放器 (复选框默认勾选但未触发信号)

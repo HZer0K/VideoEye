@@ -154,6 +154,47 @@ private:
 };
 ```
 
+#### ContainerStructureAnalyzer - 容器结构分析
+
+**职责**: 统一解析多种视频容器格式的文件结构
+
+**设计模式**: 策略模式 + 统一调度
+
+```
+ContainerStructureAnalyzer
+│
+├─ FormatDetector (魔数检测 + 扩展名回退)
+│
+├─ MP4/MOV  → Mp4BoxAnalyzer (Bento4)
+├─ MKV/WebM → EbmlAnalyzer
+├─ AVI      → AviStructureAnalyzer (RIFF 递归)
+├─ FLV      → FlvStructureAnalyzer (Tag 序列)
+├─ MPEG-TS  → TsStructureAnalyzer (PAT/PMT)
+├─ ASF/WMV  → AsfStructureAnalyzer (Object 遍历)
+├─ OGG      → OggStructureAnalyzer (Page 解析)
+└─ 其他     → FFmpeg AVFormatContext (通用 metadata)
+```
+
+**统一数据流**:
+
+```
+MediaPlayer::Open()
+  → ContainerStructureAnalyzer::Analyze(path)
+    → FormatDetector::Detect() → ContainerFormat
+    → 分发到对应解析器
+    → 统一映射为 ContainerStructureResult
+    → emit ContainerStructureReady(result)
+    → AnalysisPanel::OnContainerStructureReady()
+      → 动态标题 ("文件结构 - MP4" / "文件结构 - AVI")
+      → 通用结构树 + 流信息 + 元数据
+      → MP4/MKV 额外显示详细表格 (QStackedWidget)
+```
+
+**统一模型** (`ContainerStructureInfo.h`):
+- `ContainerElement` — 通用树节点，所有格式共用
+- `ContainerStreamInfo` — 流信息
+- `ContainerStructureResult` — 统一结果，保留 MP4/EBML 详细结果
+
 ### 3. 数据模型 (core/model)
 
 #### 设计理念

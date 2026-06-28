@@ -54,6 +54,14 @@ third_party/FFmpeg/libavutil/*.so*
 third_party/FFmpeg/libswscale/*.so*
 third_party/FFmpeg/libswresample/*.so*
 
+# Bento4 构建产物
+third_party/Bento4/Build/Makefiles/build/
+third_party/Bento4/**/*.o
+
+# ZenLib / MediaInfoLib 构建产物
+third_party/ZenLib/Project/CMake/CMakeFiles/
+third_party/MediaInfoLib/Project/CMake/CMakeFiles/
+
 # 测试覆盖率
 *.gcda
 *.gcno

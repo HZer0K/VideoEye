@@ -483,6 +483,7 @@ MediaPlayer::MediaPlayer(QObject* parent)
     
     // 注册自定义元类型
     qRegisterMetaType<model::Mp4BoxAnalysisResult>("model::Mp4BoxAnalysisResult");
+        qRegisterMetaType<model::ContainerStructureResult>("model::ContainerStructureResult");
 }
 
 void MediaPlayer::EmitAnalysisEvent(const QString& severity, const QString& type, int stream_index,
@@ -1200,6 +1201,14 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
         model::Mp4BoxAnalysisResult box_result;
         if (mp4_box_analyzer_.AnalyzeFile(url, box_result)) {
             emit Mp4BoxAnalysisReady(box_result);
+        }
+    }
+
+    // 触发统一容器结构分析
+    if (container_structure_enabled_) {
+        model::ContainerStructureResult cs_result;
+        if (container_analyzer_.Analyze(url, cs_result)) {
+            emit ContainerStructureReady(cs_result);
         }
     }
     

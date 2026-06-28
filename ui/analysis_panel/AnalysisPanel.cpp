@@ -74,6 +74,7 @@ AnalysisPanel::AnalysisPanel(QWidget* parent)
     feature_enabled_[AnalysisFeature::Timeline] = false;
     feature_enabled_[AnalysisFeature::AudioLoudness] = true;
     feature_enabled_[AnalysisFeature::Histogram] = false;
+    feature_enabled_[AnalysisFeature::ContainerStructure] = true;
     
     SetupUI();
     
@@ -107,8 +108,7 @@ void AnalysisPanel::SetupUI() {
     SetupTimelineTab();
     SetupAudioLoudnessTab();
     SetupHistogramTab();
-    SetupMp4BoxTab();
-    SetupEbmlTab();
+    SetupContainerStructureTab();
     
     main_layout->addWidget(tab_widget_);
     
@@ -843,196 +843,146 @@ void AnalysisPanel::SetupHistogramTab() {
     connect(export_histogram_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportHistogramCsv);
 }
 
-void AnalysisPanel::SetupMp4BoxTab() {
-    mp4_box_tab_ = new QWidget();
-    QVBoxLayout* layout = new QVBoxLayout(mp4_box_tab_);
-    layout->setContentsMargins(4, 0, 4, 4);
-    layout->setSpacing(2);
-    
-    // 概要标签 (兼作标题，节省空间)
-    mp4_box_summary_label_ = new QLabel(tr("未加载 MP4 文件"), mp4_box_tab_);
-    mp4_box_summary_label_->setStyleSheet("font-size: 12px; color: #666; padding: 2px 4px;");
-    mp4_box_summary_label_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    layout->addWidget(mp4_box_summary_label_);
-    
-    // 分割布局: 左侧 Box 树 + 右侧详情
-    QSplitter* splitter = new QSplitter(Qt::Horizontal, mp4_box_tab_);
-    
-    // 左侧: Box 树
-    QGroupBox* tree_group = new QGroupBox(tr("Box 树结构"), splitter);
-    QVBoxLayout* tree_layout = new QVBoxLayout(tree_group);
-    box_tree_widget_ = new QTreeWidget(tree_group);
-    box_tree_widget_->setHeaderLabels({tr("Box 类型"), tr("大小 (字节)"), tr("偏移"), tr("关键属性")});
-    box_tree_widget_->setColumnWidth(0, 130);
-    box_tree_widget_->setColumnWidth(1, 100);
-    box_tree_widget_->setColumnWidth(2, 80);
-    box_tree_widget_->columnAt(3);
-    box_tree_widget_->header()->setStretchLastSection(true);
-    box_tree_widget_->header()->setMinimumSectionSize(60);
-    box_tree_widget_->setAlternatingRowColors(true);
-    box_tree_widget_->setAnimated(true);
-    box_tree_widget_->setIndentation(20);
-    box_tree_widget_->setStyleSheet(
-        "QTreeWidget {"
-        "  show-decoration-selected: 1;"
-        "}"
-        "QTreeWidget::item {"
-        "  padding: 2px 4px;"
-        "  border-bottom: 1px solid #e8e8e8;"
-        "}"
-        "QTreeWidget::item:selected {"
-        "  color: #000;"
-        "  background-color: #b8d4f0;"
-        "}"
-    );
-    box_tree_widget_->setMinimumWidth(360);
-    tree_layout->addWidget(box_tree_widget_);
-    splitter->addWidget(tree_group);
-    
-    // 右侧: 详情选项卡
-    box_detail_tabs_ = new QTabWidget(splitter);
-    
-    // stts 表
-    QWidget* stts_widget = new QWidget();
-    QVBoxLayout* stts_layout = new QVBoxLayout(stts_widget);
-    stts_table_ = new QTableWidget(0, 3, stts_widget);
-    stts_table_->setHorizontalHeaderLabels({tr("索引"), tr("样本计数"), tr("样本增量 (timescale)")});
-    stts_table_->horizontalHeader()->setStretchLastSection(true);
-    stts_table_->horizontalHeader()->setMinimumSectionSize(60);
-    stts_table_->setAlternatingRowColors(true);
-    stts_table_->setMinimumWidth(250);
-    stts_table_->setMinimumHeight(100);
-    stts_layout->addWidget(stts_table_);
-    box_detail_tabs_->addTab(stts_widget, tr("stts (Time-to-Sample)"));
-    
-    // stco 表
-    QWidget* stco_widget = new QWidget();
-    QVBoxLayout* stco_layout = new QVBoxLayout(stco_widget);
-    stco_table_ = new QTableWidget(0, 2, stco_widget);
-    stco_table_->setHorizontalHeaderLabels({tr("索引"), tr("Chunk 偏移")});
-    stco_table_->horizontalHeader()->setStretchLastSection(true);
-    stco_table_->horizontalHeader()->setMinimumSectionSize(60);
-    stco_table_->setAlternatingRowColors(true);
-    stco_table_->setMinimumWidth(200);
-    stco_table_->setMinimumHeight(100);
-    stco_layout->addWidget(stco_table_);
-    box_detail_tabs_->addTab(stco_widget, tr("stco (Chunk Offset)"));
-    
-    // stsc 表
-    QWidget* stsc_widget = new QWidget();
-    QVBoxLayout* stsc_layout = new QVBoxLayout(stsc_widget);
-    stsc_table_ = new QTableWidget(0, 4, stsc_widget);
-    stsc_table_->setHorizontalHeaderLabels({tr("索引"), tr("首个 Chunk"), tr("每 Chunk 样本数"), tr("样本描述索引")});
-    stsc_table_->horizontalHeader()->setStretchLastSection(true);
-    stsc_table_->horizontalHeader()->setMinimumSectionSize(60);
-    stsc_table_->setAlternatingRowColors(true);
-    stsc_table_->setMinimumWidth(300);
-    stsc_table_->setMinimumHeight(100);
-    stsc_layout->addWidget(stsc_table_);
-    box_detail_tabs_->addTab(stsc_widget, tr("stsc (Sample-to-Chunk)"));
-    
-    // stsz 表
-    QWidget* stsz_widget = new QWidget();
-    QVBoxLayout* stsz_layout = new QVBoxLayout(stsz_widget);
-    stsz_table_ = new QTableWidget(0, 3, stsz_widget);
-    stsz_table_->setHorizontalHeaderLabels({tr("索引"), tr("样本大小 (字节)"), tr("备注")});
-    stsz_table_->horizontalHeader()->setStretchLastSection(true);
-    stsz_table_->horizontalHeader()->setMinimumSectionSize(60);
-    stsz_table_->setAlternatingRowColors(true);
-    stsz_table_->setMinimumWidth(250);
-    stsz_table_->setMinimumHeight(100);
-    stsz_layout->addWidget(stsz_table_);
-    box_detail_tabs_->addTab(stsz_widget, tr("stsz (Sample Size)"));
-    
-    // stss 表
-    QWidget* stss_widget = new QWidget();
-    QVBoxLayout* stss_layout = new QVBoxLayout(stss_widget);
-    stss_table_ = new QTableWidget(0, 2, stss_widget);
-    stss_table_->setHorizontalHeaderLabels({tr("索引"), tr("关键帧样本号")});
-    stss_table_->horizontalHeader()->setStretchLastSection(true);
-    stss_table_->horizontalHeader()->setMinimumSectionSize(60);
-    stss_table_->setAlternatingRowColors(true);
-    stss_table_->setMinimumWidth(200);
-    stss_table_->setMinimumHeight(100);
-    stss_layout->addWidget(stss_table_);
-    box_detail_tabs_->addTab(stss_widget, tr("stss (Sync Sample)"));
-    
-    // co64 表
-    QWidget* co64_widget = new QWidget();
-    QVBoxLayout* co64_layout = new QVBoxLayout(co64_widget);
-    co64_table_ = new QTableWidget(0, 2, co64_widget);
-    co64_table_->setHorizontalHeaderLabels({tr("索引"), tr("Chunk 偏移 (64位)")});
-    co64_table_->horizontalHeader()->setStretchLastSection(true);
-    co64_table_->horizontalHeader()->setMinimumSectionSize(60);
-    co64_table_->setAlternatingRowColors(true);
-    co64_table_->setMinimumWidth(200);
-    co64_table_->setMinimumHeight(100);
-    co64_layout->addWidget(co64_table_);
-    box_detail_tabs_->addTab(co64_widget, tr("co64 (64-bit Chunk)"));
-    
-    splitter->addWidget(box_detail_tabs_);
-    splitter->setStretchFactor(0, 1);
-    splitter->setStretchFactor(1, 3);
-    splitter->setMinimumWidth(540);
-    splitter->setChildrenCollapsible(false);
-    
-    layout->addWidget(splitter);
-    
-    // 导出按钮
-    export_mp4_box_button_ = new QPushButton(tr("导出 Box 数据"), mp4_box_tab_);
-    export_mp4_box_button_->setToolTip(tr("将 Box 树结构和表格数据导出为文本文件"));
-    layout->addWidget(export_mp4_box_button_, 0, Qt::AlignRight);
-    
-    AddTabWithScroll(mp4_box_tab_, tr("MP4 Box"));
-    
-    connect(export_mp4_box_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportMp4Box);
-}
-
-void AnalysisPanel::SetupEbmlTab() {
-    ebml_tab_ = new QWidget();
-    QVBoxLayout* layout = new QVBoxLayout(ebml_tab_);
+void AnalysisPanel::SetupContainerStructureTab() {
+    container_tab_ = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(container_tab_);
     layout->setContentsMargins(4, 0, 4, 4);
     layout->setSpacing(2);
 
-    ebml_summary_label_ = new QLabel(tr("未加载 MKV/WebM 文件"), ebml_tab_);
-    ebml_summary_label_->setStyleSheet("font-size: 12px; color: #666; padding: 2px 4px;");
-    ebml_summary_label_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    layout->addWidget(ebml_summary_label_);
+    // 动态标题
+    container_title_label_ = new QLabel(tr("未加载文件"), container_tab_);
+    container_title_label_->setStyleSheet("font-size: 13px; font-weight: bold; color: #333; padding: 2px 4px;");
+    container_title_label_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    layout->addWidget(container_title_label_);
 
-    // 左右分割: 左侧元素树, 右侧详情表
-    QSplitter* splitter = new QSplitter(Qt::Horizontal, ebml_tab_);
+    // 概要标签
+    container_summary_label_ = new QLabel(tr("打开媒体文件后将自动分析容器结构"), container_tab_);
+    container_summary_label_->setStyleSheet("font-size: 12px; color: #666; padding: 2px 4px;");
+    container_summary_label_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    layout->addWidget(container_summary_label_);
 
-    // --- 左侧: 元素树 ---
+    // 分割布局: 左侧结构树 + 右侧详情
+    QSplitter* splitter = new QSplitter(Qt::Horizontal, container_tab_);
+
+    // --- 左侧: 通用结构树 ---
     QWidget* leftPanel = new QWidget(splitter);
     QVBoxLayout* leftLayout = new QVBoxLayout(leftPanel);
     leftLayout->setContentsMargins(0, 0, 0, 0);
-    QLabel* treeLabel = new QLabel(tr("EBML 元素树:"), leftPanel);
+    QLabel* treeLabel = new QLabel(tr("容器结构树:"), leftPanel);
     treeLabel->setStyleSheet("font-weight: bold; font-size: 11px; padding: 2px;");
     leftLayout->addWidget(treeLabel);
-    ebml_tree_ = new QTreeWidget(leftPanel);
-    ebml_tree_->setHeaderLabels({tr("元素名称"), tr("大小"), tr("偏移"), tr("值")});
-    ebml_tree_->setColumnWidth(0, 160);
-    ebml_tree_->setColumnWidth(1, 70);
-    ebml_tree_->setColumnWidth(2, 70);
-    ebml_tree_->header()->setStretchLastSection(true);
-    ebml_tree_->setAlternatingRowColors(true);
-    ebml_tree_->setAnimated(true);
-    ebml_tree_->setIndentation(16);
-    ebml_tree_->setStyleSheet(
+    container_tree_ = new QTreeWidget(leftPanel);
+    container_tree_->setHeaderLabels({tr("名称"), tr("类型"), tr("大小"), tr("偏移"), tr("值/属性")});
+    container_tree_->setColumnWidth(0, 160);
+    container_tree_->setColumnWidth(1, 70);
+    container_tree_->setColumnWidth(2, 80);
+    container_tree_->setColumnWidth(3, 70);
+    container_tree_->header()->setStretchLastSection(true);
+    container_tree_->setAlternatingRowColors(true);
+    container_tree_->setAnimated(true);
+    container_tree_->setIndentation(16);
+    container_tree_->setStyleSheet(
         "QTreeWidget::item { padding: 1px 3px; font-size: 11px; }"
         "QTreeWidget::item:selected { color: #000; background-color: #b8d4f0; }"
     );
-    leftLayout->addWidget(ebml_tree_);
+    leftLayout->addWidget(container_tree_);
     splitter->addWidget(leftPanel);
 
-    // --- 右侧: 详情表页 (轨道/Cues/Block) ---
+    // --- 右侧: 详情区 (QStackedWidget) ---
     QWidget* rightPanel = new QWidget(splitter);
     QVBoxLayout* rightLayout = new QVBoxLayout(rightPanel);
     rightLayout->setContentsMargins(0, 0, 0, 0);
-    ebml_detail_tabs_ = new QTabWidget(rightPanel);
-    ebml_detail_tabs_->setStyleSheet("QTabWidget::pane { border: 1px solid #ccc; }");
+    container_detail_stack_ = new QStackedWidget(rightPanel);
 
-    // 轨道表
+    // ===== Page 0: 通用信息 (流信息 + 元数据) =====
+    QWidget* generic_page = new QWidget();
+    QVBoxLayout* generic_layout = new QVBoxLayout(generic_page);
+    generic_layout->setContentsMargins(0, 0, 0, 0);
+
+    QLabel* stream_label = new QLabel(tr("流信息:"), generic_page);
+    stream_label->setStyleSheet("font-weight: bold; font-size: 11px; padding: 2px;");
+    generic_layout->addWidget(stream_label);
+    container_stream_table_ = new QTableWidget(0, 4, generic_page);
+    container_stream_table_->setHorizontalHeaderLabels({tr("#"), tr("类型"), tr("编码"), tr("详情")});
+    container_stream_table_->horizontalHeader()->setStretchLastSection(true);
+    container_stream_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    container_stream_table_->setAlternatingRowColors(true);
+    generic_layout->addWidget(container_stream_table_);
+
+    QLabel* meta_label = new QLabel(tr("元数据:"), generic_page);
+    meta_label->setStyleSheet("font-weight: bold; font-size: 11px; padding: 2px;");
+    generic_layout->addWidget(meta_label);
+    container_metadata_table_ = new QTableWidget(0, 2, generic_page);
+    container_metadata_table_->setHorizontalHeaderLabels({tr("键"), tr("值")});
+    container_metadata_table_->horizontalHeader()->setStretchLastSection(true);
+    container_metadata_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    container_metadata_table_->setAlternatingRowColors(true);
+    generic_layout->addWidget(container_metadata_table_);
+
+    container_detail_stack_->addWidget(generic_page);
+
+    // ===== Page 1: MP4 专用详情表 =====
+    mp4_detail_tabs_ = new QTabWidget();
+
+    QWidget* stts_w = new QWidget();
+    QVBoxLayout* stts_l = new QVBoxLayout(stts_w);
+    stts_table_ = new QTableWidget(0, 3, stts_w);
+    stts_table_->setHorizontalHeaderLabels({tr("索引"), tr("样本计数"), tr("样本增量")});
+    stts_table_->horizontalHeader()->setStretchLastSection(true);
+    stts_table_->setAlternatingRowColors(true);
+    stts_l->addWidget(stts_table_);
+    mp4_detail_tabs_->addTab(stts_w, "stts");
+
+    QWidget* stco_w = new QWidget();
+    QVBoxLayout* stco_l = new QVBoxLayout(stco_w);
+    stco_table_ = new QTableWidget(0, 2, stco_w);
+    stco_table_->setHorizontalHeaderLabels({tr("索引"), tr("Chunk 偏移")});
+    stco_table_->horizontalHeader()->setStretchLastSection(true);
+    stco_table_->setAlternatingRowColors(true);
+    stco_l->addWidget(stco_table_);
+    mp4_detail_tabs_->addTab(stco_w, "stco");
+
+    QWidget* stsc_w = new QWidget();
+    QVBoxLayout* stsc_l = new QVBoxLayout(stsc_w);
+    stsc_table_ = new QTableWidget(0, 4, stsc_w);
+    stsc_table_->setHorizontalHeaderLabels({tr("索引"), tr("首个Chunk"), tr("样本/Chunk"), tr("描述索引")});
+    stsc_table_->horizontalHeader()->setStretchLastSection(true);
+    stsc_table_->setAlternatingRowColors(true);
+    stsc_l->addWidget(stsc_table_);
+    mp4_detail_tabs_->addTab(stsc_w, "stsc");
+
+    QWidget* stsz_w = new QWidget();
+    QVBoxLayout* stsz_l = new QVBoxLayout(stsz_w);
+    stsz_table_ = new QTableWidget(0, 3, stsz_w);
+    stsz_table_->setHorizontalHeaderLabels({tr("索引"), tr("样本大小"), tr("备注")});
+    stsz_table_->horizontalHeader()->setStretchLastSection(true);
+    stsz_table_->setAlternatingRowColors(true);
+    stsz_l->addWidget(stsz_table_);
+    mp4_detail_tabs_->addTab(stsz_w, "stsz");
+
+    QWidget* stss_w = new QWidget();
+    QVBoxLayout* stss_l = new QVBoxLayout(stss_w);
+    stss_table_ = new QTableWidget(0, 2, stss_w);
+    stss_table_->setHorizontalHeaderLabels({tr("索引"), tr("关键帧样本号")});
+    stss_table_->horizontalHeader()->setStretchLastSection(true);
+    stss_table_->setAlternatingRowColors(true);
+    stss_l->addWidget(stss_table_);
+    mp4_detail_tabs_->addTab(stss_w, "stss");
+
+    QWidget* co64_w = new QWidget();
+    QVBoxLayout* co64_l = new QVBoxLayout(co64_w);
+    co64_table_ = new QTableWidget(0, 2, co64_w);
+    co64_table_->setHorizontalHeaderLabels({tr("索引"), tr("Chunk偏移(64位)")});
+    co64_table_->horizontalHeader()->setStretchLastSection(true);
+    co64_table_->setAlternatingRowColors(true);
+    co64_l->addWidget(co64_table_);
+    mp4_detail_tabs_->addTab(co64_w, "co64");
+
+    container_detail_stack_->addWidget(mp4_detail_tabs_);
+
+    // ===== Page 2: EBML 专用详情表 =====
+    ebml_detail_tabs_ = new QTabWidget();
+
     ebml_track_table_ = new QTableWidget(ebml_detail_tabs_);
     ebml_track_table_->setColumnCount(10);
     ebml_track_table_->setHorizontalHeaderLabels({
@@ -1043,334 +993,46 @@ void AnalysisPanel::SetupEbmlTab() {
     ebml_track_table_->horizontalHeader()->setStretchLastSection(true);
     ebml_track_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     ebml_track_table_->setAlternatingRowColors(true);
-    ebml_detail_tabs_->addTab(ebml_track_table_, tr("轨道 (%1)").arg(0));
+    ebml_detail_tabs_->addTab(ebml_track_table_, tr("轨道"));
 
-    // Cues 索引表
     ebml_cue_table_ = new QTableWidget(ebml_detail_tabs_);
     ebml_cue_table_->setColumnCount(4);
-    ebml_cue_table_->setHorizontalHeaderLabels({
-        tr("#"), tr("时间"), tr("轨道"), tr("Cluster 偏移")
-    });
+    ebml_cue_table_->setHorizontalHeaderLabels({tr("#"), tr("时间"), tr("轨道"), tr("Cluster偏移")});
     ebml_cue_table_->horizontalHeader()->setStretchLastSection(true);
     ebml_cue_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     ebml_cue_table_->setAlternatingRowColors(true);
-    ebml_detail_tabs_->addTab(ebml_cue_table_, tr("Cues (%1)").arg(0));
+    ebml_detail_tabs_->addTab(ebml_cue_table_, tr("Cues"));
 
-    // Block 摘要表
     ebml_block_table_ = new QTableWidget(ebml_detail_tabs_);
     ebml_block_table_->setColumnCount(5);
-    ebml_block_table_->setHorizontalHeaderLabels({
-        tr("#"), tr("轨道"), tr("Timecode"), tr("关键帧"), tr("大小")
-    });
+    ebml_block_table_->setHorizontalHeaderLabels({tr("#"), tr("轨道"), tr("Timecode"), tr("关键帧"), tr("大小")});
     ebml_block_table_->horizontalHeader()->setStretchLastSection(true);
     ebml_block_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     ebml_block_table_->setAlternatingRowColors(true);
-    ebml_detail_tabs_->addTab(ebml_block_table_, tr("Block (%1)").arg(0));
+    ebml_detail_tabs_->addTab(ebml_block_table_, tr("Block"));
 
-    rightLayout->addWidget(ebml_detail_tabs_);
+    container_detail_stack_->addWidget(ebml_detail_tabs_);
+
+    rightLayout->addWidget(container_detail_stack_);
     splitter->addWidget(rightPanel);
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
+    splitter->setMinimumWidth(540);
+    splitter->setChildrenCollapsible(false);
+
     layout->addWidget(splitter, 1);
 
-    // 导出
-    export_ebml_button_ = new QPushButton(tr("导出 EBML 结构"), ebml_tab_);
-    export_ebml_button_->setToolTip(tr("将 EBML 元素树结构导出为文本文件"));
-    layout->addWidget(export_ebml_button_, 0, Qt::AlignRight);
+    // 导出按钮
+    export_container_button_ = new QPushButton(tr("导出结构数据"), container_tab_);
+    export_container_button_->setToolTip(tr("将容器结构树和表格数据导出为文本文件"));
+    layout->addWidget(export_container_button_, 0, Qt::AlignRight);
 
-    AddTabWithScroll(ebml_tab_, tr("MKV/WebM"));
+    AddTabWithScroll(container_tab_, tr("文件结构"));
 
-    connect(export_ebml_button_, &QPushButton::clicked, this, [this]() {
-        if (!current_ebml_result_.valid) {
-            QMessageBox::information(this, tr("提示"), tr("当前没有可导出的 EBML 数据。"));
-            return;
-        }
-        const QString filename = QFileDialog::getSaveFileName(
-            this, tr("导出 EBML 结构"),
-            QString("videoeye_ebml_%1.txt")
-                .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
-            tr("文本文件 (*.txt);;所有文件 (*)"));
-        if (filename.isEmpty()) return;
-        QFile file(filename);
-        if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) return;
-        QTextStream out(&file);
-        out.setEncoding(QStringConverter::Utf8);
-        std::function<void(const QVector<model::EbmlElementNode>&, int)> printTree;
-        printTree = [&](const QVector<model::EbmlElementNode>& nodes, int d) {
-            for (const auto& n : nodes) {
-                QString indent(d * 2, ' ');
-                out << indent << n.name << " [" << n.id_hex
-                    << "]  size=" << n.size
-                    << "  offset=0x" << Qt::hex << n.startOffset() << Qt::dec;
-                if (!n.value.isEmpty())
-                    out << "  value=" << n.value;
-                out << "\n";
-                printTree(n.children, d + 1);
-            }
-        };
-        out << "DocType: " << current_ebml_result_.doc_type
-            << " v" << current_ebml_result_.doc_type_version << "\n\n";
-        printTree(current_ebml_result_.element_tree, 0);
-        QMessageBox::information(this, tr("导出成功"),
-                                 tr("已导出到:\n%1").arg(filename));
-    });
+    connect(export_container_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportContainerStructure);
 }
 
-void AnalysisPanel::OnEbmlAnalysisReady(const model::EbmlAnalysisResult& result) {
-    if (!feature_enabled_.value(AnalysisFeature::Master, true)) return;
-    current_ebml_result_ = result;
-
-    if (result.valid) {
-        int total = 0;
-        std::function<int(const QVector<model::EbmlElementNode>&)> count;
-        count = [&](const QVector<model::EbmlElementNode>& nodes) -> int {
-            int c = nodes.size();
-            for (const auto& n : nodes) c += count(n.children);
-            return c;
-        };
-        total = count(result.element_tree);
-        ebml_summary_label_->setText(
-            tr("%1 | %2 个元素").arg(result.doc_type).arg(total));
-        ebml_summary_label_->setStyleSheet(
-            "font-size: 12px; color: #333; font-weight: bold; padding: 2px 4px;");
-    } else {
-        ebml_summary_label_->setText(tr("未检测到 EBML 格式"));
-        ebml_summary_label_->setStyleSheet(
-            "font-size: 12px; color: #666; padding: 2px 4px;");
-    }
-
-    ebml_tree_->clear();
-
-    if (!result.valid) return;
-
-    static const QColor kDepthColors[] = {
-        QColor("#f0f4ff"), QColor("#f5f5f5"), QColor("#fffff0"),
-        QColor("#f0fff0"), QColor("#fff0f5"), QColor("#f0ffff"),
-        QColor("#faf5f0"),
-    };
-
-    std::function<void(QTreeWidgetItem*, const QVector<model::EbmlElementNode>&)> addNodes;
-    addNodes = [&](QTreeWidgetItem* parent, const QVector<model::EbmlElementNode>& nodes) {
-        for (const auto& n : nodes) {
-            auto* item = new QTreeWidgetItem();
-            item->setText(0, n.name);
-            item->setText(1, QString::number(n.size));
-            item->setText(2, QString("0x%1").arg(n.startOffset(), 0, 16));
-            item->setText(3, n.value);
-
-            int d = n.depth;
-            QColor bg = kDepthColors[d % 7];
-            for (int c = 0; c < 4; ++c) item->setBackground(c, bg);
-
-            if (parent) parent->addChild(item);
-            else ebml_tree_->addTopLevelItem(item);
-            addNodes(item, n.children);
-        }
-    };
-    for (const auto& n : result.element_tree) {
-        auto* top = new QTreeWidgetItem();
-        top->setText(0, n.name);
-        top->setText(1, QString::number(n.size));
-        top->setText(2, QString("0x%1").arg(n.startOffset(), 0, 16));
-        top->setText(3, n.value);
-        ebml_tree_->addTopLevelItem(top);
-        addNodes(top, n.children);
-    }
-    ebml_tree_->expandAll();
-
-    // --- 填充右侧详情表 ---
-    // 轨道表
-    {
-        ebml_track_table_->setRowCount(result.tracks.size());
-        for (int i = 0; i < result.tracks.size(); ++i) {
-            const auto& t = result.tracks[i];
-            auto set = [&](int col, const QString& v) {
-                ebml_track_table_->setItem(i, col, new QTableWidgetItem(v));
-            };
-            set(0, QString::number(t.track_number));
-            set(1, t.track_type_name);
-            set(2, t.codec_name);
-            set(3, t.codec_id);
-            if (t.track_type == 1) {
-                set(4, QString("%1x%2").arg(t.pixel_width).arg(t.pixel_height));
-                set(5, "-");
-                set(7, t.frame_rate > 0 ? QString("%1 fps").arg(t.frame_rate, 0, 'f', 2) : "-");
-            } else if (t.track_type == 2) {
-                set(4, t.sampling_frequency > 0 ? QString("%1 Hz").arg(t.sampling_frequency, 0, 'f', 0) : "-");
-                set(5, t.channels > 0 ? QString::number(t.channels) : "-");
-                set(7, "-");
-            } else {
-                set(4, "-");
-                set(5, "-");
-                set(7, "-");
-            }
-            set(6, t.language);
-            set(8, t.default_track ? "✓" : "");
-            set(9, t.forced ? "✓" : "");
-        }
-        ebml_detail_tabs_->setTabText(0, tr("轨道 (%1)").arg(result.tracks.size()));
-    }
-
-    // Cues 表
-    {
-        ebml_cue_table_->setRowCount(result.cues.size());
-        for (int i = 0; i < result.cues.size(); ++i) {
-            const auto& c = result.cues[i];
-            auto set = [&](int col, const QString& v) {
-                ebml_cue_table_->setItem(i, col, new QTableWidgetItem(v));
-            };
-            set(0, QString::number(i + 1));
-            set(1, QString::number(c.time));
-            set(2, QString::number(c.track_number));
-            set(3, QString("0x%1").arg(c.cluster_position, 0, 16));
-        }
-        ebml_detail_tabs_->setTabText(1, tr("Cues (%1)").arg(result.cues.size()));
-    }
-
-    // Block 摘要表 (最多 500 行)
-    {
-        int n = qMin(result.blocks.size(), 500);
-        ebml_block_table_->setRowCount(n);
-        for (int i = 0; i < n; ++i) {
-            const auto& b = result.blocks[i];
-            auto set = [&](int col, const QString& v) {
-                ebml_block_table_->setItem(i, col, new QTableWidgetItem(v));
-            };
-            set(0, QString::number(i + 1));
-            set(1, QString::number(b.track_number));
-            set(2, QString::number(b.timecode));
-            set(3, b.keyframe ? tr("KEY") : "");
-            set(4, QString::number(b.data_size));
-        }
-        ebml_detail_tabs_->setTabText(2, tr("Block (%1/%2)")
-            .arg(n).arg(result.blocks.size()));
-    }
-}
-
-// 前向声明辅助函数
-static void PopulateMp4BoxTablesImpl(const model::Mp4BoxAnalysisResult& result,
-                                       QTableWidget* stts_table, QTableWidget* stco_table,
-                                       QTableWidget* stsc_table, QTableWidget* stsz_table,
-                                       QTableWidget* co64_table, QTableWidget* stss_table);
-
-void AnalysisPanel::OnMp4BoxAnalysisReady(const model::Mp4BoxAnalysisResult& result) {
-    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
-        !feature_enabled_.value(AnalysisFeature::Mp4Box, true)) return;
-    
-    current_box_result_ = result;
-    
-    if (!result.valid) {
-        mp4_box_summary_label_->setText(tr("MP4 Box 分析失败: %1").arg(result.error_message));
-        return;
-    }
-    
-    // 更新概要
-    int box_count = 0;
-    auto countBoxes = [&](const auto& nodes, auto&& self_ref) -> void {
-        for (const auto& node : nodes) {
-            box_count++;
-            self_ref(node.children, self_ref);
-        }
-    };
-    countBoxes(result.box_tree, countBoxes);
-    
-    mp4_box_summary_label_->setText(
-        tr("MP4 Box 分析完成 | 顶级 Box: %1 个 | 总 Box: %2 个 | Track 表: %3 个")
-        .arg(result.box_tree.size())
-        .arg(box_count)
-        .arg(result.track_tables.size()));
-    
-    // 填充 Box 树
-    box_tree_widget_->clear();
-    
-    // 深度对应的背景色 (浅色梯度，层次清晰)
-    static const QColor kDepthColors[] = {
-        QColor("#f0f4ff"),  // depth 0 - 淡蓝
-        QColor("#f5f5f5"),  // depth 1 - 浅灰
-        QColor("#fffff0"),  // depth 2 - 淡黄
-        QColor("#f0fff0"),  // depth 3 - 淡绿
-        QColor("#fff0f5"),  // depth 4 - 淡粉
-        QColor("#f0ffff"),  // depth 5 - 淡青
-        QColor("#faf5f0"),  // depth 6 - 淡橙
-    };
-    constexpr int kColorCount = sizeof(kDepthColors) / sizeof(kDepthColors[0]);
-    
-    auto makeItem = [&](const model::Mp4BoxNode& node) -> QTreeWidgetItem* {
-        auto item = new QTreeWidgetItem();
-        item->setText(0, node.type);
-        item->setText(1, QString::number(node.size));
-        item->setData(1, Qt::UserRole, static_cast<qulonglong>(node.size));
-        
-        // 偏移列 (十六进制)
-        item->setText(2, QString("0x%1").arg(node.offset, 0, 16));
-        
-        // 深度层次背景色
-        int depth = static_cast<int>(node.depth);
-        QColor bg = kDepthColors[depth % kColorCount];
-        for (int col = 0; col < 4; ++col) {
-            item->setBackground(col, bg);
-        }
-        
-        // 字段信息: tooltip + 关键属性摘要
-        QString tooltip;
-        QString key_props;
-        for (const auto& f : node.fields) {
-            if (!tooltip.isEmpty()) tooltip += "\n";
-            tooltip += f.name + ": " + f.value;
-            if (f.name == "handler_type" || f.name == "id" ||
-                f.name == "timescale" || f.name == "duration" ||
-                f.name == "width" || f.name == "height" ||
-                f.name == "sample_rate" || f.name == "channel_count" ||
-                f.name == "entry_count" || f.name == "sample_size" ||
-                f.name == "sample_count" || f.name == "major_brand" ||
-                f.name == "minor_version" ||
-                f.name == "language" || f.name == "handler_name" ||
-                f.name == "balance" || f.name == "graphics_mode" ||
-                f.name.startsWith("compatible_brand") ||
-                f.name.startsWith("entry_count")) {
-                if (!key_props.isEmpty()) key_props += " | ";
-                key_props += f.name + "=" + f.value;
-            }
-        }
-        if (!tooltip.isEmpty()) {
-            item->setToolTip(0, tooltip);
-            item->setToolTip(1, tooltip);
-            item->setToolTip(2, tooltip);
-            item->setToolTip(3, tooltip);
-        }
-        if (!key_props.isEmpty()) {
-            item->setText(3, key_props);
-        }
-        return item;
-    };
-    
-    std::function<void(QTreeWidgetItem*, const QVector<model::Mp4BoxNode>&)> addNodes;
-    addNodes = [&](QTreeWidgetItem* parent, const QVector<model::Mp4BoxNode>& nodes) {
-        for (const auto& node : nodes) {
-            auto item = makeItem(node);
-            if (parent) {
-                parent->addChild(item);
-            } else {
-                box_tree_widget_->addTopLevelItem(item);
-            }
-            addNodes(item, node.children);
-        }
-    };
-    
-    for (const auto& node : result.box_tree) {
-        auto root = makeItem(node);
-        box_tree_widget_->addTopLevelItem(root);
-        addNodes(root, node.children);
-    }
-    box_tree_widget_->expandAll();
-    
-    // 填充 Track 表数据
-    PopulateMp4BoxTablesImpl(result, stts_table_, stco_table_, stsc_table_,
-                             stsz_table_, co64_table_, stss_table_);
-}
-
-// 辅助方法: 填充 MP4 Box 详情表
-static void PopulateMp4BoxTablesImpl(const model::Mp4BoxAnalysisResult& result,
+static void PopulateMp4BoxTablesInContainer(const model::Mp4BoxAnalysisResult& result,
                                        QTableWidget* stts_table, QTableWidget* stco_table,
                                        QTableWidget* stsc_table, QTableWidget* stsz_table,
                                        QTableWidget* co64_table, QTableWidget* stss_table) {
@@ -1380,9 +1042,8 @@ static void PopulateMp4BoxTablesImpl(const model::Mp4BoxAnalysisResult& result,
     stsz_table->setRowCount(0);
     stss_table->setRowCount(0);
     co64_table->setRowCount(0);
-    
+
     for (const auto& track : result.track_tables) {
-        // 添加 Track 分隔行
         auto addTrackHeader = [](QTableWidget* table, const QString& text) {
             const int row = table->rowCount();
             table->insertRow(row);
@@ -1393,7 +1054,6 @@ static void PopulateMp4BoxTablesImpl(const model::Mp4BoxAnalysisResult& result,
             table->setItem(row, 0, item);
         };
 
-        // stts
         if (!track.stts_entries.isEmpty()) {
             addTrackHeader(stts_table, QString("Track %1 (%2)").arg(track.track_id).arg(track.track_type));
             for (int i = 0; i < track.stts_entries.size(); ++i) {
@@ -1404,8 +1064,6 @@ static void PopulateMp4BoxTablesImpl(const model::Mp4BoxAnalysisResult& result,
                 stts_table->setItem(row, 2, new QTableWidgetItem(QString::number(track.stts_entries[i].sample_delta)));
             }
         }
-        
-        // stco
         if (!track.stco_entries.isEmpty()) {
             addTrackHeader(stco_table, QString("Track %1 (%2)").arg(track.track_id).arg(track.track_type));
             for (int i = 0; i < track.stco_entries.size(); ++i) {
@@ -1415,8 +1073,6 @@ static void PopulateMp4BoxTablesImpl(const model::Mp4BoxAnalysisResult& result,
                 stco_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.stco_entries[i].chunk_offset)));
             }
         }
-        
-        // co64 (单独表格显示 64-bit chunk offset)
         if (!track.co64_entries.isEmpty()) {
             addTrackHeader(co64_table, QString("Track %1 (%2)").arg(track.track_id).arg(track.track_type));
             for (int i = 0; i < track.co64_entries.size(); ++i) {
@@ -1426,8 +1082,6 @@ static void PopulateMp4BoxTablesImpl(const model::Mp4BoxAnalysisResult& result,
                 co64_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.co64_entries[i].chunk_offset)));
             }
         }
-        
-        // stsc
         if (!track.stsc_entries.isEmpty()) {
             addTrackHeader(stsc_table, QString("Track %1 (%2)").arg(track.track_id).arg(track.track_type));
             for (int i = 0; i < track.stsc_entries.size(); ++i) {
@@ -1439,17 +1093,14 @@ static void PopulateMp4BoxTablesImpl(const model::Mp4BoxAnalysisResult& result,
                 stsc_table->setItem(row, 3, new QTableWidgetItem(QString::number(track.stsc_entries[i].sample_description_index)));
             }
         }
-        
-        // stsz
         if (!track.stsz_entries.isEmpty() || track.stsz_default_size > 0) {
             addTrackHeader(stsz_table, QString("Track %1 (%2)").arg(track.track_id).arg(track.track_type));
             if (track.stsz_default_size > 0 && track.stsz_entries.isEmpty()) {
-                // 固定大小模式
                 const int row = stsz_table->rowCount();
                 stsz_table->insertRow(row);
                 stsz_table->setItem(row, 0, new QTableWidgetItem("0"));
                 stsz_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.stsz_default_size)));
-                stsz_table->setItem(row, 2, new QTableWidgetItem(QString("固定大小, %1 个样本").arg(track.stsz_sample_count)));
+                stsz_table->setItem(row, 2, new QTableWidgetItem(QString("default x%1").arg(track.stsz_sample_count)));
             } else {
                 for (int i = 0; i < track.stsz_entries.size(); ++i) {
                     const int row = stsz_table->rowCount();
@@ -1459,8 +1110,6 @@ static void PopulateMp4BoxTablesImpl(const model::Mp4BoxAnalysisResult& result,
                 }
             }
         }
-
-        // stss (关键帧列表)
         if (!track.stss_entries.isEmpty()) {
             addTrackHeader(stss_table, QString("Track %1 (%2)").arg(track.track_id).arg(track.track_type));
             for (int i = 0; i < track.stss_entries.size(); ++i) {
@@ -1471,13 +1120,200 @@ static void PopulateMp4BoxTablesImpl(const model::Mp4BoxAnalysisResult& result,
             }
         }
     }
-    
-    // 更新列宽自适应
-    for (auto* table : {stts_table, stco_table, stsc_table, stsz_table,
-                        co64_table, stss_table}) {
+    for (auto* table : {stts_table, stco_table, stsc_table, stsz_table, co64_table, stss_table}) {
         table->resizeColumnsToContents();
     }
 }
+
+void AnalysisPanel::OnContainerStructureReady(const model::ContainerStructureResult& result) {
+    if (!feature_enabled_.value(AnalysisFeature::Master, true)) return;
+    current_container_result_ = result;
+
+    // 更新动态标题
+    container_title_label_->setText(result.valid ? result.format_name + " " + tr("结构分析") : tr("文件结构"));
+    container_title_label_->setStyleSheet(
+        result.valid ? "font-size: 13px; font-weight: bold; color: #1a73e8; padding: 2px 4px;"
+                     : "font-size: 13px; font-weight: bold; color: #999; padding: 2px 4px;");
+
+    if (!result.valid) {
+        container_summary_label_->setText(result.error_message.isEmpty() ? tr("无法分析该格式") : result.error_message);
+        container_summary_label_->setStyleSheet("font-size: 12px; color: #999; padding: 2px 4px;");
+        container_tree_->clear();
+        container_detail_stack_->setCurrentIndex(0);
+        return;
+    }
+
+    container_summary_label_->setText(result.summary);
+    container_summary_label_->setStyleSheet("font-size: 12px; color: #333; font-weight: bold; padding: 2px 4px;");
+
+    // 填充通用结构树
+    container_tree_->clear();
+    static const QColor kDepthColors[] = {
+        QColor("#f0f4ff"), QColor("#f5f5f5"), QColor("#fffff0"),
+        QColor("#f0fff0"), QColor("#fff0f5"), QColor("#f0ffff"),
+        QColor("#faf5f0"),
+    };
+
+    std::function<void(QTreeWidgetItem*, const QVector<model::ContainerElement>&)> addNodes;
+    addNodes = [&](QTreeWidgetItem* parent, const QVector<model::ContainerElement>& nodes) {
+        for (const auto& n : nodes) {
+            auto* item = new QTreeWidgetItem();
+            item->setText(0, n.name);
+            item->setText(1, n.type);
+            item->setText(2, QString::number(n.size));
+            item->setText(3, QString("0x%1").arg(n.offset, 0, 16));
+            item->setText(4, n.value);
+            int d = n.depth;
+            QColor bg = kDepthColors[d % 7];
+            for (int c = 0; c < 5; ++c) item->setBackground(c, bg);
+            if (parent) parent->addChild(item);
+            else container_tree_->addTopLevelItem(item);
+            addNodes(item, n.children);
+        }
+    };
+    for (const auto& n : result.element_tree) {
+        auto* top = new QTreeWidgetItem();
+        top->setText(0, n.name);
+        top->setText(1, n.type);
+        top->setText(2, QString::number(n.size));
+        top->setText(3, QString("0x%1").arg(n.offset, 0, 16));
+        top->setText(4, n.value);
+        container_tree_->addTopLevelItem(top);
+        addNodes(top, n.children);
+    }
+    container_tree_->expandAll();
+
+    // 填充通用信息表 (Page 0)
+    // 流信息
+    container_stream_table_->setRowCount(result.streams.size());
+    for (int i = 0; i < result.streams.size(); ++i) {
+        const auto& s = result.streams[i];
+        container_stream_table_->setItem(i, 0, new QTableWidgetItem(QString::number(s.index)));
+        container_stream_table_->setItem(i, 1, new QTableWidgetItem(s.type));
+        container_stream_table_->setItem(i, 2, new QTableWidgetItem(s.codec));
+        container_stream_table_->setItem(i, 3, new QTableWidgetItem(s.details));
+    }
+    // 元数据
+    container_metadata_table_->setRowCount(result.metadata.size());
+    int row = 0;
+    for (auto it = result.metadata.begin(); it != result.metadata.end(); ++it, ++row) {
+        container_metadata_table_->setItem(row, 0, new QTableWidgetItem(it.key()));
+        container_metadata_table_->setItem(row, 1, new QTableWidgetItem(it.value()));
+    }
+
+    // 根据格式切换详情页面
+    using CF = model::ContainerFormat;
+    switch (result.format) {
+    case CF::MP4:
+    case CF::MOV:
+        container_detail_stack_->setCurrentIndex(1);  // MP4 详情页
+        // 填充 MP4 详细表
+        if (result.mp4_detail.valid) {
+            PopulateMp4BoxTablesInContainer(result.mp4_detail, stts_table_, stco_table_,
+                                            stsc_table_, stsz_table_, co64_table_, stss_table_);
+        }
+        break;
+    case CF::MKV:
+    case CF::WebM:
+        container_detail_stack_->setCurrentIndex(2);  // EBML 详情页
+        // 填充 EBML 详细表
+        if (result.ebml_detail.valid) {
+            const auto& er = result.ebml_detail;
+            // 轨道表
+            ebml_track_table_->setRowCount(er.tracks.size());
+            for (int i = 0; i < er.tracks.size(); ++i) {
+                const auto& t = er.tracks[i];
+                auto set = [&](int col, const QString& v) {
+                    ebml_track_table_->setItem(i, col, new QTableWidgetItem(v));
+                };
+                set(0, QString::number(t.track_number));
+                set(1, t.track_type_name);
+                set(2, t.codec_name);
+                set(3, t.codec_id);
+                if (t.track_type == 1) {
+                    set(4, QString("%1x%2").arg(t.pixel_width).arg(t.pixel_height));
+                    set(5, "-"); set(7, t.frame_rate > 0 ? QString("%1 fps").arg(t.frame_rate, 0, 'f', 2) : "-");
+                } else if (t.track_type == 2) {
+                    set(4, t.sampling_frequency > 0 ? QString("%1 Hz").arg(t.sampling_frequency, 0, 'f', 0) : "-");
+                    set(5, t.channels > 0 ? QString::number(t.channels) : "-"); set(7, "-");
+                } else { set(4, "-"); set(5, "-"); set(7, "-"); }
+                set(6, t.language);
+                set(8, t.default_track ? QString::fromUtf8("\u2713") : "");
+                set(9, t.forced ? QString::fromUtf8("\u2713") : "");
+            }
+            ebml_detail_tabs_->setTabText(0, tr("轨道 (%1)").arg(er.tracks.size()));
+            // Cues 表
+            ebml_cue_table_->setRowCount(er.cues.size());
+            for (int i = 0; i < er.cues.size(); ++i) {
+                const auto& c = er.cues[i];
+                ebml_cue_table_->setItem(i, 0, new QTableWidgetItem(QString::number(i + 1)));
+                ebml_cue_table_->setItem(i, 1, new QTableWidgetItem(QString::number(c.time)));
+                ebml_cue_table_->setItem(i, 2, new QTableWidgetItem(QString::number(c.track_number)));
+                ebml_cue_table_->setItem(i, 3, new QTableWidgetItem(QString("0x%1").arg(c.cluster_position, 0, 16)));
+            }
+            ebml_detail_tabs_->setTabText(1, tr("Cues (%1)").arg(er.cues.size()));
+            // Block 表
+            int bn = qMin(er.blocks.size(), 500);
+            ebml_block_table_->setRowCount(bn);
+            for (int i = 0; i < bn; ++i) {
+                const auto& b = er.blocks[i];
+                ebml_block_table_->setItem(i, 0, new QTableWidgetItem(QString::number(i + 1)));
+                ebml_block_table_->setItem(i, 1, new QTableWidgetItem(QString::number(b.track_number)));
+                ebml_block_table_->setItem(i, 2, new QTableWidgetItem(QString::number(b.timecode)));
+                ebml_block_table_->setItem(i, 3, new QTableWidgetItem(b.keyframe ? "KEY" : ""));
+                ebml_block_table_->setItem(i, 4, new QTableWidgetItem(QString::number(b.data_size)));
+            }
+            ebml_detail_tabs_->setTabText(2, tr("Block (%1/%2)").arg(bn).arg(er.blocks.size()));
+        }
+        break;
+    default:
+        container_detail_stack_->setCurrentIndex(0);  // 通用信息页
+        break;
+    }
+}
+
+void AnalysisPanel::OnExportContainerStructure() {
+    if (!current_container_result_.valid) {
+        QMessageBox::information(this, tr("提示"), tr("当前没有可导出的结构数据。"));
+        return;
+    }
+    const QString filename = QFileDialog::getSaveFileName(
+        this, tr("导出文件结构"),
+        QString("videoeye_structure_%1.txt")
+            .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
+        tr("文本文件 (*.txt);;所有文件 (*)"));
+    if (filename.isEmpty()) return;
+    QFile file(filename);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) return;
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    out << "Format: " << current_container_result_.format_name << "\n";
+    out << "File: " << current_container_result_.file_path << "\n";
+    out << "Summary: " << current_container_result_.summary << "\n\n";
+
+    std::function<void(const QVector<model::ContainerElement>&, int)> printTree;
+    printTree = [&](const QVector<model::ContainerElement>& nodes, int d) {
+        for (const auto& n : nodes) {
+            QString indent(d * 2, ' ');
+            out << indent << n.name << " [" << n.type << "]  size=" << n.size
+                << "  offset=0x" << Qt::hex << n.offset << Qt::dec;
+            if (!n.value.isEmpty()) out << "  value=" << n.value;
+            out << "\n";
+            printTree(n.children, d + 1);
+        }
+    };
+    printTree(current_container_result_.element_tree, 0);
+
+    if (!current_container_result_.metadata.isEmpty()) {
+        out << "\n--- Metadata ---\n";
+        for (auto it = current_container_result_.metadata.begin();
+             it != current_container_result_.metadata.end(); ++it) {
+            out << it.key() << " = " << it.value() << "\n";
+        }
+    }
+    QMessageBox::information(this, tr("导出成功"), tr("已导出到:\n%1").arg(filename));
+}
+
 
 void AnalysisPanel::UpdateStreamStats(const analyzer::StreamStats& stats) {
     if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
@@ -2351,7 +2187,8 @@ void AnalysisPanel::OnExportHistogramCsv() {
 }
 
 void AnalysisPanel::OnExportMp4Box() {
-    if (!current_box_result_.valid || current_box_result_.box_tree.isEmpty()) {
+    if (!current_container_result_.valid || !current_container_result_.mp4_detail.valid ||
+        current_container_result_.mp4_detail.box_tree.isEmpty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有可导出的 MP4 Box 数据。"));
         return;
     }
@@ -2392,10 +2229,10 @@ void AnalysisPanel::OnExportMp4Box() {
             printTree(node.children, depth + 1);
         }
     };
-    printTree(current_box_result_.box_tree, 0);
+    printTree(current_container_result_.mp4_detail.box_tree, 0);
 
     // 导出各 Track 的表格数据
-    for (const auto& track : current_box_result_.track_tables) {
+    for (const auto& track : current_container_result_.mp4_detail.track_tables) {
         out << "\n--- Track: " << track.track_type
             << " (ID=" << track.track_id << ") ---\n\n";
 

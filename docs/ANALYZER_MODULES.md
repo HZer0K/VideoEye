@@ -331,33 +331,117 @@ FaceInfo {
 
 ---
 
+#### 2.4 容器结构分析模块 (Container Structure)
+
+**功能概述**: 统一解析多种视频容器格式的文件结构，在分析面板中以「文件结构」模块统一展示。
+
+**支持格式**:
+
+| 格式 | 解析器 | 魔数检测 | 说明 |
+|------|--------|----------|------|
+| MP4 / MOV | `Mp4BoxAnalyzer` + Bento4 | `ftyp` box | ISO BMFF Box 树结构 |
+| MKV / WebM | `EbmlAnalyzer` | `\x1A\x45\xDF\xA3` | EBML Element 树结构 |
+| AVI | `AviStructureAnalyzer` | `RIFF...AVI ` | RIFF 容器递归解析 |
+| FLV | `FlvStructureAnalyzer` | `FLV` | Tag 序列解析 |
+| MPEG-TS | `TsStructureAnalyzer` | `0x47` sync byte | PAT/PMT 节目表解析 |
+| ASF / WMV | `AsfStructureAnalyzer` | ASF Header GUID | ASF Object 遍历 |
+| OGG | `OggStructureAnalyzer` | `OggS` | Page 头 + logical stream |
+| 其他 | FFmpeg 回退 | — | 通用 metadata/streams/chapters |
+
+**核心组件**:
+
+```
+ContainerStructureAnalyzer (调度器)
+├── FormatDetector            # 魔数 + 扩展名格式检测
+├── Mp4BoxAnalyzer            # MP4/MOV ISO BMFF 解析 (复用已有)
+├── EbmlAnalyzer              # MKV/WebM EBML 解析 (复用已有)
+├── AviStructureAnalyzer      # AVI RIFF 结构解析
+├── FlvStructureAnalyzer      # FLV Tag 结构解析
+├── TsStructureAnalyzer       # MPEG-TS PAT/PMT 解析
+├── AsfStructureAnalyzer      # ASF Object 结构解析
+└── OggStructureAnalyzer      # OGG Page 结构解析
+```
+
+**统一数据模型** (`ContainerStructureInfo.h`):
+
+```cpp
+enum class ContainerFormat {
+    Unknown, MP4, MOV, MKV, WebM,
+    AVI, FLV, MPEG_TS, ASF, OGG, FFmpeg_Generic
+};
+
+struct ContainerElement {       // 通用树节点 (所有格式共用)
+    QString name;               // 元素名称 (如 "moov", "Segment", "RIFF")
+    QString type;               // 元素类型
+    quint64 offset;             // 文件偏移
+    quint64 size;               // 字节大小
+    double start_time;          // 起始时间 (秒)
+    QMap<QString, QString> attributes;  // 属性键值对
+    QList<ContainerElement*> children;  // 子节点
+};
+
+struct ContainerStructureResult {   // 统一分析结果
+    ContainerFormat format;
+    QString format_name;
+    QString file_path;
+    quint64 file_size;
+    QList<ContainerElement*> structure_tree;  // 结构树
+    QList<ContainerStreamInfo> streams;       // 流信息
+    QMap<QString, QString> metadata;          // 元数据
+    QList<ContainerChapterInfo> chapters;     // 章节
+    // 保留原有详细结果 (MP4/MKV 专用)
+    std::shared_ptr<Mp4BoxAnalysisResult> mp4_detail;
+    std::shared_ptr<EbmlAnalysisResult> ebml_detail;
+};
+```
+
+**调用流程**:
+
+```
+MediaPlayer::Open()
+  → ContainerStructureAnalyzer::Analyze(path)
+    → FormatDetector::Detect(path) → ContainerFormat
+    → 分发到对应解析器
+    → 统一映射为 ContainerStructureResult
+    → 信号 ContainerStructureReady(result)
+    → AnalysisPanel::OnContainerStructureReady(result)
+      → 动态标题: "文件结构 - MP4" / "文件结构 - AVI" 等
+      → 通用结构树 + 流信息表 + 元数据表
+      → MP4/MKV 额外显示原有详细表格 (QStackedWidget 切换)
+```
+
+---
+
 ## 📊 代码统计
 
 ### 新增文件
 
-| 文件 | 行数 | 说明 |
-|------|------|------|
-| utils/Logger.h | 76 | 日志系统头文件 |
-| utils/Logger.cpp | 133 | 日志系统实现 |
-| utils/ConfigManager.h | 72 | 配置管理器头文件 |
-| utils/ConfigManager.cpp | 210 | 配置管理器实现 |
-| core/analyzer/StreamAnalyzer.h | 130 | 流分析器头文件 |
-| core/analyzer/StreamAnalyzer.cpp | 238 | 流分析器实现 |
-| core/analyzer/FrameAnalyzer.h | 89 | 帧分析器头文件 |
-| core/analyzer/FrameAnalyzer.cpp | 279 | 帧分析器实现 |
-| core/analyzer/FaceDetector.h | 91 | 人脸检测器头文件 |
-| core/analyzer/FaceDetector.cpp | 228 | 人脸检测器实现 |
-| **总计** | **1,546** | **10个文件** |
+| 文件 | 说明 |
+|------|------|
+| utils/Logger.h/cpp | 日志系统 |
+| utils/ConfigManager.h/cpp | 配置管理器 |
+| core/analyzer/StreamAnalyzer.h/cpp | 流分析器 |
+| core/analyzer/FrameAnalyzer.h/cpp | 帧分析器 |
+| core/analyzer/Mp4BoxAnalyzer.h/cpp | MP4 Box 结构解析 |
+| core/analyzer/EbmlAnalyzer.h/cpp | MKV/WebM EBML 结构解析 |
+| core/analyzer/FormatDetector.h/cpp | 容器格式魔数检测 |
+| core/analyzer/ContainerStructureAnalyzer.h/cpp | 容器结构统一调度器 |
+| core/analyzer/AviStructureAnalyzer.h/cpp | AVI RIFF 结构解析 |
+| core/analyzer/FlvStructureAnalyzer.h/cpp | FLV Tag 结构解析 |
+| core/analyzer/TsStructureAnalyzer.h/cpp | MPEG-TS 结构解析 |
+| core/analyzer/AsfStructureAnalyzer.h/cpp | ASF Object 结构解析 |
+| core/analyzer/OggStructureAnalyzer.h/cpp | OGG Page 结构解析 |
+| core/model/ContainerStructureInfo.h | 容器结构统一数据模型 |
 
 ### 项目总代码量
 
-| 模块 | 文件数 | 代码行数 |
-|------|--------|---------|
-| 工具类 | 4 | ~600 |
-| 分析模块 | 6 | ~1,000 |
-| 播放器核心 | 6 | ~600 |
-| UI层 | 2 | ~300 |
-| **总计** | **18** | **~2,500** |
+| 模块 | 文件数 | 说明 |
+|------|--------|------|
+| 工具类 | 4 | Logger + ConfigManager |
+| 分析模块 | 20+ | StreamAnalyzer, FrameAnalyzer, 容器结构系列 |
+| 播放器核心 | 4 | MediaPlayer + Decoders |
+| 数据模型 | 10+ | FrameData, ContainerStructureInfo 等 |
+| UI层 | 4 | MainWindow + AnalysisPanel 等 |
 
 ---
 
@@ -374,14 +458,22 @@ FaceInfo {
 | 边缘检测 | ✅ 100% | Canny算法 |
 | 轮廓提取 | ✅ 100% | 边界框计算 |
 | 2D DFT | ✅ 100% | 幅度谱/相位谱 |
-| 人脸检测 | ✅ 100% | Haar + DNN |
+| MP4/MOV 结构 | ✅ 100% | ISO BMFF Box 树解析 |
+| MKV/WebM 结构 | ✅ 100% | EBML Element 树解析 |
+| AVI 结构 | ✅ 100% | RIFF 容器递归解析 |
+| FLV 结构 | ✅ 100% | Tag 序列解析 |
+| MPEG-TS 结构 | ✅ 100% | PAT/PMT 节目表解析 |
+| ASF/WMV 结构 | ✅ 100% | ASF Object 遍历 |
+| OGG 结构 | ✅ 100% | Page + logical stream |
+| FFmpeg 回退 | ✅ 100% | 通用 metadata 提取 |
+| 统一 UI 展示 | ✅ 100% | 动态标题 + QStackedWidget |
 
-### ⏳ 待集成
+### ⏳ 待扩展
 
 | 功能 | 说明 | 难度 |
 |------|------|------|
-| UI集成 | 在界面中显示分析结果 | 中 |
-| 实时图表 | Qt Charts显示统计 | 中 |
+| 更多容器格式 | RMVB, RealMedia 等 | 中 |
+| 实时图表 | Qt Charts 显示统计 | 中 |
 | 性能优化 | 多线程分析 | 高 |
 | 批量处理 | 批量分析视频 | 低 |
 

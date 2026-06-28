@@ -67,24 +67,39 @@ VideoEye/
 core/
 ├── model/              # 数据模型
 │   ├── FrameData.h/cpp    # 帧数据结构
-│   └── StreamInfo         # 流信息结构
+│   ├── ContainerStructureInfo.h  # 容器结构统一模型
+│   ├── AnalysisEvent.h    # 分析事件
+│   ├── EbmlInfo.h         # EBML 数据模型
+│   ├── Mp4BoxInfo.h       # MP4 Box 数据模型
+│   ├── PacketInfo.h       # 包信息
+│   ├── SyncSample.h       # 同步样本
+│   └── TimelineEvent.h    # 时间线事件
 │
 ├── player/             # 播放器引擎
 │   ├── MediaPlayer.h/cpp  # 媒体播放器 (Qt信号槽)
 │   └── Decoders.h/cpp     # 音视频解码器
 │
-├── analyzer/           # 分析引擎 (待实现)
-│   ├── StreamAnalyzer    # 流分析
-│   ├── FrameAnalyzer     # 帧分析
-│   └── FaceDetector      # 人脸检测
+├── analyzer/           # 分析引擎
+│   ├── StreamAnalyzer.h/cpp           # 流分析
+│   ├── FrameAnalyzer.h/cpp            # 帧分析
+│   ├── MediaInfoAnalyzer.h/cpp        # 媒体信息分析
+│   ├── Mp4BoxAnalyzer.h/cpp           # MP4/MOV Box 结构解析
+│   ├── EbmlAnalyzer.h/cpp             # MKV/WebM EBML 结构解析
+│   ├── FormatDetector.h/cpp           # 容器格式魔数检测
+│   ├── ContainerStructureAnalyzer.h/cpp # 容器结构统一调度器
+│   ├── AviStructureAnalyzer.h/cpp     # AVI RIFF 结构解析
+│   ├── FlvStructureAnalyzer.h/cpp     # FLV Tag 结构解析
+│   ├── TsStructureAnalyzer.h/cpp      # MPEG-TS 结构解析
+│   ├── AsfStructureAnalyzer.h/cpp     # ASF/WMV Object 结构解析
+│   └── OggStructureAnalyzer.h/cpp     # OGG Page 结构解析
 │
 └── io/                 # 输入输出 (待实现)
     ├── InputStream       # 输入流管理
     └── DataExporter      # 数据导出
 ```
 
-**已实现**: ✅ model, player  
-**待实现**: ⏳ analyzer, io
+**已实现**: ✅ model, player, analyzer  
+**待实现**: ⏳ io
 
 ---
 
@@ -99,26 +114,26 @@ ui/
 │   ├── ControlPanel      # 控制面板
 │   └── SeekBar           # 进度条
 │
-├── analysis_panel/     # 分析面板 (待实现)
-│   ├── StreamInfoPanel   # 流信息面板
-│   └── ChartPanel        # 图表面板
+├── analysis_panel/     # 分析面板
+│   ├── AnalysisPanel.h/cpp  # 统一分析面板 (含文件结构/流信息/帧分析等)
+│   └── (容器结构树 + 流信息表 + 元数据表 + QStackedWidget)
 │
 └── settings/           # 设置对话框 (待实现)
     └── SettingsDialog    # 设置窗口
 ```
 
-**已实现**: ✅ main_window  
-**待实现**: ⏳ player_controls, analysis_panel, settings
+**已实现**: ✅ main_window, analysis_panel  
+**待实现**: ⏳ player_controls, settings
 
 ---
 
-### utils/ - 工具类 (待实现)
+### utils/ - 工具类
 
 ```
 utils/
 ├── Logger.h/cpp           # 日志系统
 ├── ConfigManager.h/cpp    # 配置管理
-└── ThreadPool.h/cpp       # 线程池
+└── ReportExporter.h/cpp   # 报告导出
 ```
 
 ---
@@ -260,13 +275,15 @@ cat ve_play.cpp
 
 ### 新架构代码
 
-| 目录 | 文件数 | 代码行数 | 状态 |
-|------|--------|---------|------|
-| core/ | 6 | ~600 | ✅ 已实现 |
-| ui/ | 2 | ~300 | ✅ 已实现 |
-| utils/ | 0 | 0 | ⏳ 待实现 |
-| tests/ | 0 | 0 | ⏳ 待实现 |
-| **总计** | **8** | **~900** | |
+| 目录 | 文件数 | 状态 |
+|------|--------|------|
+| core/model/ | 10 | ✅ 已实现 |
+| core/player/ | 4 | ✅ 已实现 |
+| core/analyzer/ | 24 | ✅ 已实现 |
+| ui/ | 4 | ✅ 已实现 |
+| utils/ | 6 | ✅ 已实现 |
+| tests/ | 0 | ⏳ 待实现 |
+| **总计** | **48+** | |
 
 ### Legacy 代码
 
@@ -327,9 +344,10 @@ cat ve_play.cpp
 ### 短期
 
 1. ✅ ~~整理根目录~~ (已完成)
-2. ⏳ 完善视频帧显示
-3. ⏳ 添加音频播放
-4. ⏳ 实现基础分析功能
+2. ✅ ~~完善视频帧显示~~ (已完成)
+3. ✅ ~~添加音频播放~~ (已完成)
+4. ✅ ~~实现基础分析功能~~ (已完成)
+5. ✅ ~~多格式容器结构分析~~ (已完成)
 
 ### 中期
 
