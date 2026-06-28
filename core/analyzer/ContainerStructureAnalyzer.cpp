@@ -8,6 +8,7 @@
 #include "AsfStructureAnalyzer.h"
 #include "OggStructureAnalyzer.h"
 #include "utils/Logger.h"
+#include <QStringList>
 
 namespace videoeye {
 namespace analyzer {
@@ -32,18 +33,9 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
     case model::ContainerFormat::MOV: {
         Mp4BoxAnalyzer mp4_analyzer;
         if (mp4_analyzer.AnalyzeFile(file_path, result.mp4_detail)) {
-            // 将 Box 树映射为通用树
             ConvertMp4Tree(result.mp4_detail.box_tree, 0, result.element_tree);
+            ExtractMp4StreamInfo(result.mp4_detail.box_tree, result);
             result.valid = true;
-
-            // 提取流信息
-            for (const auto& track : result.mp4_detail.track_tables) {
-                model::ContainerStreamInfo si;
-                si.index = track.track_id;
-                si.type = track.track_type;
-                si.codec = "MP4 Codec";
-                result.streams.append(si);
-            }
 
             int box_count = 0;
             std::function<int(const QVector<model::Mp4BoxNode>&)> count;
@@ -56,9 +48,11 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
             result.summary = QString("MP4 Box | 顶级: %1 | 总计: %2 | Track: %3")
                                  .arg(result.mp4_detail.box_tree.size())
                                  .arg(box_count)
-                                 .arg(result.mp4_detail.track_tables.size());
+                                 .arg(result.streams.size());
         } else {
-            result.error_message = "MP4 Box 分析失败";
+            // MP4 解析失败, 回退到 FFmpeg
+            LOG_WARN("MP4 专用解析器失败, 回退到 FFmpeg 通用分析");
+            return AnalyzeWithFFmpeg(file_path, result);
         }
         return result.valid;
     }
@@ -68,21 +62,8 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
         EbmlAnalyzer ebml_analyzer;
         if (ebml_analyzer.Analyze(file_path, result.ebml_detail)) {
             ConvertEbmlTree(result.ebml_detail.element_tree, 0, result.element_tree);
+            ExtractEbmlStreamInfo(result.ebml_detail, result);
             result.valid = true;
-
-            // 提取流信息
-            for (const auto& track : result.ebml_detail.tracks) {
-                model::ContainerStreamInfo si;
-                si.index = track.track_number;
-                si.type = track.track_type_name;
-                si.codec = track.codec_name;
-                if (track.track_type == 1 && track.pixel_width > 0) {
-                    si.details = QString("%1x%2").arg(track.pixel_width).arg(track.pixel_height);
-                } else if (track.track_type == 2 && track.sampling_frequency > 0) {
-                    si.details = QString("%1 Hz, %2 ch").arg(track.sampling_frequency, 0, 'f', 0).arg(track.channels);
-                }
-                result.streams.append(si);
-            }
 
             int elem_count = 0;
             std::function<int(const QVector<model::EbmlElementNode>&)> count;
@@ -95,37 +76,198 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
             result.summary = QString("%1 | %2 个元素 | %3 轨道")
                                  .arg(result.ebml_detail.doc_type)
                                  .arg(elem_count)
-                                 .arg(result.ebml_detail.tracks.size());
+                                 .arg(result.streams.size());
         } else {
-            result.error_message = "EBML 分析失败";
+            LOG_WARN("EBML 专用解析器失败, 回退到 FFmpeg 通用分析");
+            return AnalyzeWithFFmpeg(file_path, result);
         }
         return result.valid;
     }
 
     case model::ContainerFormat::AVI: {
         AviStructureAnalyzer avi;
-        return avi.Analyze(file_path, result);
+        if (avi.Analyze(file_path, result)) return true;
+        LOG_WARN("AVI 专用解析器失败, 回退到 FFmpeg");
+        return AnalyzeWithFFmpeg(file_path, result);
     }
     case model::ContainerFormat::FLV: {
         FlvStructureAnalyzer flv;
-        return flv.Analyze(file_path, result);
+        if (flv.Analyze(file_path, result)) return true;
+        LOG_WARN("FLV 专用解析器失败, 回退到 FFmpeg");
+        return AnalyzeWithFFmpeg(file_path, result);
     }
     case model::ContainerFormat::MPEG_TS: {
         TsStructureAnalyzer ts;
-        return ts.Analyze(file_path, result);
+        if (ts.Analyze(file_path, result)) return true;
+        LOG_WARN("TS 专用解析器失败, 回退到 FFmpeg");
+        return AnalyzeWithFFmpeg(file_path, result);
     }
     case model::ContainerFormat::ASF: {
         AsfStructureAnalyzer asf;
-        return asf.Analyze(file_path, result);
+        if (asf.Analyze(file_path, result)) return true;
+        LOG_WARN("ASF 专用解析器失败, 回退到 FFmpeg");
+        return AnalyzeWithFFmpeg(file_path, result);
     }
     case model::ContainerFormat::OGG: {
         OggStructureAnalyzer ogg;
-        return ogg.Analyze(file_path, result);
+        if (ogg.Analyze(file_path, result)) return true;
+        LOG_WARN("OGG 专用解析器失败, 回退到 FFmpeg");
+        return AnalyzeWithFFmpeg(file_path, result);
     }
 
     default:
         // FFmpeg 通用回退
         return AnalyzeWithFFmpeg(file_path, result);
+    }
+}
+
+void ContainerStructureAnalyzer::ExtractMp4StreamInfo(const QVector<model::Mp4BoxNode>& box_tree,
+                                                        model::ContainerStructureResult& result) {
+    // 遍历 box 树, 找到所有 trak, 提取流信息
+    std::function<void(const QVector<model::Mp4BoxNode>&)> walk;
+    walk = [&](const QVector<model::Mp4BoxNode>& nodes) {
+        for (const auto& node : nodes) {
+            if (node.type == "trak") {
+                model::ContainerStreamInfo si;
+                si.index = result.streams.size();
+                QString handler_type;
+                // 在 trak 子节点中提取 tkhd 和 hdlr 信息
+                std::function<void(const QVector<model::Mp4BoxNode>&)> extract_trak;
+                extract_trak = [&](const QVector<model::Mp4BoxNode>& children) {
+                    for (const auto& child : children) {
+                        if (child.type == "tkhd") {
+                            for (const auto& f : child.fields) {
+                                if (f.name == "track_id") si.details = QString("id=%1").arg(f.value);
+                                if (f.name == "width" && f.value != "0") {
+                                    // 查找 height
+                                    for (const auto& f2 : child.fields) {
+                                        if (f2.name == "height" && f2.value != "0") {
+                                            si.details += QString(" %1x%2").arg(f.value, f2.value);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        } else if (child.type == "mdia") {
+                            for (const auto& mdia_child : child.children) {
+                                if (mdia_child.type == "hdlr") {
+                                    for (const auto& f : mdia_child.fields) {
+                                        if (f.name == "handler_type") {
+                                            handler_type = f.value;
+                                            if (f.value == "vide") si.type = "video";
+                                            else if (f.value == "soun") si.type = "audio";
+                                            else if (f.value == "text" || f.value == "sbtl") si.type = "subtitle";
+                                            else si.type = f.value;
+                                        }
+                                    }
+                                } else if (mdia_child.type == "minf") {
+                                    // 深入 minf -> stbl -> stsd
+                                    std::function<void(const QVector<model::Mp4BoxNode>&)> find_stsd;
+                                    find_stsd = [&](const QVector<model::Mp4BoxNode>& stbl_nodes) {
+                                        for (const auto& stbl_n : stbl_nodes) {
+                                            if (stbl_n.type == "stsd") {
+                                                // stsd 的子节点就是编解码器描述
+                                                for (const auto& codec_node : stbl_n.children) {
+                                                    si.codec = codec_node.type;  // avc1, hvc1, mp4a 等
+                                                    // 提取编解码器字段中的关键参数
+                                                    for (const auto& cf : codec_node.fields) {
+                                                        if (cf.name == "width" && !cf.value.isEmpty()) {
+                                                            if (si.details.contains("x")) {
+                                                                // 替换 tkhd 的粗略尺寸
+                                                                int idx = si.details.indexOf("x");
+                                                                int start = si.details.lastIndexOf(" ", idx);
+                                                                si.details = si.details.left(start + 1) +
+                                                                             cf.value + "x";
+                                                                // 查找 height
+                                                                for (const auto& cf2 : codec_node.fields) {
+                                                                    if (cf2.name == "height") {
+                                                                        si.details += cf2.value;
+                                                                        break;
+                                                                    }
+                                                                }
+                                                            } else {
+                                                                si.details += QString(" %1x").arg(cf.value);
+                                                                for (const auto& cf2 : codec_node.fields) {
+                                                                    if (cf2.name == "height") {
+                                                                        si.details += cf2.value;
+                                                                        break;
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        if (cf.name == "sample_rate" && !cf.value.isEmpty()) {
+                                                            si.details += QString(" %1Hz").arg(cf.value);
+                                                        }
+                                                        if (cf.name == "channel_count" && !cf.value.isEmpty()) {
+                                                            si.details += QString(" %1ch").arg(cf.value);
+                                                        }
+                                                    }
+                                                }
+                                                return;
+                                            }
+                                            find_stsd(stbl_n.children);
+                                        }
+                                    };
+                                    find_stsd(mdia_child.children);
+                                }
+                            }
+                        }
+                    }
+                };
+                extract_trak(node.children);
+                si.details = si.details.trimmed();
+                result.streams.append(si);
+            }
+            walk(node.children);
+        }
+    };
+    walk(box_tree);
+}
+
+void ContainerStructureAnalyzer::ExtractEbmlStreamInfo(const model::EbmlAnalysisResult& ebml_detail,
+                                                         model::ContainerStructureResult& result) {
+    for (const auto& track : ebml_detail.tracks) {
+        model::ContainerStreamInfo si;
+        si.index = track.track_number;
+        si.type = track.track_type_name;
+        si.codec = track.codec_name;
+
+        // 构建丰富的 details 字符串
+        QStringList parts;
+        if (track.track_type == 1) {  // video
+            if (track.pixel_width > 0 && track.pixel_height > 0) {
+                parts << QString("%1x%2").arg(track.pixel_width).arg(track.pixel_height);
+            }
+            if (track.frame_rate > 0) {
+                parts << QString("%.2f fps").arg(track.frame_rate);
+            }
+        } else if (track.track_type == 2) {  // audio
+            if (track.sampling_frequency > 0) {
+                parts << QString("%1 Hz").arg(track.sampling_frequency, 0, 'f', 0);
+            }
+            if (track.channels > 0) {
+                parts << QString("%1 ch").arg(track.channels);
+            }
+            if (track.bit_depth > 0) {
+                parts << QString("%1 bit").arg(track.bit_depth);
+            }
+        }
+        if (!track.language.isEmpty() && track.language != "und") {
+            parts << track.language;
+        }
+        if (!track.track_name.isEmpty()) {
+            parts << track.track_name;
+        }
+        si.details = parts.join(" ");
+        result.streams.append(si);
+    }
+
+    // 提取 EBML 元数据
+    if (!ebml_detail.title.isEmpty()) result.metadata["title"] = ebml_detail.title;
+    if (!ebml_detail.muxing_app.isEmpty()) result.metadata["muxing_app"] = ebml_detail.muxing_app;
+    if (!ebml_detail.writing_app.isEmpty()) result.metadata["writing_app"] = ebml_detail.writing_app;
+    if (ebml_detail.duration_seconds > 0) {
+        result.metadata["duration"] = QString("%1s").arg(ebml_detail.duration_seconds, 0, 'f', 2);
     }
 }
 

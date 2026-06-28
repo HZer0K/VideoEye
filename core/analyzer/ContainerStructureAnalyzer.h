@@ -32,6 +32,14 @@ private:
     void ConvertEbmlTree(const QVector<model::EbmlElementNode>& nodes, int depth,
                          QVector<model::ContainerElement>& out);
 
+    /// 从 MP4 Box 树中提取丰富的流信息
+    void ExtractMp4StreamInfo(const QVector<model::Mp4BoxNode>& box_tree,
+                              model::ContainerStructureResult& result);
+
+    /// 从 EBML 树中提取丰富的流信息
+    void ExtractEbmlStreamInfo(const model::EbmlAnalysisResult& ebml_detail,
+                               model::ContainerStructureResult& result);
+
     /// FFmpeg 通用元数据回退分析
     bool AnalyzeWithFFmpeg(const QString& file_path, model::ContainerStructureResult& result);
 };

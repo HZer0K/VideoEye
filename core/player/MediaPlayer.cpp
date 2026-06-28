@@ -314,12 +314,8 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     state_ = model::PlayerState::Idle;
     emit StateChanged(state_);
 
-    // 触发容器结构分析
+    // 触发容器结构分析 (统一调度, 内部自动选择 MP4/MKV/AVI/FLV/TS/ASF/OGG/FFmpeg 解析器)
     if (container_structure_enabled_) {
-        model::Mp4BoxAnalysisResult box_result;
-        if (mp4_box_analyzer_.AnalyzeFile(url, box_result)) {
-            emit Mp4BoxAnalysisReady(box_result);
-        }
         model::ContainerStructureResult cs_result;
         if (container_analyzer_.Analyze(url, cs_result)) {
             emit ContainerStructureReady(cs_result);
@@ -704,7 +700,6 @@ void MediaPlayer::Cleanup() {
     audio_decoder_.reset();
     video_stream_index_ = -1;
     audio_stream_index_ = -1;
-    mp4_box_analyzer_.Reset();
 }
 
 } // namespace player

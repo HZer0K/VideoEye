@@ -27,9 +27,7 @@ extern "C" {
 #include "core/model/TimelineEvent.h"
 #include "core/analyzer/StreamAnalyzer.h"
 #include "core/analyzer/FrameAnalyzer.h"
-#include "core/analyzer/Mp4BoxAnalyzer.h"
 #include "core/analyzer/ContainerStructureAnalyzer.h"
-#include "core/model/Mp4BoxInfo.h"
 #include "core/model/ContainerStructureInfo.h"
 
 namespace videoeye {
@@ -71,7 +69,6 @@ public:
     void SetEventAnalysisEnabled(bool enable) { event_analysis_enabled_ = enable; }
     void SetSyncAnalysisEnabled(bool enable) { sync_analysis_enabled_ = enable; }
     void SetTimelineAnalysisEnabled(bool enable) { timeline_analysis_enabled_ = enable; }
-    void SetMp4BoxAnalysisEnabled(bool enable) { container_structure_enabled_ = enable; }
     void SetContainerStructureEnabled(bool enable) { container_structure_enabled_ = enable; }
 
     // 视频帧导出
@@ -108,7 +105,6 @@ signals:
     void AudioVisualizationReady(const model::AudioVisualizationFrame& frame);
     void MediaModeChanged(bool has_video);
     void AudioLevelReady(double level, double timestamp_seconds);
-    void Mp4BoxAnalysisReady(const videoeye::model::Mp4BoxAnalysisResult& result);
     void ContainerStructureReady(const videoeye::model::ContainerStructureResult& result);
     void VideoFrameExportStarted(int total_frames);
     void VideoFrameExportProgress(int exported_frames);
@@ -156,7 +152,6 @@ private:
     // 分析器
     analyzer::StreamAnalyzer stream_analyzer_;
     analyzer::FrameAnalyzer frame_analyzer_;
-    analyzer::Mp4BoxAnalyzer mp4_box_analyzer_;
     analyzer::ContainerStructureAnalyzer container_analyzer_;
     StreamInfoExtractor stream_info_extractor_;
     AudioVisualizer audio_visualizer_;
