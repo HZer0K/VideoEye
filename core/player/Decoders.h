@@ -9,6 +9,7 @@ extern "C" {
 
 #include <memory>
 #include <string>
+#include <vector>
 #include <functional>
 #include <mutex>
 #include <atomic>
@@ -26,11 +27,21 @@ public:
     VideoDecoder();
     ~VideoDecoder();
     
-    // 初始化解码器
+    // 初始化解码器 (软件解码)
     bool Initialize(AVCodecParameters* codec_params);
     
     // 从已有的AVCodecContext初始化（接管所有权）
     bool InitializeFromContext(AVCodecContext* codec_ctx);
+
+    // 硬件解码初始化: 尝试使用指定 HW 设备类型, 失败则回退软件解码
+    bool InitializeWithHw(AVCodecParameters* codec_params, AVHWDeviceType hw_type);
+
+    // 获取当前使用的硬件设备类型 (AV_HWDEVICE_TYPE_NONE 表示软件解码)
+    AVHWDeviceType GetHwDeviceType() const { return hw_device_type_; }
+    bool IsHardwareDecoding() const { return hw_device_type_ != AV_HWDEVICE_TYPE_NONE; }
+
+    // 查询当前平台可用的硬件加速设备类型列表
+    static std::vector<AVHWDeviceType> GetAvailableHwDeviceTypes();
 
     // 解码流程拆分：先送包，再持续取出所有可用帧。
     bool SendPacket(AVPacket* packet);
@@ -49,8 +60,14 @@ public:
     void Close();
     
 private:
+    // 将硬件帧下载到系统内存 (输出到 sw_frame)
+    bool DownloadHwFrame(AVFrame* sw_frame);
+
     AVCodecContext* codec_ctx_ = nullptr;
     AVFrame* frame_ = nullptr;
+    AVBufferRef* hw_device_ctx_ = nullptr;   // 硬件设备上下文
+    AVHWDeviceType hw_device_type_ = AV_HWDEVICE_TYPE_NONE;
+    AVPixelFormat hw_pix_fmt_ = AV_PIX_FMT_NONE;  // 硬件像素格式
     int width_ = 0;
     int height_ = 0;
     AVPictureType last_pict_type_ = AV_PICTURE_TYPE_NONE;

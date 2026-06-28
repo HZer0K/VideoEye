@@ -4,6 +4,8 @@
 
 extern "C" {
 #include <libavutil/pixdesc.h>
+#include <libavutil/hwcontext.h>
+#include <libavcodec/codec.h>
 }
 
 namespace videoeye {
@@ -85,6 +87,130 @@ bool VideoDecoder::InitializeFromContext(AVCodecContext* codec_ctx) {
     return true;
 }
 
+std::vector<AVHWDeviceType> VideoDecoder::GetAvailableHwDeviceTypes() {
+    std::vector<AVHWDeviceType> types;
+    // 按优先级遍历常用硬件加速方法
+    static const AVHWDeviceType kPreferredTypes[] = {
+        AV_HWDEVICE_TYPE_VAAPI,        // Linux AMD/Intel
+        AV_HWDEVICE_TYPE_CUDA,         // NVIDIA
+        AV_HWDEVICE_TYPE_VDPAU,        // NVIDIA (legacy)
+        AV_HWDEVICE_TYPE_VIDEOTOOLBOX, // macOS/iOS
+        AV_HWDEVICE_TYPE_D3D11VA,      // Windows
+        AV_HWDEVICE_TYPE_DXVA2,        // Windows (legacy)
+        AV_HWDEVICE_TYPE_QSV,          // Intel Quick Sync
+    };
+    for (auto type : kPreferredTypes) {
+        AVBufferRef* test_ctx = nullptr;
+        int ret = av_hwdevice_ctx_create(&test_ctx, type, nullptr, nullptr, 0);
+        if (ret >= 0) {
+            types.push_back(type);
+            av_buffer_unref(&test_ctx);
+        }
+    }
+    return types;
+}
+
+bool VideoDecoder::InitializeWithHw(AVCodecParameters* codec_params, AVHWDeviceType hw_type) {
+    if (!codec_params) return false;
+
+    // 查找支持硬件加速的解码器
+    const AVCodec* codec = nullptr;
+    void* iter = nullptr;
+    while ((codec = av_codec_iterate(&iter)) != nullptr) {
+        if (!av_codec_is_decoder(codec)) continue;  // 只查解码器
+        if (codec->id != codec_params->codec_id) continue;
+        // 检查该解码器是否支持指定的 HW 设备类型
+        for (int i = 0;; ++i) {
+            const AVCodecHWConfig* config = avcodec_get_hw_config(codec, i);
+            if (!config) break;
+            if (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX &&
+                config->device_type == hw_type) {
+                goto found_codec;
+            }
+        }
+        codec = nullptr;
+    }
+found_codec:
+    if (!codec) {
+        std::cerr << "No HW decoder for codec " << avcodec_get_name(codec_params->codec_id)
+                  << " with device type " << av_hwdevice_get_type_name(hw_type) << std::endl;
+        return false;
+    }
+
+    // 创建硬件设备上下文
+    int ret = av_hwdevice_ctx_create(&hw_device_ctx_, hw_type, nullptr, nullptr, 0);
+    if (ret < 0) {
+        std::cerr << "Failed to create HW device context" << std::endl;
+        return false;
+    }
+
+    codec_ctx_ = avcodec_alloc_context3(codec);
+    if (!codec_ctx_) {
+        std::cerr << "Failed to allocate HW codec context" << std::endl;
+        av_buffer_unref(&hw_device_ctx_);
+        return false;
+    }
+
+    ret = avcodec_parameters_to_context(codec_ctx_, codec_params);
+    if (ret < 0) {
+        Close();
+        return false;
+    }
+
+    // 查找解码器支持的 HW 像素格式
+    hw_pix_fmt_ = AV_PIX_FMT_NONE;
+    for (int i = 0;; ++i) {
+        const AVCodecHWConfig* config = avcodec_get_hw_config(codec, i);
+        if (!config) break;
+        if (config->device_type == hw_type) {
+            hw_pix_fmt_ = config->pix_fmt;
+            break;
+        }
+    }
+    if (hw_pix_fmt_ == AV_PIX_FMT_NONE) {
+        Close();
+        return false;
+    }
+
+    // 设置硬件设备上下文和 get_format 回调
+    codec_ctx_->hw_device_ctx = av_buffer_ref(hw_device_ctx_);
+    codec_ctx_->get_format = [](AVCodecContext*, const enum AVPixelFormat* pix_fmts) -> enum AVPixelFormat {
+        for (const enum AVPixelFormat* p = pix_fmts; *p != AV_PIX_FMT_NONE; ++p) {
+            const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(*p);
+            if (desc && (desc->flags & AV_PIX_FMT_FLAG_HWACCEL)) {
+                return *p;
+            }
+        }
+        return pix_fmts[0];
+    };
+
+    ret = avcodec_open2(codec_ctx_, codec, nullptr);
+    if (ret < 0) {
+        Close();
+        return false;
+    }
+
+    hw_device_type_ = hw_type;
+    width_ = codec_ctx_->width;
+    height_ = codec_ctx_->height;
+    return true;
+}
+
+bool VideoDecoder::DownloadHwFrame(AVFrame* sw_frame) {
+    AVFrame* tmp = av_frame_alloc();
+    if (!tmp) return false;
+
+    int ret = av_hwframe_transfer_data(tmp, frame_, 0);
+    if (ret < 0) {
+        av_frame_free(&tmp);
+        return false;
+    }
+    av_frame_copy_props(tmp, frame_);
+    av_frame_move_ref(sw_frame, tmp);
+    av_frame_free(&tmp);
+    return true;
+}
+
 bool VideoDecoder::SendPacket(AVPacket* packet) {
     if (!codec_ctx_ || !frame_) {
         return false;
@@ -117,17 +243,35 @@ bool VideoDecoder::ReceiveFrame(model::FrameData& output_frame) {
     }
 
     last_pict_type_ = frame_->pict_type;
+
+    // 硬件帧需要下载到系统内存
+    AVFrame* src_frame = frame_;
+    AVFrame* sw_frame = nullptr;
+    if (frame_->format == AV_PIX_FMT_NONE || av_pix_fmt_desc_get(static_cast<AVPixelFormat>(frame_->format)) == nullptr) {
+        // 未知格式, 跳过
+    } else {
+        const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(frame_->format));
+        if (desc && (desc->flags & AV_PIX_FMT_FLAG_HWACCEL)) {
+            // 这是硬件帧, 需要下载
+            sw_frame = av_frame_alloc();
+            if (!sw_frame || !DownloadHwFrame(sw_frame)) {
+                av_frame_free(&sw_frame);
+                return false;
+            }
+            src_frame = sw_frame;
+        }
+    }
     
     // 复制帧数据
     output_frame.Clear();
 
-    output_frame.width = frame_->width;
-    output_frame.height = frame_->height;
-    output_frame.format = frame_->format;
-    if (frame_->pts != AV_NOPTS_VALUE) {
-        output_frame.pts = frame_->pts;
-    } else if (frame_->best_effort_timestamp != AV_NOPTS_VALUE) {
-        output_frame.pts = frame_->best_effort_timestamp;
+    output_frame.width = src_frame->width;
+    output_frame.height = src_frame->height;
+    output_frame.format = src_frame->format;
+    if (src_frame->pts != AV_NOPTS_VALUE) {
+        output_frame.pts = src_frame->pts;
+    } else if (src_frame->best_effort_timestamp != AV_NOPTS_VALUE) {
+        output_frame.pts = src_frame->best_effort_timestamp;
     } else {
         output_frame.pts = AV_NOPTS_VALUE;
     }
@@ -139,27 +283,31 @@ bool VideoDecoder::ReceiveFrame(model::FrameData& output_frame) {
     }
 
     const AVPixFmtDescriptor* desc =
-        av_pix_fmt_desc_get(static_cast<AVPixelFormat>(frame_->format));
+        av_pix_fmt_desc_get(static_cast<AVPixelFormat>(src_frame->format));
 
     for (int i = 0; i < 8; ++i) {
-        if (!frame_->data[i] || frame_->linesize[i] <= 0) {
+        if (!src_frame->data[i] || src_frame->linesize[i] <= 0) {
             continue;
         }
 
-        int plane_height = frame_->height;
+        int plane_height = src_frame->height;
         if (desc && (i == 1 || i == 2)) {
-            plane_height = AV_CEIL_RSHIFT(frame_->height, desc->log2_chroma_h);
+            plane_height = AV_CEIL_RSHIFT(src_frame->height, desc->log2_chroma_h);
         }
 
-        int size = frame_->linesize[i] * plane_height;
+        int size = src_frame->linesize[i] * plane_height;
         if (size <= 0) {
             continue;
         }
 
-        output_frame.linesize[i] = frame_->linesize[i];
+        output_frame.linesize[i] = src_frame->linesize[i];
         output_frame.owned[i].resize(size);
-        std::memcpy(output_frame.owned[i].data(), frame_->data[i], size);
+        std::memcpy(output_frame.owned[i].data(), src_frame->data[i], size);
         output_frame.data[i] = output_frame.owned[i].data();
+    }
+
+    if (sw_frame) {
+        av_frame_free(&sw_frame);
     }
     
     return true;
@@ -181,9 +329,19 @@ std::string VideoDecoder::GetCodecName() const {
 
 void VideoDecoder::Close() {
     if (codec_ctx_) {
+        // 清除 hw_device_ctx 引用 (codec_ctx_ 持有自己的 ref)
+        if (codec_ctx_->hw_device_ctx) {
+            av_buffer_unref(&codec_ctx_->hw_device_ctx);
+        }
         avcodec_free_context(&codec_ctx_);
         codec_ctx_ = nullptr;
     }
+    if (hw_device_ctx_) {
+        av_buffer_unref(&hw_device_ctx_);
+        hw_device_ctx_ = nullptr;
+    }
+    hw_device_type_ = AV_HWDEVICE_TYPE_NONE;
+    hw_pix_fmt_ = AV_PIX_FMT_NONE;
 }
 
 // AudioDecoder 实现

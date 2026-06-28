@@ -71,6 +71,11 @@ public:
     void SetTimelineAnalysisEnabled(bool enable) { timeline_analysis_enabled_ = enable; }
     void SetContainerStructureEnabled(bool enable) { container_structure_enabled_ = enable; }
 
+    // 硬件解码
+    void SetHardwareDecodingEnabled(bool enable) { hw_decoding_enabled_ = enable; }
+    bool IsHardwareDecoding() const;
+    std::string GetHwDeviceName() const;
+
     // 视频帧导出
     void StartVideoFrameExport(const QString& output_dir, const QString& format, int jpg_quality = 90, int frame_interval = 1);
     void CancelVideoFrameExport();
@@ -167,6 +172,7 @@ private:
     bool sync_analysis_enabled_ = false;
     bool timeline_analysis_enabled_ = false;
     bool container_structure_enabled_ = true;
+    bool hw_decoding_enabled_ = true;  // 默认尝试硬件解码
     
     // 分析索引/状态
     int analysis_frame_counter_ = 0;

@@ -32,26 +32,23 @@
 
 ### 1. 播放器模块 (core/player)
 
-#### MediaPlayer 类
+#### MediaPlayer 类 (薄协调层)
 
-**职责**: 协调音视频播放流程,管理状态
+**职责**: 协调播放流程，委托专业模块完成具体工作
 
-**设计模式**: 状态模式、观察者模式
+**设计模式**: 状态模式、观察者模式、委托模式
 
 ```cpp
 class MediaPlayer : public QObject {
     Q_OBJECT
+    // 委托模块
+    StreamInfoExtractor stream_info_extractor_;   // 流元数据提取
+    AudioVisualizer audio_visualizer_;             // 音频可视化 (FFT)
+    std::unique_ptr<VideoFrameExporter> frame_exporter_;  // 帧导出
+    PlaybackClock playback_clock_;                 // 播放节奏控制
     
-signals:
-    void StateChanged(PlayerState state);
-    void FrameReady(const QImage& frame);
-    void PositionChanged(int position, int duration);
-    
-public slots:
-    void Open(const QString& url);
-    void Play();
-    void Pause();
-    void Stop();
+    // 硬件解码
+    bool hw_decoding_enabled_ = true;
 };
 ```
 
@@ -61,30 +58,59 @@ public slots:
     │                   │                  │
     ├──► Play()        │                  │
     │                  ├──► ReadPacket()  │
-    │                  ├──► Decode()      │
+    │                  ├──► HW/SW Decode() │
     │◄── FrameReady ───┤                  │
     │                  │                  ├──► Display()
     │                  │                  │
 ```
 
-#### VideoDecoder 类
+#### VideoDecoder 类 (含硬件加速)
 
-**职责**: 视频解码,使用现代 FFmpeg 8.1 API
+**职责**: 视频解码，支持硬件加速与软件解码自动切换
 
 **关键设计**:
 - 使用 `avcodec_send_packet` / `avcodec_receive_frame`
+- 硬件加速: 自动探测 VAAPI/CUDA/VDPAU/VideoToolbox/D3D11VA/DXVA2/QSV
+- HW 帧自动下载到系统内存
 - RAII 管理 FFmpeg 资源
-- 线程安全设计
 
 ```cpp
 class VideoDecoder {
 public:
-    bool Initialize(AVCodecParameters* params);
+    bool Initialize(AVCodecParameters* params);           // 软件解码
+    bool InitializeWithHw(AVCodecParameters* params,      // 硬件解码
+                          AVHWDeviceType hw_type);
+    static std::vector<AVHWDeviceType> GetAvailableHwDeviceTypes();
+    bool IsHardwareDecoding() const;
     bool DecodePacket(AVPacket* packet, FrameData& output);
     
 private:
-    AVCodecContext* codec_ctx_;  // 自动管理生命周期
-    AVFrame* frame_;
+    bool DownloadHwFrame(AVFrame* sw_frame);  // HW 帧 → CPU
+    AVBufferRef* hw_device_ctx_ = nullptr;
+    AVHWDeviceType hw_device_type_ = AV_HWDEVICE_TYPE_NONE;
+};
+```
+
+#### AudioVisualizer 类 (FFT 优化)
+
+**职责**: 从 PCM 样本计算波形、频谱、响度
+
+**性能优化**:
+- Cooley-Tukey radix-2 FFT 替代朴素 DFT (O(N log N) vs O(N×K))
+- 预计算 Hann 窗 + 旋转因子 + 位反转表
+- 全局缓存 FFT 表 (线程安全)
+- 单次 mono 混缩供所有计算复用
+- 对数频率映射匹配听觉感知
+
+```cpp
+class AudioVisualizer {
+public:
+    AudioVisualizationResult Process(const int16_t* samples,
+                                     int sample_count, int sample_rate, int channels) const;
+private:
+    struct FftTables { hann_window, twiddle_cos/sin, bit_reverse };
+    static FftTables& GetTables(int fft_size);  // 缓存
+    static void FftInPlace(re, im, tables);     // radix-2 蝶形运算
 };
 ```
 
@@ -158,22 +184,28 @@ private:
 
 **职责**: 统一解析多种视频容器格式的文件结构
 
-**设计模式**: 策略模式 + 统一调度
+**设计模式**: 策略模式 + 统一调度 + 自动回退
 
 ```
 ContainerStructureAnalyzer
 │
 ├─ FormatDetector (魔数检测 + 扩展名回退)
 │
-├─ MP4/MOV  → Mp4BoxAnalyzer (Bento4)
-├─ MKV/WebM → EbmlAnalyzer
+├─ MP4/MOV  → Mp4BoxAnalyzer (Bento4) → 丰富流信息 (codec/分辨率/采样率)
+├─ MKV/WebM → EbmlAnalyzer          → 丰富流信息 (codec/分辨率/帧率/语言)
 ├─ AVI      → AviStructureAnalyzer (RIFF 递归)
 ├─ FLV      → FlvStructureAnalyzer (Tag 序列)
 ├─ MPEG-TS  → TsStructureAnalyzer (PAT/PMT)
 ├─ ASF/WMV  → AsfStructureAnalyzer (Object 遍历)
 ├─ OGG      → OggStructureAnalyzer (Page 解析)
-└─ 其他     → FFmpeg AVFormatContext (通用 metadata)
+└─ 其他/失败 → FFmpeg AVFormatContext (通用 metadata) ← 自动回退
 ```
+
+**关键改进**:
+- MP4 流信息: 从 Box 树提取 codec (avc1/hvc1/mp4a)、分辨率、采样率、声道数
+- MKV 流信息: codec、分辨率、帧率、采样率、位深、语言、轨道名
+- 格式回退: 任何专用解析器失败时自动回退 FFmpeg 通用分析
+- 统一入口: MediaPlayer 仅调用 `container_analyzer_.Analyze()`，不再重复调用 Mp4BoxAnalyzer
 
 **统一数据流**:
 
@@ -436,24 +468,20 @@ class HardwareDecode : public IDecodeStrategy { ... };
 
 ## 性能优化
 
-### 关键优化点
+### 已实现的优化
 
-1. **零拷贝**: 尽量减少数据复制
-2. **线程池**: 复用线程,减少创建开销
-3. **内存池**: 预分配帧缓冲区
-4. **异步 I/O**: 非阻塞读取
+1. **FFT 频谱计算**: Cooley-Tukey radix-2 算法替代朴素 DFT，加速约 28 倍 (512 点 FFT)
+2. **预计算表**: Hann 窗、旋转因子、位反转表全局缓存，三角函数调用降为 0
+3. **单次 mono 混缩**: 声道混合仅执行一次，波形/频谱/响度/峰值复用
+4. **硬件解码**: 支持 VAAPI/CUDA/VideoToolbox 等，减少 CPU 负载
+5. **零拷贝**: 尽量减少数据复制
+6. **异步 I/O**: 非阻塞读取
 
 ```cpp
-// 内存池示例
-class FramePool {
-public:
-    std::unique_ptr<FrameData> Acquire();
-    void Release(std::unique_ptr<FrameData> frame);
-    
-private:
-    std::queue<std::unique_ptr<FrameData>> pool_;
-    std::mutex mutex_;
-};
+// FFT 性能对比 (512 点)
+// DFT:  512 × 64 × 2 = 65,536 次 sin/cos
+// FFT:  512 × 9 / 2  = 2,304 次蝶形 (查表)
+// 加速比: ~28x
 ```
 
 ## 测试策略
@@ -525,16 +553,19 @@ TEST(MediaPlayerTest, PlayLocalFile) {
 
 - [x] 完成基础播放功能
 - [x] 实现流分析
-- [x] 实现容器结构分析 (7 种格式)
+- [x] 实现容器结构分析 (7 种格式 + FFmpeg 回退)
 - [x] 单元测试 (6 suites, 115 cases)
+- [x] MediaPlayer 拆分重构 (PlaybackClock/StreamInfoExtractor/AudioVisualizer/VideoFrameExporter)
+- [x] FFT 性能优化 (Cooley-Tukey 算法，预计算表)
+- [x] 硬件解码支持 (VAAPI/CUDA/VideoToolbox/D3D11VA 等，自动探测与回退)
+- [x] 容器分析调度完善 (丰富流信息、格式回退、统一入口)
 - [ ] 完善 UI
 
 ### 中期 (3-6个月)
 
-- [ ] 硬件解码支持
 - [ ] 集成测试
 - [ ] 更多分析算法
-- [ ] 性能优化 (FFT 等)
+- [ ] 视频帧导出支持硬件解码
 
 ### 长期 (6-12个月)
 

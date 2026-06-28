@@ -76,8 +76,12 @@ core/
 │   └── TimelineEvent.h    # 时间线事件
 │
 ├── player/             # 播放器引擎
-│   ├── MediaPlayer.h/cpp  # 媒体播放器 (Qt信号槽)
-│   └── Decoders.h/cpp     # 音视频解码器
+│   ├── MediaPlayer.h/cpp  # 媒体播放器 (薄协调层)
+│   ├── Decoders.h/cpp     # 音视频解码器 (含硬件加速)
+│   ├── PlaybackClock.h    # 播放节奏控制 (header-only)
+│   ├── StreamInfoExtractor.h/cpp  # 流元数据提取
+│   ├── AudioVisualizer.h/cpp      # 音频可视化 (FFT 频谱)
+│   └── VideoFrameExporter.h/cpp   # 视频帧导出
 │
 ├── analyzer/           # 分析引擎
 │   ├── StreamAnalyzer.h/cpp           # 流分析
@@ -286,12 +290,12 @@ cat ve_play.cpp
 | 目录 | 文件数 | 状态 |
 |------|--------|------|
 | core/model/ | 10 | ✅ 已实现 |
-| core/player/ | 4 | ✅ 已实现 |
+| core/player/ | 10 | ✅ 已实现 (含硬件解码/FFT/帧导出) |
 | core/analyzer/ | 24 | ✅ 已实现 |
 | ui/ | 4 | ✅ 已实现 |
 | utils/ | 6 | ✅ 已实现 |
 | tests/ | 7 | ✅ 已实现 (6 suites, 115 cases) |
-| **总计** | **48+** | |
+| **总计** | **54+** | |
 
 ### Legacy 代码
 
@@ -360,9 +364,11 @@ cat ve_play.cpp
 ### 中期
 
 1. ✅ ~~添加单元测试~~ (已完成: 6 suites, 115 cases)
-2. ⏳ 完善文档
-3. ⏳ 性能优化
-4. ⏳ 添加更多分析算法
+2. ✅ ~~性能优化~~ (已完成: FFT 替代 DFT，加速 28x)
+3. ✅ ~~硬件解码支持~~ (已完成: VAAPI/CUDA/VideoToolbox 等)
+4. ✅ ~~容器分析完善~~ (已完成: 丰富流信息 + 格式回退)
+5. ⏳ 完善文档
+6. ⏳ 添加更多分析算法
 
 ### 长期
 

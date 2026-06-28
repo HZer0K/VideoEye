@@ -247,45 +247,67 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
             Cleanup();
             return false;
         }
-        const AVCodec* video_codec = best_video_codec;
-        if (!video_codec) video_codec = avcodec_find_decoder(video_stream->codecpar->codec_id);
-        if (!video_codec) {
-            emit Error("Video codec not found");
-            Cleanup();
-            return false;
+
+        bool hw_initialized = false;
+        // 尝试硬件解码
+        if (hw_decoding_enabled_) {
+            auto hw_types = VideoDecoder::GetAvailableHwDeviceTypes();
+            for (auto hw_type : hw_types) {
+                if (video_decoder_->InitializeWithHw(video_stream->codecpar, hw_type)) {
+                    hw_initialized = true;
+                    LOG_INFO("HW decoding initialized: " +
+                             std::string(av_hwdevice_get_type_name(hw_type)));
+                    break;
+                }
+            }
+            if (!hw_initialized && !hw_types.empty()) {
+                LOG_WARN("HW decoding not available, falling back to software");
+            }
         }
-        AVCodecContext* video_codec_ctx = avcodec_alloc_context3(video_codec);
-        if (!video_codec_ctx) {
-            emit Error("Failed to create video codec context");
-            Cleanup();
-            return false;
-        }
-        ret = avcodec_parameters_to_context(video_codec_ctx, video_stream->codecpar);
-        if (ret < 0) {
-            avcodec_free_context(&video_codec_ctx);
-            emit Error("Failed to copy codec parameters");
-            Cleanup();
-            return false;
-        }
-        if (video_stream->time_base.den != 0) {
-            video_codec_ctx->pkt_timebase = video_stream->time_base;
-            video_codec_ctx->time_base = video_stream->time_base;
-        }
-        ret = avcodec_open2(video_codec_ctx, video_codec, nullptr);
-        if (ret < 0) {
-            avcodec_free_context(&video_codec_ctx);
-            emit Error("Failed to open video decoder");
-            Cleanup();
-            return false;
-        }
-        if (!video_decoder_->InitializeFromContext(video_codec_ctx)) {
-            avcodec_free_context(&video_codec_ctx);
-            emit Error("Failed to initialize video decoder");
-            Cleanup();
-            return false;
+
+        // 软件解码回退
+        if (!hw_initialized) {
+            const AVCodec* video_codec = best_video_codec;
+            if (!video_codec) video_codec = avcodec_find_decoder(video_stream->codecpar->codec_id);
+            if (!video_codec) {
+                emit Error("Video codec not found");
+                Cleanup();
+                return false;
+            }
+            AVCodecContext* video_codec_ctx = avcodec_alloc_context3(video_codec);
+            if (!video_codec_ctx) {
+                emit Error("Failed to create video codec context");
+                Cleanup();
+                return false;
+            }
+            ret = avcodec_parameters_to_context(video_codec_ctx, video_stream->codecpar);
+            if (ret < 0) {
+                avcodec_free_context(&video_codec_ctx);
+                emit Error("Failed to copy codec parameters");
+                Cleanup();
+                return false;
+            }
+            if (video_stream->time_base.den != 0) {
+                video_codec_ctx->pkt_timebase = video_stream->time_base;
+                video_codec_ctx->time_base = video_stream->time_base;
+            }
+            ret = avcodec_open2(video_codec_ctx, video_codec, nullptr);
+            if (ret < 0) {
+                avcodec_free_context(&video_codec_ctx);
+                emit Error("Failed to open video decoder");
+                Cleanup();
+                return false;
+            }
+            if (!video_decoder_->InitializeFromContext(video_codec_ctx)) {
+                avcodec_free_context(&video_codec_ctx);
+                emit Error("Failed to initialize video decoder");
+                Cleanup();
+                return false;
+            }
         }
         LOG_INFO("Video decoder initialized: " + std::to_string(video_decoder_->GetWidth()) + "x" +
-                 std::to_string(video_decoder_->GetHeight()));
+                 std::to_string(video_decoder_->GetHeight()) +
+                 (video_decoder_->IsHardwareDecoding() ? " (HW)" : " (SW)"));
     }
 
     // 初始化音频解码器
@@ -692,6 +714,15 @@ void MediaPlayer::DecodeThread() {
 
     if (sws_ctx) { sws_freeContext(sws_ctx); sws_ctx = nullptr; }
     av_packet_free(&packet);
+}
+
+bool MediaPlayer::IsHardwareDecoding() const {
+    return video_decoder_ && video_decoder_->IsHardwareDecoding();
+}
+
+std::string MediaPlayer::GetHwDeviceName() const {
+    if (!video_decoder_ || !video_decoder_->IsHardwareDecoding()) return "none";
+    return av_hwdevice_get_type_name(video_decoder_->GetHwDeviceType());
 }
 
 void MediaPlayer::Cleanup() {

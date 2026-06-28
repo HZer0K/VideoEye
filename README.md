@@ -21,17 +21,19 @@ VideoEye 是一款开源的视频流分析软件,支持多种视频输入源(HTT
 - 🔍 **帧分析**: 直方图分析（可选）
 - 📋 **媒体信息**: 使用 [MediaInfo](https://github.com/MediaArea/MediaInfoLib) 显示完整的媒体文件元数据（格式、编码、码率、分辨率、音轨、字幕等）
 - 🎵 **纯音频律动**: 打开仅音频文件时在视频区域显示音频律动
-- 🎶 **音频波形与频谱**: 在分析面板实时查看音频波形快照与频谱快照
+- 🎶 **音频波形与频谱**: 在分析面板实时查看音频波形快照与频谱快照（基于 FFT 高性能计算）
 - 📈 **数据可视化**: 图表化展示分析结果
 - 🖼️ **导出每一帧**: 支持将视频的每一帧导出为 JPG / RGB / YUV
 - 🧾 **打开原始图像**: 支持直接打开 .yuv / .rgb 原始图像（需输入宽高）
-- 📦 **MP4 Box 分析**: 基于 [Bento4](https://github.com/axiomatic-systems/Bento4) 引擎解析 MP4 容器格式，展示完整 Box 树（ftyp/moov/trak/stbl 等）并提取 stts/stco/stsc/stsz 等关键表的明细数据
+- 📦 **多格式容器结构分析**: 统一调度解析 MP4/MOV、MKV/WebM、AVI、FLV、MPEG-TS、ASF/WMV、OGG 七种容器格式，自动回退 FFmpeg 通用分析
+- ⚡ **硬件解码加速**: 支持 VAAPI/CUDA/VDPAU/VideoToolbox/D3D11VA/DXVA2/QSV 多种硬件加速，自动探测可用设备并回退软件解码
 
 ### 技术特性
 - ✅ 现代化 C++17 代码
 - ✅ 跨平台支持 (Windows / Linux / macOS)
 - ✅ 多线程解码
-- ✅ 硬件加速支持 (可选)
+- ✅ 硬件加速解码 (VAAPI/CUDA/VideoToolbox/D3D11VA 等，自动探测与回退)
+- ✅ FFT 频谱计算 (Cooley-Tukey 算法，预计算表优化)
 - ✅ 响应式 UI 设计
 
 ## 🏗️ 技术栈
@@ -139,23 +141,33 @@ devenv VideoEye.sln /build Release
 VideoEye/
 ├── core/                    # 核心业务层
 │   ├── player/             # 播放器引擎
-│   │   ├── MediaPlayer.cpp/h      # 媒体播放器
-│   │   ├── Decoders.cpp/h         # 音视频解码器
-│   │   └── SyncManager.cpp/h      # 音视频同步
+│   │   ├── MediaPlayer.cpp/h      # 媒体播放器 (薄协调层)
+│   │   ├── Decoders.cpp/h         # 音视频解码器 (含硬件加速)
+│   │   ├── PlaybackClock.h        # 播放节奏控制
+│   │   ├── StreamInfoExtractor.cpp/h  # 流元数据提取
+│   │   ├── AudioVisualizer.cpp/h  # 音频可视化 (FFT 频谱)
+│   │   └── VideoFrameExporter.cpp/h   # 视频帧导出
 │   ├── analyzer/           # 分析引擎
 │   │   ├── StreamAnalyzer.cpp/h   # 流分析
 │   │   ├── FrameAnalyzer.cpp/h    # 帧分析
 │   │   ├── MediaInfoAnalyzer.cpp/h # MediaInfo 封装
-│   │   └── Mp4BoxAnalyzer.cpp/h   # MP4 Box 分析 (基于 Bento4)
+│   │   ├── FormatDetector.cpp/h   # 容器格式魔数检测
+│   │   ├── ContainerStructureAnalyzer.cpp/h  # 容器结构统一调度器
+│   │   ├── Mp4BoxAnalyzer.cpp/h   # MP4 Box 分析 (基于 Bento4)
+│   │   ├── EbmlAnalyzer.cpp/h     # MKV/WebM EBML 结构解析
+│   │   ├── AviStructureAnalyzer.cpp/h   # AVI RIFF 结构解析
+│   │   ├── FlvStructureAnalyzer.cpp/h   # FLV Tag 结构解析
+│   │   ├── TsStructureAnalyzer.cpp/h    # MPEG-TS 结构解析
+│   │   ├── AsfStructureAnalyzer.cpp/h   # ASF/WMV Object 结构解析
+│   │   └── OggStructureAnalyzer.cpp/h   # OGG Page 结构解析
 │   ├── io/                 # 输入输出
 │   └── model/              # 数据模型
-│       └── Mp4BoxInfo.h          # MP4 Box 数据结构
 ├── ui/                     # UI层
 │   ├── main_window/        # 主窗口
 │   ├── player_controls/    # 播放控制
 │   └── analysis_panel/     # 分析面板
 ├── utils/                  # 工具类
-├── tests/                  # 测试
+├── tests/                  # 测试 (GoogleTest, 6 suites, 115 cases)
 ├── third_party/            # 第三方库
 │   ├── Bento4/             # Bento4 MP4 解析引擎 (submodule)
 │   ├── FFmpeg/             # FFmpeg 8.1 源码 (源码编译集成)
