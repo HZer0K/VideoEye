@@ -81,3 +81,4 @@ build-release/_deps/gtest-*
 
 # 日志文件
 *.log
+local_docs/
