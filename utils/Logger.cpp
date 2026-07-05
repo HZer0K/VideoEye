@@ -119,7 +119,11 @@ std::string Logger::GetCurrentTime() const {
         now.time_since_epoch()) % 1000;
     
     std::tm tm_buf;
+#ifdef _WIN32
+    localtime_s(&tm_buf, &time_t);
+#else
     localtime_r(&time_t, &tm_buf);
+#endif
     
     std::ostringstream oss;
     oss << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S")

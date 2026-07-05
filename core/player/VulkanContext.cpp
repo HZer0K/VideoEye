@@ -208,11 +208,11 @@ bool VulkanContext::CreateLogicalDevice() {
         queue_infos.push_back(qinfo);
     }
 
-    // FFmpeg Vulkan 所需设备扩展
-    const char* required_dev_exts[] = {};
+    // FFmpeg Vulkan 所需设备扩展（当前为空，后续按需添加）
+    const char* required_dev_exts[] = {nullptr};
     std::vector<const char*> enabled_dev_extensions;
     for (auto* ext : required_dev_exts) {
-        enabled_dev_extensions.push_back(ext);
+        if (ext) enabled_dev_extensions.push_back(ext);
     }
 
     VkDeviceCreateInfo device_info{};
@@ -277,8 +277,10 @@ bool VulkanContext::CreateFFmpegDeviceContext() {
     }
 
     // 设置兼容旧 API 的字段（FF_API_VULKAN_FIXED_QUEUES，已弃用但仍需设置）
+#ifdef __GNUC__
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
     hw_ctx->queue_family_index = static_cast<int>(graphics_qf_);
     hw_ctx->nb_graphics_queues = (graphics_qf_ != UINT32_MAX) ? 1 : 0;
     hw_ctx->queue_family_tx_index = static_cast<int>(transfer_qf_);
@@ -289,7 +291,9 @@ bool VulkanContext::CreateFFmpegDeviceContext() {
     hw_ctx->nb_encode_queues = 0;
     hw_ctx->queue_family_decode_index = -1;
     hw_ctx->nb_decode_queues = 0;
+#ifdef __GNUC__
 #pragma GCC diagnostic pop
+#endif
 
     int ret = av_hwdevice_ctx_init(hw_device_ctx_);
     if (ret < 0) {

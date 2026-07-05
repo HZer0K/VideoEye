@@ -12,6 +12,7 @@ out/
 *.swo
 *~
 .DS_Store
+.workbuddy/
 
 # CMake生成文件
 CMakeCache.txt
@@ -63,7 +64,10 @@ coverage/
 
 # 日志文件
 *.log
-local_docs/
+docs/
+
+# vcpkg 安装目录
+vcpkg_installed/
 
 # 二进制工具 (开发者自行安装)
 tools/

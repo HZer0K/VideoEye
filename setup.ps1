@@ -122,6 +122,17 @@ if ($vcpkgRoot) {
     }
 }
 
+# 如果 vcpkg toolchain 不可用，但 vcpkg_installed 目录存在 (manifest 模式安装过)
+# 则设置 CMAKE_PREFIX_PATH 让 CMake 能找到已安装的包
+$vcpkgInstalled = "$DIR\vcpkg_installed\x64-windows"
+if ((-not $vcpkgRoot -or -not (Test-Path $toolchain)) -and (Test-Path $vcpkgInstalled)) {
+    $cmakeArgs += "-DCMAKE_PREFIX_PATH=$vcpkgInstalled"
+    Write-Host "  使用 vcpkg_installed: $vcpkgInstalled"
+}
+
+# 跳过测试（测试文件尚未创建）
+$cmakeArgs += "-DBUILD_TESTING=OFF"
+
 cmake @cmakeArgs
 if ($LASTEXITCODE -ne 0) { throw "CMake 配置失败" }
 
