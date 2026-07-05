@@ -1,4 +1,4 @@
-# VideoEye 开发环境初始化脚本 (Windows PowerShell)
+﻿# VideoEye 开发环境初始化脚本 (Windows PowerShell)
 # 用法: .\setup.ps1 [-SkipDeps] [-BuildOnly] [-Debug]
 param(
     [switch]$SkipDeps,
