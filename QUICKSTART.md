@@ -12,56 +12,86 @@ cd VideoEye
 ### 2. 一键构建
 
 ```bash
+# Linux / macOS
 ./setup.sh
+
+# Windows (PowerShell)
+.\setup.ps1
 ```
 
-脚本会自动完成：子模块初始化 → FFmpeg 下载 → 依赖检查 → 编译。首次构建需 3-8 分钟（含 FFmpeg 编译）。
+脚本自动完成：子模块初始化 → FFmpeg 下载 → 依赖检查 → 编译。首次构建需 3-8 分钟（含 FFmpeg 编译）。
 
 ### 3. 运行
 
 ```bash
+# Linux / macOS
 build/bin/VideoEye
+
+# Windows
+build\bin\Release\VideoEye.exe
 ```
 
 ---
 
 ## 手动构建
 
-如果不想用 `setup.sh`，可以手动执行：
+### Linux (Ubuntu/Debian)
 
 ```bash
-# 安装系统依赖 (Ubuntu/Debian)
 sudo apt install -y build-essential cmake nasm yasm \
     qt6-base-dev qt6-multimedia-dev qt6-charts-dev \
-    libopencv-dev libsdl2-dev
+    libopencv-dev libsdl2-dev libvulkan-dev glslc
 
-# 可选: Vulkan 硬件加速
-sudo apt install -y libvulkan-dev glslc
-
-# 克隆并初始化
-git clone --recursive <repo-url>
-cd VideoEye
+git clone --recursive <repo-url> && cd VideoEye
 git submodule update --init --recursive
-cd third_party
-git clone --depth 1 --branch n8.1 https://github.com/FFmpeg/FFmpeg.git FFmpeg
-cd ..
+git clone --depth 1 --branch n8.1 https://github.com/FFmpeg/FFmpeg.git third_party/FFmpeg
 
-# 构建
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
+```
+
+### macOS
+
+```bash
+brew install cmake nasm qt@6 opencv sdl2 vulkan-sdk
+
+git clone --recursive <repo-url> && cd VideoEye
+git submodule update --init --recursive
+git clone --depth 1 --branch n8.1 https://github.com/FFmpeg/FFmpeg.git third_party/FFmpeg
+
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j$(sysctl -n hw.ncpu)
+```
+
+### Windows (PowerShell)
+
+```powershell
+git clone https://github.com/Microsoft/vcpkg.git C:\vcpkg
+C:\vcpkg\bootstrap-vcpkg.bat
+vcpkg install opencv4 sdl2 qt6-base qt6-multimedia qt6-charts
+
+git clone --recursive <repo-url> ; cd VideoEye
+git submodule update --init --recursive
+git clone --depth 1 --branch n8.1 https://github.com/FFmpeg/FFmpeg.git third_party/FFmpeg
+
+mkdir build ; cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
+cmake --build . --config Release
 ```
 
 ---
 
 ## 构建选项
 
-| 命令 | 说明 |
-|------|------|
-| `./setup.sh` | 完整初始化 (子模块 + FFmpeg + 编译 Release) |
-| `./setup.sh --debug` | Debug 构建 |
-| `./setup.sh --build-only` | 仅编译，跳过下载 |
-| `./setup.sh --skip-deps` | 跳过系统依赖检查 |
+| 命令 | 平台 | 说明 |
+|------|------|------|
+| `./setup.sh` | Linux/macOS | 完整初始化 + 编译 Release |
+| `.\setup.ps1` | Windows | 完整初始化 + 编译 Release |
+| `--debug` | 全平台 | Debug 构建 |
+| `--build-only` | 全平台 | 仅编译，跳过下载 |
+| `--skip-deps` | 全平台 | 跳过系统依赖检查 |
 
 ---
 

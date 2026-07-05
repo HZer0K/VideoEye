@@ -55,51 +55,55 @@ VideoEye 是一款开源的视频流分析软件,支持多种视频输入源(HTT
 
 ## 📦 安装依赖
 
-### 一步到位 (推荐)
+### 一键构建 (推荐)
 
-项目提供 `setup.sh` 脚本，自动完成依赖检查、子模块初始化和编译：
+项目提供跨平台初始化脚本，自动完成依赖检查、子模块初始化和编译：
+
+| 平台 | 命令 |
+|------|------|
+| **Linux / macOS** | `./setup.sh` |
+| **Windows** (PowerShell) | `.setup.ps1` |
 
 ```bash
+# Linux / macOS
 ./setup.sh
+
+# Windows (PowerShell)
+.setup.ps1
 ```
+
+脚本支持选项：`--debug` (Debug构建) / `--skip-deps` (跳过依赖检查) / `--build-only` (仅编译)
 
 ### 手动安装系统依赖
 
 #### Ubuntu/Debian
 
 ```bash
-sudo apt update
 sudo apt install -y \
     build-essential cmake nasm yasm \
     qt6-base-dev qt6-multimedia-dev qt6-charts-dev \
-    libopencv-dev \
-    libsdl2-dev
-
+    libopencv-dev libsdl2-dev
 # 可选: Vulkan 硬件加速
 sudo apt install -y libvulkan-dev glslc
 ```
 
-> **注意**: FFmpeg 8.1 从源码编译集成，无需安装系统 FFmpeg 包。
-> 编译 FFmpeg 需要 `nasm` 或 `yasm` 汇编器。
-> Vulkan SDK >= 1.3.277 可启用 FFmpeg Vulkan 硬件解码，低于此版本会自动跳过。
-
 #### macOS
 
 ```bash
-brew install cmake nasm yasm qt@6 opencv sdl2
+brew install cmake nasm qt@6 opencv sdl2
 # 可选: Vulkan SDK (MoltenVK)
 brew install vulkan-sdk
 ```
 
-#### Windows
+#### Windows (vcpkg)
 
-推荐使用 [vcpkg](https://vcpkg.io/) 管理依赖:
-
-```bash
-git clone https://github.com/Microsoft/vcpkg.git
-cd vcpkg && ./bootstrap-vcpkg.bat
-./vcpkg install opencv4 sdl2 qt6-base qt6-multimedia qt6-charts
+```powershell
+git clone https://github.com/Microsoft/vcpkg.git C:\vcpkg
+C:\vcpkg\bootstrap-vcpkg.bat
+vcpkg install opencv4 sdl2 qt6-base qt6-multimedia qt6-charts
 ```
+
+> **注意**: FFmpeg 8.1 由 setup 脚本或 CMake 从源码编译，无需手动安装。编译器需 `nasm`/`yasm`。
 
 ## 🔨 构建指南
 
@@ -110,15 +114,19 @@ cd vcpkg && ./bootstrap-vcpkg.bat
 git clone --recursive https://github.com/yourusername/VideoEye.git
 cd VideoEye
 
-# 一键初始化 + 编译
+# Linux / macOS
 ./setup.sh
 
-# 运行
-build/bin/VideoEye
+# Windows (PowerShell)
+.\setup.ps1
 ```
 
-> `setup.sh` 自动完成：Git 子模块初始化 → FFmpeg 源码下载 → 系统依赖检查 → CMake 配置 → 编译。
-> 使用 `./setup.sh --debug` 构建 Debug 版本，`./setup.sh --build-only` 仅编译。
+脚本自动完成：Git 子模块初始化 → FFmpeg 源码下载 → 系统依赖检查 → CMake 配置 → 编译。
+支持选项：`--debug` / `--skip-deps` / `--build-only`
+
+运行：
+- Linux/macOS: `build/bin/VideoEye`
+- Windows: `build\bin\Release\VideoEye.exe`
 
 ### 手动构建
 
