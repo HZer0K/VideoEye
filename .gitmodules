@@ -1,0 +1,12 @@
+[submodule "third_party/vulkan-headers"]
+	path = third_party/vulkan-headers
+	url = https://github.com/KhronosGroup/Vulkan-Headers.git
+[submodule "third_party/Bento4"]
+	path = third_party/Bento4
+	url = https://github.com/axiomatic-systems/Bento4.git
+[submodule "third_party/ZenLib"]
+	path = third_party/ZenLib
+	url = https://github.com/MediaArea/ZenLib.git
+[submodule "third_party/MediaInfoLib"]
+	path = third_party/MediaInfoLib
+	url = https://github.com/MediaArea/MediaInfoLib.git
