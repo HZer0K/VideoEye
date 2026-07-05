@@ -8,6 +8,7 @@
       "name": "qt6",
       "features": ["qtbase", "qtmultimedia", "qtcharts"]
     },
-    "sdl2"
+    "sdl2",
+    "zlib"
   ]
 }
