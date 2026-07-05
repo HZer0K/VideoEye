@@ -24,7 +24,7 @@
 ┌────────────────────────▼────────────────────────────────────┐
 │                    外部依赖库                                │
 ├─────────────────────────────────────────────────────────────┤
-│  FFmpeg 8.1 (源码编译) │   OpenCV   │   SDL2   │   ...   │
+│  FFmpeg 8.1 (Vulkan)│ OpenCV │ SDL2 │ Vulkan │ Bento4 │ ... │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -70,26 +70,56 @@ class MediaPlayer : public QObject {
 
 **关键设计**:
 - 使用 `avcodec_send_packet` / `avcodec_receive_frame`
-- 硬件加速: 自动探测 VAAPI/CUDA/VDPAU/VideoToolbox/D3D11VA/DXVA2/QSV
-- HW 帧自动下载到系统内存
+- 硬件加速: 自动探测 Vulkan/VAAPI/CUDA/VDPAU/VideoToolbox/D3D11VA/DXVA2/QSV
+- Vulkan 优先: 通过 VulkanContext 共享设备上下文，支持零拷贝帧访问
+- HW 帧自动下载到系统内存 (兼容模式) 或保留在 GPU (零拷贝模式)
 - RAII 管理 FFmpeg 资源
 
 ```cpp
 class VideoDecoder {
 public:
     bool Initialize(AVCodecParameters* params);           // 软件解码
-    bool InitializeWithHw(AVCodecParameters* params,      // 硬件解码
+    bool InitializeWithHw(AVCodecParameters* params,      // 硬件解码 (VAAPI/CUDA/...)
                           AVHWDeviceType hw_type);
+    bool InitializeWithVulkanDevice(AVCodecParameters*,   // Vulkan 硬件解码
+                                     AVBufferRef* vk_ctx);
     static std::vector<AVHWDeviceType> GetAvailableHwDeviceTypes();
     bool IsHardwareDecoding() const;
+    bool IsCurrentFrameVulkan() const;                    // 当前帧是否 Vulkan 格式
+    const AVFrame* GetLastRawFrame() const;               // 零拷贝帧访问
     bool DecodePacket(AVPacket* packet, FrameData& output);
     
 private:
     bool DownloadHwFrame(AVFrame* sw_frame);  // HW 帧 → CPU
     AVBufferRef* hw_device_ctx_ = nullptr;
     AVHWDeviceType hw_device_type_ = AV_HWDEVICE_TYPE_NONE;
+    bool zero_copy_enabled_ = false;          // Vulkan 零拷贝模式
 };
 ```
+
+#### VulkanContext 类 (GPU 设备管理)
+
+**职责**: 管理 Vulkan 实例/物理设备/逻辑设备，桥接 FFmpeg AVBufferRef
+
+**关键设计**:
+- 动态版本协商: `vkEnumerateInstanceVersion()` 检测驱动支持的最高 API 版本
+- 优先独显 (DISCRETE_GPU)，回退任意设备
+- 队列族分离: graphics / compute / transfer 独立查找
+- `AVVulkanDeviceContext` 填充后通过 `av_hwdevice_ctx_init()` 交付 FFmpeg
+
+#### VulkanRenderer 类 (GPU 渲染管线)
+
+**职责**: 替代 `sws_scale → QImage → QLabel` CPU 渲染路径
+
+**管线流程**:
+```
+AVFrame (VK/NV12) → staging upload → Y/UV textures
+  → Compute Shader (YUV→RGB, BT.709)
+  → Graphics Pipeline (fullscreen triangle)
+  → vkQueuePresentKHR (display)
+```
+- 双模式: 零拷贝 Vulkan 帧 + CPU 上传 SW 帧
+- MAX_FRAMES_IN_FLIGHT=2 同步 + swapchain 自适应重建
 
 #### AudioVisualizer 类 (FFT 优化)
 
@@ -557,7 +587,9 @@ TEST(MediaPlayerTest, PlayLocalFile) {
 - [x] 单元测试 (6 suites, 115 cases)
 - [x] MediaPlayer 拆分重构 (PlaybackClock/StreamInfoExtractor/AudioVisualizer/VideoFrameExporter)
 - [x] FFT 性能优化 (Cooley-Tukey 算法，预计算表)
-- [x] 硬件解码支持 (VAAPI/CUDA/VideoToolbox/D3D11VA 等，自动探测与回退)
+- [x] 硬件解码支持 (Vulkan/VAAPI/CUDA/VideoToolbox/D3D11VA 等，自动探测与回退)
+- [x] Vulkan GPU 渲染管线 (YUV→RGB compute shader + 零拷贝 present)
+- [x] 一键环境初始化脚本 (setup.sh)
 - [x] 容器分析调度完善 (丰富流信息、格式回退、统一入口)
 - [ ] 完善 UI
 

@@ -73,13 +73,9 @@ void MainWindow::SetupUI() {
     main_layout->addWidget(splitter_);
     
     // 视频显示区域
-    video_label_ = new QLabel(splitter_);
-    video_label_->setMinimumSize(320, 160);
-    video_label_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    video_label_->setStyleSheet("background-color: black;");
-    video_label_->setAlignment(Qt::AlignCenter);
-    video_label_->setText(tr("视频显示区域"));
-    video_label_->setStyleSheet("background-color: black; color: white; font-size: 20px;");
+    video_widget_ = new VulkanVideoWidget(splitter_);
+    video_widget_->setMinimumSize(320, 160);
+    video_widget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     
     bottom_widget_ = new QWidget(splitter_);
     bottom_widget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -161,7 +157,7 @@ void MainWindow::SetupUI() {
         + bottom_layout->contentsMargins().bottom()
         + bottom_layout->spacing());
 
-    splitter_->addWidget(video_label_);
+    splitter_->addWidget(video_widget_);
     splitter_->addWidget(bottom_widget_);
 
     splitter_->setCollapsible(0, false);
@@ -188,7 +184,7 @@ void MainWindow::SetupUI() {
 }
 
 void MainWindow::UpdateMinimumWindowSize() {
-    const int video_min = video_label_ ? video_label_->minimumHeight() : 160;
+    const int video_min = video_widget_ ? video_widget_->minimumHeight() : 160;
     int bottom_min = 0;
     if (bottom_widget_) {
         bottom_min = bottom_widget_->minimumHeight();
@@ -932,9 +928,7 @@ bool MainWindow::ShowRawFrame(int frame_index) {
     }
 
     raw_current_frame_ = frame_index;
-    video_label_->setPixmap(QPixmap::fromImage(img).scaled(video_label_->size(),
-                                                           Qt::KeepAspectRatio,
-                                                           Qt::SmoothTransformation));
+    video_widget_->SetFallbackImage(img);
     UpdateRawNavigationState();
     statusBar()->showMessage(tr("Raw 帧 %1 / %2").arg(raw_current_frame_ + 1).arg(raw_total_frames_));
     return true;
@@ -999,9 +993,7 @@ void MainWindow::OnPlayPause() {
 }
 
 void MainWindow::ResetVideoUI() {
-    video_label_->clear();
-    video_label_->setText(tr("视频显示区域"));
-    video_label_->setStyleSheet("background-color: black; color: white; font-size: 20px;");
+    video_widget_->Clear();
     seek_slider_->setValue(0);
     seek_slider_->setRange(0, 0);
     time_label_->setText(tr("00:00 / 00:00"));
@@ -1100,10 +1092,7 @@ void MainWindow::OnFrameReady(const QImage& frame) {
         return;
     }
     
-    QPixmap pixmap = QPixmap::fromImage(frame);
-    video_label_->setPixmap(pixmap.scaled(video_label_->size(), 
-                                          Qt::KeepAspectRatio,
-                                          Qt::SmoothTransformation));
+    video_widget_->SetFallbackImage(frame);
 }
 
 void MainWindow::OnPositionChanged(int position_ms, int duration_ms) {
@@ -1166,8 +1155,7 @@ void MainWindow::OnMediaModeChanged(bool has_video) {
     smoothed_spectrum_bins_.clear();
     if (audio_only_mode_) {
         // 保留已有的专辑封面，不清除 album_cover_
-        video_label_->clear();
-        video_label_->setStyleSheet("background-color: black;");
+        video_widget_->Clear();
     } else {
         album_cover_ = QImage();
     }
@@ -1224,8 +1212,8 @@ void MainWindow::RenderAudioVisualization(double timestamp_seconds) {
     const double alpha = 1.0 - std::exp(-dt / std::max(1e-6, tau));
     audio_vis_smoothed_ += (audio_vis_target_ - audio_vis_smoothed_) * std::clamp(alpha, 0.0, 1.0);
 
-    const int w = std::max(1, video_label_->width());
-    const int h = std::max(1, video_label_->height());
+    const int w = std::max(1, video_widget_->width());
+    const int h = std::max(1, video_widget_->height());
 
     QImage img(w, h, QImage::Format_ARGB32);
 
@@ -1452,7 +1440,7 @@ void MainWindow::RenderAudioVisualization(double timestamp_seconds) {
                          .arg(timestamp_seconds, 0, 'f', 3)
                          .arg(audio_vis_smoothed_, 0, 'f', 3));
 
-    video_label_->setPixmap(QPixmap::fromImage(img));
+    video_widget_->SetFallbackImage(img);
 }
 
 void MainWindow::OnVideoFrameExportProgress(int exported_frames) {

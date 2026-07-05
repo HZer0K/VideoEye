@@ -2,7 +2,6 @@
 
 #include <QMainWindow>
 #include <QWindow>
-#include <QLabel>
 #include <QPushButton>
 #include <QSlider>
 #include <QProgressBar>
@@ -22,6 +21,7 @@
 #include <QImage>
 
 #include "core/player/MediaPlayer.h"
+#include "ui/main_window/VulkanVideoWidget.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "core/analyzer/MediaInfoAnalyzer.h"
 #include "core/analyzer/EbmlAnalyzer.h"
@@ -96,7 +96,7 @@ protected:
     player::MediaPlayer* player_;
     
     // UI组件
-    QLabel* video_label_;           // 视频显示
+    VulkanVideoWidget* video_widget_;  // 视频显示 (Vulkan + 回退)
     QSplitter* splitter_;           // 主分割器
     QWidget* bottom_widget_;        // 下半区容器
     QGroupBox* control_group_;      // 播放控制容器

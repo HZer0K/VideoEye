@@ -26,14 +26,17 @@ VideoEye 是一款开源的视频流分析软件,支持多种视频输入源(HTT
 - 🖼️ **导出每一帧**: 支持将视频的每一帧导出为 JPG / RGB / YUV
 - 🧾 **打开原始图像**: 支持直接打开 .yuv / .rgb 原始图像（需输入宽高）
 - 📦 **多格式容器结构分析**: 统一调度解析 MP4/MOV、MKV/WebM、AVI、FLV、MPEG-TS、ASF/WMV、OGG 七种容器格式，自动回退 FFmpeg 通用分析
-- ⚡ **硬件解码加速**: 支持 VAAPI/CUDA/VDPAU/VideoToolbox/D3D11VA/DXVA2/QSV 多种硬件加速，自动探测可用设备并回退软件解码
+- ⚡ **硬件解码加速**: 支持 Vulkan/VAAPI/CUDA/VDPAU/VideoToolbox/D3D11VA/DXVA2/QSV 多种硬件加速，自动探测可用设备并回退软件解码
+- 🖥️ **Vulkan 渲染管线**: GPU 零拷贝 YUV→RGB 转换 + 全屏呈现，显著降低 CPU 占用（需 Vulkan 驱动）
 
 ### 技术特性
 - ✅ 现代化 C++17 代码
 - ✅ 跨平台支持 (Windows / Linux / macOS)
 - ✅ 多线程解码
-- ✅ 硬件加速解码 (VAAPI/CUDA/VideoToolbox/D3D11VA 等，自动探测与回退)
+- ✅ Vulkan 硬件解码 + GPU 渲染管线（动态版本协商，无兼容驱动时自动回退）
+- ✅ VAAPI/CUDA/VideoToolbox/D3D11VA 等传统硬件加速（自动探测与回退）
 - ✅ FFT 频谱计算 (Cooley-Tukey 算法，预计算表优化)
+- ✅ 一键环境初始化脚本 (setup.sh)
 - ✅ 响应式 UI 设计
 
 ## 🏗️ 技术栈
@@ -41,7 +44,8 @@ VideoEye 是一款开源的视频流分析软件,支持多种视频输入源(HTT
 | 组件 | 技术 | 版本 |
 |------|------|------|
 | GUI框架 | Qt 6 | 6.0+ |
-| 多媒体 | FFmpeg | 8.1 (源码编译) |
+| 多媒体 | FFmpeg | 8.1 (源码编译，含 Vulkan 支持) |
+| GPU 渲染 | Vulkan | 1.0+ (自动版本协商) |
 | 媒体元数据 | MediaInfoLib | 26.05 (源码集成) |
 | 计算机视觉 | OpenCV | 4.8+ |
 | 音频输出 | SDL 2 | 2.0+ |
@@ -51,7 +55,17 @@ VideoEye 是一款开源的视频流分析软件,支持多种视频输入源(HTT
 
 ## 📦 安装依赖
 
-### Ubuntu/Debian
+### 一步到位 (推荐)
+
+项目提供 `setup.sh` 脚本，自动完成依赖检查、子模块初始化和编译：
+
+```bash
+./setup.sh
+```
+
+### 手动安装系统依赖
+
+#### Ubuntu/Debian
 
 ```bash
 sudo apt update
@@ -60,70 +74,73 @@ sudo apt install -y \
     qt6-base-dev qt6-multimedia-dev qt6-charts-dev \
     libopencv-dev \
     libsdl2-dev
+
+# 可选: Vulkan 硬件加速
+sudo apt install -y libvulkan-dev glslc
 ```
 
 > **注意**: FFmpeg 8.1 从源码编译集成，无需安装系统 FFmpeg 包。
 > 编译 FFmpeg 需要 `nasm` 或 `yasm` 汇编器。
+> Vulkan SDK >= 1.3.277 可启用 FFmpeg Vulkan 硬件解码，低于此版本会自动跳过。
 
-### macOS
+#### macOS
 
 ```bash
 brew install cmake nasm yasm qt@6 opencv sdl2
+# 可选: Vulkan SDK (MoltenVK)
+brew install vulkan-sdk
 ```
 
-### Windows
+#### Windows
 
 推荐使用 [vcpkg](https://vcpkg.io/) 管理依赖:
 
 ```bash
-# 安装 vcpkg
 git clone https://github.com/Microsoft/vcpkg.git
-cd vcpkg
-./bootstrap-vcpkg.bat  # Windows
-# ./bootstrap-vcpkg.sh  # Linux/macOS
-
-# 安装依赖 (FFmpeg 从源码编译，无需 vcpkg 安装)
+cd vcpkg && ./bootstrap-vcpkg.bat
 ./vcpkg install opencv4 sdl2 qt6-base qt6-multimedia qt6-charts
 ```
 
 ## 🔨 构建指南
 
-### CMake 构建
+### 一键构建 (推荐)
 
 ```bash
-# 克隆项目
-git clone https://github.com/yourusername/VideoEye.git
+# 克隆项目（含所有子模块）
+git clone --recursive https://github.com/yourusername/VideoEye.git
 cd VideoEye
 
-# 初始化第三方依赖 (Bento4 submodule)
-git submodule update --init --recursive
-
-# 拉取 MediaInfoLib 及 ZenLib 源码 (源码集成，方便客制化)
-cd third_party
-git clone --depth 1 https://github.com/MediaArea/ZenLib.git
-git clone --depth 1 https://github.com/MediaArea/MediaInfoLib.git
-
-# 拉取 FFmpeg 8.1 源码 (源码编译集成)
-git clone --depth 1 --branch n8.1 https://git.ffmpeg.org/ffmpeg.git FFmpeg
-cd ..
-
-# 创建构建目录
-mkdir build && cd build
-
-# 配置项目
-cmake .. -DCMAKE_BUILD_TYPE=Release
-
-# 编译 (FFmpeg 会自动从源码编译)
-make -j$(nproc)  # Linux/macOS
-# 或者使用 Ninja
-# cmake .. -G Ninja && ninja
+# 一键初始化 + 编译
+./setup.sh
 
 # 运行
+build/bin/VideoEye
+```
+
+> `setup.sh` 自动完成：Git 子模块初始化 → FFmpeg 源码下载 → 系统依赖检查 → CMake 配置 → 编译。
+> 使用 `./setup.sh --debug` 构建 Debug 版本，`./setup.sh --build-only` 仅编译。
+
+### 手动构建
+
+```bash
+# 克隆 + 初始化子模块
+git clone --recursive https://github.com/yourusername/VideoEye.git
+cd VideoEye
+git submodule update --init --recursive
+
+# 下载 FFmpeg 源码 (setup.sh 自动处理，手动方式如下)
+cd third_party
+git clone --depth 1 --branch n8.1 https://github.com/FFmpeg/FFmpeg.git FFmpeg
+cd ..
+
+# 构建
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc)
 ./bin/VideoEye
 ```
 
 > **提示**: 首次构建会自动编译 FFmpeg 8.1 共享库（约 2-5 分钟），后续构建会跳过已完成的步骤。
-> 也可以使用项目根目录的 `build.sh` 脚本一键构建：`./build.sh release`
 
 ### Visual Studio (Windows)
 
@@ -142,42 +159,44 @@ VideoEye/
 ├── core/                    # 核心业务层
 │   ├── player/             # 播放器引擎
 │   │   ├── MediaPlayer.cpp/h      # 媒体播放器 (薄协调层)
-│   │   ├── Decoders.cpp/h         # 音视频解码器 (含硬件加速)
+│   │   ├── Decoders.cpp/h         # 音视频解码器 (含 Vulkan/VAAPI/CUDA 等硬件加速)
+│   │   ├── VulkanContext.cpp/h    # Vulkan 设备上下文管理
+│   │   ├── VulkanRenderer.cpp/h   # Vulkan GPU 渲染管线 (YUV→RGB compute + present)
 │   │   ├── PlaybackClock.h        # 播放节奏控制
 │   │   ├── StreamInfoExtractor.cpp/h  # 流元数据提取
 │   │   ├── AudioVisualizer.cpp/h  # 音频可视化 (FFT 频谱)
-│   │   └── VideoFrameExporter.cpp/h   # 视频帧导出
+│   │   ├── VideoFrameExporter.cpp/h   # 视频帧导出
+│   │   └── shaders/               # Vulkan 着色器
+│   │       ├── yuv2rgb.comp       #   YUV→RGB compute shader
+│   │       ├── present.vert       #   全屏三角形 vertex shader
+│   │       └── present.frag       #   RGB 采样 fragment shader
 │   ├── analyzer/           # 分析引擎
 │   │   ├── StreamAnalyzer.cpp/h   # 流分析
 │   │   ├── FrameAnalyzer.cpp/h    # 帧分析
 │   │   ├── MediaInfoAnalyzer.cpp/h # MediaInfo 封装
-│   │   ├── FormatDetector.cpp/h   # 容器格式魔数检测
-│   │   ├── ContainerStructureAnalyzer.cpp/h  # 容器结构统一调度器
-│   │   ├── Mp4BoxAnalyzer.cpp/h   # MP4 Box 分析 (基于 Bento4)
-│   │   ├── EbmlAnalyzer.cpp/h     # MKV/WebM EBML 结构解析
-│   │   ├── AviStructureAnalyzer.cpp/h   # AVI RIFF 结构解析
-│   │   ├── FlvStructureAnalyzer.cpp/h   # FLV Tag 结构解析
-│   │   ├── TsStructureAnalyzer.cpp/h    # MPEG-TS 结构解析
-│   │   ├── AsfStructureAnalyzer.cpp/h   # ASF/WMV Object 结构解析
-│   │   └── OggStructureAnalyzer.cpp/h   # OGG Page 结构解析
+│   │   └── ... (格式解析器)       # MP4/MKV/AVI/FLV/TS/ASF/OGG
 │   ├── io/                 # 输入输出
 │   └── model/              # 数据模型
 ├── ui/                     # UI层
 │   ├── main_window/        # 主窗口
+│   │   └── VulkanVideoWidget.cpp/h # Vulkan 渲染 QWidget (双模式: GPU+CPU回退)
 │   ├── player_controls/    # 播放控制
 │   └── analysis_panel/     # 分析面板
 ├── utils/                  # 工具类
-├── tests/                  # 测试 (GoogleTest, 6 suites, 115 cases)
-├── third_party/            # 第三方库
-│   ├── Bento4/             # Bento4 MP4 解析引擎 (submodule)
-│   ├── FFmpeg/             # FFmpeg 8.1 源码 (源码编译集成)
-│   ├── MediaInfoLib/       # MediaInfoLib 源码 (需手动拉取)
-│   ├── ZenLib/             # ZenLib 源码 (MediaInfo 依赖, 需手动拉取)
-│   └── mediainfo/          # MediaInfo 编译集成 CMakeLists
+├── tests/                  # 测试 (GoogleTest, 6 suites)
+├── third_party/            # 第三方库 (Git 子模块)
+│   ├── Bento4/             #   Bento4 MP4 解析引擎 (submodule)
+│   ├── vulkan-headers/     #   Vulkan 1.4 头文件 (submodule, FFmpeg 编译依赖)
+│   ├── ZenLib/             #   ZenLib 源码 (submodule)
+│   ├── MediaInfoLib/       #   MediaInfoLib 源码 (submodule)
+│   ├── FFmpeg/             #   FFmpeg 8.1 源码 (setup.sh 管理, .gitignore)
+│   └── CMakeLists.txt      #   第三方库构建配置
 ├── resources/              # 资源文件
 ├── cmake/                  # CMake配置
-│   └── BuildFFmpeg.cmake   # FFmpeg 源码编译模块
-├── build.sh                # Linux 一键构建脚本
+│   └── BuildFFmpeg.cmake   # FFmpeg 源码编译模块 (含 Vulkan 版本检测)
+├── tools/                  # 开发工具 (被 .gitignore, 按需安装)
+├── setup.sh                # 一键环境初始化脚本
+├── build.sh                # 构建脚本
 ├── CMakeLists.txt          # 主CMake文件
 └── README.md
 ```

@@ -39,20 +39,8 @@ qrc_*.cpp
 moc_*.cpp
 ui_*.h
 
-# FFmpeg 源码构建产物 (BUILD_IN_SOURCE)
-third_party/FFmpeg/config.h
-third_party/FFmpeg/config.mak
-third_party/FFmpeg/config_components.h
-third_party/FFmpeg/ffbuild/
-third_party/FFmpeg/libav*/*.o
-third_party/FFmpeg/libsw*/*.o
-third_party/FFmpeg/compat/
-third_party/FFmpeg/ffversion.h
-third_party/FFmpeg/libavcodec/*.so*
-third_party/FFmpeg/libavformat/*.so*
-third_party/FFmpeg/libavutil/*.so*
-third_party/FFmpeg/libswscale/*.so*
-third_party/FFmpeg/libswresample/*.so*
+# FFmpeg 源码 (由 setup.sh 管理, 非 Git 子模块)
+third_party/FFmpeg/
 
 # Bento4 构建产物
 third_party/Bento4/Build/Makefiles/build/
@@ -73,12 +61,13 @@ test_*
 *.gcno
 coverage/
 
-# GoogleTest 缓存 (FetchContent)
-build-debug/_deps/googletest-*
-build-debug/_deps/gtest-*
-build-release/_deps/googletest-*
-build-release/_deps/gtest-*
-
 # 日志文件
 *.log
 local_docs/
+
+# 二进制工具 (开发者自行安装)
+tools/
+*.deb
+
+# Vulkan-Headers 子模块 (Git submodule)
+# third_party/vulkan-headers/ 由 .gitmodules 管理

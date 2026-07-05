@@ -1,5 +1,117 @@
 # VideoEye 2.0 快速入门指南
 
+## 5 分钟快速开始
+
+### 1. 克隆项目
+
+```bash
+git clone --recursive https://github.com/yourusername/VideoEye.git
+cd VideoEye
+```
+
+### 2. 一键构建
+
+```bash
+./setup.sh
+```
+
+脚本会自动完成：子模块初始化 → FFmpeg 下载 → 依赖检查 → 编译。首次构建需 3-8 分钟（含 FFmpeg 编译）。
+
+### 3. 运行
+
+```bash
+build/bin/VideoEye
+```
+
+---
+
+## 手动构建
+
+如果不想用 `setup.sh`，可以手动执行：
+
+```bash
+# 安装系统依赖 (Ubuntu/Debian)
+sudo apt install -y build-essential cmake nasm yasm \
+    qt6-base-dev qt6-multimedia-dev qt6-charts-dev \
+    libopencv-dev libsdl2-dev
+
+# 可选: Vulkan 硬件加速
+sudo apt install -y libvulkan-dev glslc
+
+# 克隆并初始化
+git clone --recursive <repo-url>
+cd VideoEye
+git submodule update --init --recursive
+cd third_party
+git clone --depth 1 --branch n8.1 https://github.com/FFmpeg/FFmpeg.git FFmpeg
+cd ..
+
+# 构建
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc)
+```
+
+---
+
+## 构建选项
+
+| 命令 | 说明 |
+|------|------|
+| `./setup.sh` | 完整初始化 (子模块 + FFmpeg + 编译 Release) |
+| `./setup.sh --debug` | Debug 构建 |
+| `./setup.sh --build-only` | 仅编译，跳过下载 |
+| `./setup.sh --skip-deps` | 跳过系统依赖检查 |
+
+---
+
+## 测试
+
+```bash
+cd build && ctest --output-on-failure
+# 预期: 6/6 tests passed
+```
+
+---
+
+## 常见问题
+
+### Vulkan 硬件解码不工作
+
+```bash
+# 检查 Vulkan 驱动
+vulkaninfo --summary 2>/dev/null || echo "Vulkan 不可用"
+
+# 安装 Vulkan SDK
+sudo apt install libvulkan-dev
+
+# 若驱动版本太低 (< 1.3.277)，FFmpeg 会自动跳过 Vulkan 硬件解码
+# 软件解码正常工作，无需额外操作
+```
+
+### glslc 未找到
+
+```bash
+# 安装 shader 编译器
+sudo apt install glslc
+# 或从 https://vulkan.lunarg.com/ 下载 Vulkan SDK
+```
+
+### 构建内存不足
+
+```bash
+JOBS=2 ./setup.sh  # 限制并行编译数
+```
+
+---
+
+## 后续步骤
+
+- [完整文档](README.md)
+- [架构设计](docs/ARCHITECTURE.md)
+- [Vulkan 集成规划](local_docs/VULKAN_INTEGRATION_PLAN.md)
+# VideoEye 2.0 快速入门指南
+
 ## 🚀 5分钟快速开始
 
 ### 前置条件

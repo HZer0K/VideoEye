@@ -43,6 +43,25 @@ public:
     // 查询当前平台可用的硬件加速设备类型列表
     static std::vector<AVHWDeviceType> GetAvailableHwDeviceTypes();
 
+    // === Vulkan 帧访问 ===
+
+    // 获取当前解码帧的 AVFrame 指针 (零拷贝模式使用)
+    // 返回的 AVFrame 仅在下次 ReceiveFrame 调用前有效
+    const AVFrame* GetLastRawFrame() const { return frame_; }
+
+    // 当前帧是否为 Vulkan 格式
+    bool IsCurrentFrameVulkan() const {
+        return frame_ && frame_->format == AV_PIX_FMT_VULKAN;
+    }
+
+    // 设置零拷贝模式 (不下载到 CPU, 由外部直接读取 VkImage)
+    void SetZeroCopyEnabled(bool enable) { zero_copy_enabled_ = enable; }
+    bool IsZeroCopyEnabled() const { return zero_copy_enabled_; }
+
+    // 使用外部 Vulkan 设备上下文初始化 (与 InitializeWithHw 互斥)
+    bool InitializeWithVulkanDevice(AVCodecParameters* codec_params,
+                                     AVBufferRef* vk_device_ctx);
+
     // 解码流程拆分：先送包，再持续取出所有可用帧。
     bool SendPacket(AVPacket* packet);
     bool ReceiveFrame(model::FrameData& output_frame);
@@ -68,6 +87,7 @@ private:
     AVBufferRef* hw_device_ctx_ = nullptr;   // 硬件设备上下文
     AVHWDeviceType hw_device_type_ = AV_HWDEVICE_TYPE_NONE;
     AVPixelFormat hw_pix_fmt_ = AV_PIX_FMT_NONE;  // 硬件像素格式
+    bool zero_copy_enabled_ = false;
     int width_ = 0;
     int height_ = 0;
     AVPictureType last_pict_type_ = AV_PICTURE_TYPE_NONE;

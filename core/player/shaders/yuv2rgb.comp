@@ -1,0 +1,59 @@
+#version 450
+// YUV NV12 → RGB compute shader
+// workgroup: 16x16
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) uniform sampler2D y_tex;
+layout(set = 0, binding = 1) uniform sampler2D uv_tex;
+layout(set = 0, binding = 2, rgba8) uniform writeonly image2D output_img;
+
+layout(push_constant) uniform PushConstants {
+    vec2 texel_size;
+    int color_space;   // 0=BT.601, 1=BT.709, 2=BT.2020
+    int full_range;     // 0=limited, 1=full
+    int hdr_tonemap;    // 0=off, 1=reinhard
+} params;
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(output_img);
+    if (pos.x >= size.x || pos.y >= size.y) return;
+
+    vec2 uv = (vec2(pos) + 0.5) / vec2(size);
+
+    float y_val = texture(y_tex, uv).r;
+    float u_val = texture(uv_tex, uv).r;
+    float v_val = texture(uv_tex, uv).g;
+
+    // Range conversion
+    if (params.full_range == 0) {
+        y_val = (y_val - 16.0/255.0) * 255.0/219.0;
+        u_val = (u_val - 128.0/255.0) * 255.0/224.0;
+        v_val = (v_val - 128.0/255.0) * 255.0/224.0;
+    } else {
+        u_val -= 0.5;
+        v_val -= 0.5;
+    }
+
+    vec3 yuv = vec3(y_val, u_val, v_val);
+    vec3 rgb;
+
+    if (params.color_space == 0) {
+        // BT.601
+        rgb = mat3(1.0, 0.0, 1.402, 1.0, -0.344136, -0.714136, 1.0, 1.772, 0.0) * yuv;
+    } else if (params.color_space == 1) {
+        // BT.709
+        rgb = mat3(1.0, 0.0, 1.5748, 1.0, -0.1873, -0.4681, 1.0, 1.8556, 0.0) * yuv;
+    } else {
+        // BT.2020
+        rgb = mat3(1.0, 0.0, 1.4746, 1.0, -0.1646, -0.5714, 1.0, 1.8814, 0.0) * yuv;
+    }
+
+    // HDR tone mapping
+    if (params.hdr_tonemap == 1) {
+        rgb = rgb / (rgb + vec3(1.0));
+    }
+
+    imageStore(output_img, pos, vec4(clamp(rgb, 0.0, 1.0), 1.0));
+}

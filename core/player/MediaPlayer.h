@@ -19,6 +19,8 @@ extern "C" {
 #include "core/player/StreamInfoExtractor.h"
 #include "core/player/AudioVisualizer.h"
 #include "core/player/VideoFrameExporter.h"
+#include "core/player/VulkanContext.h"
+#include "core/player/VulkanRenderer.h"
 #include "core/model/AnalysisEvent.h"
 #include "core/model/AudioVisualizationFrame.h"
 #include "core/model/FrameData.h"
@@ -79,6 +81,10 @@ public:
     // 视频帧导出
     void StartVideoFrameExport(const QString& output_dir, const QString& format, int jpg_quality = 90, int frame_interval = 1);
     void CancelVideoFrameExport();
+
+    // Vulkan 渲染
+    void SetVulkanRenderer(VulkanRenderer* renderer);
+    void SetVulkanRenderingEnabled(bool enabled) { vulkan_rendering_enabled_ = enabled; }
     
     // 获取分析器
     analyzer::StreamAnalyzer& GetStreamAnalyzer() { return stream_analyzer_; }
@@ -139,6 +145,8 @@ private:
     AVFormatContext* format_ctx_ = nullptr;
     std::unique_ptr<VideoDecoder> video_decoder_;
     std::unique_ptr<AudioDecoder> audio_decoder_;
+    std::unique_ptr<VulkanContext> vulkan_ctx_;  // Vulkan 设备上下文
+    std::unique_ptr<VulkanRenderer> vulkan_renderer_;  // Vulkan 渲染器
     int video_stream_index_ = -1;
     int audio_stream_index_ = -1;
     
@@ -173,6 +181,7 @@ private:
     bool timeline_analysis_enabled_ = false;
     bool container_structure_enabled_ = true;
     bool hw_decoding_enabled_ = true;  // 默认尝试硬件解码
+    bool vulkan_rendering_enabled_ = false;  // Vulkan 渲染开关（阶段2）
     
     // 分析索引/状态
     int analysis_frame_counter_ = 0;

@@ -251,16 +251,40 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
         bool hw_initialized = false;
         // 尝试硬件解码
         if (hw_decoding_enabled_) {
-            auto hw_types = VideoDecoder::GetAvailableHwDeviceTypes();
-            for (auto hw_type : hw_types) {
-                if (video_decoder_->InitializeWithHw(video_stream->codecpar, hw_type)) {
-                    hw_initialized = true;
-                    LOG_INFO("HW decoding initialized: " +
-                             std::string(av_hwdevice_get_type_name(hw_type)));
-                    break;
+#ifdef HAVE_VULKAN
+            // 优先尝试 Vulkan (如果 VulkanContext 可用)
+            if (!vulkan_ctx_) {
+                vulkan_ctx_ = std::make_unique<VulkanContext>();
+                if (!vulkan_ctx_->Initialize()) {
+                    vulkan_ctx_.reset();  // Vulkan 不可用, 清理
                 }
             }
-            if (!hw_initialized && !hw_types.empty()) {
+            if (vulkan_ctx_ && vulkan_ctx_->IsValid()) {
+                if (video_decoder_->InitializeWithVulkanDevice(
+                        video_stream->codecpar,
+                        vulkan_ctx_->GetAvHwDeviceContext())) {
+                    hw_initialized = true;
+                    LOG_INFO("Vulkan HW decoding initialized");
+                } else {
+                    vulkan_ctx_.reset();  // Vulkan 解码初始化失败
+                }
+            }
+#endif
+
+            // 回退到其他 HW 方法 (VAAPI/CUDA/QSV...)
+            if (!hw_initialized) {
+                auto hw_types = VideoDecoder::GetAvailableHwDeviceTypes();
+                for (auto hw_type : hw_types) {
+                    if (hw_type == AV_HWDEVICE_TYPE_VULKAN) continue;  // 已尝试
+                    if (video_decoder_->InitializeWithHw(video_stream->codecpar, hw_type)) {
+                        hw_initialized = true;
+                        LOG_INFO("HW decoding initialized: " +
+                                 std::string(av_hwdevice_get_type_name(hw_type)));
+                        break;
+                    }
+                }
+            }
+            if (!hw_initialized) {
                 LOG_WARN("HW decoding not available, falling back to software");
             }
         }
@@ -571,7 +595,16 @@ void MediaPlayer::DecodeThread() {
                                           tr("检测到无效视频帧"), tr("视频帧的宽高或数据指针无效，已被跳过。"));
                         continue;
                     }
-                    if (frame_data.format >= 0) {
+
+                    // Vulkan 渲染路径: 零拷贝模式下使用 VulkanRenderer
+                    if (vulkan_rendering_enabled_ && vulkan_renderer_ &&
+                        video_decoder_->IsCurrentFrameVulkan()) {
+                        const AVFrame* raw = video_decoder_->GetLastRawFrame();
+                        if (raw) {
+                            vulkan_renderer_->PresentFrame(raw);
+                            // Continue analysis below (frame type, histogram, etc.)
+                        }
+                    } else if (frame_data.format >= 0) {
                         if (sws_src_w != frame_data.width || sws_src_h != frame_data.height || sws_src_fmt != frame_data.format) {
                             sws_src_w = frame_data.width; sws_src_h = frame_data.height; sws_src_fmt = frame_data.format;
                         }
@@ -729,8 +762,14 @@ void MediaPlayer::Cleanup() {
     if (format_ctx_) { avformat_close_input(&format_ctx_); format_ctx_ = nullptr; }
     video_decoder_.reset();
     audio_decoder_.reset();
+    vulkan_renderer_.reset();
+    vulkan_ctx_.reset();
     video_stream_index_ = -1;
     audio_stream_index_ = -1;
+}
+
+void MediaPlayer::SetVulkanRenderer(VulkanRenderer* renderer) {
+    vulkan_renderer_.reset(renderer);
 }
 
 } // namespace player

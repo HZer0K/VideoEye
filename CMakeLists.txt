@@ -24,6 +24,23 @@ find_package(PkgConfig REQUIRED)
 # FFmpeg - 从源码编译集成
 include(BuildFFmpeg)
 
+# Vulkan - 硬件加速和渲染
+# 使用 third_party/vulkan-headers (1.4.309) 替代系统旧版头文件
+set(VULKAN_HEADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/vulkan-headers")
+if(EXISTS "${VULKAN_HEADERS_DIR}/include/vulkan/vulkan_core.h")
+    set(VULKAN_CUSTOM_HEADERS ON)
+    message(STATUS "Using bundled Vulkan headers: ${VULKAN_HEADERS_DIR}")
+else()
+    set(VULKAN_CUSTOM_HEADERS OFF)
+endif()
+
+find_package(Vulkan QUIET)
+if(Vulkan_FOUND)
+    message(STATUS "Vulkan library found: ${Vulkan_LIBRARY}")
+else()
+    message(STATUS "Vulkan library not found, building without Vulkan support")
+endif()
+
 # OpenCV
 find_package(OpenCV REQUIRED COMPONENTS core imgproc objdetect)
 
@@ -93,6 +110,16 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${OpenCV_INCLUDE_DIRS}
     ${SDL2_INCLUDE_DIRS}
 )
+# 优先使用 bundled Vulkan 头文件，然后才是系统路径
+if(VULKAN_CUSTOM_HEADERS)
+    target_include_directories(${PROJECT_NAME} BEFORE PRIVATE
+        "${VULKAN_HEADERS_DIR}/include"
+    )
+elseif(Vulkan_FOUND AND Vulkan_INCLUDE_DIR)
+    target_include_directories(${PROJECT_NAME} BEFORE PRIVATE
+        "${Vulkan_INCLUDE_DIR}"
+    )
+endif()
 
 # 链接库
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -107,6 +134,16 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     mediainfo
     zen
 )
+if(Vulkan_FOUND)
+    target_link_libraries(${PROJECT_NAME} PRIVATE Vulkan::Vulkan)
+else()
+    # 即使 find_package(Vulkan) 失败，仍可尝试直接链接 libvulkan
+    find_library(VULKAN_LIB_RAW vulkan)
+    if(VULKAN_LIB_RAW AND VULKAN_CUSTOM_HEADERS)
+        target_link_libraries(${PROJECT_NAME} PRIVATE ${VULKAN_LIB_RAW})
+        message(STATUS "Linked Vulkan directly: ${VULKAN_LIB_RAW}")
+    endif()
+endif()
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
     BUILD_RPATH "${FFMPEG_SOURCE_LIB_DIR}"
@@ -121,6 +158,58 @@ add_dependencies(${PROJECT_NAME} ffmpeg_build)
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     ${Qt6_DEFINITIONS}
 )
+if(Vulkan_FOUND)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE HAVE_VULKAN=1)
+endif()
+
+# Shader 编译 (Vulkan SPIR-V)
+# 从系统 PATH 及常见 Vulkan SDK 路径查找 glslc
+find_program(GLSLC glslc
+    PATHS /opt/vulkansdk/*/bin
+          /usr/local/bin
+          /usr/bin
+)
+if(NOT GLSLC)
+    message(WARNING "glslc not found - Vulkan shader compilation disabled")
+    message(WARNING "Install: apt install glslc  or  download Vulkan SDK from https://vulkan.lunarg.com/")
+endif()
+if(GLSLC)
+    set(SHADER_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/core/player/shaders")
+    set(SHADER_OUT_DIR "${CMAKE_BINARY_DIR}/shaders")
+    file(MAKE_DIRECTORY ${SHADER_OUT_DIR})
+
+    set(SHADER_FILES
+        "${SHADER_SRC_DIR}/yuv2rgb.comp"
+        "${SHADER_SRC_DIR}/present.vert"
+        "${SHADER_SRC_DIR}/present.frag"
+    )
+
+    foreach(SHADER_FILE ${SHADER_FILES})
+        get_filename_component(SHADER_NAME ${SHADER_FILE} NAME_WE)
+        get_filename_component(SHADER_EXT ${SHADER_FILE} EXT)
+        set(OUTPUT_FILE "${SHADER_OUT_DIR}/${SHADER_NAME}${SHADER_EXT}.spv")
+        add_custom_command(
+            OUTPUT ${OUTPUT_FILE}
+            COMMAND ${GLSLC} -O -o ${OUTPUT_FILE} ${SHADER_FILE}
+            DEPENDS ${SHADER_FILE}
+            COMMENT "Compiling shader ${SHADER_NAME}${SHADER_EXT}"
+        )
+        list(APPEND SPIRV_OUTPUTS ${OUTPUT_FILE})
+    endforeach()
+
+    add_custom_target(spirv_shaders ALL DEPENDS ${SPIRV_OUTPUTS})
+    add_dependencies(${PROJECT_NAME} spirv_shaders)
+
+    # 复制 SPIR-V 文件到运行目录
+    add_custom_command(TARGET spirv_shaders POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${SHADER_OUT_DIR} "$<TARGET_FILE_DIR:${PROJECT_NAME}>/shaders"
+        COMMENT "Copying SPIR-V shaders to output directory"
+    )
+else()
+    message(STATUS "glslc not found - shader compilation disabled")
+    message(STATUS "Install Vulkan SDK or glslc to enable Vulkan rendering")
+endif()
 
 # 安装规则
 install(TARGETS ${PROJECT_NAME}

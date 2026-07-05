@@ -5,6 +5,7 @@
 extern "C" {
 #include <libavutil/pixdesc.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/log.h>
 #include <libavcodec/codec.h>
 }
 
@@ -91,6 +92,7 @@ std::vector<AVHWDeviceType> VideoDecoder::GetAvailableHwDeviceTypes() {
     std::vector<AVHWDeviceType> types;
     // 按优先级遍历常用硬件加速方法
     static const AVHWDeviceType kPreferredTypes[] = {
+        AV_HWDEVICE_TYPE_VULKAN,       // 最高优先级 (可零拷贝渲染)
         AV_HWDEVICE_TYPE_VAAPI,        // Linux AMD/Intel
         AV_HWDEVICE_TYPE_CUDA,         // NVIDIA
         AV_HWDEVICE_TYPE_VDPAU,        // NVIDIA (legacy)
@@ -99,6 +101,11 @@ std::vector<AVHWDeviceType> VideoDecoder::GetAvailableHwDeviceTypes() {
         AV_HWDEVICE_TYPE_DXVA2,        // Windows (legacy)
         AV_HWDEVICE_TYPE_QSV,          // Intel Quick Sync
     };
+
+    // 探测时临时降低 FFmpeg 日志级别，避免 Vulkan 驱动不兼容的错误刷屏
+    int old_level = av_log_get_level();
+    av_log_set_level(AV_LOG_QUIET);
+
     for (auto type : kPreferredTypes) {
         AVBufferRef* test_ctx = nullptr;
         int ret = av_hwdevice_ctx_create(&test_ctx, type, nullptr, nullptr, 0);
@@ -107,6 +114,8 @@ std::vector<AVHWDeviceType> VideoDecoder::GetAvailableHwDeviceTypes() {
             av_buffer_unref(&test_ctx);
         }
     }
+
+    av_log_set_level(old_level);
     return types;
 }
 
@@ -196,6 +205,90 @@ found_codec:
     return true;
 }
 
+bool VideoDecoder::InitializeWithVulkanDevice(AVCodecParameters* codec_params,
+                                               AVBufferRef* vk_device_ctx) {
+    if (!codec_params || !vk_device_ctx) return false;
+
+    // 查找支持 Vulkan 的解码器
+    const AVCodec* codec = nullptr;
+    void* iter = nullptr;
+    while ((codec = av_codec_iterate(&iter)) != nullptr) {
+        if (!av_codec_is_decoder(codec)) continue;
+        if (codec->id != codec_params->codec_id) continue;
+        for (int i = 0;; ++i) {
+            const AVCodecHWConfig* config = avcodec_get_hw_config(codec, i);
+            if (!config) break;
+            if (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX &&
+                config->device_type == AV_HWDEVICE_TYPE_VULKAN) {
+                goto found_vulkan_codec;
+            }
+        }
+        codec = nullptr;
+    }
+found_vulkan_codec:
+    if (!codec) {
+        std::cerr << "No Vulkan HW decoder for codec "
+                  << avcodec_get_name(codec_params->codec_id) << std::endl;
+        return false;
+    }
+
+    // 使用外部设备上下文 (不自己创建)
+    hw_device_ctx_ = av_buffer_ref(vk_device_ctx);
+    if (!hw_device_ctx_) {
+        return false;
+    }
+
+    codec_ctx_ = avcodec_alloc_context3(codec);
+    if (!codec_ctx_) {
+        av_buffer_unref(&hw_device_ctx_);
+        return false;
+    }
+
+    int ret = avcodec_parameters_to_context(codec_ctx_, codec_params);
+    if (ret < 0) {
+        Close();
+        return false;
+    }
+
+    // 查找解码器支持的 Vulkan HW 像素格式
+    hw_pix_fmt_ = AV_PIX_FMT_NONE;
+    for (int i = 0;; ++i) {
+        const AVCodecHWConfig* config = avcodec_get_hw_config(codec, i);
+        if (!config) break;
+        if (config->device_type == AV_HWDEVICE_TYPE_VULKAN) {
+            hw_pix_fmt_ = config->pix_fmt;
+            break;
+        }
+    }
+    if (hw_pix_fmt_ == AV_PIX_FMT_NONE) {
+        Close();
+        return false;
+    }
+
+    // 设置硬件设备上下文和 get_format 回调
+    codec_ctx_->hw_device_ctx = av_buffer_ref(hw_device_ctx_);
+    codec_ctx_->get_format = [](AVCodecContext*, const enum AVPixelFormat* pix_fmts) -> enum AVPixelFormat {
+        for (const enum AVPixelFormat* p = pix_fmts; *p != AV_PIX_FMT_NONE; ++p) {
+            const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(*p);
+            if (desc && (desc->flags & AV_PIX_FMT_FLAG_HWACCEL)) {
+                return *p;
+            }
+        }
+        return pix_fmts[0];
+    };
+
+    ret = avcodec_open2(codec_ctx_, codec, nullptr);
+    if (ret < 0) {
+        Close();
+        return false;
+    }
+
+    hw_device_type_ = AV_HWDEVICE_TYPE_VULKAN;
+    width_ = codec_ctx_->width;
+    height_ = codec_ctx_->height;
+    return true;
+}
+
 bool VideoDecoder::DownloadHwFrame(AVFrame* sw_frame) {
     AVFrame* tmp = av_frame_alloc();
     if (!tmp) return false;
@@ -252,6 +345,28 @@ bool VideoDecoder::ReceiveFrame(model::FrameData& output_frame) {
     } else {
         const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(frame_->format));
         if (desc && (desc->flags & AV_PIX_FMT_FLAG_HWACCEL)) {
+            // 零拷贝模式: Vulkan 帧不下载, 仅填充元数据
+            if (zero_copy_enabled_ && frame_->format == AV_PIX_FMT_VULKAN) {
+                output_frame.Clear();
+                output_frame.width = frame_->width;
+                output_frame.height = frame_->height;
+                output_frame.format = frame_->format;  // AV_PIX_FMT_VULKAN
+                if (frame_->pts != AV_NOPTS_VALUE) {
+                    output_frame.pts = frame_->pts;
+                } else if (frame_->best_effort_timestamp != AV_NOPTS_VALUE) {
+                    output_frame.pts = frame_->best_effort_timestamp;
+                } else {
+                    output_frame.pts = AV_NOPTS_VALUE;
+                }
+                if (output_frame.pts != AV_NOPTS_VALUE && codec_ctx_->time_base.den != 0) {
+                    output_frame.timestamp = output_frame.pts * av_q2d(codec_ctx_->time_base);
+                } else {
+                    output_frame.timestamp = 0.0;
+                }
+                // 不复制像素数据 — VulkanRenderer 通过 GetLastRawFrame() 访问
+                return true;
+            }
+
             // 这是硬件帧, 需要下载
             sw_frame = av_frame_alloc();
             if (!sw_frame || !DownloadHwFrame(sw_frame)) {

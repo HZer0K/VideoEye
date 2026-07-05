@@ -29,6 +29,42 @@ set(FFMPEG_SOURCE_LIB_DIR "${FFMPEG_INSTALL_PREFIX}/lib")
 # 构建标记文件，用于判断是否需要重新构建
 set(FFMPEG_BUILD_STAMP "${CMAKE_BINARY_DIR}/ffmpeg_install_stamp/ffmpeg-built")
 
+# 检测 Vulkan 头文件版本是否满足 FFmpeg 要求 (>= 1.3.277)
+set(FFMPEG_ENABLE_VULKAN OFF)
+set(VULKAN_CFLAGS "")
+
+# 优先检查 bundled Vulkan-Headers
+set(_VK_HEADER_FILE "")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/vulkan-headers/include/vulkan/vulkan_core.h")
+    set(_VK_HEADER_FILE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/vulkan-headers/include/vulkan/vulkan_core.h")
+    set(VULKAN_CFLAGS "-I${CMAKE_CURRENT_SOURCE_DIR}/third_party/vulkan-headers/include")
+elseif(Vulkan_FOUND AND EXISTS "${Vulkan_INCLUDE_DIR}/vulkan/vulkan_core.h")
+    set(_VK_HEADER_FILE "${Vulkan_INCLUDE_DIR}/vulkan/vulkan_core.h")
+endif()
+
+if(_VK_HEADER_FILE)
+    file(STRINGS "${_VK_HEADER_FILE}" _vk_ver_str
+         REGEX "^#define VK_HEADER_VERSION ")
+    if(_vk_ver_str)
+        string(REGEX MATCH "[0-9]+" _vk_ver "${_vk_ver_str}")
+        if(_vk_ver GREATER_EQUAL 277)
+            set(FFMPEG_ENABLE_VULKAN ON)
+            message(STATUS "Vulkan header version ${_vk_ver} >= 277, enabling Vulkan in FFmpeg")
+        else()
+            message(STATUS "Vulkan header version ${_vk_ver} < 277, disabling Vulkan in FFmpeg")
+        endif()
+    endif()
+endif()
+
+if(NOT FFMPEG_ENABLE_VULKAN)
+    # Fallback: check pkg-config version
+    pkg_check_modules(VULKAN_PC vulkan)
+    if(VULKAN_PC_FOUND AND VULKAN_PC_VERSION VERSION_GREATER_EQUAL "1.3.277")
+        set(FFMPEG_ENABLE_VULKAN ON)
+        message(STATUS "pkg-config vulkan ${VULKAN_PC_VERSION} >= 1.3.277, enabling")
+    endif()
+endif()
+
 # 构建 FFmpeg 的 configure 参数
 set(FFMPEG_CONFIGURE_ARGS
     --prefix=${FFMPEG_INSTALL_PREFIX}
@@ -67,7 +103,7 @@ set(FFMPEG_CONFIGURE_ARGS
     --enable-decoder=png,jpeg2000,mjpeg
     --enable-decoder=rawvideo
     --enable-decoder=webp
-    --disable-hwaccels
+    --enable-hwaccels
     --disable-bsfs
     --disable-filters
     --disable-protocols
@@ -76,6 +112,24 @@ set(FFMPEG_CONFIGURE_ARGS
     --disable-indevs
     --disable-outdevs
 )
+
+# 条件启用 Vulkan
+if(FFMPEG_ENABLE_VULKAN)
+    list(APPEND FFMPEG_CONFIGURE_ARGS
+        --enable-hwaccel=vulkan
+        --enable-vulkan
+    )
+    # 如果使用 bundled Vulkan headers，传递 include 路径
+    if(VULKAN_CFLAGS)
+        list(APPEND FFMPEG_CONFIGURE_ARGS
+            "--extra-cflags=${VULKAN_CFLAGS}"
+        )
+    endif()
+    # 链接 libvulkan
+    list(APPEND FFMPEG_CONFIGURE_ARGS
+        --extra-ldflags=-lvulkan
+    )
+endif()
 
 # 将参数列表转换为空格分隔的字符串
 string(REPLACE ";" " " FFMPEG_CONFIGURE_STRING "${FFMPEG_CONFIGURE_ARGS}")
