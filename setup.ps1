@@ -36,7 +36,6 @@ if (-not $BuildOnly) {
         if ($LASTEXITCODE -eq 0) {
             Write-Host "  完成" -ForegroundColor Green
         } else {
-            # 尝试官方源
             git clone --depth 1 --branch n8.1 https://git.ffmpeg.org/ffmpeg.git "$DIR/third_party/FFmpeg"
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "  失败! 请手动克隆" -ForegroundColor Red
@@ -108,9 +107,12 @@ Set-Location $BUILD_DIR
 $cmakeArgs = @("..", "-DCMAKE_BUILD_TYPE=$BUILD_TYPE")
 
 # 如果配置了 vcpkg toolchain
-$vcpkgRoot = if (Test-Path env:VCPKG_ROOT) { $env:VCPKG_ROOT } `
-        elseif (Test-Path "C:\vcpkg") { "C:\vcpkg" } `
-        else { $null }
+$vcpkgRoot = $null
+if (Test-Path env:VCPKG_ROOT) {
+    $vcpkgRoot = $env:VCPKG_ROOT
+} elseif (Test-Path "C:\vcpkg") {
+    $vcpkgRoot = "C:\vcpkg"
+}
 
 if ($vcpkgRoot) {
     $toolchain = "$vcpkgRoot\scripts\buildsystems\vcpkg.cmake"
