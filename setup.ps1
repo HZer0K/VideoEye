@@ -32,14 +32,12 @@ if (-not $BuildOnly) {
         Write-Host "  已存在" -ForegroundColor Green
     } else {
         Write-Host "  下载中 (~40MB)..."
-        git clone --depth 1 --branch n8.1 `
-            https://github.com/FFmpeg/FFmpeg.git "$DIR/third_party/FFmpeg"
+        git clone --depth 1 --branch n8.1 https://github.com/FFmpeg/FFmpeg.git "$DIR/third_party/FFmpeg"
         if ($LASTEXITCODE -eq 0) {
             Write-Host "  完成" -ForegroundColor Green
         } else {
             # 尝试官方源
-            git clone --depth 1 --branch n8.1 `
-                https://git.ffmpeg.org/ffmpeg.git "$DIR/third_party/FFmpeg"
+            git clone --depth 1 --branch n8.1 https://git.ffmpeg.org/ffmpeg.git "$DIR/third_party/FFmpeg"
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "  失败! 请手动克隆" -ForegroundColor Red
             }
