@@ -4,10 +4,9 @@
   "description": "VideoEye - 现代化的视频流分析软件",
   "dependencies": [
     "opencv4",
-    {
-      "name": "qt6",
-      "features": ["qtbase", "qtmultimedia", "qtcharts"]
-    },
+    "qtbase",
+    "qtmultimedia",
+    "qtcharts",
     "sdl2",
     "zlib"
   ]
