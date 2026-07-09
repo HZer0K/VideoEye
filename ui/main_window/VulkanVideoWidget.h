@@ -2,11 +2,38 @@
 
 #include <QWidget>
 #include <QImage>
+#include <QString>
 
 namespace videoeye {
 namespace player { class VulkanRenderer; }
 
 namespace ui {
+
+// 视频叠加信息 (分辨率/编码/FPS/状态)
+struct VideoOverlayInfo {
+    QString resolution;    // e.g. "1920x1080"
+    QString codec;         // e.g. "H.264"
+    QString fps;           // e.g. "30 fps"
+    QString status;        // e.g. "播放中"
+    bool is_playing = false;
+    bool has_video = false;
+};
+
+// 视频叠加层 Widget — 透明背景，绘制信息徽标和中央播放按钮
+class VideoOverlayWidget : public QWidget {
+    Q_OBJECT
+public:
+    explicit VideoOverlayWidget(QWidget* parent = nullptr);
+    void SetOverlayInfo(const VideoOverlayInfo& info);
+    void SetCenterPlayButtonVisible(bool visible);
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+
+private:
+    VideoOverlayInfo info_;
+    bool show_center_play_ = true;
+};
 
 // Vulkan 渲染 Widget — 支持 Vulkan 直接渲染 + CPU 回退模式
 class VulkanVideoWidget : public QWidget {
@@ -30,6 +57,12 @@ public:
     // Vulkan 渲染是否活跃
     bool IsVulkanActive() const { return vulkan_active_; }
 
+    // 更新叠加层信息
+    void SetOverlayInfo(const VideoOverlayInfo& info);
+
+    // 设置中央播放按钮可见性
+    void SetCenterPlayButtonVisible(bool visible);
+
 protected:
     void paintEvent(QPaintEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
@@ -40,6 +73,7 @@ private:
     QImage fallback_image_;
     bool vulkan_active_ = false;
     bool first_show_ = true;
+    VideoOverlayWidget* overlay_;  // 叠加层
 };
 
 } // namespace ui

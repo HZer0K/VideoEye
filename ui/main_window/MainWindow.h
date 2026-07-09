@@ -17,6 +17,9 @@
 #include <QRect>
 #include <QProgressDialog>
 #include <QElapsedTimer>
+#include <QListWidget>
+#include <QStackedWidget>
+#include <QLabel>
 #include <deque>
 #include <QImage>
 
@@ -73,10 +76,13 @@ private slots:
 private:
     // 初始化UI
     void SetupUI();
+    void SetupAppBar();         // 顶部应用栏
+    void SetupSidebar();        // 左侧导航栏
+    void SetupContentArea();    // 右侧主内容区 (视频+控制+分析)
     void SetupMenuBar();
-    void SetupToolBar();
     void SetupStatusBar();
     void SetupConnections();
+    void OnSidebarChanged(int index);  // 侧边栏切换
     bool LoadRawImageFile(const QString& filename);
     bool PromptForPcmSettings(QString& demuxer_name, int& sample_rate, int& channels);
     bool ShowRawFrame(int frame_index);
@@ -95,20 +101,28 @@ protected:
     // 成员变量
     player::MediaPlayer* player_;
     
-    // UI组件
+    // UI组件 - 整体布局
+    QWidget* app_bar_;            // 顶部应用栏
+    QListWidget* sidebar_;        // 左侧导航栏
+    QStackedWidget* content_stack_;  // 内容区堆栈 (媒体信息 + 分析面板各页)
+    QSplitter* main_splitter_;    // 水平分割器 (侧栏 | 主内容)
+    QSplitter* content_splitter_; // 垂直分割器 (视频 | 分析)
+    
+    // 视频区
     VulkanVideoWidget* video_widget_;  // 视频显示 (Vulkan + 回退)
-    QSplitter* splitter_;           // 主分割器
-    QWidget* bottom_widget_;        // 下半区容器
-    QGroupBox* control_group_;      // 播放控制容器
-    QTabWidget* tab_widget_;        // 标签页
-    QSlider* seek_slider_;          // 进度条
+    
+    // 控制栏
+    QWidget* control_bar_;        // 播放控制容器
+    QSlider* seek_slider_;        // 进度条
     QPushButton* play_pause_button_; // 播放/暂停按钮
-    QPushButton* stop_button_;      // 停止按钮
+    QPushButton* stop_button_;    // 停止按钮
     QPushButton* prev_frame_button_;
     QPushButton* next_frame_button_;
-    QLabel* time_label_;            // 时间显示
-    QTextEdit* mediainfo_text_;     // MediaInfo 媒体信息文本框
-    QLabel* current_media_label_;   // 顶部显示当前媒体路径
+    QLabel* time_label_;          // 时间显示
+    
+    // 媒体信息
+    QTextEdit* mediainfo_text_;   // MediaInfo 媒体信息文本框
+    QLabel* current_media_label_; // 顶部显示当前媒体路径
     QString current_media_url_;
     
     // 分析面板
@@ -116,7 +130,6 @@ protected:
     
     // 菜单和工具栏
     QMenuBar* menu_bar_;
-    QToolBar* tool_bar_;
     QStatusBar* status_bar_;
     QAction* export_frames_action_ = nullptr;
     QProgressDialog* export_progress_dialog_ = nullptr;
@@ -141,6 +154,11 @@ protected:
     qint64 raw_frame_size_ = 0;
     int raw_total_frames_ = 0;
     int raw_current_frame_ = 0;
+    
+    // 叠加层缓存数据
+    QString last_overlay_fps_;
+    QString last_overlay_resolution_;
+    QString last_overlay_codec_;
 };
 
 } // namespace ui

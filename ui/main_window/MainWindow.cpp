@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
+#include "ui/theme/AppTheme.h"
 #include "core/model/EbmlInfo.h"
 #include "core/model/ContainerStructureInfo.h"
 #include "core/model/AudioVisualizationFrame.h"
@@ -20,6 +21,8 @@
 #include <QFontDatabase>
 #include <QPainter>
 #include <QPainterPath>
+#include <QListWidget>
+#include <QStackedWidget>
 #include <algorithm>
 #include <QProgressDialog>
 #include <QFileInfo>
@@ -35,16 +38,33 @@ namespace ui {
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
     , player_(nullptr)
-    , splitter_(nullptr)
-    , bottom_widget_(nullptr)
-    , control_group_(nullptr) {
+    , app_bar_(nullptr)
+    , sidebar_(nullptr)
+    , content_stack_(nullptr)
+    , main_splitter_(nullptr)
+    , content_splitter_(nullptr)
+    , video_widget_(nullptr)
+    , control_bar_(nullptr)
+    , seek_slider_(nullptr)
+    , play_pause_button_(nullptr)
+    , stop_button_(nullptr)
+    , prev_frame_button_(nullptr)
+    , next_frame_button_(nullptr)
+    , time_label_(nullptr)
+    , mediainfo_text_(nullptr)
+    , current_media_label_(nullptr)
+    , analysis_panel_(nullptr)
+    , menu_bar_(nullptr)
+    , status_bar_(nullptr) {
     
     // 创建播放器实例
     player_ = new player::MediaPlayer(this);
     
+    // 应用深色主题
+    theme::applyDarkTheme();
+    
     SetupUI();
     SetupMenuBar();
-    SetupToolBar();
     SetupStatusBar();
     SetupConnections();
     UpdateMinimumWindowSize();
@@ -65,156 +85,246 @@ void MainWindow::SetupUI() {
     QWidget* central_widget = new QWidget(this);
     setCentralWidget(central_widget);
     
-    QVBoxLayout* main_layout = new QVBoxLayout(central_widget);
-    main_layout->setContentsMargins(0, 0, 0, 0);
+    QVBoxLayout* root_layout = new QVBoxLayout(central_widget);
+    root_layout->setContentsMargins(0, 0, 0, 0);
+    root_layout->setSpacing(0);
     
-    splitter_ = new QSplitter(Qt::Vertical, central_widget);
-    splitter_->setChildrenCollapsible(false);
-    main_layout->addWidget(splitter_);
+    // === 1. 顶部应用栏 ===
+    SetupAppBar();
+    root_layout->addWidget(app_bar_);
     
-    // 视频显示区域
-    video_widget_ = new VulkanVideoWidget(splitter_);
+    // === 2. 水平分割器: 侧栏 | 主内容 ===
+    main_splitter_ = new QSplitter(Qt::Horizontal, central_widget);
+    main_splitter_->setChildrenCollapsible(false);
+    root_layout->addWidget(main_splitter_);
+    
+    // === 3. 左侧导航栏 ===
+    SetupSidebar();
+    main_splitter_->addWidget(sidebar_);
+    
+    // === 4. 右侧主内容区 ===
+    SetupContentArea();
+    main_splitter_->addWidget(content_splitter_);
+    
+    // 设置分割比例: 侧栏 200px, 主内容区弹性
+    main_splitter_->setStretchFactor(0, 0);
+    main_splitter_->setStretchFactor(1, 1);
+    main_splitter_->setSizes({200, 1000});
+}
+
+void MainWindow::SetupAppBar() {
+    app_bar_ = new QWidget(this);
+    app_bar_->setObjectName("AppBar");
+    app_bar_->setFixedHeight(48);
+    
+    QHBoxLayout* layout = new QHBoxLayout(app_bar_);
+    layout->setContentsMargins(16, 0, 16, 0);
+    layout->setSpacing(12);
+    
+    // Logo + 应用名
+    QLabel* logo_label = new QLabel(QStringLiteral("\xF0\x9F\x91\x81"), app_bar_);  // eye emoji
+    logo_label->setFixedSize(24, 24);
+    logo_label->setAlignment(Qt::AlignCenter);
+    QFont logoFont;
+    logoFont.setPixelSize(16);
+    logo_label->setFont(logoFont);
+    layout->addWidget(logo_label);
+    
+    QLabel* title_label = new QLabel("VideoEye", app_bar_);
+    title_label->setObjectName("AppTitle");
+    layout->addWidget(title_label);
+    
+    QLabel* version_badge = new QLabel("2.0", app_bar_);
+    version_badge->setObjectName("VersionBadge");
+    layout->addWidget(version_badge);
+    
+    layout->addSpacing(24);
+    
+    // 媒体路径显示
+    current_media_label_ = new QLabel(tr("未选择媒体"), app_bar_);
+    current_media_label_->setObjectName("MediaPath");
+    current_media_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(current_media_label_, 1);
+    
+    // 操作按钮
+    QPushButton* open_file_btn = new QPushButton(tr("打开文件"), app_bar_);
+    open_file_btn->setObjectName("PrimaryButton");
+    connect(open_file_btn, &QPushButton::clicked, this, &MainWindow::OnOpenFile);
+    layout->addWidget(open_file_btn);
+    
+    QPushButton* open_url_btn = new QPushButton(tr("打开URL"), app_bar_);
+    connect(open_url_btn, &QPushButton::clicked, this, &MainWindow::OnOpenURL);
+    layout->addWidget(open_url_btn);
+    
+    QPushButton* export_btn = new QPushButton(tr("导出帧"), app_bar_);
+    connect(export_btn, &QPushButton::clicked, this, &MainWindow::OnExportVideoFrames);
+    layout->addWidget(export_btn);
+}
+
+void MainWindow::SetupSidebar() {
+    sidebar_ = new QListWidget(this);
+    sidebar_->setObjectName("Sidebar");
+    sidebar_->setFixedWidth(200);
+    sidebar_->setIconSize(QSize(16, 16));
+    sidebar_->setSpacing(0);
+    sidebar_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    
+    // 导航项 (与设计稿一致: 媒体信息 + 10个分析功能)
+    QStringList nav_items = {
+        tr("媒体信息"),
+        tr("流分析"),
+        tr("视频帧"),
+        tr("音频帧"),
+        tr("数据包"),
+        tr("异常事件"),
+        tr("同步分析"),
+        tr("时间轴"),
+        tr("音频响度"),
+        tr("直方图"),
+        tr("容器结构")
+    };
+    
+    for (const QString& item : nav_items) {
+        QListWidgetItem* list_item = new QListWidgetItem(item);
+        list_item->setSizeHint(QSize(200, 34));
+        sidebar_->addItem(list_item);
+    }
+    
+    // 默认选中第一项
+    sidebar_->setCurrentRow(0);
+    
+    connect(sidebar_, &QListWidget::currentRowChanged, this, &MainWindow::OnSidebarChanged);
+}
+
+void MainWindow::SetupContentArea() {
+    // 右侧主内容区: 垂直分割器 (视频区+控制栏 | 分析内容区)
+    content_splitter_ = new QSplitter(Qt::Vertical, this);
+    content_splitter_->setChildrenCollapsible(false);
+    
+    // === 上半区: 视频 + 控制栏 ===
+    QWidget* top_area = new QWidget(content_splitter_);
+    QVBoxLayout* top_layout = new QVBoxLayout(top_area);
+    top_layout->setContentsMargins(0, 0, 0, 0);
+    top_layout->setSpacing(0);
+    
+    // 视频显示区
+    video_widget_ = new VulkanVideoWidget(top_area);
     video_widget_->setMinimumSize(320, 160);
     video_widget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    top_layout->addWidget(video_widget_);
     
-    bottom_widget_ = new QWidget(splitter_);
-    bottom_widget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    QVBoxLayout* bottom_layout = new QVBoxLayout(bottom_widget_);
-    bottom_layout->setContentsMargins(4, 2, 4, 4);
-    bottom_layout->setSpacing(4);
-
-    // 控制面板
-    control_group_ = new QGroupBox(bottom_widget_);
-    control_group_->setTitle(QString());
-    control_group_->setFlat(true);
-    QHBoxLayout* control_layout = new QHBoxLayout(control_group_);
+    // 控制栏
+    control_bar_ = new QWidget(top_area);
+    control_bar_->setObjectName("ControlBar");
+    control_bar_->setFixedHeight(56);
     
-    // 播放控制按钮
-    play_pause_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), tr("播放"), control_group_);
-    stop_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaStop), tr("停止"), control_group_);
-    prev_frame_button_ = new QPushButton(tr("上一帧"), control_group_);
-    next_frame_button_ = new QPushButton(tr("下一帧"), control_group_);
+    QHBoxLayout* control_layout = new QHBoxLayout(control_bar_);
+    control_layout->setContentsMargins(16, 8, 16, 8);
+    control_layout->setSpacing(12);
     
+    // 播放/暂停按钮 (圆形主按钮)
+    play_pause_button_ = new QPushButton(control_bar_);
     play_pause_button_->setObjectName("playPauseButton");
+    play_pause_button_->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+    play_pause_button_->setIconSize(QSize(16, 16));
     play_pause_button_->setToolTip(tr("播放/暂停"));
-    
     control_layout->addWidget(play_pause_button_);
+    
+    // 停止按钮
+    stop_button_ = new QPushButton(control_bar_);
+    stop_button_->setObjectName("stopButton");
+    stop_button_->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
+    stop_button_->setIconSize(QSize(14, 14));
+    stop_button_->setToolTip(tr("停止"));
     control_layout->addWidget(stop_button_);
+    
+    // 上一帧/下一帧 (默认隐藏)
+    prev_frame_button_ = new QPushButton(tr("上一帧"), control_bar_);
+    prev_frame_button_->setVisible(false);
     control_layout->addWidget(prev_frame_button_);
+    
+    next_frame_button_ = new QPushButton(tr("下一帧"), control_bar_);
+    next_frame_button_->setVisible(false);
     control_layout->addWidget(next_frame_button_);
     
     // 进度条
-    seek_slider_ = new QSlider(Qt::Horizontal, control_group_);
+    seek_slider_ = new QSlider(Qt::Horizontal, control_bar_);
     seek_slider_->setRange(0, 0);
     control_layout->addWidget(seek_slider_, 1);
     
     // 时间显示
-    time_label_ = new QLabel(tr("00:00 / 00:00"), control_group_);
+    time_label_ = new QLabel(tr("00:00:00 / 00:00:00"), control_bar_);
+    time_label_->setObjectName("TimeLabel");
+    time_label_->setMinimumWidth(140);
+    time_label_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     control_layout->addWidget(time_label_);
-
-    prev_frame_button_->setVisible(false);
-    next_frame_button_->setVisible(false);
-
-    control_group_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    const int control_h = control_group_->sizeHint().height();
-    control_group_->setFixedHeight(control_h + 6);
-        
-    // 信息面板
-    tab_widget_ = new QTabWidget(bottom_widget_);
-    tab_widget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    const int tabbar_h = tab_widget_->tabBar()->sizeHint().height();
-    tab_widget_->setMinimumHeight(tabbar_h + 250);
     
-    // MediaInfo 媒体信息标签页
-    QWidget* mediainfo_tab = new QWidget(tab_widget_);
-    QVBoxLayout* mediainfo_layout = new QVBoxLayout(mediainfo_tab);
-    QScrollArea* mediainfo_scroll = new QScrollArea(mediainfo_tab);
+    top_layout->addWidget(control_bar_);
+    
+    // === 下半区: 内容堆栈 ===
+    content_stack_ = new QStackedWidget(content_splitter_);
+    content_stack_->setMinimumHeight(250);
+    
+    // Page 0: 媒体信息
+    QWidget* mediainfo_page = new QWidget(content_stack_);
+    QVBoxLayout* mediainfo_layout = new QVBoxLayout(mediainfo_page);
+    mediainfo_layout->setContentsMargins(0, 0, 0, 0);
+    QScrollArea* mediainfo_scroll = new QScrollArea(mediainfo_page);
     mediainfo_scroll->setWidgetResizable(true);
     mediainfo_scroll->setFrameShape(QFrame::NoFrame);
     mediainfo_text_ = new QTextEdit(mediainfo_scroll);
     mediainfo_text_->setReadOnly(true);
-    mediainfo_text_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    mediainfo_text_->setFont(theme::font::monoFont(9));
     mediainfo_text_->setLineWrapMode(QTextEdit::NoWrap);
     mediainfo_text_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     mediainfo_scroll->setWidget(mediainfo_text_);
     mediainfo_layout->addWidget(mediainfo_scroll);
-    tab_widget_->addTab(mediainfo_tab, tr("媒体信息"));
-    
-    // 设置默认提示
     mediainfo_text_->setPlainText(tr("请打开一个媒体文件以查看详细信息"));
+    content_stack_->addWidget(mediainfo_page);
     
-    // 分析面板标签页 (集成分析功能)
-    analysis_panel_ = new ui::AnalysisPanel(tab_widget_);
+    // Page 1-10: 分析面板各页
+    // AnalysisPanel 会创建自己的页面并添加到 content_stack_
+    analysis_panel_ = new ui::AnalysisPanel(content_stack_);
+    analysis_panel_->PopulateStackedWidget(content_stack_);
     analysis_panel_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    tab_widget_->addTab(analysis_panel_, tr("分析面板"));
     
-    bottom_layout->addWidget(control_group_, 0);
-    bottom_layout->addWidget(tab_widget_, 1);
+    content_splitter_->addWidget(top_area);
+    content_splitter_->addWidget(content_stack_);
+    
+    content_splitter_->setStretchFactor(0, 3);
+    content_splitter_->setStretchFactor(1, 2);
+    content_splitter_->setSizes({480, 320});
+    
+    // 防止下区缩太小
+    content_splitter_->setCollapsible(0, false);
+    content_splitter_->setCollapsible(1, false);
+}
 
-    bottom_widget_->setMinimumHeight(control_h
-        + tab_widget_->minimumHeight()
-        + bottom_layout->contentsMargins().top()
-        + bottom_layout->contentsMargins().bottom()
-        + bottom_layout->spacing());
-
-    splitter_->addWidget(video_widget_);
-    splitter_->addWidget(bottom_widget_);
-
-    splitter_->setCollapsible(0, false);
-    splitter_->setCollapsible(1, false);
-    splitter_->setStretchFactor(0, 3);
-    splitter_->setStretchFactor(1, 2);
-    splitter_->setSizes({600, 400});
-
-    connect(splitter_, &QSplitter::splitterMoved, this, [this](int, int) {
-        if (!splitter_ || !bottom_widget_) {
-            return;
-        }
-        const int bottom_min = bottom_widget_->minimumHeight();
-        QList<int> sizes = splitter_->sizes();
-        if (sizes.size() != 2) {
-            return;
-        }
-        if (sizes[1] < bottom_min) {
-            sizes[0] = std::max(0, sizes[0] - (bottom_min - sizes[1]));
-            sizes[1] = bottom_min;
-            splitter_->setSizes(sizes);
-        }
-    });
+void MainWindow::OnSidebarChanged(int index) {
+    if (!content_stack_ || index < 0) return;
+    content_stack_->setCurrentIndex(index);
 }
 
 void MainWindow::UpdateMinimumWindowSize() {
     const int video_min = video_widget_ ? video_widget_->minimumHeight() : 160;
-    int bottom_min = 0;
-    if (bottom_widget_) {
-        bottom_min = bottom_widget_->minimumHeight();
-        if (bottom_min <= 0) {
-            bottom_min = bottom_widget_->minimumSizeHint().height();
-        }
-    }
+    int content_min = content_stack_ ? content_stack_->minimumHeight() : 250;
 
     int bars = 0;
+    if (app_bar_) {
+        bars += app_bar_->height();
+    }
     if (menuBar()) {
         bars += menuBar()->sizeHint().height();
-    }
-    if (tool_bar_) {
-        bars += tool_bar_->sizeHint().height();
     }
     if (statusBar()) {
         bars += statusBar()->sizeHint().height();
     }
 
-    int min_height = bars + bottom_min + video_min + 20;
+    int min_height = bars + content_min + video_min + 56; // 56 = control bar height
 
-    int min_width = 0;
-    if (control_group_) {
-        min_width = control_group_->minimumSizeHint().width();
-        if (min_width < control_group_->sizeHint().width()) {
-            min_width = control_group_->sizeHint().width();
-        }
-    }
-    if (min_width < 900) {
-        min_width = 900;
+    int min_width = 900;
+    if (sidebar_) {
+        min_width += sidebar_->width();
     }
 
     setMinimumSize(min_width, min_height);
@@ -250,21 +360,12 @@ void MainWindow::SetupMenuBar() {
     file_menu->addSeparator();
     file_menu->addAction(tr("退出"), QKeySequence::Quit, this, &MainWindow::OnExit);
     
-    // 分析控制已移至分析面板顶部工具栏
     // 帮助菜单
     QMenu* help_menu = menu_bar_->addMenu(tr("帮助"));
     help_menu->addAction(tr("关于"), this, []() {
         QMessageBox::about(nullptr, QObject::tr("关于"),
                           QObject::tr("VideoEye 2.0\n现代化的视频流分析软件"));
     });
-}
-
-void MainWindow::SetupToolBar() {
-    tool_bar_ = addToolBar(tr("工具栏"));
-    current_media_label_ = new QLabel(tr("未选择媒体"), this);
-    current_media_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    current_media_label_->setMinimumWidth(600);
-    tool_bar_->addWidget(current_media_label_);
 }
 
 void MainWindow::SetupStatusBar() {
@@ -957,7 +1058,7 @@ void MainWindow::UpdateRawNavigationState() {
         time_label_->setText(tr("帧 %1 / %2").arg(raw_current_frame_ + 1).arg(raw_total_frames_));
     } else {
         seek_slider_->setEnabled(true);
-        time_label_->setText(tr("00:00 / 00:00"));
+        time_label_->setText(tr("00:00:00 / 00:00:00"));
     }
 }
 
@@ -996,7 +1097,7 @@ void MainWindow::ResetVideoUI() {
     video_widget_->Clear();
     seek_slider_->setValue(0);
     seek_slider_->setRange(0, 0);
-    time_label_->setText(tr("00:00 / 00:00"));
+    time_label_->setText(tr("00:00:00 / 00:00:00"));
 }
 
 void MainWindow::OnStop() {
@@ -1070,14 +1171,23 @@ void MainWindow::OnStateChanged(model::PlayerState state) {
     
     statusBar()->showMessage(state_text);
     
-    // 更新播放/暂停按钮的图标和文本
+    // 更新播放/暂停按钮的图标
     if (state == model::PlayerState::Playing) {
         play_pause_button_->setIcon(style()->standardIcon(QStyle::SP_MediaPause));
-        play_pause_button_->setText(tr("暂停"));
     } else {
         play_pause_button_->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
-        play_pause_button_->setText(tr("播放"));
     }
+
+    // 更新视频区叠加层状态
+    ui::VideoOverlayInfo overlay;
+    overlay.is_playing = (state == model::PlayerState::Playing);
+    overlay.has_video = !audio_only_mode_ && !showing_raw_image_;
+    overlay.status = state_text;
+    if (state == model::PlayerState::Playing) {
+        overlay.fps = last_overlay_fps_;
+    }
+    video_widget_->SetOverlayInfo(overlay);
+    video_widget_->SetCenterPlayButtonVisible(!overlay.is_playing && overlay.has_video);
 }
 
 void MainWindow::OnFrameReady(const QImage& frame) {
@@ -1105,19 +1215,9 @@ void MainWindow::OnPositionChanged(int position_ms, int duration_ms) {
     seek_slider_->setRange(0, duration_ms);
     seek_slider_->setValue(position_ms);
     
-    auto format_time = [](int ms) {
-        int seconds = ms / 1000;
-        int minutes = seconds / 60;
-        int hours = minutes / 60;
-        return QString("%1:%2:%3")
-            .arg(hours, 2, 10, QChar('0'))
-            .arg(minutes % 60, 2, 10, QChar('0'))
-            .arg(seconds % 60, 2, 10, QChar('0'));
-    };
-    
     time_label_->setText(QString("%1 / %2")
-        .arg(format_time(position_ms))
-        .arg(format_time(duration_ms)));
+        .arg(theme::font::formatTime(position_ms))
+        .arg(theme::font::formatTime(duration_ms)));
 }
 
 void MainWindow::OnError(const QString& message) {
@@ -1137,6 +1237,18 @@ void MainWindow::OnStreamStatsUpdate(const analyzer::StreamStats& stats) {
         .arg(stats.current_bitrate_bps / 1000)
         .arg(stats.key_frame_count);
     status_bar_->showMessage(status);
+
+    // 更新叠加层 FPS 信息
+    last_overlay_fps_ = QString("%1 fps").arg(stats.current_fps, 0, 'f', 1);
+    ui::VideoOverlayInfo overlay;
+    overlay.is_playing = (player_ && player_->GetState() == model::PlayerState::Playing);
+    overlay.has_video = !audio_only_mode_ && !showing_raw_image_;
+    overlay.fps = last_overlay_fps_;
+    overlay.resolution = last_overlay_resolution_;
+    overlay.codec = last_overlay_codec_;
+    overlay.status = (player_ && player_->GetState() == model::PlayerState::Playing) 
+        ? tr("播放中") : tr("已暂停");
+    video_widget_->SetOverlayInfo(overlay);
 }
 
 void MainWindow::OnHistogramUpdate(const analyzer::HistogramData& hist) {
@@ -1159,6 +1271,16 @@ void MainWindow::OnMediaModeChanged(bool has_video) {
     } else {
         album_cover_ = QImage();
     }
+
+    // 更新叠加层
+    ui::VideoOverlayInfo overlay;
+    overlay.is_playing = (player_ && player_->GetState() == model::PlayerState::Playing);
+    overlay.has_video = has_video && !showing_raw_image_;
+    overlay.fps = last_overlay_fps_;
+    overlay.status = (player_ && player_->GetState() == model::PlayerState::Playing)
+        ? tr("播放中") : tr("已暂停");
+    video_widget_->SetOverlayInfo(overlay);
+    video_widget_->SetCenterPlayButtonVisible(!overlay.is_playing && overlay.has_video);
 }
 
 void MainWindow::OnAudioLevelReady(double level, double timestamp_seconds) {

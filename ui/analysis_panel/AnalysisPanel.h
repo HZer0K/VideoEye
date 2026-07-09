@@ -65,6 +65,13 @@ public:
     explicit AnalysisPanel(QWidget* parent = nullptr);
     ~AnalysisPanel();
     
+    // 将分析面板各页添加到外部 QStackedWidget
+    // 返回添加的页面数量 (10页: 流分析/视频帧/音频帧/数据包/异常事件/同步分析/时间轴/音频响度/直方图/容器结构)
+    int PopulateStackedWidget(QStackedWidget* stack);
+    
+    // 设置当前显示的页面索引 (0-9)
+    void SetCurrentPageIndex(int index);
+    
     // 检查某个分析功能是否启用
     bool IsFeatureEnabled(AnalysisFeature feature) const;
     
@@ -179,8 +186,8 @@ private:
     void SetupUI();
     // 在每个标签页中创建带开关的标题栏
     QWidget* CreateToggleHeader(AnalysisFeature feature, const QString& title, QWidget* parent);
-    // 将标签页内容包裹 QScrollArea 防止缩放重叠
-    void AddTabWithScroll(QWidget* tab_widget, const QString& title);
+    // 将页面包裹 QScrollArea 并添加到页面列表
+    void AddPageWithScroll(QWidget* tab_widget, const QString& title);
     void SetupStreamTab();
     void SetupFrameTab();
     void SetupAudioFrameTab();
@@ -246,8 +253,10 @@ private:
     // 分析功能开关
     QMap<AnalysisFeature, bool> feature_enabled_;
     
-    // 成员变量
-    QTabWidget* tab_widget_;
+    // 页面管理 (替代 QTabWidget)
+    QList<QWidget*> page_widgets_;      // 各页面的 QScrollArea (含内容)
+    QStringList page_titles_;           // 各页面标题
+    QStackedWidget* external_stack_ = nullptr;  // 外部 QStackedWidget (由 MainWindow 提供)
     
     // 流分析标签页
     QWidget* stream_tab_;

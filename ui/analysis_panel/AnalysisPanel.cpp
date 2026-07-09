@@ -90,14 +90,8 @@ AnalysisPanel::~AnalysisPanel() {
 }
 
 void AnalysisPanel::SetupUI() {
-    QVBoxLayout* main_layout = new QVBoxLayout(this);
-    main_layout->setContentsMargins(4, 4, 4, 4);
-    main_layout->setSpacing(4);
-    
-    setMinimumSize(500, 300);
-    
-    // 创建标签页
-    tab_widget_ = new QTabWidget(this);
+    // 不再创建内部 QTabWidget，页面由 AddPageWithScroll 收集
+    // PopulateStackedWidget 时添加到外部 QStackedWidget
     
     SetupStreamTab();
     SetupFrameTab();
@@ -109,10 +103,6 @@ void AnalysisPanel::SetupUI() {
     SetupAudioLoudnessTab();
     SetupHistogramTab();
     SetupContainerStructureTab();
-    
-    main_layout->addWidget(tab_widget_);
-    
-    // 连接信号 - 移除了底部全局导出按钮，导出功能分散到各 Tab
 }
 
 bool AnalysisPanel::IsFeatureEnabled(AnalysisFeature feature) const {
@@ -166,12 +156,28 @@ QWidget* AnalysisPanel::CreateToggleHeader(AnalysisFeature feature, const QStrin
     return header;
 }
 
-void AnalysisPanel::AddTabWithScroll(QWidget* tab_widget, const QString& title) {
+void AnalysisPanel::AddPageWithScroll(QWidget* tab_widget, const QString& title) {
     QScrollArea* scroll = new QScrollArea();
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setWidget(tab_widget);
-    tab_widget_->addTab(scroll, title);
+    page_widgets_.append(scroll);
+    page_titles_.append(title);
+}
+
+int AnalysisPanel::PopulateStackedWidget(QStackedWidget* stack) {
+    external_stack_ = stack;
+    for (int i = 0; i < page_widgets_.size(); ++i) {
+        stack->addWidget(page_widgets_[i]);
+    }
+    return page_widgets_.size();
+}
+
+void AnalysisPanel::SetCurrentPageIndex(int index) {
+    if (external_stack_ && index >= 0 && index < page_widgets_.size()) {
+        // 外部 stack 的 page 0 是媒体信息，分析页从 page 1 开始
+        external_stack_->setCurrentIndex(index + 1);
+    }
 }
 
 void AnalysisPanel::SetupStreamTab() {
@@ -244,7 +250,7 @@ void AnalysisPanel::SetupStreamTab() {
     
     layout->addLayout(charts_layout);
     
-    AddTabWithScroll(stream_tab_, tr("流分析"));
+    AddPageWithScroll(stream_tab_, tr("流分析"));
     
     bitrate_series_ = new QLineSeries(this);
     bitrate_chart_object_ = new QChart();
@@ -356,7 +362,7 @@ void AnalysisPanel::SetupFrameTab() {
     gop_layout->addWidget(gop_table_);
     layout->addWidget(gop_group);
     
-    AddTabWithScroll(frame_tab_, tr("视频帧"));
+    AddPageWithScroll(frame_tab_, tr("视频帧"));
 
     connect(frame_filter_combo_, &QComboBox::currentIndexChanged, this, [this](int) {
         OnFrameFilterChanged();
@@ -410,7 +416,7 @@ void AnalysisPanel::SetupAudioFrameTab() {
     table_layout->addWidget(audio_frame_table_);
     layout->addWidget(table_group);
 
-    AddTabWithScroll(audio_frame_tab_, tr("音频帧"));
+    AddPageWithScroll(audio_frame_tab_, tr("音频帧"));
 
     connect(export_audio_frame_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportAudioFrameCsv);
 }
@@ -463,7 +469,7 @@ void AnalysisPanel::SetupPacketTab() {
     table_layout->addWidget(packet_table_);
     layout->addWidget(table_group);
 
-    AddTabWithScroll(packet_tab_, tr("包分析"));
+    AddPageWithScroll(packet_tab_, tr("包分析"));
 
     connect(export_packet_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportPacketCsv);
 }
@@ -515,7 +521,7 @@ void AnalysisPanel::SetupEventTab() {
     table_layout->addWidget(event_table_);
     layout->addWidget(table_group);
 
-    AddTabWithScroll(event_tab_, tr("异常事件"));
+    AddPageWithScroll(event_tab_, tr("异常事件"));
 
     connect(export_event_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportEventCsv);
 }
@@ -569,7 +575,7 @@ void AnalysisPanel::SetupSyncTab() {
     table_layout->addWidget(sync_table_);
     layout->addWidget(table_group);
 
-    AddTabWithScroll(sync_tab_, tr("同步分析"));
+    AddPageWithScroll(sync_tab_, tr("同步分析"));
 
     sync_series_ = new QLineSeries(this);
     QChart* sync_chart_object = new QChart();
@@ -640,7 +646,7 @@ void AnalysisPanel::SetupTimelineTab() {
     table_layout->addWidget(timeline_table_);
     layout->addWidget(table_group);
 
-    AddTabWithScroll(timeline_tab_, tr("统一时间轴"));
+    AddPageWithScroll(timeline_tab_, tr("统一时间轴"));
 
     timeline_video_series_ = new QLineSeries(this);
     timeline_video_series_->setName(tr("视频关键帧"));
@@ -732,7 +738,7 @@ void AnalysisPanel::SetupAudioLoudnessTab() {
     loudness_chart_->setMinimumWidth(280);
     layout->addWidget(loudness_chart_);
 
-    AddTabWithScroll(audio_loudness_tab_, tr("音频响度"));
+    AddPageWithScroll(audio_loudness_tab_, tr("音频响度"));
 }
 
 void AnalysisPanel::UpdateAudioLoudness(const model::AudioVisualizationFrame& frame) {
@@ -838,7 +844,7 @@ void AnalysisPanel::SetupHistogramTab() {
     
     layout->addWidget(hist_group);
     
-    AddTabWithScroll(histogram_tab_, tr("直方图"));
+    AddPageWithScroll(histogram_tab_, tr("直方图"));
     
     connect(export_histogram_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportHistogramCsv);
 }
@@ -1027,7 +1033,7 @@ void AnalysisPanel::SetupContainerStructureTab() {
     export_container_button_->setToolTip(tr("将容器结构树和表格数据导出为文本文件"));
     layout->addWidget(export_container_button_, 0, Qt::AlignRight);
 
-    AddTabWithScroll(container_tab_, tr("文件结构"));
+    AddPageWithScroll(container_tab_, tr("文件结构"));
 
     connect(export_container_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportContainerStructure);
 }
