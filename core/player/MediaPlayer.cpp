@@ -357,6 +357,16 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
             return false;
         }
         LOG_INFO("Audio decoder initialized");
+
+        // 初始化音频输出设备 (SDL2): 把解码后的 PCM 送进声卡
+        audio_output_ = std::make_unique<AudioOutput>();
+        if (!audio_output_->Open(audio_decoder_->GetSampleRate(), audio_decoder_->GetChannels())) {
+            LOG_WARN("音频输出设备打开失败, 将继续无声音播放");
+            audio_output_.reset();
+        } else {
+            audio_output_->SetVolume(volume_ / 100.0);
+            LOG_INFO("AudioOutput: 音频输出设备已就绪");
+        }
     }
 
     // 提取流信息 (委托给 StreamInfoExtractor)
@@ -397,6 +407,7 @@ void MediaPlayer::Play() {
         should_stop_ = false;
         state_ = model::PlayerState::Playing;
         emit StateChanged(state_);
+        if (audio_output_) audio_output_->Play();
         cv_.notify_one();
         return;
     }
@@ -404,6 +415,7 @@ void MediaPlayer::Play() {
     should_stop_ = false;
     state_ = model::PlayerState::Playing;
     emit StateChanged(state_);
+    if (audio_output_) audio_output_->Play();
     decode_thread_ = std::thread(&MediaPlayer::DecodeThread, this);
     LOG_INFO("Play: decode thread started");
 }
@@ -413,6 +425,7 @@ void MediaPlayer::Pause() {
     if (state_ == model::PlayerState::Playing) {
         state_ = model::PlayerState::Paused;
         emit StateChanged(state_);
+        if (audio_output_) audio_output_->Pause();
         cv_.notify_one();
     }
 }
@@ -422,9 +435,11 @@ void MediaPlayer::Stop() {
     should_stop_ = true;
     state_ = model::PlayerState::Stopped;
     cv_.notify_one();
+    if (audio_output_) audio_output_->Stop(); // 先停设备, 唤醒可能在 Enqueue 中阻塞的解码线程
     if (decode_thread_.joinable() && decode_thread_.get_id() != std::this_thread::get_id()) {
         decode_thread_.join();
     }
+    audio_output_.reset();
     current_position_ms_.store(0);
     emit StateChanged(state_);
 }
@@ -433,6 +448,7 @@ void MediaPlayer::Seek(int position_ms) {
     LOG_INFO("Seek: target_ms=" + std::to_string(position_ms));
     std::lock_guard<std::mutex> lock(mutex_);
     if (!format_ctx_) return;
+    if (audio_output_) audio_output_->Clear(); // 丢弃已缓冲的旧音频, 避免 seek 后播放过期声音
     int64_t timestamp = position_ms * 1000LL;
     int ret = av_seek_frame(format_ctx_, -1, timestamp, AVSEEK_FLAG_BACKWARD);
     if (ret < 0) { emit Error("Seek failed"); return; }
@@ -442,6 +458,7 @@ void MediaPlayer::Seek(int position_ms) {
 
 void MediaPlayer::SetVolume(int volume) {
     volume_ = std::max(0, std::min(100, volume));
+    if (audio_output_) audio_output_->SetVolume(volume_ / 100.0);
 }
 
 void MediaPlayer::EnableAnalysis(bool enable) {
@@ -743,6 +760,11 @@ void MediaPlayer::DecodeThread() {
                     }
                     if (out_size < static_cast<int>(sizeof(int16_t))) continue;
 
+                    // 推送 PCM 到音频输出设备 (SDL2 回调播放)
+                    if (audio_output_) {
+                        audio_output_->Enqueue(audio_buffer.data(), out_size);
+                    }
+
                     const int16_t* samples = reinterpret_cast<const int16_t*>(audio_buffer.data());
                     const int sample_count = out_size / static_cast<int>(sizeof(int16_t));
 
@@ -806,6 +828,7 @@ void MediaPlayer::Cleanup() {
     if (format_ctx_) { avformat_close_input(&format_ctx_); format_ctx_ = nullptr; }
     video_decoder_.reset();
     audio_decoder_.reset();
+    audio_output_.reset();
     vulkan_renderer_.reset();
     vulkan_ctx_.reset();
     video_stream_index_ = -1;

@@ -18,6 +18,7 @@ extern "C" {
 #include "core/player/PlaybackClock.h"
 #include "core/player/StreamInfoExtractor.h"
 #include "core/player/AudioVisualizer.h"
+#include "core/player/AudioOutput.h"
 #include "core/player/VideoFrameExporter.h"
 #include "core/player/VulkanContext.h"
 #include "core/player/VulkanRenderer.h"
@@ -145,6 +146,7 @@ private:
     AVFormatContext* format_ctx_ = nullptr;
     std::unique_ptr<VideoDecoder> video_decoder_;
     std::unique_ptr<AudioDecoder> audio_decoder_;
+    std::unique_ptr<AudioOutput> audio_output_;  // SDL2 音频输出 (PCM -> 声卡)
     std::unique_ptr<VulkanContext> vulkan_ctx_;  // Vulkan 设备上下文
     std::unique_ptr<VulkanRenderer> vulkan_renderer_;  // Vulkan 渲染器
     int video_stream_index_ = -1;
