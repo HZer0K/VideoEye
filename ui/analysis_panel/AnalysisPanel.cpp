@@ -12,9 +12,12 @@
 #include <QTextStream>
 #include <QHBoxLayout>
 #include <QCheckBox>
+#include <QPainter>
+#include <QPen>
 #include <QtCharts>
 #include <algorithm>
 #include <functional>
+#include <cmath>
 
 namespace videoeye {
 namespace ui {
@@ -75,6 +78,7 @@ AnalysisPanel::AnalysisPanel(QWidget* parent)
     feature_enabled_[AnalysisFeature::AudioLoudness] = true;
     feature_enabled_[AnalysisFeature::Histogram] = false;
     feature_enabled_[AnalysisFeature::ContainerStructure] = true;
+    feature_enabled_[AnalysisFeature::Macroblock] = false;
     
     SetupUI();
     
@@ -103,6 +107,7 @@ void AnalysisPanel::SetupUI() {
     SetupAudioLoudnessTab();
     SetupHistogramTab();
     SetupContainerStructureTab();
+    SetupMacroblockTab();
 }
 
 bool AnalysisPanel::IsFeatureEnabled(AnalysisFeature feature) const {
@@ -121,6 +126,7 @@ void AnalysisPanel::EmitInitialFeatureStates() {
         AnalysisFeature::Timeline,
         AnalysisFeature::AudioLoudness,
         AnalysisFeature::Histogram,
+        AnalysisFeature::Macroblock,
     };
     for (auto feat : kFeatures) {
         bool enabled = feature_enabled_.value(feat, true);
@@ -2397,6 +2403,10 @@ void AnalysisPanel::FlushPendingUiUpdates() {
         UpdateTimelineSummary();
         timeline_summary_dirty_ = false;
     }
+    if (macroblock_dirty_) {
+        RefreshMacroblockUi();
+        macroblock_dirty_ = false;
+    }
 }
 
 void AnalysisPanel::FlushPendingFrameTableUpdates() {
@@ -2824,6 +2834,318 @@ void AnalysisPanel::OnExportReport() {
     } else {
         QMessageBox::warning(this, tr("错误"), tr("导出分析报告失败:\n%1").arg(filename));
     }
+}
+
+// ==================== 宏块分析 ====================
+
+void AnalysisPanel::SetupMacroblockTab() {
+    macroblock_tab_ = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(macroblock_tab_);
+    layout->setContentsMargins(4, 2, 4, 4);
+    layout->setSpacing(4);
+
+    // 工具栏
+    QHBoxLayout* toolbar = new QHBoxLayout();
+    macroblock_summary_label_ = new QLabel(
+        tr("帧: -- | 块总数: 0 | 前向: 0 | 后向: 0 | 帧内: 0 | 平均MV: 0.0 | 最大MV: 0.0"),
+        macroblock_tab_);
+    toolbar->addWidget(macroblock_summary_label_, 1);
+
+    export_macroblock_csv_button_ = new QPushButton(tr("导出 CSV"), macroblock_tab_);
+    toolbar->addWidget(export_macroblock_csv_button_);
+
+    QCheckBox* toggle = new QCheckBox(tr("启用分析"), macroblock_tab_);
+    toggle->setChecked(feature_enabled_.value(AnalysisFeature::Macroblock, false));
+    connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
+        feature_enabled_[AnalysisFeature::Macroblock] = checked;
+        emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::Macroblock), checked);
+    });
+    toolbar->addWidget(toggle);
+    layout->addLayout(toolbar);
+
+    // 运动矢量表格 + 可视化预览 (水平分割)
+    QSplitter* h_split = new QSplitter(Qt::Horizontal, macroblock_tab_);
+
+    // 左: 运动矢量表格
+    QGroupBox* mv_group = new QGroupBox(tr("运动矢量列表"), macroblock_tab_);
+    QVBoxLayout* mv_layout = new QVBoxLayout(mv_group);
+    macroblock_table_ = new QTableWidget(0, 9, mv_group);
+    macroblock_table_->setHorizontalHeaderLabels(
+        {"序号", "块X", "块Y", "块大小", "MVx(px)", "MVy(px)", "幅度(px)", "角度(°)", "参考"});
+    macroblock_table_->verticalHeader()->setVisible(false);
+    macroblock_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    macroblock_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    macroblock_table_->setSelectionMode(QAbstractItemView::SingleSelection);
+    macroblock_table_->horizontalHeader()->setStretchLastSection(true);
+    macroblock_table_->setColumnWidth(0, 50);
+    macroblock_table_->setColumnWidth(1, 60);
+    macroblock_table_->setColumnWidth(2, 60);
+    macroblock_table_->setColumnWidth(3, 70);
+    macroblock_table_->setColumnWidth(4, 80);
+    macroblock_table_->setColumnWidth(5, 80);
+    macroblock_table_->setColumnWidth(6, 80);
+    macroblock_table_->setColumnWidth(7, 70);
+    macroblock_table_->setMinimumWidth(450);
+    macroblock_table_->setMinimumHeight(200);
+    mv_layout->addWidget(macroblock_table_);
+    h_split->addWidget(mv_group);
+
+    // 右: 运动矢量可视化预览
+    QGroupBox* viz_group = new QGroupBox(tr("运动矢量可视化"), macroblock_tab_);
+    QVBoxLayout* viz_layout = new QVBoxLayout(viz_group);
+    macroblock_viz_label_ = new QLabel(viz_group);
+    macroblock_viz_label_->setMinimumSize(320, 240);
+    macroblock_viz_label_->setAlignment(Qt::AlignCenter);
+    macroblock_viz_label_->setStyleSheet("background-color: #0D1117; border: 1px solid #30363D;");
+    macroblock_viz_label_->setText(tr("等待视频播放...\n\n启用分析后将在播放时\n显示运动矢量可视化"));
+    viz_layout->addWidget(macroblock_viz_label_);
+    h_split->addWidget(viz_group);
+
+    h_split->setStretchFactor(0, 3);
+    h_split->setStretchFactor(1, 2);
+    layout->addWidget(h_split, 1);
+
+    // 块大小分布 + 幅度分布 (水平排列)
+    QHBoxLayout* dist_layout = new QHBoxLayout();
+
+    QGroupBox* blocksize_group = new QGroupBox(tr("块大小分布"), macroblock_tab_);
+    QVBoxLayout* bs_layout = new QVBoxLayout(blocksize_group);
+    macroblock_blocksize_table_ = new QTableWidget(0, 3, blocksize_group);
+    macroblock_blocksize_table_->setHorizontalHeaderLabels({"块大小", "数量", "占比"});
+    macroblock_blocksize_table_->verticalHeader()->setVisible(false);
+    macroblock_blocksize_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    macroblock_blocksize_table_->horizontalHeader()->setStretchLastSection(true);
+    macroblock_blocksize_table_->setMinimumHeight(160);
+    bs_layout->addWidget(macroblock_blocksize_table_);
+    dist_layout->addWidget(blocksize_group);
+
+    QGroupBox* mag_group = new QGroupBox(tr("运动幅度分布"), macroblock_tab_);
+    QVBoxLayout* mg_layout = new QVBoxLayout(mag_group);
+    macroblock_mag_table_ = new QTableWidget(0, 3, mag_group);
+    macroblock_mag_table_->setHorizontalHeaderLabels({"幅度范围(px)", "数量", "占比"});
+    macroblock_mag_table_->verticalHeader()->setVisible(false);
+    macroblock_mag_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    macroblock_mag_table_->horizontalHeader()->setStretchLastSection(true);
+    macroblock_mag_table_->setMinimumHeight(160);
+    mg_layout->addWidget(macroblock_mag_table_);
+    dist_layout->addWidget(mag_group);
+
+    layout->addLayout(dist_layout);
+
+    AddPageWithScroll(macroblock_tab_, tr("宏块分析"));
+
+    connect(export_macroblock_csv_button_, &QPushButton::clicked,
+            this, &AnalysisPanel::OnExportMacroblockCsv);
+}
+
+void AnalysisPanel::UpdateMacroblockInfo(const model::MacroblockFrameAnalysis& analysis) {
+    current_macroblock_analysis_ = analysis;
+    macroblock_dirty_ = true;
+}
+
+void AnalysisPanel::RefreshMacroblockUi() {
+    const auto& ma = current_macroblock_analysis_;
+    const auto& s = ma.stats;
+
+    // 更新统计标签
+    QString frame_type_str;
+    switch (ma.frame_type) {
+        case 1: frame_type_str = "I"; break;
+        case 2: frame_type_str = "P"; break;
+        case 3: frame_type_str = "B"; break;
+        default: frame_type_str = "?"; break;
+    }
+    macroblock_summary_label_->setText(
+        tr("帧 #%1 [%2] | 时间: %3s | 块总数: %4 | 前向: %5 | 后向: %6 | 帧内: %7 | 平均MV: %8 | 最大MV: %9")
+            .arg(ma.frame_index)
+            .arg(frame_type_str)
+            .arg(ma.timestamp, 0, 'f', 3)
+            .arg(s.total_blocks)
+            .arg(s.forward_count)
+            .arg(s.backward_count)
+            .arg(s.intra_count)
+            .arg(s.avg_motion_magnitude, 0, 'f', 2)
+            .arg(s.max_motion_magnitude, 0, 'f', 2));
+
+    // 填充运动矢量表格 (限制最多 500 行以保证流畅)
+    macroblock_table_->setUpdatesEnabled(false);
+    macroblock_table_->setRowCount(0);
+    const int max_rows = 500;
+    const int mv_count = static_cast<int>(ma.motion_vectors.size());
+    const int display_count = qMin(mv_count, max_rows);
+    macroblock_table_->setRowCount(display_count);
+
+    for (int i = 0; i < display_count; ++i) {
+        const auto& mv = ma.motion_vectors[i];
+        double scale = (mv.motion_scale > 0) ? static_cast<double>(mv.motion_scale) : 1.0;
+        double px_mx = mv.motion_x / scale;
+        double px_my = mv.motion_y / scale;
+        QString ref_str = (mv.source < 0) ? tr("前向") : (mv.source > 0) ? tr("后向") : tr("—");
+        QString size_str = QString("%1x%2").arg(mv.block_w).arg(mv.block_h);
+
+        SetTableItemText(macroblock_table_, i, 0, QString::number(i));
+        SetTableItemText(macroblock_table_, i, 1, QString::number(mv.block_x));
+        SetTableItemText(macroblock_table_, i, 2, QString::number(mv.block_y));
+        SetTableItemText(macroblock_table_, i, 3, size_str);
+        SetTableItemText(macroblock_table_, i, 4, QString::number(px_mx, 'f', 2));
+        SetTableItemText(macroblock_table_, i, 5, QString::number(px_my, 'f', 2));
+        SetTableItemText(macroblock_table_, i, 6, QString::number(mv.motion_magnitude, 'f', 2));
+        SetTableItemText(macroblock_table_, i, 7, QString::number(mv.motion_angle, 'f', 1));
+        SetTableItemText(macroblock_table_, i, 8, ref_str);
+    }
+    macroblock_table_->setUpdatesEnabled(true);
+
+    // 填充块大小分布表
+    auto fill_dist_table = [this](QTableWidget* table, const QStringList& labels, const QList<int>& counts, int total) {
+        table->setUpdatesEnabled(false);
+        table->setRowCount(labels.size());
+        for (int i = 0; i < labels.size(); ++i) {
+            SetTableItemText(table, i, 0, labels[i]);
+            SetTableItemText(table, i, 1, QString::number(counts[i]));
+            double ratio = (total > 0) ? (100.0 * counts[i] / total) : 0.0;
+            SetTableItemText(table, i, 2, QString::number(ratio, 'f', 1) + "%");
+        }
+        table->setUpdatesEnabled(true);
+    };
+
+    int bs_total = s.count_16x16 + s.count_16x8 + s.count_8x16 + s.count_8x8 +
+                   s.count_8x4 + s.count_4x8 + s.count_4x4 + s.count_other;
+    fill_dist_table(macroblock_blocksize_table_,
+                    {"16x16", "16x8", "8x16", "8x8", "8x4", "4x8", "4x4", tr("其他")},
+                    {s.count_16x16, s.count_16x8, s.count_8x16, s.count_8x8,
+                     s.count_8x4, s.count_4x8, s.count_4x4, s.count_other},
+                    bs_total);
+
+    int mg_total = s.mag_0_2 + s.mag_2_4 + s.mag_4_8 + s.mag_8_16 + s.mag_16_plus;
+    fill_dist_table(macroblock_mag_table_,
+                    {"0-2", "2-4", "4-8", "8-16", "16+"},
+                    {s.mag_0_2, s.mag_2_4, s.mag_4_8, s.mag_8_16, s.mag_16_plus},
+                    mg_total);
+
+    // 绘制运动矢量可视化图
+    if (ma.frame_width > 0 && ma.frame_height > 0 && !ma.motion_vectors.empty()) {
+        const int kMaxVizW = 480;
+        const int kMaxVizH = 320;
+        double aspect = static_cast<double>(ma.frame_width) / ma.frame_height;
+        int viz_w = kMaxVizW;
+        int viz_h = static_cast<int>(viz_w / aspect);
+        if (viz_h > kMaxVizH) {
+            viz_h = kMaxVizH;
+            viz_w = static_cast<int>(viz_h * aspect);
+        }
+        double scale_x = static_cast<double>(viz_w) / ma.frame_width;
+        double scale_y = static_cast<double>(viz_h) / ma.frame_height;
+
+        QImage viz_img(viz_w, viz_h, QImage::Format_RGB32);
+        viz_img.fill(QColor(13, 17, 23));  // 深色背景
+
+        QPainter painter(&viz_img);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+
+        // 绘制运动矢量箭头
+        for (const auto& mv : ma.motion_vectors) {
+            double mv_scale = (mv.motion_scale > 0) ? static_cast<double>(mv.motion_scale) : 1.0;
+            double px_mx = mv.motion_x / mv_scale;
+            double px_my = mv.motion_y / mv_scale;
+
+            double cx = (mv.block_x + mv.block_w / 2.0) * scale_x;
+            double cy = (mv.block_y + mv.block_h / 2.0) * scale_y;
+            double ex = cx + px_mx * scale_x;
+            double ey = cy + px_my * scale_y;
+
+            // 颜色: 前向=红, 后向=蓝
+            QColor color = (mv.source < 0) ? QColor(255, 107, 107)
+                                           : QColor(88, 166, 255);
+            // 幅度越大越亮
+            double brightness = qMin(1.0, mv.motion_magnitude / 16.0);
+            color.setAlphaF(0.3 + 0.7 * brightness);
+
+            QPen pen(color, 1.2);
+            painter.setPen(pen);
+            painter.drawLine(QPointF(cx, cy), QPointF(ex, ey));
+
+            // 箭头头部
+            if (mv.motion_magnitude > 0.5) {
+                double angle = std::atan2(ey - cy, ex - cx);
+                double arrow_len = 3.0;
+                QPointF p1(ex - arrow_len * std::cos(angle - 0.5),
+                           ey - arrow_len * std::sin(angle - 0.5));
+                QPointF p2(ex - arrow_len * std::cos(angle + 0.5),
+                           ey - arrow_len * std::sin(angle + 0.5));
+                painter.drawLine(QPointF(ex, ey), p1);
+                painter.drawLine(QPointF(ex, ey), p2);
+            }
+        }
+
+        // 绘制图例
+        painter.setPen(QPen(QColor(255, 107, 107), 2));
+        painter.drawLine(10, viz_h - 20, 30, viz_h - 20);
+        painter.setPen(QColor(200, 200, 200));
+        painter.drawText(35, viz_h - 16, tr("前向"));
+        painter.setPen(QPen(QColor(88, 166, 255), 2));
+        painter.drawLine(80, viz_h - 20, 100, viz_h - 20);
+        painter.setPen(QColor(200, 200, 200));
+        painter.drawText(105, viz_h - 16, tr("后向"));
+
+        painter.end();
+        macroblock_viz_label_->setPixmap(QPixmap::fromImage(viz_img));
+    } else if (ma.has_motion_vectors == false && ma.frame_width > 0) {
+        // I 帧: 无运动矢量
+        macroblock_viz_label_->setText(
+            tr("I 帧 (无运动矢量)\n帧内块数: %1").arg(s.intra_count));
+    }
+}
+
+void AnalysisPanel::OnExportMacroblockCsv() {
+    const auto& ma = current_macroblock_analysis_;
+    if (ma.motion_vectors.empty()) {
+        QMessageBox::information(this, tr("提示"), tr("当前没有宏块分析数据可导出"));
+        return;
+    }
+
+    QString filename = QFileDialog::getSaveFileName(
+        this, tr("导出宏块分析 CSV"),
+        QStringLiteral("macroblock_frame_%1.csv").arg(ma.frame_index),
+        tr("CSV 文件 (*.csv)"));
+    if (filename.isEmpty()) return;
+
+    QFile file(filename);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("错误"), tr("无法打开文件写入"));
+        return;
+    }
+
+    QTextStream stream(&file);
+    stream.setEncoding(QStringConverter::Utf8);
+    // BOM for Excel
+    stream << "\xEF\xBB\xBF";
+    stream << "序号,块X,块Y,块宽,块高,MVx(raw),MVy(raw),精度分母,MVx(px),MVy(px),幅度(px),角度(度),参考方向\n";
+
+    for (int i = 0; i < static_cast<int>(ma.motion_vectors.size()); ++i) {
+        const auto& mv = ma.motion_vectors[i];
+        double scale = (mv.motion_scale > 0) ? static_cast<double>(mv.motion_scale) : 1.0;
+        double px_mx = mv.motion_x / scale;
+        double px_my = mv.motion_y / scale;
+        QString ref = (mv.source < 0) ? "forward" : (mv.source > 0) ? "backward" : "none";
+
+        stream << i << ","
+               << mv.block_x << ","
+               << mv.block_y << ","
+               << static_cast<int>(mv.block_w) << ","
+               << static_cast<int>(mv.block_h) << ","
+               << mv.motion_x << ","
+               << mv.motion_y << ","
+               << mv.motion_scale << ","
+               << QString::number(px_mx, 'f', 4) << ","
+               << QString::number(px_my, 'f', 4) << ","
+               << QString::number(mv.motion_magnitude, 'f', 4) << ","
+               << QString::number(mv.motion_angle, 'f', 2) << ","
+               << ref << "\n";
+    }
+    file.close();
+
+    QMessageBox::information(this, tr("成功"),
+        tr("已导出 %1 条运动矢量到:\n%2").arg(ma.motion_vectors.size()).arg(filename));
 }
 
 } // namespace ui

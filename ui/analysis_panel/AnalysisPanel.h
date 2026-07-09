@@ -38,6 +38,7 @@
 #include "core/model/Mp4BoxInfo.h"
 #include "core/model/EbmlInfo.h"
 #include "core/model/ContainerStructureInfo.h"
+#include "core/model/MacroblockInfo.h"
 
 namespace videoeye {
 namespace ui {
@@ -59,7 +60,8 @@ public:
         Timeline,      // 时间线
         AudioLoudness, // 音频响度监测
         Histogram,     // 直方图
-        ContainerStructure  // 文件结构分析
+        ContainerStructure,  // 文件结构分析
+        Macroblock     // 宏块分析 (运动矢量/块统计)
     };
 
     explicit AnalysisPanel(QWidget* parent = nullptr);
@@ -104,6 +106,7 @@ public slots:
     void AppendTimelineEvent(const model::TimelineEvent& event);
     void OnContainerStructureReady(const model::ContainerStructureResult& result);
     void UpdateAudioLoudness(const model::AudioVisualizationFrame& frame);
+    void UpdateMacroblockInfo(const model::MacroblockFrameAnalysis& analysis);
     
     // 导出报告
     void OnExportReport();
@@ -198,6 +201,7 @@ private:
     void SetupAudioLoudnessTab();
     void SetupHistogramTab();
     void SetupContainerStructureTab();
+    void SetupMacroblockTab();
     void RebuildFrameTable();
     void RebuildGopTable();
     void RebuildAudioFrameTable();
@@ -241,6 +245,8 @@ private:
     void OnExportMp4Box();
     void OnExportContainerStructure();
     void OnFrameFilterChanged();
+    void RefreshMacroblockUi();
+    void OnExportMacroblockCsv();
     
     // 更新图表
     void UpdateBitrateChart(const analyzer::StreamStats& stats);
@@ -320,6 +326,17 @@ private:
     // 直方图标签页
     QWidget* histogram_tab_;
     QChartView* histogram_chart_;
+
+    // 宏块分析标签页
+    QWidget* macroblock_tab_;
+    QLabel* macroblock_summary_label_;
+    QTableWidget* macroblock_table_;        // 运动矢量表格
+    QLabel* macroblock_viz_label_;          // 运动矢量可视化预览
+    QTableWidget* macroblock_blocksize_table_;  // 块大小分布
+    QTableWidget* macroblock_mag_table_;    // 运动幅度分布
+    QPushButton* export_macroblock_csv_button_;
+    model::MacroblockFrameAnalysis current_macroblock_analysis_;
+    bool macroblock_dirty_ = false;
     
     // 统一文件结构分析标签页
     QWidget* container_tab_;

@@ -181,7 +181,8 @@ void MainWindow::SetupSidebar() {
         tr("时间轴"),
         tr("音频响度"),
         tr("直方图"),
-        tr("容器结构")
+        tr("容器结构"),
+        tr("宏块分析")
     };
     
     for (const QString& item : nav_items) {
@@ -468,6 +469,8 @@ void MainWindow::SetupConnections() {
     // 统一容器结构分析信号
     connect(player_, &player::MediaPlayer::ContainerStructureReady,
             analysis_panel_, &ui::AnalysisPanel::OnContainerStructureReady);
+    connect(player_, &player::MediaPlayer::MacroblockInfoReady,
+            analysis_panel_, &ui::AnalysisPanel::UpdateMacroblockInfo);
     
     // 面板开关信号 -> MediaPlayer 控制
     connect(analysis_panel_, &ui::AnalysisPanel::AnalysisFeatureToggled,
@@ -509,6 +512,9 @@ void MainWindow::SetupConnections() {
                     break;
                 case AF::ContainerStructure:
                     player_->SetContainerStructureEnabled(enabled);
+                    break;
+                case AF::Macroblock:
+                    player_->SetMacroblockAnalysisEnabled(enabled);
                     break;
                 default:
                     break;

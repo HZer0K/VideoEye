@@ -32,6 +32,8 @@ MediaPlayer::MediaPlayer(QObject* parent)
     avformat_network_init();
     qRegisterMetaType<model::Mp4BoxAnalysisResult>("model::Mp4BoxAnalysisResult");
     qRegisterMetaType<model::ContainerStructureResult>("model::ContainerStructureResult");
+    qRegisterMetaType<model::MacroblockFrameAnalysis>("model::MacroblockFrameAnalysis");
+    qRegisterMetaType<model::MacroblockFrameAnalysis>("videoeye::model::MacroblockFrameAnalysis");
 }
 
 MediaPlayer::~MediaPlayer() {
@@ -132,6 +134,7 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     current_url_ = url;
     should_stop_ = false;
     video_frame_index_ = 0;
+    macroblock_frame_index_ = 0;
     audio_frame_index_ = 0;
     packet_index_ = 0;
     analysis_event_index_ = 0;
@@ -687,6 +690,23 @@ void MediaPlayer::DecodeThread() {
                         if (is_key_frame) {
                             EmitTimelineEvent(QStringLiteral("视频关键帧"), ts,
                                               QStringLiteral("关键帧 #%1").arg(emitted_index));
+                        }
+                    }
+                    // 宏块分析 (运动矢量 / 块统计)
+                    if (macroblock_analysis_enabled_) {
+                        const AVFrame* raw_frame = video_decoder_->GetLastRawFrame();
+                        if (raw_frame) {
+                            try {
+                                auto mb_analysis = macroblock_analyzer_.AnalyzeFrame(
+                                    raw_frame,
+                                    macroblock_frame_index_++,
+                                    static_cast<qint64>(frame_data.pts),
+                                    frame_data.timestamp,
+                                    static_cast<int>(video_decoder_->GetLastPictureType()));
+                                emit MacroblockInfoReady(mb_analysis);
+                            } catch (const std::exception& e) {
+                                LOG_ERROR("宏块分析失败: " + std::string(e.what()));
+                            }
                         }
                     }
                     if (analysis_enabled_) {

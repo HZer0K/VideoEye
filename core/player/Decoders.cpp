@@ -51,6 +51,9 @@ bool VideoDecoder::Initialize(AVCodecParameters* codec_params) {
         return false;
     }
     
+    // 导出运动矢量 side data (供宏块分析使用)
+    codec_ctx_->export_side_data |= AV_CODEC_EXPORT_DATA_MVS;
+
     // 打开解码器
     ret = avcodec_open2(codec_ctx_, codec, nullptr);
     if (ret < 0) {
@@ -193,6 +196,9 @@ found_codec:
         return pix_fmts[0];
     };
 
+    // 导出运动矢量 side data (供宏块分析使用)
+    codec_ctx_->export_side_data |= AV_CODEC_EXPORT_DATA_MVS;
+
     ret = avcodec_open2(codec_ctx_, codec, nullptr);
     if (ret < 0) {
         Close();
@@ -276,6 +282,9 @@ found_vulkan_codec:
         }
         return pix_fmts[0];
     };
+
+    // 导出运动矢量 side data (供宏块分析使用)
+    codec_ctx_->export_side_data |= AV_CODEC_EXPORT_DATA_MVS;
 
     ret = avcodec_open2(codec_ctx_, codec, nullptr);
     if (ret < 0) {
