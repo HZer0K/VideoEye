@@ -65,9 +65,10 @@ VideoEye 2.0 已完成从 MFC 旧架构到现代化 Qt6 + C++17 跨平台架构�
 
 ### 4. 测试 (tests/)
 - ✅ GoogleTest v1.15.2 (FetchContent 自动下载)
-- ✅ 6 个测试套件，115 个测试用例，全部通过
+- ✅ CMakeLists.txt 已配置 6 个测试目标的编译规则
+- ⏳ 测试源文件 (`tests/unit/*.cpp`) 待补全
 
-| 测试套件 | 用例数 |
+| 测试套件 | 用例数 (规划) |
 |---------|--------|
 | test_format_detector | 27 |
 | test_config_manager | 26 |
@@ -101,7 +102,14 @@ VideoEye 2.0 已完成从 MFC 旧架构到现代化 Qt6 + C++17 跨平台架构�
 - ✅ `build.sh` — Linux 构建脚本 (含依赖检查)
 - ✅ `setup.sh` — Linux 环境初始化
 
-### 6. 文档
+### 6. 项目结构清理
+
+- ✅ 删除 `legacy/` 目录 (旧 MFC 代码，~150K 行)
+- ✅ 删除 `cmake/BuildFFmpeg.cmake` (367 行死代码)
+- ✅ 删除 `setup.ps1` (被 setup.sh + build_ninja.ps1 替代)
+- ✅ 仓库从 492 文件精简到 ~92 文件 (减少 81%)
+
+### 7. 文档
 - ✅ README.md — 完整项目说明
 - ✅ QUICKSTART.md — 快速入门指南
 - ✅ BUILD_REPORT.md — 编译报告
@@ -170,7 +178,7 @@ AVFrame (VK/NV12) → staging upload → Y/UV textures
 | GPU 渲染 | 无 | Vulkan 零拷贝管线 |
 | 硬件解码 | 无 | 8 种 HW 加速器自动探测 |
 | 容器分析 | 无 | 7 种格式 + FFmpeg 回退 |
-| 测试 | 无 | GoogleTest 115 cases |
+| 测试 | GoogleTest 配置就绪 | GoogleTest 6 目标 (源文件待补全) |
 | 跨平台 | Windows only | Windows / Linux / macOS |
 
 ---

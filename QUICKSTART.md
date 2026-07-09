@@ -125,13 +125,15 @@ CMake 采用**三级 fallback**策略自动查找 FFmpeg：
 ## 🧪 运行测试
 
 ```bash
-# Debug 构建
-./build.sh debug
+# 构建 Debug 版本 (启用测试)
+cmake -B build-debug -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-debug
 
 # 运行测试
 cd build-debug && ctest --output-on-failure
-# 预期: 6 suites, 115 cases passed
 ```
+
+> **注意**: 测试源文件 (`tests/unit/*.cpp`) 尚未提交到仓库。CMakeLists.txt 已配置好编译规则，待补全源文件后即可运行。
 
 ---
 

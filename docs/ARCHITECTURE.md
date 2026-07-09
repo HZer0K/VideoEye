@@ -6,7 +6,8 @@
 ┌─────────────────────────────────────────────────────────────┐
 │                         UI 层 (Qt6)                          │
 ├─────────────────────────────────────────────────────────────┤
-│  MainWindow │ PlayerControls │ AnalysisPanel │ SettingsPanel │
+│  MainWindow (AppBar + Sidebar + VideoWidget + ControlBar)    │
+│  AnalysisPanel (QStackedWidget + 侧边栏导航)                  │
 └────────────────────────┬────────────────────────────────────┘
                          │ Qt Signals/Slots
 ┌────────────────────────▼────────────────────────────────────┐
@@ -188,25 +189,6 @@ public:
     
 private:
     cv::Mat ConvertToMat(const FrameData& frame);
-};
-```
-
-#### FaceDetector
-
-**职责**: 实时人脸检测
-
-**技术**: OpenCV Haar Cascade / DNN
-
-```cpp
-class FaceDetector {
-public:
-    bool Initialize(const std::string& cascade_path);
-    std::vector<cv::Rect> Detect(const FrameData& frame);
-    
-private:
-    cv::CascadeClassifier cascade_;
-    // 或使用 DNN
-    cv::dnn::Net dnn_model_;
 };
 ```
 
@@ -529,11 +511,11 @@ class HardwareDecode : public IDecodeStrategy { ... };
 ### 测试框架
 
 - **框架**: GoogleTest v1.15.2 (FetchContent 自动下载)
-- **构建**: CMake `BUILD_TESTING` option 控制
+- **构建**: CMake `BUILD_TESTING` option 控制 (默认 OFF)
 - **运行**: `cd build-debug && ctest --output-on-failure`
-- **规模**: 6 个测试套件，115 个测试用例
+- **状态**: CMakeLists.txt 已配置 6 个测试目标的编译规则，测试源文件 (`tests/unit/*.cpp`) 待补全
 
-### 测试覆盖
+### 测试覆盖 (规划)
 
 | 测试套件 | 被测模块 | 用例数 | 说明 |
 |---------|---------|--------|------|
@@ -594,7 +576,7 @@ TEST(MediaPlayerTest, PlayLocalFile) {
 - [x] 完成基础播放功能
 - [x] 实现流分析
 - [x] 实现容器结构分析 (7 种格式 + FFmpeg 回退)
-- [x] 单元测试 (6 suites, 115 cases)
+- [x] 单元测试框架搭建 (GoogleTest 集成，CMakeLists.txt 配置 6 个测试目标)
 - [x] MediaPlayer 拆分重构 (PlaybackClock/StreamInfoExtractor/AudioVisualizer/VideoFrameExporter)
 - [x] FFT 性能优化 (Cooley-Tukey 算法，预计算表)
 - [x] 硬件解码支持 (Vulkan/VAAPI/CUDA/VideoToolbox/D3D11VA 等，自动探测与回退)
@@ -604,9 +586,11 @@ TEST(MediaPlayerTest, PlayLocalFile) {
 - [x] 深色专业风格 UI (GitHub Dark 色板 + 侧边栏导航)
 - [x] 跨平台构建 (Windows Ninja+MSVC / Linux GCC+Make)
 - [x] 混合依赖管理 (vcpkg/apt + 源码集成 + FFmpeg 三级 fallback)
+- [x] 项目结构清理 (删除 legacy/ 旧代码，精简仓库)
 
 ### 中期 (3-6个月)
 
+- [ ] 补全单元测试源文件 (tests/unit/*.cpp)
 - [ ] 集成测试
 - [ ] 更多分析算法
 - [ ] 视频帧导出支持硬件解码

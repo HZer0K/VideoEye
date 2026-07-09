@@ -8,7 +8,7 @@
 
 ## 1. 设计目标
 
-基于现有代码结构（`MainWindow` + `AnalysisPanel` 10 个 Tab），本次优化聚焦于：
+基于现有代码结构（`MainWindow` + `AnalysisPanel` 11 个分析模块），本次优化聚焦于：
 
 1. **信息层级重构**：把原本横向堆叠的 10 个分析 Tab 迁移到左侧垂直导航，释放顶部空间并提升可扩展性。
 2. **视觉风格统一**：采用深色专业风格（Dark First Pro），降低长时间分析的视觉疲劳。
@@ -96,7 +96,7 @@
   - 文字变白 + 图标变蓝。
 - **未选中态**：无背景，文字/图标为 `#8B949E`，hover 时背景 `#21262D`。
 
-导航项列表（与现有 `AnalysisPanel` 10 个 Tab 对应）：
+导航项列表（与现有 `AnalysisPanel` 11 个分析模块对应）：
 
 1. 媒体信息（默认选中）
 2. 流分析
@@ -200,7 +200,7 @@
 | 设计区域 | 现有代码位置 | 建议改动 |
 |----------|--------------|----------|
 | Top App Bar | `MainWindow::SetupUI` 中的 menu/toolbar | 用自定义 `QWidget` 替换默认 toolbar，保持统一风格。 |
-| Left Sidebar | `AnalysisPanel` 中的 `QTabWidget` | 将 `QTabWidget` 改为左侧垂直导航列表，内容区改为 `QStackedWidget`。 |
+| Left Sidebar | `AnalysisPanel` 中的 `QTabWidget` | 将 `QTabWidget` 改为左侧垂直导航列表（11 个模块），内容区改为 `QStackedWidget`。 |
 | Video Display | `VulkanVideoWidget` | 在 widget 上叠加信息层和中央播放按钮。 |
 | Control Bar | `MainWindow` 底部控制区 | 重绘进度条和按钮样式。 |
 | Analysis Panel | `AnalysisPanel` 各 Tab 创建逻辑 | 保留原有数据模型，仅调整展示层。 |

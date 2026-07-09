@@ -140,12 +140,12 @@ build-ninja\bin\VideoEye.exe
 
 | 模块 | 文件数 | 说明 |
 |------|--------|------|
-| core/ | 52 | 核心业务层 (player + analyzer + model + io) |
-| ui/ | 7 | UI 层 (theme + main_window + analysis_panel) |
+| core/ | 52 | 核心业务层 (player 18 含着色器 + analyzer 24 + model 10) |
+| ui/ | 9 | UI 层 (theme 2 + main_window 4 + analysis_panel 2 + app 1) |
 | utils/ | 6 | 工具类 (Logger / ConfigManager / ReportExporter) |
-| tests/ | 7 | 测试 (6 suites, 115 cases) |
-| 第三方集成 | 4 | CMakeLists.txt (Bento4 + ZenLib + MediaInfoLib) |
-| **总计** | **76+** | |
+| tests/ | 1 | 测试配置 (CMakeLists.txt，源文件待补全) |
+| 第三方集成 | 3 | CMakeLists.txt (Bento4 + ZenLib/MediaInfoLib + vulkan-headers) |
+| **总计** | **71** | |
 
 ### 编译产物
 

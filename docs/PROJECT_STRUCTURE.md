@@ -95,13 +95,19 @@ core/
 │   ├── AsfStructureAnalyzer.h/cpp     # ASF/WMV Object 结构解析
 │   └── OggStructureAnalyzer.h/cpp     # OGG Page 结构解析
 │
-└── io/                 # 输入输出 (待实现)
-    ├── InputStream       # 输入流管理
-    └── DataExporter      # 数据导出
+└── model/              # 数据模型
+    ├── FrameData.h/cpp    # 帧数据结构
+    ├── ContainerStructureInfo.h  # 容器结构统一模型
+    ├── AnalysisEvent.h    # 分析事件
+    ├── AudioVisualizationFrame.h  # 音频可视化帧数据
+    ├── EbmlInfo.h         # EBML 数据模型
+    ├── Mp4BoxInfo.h       # MP4 Box 数据模型
+    ├── PacketInfo.h       # 包信息
+    ├── SyncSample.h       # 同步样本
+    └── TimelineEvent.h    # 时间线事件
 ```
 
-**已实现**: ✅ model, player, analyzer  
-**待实现**: ⏳ io
+**已实现**: ✅ model, player, analyzer
 
 ---
 
@@ -143,18 +149,12 @@ utils/
 
 ```
 tests/
-├── CMakeLists.txt        # 测试构建配置 (GoogleTest FetchContent)
-└── unit/                 # 单元测试 (待补全)
-    ├── test_format_detector.cpp    # FormatDetector 格式检测
-    ├── test_config_manager.cpp     # ConfigManager 配置管理
-    ├── test_report_exporter.cpp    # ReportExporter 报告导出
-    ├── test_stream_analyzer.cpp    # StreamAnalyzer 流分析
-    ├── test_frame_data.cpp         # FrameData 帧数据模型
-    └── test_frame_analyzer.cpp     # FrameAnalyzer 帧分析/OpenCV
+└── CMakeLists.txt        # 测试构建配置 (GoogleTest FetchContent)
 ```
 
 **测试框架**: GoogleTest v1.15.2 (FetchContent 自动下载)  
-**启用方式**: `cmake -DBUILD_TESTING=ON ..` (默认关闭)
+**启用方式**: `cmake -DBUILD_TESTING=ON ..` (默认关闭)  
+**注意**: 测试源文件 (`tests/unit/*.cpp`) 尚未提交到仓库，CMakeLists.txt 已配置好 6 个测试目标的编译规则，待补全源文件后即可运行。
 
 ---
 
@@ -179,12 +179,12 @@ tests/
 | 目录 | 文件数 | 状态 |
 |------|--------|------|
 | core/model/ | 10 | ✅ 已实现 |
-| core/player/ | 13 | ✅ 已实现 (含 Vulkan 渲染 + 硬件解码) |
-| core/analyzer/ | 24 | ✅ 已实现 (11 种容器格式) |
+| core/player/ | 18 | ✅ 已实现 (含 Vulkan 渲染 + 硬件解码 + 3 着色器) |
+| core/analyzer/ | 24 | ✅ 已实现 (7 种容器格式 + 统一调度) |
 | ui/ | 9 | ✅ 已实现 (深色主题) |
 | utils/ | 6 | ✅ 已实现 |
-| tests/ | 1 | ⏳ 配置就绪，测试文件待补全 |
-| **总计** | **63** | |
+| tests/ | 1 | ⏳ CMakeLists 就绪，源文件待补全 |
+| **总计** | **68** | |
 
 ---
 
@@ -223,7 +223,7 @@ tests/
 
 ### 中期
 
-1. ⏳ 补全单元测试文件
+1. ⏳ 补全单元测试源文件 (tests/unit/*.cpp)
 2. ⏳ 添加更多分析算法
 3. ⏳ 完善 UI 交互细节
 

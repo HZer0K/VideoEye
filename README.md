@@ -191,7 +191,6 @@ VideoEye/
 │   │   ├── VideoFrameExporter   # 视频帧导出
 │   │   └── shaders/             # Vulkan 着色器
 │   ├── analyzer/                # 分析引擎 (MP4/MKV/AVI/FLV/TS/ASF/OGG)
-│   ├── io/                      # 输入输出
 │   └── model/                   # 数据模型
 ├── ui/                          # UI层
 │   ├── theme/                   # 深色主题模块 (AppTheme.h/cpp)
@@ -200,7 +199,7 @@ VideoEye/
 │   │   └── VulkanVideoWidget.h/cpp  # 视频渲染 + 叠加信息层
 │   └── analysis_panel/          # 分析面板 (QStackedWidget 模式)
 ├── utils/                       # 工具类 (Logger / ConfigManager / ReportExporter)
-├── tests/                       # 测试 (GoogleTest, 6 suites, 115 cases)
+├── tests/                       # 测试配置 (GoogleTest, 源文件待补全)
 ├── third_party/                 # 第三方库
 │   ├── Bento4/                  # MP4 解析 (源码集成 + CMakeLists.txt)
 │   ├── vulkan-headers/          # Vulkan 1.4 头文件 (submodule)
@@ -273,15 +272,17 @@ VideoEye/
 ## 🧪 测试
 
 ```bash
-# 构建 Debug 版本
-./build.sh debug
+# 构建 Debug 版本 (启用测试)
+cmake -B build-debug -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-debug
 
 # 运行测试
 cd build-debug && ctest --output-on-failure
-# 预期: 6 suites, 115 cases passed
 ```
 
-| 测试套件 | 被测模块 | 用例数 |
+> **注意**: 测试源文件 (`tests/unit/*.cpp`) 尚未提交到仓库。CMakeLists.txt 已配置好 6 个测试目标的编译规则，待补全源文件后即可运行。
+
+| 测试套件 | 被测模块 | 用例数 (规划) |
 |---------|---------|--------|
 | test_format_detector | FormatDetector | 27 |
 | test_config_manager | ConfigManager | 26 |
