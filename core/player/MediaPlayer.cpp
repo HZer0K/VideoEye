@@ -2,11 +2,14 @@
 #include "utils/Logger.h"
 #include <QFileInfo>
 #include <QDebug>
+#include <QPointer>
 #include <algorithm>
 #include <cstdint>
 #include <chrono>
 #include <limits>
+#include <exception>
 #include <QDir>
+#include <thread>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -102,7 +105,10 @@ void MediaPlayer::EmitAudioVisualization(const AudioVisualizationResult& vis,
 // --- 播放控制 ---
 
 bool MediaPlayer::Open(const QString& url) {
-    return OpenInternal(url, nullptr, nullptr);
+    LOG_INFO("Open ENTER: " + url.toStdString());
+    bool ok = OpenInternal(url, nullptr, nullptr);
+    LOG_INFO("Open EXIT: result=" + std::string(ok ? "true" : "false"));
+    return ok;
 }
 
 bool MediaPlayer::OpenRawPcm(const QString& url, const QString& demuxer_name, int sample_rate, int channels) {
@@ -163,6 +169,7 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
         emit Error(QString("Failed to open: %1").arg(url));
         return false;
     }
+    LOG_INFO("OpenInternal: avformat_open_input OK");
 
     ret = avformat_find_stream_info(format_ctx_, nullptr);
     if (ret < 0) {
@@ -170,6 +177,7 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
         Cleanup();
         return false;
     }
+    LOG_INFO("OpenInternal: avformat_find_stream_info OK, streams=" + std::to_string(format_ctx_->nb_streams));
 
     if (!format_ctx_) {
         emit Error("Format context is null");
@@ -360,12 +368,21 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     state_ = model::PlayerState::Idle;
     emit StateChanged(state_);
 
-    // 触发容器结构分析 (统一调度, 内部自动选择 MP4/MKV/AVI/FLV/TS/ASF/OGG/FFmpeg 解析器)
+    // 触发容器结构分析 (统一调度) — 放到后台线程执行。
+    // 容器结构分析是纯展示信息 (面板里看 Box 树 / 样本表), 不应阻塞打开 / 播放。
+    // 之前同步跑在 UI 线程, 大文件的 sample 表展开会让界面冻结数秒~数十秒。
+    // 改为后台线程, 完成后通过信号 (跨线程自动排队) 投递结果。
     if (container_structure_enabled_) {
-        model::ContainerStructureResult cs_result;
-        if (container_analyzer_.Analyze(url, cs_result)) {
-            emit ContainerStructureReady(cs_result);
-        }
+        LOG_INFO("OpenInternal: 容器结构分析已派发到后台线程");
+        QString url_copy = url;
+        QPointer<MediaPlayer> self = this;
+        std::thread([self, url_copy]() {
+            model::ContainerStructureResult cs_result;
+            if (self && self->container_analyzer_.Analyze(url_copy, cs_result)) {
+                emit self->ContainerStructureReady(cs_result);
+            }
+            LOG_INFO("OpenInternal: 后台容器结构分析完成");
+        }).detach();
     }
 
     LOG_INFO("OpenInternal success: " + url.toStdString());
@@ -373,6 +390,7 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
 }
 
 void MediaPlayer::Play() {
+    LOG_INFO("Play ENTER: state=" + std::to_string(static_cast<int>(state_.load())));
     if (!format_ctx_) { emit Error("No media opened"); return; }
     if (state_ == model::PlayerState::Playing) return;
     if (state_ == model::PlayerState::Paused) {
@@ -387,9 +405,11 @@ void MediaPlayer::Play() {
     state_ = model::PlayerState::Playing;
     emit StateChanged(state_);
     decode_thread_ = std::thread(&MediaPlayer::DecodeThread, this);
+    LOG_INFO("Play: decode thread started");
 }
 
 void MediaPlayer::Pause() {
+    LOG_INFO("Pause");
     if (state_ == model::PlayerState::Playing) {
         state_ = model::PlayerState::Paused;
         emit StateChanged(state_);
@@ -398,6 +418,7 @@ void MediaPlayer::Pause() {
 }
 
 void MediaPlayer::Stop() {
+    LOG_INFO("Stop");
     should_stop_ = true;
     state_ = model::PlayerState::Stopped;
     cv_.notify_one();
@@ -409,6 +430,7 @@ void MediaPlayer::Stop() {
 }
 
 void MediaPlayer::Seek(int position_ms) {
+    LOG_INFO("Seek: target_ms=" + std::to_string(position_ms));
     std::lock_guard<std::mutex> lock(mutex_);
     if (!format_ctx_) return;
     int64_t timestamp = position_ms * 1000LL;
@@ -470,13 +492,16 @@ void MediaPlayer::CancelVideoFrameExport() {
 // --- 解码线程 ---
 
 void MediaPlayer::DecodeThread() {
+    LOG_INFO("DecodeThread START");
     AVPacket* packet = av_packet_alloc();
     model::FrameData frame_data;
     SwsContext* sws_ctx = nullptr;
     int sws_src_w = 0, sws_src_h = 0, sws_src_fmt = AV_PIX_FMT_NONE;
     std::vector<uint8_t> audio_buffer(192000);
     int last_emitted_position_ms = -1;
+    int64_t decoded_frames = 0;
 
+    try {
     const int clock_stream_index = SelectPlaybackClockStreamIndex(audio_stream_index_, video_stream_index_);
     const bool enable_pacing = (clock_stream_index >= 0);
     const bool frame_paced_video = (clock_stream_index >= 0 && clock_stream_index == video_stream_index_);
@@ -506,7 +531,7 @@ void MediaPlayer::DecodeThread() {
         }
 
         int ret = av_read_frame(format_ctx_, packet);
-        if (ret < 0) { emit PlaybackFinished(); break; }
+        if (ret < 0) { LOG_INFO("DecodeThread: av_read_frame EOF -> PlaybackFinished"); emit PlaybackFinished(); break; }
 
         const int64_t pkt_ts = (packet->pts != AV_NOPTS_VALUE) ? packet->pts : packet->dts;
         const double packet_ts_sec = PacketTimestampSeconds(format_ctx_, packet);
@@ -621,6 +646,10 @@ void MediaPlayer::DecodeThread() {
                             sws_scale(sws_ctx, frame_data.data, frame_data.linesize, 0, frame_data.height,
                                       dst_slices, dst_linesize);
                             emit FrameReady(qimage);
+                            if (++decoded_frames % 120 == 0) {
+                                LOG_INFO("DecodeThread heartbeat: frames=" + std::to_string(decoded_frames) +
+                                         " pos_ms=" + std::to_string(current_position_ms_.load()));
+                            }
                         }
                     }
                     if (frame_type_analysis_enabled_) {
@@ -745,8 +774,23 @@ void MediaPlayer::DecodeThread() {
         av_packet_unref(packet);
     }
 
+    } catch (const std::exception& e) {
+        LOG_ERROR("DecodeThread exception: " + std::string(e.what()));
+        emit Error(QString("解码线程发生异常，已停止播放: %1").arg(e.what()));
+        should_stop_ = true;
+    } catch (...) {
+        LOG_ERROR("DecodeThread unknown exception");
+        emit Error(QString("解码线程发生未知异常，已停止播放"));
+        should_stop_ = true;
+    }
+
+    LOG_INFO("DecodeThread EXIT");
     if (sws_ctx) { sws_freeContext(sws_ctx); sws_ctx = nullptr; }
     av_packet_free(&packet);
+    if (state_ != model::PlayerState::Stopped) {
+        state_ = model::PlayerState::Stopped;
+        emit StateChanged(state_);
+    }
 }
 
 bool MediaPlayer::IsHardwareDecoding() const {

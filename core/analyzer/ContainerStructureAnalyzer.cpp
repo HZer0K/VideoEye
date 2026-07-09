@@ -9,6 +9,7 @@
 #include "OggStructureAnalyzer.h"
 #include "utils/Logger.h"
 #include <QStringList>
+#include <chrono>
 
 namespace videoeye {
 namespace analyzer {
@@ -19,6 +20,7 @@ ContainerStructureAnalyzer::~ContainerStructureAnalyzer() = default;
 bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
                                           model::ContainerStructureResult& result) {
     result.file_path = file_path;
+    LOG_INFO("ContainerStructureAnalyzer::Analyze ENTER: " + file_path.toStdString());
 
     // 1. 检测格式
     auto fmt = FormatDetector::Detect(file_path);
@@ -26,6 +28,7 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
     result.format_name = FormatDetector::FormatName(fmt);
 
     LOG_INFO("容器结构分析: 检测到格式 = " + result.format_name.toStdString());
+    LOG_INFO("ContainerStructureAnalyzer: 分发到对应解析器, format=" + std::to_string(static_cast<int>(fmt)));
 
     // 2. 根据格式分发到对应解析器
     switch (fmt) {
@@ -33,8 +36,15 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
     case model::ContainerFormat::MOV: {
         Mp4BoxAnalyzer mp4_analyzer;
         if (mp4_analyzer.AnalyzeFile(file_path, result.mp4_detail)) {
+            auto t0 = std::chrono::steady_clock::now();
             ConvertMp4Tree(result.mp4_detail.box_tree, 0, result.element_tree);
+            auto t1 = std::chrono::steady_clock::now();
+            LOG_INFO("ContainerStructureAnalyzer: ConvertMp4Tree 耗时 = " +
+                     std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()) + " ms");
             ExtractMp4StreamInfo(result.mp4_detail.box_tree, result);
+            auto t2 = std::chrono::steady_clock::now();
+            LOG_INFO("ContainerStructureAnalyzer: ExtractMp4StreamInfo 耗时 = " +
+                     std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count()) + " ms");
             result.valid = true;
 
             int box_count = 0;

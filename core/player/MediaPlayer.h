@@ -180,7 +180,7 @@ private:
     bool sync_analysis_enabled_ = false;
     bool timeline_analysis_enabled_ = false;
     bool container_structure_enabled_ = true;
-    bool hw_decoding_enabled_ = true;  // 默认尝试硬件解码
+    bool hw_decoding_enabled_ = false; // 默认关闭硬件解码: Vulkan/D3D11 等 HW 路径在部分 Windows 驱动下会导致"打开视频即闪退"(FFmpeg 内部段错误, 无法被 C++ 异常捕获, 进程直接终止)。软件解码稳定可靠; 如确需 HW 解码性能, 可显式调用 SetHardwareDecodingEnabled(true), 但仍建议保留下方解码线程的异常兜底。
     bool vulkan_rendering_enabled_ = false;  // Vulkan 渲染开关（阶段2）
     
     // 分析索引/状态

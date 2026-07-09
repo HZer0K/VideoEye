@@ -199,12 +199,16 @@ private:
     }
 
     // 将 stco/stsz 风格的裸值条目保存为 entry[N]=key=value 格式
+    // 封顶: 单个 Box 的样本条目最多保留 kMaxEntryFields 条, 避免大文件展开成
+    // 几十万个 QString 字段, 拖垮后续 ConvertMp4Tree / ExtractMp4StreamInfo 遍历。
+    static const int kMaxEntryFields = 5000;
     void FlushBareFieldEntries() {
         if (node_stack_.isEmpty()) return;
         const QString& box_type = node_stack_.top().type;
         auto& current = const_cast<model::Mp4BoxNode&>(node_stack_.top());
 
         for (int i = 0; i < entry_bare_values_.size(); ++i) {
+            if (current.fields.size() >= kMaxEntryFields) break;
             QString entry_str;
             if (box_type == "stco" || box_type == "Co64Atom"
                 || box_type == "co64") {
@@ -226,6 +230,10 @@ private:
     void FlushObjectEntry() {
         if (node_stack_.isEmpty()) return;
         auto& current = const_cast<model::Mp4BoxNode&>(node_stack_.top());
+        if (current.fields.size() >= kMaxEntryFields) {
+            current_entry_fields_.clear();
+            return;
+        }
         QString entry_str;
         for (const auto& f : current_entry_fields_) {
             if (!entry_str.isEmpty()) entry_str += ", ";
@@ -449,6 +457,7 @@ bool Mp4BoxAnalyzer::AnalyzeFile(const QString& file_path,
                                   model::Mp4BoxAnalysisResult& result) {
     result = model::Mp4BoxAnalysisResult();
     result.file_path = file_path;
+    LOG_INFO("Mp4BoxAnalyzer::AnalyzeFile ENTER: " + file_path.toStdString());
 
     // 打开文件
     AP4_ByteStream* stream = nullptr;
@@ -464,6 +473,7 @@ bool Mp4BoxAnalyzer::AnalyzeFile(const QString& file_path,
         LOG_ERROR(result.error_message.toStdString());
         return false;
     }
+    LOG_INFO("Mp4BoxAnalyzer: file opened");
 
     // 解析文件
     AP4_File* file = nullptr;
@@ -488,7 +498,9 @@ bool Mp4BoxAnalyzer::AnalyzeFile(const QString& file_path,
     // (stts/stco/stsc 需要 ≥1, stsz 需要 ≥2)
     VideoEyeInspector inspector(result);
     inspector.SetVerbosity(2);
+    LOG_INFO("Mp4BoxAnalyzer: BEFORE file->Inspect (verbosity=2, 会遍历全部 sample 表)");
     file->Inspect(inspector);
+    LOG_INFO("Mp4BoxAnalyzer: AFTER file->Inspect");
 
     // 清理
     delete file;
