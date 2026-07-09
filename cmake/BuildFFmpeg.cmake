@@ -115,49 +115,65 @@ set(FFMPEG_CONFIGURE_ARGS
 
 # 条件启用 Vulkan
 if(FFMPEG_ENABLE_VULKAN)
-    # Vulkan 在 FFmpeg 8.1+ 中自动检测，只需提供头文件和链接库
-    # 注意：--enable-hwaccel 已由 --enable-hwaccels 覆盖，vulkan 不是有效的 hwaccel 名称
-    # 注意：--enable-vulkan 在 FFmpeg 8.1 中已移除（仅保留 --enable-vulkan-static）
-    # 如果使用 bundled Vulkan headers，传递 include 路径
     if(VULKAN_CFLAGS)
         list(APPEND FFMPEG_CONFIGURE_ARGS
             "--extra-cflags=${VULKAN_CFLAGS}"
         )
     endif()
-    # Vulkan 导入库：MinGW 的 ld 无法直接使用 MSVC 的 .lib，
+    # Vulkan 导入库：Windows 上 MinGW 的 ld 无法直接使用 MSVC 的 .lib，
     # 需要用 gendef/dlltool 从 vulkan-1.dll 生成 .a 格式导入库
-    set(VULKAN_IMPORT_DIR "${CMAKE_BINARY_DIR}/ffmpeg_tmp/vulkan_import")
-    file(MAKE_DIRECTORY "${VULKAN_IMPORT_DIR}")
+    # Linux 上直接使用系统 libvulkan.so，不需要此步骤
+    if(WIN32)
+        set(VULKAN_IMPORT_DIR "${CMAKE_BINARY_DIR}/ffmpeg_tmp/vulkan_import")
+        file(MAKE_DIRECTORY "${VULKAN_IMPORT_DIR}")
+    endif()
 endif()
 
 # 将参数列表转换为空格分隔的字符串
 string(REPLACE ";" " " FFMPEG_CONFIGURE_STRING "${FFMPEG_CONFIGURE_ARGS}")
+
+# 平台相关: 库文件前缀和后缀
+if(WIN32 AND MSVC)
+    set(FFMPEG_LIB_SUFFIX ".lib")
+    set(FFMPEG_LIB_PREFIX "")
+else()
+    set(FFMPEG_LIB_SUFFIX ".so")
+    set(FFMPEG_LIB_PREFIX "lib")
+endif()
 
 # 使用 ExternalProject 构建 FFmpeg
 # 设置 TMPDIR 到构建目录内，避免沙箱环境无法写入 /tmp
 set(FFMPEG_TMPDIR "${CMAKE_BINARY_DIR}/ffmpeg_tmp")
 file(MAKE_DIRECTORY "${FFMPEG_TMPDIR}")
 
-# 查找可用的 bash（MSYS2 > Git Bash > 系统默认）
-# 必须避免 WSL bash，因为它无法访问 Windows 文件系统
-find_program(BASH_EXECUTABLE
-    NAMES bash
-    PATHS
-        "D:/APP/Msys64/usr/bin"
-        "C:/msys64/usr/bin"
-        "C:/Program Files/Git/bin"
-        "C:/Program Files/Git/usr/bin"
-    NO_DEFAULT_PATH
-)
-if(NOT BASH_EXECUTABLE)
+# 查找可用的 bash
+# Windows: MSYS2 > Git Bash (避免 WSL bash, 无法访问 Windows 文件系统)
+# Linux: 系统默认 bash
+if(WIN32)
+    find_program(BASH_EXECUTABLE
+        NAMES bash
+        PATHS
+            "D:/APP/Msys64/usr/bin"
+            "C:/msys64/usr/bin"
+            "C:/Program Files/Git/bin"
+            "C:/Program Files/Git/usr/bin"
+        NO_DEFAULT_PATH
+    )
+    if(NOT BASH_EXECUTABLE)
+        find_program(BASH_EXECUTABLE bash)
+    endif()
+    if(NOT BASH_EXECUTABLE)
+        message(FATAL_ERROR "bash not found, required for FFmpeg build on Windows. Install MSYS2 or Git for Windows.")
+    endif()
+else()
     find_program(BASH_EXECUTABLE bash)
-endif()
-if(NOT BASH_EXECUTABLE)
-    message(FATAL_ERROR "bash not found, required for FFmpeg build. Install MSYS2 or Git for Windows.")
+    if(NOT BASH_EXECUTABLE)
+        message(FATAL_ERROR "bash not found")
+    endif()
 endif()
 message(STATUS "Using bash: ${BASH_EXECUTABLE}")
 
-# 转换 Windows 路径为 Unix 格式: D:/path/to -> /d/path/to (MSYS2/Git Bash 需要)
+# 转换 Windows 路径为 Unix 格式 (仅 Windows 需要)
 function(to_unix_path OUT_VAR IN_PATH)
     if(WIN32)
         string(REGEX REPLACE "^([A-Za-z]):/" "/\\1/" _unix "${IN_PATH}")
@@ -180,38 +196,41 @@ to_unix_path(CMAKE_CURRENT_SOURCE_DIR_UNIX "${CMAKE_CURRENT_SOURCE_DIR}")
 list(TRANSFORM FFMPEG_CONFIGURE_ARGS_UNIX REPLACE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR_UNIX}")
 list(TRANSFORM FFMPEG_CONFIGURE_ARGS_UNIX REPLACE "${FFMPEG_INSTALL_PREFIX}" "${FFMPEG_INSTALL_PREFIX_UNIX}")
 
-# Vulkan 导入库路径（MinGW 需要 .a 格式，不能用 MSVC 的 .lib）
-if(FFMPEG_ENABLE_VULKAN)
+# Vulkan 导入库路径（仅 Windows: MinGW 需要 .a 格式，不能用 MSVC 的 .lib）
+if(FFMPEG_ENABLE_VULKAN AND WIN32)
     to_unix_path(VULKAN_IMPORT_DIR_UNIX "${VULKAN_IMPORT_DIR}")
     list(APPEND FFMPEG_CONFIGURE_ARGS_UNIX
-        "--extra-ldflags='-L${VULKAN_IMPORT_DIR_UNIX} -lvulkan-1'"
+        "--extra-ldflags=-L${VULKAN_IMPORT_DIR_UNIX} -lvulkan-1"
     )
 endif()
 
 string(REPLACE ";" " " FFMPEG_CONFIGURE_STRING_UNIX "${FFMPEG_CONFIGURE_ARGS_UNIX}")
 
-# 查找 MSYS2 UCRT64 的 GCC（编译 FFmpeg 需要）
-# 从 BASH_EXECUTABLE 推导 MSYS2 根目录（bash.exe 在 usr/bin/ 下，需要回退 2 层）
-get_filename_component(_bash_bin "${BASH_EXECUTABLE}" DIRECTORY)  # → .../usr/bin
-get_filename_component(_msys2_root "${_bash_bin}/../.." ABSOLUTE) # → MSYS2 根目录
-to_unix_path(MSYS2_USR_BIN_UNIX "${_msys2_root}/usr/bin")
-to_unix_path(MSYS2_UCRT64_BIN_UNIX "${_msys2_root}/ucrt64/bin")
+# Bash 环境: Windows 需要 MSYS2 UCRT64 环境, Linux 直接使用系统环境
+if(WIN32)
+    # 从 BASH_EXECUTABLE 推导 MSYS2 根目录
+    get_filename_component(_bash_bin "${BASH_EXECUTABLE}" DIRECTORY)
+    get_filename_component(_msys2_root "${_bash_bin}/../.." ABSOLUTE)
+    to_unix_path(MSYS2_USR_BIN_UNIX "${_msys2_root}/usr/bin")
+    to_unix_path(MSYS2_UCRT64_BIN_UNIX "${_msys2_root}/ucrt64/bin")
+    set(BASH_ENV "export MSYSTEM=UCRT64 && export PATH=${MSYS2_UCRT64_BIN_UNIX}:${MSYS2_USR_BIN_UNIX}:${MSYS2_USR_BIN_UNIX}/../local/bin:/bin")
+else()
+    set(BASH_ENV "")
+endif()
 
-# Bash 环境初始化：显式设置所有必要的 MSYS2 路径
-# 注意：不能用 $PATH（会被 MSBuild 转义失效），必须逐项列出
-# 必须设置 MSYSTEM=UCRT64，否则 FFmpeg 报 "Native MSYS builds are discouraged"
-set(BASH_ENV "export MSYSTEM=UCRT64 && export PATH=${MSYS2_UCRT64_BIN_UNIX}:${MSYS2_USR_BIN_UNIX}:${MSYS2_USR_BIN_UNIX}/../local/bin:/bin")
-
-# 构建 Vulkan 导入库的预处理命令（MinGW 兼容）
-if(FFMPEG_ENABLE_VULKAN)
+# 构建 Vulkan 导入库的预处理命令（仅 Windows MinGW 兼容）
+if(FFMPEG_ENABLE_VULKAN AND WIN32)
     set(VULKAN_GENLIB_CMD "mkdir -p ${VULKAN_IMPORT_DIR_UNIX} && cd ${VULKAN_IMPORT_DIR_UNIX} && gendef /c/Windows/System32/vulkan-1.dll && dlltool -d vulkan-1.def -l libvulkan-1.a -D vulkan-1.dll && ")
 else()
     set(VULKAN_GENLIB_CMD "")
 endif()
 
-# 生成 post-install 脚本（为每个 DLL 生成 .def 文件供 MSVC 使用）
-set(_GENDEF_SCRIPT "${CMAKE_BINARY_DIR}/ffmpeg_gendef.sh")
-file(WRITE "${_GENDEF_SCRIPT}"
+# 生成 post-install 脚本
+# Windows: 为每个 DLL 生成 .def 文件供 MSVC 使用 (gendef 是 MSYS2 工具)
+# Linux: 不需要 .def 文件，直接生成 .so
+if(WIN32)
+    set(_GENDEF_SCRIPT "${CMAKE_BINARY_DIR}/ffmpeg_gendef.sh")
+    file(WRITE "${_GENDEF_SCRIPT}"
 "#!/bin/bash
 cd ${FFMPEG_INSTALL_PREFIX_UNIX}/bin
 for f in av*.dll sw*.dll; do
@@ -220,20 +239,33 @@ for f in av*.dll sw*.dll; do
     gendef \"\$f\" 2>/dev/null
 done
 ")
-to_unix_path(_GENDEF_SCRIPT_UNIX "${_GENDEF_SCRIPT}")
+    to_unix_path(_GENDEF_SCRIPT_UNIX "${_GENDEF_SCRIPT}")
+    set(FFMPEG_INSTALL_SUFFIX "&& bash ${_GENDEF_SCRIPT_UNIX}")
+else()
+    set(FFMPEG_INSTALL_SUFFIX "")
+endif()
+
+# 构建 FFmpeg 的 configure/build/install 命令前缀
+# Windows: 需要先设置 MSYS2 环境
+# Linux: 直接执行
+if(WIN32)
+    set(FFMPEG_CMD_PREFIX "${BASH_ENV} && ")
+else()
+    set(FFMPEG_CMD_PREFIX "")
+endif()
 
 ExternalProject_Add(ffmpeg_build
     SOURCE_DIR "${FFMPEG_SOURCE_DIR}"
-    CONFIGURE_COMMAND ${BASH_EXECUTABLE} -c "${BASH_ENV} && ${VULKAN_GENLIB_CMD}cd ${FFMPEG_SOURCE_DIR_UNIX} && TMPDIR=${FFMPEG_TMPDIR_UNIX} ./configure ${FFMPEG_CONFIGURE_STRING_UNIX}"
-    BUILD_COMMAND ${BASH_EXECUTABLE} -c "${BASH_ENV} && cd ${FFMPEG_SOURCE_DIR_UNIX} && TMPDIR=${FFMPEG_TMPDIR_UNIX} make -j8"
-    INSTALL_COMMAND ${BASH_EXECUTABLE} -c "${BASH_ENV} && cd ${FFMPEG_SOURCE_DIR_UNIX} && TMPDIR=${FFMPEG_TMPDIR_UNIX} make install && bash ${_GENDEF_SCRIPT_UNIX}"
+    CONFIGURE_COMMAND ${BASH_EXECUTABLE} -c "${FFMPEG_CMD_PREFIX}${VULKAN_GENLIB_CMD}cd ${FFMPEG_SOURCE_DIR_UNIX} && TMPDIR=${FFMPEG_TMPDIR_UNIX} ./configure ${FFMPEG_CONFIGURE_STRING_UNIX}"
+    BUILD_COMMAND ${BASH_EXECUTABLE} -c "${FFMPEG_CMD_PREFIX}cd ${FFMPEG_SOURCE_DIR_UNIX} && TMPDIR=${FFMPEG_TMPDIR_UNIX} make -j8"
+    INSTALL_COMMAND ${BASH_EXECUTABLE} -c "${FFMPEG_CMD_PREFIX}cd ${FFMPEG_SOURCE_DIR_UNIX} && TMPDIR=${FFMPEG_TMPDIR_UNIX} make install ${FFMPEG_INSTALL_SUFFIX}"
     BUILD_IN_SOURCE 1
     BUILD_BYPRODUCTS
-        "${FFMPEG_INSTALL_PREFIX}/lib/avcodec.lib"
-        "${FFMPEG_INSTALL_PREFIX}/lib/avformat.lib"
-        "${FFMPEG_INSTALL_PREFIX}/lib/avutil.lib"
-        "${FFMPEG_INSTALL_PREFIX}/lib/swscale.lib"
-        "${FFMPEG_INSTALL_PREFIX}/lib/swresample.lib"
+        "${FFMPEG_INSTALL_PREFIX}/lib/${FFMPEG_LIB_PREFIX}avcodec${FFMPEG_LIB_SUFFIX}"
+        "${FFMPEG_INSTALL_PREFIX}/lib/${FFMPEG_LIB_PREFIX}avformat${FFMPEG_LIB_SUFFIX}"
+        "${FFMPEG_INSTALL_PREFIX}/lib/${FFMPEG_LIB_PREFIX}avutil${FFMPEG_LIB_SUFFIX}"
+        "${FFMPEG_INSTALL_PREFIX}/lib/${FFMPEG_LIB_PREFIX}swscale${FFMPEG_LIB_SUFFIX}"
+        "${FFMPEG_INSTALL_PREFIX}/lib/${FFMPEG_LIB_PREFIX}swresample${FFMPEG_LIB_SUFFIX}"
     INSTALL_DIR "${FFMPEG_INSTALL_PREFIX}"
 )
 
@@ -285,28 +317,26 @@ add_library(ffmpeg::avutil SHARED IMPORTED GLOBAL)
 add_library(ffmpeg::swscale SHARED IMPORTED GLOBAL)
 add_library(ffmpeg::swresample SHARED IMPORTED GLOBAL)
 
-# 根据平台选择库文件后缀
+# 库文件属性 (FFMPEG_LIB_PREFIX/SUFFIX 已在前面定义)
 if(WIN32 AND MSVC)
-    set(FFMPEG_LIB_SUFFIX ".lib")
     set(FFMPEG_IMPLIB_PROP IMPORTED_IMPLIB)
 else()
-    set(FFMPEG_LIB_SUFFIX ".so")
     set(FFMPEG_IMPLIB_PROP IMPORTED_LOCATION)
 endif()
 
 foreach(_lib avcodec avformat avutil swscale swresample)
     set_target_properties(ffmpeg::${_lib} PROPERTIES
-        ${FFMPEG_IMPLIB_PROP} "${FFMPEG_SOURCE_LIB_DIR}/${_lib}${FFMPEG_LIB_SUFFIX}"
+        ${FFMPEG_IMPLIB_PROP} "${FFMPEG_SOURCE_LIB_DIR}/${FFMPEG_LIB_PREFIX}${_lib}${FFMPEG_LIB_SUFFIX}"
         IMPORTED_NO_SONAME ON
     )
 endforeach()
 
 set(FFMPEG_LIBRARIES
-    "${FFMPEG_SOURCE_LIB_DIR}/avcodec${FFMPEG_LIB_SUFFIX}"
-    "${FFMPEG_SOURCE_LIB_DIR}/avformat${FFMPEG_LIB_SUFFIX}"
-    "${FFMPEG_SOURCE_LIB_DIR}/avutil${FFMPEG_LIB_SUFFIX}"
-    "${FFMPEG_SOURCE_LIB_DIR}/swscale${FFMPEG_LIB_SUFFIX}"
-    "${FFMPEG_SOURCE_LIB_DIR}/swresample${FFMPEG_LIB_SUFFIX}"
+    "${FFMPEG_SOURCE_LIB_DIR}/${FFMPEG_LIB_PREFIX}avcodec${FFMPEG_LIB_SUFFIX}"
+    "${FFMPEG_SOURCE_LIB_DIR}/${FFMPEG_LIB_PREFIX}avformat${FFMPEG_LIB_SUFFIX}"
+    "${FFMPEG_SOURCE_LIB_DIR}/${FFMPEG_LIB_PREFIX}avutil${FFMPEG_LIB_SUFFIX}"
+    "${FFMPEG_SOURCE_LIB_DIR}/${FFMPEG_LIB_PREFIX}swscale${FFMPEG_LIB_SUFFIX}"
+    "${FFMPEG_SOURCE_LIB_DIR}/${FFMPEG_LIB_PREFIX}swresample${FFMPEG_LIB_SUFFIX}"
 )
 
 # 查找 FFmpeg 依赖的系统库

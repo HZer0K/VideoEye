@@ -1,4 +1,4 @@
-# VideoEye Ninja Build Script (PowerShell)
+# VideoEye Windows Build Script (PowerShell + Ninja + MSVC)
 # Usage: powershell -ExecutionPolicy Bypass -File build_ninja.ps1
 #
 # This script bypasses the MSBuild LOLBin restriction by using the Ninja generator
@@ -6,7 +6,7 @@
 
 $ErrorActionPreference = "Stop"
 
-$projectRoot = "D:\Coding\C\videoeye\VideoEye"
+$projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $buildDir = "$projectRoot\build-ninja"
 
 # ── MSVC and Windows SDK paths ──
@@ -23,12 +23,19 @@ $env:PATH = "$msvcRoot\bin\Hostx64\x64;$winKits\bin\$sdkVer\x64;$env:PATH"
 $env:INCLUDE = "$msvcRoot\include;$winKits\Include\$sdkVer\ucrt;$winKits\Include\$sdkVer\um;$winKits\Include\$sdkVer\shared;$winKits\Include\$sdkVer\winrt"
 $env:LIB = "$msvcRoot\lib\x64;$winKits\Lib\$sdkVer\ucrt\x64;$winKits\Lib\$sdkVer\um\x64;$vcpkgLib"
 
-Write-Output "=== VideoEye Ninja Build ==="
+Write-Output "=== VideoEye Ninja Build (Windows) ==="
+Write-Output "Project: $projectRoot"
 
 # Verify cl.exe
 $clPath = Get-Command cl.exe -ErrorAction SilentlyContinue
 if (!$clPath) { Write-Output "ERROR: cl.exe not found!"; exit 1 }
 Write-Output "Compiler: $($clPath.Source)"
+
+# Verify ninja
+if (!(Test-Path $ninjaExe)) {
+    Write-Output "ERROR: ninja.exe not found at $ninjaExe"
+    exit 1
+}
 
 # Create build directory
 if (!(Test-Path $buildDir)) { New-Item -ItemType Directory -Path $buildDir | Out-Null }
@@ -53,7 +60,7 @@ $ffmpegBin = "$buildDir\ffmpeg_install\bin"
 
 # FFmpeg DLLs
 if (Test-Path $ffmpegBin) { Copy-Item "$ffmpegBin\*.dll" $binDir -Force }
-# vcpkg DLLs (Qt6, SDL2, OpenCV, zlib)
+# vcpkg DLLs (Qt6, SDL2, OpenCV, zlib, icu, harfbuzz, etc. - copy all)
 if (Test-Path $vcpkgBin) { Copy-Item "$vcpkgBin\*.dll" $binDir -Force }
 # Qt6 plugins
 $pluginDirs = @("platforms", "styles", "imageformats", "tls")
@@ -64,6 +71,14 @@ foreach ($dir in $pluginDirs) {
         if (!(Test-Path $dst)) { New-Item -ItemType Directory -Path $dst | Out-Null }
         Copy-Item "$src\*.dll" $dst -Force
     }
+}
+
+# Copy SPIR-V shaders if they exist
+$shaderDir = "$buildDir\shaders"
+if (Test-Path $shaderDir) {
+    $dstShader = "$binDir\shaders"
+    if (!(Test-Path $dstShader)) { New-Item -ItemType Directory -Path $dstShader | Out-Null }
+    Copy-Item "$shaderDir\*.spv" $dstShader -Force
 }
 
 Write-Output ""

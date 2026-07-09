@@ -1,5 +1,5 @@
 #!/bin/bash
-# VideoEye 开发环境初始化脚本 (Linux / macOS)
+# VideoEye 开发环境初始化脚本 (Linux / macOS / WSL)
 set -eu
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
@@ -55,25 +55,24 @@ if [ "$BUILD_ONLY" = false ]; then
         echo -e "\n${YELLOW}[3/4] 系统依赖...${NC}"
 
         check_cmd() { command -v "$1" >/dev/null 2>&1 && echo -e "  ${GREEN}[OK]${NC} $1" || echo -e "  ${RED}[缺]${NC} $1"; }
+        check_pkg() { pkg-config --exists "$1" 2>/dev/null && echo -e "  ${GREEN}[OK]${NC} $1" || echo -e "  ${RED}[缺]${NC} $1"; }
 
-        check_cmd cmake; check_cmd gcc; check_cmd g++; check_cmd make
-
-        if [ "$OS" = "macos" ]; then
-            pkg-config --exists sdl2 2>/dev/null && echo -e "  ${GREEN}[OK]${NC} sdl2" || echo -e "  ${YELLOW}[缺]${NC} sdl2 (brew install sdl2)"
-        else
-            pkg-config --exists sdl2 2>/dev/null && echo -e "  ${GREEN}[OK]${NC} sdl2" || echo -e "  ${RED}[缺]${NC} sdl2 (apt install libsdl2-dev)"
-        fi
+        check_cmd cmake; check_cmd gcc; check_cmd g++; check_cmd make; check_cmd pkg-config
+        check_pkg Qt6Widgets; check_pkg opencv4; check_pkg sdl2; check_pkg zlib
 
         command -v glslc >/dev/null 2>&1 && echo -e "  ${GREEN}[OK]${NC} glslc" || echo -e "  ${YELLOW}[可选]${NC} glslc"
-        pkg-config --exists vulkan 2>/dev/null && echo -e "  ${GREEN}[OK]${NC} vulkan" || echo -e "  ${YELLOW}[可选]${NC} vulkan"
+        check_pkg vulkan
 
         # 打印安装建议
         echo ""
         if [ "$OS" = "linux" ]; then
-            echo "  系统依赖安装: sudo apt install build-essential cmake nasm yasm qt6-base-dev qt6-multimedia-dev qt6-charts-dev libopencv-dev libsdl2-dev"
-            echo "  Vulkan (可选): sudo apt install libvulkan-dev glslc"
+            echo "  Debian/Ubuntu 安装命令:"
+            echo "    sudo apt install -y build-essential cmake pkg-config nasm yasm \\"
+            echo "      qt6-base-dev qt6-multimedia-dev qt6-charts-dev \\"
+            echo "      libopencv-dev libsdl2-dev zlib1g-dev \\"
+            echo "      libvulkan-dev glslc"
         elif [ "$OS" = "macos" ]; then
-            echo "  系统依赖安装: brew install cmake nasm qt@6 opencv sdl2"
+            echo "  brew install cmake nasm qt@6 opencv sdl2 zlib"
             echo "  Vulkan (可选): brew install vulkan-sdk"
         fi
     fi
@@ -84,7 +83,7 @@ echo -e "\n${YELLOW}[4/4] 编译 (${BUILD_TYPE})...${NC}"
 BUILD_DIR="$DIR/build"
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
-cmake .. -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+cmake .. -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -DBUILD_TESTING=OFF
 
 if [ "$OS" = "macos" ]; then
     JOBS=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
@@ -96,50 +95,4 @@ cmake --build . -j"$JOBS"
 echo -e "\n${GREEN}========================================${NC}"
 echo -e "${GREEN}  初始化完成！${NC}"
 echo -e "${GREEN}  运行: $BUILD_DIR/bin/VideoEye${NC}"
-echo -e "${GREEN}  测试: cd $BUILD_DIR && ctest${NC}"
 echo -e "${GREEN}========================================${NC}"
-#!/bin/bash
-# VideoEye 开发环境初始化脚本
-set -eu
-DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$DIR"
-
-echo "=== VideoEye 环境初始化 ==="
-
-# 1. Git 子模块
-echo "[1/4] Git 子模块..."
-git submodule update --init --recursive && echo "  完成" || echo "  失败"
-
-# 2. FFmpeg 源码
-echo "[2/4] FFmpeg 源码..."
-if [ ! -f "$DIR/third_party/FFmpeg/configure" ]; then
-    echo "  下载 n8.1 (~40MB)..."
-    git clone --depth 1 --branch n8.1 \
-        https://git.ffmpeg.org/ffmpeg.git "$DIR/third_party/FFmpeg" 2>/dev/null || \
-    git clone --depth 1 --branch n8.1 \
-        https://github.com/FFmpeg/FFmpeg.git "$DIR/third_party/FFmpeg" || \
-    echo "  失败! 请手动克隆"
-else
-    echo "  已存在"
-fi
-
-# 3. 系统依赖
-echo "[3/4] 系统依赖..."
-for cmd in cmake gcc g++ make; do
-    command -v "$cmd" >/dev/null 2>&1 && echo "  [OK] $cmd" || echo "  [缺] $cmd"
-done
-pkg-config --exists sdl2 2>/dev/null && echo "  [OK] sdl2" || echo "  [缺] sdl2"
-command -v glslc >/dev/null 2>&1 && echo "  [OK] glslc" || echo "  [可选] glslc"
-pkg-config --exists vulkan 2>/dev/null && echo "  [OK] vulkan" || echo "  [可选] vulkan"
-
-# 4. 编译
-echo "[4/4] 编译..."
-BUILD_DIR="$DIR/build"
-mkdir -p "$BUILD_DIR"
-cd "$BUILD_DIR"
-cmake .. -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}"
-cmake --build . -j"$(nproc 2>/dev/null || echo 4)"
-echo ""
-echo "=== 完成 ==="
-echo "运行: $BUILD_DIR/bin/VideoEye"
-echo "测试: cd $BUILD_DIR && ctest"
