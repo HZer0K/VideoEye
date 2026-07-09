@@ -1,395 +1,201 @@
 # VideoEye 2.0 快速入门指南
 
-## 5 分钟快速开始
+## 🚀 5 分钟快速开始
 
 ### 1. 克隆项目
 
 ```bash
-git clone --recursive https://github.com/yourusername/VideoEye.git
+git clone --recursive https://github.com/HZer0K/VideoEye.git
 cd VideoEye
 ```
 
-### 2. 一键构建
+### 2. 构建项目
 
-```bash
-# Linux / macOS
-./setup.sh
+#### Windows (Ninja + MSVC)
 
-# Windows (PowerShell)
-.\setup.ps1
+```powershell
+# 推荐方式：使用 Ninja 构建脚本（自动配置 MSVC 环境）
+.\build.bat ninja
 ```
 
-脚本自动完成：子模块初始化 → FFmpeg 下载 → 依赖检查 → 编译。首次构建需 3-8 分钟（含 FFmpeg 编译）。
+> 首次构建会自动通过 vcpkg 拉取依赖（OpenCV、Qt6、SDL2 等），FFmpeg 使用已有源码编译产物。
+
+#### Linux (Ubuntu/Debian)
+
+```bash
+# 安装系统依赖
+sudo apt install -y \
+    build-essential cmake ninja-build nasm yasm pkg-config \
+    qt6-base-dev qt6-multimedia-dev qt6-charts-dev \
+    libopencv-dev libsdl2-dev zlib1g-dev \
+    libavcodec-dev libavformat-dev libavutil-dev \
+    libswscale-dev libswresample-dev \
+    libvulkan-dev glslc
+
+# 一键构建
+./build.sh release
+```
+
+#### macOS
+
+```bash
+brew install cmake ninja nasm qt@6 opencv sdl2 zlib ffmpeg
+./build.sh release
+```
 
 ### 3. 运行
 
 ```bash
-# Linux / macOS
-build/bin/VideoEye
-
 # Windows
-build\bin\Release\VideoEye.exe
+build-ninja\bin\VideoEye.exe
+
+# Linux / macOS
+build-release/bin/VideoEye
 ```
 
 ---
 
-## 手动构建
+## 📦 构建方式详解
 
-### Linux (Ubuntu/Debian)
+### Windows 构建
 
-```bash
-sudo apt install -y build-essential cmake nasm yasm \
-    qt6-base-dev qt6-multimedia-dev qt6-charts-dev \
-    libopencv-dev libsdl2-dev libvulkan-dev glslc
+| 命令 | 说明 |
+|------|------|
+| `.\build.bat ninja` | Ninja + MSVC 构建（推荐） |
+| `.\build.bat release` | Visual Studio 生成器 Release |
+| `.\build.bat debug` | Visual Studio 生成器 Debug |
+| `powershell -File build_ninja.ps1` | 直接运行 Ninja 构建脚本 |
 
-git clone --recursive <repo-url> && cd VideoEye
-git submodule update --init --recursive
-git clone --depth 1 --branch n8.1 https://github.com/FFmpeg/FFmpeg.git third_party/FFmpeg
+**build_ninja.ps1** 自动完成：
+- 设置 MSVC 环境变量 (PATH / INCLUDE / LIB)
+- CMake 配置 (Ninja 生成器)
+- 编译 (ninja -j4)
+- 复制 vcpkg DLL + Qt6 插件 + FFmpeg DLL 到 bin/
 
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
+> **注意**: Windows 上 MSBuild 可能被标记为 LOLBin，使用 Ninja 生成器可绕过此限制。
+
+### Linux 构建
+
+| 命令 | 说明 |
+|------|------|
+| `./build.sh release` | Release 构建 (默认) |
+| `./build.sh debug` | Debug 构建 |
+| `./setup.sh` | 完整初始化 + 构建 |
+| `./setup.sh --build-only` | 仅编译，跳过依赖检查 |
+
+---
+
+## 🔧 依赖说明
+
+### FFmpeg 依赖管理
+
+CMake 采用**三级 fallback**策略自动查找 FFmpeg：
+
+```
+优先级 1: find_package(FFMPEG)        ← vcpkg 已安装 ffmpeg 包
+优先级 2: 源码编译产物                  ← build-ninja/ffmpeg_install/ 等
+优先级 3: pkg-config                   ← Linux apt 安装 (libavcodec-dev 等)
 ```
 
-### macOS
+**Windows 用户**:
+- 如果 vcpkg 的 FFmpeg 不含 vulkan feature，构建脚本会自动使用已有的源码编译产物
+- 首次需要通过 `build_ninja.ps1` 构建 FFmpeg（脚本内集成）
+
+**Linux 用户**:
+- 直接 `apt install libavcodec-dev libavformat-dev ...` 即可
+- 无需从源码编译 FFmpeg
+
+### vcpkg 依赖 (Windows)
+
+项目根目录的 `vcpkg.json` 声明了以下依赖：
+- `opencv4` — 计算机视觉
+- `qtbase` / `qtmultimedia` / `qtcharts` — Qt6 模块
+- `sdl2` — 音频输出
+- `zlib` — 压缩库 (MediaInfoLib 依赖)
+
+### 源码集成依赖
+
+以下库通过 Git submodule + `add_subdirectory` 集成：
+- **MediaInfoLib + ZenLib** — 有定制改动，源码集成保留灵活性
+- **Bento4** — vcpkg 版本过旧 (1.5.1 vs 1.6.0)，独立 CMakeLists.txt 集成
+- **vulkan-headers** — Vulkan 1.4.309 头文件，替代系统旧版
+
+---
+
+## 🧪 运行测试
 
 ```bash
-brew install cmake nasm qt@6 opencv sdl2 vulkan-sdk
+# Debug 构建
+./build.sh debug
 
-git clone --recursive <repo-url> && cd VideoEye
-git submodule update --init --recursive
-git clone --depth 1 --branch n8.1 https://github.com/FFmpeg/FFmpeg.git third_party/FFmpeg
-
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(sysctl -n hw.ncpu)
+# 运行测试
+cd build-debug && ctest --output-on-failure
+# 预期: 6 suites, 115 cases passed
 ```
 
-### Windows (PowerShell)
+---
 
+## ❓ 常见问题
+
+### Q: Windows 构建报 "MSBuild is blocked"
+
+使用 Ninja 构建器绕过：
 ```powershell
-git clone https://github.com/Microsoft/vcpkg.git C:\vcpkg
-C:\vcpkg\bootstrap-vcpkg.bat
-vcpkg install opencv4 sdl2 qt6-base qt6-multimedia qt6-charts
-
-git clone --recursive <repo-url> ; cd VideoEye
-git submodule update --init --recursive
-git clone --depth 1 --branch n8.1 https://github.com/FFmpeg/FFmpeg.git third_party/FFmpeg
-
-mkdir build ; cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
-cmake --build . --config Release
+.\build.bat ninja
 ```
 
----
+### Q: vcpkg install 报 FFmpeg vulkan feature 错误
 
-## 构建选项
+这是 vcpkg 版本的 FFmpeg 不支持 vulkan feature。CMake 会自动回退到已有的源码编译产物。确保 `build-ninja/ffmpeg_install/` 目录存在。
 
-| 命令 | 平台 | 说明 |
-|------|------|------|
-| `./setup.sh` | Linux/macOS | 完整初始化 + 编译 Release |
-| `.\setup.ps1` | Windows | 完整初始化 + 编译 Release |
-| `--debug` | 全平台 | Debug 构建 |
-| `--build-only` | 全平台 | 仅编译，跳过下载 |
-| `--skip-deps` | 全平台 | 跳过系统依赖检查 |
+### Q: 运行时找不到 DLL
 
----
+Windows 上运行 `build_ninja.ps1` 会自动复制所有需要的 DLL。如果仍缺失：
+```powershell
+# 检查 vcpkg_installed 目录
+ls vcpkg_installed\x64-windows\bin\*.dll
+```
 
-## 测试
+### Q: CMake 找不到 FFmpeg (Linux)
 
 ```bash
-cd build && ctest --output-on-failure
-# 预期: 6/6 tests passed
+# 确认 pkg-config 能找到 FFmpeg
+pkg-config --modversion libavcodec libavformat libavutil libswscale libswresample
+
+# 如果缺失，安装开发包
+sudo apt install -y libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
 ```
 
----
-
-## 常见问题
-
-### Vulkan 硬件解码不工作
+### Q: Vulkan 硬件解码不工作
 
 ```bash
 # 检查 Vulkan 驱动
 vulkaninfo --summary 2>/dev/null || echo "Vulkan 不可用"
 
 # 安装 Vulkan SDK
-sudo apt install libvulkan-dev
+sudo apt install libvulkan-dev glslc
 
-# 若驱动版本太低 (< 1.3.277)，FFmpeg 会自动跳过 Vulkan 硬件解码
+# 若驱动版本太低，FFmpeg 会自动跳过 Vulkan 硬件解码
 # 软件解码正常工作，无需额外操作
 ```
 
-### glslc 未找到
+### Q: 构建内存不足
 
 ```bash
-# 安装 shader 编译器
-sudo apt install glslc
-# 或从 https://vulkan.lunarg.com/ 下载 Vulkan SDK
-```
+# Linux: 限制并行编译数
+JOBS=2 ./build.sh release
 
-### 构建内存不足
-
-```bash
-JOBS=2 ./setup.sh  # 限制并行编译数
-```
-
----
-
-## 后续步骤
-
-- [完整文档](README.md)
-- [架构设计](docs/ARCHITECTURE.md)
-- [Vulkan 集成规划](local_docs/VULKAN_INTEGRATION_PLAN.md)
-# VideoEye 2.0 快速入门指南
-
-## 🚀 5分钟快速开始
-
-### 前置条件
-
-确保你的系统已安装:
-- CMake 3.20+
-- C++17 编译器 (GCC 9+, Clang 9+, MSVC 2019+)
-- 依赖库 (FFmpeg, Qt6, OpenCV, SDL2)
-
-### 步骤 1: 检查依赖
-
-```bash
-# Ubuntu/Debian
-cmake --version
-g++ --version
-pkg-config --modversion libavformat
-pkg-config --modversion Qt6Core
-pkg-config --modversion opencv4
-```
-
-### 步骤 2: 安装依赖 (如果未安装)
-
-#### Ubuntu 22.04+
-
-```bash
-sudo apt update
-sudo apt install -y \
-    build-essential cmake \
-    qt6-base-dev qt6-multimedia-dev qt6-charts-dev \
-    libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
-    libopencv-dev libsdl2-dev
-```
-
-#### macOS
-
-```bash
-brew install cmake qt ffmpeg opencv sdl2
-```
-
-### 步骤 3: 构建项目
-
-```bash
-# 使用自动构建脚本
-./build.sh
-
-# 或手动构建
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
-```
-
-### 步骤 4: 运行
-
-```bash
-# 从项目根目录
-./build/bin/VideoEye
-
-# 或
-./build.sh  # 构建完成后会提示运行命令
-```
-
----
-
-## 📖 详细指南
-
-### 使用 vcpkg 管理依赖 (推荐)
-
-如果你使用的是 Windows 或者想要更简单的依赖管理:
-
-```bash
-# 1. 安装 vcpkg
-git clone https://github.com/Microsoft/vcpkg.git
-cd vcpkg
-./bootstrap-vcpkg.sh  # Linux/macOS
-# .\bootstrap-vcpkg.bat  # Windows
-
-# 2. 安装 VideoEye 依赖
-./vcpkg install \
-    ffmpeg \
-    opencv4 \
-    sdl2 \
-    qt6-base \
-    qt6-multimedia \
-    qt6-charts
-
-# 3. 集成到系统 (Windows)
-# .\vcpkg integrate install
-
-# 4. 构建 VideoEye
-cd /path/to/VideoEye
-mkdir build && cd build
-cmake .. \
-    -DCMAKE_TOOLCHAIN_FILE=/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake
-make -j$(nproc)
-```
-
-### 常见问题
-
-#### Q1: CMake 找不到 FFmpeg
-
-**解决方案**:
-
-```bash
-# 方法1: 设置 PKG_CONFIG_PATH
-export PKG_CONFIG_PATH=/usr/lib/pkgconfig:/usr/share/pkgconfig
-
-# 方法2: 手动指定 FFmpeg 路径
-cmake .. \
-    -DFFMPEG_INCLUDE_DIR=/usr/include \
-    -DAVCODEC_LIBRARY=/usr/lib/libavcodec.so \
-    -DAVFORMAT_LIBRARY=/usr/lib/libavformat.so
-```
-
-#### Q2: Qt6 版本过低
-
-**解决方案**:
-
-```bash
-# Ubuntu: 添加 Qt PPA
-sudo add-apt-repository ppa:ubuntu-toolchain-r/test
-sudo apt update
-sudo apt install qt6-base-dev
-
-# 或者从源码编译 Qt6
-```
-
-#### Q3: 编译时内存不足
-
-**解决方案**:
-
-```bash
-# 减少并行编译数量
-make -j2  # 只使用2个线程
-
-# 或者启用交换空间
-sudo fallocate -l 4G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
-```
-
----
-
-## 🎯 测试功能
-
-### 播放本地文件
-
-1. 启动 VideoEye
-2. 点击 "文件" -> "打开文件"
-3. 选择一个视频文件 (支持 mp4, avi, mkv, flv 等)
-4. 点击播放按钮
-
-### 播放网络流
-
-1. 点击 "文件" -> "打开URL"
-2. 输入流媒体地址,例如:
-   - RTMP: `rtmp://live.example.com/stream`
-   - RTSP: `rtsp://camera.example.com/stream`
-   - HTTP: `http://example.com/video.mp4`
-3. 点击确定
-
-### 查看流信息
-
-打开文件后,在底部的"流信息"标签页可以看到:
-- 文件名和格式
-- 视频编码、分辨率、帧率
-- 音频编码、采样率、声道数
-- 时长和码率
-
----
-
-## 🔧 开发提示
-
-### IDE 配置
-
-#### VS Code
-
-1. 安装扩展:
-   - C/C++ (Microsoft)
-   - CMake Tools (Microsoft)
-   - Qt for Python (可选)
-
-2. 打开项目文件夹
-3. CMake Tools 会自动检测配置
-4. 按 `F7` 构建, `Ctrl+F5` 运行
-
-#### CLion
-
-1. 直接打开项目文件夹
-2. CLion 会自动识别 CMakeLists.txt
-3. 在右上角配置运行/调试配置
-
-#### Visual Studio 2022
-
-```bash
-# 生成 VS 项目
-cmake .. -G "Visual Studio 17 2022" -A x64
-
-# 打开解决方案
-devenv VideoEye.sln
-```
-
-### 代码格式化
-
-```bash
-# 格式化单个文件
-clang-format -i core/player/MediaPlayer.cpp
-
-# 格式化所有文件
-find core ui utils -name "*.cpp" -o -name "*.h" | xargs clang-format -i
-```
-
-### 调试技巧
-
-```bash
-# 1. Debug 构建
-./build.sh debug
-
-# 2. 使用 GDB
-gdb build-debug/bin/VideoEye
-
-# 3. 设置断点
-(gdb) break MediaPlayer::Open
-(gdb) run
-
-# 4. 查看调用栈
-(gdb) backtrace
+# Windows: 修改 build_ninja.ps1 中的 -j4 为 -j2
 ```
 
 ---
 
 ## 📚 下一步
 
-- 📖 阅读 [完整文档](README.md)
-- 🔍 了解 [架构设计](docs/ARCHITECTURE.md)
-- 🤝 查看 [贡献指南](CONTRIBUTING.md)
-- 📝 阅读 [API 文档](docs/API.md)
-
----
-
-## 💬 获取帮助
-
-遇到问题? 
-
-1. 查看 [常见问题](#常见问题)
-2. 搜索 [Issues](https://github.com/yourusername/VideoEye/issues)
-3. 提交新的 Issue
-4. 加入社区讨论
+- [完整文档](README.md)
+- [架构设计](docs/ARCHITECTURE.md)
+- [项目结构](docs/PROJECT_STRUCTURE.md)
+- [UI 优化设计稿](docs/UI_OPTIMIZATION_DESIGN.md)
 
 ---
 

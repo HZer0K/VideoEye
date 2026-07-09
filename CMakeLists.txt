@@ -28,8 +28,46 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 # 查找依赖包 - 使用 pkg-config
 find_package(PkgConfig REQUIRED)
 
-# FFmpeg - 从源码编译集成
-include(BuildFFmpeg)
+# FFmpeg - 多来源查找策略
+# 优先级: 1) vcpkg/apt 包管理器  2) 已有源码编译产物  3) 系统 pkg-config (Linux)
+find_package(FFMPEG QUIET)
+if(NOT FFMPEG_FOUND)
+    # 检查已有的源码编译产物 (Windows: build-ninja/ffmpeg_install, Linux: build/ffmpeg_install)
+    set(FFMPEG_LOCAL_DIR "${CMAKE_BINARY_DIR}/ffmpeg_install")
+    if(NOT EXISTS "${FFMPEG_LOCAL_DIR}/include/libavcodec/avcodec.h")
+        # 尝试从源码目录查找
+        set(FFMPEG_LOCAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build-ninja/ffmpeg_install")
+    endif()
+    if(NOT EXISTS "${FFMPEG_LOCAL_DIR}/include/libavcodec/avcodec.h")
+        set(FFMPEG_LOCAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build-Release/ffmpeg_install")
+    endif()
+    if(NOT EXISTS "${FFMPEG_LOCAL_DIR}/include/libavcodec/avcodec.h")
+        set(FFMPEG_LOCAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build/ffmpeg_install")
+    endif()
+
+    if(EXISTS "${FFMPEG_LOCAL_DIR}/include/libavcodec/avcodec.h")
+        # 使用已有源码编译产物
+        set(FFMPEG_INCLUDE_DIRS "${FFMPEG_LOCAL_DIR}/include")
+        if(WIN32)
+            set(FFMPEG_LIBRARIES avcodec avformat avutil swscale swresample)
+            set(FFMPEG_LIB_DIR "${FFMPEG_LOCAL_DIR}/lib")
+        else()
+            set(FFMPEG_LIBRARIES avcodec avformat avutil swscale swresample)
+            set(FFMPEG_LIB_DIR "${FFMPEG_LOCAL_DIR}/lib")
+        endif()
+        set(FFMPEG_FOUND TRUE)
+        set(FFMPEG_LOCAL_BUILD ON)
+        message(STATUS "FFmpeg: using local build artifacts at ${FFMPEG_LOCAL_DIR}")
+    elseif(PkgConfig_FOUND)
+        # Linux fallback: 通过 pkg-config 查找
+        pkg_check_modules(FFMPEG REQUIRED
+            libavcodec libavformat libavutil libswscale libswresample)
+        message(STATUS "FFmpeg: using system pkg-config")
+    else()
+        message(FATAL_ERROR "FFmpeg not found. Install via vcpkg, apt, or build from source.")
+    endif()
+endif()
+message(STATUS "FFmpeg found: ${FFMPEG_LIBRARIES}")
 
 # Vulkan - 硬件加速和渲染
 # 使用 third_party/vulkan-headers (1.4.309) 替代系统旧版头文件
@@ -63,13 +101,8 @@ find_package(ZLIB REQUIRED)
 # MediaInfo 第三方库 (ZenLib + MediaInfoLib 源码集成, 方便客制化)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party ${CMAKE_BINARY_DIR}/third_party)
 
-# Bento4 Core library
-set(BENTO4_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/Bento4/Source/C++/Core")
-file(GLOB BENTO4_SOURCES "${BENTO4_DIR}/*.cpp")
-file(GLOB BENTO4_CRYPTO_SOURCES "${BENTO4_DIR}/../Crypto/*.cpp")
-file(GLOB BENTO4_CODECS_SOURCES "${BENTO4_DIR}/../Codecs/*.cpp")
-file(GLOB BENTO4_METADATA_SOURCES "${BENTO4_DIR}/../MetaData/*.cpp")
-file(GLOB BENTO4_SYSTEM_SOURCES "${BENTO4_DIR}/../System/StdC/*.cpp")
+# Bento4 (源码集成, vcpkg 版本过旧)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party/Bento4 ${CMAKE_BINARY_DIR}/bento4)
 
 # 设置输出目录
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -94,11 +127,6 @@ add_executable(${PROJECT_NAME}
     ${CORE_SOURCES}
     ${UI_SOURCES}
     ${UTILS_SOURCES}
-    ${BENTO4_SOURCES}
-    ${BENTO4_CRYPTO_SOURCES}
-    ${BENTO4_CODECS_SOURCES}
-    ${BENTO4_METADATA_SOURCES}
-    ${BENTO4_SYSTEM_SOURCES}
     ${HEADERS}
 )
 
@@ -108,15 +136,19 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/ui
     ${CMAKE_CURRENT_SOURCE_DIR}/utils
-    ${BENTO4_DIR}
-    ${BENTO4_DIR}/../MetaData
-    ${BENTO4_DIR}/../Codecs
-    ${BENTO4_DIR}/../Crypto
-    ${BENTO4_DIR}/../Adapters
-    ${FFMPEG_SOURCE_INCLUDE_DIR}
+    ${FFMPEG_INCLUDE_DIRS}
     ${OpenCV_INCLUDE_DIRS}
     ${SDL2_INCLUDE_DIRS}
 )
+# FFmpeg local build 需要额外的 lib 搜索路径
+if(FFMPEG_LOCAL_BUILD AND FFMPEG_LIB_DIR)
+    target_link_directories(${PROJECT_NAME} PRIVATE ${FFMPEG_LIB_DIR})
+    # 运行时 RPATH，确保能找到 FFmpeg DLL/.so
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        BUILD_RPATH "${FFMPEG_LOCAL_DIR}/bin"
+        INSTALL_RPATH "${FFMPEG_LOCAL_DIR}/bin"
+    )
+endif()
 # 优先使用 bundled Vulkan 头文件，然后才是系统路径
 if(VULKAN_CUSTOM_HEADERS)
     target_include_directories(${PROJECT_NAME} BEFORE PRIVATE
@@ -135,11 +167,11 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Qt6::MultimediaWidgets
     Qt6::Charts
     ${FFMPEG_LIBRARIES}
-    ${FFMPEG_SYSTEM_LIBS}
     ${OpenCV_LIBS}
     ${SDL2_LIBRARIES}
     mediainfo
     zen
+    bento4
 )
 if(Vulkan_FOUND)
     target_link_libraries(${PROJECT_NAME} PRIVATE Vulkan::Vulkan)
@@ -151,15 +183,6 @@ else()
         message(STATUS "Linked Vulkan directly: ${VULKAN_LIB_RAW}")
     endif()
 endif()
-
-set_target_properties(${PROJECT_NAME} PROPERTIES
-    BUILD_RPATH "${FFMPEG_SOURCE_LIB_DIR}"
-    INSTALL_RPATH "${FFMPEG_SOURCE_LIB_DIR}"
-    INSTALL_RPATH_USE_LINK_PATH ON
-)
-
-# 确保 FFmpeg 在 VideoEye 之前构建
-add_dependencies(${PROJECT_NAME} ffmpeg_build)
 
 # 编译定义
 target_compile_definitions(${PROJECT_NAME} PRIVATE
@@ -240,8 +263,12 @@ message(STATUS "VideoEye Configuration:")
 message(STATUS "  Version: ${PROJECT_VERSION}")
 message(STATUS "  Build Type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ Standard: ${CMAKE_CXX_STANDARD}")
-message(STATUS "  FFmpeg: 源码编译 (n8.1)")
-message(STATUS "  FFmpeg Include: ${FFMPEG_SOURCE_INCLUDE_DIR}")
+if(FFMPEG_LOCAL_BUILD)
+    message(STATUS "  FFmpeg: local build (${FFMPEG_LOCAL_DIR})")
+else()
+    message(STATUS "  FFmpeg: package manager / system")
+endif()
+message(STATUS "  FFmpeg Include: ${FFMPEG_INCLUDE_DIRS}")
 message(STATUS "  FFmpeg Libs: ${FFMPEG_LIBRARIES}")
 message(STATUS "  OpenCV Version: ${OpenCV_VERSION}")
 message(STATUS "  Qt Version: ${Qt6_VERSION}")

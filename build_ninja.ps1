@@ -58,7 +58,7 @@ Write-Output "=== Copying runtime DLLs ==="
 $binDir = "$buildDir\bin"
 $ffmpegBin = "$buildDir\ffmpeg_install\bin"
 
-# FFmpeg DLLs
+# FFmpeg DLLs (from local source build)
 if (Test-Path $ffmpegBin) { Copy-Item "$ffmpegBin\*.dll" $binDir -Force }
 # vcpkg DLLs (Qt6, SDL2, OpenCV, zlib, icu, harfbuzz, etc. - copy all)
 if (Test-Path $vcpkgBin) { Copy-Item "$vcpkgBin\*.dll" $binDir -Force }

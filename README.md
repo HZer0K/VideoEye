@@ -3,13 +3,12 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![C++](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://isocpp.org/)
 [![Qt](https://img.shields.io/badge/Qt-6-green.svg)](https://www.qt.io/)
-[![FFmpeg](https://img.shields.io/badge/FFmpeg-8.1-red.svg)](https://ffmpeg.org/)
+[![FFmpeg](https://img.shields.io/badge/FFmpeg-7.1%2B-red.svg)](https://ffmpeg.org/)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)]()
 
 ## 项目简介
 
-VideoEye 是一款开源的视频流分析软件,支持多种视频输入源(HTTP、RTMP、RTSP及本地文件),提供实时视频流分析和图形化展示功能。
-
-**⚠️ 注意**: 当前正在进行现代化重构,从 MFC + 老旧FFmpeg迁移到 Qt6 + 现代FFmpeg。
+VideoEye 是一款开源的视频流分析软件，支持多种视频输入源（HTTP、RTMP、RTSP 及本地文件），提供实时视频流分析和图形化展示功能。采用现代化 C++17 + Qt6 技术栈，深色专业风格 UI，跨平台支持 Windows / Linux / macOS。
 
 ## ✨ 主要特性
 
@@ -17,195 +16,206 @@ VideoEye 是一款开源的视频流分析软件,支持多种视频输入源(HTT
 - 🎬 **多源输入**: 支持 HTTP、RTMP、RTSP 协议及本地文件
 - 🎥 **实时播放**: 流畅的视频播放体验
 - 📊 **流分析**: 实时分析码流统计信息与可视化曲线
-- 🧩 **视频帧分析**: 单独标签页显示 I/P/B 帧类型、序号、PTS、时间戳（追加显示不覆盖）
-- 🔍 **帧分析**: 直方图分析（可选）
-- 📋 **媒体信息**: 使用 [MediaInfo](https://github.com/MediaArea/MediaInfoLib) 显示完整的媒体文件元数据（格式、编码、码率、分辨率、音轨、字幕等）
+- 🧩 **视频帧分析**: 单独标签页显示 I/P/B 帧类型、序号、PTS、时间戳
+- 📋 **媒体信息**: 使用 [MediaInfo](https://github.com/MediaArea/MediaInfoLib) 显示完整的媒体文件元数据
 - 🎵 **纯音频律动**: 打开仅音频文件时在视频区域显示音频律动
-- 🎶 **音频波形与频谱**: 在分析面板实时查看音频波形快照与频谱快照（基于 FFT 高性能计算）
+- 🎶 **音频波形与频谱**: 实时查看音频波形快照与频谱快照（基于 FFT 高性能计算）
 - 📈 **数据可视化**: 图表化展示分析结果
 - 🖼️ **导出每一帧**: 支持将视频的每一帧导出为 JPG / RGB / YUV
-- 🧾 **打开原始图像**: 支持直接打开 .yuv / .rgb 原始图像（需输入宽高）
-- 📦 **多格式容器结构分析**: 统一调度解析 MP4/MOV、MKV/WebM、AVI、FLV、MPEG-TS、ASF/WMV、OGG 七种容器格式，自动回退 FFmpeg 通用分析
-- ⚡ **硬件解码加速**: 支持 Vulkan/VAAPI/CUDA/VDPAU/VideoToolbox/D3D11VA/DXVA2/QSV 多种硬件加速，自动探测可用设备并回退软件解码
-- 🖥️ **Vulkan 渲染管线**: GPU 零拷贝 YUV→RGB 转换 + 全屏呈现，显著降低 CPU 占用（需 Vulkan 驱动）
+- 🧾 **打开原始图像**: 支持直接打开 .yuv / .rgb 原始图像
+- 📦 **多格式容器结构分析**: 统一调度解析 MP4/MOV、MKV/WebM、AVI、FLV、MPEG-TS、ASF/WMV、OGG 七种容器格式
+- ⚡ **硬件解码加速**: 支持 Vulkan/VAAPI/CUDA/VDPAU/VideoToolbox/D3D11VA/DXVA2/QSV 多种硬件加速
+- 🖥️ **Vulkan 渲染管线**: GPU 零拷贝 YUV→RGB 转换 + 全屏呈现
+
+### UI 特性
+- 🎨 **深色专业风格**: GitHub Dark 色板，降低长时间分析视觉疲劳
+- 📐 **侧边栏导航**: 分析模块从横向 Tab 迁移到左侧垂直导航列表
+- 🔢 **等宽数值显示**: FPS、码率、时间码使用 JetBrains Mono 等宽字体
+- 🏷️ **信息叠加层**: 视频区域顶部叠加分辨率、编码、FPS、状态信息
 
 ### 技术特性
 - ✅ 现代化 C++17 代码
 - ✅ 跨平台支持 (Windows / Linux / macOS)
 - ✅ 多线程解码
 - ✅ Vulkan 硬件解码 + GPU 渲染管线（动态版本协商，无兼容驱动时自动回退）
-- ✅ VAAPI/CUDA/VideoToolbox/D3D11VA 等传统硬件加速（自动探测与回退）
 - ✅ FFT 频谱计算 (Cooley-Tukey 算法，预计算表优化)
-- ✅ 一键环境初始化脚本 (setup.sh)
-- ✅ 响应式 UI 设计
+- ✅ 混合依赖管理策略 (vcpkg/apt + 源码集成)
+- ✅ Ninja + MSVC 构建 (Windows) / GCC Make (Linux)
 
 ## 🏗️ 技术栈
 
-| 组件 | 技术 | 版本 |
-|------|------|------|
-| GUI框架 | Qt 6 | 6.0+ |
-| 多媒体 | FFmpeg | 8.1 (源码编译，含 Vulkan 支持) |
-| GPU 渲染 | Vulkan | 1.0+ (自动版本协商) |
-| 媒体元数据 | MediaInfoLib | 26.05 (源码集成) |
-| 计算机视觉 | OpenCV | 4.8+ |
-| 音频输出 | SDL 2 | 2.0+ |
-| MP4容器解析 | Bento4 | 1.6+ |
-| 构建系统 | CMake | 3.20+ |
-| 编程语言 | C++ | C++17 |
+| 组件 | 技术 | 版本 | 管理方式 |
+|------|------|------|----------|
+| GUI 框架 | Qt 6 | 6.0+ | vcpkg / apt |
+| 多媒体 | FFmpeg | 7.1+ | vcpkg / apt / 源码编译 |
+| GPU 渲染 | Vulkan | 1.3+ | 系统 SDK / apt |
+| 媒体元数据 | MediaInfoLib | 26.05 | 源码集成 (有定制) |
+| 计算机视觉 | OpenCV | 4.8+ | vcpkg / apt |
+| 音频输出 | SDL 2 | 2.0+ | vcpkg / apt |
+| MP4 容器解析 | Bento4 | 1.6+ | 源码集成 (CMakeLists.txt) |
+| 构建系统 | CMake | 3.20+ | — |
+| 构建工具 | Ninja / Make | — | — |
+| 编程语言 | C++ | C++17 | — |
+
+### 依赖管理策略
+
+项目采用**混合依赖管理**策略，兼顾便利性与定制能力：
+
+| 依赖 | 管理方式 | 原因 |
+|------|----------|------|
+| FFmpeg | vcpkg / apt / 源码编译 | 三级 fallback 查找，自动选择最优来源 |
+| OpenCV | vcpkg / apt | 通用库，无需定制 |
+| Qt6 | vcpkg / apt | 通用库，无需定制 |
+| SDL2 | vcpkg / apt | 通用库，无需定制 |
+| zlib | vcpkg / apt | MediaInfoLib 依赖 |
+| MediaInfoLib + ZenLib | 源码集成 | 有定制改动（排除 HTTP_Client、编译宏等） |
+| Bento4 | 源码集成 | vcpkg 版本过旧 (1.5.1 vs 1.6.0) |
+| Vulkan Headers | Git submodule | 1.4.309，替代系统旧版头文件 |
+
+**FFmpeg 查找优先级** (CMakeLists.txt 自动选择):
+1. `find_package(FFMPEG)` — vcpkg 已安装的 ffmpeg 包
+2. 已有源码编译产物 — `build-ninja/ffmpeg_install/` 等
+3. 系统 `pkg-config` — Linux apt 安装的 libavcodec-dev 等
 
 ## 📦 安装依赖
 
-### 一键构建 (推荐)
-
-项目提供跨平台初始化脚本，自动完成依赖检查、子模块初始化和编译：
-
-| 平台 | 命令 |
-|------|------|
-| **Linux / macOS** | `./setup.sh` |
-| **Windows** (PowerShell) | `.setup.ps1` |
-
-```bash
-# Linux / macOS
-./setup.sh
-
-# Windows (PowerShell)
-.setup.ps1
-```
-
-脚本支持选项：`--debug` (Debug构建) / `--skip-deps` (跳过依赖检查) / `--build-only` (仅编译)
-
-### 手动安装系统依赖
-
-#### Ubuntu/Debian
+### Linux (Ubuntu/Debian)
 
 ```bash
 sudo apt install -y \
-    build-essential cmake nasm yasm \
+    build-essential cmake ninja-build nasm yasm pkg-config \
     qt6-base-dev qt6-multimedia-dev qt6-charts-dev \
-    libopencv-dev libsdl2-dev
-# 可选: Vulkan 硬件加速
-sudo apt install -y libvulkan-dev glslc
+    libopencv-dev libsdl2-dev zlib1g-dev \
+    libavcodec-dev libavformat-dev libavutil-dev \
+    libswscale-dev libswresample-dev \
+    libvulkan-dev glslc
 ```
 
-#### macOS
+### macOS
 
 ```bash
-brew install cmake nasm qt@6 opencv sdl2
-# 可选: Vulkan SDK (MoltenVK)
-brew install vulkan-sdk
+brew install cmake ninja nasm qt@6 opencv sdl2 zlib ffmpeg
+brew install vulkan-sdk  # 可选: Vulkan 硬件加速
 ```
 
-#### Windows (vcpkg)
+### Windows (vcpkg)
 
 ```powershell
 git clone https://github.com/Microsoft/vcpkg.git C:\vcpkg
 C:\vcpkg\bootstrap-vcpkg.bat
-vcpkg install opencv4 sdl2 qt6-base qt6-multimedia qt6-charts
+
+# 在项目根目录运行 vcpkg install（自动读取 vcpkg.json manifest）
+cd VideoEye
+vcpkg install
 ```
 
-> **注意**: FFmpeg 8.1 由 setup 脚本或 CMake 从源码编译，无需手动安装。编译器需 `nasm`/`yasm`。
+> **FFmpeg 说明**: Windows 上如果 vcpkg 的 FFmpeg 版本不支持 vulkan feature，CMake 会自动回退到已有的源码编译产物（`build-ninja/ffmpeg_install/`）。首次需要通过 `build_ninja.ps1` 构建 FFmpeg。
 
 ## 🔨 构建指南
 
-### 一键构建 (推荐)
+### Windows (Ninja + MSVC)
 
-```bash
-# 克隆项目（含所有子模块）
-git clone --recursive https://github.com/yourusername/VideoEye.git
-cd VideoEye
+```powershell
+# 推荐方式: 使用 Ninja 构建脚本（自动设置 MSVC 环境变量）
+.\build.bat ninja
 
-# Linux / macOS
-./setup.sh
+# 或直接运行 PowerShell 脚本
+powershell -ExecutionPolicy Bypass -File build_ninja.ps1
 
-# Windows (PowerShell)
-.\setup.ps1
+# 也可以使用 Visual Studio 生成器
+.\build.bat release
 ```
 
-脚本自动完成：Git 子模块初始化 → FFmpeg 源码下载 → 系统依赖检查 → CMake 配置 → 编译。
-支持选项：`--debug` / `--skip-deps` / `--build-only`
+构建产物在 `build-ninja/bin/VideoEye.exe`，运行时 DLL 由构建脚本自动复制。
 
-运行：
-- Linux/macOS: `build/bin/VideoEye`
-- Windows: `build\bin\Release\VideoEye.exe`
+### Linux / macOS
+
+```bash
+# 一键构建
+./build.sh release
+
+# Debug 构建
+./build.sh debug
+```
+
+构建产物在 `build-release/bin/VideoEye`。
+
+### 环境初始化 (Linux)
+
+```bash
+# 检查依赖 + 初始化子模块 + 构建
+./setup.sh
+
+# 选项
+./setup.sh --debug        # Debug 构建
+./setup.sh --skip-deps    # 跳过依赖检查
+./setup.sh --build-only   # 仅编译
+```
 
 ### 手动构建
 
 ```bash
-# 克隆 + 初始化子模块
-git clone --recursive https://github.com/yourusername/VideoEye.git
+# 克隆项目（含子模块）
+git clone --recursive https://github.com/HZer0K/VideoEye.git
 cd VideoEye
-git submodule update --init --recursive
 
-# 下载 FFmpeg 源码 (setup.sh 自动处理，手动方式如下)
-cd third_party
-git clone --depth 1 --branch n8.1 https://github.com/FFmpeg/FFmpeg.git FFmpeg
-cd ..
-
-# 构建
+# Linux
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
-./bin/VideoEye
+
+# Windows (需要 MSVC 环境)
+mkdir build && cd build
+cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=<vcpkg_installed_path>
+ninja
 ```
 
-> **提示**: 首次构建会自动编译 FFmpeg 8.1 共享库（约 2-5 分钟），后续构建会跳过已完成的步骤。
+### 运行
 
-### Visual Studio (Windows)
-
-```bash
-# 生成 Visual Studio 项目
-cmake .. -G "Visual Studio 17 2022" -A x64
-
-# 在 Visual Studio 中打开并构建
-devenv VideoEye.sln /build Release
-```
+- **Linux/macOS**: `build-release/bin/VideoEye`
+- **Windows**: `build-ninja\bin\VideoEye.exe`
 
 ## 📁 项目结构
 
 ```
 VideoEye/
-├── core/                    # 核心业务层
-│   ├── player/             # 播放器引擎
-│   │   ├── MediaPlayer.cpp/h      # 媒体播放器 (薄协调层)
-│   │   ├── Decoders.cpp/h         # 音视频解码器 (含 Vulkan/VAAPI/CUDA 等硬件加速)
-│   │   ├── VulkanContext.cpp/h    # Vulkan 设备上下文管理
-│   │   ├── VulkanRenderer.cpp/h   # Vulkan GPU 渲染管线 (YUV→RGB compute + present)
-│   │   ├── PlaybackClock.h        # 播放节奏控制
-│   │   ├── StreamInfoExtractor.cpp/h  # 流元数据提取
-│   │   ├── AudioVisualizer.cpp/h  # 音频可视化 (FFT 频谱)
-│   │   ├── VideoFrameExporter.cpp/h   # 视频帧导出
-│   │   └── shaders/               # Vulkan 着色器
-│   │       ├── yuv2rgb.comp       #   YUV→RGB compute shader
-│   │       ├── present.vert       #   全屏三角形 vertex shader
-│   │       └── present.frag       #   RGB 采样 fragment shader
-│   ├── analyzer/           # 分析引擎
-│   │   ├── StreamAnalyzer.cpp/h   # 流分析
-│   │   ├── FrameAnalyzer.cpp/h    # 帧分析
-│   │   ├── MediaInfoAnalyzer.cpp/h # MediaInfo 封装
-│   │   └── ... (格式解析器)       # MP4/MKV/AVI/FLV/TS/ASF/OGG
-│   ├── io/                 # 输入输出
-│   └── model/              # 数据模型
-├── ui/                     # UI层
-│   ├── main_window/        # 主窗口
-│   │   └── VulkanVideoWidget.cpp/h # Vulkan 渲染 QWidget (双模式: GPU+CPU回退)
-│   ├── player_controls/    # 播放控制
-│   └── analysis_panel/     # 分析面板
-├── utils/                  # 工具类
-├── tests/                  # 测试 (GoogleTest, 6 suites)
-├── third_party/            # 第三方库 (Git 子模块)
-│   ├── Bento4/             #   Bento4 MP4 解析引擎 (submodule)
-│   ├── vulkan-headers/     #   Vulkan 1.4 头文件 (submodule, FFmpeg 编译依赖)
-│   ├── ZenLib/             #   ZenLib 源码 (submodule)
-│   ├── MediaInfoLib/       #   MediaInfoLib 源码 (submodule)
-│   ├── FFmpeg/             #   FFmpeg 8.1 源码 (setup.sh 管理, .gitignore)
-│   └── CMakeLists.txt      #   第三方库构建配置
-├── resources/              # 资源文件
-├── cmake/                  # CMake配置
-│   └── BuildFFmpeg.cmake   # FFmpeg 源码编译模块 (含 Vulkan 版本检测)
-├── tools/                  # 开发工具 (被 .gitignore, 按需安装)
-├── setup.sh                # 一键环境初始化脚本
-├── build.sh                # 构建脚本
-├── CMakeLists.txt          # 主CMake文件
+├── core/                        # 核心业务层
+│   ├── player/                  # 播放器引擎
+│   │   ├── MediaPlayer.cpp/h    # 媒体播放器 (薄协调层)
+│   │   ├── Decoders.cpp/h       # 音视频解码器 (含 Vulkan/VAAPI/CUDA 硬件加速)
+│   │   ├── VulkanContext.cpp/h  # Vulkan 设备上下文管理
+│   │   ├── VulkanRenderer.cpp/h # Vulkan GPU 渲染管线 (YUV→RGB compute + present)
+│   │   ├── PlaybackClock.h      # 播放节奏控制
+│   │   ├── StreamInfoExtractor  # 流元数据提取
+│   │   ├── AudioVisualizer      # 音频可视化 (FFT 频谱)
+│   │   ├── VideoFrameExporter   # 视频帧导出
+│   │   └── shaders/             # Vulkan 着色器
+│   ├── analyzer/                # 分析引擎 (MP4/MKV/AVI/FLV/TS/ASF/OGG)
+│   ├── io/                      # 输入输出
+│   └── model/                   # 数据模型
+├── ui/                          # UI层
+│   ├── theme/                   # 深色主题模块 (AppTheme.h/cpp)
+│   ├── main_window/             # 主窗口 (AppBar + Sidebar + ContentArea + ControlBar)
+│   │   ├── MainWindow.h/cpp
+│   │   └── VulkanVideoWidget.h/cpp  # 视频渲染 + 叠加信息层
+│   └── analysis_panel/          # 分析面板 (QStackedWidget 模式)
+├── utils/                       # 工具类 (Logger / ConfigManager / ReportExporter)
+├── tests/                       # 测试 (GoogleTest, 6 suites, 115 cases)
+├── third_party/                 # 第三方库
+│   ├── Bento4/                  # MP4 解析 (源码集成 + CMakeLists.txt)
+│   ├── vulkan-headers/          # Vulkan 1.4 头文件 (submodule)
+│   ├── ZenLib/                  # ZenLib 源码 (submodule)
+│   ├── MediaInfoLib/            # MediaInfoLib 源码 (submodule)
+│   └── CMakeLists.txt           # ZenLib + MediaInfoLib 构建配置
+├── cmake/                       # CMake 配置
+│   └── BuildFFmpeg.cmake        # FFmpeg 源码编译模块 (已弃用，保留备用)
+├── docs/                        # 文档
+├── vcpkg.json                   # vcpkg 依赖清单
+├── CMakeLists.txt               # 主 CMake 配置
+├── build.bat                    # Windows 构建脚本 (支持 ninja/release/debug)
+├── build_ninja.ps1              # Ninja + MSVC 构建脚本
+├── build.sh                     # Linux 构建脚本
+├── setup.sh                     # Linux 环境初始化脚本
 └── README.md
 ```
 
@@ -213,28 +223,29 @@ VideoEye/
 
 ### 基本使用
 
-1. **打开文件**: 点击"文件" -> "打开文件" 或按 `Ctrl+O`
-2. **打开网络流**: 点击"文件" -> "打开URL" 输入 RTMP/RTSP/HTTP 地址
+1. **打开文件**: 点击顶部栏"打开文件"按钮或按 `Ctrl+O`
+2. **打开网络流**: 点击"打开URL"输入 RTMP/RTSP/HTTP 地址
 3. **播放控制**: 使用底部控制栏的播放/暂停/停止按钮
-4. **查看信息**: 在"媒体信息"标签页查看 MediaInfo 解析的完整文件元数据
-5. **分析面板**: 在"分析面板"标签页查看实时流分析图表、帧信息、MP4 Box 等
+4. **分析导航**: 点击左侧边栏的分析模块切换分析视图
+5. **查看信息**: 在分析面板查看流分析、帧信息、容器结构等
 
 ### 分析面板
 
-- 菜单 `分析` 提供开关：流分析 / 视频帧分析 / 直方图
-- 分析面板包含标签页：流分析 / 视频帧 / 音频帧 / 包分析 / 异常事件 / 同步分析 / 统一时间轴 / 音频可视化 / 直方图 / **MP4 Box**
-- 每个标签页顶部配有独立的「启用分析」开关，可灵活关闭单个功能以降低性能开销
-- **MP4 Box** 标签页：打开 MP4/MOV 文件后自动解析，左侧展示 **Box 树**（ftyp → moov → trak → stbl → stts/stco/stsc/stsz...），右侧以表格展示各 Box 的详细入口数据
+左侧边栏提供以下分析模块导航：
 
-### 音频分析复现脚本
+1. **媒体信息** — MediaInfo 解析的完整文件元数据
+2. **流分析** — FPS / 码率 / 关键帧统计卡片 + 走势图表
+3. **视频帧** — I/P/B 帧类型、序号、PTS、时间戳
+4. **音频帧** — 音频包信息
+5. **数据包** — 包级别分析
+6. **异常事件** — 解码异常监测
+7. **同步分析** — 音视频同步
+8. **时间轴** — 统一时间轴
+9. **音频响度** — 波形与频谱
+10. **直方图** — 帧直方图分析
+11. **容器结构** — MP4 Box 树 / MKV EBML / AVI RIFF 等
 
-```bash
-chmod +x scripts/repro_audio_analysis.sh
-./scripts/repro_audio_analysis.sh /path/to/media.mp3
-```
-
-- 脚本会使用现有 CMake 配置完成构建，并以命令行参数方式自动打开媒体文件
-- 建议在 GUI 中重点检查 `分析面板` 下的 `音频帧`、`音频可视化`、`统一时间轴` 三个标签页
+每个分析模块顶部配有独立的「启用分析」开关，可灵活关闭单个功能以降低性能开销。
 
 ### 导出视频帧
 
@@ -261,67 +272,50 @@ chmod +x scripts/repro_audio_analysis.sh
 | `Esc` | 停止 |
 | `Ctrl+Q` | 退出 |
 
-## 🔧 开发指南
-
-### 代码规范
-
-项目使用 clang-format 进行代码格式化,配置文件见 `.clang-format`。
+## 🧪 测试
 
 ```bash
-# 格式化代码
-clang-format -i src/*.cpp src/*.h
+# 构建 Debug 版本
+./build.sh debug
+
+# 运行测试
+cd build-debug && ctest --output-on-failure
+# 预期: 6 suites, 115 cases passed
 ```
 
-### 添加新功能
+| 测试套件 | 被测模块 | 用例数 |
+|---------|---------|--------|
+| test_format_detector | FormatDetector | 27 |
+| test_config_manager | ConfigManager | 26 |
+| test_report_exporter | ReportExporter | 14 |
+| test_stream_analyzer | StreamAnalyzer | 17 |
+| test_frame_data | FrameData | 15 |
+| test_frame_analyzer | FrameAnalyzer | 16 |
 
-1. 在 `core/` 下创建模块
-2. 在 `ui/` 下创建对应的 UI 组件
-3. 使用 Qt 信号槽机制连接业务逻辑和 UI
-4. 编写单元测试
+## 🎨 UI 设计
 
-### 调试技巧
+项目采用深色专业风格 UI，设计稿文件名为 `VideoEye UI Optimization`。
 
-```bash
-# Debug 构建
-cmake .. -DCMAKE_BUILD_TYPE=Debug
-
-# 使用 GDB 调试
-gdb ./bin/VideoEye
-
-# 内存泄漏检测 (Linux)
-valgrind --leak-check=full ./bin/VideoEye
-```
+- **色板**: GitHub Dark — 背景 `#0D1117`、卡片 `#161B22`、边框 `#30363D`、强调色 `#58A6FF`
+- **字体**: 界面文字 Inter，数值/时间码 JetBrains Mono
+- **布局**: Top App Bar + Left Sidebar + Video Area + Control Bar + Analysis Panel + Status Bar
+- **主题模块**: `ui/theme/AppTheme.h/cpp` 集中式 QSS + QPalette 管理
 
 ## 📝 迁移指南 (从旧版本)
 
 如果你是从旧版 VideoEye (MFC版本) 迁移:
 
-### 主要变化
-
-1. **构建系统**: Visual Studio → CMake
-2. **GUI框架**: MFC → Qt 6
-3. **FFmpeg API**: 旧API → 新API (send/receive)
-4. **内存管理**: 手动管理 → 智能指针
-5. **字符编码**: MultiByte → UTF-8
-
-### 保留旧代码
+| 变化 | 旧版本 | 新版本 |
+|------|--------|--------|
+| 构建系统 | Visual Studio 2010 | CMake 3.20+ / Ninja |
+| GUI 框架 | MFC (Windows only) | Qt6 (跨平台) |
+| FFmpeg API | 旧API (avcodec_decode) | 新API (send/receive) |
+| 内存管理 | 手动 new/delete | 智能指针 + RAII |
+| 字符编码 | MultiByte (乱码) | UTF-8 |
+| UI 风格 | 系统默认 | 深色专业风格 |
+| 依赖管理 | 散落 DLL | vcpkg + 源码集成混合 |
 
 旧版代码保留在 `legacy/` 目录中作为参考。
-
-## 🧪 测试
-
-```bash
-# 运行测试
-cd build
-ctest --output-on-failure
-
-# 生成测试覆盖率报告
-cmake .. -DCODE_COVERAGE=ON
-make
-ctest
-lcov --capture --directory . --output-file coverage.info
-genhtml coverage.info --output-directory coverage_report
-```
 
 ## 🤝 贡献指南
 
@@ -350,7 +344,7 @@ genhtml coverage.info --output-directory coverage_report
 - [MediaInfoLib](https://github.com/MediaArea/MediaInfoLib) - 媒体元数据解析库 (BSD-2-Clause)
 - [ZenLib](https://github.com/MediaArea/ZenLib) - 跨平台基础库 (MediaInfo 依赖)
 - [Bento4](https://github.com/axiomatic-systems/Bento4) - MP4 容器解析库 (GPL-2.0)
-
+- [vcpkg](https://github.com/microsoft/vcpkg) - C++ 包管理器
 
 ---
 

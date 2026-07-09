@@ -20,7 +20,8 @@ VideoEye/
 │   ├── .clang-format              # 代码格式化配置
 │   ├── .gitignore                 # Git 忽略规则
 │   ├── build.sh                   # Linux 构建脚本
-│   └── build.bat                  # Windows 构建脚本
+│   ├── build.bat                  # Windows 构建入口 (ninja/release/debug)
+│   └── build_ninja.ps1            # Ninja + MSVC 构建脚本
 │
 ├── 📂 源代码目录
 │   ├── core/                      # 核心业务层 ⭐
@@ -34,15 +35,16 @@ VideoEye/
 │   │   ├── styles/               # 样式
 │   │   └── translations/         # 翻译
 │   └── cmake/                     # CMake 模块
-│       └── BuildFFmpeg.cmake     # FFmpeg 源码编译模块
+│       └── BuildFFmpeg.cmake     # FFmpeg 源码编译模块 (已弃用，保留备用)
 │
 ├── 📚 第三方库
 │   └── third_party/
-│       ├── Bento4/                # Bento4 MP4 解析引擎 (submodule)
-│       ├── FFmpeg/                # FFmpeg 8.1 源码 (源码编译集成)
-│       ├── MediaInfoLib/          # MediaInfoLib 源码 (源码集成)
+│       ├── Bento4/                # Bento4 MP4 解析引擎 (源码集成 + CMakeLists.txt)
+│       ├── FFmpeg/                # FFmpeg 源码 (源码编译，.gitignore)
+│       ├── MediaInfoLib/          # MediaInfoLib 源码 (源码集成，有定制)
 │       ├── ZenLib/                # ZenLib 源码 (MediaInfo 依赖)
-│       └── mediainfo/             # MediaInfo 编译集成 CMakeLists
+│       ├── vulkan-headers/        # Vulkan 1.4 头文件 (submodule)
+│       └── CMakeLists.txt         # ZenLib + MediaInfoLib 构建配置
 │
 ├── 📚 Legacy 目录
 │   └── legacy/                    # 旧版代码归档 📦
@@ -52,9 +54,9 @@ VideoEye/
 │   └── scripts/                   # 辅助脚本
 │
 └── 🏗️ 构建输出
-    ├── build/                     # 编译输出 (git忽略)
-    ├── build-release/             # Release 编译输出 (git忽略)
-    └── build-debug/               # Debug 编译输出 (git忽略)
+    ├── build-ninja/             # Ninja 编译输出 (Windows, git忽略)
+    ├── build-release/           # Release 编译输出 (Linux, git忽略)
+    └── build-debug/             # Debug 编译输出 (git忽略)
 ```
 
 ---
@@ -111,23 +113,22 @@ core/
 
 ```
 ui/
-├── main_window/        # 主窗口
-│   └── MainWindow.h/cpp  # Qt6 主窗口 ⭐
+├── theme/                        # 深色主题模块
+│   └── AppTheme.h/cpp            # GitHub Dark 色板 + QSS + QPalette ⭐
 │
-├── player_controls/    # 播放控制 (待实现)
-│   ├── ControlPanel      # 控制面板
-│   └── SeekBar           # 进度条
+├── main_window/                  # 主窗口
+│   ├── MainWindow.h/cpp          # Top App Bar + Sidebar + ContentArea + ControlBar ⭐
+│   └── VulkanVideoWidget.h/cpp   # Vulkan 视频渲染 + 叠加信息层 ⭐
 │
-├── analysis_panel/     # 分析面板
-│   ├── AnalysisPanel.h/cpp  # 统一分析面板 (含文件结构/流信息/帧分析等)
-│   └── (容器结构树 + 流信息表 + 元数据表 + QStackedWidget)
+├── analysis_panel/               # 分析面板
+│   └── AnalysisPanel.h/cpp       # QStackedWidget + 侧边栏导航 (11 个分析模块) ⭐
 │
-└── settings/           # 设置对话框 (待实现)
-    └── SettingsDialog    # 设置窗口
+└── settings/                     # 设置对话框 (待实现)
+    └── SettingsDialog              # 设置窗口
 ```
 
-**已实现**: ✅ main_window, analysis_panel  
-**待实现**: ⏳ player_controls, settings
+**已实现**: ✅ theme, main_window, analysis_panel
+**待实现**: ⏳ settings
 
 ---
 

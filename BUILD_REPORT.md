@@ -1,63 +1,80 @@
 # VideoEye 2.0 编译运行报告
 
-## ✅ 编译成功！
+## ✅ 跨平台编译验证通过
 
-### 系统环境
+### Windows 构建 (Ninja + MSVC)
 
 | 组件 | 版本 | 状态 |
 |------|------|------|
-| OS | Debian 12 | ✅ |
+| OS | Windows 11 | ✅ |
+| 编译器 | MSVC 14.43.34808 | ✅ |
+| 构建工具 | Ninja (VS 2022 内置) | ✅ |
+| CMake | 3.27+ | ✅ |
+| Qt6 | 6.x (vcpkg) | ✅ |
+| OpenCV | 4.x (vcpkg) | ✅ |
+| SDL2 | 2.x (vcpkg) | ✅ |
+| FFmpeg | 7.1+ (源码编译产物) | ✅ |
+| Vulkan | 1.4.309 (bundled headers) | ✅ |
+
+#### 构建过程
+
+```powershell
+# 使用 Ninja 构建脚本（推荐）
+.\build.bat ninja
+```
+
+**build_ninja.ps1 自动完成**:
+1. 设置 MSVC 环境变量 (PATH / INCLUDE / LIB)
+2. vcpkg 依赖检查 (manifest 模式)
+3. CMake 配置 (Ninja 生成器)
+4. 编译 (ninja -j4)
+5. 复制运行时 DLL (vcpkg + FFmpeg + Qt6 插件)
+
+**编译结果**:
+```
+[464/464] Linking CXX executable bin\VideoEye.exe
+```
+
+- 可执行文件: `build-ninja/bin/VideoEye.exe`
+- 大小: ~13.5 MB
+- 运行时 DLL: 自动复制到 `bin/` 目录
+
+### Linux 构建 (WSL Debian)
+
+| 组件 | 版本 | 状态 |
+|------|------|------|
+| OS | Debian 12 (WSL) | ✅ |
+| 编译器 | GCC 12.2.0 | ✅ |
+| 构建工具 | GNU Make | ✅ |
 | CMake | 3.25.1 | ✅ |
-| GCC | 12.2.0 | ✅ |
-| FFmpeg | 62.1.101 | ✅ |
-| Qt6 | 6.4.2 | ✅ |
-| OpenCV | 4.6.0 | ✅ |
-| SDL2 | 2.26.5 | ✅ |
+| Qt6 | 6.4.2 (apt) | ✅ |
+| OpenCV | 4.6.0 (apt) | ✅ |
+| SDL2 | 2.26.5 (apt) | ✅ |
+| FFmpeg | 62.x (apt pkg-config) | ✅ |
+| Vulkan | 1.x (apt) | ✅ |
 
-### 编译过程
+#### 构建过程
 
-#### 1. 安装依赖
 ```bash
-sudo apt update
-sudo apt install -y qt6-base-dev qt6-multimedia-dev qt6-charts-dev libopencv-dev
+# 安装依赖
+sudo apt install -y \
+    build-essential cmake pkg-config nasm yasm \
+    qt6-base-dev qt6-multimedia-dev qt6-charts-dev \
+    libopencv-dev libsdl2-dev zlib1g-dev \
+    libavcodec-dev libavformat-dev libavutil-dev \
+    libswscale-dev libswresample-dev \
+    libvulkan-dev glslc
+
+# 构建
+./build.sh release
 ```
 
-**已安装的包**:
-- ✅ qt6-base-dev (6.4.2)
-- ✅ qt6-multimedia-dev
-- ✅ qt6-charts-dev
-- ✅ libopencv-dev (4.6.0)
-
-系统已有:
-- ✅ FFmpeg (62.1.101)
-- ✅ SDL2 (2.26.5)
-- ✅ build-essential
-- ✅ cmake
-
-#### 2. CMake 配置
-```bash
-cd /home/hxk/project/VideoEye/VideoEye
-mkdir -p build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
+**CMake 配置输出**:
 ```
-
-**配置输出**:
-```
--- Found libavcodec, version 62.5.100
--- Found libavformat, version 62.1.101
--- Found libavutil, version 60.4.101
--- Found libswscale, version 9.0.100
--- Found libswresample, version 6.0.100
--- Found OpenCV: /usr (found version "4.6.0")
--- Found Qt6: 6.4.2
--- Found SDL2: 2.26.5
+-- FFmpeg: using system pkg-config
+-- FFmpeg found: avcodec;avformat;avutil;swscale;swresample
 -- Configuring done
 -- Generating done
-```
-
-#### 3. 编译
-```bash
-make -j$(nproc)
 ```
 
 **编译结果**:
@@ -65,167 +82,78 @@ make -j$(nproc)
 [100%] Built target VideoEye
 ```
 
-**生成的可执行文件**:
-- 路径: `/home/hxk/project/VideoEye/VideoEye/build/bin/VideoEye`
-- 大小: 107KB
-- 权限: -rwxr-xr-x
+- 可执行文件: `build-release/bin/VideoEye`
+- 大小: ~16 MB
+- 链接库验证: `ldd` 无缺失库
 
-### 编译中遇到的问题及解决
+### FFmpeg 依赖查找策略
 
-#### 问题 1: CMake 找不到 FFmpeg
-**错误**:
+CMakeLists.txt 实现三级 fallback 查找：
+
 ```
-Could not find a package configuration file provided by "FFmpeg"
-```
-
-**解决方案**:
-修改 CMakeLists.txt，使用 pkg-config 而不是 find_package:
-```cmake
-pkg_check_modules(FFmpeg REQUIRED
-    libavcodec
-    libavformat
-    libavutil
-    libswscale
-    libswresample
-)
+1. find_package(FFMPEG)                    ← vcpkg manifest 模式
+2. 已有源码编译产物 (ffmpeg_install/)       ← Windows build_ninja 产物
+3. pkg_check_modules(FFMPEG REQUIRED ...)   ← Linux apt 安装
 ```
 
-#### 问题 2: 缺少 SwrContext 头文件
-**错误**:
-```
-'SwrContext' does not name a type
-```
+- **Windows**: 使用 `build-ninja/ffmpeg_install/` 的源码编译产物
+- **Linux**: 使用 apt 安装的系统 FFmpeg (通过 pkg-config)
 
-**解决方案**:
-在 Decoders.h 中添加:
-```cpp
-#include <libswresample/swresample.h>
-```
+### Bento4 集成
 
-#### 问题 3: 缺少 memcpy
-**错误**:
-```
-'memcpy' is not a member of 'std'
-```
+Bento4 从裸 GLOB 源文件改为独立 CMakeLists.txt + `add_subdirectory`：
+- `third_party/Bento4/CMakeLists.txt` 规范化源文件收集
+- 按平台选择 Win32/Posix 系统文件
+- 导出 `bento4` 静态库 target
 
-**解决方案**:
-在 Decoders.cpp 中添加:
-```cpp
-#include <cstring>
-```
+### 跨平台编译器选项
 
-#### 问题 4: Qt6 快捷键变化
-**错误**:
-```
-'MediaPlay' is not a member of 'QKeySequence'
-```
+| 平台 | Debug | Release | 额外选项 |
+|------|-------|---------|----------|
+| MSVC | `/Zi /Ob0 /Od /RTC1` | `/O2` | `/permissive- /Zc:__cplusplus /utf-8` |
+| GCC/Clang | `-g -O0` | `-O3` | — |
 
-**解决方案**:
-使用 Qt 标准键:
-```cpp
-QKeySequence(Qt::Key_Space)  // 替代 MediaPlay
-QKeySequence(Qt::Key_Escape) // 替代 MediaStop
-```
+### 构建脚本
 
-### 运行程序
+| 脚本 | 平台 | 功能 |
+|------|------|------|
+| `build.bat` | Windows | 入口脚本，支持 `ninja` / `release` / `debug` 参数 |
+| `build_ninja.ps1` | Windows | Ninja + MSVC 构建脚本，自动设置环境变量 |
+| `build.sh` | Linux/macOS | 构建脚本，含依赖检查 |
+| `setup.sh` | Linux/macOS | 环境初始化 + 构建 |
+
+### 运行
 
 ```bash
-cd /home/hxk/project/VideoEye/VideoEye/build
-export QT_QPA_PLATFORM=xcb
-./bin/VideoEye
-```
+# Windows
+build-ninja\bin\VideoEye.exe
 
-**运行状态**: ✅ 成功启动 (PID: 15545)
-
-### 编译警告
-
-有以下 deprecated 警告（不影响运行）:
-```
-warning: 'QMenu::addAction(...)' is deprecated: 
-Use addAction(text, shortcut, object, slot) instead.
-```
-
-这是因为 Qt6.4+ 推荐使用新的 addAction 签名。
-
-### 项目结构
-
-```
-VideoEye/
-├── core/
-│   ├── model/
-│   │   ├── FrameData.h/cpp          ✅ 编译成功
-│   └── player/
-│       ├── Decoders.h/cpp           ✅ 编译成功
-│       └── MediaPlayer.h/cpp        ✅ 编译成功
-├── ui/
-│   └── main_window/
-│       └── MainWindow.h/cpp         ✅ 编译成功
-├── CMakeLists.txt                   ✅ 配置成功
-└── build/
-    └── bin/
-        └── VideoEye                 ✅ 生成成功
-```
-
-### 代码统计
-
-| 模块 | 文件数 | 代码行数 |
-|------|--------|---------|
-| 核心层 | 6 | ~600 |
-| UI层 | 2 | ~300 |
-| 配置 | 8 | ~200 |
-| **总计** | **16** | **~1100** |
-
-### 已实现的功能
-
-✅ **播放器引擎**
-- 视频解码 (FFmpeg 新 API)
-- 音频解码 (带重采样)
-- 播放控制 (Play/Pause/Stop)
-- 进度跟踪
-- 状态管理
-
-✅ **用户界面**
-- 主窗口框架
-- 视频显示区域
-- 播放控制面板
-- 进度条和时间显示
-- 菜单栏 (文件/播放/分析/帮助)
-- 工具栏
-- 状态栏
-- 流信息显示
-- 快捷键支持
-
-### 下一步
-
-1. **完善视频显示**: 实现 YUV 到 RGB 的转换
-2. **音频播放**: 集成 SDL2 音频输出
-3. **分析功能**: 实现流分析和帧分析
-4. **性能优化**: 多线程解码优化
-5. **测试**: 添加单元测试
-
-### 快速启动命令
-
-```bash
-# 进入项目目录
-cd /home/hxk/project/VideoEye/VideoEye
-
-# 运行程序
-./build/bin/VideoEye
-
-# 或者重新编译
-cd build
-make -j$(nproc)
-./bin/VideoEye
+# Linux
+./build-release/bin/VideoEye
 ```
 
 ---
 
-**🎉 恭喜！VideoEye 2.0 新架构已成功编译并运行！**
+## 📊 项目统计
 
-你现在可以看到:
-- 现代化的 Qt6 界面
-- 视频播放控制
-- 流信息显示
-- 完整的菜单系统
+### 代码规模
 
-尝试打开一个视频文件测试播放功能！
+| 模块 | 文件数 | 说明 |
+|------|--------|------|
+| core/ | 52 | 核心业务层 (player + analyzer + model + io) |
+| ui/ | 7 | UI 层 (theme + main_window + analysis_panel) |
+| utils/ | 6 | 工具类 (Logger / ConfigManager / ReportExporter) |
+| tests/ | 7 | 测试 (6 suites, 115 cases) |
+| 第三方集成 | 4 | CMakeLists.txt (Bento4 + ZenLib + MediaInfoLib) |
+| **总计** | **76+** | |
+
+### 编译产物
+
+| 平台 | 构建目标 | 产物大小 | 编译单元 |
+|------|----------|----------|----------|
+| Windows (Ninja) | `VideoEye.exe` | ~13.5 MB | 464 |
+| Linux (Make) | `VideoEye` (ELF) | ~16 MB | 175+ |
+
+---
+
+**✅ 跨平台编译验证完成！** Windows MSVC + Ninja 和 Linux GCC + Make 均通过。

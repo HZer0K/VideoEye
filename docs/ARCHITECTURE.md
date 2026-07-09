@@ -24,7 +24,7 @@
 ┌────────────────────────▼────────────────────────────────────┐
 │                    外部依赖库                                │
 ├─────────────────────────────────────────────────────────────┤
-│  FFmpeg 8.1 (Vulkan)│ OpenCV │ SDL2 │ Vulkan │ Bento4 │ ... │
+│  FFmpeg 7.1+ │ OpenCV │ SDL2 │ Vulkan │ Bento4 │ MediaInfo │ ... │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -279,15 +279,25 @@ struct StreamInfo {
 
 ### 4. UI 模块 (ui)
 
+#### 深色主题 (ui/theme)
+
+**AppTheme.h/cpp** — 集中式深色主题模块
+
+- 色板: GitHub Dark — 背景 `#0D1117`、卡片 `#161B22`、边框 `#30363D`、强调色 `#58A6FF`
+- 字体: Inter (界面文字) + JetBrains Mono (数值/时间码)
+- 实现: QSS 样式表 + QPalette 统一管理
+
 #### MainWindow
 
-**职责**: 主窗口容器,协调各子模块
+**职责**: 主窗口容器，协调各子模块
+
+**布局**: Top App Bar + Left Sidebar + Video Area + Control Bar + Analysis Panel + Status Bar
 
 **组件**:
-- VideoWidget: 视频显示
-- ControlPanel: 播放控制
-- InfoPanel: 信息显示
-- AnalysisPanel: 分析结果
+- VulkanVideoWidget: Vulkan 视频渲染 + 叠加信息层
+- ControlBar: 播放控制 (播放/暂停/停止/进度条/音量)
+- AnalysisPanel: 分析结果 (QStackedWidget + 侧边栏导航)
+- StatusBar: 状态/实时指标/当前时间
 
 #### 信号槽连接
 
@@ -591,7 +601,9 @@ TEST(MediaPlayerTest, PlayLocalFile) {
 - [x] Vulkan GPU 渲染管线 (YUV→RGB compute shader + 零拷贝 present)
 - [x] 一键环境初始化脚本 (setup.sh)
 - [x] 容器分析调度完善 (丰富流信息、格式回退、统一入口)
-- [ ] 完善 UI
+- [x] 深色专业风格 UI (GitHub Dark 色板 + 侧边栏导航)
+- [x] 跨平台构建 (Windows Ninja+MSVC / Linux GCC+Make)
+- [x] 混合依赖管理 (vcpkg/apt + 源码集成 + FFmpeg 三级 fallback)
 
 ### 中期 (3-6个月)
 

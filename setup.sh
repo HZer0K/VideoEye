@@ -34,31 +34,20 @@ echo -e "${GREEN}========================================${NC}"
 
 if [ "$BUILD_ONLY" = false ]; then
     # 1. Git 子模块
-    echo -e "\n${YELLOW}[1/4] Git 子模块...${NC}"
+    echo -e "\n${YELLOW}[1/3] Git 子模块...${NC}"
     git submodule update --init --recursive && echo -e "${GREEN}  完成${NC}" || echo -e "${RED}  失败${NC}"
 
-    # 2. FFmpeg 源码
-    echo -e "\n${YELLOW}[2/4] FFmpeg 源码 (n8.1)...${NC}"
-    if [ -f "$DIR/third_party/FFmpeg/configure" ]; then
-        echo -e "${GREEN}  已存在${NC}"
-    else
-        echo "  下载中 (~40MB)..."
-        git clone --depth 1 --branch n8.1 \
-            https://git.ffmpeg.org/ffmpeg.git "$DIR/third_party/FFmpeg" 2>/dev/null || \
-        git clone --depth 1 --branch n8.1 \
-            https://github.com/FFmpeg/FFmpeg.git "$DIR/third_party/FFmpeg" || \
-        echo -e "${RED}  失败! 请手动克隆${NC}"
-    fi
-
-    # 3. 系统依赖
+    # 2. 系统依赖
     if [ "$SKIP_DEPS" = false ]; then
-        echo -e "\n${YELLOW}[3/4] 系统依赖...${NC}"
+        echo -e "\n${YELLOW}[2/3] 系统依赖...${NC}"
 
         check_cmd() { command -v "$1" >/dev/null 2>&1 && echo -e "  ${GREEN}[OK]${NC} $1" || echo -e "  ${RED}[缺]${NC} $1"; }
         check_pkg() { pkg-config --exists "$1" 2>/dev/null && echo -e "  ${GREEN}[OK]${NC} $1" || echo -e "  ${RED}[缺]${NC} $1"; }
 
         check_cmd cmake; check_cmd gcc; check_cmd g++; check_cmd make; check_cmd pkg-config
         check_pkg Qt6Widgets; check_pkg opencv4; check_pkg sdl2; check_pkg zlib
+        check_pkg libavcodec; check_pkg libavformat; check_pkg libavutil
+        check_pkg libswscale; check_pkg libswresample
 
         command -v glslc >/dev/null 2>&1 && echo -e "  ${GREEN}[OK]${NC} glslc" || echo -e "  ${YELLOW}[可选]${NC} glslc"
         check_pkg vulkan
@@ -67,19 +56,22 @@ if [ "$BUILD_ONLY" = false ]; then
         echo ""
         if [ "$OS" = "linux" ]; then
             echo "  Debian/Ubuntu 安装命令:"
-            echo "    sudo apt install -y build-essential cmake pkg-config nasm yasm \\"
+            echo "    sudo apt install -y build-essential cmake pkg-config \\"
             echo "      qt6-base-dev qt6-multimedia-dev qt6-charts-dev \\"
             echo "      libopencv-dev libsdl2-dev zlib1g-dev \\"
-            echo "      libvulkan-dev glslc"
+            echo "      libvulkan-dev glslc \\"
+            echo "      libavcodec-dev libavformat-dev libavutil-dev \\"
+            echo "      libswscale-dev libswresample-dev"
         elif [ "$OS" = "macos" ]; then
-            echo "  brew install cmake nasm qt@6 opencv sdl2 zlib"
+            echo "  brew install cmake qt@6 opencv sdl2 zlib"
+            echo "  brew install ffmpeg" 
             echo "  Vulkan (可选): brew install vulkan-sdk"
         fi
     fi
 fi
 
-# 4. 编译
-echo -e "\n${YELLOW}[4/4] 编译 (${BUILD_TYPE})...${NC}"
+# 3. 编译
+echo -e "\n${YELLOW}[3/3] 编译 (${BUILD_TYPE})...${NC}"
 BUILD_DIR="$DIR/build"
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
