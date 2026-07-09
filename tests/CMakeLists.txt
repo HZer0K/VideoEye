@@ -1,6 +1,9 @@
 # ============================================================
 # VideoEye 单元测试配置
 # 使用 GoogleTest 框架 (通过 FetchContent 自动下载)
+#
+# 注意: 测试源文件 (tests/unit/*.cpp) 尚未提交到仓库
+#       启用方式: cmake -DBUILD_TESTING=ON ..
 # ============================================================
 
 include(FetchContent)
@@ -19,20 +22,29 @@ enable_testing()
 # ============================================================
 # 公共 include 目录 (与主项目一致)
 # ============================================================
+set(BENTO4_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/Bento4/Source/C++/Core")
+
 set(TEST_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/..
     ${CMAKE_CURRENT_SOURCE_DIR}/../core
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui
     ${CMAKE_CURRENT_SOURCE_DIR}/../utils
-    ${BENTO4_DIR}
-    ${BENTO4_DIR}/../MetaData
-    ${BENTO4_DIR}/../Codecs
-    ${BENTO4_DIR}/../Crypto
-    ${BENTO4_DIR}/../Adapters
-    ${FFMPEG_SOURCE_INCLUDE_DIR}
+    ${BENTO4_CORE_DIR}
+    ${BENTO4_CORE_DIR}/../MetaData
+    ${BENTO4_CORE_DIR}/../Codecs
+    ${BENTO4_CORE_DIR}/../Crypto
+    ${BENTO4_CORE_DIR}/../Adapters
+    ${FFMPEG_INCLUDE_DIRS}
     ${OpenCV_INCLUDE_DIRS}
     ${SDL2_INCLUDE_DIRS}
 )
+
+# FFmpeg RPATH (用于 local build 场景)
+if(FFMPEG_LOCAL_BUILD AND FFMPEG_LOCAL_DIR)
+    set(TEST_FFMPEG_RPATH "${FFMPEG_LOCAL_DIR}/bin")
+else()
+    set(TEST_FFMPEG_RPATH "")
+endif()
 
 # ============================================================
 # 测试 1: FormatDetector (仅依赖 Qt)
@@ -48,7 +60,7 @@ target_link_libraries(test_format_detector PRIVATE
 )
 set_target_properties(test_format_detector PROPERTIES
     AUTOMOC ON
-    BUILD_RPATH "${FFMPEG_SOURCE_LIB_DIR}"
+    BUILD_RPATH "${TEST_FFMPEG_RPATH}"
 )
 add_test(NAME FormatDetectorTests COMMAND test_format_detector)
 
@@ -67,7 +79,7 @@ target_link_libraries(test_config_manager PRIVATE
 )
 set_target_properties(test_config_manager PROPERTIES
     AUTOMOC ON
-    BUILD_RPATH "${FFMPEG_SOURCE_LIB_DIR}"
+    BUILD_RPATH "${TEST_FFMPEG_RPATH}"
 )
 add_test(NAME ConfigManagerTests COMMAND test_config_manager)
 
@@ -85,11 +97,10 @@ target_link_libraries(test_report_exporter PRIVATE
     GTest::gtest_main
     Qt6::Core
     ${FFMPEG_LIBRARIES}
-    ${FFMPEG_SYSTEM_LIBS}
 )
 set_target_properties(test_report_exporter PROPERTIES
     AUTOMOC ON
-    BUILD_RPATH "${FFMPEG_SOURCE_LIB_DIR}"
+    BUILD_RPATH "${TEST_FFMPEG_RPATH}"
 )
 add_test(NAME ReportExporterTests COMMAND test_report_exporter)
 
@@ -105,10 +116,9 @@ target_include_directories(test_stream_analyzer PRIVATE ${TEST_INCLUDE_DIRS})
 target_link_libraries(test_stream_analyzer PRIVATE
     GTest::gtest_main
     ${FFMPEG_LIBRARIES}
-    ${FFMPEG_SYSTEM_LIBS}
 )
 set_target_properties(test_stream_analyzer PROPERTIES
-    BUILD_RPATH "${FFMPEG_SOURCE_LIB_DIR}"
+    BUILD_RPATH "${TEST_FFMPEG_RPATH}"
 )
 add_test(NAME StreamAnalyzerTests COMMAND test_stream_analyzer)
 
@@ -123,10 +133,9 @@ target_include_directories(test_frame_data PRIVATE ${TEST_INCLUDE_DIRS})
 target_link_libraries(test_frame_data PRIVATE
     GTest::gtest_main
     ${FFMPEG_LIBRARIES}
-    ${FFMPEG_SYSTEM_LIBS}
 )
 set_target_properties(test_frame_data PROPERTIES
-    BUILD_RPATH "${FFMPEG_SOURCE_LIB_DIR}"
+    BUILD_RPATH "${TEST_FFMPEG_RPATH}"
 )
 add_test(NAME FrameDataTests COMMAND test_frame_data)
 
@@ -143,10 +152,9 @@ target_include_directories(test_frame_analyzer PRIVATE ${TEST_INCLUDE_DIRS})
 target_link_libraries(test_frame_analyzer PRIVATE
     GTest::gtest_main
     ${FFMPEG_LIBRARIES}
-    ${FFMPEG_SYSTEM_LIBS}
     ${OpenCV_LIBS}
 )
 set_target_properties(test_frame_analyzer PROPERTIES
-    BUILD_RPATH "${FFMPEG_SOURCE_LIB_DIR}"
+    BUILD_RPATH "${TEST_FFMPEG_RPATH}"
 )
 add_test(NAME FrameAnalyzerTests COMMAND test_frame_analyzer)

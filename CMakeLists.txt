@@ -22,9 +22,6 @@ else()
     set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 endif()
 
-# 添加自定义 CMake 模块路径
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-
 # 查找依赖包 - 使用 pkg-config
 find_package(PkgConfig REQUIRED)
 
@@ -246,17 +243,12 @@ install(TARGETS ${PROJECT_NAME}
     RUNTIME DESTINATION bin
 )
 
-# 测试支持
-option(BUILD_TESTING "构建单元测试" ON)
+# 测试支持 (默认关闭, 测试文件待补全)
+option(BUILD_TESTING "构建单元测试" OFF)
 if(BUILD_TESTING)
     enable_testing()
     add_subdirectory(tests)
 endif()
-
-# 复制资源文件
-install(DIRECTORY resources/
-    DESTINATION share/VideoEye/resources
-)
 
 # 打印配置信息
 message(STATUS "VideoEye Configuration:")

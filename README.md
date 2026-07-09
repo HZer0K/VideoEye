@@ -207,8 +207,6 @@ VideoEye/
 │   ├── ZenLib/                  # ZenLib 源码 (submodule)
 │   ├── MediaInfoLib/            # MediaInfoLib 源码 (submodule)
 │   └── CMakeLists.txt           # ZenLib + MediaInfoLib 构建配置
-├── cmake/                       # CMake 配置
-│   └── BuildFFmpeg.cmake        # FFmpeg 源码编译模块 (已弃用，保留备用)
 ├── docs/                        # 文档
 ├── vcpkg.json                   # vcpkg 依赖清单
 ├── CMakeLists.txt               # 主 CMake 配置
@@ -314,8 +312,6 @@ cd build-debug && ctest --output-on-failure
 | 字符编码 | MultiByte (乱码) | UTF-8 |
 | UI 风格 | 系统默认 | 深色专业风格 |
 | 依赖管理 | 散落 DLL | vcpkg + 源码集成混合 |
-
-旧版代码保留在 `legacy/` 目录中作为参考。
 
 ## 🤝 贡献指南
 
