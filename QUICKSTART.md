@@ -18,7 +18,7 @@ cd VideoEye
 .\build.bat ninja
 ```
 
-> 首次构建会自动通过 vcpkg 拉取依赖（OpenCV、Qt6、SDL2 等），FFmpeg 使用已有源码编译产物。
+> 首次构建会自动通过 vcpkg 拉取依赖（OpenCV、Qt6、SDL2 等），FFmpeg 使用已有的预编译共享库（gyan.dev full shared 构建，8.1.2）。
 
 #### Linux (Ubuntu/Debian)
 
@@ -93,13 +93,14 @@ CMake 采用**三级 fallback**策略自动查找 FFmpeg：
 
 ```
 优先级 1: find_package(FFMPEG)        ← vcpkg 已安装 ffmpeg 包
-优先级 2: 源码编译产物                  ← build-ninja/ffmpeg_install/ 等
+优先级 2: 预编译共享库                 ← build-ninja/ffmpeg_install/ (gyan.dev 8.1.2)
 优先级 3: pkg-config                   ← Linux apt 安装 (libavcodec-dev 等)
 ```
 
 **Windows 用户**:
-- 如果 vcpkg 的 FFmpeg 不含 vulkan feature，构建脚本会自动使用已有的源码编译产物
-- 首次需要通过 `build_ninja.ps1` 构建 FFmpeg（脚本内集成）
+- 如果 vcpkg 的 FFmpeg 不含 vulkan feature，构建脚本会自动使用已有的预编译共享库
+- 预编译库来自 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) full shared 构建（FFmpeg 8.1.2），包含 DLL、.lib 和头文件
+- `build-ninja/ffmpeg_install/` 目录由构建脚本自动复制 DLL 到 `bin/`
 
 **Linux 用户**:
 - 直接 `apt install libavcodec-dev libavformat-dev ...` 即可
@@ -148,7 +149,7 @@ cd build-debug && ctest --output-on-failure
 
 ### Q: vcpkg install 报 FFmpeg vulkan feature 错误
 
-这是 vcpkg 版本的 FFmpeg 不支持 vulkan feature。CMake 会自动回退到已有的源码编译产物。确保 `build-ninja/ffmpeg_install/` 目录存在。
+这是 vcpkg 版本的 FFmpeg 不支持 vulkan feature。CMake 会自动回退到已有的预编译共享库。确保 `build-ninja/ffmpeg_install/` 目录存在（含 gyan.dev full shared 构建的 DLL、.lib 和头文件）。
 
 ### Q: 运行时找不到 DLL
 

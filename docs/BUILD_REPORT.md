@@ -13,7 +13,7 @@
 | Qt6 | 6.x (vcpkg) | ✅ |
 | OpenCV | 4.x (vcpkg) | ✅ |
 | SDL2 | 2.x (vcpkg) | ✅ |
-| FFmpeg | 7.1+ (源码编译产物) | ✅ |
+| FFmpeg | 8.1.2 (gyan.dev full shared) | ✅ |
 | Vulkan | 1.4.309 (bundled headers) | ✅ |
 
 #### 构建过程
@@ -92,11 +92,11 @@ CMakeLists.txt 实现三级 fallback 查找：
 
 ```
 1. find_package(FFMPEG)                    ← vcpkg manifest 模式
-2. 已有源码编译产物 (ffmpeg_install/)       ← Windows build_ninja 产物
+2. 已有预编译共享库 (ffmpeg_install/)       ← gyan.dev full shared 构建 (8.1.2)
 3. pkg_check_modules(FFMPEG REQUIRED ...)   ← Linux apt 安装
 ```
 
-- **Windows**: 使用 `build-ninja/ffmpeg_install/` 的源码编译产物
+- **Windows**: 使用 `build-ninja/ffmpeg_install/` 的预编译共享库 (gyan.dev full shared 8.1.2)
 - **Linux**: 使用 apt 安装的系统 FFmpeg (通过 pkg-config)
 
 ### Bento4 集成

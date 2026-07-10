@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![C++](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://isocpp.org/)
 [![Qt](https://img.shields.io/badge/Qt-6-green.svg)](https://www.qt.io/)
-[![FFmpeg](https://img.shields.io/badge/FFmpeg-7.1%2B-red.svg)](https://ffmpeg.org/)
+[![FFmpeg](https://img.shields.io/badge/FFmpeg-8.1%2B-red.svg)](https://ffmpeg.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)]()
 
 ## 项目简介
@@ -47,7 +47,7 @@ VideoEye 是一款开源的视频流分析软件，支持多种视频输入源�
 | 组件 | 技术 | 版本 | 管理方式 |
 |------|------|------|----------|
 | GUI 框架 | Qt 6 | 6.0+ | vcpkg / apt |
-| 多媒体 | FFmpeg | 7.1+ | vcpkg / apt / 源码编译 |
+| 多媒体 | FFmpeg | 8.1+ | vcpkg / apt / 预编译共享库 |
 | GPU 渲染 | Vulkan | 1.3+ | 系统 SDK / apt |
 | 媒体元数据 | MediaInfoLib | 26.05 | 源码集成 (有定制) |
 | 计算机视觉 | OpenCV | 4.8+ | vcpkg / apt |
@@ -63,7 +63,7 @@ VideoEye 是一款开源的视频流分析软件，支持多种视频输入源�
 
 | 依赖 | 管理方式 | 原因 |
 |------|----------|------|
-| FFmpeg | vcpkg / apt / 源码编译 | 三级 fallback 查找，自动选择最优来源 |
+| FFmpeg | vcpkg / apt / 预编译共享库 | 三级 fallback 查找，自动选择最优来源 |
 | OpenCV | vcpkg / apt | 通用库，无需定制 |
 | Qt6 | vcpkg / apt | 通用库，无需定制 |
 | SDL2 | vcpkg / apt | 通用库，无需定制 |
@@ -74,7 +74,7 @@ VideoEye 是一款开源的视频流分析软件，支持多种视频输入源�
 
 **FFmpeg 查找优先级** (CMakeLists.txt 自动选择):
 1. `find_package(FFMPEG)` — vcpkg 已安装的 ffmpeg 包
-2. 已有源码编译产物 — `build-ninja/ffmpeg_install/` 等
+2. 已有预编译共享库 — `build-ninja/ffmpeg_install/` (gyan.dev full shared 构建)
 3. 系统 `pkg-config` — Linux apt 安装的 libavcodec-dev 等
 
 ## 📦 安装依赖
@@ -109,7 +109,7 @@ cd VideoEye
 vcpkg install
 ```
 
-> **FFmpeg 说明**: Windows 上如果 vcpkg 的 FFmpeg 版本不支持 vulkan feature，CMake 会自动回退到已有的源码编译产物（`build-ninja/ffmpeg_install/`）。首次需要通过 `build_ninja.ps1` 构建 FFmpeg。
+> **FFmpeg 说明**: Windows 上如果 vcpkg 的 FFmpeg 不含 vulkan feature，CMake 会自动回退到已有的预编译共享库（`build-ninja/ffmpeg_install/`，来自 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) full shared 构建，当前版本 8.1.2）。该目录包含完整的 DLL、.lib 和头文件，含 Vulkan hwaccel 支持。
 
 ## 🔨 构建指南
 

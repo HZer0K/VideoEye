@@ -89,7 +89,7 @@ VideoEye 2.0 已完成从 MFC 旧架构到现代化 Qt6 + C++17 跨平台架构�
 - ✅ **vcpkg** (Windows): opencv4 / qtbase / qtmultimedia / qtcharts / sdl2 / zlib
 - ✅ **apt** (Linux): 对应的 -dev 包
 - ✅ **源码集成**: MediaInfoLib + ZenLib (有定制) / Bento4 (版本过旧) / vulkan-headers
-- ✅ **FFmpeg 三级 fallback**: vcpkg → 源码编译产物 → pkg-config
+- ✅ **FFmpeg 三级 fallback**: vcpkg → 预编译共享库 (gyan.dev 8.1.2) → pkg-config
 
 #### Bento4 CMakeLists.txt
 - ✅ 从裸 GLOB 源文件改为独立 CMakeLists.txt
@@ -170,7 +170,7 @@ AVFrame (VK/NV12) → staging upload → Y/UV textures
 | GUI 框架 | MFC (Windows only) | Qt6 (跨平台) |
 | 构建系统 | VS2010 | CMake + Ninja/Make |
 | C++ 标准 | C++98 | C++17 |
-| FFmpeg | 2012版旧API | 7.1+ 新API (send/receive) |
+| FFmpeg | 2012版旧API | 8.1+ 新API (send/receive) |
 | 内存管理 | new/delete | 智能指针 + RAII |
 | 字符编码 | MultiByte (乱码) | UTF-8 |
 | UI 风格 | 系统默认 | 深色专业风格 |
