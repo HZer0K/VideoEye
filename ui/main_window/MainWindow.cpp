@@ -179,7 +179,9 @@ void MainWindow::SetupSidebar() {
         tr("音频响度"),
         tr("直方图"),
         tr("容器结构"),
-        tr("宏块分析")
+        tr("宏块分析"),
+        tr("场景切换"),
+        tr("质量评估")
     };
     
     for (const QString& item : nav_items) {
@@ -468,6 +470,8 @@ void MainWindow::SetupConnections() {
             analysis_panel_, &ui::AnalysisPanel::OnContainerStructureReady);
     connect(player_, &player::MediaPlayer::MacroblockInfoReady,
             analysis_panel_, &ui::AnalysisPanel::UpdateMacroblockInfo);
+    connect(player_, &player::MediaPlayer::SceneChangeReady,
+            analysis_panel_, &ui::AnalysisPanel::OnSceneChangeDetected);
     
     // 面板开关信号 -> MediaPlayer 控制
     connect(analysis_panel_, &ui::AnalysisPanel::AnalysisFeatureToggled,
@@ -512,6 +516,12 @@ void MainWindow::SetupConnections() {
                     break;
                 case AF::Macroblock:
                     player_->SetMacroblockAnalysisEnabled(enabled);
+                    break;
+                case AF::SceneChange:
+                    player_->SetSceneChangeAnalysisEnabled(enabled);
+                    break;
+                case AF::Quality:
+                    // 质量评估为离线批量任务, 由面板内的"开始评估"触发, 此处无需控制播放器
                     break;
                 default:
                     break;

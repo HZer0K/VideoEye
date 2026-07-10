@@ -1,6 +1,7 @@
 #include "AnalysisPanel.h"
 #include "utils/Logger.h"
 #include "utils/ReportExporter.h"
+#include "ui/theme/AppTheme.h"
 #include <QGroupBox>
 #include <QSplitter>
 #include <QHeaderView>
@@ -72,6 +73,8 @@ AnalysisPanel::AnalysisPanel(QWidget* parent)
     feature_enabled_[AnalysisFeature::Histogram] = false;
     feature_enabled_[AnalysisFeature::ContainerStructure] = true;
     feature_enabled_[AnalysisFeature::Macroblock] = false;
+    feature_enabled_[AnalysisFeature::SceneChange] = false;
+    feature_enabled_[AnalysisFeature::Quality] = false;
     
     SetupUI();
     
@@ -83,6 +86,12 @@ AnalysisPanel::AnalysisPanel(QWidget* parent)
 }
 
 AnalysisPanel::~AnalysisPanel() {
+    // 若质量评估仍在后台线程运行, 置取消标志并等待其结束, 避免 std::thread
+    // 析构时调用 std::terminate。已排队的 QMetaCallEvent 会由 ~QObject 自动移除。
+    quality_analyzer_.cancel_ = true;
+    if (quality_thread_.joinable()) {
+        quality_thread_.join();
+    }
     LOG_INFO("分析面板已销毁");
 }
 
@@ -98,6 +107,12 @@ void AnalysisPanel::SetupUI() {
     SetupHistogramTab();
     SetupContainerStructureTab();
     SetupMacroblockTab();
+    SetupSceneChangeTab();
+    SetupQualityTab();
+
+    qRegisterMetaType<analyzer::SceneChangeResult>();
+    qRegisterMetaType<analyzer::QualityFrameResult>();
+    qRegisterMetaType<analyzer::QualitySummary>();
 }
 
 bool AnalysisPanel::IsFeatureEnabled(AnalysisFeature feature) const {
@@ -818,13 +833,13 @@ void AnalysisPanel::SetupContainerStructureTab() {
 
     // 动态标题
     container_title_label_ = new QLabel(tr("未加载文件"), container_tab_);
-    container_title_label_->setStyleSheet("font-size: 13px; font-weight: bold; color: #333; padding: 2px 4px;");
+    container_title_label_->setStyleSheet("font-size: 13px; font-weight: bold; color: #F0F6FC; padding: 2px 4px;");
     container_title_label_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     layout->addWidget(container_title_label_);
 
     // 概要标签
     container_summary_label_ = new QLabel(tr("打开媒体文件后将自动分析容器结构"), container_tab_);
-    container_summary_label_->setStyleSheet("font-size: 12px; color: #666; padding: 2px 4px;");
+    container_summary_label_->setStyleSheet("font-size: 12px; color: #8B949E; padding: 2px 4px;");
     container_summary_label_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     layout->addWidget(container_summary_label_);
 
@@ -1100,18 +1115,18 @@ void AnalysisPanel::OnContainerStructureReady(const model::ContainerStructureRes
     container_title_label_->setText(result.valid ? result.format_name + " " + tr("结构分析") : tr("文件结构"));
     container_title_label_->setStyleSheet(
         result.valid ? "font-size: 13px; font-weight: bold; color: #1a73e8; padding: 2px 4px;"
-                     : "font-size: 13px; font-weight: bold; color: #999; padding: 2px 4px;");
+                     : "font-size: 13px; font-weight: bold; color: #8B949E; padding: 2px 4px;");
 
     if (!result.valid) {
         container_summary_label_->setText(result.error_message.isEmpty() ? tr("无法分析该格式") : result.error_message);
-        container_summary_label_->setStyleSheet("font-size: 12px; color: #999; padding: 2px 4px;");
+        container_summary_label_->setStyleSheet("font-size: 12px; color: #8B949E; padding: 2px 4px;");
         container_tree_->clear();
         container_detail_stack_->setCurrentIndex(0);
         return;
     }
 
     container_summary_label_->setText(result.summary);
-    container_summary_label_->setStyleSheet("font-size: 12px; color: #333; font-weight: bold; padding: 2px 4px;");
+    container_summary_label_->setStyleSheet("font-size: 12px; color: #F0F6FC; font-weight: bold; padding: 2px 4px;");
 
     // 填充通用结构树
     container_tree_->clear();
@@ -2412,6 +2427,14 @@ void AnalysisPanel::FlushPendingUiUpdates() {
         RefreshMacroblockUi();
         macroblock_dirty_ = false;
     }
+    if (scene_change_dirty_) {
+        FlushPendingSceneChangeTable();
+        scene_change_dirty_ = false;
+    }
+    if (quality_dirty_) {
+        FlushPendingQualityTable();
+        quality_dirty_ = false;
+    }
 }
 
 void AnalysisPanel::FlushPendingFrameTableUpdates() {
@@ -3121,6 +3144,423 @@ void AnalysisPanel::OnExportMacroblockCsv() {
 
     QMessageBox::information(this, tr("成功"),
         tr("已导出 %1 条运动矢量到:\n%2").arg(ma.motion_vectors.size()).arg(filename));
+}
+
+// ===========================================================================
+// 场景切换检测标签页
+// ===========================================================================
+
+void AnalysisPanel::SetupSceneChangeTab() {
+    scene_change_tab_ = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(scene_change_tab_);
+    layout->setContentsMargins(4, 2, 4, 4);
+    layout->setSpacing(4);
+
+    // 标题 + 启用开关
+    {
+        QWidget* row = new QWidget(scene_change_tab_);
+        QHBoxLayout* rl = new QHBoxLayout(row);
+        rl->setContentsMargins(0, 0, 0, 0);
+        QLabel* title = new QLabel(tr("场景切换检测（镜头边界）"), row);
+        rl->addWidget(title);
+        rl->addStretch();
+        QCheckBox* toggle = new QCheckBox(tr("启用检测"), row);
+        toggle->setChecked(feature_enabled_.value(AnalysisFeature::SceneChange, false));
+        connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
+            feature_enabled_[AnalysisFeature::SceneChange] = checked;
+            emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::SceneChange), checked);
+        });
+        rl->addWidget(toggle);
+        layout->addWidget(row);
+    }
+
+    scene_change_summary_label_ = new QLabel(
+        tr("启用检测并在播放中分析视频，将在此列出检测到的镜头切换点（时间戳 + 切换强度）。"));
+    scene_change_summary_label_->setWordWrap(true);
+    layout->addWidget(scene_change_summary_label_);
+
+    // 切换强度柱状图
+    scene_change_chart_object_ = new QChart();
+    scene_change_chart_object_->setTitle(tr("切换强度（逐切换点）"));
+    scene_change_bar_set_ = new QBarSet(tr("强度"));
+    scene_change_series_ = new QBarSeries();
+    scene_change_series_->append(scene_change_bar_set_);
+    scene_change_chart_object_->addSeries(scene_change_series_);
+    scene_change_axis_x_ = new QValueAxis();
+    scene_change_axis_x_->setTitleText(tr("切换点序号"));
+    scene_change_axis_y_ = new QValueAxis();
+    scene_change_axis_y_->setTitleText(tr("强度"));
+    scene_change_axis_y_->setRange(0, 1);
+    scene_change_chart_object_->addAxis(scene_change_axis_x_, Qt::AlignBottom);
+    scene_change_chart_object_->addAxis(scene_change_axis_y_, Qt::AlignLeft);
+    scene_change_series_->attachAxis(scene_change_axis_x_);
+    scene_change_series_->attachAxis(scene_change_axis_y_);
+    scene_change_chart_ = new QChartView(scene_change_chart_object_);
+    scene_change_chart_->setMinimumHeight(180);
+    scene_change_chart_->setRenderHint(QPainter::Antialiasing);
+    layout->addWidget(scene_change_chart_);
+
+    // 切换点列表
+    scene_change_table_ = new QTableWidget(0, 3, scene_change_tab_);
+    scene_change_table_->setHorizontalHeaderLabels({tr("帧序号"), tr("时间戳"), tr("切换强度")});
+    scene_change_table_->verticalHeader()->setVisible(false);
+    scene_change_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    scene_change_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    scene_change_table_->horizontalHeader()->setStretchLastSection(true);
+    scene_change_table_->setMinimumHeight(200);
+    layout->addWidget(scene_change_table_);
+
+    // 导出按钮
+    QPushButton* export_btn = new QPushButton(tr("导出切换点 CSV"), scene_change_tab_);
+    connect(export_btn, &QPushButton::clicked, this, &AnalysisPanel::OnExportSceneChangeCsv);
+    layout->addWidget(export_btn, 0, Qt::AlignRight);
+
+    AddPageWithScroll(scene_change_tab_, tr("场景切换"));
+}
+
+void AnalysisPanel::OnSceneChangeDetected(const analyzer::SceneChangeResult& result) {
+    scene_change_records_.push_back(result);
+    scene_change_table_dirty_ = true;
+    if (update_timer_) update_timer_->start(kUiFlushIntervalMs);
+}
+
+void AnalysisPanel::FlushPendingSceneChangeTable() {
+    if (!scene_change_table_dirty_) return;
+    scene_change_table_dirty_ = false;
+    const size_t total = scene_change_records_.size();
+    for (size_t i = scene_change_table_synced_count_; i < total; ++i) {
+        AppendSceneChangeRow(scene_change_records_[i]);
+    }
+    scene_change_table_synced_count_ = total;
+    UpdateSceneChangeChart();
+    UpdateSceneChangeSummary();
+}
+
+void AnalysisPanel::AppendSceneChangeRow(const analyzer::SceneChangeResult& result) {
+    const int row = scene_change_table_->rowCount();
+    scene_change_table_->insertRow(row);
+    SetTableItemText(scene_change_table_, row, 0, QString::number(result.frame_index));
+    SetTableItemText(scene_change_table_, row, 1, theme::font::formatTime(static_cast<int>(result.timestamp * 1000)));
+    SetTableItemText(scene_change_table_, row, 2, QString::number(result.score, 'f', 3));
+}
+
+void AnalysisPanel::UpdateSceneChangeChart() {
+    if (scene_change_bar_set_->count() > 0)
+        scene_change_bar_set_->remove(0, scene_change_bar_set_->count());
+    // 限制显示最近 200 个切换点, 避免柱状图过载
+    const int max_bars = 200;
+    const int start = scene_change_records_.size() > static_cast<size_t>(max_bars)
+                          ? static_cast<int>(scene_change_records_.size() - max_bars) : 0;
+    for (int i = start; i < static_cast<int>(scene_change_records_.size()); ++i) {
+        scene_change_bar_set_->append(scene_change_records_[i].score);
+    }
+    scene_change_axis_x_->setRange(start, std::max(start + 1, static_cast<int>(scene_change_records_.size())));
+}
+
+void AnalysisPanel::UpdateSceneChangeSummary() {
+    const int n = static_cast<int>(scene_change_records_.size());
+    if (n == 0) {
+        scene_change_summary_label_->setText(
+            tr("启用检测并在播放中分析视频，将在此列出检测到的镜头切换点（时间戳 + 切换强度）。"));
+        return;
+    }
+    double sum = 0.0;
+    double max_s = 0.0;
+    for (const auto& r : scene_change_records_) { sum += r.score; if (r.score > max_s) max_s = r.score; }
+    scene_change_summary_label_->setText(
+        tr("共检测到 %1 个切换点 | 平均强度 %2 | 最大强度 %3")
+            .arg(n).arg(QString::number(sum / n, 'f', 3)).arg(QString::number(max_s, 'f', 3)));
+}
+
+void AnalysisPanel::OnExportSceneChangeCsv() {
+    if (scene_change_records_.empty()) {
+        QMessageBox::information(this, tr("提示"), tr("当前没有可导出的切换点数据。"));
+        return;
+    }
+    const QString filename = QFileDialog::getSaveFileName(this, tr("导出切换点 CSV"),
+        QString::fromStdString(current_video_path_).section('/', -1) + "_scenecut.csv",
+        tr("CSV 文件 (*.csv)"));
+    if (filename.isEmpty()) return;
+    QFile file(filename);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("错误"), tr("无法打开文件: ") + filename);
+        return;
+    }
+    QTextStream stream(&file);
+    stream.setEncoding(QStringConverter::Utf8);
+    stream << "\xEF\xBB\xBF";
+    stream << "frame_index,timestamp_seconds,score\n";
+    for (const auto& r : scene_change_records_) {
+        stream << r.frame_index << "," << QString::number(r.timestamp, 'f', 3) << ","
+               << QString::number(r.score, 'f', 4) << "\n";
+    }
+    file.close();
+    QMessageBox::information(this, tr("成功"), tr("已导出 %1 个切换点到:\n%2")
+        .arg(scene_change_records_.size()).arg(filename));
+}
+
+// ===========================================================================
+// 质量评估（PSNR/SSIM）标签页
+// ===========================================================================
+
+void AnalysisPanel::SetupQualityTab() {
+    quality_tab_ = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(quality_tab_);
+    layout->setContentsMargins(4, 2, 4, 4);
+    layout->setSpacing(4);
+
+    QLabel* title = new QLabel(tr("质量评估（PSNR / SSIM）"));
+    layout->addWidget(title);
+
+    QLabel* desc = new QLabel(
+        tr("选择一段“参考视频”（与主视频内容相同、通常为原始/高质量版本），点击“开始评估”后，"
+           "软件将逐帧对比计算 PSNR 与 SSIM。PSNR 越高、SSIM 越接近 1 表示质量越好。"));
+    desc->setWordWrap(true);
+    layout->addWidget(desc);
+
+    // 控制行
+    QWidget* ctrl = new QWidget(quality_tab_);
+    QHBoxLayout* cl = new QHBoxLayout(ctrl);
+    cl->setContentsMargins(0, 0, 0, 0);
+    quality_select_ref_button_ = new QPushButton(tr("选择参考视频..."), ctrl);
+    connect(quality_select_ref_button_, &QPushButton::clicked, this, &AnalysisPanel::OnSelectReferenceClicked);
+    quality_start_button_ = new QPushButton(tr("开始评估"), ctrl);
+    connect(quality_start_button_, &QPushButton::clicked, this, &AnalysisPanel::OnStartQualityClicked);
+    quality_cancel_button_ = new QPushButton(tr("取消"), ctrl);
+    quality_cancel_button_->setEnabled(false);
+    connect(quality_cancel_button_, &QPushButton::clicked, this, &AnalysisPanel::OnCancelQualityClicked);
+    cl->addWidget(quality_select_ref_button_);
+    cl->addWidget(quality_start_button_);
+    cl->addWidget(quality_cancel_button_);
+    cl->addStretch();
+    layout->addWidget(ctrl);
+
+    quality_ref_label_ = new QLabel(tr("参考视频: 未选择"));
+    layout->addWidget(quality_ref_label_);
+
+    quality_progress_ = new QProgressBar(quality_tab_);
+    quality_progress_->setRange(0, 0);  // 不确定模式
+    quality_progress_->setTextVisible(false);
+    quality_progress_->setVisible(false);
+    layout->addWidget(quality_progress_);
+
+    quality_summary_label_ = new QLabel(tr("就绪。请先选择参考视频。"));
+    layout->addWidget(quality_summary_label_);
+
+    // PSNR 曲线
+    quality_psnr_chart_object_ = new QChart();
+    quality_psnr_chart_object_->setTitle(tr("PSNR (dB)"));
+    quality_psnr_series_ = new QLineSeries();
+    quality_psnr_chart_object_->addSeries(quality_psnr_series_);
+    quality_psnr_axis_x_ = new QValueAxis();
+    quality_psnr_axis_x_->setTitleText(tr("帧序号"));
+    quality_psnr_axis_y_ = new QValueAxis();
+    quality_psnr_axis_y_->setTitleText(tr("PSNR (dB)"));
+    quality_psnr_axis_y_->setRange(0, 60);
+    quality_psnr_chart_object_->addAxis(quality_psnr_axis_x_, Qt::AlignBottom);
+    quality_psnr_chart_object_->addAxis(quality_psnr_axis_y_, Qt::AlignLeft);
+    quality_psnr_series_->attachAxis(quality_psnr_axis_x_);
+    quality_psnr_series_->attachAxis(quality_psnr_axis_y_);
+    quality_psnr_chart_ = new QChartView(quality_psnr_chart_object_);
+    quality_psnr_chart_->setMinimumHeight(160);
+    quality_psnr_chart_->setRenderHint(QPainter::Antialiasing);
+    layout->addWidget(quality_psnr_chart_);
+
+    // SSIM 曲线
+    quality_ssim_chart_object_ = new QChart();
+    quality_ssim_chart_object_->setTitle(tr("SSIM"));
+    quality_ssim_series_ = new QLineSeries();
+    quality_ssim_chart_object_->addSeries(quality_ssim_series_);
+    quality_ssim_axis_x_ = new QValueAxis();
+    quality_ssim_axis_x_->setTitleText(tr("帧序号"));
+    quality_ssim_axis_y_ = new QValueAxis();
+    quality_ssim_axis_y_->setTitleText(tr("SSIM"));
+    quality_ssim_axis_y_->setRange(0, 1);
+    quality_ssim_chart_object_->addAxis(quality_ssim_axis_x_, Qt::AlignBottom);
+    quality_ssim_chart_object_->addAxis(quality_ssim_axis_y_, Qt::AlignLeft);
+    quality_ssim_series_->attachAxis(quality_ssim_axis_x_);
+    quality_ssim_series_->attachAxis(quality_ssim_axis_y_);
+    quality_ssim_chart_ = new QChartView(quality_ssim_chart_object_);
+    quality_ssim_chart_->setMinimumHeight(160);
+    quality_ssim_chart_->setRenderHint(QPainter::Antialiasing);
+    layout->addWidget(quality_ssim_chart_);
+
+    // 明细表
+    quality_table_ = new QTableWidget(0, 4, quality_tab_);
+    quality_table_->setHorizontalHeaderLabels({tr("帧序号"), tr("时间戳"), tr("PSNR(dB)"), tr("SSIM")});
+    quality_table_->verticalHeader()->setVisible(false);
+    quality_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    quality_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    quality_table_->horizontalHeader()->setStretchLastSection(true);
+    quality_table_->setMinimumHeight(160);
+    layout->addWidget(quality_table_);
+
+    QPushButton* export_btn = new QPushButton(tr("导出质量 CSV"), quality_tab_);
+    connect(export_btn, &QPushButton::clicked, this, &AnalysisPanel::OnExportQualityCsv);
+    layout->addWidget(export_btn, 0, Qt::AlignRight);
+
+    AddPageWithScroll(quality_tab_, tr("质量评估"));
+}
+
+void AnalysisPanel::ResetQualityUi() {
+    quality_records_.clear();
+    quality_table_synced_count_ = 0;
+    quality_table_->setRowCount(0);
+    quality_psnr_series_->clear();
+    quality_ssim_series_->clear();
+    quality_psnr_axis_x_->setRange(0, 1);
+    quality_ssim_axis_x_->setRange(0, 1);
+}
+
+void AnalysisPanel::OnSelectReferenceClicked() {
+    const QString filename = QFileDialog::getOpenFileName(this, tr("选择参考视频"),
+        QString(), tr("视频文件 (*.mp4 *.mkv *.avi *.mov *.ts *.webm *.flv);;所有文件 (*.*)"));
+    if (filename.isEmpty()) return;
+    quality_ref_path_ = filename.toStdString();
+    quality_ref_label_->setText(tr("参考视频: %1").arg(filename.section('/', -1)));
+    quality_summary_label_->setText(tr("已选择参考视频，点击“开始评估”进行比较。"));
+}
+
+void AnalysisPanel::OnStartQualityClicked() {
+    if (quality_running_) return;
+    if (quality_main_path_.empty()) {
+        QMessageBox::information(this, tr("提示"),
+            tr("请先打开一个主视频（当前未加载任何文件）。"));
+        return;
+    }
+    if (quality_ref_path_.empty()) {
+        QMessageBox::information(this, tr("提示"), tr("请先选择参考视频。"));
+        return;
+    }
+    ResetQualityUi();
+    quality_running_ = true;
+    quality_cancel_button_->setEnabled(true);
+    quality_start_button_->setEnabled(false);
+    quality_select_ref_button_->setEnabled(false);
+    quality_progress_->setVisible(true);
+    quality_progress_->setTextVisible(true);
+    quality_summary_label_->setText(tr("正在评估，请稍候..."));
+
+    // 在工作线程中运行评估，避免阻塞 UI。
+    analyzer::QualityAnalyzer* analyzer = &quality_analyzer_;
+    const std::string main_path = quality_main_path_;
+    const std::string ref_path = quality_ref_path_;
+
+    if (quality_thread_.joinable()) quality_thread_.join();
+    quality_thread_ = std::thread([this, analyzer, main_path, ref_path]() {
+        analyzer->Run(
+            main_path, ref_path,
+            [this](int cur, int) {
+                QMetaObject::invokeMethod(this, &AnalysisPanel::OnQualityProgress,
+                                          Qt::QueuedConnection, cur);
+            },
+            [this](const analyzer::QualityFrameResult& fr) {
+                QMetaObject::invokeMethod(this, &AnalysisPanel::OnQualityFrameResult,
+                                          Qt::QueuedConnection, fr);
+            },
+            [this](const analyzer::QualitySummary& sum) {
+                QMetaObject::invokeMethod(this, &AnalysisPanel::OnQualitySummary,
+                                          Qt::QueuedConnection, sum);
+            });
+    });
+}
+
+void AnalysisPanel::OnCancelQualityClicked() {
+    if (!quality_running_) return;
+    quality_analyzer_.cancel_ = true;
+    quality_summary_label_->setText(tr("正在取消..."));
+}
+
+void AnalysisPanel::OnQualityProgress(int current) {
+    quality_progress_->setFormat(tr("已比较 %1 帧").arg(current));
+}
+
+void AnalysisPanel::OnQualityFrameResult(const analyzer::QualityFrameResult& result) {
+    quality_records_.push_back(result);
+    quality_table_dirty_ = true;
+    if (update_timer_) update_timer_->start(kUiFlushIntervalMs);
+}
+
+void AnalysisPanel::FlushPendingQualityTable() {
+    if (!quality_table_dirty_) return;
+    quality_table_dirty_ = false;
+    const size_t total = quality_records_.size();
+    for (size_t i = quality_table_synced_count_; i < total; ++i) {
+        AppendQualityRow(quality_records_[i]);
+    }
+    quality_table_synced_count_ = total;
+    UpdateQualityCharts();
+}
+
+void AnalysisPanel::AppendQualityRow(const analyzer::QualityFrameResult& result) {
+    const int row = quality_table_->rowCount();
+    quality_table_->insertRow(row);
+    SetTableItemText(quality_table_, row, 0, QString::number(result.frame_index));
+    SetTableItemText(quality_table_, row, 1, theme::font::formatTime(static_cast<int>(result.timestamp * 1000)));
+    SetTableItemText(quality_table_, row, 2, QString::number(result.psnr, 'f', 2));
+    SetTableItemText(quality_table_, row, 3, QString::number(result.ssim, 'f', 4));
+}
+
+void AnalysisPanel::UpdateQualityCharts() {
+    quality_psnr_series_->clear();
+    quality_ssim_series_->clear();
+    const int n = static_cast<int>(quality_records_.size());
+    for (int i = 0; i < n; ++i) {
+        quality_psnr_series_->append(i, quality_records_[i].psnr);
+        quality_ssim_series_->append(i, quality_records_[i].ssim);
+    }
+    if (n > 0) {
+        quality_psnr_axis_x_->setRange(0, n - 1);
+        quality_ssim_axis_x_->setRange(0, n - 1);
+    }
+}
+
+void AnalysisPanel::OnQualitySummary(const analyzer::QualitySummary& summary) {
+    quality_running_ = false;
+    quality_progress_->setVisible(false);
+    quality_cancel_button_->setEnabled(false);
+    quality_start_button_->setEnabled(true);
+    quality_select_ref_button_->setEnabled(true);
+    if (quality_thread_.joinable()) quality_thread_.join();
+
+    if (!summary.ok) {
+        quality_summary_label_->setText(tr("评估失败: %1").arg(QString::fromStdString(summary.error)));
+        return;
+    }
+    quality_summary_label_->setText(
+        tr("比较 %1 帧 | 平均 PSNR %2 dB | 最低 PSNR %3 dB (帧 %4) | 平均 SSIM %5 | 最低 SSIM %6 (帧 %7)")
+            .arg(summary.compared_frames)
+            .arg(QString::number(summary.mean_psnr, 'f', 2))
+            .arg(QString::number(summary.min_psnr, 'f', 2)).arg(summary.min_psnr_frame)
+            .arg(QString::number(summary.mean_ssim, 'f', 4))
+            .arg(QString::number(summary.min_ssim, 'f', 4)).arg(summary.min_ssim_frame));
+}
+
+void AnalysisPanel::OnExportQualityCsv() {
+    if (quality_records_.empty()) {
+        QMessageBox::information(this, tr("提示"), tr("当前没有可导出的质量数据。"));
+        return;
+    }
+    const QString filename = QFileDialog::getSaveFileName(this, tr("导出质量 CSV"),
+        QString::fromStdString(current_video_path_).section('/', -1) + "_quality.csv",
+        tr("CSV 文件 (*.csv)"));
+    if (filename.isEmpty()) return;
+    QFile file(filename);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("错误"), tr("无法打开文件: ") + filename);
+        return;
+    }
+    QTextStream stream(&file);
+    stream.setEncoding(QStringConverter::Utf8);
+    stream << "\xEF\xBB\xBF";
+    stream << "frame_index,timestamp_seconds,psnr_db,ssim\n";
+    for (const auto& r : quality_records_) {
+        stream << r.frame_index << "," << QString::number(r.timestamp, 'f', 3) << ","
+               << QString::number(r.psnr, 'f', 4) << "," << QString::number(r.ssim, 'f', 6) << "\n";
+    }
+    file.close();
+    QMessageBox::information(this, tr("成功"), tr("已导出 %1 帧质量数据到:\n%2")
+        .arg(quality_records_.size()).arg(filename));
 }
 
 } // namespace ui

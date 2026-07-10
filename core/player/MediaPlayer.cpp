@@ -135,6 +135,8 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     should_stop_ = false;
     video_frame_index_ = 0;
     macroblock_frame_index_ = 0;
+    scene_change_frame_index_ = 0;
+    scene_change_analyzer_.Reset();
     audio_frame_index_ = 0;
     packet_index_ = 0;
     analysis_event_index_ = 0;
@@ -737,6 +739,19 @@ void MediaPlayer::DecodeThread() {
                             } catch (const std::exception& e) {
                                 LOG_ERROR("宏块分析失败: " + std::string(e.what()));
                             }
+                        }
+                    }
+
+                    // 场景切换检测: 逐帧计算灰度直方图, 与上一帧比较巴氏距离。
+                    // 独立于"直方图"开关, 仅在本开关开启时计算, 避免无谓开销。
+                    if (scene_change_analysis_enabled_) {
+                        try {
+                            auto hist = frame_analyzer_.ComputeHistogram(frame_data);
+                            auto sc = scene_change_analyzer_.Feed(
+                                scene_change_frame_index_++, frame_data.timestamp, hist.gray_channel);
+                            if (sc) emit SceneChangeReady(*sc);
+                        } catch (const std::exception& e) {
+                            LOG_ERROR("场景切换检测失败: " + std::string(e.what()));
                         }
                     }
                     if (analysis_enabled_) {

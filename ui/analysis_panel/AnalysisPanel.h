@@ -15,6 +15,7 @@
 #include <QPushButton>
 #include <QTextEdit>
 #include <QTableWidget>
+#include <QProgressBar>
 #include <QTimer>
 #include <QComboBox>
 #include <QCheckBox>
@@ -27,6 +28,9 @@
 #include <deque>
 #include <vector>
 #include <string>
+#include <thread>
+#include <atomic>
+#include <memory>
 
 #include "core/analyzer/StreamAnalyzer.h"
 #include "core/analyzer/FrameAnalyzer.h"
@@ -39,6 +43,8 @@
 #include "core/model/EbmlInfo.h"
 #include "core/model/ContainerStructureInfo.h"
 #include "core/model/MacroblockInfo.h"
+#include "core/analyzer/SceneChangeAnalyzer.h"
+#include "core/analyzer/QualityAnalyzer.h"
 
 namespace videoeye {
 namespace ui {
@@ -61,7 +67,9 @@ public:
         AudioLoudness, // 音频响度监测
         Histogram,     // 直方图
         ContainerStructure,  // 文件结构分析
-        Macroblock     // 宏块分析 (运动矢量/块统计)
+        Macroblock,    // 宏块分析 (运动矢量/块统计)
+        SceneChange,   // 场景切换检测 (镜头边界)
+        Quality        // 质量评估 (PSNR/SSIM, 需参考视频)
     };
 
     explicit AnalysisPanel(QWidget* parent = nullptr);
@@ -77,8 +85,11 @@ public:
     // 检查某个分析功能是否启用
     bool IsFeatureEnabled(AnalysisFeature feature) const;
     
-    // 设置当前视频文件路径 (供导出报告使用)
-    void SetCurrentVideoPath(const QString& path) { current_video_path_ = path.toStdString(); }
+    // 设置当前视频文件路径 (供导出报告 / 质量评估主视频)
+    void SetCurrentVideoPath(const QString& path) {
+        current_video_path_ = path.toStdString();
+        quality_main_path_ = path.toStdString();
+    }
     
     // 重新发射所有启用状态的开关信号 (用于文件打开后同步播放器状态)
     void EmitInitialFeatureStates();
@@ -107,6 +118,13 @@ public slots:
     void OnContainerStructureReady(const model::ContainerStructureResult& result);
     void UpdateAudioLoudness(const model::AudioVisualizationFrame& frame);
     void UpdateMacroblockInfo(const model::MacroblockFrameAnalysis& analysis);
+    void OnSceneChangeDetected(const analyzer::SceneChangeResult& result);
+    void OnQualityFrameResult(const analyzer::QualityFrameResult& result);
+    void OnQualityProgress(int current);
+    void OnQualitySummary(const analyzer::QualitySummary& summary);
+    void OnSelectReferenceClicked();
+    void OnStartQualityClicked();
+    void OnCancelQualityClicked();
     
     // 导出报告
     void OnExportReport();
@@ -202,6 +220,8 @@ private:
     void SetupHistogramTab();
     void SetupContainerStructureTab();
     void SetupMacroblockTab();
+    void SetupSceneChangeTab();
+    void SetupQualityTab();
     void RebuildFrameTable();
     void RebuildGopTable();
     void RebuildAudioFrameTable();
@@ -249,6 +269,20 @@ private:
     void OnFrameFilterChanged();
     void RefreshMacroblockUi();
     void OnExportMacroblockCsv();
+
+    // 场景切换检测
+    void FlushPendingSceneChangeTable();
+    void AppendSceneChangeRow(const analyzer::SceneChangeResult& result);
+    void UpdateSceneChangeChart();
+    void UpdateSceneChangeSummary();
+    void OnExportSceneChangeCsv();
+
+    // 质量评估
+    void FlushPendingQualityTable();
+    void AppendQualityRow(const analyzer::QualityFrameResult& result);
+    void UpdateQualityCharts();
+    void OnExportQualityCsv();
+    void ResetQualityUi();
     
     // 更新图表
     void UpdateBitrateChart(const analyzer::StreamStats& stats);
@@ -343,6 +377,48 @@ private:
     QPushButton* export_macroblock_csv_button_;
     model::MacroblockFrameAnalysis current_macroblock_analysis_;
     bool macroblock_dirty_ = false;
+
+    // 场景切换检测标签页
+    QWidget* scene_change_tab_;
+    QLabel* scene_change_summary_label_;
+    QTableWidget* scene_change_table_;
+    QChartView* scene_change_chart_;
+    QChart* scene_change_chart_object_;
+    QBarSeries* scene_change_series_;
+    QBarSet* scene_change_bar_set_;
+    QValueAxis* scene_change_axis_x_;
+    QValueAxis* scene_change_axis_y_;
+    std::vector<analyzer::SceneChangeResult> scene_change_records_;
+    bool scene_change_table_dirty_ = false;
+    size_t scene_change_table_synced_count_ = 0;
+
+    // 质量评估标签页
+    QWidget* quality_tab_;
+    QLabel* quality_summary_label_;
+    QLabel* quality_ref_label_;
+    QChartView* quality_psnr_chart_;
+    QChartView* quality_ssim_chart_;
+    QChart* quality_psnr_chart_object_;
+    QChart* quality_ssim_chart_object_;
+    QLineSeries* quality_psnr_series_;
+    QLineSeries* quality_ssim_series_;
+    QValueAxis* quality_psnr_axis_x_;
+    QValueAxis* quality_psnr_axis_y_;
+    QValueAxis* quality_ssim_axis_x_;
+    QValueAxis* quality_ssim_axis_y_;
+    QTableWidget* quality_table_;
+    QPushButton* quality_select_ref_button_;
+    QPushButton* quality_start_button_;
+    QPushButton* quality_cancel_button_;
+    QProgressBar* quality_progress_;
+    std::vector<analyzer::QualityFrameResult> quality_records_;
+    bool quality_table_dirty_ = false;
+    size_t quality_table_synced_count_ = 0;
+    std::string quality_main_path_;
+    std::string quality_ref_path_;
+    analyzer::QualityAnalyzer quality_analyzer_;
+    std::thread quality_thread_;
+    std::atomic<bool> quality_running_{false};
     
     // 统一文件结构分析标签页
     QWidget* container_tab_;
@@ -423,10 +499,18 @@ private:
     std::deque<qreal> bitrate_chart_values_;
     std::deque<qreal> fps_chart_values_;
     std::deque<qreal> sync_chart_values_;
-    
+
+    bool scene_change_dirty_ = false;
+    bool quality_dirty_ = false;
+
     // 当前视频文件路径 (供导出报告使用)
     std::string current_video_path_;
 };
 
 } // namespace ui
 } // namespace videoeye
+
+// 注意: 跨线程信号/槽传递的元类型注册统一在 AnalysisPanel::SetupUI 中
+// 通过 qRegisterMetaType<T>() 完成。Qt 6.8 的 QMetaType::fromType<T>() 会自动
+// 为普通结构体生成元类型接口, 无需 (且不应) 在此处使用 Q_DECLARE_METATYPE,
+// 否则会与 moc 触发的自动注册冲突 (C2908 "QMetaTypeId 已实例化")。

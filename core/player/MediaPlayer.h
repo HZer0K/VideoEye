@@ -32,6 +32,7 @@ extern "C" {
 #include "core/analyzer/FrameAnalyzer.h"
 #include "core/analyzer/ContainerStructureAnalyzer.h"
 #include "core/analyzer/MacroblockAnalyzer.h"
+#include "core/analyzer/SceneChangeAnalyzer.h"
 #include "core/model/ContainerStructureInfo.h"
 #include "core/model/MacroblockInfo.h"
 
@@ -76,6 +77,7 @@ public:
     void SetTimelineAnalysisEnabled(bool enable) { timeline_analysis_enabled_ = enable; }
     void SetContainerStructureEnabled(bool enable) { container_structure_enabled_ = enable; }
     void SetMacroblockAnalysisEnabled(bool enable);
+    void SetSceneChangeAnalysisEnabled(bool enable) { scene_change_analysis_enabled_ = enable; }
 
     // 硬件解码
     void SetHardwareDecodingEnabled(bool enable) { hw_decoding_enabled_ = enable; }
@@ -122,6 +124,7 @@ signals:
     void AudioLevelReady(double level, double timestamp_seconds);
     void ContainerStructureReady(const videoeye::model::ContainerStructureResult& result);
     void MacroblockInfoReady(const videoeye::model::MacroblockFrameAnalysis& analysis);
+    void SceneChangeReady(const analyzer::SceneChangeResult& result);
     void VideoFrameExportStarted(int total_frames);
     void VideoFrameExportProgress(int exported_frames);
     void VideoFrameExportFinished(const QString& output_dir);
@@ -173,6 +176,7 @@ private:
     analyzer::FrameAnalyzer frame_analyzer_;
     analyzer::ContainerStructureAnalyzer container_analyzer_;
     analyzer::MacroblockAnalyzer macroblock_analyzer_;
+    analyzer::SceneChangeAnalyzer scene_change_analyzer_;
     StreamInfoExtractor stream_info_extractor_;
     AudioVisualizer audio_visualizer_;
     std::unique_ptr<VideoFrameExporter> frame_exporter_;
@@ -188,6 +192,7 @@ private:
     bool timeline_analysis_enabled_ = false;
     bool container_structure_enabled_ = true;
     bool macroblock_analysis_enabled_ = false;
+    bool scene_change_analysis_enabled_ = false;
     bool hw_decoding_enabled_ = false; // 默认关闭硬件解码: Vulkan/D3D11 等 HW 路径在部分 Windows 驱动下会导致"打开视频即闪退"(FFmpeg 内部段错误, 无法被 C++ 异常捕获, 进程直接终止)。软件解码稳定可靠; 如确需 HW 解码性能, 可显式调用 SetHardwareDecodingEnabled(true), 但仍建议保留下方解码线程的异常兜底。
     bool vulkan_rendering_enabled_ = false;  // Vulkan 渲染开关（阶段2）
     
@@ -195,6 +200,7 @@ private:
     int analysis_frame_counter_ = 0;
     int video_frame_index_ = 0;
     int macroblock_frame_index_ = 0;
+    int scene_change_frame_index_ = 0;
     int audio_frame_index_ = 0;
     int packet_index_ = 0;
     int analysis_event_index_ = 0;
