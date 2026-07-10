@@ -93,7 +93,10 @@ core/
 │   ├── FlvStructureAnalyzer.h/cpp     # FLV Tag 结构解析
 │   ├── TsStructureAnalyzer.h/cpp      # MPEG-TS 结构解析
 │   ├── AsfStructureAnalyzer.h/cpp     # ASF/WMV Object 结构解析
-│   └── OggStructureAnalyzer.h/cpp     # OGG Page 结构解析
+│   ├── OggStructureAnalyzer.h/cpp     # OGG Page 结构解析
+│   ├── MacroblockAnalyzer.h/cpp       # 宏块分析 (MV/码块类型)
+│   ├── SceneChangeAnalyzer.h/cpp      # 场景切换检测 (灰度直方图 Bhattacharyya)
+│   └── QualityAnalyzer.h/cpp          # 质量评估 (PSNR/SSIM, FFmpeg+OpenCV)
 │
 └── model/              # 数据模型
     ├── FrameData.h/cpp    # 帧数据结构
@@ -123,7 +126,7 @@ ui/
 │   └── VulkanVideoWidget.h/cpp   # Vulkan 视频渲染 + 叠加信息层 ⭐
 │
 ├── analysis_panel/               # 分析面板
-│   └── AnalysisPanel.h/cpp       # QStackedWidget + 侧边栏导航 (11 个分析模块) ⭐
+│   └── AnalysisPanel.h/cpp       # QStackedWidget + 侧边栏导航 (13 个分析模块) ⭐
 │
 └── app/                          # 应用入口
     └── main.cpp                  # main() 函数

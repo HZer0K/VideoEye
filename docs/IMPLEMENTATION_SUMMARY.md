@@ -34,6 +34,9 @@ VideoEye 2.0 已完成从 MFC 旧架构到现代化 Qt6 + C++17 跨平台架构�
   - AsfStructureAnalyzer — ASF/WMV Object 解析
   - OggStructureAnalyzer — OGG Page 解析
   - FormatDetector — 魔数检测 + 扩展名回退
+- ✅ **MacroblockAnalyzer** — 宏块分析 (MV/码块类型)
+- ✅ **SceneChangeAnalyzer** — 场景切换检测 (灰度直方图 Bhattacharyya 距离)
+- ✅ **QualityAnalyzer** — 质量评估 (PSNR/SSIM, FFmpeg 软解 + OpenCV)
 
 #### 数据模型 (core/model/)
 - ✅ FrameData / StreamInfo / PacketInfo / SyncSample / TimelineEvent
@@ -55,7 +58,7 @@ VideoEye 2.0 已完成从 MFC 旧架构到现代化 Qt6 + C++17 跨平台架构�
 
 #### 分析面板 (ui/analysis_panel/)
 - ✅ **AnalysisPanel.h/cpp** — QStackedWidget 模式，左侧导航列表切换
-- 11 个分析模块: 媒体信息 / 流分析 / 视频帧 / 音频帧 / 数据包 / 异常事件 / 同步分析 / 时间轴 / 音频响度 / 直方图 / 容器结构
+- 13 个分析模块: 媒体信息 / 流分析 / 视频帧 / 音频帧 / 数据包 / 异常事件 / 同步分析 / 时间轴 / 音频响度 / 直方图 / 容器结构 / 场景切换 / 质量评估
 - 每个模块独立启用开关
 
 ### 3. 工具层 (utils/)
