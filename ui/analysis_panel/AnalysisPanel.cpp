@@ -93,9 +93,7 @@ void AnalysisPanel::SetupUI() {
     SetupStreamTab();
     SetupFrameTab();
     SetupPacketTab();
-    SetupEventTab();
-    SetupSyncTab();
-    SetupTimelineTab();
+    SetupEventAnalysisTab();
     SetupAudioLoudnessTab();
     SetupHistogramTab();
     SetupContainerStructureTab();
@@ -471,8 +469,6 @@ void AnalysisPanel::SetupEventTab() {
     table_layout->addWidget(event_table_);
     layout->addWidget(table_group);
 
-    AddPageWithScroll(event_tab_, tr("异常事件"));
-
     connect(export_event_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportEventCsv);
 }
 
@@ -524,8 +520,6 @@ void AnalysisPanel::SetupSyncTab() {
     sync_table_->setMinimumHeight(120);
     table_layout->addWidget(sync_table_);
     layout->addWidget(table_group);
-
-    AddPageWithScroll(sync_tab_, tr("同步分析"));
 
     sync_series_ = new QLineSeries(this);
     QChart* sync_chart_object = new QChart();
@@ -596,8 +590,6 @@ void AnalysisPanel::SetupTimelineTab() {
     table_layout->addWidget(timeline_table_);
     layout->addWidget(table_group);
 
-    AddPageWithScroll(timeline_tab_, tr("统一时间轴"));
-
     timeline_video_series_ = new QLineSeries(this);
     timeline_video_series_->setName(tr("视频关键帧"));
     timeline_video_series_->setPointsVisible(true);
@@ -630,6 +622,25 @@ void AnalysisPanel::SetupTimelineTab() {
     timeline_chart_->setRenderHint(QPainter::Antialiasing);
 
     connect(export_timeline_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportTimelineCsv);
+}
+
+void AnalysisPanel::SetupEventAnalysisTab() {
+    event_analysis_tab_ = new QWidget();
+    QVBoxLayout* root_layout = new QVBoxLayout(event_analysis_tab_);
+    root_layout->setContentsMargins(0, 0, 0, 0);
+
+    event_analysis_sub_tabs_ = new QTabWidget(event_analysis_tab_);
+    root_layout->addWidget(event_analysis_sub_tabs_);
+
+    SetupEventTab();
+    SetupSyncTab();
+    SetupTimelineTab();
+
+    event_analysis_sub_tabs_->addTab(event_tab_, tr("异常事件"));
+    event_analysis_sub_tabs_->addTab(timeline_tab_, tr("时间轴"));
+    event_analysis_sub_tabs_->addTab(sync_tab_, tr("同步分析"));
+
+    AddPageWithScroll(event_analysis_tab_, tr("事件与时间轴"));
 }
 
 void AnalysisPanel::SetupAudioLoudnessTab() {

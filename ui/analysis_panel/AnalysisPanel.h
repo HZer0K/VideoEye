@@ -194,6 +194,7 @@ private:
     void SetupStreamTab();
     void SetupFrameTab();
     void SetupPacketTab();
+    void SetupEventAnalysisTab();
     void SetupEventTab();
     void SetupSyncTab();
     void SetupTimelineTab();
@@ -289,6 +290,9 @@ private:
     QTableWidget* packet_table_;
     QPushButton* export_packet_csv_button_;
     int packet_filter_mode_ = -1;  // -1=全部, 0=视频流, 1=音频流, 2=其他流
+
+    QWidget* event_analysis_tab_;
+    QTabWidget* event_analysis_sub_tabs_;
 
     QWidget* event_tab_;
     QLabel* event_summary_label_;
