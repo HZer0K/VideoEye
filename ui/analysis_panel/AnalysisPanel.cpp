@@ -3221,6 +3221,7 @@ void AnalysisPanel::SetupSceneChangeTab() {
 void AnalysisPanel::OnSceneChangeDetected(const analyzer::SceneChangeResult& result) {
     scene_change_records_.push_back(result);
     scene_change_table_dirty_ = true;
+    scene_change_dirty_ = true;
     if (update_timer_) update_timer_->start(kUiFlushIntervalMs);
 }
 
@@ -3478,6 +3479,7 @@ void AnalysisPanel::OnQualityProgress(int current) {
 void AnalysisPanel::OnQualityFrameResult(const analyzer::QualityFrameResult& result) {
     quality_records_.push_back(result);
     quality_table_dirty_ = true;
+    quality_dirty_ = true;
     if (update_timer_) update_timer_->start(kUiFlushIntervalMs);
 }
 
