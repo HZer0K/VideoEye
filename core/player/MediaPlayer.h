@@ -75,7 +75,7 @@ public:
     void SetSyncAnalysisEnabled(bool enable) { sync_analysis_enabled_ = enable; }
     void SetTimelineAnalysisEnabled(bool enable) { timeline_analysis_enabled_ = enable; }
     void SetContainerStructureEnabled(bool enable) { container_structure_enabled_ = enable; }
-    void SetMacroblockAnalysisEnabled(bool enable) { macroblock_analysis_enabled_ = enable; }
+    void SetMacroblockAnalysisEnabled(bool enable);
 
     // 硬件解码
     void SetHardwareDecodingEnabled(bool enable) { hw_decoding_enabled_ = enable; }

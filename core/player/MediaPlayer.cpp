@@ -261,7 +261,9 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
 
         bool hw_initialized = false;
         // 尝试硬件解码
-        if (hw_decoding_enabled_) {
+        // 宏块分析依赖软件解码导出的运动矢量 side data, 硬件解码器不产出该数据,
+        // 因此启用宏块分析时直接走软件解码路径。
+        if (hw_decoding_enabled_ && !macroblock_analysis_enabled_) {
 #ifdef HAVE_VULKAN
             // 优先尝试 Vulkan (如果 VulkanContext 可用)
             if (!vulkan_ctx_) {
@@ -326,6 +328,10 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
                 video_codec_ctx->pkt_timebase = video_stream->time_base;
                 video_codec_ctx->time_base = video_stream->time_base;
             }
+            // 导出运动矢量 side data (供宏块分析使用)。
+            // 注意: 软件解码才会产出 AV_FRAME_DATA_MOTION_VECTORS; 硬件解码
+            // (Vulkan/D3D11/CUDA) 不导出该 side data, 宏块分析面板将始终为空。
+            video_codec_ctx->export_side_data |= AV_CODEC_EXPORT_DATA_MVS;
             ret = avcodec_open2(video_codec_ctx, video_codec, nullptr);
             if (ret < 0) {
                 avcodec_free_context(&video_codec_ctx);
@@ -477,6 +483,30 @@ void MediaPlayer::EnableAnalysis(bool enable) {
 }
 
 void MediaPlayer::SetFrameTypeAnalysisEnabled(bool enable) { frame_type_analysis_enabled_ = enable; }
+
+void MediaPlayer::SetMacroblockAnalysisEnabled(bool enable) {
+    bool was_enabled = macroblock_analysis_enabled_;
+    macroblock_analysis_enabled_ = enable;
+    if (enable && !was_enabled) {
+        LOG_INFO("宏块分析已启用");
+        // 运动矢量仅在软件解码下由 FFmpeg 导出; 硬件解码 (Vulkan/D3D11/CUDA) 不产出
+        // AV_FRAME_DATA_MOTION_VECTORS side data。若当前正在使用硬件解码, 则重新以
+        // 软件解码打开当前文件并恢复播放位置, 否则宏块分析面板将始终为空。
+        if (video_decoder_ && video_decoder_->IsHardwareDecoding() && !current_url_.isEmpty()) {
+            LOG_WARN("当前为硬件解码, 无法导出运动矢量。自动切换为软件解码以启用宏块分析...");
+            int resume_ms = current_position_ms_.load();
+            bool was_playing = (state_.load() == model::PlayerState::Playing);
+            QString url = current_url_;
+            if (Open(url)) {
+                if (resume_ms > 0) Seek(resume_ms);
+                if (was_playing) Play();
+            }
+        }
+    } else if (!enable && was_enabled) {
+        LOG_INFO("宏块分析已禁用");
+    }
+}
+
 void MediaPlayer::SetHistogramEnabled(bool enable) { histogram_enabled_ = enable; }
 analyzer::StreamStats MediaPlayer::GetCurrentStats() const { return stream_analyzer_.GetStats(); }
 
