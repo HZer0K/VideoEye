@@ -193,7 +193,6 @@ private:
     void AddPageWithScroll(QWidget* tab_widget, const QString& title);
     void SetupStreamTab();
     void SetupFrameTab();
-    void SetupAudioFrameTab();
     void SetupPacketTab();
     void SetupEventTab();
     void SetupSyncTab();
@@ -217,6 +216,8 @@ private:
     void UpdateTimelineSummary();
     QString FrameTypeToString(int frame_type) const;
     QString PacketFlagsToString(int flags) const;
+    QString PacketStreamTypeToName(int type) const;
+    bool PacketMatchesFilter(const PacketRecord& record) const;
     bool MatchesFrameFilter(const VideoFrameRecord& record) const;
     void FlushPendingUiUpdates();
     void FlushPendingFrameTableUpdates();
@@ -267,26 +268,27 @@ private:
     // 流分析标签页
     QWidget* stream_tab_;
     QTableWidget* stats_table_;
-    QChartView* bitrate_chart_;
-    QChartView* fps_chart_;
     QChartView* gop_chart_;
 
     QWidget* frame_tab_;
+    QTabWidget* frame_sub_tabs_;
     QComboBox* frame_filter_combo_;
     QLabel* frame_summary_label_;
     QTableWidget* frame_table_;
     QPushButton* export_frame_csv_button_;
     QTableWidget* gop_table_;
 
-    QWidget* audio_frame_tab_;
+    QWidget* audio_frame_sub_;
     QLabel* audio_frame_summary_label_;
     QTableWidget* audio_frame_table_;
     QPushButton* export_audio_frame_csv_button_;
 
     QWidget* packet_tab_;
     QLabel* packet_summary_label_;
+    QComboBox* packet_filter_combo_;
     QTableWidget* packet_table_;
     QPushButton* export_packet_csv_button_;
+    int packet_filter_mode_ = -1;  // -1=全部, 0=视频流, 1=音频流, 2=其他流
 
     QWidget* event_tab_;
     QLabel* event_summary_label_;
@@ -368,18 +370,10 @@ private:
     QPushButton* export_histogram_button_;
     
     // 图表数据系列
-    QChart* bitrate_chart_object_;
-    QChart* fps_chart_object_;
-    QLineSeries* bitrate_series_;
-    QLineSeries* fps_series_;
     QLineSeries* sync_series_;
     QLineSeries* timeline_video_series_;
     QLineSeries* timeline_audio_series_;
     QLineSeries* timeline_event_series_;
-    QValueAxis* bitrate_axis_x_;
-    QValueAxis* bitrate_axis_y_;
-    QValueAxis* fps_axis_x_;
-    QValueAxis* fps_axis_y_;
     QValueAxis* sync_axis_x_;
     QValueAxis* sync_axis_y_;
     QValueAxis* timeline_axis_x_;
@@ -422,7 +416,6 @@ private:
     size_t event_table_synced_record_count_ = 0;
     size_t sync_table_synced_record_count_ = 0;
     size_t timeline_table_synced_record_count_ = 0;
-    int stream_chart_sample_index_ = 0;
     std::deque<qreal> bitrate_chart_values_;
     std::deque<qreal> fps_chart_values_;
     std::deque<qreal> sync_chart_values_;

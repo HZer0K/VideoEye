@@ -169,12 +169,11 @@ void MainWindow::SetupSidebar() {
     sidebar_->setSpacing(0);
     sidebar_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     
-    // 导航项 (与设计稿一致: 媒体信息 + 10个分析功能)
+    // 导航项 (媒体信息 + 10个分析功能: 流概览/帧分析/包/事件/同步/时间轴/响度/直方图/结构/宏块)
     QStringList nav_items = {
         tr("媒体信息"),
         tr("流分析"),
-        tr("视频帧"),
-        tr("音频帧"),
+        tr("帧分析"),
         tr("数据包"),
         tr("异常事件"),
         tr("同步分析"),
