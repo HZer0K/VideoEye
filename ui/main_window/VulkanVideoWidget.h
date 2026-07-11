@@ -84,6 +84,8 @@ private:
     std::atomic<bool> init_running_{false};         // 后台初始化是否进行中
     std::thread init_thread_;                       // 后台初始化线程
     bool first_show_ = true;
+    int retry_count_ = 0;                           // 呈现支持未就绪时的延迟重试计数
+    static constexpr int kMaxRetries = 8;           // 最多重试次数 (~8 * 800ms ≈ 6.4s)
     VideoOverlayWidget* overlay_;  // 叠加层
 };
 

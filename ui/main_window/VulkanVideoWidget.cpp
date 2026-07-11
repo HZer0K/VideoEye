@@ -4,6 +4,7 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QResizeEvent>
+#include <QTimer>
 #include <QPainterPath>
 #include <QFont>
 #include <QFontMetrics>
@@ -235,7 +236,9 @@ void VulkanVideoWidget::TryInitializeVulkan() {
 #ifdef HAVE_VULKAN
         // 重量级 Vulkan 初始化放在后台线程, 避免阻塞 GUI 线程导致窗口无法显示。
         // 无论成功/失败/异常, 主窗口都不会卡死; 失败自动回退 CPU 显示。
-        // winId() 必须在 GUI 线程取值 (此处窗口已 realize/显示), 再传入后台线程使用。
+        // 窗口句柄必须在 GUI 线程取值 (此处窗口已 realize/显示), 再传入后台线程使用。
+        // 使用本 Widget 的 winId() 创建 Surface (真机已验证可见=是 且
+        // vkCreateWin32SurfaceKHR 成功); 不改用顶层窗口 HWND 以避免强制原生化的副作用。
         init_running_.store(true);
         WId handle = winId();
         int w = width(), h = height();
@@ -243,12 +246,12 @@ void VulkanVideoWidget::TryInitializeVulkan() {
         player::VulkanContext* c = vulkan_ctx_;
         QPointer<VulkanVideoWidget> self(this);
         init_thread_ = std::thread([self, r, c, handle, w, h]() {
+            // Initialize 是幂等的: 首次调用建 instance+surface+选设备; 若选设备失败
+            // (DWM 时机未就绪) 则 instance+surface 保留, 重试时跳过 CreateInstance
+            // 只重新查呈现支持 —— 避免二次 vkCreateInstance 在某些环境 fast-fail。
             bool ok = false;
             std::string err;
             try {
-                // 关键: 上下文的「建 Surface + 呈现感知选设备 + 建逻辑设备」也在此处完成。
-                // 窗口已显示, winId 已 realize, vkGetPhysicalDeviceSurfaceSupportKHR 才能
-                // 对该 Surface 正确返回呈现支持 (Optimus 笔记本 pre-show 会全部误报 false)。
                 if (c->IsValid() || c->Initialize(handle)) {
                     ok = r->Initialize(c, handle, w, h);
                 }
@@ -261,14 +264,33 @@ void VulkanVideoWidget::TryInitializeVulkan() {
             QMetaObject::invokeMethod(self, [self, r, ok, err]() {
                 if (!self) return;
                 self->init_running_.store(false);
+                // join 已完成的后台线程, 使 init_thread_ 可被下次重试安全赋值
+                if (self->init_thread_.joinable()) self->init_thread_.join();
                 if (ok && r->IsInitialized()) {
                     self->vulkan_active_.store(true);
                     LOG_INFO("VulkanVideoWidget: 渲染器初始化成功, GPU 直渲已启用");
-                } else {
-                    LOG_WARN("VulkanVideoWidget: 渲染器初始化失败, 回退到 CPU 显示"
-                             + (err.empty() ? std::string() : (" (" + err + ")")));
-                    self->vulkan_active_.store(false);
+                    return;
                 }
+                // 呈现支持未就绪 (DWM 合成时机/Optimus): 延迟重试。复用同一 context
+                // (instance+surface 保留), Initialize 幂等跳过 CreateInstance。
+                // 若达上限仍失败则干净回退 CPU, 应用仍可用。
+                if (self->retry_count_ < self->kMaxRetries) {
+                    self->retry_count_++;
+                    LOG_INFO("VulkanVideoWidget: 呈现支持未就绪, "
+                             "延迟重试 (" + std::to_string(self->retry_count_) + "/"
+                             + std::to_string(self->kMaxRetries) + ")");
+                    QTimer::singleShot(800, self, [self]() {
+                        if (!self || !self->isVisible()) {
+                            if (self) { self->retry_count_ = 0; self->first_show_ = true; }
+                            return;
+                        }
+                        self->TryInitializeVulkan();
+                    });
+                    return;
+                }
+                LOG_WARN("VulkanVideoWidget: 渲染器初始化失败 (重试耗尽), 回退到 CPU 显示"
+                         + (err.empty() ? std::string() : (" (" + err + ")")));
+                self->vulkan_active_.store(false);
                 self->first_show_ = false;
             }, Qt::QueuedConnection);
         });

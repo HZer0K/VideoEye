@@ -42,6 +42,28 @@ bool VulkanContext::Initialize(WId window_handle, const QString& app_name) {
         return true;
     }
 
+    // 重试路径: instance + surface 已在上一次部分初始化中创建 (SelectPhysicalDevice
+    // 因 DWM 合成时机未就绪而失败, 但 instance/surface 保留未销毁)。跳过
+    // CreateInstance/CreateSurface, 直接重试设备选择 —— 避免二次 vkCreateInstance
+    // 在某些无显示环境 (headless/沙箱) 触发 Vulkan loader fast-fail。
+    if (instance_ != VK_NULL_HANDLE && surface_ != VK_NULL_HANDLE) {
+        LOG_INFO("VulkanContext: 重试设备选择 (复用已有 instance+surface)");
+        if (!SelectPhysicalDevice()) {
+            LOG_INFO("VulkanContext: 仍无设备支持呈现, 渲染将回退 CPU");
+            return false;  // instance+surface 保留, 供后续重试
+        }
+        if (!CreateLogicalDevice()) {
+            LOG_INFO("Vulkan logical device creation failed (retry), HW decoding will use fallback");
+            Destroy();
+            return false;
+        }
+        valid_ = true;
+        auto caps = GetCapabilities();
+        LOG_INFO("Vulkan initialized (retry): " + caps.device_name.toStdString());
+        return true;
+    }
+
+    // 全新初始化
     if (!CreateInstance(app_name)) {
         LOG_INFO("Vulkan instance not available, HW decoding will use fallback");
         return false;
@@ -53,7 +75,7 @@ bool VulkanContext::Initialize(WId window_handle, const QString& app_name) {
     }
     if (!SelectPhysicalDevice()) {
         LOG_INFO("No suitable Vulkan physical device, HW decoding will use fallback");
-        Destroy();
+        // 不调 Destroy —— 保留 instance+surface 供重试 (DWM 合成时机问题可能稍后就绪)
         return false;
     }
     if (!CreateLogicalDevice()) {
@@ -200,10 +222,7 @@ bool VulkanContext::SelectPhysicalDevice() {
         for (uint32_t i = 0; i < qf_count; i++) {
             if (!(fams[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) continue;
             VkBool32 supported = VK_FALSE;
-            VkResult pr = vkGetPhysicalDeviceSurfaceSupportKHR(dev, i, surface_, &supported);
-            LOG_INFO(std::string("    队列族 ") + std::to_string(i) +
-                     " GRAPHICS 呈现支持 pr=" + std::to_string(pr) +
-                     " supported=" + (supported ? "TRUE" : "FALSE"));
+            vkGetPhysicalDeviceSurfaceSupportKHR(dev, i, surface_, &supported);
             if (supported) return i;
         }
         return UINT32_MAX;
