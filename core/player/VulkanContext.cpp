@@ -159,11 +159,24 @@ bool VulkanContext::CreateSurface(WId window_handle) {
     info.window = static_cast<xcb_window_t>(window_handle);
     return vkCreateXcbSurfaceKHR(instance, &info, nullptr, &surface_) == VK_SUCCESS;
 #elif defined(VK_USE_PLATFORM_WIN32_KHR)
+    HWND hwnd = reinterpret_cast<HWND>(window_handle);
+    // 诊断: 窗口此刻是否真的可见 (WS_VISIBLE 且 IsWindowVisible)。
+    // 若不可见, vkCreateWin32SurfaceKHR 能成功但 Surface 无 display 关联,
+    // 后续 vkGetPhysicalDeviceSurfaceSupportKHR 可能对所有设备返回 false。
+    LONG style = GetWindowLong(hwnd, GWL_STYLE);
+    bool visible = (style & WS_VISIBLE) != 0 && IsWindowVisible(hwnd);
+    LOG_INFO(std::string("VulkanContext: CreateSurface hwnd=") +
+             std::to_string(reinterpret_cast<uintptr_t>(hwnd)) +
+             " 可见=" + (visible ? "是" : "否") +
+             " WS_VISIBLE=" + ((style & WS_VISIBLE) ? "1" : "0"));
     VkWin32SurfaceCreateInfoKHR info{};
     info.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
     info.hinstance = GetModuleHandle(nullptr);
-    info.hwnd = reinterpret_cast<HWND>(window_handle);
-    return vkCreateWin32SurfaceKHR(instance, &info, nullptr, &surface_) == VK_SUCCESS;
+    info.hwnd = hwnd;
+    VkResult sr = vkCreateWin32SurfaceKHR(instance, &info, nullptr, &surface_);
+    LOG_INFO("VulkanContext: vkCreateWin32SurfaceKHR 返回=" + std::to_string(sr) +
+             (sr == VK_SUCCESS ? " (成功)" : " (失败)"));
+    return sr == VK_SUCCESS;
 #else
     LOG_ERROR("VulkanContext: 当前平台不支持创建 Vulkan Surface");
     return false;
@@ -187,7 +200,10 @@ bool VulkanContext::SelectPhysicalDevice() {
         for (uint32_t i = 0; i < qf_count; i++) {
             if (!(fams[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) continue;
             VkBool32 supported = VK_FALSE;
-            vkGetPhysicalDeviceSurfaceSupportKHR(dev, i, surface_, &supported);
+            VkResult pr = vkGetPhysicalDeviceSurfaceSupportKHR(dev, i, surface_, &supported);
+            LOG_INFO(std::string("    队列族 ") + std::to_string(i) +
+                     " GRAPHICS 呈现支持 pr=" + std::to_string(pr) +
+                     " supported=" + (supported ? "TRUE" : "FALSE"));
             if (supported) return i;
         }
         return UINT32_MAX;
