@@ -1,5 +1,6 @@
 #include "VulkanVideoWidget.h"
 #include "core/player/VulkanRenderer.h"
+#include "utils/Logger.h"
 #include <QPainter>
 #include <QPaintEvent>
 #include <QResizeEvent>
@@ -151,20 +152,14 @@ VulkanVideoWidget::VulkanVideoWidget(QWidget* parent)
 }
 
 VulkanVideoWidget::~VulkanVideoWidget() {
+    // 等待后台 Vulkan 初始化线程结束, 避免渲染器/上下文被析构时仍在使用
+    if (init_thread_.joinable()) init_thread_.join();
 }
 
-void VulkanVideoWidget::SetVulkanRenderer(player::VulkanRenderer* renderer) {
+void VulkanVideoWidget::SetVulkanRenderer(player::VulkanRenderer* renderer, player::VulkanContext* ctx) {
     renderer_ = renderer;
-#ifdef HAVE_VULKAN
-    if (renderer_ && isVisible() && first_show_) {
-        if (renderer_->Initialize(nullptr, winId(), width(), height())) {
-            vulkan_active_ = true;
-        }
-        first_show_ = false;
-    }
-#else
-    vulkan_active_ = false;
-#endif
+    vulkan_ctx_ = ctx;
+    // 实际 Initialize 延迟到 showEvent (原生窗口句柄 winId() 就绪时)
 }
 
 void VulkanVideoWidget::SetFallbackImage(const QImage& image) {
@@ -231,16 +226,57 @@ void VulkanVideoWidget::resizeEvent(QResizeEvent* event) {
     }
 }
 
+void VulkanVideoWidget::TryInitializeVulkan() {
+    if (vulkan_active_.load() || init_running_.load()) return;  // 已激活或进行中, 幂等
+    // first_show_ 仅在真正尝试初始化后才置 false, 因此若此时窗口尺寸无效
+    // (尺寸为 0, 例如布局尚未生效), 则不消费该次机会, 留待后续 showEvent/resize。
+    if (first_show_ && renderer_ && vulkan_ctx_ && vulkan_ctx_->IsValid() &&
+        width() > 0 && height() > 0) {
+#ifdef HAVE_VULKAN
+        // 重量级 Vulkan 初始化放在后台线程, 避免阻塞 GUI 线程导致窗口无法显示。
+        // 无论成功/失败/异常, 主窗口都不会卡死; 失败自动回退 CPU 显示。
+        init_running_.store(true);
+        WId handle = winId();
+        int w = width(), h = height();
+        player::VulkanRenderer* r = renderer_;
+        player::VulkanContext* c = vulkan_ctx_;
+        QPointer<VulkanVideoWidget> self(this);
+        init_thread_ = std::thread([self, r, c, handle, w, h]() {
+            bool ok = false;
+            std::string err;
+            try {
+                ok = r->Initialize(c, handle, w, h);
+            } catch (const std::exception& e) {
+                err = e.what();
+            } catch (...) {
+                err = "non-std exception";
+            }
+            // 切回 GUI 线程更新状态 (self 为 QPointer, 对象已销毁则自动跳过)
+            QMetaObject::invokeMethod(self, [self, r, ok, err]() {
+                if (!self) return;
+                self->init_running_.store(false);
+                if (ok && r->IsInitialized()) {
+                    self->vulkan_active_.store(true);
+                    LOG_INFO("VulkanVideoWidget: 渲染器初始化成功, GPU 直渲已启用");
+                } else {
+                    LOG_WARN("VulkanVideoWidget: 渲染器初始化失败, 回退到 CPU 显示"
+                             + (err.empty() ? std::string() : (" (" + err + ")")));
+                    self->vulkan_active_.store(false);
+                }
+                self->first_show_ = false;
+            }, Qt::QueuedConnection);
+        });
+#else
+        vulkan_active_.store(false);
+        first_show_ = false;
+#endif
+    }
+}
+
 void VulkanVideoWidget::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
-    // Vulkan 渲染器延迟到窗口显示后初始化（此时原生句柄已就绪）
-    if (first_show_ && renderer_) {
-#ifdef HAVE_VULKAN
-        // Note: VulkanContext must be set up externally before calling Initialize
-        // The actual initialization happens when MainWindow sets up the renderer
-#endif
-        first_show_ = false;
-    }
+    // Vulkan 渲染器延迟到窗口首次显示后初始化（此时原生窗口句柄 winId() 已就绪）
+    TryInitializeVulkan();
     if (overlay_) {
         overlay_->raise();
         overlay_->show();

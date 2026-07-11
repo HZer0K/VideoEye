@@ -3,6 +3,9 @@
 #include "ui/theme/AppTheme.h"
 #include "ui/dialogs/MediaExportDialog.h"
 #include "core/exporter/MediaExporter.h"
+#include "core/player/VulkanContext.h"
+#include "core/player/VulkanRenderer.h"
+#include "utils/Logger.h"
 #include "core/model/EbmlInfo.h"
 #include "core/model/ContainerStructureInfo.h"
 #include "core/model/AudioVisualizationFrame.h"
@@ -71,6 +74,7 @@ MainWindow::MainWindow(QWidget* parent)
     SetupMenuBar();
     SetupStatusBar();
     SetupConnections();
+    InitVulkan();
     UpdateMinimumWindowSize();
     audio_vis_timer_.start();
 
@@ -82,6 +86,36 @@ MainWindow::~MainWindow() {
     if (player_) {
         player_->Stop();
     }
+}
+
+void MainWindow::InitVulkan() {
+#ifdef HAVE_VULKAN
+    if (!player_ || !video_widget_) return;
+
+    // 创建共享 VulkanContext (渲染与可选 HW 解码共用)
+    // 需传入视频 Widget 的原生窗口句柄以提前创建可呈现 Surface (用于按呈现能力选设备)
+    vulkan_ctx_ = std::make_unique<player::VulkanContext>();
+    if (!vulkan_ctx_->Initialize(video_widget_->winId(), "VideoEye")) {
+        // 系统不支持 Vulkan (无驱动/loader), 安全降级为 CPU 渲染
+        LOG_WARN("Vulkan 不可用, 回退到 CPU 渲染");
+        vulkan_ctx_.reset();
+        return;
+    }
+
+    // 创建渲染器 (生命周期由 MainWindow 拥有)
+    vulkan_renderer_ = std::make_unique<player::VulkanRenderer>(this);
+
+    // 把渲染器/上下文挂载到视频 Widget 与播放器。
+    // 实际渲染管线 Initialize 延迟到 video_widget_ 首次 showEvent (原生窗口句柄就绪)。
+    video_widget_->SetVulkanRenderer(vulkan_renderer_.get(), vulkan_ctx_.get());
+    player_->SetVulkanContext(vulkan_ctx_.get());
+    player_->SetVulkanRenderer(vulkan_renderer_.get());
+    player_->SetVulkanRenderingEnabled(true);
+
+    LOG_INFO("Vulkan 已挂载: 渲染将由 GPU 完成 (失败自动回退 CPU)");
+#else
+    LOG_INFO("未定义 HAVE_VULKAN, 使用 CPU 渲染");
+#endif
 }
 
 void MainWindow::SetupUI() {
@@ -338,6 +372,11 @@ void MainWindow::UpdateMinimumWindowSize() {
 void MainWindow::showEvent(QShowEvent* event) {
     QMainWindow::showEvent(event);
     UpdateMinimumWindowSize();
+    // 确保 Vulkan 渲染器在窗口显示后初始化 (原生窗口句柄就绪)。
+    // 即使子 Widget 的 showEvent 由于平台时序未触发, 这里也能兜底初始化。
+    if (video_widget_) {
+        video_widget_->TryInitializeVulkan();
+    }
 }
 
 void MainWindow::resizeEvent(QResizeEvent* event) {

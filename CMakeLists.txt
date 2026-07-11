@@ -190,9 +190,11 @@ if(Vulkan_FOUND)
 endif()
 
 # Shader 编译 (Vulkan SPIR-V)
-# 从系统 PATH 及常见 Vulkan SDK 路径查找 glslc
+# 从系统 PATH 及常见 Vulkan SDK 路径查找 glslc (Windows/Linux 均覆盖)
 find_program(GLSLC glslc
-    PATHS /opt/vulkansdk/*/bin
+    PATHS $ENV{VULKAN_SDK}/Bin
+          "C:/VulkanSDK/*/Bin"
+          /opt/vulkansdk/*/bin
           /usr/local/bin
           /usr/bin
 )

@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.h>
 #include <QString>
 #include <vector>
+#include <QWindow>
 
 extern "C" {
 #include <libavutil/buffer.h>
@@ -20,8 +21,13 @@ public:
     VulkanContext();
     ~VulkanContext();
 
-    // 初始化 Vulkan 实例 + 物理设备 + 逻辑设备 + FFmpeg 设备上下文
-    bool Initialize(const QString& app_name = "VideoEye");
+    // 初始化 Vulkan 实例 + Surface + 物理设备 + 逻辑设备 (渲染所需)
+    // window_handle: 用于创建可呈现 Surface 的原生窗口句柄 (WId)
+    bool Initialize(WId window_handle, const QString& app_name = "VideoEye");
+
+    // 延迟创建 FFmpeg 设备上下文 (仅 HW 解码需要, 渲染不需要)
+    // 返回 true 表示 hw_device_ctx_ 已就绪 (可能此前已创建)
+    bool InitializeFFmpegDevice();
 
     // FFmpeg 设备上下文 — 可直接赋给 codec_ctx_->hw_device_ctx
     AVBufferRef* GetAvHwDeviceContext() const { return hw_device_ctx_; }
@@ -33,6 +39,7 @@ public:
     VkInstance GetInstance() const { return instance_; }
     VkPhysicalDevice GetPhysicalDevice() const { return phys_dev_; }
     VkDevice GetDevice() const { return device_; }
+    VkSurfaceKHR GetSurface() const { return surface_; }
     uint32_t GetGraphicsQueueFamily() const { return graphics_qf_; }
     VkQueue GetGraphicsQueue() const { return graphics_queue_; }
     uint32_t GetComputeQueueFamily() const { return compute_qf_; }
@@ -56,6 +63,7 @@ public:
 
 private:
     bool CreateInstance(const QString& app_name);
+    bool CreateSurface(WId window_handle);
     bool SelectPhysicalDevice();
     bool CreateLogicalDevice();
     bool CreateFFmpegDeviceContext();
@@ -63,6 +71,7 @@ private:
     VkInstance instance_ = VK_NULL_HANDLE;
     VkPhysicalDevice phys_dev_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
+    VkSurfaceKHR surface_ = VK_NULL_HANDLE;   // 由本上下文创建并拥有 (渲染 Surface)
 
     // 队列族索引
     uint32_t graphics_qf_ = UINT32_MAX;

@@ -100,7 +100,7 @@ private:
     // --- 辅助 ---
     VkShaderModule CreateShaderModule(const std::vector<uint32_t>& spirv);
     uint32_t FindMemoryType(uint32_t type_filter, VkMemoryPropertyFlags props);
-    void CreateImage(uint32_t width, uint32_t height,
+    bool CreateImage(uint32_t width, uint32_t height,
                      VkFormat format, VkImageTiling tiling,
                      VkImageUsageFlags usage,
                      VkImage& image, VkDeviceMemory& memory);

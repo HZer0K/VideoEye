@@ -100,7 +100,8 @@ public:
     void StartMediaExport(const exporter::ExportOptions& opt);
     void CancelMediaExport();
 
-    // Vulkan 渲染
+    // Vulkan 渲染 (渲染器/上下文由 MainWindow 拥有, 此处为非拥有裸指针)
+    void SetVulkanContext(VulkanContext* ctx);
     void SetVulkanRenderer(VulkanRenderer* renderer);
     void SetVulkanRenderingEnabled(bool enabled) { vulkan_rendering_enabled_ = enabled; }
     
@@ -173,8 +174,8 @@ private:
     std::unique_ptr<VideoDecoder> video_decoder_;
     std::unique_ptr<AudioDecoder> audio_decoder_;
     std::unique_ptr<AudioOutput> audio_output_;  // SDL2 音频输出 (PCM -> 声卡)
-    std::unique_ptr<VulkanContext> vulkan_ctx_;  // Vulkan 设备上下文
-    std::unique_ptr<VulkanRenderer> vulkan_renderer_;  // Vulkan 渲染器
+    VulkanContext* vulkan_ctx_ = nullptr;        // 非拥有: 由 MainWindow 提供 (渲染/HW解码共享)
+    VulkanRenderer* vulkan_renderer_ = nullptr;  // 非拥有: 由 MainWindow 提供
     int video_stream_index_ = -1;
     int audio_stream_index_ = -1;
     
@@ -225,7 +226,7 @@ private:
     bool macroblock_analysis_enabled_ = false;
     bool scene_change_analysis_enabled_ = false;
     bool hw_decoding_enabled_ = false; // 默认关闭硬件解码: Vulkan/D3D11 等 HW 路径在部分 Windows 驱动下会导致"打开视频即闪退"(FFmpeg 内部段错误, 无法被 C++ 异常捕获, 进程直接终止)。软件解码稳定可靠; 如确需 HW 解码性能, 可显式调用 SetHardwareDecodingEnabled(true), 但仍建议保留下方解码线程的异常兜底。
-    bool vulkan_rendering_enabled_ = false;  // Vulkan 渲染开关（阶段2）
+    bool vulkan_rendering_enabled_ = true;  // Vulkan 渲染开关 (P0 接入后默认开启, 失败时自动回退 CPU)
     
     // 分析索引/状态
     int analysis_frame_counter_ = 0;

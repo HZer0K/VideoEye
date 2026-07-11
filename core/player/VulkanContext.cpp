@@ -1,3 +1,4 @@
+#include "vulkan_platform.h"
 #include "VulkanContext.h"
 #include "utils/Logger.h"
 #include <cstring>
@@ -35,7 +36,7 @@ bool VulkanContext::IsVulkanAvailable() {
     return api_version >= VK_API_VERSION_1_0;
 }
 
-bool VulkanContext::Initialize(const QString& app_name) {
+bool VulkanContext::Initialize(WId window_handle, const QString& app_name) {
     if (valid_) {
         LOG_WARN("VulkanContext already initialized");
         return true;
@@ -43,6 +44,11 @@ bool VulkanContext::Initialize(const QString& app_name) {
 
     if (!CreateInstance(app_name)) {
         LOG_INFO("Vulkan instance not available, HW decoding will use fallback");
+        return false;
+    }
+    if (!CreateSurface(window_handle)) {
+        LOG_WARN("Vulkan surface creation failed, 渲染将回退 CPU");
+        Destroy();
         return false;
     }
     if (!SelectPhysicalDevice()) {
@@ -55,12 +61,10 @@ bool VulkanContext::Initialize(const QString& app_name) {
         Destroy();
         return false;
     }
-    if (!CreateFFmpegDeviceContext()) {
-        LOG_INFO("FFmpeg Vulkan device context failed, HW decoding will use fallback");
-        Destroy();
-        return false;
-    }
 
+    // 注意: FFmpeg 设备上下文 (av_hwdevice_ctx_init) 仅 HW 解码需要, 且历史上
+    // 在未完整初始化 AVVulkanDeviceContext 字段时会导致段错误。因此延迟到 HW 解码
+    // 真正启用时再创建 (见 InitializeFFmpegDevice), 避免渲染路径无谓触发此风险路径。
     valid_ = true;
     auto caps = GetCapabilities();
     LOG_INFO("Vulkan initialized: " + caps.device_name.toStdString());
@@ -109,6 +113,8 @@ bool VulkanContext::CreateInstance(const QString& app_name) {
     instance_extensions.push_back(VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME);
 #elif defined(VK_USE_PLATFORM_XLIB_KHR)
     instance_extensions.push_back(VK_KHR_XLIB_SURFACE_EXTENSION_NAME);
+#elif defined(VK_USE_PLATFORM_WIN32_KHR)
+    instance_extensions.push_back(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
 #endif
 
     // 检查扩展是否可用
@@ -143,6 +149,27 @@ bool VulkanContext::CreateInstance(const QString& app_name) {
     return true;
 }
 
+bool VulkanContext::CreateSurface(WId window_handle) {
+    auto instance = instance_;
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+    // 注: XCB 路径需要从 Qt 平台接口取连接, 此处简化仅使用 winId
+    VkXcbSurfaceCreateInfoKHR info{};
+    info.sType = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR;
+    info.connection = nullptr;  // 实际需在渲染端补全, 当前以 Win32 为主路径
+    info.window = static_cast<xcb_window_t>(window_handle);
+    return vkCreateXcbSurfaceKHR(instance, &info, nullptr, &surface_) == VK_SUCCESS;
+#elif defined(VK_USE_PLATFORM_WIN32_KHR)
+    VkWin32SurfaceCreateInfoKHR info{};
+    info.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+    info.hinstance = GetModuleHandle(nullptr);
+    info.hwnd = reinterpret_cast<HWND>(window_handle);
+    return vkCreateWin32SurfaceKHR(instance, &info, nullptr, &surface_) == VK_SUCCESS;
+#else
+    LOG_ERROR("VulkanContext: 当前平台不支持创建 Vulkan Surface");
+    return false;
+#endif
+}
+
 bool VulkanContext::SelectPhysicalDevice() {
     uint32_t device_count = 0;
     vkEnumeratePhysicalDevices(instance_, &device_count, nullptr);
@@ -151,18 +178,42 @@ bool VulkanContext::SelectPhysicalDevice() {
     std::vector<VkPhysicalDevice> devices(device_count);
     vkEnumeratePhysicalDevices(instance_, &device_count, devices.data());
 
-    // 评分: 独显 > 集显 > 其他
+    // 寻找「带 GRAPHICS_BIT 且支持对该 Surface 呈现」的队列族
+    auto find_graphics_present_family = [this](VkPhysicalDevice dev) -> uint32_t {
+        uint32_t qf_count = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(dev, &qf_count, nullptr);
+        std::vector<VkQueueFamilyProperties> fams(qf_count);
+        vkGetPhysicalDeviceQueueFamilyProperties(dev, &qf_count, fams.data());
+        for (uint32_t i = 0; i < qf_count; i++) {
+            if (!(fams[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) continue;
+            VkBool32 supported = VK_FALSE;
+            vkGetPhysicalDeviceSurfaceSupportKHR(dev, i, surface_, &supported);
+            if (supported) return i;
+        }
+        return UINT32_MAX;
+    };
+
+    // 评分: 独显 > 集显 > 其他; 仅考虑「存在可呈现图形队列族」的设备
+    int best_score = -1;
     for (auto& dev : devices) {
+        uint32_t gqf = find_graphics_present_family(dev);
+        if (gqf == UINT32_MAX) continue;  // 该设备无法向此 Surface 呈现, 跳过
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(dev, &props);
-        if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+        int score = 0;
+        if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) score = 2;
+        else if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) score = 1;
+        if (score > best_score) {
+            best_score = score;
             phys_dev_ = dev;
-            return true;
+            graphics_qf_ = gqf;
         }
     }
-
-    // 回退: 选择第一个设备
-    phys_dev_ = devices[0];
+    if (phys_dev_ == VK_NULL_HANDLE) {
+        LOG_WARN("VulkanContext: 没有支持 Surface 呈现的物理设备, 渲染将回退 CPU");
+        return false;
+    }
+    LOG_INFO("VulkanContext: 选中可呈现设备, 图形队列族=" + std::to_string(graphics_qf_));
     return true;
 }
 
@@ -305,6 +356,20 @@ bool VulkanContext::CreateFFmpegDeviceContext() {
     return true;
 }
 
+bool VulkanContext::InitializeFFmpegDevice() {
+    if (hw_device_ctx_) return true;          // 已创建
+    if (!valid_) {
+        LOG_WARN("InitializeFFmpegDevice: Vulkan 未初始化, 无法创建 FFmpeg 设备上下文");
+        return false;
+    }
+    if (!CreateFFmpegDeviceContext()) {
+        LOG_WARN("InitializeFFmpegDevice: FFmpeg 设备上下文创建失败 (HW 解码将不可用)");
+        return false;
+    }
+    LOG_INFO("Vulkan FFmpeg 设备上下文已创建 (HW 解码可用)");
+    return true;
+}
+
 VulkanContext::DeviceCapabilities VulkanContext::GetCapabilities() const {
     DeviceCapabilities caps{};
     if (phys_dev_ == VK_NULL_HANDLE) return caps;
@@ -326,6 +391,10 @@ void VulkanContext::Destroy() {
     if (device_ != VK_NULL_HANDLE) {
         vkDestroyDevice(device_, nullptr);
         device_ = VK_NULL_HANDLE;
+    }
+    if (surface_ != VK_NULL_HANDLE) {
+        vkDestroySurfaceKHR(instance_, surface_, nullptr);
+        surface_ = VK_NULL_HANDLE;
     }
     if (instance_ != VK_NULL_HANDLE) {
         vkDestroyInstance(instance_, nullptr);

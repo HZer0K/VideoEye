@@ -273,21 +273,14 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
         // 因此启用宏块分析时直接走软件解码路径。
         if (hw_decoding_enabled_ && !macroblock_analysis_enabled_) {
 #ifdef HAVE_VULKAN
-            // 优先尝试 Vulkan (如果 VulkanContext 可用)
-            if (!vulkan_ctx_) {
-                vulkan_ctx_ = std::make_unique<VulkanContext>();
-                if (!vulkan_ctx_->Initialize()) {
-                    vulkan_ctx_.reset();  // Vulkan 不可用, 清理
-                }
-            }
+            // 优先尝试 Vulkan: 复用 MainWindow 提供的共享 VulkanContext (同时也用于渲染)
             if (vulkan_ctx_ && vulkan_ctx_->IsValid()) {
-                if (video_decoder_->InitializeWithVulkanDevice(
+                if (vulkan_ctx_->InitializeFFmpegDevice() &&
+                    video_decoder_->InitializeWithVulkanDevice(
                         video_stream->codecpar,
                         vulkan_ctx_->GetAvHwDeviceContext())) {
                     hw_initialized = true;
                     LOG_INFO("Vulkan HW decoding initialized");
-                } else {
-                    vulkan_ctx_.reset();  // Vulkan 解码初始化失败
                 }
             }
 #endif
@@ -758,9 +751,12 @@ void MediaPlayer::DecodeThread() {
                         continue;
                     }
 
-                    // Vulkan 渲染路径: 零拷贝模式下使用 VulkanRenderer
+                    // Vulkan 渲染路径: 软件解码帧 (YUV420P) 直接上传渲染, 不再要求零拷贝 HW 帧。
+                    // 仅当渲染器已成功初始化且当前帧不是 HW Vulkan 帧时才走 Vulkan; 否则回退 CPU。
+                    // (HW Vulkan 帧的零拷贝渲染待 P2 实现, 此处仍由下方 CPU 回退路径显示。)
                     if (vulkan_rendering_enabled_ && vulkan_renderer_ &&
-                        video_decoder_->IsCurrentFrameVulkan()) {
+                        vulkan_renderer_->IsInitialized() &&
+                        !video_decoder_->IsCurrentFrameVulkan()) {
                         const AVFrame* raw = video_decoder_->GetLastRawFrame();
                         if (raw) {
                             vulkan_renderer_->PresentFrame(raw);
@@ -981,14 +977,18 @@ void MediaPlayer::Cleanup() {
     video_decoder_.reset();
     audio_decoder_.reset();
     audio_output_.reset();
-    vulkan_renderer_.reset();
-    vulkan_ctx_.reset();
+    vulkan_renderer_ = nullptr;  // 非拥有, 不释放 (由 MainWindow 管理)
+    vulkan_ctx_ = nullptr;       // 非拥有, 不释放 (由 MainWindow 管理)
     video_stream_index_ = -1;
     audio_stream_index_ = -1;
 }
 
+void MediaPlayer::SetVulkanContext(VulkanContext* ctx) {
+    vulkan_ctx_ = ctx;  // 非拥有: 由 MainWindow 管理生命周期
+}
+
 void MediaPlayer::SetVulkanRenderer(VulkanRenderer* renderer) {
-    vulkan_renderer_.reset(renderer);
+    vulkan_renderer_ = renderer;  // 非拥有: 由 MainWindow 管理生命周期
 }
 
 } // namespace player

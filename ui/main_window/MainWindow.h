@@ -23,6 +23,7 @@
 #include <QLabel>
 #include <QButtonGroup>
 #include <deque>
+#include <memory>
 #include <QImage>
 
 #include "core/player/MediaPlayer.h"
@@ -92,6 +93,7 @@ private:
     void SetupStatusBar();
     void SetupConnections();
     void OnSidebarChanged(int index);  // 侧边栏切换
+    void InitVulkan();                 // 创建并挂载 Vulkan 渲染 (失败自动回退 CPU)
     bool LoadRawImageFile(const QString& filename);
     bool PromptForPcmSettings(QString& demuxer_name, int& sample_rate, int& channels);
     bool ShowRawFrame(int frame_index);
@@ -109,6 +111,10 @@ protected:
     
     // 成员变量
     player::MediaPlayer* player_;
+
+    // Vulkan 渲染 (MainWindow 拥有生命周期, 渲染器/上下文与 MediaPlayer 共享)
+    std::unique_ptr<player::VulkanContext> vulkan_ctx_;
+    std::unique_ptr<player::VulkanRenderer> vulkan_renderer_;
     
     // UI组件 - 整体布局
     QWidget* app_bar_;            // 顶部应用栏

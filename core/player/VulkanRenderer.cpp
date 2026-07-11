@@ -1,6 +1,8 @@
+#include "vulkan_platform.h"
 #include "VulkanRenderer.h"
 #include "utils/Logger.h"
 #include <QGuiApplication>
+#include <QCoreApplication>
 #include <fstream>
 #include <cstring>
 #include <stdexcept>
@@ -15,7 +17,12 @@
 namespace videoeye {
 namespace player {
 
-static const char* kShaderDir = "shaders/";
+// 着色器目录: 使用可执行文件所在目录下的 shaders/, 不依赖进程 cwd
+namespace {
+std::string ShaderDir() {
+    return QCoreApplication::applicationDirPath().toStdString() + "/shaders/";
+}
+}
 
 VulkanRenderer::VulkanRenderer(QObject* parent) : QObject(parent) {}
 VulkanRenderer::~VulkanRenderer() { Destroy(); }
@@ -24,27 +31,34 @@ VulkanRenderer::~VulkanRenderer() { Destroy(); }
 
 bool VulkanRenderer::Initialize(VulkanContext* ctx, WId window_handle,
                                  int width, int height) {
-    if (!ctx || !ctx->IsValid()) { LOG_ERROR("Invalid VulkanContext"); return false; }
-    if (initialized_) { LOG_WARN("VulkanRenderer already initialized"); return true; }
+    if (!ctx || !ctx->IsValid()) { LOG_ERROR("VulkanRenderer: Invalid VulkanContext"); return false; }
+    if (initialized_) { LOG_WARN("VulkanRenderer: already initialized"); return true; }
 
     vulkan_ctx_ = ctx;
     window_handle_ = window_handle;
     window_width_ = width;
     window_height_ = height;
+    LOG_INFO("VulkanRenderer: Initialize begin (" +
+             std::to_string(width) + "x" + std::to_string(height) + ")");
 
-    if (!CreateSurface()) return false;
-    if (!QuerySwapchainSupport()) return false;
-    if (!CreateSwapchain()) return false;
-    if (!CreateRenderPass()) return false;
-    if (!CreateCommandPool()) return false;
-    if (!CreateTextureResources()) return false;
-    if (!CreateComputePipeline()) return false;
-    if (!CreateGraphicsPipeline()) return false;
-    if (!CreateFramebuffers()) return false;
-    if (!CreateSyncObjects()) return false;
+    if (!CreateSurface()) { LOG_ERROR("VulkanRenderer: CreateSurface failed"); return false; }
+    LOG_INFO("VulkanRenderer: surface created");
+    if (!QuerySwapchainSupport()) { LOG_ERROR("VulkanRenderer: QuerySwapchainSupport failed (presentation unsupported?)"); return false; }
+    LOG_INFO("VulkanRenderer: swapchain support queried");
+    if (!CreateSwapchain()) { LOG_ERROR("VulkanRenderer: CreateSwapchain failed"); return false; }
+    LOG_INFO("VulkanRenderer: swapchain created");
+    if (!CreateRenderPass()) { LOG_ERROR("VulkanRenderer: CreateRenderPass failed"); return false; }
+    if (!CreateCommandPool()) { LOG_ERROR("VulkanRenderer: CreateCommandPool failed"); return false; }
+    if (!CreateTextureResources()) { LOG_ERROR("VulkanRenderer: CreateTextureResources failed"); return false; }
+    LOG_INFO("VulkanRenderer: textures/resources created");
+    if (!CreateComputePipeline()) { LOG_ERROR("VulkanRenderer: CreateComputePipeline failed"); return false; }
+    if (!CreateGraphicsPipeline()) { LOG_ERROR("VulkanRenderer: CreateGraphicsPipeline failed"); return false; }
+    LOG_INFO("VulkanRenderer: pipelines created");
+    if (!CreateFramebuffers()) { LOG_ERROR("VulkanRenderer: CreateFramebuffers failed"); return false; }
+    if (!CreateSyncObjects()) { LOG_ERROR("VulkanRenderer: CreateSyncObjects failed"); return false; }
 
     initialized_ = true;
-    LOG_INFO("VulkanRenderer initialized: " +
+    LOG_INFO("VulkanRenderer: initialized " +
              std::to_string(swapchain_extent_.width) + "x" +
              std::to_string(swapchain_extent_.height));
     return true;
@@ -87,26 +101,30 @@ void VulkanRenderer::Resize(int width, int height) {
 // ---- Surface/Swapchain ----
 
 bool VulkanRenderer::CreateSurface() {
-    auto instance = vulkan_ctx_->GetInstance();
-#if defined(VK_USE_PLATFORM_XCB_KHR)
-    xcb_connection_t* connection = nullptr;
-    auto* native = QGuiApplication::platformNativeInterface();
-    if (native) connection = static_cast<xcb_connection_t*>(
-        native->nativeResourceForWindow("connection", nullptr));
-    if (!connection) { LOG_ERROR("Failed to get XCB connection"); return false; }
-
-    VkXcbSurfaceCreateInfoKHR info{};
-    info.sType = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR;
-    info.connection = connection;
-    info.window = static_cast<xcb_window_t>(window_handle_);
-    return vkCreateXcbSurfaceKHR(instance, &info, nullptr, &surface_) == VK_SUCCESS;
-#else
-    LOG_ERROR("Unsupported platform for Vulkan surface"); return false;
-#endif
+    // Surface 已由 VulkanContext 在设备创建前创建 (需按呈现能力选择设备),
+    // 渲染器直接复用, 不重复创建也不拥有它 (生命周期由 VulkanContext 管理)。
+    surface_ = vulkan_ctx_->GetSurface();
+    if (surface_ == VK_NULL_HANDLE) {
+        LOG_ERROR("VulkanRenderer: VulkanContext 未提供 Surface");
+        return false;
+    }
+    return true;
 }
 
 bool VulkanRenderer::QuerySwapchainSupport() {
     auto phys_dev = vulkan_ctx_->GetPhysicalDevice();
+
+    // 校验图形队列族是否支持对该 Surface 的呈现。
+    // 在多 GPU (Optimus) 笔记本上，选中的独显图形队列可能不支持呈现，
+    // 此时继续创建 Swapchain 会在部分驱动上卡死/崩溃。这里提前失败并回退 CPU。
+    VkBool32 present_supported = VK_FALSE;
+    vkGetPhysicalDeviceSurfaceSupportKHR(phys_dev, vulkan_ctx_->GetGraphicsQueueFamily(),
+                                         surface_, &present_supported);
+    if (!present_supported) {
+        LOG_ERROR("VulkanRenderer: 图形队列族不支持对该 Surface 的呈现 (device/surface 不匹配)");
+        return false;
+    }
+
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys_dev, surface_, &swapchain_support_.capabilities);
 
     uint32_t count;
@@ -220,7 +238,7 @@ bool VulkanRenderer::CreateComputePipeline() {
     pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &pcr;
     if (vkCreatePipelineLayout(dev, &pli, nullptr, &compute_.layout) != VK_SUCCESS) return false;
 
-    auto spirv = LoadSpirvFile(std::string(kShaderDir) + "yuv2rgb.spv");
+    auto spirv = LoadSpirvFile(ShaderDir() + "yuv2rgb.spv");
     if (spirv.empty()) { LOG_ERROR("Failed to load yuv2rgb.spv"); return false; }
     VkShaderModule mod = CreateShaderModule(spirv);
     if (!mod) return false;
@@ -278,8 +296,8 @@ bool VulkanRenderer::CreateGraphicsPipeline() {
     pli.setLayoutCount = 1; pli.pSetLayouts = &graphics_.desc_layout;
     if (vkCreatePipelineLayout(dev, &pli, nullptr, &graphics_.layout) != VK_SUCCESS) return false;
 
-    auto vert = LoadSpirvFile(std::string(kShaderDir) + "present.vert.spv");
-    auto frag = LoadSpirvFile(std::string(kShaderDir) + "present.frag.spv");
+    auto vert = LoadSpirvFile(ShaderDir() + "present.vert.spv");
+    auto frag = LoadSpirvFile(ShaderDir() + "present.frag.spv");
     if (vert.empty() || frag.empty()) { LOG_ERROR("Failed to load present shaders"); return false; }
     VkShaderModule vm = CreateShaderModule(vert), fm = CreateShaderModule(frag);
     if (!vm || !fm) { if(vm) vkDestroyShaderModule(dev, vm, nullptr); if(fm) vkDestroyShaderModule(dev, fm, nullptr); return false; }
@@ -353,16 +371,16 @@ bool VulkanRenderer::CreateTextureResources() {
     auto dev = vulkan_ctx_->GetDevice();
     tex_width_ = std::max(window_width_, 640); tex_height_ = std::max(window_height_, 480);
 
-    CreateImage(tex_width_, tex_height_, VK_FORMAT_R8_UNORM, VK_IMAGE_TILING_OPTIMAL,
-        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, y_texture_, y_texture_memory_);
+    if (!CreateImage(tex_width_, tex_height_, VK_FORMAT_R8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, y_texture_, y_texture_memory_)) return false;
     y_texture_view_ = CreateImageView(y_texture_, VK_FORMAT_R8_UNORM);
 
-    CreateImage(tex_width_/2, tex_height_/2, VK_FORMAT_R8G8_UNORM, VK_IMAGE_TILING_OPTIMAL,
-        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, uv_texture_, uv_texture_memory_);
+    if (!CreateImage(tex_width_/2, tex_height_/2, VK_FORMAT_R8G8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, uv_texture_, uv_texture_memory_)) return false;
     uv_texture_view_ = CreateImageView(uv_texture_, VK_FORMAT_R8G8_UNORM);
 
-    CreateImage(tex_width_, tex_height_, VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
-        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, rgb_texture_, rgb_texture_memory_);
+    if (!CreateImage(tex_width_, tex_height_, VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, rgb_texture_, rgb_texture_memory_)) return false;
     rgb_texture_view_ = CreateImageView(rgb_texture_, VK_FORMAT_B8G8R8A8_UNORM);
 
     VkSamplerCreateInfo si{};
@@ -383,6 +401,7 @@ bool VulkanRenderer::CreateTextureResources() {
     ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO; ai.allocationSize = mr.size;
     ai.memoryTypeIndex = FindMemoryType(mr.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (ai.memoryTypeIndex == UINT32_MAX) return false;
     if (vkAllocateMemory(dev, &ai, nullptr, &staging_memory_) != VK_SUCCESS) return false;
     vkBindBufferMemory(dev, staging_buffer_, staging_memory_, 0);
 
@@ -552,19 +571,23 @@ VkShaderModule VulkanRenderer::CreateShaderModule(const std::vector<uint32_t>& s
 uint32_t VulkanRenderer::FindMemoryType(uint32_t tf,VkMemoryPropertyFlags p){
     VkPhysicalDeviceMemoryProperties mp;vkGetPhysicalDeviceMemoryProperties(vulkan_ctx_->GetPhysicalDevice(),&mp);
     for(uint32_t i=0;i<mp.memoryTypeCount;i++)if((tf&(1<<i))&&(mp.memoryTypes[i].propertyFlags&p)==p)return i;
-    throw std::runtime_error("No suitable memory type");
+    LOG_ERROR("VulkanRenderer: No suitable memory type (filter=0x" + std::to_string(tf) + ")");
+    return UINT32_MAX;
 }
-void VulkanRenderer::CreateImage(uint32_t w,uint32_t h,VkFormat fmt,VkImageTiling tiling,VkImageUsageFlags use,VkImage& img,VkDeviceMemory& mem){
+bool VulkanRenderer::CreateImage(uint32_t w,uint32_t h,VkFormat fmt,VkImageTiling tiling,VkImageUsageFlags use,VkImage& img,VkDeviceMemory& mem){
     auto dev=vulkan_ctx_->GetDevice();
     VkImageCreateInfo ii{};ii.sType=VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ii.imageType=VK_IMAGE_TYPE_2D;ii.format=fmt;ii.extent={w,h,1};
     ii.mipLevels=ii.arrayLayers=1;ii.samples=VK_SAMPLE_COUNT_1_BIT;
     ii.tiling=tiling;ii.usage=use;ii.initialLayout=VK_IMAGE_LAYOUT_UNDEFINED;
-    vkCreateImage(dev,&ii,nullptr,&img);
+    if(vkCreateImage(dev,&ii,nullptr,&img)!=VK_SUCCESS)return false;
     VkMemoryRequirements mr;vkGetImageMemoryRequirements(dev,img,&mr);
+    uint32_t mti=FindMemoryType(mr.memoryTypeBits,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if(mti==UINT32_MAX){vkDestroyImage(dev,img,nullptr);img=VK_NULL_HANDLE;return false;}
     VkMemoryAllocateInfo ai{};ai.sType=VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ai.allocationSize=mr.size;ai.memoryTypeIndex=FindMemoryType(mr.memoryTypeBits,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    vkAllocateMemory(dev,&ai,nullptr,&mem);vkBindImageMemory(dev,img,mem,0);
+    ai.allocationSize=mr.size;ai.memoryTypeIndex=mti;
+    if(vkAllocateMemory(dev,&ai,nullptr,&mem)!=VK_SUCCESS){vkDestroyImage(dev,img,nullptr);img=VK_NULL_HANDLE;return false;}
+    vkBindImageMemory(dev,img,mem,0);return true;
 }
 VkImageView VulkanRenderer::CreateImageView(VkImage img,VkFormat fmt){
     VkImageViewCreateInfo vi{};vi.sType=VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -636,7 +659,7 @@ void VulkanRenderer::Destroy() {
     for (auto& v : swapchain_views_) vkDestroyImageView(dev, v, nullptr);
     if (swapchain_) vkDestroySwapchainKHR(dev, swapchain_, nullptr);
     if (command_pool_) vkDestroyCommandPool(dev, command_pool_, nullptr);
-    if (surface_) vkDestroySurfaceKHR(vulkan_ctx_->GetInstance(), surface_, nullptr);
+    // 注意: Surface 由 VulkanContext 拥有并销毁, 渲染器不在此释放
     initialized_ = false;
 }
 
