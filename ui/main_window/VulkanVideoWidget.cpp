@@ -230,11 +230,12 @@ void VulkanVideoWidget::TryInitializeVulkan() {
     if (vulkan_active_.load() || init_running_.load()) return;  // 已激活或进行中, 幂等
     // first_show_ 仅在真正尝试初始化后才置 false, 因此若此时窗口尺寸无效
     // (尺寸为 0, 例如布局尚未生效), 则不消费该次机会, 留待后续 showEvent/resize。
-    if (first_show_ && renderer_ && vulkan_ctx_ && vulkan_ctx_->IsValid() &&
+    if (first_show_ && renderer_ && vulkan_ctx_ &&
         width() > 0 && height() > 0) {
 #ifdef HAVE_VULKAN
         // 重量级 Vulkan 初始化放在后台线程, 避免阻塞 GUI 线程导致窗口无法显示。
         // 无论成功/失败/异常, 主窗口都不会卡死; 失败自动回退 CPU 显示。
+        // winId() 必须在 GUI 线程取值 (此处窗口已 realize/显示), 再传入后台线程使用。
         init_running_.store(true);
         WId handle = winId();
         int w = width(), h = height();
@@ -245,7 +246,12 @@ void VulkanVideoWidget::TryInitializeVulkan() {
             bool ok = false;
             std::string err;
             try {
-                ok = r->Initialize(c, handle, w, h);
+                // 关键: 上下文的「建 Surface + 呈现感知选设备 + 建逻辑设备」也在此处完成。
+                // 窗口已显示, winId 已 realize, vkGetPhysicalDeviceSurfaceSupportKHR 才能
+                // 对该 Surface 正确返回呈现支持 (Optimus 笔记本 pre-show 会全部误报 false)。
+                if (c->IsValid() || c->Initialize(handle)) {
+                    ok = r->Initialize(c, handle, w, h);
+                }
             } catch (const std::exception& e) {
                 err = e.what();
             } catch (...) {

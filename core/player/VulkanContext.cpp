@@ -193,13 +193,17 @@ bool VulkanContext::SelectPhysicalDevice() {
         return UINT32_MAX;
     };
 
+    LOG_INFO("VulkanContext: 枚举到 " + std::to_string(device_count) + " 个物理设备");
     // 评分: 独显 > 集显 > 其他; 仅考虑「存在可呈现图形队列族」的设备
     int best_score = -1;
     for (auto& dev : devices) {
-        uint32_t gqf = find_graphics_present_family(dev);
-        if (gqf == UINT32_MAX) continue;  // 该设备无法向此 Surface 呈现, 跳过
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(dev, &props);
+        uint32_t gqf = find_graphics_present_family(dev);
+        LOG_INFO(std::string("  设备 [") + props.deviceName + "] type=" +
+                 std::to_string(props.deviceType) + " 可呈现图形队列族=" +
+                 (gqf == UINT32_MAX ? std::string("无") : std::to_string(gqf)));
+        if (gqf == UINT32_MAX) continue;  // 该设备无法向此 Surface 呈现, 跳过
         int score = 0;
         if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) score = 2;
         else if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) score = 1;
@@ -259,11 +263,26 @@ bool VulkanContext::CreateLogicalDevice() {
         queue_infos.push_back(qinfo);
     }
 
-    // FFmpeg Vulkan 所需设备扩展（当前为空，后续按需添加）
-    const char* required_dev_exts[] = {nullptr};
+    // 设备扩展: Swapchain 为渲染呈现必需 (vkCreateSwapchainKHR 依赖它)。
+    // 仅在物理设备实际支持时才启用, 避免 vkCreateDevice 因扩展缺失失败。
     std::vector<const char*> enabled_dev_extensions;
-    for (auto* ext : required_dev_exts) {
-        if (ext) enabled_dev_extensions.push_back(ext);
+    {
+        uint32_t ext_count = 0;
+        vkEnumerateDeviceExtensionProperties(phys_dev_, nullptr, &ext_count, nullptr);
+        std::vector<VkExtensionProperties> avail(ext_count);
+        vkEnumerateDeviceExtensionProperties(phys_dev_, nullptr, &ext_count, avail.data());
+        bool has_swapchain = false;
+        for (const auto& e : avail) {
+            if (std::strcmp(e.extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0) {
+                has_swapchain = true;
+                break;
+            }
+        }
+        if (has_swapchain) {
+            enabled_dev_extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+        } else {
+            LOG_WARN("VulkanContext: 设备不支持 VK_KHR_swapchain, 渲染将回退 CPU");
+        }
     }
 
     VkDeviceCreateInfo device_info{};

@@ -92,27 +92,26 @@ void MainWindow::InitVulkan() {
 #ifdef HAVE_VULKAN
     if (!player_ || !video_widget_) return;
 
-    // 创建共享 VulkanContext (渲染与可选 HW 解码共用)
-    // 需传入视频 Widget 的原生窗口句柄以提前创建可呈现 Surface (用于按呈现能力选设备)
-    vulkan_ctx_ = std::make_unique<player::VulkanContext>();
-    if (!vulkan_ctx_->Initialize(video_widget_->winId(), "VideoEye")) {
-        // 系统不支持 Vulkan (无驱动/loader), 安全降级为 CPU 渲染
-        LOG_WARN("Vulkan 不可用, 回退到 CPU 渲染");
-        vulkan_ctx_.reset();
+    // 快速探测: 无 Vulkan loader/驱动时直接走 CPU, 不创建对象。
+    if (!player::VulkanContext::IsVulkanAvailable()) {
+        LOG_WARN("Vulkan 不可用 (无 loader/驱动), 回退到 CPU 渲染");
         return;
     }
 
-    // 创建渲染器 (生命周期由 MainWindow 拥有)
+    // 创建共享 VulkanContext + 渲染器 (生命周期由 MainWindow 拥有)。
+    // 关键: 不在此处 (构造函数, show() 之前) 调用 Initialize。因为提前用未显示的
+    // 子窗口 winId() 创建 Surface, 会导致 Optimus 笔记本上 vkGetPhysicalDeviceSurfaceSupportKHR
+    // 对所有设备误报「不支持呈现」。改为延迟到 video_widget_ 首次 showEvent 时,
+    // 在后台线程内完成「建 Surface → 呈现感知选设备 → 建管线」(见 VulkanVideoWidget::TryInitializeVulkan)。
+    vulkan_ctx_ = std::make_unique<player::VulkanContext>();
     vulkan_renderer_ = std::make_unique<player::VulkanRenderer>(this);
 
-    // 把渲染器/上下文挂载到视频 Widget 与播放器。
-    // 实际渲染管线 Initialize 延迟到 video_widget_ 首次 showEvent (原生窗口句柄就绪)。
     video_widget_->SetVulkanRenderer(vulkan_renderer_.get(), vulkan_ctx_.get());
     player_->SetVulkanContext(vulkan_ctx_.get());
     player_->SetVulkanRenderer(vulkan_renderer_.get());
     player_->SetVulkanRenderingEnabled(true);
 
-    LOG_INFO("Vulkan 已挂载: 渲染将由 GPU 完成 (失败自动回退 CPU)");
+    LOG_INFO("Vulkan 已挂载: 渲染器将在窗口显示后于后台线程初始化 (失败自动回退 CPU)");
 #else
     LOG_INFO("未定义 HAVE_VULKAN, 使用 CPU 渲染");
 #endif
