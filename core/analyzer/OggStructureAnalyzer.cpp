@@ -6,6 +6,40 @@
 namespace videoeye {
 namespace analyzer {
 
+namespace {
+uint32_t oggLE32(const QByteArray& d, int off) {
+    if (off + 4 > d.size()) return 0;
+    return static_cast<uint32_t>(static_cast<uint8_t>(d[off])) |
+           (static_cast<uint32_t>(static_cast<uint8_t>(d[off + 1])) << 8) |
+           (static_cast<uint32_t>(static_cast<uint8_t>(d[off + 2])) << 16) |
+           (static_cast<uint32_t>(static_cast<uint8_t>(d[off + 3])) << 24);
+}
+// 解析 Vorbis/Opus 注释块 (vendor + KEY=VALUE 列表)，从 start 起
+void parseVorbisComments(const QByteArray& d, int start, QMap<QString, QString>& out) {
+    int pos = start;
+    if (pos + 4 > d.size()) return;
+    uint32_t vlen = oggLE32(d, pos); pos += 4;
+    if (pos + static_cast<int>(vlen) > d.size()) return;
+    QString vendor = QString::fromUtf8(d.mid(pos, vlen));
+    pos += vlen;
+    if (!vendor.isEmpty()) out["vendor"] = vendor;
+    if (pos + 4 > d.size()) return;
+    uint32_t count = oggLE32(d, pos); pos += 4;
+    for (uint32_t i = 0; i < count && pos + 4 <= d.size(); ++i) {
+        uint32_t clen = oggLE32(d, pos); pos += 4;
+        if (pos + static_cast<int>(clen) > d.size()) break;
+        QString comment = QString::fromUtf8(d.mid(pos, clen));
+        pos += clen;
+        int eq = comment.indexOf('=');
+        if (eq > 0) {
+            QString k = comment.left(eq).toUpper();
+            QString v = comment.mid(eq + 1);
+            if (!out.contains(k)) out[k] = v;
+        }
+    }
+}
+} // namespace
+
 bool OggStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStructureResult& result) {
     QFile file(file_path);
     if (!file.open(QIODevice::ReadOnly)) {
@@ -29,6 +63,9 @@ bool OggStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
         int page_count = 0;
         QString codec_name;
         bool bos_seen = false;
+        uint32_t sample_rate = 0;
+        int channels = 0;
+        bool comments_parsed = false;
     };
     QMap<uint32_t, StreamInfo> streams;
 
@@ -75,9 +112,9 @@ bool OggStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
             page_data_size += static_cast<uint8_t>(seg_table[i]);
         }
 
-        // 读取页面数据 (仅前 64 字节用于 codec 识别)
+        // 读取页面数据 (前 4096 字节，足以覆盖标识头与注释头，用于 codec 识别与元数据)
         qint64 page_data_offset = file.pos();
-        QByteArray page_data = file.read(qMin(static_cast<qint64>(page_data_size), static_cast<qint64>(64)));
+        QByteArray page_data = file.read(qMin(static_cast<qint64>(page_data_size), static_cast<qint64>(4096)));
 
         // 跳到下一页
         file.seek(page_data_offset + page_data_size);
@@ -86,12 +123,22 @@ bool OggStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
         auto& si = streams[serial];
         si.page_count++;
 
-        // BOS 页面识别 codec
+        // BOS 页面识别 codec + 标识头解析 (采样率/声道)
         if (is_bos && page_data.size() >= 7) {
             if (page_data.mid(1, 6) == "vorbis") {
                 si.codec_name = "Vorbis";
+                // \x01vorbis(7) + version(4) + channels(1) + sample_rate(4 LE)
+                if (page_data.size() >= 16) {
+                    si.channels = static_cast<uint8_t>(page_data[11]);
+                    si.sample_rate = oggLE32(page_data, 12);
+                }
             } else if (page_data.startsWith("OpusHead")) {
                 si.codec_name = "Opus";
+                // OpusHead(8)+version(1)+channels(1)+preskip(2)+input_sample_rate(4 LE)
+                if (page_data.size() >= 16) {
+                    si.channels = static_cast<uint8_t>(page_data[9]);
+                    si.sample_rate = oggLE32(page_data, 12);
+                }
             } else if (page_data.mid(0, 4) == "fLaC" || page_data.startsWith(QByteArray("\x7F" "FLAC", 5))) {
                 si.codec_name = "FLAC";
             } else if (page_data.mid(1, 6) == "theora") {
@@ -102,6 +149,18 @@ bool OggStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
                 si.codec_name = "Speex";
             } else {
                 si.codec_name = "Unknown";
+            }
+        }
+
+        // 注释头解析 (通常在 BOS 之后的第二个包)
+        if (!si.comments_parsed) {
+            if (page_data.size() > 7 && page_data.mid(1, 6) == "vorbis" &&
+                static_cast<uint8_t>(page_data[0]) == 0x03) {
+                parseVorbisComments(page_data, 7, result.metadata);
+                si.comments_parsed = true;
+            } else if (page_data.startsWith("OpusTags")) {
+                parseVorbisComments(page_data, 8, result.metadata);
+                si.comments_parsed = true;
             }
         }
 
@@ -127,17 +186,25 @@ bool OggStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
 
     // 添加流信息
     for (auto it = streams.begin(); it != streams.end(); ++it) {
+        const auto& info = it.value();
+        QString detail;
+        if (info.sample_rate > 0)
+            detail = QString("%1 Hz, %2 ch").arg(info.sample_rate).arg(info.channels);
+
         model::ContainerElement stream_elem;
         stream_elem.name = QString("Logical Stream (serial=%1)").arg(it.key());
         stream_elem.type = "Logical Stream";
         stream_elem.depth = 1;
-        stream_elem.value = QString("codec=%1 pages=%2").arg(it.value().codec_name).arg(it.value().page_count);
+        stream_elem.value = QString("codec=%1 pages=%2%3")
+                                .arg(info.codec_name).arg(info.page_count)
+                                .arg(detail.isEmpty() ? "" : " | " + detail);
 
         model::ContainerStreamInfo csi;
         csi.index = result.streams.size();
-        csi.codec = it.value().codec_name;
+        csi.codec = info.codec_name;
+        csi.details = detail;
         // 根据 codec 推断类型
-        QString codec_lower = it.value().codec_name.toLower();
+        QString codec_lower = info.codec_name.toLower();
         if (codec_lower == "vorbis" || codec_lower == "opus" || codec_lower == "flac" || codec_lower == "speex") {
             csi.type = "audio";
         } else if (codec_lower == "theora") {

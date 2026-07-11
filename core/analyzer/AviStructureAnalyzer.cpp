@@ -6,6 +6,42 @@
 namespace videoeye {
 namespace analyzer {
 
+namespace {
+// 小端读取辅助 (AVI/RIFF 为小端)
+uint16_t readLE16(const QByteArray& d, int off) {
+    if (off + 2 > d.size()) return 0;
+    return static_cast<uint16_t>(static_cast<uint8_t>(d[off])) |
+           (static_cast<uint16_t>(static_cast<uint8_t>(d[off + 1])) << 8);
+}
+uint32_t readLE32(const QByteArray& d, int off) {
+    if (off + 4 > d.size()) return 0;
+    return static_cast<uint32_t>(static_cast<uint8_t>(d[off])) |
+           (static_cast<uint32_t>(static_cast<uint8_t>(d[off + 1])) << 8) |
+           (static_cast<uint32_t>(static_cast<uint8_t>(d[off + 2])) << 16) |
+           (static_cast<uint32_t>(static_cast<uint8_t>(d[off + 3])) << 24);
+}
+// WAVE 格式 tag → 可读音频编码名
+QString waveFormatName(uint16_t tag) {
+    switch (tag) {
+        case 0x0001: return "PCM";
+        case 0x0002: return "ADPCM";
+        case 0x0003: return "IEEE Float";
+        case 0x0006: return "A-law";
+        case 0x0007: return "mu-law";
+        case 0x0011: return "IMA ADPCM";
+        case 0x0031: case 0x0032: return "GSM 6.10";
+        case 0x0050: return "MPEG";
+        case 0x0055: return "MP3";
+        case 0x00FF: return "AAC";
+        case 0x2000: return "AC-3";
+        case 0x2001: return "DTS";
+        case 0xF1AC: return "FLAC";
+        case 0x674F: case 0x6750: case 0x6751: return "Ogg Vorbis";
+        default: return QString("0x%1").arg(tag, 4, 16, QChar('0')).toUpper();
+    }
+}
+} // namespace
+
 bool AviStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStructureResult& result) {
     QFile file(file_path);
     if (!file.open(QIODevice::ReadOnly)) {
@@ -52,6 +88,10 @@ bool AviStructureAnalyzer::ParseChunk(QFile& file, qint64 end_offset, int depth,
                                        model::ContainerStructureResult& result) {
     // 限制递归深度防止栈溢出
     if (depth > 8) return false;
+
+    // 当前 strl 内 strh 记录的流类型/流索引，供随后的 strf 解释格式头
+    QString cur_strh_type;   // "vids" / "auds" / ...
+    int cur_stream_idx = -1;
 
     while (file.pos() < end_offset - 8) {
         QByteArray chunk_header = file.read(8);
@@ -101,10 +141,57 @@ bool AviStructureAnalyzer::ParseChunk(QFile& file, qint64 end_offset, int depth,
                 else if (fcc_type == "auds") si.type = "audio";
                 else if (fcc_type == "txts" || fcc_type == "subs") si.type = "subtitle";
                 else si.type = fcc_type;
-                si.codec = fcc_handler;
+                si.codec = fcc_handler.trimmed();
                 result.streams.append(si);
+
+                cur_strh_type = fcc_type;
+                cur_stream_idx = si.index;
             }
             // 对齐
+            qint64 next_pos = chunk_offset + 8 + chunk_size;
+            if (chunk_size % 2 != 0) next_pos++;
+            if (next_pos <= file.size()) file.seek(next_pos);
+        } else if (fourcc == "strf") {
+            // 流格式头: 视频=BITMAPINFOHEADER, 音频=WAVEFORMATEX
+            elem.type = "Stream Format";
+            QByteArray data = file.read(chunk_size);
+            if (cur_strh_type == "vids" && data.size() >= 40) {
+                uint32_t biWidth  = readLE32(data, 4);
+                int32_t  biHeight = static_cast<int32_t>(readLE32(data, 8));
+                uint16_t biBitCount = readLE16(data, 14);
+                QByteArray comp = data.mid(16, 4);
+                QString fourccStr = QString::fromLatin1(comp).trimmed();
+                bool rawRgb = (readLE32(data, 16) == 0);
+                QString codecName = rawRgb ? QString("RGB") : fourccStr;
+                elem.value = QString("%1x%2 %3bit codec=%4")
+                                 .arg(biWidth).arg(qAbs(biHeight))
+                                 .arg(biBitCount).arg(codecName);
+                if (cur_stream_idx >= 0 && cur_stream_idx < result.streams.size()) {
+                    auto& s = result.streams[cur_stream_idx];
+                    if (!codecName.isEmpty()) s.codec = codecName;
+                    s.details = QString("%1x%2, %3-bit")
+                                    .arg(biWidth).arg(qAbs(biHeight)).arg(biBitCount);
+                }
+            } else if (cur_strh_type == "auds" && data.size() >= 16) {
+                uint16_t wFormatTag     = readLE16(data, 0);
+                uint16_t nChannels      = readLE16(data, 2);
+                uint32_t nSamplesPerSec = readLE32(data, 4);
+                uint32_t nAvgBytesPerSec = readLE32(data, 8);
+                uint16_t wBitsPerSample = readLE16(data, 14);
+                QString codecName = waveFormatName(wFormatTag);
+                elem.value = QString("%1 %2Hz %3ch %4bit %5kbps")
+                                 .arg(codecName).arg(nSamplesPerSec).arg(nChannels)
+                                 .arg(wBitsPerSample).arg(nAvgBytesPerSec * 8 / 1000);
+                if (cur_stream_idx >= 0 && cur_stream_idx < result.streams.size()) {
+                    auto& s = result.streams[cur_stream_idx];
+                    s.codec = codecName;
+                    s.details = QString("%1 Hz, %2 ch, %3-bit, %4 kbps")
+                                    .arg(nSamplesPerSec).arg(nChannels)
+                                    .arg(wBitsPerSample).arg(nAvgBytesPerSec * 8 / 1000);
+                }
+            } else {
+                elem.value = QString("size=%1").arg(chunk_size);
+            }
             qint64 next_pos = chunk_offset + 8 + chunk_size;
             if (chunk_size % 2 != 0) next_pos++;
             if (next_pos <= file.size()) file.seek(next_pos);

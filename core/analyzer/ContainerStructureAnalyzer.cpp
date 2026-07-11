@@ -292,19 +292,42 @@ void ContainerStructureAnalyzer::ConvertMp4Tree(const QVector<model::Mp4BoxNode>
         elem.offset = node.offset;
         elem.depth = depth;
 
-        // 拼接关键字段作为 value
-        QString key_props;
+        // value 列：优先展示关键字段，其后补充其余字段（保证 box 内部信息在树中可见）
+        auto isKeyField = [](const QString& n) {
+            return n == "handler_type" || n == "major_brand" ||
+                   n == "timescale" || n == "duration" ||
+                   n == "width" || n == "height" ||
+                   n == "entry_count" || n == "sample_rate" ||
+                   n == "channel_count" || n == "version" ||
+                   n == "flags" || n == "creation_time" ||
+                   n == "modification_time" || n == "track_id" ||
+                   n == "language" || n == "compatible_brands" ||
+                   n == "data_format" || n == "codec";
+        };
+        QString key_props;    // 关键字段（放前面）
+        QString rest_props;   // 其余字段
+        QString all_props;    // 全部字段（供 extra/tooltip）
         for (const auto& f : node.fields) {
-            if (f.name == "handler_type" || f.name == "major_brand" ||
-                f.name == "timescale" || f.name == "duration" ||
-                f.name == "width" || f.name == "height" ||
-                f.name == "entry_count" || f.name == "sample_rate" ||
-                f.name == "channel_count") {
+            const QString kv = f.name + "=" + f.value;
+            if (!all_props.isEmpty()) all_props += "\n";
+            all_props += kv;
+            if (isKeyField(f.name)) {
                 if (!key_props.isEmpty()) key_props += " | ";
-                key_props += f.name + "=" + f.value;
+                key_props += kv;
+            } else {
+                if (!rest_props.isEmpty()) rest_props += " | ";
+                rest_props += kv;
             }
         }
-        elem.value = key_props;
+        QString value = key_props;
+        if (!rest_props.isEmpty()) {
+            if (!value.isEmpty()) value += " | ";
+            value += rest_props;
+        }
+        // value 列长度限制，避免超长字段撑爆列宽；完整内容放 extra 供 tooltip 展示
+        if (value.size() > 240) value = value.left(237) + "...";
+        elem.value = value;
+        elem.extra = all_props;
 
         ConvertMp4Tree(node.children, depth + 1, elem.children);
         out.append(elem);

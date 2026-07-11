@@ -831,11 +831,26 @@ void AnalysisPanel::SetupContainerStructureTab() {
     layout->setContentsMargins(4, 0, 4, 4);
     layout->setSpacing(2);
 
-    // 动态标题
-    container_title_label_ = new QLabel(tr("未加载文件"), container_tab_);
-    container_title_label_->setStyleSheet("font-size: 13px; font-weight: bold; color: #F0F6FC; padding: 2px 4px;");
-    container_title_label_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    layout->addWidget(container_title_label_);
+    // 动态标题 + 启用分析开关 (同一行)
+    {
+        QWidget* titleRow = new QWidget(container_tab_);
+        QHBoxLayout* trl = new QHBoxLayout(titleRow);
+        trl->setContentsMargins(0, 0, 0, 0);
+        container_title_label_ = new QLabel(tr("未加载文件"), titleRow);
+        container_title_label_->setStyleSheet("font-size: 13px; font-weight: bold; color: #F0F6FC; padding: 2px 4px;");
+        container_title_label_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+        trl->addWidget(container_title_label_);
+        trl->addStretch();
+        QCheckBox* toggle = new QCheckBox(tr("启用分析"), titleRow);
+        toggle->setChecked(feature_enabled_.value(AnalysisFeature::ContainerStructure, true));
+        toggle->setToolTip(tr("启用或禁用容器结构分析，关闭可跳过打开文件时的结构解析"));
+        connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
+            feature_enabled_[AnalysisFeature::ContainerStructure] = checked;
+            emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::ContainerStructure), checked);
+        });
+        trl->addWidget(toggle);
+        layout->addWidget(titleRow);
+    }
 
     // 概要标签
     container_summary_label_ = new QLabel(tr("打开媒体文件后将自动分析容器结构"), container_tab_);
@@ -864,8 +879,11 @@ void AnalysisPanel::SetupContainerStructureTab() {
     container_tree_->setAnimated(true);
     container_tree_->setIndentation(16);
     container_tree_->setStyleSheet(
-        "QTreeWidget::item { padding: 1px 3px; font-size: 11px; }"
-        "QTreeWidget::item:selected { color: #000; background-color: #b8d4f0; }"
+        "QTreeWidget { background-color: #0D1117; border: 1px solid #30363D; border-radius: 4px; color: #F0F6FC; font-size: 11px; }"
+        "QTreeWidget::item { padding: 2px 4px; color: #F0F6FC; }"
+        "QTreeWidget::item:hover { background-color: #161B22; }"
+        "QTreeWidget::item:selected { background-color: rgba(88, 166, 255, 0.15); color: #F0F6FC; }"
+        "QHeaderView::section { background-color: #161B22; color: #8B949E; padding: 3px; border: none; border-bottom: 1px solid #30363D; font-weight: bold; }"
     );
     leftLayout->addWidget(container_tree_);
     splitter->addWidget(leftPanel);
@@ -1131,9 +1149,13 @@ void AnalysisPanel::OnContainerStructureReady(const model::ContainerStructureRes
     // 填充通用结构树
     container_tree_->clear();
     static const QColor kDepthColors[] = {
-        QColor("#f0f4ff"), QColor("#f5f5f5"), QColor("#fffff0"),
-        QColor("#f0fff0"), QColor("#fff0f5"), QColor("#f0ffff"),
-        QColor("#faf5f0"),
+        QColor("#161B22"),  // level 0 — card background
+        QColor("#0D1117"),  // level 1 — base background
+        QColor("#131A21"),  // level 2
+        QColor("#111920"),  // level 3
+        QColor("#141C24"),  // level 4
+        QColor("#10171D"),  // level 5
+        QColor("#151D25"),  // level 6
     };
 
     std::function<void(QTreeWidgetItem*, const QVector<model::ContainerElement>&)> addNodes;
@@ -1145,6 +1167,10 @@ void AnalysisPanel::OnContainerStructureReady(const model::ContainerStructureRes
             item->setText(2, QString::number(n.size));
             item->setText(3, QString("0x%1").arg(n.offset, 0, 16));
             item->setText(4, n.value);
+            if (!n.extra.isEmpty()) {
+                item->setToolTip(0, n.extra);
+                item->setToolTip(4, n.extra);
+            }
             int d = n.depth;
             QColor bg = kDepthColors[d % 7];
             for (int c = 0; c < 5; ++c) item->setBackground(c, bg);
@@ -1160,6 +1186,10 @@ void AnalysisPanel::OnContainerStructureReady(const model::ContainerStructureRes
         top->setText(2, QString::number(n.size));
         top->setText(3, QString("0x%1").arg(n.offset, 0, 16));
         top->setText(4, n.value);
+        if (!n.extra.isEmpty()) {
+            top->setToolTip(0, n.extra);
+            top->setToolTip(4, n.extra);
+        }
         container_tree_->addTopLevelItem(top);
         addNodes(top, n.children);
     }
@@ -1293,6 +1323,123 @@ void AnalysisPanel::OnExportContainerStructure() {
             out << it.key() << " = " << it.value() << "\n";
         }
     }
+
+    // 流信息表
+    if (!current_container_result_.streams.isEmpty()) {
+        out << "\n--- Streams ---\n";
+        for (const auto& s : current_container_result_.streams) {
+            out << "  #" << s.index << "  " << s.type << "  " << s.codec;
+            if (!s.details.isEmpty()) out << "  (" << s.details << ")";
+            out << "\n";
+        }
+    }
+
+    // MP4/MOV 详细 Box 表
+    const auto fmt = current_container_result_.format;
+    if (fmt == model::ContainerFormat::MP4 || fmt == model::ContainerFormat::MOV) {
+        const auto& mp4 = current_container_result_.mp4_detail;
+        if (mp4.valid && !mp4.track_tables.isEmpty()) {
+            out << "\n========== MP4 Sample Tables ==========\n";
+            for (const auto& t : mp4.track_tables) {
+                out << "\n--- Track " << t.track_id << " (" << t.track_type << ") ---\n";
+
+                if (!t.stts_entries.isEmpty()) {
+                    out << "  [stts] Time-to-Sample (" << t.stts_entries.size() << " entries)\n";
+                    out << "    idx\tsample_count\tsample_delta\n";
+                    int i = 0;
+                    for (const auto& e : t.stts_entries)
+                        out << "    " << i++ << "\t" << e.sample_count << "\t\t" << e.sample_delta << "\n";
+                }
+                if (!t.stsc_entries.isEmpty()) {
+                    out << "  [stsc] Sample-to-Chunk (" << t.stsc_entries.size() << " entries)\n";
+                    out << "    idx\tfirst_chunk\tsamples_per_chunk\tsample_desc_idx\n";
+                    int i = 0;
+                    for (const auto& e : t.stsc_entries)
+                        out << "    " << i++ << "\t" << e.first_chunk << "\t\t" << e.samples_per_chunk
+                            << "\t\t\t" << e.sample_description_index << "\n";
+                }
+                if (!t.stco_entries.isEmpty()) {
+                    out << "  [stco] Chunk Offset (" << t.stco_entries.size() << " entries)\n";
+                    out << "    idx\tchunk_offset\n";
+                    int i = 0;
+                    for (const auto& e : t.stco_entries)
+                        out << "    " << i++ << "\t0x" << Qt::hex << e.chunk_offset << Qt::dec << "\n";
+                }
+                if (!t.co64_entries.isEmpty()) {
+                    out << "  [co64] 64-bit Chunk Offset (" << t.co64_entries.size() << " entries)\n";
+                    out << "    idx\tchunk_offset\n";
+                    int i = 0;
+                    for (const auto& e : t.co64_entries)
+                        out << "    " << i++ << "\t0x" << Qt::hex << e.chunk_offset << Qt::dec << "\n";
+                }
+                if (!t.stsz_entries.isEmpty() || t.stsz_default_size > 0) {
+                    out << "  [stsz] Sample Size (count=" << t.stsz_sample_count
+                        << ", default=" << t.stsz_default_size << ")\n";
+                    if (!t.stsz_entries.isEmpty()) {
+                        out << "    idx\tsample_size\n";
+                        int i = 0;
+                        for (const auto& e : t.stsz_entries)
+                            out << "    " << i++ << "\t" << e.sample_size << "\n";
+                    }
+                }
+                if (!t.stss_entries.isEmpty()) {
+                    out << "  [stss] Sync Sample / Keyframes (" << t.stss_entries.size() << " entries)\n";
+                    out << "    idx\tsample_number\n";
+                    int i = 0;
+                    for (const auto& e : t.stss_entries)
+                        out << "    " << i++ << "\t" << e.sample_number << "\n";
+                }
+            }
+        }
+    }
+
+    // MKV/WebM 详细表 (轨道 / Cues / Blocks)
+    if (fmt == model::ContainerFormat::MKV || fmt == model::ContainerFormat::WebM) {
+        const auto& ebml = current_container_result_.ebml_detail;
+        if (ebml.valid) {
+            out << "\n========== EBML/Matroska Detail ==========\n";
+            out << "DocType: " << ebml.doc_type << " v" << ebml.doc_type_version << "\n";
+            out << "TimestampScale: " << ebml.timestamp_scale << " ns\n";
+            out << "Duration: " << ebml.duration_seconds << " s\n";
+            out << "Clusters: " << ebml.total_clusters
+                << "  BlockGroups: " << ebml.total_blockgroups
+                << "  SimpleBlocks: " << ebml.total_simpleblocks << "\n";
+
+            if (!ebml.tracks.isEmpty()) {
+                out << "\n--- Tracks (" << ebml.tracks.size() << ") ---\n";
+                for (const auto& tr : ebml.tracks) {
+                    out << "  Track #" << tr.track_number << "  " << tr.track_type_name
+                        << "  codec=" << tr.codec_id;
+                    if (!tr.codec_name.isEmpty()) out << " (" << tr.codec_name << ")";
+                    if (!tr.language.isEmpty()) out << "  lang=" << tr.language;
+                    if (tr.pixel_width > 0)
+                        out << "  " << tr.pixel_width << "x" << tr.pixel_height;
+                    if (tr.sampling_frequency > 0)
+                        out << "  " << tr.sampling_frequency << "Hz " << tr.channels << "ch";
+                    out << "\n";
+                }
+            }
+            if (!ebml.cues.isEmpty()) {
+                out << "\n--- Cues (" << ebml.cues.size() << " entries) ---\n";
+                out << "    time\ttrack\tcluster_pos\tblock_no\n";
+                for (const auto& c : ebml.cues)
+                    out << "    " << c.time << "\t" << c.track_number
+                        << "\t0x" << Qt::hex << c.cluster_position << Qt::dec
+                        << "\t" << c.block_number << "\n";
+            }
+            if (!ebml.blocks.isEmpty()) {
+                out << "\n--- Blocks (" << ebml.blocks.size() << " entries, may be truncated) ---\n";
+                out << "    track\ttimecode\tkeyframe\tsize\tcluster_off\tblock_off\n";
+                for (const auto& b : ebml.blocks)
+                    out << "    " << b.track_number << "\t" << b.timecode
+                        << "\t\t" << (b.keyframe ? "K" : "-")
+                        << "\t" << b.data_size
+                        << "\t0x" << Qt::hex << b.cluster_offset
+                        << "\t0x" << b.block_offset << Qt::dec << "\n";
+            }
+        }
+    }
+
     QMessageBox::information(this, tr("导出成功"), tr("已导出到:\n%1").arg(filename));
 }
 

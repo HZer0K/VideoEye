@@ -70,6 +70,9 @@ private:
         uint64_t current_cluster_offset = 0;
         uint64_t timestamp_scale = 1000000;
     };
+
+    // 当前正在解析的 Cluster 的元素起始偏移 (供 Block/SimpleBlock 记录归属 Cluster)
+    uint64_t current_cluster_offset_ = 0;
 };
 
 } // namespace analyzer

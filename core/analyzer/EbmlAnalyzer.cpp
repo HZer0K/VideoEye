@@ -161,10 +161,12 @@ QMap<uint64_t, QString>& EbmlAnalyzer::ElementNames() {
         map[0xB7]       = "CueTrackPositions";
         map[0xF7]       = "CueTrack";
         map[0xF1]       = "CueClusterPosition";
-        map[0x5387]     = "CueRelativePosition";
         map[0xF0]       = "CueRelativePosition";
+        map[0xB2]       = "CueDuration";
         map[0x5378]     = "CueBlockNumber";
         map[0xEA]       = "CueCodecState";
+        map[0xDB]       = "CueReference";
+        map[0x96]       = "CueRefTime";
         // Chapters
         map[0x1043A770] = "Chapters";
         map[0x45B9]     = "EditionEntry";
@@ -588,7 +590,7 @@ void EbmlAnalyzer::ParseLeafValue(model::EbmlElementNode& node,
         // Block 数据
         case 0xA1: { // Block
             model::EbmlBlockSummary s;
-            s.cluster_offset = result.total_clusters > 0 ? 0 : 0;
+            s.cluster_offset = current_cluster_offset_;
             node.value = ParseBlockData(data, s);
             node.extra = node.value;
             if (result.blocks.size() < 1000) {
@@ -599,6 +601,7 @@ void EbmlAnalyzer::ParseLeafValue(model::EbmlElementNode& node,
         }
         case 0xA3: { // SimpleBlock
             model::EbmlBlockSummary s;
+            s.cluster_offset = current_cluster_offset_;
             node.value = ParseSimpleBlockData(data, s);
             node.extra = node.value;
             if (result.blocks.size() < 1000) {
@@ -748,7 +751,14 @@ bool EbmlAnalyzer::ParseElement(QDataStream& ds, qint64 end_offset, int depth,
             qint64 child_end = node.offset + static_cast<qint64>(size);
             parent->children.push_back(node);
             model::EbmlElementNode& child = parent->children.last();
+
+            // 进入 Cluster 前记录其元素起始偏移，供内部 Block 归属；退出后恢复 (支持嵌套)
+            uint64_t saved_cluster_offset = current_cluster_offset_;
+            if (id == 0x1F43B675) { // Cluster
+                current_cluster_offset_ = node.offset - node.header_size;
+            }
             ParseElement(ds, child_end, depth + 1, &child, result);
+            current_cluster_offset_ = saved_cluster_offset;
 
             // --- 后处理：提取表格数据 ---
             if (id == 0xAE) { // TrackEntry
