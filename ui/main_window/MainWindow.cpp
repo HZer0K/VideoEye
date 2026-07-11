@@ -23,12 +23,14 @@
 #include <QPainterPath>
 #include <QListWidget>
 #include <QStackedWidget>
+#include <QActionGroup>
 #include <algorithm>
 #include <QProgressDialog>
 #include <QFileInfo>
 #include <QFile>
 #include <QByteArray>
 #include <QRegularExpression>
+#include <QDateTime>
 #include <QtGlobal>
 #include <cmath>
 
@@ -247,6 +249,8 @@ void MainWindow::SetupContentArea() {
     next_frame_button_->setVisible(false);
     control_layout->addWidget(next_frame_button_);
     
+    // 定位方式 (关键帧 / 精确值) 已移至顶部菜单: 播放设置 → seek方式
+
     // 进度条
     seek_slider_ = new QSlider(Qt::Horizontal, control_bar_);
     seek_slider_->setRange(0, 0);
@@ -360,11 +364,34 @@ void MainWindow::SetupMenuBar() {
     file_menu->addSeparator();
     file_menu->addAction(tr("退出"), QKeySequence::Quit, this, &MainWindow::OnExit);
     
-    // 帮助菜单
+    // 帮助菜单 (先声明, 以便在其之前插入"播放设置")
     QMenu* help_menu = menu_bar_->addMenu(tr("帮助"));
     help_menu->addAction(tr("关于"), this, []() {
         QMessageBox::about(nullptr, QObject::tr("关于"),
                           QObject::tr("VideoEye 2.0\n现代化的视频流分析软件"));
+    });
+
+    // 播放设置菜单 (位于 "文件" 与 "帮助" 之间)
+    QMenu* playback_menu = new QMenu(tr("播放设置"), menu_bar_);
+    menu_bar_->insertMenu(help_menu->menuAction(), playback_menu);
+
+    QMenu* seek_mode_menu = playback_menu->addMenu(tr("seek方式"));
+    QActionGroup* seek_ag = new QActionGroup(playback_menu);
+    seek_ag->setExclusive(true);
+
+    QAction* act_keyframe = seek_ag->addAction(tr("关键帧"));
+    act_keyframe->setCheckable(true);
+    act_keyframe->setData(static_cast<int>(model::SeekMode::NearestKeyframe));
+    act_keyframe->setChecked(true); // 默认: 关键帧 (与原行为一致)
+    seek_mode_menu->addAction(act_keyframe);
+
+    QAction* act_exact = seek_ag->addAction(tr("精确值"));
+    act_exact->setCheckable(true);
+    act_exact->setData(static_cast<int>(model::SeekMode::ExactFrame));
+    seek_mode_menu->addAction(act_exact);
+
+    connect(seek_ag, &QActionGroup::triggered, this, [this](QAction* a) {
+        if (a && player_) player_->SetSeekMode(static_cast<model::SeekMode>(a->data().toInt()));
     });
 }
 
@@ -533,7 +560,32 @@ void MainWindow::SetupConnections() {
     connect(stop_button_, &QPushButton::clicked, this, &MainWindow::OnStop);
     connect(prev_frame_button_, &QPushButton::clicked, this, &MainWindow::OnPrevRawFrame);
     connect(next_frame_button_, &QPushButton::clicked, this, &MainWindow::OnNextRawFrame);
-    connect(seek_slider_, &QSlider::valueChanged, this, &MainWindow::OnSeek);
+    // 进度条交互:
+    //  - 拖动中由 sliderMoved 做"节流的关键帧预览" (画面跟手且不过度占用 UI 线程)
+    //  - valueChanged 仅在非拖动时生效 (键盘方向键/程序化跳转), 按当前模式定位
+    //  - 释放时由 sliderReleased 按当前选择的定位方式 (关键帧/精确值) 做最终定位
+    connect(seek_slider_, &QSlider::sliderPressed, this, [this]() {
+        slider_dragging_ = true;
+        if (player_) player_->SetSeekDragging(true); // 拖动期间抑制音频, 避免杂音
+    });
+    connect(seek_slider_, &QSlider::sliderMoved, this, [this](int v) {
+        // 拖动中: 实时关键帧预览 (画面跟手)。节流到 ~100ms 一次, 避免每像素都调 av_seek_frame。
+        if (showing_raw_image_) { ShowRawFrame(v); return; }
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (now - last_drag_seek_ms_ < 100) return;
+        last_drag_seek_ms_ = now;
+        if (player_) player_->Seek(v, model::SeekMode::NearestKeyframe);
+    });
+    connect(seek_slider_, &QSlider::valueChanged, this, [this](int v) {
+        if (slider_dragging_) return; // 拖动中由 sliderMoved 处理预览, 此处跳过
+        OnSeek(v); // 键盘/程序化跳转: 按当前模式定位
+    });
+    connect(seek_slider_, &QSlider::sliderReleased, this, [this]() {
+        slider_dragging_ = false;
+        if (player_) player_->SetSeekDragging(false); // 恢复音频
+        OnSeek(seek_slider_->value()); // 释放时按当前定位方式真正 seek
+    });
+
 }
 
 void MainWindow::OnOpenFile() {
@@ -1152,7 +1204,15 @@ void MainWindow::OnSeek(int value) {
         ShowRawFrame(value);
         return;
     }
-    player_->Seek(value);
+    if (!player_) return;
+    // 去重: 释放进度条时 sliderReleased 与尾随的 valueChanged 会用相同目标值
+    // 在短时间内各调一次 OnSeek, 这里跳过重复的那次, 避免双 seek。
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (value == last_seek_value_ && now - last_seek_time_ < 100) return;
+    last_seek_value_ = value;
+    last_seek_time_ = now;
+    // 按当前选择的定位方式 (关键帧 / 精确帧) 执行 seek
+    player_->Seek(value, player_->GetSeekMode());
 }
 
 void MainWindow::OnStateChanged(model::PlayerState state) {

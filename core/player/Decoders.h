@@ -74,7 +74,10 @@ public:
     int GetWidth() const { return width_; }
     int GetHeight() const { return height_; }
     AVPictureType GetLastPictureType() const { return last_pict_type_; }
-    
+
+    // 清空解码器内部缓冲 (定位后丢弃旧参考帧/B帧, 避免花屏与过期帧)
+    void Flush();
+
     // 关闭解码器
     void Close();
     
@@ -113,6 +116,9 @@ public:
     std::string GetCodecName() const;
     int GetSampleRate() const { return sample_rate_; }
     int GetChannels() const { return channels_; }
+
+    // 清空解码器内部缓冲 (定位后丢弃旧参考帧, 避免过期音频输出)
+    void Flush();
     int64_t GetLastFramePts() const { return last_frame_pts_; }
     int GetLastFrameSampleCount() const { return last_frame_sample_count_; }
     int GetLastFrameSampleRate() const { return last_frame_sample_rate_; }

@@ -20,6 +20,7 @@
 #include <QListWidget>
 #include <QStackedWidget>
 #include <QLabel>
+#include <QButtonGroup>
 #include <deque>
 #include <QImage>
 
@@ -114,6 +115,10 @@ protected:
     // 控制栏
     QWidget* control_bar_;        // 播放控制容器
     QSlider* seek_slider_;        // 进度条
+    bool slider_dragging_ = false; // 进度条是否正在拖动 (区分拖动预览与键盘跳转)
+    qint64 last_drag_seek_ms_ = 0; // 拖动预览节流的上一帧 seek 时间 (ms, 避免每像素都调 av_seek_frame 卡 UI)
+    int last_seek_value_ = -1;     // 去重: 上一次真正 seek 的目标值 (避免释放+尾随 valueChanged 双 seek)
+    qint64 last_seek_time_ = 0;    // 去重: 上一次真正 seek 的时间 (ms)
     QPushButton* play_pause_button_; // 播放/暂停按钮
     QPushButton* stop_button_;    // 停止按钮
     QPushButton* prev_frame_button_;

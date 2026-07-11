@@ -451,6 +451,12 @@ std::string VideoDecoder::GetCodecName() const {
     return "unknown";
 }
 
+void VideoDecoder::Flush() {
+    if (codec_ctx_) {
+        avcodec_flush_buffers(codec_ctx_);
+    }
+}
+
 void VideoDecoder::Close() {
     if (codec_ctx_) {
         // 清除 hw_device_ctx 引用 (codec_ctx_ 持有自己的 ref)
@@ -629,6 +635,12 @@ std::string AudioDecoder::GetCodecName() const {
         return codec_ctx_->codec->name;
     }
     return "unknown";
+}
+
+void AudioDecoder::Flush() {
+    if (codec_ctx_) {
+        avcodec_flush_buffers(codec_ctx_);
+    }
 }
 
 void AudioDecoder::Close() {

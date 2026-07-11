@@ -25,6 +25,7 @@ extern "C" {
 #include "core/model/AnalysisEvent.h"
 #include "core/model/AudioVisualizationFrame.h"
 #include "core/model/FrameData.h"
+#include "core/model/SeekMode.h"
 #include "core/model/PacketInfo.h"
 #include "core/model/SyncSample.h"
 #include "core/model/TimelineEvent.h"
@@ -53,7 +54,13 @@ public:
     void Play();
     void Pause();
     void Stop();
-    void Seek(int position_ms);
+    void Seek(int position_ms, model::SeekMode mode = model::SeekMode::NearestKeyframe);
+
+    // 定位方式 (进度条拖动策略)
+    void SetSeekMode(model::SeekMode mode) { seek_mode_.store(mode); }
+    model::SeekMode GetSeekMode() const { return seek_mode_.load(); }
+    // 拖动进度条期间调用: 抑制音频输出, 避免关键帧预览时从多个位置传出杂音
+    void SetSeekDragging(bool dragging) { drag_seeking_.store(dragging); }
     
     // 状态查询
     model::PlayerState GetState() const { return state_; }
@@ -170,6 +177,14 @@ private:
     std::atomic<int> current_position_ms_{0};
     int volume_ = 100;
     QString current_url_;
+
+    // 定位方式 (进度条拖动策略)
+    std::atomic<model::SeekMode> seek_mode_{model::SeekMode::NearestKeyframe}; // 用户选择的定位方式 (菜单设置)
+    std::atomic<bool> pending_seek_{false};   // 解码线程据此在下一轮循环执行 flush
+    std::atomic<model::SeekMode> pending_seek_mode_{model::SeekMode::NearestKeyframe}; // 本次定位使用的模式
+    double seek_request_ms_ = 0;              // 待定位目标 (仅 Seek 线程在 mutex_ 下访问)
+    std::atomic<double> drop_until_sec_{-1.0}; // 精确帧模式: 丢弃此秒数之前的帧; <0 表示不丢弃
+    std::atomic<bool> drag_seeking_{false};    // 拖动进度条期间: 抑制音频输出, 避免关键帧预览时杂音
     
     // 分析器
     analyzer::StreamAnalyzer stream_analyzer_;

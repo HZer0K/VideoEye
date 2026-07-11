@@ -455,14 +455,23 @@ void MediaPlayer::Stop() {
     emit StateChanged(state_);
 }
 
-void MediaPlayer::Seek(int position_ms) {
-    LOG_INFO("Seek: target_ms=" + std::to_string(position_ms));
+void MediaPlayer::Seek(int position_ms, model::SeekMode mode) {
+    LOG_INFO("Seek: target_ms=" + std::to_string(position_ms) +
+             " mode=" + std::to_string(static_cast<int>(mode)));
     std::lock_guard<std::mutex> lock(mutex_);
     if (!format_ctx_) return;
     if (audio_output_) audio_output_->Clear(); // 丢弃已缓冲的旧音频, 避免 seek 后播放过期声音
+
     int64_t timestamp = position_ms * 1000LL;
-    int ret = av_seek_frame(format_ctx_, -1, timestamp, AVSEEK_FLAG_BACKWARD);
+    // 两种模式都先回退到目标时间之前最近的关键帧 (I帧); 精确帧再由解码线程向前丢弃到目标。
+    int flags = AVSEEK_FLAG_BACKWARD;
+
+    int ret = av_seek_frame(format_ctx_, -1, timestamp, flags);
     if (ret < 0) { emit Error("Seek failed"); return; }
+
+    pending_seek_mode_.store(mode);
+    seek_request_ms_ = position_ms;
+    pending_seek_.store(true); // 由解码线程在下一轮循环内执行 flush (线程安全)
     current_position_ms_.store(position_ms);
     emit PositionChanged(current_position_ms_.load(), duration_ms_);
 }
@@ -582,6 +591,24 @@ void MediaPlayer::DecodeThread() {
             continue;
         }
 
+        // 处理定位请求: 在解码线程内刷新解码器, 避免与 SendPacket/ReceiveFrame 产生竞态。
+        // 精确帧模式需丢弃目标之前的帧, 直到到达目标时间戳。
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (pending_seek_) {
+                if (video_decoder_) video_decoder_->Flush();
+                if (audio_decoder_) audio_decoder_->Flush();
+                // 关键: 定位后必须重置播放时钟, 将新位置作为新的时间基准。
+                // 否则 PaceTo 仍按"视频起点"计算需要 sleep 的时长, 产生长达
+                // (目标时间戳 - 起点) 秒的 sleep, 解码线程被睡死 -> 画面/进度条冻结。
+                playback_clock.Reset();
+                drop_until_sec_.store((pending_seek_mode_.load() == model::SeekMode::ExactFrame)
+                                          ? (seek_request_ms_ / 1000.0)
+                                          : -1.0);
+                pending_seek_.store(false);
+            }
+        }
+
         int ret = av_read_frame(format_ctx_, packet);
         if (ret < 0) { LOG_INFO("DecodeThread: av_read_frame EOF -> PlaybackFinished"); emit PlaybackFinished(); break; }
 
@@ -657,6 +684,13 @@ void MediaPlayer::DecodeThread() {
                             frame_data.timestamp = frame_ts;
                         }
                     }
+                    // 精确帧定位: 从关键帧向前逐帧解码到目标时间戳。
+                    // 追赶阶段放行显示 (画面快速前进到目标, 不再冻结), 但跳过分析开销
+                    // (见下方各分析块的条件); 越过目标帧后清除标志, 后续恢复正常处理。
+                    if (drop_until_sec_.load() >= 0.0 && frame_ts + 0.001 >= drop_until_sec_.load()) {
+                        drop_until_sec_.store(-1.0); // 到达/越过目标帧, 结束追赶
+                    }
+
                     if (frame_paced_video) {
                         playback_clock.PaceTo(frame_ts);
                         emit_position_if_needed(frame_ts);
@@ -704,7 +738,7 @@ void MediaPlayer::DecodeThread() {
                             }
                         }
                     }
-                    if (frame_type_analysis_enabled_) {
+                    if (drop_until_sec_.load() < 0.0 && frame_type_analysis_enabled_) {
                         double ts = frame_data.timestamp;
                         const int emitted_index = video_frame_index_;
                         const bool is_key_frame = (packet->flags & AV_PKT_FLAG_KEY) != 0;
@@ -725,7 +759,7 @@ void MediaPlayer::DecodeThread() {
                         }
                     }
                     // 宏块分析 (运动矢量 / 块统计)
-                    if (macroblock_analysis_enabled_) {
+                    if (drop_until_sec_.load() < 0.0 && macroblock_analysis_enabled_) {
                         const AVFrame* raw_frame = video_decoder_->GetLastRawFrame();
                         if (raw_frame) {
                             try {
@@ -744,7 +778,7 @@ void MediaPlayer::DecodeThread() {
 
                     // 场景切换检测: 逐帧计算灰度直方图, 与上一帧比较巴氏距离。
                     // 独立于"直方图"开关, 仅在本开关开启时计算, 避免无谓开销。
-                    if (scene_change_analysis_enabled_) {
+                    if (drop_until_sec_.load() < 0.0 && scene_change_analysis_enabled_) {
                         try {
                             auto hist = frame_analyzer_.ComputeHistogram(frame_data);
                             auto sc = scene_change_analyzer_.Feed(
@@ -754,7 +788,7 @@ void MediaPlayer::DecodeThread() {
                             LOG_ERROR("场景切换检测失败: " + std::string(e.what()));
                         }
                     }
-                    if (analysis_enabled_) {
+                    if (drop_until_sec_.load() < 0.0 && analysis_enabled_) {
                         stream_analyzer_.AnalyzeVideoFrame(video_decoder_->GetLastPictureType());
                         analysis_frame_counter_++;
                         if (analysis_frame_counter_ % 10 == 0) {
@@ -780,6 +814,8 @@ void MediaPlayer::DecodeThread() {
                 int out_size = 0;
                 while (audio_decoder_->ReceiveFrame(audio_buffer.data(),
                                                     static_cast<int>(audio_buffer.size()), out_size)) {
+                    // 精确帧定位追赶阶段: 丢弃音频输出与分析事件, 避免过期声音
+                    if (drop_until_sec_.load() >= 0.0 || drag_seeking_.load()) continue;
                     const qint64 frame_pts = static_cast<qint64>(audio_decoder_->GetLastFramePts());
                     double ts = current_position_ms_.load() / 1000.0;
                     if (frame_pts == AV_NOPTS_VALUE && !missing_audio_pts_reported_[audio_stream_index_]) {
