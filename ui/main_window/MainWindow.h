@@ -9,6 +9,7 @@
 #include <QString>
 #include <QTabWidget>
 #include <QMenuBar>
+#include <QMenu>
 #include <QToolBar>
 #include <QStatusBar>
 #include <QAction>
@@ -73,7 +74,14 @@ private slots:
     void OnVideoFrameExportProgress(int exported_frames);
     void OnVideoFrameExportFinished(const QString& output_dir);
     void OnVideoFrameExportError(const QString& message);
-    
+
+    // 音视频导出
+    void OnExportVideo();
+    void OnExportAudio();
+    void OnMediaExportProgress(int percent);
+    void OnMediaExportFinished(const QString& output_path);
+    void OnMediaExportError(const QString& message);
+
 private:
     // 初始化UI
     void SetupUI();
@@ -139,6 +147,10 @@ protected:
     QAction* export_frames_action_ = nullptr;
     QProgressDialog* export_progress_dialog_ = nullptr;
     int export_total_frames_ = 0;
+
+    // 导出类型跟踪 (用于进度对话框取消时调用正确的取消接口)
+    enum class ActiveExport { None, Frames, Media };
+    ActiveExport active_export_ = ActiveExport::None;
 
     bool audio_only_mode_ = false;
     QImage album_cover_;

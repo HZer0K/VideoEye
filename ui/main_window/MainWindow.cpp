@@ -1,6 +1,8 @@
 #include "MainWindow.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/theme/AppTheme.h"
+#include "ui/dialogs/MediaExportDialog.h"
+#include "core/exporter/MediaExporter.h"
 #include "core/model/EbmlInfo.h"
 #include "core/model/ContainerStructureInfo.h"
 #include "core/model/AudioVisualizationFrame.h"
@@ -157,10 +159,6 @@ void MainWindow::SetupAppBar() {
     QPushButton* open_url_btn = new QPushButton(tr("打开URL"), app_bar_);
     connect(open_url_btn, &QPushButton::clicked, this, &MainWindow::OnOpenURL);
     layout->addWidget(open_url_btn);
-    
-    QPushButton* export_btn = new QPushButton(tr("导出帧"), app_bar_);
-    connect(export_btn, &QPushButton::clicked, this, &MainWindow::OnExportVideoFrames);
-    layout->addWidget(export_btn);
 }
 
 void MainWindow::SetupSidebar() {
@@ -360,7 +358,11 @@ void MainWindow::SetupMenuBar() {
     QMenu* file_menu = menu_bar_->addMenu(tr("文件"));
     file_menu->addAction(tr("打开本地文件"), QKeySequence::Open, this, &MainWindow::OnOpenFile);
     file_menu->addAction(tr("打开URL"), QKeySequence("Ctrl+U"), this, &MainWindow::OnOpenURL);
-    export_frames_action_ = file_menu->addAction(tr("导出视频帧..."), this, &MainWindow::OnExportVideoFrames);
+    // 导出 子菜单
+    QMenu* export_menu = file_menu->addMenu(tr("导出"));
+    export_frames_action_ = export_menu->addAction(tr("导出视频帧..."), this, &MainWindow::OnExportVideoFrames);
+    export_menu->addAction(tr("导出视频..."), this, &MainWindow::OnExportVideo);
+    export_menu->addAction(tr("导出音频..."), this, &MainWindow::OnExportAudio);
     file_menu->addSeparator();
     file_menu->addAction(tr("退出"), QKeySequence::Quit, this, &MainWindow::OnExit);
     
@@ -449,10 +451,10 @@ void MainWindow::SetupConnections() {
                     export_progress_dialog_->setAutoClose(false);
                     export_progress_dialog_->setAutoReset(false);
                     connect(export_progress_dialog_, &QProgressDialog::canceled, this, [this]() {
-                        if (player_) {
-                            statusBar()->showMessage(tr("正在终止导出..."));
-                            player_->CancelVideoFrameExport();
-                        }
+                        if (!player_) return;
+                        statusBar()->showMessage(tr("正在终止导出..."));
+                        if (active_export_ == ActiveExport::Media) player_->CancelMediaExport();
+                        else player_->CancelVideoFrameExport();
                     });
                 } else {
                     export_progress_dialog_->setMaximum(total_frames > 0 ? total_frames : 0);
@@ -461,7 +463,47 @@ void MainWindow::SetupConnections() {
                 export_progress_dialog_->setLabelText(tr("正在导出视频帧..."));
                 export_progress_dialog_->show();
             });
-    
+
+    // 音视频导出信号
+    connect(player_, &player::MediaPlayer::MediaExportProgress,
+            this, &MainWindow::OnMediaExportProgress);
+    connect(player_, &player::MediaPlayer::MediaExportFinished,
+            this, &MainWindow::OnMediaExportFinished);
+    connect(player_, &player::MediaPlayer::MediaExportError,
+            this, &MainWindow::OnMediaExportError);
+    connect(player_, &player::MediaPlayer::MediaExportStarted,
+            this, [this](qint64 duration_ms) {
+                Q_UNUSED(duration_ms);
+                if (!export_progress_dialog_) {
+                    export_progress_dialog_ = new QProgressDialog(tr("正在导出..."),
+                                                                  tr("终止"), 0, 100, this);
+                    export_progress_dialog_->setWindowModality(Qt::ApplicationModal);
+                    export_progress_dialog_->setAutoClose(false);
+                    export_progress_dialog_->setAutoReset(false);
+                    connect(export_progress_dialog_, &QProgressDialog::canceled, this, [this]() {
+                        if (!player_) return;
+                        statusBar()->showMessage(tr("正在终止导出..."));
+                        if (active_export_ == ActiveExport::Media) player_->CancelMediaExport();
+                        else player_->CancelVideoFrameExport();
+                    });
+                } else {
+                    export_progress_dialog_->setMaximum(100);
+                }
+                export_progress_dialog_->setValue(0);
+                export_progress_dialog_->setLabelText(tr("正在导出音视频..."));
+                export_progress_dialog_->show();
+            });
+    connect(player_, &player::MediaPlayer::MediaExportCanceled,
+            this, [this](const QString& output_path) {
+                if (export_progress_dialog_) {
+                    export_progress_dialog_->reset();
+                    export_progress_dialog_->hide();
+                }
+                const QString msg = tr("已取消导出：%1").arg(output_path);
+                statusBar()->showMessage(msg);
+                QMessageBox::information(this, tr("导出已取消"), msg);
+            });
+
     // 播放器信号连接 - 分析功能 (实时分析)
     connect(player_, &player::MediaPlayer::StreamStatsReady,
             analysis_panel_, &ui::AnalysisPanel::UpdateStreamStats);
@@ -784,6 +826,7 @@ void MainWindow::OnExportVideoFrames() {
         QMessageBox::information(this, tr("提示"), tr("正在导出中，请先终止或等待完成"));
         return;
     }
+    active_export_ = ActiveExport::Frames;
 
     const QString dir = QFileDialog::getExistingDirectory(this, tr("选择导出目录"), "");
     if (dir.isEmpty()) {
@@ -822,6 +865,46 @@ void MainWindow::OnExportVideoFrames() {
 
     statusBar()->showMessage(tr("开始导出视频帧..."));
     player_->StartVideoFrameExport(dir, format, quality, interval);
+}
+
+void MainWindow::OnExportVideo() {
+    if (!player_ || current_media_url_.isEmpty()) {
+        QMessageBox::information(this, tr("提示"), tr("请先打开一个视频文件"));
+        return;
+    }
+    if (showing_raw_image_) {
+        QMessageBox::information(this, tr("提示"), tr("当前为图像文件，无法导出视频"));
+        return;
+    }
+    if (export_progress_dialog_ && export_progress_dialog_->isVisible()) {
+        QMessageBox::information(this, tr("提示"), tr("正在导出中，请先终止或等待完成"));
+        return;
+    }
+    active_export_ = ActiveExport::Media;
+    ui::MediaExportDialog dlg(this, exporter::ExportKind::Video, current_media_url_, player_->GetDuration());
+    if (dlg.exec() != QDialog::Accepted) return;
+    statusBar()->showMessage(tr("开始导出视频..."));
+    player_->StartMediaExport(dlg.GetOptions());
+}
+
+void MainWindow::OnExportAudio() {
+    if (!player_ || current_media_url_.isEmpty()) {
+        QMessageBox::information(this, tr("提示"), tr("请先打开一个视频文件"));
+        return;
+    }
+    if (showing_raw_image_) {
+        QMessageBox::information(this, tr("提示"), tr("当前为图像文件，无法导出音频"));
+        return;
+    }
+    if (export_progress_dialog_ && export_progress_dialog_->isVisible()) {
+        QMessageBox::information(this, tr("提示"), tr("正在导出中，请先终止或等待完成"));
+        return;
+    }
+    active_export_ = ActiveExport::Media;
+    ui::MediaExportDialog dlg(this, exporter::ExportKind::Audio, current_media_url_, player_->GetDuration());
+    if (dlg.exec() != QDialog::Accepted) return;
+    statusBar()->showMessage(tr("开始导出音频..."));
+    player_->StartMediaExport(dlg.GetOptions());
 }
 
 void MainWindow::OnExit() {
@@ -1661,6 +1744,33 @@ void MainWindow::OnVideoFrameExportFinished(const QString& output_dir) {
 }
 
 void MainWindow::OnVideoFrameExportError(const QString& message) {
+    if (export_progress_dialog_) {
+        export_progress_dialog_->reset();
+        export_progress_dialog_->hide();
+    }
+    statusBar()->showMessage(tr("导出失败: %1").arg(message));
+    QMessageBox::warning(this, tr("导出失败"), message);
+}
+
+void MainWindow::OnMediaExportProgress(int percent) {
+    if (export_progress_dialog_) {
+        export_progress_dialog_->setMaximum(100);
+        export_progress_dialog_->setValue(percent);
+        export_progress_dialog_->setLabelText(tr("正在导出音视频... %1%").arg(percent));
+    }
+}
+
+void MainWindow::OnMediaExportFinished(const QString& output_path) {
+    if (export_progress_dialog_) {
+        export_progress_dialog_->reset();
+        export_progress_dialog_->hide();
+    }
+    const QString msg = tr("导出完成: %1").arg(output_path);
+    statusBar()->showMessage(msg);
+    QMessageBox::information(this, tr("导出完成"), msg);
+}
+
+void MainWindow::OnMediaExportError(const QString& message) {
     if (export_progress_dialog_) {
         export_progress_dialog_->reset();
         export_progress_dialog_->hide();

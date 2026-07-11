@@ -9,6 +9,7 @@
 #include <limits>
 #include <exception>
 #include <QDir>
+#include <QThread>
 #include <thread>
 
 extern "C" {
@@ -38,6 +39,11 @@ MediaPlayer::MediaPlayer(QObject* parent)
 
 MediaPlayer::~MediaPlayer() {
     CancelVideoFrameExport();
+    CancelMediaExport();
+    if (media_export_thread_) {
+        media_export_thread_->quit();
+        media_export_thread_->wait(5000);
+    }
     Stop();
     Cleanup();
     avformat_network_deinit();
@@ -548,6 +554,51 @@ void MediaPlayer::CancelVideoFrameExport() {
         frame_exporter_->Cancel();
         frame_exporter_.reset();
     }
+}
+
+// --- 音视频导出 (后台线程运行 MediaExporter) ---
+
+void MediaPlayer::StartMediaExport(const exporter::ExportOptions& opt) {
+    CancelMediaExport(); // 取消可能正在进行的旧导出
+    if (opt.input_path.isEmpty()) { emit MediaExportError("未打开媒体文件"); return; }
+    if (opt.output_path.isEmpty()) { emit MediaExportError("未指定输出路径"); return; }
+    // 若输出文件已存在则先删除, 导出器会重建
+    if (QFile::exists(opt.output_path)) QFile::remove(opt.output_path);
+
+    auto* thread = new QThread(this);
+    auto* exporter = new exporter::MediaExporter();
+    exporter->moveToThread(thread);
+
+    media_export_thread_ = thread;
+    media_exporter_ = exporter;
+
+    connect(exporter, &exporter::MediaExporter::ExportStarted, this, &MediaPlayer::MediaExportStarted);
+    connect(exporter, &exporter::MediaExporter::ExportProgress, this, &MediaPlayer::MediaExportProgress);
+    connect(exporter, &exporter::MediaExporter::ExportFinished, this, &MediaPlayer::MediaExportFinished);
+    connect(exporter, &exporter::MediaExporter::ExportCanceled, this, &MediaPlayer::MediaExportCanceled);
+    connect(exporter, &exporter::MediaExporter::ExportError, this, &MediaPlayer::MediaExportError);
+
+    // 导出结束 -> 退出线程, 随后自清理 (不触碰 this 的成员指针, 避免覆盖新导出)
+    connect(exporter, &exporter::MediaExporter::ExportFinished, thread, &QThread::quit);
+    connect(exporter, &exporter::MediaExporter::ExportCanceled, thread, &QThread::quit);
+    connect(exporter, &exporter::MediaExporter::ExportError, thread, &QThread::quit);
+    connect(thread, &QThread::finished, thread, &QThread::deleteLater);
+    connect(thread, &QThread::finished, exporter, &QObject::deleteLater);
+    connect(thread, &QThread::finished, this, [this, thread, exporter]() {
+        if (media_export_thread_ == thread) media_export_thread_ = nullptr;
+        if (media_exporter_ == exporter) media_exporter_ = nullptr;
+    });
+
+    // 线程启动后执行导出 (在 worker 线程中同步运行)
+    connect(thread, &QThread::started, exporter, [exporter, opt]() {
+        exporter->Export(opt);
+    });
+
+    thread->start();
+}
+
+void MediaPlayer::CancelMediaExport() {
+    if (media_exporter_) media_exporter_->Cancel();
 }
 
 // --- 解码线程 ---

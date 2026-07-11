@@ -20,6 +20,7 @@ extern "C" {
 #include "core/player/AudioVisualizer.h"
 #include "core/player/AudioOutput.h"
 #include "core/player/VideoFrameExporter.h"
+#include "core/exporter/MediaExporter.h"
 #include "core/player/VulkanContext.h"
 #include "core/player/VulkanRenderer.h"
 #include "core/model/AnalysisEvent.h"
@@ -95,6 +96,10 @@ public:
     void StartVideoFrameExport(const QString& output_dir, const QString& format, int jpg_quality = 90, int frame_interval = 1);
     void CancelVideoFrameExport();
 
+    // 音视频导出 (remux / transcode)
+    void StartMediaExport(const exporter::ExportOptions& opt);
+    void CancelMediaExport();
+
     // Vulkan 渲染
     void SetVulkanRenderer(VulkanRenderer* renderer);
     void SetVulkanRenderingEnabled(bool enabled) { vulkan_rendering_enabled_ = enabled; }
@@ -137,7 +142,14 @@ signals:
     void VideoFrameExportFinished(const QString& output_dir);
     void VideoFrameExportCanceled(int exported_frames, const QString& output_dir);
     void VideoFrameExportError(const QString& message);
-    
+
+    // 音视频导出信号
+    void MediaExportStarted(qint64 duration_ms);
+    void MediaExportProgress(int percent);
+    void MediaExportFinished(const QString& output_path);
+    void MediaExportCanceled(const QString& output_path);
+    void MediaExportError(const QString& message);
+
 private:
     // 解码线程
     void DecodeThread();
@@ -195,7 +207,11 @@ private:
     StreamInfoExtractor stream_info_extractor_;
     AudioVisualizer audio_visualizer_;
     std::unique_ptr<VideoFrameExporter> frame_exporter_;
-    
+
+    // 音视频导出 (后台线程)
+    QThread* media_export_thread_ = nullptr;
+    exporter::MediaExporter* media_exporter_ = nullptr;
+
     // 分析开关
     bool analysis_enabled_ = false;
     bool frame_type_analysis_enabled_ = false;
