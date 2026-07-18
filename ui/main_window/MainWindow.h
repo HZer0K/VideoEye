@@ -76,6 +76,10 @@ private slots:
     void OnVideoFrameExportFinished(const QString& output_dir);
     void OnVideoFrameExportError(const QString& message);
 
+    // 运动矢量叠加
+    void OnMvOverlayToggled(bool enabled);
+    void OnMacroblockInfoForOverlay(const videoeye::model::MacroblockFrameAnalysis& analysis);
+
     // 音视频导出
     void OnExportVideo();
     void OnExportAudio();
@@ -182,6 +186,10 @@ protected:
     QString last_overlay_fps_;
     QString last_overlay_resolution_;
     QString last_overlay_codec_;
+
+    // 运动矢量叠加
+    QPushButton* mv_overlay_button_ = nullptr;  // MV 叠加开关 (checkable)
+    bool mv_overlay_enabled_ = false;
 };
 
 } // namespace ui

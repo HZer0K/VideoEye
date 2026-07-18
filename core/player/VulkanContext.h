@@ -25,6 +25,16 @@ public:
     // window_handle: 用于创建可呈现 Surface 的原生窗口句柄 (WId)
     bool Initialize(WId window_handle, const QString& app_name = "VideoEye");
 
+    // 分步初始化: 在 GUI 线程创建 instance + surface (Win32 窗口线程亲和性)。
+    // 重试时会销毁旧 Surface 并用当前窗口状态重建, 确保 DWM 已就绪后获得有效 Surface。
+    // 返回 true 表示 instance + surface 就绪 (但不代表设备已选择)。
+    bool PrepareSurface(WId window_handle, const QString& app_name = "VideoEye");
+
+    // 分步初始化: 在后台线程选择物理设备 + 创建逻辑设备。
+    // 前提: PrepareSurface 已成功 (instance_ + surface_ 就绪)。
+    // 失败时不销毁 instance/surface, 供后续重试 (可能重建 surface 后再试)。
+    bool InitializeDevice();
+
     // 延迟创建 FFmpeg 设备上下文 (仅 HW 解码需要, 渲染不需要)
     // 返回 true 表示 hw_device_ctx_ 已就绪 (可能此前已创建)
     bool InitializeFFmpegDevice();
@@ -72,6 +82,7 @@ private:
     VkPhysicalDevice phys_dev_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;   // 由本上下文创建并拥有 (渲染 Surface)
+    WId window_handle_ = 0;                    // 保存窗口句柄供重试时重建 Surface
 
     // 队列族索引
     uint32_t graphics_qf_ = UINT32_MAX;

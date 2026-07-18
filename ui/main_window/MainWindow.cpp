@@ -293,6 +293,25 @@ void MainWindow::SetupContentArea() {
     time_label_->setMinimumWidth(140);
     time_label_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     control_layout->addWidget(time_label_);
+
+    // 运动矢量叠加开关 (checkable)
+    mv_overlay_button_ = new QPushButton(tr("MV"), control_bar_);
+    mv_overlay_button_->setObjectName("MvOverlayButton");
+    mv_overlay_button_->setCheckable(true);
+    mv_overlay_button_->setToolTip(tr("运动矢量叠加显示 (需软件解码)"));
+    mv_overlay_button_->setFixedSize(40, 28);
+    mv_overlay_button_->setStyleSheet(
+        "QPushButton#MvOverlayButton {"
+        "  background-color: #21262D; border: 1px solid #30363D;"
+        "  border-radius: 4px; color: #8B949E; font-size: 11px; font-weight: bold;"
+        "}"
+        "QPushButton#MvOverlayButton:hover {"
+        "  border-color: #58A6FF; color: #C9D1D9;"
+        "}"
+        "QPushButton#MvOverlayButton:checked {"
+        "  background-color: #1F6FEB; border-color: #58A6FF; color: #FFFFFF;"
+        "}");
+    control_layout->addWidget(mv_overlay_button_);
     
     top_layout->addWidget(control_bar_);
     
@@ -577,6 +596,9 @@ void MainWindow::SetupConnections() {
             analysis_panel_, &ui::AnalysisPanel::OnContainerStructureReady);
     connect(player_, &player::MediaPlayer::MacroblockInfoReady,
             analysis_panel_, &ui::AnalysisPanel::UpdateMacroblockInfo);
+    // MV 叠加: 同时转发到视频叠加层
+    connect(player_, &player::MediaPlayer::MacroblockInfoReady,
+            this, &MainWindow::OnMacroblockInfoForOverlay);
     connect(player_, &player::MediaPlayer::SceneChangeReady,
             analysis_panel_, &ui::AnalysisPanel::OnSceneChangeDetected);
     
@@ -623,6 +645,10 @@ void MainWindow::SetupConnections() {
                     break;
                 case AF::Macroblock:
                     player_->SetMacroblockAnalysisEnabled(enabled);
+                    // 宏块分析关闭时联动关闭 MV 叠加
+                    if (!enabled && mv_overlay_enabled_) {
+                        mv_overlay_button_->setChecked(false);
+                    }
                     break;
                 case AF::SceneChange:
                     player_->SetSceneChangeAnalysisEnabled(enabled);
@@ -640,6 +666,8 @@ void MainWindow::SetupConnections() {
     connect(stop_button_, &QPushButton::clicked, this, &MainWindow::OnStop);
     connect(prev_frame_button_, &QPushButton::clicked, this, &MainWindow::OnPrevRawFrame);
     connect(next_frame_button_, &QPushButton::clicked, this, &MainWindow::OnNextRawFrame);
+    // MV 叠加开关
+    connect(mv_overlay_button_, &QPushButton::toggled, this, &MainWindow::OnMvOverlayToggled);
     // 进度条交互:
     //  - 拖动中由 sliderMoved 做"节流的关键帧预览" (画面跟手且不过度占用 UI 线程)
     //  - valueChanged 仅在非拖动时生效 (键盘方向键/程序化跳转), 按当前模式定位
@@ -1281,6 +1309,8 @@ void MainWindow::OnPlayPause() {
 
 void MainWindow::ResetVideoUI() {
     video_widget_->Clear();
+    // 清除旧的运动矢量数据, 避免新文件打开前显示残留箭头
+    video_widget_->SetMotionVectors(videoeye::model::MacroblockFrameAnalysis{});
     seek_slider_->setValue(0);
     seek_slider_->setRange(0, 0);
     time_label_->setText(tr("00:00:00 / 00:00:00"));
@@ -1815,6 +1845,28 @@ void MainWindow::OnMediaExportError(const QString& message) {
     }
     statusBar()->showMessage(tr("导出失败: %1").arg(message));
     QMessageBox::warning(this, tr("导出失败"), message);
+}
+
+void MainWindow::OnMvOverlayToggled(bool enabled) {
+    mv_overlay_enabled_ = enabled;
+
+    if (enabled) {
+        // 开启 MV 叠加: 自动启用宏块分析 (会触发软件解码切换)
+        if (player_) {
+            player_->SetMacroblockAnalysisEnabled(true);
+        }
+        video_widget_->SetMvOverlayMode(ui::MvOverlayMode::Arrows);
+        statusBar()->showMessage(tr("运动矢量叠加已开启"), 3000);
+    } else {
+        video_widget_->SetMvOverlayMode(ui::MvOverlayMode::Off);
+        statusBar()->showMessage(tr("运动矢量叠加已关闭"), 3000);
+    }
+}
+
+void MainWindow::OnMacroblockInfoForOverlay(
+        const videoeye::model::MacroblockFrameAnalysis& analysis) {
+    if (!mv_overlay_enabled_) return;
+    video_widget_->SetMotionVectors(analysis);
 }
 
 } // namespace ui

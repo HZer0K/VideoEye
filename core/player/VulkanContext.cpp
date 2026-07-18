@@ -41,42 +41,49 @@ bool VulkanContext::Initialize(WId window_handle, const QString& app_name) {
         LOG_WARN("VulkanContext already initialized");
         return true;
     }
+    // 便捷方法: 顺序调用 PrepareSurface + InitializeDevice
+    if (!PrepareSurface(window_handle, app_name)) return false;
+    if (!InitializeDevice()) return false;
+    return true;
+}
 
-    // 重试路径: instance + surface 已在上一次部分初始化中创建 (SelectPhysicalDevice
-    // 因 DWM 合成时机未就绪而失败, 但 instance/surface 保留未销毁)。跳过
-    // CreateInstance/CreateSurface, 直接重试设备选择 —— 避免二次 vkCreateInstance
-    // 在某些无显示环境 (headless/沙箱) 触发 Vulkan loader fast-fail。
-    if (instance_ != VK_NULL_HANDLE && surface_ != VK_NULL_HANDLE) {
-        LOG_INFO("VulkanContext: 重试设备选择 (复用已有 instance+surface)");
-        if (!SelectPhysicalDevice()) {
-            LOG_INFO("VulkanContext: 仍无设备支持呈现, 渲染将回退 CPU");
-            return false;  // instance+surface 保留, 供后续重试
-        }
-        if (!CreateLogicalDevice()) {
-            LOG_INFO("Vulkan logical device creation failed (retry), HW decoding will use fallback");
-            Destroy();
+bool VulkanContext::PrepareSurface(WId window_handle, const QString& app_name) {
+    window_handle_ = window_handle;
+
+    // 创建 instance (仅首次)
+    if (instance_ == VK_NULL_HANDLE) {
+        if (!CreateInstance(app_name)) {
+            LOG_INFO("Vulkan instance not available, HW decoding will use fallback");
             return false;
         }
-        valid_ = true;
-        auto caps = GetCapabilities();
-        LOG_INFO("Vulkan initialized (retry): " + caps.device_name.toStdString());
-        return true;
     }
 
-    // 全新初始化
-    if (!CreateInstance(app_name)) {
-        LOG_INFO("Vulkan instance not available, HW decoding will use fallback");
-        return false;
+    // (重)创建 Surface: 每次调用都销毁旧 Surface 并重建。
+    // 这解决了「Surface 在 DWM 未就绪时创建导致永久无效」的问题:
+    // 旧 Surface 可能关联了错误的显示输出, 重试时用当前 (DWM 已就绪) 窗口状态重建。
+    if (surface_ != VK_NULL_HANDLE) {
+        LOG_INFO("VulkanContext: 重建 Surface (销毁旧 Surface)");
+        vkDestroySurfaceKHR(instance_, surface_, nullptr);
+        surface_ = VK_NULL_HANDLE;
     }
     if (!CreateSurface(window_handle)) {
         LOG_WARN("Vulkan surface creation failed, 渲染将回退 CPU");
-        Destroy();
+        // 不销毁 instance — 保留供后续重试 (surface 可能在 DWM 就绪后创建成功)
         return false;
     }
-    if (!SelectPhysicalDevice()) {
-        LOG_INFO("No suitable Vulkan physical device, HW decoding will use fallback");
-        // 不调 Destroy —— 保留 instance+surface 供重试 (DWM 合成时机问题可能稍后就绪)
+    return true;  // instance + surface 就绪
+}
+
+bool VulkanContext::InitializeDevice() {
+    if (valid_) return true;
+    if (instance_ == VK_NULL_HANDLE || surface_ == VK_NULL_HANDLE) {
+        LOG_WARN("VulkanContext: InitializeDevice 前置条件不满足 (instance/surface 未就绪)");
         return false;
+    }
+
+    if (!SelectPhysicalDevice()) {
+        LOG_INFO("VulkanContext: 无设备支持呈现 (DWM 可能尚未就绪), 保留 instance+surface 供重试");
+        return false;  // 不调 Destroy — 保留 instance+surface 供重试
     }
     if (!CreateLogicalDevice()) {
         LOG_INFO("Vulkan logical device creation failed, HW decoding will use fallback");
@@ -84,9 +91,6 @@ bool VulkanContext::Initialize(WId window_handle, const QString& app_name) {
         return false;
     }
 
-    // 注意: FFmpeg 设备上下文 (av_hwdevice_ctx_init) 仅 HW 解码需要, 且历史上
-    // 在未完整初始化 AVVulkanDeviceContext 字段时会导致段错误。因此延迟到 HW 解码
-    // 真正启用时再创建 (见 InitializeFFmpegDevice), 避免渲染路径无谓触发此风险路径。
     valid_ = true;
     auto caps = GetCapabilities();
     LOG_INFO("Vulkan initialized: " + caps.device_name.toStdString());
@@ -120,8 +124,9 @@ bool VulkanContext::CreateInstance(const QString& app_name) {
     // 收集实例扩展
     std::vector<const char*> instance_extensions;
 
-    // 1. FFmpeg Vulkan 所需实例扩展
+    // 1. WSI 基础扩展 + FFmpeg 所需扩展
     const char* required_exts[] = {
+        VK_KHR_SURFACE_EXTENSION_NAME,                    // WSI 基础 (vkGetPhysicalDeviceSurfaceSupportKHR 依赖)
         VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
     };
     for (auto* ext : required_exts) {
@@ -229,12 +234,46 @@ bool VulkanContext::SelectPhysicalDevice() {
     };
 
     LOG_INFO("VulkanContext: 枚举到 " + std::to_string(device_count) + " 个物理设备");
+
+    // 诊断: 查询 Surface 的格式数和呈现模式数。若两者都为 0, 说明 Surface 无效
+    // (可能创建时 DWM 未就绪或窗口句柄有问题)。
+    {
+        uint32_t fmt_count = 0, pm_count = 0;
+        vkGetPhysicalDeviceSurfaceFormatsKHR(devices[0], surface_, &fmt_count, nullptr);
+        vkGetPhysicalDeviceSurfacePresentModesKHR(devices[0], surface_, &pm_count, nullptr);
+        LOG_INFO("VulkanContext: Surface 诊断 — formats=" + std::to_string(fmt_count) +
+                 " present_modes=" + std::to_string(pm_count) +
+                 (fmt_count == 0 && pm_count == 0 ? " (Surface 可能无效!)" : ""));
+    }
+
     // 评分: 独显 > 集显 > 其他; 仅考虑「存在可呈现图形队列族」的设备
     int best_score = -1;
     for (auto& dev : devices) {
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(dev, &props);
-        uint32_t gqf = find_graphics_present_family(dev);
+
+        // 诊断: 逐队列族检查 Win32 呈现能力 (不依赖 Surface)
+        uint32_t qf_count = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(dev, &qf_count, nullptr);
+        std::vector<VkQueueFamilyProperties> fams(qf_count);
+        vkGetPhysicalDeviceQueueFamilyProperties(dev, &qf_count, fams.data());
+
+        uint32_t gqf = UINT32_MAX;
+        for (uint32_t i = 0; i < qf_count; i++) {
+            if (!(fams[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) continue;
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+            VkBool32 win32_present = vkGetPhysicalDeviceWin32PresentationSupportKHR(dev, i);
+#else
+            VkBool32 win32_present = VK_TRUE;  // 非 Win32 平台跳过此检查
+#endif
+            VkBool32 surf_supported = VK_FALSE;
+            vkGetPhysicalDeviceSurfaceSupportKHR(dev, i, surface_, &surf_supported);
+            LOG_INFO(std::string("    队列族 ") + std::to_string(i) +
+                     " win32_present=" + (win32_present ? "1" : "0") +
+                     " surface_present=" + (surf_supported ? "1" : "0"));
+            if (surf_supported && gqf == UINT32_MAX) gqf = i;
+        }
+
         LOG_INFO(std::string("  设备 [") + props.deviceName + "] type=" +
                  std::to_string(props.deviceType) + " 可呈现图形队列族=" +
                  (gqf == UINT32_MAX ? std::string("无") : std::to_string(gqf)));

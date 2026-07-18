@@ -4,8 +4,10 @@
 #include <QImage>
 #include <QString>
 #include <QPointer>
+#include <QRectF>
 #include <thread>
 #include <atomic>
+#include "core/model/MacroblockInfo.h"
 
 namespace videoeye {
 namespace player { class VulkanRenderer; class VulkanContext; }
@@ -22,7 +24,15 @@ struct VideoOverlayInfo {
     bool has_video = false;
 };
 
-// 视频叠加层 Widget — 透明背景，绘制信息徽标和中央播放按钮
+// MV 叠加显示模式
+enum class MvOverlayMode {
+    Off,           // 关闭
+    Arrows,        // 箭头模式 (默认): 每个块画一个箭头表示运动方向和幅度
+    Blocks,        // 块模式: 用颜色填充块, 颜色表示运动幅度 (热力图)
+    ArrowsAndBlocks // 箭头+块: 同时显示
+};
+
+// 视频叠加层 Widget — 透明背景，绘制信息徽标、中央播放按钮和运动矢量叠加
 class VideoOverlayWidget : public QWidget {
     Q_OBJECT
 public:
@@ -30,12 +40,31 @@ public:
     void SetOverlayInfo(const VideoOverlayInfo& info);
     void SetCenterPlayButtonVisible(bool visible);
 
+    // 运动矢量叠加
+    void SetMotionVectors(const model::MacroblockFrameAnalysis& analysis);
+    void SetMvOverlayMode(MvOverlayMode mode);
+    void SetVulkanActive(bool active);  // 告知 overlay 当前渲染模式 (Vulkan=拉伸 / CPU=保持宽高比)
+
 protected:
     void paintEvent(QPaintEvent* event) override;
 
 private:
     VideoOverlayInfo info_;
     bool show_center_play_ = true;
+
+    // MV 叠加数据
+    model::MacroblockFrameAnalysis mv_analysis_;
+    MvOverlayMode mv_mode_ = MvOverlayMode::Off;
+    bool vulkan_active_ = false;  // Vulkan 激活时视频拉伸填充, 否则保持宽高比居中
+
+    // 计算视频在 widget 中的实际显示区域 (考虑宽高比)
+    QRectF ComputeVideoDisplayRect() const;
+    // 绘制 MV 箭头
+    void DrawMvArrows(QPainter& painter, const QRectF& display_rect);
+    // 绘制 MV 块热力图
+    void DrawMvBlocks(QPainter& painter, const QRectF& display_rect);
+    // 绘制 MV 叠加图例
+    void DrawMvLegend(QPainter& painter, const QRectF& display_rect);
 };
 
 // Vulkan 渲染 Widget — 支持 Vulkan 直接渲染 + CPU 回退模式
@@ -70,6 +99,10 @@ public:
 
     // 设置中央播放按钮可见性
     void SetCenterPlayButtonVisible(bool visible);
+
+    // 运动矢量叠加
+    void SetMotionVectors(const model::MacroblockFrameAnalysis& analysis);
+    void SetMvOverlayMode(MvOverlayMode mode);
 
 protected:
     void paintEvent(QPaintEvent* event) override;

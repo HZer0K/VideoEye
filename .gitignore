@@ -76,3 +76,7 @@ tools/
 
 # Vulkan-Headers 子模块 (Git submodule)
 # third_party/vulkan-headers/ 由 .gitmodules 管理
+
+# 评审/规划过程文档 (非源码, 不纳入版本控制)
+deliverables/
+overview.md
