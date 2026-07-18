@@ -2,12 +2,14 @@
 #include "utils/Logger.h"
 #include <QFileInfo>
 #include <QDebug>
+#include <QMetaObject>
 #include <QPointer>
 #include <algorithm>
 #include <cstdint>
 #include <chrono>
 #include <limits>
 #include <exception>
+#include <utility>
 #include <QDir>
 #include <QThread>
 #include <thread>
@@ -44,6 +46,8 @@ MediaPlayer::~MediaPlayer() {
         media_export_thread_->quit();
         media_export_thread_->wait(5000);
     }
+    container_analysis_generation_.fetch_add(1);
+    ReapContainerAnalysisThreads(true);
     Stop();
     Cleanup();
     avformat_network_deinit();
@@ -139,6 +143,7 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
 
     current_url_ = url;
     should_stop_ = false;
+    container_analysis_generation_.fetch_add(1);
     pending_seek_.store(false);
     pending_seek_mode_.store(seek_mode_.load());
     seek_request_ms_ = 0;
@@ -397,16 +402,7 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     // 之前同步跑在 UI 线程, 大文件的 sample 表展开会让界面冻结数秒~数十秒。
     // 改为后台线程, 完成后通过信号 (跨线程自动排队) 投递结果。
     if (container_structure_enabled_) {
-        LOG_INFO("OpenInternal: 容器结构分析已派发到后台线程");
-        QString url_copy = url;
-        QPointer<MediaPlayer> self = this;
-        std::thread([self, url_copy]() {
-            model::ContainerStructureResult cs_result;
-            if (self && self->container_analyzer_.Analyze(url_copy, cs_result)) {
-                emit self->ContainerStructureReady(cs_result);
-            }
-            LOG_INFO("OpenInternal: 后台容器结构分析完成");
-        }).detach();
+        StartContainerStructureAnalysis(url);
     }
 
     LOG_INFO("OpenInternal success: " + url.toStdString());
@@ -602,6 +598,57 @@ void MediaPlayer::StartMediaExport(const exporter::ExportOptions& opt) {
 
 void MediaPlayer::CancelMediaExport() {
     if (media_exporter_) media_exporter_->Cancel();
+}
+
+void MediaPlayer::StartContainerStructureAnalysis(const QString& url) {
+    ReapContainerAnalysisThreads(false);
+
+    const uint64_t generation = container_analysis_generation_.fetch_add(1) + 1;
+    const QString url_copy = url;
+    auto finished = std::make_shared<std::atomic<bool>>(false);
+    QPointer<MediaPlayer> self = this;
+
+    container_analysis_workers_.reserve(container_analysis_workers_.size() + 1);
+    ContainerAnalysisWorker worker;
+    worker.finished = finished;
+    worker.thread = std::thread([self, url_copy, generation, finished]() {
+        model::ContainerStructureResult cs_result;
+        bool ok = false;
+        try {
+            analyzer::ContainerStructureAnalyzer analyzer;
+            ok = analyzer.Analyze(url_copy, cs_result);
+        } catch (const std::exception& e) {
+            LOG_ERROR("后台容器结构分析异常: " + std::string(e.what()));
+        } catch (...) {
+            LOG_ERROR("后台容器结构分析发生未知异常");
+        }
+
+        if (ok && self) {
+            QMetaObject::invokeMethod(self, [self, generation, result = std::move(cs_result)]() mutable {
+                if (self && generation == self->container_analysis_generation_.load()) {
+                    emit self->ContainerStructureReady(result);
+                }
+            }, Qt::QueuedConnection);
+        }
+        LOG_INFO("OpenInternal: 容器结构分析完成");
+        finished->store(true);
+    });
+    container_analysis_workers_.push_back(std::move(worker));
+    LOG_INFO("OpenInternal: 容器结构分析已派发到后台线程");
+}
+
+void MediaPlayer::ReapContainerAnalysisThreads(bool wait_for_all) {
+    auto it = container_analysis_workers_.begin();
+    while (it != container_analysis_workers_.end()) {
+        if (wait_for_all || (it->finished && it->finished->load())) {
+            if (it->thread.joinable()) {
+                it->thread.join();
+            }
+            it = container_analysis_workers_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 // --- 解码线程 ---

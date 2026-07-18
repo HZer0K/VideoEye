@@ -5,10 +5,12 @@
 #include <QImage>
 #include <memory>
 #include <atomic>
+#include <cstdint>
 #include <limits>
 #include <map>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -163,6 +165,8 @@ private:
                            const QString& label, const QString& detail = QString());
     void EmitAudioVisualization(const AudioVisualizationResult& vis_result,
                                 int sample_rate, int channels, double timestamp_seconds, double level);
+    void StartContainerStructureAnalysis(const QString& url);
+    void ReapContainerAnalysisThreads(bool wait_for_all);
     void Cleanup();
     
     // 状态
@@ -202,12 +206,18 @@ private:
     // 分析器
     analyzer::StreamAnalyzer stream_analyzer_;
     analyzer::FrameAnalyzer frame_analyzer_;
-    analyzer::ContainerStructureAnalyzer container_analyzer_;
     analyzer::MacroblockAnalyzer macroblock_analyzer_;
     analyzer::SceneChangeAnalyzer scene_change_analyzer_;
     StreamInfoExtractor stream_info_extractor_;
     AudioVisualizer audio_visualizer_;
     std::unique_ptr<VideoFrameExporter> frame_exporter_;
+
+    struct ContainerAnalysisWorker {
+        std::thread thread;
+        std::shared_ptr<std::atomic<bool>> finished;
+    };
+    std::vector<ContainerAnalysisWorker> container_analysis_workers_;
+    std::atomic<uint64_t> container_analysis_generation_{0};
 
     // 音视频导出 (后台线程)
     QThread* media_export_thread_ = nullptr;
