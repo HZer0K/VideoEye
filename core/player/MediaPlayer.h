@@ -193,9 +193,9 @@ private:
 
     // 定位方式 (进度条拖动策略)
     std::atomic<model::SeekMode> seek_mode_{model::SeekMode::NearestKeyframe}; // 用户选择的定位方式 (菜单设置)
-    std::atomic<bool> pending_seek_{false};   // 解码线程据此在下一轮循环执行 flush
+    std::atomic<bool> pending_seek_{false};   // 解码线程据此执行 av_seek_frame + flush
     std::atomic<model::SeekMode> pending_seek_mode_{model::SeekMode::NearestKeyframe}; // 本次定位使用的模式
-    double seek_request_ms_ = 0;              // 待定位目标 (仅 Seek 线程在 mutex_ 下访问)
+    double seek_request_ms_ = 0;              // 待定位目标 (seek/解码线程在 mutex_ 下访问)
     std::atomic<double> drop_until_sec_{-1.0}; // 精确帧模式: 丢弃此秒数之前的帧; <0 表示不丢弃
     std::atomic<bool> drag_seeking_{false};    // 拖动进度条期间: 抑制音频输出, 避免关键帧预览时杂音
     

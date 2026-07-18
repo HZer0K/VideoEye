@@ -139,6 +139,10 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
 
     current_url_ = url;
     should_stop_ = false;
+    pending_seek_.store(false);
+    pending_seek_mode_.store(seek_mode_.load());
+    seek_request_ms_ = 0;
+    drop_until_sec_.store(-1.0);
     video_frame_index_ = 0;
     macroblock_frame_index_ = 0;
     scene_change_frame_index_ = 0;
@@ -449,6 +453,12 @@ void MediaPlayer::Stop() {
     if (decode_thread_.joinable() && decode_thread_.get_id() != std::this_thread::get_id()) {
         decode_thread_.join();
     }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pending_seek_.store(false);
+        seek_request_ms_ = 0.0;
+    }
+    drop_until_sec_.store(-1.0);
     audio_output_.reset();
     current_position_ms_.store(0);
     emit StateChanged(state_);
@@ -457,22 +467,22 @@ void MediaPlayer::Stop() {
 void MediaPlayer::Seek(int position_ms, model::SeekMode mode) {
     LOG_INFO("Seek: target_ms=" + std::to_string(position_ms) +
              " mode=" + std::to_string(static_cast<int>(mode)));
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!format_ctx_) return;
+    const int target_ms = duration_ms_ > 0 
+                            ? std::clamp(position_ms, 0, duration_ms_)
+                            : std::max(0, position_ms);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!format_ctx_) return;
+        // 只投递seek请求，AVFormatContext 由解码线程独占调用 av_seek_frame/av_read_frame
+        // 避免 ui 线程 seek 与解码线程 read 并发访问同一个 FFmpeg 上下文。
+        pending_seek_mode_.store(mode);
+        seek_request_ms_ = target_ms;
+        pending_seek_.store(true);
+    }
     if (audio_output_) audio_output_->Clear(); // 丢弃已缓冲的旧音频, 避免 seek 后播放过期声音
-
-    int64_t timestamp = position_ms * 1000LL;
-    // 两种模式都先回退到目标时间之前最近的关键帧 (I帧); 精确帧再由解码线程向前丢弃到目标。
-    int flags = AVSEEK_FLAG_BACKWARD;
-
-    int ret = av_seek_frame(format_ctx_, -1, timestamp, flags);
-    if (ret < 0) { emit Error("Seek failed"); return; }
-
-    pending_seek_mode_.store(mode);
-    seek_request_ms_ = position_ms;
-    pending_seek_.store(true); // 由解码线程在下一轮循环内执行 flush (线程安全)
-    current_position_ms_.store(position_ms);
+    current_position_ms_.store(target_ms);
     emit PositionChanged(current_position_ms_.load(), duration_ms_);
+    cv_.notify_one();
 }
 
 void MediaPlayer::SetVolume(int volume) {
@@ -625,32 +635,65 @@ void MediaPlayer::DecodeThread() {
         }
     };
 
+    auto process_pending_seek = [&]() {
+        double target_ms = 0.0;
+        model::SeekMode mode = model::SeekMode::NearestKeyframe;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!pending_seek_.load()) {
+                return false;
+            }
+            target_ms = seek_request_ms_;
+            mode = pending_seek_mode_.load();
+            pending_seek_.store(false);
+        }
+
+        if (!format_ctx_) {
+            return true;
+        }
+
+        av_packet_unref(packet);
+        const int64_t timestamp = static_cast<int64_t>(target_ms) * 1000LL;
+        const int flags = AVSEEK_FLAG_BACKWARD;
+        const int ret = av_seek_frame(format_ctx_, -1, timestamp, flags);
+        if (ret < 0) {
+            drop_until_sec_.store(-1.0);
+            emit Error("Seek failed");
+            return true;
+        }
+
+        if (video_decoder_) video_decoder_->Flush();
+        if (audio_decoder_) audio_decoder_->Flush();
+
+        // 定位之后必须重置播放时钟，将新位置作为新的时间基准。
+        // 否则 PaceTo 仍按"视频起点"计算需要 sleep 的时长,
+        // 产生长达 (目标时间戳 - 起点) 秒的 sleep, 解码线程被睡死 -> 画面/进度条冻结。
+        playback_clock.Reset();
+        drop_until_sec_.store((mode == model::SeekMode::ExactFrame) 
+                                ? (target_ms / 1000.0) 
+                                : -1.0);
+        current_position_ms_.store(static_cast<int>(target_ms));
+        last_emitted_position_ms = static_cast<int>(target_ms);
+        emit PositionChanged(current_position_ms_.load(), duration_ms_);
+        return true;
+    };
+
     while (!should_stop_) {
-        if (state_ == model::PlayerState::Paused) {
-            const auto pause_begin = SteadyClock::now();
-            std::unique_lock<std::mutex> lock(mutex_);
-            cv_.wait(lock, [this] { return state_ != model::PlayerState::Paused || should_stop_; });
-            const auto pause_end = SteadyClock::now();
-            if (enable_pacing) playback_clock.OnPaused(pause_end - pause_begin);
+        if (process_pending_seek()) {
             continue;
         }
 
-        // 处理定位请求: 在解码线程内刷新解码器, 避免与 SendPacket/ReceiveFrame 产生竞态。
-        // 精确帧模式需丢弃目标之前的帧, 直到到达目标时间戳。
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (pending_seek_) {
-                if (video_decoder_) video_decoder_->Flush();
-                if (audio_decoder_) audio_decoder_->Flush();
-                // 关键: 定位后必须重置播放时钟, 将新位置作为新的时间基准。
-                // 否则 PaceTo 仍按"视频起点"计算需要 sleep 的时长, 产生长达
-                // (目标时间戳 - 起点) 秒的 sleep, 解码线程被睡死 -> 画面/进度条冻结。
-                playback_clock.Reset();
-                drop_until_sec_.store((pending_seek_mode_.load() == model::SeekMode::ExactFrame)
-                                          ? (seek_request_ms_ / 1000.0)
-                                          : -1.0);
-                pending_seek_.store(false);
-            }
+        if (state_ == model::PlayerState::Paused) {
+            const auto pause_begin = SteadyClock::now();
+            std::unique_lock<std::mutex> lock(mutex_);
+            cv_.wait(lock, [this] {
+                return state_ != model::PlayerState::Paused || 
+                        should_stop_ ||
+                        pending_seek_.load();
+            });
+            const auto pause_end = SteadyClock::now();
+            if (enable_pacing) playback_clock.OnPaused(pause_end - pause_begin);
+            continue;
         }
 
         int ret = av_read_frame(format_ctx_, packet);
