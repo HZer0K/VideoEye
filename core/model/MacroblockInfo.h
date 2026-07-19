@@ -30,7 +30,7 @@ struct MacroblockStats {
     double avg_motion_magnitude = 0.0; // 平均运动矢量幅度 (像素)
     double max_motion_magnitude = 0.0; // 最大运动矢量幅度 (像素)
 
-    // 块大小分布统计
+    // 块大小分布统计 (H.264 宏块尺寸)
     int count_16x16 = 0;
     int count_16x8 = 0;
     int count_8x16 = 0;
@@ -38,6 +38,13 @@ struct MacroblockStats {
     int count_8x4 = 0;
     int count_4x8 = 0;
     int count_4x4 = 0;
+    // HEVC CTU/CU 大尺寸分区 (H.264 不产生, 计数恒为 0)
+    int count_64x64 = 0;
+    int count_32x32 = 0;
+    int count_32x16 = 0;
+    int count_16x32 = 0;
+    int count_32x8 = 0;
+    int count_8x32 = 0;
     int count_other = 0;
 
     // 运动矢量幅度分布 (0-2, 2-4, 4-8, 8-16, 16+ 像素)
@@ -56,12 +63,21 @@ struct MacroblockFrameAnalysis {
     int frame_width = 0;
     int frame_height = 0;
     int frame_type = 0;               // AVPictureType (1=I, 2=P, 3=B)
+    int codec_id = 0;                 // AV_CODEC_ID_* (H264/HEVC/AV1/VP9...), 决定术语: 宏块 vs CTU
     bool has_motion_vectors = false;   // 是否包含运动矢量数据
     MacroblockStats stats;
     std::vector<MotionVectorInfo> motion_vectors;  // 运动矢量列表
 };
 
 } // namespace model
+
+// 编码类型辅助判断 (数值与 FFmpeg AV_CODEC_ID_* 对应, 避免 UI 层引入 FFmpeg 头依赖)
+// AV_CODEC_ID_HEVC 在 FFmpeg 中为稳定值 173 (自 2.0 起未变)
+namespace CodecType {
+constexpr int kHevc = 173;
+inline bool IsHevc(int codec_id) { return codec_id == kHevc; }
+} // namespace CodecType
+
 } // namespace videoeye
 
 Q_DECLARE_METATYPE(videoeye::model::MacroblockFrameAnalysis)

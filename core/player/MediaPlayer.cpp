@@ -905,7 +905,8 @@ void MediaPlayer::DecodeThread() {
                                     macroblock_frame_index_++,
                                     static_cast<qint64>(frame_data.pts),
                                     frame_data.timestamp,
-                                    static_cast<int>(video_decoder_->GetLastPictureType()));
+                                    static_cast<int>(video_decoder_->GetLastPictureType()),
+                                    static_cast<int>(video_decoder_->GetCodecId()));
                                 emit MacroblockInfoReady(mb_analysis);
                             } catch (const std::exception& e) {
                                 LOG_ERROR("宏块分析失败: " + std::string(e.what()));

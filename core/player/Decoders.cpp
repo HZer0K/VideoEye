@@ -451,6 +451,13 @@ std::string VideoDecoder::GetCodecName() const {
     return "unknown";
 }
 
+AVCodecID VideoDecoder::GetCodecId() const {
+    if (codec_ctx_) {
+        return codec_ctx_->codec_id;
+    }
+    return AV_CODEC_ID_NONE;
+}
+
 void VideoDecoder::Flush() {
     if (codec_ctx_) {
         avcodec_flush_buffers(codec_ctx_);

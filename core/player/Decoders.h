@@ -71,6 +71,7 @@ public:
     
     // 获取解码器信息
     std::string GetCodecName() const;
+    AVCodecID GetCodecId() const;
     int GetWidth() const { return width_; }
     int GetHeight() const { return height_; }
     AVPictureType GetLastPictureType() const { return last_pict_type_; }

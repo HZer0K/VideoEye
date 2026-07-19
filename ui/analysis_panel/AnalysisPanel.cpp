@@ -3092,6 +3092,10 @@ void AnalysisPanel::RefreshMacroblockUi() {
     const auto& ma = current_macroblock_analysis_;
     const auto& s = ma.stats;
 
+    // 术语自适应: HEVC→CTU, 其余→宏块
+    const bool is_hevc = CodecType::IsHevc(ma.codec_id);
+    const QString block_term = is_hevc ? tr("CTU") : tr("宏块");
+
     // 更新统计标签
     QString frame_type_str;
     switch (ma.frame_type) {
@@ -3101,10 +3105,11 @@ void AnalysisPanel::RefreshMacroblockUi() {
         default: frame_type_str = "?"; break;
     }
     macroblock_summary_label_->setText(
-        tr("帧 #%1 [%2] | 时间: %3s | 块总数: %4 | 前向: %5 | 后向: %6 | 帧内: %7 | 平均MV: %8 | 最大MV: %9")
+        tr("帧 #%1 [%2] | 时间: %3s | %4总数: %5 | 前向: %6 | 后向: %7 | 帧内: %8 | 平均MV: %9 | 最大MV: %10")
             .arg(ma.frame_index)
             .arg(frame_type_str)
             .arg(ma.timestamp, 0, 'f', 3)
+            .arg(block_term)
             .arg(s.total_blocks)
             .arg(s.forward_count)
             .arg(s.backward_count)
@@ -3153,13 +3158,26 @@ void AnalysisPanel::RefreshMacroblockUi() {
         table->setUpdatesEnabled(true);
     };
 
-    int bs_total = s.count_16x16 + s.count_16x8 + s.count_8x16 + s.count_8x8 +
-                   s.count_8x4 + s.count_4x8 + s.count_4x4 + s.count_other;
-    fill_dist_table(macroblock_blocksize_table_,
-                    {"16x16", "16x8", "8x16", "8x8", "8x4", "4x8", "4x4", tr("其他")},
-                    {s.count_16x16, s.count_16x8, s.count_8x16, s.count_8x8,
-                     s.count_8x4, s.count_4x8, s.count_4x4, s.count_other},
-                    bs_total);
+    // 块大小分布表 — 根据 codec 动态显示尺寸行
+    QStringList bs_labels;
+    QList<int> bs_counts;
+    if (is_hevc) {
+        // HEVC CTU/CU 大尺寸分区 + 共有小尺寸
+        bs_labels = {"64x64", "32x32", "32x16", "16x32", "32x8", "8x32",
+                     "16x16", "16x8", "8x16", "8x8", "8x4", "4x8", "4x4", tr("其他")};
+        bs_counts = {s.count_64x64, s.count_32x32, s.count_32x16, s.count_16x32,
+                     s.count_32x8, s.count_8x32, s.count_16x16, s.count_16x8,
+                     s.count_8x16, s.count_8x8, s.count_8x4, s.count_4x8,
+                     s.count_4x4, s.count_other};
+    } else {
+        // H.264 等传统编码: 宏块尺寸
+        bs_labels = {"16x16", "16x8", "8x16", "8x8", "8x4", "4x8", "4x4", tr("其他")};
+        bs_counts = {s.count_16x16, s.count_16x8, s.count_8x16, s.count_8x8,
+                     s.count_8x4, s.count_4x8, s.count_4x4, s.count_other};
+    }
+    int bs_total = 0;
+    for (int c : bs_counts) bs_total += c;
+    fill_dist_table(macroblock_blocksize_table_, bs_labels, bs_counts, bs_total);
 
     int mg_total = s.mag_0_2 + s.mag_2_4 + s.mag_4_8 + s.mag_8_16 + s.mag_16_plus;
     fill_dist_table(macroblock_mag_table_,
