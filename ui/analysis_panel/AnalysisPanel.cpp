@@ -3617,16 +3617,16 @@ void AnalysisPanel::OnStartQualityClicked() {
         analyzer->Run(
             main_path, ref_path,
             [this](int cur, int) {
-                QMetaObject::invokeMethod(this, &AnalysisPanel::OnQualityProgress,
-                                          Qt::QueuedConnection, cur);
+                QMetaObject::invokeMethod(this, [this, cur]() { OnQualityProgress(cur); },
+                                          Qt::QueuedConnection);
             },
             [this](const analyzer::QualityFrameResult& fr) {
-                QMetaObject::invokeMethod(this, &AnalysisPanel::OnQualityFrameResult,
-                                          Qt::QueuedConnection, fr);
+                QMetaObject::invokeMethod(this, [this, &fr]() { OnQualityFrameResult(fr); },
+                                          Qt::QueuedConnection);
             },
             [this](const analyzer::QualitySummary& sum) {
-                QMetaObject::invokeMethod(this, &AnalysisPanel::OnQualitySummary,
-                                          Qt::QueuedConnection, sum);
+                QMetaObject::invokeMethod(this, [this, &sum]() { OnQualitySummary(sum); },
+                                          Qt::QueuedConnection);
             });
     });
 }
