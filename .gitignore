@@ -45,6 +45,9 @@ ui_*.h
 # FFmpeg 源码 (由 setup.sh 管理, 非 Git 子模块)
 third_party/FFmpeg/
 
+# FFmpeg 预编译包 (由 scripts/fetch-ffmpeg.ps1 下载, 不入库)
+third_party/ffmpeg-prebuilt/
+
 # Bento4 构建产物
 third_party/Bento4/Build/Makefiles/build/
 third_party/Bento4/**/*.o

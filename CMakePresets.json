@@ -1,0 +1,65 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "win-release",
+      "displayName": "Windows Ninja Release",
+      "description": "Windows 构建 (Ninja + MSVC)。需在 vcvars64 环境下运行，或直接用 build_ninja.ps1。",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_PREFIX_PATH": "${sourceDir}/vcpkg_installed/x64-windows",
+        "FFMPEG_ROOT": "${sourceDir}/third_party/ffmpeg-prebuilt",
+        "BUILD_TESTING": "OFF"
+      }
+    },
+    {
+      "name": "linux-release",
+      "displayName": "Linux Make Release",
+      "description": "Linux 构建 (GCC + Make)，生成 compile_commands.json 供 clangd 使用。",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BUILD_TESTING": "OFF"
+      }
+    },
+    {
+      "name": "linux-debug",
+      "displayName": "Linux Make Debug",
+      "description": "Linux Debug 构建，带调试符号。",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BUILD_TESTING": "OFF"
+      }
+    },
+    {
+      "name": "linux-test",
+      "displayName": "Linux Make Release + Tests",
+      "description": "启用单元测试的构建。",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build-test",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BUILD_TESTING": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "win-release", "configurePreset": "win-release" },
+    { "name": "linux-release", "configurePreset": "linux-release" },
+    { "name": "linux-debug", "configurePreset": "linux-debug" },
+    { "name": "linux-test", "configurePreset": "linux-test" }
+  ]
+}

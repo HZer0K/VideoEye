@@ -1,0 +1,30 @@
+#!/bin/sh
+# pre-commit: 提交前对暂存的 C++ 文件运行 clang-format 检查
+# 安装: bash scripts/setup-hooks.sh
+
+staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.cpp' '*.h' '*.hpp' '*.c')
+if [ -z "$staged" ]; then
+    exit 0
+fi
+
+if ! command -v clang-format >/dev/null 2>&1; then
+    echo "warning: clang-format 未安装，跳过格式检查" >&2
+    exit 0
+fi
+
+fail=0
+for f in $staged; do
+    if ! clang-format --dry-run --Werror "$f" >/dev/null 2>&1; then
+        echo "格式不符合 .clang-format: $f" >&2
+        echo "  修复: clang-format -i \"$f\" && git add \"$f\"" >&2
+        fail=1
+    fi
+done
+
+if [ "$fail" -ne 0 ]; then
+    echo "" >&2
+    echo "提交已阻止：上述文件未通过 clang-format 检查。" >&2
+    echo "批量修复: clang-format -i $(echo $staged)" >&2
+fi
+
+exit $fail

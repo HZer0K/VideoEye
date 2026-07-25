@@ -1,0 +1,68 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            preset: linux-release
+          - os: windows-latest
+            preset: win-release
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      # ─────────────── Linux ───────────────
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake pkg-config ninja-build \
+            qt6-base-dev qt6-multimedia-dev qt6-charts-dev \
+            libopencv-dev libsdl2-dev zlib1g-dev \
+            libvulkan-dev glslc \
+            libavcodec-dev libavformat-dev libavutil-dev \
+            libswscale-dev libswresample-dev
+
+      - name: Configure (Linux)
+        if: runner.os == 'Linux'
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      # ─────────────── Windows ───────────────
+      - name: Setup vcpkg (Windows)
+        if: runner.os == 'Windows'
+        uses: friendlyanon/setup-vcpkg@v1
+        with:
+          vcpkg-ref: 2025-04-16
+
+      - name: Install vcpkg dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          vcpkg install --triplet x64-windows --x-manifest-root=. --x-install-root=vcpkg_installed
+
+      - name: Build (Windows, incl. FFmpeg fetch + configure + compile)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File build_ninja.ps1

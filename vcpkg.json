@@ -1,4 +1,5 @@
 {
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "videoeye",
   "version": "2.0.0",
   "description": "VideoEye - 现代化的视频流分析软件",

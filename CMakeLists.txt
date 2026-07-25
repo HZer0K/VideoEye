@@ -26,42 +26,49 @@ endif()
 find_package(PkgConfig REQUIRED)
 
 # FFmpeg - 多来源查找策略
-# 优先级: 1) vcpkg/apt 包管理器  2) 已有源码编译产物  3) 系统 pkg-config (Linux)
+# 优先级: 1) FFMPEG_ROOT 变量 / vcpkg  2) 默认预编译目录 third_party/ffmpeg-prebuilt
+#         3) 系统 pkg-config (Linux)
+# 获取预编译包: powershell -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1
+set(FFMPEG_ROOT "${FFMPEG_ROOT}" CACHE PATH "FFmpeg 预编译安装前缀 (含 include/lib/bin)")
+
 find_package(FFMPEG QUIET)
 if(NOT FFMPEG_FOUND)
-    # 检查已有的源码编译产物 (Windows: build-ninja/ffmpeg_install, Linux: build/ffmpeg_install)
-    set(FFMPEG_LOCAL_DIR "${CMAKE_BINARY_DIR}/ffmpeg_install")
-    if(NOT EXISTS "${FFMPEG_LOCAL_DIR}/include/libavcodec/avcodec.h")
-        # 尝试从源码目录查找
-        set(FFMPEG_LOCAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build-ninja/ffmpeg_install")
+    # 候选目录: FFMPEG_ROOT → 默认预编译位置 → 兼容旧布局(build*/ffmpeg_install)
+    set(_FF_CANDIDATES "")
+    if(FFMPEG_ROOT)
+        list(APPEND _FF_CANDIDATES "${FFMPEG_ROOT}")
     endif()
-    if(NOT EXISTS "${FFMPEG_LOCAL_DIR}/include/libavcodec/avcodec.h")
-        set(FFMPEG_LOCAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build-Release/ffmpeg_install")
-    endif()
-    if(NOT EXISTS "${FFMPEG_LOCAL_DIR}/include/libavcodec/avcodec.h")
-        set(FFMPEG_LOCAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build/ffmpeg_install")
-    endif()
+    list(APPEND _FF_CANDIDATES
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ffmpeg-prebuilt"
+        "${CMAKE_BINARY_DIR}/ffmpeg_install"
+        "${CMAKE_CURRENT_SOURCE_DIR}/build-ninja/ffmpeg_install"
+        "${CMAKE_CURRENT_SOURCE_DIR}/build-Release/ffmpeg_install"
+        "${CMAKE_CURRENT_SOURCE_DIR}/build/ffmpeg_install"
+    )
 
-    if(EXISTS "${FFMPEG_LOCAL_DIR}/include/libavcodec/avcodec.h")
-        # 使用已有源码编译产物
-        set(FFMPEG_INCLUDE_DIRS "${FFMPEG_LOCAL_DIR}/include")
-        if(WIN32)
-            set(FFMPEG_LIBRARIES avcodec avformat avutil swscale swresample)
-            set(FFMPEG_LIB_DIR "${FFMPEG_LOCAL_DIR}/lib")
-        else()
-            set(FFMPEG_LIBRARIES avcodec avformat avutil swscale swresample)
-            set(FFMPEG_LIB_DIR "${FFMPEG_LOCAL_DIR}/lib")
+    set(FFMPEG_LOCAL_DIR "")
+    foreach(_dir ${_FF_CANDIDATES})
+        if(EXISTS "${_dir}/include/libavcodec/avcodec.h")
+            set(FFMPEG_LOCAL_DIR "${_dir}")
+            break()
         endif()
+    endforeach()
+
+    if(FFMPEG_LOCAL_DIR)
+        set(FFMPEG_INCLUDE_DIRS "${FFMPEG_LOCAL_DIR}/include")
+        set(FFMPEG_LIBRARIES avcodec avformat avutil swscale swresample)
+        set(FFMPEG_LIB_DIR "${FFMPEG_LOCAL_DIR}/lib")
         set(FFMPEG_FOUND TRUE)
         set(FFMPEG_LOCAL_BUILD ON)
-        message(STATUS "FFmpeg: using local build artifacts at ${FFMPEG_LOCAL_DIR}")
+        message(STATUS "FFmpeg: using local build at ${FFMPEG_LOCAL_DIR}")
     elseif(PkgConfig_FOUND)
         # Linux fallback: 通过 pkg-config 查找
         pkg_check_modules(FFMPEG REQUIRED
             libavcodec libavformat libavutil libswscale libswresample)
         message(STATUS "FFmpeg: using system pkg-config")
     else()
-        message(FATAL_ERROR "FFmpeg not found. Install via vcpkg, apt, or build from source.")
+        message(FATAL_ERROR "FFmpeg not found. 运行 scripts/fetch-ffmpeg.ps1 获取预编译包，"
+            "或设置 -DFFMPEG_ROOT=<path>，或通过 vcpkg/apt 安装。")
     endif()
 endif()
 message(STATUS "FFmpeg found: ${FFMPEG_LIBRARIES}")
@@ -83,8 +90,8 @@ else()
     message(STATUS "Vulkan library not found, building without Vulkan support")
 endif()
 
-# OpenCV
-find_package(OpenCV REQUIRED COMPONENTS core imgproc objdetect)
+# OpenCV (仅 core+imgproc, 项目未使用 objdetect)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc)
 
 # Qt6
 find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets Charts)
@@ -106,13 +113,13 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
-# 收集源文件
-file(GLOB_RECURSE CORE_SOURCES "core/*.cpp")
-file(GLOB_RECURSE UI_SOURCES "ui/*.cpp")
-file(GLOB_RECURSE UTILS_SOURCES "utils/*.cpp")
+# 收集源文件 (CONFIGURE_DEPENDS: 新增/删除文件自动触发重新配置)
+file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS "core/*.cpp")
+file(GLOB_RECURSE UI_SOURCES CONFIGURE_DEPENDS "ui/*.cpp")
+file(GLOB_RECURSE UTILS_SOURCES CONFIGURE_DEPENDS "utils/*.cpp")
 
 # 收集头文件
-file(GLOB_RECURSE HEADERS "core/*.h" "ui/*.h" "utils/*.h")
+file(GLOB_RECURSE HEADERS CONFIGURE_DEPENDS "core/*.h" "ui/*.h" "utils/*.h")
 
 # Qt MOC处理
 set(CMAKE_AUTOMOC ON)
@@ -140,10 +147,11 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 # FFmpeg local build 需要额外的 lib 搜索路径
 if(FFMPEG_LOCAL_BUILD AND FFMPEG_LIB_DIR)
     target_link_directories(${PROJECT_NAME} PRIVATE ${FFMPEG_LIB_DIR})
-    # 运行时 RPATH，确保能找到 FFmpeg DLL/.so
+    # 运行时 RPATH: 构建期指向 FFmpeg bin; 安装期用 $ORIGIN 相对查找 (Linux)
     set_target_properties(${PROJECT_NAME} PROPERTIES
         BUILD_RPATH "${FFMPEG_LOCAL_DIR}/bin"
-        INSTALL_RPATH "${FFMPEG_LOCAL_DIR}/bin"
+        INSTALL_RPATH "$ORIGIN/../lib;$ORIGIN"
+        INSTALL_RPATH_USE_LINK_PATH TRUE
     )
 endif()
 # 优先使用 bundled Vulkan 头文件，然后才是系统路径
@@ -244,6 +252,20 @@ endif()
 install(TARGETS ${PROJECT_NAME}
     RUNTIME DESTINATION bin
 )
+
+# Windows: 安装 FFmpeg 运行时 DLL 到可执行文件同目录
+if(WIN32 AND FFMPEG_LOCAL_BUILD AND EXISTS "${FFMPEG_LOCAL_DIR}/bin")
+    install(DIRECTORY "${FFMPEG_LOCAL_DIR}/bin/"
+        DESTINATION bin
+        FILES_MATCHING PATTERN "*.dll")
+endif()
+
+# 安装 SPIR-V shaders
+if(GLSLC AND EXISTS "${CMAKE_BINARY_DIR}/shaders")
+    install(DIRECTORY "${CMAKE_BINARY_DIR}/shaders/"
+        DESTINATION bin/shaders
+        FILES_MATCHING PATTERN "*.spv")
+endif()
 
 # 测试支持 (默认关闭, 测试文件待补全)
 option(BUILD_TESTING "构建单元测试" OFF)
