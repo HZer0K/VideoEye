@@ -106,6 +106,7 @@ find_package(ZLIB REQUIRED)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party ${CMAKE_BINARY_DIR}/third_party)
 
 # Bento4 (源码集成, vcpkg 版本过旧)
+set(BUILD_APPS OFF CACHE BOOL "" FORCE)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party/Bento4 ${CMAKE_BINARY_DIR}/bento4)
 
 # 设置输出目录
@@ -176,7 +177,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     ${SDL2_LIBRARIES}
     mediainfo
     zen
-    bento4
+    ap4
 )
 if(Vulkan_FOUND)
     target_link_libraries(${PROJECT_NAME} PRIVATE Vulkan::Vulkan)
