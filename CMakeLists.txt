@@ -108,6 +108,7 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party ${CMAKE_BINARY_DIR}/thi
 # Bento4 (源码集成, vcpkg 版本过旧)
 set(BUILD_APPS OFF CACHE BOOL "" FORCE)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party/Bento4 ${CMAKE_BINARY_DIR}/bento4)
+set(BENTO4_SOURCE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/third_party/Bento4/Source/C++)
 
 # 设置输出目录
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -144,6 +145,10 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${FFMPEG_INCLUDE_DIRS}
     ${OpenCV_INCLUDE_DIRS}
     ${SDL2_INCLUDE_DIRS}
+    ${BENTO4_SOURCE_ROOT}/Core
+    ${BENTO4_SOURCE_ROOT}/Codecs
+    ${BENTO4_SOURCE_ROOT}/Crypto
+    ${BENTO4_SOURCE_ROOT}/MetaData
 )
 # FFmpeg local build 需要额外的 lib 搜索路径
 if(FFMPEG_LOCAL_BUILD AND FFMPEG_LIB_DIR)
