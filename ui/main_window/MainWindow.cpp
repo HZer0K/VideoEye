@@ -58,6 +58,8 @@ MainWindow::MainWindow(QWidget* parent)
     , prev_frame_button_(nullptr)
     , next_frame_button_(nullptr)
     , time_label_(nullptr)
+    , volume_button_(nullptr)
+    , volume_slider_(nullptr)
     , mediainfo_text_(nullptr)
     , current_media_label_(nullptr)
     , analysis_panel_(nullptr)
@@ -293,6 +295,44 @@ void MainWindow::SetupContentArea() {
     time_label_->setMinimumWidth(140);
     time_label_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     control_layout->addWidget(time_label_);
+
+    // 音量控制
+    volume_button_ = new QPushButton(control_bar_);
+    volume_button_->setObjectName("volumeButton");
+    volume_button_->setIcon(style()->standardIcon(QStyle::SP_MediaVolume));
+    volume_button_->setIconSize(QSize(16, 16));
+    volume_button_->setFixedSize(32, 28);
+    volume_button_->setToolTip(tr("静音/取消静音"));
+    volume_button_->setStyleSheet(
+        "QPushButton#volumeButton {"
+        "  background-color: transparent; border: none;"
+        "}"
+        "QPushButton#volumeButton:hover {"
+        "  background-color: #21262D; border-radius: 4px;"
+        "}");
+    control_layout->addWidget(volume_button_);
+
+    volume_slider_ = new QSlider(Qt::Horizontal, control_bar_);
+    volume_slider_->setObjectName("volumeSlider");
+    volume_slider_->setRange(0, 100);
+    volume_slider_->setValue(100);
+    volume_slider_->setFixedWidth(80);
+    volume_slider_->setToolTip(tr("音量: 100%"));
+    volume_slider_->setStyleSheet(
+        "QSlider#volumeSlider::groove:horizontal {"
+        "  border: none; height: 4px; background: #30363D; border-radius: 2px;"
+        "}"
+        "QSlider#volumeSlider::sub-page:horizontal {"
+        "  background: #58A6FF; border-radius: 2px;"
+        "}"
+        "QSlider#volumeSlider::handle:horizontal {"
+        "  background: #C9D1D9; width: 12px; height: 12px;"
+        "  margin: -5px 0; border-radius: 6px;"
+        "}"
+        "QSlider#volumeSlider::handle:horizontal:hover {"
+        "  background: #FFFFFF;"
+        "}");
+    control_layout->addWidget(volume_slider_);
 
     // 运动矢量叠加开关 (checkable)
     mv_overlay_button_ = new QPushButton(tr("MV"), control_bar_);
@@ -693,6 +733,10 @@ void MainWindow::SetupConnections() {
         if (player_) player_->SetSeekDragging(false); // 恢复音频
         OnSeek(seek_slider_->value()); // 释放时按当前定位方式真正 seek
     });
+
+    // 音量控制
+    connect(volume_slider_, &QSlider::valueChanged, this, &MainWindow::OnVolumeChanged);
+    connect(volume_button_, &QPushButton::clicked, this, &MainWindow::OnMuteButtonClicked);
 
 }
 
@@ -1263,6 +1307,12 @@ void MainWindow::UpdateRawNavigationState() {
     if (play_pause_button_) {
         play_pause_button_->setEnabled(!raw_mode);
     }
+    if (volume_button_) {
+        volume_button_->setEnabled(!raw_mode);
+    }
+    if (volume_slider_) {
+        volume_slider_->setEnabled(!raw_mode);
+    }
 
     if (raw_mode) {
         QSignalBlocker blocker(seek_slider_);
@@ -1364,6 +1414,38 @@ void MainWindow::OnSeek(int value) {
     last_seek_time_ = now;
     // 按当前选择的定位方式 (关键帧 / 精确帧) 执行 seek
     player_->Seek(value, player_->GetSeekMode());
+}
+
+void MainWindow::OnVolumeChanged(int value) {
+    if (player_) {
+        player_->SetVolume(value);
+    }
+    // 更新 tooltip
+    volume_slider_->setToolTip(tr("音量: %1%").arg(value));
+
+    // 更新音量按钮图标: 音量为 0 时显示静音图标
+    if (value == 0) {
+        volume_button_->setIcon(style()->standardIcon(QStyle::SP_MediaVolumeMuted));
+    } else {
+        volume_button_->setIcon(style()->standardIcon(QStyle::SP_MediaVolume));
+        // 从 0 调高音量时, 记住当前音量 (用于静音恢复)
+        if (last_volume_ == 0) {
+            last_volume_ = value;
+        }
+    }
+}
+
+void MainWindow::OnMuteButtonClicked() {
+    const int current = volume_slider_->value();
+    if (current > 0) {
+        // 当前有音量 → 静音: 记住音量, 滑块归零
+        last_volume_ = current;
+        volume_slider_->setValue(0);
+    } else {
+        // 当前静音 → 恢复: 恢复上次音量 (至少 1, 避免 0 又变静音)
+        const int restore = std::max(1, last_volume_);
+        volume_slider_->setValue(restore);
+    }
 }
 
 void MainWindow::OnStateChanged(model::PlayerState state) {

@@ -58,6 +58,8 @@ private slots:
     void OnPlayPause();
     void OnStop();
     void OnSeek(int value);
+    void OnVolumeChanged(int value);
+    void OnMuteButtonClicked();
     
     // 播放器信号处理
     void OnStateChanged(model::PlayerState state);
@@ -142,6 +144,9 @@ protected:
     QPushButton* prev_frame_button_;
     QPushButton* next_frame_button_;
     QLabel* time_label_;          // 时间显示
+    QPushButton* volume_button_;  // 音量/静音切换按钮
+    QSlider* volume_slider_;      // 音量滑块 (0-100)
+    int last_volume_ = 100;       // 静音前的音量 (用于恢复)
     
     // 媒体信息
     QTextEdit* mediainfo_text_;   // MediaInfo 媒体信息文本框
