@@ -3,7 +3,11 @@ build/
 build-debug/
 build-release/
 build-Release/
+build-linux/
+build-test/
 build-ninja/
+build-ninja-debug/
+build-ninja-test/
 cmake-build-*/
 out/
 

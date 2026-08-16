@@ -18,7 +18,7 @@ cd VideoEye
 .\build.bat ninja
 ```
 
-> 首次构建会自动通过 vcpkg 拉取依赖（OpenCV、Qt6、SDL2 等），FFmpeg 使用已有的预编译共享库（gyan.dev full shared 构建，8.1.2）。
+> 首次构建会自动通过 vcpkg 拉取依赖（OpenCV、Qt6、SDL2 等），FFmpeg 使用 gyan.dev full-shared 预编译共享库（含头文件与导入库，`build.bat ninja` 检测缺失时自动下载，版本由 stamp 记录自动追踪）。
 
 #### Linux (Ubuntu/Debian)
 
@@ -26,7 +26,7 @@ cd VideoEye
 # 安装系统依赖
 sudo apt install -y \
     build-essential cmake ninja-build nasm yasm pkg-config \
-    qt6-base-dev qt6-multimedia-dev qt6-charts-dev \
+    qt6-base-dev qt6-charts-dev \
     libopencv-dev libsdl2-dev zlib1g-dev \
     libavcodec-dev libavformat-dev libavutil-dev \
     libswscale-dev libswresample-dev \
@@ -93,14 +93,14 @@ CMake 采用**三级 fallback**策略自动查找 FFmpeg：
 
 ```
 优先级 1: find_package(FFMPEG)        ← vcpkg 已安装 ffmpeg 包
-优先级 2: 预编译共享库                 ← build-ninja/ffmpeg_install/ (gyan.dev 8.1.2)
+优先级 2: 预编译共享库                 ← third_party/ffmpeg-prebuilt/ (gyan.dev full-shared)
 优先级 3: pkg-config                   ← Linux apt 安装 (libavcodec-dev 等)
 ```
 
 **Windows 用户**:
-- 如果 vcpkg 的 FFmpeg 不含 vulkan feature，构建脚本会自动使用已有的预编译共享库
-- 预编译库来自 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) full shared 构建（FFmpeg 8.1.2），包含 DLL、.lib 和头文件
-- `build-ninja/ffmpeg_install/` 目录由构建脚本自动复制 DLL 到 `bin/`
+- `build.bat ninja` 检测到 `third_party/ffmpeg-prebuilt/` 缺失时，自动运行 `scripts/fetch-ffmpeg.ps1` 下载
+- 预编译库来自 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) **release-full-shared** 构建（gyan 唯一带 include/ 头文件与 lib/ 导入库的共享构建；essentials 仅含 bin/，不适合链接开发），包含 DLL、.lib 和头文件
+- 版本由 `.videoeye-ffmpeg.json` stamp 记录，gyan.dev 更新后重新执行脚本即可自动升级
 
 **Linux 用户**:
 - 直接 `apt install libavcodec-dev libavformat-dev ...` 即可
@@ -110,9 +110,15 @@ CMake 采用**三级 fallback**策略自动查找 FFmpeg：
 
 项目根目录的 `vcpkg.json` 声明了以下依赖：
 - `opencv4` — 计算机视觉
-- `qtbase` / `qtmultimedia` / `qtcharts` — Qt6 模块
+- `qtbase` / `qtcharts` — Qt6 模块（音频输出走 SDL2，不再依赖 Qt Multimedia）
 - `sdl2` — 音频输出
 - `zlib` — 压缩库 (MediaInfoLib 依赖)
+
+> Windows 下使用项目自带的 release-only 覆盖 triplet（`scripts/triplets/x64-windows-release.cmake`），仅装 release 二进制，省约一半磁盘与安装时间；host 与 target 同名，避免 vcpkg 交叉编译分支：
+
+```powershell
+vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --x-manifest-root=. --x-install-root=vcpkg_installed
+```
 
 ### 源码集成依赖
 
@@ -149,7 +155,7 @@ cd build-debug && ctest --output-on-failure
 
 ### Q: vcpkg install 报 FFmpeg vulkan feature 错误
 
-这是 vcpkg 版本的 FFmpeg 不支持 vulkan feature。CMake 会自动回退到已有的预编译共享库。确保 `build-ninja/ffmpeg_install/` 目录存在（含 gyan.dev full shared 构建的 DLL、.lib 和头文件）。
+这是 vcpkg 版本的 FFmpeg 不支持 vulkan feature。项目不依赖 vcpkg 的 ffmpeg：CMake 会自动回退到 `third_party/ffmpeg-prebuilt/`（gyan.dev full-shared 构建的 DLL、.lib 和头文件），缺失时 `build.bat ninja` 会自动下载。
 
 ### Q: 运行时找不到 DLL
 

@@ -76,7 +76,7 @@ VideoEye 是一款开源的视频流分析软件，支持多种视频输入源�
 
 **FFmpeg 查找优先级** (CMakeLists.txt 自动选择):
 1. `find_package(FFMPEG)` — vcpkg 已安装的 ffmpeg 包
-2. 已有预编译共享库 — `build-ninja/ffmpeg_install/` (gyan.dev full shared 构建)
+2. 已有预编译共享库 — `third_party/ffmpeg-prebuilt/` (gyan.dev full-shared 构建, 由 `scripts/fetch-ffmpeg.ps1` 获取)
 3. 系统 `pkg-config` — Linux apt 安装的 libavcodec-dev 等
 
 ## 📦 安装依赖
@@ -86,7 +86,7 @@ VideoEye 是一款开源的视频流分析软件，支持多种视频输入源�
 ```bash
 sudo apt install -y \
     build-essential cmake ninja-build nasm yasm pkg-config \
-    qt6-base-dev qt6-multimedia-dev qt6-charts-dev \
+    qt6-base-dev qt6-charts-dev \
     libopencv-dev libsdl2-dev zlib1g-dev \
     libavcodec-dev libavformat-dev libavutil-dev \
     libswscale-dev libswresample-dev \
@@ -108,10 +108,11 @@ C:\vcpkg\bootstrap-vcpkg.bat
 
 # 在项目根目录运行 vcpkg install（自动读取 vcpkg.json manifest）
 cd VideoEye
-vcpkg install
+# 使用 release-only 覆盖 triplet（scripts/triplets/），host==target 同名避免交叉编译分支
+vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --x-manifest-root=. --x-install-root=vcpkg_installed
 ```
 
-> **FFmpeg 说明**: Windows 上如果 vcpkg 的 FFmpeg 不含 vulkan feature，CMake 会自动回退到已有的预编译共享库（`build-ninja/ffmpeg_install/`，来自 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) full shared 构建，当前版本 8.1.2）。该目录包含完整的 DLL、.lib 和头文件，含 Vulkan hwaccel 支持。
+> **FFmpeg 说明**: Windows 上运行 `powershell -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1` 自动下载 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) **release-full-shared** 预编译共享库到 `third_party/ffmpeg-prebuilt/`（含 DLL、.lib 导入库与头文件；gyan 的 essentials 构建不含开发文件，不适用）。`build.bat ninja` 检测到缺失时会自动触发下载。版本由 `.videoeye-ffmpeg.json` stamp 记录，gyan.dev 升级后重新执行脚本即可自动更新。
 
 ## 🔨 构建指南
 

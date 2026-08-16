@@ -17,7 +17,8 @@
 ### Windows
 ```powershell
 # 1. 安装 vcpkg 依赖（首次）
-vcpkg install --triplet x64-windows
+vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release \
+  --overlay-triplets=scripts/triplets --x-manifest-root=. --x-install-root=vcpkg_installed
 
 # 2. 构建（脚本自动探测 MSVC、自动获取 FFmpeg、复制 DLL）
 powershell -ExecutionPolicy Bypass -File build_ninja.ps1
@@ -33,7 +34,7 @@ cmake --build --preset win-release
 ```bash
 # 1. 安装系统依赖
 sudo apt install -y build-essential cmake pkg-config ninja-build \
-  qt6-base-dev qt6-multimedia-dev qt6-charts-dev \
+  qt6-base-dev qt6-charts-dev \
   libopencv-dev libsdl2-dev zlib1g-dev \
   libvulkan-dev glslc \
   libavcodec-dev libavformat-dev libavutil-dev \
@@ -57,7 +58,7 @@ cmake --preset linux-release && cmake --build --preset linux-release
 | Vulkan headers | submodule (vulkan-headers) | apt (libvulkan-dev) |
 | Bento4 / ZenLib / MediaInfoLib | submodule (源码集成) | submodule |
 
-FFmpeg 版本由 `vcpkg-configuration.json`（baseline `2025-04-16`）锁定，确保团队成员依赖一致。
+FFmpeg（Windows）通过 `scripts/fetch-ffmpeg.ps1` 从 gyan.dev 获取预编译包，版本记录在 `third_party/ffmpeg-prebuilt/.videoeye-ffmpeg.json`。vcpkg 依赖版本由 `vcpkg-configuration.json`（baseline `2025-04-16`）锁定，确保团队成员依赖一致。
 
 ## 代码风格
 

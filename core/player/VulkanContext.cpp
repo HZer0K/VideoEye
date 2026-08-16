@@ -420,24 +420,9 @@ bool VulkanContext::CreateFFmpegDeviceContext() {
         hw_ctx->nb_qf++;
     }
 
-    // 设置兼容旧 API 的字段（FF_API_VULKAN_FIXED_QUEUES，已弃用但仍需设置）
-#ifdef __GNUC__
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
-    hw_ctx->queue_family_index = static_cast<int>(graphics_qf_);
-    hw_ctx->nb_graphics_queues = (graphics_qf_ != UINT32_MAX) ? 1 : 0;
-    hw_ctx->queue_family_tx_index = static_cast<int>(transfer_qf_);
-    hw_ctx->nb_tx_queues = (transfer_qf_ != UINT32_MAX) ? 1 : 0;
-    hw_ctx->queue_family_comp_index = static_cast<int>(compute_qf_);
-    hw_ctx->nb_comp_queues = (compute_qf_ != UINT32_MAX) ? 1 : 0;
-    hw_ctx->queue_family_encode_index = -1;
-    hw_ctx->nb_encode_queues = 0;
-    hw_ctx->queue_family_decode_index = -1;
-    hw_ctx->nb_decode_queues = 0;
-#ifdef __GNUC__
-#pragma GCC diagnostic pop
-#endif
+    // FFmpeg 9.0 移除了 AVVulkanDeviceContext 的固定队列字段
+    // (queue_family_index/nb_graphics_queues 等), 已由上面的 qf[]/nb_qf 数组 API 取代,
+    // 旧字段赋值块不再需要。
 
     int ret = av_hwdevice_ctx_init(hw_device_ctx_);
     if (ret < 0) {

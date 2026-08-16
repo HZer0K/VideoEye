@@ -165,10 +165,10 @@ tests/
 
 | 依赖 | 管理方式 | 说明 |
 |------|---------|------|
-| Qt6 | vcpkg (Win) / apt (Linux) | Widgets, Multimedia, Charts |
+| Qt6 | vcpkg (Win) / apt (Linux) | Widgets, Charts（音频输出走 SDL2） |
 | OpenCV | vcpkg (Win) / apt (Linux) | core, imgproc, objdetect |
 | SDL2 | vcpkg (Win) / apt (Linux) | 音频输出 |
-| FFmpeg | 多来源查找 | vcpkg → 预编译共享库 (gyan.dev 8.1.2) → pkg-config |
+| FFmpeg | 多来源查找 | vcpkg → 预编译共享库 (gyan.dev full-shared) → pkg-config |
 | Bento4 | 源码集成 (add_subdirectory) | vcpkg 版本过旧 (1.5.1 vs 1.6.0) |
 | MediaInfoLib | 源码集成 (add_subdirectory) | 有定制改动 |
 | ZenLib | 源码集成 (add_subdirectory) | MediaInfoLib 依赖 |

@@ -1,0 +1,71 @@
+# Git 属性配置 — 跨平台行尾规范
+# 确保 Windows/Linux/macOS 团队成员签出后行尾一致
+
+# 默认: 文本文件自动转换 (遵循 core.autocrlf 设置)
+* text=auto
+
+# 源码文件统一 LF (跨平台一致)
+*.cpp   text eol=lf
+*.h     text eol=lf
+*.hpp   text eol=lf
+*.c     text eol=lf
+*.cc    text eol=lf
+*.frag  text eol=lf
+*.vert  text eol=lf
+*.comp  text eol=lf
+
+# CMake 文件
+*.cmake     text eol=lf
+CMakeLists.txt text eol=lf
+*.txt       text eol=lf
+
+# 配置文件
+*.json     text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.editorconfig text eol=lf
+*.clang-format text eol=lf
+*.clang-tidy text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+.gitmodules text eol=lf
+
+# Shell 脚本必须 LF (否则 WSL/Linux 下报 bad interpreter)
+*.sh       text eol=lf
+build.sh   text eol=lf
+setup.sh   text eol=lf
+run.sh     text eol=lf
+
+# PowerShell 脚本用 CRLF (Windows 原生)
+*.ps1      text eol=crlf
+*.psm1     text eol=crlf
+*.psd1     text eol=crlf
+
+# Batch 脚本用 CRLF
+*.bat      text eol=crlf
+*.cmd      text eol=crlf
+
+# Markdown 保持原样
+*.md       text eol=lf
+
+# 二进制文件 (不转换)
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.ico      binary
+*.icns     binary
+*.pdf      binary
+*.zip      binary
+*.7z       binary
+*.gz       binary
+*.tar      binary
+*.dll      binary
+*.exe      binary
+*.lib      binary
+*.so       binary
+*.so.*     binary
+*.a        binary
+*.dylib    binary
+*.obj      binary
+*.pdb      binary
+*.spv      binary

@@ -230,7 +230,19 @@ void MediaExporter::Export(const ExportOptions& opt) {
             if (mt == AVMEDIA_TYPE_VIDEO) {
                 enc->width = dec->width;
                 enc->height = dec->height;
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 19, 100)   // FFmpeg >= 7.1
+                {
+                    // FFmpeg 9.0 移除了 AVCodec::pix_fmts, 改用 avcodec_get_supported_config
+                    const void* supported = nullptr;
+                    if (avcodec_get_supported_config(nullptr, enc_codec,
+                            AV_CODEC_CONFIG_PIX_FORMAT, 0, &supported, nullptr) >= 0 && supported)
+                        enc->pix_fmt = static_cast<const AVPixelFormat*>(supported)[0];
+                    else
+                        enc->pix_fmt = AV_PIX_FMT_YUV420P;
+                }
+#else
                 enc->pix_fmt = (enc_codec->pix_fmts) ? enc_codec->pix_fmts[0] : AV_PIX_FMT_YUV420P;
+#endif
                 sc.enc_pix_fmt = enc->pix_fmt;
                 enc->time_base = in_st->time_base;
                 const int base = enc->width * enc->height;
@@ -248,7 +260,19 @@ void MediaExporter::Export(const ExportOptions& opt) {
                 if (enc->ch_layout.nb_channels == 0) {
                     av_channel_layout_default(&enc->ch_layout, dec->ch_layout.nb_channels ? dec->ch_layout.nb_channels : 2);
                 }
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 19, 100)   // FFmpeg >= 7.1
+                {
+                    // FFmpeg 9.0 移除了 AVCodec::sample_fmts, 改用 avcodec_get_supported_config
+                    const void* supported = nullptr;
+                    if (avcodec_get_supported_config(nullptr, enc_codec,
+                            AV_CODEC_CONFIG_SAMPLE_FORMAT, 0, &supported, nullptr) >= 0 && supported)
+                        enc->sample_fmt = static_cast<const AVSampleFormat*>(supported)[0];
+                    else
+                        enc->sample_fmt = AV_SAMPLE_FMT_FLTP;
+                }
+#else
                 enc->sample_fmt = (enc_codec->sample_fmts) ? enc_codec->sample_fmts[0] : AV_SAMPLE_FMT_FLTP;
+#endif
                 enc->bit_rate = static_cast<int64_t>(opt.audioBitrateKbps) * 1000;
                 enc->time_base = {1, enc->sample_rate};
                 if (out_fmt->oformat->flags & AVFMT_GLOBALHEADER)

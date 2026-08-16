@@ -6,6 +6,13 @@
 #       启用方式: cmake -DBUILD_TESTING=ON ..
 # ============================================================
 
+# 守卫: unit/ 测试源尚未提交时, 跳过测试构建 (避免 configure 因缺源文件失败)
+file(GLOB TEST_UNIT_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/unit/*.cpp")
+if(NOT TEST_UNIT_SOURCES)
+    message(STATUS "tests/unit/*.cpp 未找到, 跳过测试构建 (提交测试源文件后自动启用)")
+    return()
+endif()
+
 include(FetchContent)
 
 FetchContent_Declare(

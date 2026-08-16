@@ -14,9 +14,41 @@
       "binaryDir": "${sourceDir}/build-ninja",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_PREFIX_PATH": "${sourceDir}/vcpkg_installed/x64-windows",
+        "CMAKE_PREFIX_PATH": "${sourceDir}/vcpkg_installed/x64-windows-release",
         "FFMPEG_ROOT": "${sourceDir}/third_party/ffmpeg-prebuilt",
+        "FFMPEG_VERSION": "8.1.1",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "BUILD_TESTING": "OFF"
+      }
+    },
+    {
+      "name": "win-debug",
+      "displayName": "Windows Ninja Debug",
+      "description": "Windows Debug 构建 (Ninja + MSVC)，带调试符号。需在 vcvars64 环境下运行。",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-ninja-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_PREFIX_PATH": "${sourceDir}/vcpkg_installed/x64-windows-release",
+        "FFMPEG_ROOT": "${sourceDir}/third_party/ffmpeg-prebuilt",
+        "FFMPEG_VERSION": "8.1.1",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BUILD_TESTING": "OFF"
+      }
+    },
+    {
+      "name": "win-test",
+      "displayName": "Windows Ninja Release + Tests",
+      "description": "Windows 构建并启用单元测试。需在 vcvars64 环境下运行。",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-ninja-test",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_PREFIX_PATH": "${sourceDir}/vcpkg_installed/x64-windows-release",
+        "FFMPEG_ROOT": "${sourceDir}/third_party/ffmpeg-prebuilt",
+        "FFMPEG_VERSION": "8.1.1",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BUILD_TESTING": "ON"
       }
     },
     {
@@ -24,7 +56,7 @@
       "displayName": "Linux Make Release",
       "description": "Linux 构建 (GCC + Make)，生成 compile_commands.json 供 clangd 使用。",
       "generator": "Unix Makefiles",
-      "binaryDir": "${sourceDir}/build",
+      "binaryDir": "${sourceDir}/build-linux",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
@@ -58,6 +90,8 @@
   ],
   "buildPresets": [
     { "name": "win-release", "configurePreset": "win-release" },
+    { "name": "win-debug", "configurePreset": "win-debug" },
+    { "name": "win-test", "configurePreset": "win-test" },
     { "name": "linux-release", "configurePreset": "linux-release" },
     { "name": "linux-debug", "configurePreset": "linux-debug" },
     { "name": "linux-test", "configurePreset": "linux-test" }

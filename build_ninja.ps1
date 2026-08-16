@@ -1,13 +1,22 @@
 ﻿# VideoEye Windows Build Script (PowerShell + Ninja + MSVC)
-# Usage: powershell -ExecutionPolicy Bypass -File build_ninja.ps1
+# Usage: powershell -ExecutionPolicy Bypass -File build_ninja.ps1 [-BuildType Debug|Release]
 #
 # 自动探测 Visual Studio 2022 / Build Tools (via vswhere)，无需硬编码路径。
 # 依赖: vcpkg (vcpkg_installed/), FFmpeg (运行 scripts/fetch-ffmpeg.ps1 获取)
 
+param(
+    [ValidateSet("Release", "Debug")]
+    [string]$BuildType = "Release"
+)
+
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$buildDir = "$projectRoot\build-ninja"
+$buildDir = if ($BuildType -eq "Debug") { "$projectRoot\build-ninja-debug" } else { "$projectRoot\build-ninja" }
+
+# ── FFmpeg 版本锁定 ──
+# 团队统一使用 8.1.1 (gyan.dev full-shared 预编译包), 确保所有人构建环境一致。
+$FfmpegVersion = "8.1.1"
 
 # -- 用 vswhere 自动探测 Visual Studio 安装路径 --
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -51,9 +60,8 @@ if (-not (Test-Path $ninjaExe)) {
     }
 }
 
-$vcpkgBin = "$projectRoot\vcpkg_installed\x64-windows\bin"
-$vcpkgLib = "$projectRoot\vcpkg_installed\x64-windows\lib"
-$vcpkgQtPlugins = "$projectRoot\vcpkg_installed\x64-windows\Qt6\plugins"
+$vcpkgTriplet = "x64-windows-release"
+$vcpkgLib = "$projectRoot\vcpkg_installed\$vcpkgTriplet\lib"
 
 # vcpkg lib 必须加入 LIB，否则链接器找不到 SDL2.lib 等裸名引用
 if (Test-Path $vcpkgLib) {
@@ -67,8 +75,10 @@ if ($clPath) { Write-Output "Compiler: $($clPath.Source)" } else { Write-Error "
 Write-Output "Ninja: $ninjaExe"
 
 # -- 检查 vcpkg 依赖 --
-if (-not (Test-Path "$projectRoot\vcpkg_installed\x64-windows\include")) {
-    Write-Output "WARNING: vcpkg 依赖未安装。运行: vcpkg install --triplet x64-windows"
+if (-not (Test-Path "$projectRoot\vcpkg_installed\$vcpkgTriplet\include")) {
+    Write-Output "WARNING: vcpkg 依赖未安装。运行:"
+    Write-Output "  vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --x-manifest-root=. --x-install-root=vcpkg_installed"
+    Write-Output "（release-only triplet，host==target 同名，省约一半磁盘/安装时间）"
 }
 
 # -- 检查/获取 FFmpeg --
@@ -79,7 +89,11 @@ if (-not (Test-Path "$ffmpegDir\include\libavcodec\avcodec.h")) {
         $ffmpegDir = "$buildDir\ffmpeg_install"
     } else {
         Write-Output "FFmpeg 未找到，自动获取中..."
-        & powershell -ExecutionPolicy Bypass -File "$projectRoot\scripts\fetch-ffmpeg.ps1"
+        if ($FfmpegVersion) {
+            & powershell -ExecutionPolicy Bypass -File "$projectRoot\scripts\fetch-ffmpeg.ps1" -Version $FfmpegVersion
+        } else {
+            & powershell -ExecutionPolicy Bypass -File "$projectRoot\scripts\fetch-ffmpeg.ps1"
+        }
         if ($LASTEXITCODE -ne 0) { Write-Error "FFmpeg 获取失败"; exit $LASTEXITCODE }
     }
 }
@@ -89,15 +103,15 @@ $ffmpegArg = "-DFFMPEG_ROOT=$ffmpegDir"
 if (!(Test-Path $buildDir)) { New-Item -ItemType Directory -Path $buildDir | Out-Null }
 Set-Location $buildDir
 
-# -- Configure (only if build.ninja doesn't exist) --
-if (!(Test-Path "$buildDir\build.ninja")) {
-    Write-Output "=== Configuring CMake with Ninja ==="
-    & cmake $projectRoot -G Ninja -DCMAKE_BUILD_TYPE=Release `
-        "-DCMAKE_MAKE_PROGRAM=$ninjaExe" `
-        "-DCMAKE_PREFIX_PATH=$projectRoot\vcpkg_installed\x64-windows" `
-        $ffmpegArg -DBUILD_TESTING=OFF
-    if ($LASTEXITCODE -ne 0) { Write-Output "CMake configuration failed!"; exit $LASTEXITCODE }
-}
+# -- Configure (总是执行; cmake 增量配置很快, 避免参数/依赖变化后陈旧缓存) --
+Write-Output "=== Configuring CMake with Ninja ==="
+& cmake $projectRoot -G Ninja `
+    "-DCMAKE_BUILD_TYPE=$BuildType" `
+    "-DCMAKE_MAKE_PROGRAM=$ninjaExe" `
+    "-DCMAKE_PREFIX_PATH=$projectRoot\vcpkg_installed\$vcpkgTriplet" `
+    $ffmpegArg -DBUILD_TESTING=OFF `
+    "-DVIDEOEYE_UNITY_BUILD=OFF"   # 显式关闭: MediaInfoLib/ZenLib 与 Unity Build 不兼容
+if ($LASTEXITCODE -ne 0) { Write-Output "CMake configuration failed!"; exit $LASTEXITCODE }
 
 # -- Build --
 Write-Output "=== Building ==="
@@ -106,34 +120,9 @@ if ($jobs -lt 1) { $jobs = 4 }
 & $ninjaExe "-j$jobs"
 if ($LASTEXITCODE -ne 0) { Write-Output "Build failed!"; exit $LASTEXITCODE }
 
-# -- Copy runtime DLLs --
-Write-Output "=== Copying runtime DLLs ==="
-$binDir = "$buildDir\bin"
-
-# FFmpeg DLLs
-$ffmpegBin = "$ffmpegDir\bin"
-if (Test-Path $ffmpegBin) { Copy-Item "$ffmpegBin\*.dll" $binDir -Force }
-# vcpkg DLLs (Qt6, SDL2, OpenCV, zlib, icu, harfbuzz, etc. - copy all)
-if (Test-Path $vcpkgBin) { Copy-Item "$vcpkgBin\*.dll" $binDir -Force }
-# Qt6 plugins
-$pluginDirs = @("platforms", "styles", "imageformats", "tls")
-foreach ($dir in $pluginDirs) {
-    $src = "$vcpkgQtPlugins\$dir"
-    if (Test-Path $src) {
-        $dst = "$binDir\$dir"
-        if (!(Test-Path $dst)) { New-Item -ItemType Directory -Path $dst | Out-Null }
-        Copy-Item "$src\*.dll" $dst -Force
-    }
-}
-
-# Copy SPIR-V shaders if they exist
-$shaderDir = "$buildDir\shaders"
-if (Test-Path $shaderDir) {
-    $dstShader = "$binDir\shaders"
-    if (!(Test-Path $dstShader)) { New-Item -ItemType Directory -Path $dstShader | Out-Null }
-    Copy-Item "$shaderDir\*.spv" $dstShader -Force
-}
+# 运行时 DLL / Qt 插件 / shaders 已由 CMake POST_BUILD 步骤 (TARGET_RUNTIME_DLLS +
+# FFmpeg bin 拷贝 + windeployqt + spirv_shaders) 自动部署到 bin/, 无需手动复制。
 
 Write-Output ""
 Write-Output "=== Build complete! ==="
-Write-Output "Executable: $binDir\VideoEye.exe"
+Write-Output "Executable: $buildDir\bin\VideoEye.exe"

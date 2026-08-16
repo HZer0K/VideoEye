@@ -6,27 +6,41 @@
 include(CheckTypeSize)
 include(CheckSymbolExists)
 
+# Unity Build 加速 (由根 CMakeLists 的 VIDEOEYE_UNITY_BUILD 控制, 默认 OFF)
+# 注意: MediaInfoLib 的 Multiple/*.cpp 存在同名文件级全局变量、ZenLib 的
+#       std::numeric_limits::max() 会被 Windows min/max 宏展开 —— 均与 Unity Build
+#       不兼容, 故默认关闭; 如需尝试, cmake -DVIDEOEYE_UNITY_BUILD=ON
+if(VIDEOEYE_UNITY_BUILD)
+    set(_UNITY_BATCH 32)
+else()
+    set(_UNITY_BATCH 0)
+endif()
+
 # ============================================================
 # ZenLib 静态库
 # ============================================================
 set(ZENLIB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/ZenLib")
 set(ZENLIB_SRC "${ZENLIB_ROOT}/Source/ZenLib")
 
-file(GLOB_RECURSE ZENLIB_SOURCES
+file(GLOB_RECURSE ZENLIB_SOURCES CONFIGURE_DEPENDS
     "${ZENLIB_SRC}/*.cpp"
     "${ZENLIB_SRC}/*.c"
 )
-file(GLOB_RECURSE ZENLIB_HEADERS
+file(GLOB_RECURSE ZENLIB_HEADERS CONFIGURE_DEPENDS
     "${ZENLIB_SRC}/*.h"
 )
 
-# 排除 HTTP_Client (不需要 HTTP 客户端功能)
-file(GLOB ZENLIB_HTTP_CLIENT_SOURCES "${ZENLIB_SRC}/HTTP_Client/*.c" "${ZENLIB_SRC}/HTTP_Client/*.cpp")
-file(GLOB ZENLIB_HTTP_CLIENT_HEADERS "${ZENLIB_SRC}/HTTP_Client/*.h")
+# 排除不需要的文件 (工具、示例、测试)
+file(GLOB ZENLIB_HTTP_CLIENT_SOURCES CONFIGURE_DEPENDS "${ZENLIB_SRC}/HTTP_Client/*.c" "${ZENLIB_SRC}/HTTP_Client/*.cpp")
+file(GLOB ZENLIB_HTTP_CLIENT_HEADERS CONFIGURE_DEPENDS "${ZENLIB_SRC}/HTTP_Client/*.h")
 list(REMOVE_ITEM ZENLIB_SOURCES ${ZENLIB_HTTP_CLIENT_SOURCES})
 list(REMOVE_ITEM ZENLIB_HEADERS ${ZENLIB_HTTP_CLIENT_HEADERS})
 
 add_library(zen STATIC ${ZENLIB_SOURCES} ${ZENLIB_HEADERS})
+if(_UNITY_BATCH GREATER 0)
+    set_property(TARGET zen PROPERTY UNITY_BUILD ON)
+    set_property(TARGET zen PROPERTY UNITY_BUILD_BATCH_SIZE ${_UNITY_BATCH})
+endif()
 
 target_include_directories(zen PUBLIC ${ZENLIB_ROOT}/Source)
 
@@ -39,8 +53,8 @@ if(CMAKE_THREAD_LIBS_INIT)
     target_link_libraries(zen PUBLIC ${CMAKE_THREAD_LIBS_INIT})
 endif()
 
-# Large file support
-add_definitions(-D_FILE_OFFSET_BITS=64)
+# Large file support (target 级别, 避免全局 add_definitions 泄漏到后续 target)
+target_compile_definitions(zen PUBLIC _FILE_OFFSET_BITS=64)
 
 check_type_size(size_t SIZE_T_SIZE)
 check_type_size(long LONG_SIZE)
@@ -65,14 +79,14 @@ set(MEDIAINFO_SRC "${MEDIAINFO_ROOT}/Source/MediaInfo")
 set(THIRDPARTY_SRC "${MEDIAINFO_ROOT}/Source/ThirdParty")
 
 # 自动收集 MediaInfoLib 源文件
-file(GLOB_RECURSE MEDIAINFO_SOURCES
+file(GLOB_RECURSE MEDIAINFO_SOURCES CONFIGURE_DEPENDS
     "${MEDIAINFO_SRC}/*.cpp"
     "${MEDIAINFO_SRC}/*.c"
 )
 
 # 自动收集 ThirdParty 源文件，排除不需要的工具/示例代码
-file(GLOB THIRDPARTY_C_SOURCES "${THIRDPARTY_SRC}/*/*.c")
-file(GLOB THIRDPARTY_CXX_SOURCES "${THIRDPARTY_SRC}/*/*.cpp" "${THIRDPARTY_SRC}/*/*.cc")
+file(GLOB THIRDPARTY_C_SOURCES CONFIGURE_DEPENDS "${THIRDPARTY_SRC}/*/*.c")
+file(GLOB THIRDPARTY_CXX_SOURCES CONFIGURE_DEPENDS "${THIRDPARTY_SRC}/*/*.cpp" "${THIRDPARTY_SRC}/*/*.cc")
 
 # 排除不需要的文件 (工具、示例、测试)
 list(FILTER THIRDPARTY_C_SOURCES EXCLUDE REGEX ".*/(aesxam|tablegen|shasum|pwd2key)\\.c$")
@@ -80,7 +94,7 @@ list(FILTER THIRDPARTY_C_SOURCES EXCLUDE REGEX ".*/(aesxam|tablegen|shasum|pwd2k
 set(MEDIAINFO_ALL_SOURCES ${MEDIAINFO_SOURCES} ${THIRDPARTY_C_SOURCES} ${THIRDPARTY_CXX_SOURCES})
 
 # MediaInfoLib 公共头文件
-file(GLOB MEDIAINFO_PUBLIC_HDRS
+file(GLOB MEDIAINFO_PUBLIC_HDRS CONFIGURE_DEPENDS
     "${MEDIAINFO_SRC}/MediaInfo.h"
     "${MEDIAINFO_SRC}/MediaInfoList.h"
     "${MEDIAINFO_SRC}/MediaInfo_Const.h"
@@ -90,6 +104,10 @@ file(GLOB MEDIAINFO_PUBLIC_HDRS
 )
 
 add_library(mediainfo STATIC ${MEDIAINFO_ALL_SOURCES} ${MEDIAINFO_PUBLIC_HDRS})
+# 注意: MediaInfoLib 的 Multiple/*.cpp 存在大量同名文件级全局变量
+# (如 MaxCountSameElementInTrace 同时在 File_Mk/File_Mxf 定义), Unity Build 会冲突,
+# 故不启用 unity; zen/ap4 启用。
+# if(_UNITY_BATCH GREATER 0) ... endif()
 
 target_include_directories(mediainfo PUBLIC
     ${MEDIAINFO_ROOT}/Source

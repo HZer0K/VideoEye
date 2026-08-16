@@ -35,7 +35,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake pkg-config ninja-build \
-            qt6-base-dev qt6-multimedia-dev qt6-charts-dev \
+            qt6-base-dev qt6-charts-dev \
             libopencv-dev libsdl2-dev zlib1g-dev \
             libvulkan-dev glslc \
             libavcodec-dev libavformat-dev libavutil-dev \
@@ -49,20 +49,85 @@ jobs:
         if: runner.os == 'Linux'
         run: cmake --build --preset ${{ matrix.preset }}
 
+      - name: Upload artifact (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoEye-linux
+          path: build-linux/bin
+
       # ─────────────── Windows ───────────────
       - name: Setup vcpkg (Windows)
         if: runner.os == 'Windows'
         uses: friendlyanon/setup-vcpkg@v1
         with:
-          vcpkg-ref: 2025-04-16
+          # 与 vcpkg-configuration.json 的 baseline 保持一致 (2025-04-17 提交)
+          vcpkg-ref: fd22bbac96555f6c43ee35f143a634daed53369c
+
+      - name: Cache vcpkg dependencies (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'scripts/triplets/x64-windows-release.cmake') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-
 
       - name: Install vcpkg dependencies (Windows)
         if: runner.os == 'Windows'
         run: |
-          vcpkg install --triplet x64-windows --x-manifest-root=. --x-install-root=vcpkg_installed
+          # release-only 覆盖 triplet (scripts/triplets/x64-windows-release.cmake),
+          # host==target 同名避免交叉编译分支; 省 ~2GB 磁盘与一半安装时间
+          vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --x-manifest-root=. --x-install-root=vcpkg_installed
+
+      - name: Validate CMake Preset (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # 激活 MSVC 环境 (与 build_ninja.ps1 同方式: vswhere + vcvars64.bat)
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsRoot = & $vswhere -latest -products * `
+              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+              -property installationPath
+          $vcvars = "$vsRoot\VC\Auxiliary\Build\vcvars64.bat"
+          cmd /c "`"$vcvars`" x64 && set" | ForEach-Object {
+              if ($_ -match '^(.*?)=(.*)$') {
+                  Set-Item -Path "env:$($matches[1])" -Value $matches[2].TrimEnd()
+              }
+          }
+          # 验证 preset 可正常 configure (提前发现 preset 配置损坏)
+          # 同时预配置 build-ninja/ 目录, build_ninja.ps1 会增量重配置 (很快)
+          cmake --preset win-release
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "CMake preset 'win-release' validation failed"
+            exit 1
+          }
+          Write-Host "Preset validation passed"
 
       - name: Build (Windows, incl. FFmpeg fetch + configure + compile)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           powershell -ExecutionPolicy Bypass -File build_ninja.ps1
+
+      - name: Smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = "build-ninja\bin\VideoEye.exe"
+          if (-not (Test-Path $exe)) { Write-Error "VideoEye.exe not found"; exit 1 }
+          $p = Start-Process -FilePath (Resolve-Path $exe) -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) {
+            Write-Error "Smoke test failed: app exited early with code $($p.ExitCode) (可能缺 DLL)"
+            exit 1
+          }
+          Stop-Process -Id $p.Id -Force
+          Write-Host "Smoke test passed: app stayed running 8s"
+
+      - name: Upload artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoEye-windows
+          path: build-ninja/bin

@@ -45,7 +45,7 @@ if [ -n "$MISSING_DEPS" ]; then
     echo ""
     echo "Debian/Ubuntu 安装命令:"
     echo "  sudo apt install -y cmake g++ make pkg-config \\"
-    echo "    qt6-base-dev qt6-multimedia-dev qt6-charts-dev \\"
+    echo "    qt6-base-dev qt6-charts-dev \\"
     echo "    libopencv-dev libsdl2-dev zlib1g-dev \\"
     echo "    libvulkan-dev libglslc-dev glslc \\"
     echo "    libavcodec-dev libavformat-dev libavutil-dev \\"

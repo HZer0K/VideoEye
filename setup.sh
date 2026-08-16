@@ -57,7 +57,7 @@ if [ "$BUILD_ONLY" = false ]; then
         if [ "$OS" = "linux" ]; then
             echo "  Debian/Ubuntu 安装命令:"
             echo "    sudo apt install -y build-essential cmake pkg-config \\"
-            echo "      qt6-base-dev qt6-multimedia-dev qt6-charts-dev \\"
+            echo "      qt6-base-dev qt6-charts-dev \\"
             echo "      libopencv-dev libsdl2-dev zlib1g-dev \\"
             echo "      libvulkan-dev glslc \\"
             echo "      libavcodec-dev libavformat-dev libavutil-dev \\"
@@ -72,7 +72,7 @@ fi
 
 # 3. 编译
 echo -e "\n${YELLOW}[3/3] 编译 (${BUILD_TYPE})...${NC}"
-BUILD_DIR="$DIR/build"
+BUILD_DIR="$DIR/build-linux"
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 cmake .. -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -DBUILD_TESTING=OFF

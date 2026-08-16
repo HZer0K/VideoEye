@@ -4,9 +4,11 @@
   "version": "2.0.0",
   "description": "VideoEye - 现代化的视频流分析软件",
   "dependencies": [
-    "opencv4",
+    {
+      "name": "opencv4",
+      "default-features": false
+    },
     "qtbase",
-    "qtmultimedia",
     "qtcharts",
     "sdl2",
     "zlib"
