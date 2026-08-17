@@ -844,34 +844,44 @@ void MediaPlayer::DecodeThread() {
                     // Vulkan 渲染路径: 软件解码帧 (YUV420P) 直接上传渲染, 不再要求零拷贝 HW 帧。
                     // 仅当渲染器已成功初始化且当前帧不是 HW Vulkan 帧时才走 Vulkan; 否则回退 CPU。
                     // (HW Vulkan 帧的零拷贝渲染待 P2 实现, 此处仍由下方 CPU 回退路径显示。)
+                    // 注意: Vulkan 呈现成功后必须整体跳过下方 sws_scale 路径, 否则若 sws_ctx
+                    // 在 Vulkan 激活前已创建 (如后台初始化完成前播了若干帧), 会双路渲染白烧 CPU。
+                    bool presented_via_vulkan = false;
                     if (vulkan_rendering_enabled_ && vulkan_renderer_ &&
                         vulkan_renderer_->IsInitialized() &&
                         !video_decoder_->IsCurrentFrameVulkan()) {
                         const AVFrame* raw = video_decoder_->GetLastRawFrame();
                         if (raw) {
-                            vulkan_renderer_->PresentFrame(raw);
+                            // PresentFrame 返回 false 表示本帧未被渲染器显示
+                            // (渲染器尚未初始化), 此时走下方 CPU 转换 + FrameReady
+                            // 路径。返回 true = 已显示 (Vulkan 渲染或拖动期间
+                            // 渲染器内部的 GDI 兜底绘制)。
+                            presented_via_vulkan = vulkan_renderer_->PresentFrame(raw);
                             // Continue analysis below (frame type, histogram, etc.)
                         }
-                    } else if (frame_data.format >= 0) {
-                        if (sws_src_w != frame_data.width || sws_src_h != frame_data.height || sws_src_fmt != frame_data.format) {
-                            sws_src_w = frame_data.width; sws_src_h = frame_data.height; sws_src_fmt = frame_data.format;
-                        }
-                        sws_ctx = sws_getCachedContext(sws_ctx, frame_data.width, frame_data.height,
-                                                       static_cast<AVPixelFormat>(frame_data.format),
-                                                       frame_data.width, frame_data.height, AV_PIX_FMT_BGRA,
-                                                       SWS_BILINEAR, nullptr, nullptr, nullptr);
                     }
-                    if (sws_ctx) {
-                        QImage qimage(frame_data.width, frame_data.height, QImage::Format_ARGB32);
-                        if (!qimage.isNull()) {
-                            uint8_t* dst_slices[4] = {qimage.bits(), nullptr, nullptr, nullptr};
-                            int dst_linesize[4] = {static_cast<int>(qimage.bytesPerLine()), 0, 0, 0};
-                            sws_scale(sws_ctx, frame_data.data, frame_data.linesize, 0, frame_data.height,
-                                      dst_slices, dst_linesize);
-                            emit FrameReady(qimage);
-                            if (++decoded_frames % 120 == 0) {
-                                LOG_INFO("DecodeThread heartbeat: frames=" + std::to_string(decoded_frames) +
-                                         " pos_ms=" + std::to_string(current_position_ms_.load()));
+                    if (!presented_via_vulkan) {
+                        if (frame_data.format >= 0) {
+                            if (sws_src_w != frame_data.width || sws_src_h != frame_data.height || sws_src_fmt != frame_data.format) {
+                                sws_src_w = frame_data.width; sws_src_h = frame_data.height; sws_src_fmt = frame_data.format;
+                            }
+                            sws_ctx = sws_getCachedContext(sws_ctx, frame_data.width, frame_data.height,
+                                                           static_cast<AVPixelFormat>(frame_data.format),
+                                                           frame_data.width, frame_data.height, AV_PIX_FMT_BGRA,
+                                                           SWS_BILINEAR, nullptr, nullptr, nullptr);
+                        }
+                        if (sws_ctx) {
+                            QImage qimage(frame_data.width, frame_data.height, QImage::Format_ARGB32);
+                            if (!qimage.isNull()) {
+                                uint8_t* dst_slices[4] = {qimage.bits(), nullptr, nullptr, nullptr};
+                                int dst_linesize[4] = {static_cast<int>(qimage.bytesPerLine()), 0, 0, 0};
+                                sws_scale(sws_ctx, frame_data.data, frame_data.linesize, 0, frame_data.height,
+                                          dst_slices, dst_linesize);
+                                emit FrameReady(qimage);
+                                if (++decoded_frames % 120 == 0) {
+                                    LOG_INFO("DecodeThread heartbeat: frames=" + std::to_string(decoded_frames) +
+                                             " pos_ms=" + std::to_string(current_position_ms_.load()));
+                                }
                             }
                         }
                     }
@@ -1068,8 +1078,8 @@ void MediaPlayer::Cleanup() {
     video_decoder_.reset();
     audio_decoder_.reset();
     audio_output_.reset();
-    vulkan_renderer_ = nullptr;  // 非拥有, 不释放 (由 MainWindow 管理)
-    vulkan_ctx_ = nullptr;       // 非拥有, 不释放 (由 MainWindow 管理)
+    // 注意: vulkan_renderer_ / vulkan_ctx_ 是 MainWindow 管理的渲染基础设施,
+    // 跨文件复用, 不在 Cleanup 中清空 (否则 Open 后解码线程无法走 Vulkan 路径)。
     video_stream_index_ = -1;
     audio_stream_index_ = -1;
 }

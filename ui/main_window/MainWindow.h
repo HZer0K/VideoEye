@@ -22,6 +22,7 @@
 #include <QStackedWidget>
 #include <QLabel>
 #include <QButtonGroup>
+#include <QPointer>
 #include <deque>
 #include <memory>
 #include <QImage>
@@ -110,10 +111,20 @@ private:
 protected:
     void showEvent(QShowEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
+    void moveEvent(QMoveEvent* event) override;
+    // WM_ENTERSIZEMOVE/WM_EXITSIZEMOVE: 精确检测窗口拖动模态的开始/结束,
+    // 通知渲染器在拖动期间抑制 swapchain 重建 (时间防抖对慢速拖动无效)
+    bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
     
     // 更新UI状态
     void UpdateUIState();
     void ResetVideoUI();  // 重置视频显示UI
+
+    // GDI overlay popup: 拖动模态期间 DWM 对被拖动窗口只显示快照缩放,
+    // 视频帧改由解码线程 GDI 直绘到独立顶层 popup 窗口 (覆盖在视频区域上)。
+    void ShowGdiOverlayPopup();
+    void HideGdiOverlayPopup();
+    void UpdateGdiOverlayPopupGeometry();
     
     // 成员变量
     player::MediaPlayer* player_;
@@ -131,6 +142,10 @@ protected:
     
     // 视频区
     VulkanVideoWidget* video_widget_;  // 视频显示 (Vulkan + 回退)
+
+    // GDI overlay popup (拖动模态期间显示视频帧的独立顶层 Win32 窗口)。
+    // 纯 Win32 窗口绕开 Qt backing store 绘制管线, 避免与解码线程 GDI 直绘竞争闪屏。
+    WId gdi_overlay_hwnd_ = 0;
     
     // 控制栏
     QWidget* control_bar_;        // 播放控制容器

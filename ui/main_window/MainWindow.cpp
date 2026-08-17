@@ -38,6 +38,18 @@
 #include <QDateTime>
 #include <QtGlobal>
 #include <cmath>
+#ifdef Q_OS_WIN
+// WM_ENTERSIZEMOVE/WM_EXITSIZEMOVE: 窗口拖动模态检测。
+// 必须定义 NOMINMAX: windows.h 的 min/max 宏会破坏 std::max/std::min/std::clamp
+// (此文件是 MainWindow.cpp 中首次引入 windows.h, 前无 NOMINMAX 定义)。
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace videoeye {
 namespace ui {
@@ -446,6 +458,111 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
     if (cur_sz.width() < min_sz.width() || cur_sz.height() < min_sz.height()) {
         resize(cur_sz.expandedTo(min_sz));
     }
+    // popup 几何更新统一在 nativeEvent 的 WM_WINDOWPOSCHANGED 处理
+    // (此时 Qt 布局已完成, 视频 widget 几何才准确; resizeEvent 中滞后)。
+}
+
+void MainWindow::moveEvent(QMoveEvent* event) {
+    QMainWindow::moveEvent(event);
+    // 同 resizeEvent: 几何更新由 WM_WINDOWPOSCHANGED 统一处理
+}
+
+void MainWindow::ShowGdiOverlayPopup() {
+    if (!video_widget_ || !vulkan_renderer_) return;
+    if (!gdi_overlay_hwnd_) {
+#ifdef Q_OS_WIN
+        // 注册窗口类 (一次性)
+        static bool cls_registered = false;
+        if (!cls_registered) {
+            WNDCLASSEXW wc{};
+            wc.cbSize = sizeof(wc);
+            wc.lpfnWndProc = DefWindowProcW;
+            wc.hInstance = GetModuleHandleW(nullptr);
+            wc.lpszClassName = L"VideoEyeGdiOverlay";
+            wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+            wc.hbrBackground = nullptr;
+            RegisterClassExW(&wc);
+            cls_registered = true;
+        }
+        // layered popup: 内容与位置由 UpdateLayeredWindow 原子更新, 无绘制/移动撕裂
+        // 创建前先将主窗口视频区域涂黑: DWM 拖动模态快照与实时合成均显示
+        // 黑底, 拖动中 popup 错位时露出的仅是黑边而非旧画面 (消除重影)。
+        player::VulkanRenderer::FillWindowBlack(video_widget_->winId());
+        gdi_overlay_hwnd_ = reinterpret_cast<WId>(CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW,
+            L"VideoEyeGdiOverlay", L"",
+            WS_POPUP,
+            0, 0, 1, 1,
+            nullptr, nullptr, GetModuleHandleW(nullptr), nullptr));
+        if (!gdi_overlay_hwnd_) return;
+        vulkan_renderer_->SetGdiOverlayWindow(gdi_overlay_hwnd_);
+        UpdateGdiOverlayPopupGeometry();
+        // 显示前以最近帧预刷新一次, 避免首帧黑屏闪烁
+        vulkan_renderer_->RefreshGdiOverlayNow();
+        ShowWindow(reinterpret_cast<HWND>(gdi_overlay_hwnd_), SW_SHOWNOACTIVATE);
+#endif
+    }
+    UpdateGdiOverlayPopupGeometry();
+}
+
+void MainWindow::HideGdiOverlayPopup() {
+    if (vulkan_renderer_) vulkan_renderer_->SetGdiOverlayWindow(0);
+    if (gdi_overlay_hwnd_) {
+#ifdef Q_OS_WIN
+        DestroyWindow(reinterpret_cast<HWND>(gdi_overlay_hwnd_));
+#endif
+        gdi_overlay_hwnd_ = 0;
+    }
+}
+
+void MainWindow::UpdateGdiOverlayPopupGeometry() {
+    if (!gdi_overlay_hwnd_ || !video_widget_ || !vulkan_renderer_) return;
+#ifdef Q_OS_WIN
+    // 以视频 widget 原生窗口的物理像素几何为准 (无 DPR 舍入误差)
+    HWND wh = reinterpret_cast<HWND>(video_widget_->winId());
+    RECT rc{};
+    GetClientRect(wh, &rc);
+    POINT pt{0, 0};
+    ClientToScreen(wh, &pt);
+    vulkan_renderer_->SetGdiOverlayGeometry(pt.x, pt.y,
+                                            rc.right - rc.left, rc.bottom - rc.top);
+#endif
+}
+
+bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr* result) {
+#ifdef Q_OS_WIN
+    if (eventType == "windows_generic_MSG") {
+        MSG* msg = static_cast<MSG*>(message);
+        if (msg->message == WM_ENTERSIZEMOVE) {
+            // 进入窗口拖动模态: 通知渲染器抑制 swapchain 重建 (慢速拖动时
+            // resize 事件间隔可大于时间防抖期, 需靠模态消息精确判定拖动中)。
+            // DWM 在拖动模态中只对被拖动窗口做快照缩放, 窗口上任何绘制都
+            // 不可见, 因此视频帧改由 GDI 直绘到独立顶层 popup 窗口。
+            if (vulkan_renderer_) vulkan_renderer_->NotifyResizeDrag(true);
+            // 立即同步销毁 swapchain: 否则 flip 表面仍显示拖动前最后一帧,
+            // GDI 涂黑被其覆盖不可见, DWM 快照会拍到旧画面 → 拖动全程重影。
+            if (vulkan_renderer_) vulkan_renderer_->DestroySwapchainForDragSync();
+            ShowGdiOverlayPopup();
+        } else if (msg->message == WM_EXITSIZEMOVE) {
+            // 拖动结束: 下一帧立即重建到最终尺寸, 销毁 popup 恢复直渲
+            if (vulkan_renderer_) vulkan_renderer_->NotifyResizeDrag(false);
+            HideGdiOverlayPopup();
+            // popup 销毁后主窗口视频区域仍是拖动期间的黑色占位, 立即以最近
+            // 帧恢复画面, 避免等待下一帧的黑闪 — 与后续 Vulkan 恢复无缝衔接。
+            if (vulkan_renderer_) vulkan_renderer_->RefreshMainWindowNow();
+        } else if (msg->message == WM_WINDOWPOSCHANGED) {
+            // 窗口位置/尺寸变化后派发 (在 WM_SIZE 之后, Qt 布局已完成):
+            // 视频 widget 几何此时才准确, 更新目标几何并立即以最近帧呈现
+            // popup — 解码线程帧循环更新有最长一帧间隔的滞后, 拖动中会
+            // 露出主窗口 DWM 快照的旧画面造成残留。
+            UpdateGdiOverlayPopupGeometry();
+            if (vulkan_renderer_) vulkan_renderer_->RefreshGdiOverlayNow();
+        }
+    }
+#else
+    Q_UNUSED(eventType); Q_UNUSED(message); Q_UNUSED(result);
+#endif
+    return QMainWindow::nativeEvent(eventType, message, result);
 }
 
 void MainWindow::SetupMenuBar() {
