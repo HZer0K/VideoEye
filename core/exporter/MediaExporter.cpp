@@ -384,8 +384,12 @@ void MediaExporter::Export(const ExportOptions& opt) {
             av_frame_free(&out_frame);
             return;
         }
+        // C++ 不允许 uint8_t** → const uint8_t** 隐式转换 (GCC 报错),
+        // 显式 reinterpret_cast 跨编译器干净
+        const uint8_t* const* src_data =
+            reinterpret_cast<const uint8_t* const*>(src->data);
         const int got = swr_convert(s.swr, out_frame->data, dst_nb,
-                                    src->data, src->nb_samples);
+                                    src_data, src->nb_samples);
         if (got < 0) { av_frame_free(&out_frame); return; }
         out_frame->nb_samples = got;
         out_frame->pts = s.enc_pts;
