@@ -77,7 +77,7 @@ Write-Output "Ninja: $ninjaExe"
 # -- 检查 vcpkg 依赖 --
 if (-not (Test-Path "$projectRoot\vcpkg_installed\$vcpkgTriplet\include")) {
     Write-Output "WARNING: vcpkg 依赖未安装。运行:"
-    Write-Output "  vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --x-manifest-root=. --x-install-root=vcpkg_installed"
+    Write-Output "  vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --overlay-ports=scripts/overlay-ports --x-manifest-root=. --x-install-root=vcpkg_installed"
     Write-Output "（release-only triplet，host==target 同名，省约一半磁盘/安装时间）"
 }
 

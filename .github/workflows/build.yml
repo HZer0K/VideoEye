@@ -94,7 +94,9 @@ jobs:
         run: |
           # release-only 覆盖 triplet (scripts/triplets/x64-windows-release.cmake),
           # host==target 同名避免交叉编译分支; 省 ~2GB 磁盘与一半安装时间
-          vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --x-manifest-root=. --x-install-root=vcpkg_installed
+          # overlay-ports: 用本地 zlib port (移除 vcpkg_fixup_pkgconfig, 避免
+          # vcpkg_acquire_msys 下载被滚动镜像删除的旧 MSYS2 包 → 404)
+          vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --overlay-ports=scripts/overlay-ports --x-manifest-root=. --x-install-root=vcpkg_installed
 
       - name: Validate CMake Preset (Windows)
         if: runner.os == 'Windows'

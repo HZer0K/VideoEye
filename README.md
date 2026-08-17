@@ -44,7 +44,7 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 
 ```powershell
 # 安装依赖 (自动读取 vcpkg.json manifest)
-vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --x-manifest-root=. --x-install-root=vcpkg_installed
+vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --overlay-ports=scripts/overlay-ports --x-manifest-root=. --x-install-root=vcpkg_installed
 
 # 构建 (自动设置 MSVC 环境; 缺失时自动下载 FFmpeg 预编译库)
 .\build.bat ninja

@@ -18,7 +18,7 @@
 ```powershell
 # 1. 安装 vcpkg 依赖（首次）
 vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release \
-  --overlay-triplets=scripts/triplets --x-manifest-root=. --x-install-root=vcpkg_installed
+  --overlay-triplets=scripts/triplets --overlay-ports=scripts/overlay-ports --x-manifest-root=. --x-install-root=vcpkg_installed
 
 # 2. 构建（脚本自动探测 MSVC、自动获取 FFmpeg、复制 DLL）
 powershell -ExecutionPolicy Bypass -File build_ninja.ps1

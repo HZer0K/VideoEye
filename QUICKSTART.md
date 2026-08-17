@@ -117,7 +117,7 @@ CMake 采用**三级 fallback**策略自动查找 FFmpeg：
 > Windows 下使用项目自带的 release-only 覆盖 triplet（`scripts/triplets/x64-windows-release.cmake`），仅装 release 二进制，省约一半磁盘与安装时间；host 与 target 同名，避免 vcpkg 交叉编译分支：
 
 ```powershell
-vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --x-manifest-root=. --x-install-root=vcpkg_installed
+vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --overlay-ports=scripts/overlay-ports --x-manifest-root=. --x-install-root=vcpkg_installed
 ```
 
 ### 源码集成依赖
