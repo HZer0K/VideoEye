@@ -59,10 +59,26 @@ jobs:
       # ─────────────── Windows ───────────────
       - name: Setup vcpkg (Windows)
         if: runner.os == 'Windows'
-        uses: friendlyanon/setup-vcpkg@v1
-        with:
-          # 与 vcpkg-configuration.json 的 baseline 保持一致 (2025-04-17 提交)
-          vcpkg-ref: fd22bbac96555f6c43ee35f143a634daed53369c
+        shell: pwsh
+        run: |
+          # 不用第三方 action (friendlyanon/setup-vcpkg 常因 codeload 限流
+          # 下载失败), 直接使用 runner 预装 vcpkg 或 git clone, 再检出与
+          # vcpkg-configuration.json 的 builtin-baseline 一致的版本
+          # (2025-04-17 提交 fd22bbac)
+          $vcpkgRoot = if ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT } else { "C:\vcpkg" }
+          if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
+            git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
+            if ($LASTEXITCODE -ne 0) { Write-Error "vcpkg clone failed"; exit 1 }
+          }
+          # 浅克隆需 fetch 目标提交; 完整仓库该步为 no-op
+          $vcpkgRef = "fd22bbac96555f6c43ee35f143a634daed53369c"
+          git -C $vcpkgRoot fetch --depth 1 origin $vcpkgRef 2>$null
+          git -C $vcpkgRoot checkout --force $vcpkgRef
+          if ($LASTEXITCODE -ne 0) { Write-Error "vcpkg checkout $vcpkgRef failed"; exit 1 }
+          & "$vcpkgRoot\bootstrap-vcpkg.bat" -disableMetrics
+          $vcpkgRoot | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "VCPKG_INSTALLATION_ROOT=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "vcpkg ready: $(& "$vcpkgRoot\vcpkg.exe" version)"
 
       - name: Cache vcpkg dependencies (Windows)
         if: runner.os == 'Windows'
