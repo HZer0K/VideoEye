@@ -509,7 +509,6 @@ bool VulkanRenderer::RefreshGdiOverlayNow() {
                               gdi_overlay_x_.load(), gdi_overlay_y_.load(),
                               dst_w, dst_h);
 #else
-    Q_UNUSED(rgba); Q_UNUSED(fw); Q_UNUSED(fh);
     return false;
 #endif
 }
