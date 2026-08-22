@@ -36,7 +36,7 @@ jobs:
           sudo apt-get install -y \
             build-essential cmake pkg-config ninja-build \
             qt6-base-dev qt6-charts-dev \
-            libopencv-dev libsdl2-dev zlib1g-dev \
+            libsdl2-dev zlib1g-dev \
             libvulkan-dev glslc \
             libavcodec-dev libavformat-dev libavutil-dev \
             libswscale-dev libswresample-dev
@@ -54,30 +54,26 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: VideoEye-linux
-          path: build-linux/bin
+          path: build/release/bin
 
       # ─────────────── Windows ───────────────
       - name: Setup vcpkg (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # 不用第三方 action (friendlyanon/setup-vcpkg 常因 codeload 限流
-          # 下载失败), 直接使用 runner 预装 vcpkg 或 git clone, 再检出与
-          # vcpkg-configuration.json 的 builtin-baseline 一致的版本
-          # (2025-04-17 提交 fd22bbac)
+          # 用最新 vcpkg: msys2 滚动镜像会删除旧包, 锁定旧 commit 会导致
+          # vcpkg_acquire_msys 下载 404 (如 msys2-runtime-*.pkg.tar.zst)
           $vcpkgRoot = if ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT } else { "C:\vcpkg" }
           if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
-            git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
+            git clone --depth 1 https://github.com/microsoft/vcpkg.git $vcpkgRoot
             if ($LASTEXITCODE -ne 0) { Write-Error "vcpkg clone failed"; exit 1 }
+          } else {
+            git -C $vcpkgRoot fetch --depth 1 origin master 2>$null
+            if ($LASTEXITCODE -eq 0) { git -C $vcpkgRoot reset --hard FETCH_HEAD }
           }
-          # 浅克隆需 fetch 目标提交; 完整仓库该步为 no-op
-          $vcpkgRef = "fd22bbac96555f6c43ee35f143a634daed53369c"
-          git -C $vcpkgRoot fetch --depth 1 origin $vcpkgRef 2>$null
-          git -C $vcpkgRoot checkout --force $vcpkgRef
-          if ($LASTEXITCODE -ne 0) { Write-Error "vcpkg checkout $vcpkgRef failed"; exit 1 }
           & "$vcpkgRoot\bootstrap-vcpkg.bat" -disableMetrics
           $vcpkgRoot | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          "VCPKG_INSTALLATION_ROOT=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VCPKG_ROOT=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "vcpkg ready: $(& "$vcpkgRoot\vcpkg.exe" version)"
 
       - name: Cache vcpkg dependencies (Windows)
@@ -98,41 +94,17 @@ jobs:
           # vcpkg_acquire_msys 下载被滚动镜像删除的旧 MSYS2 包 → 404)
           vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --overlay-ports=scripts/overlay-ports --x-manifest-root=. --x-install-root=vcpkg_installed
 
-      - name: Validate CMake Preset (Windows)
+      - name: Build (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: cmd
         run: |
-          # 激活 MSVC 环境 (与 build_ninja.ps1 同方式: vswhere + vcvars64.bat)
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsRoot = & $vswhere -latest -products * `
-              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-              -property installationPath
-          $vcvars = "$vsRoot\VC\Auxiliary\Build\vcvars64.bat"
-          cmd /c "`"$vcvars`" x64 && set" | ForEach-Object {
-              if ($_ -match '^(.*?)=(.*)$') {
-                  Set-Item -Path "env:$($matches[1])" -Value $matches[2].TrimEnd()
-              }
-          }
-          # 验证 preset 可正常 configure (提前发现 preset 配置损坏)
-          # 同时预配置 build-ninja/ 目录, build_ninja.ps1 会增量重配置 (很快)
-          cmake --preset win-release
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "CMake preset 'win-release' validation failed"
-            exit 1
-          }
-          Write-Host "Preset validation passed"
-
-      - name: Build (Windows, incl. FFmpeg fetch + configure + compile)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          powershell -ExecutionPolicy Bypass -File build_ninja.ps1
+          build.bat release
 
       - name: Smoke test (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $exe = "build-ninja\bin\VideoEye.exe"
+          $exe = "build\release\bin\VideoEye.exe"
           if (-not (Test-Path $exe)) { Write-Error "VideoEye.exe not found"; exit 1 }
           $p = Start-Process -FilePath (Resolve-Path $exe) -PassThru
           Start-Sleep -Seconds 8
@@ -148,4 +120,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: VideoEye-windows
-          path: build-ninja/bin
+          path: build/release/bin

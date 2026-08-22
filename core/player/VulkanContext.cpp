@@ -399,7 +399,8 @@ bool VulkanContext::CreateFFmpegDeviceContext() {
     hw_ctx->enabled_dev_extensions = nullptr;
     hw_ctx->nb_enabled_dev_extensions = 0;
 
-    // 填充新式队列族信息
+    // 填充队列族信息
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(59, 39, 100)   // FFmpeg >= 7.1
     hw_ctx->nb_qf = 0;
     if (graphics_qf_ != UINT32_MAX) {
         hw_ctx->qf[hw_ctx->nb_qf].idx = static_cast<int>(graphics_qf_);
@@ -419,10 +420,18 @@ bool VulkanContext::CreateFFmpegDeviceContext() {
         hw_ctx->qf[hw_ctx->nb_qf].flags = VK_QUEUE_TRANSFER_BIT;
         hw_ctx->nb_qf++;
     }
-
-    // FFmpeg 9.0 移除了 AVVulkanDeviceContext 的固定队列字段
-    // (queue_family_index/nb_graphics_queues 等), 已由上面的 qf[]/nb_qf 数组 API 取代,
-    // 旧字段赋值块不再需要。
+#else
+    hw_ctx->queue_family_index = static_cast<int>(graphics_qf_);
+    hw_ctx->nb_graphics_queues = 1;
+    if (compute_qf_ != UINT32_MAX && compute_qf_ != graphics_qf_) {
+        hw_ctx->queue_family_comp_index = static_cast<int>(compute_qf_);
+        hw_ctx->nb_comp_queues = 1;
+    }
+    if (transfer_qf_ != UINT32_MAX && transfer_qf_ != graphics_qf_) {
+        hw_ctx->queue_family_tx_index = static_cast<int>(transfer_qf_);
+        hw_ctx->nb_tx_queues = 1;
+    }
+#endif
 
     int ret = av_hwdevice_ctx_init(hw_device_ctx_);
     if (ret < 0) {
