@@ -216,7 +216,7 @@ void MainWindow::SetupSidebar() {
     sidebar_->setSpacing(0);
     sidebar_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     
-    // 导航项 (媒体信息 + 8个分析功能: 流分析/帧分析/包/事件与时间轴/响度/直方图/结构/宏块)
+    // 导航项 (媒体信息 + 8个分析功能: 流分析/帧分析/包/事件与时间轴/响度/容器结构/宏块分析/场景切换)
     QStringList nav_items = {
         tr("媒体信息"),
         tr("流分析"),
@@ -224,11 +224,9 @@ void MainWindow::SetupSidebar() {
         tr("数据包"),
         tr("事件与时间轴"),
         tr("音频响度"),
-        tr("直方图"),
         tr("容器结构"),
         tr("宏块分析"),
-        tr("场景切换"),
-        tr("质量评估")
+        tr("场景切换")
     };
     
     for (const QString& item : nav_items) {
@@ -388,7 +386,7 @@ void MainWindow::SetupContentArea() {
     mediainfo_text_->setPlainText(tr("请打开一个媒体文件以查看详细信息"));
     content_stack_->addWidget(mediainfo_page);
     
-    // Page 1-10: 分析面板各页
+    // Page 1-8: 分析面板各页
     // AnalysisPanel 会创建自己的页面并添加到 content_stack_
     analysis_panel_ = new ui::AnalysisPanel(content_stack_);
     analysis_panel_->PopulateStackedWidget(content_stack_);
