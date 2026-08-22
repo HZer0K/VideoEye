@@ -61,27 +61,25 @@ build-release/bin/VideoEye
 
 | 命令 | 说明 |
 |------|------|
-| `.\build.bat ninja` | Ninja + MSVC 构建（推荐） |
-| `.\build.bat release` | Visual Studio 生成器 Release |
-| `.\build.bat debug` | Visual Studio 生成器 Debug |
-| `powershell -File build_ninja.ps1` | 直接运行 Ninja 构建脚本 |
+| `build.bat` | Release 构建（Ninja + MSVC） **推荐** |
+| `build.bat debug` | Debug 构建 |
+| `cmake --preset win-release` | 直接用 CMake preset（需已加载 MSVC 环境） |
+| `cmake --build build/release` | 仅编译，不重新 configure |
 
-**build_ninja.ps1** 自动完成：
-- 设置 MSVC 环境变量 (PATH / INCLUDE / LIB)
-- CMake 配置 (Ninja 生成器)
-- 编译 (ninja -j4)
-- 复制 vcpkg DLL + Qt6 插件 + FFmpeg DLL 到 bin/
+**build.bat** 自动完成：
+- 用 `vswhere.exe` 找到并加载 Visual Studio 2022 的 `vcvars64.bat` 环境
+- FFmpeg 缺失自动调用 `scripts/fetch-ffmpeg.ps1` 下载 gyan.dev full-shared
+- 通过 CMakePresets + vcpkg toolchain 自动安装依赖（qtbase、qtcharts、sdl2、zlib）
+- CMake configure + build + 运行时 DLL 部署
 
-> **注意**: Windows 上 MSBuild 可能被标记为 LOLBin，使用 Ninja 生成器可绕过此限制。
-
-### Linux 构建
+### Linux / macOS 构建
 
 | 命令 | 说明 |
 |------|------|
-| `./build.sh release` | Release 构建 (默认) |
+| `./build.sh` | Release 构建（默认） **推荐** |
 | `./build.sh debug` | Debug 构建 |
-| `./setup.sh` | 完整初始化 + 构建 |
-| `./setup.sh --build-only` | 仅编译，跳过依赖检查 |
+| `cmake --preset linux-release` | 直接用 preset |
+| `cmake --build build/release` | 仅编译 |
 
 ---
 
@@ -89,112 +87,94 @@ build-release/bin/VideoEye
 
 ### FFmpeg 依赖管理
 
-CMake 采用**三级 fallback**策略自动查找 FFmpeg：
+CMake 采用**两级 fallback** 自动查找 FFmpeg：
 
 ```
-优先级 1: find_package(FFMPEG)        ← vcpkg 已安装 ffmpeg 包
-优先级 2: 预编译共享库                 ← third_party/ffmpeg-prebuilt/ (gyan.dev full-shared)
-优先级 3: pkg-config                   ← Linux apt 安装 (libavcodec-dev 等)
+优先级 1: third_party/ffmpeg-prebuilt/   ← gyan.dev full-shared（Windows 推荐）
+优先级 2: pkg-config                      ← Linux apt / macOS brew（libavcodec-dev 等）
 ```
 
-**Windows 用户**:
-- `build.bat ninja` 检测到 `third_party/ffmpeg-prebuilt/` 缺失时，自动运行 `scripts/fetch-ffmpeg.ps1` 下载
-- 预编译库来自 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) **release-full-shared** 构建（gyan 唯一带 include/ 头文件与 lib/ 导入库的共享构建；essentials 仅含 bin/，不适合链接开发），包含 DLL、.lib 和头文件
-- 版本由 `.videoeye-ffmpeg.json` stamp 记录，gyan.dev 更新后重新执行脚本即可自动升级
+**Windows 用户**：
+- `build.bat` 检测到 `third_party/ffmpeg-prebuilt/` 缺失时，自动运行 `scripts/fetch-ffmpeg.ps1` 下载
+- 预编译库来自 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) **release-full-shared**（gyan 唯一带 include/ 头文件与 lib/ 导入库的共享包；essentials 仅含 bin/ 不适合链接开发）
 
-**Linux 用户**:
+**Linux 用户**：
 - 直接 `apt install libavcodec-dev libavformat-dev ...` 即可
-- 无需从源码编译 FFmpeg
 
-### vcpkg 依赖 (Windows)
+### vcpkg 依赖（Windows 自动集成）
 
-项目根目录的 `vcpkg.json` 声明了以下依赖：
-- `opencv4` — 计算机视觉
-- `qtbase` / `qtcharts` — Qt6 模块（音频输出走 SDL2，不再依赖 Qt Multimedia）
+项目通过 `vcpkg.json` + `CMakePresets.json` 自动声明并安装依赖，无需手动运行 `vcpkg install`：
+- `qtbase` / `qtcharts` — Qt6 GUI + 图表
 - `sdl2` — 音频输出
-- `zlib` — 压缩库 (MediaInfoLib 依赖)
+- `zlib` — 压缩库（MediaInfoLib 依赖）
 
-> Windows 下使用项目自带的 release-only 覆盖 triplet（`scripts/triplets/x64-windows-release.cmake`），仅装 release 二进制，省约一半磁盘与安装时间；host 与 target 同名，避免 vcpkg 交叉编译分支：
-
-```powershell
-vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --overlay-ports=scripts/overlay-ports --x-manifest-root=. --x-install-root=vcpkg_installed
-```
+> 使用项目自带的 release-only triplet（`scripts/triplets/x64-windows-release.cmake`），只装 release 二进制，省约一半磁盘与安装时间。
 
 ### 源码集成依赖
 
 以下库通过 Git submodule + `add_subdirectory` 集成：
-- **MediaInfoLib + ZenLib** — 有定制改动，源码集成保留灵活性
-- **Bento4** — vcpkg 版本过旧 (1.5.1 vs 1.6.0)，独立 CMakeLists.txt 集成
-- **vulkan-headers** — Vulkan 1.4.309 头文件，替代系统旧版
+- **MediaInfoLib + ZenLib** — 媒体元数据解析
+- **Bento4** — MP4 容器深度解析
+- **vulkan-headers** — Vulkan 1.4+ 头文件
 
 ---
 
 ## 🧪 运行测试
 
 ```bash
-# 构建 Debug 版本 (启用测试)
-cmake -B build-debug -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-debug
+# Debug 构建 (启用测试)
+cmake -B build/debug -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/debug
 
 # 运行测试
-cd build-debug && ctest --output-on-failure
+cd build/debug && ctest --output-on-failure
 ```
 
-> **注意**: 测试源文件 (`tests/unit/*.cpp`) 尚未提交到仓库。CMakeLists.txt 已配置好编译规则，待补全源文件后即可运行。
+> **注意**：测试源文件 (`tests/unit/*.cpp`) 尚未提交。CMakeLists.txt 已配置编译框架。
 
 ---
 
 ## ❓ 常见问题
 
-### Q: Windows 构建报 "MSBuild is blocked"
+### Q: Windows 报 find_package(Qt6) 失败 / 找不到 Qt6
 
-使用 Ninja 构建器绕过：
+这通常是**首次构建 vcpkg 正在后台编译 qtbase**（需要 30~60 分钟），或 `VCPKG_ROOT` 环境变量没设对。耐心等 qtbase 编译完成后重跑：
 ```powershell
-.\build.bat ninja
+# 确认 Qt6 cmake 配置是否已存在
+Test-Path "vcpkg_installed\x64-windows-release\share\Qt6\Qt6Config.cmake"
 ```
 
-### Q: vcpkg install 报 FFmpeg vulkan feature 错误
+### Q: 运行时找不到 DLL（Windows）
 
-这是 vcpkg 版本的 FFmpeg 不支持 vulkan feature。项目不依赖 vcpkg 的 ffmpeg：CMake 会自动回退到 `third_party/ffmpeg-prebuilt/`（gyan.dev full-shared 构建的 DLL、.lib 和头文件），缺失时 `build.bat ninja` 会自动下载。
-
-### Q: 运行时找不到 DLL
-
-Windows 上运行 `build_ninja.ps1` 会自动复制所有需要的 DLL。如果仍缺失：
+`build.bat` 已在构建阶段自动复制 vcpkg DLL、Qt6 插件、FFmpeg DLL 到 `build\release\bin\`。如仍缺失：
 ```powershell
-# 检查 vcpkg_installed 目录
-ls vcpkg_installed\x64-windows\bin\*.dll
+ls build\release\bin\*.dll
 ```
 
-### Q: CMake 找不到 FFmpeg (Linux)
+### Q: CMake 找不到 FFmpeg（Linux）
 
 ```bash
-# 确认 pkg-config 能找到 FFmpeg
 pkg-config --modversion libavcodec libavformat libavutil libswscale libswresample
-
-# 如果缺失，安装开发包
+# 如果缺失：
 sudo apt install -y libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
 ```
 
 ### Q: Vulkan 硬件解码不工作
 
 ```bash
-# 检查 Vulkan 驱动
 vulkaninfo --summary 2>/dev/null || echo "Vulkan 不可用"
-
-# 安装 Vulkan SDK
-sudo apt install libvulkan-dev glslc
-
-# 若驱动版本太低，FFmpeg 会自动跳过 Vulkan 硬件解码
+sudo apt install libvulkan-dev glslc   # Ubuntu/Debian
 # 软件解码正常工作，无需额外操作
 ```
 
-### Q: 构建内存不足
+### Q: 构建内存不足 / OOM
 
 ```bash
-# Linux: 限制并行编译数
-JOBS=2 ./build.sh release
+# Linux: 限制并行数
+JOBS=2 ./build.sh debug
 
-# Windows: 修改 build_ninja.ps1 中的 -j4 为 -j2
+# Windows: 通过 preset 传参
+cmake --build build/release -- -j2
 ```
 
 ---

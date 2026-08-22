@@ -45,7 +45,7 @@ if [ "$BUILD_ONLY" = false ]; then
         check_pkg() { pkg-config --exists "$1" 2>/dev/null && echo -e "  ${GREEN}[OK]${NC} $1" || echo -e "  ${RED}[缺]${NC} $1"; }
 
         check_cmd cmake; check_cmd gcc; check_cmd g++; check_cmd make; check_cmd pkg-config
-        check_pkg Qt6Widgets; check_pkg opencv4; check_pkg sdl2; check_pkg zlib
+        check_pkg Qt6Widgets; check_pkg sdl2; check_pkg zlib
         check_pkg libavcodec; check_pkg libavformat; check_pkg libavutil
         check_pkg libswscale; check_pkg libswresample
 
@@ -58,12 +58,12 @@ if [ "$BUILD_ONLY" = false ]; then
             echo "  Debian/Ubuntu 安装命令:"
             echo "    sudo apt install -y build-essential cmake pkg-config \\"
             echo "      qt6-base-dev qt6-charts-dev \\"
-            echo "      libopencv-dev libsdl2-dev zlib1g-dev \\"
+            echo "      libsdl2-dev zlib1g-dev \\"
             echo "      libvulkan-dev glslc \\"
             echo "      libavcodec-dev libavformat-dev libavutil-dev \\"
             echo "      libswscale-dev libswresample-dev"
         elif [ "$OS" = "macos" ]; then
-            echo "  brew install cmake qt@6 opencv sdl2 zlib"
+            echo "  brew install cmake qt@6 sdl2 zlib"
             echo "  brew install ffmpeg" 
             echo "  Vulkan (可选): brew install vulkan-sdk"
         fi

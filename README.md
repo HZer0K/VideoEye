@@ -31,42 +31,46 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 | 多媒体 | FFmpeg 8.1+ |
 | GPU 渲染 | Vulkan 1.3+ |
 | 媒体元数据 | MediaInfoLib（源码集成） |
-| 计算机视觉 | OpenCV 4.8+ |
 | 音频输出 | SDL 2 |
 | MP4 解析 | Bento4（源码集成） |
-| 构建 | CMake 3.20+ / Ninja |
+| 构建 | CMake 3.23+ / Ninja + CMakePresets |
 
-依赖采用混合管理：通用库（Qt/OpenCV/SDL2）走 vcpkg / apt；MediaInfoLib、Bento4 有定制改动走源码集成；FFmpeg 按 vcpkg → `third_party/ffmpeg-prebuilt/` → pkg-config 三级 fallback 自动选择。
+依赖采用混合管理：Qt/SDL2 通用库走 vcpkg manifest 自动拉取（Windows）或系统包管理器（apt/brew）；MediaInfoLib、Bento4 有定制改动走源码集成；FFmpeg 按 `third_party/ffmpeg-prebuilt/` → pkg-config 两级 fallback 自动选择（不再依赖 vcpkg 的 FFmpeg）。
 
 ## 构建
 
 ### Windows (Ninja + MSVC)
 
-```powershell
-# 安装依赖 (自动读取 vcpkg.json manifest)
-vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --overlay-ports=scripts/overlay-ports --x-manifest-root=. --x-install-root=vcpkg_installed
+> **前置要求**：Visual Studio 2022 (带 C++/CMake/Ninja） + vcpkg (设置环境变量 `VCPKG_ROOT`)
 
-# 构建 (自动设置 MSVC 环境; 缺失时自动下载 FFmpeg 预编译库)
-.\build.bat ninja
+```powershell
+# 一键构建（自动加载 MSVC 环境 + 自动下载 FFmpeg 预编译库 + 自动安装 vcpkg 依赖）
+.\build.bat           # Release 构建
+.\build.bat debug     # Debug 构建
 ```
 
-产物: `build-ninja\bin\VideoEye.exe`
+产物：`build\release\bin\VideoEye.exe` / `build\debug\bin\VideoEye.exe`
+
+> **vcpkg 说明：项目使用 `vcpkg.json` manifest + `CMakePresets.json` 自动集成 Qt6、SDL2 等依赖；首次构建较慢（qtbase 编译需要 30~60 分钟），vcpkg 会缓存后增量构建秒级完成。
 
 ### Linux / macOS
 
 ```bash
-# Ubuntu/Debian 依赖
+# Ubuntu/Debian 系统依赖
 sudo apt install -y build-essential cmake ninja-build nasm pkg-config \
-    qt6-base-dev qt6-charts-dev libopencv-dev libsdl2-dev zlib1g-dev \
-    libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
-    libvulkan-dev glslc
-# macOS
-brew install cmake ninja nasm qt@6 opencv sdl2 zlib ffmpeg
+    qt6-base-dev qt6-charts-dev libsdl2-dev zlib1g-dev \
+    libavcodec-dev libavformat-dev libavutil-dev \
+    libswscale-dev libswresample-dev libvulkan-dev glslc
 
-./build.sh release
+# macOS
+brew install cmake ninja nasm qt@6 sdl2 zlib ffmpeg
+
+# 构建
+./build.sh             # Release
+./build.sh debug      # Debug
 ```
 
-产物: `build-release/bin/VideoEye`
+产物：`build/release/bin/VideoEye` / `build/debug/bin/VideoEye`
 
 ## 使用指南
 
@@ -95,8 +99,8 @@ VideoEye/
 ## 测试
 
 ```bash
-cmake -B build-debug -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-debug && cd build-debug && ctest --output-on-failure
+cmake -B build/debug -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/debug && cd build/debug && ctest --output-on-failure
 ```
 
 ## 贡献

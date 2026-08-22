@@ -4,7 +4,6 @@
 #include <vector>
 
 #include "core/analyzer/StreamAnalyzer.h"
-#include "core/analyzer/FrameAnalyzer.h"
 
 namespace videoeye {
 namespace utils {

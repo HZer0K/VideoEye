@@ -30,6 +30,48 @@ namespace player {
 
 using SteadyClock = std::chrono::steady_clock;
 
+// 计算单帧 256-bin 灰度直方图 (供场景切换检测使用)。
+// 通过 sws_scale 将任意像素格式转为 GRAY8, 再逐字节计数; 不依赖 OpenCV。
+// 返回空 vector 表示转换失败 (调用方应跳过该帧)。
+static std::vector<float> ComputeGrayHistogram(const model::FrameData& frame) {
+    std::vector<float> hist;
+    if (frame.width <= 0 || frame.height <= 0 || frame.format < 0 ||
+        !frame.data[0] || frame.linesize[0] <= 0) {
+        return hist;
+    }
+
+    const auto pix_fmt = static_cast<AVPixelFormat>(frame.format);
+    SwsContext* sws = sws_getContext(
+        frame.width, frame.height, pix_fmt,
+        frame.width, frame.height, AV_PIX_FMT_GRAY8,
+        SWS_BILINEAR, nullptr, nullptr, nullptr);
+    if (!sws) {
+        LOG_WARN("无法创建 sws_scale 上下文 (灰度直方图)");
+        return hist;
+    }
+
+    std::vector<uint8_t> gray(static_cast<size_t>(frame.width) * frame.height);
+    uint8_t* dst_data[1] = { gray.data() };
+    const int dst_linesize[1] = { frame.width };
+    const int ret = sws_scale(sws, frame.data, frame.linesize, 0, frame.height,
+                              dst_data, dst_linesize);
+    sws_freeContext(sws);
+    if (ret <= 0) {
+        LOG_WARN("sws_scale 灰度转换失败");
+        return hist;
+    }
+
+    hist.assign(256, 0.0f);
+    for (int y = 0; y < frame.height; ++y) {
+        const uint8_t* line = gray.data() + static_cast<size_t>(y) * frame.width;
+        for (int x = 0; x < frame.width; ++x) {
+            ++hist[line[x]];
+        }
+    }
+    return hist;  // SceneChangeAnalyzer::Feed 内部会归一化, 这里返回原始计数即可
+}
+
+
 MediaPlayer::MediaPlayer(QObject* parent)
     : QObject(parent) {
     avformat_network_init();
@@ -492,7 +534,6 @@ void MediaPlayer::EnableAnalysis(bool enable) {
         stream_analyzer_.Start();
         LOG_INFO("已启用视频分析");
     } else {
-        histogram_enabled_ = false;
         stream_analyzer_.Stop();
         LOG_INFO("已禁用视频分析");
     }
@@ -523,7 +564,6 @@ void MediaPlayer::SetMacroblockAnalysisEnabled(bool enable) {
     }
 }
 
-void MediaPlayer::SetHistogramEnabled(bool enable) { histogram_enabled_ = enable; }
 analyzer::StreamStats MediaPlayer::GetCurrentStats() const { return stream_analyzer_.GetStats(); }
 
 // --- 视频帧导出 (委托给 VideoFrameExporter) ---
@@ -857,7 +897,7 @@ void MediaPlayer::DecodeThread() {
                             // 路径。返回 true = 已显示 (Vulkan 渲染或拖动期间
                             // 渲染器内部的 GDI 兜底绘制)。
                             presented_via_vulkan = vulkan_renderer_->PresentFrame(raw);
-                            // Continue analysis below (frame type, histogram, etc.)
+                            // Continue analysis below (frame type, scene change, etc.)
                         }
                     }
                     if (!presented_via_vulkan) {
@@ -925,13 +965,15 @@ void MediaPlayer::DecodeThread() {
                     }
 
                     // 场景切换检测: 逐帧计算灰度直方图, 与上一帧比较巴氏距离。
-                    // 独立于"直方图"开关, 仅在本开关开启时计算, 避免无谓开销。
+                    // 独立于其他分析开关, 仅在本开关开启时计算, 避免无谓开销。
                     if (drop_until_sec_.load() < 0.0 && scene_change_analysis_enabled_) {
                         try {
-                            auto hist = frame_analyzer_.ComputeHistogram(frame_data);
-                            auto sc = scene_change_analyzer_.Feed(
-                                scene_change_frame_index_++, frame_data.timestamp, hist.gray_channel);
-                            if (sc) emit SceneChangeReady(*sc);
+                            auto gray_hist = ComputeGrayHistogram(frame_data);
+                            if (!gray_hist.empty()) {
+                                auto sc = scene_change_analyzer_.Feed(
+                                    scene_change_frame_index_++, frame_data.timestamp, gray_hist);
+                                if (sc) emit SceneChangeReady(*sc);
+                            }
                         } catch (const std::exception& e) {
                             LOG_ERROR("场景切换检测失败: " + std::string(e.what()));
                         }
@@ -940,14 +982,6 @@ void MediaPlayer::DecodeThread() {
                         stream_analyzer_.AnalyzeVideoFrame(video_decoder_->GetLastPictureType());
                         analysis_frame_counter_++;
                         if (analysis_frame_counter_ % 10 == 0) {
-                            if (histogram_enabled_) {
-                                try {
-                                    auto hist = frame_analyzer_.ComputeHistogram(frame_data);
-                                    emit HistogramReady(hist);
-                                } catch (const std::exception& e) {
-                                    LOG_ERROR("直方图分析失败: " + std::string(e.what()));
-                                }
-                            }
                             auto stats = stream_analyzer_.GetStats();
                             emit StreamStatsReady(stats);
                         }

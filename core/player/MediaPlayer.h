@@ -33,7 +33,6 @@ extern "C" {
 #include "core/model/SyncSample.h"
 #include "core/model/TimelineEvent.h"
 #include "core/analyzer/StreamAnalyzer.h"
-#include "core/analyzer/FrameAnalyzer.h"
 #include "core/analyzer/ContainerStructureAnalyzer.h"
 #include "core/analyzer/MacroblockAnalyzer.h"
 #include "core/analyzer/SceneChangeAnalyzer.h"
@@ -79,7 +78,6 @@ public:
     void EnableAnalysis(bool enable);
     bool IsAnalysisEnabled() const { return analysis_enabled_; }
     void SetFrameTypeAnalysisEnabled(bool enable);
-    void SetHistogramEnabled(bool enable);
     void SetAudioFrameAnalysisEnabled(bool enable) { audio_frame_analysis_enabled_ = enable; }
     void SetPacketAnalysisEnabled(bool enable) { packet_analysis_enabled_ = enable; }
     void SetEventAnalysisEnabled(bool enable) { event_analysis_enabled_ = enable; }
@@ -120,7 +118,6 @@ signals:
     
     // 分析数据信号
     void StreamStatsReady(const analyzer::StreamStats& stats);
-    void HistogramReady(const analyzer::HistogramData& hist);
     void VideoFrameListReset();
     void VideoFrameInfoReady(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds);
     void AudioFrameListReset();
@@ -205,7 +202,6 @@ private:
     
     // 分析器
     analyzer::StreamAnalyzer stream_analyzer_;
-    analyzer::FrameAnalyzer frame_analyzer_;
     analyzer::MacroblockAnalyzer macroblock_analyzer_;
     analyzer::SceneChangeAnalyzer scene_change_analyzer_;
     StreamInfoExtractor stream_info_extractor_;
@@ -226,7 +222,6 @@ private:
     // 分析开关
     bool analysis_enabled_ = false;
     bool frame_type_analysis_enabled_ = false;
-    bool histogram_enabled_ = false;
     bool audio_frame_analysis_enabled_ = false;
     bool packet_analysis_enabled_ = false;
     bool event_analysis_enabled_ = false;

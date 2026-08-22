@@ -1,8 +1,12 @@
 # overlay port: 基于 vcpkg baseline (fd22bbac) 的官方 zlib 1.3.1 port,
-# 移除 pkgconfig 安装与 vcpkg_fixup_pkgconfig()。
+# 手动安装 zlib.pc 但不调用 vcpkg_fixup_pkgconfig()。
 # 原因: vcpkg_fixup_pkgconfig 会触发 vcpkg_acquire_msys 下载固定版本的
 # MSYS2 包 (pkgconf), 而 MSYS2 滚动镜像会删除旧包 → 下载 404 导致构建失败。
-# 仅影响 pkg-config 使用 zlib 的场景; 本项目用 CMake find_package, 无影响。
+# 但 zlib.pc 仍需存在: 下游包 (如 libpng) 的 portfile 调用
+# vcpkg_fixup_pkgconfig() 检查 pkg-config --exists libpng16,
+# libpng16.pc 依赖 zlib.pc → 缺失则构建失败。
+# 解决: 从 CMake 构建树手动复制 zlib.pc 到 lib/pkgconfig/,
+# 路径由 CMAKE_INSTALL_PREFIX (= CURRENT_PACKAGES_DIR) 自动生成, 无需 fixup。
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO madler/zlib
@@ -30,6 +34,13 @@ vcpkg_cmake_configure(
 vcpkg_cmake_install()
 file(INSTALL "${CMAKE_CURRENT_LIST_DIR}/vcpkg-cmake-wrapper.cmake" DESTINATION "${CURRENT_PACKAGES_DIR}/share/${PORT}")
 vcpkg_copy_pdbs()
+
+# 手动安装 zlib.pc (SKIP_INSTALL_FILES=ON 阻止了 CMake 自动安装)
+# 下游包 (libpng, freetype 等) 的 vcpkg_fixup_pkgconfig 需要 zlib.pc
+set(_zlib_pc "${CURRENT_BUILDTREES_DIR}/${TARGET_TRIPLET}-rel/zlib.pc")
+if(EXISTS "${_zlib_pc}")
+    file(INSTALL "${_zlib_pc}" DESTINATION "${CURRENT_PACKAGES_DIR}/lib/pkgconfig")
+endif()
 
 if(VCPKG_LIBRARY_LINKAGE STREQUAL "static")
     vcpkg_replace_string("${CURRENT_PACKAGES_DIR}/include/zconf.h" "ifdef ZLIB_DLL" "if 0")

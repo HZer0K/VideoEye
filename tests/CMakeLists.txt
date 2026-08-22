@@ -42,7 +42,6 @@ set(TEST_INCLUDE_DIRS
     ${BENTO4_CORE_DIR}/../Crypto
     ${BENTO4_CORE_DIR}/../Adapters
     ${FFMPEG_INCLUDE_DIRS}
-    ${OpenCV_INCLUDE_DIRS}
     ${SDL2_INCLUDE_DIRS}
 )
 
@@ -145,23 +144,3 @@ set_target_properties(test_frame_data PROPERTIES
     BUILD_RPATH "${TEST_FFMPEG_RPATH}"
 )
 add_test(NAME FrameDataTests COMMAND test_frame_data)
-
-# ============================================================
-# 测试 6: FrameAnalyzer (依赖 OpenCV + FFmpeg)
-# ============================================================
-add_executable(test_frame_analyzer
-    unit/test_frame_analyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/FrameAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/FrameData.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/Logger.cpp
-)
-target_include_directories(test_frame_analyzer PRIVATE ${TEST_INCLUDE_DIRS})
-target_link_libraries(test_frame_analyzer PRIVATE
-    GTest::gtest_main
-    ${FFMPEG_LIBRARIES}
-    ${OpenCV_LIBS}
-)
-set_target_properties(test_frame_analyzer PROPERTIES
-    BUILD_RPATH "${TEST_FFMPEG_RPATH}"
-)
-add_test(NAME FrameAnalyzerTests COMMAND test_frame_analyzer)

@@ -1,79 +1,55 @@
 #!/bin/bash
-# VideoEye 构建脚本 (Linux / macOS / WSL)
-# 用法: ./build.sh [debug|release] [cmake-args...]
+# ========================================
+#  VideoEye - 一键构建 (Linux / macOS / WSL)
+#  用法: ./build.sh [release|debug]
+#  默认: release
+# ========================================
+set -euo pipefail
 
-set -e
-
-BUILD_TYPE=${1:-release}
+PRESET="${1:-release}"
 shift || true
-BUILD_DIR="build-${BUILD_TYPE}"
-PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
-echo "====================================="
-echo "VideoEye 构建脚本 (Linux)"
-echo "====================================="
-echo "构建类型: ${BUILD_TYPE}"
-echo "构建目录: ${BUILD_DIR}"
-echo "====================================="
+case "$PRESET" in
+    release|debug) ;;
+    *) echo "用法: $0 [release|debug]"; exit 1 ;;
+esac
 
-# 检查构建依赖
-echo "检查构建依赖..."
-MISSING_DEPS=""
-
-if ! command -v cmake &>/dev/null; then
-    MISSING_DEPS="$MISSING_DEPS cmake"
-fi
-if ! command -v gcc &>/dev/null && ! command -v g++ &>/dev/null; then
-    MISSING_DEPS="$MISSING_DEPS g++"
-fi
-if ! command -v make &>/dev/null; then
-    MISSING_DEPS="$MISSING_DEPS make"
-fi
-if ! command -v pkg-config &>/dev/null; then
-    MISSING_DEPS="$MISSING_DEPS pkg-config"
-fi
-
-# 检查库依赖 (FFmpeg 通过 apt 安装, 不再需要源码编译)
-for pkg in Qt6Widgets opencv4 sdl2 zlib vulkan libavcodec libavformat libavutil libswscale libswresample; do
-    if ! pkg-config --exists "$pkg" 2>/dev/null; then
-        MISSING_DEPS="$MISSING_DEPS $pkg(dev)"
-    fi
-done
-
-if [ -n "$MISSING_DEPS" ]; then
-    echo "❌ 缺少依赖: $MISSING_DEPS"
+# ============ 依赖缺失时的友好提示 ============
+handle_deps_hint() {
     echo ""
-    echo "Debian/Ubuntu 安装命令:"
-    echo "  sudo apt install -y cmake g++ make pkg-config \\"
-    echo "    qt6-base-dev qt6-charts-dev \\"
-    echo "    libopencv-dev libsdl2-dev zlib1g-dev \\"
-    echo "    libvulkan-dev libglslc-dev glslc \\"
-    echo "    libavcodec-dev libavformat-dev libavutil-dev \\"
-    echo "    libswscale-dev libswresample-dev"
+    echo "--- 依赖安装提示 ---"
+    if [[ "$(uname)" == "Darwin" ]]; then
+        echo "macOS (Homebrew):"
+        echo "  brew install cmake ninja qt@6 sdl2 ffmpeg zlib glslang vulkan-headers"
+    else
+        echo "Debian/Ubuntu:"
+        echo "  sudo apt install -y cmake ninja-build pkg-config \\"
+        echo "    qt6-base-dev qt6-charts-dev libsdl2-dev zlib1g-dev \\"
+        echo "    libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \\"
+        echo "    libvulkan-dev glslc"
+    fi
     exit 1
-fi
+}
+trap handle_deps_hint ERR
 
-echo "✅ 依赖检查通过"
+PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$PROJECT_ROOT"
 
-# 创建构建目录
-mkdir -p "${BUILD_DIR}"
-cd "${BUILD_DIR}"
+echo "===================================="
+echo " VideoEye Build - $PRESET"
+echo "===================================="
 
-# 配置
-echo "配置项目..."
-cmake .. \
-    -DCMAKE_BUILD_TYPE="$(echo ${BUILD_TYPE} | sed 's/^./\U&/')" \
-    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-    "$@"
+# --- 1. Configure (via preset) ---
+echo "[1/2] CMake Configure..."
+cmake --preset "$PRESET" "$@"
 
-# 编译
-echo "开始编译..."
-CPU_COUNT=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)
-echo "使用 ${CPU_COUNT} 个并行进程"
-cmake --build . -j ${CPU_COUNT}
+# --- 2. Build ---
+echo ""
+echo "[2/2] Build..."
+cmake --build --preset "$PRESET"
 
-echo "====================================="
-echo "构建完成!"
-echo "可执行文件位置: ${BUILD_DIR}/bin/VideoEye"
-echo "====================================="
-echo "运行: ./${BUILD_DIR}/bin/VideoEye"
+echo ""
+echo "===================================="
+echo " 构建成功: build/$PRESET/bin/VideoEye"
+echo " 运行:   ./build/$PRESET/bin/VideoEye"
+echo "===================================="

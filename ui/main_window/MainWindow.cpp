@@ -721,8 +721,6 @@ void MainWindow::SetupConnections() {
     // 播放器信号连接 - 分析功能 (实时分析)
     connect(player_, &player::MediaPlayer::StreamStatsReady,
             analysis_panel_, &ui::AnalysisPanel::UpdateStreamStats);
-    connect(player_, &player::MediaPlayer::HistogramReady,
-            analysis_panel_, &ui::AnalysisPanel::UpdateHistogram);
     connect(player_, &player::MediaPlayer::VideoFrameListReset,
             analysis_panel_, &ui::AnalysisPanel::ResetVideoFrameList);
     connect(player_, &player::MediaPlayer::VideoFrameInfoReady,
@@ -768,16 +766,9 @@ void MainWindow::SetupConnections() {
                 switch (feat) {
                 case AF::StreamStats:
                     player_->EnableAnalysis(enabled);
-                    if (!enabled) {
-                        player_->SetHistogramEnabled(false);
-                    }
                     break;
                 case AF::VideoFrame:
                     player_->SetFrameTypeAnalysisEnabled(enabled);
-                    break;
-                case AF::Histogram:
-                    if (enabled) player_->EnableAnalysis(true);
-                    player_->SetHistogramEnabled(enabled);
                     break;
                 case AF::AudioFrame:
                     player_->SetAudioFrameAnalysisEnabled(enabled);
@@ -809,9 +800,6 @@ void MainWindow::SetupConnections() {
                     break;
                 case AF::SceneChange:
                     player_->SetSceneChangeAnalysisEnabled(enabled);
-                    break;
-                case AF::Quality:
-                    // 质量评估为离线批量任务, 由面板内的"开始评估"触发, 此处无需控制播放器
                     break;
                 default:
                     break;
@@ -1672,10 +1660,6 @@ void MainWindow::OnStreamStatsUpdate(const analyzer::StreamStats& stats) {
     overlay.status = (player_ && player_->GetState() == model::PlayerState::Playing) 
         ? tr("播放中") : tr("已暂停");
     video_widget_->SetOverlayInfo(overlay);
-}
-
-void MainWindow::OnHistogramUpdate(const analyzer::HistogramData& hist) {
-    // 直方图数据已由分析面板处理，这里可以做其他处理
 }
 
 void MainWindow::OnMediaModeChanged(bool has_video) {

@@ -1,4 +1,4 @@
-# 构建目录
+# 构建目录 (新: build/<config>)
 build/
 build-debug/
 build-release/
@@ -11,16 +11,18 @@ build-ninja-test/
 cmake-build-*/
 out/
 
-# IDE文件
+# IDE / 编辑器
 .vs/
 .vscode/
+CMakeUserPresets.json
+compile_commands.json
 *.swp
 *.swo
 *~
 .DS_Store
 .workbuddy/
 
-# CMake生成文件
+# CMake 生成文件
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
@@ -38,7 +40,7 @@ Makefile
 *.lib
 *.exp
 
-# Qt生成文件
+# Qt 生成文件
 .moc
 .uic
 .rcc
@@ -46,11 +48,12 @@ qrc_*.cpp
 moc_*.cpp
 ui_*.h
 
-# FFmpeg 源码 (由 setup.sh 管理, 非 Git 子模块)
+# FFmpeg 源码 (非 Git 子模块)
 third_party/FFmpeg/
 
-# FFmpeg 预编译包 (由 scripts/fetch-ffmpeg.ps1 下载, 不入库)
+# FFmpeg 预编译包 (fetch-ffmpeg.ps1 下载)
 third_party/ffmpeg-prebuilt/
+.videoeye-ffmpeg.json
 
 # Bento4 构建产物
 third_party/Bento4/Build/Makefiles/build/
@@ -60,31 +63,29 @@ third_party/Bento4/**/*.o
 third_party/ZenLib/Project/CMake/CMakeFiles/
 third_party/MediaInfoLib/Project/CMake/CMakeFiles/
 
-# 测试构建产物
+# 测试
 *_test
 *_tests
 test_*
 *_test_runner
 
-# 测试覆盖率
+# 覆盖率
 *.gcda
 *.gcno
 coverage/
 
-# 日志文件
+# 日志
 *.log
 
 # vcpkg 安装目录
 vcpkg_installed/
 
 # 二进制工具 (开发者自行安装)
-tools/
-*.deb
+tools/*.deb
+tools/*.exe
+tools/*.zip
 
-# Vulkan-Headers 子模块 (Git submodule)
-# third_party/vulkan-headers/ 由 .gitmodules 管理
-
-# 评审/规划过程文档 (非源码, 不纳入版本控制)
+# 评审/规划过程文档
 deliverables/
 overview.md
 local_docs/

@@ -33,7 +33,6 @@
 #include <memory>
 
 #include "core/analyzer/StreamAnalyzer.h"
-#include "core/analyzer/FrameAnalyzer.h"
 #include "core/model/AnalysisEvent.h"
 #include "core/model/AudioVisualizationFrame.h"
 #include "core/model/PacketInfo.h"
@@ -44,7 +43,6 @@
 #include "core/model/ContainerStructureInfo.h"
 #include "core/model/MacroblockInfo.h"
 #include "core/analyzer/SceneChangeAnalyzer.h"
-#include "core/analyzer/QualityAnalyzer.h"
 
 namespace videoeye {
 namespace ui {
@@ -65,30 +63,27 @@ public:
         SyncSample,    // 音视频同步
         Timeline,      // 时间线
         AudioLoudness, // 音频响度监测
-        Histogram,     // 直方图
         ContainerStructure,  // 文件结构分析
         Macroblock,    // 宏块分析 (运动矢量/块统计)
-        SceneChange,   // 场景切换检测 (镜头边界)
-        Quality        // 质量评估 (PSNR/SSIM, 需参考视频)
+        SceneChange    // 场景切换检测 (镜头边界)
     };
 
     explicit AnalysisPanel(QWidget* parent = nullptr);
     ~AnalysisPanel();
     
     // 将分析面板各页添加到外部 QStackedWidget
-    // 返回添加的页面数量 (10页: 流分析/视频帧/音频帧/数据包/异常事件/同步分析/时间轴/音频响度/直方图/容器结构)
+    // 返回添加的页面数量 (流分析/视频帧/音频帧/数据包/异常事件/同步分析/时间轴/音频响度/容器结构等)
     int PopulateStackedWidget(QStackedWidget* stack);
-    
-    // 设置当前显示的页面索引 (0-9)
+
+    // 设置当前显示的页面索引
     void SetCurrentPageIndex(int index);
-    
+
     // 检查某个分析功能是否启用
     bool IsFeatureEnabled(AnalysisFeature feature) const;
-    
-    // 设置当前视频文件路径 (供导出报告 / 质量评估主视频)
+
+    // 设置当前视频文件路径 (供导出报告)
     void SetCurrentVideoPath(const QString& path) {
         current_video_path_ = path.toStdString();
-        quality_main_path_ = path.toStdString();
     }
     
     // 重新发射所有启用状态的开关信号 (用于文件打开后同步播放器状态)
@@ -101,7 +96,6 @@ signals:
 public slots:
     // 更新统计数据
     void UpdateStreamStats(const analyzer::StreamStats& stats);
-    void UpdateHistogram(const analyzer::HistogramData& hist);
     void ResetVideoFrameList();
     void AppendVideoFrameInfo(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds);
     void ResetAudioFrameList();
@@ -119,13 +113,7 @@ public slots:
     void UpdateAudioLoudness(const model::AudioVisualizationFrame& frame);
     void UpdateMacroblockInfo(const model::MacroblockFrameAnalysis& analysis);
     void OnSceneChangeDetected(const analyzer::SceneChangeResult& result);
-    void OnQualityFrameResult(const analyzer::QualityFrameResult& result);
-    void OnQualityProgress(int current);
-    void OnQualitySummary(const analyzer::QualitySummary& summary);
-    void OnSelectReferenceClicked();
-    void OnStartQualityClicked();
-    void OnCancelQualityClicked();
-    
+
     // 导出报告
     void OnExportReport();
     
@@ -217,11 +205,9 @@ private:
     void SetupSyncTab();
     void SetupTimelineTab();
     void SetupAudioLoudnessTab();
-    void SetupHistogramTab();
     void SetupContainerStructureTab();
     void SetupMacroblockTab();
     void SetupSceneChangeTab();
-    void SetupQualityTab();
     void RebuildFrameTable();
     void RebuildGopTable();
     void RebuildAudioFrameTable();
@@ -263,7 +249,6 @@ private:
     void OnExportEventCsv();
     void OnExportSyncCsv();
     void OnExportTimelineCsv();
-    void OnExportHistogramCsv();
     void OnExportMp4Box();
     void OnExportContainerStructure();
     void OnFrameFilterChanged();
@@ -277,18 +262,10 @@ private:
     void UpdateSceneChangeSummary();
     void OnExportSceneChangeCsv();
 
-    // 质量评估
-    void FlushPendingQualityTable();
-    void AppendQualityRow(const analyzer::QualityFrameResult& result);
-    void UpdateQualityCharts();
-    void OnExportQualityCsv();
-    void ResetQualityUi();
-    
     // 更新图表
     void UpdateBitrateChart(const analyzer::StreamStats& stats);
     void UpdateFPSChart(const analyzer::StreamStats& stats);
     void UpdateGOPChart(const analyzer::StreamStats& stats);
-    void UpdateHistogramChart(const analyzer::HistogramData& hist);
     void UpdateSyncChart();
     void UpdateTimelineChart();
     
@@ -362,10 +339,6 @@ private:
     double max_peak_dbfs_ = -70.0;
     int loudness_sample_count_ = 0;
     double loudness_sum_ = 0.0;
-    
-    // 直方图标签页
-    QWidget* histogram_tab_;
-    QChartView* histogram_chart_;
 
     // 宏块分析标签页
     QWidget* macroblock_tab_;
@@ -392,34 +365,6 @@ private:
     bool scene_change_table_dirty_ = false;
     size_t scene_change_table_synced_count_ = 0;
 
-    // 质量评估标签页
-    QWidget* quality_tab_;
-    QLabel* quality_summary_label_;
-    QLabel* quality_ref_label_;
-    QChartView* quality_psnr_chart_;
-    QChartView* quality_ssim_chart_;
-    QChart* quality_psnr_chart_object_;
-    QChart* quality_ssim_chart_object_;
-    QLineSeries* quality_psnr_series_;
-    QLineSeries* quality_ssim_series_;
-    QValueAxis* quality_psnr_axis_x_;
-    QValueAxis* quality_psnr_axis_y_;
-    QValueAxis* quality_ssim_axis_x_;
-    QValueAxis* quality_ssim_axis_y_;
-    QTableWidget* quality_table_;
-    QPushButton* quality_select_ref_button_;
-    QPushButton* quality_start_button_;
-    QPushButton* quality_cancel_button_;
-    QProgressBar* quality_progress_;
-    std::vector<analyzer::QualityFrameResult> quality_records_;
-    bool quality_table_dirty_ = false;
-    size_t quality_table_synced_count_ = 0;
-    std::string quality_main_path_;
-    std::string quality_ref_path_;
-    analyzer::QualityAnalyzer quality_analyzer_;
-    std::thread quality_thread_;
-    std::atomic<bool> quality_running_{false};
-    
     // 统一文件结构分析标签页
     QWidget* container_tab_;
     QLabel* container_title_label_;       // 动态标题
@@ -447,7 +392,6 @@ private:
     
     // 控制按钮
     QPushButton* export_button_;          // 流统计导出 (HTML/JSON/TXT)
-    QPushButton* export_histogram_button_;
     
     // 图表数据系列
     QLineSeries* sync_series_;
@@ -464,7 +408,6 @@ private:
     
     // 当前数据
     analyzer::StreamStats current_stats_;
-    analyzer::HistogramData current_hist_;
     std::vector<VideoFrameRecord> frame_records_;
     std::vector<AudioFrameRecord> audio_frame_records_;
     std::vector<PacketRecord> packet_records_;
@@ -474,8 +417,6 @@ private:
     std::vector<GopSummary> gop_summaries_;
     analyzer::StreamStats pending_stream_stats_;
     bool has_pending_stream_stats_ = false;
-    bool has_pending_histogram_ = false;
-    analyzer::HistogramData pending_histogram_;
     bool frame_table_dirty_ = false;
     bool gop_table_dirty_ = false;
     bool frame_summary_dirty_ = false;
@@ -501,7 +442,6 @@ private:
     std::deque<qreal> sync_chart_values_;
 
     bool scene_change_dirty_ = false;
-    bool quality_dirty_ = false;
 
     // 当前视频文件路径 (供导出报告使用)
     std::string current_video_path_;

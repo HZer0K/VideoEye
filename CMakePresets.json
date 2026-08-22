@@ -7,93 +7,101 @@
   },
   "configurePresets": [
     {
-      "name": "win-release",
-      "displayName": "Windows Ninja Release",
-      "description": "Windows 构建 (Ninja + MSVC)。需在 vcvars64 环境下运行，或直接用 build_ninja.ps1。",
+      "name": "windows-base",
+      "hidden": true,
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build-ninja",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_PREFIX_PATH": "${sourceDir}/vcpkg_installed/x64-windows-release",
+        "CMAKE_TOOLCHAIN_FILE": "D:/APP/Vcpkg/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-release",
+        "VCPKG_HOST_TRIPLET": "x64-windows-release",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/scripts/triplets",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/scripts/overlay-ports",
         "FFMPEG_ROOT": "${sourceDir}/third_party/ffmpeg-prebuilt",
-        "FFMPEG_VERSION": "8.1.1",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "BUILD_TESTING": "OFF"
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "win-release",
+      "displayName": "Windows Release",
+      "inherits": "windows-base",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
       }
     },
     {
       "name": "win-debug",
-      "displayName": "Windows Ninja Debug",
-      "description": "Windows Debug 构建 (Ninja + MSVC)，带调试符号。需在 vcvars64 环境下运行。",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build-ninja-debug",
+      "displayName": "Windows Debug",
+      "inherits": "windows-base",
+      "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_PREFIX_PATH": "${sourceDir}/vcpkg_installed/x64-windows-release",
-        "FFMPEG_ROOT": "${sourceDir}/third_party/ffmpeg-prebuilt",
-        "FFMPEG_VERSION": "8.1.1",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "BUILD_TESTING": "OFF"
-      }
-    },
-    {
-      "name": "win-test",
-      "displayName": "Windows Ninja Release + Tests",
-      "description": "Windows 构建并启用单元测试。需在 vcvars64 环境下运行。",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build-ninja-test",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_PREFIX_PATH": "${sourceDir}/vcpkg_installed/x64-windows-release",
-        "FFMPEG_ROOT": "${sourceDir}/third_party/ffmpeg-prebuilt",
-        "FFMPEG_VERSION": "8.1.1",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "BUILD_TESTING": "ON"
+        "CMAKE_BUILD_TYPE": "Debug"
       }
     },
     {
       "name": "linux-release",
-      "displayName": "Linux Make Release",
-      "description": "Linux 构建 (GCC + Make)，生成 compile_commands.json 供 clangd 使用。",
-      "generator": "Unix Makefiles",
-      "binaryDir": "${sourceDir}/build-linux",
+      "displayName": "Linux Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "BUILD_TESTING": "OFF"
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     },
     {
       "name": "linux-debug",
-      "displayName": "Linux Make Debug",
-      "description": "Linux Debug 构建，带调试符号。",
-      "generator": "Unix Makefiles",
-      "binaryDir": "${sourceDir}/build-debug",
+      "displayName": "Linux Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "BUILD_TESTING": "OFF"
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     },
     {
-      "name": "linux-test",
-      "displayName": "Linux Make Release + Tests",
-      "description": "启用单元测试的构建。",
-      "generator": "Unix Makefiles",
-      "binaryDir": "${sourceDir}/build-test",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "BUILD_TESTING": "ON"
-      }
+      "name": "release",
+      "displayName": "Release (Windows only)",
+      "inherits": "win-release"
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug (Windows only)",
+      "inherits": "win-debug"
+    },
+    {
+      "name": "default",
+      "displayName": "Default",
+      "inherits": "release"
     }
   ],
   "buildPresets": [
-    { "name": "win-release", "configurePreset": "win-release" },
-    { "name": "win-debug", "configurePreset": "win-debug" },
-    { "name": "win-test", "configurePreset": "win-test" },
-    { "name": "linux-release", "configurePreset": "linux-release" },
-    { "name": "linux-debug", "configurePreset": "linux-debug" },
-    { "name": "linux-test", "configurePreset": "linux-test" }
+    {
+      "name": "win-release",
+      "configurePreset": "win-release"
+    },
+    {
+      "name": "win-debug",
+      "configurePreset": "win-debug"
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release"
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "default",
+      "configurePreset": "default"
+    }
   ]
 }

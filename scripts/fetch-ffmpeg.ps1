@@ -25,13 +25,22 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $scriptDir
 if (-not $DestDir) { $DestDir = Join-Path $projectRoot "third_party\ffmpeg-prebuilt" }
 
-# 版本锁定: -Version "8.1.1" 将 Variant 从 release-full-shared 改为 8.1.1-full-shared (gyan.dev 版本化 URL)
+# 版本锁定: -Version "8.1.2" 将 Variant 从 release-full-shared 改为 8.1.2-full_build-shared (gyan.dev 版本化 URL)
+# 注意: gyan.dev 版本化归档包命名含 "_build" (full_build-shared), 与 release 变体 (full-shared) 不同;
+#       且 URL 路径多一层 /packages/ 子路径。
 if ($Version) {
-    $Variant = "$Version-full-shared"
+    $Variant = "$Version-full_build-shared"
     Write-Host "已指定版本锁定: FFmpeg $Version (variant=$Variant)"
 }
 
-$url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-$Variant.7z"
+# gyan.dev URL 结构:
+#   release 变体 (latest):  /ffmpeg/builds/ffmpeg-release-full-shared.7z
+#   版本化归档 (previous):  /ffmpeg/builds/packages/ffmpeg-{ver}-full_build-shared.7z
+if ($Version) {
+    $url = "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-$Variant.7z"
+} else {
+    $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-$Variant.7z"
+}
 $shaUrl = "$url.sha256"
 $archive = Join-Path $env:TEMP "videoeye-ffmpeg-$Variant.7z"
 

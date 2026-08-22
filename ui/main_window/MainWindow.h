@@ -71,7 +71,6 @@ private slots:
     
     // 分析功能槽函数 (MediaPlayer信号)
     void OnStreamStatsUpdate(const analyzer::StreamStats& stats);
-    void OnHistogramUpdate(const analyzer::HistogramData& hist);
     void OnMediaModeChanged(bool has_video);
     void OnAudioLevelReady(double level, double timestamp_seconds);
     void OnAudioVisualizationForDisplay(const model::AudioVisualizationFrame& frame);

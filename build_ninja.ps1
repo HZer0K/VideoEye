@@ -15,8 +15,9 @@ $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $buildDir = if ($BuildType -eq "Debug") { "$projectRoot\build-ninja-debug" } else { "$projectRoot\build-ninja" }
 
 # ── FFmpeg 版本锁定 ──
-# 团队统一使用 8.1.1 (gyan.dev full-shared 预编译包), 确保所有人构建环境一致。
-$FfmpegVersion = "8.1.1"
+# 团队统一使用 8.1.2 (gyan.dev full-shared 预编译包), 确保所有人构建环境一致。
+# 8.1.1 已从 gyan.dev 下线, 8.1.2 是 8.1.x 系列当前可用版本 (ABI 兼容)。
+$FfmpegVersion = "8.1.2"
 
 # -- 用 vswhere 自动探测 Visual Studio 安装路径 --
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
