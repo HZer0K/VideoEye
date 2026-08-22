@@ -1,5 +1,6 @@
 #include "ReportExporter.h"
 #include "Logger.h"
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <iomanip>
