@@ -9,7 +9,7 @@
       "default-features": false,
       "features": [
         "brotli", "concurrent", "dbus", "dnslookup",
-        "doubleconversion", "freetype", "gui", "harfbuzz", "icu",
+        "doubleconversion", "freetype", "gui", "harfbuzz",
         "jpeg", "network", "opengl", "openssl", "pcre2", "png",
         "testlib", "thread", "widgets", "zstd"
       ]

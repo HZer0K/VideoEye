@@ -1,11 +1,15 @@
+param(
+    [ValidateSet("release", "debug")]
+    [string]$Config = "release"
+)
+
+$ProjectRoot = Split-Path -Parent $PSScriptRoot
+$Triplet = "x64-windows-$Config"
+
 # Run vcpkg install with full MSVC environment loaded (vcvars64).
-# Reason: libpq's perl build.pl spawns "msbuild" by name, which requires
-# MSBuild in PATH. Running from git-bash without vcvars fails with
-# "Inappropriate I/O control operation".
-$logFile = "D:\Coding\C\videoeye\VideoEye\build-ninja\vcpkg-install.log"
+$logFile = Join-Path $ProjectRoot "vcpkg-install.log"
 
 # Remove problematic env vars
-Remove-Item Env:VCPKG_ROOT -ErrorAction SilentlyContinue
 Remove-Item Env:HTTP_PROXY -ErrorAction SilentlyContinue
 Remove-Item Env:HTTPS_PROXY -ErrorAction SilentlyContinue
 Remove-Item Env:http_proxy -ErrorAction SilentlyContinue
@@ -34,12 +38,14 @@ Write-Output "MSVC environment loaded. MSBuild check:"
 $msbuild = Get-Command msbuild -ErrorAction SilentlyContinue
 if ($msbuild) { Write-Output "  msbuild: $($msbuild.Source)" } else { Write-Output "  msbuild: NOT FOUND" }
 
-Set-Location "D:\Coding\C\videoeye\VideoEye"
-Write-Output "Running vcpkg install..."
+if (-not $env:VCPKG_ROOT) { Write-Error "VCPKG_ROOT is not set"; exit 1 }
 
-& "D:\APP\Vcpkg\vcpkg\vcpkg.exe" install `
-    --triplet x64-windows-release `
-    --host-triplet x64-windows-release `
+Set-Location $ProjectRoot
+Write-Output "Running vcpkg install (triplet: $Triplet)..."
+
+& "$env:VCPKG_ROOT\vcpkg.exe" install `
+    --triplet $Triplet `
+    --host-triplet $Triplet `
     --overlay-triplets=scripts/triplets `
     --overlay-ports=scripts/overlay-ports `
     --x-manifest-root=. `
