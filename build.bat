@@ -1,7 +1,7 @@
 @echo off
 REM ========================================
 REM  VideoEye - 一键构建 (Windows)
-REM  用法: build.bat [release|debug]
+REM  用法: build.bat [release|debug|clean]
 REM  默认: release
 REM ========================================
 setlocal enabledelayedexpansion
@@ -9,9 +9,24 @@ setlocal enabledelayedexpansion
 set "PRESET=%~1"
 if "%PRESET%"=="" set "PRESET=release"
 if /i "%PRESET%"=="ninja" set "PRESET=release"
+
+REM clean 子命令: 清理构建目录后退出
+if /i "%PRESET%"=="clean" (
+    if exist "%~dp0build\release" (
+        rmdir /s /q "%~dp0build\release"
+        echo 已删除: build\release
+    )
+    if exist "%~dp0build\debug" (
+        rmdir /s /q "%~dp0build\debug"
+        echo 已删除: build\debug
+    )
+    echo 构建目录已清理
+    exit /b 0
+)
+
 if /i not "%PRESET%"=="release" if /i not "%PRESET%"=="debug" (
     echo [ERROR] 无效参数: %PRESET%
-    echo 用法: build.bat [release^|debug]
+    echo 用法: build.bat [release^|debug^|clean]
     exit /b 1
 )
 
