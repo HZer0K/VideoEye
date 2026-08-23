@@ -16,6 +16,7 @@
     },
     "qtcharts",
     "sdl2",
-    "zlib"
+    "zlib",
+    "vulkan"
   ]
 }

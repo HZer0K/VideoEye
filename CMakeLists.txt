@@ -28,7 +28,10 @@ list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(FFMPEG REQUIRED)
 
 # Vulkan
-find_package(Vulkan QUIET)
+find_package(Vulkan CONFIG QUIET)
+if(NOT Vulkan_FOUND)
+    find_package(Vulkan MODULE QUIET)
+endif()
 set(VULKAN_HEADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/vulkan-headers")
 
 # Qt6 + SDL2 + ZLIB
