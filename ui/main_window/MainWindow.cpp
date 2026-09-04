@@ -851,7 +851,11 @@ void MainWindow::OnOpenFile() {
     
     QString filename = QFileDialog::getOpenFileName(this,
         tr("打开媒体文件"), "",
-        tr("媒体文件 (*.mp4 *.avi *.mkv *.flv *.ts *.mp3 *.aac *.wav *.pcm *.yuv *.nv12 *.rgb *.bgr *.yuy2 *.raw);;所有文件 (*)"));
+        tr("媒体文件 (*.mp4 *.MP4 *.m4v *.M4V *.mov *.MOV *.avi *.AVI *.mkv *.MKV "
+           "*.webm *.WEBM *.flv *.FLV *.ts *.TS *.mts *.MTS *.m2ts *.M2TS "
+           "*.asf *.ASF *.wmv *.WMV *.ogg *.OGG *.ogv *.OGV *.mp3 *.MP3 "
+           "*.aac *.AAC *.wav *.WAV *.pcm *.yuv *.YUV *.nv12 *.NV12 "
+           "*.rgb *.RGB *.bgr *.BGR *.yuy2 *.YUY2 *.raw *.RAW);;所有文件 (*)"));
     
     qDebug() << "[1] 选择的文件:" << filename;
     
