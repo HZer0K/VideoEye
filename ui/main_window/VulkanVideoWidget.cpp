@@ -9,6 +9,10 @@
 #include <QFont>
 #include <QFontMetrics>
 #include <cmath>
+#if !defined(Q_OS_WIN)
+#include <QGuiApplication>
+#include <QtGui/qguiapplication_platform.h>
+#endif
 
 namespace videoeye {
 namespace ui {
@@ -496,6 +500,17 @@ void VulkanVideoWidget::TryInitializeVulkan() {
         int w = width(), h = height();
         player::VulkanRenderer* r = renderer_;
         player::VulkanContext* c = vulkan_ctx_;
+        // 必须在 GUI 线程取得 Qt 的 xcb 连接再传给后台线程使用, 供 vkCreateXcbSurfaceKHR
+        // 构造合法 connection (见 VulkanContext::CreateSurface); 无连接时干净回退 CPU。
+#if !defined(Q_OS_WIN)
+        if (c) {
+            if (auto* x11app = qGuiApp->nativeInterface<QNativeInterface::QX11Application>()) {
+                c->SetXcbConnection(x11app->connection());
+            } else {
+                c->SetXcbConnection(nullptr);
+            }
+        }
+#endif
         QPointer<VulkanVideoWidget> self(this);
         init_thread_ = std::thread([self, r, c, handle, w, h]() {
             // Initialize 是幂等的: 首次调用建 instance+surface+选设备; 若选设备失败

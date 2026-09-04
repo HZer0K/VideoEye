@@ -568,15 +568,18 @@ void MainWindow::SetupMenuBar() {
     
     // 文件菜单
     QMenu* file_menu = menu_bar_->addMenu(tr("文件"));
-    file_menu->addAction(tr("打开本地文件"), QKeySequence::Open, this, &MainWindow::OnOpenFile);
-    file_menu->addAction(tr("打开URL"), QKeySequence("Ctrl+U"), this, &MainWindow::OnOpenURL);
+    QAction* act_open = file_menu->addAction(tr("打开本地文件"), this, &MainWindow::OnOpenFile);
+    act_open->setShortcut(QKeySequence::Open);
+    QAction* act_open_url = file_menu->addAction(tr("打开URL"), this, &MainWindow::OnOpenURL);
+    act_open_url->setShortcut(QKeySequence("Ctrl+U"));
     // 导出 子菜单
     QMenu* export_menu = file_menu->addMenu(tr("导出"));
     export_frames_action_ = export_menu->addAction(tr("导出视频帧..."), this, &MainWindow::OnExportVideoFrames);
     export_menu->addAction(tr("导出视频..."), this, &MainWindow::OnExportVideo);
     export_menu->addAction(tr("导出音频..."), this, &MainWindow::OnExportAudio);
     file_menu->addSeparator();
-    file_menu->addAction(tr("退出"), QKeySequence::Quit, this, &MainWindow::OnExit);
+    QAction* act_exit = file_menu->addAction(tr("退出"), this, &MainWindow::OnExit);
+    act_exit->setShortcut(QKeySequence::Quit);
     
     // 帮助菜单 (先声明, 以便在其之前插入"播放设置")
     QMenu* help_menu = menu_bar_->addMenu(tr("帮助"));

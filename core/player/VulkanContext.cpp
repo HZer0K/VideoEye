@@ -179,12 +179,21 @@ bool VulkanContext::CreateInstance(const QString& app_name) {
 bool VulkanContext::CreateSurface(WId window_handle) {
     auto instance = instance_;
 #if defined(VK_USE_PLATFORM_XCB_KHR)
-    // 注: XCB 路径需要从 Qt 平台接口取连接, 此处简化仅使用 winId
+    // XCB 路径必须提供 Qt 平台的 xcb 连接 (GUI 线程经 QX11Application 取得后注入)。
+    // 之前传 nullptr 会让驱动用非法连接做 xcb 查询 → 段错误; 无法取得连接时
+    // (offscreen/Wayland 等) 干净返回失败, 走 CPU 回退。
+    if (xcb_connection_ == nullptr) {
+        LOG_WARN("VulkanContext: 无 xcb 连接, 跳过 XCB Surface 创建 (回退 CPU 渲染)");
+        return false;
+    }
     VkXcbSurfaceCreateInfoKHR info{};
     info.sType = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR;
-    info.connection = nullptr;  // 实际需在渲染端补全, 当前以 Win32 为主路径
+    info.connection = static_cast<xcb_connection_t*>(xcb_connection_);
     info.window = static_cast<xcb_window_t>(window_handle);
-    return vkCreateXcbSurfaceKHR(instance, &info, nullptr, &surface_) == VK_SUCCESS;
+    VkResult sr = vkCreateXcbSurfaceKHR(instance, &info, nullptr, &surface_);
+    LOG_INFO(std::string("VulkanContext: vkCreateXcbSurfaceKHR 返回=") + std::to_string(sr) +
+             (sr == VK_SUCCESS ? " (成功)" : " (失败)"));
+    return sr == VK_SUCCESS;
 #elif defined(VK_USE_PLATFORM_WIN32_KHR)
     HWND hwnd = reinterpret_cast<HWND>(window_handle);
     // 诊断: 窗口此刻是否真的可见 (WS_VISIBLE 且 IsWindowVisible)。
