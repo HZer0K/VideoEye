@@ -1,6 +1,6 @@
 # VideoEye 2.0 - 现代化视频流分析软件
 
-[![License](https://img.shields.io/badge/license-GPL--3.0-or--later-blue.svg)](LICENSE)
+[![License](https://img.shields.io/static/v1?label=license&message=GPL-3.0-or-later&color=blue)](LICENSE)
 [![C++](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://isocpp.org/)
 [![Qt](https://img.shields.io/badge/Qt-6-green.svg)](https://www.qt.io/)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-8.1%2B-red.svg)](https://ffmpeg.org/)
