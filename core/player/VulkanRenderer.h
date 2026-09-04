@@ -260,6 +260,13 @@ private:
     AVPixelFormat gdi_src_fmt_ = AV_PIX_FMT_NONE;
     int gdi_frame_w_ = 0;   // 最近一次转换的帧尺寸 (gdi_frame_mutex_ 保护)
     int gdi_frame_h_ = 0;
+
+    // NV12 归一化 (非 8-bit 4:2:0 源帧经 swscale 转 8-bit NV12 再上传) — 仅解码线程访问
+    SwsContext* nv12_sws_ctx_ = nullptr;
+    int nv12_sws_w_ = 0;
+    int nv12_sws_h_ = 0;
+    AVPixelFormat nv12_sws_fmt_ = AV_PIX_FMT_NONE;
+
     std::mutex gdi_frame_mutex_;  // 保护 gdi_rgba_buf_/gdi_frame_w_/gdi_frame_h_ 跨线程访问
     std::atomic<WId> gdi_overlay_hwnd_{0};  // 非 0 时 GDI 帧绘制到此窗口 (拖动期间的顶层 popup)
     std::atomic<int> gdi_overlay_x_{0};     // overlay 目标几何 (物理像素, GUI 线程更新)

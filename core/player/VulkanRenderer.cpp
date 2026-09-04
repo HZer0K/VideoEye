@@ -8,6 +8,10 @@
 #include <stdexcept>
 #include <chrono>
 
+extern "C" {
+#include <libavutil/pixdesc.h>
+}
+
 #if defined(VK_USE_PLATFORM_XCB_KHR)
 #include <xcb/xcb.h>
 #elif defined(VK_USE_PLATFORM_XLIB_KHR)
@@ -27,6 +31,25 @@ std::string ShaderDir() {
 // 不为旧 swapchain 提供图像, 无限超时 (UINT64_MAX) 会永久阻塞解码线程致播放卡住。
 constexpr uint64_t kAcquireTimeoutNs = 100'000'000ull;  // 100ms
 }
+
+namespace {
+// 帧能否不经转换直接按「8-bit 平面 NV12」打包上传:
+// 仅 8-bit 4:2:0 的 NV12 / YUV420P(yuvj420p) 每样本恰 1 字节、色度半分辨率,
+// 字节布局与 staging/着色器(NV12)一致。10/12-bit、4:2:2/4:4:4、RGB 等源帧
+// 每样本不止 1 字节或色度布局不同, 直接逐字节拷贝会花屏, 必须先转 NV12。
+bool FrameCanPackDirectAsNv12(const AVFrame* f) {
+    if (!f || !f->data[0]) return false;
+    const AVPixelFormat fmt = static_cast<AVPixelFormat>(f->format);
+    if (fmt == AV_PIX_FMT_NV12) return true;
+    const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(fmt);
+    if (!d) return false;
+    if (d->flags & (AV_PIX_FMT_FLAG_HWACCEL | AV_PIX_FMT_FLAG_RGB)) return false;
+    if (d->nb_components < 3) return false;
+    if (d->log2_chroma_w != 1 || d->log2_chroma_h != 1) return false;  // 仅 4:2:0
+    if (d->comp[0].depth != 8) return false;                            // 仅 8-bit
+    return f->data[1] && f->data[2];
+}
+}  // namespace
 
 VulkanRenderer::VulkanRenderer(QObject* parent) : QObject(parent) {}
 VulkanRenderer::~VulkanRenderer() { Destroy(); }
@@ -932,8 +955,35 @@ void VulkanRenderer::UploadFrameToTextures(const AVFrame* frame) {
     if (!frame || !frame->data[0]) return;
     auto dev = vulkan_ctx_->GetDevice();
     int w = frame->width, h = frame->height;
+
     void* data;
     vkMapMemory(dev, staging_memory_, 0, staging_size_, 0, &data);
+
+    // 8-bit 4:2:0 (NV12/YUV420P) 直接打包; 其他格式先 swscale 归一化为 8-bit NV12,
+    // 直接写入 staging, 避免 10/12-bit 等源帧按字节硬拷导致的画面花屏。
+    if (!FrameCanPackDirectAsNv12(frame)) {
+        if (nv12_sws_w_ != w || nv12_sws_h_ != h ||
+            nv12_sws_fmt_ != static_cast<AVPixelFormat>(frame->format)) {
+            if (nv12_sws_ctx_) sws_freeContext(nv12_sws_ctx_);
+            nv12_sws_ctx_ = sws_getContext(w, h, static_cast<AVPixelFormat>(frame->format),
+                                           w, h, AV_PIX_FMT_NV12,
+                                           SWS_BILINEAR, nullptr, nullptr, nullptr);
+            nv12_sws_w_ = w;
+            nv12_sws_h_ = h;
+            nv12_sws_fmt_ = static_cast<AVPixelFormat>(frame->format);
+        }
+        if (nv12_sws_ctx_) {
+            uint8_t* dst_slices[4] = { static_cast<uint8_t*>(data),
+                                       static_cast<uint8_t*>(data) + (size_t)w * h,
+                                       nullptr, nullptr };
+            int dst_stride[4] = { w, w, 0, 0 };  // NV12: Y 宽 w, UV 交错行宽 = w
+            sws_scale(nv12_sws_ctx_, frame->data, frame->linesize, 0, h,
+                      dst_slices, dst_stride);
+        }
+        vkUnmapMemory(dev, staging_memory_);
+        return;
+    }
+
     size_t ysz = (size_t)w*h;
     if (frame->linesize[0]==w) memcpy(data,frame->data[0],ysz);
     else for(int r=0;r<h;r++) memcpy((uint8_t*)data+r*w,frame->data[0]+r*frame->linesize[0],w);
@@ -1335,6 +1385,10 @@ void VulkanRenderer::Destroy() {
     if (gdi_sws_ctx_) {
         sws_freeContext(gdi_sws_ctx_);
         gdi_sws_ctx_ = nullptr;
+    }
+    if (nv12_sws_ctx_) {
+        sws_freeContext(nv12_sws_ctx_);
+        nv12_sws_ctx_ = nullptr;
     }
 #ifdef _WIN32
     if (gdi_mem_dc_) {

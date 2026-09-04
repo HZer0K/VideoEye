@@ -54,6 +54,11 @@ bool VideoDecoder::Initialize(AVCodecParameters* codec_params) {
     // 导出运动矢量 side data (供宏块分析使用)
     codec_ctx_->export_side_data |= AV_CODEC_EXPORT_DATA_MVS;
 
+    // 帧级多线程解码: 单线程下 HEVC Main10 1080p 只有 ~24fps, 跟不上 29.97fps
+    // 实时播放 (表现为慢放)。thread_count=0 让 FFmpeg 按 CPU 数自动选帧线程,
+    // 实测可达 ~140fps, 留足余量给后续转换/渲染。
+    codec_ctx_->thread_count = 0;
+
     // 打开解码器
     ret = avcodec_open2(codec_ctx_, codec, nullptr);
     if (ret < 0) {

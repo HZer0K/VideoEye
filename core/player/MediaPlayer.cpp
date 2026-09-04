@@ -384,6 +384,10 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
             // 注意: 软件解码才会产出 AV_FRAME_DATA_MOTION_VECTORS; 硬件解码
             // (Vulkan/D3D11/CUDA) 不导出该 side data, 宏块分析面板将始终为空。
             video_codec_ctx->export_side_data |= AV_CODEC_EXPORT_DATA_MVS;
+            // 帧级多线程解码: 默认单线程下 HEVC Main10 1080p 只有 ~24fps, 跟不上
+            // 29.97fps 实时播放 (表现为慢放)。thread_count=0 让 FFmpeg 按 CPU 数
+            // 自动启用帧线程, 实测 ~140fps, 为后续转换/渲染留出余量。
+            video_codec_ctx->thread_count = 0;
             ret = avcodec_open2(video_codec_ctx, video_codec, nullptr);
             if (ret < 0) {
                 avcodec_free_context(&video_codec_ctx);
