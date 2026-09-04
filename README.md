@@ -1,6 +1,6 @@
 # VideoEye 2.0 - 现代化视频流分析软件
 
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-GPL--3.0-or--later-blue.svg)](LICENSE)
 [![C++](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://isocpp.org/)
 [![Qt](https://img.shields.io/badge/Qt-6-green.svg)](https://www.qt.io/)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-8.1%2B-red.svg)](https://ffmpeg.org/)
@@ -109,7 +109,9 @@ cmake --build build/debug && cd build/debug && ctest --output-on-failure
 
 ## 开源协议
 
-本项目采用 [MIT](LICENSE) 协议。
+本项目整体采用 [GPL-3.0-or-later](LICENSE)（因静态链接 GPLv2+ 的 Bento4/ap4 解析器）。
+仓库原创源码另可按 [MIT](LICENSE-MIT) 使用（双许可）。各三方组件的许可见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 致谢
 
