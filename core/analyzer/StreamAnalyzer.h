@@ -127,6 +127,7 @@ private:
     bool is_analyzing_;
     int64_t last_pts_;
     int frame_count_;
+    long long bitrate_window_bytes_;
     
     // 时间窗口
     std::chrono::steady_clock::time_point last_fps_calc_time_;
