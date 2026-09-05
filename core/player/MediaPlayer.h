@@ -39,6 +39,8 @@ extern "C" {
 #include "core/model/ContainerStructureInfo.h"
 #include "core/model/MacroblockInfo.h"
 
+class QThread;
+
 namespace videoeye {
 namespace player {
 
@@ -206,7 +208,8 @@ private:
     analyzer::SceneChangeAnalyzer scene_change_analyzer_;
     StreamInfoExtractor stream_info_extractor_;
     AudioVisualizer audio_visualizer_;
-    std::unique_ptr<VideoFrameExporter> frame_exporter_;
+    QThread* frame_export_thread_ = nullptr;
+    VideoFrameExporter* frame_exporter_ = nullptr;
 
     struct ContainerAnalysisWorker {
         std::thread thread;

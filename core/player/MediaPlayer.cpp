@@ -194,6 +194,7 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     macroblock_frame_index_ = 0;
     scene_change_frame_index_ = 0;
     scene_change_analyzer_.Reset();
+    stream_analyzer_.Reset();
     audio_frame_index_ = 0;
     packet_index_ = 0;
     analysis_event_index_ = 0;
@@ -578,20 +579,57 @@ void MediaPlayer::StartVideoFrameExport(const QString& output_dir, const QString
         return;
     }
 
-    frame_exporter_ = std::make_unique<VideoFrameExporter>();
+    const QString url = current_url_;
+    const QString normalized_format = format.toLower();
+    const int normalized_interval = std::max(1, frame_interval);
+
+    auto* thread = new QThread(this);
+    auto* exporter = new VideoFrameExporter();
+    exporter->moveToThread(thread);
+
+    frame_export_thread_ = thread;
+    frame_exporter_ = exporter;
+
     // 转发信号
-    connect(frame_exporter_.get(), &VideoFrameExporter::ExportStarted, this, &MediaPlayer::VideoFrameExportStarted);
-    connect(frame_exporter_.get(), &VideoFrameExporter::ExportProgress, this, &MediaPlayer::VideoFrameExportProgress);
-    connect(frame_exporter_.get(), &VideoFrameExporter::ExportFinished, this, &MediaPlayer::VideoFrameExportFinished);
-    connect(frame_exporter_.get(), &VideoFrameExporter::ExportCanceled, this, &MediaPlayer::VideoFrameExportCanceled);
-    connect(frame_exporter_.get(), &VideoFrameExporter::ExportError, this, &MediaPlayer::VideoFrameExportError);
-    frame_exporter_->Export(current_url_, output_dir, format.toLower(), jpg_quality, std::max(1, frame_interval));
+    connect(exporter, &VideoFrameExporter::ExportStarted, this, &MediaPlayer::VideoFrameExportStarted);
+    connect(exporter, &VideoFrameExporter::ExportProgress, this, &MediaPlayer::VideoFrameExportProgress);
+    connect(exporter, &VideoFrameExporter::ExportFinished, this, &MediaPlayer::VideoFrameExportFinished);
+    connect(exporter, &VideoFrameExporter::ExportCanceled, this, &MediaPlayer::VideoFrameExportCanceled);
+    connect(exporter, &VideoFrameExporter::ExportError, this, &MediaPlayer::VideoFrameExportError);
+
+    connect(exporter, &VideoFrameExporter::ExportFinished, thread, &QThread::quit);
+    connect(exporter, &VideoFrameExporter::ExportCanceled, thread, &QThread::quit);
+    connect(exporter, &VideoFrameExporter::ExportError, thread, &QThread::quit);
+    connect(thread, &QThread::finished, thread, &QThread::deleteLater);
+    connect(thread, &QThread::finished, exporter, &QObject::deleteLater);
+    connect(thread, &QThread::finished, this, [this, thread, exporter]() {
+        if (frame_export_thread_ == thread) frame_export_thread_ = nullptr;
+        if (frame_exporter_ == exporter) frame_exporter_ = nullptr;
+    });
+    connect(thread, &QThread::started, exporter,
+            [exporter, url, output_dir, normalized_format, jpg_quality, normalized_interval]() {
+                exporter->Export(url, output_dir, normalized_format, jpg_quality, normalized_interval);
+            });
+    thread->start();
 }
 
 void MediaPlayer::CancelVideoFrameExport() {
-    if (frame_exporter_) {
-        frame_exporter_->Cancel();
-        frame_exporter_.reset();
+    VideoFrameExporter* exporter = frame_exporter_;
+    QThread* thread = frame_export_thread_;
+
+    if (exporter) {
+        exporter->Cancel();
+    }
+    if (thread) {
+        thread->quit();
+        thread->wait(5000);
+    }
+    if (frame_exporter_ == exporter) {
+        frame_exporter_ = nullptr;
+    }
+    thread->quit();
+    if (thread != QThread::currentThread()) {
+        thread->wait(5000);
     }
 }
 
