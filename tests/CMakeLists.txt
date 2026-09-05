@@ -1,6 +1,6 @@
 # ============================================================
 # VideoEye 单元测试配置
-# 使用 GoogleTest 框架 (通过 FetchContent 自动下载)
+# 使用 GoogleTest 框架 (优先使用已安装包，必要时通过 FetchContent 自动下载)
 #
 # 注意: 测试源文件 (tests/unit/*.cpp) 尚未提交到仓库
 #       启用方式: cmake -DBUILD_TESTING=ON ..
@@ -13,16 +13,19 @@ if(NOT TEST_UNIT_SOURCES)
     return()
 endif()
 
-include(FetchContent)
+find_package(GTest CONFIG QUIET)
+if(NOT GTest_FOUND)
+    include(FetchContent)
 
-FetchContent_Declare(
-    googletest
-    GIT_REPOSITORY https://github.com/google/googletest.git
-    GIT_TAG        v1.15.2
-)
-# 禁止 GoogleTest 覆盖编译器标志
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(googletest)
+    FetchContent_Declare(
+        googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG        v1.15.2
+    )
+    # 禁止 GoogleTest 覆盖编译器标志
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+endif()
 
 enable_testing()
 
@@ -144,3 +147,20 @@ set_target_properties(test_frame_data PROPERTIES
     BUILD_RPATH "${TEST_FFMPEG_RPATH}"
 )
 add_test(NAME FrameDataTests COMMAND test_frame_data)
+
+# =================================================
+# 测试 6：QualityAnalyzer(依赖 FFmpeg + swscale)
+# =================================================
+add_executable(test_quality_analyzer
+    unit/test_quality_analyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/QualityAnalyzer.cpp
+)
+target_include_directories(test_quality_analyzer PRIVATE ${TEST_INCLUDE_DIRS})
+target_link_libraries(test_quality_analyzer PRIVATE
+    GTest::gtest_main
+    ${FFMPEG_LIBRARIES}
+)
+set_target_properties(test_quality_analyzer PROPERTIES
+    BUILD_RPATH "${TEST_FFMPEG_RPATH}"
+)
+add_test(NAME QualityAnalyzerTests COMMAND test_quality_analyzer)

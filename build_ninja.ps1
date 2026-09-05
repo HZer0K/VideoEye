@@ -44,9 +44,25 @@ if (-not (Test-Path $vcvars)) {
     exit 1
 }
 Write-Output "导入 MSVC 环境..."
+# 注意: cmd 的 set 输出中 PATH 可能存在多个大小写变体 (Path/PATH/path, 值不同),
+# 若按顺序全部 Set-Item, 最后写入的不含 MSVC 的变体会覆盖 MSVC 路径导致 cl.exe 找不到。
+# 因此按大小写不敏感去重, 只保留第一个出现的条目; 之后再兜底前置 MSVC bin 目录。
+$envSeen = @{}
 cmd /c "`"$vcvars`" x64 && set" | ForEach-Object {
     if ($_ -match '^(.*?)=(.*)$') {
-        Set-Item -Path "env:$($matches[1])" -Value $matches[2].TrimEnd()
+        $envName = $matches[1]
+        if ($envSeen.ContainsKey($envName.ToLowerInvariant())) { return }
+        $envSeen[$envName.ToLowerInvariant()] = $true
+        Set-Item -Path "env:$envName" -Value $matches[2].TrimEnd()
+    }
+}
+# 兜底: 若 PATH 中缺少 MSVC cl.exe 目录, 显式前置 (兼容大小写变体残留的情况)
+$msvcLatest = Get-ChildItem "$vsRoot\VC\Tools\MSVC" -Directory -ErrorAction SilentlyContinue |
+    Sort-Object Name -Descending | Select-Object -First 1
+if ($msvcLatest) {
+    $clDir = Join-Path $msvcLatest.FullName "bin\HostX64\x64"
+    if ((Test-Path (Join-Path $clDir "cl.exe")) -and $env:PATH -notlike "*$clDir*") {
+        $env:PATH = "$clDir;$env:PATH"
     }
 }
 

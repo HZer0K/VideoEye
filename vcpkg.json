@@ -15,6 +15,7 @@
       ]
     },
     "qtcharts",
+    "gtest",
     "sdl2",
     "zlib",
     "vulkan"
