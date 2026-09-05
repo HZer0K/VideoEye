@@ -123,7 +123,7 @@ bool ReportExporter::ExportJSON(
     }
     
     file << "{" << std::endl;
-    file << "  \"video_file\": \"" << video_file << "\"," << std::endl;
+    file << "  \"video_file\": \"" << EscapeJSON(video_file) << "\"," << std::endl;
     file << "  \"statistics\": {" << std::endl;
     file << "    \"total_packets\": " << stats.total_packets << "," << std::endl;
     file << "    \"total_bytes\": " << stats.total_bytes << "," << std::endl;
@@ -268,6 +268,31 @@ std::string ReportExporter::EscapeHTML(const std::string& text) {
         }
     }
     return result;
+}
+
+std::string ReportExporter::EscapeJSON(const std::string& text) {
+    std::ostringstream oss;
+    oss << std::hex << std::uppercase;
+    for (unsigned char c : text) {
+        switch (c) {
+            case '\"': oss << "\\\""; break;
+            case '\\': oss << "\\\\"; break;
+            case '\b': oss << "\\b"; break;
+            case '\f': oss << "\\f"; break;
+            case '\n': oss << "\\n"; break;
+            case '\r': oss << "\\r"; break;
+            case '\t': oss << "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    oss << "\\u" << std::setw(4) << std::setfill('0') 
+                        << static_cast<int>(c) << std::setfill(' ');
+                } else {
+                    oss << static_cast<char>(c);
+                }
+                break;
+        }
+    }
+    return oss.str();
 }
 
 } // namespace utils

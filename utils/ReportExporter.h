@@ -51,6 +51,9 @@ private:
     
     // 转义HTML特殊字符
     static std::string EscapeHTML(const std::string& text);
+
+    // 转义JSON特殊字符
+    static std::string EscapeJSON(const std::string& text);
 };
 
 } // namespace utils

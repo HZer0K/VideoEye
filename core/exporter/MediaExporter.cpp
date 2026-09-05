@@ -2,6 +2,8 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <algorithm>
+#include <limits>
 #include <vector>
 
 extern "C" {
@@ -98,7 +100,6 @@ void MediaExporter::Export(const ExportOptions& opt) {
     AVFrame* frame = av_frame_alloc();
 
     QString err_msg;
-    bool ok = false;
 
     auto cleanup_and_emit = [&](bool is_error, const QString& msg) {
         if (pkt) av_packet_free(&pkt);
@@ -145,7 +146,12 @@ void MediaExporter::Export(const ExportOptions& opt) {
     const qint64 duration_ms = (in_fmt->duration != AV_NOPTS_VALUE)
         ? static_cast<qint64>(in_fmt->duration / (double)AV_TIME_BASE * 1000.0) : 0;
     qint64 start_ms = (opt.start_ms > 0) ? opt.start_ms : 0;
-    qint64 end_ms = (opt.end_ms > 0 && opt.end_ms < duration_ms) ? opt.end_ms : duration_ms;
+    qint64 end_ms = duration_ms;
+    if (opt.end_ms > 0) {
+        end_ms = (duration_ms > 0) ? std::min(opt.end_ms, duration_ms) : opt.end_ms;
+    } else if (duration_ms <= 0) {
+        end_ms = std::numeric_limits<qint64>::max();
+    }
     if (start_ms >= end_ms) {
         err_msg = "导出区间无效 (起点需小于终点)";
         cleanup_and_emit(true, err_msg);
@@ -213,13 +219,13 @@ void MediaExporter::Export(const ExportOptions& opt) {
             }
             sc.dec = dec;
 
-            const char* enc_name = (mt == AVMEDIA_TYPE_VIDEO)
-                ? video_enc_name.toUtf8().constData()
-                : audio_enc_name.toUtf8().constData();
-            const AVCodec* enc_codec = avcodec_find_encoder_by_name(enc_name);
+            QString enc_name = (mt == AVMEDIA_TYPE_VIDEO) ? video_enc_name : audio_enc_name;
+            QByteArray enc_name_bytes = enc_name.toUtf8();
+            const AVCodec* enc_codec = avcodec_find_encoder_by_name(enc_name_bytes.constData());
             if (!enc_codec) {
-                enc_name = (mt == AVMEDIA_TYPE_VIDEO) ? "mpeg4" : "aac";
-                enc_codec = avcodec_find_encoder_by_name(enc_name);
+                enc_name = (mt == AVMEDIA_TYPE_VIDEO) ? QStringLiteral("mpeg4") : QStringLiteral("aac");
+                enc_name_bytes = enc_name.toUtf8();
+                enc_codec = avcodec_find_encoder_by_name(enc_name_bytes.constData());
             }
             if (!enc_codec) {
                 err_msg = QString("找不到编码器: %1 (该格式可能需要完整版 FFmpeg)").arg(enc_name);
@@ -409,6 +415,12 @@ void MediaExporter::Export(const ExportOptions& opt) {
         if (!sc) { av_packet_unref(pkt); continue; }
 
         AVStream* in_st = in_fmt->streams[pkt->stream_index];
+        int progress_percent = -1;
+        if (pkt->pts != AV_NOPTS_VALUE && duration_ms > 0) {
+            qint64 cur = static_cast<qint64>(pkt->pts * av_q2d(in_st->time_base) * 1000.0);
+            progress_percent = static_cast<int>((cur - start_ms) * 100 / (end_ms - start_ms));
+            progress_percent = qBound(0, progress_percent, 100);
+        }
 
         // 区间终点检查
         if (end_ms > 0 && pkt->pts != AV_NOPTS_VALUE) {
@@ -420,8 +432,13 @@ void MediaExporter::Export(const ExportOptions& opt) {
         if (!sc->do_encode) {
             pkt->stream_index = sc->out_idx;
             av_packet_rescale_ts(pkt, in_st->time_base, out_fmt->streams[sc->out_idx]->time_base);
-            av_interleaved_write_frame(out_fmt, pkt);
+            const int write_ret = av_interleaved_write_frame(out_fmt, pkt);
             av_packet_unref(pkt);
+            if (write_ret < 0) {
+                err_msg = "写入输出包失败";
+                reached_end = false;
+                break;
+            }
         } else {
             const AVMediaType mt = sc->dec->codec_type;
             if (mt == AVMEDIA_TYPE_VIDEO) {
@@ -443,16 +460,14 @@ void MediaExporter::Export(const ExportOptions& opt) {
         }
 
         // 进度
-        if (pkt->pts != AV_NOPTS_VALUE && duration_ms > 0) {
-            qint64 cur = static_cast<qint64>(pkt->pts * av_q2d(in_st->time_base) * 1000.0);
-            int pct = static_cast<int>((cur - start_ms) * 100 / (end_ms - start_ms));
-            pct = qBound(0, pct, 100);
-            if (pct != last_progress) { last_progress = pct; emit ExportProgress(pct); }
+        if (progress_percent >= 0 && progress_percent != last_progress) {
+            last_progress = progress_percent;
+            emit ExportProgress(progress_percent);
         }
     }
 
     // flush 编码器
-    if (!cancel_) {
+    if (!cancel_ && err_msg.isEmpty()) {
         for (auto& s : streams) {
             if (!s.do_encode) continue;
             avcodec_send_packet(s.dec, nullptr);
@@ -489,7 +504,7 @@ void MediaExporter::Export(const ExportOptions& opt) {
     } else {
         // 非取消也非正常结束 (读取出错但已写部分) -> 视为错误
         QFile::remove(opt.output_path);
-        emit ExportError("导出过程中读取失败");
+        emit ExportError(err_msg.isEmpty() ? "导出过程中读取失败" : err_msg);
     }
 }
 
