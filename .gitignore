@@ -14,6 +14,7 @@ out/
 # IDE / 编辑器
 .vs/
 .vscode/
+.qtcreator/
 CMakeUserPresets.json
 compile_commands.json
 *.swp
