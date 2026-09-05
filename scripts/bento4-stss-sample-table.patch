@@ -1,0 +1,24 @@
+diff --git a/Source/C++/Core/Ap4StssAtom.cpp b/Source/C++/Core/Ap4StssAtom.cpp
+index 4b79b0d..81d8900 100644
+--- a/Source/C++/Core/Ap4StssAtom.cpp
++++ b/Source/C++/Core/Ap4StssAtom.cpp
+@@ -162,6 +162,19 @@ AP4_StssAtom::InspectFields(AP4_AtomInspector& inspector)
+ {
+     inspector.AddField("entry_count", m_Entries.ItemCount());
+ 
++    // [VideoEye 本地修改] 上游 Bento4 只输出 entry_count, 不输出关键帧列表,
++    // 导致容器结构树里 stss 节点为空、关键帧表无从展示。
++    // 这里按 AP4_SttsAtom 的相同模式补充 entries 输出。
++    if (inspector.GetVerbosity() >= 1) {
++        inspector.StartArray("entries", m_Entries.ItemCount());
++        for (AP4_Ordinal i=0; i<m_Entries.ItemCount(); i++) {
++            inspector.StartObject(NULL, 1, true);
++            inspector.AddField("sample_number", m_Entries[i]);
++            inspector.EndObject();
++        }
++        inspector.EndArray();
++    }
++
+     return AP4_SUCCESS;
+ }
+     

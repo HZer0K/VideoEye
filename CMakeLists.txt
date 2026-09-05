@@ -105,6 +105,9 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     SDL2::SDL2
     mediainfo zen ap4
 )
+# 以下两个宏分别启用 MediaInfoAnalyzer.cpp / Mp4BoxAnalyzer.cpp 的真实实现。
+# 缺失时二者编译为空桩: 媒体信息页面无法解析、MP4 容器结构回退 FFmpeg 通用分析(信息极少)。
+target_compile_definitions(${PROJECT_NAME} PRIVATE HAVE_MEDIAINFO=1 HAVE_BENTO4=1)
 
 if(Vulkan_FOUND)
     target_link_libraries(${PROJECT_NAME} PRIVATE Vulkan::Vulkan)

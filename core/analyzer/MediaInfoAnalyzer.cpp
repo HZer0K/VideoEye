@@ -1,4 +1,6 @@
 #include "MediaInfoAnalyzer.h"
+
+#ifdef HAVE_MEDIAINFO
 #include "MediaInfo/MediaInfo.h"
 #include <QDebug>
 
@@ -98,3 +100,49 @@ bool MediaInfoAnalyzer::IsReady() const {
 
 } // namespace analyzer
 } // namespace videoeye
+
+#else
+
+namespace videoeye {
+namespace analyzer {
+
+MediaInfoAnalyzer::MediaInfoAnalyzer()
+    : mi_(nullptr), opened_(false) {
+}
+
+MediaInfoAnalyzer::~MediaInfoAnalyzer() = default;
+
+bool MediaInfoAnalyzer::Open(const QString& filePath) {
+    Q_UNUSED(filePath);
+    opened_ = false;
+    return false;
+}
+
+QString MediaInfoAnalyzer::GetCompleteInfo() const {
+    return QString();
+}
+
+QString MediaInfoAnalyzer::GetParameter(int streamKind, int streamNumber, const QString& parameter) const {
+    Q_UNUSED(streamKind);
+    Q_UNUSED(streamNumber);
+    Q_UNUSED(parameter);
+    return QString();
+}
+
+int MediaInfoAnalyzer::GetStreamCount(int streamKind) const {
+    Q_UNUSED(streamKind);
+    return 0;
+}
+
+void MediaInfoAnalyzer::Close() {
+    opened_ = false;
+}
+
+bool MediaInfoAnalyzer::IsReady() const {
+    return false;
+}
+
+} // namespace analyzer
+} // namespace videoeye
+
+#endif // HAVE_MEDIAINFO

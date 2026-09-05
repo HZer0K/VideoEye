@@ -1,6 +1,8 @@
 #include "core/analyzer/Mp4BoxAnalyzer.h"
 #include "utils/Logger.h"
 
+#ifdef HAVE_BENTO4
+
 // Bento4 includes
 #include "Ap4.h"
 #include "Ap4FileByteStream.h"
@@ -28,9 +30,14 @@ public:
         model::Mp4BoxNode node;
         node.type = QString::fromLatin1(name);
         node.size = static_cast<uint64_t>(size);
-        node.offset = next_offset_;
+        // 偏移量: 取父 Box 的"下一个子 Box 起始位置"游标 (顶层则从 0 开始)。
+        // 不能像旧实现那样在 StartAtom 里就把自身 size 累加进全局游标,
+        // 否则子 Box 的偏移会被所有祖先容器的 size 整体推后, 出现
+        // "子节点偏移大于父节点" 的荒谬结果。
+        node.offset = child_cursor_.isEmpty() ? root_cursor_ : child_cursor_.top();
         node.depth = node_stack_.size();
-        next_offset_ += node.size;
+        // 子 Box 数据区从 header 之后开始
+        child_cursor_.push(node.offset + header_size);
 
         // 记录 trak 上下文
         if (node.type == "trak") {
@@ -69,6 +76,15 @@ public:
 
         model::Mp4BoxNode node = node_stack_.pop();
 
+        // 弹出本 Box 的子游标; 父游标直接推进到本 Box 末尾 (offset+size),
+        // 这样即使子 Box 之间有填充/未解析数据, 父的下一个子 Box 偏移依然正确。
+        child_cursor_.pop();
+        if (!child_cursor_.isEmpty()) {
+            child_cursor_.top() = node.offset + node.size;
+        } else {
+            root_cursor_ = node.offset + node.size;  // 顶层 Box 依次向后排
+        }
+
         // 退出 trak 上下文
         if (node.type == "trak") {
             trak_nesting_--;
@@ -96,6 +112,7 @@ public:
         if (tracking_entries_) {
             current_entry_fields_.clear();
             entry_bare_values_.clear();
+            entry_index_ = 0;  // 每条 entry 从 0 开始独立编号
         }
         (void)element_count;
     }
@@ -174,7 +191,12 @@ private:
             current_track_id_ = value.toInt();
         }
         if (inside_hdlr_ && name && strcmp(name, "handler_type") == 0) {
-            current_track_type_ = value;
+            // 只取 trak 内第一个 hdlr (mdia/hdlr) 的 handler_type 作为媒体类型。
+            // QuickTime MOV 在 minf 下还有一个 hdlr (handler_type='url ', DataHandler),
+            // 若无条件覆盖会把视频轨道类型显示成 "url "。
+            if (current_track_type_.isEmpty()) {
+                current_track_type_ = value;
+            }
         }
 
         if (tracking_entries_) {
@@ -219,7 +241,7 @@ private:
                 entry_str = QString("value=%1").arg(entry_bare_values_[i]);
             }
             model::Mp4BoxNode::Field entry_field;
-            entry_field.name = QString("entry[%1]").arg(current.fields.size());
+            entry_field.name = QString("entry[%1]").arg(entry_index_++);
             entry_field.value = entry_str;
             current.fields.push_back(entry_field);
         }
@@ -240,7 +262,7 @@ private:
             entry_str += f.name + "=" + f.value;
         }
         model::Mp4BoxNode::Field entry_field;
-        entry_field.name = QString("entry[%1]").arg(current.fields.size());
+        entry_field.name = QString("entry[%1]").arg(entry_index_++);
         entry_field.value = entry_str;
         current.fields.push_back(entry_field);
     }
@@ -273,6 +295,9 @@ private:
                 existing.stsz_entries.append(new_table.stsz_entries);
                 existing.stsz_default_size = new_table.stsz_default_size;
                 existing.stsz_sample_count = new_table.stsz_sample_count;
+                // 关键帧表: 原实现漏了这一行, stss 条目在合并时被静默丢弃,
+                // 导致关键帧(stss)表在 UI 里永远为空。
+                existing.stss_entries.append(new_table.stss_entries);
                 return;
             }
         }
@@ -431,12 +456,15 @@ private:
 
     model::Mp4BoxAnalysisResult& result_;
     QStack<model::Mp4BoxNode> node_stack_;
-    uint64_t next_offset_ = 0;     // 追踪当前 Box 的文件偏移
+    // 每层记录"下一个子 Box 的起始偏移": 栈顶 = 当前 Box 的子 Box 游标
+    QStack<uint64_t> child_cursor_;
+    uint64_t root_cursor_ = 0;     // 顶层 Box 游标 (栈空时使用)
     QString current_array_name_;
     bool tracking_entries_ = false;
     bool in_entry_object_ = false;
     QVector<model::Mp4BoxNode::Field> current_entry_fields_;
     QVector<QString> entry_bare_values_;
+    int entry_index_ = 0;      // 当前 entries 数组内的条目序号 (0-based)
 
     // 当前 trak 上下文
     int current_track_id_ = 0;
@@ -476,9 +504,12 @@ bool Mp4BoxAnalyzer::AnalyzeFile(const QString& file_path,
     LOG_INFO("Mp4BoxAnalyzer: file opened");
 
     // 解析文件
+    // moov_only = false: 解析全部顶层 Box (ftyp/free/mdat/moov/...),
+    // 否则树里只剩 moov 一个顶层节点, 且偏移从 0 起算全部失真。
+    // 注意 mdat 等未知 Box 是叶子节点, 不会被递归展开, 因此开销可忽略。
     AP4_File* file = nullptr;
     try {
-        file = new AP4_File(*stream, true); // moov_only = true 只解析 moov
+        file = new AP4_File(*stream, false);
     } catch (...) {
         result.error_message = "解析 MP4 文件时发生异常";
         LOG_ERROR(result.error_message.toStdString());
@@ -498,9 +529,13 @@ bool Mp4BoxAnalyzer::AnalyzeFile(const QString& file_path,
     // (stts/stco/stsc 需要 ≥1, stsz 需要 ≥2)
     VideoEyeInspector inspector(result);
     inspector.SetVerbosity(2);
-    LOG_INFO("Mp4BoxAnalyzer: BEFORE file->Inspect (verbosity=2, 会遍历全部 sample 表)");
-    file->Inspect(inspector);
-    LOG_INFO("Mp4BoxAnalyzer: AFTER file->Inspect");
+    LOG_INFO("Mp4BoxAnalyzer: BEFORE Inspect (verbosity=2, 会遍历全部 sample 表)");
+    // 直接遍历顶层子节点, 而不是 file->Inspect():
+    // AP4_File::Inspect() 会先单独 dump 一次 moov (通过 m_Movie), 再 dump 全部子 Box,
+    // 导致 moov 在树中出现两次。
+    AP4_AtomListInspector list_inspector(inspector);
+    file->GetChildren().Apply(list_inspector);
+    LOG_INFO("Mp4BoxAnalyzer: AFTER Inspect");
 
     // 清理
     delete file;
@@ -520,3 +555,30 @@ void Mp4BoxAnalyzer::Reset() {
 
 } // namespace analyzer
 } // namespace videoeye
+
+#else
+
+namespace videoeye {
+namespace analyzer {
+
+Mp4BoxAnalyzer::Mp4BoxAnalyzer() = default;
+
+Mp4BoxAnalyzer::~Mp4BoxAnalyzer() = default;
+
+bool Mp4BoxAnalyzer::AnalyzeFile(const QString& file_path,
+                                  model::Mp4BoxAnalysisResult& result) {
+    result = model::Mp4BoxAnalysisResult();
+    result.file_path = file_path;
+    result.error_message = "Bento4 库未链接，无法分析 MP4 文件";
+    LOG_WARN(result.error_message.toStdString());
+    return false;
+}
+
+void Mp4BoxAnalyzer::Reset() {
+    // 无状态需要清理
+}
+
+} // namespace analyzer
+} // namespace videoeye
+
+#endif // HAVE_BENTO4
