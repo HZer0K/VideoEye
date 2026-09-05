@@ -12,7 +12,7 @@ model::ContainerFormat FormatDetector::DetectByMagic(const QString& file_path) {
         return model::ContainerFormat::Unknown;
     }
 
-    QByteArray header = file.read(64);
+    QByteArray header = file.read(1024);
     file.close();
 
     if (header.size() < 4) {
@@ -54,10 +54,15 @@ model::ContainerFormat FormatDetector::DetectByMagic(const QString& file_path) {
         return model::ContainerFormat::FLV;
     }
 
-    // MPEG-TS: sync byte 0x47 at first byte (and possibly at 188, 376...)
-    if (header.size() >= 189 &&
-        (unsigned char)header[0] == 0x47 &&
-        (unsigned char)header[188] == 0x47) {
+    // MPEG-TS: sync byte 0x47 repeats every 188 bytes. Some TS files start
+    // after a small leading offset, so scan the first first packet range.
+    auto is_sync_at = [&header](int offset) {
+        return offset >= 0 && offset < header.size() &&
+               static_cast<unsigned char>(header[offset]) == 0x47;
+    };
+    for (int offset = 0; offset < 188 && offset + 188 < header.size(); ++offset) {
+        if (is_sync_at(offset) && is_sync_at(offset + 188) &&
+            (offset + 376 >= header.size() || is_sync_at(offset + 376)))
         return model::ContainerFormat::MPEG_TS;
     }
 
