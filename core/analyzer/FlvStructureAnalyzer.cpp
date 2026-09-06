@@ -22,6 +22,16 @@ QString flvVideoCodec(int id) {
         default: return QString("CodecID %1").arg(id);
     }
 }
+// Enhanced-FLV (Enhanced-RTMP / spec-2020) 视频 fourcc → 名称。
+// 视频头首字节 bit7=1 (isExVideoHeader) 时, 后跟 3 字节 fourcc,
+// AV1/VP9/HEVC 均通过该通道承载, 传统的低 4 位 CodecID 已废弃。
+QString flvEnhancedVideoFourcc(const QByteArray& fcc) {
+    if (fcc == "av01") return "AV1";
+    if (fcc == "vp09") return "VP9";
+    if (fcc == "hvc1" || fcc == "hev1") return "H.265 (HEVC)";
+    if (fcc == "avc1") return "H.264 (AVC)";
+    return QString("FourCC %1").arg(QString::fromLatin1(fcc));
+}
 // FLV 音频 SoundFormat → 名称
 QString flvAudioCodec(int fmt) {
     switch (fmt) {
@@ -245,8 +255,20 @@ bool FlvStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
             video_tags++;
             if (!video_codec_found && data_size >= 1) {
                 uint8_t vh = static_cast<uint8_t>(file.read(1).at(0));
-                int codec_id = vh & 0x0F;
-                QString codec = flvVideoCodec(codec_id);
+                QString codec;
+                if (vh & 0x80) {
+                    // Enhanced-FLV: 首字节 bit7=1 (isExVideoHeader), 后跟 3 字节 fourcc
+                    // (av01/vp09/hvc1...)。此处不能回退到低 4 位 CodecID——
+                    // 增强头里低 4 位是 PacketType, 会被误判成完全无关的编码器。
+                    if (data_size >= 4) {
+                        codec = flvEnhancedVideoFourcc(file.read(3));
+                    } else {
+                        codec = "Enhanced FLV (fourcc 缺失)";
+                    }
+                } else {
+                    int codec_id = vh & 0x0F;
+                    codec = flvVideoCodec(codec_id);
+                }
                 tag.value += QString(" | %1").arg(codec);
                 if (video_stream_idx >= 0) result.streams[video_stream_idx].codec = codec;
                 video_codec_found = true;

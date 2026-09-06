@@ -14,6 +14,35 @@
 namespace videoeye {
 namespace analyzer {
 
+namespace {
+// MP4 stsd 采样描述 fourcc → 可读编码名。
+// 覆盖 AV1 (av01) / VP9 (vp09) 及常见 H.264/HEVC/AAC 等，
+// 未匹配的 fourcc 返回空串，调用方回退显示原始 fourcc。
+QString Mp4FourccToName(const QString& fourcc) {
+    if (fourcc == "av01") return "AV1";
+    if (fourcc == "vp08") return "VP8";
+    if (fourcc == "vp09") return "VP9";
+    if (fourcc == "avc1" || fourcc == "avc2" ||
+        fourcc == "avc3" || fourcc == "avc4") return "H.264 (AVC)";
+    if (fourcc == "hev1" || fourcc == "hvc1") return "H.265 (HEVC)";
+    if (fourcc == "vvc1" || fourcc == "vvi1") return "H.266 (VVC)";
+    if (fourcc == "dva1") return "Dolby Vision (AV1 base)";
+    if (fourcc == "dvav") return "Dolby Vision (AVC base)";
+    if (fourcc == "dvhe" || fourcc == "dvh1") return "Dolby Vision (HEVC base)";
+    if (fourcc == "mp4v") return "MPEG-4 Visual";
+    if (fourcc == "mp4a") return "MPEG-4 Audio (AAC)";
+    if (fourcc == "opus") return "Opus";
+    if (fourcc == "fLaC") return "FLAC";
+    if (fourcc == "alac") return "ALAC";
+    if (fourcc == "ac-3") return "AC-3";
+    if (fourcc == "ec-3") return "E-AC-3";
+    if (fourcc == "ac-4") return "AC-4";
+    if (fourcc == "mlpa") return "TrueHD (MLP)";
+    if (fourcc == "stpp") return "Timed Text (STPP)";
+    return QString();
+}
+} // namespace
+
 ContainerStructureAnalyzer::ContainerStructureAnalyzer() = default;
 ContainerStructureAnalyzer::~ContainerStructureAnalyzer() = default;
 
@@ -178,7 +207,12 @@ void ContainerStructureAnalyzer::ExtractMp4StreamInfo(const QVector<model::Mp4Bo
                                             if (stbl_n.type == "stsd") {
                                                 // stsd 的子节点就是编解码器描述
                                                 for (const auto& codec_node : stbl_n.children) {
-                                                    si.codec = codec_node.type;  // avc1, hvc1, mp4a 等
+                                                    si.codec = codec_node.type;  // avc1, hvc1, mp4a, av01, vp09 等
+                                                    // AV1/VP9 等补充可读编码名: "AV1 (av01)"
+                                                    QString readable = Mp4FourccToName(codec_node.type);
+                                                    if (!readable.isEmpty()) {
+                                                        si.codec = readable + " (" + codec_node.type + ")";
+                                                    }
                                                     // 提取编解码器字段中的关键参数
                                                     for (const auto& cf : codec_node.fields) {
                                                         if (cf.name == "width" && !cf.value.isEmpty()) {
