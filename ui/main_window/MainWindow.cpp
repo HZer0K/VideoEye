@@ -216,15 +216,15 @@ void MainWindow::SetupSidebar() {
     sidebar_->setSpacing(0);
     sidebar_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     
-    // 导航项 (媒体信息 + 8个分析功能: 流分析/帧分析/包/事件与时间轴/响度/容器结构/宏块分析/场景切换)
+    // 导航项 (媒体信息 + 6 个分析功能页), 与 AnalysisPanel::PopulateStackedWidget
+    // 提供的页面顺序一一对应: 媒体信息 / 码流分析 / 事件与时间轴 / 音频响度 /
+    // 文件结构 / 宏块分析 / 场景切换。流/帧/包三个旧页已合并到"码流分析"。
     QStringList nav_items = {
         tr("媒体信息"),
-        tr("流分析"),
-        tr("帧分析"),
-        tr("数据包"),
+        tr("码流分析"),
         tr("事件与时间轴"),
         tr("音频响度"),
-        tr("容器结构"),
+        tr("文件结构"),
         tr("宏块分析"),
         tr("场景切换")
     };

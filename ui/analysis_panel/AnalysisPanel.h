@@ -116,7 +116,11 @@ public slots:
 
     // 导出报告
     void OnExportReport();
-    
+
+    // 包表/帧表按 PTS 互跳联动
+    void OnPacketTableSelectionChanged();
+    void OnVideoFrameTableSelectionChanged();
+
 private:
     struct VideoFrameRecord {
         int index = 0;
@@ -200,6 +204,7 @@ private:
     void SetupStreamTab();
     void SetupFrameTab();
     void SetupPacketTab();
+    void SetupBitstreamTab();
     void SetupEventAnalysisTab();
     void SetupEventTab();
     void SetupSyncTab();
@@ -245,6 +250,7 @@ private:
     void UpdateGopRowInTable(int row, const GopSummary& summary);
     void OnExportFrameCsv();
     void OnExportAudioFrameCsv();
+    void OnExportGopCsv();
     void OnExportPacketCsv();
     void OnExportEventCsv();
     void OnExportSyncCsv();
@@ -265,7 +271,9 @@ private:
     // 更新图表
     void UpdateBitrateChart(const analyzer::StreamStats& stats);
     void UpdateFPSChart(const analyzer::StreamStats& stats);
-    void UpdateGOPChart(const analyzer::StreamStats& stats);
+    // GOP 曲线数据源为 UI 侧 gop_summaries_ (统一口径, 见 RebuildGopTable)
+    void UpdateGOPChart();
+    void ResetStreamCharts();
     void UpdateSyncChart();
     void UpdateTimelineChart();
     
@@ -276,26 +284,49 @@ private:
     QList<QWidget*> page_widgets_;      // 各页面的 QScrollArea (含内容)
     QStringList page_titles_;           // 各页面标题
     QStackedWidget* external_stack_ = nullptr;  // 外部 QStackedWidget (由 MainWindow 提供)
-    
-    // 流分析标签页
-    QWidget* stream_tab_;
-    QTableWidget* stats_table_;
-    QChartView* gop_chart_;
+    int bitstream_page_index_ = -1;      // 码流分析页在 page_widgets_ 中的索引 (合并了旧的流/帧/包三页)
+    bool linking_ = false;              // 包/帧互跳回调重入保护
 
-    QWidget* frame_tab_;
-    QTabWidget* frame_sub_tabs_;
+    // 码流分析页 (合并自原流分析/帧分析/包分析三个独立页)
+    QWidget* bitstream_tab_;
+    QWidget* stream_section_;           // 顶部区: 6 指标 + 3 chart + 导出按钮
+    QWidget* detail_sub_tabs_container_; // 底部区: QTabWidget 容器
+
+    // 流概览子区 (bitstream_tab_ 顶部)
+    QTableWidget* stats_table_;
+    QChartView* bitrate_chart_;
+    QChart* bitrate_chart_object_;
+    QLineSeries* bitrate_series_;
+    QValueAxis* bitrate_axis_x_;
+    QValueAxis* bitrate_axis_y_;
+    QChartView* fps_chart_;
+    QChart* fps_chart_object_;
+    QLineSeries* fps_series_;
+    QValueAxis* fps_axis_x_;
+    QValueAxis* fps_axis_y_;
+    QChartView* gop_chart_;
+    QChart* gop_chart_object_;
+    QLineSeries* gop_series_;
+    QValueAxis* gop_axis_x_;
+    QValueAxis* gop_axis_y_;
+
+    // 码流明细子 TabWidget (bitstream_tab_ 底部, 4 个子页)
+    QTabWidget* detail_sub_tabs_;
+    QWidget* video_sub_;                // 子页 0: 视频帧
+    QWidget* packet_sub_;               // 子页 1: 包
+    QWidget* gop_summary_sub_;          // 子页 2: GOP 摘要
+    QWidget* audio_frame_sub_;          // 子页 3: 音频帧
+
     QComboBox* frame_filter_combo_;
     QLabel* frame_summary_label_;
     QTableWidget* frame_table_;
     QPushButton* export_frame_csv_button_;
     QTableWidget* gop_table_;
 
-    QWidget* audio_frame_sub_;
     QLabel* audio_frame_summary_label_;
     QTableWidget* audio_frame_table_;
     QPushButton* export_audio_frame_csv_button_;
 
-    QWidget* packet_tab_;
     QLabel* packet_summary_label_;
     QComboBox* packet_filter_combo_;
     QTableWidget* packet_table_;

@@ -20,6 +20,7 @@
 #include <functional>
 #include <cmath>
 #include <climits>
+#include <limits>
 
 namespace videoeye {
 namespace ui {
@@ -94,6 +95,7 @@ void AnalysisPanel::SetupUI() {
     SetupStreamTab();
     SetupFrameTab();
     SetupPacketTab();
+    SetupBitstreamTab();
     SetupEventAnalysisTab();
     SetupAudioLoudnessTab();
     SetupContainerStructureTab();
@@ -178,14 +180,15 @@ void AnalysisPanel::SetCurrentPageIndex(int index) {
 }
 
 void AnalysisPanel::SetupStreamTab() {
-    stream_tab_ = new QWidget();
-    QVBoxLayout* layout = new QVBoxLayout(stream_tab_);
+    // stream_section_ 是 bitstream_tab_ 顶部的「流概览」区, 不再作为独立页
+    stream_section_ = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(stream_section_);
     layout->setContentsMargins(4, 2, 4, 4);
     layout->setSpacing(4);
 
-    // 流统计信息标题 + 启用分析复选框 同一行
+    // 第一行: 标题 + 流概览启用 toggle + 导出按钮
     {
-        QWidget* row = new QWidget(stream_tab_);
+        QWidget* row = new QWidget(stream_section_);
         QHBoxLayout* rl = new QHBoxLayout(row);
         rl->setContentsMargins(0, 0, 0, 0);
         QLabel* title = new QLabel(tr("流概览"), row);
@@ -198,62 +201,140 @@ void AnalysisPanel::SetupStreamTab() {
             emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::StreamStats), checked);
         });
         rl->addWidget(toggle);
+
+        export_button_ = new QPushButton(tr("导出分析报告"), row);
+        export_button_->setToolTip(tr("将当前流统计信息导出为 HTML/JSON/TXT 报告"));
+        rl->addWidget(export_button_);
+
         layout->addWidget(row);
     }
 
-    // 流概览表格 (仅流级指标：码率/时长/GOP；包级统计见「数据包」tab)
-    // 参数名一行 (表头) + 值一行，无多余空白
+    // 第二行: 流概览 5 指标横排
     QStringList stream_labels = {
         tr("当前码率"), tr("平均码率"), tr("峰值码率"), tr("分析时长"), tr("最大GOP大小")
     };
-    stats_table_ = new QTableWidget(1, stream_labels.size(), stream_tab_);
+    stats_table_ = new QTableWidget(1, stream_labels.size(), stream_section_);
     stats_table_->setHorizontalHeaderLabels(stream_labels);
     stats_table_->verticalHeader()->setVisible(false);
     for (int c = 0; c < stream_labels.size(); ++c) {
         stats_table_->setColumnWidth(c, 130);
         stats_table_->setItem(0, c, new QTableWidgetItem("0"));
     }
-
     layout->addWidget(stats_table_);
 
-    AddPageWithScroll(stream_tab_, tr("流分析"));
-    
-    // 导出报告按钮
-    export_button_ = new QPushButton(tr("导出分析报告"), stream_tab_);
-    export_button_->setToolTip(tr("将当前流统计信息导出为 HTML/JSON/TXT 报告"));
-    layout->addWidget(export_button_, 0, Qt::AlignRight);
-    
+    // 第三行: 码率 / FPS / GOP 三条趋势横向并排 (而不是纵向堆叠)
+    QWidget* chart_row = new QWidget(stream_section_);
+    QHBoxLayout* chart_layout = new QHBoxLayout(chart_row);
+    chart_layout->setContentsMargins(0, 0, 0, 0);
+    chart_layout->setSpacing(8);
+
+    auto make_chart_box = [&](const QString& title) -> QPair<QChartView*, QGroupBox*> {
+        QChartView* view = new QChartView(chart_row);
+        view->setMinimumHeight(180);
+        QGroupBox* box = new QGroupBox(title, chart_row);
+        QVBoxLayout* bl = new QVBoxLayout(box);
+        bl->setContentsMargins(4, 12, 4, 4);
+        bl->addWidget(view);
+        chart_layout->addWidget(box, 1);
+        return {view, box};
+    };
+
+    auto b = make_chart_box(tr("码率趋势 (Kbps)"));
+    bitrate_chart_ = b.first;
+    auto f = make_chart_box(tr("帧率趋势 (fps)"));
+    fps_chart_ = f.first;
+    auto g = make_chart_box(tr("GOP 帧数分布"));
+    gop_chart_ = g.first;
+
+    layout->addWidget(chart_row);
+
+    // 码率图
+    bitrate_series_ = new QLineSeries(this);
+    bitrate_chart_object_ = new QChart();
+    bitrate_chart_object_->setTitle(tr("码率 (Kbps)"));
+    bitrate_chart_object_->legend()->hide();
+    bitrate_chart_object_->addSeries(bitrate_series_);
+    bitrate_axis_x_ = new QValueAxis(this);
+    bitrate_axis_y_ = new QValueAxis(this);
+    bitrate_axis_x_->setLabelFormat("%d");
+    bitrate_axis_y_->setLabelFormat("%.0f");
+    bitrate_axis_x_->setTitleText(tr("采样"));
+    bitrate_chart_object_->addAxis(bitrate_axis_x_, Qt::AlignBottom);
+    bitrate_chart_object_->addAxis(bitrate_axis_y_, Qt::AlignLeft);
+    bitrate_series_->attachAxis(bitrate_axis_x_);
+    bitrate_series_->attachAxis(bitrate_axis_y_);
+    bitrate_chart_->setChart(bitrate_chart_object_);
+    bitrate_chart_->setRenderHint(QPainter::Antialiasing);
+
+    // 帧率图
+    fps_series_ = new QLineSeries(this);
+    fps_chart_object_ = new QChart();
+    fps_chart_object_->setTitle(tr("帧率 (fps)"));
+    fps_chart_object_->legend()->hide();
+    fps_chart_object_->addSeries(fps_series_);
+    fps_axis_x_ = new QValueAxis(this);
+    fps_axis_y_ = new QValueAxis(this);
+    fps_axis_x_->setLabelFormat("%d");
+    fps_axis_y_->setLabelFormat("%.1f");
+    fps_axis_x_->setTitleText(tr("采样"));
+    fps_chart_object_->addAxis(fps_axis_x_, Qt::AlignBottom);
+    fps_chart_object_->addAxis(fps_axis_y_, Qt::AlignLeft);
+    fps_series_->attachAxis(fps_axis_x_);
+    fps_series_->attachAxis(fps_axis_y_);
+    fps_chart_->setChart(fps_chart_object_);
+    fps_chart_->setRenderHint(QPainter::Antialiasing);
+
+    // GOP 图
+    gop_series_ = new QLineSeries(this);
+    gop_chart_object_ = new QChart();
+    gop_chart_object_->setTitle(tr("每个 GOP 的帧数"));
+    gop_chart_object_->legend()->hide();
+    gop_chart_object_->addSeries(gop_series_);
+    gop_axis_x_ = new QValueAxis(this);
+    gop_axis_y_ = new QValueAxis(this);
+    gop_axis_x_->setLabelFormat("%d");
+    gop_axis_y_->setLabelFormat("%d");
+    gop_axis_x_->setTitleText(tr("GOP 序号"));
+    gop_chart_object_->addAxis(gop_axis_x_, Qt::AlignBottom);
+    gop_chart_object_->addAxis(gop_axis_y_, Qt::AlignLeft);
+    gop_series_->attachAxis(gop_axis_x_);
+    gop_series_->attachAxis(gop_axis_y_);
+    gop_chart_->setChart(gop_chart_object_);
+    gop_chart_->setRenderHint(QPainter::Antialiasing);
+
     connect(export_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportReport);
 }
 
 void AnalysisPanel::SetupFrameTab() {
-    frame_tab_ = new QWidget();
-    QVBoxLayout* layout = new QVBoxLayout(frame_tab_);
-    layout->setContentsMargins(4, 2, 4, 4);
-    layout->setSpacing(4);
+    // detail_sub_tabs_container_ 是 bitstream_tab_ 底部区, 内部装 detail_sub_tabs_ (QTabWidget)
+    // 4 个子页: 视频帧 / 包 / GOP 摘要 / 音频帧
+    detail_sub_tabs_container_ = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(detail_sub_tabs_container_);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
 
-    // 子切换：视频帧 / 音频帧
-    frame_sub_tabs_ = new QTabWidget(frame_tab_);
+    detail_sub_tabs_ = new QTabWidget(detail_sub_tabs_container_);
+    detail_sub_tabs_->setDocumentMode(true);
 
-    // ---- 视频帧子页 ----
-    QWidget* video_sub = new QWidget(frame_sub_tabs_);
-    QVBoxLayout* v_layout = new QVBoxLayout(video_sub);
+    // ---- 子页 0: 视频帧 ----
+    video_sub_ = new QWidget(detail_sub_tabs_);
+    QVBoxLayout* v_layout = new QVBoxLayout(video_sub_);
     v_layout->setContentsMargins(4, 4, 4, 4);
     v_layout->setSpacing(4);
 
     QHBoxLayout* v_toolbar = new QHBoxLayout();
-    v_toolbar->addWidget(new QLabel(tr("筛选:"), video_sub));
-    frame_filter_combo_ = new QComboBox(video_sub);
+    v_toolbar->addWidget(new QLabel(tr("筛选:"), video_sub_));
+    frame_filter_combo_ = new QComboBox(video_sub_);
     frame_filter_combo_->addItems({tr("全部帧"), tr("仅 I 帧")});
     v_toolbar->addWidget(frame_filter_combo_);
 
-    frame_summary_label_ = new QLabel(tr("总帧数: 0 | 显示: 0 | GOP: 0"), video_sub);
+    frame_summary_label_ = new QLabel(tr("总帧数: 0 | 显示: 0 | GOP: 0"), video_sub_);
     v_toolbar->addWidget(frame_summary_label_, 1);
 
-    export_frame_csv_button_ = new QPushButton(tr("导出 CSV"), video_sub);
+    export_frame_csv_button_ = new QPushButton(tr("导出 CSV"), video_sub_);
     v_toolbar->addWidget(export_frame_csv_button_);
 
-    QCheckBox* v_toggle = new QCheckBox(tr("启用分析"), video_sub);
+    QCheckBox* v_toggle = new QCheckBox(tr("启用分析"), video_sub_);
     v_toggle->setChecked(feature_enabled_.value(AnalysisFeature::VideoFrame, true));
     connect(v_toggle, &QCheckBox::toggled, this, [this](bool checked) {
         feature_enabled_[AnalysisFeature::VideoFrame] = checked;
@@ -262,10 +343,14 @@ void AnalysisPanel::SetupFrameTab() {
     v_toolbar->addWidget(v_toggle);
     v_layout->addLayout(v_toolbar);
 
-    QGroupBox* table_group = new QGroupBox(tr("视频帧信息"), video_sub);
+    QGroupBox* table_group = new QGroupBox(tr("视频帧信息"), video_sub_);
     QVBoxLayout* table_layout = new QVBoxLayout(table_group);
-    frame_table_ = new QTableWidget(0, 7, table_group);
-    frame_table_->setHorizontalHeaderLabels({"序号", "帧类型", "关键帧", "时间戳(s)", "PTS", "GOP", "GOP内位置"});
+    // 视频帧列名升级 + 删除冗余列 (原 7 列 → 6 列, 去掉了「关键帧」列, 该信息
+    // 已由「帧类型」(I) 覆盖; 同时将协议术语 PTS 改为更易懂的「原始 PTS」)
+    frame_table_ = new QTableWidget(0, 6, table_group);
+    frame_table_->setHorizontalHeaderLabels({
+        "#", "帧类型", "播放时间(s)", "原始 PTS", "GOP #", "GOP 内"
+    });
     frame_table_->verticalHeader()->setVisible(false);
     frame_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     frame_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -273,20 +358,94 @@ void AnalysisPanel::SetupFrameTab() {
     frame_table_->setSortingEnabled(false);
     frame_table_->horizontalHeader()->setStretchLastSection(true);
     frame_table_->horizontalHeader()->setMinimumSectionSize(40);
-    frame_table_->setColumnWidth(0, 60);
-    frame_table_->setColumnWidth(1, 70);
-    frame_table_->setColumnWidth(2, 70);
-    frame_table_->setColumnWidth(3, 100);
-    frame_table_->setColumnWidth(5, 60);
+    frame_table_->setColumnWidth(0, 60);   // #
+    frame_table_->setColumnWidth(1, 70);   // 帧类型
+    frame_table_->setColumnWidth(2, 110);  // 播放时间(s)
+    frame_table_->setColumnWidth(3, 110);  // 原始 PTS
+    frame_table_->setColumnWidth(4, 70);   // GOP #
     frame_table_->setMinimumWidth(400);
     frame_table_->setMinimumHeight(120);
     table_layout->addWidget(frame_table_);
     v_layout->addWidget(table_group);
 
-    QGroupBox* gop_group = new QGroupBox(tr("GOP 分段统计"), video_sub);
-    QVBoxLayout* gop_layout = new QVBoxLayout(gop_group);
-    gop_table_ = new QTableWidget(0, 9, gop_group);
-    gop_table_->setHorizontalHeaderLabels({"GOP", "起始帧", "结束帧", "起始时间(s)", "结束时间(s)", "总帧数", "I", "P", "B"});
+    detail_sub_tabs_->addTab(video_sub_, tr("视频帧"));
+
+    // ---- 子页 1: 包 ----
+    packet_sub_ = new QWidget(detail_sub_tabs_);
+    QVBoxLayout* p_layout = new QVBoxLayout(packet_sub_);
+    p_layout->setContentsMargins(4, 4, 4, 4);
+    p_layout->setSpacing(4);
+
+    QHBoxLayout* p_toolbar = new QHBoxLayout();
+    packet_summary_label_ = new QLabel(tr("总包数: 0 | 视频包: 0 | 音频包: 0 | 其他包: 0"), packet_sub_);
+    p_toolbar->addWidget(packet_summary_label_, 1);
+
+    p_toolbar->addWidget(new QLabel(tr("筛选:"), packet_sub_));
+    packet_filter_combo_ = new QComboBox(packet_sub_);
+    packet_filter_combo_->addItems({tr("全部流"), tr("视频流"), tr("音频流"), tr("其他流")});
+    packet_filter_combo_->setCurrentIndex(0);
+    p_toolbar->addWidget(packet_filter_combo_);
+
+    export_packet_csv_button_ = new QPushButton(tr("导出 CSV"), packet_sub_);
+    p_toolbar->addWidget(export_packet_csv_button_);
+
+    QCheckBox* p_toggle = new QCheckBox(tr("启用分析"), packet_sub_);
+    p_toggle->setChecked(feature_enabled_.value(AnalysisFeature::Packet, true));
+    connect(p_toggle, &QCheckBox::toggled, this, [this](bool checked) {
+        feature_enabled_[AnalysisFeature::Packet] = checked;
+        emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::Packet), checked);
+    });
+    p_toolbar->addWidget(p_toggle);
+    p_layout->addLayout(p_toolbar);
+
+    QGroupBox* p_table_group = new QGroupBox(tr("数据包信息"), packet_sub_);
+    QVBoxLayout* p_table_layout = new QVBoxLayout(p_table_group);
+    // 包表列名升级 + 删除面向开发者的列 (原 10 列 → 7 列, 去掉了「标记」「文件偏移」
+    // 等非用户语义字段, 合并「流索引」+「流类型」为单列, 协议术语 PTS/DTS 括注用途)
+    packet_table_ = new QTableWidget(0, 7, p_table_group);
+    packet_table_->setHorizontalHeaderLabels({
+        "#", "流", "播放时间(s)", "显示时间(PTS)", "解码时间(DTS)", "时长", "包大小"
+    });
+    packet_table_->verticalHeader()->setVisible(false);
+    packet_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    packet_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    packet_table_->setSelectionMode(QAbstractItemView::SingleSelection);
+    packet_table_->setSortingEnabled(false);
+    packet_table_->horizontalHeader()->setStretchLastSection(true);
+    packet_table_->horizontalHeader()->setMinimumSectionSize(50);
+    packet_table_->setColumnWidth(0, 60);   // #
+    packet_table_->setColumnWidth(1, 90);   // 流
+    packet_table_->setColumnWidth(2, 110);  // 播放时间(s)
+    packet_table_->setColumnWidth(3, 110);  // 显示时间(PTS)
+    packet_table_->setColumnWidth(4, 110);  // 解码时间(DTS)
+    packet_table_->setColumnWidth(5, 80);   // 时长
+    packet_table_->setColumnWidth(6, 90);   // 包大小
+    packet_table_->setMinimumWidth(650);
+    packet_table_->setMinimumHeight(120);
+    p_table_layout->addWidget(packet_table_);
+    p_layout->addWidget(p_table_group);
+
+    detail_sub_tabs_->addTab(packet_sub_, tr("包"));
+
+    // ---- 子页 2: GOP 摘要 ----
+    gop_summary_sub_ = new QWidget(detail_sub_tabs_);
+    QVBoxLayout* g_layout = new QVBoxLayout(gop_summary_sub_);
+    g_layout->setContentsMargins(4, 4, 4, 4);
+    g_layout->setSpacing(4);
+
+    QHBoxLayout* g_toolbar = new QHBoxLayout();
+    g_toolbar->addWidget(new QLabel(tr("按解码帧 pict_type 统计的 GOP 摘要"), gop_summary_sub_), 1);
+    QPushButton* g_export_btn = new QPushButton(tr("导出 CSV"), gop_summary_sub_);
+    g_toolbar->addWidget(g_export_btn);
+    g_layout->addLayout(g_toolbar);
+
+    QGroupBox* g_table_group = new QGroupBox(tr("GOP 分段统计"), gop_summary_sub_);
+    QVBoxLayout* g_table_layout = new QVBoxLayout(g_table_group);
+    // GOP 列名升级 (列数保持 9 列, 起止类列改为「帧号」「时间(s)」表述, 与其它表统一)
+    gop_table_ = new QTableWidget(0, 9, g_table_group);
+    gop_table_->setHorizontalHeaderLabels({
+        "GOP #", "起始帧号", "结束帧号", "起始(s)", "结束(s)", "总帧数", "I", "P", "B"
+    });
     gop_table_->verticalHeader()->setVisible(false);
     gop_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     gop_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -295,13 +454,13 @@ void AnalysisPanel::SetupFrameTab() {
     gop_table_->horizontalHeader()->setStretchLastSection(true);
     gop_table_->setMinimumWidth(500);
     gop_table_->setMinimumHeight(120);
-    gop_layout->addWidget(gop_table_);
-    v_layout->addWidget(gop_group);
+    g_table_layout->addWidget(gop_table_);
+    g_layout->addWidget(g_table_group);
 
-    frame_sub_tabs_->addTab(video_sub, tr("视频帧"));
+    detail_sub_tabs_->addTab(gop_summary_sub_, tr("GOP 摘要"));
 
-    // ---- 音频帧子页 ----
-    audio_frame_sub_ = new QWidget(frame_sub_tabs_);
+    // ---- 子页 3: 音频帧 ----
+    audio_frame_sub_ = new QWidget(detail_sub_tabs_);
     QVBoxLayout* a_layout = new QVBoxLayout(audio_frame_sub_);
     a_layout->setContentsMargins(4, 4, 4, 4);
     a_layout->setSpacing(4);
@@ -324,8 +483,11 @@ void AnalysisPanel::SetupFrameTab() {
 
     QGroupBox* a_table_group = new QGroupBox(tr("音频帧信息"), audio_frame_sub_);
     QVBoxLayout* a_table_layout = new QVBoxLayout(a_table_group);
+    // 音频帧列名升级 (列数保持 7 列, PTS/Hz 等协议术语括注用途, 字面更紧凑)
     audio_frame_table_ = new QTableWidget(0, 7, a_table_group);
-    audio_frame_table_->setHorizontalHeaderLabels({"序号", "时间戳(s)", "PTS", "样本数", "采样率(Hz)", "声道数", "字节数"});
+    audio_frame_table_->setHorizontalHeaderLabels({
+        "#", "播放时间(s)", "原始 PTS", "样本数", "采样率", "声道", "字节"
+    });
     audio_frame_table_->verticalHeader()->setVisible(false);
     audio_frame_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     audio_frame_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -344,76 +506,16 @@ void AnalysisPanel::SetupFrameTab() {
     a_table_layout->addWidget(audio_frame_table_);
     a_layout->addWidget(a_table_group);
 
-    frame_sub_tabs_->addTab(audio_frame_sub_, tr("音频帧"));
+    detail_sub_tabs_->addTab(audio_frame_sub_, tr("音频帧"));
 
-    layout->addWidget(frame_sub_tabs_);
-
-    AddPageWithScroll(frame_tab_, tr("帧分析"));
+    layout->addWidget(detail_sub_tabs_);
 
     connect(frame_filter_combo_, &QComboBox::currentIndexChanged, this, [this](int) {
         OnFrameFilterChanged();
     });
     connect(export_frame_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportFrameCsv);
     connect(export_audio_frame_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportAudioFrameCsv);
-}
-
-void AnalysisPanel::SetupPacketTab() {
-    packet_tab_ = new QWidget();
-    QVBoxLayout* layout = new QVBoxLayout(packet_tab_);
-    layout->setContentsMargins(4, 2, 4, 4);
-    layout->setSpacing(4);
-
-    QHBoxLayout* toolbar_layout = new QHBoxLayout();
-    packet_summary_label_ = new QLabel(tr("总包数: 0 | 视频包: 0 | 音频包: 0 | 其他包: 0"), packet_tab_);
-    toolbar_layout->addWidget(packet_summary_label_, 1);
-
-    toolbar_layout->addWidget(new QLabel(tr("筛选:"), packet_tab_));
-    packet_filter_combo_ = new QComboBox(packet_tab_);
-    packet_filter_combo_->addItems({tr("全部流"), tr("视频流"), tr("音频流"), tr("其他流")});
-    packet_filter_combo_->setCurrentIndex(0);
-    toolbar_layout->addWidget(packet_filter_combo_);
-
-    export_packet_csv_button_ = new QPushButton(tr("导出 CSV"), packet_tab_);
-    toolbar_layout->addWidget(export_packet_csv_button_);
-
-    QCheckBox* toggle = new QCheckBox(tr("启用分析"), packet_tab_);
-    toggle->setChecked(feature_enabled_.value(AnalysisFeature::Packet, true));
-    connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
-        feature_enabled_[AnalysisFeature::Packet] = checked;
-        emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::Packet), checked);
-    });
-    toolbar_layout->addWidget(toggle);
-    layout->addLayout(toolbar_layout);
-
-    QGroupBox* table_group = new QGroupBox(tr("数据包信息"), packet_tab_);
-    QVBoxLayout* table_layout = new QVBoxLayout(table_group);
-
-    packet_table_ = new QTableWidget(0, 10, table_group);
-    packet_table_->setHorizontalHeaderLabels({"序号", "流索引", "流类型", "时间戳(s)", "PTS", "DTS", "时长", "大小", "标记", "文件偏移"});
-    packet_table_->verticalHeader()->setVisible(false);
-    packet_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    packet_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    packet_table_->setSelectionMode(QAbstractItemView::SingleSelection);
-    packet_table_->setSortingEnabled(false);
-    packet_table_->horizontalHeader()->setStretchLastSection(true);
-    packet_table_->horizontalHeader()->setMinimumSectionSize(50);
-    packet_table_->setColumnWidth(0, 60);
-    packet_table_->setColumnWidth(1, 70);
-    packet_table_->setColumnWidth(2, 80);
-    packet_table_->setColumnWidth(3, 100);
-    packet_table_->setColumnWidth(4, 100);
-    packet_table_->setColumnWidth(5, 100);
-    packet_table_->setColumnWidth(6, 100);
-    packet_table_->setColumnWidth(7, 90);
-    packet_table_->setColumnWidth(8, 110);
-    packet_table_->setColumnWidth(9, 100);
-    packet_table_->setMinimumWidth(650);
-    packet_table_->setMinimumHeight(120);
-
-    table_layout->addWidget(packet_table_);
-    layout->addWidget(table_group);
-
-    AddPageWithScroll(packet_tab_, tr("包分析"));
+    connect(g_export_btn, &QPushButton::clicked, this, &AnalysisPanel::OnExportGopCsv);
 
     connect(packet_filter_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int idx) {
@@ -421,6 +523,39 @@ void AnalysisPanel::SetupPacketTab() {
         RebuildPacketTable();
     });
     connect(export_packet_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportPacketCsv);
+    connect(packet_table_, &QTableWidget::itemSelectionChanged, this, &AnalysisPanel::OnPacketTableSelectionChanged);
+
+    connect(frame_table_, &QTableWidget::itemSelectionChanged, this, &AnalysisPanel::OnVideoFrameTableSelectionChanged);
+}
+
+void AnalysisPanel::SetupPacketTab() {
+    // 已合并到 SetupFrameTab 的 detail_sub_tabs_ 第 1 子页 (packet_sub_)
+    // 保留函数占位以兼容历史调用方
+}
+
+void AnalysisPanel::SetupBitstreamTab() {
+    // 合并流/帧/包三页为单一「码流分析」页.
+    // 顶部: 流概览 5 指标 + 三条趋势曲线 (来自 stream_section_)
+    // 底部: QTabWidget 4 子页 - 视频帧/包/GOP 摘要/音频帧 (来自 detail_sub_tabs_container_)
+    bitstream_tab_ = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(bitstream_tab_);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    // 顶部流概览区 (固定高度不可滚动, 让曲线一直可见)
+    layout->addWidget(stream_section_);
+
+    // 分隔条
+    QFrame* sep = new QFrame(bitstream_tab_);
+    sep->setFrameShape(QFrame::HLine);
+    sep->setFrameShadow(QFrame::Sunken);
+    layout->addWidget(sep);
+
+    // 底部 4 子 Tab 区 (可伸展, 占剩余高度)
+    layout->addWidget(detail_sub_tabs_container_, 1);
+
+    AddPageWithScroll(bitstream_tab_, tr("码流分析"));
+    bitstream_page_index_ = page_widgets_.size() - 1;
 }
 
 void AnalysisPanel::SetupEventTab() {
@@ -1405,6 +1540,7 @@ void AnalysisPanel::ResetVideoFrameList() {
         !feature_enabled_.value(AnalysisFeature::VideoFrame, true)) return;
     frame_records_.clear();
     gop_summaries_.clear();
+    ResetStreamCharts();
     frame_table_synced_record_count_ = 0;
     gop_table_synced_count_ = 0;
     frame_table_dirty_ = false;
@@ -2124,6 +2260,46 @@ void AnalysisPanel::OnExportAudioFrameCsv() {
     QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
 }
 
+void AnalysisPanel::OnExportGopCsv() {
+    if (gop_summaries_.empty()) {
+        QMessageBox::information(this, tr("提示"), tr("当前没有可导出的 GOP 摘要数据。"));
+        return;
+    }
+
+    const QString filename = QFileDialog::getSaveFileName(
+        this,
+        tr("导出 GOP 摘要 CSV"),
+        QString("videoeye_gop_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
+        tr("CSV 文件 (*.csv);;所有文件 (*)"));
+    if (filename.isEmpty()) {
+        return;
+    }
+
+    QFile file(filename);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件:\n%1").arg(filename));
+        return;
+    }
+
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    out << "gop_index,start_frame,end_frame,start_ts,end_ts,total_frames,i_count,p_count,b_count,key_count\n";
+    for (const auto& s : gop_summaries_) {
+        out << s.gop_index << ','
+            << s.start_frame << ','
+            << s.end_frame << ','
+            << QString::number(s.start_ts, 'f', 6) << ','
+            << QString::number(s.end_ts, 'f', 6) << ','
+            << s.total_frames << ','
+            << s.i_count << ','
+            << s.p_count << ','
+            << s.b_count << ','
+            << s.key_count << '\n';
+    }
+
+    QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
+}
+
 void AnalysisPanel::OnExportPacketCsv() {
     if (packet_records_.empty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有可导出的包分析数据。"));
@@ -2517,6 +2693,9 @@ void AnalysisPanel::FlushPendingGopTableUpdates() {
     const int last_row = static_cast<int>(gop_summaries_.size()) - 1;
     UpdateGopRowInTable(last_row, gop_summaries_.back());
     gop_table_->setUpdatesEnabled(true);
+
+    // GOP 表更新后同步流分析页的 GOP 曲线
+    UpdateGOPChart();
 }
 
 void AnalysisPanel::FlushPendingAudioFrameTableUpdates() {
@@ -2619,9 +2798,15 @@ void AnalysisPanel::RefreshStreamStatsUi(const analyzer::StreamStats& stats) {
     const auto duration = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - stats.start_time);
     SetTableItemText(stats_table_, 0, 3, QString::number(duration.count()) + " s");
-    SetTableItemText(stats_table_, 0, 4, QString::number(stats.max_gop_size));
+    // 最大 GOP 统一取 UI 侧 gop_summaries_ 的口径 (解码帧 pict_type),
+    // 与「帧分析」页的 GOP 表保持一致。
+    int ui_max_gop = 0;
+    for (const auto& g : gop_summaries_) {
+        if (g.total_frames > ui_max_gop) ui_max_gop = g.total_frames;
+    }
+    SetTableItemText(stats_table_, 0, 4, QString::number(ui_max_gop));
 
-    // 收集历史数据供导出报告使用（不再渲染图表）
+    // 收集历史数据供图表与导出报告共用
     const qreal bitrate_kbps = stats.current_bitrate_bps / 1000.0;
     const qreal fps = stats.current_fps;
     bitrate_chart_values_.push_back(bitrate_kbps);
@@ -2632,6 +2817,9 @@ void AnalysisPanel::RefreshStreamStatsUi(const analyzer::StreamStats& stats) {
     if (fps_chart_values_.size() > kMaxChartSamples) {
         fps_chart_values_.pop_front();
     }
+
+    UpdateBitrateChart(stats);
+    UpdateFPSChart(stats);
 }
 
 void AnalysisPanel::SetTableItemText(QTableWidget* table, int row, int column, const QString& text) {
@@ -2647,16 +2835,16 @@ void AnalysisPanel::SetTableItemText(QTableWidget* table, int row, int column, c
     item->setText(text);
 }
 
+// 与 SetupFrameTab 表头一一对应 (6 列): #/帧类型/播放时间(s)/原始 PTS/GOP #/GOP 内
 void AnalysisPanel::AppendFrameRowToTable(const VideoFrameRecord& record) {
     const int row = frame_table_->rowCount();
     frame_table_->insertRow(row);
     SetTableItemText(frame_table_, row, 0, QString::number(record.index));
     SetTableItemText(frame_table_, row, 1, FrameTypeToString(record.frame_type));
-    SetTableItemText(frame_table_, row, 2, record.is_key_frame ? tr("是") : tr("否"));
-    SetTableItemText(frame_table_, row, 3, QString::number(record.timestamp_seconds, 'f', 3));
-    SetTableItemText(frame_table_, row, 4, QString::number(record.pts));
-    SetTableItemText(frame_table_, row, 5, QString::number(record.gop_index));
-    SetTableItemText(frame_table_, row, 6, QString::number(record.gop_position));
+    SetTableItemText(frame_table_, row, 2, QString::number(record.timestamp_seconds, 'f', 3));
+    SetTableItemText(frame_table_, row, 3, QString::number(record.pts));
+    SetTableItemText(frame_table_, row, 4, QString::number(record.gop_index));
+    SetTableItemText(frame_table_, row, 5, QString::number(record.gop_position));
 }
 
 void AnalysisPanel::AppendAudioFrameRowToTable(const AudioFrameRecord& record) {
@@ -2671,6 +2859,7 @@ void AnalysisPanel::AppendAudioFrameRowToTable(const AudioFrameRecord& record) {
     SetTableItemText(audio_frame_table_, row, 6, QString::number(record.byte_count));
 }
 
+// 与 SetupFrameTab 包表头一一对应 (7 列): #/流/播放时间(s)/显示时间(PTS)/解码时间(DTS)/时长/包大小
 void AnalysisPanel::AppendPacketRowToTable(const PacketRecord& record) {
     if (!PacketMatchesFilter(record)) {
         return;
@@ -2678,15 +2867,14 @@ void AnalysisPanel::AppendPacketRowToTable(const PacketRecord& record) {
     const int row = packet_table_->rowCount();
     packet_table_->insertRow(row);
     SetTableItemText(packet_table_, row, 0, QString::number(record.index));
-    SetTableItemText(packet_table_, row, 1, QString::number(record.stream_index));
-    SetTableItemText(packet_table_, row, 2, PacketStreamTypeToName(record.stream_type));
-    SetTableItemText(packet_table_, row, 3, QString::number(record.timestamp_seconds, 'f', 3));
-    SetTableItemText(packet_table_, row, 4, QString::number(record.pts));
-    SetTableItemText(packet_table_, row, 5, QString::number(record.dts));
-    SetTableItemText(packet_table_, row, 6, QString::number(record.duration));
-    SetTableItemText(packet_table_, row, 7, QString::number(record.size));
-    SetTableItemText(packet_table_, row, 8, PacketFlagsToString(record.flags));
-    SetTableItemText(packet_table_, row, 9, QString::number(record.pos));
+    // 「流」列把流索引与类型合到一个单元格, 形如 "#0 视频"
+    SetTableItemText(packet_table_, row, 1,
+        QString("#%1 %2").arg(record.stream_index).arg(PacketStreamTypeToName(record.stream_type)));
+    SetTableItemText(packet_table_, row, 2, QString::number(record.timestamp_seconds, 'f', 3));
+    SetTableItemText(packet_table_, row, 3, QString::number(record.pts));
+    SetTableItemText(packet_table_, row, 4, QString::number(record.dts));
+    SetTableItemText(packet_table_, row, 5, QString::number(record.duration));
+    SetTableItemText(packet_table_, row, 6, QString::number(record.size));
 }
 
 void AnalysisPanel::AppendEventRowToTable(const AnalysisEventRecord& record) {
@@ -2736,14 +2924,68 @@ void AnalysisPanel::UpdateGopRowInTable(int row, const GopSummary& summary) {
 
 void AnalysisPanel::UpdateBitrateChart(const analyzer::StreamStats& stats) {
     Q_UNUSED(stats);
+    if (!bitrate_series_ || !bitrate_axis_x_ || !bitrate_axis_y_) {
+        return;
+    }
+
+    bitrate_series_->clear();
+    qreal max_value = 0.0;
+    for (size_t i = 0; i < bitrate_chart_values_.size(); ++i) {
+        const qreal v = bitrate_chart_values_[i];
+        bitrate_series_->append(static_cast<qreal>(i), v);
+        if (v > max_value) max_value = v;
+    }
+    bitrate_axis_x_->setRange(0, std::max<qreal>(1.0, bitrate_chart_values_.size()));
+    // 上限留 10% 余量, 避免曲线贴顶; 全零时给一个最小量程防止坐标轴退化
+    bitrate_axis_y_->setRange(0, std::max<qreal>(100.0, max_value * 1.1));
 }
 
 void AnalysisPanel::UpdateFPSChart(const analyzer::StreamStats& stats) {
     Q_UNUSED(stats);
+    if (!fps_series_ || !fps_axis_x_ || !fps_axis_y_) {
+        return;
+    }
+
+    fps_series_->clear();
+    qreal max_value = 0.0;
+    for (size_t i = 0; i < fps_chart_values_.size(); ++i) {
+        const qreal v = fps_chart_values_[i];
+        fps_series_->append(static_cast<qreal>(i), v);
+        if (v > max_value) max_value = v;
+    }
+    fps_axis_x_->setRange(0, std::max<qreal>(1.0, fps_chart_values_.size()));
+    fps_axis_y_->setRange(0, std::max<qreal>(30.0, max_value * 1.1));
 }
 
-void AnalysisPanel::UpdateGOPChart(const analyzer::StreamStats& stats) {
-    // GOP图表实现
+void AnalysisPanel::UpdateGOPChart() {
+    if (!gop_series_ || !gop_axis_x_ || !gop_axis_y_) {
+        return;
+    }
+
+    // 数据源统一为 UI 侧的 gop_summaries_ (由解码帧 pict_type 推导),
+    // 不再使用 StreamAnalyzer 基于 packet flags 的独立 GOP 统计。
+    gop_series_->clear();
+    if (gop_summaries_.empty()) {
+        gop_axis_x_->setRange(0, 1);
+        gop_axis_y_->setRange(0, 1);
+        return;
+    }
+
+    int max_frames = 0;
+    for (const auto& g : gop_summaries_) {
+        gop_series_->append(static_cast<qreal>(g.gop_index), static_cast<qreal>(g.total_frames));
+        if (g.total_frames > max_frames) max_frames = g.total_frames;
+    }
+    gop_axis_x_->setRange(0, std::max(1, static_cast<int>(gop_summaries_.size())));
+    gop_axis_y_->setRange(0, std::max(1, max_frames));
+}
+
+void AnalysisPanel::ResetStreamCharts() {
+    bitrate_chart_values_.clear();
+    fps_chart_values_.clear();
+    if (bitrate_series_) bitrate_series_->clear();
+    if (fps_series_) fps_series_->clear();
+    if (gop_series_) gop_series_->clear();
 }
 
 void AnalysisPanel::UpdateSyncChart() {
@@ -3340,6 +3582,115 @@ void AnalysisPanel::OnExportSceneChangeCsv() {
     file.close();
     QMessageBox::information(this, tr("成功"), tr("已导出 %1 个切换点到:\n%2")
         .arg(scene_change_records_.size()).arg(filename));
+}
+
+// 包表选中 → 在 frame_records_ 中找 PTS 最接近的视频帧, 跳转并高亮
+void AnalysisPanel::OnPacketTableSelectionChanged() {
+    if (linking_) return;
+    if (!packet_table_ || !frame_table_) return;
+
+    const int row = packet_table_->currentRow();
+    if (row < 0 || row >= packet_table_->rowCount()) return;
+
+    // 从表中读 PTS (原始 timebase 单位) 用于匹配
+    QTableWidgetItem* pts_item = packet_table_->item(row, 3);  // 列 3 = 显示时间(PTS)
+    if (!pts_item) return;
+    bool ok = false;
+    const qint64 target_pts = pts_item->text().toLongLong(&ok);
+    if (!ok) return;
+
+    // 在 frame_records_ 中找 PTS 最接近的记录
+    int best_index = -1;
+    qint64 best_diff = std::numeric_limits<qint64>::max();
+    for (size_t i = 0; i < frame_records_.size(); ++i) {
+        const qint64 diff = std::llabs(frame_records_[i].pts - target_pts);
+        if (diff < best_diff) {
+            best_diff = diff;
+            best_index = static_cast<int>(i);
+        }
+    }
+    if (best_index < 0) return;
+
+
+    // 帧表可能被 RebuildFrameTable 过滤, 行号 != 下标. 反向查可见行.
+    int target_visible_row = -1;
+    for (int r = 0; r < frame_table_->rowCount(); ++r) {
+        QTableWidgetItem* pts_cell = frame_table_->item(r, 3);  // 列 3 = 原始 PTS
+        if (!pts_cell) continue;
+        bool ok2 = false;
+        const qint64 cell_pts = pts_cell->text().toLongLong(&ok2);
+        if (ok2 && cell_pts == frame_records_[best_index].pts) {
+            target_visible_row = r;
+            break;
+        }
+    }
+    if (target_visible_row < 0) return;
+
+    linking_ = true;
+    frame_table_->setCurrentCell(target_visible_row, 0);
+    frame_table_->scrollToItem(frame_table_->item(target_visible_row, 0),
+                               QAbstractItemView::PositionAtCenter);
+    linking_ = false;
+
+    // 自动切到 detail_sub_tabs_ 的「视频帧」子页 (合并后只切内部 Tab 不切外部页)
+    if (detail_sub_tabs_) {
+        detail_sub_tabs_->setCurrentIndex(0);
+    }
+}
+
+// 帧表选中 → 在 packet_records_ 中找 PTS 最接近的视频包, 跳转并高亮
+void AnalysisPanel::OnVideoFrameTableSelectionChanged() {
+    if (linking_) return;
+    if (!frame_table_ || !packet_table_) return;
+
+    const int row = frame_table_->currentRow();
+    if (row < 0 || row >= frame_table_->rowCount()) return;
+
+    QTableWidgetItem* pts_item = frame_table_->item(row, 3);  // 列 3 = 原始 PTS
+    if (!pts_item) return;
+    bool ok = false;
+    const qint64 target_pts = pts_item->text().toLongLong(&ok);
+    if (!ok) return;
+
+    // packet_records_ 含视频/音频包, 仅匹配视频包以保证 PTS 时基一致
+    int best_index = -1;
+    qint64 best_diff = std::numeric_limits<qint64>::max();
+    for (size_t i = 0; i < packet_records_.size(); ++i) {
+        if (packet_records_[i].stream_type != AVMEDIA_TYPE_VIDEO) continue;
+        const qint64 diff = std::llabs(packet_records_[i].pts - target_pts);
+        if (diff < best_diff) {
+            best_diff = diff;
+            best_index = static_cast<int>(i);
+        }
+    }
+    if (best_index < 0) return;
+
+    // 包表行号需要按 PacketMatchesFilter 过滤后映射; 若无过滤则是直接下标
+    // 简化处理: 调用 RebuildPacketTable 后行号未必一一对应, 这里走 setCurrentCell 失败则返回
+    // 为避免过滤导致错位, 通过遍历当前可见行做反向查找
+    int target_visible_row = -1;
+    for (int r = 0; r < packet_table_->rowCount(); ++r) {
+        QTableWidgetItem* pts_cell = packet_table_->item(r, 3);  // 列 3 = 显示时间(PTS)
+        if (!pts_cell) continue;
+        bool ok2 = false;
+        const qint64 cell_pts = pts_cell->text().toLongLong(&ok2);
+        if (ok2 && cell_pts == packet_records_[best_index].pts) {
+            target_visible_row = r;
+            break;
+        }
+    }
+    if (target_visible_row < 0) return;
+
+    linking_ = true;
+    packet_table_->setCurrentCell(target_visible_row, 0);
+    packet_table_->scrollToItem(packet_table_->item(target_visible_row, 0),
+                                QAbstractItemView::PositionAtCenter);
+    linking_ = false;
+
+    // 自动切到 detail_sub_tabs_ 的「包」子页 (合并后只切内部 Tab 不切外部页)
+    if (detail_sub_tabs_) {
+        detail_sub_tabs_->setCurrentIndex(1);
+    }
 }
 
 } // namespace ui
