@@ -246,20 +246,20 @@ void StreamAnalyzer::CalculateBitrate() {
 }
 
 void StreamAnalyzer::UpdateGopInfo(const AVPacket* packet) {
-    // 检查是否是关键帧
+    // 基于 packet flags 的轻量级 GOP 统计. 仅供 ReportExporter 在不解码时输出报告用;
+    // UI 侧用解码帧 pict_type 计算更精确的 GOP 表.
     if (packet->flags & AV_PKT_FLAG_KEY) {
         stats_.key_frame_count++;
-        
-        // 记录当前 GOP 大小
+
+        // 收尾上一个 GOP, 记录历史最大值
         if (stats_.current_gop_size > 0) {
-            stats_.gop_size = stats_.current_gop_size;
             stats_.max_gop_size = std::max(stats_.max_gop_size, stats_.current_gop_size);
         }
-        
+
         // 重置当前 GOP 计数器
         stats_.current_gop_size = 0;
     }
-    
+
     stats_.current_gop_size++;
 }
 
@@ -278,7 +278,7 @@ std::string StreamStats::ToString() const {
         << (avg_bitrate_bps / 1000) << " kbps, 峰值: " << (peak_bitrate_bps / 1000) << " kbps)" << std::endl;
     oss << std::endl;
     
-    oss << "GOP 大小: " << gop_size << " (最大: " << max_gop_size << ")" << std::endl;
+    oss << "GOP 大小: " << current_gop_size << " (最大: " << max_gop_size << ")" << std::endl;
     oss << "关键帧数: " << key_frame_count << std::endl;
     oss << "帧类型: I=" << i_frame_count << " P=" << p_frame_count << " B=" << b_frame_count
         << " 其他=" << other_frame_count << std::endl;

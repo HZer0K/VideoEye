@@ -50,7 +50,7 @@ bool ReportExporter::ExportTextReport(
     file << std::endl;
     
     file << "--- GOP 分析 ---" << std::endl;
-    file << "GOP 大小: " << stats.gop_size << " 帧" << std::endl;
+    file << "GOP 大小: " << stats.current_gop_size << " 帧" << std::endl;
     file << "最大 GOP: " << stats.max_gop_size << " 帧" << std::endl;
     file << "关键帧数: " << stats.key_frame_count << std::endl;
     file << std::endl;
@@ -101,7 +101,7 @@ bool ReportExporter::ExportCSV(
              << stats.current_bitrate_bps << ","
              << stats.avg_bitrate_bps << ","
              << stats.peak_bitrate_bps << ","
-             << stats.gop_size << ","
+             << stats.current_gop_size << ","
              << stats.key_frame_count << ","
              << stats.avg_packet_size << std::endl;
     }
@@ -134,7 +134,7 @@ bool ReportExporter::ExportJSON(
     file << "    \"current_bitrate_bps\": " << stats.current_bitrate_bps << "," << std::endl;
     file << "    \"avg_bitrate_bps\": " << stats.avg_bitrate_bps << "," << std::endl;
     file << "    \"peak_bitrate_bps\": " << stats.peak_bitrate_bps << "," << std::endl;
-    file << "    \"gop_size\": " << stats.gop_size << "," << std::endl;
+    file << "    \"gop_size\": " << stats.current_gop_size << "," << std::endl;
     file << "    \"max_gop_size\": " << stats.max_gop_size << "," << std::endl;
     file << "    \"key_frame_count\": " << stats.key_frame_count << "," << std::endl;
     file << "    \"avg_packet_size\": " << stats.avg_packet_size << "," << std::endl;
@@ -194,7 +194,7 @@ bool ReportExporter::ExportHTMLReport(
     file << "    <tr><td>当前码率</td><td>" << FormatBitrate(stats.current_bitrate_bps) << "</td></tr>" << std::endl;
     file << "    <tr><td>平均码率</td><td>" << FormatBitrate(stats.avg_bitrate_bps) << "</td></tr>" << std::endl;
     file << "    <tr><td>峰值码率</td><td>" << FormatBitrate(stats.peak_bitrate_bps) << "</td></tr>" << std::endl;
-    file << "    <tr><td>GOP 大小</td><td>" << stats.gop_size << " 帧</td></tr>" << std::endl;
+    file << "    <tr><td>GOP 大小</td><td>" << stats.current_gop_size << " 帧</td></tr>" << std::endl;
     file << "    <tr><td>关键帧数</td><td>" << stats.key_frame_count << "</td></tr>" << std::endl;
     file << "    <tr><td>持续时间</td><td>" << FormatTime(stats.duration_seconds) << "</td></tr>" << std::endl;
     file << "  </table>" << std::endl;

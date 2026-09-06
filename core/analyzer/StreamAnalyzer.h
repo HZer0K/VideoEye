@@ -43,11 +43,12 @@ struct StreamStats {
     int avg_bitrate_bps = 0;
     int peak_bitrate_bps = 0;
     
-    // GOP 统计
-    int gop_size = 0;
-    int current_gop_size = 0;
-    int max_gop_size = 0;
-    int key_frame_count = 0;
+    // GOP 统计 (基于 packet flags 的轻量级近似)
+    // 注: UI 侧另有更精确的 GopSummary 表 (基于解码帧 pict_type),
+    // 显示口径以 UI 侧为准. 本字段供 ReportExporter 在不解码时输出报告用.
+    int current_gop_size = 0;   // 当前正在累加的 GOP 帧数
+    int max_gop_size = 0;       // 历史最大 GOP 大小
+    int key_frame_count = 0;    // 关键帧总数
 
     // 视频帧类型统计
     int total_video_frames = 0;
