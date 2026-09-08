@@ -65,16 +65,13 @@ struct AnalysisResult {
     double max_gop_interval_seconds = 0.0;
     int max_gop_frames = 0;
 
-    // 时间戳健康度
+    // 时间戳健康度（PTS 非单调 / 时间戳跳变现由 TimelineAnalyzer 统一产出，
+    // 不再在此重复统计；DTS 缺失占比仍用于 timing.dts_missing 规则）
     int64_t total_packets = 0;
     int64_t total_bytes = 0;
     int64_t video_packets = 0;
     int64_t key_frame_count = 0;
     int64_t packets_missing_dts = 0;
-    int64_t pts_non_monotonic_count = 0;
-    double max_timestamp_gap_seconds = 0.0;
-    double max_gap_at_seconds = -1.0;     // 最大跳变发生的时间点（用于定位）
-    double pts_non_monotonic_at_seconds = -1.0;
 
     // 包大小
     int64_t max_packet_bytes = 0;

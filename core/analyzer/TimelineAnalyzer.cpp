@@ -53,9 +53,9 @@ void TimelineAnalyzer::AddIssue(model::TimelineIssueType type, model::IssueSever
     if (it != index_by_stream.end()) {
         auto& issue = result_.issues[it->second];
         ++issue.occurrence_count;
-        issue.timestamp_ms = timestamp_ms;
-        if (std::abs(metric_value_ms) > std::abs(issue.metric_value_ms)) {
-            issue.metric_value_ms = metric_value_ms;
+        issue.range = model::TimeRange::At(timestamp_ms / 1000.0);
+        if (std::abs(metric_value_ms) > std::abs(issue.metric_value)) {
+            issue.metric_value = metric_value_ms;
             issue.detail = detail;
         }
         return;
@@ -66,15 +66,18 @@ void TimelineAnalyzer::AddIssue(model::TimelineIssueType type, model::IssueSever
     }
     ++issue_total_count_[type_key];
 
-    model::TimelineDiagnostic issue;
-    issue.type = type;
+    model::DiagnosticIssue issue;
+    issue.rule_id = model::RuleIdOf(type);
+    issue.title = model::ToString(type);
+    issue.category = model::IssueCategory::Timing;
     issue.severity = severity;
     issue.stream_index = stream_index;
-    issue.timestamp_ms = timestamp_ms;
-    issue.metric_value_ms = metric_value_ms;
-    issue.threshold_ms = threshold_ms;
+    issue.range = model::TimeRange::At(timestamp_ms / 1000.0);
+    issue.metric_value = metric_value_ms;
+    issue.threshold = threshold_ms;
     issue.detail = detail;
     issue.suggestion = suggestion;
+    issue.occurrence_count = 1;
     index_by_stream[stream_index] = result_.issues.size();
     result_.issues.push_back(std::move(issue));
 }

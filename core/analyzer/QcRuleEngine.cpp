@@ -81,6 +81,11 @@ model::QcReport QcRuleEngine::Evaluate(const AnalysisResult& result) const {
         }
     }
 
+    // 并入时间轴与同步诊断问题（category=Timing，统一计分与展示，避免与上面规则重复）
+    for (const auto& tl_issue : result.timeline.issues) {
+        report.issues.push_back(tl_issue);
+    }
+
     // 严重度排序: Critical > Error > Warning > Info
     std::stable_sort(report.issues.begin(), report.issues.end(),
                      [](const model::DiagnosticIssue& a, const model::DiagnosticIssue& b) {
@@ -235,22 +240,7 @@ std::vector<model::DiagnosticIssue> QcRuleEngine::CheckRule(const model::QcRule&
         return issues;
     }
 
-    // ---------- 时间戳 ----------
-    if (rule.id == "timing.pts_non_monotonic") {
-        if (result.pts_non_monotonic_count > 0) {
-            const model::TimeRange range =
-                (result.pts_non_monotonic_at_seconds >= 0.0)
-                    ? model::TimeRange::At(result.pts_non_monotonic_at_seconds)
-                    : model::TimeRange::Global();
-            issues.push_back(make_issue(static_cast<double>(result.pts_non_monotonic_count),
-                "检测到 " + std::to_string(result.pts_non_monotonic_count) +
-                " 次 PTS 回退，首次出现在 " +
-                (range.IsGlobal() ? std::string("未知位置") : model::FormatTimestamp(range.start_seconds)) +
-                "。",
-                range, -1, static_cast<int>(result.pts_non_monotonic_count)));
-        }
-        return issues;
-    }
+    // ---------- 时间戳（PTS 非单调 / 时间戳跳变已由 TimelineAnalyzer 统一产出，并入诊断报告） ----------
     if (rule.id == "timing.dts_missing") {
         if (result.total_packets > 0) {
             const double ratio = 100.0 * static_cast<double>(result.packets_missing_dts) /
@@ -264,21 +254,7 @@ std::vector<model::DiagnosticIssue> QcRuleEngine::CheckRule(const model::QcRule&
         }
         return issues;
     }
-    if (rule.id == "timing.gap") {
-        if (result.max_timestamp_gap_seconds > 0.0 &&
-            Triggered(rule, result.max_timestamp_gap_seconds)) {
-            const model::TimeRange range =
-                (result.max_gap_at_seconds >= 0.0)
-                    ? model::TimeRange::At(result.max_gap_at_seconds)
-                    : model::TimeRange::Global();
-            issues.push_back(make_issue(result.max_timestamp_gap_seconds,
-                "最大时间戳跳变 " + FormatValue(result.max_timestamp_gap_seconds, 3) + " 秒，位于 " +
-                (range.IsGlobal() ? std::string("未知位置") : model::FormatTimestamp(range.start_seconds)) +
-                "（阈值 " + ThresholdText(rule) + "）。",
-                range));
-        }
-        return issues;
-    }
+    // 时间戳跳变（gap）已由 TimelineAnalyzer 统一产出，不再重复规则。
 
     // ---------- 音频 ----------
     if (rule.id == "audio.sample_rate_low") {

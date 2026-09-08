@@ -23,21 +23,22 @@ enum class TimelineIssueType {
 
 const char* ToString(TimelineIssueType type);
 
-// 单条时间轴诊断
-struct TimelineDiagnostic {
-    TimelineIssueType type = TimelineIssueType::PtsNonMonotonic;
-    IssueSeverity severity = IssueSeverity::Warning;
-    int stream_index = -1;
-    double timestamp_ms = 0.0;     // 问题发生位置
-    double metric_value_ms = 0.0;  // 实测值（ms 或 ms 差值）
-    double threshold_ms = 0.0;     // 触发阈值
-    int occurrence_count = 1;      // 同类问题出现次数（合并统计）
-    std::string detail;
-    std::string suggestion;
-
-    std::string TypeText() const { return ToString(type); }
-    std::string SeverityText() const { return ::videoeye::model::ToString(severity); }
-};
+// 与时间轴问题类型对应的稳定 rule_id。
+// 时间轴分析器产出的问题统一并入 DiagnosticIssue 体系（category=Timing），
+// 这样诊断报告/问题表/计分只认 DiagnosticIssue 一种载体，避免与时间轴模块各搞一套。
+inline const char* RuleIdOf(TimelineIssueType type) {
+    switch (type) {
+        case TimelineIssueType::PtsNonMonotonic:            return "timeline.pts_non_monotonic";
+        case TimelineIssueType::DtsNonMonotonic:            return "timeline.dts_non_monotonic";
+        case TimelineIssueType::DtsAfterPts:                return "timeline.dts_after_pts";
+        case TimelineIssueType::AudioVideoStartOffset:      return "timeline.av_start_offset";
+        case TimelineIssueType::AudioVideoDurationMismatch: return "timeline.av_duration_mismatch";
+        case TimelineIssueType::FrameIntervalSpike:         return "timeline.frame_interval_spike";
+        case TimelineIssueType::DuplicatedTimestamp:        return "timeline.duplicated_timestamp";
+        case TimelineIssueType::MissingKeyframeIndex:       return "timeline.missing_keyframe_index";
+    }
+    return "timeline.unknown";
+}
 
 // 时间轴分析汇总结果
 struct TimelineAnalysisResult {
@@ -69,7 +70,8 @@ struct TimelineAnalysisResult {
     // 帧间隔直方图（下标 = 毫秒，值 = 帧数），用于区分 CFR/VFR 与观察分布
     std::vector<int> frame_interval_histogram_ms;
 
-    std::vector<TimelineDiagnostic> issues;
+    // 问题列表（统一为 DiagnosticIssue，category=Timing）
+    std::vector<DiagnosticIssue> issues;
 
     int CountOf(TimelineIssueType type) const;
     bool HasIssue(TimelineIssueType type) const;

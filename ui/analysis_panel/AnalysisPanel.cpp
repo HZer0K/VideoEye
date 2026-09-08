@@ -4208,13 +4208,13 @@ void AnalysisPanel::RefreshTimelineUi() {
     timeline_issue_table_->setRowCount(static_cast<int>(issues.size()));
     for (int i = 0; i < static_cast<int>(issues.size()); ++i) {
         const auto& issue = issues[i];
-        SetTableItemText(timeline_issue_table_, i, 0, QString::fromStdString(issue.TypeText()));
+        SetTableItemText(timeline_issue_table_, i, 0, QString::fromStdString(issue.title));
         SetTableItemText(timeline_issue_table_, i, 1, QString::fromStdString(issue.SeverityText()));
         SetTableItemText(timeline_issue_table_, i, 2,
                          issue.stream_index >= 0 ? QString::number(issue.stream_index)
                                                  : tr("文件级"));
         SetTableItemText(timeline_issue_table_, i, 3,
-                         QString::fromStdString(model::FormatTimestamp(issue.timestamp_ms / 1000.0)));
+                         QString::fromStdString(model::FormatTimestamp(issue.range.start_seconds)));
         SetTableItemText(timeline_issue_table_, i, 4, QString::number(issue.occurrence_count));
         SetTableItemText(timeline_issue_table_, i, 5, QString::fromStdString(issue.detail));
 
@@ -4237,7 +4237,7 @@ void AnalysisPanel::UpdateTimelineDiagnosticSummary() {
     const auto& r = timeline_result_;
     if (!r.has_data) {
         timeline_diag_summary_label_->setText(
-            tr("开启「事件与时间轴」分析并播放，或在本页执行一次全文件扫描，"
+            tr("开启「时间轴与同步」分析并播放，或在本页执行一次全文件扫描，"
                "将输出 PTS/DTS、音视频同步、帧间隔与 VFR/CFR 判定。"));
         return;
     }
@@ -4280,9 +4280,9 @@ void AnalysisPanel::UpdateTimelineDiagnosticChart() {
     // 问题标记：按严重度着色，y 取该时刻的帧间隔（无数据则取 0）
     for (int i = 0; i < static_cast<int>(r.issues.size()); ++i) {
         const auto& issue = r.issues[i];
-        const double t = issue.timestamp_ms / 1000.0;
+        const double t = issue.range.start_seconds;
         if (t < 0.0) continue;
-        const double y = r.frame_interval_ms.ValueAt(issue.timestamp_ms);
+        const double y = r.frame_interval_ms.ValueAt(issue.range.start_seconds * 1000.0);
         *timeline_marker_series_ << QPointF(t, y);
         timeline_marker_issue_index_.append(i);
 
@@ -4322,11 +4322,11 @@ void AnalysisPanel::OnTimelineMarkerHovered(const QPointF& point, bool state) {
     QToolTip::showText(QCursor::pos(),
         tr("流 #%1\n时间码: %2\n%3 (%4)\n实测: %5 ms / 阈值: %6 ms\n%7")
             .arg(issue.stream_index)
-            .arg(QString::fromStdString(model::FormatTimestamp(issue.timestamp_ms / 1000.0)))
-            .arg(QString::fromStdString(issue.TypeText()))
+            .arg(QString::fromStdString(model::FormatTimestamp(issue.range.start_seconds)))
+            .arg(QString::fromStdString(issue.title))
             .arg(QString::fromStdString(issue.SeverityText()))
-            .arg(QString::number(issue.metric_value_ms, 'f', 2))
-            .arg(QString::number(issue.threshold_ms, 'f', 2))
+            .arg(QString::number(issue.metric_value, 'f', 2))
+            .arg(QString::number(issue.threshold, 'f', 2))
             .arg(QString::fromStdString(issue.detail)));
 }
 
@@ -4337,7 +4337,7 @@ void AnalysisPanel::OnJumpToTimelineIssue() {
         QMessageBox::information(this, tr("提示"), tr("请先在问题列表中选择一条记录。"));
         return;
     }
-    const double seconds = timeline_result_.issues[row].timestamp_ms / 1000.0;
+    const double seconds = timeline_result_.issues[row].range.start_seconds;
     if (seconds < 0.0) {
         QMessageBox::information(this, tr("提示"), tr("该问题为文件级问题，没有可跳转的时间点。"));
         return;

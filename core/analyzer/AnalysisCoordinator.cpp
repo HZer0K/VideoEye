@@ -183,8 +183,6 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
     // ---- 逐包扫描 ----
     const double interval = (options.sample_interval_seconds > 0.0) ? options.sample_interval_seconds : 1.0;
     std::map<int64_t, Bucket> buckets;
-    std::vector<int64_t> last_pts(fmt->nb_streams, AV_NOPTS_VALUE);
-    std::vector<double> last_ts(fmt->nb_streams, -1.0);
     std::vector<int64_t> frames_since_key(fmt->nb_streams, 0);
     double last_key_ts = -1.0;
     bool has_key = false;
@@ -244,29 +242,6 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
         digest.byte_count += pkt->size;
         if (pkt->size > result.max_packet_bytes) result.max_packet_bytes = pkt->size;
         if (pkt->dts == AV_NOPTS_VALUE) result.packets_missing_dts += 1;
-
-        // 时间戳单调性
-        if (has_pts) {
-            const int64_t ref_pts = last_pts[pkt->stream_index];
-            if (ref_pts != AV_NOPTS_VALUE && pkt->pts < ref_pts) {
-                result.pts_non_monotonic_count += 1;
-                if (result.pts_non_monotonic_at_seconds < 0.0) {
-                    result.pts_non_monotonic_at_seconds = ts;
-                }
-            }
-            last_pts[pkt->stream_index] = pkt->pts;
-
-            // 时间戳跳变（同流相邻包）
-            const double prev_ts = last_ts[pkt->stream_index];
-            if (prev_ts >= 0.0 && ts >= 0.0) {
-                const double gap = ts - prev_ts;
-                if (gap > result.max_timestamp_gap_seconds) {
-                    result.max_timestamp_gap_seconds = gap;
-                    result.max_gap_at_seconds = ts;
-                }
-            }
-            last_ts[pkt->stream_index] = ts;
-        }
 
         if (is_video) {
                 result.video_packets += 1;

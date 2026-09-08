@@ -117,21 +117,12 @@ std::vector<QcRule> DefaultQcRules() {
         "宽或高为奇数，4:2:0 采样下多数编码器要求偶数。",
         "缩放至偶数分辨率：-vf scale=trunc(iw/2)*2:trunc(ih/2)*2。");
 
-    // ---- 时间戳 ----
-    add("timing.pts_non_monotonic", "PTS 非单调", IssueCategory::Timing,
-        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "次",
-        "同一流内出现 PTS 回退，解码器可能丢帧或报 timestamp 错误。",
-        "重新封装/转码，或检查拼接时时间戳是否重置。");
-
+    // ---- 时间戳（PTS 非单调 / 时间戳跳变等同步类问题统一由 TimelineAnalyzer 产出，
+    //        以 category=Timing 的 DiagnosticIssue 并入诊断报告，此处不再重复规则） ----
     add("timing.dts_missing", "DTS 大量缺失", IssueCategory::Timing,
         IssueSeverity::Warning, QcRuleOp::MaxExceeded, 5.0, "%",
         "缺失 DTS 的包占比过高，含 B 帧时排序依赖播放器猜测。",
         "确保封装器写出 DTS（多数 muxer 默认会写，检查是否走了裸流）。");
-
-    add("timing.gap", "时间戳跳变", IssueCategory::Timing,
-        IssueSeverity::Warning, QcRuleOp::MaxExceeded, 2.0, "s",
-        "相邻包时间戳出现大空洞，通常意味着丢数据或拼接错误。",
-        "核查源文件完整性；拼接场景请重算时间戳（-fflags +genpts）。");
 
     // ---- 音频 ----
     add("audio.sample_rate_low", "音频采样率偏低", IssueCategory::Audio,

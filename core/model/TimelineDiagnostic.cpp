@@ -20,16 +20,18 @@ const char* ToString(TimelineIssueType type) {
 }
 
 int TimelineAnalysisResult::CountOf(TimelineIssueType type) const {
+    const char* rid = RuleIdOf(type);
     int count = 0;
     for (const auto& issue : issues) {
-        if (issue.type == type) count += issue.occurrence_count;
+        if (issue.rule_id == rid) count += issue.occurrence_count;
     }
     return count;
 }
 
 bool TimelineAnalysisResult::HasIssue(TimelineIssueType type) const {
+    const char* rid = RuleIdOf(type);
     return std::any_of(issues.begin(), issues.end(),
-                       [type](const TimelineDiagnostic& issue) { return issue.type == type; });
+                       [rid](const DiagnosticIssue& issue) { return issue.rule_id == rid; });
 }
 
 } // namespace model
