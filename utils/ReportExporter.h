@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "core/analyzer/StreamAnalyzer.h"
+#include "core/model/QcReport.h"
 
 namespace videoeye {
 namespace utils {
@@ -41,6 +42,14 @@ public:
     
     // 生成报告摘要
     static std::string GenerateSummary(const analyzer::StreamStats& stats);
+
+    // ===== 诊断报告 (model::QcReport) 导出 =====
+    // 统一入口: 按扩展名分派 (.json/.html/.csv/.txt)
+    static bool ExportQcReport(const std::string& filename, const model::QcReport& report);
+    static bool ExportQcReportJSON(const std::string& filename, const model::QcReport& report);
+    static bool ExportQcReportHTML(const std::string& filename, const model::QcReport& report);
+    static bool ExportQcReportCSV(const std::string& filename, const model::QcReport& report);
+    static bool ExportQcReportText(const std::string& filename, const model::QcReport& report);
     
 private:
     // 格式化时间

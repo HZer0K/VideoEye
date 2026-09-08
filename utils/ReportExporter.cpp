@@ -1,6 +1,7 @@
 #include "ReportExporter.h"
 #include "Logger.h"
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <sstream>
 #include <iomanip>
@@ -222,6 +223,274 @@ bool ReportExporter::ExportHTMLReport(
     
     file.close();
     LOG_INFO("HTML报告已导出: " + filename);
+    return true;
+}
+
+// ===========================================================================
+// 诊断报告 (model::QcReport) 导出
+// ===========================================================================
+
+bool ReportExporter::ExportQcReport(const std::string& filename, const model::QcReport& report) {
+    const std::string lower = [&filename]() {
+        std::string s;
+        const size_t dot = filename.rfind('.');
+        if (dot != std::string::npos) {
+            s = filename.substr(dot);
+            std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+        }
+        return s;
+    }();
+
+    if (lower == ".json") return ExportQcReportJSON(filename, report);
+    if (lower == ".html" || lower == ".htm") return ExportQcReportHTML(filename, report);
+    if (lower == ".csv") return ExportQcReportCSV(filename, report);
+    return ExportQcReportText(filename, report);
+}
+
+bool ReportExporter::ExportQcReportJSON(const std::string& filename, const model::QcReport& report) {
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+        LOG_ERROR("无法创建诊断JSON文件: " + filename);
+        return false;
+    }
+
+    file << "{\n";
+    file << "  \"file_path\": \"" << EscapeJSON(report.file_path) << "\",\n";
+    file << "  \"file_name\": \"" << EscapeJSON(report.file_name) << "\",\n";
+    file << "  \"container_format\": \"" << EscapeJSON(report.container_format) << "\",\n";
+    file << "  \"duration_seconds\": " << std::fixed << std::setprecision(3)
+         << report.duration_seconds << ",\n";
+    file << "  \"file_size_bytes\": " << report.file_size_bytes << ",\n";
+    file << "  \"overall_bitrate_bps\": " << report.overall_bitrate_bps << ",\n";
+    file << "  \"video_stream_count\": " << report.video_stream_count << ",\n";
+    file << "  \"audio_stream_count\": " << report.audio_stream_count << ",\n";
+    file << "  \"score\": " << std::fixed << std::setprecision(1) << report.score << ",\n";
+    file << "  \"verdict\": \"" << EscapeJSON(report.verdict) << "\",\n";
+    file << "  \"generated_at\": \"" << EscapeJSON(report.generated_at) << "\",\n";
+    file << "  \"analysis_elapsed_ms\": " << std::fixed << std::setprecision(1)
+         << report.analysis_elapsed_ms << ",\n";
+    file << "  \"completed\": " << (report.completed ? "true" : "false") << ",\n";
+
+    file << "  \"severity_counts\": {\n";
+    file << "    \"critical\": " << report.CountBySeverity(model::IssueSeverity::Critical) << ",\n";
+    file << "    \"error\": " << report.CountBySeverity(model::IssueSeverity::Error) << ",\n";
+    file << "    \"warning\": " << report.CountBySeverity(model::IssueSeverity::Warning) << ",\n";
+    file << "    \"info\": " << report.CountBySeverity(model::IssueSeverity::Info) << "\n";
+    file << "  },\n";
+
+    file << "  \"issues\": [\n";
+    for (size_t i = 0; i < report.issues.size(); ++i) {
+        const auto& issue = report.issues[i];
+        file << "    {\n";
+        file << "      \"rule_id\": \"" << EscapeJSON(issue.rule_id) << "\",\n";
+        file << "      \"title\": \"" << EscapeJSON(issue.title) << "\",\n";
+        file << "      \"severity\": \"" << EscapeJSON(issue.SeverityText()) << "\",\n";
+        file << "      \"category\": \"" << EscapeJSON(issue.CategoryText()) << "\",\n";
+        file << "      \"detail\": \"" << EscapeJSON(issue.detail) << "\",\n";
+        file << "      \"suggestion\": \"" << EscapeJSON(issue.suggestion) << "\",\n";
+        file << "      \"time_range\": \"" << EscapeJSON(issue.range.ToString()) << "\",\n";
+        file << "      \"stream_index\": " << issue.stream_index << ",\n";
+        file << "      \"metric_value\": " << std::fixed << std::setprecision(4)
+             << issue.metric_value << ",\n";
+        file << "      \"threshold\": " << std::fixed << std::setprecision(4)
+             << issue.threshold << ",\n";
+        file << "      \"occurrence_count\": " << issue.occurrence_count << "\n";
+        file << "    }" << (i + 1 < report.issues.size() ? "," : "") << "\n";
+    }
+    file << "  ],\n";
+
+    file << "  \"rules\": [\n";
+    for (size_t i = 0; i < report.rules.size(); ++i) {
+        const auto& rule = report.rules[i];
+        file << "    {\n";
+        file << "      \"id\": \"" << EscapeJSON(rule.id) << "\",\n";
+        file << "      \"name\": \"" << EscapeJSON(rule.name) << "\",\n";
+        file << "      \"category\": \"" << EscapeJSON(ToString(rule.category)) << "\",\n";
+        file << "      \"severity\": \"" << EscapeJSON(ToString(rule.severity)) << "\",\n";
+        file << "      \"op\": \"" << EscapeJSON(ToString(rule.op)) << "\",\n";
+        file << "      \"threshold\": " << std::fixed << std::setprecision(4) << rule.threshold << ",\n";
+        file << "      \"unit\": \"" << EscapeJSON(rule.unit) << "\",\n";
+        file << "      \"enabled\": " << (rule.enabled ? "true" : "false") << "\n";
+        file << "    }" << (i + 1 < report.rules.size() ? "," : "") << "\n";
+    }
+    file << "  ]\n";
+    file << "}\n";
+
+    file.close();
+    LOG_INFO("诊断JSON报告已导出: " + filename);
+    return true;
+}
+
+bool ReportExporter::ExportQcReportHTML(const std::string& filename, const model::QcReport& report) {
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+        LOG_ERROR("无法创建诊断HTML文件: " + filename);
+        return false;
+    }
+
+    auto severity_class = [](model::IssueSeverity severity) {
+        switch (severity) {
+            case model::IssueSeverity::Critical: return "critical";
+            case model::IssueSeverity::Error:    return "error";
+            case model::IssueSeverity::Warning:  return "warning";
+            case model::IssueSeverity::Info:     return "info";
+        }
+        return "info";
+    };
+
+    file << "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n";
+    file << "  <meta charset=\"UTF-8\">\n  <title>VideoEye 诊断报告</title>\n";
+    file << "  <style>\n"
+         << "    body { font-family: 'Microsoft YaHei', Arial, sans-serif; margin: 24px; color: #222; }\n"
+         << "    h1 { font-size: 22px; }\n"
+         << "    h2 { font-size: 18px; margin-top: 28px; border-left: 4px solid #4CAF50; padding-left: 8px; }\n"
+         << "    table { border-collapse: collapse; width: 100%; margin-top: 10px; }\n"
+         << "    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; vertical-align: top; }\n"
+         << "    th { background-color: #f5f5f5; }\n"
+         << "    .score { font-size: 32px; font-weight: bold; }\n"
+         << "    .pass { color: #2e7d32; } .warn { color: #ef6c00; } .fail { color: #c62828; }\n"
+         << "    .critical td:first-child { color: #c62828; font-weight: bold; }\n"
+         << "    .error td:first-child { color: #c62828; }\n"
+         << "    .warning td:first-child { color: #ef6c00; }\n"
+         << "    .info td:first-child { color: #1565c0; }\n"
+         << "    .meta { color: #666; font-size: 13px; }\n"
+         << "  </style>\n</head>\n<body>\n";
+
+    file << "  <h1>VideoEye 诊断报告</h1>\n";
+    file << "  <p class=\"meta\">文件: " << EscapeHTML(report.file_path)
+         << " ｜ 生成时间: " << EscapeHTML(report.generated_at)
+         << " ｜ 分析耗时: " << std::fixed << std::setprecision(0) << report.analysis_elapsed_ms
+         << " ms" << (report.completed ? "" : " ｜ <b>分析被取消，结果不完整</b>") << "</p>\n";
+
+    const std::string verdict_class =
+        (report.score >= 90.0) ? "pass" : ((report.score >= 70.0) ? "warn" : "fail");
+    file << "  <h2>总览</h2>\n";
+    file << "  <p class=\"score " << verdict_class << "\">" << std::fixed << std::setprecision(1)
+         << report.score << " / 100 — " << EscapeHTML(report.verdict) << "</p>\n";
+    file << "  <table>\n    <tr><th>指标</th><th>值</th></tr>\n";
+    file << "    <tr><td>容器格式</td><td>" << EscapeHTML(report.container_format) << "</td></tr>\n";
+    file << "    <tr><td>时长</td><td>" << FormatTime(report.duration_seconds) << " ("
+         << std::fixed << std::setprecision(3) << report.duration_seconds << " s)</td></tr>\n";
+    file << "    <tr><td>文件大小</td><td>" << (report.file_size_bytes / 1024) << " KB</td></tr>\n";
+    file << "    <tr><td>整体码率</td><td>" << FormatBitrate(static_cast<int>(report.overall_bitrate_bps)) << "</td></tr>\n";
+    file << "    <tr><td>视频流 / 音频流</td><td>" << report.video_stream_count << " / "
+         << report.audio_stream_count << "</td></tr>\n";
+    file << "    <tr><td>问题数（致命/错误/警告/提示）</td><td>"
+         << report.CountBySeverity(model::IssueSeverity::Critical) << " / "
+         << report.CountBySeverity(model::IssueSeverity::Error) << " / "
+         << report.CountBySeverity(model::IssueSeverity::Warning) << " / "
+         << report.CountBySeverity(model::IssueSeverity::Info) << "</td></tr>\n";
+    file << "  </table>\n";
+
+    file << "  <h2>问题清单</h2>\n";
+    if (report.issues.empty()) {
+        file << "  <p>未发现问题。</p>\n";
+    } else {
+        file << "  <table>\n    <tr><th>严重度</th><th>类别</th><th>问题</th><th>位置</th>"
+                "<th>说明</th><th>建议</th></tr>\n";
+        for (const auto& issue : report.issues) {
+            file << "    <tr class=\"" << severity_class(issue.severity) << "\">"
+                 << "<td>" << EscapeHTML(issue.SeverityText()) << "</td>"
+                 << "<td>" << EscapeHTML(issue.CategoryText()) << "</td>"
+                 << "<td>" << EscapeHTML(issue.title) << "</td>"
+                 << "<td>" << EscapeHTML(issue.range.ToString()) << "</td>"
+                 << "<td>" << EscapeHTML(issue.detail) << "</td>"
+                 << "<td>" << EscapeHTML(issue.suggestion) << "</td></tr>\n";
+        }
+        file << "  </table>\n";
+    }
+
+    file << "  <h2>规则快照</h2>\n";
+    file << "  <table>\n    <tr><th>规则</th><th>类别</th><th>判定</th><th>阈值</th><th>启用</th></tr>\n";
+    for (const auto& rule : report.rules) {
+        file << "    <tr><td>" << EscapeHTML(rule.name) << " (" << EscapeHTML(rule.id) << ")</td>"
+             << "<td>" << EscapeHTML(ToString(rule.category)) << "</td>"
+             << "<td>" << EscapeHTML(ToString(rule.op)) << "</td>"
+             << "<td>" << std::fixed << std::setprecision(2) << rule.threshold
+             << " " << EscapeHTML(rule.unit) << "</td>"
+             << "<td>" << (rule.enabled ? "是" : "否") << "</td></tr>\n";
+    }
+    file << "  </table>\n";
+
+    file << "  <p class=\"meta\">Generated by VideoEye 2.0</p>\n</body>\n</html>\n";
+
+    file.close();
+    LOG_INFO("诊断HTML报告已导出: " + filename);
+    return true;
+}
+
+bool ReportExporter::ExportQcReportCSV(const std::string& filename, const model::QcReport& report) {
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+        LOG_ERROR("无法创建诊断CSV文件: " + filename);
+        return false;
+    }
+
+    // CSV 字段转义: 加引号 + 内部引号翻倍
+    auto csv_field = [](const std::string& text) {
+        std::string out = "\"";
+        for (const char c : text) {
+            if (c == '"') out += "\"\"";
+            else out += c;
+        }
+        out += "\"";
+        return out;
+    };
+
+    file << "\xEF\xBB\xBF";  // UTF-8 BOM for Excel
+    file << "严重度,类别,规则ID,问题,位置,流序号,实测值,阈值,出现次数,说明,建议\n";
+    for (const auto& issue : report.issues) {
+        file << csv_field(issue.SeverityText()) << ","
+             << csv_field(issue.CategoryText()) << ","
+             << csv_field(issue.rule_id) << ","
+             << csv_field(issue.title) << ","
+             << csv_field(issue.range.ToString()) << ","
+             << issue.stream_index << ","
+             << std::fixed << std::setprecision(4) << issue.metric_value << ","
+             << std::fixed << std::setprecision(4) << issue.threshold << ","
+             << issue.occurrence_count << ","
+             << csv_field(issue.detail) << ","
+             << csv_field(issue.suggestion) << "\n";
+    }
+
+    file.close();
+    LOG_INFO("诊断CSV报告已导出: " + filename);
+    return true;
+}
+
+bool ReportExporter::ExportQcReportText(const std::string& filename, const model::QcReport& report) {
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+        LOG_ERROR("无法创建诊断文本报告: " + filename);
+        return false;
+    }
+
+    file << "========================================\n";
+    file << "  VideoEye 诊断报告\n";
+    file << "========================================\n\n";
+    file << "文件: " << report.file_path << "\n";
+    file << "生成时间: " << report.generated_at << "\n";
+    file << "评分: " << std::fixed << std::setprecision(1) << report.score << " / 100 ("
+         << report.verdict << ")\n";
+    if (!report.completed) file << "注意: 分析被取消，结果不完整\n";
+    file << "\n--- 问题清单 ---\n";
+    if (report.issues.empty()) {
+        file << "未发现问题。\n";
+    } else {
+        for (size_t i = 0; i < report.issues.size(); ++i) {
+            const auto& issue = report.issues[i];
+            file << "[" << (i + 1) << "] " << issue.SeverityText() << " / " << issue.CategoryText()
+                 << " / " << issue.title << "\n"
+                 << "    位置: " << issue.range.ToString() << "\n"
+                 << "    " << issue.detail << "\n"
+                 << "    建议: " << issue.suggestion << "\n";
+        }
+    }
+
+    file.close();
+    LOG_INFO("诊断文本报告已导出: " + filename);
     return true;
 }
 

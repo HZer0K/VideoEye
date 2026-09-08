@@ -5,6 +5,7 @@
 #include <QGroupBox>
 #include <QSplitter>
 #include <QHeaderView>
+#include <QColor>
 #include <QDateTime>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -74,6 +75,7 @@ AnalysisPanel::AnalysisPanel(QWidget* parent)
     feature_enabled_[AnalysisFeature::ContainerStructure] = true;
     feature_enabled_[AnalysisFeature::Macroblock] = false;
     feature_enabled_[AnalysisFeature::SceneChange] = false;
+    feature_enabled_[AnalysisFeature::Diagnostics] = true;
 
     SetupUI();
     
@@ -101,8 +103,10 @@ void AnalysisPanel::SetupUI() {
     SetupContainerStructureTab();
     SetupMacroblockTab();
     SetupSceneChangeTab();
+    SetupDiagnosticsTab();
 
     qRegisterMetaType<analyzer::SceneChangeResult>();
+    qRegisterMetaType<analyzer::AnalysisResult>();
 }
 
 bool AnalysisPanel::IsFeatureEnabled(AnalysisFeature feature) const {
@@ -3690,6 +3694,410 @@ void AnalysisPanel::OnVideoFrameTableSelectionChanged() {
     // 自动切到 detail_sub_tabs_ 的「包」子页 (合并后只切内部 Tab 不切外部页)
     if (detail_sub_tabs_) {
         detail_sub_tabs_->setCurrentIndex(1);
+    }
+}
+
+// ===========================================================================
+// 诊断与报告标签页（全文件扫描 + QC 规则引擎）
+// ===========================================================================
+
+void AnalysisPanel::SetupDiagnosticsTab() {
+    diagnostics_tab_ = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(diagnostics_tab_);
+    layout->setContentsMargins(4, 2, 4, 4);
+    layout->setSpacing(4);
+
+    // 第一行: 标题 + 控制按钮
+    {
+        QWidget* row = new QWidget(diagnostics_tab_);
+        QHBoxLayout* rl = new QHBoxLayout(row);
+        rl->setContentsMargins(0, 0, 0, 0);
+        QLabel* title = new QLabel(tr("诊断与报告（全文件扫描）"), row);
+        QFont title_font = title->font();
+        title_font.setBold(true);
+        title_font.setPointSize(title_font.pointSize() + 1);
+        title->setFont(title_font);
+        rl->addWidget(title);
+        rl->addStretch();
+
+        qc_start_button_ = new QPushButton(tr("开始分析"), row);
+        qc_start_button_->setToolTip(tr("对当前文件做一次完整 demux 扫描并按规则生成诊断报告"));
+        connect(qc_start_button_, &QPushButton::clicked, this, &AnalysisPanel::OnStartDiagnostics);
+        rl->addWidget(qc_start_button_);
+
+        qc_cancel_button_ = new QPushButton(tr("取消"), row);
+        qc_cancel_button_->setEnabled(false);
+        connect(qc_cancel_button_, &QPushButton::clicked, this, &AnalysisPanel::OnCancelDiagnostics);
+        rl->addWidget(qc_cancel_button_);
+
+        qc_export_button_ = new QPushButton(tr("导出报告"), row);
+        qc_export_button_->setEnabled(false);
+        connect(qc_export_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportQcReport);
+        rl->addWidget(qc_export_button_);
+        layout->addWidget(row);
+    }
+
+    qc_progress_bar_ = new QProgressBar(diagnostics_tab_);
+    qc_progress_bar_->setRange(0, 100);
+    qc_progress_bar_->setValue(0);
+    qc_progress_bar_->setTextVisible(true);
+    qc_progress_bar_->setFormat(tr("未开始"));
+    layout->addWidget(qc_progress_bar_);
+
+    qc_summary_label_ = new QLabel(
+        tr("点击「开始分析」对当前文件做一次完整扫描，将按内置 QC 规则输出问题清单与评分。"));
+    qc_summary_label_->setWordWrap(true);
+    layout->addWidget(qc_summary_label_);
+
+    qc_sub_tabs_ = new QTabWidget(diagnostics_tab_);
+    qc_sub_tabs_->setMinimumHeight(360);
+
+    // ---- 子页 0: 问题清单 ----
+    {
+        QWidget* page = new QWidget(qc_sub_tabs_);
+        QVBoxLayout* pl = new QVBoxLayout(page);
+        pl->setContentsMargins(2, 2, 2, 2);
+
+        qc_chart_object_ = new QChart();
+        qc_chart_object_->setTitle(tr("逐秒码率 / 帧率"));
+        qc_bitrate_series_ = new QLineSeries();
+        qc_bitrate_series_->setName(tr("码率 (kbps)"));
+        qc_fps_series_ = new QLineSeries();
+        qc_fps_series_->setName(tr("帧率 (fps)"));
+        qc_chart_object_->addSeries(qc_bitrate_series_);
+        qc_chart_object_->addSeries(qc_fps_series_);
+        qc_axis_x_ = new QValueAxis();
+        qc_axis_x_->setTitleText(tr("时间 (s)"));
+        qc_axis_bitrate_ = new QValueAxis();
+        qc_axis_bitrate_->setTitleText(tr("kbps"));
+        qc_axis_fps_ = new QValueAxis();
+        qc_axis_fps_->setTitleText(tr("fps"));
+        qc_chart_object_->addAxis(qc_axis_x_, Qt::AlignBottom);
+        qc_chart_object_->addAxis(qc_axis_bitrate_, Qt::AlignLeft);
+        qc_chart_object_->addAxis(qc_axis_fps_, Qt::AlignRight);
+        qc_bitrate_series_->attachAxis(qc_axis_x_);
+        qc_bitrate_series_->attachAxis(qc_axis_bitrate_);
+        qc_fps_series_->attachAxis(qc_axis_x_);
+        qc_fps_series_->attachAxis(qc_axis_fps_);
+        qc_chart_view_ = new QChartView(qc_chart_object_, page);
+        qc_chart_view_->setMinimumHeight(220);
+        qc_chart_view_->setRenderHint(QPainter::Antialiasing);
+        pl->addWidget(qc_chart_view_);
+
+        qc_issue_table_ = new QTableWidget(0, 6, page);
+        qc_issue_table_->setHorizontalHeaderLabels(
+            {tr("严重度"), tr("类别"), tr("问题"), tr("位置"), tr("说明"), tr("建议")});
+        qc_issue_table_->verticalHeader()->setVisible(false);
+        qc_issue_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        qc_issue_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+        qc_issue_table_->horizontalHeader()->setStretchLastSection(true);
+        qc_issue_table_->setMinimumHeight(200);
+        pl->addWidget(qc_issue_table_);
+
+        qc_sub_tabs_->addTab(page, tr("问题清单"));
+    }
+
+    // ---- 子页 1: 规则与阈值 ----
+    {
+        QWidget* page = new QWidget(qc_sub_tabs_);
+        QVBoxLayout* pl = new QVBoxLayout(page);
+        pl->setContentsMargins(2, 2, 2, 2);
+
+        QLabel* hint = new QLabel(
+            tr("勾选启用列可开关规则，双击阈值可直接修改；修改后会立即用当前扫描结果重算报告。"),
+            page);
+        hint->setWordWrap(true);
+        pl->addWidget(hint);
+
+        qc_rule_table_ = new QTableWidget(0, 6, page);
+        qc_rule_table_->setHorizontalHeaderLabels(
+            {tr("启用"), tr("规则"), tr("类别"), tr("严重度"), tr("判定"), tr("阈值")});
+        qc_rule_table_->verticalHeader()->setVisible(false);
+        qc_rule_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+        qc_rule_table_->horizontalHeader()->setStretchLastSection(true);
+        pl->addWidget(qc_rule_table_);
+        connect(qc_rule_table_, &QTableWidget::itemChanged,
+                this, &AnalysisPanel::OnQcRuleItemChanged);
+
+        QPushButton* reset_btn = new QPushButton(tr("恢复默认规则"), page);
+        connect(reset_btn, &QPushButton::clicked, this, &AnalysisPanel::OnResetQcRules);
+        pl->addWidget(reset_btn, 0, Qt::AlignRight);
+
+        qc_sub_tabs_->addTab(page, tr("规则与阈值"));
+    }
+
+    layout->addWidget(qc_sub_tabs_);
+
+    // 规则表初始内容
+    RebuildRuleTable();
+
+    // 扫描线程回调 -> UI 线程
+    connect(&diagnostics_coordinator_, &analyzer::AnalysisCoordinator::ProgressReported,
+            this, &AnalysisPanel::OnDiagnosticsProgress);
+    connect(&diagnostics_coordinator_, &analyzer::AnalysisCoordinator::AnalysisFinished,
+            this, &AnalysisPanel::OnDiagnosticsFinished);
+    connect(&diagnostics_coordinator_, &analyzer::AnalysisCoordinator::AnalysisFailed,
+            this, &AnalysisPanel::OnDiagnosticsFailed);
+
+    AddPageWithScroll(diagnostics_tab_, tr("诊断与报告"));
+}
+
+void AnalysisPanel::OnStartDiagnostics() {
+    if (current_video_path_.empty()) {
+        QMessageBox::information(this, tr("提示"), tr("请先打开一个媒体文件。"));
+        return;
+    }
+    if (diagnostics_coordinator_.IsRunning()) {
+        QMessageBox::information(this, tr("提示"), tr("分析正在进行中。"));
+        return;
+    }
+
+    diagnostics_start_time_ = std::chrono::steady_clock::now();
+    has_diagnostics_result_ = false;
+    qc_issue_table_->setRowCount(0);
+    qc_export_button_->setEnabled(false);
+    qc_start_button_->setEnabled(false);
+    qc_cancel_button_->setEnabled(true);
+    qc_progress_bar_->setValue(0);
+    qc_progress_bar_->setFormat(tr("准备中 %p%"));
+    qc_summary_label_->setText(tr("正在扫描: %1").arg(QString::fromStdString(current_video_path_)));
+
+    diagnostics_generation_ = diagnostics_coordinator_.StartAnalysis(current_video_path_);
+}
+
+void AnalysisPanel::OnCancelDiagnostics() {
+    diagnostics_coordinator_.Cancel();
+    qc_cancel_button_->setEnabled(false);
+    qc_progress_bar_->setFormat(tr("取消中..."));
+}
+
+void AnalysisPanel::OnDiagnosticsProgress(quint64 generation, double percent, const QString& stage) {
+    if (generation != diagnostics_generation_) return;  // 旧任务的回调直接丢弃
+    qc_progress_bar_->setValue(static_cast<int>(percent));
+    qc_progress_bar_->setFormat(stage + " %p%");
+}
+
+void AnalysisPanel::OnDiagnosticsFinished(quint64 generation, bool completed,
+                                          const analyzer::AnalysisResult& result) {
+    if (generation != diagnostics_generation_) return;
+
+    diagnostics_result_ = result;
+    has_diagnostics_result_ = true;
+
+    const double elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now() - diagnostics_start_time_)
+                                  .count();
+
+    EvaluateDiagnostics();
+    current_qc_report_.analysis_elapsed_ms = elapsed_ms;
+
+    qc_start_button_->setEnabled(true);
+    qc_cancel_button_->setEnabled(false);
+    qc_export_button_->setEnabled(true);
+    qc_progress_bar_->setValue(100);
+    qc_progress_bar_->setFormat(completed ? tr("分析完成") : tr("已取消（结果不完整）"));
+    UpdateQcSummary();
+}
+
+void AnalysisPanel::OnDiagnosticsFailed(quint64 generation, const QString& message) {
+    if (generation != diagnostics_generation_) return;
+    qc_start_button_->setEnabled(true);
+    qc_cancel_button_->setEnabled(false);
+    qc_progress_bar_->setValue(0);
+    qc_progress_bar_->setFormat(tr("失败"));
+    qc_summary_label_->setText(message);
+    QMessageBox::warning(this, tr("分析失败"), message);
+}
+
+void AnalysisPanel::EvaluateDiagnostics() {
+    if (!has_diagnostics_result_) return;
+    current_qc_report_ = qc_rule_engine_.Evaluate(diagnostics_result_);
+    RebuildIssueTable();
+    UpdateQcChart();
+    UpdateQcSummary();
+}
+
+void AnalysisPanel::RebuildIssueTable() {
+    if (!qc_issue_table_) return;
+    qc_issue_table_->setRowCount(0);
+    qc_issue_table_->setRowCount(static_cast<int>(current_qc_report_.issues.size()));
+
+    for (int i = 0; i < static_cast<int>(current_qc_report_.issues.size()); ++i) {
+        const auto& issue = current_qc_report_.issues[i];
+        SetTableItemText(qc_issue_table_, i, 0, QString::fromStdString(issue.SeverityText()));
+        SetTableItemText(qc_issue_table_, i, 1, QString::fromStdString(issue.CategoryText()));
+        SetTableItemText(qc_issue_table_, i, 2, QString::fromStdString(issue.title));
+        SetTableItemText(qc_issue_table_, i, 3, QString::fromStdString(issue.range.ToString()));
+        SetTableItemText(qc_issue_table_, i, 4, QString::fromStdString(issue.detail));
+        SetTableItemText(qc_issue_table_, i, 5, QString::fromStdString(issue.suggestion));
+
+        QColor color = QColor("#1565c0");
+        switch (issue.severity) {
+            case model::IssueSeverity::Critical: color = QColor("#c62828"); break;
+            case model::IssueSeverity::Error:    color = QColor("#e53935"); break;
+            case model::IssueSeverity::Warning:  color = QColor("#ef6c00"); break;
+            case model::IssueSeverity::Info:     color = QColor("#1565c0"); break;
+        }
+        if (QTableWidgetItem* cell = qc_issue_table_->item(i, 0)) {
+            cell->setForeground(color);
+        }
+    }
+    qc_issue_table_->resizeColumnsToContents();
+}
+
+void AnalysisPanel::UpdateQcSummary() {
+    if (!qc_summary_label_) return;
+    if (!has_diagnostics_result_) {
+        qc_summary_label_->setText(
+            tr("点击「开始分析」对当前文件做一次完整扫描，将按内置 QC 规则输出问题清单与评分。"));
+        return;
+    }
+
+    const auto& report = current_qc_report_;
+    const auto& result = diagnostics_result_;
+    const int critical = report.CountBySeverity(model::IssueSeverity::Critical);
+    const int error = report.CountBySeverity(model::IssueSeverity::Error);
+    const int warning = report.CountBySeverity(model::IssueSeverity::Warning);
+    const int info = report.CountBySeverity(model::IssueSeverity::Info);
+
+    qc_summary_label_->setText(
+        tr("评分 <b>%1</b>/100（%2）｜ 致命 %3 · 错误 %4 · 警告 %5 · 提示 %6<br>"
+           "容器 %7 ｜ 时长 %8 s ｜ 平均码率 %9 kbps ｜ 视频流 %10 · 音频流 %11 ｜ 包 %12 ｜ 关键帧 %13")
+            .arg(QString::number(report.score, 'f', 1))
+            .arg(QString::fromStdString(report.verdict))
+            .arg(critical).arg(error).arg(warning).arg(info)
+            .arg(QString::fromStdString(result.container_format))
+            .arg(QString::number(result.duration_seconds, 'f', 3))
+            .arg(result.overall_bitrate_bps / 1000)
+            .arg(result.VideoStreamCount())
+            .arg(result.AudioStreamCount())
+            .arg(static_cast<qlonglong>(result.total_packets))
+            .arg(static_cast<qlonglong>(result.key_frame_count)));
+}
+
+void AnalysisPanel::UpdateQcChart() {
+    if (!qc_bitrate_series_ || !has_diagnostics_result_) return;
+    qc_bitrate_series_->clear();
+    qc_fps_series_->clear();
+
+    const auto& bitrate = diagnostics_result_.video_bitrate_kbps.IsEmpty()
+                              ? diagnostics_result_.total_bitrate_kbps
+                              : diagnostics_result_.video_bitrate_kbps;
+    for (const auto& sample : bitrate.samples) {
+        qc_bitrate_series_->append(sample.timestamp_seconds, sample.value);
+    }
+    for (const auto& sample : diagnostics_result_.video_fps.samples) {
+        qc_fps_series_->append(sample.timestamp_seconds, sample.value);
+    }
+
+    double max_t = 1.0;
+    if (!bitrate.samples.empty()) max_t = std::max(max_t, bitrate.samples.back().timestamp_seconds);
+    if (!diagnostics_result_.video_fps.samples.empty()) {
+        max_t = std::max(max_t, diagnostics_result_.video_fps.samples.back().timestamp_seconds);
+    }
+    qc_axis_x_->setRange(0, max_t);
+    qc_axis_bitrate_->setRange(0, std::max(1.0, bitrate.Max() * 1.2));
+    qc_axis_fps_->setRange(0, std::max(1.0, diagnostics_result_.video_fps.Max() * 1.2));
+}
+
+void AnalysisPanel::RebuildRuleTable() {
+    if (!qc_rule_table_) return;
+    qc_rule_table_updating_ = true;
+    qc_rule_table_->setRowCount(0);
+
+    const auto& rules = qc_rule_engine_.rules();
+    qc_rule_table_->setRowCount(static_cast<int>(rules.size()));
+    for (int i = 0; i < static_cast<int>(rules.size()); ++i) {
+        const auto& rule = rules[i];
+
+        QTableWidgetItem* enable_item = new QTableWidgetItem();
+        enable_item->setCheckState(rule.enabled ? Qt::Checked : Qt::Unchecked);
+        enable_item->setData(Qt::UserRole, QString::fromStdString(rule.id));
+        qc_rule_table_->setItem(i, 0, enable_item);
+
+        QTableWidgetItem* name_item = new QTableWidgetItem(QString::fromStdString(rule.name));
+        name_item->setToolTip(QString::fromStdString(rule.description));
+        name_item->setData(Qt::UserRole, QString::fromStdString(rule.id));
+        qc_rule_table_->setItem(i, 1, name_item);
+
+        SetTableItemText(qc_rule_table_, i, 2, QString::fromStdString(ToString(rule.category)));
+        SetTableItemText(qc_rule_table_, i, 3, QString::fromStdString(ToString(rule.severity)));
+        SetTableItemText(qc_rule_table_, i, 4, QString::fromStdString(ToString(rule.op)));
+
+        QTableWidgetItem* threshold_item =
+            new QTableWidgetItem(QString::number(rule.threshold, 'f', 2) +
+                                 QString::fromStdString(rule.unit));
+        threshold_item->setData(Qt::UserRole, QString::fromStdString(rule.id));
+        threshold_item->setToolTip(tr("双击修改阈值（仅需填写数值部分）"));
+        qc_rule_table_->setItem(i, 5, threshold_item);
+    }
+    qc_rule_table_->resizeColumnsToContents();
+    qc_rule_table_updating_ = false;
+}
+
+void AnalysisPanel::OnQcRuleItemChanged(QTableWidgetItem* item) {
+    if (!item || qc_rule_table_updating_) return;
+    const QString rule_id = item->data(Qt::UserRole).toString();
+    if (rule_id.isEmpty()) return;
+
+    model::QcRule* rule = model::FindQcRule(qc_rule_engine_.rules(), rule_id.toStdString());
+    if (!rule) return;
+
+    if (item->column() == 0) {
+        rule->enabled = (item->checkState() == Qt::Checked);
+    } else if (item->column() == 5) {
+        // 允许 "12.5s" / "12.5" 这类输入，取前导数字部分
+        const QString text = item->text().trimmed();
+        int end = 0;
+        while (end < text.size() &&
+               (text.at(end).isDigit() || text.at(end) == QLatin1Char('.') ||
+                text.at(end) == QLatin1Char('-') || text.at(end) == QLatin1Char('+'))) {
+            ++end;
+        }
+        bool ok = false;
+        const double value = text.left(end).toDouble(&ok);
+        if (!ok) {
+            // 还原显示
+            qc_rule_table_updating_ = true;
+            item->setText(QString::number(rule->threshold, 'f', 2) +
+                          QString::fromStdString(rule->unit));
+            qc_rule_table_updating_ = false;
+            return;
+        }
+        rule->threshold = value;
+    } else {
+        return;
+    }
+
+    if (has_diagnostics_result_) EvaluateDiagnostics();
+}
+
+void AnalysisPanel::OnResetQcRules() {
+    qc_rule_engine_.SetRules(model::DefaultQcRules());
+    RebuildRuleTable();
+    if (has_diagnostics_result_) EvaluateDiagnostics();
+}
+
+void AnalysisPanel::OnExportQcReport() {
+    if (!has_diagnostics_result_) {
+        QMessageBox::information(this, tr("提示"), tr("请先执行一次分析。"));
+        return;
+    }
+
+    const QString default_name =
+        QString::fromStdString(current_qc_report_.file_name.empty()
+                                   ? std::string("diagnostics")
+                                   : current_qc_report_.file_name) + "_diagnostics.html";
+    const QString filename = QFileDialog::getSaveFileName(
+        this, tr("导出诊断报告"), default_name,
+        tr("HTML 报告 (*.html);;JSON 报告 (*.json);;CSV 报告 (*.csv);;文本报告 (*.txt)"));
+    if (filename.isEmpty()) return;
+
+    if (utils::ReportExporter::ExportQcReport(filename.toStdString(), current_qc_report_)) {
+        QMessageBox::information(this, tr("成功"),
+            tr("诊断报告已导出到:\n%1").arg(filename));
+    } else {
+        QMessageBox::warning(this, tr("失败"), tr("导出诊断报告失败。"));
     }
 }
 

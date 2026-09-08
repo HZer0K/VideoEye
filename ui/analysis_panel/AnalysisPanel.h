@@ -25,6 +25,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtCharts/QValueAxis>
+#include <chrono>
 #include <deque>
 #include <vector>
 #include <string>
@@ -43,6 +44,9 @@
 #include "core/model/ContainerStructureInfo.h"
 #include "core/model/MacroblockInfo.h"
 #include "core/analyzer/SceneChangeAnalyzer.h"
+#include "core/analyzer/AnalysisCoordinator.h"
+#include "core/analyzer/QcRuleEngine.h"
+#include "core/model/QcReport.h"
 
 namespace videoeye {
 namespace ui {
@@ -65,7 +69,8 @@ public:
         AudioLoudness, // 音频响度监测
         ContainerStructure,  // 文件结构分析
         Macroblock,    // 宏块分析 (运动矢量/块统计)
-        SceneChange    // 场景切换检测 (镜头边界)
+        SceneChange,   // 场景切换检测 (镜头边界)
+        Diagnostics    // 诊断与报告 (全文件扫描 + QC 规则引擎)
     };
 
     explicit AnalysisPanel(QWidget* parent = nullptr);
@@ -116,6 +121,17 @@ public slots:
 
     // 导出报告
     void OnExportReport();
+
+    // 诊断与报告 (全文件扫描 + QC 规则引擎)
+    void OnStartDiagnostics();
+    void OnCancelDiagnostics();
+    void OnExportQcReport();
+    void OnResetQcRules();
+    void OnQcRuleItemChanged(QTableWidgetItem* item);
+    void OnDiagnosticsProgress(quint64 generation, double percent, const QString& stage);
+    void OnDiagnosticsFinished(quint64 generation, bool completed,
+                               const analyzer::AnalysisResult& result);
+    void OnDiagnosticsFailed(quint64 generation, const QString& message);
 
     // 包表/帧表按 PTS 互跳联动
     void OnPacketTableSelectionChanged();
@@ -213,6 +229,7 @@ private:
     void SetupContainerStructureTab();
     void SetupMacroblockTab();
     void SetupSceneChangeTab();
+    void SetupDiagnosticsTab();
     void RebuildFrameTable();
     void RebuildGopTable();
     void RebuildAudioFrameTable();
@@ -267,6 +284,14 @@ private:
     void UpdateSceneChangeChart();
     void UpdateSceneChangeSummary();
     void OnExportSceneChangeCsv();
+
+    // 诊断与报告页
+    void RebuildIssueTable();
+    void UpdateQcSummary();
+    void UpdateQcChart();
+    void RebuildRuleTable();
+    // 用 diagnostics_result_ + qc_rule_engine_ 生成报告并刷新 UI
+    void EvaluateDiagnostics();
 
     // 更新图表
     void UpdateBitrateChart(const analyzer::StreamStats& stats);
@@ -421,6 +446,33 @@ private:
     QPushButton* export_container_button_;
     model::ContainerStructureResult current_container_result_;
     
+    // 诊断与报告标签页
+    QWidget* diagnostics_tab_;
+    QPushButton* qc_start_button_;
+    QPushButton* qc_cancel_button_;
+    QPushButton* qc_export_button_;
+    QProgressBar* qc_progress_bar_;
+    QLabel* qc_summary_label_;
+    QTabWidget* qc_sub_tabs_;
+    QTableWidget* qc_issue_table_;
+    QChartView* qc_chart_view_;
+    QChart* qc_chart_object_;
+    QLineSeries* qc_bitrate_series_;
+    QLineSeries* qc_fps_series_;
+    QValueAxis* qc_axis_x_;
+    QValueAxis* qc_axis_bitrate_;
+    QValueAxis* qc_axis_fps_;
+    QTableWidget* qc_rule_table_;
+    bool qc_rule_table_updating_ = false;
+
+    analyzer::AnalysisCoordinator diagnostics_coordinator_;
+    analyzer::QcRuleEngine qc_rule_engine_;
+    analyzer::AnalysisResult diagnostics_result_;
+    model::QcReport current_qc_report_;
+    quint64 diagnostics_generation_ = 0;
+    bool has_diagnostics_result_ = false;
+    std::chrono::steady_clock::time_point diagnostics_start_time_;
+
     // 控制按钮
     QPushButton* export_button_;          // 流统计导出 (HTML/JSON/TXT)
     

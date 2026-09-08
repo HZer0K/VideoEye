@@ -216,9 +216,10 @@ void MainWindow::SetupSidebar() {
     sidebar_->setSpacing(0);
     sidebar_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     
-    // 导航项 (媒体信息 + 6 个分析功能页), 与 AnalysisPanel::PopulateStackedWidget
+    // 导航项 (媒体信息 + 7 个分析功能页), 与 AnalysisPanel::PopulateStackedWidget
     // 提供的页面顺序一一对应: 媒体信息 / 码流分析 / 事件与时间轴 / 音频响度 /
-    // 文件结构 / 宏块分析 / 场景切换。流/帧/包三个旧页已合并到"码流分析"。
+    // 文件结构 / 宏块分析 / 场景切换 / 诊断与报告。
+    // !! 增减 AnalysisPanel 的 AddPageWithScroll 调用必须同步修改本列表 !!
     QStringList nav_items = {
         tr("媒体信息"),
         tr("码流分析"),
@@ -226,7 +227,8 @@ void MainWindow::SetupSidebar() {
         tr("音频响度"),
         tr("文件结构"),
         tr("宏块分析"),
-        tr("场景切换")
+        tr("场景切换"),
+        tr("诊断与报告")
     };
     
     for (const QString& item : nav_items) {
