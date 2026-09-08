@@ -197,6 +197,7 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     stream_analyzer_.Reset();
     audio_frame_index_ = 0;
     packet_index_ = 0;
+    timeline_packet_index_ = 0;
     analysis_event_index_ = 0;
     sync_sample_index_ = 0;
     timeline_event_index_ = 0;
@@ -848,6 +849,35 @@ void MediaPlayer::DecodeThread() {
             emit PacketInfoReady(packet_info);
         }
 
+        // 时间轴与同步诊断（demux 层 packet 时间）
+        if (timeline_analysis_enabled_) {
+            AVStream* ts_stream = (format_ctx_ && packet->stream_index >= 0 &&
+                                   packet->stream_index < static_cast<int>(format_ctx_->nb_streams))
+                                      ? format_ctx_->streams[packet->stream_index]
+                                      : nullptr;
+            if (ts_stream) {
+                const double tb_ms = av_q2d(ts_stream->time_base) * 1000.0;
+                model::PacketTiming timing;
+                timing.index = timeline_packet_index_++;
+                timing.stream_index = packet->stream_index;
+                timing.media_type = static_cast<int>(ts_stream->codecpar->codec_type);
+                timing.pts_ms = (packet->pts != AV_NOPTS_VALUE)
+                                    ? static_cast<double>(packet->pts) * tb_ms
+                                    : model::kNoTimestamp;
+                timing.dts_ms = (packet->dts != AV_NOPTS_VALUE)
+                                    ? static_cast<double>(packet->dts) * tb_ms
+                                    : model::kNoTimestamp;
+                timing.duration_ms = (packet->duration > 0)
+                                         ? static_cast<double>(packet->duration) * tb_ms
+                                         : model::kNoTimestamp;
+                timing.pos = packet->pos;
+                timing.size = packet->size;
+                timing.flags = packet->flags;
+                timing.key_frame = (packet->flags & AV_PKT_FLAG_KEY) != 0;
+                emit TimelinePacketReady(timing);
+            }
+        }
+
         // 时间戳检查
         if (!std::isfinite(packet_ts_sec)) {
             if (!missing_packet_ts_reported_[packet->stream_index]) {
@@ -978,6 +1008,36 @@ void MediaPlayer::DecodeThread() {
                         emit VideoFrameInfoReady(video_frame_index_++,
                                                  static_cast<int>(video_decoder_->GetLastPictureType()),
                                                  is_key_frame, static_cast<qint64>(frame_data.pts), ts);
+                        // 时间轴与同步诊断（decode 层 frame 时间：best_effort / repeat_pict）
+                        if (timeline_analysis_enabled_) {
+                            AVStream* vs = format_ctx_->streams[video_stream_index_];
+                            const double tb_ms = (vs && vs->time_base.den != 0)
+                                                     ? av_q2d(vs->time_base) * 1000.0
+                                                     : 0.0;
+                            const AVFrame* raw = video_decoder_->GetLastRawFrame();
+                            model::FrameTimingInfo timing;
+                            timing.index = static_cast<int>(video_frame_index_ - 1);
+                            timing.stream_index = video_stream_index_;
+                            timing.pts_ms = (frame_data.pts != AV_NOPTS_VALUE)
+                                                ? static_cast<double>(frame_data.pts) * tb_ms
+                                                : model::kNoTimestamp;
+                            if (raw) {
+                                timing.best_effort_ms =
+                                    (raw->best_effort_timestamp != AV_NOPTS_VALUE)
+                                        ? static_cast<double>(raw->best_effort_timestamp) * tb_ms
+                                        : model::kNoTimestamp;
+                                timing.duration_ms = (raw->duration > 0)
+                                                         ? static_cast<double>(raw->duration) * tb_ms
+                                                         : model::kNoTimestamp;
+                                timing.pict_type = static_cast<int>(raw->pict_type);
+                                timing.repeat_pict = raw->repeat_pict;
+                                timing.key_frame = (raw->flags & AV_FRAME_FLAG_KEY) != 0;
+                            } else {
+                                timing.key_frame = is_key_frame;
+                            }
+                            timing.display_ms = ts * 1000.0;
+                            emit FrameTimingReady(timing);
+                        }
                         if (is_key_frame) {
                             EmitTimelineEvent(QStringLiteral("视频关键帧"), ts,
                                               QStringLiteral("关键帧 #%1").arg(emitted_index));

@@ -32,6 +32,7 @@ extern "C" {
 #include "core/model/PacketInfo.h"
 #include "core/model/SyncSample.h"
 #include "core/model/TimelineEvent.h"
+#include "core/model/FrameTimingInfo.h"
 #include "core/analyzer/StreamAnalyzer.h"
 #include "core/analyzer/ContainerStructureAnalyzer.h"
 #include "core/analyzer/MacroblockAnalyzer.h"
@@ -131,6 +132,9 @@ signals:
     void AnalysisEventReady(const model::AnalysisEvent& event_info);
     void SyncSampleListReset();
     void SyncSampleReady(const model::SyncSample& sample);
+    // 时间轴与同步诊断（demux 层 packet 时间 / decode 层 frame 时间）
+    void TimelinePacketReady(const model::PacketTiming& timing);
+    void FrameTimingReady(const model::FrameTimingInfo& timing);
     void TimelineEventListReset();
     void TimelineEventReady(const model::TimelineEvent& event);
     void AudioVisualizationReady(const model::AudioVisualizationFrame& frame);
@@ -243,6 +247,7 @@ private:
     int scene_change_frame_index_ = 0;
     int audio_frame_index_ = 0;
     int packet_index_ = 0;
+    int timeline_packet_index_ = 0;
     int analysis_event_index_ = 0;
     int sync_sample_index_ = 0;
     int timeline_event_index_ = 0;

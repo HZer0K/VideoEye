@@ -745,7 +745,17 @@ void MainWindow::SetupConnections() {
             analysis_panel_, &ui::AnalysisPanel::ResetTimelineEventList);
     connect(player_, &player::MediaPlayer::TimelineEventReady,
             analysis_panel_, &ui::AnalysisPanel::AppendTimelineEvent);
-    
+    // 时间轴与同步诊断（demux 层 packet 时间 / decode 层 frame 时间）
+    connect(player_, &player::MediaPlayer::TimelinePacketReady,
+            analysis_panel_, &ui::AnalysisPanel::OnTimelinePacket);
+    connect(player_, &player::MediaPlayer::FrameTimingReady,
+            analysis_panel_, &ui::AnalysisPanel::OnFrameTiming);
+    // 诊断页"跳转到问题帧" -> 播放器 seek
+    connect(analysis_panel_, &ui::AnalysisPanel::SeekRequested,
+            this, [this](double seconds) {
+                if (player_) player_->Seek(seconds, player_->GetSeekMode());
+            });
+
     // 统一容器结构分析信号
     connect(player_, &player::MediaPlayer::ContainerStructureReady,
             analysis_panel_, &ui::AnalysisPanel::OnContainerStructureReady);

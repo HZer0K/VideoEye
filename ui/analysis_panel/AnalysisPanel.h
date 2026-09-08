@@ -25,6 +25,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtCharts/QValueAxis>
+#include <QtCharts/QScatterSeries>
 #include <chrono>
 #include <deque>
 #include <vector>
@@ -46,6 +47,9 @@
 #include "core/analyzer/SceneChangeAnalyzer.h"
 #include "core/analyzer/AnalysisCoordinator.h"
 #include "core/analyzer/QcRuleEngine.h"
+#include "core/analyzer/TimelineAnalyzer.h"
+#include "core/model/FrameTimingInfo.h"
+#include "core/model/TimelineDiagnostic.h"
 #include "core/model/QcReport.h"
 
 namespace videoeye {
@@ -89,6 +93,11 @@ public:
     // 设置当前视频文件路径 (供导出报告)
     void SetCurrentVideoPath(const QString& path) {
         current_video_path_ = path.toStdString();
+        // 切换文件后重置时间轴累计状态 (避免上一文件的数据混入)
+        timeline_analyzer_.Reset();
+        timeline_result_ = model::TimelineAnalysisResult{};
+        timeline_offline_ = false;
+        timeline_dirty_ = false;
     }
     
     // 重新发射所有启用状态的开关信号 (用于文件打开后同步播放器状态)
@@ -97,6 +106,9 @@ public:
 signals:
     // 分析功能开关变化信号 (供 MainWindow 连接 MediaPlayer)
     void AnalysisFeatureToggled(int feature, bool enabled);
+
+    // 跳转到指定时间（秒）: 由"跳转到问题帧"触发, MainWindow 连接到播放器 Seek
+    void SeekRequested(double seconds);
     
 public slots:
     // 更新统计数据
@@ -132,6 +144,12 @@ public slots:
     void OnDiagnosticsFinished(quint64 generation, bool completed,
                                const analyzer::AnalysisResult& result);
     void OnDiagnosticsFailed(quint64 generation, const QString& message);
+
+    // 时间轴与同步诊断（播放实时数据）
+    void OnTimelinePacket(const model::PacketTiming& timing);
+    void OnFrameTiming(const model::FrameTimingInfo& timing);
+    void OnTimelineMarkerHovered(const QPointF& point, bool state);
+    void OnJumpToTimelineIssue();
 
     // 包表/帧表按 PTS 互跳联动
     void OnPacketTableSelectionChanged();
@@ -243,6 +261,7 @@ private:
     void UpdateEventSummary();
     void UpdateSyncSummary();
     void UpdateTimelineSummary();
+    void UpdateTimelineChart();
     QString FrameTypeToString(int frame_type) const;
     QString PacketFlagsToString(int flags) const;
     QString PacketStreamTypeToName(int type) const;
@@ -292,6 +311,11 @@ private:
     void RebuildRuleTable();
     // 用 diagnostics_result_ + qc_rule_engine_ 生成报告并刷新 UI
     void EvaluateDiagnostics();
+    // 时间轴与同步页
+    void SetupTimelineDiagnosticsSubPage();
+    void RefreshTimelineUi();
+    void UpdateTimelineDiagnosticChart();
+    void UpdateTimelineDiagnosticSummary();
 
     // 更新图表
     void UpdateBitrateChart(const analyzer::StreamStats& stats);
@@ -300,7 +324,6 @@ private:
     void UpdateGOPChart();
     void ResetStreamCharts();
     void UpdateSyncChart();
-    void UpdateTimelineChart();
     
     // 分析功能开关
     QMap<AnalysisFeature, bool> feature_enabled_;
@@ -464,6 +487,22 @@ private:
     QValueAxis* qc_axis_fps_;
     QTableWidget* qc_rule_table_;
     bool qc_rule_table_updating_ = false;
+
+    // 时间轴与同步（诊断与报告页的子页）
+    QWidget* timeline_sub_;
+    QLabel* timeline_diag_summary_label_;
+    QChartView* timeline_issue_chart_;
+    QChart* timeline_issue_chart_object_;
+    QLineSeries* timeline_interval_series_;
+    QScatterSeries* timeline_marker_series_;
+    QValueAxis* timeline_chart_axis_x_;
+    QValueAxis* timeline_chart_axis_y_;
+    QTableWidget* timeline_issue_table_;
+    QVector<int> timeline_marker_issue_index_;   // 散点序号 -> 问题序号
+    analyzer::TimelineAnalyzer timeline_analyzer_;
+    model::TimelineAnalysisResult timeline_result_;
+    bool timeline_dirty_ = false;
+    bool timeline_offline_ = false;              // true = 数据来自全文件扫描
 
     analyzer::AnalysisCoordinator diagnostics_coordinator_;
     analyzer::QcRuleEngine qc_rule_engine_;

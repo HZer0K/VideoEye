@@ -1818,6 +1818,11 @@ void AnalysisPanel::AppendSyncSample(const model::SyncSample& sample) {
     sync_table_dirty_ = true;
     sync_summary_dirty_ = true;
     TrimRecords(sync_sample_records_, sync_table_synced_record_count_, sync_table_, sync_table_dirty_, kMaxSyncRecords);
+
+    // 同步采样同时喂给时间轴分析器（构建音视频偏移曲线）
+    timeline_analyzer_.OnSyncSample(sample.audio_timestamp_seconds * 1000.0,
+                                    sample.video_timestamp_seconds * 1000.0);
+    timeline_dirty_ = true;
 }
 
 void AnalysisPanel::AppendTimelineEvent(const model::TimelineEvent& event) {
@@ -2659,6 +2664,13 @@ void AnalysisPanel::FlushPendingUiUpdates() {
     if (scene_change_dirty_) {
         FlushPendingSceneChangeTable();
         scene_change_dirty_ = false;
+    }
+    if (timeline_dirty_) {
+        // 实时解码路径：用当前累积状态做一份快照（Finish 在副本上执行，不破坏累积状态）
+        timeline_result_ = timeline_analyzer_.Snapshot();
+        timeline_offline_ = false;
+        RefreshTimelineUi();
+        timeline_dirty_ = false;
     }
 }
 
@@ -3828,6 +3840,9 @@ void AnalysisPanel::SetupDiagnosticsTab() {
 
     layout->addWidget(qc_sub_tabs_);
 
+    // 时间轴与同步子页
+    SetupTimelineDiagnosticsSubPage();
+
     // 规则表初始内容
     RebuildRuleTable();
 
@@ -3912,6 +3927,12 @@ void AnalysisPanel::OnDiagnosticsFailed(quint64 generation, const QString& messa
 void AnalysisPanel::EvaluateDiagnostics() {
     if (!has_diagnostics_result_) return;
     current_qc_report_ = qc_rule_engine_.Evaluate(diagnostics_result_);
+
+    // 时间轴与同步诊断：直接复用全文件扫描的 demux 层结果
+    timeline_result_ = diagnostics_result_.timeline;
+    timeline_offline_ = true;
+    RefreshTimelineUi();
+
     RebuildIssueTable();
     UpdateQcChart();
     UpdateQcSummary();
@@ -4099,6 +4120,229 @@ void AnalysisPanel::OnExportQcReport() {
     } else {
         QMessageBox::warning(this, tr("失败"), tr("导出诊断报告失败。"));
     }
+}
+
+// ===========================================================================
+// 时间轴与同步诊断（诊断与报告页的子页）
+// ===========================================================================
+
+void AnalysisPanel::SetupTimelineDiagnosticsSubPage() {
+    timeline_sub_ = new QWidget(qc_sub_tabs_);
+    QVBoxLayout* layout = new QVBoxLayout(timeline_sub_);
+    layout->setContentsMargins(2, 2, 2, 2);
+
+    timeline_diag_summary_label_ = new QLabel(
+        tr("开启「事件与时间轴」分析并播放，或在本页执行一次全文件扫描，"
+           "将输出 PTS/DTS、音视频同步、帧间隔与 VFR/CFR 判定。"));
+    timeline_diag_summary_label_->setWordWrap(true);
+    layout->addWidget(timeline_diag_summary_label_);
+
+    // 帧间隔曲线 + 问题标记散点
+    timeline_issue_chart_object_ = new QChart();
+    timeline_issue_chart_object_->setTitle(tr("帧间隔与问题分布"));
+    timeline_interval_series_ = new QLineSeries();
+    timeline_interval_series_->setName(tr("帧间隔 (ms)"));
+    timeline_marker_series_ = new QScatterSeries();
+    timeline_marker_series_->setName(tr("问题"));
+    timeline_marker_series_->setMarkerSize(10.0);
+    timeline_issue_chart_object_->addSeries(timeline_interval_series_);
+    timeline_issue_chart_object_->addSeries(timeline_marker_series_);
+    timeline_chart_axis_x_ = new QValueAxis();
+    timeline_chart_axis_x_->setTitleText(tr("时间 (s)"));
+    timeline_chart_axis_y_ = new QValueAxis();
+    timeline_chart_axis_y_->setTitleText(tr("间隔 (ms)"));
+    timeline_issue_chart_object_->addAxis(timeline_chart_axis_x_, Qt::AlignBottom);
+    timeline_issue_chart_object_->addAxis(timeline_chart_axis_y_, Qt::AlignLeft);
+    timeline_interval_series_->attachAxis(timeline_chart_axis_x_);
+    timeline_interval_series_->attachAxis(timeline_chart_axis_y_);
+    timeline_marker_series_->attachAxis(timeline_chart_axis_x_);
+    timeline_marker_series_->attachAxis(timeline_chart_axis_y_);
+    timeline_issue_chart_ = new QChartView(timeline_issue_chart_object_, timeline_sub_);
+    timeline_issue_chart_->setMinimumHeight(220);
+    timeline_issue_chart_->setRenderHint(QPainter::Antialiasing);
+    layout->addWidget(timeline_issue_chart_);
+
+    connect(timeline_marker_series_, &QScatterSeries::hovered,
+            this, &AnalysisPanel::OnTimelineMarkerHovered);
+
+    timeline_issue_table_ = new QTableWidget(0, 6, timeline_sub_);
+    timeline_issue_table_->setHorizontalHeaderLabels(
+        {tr("类型"), tr("严重度"), tr("流"), tr("时间码"), tr("次数"), tr("说明")});
+    timeline_issue_table_->verticalHeader()->setVisible(false);
+    timeline_issue_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    timeline_issue_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    timeline_issue_table_->horizontalHeader()->setStretchLastSection(true);
+    timeline_issue_table_->setMinimumHeight(200);
+    layout->addWidget(timeline_issue_table_);
+
+    QWidget* button_row = new QWidget(timeline_sub_);
+    QHBoxLayout* bl = new QHBoxLayout(button_row);
+    bl->setContentsMargins(0, 0, 0, 0);
+    bl->addStretch();
+    QPushButton* jump_button = new QPushButton(tr("跳转到问题帧"), button_row);
+    jump_button->setToolTip(tr("按当前选中问题的位置执行 seek"));
+    connect(jump_button, &QPushButton::clicked, this, &AnalysisPanel::OnJumpToTimelineIssue);
+    bl->addWidget(jump_button);
+    layout->addWidget(button_row);
+
+    qc_sub_tabs_->addTab(timeline_sub_, tr("时间轴与同步"));
+}
+
+void AnalysisPanel::OnTimelinePacket(const model::PacketTiming& timing) {
+    timeline_analyzer_.OnPacket(timing);
+    timeline_dirty_ = true;
+}
+
+void AnalysisPanel::OnFrameTiming(const model::FrameTimingInfo& timing) {
+    timeline_analyzer_.OnFrame(timing);
+    timeline_dirty_ = true;
+}
+
+void AnalysisPanel::RefreshTimelineUi() {
+    UpdateTimelineDiagnosticSummary();
+    UpdateTimelineDiagnosticChart();
+
+    if (!timeline_issue_table_) return;
+    timeline_issue_table_->setRowCount(0);
+    const auto& issues = timeline_result_.issues;
+    timeline_issue_table_->setRowCount(static_cast<int>(issues.size()));
+    for (int i = 0; i < static_cast<int>(issues.size()); ++i) {
+        const auto& issue = issues[i];
+        SetTableItemText(timeline_issue_table_, i, 0, QString::fromStdString(issue.TypeText()));
+        SetTableItemText(timeline_issue_table_, i, 1, QString::fromStdString(issue.SeverityText()));
+        SetTableItemText(timeline_issue_table_, i, 2,
+                         issue.stream_index >= 0 ? QString::number(issue.stream_index)
+                                                 : tr("文件级"));
+        SetTableItemText(timeline_issue_table_, i, 3,
+                         QString::fromStdString(model::FormatTimestamp(issue.timestamp_ms / 1000.0)));
+        SetTableItemText(timeline_issue_table_, i, 4, QString::number(issue.occurrence_count));
+        SetTableItemText(timeline_issue_table_, i, 5, QString::fromStdString(issue.detail));
+
+        QColor color = QColor("#1565c0");
+        switch (issue.severity) {
+            case model::IssueSeverity::Critical: color = QColor("#c62828"); break;
+            case model::IssueSeverity::Error:    color = QColor("#e53935"); break;
+            case model::IssueSeverity::Warning:  color = QColor("#ef6c00"); break;
+            case model::IssueSeverity::Info:     color = QColor("#1565c0"); break;
+        }
+        if (QTableWidgetItem* cell = timeline_issue_table_->item(i, 1)) {
+            cell->setForeground(color);
+        }
+    }
+    timeline_issue_table_->resizeColumnsToContents();
+}
+
+void AnalysisPanel::UpdateTimelineDiagnosticSummary() {
+    if (!timeline_diag_summary_label_) return;
+    const auto& r = timeline_result_;
+    if (!r.has_data) {
+        timeline_diag_summary_label_->setText(
+            tr("开启「事件与时间轴」分析并播放，或在本页执行一次全文件扫描，"
+               "将输出 PTS/DTS、音视频同步、帧间隔与 VFR/CFR 判定。"));
+        return;
+    }
+
+    timeline_diag_summary_label_->setText(
+        tr("数据源: %1 ｜ 最大音视频偏移 <b>%2</b> ms ｜ 首帧偏移 %3 ms ｜ 平均帧间隔 %4 ms"
+           "（σ %5 ms, %6~%7 ms）｜ 帧率判定 <b>%8</b> ｜ 视频 %9 ms / 音频 %10 ms"
+           " ｜ 帧 %11 ｜ 关键帧 %12 ｜ 问题 %13")
+            .arg(timeline_offline_ ? tr("全文件扫描") : tr("播放实时"))
+            .arg(QString::number(r.max_av_offset_ms, 'f', 1))
+            .arg(QString::number(r.av_start_offset_ms, 'f', 1))
+            .arg(QString::number(r.avg_frame_interval_ms, 'f', 2))
+            .arg(QString::number(r.frame_interval_stddev_ms, 'f', 2))
+            .arg(QString::number(r.min_frame_interval_ms, 'f', 2))
+            .arg(QString::number(r.max_frame_interval_ms, 'f', 2))
+            .arg(QString::fromStdString(r.FrameRateVerdict()))
+            .arg(QString::number(r.video_duration_ms, 'f', 0))
+            .arg(QString::number(r.audio_duration_ms, 'f', 0))
+            .arg(r.frame_count)
+            .arg(r.key_frame_count)
+            .arg(static_cast<int>(r.issues.size())));
+}
+
+void AnalysisPanel::UpdateTimelineDiagnosticChart() {
+    if (!timeline_interval_series_) return;
+    timeline_interval_series_->clear();
+    timeline_marker_series_->clear();
+    timeline_marker_issue_index_.clear();
+
+    const auto& r = timeline_result_;
+    double max_interval = 1.0;
+    double max_time = 1.0;
+    for (const auto& sample : r.frame_interval_ms.samples) {
+        const double t = sample.timestamp_seconds / 1000.0;   // ms -> s
+        timeline_interval_series_->append(t, sample.value);
+        max_interval = std::max(max_interval, sample.value);
+        max_time = std::max(max_time, t);
+    }
+
+    // 问题标记：按严重度着色，y 取该时刻的帧间隔（无数据则取 0）
+    for (int i = 0; i < static_cast<int>(r.issues.size()); ++i) {
+        const auto& issue = r.issues[i];
+        const double t = issue.timestamp_ms / 1000.0;
+        if (t < 0.0) continue;
+        const double y = r.frame_interval_ms.ValueAt(issue.timestamp_ms);
+        *timeline_marker_series_ << QPointF(t, y);
+        timeline_marker_issue_index_.append(i);
+
+        QColor color = QColor("#1565c0");
+        switch (issue.severity) {
+            case model::IssueSeverity::Critical: color = QColor("#c62828"); break;
+            case model::IssueSeverity::Error:    color = QColor("#e53935"); break;
+            case model::IssueSeverity::Warning:  color = QColor("#ef6c00"); break;
+            case model::IssueSeverity::Info:     color = QColor("#1565c0"); break;
+        }
+        timeline_marker_series_->setColor(color);  // 颜色以最后一组为准（散点整体着色）
+    }
+
+    timeline_chart_axis_x_->setRange(0, max_time);
+    timeline_chart_axis_y_->setRange(0, max_interval * 1.2);
+}
+
+void AnalysisPanel::OnTimelineMarkerHovered(const QPointF& point, bool state) {
+    if (!state || !timeline_marker_series_) return;
+
+    // 命中点定位到问题序号（按下标顺序一一对应）
+    const QList<QPointF> points = timeline_marker_series_->points();
+    int index = -1;
+    double best = std::numeric_limits<double>::max();
+    for (int i = 0; i < points.size(); ++i) {
+        const double dx = points[i].x() - point.x();
+        const double dy = points[i].y() - point.y();
+        const double dist = dx * dx + dy * dy;
+        if (dist < best) { best = dist; index = i; }
+    }
+    if (index < 0 || index >= timeline_marker_issue_index_.size()) return;
+
+    const int issue_index = timeline_marker_issue_index_[index];
+    if (issue_index < 0 || issue_index >= static_cast<int>(timeline_result_.issues.size())) return;
+    const auto& issue = timeline_result_.issues[issue_index];
+
+    QToolTip::showText(QCursor::pos(),
+        tr("流 #%1\n时间码: %2\n%3 (%4)\n实测: %5 ms / 阈值: %6 ms\n%7")
+            .arg(issue.stream_index)
+            .arg(QString::fromStdString(model::FormatTimestamp(issue.timestamp_ms / 1000.0)))
+            .arg(QString::fromStdString(issue.TypeText()))
+            .arg(QString::fromStdString(issue.SeverityText()))
+            .arg(QString::number(issue.metric_value_ms, 'f', 2))
+            .arg(QString::number(issue.threshold_ms, 'f', 2))
+            .arg(QString::fromStdString(issue.detail)));
+}
+
+void AnalysisPanel::OnJumpToTimelineIssue() {
+    if (!timeline_issue_table_) return;
+    const int row = timeline_issue_table_->currentRow();
+    if (row < 0 || row >= static_cast<int>(timeline_result_.issues.size())) {
+        QMessageBox::information(this, tr("提示"), tr("请先在问题列表中选择一条记录。"));
+        return;
+    }
+    const double seconds = timeline_result_.issues[row].timestamp_ms / 1000.0;
+    if (seconds < 0.0) {
+        QMessageBox::information(this, tr("提示"), tr("该问题为文件级问题，没有可跳转的时间点。"));
+        return;
+    }
+    emit SeekRequested(seconds);
 }
 
 } // namespace ui
