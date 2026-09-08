@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "core/model/MetricSeries.h"
+#include "core/model/TimelineDiagnostic.h"
 
 namespace videoeye {
 namespace analyzer {
@@ -78,6 +79,9 @@ struct AnalysisResult {
     // 包大小
     int64_t max_packet_bytes = 0;
     double avg_packet_bytes = 0.0;
+
+    // 时间轴与同步诊断（demux 层，不解码）
+    model::TimelineAnalysisResult timeline;
 
     // 执行状态
     bool completed = true;        // false = 被取消

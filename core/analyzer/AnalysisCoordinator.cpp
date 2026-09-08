@@ -1,4 +1,5 @@
 #include "core/analyzer/AnalysisCoordinator.h"
+#include "core/analyzer/TimelineAnalyzer.h"
 
 #include <QMetaType>
 
@@ -191,6 +192,7 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
     AVPacket* pkt = av_packet_alloc();
     int64_t packet_index = 0;
     int64_t last_pos = 0;
+    TimelineAnalyzer timeline_analyzer;
 
     auto last_progress = std::chrono::steady_clock::now();
     emit ProgressReported(generation, 0.0, QStringLiteral("扫描数据包"));
@@ -215,6 +217,26 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
         const bool is_video = (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO);
         const bool has_pts = (pkt->pts != AV_NOPTS_VALUE);
         const double ts = has_pts ? static_cast<double>(pkt->pts) * tb : -1.0;
+
+        // 时间轴与同步诊断（demux 层：PTS/DTS/B 帧/首帧偏移/关键帧索引）
+        {
+            model::PacketTiming timing;
+            timing.index = static_cast<int>(packet_index);
+            timing.stream_index = pkt->stream_index;
+            timing.media_type = static_cast<int>(st->codecpar->codec_type);
+            timing.pts_ms = has_pts ? ts * 1000.0 : model::kNoTimestamp;
+            timing.dts_ms = (pkt->dts != AV_NOPTS_VALUE)
+                                ? static_cast<double>(pkt->dts) * tb * 1000.0
+                                : model::kNoTimestamp;
+            timing.duration_ms = (pkt->duration > 0)
+                                     ? static_cast<double>(pkt->duration) * tb * 1000.0
+                                     : model::kNoTimestamp;
+            timing.pos = pkt->pos;
+            timing.size = pkt->size;
+            timing.flags = pkt->flags;
+            timing.key_frame = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
+            timeline_analyzer.OnPacket(timing);
+        }
 
         result.total_packets += 1;
         result.total_bytes += pkt->size;
@@ -351,6 +373,10 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
         result.video_bitrate_kbps.Add(t, static_cast<double>(bucket.video_bytes) * kbps_per_byte_per_sec);
         result.video_fps.Add(t, static_cast<double>(bucket.video_frames) / interval);
     }
+
+    // ---- 时间轴与同步汇总 ----
+    timeline_analyzer.Finish();
+    result.timeline = timeline_analyzer.result();
 
     if (result.max_gop_frames == 0 && !result.gop_frame_sizes.empty()) {
         result.max_gop_frames = *std::max_element(result.gop_frame_sizes.begin(),
