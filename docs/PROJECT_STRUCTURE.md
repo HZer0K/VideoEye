@@ -181,13 +181,13 @@ tests/
 
 | 目录 | 文件数 | 状态 |
 |------|--------|------|
-| core/model/ | 10 | ✅ 已实现 |
+| core/model/ | 19 | ✅ 已实现 (含诊断模型: TimeRange/MetricSeries/DiagnosticIssue/QcRule/QcReport) |
 | core/player/ | 18 | ✅ 已实现 (含 Vulkan 渲染 + 硬件解码 + 3 着色器) |
-| core/analyzer/ | 24 | ✅ 已实现 (7 种容器格式 + 统一调度) |
-| ui/ | 9 | ✅ 已实现 (深色主题) |
-| utils/ | 6 | ✅ 已实现 |
+| core/analyzer/ | 34 | ✅ 已实现 (7 种容器格式 + 统一调度 + 全文件扫描 AnalysisCoordinator + QcRuleEngine) |
+| ui/ | 9 | ✅ 已实现 (深色主题, 含「诊断与报告」页) |
+| utils/ | 6 | ✅ 已实现 (ReportExporter 支持 QcReport 导出) |
 | tests/ | 1 | ⏳ CMakeLists 就绪，源文件待补全 |
-| **总计** | **68** | |
+| **总计** | **81** | |
 
 ---
 
