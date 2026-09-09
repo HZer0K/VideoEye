@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "core/analyzer/BitrateGopAnalyzer.h"
 #include "core/model/MetricSeries.h"
 #include "core/model/TimelineDiagnostic.h"
 
@@ -15,6 +16,15 @@ struct AnalysisOptions {
     double sample_interval_seconds = 1.0;  // 码率/帧率序列的采样粒度
     int64_t max_packets = 0;               // 0 表示不限制（超长文件可设上限做抽样）
     bool detect_container_layout = true;   // MP4 家族是否检测 moov/mdat 顺序
+
+    // 码率与 GOP 深度分析（滑动窗口码率 / I-P-B / GOP 列表 / 异常识别）
+    bool analyze_bitrate_gop = true;
+    BitrateGopOptions bitrate_gop_options;
+
+    // 是否解码视频帧以获取精确帧类型（I/P/B）。
+    // 关闭时改用 codec parser（几乎零成本）；解析器无法判定时帧类型记为"未知"。
+    // 开启后结果最准确，但要完整解码一遍视频，长文件会明显变慢。
+    bool decode_frame_types = false;
 };
 
 // 单条流的静态摘要（demux 层，不解码）
@@ -59,11 +69,14 @@ struct AnalysisResult {
     model::MetricSeries video_bitrate_kbps;
     model::MetricSeries video_fps;
 
-    // GOP / 关键帧
+    // GOP / 关键帧（demux 层的轻量统计，供 QC 规则与报告使用）
     std::vector<double> gop_intervals_seconds;
     std::vector<int> gop_frame_sizes;
     double max_gop_interval_seconds = 0.0;
     int max_gop_frames = 0;
+
+    // 码率与 GOP 深度分析结果（滑动窗口码率、I/P/B、GOP 列表、异常与建议）
+    BitrateGopAnalysis bitrate_gop;
 
     // 时间戳健康度（PTS 非单调 / 时间戳跳变现由 TimelineAnalyzer 统一产出，
     // 不再在此重复统计；DTS 缺失占比仍用于 timing.dts_missing 规则）

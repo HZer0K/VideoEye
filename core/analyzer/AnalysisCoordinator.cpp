@@ -88,6 +88,28 @@ struct Bucket {
     int64_t video_frames = 0;
 };
 
+// 帧类型探测：优先用解码器（准确但慢），否则用 codec parser（几乎零成本）。
+// 两者都拿不到时，调用方退回 OnPacket()，只按 AV_PKT_FLAG_KEY 识别 I 帧。
+struct FrameTypeProbe {
+    AVCodecContext* parser_ctx = nullptr;    // 仅供 av_parser_parse2 使用的参数上下文
+    AVCodecParserContext* parser = nullptr;
+    AVCodecContext* decoder = nullptr;
+    AVFrame* frame = nullptr;
+    bool use_decoder = false;
+
+    void Release() {
+        if (parser) av_parser_close(parser);
+        if (parser_ctx) avcodec_free_context(&parser_ctx);
+        if (frame) av_frame_free(&frame);
+        if (decoder) avcodec_free_context(&decoder);
+        parser = nullptr;
+        parser_ctx = nullptr;
+        frame = nullptr;
+        decoder = nullptr;
+        use_decoder = false;
+    }
+};
+
 }  // namespace
 
 AnalysisCoordinator::AnalysisCoordinator(QObject* parent) : QObject(parent) {
@@ -178,6 +200,56 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
             digest.duration_seconds = file_duration;
         }
         result.streams.push_back(std::move(digest));
+    }
+
+    // ---- 码率与 GOP 深度分析准备 ----
+    int video_stream_index = -1;
+    if (options.analyze_bitrate_gop) {
+        for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+            if (fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+                video_stream_index = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+
+    BitrateGopAnalyzer bitrate_gop;
+    FrameTypeProbe probe;
+    if (options.analyze_bitrate_gop && video_stream_index >= 0) {
+        bitrate_gop.Reset(options.bitrate_gop_options);
+        AVStream* vst = fmt->streams[video_stream_index];
+
+        if (options.decode_frame_types) {
+            const AVCodec* codec = avcodec_find_decoder(vst->codecpar->codec_id);
+            if (codec != nullptr) {
+                probe.decoder = avcodec_alloc_context3(codec);
+                if (probe.decoder != nullptr &&
+                    avcodec_parameters_to_context(probe.decoder, vst->codecpar) >= 0) {
+                    probe.decoder->pkt_timebase = vst->time_base;
+                    probe.frame = av_frame_alloc();
+                    if (probe.frame != nullptr &&
+                        avcodec_open2(probe.decoder, codec, nullptr) == 0) {
+                        probe.use_decoder = true;
+                    }
+                }
+                if (!probe.use_decoder) {
+                    // 打开失败 → 退回 parser
+                    if (probe.frame) { av_frame_free(&probe.frame); }
+                    if (probe.decoder) { avcodec_free_context(&probe.decoder); }
+                }
+            }
+        }
+        if (!probe.use_decoder) {
+            probe.parser = av_parser_init(vst->codecpar->codec_id);
+            if (probe.parser != nullptr) {
+                // 我们喂的是完整访问单元（一个包 = 一帧），告诉解析器不要做拼接
+                probe.parser->flags |= PARSER_FLAG_COMPLETE_FRAMES;
+                probe.parser_ctx = avcodec_alloc_context3(nullptr);
+                if (probe.parser_ctx != nullptr) {
+                    avcodec_parameters_to_context(probe.parser_ctx, vst->codecpar);
+                }
+            }
+        }
     }
 
     // ---- 逐包扫描 ----
@@ -272,6 +344,57 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
                 }
             }
 
+            // 码率与 GOP 深度分析（仅第一条视频流）
+            if (options.analyze_bitrate_gop && pkt->stream_index == video_stream_index) {
+                const double sample_ts = has_pts
+                                             ? ts
+                                             : ((pkt->dts != AV_NOPTS_VALUE)
+                                                    ? static_cast<double>(pkt->dts) * tb
+                                                    : 0.0);
+                model::FrameType frame_type = model::FrameType::Unknown;
+                bool is_idr = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
+                bool fed = false;
+
+                if (probe.use_decoder) {
+                    if (avcodec_send_packet(probe.decoder, pkt) == 0) {
+                        while (avcodec_receive_frame(probe.decoder, probe.frame) >= 0) {
+                            frame_type = static_cast<model::FrameType>(probe.frame->pict_type);
+                            // 注: FFmpeg 8.x 已移除 AVFrame::key_frame，统一用 AV_FRAME_FLAG_KEY
+                            is_idr = ((probe.frame->flags & AV_FRAME_FLAG_KEY) != 0);
+                            const double frame_ts =
+                                (probe.frame->pts != AV_NOPTS_VALUE)
+                                    ? static_cast<double>(probe.frame->pts) * tb
+                                    : sample_ts;
+                            bitrate_gop.OnFrame(pkt->stream_index, frame_ts, pkt->size,
+                                                frame_type, is_idr);
+                            fed = true;
+                            av_frame_unref(probe.frame);
+                        }
+                    }
+                } else if (probe.parser != nullptr) {
+                    uint8_t* out_data = nullptr;
+                    int out_size = 0;
+                    av_parser_parse2(probe.parser, probe.parser_ctx, &out_data, &out_size,
+                                     pkt->data, pkt->size, pkt->pts, pkt->dts, pkt->pos);
+                    if (probe.parser->pict_type != AV_PICTURE_TYPE_NONE) {
+                        frame_type = static_cast<model::FrameType>(probe.parser->pict_type);
+                        if (probe.parser->key_frame >= 1) {
+                            is_idr = true;
+                        } else if (probe.parser->key_frame == 0) {
+                            is_idr = false;
+                        }
+                        fed = true;
+                    }
+                }
+
+                if (fed) {
+                    bitrate_gop.OnFrame(pkt->stream_index, sample_ts, pkt->size, frame_type,
+                                        is_idr);
+                } else {
+                    bitrate_gop.OnPacket(pkt->stream_index, sample_ts, pkt->size, is_idr);
+                }
+            }
+
             // 逐秒桶：码率 + 帧率
             if (ts >= 0.0) {
                 const int64_t bucket_index = static_cast<int64_t>(std::floor(ts / interval));
@@ -312,6 +435,7 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
     }
     av_packet_free(&pkt);
     avformat_close_input(&fmt);
+    probe.Release();
 
     // ---- 汇总 ----
     if (result.total_packets > 0) {
@@ -356,6 +480,14 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
     if (result.max_gop_frames == 0 && !result.gop_frame_sizes.empty()) {
         result.max_gop_frames = *std::max_element(result.gop_frame_sizes.begin(),
                                                   result.gop_frame_sizes.end());
+    }
+
+    // 码率与 GOP 深度分析收尾（必须在 probe.Release() 之后、发信号之前）
+    if (options.analyze_bitrate_gop && video_stream_index >= 0) {
+        result.bitrate_gop = bitrate_gop.Finish();
+        LOG_INFO("码率与 GOP 分析: frames=" + std::to_string(result.bitrate_gop.total_frames) +
+                 " gops=" + std::to_string(result.bitrate_gop.gops.size()) +
+                 " anomalies=" + std::to_string(result.bitrate_gop.anomalies.size()));
     }
 
     LOG_INFO("全文件分析完成: packets=" + std::to_string(result.total_packets) +

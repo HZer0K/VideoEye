@@ -149,7 +149,22 @@ set_target_properties(test_frame_data PROPERTIES
 add_test(NAME FrameDataTests COMMAND test_frame_data)
 
 # =================================================
-# 测试 6：QualityAnalyzer(依赖 FFmpeg + swscale)
+# 测试 6：BitrateGopAnalyzer (不依赖 FFmpeg / Qt，喂合成样本)
+# =================================================
+add_executable(test_bitrate_gop_analyzer
+    unit/test_bitrate_gop_analyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/BitrateGopAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/BitratePoint.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/GopInfo.cpp
+)
+target_include_directories(test_bitrate_gop_analyzer PRIVATE ${TEST_INCLUDE_DIRS})
+target_link_libraries(test_bitrate_gop_analyzer PRIVATE
+    GTest::gtest_main
+)
+add_test(NAME BitrateGopAnalyzerTests COMMAND test_bitrate_gop_analyzer)
+
+# =================================================
+# 测试 7：QualityAnalyzer(依赖 FFmpeg + swscale)
 # =================================================
 add_executable(test_quality_analyzer
     unit/test_quality_analyzer.cpp

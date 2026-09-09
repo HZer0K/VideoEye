@@ -94,6 +94,7 @@ private:
     void SetupUI();
     void SetupAppBar();         // 顶部应用栏
     void SetupSidebar();        // 左侧导航栏
+    void PopulateSidebarItems();  // 依据 content_stack_ 实际页面生成导航项（须在页面注册完后调用）
     void SetupContentArea();    // 右侧主内容区 (视频+控制+分析)
     void SetupMenuBar();
     void SetupStatusBar();

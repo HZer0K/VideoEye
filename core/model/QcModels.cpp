@@ -106,6 +106,37 @@ std::vector<QcRule> DefaultQcRules() {
         "关键帧间隔标准差/均值偏高，场景切换自适应插入导致。",
         "若不追求自适应关键帧，可关闭 sc_threshold 使用固定 GOP。");
 
+    // ---- 码率与 GOP 深度分析（core/analyzer/BitrateGopAnalyzer）----
+    add("video.gop.long_count", "存在超长 GOP", IssueCategory::Gop,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "个",
+        "存在时长或帧数超过阈值的 GOP，seek 需解码大量帧。",
+        "固定 GOP 长度：-g <帧数> -keyint_min <帧数>，或用 -force_key_frames 限制最大间隔。");
+
+    add("video.gop.scene_without_keyframe", "场景切换后缺少关键帧", IssueCategory::Gop,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "处",
+        "场景切换点附近没有关键帧，新镜头只能从前一场景预测，画质与 seek 精度受损。",
+        "开启场景切换自适应关键帧（x264 默认开启），或用 -force_key_frames 在切换点插入 IDR。");
+
+    add("video.gop.sparse_keyframes", "关键帧过于稀疏", IssueCategory::Gop,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "全片关键帧数量极少（不足 2 个），几乎无法随机访问。",
+        "按目标 seek 粒度插入关键帧，例如每 2~5 秒一个 IDR。");
+
+    add("video.bitrate.peak_overshoot", "瞬时码率超过目标峰值", IssueCategory::Bitrate,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "段",
+        "存在滑动窗口码率持续超过目标峰值的区间，播放器/CDN 可能出现缓冲。",
+        "收紧 VBV（-maxrate / -bufsize）或改用 CBR；确认缓冲区能吸收突发。");
+
+    add("video.frame.oversized", "存在异常大帧", IssueCategory::Video,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "帧",
+        "个别帧远大于全片平均帧大小，解码与网络抖动风险升高。",
+        "检查是否为场景切换/高动态画面；必要时开启 VBV 限制单帧上限。");
+
+    add("video.frame.oversized_i", "I 帧过大", IssueCategory::Video,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "帧",
+        "个别 I 帧远大于平均 I 帧，seek/首屏会产生瞬时带宽尖峰。",
+        "降低 I 帧质量权重或调大 GOP；大 IDR 也可能导致首帧解码耗时偏高。");
+
     // ---- 视频 ----
     add("video.fps.unstable", "帧率不稳定", IssueCategory::Video,
         IssueSeverity::Warning, QcRuleOp::MaxExceeded, 2.5, "fps",

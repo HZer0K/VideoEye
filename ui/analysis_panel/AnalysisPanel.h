@@ -19,7 +19,10 @@
 #include <QTimer>
 #include <QComboBox>
 #include <QCheckBox>
+#include <QDoubleSpinBox>
+#include <QListWidget>
 #include <QScrollArea>
+#include <QSpinBox>
 #include <QStackedWidget>
 #include <QMap>
 #include <QVariantList>
@@ -46,6 +49,7 @@
 #include "core/model/MacroblockInfo.h"
 #include "core/analyzer/SceneChangeAnalyzer.h"
 #include "core/analyzer/AnalysisCoordinator.h"
+#include "core/analyzer/BitrateGopAnalyzer.h"
 #include "core/analyzer/QcRuleEngine.h"
 #include "core/analyzer/TimelineAnalyzer.h"
 #include "core/model/FrameTimingInfo.h"
@@ -113,6 +117,18 @@ signals:
 public slots:
     // 更新统计数据
     void UpdateStreamStats(const analyzer::StreamStats& stats);
+
+    // 码率与 GOP 深度分析
+    void OnStartBitrateGopAnalysis();
+    void OnCancelBitrateGopAnalysis();
+    void OnBitrateGopWindowChanged();
+    void OnBitrateGopOptionChanged();
+    void OnLinkSceneChanges();
+    void OnBitrateGopCellClicked(int row, int column);
+    void OnBitrateAnomalyCellClicked(int row, int column);
+    void OnExportBitrateGopCsv();
+    void OnExportBitrateCurveCsv();
+    void OnExportBitrateAnomalyCsv();
     void ResetVideoFrameList();
     void AppendVideoFrameInfo(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds);
     void ResetAudioFrameList();
@@ -247,6 +263,7 @@ private:
     void SetupContainerStructureTab();
     void SetupMacroblockTab();
     void SetupSceneChangeTab();
+    void SetupBitrateGopTab();
     void SetupDiagnosticsTab();
     void RebuildFrameTable();
     void RebuildGopTable();
@@ -303,6 +320,16 @@ private:
     void UpdateSceneChangeChart();
     void UpdateSceneChangeSummary();
     void OnExportSceneChangeCsv();
+
+    // 码率与 GOP 深度分析页
+    void StartDiagnosticsScan(const analyzer::AnalysisOptions& options);
+    void ApplyBitrateGopOptionsFromUi();
+    void UpdateBitrateGopUi();          // 汇总 + 曲线 + GOP 表 + 异常 + 建议 一次刷新
+    void UpdateBitrateGopSummary();
+    void UpdateBitrateGopChart();
+    void RebuildBitrateGopTable();
+    void RebuildBitrateAnomalyTable();
+    void UpdateBitrateGopSuggestions();
 
     // 诊断与报告页
     void RebuildIssueTable();
@@ -469,6 +496,34 @@ private:
     QPushButton* export_container_button_;
     model::ContainerStructureResult current_container_result_;
     
+    // 码率与 GOP 深度分析标签页
+    QWidget* bitrate_gop_tab_;
+    QLabel* bitrate_gop_summary_label_;
+    QProgressBar* bitrate_gop_progress_bar_;
+    QPushButton* bitrate_gop_start_button_;
+    QPushButton* bitrate_gop_cancel_button_;
+    QComboBox* bitrate_window_combo_;
+    QDoubleSpinBox* bitrate_target_peak_spin_;
+    QDoubleSpinBox* bitrate_max_gop_seconds_spin_;
+    QSpinBox* bitrate_max_gop_frames_spin_;
+    QCheckBox* bitrate_decode_types_check_;
+    QChartView* bitrate_gop_chart_;
+    QChart* bitrate_gop_chart_object_;
+    QLineSeries* bitrate_gop_series_;
+    QLineSeries* bitrate_target_series_;
+    QScatterSeries* bitrate_iframe_series_;
+    QScatterSeries* bitrate_scene_series_;
+    QScatterSeries* bitrate_anomaly_series_;
+    QValueAxis* bitrate_gop_axis_x_;
+    QValueAxis* bitrate_gop_axis_y_;
+    QTabWidget* bitrate_gop_sub_tabs_;
+    QTableWidget* bitrate_gop_table_;
+    QTableWidget* bitrate_anomaly_table_;
+    QListWidget* bitrate_suggestion_list_;
+    analyzer::BitrateGopOptions bitrate_gop_options_;
+    analyzer::AnalysisOptions diagnostics_options_;
+    double bitrate_gop_display_window_ = 1.0;   // 当前图表显示的窗口长度
+
     // 诊断与报告标签页
     QWidget* diagnostics_tab_;
     QPushButton* qc_start_button_;

@@ -216,31 +216,34 @@ void MainWindow::SetupSidebar() {
     sidebar_->setSpacing(0);
     sidebar_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     
-    // 导航项 (媒体信息 + 7 个分析功能页), 与 AnalysisPanel::PopulateStackedWidget
-    // 提供的页面顺序一一对应: 媒体信息 / 码流分析 / 事件与时间轴 / 音频响度 /
-    // 文件结构 / 宏块分析 / 场景切换 / 诊断与报告。
-    // !! 增减 AnalysisPanel 的 AddPageWithScroll 调用必须同步修改本列表 !!
-    QStringList nav_items = {
-        tr("媒体信息"),
-        tr("码流分析"),
-        tr("事件与时间轴"),
-        tr("音频响度"),
-        tr("文件结构"),
-        tr("宏块分析"),
-        tr("场景切换"),
-        tr("诊断与报告")
-    };
-    
-    for (const QString& item : nav_items) {
-        QListWidgetItem* list_item = new QListWidgetItem(item);
+    // 注意：导航项不再硬编码，而是在 SetupContentArea() 末尾由
+    // PopulateSidebarItems() 依据 content_stack_ 的真实页面生成，避免增减分析页
+    // 后 sidebar 行号与 stack 下标静默错位（曾导致「码率与 GOP」显示成「诊断与报告」）。
+    connect(sidebar_, &QListWidget::currentRowChanged, this, &MainWindow::OnSidebarChanged);
+}
+
+void MainWindow::PopulateSidebarItems() {
+    if (!sidebar_ || !content_stack_) return;
+
+    sidebar_->blockSignals(true);
+    sidebar_->clear();
+
+    const int page_count = content_stack_->count();
+    for (int i = 0; i < page_count; ++i) {
+        QString title = content_stack_->widget(i)->property("pageTitle").toString();
+        if (title.isEmpty()) {
+            // 分析页由 AnalysisPanel 提供标题；媒体信息页等外部页走这里
+            title = (i == 0) ? tr("媒体信息") : tr("页面 %1").arg(i);
+        }
+        QListWidgetItem* list_item = new QListWidgetItem(title);
         list_item->setSizeHint(QSize(200, 34));
         sidebar_->addItem(list_item);
     }
-    
-    // 默认选中第一项
+    sidebar_->blockSignals(false);
+
+    // 默认选中第一项（blockSignals 期间 setCurrentRow 不会触发切换，显式同步一次）
     sidebar_->setCurrentRow(0);
-    
-    connect(sidebar_, &QListWidget::currentRowChanged, this, &MainWindow::OnSidebarChanged);
+    content_stack_->setCurrentIndex(0);
 }
 
 void MainWindow::SetupContentArea() {
@@ -386,13 +389,17 @@ void MainWindow::SetupContentArea() {
     mediainfo_scroll->setWidget(mediainfo_text_);
     mediainfo_layout->addWidget(mediainfo_scroll);
     mediainfo_text_->setPlainText(tr("请打开一个媒体文件以查看详细信息"));
+    mediainfo_page->setProperty("pageTitle", tr("媒体信息"));
     content_stack_->addWidget(mediainfo_page);
     
-    // Page 1-8: 分析面板各页
+    // Page 1-N: 分析面板各页
     // AnalysisPanel 会创建自己的页面并添加到 content_stack_
     analysis_panel_ = new ui::AnalysisPanel(content_stack_);
     analysis_panel_->PopulateStackedWidget(content_stack_);
     analysis_panel_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+    // 页面全部注册完毕后才生成侧边栏条目，保证行号 == stack 下标
+    PopulateSidebarItems();
     
     content_splitter_->addWidget(top_area);
     content_splitter_->addWidget(content_stack_);
@@ -408,6 +415,11 @@ void MainWindow::SetupContentArea() {
 
 void MainWindow::OnSidebarChanged(int index) {
     if (!content_stack_ || index < 0) return;
+    if (index >= content_stack_->count()) {
+        qWarning() << "侧边栏行号" << index << "超出页面数" << content_stack_->count()
+                   << "，页面栈与导航列表不一致";
+        return;
+    }
     content_stack_->setCurrentIndex(index);
 }
 

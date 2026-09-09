@@ -216,6 +216,44 @@ std::vector<model::DiagnosticIssue> QcRuleEngine::CheckRule(const model::QcRule&
         return issues;
     }
 
+    // ---------- 码率与 GOP 深度分析（BitrateGopAnalyzer）----------
+    // 这些规则逐条展开 anomalies，让诊断表能直接给出时间区间并支持"跳转"。
+    if (rule.id == "video.gop.long_count" ||
+        rule.id == "video.gop.scene_without_keyframe" ||
+        rule.id == "video.gop.sparse_keyframes" ||
+        rule.id == "video.bitrate.peak_overshoot" ||
+        rule.id == "video.frame.oversized" ||
+        rule.id == "video.frame.oversized_i") {
+        using AnomalyType = BitrateAnomalyType;
+        const AnomalyType type =
+            (rule.id == "video.gop.long_count")               ? AnomalyType::LongGop
+            : (rule.id == "video.gop.scene_without_keyframe") ? AnomalyType::SceneChangeWithoutKeyframe
+            : (rule.id == "video.gop.sparse_keyframes")       ? AnomalyType::SparseKeyframes
+            : (rule.id == "video.bitrate.peak_overshoot")     ? AnomalyType::PeakOvershoot
+            : (rule.id == "video.frame.oversized")            ? AnomalyType::OversizedFrame
+                                                              : AnomalyType::OversizedIFrame;
+
+        auto anomalies = result.bitrate_gop.AnomaliesOf(type);
+        if (!anomalies.empty()) {
+            // 单条规则最多展开 50 条，避免长视频把诊断表刷爆
+            constexpr size_t kMaxExpanded = 50;
+            const size_t count = std::min(anomalies.size(), kMaxExpanded);
+            for (size_t i = 0; i < count; ++i) {
+                const BitrateAnomaly& a = *anomalies[i];
+                issues.push_back(make_issue(a.value, a.detail,
+                                            model::TimeRange::Between(a.start_seconds,
+                                                                      a.end_seconds),
+                                            -1, 1));
+            }
+            if (anomalies.size() > count) {
+                issues.push_back(make_issue(static_cast<double>(anomalies.size()),
+                    "另有 " + std::to_string(anomalies.size() - count) + " 条「" + rule.name +
+                    "」未展开，完整列表见「码率与 GOP」页。"));
+            }
+        }
+        return issues;
+    }
+
     // ---------- 视频 ----------
     if (rule.id == "video.fps.unstable") {
         if (result.video_fps.Size() >= 3) {
