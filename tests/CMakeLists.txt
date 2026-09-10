@@ -179,3 +179,39 @@ set_target_properties(test_quality_analyzer PROPERTIES
     BUILD_RPATH "${TEST_FFMPEG_RPATH}"
 )
 add_test(NAME QualityAnalyzerTests COMMAND test_quality_analyzer)
+
+# =================================================
+# 测试 8：AudioQcAnalyzer (不依赖 FFmpeg / Qt，喂合成 PCM)
+# =================================================
+add_executable(test_audio_qc_analyzer
+    unit/test_audio_qc_analyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/AudioQcAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AudioQcResult.cpp
+)
+target_include_directories(test_audio_qc_analyzer PRIVATE ${TEST_INCLUDE_DIRS})
+target_link_libraries(test_audio_qc_analyzer PRIVATE
+    GTest::gtest_main
+)
+add_test(NAME AudioQcAnalyzerTests COMMAND test_audio_qc_analyzer)
+
+# =================================================
+# 测试 9：音频 QC 规则 (AudioQcAnalyzer + QcRuleEngine，不依赖 FFmpeg)
+# =================================================
+add_executable(test_audio_qc_rules
+    unit/test_audio_qc_rules.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/AudioQcAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/QcRuleEngine.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/AnalysisTask.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AudioQcResult.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcModels.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcReport.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/BitrateGopAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/BitratePoint.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/GopInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimelineDiagnostic.cpp
+)
+target_include_directories(test_audio_qc_rules PRIVATE ${TEST_INCLUDE_DIRS})
+target_link_libraries(test_audio_qc_rules PRIVATE
+    GTest::gtest_main
+)
+add_test(NAME AudioQcRulesTests COMMAND test_audio_qc_rules)
