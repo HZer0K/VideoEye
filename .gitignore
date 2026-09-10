@@ -67,7 +67,10 @@ third_party/MediaInfoLib/Project/CMake/CMakeFiles/
 # 测试
 *_test
 *_tests
+# test_* 仅忽略测试二进制/产物；测试源码(.cpp/.h)必须纳入版本控制
 test_*
+!tests/**/test_*.cpp
+!tests/**/test_*.h
 *_test_runner
 
 # 覆盖率
