@@ -6,6 +6,7 @@
 #include <QtCharts/QLineSeries>
 #include <QtCharts/QBarSeries>
 #include <QtCharts/QBarSet>
+#include <QtCharts/QBarCategoryAxis>
 #include <QtCharts/QCategoryAxis>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -55,6 +56,7 @@
 #include "core/model/FrameTimingInfo.h"
 #include "core/model/TimelineDiagnostic.h"
 #include "core/model/QcReport.h"
+#include "core/model/AudioQcResult.h"
 
 namespace videoeye {
 namespace ui {
@@ -74,7 +76,6 @@ public:
         Event,         // 分析事件
         SyncSample,    // 音视频同步
         Timeline,      // 时间线
-        AudioLoudness, // 音频响度监测
         ContainerStructure,  // 文件结构分析
         Macroblock,    // 宏块分析 (运动矢量/块统计)
         SceneChange,   // 场景切换检测 (镜头边界)
@@ -85,7 +86,7 @@ public:
     ~AnalysisPanel();
     
     // 将分析面板各页添加到外部 QStackedWidget
-    // 返回添加的页面数量 (流分析/视频帧/音频帧/数据包/异常事件/同步分析/时间轴/音频响度/容器结构等)
+    // 返回添加的页面数量 (流分析/视频帧/音频帧/数据包/异常事件/同步分析/时间轴/音频 QC/容器结构等)
     int PopulateStackedWidget(QStackedWidget* stack);
 
     // 设置当前显示的页面索引
@@ -143,9 +144,16 @@ public slots:
     void ResetTimelineEventList();
     void AppendTimelineEvent(const model::TimelineEvent& event);
     void OnContainerStructureReady(const model::ContainerStructureResult& result);
-    void UpdateAudioLoudness(const model::AudioVisualizationFrame& frame);
     void UpdateMacroblockInfo(const model::MacroblockFrameAnalysis& analysis);
     void OnSceneChangeDetected(const analyzer::SceneChangeResult& result);
+
+    // 音频 QC（响度 / 真峰值 / 削波 / 静音 / 声道相位）
+    void OnStartAudioQcAnalysis();
+    void OnCancelAudioQcAnalysis();
+    void OnAudioQcOptionChanged();
+    void OnAudioQcClipCellClicked(int row, int column);
+    void OnAudioQcSilenceCellClicked(int row, int column);
+    void OnExportAudioQcCsv();
 
     // 导出报告
     void OnExportReport();
@@ -259,7 +267,6 @@ private:
     void SetupEventTab();
     void SetupSyncTab();
     void SetupTimelineTab();
-    void SetupAudioLoudnessTab();
     void SetupContainerStructureTab();
     void SetupMacroblockTab();
     void SetupSceneChangeTab();
@@ -330,6 +337,17 @@ private:
     void RebuildBitrateGopTable();
     void RebuildBitrateAnomalyTable();
     void UpdateBitrateGopSuggestions();
+
+    // 音频 QC 页
+    void SetupAudioQcTab();
+    void ApplyAudioQcOptionsFromUi();
+    void UpdateAudioQcUi();          // 汇总 + 曲线 + 表格 + 判定 一次刷新
+    void UpdateAudioQcSummary();
+    void UpdateAudioQcCharts();
+    void RebuildAudioQcClipTable();
+    void RebuildAudioQcSilenceTable();
+    void RebuildAudioQcVerdictTable();
+    void RebuildAudioQcMetadataTable();
 
     // 诊断与报告页
     void RebuildIssueTable();
@@ -427,24 +445,6 @@ private:
     QChartView* timeline_chart_;
     QTableWidget* timeline_table_;
     QPushButton* export_timeline_csv_button_;
-    
-    // 音频响度监测标签页
-    QWidget* audio_loudness_tab_;
-    QLabel* loudness_summary_label_;
-    QChartView* loudness_chart_;
-    QChart* loudness_chart_object_;
-    QLineSeries* loudness_series_;
-    QLineSeries* peak_series_;
-    QValueAxis* loudness_axis_x_;
-    QValueAxis* loudness_axis_y_;
-    std::deque<double> loudness_history_;     // LUFS 历史
-    std::deque<double> peak_history_;         // dBFS 历史
-    double integrated_lufs_ = -70.0;
-    double loudness_range_lu_ = 0.0;
-    double max_true_peak_dbtp_ = -70.0;
-    double max_peak_dbfs_ = -70.0;
-    int loudness_sample_count_ = 0;
-    double loudness_sum_ = 0.0;
 
     // 宏块分析标签页
     QWidget* macroblock_tab_;
@@ -523,6 +523,62 @@ private:
     analyzer::BitrateGopOptions bitrate_gop_options_;
     analyzer::AnalysisOptions diagnostics_options_;
     double bitrate_gop_display_window_ = 1.0;   // 当前图表显示的窗口长度
+
+    // 音频 QC 标签页
+    QWidget* audio_qc_tab_;
+    QLabel* audio_qc_summary_label_;
+    QProgressBar* audio_qc_progress_bar_;
+    QPushButton* audio_qc_start_button_;
+    QPushButton* audio_qc_cancel_button_;
+    QDoubleSpinBox* audio_qc_target_lufs_spin_;
+    QDoubleSpinBox* audio_qc_silence_spin_;
+    QDoubleSpinBox* audio_qc_min_silence_spin_;
+    QDoubleSpinBox* audio_qc_clip_spin_;
+    QCheckBox* audio_qc_loudness_check_;
+    QCheckBox* audio_qc_true_peak_check_;
+    QCheckBox* audio_qc_correlation_check_;
+    QTabWidget* audio_qc_sub_tabs_;
+    // 响度曲线
+    QChartView* audio_lufs_chart_;
+    QChart* audio_lufs_chart_object_;
+    QLineSeries* audio_momentary_series_;
+    QLineSeries* audio_short_term_series_;
+    QLineSeries* audio_integrated_series_;
+    QLineSeries* audio_target_series_;
+    QValueAxis* audio_lufs_axis_x_;
+    QValueAxis* audio_lufs_axis_y_;
+    // 电平曲线
+    QChartView* audio_level_chart_;
+    QChart* audio_level_chart_object_;
+    QLineSeries* audio_rms_series_;
+    QLineSeries* audio_peak_series_;
+    QLineSeries* audio_true_peak_series_;
+    QValueAxis* audio_level_axis_x_;
+    QValueAxis* audio_level_axis_y_;
+    // 静音段 / 削波点时间轴
+    QChartView* audio_event_chart_;
+    QChart* audio_event_chart_object_;
+    QLineSeries* audio_silence_series_;
+    QScatterSeries* audio_clip_series_;
+    QValueAxis* audio_event_axis_x_;
+    QValueAxis* audio_event_axis_y_;
+    // 声道能量柱状图
+    QChartView* audio_channel_chart_;
+    QChart* audio_channel_chart_object_;
+    QBarSeries* audio_channel_series_;
+    QBarCategoryAxis* audio_channel_axis_x_;
+    QValueAxis* audio_channel_axis_y_;
+    // 声道相关性曲线
+    QChartView* audio_corr_chart_;
+    QChart* audio_corr_chart_object_;
+    QLineSeries* audio_corr_series_;
+    QValueAxis* audio_corr_axis_x_;
+    QValueAxis* audio_corr_axis_y_;
+    QTableWidget* audio_clip_table_;
+    QTableWidget* audio_silence_table_;
+    QTableWidget* audio_verdict_table_;
+    QTableWidget* audio_metadata_table_;
+    analyzer::AudioQcOptions audio_qc_options_;
 
     // 诊断与报告标签页
     QWidget* diagnostics_tab_;

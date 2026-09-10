@@ -646,8 +646,6 @@ void MainWindow::SetupConnections() {
             this, &MainWindow::OnAudioLevelReady);
     connect(player_, &player::MediaPlayer::AudioVisualizationReady,
             this, &MainWindow::OnAudioVisualizationForDisplay);
-    connect(player_, &player::MediaPlayer::AudioVisualizationReady,
-            analysis_panel_, &ui::AnalysisPanel::UpdateAudioLoudness);
     connect(player_, &player::MediaPlayer::VideoFrameExportProgress,
             this, &MainWindow::OnVideoFrameExportProgress);
     connect(player_, &player::MediaPlayer::VideoFrameExportFinished,
@@ -806,9 +804,6 @@ void MainWindow::SetupConnections() {
                     break;
                 case AF::Timeline:
                     player_->SetTimelineAnalysisEnabled(enabled);
-                    break;
-                case AF::AudioLoudness:
-                    // 音频响度复用 AudioVisualization 数据流，无需单独控制
                     break;
                 case AF::ContainerStructure:
                     player_->SetContainerStructureEnabled(enabled);
