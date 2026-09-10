@@ -166,6 +166,63 @@ std::vector<QcRule> DefaultQcRules() {
         "音频流声道数未标注（0），下游混音可能异常。",
         "检查容器是否写入了正确的 channel layout。");
 
+    // ---- 音频 QC（core/analyzer/AudioQcAnalyzer，需解码音频）----
+    // 目标响度窗口写成"上限 / 下限"两条规则，便于在「规则与阈值」页直接改容差
+    add("audio.loudness.target_high", "响度高于目标", IssueCategory::Audio,
+        IssueSeverity::Warning, QcRuleOp::MaxExceeded, -22.0, "LUFS",
+        "积分响度高于目标上限（默认 -23 ± 1 LUFS），平台会做衰减或触发响度归一。",
+        "整体衰减到目标响度：ffmpeg -af loudnorm=I=-23:TP=-1:LRA=11 或 volume=-Xd。");
+
+    add("audio.loudness.target_low", "响度低于目标", IssueCategory::Audio,
+        IssueSeverity::Warning, QcRuleOp::MinBelow, -24.0, "LUFS",
+        "积分响度低于目标下限（默认 -23 ± 1 LUFS），观众需要手动调大音量。",
+        "提升整体增益到目标响度，注意同时守住真峰值上限（如 -1 dBTP）。");
+
+    add("audio.loudness.range", "响度动态范围过大", IssueCategory::Audio,
+        IssueSeverity::Warning, QcRuleOp::MaxExceeded, 20.0, "LU",
+        "LRA 偏大，移动端/电视外放场景下轻声段听不清、大声段过响。",
+        "适度压缩动态：-af loudnorm=LRA=11 或加轻度限幅/压缩。");
+
+    add("audio.true_peak", "真峰值超过上限", IssueCategory::Audio,
+        IssueSeverity::Error, QcRuleOp::MaxExceeded, -1.0, "dBTP",
+        "4× 过采样真峰值超过交付上限，转码/播放端可能出现削波失真。",
+        "加真峰值限幅：-af loudnorm=TP=-1 或 alimiter/limiter，留 1 dB 余量。");
+
+    add("audio.clipping", "存在削波", IssueCategory::Audio,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "样本",
+        "采样值达到满刻度（≥ -0.01 dBFS），波形已被削平，无法后期修复。",
+        "回到源头降低增益重新混音；已削波的文件只能靠限幅掩盖。");
+
+    add("audio.silence.longest", "存在过长静音", IssueCategory::Audio,
+        IssueSeverity::Warning, QcRuleOp::MaxExceeded, 10.0, "s",
+        "存在过长的静音段，可能是音轨缺失、封装错误或编码中断。",
+        "确认该段确实无内容；否则检查音轨是否被静音/丢帧。");
+
+    add("audio.silence.ratio", "静音占比过高", IssueCategory::Audio,
+        IssueSeverity::Info, QcRuleOp::MaxExceeded, 50.0, "%",
+        "全片静音占比偏高，需确认是否为预期（如纯音乐视频的间隔）。",
+        "确认音轨完整；必要时裁剪静音段或改用正确音轨。");
+
+    add("audio.dc_offset", "直流偏移过大", IssueCategory::Audio,
+        IssueSeverity::Warning, QcRuleOp::MaxExceeded, 0.01, "",
+        "存在直流分量，会浪费动态余量并让某些编码器/设备出现爆音。",
+        "加高通去除直流：-af highpass=f=20 或 dcshift 修正。");
+
+    add("audio.phase_correlation", "声道反相", IssueCategory::Audio,
+        IssueSeverity::Warning, QcRuleOp::MinBelow, -0.5, "",
+        "声道间相关性为负，单声道下混时会互相抵消（人声被削弱甚至消失）。",
+        "检查是否有声道接反/极性反转；用 -af 'pan' 或交换声道修正。");
+
+    add("audio.metadata.layout", "声道布局未标注", IssueCategory::Metadata,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "",
+        "多声道但容器未写明声道位置，响度加权与下混顺序只能靠猜测。",
+        "封装时写入正确的 channel layout（如 5.1 的 FL FR FC LFE BL BR）。");
+
+    add("audio.metadata.duration_mismatch", "音视频时长不一致", IssueCategory::Metadata,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "音频流时长与容器/视频时长相差明显，可能导致结尾音画不同步。",
+        "检查是否丢帧/尾帧被截断，重新封装或补齐音频尾部。");
+
     return rules;
 }
 

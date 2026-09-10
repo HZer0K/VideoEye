@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "core/analyzer/AudioQcAnalyzer.h"
 #include "core/analyzer/BitrateGopAnalyzer.h"
 #include "core/model/MetricSeries.h"
 #include "core/model/TimelineDiagnostic.h"
@@ -25,6 +26,11 @@ struct AnalysisOptions {
     // 关闭时改用 codec parser（几乎零成本）；解析器无法判定时帧类型记为"未知"。
     // 开启后结果最准确，但要完整解码一遍视频，长文件会明显变慢。
     bool decode_frame_types = false;
+
+    // 音频 QC（响度 / 真峰值 / 削波 / 静音 / 声道相位 / metadata 一致性）。
+    // 需要把第一条音频流完整解码一遍（音频解码开销远小于视频），与码率/GOP 扫描同一次 demux。
+    bool analyze_audio_qc = true;
+    AudioQcOptions audio_qc_options;
 };
 
 // 单条流的静态摘要（demux 层，不解码）
@@ -89,6 +95,9 @@ struct AnalysisResult {
     // 包大小
     int64_t max_packet_bytes = 0;
     double avg_packet_bytes = 0.0;
+
+    // 音频 QC（解码 + 重采样/格式归一后统计，见 core/analyzer/AudioQcAnalyzer.h）
+    model::AudioQcResult audio_qc;
 
     // 时间轴与同步诊断（demux 层，不解码）
     model::TimelineAnalysisResult timeline;
