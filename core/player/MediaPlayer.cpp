@@ -955,7 +955,10 @@ void MediaPlayer::DecodeThread() {
                     // 注意: Vulkan 呈现成功后必须整体跳过下方 sws_scale 路径, 否则若 sws_ctx
                     // 在 Vulkan 激活前已创建 (如后台初始化完成前播了若干帧), 会双路渲染白烧 CPU。
                     bool presented_via_vulkan = false;
-                    if (vulkan_rendering_enabled_ && vulkan_renderer_ &&
+                    // 播放区隐藏时整段跳过画面输出: 解码、实时分析、音频均不受影响。
+                    const bool suppress_render =
+                        rendering_suppressed_.load(std::memory_order_relaxed);
+                    if (!suppress_render && vulkan_rendering_enabled_ && vulkan_renderer_ &&
                         vulkan_renderer_->IsInitialized() &&
                         !video_decoder_->IsCurrentFrameVulkan()) {
                         const AVFrame* raw = video_decoder_->GetLastRawFrame();
@@ -968,7 +971,7 @@ void MediaPlayer::DecodeThread() {
                             // Continue analysis below (frame type, scene change, etc.)
                         }
                     }
-                    if (!presented_via_vulkan) {
+                    if (!suppress_render && !presented_via_vulkan) {
                         if (frame_data.format >= 0) {
                             if (sws_src_w != frame_data.width || sws_src_h != frame_data.height || sws_src_fmt != frame_data.format) {
                                 sws_src_w = frame_data.width; sws_src_h = frame_data.height; sws_src_fmt = frame_data.format;
