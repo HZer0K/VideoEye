@@ -84,6 +84,14 @@ std::vector<QcRule> DefaultQcRules() {
         "文件中没有音频流。",
         "确认转码参数是否误用了 -an。");
 
+    add("container.extension_mismatch", "扩展名与实际容器不符", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "文件扩展名与实际封装格式不一致。FFmpeg 等按内容探测的工具可正常打开，"
+        "但按扩展名选择解析器的播放器/剪辑工具/上传平台会打开失败或识别错误。",
+        "方案一：按实际容器重命名扩展名（如 xxx.ts 实为 MOV 则改为 xxx.mov）；"
+        "方案二：转封装为扩展名对应的容器，流不重编码："
+        "ffmpeg -i 输入.ts -c copy 输出.mp4。");
+
     // ---- 码率 ----
     add("video.bitrate.peak_ratio", "码率波动过大", IssueCategory::Bitrate,
         IssueSeverity::Warning, QcRuleOp::MaxExceeded, 3.0, "倍",

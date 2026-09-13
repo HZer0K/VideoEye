@@ -5157,6 +5157,12 @@ void AnalysisPanel::OnStartDiagnostics() {
     StartDiagnosticsScan(diagnostics_options_);
 }
 
+void AnalysisPanel::StartDiagnosticsScanForCurrentFile() {
+    // 播放器打开失败时的自动扫描入口: 静默失败路径, 不弹"请先打开文件"提示框
+    if (current_video_path_.empty() || diagnostics_coordinator_.IsRunning()) return;
+    StartDiagnosticsScan(diagnostics_options_);
+}
+
 void AnalysisPanel::OnCancelDiagnostics() {
     diagnostics_coordinator_.Cancel();
     qc_cancel_button_->setEnabled(false);
@@ -5220,7 +5226,8 @@ void AnalysisPanel::OnDiagnosticsFailed(quint64 generation, const QString& messa
     bitrate_gop_progress_bar_->setValue(0);
     bitrate_gop_progress_bar_->setFormat(tr("失败"));
 
-    QMessageBox::warning(this, tr("分析失败"), message);
+    // 不再弹模态框: 失败原因已写入上方汇总标签, 在诊断页内直接可见
+    // (异常文件打开时也会自动触发扫描, 弹窗会打断"打开即分析"的流程)。
 }
 
 void AnalysisPanel::EvaluateDiagnostics() {

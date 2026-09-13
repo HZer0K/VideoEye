@@ -107,6 +107,10 @@ public:
     
     // 重新发射所有启用状态的开关信号 (用于文件打开后同步播放器状态)
     void EmitInitialFeatureStates();
+
+    // 用面板当前的诊断选项对 current_video_path_ 发起全文件诊断扫描。
+    // 播放器打开失败进入"分析模式"时由 MainWindow 调用, 让诊断页展示具体错误原因。
+    void StartDiagnosticsScanForCurrentFile();
     
 signals:
     // 分析功能开关变化信号 (供 MainWindow 连接 MediaPlayer)

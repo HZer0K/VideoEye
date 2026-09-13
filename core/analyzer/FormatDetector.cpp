@@ -29,6 +29,16 @@ model::ContainerFormat FormatDetector::DetectByMagic(const QString& file_path) {
         return model::ContainerFormat::MP4;
     }
 
+    // fMP4 媒体分片 (DASH/Smooth Streaming): 首盒为 styp，或直接以 moof 开头。
+    // 属于 ISOBMFF 家族，交给 MP4 Box 解析器可直接展示 styp/moof/mdat 盒树；
+    // 若按扩展名兜底 (如 .ts) 会误分发到 TS 分析器。
+    if (header.size() >= 8) {
+        const QByteArray first_box = header.mid(4, 4);
+        if (first_box == "styp" || first_box == "moof") {
+            return model::ContainerFormat::MP4;
+        }
+    }
+
     // EBML (MKV/WebM): \x1A\x45\xDF\xA3
     if (header.size() >= 4 &&
         (unsigned char)header[0] == 0x1A &&

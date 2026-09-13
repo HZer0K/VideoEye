@@ -262,6 +262,7 @@ void PlayerPanel::SetMediaPlayer(player::MediaPlayer* player) {
     connect(player_, &player::MediaPlayer::FrameReady, this, &PlayerPanel::OnFrameReady);
     connect(player_, &player::MediaPlayer::PositionChanged, this, &PlayerPanel::OnPositionChanged);
     connect(player_, &player::MediaPlayer::Error, this, &PlayerPanel::OnError);
+    connect(player_, &player::MediaPlayer::OpenFailed, this, &PlayerPanel::OnOpenFailed);
     connect(player_, &player::MediaPlayer::PlaybackFinished, this, &PlayerPanel::OnPlaybackFinished);
     connect(player_, &player::MediaPlayer::MediaModeChanged, this, &PlayerPanel::OnMediaModeChanged);
     connect(player_, &player::MediaPlayer::AudioLevelReady, this, &PlayerPanel::OnAudioLevelReady);
@@ -538,7 +539,7 @@ void PlayerPanel::OnPlayPause() {
          state == model::PlayerState::Error) &&
         !current_source_.isEmpty()) {
         if (!player_->Open(current_source_)) {
-            emit StatusMessage(tr("打开失败: %1").arg(current_source_), 0);
+            emit StatusMessage(tr("打开失败: %1").arg(player_->GetLastError()), 0);
             return;
         }
     }
@@ -733,6 +734,13 @@ void PlayerPanel::OnPositionChanged(int position_ms, int duration_ms) {
 void PlayerPanel::OnError(const QString& message) {
     QMessageBox::critical(this, tr("错误"), message);
     emit ErrorMessage(tr("错误: %1").arg(message));
+}
+
+void PlayerPanel::OnOpenFailed(const QString& message) {
+    // 打开失败不弹模态框: 文件仍会被加载到分析模块 (媒体信息/文件结构/诊断扫描),
+    // 错误原因经状态栏展示, 用户可在对应分析页查看详情。
+    emit StatusMessage(tr("无法播放: %1").arg(message), 0);
+    emit ErrorMessage(tr("无法播放: %1").arg(message));
 }
 
 void PlayerPanel::OnPlaybackFinished() {

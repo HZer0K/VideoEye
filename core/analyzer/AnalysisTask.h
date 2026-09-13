@@ -60,6 +60,7 @@ struct StreamDigest {
 struct AnalysisResult {
     // 文件级
     std::string file_path;
+    std::string file_extension;     // 小写扩展名（无扩展名/URL 为空），供扩展名与容器一致性检查
     std::string container_format;
     double duration_seconds = 0.0;
     int64_t file_size_bytes = 0;

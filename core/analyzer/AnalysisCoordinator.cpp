@@ -1,9 +1,11 @@
 #include "core/analyzer/AnalysisCoordinator.h"
 #include "core/analyzer/TimelineAnalyzer.h"
+#include "utils/FileProbe.h"
 
 #include <QMetaType>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -190,17 +192,42 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
     AnalysisResult result;
     result.file_path = file_path;
 
+    // 提取小写扩展名（供"扩展名与实际容器不符"规则使用）
+    {
+        const size_t slash = file_path.find_last_of("/\\");
+        const size_t dot = file_path.find_last_of('.');
+        if (dot != std::string::npos &&
+            (slash == std::string::npos || dot > slash)) {
+            result.file_extension = file_path.substr(dot + 1);
+            std::transform(result.file_extension.begin(), result.file_extension.end(),
+                           result.file_extension.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        }
+    }
+
     AVFormatContext* fmt = nullptr;
-    if (avformat_open_input(&fmt, file_path.c_str(), nullptr, nullptr) < 0) {
+    int open_ret = avformat_open_input(&fmt, file_path.c_str(), nullptr, nullptr);
+    if (open_ret < 0) {
+        char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+        av_strerror(open_ret, errbuf, sizeof(errbuf));
         running_.store(false, std::memory_order_release);
-        emit AnalysisFailed(generation, QString::fromStdString("无法打开文件: " + file_path));
+        std::string msg = "无法打开文件: " + file_path + " (" + errbuf + ")";
+        // 定向诊断: FFmpeg 通用报错往往不含可操作的修复建议 (如 fMP4 分片缺 init 段)
+        const std::string extra = utils::DiagnoseUnopenableFile(file_path);
+        if (!extra.empty()) msg += "。" + extra;
+        emit AnalysisFailed(generation, QString::fromStdString(msg));
         return;
     }
 
-    if (avformat_find_stream_info(fmt, nullptr) < 0) {
+    int find_ret = avformat_find_stream_info(fmt, nullptr);
+    if (find_ret < 0) {
+        char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+        av_strerror(find_ret, errbuf, sizeof(errbuf));
         avformat_close_input(&fmt);
         running_.store(false, std::memory_order_release);
-        emit AnalysisFailed(generation, QString::fromStdString("无法解析流信息: " + file_path));
+        emit AnalysisFailed(generation, QString("无法解析流信息: %1 (%2, 文件可能损坏或截断)")
+                                             .arg(QString::fromStdString(file_path),
+                                                  QString::fromUtf8(errbuf)));
         return;
     }
 

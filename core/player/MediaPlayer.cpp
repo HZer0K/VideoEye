@@ -1,5 +1,6 @@
 #include "MediaPlayer.h"
 #include "utils/Logger.h"
+#include "utils/FileProbe.h"
 #include <QFileInfo>
 #include <QDebug>
 #include <QMetaObject>
@@ -29,6 +30,15 @@ namespace videoeye {
 namespace player {
 
 using SteadyClock = std::chrono::steady_clock;
+
+// FFmpeg 错误码 -> 可读描述。不用 av_err2str 宏 (MSVC 不支持其 compound literal 写法)。
+static QString AvErrorString(int ret) {
+    char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+    if (av_strerror(ret, errbuf, sizeof(errbuf)) != 0) {
+        return QStringLiteral("错误码 %1").arg(ret);
+    }
+    return QString::fromUtf8(errbuf);
+}
 
 // 计算单帧 256-bin 灰度直方图 (供场景切换检测使用)。
 // 通过 sws_scale 将任意像素格式转为 GRAY8, 再逐字节计数; 不依赖 OpenCV。
@@ -168,7 +178,8 @@ bool MediaPlayer::Open(const QString& url) {
 bool MediaPlayer::OpenRawPcm(const QString& url, const QString& demuxer_name, int sample_rate, int channels) {
     const AVInputFormat* input_format = av_find_input_format(demuxer_name.toUtf8().constData());
     if (!input_format) {
-        emit Error(QString("Unsupported PCM format: %1").arg(demuxer_name));
+        last_open_error_ = QString("不支持的 PCM 采样格式: %1").arg(demuxer_name);
+        emit OpenFailed(last_open_error_);
         return false;
     }
     AVDictionary* input_options = nullptr;
@@ -219,8 +230,9 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     const unsigned header_avcodec_major = LIBAVCODEC_VERSION_MAJOR;
     const unsigned runtime_avcodec_major = static_cast<unsigned>(avcodec_version() >> 16);
     if (header_avcodec_major != runtime_avcodec_major) {
-        emit Error(QString("FFmpeg libavcodec 版本不匹配：编译期头文件=%1，运行期库=%2。")
-                       .arg(header_avcodec_major).arg(runtime_avcodec_major));
+        last_open_error_ = QString("FFmpeg libavcodec 版本不匹配：编译期头文件=%1，运行期库=%2。")
+                       .arg(header_avcodec_major).arg(runtime_avcodec_major);
+        emit OpenFailed(last_open_error_);
         return false;
     }
 
@@ -230,21 +242,27 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     int ret = avformat_open_input(&format_ctx_, url_str.c_str(), input_format, open_options ? &open_options : nullptr);
     if (open_options) av_dict_free(&open_options);
     if (ret < 0) {
-        emit Error(QString("Failed to open: %1").arg(url));
+        last_open_error_ = QString("打开输入失败: %1 | FFmpeg: %2").arg(url, AvErrorString(ret));
+        // 定向诊断: fMP4 分片缺 init 段等特征, 给出可操作的修复建议
+        const std::string extra = utils::DiagnoseUnopenableFile(url_str);
+        if (!extra.empty()) last_open_error_ += QString::fromStdString("；" + extra);
+        emit OpenFailed(last_open_error_);
         return false;
     }
     LOG_INFO("OpenInternal: avformat_open_input OK");
 
     ret = avformat_find_stream_info(format_ctx_, nullptr);
     if (ret < 0) {
-        emit Error("Failed to find stream info");
+        last_open_error_ = QString("无法解析流信息 (文件可能损坏、截断或格式不受支持) | FFmpeg: %1").arg(AvErrorString(ret));
+        emit OpenFailed(last_open_error_);
         Cleanup();
         return false;
     }
     LOG_INFO("OpenInternal: avformat_find_stream_info OK, streams=" + std::to_string(format_ctx_->nb_streams));
 
     if (!format_ctx_) {
-        emit Error("Format context is null");
+        last_open_error_ = "Format context is null";
+        emit OpenFailed(last_open_error_);
         return false;
     }
 
@@ -255,7 +273,8 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     audio_stream_index_ = av_find_best_stream(format_ctx_, AVMEDIA_TYPE_AUDIO, -1, -1, &best_audio_codec, 0);
 
     if (video_stream_index_ < 0 && audio_stream_index_ < 0) {
-        emit Error("No video or audio stream found");
+        last_open_error_ = "文件中未找到可播放的视频/音频流 (可能已损坏或为不支持的编码)";
+        emit OpenFailed(last_open_error_);
         Cleanup();
         return false;
     }
@@ -315,7 +334,8 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
         video_decoder_ = std::make_unique<VideoDecoder>();
         AVStream* video_stream = format_ctx_->streams[video_stream_index_];
         if (!video_stream || !video_stream->codecpar) {
-            emit Error("Video codec parameters not available");
+            last_open_error_ = "视频流编解码参数不可用";
+            emit OpenFailed(last_open_error_);
             Cleanup();
             return false;
         }
@@ -361,20 +381,24 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
             const AVCodec* video_codec = best_video_codec;
             if (!video_codec) video_codec = avcodec_find_decoder(video_stream->codecpar->codec_id);
             if (!video_codec) {
-                emit Error("Video codec not found");
+                last_open_error_ = QString("找不到视频解码器 (codec_id=%1)")
+                                       .arg(avcodec_get_name(video_stream->codecpar->codec_id));
+                emit OpenFailed(last_open_error_);
                 Cleanup();
                 return false;
             }
             AVCodecContext* video_codec_ctx = avcodec_alloc_context3(video_codec);
             if (!video_codec_ctx) {
-                emit Error("Failed to create video codec context");
+                last_open_error_ = "无法创建视频解码器上下文";
+                emit OpenFailed(last_open_error_);
                 Cleanup();
                 return false;
             }
             ret = avcodec_parameters_to_context(video_codec_ctx, video_stream->codecpar);
             if (ret < 0) {
                 avcodec_free_context(&video_codec_ctx);
-                emit Error("Failed to copy codec parameters");
+                last_open_error_ = QString("复制视频编解码参数失败: %1").arg(AvErrorString(ret));
+                emit OpenFailed(last_open_error_);
                 Cleanup();
                 return false;
             }
@@ -389,13 +413,16 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
             ret = avcodec_open2(video_codec_ctx, video_codec, nullptr);
             if (ret < 0) {
                 avcodec_free_context(&video_codec_ctx);
-                emit Error("Failed to open video decoder");
+                last_open_error_ = QString("打开视频解码器失败 (%1): %2")
+                                       .arg(avcodec_get_name(video_codec->id), AvErrorString(ret));
+                emit OpenFailed(last_open_error_);
                 Cleanup();
                 return false;
             }
             if (!video_decoder_->InitializeFromContext(video_codec_ctx)) {
                 avcodec_free_context(&video_codec_ctx);
-                emit Error("Failed to initialize video decoder");
+                last_open_error_ = "初始化视频解码器失败";
+                emit OpenFailed(last_open_error_);
                 Cleanup();
                 return false;
             }
@@ -410,12 +437,14 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
         audio_decoder_ = std::make_unique<AudioDecoder>();
         AVStream* audio_stream = format_ctx_->streams[audio_stream_index_];
         if (!audio_stream->codecpar) {
-            emit Error("Audio codec parameters not available");
+            last_open_error_ = "音频流编解码参数不可用";
+            emit OpenFailed(last_open_error_);
             Cleanup();
             return false;
         }
         if (!audio_decoder_->Initialize(audio_stream->codecpar)) {
-            emit Error("Failed to initialize audio decoder");
+            last_open_error_ = "初始化音频解码器失败";
+            emit OpenFailed(last_open_error_);
             Cleanup();
             return false;
         }
@@ -449,8 +478,17 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
         StartContainerStructureAnalysis(url);
     }
 
+    last_open_error_.clear();
     LOG_INFO("OpenInternal success: " + url.toStdString());
     return true;
+}
+
+void MediaPlayer::RequestContainerStructureAnalysis(const QString& url) {
+    // 供播放器 Open 失败后的"分析模式"使用: 文件打不开/播不了也要尽量给出文件级结构信息。
+    ReapContainerAnalysisThreads(false);
+    if (container_structure_enabled_) {
+        StartContainerStructureAnalysis(url);
+    }
 }
 
 void MediaPlayer::Play() {

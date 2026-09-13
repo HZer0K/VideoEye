@@ -748,19 +748,21 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
     player_panel_->SetRawImageMode(false);
     player_panel_->SetCurrentSource(source);
     const bool open_result = player_->Open(source);
-    if (!open_result) {
-        statusBar()->showMessage(tr("打开失败: %1").arg(source));
-        return false;
-    }
 
-    statusBar()->showMessage(tr("已打开: %1").arg(source));
+    // 打开失败 (文件损坏/截断/格式不受支持/无可播放流) 不再直接中止:
+    // 仍把文件加载到分析模块, 由媒体信息/文件结构/诊断扫描给出错误原因。
+    if (open_result) {
+        statusBar()->showMessage(tr("已打开: %1").arg(source));
+    } else {
+        statusBar()->showMessage(tr("无法播放 (已进入分析模式): %1").arg(player_->GetLastError()), 0);
+    }
     if (current_media_label_) {
-        current_media_label_->setText(source);
+        current_media_label_->setText(open_result ? source : tr("%1 (无法播放)").arg(source));
     }
     current_media_url_ = source;
     analysis_panel_->SetCurrentVideoPath(source);
 
-    // MediaInfo 解析
+    // MediaInfo 解析 (异常文件也可能部分解析成功, 尽力而为)
     {
         analyzer::MediaInfoAnalyzer mi;
         if (mi.Open(source)) {
@@ -773,8 +775,18 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
     // 同步已启用的分析功能到播放器 (复选框默认勾选但未触发信号)
     analysis_panel_->EmitInitialFeatureStates();
 
-    if (autoplay) {
-        player_->Play();
+    if (open_result) {
+        if (autoplay) {
+            player_->Play();
+        }
+        // 打开即分析: 后台自动跑一次全文件诊断扫描 (扩展名/容器一致性、GOP、时间戳、
+        // 音频 QC 等规则在「诊断与报告」页直接给出原因与修复建议; 大文件可在该页取消)。
+        analysis_panel_->StartDiagnosticsScanForCurrentFile();
+    } else {
+        // 分析模式: 补跑文件结构分析与全文件诊断扫描,
+        // 让「文件结构」「诊断与报告」「码率与 GOP」页展示该文件的具体错误。
+        player_->RequestContainerStructureAnalysis(source);
+        analysis_panel_->StartDiagnosticsScanForCurrentFile();
     }
     return true;
 }

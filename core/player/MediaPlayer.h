@@ -72,6 +72,13 @@ public:
     model::StreamInfo GetStreamInfo() const { return stream_info_; }
     int GetDuration() const { return duration_ms_; }
     int GetCurrentPosition() const { return current_position_ms_.load(); }
+
+    // 最近一次打开失败的详细原因 (成功打开后清空)。用于"打开异常文件仍进入分析模式"的
+    // 场景: MainWindow 据此在状态栏/分析模块展示失败原因, 而不是弹模态框阻断。
+    QString GetLastError() const { return last_open_error_; }
+    // 播放器 Open 失败后手动触发容器结构分析 (后台线程, 结果经 ContainerStructureReady 发出)。
+    // 正常 Open 成功路径内部已自动触发, 无需调用此方法。
+    void RequestContainerStructureAnalysis(const QString& url);
     
     // 音量控制 (0-100)
     void SetVolume(int volume);
@@ -128,6 +135,9 @@ signals:
     void FrameReady(const QImage& frame);
     void PositionChanged(int position_ms, int duration_ms);
     void Error(const QString& message);
+    // 打开阶段失败 (avformat_open_input / find_stream_info / 无可播放流 / 解码器初始化失败)。
+    // 与 Error 的区别: 不弹模态框, 只在状态栏提示, 文件仍会加载到分析模块。
+    void OpenFailed(const QString& message);
     void PlaybackFinished();
     
     // 分析数据信号
@@ -208,6 +218,7 @@ private:
     std::atomic<int> current_position_ms_{0};
     int volume_ = 100;
     QString current_url_;
+    QString last_open_error_;   // 最近一次 Open/OpenRawPcm 失败的详细原因
 
     // 定位方式 (进度条拖动策略)
     std::atomic<model::SeekMode> seek_mode_{model::SeekMode::NearestKeyframe}; // 用户选择的定位方式 (菜单设置)

@@ -105,6 +105,8 @@ private slots:
     void OnPositionChanged(int position_ms, int duration_ms);
     void OnMediaModeChanged(bool has_video);
     void OnError(const QString& message);
+    // 打开阶段失败: 不弹模态框, 只在状态栏提示 (文件仍会进入分析模块展示错误原因)
+    void OnOpenFailed(const QString& message);
     void OnPlaybackFinished();
     void OnAudioLevelReady(double level, double timestamp_seconds);
     void OnAudioVisualizationForDisplay(const model::AudioVisualizationFrame& frame);
