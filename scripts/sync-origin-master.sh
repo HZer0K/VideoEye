@@ -11,7 +11,12 @@
 set -euo pipefail
 REMOTE="${1:-origin}"
 BRANCH="${2:-master}"
-TIP="$(git ls-remote "$REMOTE" "$BRANCH" | awk 'NR==1 {print $1}')"
+# 沙箱注入的 http_proxy/https_proxy 与 git global 的代理配置均已失效,
+# 必须逐个清空后走直连 (只清 http.proxy 会被 env 兜回死代理)。
+TIP="$(git -c http.proxy= -c https.proxy= \
+        -c "http.https://github.com.proxy=" \
+        -c credential.helper=wincred \
+        ls-remote "$REMOTE" "$BRANCH" | awk 'NR==1 {print $1}')"
 if [ -z "$TIP" ]; then
   echo "ERROR: ls-remote returned empty for $REMOTE/$BRANCH" >&2
   exit 1
