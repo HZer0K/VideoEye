@@ -3,12 +3,9 @@
 #include "ui/theme/AppTheme.h"
 #include "ui/dialogs/MediaExportDialog.h"
 #include "core/exporter/MediaExporter.h"
-#include "core/player/VulkanContext.h"
-#include "core/player/VulkanRenderer.h"
 #include "utils/Logger.h"
 #include "core/model/EbmlInfo.h"
 #include "core/model/ContainerStructureInfo.h"
-#include "core/model/AudioVisualizationFrame.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
@@ -62,25 +59,16 @@ MainWindow::MainWindow(QWidget* parent)
     , content_stack_(nullptr)
     , main_splitter_(nullptr)
     , content_splitter_(nullptr)
-    , video_widget_(nullptr)
-    , control_bar_(nullptr)
-    , seek_slider_(nullptr)
-    , play_pause_button_(nullptr)
-    , stop_button_(nullptr)
-    , prev_frame_button_(nullptr)
-    , next_frame_button_(nullptr)
-    , time_label_(nullptr)
-    , volume_button_(nullptr)
-    , volume_slider_(nullptr)
     , mediainfo_text_(nullptr)
     , current_media_label_(nullptr)
+    , stats_label_(nullptr)
     , analysis_panel_(nullptr)
     , menu_bar_(nullptr)
     , status_bar_(nullptr) {
-    
-    // 创建播放器实例
+
+    // 创建播放器实例 (MainWindow 拥有; 分析侧与播放模块共用)
     player_ = new player::MediaPlayer(this);
-    
+
     // 应用深色主题
     theme::applyDarkTheme();
     
@@ -88,9 +76,12 @@ MainWindow::MainWindow(QWidget* parent)
     SetupMenuBar();
     SetupStatusBar();
     SetupConnections();
-    InitVulkan();
+    // 恢复上次播放区显隐状态 (须在 SetupUI 之后; 若为收起态, Vulkan 会延迟到
+    // 展开时由 PlayerPanel 内部 video widget 的 showEvent 触发初始化)
+    player_panel_->RestoreVisibility();
+    // Vulkan: 由 PlayerPanel 拥有 context/renderer, 失败自动回退 CPU
+    player_panel_->InitVulkan();
     UpdateMinimumWindowSize();
-    audio_vis_timer_.start();
 
     setWindowTitle(tr("VideoEye 2.0 - 视频流分析软件"));
     resize(1200, 800);
@@ -100,35 +91,6 @@ MainWindow::~MainWindow() {
     if (player_) {
         player_->Stop();
     }
-}
-
-void MainWindow::InitVulkan() {
-#ifdef HAVE_VULKAN
-    if (!player_ || !video_widget_) return;
-
-    // 快速探测: 无 Vulkan loader/驱动时直接走 CPU, 不创建对象。
-    if (!player::VulkanContext::IsVulkanAvailable()) {
-        LOG_WARN("Vulkan 不可用 (无 loader/驱动), 回退到 CPU 渲染");
-        return;
-    }
-
-    // 创建共享 VulkanContext + 渲染器 (生命周期由 MainWindow 拥有)。
-    // 关键: 不在此处 (构造函数, show() 之前) 调用 Initialize。因为提前用未显示的
-    // 子窗口 winId() 创建 Surface, 会导致 Optimus 笔记本上 vkGetPhysicalDeviceSurfaceSupportKHR
-    // 对所有设备误报「不支持呈现」。改为延迟到 video_widget_ 首次 showEvent 时,
-    // 在后台线程内完成「建 Surface → 呈现感知选设备 → 建管线」(见 VulkanVideoWidget::TryInitializeVulkan)。
-    vulkan_ctx_ = std::make_unique<player::VulkanContext>();
-    vulkan_renderer_ = std::make_unique<player::VulkanRenderer>(this);
-
-    video_widget_->SetVulkanRenderer(vulkan_renderer_.get(), vulkan_ctx_.get());
-    player_->SetVulkanContext(vulkan_ctx_.get());
-    player_->SetVulkanRenderer(vulkan_renderer_.get());
-    player_->SetVulkanRenderingEnabled(true);
-
-    LOG_INFO("Vulkan 已挂载: 渲染器将在窗口显示后于后台线程初始化 (失败自动回退 CPU)");
-#else
-    LOG_INFO("未定义 HAVE_VULKAN, 使用 CPU 渲染");
-#endif
 }
 
 void MainWindow::SetupUI() {
@@ -247,128 +209,16 @@ void MainWindow::PopulateSidebarItems() {
 }
 
 void MainWindow::SetupContentArea() {
-    // 右侧主内容区: 垂直分割器 (视频区+控制栏 | 分析内容区)
+    // 右侧主内容区: 垂直分割器 (播放模块 | 分析内容区)
     content_splitter_ = new QSplitter(Qt::Vertical, this);
     content_splitter_->setChildrenCollapsible(false);
     
-    // === 上半区: 视频 + 控制栏 ===
-    QWidget* top_area = new QWidget(content_splitter_);
-    QVBoxLayout* top_layout = new QVBoxLayout(top_area);
-    top_layout->setContentsMargins(0, 0, 0, 0);
-    top_layout->setSpacing(0);
-    
-    // 视频显示区
-    video_widget_ = new VulkanVideoWidget(top_area);
-    video_widget_->setMinimumSize(320, 160);
-    video_widget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    top_layout->addWidget(video_widget_);
-    
-    // 控制栏
-    control_bar_ = new QWidget(top_area);
-    control_bar_->setObjectName("ControlBar");
-    control_bar_->setFixedHeight(56);
-    
-    QHBoxLayout* control_layout = new QHBoxLayout(control_bar_);
-    control_layout->setContentsMargins(16, 8, 16, 8);
-    control_layout->setSpacing(12);
-    
-    // 播放/暂停按钮 (圆形主按钮)
-    play_pause_button_ = new QPushButton(control_bar_);
-    play_pause_button_->setObjectName("playPauseButton");
-    play_pause_button_->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
-    play_pause_button_->setIconSize(QSize(16, 16));
-    play_pause_button_->setToolTip(tr("播放/暂停"));
-    control_layout->addWidget(play_pause_button_);
-    
-    // 停止按钮
-    stop_button_ = new QPushButton(control_bar_);
-    stop_button_->setObjectName("stopButton");
-    stop_button_->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
-    stop_button_->setIconSize(QSize(14, 14));
-    stop_button_->setToolTip(tr("停止"));
-    control_layout->addWidget(stop_button_);
-    
-    // 上一帧/下一帧 (默认隐藏)
-    prev_frame_button_ = new QPushButton(tr("上一帧"), control_bar_);
-    prev_frame_button_->setVisible(false);
-    control_layout->addWidget(prev_frame_button_);
-    
-    next_frame_button_ = new QPushButton(tr("下一帧"), control_bar_);
-    next_frame_button_->setVisible(false);
-    control_layout->addWidget(next_frame_button_);
-    
-    // 定位方式 (关键帧 / 精确值) 已移至顶部菜单: 播放设置 → seek方式
-
-    // 进度条
-    seek_slider_ = new QSlider(Qt::Horizontal, control_bar_);
-    seek_slider_->setRange(0, 0);
-    control_layout->addWidget(seek_slider_, 1);
-    
-    // 时间显示
-    time_label_ = new QLabel(tr("00:00:00 / 00:00:00"), control_bar_);
-    time_label_->setObjectName("TimeLabel");
-    time_label_->setMinimumWidth(140);
-    time_label_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    control_layout->addWidget(time_label_);
-
-    // 音量控制
-    volume_button_ = new QPushButton(control_bar_);
-    volume_button_->setObjectName("volumeButton");
-    volume_button_->setIcon(style()->standardIcon(QStyle::SP_MediaVolume));
-    volume_button_->setIconSize(QSize(16, 16));
-    volume_button_->setFixedSize(32, 28);
-    volume_button_->setToolTip(tr("静音/取消静音"));
-    volume_button_->setStyleSheet(
-        "QPushButton#volumeButton {"
-        "  background-color: transparent; border: none;"
-        "}"
-        "QPushButton#volumeButton:hover {"
-        "  background-color: #21262D; border-radius: 4px;"
-        "}");
-    control_layout->addWidget(volume_button_);
-
-    volume_slider_ = new QSlider(Qt::Horizontal, control_bar_);
-    volume_slider_->setObjectName("volumeSlider");
-    volume_slider_->setRange(0, 100);
-    volume_slider_->setValue(100);
-    volume_slider_->setFixedWidth(80);
-    volume_slider_->setToolTip(tr("音量: 100%"));
-    volume_slider_->setStyleSheet(
-        "QSlider#volumeSlider::groove:horizontal {"
-        "  border: none; height: 4px; background: #30363D; border-radius: 2px;"
-        "}"
-        "QSlider#volumeSlider::sub-page:horizontal {"
-        "  background: #58A6FF; border-radius: 2px;"
-        "}"
-        "QSlider#volumeSlider::handle:horizontal {"
-        "  background: #C9D1D9; width: 12px; height: 12px;"
-        "  margin: -5px 0; border-radius: 6px;"
-        "}"
-        "QSlider#volumeSlider::handle:horizontal:hover {"
-        "  background: #FFFFFF;"
-        "}");
-    control_layout->addWidget(volume_slider_);
-
-    // 运动矢量叠加开关 (checkable)
-    mv_overlay_button_ = new QPushButton(tr("MV"), control_bar_);
-    mv_overlay_button_->setObjectName("MvOverlayButton");
-    mv_overlay_button_->setCheckable(true);
-    mv_overlay_button_->setToolTip(tr("运动矢量叠加显示 (需软件解码)"));
-    mv_overlay_button_->setFixedSize(40, 28);
-    mv_overlay_button_->setStyleSheet(
-        "QPushButton#MvOverlayButton {"
-        "  background-color: #21262D; border: 1px solid #30363D;"
-        "  border-radius: 4px; color: #8B949E; font-size: 11px; font-weight: bold;"
-        "}"
-        "QPushButton#MvOverlayButton:hover {"
-        "  border-color: #58A6FF; color: #C9D1D9;"
-        "}"
-        "QPushButton#MvOverlayButton:checked {"
-        "  background-color: #1F6FEB; border-color: #58A6FF; color: #FFFFFF;"
-        "}");
-    control_layout->addWidget(mv_overlay_button_);
-    
-    top_layout->addWidget(control_bar_);
+    // === 上半区: 播放模块 (视频区 + 控制栏, 可整体收起) ===
+    // 播放相关的一切都在 PlayerPanel 内: 视频 widget、控制栏、Vulkan/GDI 渲染、
+    // 音频可视化、Raw 序列。MainWindow 只负责把它放进分割器并注入 MediaPlayer。
+    player_panel_ = new PlayerPanel(content_splitter_);
+    player_panel_->SetMediaPlayer(player_);
+    player_panel_->SetSplitter(content_splitter_);
     
     // === 下半区: 内容堆栈 ===
     content_stack_ = new QStackedWidget(content_splitter_);
@@ -401,9 +251,9 @@ void MainWindow::SetupContentArea() {
     // 页面全部注册完毕后才生成侧边栏条目，保证行号 == stack 下标
     PopulateSidebarItems();
     
-    content_splitter_->addWidget(top_area);
+    content_splitter_->addWidget(player_panel_);
     content_splitter_->addWidget(content_stack_);
-    
+
     content_splitter_->setStretchFactor(0, 3);
     content_splitter_->setStretchFactor(1, 2);
     content_splitter_->setSizes({480, 320});
@@ -423,8 +273,13 @@ void MainWindow::OnSidebarChanged(int index) {
     content_stack_->setCurrentIndex(index);
 }
 
+void MainWindow::OnTogglePlayerArea(bool checked) {
+    player_panel_->SetPlayerAreaVisible(checked);
+}
+
 void MainWindow::UpdateMinimumWindowSize() {
-    const int video_min = video_widget_ ? video_widget_->minimumHeight() : 160;
+    // 播放区收起时 MinimumHeightHint 返回 0, 窗口可以缩得更小
+    const int player_min = player_panel_ ? player_panel_->MinimumHeightHint() : 0;
     int content_min = content_stack_ ? content_stack_->minimumHeight() : 250;
 
     int bars = 0;
@@ -438,7 +293,7 @@ void MainWindow::UpdateMinimumWindowSize() {
         bars += statusBar()->sizeHint().height();
     }
 
-    int min_height = bars + content_min + video_min + 56; // 56 = control bar height
+    int min_height = bars + content_min + player_min;
 
     int min_width = 900;
     if (sidebar_) {
@@ -456,8 +311,9 @@ void MainWindow::showEvent(QShowEvent* event) {
     UpdateMinimumWindowSize();
     // 确保 Vulkan 渲染器在窗口显示后初始化 (原生窗口句柄就绪)。
     // 即使子 Widget 的 showEvent 由于平台时序未触发, 这里也能兜底初始化。
-    if (video_widget_) {
-        video_widget_->TryInitializeVulkan();
+    // 播放区收起时 PlayerPanel 内部会跳过, 留到展开时再建 surface / swapchain。
+    if (player_panel_) {
+        player_panel_->TryInitializeVulkan();
     }
 }
 
@@ -474,101 +330,22 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
     // (此时 Qt 布局已完成, 视频 widget 几何才准确; resizeEvent 中滞后)。
 }
 
-void MainWindow::moveEvent(QMoveEvent* event) {
-    QMainWindow::moveEvent(event);
-    // 同 resizeEvent: 几何更新由 WM_WINDOWPOSCHANGED 统一处理
-}
-
-void MainWindow::ShowGdiOverlayPopup() {
-    if (!video_widget_ || !vulkan_renderer_) return;
-    if (!gdi_overlay_hwnd_) {
-#ifdef Q_OS_WIN
-        // 注册窗口类 (一次性)
-        static bool cls_registered = false;
-        if (!cls_registered) {
-            WNDCLASSEXW wc{};
-            wc.cbSize = sizeof(wc);
-            wc.lpfnWndProc = DefWindowProcW;
-            wc.hInstance = GetModuleHandleW(nullptr);
-            wc.lpszClassName = L"VideoEyeGdiOverlay";
-            wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-            wc.hbrBackground = nullptr;
-            RegisterClassExW(&wc);
-            cls_registered = true;
-        }
-        // layered popup: 内容与位置由 UpdateLayeredWindow 原子更新, 无绘制/移动撕裂
-        // 创建前先将主窗口视频区域涂黑: DWM 拖动模态快照与实时合成均显示
-        // 黑底, 拖动中 popup 错位时露出的仅是黑边而非旧画面 (消除重影)。
-        player::VulkanRenderer::FillWindowBlack(video_widget_->winId());
-        gdi_overlay_hwnd_ = reinterpret_cast<WId>(CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW,
-            L"VideoEyeGdiOverlay", L"",
-            WS_POPUP,
-            0, 0, 1, 1,
-            nullptr, nullptr, GetModuleHandleW(nullptr), nullptr));
-        if (!gdi_overlay_hwnd_) return;
-        vulkan_renderer_->SetGdiOverlayWindow(gdi_overlay_hwnd_);
-        UpdateGdiOverlayPopupGeometry();
-        // 显示前以最近帧预刷新一次, 避免首帧黑屏闪烁
-        vulkan_renderer_->RefreshGdiOverlayNow();
-        ShowWindow(reinterpret_cast<HWND>(gdi_overlay_hwnd_), SW_SHOWNOACTIVATE);
-#endif
-    }
-    UpdateGdiOverlayPopupGeometry();
-}
-
-void MainWindow::HideGdiOverlayPopup() {
-    if (vulkan_renderer_) vulkan_renderer_->SetGdiOverlayWindow(0);
-    if (gdi_overlay_hwnd_) {
-#ifdef Q_OS_WIN
-        DestroyWindow(reinterpret_cast<HWND>(gdi_overlay_hwnd_));
-#endif
-        gdi_overlay_hwnd_ = 0;
-    }
-}
-
-void MainWindow::UpdateGdiOverlayPopupGeometry() {
-    if (!gdi_overlay_hwnd_ || !video_widget_ || !vulkan_renderer_) return;
-#ifdef Q_OS_WIN
-    // 以视频 widget 原生窗口的物理像素几何为准 (无 DPR 舍入误差)
-    HWND wh = reinterpret_cast<HWND>(video_widget_->winId());
-    RECT rc{};
-    GetClientRect(wh, &rc);
-    POINT pt{0, 0};
-    ClientToScreen(wh, &pt);
-    vulkan_renderer_->SetGdiOverlayGeometry(pt.x, pt.y,
-                                            rc.right - rc.left, rc.bottom - rc.top);
-#endif
-}
-
 bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr* result) {
 #ifdef Q_OS_WIN
     if (eventType == "windows_generic_MSG") {
         MSG* msg = static_cast<MSG*>(message);
+        // 拖动相关的渲染处理全部转发给 PlayerPanel:
+        // WM_ENTERSIZEMOVE/EXITSIZEMOVE 只发给顶层窗口, 子 widget 收不到,
+        // 因此这里只做转发, 具体逻辑见 PlayerPanel::OnDragStateChanged。
         if (msg->message == WM_ENTERSIZEMOVE) {
-            // 进入窗口拖动模态: 通知渲染器抑制 swapchain 重建 (慢速拖动时
-            // resize 事件间隔可大于时间防抖期, 需靠模态消息精确判定拖动中)。
-            // DWM 在拖动模态中只对被拖动窗口做快照缩放, 窗口上任何绘制都
-            // 不可见, 因此视频帧改由 GDI 直绘到独立顶层 popup 窗口。
-            if (vulkan_renderer_) vulkan_renderer_->NotifyResizeDrag(true);
-            // 立即同步销毁 swapchain: 否则 flip 表面仍显示拖动前最后一帧,
-            // GDI 涂黑被其覆盖不可见, DWM 快照会拍到旧画面 → 拖动全程重影。
-            if (vulkan_renderer_) vulkan_renderer_->DestroySwapchainForDragSync();
-            ShowGdiOverlayPopup();
+            if (player_panel_) player_panel_->OnDragStateChanged(true);
         } else if (msg->message == WM_EXITSIZEMOVE) {
-            // 拖动结束: 下一帧立即重建到最终尺寸, 销毁 popup 恢复直渲
-            if (vulkan_renderer_) vulkan_renderer_->NotifyResizeDrag(false);
-            HideGdiOverlayPopup();
-            // popup 销毁后主窗口视频区域仍是拖动期间的黑色占位, 立即以最近
-            // 帧恢复画面, 避免等待下一帧的黑闪 — 与后续 Vulkan 恢复无缝衔接。
-            if (vulkan_renderer_) vulkan_renderer_->RefreshMainWindowNow();
+            if (player_panel_) player_panel_->OnDragStateChanged(false);
         } else if (msg->message == WM_WINDOWPOSCHANGED) {
             // 窗口位置/尺寸变化后派发 (在 WM_SIZE 之后, Qt 布局已完成):
-            // 视频 widget 几何此时才准确, 更新目标几何并立即以最近帧呈现
-            // popup — 解码线程帧循环更新有最长一帧间隔的滞后, 拖动中会
-            // 露出主窗口 DWM 快照的旧画面造成残留。
-            UpdateGdiOverlayPopupGeometry();
-            if (vulkan_renderer_) vulkan_renderer_->RefreshGdiOverlayNow();
+            // 视频 widget 几何此时才准确, 更新 popup 几何并立即以最近帧呈现
+            // — 解码线程帧循环更新有最长一帧间隔的滞后, 拖动中会露出残留。
+            if (player_panel_) player_panel_->OnWindowPosChanged();
         }
     }
 #else
@@ -603,6 +380,18 @@ void MainWindow::SetupMenuBar() {
     QMenu* playback_menu = new QMenu(tr("播放设置"), menu_bar_);
     menu_bar_->insertMenu(help_menu->menuAction(), playback_menu);
 
+    // 视图菜单 (位于 "播放设置" 与 "帮助" 之间)
+    QMenu* view_menu = new QMenu(tr("视图"), menu_bar_);
+    menu_bar_->insertMenu(help_menu->menuAction(), view_menu);
+
+    toggle_player_action_ = new QAction(tr("显示播放区"), this);
+    toggle_player_action_->setCheckable(true);
+    toggle_player_action_->setChecked(true);
+    toggle_player_action_->setShortcut(QKeySequence(QStringLiteral("F9")));
+    toggle_player_action_->setStatusTip(tr("收起播放区可让分析区占满整个内容区 (VideoEye 以分析为主)"));
+    connect(toggle_player_action_, &QAction::toggled, this, &MainWindow::OnTogglePlayerArea);
+    view_menu->addAction(toggle_player_action_);
+
     QMenu* seek_mode_menu = playback_menu->addMenu(tr("seek方式"));
     QActionGroup* seek_ag = new QActionGroup(playback_menu);
     seek_ag->setExclusive(true);
@@ -626,26 +415,20 @@ void MainWindow::SetupMenuBar() {
 void MainWindow::SetupStatusBar() {
     status_bar_ = statusBar();
     status_bar_->showMessage(tr("就绪"));
+
+    // 实时码流统计常驻区 (右端): 用 permanent widget 而非 showMessage,
+    // 否则每 10 帧一次的统计会把“已打开 xx”这类临时提示冲掉。
+    stats_label_ = new QLabel(status_bar_);
+    stats_label_->setFont(theme::font::monoFont(9));
+    stats_label_->setStyleSheet(QStringLiteral("color: #8b949e; padding-right: 8px;"));
+    stats_label_->setTextInteractionFlags(Qt::NoTextInteraction);
+    stats_label_->setVisible(false);  // 有统计数据时才显示
+    status_bar_->addPermanentWidget(stats_label_);
 }
 
 void MainWindow::SetupConnections() {
-    // 播放器信号连接 - 基本功能
-    connect(player_, &player::MediaPlayer::StateChanged,
-            this, &MainWindow::OnStateChanged);
-    connect(player_, &player::MediaPlayer::FrameReady,
-            this, &MainWindow::OnFrameReady);
-    connect(player_, &player::MediaPlayer::PositionChanged,
-            this, &MainWindow::OnPositionChanged);
-    connect(player_, &player::MediaPlayer::Error,
-            this, &MainWindow::OnError);
-    connect(player_, &player::MediaPlayer::PlaybackFinished,
-            this, &MainWindow::OnPlaybackFinished);
-    connect(player_, &player::MediaPlayer::MediaModeChanged,
-            this, &MainWindow::OnMediaModeChanged);
-    connect(player_, &player::MediaPlayer::AudioLevelReady,
-            this, &MainWindow::OnAudioLevelReady);
-    connect(player_, &player::MediaPlayer::AudioVisualizationReady,
-            this, &MainWindow::OnAudioVisualizationForDisplay);
+    // 播放器信号 - 播放/画面/音频相关已由 PlayerPanel 自行连接 (SetMediaPlayer)。
+    // 此处只连接 MainWindow 负责的部分: 导出进度、分析面板、跨模块转发。
     connect(player_, &player::MediaPlayer::VideoFrameExportProgress,
             this, &MainWindow::OnVideoFrameExportProgress);
     connect(player_, &player::MediaPlayer::VideoFrameExportFinished,
@@ -771,9 +554,9 @@ void MainWindow::SetupConnections() {
             analysis_panel_, &ui::AnalysisPanel::OnContainerStructureReady);
     connect(player_, &player::MediaPlayer::MacroblockInfoReady,
             analysis_panel_, &ui::AnalysisPanel::UpdateMacroblockInfo);
-    // MV 叠加: 同时转发到视频叠加层
+    // MV 叠加: 同时转发到播放模块的视频叠加层
     connect(player_, &player::MediaPlayer::MacroblockInfoReady,
-            this, &MainWindow::OnMacroblockInfoForOverlay);
+            player_panel_, &PlayerPanel::OnMacroblockInfoForOverlay);
     connect(player_, &player::MediaPlayer::SceneChangeReady,
             analysis_panel_, &ui::AnalysisPanel::OnSceneChangeDetected);
     
@@ -811,8 +594,8 @@ void MainWindow::SetupConnections() {
                 case AF::Macroblock:
                     player_->SetMacroblockAnalysisEnabled(enabled);
                     // 宏块分析关闭时联动关闭 MV 叠加
-                    if (!enabled && mv_overlay_enabled_) {
-                        mv_overlay_button_->setChecked(false);
+                    if (!enabled) {
+                        player_panel_->SetMvOverlayEnabled(false);
                     }
                     break;
                 case AF::SceneChange:
@@ -823,43 +606,36 @@ void MainWindow::SetupConnections() {
                 }
             });
     
-    // 控件信号连接
-    connect(play_pause_button_, &QPushButton::clicked, this, &MainWindow::OnPlayPause);
-    connect(stop_button_, &QPushButton::clicked, this, &MainWindow::OnStop);
-    connect(prev_frame_button_, &QPushButton::clicked, this, &MainWindow::OnPrevRawFrame);
-    connect(next_frame_button_, &QPushButton::clicked, this, &MainWindow::OnNextRawFrame);
-    // MV 叠加开关
-    connect(mv_overlay_button_, &QPushButton::toggled, this, &MainWindow::OnMvOverlayToggled);
-    // 进度条交互:
-    //  - 拖动中由 sliderMoved 做"节流的关键帧预览" (画面跟手且不过度占用 UI 线程)
-    //  - valueChanged 仅在非拖动时生效 (键盘方向键/程序化跳转), 按当前模式定位
-    //  - 释放时由 sliderReleased 按当前选择的定位方式 (关键帧/精确值) 做最终定位
-    connect(seek_slider_, &QSlider::sliderPressed, this, [this]() {
-        slider_dragging_ = true;
-        if (player_) player_->SetSeekDragging(true); // 拖动期间抑制音频, 避免杂音
-    });
-    connect(seek_slider_, &QSlider::sliderMoved, this, [this](int v) {
-        // 拖动中: 实时关键帧预览 (画面跟手)。节流到 ~100ms 一次, 避免每像素都调 av_seek_frame。
-        if (showing_raw_image_) { ShowRawFrame(v); return; }
-        const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        if (now - last_drag_seek_ms_ < 100) return;
-        last_drag_seek_ms_ = now;
-        if (player_) player_->Seek(v, model::SeekMode::NearestKeyframe);
-    });
-    connect(seek_slider_, &QSlider::valueChanged, this, [this](int v) {
-        if (slider_dragging_) return; // 拖动中由 sliderMoved 处理预览, 此处跳过
-        OnSeek(v); // 键盘/程序化跳转: 按当前模式定位
-    });
-    connect(seek_slider_, &QSlider::sliderReleased, this, [this]() {
-        slider_dragging_ = false;
-        if (player_) player_->SetSeekDragging(false); // 恢复音频
-        OnSeek(seek_slider_->value()); // 释放时按当前定位方式真正 seek
-    });
-
-    // 音量控制
-    connect(volume_slider_, &QSlider::valueChanged, this, &MainWindow::OnVolumeChanged);
-    connect(volume_button_, &QPushButton::clicked, this, &MainWindow::OnMuteButtonClicked);
-
+    // 播放模块的信号桥接 (播放区内部的控件连接见 PlayerPanel::SetupConnections)
+    connect(player_panel_, &PlayerPanel::StatusMessage,
+            this, [this](const QString& text, int timeout) {
+                statusBar()->showMessage(text, timeout);
+            });
+    connect(player_panel_, &PlayerPanel::ErrorMessage,
+            this, [this](const QString& text) {
+                statusBar()->showMessage(text);
+            });
+    connect(player_panel_, &PlayerPanel::RawImageInfoReady,
+            this, [this](const QString& info) {
+                mediainfo_text_->setPlainText(info);
+            });
+    // 实时码流统计: 空串表示停止/换源, 隐藏常驻区
+    connect(player_panel_, &PlayerPanel::StreamStatsDisplayReady,
+            this, [this](const QString& text) {
+                if (!stats_label_) return;
+                stats_label_->setText(text);
+                stats_label_->setVisible(!text.isEmpty());
+            });
+    // 播放区显隐变化时同步菜单勾选并重算窗口最小尺寸
+    connect(player_panel_, &PlayerPanel::VisibilityChanged,
+            this, [this](bool visible) {
+                if (toggle_player_action_ && toggle_player_action_->isChecked() != visible) {
+                    toggle_player_action_->blockSignals(true);
+                    toggle_player_action_->setChecked(visible);
+                    toggle_player_action_->blockSignals(false);
+                }
+                UpdateMinimumWindowSize();
+            });
 }
 
 void MainWindow::OnOpenFile() {
@@ -900,14 +676,22 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
         return false;
     }
 
-    OnStop();
+    // 打开新文件前先终止进行中的导出 (与停止播放配套)
+    if (export_progress_dialog_ && export_progress_dialog_->isVisible()) {
+        player_->CancelVideoFrameExport();
+        export_progress_dialog_->reset();
+        export_progress_dialog_->hide();
+    }
+    // 停止当前播放并清理播放模块状态 (Raw/音频可视化/进度条等)
+    player_panel_->StopPlayback();
 
     const QString suffix = QFileInfo(source).suffix().toLower();
     if (suffix == "yuv" || suffix == "nv12" || suffix == "rgb" ||
         suffix == "bgr" || suffix == "yuy2" || suffix == "raw") {
-        showing_raw_image_ = true;
+        player_panel_->SetRawImageMode(true);
+        player_panel_->SetCurrentSource(QString());
         current_media_url_.clear();
-        if (!LoadRawImageFile(source)) {
+        if (!player_panel_->LoadRawImageFile(source)) {
             statusBar()->showMessage(tr("打开失败: %1").arg(source));
             return false;
         }
@@ -915,7 +699,8 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
         if (current_media_label_) {
             current_media_label_->setText(source);
         }
-        mediainfo_text_->setPlainText(tr("(原始图像文件，无 MediaInfo 数据)"));
+        // 媒体信息框保留 LoadRawImageFile 通过 RawImageInfoReady 写入的 Raw 详情
+        // (旧行为: 此处会用“无 MediaInfo 数据”覆盖掉, 导致 Raw 信息一闪而过)
         return true;
     }
 
@@ -928,7 +713,8 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
             return false;
         }
 
-        showing_raw_image_ = false;
+        player_panel_->SetRawImageMode(false);
+        player_panel_->SetCurrentSource(source);
         const bool open_result = player_->OpenRawPcm(source, demuxer_name, sample_rate, channels);
         if (!open_result) {
             statusBar()->showMessage(tr("打开 PCM 失败: %1").arg(source));
@@ -959,7 +745,8 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
         return true;
     }
 
-    showing_raw_image_ = false;
+    player_panel_->SetRawImageMode(false);
+    player_panel_->SetCurrentSource(source);
     const bool open_result = player_->Open(source);
     if (!open_result) {
         statusBar()->showMessage(tr("打开失败: %1").arg(source));
@@ -1104,7 +891,7 @@ void MainWindow::OnExportVideo() {
         QMessageBox::information(this, tr("提示"), tr("请先打开一个视频文件"));
         return;
     }
-    if (showing_raw_image_) {
+    if (player_panel_ && player_panel_->IsShowingRawImage()) {
         QMessageBox::information(this, tr("提示"), tr("当前为图像文件，无法导出视频"));
         return;
     }
@@ -1124,7 +911,7 @@ void MainWindow::OnExportAudio() {
         QMessageBox::information(this, tr("提示"), tr("请先打开一个视频文件"));
         return;
     }
-    if (showing_raw_image_) {
+    if (player_panel_ && player_panel_->IsShowingRawImage()) {
         QMessageBox::information(this, tr("提示"), tr("当前为图像文件，无法导出音频"));
         return;
     }
@@ -1141,852 +928,6 @@ void MainWindow::OnExportAudio() {
 
 void MainWindow::OnExit() {
     close();
-}
-
-void MainWindow::OnPrevRawFrame() {
-    if (showing_raw_image_ && raw_current_frame_ > 0) {
-        ShowRawFrame(raw_current_frame_ - 1);
-    }
-}
-
-void MainWindow::OnNextRawFrame() {
-    if (showing_raw_image_ && raw_current_frame_ + 1 < raw_total_frames_) {
-        ShowRawFrame(raw_current_frame_ + 1);
-    }
-}
-
-bool MainWindow::LoadRawImageFile(const QString& filename) {
-    const QString suffix = QFileInfo(filename).suffix().toLower();
-    if (suffix != "yuv" && suffix != "nv12" && suffix != "rgb" &&
-        suffix != "bgr" && suffix != "yuy2" && suffix != "raw") {
-        return false;
-    }
-
-    int default_width = 1920;
-    int default_height = 1080;
-    {
-        const QString name = QFileInfo(filename).fileName().toLower();
-        QRegularExpression re_wh(R"((\d{2,5})\s*[xX]\s*(\d{2,5}))");
-        QRegularExpressionMatch m = re_wh.match(name);
-        if (m.hasMatch()) {
-            bool ok_w = false;
-            bool ok_h = false;
-            const int w = m.captured(1).toInt(&ok_w);
-            const int h = m.captured(2).toInt(&ok_h);
-            if (ok_w && ok_h && w > 0 && h > 0) {
-                default_width = w;
-                default_height = h;
-            }
-        } else {
-            QRegularExpression re_w_h(R"(w(\d{2,5}).*h(\d{2,5}))", QRegularExpression::CaseInsensitiveOption);
-            m = re_w_h.match(name);
-            if (m.hasMatch()) {
-                bool ok_w = false;
-                bool ok_h = false;
-                const int w = m.captured(1).toInt(&ok_w);
-                const int h = m.captured(2).toInt(&ok_h);
-                if (ok_w && ok_h && w > 0 && h > 0) {
-                    default_width = w;
-                    default_height = h;
-                }
-            }
-        }
-    }
-
-    bool ok = false;
-    const int width = QInputDialog::getInt(this, tr("图像宽度"),
-                                           tr("请输入宽度(px):"),
-                                           default_width, 1, 16384, 1, &ok);
-    if (!ok) {
-        return false;
-    }
-    const int height = QInputDialog::getInt(this, tr("图像高度"),
-                                            tr("请输入高度(px):"),
-                                            default_height, 1, 16384, 1, &ok);
-    if (!ok) {
-        return false;
-    }
-
-    const QString lower_name = QFileInfo(filename).fileName().toLower();
-    const QStringList formats = {
-        "YUV420P(I420)",
-        "NV12",
-        "YUY2",
-        "RGB24",
-        "BGR24"
-    };
-
-    QString default_format = "YUV420P(I420)";
-    if (suffix == "nv12" || lower_name.contains("nv12")) {
-        default_format = "NV12";
-    } else if (suffix == "yuy2" || lower_name.contains("yuy2")) {
-        default_format = "YUY2";
-    } else if (suffix == "rgb" || lower_name.contains("rgb24") || lower_name.contains("_rgb")) {
-        default_format = "RGB24";
-    } else if (suffix == "bgr" || lower_name.contains("bgr24") || lower_name.contains("_bgr")) {
-        default_format = "BGR24";
-    }
-
-    const QString selected = QInputDialog::getItem(this, tr("原始图像格式"),
-                                                   tr("选择像素格式:"),
-                                                   formats,
-                                                   formats.indexOf(default_format),
-                                                   false, &ok);
-    if (!ok || selected.isEmpty()) {
-        return false;
-    }
-
-    qint64 frame_size = 0;
-    if (selected == "RGB24" || selected == "BGR24") {
-        frame_size = static_cast<qint64>(width) * static_cast<qint64>(height) * 3;
-    } else if (selected == "YUV420P(I420)" || selected == "NV12") {
-        if ((width % 2) != 0 || (height % 2) != 0) {
-            QMessageBox::warning(this, tr("尺寸不支持"),
-                                 tr("%1 仅支持偶数宽高。").arg(selected));
-            return false;
-        }
-        frame_size = static_cast<qint64>(width) * static_cast<qint64>(height) * 3 / 2;
-    } else if (selected == "YUY2") {
-        if ((width % 2) != 0) {
-            QMessageBox::warning(this, tr("尺寸不支持"),
-                                 tr("YUY2 仅支持偶数宽度。"));
-            return false;
-        }
-        frame_size = static_cast<qint64>(width) * static_cast<qint64>(height) * 2;
-    }
-
-    const qint64 file_size = QFileInfo(filename).size();
-    if (frame_size <= 0 || file_size < frame_size) {
-        QMessageBox::warning(this, tr("打开失败"),
-                             tr("文件大小不足以组成一帧。\n单帧大小: %1 字节\n文件大小: %2 字节")
-                                 .arg(frame_size)
-                                 .arg(file_size));
-        return false;
-    }
-
-    raw_image_path_ = filename;
-    raw_pixel_format_ = selected;
-    raw_width_ = width;
-    raw_height_ = height;
-    raw_frame_size_ = frame_size;
-    raw_total_frames_ = std::max(1, static_cast<int>(file_size / frame_size));
-    raw_current_frame_ = 0;
-
-    const qint64 remain = file_size % frame_size;
-    mediainfo_text_->setPlainText(
-        tr("Raw Image Sequence\n"
-           "File: %1\n"
-           "Format: %2\n"
-           "Size: %3x%4\n"
-           "Frame Size: %5 bytes\n"
-           "Total Frames: %6\n"
-           "Ignored Tail Bytes: %7")
-            .arg(filename)
-            .arg(selected)
-            .arg(width)
-            .arg(height)
-            .arg(frame_size)
-            .arg(raw_total_frames_)
-            .arg(remain));
-
-    return ShowRawFrame(0);
-}
-
-bool MainWindow::ShowRawFrame(int frame_index) {
-    if (!showing_raw_image_ || raw_image_path_.isEmpty() || raw_frame_size_ <= 0 ||
-        frame_index < 0 || frame_index >= raw_total_frames_) {
-        return false;
-    }
-
-    QFile file(raw_image_path_);
-    if (!file.open(QIODevice::ReadOnly)) {
-        QMessageBox::warning(this, tr("打开失败"), tr("无法读取文件: %1").arg(raw_image_path_));
-        return false;
-    }
-
-    const qint64 offset = static_cast<qint64>(frame_index) * raw_frame_size_;
-    if (!file.seek(offset)) {
-        QMessageBox::warning(this, tr("定位失败"),
-                             tr("无法定位到第 %1 帧。").arg(frame_index + 1));
-        return false;
-    }
-
-    const QByteArray data = file.read(raw_frame_size_);
-    file.close();
-    if (data.size() != raw_frame_size_) {
-        QMessageBox::warning(this, tr("读取失败"),
-                             tr("读取第 %1 帧失败，期望 %2 字节，实际 %3 字节。")
-                                 .arg(frame_index + 1)
-                                 .arg(raw_frame_size_)
-                                 .arg(data.size()));
-        return false;
-    }
-
-    auto clamp_to_u8 = [](int value) -> uchar {
-        return static_cast<uchar>(qBound(0, value, 255));
-    };
-    auto yuv_to_rgb = [&](int Y, int U, int V, uchar* dst) {
-        const int u = U - 128;
-        const int v = V - 128;
-        const int r = Y + static_cast<int>(1.402 * v);
-        const int g = Y - static_cast<int>(0.344136 * u + 0.714136 * v);
-        const int b = Y + static_cast<int>(1.772 * u);
-        dst[0] = clamp_to_u8(r);
-        dst[1] = clamp_to_u8(g);
-        dst[2] = clamp_to_u8(b);
-    };
-
-    QImage img(raw_width_, raw_height_, QImage::Format_RGB888);
-    if (img.isNull()) {
-        return false;
-    }
-
-    if (raw_pixel_format_ == "RGB24" || raw_pixel_format_ == "BGR24") {
-        const uchar* src = reinterpret_cast<const uchar*>(data.constData());
-        for (int j = 0; j < raw_height_; ++j) {
-            uchar* row = img.scanLine(j);
-            const uchar* src_row = src + static_cast<qint64>(j) * raw_width_ * 3;
-            for (int i = 0; i < raw_width_; ++i) {
-                const int src_idx = i * 3;
-                if (raw_pixel_format_ == "RGB24") {
-                    row[src_idx + 0] = src_row[src_idx + 0];
-                    row[src_idx + 1] = src_row[src_idx + 1];
-                    row[src_idx + 2] = src_row[src_idx + 2];
-                } else {
-                    row[src_idx + 0] = src_row[src_idx + 2];
-                    row[src_idx + 1] = src_row[src_idx + 1];
-                    row[src_idx + 2] = src_row[src_idx + 0];
-                }
-            }
-        }
-    } else if (raw_pixel_format_ == "YUV420P(I420)" || raw_pixel_format_ == "NV12") {
-        const qint64 y_size = static_cast<qint64>(raw_width_) * static_cast<qint64>(raw_height_);
-        const uchar* y_plane = reinterpret_cast<const uchar*>(data.constData());
-        const uchar* uv_plane = y_plane + y_size;
-        const qint64 uv_size = y_size / 4;
-        const uchar* u_plane = (raw_pixel_format_ == "NV12") ? nullptr : uv_plane;
-        const uchar* v_plane = (raw_pixel_format_ == "NV12") ? nullptr : (uv_plane + uv_size);
-
-        for (int j = 0; j < raw_height_; ++j) {
-            uchar* row = img.scanLine(j);
-            const int uv_j_i420 = (j / 2) * (raw_width_ / 2);
-            const int uv_j_nv12 = (j / 2) * raw_width_;
-            for (int i = 0; i < raw_width_; ++i) {
-                const int y_idx = j * raw_width_ + i;
-                int U = 0;
-                int V = 0;
-                if (raw_pixel_format_ == "NV12") {
-                    const int uv_idx = uv_j_nv12 + (i / 2) * 2;
-                    U = static_cast<int>(uv_plane[uv_idx]);
-                    V = static_cast<int>(uv_plane[uv_idx + 1]);
-                } else {
-                    const int uv_idx = uv_j_i420 + (i / 2);
-                    U = static_cast<int>(u_plane[uv_idx]);
-                    V = static_cast<int>(v_plane[uv_idx]);
-                }
-                yuv_to_rgb(static_cast<int>(y_plane[y_idx]), U, V, row + i * 3);
-            }
-        }
-    } else if (raw_pixel_format_ == "YUY2") {
-        const uchar* src = reinterpret_cast<const uchar*>(data.constData());
-        for (int j = 0; j < raw_height_; ++j) {
-            uchar* row = img.scanLine(j);
-            const uchar* src_row = src + static_cast<qint64>(j) * raw_width_ * 2;
-            for (int i = 0; i < raw_width_; i += 2) {
-                const int idx = i * 2;
-                const int y0 = static_cast<int>(src_row[idx + 0]);
-                const int u = static_cast<int>(src_row[idx + 1]);
-                const int y1 = static_cast<int>(src_row[idx + 2]);
-                const int v = static_cast<int>(src_row[idx + 3]);
-                yuv_to_rgb(y0, u, v, row + i * 3);
-                if (i + 1 < raw_width_) {
-                    yuv_to_rgb(y1, u, v, row + (i + 1) * 3);
-                }
-            }
-        }
-    } else {
-        return false;
-    }
-
-    raw_current_frame_ = frame_index;
-    video_widget_->SetFallbackImage(img);
-    UpdateRawNavigationState();
-    statusBar()->showMessage(tr("Raw 帧 %1 / %2").arg(raw_current_frame_ + 1).arg(raw_total_frames_));
-    return true;
-}
-
-void MainWindow::UpdateRawNavigationState() {
-    const bool raw_mode = showing_raw_image_ && raw_total_frames_ > 0;
-
-    if (prev_frame_button_) {
-        prev_frame_button_->setVisible(raw_mode);
-        prev_frame_button_->setEnabled(raw_mode && raw_current_frame_ > 0);
-    }
-    if (next_frame_button_) {
-        next_frame_button_->setVisible(raw_mode);
-        next_frame_button_->setEnabled(raw_mode && raw_current_frame_ + 1 < raw_total_frames_);
-    }
-    if (play_pause_button_) {
-        play_pause_button_->setEnabled(!raw_mode);
-    }
-    if (volume_button_) {
-        volume_button_->setEnabled(!raw_mode);
-    }
-    if (volume_slider_) {
-        volume_slider_->setEnabled(!raw_mode);
-    }
-
-    if (raw_mode) {
-        QSignalBlocker blocker(seek_slider_);
-        seek_slider_->setRange(0, std::max(0, raw_total_frames_ - 1));
-        seek_slider_->setValue(raw_current_frame_);
-        seek_slider_->setEnabled(raw_total_frames_ > 1);
-        time_label_->setText(tr("帧 %1 / %2").arg(raw_current_frame_ + 1).arg(raw_total_frames_));
-    } else {
-        seek_slider_->setEnabled(true);
-        time_label_->setText(tr("00:00:00 / 00:00:00"));
-    }
-}
-
-void MainWindow::OnPlayPause() {
-    if (!player_) {
-        return;
-    }
-    
-    if (showing_raw_image_) {
-        statusBar()->showMessage(tr("当前为图像文件，无法播放"));
-        return;
-    }
-    
-    const auto state = player_->GetState();
-    
-    // 如果处于Idle/Stopped/Error状态，先打开媒体
-    if ((state == model::PlayerState::Idle ||
-         state == model::PlayerState::Stopped ||
-         state == model::PlayerState::Error) &&
-        !current_media_url_.isEmpty()) {
-        if (!player_->Open(current_media_url_)) {
-            statusBar()->showMessage(tr("打开失败: %1").arg(current_media_url_));
-            return;
-        }
-    }
-    
-    // 根据当前状态切换播放/暂停
-    if (state == model::PlayerState::Playing) {
-        player_->Pause();
-    } else {
-        player_->Play();
-    }
-}
-
-void MainWindow::ResetVideoUI() {
-    video_widget_->Clear();
-    // 清除旧的运动矢量数据, 避免新文件打开前显示残留箭头
-    video_widget_->SetMotionVectors(videoeye::model::MacroblockFrameAnalysis{});
-    seek_slider_->setValue(0);
-    seek_slider_->setRange(0, 0);
-    time_label_->setText(tr("00:00:00 / 00:00:00"));
-}
-
-void MainWindow::OnStop() {
-    // 清理其他状态（不立即清理视频UI，让OnStateChanged统一处理）
-    audio_level_history_.clear();
-    spectrum_history_.clear();
-    audio_only_mode_ = false;
-    audio_vis_last_render_ms_ = -1;
-    audio_vis_smoothed_ = 0.0;
-    audio_vis_target_ = 0.0;
-    latest_spectrum_bins_.clear();
-    latest_waveform_points_.clear();
-    smoothed_spectrum_bins_.clear();
-    album_cover_ = QImage();
-    showing_raw_image_ = false;
-    raw_image_path_.clear();
-    raw_pixel_format_.clear();
-    raw_width_ = 0;
-    raw_height_ = 0;
-    raw_frame_size_ = 0;
-    raw_total_frames_ = 0;
-    raw_current_frame_ = 0;
-    UpdateRawNavigationState();
-    
-    // 停止播放器，会触发OnStateChanged(Stopped)来清理视频UI
-    if (player_) {
-        player_->Stop();
-    }
-    
-    if (export_progress_dialog_ && export_progress_dialog_->isVisible()) {
-        player_->CancelVideoFrameExport();
-        export_progress_dialog_->reset();
-        export_progress_dialog_->hide();
-    }
-}
-
-void MainWindow::OnSeek(int value) {
-    if (showing_raw_image_) {
-        ShowRawFrame(value);
-        return;
-    }
-    if (!player_) return;
-    // 去重: 释放进度条时 sliderReleased 与尾随的 valueChanged 会用相同目标值
-    // 在短时间内各调一次 OnSeek, 这里跳过重复的那次, 避免双 seek。
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    if (value == last_seek_value_ && now - last_seek_time_ < 100) return;
-    last_seek_value_ = value;
-    last_seek_time_ = now;
-    // 按当前选择的定位方式 (关键帧 / 精确帧) 执行 seek
-    player_->Seek(value, player_->GetSeekMode());
-}
-
-void MainWindow::OnVolumeChanged(int value) {
-    if (player_) {
-        player_->SetVolume(value);
-    }
-    // 更新 tooltip
-    volume_slider_->setToolTip(tr("音量: %1%").arg(value));
-
-    // 更新音量按钮图标: 音量为 0 时显示静音图标
-    if (value == 0) {
-        volume_button_->setIcon(style()->standardIcon(QStyle::SP_MediaVolumeMuted));
-    } else {
-        volume_button_->setIcon(style()->standardIcon(QStyle::SP_MediaVolume));
-        // 从 0 调高音量时, 记住当前音量 (用于静音恢复)
-        if (last_volume_ == 0) {
-            last_volume_ = value;
-        }
-    }
-}
-
-void MainWindow::OnMuteButtonClicked() {
-    const int current = volume_slider_->value();
-    if (current > 0) {
-        // 当前有音量 → 静音: 记住音量, 滑块归零
-        last_volume_ = current;
-        volume_slider_->setValue(0);
-    } else {
-        // 当前静音 → 恢复: 恢复上次音量 (至少 1, 避免 0 又变静音)
-        const int restore = std::max(1, last_volume_);
-        volume_slider_->setValue(restore);
-    }
-}
-
-void MainWindow::OnStateChanged(model::PlayerState state) {
-    QString state_text;
-    switch (state) {
-        case model::PlayerState::Idle:
-            state_text = tr("空闲");
-            break;
-        case model::PlayerState::Loading:
-            state_text = tr("加载中");
-            break;
-        case model::PlayerState::Playing:
-            state_text = tr("播放中");
-            break;
-        case model::PlayerState::Paused:
-            state_text = tr("已暂停");
-            break;
-        case model::PlayerState::Stopped:
-            state_text = tr("已停止");
-            // 停止状态下清理UI，确保最后一帧被清除
-            QMetaObject::invokeMethod(this, [this]() {
-                ResetVideoUI();
-            }, Qt::QueuedConnection);
-            break;
-        case model::PlayerState::Error:
-            state_text = tr("错误");
-            break;
-    }
-    
-    statusBar()->showMessage(state_text);
-    
-    // 更新播放/暂停按钮的图标
-    if (state == model::PlayerState::Playing) {
-        play_pause_button_->setIcon(style()->standardIcon(QStyle::SP_MediaPause));
-    } else {
-        play_pause_button_->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
-    }
-
-    // 更新视频区叠加层状态
-    ui::VideoOverlayInfo overlay;
-    overlay.is_playing = (state == model::PlayerState::Playing);
-    overlay.has_video = !audio_only_mode_ && !showing_raw_image_;
-    overlay.status = state_text;
-    if (state == model::PlayerState::Playing) {
-        overlay.fps = last_overlay_fps_;
-    }
-    video_widget_->SetOverlayInfo(overlay);
-    video_widget_->SetCenterPlayButtonVisible(!overlay.is_playing && overlay.has_video);
-}
-
-void MainWindow::OnFrameReady(const QImage& frame) {
-    // 如果播放器已停止，忽略帧更新
-    if (player_ && player_->GetState() == model::PlayerState::Stopped) {
-        return;
-    }
-    
-    // 在纯音频模式下，将封面存储为专辑封面而不是直接显示
-    if (audio_only_mode_) {
-        album_cover_ = frame;
-        return;
-    }
-    
-    video_widget_->SetFallbackImage(frame);
-}
-
-void MainWindow::OnPositionChanged(int position_ms, int duration_ms) {
-    // 如果播放器已停止，忽略位置更新
-    if (player_ && player_->GetState() == model::PlayerState::Stopped) {
-        return;
-    }
-    
-    QSignalBlocker blocker(seek_slider_);
-    seek_slider_->setRange(0, duration_ms);
-    seek_slider_->setValue(position_ms);
-    
-    time_label_->setText(QString("%1 / %2")
-        .arg(theme::font::formatTime(position_ms))
-        .arg(theme::font::formatTime(duration_ms)));
-}
-
-void MainWindow::OnError(const QString& message) {
-    QMessageBox::critical(this, tr("错误"), message);
-    status_bar_->showMessage(tr("错误: %1").arg(message));
-}
-
-void MainWindow::OnPlaybackFinished() {
-    OnStop();
-    statusBar()->showMessage(tr("播放完成"));
-}
-
-void MainWindow::OnStreamStatsUpdate(const analyzer::StreamStats& stats) {
-    // 更新状态栏显示关键信息
-    QString status = QString("FPS: %1 | 码率: %2 Kbps | 关键帧: %3")
-        .arg(stats.current_fps, 0, 'f', 1)
-        .arg(stats.current_bitrate_bps / 1000)
-        .arg(stats.key_frame_count);
-    status_bar_->showMessage(status);
-
-    // 更新叠加层 FPS 信息
-    last_overlay_fps_ = QString("%1 fps").arg(stats.current_fps, 0, 'f', 1);
-    ui::VideoOverlayInfo overlay;
-    overlay.is_playing = (player_ && player_->GetState() == model::PlayerState::Playing);
-    overlay.has_video = !audio_only_mode_ && !showing_raw_image_;
-    overlay.fps = last_overlay_fps_;
-    overlay.resolution = last_overlay_resolution_;
-    overlay.codec = last_overlay_codec_;
-    overlay.status = (player_ && player_->GetState() == model::PlayerState::Playing) 
-        ? tr("播放中") : tr("已暂停");
-    video_widget_->SetOverlayInfo(overlay);
-}
-
-void MainWindow::OnMediaModeChanged(bool has_video) {
-    audio_only_mode_ = !has_video;
-    audio_level_history_.clear();
-    spectrum_history_.clear();
-    audio_vis_last_render_ms_ = -1;
-    audio_vis_smoothed_ = 0.0;
-    audio_vis_target_ = 0.0;
-    latest_spectrum_bins_.clear();
-    latest_waveform_points_.clear();
-    smoothed_spectrum_bins_.clear();
-    if (audio_only_mode_) {
-        // 保留已有的专辑封面，不清除 album_cover_
-        video_widget_->Clear();
-    } else {
-        album_cover_ = QImage();
-    }
-
-    // 更新叠加层
-    ui::VideoOverlayInfo overlay;
-    overlay.is_playing = (player_ && player_->GetState() == model::PlayerState::Playing);
-    overlay.has_video = has_video && !showing_raw_image_;
-    overlay.fps = last_overlay_fps_;
-    overlay.status = (player_ && player_->GetState() == model::PlayerState::Playing)
-        ? tr("播放中") : tr("已暂停");
-    video_widget_->SetOverlayInfo(overlay);
-    video_widget_->SetCenterPlayButtonVisible(!overlay.is_playing && overlay.has_video);
-}
-
-void MainWindow::OnAudioLevelReady(double level, double timestamp_seconds) {
-    if (!audio_only_mode_) {
-        return;
-    }
-
-    audio_vis_target_ = std::clamp(level, 0.0, 1.0);
-    if (!audio_vis_timer_.isValid()) {
-        audio_vis_timer_.start();
-        audio_vis_last_render_ms_ = -1;
-    }
-
-    static constexpr qint64 kFrameIntervalMs = 33;
-    const qint64 now_ms = audio_vis_timer_.elapsed();
-    if (audio_vis_last_render_ms_ >= 0 && (now_ms - audio_vis_last_render_ms_) < kFrameIntervalMs) {
-        return;
-    }
-
-    RenderAudioVisualization(timestamp_seconds);
-}
-
-void MainWindow::OnAudioVisualizationForDisplay(const model::AudioVisualizationFrame& frame) {
-    if (!audio_only_mode_) return;
-    latest_spectrum_bins_ = frame.spectrum_bins;
-    latest_waveform_points_ = frame.waveform_points;
-
-    // Smooth spectrum with fast attack, slow decay for persistence
-    const int n = static_cast<int>(latest_spectrum_bins_.size());
-    if (smoothed_spectrum_bins_.size() != n) {
-        smoothed_spectrum_bins_.resize(n);
-        smoothed_spectrum_bins_.fill(0.0);
-    }
-    for (int i = 0; i < n; ++i) {
-        const double target = latest_spectrum_bins_[i];
-        const double alpha = (target > smoothed_spectrum_bins_[i]) ? 0.7 : 0.15;
-        smoothed_spectrum_bins_[i] += (target - smoothed_spectrum_bins_[i]) * alpha;
-    }
-}
-
-void MainWindow::RenderAudioVisualization(double timestamp_seconds) {
-    const double dt = (audio_vis_last_render_ms_ >= 0)
-                          ? (static_cast<double>(audio_vis_timer_.elapsed() - audio_vis_last_render_ms_) / 1000.0)
-                          : (0.033);
-    audio_vis_last_render_ms_ = audio_vis_timer_.elapsed();
-
-    // Smoothed overall level
-    const double tau_attack = 0.04;
-    const double tau_release = 0.18;
-    const double tau = (audio_vis_target_ > audio_vis_smoothed_) ? tau_attack : tau_release;
-    const double alpha = 1.0 - std::exp(-dt / std::max(1e-6, tau));
-    audio_vis_smoothed_ += (audio_vis_target_ - audio_vis_smoothed_) * std::clamp(alpha, 0.0, 1.0);
-
-    const int w = std::max(1, video_widget_->width());
-    const int h = std::max(1, video_widget_->height());
-
-    QImage img(w, h, QImage::Format_ARGB32);
-
-    // --- Background: radial gradient pulsing with audio ---
-    {
-        QPainter bg(&img);
-        bg.setRenderHint(QPainter::Antialiasing, true);
-        const int pulse = static_cast<int>(audio_vis_smoothed_ * 30);
-        const double cx = w / 2.0;
-        const double cy = h * 0.38;
-        const double radius = std::max(w, h) * 0.8;
-        QRadialGradient rg(cx, cy, radius);
-        rg.setColorAt(0.0, QColor(20 + pulse, 15 + pulse / 2, 50 + pulse));
-        rg.setColorAt(0.5, QColor(10, 8, 28));
-        rg.setColorAt(1.0, QColor(4, 3, 12));
-        bg.fillRect(0, 0, w, h, rg);
-    }
-
-    QPainter painter(&img);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-
-    // --- Album cover ---
-    const int cover_size = std::clamp(std::min(w, h) * 38 / 100, 80, 380);
-    const int cover_cx = w / 2;
-    const int cover_cy = h * 38 / 100;
-    const int cover_x = cover_cx - cover_size / 2;
-    const int cover_y = cover_cy - cover_size / 2;
-
-    if (!album_cover_.isNull()) {
-        QImage scaled = album_cover_.scaled(cover_size, cover_size,
-                                            Qt::KeepAspectRatio,
-                                            Qt::SmoothTransformation);
-        const int sx = cover_x + (cover_size - scaled.width()) / 2;
-        const int sy = cover_y + (cover_size - scaled.height()) / 2;
-
-        // Glow behind cover, pulsing with audio
-        const int glow_r = 15 + static_cast<int>(audio_vis_smoothed_ * 25);
-        const int glow_a = 50 + static_cast<int>(audio_vis_smoothed_ * 100);
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(100, 160, 255, glow_a));
-        painter.drawRoundedRect(sx - glow_r / 2, sy - glow_r / 2,
-                                scaled.width() + glow_r, scaled.height() + glow_r, 18, 18);
-
-        // Rounded cover
-        QPainterPath clip;
-        clip.addRoundedRect(QRect(sx, sy, scaled.width(), scaled.height()), 12, 12);
-        painter.save();
-        painter.setClipPath(clip);
-        painter.drawImage(sx, sy, scaled);
-        painter.restore();
-
-        // Border
-        painter.setPen(QPen(QColor(255, 255, 255, 35), 1.5));
-        painter.setBrush(Qt::NoBrush);
-        painter.drawRoundedRect(sx, sy, scaled.width(), scaled.height(), 12, 12);
-
-        // Reflection
-        const int refl_h = std::min(scaled.height() / 4, 50);
-        if (refl_h > 0) {
-            QImage ref = scaled.mirrored(false, true).copy(0, 0, scaled.width(), refl_h);
-            painter.setOpacity(0.12);
-            painter.drawImage(sx, sy + scaled.height() + 3, ref);
-            QLinearGradient fg(0, sy + scaled.height() + 3, 0, sy + scaled.height() + 3 + refl_h);
-            fg.setColorAt(0.0, QColor(0, 0, 0, 0));
-            fg.setColorAt(1.0, QColor(0, 0, 0, 255));
-            painter.setOpacity(1.0);
-            painter.fillRect(sx, sy + scaled.height() + 3, ref.width(), refl_h, fg);
-        }
-    } else {
-        // Placeholder
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(30, 40, 65, 200));
-        painter.drawRoundedRect(cover_x, cover_y, cover_size, cover_size, 12, 12);
-        painter.setPen(QColor(100, 120, 160, 140));
-        QFont f; f.setPixelSize(cover_size / 3);
-        painter.setFont(f);
-        painter.drawText(QRect(cover_x, cover_y, cover_size, cover_size),
-                         Qt::AlignCenter, QStringLiteral("\u266B"));
-    }
-
-    // --- Circular spectrum bars around cover ---
-    const int n_bins = static_cast<int>(smoothed_spectrum_bins_.size());
-    if (n_bins > 0) {
-        const double cx = w / 2.0;
-        const double cy = cover_cy;
-        const double inner_r = cover_size / 2.0 + 18;
-        const double max_bar_len = cover_size * 0.42;
-
-        const int bar_count = std::min(n_bins, 64);
-        for (int i = 0; i < bar_count; ++i) {
-            double val = std::clamp(smoothed_spectrum_bins_[i] * 8.0, 0.0, 1.0);
-            // Apply logarithmic perception: boost quiet frequencies
-            val = std::pow(val, 0.6);
-            const double bar_len = val * max_bar_len;
-            if (bar_len < 2.0) continue;
-
-            const double angle = -M_PI / 2.0 + 2.0 * M_PI * i / bar_count;
-            const double cos_a = std::cos(angle);
-            const double sin_a = std::sin(angle);
-
-            const double x1 = cx + inner_r * cos_a;
-            const double y1 = cy + inner_r * sin_a;
-            const double x2 = cx + (inner_r + bar_len) * cos_a;
-            const double y2 = cy + (inner_r + bar_len) * sin_a;
-
-            // Gradient color along the bar: base color to tip color
-            const double hue = 190.0 + (static_cast<double>(i) / bar_count) * 170.0;
-            QColor c_base = QColor::fromHsvF(std::fmod(hue / 360.0, 1.0), 0.55, 0.85, 0.75);
-            QColor c_tip  = QColor::fromHsvF(std::fmod(hue / 360.0, 1.0), 0.75, 1.0, 0.95);
-
-            QLinearGradient bar_grad(x1, y1, x2, y2);
-            bar_grad.setColorAt(0.0, c_base);
-            bar_grad.setColorAt(1.0, c_tip);
-
-            QPen pen(QBrush(bar_grad), 3.2, Qt::SolidLine, Qt::RoundCap);
-            painter.setPen(pen);
-            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2));
-        }
-    }
-
-    // --- Real waveform at bottom area ---
-    const int wf_n = static_cast<int>(latest_waveform_points_.size());
-    if (wf_n > 2) {
-        const int wf_top = cover_cy + cover_size / 2 + cover_size * 0.5;
-        const int wf_bot = h - 10;
-        const int wf_h = wf_bot - wf_top;
-        if (wf_h > 20) {
-            const double mid_y = wf_top + wf_h / 2.0;
-            const double amp = wf_h * 0.42;
-
-            // Draw filled waveform area
-            QPainterPath wf_path;
-            wf_path.moveTo(0.0, mid_y);
-            for (int i = 0; i < wf_n; ++i) {
-                const double x = static_cast<double>(i) / (wf_n - 1) * w;
-                const double y = mid_y - latest_waveform_points_[i] * amp;
-                wf_path.lineTo(x, y);
-            }
-            wf_path.lineTo(static_cast<double>(w), mid_y);
-            wf_path.lineTo(0.0, mid_y);
-
-            QLinearGradient wf_fill(0, wf_top, 0, wf_bot);
-            const double hue_shift = audio_vis_smoothed_ * 30.0;
-            wf_fill.setColorAt(0.0, QColor::fromHsvF((220.0 + hue_shift) / 360.0, 0.6, 0.95, 0.35));
-            wf_fill.setColorAt(0.5, QColor::fromHsvF((260.0 + hue_shift) / 360.0, 0.5, 0.7, 0.2));
-            wf_fill.setColorAt(1.0, QColor::fromHsvF((220.0 + hue_shift) / 360.0, 0.6, 0.95, 0.35));
-            painter.setPen(Qt::NoPen);
-            painter.setBrush(wf_fill);
-            painter.drawPath(wf_path);
-
-            // Draw waveform line on top
-            QPainterPath wf_line;
-            for (int i = 0; i < wf_n; ++i) {
-                const double x = static_cast<double>(i) / (wf_n - 1) * w;
-                const double y = mid_y - latest_waveform_points_[i] * amp;
-                if (i == 0) wf_line.moveTo(x, y);
-                else wf_line.lineTo(x, y);
-            }
-            QPen line_pen(QColor::fromHsvF((200.0 + hue_shift) / 360.0, 0.5, 1.0, 0.8));
-            line_pen.setWidthF(1.8);
-            painter.setPen(line_pen);
-            painter.setBrush(Qt::NoBrush);
-            painter.drawPath(wf_line);
-
-            // Mirror waveform (below center)
-            QPainterPath wf_mirror;
-            wf_mirror.moveTo(0.0, mid_y);
-            for (int i = 0; i < wf_n; ++i) {
-                const double x = static_cast<double>(i) / (wf_n - 1) * w;
-                const double y = mid_y + latest_waveform_points_[i] * amp;
-                wf_mirror.lineTo(x, y);
-            }
-            wf_mirror.lineTo(static_cast<double>(w), mid_y);
-            wf_mirror.lineTo(0.0, mid_y);
-
-            QLinearGradient mirror_fill(0, wf_top, 0, wf_bot);
-            mirror_fill.setColorAt(0.0, QColor::fromHsvF((280.0 + hue_shift) / 360.0, 0.5, 0.85, 0.18));
-            mirror_fill.setColorAt(1.0, QColor::fromHsvF((300.0 + hue_shift) / 360.0, 0.4, 0.6, 0.08));
-            painter.setPen(Qt::NoPen);
-            painter.setBrush(mirror_fill);
-            painter.drawPath(wf_mirror);
-
-            // Center line
-            painter.setPen(QPen(QColor(255, 255, 255, 25), 1.0));
-            painter.drawLine(QPointF(0, mid_y), QPointF(w, mid_y));
-        }
-    } else {
-        // Fallback: simple level bars if no waveform data yet
-        static constexpr size_t kMaxHistory = 120;
-        if (audio_level_history_.size() >= kMaxHistory) audio_level_history_.pop_front();
-        audio_level_history_.push_back(audio_vis_smoothed_);
-
-        const int n = static_cast<int>(audio_level_history_.size());
-        const int bar_area_y = cover_cy + cover_size / 2 + cover_size * 0.5;
-        const int bar_area_h = h - bar_area_y - 10;
-        if (bar_area_h > 10 && n > 1) {
-            const double bar_w = static_cast<double>(w) / n;
-            for (int i = 0; i < n; ++i) {
-                const double v = std::clamp(audio_level_history_[static_cast<size_t>(i)], 0.0, 1.0);
-                const int amp = static_cast<int>(v * (bar_area_h * 0.8));
-                if (amp < 1) continue;
-                const int x0 = static_cast<int>(i * bar_w);
-                const int bw = std::max(1, static_cast<int>(bar_w) - 1);
-                const int my = bar_area_y + bar_area_h / 2;
-                const double hue = 180.0 + (static_cast<double>(i) / n) * 120.0;
-                QLinearGradient g(x0, my - amp, x0, my + amp);
-                g.setColorAt(0.0, QColor::fromHsvF(hue / 360.0, 0.6, 0.95, 0.9));
-                g.setColorAt(1.0, QColor::fromHsvF(hue / 360.0, 0.4, 0.7, 0.4));
-                painter.setPen(Qt::NoPen);
-                painter.setBrush(g);
-                painter.drawRoundedRect(x0, my - amp, bw, amp * 2, 1.5, 1.5);
-            }
-        }
-    }
-
-    // --- Info text ---
-    painter.setPen(QColor(200, 200, 220, 140));
-    QFont info_font;
-    info_font.setPixelSize(12);
-    painter.setFont(info_font);
-    painter.drawText(QRect(10, 6, w - 20, 18),
-                     Qt::AlignLeft | Qt::AlignVCenter,
-                     QString("t=%1s  level=%2")
-                         .arg(timestamp_seconds, 0, 'f', 3)
-                         .arg(audio_vis_smoothed_, 0, 'f', 3));
-
-    video_widget_->SetFallbackImage(img);
 }
 
 void MainWindow::OnVideoFrameExportProgress(int exported_frames) {
@@ -2045,28 +986,6 @@ void MainWindow::OnMediaExportError(const QString& message) {
     }
     statusBar()->showMessage(tr("导出失败: %1").arg(message));
     QMessageBox::warning(this, tr("导出失败"), message);
-}
-
-void MainWindow::OnMvOverlayToggled(bool enabled) {
-    mv_overlay_enabled_ = enabled;
-
-    if (enabled) {
-        // 开启 MV 叠加: 自动启用宏块分析 (会触发软件解码切换)
-        if (player_) {
-            player_->SetMacroblockAnalysisEnabled(true);
-        }
-        video_widget_->SetMvOverlayMode(ui::MvOverlayMode::Arrows);
-        statusBar()->showMessage(tr("运动矢量叠加已开启"), 3000);
-    } else {
-        video_widget_->SetMvOverlayMode(ui::MvOverlayMode::Off);
-        statusBar()->showMessage(tr("运动矢量叠加已关闭"), 3000);
-    }
-}
-
-void MainWindow::OnMacroblockInfoForOverlay(
-        const videoeye::model::MacroblockFrameAnalysis& analysis) {
-    if (!mv_overlay_enabled_) return;
-    video_widget_->SetMotionVectors(analysis);
 }
 
 } // namespace ui
