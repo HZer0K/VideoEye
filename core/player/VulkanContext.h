@@ -68,6 +68,11 @@ public:
     // 静态检测: 系统是否有可用 Vulkan 驱动
     static bool IsVulkanAvailable();
 
+    // Linux/XCB: 供调用方在 GUI 线程取得 Qt 的 xcb 连接后注入,
+    // 供 CreateSurface 构造 VkXcbSurfaceCreateInfoKHR (connection 不得为空)。
+    // 非 XCB 平台无需调用, 保持 nullptr 即可。
+    void SetXcbConnection(void* connection) { xcb_connection_ = connection; }
+
     // 销毁所有 Vulkan 资源
     void Destroy();
 
@@ -83,6 +88,8 @@ private:
     VkDevice device_ = VK_NULL_HANDLE;
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;   // 由本上下文创建并拥有 (渲染 Surface)
     WId window_handle_ = 0;                    // 保存窗口句柄供重试时重建 Surface
+
+    void* xcb_connection_ = nullptr;           // Linux/XCB: Qt 提供的 xcb 连接 (仅建 Surface 用)
 
     // 队列族索引
     uint32_t graphics_qf_ = UINT32_MAX;

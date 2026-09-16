@@ -359,15 +359,18 @@ void MainWindow::SetupMenuBar() {
     
     // 文件菜单
     QMenu* file_menu = menu_bar_->addMenu(tr("文件"));
-    file_menu->addAction(tr("打开本地文件"), QKeySequence::Open, this, &MainWindow::OnOpenFile);
-    file_menu->addAction(tr("打开URL"), QKeySequence("Ctrl+U"), this, &MainWindow::OnOpenURL);
+    QAction* act_open = file_menu->addAction(tr("打开本地文件"), this, &MainWindow::OnOpenFile);
+    act_open->setShortcut(QKeySequence::Open);
+    QAction* act_open_url = file_menu->addAction(tr("打开URL"), this, &MainWindow::OnOpenURL);
+    act_open_url->setShortcut(QKeySequence("Ctrl+U"));
     // 导出 子菜单
     QMenu* export_menu = file_menu->addMenu(tr("导出"));
     export_frames_action_ = export_menu->addAction(tr("导出视频帧..."), this, &MainWindow::OnExportVideoFrames);
     export_menu->addAction(tr("导出视频..."), this, &MainWindow::OnExportVideo);
     export_menu->addAction(tr("导出音频..."), this, &MainWindow::OnExportAudio);
     file_menu->addSeparator();
-    file_menu->addAction(tr("退出"), QKeySequence::Quit, this, &MainWindow::OnExit);
+    QAction* act_exit = file_menu->addAction(tr("退出"), this, &MainWindow::OnExit);
+    act_exit->setShortcut(QKeySequence::Quit);
     
     // 帮助菜单 (先声明, 以便在其之前插入"播放设置")
     QMenu* help_menu = menu_bar_->addMenu(tr("帮助"));
@@ -643,7 +646,11 @@ void MainWindow::OnOpenFile() {
     
     QString filename = QFileDialog::getOpenFileName(this,
         tr("打开媒体文件"), "",
-        tr("媒体文件 (*.mp4 *.avi *.mkv *.flv *.ts *.mp3 *.aac *.wav *.pcm *.yuv *.nv12 *.rgb *.bgr *.yuy2 *.raw);;所有文件 (*)"));
+        tr("媒体文件 (*.mp4 *.MP4 *.m4v *.M4V *.mov *.MOV *.avi *.AVI *.mkv *.MKV "
+           "*.webm *.WEBM *.flv *.FLV *.ts *.TS *.mts *.MTS *.m2ts *.M2TS "
+           "*.asf *.ASF *.wmv *.WMV *.ogg *.OGG *.ogv *.OGV *.mp3 *.MP3 "
+           "*.aac *.AAC *.wav *.WAV *.pcm *.yuv *.YUV *.nv12 *.NV12 "
+           "*.rgb *.RGB *.bgr *.BGR *.yuy2 *.YUY2 *.raw *.RAW);;所有文件 (*)"));
     
     qDebug() << "[1] 选择的文件:" << filename;
     
