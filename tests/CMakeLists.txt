@@ -100,6 +100,10 @@ add_executable(test_report_exporter
     ${CMAKE_CURRENT_SOURCE_DIR}/../utils/ReportExporter.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../utils/Logger.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/StreamAnalyzer.cpp
+    # ReportExporter 的「色彩与 HDR」章节复用 ColorHdrAnalyzer 的行构造
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/ColorHdrAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/ColorInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/HdrMetadataInfo.cpp
 )
 target_include_directories(test_report_exporter PRIVATE ${TEST_INCLUDE_DIRS})
 target_link_libraries(test_report_exporter PRIVATE
@@ -205,6 +209,9 @@ add_executable(test_audio_qc_rules
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AudioQcResult.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcModels.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcReport.cpp
+    # QcRuleEngine 会用到色彩/HDR 模型的成员函数 (EffectiveBitDepth / CompatibilityText ...)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/ColorInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/HdrMetadataInfo.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/BitrateGopAnalyzer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/BitratePoint.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/GopInfo.cpp
@@ -215,3 +222,50 @@ target_link_libraries(test_audio_qc_rules PRIVATE
     GTest::gtest_main
 )
 add_test(NAME AudioQcRulesTests COMMAND test_audio_qc_rules)
+
+# =================================================
+# 测试 10：色彩与 HDR 元数据 (ColorHdrAnalyzer 的行构造 + QcRuleEngine)
+# 说明: BuildColorRows / BuildHdrRows 定义在 ColorHdrAnalyzer.cpp（依赖 FFmpeg 头文件），
+#       所以本目标需要链接 FFmpeg；规则判定本身仍是纯模型层，无需解码任何文件。
+# =================================================
+add_executable(test_color_hdr_rules
+    unit/test_color_hdr_rules.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/ColorHdrAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/QcRuleEngine.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/AnalysisTask.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/BitrateGopAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/AudioQcAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcModels.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcReport.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/ColorInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/HdrMetadataInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AudioQcResult.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/BitratePoint.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/GopInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimelineDiagnostic.cpp
+)
+target_include_directories(test_color_hdr_rules PRIVATE ${TEST_INCLUDE_DIRS})
+target_link_libraries(test_color_hdr_rules PRIVATE
+    GTest::gtest_main
+    ${FFMPEG_LIBRARIES}
+)
+set_target_properties(test_color_hdr_rules PROPERTIES
+    BUILD_RPATH "${TEST_FFMPEG_RPATH}"
+)
+add_test(NAME ColorHdrRulesTests COMMAND test_color_hdr_rules)
+
+# =================================================
+# 测试 11：MP4/fMP4 容器一致性 (Mp4SampleTableAnalyzer 的纯逻辑校验)
+# 说明: 只测 Validate()——手工构造合成样本表，不需要 Bento4、Qt 或真实文件。
+#       本目标不定义 HAVE_BENTO4，Mp4SampleTableAnalyzer.cpp 的解析分支会被跳过。
+# =================================================
+add_executable(test_mp4_sample_table
+    unit/test_mp4_sample_table.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/Mp4SampleTableAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/Logger.cpp
+)
+target_include_directories(test_mp4_sample_table PRIVATE ${TEST_INCLUDE_DIRS})
+target_link_libraries(test_mp4_sample_table PRIVATE
+    GTest::gtest_main
+)
+add_test(NAME Mp4SampleTableTests COMMAND test_mp4_sample_table)

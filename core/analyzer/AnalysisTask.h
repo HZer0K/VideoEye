@@ -6,6 +6,8 @@
 
 #include "core/analyzer/AudioQcAnalyzer.h"
 #include "core/analyzer/BitrateGopAnalyzer.h"
+#include "core/analyzer/ColorHdrAnalyzer.h"
+#include "core/analyzer/Mp4SampleTableAnalyzer.h"
 #include "core/model/MetricSeries.h"
 #include "core/model/TimelineDiagnostic.h"
 
@@ -31,6 +33,19 @@ struct AnalysisOptions {
     // 需要把第一条音频流完整解码一遍（音频解码开销远小于视频），与码率/GOP 扫描同一次 demux。
     bool analyze_audio_qc = true;
     AudioQcOptions audio_qc_options;
+
+    // 色彩与 HDR 元数据分析（primaries / transfer / matrix / range / bit depth /
+    // chroma subsampling / mastering display / MaxCLL-MaxFALL / Dolby Vision）。
+    // 本身几乎零成本：主要读 AVCodecParameters 与 coded_side_data；
+    // 只有在 HDR 静态元数据不全时才会额外解码首帧去读 AVFrame side data。
+    bool analyze_color_hdr = true;
+    ColorHdrOptions color_hdr_options;
+
+    // MP4/fMP4 容器一致性校验（sample table / elst / moof-traf-trun / faststart）。
+    // 走 Bento4 直接读 stbl 与 moof，与 FFmpeg demux 是两套独立解析：
+    // 只在容器属于 MP4 家族时才真正执行，其它格式直接跳过。
+    bool analyze_mp4_sample_table = true;
+    Mp4SampleTableOptions mp4_sample_table_options;
 };
 
 // 单条流的静态摘要（demux 层，不解码）
@@ -100,8 +115,16 @@ struct AnalysisResult {
     // 音频 QC（解码 + 重采样/格式归一后统计，见 core/analyzer/AudioQcAnalyzer.h）
     model::AudioQcResult audio_qc;
 
+    // 色彩与 HDR 元数据（demux 层 + 可选的首帧解码，见 core/analyzer/ColorHdrAnalyzer.h）
+    ColorHdrAnalysis color_hdr;
+
     // 时间轴与同步诊断（demux 层，不解码）
     model::TimelineAnalysisResult timeline;
+
+    // MP4/fMP4 容器一致性（Bento4 解析，见 core/analyzer/Mp4SampleTableAnalyzer.h）
+    // mp4_samples_analyzed=true 才表示跑过（非 MP4 家族或 Bento4 不可用时不跑）
+    model::Mp4SampleTableResult mp4_samples;
+    bool mp4_samples_analyzed = false;
 
     // 执行状态
     bool completed = true;        // false = 被取消

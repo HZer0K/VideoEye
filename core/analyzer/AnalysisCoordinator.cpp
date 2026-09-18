@@ -159,6 +159,45 @@ struct FrameTypeProbe {
     }
 };
 
+// 色彩与 HDR 的帧级兜底探测：容器/码流层信息不全时，解码前几帧读 AVFrame side data
+// （HDR10+/DV RPU 这类动态元数据通常只在解码帧上出现）
+struct ColorFrameProbe {
+    AVCodecContext* decoder = nullptr;
+    AVFrame* frame = nullptr;
+    bool opened = false;
+    bool failed = false;
+    int frames_read = 0;
+
+    bool Ready() const { return decoder != nullptr && frame != nullptr && !failed; }
+
+    // 惰性打开解码器；打开失败会被记住，不会重复尝试
+    bool EnsureOpen(AVStream* stream) {
+        if (failed) return false;
+        if (opened) return Ready();
+        opened = true;
+        const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
+        if (codec != nullptr) {
+            decoder = avcodec_alloc_context3(codec);
+            if (decoder != nullptr &&
+                avcodec_parameters_to_context(decoder, stream->codecpar) >= 0) {
+                decoder->pkt_timebase = stream->time_base;
+                frame = av_frame_alloc();
+                if (frame != nullptr && avcodec_open2(decoder, codec, nullptr) == 0) {
+                    return true;
+                }
+            }
+        }
+        Release();
+        failed = true;
+        return false;
+    }
+
+    void Release() {
+        if (frame) av_frame_free(&frame);
+        if (decoder) avcodec_free_context(&decoder);
+    }
+};
+
 }  // namespace
 
 AnalysisCoordinator::AnalysisCoordinator(QObject* parent) : QObject(parent) {
@@ -243,6 +282,19 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
         result.moov_after_mdat = ScanMoovAfterMdat(file_path);
     }
 
+    // MP4/fMP4 容器一致性校验（Bento4 解析 stbl / moof，与 FFmpeg demux 独立）
+    // 只对 MP4 家族执行：其它格式 Bento4 解析必然失败，白跑一遍还要多开一次文件句柄。
+    if (options.analyze_mp4_sample_table && IsMp4Family(result.container_format)) {
+        Mp4SampleTableAnalyzer mp4_analyzer;
+        if (mp4_analyzer.AnalyzeFile(file_path, result.mp4_samples,
+                                     options.mp4_sample_table_options)) {
+            result.mp4_samples_analyzed = true;
+        } else if (!result.mp4_samples.error_message.empty()) {
+            // 解析失败不致命，记一条日志即可（诊断仍走 FFmpeg 那条通路）
+            LOG_WARN("MP4 样本表分析失败: " + result.mp4_samples.error_message);
+        }
+    }
+
     // ---- 流摘要 ----
     const double file_duration = result.duration_seconds;
     result.streams.reserve(fmt->nb_streams);
@@ -274,6 +326,23 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
             digest.duration_seconds = file_duration;
         }
         result.streams.push_back(std::move(digest));
+    }
+
+    // ---- 色彩与 HDR 元数据分析（读 AVCodecParameters + coded_side_data，几乎零成本）----
+    int color_video_stream_index = -1;
+    if (options.analyze_color_hdr) {
+        for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+            if (fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+                color_video_stream_index = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+    ColorHdrAnalyzer color_hdr;
+    ColorFrameProbe color_probe;
+    if (options.analyze_color_hdr && color_video_stream_index >= 0) {
+        color_hdr.Reset(options.color_hdr_options);
+        color_hdr.UpdateFromStream(fmt->streams[color_video_stream_index]);
     }
 
     // ---- 码率与 GOP 深度分析准备 ----
@@ -597,13 +666,37 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
                 }
             }
 
-            // 逐秒桶：码率 + 帧率
-            if (ts >= 0.0) {
-                const int64_t bucket_index = static_cast<int64_t>(std::floor(ts / interval));
-                Bucket& bucket = buckets[bucket_index];
-                bucket.video_bytes += pkt->size;
-                bucket.video_frames += 1;
+        // 色彩与 HDR：包级 side data 补充 + 需要时解码首帧读 AVFrame side data
+        if (options.analyze_color_hdr && is_video &&
+            pkt->stream_index == color_video_stream_index) {
+            if (pkt->side_data != nullptr && pkt->side_data_elems > 0) {
+                color_hdr.UpdateFromPacket(pkt, pkt->stream_index);
             }
+            if (color_hdr.NeedsFrameProbe() && !color_probe.failed &&
+                color_probe.frames_read < options.color_hdr_options.max_probe_frames) {
+                if (color_probe.EnsureOpen(st)) {
+                    if (avcodec_send_packet(color_probe.decoder, pkt) == 0) {
+                        while (avcodec_receive_frame(color_probe.decoder, color_probe.frame) >= 0) {
+                            color_hdr.UpdateFromFrame(color_probe.frame);
+                            av_frame_unref(color_probe.frame);
+                            ++color_probe.frames_read;
+                            if (color_probe.frames_read >=
+                                options.color_hdr_options.max_probe_frames) {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 逐秒桶：码率 + 帧率
+        if (ts >= 0.0) {
+            const int64_t bucket_index = static_cast<int64_t>(std::floor(ts / interval));
+            Bucket& bucket = buckets[bucket_index];
+            bucket.video_bytes += pkt->size;
+            bucket.video_frames += 1;
+        }
         }
 
         if (ts >= 0.0) {
@@ -636,8 +729,14 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
         }
     }
     av_packet_free(&pkt);
+
+    // 部分封装的 HDR 元数据要读到数据包后才补充进 codecpar，关闭输入前再刷一次
+    if (options.analyze_color_hdr && color_video_stream_index >= 0) {
+        color_hdr.UpdateFromStream(fmt->streams[color_video_stream_index]);
+    }
     avformat_close_input(&fmt);
     probe.Release();
+    color_probe.Release();
 
     // ---- 音频解码收尾（flush 解码器与 swr 缓存）----
     const bool audio_decoder_ready = audio_probe.ready;
@@ -738,6 +837,12 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
             result.audio_qc.notes.push_back("音频采样率/声道数中途改变，部分样本未参与统计");
         }
         LOG_INFO("音频 QC: " + result.audio_qc.ToString());
+    }
+
+    // 色彩与 HDR 元数据收尾（必须在 color_probe.Release() 之后、发信号之前）
+    if (options.analyze_color_hdr && color_video_stream_index >= 0) {
+        result.color_hdr = color_hdr.Finish();
+        LOG_INFO("色彩与 HDR: " + result.color_hdr.ToString());
     }
 
     LOG_INFO("全文件分析完成: packets=" + std::to_string(result.total_packets) +

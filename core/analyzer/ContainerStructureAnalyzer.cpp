@@ -1,6 +1,7 @@
 #include "ContainerStructureAnalyzer.h"
 #include "FormatDetector.h"
 #include "Mp4BoxAnalyzer.h"
+#include "Mp4SampleTableAnalyzer.h"
 #include "EbmlAnalyzer.h"
 #include "AviStructureAnalyzer.h"
 #include "FlvStructureAnalyzer.h"
@@ -75,6 +76,15 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
             LOG_INFO("ContainerStructureAnalyzer: ExtractMp4StreamInfo 耗时 = " +
                      std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count()) + " ms");
             result.valid = true;
+
+            // 样本级一致性校验（stbl 全表交叉校验 / elst / moof-traf-trun / faststart）。
+            // 与 Mp4BoxAnalyzer 是两次独立解析：那边走 Inspector 字符串（为了展示 box 树），
+            // 这边直接读原子拿数值（为了算偏移与时间）。失败不影响结构树展示。
+            Mp4SampleTableAnalyzer sample_analyzer;
+            if (sample_analyzer.AnalyzeFile(file_path.toStdString(), result.mp4_samples)) {
+                LOG_INFO("ContainerStructureAnalyzer: MP4 样本表校验 issues=" +
+                         std::to_string(result.mp4_samples.issues.size()));
+            }
 
             int box_count = 0;
             std::function<int(const QVector<model::Mp4BoxNode>&)> count;

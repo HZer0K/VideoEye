@@ -104,6 +104,7 @@ void AnalysisPanel::SetupUI() {
     SetupSceneChangeTab();
     SetupBitrateGopTab();
     SetupAudioQcTab();
+    SetupColorHdrTab();
     SetupDiagnosticsTab();
 
     qRegisterMetaType<analyzer::SceneChangeResult>();
@@ -938,6 +939,11 @@ void AnalysisPanel::SetupContainerStructureTab() {
     co64_l->addWidget(co64_table_);
     mp4_detail_tabs_->addTab(co64_w, "co64");
 
+    // Sample Table 子页: 样本级展开 + 一致性问题 + 分片列表
+    mp4_sample_sub_ = new QWidget();
+    SetupMp4SampleTableSubPage(mp4_sample_sub_);
+    mp4_detail_tabs_->addTab(mp4_sample_sub_, tr("Sample Table"));
+
     container_detail_stack_->addWidget(mp4_detail_tabs_);
 
     // ===== Page 2: EBML 专用详情表 =====
@@ -990,6 +996,82 @@ void AnalysisPanel::SetupContainerStructureTab() {
     AddPageWithScroll(container_tab_, tr("文件结构"));
 
     connect(export_container_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportContainerStructure);
+    // 结构树点击 stts/ctts/stss/stco/stsz/elst/moof 等样本表相关 box 时联动到 Sample Table
+    connect(container_tree_, &QTreeWidget::itemSelectionChanged,
+            this, &AnalysisPanel::OnContainerTreeSelectionChanged);
+}
+
+void AnalysisPanel::SetupMp4SampleTableSubPage(QWidget* parent) {
+    QVBoxLayout* layout = new QVBoxLayout(parent);
+    layout->setContentsMargins(2, 2, 2, 2);
+    layout->setSpacing(2);
+
+    // 顶部: 轨道选择 + 联动提示
+    QHBoxLayout* top = new QHBoxLayout();
+    top->setContentsMargins(0, 0, 0, 0);
+    top->addWidget(new QLabel(tr("轨道:"), parent));
+    mp4_sample_track_combo_ = new QComboBox(parent);
+    mp4_sample_track_combo_->setMinimumWidth(240);
+    mp4_sample_track_combo_->setToolTip(tr("选择要展开样本的轨道（视频/音频/字幕等）"));
+    top->addWidget(mp4_sample_track_combo_);
+    top->addStretch();
+    mp4_sample_focus_label_ = new QLabel(tr("点击左侧结构树的 stts/ctts/stss/stco/stsz 可联动本表"), parent);
+    mp4_sample_focus_label_->setStyleSheet("font-size: 11px; color: #8B949E;");
+    top->addWidget(mp4_sample_focus_label_);
+    export_mp4_sample_button_ = new QPushButton(tr("导出样本 CSV"), parent);
+    export_mp4_sample_button_->setToolTip(tr("把当前轨道的样本表导出为 CSV（含偏移/DTS/PTS/大小/关键帧）"));
+    top->addWidget(export_mp4_sample_button_);
+    layout->addLayout(top);
+
+    mp4_sample_summary_label_ = new QLabel(tr("样本表：未分析"), parent);
+    mp4_sample_summary_label_->setStyleSheet("font-size: 11px; color: #8B949E; padding: 2px;");
+    mp4_sample_summary_label_->setWordWrap(true);
+    layout->addWidget(mp4_sample_summary_label_);
+
+    mp4_sample_table_ = new QTableWidget(0, 9, parent);
+    mp4_sample_table_->setHorizontalHeaderLabels({
+        tr("#"), tr("偏移"), tr("DTS(s)"), tr("PTS(s)"), tr("ΔCTS(ms)"),
+        tr("时长(ms)"), tr("大小(B)"), tr("Chunk"), tr("关键帧")});
+    mp4_sample_table_->horizontalHeader()->setStretchLastSection(true);
+    mp4_sample_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    mp4_sample_table_->setAlternatingRowColors(true);
+    mp4_sample_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    mp4_sample_table_->setStyleSheet(
+        "QTableWidget { background-color: #0D1117; alternate-background-color: #12181F; color: #F0F6FC; }"
+        "QHeaderView::section { background-color: #161B22; color: #8B949E; padding: 3px; border: none; }");
+
+    // 底部: 一致性问题 + 分片列表
+    QTabWidget* bottom = new QTabWidget(parent);
+    mp4_issue_table_ = new QTableWidget(0, 5, bottom);
+    mp4_issue_table_->setHorizontalHeaderLabels({tr("级别"), tr("位置"), tr("问题"), tr("说明"), tr("建议")});
+    mp4_issue_table_->horizontalHeader()->setStretchLastSection(true);
+    mp4_issue_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    mp4_issue_table_->setAlternatingRowColors(true);
+    mp4_issue_table_->verticalHeader()->setVisible(false);
+    bottom->addTab(mp4_issue_table_, tr("一致性问题"));
+
+    mp4_fragment_table_ = new QTableWidget(0, 8, bottom);
+    mp4_fragment_table_->setHorizontalHeaderLabels({
+        tr("#"), tr("序号"), tr("Track"), tr("偏移"), tr("tfdt"),
+        tr("时长"), tr("样本数"), tr("字节数")});
+    mp4_fragment_table_->horizontalHeader()->setStretchLastSection(true);
+    mp4_fragment_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    mp4_fragment_table_->setAlternatingRowColors(true);
+    mp4_fragment_table_->verticalHeader()->setVisible(false);
+    bottom->addTab(mp4_fragment_table_, tr("分片 (moof)"));
+
+    QSplitter* splitter = new QSplitter(Qt::Vertical, parent);
+    splitter->addWidget(mp4_sample_table_);
+    splitter->addWidget(bottom);
+    splitter->setStretchFactor(0, 3);
+    splitter->setStretchFactor(1, 2);
+    splitter->setChildrenCollapsible(false);
+    layout->addWidget(splitter, 1);
+
+    connect(mp4_sample_track_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &AnalysisPanel::OnMp4SampleTrackChanged);
+    connect(export_mp4_sample_button_, &QPushButton::clicked,
+            this, &AnalysisPanel::OnExportMp4SampleCsv);
 }
 
 static void PopulateMp4BoxTablesInContainer(const model::Mp4BoxAnalysisResult& result,
@@ -1184,6 +1266,26 @@ void AnalysisPanel::OnContainerStructureReady(const model::ContainerStructureRes
             PopulateMp4BoxTablesInContainer(result.mp4_detail, stts_table_, stco_table_,
                                             stsc_table_, stsz_table_, co64_table_, stss_table_);
         }
+        // 填充 Sample Table 子页（样本级展开 + 一致性问题 + 分片）
+        mp4_samples_ = result.mp4_samples;
+        mp4_sample_focus_box_.clear();
+        {
+            const QSignalBlocker blocker(mp4_sample_track_combo_);
+            mp4_sample_track_combo_->clear();
+            for (const auto& t : mp4_samples_.tracks) {
+                QString label = QString("Track %1 (%2").arg(t.track_id)
+                                    .arg(QString::fromStdString(t.type));
+                if (!t.codec.empty()) {
+                    label += " / " + QString::fromStdString(t.codec);
+                }
+                label += QString(") · %1 样本").arg(t.stsz_sample_count);
+                mp4_sample_track_combo_->addItem(label, static_cast<quint32>(t.track_id));
+            }
+        }
+        UpdateMp4SampleSummary();
+        RebuildMp4SampleTable();
+        RebuildMp4IssueTable();
+        RebuildMp4FragmentTable();
         break;
     case CF::MKV:
     case CF::WebM:
@@ -1242,6 +1344,304 @@ void AnalysisPanel::OnContainerStructureReady(const model::ContainerStructureRes
         container_detail_stack_->setCurrentIndex(0);  // 通用信息页
         break;
     }
+}
+
+void AnalysisPanel::UpdateMp4SampleSummary() {
+    const auto& r = mp4_samples_;
+    if (!r.valid) {
+        mp4_sample_summary_label_->setText(
+            tr("样本表：未分析（文件不是 MP4/MOV，或 Bento4 不可用）"));
+        mp4_sample_summary_label_->setStyleSheet("font-size: 11px; color: #8B949E; padding: 2px;");
+        return;
+    }
+
+    QString order;
+    for (const auto& box : r.top_level_order) {
+        if (!order.isEmpty()) order += " → ";
+        order += QString::fromStdString(box);
+    }
+    const int errors = r.CountIssues(model::IssueSeverity::Error) +
+                       r.CountIssues(model::IssueSeverity::Critical);
+    const int warnings = r.CountIssues(model::IssueSeverity::Warning);
+    const int infos = r.CountIssues(model::IssueSeverity::Info);
+
+    mp4_sample_summary_label_->setText(
+        QString("文件 %1 字节 | 顶层: %2 | moov: %3 | faststart: %4 | 分片: %5 (sidx %6 / styp %7) | "
+                "问题: 错误 %8 / 警告 %9 / 提示 %10")
+            .arg(QString::number(static_cast<quint64>(r.file_size)))
+            .arg(order.isEmpty() ? "-" : order)
+            .arg(r.moov_size > 0 ? QString("0x%1 (%2 B)")
+                                       .arg(static_cast<quint64>(r.moov_offset), 0, 16)
+                                       .arg(QString::number(static_cast<quint64>(r.moov_size)))
+                                 : tr("无"))
+            .arg(r.IsFastStart() ? tr("是") : tr("否"))
+            .arg(r.fragments.size())
+            .arg(r.sidx_count)
+            .arg(r.styp_count)
+            .arg(errors)
+            .arg(warnings)
+            .arg(infos));
+    mp4_sample_summary_label_->setStyleSheet(
+        errors > 0 ? "font-size: 11px; color: #F85149; padding: 2px;"
+                   : (warnings > 0 ? "font-size: 11px; color: #D29922; padding: 2px;"
+                                   : "font-size: 11px; color: #3FB950; padding: 2px;"));
+}
+
+void AnalysisPanel::RebuildMp4SampleTable() {
+    mp4_sample_table_->setRowCount(0);
+    if (!mp4_samples_.valid) return;
+
+    const int track_index = mp4_sample_track_combo_->currentIndex();
+    if (track_index < 0 || track_index >= static_cast<int>(mp4_samples_.tracks.size())) return;
+    const model::Mp4TrackSampleTable& track = mp4_samples_.tracks[track_index];
+    if (track.samples.empty()) return;
+
+    // 结构树点了 stss 时只看关键帧
+    const bool keyframe_only = (mp4_sample_focus_box_ == "stss");
+    // 结构树联动的列高亮
+    QVector<int> focus_cols;
+    if (mp4_sample_focus_box_ == "stts")       focus_cols = {2, 5};
+    else if (mp4_sample_focus_box_ == "ctts")  focus_cols = {3, 4};
+    else if (mp4_sample_focus_box_ == "stsz")  focus_cols = {6};
+    else if (mp4_sample_focus_box_ == "stsc")  focus_cols = {7};
+    else if (mp4_sample_focus_box_ == "stco" ||
+             mp4_sample_focus_box_ == "co64")  focus_cols = {1, 7};
+    else if (mp4_sample_focus_box_ == "stss")  focus_cols = {8};
+
+    constexpr int kMaxSampleRows = 5000;  // UI 安全上限（样本本身可按 options 截断）
+    int row = 0;
+    for (const auto& s : track.samples) {
+        if (keyframe_only && !s.keyframe) continue;
+        if (row >= kMaxSampleRows) break;
+
+        mp4_sample_table_->insertRow(row);
+        auto set = [&](int col, const QString& text) {
+            auto* item = new QTableWidgetItem(text);
+            mp4_sample_table_->setItem(row, col, item);
+            return item;
+        };
+        set(0, QString::number(s.index));
+        set(1, QString("0x%1").arg(static_cast<quint64>(s.offset), 0, 16));
+        set(2, QString::number(s.DtsSeconds(track.media_timescale), 'f', 4));
+        set(3, QString::number(s.CtsSeconds(track.media_timescale), 'f', 4));
+        set(4, track.media_timescale > 0
+                   ? QString::number(static_cast<double>(s.cts_delta) * 1000.0 /
+                                         track.media_timescale, 'f', 2)
+                   : QString::number(s.cts_delta));
+        set(5, track.media_timescale > 0
+                   ? QString::number(static_cast<double>(s.duration) * 1000.0 /
+                                         track.media_timescale, 'f', 2)
+                   : QString::number(s.duration));
+        set(6, QString::number(static_cast<quint64>(s.size)));
+        set(7, QString("%1.%2").arg(s.chunk_index).arg(s.index_in_chunk));
+        set(8, s.keyframe ? QString::fromUtf8("\u2713") : QString());
+
+        // 异常行着色: 红=会导致读不到数据/解码错乱，黄=可能影响兼容与体验
+        QStringList reasons;
+        bool error_row = false, warn_row = false;
+        auto note = [&reasons](const char* text) { reasons << QString::fromUtf8(text); };
+        if (s.HasFlag(model::Mp4SampleFlags::kOffsetOutOfRange)) {
+            error_row = true; note("偏移越过文件末尾");
+        }
+        if (s.HasFlag(model::Mp4SampleFlags::kDtsNotMonotonic)) {
+            error_row = true; note("DTS 回退");
+        }
+        if (s.HasFlag(model::Mp4SampleFlags::kNegativeCts)) { warn_row = true; note("合成时间为负"); }
+        if (s.HasFlag(model::Mp4SampleFlags::kZeroSize)) { warn_row = true; note("大小为 0"); }
+        if (s.HasFlag(model::Mp4SampleFlags::kZeroDuration)) { warn_row = true; note("时长为 0"); }
+        if (s.HasFlag(model::Mp4SampleFlags::kChunkDiscontinuity)) {
+            warn_row = true; note("chunk 内偏移不连续");
+        }
+
+        if (error_row || warn_row) {
+            const QColor bg = error_row ? QColor("#5C1F1F") : QColor("#5C4A1F");
+            for (int c = 0; c < mp4_sample_table_->columnCount(); ++c) {
+                auto* item = mp4_sample_table_->item(row, c);
+                if (item) item->setBackground(bg);
+            }
+            for (int c = 0; c < mp4_sample_table_->columnCount(); ++c) {
+                auto* item = mp4_sample_table_->item(row, c);
+                if (item) item->setToolTip(reasons.join(" / "));
+            }
+        }
+        // 结构树联动的高亮列
+        for (int col : focus_cols) {
+            auto* item = mp4_sample_table_->item(row, col);
+            if (item) item->setForeground(QColor("#58A6FF"));
+        }
+        ++row;
+    }
+    mp4_sample_table_->resizeColumnsToContents();
+}
+
+void AnalysisPanel::RebuildMp4IssueTable() {
+    mp4_issue_table_->setRowCount(0);
+    if (!mp4_samples_.valid) return;
+
+    int row = 0;
+    for (const auto& issue : mp4_samples_.issues) {
+        mp4_issue_table_->insertRow(row);
+        auto set = [&](int col, const QString& text) {
+            mp4_issue_table_->setItem(row, col, new QTableWidgetItem(text));
+        };
+        set(0, QString::fromUtf8(model::ToString(issue.severity)));
+
+        QString where = tr("文件级");
+        if (issue.track_id >= 0) {
+            where = QString("Track %1").arg(issue.track_id);
+        } else if (issue.fragment_index >= 0) {
+            where = QString("分片 #%1").arg(issue.fragment_index);
+        }
+        if (issue.has_sample_index) where += QString(" @样本#%1").arg(issue.sample_index);
+        if (issue.occurrence_count > 1) where += QString(" ×%1").arg(issue.occurrence_count);
+        set(1, where);
+
+        set(2, QString::fromStdString(issue.title));
+        set(3, QString::fromStdString(issue.detail));
+        set(4, QString::fromStdString(issue.suggestion));
+
+        const QColor fg = (issue.severity == model::IssueSeverity::Error ||
+                           issue.severity == model::IssueSeverity::Critical)
+                              ? QColor("#F85149")
+                              : (issue.severity == model::IssueSeverity::Warning
+                                     ? QColor("#D29922")
+                                     : QColor("#8B949E"));
+        for (int c = 0; c < mp4_issue_table_->columnCount(); ++c) {
+            if (auto* item = mp4_issue_table_->item(row, c)) item->setForeground(fg);
+        }
+        ++row;
+    }
+    mp4_issue_table_->resizeColumnsToContents();
+}
+
+void AnalysisPanel::RebuildMp4FragmentTable() {
+    mp4_fragment_table_->setRowCount(0);
+    if (!mp4_samples_.valid || mp4_samples_.fragments.empty()) return;
+
+    int row = 0;
+    for (const auto& f : mp4_samples_.fragments) {
+        mp4_fragment_table_->insertRow(row);
+        auto set = [&](int col, const QString& text) {
+            mp4_fragment_table_->setItem(row, col, new QTableWidgetItem(text));
+        };
+        const model::Mp4TrackSampleTable* track = mp4_samples_.FindTrack(f.track_id);
+        const uint32_t ts = track ? track->media_timescale : mp4_samples_.movie_timescale;
+        set(0, QString::number(f.index));
+        set(1, QString::number(f.sequence_number));
+        set(2, QString::number(f.track_id));
+        set(3, QString("0x%1").arg(static_cast<quint64>(f.offset), 0, 16));
+        set(4, f.has_tfdt ? QString::number(static_cast<quint64>(f.base_media_decode_time))
+                          : tr("缺失"));
+        set(5, ts > 0 ? QString("%1 (%2 s)")
+                            .arg(QString::number(static_cast<quint64>(f.duration)))
+                            .arg(QString::number(static_cast<double>(f.duration) / ts, 'f', 3))
+                      : QString::number(static_cast<quint64>(f.duration)));
+        set(6, QString::number(f.sample_count));
+        set(7, QString::number(static_cast<quint64>(f.total_size)));
+        if (!f.has_tfdt || (!f.base_data_offset_present && !f.default_base_is_moof &&
+                            !f.trun_data_offset_present)) {
+            for (int c = 0; c < mp4_fragment_table_->columnCount(); ++c) {
+                if (auto* item = mp4_fragment_table_->item(row, c)) {
+                    item->setBackground(QColor("#5C4A1F"));
+                }
+            }
+        }
+        ++row;
+    }
+    mp4_fragment_table_->resizeColumnsToContents();
+}
+
+void AnalysisPanel::OnMp4SampleTrackChanged(int) {
+    RebuildMp4SampleTable();
+}
+
+void AnalysisPanel::OnContainerTreeSelectionChanged() {
+    QTreeWidgetItem* item = container_tree_->currentItem();
+    if (!item) return;
+    const QString box = item->text(0).trimmed();
+    static const QStringList kSampleBoxes = {
+        "stts", "ctts", "stss", "stsz", "stz2", "stsc", "stco", "co64",
+        "elst", "moof", "traf", "tfhd", "tfdt", "trun", "mfhd"};
+    if (!kSampleBoxes.contains(box)) return;
+
+    mp4_sample_focus_box_ = box;
+
+    // moof 系列: 直接跳到分片表
+    const bool is_fragment_box = (box == "moof" || box == "traf" || box == "tfhd" ||
+                                  box == "tfdt" || box == "trun" || box == "mfhd");
+
+    // 顺着父链找 trak，用它在同级 trak 中的序号选对应轨道
+    QTreeWidgetItem* node = item;
+    while (node && node->text(0).trimmed() != "trak") node = node->parent();
+    if (node && node->parent()) {
+        int trak_index = -1, found = 0;
+        QTreeWidgetItem* parent = node->parent();
+        for (int i = 0; i < parent->childCount(); ++i) {
+            if (parent->child(i)->text(0).trimmed() != "trak") continue;
+            if (parent->child(i) == node) { trak_index = found; break; }
+            ++found;
+        }
+        if (trak_index >= 0 && trak_index < mp4_sample_track_combo_->count()) {
+            mp4_sample_track_combo_->setCurrentIndex(trak_index);
+        }
+    }
+
+    container_detail_stack_->setCurrentIndex(1);        // MP4 详情页
+    mp4_detail_tabs_->setCurrentWidget(mp4_sample_sub_);  // Sample Table 子页
+    if (is_fragment_box) {
+        // 底部切到分片表
+        if (auto* bottom = qobject_cast<QTabWidget*>(mp4_fragment_table_->parentWidget())) {
+            bottom->setCurrentWidget(mp4_fragment_table_);
+        }
+        mp4_sample_focus_label_->setText(tr("已联动：%1（分片信息见下方「分片 (moof)」）").arg(box));
+    } else {
+        mp4_sample_focus_label_->setText(tr("已联动：%1（高亮关联列）").arg(box));
+    }
+    RebuildMp4SampleTable();
+}
+
+void AnalysisPanel::OnExportMp4SampleCsv() {
+    if (!mp4_samples_.valid || mp4_samples_.tracks.empty()) {
+        QMessageBox::information(this, tr("提示"), tr("当前没有可导出的 MP4 样本数据。"));
+        return;
+    }
+    const int track_index = mp4_sample_track_combo_->currentIndex();
+    if (track_index < 0 || track_index >= static_cast<int>(mp4_samples_.tracks.size())) return;
+    const model::Mp4TrackSampleTable& track = mp4_samples_.tracks[track_index];
+
+    const QString filename = QFileDialog::getSaveFileName(
+        this, tr("导出 MP4 样本表 CSV"),
+        QString("videoeye_mp4_samples_track%1_%2.csv")
+            .arg(track.track_id)
+            .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
+        tr("CSV 文件 (*.csv);;所有文件 (*)"));
+    if (filename.isEmpty()) return;
+
+    QFile file(filename);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件:\n%1").arg(filename));
+        return;
+    }
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    out << "index,offset,dts,pts,cts_delta,duration,size,chunk,index_in_chunk,keyframe,flags\n";
+    const double ts = static_cast<double>(track.media_timescale);
+    for (const auto& s : track.samples) {
+        out << s.index << ','
+            << s.offset << ','
+            << QString::number(ts > 0 ? s.dts / ts : 0.0, 'f', 6) << ','
+            << QString::number(ts > 0 ? s.cts / ts : 0.0, 'f', 6) << ','
+            << s.cts_delta << ','
+            << s.duration << ','
+            << s.size << ','
+            << s.chunk_index << ','
+            << s.index_in_chunk << ','
+            << (s.keyframe ? 1 : 0) << ','
+            << s.flags << '\n';
+    }
+    file.close();
+    QMessageBox::information(this, tr("导出完成"),
+                             tr("已导出 %1 个样本到:\n%2").arg(track.samples.size()).arg(filename));
 }
 
 void AnalysisPanel::OnExportContainerStructure() {
@@ -4979,6 +5379,360 @@ void AnalysisPanel::OnExportAudioQcCsv() {
                                  .arg(diagnostics_result_.audio_qc.loudness_points.size()));
 }
 
+// ==========================================================================
+// 色彩与 HDR 分析页
+// 与「码率与 GOP」「音频 QC」「诊断与报告」共用同一次全文件扫描结果
+// ==========================================================================
+void AnalysisPanel::SetupColorHdrTab() {
+    color_hdr_tab_ = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(color_hdr_tab_);
+    layout->setContentsMargins(4, 2, 4, 4);
+    layout->setSpacing(4);
+
+    // 第一行: 标题 + 开始/取消/导出
+    {
+        QWidget* row = new QWidget(color_hdr_tab_);
+        QHBoxLayout* rl = new QHBoxLayout(row);
+        rl->setContentsMargins(0, 0, 0, 0);
+        QLabel* title = new QLabel(tr("色彩与 HDR 元数据"), row);
+        QFont title_font = title->font();
+        title_font.setBold(true);
+        title_font.setPointSize(title_font.pointSize() + 1);
+        title->setFont(title_font);
+        rl->addWidget(title);
+        rl->addStretch();
+
+        color_hdr_start_button_ = new QPushButton(tr("开始分析"), row);
+        color_hdr_start_button_->setToolTip(
+            tr("读取视频流的 primaries / transfer / matrix / range / bit depth / 色度采样，"
+               "并汇总 HDR10 静态元数据（母版显示、MaxCLL/MaxFALL）与 Dolby Vision 配置记录。"
+               "与「码率与 GOP」「音频 QC」「诊断与报告」共用同一次扫描。"));
+        connect(color_hdr_start_button_, &QPushButton::clicked,
+                this, &AnalysisPanel::OnStartColorHdrAnalysis);
+        rl->addWidget(color_hdr_start_button_);
+
+        color_hdr_cancel_button_ = new QPushButton(tr("取消"), row);
+        color_hdr_cancel_button_->setEnabled(false);
+        connect(color_hdr_cancel_button_, &QPushButton::clicked,
+                this, &AnalysisPanel::OnCancelColorHdrAnalysis);
+        rl->addWidget(color_hdr_cancel_button_);
+
+        QPushButton* export_btn = new QPushButton(tr("导出 CSV"), row);
+        connect(export_btn, &QPushButton::clicked, this, &AnalysisPanel::OnExportColorHdrCsv);
+        rl->addWidget(export_btn);
+        layout->addWidget(row);
+    }
+
+    color_hdr_progress_bar_ = new QProgressBar(color_hdr_tab_);
+    color_hdr_progress_bar_->setRange(0, 100);
+    color_hdr_progress_bar_->setValue(0);
+    color_hdr_progress_bar_->setFormat(tr("未开始"));
+    layout->addWidget(color_hdr_progress_bar_);
+
+    // 第二行: 选项
+    {
+        QWidget* row = new QWidget(color_hdr_tab_);
+        QHBoxLayout* rl = new QHBoxLayout(row);
+        rl->setContentsMargins(0, 0, 0, 0);
+
+        color_hdr_probe_frame_check_ = new QCheckBox(tr("解码首帧读取动态元数据"), row);
+        color_hdr_probe_frame_check_->setChecked(color_hdr_options_.probe_decoded_frame);
+        color_hdr_probe_frame_check_->setToolTip(
+            tr("容器/码流层没有 HDR 静态元数据时，解码首帧读取 AVFrame side data "
+               "（HDR10+ / DV RPU / HDR Vivid）。关闭后只依赖容器标注，速度最快。"));
+        connect(color_hdr_probe_frame_check_, &QCheckBox::toggled,
+                this, &AnalysisPanel::OnColorHdrOptionChanged);
+        rl->addWidget(color_hdr_probe_frame_check_);
+        rl->addStretch();
+        layout->addWidget(row);
+    }
+
+    color_hdr_summary_label_ = new QLabel(
+        tr("点击「开始分析」读取当前视频流的色彩与 HDR 元数据。"
+           "正确的组合应为：BT.709 + BT.709 + BT.709（SDR）或 BT.2020 + PQ/HLG + BT.2020 NCL（HDR）。"),
+        color_hdr_tab_);
+    color_hdr_summary_label_->setWordWrap(true);
+    layout->addWidget(color_hdr_summary_label_);
+
+    color_hdr_sub_tabs_ = new QTabWidget(color_hdr_tab_);
+    color_hdr_sub_tabs_->setMinimumHeight(340);
+
+    auto make_info_table = [](QWidget* parent) {
+        QTableWidget* table = new QTableWidget(0, 3, parent);
+        table->setHorizontalHeaderLabels({tr("项目"), tr("值"), tr("说明")});
+        table->verticalHeader()->setVisible(false);
+        table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        table->setSelectionBehavior(QAbstractItemView::SelectRows);
+        table->horizontalHeader()->setStretchLastSection(true);
+        table->setMinimumHeight(260);
+        return table;
+    };
+
+    // ---- 子页 0: 色彩信息 ----
+    {
+        QWidget* page = new QWidget(color_hdr_sub_tabs_);
+        QVBoxLayout* pl = new QVBoxLayout(page);
+        pl->setContentsMargins(2, 2, 2, 2);
+        color_info_table_ = make_info_table(page);
+        pl->addWidget(color_info_table_);
+        color_hdr_sub_tabs_->addTab(page, tr("色彩信息"));
+    }
+
+    // ---- 子页 1: HDR 元数据 ----
+    {
+        QWidget* page = new QWidget(color_hdr_sub_tabs_);
+        QVBoxLayout* pl = new QVBoxLayout(page);
+        pl->setContentsMargins(2, 2, 2, 2);
+        hdr_info_table_ = make_info_table(page);
+        pl->addWidget(hdr_info_table_);
+        color_hdr_sub_tabs_->addTab(page, tr("HDR 元数据"));
+    }
+
+    // ---- 子页 2: 异常组合 ----
+    {
+        QWidget* page = new QWidget(color_hdr_sub_tabs_);
+        QVBoxLayout* pl = new QVBoxLayout(page);
+        pl->setContentsMargins(2, 2, 2, 2);
+
+        QLabel* hint = new QLabel(
+            tr("下面列出的是由色彩/HDR 规则判定的异常组合，判定阈值取自"
+               "「诊断与报告 → 规则与阈值」，这些项目同样计入诊断报告评分。"), page);
+        hint->setWordWrap(true);
+        pl->addWidget(hint);
+
+        color_issue_table_ = new QTableWidget(0, 4, page);
+        color_issue_table_->setHorizontalHeaderLabels(
+            {tr("严重度"), tr("规则"), tr("说明"), tr("建议")});
+        color_issue_table_->verticalHeader()->setVisible(false);
+        color_issue_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        color_issue_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+        color_issue_table_->horizontalHeader()->setStretchLastSection(true);
+        color_issue_table_->setMinimumHeight(240);
+        pl->addWidget(color_issue_table_);
+
+        color_hdr_sub_tabs_->addTab(page, tr("异常组合"));
+    }
+
+    layout->addWidget(color_hdr_sub_tabs_);
+    AddPageWithScroll(color_hdr_tab_, tr("色彩与 HDR"));
+}
+
+void AnalysisPanel::ApplyColorHdrOptionsFromUi() {
+    color_hdr_options_.probe_decoded_frame = color_hdr_probe_frame_check_ &&
+                                             color_hdr_probe_frame_check_->isChecked();
+    diagnostics_options_.color_hdr_options = color_hdr_options_;
+    diagnostics_options_.analyze_color_hdr = true;
+}
+
+void AnalysisPanel::OnStartColorHdrAnalysis() {
+    ApplyColorHdrOptionsFromUi();
+    StartDiagnosticsScan(diagnostics_options_);
+}
+
+void AnalysisPanel::OnCancelColorHdrAnalysis() { OnCancelDiagnostics(); }
+
+void AnalysisPanel::OnColorHdrOptionChanged() {
+    if (!color_hdr_probe_frame_check_) return;
+    ApplyColorHdrOptionsFromUi();
+}
+
+void AnalysisPanel::UpdateColorHdrUi() {
+    UpdateColorHdrSummary();
+    RebuildColorHdrTables();
+    RebuildColorHdrIssueTable();
+}
+
+void AnalysisPanel::UpdateColorHdrSummary() {
+    if (!color_hdr_summary_label_) return;
+    const auto& analysis = diagnostics_result_.color_hdr;
+    if (!has_diagnostics_result_ || !analysis.analyzed) {
+        color_hdr_summary_label_->setText(
+            tr("暂无色彩/HDR 结果。点击「开始分析」扫描当前文件（需要有视频流）。"));
+        return;
+    }
+
+    const model::ColorInfo& color = analysis.color;
+    const model::HdrMetadataInfo& hdr = analysis.hdr;
+
+    auto piece = [](const std::string& text) {
+        return text.empty() ? QObject::tr("未标注") : QString::fromStdString(text);
+    };
+
+    QColor verdict_color = QColor("#43a047");   // 绿
+    QString verdict = tr("色彩标注完整");
+    int missing_count = 0;
+    if (!color.PrimariesSpecified()) ++missing_count;
+    if (!color.TransferSpecified()) ++missing_count;
+    if (!color.MatrixSpecified()) ++missing_count;
+    if (!color.RangeSpecified()) ++missing_count;
+    if (missing_count > 0 || (hdr.hdr && !hdr.mastering_display.Complete() &&
+                              color.transfer == model::TransferKind::Pq)) {
+        verdict_color = QColor("#fb8c00");      // 橙
+        verdict = tr("存在待核查项");
+    }
+
+    QString text;
+    text += QStringLiteral("<b>%1</b>: %2 ｜ ").arg(tr("HDR 格式"), piece(hdr.format_name));
+    text += QStringLiteral("%1 ｜ %2 ｜ %3 ｜ %4<br>")
+                .arg(piece(color.primaries_name), piece(color.transfer_name),
+                     piece(color.matrix_name), piece(color.range_name));
+    text += QStringLiteral("%1: %2 ｜ %3 ｜ ")
+                .arg(tr("像素格式"), piece(color.pixel_format.name),
+                     color.EffectiveBitDepth() > 0
+                         ? (QString::number(color.EffectiveBitDepth()) + QLatin1String(" bit"))
+                         : tr("未标注"));
+    text += QStringLiteral("%1<br>").arg(
+        color.pixel_format.chroma_subsampling.empty()
+            ? QString::fromStdString(color.codec_name + " / " + color.profile_name)
+            : piece(color.pixel_format.chroma_subsampling));
+    text += QStringLiteral("<font color='%1'><b>%2</b></font>")
+                .arg(verdict_color.name(), verdict);
+
+    if (hdr.mastering_display.has_luminance) {
+        text += QStringLiteral(" ｜ MaxCLL %1 / MaxFALL %2 cd/m²")
+                    .arg(hdr.content_light.max_cll)
+                    .arg(hdr.content_light.max_fall);
+    }
+    if (hdr.dolby_vision.present) {
+        text += QStringLiteral(" ｜ DV %1").arg(
+            QString::fromStdString(hdr.dolby_vision.ProfileText()));
+    }
+    for (const auto& note : analysis.notes) {
+        text += QStringLiteral("<br><font color='#e53935'>%1</font>")
+                    .arg(QString::fromStdString(note).toHtmlEscaped());
+    }
+    color_hdr_summary_label_->setText(text);
+}
+
+void AnalysisPanel::RebuildColorHdrTables() {
+    if (!color_info_table_ || !hdr_info_table_) return;
+
+    const auto fill = [this](QTableWidget* table,
+                             const std::vector<analyzer::ColorKeyValueRow>& rows) {
+        table->setRowCount(0);
+        table->setRowCount(static_cast<int>(rows.size()));
+        for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+            const auto& row = rows[static_cast<size_t>(i)];
+            table->setItem(i, 0, new QTableWidgetItem(QString::fromStdString(row.key)));
+            QTableWidgetItem* value_item = new QTableWidgetItem(QString::fromStdString(row.value));
+            // 缺失/异常项用醒目颜色标记
+            const QString lower = QString::fromStdString(row.value).toLower();
+            if (row.value == "缺失" || row.value == "未标注" || lower.startsWith("unknown")) {
+                value_item->setForeground(QColor("#fb8c00"));
+                value_item->setFont([value_item] {
+                    QFont f = value_item->font();
+                    f.setBold(true);
+                    return f;
+                }());
+            }
+            table->setItem(i, 1, value_item);
+            table->setItem(i, 2, new QTableWidgetItem(QString::fromStdString(row.note)));
+        }
+        table->resizeColumnsToContents();
+    };
+
+    const auto& analysis = diagnostics_result_.color_hdr;
+    if (!has_diagnostics_result_ || !analysis.analyzed) {
+        color_info_table_->setRowCount(0);
+        hdr_info_table_->setRowCount(0);
+        return;
+    }
+    fill(color_info_table_, analyzer::BuildColorRows(analysis));
+    fill(hdr_info_table_, analyzer::BuildHdrRows(analysis));
+}
+
+void AnalysisPanel::RebuildColorHdrIssueTable() {
+    if (!color_issue_table_) return;
+    color_issue_table_->setRowCount(0);
+    if (!has_diagnostics_result_) return;
+
+    auto severity_color = [](model::IssueSeverity severity) -> QColor {
+        switch (severity) {
+            case model::IssueSeverity::Critical: return QColor("#c62828");
+            case model::IssueSeverity::Error:    return QColor("#e53935");
+            case model::IssueSeverity::Warning:  return QColor("#fb8c00");
+            case model::IssueSeverity::Info:     return QColor("#1e88e5");
+        }
+        return QColor("#888888");
+    };
+
+    int row = 0;
+    for (const auto& issue : current_qc_report_.issues) {
+        if (issue.category != model::IssueCategory::ColorHdr) continue;
+        color_issue_table_->insertRow(row);
+        QTableWidgetItem* severity_item =
+            new QTableWidgetItem(QString::fromStdString(issue.SeverityText()));
+        severity_item->setForeground(severity_color(issue.severity));
+        {
+            QFont f = severity_item->font();
+            f.setBold(true);
+            severity_item->setFont(f);
+        }
+        color_issue_table_->setItem(row, 0, severity_item);
+        color_issue_table_->setItem(row, 1, new QTableWidgetItem(
+                                                QString::fromStdString(issue.rule_id)));
+        color_issue_table_->setItem(row, 2, new QTableWidgetItem(
+                                                QString::fromStdString(issue.detail)));
+        color_issue_table_->setItem(row, 3, new QTableWidgetItem(
+                                                QString::fromStdString(issue.suggestion)));
+        ++row;
+    }
+    if (row == 0) {
+        color_issue_table_->insertRow(0);
+        color_issue_table_->setItem(0, 0, new QTableWidgetItem(tr("无")));
+        color_issue_table_->setItem(0, 1,
+                                    new QTableWidgetItem(tr("未发现异常的色彩/HDR 组合")));
+        color_issue_table_->setItem(0, 2, new QTableWidgetItem(tr("")));
+        color_issue_table_->setItem(0, 3, new QTableWidgetItem(tr("")));
+    }
+    color_issue_table_->resizeColumnsToContents();
+}
+
+void AnalysisPanel::OnExportColorHdrCsv() {
+    if (!has_diagnostics_result_ || !diagnostics_result_.color_hdr.analyzed) {
+        QMessageBox::information(this, tr("提示"), tr("请先完成一次色彩/HDR 分析。"));
+        return;
+    }
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("导出色彩与 HDR 信息 CSV"),
+        QString::fromStdString(current_video_path_) + QStringLiteral("_colorhdr.csv"),
+        QStringLiteral("CSV (*.csv)"));
+    if (path.isEmpty()) return;
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件: %1").arg(path));
+        return;
+    }
+
+    auto csv_field = [](const QString& text) {
+        QString out = text;
+        out.replace(QLatin1Char('"'), QStringLiteral("\"\""));
+        return QLatin1Char('"') + out + QLatin1Char('"');
+    };
+
+    const auto& analysis = diagnostics_result_.color_hdr;
+    QTextStream out(&file);
+    out << "\xEF\xBB\xBF";  // UTF-8 BOM for Excel
+    out << "分组,项目,值,说明\n";
+    auto write_rows = [&](const char* /*unused*/, const QString& group,
+                          const std::vector<analyzer::ColorKeyValueRow>& rows) {
+        for (const auto& row : rows) {
+            out << csv_field(group) << ','
+                << csv_field(QString::fromStdString(row.key)) << ','
+                << csv_field(QString::fromStdString(row.value)) << ','
+                << csv_field(QString::fromStdString(row.note)) << '\n';
+        }
+    };
+    write_rows(nullptr, tr("色彩信息"), analyzer::BuildColorRows(analysis));
+    write_rows(nullptr, tr("HDR 元数据"), analyzer::BuildHdrRows(analysis));
+    file.close();
+
+    const int rows = static_cast<int>(analyzer::BuildColorRows(analysis).size() +
+                                      analyzer::BuildHdrRows(analysis).size());
+    QMessageBox::information(this, tr("导出完成"), tr("已导出 %1 行。").arg(rows));
+}
+
 void AnalysisPanel::SetupDiagnosticsTab() {
     diagnostics_tab_ = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(diagnostics_tab_);
@@ -5150,6 +5904,17 @@ void AnalysisPanel::StartDiagnosticsScan(const analyzer::AnalysisOptions& option
     bitrate_gop_progress_bar_->setValue(0);
     bitrate_gop_progress_bar_->setFormat(tr("准备中 %p%"));
 
+    // 「音频 QC」与「色彩与 HDR」也共用同一次扫描：同步这两页的控件状态
+    audio_qc_start_button_->setEnabled(false);
+    audio_qc_cancel_button_->setEnabled(true);
+    audio_qc_progress_bar_->setValue(0);
+    audio_qc_progress_bar_->setFormat(tr("准备中 %p%"));
+
+    color_hdr_start_button_->setEnabled(false);
+    color_hdr_cancel_button_->setEnabled(true);
+    color_hdr_progress_bar_->setValue(0);
+    color_hdr_progress_bar_->setFormat(tr("准备中 %p%"));
+
     diagnostics_generation_ = diagnostics_coordinator_.StartAnalysis(current_video_path_, options);
 }
 
@@ -5168,9 +5933,11 @@ void AnalysisPanel::OnCancelDiagnostics() {
     qc_cancel_button_->setEnabled(false);
     bitrate_gop_cancel_button_->setEnabled(false);
     audio_qc_cancel_button_->setEnabled(false);
+    color_hdr_cancel_button_->setEnabled(false);
     qc_progress_bar_->setFormat(tr("取消中..."));
     bitrate_gop_progress_bar_->setFormat(tr("取消中..."));
     audio_qc_progress_bar_->setFormat(tr("取消中..."));
+    color_hdr_progress_bar_->setFormat(tr("取消中..."));
 }
 
 void AnalysisPanel::OnDiagnosticsProgress(quint64 generation, double percent, const QString& stage) {
@@ -5181,6 +5948,8 @@ void AnalysisPanel::OnDiagnosticsProgress(quint64 generation, double percent, co
     bitrate_gop_progress_bar_->setFormat(stage + " %p%");
     audio_qc_progress_bar_->setValue(static_cast<int>(percent));
     audio_qc_progress_bar_->setFormat(stage + " %p%");
+    color_hdr_progress_bar_->setValue(static_cast<int>(percent));
+    color_hdr_progress_bar_->setFormat(stage + " %p%");
 }
 
 void AnalysisPanel::OnDiagnosticsFinished(quint64 generation, bool completed,
@@ -5211,6 +5980,16 @@ void AnalysisPanel::OnDiagnosticsFinished(quint64 generation, bool completed,
 
     UpdateQcSummary();
     UpdateAudioQcUi();   // 音频 QC 页与码率/GOP、诊断报告共用同一次扫描结果
+    UpdateColorHdrUi();  // 色彩与 HDR 页同样共用同一次扫描结果
+
+    // MP4 样本表：扫描跑过就顺带刷新容器页（与打开文件时那次解析结果一致）
+    if (result.mp4_samples_analyzed && result.mp4_samples.valid) {
+        mp4_samples_ = result.mp4_samples;
+        UpdateMp4SampleSummary();
+        RebuildMp4SampleTable();
+        RebuildMp4IssueTable();
+        RebuildMp4FragmentTable();
+    }
 }
 
 void AnalysisPanel::OnDiagnosticsFailed(quint64 generation, const QString& message) {
@@ -5243,6 +6022,7 @@ void AnalysisPanel::EvaluateDiagnostics() {
     UpdateQcChart();
     UpdateQcSummary();
     RebuildAudioQcVerdictTable();   // 音频 QC 页的判定表复用同一份报告
+    RebuildColorHdrIssueTable();    // 色彩与 HDR 页的异常组合同样来自这份报告
 }
 
 void AnalysisPanel::RebuildIssueTable() {

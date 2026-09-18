@@ -24,6 +24,7 @@ const char* ToString(IssueCategory category) {
         case IssueCategory::Bitrate:   return "码率";
         case IssueCategory::Gop:       return "GOP";
         case IssueCategory::Metadata:  return "元数据";
+        case IssueCategory::ColorHdr:  return "色彩/HDR";
         case IssueCategory::Other:     return "其他";
     }
     return "未知";
@@ -92,6 +93,66 @@ std::vector<QcRule> DefaultQcRules() {
         "方案二：转封装为扩展名对应的容器，流不重编码："
         "ffmpeg -i 输入.ts -c copy 输出.mp4。");
 
+    // ---- MP4/fMP4 容器一致性（core/analyzer/Mp4SampleTableAnalyzer，走 Bento4）----
+    // 这些规则只决定"是否上报 / 以什么级别上报"，问题本身（含具体样本号、偏移、分片号）
+    // 由分析器给出；级别取「规则级别」与「分析器级别」中更严重的一侧，
+    // 因此把规则调到 Error 可以抬高，调到 Info 也不会把 Error 级发现降没。
+    add("container.mp4.sample_count_mismatch", "样本表样本数不一致", IssueCategory::Container,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "",
+        "stts / ctts / stss / stsz / stco 等表的样本数不一致，或缺少 chunk offset 表。",
+        "重新封装（-c copy）让 muxer 重写全部 sample table。");
+
+    add("container.mp4.chunk_offset_out_of_range", "样本偏移越过文件末尾", IssueCategory::Container,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "个",
+        "chunk offset + sample size 超出文件大小，通常是文件被截断或偏移表写坏。",
+        "重新下载 / 重新封装；-c copy 重封装会按实际数据重建偏移表。");
+
+    add("container.mp4.dts_not_monotonic", "解码时间回退", IssueCategory::Container,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "处",
+        "DTS 出现回退，含 B 帧时解码顺序被打乱，表现为花屏或 seek 卡死。",
+        "重新封装让 muxer 重算 stts；检查是否误用了 VFR 输入。");
+
+    add("container.mp4.negative_cts", "合成时间为负", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "个",
+        "ctts 负偏移导致 PTS < 0，部分播放器会出现起播黑帧、首帧被丢或音画不同步。",
+        "用 elst 平移代替负 ctts：重新封装时加 -avoid_negative_ts make_zero。");
+
+    add("container.mp4.sample_offset_gap", "chunk 内样本偏移不连续", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "处",
+        "stsz 与 stco/stsc 不自洽，同一 chunk 内样本偏移不等于上一帧结束位置。",
+        "重新封装（-c copy）重建 sample table。");
+
+    add("container.mp4.first_sample_not_sync", "首个样本不是关键帧", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "起播必须先解码到下一个 IDR，首屏变慢甚至短时花屏。",
+        "重新编码时在起点插入 IDR，或把剪辑点挪到关键帧上。");
+
+    add("container.mp4.elst_first_frame_shift", "elst 造成首帧偏移", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::MaxExceeded, 33.0, "ms",
+        "edit list 把媒体起点推后，开头一段内容不会呈现（首帧被隐藏）。",
+        "确认是否为刻意的音视频对齐；否则删除 elst 后重新封装。");
+
+    add("container.mp4.av_start_mismatch", "音视频起点不一致", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::MaxExceeded, 40.0, "ms",
+        "视频与音频首个样本的呈现时间相差过大，表现为开头音画不同步。",
+        "统一两侧 elst（-c copy -avoid_negative_ts make_zero），或用 -itsoffset 对齐。");
+
+    add("container.mp4.fragment_sequence_gap", "分片序号不连续", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "处",
+        "moof 的 sequence_number 跳号、重复或回退，播放器无法判断分片顺序。",
+        "检查分片拼接脚本，保证序号单调递增且唯一。");
+
+    add("container.mp4.fragment_time_gap", "分片解码时间不连续", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "处",
+        "tfdt 与上一分片的结束时间对不上（时间空洞或回退），分段处会停顿、时长统计偏大。",
+        "重新生成分片；拼接多段时要做时间轴平移。");
+
+    add("container.mp4.fragment_data_offset", "分片样本数据位置缺失", IssueCategory::Container,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "个",
+        "tfhd.base_data_offset / default-base-is-moof / trun.data_offset 三者全无，"
+        "播放器无法算出样本数据的文件偏移。",
+        "重新封装；CMAF 要求前两者至少有一个。");
+
     // ---- 码率 ----
     add("video.bitrate.peak_ratio", "码率波动过大", IssueCategory::Bitrate,
         IssueSeverity::Warning, QcRuleOp::MaxExceeded, 3.0, "倍",
@@ -144,6 +205,68 @@ std::vector<QcRule> DefaultQcRules() {
         IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "帧",
         "个别 I 帧远大于平均 I 帧，seek/首屏会产生瞬时带宽尖峰。",
         "降低 I 帧质量权重或调大 GOP；大 IDR 也可能导致首帧解码耗时偏高。");
+
+    // ---- 色彩与 HDR（core/analyzer/ColorHdrAnalyzer）----
+    add("video.color.hdr_missing_mastering", "PQ 缺少母版显示信息", IssueCategory::ColorHdr,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "传递函数为 PQ(SMPTE ST 2084)，但没有 SMPTE ST 2086 母版显示信息"
+        "（mastering display metadata）。播放器只能按默认色彩体量做色调映射，"
+        "在不同显示器上亮度与饱和度会明显不一致。",
+        "补充母版显示信息后重封装/重编码：x265 用 -x265-params "
+        "master-display=G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)；x264/ffmpeg 可用 "
+        "libx265 的 master-display 或 mp4box --hdr。" "MaxCLL/MaxFALL 一并写入更稳妥。");
+
+    add("video.color.hdr_missing_light_level", "PQ 缺少 MaxCLL/MaxFALL", IssueCategory::ColorHdr,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "传递函数为 PQ，但缺少 MaxCLL / MaxFALL（CTA-861.3 内容光level）。"
+        "缺少该值时接收端无法预判内容亮度，容易整体过曝或压暗。",
+        "写入内容光level：x265 用 -x265-params max-cll=1000,400；"
+        "MP4 封装对应 clli 盒，Matroska 对应 MaxCLL/MaxFALL 元素。");
+
+    add("video.color.hdr_low_bitdepth", "HDR 位深不足", IssueCategory::ColorHdr,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "bit",
+        "PQ/HLG 内容使用了不足 10 bit 的像素格式。PQ/HLG 需要 10 bit 以上位深，"
+        "8 bit 承载 HDR 会出现明显色带（尤其暗部渐变）。",
+        "重新编码为 10 bit：-pix_fmt yuv420p10le（HDR10 常规选择）；"
+        "若确实只有 8 bit 源，应改用 SDR 分发（transfer=BT.709）。");
+
+    add("video.color.wide_gamut_sdr_transfer", "广色域搭配 SDR 传递函数", IssueCategory::ColorHdr,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "色彩原色为 BT.2020 / P3 这类广色域，但传递函数仍是传统 SDR gamma。"
+        "广色域通常需要搭配 PQ/HLG 才能表达高亮度范围，否则要么被当作 SDR BT.2020 "
+        "做窄范围映射（颜色发灰），要么说明整套色彩标注是误标的。",
+        "确认内容本色：是 HDR 就把 transfer 改成 PQ/HLG 并补齐静态元数据；"
+        "是 SDR 就把 primaries/matrix 改回 BT.709。"
+        "（仅在有意分发 SDR BT.2020 时可忽略本条。）");
+
+    add("video.color.matrix_mismatch", "矩阵系数与原色不匹配", IssueCategory::ColorHdr,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "矩阵系数与色彩原色不属于同一代标准（如 BT.2020 原色配 BT.709 矩阵）。"
+        "YUV→RGB 会按错误矩阵还原，画面整体偏色（通常表现为肤色发青/发紫）。",
+        "让矩阵跟原色对齐：BT.709 原色配 BT.709 矩阵，BT.2020 原色配 BT.2020 NCL 矩阵。"
+        "ffmpeg 可用 -colorspace bt2020nc -color_primaries bt2020 -color_trc smpte2084。");
+
+    add("video.color.range_conflict", "量化范围标注冲突", IssueCategory::ColorHdr,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "像素格式隐含的量化范围与容器标注不一致（如 yuvj420p 隐含 full range 却被标成 "
+        "Limited，或 RGB 数据被标成 Limited）。灰阶会被整体抬高/压低，"
+        "表现为画面发灰或黑位丢 detail。",
+        "统一两者：either 用 yuv420p 等不带隐含范围的像素格式，"
+        "either 把 AVColorRange 改成实际值（-color_range pc / tv）。");
+
+    add("video.color.unspecified", "色彩元数据缺失", IssueCategory::ColorHdr,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "项",
+        "primaries / transfer / matrix / range 中有未标注项。缺失时播放器只能猜"
+        "（通常按分辨率猜 BT.601 或 BT.709），广色域与 HDR 内容几乎必然颜色错误。",
+        "填全 VUI/容器色彩标注：ffmpeg 加 -color_primaries bt709 -color_trc bt709 "
+        "-colorspace bt709 -color_range tv（-c copy 即可，无需重编码）。");
+
+    add("video.color.dv_no_compatibility", "Dolby Vision 无兼容层", IssueCategory::ColorHdr,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "",
+        "Dolby Vision 流的 bl_signal_compatibility_id 为 0（如 Profile 5），"
+        "没有 HDR10/SDR 兼容层。非 Dolby Vision 设备回放时颜色与亮度会明显错误。",
+        "外发需求覆盖多终端时改用带兼容层的 Profile 8.1（HDR10 基线）或 Profile 8.4（HLG 基线）；"
+        "仅 DV 端到端场景可保留 Profile 5。");
 
     // ---- 视频 ----
     add("video.fps.unstable", "帧率不稳定", IssueCategory::Video,

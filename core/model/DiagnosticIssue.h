@@ -25,6 +25,7 @@ enum class IssueCategory {
     Bitrate,    // 码率
     Gop,        // GOP / 关键帧
     Metadata,   // 元数据/标签
+    ColorHdr,   // 色彩与 HDR（primaries / transfer / matrix / range / bit depth / HDR 元数据）
     Other
 };
 

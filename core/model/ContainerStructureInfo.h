@@ -7,6 +7,7 @@
 #include <cstdint>
 
 #include "core/model/Mp4BoxInfo.h"
+#include "core/model/Mp4SampleInfo.h"
 #include "core/model/EbmlInfo.h"
 
 namespace videoeye {
@@ -62,6 +63,10 @@ struct ContainerStructureResult {
     // 保留原有详细结果 (MP4/MKV 专用, 用于显示详细表格)
     Mp4BoxAnalysisResult mp4_detail;
     EbmlAnalysisResult ebml_detail;
+
+    // MP4/fMP4 样本级一致性（sample table / elst / moof-traf-trun / faststart）
+    // 由 ContainerStructureAnalyzer 在 MP4 家族时顺带跑一遍（Bento4 解析）
+    Mp4SampleTableResult mp4_samples;
 };
 
 } // namespace model

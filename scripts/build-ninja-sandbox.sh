@@ -22,7 +22,10 @@ LOG="$ROOT/.workbuddy/build-ninja.log"
 "$NINJA" "$@" > "$LOG" 2>&1
 code=$?
 # MSVC 输出是 UTF-16，转码后再打印
-python - "$LOG" <<'PY'
+# 注意: LOG 是 MSYS 风格路径 (/d/...)，Windows 版 python 认不出来，
+# 必须先用 cygpath 转成 D:\... 再传给 python，否则报 FileNotFoundError。
+LOG_WIN="$(cygpath -w "$LOG" 2>/dev/null || echo "$LOG")"
+python - "$LOG_WIN" <<'PY'
 import sys
 data = open(sys.argv[1], 'rb').read()
 for enc in ('utf-16-le', 'utf-8', 'gbk'):

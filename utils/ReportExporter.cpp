@@ -301,6 +301,30 @@ bool ReportExporter::ExportQcReportJSON(const std::string& filename, const model
     }
     file << "  ],\n";
 
+    // ---- 色彩与 HDR 章节（core/analyzer/ColorHdrAnalyzer）----
+    {
+        const auto color_rows = analyzer::BuildColorRows(report.color_hdr);
+        const auto hdr_rows = analyzer::BuildHdrRows(report.color_hdr);
+        file << "  \"color_hdr\": {\n";
+        file << "    \"analyzed\": " << (report.color_hdr.analyzed ? "true" : "false") << ",\n";
+        file << "    \"format\": \"" << EscapeJSON(report.color_hdr.hdr.format_name) << "\",\n";
+        auto write_group = [&file](const char* field,
+                                  const std::vector<analyzer::ColorKeyValueRow>& rows) {
+            file << "    \"" << field << "\": [\n";
+            for (size_t i = 0; i < rows.size(); ++i) {
+                const auto& row = rows[i];
+                file << "      {\"item\": \"" << EscapeJSON(row.key) << "\", \"value\": \""
+                     << EscapeJSON(row.value) << "\", \"note\": \"" << EscapeJSON(row.note)
+                     << "\"}" << (i + 1 < rows.size() ? "," : "") << "\n";
+            }
+            file << "    ]";
+        };
+        write_group("color", color_rows);
+        file << ",\n";
+        write_group("hdr", hdr_rows);
+        file << "\n  },\n";
+    }
+
     file << "  \"rules\": [\n";
     for (size_t i = 0; i < report.rules.size(); ++i) {
         const auto& rule = report.rules[i];
@@ -346,6 +370,7 @@ bool ReportExporter::ExportQcReportHTML(const std::string& filename, const model
          << "    body { font-family: 'Microsoft YaHei', Arial, sans-serif; margin: 24px; color: #222; }\n"
          << "    h1 { font-size: 22px; }\n"
          << "    h2 { font-size: 18px; margin-top: 28px; border-left: 4px solid #4CAF50; padding-left: 8px; }\n"
+         << "    h3 { font-size: 15px; margin-top: 18px; color: #455a64; }\n"
          << "    table { border-collapse: collapse; width: 100%; margin-top: 10px; }\n"
          << "    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; vertical-align: top; }\n"
          << "    th { background-color: #f5f5f5; }\n"
@@ -400,6 +425,30 @@ bool ReportExporter::ExportQcReportHTML(const std::string& filename, const model
                  << "<td>" << EscapeHTML(issue.suggestion) << "</td></tr>\n";
         }
         file << "  </table>\n";
+    }
+
+    // ---- 色彩与 HDR 章节 ----
+    {
+        const auto color_rows = analyzer::BuildColorRows(report.color_hdr);
+        const auto hdr_rows = analyzer::BuildHdrRows(report.color_hdr);
+        auto write_rows = [&file](const char* subtitle,
+                                  const std::vector<analyzer::ColorKeyValueRow>& rows) {
+            file << "  <h3>" << subtitle << "</h3>\n";
+            file << "  <table>\n    <tr><th>项目</th><th>值</th><th>说明</th></tr>\n";
+            for (const auto& row : rows) {
+                file << "    <tr><td>" << EscapeHTML(row.key) << "</td><td>"
+                     << EscapeHTML(row.value) << "</td><td>" << EscapeHTML(row.note)
+                     << "</td></tr>\n";
+            }
+            file << "  </table>\n";
+        };
+        file << "  <h2>色彩与 HDR</h2>\n";
+        if (report.color_hdr.analyzed) {
+            write_rows("色彩信息", color_rows);
+            write_rows("HDR 元数据", hdr_rows);
+        } else {
+            file << "  <p>未执行色彩/HDR 分析。</p>\n";
+        }
     }
 
     file << "  <h2>规则快照</h2>\n";
@@ -486,6 +535,26 @@ bool ReportExporter::ExportQcReportText(const std::string& filename, const model
                  << "    位置: " << issue.range.ToString() << "\n"
                  << "    " << issue.detail << "\n"
                  << "    建议: " << issue.suggestion << "\n";
+        }
+    }
+
+    // ---- 色彩与 HDR 章节 ----
+    {
+        auto write_rows = [&file](const char* subtitle,
+                                  const std::vector<analyzer::ColorKeyValueRow>& rows) {
+            file << "  " << subtitle << "\n";
+            for (const auto& row : rows) {
+                file << "    " << row.key << ": " << row.value;
+                if (!row.note.empty()) file << "  (" << row.note << ")";
+                file << "\n";
+            }
+        };
+        file << "\n--- 色彩与 HDR ---\n";
+        if (report.color_hdr.analyzed) {
+            write_rows("色彩信息", analyzer::BuildColorRows(report.color_hdr));
+            write_rows("HDR 元数据", analyzer::BuildHdrRows(report.color_hdr));
+        } else {
+            file << "未执行色彩/HDR 分析。\n";
         }
     }
 

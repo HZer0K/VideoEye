@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "core/analyzer/ColorHdrAnalyzer.h"
 #include "core/model/DiagnosticIssue.h"
 #include "core/model/QcRule.h"
 
@@ -25,6 +26,9 @@ struct QcReport {
     // 诊断结果
     std::vector<DiagnosticIssue> issues;
     std::vector<QcRule> rules;   // 生成报告时使用的规则快照（含阈值）
+
+    // 色彩与 HDR 元数据快照（报告的 "Color/HDR" 章节，见 core/analyzer/ColorHdrAnalyzer.h）
+    analyzer::ColorHdrAnalysis color_hdr;
 
     // 汇总
     double score = 100.0;            // 0..100，按问题严重度扣分

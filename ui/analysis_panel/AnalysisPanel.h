@@ -51,6 +51,7 @@
 #include "core/analyzer/SceneChangeAnalyzer.h"
 #include "core/analyzer/AnalysisCoordinator.h"
 #include "core/analyzer/BitrateGopAnalyzer.h"
+#include "core/analyzer/ColorHdrAnalyzer.h"
 #include "core/analyzer/QcRuleEngine.h"
 #include "core/analyzer/TimelineAnalyzer.h"
 #include "core/model/FrameTimingInfo.h"
@@ -158,6 +159,12 @@ public slots:
     void OnAudioQcClipCellClicked(int row, int column);
     void OnAudioQcSilenceCellClicked(int row, int column);
     void OnExportAudioQcCsv();
+
+    // 色彩与 HDR（primaries / transfer / matrix / range / bit depth / HDR 元数据）
+    void OnStartColorHdrAnalysis();
+    void OnCancelColorHdrAnalysis();
+    void OnColorHdrOptionChanged();
+    void OnExportColorHdrCsv();
 
     // 导出报告
     void OnExportReport();
@@ -275,6 +282,7 @@ private:
     void SetupMacroblockTab();
     void SetupSceneChangeTab();
     void SetupBitrateGopTab();
+    void SetupColorHdrTab();
     void SetupDiagnosticsTab();
     void RebuildFrameTable();
     void RebuildGopTable();
@@ -353,7 +361,25 @@ private:
     void RebuildAudioQcVerdictTable();
     void RebuildAudioQcMetadataTable();
 
+    // 色彩与 HDR 页
+    void ApplyColorHdrOptionsFromUi();
+    void UpdateColorHdrUi();          // 汇总 + 两张信息表 + 异常表 一次刷新
+    void UpdateColorHdrSummary();
+    void RebuildColorHdrTables();
+    void RebuildColorHdrIssueTable();
+
     // 诊断与报告页
+    // MP4/fMP4 样本表子页（容器页）
+    void SetupMp4SampleTableSubPage(QWidget* parent);
+    void RebuildMp4SampleTable();
+    void RebuildMp4IssueTable();
+    void RebuildMp4FragmentTable();
+    void UpdateMp4SampleSummary();
+    // 结构树点击 stts/ctts/stss/stco/stsz 等样本表 box 时联动到样本表
+    void OnContainerTreeSelectionChanged();
+    void OnMp4SampleTrackChanged(int index);
+    void OnExportMp4SampleCsv();
+
     void RebuildIssueTable();
     void UpdateQcSummary();
     void UpdateQcChart();
@@ -492,6 +518,17 @@ private:
     QTableWidget* stsz_table_;
     QTableWidget* co64_table_;
     QTableWidget* stss_table_;
+    // Sample Table 子页（MP4/fMP4 样本级一致性）
+    QWidget* mp4_sample_sub_;
+    QComboBox* mp4_sample_track_combo_;
+    QLabel* mp4_sample_summary_label_;
+    QLabel* mp4_sample_focus_label_;
+    QTableWidget* mp4_sample_table_;
+    QTableWidget* mp4_issue_table_;
+    QTableWidget* mp4_fragment_table_;
+    QPushButton* export_mp4_sample_button_;
+    model::Mp4SampleTableResult mp4_samples_;
+    QString mp4_sample_focus_box_;   // 结构树点击的 box 名（"" = 不过滤）
     // Page 2: EBML 专用
     QTabWidget* ebml_detail_tabs_;
     QTableWidget* ebml_track_table_;
@@ -583,6 +620,19 @@ private:
     QTableWidget* audio_verdict_table_;
     QTableWidget* audio_metadata_table_;
     analyzer::AudioQcOptions audio_qc_options_;
+
+    // 色彩与 HDR 标签页
+    QWidget* color_hdr_tab_;
+    QLabel* color_hdr_summary_label_;
+    QProgressBar* color_hdr_progress_bar_;
+    QPushButton* color_hdr_start_button_;
+    QPushButton* color_hdr_cancel_button_;
+    QCheckBox* color_hdr_probe_frame_check_;
+    QTabWidget* color_hdr_sub_tabs_;
+    QTableWidget* color_info_table_;      // 色彩信息（项目/值/说明）
+    QTableWidget* hdr_info_table_;        // HDR 元数据（项目/值/说明）
+    QTableWidget* color_issue_table_;     // 异常组合（来自 QC 规则，category=色彩/HDR）
+    analyzer::ColorHdrOptions color_hdr_options_;
 
     // 诊断与报告标签页
     QWidget* diagnostics_tab_;
