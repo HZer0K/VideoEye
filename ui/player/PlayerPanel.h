@@ -191,6 +191,7 @@ private:
 
     // 音频可视化状态
     QImage album_cover_;
+
     std::deque<double> audio_level_history_;
     std::deque<double> spectrum_history_;
     QElapsedTimer audio_vis_timer_;

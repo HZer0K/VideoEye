@@ -1,5 +1,6 @@
 #include "AnalysisPanel.h"
 #include "utils/Logger.h"
+#include "utils/ScopedTimer.h"
 #include "utils/ReportExporter.h"
 #include "ui/theme/AppTheme.h"
 #include <QGroupBox>
@@ -50,6 +51,62 @@ void TrimRecords(std::vector<T>& records, size_t& synced_count,
     synced_count = 0;
     table_dirty = true;
 }
+
+// 图表数据批量提交。
+//
+// QXYSeries::append() 每加一个点都会触发一次图表重算/重绘，几千点时主线程会被
+// 拖到秒级卡顿（实测 7 条曲线 × 4000 点 ≈ 3.5 s）。先在内存里攒好，析构时
+// 用 replace() 一次性提交（只触发一次刷新）。
+class SeriesBatch {
+public:
+    explicit SeriesBatch(QXYSeries* series) : series_(series) {}
+    ~SeriesBatch() {
+        if (series_) series_->replace(points_);
+    }
+
+    void Reserve(int n) { points_.reserve(n); }
+    void Add(double x, double y) { points_.append(QPointF(x, y)); }
+    bool Empty() const { return points_.isEmpty(); }
+
+private:
+    QXYSeries* series_ = nullptr;
+    QVector<QPointF> points_;
+};
+
+// 大表批量填充: 先关掉刷新与重绘, 一次性预分配行数, 比逐行 insertRow 快一个量级
+// (insertRow 每次都要移动后续行, 1 万行时是 O(n^2))。
+class TableBatch {
+public:
+    explicit TableBatch(QTableWidget* table) : table_(table) {
+        if (!table_) return;
+        was_updates_enabled_ = table_->updatesEnabled();
+        table_->setUpdatesEnabled(false);
+    }
+    ~TableBatch() {
+        if (!table_) return;
+        table_->setUpdatesEnabled(was_updates_enabled_);
+    }
+
+    void SetRowCount(int rows) { if (table_) table_->setRowCount(rows); }
+    int RowCount() const { return table_ ? table_->rowCount() : 0; }
+    void SetText(int row, int column, const QString& text, bool bold = false) {
+        if (!table_) return;
+        auto* item = new QTableWidgetItem(text);
+        if (bold) {
+            QFont f = item->font();
+            f.setBold(true);
+            item->setFont(f);
+        }
+        table_->setItem(row, column, item);
+    }
+    QTableWidgetItem* Item(int row, int column) const {
+        return table_ ? table_->item(row, column) : nullptr;
+    }
+
+private:
+    QTableWidget* table_ = nullptr;
+    bool was_updates_enabled_ = true;
+};
 } // namespace
 
 AnalysisPanel::AnalysisPanel(QWidget* parent)
@@ -1074,100 +1131,99 @@ void AnalysisPanel::SetupMp4SampleTableSubPage(QWidget* parent) {
             this, &AnalysisPanel::OnExportMp4SampleCsv);
 }
 
+// stsz / stco / stsc / stss 的条目数与样本数量级，2 小时视频可达数十万条。
+// 这里统一预分配行数 + 关闭刷新 + 截断显示，避免主线程被 O(n^2) 的 insertRow 拖死。
 static void PopulateMp4BoxTablesInContainer(const model::Mp4BoxAnalysisResult& result,
                                        QTableWidget* stts_table, QTableWidget* stco_table,
                                        QTableWidget* stsc_table, QTableWidget* stsz_table,
                                        QTableWidget* co64_table, QTableWidget* stss_table) {
-    stts_table->setRowCount(0);
-    stco_table->setRowCount(0);
-    stsc_table->setRowCount(0);
-    stsz_table->setRowCount(0);
-    stss_table->setRowCount(0);
-    co64_table->setRowCount(0);
+    constexpr int kMaxBoxTableRows = 2000;   // 每张表每个 track 最多显示的行数
+
+    for (auto* table : {stts_table, stco_table, stsc_table, stsz_table, co64_table, stss_table}) {
+        table->setUpdatesEnabled(false);
+        table->setRowCount(0);
+    }
+
+    // 追加一个 track 段：标题行 + min(total, cap) 条 + 可选"已截断"提示行
+    auto append_section = [](QTableWidget* table, const QString& header, int total,
+                             const std::function<void(int row, int index)>& fill_row) {
+        if (total <= 0) return;
+        const int shown = std::min(total, kMaxBoxTableRows);
+        const bool truncated = total > shown;
+        const int first = table->rowCount();
+        table->setRowCount(first + 1 + shown + (truncated ? 1 : 0));
+
+        auto* head = new QTableWidgetItem(header);
+        QFont hf = head->font();
+        hf.setBold(true);
+        head->setFont(hf);
+        table->setItem(first, 0, head);
+
+        for (int i = 0; i < shown; ++i) {
+            fill_row(first + 1 + i, i);
+        }
+
+        if (truncated) {
+            auto* tail = new QTableWidgetItem(
+                QObject::tr("… 仅显示前 %1 条（共 %2 条，完整数据请导出查看）").arg(shown).arg(total));
+            QFont tf = tail->font();
+            tf.setItalic(true);
+            tail->setFont(tf);
+            table->setItem(first + 1 + shown, 0, tail);
+        }
+    };
+    auto cell = [](QTableWidget* table, int row, int col, const QString& text) {
+        table->setItem(row, col, new QTableWidgetItem(text));
+    };
 
     for (const auto& track : result.track_tables) {
-        auto addTrackHeader = [](QTableWidget* table, const QString& text) {
-            const int row = table->rowCount();
-            table->insertRow(row);
-            auto* item = new QTableWidgetItem(text);
-            QFont f = item->font();
-            f.setBold(true);
-            item->setFont(f);
-            table->setItem(row, 0, item);
-        };
+        const QString header = QString("Track %1 (%2)").arg(track.track_id).arg(track.track_type);
 
-        if (!track.stts_entries.isEmpty()) {
-            addTrackHeader(stts_table, QString("Track %1 (%2)").arg(track.track_id).arg(track.track_type));
-            for (int i = 0; i < track.stts_entries.size(); ++i) {
-                const int row = stts_table->rowCount();
-                stts_table->insertRow(row);
-                stts_table->setItem(row, 0, new QTableWidgetItem(QString::number(i)));
-                stts_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.stts_entries[i].sample_count)));
-                stts_table->setItem(row, 2, new QTableWidgetItem(QString::number(track.stts_entries[i].sample_delta)));
-            }
+        append_section(stts_table, header, track.stts_entries.size(), [&](int row, int i) {
+            cell(stts_table, row, 0, QString::number(i));
+            cell(stts_table, row, 1, QString::number(track.stts_entries[i].sample_count));
+            cell(stts_table, row, 2, QString::number(track.stts_entries[i].sample_delta));
+        });
+        append_section(stco_table, header, track.stco_entries.size(), [&](int row, int i) {
+            cell(stco_table, row, 0, QString::number(i));
+            cell(stco_table, row, 1, QString::number(track.stco_entries[i].chunk_offset));
+        });
+        append_section(co64_table, header, track.co64_entries.size(), [&](int row, int i) {
+            cell(co64_table, row, 0, QString::number(i));
+            cell(co64_table, row, 1, QString::number(track.co64_entries[i].chunk_offset));
+        });
+        append_section(stsc_table, header, track.stsc_entries.size(), [&](int row, int i) {
+            cell(stsc_table, row, 0, QString::number(i));
+            cell(stsc_table, row, 1, QString::number(track.stsc_entries[i].first_chunk));
+            cell(stsc_table, row, 2, QString::number(track.stsc_entries[i].samples_per_chunk));
+            cell(stsc_table, row, 3, QString::number(track.stsc_entries[i].sample_description_index));
+        });
+        if (!track.stsz_entries.isEmpty()) {
+            append_section(stsz_table, header, track.stsz_entries.size(), [&](int row, int i) {
+                cell(stsz_table, row, 0, QString::number(i));
+                cell(stsz_table, row, 1, QString::number(track.stsz_entries[i].sample_size));
+            });
+        } else if (track.stsz_default_size > 0) {
+            append_section(stsz_table, header, 1, [&](int row, int) {
+                cell(stsz_table, row, 0, "0");
+                cell(stsz_table, row, 1, QString::number(track.stsz_default_size));
+                cell(stsz_table, row, 2, QString("default x%1").arg(track.stsz_sample_count));
+            });
         }
-        if (!track.stco_entries.isEmpty()) {
-            addTrackHeader(stco_table, QString("Track %1 (%2)").arg(track.track_id).arg(track.track_type));
-            for (int i = 0; i < track.stco_entries.size(); ++i) {
-                const int row = stco_table->rowCount();
-                stco_table->insertRow(row);
-                stco_table->setItem(row, 0, new QTableWidgetItem(QString::number(i)));
-                stco_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.stco_entries[i].chunk_offset)));
-            }
-        }
-        if (!track.co64_entries.isEmpty()) {
-            addTrackHeader(co64_table, QString("Track %1 (%2)").arg(track.track_id).arg(track.track_type));
-            for (int i = 0; i < track.co64_entries.size(); ++i) {
-                const int row = co64_table->rowCount();
-                co64_table->insertRow(row);
-                co64_table->setItem(row, 0, new QTableWidgetItem(QString::number(i)));
-                co64_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.co64_entries[i].chunk_offset)));
-            }
-        }
-        if (!track.stsc_entries.isEmpty()) {
-            addTrackHeader(stsc_table, QString("Track %1 (%2)").arg(track.track_id).arg(track.track_type));
-            for (int i = 0; i < track.stsc_entries.size(); ++i) {
-                const int row = stsc_table->rowCount();
-                stsc_table->insertRow(row);
-                stsc_table->setItem(row, 0, new QTableWidgetItem(QString::number(i)));
-                stsc_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.stsc_entries[i].first_chunk)));
-                stsc_table->setItem(row, 2, new QTableWidgetItem(QString::number(track.stsc_entries[i].samples_per_chunk)));
-                stsc_table->setItem(row, 3, new QTableWidgetItem(QString::number(track.stsc_entries[i].sample_description_index)));
-            }
-        }
-        if (!track.stsz_entries.isEmpty() || track.stsz_default_size > 0) {
-            addTrackHeader(stsz_table, QString("Track %1 (%2)").arg(track.track_id).arg(track.track_type));
-            if (track.stsz_default_size > 0 && track.stsz_entries.isEmpty()) {
-                const int row = stsz_table->rowCount();
-                stsz_table->insertRow(row);
-                stsz_table->setItem(row, 0, new QTableWidgetItem("0"));
-                stsz_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.stsz_default_size)));
-                stsz_table->setItem(row, 2, new QTableWidgetItem(QString("default x%1").arg(track.stsz_sample_count)));
-            } else {
-                for (int i = 0; i < track.stsz_entries.size(); ++i) {
-                    const int row = stsz_table->rowCount();
-                    stsz_table->insertRow(row);
-                    stsz_table->setItem(row, 0, new QTableWidgetItem(QString::number(i)));
-                    stsz_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.stsz_entries[i].sample_size)));
-                }
-            }
-        }
-        if (!track.stss_entries.isEmpty()) {
-            addTrackHeader(stss_table, QString("Track %1 (%2)").arg(track.track_id).arg(track.track_type));
-            for (int i = 0; i < track.stss_entries.size(); ++i) {
-                const int row = stss_table->rowCount();
-                stss_table->insertRow(row);
-                stss_table->setItem(row, 0, new QTableWidgetItem(QString::number(i)));
-                stss_table->setItem(row, 1, new QTableWidgetItem(QString::number(track.stss_entries[i].sample_number)));
-            }
-        }
+        append_section(stss_table, header, track.stss_entries.size(), [&](int row, int i) {
+            cell(stss_table, row, 0, QString::number(i));
+            cell(stss_table, row, 1, QString::number(track.stss_entries[i].sample_number));
+        });
     }
+
     for (auto* table : {stts_table, stco_table, stsc_table, stsz_table, co64_table, stss_table}) {
+        table->setUpdatesEnabled(true);
         table->resizeColumnsToContents();
     }
 }
 
 void AnalysisPanel::OnContainerStructureReady(const model::ContainerStructureResult& result) {
+    VE_PERF("OnContainerStructureReady 总计");
     if (!feature_enabled_.value(AnalysisFeature::Master, true)) return;
     current_container_result_ = result;
 
@@ -1221,6 +1277,8 @@ void AnalysisPanel::OnContainerStructureReady(const model::ContainerStructureRes
             addNodes(item, n.children);
         }
     };
+    {
+    VE_PERF("容器结构树填充");
     for (const auto& n : result.element_tree) {
         auto* top = new QTreeWidgetItem();
         top->setText(0, n.name);
@@ -1235,7 +1293,11 @@ void AnalysisPanel::OnContainerStructureReady(const model::ContainerStructureRes
         container_tree_->addTopLevelItem(top);
         addNodes(top, n.children);
     }
-    container_tree_->expandAll();
+    }
+    {
+        VE_PERF("容器结构树 expandAll");
+        container_tree_->expandAll();
+    }
 
     // 填充通用信息表 (Page 0)
     // 流信息
@@ -1283,7 +1345,10 @@ void AnalysisPanel::OnContainerStructureReady(const model::ContainerStructureRes
             }
         }
         UpdateMp4SampleSummary();
-        RebuildMp4SampleTable();
+        {
+            VE_PERF("RebuildMp4SampleTable(主线程)");
+            RebuildMp4SampleTable();
+        }
         RebuildMp4IssueTable();
         RebuildMp4FragmentTable();
         break;
@@ -1409,16 +1474,25 @@ void AnalysisPanel::RebuildMp4SampleTable() {
     else if (mp4_sample_focus_box_ == "stss")  focus_cols = {8};
 
     constexpr int kMaxSampleRows = 5000;  // UI 安全上限（样本本身可按 options 截断）
+
+    // 先算出实际要显示多少行，一次性 setRowCount：
+    // 逐行 insertRow 在几千行时是 O(n^2)，实测 5000 行要 200ms+。
+    int visible = 0;
+    for (const auto& s : track.samples) {
+        if (keyframe_only && !s.keyframe) continue;
+        if (visible >= kMaxSampleRows) break;
+        ++visible;
+    }
+    TableBatch table(mp4_sample_table_);
+    table.SetRowCount(visible);
+
     int row = 0;
     for (const auto& s : track.samples) {
         if (keyframe_only && !s.keyframe) continue;
         if (row >= kMaxSampleRows) break;
 
-        mp4_sample_table_->insertRow(row);
         auto set = [&](int col, const QString& text) {
-            auto* item = new QTableWidgetItem(text);
-            mp4_sample_table_->setItem(row, col, item);
-            return item;
+            return table.SetText(row, col, text);
         };
         set(0, QString::number(s.index));
         set(1, QString("0x%1").arg(static_cast<quint64>(s.offset), 0, 16));
@@ -1471,7 +1545,17 @@ void AnalysisPanel::RebuildMp4SampleTable() {
         }
         ++row;
     }
-    mp4_sample_table_->resizeColumnsToContents();
+
+    // resizeColumnsToContents 要逐行算文本宽度 (5000 行 × 9 列 ≈ 300ms),
+    // 行数多时改用固定列宽, 把主线程还给用户。
+    if (mp4_sample_table_->rowCount() <= 1000) {
+        mp4_sample_table_->resizeColumnsToContents();
+    } else {
+        static const int kColumnWidths[] = {70, 110, 90, 90, 80, 80, 80, 90, 60};
+        for (int c = 0; c < mp4_sample_table_->columnCount() && c < 9; ++c) {
+            mp4_sample_table_->setColumnWidth(c, kColumnWidths[c]);
+        }
+    }
 }
 
 void AnalysisPanel::RebuildMp4IssueTable() {
@@ -2874,6 +2958,9 @@ void AnalysisPanel::FlushPendingUiUpdates() {
     // 面板不可见时跳过UI刷新以节省CPU
     if (!isVisible()) return;
 
+    // 批量刷新跑在主线程: 单次超过 50ms 就会被用户感知为卡顿, 打点记录便于定位
+    const auto flush_begin = std::chrono::steady_clock::now();
+
     if (has_pending_stream_stats_) {
         RefreshStreamStatsUi(pending_stream_stats_);
         has_pending_stream_stats_ = false;
@@ -2944,6 +3031,13 @@ void AnalysisPanel::FlushPendingUiUpdates() {
         timeline_offline_ = false;
         RefreshTimelineUi();
         timeline_dirty_ = false;
+    }
+
+    const double flush_ms = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - flush_begin).count();
+    if (flush_ms >= 50.0) {
+        LOG_WARN("[perf] 分析面板批量 UI 刷新耗时 " +
+                 std::to_string(static_cast<long long>(flush_ms)) + " ms");
     }
 }
 
@@ -3219,10 +3313,14 @@ void AnalysisPanel::UpdateBitrateChart(const analyzer::StreamStats& stats) {
 
     bitrate_series_->clear();
     qreal max_value = 0.0;
-    for (size_t i = 0; i < bitrate_chart_values_.size(); ++i) {
-        const qreal v = bitrate_chart_values_[i];
-        bitrate_series_->append(static_cast<qreal>(i), v);
-        if (v > max_value) max_value = v;
+    {
+        SeriesBatch batch(bitrate_series_);
+        batch.Reserve(static_cast<int>(bitrate_chart_values_.size()));
+        for (size_t i = 0; i < bitrate_chart_values_.size(); ++i) {
+            const qreal v = bitrate_chart_values_[i];
+            batch.Add(static_cast<qreal>(i), v);
+            if (v > max_value) max_value = v;
+        }
     }
     bitrate_axis_x_->setRange(0, std::max<qreal>(1.0, bitrate_chart_values_.size()));
     // 上限留 10% 余量, 避免曲线贴顶; 全零时给一个最小量程防止坐标轴退化
@@ -3237,10 +3335,14 @@ void AnalysisPanel::UpdateFPSChart(const analyzer::StreamStats& stats) {
 
     fps_series_->clear();
     qreal max_value = 0.0;
-    for (size_t i = 0; i < fps_chart_values_.size(); ++i) {
-        const qreal v = fps_chart_values_[i];
-        fps_series_->append(static_cast<qreal>(i), v);
-        if (v > max_value) max_value = v;
+    {
+        SeriesBatch batch(fps_series_);
+        batch.Reserve(static_cast<int>(fps_chart_values_.size()));
+        for (size_t i = 0; i < fps_chart_values_.size(); ++i) {
+            const qreal v = fps_chart_values_[i];
+            batch.Add(static_cast<qreal>(i), v);
+            if (v > max_value) max_value = v;
+        }
     }
     fps_axis_x_->setRange(0, std::max<qreal>(1.0, fps_chart_values_.size()));
     fps_axis_y_->setRange(0, std::max<qreal>(30.0, max_value * 1.1));
@@ -3261,9 +3363,13 @@ void AnalysisPanel::UpdateGOPChart() {
     }
 
     int max_frames = 0;
-    for (const auto& g : gop_summaries_) {
-        gop_series_->append(static_cast<qreal>(g.gop_index), static_cast<qreal>(g.total_frames));
-        if (g.total_frames > max_frames) max_frames = g.total_frames;
+    {
+        SeriesBatch batch(gop_series_);
+        batch.Reserve(static_cast<int>(gop_summaries_.size()));
+        for (const auto& g : gop_summaries_) {
+            batch.Add(static_cast<qreal>(g.gop_index), static_cast<qreal>(g.total_frames));
+            if (g.total_frames > max_frames) max_frames = g.total_frames;
+        }
     }
     gop_axis_x_->setRange(0, std::max(1, static_cast<int>(gop_summaries_.size())));
     gop_axis_y_->setRange(0, std::max(1, max_frames));
@@ -3285,10 +3391,13 @@ void AnalysisPanel::UpdateSyncChart() {
     sync_series_->clear();
     sync_chart_values_.clear();
     const int start = std::max(0, static_cast<int>(sync_sample_records_.size()) - kMaxChartSamples);
-    for (int i = start; i < static_cast<int>(sync_sample_records_.size()); ++i) {
-        const qreal diff = static_cast<qreal>(sync_sample_records_[i].diff_ms);
-        sync_series_->append(sync_sample_records_[i].index, diff);
-        sync_chart_values_.push_back(diff);
+    {
+        SeriesBatch batch(sync_series_);
+        for (int i = start; i < static_cast<int>(sync_sample_records_.size()); ++i) {
+            const qreal diff = static_cast<qreal>(sync_sample_records_[i].diff_ms);
+            batch.Add(sync_sample_records_[i].index, diff);
+            sync_chart_values_.push_back(diff);
+        }
     }
 
     const int x_min = sync_sample_records_.empty() ? 0 : sync_sample_records_[start].index;
@@ -3321,17 +3430,22 @@ void AnalysisPanel::UpdateTimelineChart() {
     const int start = std::max(0, static_cast<int>(timeline_event_records_.size()) - kMaxChartSamples);
     double min_ts = timeline_event_records_[start].timestamp_seconds;
     double max_ts = timeline_event_records_[start].timestamp_seconds;
-    for (int i = start; i < static_cast<int>(timeline_event_records_.size()); ++i) {
-        const auto& record = timeline_event_records_[i];
-        if (record.category == tr("视频关键帧")) {
-            timeline_video_series_->append(record.timestamp_seconds, 3.0);
-        } else if (record.category == tr("音频采样")) {
-            timeline_audio_series_->append(record.timestamp_seconds, 2.0);
-        } else {
-            timeline_event_series_->append(record.timestamp_seconds, 1.0);
+    {
+        SeriesBatch video_batch(timeline_video_series_);
+        SeriesBatch audio_batch(timeline_audio_series_);
+        SeriesBatch event_batch(timeline_event_series_);
+        for (int i = start; i < static_cast<int>(timeline_event_records_.size()); ++i) {
+            const auto& record = timeline_event_records_[i];
+            if (record.category == tr("视频关键帧")) {
+                video_batch.Add(record.timestamp_seconds, 3.0);
+            } else if (record.category == tr("音频采样")) {
+                audio_batch.Add(record.timestamp_seconds, 2.0);
+            } else {
+                event_batch.Add(record.timestamp_seconds, 1.0);
+            }
+            min_ts = std::min(min_ts, record.timestamp_seconds);
+            max_ts = std::max(max_ts, record.timestamp_seconds);
         }
-        min_ts = std::min(min_ts, record.timestamp_seconds);
-        max_ts = std::max(max_ts, record.timestamp_seconds);
     }
 
     if (min_ts == max_ts) {
@@ -4011,20 +4125,23 @@ QString FormatMetricValue(double value, const QString& unit) {
 
 QString FormatKb(double bytes) { return QString::number(bytes / 1024.0, 'f', 1); }
 
-// 抽稀（保留每组最大值，避免丢掉峰值）
+// 抽稀（保留每组最大值，避免丢掉峰值）；批量提交，避免逐点刷新图表
 void AppendDecimated(QLineSeries* series, const model::MetricSeries& curve, int limit) {
     const size_t n = curve.Size();
     if (n == 0) return;
+    SeriesBatch batch(series);
     if (n <= static_cast<size_t>(limit)) {
-        for (const auto& s : curve.samples) series->append(s.timestamp_seconds, s.value);
+        batch.Reserve(static_cast<int>(n));
+        for (const auto& s : curve.samples) batch.Add(s.timestamp_seconds, s.value);
         return;
     }
     const size_t group = (n + limit - 1) / limit;
+    batch.Reserve(limit);
     for (size_t i = 0; i < n; i += group) {
         const size_t end = std::min(i + group, n);
         double v = curve.samples[i].value;
         for (size_t j = i + 1; j < end; ++j) v = std::max(v, curve.samples[j].value);
-        series->append(curve.samples[i].timestamp_seconds, v);
+        batch.Add(curve.samples[i].timestamp_seconds, v);
     }
 }
 }  // namespace
@@ -4437,32 +4554,41 @@ void AnalysisPanel::UpdateBitrateGopChart() {
     }
 
     // I 帧标记（画在基线）
-    const int iframe_step =
-        std::max(1, static_cast<int>(bg.i_frame_seconds.size()) / kMaxBitrateChartMarkers);
-    for (size_t i = 0; i < bg.i_frame_seconds.size(); i += iframe_step) {
-        bitrate_iframe_series_->append(bg.i_frame_seconds[i], 0.0);
+    {
+        const int iframe_step =
+            std::max(1, static_cast<int>(bg.i_frame_seconds.size()) / kMaxBitrateChartMarkers);
+        SeriesBatch batch(bitrate_iframe_series_);
+        for (size_t i = 0; i < bg.i_frame_seconds.size(); i += iframe_step) {
+            batch.Add(bg.i_frame_seconds[i], 0.0);
+        }
     }
 
     // 场景切换点（基线，用关联结果；未关联时直接用检测记录）
-    if (!bg.scene_matches.empty()) {
-        const int scene_step =
-            std::max(1, static_cast<int>(bg.scene_matches.size()) / kMaxBitrateChartMarkers);
-        for (size_t i = 0; i < bg.scene_matches.size(); i += scene_step) {
-            bitrate_scene_series_->append(bg.scene_matches[i].timestamp_seconds, 0.0);
-        }
-    } else {
-        const int scene_step =
-            std::max(1, static_cast<int>(scene_change_records_.size()) / kMaxBitrateChartMarkers);
-        for (size_t i = 0; i < scene_change_records_.size(); i += scene_step) {
-            bitrate_scene_series_->append(scene_change_records_[i].timestamp, 0.0);
+    {
+        SeriesBatch batch(bitrate_scene_series_);
+        if (!bg.scene_matches.empty()) {
+            const int scene_step =
+                std::max(1, static_cast<int>(bg.scene_matches.size()) / kMaxBitrateChartMarkers);
+            for (size_t i = 0; i < bg.scene_matches.size(); i += scene_step) {
+                batch.Add(bg.scene_matches[i].timestamp_seconds, 0.0);
+            }
+        } else {
+            const int scene_step =
+                std::max(1, static_cast<int>(scene_change_records_.size()) / kMaxBitrateChartMarkers);
+            for (size_t i = 0; i < scene_change_records_.size(); i += scene_step) {
+                batch.Add(scene_change_records_[i].timestamp, 0.0);
+            }
         }
     }
 
     // 异常峰值（标在实际码率高度）
-    for (const auto& a : bg.anomalies) {
-        if (a.type != analyzer::BitrateAnomalyType::PeakOvershoot) continue;
-        bitrate_anomaly_series_->append((a.start_seconds + a.end_seconds) * 0.5, a.value);
-        y_max = std::max(y_max, a.value * 1.1);
+    {
+        SeriesBatch batch(bitrate_anomaly_series_);
+        for (const auto& a : bg.anomalies) {
+            if (a.type != analyzer::BitrateAnomalyType::PeakOvershoot) continue;
+            batch.Add((a.start_seconds + a.end_seconds) * 0.5, a.value);
+            y_max = std::max(y_max, a.value * 1.1);
+        }
     }
 
     bitrate_gop_axis_x_->setRange(0.0, duration);
@@ -4691,8 +4817,11 @@ void AppendAudioPoints(QLineSeries* series, const std::vector<model::LoudnessPoi
     };
     const size_t n = points.size();
     const size_t step = (n <= static_cast<size_t>(limit)) ? 1 : (n + limit - 1) / limit;
+    const size_t out_n = (n + step - 1) / step;
+    SeriesBatch batch(series);
+    batch.Reserve(static_cast<int>(out_n));
     for (size_t i = 0; i < n; i += step) {
-        series->append(points[i].timestamp_seconds, get(points[i]));
+        batch.Add(points[i].timestamp_seconds, get(points[i]));
     }
 }
 
@@ -5191,14 +5320,22 @@ void AnalysisPanel::UpdateAudioQcCharts() {
     }
 
     // 静音段画成方波；削波点画在 y=1.5
-    for (const auto& range : qc.silence_ranges) {
-        audio_silence_series_->append(range.start_seconds, 0.0);
-        audio_silence_series_->append(range.start_seconds, 1.0);
-        audio_silence_series_->append(range.end_seconds, 1.0);
-        audio_silence_series_->append(range.end_seconds, 0.0);
+    {
+        SeriesBatch silence(audio_silence_series_);
+        silence.Reserve(static_cast<int>(qc.silence_ranges.size() * 4));
+        for (const auto& range : qc.silence_ranges) {
+            silence.Add(range.start_seconds, 0.0);
+            silence.Add(range.start_seconds, 1.0);
+            silence.Add(range.end_seconds, 1.0);
+            silence.Add(range.end_seconds, 0.0);
+        }
     }
-    for (const auto& event : qc.clipping_events) {
-        audio_clip_series_->append(event.start_seconds, 1.5);
+    {
+        SeriesBatch clip(audio_clip_series_);
+        clip.Reserve(static_cast<int>(qc.clipping_events.size()));
+        for (const auto& event : qc.clipping_events) {
+            clip.Add(event.start_seconds, 1.5);
+        }
     }
 
     const double span = std::max(1.0, qc.duration_seconds);
@@ -5963,7 +6100,10 @@ void AnalysisPanel::OnDiagnosticsFinished(quint64 generation, bool completed,
                                   std::chrono::steady_clock::now() - diagnostics_start_time_)
                                   .count();
 
-    EvaluateDiagnostics();
+    {
+        VE_PERF("EvaluateDiagnostics(QC 规则 + 时间轴 + 图表)");
+        EvaluateDiagnostics();
+    }
     current_qc_report_.analysis_elapsed_ms = elapsed_ms;
 
     qc_start_button_->setEnabled(true);
@@ -5976,14 +6116,24 @@ void AnalysisPanel::OnDiagnosticsFinished(quint64 generation, bool completed,
     bitrate_gop_cancel_button_->setEnabled(false);
     bitrate_gop_progress_bar_->setValue(100);
     bitrate_gop_progress_bar_->setFormat(completed ? tr("分析完成") : tr("已取消（结果不完整）"));
-    UpdateBitrateGopUi();
+    {
+        VE_PERF("UpdateBitrateGopUi");
+        UpdateBitrateGopUi();
+    }
 
     UpdateQcSummary();
-    UpdateAudioQcUi();   // 音频 QC 页与码率/GOP、诊断报告共用同一次扫描结果
-    UpdateColorHdrUi();  // 色彩与 HDR 页同样共用同一次扫描结果
+    {
+        VE_PERF("UpdateAudioQcUi");
+        UpdateAudioQcUi();   // 音频 QC 页与码率/GOP、诊断报告共用同一次扫描结果
+    }
+    {
+        VE_PERF("UpdateColorHdrUi");
+        UpdateColorHdrUi();  // 色彩与 HDR 页同样共用同一次扫描结果
+    }
 
     // MP4 样本表：扫描跑过就顺带刷新容器页（与打开文件时那次解析结果一致）
     if (result.mp4_samples_analyzed && result.mp4_samples.valid) {
+        VE_PERF("诊断后刷新 MP4 样本表");
         mp4_samples_ = result.mp4_samples;
         UpdateMp4SampleSummary();
         RebuildMp4SampleTable();
@@ -6091,11 +6241,19 @@ void AnalysisPanel::UpdateQcChart() {
     const auto& bitrate = diagnostics_result_.video_bitrate_kbps.IsEmpty()
                               ? diagnostics_result_.total_bitrate_kbps
                               : diagnostics_result_.video_bitrate_kbps;
-    for (const auto& sample : bitrate.samples) {
-        qc_bitrate_series_->append(sample.timestamp_seconds, sample.value);
+    {
+        SeriesBatch batch(qc_bitrate_series_);
+        batch.Reserve(static_cast<int>(bitrate.samples.size()));
+        for (const auto& sample : bitrate.samples) {
+            batch.Add(sample.timestamp_seconds, sample.value);
+        }
     }
-    for (const auto& sample : diagnostics_result_.video_fps.samples) {
-        qc_fps_series_->append(sample.timestamp_seconds, sample.value);
+    {
+        SeriesBatch batch(qc_fps_series_);
+        batch.Reserve(static_cast<int>(diagnostics_result_.video_fps.samples.size()));
+        for (const auto& sample : diagnostics_result_.video_fps.samples) {
+            batch.Add(sample.timestamp_seconds, sample.value);
+        }
     }
 
     double max_t = 1.0;
@@ -6357,11 +6515,15 @@ void AnalysisPanel::UpdateTimelineDiagnosticChart() {
     const auto& r = timeline_result_;
     double max_interval = 1.0;
     double max_time = 1.0;
-    for (const auto& sample : r.frame_interval_ms.samples) {
-        const double t = sample.timestamp_seconds / 1000.0;   // ms -> s
-        timeline_interval_series_->append(t, sample.value);
-        max_interval = std::max(max_interval, sample.value);
-        max_time = std::max(max_time, t);
+    {
+        SeriesBatch batch(timeline_interval_series_);
+        batch.Reserve(static_cast<int>(r.frame_interval_ms.samples.size()));
+        for (const auto& sample : r.frame_interval_ms.samples) {
+            const double t = sample.timestamp_seconds / 1000.0;   // ms -> s
+            batch.Add(t, sample.value);
+            max_interval = std::max(max_interval, sample.value);
+            max_time = std::max(max_time, t);
+        }
     }
 
     // 问题标记：按严重度着色，y 取该时刻的帧间隔（无数据则取 0）

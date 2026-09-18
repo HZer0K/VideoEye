@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include "utils/Logger.h"
+#include "utils/ScopedTimer.h"
 
 namespace videoeye {
 namespace player {
@@ -20,9 +21,12 @@ bool AudioOutput::Open(int sample_rate, int channels) {
     sample_rate_ = sample_rate;
     channels_ = channels;
 
-    if (SDL_Init(SDL_INIT_AUDIO) < 0) {
-        LOG_ERROR("AudioOutput: SDL_Init(AUDIO) 失败: " + std::string(SDL_GetError()));
-        return false;
+    {
+        VE_PERF("SDL_Init(AUDIO)");
+        if (SDL_Init(SDL_INIT_AUDIO) < 0) {
+            LOG_ERROR("AudioOutput: SDL_Init(AUDIO) 失败: " + std::string(SDL_GetError()));
+            return false;
+        }
     }
 
     SDL_AudioSpec want{};
@@ -34,7 +38,10 @@ bool AudioOutput::Open(int sample_rate, int channels) {
     want.callback = &AudioOutput::FillCallback;
     want.userdata = this;
 
-    device_id_ = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+    {
+        VE_PERF("SDL_OpenAudioDevice");
+        device_id_ = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+    }
     if (device_id_ == 0) {
         LOG_ERROR("AudioOutput: SDL_OpenAudioDevice 失败: " + std::string(SDL_GetError()));
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
@@ -52,6 +59,20 @@ bool AudioOutput::Open(int sample_rate, int channels) {
     LOG_INFO("AudioOutput: 音频设备已打开 freq=" + std::to_string(sample_rate_) +
              " channels=" + std::to_string(channels_));
     return true;
+}
+
+void AudioOutput::OpenAsync(int sample_rate, int channels) {
+    // 上一轮还没开完就先收尾（join 期间最多等一个设备打开周期）
+    if (open_thread_.joinable()) {
+        open_thread_.join();
+    }
+    open_thread_ = std::thread([this, sample_rate, channels]() {
+        const bool ok = Open(sample_rate, channels);
+        if (ok && pending_play_.exchange(false)) {
+            SDL_PauseAudioDevice(device_id_.load(), 0);
+        }
+        if (!ok) pending_play_.store(false);
+    });
 }
 
 void AudioOutput::FillCallback(void* userdata, uint8_t* stream, int len) {
@@ -99,13 +120,13 @@ void AudioOutput::Fill(uint8_t* stream, int len) {
 }
 
 void AudioOutput::Enqueue(const uint8_t* data, int len) {
-    if (device_id_ == 0 || !data || len <= 0) return;
+    if (device_id_.load() == 0 || !data || len <= 0) return;   // 异步打开未完成: 丢弃
 
     std::unique_lock<std::mutex> lock(ring_mutex_);
     // 背压：缓冲将溢出时等待有空位（避免无限增长）
     while (filled_ + static_cast<size_t>(len) > ring_capacity_) {
         ring_cv_.wait(lock);
-        if (device_id_ == 0) return; // 已被 Stop
+        if (device_id_.load() == 0) return; // 已被 Stop
     }
 
     const size_t first = std::min<size_t>(static_cast<size_t>(len), ring_capacity_ - write_pos_);
@@ -119,14 +140,20 @@ void AudioOutput::Enqueue(const uint8_t* data, int len) {
 }
 
 void AudioOutput::Play() {
-    if (device_id_ != 0) {
-        SDL_PauseAudioDevice(device_id_, 0);
+    const uint32_t id = device_id_.load();
+    if (id == 0) {
+        // 异步打开还没完成: 记下来, 设备就绪时由后台线程补一次 Play
+        pending_play_.store(true);
+        return;
     }
+    SDL_PauseAudioDevice(id, 0);
 }
 
 void AudioOutput::Pause() {
-    if (device_id_ != 0) {
-        SDL_PauseAudioDevice(device_id_, 1);
+    pending_play_.store(false);
+    const uint32_t id = device_id_.load();
+    if (id != 0) {
+        SDL_PauseAudioDevice(id, 1);
     }
 }
 
@@ -149,10 +176,15 @@ int AudioOutput::GetBufferedMs(int sample_rate, int channels) const {
 }
 
 void AudioOutput::Stop() {
-    if (device_id_ != 0) {
-        SDL_PauseAudioDevice(device_id_, 1);
-        SDL_CloseAudioDevice(device_id_);
-        device_id_ = 0;
+    pending_play_.store(false);
+    if (open_thread_.joinable()) {
+        open_thread_.join();
+    }
+    const uint32_t id = device_id_.load();
+    if (id != 0) {
+        SDL_PauseAudioDevice(id, 1);
+        SDL_CloseAudioDevice(id);
+        device_id_.store(0);
     }
     {
         std::lock_guard<std::mutex> lock(ring_mutex_);

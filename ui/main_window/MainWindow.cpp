@@ -4,6 +4,7 @@
 #include "ui/dialogs/MediaExportDialog.h"
 #include "core/exporter/MediaExporter.h"
 #include "utils/Logger.h"
+#include "utils/ScopedTimer.h"
 #include "core/model/EbmlInfo.h"
 #include "core/model/ContainerStructureInfo.h"
 #include <QVBoxLayout>
@@ -91,6 +92,11 @@ MainWindow::~MainWindow() {
     if (player_) {
         player_->Stop();
     }
+    // MediaInfo 后台线程可能还在跑: 先标记失效再 join, 避免回调打到已析构的控件
+    ++mediainfo_generation_;
+    if (mediainfo_worker_.joinable()) {
+        mediainfo_worker_.join();
+    }
 }
 
 void MainWindow::SetupUI() {
@@ -123,6 +129,24 @@ void MainWindow::SetupUI() {
     main_splitter_->setStretchFactor(0, 0);
     main_splitter_->setStretchFactor(1, 1);
     main_splitter_->setSizes({200, 1000});
+
+    // UI 健康度探针: 主线程被长任务阻塞时, 定时器回调会被推迟。
+    // 通过回调间隔即可测出"界面卡住多久"(用于定位打开/播放期卡顿, 仅写日志)。
+    ui_health_timer_ = new QTimer(this);
+    ui_health_timer_->setTimerType(Qt::PreciseTimer);
+    connect(ui_health_timer_, &QTimer::timeout, this, [this]() {
+        const auto now = std::chrono::steady_clock::now();
+        if (ui_health_last_.time_since_epoch().count() != 0) {
+            const double gap_ms =
+                std::chrono::duration<double, std::milli>(now - ui_health_last_).count();
+            if (gap_ms >= 300.0) {
+                LOG_WARN("[perf] 主线程阻塞 " + std::to_string(static_cast<long long>(gap_ms)) +
+                         " ms (定时器周期 100ms)");
+            }
+        }
+        ui_health_last_ = now;
+    });
+    ui_health_timer_->start(100);
 }
 
 void MainWindow::SetupAppBar() {
@@ -747,7 +771,11 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
 
     player_panel_->SetRawImageMode(false);
     player_panel_->SetCurrentSource(source);
-    const bool open_result = player_->Open(source);
+    bool open_result = false;
+    {
+        VE_PERF("MediaPlayer::Open");
+        open_result = player_->Open(source);
+    }
 
     // 打开失败 (文件损坏/截断/格式不受支持/无可播放流) 不再直接中止:
     // 仍把文件加载到分析模块, 由媒体信息/文件结构/诊断扫描给出错误原因。
@@ -762,15 +790,10 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
     current_media_url_ = source;
     analysis_panel_->SetCurrentVideoPath(source);
 
-    // MediaInfo 解析 (异常文件也可能部分解析成功, 尽力而为)
-    {
-        analyzer::MediaInfoAnalyzer mi;
-        if (mi.Open(source)) {
-            mediainfo_text_->setPlainText(mi.GetCompleteInfo());
-        } else {
-            mediainfo_text_->setPlainText(tr("(无法解析媒体信息)"));
-        }
-    }
+    // MediaInfo 解析 (异常文件也可能部分解析成功, 尽力而为)。
+    // 大文件/复杂容器下 MediaInfoLib 全量解析可能要到秒级, 放在后台线程跑,
+    // 结果用 generation 校验后再回主线程贴文本, 避免快速切换文件时结果串台。
+    StartMediaInfoAnalysis(source);
 
     // 同步已启用的分析功能到播放器 (复选框默认勾选但未触发信号)
     analysis_panel_->EmitInitialFeatureStates();
@@ -789,6 +812,29 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
         analysis_panel_->StartDiagnosticsScanForCurrentFile();
     }
     return true;
+}
+
+void MainWindow::StartMediaInfoAnalysis(const QString& source) {
+    const quint64 generation = ++mediainfo_generation_;
+    mediainfo_text_->setPlainText(tr("(正在解析媒体信息…)"));
+
+    if (mediainfo_worker_.joinable()) {
+        // 上一次还没跑完: 等它结束再起新的, 避免并发持有 MediaInfo 句柄
+        mediainfo_worker_.join();
+    }
+
+    mediainfo_worker_ = std::thread([this, source, generation]() {
+        QString text;
+        {
+            VE_PERF("MediaInfo 解析(后台线程)");
+            analyzer::MediaInfoAnalyzer mi;
+            text = mi.Open(source) ? mi.GetCompleteInfo() : tr("(无法解析媒体信息)");
+        }
+        QMetaObject::invokeMethod(this, [this, generation, text]() {
+            if (generation != mediainfo_generation_) return;   // 已经切到别的文件
+            mediainfo_text_->setPlainText(text);
+        }, Qt::QueuedConnection);
+    });
 }
 
 bool MainWindow::PromptForPcmSettings(QString& demuxer_name, int& sample_rate, int& channels) {

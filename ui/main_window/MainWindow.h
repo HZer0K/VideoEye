@@ -14,7 +14,11 @@
 #include <QListWidget>
 #include <QStackedWidget>
 #include <QLabel>
+#include <QTimer>
+#include <atomic>
+#include <chrono>
 #include <memory>
+#include <thread>
 
 #include "core/player/MediaPlayer.h"
 #include "core/analyzer/MediaInfoAnalyzer.h"
@@ -114,6 +118,15 @@ protected:
     // 导出类型跟踪 (用于进度对话框取消时调用正确的取消接口)
     enum class ActiveExport { None, Frames, Media };
     ActiveExport active_export_ = ActiveExport::None;
+
+    // UI 健康度探针 (主线程阻塞检测, 仅用于定位卡顿)
+    QTimer* ui_health_timer_ = nullptr;
+    std::chrono::steady_clock::time_point ui_health_last_{};
+
+    // MediaInfo 后台解析 (避免大文件解析卡住主线程)
+    void StartMediaInfoAnalysis(const QString& source);
+    std::thread mediainfo_worker_;
+    quint64 mediainfo_generation_ = 0;
 };
 
 } // namespace ui

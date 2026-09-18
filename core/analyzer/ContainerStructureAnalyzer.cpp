@@ -9,6 +9,7 @@
 #include "AsfStructureAnalyzer.h"
 #include "OggStructureAnalyzer.h"
 #include "utils/Logger.h"
+#include "utils/ScopedTimer.h"
 #include <QStringList>
 #include <chrono>
 
@@ -49,6 +50,7 @@ ContainerStructureAnalyzer::~ContainerStructureAnalyzer() = default;
 
 bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
                                           model::ContainerStructureResult& result) {
+    VE_PERF("ContainerStructureAnalyzer::Analyze");
     result.file_path = file_path;
     LOG_INFO("ContainerStructureAnalyzer::Analyze ENTER: " + file_path.toStdString());
 
@@ -65,7 +67,12 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
     case model::ContainerFormat::MP4:
     case model::ContainerFormat::MOV: {
         Mp4BoxAnalyzer mp4_analyzer;
-        if (mp4_analyzer.AnalyzeFile(file_path, result.mp4_detail)) {
+        bool mp4_ok = false;
+        {
+            VE_PERF("Mp4BoxAnalyzer::AnalyzeFile(box 树)");
+            mp4_ok = mp4_analyzer.AnalyzeFile(file_path, result.mp4_detail);
+        }
+        if (mp4_ok) {
             auto t0 = std::chrono::steady_clock::now();
             ConvertMp4Tree(result.mp4_detail.box_tree, 0, result.element_tree);
             auto t1 = std::chrono::steady_clock::now();
@@ -81,7 +88,12 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
             // 与 Mp4BoxAnalyzer 是两次独立解析：那边走 Inspector 字符串（为了展示 box 树），
             // 这边直接读原子拿数值（为了算偏移与时间）。失败不影响结构树展示。
             Mp4SampleTableAnalyzer sample_analyzer;
-            if (sample_analyzer.AnalyzeFile(file_path.toStdString(), result.mp4_samples)) {
+            bool sample_ok = false;
+            {
+                VE_PERF("Mp4SampleTableAnalyzer::AnalyzeFile(容器页)");
+                sample_ok = sample_analyzer.AnalyzeFile(file_path.toStdString(), result.mp4_samples);
+            }
+            if (sample_ok) {
                 LOG_INFO("ContainerStructureAnalyzer: MP4 样本表校验 issues=" +
                          std::to_string(result.mp4_samples.issues.size()));
             }

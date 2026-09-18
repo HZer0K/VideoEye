@@ -450,15 +450,12 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
         }
         LOG_INFO("Audio decoder initialized");
 
-        // 初始化音频输出设备 (SDL2): 把解码后的 PCM 送进声卡
+        // 初始化音频输出设备 (SDL2): 把解码后的 PCM 送进声卡。
+        // 走异步打开: Windows(WASAPI) 首次 SDL_OpenAudioDevice 实测 ~1s,
+        // 同步调用会把"打开文件"整段卡住。设备就绪前音频帧丢弃, 视频不受影响。
         audio_output_ = std::make_unique<AudioOutput>();
-        if (!audio_output_->Open(audio_decoder_->GetSampleRate(), audio_decoder_->GetChannels())) {
-            LOG_WARN("音频输出设备打开失败, 将继续无声音播放");
-            audio_output_.reset();
-        } else {
-            audio_output_->SetVolume(volume_ / 100.0);
-            LOG_INFO("AudioOutput: 音频输出设备已就绪");
-        }
+        audio_output_->SetVolume(volume_ / 100.0);
+        audio_output_->OpenAsync(audio_decoder_->GetSampleRate(), audio_decoder_->GetChannels());
     }
 
     // 提取流信息 (委托给 StreamInfoExtractor)

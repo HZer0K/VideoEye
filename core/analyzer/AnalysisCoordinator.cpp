@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "utils/Logger.h"
+#include "utils/ScopedTimer.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -228,6 +229,7 @@ void AnalysisCoordinator::Cancel() {
 }
 
 void AnalysisCoordinator::Run(quint64 generation, std::string file_path, AnalysisOptions options) {
+    VE_PERF("AnalysisCoordinator::Run");
     AnalysisResult result;
     result.file_path = file_path;
 
@@ -245,7 +247,11 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
     }
 
     AVFormatContext* fmt = nullptr;
-    int open_ret = avformat_open_input(&fmt, file_path.c_str(), nullptr, nullptr);
+    int open_ret = 0;
+    {
+        VE_PERF("avformat_open_input");
+        open_ret = avformat_open_input(&fmt, file_path.c_str(), nullptr, nullptr);
+    }
     if (open_ret < 0) {
         char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
         av_strerror(open_ret, errbuf, sizeof(errbuf));
@@ -258,7 +264,11 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
         return;
     }
 
-    int find_ret = avformat_find_stream_info(fmt, nullptr);
+    int find_ret = 0;
+    {
+        VE_PERF("avformat_find_stream_info");
+        find_ret = avformat_find_stream_info(fmt, nullptr);
+    }
     if (find_ret < 0) {
         char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
         av_strerror(find_ret, errbuf, sizeof(errbuf));
@@ -286,8 +296,13 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
     // 只对 MP4 家族执行：其它格式 Bento4 解析必然失败，白跑一遍还要多开一次文件句柄。
     if (options.analyze_mp4_sample_table && IsMp4Family(result.container_format)) {
         Mp4SampleTableAnalyzer mp4_analyzer;
-        if (mp4_analyzer.AnalyzeFile(file_path, result.mp4_samples,
-                                     options.mp4_sample_table_options)) {
+        bool mp4_ok = false;
+        {
+            VE_PERF("Mp4SampleTableAnalyzer::AnalyzeFile(诊断扫描)");
+            mp4_ok = mp4_analyzer.AnalyzeFile(file_path, result.mp4_samples,
+                                              options.mp4_sample_table_options);
+        }
+        if (mp4_ok) {
             result.mp4_samples_analyzed = true;
         } else if (!result.mp4_samples.error_message.empty()) {
             // 解析失败不致命，记一条日志即可（诊断仍走 FFmpeg 那条通路）
@@ -527,6 +542,8 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
     auto last_progress = std::chrono::steady_clock::now();
     emit ProgressReported(generation, 0.0, QStringLiteral("扫描数据包"));
 
+    {
+    VE_PERF("逐包扫描(全文件 demux + 音频解码 + GOP)");
     while (true) {
         if (cancel_requested_.load(std::memory_order_acquire)) {
             result.completed = false;
@@ -727,6 +744,7 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
                                       QStringLiteral("扫描数据包 %1 个").arg(packet_index));
             }
         }
+    }
     }
     av_packet_free(&pkt);
 
