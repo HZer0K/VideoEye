@@ -68,7 +68,7 @@ build-release/bin/VideoEye
 **build.bat** 自动完成：
 - 用 `vswhere.exe` 找到并加载 Visual Studio 2022 的 `vcvars64.bat` 环境
 - FFmpeg 缺失自动调用 `scripts/fetch-ffmpeg.ps1` 下载 gyan.dev full-shared
-- 通过 CMakePresets + vcpkg toolchain 自动安装依赖（qtbase、qtcharts、sdl2、zlib）
+- 通过 CMakePresets + vcpkg toolchain 自动安装依赖（qtbase、gtest）
 - CMake configure + build + 运行时 DLL 部署
 
 ### Linux / macOS 构建
@@ -183,10 +183,14 @@ cmake --build build/release -- -j2
 
 ## 📚 下一步
 
-- [完整文档](README.md)
-- [架构设计](docs/local/ARCHITECTURE.md)
-- [项目结构](docs/local/PROJECT_STRUCTURE.md)
-- [UI 优化设计稿](docs/UI_OPTIMIZATION_DESIGN.md)
+- [项目说明与文档导航](README.md)
+- [构建与贡献](CONTRIBUTING.md)
+- [编码码流解析](docs/BITSTREAM_ANALYSIS.md)
+- [诊断与 QC 报告](docs/DIAGNOSTICS_QC.md)
+- [音频 QC](docs/AUDIO_QC.md)
+- [码率与 GOP 分析](docs/BITRATE_GOP_ANALYSIS.md)
+- [色彩与 HDR 元数据分析](docs/COLOR_HDR_ANALYSIS.md)
+- [MP4/fMP4 容器一致性校验](docs/MP4_SAMPLE_TABLE.md)
 
 ---
 

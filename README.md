@@ -97,6 +97,19 @@ VideoEye/
 └── build.bat / build.sh  # 构建脚本
 ```
 
+## 文档
+
+| 文档 | 内容 |
+|------|------|
+| [QUICKSTART.md](QUICKSTART.md) | 快速入门：构建、打开媒体、使用各分析页 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 环境要求、构建选项、代码规范 |
+| [docs/BITSTREAM_ANALYSIS.md](docs/BITSTREAM_ANALYSIS.md) | 编码码流解析（H.264 / HEVC / AV1 / VVC） |
+| [docs/DIAGNOSTICS_QC.md](docs/DIAGNOSTICS_QC.md) | 诊断扫描与 QC 报告、规则集与导出 |
+| [docs/AUDIO_QC.md](docs/AUDIO_QC.md) | 音频 QC：响度、真峰值、削波、相位 |
+| [docs/BITRATE_GOP_ANALYSIS.md](docs/BITRATE_GOP_ANALYSIS.md) | 滑动窗口码率、GOP 重建与异常识别 |
+| [docs/COLOR_HDR_ANALYSIS.md](docs/COLOR_HDR_ANALYSIS.md) | 色彩与 HDR 元数据快照与告警 |
+| [docs/MP4_SAMPLE_TABLE.md](docs/MP4_SAMPLE_TABLE.md) | MP4/fMP4 样本表一致性校验 |
+
 ## 测试
 
 ```bash

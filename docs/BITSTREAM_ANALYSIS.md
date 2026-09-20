@@ -421,7 +421,7 @@ TEST(H264BitstreamParserTest, ParseHighProfileSPS) {
 
 ## 附录：代码文件清单
 
-### 已完成的核心文件
+### 文件清单
 
 1. `utils/BitReader.h/.cpp` - 位流读取器
 2. `utils/ExtradataParser.h` - 封装格式识别接口
@@ -432,40 +432,14 @@ TEST(H264BitstreamParserTest, ParseHighProfileSPS) {
 7. `core/analyzer/AnalysisTask.h` - 扩展（已添加 bitstream_analysis 字段）
 8. `ui/bitstream_panel/BitstreamPanel.h` - UI 组件框架
 
-### 待实现的完整文件
-
-1. `utils/ExtradataParser.cpp` - 封装格式识别实现
-2. `core/analyzer/Av1BitstreamParser.h/.cpp` - AV1 解析器
-3. `core/analyzer/VvcBitstreamParser.h/.cpp` - VVC 解析器
-4. `ui/bitstream_panel/BitstreamPanel.cpp` - UI 实现
-5. `tests/unit/test_*_bitstream_parser.cpp` - 单元测试
+9. `utils/ExtradataParser.cpp` - 封装格式识别实现（avcC / hvcC / av1C）
+10. `core/analyzer/Av1BitstreamParser.h/.cpp` - AV1 解析器
+11. `core/analyzer/VvcBitstreamParser.h` - VVC 解析器（仅基础头信息，简化版）
+12. `ui/bitstream_panel/BitstreamPanel.cpp` - UI 实现
+13. `tests/unit/test_h264_bitstream_parser.cpp`、`tests/unit/test_hevc_bitstream_parser.cpp` - 单元测试
 
 ---
 
 **版本**: 1.0  
-**最后更新**: 2026-09-19  
+**最后更新**: 2026-09-21  
 **维护者**: VideoEye Team
-
----
-
-## 📚 相关文档
-
-### 实施文档（本地）
-以下文档位于 `docs/bitstream/` 目录，仅保存在本地仓库：
-
-- [BITSTREAM_IMPLEMENTATION_STATUS.md](../bitstream/BITSTREAM_IMPLEMENTATION_STATUS.md) - 实施状态报告
-- [BITSTREAM_SUMMARY.md](../bitstream/BITSTREAM_SUMMARY.md) - 实施总结
-- [README_BITSTREAM.md](../bitstream/README_BITSTREAM.md) - 最终 README
-- [IMPLEMENTATION_COMPLETE.md](../bitstream/IMPLEMENTATION_COMPLETE.md) - 完成报告
-- [FILE_LIST.md](../bitstream/FILE_LIST.md) - 详细文件清单
-
-### 架构文档（本地）
-以下文档位于 `docs/local/` 目录，仅供内部开发使用：
-
-- [ARCHITECTURE.md](../local/ARCHITECTURE.md) - 系统架构设计
-- [PROJECT_STRUCTURE.md](../local/PROJECT_STRUCTURE.md) - 项目结构说明
-- [VULKAN_OPTIMIZATION_PLAN.md](../local/VULKAN_OPTIMIZATION_PLAN.md) - Vulkan 优化规划
-
-### 导航
-- [docs/bitstream/README.md](../bitstream/README.md) - Bitstream 功能文档索引
-- [docs/local/README.md](../local/README.md) - 本地开发文档索引
