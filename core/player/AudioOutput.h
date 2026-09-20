@@ -70,6 +70,13 @@ private:
     // 由平台音频线程调用：从环形缓冲取数据，不足时补静音
     size_t Pull(uint8_t* dst, size_t max_bytes);
 
+    // 当前线程是不是 open_thread_ 本身。
+    // Open() 会在 open_thread_ 上被调用（OpenAsync 路径），此时 Stop() 若去
+    // join open_thread_ 就是「线程 join 自己」，MSVC 会抛
+    // std::system_error(resource_deadlock_would_occur) —— 而 std::thread 的
+    // 入口函数是 noexcept 的，异常逃逸会直接 std::terminate()（进程闪退）。
+    bool OnOpenThread() const;
+
     std::unique_ptr<Backend> backend_;
     std::mutex device_mutex_;      // 保护 backend_ 的创建/销毁/控制
 

@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <condition_variable>
 #include <cstring>
+#include <exception>
 #include <functional>
 #include <mutex>
+#include <string>
 
 #include "utils/Logger.h"
 #include "utils/ScopedTimer.h"
@@ -421,6 +423,11 @@ AudioOutput::~AudioOutput() {
     Stop();
 }
 
+bool AudioOutput::OnOpenThread() const {
+    return open_thread_.joinable() &&
+           open_thread_.get_id() == std::this_thread::get_id();
+}
+
 size_t AudioOutput::Pull(uint8_t* dst, size_t max_bytes) {
     if (!dst || max_bytes == 0) return 0;
 
@@ -504,13 +511,24 @@ bool AudioOutput::Open(int sample_rate, int channels) {
 }
 
 void AudioOutput::OpenAsync(int sample_rate, int channels) {
-    if (open_thread_.joinable()) {
+    if (open_thread_.joinable() && !OnOpenThread()) {
         open_thread_.join();   // 上一轮还没开完就先收尾
     }
     stopping_.store(false);
     open_thread_ = std::thread([this, sample_rate, channels]() {
-        const bool ok = Open(sample_rate, channels);
-        if (!ok) pending_play_.store(false);
+        // std::thread 的入口在 MSVC STL 里是 noexcept 的：这里任何异常逃逸都会
+        // 直接 std::terminate()（表现为整个进程闪退，异常码 0xC0000409）。
+        // 音频设备打不开最多是没声音，不能把播放器一起带走，所以兜底捕获。
+        try {
+            const bool ok = Open(sample_rate, channels);
+            if (!ok) pending_play_.store(false);
+        } catch (const std::exception& e) {
+            LOG_ERROR(std::string("AudioOutput: 异步打开音频设备异常: ") + e.what());
+            pending_play_.store(false);
+        } catch (...) {
+            LOG_ERROR("AudioOutput: 异步打开音频设备发生未知异常");
+            pending_play_.store(false);
+        }
     });
 }
 
@@ -569,7 +587,9 @@ void AudioOutput::Stop() {
     pending_play_.store(false);
     stopping_.store(true);
 
-    if (open_thread_.joinable()) {
+    // 不能 join 自己：Open() 是在 open_thread_ 上执行的（OpenAsync 路径），
+    // self-join 会抛 std::system_error 并让整个进程 terminate。
+    if (open_thread_.joinable() && !OnOpenThread()) {
         open_thread_.join();
     }
 
