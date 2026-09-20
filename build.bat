@@ -1,85 +1,99 @@
 @echo off
+chcp 936 >nul 2>&1
 REM ========================================
-REM  VideoEye - ä¸€é”®æ„å»º (Windows)
-REM  ç”¨æ³•: build.bat [release|debug|clean]
-REM  é»˜è®¤: release
+REM  VideoEye - Ò»¼ü¹¹½¨ (Windows / MSVC)
+REM  ÓÃ·¨: build.bat [release|debug|clean]
+REM  Ä¬ÈÏ: release
+REM  ×¢Òâ: ±¾ÎÄ¼ş±ØĞë±£´æÎª GBK ±àÂë + CRLF »»ĞĞ,
+REM        ·ñÔò cmd.exe »á°ÑÖĞÎÄ½âÎö³ÉÂÒÂë²¢±¨
+REM        "'xxx' ²»ÊÇÄÚ²¿»òÍâ²¿ÃüÁî"¡£
 REM ========================================
 setlocal enabledelayedexpansion
 
 set "PRESET=%~1"
 if "%PRESET%"=="" set "PRESET=release"
 if /i "%PRESET%"=="ninja" set "PRESET=release"
+if /i "%PRESET%"=="default" set "PRESET=release"
 
-REM clean å­å‘½ä»¤: æ¸…ç†æ„å»ºç›®å½•åé€€å‡º
+REM clean ×ÓÃüÁî: ÇåÀí¹¹½¨Ä¿Â¼ºóÍË³ö
 if /i "%PRESET%"=="clean" (
     if exist "%~dp0build\release" (
         rmdir /s /q "%~dp0build\release"
-        echo å·²åˆ é™¤: build\release
+        echo ÒÑÉ¾³ı: build\release
     )
     if exist "%~dp0build\debug" (
         rmdir /s /q "%~dp0build\debug"
-        echo å·²åˆ é™¤: build\debug
+        echo ÒÑÉ¾³ı: build\debug
     )
-    echo æ„å»ºç›®å½•å·²æ¸…ç†
+    echo ¹¹½¨Ä¿Â¼ÒÑÇåÀí
     exit /b 0
 )
 
-if /i not "%PRESET%"=="release" if /i not "%PRESET%"=="debug" (
-    echo [ERROR] æ— æ•ˆå‚æ•°: %PRESET%
-    echo ç”¨æ³•: build.bat [release^|debug^|clean]
+set "VALID=0"
+if /i "%PRESET%"=="release" set "VALID=1"
+if /i "%PRESET%"=="debug" set "VALID=1"
+if "!VALID!"=="0" (
+    echo [ERROR] ÎŞĞ§²ÎÊı: %PRESET%
+    echo ÓÃ·¨: build.bat [release^|debug^|clean]
     exit /b 1
 )
 
-REM è‡ªåŠ¨åŠ è½½ MSVC ç¯å¢ƒ (é€šè¿‡ vswhere + vcvars64)
-echo [1/3] æ£€æµ‹ Visual Studio ç¯å¢ƒ...
+REM ×Ô¶¯¼ÓÔØ MSVC »·¾³ (vswhere + vcvars64)
+echo [1/3] ¼ì²â Visual Studio »·¾³...
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "!VSWHERE!" set "VSWHERE=%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "!VSWHERE!" (
-    echo [ERROR] æœªæ‰¾åˆ° vswhereã€‚è¯·å®‰è£… Visual Studio 2022 æˆ– Build Toolsã€‚
+    echo [ERROR] Î´ÕÒµ½ vswhere.exe, Çë°²×° Visual Studio 2022 »ò Build Tools
     exit /b 1
 )
 
+set "VSROOT="
 for /f "usebackq delims=" %%i in (`"!VSWHERE!" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%i"
 if "!VSROOT!"=="" (
-    echo [ERROR] æœªæ‰¾åˆ°å¸¦ C++ å·¥å…·é“¾çš„ Visual Studio å®‰è£…ã€‚
+    echo [ERROR] Î´ÕÒµ½´ø C++ ¹¤¾ßÁ´µÄ Visual Studio °²×°
     exit /b 1
 )
-echo       VS è·¯å¾„: !VSROOT!
+echo       VS Â·¾¶: !VSROOT!
 
-REM é€šè¿‡ vcvars64.bat å¯¼å…¥ç¯å¢ƒåˆ°å½“å‰ cmd è¿›ç¨‹
 set "VCVARS=!VSROOT!\VC\Auxiliary\Build\vcvars64.bat"
 if not exist "!VCVARS!" (
-    echo [ERROR] æœªæ‰¾åˆ° vcvars64.bat
+    echo [ERROR] Î´ÕÒµ½ vcvars64.bat
     exit /b 1
 )
 call "!VCVARS!" x64 >nul
 
-REM è‡ªåŠ¨è·å– FFmpeg (å¦‚æœç¼ºå¤±)
-echo [2/3] æ£€æŸ¥ FFmpeg...
+REM ×Ô¶¯»ñÈ¡ FFmpeg (Èç¹ûÈ±Ê§)
+echo [2/3] ¼ì²é FFmpeg...
 set "FFMPEG_DIR=%~dp0third_party\prebuilt\windows-x64\ffmpeg"
 if not exist "!FFMPEG_DIR!\include\libavcodec\avcodec.h" (
-    echo       FFmpeg æœªæ‰¾åˆ°ï¼Œè‡ªåŠ¨ä¸‹è½½ä¸­...
+    echo       FFmpeg Î´ÕÒµ½, ×Ô¶¯ÏÂÔØÖĞ...
     powershell -ExecutionPolicy Bypass -File "%~dp0scripts\fetch-ffmpeg.ps1"
     if errorlevel 1 (
-        echo [ERROR] FFmpeg è·å–å¤±è´¥
+        echo [ERROR] FFmpeg »ñÈ¡Ê§°Ü
         exit /b 1
     )
 )
 echo       OK
 
 REM CMake configure + build via presets
-echo [3/3] CMake é…ç½® + æ„å»º (!PRESET!)...
+echo [3/3] CMake ÅäÖÃ + ¹¹½¨ (!PRESET!)...
 echo.
 cmake --preset !PRESET!
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+    echo [ERROR] CMake ÅäÖÃÊ§°Ü
+    exit /b 1
+)
 
 echo.
-cmake --build --preset !PRESET!
-if errorlevel 1 exit /b 1
+cmake --build --preset !PRESET! --parallel %NUMBER_OF_PROCESSORS%
+if errorlevel 1 (
+    echo [ERROR] ±àÒëÊ§°Ü
+    exit /b 1
+)
 
 echo.
 echo ========================================
-echo  æ„å»ºæˆåŠŸ!
-echo  å¯æ‰§è¡Œæ–‡ä»¶: %~dp0build\!PRESET!\bin\VideoEye.exe
+echo  ¹¹½¨³É¹¦!
+echo  ¿ÉÖ´ĞĞÎÄ¼ş: %~dp0build\!PRESET!\bin\VideoEye.exe
 echo ========================================
 endlocal

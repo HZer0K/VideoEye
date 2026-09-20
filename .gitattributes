@@ -41,7 +41,9 @@ run.sh     text eol=lf
 *.psm1     text eol=crlf
 *.psd1     text eol=crlf
 
-# Batch 脚本用 CRLF
+# Batch 脚本用 CRLF，且必须存为 GBK/ANSI 编码。
+# cmd.exe 按当前代码页(默认 936)逐字节解析，UTF-8 无 BOM 会被拆成乱码，
+# 表现为 "'xxx' 不是内部或外部命令" / "无效的模式"，LF 换行还会拆坏 for /f 与 ( ) 块。
 *.bat      text eol=crlf
 *.cmd      text eol=crlf
 
