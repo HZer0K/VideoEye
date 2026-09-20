@@ -624,8 +624,8 @@ QToolTip {
     font-size: 12px;
 }
 
-/* ==== QChartView background ==== */
-QChartView {
+/* ==== 自绘图表 (MetricChartWidget) 背景 ==== */
+MetricChartWidget {
     background-color: #0D1117;
     border: 1px solid #30363D;
     border-radius: 6px;

@@ -17,7 +17,8 @@
 #include <QCheckBox>
 #include <QPainter>
 #include <QPen>
-#include <QtCharts>
+#include <QToolTip>
+#include <QCursor>
 #include <algorithm>
 #include <functional>
 #include <cmath>
@@ -54,14 +55,14 @@ void TrimRecords(std::vector<T>& records, size_t& synced_count,
 
 // 图表数据批量提交。
 //
-// QXYSeries::append() 每加一个点都会触发一次图表重算/重绘，几千点时主线程会被
+// 逐点 Append() 每加一个点都会触发一次图表重算/重绘，几千点时主线程会被
 // 拖到秒级卡顿（实测 7 条曲线 × 4000 点 ≈ 3.5 s）。先在内存里攒好，析构时
-// 用 replace() 一次性提交（只触发一次刷新）。
+// 用 Replace() 一次性提交（只触发一次刷新）。
 class SeriesBatch {
 public:
-    explicit SeriesBatch(QXYSeries* series) : series_(series) {}
+    explicit SeriesBatch(ChartSeries* series) : series_(series) {}
     ~SeriesBatch() {
-        if (series_) series_->replace(points_);
+        if (series_) series_->Replace(points_);
     }
 
     void Reserve(int n) { points_.reserve(n); }
@@ -69,7 +70,7 @@ public:
     bool Empty() const { return points_.isEmpty(); }
 
 private:
-    QXYSeries* series_ = nullptr;
+    ChartSeries* series_ = nullptr;
     QVector<QPointF> points_;
 };
 
@@ -291,9 +292,10 @@ void AnalysisPanel::SetupStreamTab() {
     chart_layout->setContentsMargins(0, 0, 0, 0);
     chart_layout->setSpacing(8);
 
-    auto make_chart_box = [&](const QString& title) -> QPair<QChartView*, QGroupBox*> {
-        QChartView* view = new QChartView(chart_row);
+    auto make_chart_box = [&](const QString& title) -> QPair<MetricChartWidget*, QGroupBox*> {
+        MetricChartWidget* view = new MetricChartWidget(chart_row);
         view->setMinimumHeight(180);
+        view->SetLegendVisible(false);   // 标题已在 GroupBox 上, 图例无信息量
         QGroupBox* box = new QGroupBox(title, chart_row);
         QVBoxLayout* bl = new QVBoxLayout(box);
         bl->setContentsMargins(4, 12, 4, 4);
@@ -312,58 +314,31 @@ void AnalysisPanel::SetupStreamTab() {
     layout->addWidget(chart_row);
 
     // 码率图
-    bitrate_series_ = new QLineSeries(this);
-    bitrate_chart_object_ = new QChart();
-    bitrate_chart_object_->setTitle(tr("码率 (Kbps)"));
-    bitrate_chart_object_->legend()->hide();
-    bitrate_chart_object_->addSeries(bitrate_series_);
-    bitrate_axis_x_ = new QValueAxis(this);
-    bitrate_axis_y_ = new QValueAxis(this);
-    bitrate_axis_x_->setLabelFormat("%d");
-    bitrate_axis_y_->setLabelFormat("%.0f");
-    bitrate_axis_x_->setTitleText(tr("采样"));
-    bitrate_chart_object_->addAxis(bitrate_axis_x_, Qt::AlignBottom);
-    bitrate_chart_object_->addAxis(bitrate_axis_y_, Qt::AlignLeft);
-    bitrate_series_->attachAxis(bitrate_axis_x_);
-    bitrate_series_->attachAxis(bitrate_axis_y_);
-    bitrate_chart_->setChart(bitrate_chart_object_);
-    bitrate_chart_->setRenderHint(QPainter::Antialiasing);
+    bitrate_series_ = bitrate_chart_->AddLineSeries(QString(), QColor("#42a5f5"));
+    bitrate_axis_x_ = bitrate_chart_->AxisX();
+    bitrate_axis_y_ = bitrate_chart_->AxisY();
+    bitrate_axis_x_->SetLabelFormat("%d");
+    bitrate_axis_y_->SetLabelFormat("%.0f");
+    bitrate_axis_x_->SetTitleText(tr("采样"));
+    bitrate_axis_y_->SetTitleText(tr("Kbps"));
 
     // 帧率图
-    fps_series_ = new QLineSeries(this);
-    fps_chart_object_ = new QChart();
-    fps_chart_object_->setTitle(tr("帧率 (fps)"));
-    fps_chart_object_->legend()->hide();
-    fps_chart_object_->addSeries(fps_series_);
-    fps_axis_x_ = new QValueAxis(this);
-    fps_axis_y_ = new QValueAxis(this);
-    fps_axis_x_->setLabelFormat("%d");
-    fps_axis_y_->setLabelFormat("%.1f");
-    fps_axis_x_->setTitleText(tr("采样"));
-    fps_chart_object_->addAxis(fps_axis_x_, Qt::AlignBottom);
-    fps_chart_object_->addAxis(fps_axis_y_, Qt::AlignLeft);
-    fps_series_->attachAxis(fps_axis_x_);
-    fps_series_->attachAxis(fps_axis_y_);
-    fps_chart_->setChart(fps_chart_object_);
-    fps_chart_->setRenderHint(QPainter::Antialiasing);
+    fps_series_ = fps_chart_->AddLineSeries(QString(), QColor("#66bb6a"));
+    fps_axis_x_ = fps_chart_->AxisX();
+    fps_axis_y_ = fps_chart_->AxisY();
+    fps_axis_x_->SetLabelFormat("%d");
+    fps_axis_y_->SetLabelFormat("%.1f");
+    fps_axis_x_->SetTitleText(tr("采样"));
+    fps_axis_y_->SetTitleText(tr("fps"));
 
     // GOP 图
-    gop_series_ = new QLineSeries(this);
-    gop_chart_object_ = new QChart();
-    gop_chart_object_->setTitle(tr("每个 GOP 的帧数"));
-    gop_chart_object_->legend()->hide();
-    gop_chart_object_->addSeries(gop_series_);
-    gop_axis_x_ = new QValueAxis(this);
-    gop_axis_y_ = new QValueAxis(this);
-    gop_axis_x_->setLabelFormat("%d");
-    gop_axis_y_->setLabelFormat("%d");
-    gop_axis_x_->setTitleText(tr("GOP 序号"));
-    gop_chart_object_->addAxis(gop_axis_x_, Qt::AlignBottom);
-    gop_chart_object_->addAxis(gop_axis_y_, Qt::AlignLeft);
-    gop_series_->attachAxis(gop_axis_x_);
-    gop_series_->attachAxis(gop_axis_y_);
-    gop_chart_->setChart(gop_chart_object_);
-    gop_chart_->setRenderHint(QPainter::Antialiasing);
+    gop_series_ = gop_chart_->AddLineSeries(QString(), QColor("#ffa726"));
+    gop_axis_x_ = gop_chart_->AxisX();
+    gop_axis_y_ = gop_chart_->AxisY();
+    gop_axis_x_->SetLabelFormat("%d");
+    gop_axis_y_->SetLabelFormat("%d");
+    gop_axis_x_->SetTitleText(tr("GOP 序号"));
+    gop_axis_y_->SetTitleText(tr("帧数"));
 
     connect(export_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportReport);
 }
@@ -695,9 +670,11 @@ void AnalysisPanel::SetupSyncTab() {
 
     QGroupBox* chart_group = new QGroupBox(tr("音视频时间差"), sync_tab_);
     QVBoxLayout* chart_layout = new QVBoxLayout(chart_group);
-    sync_chart_ = new QChartView(sync_tab_);
+    sync_chart_ = new MetricChartWidget(sync_tab_);
     sync_chart_->setMinimumHeight(220);
     sync_chart_->setMinimumWidth(280);
+    sync_chart_->SetTitle(tr("A-V 差值 (ms)"));
+    sync_chart_->SetLegendVisible(false);
     chart_layout->addWidget(sync_chart_);
     layout->addWidget(chart_group);
 
@@ -720,22 +697,14 @@ void AnalysisPanel::SetupSyncTab() {
     table_layout->addWidget(sync_table_);
     layout->addWidget(table_group);
 
-    sync_series_ = new QLineSeries(this);
-    QChart* sync_chart_object = new QChart();
-    sync_chart_object->setTitle(tr("A-V 差值 (ms)"));
-    sync_chart_object->legend()->hide();
-    sync_chart_object->addSeries(sync_series_);
-    sync_axis_x_ = new QValueAxis(this);
-    sync_axis_y_ = new QValueAxis(this);
-    sync_axis_x_->setLabelFormat("%d");
-    sync_axis_y_->setLabelFormat("%.0f");
-    sync_axis_y_->setRange(-1.0, 1.0);
-    sync_chart_object->addAxis(sync_axis_x_, Qt::AlignBottom);
-    sync_chart_object->addAxis(sync_axis_y_, Qt::AlignLeft);
-    sync_series_->attachAxis(sync_axis_x_);
-    sync_series_->attachAxis(sync_axis_y_);
-    sync_chart_->setChart(sync_chart_object);
-    sync_chart_->setRenderHint(QPainter::Antialiasing);
+    sync_series_ = sync_chart_->AddLineSeries(QString(), QColor("#42a5f5"));
+    sync_axis_x_ = sync_chart_->AxisX();
+    sync_axis_y_ = sync_chart_->AxisY();
+    sync_axis_x_->SetLabelFormat("%d");
+    sync_axis_y_->SetLabelFormat("%.0f");
+    sync_axis_y_->SetRange(-1.0, 1.0);
+    sync_axis_x_->SetTitleText(tr("样本序号"));
+    sync_axis_y_->SetTitleText(tr("ms"));
 
     connect(export_sync_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportSyncCsv);
 }
@@ -764,9 +733,10 @@ void AnalysisPanel::SetupTimelineTab() {
 
     QGroupBox* chart_group = new QGroupBox(tr("统一时间轴"), timeline_tab_);
     QVBoxLayout* chart_layout = new QVBoxLayout(chart_group);
-    timeline_chart_ = new QChartView(timeline_tab_);
+    timeline_chart_ = new MetricChartWidget(timeline_tab_);
     timeline_chart_->setMinimumHeight(220);
     timeline_chart_->setMinimumWidth(280);
+    timeline_chart_->SetTitle(tr("统一时间轴"));
     chart_layout->addWidget(timeline_chart_);
     layout->addWidget(chart_group);
 
@@ -789,36 +759,19 @@ void AnalysisPanel::SetupTimelineTab() {
     table_layout->addWidget(timeline_table_);
     layout->addWidget(table_group);
 
-    timeline_video_series_ = new QLineSeries(this);
-    timeline_video_series_->setName(tr("视频关键帧"));
-    timeline_video_series_->setPointsVisible(true);
-    timeline_audio_series_ = new QLineSeries(this);
-    timeline_audio_series_->setName(tr("音频采样"));
-    timeline_audio_series_->setPointsVisible(true);
-    timeline_event_series_ = new QLineSeries(this);
-    timeline_event_series_->setName(tr("异常事件"));
-    timeline_event_series_->setPointsVisible(true);
+    timeline_video_series_ = timeline_chart_->AddLineSeries(tr("视频关键帧"), QColor("#42a5f5"));
+    timeline_audio_series_ = timeline_chart_->AddLineSeries(tr("音频采样"), QColor("#66bb6a"));
+    timeline_event_series_ = timeline_chart_->AddLineSeries(tr("异常事件"), QColor("#e53935"));
+    timeline_video_series_->SetPointsVisible(true);
+    timeline_audio_series_->SetPointsVisible(true);
+    timeline_event_series_->SetPointsVisible(true);
 
-    QChart* timeline_chart_object = new QChart();
-    timeline_chart_object->setTitle(tr("统一时间轴"));
-    timeline_chart_object->addSeries(timeline_video_series_);
-    timeline_chart_object->addSeries(timeline_audio_series_);
-    timeline_chart_object->addSeries(timeline_event_series_);
-    timeline_axis_x_ = new QValueAxis(this);
-    timeline_axis_y_ = new QValueAxis(this);
-    timeline_axis_x_->setLabelFormat("%.2f");
-    timeline_axis_y_->setRange(0.5, 3.5);
-    timeline_axis_y_->setTickCount(4);
-    timeline_chart_object->addAxis(timeline_axis_x_, Qt::AlignBottom);
-    timeline_chart_object->addAxis(timeline_axis_y_, Qt::AlignLeft);
-    timeline_video_series_->attachAxis(timeline_axis_x_);
-    timeline_video_series_->attachAxis(timeline_axis_y_);
-    timeline_audio_series_->attachAxis(timeline_axis_x_);
-    timeline_audio_series_->attachAxis(timeline_axis_y_);
-    timeline_event_series_->attachAxis(timeline_axis_x_);
-    timeline_event_series_->attachAxis(timeline_axis_y_);
-    timeline_chart_->setChart(timeline_chart_object);
-    timeline_chart_->setRenderHint(QPainter::Antialiasing);
+    timeline_axis_x_ = timeline_chart_->AxisX();
+    timeline_axis_y_ = timeline_chart_->AxisY();
+    timeline_axis_x_->SetLabelFormat("%.2f");
+    timeline_axis_y_->SetRange(0.5, 3.5);
+    timeline_axis_y_->SetTickCount(4);
+    timeline_axis_x_->SetTitleText(tr("时间 (s)"));
 
     connect(export_timeline_csv_button_, &QPushButton::clicked, this, &AnalysisPanel::OnExportTimelineCsv);
 }
@@ -1967,13 +1920,13 @@ void AnalysisPanel::ResetSyncSampleList() {
         sync_table_->setRowCount(0);
     }
     if (sync_series_) {
-        sync_series_->clear();
+        sync_series_->Clear();
     }
     if (sync_axis_x_) {
-        sync_axis_x_->setRange(0, 1);
+        sync_axis_x_->SetRange(0, 1);
     }
     if (sync_axis_y_) {
-        sync_axis_y_->setRange(-1.0, 1.0);
+        sync_axis_y_->SetRange(-1.0, 1.0);
     }
     UpdateSyncSummary();
 }
@@ -1989,19 +1942,19 @@ void AnalysisPanel::ResetTimelineEventList() {
         timeline_table_->setRowCount(0);
     }
     if (timeline_video_series_) {
-        timeline_video_series_->clear();
+        timeline_video_series_->Clear();
     }
     if (timeline_audio_series_) {
-        timeline_audio_series_->clear();
+        timeline_audio_series_->Clear();
     }
     if (timeline_event_series_) {
-        timeline_event_series_->clear();
+        timeline_event_series_->Clear();
     }
     if (timeline_axis_x_) {
-        timeline_axis_x_->setRange(0.0, 1.0);
+        timeline_axis_x_->SetRange(0.0, 1.0);
     }
     if (timeline_axis_y_) {
-        timeline_axis_y_->setRange(0.5, 3.5);
+        timeline_axis_y_->SetRange(0.5, 3.5);
     }
     UpdateTimelineSummary();
 }
@@ -3311,7 +3264,7 @@ void AnalysisPanel::UpdateBitrateChart(const analyzer::StreamStats& stats) {
         return;
     }
 
-    bitrate_series_->clear();
+    bitrate_series_->Clear();
     qreal max_value = 0.0;
     {
         SeriesBatch batch(bitrate_series_);
@@ -3322,9 +3275,9 @@ void AnalysisPanel::UpdateBitrateChart(const analyzer::StreamStats& stats) {
             if (v > max_value) max_value = v;
         }
     }
-    bitrate_axis_x_->setRange(0, std::max<qreal>(1.0, bitrate_chart_values_.size()));
+    bitrate_axis_x_->SetRange(0, std::max<qreal>(1.0, bitrate_chart_values_.size()));
     // 上限留 10% 余量, 避免曲线贴顶; 全零时给一个最小量程防止坐标轴退化
-    bitrate_axis_y_->setRange(0, std::max<qreal>(100.0, max_value * 1.1));
+    bitrate_axis_y_->SetRange(0, std::max<qreal>(100.0, max_value * 1.1));
 }
 
 void AnalysisPanel::UpdateFPSChart(const analyzer::StreamStats& stats) {
@@ -3333,7 +3286,7 @@ void AnalysisPanel::UpdateFPSChart(const analyzer::StreamStats& stats) {
         return;
     }
 
-    fps_series_->clear();
+    fps_series_->Clear();
     qreal max_value = 0.0;
     {
         SeriesBatch batch(fps_series_);
@@ -3344,8 +3297,8 @@ void AnalysisPanel::UpdateFPSChart(const analyzer::StreamStats& stats) {
             if (v > max_value) max_value = v;
         }
     }
-    fps_axis_x_->setRange(0, std::max<qreal>(1.0, fps_chart_values_.size()));
-    fps_axis_y_->setRange(0, std::max<qreal>(30.0, max_value * 1.1));
+    fps_axis_x_->SetRange(0, std::max<qreal>(1.0, fps_chart_values_.size()));
+    fps_axis_y_->SetRange(0, std::max<qreal>(30.0, max_value * 1.1));
 }
 
 void AnalysisPanel::UpdateGOPChart() {
@@ -3355,10 +3308,10 @@ void AnalysisPanel::UpdateGOPChart() {
 
     // 数据源统一为 UI 侧的 gop_summaries_ (由解码帧 pict_type 推导),
     // 不再使用 StreamAnalyzer 基于 packet flags 的独立 GOP 统计。
-    gop_series_->clear();
+    gop_series_->Clear();
     if (gop_summaries_.empty()) {
-        gop_axis_x_->setRange(0, 1);
-        gop_axis_y_->setRange(0, 1);
+        gop_axis_x_->SetRange(0, 1);
+        gop_axis_y_->SetRange(0, 1);
         return;
     }
 
@@ -3371,16 +3324,16 @@ void AnalysisPanel::UpdateGOPChart() {
             if (g.total_frames > max_frames) max_frames = g.total_frames;
         }
     }
-    gop_axis_x_->setRange(0, std::max(1, static_cast<int>(gop_summaries_.size())));
-    gop_axis_y_->setRange(0, std::max(1, max_frames));
+    gop_axis_x_->SetRange(0, std::max(1, static_cast<int>(gop_summaries_.size())));
+    gop_axis_y_->SetRange(0, std::max(1, max_frames));
 }
 
 void AnalysisPanel::ResetStreamCharts() {
     bitrate_chart_values_.clear();
     fps_chart_values_.clear();
-    if (bitrate_series_) bitrate_series_->clear();
-    if (fps_series_) fps_series_->clear();
-    if (gop_series_) gop_series_->clear();
+    if (bitrate_series_) bitrate_series_->Clear();
+    if (fps_series_) fps_series_->Clear();
+    if (gop_series_) gop_series_->Clear();
 }
 
 void AnalysisPanel::UpdateSyncChart() {
@@ -3388,7 +3341,7 @@ void AnalysisPanel::UpdateSyncChart() {
         return;
     }
 
-    sync_series_->clear();
+    sync_series_->Clear();
     sync_chart_values_.clear();
     const int start = std::max(0, static_cast<int>(sync_sample_records_.size()) - kMaxChartSamples);
     {
@@ -3402,13 +3355,13 @@ void AnalysisPanel::UpdateSyncChart() {
 
     const int x_min = sync_sample_records_.empty() ? 0 : sync_sample_records_[start].index;
     const int x_max = sync_sample_records_.empty() ? 1 : sync_sample_records_.back().index;
-    sync_axis_x_->setRange(x_min, std::max(x_min + 1, x_max));
+    sync_axis_x_->SetRange(x_min, std::max(x_min + 1, x_max));
 
     qreal max_abs = 1.0;
     for (qreal value : sync_chart_values_) {
         max_abs = std::max(max_abs, std::abs(value));
     }
-    sync_axis_y_->setRange(-max_abs * 1.1, max_abs * 1.1);
+    sync_axis_y_->SetRange(-max_abs * 1.1, max_abs * 1.1);
 }
 
 void AnalysisPanel::UpdateTimelineChart() {
@@ -3417,13 +3370,13 @@ void AnalysisPanel::UpdateTimelineChart() {
         return;
     }
 
-    timeline_video_series_->clear();
-    timeline_audio_series_->clear();
-    timeline_event_series_->clear();
+    timeline_video_series_->Clear();
+    timeline_audio_series_->Clear();
+    timeline_event_series_->Clear();
 
     if (timeline_event_records_.empty()) {
-        timeline_axis_x_->setRange(0.0, 1.0);
-        timeline_axis_y_->setRange(0.5, 3.5);
+        timeline_axis_x_->SetRange(0.0, 1.0);
+        timeline_axis_y_->SetRange(0.5, 3.5);
         return;
     }
 
@@ -3451,8 +3404,8 @@ void AnalysisPanel::UpdateTimelineChart() {
     if (min_ts == max_ts) {
         max_ts += 0.001;
     }
-    timeline_axis_x_->setRange(min_ts, max_ts);
-    timeline_axis_y_->setRange(0.5, 3.5);
+    timeline_axis_x_->SetRange(min_ts, max_ts);
+    timeline_axis_y_->SetRange(0.5, 3.5);
 }
 
 void AnalysisPanel::OnExportReport() {
@@ -3867,24 +3820,17 @@ void AnalysisPanel::SetupSceneChangeTab() {
     layout->addWidget(scene_change_summary_label_);
 
     // 切换强度柱状图
-    scene_change_chart_object_ = new QChart();
-    scene_change_chart_object_->setTitle(tr("切换强度（逐切换点）"));
-    scene_change_bar_set_ = new QBarSet(tr("强度"));
-    scene_change_series_ = new QBarSeries();
-    scene_change_series_->append(scene_change_bar_set_);
-    scene_change_chart_object_->addSeries(scene_change_series_);
-    scene_change_axis_x_ = new QValueAxis();
-    scene_change_axis_x_->setTitleText(tr("切换点序号"));
-    scene_change_axis_y_ = new QValueAxis();
-    scene_change_axis_y_->setTitleText(tr("强度"));
-    scene_change_axis_y_->setRange(0, 1);
-    scene_change_chart_object_->addAxis(scene_change_axis_x_, Qt::AlignBottom);
-    scene_change_chart_object_->addAxis(scene_change_axis_y_, Qt::AlignLeft);
-    scene_change_series_->attachAxis(scene_change_axis_x_);
-    scene_change_series_->attachAxis(scene_change_axis_y_);
-    scene_change_chart_ = new QChartView(scene_change_chart_object_);
+    scene_change_chart_ = new MetricChartWidget(scene_change_tab_);
+    scene_change_chart_->SetTitle(tr("切换强度（逐切换点）"));
+    scene_change_chart_->SetLegendVisible(false);
+    scene_change_series_ = scene_change_chart_->AddBarSeries(tr("强度"), QColor("#8e24aa"));
+    scene_change_axis_x_ = scene_change_chart_->AxisX();
+    scene_change_axis_y_ = scene_change_chart_->AxisY();
+    scene_change_axis_x_->SetLabelFormat("%d");
+    scene_change_axis_x_->SetTitleText(tr("切换点序号"));
+    scene_change_axis_y_->SetTitleText(tr("强度"));
+    scene_change_axis_y_->SetRange(0, 1);
     scene_change_chart_->setMinimumHeight(180);
-    scene_change_chart_->setRenderHint(QPainter::Antialiasing);
     layout->addWidget(scene_change_chart_);
 
     // 切换点列表
@@ -3933,16 +3879,16 @@ void AnalysisPanel::AppendSceneChangeRow(const analyzer::SceneChangeResult& resu
 }
 
 void AnalysisPanel::UpdateSceneChangeChart() {
-    if (scene_change_bar_set_->count() > 0)
-        scene_change_bar_set_->remove(0, scene_change_bar_set_->count());
+    if (!scene_change_series_) return;
+    scene_change_series_->Clear();
     // 限制显示最近 200 个切换点, 避免柱状图过载
     const int max_bars = 200;
     const int start = scene_change_records_.size() > static_cast<size_t>(max_bars)
                           ? static_cast<int>(scene_change_records_.size() - max_bars) : 0;
     for (int i = start; i < static_cast<int>(scene_change_records_.size()); ++i) {
-        scene_change_bar_set_->append(scene_change_records_[i].score);
+        scene_change_series_->Append(static_cast<double>(i), scene_change_records_[i].score);
     }
-    scene_change_axis_x_->setRange(start, std::max(start + 1, static_cast<int>(scene_change_records_.size())));
+    scene_change_axis_x_->SetRange(start, std::max(start + 1, static_cast<int>(scene_change_records_.size())));
 }
 
 void AnalysisPanel::UpdateSceneChangeSummary() {
@@ -4126,7 +4072,7 @@ QString FormatMetricValue(double value, const QString& unit) {
 QString FormatKb(double bytes) { return QString::number(bytes / 1024.0, 'f', 1); }
 
 // 抽稀（保留每组最大值，避免丢掉峰值）；批量提交，避免逐点刷新图表
-void AppendDecimated(QLineSeries* series, const model::MetricSeries& curve, int limit) {
+void AppendDecimated(ChartSeries* series, const model::MetricSeries& curve, int limit) {
     const size_t n = curve.Size();
     if (n == 0) return;
     SeriesBatch batch(series);
@@ -4258,53 +4204,30 @@ void AnalysisPanel::SetupBitrateGopTab() {
 
     // 码率曲线（叠加 I 帧 / 场景切换 / 异常峰值标记）
     {
-        bitrate_gop_chart_object_ = new QChart();
-        bitrate_gop_chart_object_->setTitle(tr("滑动窗口码率（含 I 帧 / 场景切换 / 峰值标记）"));
-        bitrate_gop_series_ = new QLineSeries();
-        bitrate_gop_series_->setName(tr("码率"));
-        bitrate_target_series_ = new QLineSeries();
-        bitrate_target_series_->setName(tr("目标峰值"));
-        bitrate_iframe_series_ = new QScatterSeries();
-        bitrate_iframe_series_->setName(tr("I 帧"));
-        bitrate_iframe_series_->setMarkerSize(6.0);
-        bitrate_iframe_series_->setColor(QColor("#43a047"));
-        bitrate_iframe_series_->setBorderColor(QColor("#43a047"));
-        bitrate_scene_series_ = new QScatterSeries();
-        bitrate_scene_series_->setName(tr("场景切换"));
-        bitrate_scene_series_->setMarkerSize(9.0);
-        bitrate_scene_series_->setMarkerShape(QScatterSeries::MarkerShapeRectangle);
-        bitrate_scene_series_->setColor(QColor("#8e24aa"));
-        bitrate_scene_series_->setBorderColor(QColor("#8e24aa"));
-        bitrate_anomaly_series_ = new QScatterSeries();
-        bitrate_anomaly_series_->setName(tr("异常峰值"));
-        bitrate_anomaly_series_->setMarkerSize(11.0);
-        bitrate_anomaly_series_->setMarkerShape(QScatterSeries::MarkerShapeTriangle);
-        bitrate_anomaly_series_->setColor(QColor("#e53935"));
-        bitrate_anomaly_series_->setBorderColor(QColor("#e53935"));
+        bitrate_gop_chart_ = new MetricChartWidget(bitrate_gop_tab_);
+        bitrate_gop_chart_->SetTitle(tr("滑动窗口码率（含 I 帧 / 场景切换 / 峰值标记）"));
+        bitrate_gop_series_ = bitrate_gop_chart_->AddLineSeries(tr("码率"), QColor("#1e88e5"));
+        bitrate_target_series_ = bitrate_gop_chart_->AddLineSeries(tr("目标峰值"), QColor("#fb8c00"));
 
-        bitrate_gop_chart_object_->addSeries(bitrate_gop_series_);
-        bitrate_gop_chart_object_->addSeries(bitrate_target_series_);
-        bitrate_gop_chart_object_->addSeries(bitrate_iframe_series_);
-        bitrate_gop_chart_object_->addSeries(bitrate_scene_series_);
-        bitrate_gop_chart_object_->addSeries(bitrate_anomaly_series_);
+        bitrate_iframe_series_ = bitrate_gop_chart_->AddScatterSeries(tr("I 帧"), QColor("#43a047"));
+        bitrate_iframe_series_->SetMarkerSize(6.0);
+        bitrate_iframe_series_->SetBorderColor(QColor("#43a047"));
 
-        bitrate_gop_axis_x_ = new QValueAxis();
-        bitrate_gop_axis_x_->setTitleText(tr("时间 (s)"));
-        bitrate_gop_axis_y_ = new QValueAxis();
-        bitrate_gop_axis_y_->setTitleText(tr("kbps"));
-        bitrate_gop_chart_object_->addAxis(bitrate_gop_axis_x_, Qt::AlignBottom);
-        bitrate_gop_chart_object_->addAxis(bitrate_gop_axis_y_, Qt::AlignLeft);
-        for (QAbstractSeries* s : {static_cast<QAbstractSeries*>(bitrate_gop_series_),
-                                   static_cast<QAbstractSeries*>(bitrate_target_series_),
-                                   static_cast<QAbstractSeries*>(bitrate_iframe_series_),
-                                   static_cast<QAbstractSeries*>(bitrate_scene_series_),
-                                   static_cast<QAbstractSeries*>(bitrate_anomaly_series_)}) {
-            s->attachAxis(bitrate_gop_axis_x_);
-            s->attachAxis(bitrate_gop_axis_y_);
-        }
-        bitrate_gop_chart_ = new QChartView(bitrate_gop_chart_object_, bitrate_gop_tab_);
+        bitrate_scene_series_ = bitrate_gop_chart_->AddScatterSeries(tr("场景切换"), QColor("#8e24aa"));
+        bitrate_scene_series_->SetMarkerSize(9.0);
+        bitrate_scene_series_->SetMarkerShape(ChartMarkerShape::Rectangle);
+        bitrate_scene_series_->SetBorderColor(QColor("#8e24aa"));
+
+        bitrate_anomaly_series_ = bitrate_gop_chart_->AddScatterSeries(tr("异常峰值"), QColor("#e53935"));
+        bitrate_anomaly_series_->SetMarkerSize(11.0);
+        bitrate_anomaly_series_->SetMarkerShape(ChartMarkerShape::Triangle);
+        bitrate_anomaly_series_->SetBorderColor(QColor("#e53935"));
+
+        bitrate_gop_axis_x_ = bitrate_gop_chart_->AxisX();
+        bitrate_gop_axis_y_ = bitrate_gop_chart_->AxisY();
+        bitrate_gop_axis_x_->SetTitleText(tr("时间 (s)"));
+        bitrate_gop_axis_y_->SetTitleText(tr("kbps"));
         bitrate_gop_chart_->setMinimumHeight(240);
-        bitrate_gop_chart_->setRenderHint(QPainter::Antialiasing);
         layout->addWidget(bitrate_gop_chart_);
     }
 
@@ -4509,11 +4432,11 @@ void AnalysisPanel::UpdateBitrateGopSummary() {
 
 void AnalysisPanel::UpdateBitrateGopChart() {
     if (!bitrate_gop_series_) return;
-    bitrate_gop_series_->clear();
-    bitrate_target_series_->clear();
-    bitrate_iframe_series_->clear();
-    bitrate_scene_series_->clear();
-    bitrate_anomaly_series_->clear();
+    bitrate_gop_series_->Clear();
+    bitrate_target_series_->Clear();
+    bitrate_iframe_series_->Clear();
+    bitrate_scene_series_->Clear();
+    bitrate_anomaly_series_->Clear();
     if (!has_diagnostics_result_) return;
 
     const auto& bg = diagnostics_result_.bitrate_gop;
@@ -4549,8 +4472,8 @@ void AnalysisPanel::UpdateBitrateGopChart() {
     if (y_max <= 0.0) y_max = 1.0;
 
     if (bg.target_peak_kbps > 0.0) {
-        bitrate_target_series_->append(0.0, bg.target_peak_kbps);
-        bitrate_target_series_->append(duration, bg.target_peak_kbps);
+        bitrate_target_series_->Append(0.0, bg.target_peak_kbps);
+        bitrate_target_series_->Append(duration, bg.target_peak_kbps);
     }
 
     // I 帧标记（画在基线）
@@ -4591,8 +4514,8 @@ void AnalysisPanel::UpdateBitrateGopChart() {
         }
     }
 
-    bitrate_gop_axis_x_->setRange(0.0, duration);
-    bitrate_gop_axis_y_->setRange(0.0, y_max);
+    bitrate_gop_axis_x_->SetRange(0.0, duration);
+    bitrate_gop_axis_y_->SetRange(0.0, y_max);
 }
 
 void AnalysisPanel::RebuildBitrateGopTable() {
@@ -4807,7 +4730,7 @@ QString AudioFormatDb(double value, double silence_floor) {
 }
 
 // 抽稀（保留每组极值，避免丢掉峰值）
-void AppendAudioPoints(QLineSeries* series, const std::vector<model::LoudnessPoint>& points,
+void AppendAudioPoints(ChartSeries* series, const std::vector<model::LoudnessPoint>& points,
                        int limit, double (model::LoudnessPoint::*member), double floor_value) {
     if (points.empty()) return;
     const double fallback = floor_value;
@@ -4960,66 +4883,29 @@ void AnalysisPanel::SetupAudioQcTab() {
         QVBoxLayout* pl = new QVBoxLayout(page);
         pl->setContentsMargins(2, 2, 2, 2);
 
-        audio_lufs_chart_object_ = new QChart();
-        audio_lufs_chart_object_->setTitle(tr("响度曲线（M 400ms / S 3s / I 累计）"));
-        audio_momentary_series_ = new QLineSeries();
-        audio_momentary_series_->setName(tr("瞬时 M"));
-        audio_short_term_series_ = new QLineSeries();
-        audio_short_term_series_->setName(tr("短期 S"));
-        audio_integrated_series_ = new QLineSeries();
-        audio_integrated_series_->setName(tr("累计 I"));
-        audio_target_series_ = new QLineSeries();
-        audio_target_series_->setName(tr("目标"));
-        audio_target_series_->setColor(QColor("#e53935"));
-        audio_lufs_chart_object_->addSeries(audio_momentary_series_);
-        audio_lufs_chart_object_->addSeries(audio_short_term_series_);
-        audio_lufs_chart_object_->addSeries(audio_integrated_series_);
-        audio_lufs_chart_object_->addSeries(audio_target_series_);
-        audio_lufs_axis_x_ = new QValueAxis();
-        audio_lufs_axis_x_->setTitleText(tr("时间 (s)"));
-        audio_lufs_axis_y_ = new QValueAxis();
-        audio_lufs_axis_y_->setTitleText(tr("LUFS"));
-        audio_lufs_chart_object_->addAxis(audio_lufs_axis_x_, Qt::AlignBottom);
-        audio_lufs_chart_object_->addAxis(audio_lufs_axis_y_, Qt::AlignLeft);
-        for (QAbstractSeries* s : {static_cast<QAbstractSeries*>(audio_momentary_series_),
-                                   static_cast<QAbstractSeries*>(audio_short_term_series_),
-                                   static_cast<QAbstractSeries*>(audio_integrated_series_),
-                                   static_cast<QAbstractSeries*>(audio_target_series_)}) {
-            s->attachAxis(audio_lufs_axis_x_);
-            s->attachAxis(audio_lufs_axis_y_);
-        }
-        audio_lufs_chart_ = new QChartView(audio_lufs_chart_object_, page);
+        audio_lufs_chart_ = new MetricChartWidget(page);
+        audio_lufs_chart_->SetTitle(tr("响度曲线（M 400ms / S 3s / I 累计）"));
+        audio_momentary_series_ = audio_lufs_chart_->AddLineSeries(tr("瞬时 M"), QColor("#42a5f5"));
+        audio_short_term_series_ = audio_lufs_chart_->AddLineSeries(tr("短期 S"), QColor("#66bb6a"));
+        audio_integrated_series_ = audio_lufs_chart_->AddLineSeries(tr("累计 I"), QColor("#8e24aa"));
+        audio_target_series_ = audio_lufs_chart_->AddLineSeries(tr("目标"), QColor("#e53935"));
+        audio_lufs_axis_x_ = audio_lufs_chart_->AxisX();
+        audio_lufs_axis_y_ = audio_lufs_chart_->AxisY();
+        audio_lufs_axis_x_->SetTitleText(tr("时间 (s)"));
+        audio_lufs_axis_y_->SetTitleText(tr("LUFS"));
         audio_lufs_chart_->setMinimumHeight(210);
-        audio_lufs_chart_->setRenderHint(QPainter::Antialiasing);
         pl->addWidget(audio_lufs_chart_);
 
-        audio_level_chart_object_ = new QChart();
-        audio_level_chart_object_->setTitle(tr("电平曲线（RMS / 采样峰值 / 真峰值）"));
-        audio_rms_series_ = new QLineSeries();
-        audio_rms_series_->setName(tr("RMS dBFS"));
-        audio_peak_series_ = new QLineSeries();
-        audio_peak_series_->setName(tr("峰值 dBFS"));
-        audio_true_peak_series_ = new QLineSeries();
-        audio_true_peak_series_->setName(tr("真峰值 dBTP"));
-        audio_true_peak_series_->setColor(QColor("#fb8c00"));
-        audio_level_chart_object_->addSeries(audio_rms_series_);
-        audio_level_chart_object_->addSeries(audio_peak_series_);
-        audio_level_chart_object_->addSeries(audio_true_peak_series_);
-        audio_level_axis_x_ = new QValueAxis();
-        audio_level_axis_x_->setTitleText(tr("时间 (s)"));
-        audio_level_axis_y_ = new QValueAxis();
-        audio_level_axis_y_->setTitleText(tr("dB"));
-        audio_level_chart_object_->addAxis(audio_level_axis_x_, Qt::AlignBottom);
-        audio_level_chart_object_->addAxis(audio_level_axis_y_, Qt::AlignLeft);
-        for (QAbstractSeries* s : {static_cast<QAbstractSeries*>(audio_rms_series_),
-                                   static_cast<QAbstractSeries*>(audio_peak_series_),
-                                   static_cast<QAbstractSeries*>(audio_true_peak_series_)}) {
-            s->attachAxis(audio_level_axis_x_);
-            s->attachAxis(audio_level_axis_y_);
-        }
-        audio_level_chart_ = new QChartView(audio_level_chart_object_, page);
+        audio_level_chart_ = new MetricChartWidget(page);
+        audio_level_chart_->SetTitle(tr("电平曲线（RMS / 采样峰值 / 真峰值）"));
+        audio_rms_series_ = audio_level_chart_->AddLineSeries(tr("RMS dBFS"), QColor("#42a5f5"));
+        audio_peak_series_ = audio_level_chart_->AddLineSeries(tr("峰值 dBFS"), QColor("#66bb6a"));
+        audio_true_peak_series_ = audio_level_chart_->AddLineSeries(tr("真峰值 dBTP"), QColor("#fb8c00"));
+        audio_level_axis_x_ = audio_level_chart_->AxisX();
+        audio_level_axis_y_ = audio_level_chart_->AxisY();
+        audio_level_axis_x_->SetTitleText(tr("时间 (s)"));
+        audio_level_axis_y_->SetTitleText(tr("dB"));
         audio_level_chart_->setMinimumHeight(210);
-        audio_level_chart_->setRenderHint(QPainter::Antialiasing);
         pl->addWidget(audio_level_chart_);
 
         audio_qc_sub_tabs_->addTab(page, tr("响度与电平"));
@@ -5031,33 +4917,19 @@ void AnalysisPanel::SetupAudioQcTab() {
         QVBoxLayout* pl = new QVBoxLayout(page);
         pl->setContentsMargins(2, 2, 2, 2);
 
-        audio_event_chart_object_ = new QChart();
-        audio_event_chart_object_->setTitle(tr("静音段（方波）与削波点（三角）时间轴"));
-        audio_silence_series_ = new QLineSeries();
-        audio_silence_series_->setName(tr("静音段"));
-        audio_silence_series_->setColor(QColor("#1e88e5"));
-        audio_clip_series_ = new QScatterSeries();
-        audio_clip_series_->setName(tr("削波"));
-        audio_clip_series_->setMarkerSize(9.0);
-        audio_clip_series_->setMarkerShape(QScatterSeries::MarkerShapeTriangle);
-        audio_clip_series_->setColor(QColor("#e53935"));
-        audio_clip_series_->setBorderColor(QColor("#e53935"));
-        audio_event_chart_object_->addSeries(audio_silence_series_);
-        audio_event_chart_object_->addSeries(audio_clip_series_);
-        audio_event_axis_x_ = new QValueAxis();
-        audio_event_axis_x_->setTitleText(tr("时间 (s)"));
-        audio_event_axis_y_ = new QValueAxis();
-        audio_event_axis_y_->setTitleText(tr("静音 0/1 ｜ 削波 1.5"));
-        audio_event_axis_y_->setRange(-0.2, 1.8);
-        audio_event_chart_object_->addAxis(audio_event_axis_x_, Qt::AlignBottom);
-        audio_event_chart_object_->addAxis(audio_event_axis_y_, Qt::AlignLeft);
-        audio_silence_series_->attachAxis(audio_event_axis_x_);
-        audio_silence_series_->attachAxis(audio_event_axis_y_);
-        audio_clip_series_->attachAxis(audio_event_axis_x_);
-        audio_clip_series_->attachAxis(audio_event_axis_y_);
-        audio_event_chart_ = new QChartView(audio_event_chart_object_, page);
+        audio_event_chart_ = new MetricChartWidget(page);
+        audio_event_chart_->SetTitle(tr("静音段（方波）与削波点（三角）时间轴"));
+        audio_silence_series_ = audio_event_chart_->AddLineSeries(tr("静音段"), QColor("#1e88e5"));
+        audio_clip_series_ = audio_event_chart_->AddScatterSeries(tr("削波"), QColor("#e53935"));
+        audio_clip_series_->SetMarkerSize(9.0);
+        audio_clip_series_->SetMarkerShape(ChartMarkerShape::Triangle);
+        audio_clip_series_->SetBorderColor(QColor("#e53935"));
+        audio_event_axis_x_ = audio_event_chart_->AxisX();
+        audio_event_axis_y_ = audio_event_chart_->AxisY();
+        audio_event_axis_x_->SetTitleText(tr("时间 (s)"));
+        audio_event_axis_y_->SetTitleText(tr("静音 0/1 ｜ 削波 1.5"));
+        audio_event_axis_y_->SetRange(-0.2, 1.8);
         audio_event_chart_->setMinimumHeight(180);
-        audio_event_chart_->setRenderHint(QPainter::Antialiasing);
         pl->addWidget(audio_event_chart_);
 
         QLabel* clip_hint = new QLabel(tr("点击任意一行跳转到该位置。"), page);
@@ -5095,38 +4967,24 @@ void AnalysisPanel::SetupAudioQcTab() {
         QVBoxLayout* pl = new QVBoxLayout(page);
         pl->setContentsMargins(2, 2, 2, 2);
 
-        audio_channel_chart_object_ = new QChart();
-        audio_channel_chart_object_->setTitle(tr("声道能量（RMS / 峰值 dBFS）"));
-        audio_channel_series_ = new QBarSeries();
-        audio_channel_chart_object_->addSeries(audio_channel_series_);
-        audio_channel_axis_x_ = new QBarCategoryAxis();
-        audio_channel_chart_object_->addAxis(audio_channel_axis_x_, Qt::AlignBottom);
-        audio_channel_axis_y_ = new QValueAxis();
-        audio_channel_axis_y_->setTitleText(tr("dBFS"));
-        audio_channel_chart_object_->addAxis(audio_channel_axis_y_, Qt::AlignLeft);
-        audio_channel_series_->attachAxis(audio_channel_axis_x_);
-        audio_channel_series_->attachAxis(audio_channel_axis_y_);
-        audio_channel_chart_ = new QChartView(audio_channel_chart_object_, page);
+        audio_channel_chart_ = new MetricChartWidget(page);
+        audio_channel_chart_->SetTitle(tr("声道能量（RMS / 峰值 dBFS）"));
+        audio_channel_series_ = audio_channel_chart_->AddBarSeries(tr("RMS dBFS"), QColor("#42a5f5"));
+        audio_channel_peak_series_ = audio_channel_chart_->AddBarSeries(tr("峰值 dBFS"), QColor("#66bb6a"));
+        audio_channel_axis_x_ = audio_channel_chart_->AxisX();
+        audio_channel_axis_y_ = audio_channel_chart_->AxisY();
+        audio_channel_axis_y_->SetTitleText(tr("dBFS"));
         audio_channel_chart_->setMinimumHeight(200);
-        audio_channel_chart_->setRenderHint(QPainter::Antialiasing);
         pl->addWidget(audio_channel_chart_);
 
-        audio_corr_chart_object_ = new QChart();
-        audio_corr_chart_object_->setTitle(tr("声道相关性（最差声道对，1=同相 / -1=反相）"));
-        audio_corr_series_ = new QLineSeries();
-        audio_corr_series_->setName(tr("相关性"));
-        audio_corr_chart_object_->addSeries(audio_corr_series_);
-        audio_corr_axis_x_ = new QValueAxis();
-        audio_corr_axis_x_->setTitleText(tr("时间 (s)"));
-        audio_corr_axis_y_ = new QValueAxis();
-        audio_corr_axis_y_->setRange(-1.05, 1.05);
-        audio_corr_chart_object_->addAxis(audio_corr_axis_x_, Qt::AlignBottom);
-        audio_corr_chart_object_->addAxis(audio_corr_axis_y_, Qt::AlignLeft);
-        audio_corr_series_->attachAxis(audio_corr_axis_x_);
-        audio_corr_series_->attachAxis(audio_corr_axis_y_);
-        audio_corr_chart_ = new QChartView(audio_corr_chart_object_, page);
+        audio_corr_chart_ = new MetricChartWidget(page);
+        audio_corr_chart_->SetTitle(tr("声道相关性（最差声道对，1=同相 / -1=反相）"));
+        audio_corr_series_ = audio_corr_chart_->AddLineSeries(tr("相关性"), QColor("#42a5f5"));
+        audio_corr_axis_x_ = audio_corr_chart_->AxisX();
+        audio_corr_axis_y_ = audio_corr_chart_->AxisY();
+        audio_corr_axis_x_->SetTitleText(tr("时间 (s)"));
+        audio_corr_axis_y_->SetRange(-1.05, 1.05);
         audio_corr_chart_->setMinimumHeight(200);
-        audio_corr_chart_->setRenderHint(QPainter::Antialiasing);
         pl->addWidget(audio_corr_chart_);
 
         audio_metadata_table_ = new QTableWidget(0, 2, page);
@@ -5280,17 +5138,17 @@ void AnalysisPanel::UpdateAudioQcSummary() {
 }
 
 void AnalysisPanel::UpdateAudioQcCharts() {
-    if (!audio_lufs_chart_object_) return;
-    audio_momentary_series_->clear();
-    audio_short_term_series_->clear();
-    audio_integrated_series_->clear();
-    audio_target_series_->clear();
-    audio_rms_series_->clear();
-    audio_peak_series_->clear();
-    audio_true_peak_series_->clear();
-    audio_silence_series_->clear();
-    audio_clip_series_->clear();
-    audio_corr_series_->clear();
+    if (!audio_lufs_chart_) return;
+    audio_momentary_series_->Clear();
+    audio_short_term_series_->Clear();
+    audio_integrated_series_->Clear();
+    audio_target_series_->Clear();
+    audio_rms_series_->Clear();
+    audio_peak_series_->Clear();
+    audio_true_peak_series_->Clear();
+    audio_silence_series_->Clear();
+    audio_clip_series_->Clear();
+    audio_corr_series_->Clear();
 
     const auto& qc = diagnostics_result_.audio_qc;
     if (!has_diagnostics_result_ || !qc.analyzed) return;
@@ -5315,8 +5173,8 @@ void AnalysisPanel::UpdateAudioQcCharts() {
     // 目标响度参考线
     const double target = audio_qc_target_lufs_spin_ ? audio_qc_target_lufs_spin_->value() : -23.0;
     if (!points.empty()) {
-        audio_target_series_->append(points.front().timestamp_seconds, target);
-        audio_target_series_->append(points.back().timestamp_seconds, target);
+        audio_target_series_->Append(points.front().timestamp_seconds, target);
+        audio_target_series_->Append(points.back().timestamp_seconds, target);
     }
 
     // 静音段画成方波；削波点画在 y=1.5
@@ -5339,34 +5197,29 @@ void AnalysisPanel::UpdateAudioQcCharts() {
     }
 
     const double span = std::max(1.0, qc.duration_seconds);
-    audio_lufs_axis_x_->setRange(0.0, span);
-    audio_level_axis_x_->setRange(0.0, span);
-    audio_event_axis_x_->setRange(0.0, span);
-    audio_corr_axis_x_->setRange(0.0, span);
-    audio_lufs_axis_y_->setRange(-60.0, 0.0);
-    audio_level_axis_y_->setRange(-90.0, 6.0);
+    audio_lufs_axis_x_->SetRange(0.0, span);
+    audio_level_axis_x_->SetRange(0.0, span);
+    audio_event_axis_x_->SetRange(0.0, span);
+    audio_corr_axis_x_->SetRange(0.0, span);
+    audio_lufs_axis_y_->SetRange(-60.0, 0.0);
+    audio_level_axis_y_->SetRange(-90.0, 6.0);
 
-    // 声道能量柱状图
-    audio_channel_series_->clear();
-    while (audio_channel_series_->barSets().size() > 0) {
-        audio_channel_series_->remove(audio_channel_series_->barSets().first());
-    }
+    // 声道能量柱状图（每个声道两根柱: RMS / 峰值）
+    audio_channel_series_->Clear();
+    audio_channel_peak_series_->Clear();
     if (!qc.channels.empty()) {
-        QBarSet* rms_set = new QBarSet(tr("RMS dBFS"), audio_channel_series_);
-        QBarSet* peak_set = new QBarSet(tr("峰值 dBFS"), audio_channel_series_);
         QStringList categories;
         for (const auto& ch : qc.channels) {
             const QString name = ch.name.empty() ? QString("Ch%1").arg(ch.index + 1)
                                                  : QString::fromStdString(ch.name);
             categories << name;
-            *rms_set << (ch.rms_dbfs <= model::kSilenceLevelDb + 1.0 ? -120.0 : ch.rms_dbfs);
-            *peak_set << (ch.peak_dbfs <= model::kSilenceLevelDb + 1.0 ? -120.0 : ch.peak_dbfs);
+            const double rms = (ch.rms_dbfs <= model::kSilenceLevelDb + 1.0) ? -120.0 : ch.rms_dbfs;
+            const double peak = (ch.peak_dbfs <= model::kSilenceLevelDb + 1.0) ? -120.0 : ch.peak_dbfs;
+            audio_channel_series_->Append(static_cast<double>(categories.size() - 1), rms);
+            audio_channel_peak_series_->Append(static_cast<double>(categories.size() - 1), peak);
         }
-        audio_channel_series_->append(rms_set);
-        audio_channel_series_->append(peak_set);
-        audio_channel_axis_x_->clear();
-        audio_channel_axis_x_->append(categories);
-        audio_channel_axis_y_->setRange(-90.0, 6.0);
+        audio_channel_chart_->SetCategories(categories);
+        audio_channel_axis_y_->SetRange(-90.0, 6.0);
     }
 }
 
@@ -5927,30 +5780,19 @@ void AnalysisPanel::SetupDiagnosticsTab() {
         QVBoxLayout* pl = new QVBoxLayout(page);
         pl->setContentsMargins(2, 2, 2, 2);
 
-        qc_chart_object_ = new QChart();
-        qc_chart_object_->setTitle(tr("逐秒码率 / 帧率"));
-        qc_bitrate_series_ = new QLineSeries();
-        qc_bitrate_series_->setName(tr("码率 (kbps)"));
-        qc_fps_series_ = new QLineSeries();
-        qc_fps_series_->setName(tr("帧率 (fps)"));
-        qc_chart_object_->addSeries(qc_bitrate_series_);
-        qc_chart_object_->addSeries(qc_fps_series_);
-        qc_axis_x_ = new QValueAxis();
-        qc_axis_x_->setTitleText(tr("时间 (s)"));
-        qc_axis_bitrate_ = new QValueAxis();
-        qc_axis_bitrate_->setTitleText(tr("kbps"));
-        qc_axis_fps_ = new QValueAxis();
-        qc_axis_fps_->setTitleText(tr("fps"));
-        qc_chart_object_->addAxis(qc_axis_x_, Qt::AlignBottom);
-        qc_chart_object_->addAxis(qc_axis_bitrate_, Qt::AlignLeft);
-        qc_chart_object_->addAxis(qc_axis_fps_, Qt::AlignRight);
-        qc_bitrate_series_->attachAxis(qc_axis_x_);
-        qc_bitrate_series_->attachAxis(qc_axis_bitrate_);
-        qc_fps_series_->attachAxis(qc_axis_x_);
-        qc_fps_series_->attachAxis(qc_axis_fps_);
-        qc_chart_view_ = new QChartView(qc_chart_object_, page);
+        qc_chart_view_ = new MetricChartWidget(page);
+        qc_chart_view_->SetTitle(tr("逐秒码率 / 帧率"));
+        qc_bitrate_series_ = qc_chart_view_->AddLineSeries(tr("码率 (kbps)"), QColor("#1e88e5"));
+        qc_fps_series_ = qc_chart_view_->AddLineSeries(tr("帧率 (fps)"), QColor("#43a047"));
+        qc_axis_x_ = qc_chart_view_->AxisX();
+        qc_axis_bitrate_ = qc_chart_view_->AxisY();        // 左轴
+        qc_axis_fps_ = qc_chart_view_->AxisY2();           // 右轴
+        qc_chart_view_->SetAxisY2Visible(true);
+        qc_chart_view_->AttachAxis(qc_fps_series_, qc_axis_fps_);
+        qc_axis_x_->SetTitleText(tr("时间 (s)"));
+        qc_axis_bitrate_->SetTitleText(tr("kbps"));
+        qc_axis_fps_->SetTitleText(tr("fps"));
         qc_chart_view_->setMinimumHeight(220);
-        qc_chart_view_->setRenderHint(QPainter::Antialiasing);
         pl->addWidget(qc_chart_view_);
 
         qc_issue_table_ = new QTableWidget(0, 6, page);
@@ -6235,8 +6077,8 @@ void AnalysisPanel::UpdateQcSummary() {
 
 void AnalysisPanel::UpdateQcChart() {
     if (!qc_bitrate_series_ || !has_diagnostics_result_) return;
-    qc_bitrate_series_->clear();
-    qc_fps_series_->clear();
+    qc_bitrate_series_->Clear();
+    qc_fps_series_->Clear();
 
     const auto& bitrate = diagnostics_result_.video_bitrate_kbps.IsEmpty()
                               ? diagnostics_result_.total_bitrate_kbps
@@ -6261,9 +6103,9 @@ void AnalysisPanel::UpdateQcChart() {
     if (!diagnostics_result_.video_fps.samples.empty()) {
         max_t = std::max(max_t, diagnostics_result_.video_fps.samples.back().timestamp_seconds);
     }
-    qc_axis_x_->setRange(0, max_t);
-    qc_axis_bitrate_->setRange(0, std::max(1.0, bitrate.Max() * 1.2));
-    qc_axis_fps_->setRange(0, std::max(1.0, diagnostics_result_.video_fps.Max() * 1.2));
+    qc_axis_x_->SetRange(0, max_t);
+    qc_axis_bitrate_->SetRange(0, std::max(1.0, bitrate.Max() * 1.2));
+    qc_axis_fps_->SetRange(0, std::max(1.0, diagnostics_result_.video_fps.Max() * 1.2));
 }
 
 void AnalysisPanel::RebuildRuleTable() {
@@ -6383,31 +6225,19 @@ void AnalysisPanel::SetupTimelineDiagnosticsSubPage() {
     layout->addWidget(timeline_diag_summary_label_);
 
     // 帧间隔曲线 + 问题标记散点
-    timeline_issue_chart_object_ = new QChart();
-    timeline_issue_chart_object_->setTitle(tr("帧间隔与问题分布"));
-    timeline_interval_series_ = new QLineSeries();
-    timeline_interval_series_->setName(tr("帧间隔 (ms)"));
-    timeline_marker_series_ = new QScatterSeries();
-    timeline_marker_series_->setName(tr("问题"));
-    timeline_marker_series_->setMarkerSize(10.0);
-    timeline_issue_chart_object_->addSeries(timeline_interval_series_);
-    timeline_issue_chart_object_->addSeries(timeline_marker_series_);
-    timeline_chart_axis_x_ = new QValueAxis();
-    timeline_chart_axis_x_->setTitleText(tr("时间 (s)"));
-    timeline_chart_axis_y_ = new QValueAxis();
-    timeline_chart_axis_y_->setTitleText(tr("间隔 (ms)"));
-    timeline_issue_chart_object_->addAxis(timeline_chart_axis_x_, Qt::AlignBottom);
-    timeline_issue_chart_object_->addAxis(timeline_chart_axis_y_, Qt::AlignLeft);
-    timeline_interval_series_->attachAxis(timeline_chart_axis_x_);
-    timeline_interval_series_->attachAxis(timeline_chart_axis_y_);
-    timeline_marker_series_->attachAxis(timeline_chart_axis_x_);
-    timeline_marker_series_->attachAxis(timeline_chart_axis_y_);
-    timeline_issue_chart_ = new QChartView(timeline_issue_chart_object_, timeline_sub_);
+    timeline_issue_chart_ = new MetricChartWidget(timeline_sub_);
+    timeline_issue_chart_->SetTitle(tr("帧间隔与问题分布"));
+    timeline_interval_series_ = timeline_issue_chart_->AddLineSeries(tr("帧间隔 (ms)"), QColor("#1e88e5"));
+    timeline_marker_series_ = timeline_issue_chart_->AddScatterSeries(tr("问题"), QColor("#e53935"));
+    timeline_marker_series_->SetMarkerSize(10.0);
+    timeline_chart_axis_x_ = timeline_issue_chart_->AxisX();
+    timeline_chart_axis_y_ = timeline_issue_chart_->AxisY();
+    timeline_chart_axis_x_->SetTitleText(tr("时间 (s)"));
+    timeline_chart_axis_y_->SetTitleText(tr("间隔 (ms)"));
     timeline_issue_chart_->setMinimumHeight(220);
-    timeline_issue_chart_->setRenderHint(QPainter::Antialiasing);
     layout->addWidget(timeline_issue_chart_);
 
-    connect(timeline_marker_series_, &QScatterSeries::hovered,
+    connect(timeline_issue_chart_, &MetricChartWidget::PointHovered,
             this, &AnalysisPanel::OnTimelineMarkerHovered);
 
     timeline_issue_table_ = new QTableWidget(0, 6, timeline_sub_);
@@ -6508,8 +6338,8 @@ void AnalysisPanel::UpdateTimelineDiagnosticSummary() {
 
 void AnalysisPanel::UpdateTimelineDiagnosticChart() {
     if (!timeline_interval_series_) return;
-    timeline_interval_series_->clear();
-    timeline_marker_series_->clear();
+    timeline_interval_series_->Clear();
+    timeline_marker_series_->Clear();
     timeline_marker_issue_index_.clear();
 
     const auto& r = timeline_result_;
@@ -6542,18 +6372,18 @@ void AnalysisPanel::UpdateTimelineDiagnosticChart() {
             case model::IssueSeverity::Warning:  color = QColor("#ef6c00"); break;
             case model::IssueSeverity::Info:     color = QColor("#1565c0"); break;
         }
-        timeline_marker_series_->setColor(color);  // 颜色以最后一组为准（散点整体着色）
+        timeline_marker_series_->SetColor(color);  // 颜色以最后一组为准（散点整体着色）
     }
 
-    timeline_chart_axis_x_->setRange(0, max_time);
-    timeline_chart_axis_y_->setRange(0, max_interval * 1.2);
+    timeline_chart_axis_x_->SetRange(0, max_time);
+    timeline_chart_axis_y_->SetRange(0, max_interval * 1.2);
 }
 
 void AnalysisPanel::OnTimelineMarkerHovered(const QPointF& point, bool state) {
     if (!state || !timeline_marker_series_) return;
 
     // 命中点定位到问题序号（按下标顺序一一对应）
-    const QList<QPointF> points = timeline_marker_series_->points();
+    const QList<QPointF> points = timeline_marker_series_->Points();
     int index = -1;
     double best = std::numeric_limits<double>::max();
     for (int i = 0; i < points.size(); ++i) {

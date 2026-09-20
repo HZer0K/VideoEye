@@ -23,8 +23,6 @@ extern "C" {
 #include "core/player/AudioOutput.h"
 #include "core/player/VideoFrameExporter.h"
 #include "core/exporter/MediaExporter.h"
-#include "core/player/VulkanContext.h"
-#include "core/player/VulkanRenderer.h"
 #include "core/model/AnalysisEvent.h"
 #include "core/model/AudioVisualizationFrame.h"
 #include "core/model/FrameData.h"
@@ -110,15 +108,8 @@ public:
     void StartMediaExport(const exporter::ExportOptions& opt);
     void CancelMediaExport();
 
-    // Vulkan 渲染 (渲染器/上下文由 MainWindow 拥有, 此处为非拥有裸指针)
-    void SetVulkanContext(VulkanContext* ctx);
-    void SetVulkanRenderer(VulkanRenderer* renderer);
-    void SetVulkanRenderingEnabled(bool enabled) { vulkan_rendering_enabled_ = enabled; }
-
-    // 渲染抑制: 播放区被隐藏时只跳过画面输出 (Vulkan present 与 sws_scale/FrameReady),
+    // 渲染抑制: 播放区被隐藏时跳过画面输出 (sws_scale + FrameReady),
     // 解码线程、实时分析与音频照常运行; 重新展开播放区即恢复画面。
-    // 与 SetVulkanRenderingEnabled 的区别: 后者会让帧退回 CPU 转换路径 (更费),
-    // 本开关是彻底不出画面。
     void SetRenderingSuppressed(bool suppressed) {
         rendering_suppressed_.store(suppressed, std::memory_order_relaxed);
     }
@@ -201,9 +192,7 @@ private:
     AVFormatContext* format_ctx_ = nullptr;
     std::unique_ptr<VideoDecoder> video_decoder_;
     std::unique_ptr<AudioDecoder> audio_decoder_;
-    std::unique_ptr<AudioOutput> audio_output_;  // SDL2 音频输出 (PCM -> 声卡)
-    VulkanContext* vulkan_ctx_ = nullptr;        // 非拥有: 由 MainWindow 提供 (渲染/HW解码共享)
-    VulkanRenderer* vulkan_renderer_ = nullptr;  // 非拥有: 由 MainWindow 提供
+    std::unique_ptr<AudioOutput> audio_output_;  // 平台原生音频输出 (PCM -> 声卡)
     int video_stream_index_ = -1;
     int audio_stream_index_ = -1;
     
@@ -259,8 +248,7 @@ private:
     bool container_structure_enabled_ = true;
     bool macroblock_analysis_enabled_ = false;
     bool scene_change_analysis_enabled_ = false;
-    bool hw_decoding_enabled_ = false; // 默认关闭硬件解码: Vulkan/D3D11 等 HW 路径在部分 Windows 驱动下会导致"打开视频即闪退"(FFmpeg 内部段错误, 无法被 C++ 异常捕获, 进程直接终止)。软件解码稳定可靠; 如确需 HW 解码性能, 可显式调用 SetHardwareDecodingEnabled(true), 但仍建议保留下方解码线程的异常兜底。
-    bool vulkan_rendering_enabled_ = true;  // Vulkan 渲染开关 (P0 接入后默认开启, 失败时自动回退 CPU)
+    bool hw_decoding_enabled_ = false; // 默认关闭硬件解码: D3D11/CUDA 等 HW 路径在部分 Windows 驱动下会导致"打开视频即闪退"(FFmpeg 内部段错误, 无法被 C++ 异常捕获, 进程直接终止)。软件解码稳定可靠; 如确需 HW 解码性能, 可显式调用 SetHardwareDecodingEnabled(true), 但仍建议保留下方解码线程的异常兜底。
     std::atomic<bool> rendering_suppressed_{false};  // 画面输出抑制 (播放区隐藏时置位)
     
     // 分析索引/状态

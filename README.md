@@ -16,8 +16,8 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 - **流分析**: 实时统计 FPS、码率、关键帧并可视化曲线
 - **视频帧分析**: 单独标签页展示 I/P/B 帧类型、序号、PTS、时间戳
 - **容器结构分析**: 统一调度解析 MP4/MOV、MKV/WebM、AVI、FLV、MPEG-TS、ASF/WMV、OGG
-- **媒体信息**: 基于 [MediaInfo](https://github.com/MediaArea/MediaInfoLib) 展示完整元数据
-- **硬件加速**: Vulkan/VAAPI/CUDA/D3D11VA/QSV 等硬件解码，Vulkan GPU 渲染管线（零拷贝 YUV→RGB）
+- **媒体信息**: 基于 FFmpeg `libavformat` 展示完整元数据（容器 / 视频 / 音频 / 字幕 / 章节）
+- **硬件加速**: VAAPI/CUDA/D3D11VA/QSV 等硬件解码（解码后统一转 CPU 图像渲染）
 - **音频可视化**: 波形快照、FFT 频谱、纯音频律动
 - **场景切换检测**: 灰度直方图 Bhattacharyya 距离实时检测镜头切换
 - **质量评估**: 离线逐帧计算 PSNR / SSIM 及走势图
@@ -27,15 +27,18 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 
 | 组件 | 技术 |
 |------|------|
-| GUI | Qt 6 |
-| 多媒体 | FFmpeg 8.1+ |
-| GPU 渲染 | Vulkan 1.3+ |
-| 媒体元数据 | MediaInfoLib（源码集成） |
-| 音频输出 | SDL 2 |
-| MP4 解析 | Bento4（源码集成） |
+| GUI | Qt 6（只用 QtWidgets） |
+| 多媒体 | FFmpeg 8.1+（预编译，直接集成 dll/so） |
+| 图表 | 自绘 `MetricChartWidget`（QPainter） |
+| 音频输出 | 平台原生（WASAPI / ALSA / AudioQueue） |
+| MP4 解析 | 自研 `utils::IsobmffParser` |
 | 构建 | CMake 3.23+ / Ninja + CMakePresets |
 
-依赖采用混合管理：Qt/SDL2 通用库走 vcpkg manifest 自动拉取（Windows）或系统包管理器（apt/brew）；MediaInfoLib、Bento4 有定制改动走源码集成；FFmpeg 按 `third_party/ffmpeg-prebuilt/` → pkg-config 两级 fallback 自动选择（不再依赖 vcpkg 的 FFmpeg）。
+**依赖只有两个硬依赖：Qt Widgets + FFmpeg。** 其余能力（媒体信息展示、图表、MP4 样本表解析、音频输出）全部自研或走平台原生 API，
+不再集成 MediaInfoLib / Bento4 / SDL2 / QtCharts / Vulkan。
+
+Qt 走 vcpkg manifest（Windows）或系统包管理器（apt/brew）；FFmpeg 使用预编译包，布局固定为
+`third_party/prebuilt/<platform>/ffmpeg/{include,lib,bin}`（Windows 由 `scripts/fetch-ffmpeg.ps1` 下载）。
 
 ## 构建
 
@@ -51,19 +54,17 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 
 产物：`build\release\bin\VideoEye.exe` / `build\debug\bin\VideoEye.exe`
 
-> **vcpkg 说明：项目使用 `vcpkg.json` manifest + `CMakePresets.json` 自动集成 Qt6、SDL2 等依赖；首次构建较慢（qtbase 编译需要 30~60 分钟），vcpkg 会缓存后增量构建秒级完成。
+> **vcpkg 说明：项目使用 `vcpkg.json` manifest + `CMakePresets.json` 自动集成 Qt6；首次构建较慢（qtbase 编译需要 30~60 分钟），vcpkg 会缓存后增量构建秒级完成。
 
 ### Linux / macOS
 
 ```bash
 # Ubuntu/Debian 系统依赖
-sudo apt install -y build-essential cmake ninja-build nasm pkg-config \
-    qt6-base-dev qt6-charts-dev libsdl2-dev zlib1g-dev \
-    libavcodec-dev libavformat-dev libavutil-dev \
-    libswscale-dev libswresample-dev libvulkan-dev glslc
+sudo apt install -y build-essential cmake ninja-build pkg-config qt6-base-dev
+# FFmpeg 预编译包放到 third_party/prebuilt/linux-x64/ffmpeg/{include,lib,bin}
 
 # macOS
-brew install cmake ninja nasm qt@6 sdl2 zlib ffmpeg
+brew install cmake ninja qt@6
 
 # 构建
 ./build.sh             # Release
@@ -85,12 +86,12 @@ brew install cmake ninja nasm qt@6 sdl2 zlib ffmpeg
 ```
 VideoEye/
 ├── core/                 # 核心业务层
-│   ├── player/           # 播放引擎 (MediaPlayer / 解码器 / Vulkan 渲染 / 音频可视化)
+│   ├── player/           # 播放引擎 (MediaPlayer / 解码器 / 音频输出)
 │   ├── analyzer/         # 分析引擎 (容器结构 / 场景切换 / 质量评估)
 │   └── model/            # 数据模型
-├── ui/                   # UI 层 (主题 / 主窗口 / 分析面板)
-├── utils/                # 工具类 (Logger / ConfigManager / ReportExporter)
-├── third_party/          # 第三方库 (Bento4 / MediaInfoLib / Vulkan Headers)
+├── ui/                   # UI 层 (主题 / 主窗口 / 分析面板 / 自绘图表)
+├── utils/                # 工具类 (Logger / ConfigManager / ReportExporter / IsobmffParser)
+├── third_party/prebuilt/ # FFmpeg 预编译包（不入库，脚本下载）
 ├── docs/                 # 文档
 ├── vcpkg.json            # vcpkg 依赖清单
 └── build.bat / build.sh  # 构建脚本
@@ -114,4 +115,4 @@ cmake --build build/debug && cd build/debug && ctest --output-on-failure
 ## 致谢
 
 - 原项目作者: [雷霄骅 Lei Xiaohua](https://github.com/leixiaohua1020)
-- [FFmpeg](https://ffmpeg.org/) · [Qt](https://www.qt.io/) · [OpenCV](https://opencv.org/) · [SDL](https://www.libsdl.org/) · [MediaInfoLib](https://github.com/MediaArea/MediaInfoLib) · [Bento4](https://github.com/axiomatic-systems/Bento4) · [vcpkg](https://github.com/microsoft/vcpkg)
+- [FFmpeg](https://ffmpeg.org/) · [Qt](https://www.qt.io/) · [vcpkg](https://github.com/microsoft/vcpkg)

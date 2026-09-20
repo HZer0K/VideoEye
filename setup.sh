@@ -33,9 +33,15 @@ echo -e "${GREEN}  VideoEye 环境初始化 (${OS})${NC}"
 echo -e "${GREEN}========================================${NC}"
 
 if [ "$BUILD_ONLY" = false ]; then
-    # 1. Git 子模块
-    echo -e "\n${YELLOW}[1/3] Git 子模块...${NC}"
-    git submodule update --init --recursive && echo -e "${GREEN}  完成${NC}" || echo -e "${RED}  失败${NC}"
+    # 1. FFmpeg 预编译包（唯一查找路径；项目只有 Qt Widgets + FFmpeg 两个硬依赖）
+    echo -e "\n${YELLOW}[1/3] FFmpeg 预编译包...${NC}"
+    FFMPEG_DIR="$DIR/third_party/prebuilt/${OS}-$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')/ffmpeg"
+    if [ -d "$FFMPEG_DIR/include" ] && [ -d "$FFMPEG_DIR/lib" ]; then
+        echo -e "  ${GREEN}[OK]${NC} $FFMPEG_DIR"
+    else
+        echo -e "  ${RED}[缺]${NC} $FFMPEG_DIR"
+        echo "    请把 FFmpeg 预编译包放到该目录（{include,lib,bin}）"
+    fi
 
     # 2. 系统依赖
     if [ "$SKIP_DEPS" = false ]; then
@@ -45,27 +51,15 @@ if [ "$BUILD_ONLY" = false ]; then
         check_pkg() { pkg-config --exists "$1" 2>/dev/null && echo -e "  ${GREEN}[OK]${NC} $1" || echo -e "  ${RED}[缺]${NC} $1"; }
 
         check_cmd cmake; check_cmd gcc; check_cmd g++; check_cmd make; check_cmd pkg-config
-        check_pkg Qt6Widgets; check_pkg sdl2; check_pkg zlib
-        check_pkg libavcodec; check_pkg libavformat; check_pkg libavutil
-        check_pkg libswscale; check_pkg libswresample
-
-        command -v glslc >/dev/null 2>&1 && echo -e "  ${GREEN}[OK]${NC} glslc" || echo -e "  ${YELLOW}[可选]${NC} glslc"
-        check_pkg vulkan
+        check_pkg Qt6Widgets
 
         # 打印安装建议
         echo ""
         if [ "$OS" = "linux" ]; then
             echo "  Debian/Ubuntu 安装命令:"
-            echo "    sudo apt install -y build-essential cmake pkg-config \\"
-            echo "      qt6-base-dev qt6-charts-dev \\"
-            echo "      libsdl2-dev zlib1g-dev \\"
-            echo "      libvulkan-dev glslc \\"
-            echo "      libavcodec-dev libavformat-dev libavutil-dev \\"
-            echo "      libswscale-dev libswresample-dev"
+            echo "    sudo apt install -y build-essential cmake pkg-config qt6-base-dev"
         elif [ "$OS" = "macos" ]; then
-            echo "  brew install cmake qt@6 sdl2 zlib"
-            echo "  brew install ffmpeg" 
-            echo "  Vulkan (可选): brew install vulkan-sdk"
+            echo "  brew install cmake qt@6"
         fi
     fi
 fi

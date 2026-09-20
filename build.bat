@@ -56,7 +56,7 @@ call "!VCVARS!" x64 >nul
 
 REM 自动获取 FFmpeg (如果缺失)
 echo [2/3] 检查 FFmpeg...
-set "FFMPEG_DIR=%~dp0third_party\ffmpeg-prebuilt"
+set "FFMPEG_DIR=%~dp0third_party\prebuilt\windows-x64\ffmpeg"
 if not exist "!FFMPEG_DIR!\include\libavcodec\avcodec.h" (
     echo       FFmpeg 未找到，自动下载中...
     powershell -ExecutionPolicy Bypass -File "%~dp0scripts\fetch-ffmpeg.ps1"

@@ -18,19 +18,17 @@ cd VideoEye
 .\build.bat ninja
 ```
 
-> 首次构建会自动通过 vcpkg 拉取依赖（OpenCV、Qt6、SDL2 等），FFmpeg 使用 gyan.dev full-shared 预编译共享库（含头文件与导入库，`build.bat ninja` 检测缺失时自动下载，版本由 stamp 记录自动追踪）。
+> 首次构建会自动通过 vcpkg 拉取 Qt6，FFmpeg 使用 gyan.dev full-shared 预编译共享库（含头文件与导入库，`build.bat ninja` 检测缺失时自动下载，版本由 stamp 记录自动追踪）。
+> 项目只有两个硬依赖：**Qt Widgets + FFmpeg**。
 
 #### Linux (Ubuntu/Debian)
 
 ```bash
 # 安装系统依赖
 sudo apt install -y \
-    build-essential cmake ninja-build nasm yasm pkg-config \
-    qt6-base-dev qt6-charts-dev \
-    libopencv-dev libsdl2-dev zlib1g-dev \
-    libavcodec-dev libavformat-dev libavutil-dev \
-    libswscale-dev libswresample-dev \
-    libvulkan-dev glslc
+    build-essential cmake ninja-build pkg-config \
+    qt6-base-dev
+# FFmpeg 用预编译包放到 third_party/prebuilt/linux-x64/ffmpeg/{include,lib,bin}
 
 # 一键构建
 ./build.sh release
@@ -39,7 +37,8 @@ sudo apt install -y \
 #### macOS
 
 ```bash
-brew install cmake ninja nasm qt@6 opencv sdl2 zlib ffmpeg
+brew install cmake ninja qt@6
+# FFmpeg 预编译包放到 third_party/prebuilt/mac-arm64|mac-x64/ffmpeg/{include,lib,bin}
 ./build.sh release
 ```
 
@@ -90,32 +89,35 @@ build-release/bin/VideoEye
 CMake 采用**两级 fallback** 自动查找 FFmpeg：
 
 ```
-优先级 1: third_party/ffmpeg-prebuilt/   ← gyan.dev full-shared（Windows 推荐）
-优先级 2: pkg-config                      ← Linux apt / macOS brew（libavcodec-dev 等）
+third_party/prebuilt/<platform>/ffmpeg/   ← 唯一查找路径（{include,lib,bin}）
+  <platform> = windows-x64 | linux-x64 | mac-x64 | mac-arm64
 ```
 
 **Windows 用户**：
-- `build.bat` 检测到 `third_party/ffmpeg-prebuilt/` 缺失时，自动运行 `scripts/fetch-ffmpeg.ps1` 下载
+- `build.bat` 检测到 `third_party/prebuilt/windows-x64/ffmpeg/` 缺失时，自动运行 `scripts/fetch-ffmpeg.ps1` 下载
 - 预编译库来自 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) **release-full-shared**（gyan 唯一带 include/ 头文件与 lib/ 导入库的共享包；essentials 仅含 bin/ 不适合链接开发）
+- CMake 侧由 `cmake/deps/FFmpegPrebuilt.cmake` 统一生成 `FFmpeg::avcodec` 等 imported target 并部署运行时
 
-**Linux 用户**：
-- 直接 `apt install libavcodec-dev libavformat-dev ...` 即可
+**Linux / macOS 用户**：
+- 把预编译包（或自行构建的 install 前缀）放到对应的 `third_party/prebuilt/<platform>/ffmpeg/` 即可
 
 ### vcpkg 依赖（Windows 自动集成）
 
 项目通过 `vcpkg.json` + `CMakePresets.json` 自动声明并安装依赖，无需手动运行 `vcpkg install`：
-- `qtbase` / `qtcharts` — Qt6 GUI + 图表
-- `sdl2` — 音频输出
-- `zlib` — 压缩库（MediaInfoLib 依赖）
+- `qtbase` — Qt6 GUI（只用 QtWidgets）
+- `gtest` — 单元测试（默认不构建）
 
 > 使用项目自带的 release-only triplet（`scripts/triplets/x64-windows-release.cmake`），只装 release 二进制，省约一半磁盘与安装时间。
 
-### 源码集成依赖
+### 自研替代（不再引入第三方库）
 
-以下库通过 Git submodule + `add_subdirectory` 集成：
-- **MediaInfoLib + ZenLib** — 媒体元数据解析
-- **Bento4** — MP4 容器深度解析
-- **vulkan-headers** — Vulkan 1.4+ 头文件
+| 原依赖 | 现在的实现 |
+|--------|-----------|
+| MediaInfoLib / ZenLib | FFmpeg `libavformat`（`core/analyzer/MediaInfoAnalyzer`） |
+| QtCharts | 自绘 `ui/charts/MetricChartWidget`（QPainter 折线/柱状/散点） |
+| Bento4 | 自研 `utils/IsobmffParser`（ISOBMFF box 树 + sample table） |
+| SDL2 | 平台原生音频（WASAPI / ALSA / AudioQueue，`core/player/AudioOutput`） |
+| Vulkan | 移除，统一 CPU / QImage 渲染 |
 
 ---
 
@@ -159,12 +161,12 @@ pkg-config --modversion libavcodec libavformat libavutil libswscale libswresampl
 sudo apt install -y libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
 ```
 
-### Q: Vulkan 硬件解码不工作
+### Q: 硬件解码不工作
 
 ```bash
-vulkaninfo --summary 2>/dev/null || echo "Vulkan 不可用"
-sudo apt install libvulkan-dev glslc   # Ubuntu/Debian
-# 软件解码正常工作，无需额外操作
+# FFmpeg 的 hwaccel 由 Decoders.cpp 按平台枚举（VAAPI / D3D11VA / DXVA2 / QSV / CUDA / VideoToolbox），
+# 任一后端初始化失败都会自动回退软件解码，功能不受影响。
+# 排查时看日志里的 "hwaccel" 关键字即可。
 ```
 
 ### Q: 构建内存不足 / OOM
@@ -182,8 +184,8 @@ cmake --build build/release -- -j2
 ## 📚 下一步
 
 - [完整文档](README.md)
-- [架构设计](docs/ARCHITECTURE.md)
-- [项目结构](docs/PROJECT_STRUCTURE.md)
+- [架构设计](docs/local/ARCHITECTURE.md)
+- [项目结构](docs/local/PROJECT_STRUCTURE.md)
 - [UI 优化设计稿](docs/UI_OPTIMIZATION_DESIGN.md)
 
 ---

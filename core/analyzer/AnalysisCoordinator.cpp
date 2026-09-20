@@ -292,8 +292,8 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
         result.moov_after_mdat = ScanMoovAfterMdat(file_path);
     }
 
-    // MP4/fMP4 容器一致性校验（Bento4 解析 stbl / moof，与 FFmpeg demux 独立）
-    // 只对 MP4 家族执行：其它格式 Bento4 解析必然失败，白跑一遍还要多开一次文件句柄。
+    // MP4/fMP4 容器一致性校验（自研 IsobmffParser 解析 stbl / moof，与 FFmpeg demux 独立）
+    // 只对 MP4 家族执行：其它格式 ISOBMFF 解析必然失败，白跑一遍还要多开一次文件句柄。
     if (options.analyze_mp4_sample_table && IsMp4Family(result.container_format)) {
         Mp4SampleTableAnalyzer mp4_analyzer;
         bool mp4_ok = false;

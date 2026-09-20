@@ -1,7 +1,7 @@
 // Mp4SampleTableAnalyzer 单元测试
 //
-// 只测校验逻辑（Validate）：手工构造合成样本表，不依赖 Bento4 / Qt / 真实文件。
-// 解析部分（Bento4 读 stbl / moof）靠实机打开验证，见 docs/MP4_SAMPLE_TABLE.md。
+// 只测校验逻辑（Validate）：手工构造合成样本表，不依赖 Qt / 第三方库 / 真实文件。
+// 解析部分（utils::IsobmffParser 读 stbl / moof）靠实机打开验证，见 docs/MP4_SAMPLE_TABLE.md。
 
 #include <gtest/gtest.h>
 

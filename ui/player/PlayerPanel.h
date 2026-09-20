@@ -13,28 +13,22 @@
 #include <memory>
 
 #include "core/player/MediaPlayer.h"
-#include "core/player/VulkanContext.h"
-#include "core/player/VulkanRenderer.h"
 #include "core/analyzer/StreamAnalyzer.h"
 #include "core/model/MacroblockInfo.h"
-#include "ui/main_window/VulkanVideoWidget.h"
+#include "ui/main_window/VideoWidget.h"
 
 namespace videoeye {
 namespace ui {
 
-// 播放区模块 (视频显示 + 控制栏 + Vulkan/GDI 渲染 + 音频可视化 + Raw 序列)。
+// 播放区模块 (视频显示 + 控制栏 + 音频可视化 + Raw 序列)。
 //
 // VideoEye 的核心定位是视频文件分析, 播放只是辅助定位手段, 因此播放相关的一切
 // 从 MainWindow 中剥离到此处, MainWindow 只保留菜单/侧边栏/分析栈/导出。
 //
 // 职责边界:
-//   - 拥有: 视频 widget、控制栏、VulkanContext/VulkanRenderer、GDI overlay popup
+//   - 拥有: 视频 widget、控制栏
 //   - 不拥有: MediaPlayer (分析侧共用, 生命周期归 MainWindow), 只持裸指针
 //   - 与 MainWindow 通信一律走信号 (状态栏/错误提示), 不反向持有主窗口指针
-//
-// 已知约束:
-//   - nativeEvent 只有顶层窗口能收到 WM_ENTERSIZEMOVE, 子 widget 收不到,
-//     因此拖动状态由 MainWindow 通过 OnDragStateChanged() 转发进来。
 class PlayerPanel : public QWidget {
     Q_OBJECT
 
@@ -44,11 +38,6 @@ public:
 
     // 依赖注入: MediaPlayer 由 MainWindow 拥有, 此处仅取裸指针
     void SetMediaPlayer(player::MediaPlayer* player);
-
-    // Vulkan: 创建 context/renderer 并挂到 video_widget_ 与 MediaPlayer。
-    // 真正的初始化延迟到 video_widget_ 首次 showEvent (见 InitVulkan 注释)。
-    bool InitVulkan();
-    void TryInitializeVulkan();
 
     // 播放区所在的分割器: 收起/展开时保存与还原上下比例
     void SetSplitter(QSplitter* splitter) { splitter_ = splitter; }
@@ -83,9 +72,6 @@ signals:
     void StreamStatsDisplayReady(const QString& text);
 
 public slots:
-    // MainWindow::nativeEvent 转发 (子 widget 收不到 WM_ENTERSIZEMOVE 等顶层消息)
-    void OnDragStateChanged(bool dragging);   // 拖动模态开始/结束
-    void OnWindowPosChanged();                // 拖动中几何变化: 更新 popup 并立即刷新
     void OnMacroblockInfoForOverlay(const model::MacroblockFrameAnalysis& analysis);
     void OnStreamStatsUpdate(const analyzer::StreamStats& stats);
 
@@ -118,12 +104,6 @@ private:
     void SetupUI();
     void SetupConnections();
 
-    // GDI overlay popup: 拖动模态期间 DWM 只对被拖动窗口显示快照缩放,
-    // 视频帧改由解码线程 GDI 直绘到独立顶层 popup 窗口覆盖显示。
-    void ShowGdiOverlayPopup();
-    void HideGdiOverlayPopup();
-    void UpdateGdiOverlayPopupGeometry();
-
     // 集中构造并下发叠加层信息 (状态/分辨率/编码/FPS), 避免多处各拼一份导致字段漏传。
     void UpdateOverlay();
     // 刷新分辨率与编码: 编码从 StreamInfo 取一次即缓存, 分辨率随实际帧尺寸变化更新。
@@ -137,12 +117,8 @@ private:
     player::MediaPlayer* player_ = nullptr;
     QSplitter* splitter_ = nullptr;   // 非拥有: 由 MainWindow 创建的 content_splitter_
 
-    // === 拥有: Vulkan 渲染 (失败时自动回退 CPU) ===
-    std::unique_ptr<player::VulkanContext> vulkan_ctx_;
-    std::unique_ptr<player::VulkanRenderer> vulkan_renderer_;
-
     // === UI ===
-    VulkanVideoWidget* video_widget_ = nullptr;
+    VideoWidget* video_widget_ = nullptr;
     QWidget* control_bar_ = nullptr;
     QPushButton* play_pause_button_ = nullptr;
     QPushButton* stop_button_ = nullptr;
@@ -161,9 +137,6 @@ private:
     int last_seek_value_ = -1;
     qint64 last_seek_time_ = 0;
     int last_volume_ = 100;
-
-    // GDI overlay popup (纯 Win32 顶层窗口, 绕开 Qt backing store 绘制管线)
-    WId gdi_overlay_hwnd_ = 0;
 
     // 当前媒体源 (停止后再次点播放需重新 Open)
     QString current_source_;

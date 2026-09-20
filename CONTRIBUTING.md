@@ -6,7 +6,7 @@
 
 ### Windows
 - Visual Studio 2022（勾选「使用 C++ 的桌面开发」工作负载，含 MSVC + Windows SDK + Ninja）
-- vcpkg（用于 Qt6 / OpenCV / SDL2 / zlib）
+- vcpkg（用于 Qt6；gtest 仅在 -DBUILD_TESTING=ON 时需要）
 
 ### Linux (Debian/Ubuntu)
 - GCC 12+, CMake 3.21+, pkg-config, make
@@ -33,15 +33,10 @@ cmake --build --preset win-release
 ### Linux
 ```bash
 # 1. 安装系统依赖
-sudo apt install -y build-essential cmake pkg-config ninja-build \
-  qt6-base-dev qt6-charts-dev \
-  libopencv-dev libsdl2-dev zlib1g-dev \
-  libvulkan-dev glslc \
-  libavcodec-dev libavformat-dev libavutil-dev \
-  libswscale-dev libswresample-dev
+sudo apt install -y build-essential cmake pkg-config ninja-build qt6-base-dev
 
-# 2. 初始化子模块（首次）
-git submodule update --init --recursive
+# 2. 准备 FFmpeg 预编译包（唯一查找路径，不再走 pkg-config）
+#    third_party/prebuilt/linux-x64/ffmpeg/{include,lib,bin}
 
 # 3. 构建
 ./setup.sh            # 一键：检查依赖 + 编译
@@ -53,10 +48,13 @@ cmake --preset linux-release && cmake --build --preset linux-release
 
 | 依赖 | Windows 来源 | Linux 来源 |
 |------|-------------|-----------|
-| Qt6 / OpenCV / SDL2 / zlib | vcpkg | apt |
-| FFmpeg | `scripts/fetch-ffmpeg.ps1`（gyan.dev 预编译） | apt (libavcodec-dev 等) |
-| Vulkan headers | submodule (vulkan-headers) | apt (libvulkan-dev) |
-| Bento4 / ZenLib / MediaInfoLib | submodule (源码集成) | submodule |
+| Qt6 (Widgets) | vcpkg | apt (qt6-base-dev) |
+| FFmpeg | `scripts/fetch-ffmpeg.ps1`（gyan.dev 预编译） | 预编译包放到 `third_party/prebuilt/linux-x64/ffmpeg/` |
+
+**项目只有 Qt Widgets + FFmpeg 两个硬依赖。** 媒体信息（FFmpeg `libavformat`）、图表
+（`ui/charts/MetricChartWidget`，QPainter 自绘）、MP4 样本表（`utils/IsobmffParser`）、
+音频输出（WASAPI / ALSA / AudioQueue）全部自研或走平台原生 API，不再引入
+MediaInfoLib / Bento4 / SDL2 / QtCharts / Vulkan。
 
 FFmpeg（Windows）通过 `scripts/fetch-ffmpeg.ps1` 从 gyan.dev 获取预编译包，版本记录在 `third_party/ffmpeg-prebuilt/.videoeye-ffmpeg.json`。vcpkg 依赖版本由 `vcpkg-configuration.json`（baseline `2025-04-16`）锁定，确保团队成员依赖一致。
 

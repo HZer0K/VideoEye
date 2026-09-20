@@ -2,7 +2,7 @@
 # 用法: powershell -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1
 # 可选参数: -DestDir <path>  -Variant <release-full-shared|release-essentials>  -Force
 #
-# 默认安装到 third_party/ffmpeg-prebuilt（固定位置，与构建目录无关）
+# 默认安装到 third_party/prebuilt/windows-x64/ffmpeg（固定位置，与构建目录无关）
 # CMake 配置时用 -DFFMPEG_ROOT 指向该目录
 #
 # 说明:
@@ -23,7 +23,7 @@ $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $scriptDir
-if (-not $DestDir) { $DestDir = Join-Path $projectRoot "third_party\ffmpeg-prebuilt" }
+if (-not $DestDir) { $DestDir = Join-Path $projectRoot "third_party\prebuilt\windows-x64\ffmpeg" }
 
 # 版本锁定: -Version "8.1.2" 将 Variant 从 release-full-shared 改为 8.1.2-full_build-shared (gyan.dev 版本化 URL)
 # 注意: gyan.dev 版本化归档包命名含 "_build" (full_build-shared), 与 release 变体 (full-shared) 不同;

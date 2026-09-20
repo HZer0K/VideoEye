@@ -8,6 +8,7 @@
 #include "core/analyzer/BitrateGopAnalyzer.h"
 #include "core/analyzer/ColorHdrAnalyzer.h"
 #include "core/analyzer/Mp4SampleTableAnalyzer.h"
+#include "core/model/BitstreamInfo.h"
 #include "core/model/MetricSeries.h"
 #include "core/model/TimelineDiagnostic.h"
 
@@ -42,7 +43,7 @@ struct AnalysisOptions {
     ColorHdrOptions color_hdr_options;
 
     // MP4/fMP4 容器一致性校验（sample table / elst / moof-traf-trun / faststart）。
-    // 走 Bento4 直接读 stbl 与 moof，与 FFmpeg demux 是两套独立解析：
+    // 走自研 utils::IsobmffParser 直接读 stbl 与 moof，与 FFmpeg demux 是两套独立解析：
     // 只在容器属于 MP4 家族时才真正执行，其它格式直接跳过。
     bool analyze_mp4_sample_table = true;
     Mp4SampleTableOptions mp4_sample_table_options;
@@ -121,10 +122,15 @@ struct AnalysisResult {
     // 时间轴与同步诊断（demux 层，不解码）
     model::TimelineAnalysisResult timeline;
 
-    // MP4/fMP4 容器一致性（Bento4 解析，见 core/analyzer/Mp4SampleTableAnalyzer.h）
-    // mp4_samples_analyzed=true 才表示跑过（非 MP4 家族或 Bento4 不可用时不跑）
+    // MP4/fMP4 容器一致性（自研 IsobmffParser 解析，见 core/analyzer/Mp4SampleTableAnalyzer.h）
+    // mp4_samples_analyzed=true 才表示跑过（非 MP4 家族或解析失败时不跑）
     model::Mp4SampleTableResult mp4_samples;
     bool mp4_samples_analyzed = false;
+
+    // 编码码流解析（从 extradata 解析 SPS/VPS/OBU 等，见 core/analyzer/BitstreamAnalyzer.h）
+    // bitstream_analysis 不为空表示已执行码流分析
+    model::BitstreamAnalysisResult bitstream_analysis;
+    bool bitstream_analyzed = false;
 
     // 执行状态
     bool completed = true;        // false = 被取消

@@ -1,13 +1,6 @@
 #pragma once
 
 #include <QWidget>
-#include <QtCharts/QChart>
-#include <QtCharts/QChartView>
-#include <QtCharts/QLineSeries>
-#include <QtCharts/QBarSeries>
-#include <QtCharts/QBarSet>
-#include <QtCharts/QBarCategoryAxis>
-#include <QtCharts/QCategoryAxis>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QTabWidget>
@@ -28,8 +21,7 @@
 #include <QMap>
 #include <QVariantList>
 #include <QVariantMap>
-#include <QtCharts/QValueAxis>
-#include <QtCharts/QScatterSeries>
+#include "ui/charts/MetricChartWidget.h"
 #include <chrono>
 #include <deque>
 #include <vector>
@@ -417,21 +409,18 @@ private:
 
     // 流概览子区 (bitstream_tab_ 顶部)
     QTableWidget* stats_table_;
-    QChartView* bitrate_chart_;
-    QChart* bitrate_chart_object_;
-    QLineSeries* bitrate_series_;
-    QValueAxis* bitrate_axis_x_;
-    QValueAxis* bitrate_axis_y_;
-    QChartView* fps_chart_;
-    QChart* fps_chart_object_;
-    QLineSeries* fps_series_;
-    QValueAxis* fps_axis_x_;
-    QValueAxis* fps_axis_y_;
-    QChartView* gop_chart_;
-    QChart* gop_chart_object_;
-    QLineSeries* gop_series_;
-    QValueAxis* gop_axis_x_;
-    QValueAxis* gop_axis_y_;
+    MetricChartWidget* bitrate_chart_ = nullptr;
+    ChartSeries* bitrate_series_ = nullptr;
+    ChartAxis* bitrate_axis_x_ = nullptr;
+    ChartAxis* bitrate_axis_y_ = nullptr;
+    MetricChartWidget* fps_chart_ = nullptr;
+    ChartSeries* fps_series_ = nullptr;
+    ChartAxis* fps_axis_x_ = nullptr;
+    ChartAxis* fps_axis_y_ = nullptr;
+    MetricChartWidget* gop_chart_ = nullptr;
+    ChartSeries* gop_series_ = nullptr;
+    ChartAxis* gop_axis_x_ = nullptr;
+    ChartAxis* gop_axis_y_ = nullptr;
 
     // 码流明细子 TabWidget (bitstream_tab_ 底部, 4 个子页)
     QTabWidget* detail_sub_tabs_;
@@ -466,13 +455,13 @@ private:
 
     QWidget* sync_tab_;
     QLabel* sync_summary_label_;
-    QChartView* sync_chart_;
+    MetricChartWidget* sync_chart_ = nullptr;
     QTableWidget* sync_table_;
     QPushButton* export_sync_csv_button_;
 
     QWidget* timeline_tab_;
     QLabel* timeline_summary_label_;
-    QChartView* timeline_chart_;
+    MetricChartWidget* timeline_chart_ = nullptr;
     QTableWidget* timeline_table_;
     QPushButton* export_timeline_csv_button_;
 
@@ -491,12 +480,10 @@ private:
     QWidget* scene_change_tab_;
     QLabel* scene_change_summary_label_;
     QTableWidget* scene_change_table_;
-    QChartView* scene_change_chart_;
-    QChart* scene_change_chart_object_;
-    QBarSeries* scene_change_series_;
-    QBarSet* scene_change_bar_set_;
-    QValueAxis* scene_change_axis_x_;
-    QValueAxis* scene_change_axis_y_;
+    MetricChartWidget* scene_change_chart_ = nullptr;
+    ChartSeries* scene_change_series_ = nullptr;
+    ChartAxis* scene_change_axis_x_ = nullptr;
+    ChartAxis* scene_change_axis_y_ = nullptr;
     std::vector<analyzer::SceneChangeResult> scene_change_records_;
     bool scene_change_table_dirty_ = false;
     size_t scene_change_table_synced_count_ = 0;
@@ -548,15 +535,14 @@ private:
     QDoubleSpinBox* bitrate_max_gop_seconds_spin_;
     QSpinBox* bitrate_max_gop_frames_spin_;
     QCheckBox* bitrate_decode_types_check_;
-    QChartView* bitrate_gop_chart_;
-    QChart* bitrate_gop_chart_object_;
-    QLineSeries* bitrate_gop_series_;
-    QLineSeries* bitrate_target_series_;
-    QScatterSeries* bitrate_iframe_series_;
-    QScatterSeries* bitrate_scene_series_;
-    QScatterSeries* bitrate_anomaly_series_;
-    QValueAxis* bitrate_gop_axis_x_;
-    QValueAxis* bitrate_gop_axis_y_;
+    MetricChartWidget* bitrate_gop_chart_ = nullptr;
+    ChartSeries* bitrate_gop_series_ = nullptr;
+    ChartSeries* bitrate_target_series_ = nullptr;
+    ChartSeries* bitrate_iframe_series_ = nullptr;
+    ChartSeries* bitrate_scene_series_ = nullptr;
+    ChartSeries* bitrate_anomaly_series_ = nullptr;
+    ChartAxis* bitrate_gop_axis_x_ = nullptr;
+    ChartAxis* bitrate_gop_axis_y_ = nullptr;
     QTabWidget* bitrate_gop_sub_tabs_;
     QTableWidget* bitrate_gop_table_;
     QTableWidget* bitrate_anomaly_table_;
@@ -580,41 +566,37 @@ private:
     QCheckBox* audio_qc_correlation_check_;
     QTabWidget* audio_qc_sub_tabs_;
     // 响度曲线
-    QChartView* audio_lufs_chart_;
-    QChart* audio_lufs_chart_object_;
-    QLineSeries* audio_momentary_series_;
-    QLineSeries* audio_short_term_series_;
-    QLineSeries* audio_integrated_series_;
-    QLineSeries* audio_target_series_;
-    QValueAxis* audio_lufs_axis_x_;
-    QValueAxis* audio_lufs_axis_y_;
+    MetricChartWidget* audio_lufs_chart_ = nullptr;
+    ChartSeries* audio_momentary_series_ = nullptr;
+    ChartSeries* audio_short_term_series_ = nullptr;
+    ChartSeries* audio_integrated_series_ = nullptr;
+    ChartSeries* audio_target_series_ = nullptr;
+    ChartAxis* audio_lufs_axis_x_ = nullptr;
+    ChartAxis* audio_lufs_axis_y_ = nullptr;
     // 电平曲线
-    QChartView* audio_level_chart_;
-    QChart* audio_level_chart_object_;
-    QLineSeries* audio_rms_series_;
-    QLineSeries* audio_peak_series_;
-    QLineSeries* audio_true_peak_series_;
-    QValueAxis* audio_level_axis_x_;
-    QValueAxis* audio_level_axis_y_;
+    MetricChartWidget* audio_level_chart_ = nullptr;
+    ChartSeries* audio_rms_series_ = nullptr;
+    ChartSeries* audio_peak_series_ = nullptr;
+    ChartSeries* audio_true_peak_series_ = nullptr;
+    ChartAxis* audio_level_axis_x_ = nullptr;
+    ChartAxis* audio_level_axis_y_ = nullptr;
     // 静音段 / 削波点时间轴
-    QChartView* audio_event_chart_;
-    QChart* audio_event_chart_object_;
-    QLineSeries* audio_silence_series_;
-    QScatterSeries* audio_clip_series_;
-    QValueAxis* audio_event_axis_x_;
-    QValueAxis* audio_event_axis_y_;
+    MetricChartWidget* audio_event_chart_ = nullptr;
+    ChartSeries* audio_silence_series_ = nullptr;
+    ChartSeries* audio_clip_series_ = nullptr;
+    ChartAxis* audio_event_axis_x_ = nullptr;
+    ChartAxis* audio_event_axis_y_ = nullptr;
     // 声道能量柱状图
-    QChartView* audio_channel_chart_;
-    QChart* audio_channel_chart_object_;
-    QBarSeries* audio_channel_series_;
-    QBarCategoryAxis* audio_channel_axis_x_;
-    QValueAxis* audio_channel_axis_y_;
+    MetricChartWidget* audio_channel_chart_ = nullptr;
+    ChartSeries* audio_channel_series_ = nullptr;        // RMS dBFS
+    ChartSeries* audio_channel_peak_series_ = nullptr;   // 峰值 dBFS
+    ChartAxis* audio_channel_axis_x_ = nullptr;
+    ChartAxis* audio_channel_axis_y_ = nullptr;
     // 声道相关性曲线
-    QChartView* audio_corr_chart_;
-    QChart* audio_corr_chart_object_;
-    QLineSeries* audio_corr_series_;
-    QValueAxis* audio_corr_axis_x_;
-    QValueAxis* audio_corr_axis_y_;
+    MetricChartWidget* audio_corr_chart_ = nullptr;
+    ChartSeries* audio_corr_series_ = nullptr;
+    ChartAxis* audio_corr_axis_x_ = nullptr;
+    ChartAxis* audio_corr_axis_y_ = nullptr;
     QTableWidget* audio_clip_table_;
     QTableWidget* audio_silence_table_;
     QTableWidget* audio_verdict_table_;
@@ -643,25 +625,23 @@ private:
     QLabel* qc_summary_label_;
     QTabWidget* qc_sub_tabs_;
     QTableWidget* qc_issue_table_;
-    QChartView* qc_chart_view_;
-    QChart* qc_chart_object_;
-    QLineSeries* qc_bitrate_series_;
-    QLineSeries* qc_fps_series_;
-    QValueAxis* qc_axis_x_;
-    QValueAxis* qc_axis_bitrate_;
-    QValueAxis* qc_axis_fps_;
+    MetricChartWidget* qc_chart_view_ = nullptr;
+    ChartSeries* qc_bitrate_series_ = nullptr;
+    ChartSeries* qc_fps_series_ = nullptr;
+    ChartAxis* qc_axis_x_ = nullptr;
+    ChartAxis* qc_axis_bitrate_ = nullptr;
+    ChartAxis* qc_axis_fps_ = nullptr;
     QTableWidget* qc_rule_table_;
     bool qc_rule_table_updating_ = false;
 
     // 时间轴与同步（诊断与报告页的子页）
     QWidget* timeline_sub_;
     QLabel* timeline_diag_summary_label_;
-    QChartView* timeline_issue_chart_;
-    QChart* timeline_issue_chart_object_;
-    QLineSeries* timeline_interval_series_;
-    QScatterSeries* timeline_marker_series_;
-    QValueAxis* timeline_chart_axis_x_;
-    QValueAxis* timeline_chart_axis_y_;
+    MetricChartWidget* timeline_issue_chart_ = nullptr;
+    ChartSeries* timeline_interval_series_ = nullptr;
+    ChartSeries* timeline_marker_series_ = nullptr;
+    ChartAxis* timeline_chart_axis_x_ = nullptr;
+    ChartAxis* timeline_chart_axis_y_ = nullptr;
     QTableWidget* timeline_issue_table_;
     QVector<int> timeline_marker_issue_index_;   // 散点序号 -> 问题序号
     analyzer::TimelineAnalyzer timeline_analyzer_;
@@ -681,14 +661,14 @@ private:
     QPushButton* export_button_;          // 流统计导出 (HTML/JSON/TXT)
     
     // 图表数据系列
-    QLineSeries* sync_series_;
-    QLineSeries* timeline_video_series_;
-    QLineSeries* timeline_audio_series_;
-    QLineSeries* timeline_event_series_;
-    QValueAxis* sync_axis_x_;
-    QValueAxis* sync_axis_y_;
-    QValueAxis* timeline_axis_x_;
-    QValueAxis* timeline_axis_y_;
+    ChartSeries* sync_series_ = nullptr;
+    ChartSeries* timeline_video_series_ = nullptr;
+    ChartSeries* timeline_audio_series_ = nullptr;
+    ChartSeries* timeline_event_series_ = nullptr;
+    ChartAxis* sync_axis_x_ = nullptr;
+    ChartAxis* sync_axis_y_ = nullptr;
+    ChartAxis* timeline_axis_x_ = nullptr;
+    ChartAxis* timeline_axis_y_ = nullptr;
     
     // 定时器
     QTimer* update_timer_;

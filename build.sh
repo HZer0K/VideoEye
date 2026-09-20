@@ -34,15 +34,15 @@ esac
 handle_deps_hint() {
     echo ""
     echo "--- 依赖安装提示 ---"
+    echo "项目只有两个硬依赖: Qt Widgets + FFmpeg(预编译)。"
     if [[ "$(uname)" == "Darwin" ]]; then
         echo "macOS (Homebrew):"
-        echo "  brew install cmake ninja qt@6 sdl2 ffmpeg zlib glslang vulkan-headers"
+        echo "  brew install cmake ninja qt@6"
+        echo "FFmpeg 预编译包放到: third_party/prebuilt/macos-$(uname -m | sed 's/x86_64/x64/;s/arm64/arm64/')/ffmpeg/{include,lib,bin}"
     else
         echo "Debian/Ubuntu:"
-        echo "  sudo apt install -y cmake ninja-build pkg-config \\"
-        echo "    qt6-base-dev qt6-charts-dev libsdl2-dev zlib1g-dev \\"
-        echo "    libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \\"
-        echo "    libvulkan-dev glslc"
+        echo "  sudo apt install -y cmake ninja-build pkg-config qt6-base-dev"
+        echo "FFmpeg 预编译包放到: third_party/prebuilt/linux-x64/ffmpeg/{include,lib,bin}"
     fi
     exit 1
 }

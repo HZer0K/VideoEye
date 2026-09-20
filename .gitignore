@@ -52,17 +52,9 @@ ui_*.h
 # FFmpeg 源码 (非 Git 子模块)
 third_party/FFmpeg/
 
-# FFmpeg 预编译包 (fetch-ffmpeg.ps1 下载)
-third_party/ffmpeg-prebuilt/
+# FFmpeg 预编译包 (scripts/fetch-ffmpeg.ps1 下载)
+third_party/prebuilt/
 .videoeye-ffmpeg.json
-
-# Bento4 构建产物
-third_party/Bento4/Build/Makefiles/build/
-third_party/Bento4/**/*.o
-
-# ZenLib / MediaInfoLib 构建产物
-third_party/ZenLib/Project/CMake/CMakeFiles/
-third_party/MediaInfoLib/Project/CMake/CMakeFiles/
 
 # 测试
 *_test
@@ -93,3 +85,9 @@ tools/*.zip
 deliverables/
 overview.md
 local_docs/
+
+# 本地实施文档（不推送到远程仓库）
+docs/bitstream/
+
+# 本地开发文档（不推送到远程仓库）
+docs/local/

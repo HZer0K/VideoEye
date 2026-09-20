@@ -93,7 +93,7 @@ std::vector<QcRule> DefaultQcRules() {
         "方案二：转封装为扩展名对应的容器，流不重编码："
         "ffmpeg -i 输入.ts -c copy 输出.mp4。");
 
-    // ---- MP4/fMP4 容器一致性（core/analyzer/Mp4SampleTableAnalyzer，走 Bento4）----
+    // ---- MP4/fMP4 容器一致性（core/analyzer/Mp4SampleTableAnalyzer，走自研 IsobmffParser）----
     // 这些规则只决定"是否上报 / 以什么级别上报"，问题本身（含具体样本号、偏移、分片号）
     // 由分析器给出；级别取「规则级别」与「分析器级别」中更严重的一侧，
     // 因此把规则调到 Error 可以抬高，调到 Info 也不会把 Error 级发现降没。

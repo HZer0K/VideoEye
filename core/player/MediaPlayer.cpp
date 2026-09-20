@@ -345,30 +345,16 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
         // 宏块分析依赖软件解码导出的运动矢量 side data, 硬件解码器不产出该数据,
         // 因此启用宏块分析时直接走软件解码路径。
         if (hw_decoding_enabled_ && !macroblock_analysis_enabled_) {
-#ifdef HAVE_VULKAN
-            // 优先尝试 Vulkan: 复用 MainWindow 提供的共享 VulkanContext (同时也用于渲染)
-            if (vulkan_ctx_ && vulkan_ctx_->IsValid()) {
-                if (vulkan_ctx_->InitializeFFmpegDevice() &&
-                    video_decoder_->InitializeWithVulkanDevice(
-                        video_stream->codecpar,
-                        vulkan_ctx_->GetAvHwDeviceContext())) {
+            // VAAPI / D3D11VA / CUDA / QSV ...
+            // (Vulkan HW 解码随 Vulkan 渲染器一并移除: 本项目定位是分析工具,
+            //  为一条零拷贝渲染路径背一套 Vulkan 运行时不划算)
+            auto hw_types = VideoDecoder::GetAvailableHwDeviceTypes();
+            for (auto hw_type : hw_types) {
+                if (video_decoder_->InitializeWithHw(video_stream->codecpar, hw_type)) {
                     hw_initialized = true;
-                    LOG_INFO("Vulkan HW decoding initialized");
-                }
-            }
-#endif
-
-            // 回退到其他 HW 方法 (VAAPI/CUDA/QSV...)
-            if (!hw_initialized) {
-                auto hw_types = VideoDecoder::GetAvailableHwDeviceTypes();
-                for (auto hw_type : hw_types) {
-                    if (hw_type == AV_HWDEVICE_TYPE_VULKAN) continue;  // 已尝试
-                    if (video_decoder_->InitializeWithHw(video_stream->codecpar, hw_type)) {
-                        hw_initialized = true;
-                        LOG_INFO("HW decoding initialized: " +
-                                 std::string(av_hwdevice_get_type_name(hw_type)));
-                        break;
-                    }
+                    LOG_INFO("HW decoding initialized: " +
+                             std::string(av_hwdevice_get_type_name(hw_type)));
+                    break;
                 }
             }
             if (!hw_initialized) {
@@ -450,8 +436,8 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
         }
         LOG_INFO("Audio decoder initialized");
 
-        // 初始化音频输出设备 (SDL2): 把解码后的 PCM 送进声卡。
-        // 走异步打开: Windows(WASAPI) 首次 SDL_OpenAudioDevice 实测 ~1s,
+        // 初始化音频输出设备 (QAudioSink): 把解码后的 PCM 送进声卡。
+        // 走异步打开: Windows(WASAPI) 首次打开音频设备实测 ~1s,
         // 同步调用会把"打开文件"整段卡住。设备就绪前音频帧丢弃, 视频不受影响。
         audio_output_ = std::make_unique<AudioOutput>();
         audio_output_->SetVolume(volume_ / 100.0);
@@ -984,29 +970,11 @@ void MediaPlayer::DecodeThread() {
                         continue;
                     }
 
-                    // Vulkan 渲染路径: 软件解码帧 (YUV420P) 直接上传渲染, 不再要求零拷贝 HW 帧。
-                    // 仅当渲染器已成功初始化且当前帧不是 HW Vulkan 帧时才走 Vulkan; 否则回退 CPU。
-                    // (HW Vulkan 帧的零拷贝渲染待 P2 实现, 此处仍由下方 CPU 回退路径显示。)
-                    // 注意: Vulkan 呈现成功后必须整体跳过下方 sws_scale 路径, 否则若 sws_ctx
-                    // 在 Vulkan 激活前已创建 (如后台初始化完成前播了若干帧), 会双路渲染白烧 CPU。
-                    bool presented_via_vulkan = false;
-                    // 播放区隐藏时整段跳过画面输出: 解码、实时分析、音频均不受影响。
+                    // 画面输出只有一条路径: sws_scale 转 BGRA -> QImage -> FrameReady。
+                    // 播放区隐藏时整段跳过: 解码、实时分析、音频均不受影响。
                     const bool suppress_render =
                         rendering_suppressed_.load(std::memory_order_relaxed);
-                    if (!suppress_render && vulkan_rendering_enabled_ && vulkan_renderer_ &&
-                        vulkan_renderer_->IsInitialized() &&
-                        !video_decoder_->IsCurrentFrameVulkan()) {
-                        const AVFrame* raw = video_decoder_->GetLastRawFrame();
-                        if (raw) {
-                            // PresentFrame 返回 false 表示本帧未被渲染器显示
-                            // (渲染器尚未初始化), 此时走下方 CPU 转换 + FrameReady
-                            // 路径。返回 true = 已显示 (Vulkan 渲染或拖动期间
-                            // 渲染器内部的 GDI 兜底绘制)。
-                            presented_via_vulkan = vulkan_renderer_->PresentFrame(raw);
-                            // Continue analysis below (frame type, scene change, etc.)
-                        }
-                    }
-                    if (!suppress_render && !presented_via_vulkan) {
+                    if (!suppress_render) {
                         if (frame_data.format >= 0) {
                             if (sws_src_w != frame_data.width || sws_src_h != frame_data.height || sws_src_fmt != frame_data.format) {
                                 sws_src_w = frame_data.width; sws_src_h = frame_data.height; sws_src_fmt = frame_data.format;
@@ -1179,7 +1147,7 @@ void MediaPlayer::DecodeThread() {
                     }
                     if (out_size < static_cast<int>(sizeof(int16_t))) continue;
 
-                    // 推送 PCM 到音频输出设备 (SDL2 回调播放)
+                    // 推送 PCM 到音频输出设备 (QAudioSink pull 播放)
                     if (audio_output_) {
                         audio_output_->Enqueue(audio_buffer.data(), out_size);
                     }
@@ -1248,18 +1216,8 @@ void MediaPlayer::Cleanup() {
     video_decoder_.reset();
     audio_decoder_.reset();
     audio_output_.reset();
-    // 注意: vulkan_renderer_ / vulkan_ctx_ 是 MainWindow 管理的渲染基础设施,
-    // 跨文件复用, 不在 Cleanup 中清空 (否则 Open 后解码线程无法走 Vulkan 路径)。
     video_stream_index_ = -1;
     audio_stream_index_ = -1;
-}
-
-void MediaPlayer::SetVulkanContext(VulkanContext* ctx) {
-    vulkan_ctx_ = ctx;  // 非拥有: 由 MainWindow 管理生命周期
-}
-
-void MediaPlayer::SetVulkanRenderer(VulkanRenderer* renderer) {
-    vulkan_renderer_ = renderer;  // 非拥有: 由 MainWindow 管理生命周期
 }
 
 } // namespace player

@@ -31,7 +31,7 @@ namespace ui {
 
 // 主窗口: 菜单 / 侧边栏 / 分析内容栈 / 导出。
 //
-// 播放相关的一切 (视频区、控制栏、Vulkan、GDI overlay、音频可视化、Raw 序列)
+// 播放相关的一切 (视频区、控制栏、音频可视化、Raw 序列)
 // 已剥离到 ui::PlayerPanel —— VideoEye 的核心定位是视频文件分析, 播放只是辅助
 // 定位手段。MainWindow 仍拥有 MediaPlayer (分析侧共用), 以裸指针注入 PlayerPanel。
 class MainWindow : public QMainWindow {
@@ -81,10 +81,6 @@ private:
 protected:
     void showEvent(QShowEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
-    // WM_ENTERSIZEMOVE/WM_EXITSIZEMOVE: 精确检测窗口拖动模态的开始/结束,
-    // 转发给 PlayerPanel (子 widget 收不到顶层窗口消息)。
-    bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
-
     // 成员变量
     player::MediaPlayer* player_;  // MainWindow 拥有, 以裸指针注入 player_panel_
 
@@ -95,11 +91,11 @@ protected:
     QSplitter* main_splitter_;    // 水平分割器 (侧栏 | 主内容)
     QSplitter* content_splitter_; // 垂直分割器 (播放模块 | 分析)
 
-    // 播放模块 (视频区 + 控制栏 + Vulkan + 音频可视化; 可整体收起)
+    // 播放模块 (视频区 + 控制栏 + 音频可视化; 可整体收起)
     PlayerPanel* player_panel_ = nullptr;
 
     // 媒体信息
-    QTextEdit* mediainfo_text_;   // MediaInfo 媒体信息文本框
+    QTextEdit* mediainfo_text_;   // 媒体信息文本框 (FFmpeg 解析结果)
     QLabel* current_media_label_; // 顶部显示当前媒体路径
     QLabel* stats_label_;         // 状态栏右端常驻: 实时 FPS/码率/关键帧
     QString current_media_url_;
@@ -123,7 +119,7 @@ protected:
     QTimer* ui_health_timer_ = nullptr;
     std::chrono::steady_clock::time_point ui_health_last_{};
 
-    // MediaInfo 后台解析 (避免大文件解析卡住主线程)
+    // 媒体信息后台解析 (避免大文件解析卡住主线程)
     void StartMediaInfoAnalysis(const QString& source);
     std::thread mediainfo_worker_;
     quint64 mediainfo_generation_ = 0;

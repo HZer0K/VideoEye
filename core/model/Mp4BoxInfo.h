@@ -16,7 +16,7 @@ struct Mp4BoxNode {
     int depth = 0;          // 树深度
     QVector<Mp4BoxNode> children;
 
-    // 字段信息 (从 Bento4 Inspector 的 AddField 收集)
+    // 字段信息 (从自研 utils::IsobmffParser 收集)
     struct Field {
         QString name;
         QString value;      // 字符串表示

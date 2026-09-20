@@ -23,6 +23,7 @@
 #include <QTimer>
 #include <QFontDatabase>
 #include <QPainter>
+#include <QWindow>
 #include <QPainterPath>
 #include <QListWidget>
 #include <QStackedWidget>
@@ -77,11 +78,8 @@ MainWindow::MainWindow(QWidget* parent)
     SetupMenuBar();
     SetupStatusBar();
     SetupConnections();
-    // 恢复上次播放区显隐状态 (须在 SetupUI 之后; 若为收起态, Vulkan 会延迟到
-    // 展开时由 PlayerPanel 内部 video widget 的 showEvent 触发初始化)
+    // 恢复上次播放区显隐状态 (须在 SetupUI 之后)
     player_panel_->RestoreVisibility();
-    // Vulkan: 由 PlayerPanel 拥有 context/renderer, 失败自动回退 CPU
-    player_panel_->InitVulkan();
     UpdateMinimumWindowSize();
 
     setWindowTitle(tr("VideoEye 2.0 - 视频流分析软件"));
@@ -92,7 +90,7 @@ MainWindow::~MainWindow() {
     if (player_) {
         player_->Stop();
     }
-    // MediaInfo 后台线程可能还在跑: 先标记失效再 join, 避免回调打到已析构的控件
+    // 媒体信息后台线程可能还在跑: 先标记失效再 join, 避免回调打到已析构的控件
     ++mediainfo_generation_;
     if (mediainfo_worker_.joinable()) {
         mediainfo_worker_.join();
@@ -238,8 +236,8 @@ void MainWindow::SetupContentArea() {
     content_splitter_->setChildrenCollapsible(false);
     
     // === 上半区: 播放模块 (视频区 + 控制栏, 可整体收起) ===
-    // 播放相关的一切都在 PlayerPanel 内: 视频 widget、控制栏、Vulkan/GDI 渲染、
-    // 音频可视化、Raw 序列。MainWindow 只负责把它放进分割器并注入 MediaPlayer。
+    // 播放相关的一切都在 PlayerPanel 内: 视频 widget、控制栏、音频可视化、
+    // Raw 序列。MainWindow 只负责把它放进分割器并注入 MediaPlayer。
     player_panel_ = new PlayerPanel(content_splitter_);
     player_panel_->SetMediaPlayer(player_);
     player_panel_->SetSplitter(content_splitter_);
@@ -333,12 +331,6 @@ void MainWindow::UpdateMinimumWindowSize() {
 void MainWindow::showEvent(QShowEvent* event) {
     QMainWindow::showEvent(event);
     UpdateMinimumWindowSize();
-    // 确保 Vulkan 渲染器在窗口显示后初始化 (原生窗口句柄就绪)。
-    // 即使子 Widget 的 showEvent 由于平台时序未触发, 这里也能兜底初始化。
-    // 播放区收起时 PlayerPanel 内部会跳过, 留到展开时再建 surface / swapchain。
-    if (player_panel_) {
-        player_panel_->TryInitializeVulkan();
-    }
 }
 
 void MainWindow::resizeEvent(QResizeEvent* event) {
@@ -350,32 +342,6 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
     if (cur_sz.width() < min_sz.width() || cur_sz.height() < min_sz.height()) {
         resize(cur_sz.expandedTo(min_sz));
     }
-    // popup 几何更新统一在 nativeEvent 的 WM_WINDOWPOSCHANGED 处理
-    // (此时 Qt 布局已完成, 视频 widget 几何才准确; resizeEvent 中滞后)。
-}
-
-bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr* result) {
-#ifdef Q_OS_WIN
-    if (eventType == "windows_generic_MSG") {
-        MSG* msg = static_cast<MSG*>(message);
-        // 拖动相关的渲染处理全部转发给 PlayerPanel:
-        // WM_ENTERSIZEMOVE/EXITSIZEMOVE 只发给顶层窗口, 子 widget 收不到,
-        // 因此这里只做转发, 具体逻辑见 PlayerPanel::OnDragStateChanged。
-        if (msg->message == WM_ENTERSIZEMOVE) {
-            if (player_panel_) player_panel_->OnDragStateChanged(true);
-        } else if (msg->message == WM_EXITSIZEMOVE) {
-            if (player_panel_) player_panel_->OnDragStateChanged(false);
-        } else if (msg->message == WM_WINDOWPOSCHANGED) {
-            // 窗口位置/尺寸变化后派发 (在 WM_SIZE 之后, Qt 布局已完成):
-            // 视频 widget 几何此时才准确, 更新 popup 几何并立即以最近帧呈现
-            // — 解码线程帧循环更新有最长一帧间隔的滞后, 拖动中会露出残留。
-            if (player_panel_) player_panel_->OnWindowPosChanged();
-        }
-    }
-#else
-    Q_UNUSED(eventType); Q_UNUSED(message); Q_UNUSED(result);
-#endif
-    return QMainWindow::nativeEvent(eventType, message, result);
 }
 
 void MainWindow::SetupMenuBar() {
@@ -753,9 +719,10 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
         current_media_url_ = source;
         analysis_panel_->SetCurrentVideoPath(source);
 
-        // MediaInfo 解析 PCM
+        // 媒体信息解析 PCM (裸流无法自动探测, 需带上用户选择的格式参数)
         {
             analyzer::MediaInfoAnalyzer mi;
+            mi.SetRawPcmHints(demuxer_name, sample_rate, channels);
             if (mi.Open(source)) {
                 mediainfo_text_->setPlainText(mi.GetCompleteInfo());
             } else {
@@ -790,8 +757,8 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
     current_media_url_ = source;
     analysis_panel_->SetCurrentVideoPath(source);
 
-    // MediaInfo 解析 (异常文件也可能部分解析成功, 尽力而为)。
-    // 大文件/复杂容器下 MediaInfoLib 全量解析可能要到秒级, 放在后台线程跑,
+    // 媒体信息解析 (异常文件也可能部分解析成功, 尽力而为)。
+    // 大文件/复杂容器下 avformat 全量探测可能要到秒级, 放在后台线程跑,
     // 结果用 generation 校验后再回主线程贴文本, 避免快速切换文件时结果串台。
     StartMediaInfoAnalysis(source);
 
@@ -819,14 +786,14 @@ void MainWindow::StartMediaInfoAnalysis(const QString& source) {
     mediainfo_text_->setPlainText(tr("(正在解析媒体信息…)"));
 
     if (mediainfo_worker_.joinable()) {
-        // 上一次还没跑完: 等它结束再起新的, 避免并发持有 MediaInfo 句柄
+        // 上一次还没跑完: 等它结束再起新的, 避免并发持有 avformat 上下文
         mediainfo_worker_.join();
     }
 
     mediainfo_worker_ = std::thread([this, source, generation]() {
         QString text;
         {
-            VE_PERF("MediaInfo 解析(后台线程)");
+            VE_PERF("媒体信息解析(后台线程)");
             analyzer::MediaInfoAnalyzer mi;
             text = mi.Open(source) ? mi.GetCompleteInfo() : tr("(无法解析媒体信息)");
         }

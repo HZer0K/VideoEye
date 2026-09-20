@@ -1,5 +1,4 @@
-#include "VulkanVideoWidget.h"
-#include "core/player/VulkanRenderer.h"
+#include "VideoWidget.h"
 #include "utils/Logger.h"
 #include <QPainter>
 #include <QPaintEvent>
@@ -45,20 +44,12 @@ void VideoOverlayWidget::SetMvOverlayMode(MvOverlayMode mode) {
     update();
 }
 
-void VideoOverlayWidget::SetVulkanActive(bool active) {
-    vulkan_active_ = active;
-}
-
 QRectF VideoOverlayWidget::ComputeVideoDisplayRect() const {
     const int fw = mv_analysis_.frame_width;
     const int fh = mv_analysis_.frame_height;
     if (fw <= 0 || fh <= 0) return QRectF(0, 0, width(), height());
 
-    if (vulkan_active_) {
-        // Vulkan 模式: 全屏三角形拉伸填充, 视频铺满整个 widget
-        return QRectF(0, 0, width(), height());
-    }
-    // CPU 回退模式: KeepAspectRatio 居中
+    // 保持宽高比居中
     QSize video_size(fw, fh);
     QSize scaled = video_size.scaled(size(), Qt::KeepAspectRatio);
     qreal x = (width() - scaled.width()) / 2.0;
@@ -373,12 +364,10 @@ void VideoOverlayWidget::DrawMvLegend(QPainter& painter, const QRectF& display_r
 }
 
 // ============================================================================
-// VulkanVideoWidget
+// VideoWidget
 // ============================================================================
-VulkanVideoWidget::VulkanVideoWidget(QWidget* parent)
-    : QWidget(parent)
-    , overlay_(nullptr) {
-    setAttribute(Qt::WA_NativeWindow, true);   // 确保有原生窗口句柄
+VideoWidget::VideoWidget(QWidget* parent)
+    : QWidget(parent) {
     setAttribute(Qt::WA_OpaquePaintEvent, true);
     setMinimumSize(320, 160);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -392,173 +381,65 @@ VulkanVideoWidget::VulkanVideoWidget(QWidget* parent)
     overlay_->show();
 }
 
-VulkanVideoWidget::~VulkanVideoWidget() {
-    // 等待后台 Vulkan 初始化线程结束, 避免渲染器/上下文被析构时仍在使用
-    if (init_thread_.joinable()) init_thread_.join();
-}
+VideoWidget::~VideoWidget() = default;
 
-void VulkanVideoWidget::SetVulkanRenderer(player::VulkanRenderer* renderer, player::VulkanContext* ctx) {
-    renderer_ = renderer;
-    vulkan_ctx_ = ctx;
-    // 实际 Initialize 延迟到 showEvent (原生窗口句柄 winId() 就绪时)
-}
-
-void VulkanVideoWidget::SetFallbackImage(const QImage& image) {
-    if (!vulkan_active_) {
-        fallback_image_ = image;
-        update();
-    }
-}
-
-void VulkanVideoWidget::Clear() {
-    fallback_image_ = QImage();
+void VideoWidget::SetFrame(const QImage& image) {
+    frame_ = image;
     update();
 }
 
-void VulkanVideoWidget::SetOverlayInfo(const VideoOverlayInfo& info) {
-    if (overlay_) {
-        overlay_->SetOverlayInfo(info);
-    }
+void VideoWidget::Clear() {
+    frame_ = QImage();
+    update();
 }
 
-void VulkanVideoWidget::SetCenterPlayButtonVisible(bool visible) {
-    if (overlay_) {
-        overlay_->SetCenterPlayButtonVisible(visible);
-    }
+void VideoWidget::SetOverlayInfo(const VideoOverlayInfo& info) {
+    if (overlay_) overlay_->SetOverlayInfo(info);
 }
 
-void VulkanVideoWidget::SetMotionVectors(const model::MacroblockFrameAnalysis& analysis) {
-    if (overlay_) {
-        overlay_->SetMotionVectors(analysis);
-    }
+void VideoWidget::SetCenterPlayButtonVisible(bool visible) {
+    if (overlay_) overlay_->SetCenterPlayButtonVisible(visible);
 }
 
-void VulkanVideoWidget::SetMvOverlayMode(MvOverlayMode mode) {
-    if (overlay_) {
-        overlay_->SetMvOverlayMode(mode);
-    }
+void VideoWidget::SetMotionVectors(const model::MacroblockFrameAnalysis& analysis) {
+    if (overlay_) overlay_->SetMotionVectors(analysis);
 }
 
-void VulkanVideoWidget::paintEvent(QPaintEvent* event) {
+void VideoWidget::SetMvOverlayMode(MvOverlayMode mode) {
+    if (overlay_) overlay_->SetMvOverlayMode(mode);
+}
+
+void VideoWidget::paintEvent(QPaintEvent* event) {
     QWidget::paintEvent(event);
-    if (vulkan_active_) {
-        // Vulkan 直接渲染到窗口表面，Qt 不绘制
-        return;
-    }
 
     QPainter painter(this);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
-    if (fallback_image_.isNull()) {
+    if (frame_.isNull()) {
         painter.fillRect(rect(), QColor("#01060E"));
         painter.setPen(QColor(0x8B, 0x94, 0x9E));
         QFont font;
         font.setPixelSize(std::max(14, std::min(height() / 30, 30)));
         painter.setFont(font);
         painter.drawText(rect(), Qt::AlignCenter, tr("视频显示区域"));
-    } else {
-        // 缩放并居中显示
-        QSize scaled = fallback_image_.size().scaled(size(), Qt::KeepAspectRatio);
-        int x = (width() - scaled.width()) / 2;
-        int y = (height() - scaled.height()) / 2;
-        painter.fillRect(rect(), QColor("#01060E"));
-        painter.drawImage(QRect(x, y, scaled.width(), scaled.height()), fallback_image_);
+        return;
     }
+
+    // 缩放并居中显示
+    const QSize scaled = frame_.size().scaled(size(), Qt::KeepAspectRatio);
+    const int x = (width() - scaled.width()) / 2;
+    const int y = (height() - scaled.height()) / 2;
+    painter.fillRect(rect(), QColor("#01060E"));
+    painter.drawImage(QRect(x, y, scaled.width(), scaled.height()), frame_);
 }
 
-void VulkanVideoWidget::resizeEvent(QResizeEvent* event) {
+void VideoWidget::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
-    if (renderer_ && vulkan_active_) {
-#ifdef HAVE_VULKAN
-        renderer_->Resize(event->size().width(), event->size().height());
-#endif
-    }
-    // 叠加层跟随大小变化
-    if (overlay_) {
-        overlay_->setGeometry(0, 0, width(), height());
-    }
+    if (overlay_) overlay_->setGeometry(0, 0, width(), height());
 }
 
-void VulkanVideoWidget::TryInitializeVulkan() {
-    if (vulkan_active_.load() || init_running_.load()) return;  // 已激活或进行中, 幂等
-    // first_show_ 仅在真正尝试初始化后才置 false, 因此若此时窗口尺寸无效
-    // (尺寸为 0, 例如布局尚未生效), 则不消费该次机会, 留待后续 showEvent/resize。
-    if (first_show_ && renderer_ && vulkan_ctx_ &&
-        width() > 0 && height() > 0) {
-#ifdef HAVE_VULKAN
-        // 重量级 Vulkan 初始化放在后台线程, 避免阻塞 GUI 线程导致窗口无法显示。
-        // 无论成功/失败/异常, 主窗口都不会卡死; 失败自动回退 CPU 显示。
-        // 窗口句柄必须在 GUI 线程取值 (此处窗口已 realize/显示), 再传入后台线程使用。
-        // 使用本 Widget 的 winId() 创建 Surface (真机已验证可见=是 且
-        // vkCreateWin32SurfaceKHR 成功); 不改用顶层窗口 HWND 以避免强制原生化的副作用。
-        init_running_.store(true);
-        WId handle = winId();
-        int w = width(), h = height();
-        player::VulkanRenderer* r = renderer_;
-        player::VulkanContext* c = vulkan_ctx_;
-        QPointer<VulkanVideoWidget> self(this);
-        init_thread_ = std::thread([self, r, c, handle, w, h]() {
-            // Initialize 是幂等的: 首次调用建 instance+surface+选设备; 若选设备失败
-            // (DWM 时机未就绪) 则 instance+surface 保留, 重试时跳过 CreateInstance
-            // 只重新查呈现支持 —— 避免二次 vkCreateInstance 在某些环境 fast-fail。
-            bool ok = false;
-            std::string err;
-            try {
-                if (c->IsValid() || c->Initialize(handle)) {
-                    ok = r->Initialize(c, handle, w, h);
-                }
-            } catch (const std::exception& e) {
-                err = e.what();
-            } catch (...) {
-                err = "non-std exception";
-            }
-            // 切回 GUI 线程更新状态 (self 为 QPointer, 对象已销毁则自动跳过)
-            QMetaObject::invokeMethod(self, [self, r, ok, err]() {
-                if (!self) return;
-                self->init_running_.store(false);
-                // join 已完成的后台线程, 使 init_thread_ 可被下次重试安全赋值
-                if (self->init_thread_.joinable()) self->init_thread_.join();
-                if (ok && r->IsInitialized()) {
-                    self->vulkan_active_.store(true);
-                    if (self->overlay_) self->overlay_->SetVulkanActive(true);
-                    LOG_INFO("VulkanVideoWidget: 渲染器初始化成功, GPU 直渲已启用");
-                    return;
-                }
-                // 呈现支持未就绪 (DWM 合成时机/Optimus): 延迟重试。复用同一 context
-                // (instance+surface 保留), Initialize 幂等跳过 CreateInstance。
-                // 若达上限仍失败则干净回退 CPU, 应用仍可用。
-                if (self->retry_count_ < self->kMaxRetries) {
-                    self->retry_count_++;
-                    LOG_INFO("VulkanVideoWidget: 呈现支持未就绪, "
-                             "延迟重试 (" + std::to_string(self->retry_count_) + "/"
-                             + std::to_string(self->kMaxRetries) + ")");
-                    QTimer::singleShot(800, self, [self]() {
-                        if (!self || !self->isVisible()) {
-                            if (self) { self->retry_count_ = 0; self->first_show_ = true; }
-                            return;
-                        }
-                        self->TryInitializeVulkan();
-                    });
-                    return;
-                }
-                LOG_WARN("VulkanVideoWidget: 渲染器初始化失败 (重试耗尽), 回退到 CPU 显示"
-                         + (err.empty() ? std::string() : (" (" + err + ")")));
-                self->vulkan_active_.store(false);
-                if (self->overlay_) self->overlay_->SetVulkanActive(false);
-                self->first_show_ = false;
-            }, Qt::QueuedConnection);
-        });
-#else
-        vulkan_active_.store(false);
-        first_show_ = false;
-#endif
-    }
-}
-
-void VulkanVideoWidget::showEvent(QShowEvent* event) {
+void VideoWidget::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
-    // Vulkan 渲染器延迟到窗口首次显示后初始化（此时原生窗口句柄 winId() 已就绪）
-    TryInitializeVulkan();
     if (overlay_) {
         overlay_->raise();
         overlay_->show();

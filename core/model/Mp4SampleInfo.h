@@ -3,7 +3,7 @@
 // MP4/fMP4 样本表（sample table）数据契约
 //
 // 设计约束（与 BitrateGopAnalyzer / AudioQcAnalyzer 一致）:
-//   - 只用 std::string / std::vector / 定长整数，不依赖 Qt 与 Bento4，
+//   - 只用 std::string / std::vector / 定长整数，不依赖 Qt 与第三方容器库，
 //     便于在 tests/unit 里喂合成数据做单测，也便于跨线程按值传递。
 //   - 时间戳统一使用「媒体时基(media timescale)下的整数」，UI 自行除以 timescale 显示秒。
 //   - 校验逻辑本身放在 analyzer 侧（Mp4SampleTableAnalyzer::Validate），

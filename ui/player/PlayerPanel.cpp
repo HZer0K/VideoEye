@@ -23,18 +23,6 @@
 #include <QFont>
 #include <QMetaObject>
 
-#ifdef Q_OS_WIN
-// GDI overlay popup 需要 Win32 API。
-// 必须定义 NOMINMAX: windows.h 的 min/max 宏会破坏 std::max/std::min/std::clamp
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#endif
-
 #include <cmath>
 #include <algorithm>
 
@@ -57,9 +45,7 @@ PlayerPanel::PlayerPanel(QWidget* parent)
     audio_vis_timer_.start();
 }
 
-PlayerPanel::~PlayerPanel() {
-    HideGdiOverlayPopup();
-}
+PlayerPanel::~PlayerPanel() = default;
 
 // ============================================================================
 // UI 构建
@@ -71,7 +57,7 @@ void PlayerPanel::SetupUI() {
     root_layout->setSpacing(0);
 
     // --- 视频显示区 ---
-    video_widget_ = new VulkanVideoWidget(this);
+    video_widget_ = new VideoWidget(this);
     video_widget_->setMinimumSize(320, kVideoMinHeight);
     video_widget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     root_layout->addWidget(video_widget_);
@@ -323,47 +309,6 @@ void PlayerPanel::RefreshOverlayMediaInfo(const QImage* frame) {
 }
 
 // ============================================================================
-// Vulkan
-// ============================================================================
-
-bool PlayerPanel::InitVulkan() {
-#ifdef HAVE_VULKAN
-    if (!player_ || !video_widget_) return false;
-
-    // 快速探测: 无 Vulkan loader/驱动时直接走 CPU, 不创建对象。
-    if (!player::VulkanContext::IsVulkanAvailable()) {
-        LOG_WARN("Vulkan 不可用 (无 loader/驱动), 回退到 CPU 渲染");
-        return false;
-    }
-
-    // 创建共享 VulkanContext + 渲染器 (生命周期由 PlayerPanel 拥有)。
-    // 关键: 不在此处 (构造函数, show() 之前) 调用 Initialize。因为提前用未显示的
-    // 子窗口 winId() 创建 Surface, 会导致 Optimus 笔记本上 vkGetPhysicalDeviceSurfaceSupportKHR
-    // 对所有设备误报「不支持呈现」。改为延迟到 video_widget_ 首次 showEvent 时,
-    // 在后台线程内完成「建 Surface → 呈现感知选设备 → 建管线」(见 VulkanVideoWidget::TryInitializeVulkan)。
-    vulkan_ctx_ = std::make_unique<player::VulkanContext>();
-    vulkan_renderer_ = std::make_unique<player::VulkanRenderer>(this);
-
-    video_widget_->SetVulkanRenderer(vulkan_renderer_.get(), vulkan_ctx_.get());
-    player_->SetVulkanContext(vulkan_ctx_.get());
-    player_->SetVulkanRenderer(vulkan_renderer_.get());
-    player_->SetVulkanRenderingEnabled(true);
-
-    LOG_INFO("Vulkan 已挂载: 渲染器将在窗口显示后于后台线程初始化 (失败自动回退 CPU)");
-    return true;
-#else
-    LOG_INFO("未定义 HAVE_VULKAN, 使用 CPU 渲染");
-    return false;
-#endif
-}
-
-void PlayerPanel::TryInitializeVulkan() {
-    if (video_widget_ && IsPlayerAreaVisible() && video_widget_->isVisible()) {
-        video_widget_->TryInitializeVulkan();
-    }
-}
-
-// ============================================================================
 // 播放区显隐
 // ============================================================================
 
@@ -374,12 +319,6 @@ bool PlayerPanel::IsPlayerAreaVisible() const {
 void PlayerPanel::SetPlayerAreaVisible(bool visible, bool persist) {
     if (player_area_visible_ == visible) return;
     player_area_visible_ = visible;
-
-    // 收起前先摘掉 GDI overlay popup: 它按视频 widget 的屏幕几何定位,
-    // 播放区隐藏后继续存在会残留一个悬浮画面。
-    if (!visible) {
-        HideGdiOverlayPopup();
-    }
 
     // 收起前记住分割比例: QSplitter 在子部件隐藏时会把空间全部让给另一个,
     // 不保存的话展开后播放区会缩成一条。
@@ -423,100 +362,6 @@ void PlayerPanel::RestoreVisibility() {
 int PlayerPanel::MinimumHeightHint() const {
     if (!IsPlayerAreaVisible()) return 0;
     return (video_widget_ ? video_widget_->minimumHeight() : kVideoMinHeight) + kControlBarHeight;
-}
-
-// ============================================================================
-// GDI overlay popup (窗口拖动模态期间显示视频帧)
-// ============================================================================
-
-void PlayerPanel::OnDragStateChanged(bool dragging) {
-    if (dragging) {
-        if (vulkan_renderer_) {
-            // 进入拖动模态: 通知渲染器抑制 swapchain 重建 (慢速拖动时 resize 事件
-            // 间隔可大于时间防抖期, 需靠模态消息精确判定拖动中)。
-            vulkan_renderer_->NotifyResizeDrag(true);
-            // 立即同步销毁 swapchain: 否则 flip 表面仍显示拖动前最后一帧,
-            // GDI 涂黑被其覆盖不可见, DWM 快照会拍到旧画面 → 拖动全程重影。
-            vulkan_renderer_->DestroySwapchainForDragSync();
-        }
-        ShowGdiOverlayPopup();
-    } else {
-        if (vulkan_renderer_) vulkan_renderer_->NotifyResizeDrag(false);
-        HideGdiOverlayPopup();
-        // popup 销毁后主窗口视频区域仍是拖动期间的黑色占位, 立即以最近
-        // 帧恢复画面, 避免等待下一帧的黑闪 — 与后续 Vulkan 恢复无缝衔接。
-        if (vulkan_renderer_) vulkan_renderer_->RefreshMainWindowNow();
-    }
-}
-
-void PlayerPanel::OnWindowPosChanged() {
-    UpdateGdiOverlayPopupGeometry();
-    if (vulkan_renderer_) vulkan_renderer_->RefreshGdiOverlayNow();
-}
-
-void PlayerPanel::ShowGdiOverlayPopup() {
-    if (!video_widget_ || !vulkan_renderer_) return;
-    // 播放区已收起: 不存在可见的视频区域, 弹出 popup 会留下一个悬浮画面。
-    // 这里额外检查 isVisible(): 构造期 player_area_visible_ 为 true 但 widget 尚未显示。
-    if (!IsPlayerAreaVisible() || !video_widget_->isVisible()) return;
-    if (!gdi_overlay_hwnd_) {
-#ifdef Q_OS_WIN
-        // 注册窗口类 (一次性)
-        static bool cls_registered = false;
-        if (!cls_registered) {
-            WNDCLASSEXW wc{};
-            wc.cbSize = sizeof(wc);
-            wc.lpfnWndProc = DefWindowProcW;
-            wc.hInstance = GetModuleHandleW(nullptr);
-            wc.lpszClassName = L"VideoEyeGdiOverlay";
-            wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-            wc.hbrBackground = nullptr;
-            RegisterClassExW(&wc);
-            cls_registered = true;
-        }
-        // layered popup: 内容与位置由 UpdateLayeredWindow 原子更新, 无绘制/移动撕裂
-        // 创建前先将主窗口视频区域涂黑: DWM 拖动模态快照与实时合成均显示
-        // 黑底, 拖动中 popup 错位时露出的仅是黑边而非旧画面 (消除重影)。
-        player::VulkanRenderer::FillWindowBlack(video_widget_->winId());
-        gdi_overlay_hwnd_ = reinterpret_cast<WId>(CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW,
-            L"VideoEyeGdiOverlay", L"",
-            WS_POPUP,
-            0, 0, 1, 1,
-            nullptr, nullptr, GetModuleHandleW(nullptr), nullptr));
-        if (!gdi_overlay_hwnd_) return;
-        vulkan_renderer_->SetGdiOverlayWindow(gdi_overlay_hwnd_);
-        UpdateGdiOverlayPopupGeometry();
-        // 显示前以最近帧预刷新一次, 避免首帧黑屏闪烁
-        vulkan_renderer_->RefreshGdiOverlayNow();
-        ShowWindow(reinterpret_cast<HWND>(gdi_overlay_hwnd_), SW_SHOWNOACTIVATE);
-#endif
-    }
-    UpdateGdiOverlayPopupGeometry();
-}
-
-void PlayerPanel::HideGdiOverlayPopup() {
-    if (vulkan_renderer_) vulkan_renderer_->SetGdiOverlayWindow(0);
-    if (gdi_overlay_hwnd_) {
-#ifdef Q_OS_WIN
-        DestroyWindow(reinterpret_cast<HWND>(gdi_overlay_hwnd_));
-#endif
-        gdi_overlay_hwnd_ = 0;
-    }
-}
-
-void PlayerPanel::UpdateGdiOverlayPopupGeometry() {
-    if (!gdi_overlay_hwnd_ || !video_widget_ || !vulkan_renderer_) return;
-#ifdef Q_OS_WIN
-    // 以视频 widget 原生窗口的物理像素几何为准 (无 DPR 舍入误差)
-    HWND wh = reinterpret_cast<HWND>(video_widget_->winId());
-    RECT rc{};
-    GetClientRect(wh, &rc);
-    POINT pt{0, 0};
-    ClientToScreen(wh, &pt);
-    vulkan_renderer_->SetGdiOverlayGeometry(pt.x, pt.y,
-                                            rc.right - rc.left, rc.bottom - rc.top);
-#endif
 }
 
 // ============================================================================
@@ -715,7 +560,7 @@ void PlayerPanel::OnFrameReady(const QImage& frame) {
         return;
     }
 
-    video_widget_->SetFallbackImage(frame);
+    video_widget_->SetFrame(frame);
 
     // 顺带刷新叠加层的分辨率/编码 (首帧或分辨率变化时才真正下发)
     RefreshOverlayMediaInfo(&frame);
@@ -1075,7 +920,7 @@ void PlayerPanel::RenderAudioVisualization(double timestamp_seconds) {
                          .arg(timestamp_seconds, 0, 'f', 3)
                          .arg(audio_vis_smoothed_, 0, 'f', 3));
 
-    video_widget_->SetFallbackImage(img);
+    video_widget_->SetFrame(img);
 }
 
 // ============================================================================
@@ -1336,7 +1181,7 @@ bool PlayerPanel::ShowRawFrame(int frame_index) {
     }
 
     raw_current_frame_ = frame_index;
-    video_widget_->SetFallbackImage(img);
+    video_widget_->SetFrame(img);
     // Raw 序列没有编码可言, 叠加层用像素格式占位 + 实际帧尺寸
     last_overlay_codec_ = raw_pixel_format_;
     RefreshOverlayMediaInfo(&img);

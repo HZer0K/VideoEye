@@ -32,28 +32,16 @@ enable_testing()
 # ============================================================
 # 公共 include 目录 (与主项目一致)
 # ============================================================
-set(BENTO4_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/Bento4/Source/C++/Core")
-
 set(TEST_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/..
     ${CMAKE_CURRENT_SOURCE_DIR}/../core
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui
     ${CMAKE_CURRENT_SOURCE_DIR}/../utils
-    ${BENTO4_CORE_DIR}
-    ${BENTO4_CORE_DIR}/../MetaData
-    ${BENTO4_CORE_DIR}/../Codecs
-    ${BENTO4_CORE_DIR}/../Crypto
-    ${BENTO4_CORE_DIR}/../Adapters
     ${FFMPEG_INCLUDE_DIRS}
-    ${SDL2_INCLUDE_DIRS}
 )
 
-# FFmpeg RPATH (用于 local build 场景)
-if(FFMPEG_LOCAL_BUILD AND FFMPEG_LOCAL_DIR)
-    set(TEST_FFMPEG_RPATH "${FFMPEG_LOCAL_DIR}/bin")
-else()
-    set(TEST_FFMPEG_RPATH "")
-endif()
+# FFmpeg 预编译包的运行时目录（Windows 下测试 exe 与 DLL 同目录即可）
+set(TEST_FFMPEG_RPATH "${FFMPEG_BIN_DIR}")
 
 # ============================================================
 # 测试 1: FormatDetector (仅依赖 Qt)
@@ -109,7 +97,7 @@ target_include_directories(test_report_exporter PRIVATE ${TEST_INCLUDE_DIRS})
 target_link_libraries(test_report_exporter PRIVATE
     GTest::gtest_main
     Qt6::Core
-    ${FFMPEG_LIBRARIES}
+    FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swscale FFmpeg::swresample
 )
 set_target_properties(test_report_exporter PROPERTIES
     AUTOMOC ON
@@ -128,7 +116,7 @@ add_executable(test_stream_analyzer
 target_include_directories(test_stream_analyzer PRIVATE ${TEST_INCLUDE_DIRS})
 target_link_libraries(test_stream_analyzer PRIVATE
     GTest::gtest_main
-    ${FFMPEG_LIBRARIES}
+    FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swscale FFmpeg::swresample
 )
 set_target_properties(test_stream_analyzer PROPERTIES
     BUILD_RPATH "${TEST_FFMPEG_RPATH}"
@@ -145,7 +133,7 @@ add_executable(test_frame_data
 target_include_directories(test_frame_data PRIVATE ${TEST_INCLUDE_DIRS})
 target_link_libraries(test_frame_data PRIVATE
     GTest::gtest_main
-    ${FFMPEG_LIBRARIES}
+    FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swscale FFmpeg::swresample
 )
 set_target_properties(test_frame_data PROPERTIES
     BUILD_RPATH "${TEST_FFMPEG_RPATH}"
@@ -177,7 +165,7 @@ add_executable(test_quality_analyzer
 target_include_directories(test_quality_analyzer PRIVATE ${TEST_INCLUDE_DIRS})
 target_link_libraries(test_quality_analyzer PRIVATE
     GTest::gtest_main
-    ${FFMPEG_LIBRARIES}
+    FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swscale FFmpeg::swresample
 )
 set_target_properties(test_quality_analyzer PROPERTIES
     BUILD_RPATH "${TEST_FFMPEG_RPATH}"
@@ -247,7 +235,7 @@ add_executable(test_color_hdr_rules
 target_include_directories(test_color_hdr_rules PRIVATE ${TEST_INCLUDE_DIRS})
 target_link_libraries(test_color_hdr_rules PRIVATE
     GTest::gtest_main
-    ${FFMPEG_LIBRARIES}
+    FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swscale FFmpeg::swresample
 )
 set_target_properties(test_color_hdr_rules PROPERTIES
     BUILD_RPATH "${TEST_FFMPEG_RPATH}"
@@ -256,12 +244,13 @@ add_test(NAME ColorHdrRulesTests COMMAND test_color_hdr_rules)
 
 # =================================================
 # 测试 11：MP4/fMP4 容器一致性 (Mp4SampleTableAnalyzer 的纯逻辑校验)
-# 说明: 只测 Validate()——手工构造合成样本表，不需要 Bento4、Qt 或真实文件。
-#       本目标不定义 HAVE_BENTO4，Mp4SampleTableAnalyzer.cpp 的解析分支会被跳过。
+# 说明: 只测 Validate()——手工构造合成样本表，不需要 Qt 或真实文件。
+#       解析路径走自研 utils/IsobmffParser（纯 stdlib），无需任何第三方容器库。
 # =================================================
 add_executable(test_mp4_sample_table
     unit/test_mp4_sample_table.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/Mp4SampleTableAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/IsobmffParser.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../utils/Logger.cpp
 )
 target_include_directories(test_mp4_sample_table PRIVATE ${TEST_INCLUDE_DIRS})

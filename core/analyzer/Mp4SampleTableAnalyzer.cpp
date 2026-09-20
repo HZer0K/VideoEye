@@ -12,19 +12,7 @@
 
 #include "utils/Logger.h"
 
-#ifdef HAVE_BENTO4
-#include "Ap4.h"
-#include "Ap4Co64Atom.h"
-#include "Ap4ElstAtom.h"
-#include "Ap4FileByteStream.h"
-#include "Ap4MfhdAtom.h"
-#include "Ap4SidxAtom.h"
-#include "Ap4StsdAtom.h"
-#include "Ap4TfdtAtom.h"
-#include "Ap4TfhdAtom.h"
-#include "Ap4TrunAtom.h"
-#endif
-
+#include "utils/IsobmffParser.h"
 namespace videoeye {
 namespace analyzer {
 
@@ -465,403 +453,252 @@ void Mp4SampleTableAnalyzer::Validate(model::Mp4SampleTableResult& out,
     ValidateFragments(out, options);
 }
 
-#ifdef HAVE_BENTO4
+
+
+// ---------------------------------------------------------------------------
+// 解析部分: utils::IsobmffParser 的输出 -> model::Mp4SampleTableResult
+//
+// 这一段原先由 Bento4 (AP4_File / AP4_Track::GetSample) 承担。自研 IsobmffParser
+// 已经把 stts/ctts/stss/stsz/stsc/stco/co64/elst 与 fMP4 的 traf/tfhd/tfdt/trun
+// 都解析成裸表，这里只负责"按规范把表展开成逐样本"。
+// ---------------------------------------------------------------------------
 
 namespace {
 
-std::string FourCCToString(AP4_UI32 type) {
-    char buf[5] = {0, 0, 0, 0, 0};
-    buf[0] = static_cast<char>((type >> 24) & 0xFF);
-    buf[1] = static_cast<char>((type >> 16) & 0xFF);
-    buf[2] = static_cast<char>((type >> 8) & 0xFF);
-    buf[3] = static_cast<char>(type & 0xFF);
-    for (int i = 0; i < 4; ++i) {
-        const unsigned char c = static_cast<unsigned char>(buf[i]);
-        if (c < 0x20 || c > 0x7E) buf[i] = '.';
-    }
-    return std::string(buf);
+using utils::IsobmffTrack;
+
+uint32_t SampleSizeAt(const utils::StszTable& stsz, uint32_t index) {
+    if (stsz.default_size != 0) return stsz.default_size;
+    if (index < stsz.sizes.size()) return stsz.sizes[index];
+    return 0;
 }
 
-const char* TrackTypeName(AP4_Track::Type type) {
-    switch (type) {
-        case AP4_Track::TYPE_VIDEO:     return "video";
-        case AP4_Track::TYPE_AUDIO:     return "audio";
-        case AP4_Track::TYPE_HINT:      return "hint";
-        case AP4_Track::TYPE_TEXT:      return "text";
-        case AP4_Track::TYPE_JPEG:      return "jpeg";
-        case AP4_Track::TYPE_RTP:       return "rtp";
-        case AP4_Track::TYPE_SUBTITLES: return "subtitle";
-        case AP4_Track::TYPE_SYSTEM:    return "system";
-        default:                        return "unknown";
+uint64_t TotalSampleBytes(const utils::StszTable& stsz, uint32_t sample_count) {
+    if (stsz.default_size != 0) {
+        return static_cast<uint64_t>(stsz.default_size) * sample_count;
     }
+    uint64_t total = 0;
+    const uint32_t n = std::min(sample_count, static_cast<uint32_t>(stsz.sizes.size()));
+    for (uint32_t i = 0; i < n; ++i) total += stsz.sizes[i];
+    return total;
 }
 
-// Bento4 没有暴露 stts/ctts 的 entries，用「探测最大可解析序号」得到表覆盖的样本数。
-// 注意: AP4_SttsAtom::GetDts / AP4_CttsAtom::GetCtsOffset 的 sample 参数是 **1-based**
-// （源码里 "sample indexes start at 1"，传 0 直接返回 OUT_OF_RANGE），所以这里
-// 的 probe 也必须用 1-based 序号，否则第一个样本就会探测失败，得到"表覆盖 0 个样本"
-// 的荒谬结果，进而误报 sample_count_mismatch。
-// 先指数扩张找上界，再二分；两个接口内部都有顺序访问缓存，探测开销可忽略。
-template <typename Probe>
-uint32_t ProbeSampleCount(const Probe& ok) {  // ok(n): n 为 1-based 样本序号
-    if (!ok(1)) return 0;
-    uint64_t count = 1;
-    uint64_t bound = 2;
-    while (bound <= (1ull << 31) && ok(bound)) {
-        count = bound;
-        bound <<= 1;
-    }
-    if (bound > (1ull << 31)) return static_cast<uint32_t>(count);
-    uint64_t lo = count, hi = bound;  // ok(lo)=true, ok(hi)=false
-    while (lo + 1 < hi) {
-        const uint64_t mid = (lo + hi) / 2;
-        if (ok(mid)) lo = mid; else hi = mid;
-    }
-    return static_cast<uint32_t>(lo);
-}
-
-uint32_t ProbeSttsSampleCount(AP4_SttsAtom* atom) {
-    if (!atom) return 0;
-    return ProbeSampleCount([&](uint64_t n) {
-        AP4_UI64 dts = 0;
-        AP4_UI32 duration = 0;
-        return AP4_SUCCEEDED(atom->GetDts(static_cast<AP4_Ordinal>(n), dts, &duration));
-    });
-}
-
-uint32_t ProbeCttsSampleCount(AP4_CttsAtom* atom) {
-    if (!atom) return 0;
-    return ProbeSampleCount([&](uint64_t n) {
-        AP4_UI32 offset = 0;
-        return AP4_SUCCEEDED(atom->GetCtsOffset(static_cast<AP4_Ordinal>(n), offset));
-    });
-}
-
-const AP4_UI32 kAtomTypeMfhd = AP4_ATOM_TYPE('m', 'f', 'h', 'd');
-const AP4_UI32 kAtomTypeMoof = AP4_ATOM_TYPE('m', 'o', 'o', 'f');
-const AP4_UI32 kAtomTypeTfdt = AP4_ATOM_TYPE('t', 'f', 'd', 't');
-const AP4_UI32 kAtomTypeSidx = AP4_ATOM_TYPE('s', 'i', 'd', 'x');
-const AP4_UI32 kAtomTypeStyp = AP4_ATOM_TYPE('s', 't', 'y', 'p');
-const AP4_UI32 kAtomTypeMdat = AP4_ATOM_TYPE('m', 'd', 'a', 't');
-const AP4_UI32 kAtomTypeMoov = AP4_ATOM_TYPE('m', 'o', 'o', 'v');
-
-void CollectFragments(AP4_Atom* moof_atom, uint64_t moof_offset, uint64_t moof_size,
-                      uint32_t moof_index, model::Mp4SampleTableResult& out) {
-    AP4_ContainerAtom* moof = AP4_DYNAMIC_CAST(AP4_ContainerAtom, moof_atom);
-    if (!moof) return;
-
-    uint32_t sequence_number = 0;
-    AP4_MfhdAtom* mfhd = AP4_DYNAMIC_CAST(AP4_MfhdAtom, moof->GetChild(kAtomTypeMfhd));
-    if (mfhd) sequence_number = mfhd->GetSequenceNumber();
-
-    for (AP4_List<AP4_Atom>::Item* item = moof->GetChildren().FirstItem(); item;
-         item = item->GetNext()) {
-        AP4_Atom* child = item->GetData();
-        if (!child || child->GetType() != AP4_ATOM_TYPE_TRAF) continue;
-        AP4_ContainerAtom* traf = AP4_DYNAMIC_CAST(AP4_ContainerAtom, child);
-        if (!traf) continue;
-
-        model::Mp4FragmentInfo f;
-        f.moof_index = moof_index;
-        f.index = static_cast<uint32_t>(out.fragments.size());
-        f.sequence_number = sequence_number;
-        f.offset = moof_offset;
-        f.size = moof_size;
-
-        AP4_TfhdAtom* tfhd = AP4_DYNAMIC_CAST(AP4_TfhdAtom, traf->GetChild(AP4_ATOM_TYPE_TFHD));
-        uint32_t default_duration = 0;
-        uint32_t default_size = 0;
-        if (tfhd) {
-            f.track_id = tfhd->GetTrackId();
-            f.base_data_offset = tfhd->GetBaseDataOffset();
-            const AP4_UI32 flags = tfhd->GetFlags();
-            f.base_data_offset_present = (flags & AP4_TFHD_FLAG_BASE_DATA_OFFSET_PRESENT) != 0;
-            f.default_base_is_moof = (flags & AP4_TFHD_FLAG_DEFAULT_BASE_IS_MOOF) != 0;
-            f.sample_description_index_present =
-                (flags & AP4_TFHD_FLAG_SAMPLE_DESCRIPTION_INDEX_PRESENT) != 0;
-            f.default_sample_duration_present =
-                (flags & AP4_TFHD_FLAG_DEFAULT_SAMPLE_DURATION_PRESENT) != 0;
-            f.default_sample_size_present =
-                (flags & AP4_TFHD_FLAG_DEFAULT_SAMPLE_SIZE_PRESENT) != 0;
-            f.duration_is_empty = (flags & AP4_TFHD_FLAG_DURATION_IS_EMPTY) != 0;
-            default_duration = tfhd->GetDefaultSampleDuration();
-            default_size = tfhd->GetDefaultSampleSize();
-        }
-
-        AP4_TfdtAtom* tfdt = AP4_DYNAMIC_CAST(AP4_TfdtAtom, traf->GetChild(kAtomTypeTfdt));
-        if (tfdt) {
-            f.has_tfdt = true;
-            f.base_media_decode_time = tfdt->GetBaseMediaDecodeTime();
-        }
-
-        for (AP4_List<AP4_Atom>::Item* ti = traf->GetChildren().FirstItem(); ti; ti = ti->GetNext()) {
-            AP4_Atom* tchild = ti->GetData();
-            if (!tchild || tchild->GetType() != AP4_ATOM_TYPE_TRUN) continue;
-            AP4_TrunAtom* trun = AP4_DYNAMIC_CAST(AP4_TrunAtom, tchild);
-            if (!trun) continue;
-            ++f.trun_count;
-            const AP4_UI32 trun_flags = trun->GetFlags();
-            if (f.trun_count == 1) {
-                f.trun_data_offset_present = (trun_flags & AP4_TRUN_FLAG_DATA_OFFSET_PRESENT) != 0;
-                f.trun_data_offset = trun->GetDataOffset();
-            }
-            const AP4_Array<AP4_TrunAtom::Entry>& entries = trun->GetEntries();
-            for (unsigned int i = 0; i < entries.ItemCount(); ++i) {
-                ++f.sample_count;
-                f.duration += (trun_flags & AP4_TRUN_FLAG_SAMPLE_DURATION_PRESENT)
-                                  ? entries[i].sample_duration
-                                  : default_duration;
-                f.total_size += (trun_flags & AP4_TRUN_FLAG_SAMPLE_SIZE_PRESENT)
-                                    ? entries[i].sample_size
-                                    : default_size;
-            }
-        }
-
-        out.fragments.push_back(f);
-    }
-}
-
-void CollectTrack(AP4_Track* track, const Mp4SampleTableOptions& options,
-                  model::Mp4TrackSampleTable& t) {
-    t.track_id = track->GetId();
-    t.type = TrackTypeName(track->GetType());
-    t.media_timescale = track->GetMediaTimeScale();
-    t.media_duration = track->GetMediaDuration();
-
-    AP4_TrakAtom* trak = track->UseTrakAtom();
-    AP4_ContainerAtom* stbl = nullptr;
-    if (trak) {
-        AP4_Atom* stbl_atom = trak->FindChild("mdia/minf/stbl");
-        stbl = AP4_DYNAMIC_CAST(AP4_ContainerAtom, stbl_atom);
-    }
-
-    AP4_StszAtom* stsz = nullptr;
-    if (stbl) {
-        stsz = AP4_DYNAMIC_CAST(AP4_StszAtom, stbl->GetChild(AP4_ATOM_TYPE_STSZ));
-        AP4_StssAtom* stss = AP4_DYNAMIC_CAST(AP4_StssAtom, stbl->GetChild(AP4_ATOM_TYPE_STSS));
-        AP4_SttsAtom* stts = AP4_DYNAMIC_CAST(AP4_SttsAtom, stbl->GetChild(AP4_ATOM_TYPE_STTS));
-        AP4_CttsAtom* ctts = AP4_DYNAMIC_CAST(AP4_CttsAtom, stbl->GetChild(AP4_ATOM_TYPE('c', 't', 't', 's')));
-        AP4_StscAtom* stsc = AP4_DYNAMIC_CAST(AP4_StscAtom, stbl->GetChild(AP4_ATOM_TYPE_STSC));
-        AP4_StcoAtom* stco = AP4_DYNAMIC_CAST(AP4_StcoAtom, stbl->GetChild(AP4_ATOM_TYPE_STCO));
-        AP4_Co64Atom* co64 = AP4_DYNAMIC_CAST(AP4_Co64Atom, stbl->GetChild(AP4_ATOM_TYPE_CO64));
-
-        t.has_stsz = (stsz != nullptr);
-        t.has_stz2 = (stbl->GetChild(AP4_ATOM_TYPE_STZ2) != nullptr);
-        t.has_stss = (stss != nullptr);
-        t.has_stts = (stts != nullptr);
-        t.has_ctts = (ctts != nullptr);
-        t.has_stsc = (stsc != nullptr);
-        t.has_stco = (stco != nullptr);
-        t.has_co64 = (co64 != nullptr);
-
-        if (stsz) t.stsz_sample_count = stsz->GetSampleCount();
-        if (stss) t.stss_sync_count = stss->GetEntries().ItemCount();
-        t.stts_sample_count = ProbeSttsSampleCount(stts);
-        t.ctts_sample_count = ProbeCttsSampleCount(ctts);
-
-        if (stco) {
-            t.chunk_count = stco->GetChunkCount();
-            const AP4_UI32* offsets = stco->GetChunkOffsets();
-            for (AP4_Cardinal i = 0; i < stco->GetChunkCount(); ++i) {
-                t.max_chunk_offset = std::max<uint64_t>(t.max_chunk_offset, offsets[i]);
-            }
-        } else if (co64) {
-            t.chunk_count = co64->GetChunkCount();
-            const AP4_UI64* offsets = co64->GetChunkOffsets();
-            for (AP4_Cardinal i = 0; i < co64->GetChunkCount(); ++i) {
-                t.max_chunk_offset = std::max<uint64_t>(t.max_chunk_offset, offsets[i]);
-            }
-        }
-
-        AP4_StsdAtom* stsd = AP4_DYNAMIC_CAST(AP4_StsdAtom, stbl->GetChild(AP4_ATOM_TYPE_STSD));
-        if (stsd) {
-            AP4_SampleDescription* sd = stsd->GetSampleDescription(0);
-            if (sd) t.codec = FourCCToString(sd->GetFormat());
-        }
-    }
-
-    if (trak) {
-        AP4_ElstAtom* elst = AP4_DYNAMIC_CAST(AP4_ElstAtom, trak->FindChild("edts/elst"));
-        if (elst) {
-            t.has_elst = true;
-            const AP4_Array<AP4_ElstEntry>& entries = elst->GetEntries();
-            t.edit_list.reserve(entries.ItemCount());
-            for (unsigned int i = 0; i < entries.ItemCount(); ++i) {
-                model::Mp4EditListEntry e;
-                e.segment_duration = entries[i].m_SegmentDuration;
-                e.media_time = entries[i].m_MediaTime;
-                e.media_rate = entries[i].m_MediaRate;
-                e.is_empty_edit = (entries[i].m_MediaTime < 0);
-                t.edit_list.push_back(e);
-            }
-        }
-    }
-
-    // 全部样本字节数（不截断，stsz 直接累加）
-    if (stsz) {
-        const uint32_t n = t.stsz_sample_count;
-        uint64_t total = 0;
-        for (uint32_t i = 0; i < n; ++i) {
-            AP4_Size size = 0;
-            if (AP4_SUCCEEDED(stsz->GetSampleSize(i, size))) total += size;
-        }
-        t.total_sample_bytes = total;
-    }
-
-    // 逐样本展开
+// 按 stts/ctts/stsc/stco 展开逐样本信息。
+// 大文件受 options.max_samples_per_track 限制（只展开前 N 个，表级校验照做）。
+void ExpandSamples(const IsobmffTrack& src, model::Mp4TrackSampleTable& t,
+                   uint32_t max_samples) {
     const uint32_t n = t.stsz_sample_count;
-    const uint32_t limit = options.expand_samples
-                               ? std::min<uint32_t>(n, options.max_samples_per_track)
-                               : 0;
-    if (limit > 0) {
-        AP4_AtomSampleTable* atom_table =
-            AP4_DYNAMIC_CAST(AP4_AtomSampleTable, track->GetSampleTable());
-        t.samples.reserve(limit);
-        for (uint32_t i = 0; i < limit; ++i) {
-            AP4_Sample sample;
-            if (AP4_FAILED(track->GetSample(i, sample))) {
-                t.sample_read_failed = true;
-                t.sample_read_error_index = i;
-                break;
+    if (n == 0) return;
+
+    const uint32_t limit = (max_samples > 0) ? std::min(n, max_samples) : n;
+    t.samples_truncated = (limit < n);
+    t.samples.reserve(limit);
+
+    // stss 是 1-based 样本号；无 stss 时规范规定"每个样本都是同步样本"
+    std::vector<bool> sync;
+    if (src.has_stss) {
+        sync.assign(limit + 1, false);
+        for (uint32_t s : src.stss) {
+            if (s >= 1 && s <= limit) sync[s] = true;
+        }
+    }
+
+    const uint32_t chunk_count = static_cast<uint32_t>(src.chunk_offsets.size());
+    size_t stsc_idx = 0;
+    size_t stts_idx = 0, stts_used = 0;
+    size_t ctts_idx = 0, ctts_used = 0;
+    int64_t dts = 0;
+    uint32_t produced = 0;
+
+    for (uint32_t c = 1; c <= chunk_count && produced < limit; ++c) {
+        // 找到覆盖当前 chunk 的 stsc 条目（first_chunk 升序，1-based）
+        while (stsc_idx + 1 < src.stsc.size() &&
+               src.stsc[stsc_idx + 1].first_chunk <= c) {
+            ++stsc_idx;
+        }
+        if (stsc_idx >= src.stsc.size()) break;
+        const uint32_t samples_per_chunk = src.stsc[stsc_idx].samples_per_chunk;
+        const uint32_t desc_index = src.stsc[stsc_idx].sample_description_index;
+
+        uint64_t offset = src.chunk_offsets[c - 1];
+        for (uint32_t k = 0; k < samples_per_chunk && produced < limit; ++k, ++produced) {
+            uint32_t duration = 0;
+            while (stts_idx < src.stts.size() &&
+                   stts_used >= src.stts[stts_idx].sample_count) {
+                stts_used = 0;
+                ++stts_idx;
             }
-            model::Mp4Sample s;
-            s.index = i;
-            s.offset = sample.GetOffset();
-            s.size = sample.GetSize();
-            s.dts = static_cast<int64_t>(sample.GetDts());
-            s.cts_delta = sample.GetCtsDelta();
-            s.cts = s.dts + static_cast<int64_t>(s.cts_delta);
-            s.duration = sample.GetDuration();
-            s.keyframe = sample.IsSync();
-            s.description_index = sample.GetDescriptionIndex();
-            if (atom_table) {
-                AP4_Ordinal chunk = 0, pos_in_chunk = 0;
-                if (AP4_SUCCEEDED(atom_table->GetSampleChunkPosition(i, chunk, pos_in_chunk))) {
-                    s.chunk_index = static_cast<uint32_t>(chunk);
-                    s.index_in_chunk = static_cast<uint32_t>(pos_in_chunk);
+            if (stts_idx < src.stts.size()) {
+                duration = src.stts[stts_idx].sample_delta;
+                ++stts_used;
+            }
+
+            int32_t cts_delta = 0;
+            if (src.has_ctts) {
+                while (ctts_idx < src.ctts.size() &&
+                       ctts_used >= src.ctts[ctts_idx].sample_count) {
+                    ctts_used = 0;
+                    ++ctts_idx;
+                }
+                if (ctts_idx < src.ctts.size()) {
+                    cts_delta = src.ctts[ctts_idx].sample_offset;
+                    ++ctts_used;
                 }
             }
-            t.samples.push_back(s);
+
+            const uint32_t size = SampleSizeAt(src.stsz, produced);
+            model::Mp4Sample s;
+            s.index = produced;
+            s.chunk_index = c - 1;
+            s.index_in_chunk = k;
+            s.offset = offset;
+            s.size = size;
+            s.dts = dts;
+            s.cts_delta = cts_delta;
+            s.cts = dts + static_cast<int64_t>(cts_delta);
+            s.duration = duration;
+            s.keyframe = src.has_stss ? sync[produced + 1] : true;
+            s.description_index = desc_index;
+            t.samples.push_back(std::move(s));
+
+            offset += size;
+            dts += static_cast<int64_t>(duration);
         }
-        t.samples_truncated = (t.samples.size() < n);
-        if (!t.samples.empty()) t.first_sample_cts = t.samples.front().cts;
     }
+
+    // 展开数量不足又不是被上限截断的，说明表本身不自洽（stsc/stsz/stco 对不上）
+    if (produced < limit) {
+        t.sample_read_failed = true;
+        t.sample_read_error_index = produced;
+    }
+    if (!t.samples.empty()) {
+        t.first_sample_cts = t.samples.front().cts;
+    }
+}
+
+void CollectTrack(const IsobmffTrack& src, model::Mp4TrackSampleTable& t,
+                  const Mp4SampleTableOptions& options) {
+    t.track_id = src.track_id;
+    t.type = src.TypeName();
+    t.codec = src.codec;
+    t.media_timescale = src.media_timescale;
+    t.media_duration = src.media_duration;
+
+    t.has_stts = src.has_stts;
+    t.has_ctts = src.has_ctts;
+    t.has_stss = src.has_stss;
+    t.has_stsz = src.has_stsz;
+    t.has_stz2 = src.has_stz2;
+    t.has_stsc = src.has_stsc;
+    t.has_stco = src.has_stco;
+    t.has_co64 = src.has_co64;
+    t.has_elst = src.has_elst;
+
+    t.stsz_sample_count = src.stsz.sample_count;
+    t.stts_sample_count = src.SttsSampleCount();
+    t.ctts_sample_count = src.CttsSampleCount();
+    t.stss_sync_count = static_cast<uint32_t>(src.stss.size());
+    t.chunk_count = static_cast<uint32_t>(src.chunk_offsets.size());
+
+    for (uint64_t off : src.chunk_offsets) {
+        if (off > t.max_chunk_offset) t.max_chunk_offset = off;
+    }
+    t.total_sample_bytes = TotalSampleBytes(src.stsz, t.stsz_sample_count);
+
+    for (const auto& e : src.elst) {
+        model::Mp4EditListEntry entry;
+        entry.segment_duration = e.segment_duration;
+        entry.media_time = e.media_time;
+        entry.media_rate = static_cast<uint16_t>(e.media_rate_integer);
+        entry.is_empty_edit = (e.media_time < 0);
+        t.edit_list.push_back(entry);
+    }
+
+    if (options.expand_samples) {
+        ExpandSamples(src, t, options.max_samples_per_track);
+    } else {
+        t.samples_truncated = (t.stsz_sample_count > 0);
+    }
+}
+
+model::Mp4FragmentInfo ConvertFragment(const utils::IsobmffFragment& f) {
+    model::Mp4FragmentInfo out;
+    out.moof_index = f.moof_index;
+    out.index = f.index;
+    out.sequence_number = f.sequence_number;
+    out.track_id = f.track_id;
+    out.offset = f.offset;
+    out.size = f.size;
+    out.has_tfdt = f.has_tfdt;
+    out.base_media_decode_time = f.base_media_decode_time;
+    out.sample_count = f.sample_count;
+    out.duration = f.duration;
+    out.total_size = f.total_size;
+    out.base_data_offset_present = f.base_data_offset_present;
+    out.default_base_is_moof = f.default_base_is_moof;
+    out.sample_description_index_present = f.sample_description_index_present;
+    out.default_sample_duration_present = f.default_sample_duration_present;
+    out.default_sample_size_present = f.default_sample_size_present;
+    out.duration_is_empty = f.duration_is_empty;
+    out.base_data_offset = f.base_data_offset;
+    out.trun_count = f.trun_count;
+    out.trun_data_offset_present = f.trun_data_offset_present;
+    out.trun_data_offset = f.trun_data_offset;
+    return out;
 }
 
 }  // namespace
 
+Mp4SampleTableAnalyzer::Mp4SampleTableAnalyzer() = default;
+
 bool Mp4SampleTableAnalyzer::AnalyzeFile(const std::string& file_path,
                                          model::Mp4SampleTableResult& out,
                                          const Mp4SampleTableOptions& options) {
+    options_ = options;
     out = model::Mp4SampleTableResult{};
     out.file_path = file_path;
-    options_ = options;
 
-    std::error_code ec;
-    const uintmax_t size = std::filesystem::file_size(std::filesystem::path(file_path), ec);
-    if (!ec) out.file_size = static_cast<uint64_t>(size);
+    utils::IsobmffParser::Options parse_options;
+    parse_options.skip_sample_tables = !options.expand_samples;
 
-    AP4_ByteStream* stream = nullptr;
-    if (AP4_FAILED(AP4_FileByteStream::Create(file_path.c_str(),
-                                              AP4_FileByteStream::STREAM_MODE_READ, stream))) {
-        out.error_message = "无法打开文件（Bento4 打开失败）";
-        LOG_WARN("Mp4SampleTableAnalyzer: " + out.error_message + " " + file_path);
+    utils::IsobmffFile parsed;
+    if (!utils::IsobmffParser::Parse(file_path, parsed, parse_options)) {
+        out.valid = false;
+        out.error_message = parsed.error_message.empty()
+                                ? std::string("无法按 ISOBMFF (MP4/MOV) 解析该文件")
+                                : parsed.error_message;
+        LOG_WARN("MP4 样本表分析失败: " + file_path + " -> " + out.error_message);
         return false;
     }
-
-    AP4_File* file = nullptr;
-    try {
-        file = new AP4_File(*stream, false);
-    } catch (...) {
-        file = nullptr;
-    }
-    if (!file) {
-        out.error_message = "MP4 解析失败（不是有效的 ISOBMFF 文件？）";
-        stream->Release();
-        LOG_WARN("Mp4SampleTableAnalyzer: " + out.error_message + " " + file_path);
-        return false;
-    }
-
-    out.moov_before_mdat = file->IsMoovBeforeMdat();
-    AP4_Movie* movie = file->GetMovie();
-    if (!movie) {
-        // 没有 moov：可能是纯 fMP4 分片（缺 init 段）或损坏文件，仍继续扫顶层 box
-        LOG_WARN("Mp4SampleTableAnalyzer: 未找到 moov，仅有分片或文件损坏");
-    } else {
-        out.movie_timescale = movie->GetTimeScale();
-    }
-
-    // ---- 顶层 box ----
-    uint64_t cursor = 0;
-    uint32_t moof_index = 0;
-    for (AP4_List<AP4_Atom>::Item* item = file->GetChildren().FirstItem(); item;
-         item = item->GetNext()) {
-        AP4_Atom* atom = item->GetData();
-        if (!atom) continue;
-        const AP4_UI32 type = atom->GetType();
-        const uint64_t atom_size = atom->GetSize();
-        const std::string type_name = FourCCToString(type);
-        out.top_level_order.push_back(type_name);
-
-        if (type == kAtomTypeMoov && out.moov_size == 0) {
-            out.moov_offset = cursor;
-            out.moov_size = atom_size;
-        } else if (type == kAtomTypeMdat && out.first_mdat_size == 0) {
-            out.first_mdat_offset = cursor;
-            out.first_mdat_size = atom_size;
-        } else if (type == kAtomTypeSidx) {
-            ++out.sidx_count;
-        } else if (type == kAtomTypeStyp) {
-            ++out.styp_count;
-        } else if (type == kAtomTypeMoof) {
-            out.fragmented = true;
-            CollectFragments(atom, cursor, atom_size, moof_index, out);
-            ++moof_index;
-        }
-        cursor += atom_size;
-    }
-
-    // ---- 轨道样本表 ----
-    if (movie) {
-        for (AP4_List<AP4_Track>::Item* item = movie->GetTracks().FirstItem(); item;
-             item = item->GetNext()) {
-            AP4_Track* track = item->GetData();
-            if (!track) continue;
-            model::Mp4TrackSampleTable t;
-            CollectTrack(track, options, t);
-            out.tracks.push_back(std::move(t));
-        }
-    }
-
-    delete file;
-    stream->Release();
 
     out.valid = true;
-    Validate(out, options);
+    out.file_size = parsed.file_size;
+    out.fragmented = parsed.fragmented;
+    out.moov_before_mdat = parsed.moov_before_mdat;
+    out.moov_offset = parsed.moov_offset;
+    out.moov_size = parsed.moov_size;
+    out.first_mdat_offset = parsed.first_mdat_offset;
+    out.first_mdat_size = parsed.first_mdat_size;
+    out.top_level_order = parsed.top_level_order;
+    out.movie_timescale = parsed.movie_timescale;
+    out.sidx_count = parsed.sidx_count;
+    out.styp_count = parsed.styp_count;
 
-    LOG_INFO("MP4 样本表分析: tracks=" + std::to_string(out.tracks.size()) +
-             " fragments=" + std::to_string(out.fragments.size()) +
-             " issues=" + std::to_string(out.issues.size()) +
-             " faststart=" + (out.IsFastStart() ? "yes" : "no"));
+    out.tracks.reserve(parsed.tracks.size());
+    for (const auto& src : parsed.tracks) {
+        model::Mp4TrackSampleTable t;
+        CollectTrack(src, t, options);
+        out.tracks.push_back(std::move(t));
+    }
+
+    out.fragments.reserve(parsed.fragments.size());
+    for (const auto& f : parsed.fragments) {
+        out.fragments.push_back(ConvertFragment(f));
+    }
+
+    Validate(out, options);
     return true;
 }
-
-#else  // !HAVE_BENTO4
-
-bool Mp4SampleTableAnalyzer::AnalyzeFile(const std::string& file_path,
-                                         model::Mp4SampleTableResult& out,
-                                         const Mp4SampleTableOptions& options) {
-    out = model::Mp4SampleTableResult{};
-    out.file_path = file_path;
-    out.error_message = "Bento4 库未链接，无法做 MP4 样本表分析";
-    LOG_WARN(out.error_message);
-    (void)options;
-    return false;
-}
-
-#endif  // HAVE_BENTO4
-
-Mp4SampleTableAnalyzer::Mp4SampleTableAnalyzer() = default;
 
 Mp4SampleTableAnalyzer::~Mp4SampleTableAnalyzer() = default;
 

@@ -80,7 +80,7 @@ if (-not (Test-Path $ninjaExe)) {
 $vcpkgTriplet = "x64-windows-release"
 $vcpkgLib = "$projectRoot\vcpkg_installed\$vcpkgTriplet\lib"
 
-# vcpkg lib 必须加入 LIB，否则链接器找不到 SDL2.lib 等裸名引用
+# vcpkg lib 必须加入 LIB，否则链接器找不到 Qt6 的裸名引用
 if (Test-Path $vcpkgLib) {
     $env:LIB = "$vcpkgLib;$env:LIB"
 }
@@ -92,26 +92,31 @@ if ($clPath) { Write-Output "Compiler: $($clPath.Source)" } else { Write-Error "
 Write-Output "Ninja: $ninjaExe"
 
 # -- 检查 vcpkg 依赖 --
-if (-not (Test-Path "$projectRoot\vcpkg_installed\$vcpkgTriplet\include")) {
-    Write-Output "WARNING: vcpkg 依赖未安装。运行:"
+# 注意: 不能只判断 vcpkg_installed/<triplet>/include 是否存在 —— vcpkg install 失败时
+# 会把 qtbase 从 installed tree 里摘掉，但 zlib/freetype 等仍在，include/ 照样存在，
+# 于是这里会误报"已安装"，真正的失败被推迟到 find_package(Qt6) 才暴露。
+# 直接盯 Qt6Config.cmake 才能一次说准。
+$vcpkgQt6Config = "$projectRoot\vcpkg_installed\$vcpkgTriplet\share\Qt6\Qt6Config.cmake"
+if (-not (Test-Path $vcpkgQt6Config)) {
+    Write-Output "WARNING: 未找到 Qt6 ($vcpkgQt6Config)。运行:"
     Write-Output "  vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --overlay-ports=scripts/overlay-ports --x-manifest-root=. --x-install-root=vcpkg_installed"
     Write-Output "（release-only triplet，host==target 同名，省约一半磁盘/安装时间）"
+    Write-Output "（包已在 binary cache 里时通常几十秒即可恢复，不需要重新编译 Qt）"
 }
 
 # -- 检查/获取 FFmpeg --
-$ffmpegDir = "$projectRoot\third_party\ffmpeg-prebuilt"
+$ffmpegDir = "$projectRoot\third_party\prebuilt\windows-x64\ffmpeg"
 if (-not (Test-Path "$ffmpegDir\include\libavcodec\avcodec.h")) {
-    # 回退到 build-ninja/ffmpeg_install (兼容旧布局)
-    if (Test-Path "$buildDir\ffmpeg_install\include\libavcodec\avcodec.h") {
-        $ffmpegDir = "$buildDir\ffmpeg_install"
+    Write-Output "FFmpeg 未找到，自动获取中..."
+    if ($FfmpegVersion) {
+        & powershell -ExecutionPolicy Bypass -File "$projectRoot\scripts\fetch-ffmpeg.ps1" -Version $FfmpegVersion
     } else {
-        Write-Output "FFmpeg 未找到，自动获取中..."
-        if ($FfmpegVersion) {
-            & powershell -ExecutionPolicy Bypass -File "$projectRoot\scripts\fetch-ffmpeg.ps1" -Version $FfmpegVersion
-        } else {
-            & powershell -ExecutionPolicy Bypass -File "$projectRoot\scripts\fetch-ffmpeg.ps1"
-        }
-        if ($LASTEXITCODE -ne 0) { Write-Error "FFmpeg 获取失败"; exit $LASTEXITCODE }
+        & powershell -ExecutionPolicy Bypass -File "$projectRoot\scripts\fetch-ffmpeg.ps1"
+    }
+    if ($LASTEXITCODE -ne 0) { Write-Error "FFmpeg 获取失败"; exit $LASTEXITCODE }
+    if (-not (Test-Path "$ffmpegDir\include\libavcodec\avcodec.h")) {
+        Write-Error "FFmpeg 获取后仍未找到头文件: $ffmpegDir\include\libavcodec\avcodec.h"
+        exit 1
     }
 }
 $ffmpegArg = "-DFFMPEG_ROOT=$ffmpegDir"
@@ -126,8 +131,7 @@ Write-Output "=== Configuring CMake with Ninja ==="
     "-DCMAKE_BUILD_TYPE=$BuildType" `
     "-DCMAKE_MAKE_PROGRAM=$ninjaExe" `
     "-DCMAKE_PREFIX_PATH=$projectRoot\vcpkg_installed\$vcpkgTriplet" `
-    $ffmpegArg -DBUILD_TESTING=OFF `
-    "-DVIDEOEYE_UNITY_BUILD=OFF"   # 显式关闭: MediaInfoLib/ZenLib 与 Unity Build 不兼容
+    $ffmpegArg -DBUILD_TESTING=OFF
 if ($LASTEXITCODE -ne 0) { Write-Output "CMake configuration failed!"; exit $LASTEXITCODE }
 
 # -- Build --
@@ -137,8 +141,8 @@ if ($jobs -lt 1) { $jobs = 4 }
 & $ninjaExe "-j$jobs"
 if ($LASTEXITCODE -ne 0) { Write-Output "Build failed!"; exit $LASTEXITCODE }
 
-# 运行时 DLL / Qt 插件 / shaders 已由 CMake POST_BUILD 步骤 (TARGET_RUNTIME_DLLS +
-# FFmpeg bin 拷贝 + windeployqt + spirv_shaders) 自动部署到 bin/, 无需手动复制。
+# 运行时 DLL / Qt 插件已由 CMake POST_BUILD 步骤 (TARGET_RUNTIME_DLLS +
+# FFmpeg bin 拷贝 + windeployqt) 自动部署到 bin/, 无需手动复制。
 
 Write-Output ""
 Write-Output "=== Build complete! ==="

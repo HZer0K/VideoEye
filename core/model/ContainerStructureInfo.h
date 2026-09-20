@@ -65,7 +65,7 @@ struct ContainerStructureResult {
     EbmlAnalysisResult ebml_detail;
 
     // MP4/fMP4 样本级一致性（sample table / elst / moof-traf-trun / faststart）
-    // 由 ContainerStructureAnalyzer 在 MP4 家族时顺带跑一遍（Bento4 解析）
+    // 由 ContainerStructureAnalyzer 在 MP4 家族时顺带跑一遍（自研 IsobmffParser 解析）
     Mp4SampleTableResult mp4_samples;
 };
 

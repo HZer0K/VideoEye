@@ -13,14 +13,15 @@ echo "====================================="
 # 检查可执行文件是否存在
 if [ ! -f "$EXECUTABLE" ]; then
     echo "❌ 未找到可执行文件"
-    echo "正在编译项目..."
-    
-    mkdir -p "$BUILD_DIR"
-    cd "$BUILD_DIR"
-    
-    cmake .. -DCMAKE_BUILD_TYPE=Release
-    make -j$(nproc)
-    
+    echo "正在编译项目 (cmake --preset linux-release)..."
+
+    cd "$SCRIPT_DIR"
+    cmake --preset linux-release
+    if [ $? -ne 0 ]; then
+        echo "❌ CMake 配置失败! FFmpeg 需放在 third_party/prebuilt/linux-x64/ffmpeg/"
+        exit 1
+    fi
+    cmake --build --preset linux-release
     if [ $? -ne 0 ]; then
         echo "❌ 编译失败!"
         exit 1
@@ -33,12 +34,6 @@ echo "====================================="
 
 # 设置 Qt 平台
 export QT_QPA_PLATFORM=xcb
-
-if [ -n "$VIDEOEYE_FFMPEG_LD_PRELOAD" ]; then
-    export LD_PRELOAD="$VIDEOEYE_FFMPEG_LD_PRELOAD"
-else
-    unset LD_PRELOAD
-fi
 
 # 运行程序
 cd "$BUILD_DIR"

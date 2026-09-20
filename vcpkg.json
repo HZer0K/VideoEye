@@ -14,10 +14,6 @@
         "testlib", "thread", "widgets", "zstd"
       ]
     },
-    "qtcharts",
-    "gtest",
-    "sdl2",
-    "zlib",
-    "vulkan"
+    "gtest"
   ]
 }
