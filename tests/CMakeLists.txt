@@ -2,11 +2,11 @@
 # VideoEye 单元测试配置
 # 使用 GoogleTest 框架 (优先使用已安装包，必要时通过 FetchContent 自动下载)
 #
-# 注意: 测试源文件 (tests/unit/*.cpp) 尚未提交到仓库
-#       启用方式: cmake -DBUILD_TESTING=ON ..
+# 启用方式: cmake -DBUILD_TESTING=ON ..
+# gtest 在 vcpkg.json 里是可选 feature "tests"，默认依赖不含它。
 # ============================================================
 
-# 守卫: unit/ 测试源尚未提交时, 跳过测试构建 (避免 configure 因缺源文件失败)
+# 守卫: unit/ 下没有测试源时跳过测试构建 (避免 configure 因缺源文件失败)
 file(GLOB TEST_UNIT_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/unit/*.cpp")
 if(NOT TEST_UNIT_SOURCES)
     message(STATUS "tests/unit/*.cpp 未找到, 跳过测试构建 (提交测试源文件后自动启用)")
@@ -159,7 +159,8 @@ add_test(NAME BitrateGopAnalyzerTests COMMAND test_bitrate_gop_analyzer)
 # 测试 7：QualityAnalyzer(依赖 FFmpeg + swscale)
 # =================================================
 add_executable(test_quality_analyzer
-    unit/test_quality_analyzer.cpp
+    # 这个文件在 tests/ 根目录（历史遗留），其余测试都在 unit/ 下
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_quality_analyzer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/QualityAnalyzer.cpp
 )
 target_include_directories(test_quality_analyzer PRIVATE ${TEST_INCLUDE_DIRS})
@@ -258,3 +259,51 @@ target_link_libraries(test_mp4_sample_table PRIVATE
     GTest::gtest_main
 )
 add_test(NAME Mp4SampleTableTests COMMAND test_mp4_sample_table)
+
+# =================================================
+# 测试 12：ISOBMFF 真实解析路径 (utils::IsobmffParser)
+# 说明: 内存里拼一个最小合法的 MP4 再落盘解析，覆盖 stts/ctts/stz2 的字节级读取。
+#       与测试 11 互补 —— 那边只测 Validate() 的静态校验，看不见解析阶段的问题。
+# =================================================
+add_executable(test_isobmff_parser
+    unit/test_isobmff_parser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/IsobmffParser.cpp
+)
+target_include_directories(test_isobmff_parser PRIVATE ${TEST_INCLUDE_DIRS})
+target_link_libraries(test_isobmff_parser PRIVATE
+    GTest::gtest_main
+)
+add_test(NAME IsobmffParserTests COMMAND test_isobmff_parser)
+
+# =================================================
+# 测试 13：H.264 码流解析 (profile/level 名称 + SPS/PPS + extradata 格式识别)
+# 说明: 纯 stdlib，不需要 Qt / FFmpeg。
+# =================================================
+add_executable(test_h264_bitstream_parser
+    unit/test_h264_bitstream_parser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/H264BitstreamParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/ExtradataParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/BitReader.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/BitstreamInfo.cpp
+)
+target_include_directories(test_h264_bitstream_parser PRIVATE ${TEST_INCLUDE_DIRS})
+target_link_libraries(test_h264_bitstream_parser PRIVATE
+    GTest::gtest_main
+)
+add_test(NAME H264BitstreamParserTests COMMAND test_h264_bitstream_parser)
+
+# =================================================
+# 测试 14：HEVC 码流解析 (profile/tier/level 名称 + VPS/SPS/PPS + hvcC 识别)
+# =================================================
+add_executable(test_hevc_bitstream_parser
+    unit/test_hevc_bitstream_parser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/HevcBitstreamParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/ExtradataParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/BitReader.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/BitstreamInfo.cpp
+)
+target_include_directories(test_hevc_bitstream_parser PRIVATE ${TEST_INCLUDE_DIRS})
+target_link_libraries(test_hevc_bitstream_parser PRIVATE
+    GTest::gtest_main
+)
+add_test(NAME HevcBitstreamParserTests COMMAND test_hevc_bitstream_parser)

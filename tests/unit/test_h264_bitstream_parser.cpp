@@ -1,245 +1,285 @@
 #include <gtest/gtest.h>
+
+#include <algorithm>
+#include <cstdint>
+#include <vector>
+
 #include "core/analyzer/H264BitstreamParser.h"
 #include "utils/ExtradataParser.h"
 
 namespace {
 
-// H.264 NAL 单元类型测试
-class H264NalUnitTypeTest : public testing::Test {
-protected:
-    void SetUp() override {}
-    void TearDown() override {}
+using videoeye::analyzer::H264BitstreamParser;
+using videoeye::utils::NalUnit;
+
+// 测试数据由 _smoke/gen_h264_sps.py 按 H.264 7.3.2.1.1 / 附录 E 逐位生成，
+// 不是手工凑的常量。每个数组已带 emulation prevention 字节。
+//
+// 注意 NalUnit::data 的不变量：只含 RBSP payload，不含 1 字节 NAL header。
+
+// A: High / Level 3.1 / 1280x720 / 4:2:0 8bit / VUI(timing + colour + restriction)
+const std::vector<uint8_t> kSpsHigh720p = {
+    0x64, 0x00, 0x1F, 0xAC, 0x72, 0x14, 0x05, 0x00, 0x5B, 0xA6, 0xA0, 0x20,
+    0x20, 0x28, 0x00, 0x00, 0x1F, 0x40, 0x00, 0x07, 0x53, 0x04, 0x78, 0xB1,
+    0x6C, 0xB0,
 };
 
-// Profile 名称转换测试
+// B: High 10 / Level 5.1 / 1920x1088（crop bottom 4 → 1080）/ 4:2:0 10bit / 无 VUI
+const std::vector<uint8_t> kSpsHigh10_1080p = {
+    0x6E, 0x00, 0x33, 0xA6, 0xCC, 0xA4, 0x01, 0xE0, 0x08, 0x9F, 0x95,
+};
+
+// C: Main / Level 3.0 / 320x240 / 无 High 扩展字段 / VUI 仅 aspect_ratio
+const std::vector<uint8_t> kSpsMain320x240 = {
+    0x4D, 0x00, 0x1E, 0xA6, 0xC1, 0x41, 0xFB, 0x01, 0x00, 0x80,
+};
+
+// D: High / Level 4.0 / 176x144 / VUI timing 全 0（刻意制造 0x000003 反转义场景）
+const std::vector<uint8_t> kSpsQcifEscaped = {
+    0x64, 0x00, 0x28, 0xAC, 0xDA, 0x0B, 0x13, 0xA1, 0x00, 0x00, 0x03, 0x00,
+    0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x04,
+};
+
+// E: PPS —— id=0 / sps_id=0 / CABAC / l0=3 帧 / l1=2 帧 / bipred=2 / deblocking on
+const std::vector<uint8_t> kPpsBasic = {
+    0xEB, 0x4B, 0x2C, 0x80,
+};
+
+NalUnit MakeSps(const std::vector<uint8_t>& payload) {
+    return NalUnit{7, payload.size(), payload, false, true};
+}
+
+NalUnit MakePps(const std::vector<uint8_t>& payload) {
+    return NalUnit{8, payload.size(), payload, false, false};
+}
+
+// --------------------------------------------------------------------------
+// Profile / Level 名称转换
+// --------------------------------------------------------------------------
 TEST(H264BitstreamParserTest, ProfileNameConversion) {
-    // Test case 1: High Profile (100)
-    std::string profile_name = videoeye::analyzer::H264BitstreamParser::GetProfileName(100);
-    EXPECT_EQ(profile_name, "High");
-    
-    // Test case 2: Main Profile (77)
-    profile_name = videoeye::analyzer::H264BitstreamParser::GetProfileName(77);
-    EXPECT_EQ(profile_name, "Main");
-    
-    // Test case 3: Baseline Profile (66)
-    profile_name = videoeye::analyzer::H264BitstreamParser::GetProfileName(66);
-    EXPECT_EQ(profile_name, "Baseline");
-    
-    // Test case 4: Extended Profile (88)
-    profile_name = videoeye::analyzer::H264BitstreamParser::GetProfileName(88);
-    EXPECT_EQ(profile_name, "Extended");
-    
-    // Test case 5: Unknown Profile
-    profile_name = videoeye::analyzer::H264BitstreamParser::GetProfileName(999);
-    EXPECT_EQ(profile_name, "Unknown");
+    EXPECT_EQ(H264BitstreamParser::GetProfileName(100), "High");
+    EXPECT_EQ(H264BitstreamParser::GetProfileName(110), "High 10");
+    EXPECT_EQ(H264BitstreamParser::GetProfileName(122), "High 4:2:2");
+    EXPECT_EQ(H264BitstreamParser::GetProfileName(77), "Main");
+    EXPECT_EQ(H264BitstreamParser::GetProfileName(66), "Baseline");
+    EXPECT_EQ(H264BitstreamParser::GetProfileName(88), "Extended");
+    EXPECT_EQ(H264BitstreamParser::GetProfileName(999), "Unknown");
 }
 
-// Level 版本转换测试
 TEST(H264BitstreamParserTest, LevelVersionConversion) {
-    // Test case 1: Level 3.1
-    std::string level_version = videoeye::analyzer::H264BitstreamParser::GetLevelVersion(31);
-    EXPECT_EQ(level_version, "3.1");
-    
-    // Test case 2: Level 4.1
-    level_version = videoeye::analyzer::H264BitstreamParser::GetLevelVersion(41);
-    EXPECT_EQ(level_version, "4.1");
-    
-    // Test case 3: Level 5.1
-    level_version = videoeye::analyzer::H264BitstreamParser::GetLevelVersion(51);
-    EXPECT_EQ(level_version, "5.1");
-    
-    // Test case 4: Level 1
-    level_version = videoeye::analyzer::H264BitstreamParser::GetLevelVersion(10);
-    EXPECT_EQ(level_version, "1.0");
-    
-    // Test case 5: Undefined
-    level_version = videoeye::analyzer::H264BitstreamParser::GetLevelVersion(0);
-    EXPECT_EQ(level_version, "Undefined");
+    EXPECT_EQ(H264BitstreamParser::GetLevelVersion(31), "3.1");
+    EXPECT_EQ(H264BitstreamParser::GetLevelVersion(41), "4.1");
+    EXPECT_EQ(H264BitstreamParser::GetLevelVersion(51), "5.1");
+    EXPECT_EQ(H264BitstreamParser::GetLevelVersion(10), "1.0");
+    EXPECT_EQ(H264BitstreamParser::GetLevelVersion(9), "1b");
+    EXPECT_EQ(H264BitstreamParser::GetLevelVersion(0), "Undefined");
 }
 
-// ExtradataParser 格式检测测试
-class ExtradataParserFormatDetectionTest : public testing::Test {
-protected:
-    void SetUp() override {}
-    void TearDown() override {}
-};
+// --------------------------------------------------------------------------
+// ExtradataParser 格式检测
+// --------------------------------------------------------------------------
+TEST(ExtradataParserFormatDetectionTest, DetectAnnexBFormat) {
+    const std::vector<uint8_t> annex_b_data = {0, 0, 0, 1, 7};
 
-// Annex B 格式检测
-TEST_F(ExtradataParserFormatDetectionTest, DetectAnnexBFormat) {
-    // 构造一个简单的 Annex B 数据（包含起始码）
-    std::vector<uint8_t> annex_b_data;
-    annex_b_data.push_back(0);
-    annex_b_data.push_back(0);
-    annex_b_data.push_back(0);
-    annex_b_data.push_back(1); // Start code 00 00 00 01
-    annex_b_data.push_back(7); // SPS NAL type
-    
     auto result = videoeye::utils::ExtradataParser::Parse(
         annex_b_data.data(), annex_b_data.size());
-    
+
     EXPECT_TRUE(result.valid);
     EXPECT_EQ(result.format, videoeye::utils::ExtradataFormat::AnnexB);
-    EXPECT_GT(result.nal_units.size(), 0);
+    EXPECT_GT(result.nal_units.size(), 0u);
 }
 
-// avcC 格式检测
-TEST_F(ExtradataParserFormatDetectionTest, DetectAvcCFormat) {
-    // 构造一个简化的 avcC 配置记录
-    std::vector<uint8_t> avcc_data;
-    
-    // Box size (10 bytes)
-    avcc_data.push_back(0);
-    avcc_data.push_back(0);
-    avcc_data.push_back(0);
-    avcc_data.push_back(10);
-    
-    // Box type: "avcC"
-    avcc_data.push_back('a');
-    avcc_data.push_back('v');
-    avcc_data.push_back('c');
-    avcc_data.push_back('C');
-    
-    // Version
-    avcc_data.push_back(1);
-    
-    // Profile compatibility (High Profile = 100)
-    avcc_data.push_back(100);
-    
+TEST(ExtradataParserFormatDetectionTest, DetectAvcCFormat) {
+    // 真实 avcC（FFmpeg 交出的 extradata 不含 box header）
+    const std::vector<uint8_t> avcc_data = {
+        0x01,                                // configurationVersion
+        0x64, 0x00, 0x29,                    // profile=100(High) compat level=4.1
+        0xFF,                                // reserved(6b)=1 + lengthSizeMinusOne=3
+        0xE1,                                // reserved(3b) + numSPS=1
+        0x00, 0x04, 0x67, 0x64, 0x00, 0x29,  // 4 字节 SPS（含 NAL header）
+        0x01,                                // numPPS=1
+        0x00, 0x02, 0x68, 0xEB,              // 2 字节 PPS（含 NAL header）
+    };
+
     auto result = videoeye::utils::ExtradataParser::Parse(
         avcc_data.data(), avcc_data.size());
-    
+
     EXPECT_TRUE(result.valid);
     EXPECT_EQ(result.format, videoeye::utils::ExtradataFormat::AvcC);
     EXPECT_EQ(result.config.profile_idc, 100);
+    EXPECT_EQ(result.config.level_idc, 41u);
+    EXPECT_EQ(result.config.length_size_minus_one, 3u);
+    ASSERT_EQ(result.nal_units.size(), 2u);
+    EXPECT_EQ(result.nal_units[0].type, 7);  // SPS
+    EXPECT_EQ(result.nal_units[1].type, 8);  // PPS
+    // NAL header 已被剥离：4 字节 SPS → 3 字节 payload，2 字节 PPS → 1 字节
+    EXPECT_EQ(result.nal_units[0].size, 3u);
+    EXPECT_EQ(result.nal_units[1].size, 1u);
+    EXPECT_EQ(result.nal_units[0].data.size(), 3u);
 }
 
-// H.264 SPS 解析测试
-class H264SpfParsingTest : public testing::Test {
-protected:
-    void SetUp() override {}
-    void TearDown() override {}
-};
+// --------------------------------------------------------------------------
+// 真实 SPS 解析
+// --------------------------------------------------------------------------
+TEST(H264SpfParsingTest, ParseHighProfile720p) {
+    const auto sps = H264BitstreamParser::ParseFromNalUnit(MakeSps(kSpsHigh720p));
 
-// 解析简单的 SPS NAL 单元
-TEST_F(H264SpfParsingTest, ParseSimpleSPS) {
-    // 这是一个简化的 SPS NAL 单元，仅用于测试基本解析流程
-    // 实际 SPS 应该包含完整的语法结构
-    std::vector<uint8_t> sps_nal;
-    
-    // NAL header: forbidden_zero_bit=0, nal_unit_type=7 (SPS)
-    sps_nal.push_back(0x67); // 00000 111
-    
-    // seq_parameter_set_id = 0
-    sps_nal.push_back(0x00);
-    
-    // profile_idc = 100 (High Profile)
-    sps_nal.push_back(0x64);
-    
-    // constraint_flags
-    sps_nal.push_back(0x00);
-    sps_nal.push_back(0x00);
-    sps_nal.push_back(0x00);
-    
-    // level_idc = 41 (Level 4.1)
-    sps_nal.push_back(0x29);
-    
-    auto nal_unit = videoeye::analyzer::H264BitstreamParser::ParseFromNalUnit(
-        videoeye::utils::NalUnit{7, sps_nal.size(), sps_nal, false, true});
-    
-    // 由于这是简化版 SPS，我们只验证基本字段能解析
-    EXPECT_TRUE(nal_unit.present);
-    EXPECT_EQ(nal_unit.seq_parameter_set_id, 0);
-    EXPECT_EQ(nal_unit.profile_idc, 100);
-    EXPECT_EQ(nal_unit.level_idc, 41);
+    ASSERT_TRUE(sps.present);
+    EXPECT_EQ(sps.profile_idc, 100);
+    EXPECT_EQ(sps.level_idc, 31);
+    EXPECT_EQ(sps.ProfileName(), "High");
+    EXPECT_EQ(sps.LevelVersion(), "3.1");
+    EXPECT_EQ(sps.seq_parameter_set_id, 0);
+    EXPECT_EQ(sps.chroma_format_idc, 1);
+    EXPECT_EQ(sps.BitDepthLuma(), 8);
+    EXPECT_EQ(sps.BitDepthChroma(), 8);
+    EXPECT_EQ(sps.log2_max_frame_num_minus4, 2);
+    EXPECT_EQ(sps.pic_order_cnt_type, 0);
+    EXPECT_EQ(sps.log2_max_pic_order_cnt_lsb_minus4, 3);
+    EXPECT_EQ(sps.max_num_ref_frames, 4);
+    EXPECT_EQ(sps.pic_width_in_mbs_minus1, 79);
+    EXPECT_EQ(sps.pic_height_in_mbs_minus1, 44);
+    EXPECT_TRUE(sps.frame_mbs_only_flag);
+    EXPECT_EQ(sps.width(), 1280);
+    EXPECT_EQ(sps.height(), 720);
+
+    // VUI
+    ASSERT_TRUE(sps.vui.present);
+    EXPECT_TRUE(sps.vui.video_signal_type_present);
+    EXPECT_TRUE(sps.vui.colour_description_present);
+    EXPECT_EQ(sps.vui.color_primaries, 1);
+    EXPECT_EQ(sps.vui.transfer_characteristics, 1);
+    EXPECT_EQ(sps.vui.matrix_coefficients, 1);
+    EXPECT_EQ(sps.vui.color_range, 0);
+
+    ASSERT_TRUE(sps.vui.timing_info_present);
+    EXPECT_EQ(sps.vui.num_units_in_tick, 1000u);
+    EXPECT_EQ(sps.vui.time_scale, 60000u);
+    EXPECT_TRUE(sps.vui.fixed_frame_rate);
+
+    EXPECT_TRUE(sps.vui.bitstream_restriction_flag);
+    EXPECT_EQ(sps.vui.max_num_reorder_frames, 2);
+    EXPECT_EQ(sps.vui.max_dec_frame_buffering, 4);
+    EXPECT_EQ(sps.vui.log2_max_mv_length_horizontal, 10);
+    EXPECT_EQ(sps.vui.log2_max_mv_length_vertical, 10);
 }
 
-// Chroma format 解析测试
-TEST_F(H264SpfParsingTest, ParseChromaFormat) {
-    // 4:2:0 chroma format (chroma_format_idc = 1)
-    std::vector<uint8_t> sps_420;
-    sps_420.push_back(0x67); // NAL header (SPS)
-    sps_420.push_back(0x00); // seq_parameter_set_id
-    sps_420.push_back(0x64); // profile_idc (High)
-    sps_420.push_back(0x00); // constraint_flags[0]
-    sps_420.push_back(0x00); // constraint_flags[1]
-    sps_420.push_back(0x00); // constraint_flags[2]
-    sps_420.push_back(0x29); // level_idc (4.1)
-    sps_420.push_back(0x80); // frame_mbs_only_flag=1
-    sps_420.push_back(0x00); // direct_8x8_inference_flag
-    sps_420.push_back(0x01); // chroma_format_idc = 1 (4:2:0)
-    
-    auto nal_unit = videoeye::analyzer::H264BitstreamParser::ParseFromNalUnit(
-        videoeye::utils::NalUnit{7, sps_420.size(), sps_420, false, true});
-    
-    EXPECT_TRUE(nal_unit.present);
-    EXPECT_EQ(nal_unit.chroma_format_idc, 1);
+TEST(H264SpfParsingTest, ParseHigh10ProfileWithCropping) {
+    const auto sps = H264BitstreamParser::ParseFromNalUnit(MakeSps(kSpsHigh10_1080p));
+
+    ASSERT_TRUE(sps.present);
+    EXPECT_EQ(sps.profile_idc, 110);
+    EXPECT_EQ(sps.level_idc, 51);
+    EXPECT_EQ(sps.ProfileName(), "High 10");
+    EXPECT_EQ(sps.LevelVersion(), "5.1");
+    EXPECT_EQ(sps.chroma_format_idc, 1);
+    EXPECT_EQ(sps.bit_depth_luma_minus8, 2);
+    EXPECT_EQ(sps.bit_depth_chroma_minus8, 2);
+    EXPECT_EQ(sps.BitDepthLuma(), 10);
+    EXPECT_EQ(sps.BitDepthChroma(), 10);
+    EXPECT_EQ(sps.max_num_ref_frames, 3);
+    EXPECT_EQ(sps.log2_max_pic_order_cnt_lsb_minus4, 4);
+
+    // 1088 行里裁掉底部 4 个单元（CropUnitY = 2 * (2-1) = 2）→ 1080
+    ASSERT_TRUE(sps.frame_cropping_flag);
+    EXPECT_EQ(sps.frame_crop_bottom_offset, 4);
+    EXPECT_EQ(sps.width(), 1920);
+    EXPECT_EQ(sps.height(), 1080);
+
+    EXPECT_FALSE(sps.vui.present);
 }
 
-// Bit depth 解析测试
-TEST_F(H264SpfParsingTest, ParseBitDepth) {
-    // 10-bit video (bit_depth_luma_minus8 = 2)
-    std::vector<uint8_t> sps_10bit;
-    sps_10bit.push_back(0x67); // NAL header (SPS)
-    sps_10bit.push_back(0x00); // seq_parameter_set_id
-    sps_10bit.push_back(0x64); // profile_idc (High 10 = 110)
-    sps_10bit.push_back(0x00); // constraint_flags[0]
-    sps_10bit.push_back(0x00); // constraint_flags[1]
-    sps_10bit.push_back(0x00); // constraint_flags[2]
-    sps_10bit.push_back(0x29); // level_idc (4.1)
-    sps_10bit.push_back(0x80); // frame_mbs_only_flag=1
-    sps_10bit.push_back(0x00); // direct_8x8_inference_flag
-    sps_10bit.push_back(0x65); // chroma_format_idc = 1 + bit_depth fields
-    
-    auto nal_unit = videoeye::analyzer::H264BitstreamParser::ParseFromNalUnit(
-        videoeye::utils::NalUnit{7, sps_10bit.size(), sps_10bit, false, true});
-    
-    EXPECT_TRUE(nal_unit.present);
-    // bit_depth_luma_minus8 should be 2 for 10-bit
-    EXPECT_LE(nal_unit.bit_depth_luma_minus8, 2);
+TEST(H264SpfParsingTest, ParseMainProfileWithoutChromaExtension) {
+    const auto sps = H264BitstreamParser::ParseFromNalUnit(MakeSps(kSpsMain320x240));
+
+    ASSERT_TRUE(sps.present);
+    EXPECT_EQ(sps.profile_idc, 77);
+    EXPECT_EQ(sps.level_idc, 30);
+    EXPECT_EQ(sps.ProfileName(), "Main");
+    EXPECT_EQ(sps.LevelVersion(), "3.0");
+    // Main profile 不带扩展字段，规范隐含 4:2:0 / 8bit
+    EXPECT_EQ(sps.chroma_format_idc, 1);
+    EXPECT_EQ(sps.bit_depth_luma_minus8, 0);
+    EXPECT_EQ(sps.BitDepthLuma(), 8);
+    EXPECT_EQ(sps.pic_order_cnt_type, 2);
+    EXPECT_EQ(sps.max_num_ref_frames, 2);
+    EXPECT_EQ(sps.width(), 320);
+    EXPECT_EQ(sps.height(), 240);
+
+    ASSERT_TRUE(sps.vui.present);
+    EXPECT_TRUE(sps.vui.aspect_ratio_info_present);
+    EXPECT_EQ(sps.vui.aspect_ratio_idc, 1);
+    EXPECT_FALSE(sps.vui.timing_info_present);
+    EXPECT_FALSE(sps.vui.colour_description_present);
 }
 
-// VUI 信息解析测试
-TEST_F(H264SpfParsingTest, ParseVuiInfo) {
-    std::vector<uint8_t> sps_with_vui;
-    sps_with_vui.push_back(0x67); // NAL header (SPS)
-    sps_with_vui.push_back(0x00); // seq_parameter_set_id
-    sps_with_vui.push_back(0x64); // profile_idc
-    sps_with_vui.push_back(0x00); // constraint_flags[0]
-    sps_with_vui.push_back(0x00); // constraint_flags[1]
-    sps_with_vui.push_back(0x00); // constraint_flags[2]
-    sps_with_vui.push_back(0x29); // level_idc
-    sps_with_vui.push_back(0xC0); // frame_mbs_only_flag=1, vui_present_flag=1
-    sps_with_vui.push_back(0x00); // direct_8x8_inference_flag
-    sps_with_vui.push_back(0x01); // chroma_format_idc = 1
-    sps_with_vui.push_back(0x00); // bit_depth_luma_minus8
-    sps_with_vui.push_back(0x00); // bit_depth_chroma_minus8
-    sps_with_vui.push_back(0x18); // log2_max_pic_order_cnt_lsb + timing_info_present
-    
-    auto nal_unit = videoeye::analyzer::H264BitstreamParser::ParseFromNalUnit(
-        videoeye::utils::NalUnit{7, sps_with_vui.size(), sps_with_vui, false, true});
-    
-    EXPECT_TRUE(nal_unit.present);
-    EXPECT_TRUE(nal_unit.vui.present);
-    EXPECT_TRUE(nal_unit.vui.timing_info_present);
+TEST(H264SpfParsingTest, UnescapeEmulationPreventionBytes) {
+    // 原始 RBSP 里 timing 字段全是 0，编码时必然插入 0x03
+    ASSERT_NE(kSpsQcifEscaped.end(),
+              std::find(kSpsQcifEscaped.begin(), kSpsQcifEscaped.end(), 0x03));
+
+    const auto sps = H264BitstreamParser::ParseFromNalUnit(MakeSps(kSpsQcifEscaped));
+
+    ASSERT_TRUE(sps.present);
+    EXPECT_EQ(sps.profile_idc, 100);
+    EXPECT_EQ(sps.level_idc, 40);
+    EXPECT_EQ(sps.width(), 176);
+    EXPECT_EQ(sps.height(), 144);
+    EXPECT_EQ(sps.max_num_ref_frames, 1);
+    ASSERT_TRUE(sps.vui.timing_info_present);
+    EXPECT_EQ(sps.vui.num_units_in_tick, 0u);
+    EXPECT_EQ(sps.vui.time_scale, 0u);
+    EXPECT_FALSE(sps.vui.fixed_frame_rate);
 }
 
-// PPS NAL 单元判断测试
-TEST(H264BitstreamParserTest, PpsNalUnitIdentification) {
-    videoeye::utils::NalUnit pps_unit;
-    pps_unit.type = 8; // PPS type
-    
-    EXPECT_TRUE(videoeye::analyzer::H264BitstreamParser::IsPpsNalUnit(pps_unit));
-    EXPECT_FALSE(videoeye::analyzer::H264BitstreamParser::IsSpsNalUnit(pps_unit));
+// --------------------------------------------------------------------------
+// PPS
+// --------------------------------------------------------------------------
+TEST(H264PpsParsingTest, ParseBasicPps) {
+    const auto pps = H264BitstreamParser::ParsePpsFromNalUnit(MakePps(kPpsBasic));
+
+    ASSERT_TRUE(pps.present);
+    EXPECT_EQ(pps.pic_parameter_set_id, 0);
+    EXPECT_EQ(pps.seq_parameter_set_id, 0);
+    EXPECT_EQ(pps.num_ref_idx_l0_default_active_minus1, 2);
+    EXPECT_EQ(pps.num_ref_idx_l1_default_active_minus1, 1);
+    EXPECT_FALSE(pps.weighted_pred_flag);
+    EXPECT_EQ(pps.weighted_bipred_idc, 2);
+    EXPECT_EQ(pps.pic_init_qp_minus26, 0);
+    EXPECT_TRUE(pps.deblocking_filter_control_present_flag);
+    EXPECT_FALSE(pps.constrained_intra_pred_flag);
+    EXPECT_EQ(pps.redundant_pic_cnt_present_flag, 0);
 }
 
-// IDR 帧识别测试
-TEST(H264BitstreamParserTest, IdrFrameIdentification) {
-    videoeye::utils::NalUnit idr_unit;
-    idr_unit.type = 5; // IDR slice type
-    
-    EXPECT_TRUE(idr_unit.is_keyframe);
-    EXPECT_FALSE(videoeye::analyzer::H264BitstreamParser::IsSpsNalUnit(idr_unit));
-    EXPECT_FALSE(videoeye::analyzer::H264BitstreamParser::IsPpsNalUnit(idr_unit));
+// --------------------------------------------------------------------------
+// 异常输入
+// --------------------------------------------------------------------------
+TEST(H264BitstreamParserTest, RejectInvalidNalUnits) {
+    const NalUnit wrong_type{5, kSpsHigh720p.size(), kSpsHigh720p, true, true};
+    EXPECT_FALSE(H264BitstreamParser::ParseFromNalUnit(wrong_type).present);
+
+    const NalUnit empty{7, 0, {}, false, true};
+    EXPECT_FALSE(H264BitstreamParser::ParseFromNalUnit(empty).present);
+
+    // 只有 1 字节 payload 的 SPS 必然被截断
+    const std::vector<uint8_t> truncated = {0x64};
+    EXPECT_FALSE(H264BitstreamParser::ParseFromNalUnit(MakeSps(truncated)).present);
+
+    // PPS 解析不能吃 SPS
+    EXPECT_FALSE(H264BitstreamParser::ParsePpsFromNalUnit(MakeSps(kSpsHigh720p)).present);
+}
+
+TEST(H264BitstreamParserTest, NalUnitTypeIdentification) {
+    EXPECT_TRUE(H264BitstreamParser::IsSpsNalUnit(MakeSps(kSpsHigh720p)));
+    EXPECT_FALSE(H264BitstreamParser::IsPpsNalUnit(MakeSps(kSpsHigh720p)));
+    EXPECT_TRUE(H264BitstreamParser::IsPpsNalUnit(MakePps(kPpsBasic)));
+    EXPECT_FALSE(H264BitstreamParser::IsSpsNalUnit(MakePps(kPpsBasic)));
+
+    const NalUnit idr{5, 0, {}, true, true};
+    EXPECT_TRUE(idr.is_idr);
+    EXPECT_TRUE(idr.is_keyframe);
+    EXPECT_FALSE(H264BitstreamParser::IsSpsNalUnit(idr));
+    EXPECT_FALSE(H264BitstreamParser::IsPpsNalUnit(idr));
 }
 
 } // namespace
