@@ -410,7 +410,33 @@ TEST(H264BitstreamParserTest, ParseHighProfileSPS) {
 - 检测到 HDR 内容需要精确元数据
 - QC 报告需要详细编码参数
 
-## 10. 参考资料
+## 10. 当前接入状态与已知限制
+
+全文件诊断由 `AnalysisOptions::analyze_bitstream`（默认开）控制，
+在 `AnalysisCoordinator::Run()` 里对第一条视频流的 `AVCodecParameters::extradata`
+调用 `BitstreamAnalyzer::Analyze()`，结果放进 `AnalysisResult::bitstream_analysis`
+（`bitstream_analyzed=true` 表示跑过）。这一步不解码，只读 KB 级 extradata。
+
+分发用的是 FFmpeg 的 `AVCodecID`（`AV_CODEC_ID_H264` / `HEVC` / `AV1` / `VVC`），
+不是自定义编号 —— 传错就静默落到 default 分支的坑已经修掉。
+
+| 编码 | 参数集 | 说明 |
+|------|--------|------|
+| H.264 | SPS + PPS | 走 avcC / AnnexB，SPS 字段解析**尚未按规范对齐**（见下方限制） |
+| HEVC | VPS + SPS + PPS | 走 hvcC / AnnexB，同样受 SPS 字段顺序问题影响 |
+| AV1 | Sequence Header OBU | 走 av1C |
+| VVC | — | 只有类型识别，`VvcBitstreamParser` 尚未实现，结果里记一条 info |
+
+**已知限制**：`H264BitstreamParser` / `HevcBitstreamParser` 读取 SPS 的字段顺序
+与规范不一致（规范里第一个字段是 `profile_idc`，现有实现先读了一个 `ue(v)`），
+因此 `BitstreamAnalysisResult` 里的宽高/位深/色彩暂时不可信。
+`BitstreamAnalyzer` 里用 `kCompareParameterSetFields` 显式关掉了「码流层 vs 容器层」
+的字段比对，避免刷出假告警；解析器修好、对应单测转绿后把它翻成 `true` 即可打开。
+
+相关单测：`tests/unit/test_h264_bitstream_parser.cpp`、
+`tests/unit/test_hevc_bitstream_parser.cpp`（`BUILD_TESTING=ON` 时构建）。
+
+## 11. 参考资料
 
 - ITU-T H.264 (AVC): ISO/IEC 14496-10
 - ITU-T H.265 (HEVC): ISO/IEC 23008-2

@@ -68,7 +68,7 @@ build-release/bin/VideoEye
 **build.bat** 自动完成：
 - 用 `vswhere.exe` 找到并加载 Visual Studio 2022 的 `vcvars64.bat` 环境
 - FFmpeg 缺失自动调用 `scripts/fetch-ffmpeg.ps1` 下载 gyan.dev full-shared
-- 通过 CMakePresets + vcpkg toolchain 自动安装依赖（qtbase、gtest）
+- 通过 CMakePresets + vcpkg toolchain 自动安装依赖（qtbase；gtest 只在显式开启 `tests` feature 时安装）
 - CMake configure + build + 运行时 DLL 部署
 
 ### Linux / macOS 构建
@@ -104,8 +104,17 @@ third_party/prebuilt/<platform>/ffmpeg/   ← 唯一查找路径（{include,lib,
 ### vcpkg 依赖（Windows 自动集成）
 
 项目通过 `vcpkg.json` + `CMakePresets.json` 自动声明并安装依赖，无需手动运行 `vcpkg install`：
-- `qtbase` — Qt6 GUI（只用 QtWidgets）
-- `gtest` — 单元测试（默认不构建）
+- `qtbase` — Qt6 GUI（只用 QtWidgets，feature 已按需裁剪）
+- `tests`（可选 feature）— `gtest`，只在要跑单元测试时才装
+
+```powershell
+# 默认依赖（不含 gtest）
+vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release `
+  --overlay-triplets=scripts/triplets --overlay-ports=scripts/overlay-ports `
+  --x-manifest-root=. --x-install-root=vcpkg_installed
+
+# 需要单元测试时追加 --x-feature=tests
+```
 
 > 使用项目自带的 release-only triplet（`scripts/triplets/x64-windows-release.cmake`），只装 release 二进制，省约一半磁盘与安装时间。
 

@@ -1368,7 +1368,7 @@ void AnalysisPanel::UpdateMp4SampleSummary() {
     const auto& r = mp4_samples_;
     if (!r.valid) {
         mp4_sample_summary_label_->setText(
-            tr("样本表：未分析（文件不是 MP4/MOV，或 Bento4 不可用）"));
+            tr("样本表：未分析（文件不是 MP4/MOV，或容器解析失败）"));
         mp4_sample_summary_label_->setStyleSheet("font-size: 11px; color: #8B949E; padding: 2px;");
         return;
     }

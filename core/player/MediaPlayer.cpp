@@ -436,7 +436,8 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
         }
         LOG_INFO("Audio decoder initialized");
 
-        // 初始化音频输出设备 (QAudioSink): 把解码后的 PCM 送进声卡。
+        // 初始化音频输出设备（平台原生后端: WASAPI / ALSA / AudioQueue）:
+        // 解码后的 PCM 由音频线程主动 pull。
         // 走异步打开: Windows(WASAPI) 首次打开音频设备实测 ~1s,
         // 同步调用会把"打开文件"整段卡住。设备就绪前音频帧丢弃, 视频不受影响。
         audio_output_ = std::make_unique<AudioOutput>();
@@ -1147,7 +1148,7 @@ void MediaPlayer::DecodeThread() {
                     }
                     if (out_size < static_cast<int>(sizeof(int16_t))) continue;
 
-                    // 推送 PCM 到音频输出设备 (QAudioSink pull 播放)
+                    // 推送 PCM 到环形缓冲，由音频后端线程 pull 播放
                     if (audio_output_) {
                         audio_output_->Enqueue(audio_buffer.data(), out_size);
                     }

@@ -6,7 +6,7 @@
 
 ### Windows
 - Visual Studio 2022（勾选「使用 C++ 的桌面开发」工作负载，含 MSVC + Windows SDK + Ninja）
-- vcpkg（用于 Qt6；gtest 仅在 -DBUILD_TESTING=ON 时需要）
+- vcpkg（用于 Qt6；gtest 只在显式开启 `tests` feature 时安装）
 
 ### Linux (Debian/Ubuntu)
 - GCC 12+, CMake 3.21+, pkg-config, make
@@ -17,6 +17,7 @@
 ### Windows
 ```powershell
 # 1. 安装 vcpkg 依赖（首次）
+#    追加 --x-feature=tests 才会安装 gtest（跑单元测试时）
 vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release \
   --overlay-triplets=scripts/triplets --overlay-ports=scripts/overlay-ports --x-manifest-root=. --x-install-root=vcpkg_installed
 
