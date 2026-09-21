@@ -110,12 +110,16 @@ QString Trimmed(const char* s) {
 }
 
 // 语言标签: eng -> English 之类；拿不到就原样返回
+// 先读流级 metadata 再读容器级：容器级 language 是多流文件的「整体语言」，
+// 反过来读的话会被套到每一条流上（多音轨文件里每条轨都显示成同一个语言）。
 QString LanguageName(const AVDictionary* metadata, const AVStream* stream) {
     AVDictionaryEntry* lang = nullptr;
-    if (metadata) lang = av_dict_get(metadata, "language", nullptr, 0);
-    if (!lang && stream) {
-        // 有些容器把语言写在流的 metadata 上
+    if (stream) {
+        // 流级优先：MP4/MKV 通常把语言写在每条流自己的 metadata 上
         lang = av_dict_get(stream->metadata, "language", nullptr, 0);
+    }
+    if (!lang && metadata) {
+        lang = av_dict_get(metadata, "language", nullptr, 0);
     }
     if (!lang || !lang->value || !*lang->value) return QString();
     return QString::fromUtf8(lang->value);
@@ -342,7 +346,9 @@ bool MediaInfoAnalyzer::Open(const QString& filePath) {
                     }
                 }
             } else if (type == AVMEDIA_TYPE_AUDIO) {
-                out += kIndent + QStringLiteral("Format                     : ") + SampleFmtName(par->format) + QLatin1Char('\n');
+                // 注意: 这一段上面已经输出过 codec 的 Format，这里再叫 Format 会重名，
+                // 而这一行其实是 AVSampleFormat（s16 / fltp ...），所以叫 Sample format。
+                out += kIndent + QStringLiteral("Sample format              : ") + SampleFmtName(par->format) + QLatin1Char('\n');
                 out += kIndent + QStringLiteral("Sample rate                : ") + QString::number(par->sample_rate) + QStringLiteral(" Hz") + QLatin1Char('\n');
                 char layout[128] = {0};
                 if (av_channel_layout_describe(&par->ch_layout, layout, sizeof(layout)) > 0) {
