@@ -40,6 +40,24 @@ using PullFn = std::function<size_t(uint8_t*, size_t)>;
 
 #if defined(VIDEOEYE_AUDIO_WIN)
 
+// KSDATAFORMAT_SUBTYPE_PCM / KSDATAFORMAT_SUBTYPE_IEEE_FLOAT。
+// 直接把 GUID 写死，省得为两个常量引入 ksmedia.h（WDK 头）。
+static const GUID kSubtypePcm =
+    {0x00000001, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}};
+// 设备的 mix format 是不是 16bit PCM。
+// 只有这一种情况可以直接拿 mix format 去 Initialize —— 它的字节布局和
+// Pull() 产出的 S16 交错 PCM 完全一致，不需要任何转换。
+bool IsS16Pcm(const WAVEFORMATEX* wfx) {
+    if (wfx == nullptr || wfx->wBitsPerSample != 16) return false;
+    if (wfx->wFormatTag == WAVE_FORMAT_PCM) return true;
+    if (wfx->wFormatTag == WAVE_FORMAT_EXTENSIBLE && wfx->cbSize >= 22) {
+        const WAVEFORMATEXTENSIBLE* ext =
+            reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(wfx);
+        return IsEqualGUID(ext->SubFormat, kSubtypePcm) != FALSE;
+    }
+    return false;
+}
+
 class WasapiBackend final : public AudioOutput::Backend {
 public:
     explicit WasapiBackend(PullFn pull) : pull_(std::move(pull)) {}
@@ -147,16 +165,42 @@ private:
         hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
                                  kBufferDuration, 0, &wfx, nullptr);
         if (hr == AUDCLNT_E_UNSUPPORTED_FORMAT) {
-            // 设备不支持 16bit PCM 的精确采样率时交给音频引擎做重采样
+            // 设备不接受「16bit PCM + 源的采样率」。常见原因是声卡跑在 48 kHz 而我们按
+            // 源的 44.1 kHz 请求。
+            //
+            // 关键约束: Pull() 只产出 S16 交错 PCM。所以回退时**不能**直接把设备 mix
+            // format 拿来 Initialize —— mix format 常常是 float32，那样会把 S16 的字节流
+            // 当浮点播，表现为杂音或静音。先只对齐采样率/声道数、保持 S16。
             WAVEFORMATEX* mix = nullptr;
             if (SUCCEEDED(client_->GetMixFormat(&mix)) && mix) {
+                WAVEFORMATEX retry{};
+                retry.wFormatTag = WAVE_FORMAT_PCM;
+                retry.nChannels = mix->nChannels;
+                retry.nSamplesPerSec = mix->nSamplesPerSec;
+                retry.wBitsPerSample = 16;
+                retry.nBlockAlign = static_cast<WORD>(mix->nChannels * 2);
+                retry.nAvgBytesPerSec = retry.nSamplesPerSec * retry.nBlockAlign;
+                retry.cbSize = 0;
                 hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                                         kBufferDuration, 0, mix, nullptr);
+                                         kBufferDuration, 0, &retry, nullptr);
                 if (SUCCEEDED(hr)) {
-                    actual_rate_ = static_cast<int>(mix->nSamplesPerSec);
-                    actual_channels_ = mix->nChannels;
-                    block_align_ = mix->nBlockAlign;
+                    actual_rate_ = static_cast<int>(retry.nSamplesPerSec);
+                    actual_channels_ = retry.nChannels;
+                    block_align_ = retry.nBlockAlign;
+                    LOG_INFO("AudioOutput(WASAPI): 16bit PCM 未受支持, 已按设备采样率 " +
+                             std::to_string(actual_rate_) + " Hz / " +
+                             std::to_string(actual_channels_) + " ch 重新打开");
+                } else if (IsS16Pcm(mix)) {
+                    // 兜底: mix format 本身就是 16bit PCM，字节布局与 Pull() 一致，可以直用
+                    hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                                             kBufferDuration, 0, mix, nullptr);
+                    if (SUCCEEDED(hr)) {
+                        actual_rate_ = static_cast<int>(mix->nSamplesPerSec);
+                        actual_channels_ = mix->nChannels;
+                        block_align_ = mix->nBlockAlign;
+                    }
                 }
+                // 其余情况（mix 是 float32 / 24bit ...）宁可没有声音，也不要把 S16 当别的格式播
                 CoTaskMemFree(mix);
             }
         }
@@ -535,19 +579,31 @@ void AudioOutput::OpenAsync(int sample_rate, int channels) {
 void AudioOutput::Enqueue(const uint8_t* data, int len) {
     if (!opened_.load() || !data || len <= 0) return;   // 异步打开未完成: 丢弃
 
-    std::unique_lock<std::mutex> lock(ring_mutex_);
-    while (filled_ + static_cast<size_t>(len) > ring_capacity_) {
-        ring_cv_.wait(lock);
+    // 分片写入。旧实现先等「整个 len 都能放下」再写，一旦单次 PCM 块大于
+    // ring_capacity_（高采样率 / 多声道 / 大 AAC 帧解码出来很容易超），
+    // filled_ + len 永远大于容量，wait 就再也醒不过来 —— 解码线程直接卡死。
+    // 改成「有多少空位写多少」，每次至少推进 1 字节，循环必然收敛。
+    size_t remaining = static_cast<size_t>(len);
+    const uint8_t* src = data;
+    while (remaining > 0) {
+        std::unique_lock<std::mutex> lock(ring_mutex_);
+        ring_cv_.wait(lock, [this]() {
+            return !opened_.load() || filled_ < ring_capacity_;
+        });
         if (!opened_.load()) return;   // 已被 Stop
-    }
 
-    const size_t first = std::min<size_t>(static_cast<size_t>(len), ring_capacity_ - write_pos_);
-    std::memcpy(ring_.data() + write_pos_, data, first);
-    if (first < static_cast<size_t>(len)) {
-        std::memcpy(ring_.data(), data + first, len - first);
+        const size_t space = ring_capacity_ - filled_;
+        const size_t chunk = std::min<size_t>(remaining, space);
+        const size_t first = std::min<size_t>(chunk, ring_capacity_ - write_pos_);
+        std::memcpy(ring_.data() + write_pos_, src, first);
+        if (first < chunk) {
+            std::memcpy(ring_.data(), src + first, chunk - first);
+        }
+        write_pos_ = (write_pos_ + chunk) % ring_capacity_;
+        filled_ += chunk;
+        remaining -= chunk;
+        src += chunk;
     }
-    write_pos_ = (write_pos_ + static_cast<size_t>(len)) % ring_capacity_;
-    filled_ += static_cast<size_t>(len);
 }
 
 void AudioOutput::Play() {
