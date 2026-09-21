@@ -111,19 +111,28 @@ uint64_t ReadPayload(ParseContext& ctx, const IsobmffBox& box, std::vector<uint8
     return want;
 }
 
+// 样本表循环守卫: count 是「条目数」，不是「样本数」。
+// 曾经写成 added += entry.sample_count 再与 count 比较 —— 一条 entry 往往覆盖上千个样本，
+// 第一条就把 added 顶到 count 之上，结果正常 MP4 只解析出 1 条 entry（stts/ctts 全残）。
+// 一律用「已解析条目数」与 count 比。
+// 没能把声明的 count 条全部读出来就置位（载荷不够 or 撞到 max_entries 两种原因都算），
+// 便于上层区分「完整解析」和「只读到一部分」。
+void MarkTruncated(IsobmffTrack& t, size_t parsed, uint32_t count) {
+    if (parsed < count) t.tables_truncated = true;
+}
+
 void ParseStts(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entries) {
     if (n < 8) return;
     const uint32_t count = Rd32(p + 4);
     uint64_t pos = 8;
-    uint32_t added = 0;
-    while (pos + 8 <= n && added < count && t.stts.size() < max_entries) {
+    while (pos + 8 <= n && t.stts.size() < count && t.stts.size() < max_entries) {
         SttsEntry e;
         e.sample_count = Rd32(p + pos);
         e.sample_delta = Rd32(p + pos + 4);
         t.stts.push_back(e);
-        added += e.sample_count;
         pos += 8;
     }
+    MarkTruncated(t, t.stts.size(), count);
     t.has_stts = true;
 }
 
@@ -132,16 +141,23 @@ void ParseCtts(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entri
     const uint8_t version = p[0];
     const uint32_t count = Rd32(p + 4);
     uint64_t pos = 8;
-    uint32_t added = 0;
-    // v0 与 v1 的条目都是 8 字节，区别只在偏移量的符号解释（v1 可为负）
-    while (pos + 8 <= n && added < count && t.ctts.size() < max_entries) {
+    // v0 与 v1 条目都是 8 字节，区别只在偏移量的符号解释：
+    //   v0 = uint32（无符号，只出现在没有负 CTS 的场景）
+    //   v1 = int32（B 帧重排序时会出现负值）
+    // 统一存进 int32_t，v0 超过 INT32_MAX 的极端值夹到 INT32_MAX（正常码流不会出现）。
+    while (pos + 8 <= n && t.ctts.size() < count && t.ctts.size() < max_entries) {
         CttsEntry e;
         e.sample_count = Rd32(p + pos);
-        e.sample_offset = static_cast<int32_t>(Rd32(p + pos + 4));
+        const uint32_t raw = Rd32(p + pos + 4);
+        if (version == 1) {
+            e.sample_offset = static_cast<int32_t>(raw);
+        } else {
+            e.sample_offset = static_cast<int32_t>(std::min<uint32_t>(raw, 0x7FFFFFFFu));
+        }
         t.ctts.push_back(e);
-        added += e.sample_count;
         pos += 8;
     }
+    MarkTruncated(t, t.ctts.size(), count);
     t.has_ctts = true;
 }
 
@@ -153,6 +169,7 @@ void ParseStss(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entri
         t.stss.push_back(Rd32(p + pos));
         pos += 4;
     }
+    MarkTruncated(t, t.stss.size(), count);
     t.has_stss = true;
 }
 
@@ -167,6 +184,7 @@ void ParseStsz(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entri
             t.stsz.sizes.push_back(Rd32(p + pos));
             pos += 4;
         }
+        MarkTruncated(t, t.stsz.sizes.size(), count);
     }
     t.has_stsz = true;
 }
@@ -189,11 +207,18 @@ void ParseStz2(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entri
             pos += 1;
         }
     } else if (t.stsz.field_size == 4) {
+        // 一字节装两个样本；样本数为奇数时，最后一字节的低 4 位是填充，不能算作样本
         while (pos + 1 <= n && t.stsz.sizes.size() < count && t.stsz.sizes.size() < max_entries) {
-            t.stsz.sizes.push_back(static_cast<uint32_t>(p[pos] >> 4));
-            t.stsz.sizes.push_back(static_cast<uint32_t>(p[pos] & 0x0F));
+            const uint8_t b = p[pos];
+            t.stsz.sizes.push_back(static_cast<uint32_t>(b >> 4));
+            if (t.stsz.sizes.size() < count && t.stsz.sizes.size() < max_entries) {
+                t.stsz.sizes.push_back(static_cast<uint32_t>(b & 0x0F));
+            }
             pos += 1;
         }
+    }
+    if (t.stsz.field_size == 4 || t.stsz.field_size == 8 || t.stsz.field_size == 16) {
+        MarkTruncated(t, t.stsz.sizes.size(), count);
     }
     t.has_stz2 = true;
 }
@@ -210,6 +235,7 @@ void ParseStsc(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entri
         t.stsc.push_back(e);
         pos += 12;
     }
+    MarkTruncated(t, t.stsc.size(), count);
     t.has_stsc = true;
 }
 
@@ -224,6 +250,7 @@ void ParseChunkOffsets(IsobmffTrack& t, const uint8_t* p, uint64_t n, bool co64,
         t.chunk_offsets.push_back(co64 ? Rd64(p + pos) : Rd32(p + pos));
         pos += entry;
     }
+    MarkTruncated(t, t.chunk_offsets.size(), count);
     if (co64) t.has_co64 = true; else t.has_stco = true;
 }
 
@@ -246,6 +273,7 @@ void ParseElst(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entri
         t.elst.push_back(e);
         pos += version == 1 ? 20 : 12;
     }
+    MarkTruncated(t, t.elst.size(), count);
     t.has_elst = true;
 }
 
