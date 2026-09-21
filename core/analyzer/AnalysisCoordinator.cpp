@@ -1,4 +1,5 @@
 #include "core/analyzer/AnalysisCoordinator.h"
+#include "core/analyzer/BitstreamAnalyzer.h"
 #include "core/analyzer/TimelineAnalyzer.h"
 #include "utils/FileProbe.h"
 
@@ -341,6 +342,45 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
             digest.duration_seconds = file_duration;
         }
         result.streams.push_back(std::move(digest));
+    }
+
+    // ---- 编码码流解析（只读 extradata，不解码；必须在 avformat_close_input 之前）----
+    // 只取第一条视频流：诊断关心的是主视频的编码参数，多视频流取第一条足够。
+    if (options.analyze_bitstream) {
+        for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+            AVStream* st = fmt->streams[i];
+            if (st->codecpar->codec_type != AVMEDIA_TYPE_VIDEO) continue;
+            if (st->codecpar->extradata == nullptr || st->codecpar->extradata_size <= 0) continue;
+
+            ContainerMetadata meta;
+            meta.codec_name = (i < result.streams.size()) ? result.streams[i].codec_name : "";
+            meta.width = st->codecpar->width;
+            meta.height = st->codecpar->height;
+            meta.bit_depth = (st->codecpar->bits_per_raw_sample > 0)
+                                 ? st->codecpar->bits_per_raw_sample
+                                 : 8;
+            meta.color_primaries = st->codecpar->color_primaries;
+            meta.transfer_characteristics = st->codecpar->color_trc;
+            meta.matrix_coefficients = st->codecpar->color_space;
+            meta.color_range = st->codecpar->color_range;
+
+            BitstreamAnalyzer bitstream;
+            bitstream.SetContainerMetadata(meta);
+            model::BitstreamAnalysisResult bs = bitstream.Analyze(
+                st->codecpar->extradata,
+                static_cast<size_t>(st->codecpar->extradata_size),
+                static_cast<int>(st->codecpar->codec_id));
+            bs.stream_index = static_cast<int>(i);
+            if (bs.analyzed) {
+                result.bitstream_analysis = std::move(bs);
+                result.bitstream_analyzed = true;
+                LOG_INFO("码流解析: codec=" + result.bitstream_analysis.codec_name +
+                         " " + std::to_string(result.bitstream_analysis.width) + "x" +
+                         std::to_string(result.bitstream_analysis.height) +
+                         " 不一致=" + std::to_string(result.bitstream_analysis.inconsistencies.size()));
+                break;
+            }
+        }
     }
 
     // ---- 色彩与 HDR 元数据分析（读 AVCodecParameters + coded_side_data，几乎零成本）----

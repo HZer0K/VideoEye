@@ -42,6 +42,12 @@ struct AnalysisOptions {
     bool analyze_color_hdr = true;
     ColorHdrOptions color_hdr_options;
 
+    // 编码码流解析（从 AVCodecParameters::extradata 解析 SPS/VPS/Sequence Header，
+    // 与容器层宽高/位深/色彩做一致性对比，见 core/analyzer/BitstreamAnalyzer.h）。
+    // 不解码、只读 KB 级 extradata，成本可忽略；目前支持 H.264 / HEVC / AV1，
+    // VVC 只识别编码类型、不产出参数（见 BitstreamAnalyzer::ParseVvc）。
+    bool analyze_bitstream = true;
+
     // MP4/fMP4 容器一致性校验（sample table / elst / moof-traf-trun / faststart）。
     // 走自研 utils::IsobmffParser 直接读 stbl 与 moof，与 FFmpeg demux 是两套独立解析：
     // 只在容器属于 MP4 家族时才真正执行，其它格式直接跳过。
