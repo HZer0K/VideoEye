@@ -29,6 +29,9 @@ public:
     // 从 NAL 单元解析（用于实时解析）
     static model::H264SpsInfo ParseFromNalUnit(const utils::NalUnit& nal_unit);
     
+    // 从 PPS NAL 单元解析（用于实时解析）
+    static model::H264PpsInfo ParsePpsFromNalUnit(const utils::NalUnit& nal_unit);
+    
     // 判断是否为 SPS NAL 单元
     static bool IsSpsNalUnit(const utils::NalUnit& nal_unit);
     
@@ -47,6 +50,18 @@ private:
                                       std::string& profile_name,
                                       int& level,
                                       std::string& level_version);
+    
+    // 取出 RBSP：去掉可能存在的 1 字节 NAL header，再做 emulation prevention 反转义。
+    // ExtradataParser 的两条路径对 data 是否含 header 并不一致
+    // （AnnexB 剥掉、avcC 保留），这里统一处理。
+    static std::vector<uint8_t> GetRbsp(const utils::NalUnit& nal_unit);
+    
+    // 判断 profile 是否带 chroma_format_idc / bit_depth 等扩展字段
+    static bool HasChromaFormatExtension(int profile_idc);
+    
+    static void SkipScalingList(utils::BitReader& reader, int size);
+    static void SkipHrdParameters(utils::BitReader& reader, model::H264VuiInfo& vui);
+    static void ParseVuiParameters(utils::BitReader& reader, model::H264VuiInfo& vui);
 };
 
 } // namespace analyzer

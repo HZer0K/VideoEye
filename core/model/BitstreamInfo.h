@@ -20,11 +20,52 @@ struct H264VuiInfo {
     uint32_t time_scale = 0;
     bool fixed_frame_rate = false;
     
-    // Color info
+    // --- 以下是 H.264 附录 E 中真实存在的 VUI 语法元素 ---
+    // Aspect ratio (E.1.1)
+    bool aspect_ratio_info_present = false;
+    int aspect_ratio_idc = 0;           // 0xFF = Extended_SAR
+    int sar_width = 0;
+    int sar_height = 0;
+
+    // Overscan
+    bool overscan_info_present = false;
+    bool overscan_appropriate_flag = false;
+
+    // Video signal type（颜色描述的载体）
+    bool video_signal_type_present = false;
+    int video_format = 0;               // 0=Component,1=PAL,2=NTSC,3=SECAM,4=MAC,5=Unspecified
+    bool video_full_range_flag = false;
+    bool colour_description_present = false;
+
+    // Chroma sample location
+    bool chroma_loc_info_present = false;
+    int chroma_sample_loc_type_top_field = 0;
+    int chroma_sample_loc_type_bottom_field = 0;
+
+    // HRD（区分 NAL / VCL 两套）
+    bool nal_hrd_parameters_present = false;
+    bool vcl_hrd_parameters_present = false;
+    bool low_delay_hrd_flag = false;
+
+    // Picture struct
+    bool pic_struct_present_flag = false;
+
+    // Bitstream restriction
+    bool bitstream_restriction_flag = false;
+    bool motion_vectors_over_pic_boundaries_flag = false;
+    int max_bytes_per_pic_denom = 0;
+    int max_bits_per_mb_denom = 0;
+    int log2_max_mv_length_horizontal = 0;
+    int log2_max_mv_length_vertical = 0;
+    int max_num_reorder_frames = 0;
+    int max_dec_frame_buffering = 0;
+
+    // --- 以下字段在 H.264 规范中并不存在，保留仅为兼容旧引用 ---
     bool neutral_chroma_indication = false;
     bool field_seq_flag = false;
     bool frame_mbs_only_flag = true;
     
+    // 供 SPS::height() 兼容使用的旧字段（真实值在 H264SpsInfo::frame_mbs_only_flag）
     // Color primaries (从 VUI)
     int color_primaries = 0;        // AVCOL_PRI_*
     int transfer_characteristics = 0; // AVCOL_TRC_*
@@ -52,6 +93,7 @@ struct H264SpsInfo {
     int seq_parameter_set_id = 0;
     int profile_idc = 0;              // 7=High, 8=High 10, 9=High 4:2:2, 10=High 4:4:4
     int level_idc = 0;                // 31=3.1, 32=3.2, ..., 45=4.2, 51=5.1
+    int constraint_flags = 0;         // constraint_set0..5，按位 0..5
     
     // Chroma format
     int chroma_format_idc = 0;        // 0=4:0:0, 1=4:2:0, 2=4:2:2, 3=4:4:4
@@ -62,13 +104,17 @@ struct H264SpsInfo {
     // GOP structure
     int qpprime_y_zero_transform_bypass_flag = 0;
     int seq_scaling_matrix_present_flag = 0;
+    int log2_max_frame_num_minus4 = 0;
+    int pic_order_cnt_type = 0;
     int log2_max_pic_order_cnt_lsb_minus4 = 0;
     int max_num_ref_frames = 0;       // 最大参考帧数
-    int gaps_in_frame_val_allowed_flag = 0;
+    int gaps_in_frame_val_allowed_flag = 0;  // gaps_in_frame_num_value_allowed_flag
     
     // Frame properties
     int pic_width_in_mbs_minus1 = 0;  // (value + 1) * 16 = width
-    int pic_height_in_mbs_minus1 = 0; // (value + 1) * 16 = height (double for field)
+    int pic_height_in_mbs_minus1 = 0; // pic_height_in_map_units_minus1
+    bool frame_mbs_only_flag = true;
+    bool mb_adaptive_frame_field_flag = false;
     bool direct_8x8_inference_flag = false;
     
     // Frame cropping
@@ -81,10 +127,32 @@ struct H264SpsInfo {
     // VUI 信息（如果存在）
     H264VuiInfo vui;
     
-    // 计算出的宽高
-    int width() const { return (pic_width_in_mbs_minus1 + 1) * 16; }
-    int height() const { 
-        return (2 - (vui.frame_mbs_only_flag ? 1 : 0)) * (pic_height_in_mbs_minus1 + 1) * 16;
+    // 计算出的宽高（已扣除 frame_cropping，单位换算按 7.4.2.1.1）
+    int CropUnitX() const {
+        const int chroma_array_type = separate_colour_plane_flag ? 0 : chroma_format_idc;
+        if (chroma_array_type == 0) return 1;               // 4:0:0
+        return (chroma_array_type == 3) ? 1 : 2;            // 4:4:4 → 1，4:2:0/4:2:2 → 2
+    }
+    int CropUnitY() const {
+        const int chroma_array_type = separate_colour_plane_flag ? 0 : chroma_format_idc;
+        const int frame_mbs = frame_mbs_only_flag ? 1 : 0;
+        if (chroma_array_type == 0) return 2 - frame_mbs;
+        return ((chroma_array_type == 1) ? 2 : 1) * (2 - frame_mbs);
+    }
+
+    int width() const {
+        int w = (pic_width_in_mbs_minus1 + 1) * 16;
+        if (frame_cropping_flag) {
+            w -= (frame_crop_left_offset + frame_crop_right_offset) * CropUnitX();
+        }
+        return w;
+    }
+    int height() const {
+        int h = (2 - (frame_mbs_only_flag ? 1 : 0)) * (pic_height_in_mbs_minus1 + 1) * 16;
+        if (frame_cropping_flag) {
+            h -= (frame_crop_top_offset + frame_crop_bottom_offset) * CropUnitY();
+        }
+        return h;
     }
     
     // Profile 名称
@@ -221,11 +289,13 @@ struct HevcVpsInfo {
     bool present = false;
     
     int vps_video_parameter_set_id = 0;
-    int vps_profile_level_tier = 0;  // 高位 2 bits: profile, 低位：tier
-    int vps_max_layers = 0;
-    int vps_max_sub_layers = 0;
+    int vps_max_layers = 0;          // = vps_max_layers_minus1 + 1
+    int vps_max_sub_layers = 0;      // = vps_max_sub_layers_minus1 + 1
+    int vps_temporal_id_nesting_flag = 0;
+    bool vps_sub_layer_ordering_info_present_flag = false;
+    int vps_max_layer_id = 0;
+    // vps_temporal_nal_layer_only_flag 在规范里叫 vps_temporal_id_nesting_flag，保留旧名兼容
     int vps_temporal_nal_layer_only_flag = 0;
-    int vps_ptl_following_flag = 0;
     
     // PTL (Profile Tier Level)
     int general_profile_space = 0;
@@ -263,14 +333,33 @@ struct HevcSpsInfo {
     bool present = false;
     
     int sps_seq_parameter_set_id = 0;
+    int sps_video_parameter_set_id = 0;
+    int sps_max_sub_layers_minus1 = 0;
+    int sps_temporal_id_nesting_flag = 0;
+    bool sps_sub_layer_ordering_info_present_flag = false;
     
     // PTL (Profile Tier Level)
+    int general_profile_space = 0;
     int general_profile_idc = 0;
     int general_tier_flag = 0;
+    uint32_t general_level_idc = 0;
+    std::vector<bool> sub_layer_profile_present_flags;
+    std::vector<bool> sub_layer_level_present_flags;
     int chroma_format_idc = 0;      // 0=4:0:0, 1=4:2:0, 2=4:2:2, 3=4:4:4
     int separate_colour_plane_flag = 0;
-    int pic_width_in_ctu_minus1 = 0; // CTU size default 64, (value+1)*CTU = width
+    
+    // 规范里直接给的是亮度采样数，不是 CTU 数
+    int pic_width_in_luma_samples = 0;
+    int pic_height_in_luma_samples = 0;
+    int pic_width_in_ctu_minus1 = 0;  // 仅作参考，解析时按 CTU 反推
     int pic_height_in_ctu_minus1 = 0;
+    
+    // conformance window（等价于 H.264 的 frame_cropping）
+    int conformance_window_flag = 0;
+    int conf_win_left_offset = 0;
+    int conf_win_right_offset = 0;
+    int conf_win_top_offset = 0;
+    int conf_win_bottom_offset = 0;
     
     // Bit depth
     int bit_depth_luma_minus8 = 0;
@@ -281,7 +370,7 @@ struct HevcSpsInfo {
     int sub_layer_ordering_info_present_flag = 0;
     int log2_min_luma_coding_block_size_minus3 = 0;
     int log2_diff_max_min_luma_coding_block_size = 0;
-    int log2_min_luma_transform_block_size_minus3 = 0;
+    int log2_min_luma_transform_block_size_minus2 = 0;
     int log2_diff_max_min_luma_transform_block_size = 0;
     int max_transform_hierarchy_depth_inter = 0;
     int max_transform_hierarchy_depth_intra = 0;
@@ -349,6 +438,7 @@ struct HevcSpsInfo {
     // VUI
     int vui_parameters_present_flag = 0;
     int aspect_ratio_info_present_flag = 0;
+    int aspect_ratio_idc = 0;           // 255 = Extended_SAR
     int sar_width = 0;
     int sar_height = 0;
     int video_full_range_flag = 0;
@@ -357,6 +447,9 @@ struct HevcSpsInfo {
     int matrix_coefficients = 0;
     int chroma_sample_loc_type_top_field = 0;
     int chroma_sample_loc_type_bottom_field = 0;
+    bool neutral_chroma_indication_flag = false;
+    bool field_seq_flag = false;
+    bool frame_field_info_present_flag = false;
     int def_disp_win_left_offset = 0;
     int def_disp_win_right_offset = 0;
     int def_disp_win_top_offset = 0;
@@ -364,21 +457,39 @@ struct HevcSpsInfo {
     int vui_timing_info_present_flag = 0;
     uint32_t vui_num_units_in_tick = 0;
     uint32_t vui_time_scale = 0;
+    bool vui_poc_proportional_to_timing_flag = false;
+    bool vui_hrd_parameters_present_flag = false;
     int bitstream_restriction_flag = 0;
+    int min_spatial_segmentation_idc = 0;
     int max_bytes_per_pic_denom = 0;
     int max_bits_per_min_cu_denom = 0;
     int log2_max_mv_length_horizontal = 0;
     int log2_max_mv_length_vertical = 0;
     
-    // Frame properties
-    int width() const {
-        int ctu_size = 64; // Default CTU size
-        return (pic_width_in_ctu_minus1 + 1) * ctu_size;
+    // 显示宽高 = 亮度采样数 - conformance window（按 SubWidthC/SubHeightC 换算）
+    int SubWidthC() const {
+        const int cat = separate_colour_plane_flag ? 0 : chroma_format_idc;
+        return (cat == 1 || cat == 2) ? 2 : 1;
     }
-    
+    int SubHeightC() const {
+        const int cat = separate_colour_plane_flag ? 0 : chroma_format_idc;
+        return (cat == 1) ? 2 : 1;
+    }
+
+    int width() const {
+        int w = pic_width_in_luma_samples;
+        if (conformance_window_flag) {
+            w -= (conf_win_left_offset + conf_win_right_offset) * SubWidthC();
+        }
+        return w;
+    }
+
     int height() const {
-        int ctu_size = 64; // Default CTU size
-        return (pic_height_in_ctu_minus1 + 1) * ctu_size;
+        int h = pic_height_in_luma_samples;
+        if (conformance_window_flag) {
+            h -= (conf_win_top_offset + conf_win_bottom_offset) * SubHeightC();
+        }
+        return h;
     }
     
     int BitDepthLuma() const { return bit_depth_luma_minus8 + 8; }
@@ -415,8 +526,10 @@ struct HevcPpsInfo {
     int output_flag_present_flag = 0;
     int num_extra_slice_header_bits_template = 0;
     int weighted_pred_flag = 0;
-    int weighted_ppred_flag = 0;
-    int weighted_bi_pred_flag = 0;
+    int weighted_ppred_flag = 0;     // 旧名，等价 weighted_bipred_flag
+    int weighted_bi_pred_flag = 0;   // 旧名，等价 weighted_bipred_flag
+    int weighted_bipred_flag = 0;    // 规范名
+    int deblocking_filter_control_present_flag = 0;
     int transquant_bypass_enabled_flag = 0;
     int tiles_enabled_flag = 0;
     int entropy_coding_sync_enabled_flag = 0;
@@ -426,6 +539,7 @@ struct HevcPpsInfo {
     int transform_skip_context_enabled_flag = 0;
     int implicit_residual_differential_coding_enabled_flag = 0;
     int residual_adaptive_color_transform_enabled_flag = 0;
+    int pps_slice_chroma_qp_offsets_present_flag = 0;
     int slice_appended_flag = 0;
     int slice_segment_appended_flag = 0;
     int picture_appended_flag = 0;

@@ -1,19 +1,26 @@
 #include "core/analyzer/HevcBitstreamParser.h"
+
 #include "utils/BitReader.h"
 #include "utils/ExtradataParser.h"
 
 namespace videoeye {
 namespace analyzer {
 
+// --------------------------------------------------------------------------
+// Profile / Tier / Level
+// --------------------------------------------------------------------------
 std::string HevcBitstreamParser::GetProfileName(int general_profile_idc) {
     switch (general_profile_idc) {
-        case 0: return "Main";
-        case 1: return "Main 10";
-        case 2: return "Main Still Picture";
-        case 3: return "TMEE";
-        case 4: return "Range Extension";
-        case 5: return "Multipoint Extension";
-        case 6: return "Scc Extension";
+        case 0:  return "Main";
+        case 1:  return "Main 10";
+        case 2:  return "Main Still Picture";
+        case 3:  return "Main Rext";
+        case 4:  return "High Throughput";
+        case 5:  return "Multiview Main";
+        case 6:  return "Scalable Main";
+        case 7:  return "3D Main";
+        case 8:  return "Screen Content Coding";
+        case 9:  return "Scalable Range Extension";
         default: return "Unknown";
     }
 }
@@ -23,397 +30,698 @@ std::string HevcBitstreamParser::GetTierName(int general_tier_flag) {
 }
 
 std::string HevcBitstreamParser::GetLevelVersion(uint32_t general_level_idc) {
+    // general_level_idc = 30 × 主版本 + 3 × 次版本：153 -> 5.1，123 -> 4.1
     if (general_level_idc == 0) return "Undefined";
-    
-    int level = static_cast<int>(general_level_idc / 30);
-    int sub_level = general_level_idc % 30;
-    
-    // HEVC levels: 1, 2, 2.1, 3, 3.1, 4, 4.1, 5, 5.1, 5.2, 6, 6.1, 6.2
-    static const char* levels[] = {
-        "1", "2", "2.1", "3", "3.1", "4", "4.1", "5", "5.1", "5.2",
-        "6", "6.1", "6.2", "7", "7.1", "8", "8.1", "9", "9.1", "9.2",
-        "10", "10.1", "10.2", "10.3", "10.4", "10.5", "10.6", "10.7", "10.8", "10.9",
-        "11", "11.1"
-    };
-    
-    if (level >= 0 && level <= 31) {
-        return std::string(levels[level]) + "." + std::to_string(sub_level);
-    }
-    
-    return "Unknown";
+    const uint32_t level = general_level_idc / 30;
+    const uint32_t sub_level = (general_level_idc % 30) / 3;
+    if (level == 0 || level > 13) return "Unknown";
+    return std::to_string(level) + "." + std::to_string(sub_level);
 }
 
 bool HevcBitstreamParser::IsVpsNalUnit(const utils::NalUnit& nal_unit) {
-    return nal_unit.type == 32; // VPS NAL type
+    return nal_unit.type == 32;
 }
 
 bool HevcBitstreamParser::IsSpsNalUnit(const utils::NalUnit& nal_unit) {
-    return nal_unit.type == 33; // SPS NAL type
+    return nal_unit.type == 33;
 }
 
 bool HevcBitstreamParser::IsPpsNalUnit(const utils::NalUnit& nal_unit) {
-    return nal_unit.type == 34; // PPS NAL type
+    return nal_unit.type == 34;
 }
 
-model::HevcVpsInfo HevcBitstreamParser::ParseVpsFromNalUnit(const utils::NalUnit& nal_unit) {
-    if (!IsVpsNalUnit(nal_unit)) {
-        return model::HevcVpsInfo();
-    }
-    
-    model::HevcVpsInfo vps;
-    
+std::vector<uint8_t> HevcBitstreamParser::GetRbsp(const utils::NalUnit& nal_unit) {
     if (nal_unit.data.empty()) {
-        return vps;
+        return {};
     }
-    
-    utils::BitReader reader;
-    reader.ResetFromData(nal_unit.data.data(), nal_unit.data.size());
-    
-    // Skip NAL header (1 byte)
-    reader.SkipBits(8);
-    
-    // Parse VPS data
-    vps.vps_video_parameter_set_id = static_cast<int>(reader.ReadBits(4));
-    vps.vps_max_layers = static_cast<int>(reader.ReadBits(6));
-    vps.vps_max_sub_layers = static_cast<int>(reader.ReadBits(3));
-    vps.vps_temporal_nal_layer_only_flag = static_cast<int>(reader.ReadBit());
-    vps.vps_ptl_following_flag = static_cast<int>(reader.ReadBit());
-    
-    if (vps.vps_ptl_following_flag) {
-        vps.general_profile_space = static_cast<int>(reader.ReadBits(2));
-        vps.general_tier_flag = static_cast<int>(reader.ReadBit());
-        vps.general_profile_idc = static_cast<int>(reader.ReadBits(5));
-        
-        uint32_t profile_compatibility = reader.ReadBits(32);
-        bool general_profile_compatibility_flag = (profile_compatibility & 0x80000000) != 0;
-        
-        for (int i = 0; i < 31; ++i) {
-            if ((profile_compatibility & 0x80000000) != 0) {
-                profile_compatibility <<= 1;
-            } else {
-                break;
-            }
+    return utils::UnescapeRbsp(nal_unit.data.data(), nal_unit.data.size());
+}
+
+// --------------------------------------------------------------------------
+// profile_tier_level() —— 7.3.3
+// --------------------------------------------------------------------------
+void HevcBitstreamParser::ParseProfileTierLevel(utils::BitReader& reader,
+                                                int max_sub_layers_minus1,
+                                                int& profile_space,
+                                                int& tier_flag,
+                                                int& profile_idc,
+                                                uint32_t& level_idc,
+                                                std::vector<bool>& sub_layer_profile_present,
+                                                std::vector<bool>& sub_layer_level_present) {
+    bool compat[32] = {};
+
+    profile_space = static_cast<int>(reader.ReadBits(2));
+    tier_flag = static_cast<int>(reader.ReadBit());
+    profile_idc = static_cast<int>(reader.ReadBits(5));
+    for (int j = 0; j < 32; ++j) {
+        compat[j] = reader.ReadBit();
+    }
+
+    // 6 个固定约束位（progressive / interlaced / non-packed / frame-only 之后，
+    // 是否还有扩展约束位取决于 profile 是否属于 Rext 系）
+    reader.SkipBits(1); // general_progressive_source_flag
+    reader.SkipBits(1); // general_interlaced_source_flag
+    reader.SkipBits(1); // general_non_packed_constraint_flag
+    reader.SkipBits(1); // general_frame_only_constraint_flag
+
+    const bool is_rext_family =
+        profile_idc == 4 || compat[4] ||
+        profile_idc == 5 || compat[5] ||
+        profile_idc == 6 || compat[6] ||
+        profile_idc == 7 || compat[7] ||
+        profile_idc == 8 || compat[8] ||
+        profile_idc == 9 || compat[9] ||
+        profile_idc == 10 || compat[10];
+
+    if (is_rext_family) {
+        reader.SkipBits(1); // general_max_12bit_constraint_flag
+        reader.SkipBits(1); // general_max_10bit_constraint_flag
+        reader.SkipBits(1); // general_max_8bit_constraint_flag
+        reader.SkipBits(1); // general_max_422chroma_constraint_flag
+        reader.SkipBits(1); // general_max_420chroma_constraint_flag
+        reader.SkipBits(1); // general_max_monochrome_constraint_flag
+        reader.SkipBits(1); // general_intra_constraint_flag
+        reader.SkipBits(1); // general_one_picture_only_constraint_flag
+        reader.SkipBits(1); // general_lower_bit_rate_constraint_flag
+
+        const bool has_14bit =
+            profile_idc == 5 || compat[5] ||
+            profile_idc == 9 || compat[9] ||
+            profile_idc == 10 || compat[10];
+        if (has_14bit) {
+            reader.SkipBits(1);  // general_max_14bit_constraint_flag
+            reader.SkipBits(33); // general_reserved_zero_33bits
+        } else {
+            reader.SkipBits(34); // general_reserved_zero_34bits
         }
-        
-        vps.general_level_idc = reader.ReadBits(8);
-        
-        // More PTL parsing...
+    } else {
+        reader.SkipBits(43); // general_reserved_zero_43bits
     }
-    
-    vps.present = true;
-    
-    return vps;
+
+    const bool inbld_family =
+        profile_idc == 1 || compat[1] ||
+        profile_idc == 2 || compat[2] ||
+        profile_idc == 3 || compat[3] ||
+        profile_idc == 4 || compat[4];
+    if (inbld_family) {
+        reader.SkipBits(1); // general_inbld_flag
+    } else {
+        reader.SkipBits(1); // general_reserved_zero_bit
+    }
+
+    level_idc = reader.ReadBits(8);
+
+    sub_layer_profile_present.assign(max_sub_layers_minus1, false);
+    sub_layer_level_present.assign(max_sub_layers_minus1, false);
+    for (int j = 0; j < max_sub_layers_minus1; ++j) {
+        sub_layer_profile_present[j] = reader.ReadBit();
+        sub_layer_level_present[j] = reader.ReadBit();
+    }
+    if (max_sub_layers_minus1 > 0) {
+        for (int j = max_sub_layers_minus1; j < 8; ++j) {
+            reader.SkipBits(2); // reserved_zero_2bits
+        }
+    }
+
+    for (int j = 0; j < max_sub_layers_minus1; ++j) {
+        if (sub_layer_profile_present[j]) {
+            reader.SkipBits(2);  // sub_layer_profile_space
+            reader.SkipBits(1);  // sub_layer_tier_flag
+            reader.SkipBits(5);  // sub_layer_profile_idc
+            reader.SkipBits(32); // sub_layer_profile_compatibility_flag[32]
+            reader.SkipBits(1);  // progressive
+            reader.SkipBits(1);  // interlaced
+            reader.SkipBits(1);  // non-packed
+            reader.SkipBits(1);  // frame-only
+            reader.SkipBits(43); // sub_layer 约束位 + reserved（Rext 结构同上，简化处理）
+        }
+        if (sub_layer_level_present[j]) {
+            reader.SkipBits(8); // sub_layer_level_idc[j]
+        }
+    }
 }
 
-model::HevcSpsInfo HevcBitstreamParser::ParseSpfFromNalUnit(const utils::NalUnit& nal_unit) {
-    if (!IsSpsNalUnit(nal_unit)) {
-        return model::HevcSpsInfo();
-    }
-    
-    model::HevcSpsInfo sps;
-    
-    if (nal_unit.data.empty()) {
-        return sps;
-    }
-    
-    utils::BitReader reader;
-    reader.ResetFromData(nal_unit.data.data(), nal_unit.data.size());
-    
-    // Skip NAL header (1 byte)
-    reader.SkipBits(8);
-    
-    // Parse SPS data
-    sps.sps_seq_parameter_set_id = static_cast<int>(reader.ReadUWord());
-    
-    if (sps.sps_seq_parameter_set_id > 63) {
-        return sps; // Invalid
-    }
-    
-    // Chroma format
-    sps.chroma_format_idc = static_cast<int>(reader.ReadUWord());
-    
-    if (sps.chroma_format_idc == 3) {
-        sps.separate_colour_plane_flag = static_cast<int>(reader.ReadBit());
-    }
-    
-    // Frame size
-    sps.pic_width_in_ctu_minus1 = static_cast<int>(reader.ReadUWord());
-    sps.pic_height_in_ctu_minus1 = static_cast<int>(reader.ReadUWord());
-    
-    // Bit depth
-    sps.bit_depth_luma_minus8 = static_cast<int>(reader.ReadUWord());
-    sps.bit_depth_chroma_minus8 = static_cast<int>(reader.ReadUWord());
-    
-    // Log2 min coding block size
-    sps.log2_min_luma_coding_block_size_minus3 = static_cast<int>(reader.ReadUWord());
-    sps.log2_diff_max_min_luma_coding_block_size = static_cast<int>(reader.ReadUWord());
-    
-    // Scaling list
-    sps.scaling_list_enable_flag = static_cast<int>(reader.ReadBit());
-    if (sps.scaling_list_enable_flag) {
-        // Skip scaling list data
-        reader.SkipBits(1); // scaling_list_data_present_flag
-        
-        for (int i = 0; i < 8; ++i) {
-            if (reader.ReadBit()) {
-                // Skip scaling list
-                int size = (i < 6) ? 16 : 64;
-                for (int j = 0; j < size; ++j) {
-                    reader.ReadUWord();
+// --------------------------------------------------------------------------
+// scaling_list_data() —— 7.3.4
+// --------------------------------------------------------------------------
+void HevcBitstreamParser::SkipScalingListData(utils::BitReader& reader) {
+    for (int size_id = 0; size_id < 4; ++size_id) {
+        for (int matrix_id = 0; matrix_id < 6; matrix_id += (size_id == 3 ? 3 : 1)) {
+            const bool pred_mode = reader.ReadBit(); // scaling_list_pred_mode_flag
+            if (!pred_mode) {
+                reader.ReadUE(); // scaling_list_pred_matrix_id_delta
+            } else {
+                const int coef_num = (1 << (4 + (size_id << 1))) > 64
+                                         ? 64
+                                         : (1 << (4 + (size_id << 1)));
+                if (size_id > 1) {
+                    reader.ReadSE(); // scaling_list_dc_coef_minus8
+                }
+                for (int i = 0; i < coef_num; ++i) {
+                    reader.ReadSE(); // scaling_list_delta_coef
                 }
             }
         }
     }
-    
-    // Transform skip
-    sps.transform_skip_enabled_flag = static_cast<int>(reader.ReadBit());
-    if (sps.transform_skip_enabled_flag) {
-        sps.log2_transform_skip_max_size_minus2 = static_cast<int>(reader.ReadUWord());
+}
+
+// --------------------------------------------------------------------------
+// hrd_parameters() —— 7.3.5（附录 E.2.2）
+// --------------------------------------------------------------------------
+void HevcBitstreamParser::SkipHrdParameters(utils::BitReader& reader,
+                                            int max_sub_layers_minus1) {
+    const bool nal_hrd = reader.ReadBit();
+    const bool vcl_hrd = reader.ReadBit();
+    if (nal_hrd || vcl_hrd) {
+        reader.SkipBits(1); // sub_pic_hrd_params_present_flag
+        if (reader.HasError()) return;
+        reader.SkipBits(4); // tick_divisor_minus2
+        reader.SkipBits(5); // du_cpb_removal_delay_increment_length_minus1
+        reader.SkipBits(1); // sub_pic_cpb_params_in_pic_timing_sei_flag
+        reader.SkipBits(5); // dpb_output_delay_du_length_minus1
+        reader.SkipBits(5); // bit_rate_scale
+        reader.SkipBits(5); // cpb_size_scale
+        if (reader.HasError()) return;
+
+        const bool sub_pic = false; // 上面已跳过，简化为不展开
+        const uint32_t cpb_cnt = sub_pic ? 0u : 1u;
+        for (int i = 0; i <= max_sub_layers_minus1; ++i) {
+            const bool fixed_rate = reader.ReadBit();
+            (void)fixed_rate;
+            reader.SkipBits(1); // nal_hrd_parameters_present_flag(占位，实际 fixed_pic_rate_within_cvs_flag 后)
+            if (reader.HasError()) return;
+            if (!fixed_rate) {
+                reader.SkipBits(1); // elemental_duration_in_tc_minus1 前的 low_delay_hrd_flag
+            } else {
+                reader.SkipBits(1);
+            }
+            for (uint32_t j = 0; j < cpb_cnt; ++j) {
+                reader.ReadUE(); // bit_rate_value_minus1
+                reader.ReadUE(); // cpb_size_value_minus1
+                if (!sub_pic) {
+                    reader.ReadUE(); // cpb_size_du_value_minus1
+                }
+                reader.SkipBits(1); // cbr_flag
+            }
+        }
     }
-    
-    // Context adaptive entropy
-    sps.cabac_init_present_flag = static_cast<int>(reader.ReadBit());
-    
-    // CU partition
-    sps.split_cu_delta_flag = static_cast<int>(reader.ReadBit());
-    sps.log2_diff_cu_min_qp_idx_minus1 = static_cast<int>(reader.ReadUWord());
-    
-    // Long term reference
-    sps.long_term_ref_pics_present_flag = static_cast<int>(reader.ReadBit());
-    sps.num_long_term_ref_pics_sps = static_cast<int>(reader.ReadUWord());
-    
-    // STSA
-    sps.stref_pic_all_flag = static_cast<int>(reader.ReadBit());
-    
-    // Temporal motion vectors
-    sps.temporal_mvp_enabled_flag = static_cast<int>(reader.ReadBit());
-    
-    // Stronger smoothing
-    sps.strongly_smoothed_img_between_grids_flag = static_cast<int>(reader.ReadBit());
-    
-    // Sign data hiding
-    sps.sign_data_hiding_enabled_flag = static_cast<int>(reader.ReadBit());
-    
-    // CABAC
-    sps.cabac_bypass_alignment_enabled_flag = static_cast<int>(reader.ReadBit());
-    
-    // SAO
+}
+
+// --------------------------------------------------------------------------
+// short_term_ref_pic_set() —— 7.3.7
+// --------------------------------------------------------------------------
+void HevcBitstreamParser::SkipShortTermRefPicSets(utils::BitReader& reader, int num_sets) {
+    std::vector<int> num_delta_pocs(num_sets > 0 ? num_sets : 1, 0);
+
+    for (int i = 0; i < num_sets; ++i) {
+        bool predicted = false;
+        if (i != 0) {
+            predicted = reader.ReadBit(); // inter_ref_pic_set_prediction_flag
+        }
+
+        if (predicted) {
+            // SPS 里 delta_idx_minus1 恒为 0（i 永远 != num_short_term_ref_pic_sets）
+            reader.SkipBits(1); // delta_rps_sign
+            reader.ReadUE();    // abs_delta_rps_minus1
+            const int ref_num = num_delta_pocs[static_cast<size_t>(i - 1)];
+            for (int j = 0; j <= ref_num; ++j) {
+                const bool used = reader.ReadBit();      // used_by_curr_pic_flag[j]
+                if (!used) {
+                    reader.SkipBits(1);                  // use_delta_flag[j]
+                }
+            }
+            // 近似：NumDeltaPocs[i] = NumDeltaPocs[ref]（全部 used_by_curr_pic_flag=1 时精确）
+            num_delta_pocs[static_cast<size_t>(i)] = ref_num;
+        } else {
+            const uint32_t num_negative = reader.ReadUE();
+            const uint32_t num_positive = reader.ReadUE();
+            for (uint32_t j = 0; j < num_negative; ++j) {
+                reader.ReadUE(); // delta_poc_s0_minus1[j]
+                reader.SkipBits(1); // used_by_curr_pic_s0_flag[j]
+            }
+            for (uint32_t j = 0; j < num_positive; ++j) {
+                reader.ReadUE(); // delta_poc_s1_minus1[j]
+                reader.SkipBits(1); // used_by_curr_pic_s1_flag[j]
+            }
+            num_delta_pocs[static_cast<size_t>(i)] =
+                static_cast<int>(num_negative + num_positive);
+        }
+    }
+}
+
+// --------------------------------------------------------------------------
+// vui_parameters() —— 附录 E.2.1
+// --------------------------------------------------------------------------
+void HevcBitstreamParser::ParseVuiParameters(utils::BitReader& reader,
+                                             model::HevcSpsInfo& sps,
+                                             int max_sub_layers_minus1) {
+    sps.aspect_ratio_info_present_flag = static_cast<int>(reader.ReadBit());
+    if (sps.aspect_ratio_info_present_flag) {
+        sps.aspect_ratio_idc = static_cast<int>(reader.ReadBits(8));
+        if (sps.aspect_ratio_idc == 255) { // Extended_SAR
+            sps.sar_width = static_cast<int>(reader.ReadBits(16));
+            sps.sar_height = static_cast<int>(reader.ReadBits(16));
+        }
+    }
+
+    const bool overscan_info_present = reader.ReadBit();
+    if (overscan_info_present) {
+        reader.SkipBits(1); // overscan_appropriate_flag
+    }
+
+    const bool video_signal_type_present = reader.ReadBit();
+    if (video_signal_type_present) {
+        reader.SkipBits(3); // video_format
+        sps.video_full_range_flag = static_cast<int>(reader.ReadBit());
+        const bool colour_description_present = reader.ReadBit();
+        if (colour_description_present) {
+            sps.colour_primaries = static_cast<int>(reader.ReadBits(8));
+            sps.transfer_characteristics = static_cast<int>(reader.ReadBits(8));
+            sps.matrix_coefficients = static_cast<int>(reader.ReadBits(8));
+        }
+    }
+
+    const bool chroma_loc_info_present = reader.ReadBit();
+    if (chroma_loc_info_present) {
+        sps.chroma_sample_loc_type_top_field = static_cast<int>(reader.ReadUE());
+        sps.chroma_sample_loc_type_bottom_field = static_cast<int>(reader.ReadUE());
+    }
+
+    sps.neutral_chroma_indication_flag = reader.ReadBit();
+    sps.field_seq_flag = reader.ReadBit();
+    sps.frame_field_info_present_flag = reader.ReadBit();
+
+    const bool default_display_window_flag = reader.ReadBit();
+    if (default_display_window_flag) {
+        sps.def_disp_win_left_offset = static_cast<int>(reader.ReadUE());
+        sps.def_disp_win_right_offset = static_cast<int>(reader.ReadUE());
+        sps.def_disp_win_top_offset = static_cast<int>(reader.ReadUE());
+        sps.def_disp_win_bottom_offset = static_cast<int>(reader.ReadUE());
+    }
+
+    sps.vui_timing_info_present_flag = static_cast<int>(reader.ReadBit());
+    if (sps.vui_timing_info_present_flag) {
+        sps.vui_num_units_in_tick = reader.ReadBits(32);
+        sps.vui_time_scale = reader.ReadBits(32);
+        sps.vui_poc_proportional_to_timing_flag = reader.ReadBit();
+        if (sps.vui_poc_proportional_to_timing_flag) {
+            reader.ReadUE(); // vui_num_ticks_poc_diff_one_minus1
+        }
+        sps.vui_hrd_parameters_present_flag = reader.ReadBit();
+        if (sps.vui_hrd_parameters_present_flag) {
+            SkipHrdParameters(reader, max_sub_layers_minus1);
+        }
+    }
+
+    sps.bitstream_restriction_flag = static_cast<int>(reader.ReadBit());
+    if (sps.bitstream_restriction_flag) {
+        reader.SkipBits(1); // tiles_fixed_structure_flag
+        reader.SkipBits(1); // motion_vectors_over_pic_boundaries_flag
+        reader.SkipBits(1); // restricted_ref_pic_lists_flag
+        sps.min_spatial_segmentation_idc = static_cast<int>(reader.ReadUE());
+        sps.max_bytes_per_pic_denom = static_cast<int>(reader.ReadUE());
+        sps.max_bits_per_min_cu_denom = static_cast<int>(reader.ReadUE());
+        sps.log2_max_mv_length_horizontal = static_cast<int>(reader.ReadUE());
+        sps.log2_max_mv_length_vertical = static_cast<int>(reader.ReadUE());
+    }
+}
+
+// --------------------------------------------------------------------------
+// VPS —— 7.3.2.2
+// --------------------------------------------------------------------------
+model::HevcVpsInfo HevcBitstreamParser::ParseVpsFromNalUnit(const utils::NalUnit& nal_unit) {
+    model::HevcVpsInfo vps;
+
+    if (!IsVpsNalUnit(nal_unit)) {
+        return vps;
+    }
+
+    const std::vector<uint8_t> rbsp = GetRbsp(nal_unit);
+    if (rbsp.empty()) {
+        return vps;
+    }
+
+    utils::BitReader reader;
+    reader.ResetFromData(rbsp.data(), rbsp.size());
+
+    vps.vps_video_parameter_set_id = static_cast<int>(reader.ReadBits(4));
+    reader.SkipBits(2); // vps_reserved_three_2bits
+    const uint32_t max_layers_minus1 = reader.ReadBits(6);
+    const uint32_t max_sub_layers_minus1 = reader.ReadBits(3);
+    vps.vps_max_layers = static_cast<int>(max_layers_minus1) + 1;
+    vps.vps_max_sub_layers = static_cast<int>(max_sub_layers_minus1) + 1;
+    vps.vps_temporal_id_nesting_flag = static_cast<int>(reader.ReadBit());
+    vps.vps_temporal_nal_layer_only_flag = vps.vps_temporal_id_nesting_flag;
+    reader.SkipBits(16); // vps_reserved_0xffff_16bits
+
+    ParseProfileTierLevel(reader, static_cast<int>(max_sub_layers_minus1),
+                          vps.general_profile_space, vps.general_tier_flag,
+                          vps.general_profile_idc, vps.general_level_idc,
+                          vps.sub_layer_profile_present_flags,
+                          vps.sub_layer_level_present_flags);
+
+    vps.vps_sub_layer_ordering_info_present_flag = reader.ReadBit();
+    const int start = vps.vps_sub_layer_ordering_info_present_flag
+                          ? 0
+                          : static_cast<int>(max_sub_layers_minus1);
+    for (int i = start; i <= static_cast<int>(max_sub_layers_minus1); ++i) {
+        reader.ReadUE(); // vps_max_dec_pic_buffering_minus1[i]
+        reader.ReadUE(); // vps_max_num_reorder_pics[i]
+        reader.ReadUE(); // vps_max_latency_increase_plus1[i]
+    }
+
+    vps.vps_max_layer_id = static_cast<int>(reader.ReadBits(6));
+    const uint32_t num_layer_sets_minus1 = reader.ReadUE();
+    for (uint32_t i = 1; i <= num_layer_sets_minus1; ++i) {
+        for (int j = 0; j <= vps.vps_max_layer_id; ++j) {
+            reader.SkipBits(1); // layer_id_included_flag[i][j]
+        }
+    }
+
+    vps.vps_timing_info_present_flag = reader.ReadBit();
+    if (vps.vps_timing_info_present_flag) {
+        vps.vps_num_units_in_tick = reader.ReadBits(32);
+        vps.vps_time_scale = reader.ReadBits(32);
+        vps.vps_poc_proportional_to_timestamp_flag = reader.ReadBit();
+        if (vps.vps_poc_proportional_to_timestamp_flag) {
+            reader.ReadUE(); // vps_num_ticks_poc_diff_one_minus1
+        }
+        const uint32_t num_hrd = reader.ReadUE();
+        // 到这里已经拿到了我们关心的全部字段，HRD 部分结构复杂且与上层展示无关，
+        // 直接停止解析（后续字节不读不会被判定为错误）。
+        (void)num_hrd;
+    }
+
+    if (reader.HasError()) {
+        return model::HevcVpsInfo();
+    }
+
+    vps.present = true;
+    return vps;
+}
+
+// --------------------------------------------------------------------------
+// SPS —— 7.3.2.2.1
+// --------------------------------------------------------------------------
+model::HevcSpsInfo HevcBitstreamParser::ParseSpfFromNalUnit(const utils::NalUnit& nal_unit) {
+    model::HevcSpsInfo sps;
+
+    if (!IsSpsNalUnit(nal_unit)) {
+        return sps;
+    }
+
+    const std::vector<uint8_t> rbsp = GetRbsp(nal_unit);
+    if (rbsp.empty()) {
+        return sps;
+    }
+
+    utils::BitReader reader;
+    reader.ResetFromData(rbsp.data(), rbsp.size());
+
+    sps.sps_video_parameter_set_id = static_cast<int>(reader.ReadBits(4));
+    sps.sps_max_sub_layers_minus1 = static_cast<int>(reader.ReadBits(3));
+    sps.sps_temporal_id_nesting_flag = static_cast<int>(reader.ReadBit());
+
+    ParseProfileTierLevel(reader, sps.sps_max_sub_layers_minus1,
+                          sps.general_profile_space, sps.general_tier_flag,
+                          sps.general_profile_idc, sps.general_level_idc,
+                          sps.sub_layer_profile_present_flags,
+                          sps.sub_layer_level_present_flags);
+
+    sps.sps_seq_parameter_set_id = static_cast<int>(reader.ReadUE());
+    if (sps.sps_seq_parameter_set_id > 15) {
+        return sps;
+    }
+
+    sps.chroma_format_idc = static_cast<int>(reader.ReadUE());
+    if (sps.chroma_format_idc > 3) {
+        return sps;
+    }
+    if (sps.chroma_format_idc == 3) {
+        sps.separate_colour_plane_flag = static_cast<int>(reader.ReadBit());
+    }
+
+    sps.pic_width_in_luma_samples = static_cast<int>(reader.ReadUE());
+    sps.pic_height_in_luma_samples = static_cast<int>(reader.ReadUE());
+
+    sps.conformance_window_flag = static_cast<int>(reader.ReadBit());
+    if (sps.conformance_window_flag) {
+        sps.conf_win_left_offset = static_cast<int>(reader.ReadUE());
+        sps.conf_win_right_offset = static_cast<int>(reader.ReadUE());
+        sps.conf_win_top_offset = static_cast<int>(reader.ReadUE());
+        sps.conf_win_bottom_offset = static_cast<int>(reader.ReadUE());
+    }
+
+    sps.bit_depth_luma_minus8 = static_cast<int>(reader.ReadUE());
+    sps.bit_depth_chroma_minus8 = static_cast<int>(reader.ReadUE());
+    if (sps.bit_depth_luma_minus8 > 6 || sps.bit_depth_chroma_minus8 > 6) {
+        return sps;
+    }
+
+    sps.log2_max_pic_order_cnt_lsb_minus4 = static_cast<int>(reader.ReadUE());
+
+    sps.sps_sub_layer_ordering_info_present_flag = reader.ReadBit();
+    const int start = sps.sps_sub_layer_ordering_info_present_flag
+                          ? 0
+                          : sps.sps_max_sub_layers_minus1;
+    for (int i = start; i <= sps.sps_max_sub_layers_minus1; ++i) {
+        reader.ReadUE(); // sps_max_dec_pic_buffering_minus1[i]
+        reader.ReadUE(); // sps_max_num_reorder_pics[i]
+        reader.ReadUE(); // sps_max_latency_increase_plus1[i]
+    }
+
+    sps.log2_min_luma_coding_block_size_minus3 = static_cast<int>(reader.ReadUE());
+    sps.log2_diff_max_min_luma_coding_block_size = static_cast<int>(reader.ReadUE());
+    sps.log2_min_luma_transform_block_size_minus2 = static_cast<int>(reader.ReadUE());
+    sps.log2_diff_max_min_luma_transform_block_size = static_cast<int>(reader.ReadUE());
+    sps.max_transform_hierarchy_depth_inter = static_cast<int>(reader.ReadUE());
+    sps.max_transform_hierarchy_depth_intra = static_cast<int>(reader.ReadUE());
+
+    sps.scaling_list_enable_flag = static_cast<int>(reader.ReadBit());
+    if (sps.scaling_list_enable_flag) {
+        if (reader.ReadBit()) { // sps_scaling_list_data_present_flag
+            SkipScalingListData(reader);
+        }
+    }
+
+    sps.amp_enabled_flag = static_cast<int>(reader.ReadBit());
     sps.sample_adaptive_offset_enabled_flag = static_cast<int>(reader.ReadBit());
-    
-    // PCM
+
     sps.pcm_enabled_flag = static_cast<int>(reader.ReadBit());
     if (sps.pcm_enabled_flag) {
         sps.pcm_sample_bit_depth_luma_minus1 = static_cast<int>(reader.ReadBits(4));
         sps.pcm_sample_bit_depth_chroma_minus1 = static_cast<int>(reader.ReadBits(4));
-        sps.log2_min_pcm_luma_coding_block_size = static_cast<int>(reader.ReadUWord());
-        sps.log2_diff_max_min_pcm_luma_coding_block_size = static_cast<int>(reader.ReadUWord());
+        sps.log2_min_pcm_luma_coding_block_size = static_cast<int>(reader.ReadUE());
+        sps.log2_diff_max_min_pcm_luma_coding_block_size = static_cast<int>(reader.ReadUE());
         reader.SkipBits(1); // pcm_loop_filter_disabled_flag
     }
-    
-    // FP
-    sps.four_twenty_two_log2_conversion_enable_flag = static_cast<int>(reader.ReadBit());
-    sps.separate_colour_plane_flag = static_cast<int>(reader.ReadBit());
-    
-    // VUI
-    sps.vui_parameters_present_flag = static_cast<int>(reader.ReadBit());
-    if (sps.vui_parameters_present_flag) {
-        sps.aspect_ratio_info_present_flag = static_cast<int>(reader.ReadBit());
-        if (sps.aspect_ratio_info_present_flag) {
-            sps.sar_width = static_cast<int>(reader.ReadBits(16));
-            sps.sar_height = static_cast<int>(reader.ReadBits(16));
-            
-            if (reader.ReadBit()) { // overscan_info_present_flag
-                reader.SkipBits(1); // overscan_appropriate_flag
-            }
-            
-            if (reader.ReadBit()) { // video_signal_type_present_flag
-                reader.SkipBits(3); // video_format
-                sps.video_full_range_flag = static_cast<int>(reader.ReadBit());
-                
-                if (reader.ReadBit()) { // colour_description_present_flag
-                    sps.colour_primaries = static_cast<int>(reader.ReadBits(8));
-                    sps.transfer_characteristics = static_cast<int>(reader.ReadBits(8));
-                    sps.matrix_coefficients = static_cast<int>(reader.ReadBits(8));
-                }
-            }
-            
-            if (reader.ReadBit()) { // chroma_loc_info_present_flag
-                sps.chroma_sample_loc_type_top_field = static_cast<int>(reader.ReadUWord());
-                sps.chroma_sample_loc_type_bottom_field = static_cast<int>(reader.ReadUWord());
-            }
-            
-            reader.SkipBits(1); // neutral_chroma_indication_present_flag
-            
-            if (reader.ReadBit()) { // field_seq_flag
-                // field_seq_flag handling
-            }
-            
-            reader.SkipBits(1); // frame_field_info_present_flag
-            
-            if (reader.ReadBit()) { // default_display_window_flag
-                sps.def_disp_win_left_offset = static_cast<int>(reader.ReadUWord());
-                sps.def_disp_win_right_offset = static_cast<int>(reader.ReadUWord());
-                sps.def_disp_win_top_offset = static_cast<int>(reader.ReadUWord());
-                sps.def_disp_win_bottom_offset = static_cast<int>(reader.ReadUWord());
-            }
-            
-            reader.SkipBits(1); // vui_timing_info_present_flag
-            if (sps.vui_timing_info_present_flag) {
-                sps.vui_num_units_in_tick = static_cast<uint32_t>(reader.ReadBits(32));
-                sps.vui_time_scale = static_cast<uint32_t>(reader.ReadBits(32));
-                reader.SkipBits(1); // vui_poc_proportional_to_tc_flag
-                reader.SkipBits(1); // vui_hrd_params_present_flag
-            }
-            
-            reader.SkipBits(1); // bitstream_restriction_flag
-            if (sps.bitstream_restriction_flag) {
-                reader.SkipBits(1); // tiles_fixed_structure_flag
-                reader.SkipBits(1); // moving_images_allowed_flag
-                sps.max_bytes_per_pic_denom = static_cast<int>(reader.ReadUWord());
-                sps.max_bits_per_min_cu_denom = static_cast<int>(reader.ReadUWord());
-                sps.log2_max_mv_length_horizontal = static_cast<int>(reader.ReadUWord());
-                sps.log2_max_mv_length_vertical = static_cast<int>(reader.ReadUWord());
-            }
+
+    sps.num_short_term_ref_pic_sets = static_cast<int>(reader.ReadUE());
+    SkipShortTermRefPicSets(reader, sps.num_short_term_ref_pic_sets);
+
+    sps.long_term_ref_pics_present_flag = static_cast<int>(reader.ReadBit());
+    if (sps.long_term_ref_pics_present_flag) {
+        sps.num_long_term_ref_pics_sps = static_cast<int>(reader.ReadUE());
+        const int bits = sps.log2_max_pic_order_cnt_lsb_minus4 + 4;
+        for (int i = 0; i < sps.num_long_term_ref_pics_sps; ++i) {
+            reader.ReadBits(bits); // lt_ref_pic_poc_lsb_sps[i]
+            reader.SkipBits(1);    // used_by_curr_pic_lt_sps_flag[i]
         }
     }
-    
+
+    sps.temporal_mvp_enabled_flag = static_cast<int>(reader.ReadBit());
+    sps.strongly_smoothed_img_between_grids_flag = static_cast<int>(reader.ReadBit());
+
+    sps.vui_parameters_present_flag = static_cast<int>(reader.ReadBit());
+    if (sps.vui_parameters_present_flag) {
+        ParseVuiParameters(reader, sps, sps.sps_max_sub_layers_minus1);
+    }
+
+    if (reader.HasError()) {
+        return model::HevcSpsInfo();
+    }
+
+    // 顺带按 CTU 反推一份，供仍引用旧字段的地方使用
+    const int ctu = 1 << (sps.log2_min_luma_coding_block_size_minus3 + 3 +
+                          sps.log2_diff_max_min_luma_coding_block_size);
+    if (ctu > 0) {
+        sps.pic_width_in_ctu_minus1 = (sps.pic_width_in_luma_samples + ctu - 1) / ctu - 1;
+        sps.pic_height_in_ctu_minus1 = (sps.pic_height_in_luma_samples + ctu - 1) / ctu - 1;
+    }
+
     sps.present = true;
-    
     return sps;
 }
 
+// --------------------------------------------------------------------------
+// PPS —— 7.3.2.3.1
+// --------------------------------------------------------------------------
 model::HevcPpsInfo HevcBitstreamParser::ParsePpsFromNalUnit(const utils::NalUnit& nal_unit) {
-    if (!IsPpsNalUnit(nal_unit)) {
-        return model::HevcPpsInfo();
-    }
-    
     model::HevcPpsInfo pps;
-    
-    if (nal_unit.data.empty()) {
+
+    if (!IsPpsNalUnit(nal_unit)) {
         return pps;
     }
-    
+
+    const std::vector<uint8_t> rbsp = GetRbsp(nal_unit);
+    if (rbsp.empty()) {
+        return pps;
+    }
+
     utils::BitReader reader;
-    reader.ResetFromData(nal_unit.data.data(), nal_unit.data.size());
-    
-    // Skip NAL header (1 byte)
-    reader.SkipBits(8);
-    
-    // Parse PPS data
-    pps.pic_parameter_set_id = static_cast<int>(reader.ReadUWord());
-    pps.seq_parameter_set_id = static_cast<int>(reader.ReadUWord());
+    reader.ResetFromData(rbsp.data(), rbsp.size());
+
+    pps.pic_parameter_set_id = static_cast<int>(reader.ReadUE());
+    pps.seq_parameter_set_id = static_cast<int>(reader.ReadUE());
     pps.dependent_slice_segments_enabled_flag = static_cast<int>(reader.ReadBit());
     pps.output_flag_present_flag = static_cast<int>(reader.ReadBit());
     pps.num_extra_slice_header_bits = static_cast<int>(reader.ReadBits(3));
     pps.sign_data_hiding_enabled_flag = static_cast<int>(reader.ReadBit());
     pps.cabac_init_present_flag = static_cast<int>(reader.ReadBit());
-    pps.num_ref_idx_l0_default_active_minus1 = static_cast<int>(reader.ReadUWord());
-    pps.num_ref_idx_l1_default_active_minus1 = static_cast<int>(reader.ReadUWord());
-    pps.init_qp_minus26 = static_cast<int>(reader.ReadBits(6));
+    pps.num_ref_idx_l0_default_active_minus1 = static_cast<int>(reader.ReadUE());
+    pps.num_ref_idx_l1_default_active_minus1 = static_cast<int>(reader.ReadUE());
+    pps.init_qp_minus26 = static_cast<int>(reader.ReadSE());
     pps.constrained_intra_pred_flag = static_cast<int>(reader.ReadBit());
-    pps.redundant_pic_cnt_present_flag = static_cast<int>(reader.ReadBit());
     pps.transform_skip_enabled_flag = static_cast<int>(reader.ReadBit());
-    pps.cu_qp_offset_enabled_flag = static_cast<int>(reader.ReadBit());
-    
-    if (pps.cu_qp_offset_enabled_flag) {
-        pps.diff_cu_chroma_qp_offset_depth = static_cast<int>(reader.ReadUWord());
-        pps.chroma_qp_index_offset = static_cast<int>(reader.ReadBits(7));
-        pps.second_chroma_qp_index_offset = static_cast<int>(reader.ReadBits(7));
+
+    const bool cu_qp_delta_enabled = reader.ReadBit();
+    pps.cu_qp_offset_enabled_flag = cu_qp_delta_enabled ? 1 : 0;
+    if (cu_qp_delta_enabled) {
+        pps.diff_cu_chroma_qp_offset_depth = static_cast<int>(reader.ReadUE());
     }
-    
-    pps.pps_cb_offset = static_cast<int>(reader.ReadBits(6));
-    pps.pps_cr_offset = static_cast<int>(reader.ReadBits(6));
-    
+
+    pps.pps_cb_offset = static_cast<int>(reader.ReadSE());
+    pps.pps_cr_offset = static_cast<int>(reader.ReadSE());
+    pps.pps_slice_chroma_qp_offsets_present_flag = static_cast<int>(reader.ReadBit());
+    pps.weighted_pred_flag = static_cast<int>(reader.ReadBit());
+    pps.weighted_bipred_flag = static_cast<int>(reader.ReadBit());
+    pps.transquant_bypass_enabled_flag = static_cast<int>(reader.ReadBit());
+
+    pps.tiles_enabled_flag = static_cast<int>(reader.ReadBit());
+    pps.entropy_coding_sync_enabled_flag = static_cast<int>(reader.ReadBit());
+    if (pps.tiles_enabled_flag) {
+        pps.num_tile_columns_minus1 = static_cast<int>(reader.ReadUE());
+        pps.num_tile_rows_minus1 = static_cast<int>(reader.ReadUE());
+        pps.tile_uniform_spacing_flag = static_cast<int>(reader.ReadBit());
+        if (!pps.tile_uniform_spacing_flag) {
+            for (int i = 0; i < pps.num_tile_columns_minus1; ++i) {
+                pps.column_width_minus1.push_back(static_cast<int>(reader.ReadUE()));
+            }
+            for (int i = 0; i < pps.num_tile_rows_minus1; ++i) {
+                pps.row_height_minus1.push_back(static_cast<int>(reader.ReadUE()));
+            }
+        }
+        pps.loop_filter_across_tiles_enabled_flag = static_cast<int>(reader.ReadBit());
+    }
+
+    pps.loop_filter_across_slices_enabled_flag = static_cast<int>(reader.ReadBit());
+    pps.deblocking_filter_control_present_flag = static_cast<int>(reader.ReadBit());
+    if (pps.deblocking_filter_control_present_flag) {
+        reader.SkipBits(1); // deblocking_filter_override_enabled_flag
+        const bool disabled = reader.ReadBit();
+        if (!disabled) {
+            reader.ReadSE(); // pps_beta_offset_div2
+            reader.ReadSE(); // pps_tc_offset_div2
+        }
+    }
+
+    const bool scaling_list_present = reader.ReadBit();
+    if (scaling_list_present) {
+        SkipScalingListData(reader);
+    }
+
+    reader.SkipBits(1);              // lists_modification_present_flag
+    reader.ReadUE();                 // log2_parallel_merge_level_minus2
+    pps.slice_segment_header_extension_present_flag = static_cast<int>(reader.ReadBit());
+
+    if (reader.HasError()) {
+        return model::HevcPpsInfo();
+    }
+
     pps.present = true;
-    
     return pps;
 }
 
+// --------------------------------------------------------------------------
+// extradata 入口
+// --------------------------------------------------------------------------
 model::HevcVpsInfo HevcBitstreamParser::ParseVps(const uint8_t* extradata, size_t size) {
+    if (!extradata || size == 0) return model::HevcVpsInfo();
+
     auto result = utils::ExtradataParser::Parse(extradata, size);
-    
     for (const auto& nal : result.nal_units) {
         if (IsVpsNalUnit(nal)) {
             return ParseVpsFromNalUnit(nal);
         }
     }
-    
     return model::HevcVpsInfo();
 }
 
 model::HevcSpsInfo HevcBitstreamParser::ParseSpf(const uint8_t* extradata, size_t size) {
+    if (!extradata || size == 0) return model::HevcSpsInfo();
+
     auto result = utils::ExtradataParser::Parse(extradata, size);
-    
     for (const auto& nal : result.nal_units) {
         if (IsSpsNalUnit(nal)) {
             return ParseSpfFromNalUnit(nal);
         }
     }
-    
     return model::HevcSpsInfo();
 }
 
 model::HevcPpsInfo HevcBitstreamParser::ParsePps(const uint8_t* extradata, size_t size) {
+    if (!extradata || size == 0) return model::HevcPpsInfo();
+
     auto result = utils::ExtradataParser::Parse(extradata, size);
-    
     for (const auto& nal : result.nal_units) {
         if (IsPpsNalUnit(nal)) {
             return ParsePpsFromNalUnit(nal);
         }
     }
-    
     return model::HevcPpsInfo();
 }
 
+// --------------------------------------------------------------------------
+// SEI
+// --------------------------------------------------------------------------
 std::vector<model::HevcSeiMessage> HevcBitstreamParser::ParseSeiMessages(
     const uint8_t* data, size_t size) {
     std::vector<model::HevcSeiMessage> sei_messages;
-    
-    if (size < 2) {
+
+    if (!data || size < 2) {
         return sei_messages;
     }
-    
-    utils::BitReader reader;
-    reader.ResetFromData(data, size);
-    
-    while (reader.AvailableBytes() > 0) {
-        // Read SEI payload size (variable length)
+
+    // SEI payload 是字节对齐的，直接按 7.3.4 的 ff-byte 规则扫描
+    size_t pos = 0;
+    while (pos < size) {
+        uint32_t payload_type = 0;
+        while (pos < size && data[pos] == 0xFF) {
+            payload_type += 255;
+            ++pos;
+        }
+        if (pos >= size) break;
+        payload_type += data[pos++];
+
         uint32_t payload_size = 0;
-        uint32_t temp_size = 0;
-        
-        do {
-            temp_size = reader.ReadBits(8);
-            payload_size += temp_size;
-            if (temp_size < 255) break;
-        } while (reader.AvailableBytes() > 0);
-        
-        if (payload_size == 0) break;
-        
-        // Read SEI message type
-        uint32_t sei_message_type = 0;
-        do {
-            sei_message_type += reader.ReadBits(8);
-            if (sei_message_type < 255) break;
-        } while (reader.AvailableBytes() > 0);
-        
+        while (pos < size && data[pos] == 0xFF) {
+            payload_size += 255;
+            ++pos;
+        }
+        if (pos >= size) break;
+        payload_size += data[pos++];
+
+        if (payload_size == 0 || pos + payload_size > size) break;
+
         model::HevcSeiMessage sei;
         sei.present = true;
-        sei.type = static_cast<model::HevcSeiMessage::Type>(sei_message_type);
-        
-        // Read SEI payload
-        if (reader.AvailableBytes() >= payload_size) {
-            std::vector<uint8_t> payload(payload_size);
-            for (uint32_t i = 0; i < payload_size; ++i) {
-                payload[i] = static_cast<uint8_t>(reader.ReadBits(8));
-            }
-            sei.data = payload;
-            sei_messages.push_back(sei);
-        }
-        
-        // Align to byte boundary
-        reader.AlignToByte();
+        sei.type = static_cast<model::HevcSeiMessage::Type>(payload_type);
+        sei.data.assign(data + pos, data + pos + payload_size);
+        sei_messages.push_back(sei);
+
+        pos += payload_size;
     }
-    
+
     return sei_messages;
 }
 

@@ -42,6 +42,27 @@ public:
     static std::string GetProfileName(int general_profile_idc);
     static std::string GetTierName(int general_tier_flag);
     static std::string GetLevelVersion(uint32_t general_level_idc);
+
+private:
+    // NalUnit::data 已不含 NAL header，这里只做 emulation prevention 反转义
+    static std::vector<uint8_t> GetRbsp(const utils::NalUnit& nal_unit);
+
+    // profile_tier_level() —— 7.3.3
+    static void ParseProfileTierLevel(utils::BitReader& reader,
+                                      int max_sub_layers_minus1,
+                                      int& profile_space,
+                                      int& tier_flag,
+                                      int& profile_idc,
+                                      uint32_t& level_idc,
+                                      std::vector<bool>& sub_layer_profile_present,
+                                      std::vector<bool>& sub_layer_level_present);
+
+    static void SkipScalingListData(utils::BitReader& reader);
+    static void SkipHrdParameters(utils::BitReader& reader, int max_sub_layers_minus1);
+    static void SkipShortTermRefPicSets(utils::BitReader& reader, int num_sets);
+    static void ParseVuiParameters(utils::BitReader& reader,
+                                   model::HevcSpsInfo& sps,
+                                   int max_sub_layers_minus1);
 };
 
 } // namespace analyzer
