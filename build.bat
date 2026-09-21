@@ -38,6 +38,24 @@ if "!VALID!"=="0" (
     exit /b 1
 )
 
+REM 本机专有配置放在 CMakeUserPresets.json (gitignore), 里面写着 VS/SDK/cl.exe
+REM 的实际路径; 没有该文件时退回 CMakePresets.json 里的通用 preset.
+set "USE_PRESET=!PRESET!"
+if not exist "%~dp0CMakeUserPresets.json" (
+    if /i "!PRESET!"=="release" set "USE_PRESET=win-release"
+    if /i "!PRESET!"=="debug" set "USE_PRESET=win-debug"
+    echo       未找到 CMakeUserPresets.json, 使用通用 preset: !USE_PRESET!
+)
+if "!USE_PRESET:~0,4!"=="win-" (
+    if "!VCPKG_ROOT!"=="" (
+        echo [ERROR] 未设置 VCPKG_ROOT 环境变量
+        echo         通用 preset 依赖它定位 vcpkg toolchain。
+        echo         请先执行: set VCPKG_ROOT=^<vcpkg 根目录^>
+        echo         或复制一份 CMakeUserPresets.json 写死本机路径。
+        exit /b 1
+    )
+)
+
 REM 自动加载 MSVC 环境 (vswhere + vcvars64)
 echo [1/3] 检测 Visual Studio 环境...
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -76,16 +94,16 @@ if not exist "!FFMPEG_DIR!\include\libavcodec\avcodec.h" (
 echo       OK
 
 REM CMake configure + build via presets
-echo [3/3] CMake 配置 + 构建 (!PRESET!)...
+echo [3/3] CMake 配置 + 构建 (!USE_PRESET!)...
 echo.
-cmake --preset !PRESET!
+cmake --preset !USE_PRESET!
 if errorlevel 1 (
     echo [ERROR] CMake 配置失败
     exit /b 1
 )
 
 echo.
-cmake --build --preset !PRESET! --parallel %NUMBER_OF_PROCESSORS%
+cmake --build --preset !USE_PRESET! --parallel %NUMBER_OF_PROCESSORS%
 if errorlevel 1 (
     echo [ERROR] 编译失败
     exit /b 1
