@@ -118,10 +118,14 @@ enum class ExtradataFormat {
 };
 
 // NAL/OBU 单元结构
+//
+// 不变量：`data` 只含 RBSP payload **不带 NAL header**，也不带起始码。
+// AnnexB 路径由 ParseH264NalUnit / ParseHevcNalUnit 剥离（分别 1 / 2 字节），
+// avcC 路径在 ParseAvcC 里剥离 1 字节。上层 parser 不要再 SkipBits(header)。
 struct NalUnit {
     uint8_t type;              // NAL 单元类型
-    uint32_t size;             // 数据大小
-    std::vector<uint8_t> data; // NAL 单元数据（不含起始码）
+    uint32_t size;             // payload 大小（= data.size()）
+    std::vector<uint8_t> data; // RBSP payload（不含起始码、不含 NAL header）
     bool is_idr;              // H.264: IDR 帧标记
     bool is_keyframe;         // 通用关键帧标记
     

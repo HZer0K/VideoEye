@@ -57,6 +57,13 @@ ExtradataFormat ExtradataParser::DetectFormat(const uint8_t* data, size_t size) 
         }
     }
     
+    // FFmpeg 从 MP4 里取出来的 extradata 是配置记录本体，不含 box header。
+    // avcC 的特征是 configurationVersion=1 + 第 5 字节的高 6 位保留位全 1（0xFC|n）。
+    // 少了这一条，MP4 里的 H.264 extradata 会被误判成「长度前缀」格式。
+    if (size >= 8 && data[0] == 1 && (data[4] & 0xFC) == 0xFC) {
+        return ExtradataFormat::AvcC;
+    }
+
     // 检查 Annex B（起始码格式）
     if (size >= 4) {
         const uint8_t* start_code = FindStartCode(data, data + size);
@@ -252,33 +259,34 @@ std::vector<NalUnit> ExtradataParser::ExtractAnnBNalUnits(const uint8_t* data, s
             break;
         }
         
-        // 确定下一个起始码位置
-        const uint8_t* next_start = start_code + 4;
-        while (next_start < end) {
-            const uint8_t* sc = FindStartCode(next_start, end);
-            if (sc != nullptr) {
-                next_start = sc;
-            } else {
-                break;
-            }
-        }
-        
-        // 提取 NAL 单元（不含起始码）
-        size_t nal_size = next_start - start_code - 4;
-        
+        // 起始码可能是 4 字节 (00 00 00 01) 或 3 字节 (00 00 01)
+        // 00 00 00 01 的第 3 个字节是 0，00 00 01 的第 3 个字节是 1 —— 据此区分
+        const size_t sc_len = (start_code[2] == 1) ? 3u : 4u;
+        const uint8_t* nal_begin = start_code + sc_len;
+
+        // 下一个起始码；找不到就吃到缓冲区末尾（最后一个 NAL 通常没有后继起始码）。
+        // 旧实现在这里写成了 while 循环却从不推进 next_start，一旦出现两个起始码
+        // 就会死循环；同时末尾那个 NAL 的长度会被算成 0 而整个丢掉。
+        const uint8_t* next_start = end;
+        const uint8_t* sc = FindStartCode(nal_begin, end);
+        if (sc != nullptr) next_start = sc;
+
+        const size_t nal_size = static_cast<size_t>(next_start - nal_begin);
+
         if (nal_size > 0) {
             // 尝试判断是 H.264 还是 H.265
-            uint8_t first_byte = start_code[4];
-            
+            const uint8_t first_byte = nal_begin[0];
+
             // 简单启发式：如果第一个字节的高 5 位 < 32，可能是 H.264
             if ((first_byte & 0x1F) < 32) {
-                nal_units.push_back(ParseH264NalUnit(start_code + 4, nal_size));
+                nal_units.push_back(ParseH264NalUnit(nal_begin, nal_size));
             } else {
-                nal_units.push_back(ParseHevcNalUnit(start_code + 4, nal_size));
+                nal_units.push_back(ParseHevcNalUnit(nal_begin, nal_size));
             }
         }
-        
-        pos = next_start;
+
+        // 保证每次迭代都前进：next_start 至少是 start_code + sc_len
+        pos = (next_start > start_code) ? next_start : (nal_begin > start_code ? nal_begin : end);
     }
     
     return nal_units;
@@ -318,11 +326,15 @@ ExtradataResult ExtradataParser::ParseAvcC(const uint8_t* data, size_t size) {
     result.config.profile_idc = data[1];
     result.config.profile_compatibility = data[2];
     result.config.level_idc = data[3];
-    result.config.length_size_minus_one = (data[5] >> 6) & 0x03;
-    
-    uint8_t num_sps = data[6] & 0x1F;
-    
-    const uint8_t* pos = data + 7;
+    // lengthSizeMinusOne 在第 5 个字节的低 2 位（高 6 位保留，恒为 1 → 0xFC|n）
+    result.config.length_size_minus_one = data[4] & 0x03;
+
+    // numOfSequenceParameterSets 在第 6 个字节的低 5 位（高 3 位保留 → 0xE0|n），
+    // SPS 数组紧随其后，即从第 7 个字节开始。旧实现整体往后错了一个字节，
+    // 读出来的 num_sps 和 SPS 偏移都是错的。
+    const uint8_t num_sps = data[5] & 0x1F;
+
+    const uint8_t* pos = data + 6;
     
     for (int i = 0; i < num_sps; ++i) {
         if (pos + 4 > data + size) break;
@@ -332,10 +344,14 @@ ExtradataResult ExtradataParser::ParseAvcC(const uint8_t* data, size_t size) {
         
         if (pos + sps_length > data + size) break;
         
+        // 统一不变量：NalUnit::data 只放 RBSP payload，**不含 NAL header**
+        // （与 ExtractAnnBNalUnits / ParseH264NalUnit 的 AnnexB 路径保持一致）。
+        // 上层 parser 因此无需再判断"header 在不在"。
+        if (sps_length < 1) break;
         NalUnit nal;
         nal.type = 7; // SPS
-        nal.size = sps_length;
-        nal.data.assign(pos, pos + sps_length);
+        nal.size = sps_length - 1;
+        nal.data.assign(pos + 1, pos + sps_length);
         nal.is_keyframe = true;
         
         result.nal_units.push_back(nal);
@@ -356,10 +372,11 @@ ExtradataResult ExtradataParser::ParseAvcC(const uint8_t* data, size_t size) {
         
         if (pos + pps_length > data + size) break;
         
+        if (pps_length < 1) break;
         NalUnit nal;
         nal.type = 8; // PPS
-        nal.size = pps_length;
-        nal.data.assign(pos, pos + pps_length);
+        nal.size = pps_length - 1;
+        nal.data.assign(pos + 1, pos + pps_length);
         
         result.nal_units.push_back(nal);
         
