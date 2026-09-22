@@ -163,6 +163,7 @@ void AnalysisPanel::SetupUI() {
     SetupBitrateGopTab();
     SetupAudioQcTab();
     SetupColorHdrTab();
+    SetupParameterSetTab();
     SetupDiagnosticsTab();
 
     qRegisterMetaType<analyzer::SceneChangeResult>();
@@ -5507,6 +5508,33 @@ void AnalysisPanel::SetupColorHdrTab() {
     AddPageWithScroll(color_hdr_tab_, tr("色彩与 HDR"));
 }
 
+void AnalysisPanel::SetupParameterSetTab() {
+    // 页面本体就是 BitstreamPanel：结构树 + 容器/码流对比 + 不一致表都封装在里面。
+    // 外面套的是 AddPageWithScroll 的 QScrollArea，给个最小高度免得被压扁。
+    bitstream_params_panel_ = new BitstreamPanel(this);
+    bitstream_params_panel_->setMinimumHeight(560);
+
+    connect(bitstream_params_panel_, &BitstreamPanel::RefreshRequested,
+            this, &AnalysisPanel::OnBitstreamRefreshRequested);
+
+    AddPageWithScroll(bitstream_params_panel_, tr("参数集解析"));
+}
+
+void AnalysisPanel::OnBitstreamRefreshRequested() {
+    // 码流解析只读 extradata（KB 级），成本可忽略，跟着全文件扫描一起跑。
+    diagnostics_options_.analyze_bitstream = true;
+    StartDiagnosticsScan(diagnostics_options_);
+}
+
+void AnalysisPanel::UpdateBitstreamUi() {
+    if (!bitstream_params_panel_) return;
+    if (!has_diagnostics_result_ || !diagnostics_result_.bitstream_analyzed) {
+        bitstream_params_panel_->Clear();
+        return;
+    }
+    bitstream_params_panel_->SetResult(diagnostics_result_.bitstream_analysis);
+}
+
 void AnalysisPanel::ApplyColorHdrOptionsFromUi() {
     color_hdr_options_.probe_decoded_frame = color_hdr_probe_frame_check_ &&
                                              color_hdr_probe_frame_check_->isChecked();
@@ -5870,6 +5898,8 @@ void AnalysisPanel::StartDiagnosticsScan(const analyzer::AnalysisOptions& option
     diagnostics_start_time_ = std::chrono::steady_clock::now();
     has_diagnostics_result_ = false;
     qc_issue_table_->setRowCount(0);
+    // 上一次的参数集结果先清掉，避免扫描期间面板还显示旧文件的 SPS
+    if (bitstream_params_panel_) bitstream_params_panel_->Clear();
     qc_export_button_->setEnabled(false);
     qc_start_button_->setEnabled(false);
     qc_cancel_button_->setEnabled(true);
@@ -5971,6 +6001,10 @@ void AnalysisPanel::OnDiagnosticsFinished(quint64 generation, bool completed,
     {
         VE_PERF("UpdateColorHdrUi");
         UpdateColorHdrUi();  // 色彩与 HDR 页同样共用同一次扫描结果
+    }
+    {
+        VE_PERF("UpdateBitstreamUi");
+        UpdateBitstreamUi();  // 参数集页（SPS/PPS/Sequence Header）同样共用同一次扫描结果
     }
 
     // MP4 样本表：扫描跑过就顺带刷新容器页（与打开文件时那次解析结果一致）

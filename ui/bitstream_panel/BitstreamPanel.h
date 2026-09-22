@@ -1,78 +1,82 @@
 #pragma once
 
-#include <QWidget>
-#include <QTreeWidget>
-#include <QTableWidget>
+#include <QLabel>
 #include <QPushButton>
-#include <QTextEdit>
-#include "core/analyzer/BitstreamAnalyzer.h"
+#include <QTableWidget>
+#include <QTreeWidget>
+#include <QWidget>
+
+#include "core/model/BitstreamInfo.h"
 
 namespace videoeye {
 namespace ui {
 
 // ==========================================================================
-// Bitstream Panel - 码流分析面板
-// 
-// 功能：
-//   1. Tree view 展示 SPS/PPS/VPS/OBU 层级结构
-//   2. Table view 三列对比（container/bitstream/raw）
-//   3. Warning 区域高亮显示不一致项
-//   4. JSON 导出按钮
+// BitstreamPanel - 编码参数集解析面板
+//
+// 数据来源：core/analyzer/BitstreamAnalyzer（只读 extradata，不解码），
+// 结果由 AnalysisCoordinator 汇总到 AnalysisResult::bitstream_analysis。
+//
+// 布局：
+//   顶部  一行摘要（codec / 分辨率 / profile / level / 位深 / 参数集 / 不一致数）
+//   中部  左侧参数集结构树 + 右侧「容器值 vs 码流值」对比表
+//   底部  不一致项表格（级别 / 字段 / 容器值 / 码流值 / 说明）
 // ==========================================================================
 class BitstreamPanel : public QWidget {
     Q_OBJECT
 
 public:
     explicit BitstreamPanel(QWidget* parent = nullptr);
-    ~BitstreamPanel();
+    ~BitstreamPanel() override;
 
-    // 设置分析结果并更新 UI
-    void SetAnalysisResult(const videoeye::analyzer::BitstreamAnalyzer& analyzer);
-    
-    // 清空面板
+    // 直接吃分析结果（AnalysisResult::bitstream_analysis）
+    void SetResult(const model::BitstreamAnalysisResult& result);
+
+    // 清空面板（关闭文件 / 开始新一次扫描时）
     void Clear();
-    
-    // 导出为 JSON
+
+    bool HasResult() const { return has_result_; }
+
+    // 序列化：复制 JSON / 导出 JSON 文件共用
     QString ExportToJson() const;
-    
-    // 复制 JSON 到剪贴板
     void CopyJsonToClipboard() const;
 
 signals:
-    // 用户点击了"刷新"按钮
+    // 用户点了「重新扫描」：由外层决定重新跑一次全文件扫描
     void RefreshRequested();
 
 private slots:
     void OnRefreshClicked();
     void OnCopyJsonClicked();
-    void OnTreeWidgetItemDoubleClicked(QTreeWidgetItem* item, int column);
+    void OnExportJsonClicked();
 
 private:
-    // 构建 Tree view
-    void BuildStructureTreeView(const videoeye::model::BitstreamAnalysisResult& result);
-    
-    // 构建对比 Table
-    void BuildComparisonTable(const videoeye::model::BitstreamAnalysisResult& result);
-    
-    // 显示不一致警告
-    void ShowInconsistencies(const std::vector<videoeye::model::BitstreamAnalysisResult::Inconsistency>& inconsistencies);
-    
-    // 获取字段显示名
-    QString GetFieldName(const std::string& field_name) const;
-    
-    // 根据 codec 类型获取图标
-    QIcon GetCodecIcon(const std::string& codec_name) const;
+    void UpdateSummary(const model::BitstreamAnalysisResult& result);
+    void BuildStructureTree(const model::BitstreamAnalysisResult& result);
+    void BuildComparisonTable(const model::BitstreamAnalysisResult& result);
+    void BuildInconsistencyTable(const model::BitstreamAnalysisResult& result);
 
-    // UI 组件
-    QTreeWidget* structure_tree_;           // 结构树
-    QTableWidget* comparison_table_;       // 对比表
-    QTextEdit* warning_text_;              // 警告区
-    QPushButton* refresh_btn_;             // 刷新按钮
-    QPushButton* copy_json_btn_;           // 复制 JSON 按钮
-    
-    // 当前分析结果
-    videoeye::model::BitstreamAnalysisResult current_result_;
+    // 摘要里那一行「codec / 分辨率 / profile / level」
+    static QString DescribeCodec(const model::BitstreamAnalysisResult& result);
+
+    // CICP（ISO/IEC 23001-8）枚举 -> 可读名，H.264 VUI / HEVC VUI / AV1 通用
+    static QString PrimariesName(int value);
+    static QString TransferName(int value);
+    static QString MatrixName(int value);
+    static QString ChromaName(int chroma_format_idc);
+    static QString LevelName(const model::BitstreamAnalysisResult& result);
+
+    QLabel* summary_label_ = nullptr;
+    QTreeWidget* structure_tree_ = nullptr;
+    QTableWidget* comparison_table_ = nullptr;
+    QTableWidget* inconsistency_table_ = nullptr;
+    QPushButton* refresh_button_ = nullptr;
+    QPushButton* copy_json_button_ = nullptr;
+    QPushButton* export_json_button_ = nullptr;
+
+    model::BitstreamAnalysisResult current_result_;
+    bool has_result_ = false;
 };
 
-} // namespace ui
-} // namespace videoeye
+}  // namespace ui
+}  // namespace videoeye

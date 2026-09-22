@@ -599,17 +599,54 @@ struct Av1ColorConfigInfo {
     
     int subsampling_x = 0;          // 0=4:4:4, 1=4:2:2, 2=4:2:0
     int subsampling_y = 0;
+    bool separate_uv_delta = false;
+    
+    // 仅当 subsampling_x && subsampling_y 时出现在码流里
+    // 0=UNKNOWN, 1=VERTICAL(H.264 chroma_loc=2), 2=COLOCATED, 3=RESERVED
+    int chroma_sample_position = 0;
     
     bool use_127_input_colorspace = false;
+    
+    // 位深推导（AV1 规范 color_config 之后的 BitDepth 语义）：
+    //   seq_profile == 2 && high_bitdepth  -> twelve_bit ? 12 : 10
+    //   其它                                -> high_bitdepth ? 10 : 8
+    int BitDepth(int seq_profile) const {
+        if (seq_profile == 2 && high_bitdepth) return twelve_bit ? 12 : 10;
+        return high_bitdepth ? 10 : 8;
+    }
 };
 
 struct Av1SequenceHeaderInfo {
     bool present = false;
     
     // Profile and level
-    int profile = 0;                // 0=Profile 0, 1=Profile 1, 2=Profile 2
-    int level = 0;                  // 0..63 (actual level = value / 2)
+    int profile = 0;                // seq_profile: 0..2
+    int level = 0;                  // seq_level_idx_0: 0..23（2.0 ~ 7.3，每 4 档一档主版本）
     int tier = 0;                   // 0=Main, 1=High
+    
+    // 序列头前段
+    bool still_picture = false;
+    bool reduced_still_picture_header = false;
+    
+    // 编码工具开关
+    bool use_128x128_superblock = false;
+    bool enable_filter_intra = false;
+    bool enable_intra_edge_filter = false;
+    bool enable_interintra_compound = false;
+    bool enable_masked_compound = false;
+    bool enable_warped_motion = false;
+    bool enable_dual_filter = false;
+    bool enable_order_hint = false;
+    bool enable_jnt_comp = false;
+    bool enable_ref_frame_mvs = false;
+    bool enable_superres = false;
+    bool enable_cdef = false;
+    bool enable_restoration = false;
+    int seq_force_screen_content_tools = 0;  // 0=SELECT_SCREEN_CONTENT_TOOLS, 1..2=force
+    int seq_force_integer_mv = 0;            // 同上语义，仅在 screen content tools==2 时有效
+    int order_hint_bits_minus_1 = 0;
+    
+    bool film_grain_params_present = false;
     
     // Frame size
     int frame_width_minus_1 = 0;
@@ -617,6 +654,29 @@ struct Av1SequenceHeaderInfo {
     
     int FrameWidth() const { return frame_width_minus_1 + 1; }
     int FrameHeight() const { return frame_height_minus_1 + 1; }
+    
+    // AV1 的 seq_level_idx 是 0..23，映射规则：主版本 = 2 + idx/4，次版本 = idx%4
+    // 例：0 -> "2.0"，4 -> "3.0"，19 -> "6.3"，23 -> "7.3"，24 -> "Unknown"
+    std::string LevelString() const {
+        if (level < 0 || level > 23) return "Unknown";
+        return std::to_string(2 + level / 4) + "." + std::to_string(level % 4);
+    }
+    
+    // 位深：优先用 color_config 推导，退化到 input_bit_depth / bit_depth_minus_8
+    int BitDepth() const {
+        int d = color_config.BitDepth(profile);
+        if (d > 0) return d;
+        if (input_bit_depth > 0) return input_bit_depth;
+        if (bit_depth_minus_8 > 0) return bit_depth_minus_8 + 8;
+        return 8;
+    }
+    
+    std::string ChromaFormatString() const {
+        if (color_config.monochrome) return "4:0:0";
+        if (color_config.subsampling_x && color_config.subsampling_y) return "4:2:0";
+        if (color_config.subsampling_x && !color_config.subsampling_y) return "4:2:2";
+        return "4:4:4";
+    }
     
     // Bit depth
     int bit_depth_minus_8 = 0;
@@ -627,10 +687,17 @@ struct Av1SequenceHeaderInfo {
     
     // Timing
     bool timing_info_present_flag = false;
+    uint32_t num_units_in_tick = 0;
     uint32_t timescale = 0;
     uint32_t num_ticks_per_picture = 0;
     uint32_t min_update_interval = 0;
     uint32_t target_picture_duration = 0;
+    
+    // 解析后续语法元素需要的中间状态（不是展示字段）
+    bool decoder_model_info_present_flag = false;   // decoder_model_info_present
+    int decoder_buffer_delay_length = 0;            // 位宽，operating point 里要用
+    bool display_model_info_present_flag = false;   // display_model_info_present
+    int operating_points_count = 1;
     
     // Color config
     Av1ColorConfigInfo color_config;
@@ -652,82 +719,248 @@ struct Av1SequenceHeaderInfo {
     unsigned content_light_average = 0;
 };
 
+// av1C 配置记录里能拿到的信息（AV1 ISOBMFF 规范 2.3）
+//
+// MP4 / WebM 里 AV1 的 extradata 通常**只有 av1C**，不含序列头 OBU。
+// av1C 里没有分辨率，也没有 color_primaries / transfer / matrix
+// （color_description 只出现在序列头里），所以宽高与色彩只能保持未知。
+struct Av1CodecConfigInfo {
+    bool present = false;
+    
+    int profile = 0;        // seq_profile 0..2
+    int level = 0;          // seq_level_idx_0 0..23
+    int tier = 0;           // 0=Main, 1=High
+    int bit_depth = 8;
+    bool monochrome = false;
+    int subsampling_x = 1;
+    int subsampling_y = 1;
+    int chroma_sample_position = 0;
+    int color_range = 1;    // 1 = full range
+    int initial_presentation_delay = 0;
+    
+    std::string LevelString() const {
+        if (level < 0 || level > 23) return "Unknown";
+        return std::to_string(2 + level / 4) + "." + std::to_string(level % 4);
+    }
+    
+    std::string ChromaFormatString() const {
+        if (monochrome) return "4:0:0";
+        if (subsampling_x && subsampling_y) return "4:2:0";
+        if (subsampling_x && !subsampling_y) return "4:2:2";
+        return "4:4:4";
+    }
+};
+
 // --------------------------------------------------------------------------
-// VVC 码流信息（简化版）
+// VVC (H.266) 码流信息
+//
+// 语法顺序以 FFmpeg 的 libavcodec/cbs_h266_syntax_template.c 为准（CBS 层逐位
+// 解析，与 H.266 规范 7.3.2.x 一一对应）。字段命名沿用规范里的语法元素名。
 // --------------------------------------------------------------------------
 struct VvcNalUnitInfo {
     bool present = false;
-    
+
     int nal_unit_type = 0;
     int temporal_id = 0;
     int nuh_layer_id = 0;
-    
+
     bool is_vps = false;
     bool is_vps_extension = false;
 };
 
+// VVC VUI（H.266 7.3.2.3 的 vui_parameters()）
+// 与 H.264 的 VUI 相比少了 timing/HRD —— VVC 把它们挪到了
+// general_timing_hrd_parameters()，这里只收录展示需要的字段。
+struct VvcVuiInfo {
+    bool present = false;
+
+    bool progressive_source_flag = false;
+    bool interlaced_source_flag = false;
+    bool non_packed_constraint_flag = false;
+    bool non_projected_constraint_flag = false;
+
+    bool aspect_ratio_info_present_flag = false;
+    bool aspect_ratio_constant_flag = false;
+    int aspect_ratio_idc = 0;           // 0xFF = Extended_SAR
+    int sar_width = 0;
+    int sar_height = 0;
+
+    bool overscan_info_present_flag = false;
+    bool overscan_appropriate_flag = false;
+
+    bool colour_description_present_flag = false;
+    int colour_primaries = 2;           // 未出现时规范推断为 2（未指定）
+    int transfer_characteristics = 2;
+    int matrix_coeffs = 2;
+    bool full_range_flag = false;
+
+    bool chroma_loc_info_present_flag = false;
+    int chroma_sample_loc_type_frame = 6;
+};
+
 struct VvcVpsInfo {
     bool present = false;
-    
+
     int vps_video_parameter_set_id = 0;
-    int vps_max_layers = 0;
-    int vps_max_sub_layers = 0;
-    int vps_reserved_zero_2bits = 0;
-    int vps_num_ptl = 0;
-    
-    // PTL
-    int general_profile_space = 0;
-    int general_tier_flag = 0;
+    int vps_max_layers_minus1 = 0;
+    int vps_max_sublayers_minus1 = 0;
+    bool vps_default_ptl_dpb_hrd_max_tid_flag = true;
+    bool vps_all_independent_layers_flag = true;
+    bool vps_each_layer_is_an_ols_flag = true;
+    int vps_num_ptls_minus1 = 0;
+
+    // PTL（vps_profile_tier_level[0]，单层码流就是它）
     int general_profile_idc = 0;
+    int general_tier_flag = 0;
     uint32_t general_level_idc = 0;
-    
-    // Video format
-    int vps_video_format = 0;
-    
-    // Color config
+    int ptl_num_sub_profiles = 0;
+
+    // Color config（vvcC / OLS DPB 里可能带，码流里通常没有）
     int vps_chroma_format_idc = 0;
     int vps_bit_depth_luma_minus8 = 0;
     int vps_bit_depth_chroma_minus8 = 0;
+
+    int MaxLayers() const { return vps_max_layers_minus1 + 1; }
+    int MaxSubLayers() const { return vps_max_sublayers_minus1 + 1; }
+
+    std::string ProfileName() const;
+    std::string LevelString() const;
 };
 
 struct VvcSpsInfo {
     bool present = false;
-    
+
     int sps_seq_parameter_set_id = 0;
-    int sps_num_dss = 0;
-    
-    // PTL
+    int sps_video_parameter_set_id = 0;
+    int sps_max_sublayers_minus1 = 0;
+    int sps_chroma_format_idc = 0;
+    int sps_log2_ctu_size_minus5 = 0;
+
+    bool sps_ptl_dpb_hrd_params_present_flag = false;
+    bool sps_gdr_enabled_flag = false;
+    bool sps_ref_pic_resampling_enabled_flag = false;
+    bool sps_res_change_in_clvs_allowed_flag = false;
+
+    // 图像尺寸（编码尺寸；显示尺寸要看 conformance window）
+    int sps_pic_width_max_in_luma_samples = 0;
+    int sps_pic_height_max_in_luma_samples = 0;
+    bool sps_conformance_window_flag = false;
+    int sps_conf_win_left_offset = 0;
+    int sps_conf_win_right_offset = 0;
+    int sps_conf_win_top_offset = 0;
+    int sps_conf_win_bottom_offset = 0;
+
+    int sps_num_subpics_minus1 = 0;
+    int sps_bitdepth_minus8 = 0;
+    bool sps_entropy_coding_sync_enabled_flag = false;
+    bool sps_entry_point_offsets_present_flag = false;
+    int sps_log2_max_pic_order_cnt_lsb_minus4 = 0;
+    bool sps_poc_msb_cycle_flag = false;
+
+    int sps_log2_min_luma_coding_block_size_minus2 = 0;
+    bool sps_partition_constraints_override_enabled_flag = false;
+
+    // 编码工具开关（面板只展示常用的几个，其余按规范跳过）
+    bool sps_sao_enabled_flag = false;
+    bool sps_alf_enabled_flag = false;
+    bool sps_ccalf_enabled_flag = false;
+    bool sps_lmcs_enabled_flag = false;
+    bool sps_joint_cbcr_enabled_flag = false;
+    bool sps_transform_skip_enabled_flag = false;
+    bool sps_mts_enabled_flag = false;
+    bool sps_lfnst_enabled_flag = false;
+    bool sps_weighted_pred_flag = false;
+    bool sps_weighted_bipred_flag = false;
+    bool sps_long_term_ref_pics_flag = false;
+    bool sps_inter_layer_prediction_enabled_flag = false;
+    bool sps_temporal_mvp_enabled_flag = false;
+    bool sps_affine_enabled_flag = false;
+    bool sps_palette_enabled_flag = false;
+    bool sps_ibc_enabled_flag = false;
+    bool sps_dep_quant_enabled_flag = false;
+    bool sps_sign_data_hiding_enabled_flag = false;
+    int sps_num_ref_pic_lists[2] = {0, 0};
+
+    bool sps_field_seq_flag = false;
+    bool sps_vui_parameters_present_flag = false;
+    int sps_vui_payload_size_minus1 = 0;
+
+    // PTL（sps_ptl_dpb_hrd_params_present_flag == 1 时才有）
     int general_profile_idc = 0;
     int general_tier_flag = 0;
     uint32_t general_level_idc = 0;
-    
-    // Chroma
-    int sps_chroma_format_idc = 0;
-    
-    // Bit depth
-    int sps_bit_depth_luma_minus8 = 0;
-    int sps_bit_depth_chroma_minus8 = 0;
-    
-    // Frame size
-    int sps_log2_diff_max_min_coding_block_size = 0;
-    int sps_min_coding_block_size = 0;
-    int sps_max_tree_size = 0;
-    int sps_min_partition_size = 0;
-    
-    int Width() const {
-        int cb_size = 1 << sps_min_coding_block_size;
-        // Need more context to calculate exact width
-        return 0;
-    }
-    
-    int Height() const {
-        int cb_size = 1 << sps_min_coding_block_size;
-        // Need more context to calculate exact height
-        return 0;
-    }
-    
-    int BitDepthLuma() const { return sps_bit_depth_luma_minus8 + 8; }
-    int BitDepthChroma() const { return sps_bit_depth_chroma_minus8 + 8; }
+    int ptl_num_sub_profiles = 0;
+
+    VvcVuiInfo vui;
+
+    // 派生值
+    int CtuSize() const { return 1 << (sps_log2_ctu_size_minus5 + 5); }
+    int MinCbSizeY() const { return 1 << (sps_log2_min_luma_coding_block_size_minus2 + 2); }
+    int MaxPicOrderCntLsb() const { return 1 << (sps_log2_max_pic_order_cnt_lsb_minus4 + 4); }
+    int SubWidthC() const;
+    int SubHeightC() const;
+
+    // 显示尺寸 = 编码尺寸 - conformance window（按色度采样换算裁剪单位）
+    int width() const;
+    int height() const;
+
+    int BitDepthLuma() const { return sps_bitdepth_minus8 + 8; }
+    int BitDepthChroma() const { return sps_bitdepth_minus8 + 8; }
+
+    std::string ProfileName() const;
+    std::string LevelString() const;
+};
+
+// VVC PPS：只解析头部到 subpic id 映射为止（后面的 tile/slice 划分面板用不到）
+struct VvcPpsInfo {
+    bool present = false;
+
+    int pps_pic_parameter_set_id = 0;
+    int pps_seq_parameter_set_id = 0;
+    bool pps_mixed_nalu_types_in_pic_flag = false;
+    int pps_pic_width_in_luma_samples = 0;
+    int pps_pic_height_in_luma_samples = 0;
+    bool pps_conformance_window_flag = false;
+    int pps_conf_win_left_offset = 0;
+    int pps_conf_win_right_offset = 0;
+    int pps_conf_win_top_offset = 0;
+    int pps_conf_win_bottom_offset = 0;
+    bool pps_output_flag_present_flag = false;
+    bool pps_no_pic_partition_flag = false;
+    bool pps_subpic_id_mapping_present_flag = false;
+    int pps_num_subpics_minus1 = 0;
+
+    // 从 SPS 拷过来，供 width()/height() 换算裁剪单位
+    int chroma_format_idc = 1;
+    int SubWidthC() const;
+    int SubHeightC() const;
+    int width() const;
+    int height() const;
+};
+
+// vvcC（VvcDecoderConfigurationRecord）里解析出的信息。
+//
+// 为什么单独存一份：VVC 的 SPS 只在 sps_ptl_dpb_hrd_params_present_flag=1
+// 时才带 PTL，单层码流通常把这个 flag 置 0（PTL 只放 VPS 里）；而 MP4 的
+// extradata 只有 vvcC、没有 VPS。所以 profile/level/位深很多时候只能从
+// vvcC 拿到 —— 与 AV1 的 av1_config 同样定位，作兜底而非主数据源。
+struct VvcCodecConfigInfo {
+    bool present = false;
+
+    int general_profile_idc = 0;
+    int general_tier_flag = 0;
+    uint32_t general_level_idc = 0;
+    int chroma_format_idc = 1;      // 0=4:0:0 1=4:2:0 2=4:2:2 3=4:4:4
+    int bit_depth_minus8 = 0;
+    int num_sublayers = 0;          // vvcC 里的 3 位字段，实际子层数 = 值+1
+    int max_picture_width = 0;
+    int max_picture_height = 0;
+
+    int BitDepth() const { return bit_depth_minus8 + 8; }
+    int MaxSubLayers() const { return num_sublayers + 1; }
+
+    std::string ProfileName() const;
+    std::string LevelString() const;
 };
 
 // --------------------------------------------------------------------------
@@ -746,6 +979,18 @@ struct BitstreamAnalysisResult {
     int color_primaries = 0;
     int transfer_characteristics = 0;
     int matrix_coefficients = 0;
+
+    // 容器层（AVCodecParameters）的同名字段快照，供 UI 对比表两侧并列展示。
+    // 由 BitstreamAnalyzer::SetContainerMetadata() 在 Analyze() 时写入；
+    // 调用方没设置容器 metadata 时 has_container 为 false，各字段保持 0。
+    bool has_container = false;
+    int container_width = 0;
+    int container_height = 0;
+    int container_bit_depth = 0;
+    int container_color_primaries = 0;
+    int container_transfer_characteristics = 0;
+    int container_matrix_coefficients = 0;
+    int container_color_range = 0;
     
     // 各编码类型的解析结果（最多只有一个为 true）
     bool has_h264 = false;
@@ -764,10 +1009,15 @@ struct BitstreamAnalysisResult {
     
     // AV1 信息
     Av1SequenceHeaderInfo av1_seq_header;
+    Av1CodecConfigInfo av1_config;      // av1C 里解析出的（序列头缺失时的兜底）
+    bool has_av1_config = false;
     
     // VVC 信息
     VvcVpsInfo vvc_vps;
     VvcSpsInfo vvc_sps;
+    VvcPpsInfo vvc_pps;
+    VvcCodecConfigInfo vvc_config;  // vvcC 里解析出的（SPS/VPS 都缺 PTL 时的兜底）
+    bool has_vvc_config = false;
     
     // 提取的 NAL/OBU 列表
     std::vector<utils::NalUnit> nal_units;

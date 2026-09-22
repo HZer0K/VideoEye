@@ -82,6 +82,17 @@ private:
     void ApplyH264Summary();
     void ApplyHevcSummary();
     void ApplyAv1Summary();
+    void ApplyVvcSummary();
+
+    // 从 av1C 配置记录填充 av1_config（序列头 OBU 缺失时的兜底数据源）
+    void PopulateAv1Config(const utils::ExtradataResult::CodecConfig& cfg);
+
+    // 从 vvcC 配置记录填充 vvc_config（MP4 的 VVC extradata 只有 vvcC，
+    // 没有 VPS，profile/level/位深只能从这里拿）
+    void PopulateVvcConfig(const utils::ExtradataResult::CodecConfig& cfg);
+
+    // 把容器侧数值写进 result_（UI 对比表的左侧列）。必须在 result_ 重置之后调用。
+    void ApplyContainerSnapshot();
 
     // 是否真的解析出了参数集（决定要不要拿默认值去和容器层比对）
     bool AnyParameterSet() const;
@@ -96,7 +107,8 @@ private:
                          const std::string& container_value,
                          const std::string& bitstream_value,
                          const std::string& description,
-                         const std::string& suggestion = "");
+                         const std::string& suggestion = "",
+                         const std::string& severity = "warning");
     
     model::BitstreamAnalysisResult result_;
     ContainerMetadata container_metadata_;

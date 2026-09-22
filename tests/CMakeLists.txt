@@ -307,3 +307,60 @@ target_link_libraries(test_hevc_bitstream_parser PRIVATE
     GTest::gtest_main
 )
 add_test(NAME HevcBitstreamParserTests COMMAND test_hevc_bitstream_parser)
+
+# =================================================
+# 测试 15：BitstreamAnalyzer（容器侧快照 + 容器/码流对比分级）
+# 说明: 这是「参数集解析」页的数据来源。只需要 FFmpeg 头文件（AVCodecID 枚举），
+#       不调用任何 avcodec 函数，因此不必链接 FFmpeg 库。
+# =================================================
+add_executable(test_bitstream_analyzer
+    unit/test_bitstream_analyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/BitstreamAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/H264BitstreamParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/HevcBitstreamParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/Av1BitstreamParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/VvcBitstreamParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/BitstreamInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/ExtradataParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/BitReader.cpp
+)
+target_include_directories(test_bitstream_analyzer PRIVATE ${TEST_INCLUDE_DIRS})
+target_link_libraries(test_bitstream_analyzer PRIVATE
+    GTest::gtest_main
+)
+add_test(NAME BitstreamAnalyzerTests COMMAND test_bitstream_analyzer)
+
+# =================================================
+# 测试 16：AV1 码流解析（序列头 OBU + av1C 配置记录）
+# 说明: 与测试 13/14 同构，比特流由 _smoke/gen_av1_seqhdr.py 逐位生成。
+# =================================================
+add_executable(test_av1_bitstream_parser
+    unit/test_av1_bitstream_parser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/Av1BitstreamParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/ExtradataParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/BitReader.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/BitstreamInfo.cpp
+)
+target_include_directories(test_av1_bitstream_parser PRIVATE ${TEST_INCLUDE_DIRS})
+target_link_libraries(test_av1_bitstream_parser PRIVATE
+    GTest::gtest_main
+)
+add_test(NAME Av1BitstreamParserTests COMMAND test_av1_bitstream_parser)
+
+# =================================================
+# 测试 17：VVC (H.266) 码流解析（VPS/SPS/PPS + vvcC 记录 + NAL header 位域）
+# 说明: VVC 的 NAL type 在第 2 字节高 5 位，和 HEVC 完全不同 —— 这一条
+#       单独有测试兜底，避免以后改 ExtradataParser 时静默读错类型。
+# =================================================
+add_executable(test_vvc_bitstream_parser
+    unit/test_vvc_bitstream_parser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/VvcBitstreamParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/ExtradataParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/BitReader.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/BitstreamInfo.cpp
+)
+target_include_directories(test_vvc_bitstream_parser PRIVATE ${TEST_INCLUDE_DIRS})
+target_link_libraries(test_vvc_bitstream_parser PRIVATE
+    GTest::gtest_main
+)
+add_test(NAME VvcBitstreamParserTests COMMAND test_vvc_bitstream_parser)

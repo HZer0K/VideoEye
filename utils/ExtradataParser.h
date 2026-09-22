@@ -69,39 +69,27 @@ enum class HevcNalType {
     VpsExt = 45,
 };
 
-// AV1 OBU 类型
+// AV1 OBU 类型（AV1 规范 6.2.2 obu_type 取值表）
+//
+// ⚠️ 旧版本的取值是照着 H.264 NAL 类型表抄的，序列头写成了 0。
+// 规范里 OBU_SEQUENCE_HEADER = 1，OBU_PADDING = 15，其余按表排列。
 enum class Av1ObuType {
-    SequenceHeader = 0,
-    TileGroup = 1,
-    ColorSpace = 2,
-    UserConfiguration = 3,
-    FrameHeader = 4,
-    Frame = 5,
-    TileList = 6,
-    PartitionHeader = 7,
-    ConfigRecord = 8,
-    FrameTypeDependency = 9,
-    MasteringDisplay = 10,
-    ContentLight = 11,
-    FilmGrain = 12,
-    SyncMarker = 13,
-    ObuNoEdl = 14,
-    Resolution = 15,
-    TemporalDelayer = 16,
-    OpusTag = 17,
-    TimeCode = 18,
-    ColorConfig = 19,
-    ObuWithEbs = 20,
-    RedundantFrameHeader = 21,
-    AdditionalFrameReference = 22,
-    ObjectDivisions = 23,
-    MotionOverflow = 24,
-    GlobalMotion = 25,
-    FrameEdge = 26,
-    BitstreamAnnotation = 27,
-    VideoToolboxOutputBuffer = 28,
-    VideoToolboxInputBuffer = 29,
-    VideoToolboxFlush = 30,
+    Reserved0 = 0,
+    SequenceHeader = 1,
+    TemporalDelimiter = 2,
+    FrameHeader = 3,
+    TileGroup = 4,
+    Metadata = 5,
+    Frame = 6,
+    RedundantFrameHeader = 7,
+    TileList = 8,
+    Reserved9 = 9,
+    Reserved10 = 10,
+    Reserved11 = 11,
+    Reserved12 = 12,
+    Reserved13 = 13,
+    Reserved14 = 14,
+    Padding = 15,
 };
 
 // 封装格式枚举
@@ -115,6 +103,18 @@ enum class ExtradataFormat {
     HvcC,            // MP4 hvcC 配置记录（H.265）
     Av1C,            // MP4 av1C 配置记录（AV1）
     VvcC,            // MP4 vvcC 配置记录（VVC）
+};
+
+// NAL header 的解读方式。
+//
+// 三种封装的 NAL header 长度与 type 位域都不一样，AnnexB 只看首字节无法区分
+// H.264 与 VVC（VVC 首字节是 nuh_layer_id，type 在第 2 字节），所以调用方
+// 知道 codec 时必须显式指定，别让启发式去猜。
+enum class NalSyntax {
+    Auto = 0,   // 按首字节启发式猜（H.264 / HEVC 二选一，见 ExtractAnnBNalUnits）
+    H264,       // 1 字节 header，type = byte0 & 0x1F
+    Hevc,       // 2 字节 header，type = (byte0 >> 1) & 0x3F
+    Vvc,        // 2 字节 header，type = (byte1 >> 3) & 0x1F
 };
 
 // NAL/OBU 单元结构
@@ -137,13 +137,19 @@ struct NalUnit {
           is_idr(idr), is_keyframe(keyframe) {}
 };
 
-// OBU 结构（AV1/VVC）
+// OBU 结构（AV1）
+//
+// 不变量：与 NalUnit 保持一致 —— `data` 只含 **OBU payload**，
+// 不含 obu_header(1B)、不含 leb128 长度、不含 extension header。
+// 上层 parser 可以直接从 data[0] 的最高位开始按 MSB-first 读。
 struct ObuUnit {
-    uint8_t type;              // OBU 类型
-    uint32_t size;             // 数据大小
-    std::vector<uint8_t> data; // OBU 数据
-    bool has_extension_header; // 是否有扩展头
+    uint8_t type;              // obu_type（1 = OBU_SEQUENCE_HEADER）
+    uint32_t size;             // payload 大小（= data.size()）
+    std::vector<uint8_t> data; // OBU payload（不含 header / 长度 / 扩展头）
+    bool has_extension_header; // obu_extension_flag
     bool is_sequence_header;   // 是否为序列头
+    uint8_t temporal_id = 0;   // 扩展头里的 temporal_id（无扩展头时为 0）
+    uint8_t spatial_id = 0;    // 扩展头里的 spatial_id
     
     ObuUnit() : type(0), size(0), has_extension_header(false), 
                 is_sequence_header(false) {}
@@ -179,18 +185,28 @@ struct ExtradataResult {
         int vps_bit_depth_luma_minus8 = 0;
         int vps_bit_depth_chroma_minus8 = 0;
         
-        // AV1
-        int profile = 0;
+        // AV1（来自 av1C 配置记录）
+        // 注：level_idc 复用上面 H.264 那个字段；AV1 里存的是 seq_level_idx_0(0..23)，
+        // general_tier_flag 复用为 seq_tier_0。
+        int profile = 0;                // seq_profile 0..2
         int high_bitdepth = 0;
         int twelve_bit = 0;
-        int bit_depth_minus_8 = 0;     // 实际位深 = 值 + 8
+        int monochrome = 0;
+        int bit_depth_minus_8 = 0;      // 实际位深 = 值 + 8
         int chroma_subsampling_x = 1;
         int chroma_subsampling_y = 1;
+        int chroma_sample_position = 0; // 0=UNKNOWN 1=VERTICAL 2=COLOCATED 3=RESERVED
         int color_range = 1;
         int color_primaries = 9;  // BT.2020
         int transfer_characteristics = 14; // PQ
         int matrix_coefficients = 9; // BT.2020 NCL
         int initial_presentation_delay_bits = 0;
+
+        // VVC（来自 vvcC 配置记录；num_sublayers 是 vvcC 里的 3 位字段）
+        int chroma_format_idc = 0;      // 0=4:0:0 1=4:2:0 2=4:2:2 3=4:4:4
+        int num_sublayers = 0;
+        int max_picture_width = 0;
+        int max_picture_height = 0;
     } config;
     
     // 视频尺寸（如果可从 extradata 推断）
@@ -212,9 +228,18 @@ public:
     // 从 extradata 开始解析
     static ExtradataResult Parse(const uint8_t* extradata, size_t size);
     
-    // 直接指定格式解析
+    // 直接指定格式解析。syntax 只对 AnnexB / 长度前缀流有意义（见 NalSyntax 注释）；
+    // 配置记录（avcC/hvcC/vvcC）里 NAL 类型由数组头给出，不需要猜。
     static ExtradataResult ParseWithFormat(ExtradataFormat format,
-                                           const uint8_t* data, size_t size);
+                                           const uint8_t* data, size_t size,
+                                           NalSyntax syntax = NalSyntax::Auto);
+    
+    // Annex B 流的 NAL 抽取（VVC 必须传 NalSyntax::Vvc，否则类型会读错）
+    static std::vector<NalUnit> ExtractAnnBNalUnits(const uint8_t* data, size_t size,
+                                                    NalSyntax syntax = NalSyntax::Auto);
+    
+    // VVC NAL 单元解析（2 字节 header，type = (byte1 >> 3) & 0x1F）
+    static NalUnit ParseVvcNalUnit(const uint8_t* data, size_t size);
     
     // 转换封装格式（Annex B ↔ length-prefix）
     static std::vector<uint8_t> ConvertAnnexBToLengthPrefix(
@@ -224,18 +249,22 @@ public:
         const std::vector<uint8_t>& length_prefix,
         int prefix_bytes);
     
+    // 从裸 OBU 流（或 av1C 尾部的 configOBUs）中依次抽出所有 OBU。
+    // 对外可见：AV1 的序列头往往在 packet 里而不是 extradata 里，
+    // 上层需要自己拿一段 OBU 字节来解析。
+    static std::vector<ObuUnit> ExtractObuUnits(const uint8_t* data, size_t size);
+    
 private:
     // 格式检测
     static ExtradataFormat DetectFormat(const uint8_t* data, size_t size);
     
     // 具体格式解析器
-    static ExtradataResult ParseAnnexB(const uint8_t* data, size_t size);
+    static ExtradataResult ParseAnnexB(const uint8_t* data, size_t size,
+                                       NalSyntax syntax = NalSyntax::Auto);
     static ExtradataResult ParseAvcC(const uint8_t* data, size_t size);
     static ExtradataResult ParseHvcC(const uint8_t* data, size_t size);
+    static ExtradataResult ParseVvcC(const uint8_t* data, size_t size);
     static ExtradataResult ParseAv1C(const uint8_t* data, size_t size);
-    
-    // Annex B 解析辅助
-    static std::vector<NalUnit> ExtractAnnBNalUnits(const uint8_t* data, size_t size);
     
     // H.264 NAL 单元解析
     static NalUnit ParseH264NalUnit(const uint8_t* data, size_t size);
@@ -246,7 +275,7 @@ private:
     // AV1 OBU 解析
     static ObuUnit ParseAv1Obu(const uint8_t*& ptr, size_t remaining);
     
-    // 查找下一个起始码（Annex B）
+    // Annex B 解析辅助
     static const uint8_t* FindStartCode(const uint8_t* pos, const uint8_t* end);
 };
 

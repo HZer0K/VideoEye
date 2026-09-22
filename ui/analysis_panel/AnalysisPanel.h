@@ -44,6 +44,7 @@
 #include "core/analyzer/AnalysisCoordinator.h"
 #include "core/analyzer/BitrateGopAnalyzer.h"
 #include "core/analyzer/ColorHdrAnalyzer.h"
+#include "ui/bitstream_panel/BitstreamPanel.h"
 #include "core/analyzer/QcRuleEngine.h"
 #include "core/analyzer/TimelineAnalyzer.h"
 #include "core/model/FrameTimingInfo.h"
@@ -156,6 +157,8 @@ public slots:
     void OnStartColorHdrAnalysis();
     void OnCancelColorHdrAnalysis();
     void OnColorHdrOptionChanged();
+    // 参数集页「重新扫描」：复用同一次全文件扫描
+    void OnBitstreamRefreshRequested();
     void OnExportColorHdrCsv();
 
     // 导出报告
@@ -275,6 +278,9 @@ private:
     void SetupSceneChangeTab();
     void SetupBitrateGopTab();
     void SetupColorHdrTab();
+    // 编码参数集（SPS/PPS/VPS/Sequence Header）解析页，与「码流分析」页是两回事：
+    // 那一页看的是包/帧/码率，这一页看的是 extradata 里的编码参数。
+    void SetupParameterSetTab();
     void SetupDiagnosticsTab();
     void RebuildFrameTable();
     void RebuildGopTable();
@@ -357,6 +363,7 @@ private:
     void ApplyColorHdrOptionsFromUi();
     void UpdateColorHdrUi();          // 汇总 + 两张信息表 + 异常表 一次刷新
     void UpdateColorHdrSummary();
+    void UpdateBitstreamUi();         // 参数集页：结构树 + 容器/码流对比 + 不一致表
     void RebuildColorHdrTables();
     void RebuildColorHdrIssueTable();
 
@@ -615,6 +622,9 @@ private:
     QTableWidget* hdr_info_table_;        // HDR 元数据（项目/值/说明）
     QTableWidget* color_issue_table_;     // 异常组合（来自 QC 规则，category=色彩/HDR）
     analyzer::ColorHdrOptions color_hdr_options_;
+
+    // 编码参数集解析页（SPS / PPS / VPS / AV1 Sequence Header）
+    BitstreamPanel* bitstream_params_panel_ = nullptr;
 
     // 诊断与报告标签页
     QWidget* diagnostics_tab_;
