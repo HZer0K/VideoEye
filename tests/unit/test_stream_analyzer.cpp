@@ -12,7 +12,7 @@ namespace {
 class AVFormatContextGuard {
 public:
     AVFormatContextGuard() : ctx_(avformat_alloc_context()) {}
-    ~AVFormatContextGuard() { avformat_close_input(ctx_); }
+    ~AVFormatContextGuard() { avformat_close_input(&ctx_); }
 
     AVFormatContext* get() { return ctx_; }
 
@@ -34,7 +34,7 @@ TEST(StreamAnalyzerTest, ClassifiesPacketsAndFramesByMediaType) {
     ASSERT_NE(audio->codecpar, nullptr);
     audio->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
 
-    videoeye::analyzer::StreamAnalyzer analyzer(format.get(), nullptr);
+    videoeye::analyzer::StreamAnalyzer analyzer;
     analyzer.Start();
 
     AVPacket* packet = av_packet_alloc();

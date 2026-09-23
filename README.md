@@ -28,7 +28,7 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 | 组件 | 技术 |
 |------|------|
 | GUI | Qt 6（只用 QtWidgets） |
-| 多媒体 | FFmpeg 8.1+（预编译，直接集成 dll/so） |
+| 多媒体 | FFmpeg 8.x（Windows 用锁版本预编译包，Linux/macOS 用系统包） |
 | 图表 | 自绘 `MetricChartWidget`（QPainter） |
 | 音频输出 | 平台原生（WASAPI / ALSA / AudioQueue） |
 | MP4 解析 | 自研 `utils::IsobmffParser` |
@@ -37,8 +37,15 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 **依赖只有两个硬依赖：Qt Widgets + FFmpeg。** 其余能力（媒体信息展示、图表、MP4 样本表解析、音频输出）全部自研或走平台原生 API，
 不再集成 MediaInfoLib / Bento4 / SDL2 / QtCharts / Vulkan。
 
-Qt 走 vcpkg manifest（Windows）或系统包管理器（apt/brew）；FFmpeg 使用预编译包，布局固定为
-`third_party/prebuilt/<platform>/ffmpeg/{include,lib,bin}`（Windows 由 `scripts/fetch-ffmpeg.ps1` 下载）。
+Qt 走 vcpkg manifest（Windows）或系统包管理器（apt/brew）；FFmpeg 分平台取源：
+
+| 平台 | FFmpeg 来源 |
+|------|------------|
+| Windows | `third_party/prebuilt/windows-x64/ffmpeg/`，缺则由 `scripts/fetch-ffmpeg.ps1` 下载（版本 + URL + SHA256 锁在 `cmake/ffmpeg-version.json`，校验不过直接失败） |
+| Linux / macOS | `pkg-config` 找系统开发包（`libavcodec-dev` / `brew install ffmpeg`），找不到才回退 `third_party/prebuilt/<platform>/ffmpeg/` |
+
+构建配置的唯一来源是 `CMakePresets.json`；动态库部署由 CMake 完成（Windows 与 exe 同目录，
+Linux/macOS 进相邻 `lib/` 并写入 RPATH），构建后会校验确实到位。
 
 ## 构建
 
@@ -50,6 +57,7 @@ Qt 走 vcpkg manifest（Windows）或系统包管理器（apt/brew）；FFmpeg �
 # 一键构建（自动加载 MSVC 环境 + 自动下载 FFmpeg 预编译库 + 自动安装 vcpkg 依赖）
 .\build.bat           # Release 构建
 .\build.bat debug     # Debug 构建
+.\build.bat test      # Release 构建 + 跑单元测试
 ```
 
 产物：`build\release\bin\VideoEye.exe` / `build\debug\bin\VideoEye.exe`
@@ -59,12 +67,12 @@ Qt 走 vcpkg manifest（Windows）或系统包管理器（apt/brew）；FFmpeg �
 ### Linux / macOS
 
 ```bash
-# Ubuntu/Debian 系统依赖
-sudo apt install -y build-essential cmake ninja-build pkg-config qt6-base-dev
-# FFmpeg 预编译包放到 third_party/prebuilt/linux-x64/ffmpeg/{include,lib,bin}
+# Ubuntu/Debian 系统依赖（FFmpeg 用系统开发包，由 pkg-config 查找）
+sudo apt install -y build-essential cmake ninja-build pkg-config qt6-base-dev \
+  libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
 
 # macOS
-brew install cmake ninja qt@6
+brew install cmake ninja qt@6 ffmpeg
 
 # 构建
 ./build.sh             # Release
@@ -112,10 +120,22 @@ VideoEye/
 
 ## 测试
 
+用带测试的 preset（`BUILD_TESTING=ON`；Windows 上另带 `VCPKG_MANIFEST_FEATURES=tests` 让 vcpkg 装 gtest）：
+
 ```bash
-cmake -B build/debug -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
-cmake --build build/debug && cd build/debug && ctest --output-on-failure
+# Windows：推荐 win-test-release（Debug 需要重编整套 debug triplet 的 Qt，约 1 小时）
+cmake --preset win-test-release
+cmake --build --preset win-test-release
+ctest --preset win-test-release
+
+# Linux / macOS
+cmake --preset linux-test-debug
+cmake --build --preset linux-test-debug
+ctest --preset linux-test-debug
 ```
+
+共 18 个可执行文件 + 17 组 ctest 用例，覆盖码流解析（H.264/HEVC/AV1/VVC）、MP4 样本表、
+ISOBMFF、QC 规则、码率/GOP、色彩 HDR、导出器等纯逻辑路径。
 
 ## 贡献
 

@@ -1,0 +1,17 @@
+{
+  "_comment": "FFmpeg 预编译包的唯一版本源。所有脚本（scripts/fetch-ffmpeg.ps1、CI）都从这里读版本与校验值，避免出现不同入口构建出不同 ABI 的情况。",
+  "version": "8.1.2",
+  "windows": {
+    "provider": "gyan.dev",
+    "_url-note": "版本化 URL 比 rolling release 多一层 /packages/，且文件名是 ffmpeg-<ver>-full_build-shared.7z（注意 full 后面的 _build）。",
+    "urlTemplate": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-{version}-full_build-shared.7z",
+    "url": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-full_build-shared.7z",
+    "sha256": "cba748035c21ce1431d0823c7a3a711f38616f89f87a265dceddf9b7f6749d2d"
+  },
+  "linux": {
+    "_note": "Linux/macOS 不下载预编译包，默认使用包管理器安装的系统 FFmpeg（pkg-config 查找）。见 cmake/deps/FFmpegPrebuilt.cmake。"
+  },
+  "macos": {
+    "_note": "同 Linux：brew install ffmpeg 即可。"
+  }
+}

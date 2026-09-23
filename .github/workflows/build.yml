@@ -22,22 +22,21 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - name: Checkout (with submodules)
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 0
 
       # ─────────────── Linux ───────────────
+      # 项目只剩两个硬依赖: Qt Widgets + FFmpeg。Linux 上 FFmpeg 用系统开发包
+      # (由 cmake/deps/FFmpegPrebuilt.cmake 通过 pkg-config 查找)，不再下载预编译库。
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake pkg-config ninja-build \
-            qt6-base-dev qt6-charts-dev \
-            libsdl2-dev zlib1g-dev \
-            libvulkan-dev glslc \
+            qt6-base-dev \
             libavcodec-dev libavformat-dev libavutil-dev \
             libswscale-dev libswresample-dev
 
@@ -88,12 +87,9 @@ jobs:
       - name: Install vcpkg dependencies (Windows)
         if: runner.os == 'Windows'
         run: |
-          # release-only 覆盖 triplet (scripts/triplets/x64-windows-release.cmake),
-          # host==target 同名避免交叉编译分支; 省 ~2GB 磁盘与一半安装时间
-          # overlay-ports: 用本地 zlib port (移除 vcpkg_fixup_pkgconfig, 避免
-          # vcpkg_acquire_msys 下载被滚动镜像删除的旧 MSYS2 包 → 404)
           vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --overlay-ports=scripts/overlay-ports --x-manifest-root=. --x-install-root=vcpkg_installed
 
+      # FFmpeg 版本与 SHA256 由 cmake/ffmpeg-version.json 锁定，不跟随 gyan.dev 的 latest
       - name: Build (Windows)
         if: runner.os == 'Windows'
         shell: cmd
@@ -121,3 +117,84 @@ jobs:
         with:
           name: VideoEye-windows
           path: build/release/bin
+
+  # ─────────────── 单元测试 ───────────────
+  # 单独的 job: 测试用 Debug + vcpkg feature "tests"(gtest)，
+  # 和主构建用不同的 triplet / 不同的依赖集，混在一个矩阵里会互相拖累。
+  test:
+    name: Unit tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            preset: linux-test-debug
+          # Windows 用 win-test-release: debug 配置需要重新编译一整套 debug triplet
+          # 的 Qt（约 1 小时），在 CI 上不划算
+          - os: windows-latest
+            preset: win-test-release
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake pkg-config ninja-build \
+            qt6-base-dev libgtest-dev \
+            libavcodec-dev libavformat-dev libavutil-dev \
+            libswscale-dev libswresample-dev
+
+      - name: Setup vcpkg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vcpkgRoot = if ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT } else { "C:\vcpkg" }
+          if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
+            git clone --depth 1 https://github.com/microsoft/vcpkg.git $vcpkgRoot
+            if ($LASTEXITCODE -ne 0) { Write-Error "vcpkg clone failed"; exit 1 }
+          }
+          & "$vcpkgRoot\bootstrap-vcpkg.bat" -disableMetrics
+          $vcpkgRoot | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "VCPKG_ROOT=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Cache vcpkg dependencies (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: vcpkg_installed
+          key: vcpkg-tests-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'scripts/triplets/x64-windows-release.cmake') }}
+          restore-keys: |
+            vcpkg-tests-${{ runner.os }}-
+
+      # Windows 上 gtest 由 preset 的 VCPKG_MANIFEST_FEATURES=tests 带来。
+      # 走 build.bat 是为了跟开发者用同一个入口: FFmpeg 缺失时它会自动下载，
+      # 不用在 CI 里复制一遍参数。
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --overlay-ports=scripts/overlay-ports --x-manifest-root=. --x-install-root=vcpkg_installed
+
+      - name: Build + Run tests (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: build.bat test
+
+      - name: Configure (tests)
+        if: runner.os == 'Linux'
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build (tests)
+        if: runner.os == 'Linux'
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Run ctest
+        if: runner.os == 'Linux'
+        run: ctest --preset ${{ matrix.preset }}

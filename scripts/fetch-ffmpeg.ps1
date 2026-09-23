@@ -1,22 +1,26 @@
-﻿# fetch-ffmpeg.ps1 - 自动下载并校验 FFmpeg 预编译包 (gyan.dev full shared)
-# 用法: powershell -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1
-# 可选参数: -DestDir <path>  -Variant <release-full-shared|release-essentials>  -Force
+﻿# fetch-ffmpeg.ps1 - 下载并强校验 FFmpeg 预编译包 (gyan.dev full shared)
 #
-# 默认安装到 third_party/prebuilt/windows-x64/ffmpeg（固定位置，与构建目录无关）
-# CMake 配置时用 -DFFMPEG_ROOT 指向该目录
+# 用法:
+#   powershell -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1
+#   powershell -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1 -Version 8.1.2
+#   powershell -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1 -DestDir <path>
 #
-# 说明:
-#   * 默认 release-full-shared 变体: gyan.dev 唯一带开发文件(include/ + lib/ 导入库)的共享构建,
-#     项目需要头文件与 .lib 才能链接, 因此 essentials(仅 bin/) 不适用。
-#   * 版本检测使用 stamp 文件 (.videoeye-ffmpeg.json), 不再依赖特定 avcodec-X.dll 文件名,
-#     避免 gyan.dev 升级 FFmpeg 版本后旧标记仍然命中导致永不更新。
-#   * 下载失败时自动回退 curl.exe (带重试)。
+# 行为约定:
+#   * 版本/URL/SHA256 的唯一来源是 cmake/ffmpeg-version.json —— 所有入口必须一致,
+#     否则不同开发者会构建出 ABI 不同的产物。
+#   * SHA256 是硬性要求: 拿不到校验值或校验不过一律失败退出, 不留"警告继续"。
+#     只有在人工核对过镜像的场景才用 -SkipChecksum 显式关闭。
+#   * 先解压到临时目录并验证结构完整, 再替换已有目录 —— 中途失败不会把已经有
+#     的、可用的依赖弄丢。
+#
+# 为什么固定用 release-full-shared 系列: gyan.dev 唯一带 include/ 头文件与 lib/
+# 导入库的共享构建。essentials 变体只有 bin/, 没法拿来链接。
 
 param(
     [string]$DestDir = "",
-    [string]$Variant = "release-full-shared",
     [string]$Version = "",
-    [switch]$Force
+    [switch]$Force,
+    [switch]$SkipChecksum
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,49 +29,63 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $scriptDir
 if (-not $DestDir) { $DestDir = Join-Path $projectRoot "third_party\prebuilt\windows-x64\ffmpeg" }
 
-# 版本锁定: -Version "8.1.2" 将 Variant 从 release-full-shared 改为 8.1.2-full_build-shared (gyan.dev 版本化 URL)
-# 注意: gyan.dev 版本化归档包命名含 "_build" (full_build-shared), 与 release 变体 (full-shared) 不同;
-#       且 URL 路径多一层 /packages/ 子路径。
-if ($Version) {
-    $Variant = "$Version-full_build-shared"
-    Write-Host "已指定版本锁定: FFmpeg $Version (variant=$Variant)"
+# ── 版本: 唯一来源 cmake/ffmpeg-version.json ──
+$versionFile = Join-Path $projectRoot "cmake\ffmpeg-version.json"
+if (-not (Test-Path $versionFile)) {
+    Write-Error "缺少版本配置文件: $versionFile（本脚本不允许再使用 latest 滚动版本）"
+    exit 1
 }
+$cfg = Get-Content $versionFile -Raw | ConvertFrom-Json
+$lockedVersion = $cfg.version
+if ([string]::IsNullOrWhiteSpace($lockedVersion)) {
+    Write-Error "$versionFile 里没有 version 字段"
+    exit 1
+}
+if ([string]::IsNullOrWhiteSpace($Version)) { $Version = $lockedVersion }
 
-# gyan.dev URL 结构:
-#   release 变体 (latest):  /ffmpeg/builds/ffmpeg-release-full-shared.7z
-#   版本化归档 (previous):  /ffmpeg/builds/packages/ffmpeg-{ver}-full_build-shared.7z
-if ($Version) {
-    $url = "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-$Variant.7z"
+$expectedSha = ""
+if ($Version -eq $lockedVersion -and $cfg.windows.url -and $cfg.windows.sha256) {
+    # 锁定版本的完整 Shopify 路径: URL + SHA256 都在仓库里, 完全离线可验证
+    $url = $cfg.windows.url
+    $expectedSha = $cfg.windows.sha256
+    Write-Host "版本锁定: FFmpeg $Version (cmake/ffmpeg-version.json)"
 } else {
-    $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-$Variant.7z"
+    if (-not $cfg.windows.urlTemplate) {
+        Write-Error "$versionFile 缺少 windows.urlTemplate, 无法拼出 $Version 的下载地址"
+        exit 1
+    }
+    # gyan.dev 版本化 URL 路径多一层 /packages/, 文件名是 full_build-shared
+    $url = ($cfg.windows.urlTemplate -replace '\{version\}', $Version)
+    Write-Host "版本: FFmpeg $Version (未锁定校验值, 将从 $url.sha256 在线获取)"
+    if ($Version -ne $lockedVersion) {
+        Write-Warning "注意: 项目锁定的版本是 $lockedVersion, 你正在拉 $Version, 产物 ABI 可能与其他人不一致。"
+    }
 }
-$shaUrl = "$url.sha256"
-$archive = Join-Path $env:TEMP "videoeye-ffmpeg-$Variant.7z"
+$archive = Join-Path $env:TEMP "videoeye-ffmpeg-$Version.7z"
+$variant = "$Version-full_build-shared"
 
 Write-Host "=== VideoEye FFmpeg 预编译包获取 ==="
-Write-Host "变体: $Variant"
-Write-Host "目标: $DestDir"
+Write-Host "版本:   $Version"
+Write-Host "地址:   $url"
+Write-Host "目标:   $DestDir"
 
-# 已存在则跳过（除非 -Force）— 以 stamp 文件为准，与具体 DLL 版本号解耦
+# ── 已存在则跳过（以 stamp 为准, 与具体 DLL 文件名解耦）──
 $stampFile = Join-Path $DestDir ".videoeye-ffmpeg.json"
 if ((Test-Path $DestDir) -and (Test-Path $stampFile) -and -not $Force) {
     $stamp = Get-Content $stampFile -Raw | ConvertFrom-Json
-    if ($stamp.Variant -eq $Variant) {
-        Write-Host "FFmpeg 已存在于 $DestDir (variant=$Variant, 获取于 $($stamp.FetchedAt))，跳过下载（用 -Force 强制重下）"
-        if ($stamp.FFmpegVersion) { Write-Host "FFmpeg 版本: $($stamp.FFmpegVersion)" }
-        Write-Host "CMake 配置: -DFFMPEG_ROOT=`"$DestDir`""
+    if ($stamp.Variant -eq $variant) {
+        Write-Host "已存在且版本一致 (variant=$variant, 获取于 $($stamp.FetchedAt))，跳过下载。用 -Force 强制重下。"
         exit 0
     } else {
-        Write-Host "检测到版本变更 ($($stamp.Variant) -> $Variant)，重新获取..."
+        Write-Host "检测到版本变更 ($($stamp.Variant) -> $variant)，重新获取..."
     }
 } elseif ((Test-Path $DestDir) -and -not $Force) {
-    # 旧布局（无 stamp，只有 avcodec-*.dll）：无法确认版本，视为过期，重新获取以确保与 Variant 一致
-    Write-Host "检测到旧版 FFmpeg 安装（无版本 stamp），重新获取以确保版本可追踪..."
+    Write-Host "检测到旧版 FFmpeg（无版本 stamp），重新获取以保证版本可追踪..."
 }
 
-# -- 下载 (失败时自动回退 curl.exe 带重试) --
-Write-Host "=== 下载 FFmpeg ==="
-Write-Host "URL: $url"
+# ── 下载 ──
+Write-Host ""
+Write-Host "=== 下载 ==="
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'
 $downloaded = $false
@@ -85,7 +103,6 @@ if (-not $downloaded) {
         exit 1
     }
 }
-
 if (-not (Test-Path $archive)) {
     Write-Error "下载失败: $url"
     exit 1
@@ -93,34 +110,42 @@ if (-not (Test-Path $archive)) {
 $sizeMB = [math]::Round((Get-Item $archive).Length / 1MB, 1)
 Write-Host "下载完成: $sizeMB MB"
 
-# -- SHA256 校验 --
+# ── SHA256 校验 (硬性) ──
+Write-Host ""
 Write-Host "=== 校验 SHA256 ==="
 $actualHash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
 Write-Host "实际 SHA256: $actualHash"
 
-$verified = $false
-try {
-    Invoke-WebRequest -Uri $shaUrl -OutFile "$archive.sha256" -UseBasicParsing
-    $expectedRaw = (Get-Content "$archive.sha256" -Raw).Trim()
-    # 兼容 "<hash>  <filename>" 或纯 hash 两种格式
-    $expectedHash = ($expectedRaw -split '\s+')[0].ToLower()
-    if ($actualHash -eq $expectedHash) {
-        Write-Host "SHA256 校验通过"
-        $verified = $true
-    } else {
-        Write-Warning "SHA256 不匹配! 期望=$expectedHash 实际=$actualHash"
-        Write-Warning "校验文件格式可能不同，请人工到 gyan.dev 核对后继续"
+if ($SkipChecksum) {
+    Write-Warning "已通过 -SkipChecksum 跳过校验 —— 请确保 you trust 该下载源。"
+} else {
+    if (-not $expectedSha) {
+        # 版本没被仓库锁住时, 只能在线取 sidecar; 取不到就失败, 不能"算了继续"
+        try {
+            Invoke-WebRequest -Uri "$url.sha256" -OutFile "$archive.sha256" -UseBasicParsing -TimeoutSec 60
+            $expectedSha = (($((Get-Content "$archive.sha256" -Raw).Trim()) -split '\s+')[0]).ToLower()
+        } catch {
+            Remove-Item $archive -Force -ErrorAction SilentlyContinue
+            Write-Error "无法获取校验文件 $url.sha256 ($($_.Exception.Message))。"
+            Write-Error "构建依赖不允许在校验缺失的情况下继续。请把该版本的 sha256 写进 cmake/ffmpeg-version.json 后重试。"
+            exit 1
+        }
     }
-} catch {
-    Write-Warning "无法下载校验文件 ($shaUrl)，已跳过自动校验"
-    Write-Warning "请到 https://www.gyan.dev/ffmpeg/builds/ 手动核对上述 SHA256"
+    Write-Host "期望 SHA256: $($expectedSha.ToLower())"
+    if ($actualHash -ne $expectedSha.ToLower()) {
+        Remove-Item $archive -Force -ErrorAction SilentlyContinue
+        Write-Error "SHA256 校验失败！期望=$($expectedSha.ToLower()) 实际=$actualHash"
+        Write-Error "归档可能已损坏或被替换, 已中止。请核对 cmake/ffmpeg-version.json 里的 sha256 后再试。"
+        exit 1
+    }
+    Write-Host "SHA256 校验通过"
 }
 
-# -- 解压 (优先 Windows 自带 bsdtar; 失败则回退 7-Zip) --
-Write-Host "=== 解压到 $DestDir ==="
-$extractTmp = Join-Path $env:TEMP "videoeye-ffmpeg-extract"
-if (Test-Path $extractTmp) { Remove-Item $extractTmp -Recurse -Force }
-if (Test-Path $DestDir) { Remove-Item $DestDir -Recurse -Force }
+# ── 解压到临时目录 ──
+Write-Host ""
+Write-Host "=== 解压 ==="
+$extractTmp = Join-Path $env:TEMP "videoeye-ffmpeg-extract-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+Remove-Item $extractTmp -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $extractTmp -Force | Out-Null
 
 $tarOk = $false
@@ -133,93 +158,122 @@ if (-not $tarOk) {
     $candidates = @(
         "7z",
         "$env:VCPKG_ROOT\downloads\tools\7zip\19.00\7z.exe",
-        "$env:VCPKG_ROOT\downloads\tools\7zip\*\7z.exe",
         "C:\Program Files\7-Zip\7z.exe",
         "C:\Program Files (x86)\7-Zip\7z.exe"
     )
     foreach ($cand in $candidates) {
         $resolved = Get-Command $cand -ErrorAction SilentlyContinue
         if ($resolved) { $sevenZip = $resolved.Source; break }
-        $matches = Get-ChildItem $cand -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($matches) { $sevenZip = $matches.FullName; break }
+        $hit = Get-ChildItem $cand -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($hit) { $sevenZip = $hit.FullName; break }
     }
     if (-not $sevenZip) {
-        Write-Error "解压失败且未找到 7-Zip！请安装 7-Zip (https://www.7-zip.org/) 后重试，或检查 tar 是否可用。"
+        Remove-Item $extractTmp -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Error "解压失败且未找到 7-Zip。请安装 7-Zip (https://www.7-zip.org/) 或确保 tar 可用。"
         exit 1
     }
     Write-Host "解压器: $sevenZip"
     & $sevenZip x $archive "-o$extractTmp" -y | Out-Null
     if ($LASTEXITCODE -ne 0) {
+        Remove-Item $extractTmp -Recurse -Force -ErrorAction SilentlyContinue
         Write-Error "解压失败 (exit $LASTEXITCODE)"
         exit $LASTEXITCODE
     }
 }
 
-# gyan 包解压后顶层有一个 ffmpeg-xxxx 目录，提取其内容到 DestDir
-$topDir = Get-ChildItem $extractTmp -Directory | Select-Object -First 1
-if ($topDir -and (Test-Path "$($topDir.FullName)\bin")) {
-    Move-Item $topDir.FullName $DestDir
-} else {
-    New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
-    Copy-Item "$extractTmp\*" $DestDir -Recurse -Force
+# gyan 包解压后顶层是一个 ffmpeg-8.1.2-full_build-www.gyan.dev 目录
+function Test-FfmpegLayout([string]$dir) {
+    return (Test-Path (Join-Path $dir "include\libavcodec\avcodec.h")) -and
+           (Test-Path (Join-Path $dir "lib\avcodec.lib")) -and
+           ((Get-ChildItem (Join-Path $dir "bin") -Filter "avcodec-*.dll" -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0)
 }
 
-# -- 清理临时文件 --
-Remove-Item $archive -Force -ErrorAction SilentlyContinue
-Remove-Item "$archive.sha256" -Force -ErrorAction SilentlyContinue
-Remove-Item $extractTmp -Recurse -Force -ErrorAction SilentlyContinue
-
-# 注意: 多余文件清理 (ffmpeg.exe/ffplay.exe/doc/) 在版本检测之后执行, 
-#       因为版本检测需要运行 ffmpeg.exe
-
-# -- 验证产物 + 写入版本 stamp --
-Write-Host ""
-Write-Host "=== 完成 ==="
-if (Test-Path "$DestDir\include\libavcodec\avcodec.h") {
-    # 提取实际 FFmpeg 版本号 (供团队协调版本一致性)
-    $ffVersion = ""
-    $ffExe = Join-Path $DestDir "bin\ffmpeg.exe"
-    if (Test-Path $ffExe) {
-        $verOutput = & $ffExe -version 2>&1 | Select-Object -First 1
-        if ($verOutput -match 'ffmpeg version\s+(\S+)') {
-            $ffVersion = $matches[1]
-            Write-Host "FFmpeg 版本: $ffVersion"
-        }
-    }
-
-    # 记录获取信息, 供后续跳过/更新判断
-    $stamp = @{
-        Variant       = $Variant
-        FFmpegVersion = $ffVersion
-        FetchedAt     = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-        Source        = $url
-    }
-    $stamp | ConvertTo-Json | Set-Content (Join-Path $DestDir ".videoeye-ffmpeg.json") -Encoding UTF8
-    Write-Host "FFmpeg 安装成功: $DestDir"
-    Write-Host "  Include: $DestDir\include"
-    Write-Host "  Lib:     $DestDir\lib"
-    Write-Host "  Bin:     $DestDir\bin"
-    Write-Host ""
-    Write-Host "CMake 配置时传递: -DFFMPEG_ROOT=`"$DestDir`""
-    Write-Host "或设置环境变量: set FFMPEG_ROOT=$DestDir"
-    if (-not $Version) {
-        Write-Host ""
-        Write-Host "提示: 当前使用 latest (release-full-shared)。团队协作时建议锁定版本:"
-        Write-Host "  powershell -File scripts\fetch-ffmpeg.ps1 -Version $ffVersion"
-        Write-Host "  或在 build_ninja.ps1 中设置 `$FfmpegVersion 变量"
-    }
-
-    # -- 清理运行时不需要的多余文件 (减小 ~27MB) --
-    # 版本检测已完成, 删除可执行工具和文档 (项目只需要 DLL + lib + include)
-    foreach ($exe in @("ffmpeg.exe", "ffplay.exe", "ffprobe.exe")) {
-        $exePath = Join-Path $DestDir "bin\$exe"
-        if (Test-Path $exePath) { Remove-Item $exePath -Force -ErrorAction SilentlyContinue }
-    }
-    foreach ($dir in @("doc", "presets")) {
-        $dirPath = Join-Path $DestDir $dir
-        if (Test-Path $dirPath) { Remove-Item $dirPath -Recurse -Force -ErrorAction SilentlyContinue }
-    }
+$payload = $null
+if (Test-FfmpegLayout $extractTmp) {
+    $payload = $extractTmp
 } else {
-    Write-Error "解压产物结构异常，未找到 include/libavcodec/avcodec.h"
+    foreach ($sub in (Get-ChildItem $extractTmp -Directory)) {
+        if (Test-FfmpegLayout $sub.FullName) { $payload = $sub.FullName; break }
+    }
+}
+if (-not $payload) {
+    Remove-Item $extractTmp -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Error "解压产物结构异常: 未找到完整的 {include,lib,bin}。请确认下载的是 full_build-shared 而非 essentials。"
     exit 1
 }
+Write-Host "结构校验通过: include/ + lib/ + bin/ 齐全"
+
+# ── 原子替换: 先备份旧目录, 成功后再删除 ──
+# 顺序很关键 —— 直接在解压前 Remove-Item 目标目录, 一旦下载/解压中途失败,
+# 原本能用的依赖也没了, 只剩一个"需要联网重下"的坑。
+$backup = ""
+if (Test-Path $DestDir) {
+    $backup = "$DestDir.old"
+    if (Test-Path $backup) { Remove-Item $backup -Recurse -Force }
+    Move-Item $DestDir $backup
+}
+
+try {
+    Write-Host ""
+    Write-Host "=== 安装到 $DestDir ==="
+    Copy-Item $payload $DestDir -Recurse -Force
+    if (-not (Test-FfmpegLayout $DestDir)) {
+        throw "安装后的目录不完整: $DestDir"
+    }
+} catch {
+    Write-Error "安装失败: $($_.Exception.Message)"
+    if ($backup -and (Test-Path $backup)) {
+        Write-Warning "正在恢复原有 FFmpeg: $DestDir"
+        if (Test-Path $DestDir) { Remove-Item $DestDir -Recurse -Force }
+        Move-Item $backup $DestDir
+    }
+    Remove-Item $extractTmp -Recurse -Force -ErrorAction SilentlyContinue
+    exit 1
+}
+
+if ($backup -and (Test-Path $backup)) { Remove-Item $backup -Recurse -Force }
+Remove-Item $extractTmp -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item $archive -Force -ErrorAction SilentlyContinue
+Remove-Item "$archive.sha256" -Force -ErrorAction SilentlyContinue
+
+# ── 记录版本 stamp (含 sha256, 便于追溯) ──
+Write-Host ""
+Write-Host "=== 完成 ==="
+$ffVersion = ""
+$ffExe = Join-Path $DestDir "bin\ffmpeg.exe"
+if (Test-Path $ffExe) {
+    $verOutput = & $ffExe -version 2>&1 | Select-Object -First 1
+    if ($verOutput -match 'ffmpeg version\s+(\S+)') { $ffVersion = $matches[1] }
+}
+
+$stamp = @{
+    Variant       = $variant
+    FFmpegVersion = $ffVersion
+    RequestedTag  = $Version
+    Sha256        = $actualHash
+    Verified      = -not $SkipChecksum
+    FetchedAt     = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+    Source        = $url
+}
+$stamp | ConvertTo-Json | Set-Content (Join-Path $DestDir ".videoeye-ffmpeg.json") -Encoding UTF8
+
+Write-Host "FFmpeg 安装成功: $DestDir"
+if ($ffVersion) { Write-Host "  ffmpeg.exe 自报版本: $ffVersion" }
+Write-Host "  Include: $DestDir\include"
+Write-Host "  Lib:     $DestDir\lib"
+Write-Host "  Bin:     $DestDir\bin"
+
+# ── 清理运行时不需要的东西 (约 -27MB): ffmpeg.exe/ffplay.exe/doc/ ──
+# 放在版本探测之后, 因为版本号是从 ffmpeg.exe -version 读出来的
+foreach ($exe in @("ffmpeg.exe", "ffplay.exe", "ffprobe.exe")) {
+    $exePath = Join-Path $DestDir "bin\$exe"
+    if (Test-Path $exePath) { Remove-Item $exePath -Force -ErrorAction SilentlyContinue }
+}
+foreach ($dir in @("doc", "presets")) {
+    $dirPath = Join-Path $DestDir $dir
+    if (Test-Path $dirPath) { Remove-Item $dirPath -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+Write-Host ""
+Write-Host "CMake 侧会自动找到该目录; 如需覆盖: -DFFMPEG_ROOT=`"$DestDir`""
+exit 0

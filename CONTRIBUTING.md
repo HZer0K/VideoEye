@@ -14,43 +14,50 @@
 
 ## 一键构建
 
+> `CMakePresets.json` 是构建配置的唯一来源，`build.bat` / `build.sh` / `build_ninja.ps1`
+> 只是它的薄封装。新增构建选项请改 preset，不要往脚本里塞 `-DCMAKE_XXX`。
+
 ### Windows
 ```powershell
-# 1. 安装 vcpkg 依赖（首次）
-#    追加 --x-feature=tests 才会安装 gtest（跑单元测试时）
-vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release \
-  --overlay-triplets=scripts/triplets --overlay-ports=scripts/overlay-ports --x-manifest-root=. --x-install-root=vcpkg_installed
-
-# 2. 构建（脚本自动探测 MSVC、自动获取 FFmpeg、复制 DLL）
-powershell -ExecutionPolicy Bypass -File build_ninja.ps1
+build.bat            # Release（等价于 cmake --preset win-release + --build）
+build.bat debug      # Debug
+build.bat clean      # 清理 build/release 与 build/debug
 ```
 
-或使用 CMake Presets（需先在「Developer PowerShell for VS 2022」中运行）：
-```powershell
-cmake --preset win-release
-cmake --build --preset win-release
-```
+无参数时要先满足：环境变量 `VCPKG_ROOT`，且 `ninja` / `cl.exe` 在 PATH 里
+（在「x64 Native Tools Command Prompt for VS 2022」中执行即可）。
+
+想自己铺本机路径就在 gitignore 掉的 `CMakeUserPresets.json` 里写，不要改 `CMakePresets.json`。
+FFmpeg 缺失时会自动调用 `scripts/fetch-ffmpeg.ps1`。
 
 ### Linux
 ```bash
-# 1. 安装系统依赖
-sudo apt install -y build-essential cmake pkg-config ninja-build qt6-base-dev
+# 系统依赖（FFmpeg 走系统开发包，由 pkg-config 查找）
+sudo apt install -y build-essential cmake ninja-build pkg-config qt6-base-dev \
+  libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
 
-# 2. 准备 FFmpeg 预编译包（唯一查找路径，不再走 pkg-config）
-#    third_party/prebuilt/linux-x64/ffmpeg/{include,lib,bin}
-
-# 3. 构建
-./setup.sh            # 一键：检查依赖 + 编译
-# 或
-cmake --preset linux-release && cmake --build --preset linux-release
+./build.sh release            # 等价于 cmake --preset linux-release && cmake --build --preset linux-release
+./setup.sh                    # 依赖自检 + 调用 build.sh
 ```
+
+## 单元测试
+
+```bash
+cmake --preset linux-test-debug         # Windows: win-test-release / win-test-debug
+cmake --build --preset linux-test-debug
+ctest --preset linux-test-debug
+```
+
+Windows 的 `-test-` preset 额外带 `VCPKG_MANIFEST_FEATURES=tests`，gtest 由 vcpkg 安装。
+建议用 `win-test-release`：Debug 配置需要重编整套 debug triplet 的 Qt，慢得多。
 
 ## 依赖说明
 
-| 依赖 | Windows 来源 | Linux 来源 |
+| 依赖 | Windows 来源 | Linux / macOS 来源 |
 |------|-------------|-----------|
-| Qt6 (Widgets) | vcpkg | apt (qt6-base-dev) |
-| FFmpeg | `scripts/fetch-ffmpeg.ps1`（gyan.dev 预编译） | 预编译包放到 `third_party/prebuilt/linux-x64/ffmpeg/` |
+| Qt6 (Widgets) | vcpkg manifest | apt (`qt6-base-dev`) / brew (`qt@6`) |
+| FFmpeg | `scripts/fetch-ffmpeg.ps1`（gyan.dev 预编译，版本锁在 `cmake/ffmpeg-version.json`） | 系统包 + `pkg-config`（找不到才回退 `third_party/prebuilt/<platform>/ffmpeg/`） |
+| GoogleTest（仅测试） | vcpkg feature `tests` | apt (`libgtest-dev`) / brew (`googletest`) |
 
 **项目只有 Qt Widgets + FFmpeg 两个硬依赖。** 媒体信息（FFmpeg `libavformat`）、图表
 （`ui/charts/MetricChartWidget`，QPainter 自绘）、MP4 样本表（`utils/IsobmffParser`）、

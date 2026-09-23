@@ -1,9 +1,17 @@
-﻿# VideoEye Windows Build Script (PowerShell + Ninja + MSVC)
-# Usage: powershell -ExecutionPolicy Bypass -File build_ninja.ps1 [-BuildType Debug|Release]
+﻿# ============================================================
+# build_ninja.ps1 — 历史入口，现在只是 build.bat 的转发器
 #
-# 自动探测 Visual Studio 2022 / Build Tools (via vswhere)，无需硬编码路径。
-# 依赖: vcpkg (vcpkg_installed/), FFmpeg (运行 scripts/fetch-ffmpeg.ps1 获取)
-
+# 真正的构建配置只有一份: CMakePresets.json (Windows 上由 CMakeUserPresets.json
+# 覆盖本机路径)。build.bat 负责准备 MSVC 环境 + FFmpeg，然后调用 cmake --preset。
+#
+# 以前这个文件自己拼 -DCMAKE_PREFIX_PATH / -DFFMPEG_ROOT / triplet，和 preset 是
+# 两套独立逻辑 —— 结果就是 Debug 链接 Release 的 Qt、vcpkg triplet 不一致、
+# 输出目录还多出一个 build-ninja/。现在统一走 build.bat。
+#
+# 产物路径也变了:
+#   旧: build-ninja\bin\VideoEye.exe / build-ninja-debug\bin\VideoEye.exe
+#   新: build\release\bin\VideoEye.exe / build\debug\bin\VideoEye.exe
+# ============================================================
 param(
     [ValidateSet("Release", "Debug")]
     [string]$BuildType = "Release"
@@ -12,138 +20,20 @@ param(
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$buildDir = if ($BuildType -eq "Debug") { "$projectRoot\build-ninja-debug" } else { "$projectRoot\build-ninja" }
+$bat = Join-Path $projectRoot "build.bat"
 
-# ── FFmpeg 版本锁定 ──
-# 团队统一使用 8.1.2 (gyan.dev full-shared 预编译包), 确保所有人构建环境一致。
-# 8.1.1 已从 gyan.dev 下线, 8.1.2 是 8.1.x 系列当前可用版本 (ABI 兼容)。
-$FfmpegVersion = "8.1.2"
-
-# -- 用 vswhere 自动探测 Visual Studio 安装路径 --
-$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-if (-not (Test-Path $vswhere)) {
-    $vswhere = "${env:ProgramFiles}\Microsoft Visual Studio\Installer\vswhere.exe"
-}
-if (-not (Test-Path $vswhere)) {
-    Write-Error "未找到 vswhere！请安装 Visual Studio 2022 或 Build Tools。"
+if (-not (Test-Path $bat)) {
+    Write-Error "未找到 build.bat: $bat"
     exit 1
 }
-$vsRoot = & $vswhere -latest -products * `
-    -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-    -property installationPath
-if (-not $vsRoot) {
-    Write-Error "vswhere 未找到带 C++ 工具链的 VS 安装。请在 VS Installer 中勾选 '使用 C++ 的桌面开发' 工作负载。"
-    exit 1
-}
-Write-Output "VS 安装路径: $vsRoot"
 
-# -- 通过 vcvars64.bat 导入完整 MSVC 环境 (PATH/INCLUDE/LIB) --
-$vcvars = "$vsRoot\VC\Auxiliary\Build\vcvars64.bat"
-if (-not (Test-Path $vcvars)) {
-    Write-Error "未找到 vcvars64.bat: $vcvars"
-    exit 1
-}
-Write-Output "导入 MSVC 环境..."
-# 注意: cmd 的 set 输出中 PATH 可能存在多个大小写变体 (Path/PATH/path, 值不同),
-# 若按顺序全部 Set-Item, 最后写入的不含 MSVC 的变体会覆盖 MSVC 路径导致 cl.exe 找不到。
-# 因此按大小写不敏感去重, 只保留第一个出现的条目; 之后再兜底前置 MSVC bin 目录。
-$envSeen = @{}
-cmd /c "`"$vcvars`" x64 && set" | ForEach-Object {
-    if ($_ -match '^(.*?)=(.*)$') {
-        $envName = $matches[1]
-        if ($envSeen.ContainsKey($envName.ToLowerInvariant())) { return }
-        $envSeen[$envName.ToLowerInvariant()] = $true
-        Set-Item -Path "env:$envName" -Value $matches[2].TrimEnd()
-    }
-}
-# 兜底: 若 PATH 中缺少 MSVC cl.exe 目录, 显式前置 (兼容大小写变体残留的情况)
-$msvcLatest = Get-ChildItem "$vsRoot\VC\Tools\MSVC" -Directory -ErrorAction SilentlyContinue |
-    Sort-Object Name -Descending | Select-Object -First 1
-if ($msvcLatest) {
-    $clDir = Join-Path $msvcLatest.FullName "bin\HostX64\x64"
-    if ((Test-Path (Join-Path $clDir "cl.exe")) -and $env:PATH -notlike "*$clDir*") {
-        $env:PATH = "$clDir;$env:PATH"
-    }
-}
+Write-Host "==> build_ninja.ps1 已改为 build.bat 的薄封装 (构建配置源: CMakePresets.json)"
+Write-Host "    -BuildType $BuildType  ->  build.bat $($BuildType.ToLower())"
+Write-Host ""
 
-# -- 定位 ninja --
-$ninjaExe = "$vsRoot\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"
-if (-not (Test-Path $ninjaExe)) {
-    $ninjaCmd = Get-Command ninja -ErrorAction SilentlyContinue
-    if ($ninjaCmd) { $ninjaExe = $ninjaCmd.Source }
-    else {
-        Write-Error "未找到 ninja.exe！请在 VS Installer 中勾选 'C++ CMake tools for Windows'，或将 ninja 加入 PATH。"
-        exit 1
-    }
-}
+& cmd /c "`"$bat`" $($BuildType.ToLower())"
+$code = $LASTEXITCODE
 
-$vcpkgTriplet = "x64-windows-release"
-$vcpkgLib = "$projectRoot\vcpkg_installed\$vcpkgTriplet\lib"
-
-# vcpkg lib 必须加入 LIB，否则链接器找不到 Qt6 的裸名引用
-if (Test-Path $vcpkgLib) {
-    $env:LIB = "$vcpkgLib;$env:LIB"
-}
-
-Write-Output "=== VideoEye Ninja Build (Windows) ==="
-Write-Output "Project: $projectRoot"
-$clPath = Get-Command cl.exe -ErrorAction SilentlyContinue
-if ($clPath) { Write-Output "Compiler: $($clPath.Source)" } else { Write-Error "cl.exe not found!"; exit 1 }
-Write-Output "Ninja: $ninjaExe"
-
-# -- 检查 vcpkg 依赖 --
-# 注意: 不能只判断 vcpkg_installed/<triplet>/include 是否存在 —— vcpkg install 失败时
-# 会把 qtbase 从 installed tree 里摘掉，但 zlib/freetype 等仍在，include/ 照样存在，
-# 于是这里会误报"已安装"，真正的失败被推迟到 find_package(Qt6) 才暴露。
-# 直接盯 Qt6Config.cmake 才能一次说准。
-$vcpkgQt6Config = "$projectRoot\vcpkg_installed\$vcpkgTriplet\share\Qt6\Qt6Config.cmake"
-if (-not (Test-Path $vcpkgQt6Config)) {
-    Write-Output "WARNING: 未找到 Qt6 ($vcpkgQt6Config)。运行:"
-    Write-Output "  vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --overlay-ports=scripts/overlay-ports --x-manifest-root=. --x-install-root=vcpkg_installed"
-    Write-Output "（release-only triplet，host==target 同名，省约一半磁盘/安装时间）"
-    Write-Output "（包已在 binary cache 里时通常几十秒即可恢复，不需要重新编译 Qt）"
-}
-
-# -- 检查/获取 FFmpeg --
-$ffmpegDir = "$projectRoot\third_party\prebuilt\windows-x64\ffmpeg"
-if (-not (Test-Path "$ffmpegDir\include\libavcodec\avcodec.h")) {
-    Write-Output "FFmpeg 未找到，自动获取中..."
-    if ($FfmpegVersion) {
-        & powershell -ExecutionPolicy Bypass -File "$projectRoot\scripts\fetch-ffmpeg.ps1" -Version $FfmpegVersion
-    } else {
-        & powershell -ExecutionPolicy Bypass -File "$projectRoot\scripts\fetch-ffmpeg.ps1"
-    }
-    if ($LASTEXITCODE -ne 0) { Write-Error "FFmpeg 获取失败"; exit $LASTEXITCODE }
-    if (-not (Test-Path "$ffmpegDir\include\libavcodec\avcodec.h")) {
-        Write-Error "FFmpeg 获取后仍未找到头文件: $ffmpegDir\include\libavcodec\avcodec.h"
-        exit 1
-    }
-}
-$ffmpegArg = "-DFFMPEG_ROOT=$ffmpegDir"
-
-# Create build directory
-if (!(Test-Path $buildDir)) { New-Item -ItemType Directory -Path $buildDir | Out-Null }
-Set-Location $buildDir
-
-# -- Configure (总是执行; cmake 增量配置很快, 避免参数/依赖变化后陈旧缓存) --
-Write-Output "=== Configuring CMake with Ninja ==="
-& cmake $projectRoot -G Ninja `
-    "-DCMAKE_BUILD_TYPE=$BuildType" `
-    "-DCMAKE_MAKE_PROGRAM=$ninjaExe" `
-    "-DCMAKE_PREFIX_PATH=$projectRoot\vcpkg_installed\$vcpkgTriplet" `
-    $ffmpegArg -DBUILD_TESTING=OFF
-if ($LASTEXITCODE -ne 0) { Write-Output "CMake configuration failed!"; exit $LASTEXITCODE }
-
-# -- Build --
-Write-Output "=== Building ==="
-$jobs = [int]$env:NUMBER_OF_PROCESSORS
-if ($jobs -lt 1) { $jobs = 4 }
-& $ninjaExe "-j$jobs"
-if ($LASTEXITCODE -ne 0) { Write-Output "Build failed!"; exit $LASTEXITCODE }
-
-# 运行时 DLL / Qt 插件已由 CMake POST_BUILD 步骤 (TARGET_RUNTIME_DLLS +
-# FFmpeg bin 拷贝 + windeployqt) 自动部署到 bin/, 无需手动复制。
-
-Write-Output ""
-Write-Output "=== Build complete! ==="
-Write-Output "Executable: $buildDir\bin\VideoEye.exe"
+Write-Host ""
+Write-Host "产物: $projectRoot\build\$($BuildType.ToLower())\bin\VideoEye.exe"
+exit $code

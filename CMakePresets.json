@@ -7,8 +7,9 @@
   },
   "vendor": {
     "videoeye": {
-      "note": "本文件只放通用配置，不含任何本机绝对路径。Windows 上需要：环境变量 VCPKG_ROOT 指向 vcpkg 根目录，且 PATH 里能找到 ninja 与 cl.exe（在 'x64 Native Tools Command Prompt for VS 2022' 里执行即可）。要把 VS 版本 / Windows SDK 版本 / cl.exe / ninja 的绝对路径钉死，请写进 CMakeUserPresets.json（已 gitignore），不要修改本文件。",
-      "example-local-overrides": "CMakeUserPresets.json 里 inherits \"win-release\"，再覆盖 environment 与 CMAKE_MAKE_PROGRAM / CMAKE_C_COMPILER / CMAKE_CXX_COMPILER 即可。"
+      "note": "本文件是构建配置的唯一真实来源(single source of truth)，不含任何本机绝对路径。build.bat / build.sh / build_ninja.ps1 都只是它的薄封装。Windows 上需要：环境变量 VCPKG_ROOT 指向 vcpkg 根目录，且 PATH 里能找到 ninja 与 cl.exe（在 'x64 Native Tools Command Prompt for VS 2022' 里执行即可）。要把 VS 版本 / Windows SDK 版本 / cl.exe / ninja 的绝对路径钉死，请写进 CMakeUserPresets.json（已 gitignore），不要修改本文件。",
+      "example-local-overrides": "CMakeUserPresets.json 里 inherits \"win-release\"，再覆盖 environment 与 CMAKE_MAKE_PROGRAM / CMAKE_C_COMPILER / CMAKE_CXX_COMPILER 即可。",
+      "naming": "win-* 是 Windows(MSVC+vcpkg)，linux-* 是 Linux/macOS(系统 Qt 与系统 FFmpeg)。*-test-* 额外打开 BUILD_TESTING，并在 Windows 上启用 vcpkg 的 tests feature(gtest)。"
     }
   },
   "configurePresets": [
@@ -25,6 +26,15 @@
         "VCPKG_OVERLAY_PORTS": "${sourceDir}/scripts/overlay-ports",
         "FFMPEG_ROOT": "${sourceDir}/third_party/prebuilt/windows-x64/ffmpeg",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "windows-test-base",
+      "hidden": true,
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "BUILD_TESTING": "ON",
+        "VCPKG_MANIFEST_FEATURES": "tests"
       }
     },
     {
@@ -48,23 +58,66 @@
       }
     },
     {
-      "name": "linux-release",
-      "displayName": "Linux Release",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/release",
+      "name": "win-test-release",
+      "displayName": "Windows Release + Unit Tests (推荐/CI 用: 复用 release triplet)",
+      "inherits": "windows-test-base",
+      "binaryDir": "${sourceDir}/build/test-release",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "win-test-debug",
+      "displayName": "Windows Debug + Unit Tests (首次会用 debug triplet 重编 Qt, 很慢)",
+      "inherits": "windows-test-base",
+      "binaryDir": "${sourceDir}/build/test-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-debug",
+        "VCPKG_HOST_TRIPLET": "x64-windows-release"
+      }
+    },
+    {
+      "name": "linux-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     },
     {
+      "name": "linux-test-base",
+      "hidden": true,
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "linux-release",
+      "displayName": "Linux/macOS Release",
+      "inherits": "linux-base",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
       "name": "linux-debug",
-      "displayName": "Linux Debug",
-      "generator": "Ninja",
+      "displayName": "Linux/macOS Debug",
+      "inherits": "linux-base",
       "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "linux-test-debug",
+      "displayName": "Linux/macOS Debug + Unit Tests",
+      "inherits": "linux-test-base",
+      "binaryDir": "${sourceDir}/build/test-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
       }
     }
   ],
@@ -78,12 +131,59 @@
       "configurePreset": "win-debug"
     },
     {
+      "name": "win-test-release",
+      "configurePreset": "win-test-release"
+    },
+    {
+      "name": "win-test-debug",
+      "configurePreset": "win-test-debug"
+    },
+    {
       "name": "linux-release",
       "configurePreset": "linux-release"
     },
     {
       "name": "linux-debug",
       "configurePreset": "linux-debug"
+    },
+    {
+      "name": "linux-test-debug",
+      "configurePreset": "linux-test-debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "win-test-release",
+      "configurePreset": "win-test-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error",
+        "stopOnFailure": true
+      }
+    },
+    {
+      "name": "win-test-debug",
+      "configurePreset": "win-test-debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error",
+        "stopOnFailure": true
+      }
+    },
+    {
+      "name": "linux-test-debug",
+      "configurePreset": "linux-test-debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error",
+        "stopOnFailure": true
+      }
     }
   ]
 }

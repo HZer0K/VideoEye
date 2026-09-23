@@ -39,9 +39,9 @@ TEST(FrameDataTest, CopyFromCreatesIndependentPlaneStorage) {
     ASSERT_NE(copy.data[0], source.data[0]);
     ASSERT_NE(copy.data[1], source.data[1]);
     ASSERT_NE(copy.data[2], source.data[2]);
-    EXPECT_EQ(copy.owned[0].size, 16U);
-    EXPECT_EQ(copy.owned[1].size, 4U);
-    EXPECT_EQ(copy.owned[2].size, 4U);
+    EXPECT_EQ(copy.owned[0].size(), 16U);
+    EXPECT_EQ(copy.owned[1].size(), 4U);
+    EXPECT_EQ(copy.owned[2].size(), 4U);
     ASSERT_EQ(copy.width, source.width);
     ASSERT_EQ(copy.height, source.height);
     ASSERT_EQ(copy.format, source.format);

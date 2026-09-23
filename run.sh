@@ -1,43 +1,44 @@
 #!/bin/bash
-
-# VideoEye 快速启动脚本
+# ========================================
+#  VideoEye - 快速启动 (Linux / macOS / WSL)
+#  用法: ./run.sh [release|debug]
+#  默认: release
+#
+#  构建配置统一放在 CMakePresets.json，这里只负责"没构建过就先构建"。
+# ========================================
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUILD_DIR="${SCRIPT_DIR}/build"
+BUILD_TYPE="${1:-release}"
+
+case "$BUILD_TYPE" in
+    release|debug) ;;
+    *) echo "用法: $0 [release|debug]"; exit 1 ;;
+esac
+
+BUILD_DIR="${SCRIPT_DIR}/build/${BUILD_TYPE}"
 EXECUTABLE="${BUILD_DIR}/bin/VideoEye"
 
 echo "====================================="
 echo "VideoEye 2.0 启动器"
 echo "====================================="
 
-# 检查可执行文件是否存在
 if [ ! -f "$EXECUTABLE" ]; then
-    echo "❌ 未找到可执行文件"
-    echo "正在编译项目 (cmake --preset linux-release)..."
-
-    cd "$SCRIPT_DIR"
-    cmake --preset linux-release
-    if [ $? -ne 0 ]; then
-        echo "❌ CMake 配置失败! FFmpeg 需放在 third_party/prebuilt/linux-x64/ffmpeg/"
-        exit 1
-    fi
-    cmake --build --preset linux-release
-    if [ $? -ne 0 ]; then
-        echo "❌ 编译失败!"
-        exit 1
-    fi
+    echo "未找到可执行文件: $EXECUTABLE"
+    echo "先构建 ($BUILD_TYPE)..."
+    "$SCRIPT_DIR/build.sh" "$BUILD_TYPE"
 fi
 
-echo "✅ 找到可执行文件: $EXECUTABLE"
+echo "可执行文件: $EXECUTABLE"
 echo "启动 VideoEye..."
 echo "====================================="
 
-# 设置 Qt 平台
-export QT_QPA_PLATFORM=xcb
+# Linux 桌面环境下强制 xcb 插件（Wayland 会话里 Qt 有时会挑错平台插件）
+if [ "$(uname)" = "Linux" ]; then
+    export QT_QPA_PLATFORM=xcb
+fi
 
-# 运行程序
-cd "$BUILD_DIR"
-./bin/VideoEye &
-
-echo "🎬 VideoEye 已启动 (PID: $!)"
+"$EXECUTABLE" &
+PID=$!
+echo "VideoEye 已启动 (PID: $PID)"
 echo "====================================="
