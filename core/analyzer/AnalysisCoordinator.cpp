@@ -1,7 +1,10 @@
 #include "core/analyzer/AnalysisCoordinator.h"
 #include "core/analyzer/BitstreamAnalyzer.h"
+#include "core/analyzer/DashManifestAnalyzer.h"
+#include "core/analyzer/HlsManifestAnalyzer.h"
 #include "core/analyzer/TimelineAnalyzer.h"
 #include "utils/FileProbe.h"
+#include "utils/ManifestText.h"
 
 #include <QMetaType>
 
@@ -48,6 +51,12 @@ bool IsMp4Family(const std::string& format_name) {
         if (format_name == name) return true;
     }
     return false;
+}
+
+// 流媒体清单的扩展名。清单是纯文本，扩展名是唯一的识别手段
+// （魔数检测对 "#EXTM3U" / "<MPD" 无能为力）。
+bool IsStreamingManifestExtension(const std::string& ext) {
+    return ext == "m3u8" || ext == "m3u" || ext == "mpd";
 }
 
 // 扫描顶层 box 顺序，判断 moov 是否在 mdat 之后（未 faststart）
@@ -245,6 +254,16 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
                            result.file_extension.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         }
+    }
+
+    // ---- 流媒体清单分流（必须在 avformat_open_input 之前）----
+    // FFmpeg 会把 .m3u8 / .mpd 当成 HLS / DASH 播放列表去发网络请求，
+    // 离线分析时既不可控（卡在网络超时），也拿不到有意义的时长/码率序列。
+    // 所以这里在打开任何 IO 之前就分流到自研的清单解析器。
+    if (options.analyze_streaming_package && IsStreamingManifestExtension(result.file_extension) &&
+        file_path.find("://") == std::string::npos) {
+        RunStreamingManifest(generation, file_path, options, result);
+        return;
     }
 
     AVFormatContext* fmt = nullptr;
@@ -909,6 +928,63 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
 
     running_.store(false, std::memory_order_release);
     emit ProgressReported(generation, 100.0, QStringLiteral("分析完成"));
+    emit AnalysisFinished(generation, result.completed, result);
+}
+
+void AnalysisCoordinator::RunStreamingManifest(quint64 generation, const std::string& file_path,
+                                               const AnalysisOptions& options, AnalysisResult& result) {
+    VE_PERF("AnalysisCoordinator::RunStreamingManifest");
+    const bool is_dash = (result.file_extension == "mpd");
+    result.container_format = is_dash ? "dash" : "hls";
+
+    model::StreamingPackageResult& pkg = result.streaming_package;
+    bool ok = false;
+    {
+        VE_PERF("流媒体清单解析");
+        if (is_dash) {
+            DashManifestAnalyzer dash;
+            ok = dash.AnalyzeFile(file_path, pkg);
+        } else {
+            HlsManifestAnalyzer hls;
+            ok = hls.AnalyzeFile(file_path, pkg);
+        }
+    }
+    if (!ok) {
+        running_.store(false, std::memory_order_release);
+        emit AnalysisFailed(generation, QString::fromStdString(
+            pkg.error_message.empty() ? ("无法解析清单: " + file_path) : pkg.error_message));
+        return;
+    }
+
+    {
+        VE_PERF("SegmentQcAnalyzer::Analyze");
+        SegmentQcAnalyzer::Analyze(pkg, options.streaming_package_options);
+    }
+    result.streaming_analyzed = true;
+
+    int64_t manifest_size = 0;
+    utils::manifest::FileSizeOf(file_path, manifest_size);
+    result.file_size_bytes = manifest_size;
+    // 时长取清单声明值：分片本体不 demux，拿不到更精确的数字
+    if (is_dash) {
+        result.duration_seconds = pkg.media_presentation_duration_s;
+    } else {
+        double longest = 0.0;
+        for (const model::MediaPlaylistInfo& pl : pkg.playlists) {
+            if (pl.total_duration_seconds > longest) longest = pl.total_duration_seconds;
+        }
+        result.duration_seconds = longest;
+    }
+    result.seekable = true;
+    result.completed = true;
+
+    LOG_INFO("流媒体清单分析完成: kind=" + std::to_string(static_cast<int>(pkg.kind)) +
+             " ladder=" + std::to_string(pkg.ladder.size()) +
+             " segments=" + std::to_string(pkg.TotalSegments()) +
+             " issues=" + std::to_string(pkg.issues.size()));
+
+    running_.store(false, std::memory_order_release);
+    emit ProgressReported(generation, 100.0, QStringLiteral("清单分析完成"));
     emit AnalysisFinished(generation, result.completed, result);
 }
 

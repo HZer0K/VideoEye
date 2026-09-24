@@ -117,6 +117,7 @@ VideoEye/
 | [docs/BITRATE_GOP_ANALYSIS.md](docs/BITRATE_GOP_ANALYSIS.md) | 滑动窗口码率、GOP 重建与异常识别 |
 | [docs/COLOR_HDR_ANALYSIS.md](docs/COLOR_HDR_ANALYSIS.md) | 色彩与 HDR 元数据快照与告警 |
 | [docs/MP4_SAMPLE_TABLE.md](docs/MP4_SAMPLE_TABLE.md) | MP4/fMP4 样本表一致性校验 |
+| [docs/HLS_DASH_SEGMENT.md](docs/HLS_DASH_SEGMENT.md) | HLS/DASH 流媒体包检测（manifest + segment + 多码率 ladder） |
 
 ## 测试
 

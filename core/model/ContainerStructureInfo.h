@@ -9,6 +9,7 @@
 #include "core/model/Mp4BoxInfo.h"
 #include "core/model/Mp4SampleInfo.h"
 #include "core/model/EbmlInfo.h"
+#include "core/model/StreamPackageInfo.h"
 
 namespace videoeye {
 namespace model {
@@ -25,6 +26,11 @@ enum class ContainerFormat {
     MPEG_TS,
     ASF,
     OGG,
+    // 流媒体清单（纯文本，魔数识别不出来，只能靠扩展名）：
+    // HLS 的 .m3u8 与 DASH 的 .mpd。二者都不是"容器"而是分片索引，
+    // 但仍然走 ContainerStructureAnalyzer 的分发，由 StreamingPackage* 系列解析。
+    HLS,
+    DASH,
     FFmpeg_Generic
 };
 
@@ -67,6 +73,10 @@ struct ContainerStructureResult {
     // MP4/fMP4 样本级一致性（sample table / elst / moof-traf-trun / faststart）
     // 由 ContainerStructureAnalyzer 在 MP4 家族时顺带跑一遍（自研 IsobmffParser 解析）
     Mp4SampleTableResult mp4_samples;
+
+    // HLS / DASH 流媒体包（manifest + segment + 多码率 ladder）。
+    // 只有 format == HLS / DASH 时才填充，见 core/analyzer/HlsManifestAnalyzer.h。
+    StreamingPackageResult streaming_package;
 };
 
 } // namespace model

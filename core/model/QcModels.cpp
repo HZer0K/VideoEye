@@ -153,6 +153,120 @@ std::vector<QcRule> DefaultQcRules() {
         "播放器无法算出样本数据的文件偏移。",
         "重新封装；CMAF 要求前两者至少有一个。");
 
+    // ---- HLS 流媒体包（core/analyzer/HlsManifestAnalyzer）----
+    // 与 MP4 那一组同样的套路：问题由分析器产出，规则决定要不要报、以什么级别报。
+    add("container.hls.missing_target_duration", "缺少目标分片时长", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "媒体播放列表缺少 EXT-X-TARGETDURATION。",
+        "补上 #EXT-X-TARGETDURATION:<n>，其值不小于任一 EXTINF 的整数值。");
+
+    add("container.hls.segment_duration_over_target", "分片时长超过目标时长", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "个",
+        "存在时长超过 EXT-X-TARGETDURATION 的分片，播放器按 target 预取不足会卡顿。",
+        "调大 EXT-X-TARGETDURATION，或重新切片让分片时长稳定。");
+
+    add("container.hls.segment_duration_jitter", "分片时长抖动过大", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::MaxExceeded, 0.25, "",
+        "分片时长忽长忽短，ABR 切换点与 GOP 边界对不齐。",
+        "按固定 GOP 切片，让码率 ladder 使用相同的切片点。");
+
+    add("container.hls.discontinuity_unpaired", "discontinuity 未配对", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "处",
+        "EXT-X-DISCONTINUITY 没有与之配对的序号、后面没有分片，或音视频两侧位置不一致。",
+        "补 EXT-X-DISCONTINUITY-SEQUENCE，并让同一内容的所有 variant / 音轨在同一时间点打标记。");
+
+    add("container.hls.missing_init_section", "缺少初始化段", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "fMP4/CMAF 分片没有 EXT-X-MAP 声明初始化段。",
+        "用 #EXT-X-MAP:URI=\"init.mp4\" 给出含 moov 的初始化段。");
+
+    add("container.hls.encryption_key", "分片已加密", IssueCategory::Container,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "",
+        "清单声明了 EXT-X-KEY，播放依赖密钥服务。",
+        "确认密钥服务在目标网络可达；SAMPLE-AES 与 fMP4 组合需确认播放器支持。");
+
+    add("container.hls.partial_segment", "启用 LL-HLS 部分分片", IssueCategory::Container,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "个",
+        "清单使用了 EXT-X-PART（Low-Latency HLS）。",
+        "确认服务端支持阻塞式播放列表重载，且 CDN 不会缓存部分分片。");
+
+    add("container.hls.variant_bandwidth_mismatch", "实测码率高于声明带宽", IssueCategory::Bitrate,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "条",
+        "实测峰值段码率明显高于 EXT-X-STREAM-INF 的 BANDWIDTH。",
+        "按实测峰值更新 BANDWIDTH，或加 VBV/maxrate 让分片码率更平。");
+
+    add("container.hls.variant_resolution_mismatch", "码率阶梯分辨率异常", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "ladder 里有流未声明 RESOLUTION，或分辨率与码率顺序矛盾。",
+        "给每条 EXT-X-STREAM-INF 补 RESOLUTION，并保证分辨率随码率单调不减。");
+
+    add("container.hls.variant_codec_mismatch", "码率阶梯编码不一致", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "种",
+        "同一条 ladder 混用了不同的视频编码，ABR 切换时解码器要重建。",
+        "同一 ladder 使用同一种编码（含 profile/level 兼容）。");
+
+    add("container.hls.variant_keyframe_misalign", "多码率关键帧不对齐", IssueCategory::Gop,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "条",
+        "各码率的分片起点（关键帧）时间轴不一致，ABR 无法在切换点无缝切换。",
+        "让所有码率层使用相同的 GOP 长度与切片起点。");
+
+    add("container.hls.av_segment_count_mismatch", "音视频分片数量/时长对不上", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "视频轨与音轨的分片数量不同，且总时长差超过一个分片。",
+        "让音视频使用相同的分片时长并对齐起点。");
+
+    // ---- DASH 流媒体包（core/analyzer/DashManifestAnalyzer）----
+    add("container.dash.segment_timeline_gap", "SegmentTimeline 存在时间缺口", IssueCategory::Container,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "处",
+        "SegmentTimeline 的相邻 <S> 之间存在时间空洞，播放器会缓冲失败或跳播。",
+        "补齐缺失的分片，或用 <S t=...> 显式声明每个区段的起点。");
+
+    add("container.dash.segment_timeline_overlap", "SegmentTimeline 存在时间重叠", IssueCategory::Container,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "处",
+        "SegmentTimeline 的相邻 <S> 时间倒退，会导致重复播放与音画错位。",
+        "修正 <S> 的 t / d / r，让各区段首尾相接。");
+
+    add("container.dash.missing_segment_info", "缺少分片定位信息", IssueCategory::Container,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "",
+        "Representation 既没有 SegmentTemplate，也没有 SegmentList / SegmentBase。",
+        "补 SegmentTemplate（推荐），或至少给 SegmentBase + indexRange。");
+
+    add("container.dash.representation_bandwidth_mismatch", "实测码率高于声明带宽", IssueCategory::Bitrate,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "条",
+        "实测峰值段码率明显高于 Representation@bandwidth。",
+        "按实测峰值更新 bandwidth，或加 VBV/maxrate 让分片码率更平。");
+
+    add("container.dash.representation_resolution_mismatch", "码率阶梯分辨率异常", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "ladder 里有 Representation 未声明 width/height，或分辨率与码率顺序矛盾。",
+        "给每个 Representation 补 width / height，并保证分辨率随码率单调不减。");
+
+    add("container.dash.representation_codec_mismatch", "码率阶梯编码不一致", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "种",
+        "同一条 ladder 混用了不同的视频编码，ABR 切换时解码器要重建。",
+        "同一 ladder 使用同一种编码（含 profile/level 兼容）。");
+
+    add("container.dash.variant_keyframe_misalign", "多码率关键帧不对齐", IssueCategory::Gop,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "条",
+        "各 Representation 的分片起点（关键帧）时间轴不一致。",
+        "让所有码率层使用相同的 GOP 长度与切片起点。");
+
+    add("container.dash.av_segment_count_mismatch", "音视频分片数量/时长对不上", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "同一 Period 内视频轨与音轨的总时长差超过一个分片。",
+        "让音视频使用相同的分片时长并对齐起点。");
+
+    // ---- HLS / DASH 通用（core/analyzer/SegmentQcAnalyzer）----
+    add("container.streaming.segment_missing_file", "分片文件不存在", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "个",
+        "清单声明的本地分片在磁盘上找不到。",
+        "补齐分片文件，或修正清单里的相对路径。");
+
+    add("container.streaming.segment_container_invalid", "分片容器解析失败", IssueCategory::Container,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "个",
+        "分片文件存在，但用已有的容器分析器解析失败。",
+        "单独打开该分片看具体报错；常见原因是分片被截断或缺少初始化段。");
+
     // ---- 码率 ----
     add("video.bitrate.peak_ratio", "码率波动过大", IssueCategory::Bitrate,
         IssueSeverity::Warning, QcRuleOp::MaxExceeded, 3.0, "倍",

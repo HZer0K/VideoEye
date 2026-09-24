@@ -45,6 +45,12 @@ signals:
 private:
     void Run(quint64 generation, std::string file_path, AnalysisOptions options);
 
+    // 流媒体清单（.m3u8 / .mpd）分支：只跑自研清单解析，不做 FFmpeg demux。
+    // 从 Run 里单独拆出来是因为这条路径完全不碰 avformat ——
+    // FFmpeg 会把清单当播放列表去发网络请求，离线 QC 既不可控也无法单测。
+    void RunStreamingManifest(quint64 generation, const std::string& file_path,
+                              const AnalysisOptions& options, AnalysisResult& result);
+
     std::atomic<bool> cancel_requested_{false};
     std::atomic<bool> running_{false};
     std::atomic<quint64> generation_{0};

@@ -8,9 +8,13 @@
 #include "TsStructureAnalyzer.h"
 #include "AsfStructureAnalyzer.h"
 #include "OggStructureAnalyzer.h"
+#include "HlsManifestAnalyzer.h"
+#include "DashManifestAnalyzer.h"
+#include "SegmentQcAnalyzer.h"
 #include "utils/Logger.h"
 #include "utils/ScopedTimer.h"
 #include <QStringList>
+#include <algorithm>
 #include <chrono>
 
 namespace videoeye {
@@ -161,6 +165,12 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
         TsStructureAnalyzer ts;
         if (ts.Analyze(file_path, result)) return true;
         LOG_WARN("TS 专用解析器失败, 回退到 FFmpeg");
+        return AnalyzeWithFFmpeg(file_path, result);
+    }
+    case model::ContainerFormat::HLS:
+    case model::ContainerFormat::DASH: {
+        if (AnalyzeStreamingManifest(file_path, result)) return true;
+        LOG_WARN("流媒体清单解析失败, 回退到 FFmpeg");
         return AnalyzeWithFFmpeg(file_path, result);
     }
     case model::ContainerFormat::ASF: {
@@ -509,6 +519,265 @@ bool ContainerStructureAnalyzer::AnalyzeWithFFmpeg(const QString& file_path,
 
     avformat_close_input(&fmt_ctx);
     return true;
+}
+
+bool ContainerStructureAnalyzer::AnalyzeStreamingManifest(const QString& file_path,
+                                                          model::ContainerStructureResult& result) {
+    VE_PERF("AnalyzeStreamingManifest");
+    const std::string path = file_path.toStdString();
+    model::StreamingPackageResult& pkg = result.streaming_package;
+
+    bool ok = false;
+    if (result.format == model::ContainerFormat::DASH) {
+        DashManifestAnalyzer dash;
+        ok = dash.AnalyzeFile(path, pkg);
+    } else {
+        HlsManifestAnalyzer hls;
+        ok = hls.AnalyzeFile(path, pkg);
+    }
+    if (!ok) {
+        result.valid = false;
+        result.error_message = QString::fromStdString(pkg.error_message);
+        return false;
+    }
+
+    // 分片级 / ladder 级交叉校验。fMP4 分片在这里被 Mp4SampleTableAnalyzer 解析，
+    // MPEG-TS 分片的逐包解析要依赖 Qt，放到下面的 ProbeTsSegments。
+    SegmentQcAnalyzer::Analyze(pkg, SegmentQcOptions{});
+
+    ProbeTsSegments(result);
+    BuildStreamingTree(result);
+
+    result.valid = true;
+    return true;
+}
+
+void ContainerStructureAnalyzer::ProbeTsSegments(model::ContainerStructureResult& result) {
+    model::StreamingPackageResult& pkg = result.streaming_package;
+    constexpr int kMaxTsProbe = 3;  // 抽查头几个就够了：分片是同一次切片产出的
+    int probed = 0;
+
+    auto probe_one = [&](model::SegmentInfo& seg) {
+        if (probed >= kMaxTsProbe) return;
+        if (seg.partial || seg.container != model::SegmentContainer::MPEG_TS) return;
+        if (!seg.exists || seg.resolved_path.empty()) return;
+        ++probed;
+        TsStructureAnalyzer ts;
+        model::ContainerStructureResult ts_result;
+        if (ts.Analyze(QString::fromStdString(seg.resolved_path), ts_result)) {
+            seg.probed = true;
+            return;
+        }
+        seg.container_parse_failed = true;
+        seg.container_error = ts_result.error_message.isEmpty()
+                                  ? std::string("TS 结构解析失败")
+                                  : ts_result.error_message.toStdString();
+    };
+
+    for (model::MediaPlaylistInfo& pl : pkg.playlists) {
+        for (model::SegmentInfo& seg : pl.segments) probe_one(seg);
+    }
+    for (model::DashRepresentationInfo& rep : pkg.representations) {
+        for (model::SegmentInfo& seg : rep.segments) probe_one(seg);
+    }
+}
+
+void ContainerStructureAnalyzer::BuildStreamingTree(model::ContainerStructureResult& result) {
+    const model::StreamingPackageResult& pkg = result.streaming_package;
+
+    auto make_elem = [](const QString& name, const QString& type, int depth,
+                        const QString& value = QString(),
+                        const QString& extra = QString()) {
+        model::ContainerElement e;
+        e.name = name;
+        e.type = type;
+        e.depth = depth;
+        e.value = value;
+        e.extra = extra;
+        return e;
+    };
+
+    model::ContainerElement root = make_elem(QString::fromStdString(model::ToString(pkg.kind)),
+                                             "Manifest", 0);
+    root.extra = QString::fromStdString(pkg.manifest_path);
+
+    if (pkg.IsDash()) {
+        root.value = QString("%1 | %2 Period | %3 Representation")
+                         .arg(QString::fromStdString(pkg.mpd_type))
+                         .arg(pkg.periods.size())
+                         .arg(pkg.representations.size());
+        for (const model::DashPeriodInfo& period : pkg.periods) {
+            model::ContainerElement period_elem =
+                make_elem(QString("Period %1").arg(period.index), "Period", 1,
+                          QString("duration=%1s").arg(period.duration_seconds, 0, 'f', 3));
+            for (const model::DashAdaptationSetInfo& as : period.adaptation_sets) {
+                model::ContainerElement as_elem =
+                    make_elem(QString("AdaptationSet %1").arg(as.index), "AdaptationSet", 2,
+                              QString::fromStdString(as.content_type + " " + as.mime_type));
+                for (int ri : as.representation_indices) {
+                    if (ri < 0 || static_cast<size_t>(ri) >= pkg.representations.size()) continue;
+                    const model::DashRepresentationInfo& rep = pkg.representations[ri];
+                    model::ContainerElement rep_elem = make_elem(
+                        QString("Representation %1").arg(QString::fromStdString(rep.id)),
+                        "Representation", 3,
+                        QString("%1x%2 %3 kbps")
+                            .arg(rep.width)
+                            .arg(rep.height)
+                            .arg(rep.bandwidth_bps / 1000));
+                    rep_elem.extra = QString::fromStdString(rep.codecs);
+                    constexpr int kMaxSegmentNodes = 100;
+                    for (int i = 0; i < static_cast<int>(rep.segments.size()) && i < kMaxSegmentNodes;
+                         ++i) {
+                        const model::SegmentInfo& seg = rep.segments[i];
+                        rep_elem.children.append(make_elem(
+                            QString("Segment %1").arg(seg.sequence), "Segment", 4,
+                            QString("t=%1s d=%2s %3")
+                                .arg(seg.start_seconds, 0, 'f', 3)
+                                .arg(seg.duration_seconds, 0, 'f', 3)
+                                .arg(seg.exists ? QString("ok") : QString("缺失")),
+                            QString::fromStdString(seg.uri)));
+                    }
+                    if (static_cast<int>(rep.segments.size()) > kMaxSegmentNodes) {
+                        rep_elem.children.append(
+                            make_elem(QString("... 其余 %1 个分片省略")
+                                          .arg(static_cast<int>(rep.segments.size()) - kMaxSegmentNodes),
+                                      "Segment", 4));
+                    }
+                    as_elem.children.append(rep_elem);
+                }
+                period_elem.children.append(as_elem);
+            }
+            root.children.append(period_elem);
+        }
+
+        // 流信息：视频 ladder + 音频 representation
+        for (const model::StreamingLadderEntry& e : pkg.ladder) {
+            model::ContainerStreamInfo si;
+            si.index = result.streams.size();
+            si.type = "video";
+            si.codec = QString::fromStdString(e.video_codec);
+            si.details = QString("%1x%2 %3 kbps")
+                             .arg(e.width)
+                             .arg(e.height)
+                             .arg(e.bandwidth_bps / 1000);
+            result.streams.append(si);
+        }
+        for (const model::DashRepresentationInfo& rep : pkg.representations) {
+            if (rep.content_type != "audio") continue;
+            model::ContainerStreamInfo si;
+            si.index = result.streams.size();
+            si.type = "audio";
+            si.codec = QString::fromStdString(rep.audio_codec);
+            si.details = QString("%1 kbps").arg(rep.bandwidth_bps / 1000);
+            result.streams.append(si);
+        }
+
+        result.metadata["MPD type"] = QString::fromStdString(pkg.mpd_type);
+        if (pkg.media_presentation_duration_s > 0.0) {
+            result.metadata["时长"] =
+                QString("%1 s").arg(pkg.media_presentation_duration_s, 0, 'f', 3);
+        }
+        result.summary = QString("DASH | %1 Period | %2 Representation | %3 分片")
+                             .arg(pkg.periods.size())
+                             .arg(pkg.representations.size())
+                             .arg(static_cast<qulonglong>(pkg.TotalSegments()));
+    } else {
+        root.value = QString("%1 | %2 variant | %3 playlist")
+                         .arg(pkg.kind == model::StreamingKind::HlsMaster ? "master" : "media")
+                         .arg(pkg.variants.size())
+                         .arg(pkg.playlists.size());
+
+        model::ContainerElement variants_elem =
+            make_elem(QString("Variants (%1)").arg(pkg.variants.size()), "Group", 1);
+        for (const model::HlsVariantInfo& v : pkg.variants) {
+            model::ContainerElement v_elem = make_elem(
+                QString("variant #%1").arg(v.index), "Variant", 2,
+                QString("%1 kbps %2").arg(v.bandwidth_bps / 1000).arg(QString::fromStdString(v.resolution)));
+            v_elem.extra = QString::fromStdString(v.uri + "  codecs=" + v.codecs);
+            variants_elem.children.append(v_elem);
+        }
+        root.children.append(variants_elem);
+
+        if (!pkg.renditions.empty()) {
+            model::ContainerElement rend_elem =
+                make_elem(QString("Renditions (%1)").arg(pkg.renditions.size()), "Group", 1);
+            for (const model::HlsRenditionInfo& r : pkg.renditions) {
+                rend_elem.children.append(make_elem(
+                    QString::fromStdString(r.type + " " + r.name), "Rendition", 2,
+                    QString::fromStdString("group=" + r.group_id +
+                                           (r.language.empty() ? "" : " lang=" + r.language))));
+            }
+            root.children.append(rend_elem);
+        }
+
+        model::ContainerElement pl_elem =
+            make_elem(QString("Media playlists (%1)").arg(pkg.playlists.size()), "Group", 1);
+        constexpr int kMaxSegmentNodes = 100;
+        for (const model::MediaPlaylistInfo& pl : pkg.playlists) {
+            model::ContainerElement one =
+                make_elem(QString("%1 #%2").arg(QString::fromStdString(pl.role)).arg(pl.index),
+                          "Playlist", 2,
+                          QString("%1 分片 target=%2s")
+                              .arg(pl.SegmentCount())
+                              .arg(pl.target_duration_s));
+            one.extra = QString::fromStdString(pl.uri);
+            for (int i = 0; i < static_cast<int>(pl.segments.size()) && i < kMaxSegmentNodes; ++i) {
+                const model::SegmentInfo& seg = pl.segments[i];
+                one.children.append(make_elem(
+                    seg.partial ? QString("Part") : QString("Segment %1").arg(seg.sequence),
+                    "Segment", 3,
+                    QString("t=%1s d=%2s %3%4")
+                        .arg(seg.start_seconds, 0, 'f', 3)
+                        .arg(seg.duration_seconds, 0, 'f', 3)
+                        .arg(seg.exists ? QString("ok") : QString("缺失"))
+                        .arg(seg.discontinuity_before ? " [discontinuity]" : ""),
+                    QString::fromStdString(seg.uri)));
+            }
+            if (static_cast<int>(pl.segments.size()) > kMaxSegmentNodes) {
+                one.children.append(make_elem(
+                    QString("... 其余 %1 个分片省略")
+                        .arg(static_cast<int>(pl.segments.size()) - kMaxSegmentNodes),
+                    "Segment", 3));
+            }
+            pl_elem.children.append(one);
+        }
+        root.children.append(pl_elem);
+
+        for (const model::StreamingLadderEntry& e : pkg.ladder) {
+            model::ContainerStreamInfo si;
+            si.index = result.streams.size();
+            si.type = e.width > 0 ? "video" : "audio";
+            si.codec = QString::fromStdString(e.video_codec.empty() ? e.audio_codec : e.video_codec);
+            si.details = QString("%1 kbps %2")
+                             .arg(e.bandwidth_bps / 1000)
+                             .arg(e.width > 0 ? QString("%1x%2").arg(e.width).arg(e.height)
+                                              : QString("audio"));
+            result.streams.append(si);
+        }
+
+        for (const model::MediaPlaylistInfo& pl : pkg.playlists) {
+            if (pl.has_target_duration) {
+                result.metadata[QString("EXT-X-TARGETDURATION #%1").arg(pl.index)] =
+                    QString("%1 s").arg(pl.target_duration_s);
+            }
+            if (pl.encrypted) {
+                result.metadata[QString("加密 #%1").arg(pl.index)] =
+                    QString::fromStdString(pl.key_method);
+            }
+        }
+        result.metadata["点播/直播"] = pkg.IsLive() ? "直播" : "点播";
+        result.metadata["低延迟 HLS"] = pkg.playlists.empty() ? "否"
+            : (std::any_of(pkg.playlists.begin(), pkg.playlists.end(),
+                           [](const model::MediaPlaylistInfo& p) { return p.low_latency; })
+                   ? "是"
+                   : "否");
+        result.summary = QString("HLS | %1 variant | %2 playlist | %3 分片")
+                             .arg(pkg.variants.size())
+                             .arg(pkg.playlists.size())
+                             .arg(static_cast<qulonglong>(pkg.TotalSegments()));
+    }
+
+    result.element_tree.append(root);
 }
 
 void ContainerStructureAnalyzer::Reset() {

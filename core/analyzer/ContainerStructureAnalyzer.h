@@ -42,6 +42,18 @@ private:
 
     /// FFmpeg 通用元数据回退分析
     bool AnalyzeWithFFmpeg(const QString& file_path, model::ContainerStructureResult& result);
+
+    /// HLS (.m3u8) / DASH (.mpd) 清单解析。
+    /// 只走自研解析器（std::ifstream），绝不把清单交给 FFmpeg ——
+    /// avformat 会把它当播放列表去发网络请求，离线 QC 场景不可控也无法单测。
+    bool AnalyzeStreamingManifest(const QString& file_path,
+                                  model::ContainerStructureResult& result);
+
+    /// 清单结构 -> 通用结构树 / 流信息 / 元数据（供"文件结构"页复用同一套渲染）
+    void BuildStreamingTree(model::ContainerStructureResult& result);
+
+    /// 用 TsStructureAnalyzer 抽查若干 TS 分片（复用已有 TS 容器分析）
+    void ProbeTsSegments(model::ContainerStructureResult& result);
 };
 
 } // namespace analyzer

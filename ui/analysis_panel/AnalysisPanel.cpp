@@ -164,6 +164,7 @@ void AnalysisPanel::SetupUI() {
     SetupAudioQcTab();
     SetupColorHdrTab();
     SetupParameterSetTab();
+    SetupStreamingPackageTab();
     SetupDiagnosticsTab();
 
     qRegisterMetaType<analyzer::SceneChangeResult>();
@@ -1199,6 +1200,9 @@ void AnalysisPanel::OnContainerStructureReady(const model::ContainerStructureRes
 
     container_summary_label_->setText(result.summary);
     container_summary_label_->setStyleSheet("font-size: 12px; color: #F0F6FC; font-weight: bold; padding: 2px 4px;");
+
+    // 流媒体清单：顺手把「流媒体包」页也喂上（同一份结果，只是换了个视图）
+    UpdateStreamingUi();
 
     // 填充通用结构树
     container_tree_->clear();
@@ -5510,6 +5514,39 @@ void AnalysisPanel::SetupColorHdrTab() {
     AddPageWithScroll(color_hdr_tab_, tr("色彩与 HDR"));
 }
 
+void AnalysisPanel::SetupStreamingPackageTab() {
+    // 页面本体就是 StreamingPanel：manifest 结构树 + 码率阶梯表 +
+    // 分片时间轴对齐表 + 问题表都封装在里面。
+    streaming_panel_ = new StreamingPanel(this);
+    streaming_panel_->setMinimumHeight(560);
+
+    connect(streaming_panel_, &StreamingPanel::RefreshRequested,
+            this, &AnalysisPanel::OnStreamingRefreshRequested);
+
+    AddPageWithScroll(streaming_panel_, tr("流媒体包"));
+}
+
+void AnalysisPanel::OnStreamingRefreshRequested() {
+    // 清单解析是纯本地文件读取（第一阶段不联网），跟着全文件扫描一起跑。
+    diagnostics_options_.analyze_streaming_package = true;
+    StartDiagnosticsScan(diagnostics_options_);
+}
+
+void AnalysisPanel::UpdateStreamingUi() {
+    if (!streaming_panel_) return;
+    // 优先用容器结构分析的结果（打开清单文件时由 ContainerStructureAnalyzer 直接产出）；
+    // 没有的话再退到全文件扫描的 streaming_package。
+    if (current_container_result_.streaming_package.valid) {
+        streaming_panel_->SetResult(current_container_result_.streaming_package);
+        return;
+    }
+    if (has_diagnostics_result_ && diagnostics_result_.streaming_analyzed) {
+        streaming_panel_->SetResult(diagnostics_result_.streaming_package);
+        return;
+    }
+    streaming_panel_->Clear();
+}
+
 void AnalysisPanel::SetupParameterSetTab() {
     // 页面本体就是 BitstreamPanel：结构树 + 容器/码流对比 + 不一致表都封装在里面。
     // 外面套的是 AddPageWithScroll 的 QScrollArea，给个最小高度免得被压扁。
@@ -6007,6 +6044,10 @@ void AnalysisPanel::OnDiagnosticsFinished(quint64 generation, bool completed,
     {
         VE_PERF("UpdateBitstreamUi");
         UpdateBitstreamUi();  // 参数集页（SPS/PPS/Sequence Header）同样共用同一次扫描结果
+    }
+    {
+        VE_PERF("UpdateStreamingUi");
+        UpdateStreamingUi();  // 流媒体包页：清单文件的 QC 结果来自同一次扫描
     }
 
     // MP4 样本表：扫描跑过就顺带刷新容器页（与打开文件时那次解析结果一致）

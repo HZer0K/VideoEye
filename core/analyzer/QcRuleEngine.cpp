@@ -61,6 +61,8 @@ const std::map<std::string, std::string>& ExtensionAliasMap() {
         {"mpg", "mpeg"}, {"mpe", "mpeg"}, {"vob", "mpeg"}, {"m2p", "mpeg"},
         {"m4v", "mov"},
         {"3gpp", "3gp"},
+        // 流媒体清单：container_format 由 AnalysisCoordinator 直接写 "hls" / "dash"
+        {"m3u8", "hls"}, {"m3u", "hls"}, {"mpd", "dash"},
     };
     return kAlias;
 }
@@ -75,6 +77,7 @@ std::string FriendlyContainerName(const std::string& token) {
         {"ogg", "Ogg"}, {"mpeg", "MPEG-PS"}, {"wav", "WAV"}, {"mp3", "MP3"},
         {"aac", "AAC (ADTS)"}, {"flac", "FLAC"}, {"opus", "Opus (Ogg)"},
         {"rawvideo", "原始视频流"}, {"webm", "WebM"},
+        {"hls", "HLS 清单"}, {"dash", "DASH 清单"},
     };
     auto it = kNames.find(token);
     return (it != kNames.end()) ? it->second : token;
@@ -280,6 +283,42 @@ std::vector<model::DiagnosticIssue> QcRuleEngine::CheckRule(const model::QcRule&
             issue.threshold = rule.threshold;
             // 级别取「规则」与「分析器」中更严重的一侧：用户在规则表调到 Error 可以抬高，
             // 调到 Info 也不会把 Error 级发现（如分片序号回退）降没。
+            if (static_cast<int>(finding.severity) > static_cast<int>(rule.severity)) {
+                issue.severity = finding.severity;
+            } else {
+                issue.severity = rule.severity;
+            }
+            issues.push_back(std::move(issue));
+        }
+        return issues;
+    }
+
+    // ---------- HLS / DASH 流媒体包 ----------
+    // 与 container.mp4.* 完全同构：问题（含 variant 号 / 分片序号 / 时间点）由
+    // HlsManifestAnalyzer / DashManifestAnalyzer / SegmentQcAnalyzer 产出，
+    // 规则只决定"要不要报、以什么级别报、阈值类再核一次"。
+    if (rule.id.rfind("container.hls.", 0) == 0 || rule.id.rfind("container.dash.", 0) == 0 ||
+        rule.id.rfind("container.streaming.", 0) == 0) {
+        if (!result.streaming_analyzed || !result.streaming_package.valid) return issues;
+
+        for (const auto& finding : result.streaming_package.issues) {
+            if (finding.code != rule.id) continue;
+            if (rule.op == model::QcRuleOp::MaxExceeded && rule.threshold > 0.0 &&
+                finding.metric_value > 0.0 && finding.metric_value <= rule.threshold) {
+                continue;
+            }
+            if (rule.op == model::QcRuleOp::MinBelow && rule.threshold != 0.0 &&
+                finding.metric_value != 0.0 && finding.metric_value >= rule.threshold) {
+                continue;
+            }
+
+            model::DiagnosticIssue issue = finding.ToDiagnosticIssue();
+            issue.rule_id = rule.id;
+            issue.title = rule.name;
+            issue.category = rule.category;
+            issue.suggestion = rule.suggestion.empty() ? finding.suggestion : rule.suggestion;
+            issue.threshold = rule.threshold;
+            // 级别取「规则」与「分析器」中更严重的一侧
             if (static_cast<int>(finding.severity) > static_cast<int>(rule.severity)) {
                 issue.severity = finding.severity;
             } else {

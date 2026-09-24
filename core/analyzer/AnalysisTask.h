@@ -8,6 +8,7 @@
 #include "core/analyzer/BitrateGopAnalyzer.h"
 #include "core/analyzer/ColorHdrAnalyzer.h"
 #include "core/analyzer/Mp4SampleTableAnalyzer.h"
+#include "core/analyzer/SegmentQcAnalyzer.h"
 #include "core/model/BitstreamInfo.h"
 #include "core/model/MetricSeries.h"
 #include "core/model/TimelineDiagnostic.h"
@@ -53,6 +54,14 @@ struct AnalysisOptions {
     // 只在容器属于 MP4 家族时才真正执行，其它格式直接跳过。
     bool analyze_mp4_sample_table = true;
     Mp4SampleTableOptions mp4_sample_table_options;
+
+    // HLS / DASH 流媒体包（manifest + segment + 多码率 ladder）。
+    // 只在输入是本地 .m3u8 / .mpd 时执行，此时 AnalysisCoordinator 会跳过 FFmpeg demux ——
+    // avformat 会把清单当播放列表去发网络请求，离线 QC 场景既不可控也无法单测。
+    // 全文件扫描只负责产出 QC 结果，UI 的「流媒体包」页读的是
+    // ContainerStructureResult::streaming_package（打开文件时由 ContainerStructureAnalyzer 填）。
+    bool analyze_streaming_package = true;
+    SegmentQcOptions streaming_package_options;
 };
 
 // 单条流的静态摘要（demux 层，不解码）
@@ -137,6 +146,11 @@ struct AnalysisResult {
     // bitstream_analysis 不为空表示已执行码流分析
     model::BitstreamAnalysisResult bitstream_analysis;
     bool bitstream_analyzed = false;
+
+    // HLS / DASH 流媒体包（见 core/analyzer/HlsManifestAnalyzer.h / DashManifestAnalyzer.h）
+    // 只有输入是清单文件时才跑；streaming_analyzed=true 才表示跑过。
+    model::StreamingPackageResult streaming_package;
+    bool streaming_analyzed = false;
 
     // 执行状态
     bool completed = true;        // false = 被取消

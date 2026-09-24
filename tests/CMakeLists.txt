@@ -381,6 +381,57 @@ add_test(NAME Av1BitstreamParserTests COMMAND test_av1_bitstream_parser)
 # 说明: VVC 的 NAL type 在第 2 字节高 5 位，和 HEVC 完全不同 —— 这一条
 #       单独有测试兜底，避免以后改 ExtradataParser 时静默读错类型。
 # =================================================
+# =================================================
+# 测试 18：HLS / DASH 流媒体包解析与校验
+# 说明: 纯 stdlib，不需要 Qt / FFmpeg。
+#       SegmentQcAnalyzer 会链到 Mp4SampleTableAnalyzer（fMP4 分片探测走自研
+#       IsobmffParser），那一支同样不含 Qt，只是多了 Logger。
+#       临时文件用 std::filesystem 造在 TEMP 下。
+# =================================================
+videoeye_add_test(test_streaming_package
+    unit/test_streaming_package.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/HlsManifestAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/DashManifestAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/SegmentQcAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/Mp4SampleTableAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/IsobmffParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/Logger.cpp
+)
+add_test(NAME StreamingPackageTests COMMAND test_streaming_package)
+
+# =================================================
+# 测试 19：流媒体包 QC 规则（QcRuleEngine 的 container.hls.* / container.dash.* /
+#          container.streaming.* 三个前缀分支）
+# 说明: 依赖清单与测试 10（色彩/HDR 规则）同构，再叠加三个清单分析器。
+# =================================================
+videoeye_add_test(test_streaming_qc_rules
+    unit/test_streaming_qc_rules.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/HlsManifestAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/DashManifestAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/SegmentQcAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/Mp4SampleTableAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/QcRuleEngine.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/AnalysisTask.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/BitrateGopAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/AudioQcAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcModels.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcReport.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/ColorInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/HdrMetadataInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AudioQcResult.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/BitratePoint.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/GopInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimelineDiagnostic.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/IsobmffParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/Logger.cpp
+)
+add_test(NAME StreamingQcRulesTests COMMAND test_streaming_qc_rules)
+
+# =================================================
+# 测试 20：VVC (H.266) 码流解析（VPS/SPS/PPS + vvcC 记录 + NAL header 位域）
+# 说明: VVC 的 NAL type 在第 2 字节高 5 位，和 HEVC 完全不同 —— 这一条
+#       单独有测试兜底，避免以后改 ExtradataParser 时静默读错类型。
+# =================================================
 videoeye_add_test(test_vvc_bitstream_parser
     unit/test_vvc_bitstream_parser.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/VvcBitstreamParser.cpp

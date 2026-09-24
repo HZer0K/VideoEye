@@ -127,6 +127,13 @@ model::ContainerFormat FormatDetector::DetectByExtension(const QString& file_pat
     if (ext == "ogg" || ext == "oga" || ext == "ogv" || ext == "opus") {
         return model::ContainerFormat::OGG;
     }
+    // 流媒体清单是纯文本（#EXTM3U / <MPD），魔数无从判断，只能看扩展名。
+    if (ext == "m3u8" || ext == "m3u") {
+        return model::ContainerFormat::HLS;
+    }
+    if (ext == "mpd") {
+        return model::ContainerFormat::DASH;
+    }
 
     return model::ContainerFormat::Unknown;
 }
@@ -152,6 +159,8 @@ QString FormatDetector::FormatName(model::ContainerFormat fmt) {
     case model::ContainerFormat::MPEG_TS:        return "MPEG-TS";
     case model::ContainerFormat::ASF:            return "ASF";
     case model::ContainerFormat::OGG:            return "OGG";
+    case model::ContainerFormat::HLS:            return "HLS";
+    case model::ContainerFormat::DASH:           return "DASH";
     case model::ContainerFormat::FFmpeg_Generic: return "Generic";
     default:                                     return "Unknown";
     }
@@ -168,6 +177,8 @@ QString FormatDetector::FormatTitle(model::ContainerFormat fmt) {
     case model::ContainerFormat::MPEG_TS:        return "MPEG-TS 结构";
     case model::ContainerFormat::ASF:            return "ASF/WMV 结构";
     case model::ContainerFormat::OGG:            return "OGG 结构";
+    case model::ContainerFormat::HLS:            return "HLS 清单结构";
+    case model::ContainerFormat::DASH:           return "DASH MPD 结构";
     case model::ContainerFormat::FFmpeg_Generic: return "FFmpeg 通用结构";
     default:                                     return "文件结构";
     }
