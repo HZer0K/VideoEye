@@ -34,6 +34,8 @@ sudo apt install -y build-essential cmake ninja-build pkg-config qt6-base-dev \
   libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
 
 ./build.sh release     # 或 ./build.sh debug
+./build.sh test        # Debug + 单元测试，编译完自动跑 ctest
+JOBS=2 ./build.sh release   # 限制编译并行数（默认吃满所有核）
 ```
 
 #### macOS
@@ -65,7 +67,7 @@ build\release\bin\VideoEye.exe
 | `build.bat debug` | Windows Debug |
 | `build.bat test` | Windows Release + 跑单元测试（自带 gtest） |
 | `build_ninja.ps1 [-BuildType Debug]` | `build.bat` 的转发器（历史入口，保留兼容） |
-| `./build.sh [release\|debug\|clean]` | Linux / macOS 构建 |
+| `./build.sh [release\|debug\|test\|clean]` | Linux / macOS 构建（`test` 带 ctest） |
 | `./setup.sh` | Linux / macOS 环境自检 + 调用 `build.sh` |
 | `./run.sh [release\|debug]` | 构建过就直接跑，没构建过先构建 |
 
@@ -149,7 +151,7 @@ cmake --preset win-test-release
 cmake --build --preset win-test-release
 ctest --preset win-test-release
 
-# Linux / macOS
+# Linux / macOS（也可以一步到位: ./build.sh test）
 cmake --preset linux-test-debug
 cmake --build --preset linux-test-debug
 ctest --preset linux-test-debug

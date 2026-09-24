@@ -9,7 +9,7 @@
 - vcpkg（用于 Qt6；gtest 只在显式开启 `tests` feature 时安装）
 
 ### Linux (Debian/Ubuntu)
-- GCC 12+, CMake 3.21+, pkg-config, make
+- GCC 12+, CMake 3.23+, pkg-config, ninja-build（preset 用的就是 Ninja 生成器）
 - 依赖包见下方安装命令
 
 ## 一键构建
@@ -64,7 +64,7 @@ Windows 的 `-test-` preset 额外带 `VCPKG_MANIFEST_FEATURES=tests`，gtest �
 音频输出（WASAPI / ALSA / AudioQueue）全部自研或走平台原生 API，不再引入
 MediaInfoLib / Bento4 / SDL2 / QtCharts / Vulkan。
 
-FFmpeg（Windows）通过 `scripts/fetch-ffmpeg.ps1` 从 gyan.dev 获取预编译包，版本记录在 `third_party/ffmpeg-prebuilt/.videoeye-ffmpeg.json`。vcpkg 依赖版本由 `vcpkg-configuration.json`（baseline `2025-04-16`）锁定，确保团队成员依赖一致。
+FFmpeg（Windows）通过 `scripts/fetch-ffmpeg.ps1` 从 gyan.dev 获取预编译包，版本号、URL、SHA256 的唯一来源是 `cmake/ffmpeg-version.json`（校验不过直接失败，不会带着可疑归档继续构建），下载完成后会在 `third_party/prebuilt/windows-x64/ffmpeg/.videoeye-ffmpeg.json` 留一份 stamp 记录实际装的是哪个版本。vcpkg 依赖版本由 `vcpkg-configuration.json`（baseline `2025-04-16`）锁定，确保团队成员依赖一致。
 
 ## 代码风格
 
@@ -85,7 +85,7 @@ clang-format -i $(git diff --name-only -- '*.cpp' '*.h')
 ## 提交流程
 
 1. Fork 仓库并创建特性分支：`git checkout -b feature/your-feature`
-2. 确保通过本地构建：Windows 用 `build_ninja.ps1`，Linux 用 `cmake --build --preset linux-release`
+2. 确保通过本地构建：Windows 用 `build.bat release`（测试用 `build.bat test`），Linux 用 `cmake --build --preset linux-release`
 3. 运行格式检查：`clang-format --dry-run --Werror $(git diff --name-only)`
 4. 提交（遵循约定式提交）：
    ```

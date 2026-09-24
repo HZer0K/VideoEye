@@ -75,19 +75,25 @@ jobs:
           "VCPKG_ROOT=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "vcpkg ready: $(& "$vcpkgRoot\vcpkg.exe" version)"
 
+      # key 必须覆盖所有会影响 vcpkg 产物的输入: manifest / baseline / overlay triplet /
+      # overlay port，以及决定用哪个 triplet 的 CMakePresets.json。漏掉 overlay port
+      # 的话改了自定义 port 也会命中旧缓存。
       - name: Cache vcpkg dependencies (Windows)
         if: runner.os == 'Windows'
         uses: actions/cache@v4
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'scripts/triplets/x64-windows-release.cmake') }}
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'CMakePresets.json', 'scripts/triplets/**', 'scripts/overlay-ports/**') }}
           restore-keys: |
             vcpkg-${{ runner.os }}-
 
+      # 与开发者本机同一入口 (scripts/run-vcpkg-install.ps1)，避免在 CI 里再抄一份参数
       - name: Install vcpkg dependencies (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --overlay-ports=scripts/overlay-ports --x-manifest-root=. --x-install-root=vcpkg_installed
+          & scripts/run-vcpkg-install.ps1 -Config release
+          exit $LASTEXITCODE
 
       # FFmpeg 版本与 SHA256 由 cmake/ffmpeg-version.json 锁定，不跟随 gyan.dev 的 latest
       - name: Build (Windows)
@@ -170,17 +176,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: vcpkg_installed
-          key: vcpkg-tests-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'scripts/triplets/x64-windows-release.cmake') }}
+          key: vcpkg-tests-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'CMakePresets.json', 'scripts/triplets/**', 'scripts/overlay-ports/**') }}
           restore-keys: |
             vcpkg-tests-${{ runner.os }}-
 
-      # Windows 上 gtest 由 preset 的 VCPKG_MANIFEST_FEATURES=tests 带来。
-      # 走 build.bat 是为了跟开发者用同一个入口: FFmpeg 缺失时它会自动下载，
-      # 不用在 CI 里复制一遍参数。
-      - name: Install dependencies (Windows)
+      # Windows 上 gtest 由 preset 的 VCPKG_MANIFEST_FEATURES=tests 带来，
+      # 所以这里必须显式带 -Feature tests 装上，否则 configure 才去装、链路绕一圈。
+      - name: Install dependencies (Windows, tests feature)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          vcpkg install --triplet x64-windows-release --host-triplet x64-windows-release --overlay-triplets=scripts/triplets --overlay-ports=scripts/overlay-ports --x-manifest-root=. --x-install-root=vcpkg_installed
+          & scripts/run-vcpkg-install.ps1 -Config release -Feature tests
+          exit $LASTEXITCODE
 
       - name: Build + Run tests (Windows)
         if: runner.os == 'Windows'

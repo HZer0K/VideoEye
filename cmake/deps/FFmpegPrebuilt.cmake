@@ -174,13 +174,18 @@ function(_ffmpeg_try_prebuilt out_ok)
     set(_libs "")
     set(_runtimes "")
     set(_missing "")
+    set(_missing_dll "")
     foreach(_comp IN LISTS _ffmpeg_components)
         _ffmpeg_resolve_prebuilt(${_comp} "${_root}" _implib _runtime)
         if(NOT _implib)
             list(APPEND _missing ${_comp})
         else()
+            # _runtimes 必须和 _ffmpeg_components 一一对应（下面按组件下标读取）
             list(APPEND _libs "${_implib}")
             list(APPEND _runtimes "${_runtime}")
+            if(WIN32 AND NOT _runtime)
+                list(APPEND _missing_dll ${_comp})
+            endif()
         endif()
     endforeach()
 
@@ -189,6 +194,16 @@ function(_ffmpeg_try_prebuilt out_ok)
             "FFmpeg 预编译包不完整: ${_root}\n"
             "缺少组件 ${_missing} 的库文件。\n"
             "必须是开发包（include/ + lib/ + bin/），只有 runtime DLL 的包不能用于链接。")
+    endif()
+
+    # Windows 只有 .lib 没有 DLL 是最坑的一种半包: 链接一定过, 运行时 0xc0000135。
+    # 与其拖到启动才炸，不如在 configure 阶段就说清楚。
+    if(_missing_dll)
+        message(FATAL_ERROR
+            "FFmpeg 预编译包缺少运行时 DLL: ${_root}\n"
+            "组件 ${_missing_dll} 有导入库(lib/*.lib) 但 bin/ 下找不到对应的 dll。\n"
+            "gyan.dev 的包分 shared / shared-libs / dev 几种，需要的是带 bin/*.dll 的那份；\n"
+            "重新获取: powershell -ExecutionPolicy Bypass -File scripts\\fetch-ffmpeg.ps1 -Force")
     endif()
 
     set(FFMPEG_SOURCE "prebuilt" PARENT_SCOPE)
@@ -289,6 +304,7 @@ function(_ffmpeg_try_pkgconfig out_ok)
 
     set(_libs "")
     set(_runtimes "")
+    set(_deploy_libs "")
     set(_kinds "")
     set(_incdirs "")
     set(_libdirs "")
@@ -304,9 +320,12 @@ function(_ffmpeg_try_pkgconfig out_ok)
         list(APPEND _libs "${_implib}")
         _ffmpeg_library_kind("${_implib}" _kind)
         list(APPEND _kinds "${_kind}")
-        # 只有动态库才需要部署；静态库已经进可执行文件了
+        # FFMPEG_COMPONENT_RUNTIMES 是按组件下标读的，所以必须和 _ffmpeg_components
+        # 一一对应: 静态库也要占位（值就用 implib，反正没人会去部署它）。
+        # 真正需要部署的动态库单独放 _deploy_libs。
+        list(APPEND _runtimes "${_implib}")
         if(_kind STREQUAL "SHARED")
-            list(APPEND _runtimes "${_implib}")
+            list(APPEND _deploy_libs "${_implib}")
         endif()
         # 附加依赖（-pthread / 第三方 codec 库等）按组件存到一个变量里
         set(_ffmpeg_extra_${_comp} "${_extra}" PARENT_SCOPE)
@@ -341,7 +360,7 @@ function(_ffmpeg_try_pkgconfig out_ok)
     set(FFMPEG_COMPONENT_LIBRARIES "${_libs}" PARENT_SCOPE)
     set(FFMPEG_COMPONENT_RUNTIMES "${_runtimes}" PARENT_SCOPE)
     set(FFMPEG_COMPONENT_KINDS "${_kinds}" PARENT_SCOPE)
-    set(FFMPEG_RUNTIME_FILES "${_runtimes}" PARENT_SCOPE)
+    set(FFMPEG_RUNTIME_FILES "${_deploy_libs}" PARENT_SCOPE)
     set(FFMPEG_WINDOWS_DLLS "" PARENT_SCOPE)
 
     set(${out_ok} TRUE PARENT_SCOPE)
@@ -393,7 +412,16 @@ message(STATUS "FFmpeg: ${_origin_label}")
 set(_ffmpeg_index 0)
 foreach(_comp IN LISTS _ffmpeg_components)
     list(GET FFMPEG_COMPONENT_LIBRARIES ${_ffmpeg_index} _implib)
-    list(GET FFMPEG_COMPONENT_RUNTIMES ${_ffmpeg_index} _runtime)
+    # 运行时只在 Windows 上有意义（MSVC 的 IMPORTED_LOCATION 要指向 DLL）。
+    # 其他平台上 FFMPEG_COMPONENT_RUNTIMES 只是按组件占位的列表，读它没有意义，
+    # 而且 pkg-config 静态库场景下它还可能短于组件数 —— 越界会让 list(GET) 直接报错。
+    set(_runtime "")
+    if(WIN32)
+        list(LENGTH FFMPEG_COMPONENT_RUNTIMES _runtime_count)
+        if(_ffmpeg_index LESS _runtime_count)
+            list(GET FFMPEG_COMPONENT_RUNTIMES ${_ffmpeg_index} _runtime)
+        endif()
+    endif()
     math(EXPR _ffmpeg_index "${_ffmpeg_index} + 1")
 
     if(TARGET FFmpeg::${_comp})
