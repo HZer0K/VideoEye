@@ -15,7 +15,7 @@ TEST(FormatDetectorTest, detectsMpegTsSyncPattern) {
     data[0] = static_cast<char>(0x47);
     data[188] = static_cast<char>(0x47);
     data[376] = static_cast<char>(0x47);
-    ASSERT_TRUE(file.write(data), data.size());
+    ASSERT_EQ(file.write(data), static_cast<qint64>(data.size()));
     file.close();
 
     EXPECT_EQ(videoeye::model::ContainerFormat::MPEG_TS,
@@ -30,7 +30,7 @@ TEST(FormatDetectorTest, detectsMpegTsWithLeadingOffset) {
     data[7] = static_cast<char>(0x47);
     data[7 + 188] = static_cast<char>(0x47);
     data[7 + 376] = static_cast<char>(0x47);
-    ASSERT_TRUE(file.write(data), data.size());
+    ASSERT_EQ(file.write(data), static_cast<qint64>(data.size()));
     file.close();
 
     EXPECT_EQ(videoeye::model::ContainerFormat::MPEG_TS,

@@ -16,7 +16,7 @@ TEST(ConfigManagerTest, StoresTypeValuesAndDefaults) {
     EXPECT_EQ(config.GetString("ui.theme"), "dark");
     EXPECT_EQ(config.GetInt("analysis.window"), 60);
     EXPECT_DOUBLE_EQ(config.GetDouble("playback.speed"), 1.0);
-    EXPECT_TRUE(config.GetBool("render.vulkan"), true);
+    EXPECT_TRUE(config.GetBool("render.vulkan"));
     EXPECT_EQ(config.GetString("missing", "fallback"), "fallback");
 
     config.RemoveKey("ui.theme");

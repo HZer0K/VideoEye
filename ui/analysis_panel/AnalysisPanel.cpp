@@ -1099,8 +1099,10 @@ static void PopulateMp4BoxTablesInContainer(const model::Mp4BoxAnalysisResult& r
     }
 
     // 追加一个 track 段：标题行 + min(total, cap) 条 + 可选"已截断"提示行
-    auto append_section = [](QTableWidget* table, const QString& header, int total,
-                             const std::function<void(int row, int index)>& fill_row) {
+    // kMaxBoxTableRows 必须显式捕获：std::min 走 const& 形参，属于 odr-use，
+    // C++17 的"constexpr 变量免捕获"豁免不适用（MSVC 不检查，GCC/Clang 会报错）。
+    auto append_section = [kMaxBoxTableRows](QTableWidget* table, const QString& header, int total,
+                                             const std::function<void(int row, int index)>& fill_row) {
         if (total <= 0) return;
         const int shown = std::min(total, kMaxBoxTableRows);
         const bool truncated = total > shown;

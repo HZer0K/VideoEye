@@ -145,16 +145,26 @@ struct IsobmffFile {
     bool found_mdat = false;
 };
 
+// 解析选项。
+//
+// ⚠️ 必须定义在 namespace 作用域，不能嵌套进 IsobmffParser：GCC 会把
+// 「带默认成员初始化器(NSDMI)的成员」的解析推迟到**最外层**外围类结束处，
+// 于是类内默认实参 `Options{}` 用不到这些初始化器，报
+// "default member initializer ... required before the end of its enclosing class"。
+// （MSVC 不做这个延迟，所以这套写法在 Windows 上一直能编过。）
+struct IsobmffOptions {
+    // 单个样本表最多解析多少条（防止 GB 级文件把内存吃光）
+    uint32_t max_entries_per_table = 500000;
+    // 递归深度上限，防御构造出"无限嵌套"的恶意 box
+    int max_depth = 8;
+    // 是否只扫顶层 + 容器结构，不解析样本表（更快）
+    bool skip_sample_tables = false;
+};
+
 class IsobmffParser {
 public:
-    struct Options {
-        // 单个样本表最多解析多少条（防止 GB 级文件把内存吃光）
-        uint32_t max_entries_per_table = 500000;
-        // 递归深度上限，防御构造出"无限嵌套"的恶意 box
-        int max_depth = 8;
-        // 是否只扫顶层 + 容器结构，不解析样本表（更快）
-        bool skip_sample_tables = false;
-    };
+    // 兼容既有的 IsobmffParser::Options 写法
+    using Options = IsobmffOptions;
 
     static bool Parse(const std::string& file_path, IsobmffFile& out,
                       const Options& options = Options{});
