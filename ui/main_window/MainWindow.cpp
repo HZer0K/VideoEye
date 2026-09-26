@@ -627,6 +627,10 @@ void MainWindow::SetupConnections() {
             this, [this](const QString& info) {
                 mediainfo_text_->setPlainText(info);
             });
+    connect(analysis_panel_, &ui::AnalysisPanel::StatusMessage,
+            this, [this](const QString& text) {
+                if (statusBar()) statusBar()->showMessage(text);
+            });
     // 实时码流统计: 空串表示停止/换源, 隐藏常驻区
     connect(player_panel_, &PlayerPanel::StreamStatsDisplayReady,
             this, [this](const QString& text) {

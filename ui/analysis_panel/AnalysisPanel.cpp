@@ -3,6 +3,7 @@
 #include "utils/ScopedTimer.h"
 #include "utils/ReportExporter.h"
 #include "ui/theme/AppTheme.h"
+#include "ui/reporting_panel/ReportingPanel.h"
 #include <QGroupBox>
 #include <QSplitter>
 #include <QHeaderView>
@@ -7073,6 +7074,13 @@ void AnalysisPanel::SetupDiagnosticsTab() {
             this, &AnalysisPanel::OnDiagnosticsFailed);
 
     AddPageWithScroll(diagnostics_tab_, tr("诊断与报告"));
+
+    // 报告与批量 QC（功能 12）：模板选择 + 单文件报告 + 目录批量扫描 + 导出。
+    // 该页自带后台线程，状态冒泡给主窗口状态栏。
+    reporting_panel_ = new ui::ReportingPanel(this);
+    connect(reporting_panel_, &ui::ReportingPanel::StatusMessage,
+            this, &AnalysisPanel::StatusMessage);
+    AddPageWithScroll(reporting_panel_, tr("报告与批量 QC"));
 }
 
 // 「诊断与报告」与「码率与 GOP」共用同一次全文件扫描，避免重复 I/O

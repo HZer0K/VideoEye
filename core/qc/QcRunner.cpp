@@ -1,0 +1,170 @@
+#include "core/qc/QcRunner.h"
+
+#include <QObject>
+
+#include <condition_variable>
+#include <filesystem>
+#include <memory>
+#include <mutex>
+#include <utility>
+
+namespace videoeye {
+namespace qc {
+namespace {
+
+constexpr std::chrono::milliseconds kCancelPollInterval{100};
+
+}  // namespace
+
+bool IsAnalyzableFile(const std::string& path, std::string& reason) {
+    std::error_code ec;
+    if (path.empty()) {
+        reason = "路径为空";
+        return false;
+    }
+    const auto status = std::filesystem::status(path, ec);
+    if (ec || !std::filesystem::exists(status)) {
+        reason = "文件不存在: " + path;
+        return false;
+    }
+    if (std::filesystem::is_directory(status)) {
+        reason = "路径是目录，单文件分析请给出具体文件: " + path;
+        return false;
+    }
+    const auto size = std::filesystem::file_size(path, ec);
+    if (!ec && size == 0) {
+        reason = "文件为空: " + path;
+        return false;
+    }
+    return true;
+}
+
+QcRunResult QcRunner::AnalyzeFile(const std::string& path,
+                                  const QcProfile& profile,
+                                  analyzer::AnalysisOptions options,
+                                  const QcRunCallbacks& callbacks) {
+    QcRunResult output;
+    output.profile_id = profile.id;
+
+    std::string reason;
+    if (!IsAnalyzableFile(path, reason)) {
+        output.ok = false;
+        output.error = reason;
+        return output;
+    }
+
+    const auto started_at = std::chrono::steady_clock::now();
+    analyzer::QcRuleEngine engine(BuildRulesForProfile(profile));
+    analyzer::AnalysisCoordinator coordinator;
+
+    // worker 线程与等待线程之间的交接区。std::promise 也能做，但需要额外处理
+    // "进度回调要持续转发"这件事，条件变量版本更直观。
+    struct Outcome {
+        bool settled = false;
+        bool failed = false;
+        std::string error;
+        analyzer::AnalysisResult result;
+    };
+    Outcome outcome;
+    std::mutex mutex;
+    std::condition_variable cv;
+
+    auto settle = [&outcome, &mutex, &cv](Outcome next) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            outcome = std::move(next);
+            outcome.settled = true;
+        }
+        cv.notify_all();
+    };
+
+    // 注意 Qt6 的 form：带 ConnectionType 的仿函数连接必须显式给 context（这里就是 sender 自己）。
+    QObject::connect(&coordinator, &analyzer::AnalysisCoordinator::AnalysisFinished,
+                     &coordinator,
+                     [&settle](quint64, bool, const analyzer::AnalysisResult& result) {
+                         Outcome next;
+                         next.result = result;
+                         settle(std::move(next));
+                     },
+                     Qt::DirectConnection);
+
+    QObject::connect(&coordinator, &analyzer::AnalysisCoordinator::AnalysisFailed,
+                     &coordinator,
+                     [&settle](quint64, const QString& message) {
+                         Outcome next;
+                         next.failed = true;
+                         next.error = message.toStdString();
+                         settle(std::move(next));
+                     },
+                     Qt::DirectConnection);
+
+    auto merged_should_cancel = [this, &callbacks]() {
+        if (cancel_.load(std::memory_order_acquire)) return true;
+        return callbacks.should_cancel ? callbacks.should_cancel() : false;
+    };
+
+    if (callbacks.progress) {
+        QObject::connect(&coordinator, &analyzer::AnalysisCoordinator::ProgressReported,
+                         &coordinator,
+                         [&callbacks](quint64, double percent, const QString& stage) {
+                             callbacks.progress(percent, stage.toStdString());
+                         },
+                         Qt::DirectConnection);
+    }
+
+    coordinator.StartAnalysis(path, options);
+
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        while (!outcome.settled) {
+            if (cv.wait_for(lock, kCancelPollInterval) == std::cv_status::timeout) {
+                if (merged_should_cancel()) coordinator.Cancel();
+            }
+        }
+    }
+
+    const auto elapsed = std::chrono::steady_clock::now() - started_at;
+    output.elapsed_ms = std::chrono::duration<double, std::milli>(elapsed).count();
+
+    if (outcome.failed) {
+        output.ok = false;
+        output.error = outcome.error;
+        return output;
+    }
+
+    output.analysis = std::move(outcome.result);
+    output.report = engine.Evaluate(output.analysis);
+    if (!output.analysis.completed) {
+        // 被取消时报告里的数据是不完整的，但仍然保留（UI 要显示"取消了"而不是白屏）
+        output.ok = false;
+        output.error = "分析被取消";
+        return output;
+    }
+    if (!output.analysis.error_message.empty()) {
+        output.ok = false;
+        output.error = output.analysis.error_message;
+        return output;
+    }
+
+    output.ok = true;
+    return output;
+}
+
+QcAnalyzeFn QcRunner::MakeAnalyzeFunction(const QcProfile& profile,
+                                          analyzer::AnalysisOptions options) {
+    // profile / options 在闭包之间共享（只读），cancel 状态每次调用由 request 带入。
+    auto shared = std::make_shared<std::pair<QcProfile, analyzer::AnalysisOptions>>(
+        profile, options);
+
+    return [shared](const QcAnalyzeRequest& request) -> QcRunResult {
+        QcRunner runner;
+        QcRunCallbacks callbacks;
+        callbacks.should_cancel = [&request]() {
+            return request.cancel != nullptr && request.cancel->load(std::memory_order_acquire);
+        };
+        return runner.AnalyzeFile(request.path, shared->first, shared->second, callbacks);
+    };
+}
+
+}  // namespace qc
+}  // namespace videoeye

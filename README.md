@@ -91,6 +91,21 @@ brew install cmake ninja qt@6 ffmpeg
 4. **导出帧**: `文件` → `导出视频帧...`（jpg / rgb / yuv）
 5. **原始图像**: 打开 `.yuv`（YUV420P）/ `.rgb`（RGB24）时输入宽高
 
+### 命令行工具 `videoeye-cli`
+
+除 GUI 外，项目还提供 `videoeye-cli` 做批量与 CI 场景的分析：
+
+```bash
+videoeye-cli analyze input.mp4 --profile hls-vod --json report.json
+videoeye-cli batch D:\media --profile broadcast --out reports --summary reports\summary.csv
+videoeye-cli compare source.mov transcoded.mp4 --csv diff.csv
+videoeye-cli profiles          # 列出内置 QC 模板
+```
+
+`--profile` 接受内置模板 id（`general` / `broadcast` / `hls-vod` / `short-video` / `archive-master`）
+或一份 JSON 模板文件路径；`--json/--csv/--html/--txt/--pdf` 选择导出格式；`--fail-on` 控制何时返回非 0
+退出码（供 CI 判定构建失败）。详见 [docs/REPORTING_BATCH_QC.md](docs/REPORTING_BATCH_QC.md)。
+
 ## 项目结构
 
 ```
@@ -122,6 +137,7 @@ VideoEye/
 | [docs/HLS_DASH_SEGMENT.md](docs/HLS_DASH_SEGMENT.md) | HLS/DASH 流媒体包检测（manifest + segment + 多码率 ladder） |
 | [docs/VISUAL_QC.md](docs/VISUAL_QC.md) | 画面质量与视觉缺陷检测（黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 曝光 / 色偏 / 梳齿 / 黑边） |
 | [docs/SUBTITLE_TIMECODE_AUX.md](docs/SUBTITLE_TIMECODE_AUX.md) | 字幕 cue、SMPTE 时码 / 章节、data 流与 SCTE-35 插入点 |
+| [docs/REPORTING_BATCH_QC.md](docs/REPORTING_BATCH_QC.md) | 报告与批量 QC：模板、单文件/批量分析、CLI、对比、导出、CI |
 
 ## 测试
 

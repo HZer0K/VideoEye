@@ -516,3 +516,52 @@ videoeye_add_test(test_vvc_bitstream_parser
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/BitstreamInfo.cpp
 )
 add_test(NAME VvcBitstreamParserTests COMMAND test_vvc_bitstream_parser)
+
+# =================================================
+# 测试 24：JSON 工具（极简读写，不依赖 Qt / FFmpeg）
+# =================================================
+videoeye_add_test(test_json
+    unit/test_json.cpp
+)
+target_link_libraries(test_json PRIVATE VideoEyeCore)
+add_test(NAME JsonTests COMMAND test_json)
+
+# =================================================
+# 测试 25：QC 模板（内置 5 套 / 序列化往返 / 覆盖项 / 未知规则检测）
+# 说明: QcProfile 是纯模型层（只依赖 AnalysisTask / QcRule），无需解码文件。
+# =================================================
+videoeye_add_test(test_qc_profile
+    unit/test_qc_profile.cpp
+)
+target_link_libraries(test_qc_profile PRIVATE VideoEyeCore)
+add_test(NAME QcProfileTests COMMAND test_qc_profile)
+
+# =================================================
+# 测试 26：批量 QC 扫描（目录发现 / 扩展名过滤 / 取消后无残留线程 / 并发上限）
+# 说明: BatchQcRunner 只做调度，用假分析函数即可，不触碰任何媒体文件。
+# =================================================
+videoeye_add_test(test_batch_qc_runner
+    unit/test_batch_qc_runner.cpp
+)
+target_link_libraries(test_batch_qc_runner PRIVATE VideoEyeCore)
+add_test(NAME BatchQcRunnerTests COMMAND test_batch_qc_runner)
+
+# =================================================
+# 测试 27：双文件对比（转码前后 / 同参数校验）
+# 说明: CompareRuns 读 QcRunResult.report 字段即可产生对比行，无需完整 analysis。
+# =================================================
+videoeye_add_test(test_qc_comparator
+    unit/test_qc_comparator.cpp
+)
+target_link_libraries(test_qc_comparator PRIVATE VideoEyeCore)
+add_test(NAME QcComparatorTests COMMAND test_qc_comparator)
+
+# =================================================
+# 测试 28：报告导出（CSV 每 issue 一行 / JSON schema 稳定 / 批量汇总 / 扩展名）
+# 说明: 只测 CSV/JSON/汇总这些纯 std::string 路径；PDF 走 QPdfWriter 不在本测试覆盖。
+# =================================================
+videoeye_add_test(test_qc_report_exporter
+    unit/test_qc_report_exporter.cpp
+)
+target_link_libraries(test_qc_report_exporter PRIVATE VideoEyeCore)
+add_test(NAME QcReportExporterTests COMMAND test_qc_report_exporter)

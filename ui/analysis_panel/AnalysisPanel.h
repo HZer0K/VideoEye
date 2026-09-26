@@ -23,6 +23,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include "ui/charts/MetricChartWidget.h"
+#include "ui/reporting_panel/ReportingPanel.h"
 #include <chrono>
 #include <deque>
 #include <vector>
@@ -106,6 +107,8 @@ public:
         timeline_result_ = model::TimelineAnalysisResult{};
         timeline_offline_ = false;
         timeline_dirty_ = false;
+        // 报告与批量 QC 页需要当前文件来"按模板重新分析"
+        if (reporting_panel_) reporting_panel_->SetCurrentFile(path);
     }
     
     // 重新发射所有启用状态的开关信号 (用于文件打开后同步播放器状态)
@@ -128,6 +131,9 @@ signals:
     // 全文件扫描拿到素材自带起始时码（tmcd 轨 / metadata timecode tag）时发出，
     // MainWindow 转给 PlayerPanel，让播放器时间轴旁显示真实 SMPTE 时码。
     void StartTimecodeReady(const QString& timecode, double fps);
+
+    // 报告与批量 QC 页把状态（"已导出报告…""模板已加载"等）冒泡给主窗口状态栏
+    void StatusMessage(const QString& text);
     
 public slots:
     // 更新统计数据
@@ -747,6 +753,9 @@ private:
 
     // 诊断与报告标签页
     QWidget* diagnostics_tab_;
+
+    // 报告与批量 QC 页（功能 12）：模板选择 / 单文件报告 / 目录批量扫描 / 导出
+    ui::ReportingPanel* reporting_panel_ = nullptr;
     QPushButton* qc_start_button_;
     QPushButton* qc_cancel_button_;
     QPushButton* qc_export_button_;

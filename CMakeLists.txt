@@ -45,28 +45,37 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS "core/*.cpp")
 file(GLOB_RECURSE UI_SOURCES CONFIGURE_DEPENDS "ui/*.cpp")
 file(GLOB_RECURSE UTILS_SOURCES CONFIGURE_DEPENDS "utils/*.cpp")
-file(GLOB_RECURSE HEADERS CONFIGURE_DEPENDS "core/*.h" "ui/*.h" "utils/*.h")
+# 头文件按归属分开挂: ui/*.h 里有 Q_OBJECT，如果同时挂给静态库和主程序，
+# AUTOMOC 会各生成一份 moc_*.cpp，链接期撞 LNK2005 重复定义。
+file(GLOB_RECURSE HEADERS CONFIGURE_DEPENDS "core/*.h" "utils/*.h")
+file(GLOB_RECURSE UI_HEADERS CONFIGURE_DEPENDS "ui/*.h")
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-add_executable(${PROJECT_NAME}
+# ============================================================
+# 核心静态库: core/ + utils/
+#
+# 抽出来的唯一理由: videoeye-cli 要复用同一批代码。
+# 以前它们直接编进 GUI 可执行文件，CLI 想链同样的逻辑只能像 tests/ 那样
+# 手工列一串源文件 —— 每加一个 analyzer 就可能 LNK2019。
+# ============================================================
+add_library(VideoEyeCore STATIC
     ${CORE_SOURCES}
-    ${UI_SOURCES}
     ${UTILS_SOURCES}
     ${HEADERS}
 )
-
-target_include_directories(${PROJECT_NAME} PRIVATE
+set_target_properties(VideoEyeCore PROPERTIES OUTPUT_NAME videoeye_core AUTOMOC ON)
+target_include_directories(VideoEyeCore PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/ui
     ${CMAKE_CURRENT_SOURCE_DIR}/utils
 )
-
-target_link_libraries(${PROJECT_NAME} PRIVATE
-    Qt6::Widgets
+target_link_libraries(VideoEyeCore PUBLIC
+    Qt6::Core
+    Qt6::Gui
     FFmpeg::avcodec
     FFmpeg::avformat
     FFmpeg::avutil
@@ -77,16 +86,25 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 # 音频输出用的是平台原生 API，各平台补一下系统库
 if(WIN32)
     # WASAPI: CoCreateInstance 在 ole32
-    target_link_libraries(${PROJECT_NAME} PRIVATE ole32)
+    target_link_libraries(VideoEyeCore PUBLIC ole32)
 elseif(APPLE)
     find_library(AUDIOTOOLBOX_FRAMEWORK AudioToolbox)
     if(AUDIOTOOLBOX_FRAMEWORK)
-        target_link_libraries(${PROJECT_NAME} PRIVATE ${AUDIOTOOLBOX_FRAMEWORK})
+        target_link_libraries(VideoEyeCore PUBLIC ${AUDIOTOOLBOX_FRAMEWORK})
     endif()
 else()
     # ALSA 走 dlopen，只需 libdl
-    target_link_libraries(${PROJECT_NAME} PRIVATE ${CMAKE_DL_LIBS})
+    target_link_libraries(VideoEyeCore PUBLIC ${CMAKE_DL_LIBS})
 endif()
+
+add_executable(${PROJECT_NAME}
+    ${UI_SOURCES}
+    ${UI_HEADERS}
+)
+target_link_libraries(${PROJECT_NAME} PRIVATE
+    VideoEyeCore
+    Qt6::Widgets
+)
 
 # FFmpeg 运行时部署 (Windows 拷 DLL / Linux、macOS 拷 .so、.dylib 并设 rpath)
 videoeye_deploy_ffmpeg(${PROJECT_NAME})
@@ -135,9 +153,30 @@ if(WIN32)
 endif()
 
 # ============================================================
+# 命令行工具: videoeye-cli
+#
+# 专门抽核心静态库就是为了这个目标 —— CLI 不需要任何 UI 代码，
+# 只要链 VideoEyeCore 就能拿到完整的分析 + 报告导出能力。
+# ============================================================
+option(VIDEOEYE_BUILD_CLI "构建 videoeye-cli 命令行工具" ON)
+if(VIDEOEYE_BUILD_CLI)
+    add_executable(videoeye-cli cli/videoeye-cli.cpp)
+    target_link_libraries(videoeye-cli PRIVATE VideoEyeCore)
+    # Linux/macOS 靠 rpath 找 build/lib 里的 FFmpeg 动态库
+    videoeye_set_ffmpeg_rpath(videoeye-cli)
+    if(WIN32)
+        # DLL 由 videoeye-runtime 一次性铺好（各目标分别拷会撞文件锁）
+        videoeye_register_runtime_target(videoeye-cli)
+    endif()
+endif()
+
+# ============================================================
 # 安装
 # ============================================================
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
+if(VIDEOEYE_BUILD_CLI)
+    install(TARGETS videoeye-cli RUNTIME DESTINATION bin)
+endif()
 # FFmpeg 动态库: Windows 扁平布局进 bin/, Linux/macOS 进 lib/ (由 INSTALL_RPATH 指过去)
 videoeye_install_ffmpeg()
 
@@ -145,6 +184,14 @@ if(WIN32)
     # 安装树同样要跑一遍依赖闭包 —— 打包出去的东西比 build 目录更容易漏文件,
     # 而且漏了之后只有目标机器上才会暴露。
     videoeye_windows_runtime_search_dirs(_install_search_dirs)
+
+    # 安装期要扫的可执行文件（GUI + CLI）
+    if(VIDEOEYE_BUILD_CLI)
+        set(_install_inputs
+            "${CMAKE_INSTALL_PREFIX}/bin/$<TARGET_FILE_NAME:${PROJECT_NAME}>;${CMAKE_INSTALL_PREFIX}/bin/$<TARGET_FILE_NAME:videoeye-cli>")
+    else()
+        set(_install_inputs "${CMAKE_INSTALL_PREFIX}/bin/$<TARGET_FILE_NAME:${PROJECT_NAME}>")
+    endif()
 
     # Qt 插件这一步必须在配置期就决定好。
     # install(CODE) 里的脚本是安装时才执行的，那时 WINDEPLOYQT 这个变量并不存在，
@@ -171,7 +218,7 @@ if(WIN32)
     install(CODE "
         execute_process(
             COMMAND \"\${CMAKE_COMMAND}\"
-                    \"-DVE_INPUTS=\${CMAKE_INSTALL_PREFIX}/bin/$<TARGET_FILE_NAME:${PROJECT_NAME}>\"
+                    \"-DVE_INPUTS=${_install_inputs}\"
                     \"-DVE_DEST=\${CMAKE_INSTALL_PREFIX}/bin\"
                     \"-DVE_SEARCH_DIRS=${_install_search_dirs}\"
                     -P \"${VIDEOEYE_RUNTIME_DEPS_SCAN_SCRIPT}\"
