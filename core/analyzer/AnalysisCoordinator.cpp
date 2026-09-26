@@ -363,6 +363,23 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
         result.streams.push_back(std::move(digest));
     }
 
+    // ---- 字幕 / 时码 / 辅助数据轨准备（只在存在对应流时才有实际工作量）----
+    SubtitleAnalyzer subtitle_analyzer;
+    TimecodeAnalyzer timecode_analyzer;
+    AuxDataAnalyzer aux_analyzer;
+    if (options.analyze_subtitle) {
+        subtitle_analyzer.Reset(options.subtitle_options);
+        subtitle_analyzer.RegisterStreams(fmt);
+    }
+    if (options.analyze_timecode) {
+        timecode_analyzer.Reset(options.timecode_options);
+        timecode_analyzer.RegisterStreams(fmt, file_duration);
+    }
+    if (options.analyze_aux_data) {
+        aux_analyzer.Reset(options.aux_data_options);
+        aux_analyzer.RegisterStreams(fmt);
+    }
+
     // ---- 编码码流解析（只读 extradata，不解码；必须在 avformat_close_input 之前）----
     // 只取第一条视频流：诊断关心的是主视频的编码参数，多视频流取第一条足够。
     if (options.analyze_bitstream) {
@@ -644,6 +661,11 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
             timeline_analyzer.OnPacket(timing);
         }
 
+        // 字幕 / 时码 / 辅助数据轨（内部先按流号过滤，非目标流直接返回）
+        if (options.analyze_subtitle) subtitle_analyzer.OnPacket(pkt, st);
+        if (options.analyze_timecode) timecode_analyzer.OnPacket(pkt, st);
+        if (options.analyze_aux_data) aux_analyzer.OnPacket(pkt, st);
+
         // 音频 QC：解码后归一为 float planar 再喂给分析器
         if (options.analyze_audio_qc && pkt->stream_index == audio_stream_index &&
             audio_probe.ready) {
@@ -920,6 +942,40 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
     if (options.analyze_color_hdr && color_video_stream_index >= 0) {
         result.color_hdr = color_hdr.Finish();
         LOG_INFO("色彩与 HDR: " + result.color_hdr.ToString());
+    }
+
+    // 字幕轨收尾（必须在 avformat_close_input 之后、发信号之前）
+    if (options.analyze_subtitle) {
+        // 用实测时长兜底：容器没给时长时用桶估算值，否则"超出媒体时长"会全漏
+        const double cue_limit = (result.duration_seconds > 0.0) ? result.duration_seconds
+                                                                 : measured_duration;
+        subtitle_analyzer.Finish(cue_limit);
+        result.subtitle = subtitle_analyzer.result();
+        result.subtitle_analyzed = result.subtitle.analyzed && !result.subtitle.streams.empty();
+        LOG_INFO("字幕分析: streams=" + std::to_string(result.subtitle.streams.size()) +
+                 " cues=" + std::to_string(result.subtitle.cues.size()) +
+                 " issues=" + std::to_string(result.subtitle.issues.size()));
+    }
+
+    // 时码与章节收尾
+    if (options.analyze_timecode) {
+        timecode_analyzer.Finish();
+        result.timecode = timecode_analyzer.result();
+        result.timecode_analyzed = result.timecode.analyzed;
+        LOG_INFO("时码与章节: tracks=" + std::to_string(result.timecode.tracks.size()) +
+                 " 首帧时码=" + (result.timecode.has_primary ? result.timecode.primary.ToString()
+                                                             : std::string("无")) +
+                 " chapters=" + std::to_string(result.timecode.chapters.size()));
+    }
+
+    // 辅助数据轨收尾
+    if (options.analyze_aux_data) {
+        aux_analyzer.Finish();
+        result.aux_data = aux_analyzer.result();
+        result.aux_data_analyzed = result.aux_data.analyzed;
+        LOG_INFO("辅助数据轨: streams=" + std::to_string(result.aux_data.streams.size()) +
+                 " scte35=" + std::to_string(result.aux_data.scte35_cue_count) +
+                 " metadata=" + std::to_string(result.aux_data.metadata.size()));
     }
 
     LOG_INFO("全文件分析完成: packets=" + std::to_string(result.total_packets) +

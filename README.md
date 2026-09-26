@@ -21,6 +21,7 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 - **音频可视化**: 波形快照、FFT 频谱、纯音频律动
 - **场景切换检测**: 灰度直方图 Bhattacharyya 距离实时检测镜头切换
 - **画面质量（视觉缺陷）**: 黑场 / 冻结 / 花屏马赛克 / 模糊 / 闪烁 / 过曝欠曝 / 色偏 / 隔行梳齿 / 黑边，带证据缩略图与缺陷列表
+- **字幕 / 时码 / 辅助数据**: 字幕 cue（SRT / ASS-SSA / WebVTT / tx3g / CEA-608）重叠与空字幕检查、SMPTE 时码与章节、data 流与 SCTE-35 广告插入点
 - **质量评估**: 离线逐帧计算 PSNR / SSIM 及走势图
 - **帧导出**: 导出任意帧为 JPG / RGB / YUV，支持打开 .yuv / .rgb 原始图像
 
@@ -120,6 +121,7 @@ VideoEye/
 | [docs/MP4_SAMPLE_TABLE.md](docs/MP4_SAMPLE_TABLE.md) | MP4/fMP4 样本表一致性校验 |
 | [docs/HLS_DASH_SEGMENT.md](docs/HLS_DASH_SEGMENT.md) | HLS/DASH 流媒体包检测（manifest + segment + 多码率 ladder） |
 | [docs/VISUAL_QC.md](docs/VISUAL_QC.md) | 画面质量与视觉缺陷检测（黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 曝光 / 色偏 / 梳齿 / 黑边） |
+| [docs/SUBTITLE_TIMECODE_AUX.md](docs/SUBTITLE_TIMECODE_AUX.md) | 字幕 cue、SMPTE 时码 / 章节、data 流与 SCTE-35 插入点 |
 
 ## 测试
 

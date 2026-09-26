@@ -15,6 +15,7 @@
 #include "core/player/MediaPlayer.h"
 #include "core/analyzer/StreamAnalyzer.h"
 #include "core/model/MacroblockInfo.h"
+#include "core/model/TimecodeInfo.h"
 #include "ui/main_window/VideoWidget.h"
 
 namespace videoeye {
@@ -60,6 +61,10 @@ public:
     // 当前媒体源: 停止后再次点播放需要重新 Open, 由 MainWindow 在 OpenMedia 时同步。
     // 同时负责换源时清掉上一份文件的叠加层缓存与状态栏统计。
     void SetCurrentSource(const QString& source);
+
+    // 注入素材自带的起始时码（tmcd 轨首帧时码或 metadata timecode tag）。
+    // 传空串表示回到"从 00:00:00:00 起算"的相对时码。
+    void SetStartTimecode(const QString& timecode, double fps = 0.0);
 
 signals:
     void StatusMessage(const QString& text, int timeout);
@@ -113,6 +118,14 @@ private:
     void UpdateRawNavigationState();
     void RenderAudioVisualization(double timestamp_seconds);
 
+    // === 时码显示（功能 9）===
+    // 把当前播放位置换算成 SMPTE 时码显示在时间标签旁。起始时码默认 00:00:00:00，
+    // 素材自带（tmcd 轨 / timecode tag）时由 SetStartTimecode 注入基准。
+    void UpdateTimecodeLabel(int position_ms);
+    // 帧率在 Open 之后才拿得到，这里惰性解析一次 StreamInfo 的 frame_rate 文本
+    void RefreshTimecodeFps();
+    static bool ParseFrameRateText(const std::string& text, double& fps_out);
+
     // === 非拥有依赖 ===
     player::MediaPlayer* player_ = nullptr;
     QSplitter* splitter_ = nullptr;   // 非拥有: 由 MainWindow 创建的 content_splitter_
@@ -126,6 +139,11 @@ private:
     QPushButton* next_frame_button_ = nullptr;
     QPushButton* volume_button_ = nullptr;
     QSlider* volume_slider_ = nullptr;
+    QLabel* timecode_label_ = nullptr;
+    double timecode_fps_ = 0.0;
+    bool timecode_fps_resolved_ = false;
+    bool timecode_start_valid_ = false;
+    model::Timecode timecode_start_;
     QPushButton* mv_overlay_button_ = nullptr;
     QPushButton* collapse_player_button_ = nullptr;
     QSlider* seek_slider_ = nullptr;

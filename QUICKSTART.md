@@ -252,6 +252,7 @@ cmake --build build/release -- -j2
 - [色彩与 HDR 元数据分析](docs/COLOR_HDR_ANALYSIS.md)
 - [MP4/fMP4 容器一致性校验](docs/MP4_SAMPLE_TABLE.md)
 - [画面质量与视觉缺陷检测](docs/VISUAL_QC.md)
+- [字幕、时码与辅助数据轨](docs/SUBTITLE_TIMECODE_AUX.md)
 
 ---
 

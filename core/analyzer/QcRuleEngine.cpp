@@ -761,6 +761,178 @@ std::vector<model::DiagnosticIssue> QcRuleEngine::CheckRule(const model::QcRule&
         return issues;
     }
 
+    // ---------- 字幕（core/analyzer/SubtitleAnalyzer.h）----------
+    // 具体阈值（最短/最长停留、阅读速度）由 SubtitleOptions 决定，规则只决定
+    // "这类问题要不要进报告、按什么级别进"，所以全部用计数型判定。
+    if (rule.id.rfind("subtitle.", 0) == 0) {
+        static const std::pair<const char*, model::SubtitleIssueType> kMap[] = {
+            {"subtitle.cue_empty", model::SubtitleIssueType::EmptyText},
+            {"subtitle.cue_overlap", model::SubtitleIssueType::Overlap},
+            {"subtitle.cue_too_short", model::SubtitleIssueType::TooShort},
+            {"subtitle.cue_too_long", model::SubtitleIssueType::TooLong},
+            {"subtitle.cue_order", model::SubtitleIssueType::NonMonotonic},
+            {"subtitle.cue_invalid_duration", model::SubtitleIssueType::InvalidDuration},
+            {"subtitle.cue_too_fast", model::SubtitleIssueType::TooFast},
+            {"subtitle.cue_out_of_range", model::SubtitleIssueType::OutOfRange},
+            {"subtitle.missing_language", model::SubtitleIssueType::MissingLanguage},
+            {"subtitle.missing_handler", model::SubtitleIssueType::MissingHandler},
+        };
+        bool matched = false;
+        model::SubtitleIssueType target = model::SubtitleIssueType::EmptyText;
+        for (const auto& entry : kMap) {
+            if (rule.id == entry.first) {
+                matched = true;
+                target = entry.second;
+                break;
+            }
+        }
+        if (!matched || !result.subtitle_analyzed) return issues;
+
+        const int count = result.subtitle.CountIssues(target);
+        if (Triggered(rule, static_cast<double>(count))) {
+            const model::SubtitleIssue* first = nullptr;
+            for (const model::SubtitleIssue& issue : result.subtitle.issues) {
+                if (issue.type == target) {
+                    first = &issue;
+                    break;
+                }
+            }
+            std::string detail = "共 " + std::to_string(count) + " 处";
+            if (first != nullptr && !first->detail.empty()) detail += "，例如：" + first->detail;
+            model::TimeRange range = model::TimeRange::Global();
+            int stream_index = -1;
+            if (first != nullptr && !first->IsStreamLevel() && first->start_seconds >= 0.0) {
+                range = model::TimeRange::At(first->start_seconds);
+                stream_index = first->stream_index;
+            } else if (first != nullptr) {
+                stream_index = first->stream_index;
+            }
+            issues.push_back(make_issue(static_cast<double>(count), detail, range, stream_index,
+                                        count > 0 ? count : 1));
+        }
+        return issues;
+    }
+
+    // ---------- 时码与章节（core/analyzer/TimecodeAnalyzer.h）----------
+    if (rule.id == "timecode.missing") {
+        if (!result.timecode_analyzed) return issues;
+        if (Triggered(rule, result.timecode.has_primary ? 0.0 : 1.0)) {
+            issues.push_back(make_issue(1.0,
+                "未找到时码：既没有 MOV/MP4 的 tmcd 时码轨，也没有 metadata 里的 timecode tag。"));
+        }
+        return issues;
+    }
+    if (rule.id == "timecode.drop_frame_mismatch") {
+        if (!result.timecode_analyzed || !result.timecode.has_primary) return issues;
+        const double fps = result.timecode.primary_frame_rate;
+        if (fps <= 0.0) return issues;
+        const bool rate_is_ntsc = model::IsDropFrameRate(fps);
+        const bool mismatch = (rate_is_ntsc && !result.timecode.primary_drop_frame) ||
+                              (!rate_is_ntsc && result.timecode.primary_drop_frame);
+        if (Triggered(rule, mismatch ? 1.0 : 0.0)) {
+            issues.push_back(make_issue(1.0,
+                "帧率 " + FormatValue(fps, 3) + " fps 与时码标记 " +
+                (result.timecode.primary_drop_frame ? "drop-frame" : "non-drop-frame") +
+                " 不一致；29.97 素材用 non-drop 时码，一小时会累积约 3.6 秒偏差。",
+                model::TimeRange::At(0.0)));
+        }
+        return issues;
+    }
+    if (rule.id == "timecode.invalid_frame") {
+        if (!result.timecode_analyzed || !result.timecode.has_primary) return issues;
+        const double fps = result.timecode.primary_frame_rate;
+        if (fps <= 0.0) return issues;
+        if (Triggered(rule, model::IsValidTimecode(result.timecode.primary, fps) ? 0.0 : 1.0)) {
+            issues.push_back(make_issue(1.0,
+                "首帧时码 " + result.timecode.primary.ToString() + " 在 " +
+                FormatValue(fps, 3) + " fps 下不合法（帧号越界或 drop-frame 跳帧位置错误）。",
+                model::TimeRange::At(0.0)));
+        }
+        return issues;
+    }
+    if (rule.id.rfind("chapter.", 0) == 0) {
+        static const std::pair<const char*, model::ChapterIssueType> kMap[] = {
+            {"chapter.overlap", model::ChapterIssueType::Overlap},
+            {"chapter.out_of_range", model::ChapterIssueType::OutOfRange},
+            {"chapter.non_monotonic", model::ChapterIssueType::NonMonotonic},
+            {"chapter.zero_duration", model::ChapterIssueType::ZeroDuration},
+            {"chapter.missing_title", model::ChapterIssueType::MissingTitle},
+        };
+        bool matched = false;
+        model::ChapterIssueType target = model::ChapterIssueType::Overlap;
+        for (const auto& entry : kMap) {
+            if (rule.id == entry.first) {
+                matched = true;
+                target = entry.second;
+                break;
+            }
+        }
+        if (!matched || !result.timecode_analyzed) return issues;
+
+        const int count = result.timecode.CountChapterIssues(target);
+        if (Triggered(rule, static_cast<double>(count))) {
+            const model::ChapterIssue* first = nullptr;
+            for (const model::ChapterIssue& issue : result.timecode.chapter_issues) {
+                if (issue.type == target) {
+                    first = &issue;
+                    break;
+                }
+            }
+            std::string detail = "共 " + std::to_string(count) + " 处";
+            if (first != nullptr && !first->detail.empty()) detail += "，例如：" + first->detail;
+            model::TimeRange range = model::TimeRange::Global();
+            if (first != nullptr && first->start_seconds >= 0.0) {
+                range = model::TimeRange::At(first->start_seconds);
+            }
+            issues.push_back(make_issue(static_cast<double>(count), detail, range, -1,
+                                        count > 0 ? count : 1));
+        }
+        return issues;
+    }
+
+    // ---------- SCTE-35（core/analyzer/Scte35Analyzer.h）----------
+    if (rule.id == "scte35.parse_error") {
+        if (!result.aux_data_analyzed) return issues;
+        const int count = result.aux_data.parse_error_count;
+        if (Triggered(rule, static_cast<double>(count))) {
+            issues.push_back(make_issue(static_cast<double>(count),
+                "有 " + std::to_string(count) +
+                " 个 SCTE-35 载荷解析失败（table_id / section_length 或命令体异常）。"));
+        }
+        return issues;
+    }
+    if (rule.id == "scte35.crc_invalid") {
+        if (!result.aux_data_analyzed) return issues;
+        const int count = result.aux_data.crc_invalid_count;
+        if (Triggered(rule, static_cast<double>(count))) {
+            issues.push_back(make_issue(static_cast<double>(count),
+                "有 " + std::to_string(count) +
+                " 个 SCTE-35 section 的 CRC_32 校验不通过，可能是传输损坏或被拼接过。"));
+        }
+        return issues;
+    }
+    if (rule.id == "scte35.duration_missing") {
+        if (!result.aux_data_analyzed) return issues;
+        int count = 0;
+        for (const model::Scte35Cue& cue : result.aux_data.cues) {
+            // splice_insert 没带 break_duration、segmentation 也没给时长 -> 下游不知道插多长
+            if (cue.valid && !cue.cancel_indicator && !cue.has_duration &&
+                cue.command == model::Scte35Command::SpliceInsert) {
+                bool seg_duration = false;
+                for (const model::Scte35Segmentation& seg : cue.segmentation) {
+                    if (seg.has_duration) seg_duration = true;
+                }
+                if (!seg_duration) ++count;
+            }
+        }
+        if (Triggered(rule, static_cast<double>(count))) {
+            issues.push_back(make_issue(static_cast<double>(count),
+                "有 " + std::to_string(count) +
+                " 条 splice_insert cue 没有给 duration，下游无法判断广告插入多长。"));
+        }
+        return issues;
+    }
+
     if (rule.id == "audio.channel_missing") {
         int missing = 0;
         int stream_index = -1;

@@ -55,6 +55,9 @@
 #include "core/model/AudioQcResult.h"
 #include "core/model/QualityMetric.h"
 #include "core/model/VisualDefect.h"
+#include "core/model/SubtitleCueInfo.h"
+#include "core/model/TimecodeInfo.h"
+#include "core/model/AuxiliaryDataInfo.h"
 #include "core/analyzer/VisualDefectAnalyzer.h"
 
 namespace videoeye {
@@ -121,6 +124,10 @@ signals:
 
     // 跳转到指定时间（秒）: 由"跳转到问题帧"触发, MainWindow 连接到播放器 Seek
     void SeekRequested(double seconds);
+
+    // 全文件扫描拿到素材自带起始时码（tmcd 轨 / metadata timecode tag）时发出，
+    // MainWindow 转给 PlayerPanel，让播放器时间轴旁显示真实 SMPTE 时码。
+    void StartTimecodeReady(const QString& timecode, double fps);
     
 public slots:
     // 更新统计数据
@@ -181,6 +188,15 @@ public slots:
     // 参数集页「重新扫描」：复用同一次全文件扫描
     void OnBitstreamRefreshRequested();
     void OnExportColorHdrCsv();
+
+    // 字幕 / 时码 / 辅助数据（功能 9：字幕 cue、SMPTE 时码、章节、SCTE-35、metadata）
+    void OnStartSubtitleAuxAnalysis();
+    void OnSubtitleStreamChanged(int index);
+    void OnExportSubtitleCsv();
+    void OnExportTimecodeCsv();
+    void OnExportScte35Csv();
+    void OnExportMetadataCsv();
+    void OnSubtitleCueCellClicked(int row, int column);
 
     // 导出报告
     void OnExportReport();
@@ -401,6 +417,23 @@ private:
     void UpdateStreamingUi();         // 流媒体包页：结构树 + ladder + 分片时间轴 + 问题
     void RebuildColorHdrTables();
     void RebuildColorHdrIssueTable();
+
+    // 字幕 / 时码 / 辅助数据页（功能 9）
+    void SetupSubtitleAuxTab();
+    void UpdateSubtitleAuxUi();          // 汇总 + 6 张表 + SCTE-35 标记图 一次刷新
+    void UpdateSubtitleAuxSummary();
+    void RebuildSubtitleStreamTable();
+    void RebuildSubtitleCueTable();
+    void RebuildTimecodeTable();
+    void RebuildChapterTable();
+    void RebuildAuxStreamTable();
+    void RebuildScte35Table();
+    void RebuildMetadataTable();
+    void UpdateScte35MarkerChart();
+    // 当前 cue 表要展示的流（-1 = 全部字幕流）
+    int CurrentSubtitleStreamIndex() const;
+    // 字幕阈值以「规则与阈值」页的可编辑规则表为准，扫描前同步一次
+    void SyncSubtitleThresholdsFromRules(analyzer::SubtitleOptions& options) const;
 
     // 诊断与报告页
     // MP4/fMP4 样本表子页（容器页）
@@ -692,6 +725,25 @@ private:
 
     // 流媒体包页（HLS / DASH 清单 + 分片 + 码率阶梯）
     StreamingPanel* streaming_panel_ = nullptr;
+
+    // 字幕 / 时码 / 辅助数据页（功能 9）
+    QWidget* subtitle_aux_tab_ = nullptr;
+    QLabel* subtitle_aux_summary_label_ = nullptr;
+    QPushButton* subtitle_aux_start_button_ = nullptr;
+    QTabWidget* subtitle_aux_sub_tabs_ = nullptr;
+    QComboBox* subtitle_stream_combo_ = nullptr;
+    QCheckBox* subtitle_issues_only_check_ = nullptr;
+    QTableWidget* subtitle_stream_table_ = nullptr;
+    QTableWidget* subtitle_cue_table_ = nullptr;
+    QTableWidget* timecode_table_ = nullptr;
+    QTableWidget* chapter_table_ = nullptr;
+    QTableWidget* aux_stream_table_ = nullptr;
+    QTableWidget* scte35_table_ = nullptr;
+    QTableWidget* metadata_table_ = nullptr;
+    MetricChartWidget* scte35_marker_chart_ = nullptr;
+    ChartSeries* scte35_marker_series_ = nullptr;
+    ChartAxis* scte35_marker_axis_x_ = nullptr;
+    ChartAxis* scte35_marker_axis_y_ = nullptr;
 
     // 诊断与报告标签页
     QWidget* diagnostics_tab_;

@@ -5,10 +5,13 @@
 #include <vector>
 
 #include "core/analyzer/AudioQcAnalyzer.h"
+#include "core/analyzer/AuxDataAnalyzer.h"
 #include "core/analyzer/BitrateGopAnalyzer.h"
 #include "core/analyzer/ColorHdrAnalyzer.h"
 #include "core/analyzer/Mp4SampleTableAnalyzer.h"
 #include "core/analyzer/SegmentQcAnalyzer.h"
+#include "core/analyzer/SubtitleAnalyzer.h"
+#include "core/analyzer/TimecodeAnalyzer.h"
 #include "core/model/BitstreamInfo.h"
 #include "core/model/MetricSeries.h"
 #include "core/model/TimelineDiagnostic.h"
@@ -62,6 +65,20 @@ struct AnalysisOptions {
     // ContainerStructureResult::streaming_package（打开文件时由 ContainerStructureAnalyzer 填）。
     bool analyze_streaming_package = true;
     SegmentQcOptions streaming_package_options;
+
+    // 字幕轨（SRT / ASS-SSA / WebVTT / tx3g 的 cue 解析与校验；图形字幕与 CEA-708
+    // 第一阶段只输出流 metadata 与包时间线）。只在存在字幕流时才有工作量。
+    bool analyze_subtitle = true;
+    SubtitleOptions subtitle_options;
+
+    // 时码与章节（MOV/MP4 tmcd 轨首帧时码、metadata timecode tag、章节时间线）。
+    // 只读 metadata 与 tmcd 首包，几乎零成本。
+    bool analyze_timecode = true;
+    TimecodeOptions timecode_options;
+
+    // 辅助数据轨（data stream 枚举 + SCTE-35 cue 解析 + metadata key-value 采集）
+    bool analyze_aux_data = true;
+    AuxDataOptions aux_data_options;
 };
 
 // 单条流的静态摘要（demux 层，不解码）
@@ -151,6 +168,19 @@ struct AnalysisResult {
     // 只有输入是清单文件时才跑；streaming_analyzed=true 才表示跑过。
     model::StreamingPackageResult streaming_package;
     bool streaming_analyzed = false;
+
+    // 字幕轨（见 core/analyzer/SubtitleAnalyzer.h）
+    // subtitle_analyzed=true 才表示跑过（没有字幕流时不跑）
+    model::SubtitleAnalysisResult subtitle;
+    bool subtitle_analyzed = false;
+
+    // 时码与章节（见 core/analyzer/TimecodeAnalyzer.h）
+    model::TimecodeAnalysisResult timecode;
+    bool timecode_analyzed = false;
+
+    // 辅助数据轨（见 core/analyzer/AuxDataAnalyzer.h：data 流 + SCTE-35 + metadata）
+    model::AuxiliaryDataResult aux_data;
+    bool aux_data_analyzed = false;
 
     // 执行状态
     bool completed = true;        // false = 被取消

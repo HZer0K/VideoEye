@@ -110,6 +110,16 @@ void PlayerPanel::SetupUI() {
     time_label_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     control_layout->addWidget(time_label_);
 
+    // 时码显示（SMPTE HH:MM:SS:FF）：放在时间标签旁，方便与交付单上的时码对表。
+    // 素材本身没有写时码时，按 00:00:00:00 起算的"相对时码"显示。
+    timecode_label_ = new QLabel(tr("时码 --:--:--:--"), control_bar_);
+    timecode_label_->setObjectName("TimecodeLabel");
+    timecode_label_->setMinimumWidth(150);
+    timecode_label_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    timecode_label_->setToolTip(
+        tr("按当前帧率换算的 SMPTE 时码；素材自带起始时码时（tmcd 轨 / timecode tag）以此为基准累加"));
+    control_layout->addWidget(timecode_label_);
+
     // 音量控制
     volume_button_ = new QPushButton(control_bar_);
     volume_button_->setObjectName("volumeButton");
@@ -406,6 +416,12 @@ void PlayerPanel::ResetVideoUI() {
     seek_slider_->setValue(0);
     seek_slider_->setRange(0, 0);
     time_label_->setText(tr("00:00:00 / 00:00:00"));
+    // 换源/停止: 时码回到未知态（帧率与起始时码都要等新文件打开后重新解析）
+    timecode_fps_ = 0.0;
+    timecode_fps_resolved_ = false;
+    timecode_start_valid_ = false;
+    timecode_start_ = model::Timecode{};
+    if (timecode_label_) timecode_label_->setText(tr("时码 --:--:--:--"));
 }
 
 void PlayerPanel::OnStop() {
@@ -579,6 +595,74 @@ void PlayerPanel::OnPositionChanged(int position_ms, int duration_ms) {
     time_label_->setText(QString("%1 / %2")
         .arg(theme::font::formatTime(position_ms))
         .arg(theme::font::formatTime(duration_ms)));
+
+    UpdateTimecodeLabel(position_ms);
+}
+
+void PlayerPanel::SetStartTimecode(const QString& timecode, double fps) {
+    timecode_start_ = model::TimecodeFromString(timecode.toStdString(), fps);
+    timecode_start_valid_ = timecode_start_.valid;
+    if (fps > 0.0) timecode_fps_ = fps;
+    timecode_fps_resolved_ = false;   // 帧率可能被覆盖, 下次刷新时重新解析
+}
+
+void PlayerPanel::RefreshTimecodeFps() {
+    if (timecode_fps_ > 0.0 || player_ == nullptr) return;
+    // StreamInfo 在 Open 阶段填充, 取到之前每次回调都重试一次
+    const std::string& fps_text = player_->GetStreamInfo().video.frame_rate;
+    double parsed = 0.0;
+    if (PlayerPanel::ParseFrameRateText(fps_text, parsed) && parsed > 0.0) {
+        timecode_fps_ = parsed;
+        timecode_fps_resolved_ = true;
+    }
+}
+
+bool PlayerPanel::ParseFrameRateText(const std::string& text, double& fps_out) {
+    // StreamInfo 里是 "25.000 fps" / "29.970 (30000/1001) fps" 之类的人类可读串,
+    // 这里只取第一个可解析的浮点数。
+    std::string digits;
+    bool seen_digit = false;
+    for (char c : text) {
+        if ((c >= '0' && c <= '9') || c == '.') {
+            digits.push_back(c);
+            if (c >= '0' && c <= '9') seen_digit = true;
+        } else if (seen_digit) {
+            break;
+        }
+    }
+    if (!seen_digit) return false;
+    try {
+        fps_out = std::stod(digits);
+    } catch (const std::exception&) {
+        return false;
+    }
+    return fps_out > 0.0;
+}
+
+void PlayerPanel::UpdateTimecodeLabel(int position_ms) {
+    if (timecode_label_ == nullptr) return;
+    RefreshTimecodeFps();
+
+    if (timecode_fps_ <= 0.0) {
+        timecode_label_->setText(tr("时码 --:--:--:--"));
+        return;
+    }
+
+    const bool drop_frame = model::IsDropFrameRate(timecode_fps_);
+    int64_t start_frames = 0;
+    if (timecode_start_valid_) {
+        start_frames = timecode_start_.ToFrameCount(timecode_fps_);
+        if (start_frames < 0) start_frames = 0;
+    } else {
+        // 素材没写起始时码: 按 00:00:00:00 起算, drop frame 标记跟着帧率走
+    }
+    const double position_seconds = static_cast<double>(position_ms) / 1000.0;
+    const int64_t elapsed_frames =
+        static_cast<int64_t>(std::llround(position_seconds * timecode_fps_));
+
+    const model::Timecode tc = model::TimecodeFromFrameCount(start_frames + elapsed_frames,
+                                                             timecode_fps_, drop_frame);
+    timecode_label_->setText(tr("时码 %1").arg(QString::fromStdString(tc.ToString())));
 }
 
 void PlayerPanel::OnError(const QString& message) {

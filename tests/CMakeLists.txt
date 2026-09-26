@@ -267,6 +267,10 @@ videoeye_add_test(test_audio_qc_rules
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/BitratePoint.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/GopInfo.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimelineDiagnostic.cpp
+    # QcRuleEngine 的 subtitle.*/timecode.*/chapter.*/scte35.* 分支需要这三个模型
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/SubtitleCueInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimecodeInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AuxiliaryDataInfo.cpp
 )
 add_test(NAME AudioQcRulesTests COMMAND test_audio_qc_rules)
 
@@ -290,6 +294,10 @@ videoeye_add_test(test_color_hdr_rules
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/BitratePoint.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/GopInfo.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimelineDiagnostic.cpp
+    # QcRuleEngine 的 subtitle.*/timecode.*/chapter.*/scte35.* 分支需要这三个模型
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/SubtitleCueInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimecodeInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AuxiliaryDataInfo.cpp
 )
 target_link_libraries(test_color_hdr_rules PRIVATE
     FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swscale FFmpeg::swresample
@@ -424,6 +432,10 @@ videoeye_add_test(test_streaming_qc_rules
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimelineDiagnostic.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../utils/IsobmffParser.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../utils/Logger.cpp
+    # QcRuleEngine 的 subtitle.*/timecode.*/chapter.*/scte35.* 分支需要这三个模型
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/SubtitleCueInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimecodeInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AuxiliaryDataInfo.cpp
 )
 add_test(NAME StreamingQcRulesTests COMMAND test_streaming_qc_rules)
 
@@ -439,6 +451,57 @@ videoeye_add_test(test_visual_defect
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/VisualDefect.cpp
 )
 add_test(NAME VisualDefectTests COMMAND test_visual_defect)
+
+# =================================================
+# 测试 22：字幕 / 时码 / SCTE-35 解析与校验（功能 9）
+# 说明: SRT/ASS/WebVTT/tx3g 的文本解析、SMPTE 时码换算（含 drop-frame）、
+#       SCTE-35 splice_info_section 位流解析全部是纯逻辑，用合成输入验证；
+#       唯一需要 FFmpeg 的是 ParsePacketPayload 里的 codec id 分派，
+#       所以这个目标要链 avcodec/avformat。
+# =================================================
+videoeye_add_test(test_subtitle_timecode_aux
+    unit/test_subtitle_timecode_aux.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/SubtitleAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/TimecodeAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/Scte35Analyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/AuxDataAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/SubtitleCueInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimecodeInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AuxiliaryDataInfo.cpp
+)
+target_link_libraries(test_subtitle_timecode_aux PRIVATE
+    FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swscale FFmpeg::swresample)
+add_test(NAME SubtitleTimecodeAuxTests COMMAND test_subtitle_timecode_aux)
+
+# =================================================
+# 测试 23：字幕 / 时码 / 章节 / SCTE-35 的 QC 规则（subtitle.* / timecode.* /
+#          chapter.* / scte35.*）
+# 说明: 测的是"分析器发现的问题有没有被规则引擎转成报告条目、级别对不对"。
+#       规则表被人改了 id 或严重度时，只有这一层能发现。
+# =================================================
+videoeye_add_test(test_aux_qc_rules
+    unit/test_aux_qc_rules.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/QcRuleEngine.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/AnalysisTask.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/BitrateGopAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/AudioQcAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/SegmentQcAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/Mp4SampleTableAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcModels.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcReport.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/ColorInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/HdrMetadataInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AudioQcResult.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/BitratePoint.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/GopInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimelineDiagnostic.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/SubtitleCueInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimecodeInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AuxiliaryDataInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/IsobmffParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/Logger.cpp
+)
+add_test(NAME AuxQcRulesTests COMMAND test_aux_qc_rules)
 
 # =================================================
 # 测试 20：VVC (H.266) 码流解析（VPS/SPS/PPS + vvcC 记录 + NAL header 位域）

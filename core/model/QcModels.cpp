@@ -411,6 +411,114 @@ std::vector<QcRule> DefaultQcRules() {
         "音频流声道数未标注（0），下游混音可能异常。",
         "检查容器是否写入了正确的 channel layout。");
 
+    // ---- 字幕 / 时码 / 章节 / 辅助数据（功能 9，core/analyzer/SubtitleAnalyzer 等）----
+    // 这几类规则一律是"存在即报"（NonZero）：具体阈值（最短/最长停留、阅读速度）
+    // 在 SubtitleOptions 里，规则只负责决定要不要进报告、按什么级别进。
+    add("subtitle.cue_empty", "空字幕 cue", IssueCategory::Metadata,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "条",
+        "存在没有任何可见文本的字幕 cue，播放时表现为「闪一条空白」。",
+        "删掉空 cue，或补上文本；批量检查可用字幕编辑器的「移除空行」功能。");
+
+    add("subtitle.cue_overlap", "字幕 cue 重叠", IssueCategory::Metadata,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "处",
+        "相邻字幕的时间区间重叠，播放时会两行压在一起或互相顶掉。",
+        "把前一条的结束时间改到后一条开始时间之前（留 1-2 帧间隔）。");
+
+    add("subtitle.cue_too_short", "字幕停留过短", IssueCategory::Metadata,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.5, "s",
+        "字幕停留时间短于下限，观众来不及读完。",
+        "延长到至少 0.5-1 秒；一句话字幕建议 1.5 秒以上。");
+
+    add("subtitle.cue_too_long", "字幕停留过长", IssueCategory::Metadata,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 8.0, "s",
+        "字幕停留时间长于上限，通常是忘记写结束时间或时间轴写错。",
+        "补上正确的结束时间；长句建议拆成两条。");
+
+    add("subtitle.cue_order", "字幕时间倒序", IssueCategory::Metadata,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "处",
+        "字幕 cue 的开始时间早于上一条，播放器可能不显示或顺序错乱。",
+        "按时间顺序重排 cue，检查是否串行号与时间轴对错位。");
+
+    add("subtitle.cue_invalid_duration", "字幕时长非法", IssueCategory::Metadata,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "条",
+        "cue 的结束时间不晚于开始时间，规范上非法。",
+        "修正结束时间；SRT 里常见于小时位写错（00 写成 10）。");
+
+    add("subtitle.cue_too_fast", "字幕阅读速度过快", IssueCategory::Metadata,
+        IssueSeverity::Info, QcRuleOp::NonZero, 21.0, "字符/秒",
+        "按字符数/停留时间算出的阅读速度超过上限。",
+        "拆分长句或延长停留；中文建议 12-16 字符/秒，英文 16-21。");
+
+    add("subtitle.cue_out_of_range", "字幕超出媒体时长", IssueCategory::Metadata,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "条",
+        "cue 的开始时间晚于媒体总时长，永远不会被显示。",
+        "核对字幕时间轴是否按错的时间基准（如 25fps 字幕配到 30fps 片子）。");
+
+    add("subtitle.missing_language", "字幕缺少语言 tag", IssueCategory::Metadata,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "条",
+        "字幕流没有 language tag，播放器无法按界面语言自动选轨。",
+        "封装时写语言：-metadata:s:s:0 language=chi（-c copy 即可）。");
+
+    add("subtitle.missing_handler", "字幕缺少 handler name", IssueCategory::Metadata,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "条",
+        "MP4/MOV 的字幕轨没有 hdlr handler name，部分工具识别不出这是字幕轨。",
+        "用支持写 hdlr 的 muxer 重新封装（FFmpeg 的 mov/mp4 muxer 默认会写）。");
+
+    add("timecode.missing", "缺少时码", IssueCategory::Metadata,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "",
+        "既没有 tmcd 时码轨，也没有 metadata 里的 timecode tag，交付规范可能不满足。",
+        "母版写入时码：ffmpeg -i in.mov -timecode 00:59:58:00 -c copy out.mov。");
+
+    add("timecode.drop_frame_mismatch", "时码 drop-frame 与帧率不符", IssueCategory::Metadata,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "29.97/59.94 素材配 non-drop 时码（或反过来），长片会累积约 3.6 秒/小时的偏差。",
+        "统一成 drop-frame 时码（00:00:00;00 写法），或把素材规整到整数帧率。");
+
+    add("timecode.invalid_frame", "时码帧号非法", IssueCategory::Metadata,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "",
+        "首帧时码的帧号越界，或落在 drop-frame 跳过的帧上。",
+        "按 SMPTE 12M 重算起始时码，检查是否是手工填写时写错。");
+
+    add("chapter.overlap", "章节重叠", IssueCategory::Metadata,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "处",
+        "相邻章节的时间区间重叠，跳转时落在哪一段不确定。",
+        "让章节首尾相接（后一章起点 = 前一章终点）。");
+
+    add("chapter.out_of_range", "章节越界", IssueCategory::Metadata,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "处",
+        "章节终点超出媒体时长，播放器跳转到该章节会失败。",
+        "把最后一个章节的终点改到媒体时长以内。");
+
+    add("chapter.non_monotonic", "章节倒序", IssueCategory::Metadata,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "处",
+        "章节起点早于上一章节起点，章节列表与播放顺序不一致。",
+        "按时间顺序重排章节列表。");
+
+    add("chapter.zero_duration", "章节零时长", IssueCategory::Metadata,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "处",
+        "存在时长为 0 的章节，通常是导出章节时首尾写成了同一个时间。",
+        "补上章节终点时间。");
+
+    add("chapter.missing_title", "章节无标题", IssueCategory::Metadata,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "处",
+        "章节没有标题，播放器章节菜单会显示成空白。",
+        "写章节 metadata：ffmpeg -i in.mp4 -i chapters.txt -map_metadata 1 -c copy out.mp4。");
+
+    add("scte35.parse_error", "SCTE-35 解析失败", IssueCategory::Metadata,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "个",
+        "有 SCTE-35 载荷解析不出来（table_id / section_length / 命令体异常）。",
+        "核对 cue 生成的字节序与描述符长度；抓包确认 TS 里的 SCTE-35 PID 没被截断。");
+
+    add("scte35.crc_invalid", "SCTE-35 CRC 校验失败", IssueCategory::Metadata,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "个",
+        "SCTE-35 section 的 CRC_32 不通过，cue 可能在传输或拼接环节被改坏。",
+        "让上游重新计算 CRC_32（MPEG-2 多项式），不要手工改 cue 字节。");
+
+    add("scte35.duration_missing", "SCTE-35 缺少 duration", IssueCategory::Metadata,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "条",
+        "splice_insert cue 没给 break_duration，下游不知道广告要插多长。",
+        "生成 cue 时带上 break_duration 或 segmentation_duration。");
+
     // ---- 音频 QC（core/analyzer/AudioQcAnalyzer，需解码音频）----
     // 目标响度窗口写成"上限 / 下限"两条规则，便于在「规则与阈值」页直接改容差
     add("audio.loudness.target_high", "响度高于目标", IssueCategory::Audio,

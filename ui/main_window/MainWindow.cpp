@@ -561,6 +561,9 @@ void MainWindow::SetupConnections() {
     // 面板改采样档位 / 阈值 -> 播放器
     connect(analysis_panel_, &ui::AnalysisPanel::VisualDefectOptionsChanged,
             player_, &player::MediaPlayer::SetVisualDefectOptions);
+    // 全文件扫描拿到素材自带起始时码 -> 播放器时间轴旁的 SMPTE 时码显示
+    connect(analysis_panel_, &ui::AnalysisPanel::StartTimecodeReady,
+            player_panel_, &PlayerPanel::SetStartTimecode);
     
     // 面板开关信号 -> MediaPlayer 控制
     connect(analysis_panel_, &ui::AnalysisPanel::AnalysisFeatureToggled,
