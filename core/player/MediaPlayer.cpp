@@ -89,6 +89,13 @@ MediaPlayer::MediaPlayer(QObject* parent)
     qRegisterMetaType<model::ContainerStructureResult>("model::ContainerStructureResult");
     qRegisterMetaType<model::MacroblockFrameAnalysis>("model::MacroblockFrameAnalysis");
     qRegisterMetaType<model::MacroblockFrameAnalysis>("videoeye::model::MacroblockFrameAnalysis");
+    // 画面质量 / 视觉缺陷（解码线程 -> UI 线程，必须注册元类型才能排队投递）
+    qRegisterMetaType<model::FrameQualityMetric>("model::FrameQualityMetric");
+    qRegisterMetaType<model::FrameQualityMetric>("videoeye::model::FrameQualityMetric");
+    qRegisterMetaType<model::VisualDefect>("model::VisualDefect");
+    qRegisterMetaType<model::VisualDefect>("videoeye::model::VisualDefect");
+    qRegisterMetaType<model::ActivePictureArea>("model::ActivePictureArea");
+    qRegisterMetaType<model::ActivePictureArea>("videoeye::model::ActivePictureArea");
 }
 
 MediaPlayer::~MediaPlayer() {
@@ -205,6 +212,14 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     macroblock_frame_index_ = 0;
     scene_change_frame_index_ = 0;
     scene_change_analyzer_.Reset();
+    visual_defect_frame_index_ = 0;
+    visual_defect_last_sample_ts_ = -1.0;
+    last_audio_level_ = 0.0;
+    visual_defect_analyzer_.Reset(visual_defect_options_);
+    if (visual_defect_analysis_enabled_ &&
+        visual_defect_options_.preset != analyzer::VisualSamplingPreset::OfflineFull) {
+        visual_defect_analyzer_.StartWorker(8);
+    }
     stream_analyzer_.Reset();
     audio_frame_index_ = 0;
     packet_index_ = 0;
@@ -225,6 +240,7 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     if (event_analysis_enabled_) emit AnalysisEventListReset();
     if (sync_analysis_enabled_) emit SyncSampleListReset();
     if (timeline_analysis_enabled_) emit TimelineEventListReset();
+    if (visual_defect_analysis_enabled_) emit VisualDefectReset();
 
     // 版本检查
     const unsigned header_avcodec_major = LIBAVCODEC_VERSION_MAJOR;
@@ -522,6 +538,11 @@ void MediaPlayer::Stop() {
     }
     drop_until_sec_.store(-1.0);
     audio_output_.reset();
+    // 停止播放时闭合未结束的缺陷段（UI 立刻能看到最后一条）
+    if (visual_defect_analysis_enabled_) {
+        FlushVisualDefectSegments(visual_defect_last_sample_ts_ > 0.0 ? visual_defect_last_sample_ts_
+                                                                      : 0.0);
+    }
     current_position_ms_.store(0);
     emit StateChanged(state_);
 }
@@ -564,6 +585,122 @@ void MediaPlayer::EnableAnalysis(bool enable) {
 }
 
 void MediaPlayer::SetFrameTypeAnalysisEnabled(bool enable) { frame_type_analysis_enabled_ = enable; }
+
+// --- 画面质量 / 视觉缺陷 ---
+
+void MediaPlayer::SetVisualDefectAnalysisEnabled(bool enable) {
+    if (visual_defect_analysis_enabled_ == enable) return;
+    visual_defect_analysis_enabled_ = enable;
+    if (enable) {
+        visual_defect_analyzer_.Reset(visual_defect_options_);
+        visual_defect_frame_index_ = 0;
+        visual_defect_last_sample_ts_ = -1.0;
+        // 实时档位走工作线程 + 有上限队列: 播放压力大时丢分析帧，绝不反压解码线程。
+        // 离线全帧档位不需要队列（Feed 是同步的），开线程反而多一次拷贝。
+        if (visual_defect_options_.preset != analyzer::VisualSamplingPreset::OfflineFull) {
+            visual_defect_analyzer_.StartWorker(8);
+        }
+        LOG_INFO("画面质量检测已启用");
+        emit VisualDefectReset();
+    } else {
+        FlushVisualDefectSegments(visual_defect_last_sample_ts_ > 0.0 ? visual_defect_last_sample_ts_ : 0.0);
+        visual_defect_analyzer_.StopWorker();
+        LOG_INFO("画面质量检测已禁用");
+    }
+}
+
+void MediaPlayer::SetVisualDefectOptions(const analyzer::VisualDefectOptions& options) {
+    const bool was_enabled = visual_defect_analysis_enabled_;
+    visual_defect_options_ = options;
+    if (!was_enabled) return;
+    // 档位变了（尤其"离线全帧"开关）要重建线程与状态
+    visual_defect_analyzer_.Reset(visual_defect_options_);
+    visual_defect_frame_index_ = 0;
+    visual_defect_last_sample_ts_ = -1.0;
+    if (options.preset != analyzer::VisualSamplingPreset::OfflineFull) {
+        visual_defect_analyzer_.StartWorker(8);
+    }
+    emit VisualDefectReset();
+}
+
+void MediaPlayer::FlushVisualDefectSegments(double end_timestamp_seconds) {
+    visual_defect_analyzer_.Flush(end_timestamp_seconds);
+    DrainVisualDefectResults();
+    EmitVisualDefectStats(true);
+}
+
+void MediaPlayer::DrainVisualDefectResults() {
+    const auto metrics = visual_defect_analyzer_.TakePendingMetrics();
+    for (const auto& m : metrics) {
+        emit VisualDefectFrameReady(m);
+    }
+    const auto defects = visual_defect_analyzer_.TakePendingDefects();
+    for (const auto& d : defects) {
+        emit VisualDefectReady(d);
+    }
+}
+
+void MediaPlayer::FeedVisualDefectFrame(const AVFrame* frame, double timestamp_seconds,
+                                        bool audio_silent) {
+    if (!frame) return;
+
+    const double fps = visual_defect_options_.EffectiveSampleFps();
+    if (fps > 0.0 && visual_defect_last_sample_ts_ >= 0.0 &&
+        (timestamp_seconds - visual_defect_last_sample_ts_) + 1e-6 < 1.0 / fps) {
+        return;   // 还没到下一次采样点
+    }
+
+    // 时间跳变（seek 后退 / 大跨度前进）: 先闭合上一段。
+    // 否则 seek 前后两段不连续的画面会被连成一条超长缺陷（比如"从 3s 跳到 60s"里的冻结）。
+    // 2 秒这个量取得比最慢采样档位（1 fps = 1 秒间隔）还宽，正常播放不会误触发。
+    if (visual_defect_last_sample_ts_ >= 0.0 &&
+        (timestamp_seconds + 0.5 < visual_defect_last_sample_ts_ ||
+         timestamp_seconds - visual_defect_last_sample_ts_ > 2.0)) {
+        visual_defect_analyzer_.Flush(visual_defect_last_sample_ts_);
+        DrainVisualDefectResults();
+    }
+
+    model::FrameSample sample;
+    std::string error;
+    if (!analyzer::QualityAnalyzer::BuildSample(frame,
+                                                visual_defect_options_.EffectiveAnalysisWidth(),
+                                                visual_defect_options_.EffectiveEvidenceWidth(),
+                                                visual_defect_options_.capture_rgb,
+                                                sample, error)) {
+        LOG_WARN("画面质量分析: 降采样失败 - " + error);
+        return;
+    }
+    sample.frame_index = visual_defect_frame_index_++;
+    sample.timestamp_seconds = timestamp_seconds;
+    sample.audio_silent = audio_silent;
+    visual_defect_last_sample_ts_ = timestamp_seconds;
+
+    if (visual_defect_options_.preset == analyzer::VisualSamplingPreset::OfflineFull) {
+        // 离线档位: 同步分析每一帧，一帧都不丢（代价是播放会变慢）
+        visual_defect_analyzer_.Feed(sample);
+    } else if (!visual_defect_analyzer_.Submit(sample)) {
+        DrainVisualDefectResults();
+        EmitVisualDefectStats(false);
+        return;   // 队列满，本帧丢弃（计数在分析器里，UI 会显示）
+    }
+    DrainVisualDefectResults();
+    EmitVisualDefectStats(false);
+}
+
+void MediaPlayer::EmitVisualDefectStats(bool force) {
+    const auto now = std::chrono::steady_clock::now();
+    if (!force) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 now - visual_defect_last_stats_emit_).count();
+        if (visual_defect_last_stats_emit_.time_since_epoch().count() != 0 && elapsed < 1000) {
+            return;
+        }
+    }
+    visual_defect_last_stats_emit_ = now;
+    emit VisualDefectStatsReady(visual_defect_analyzer_.analyzed_samples(),
+                                visual_defect_analyzer_.dropped_samples(),
+                                visual_defect_analyzer_.EffectiveArea());
+}
 
 void MediaPlayer::SetMacroblockAnalysisEnabled(bool enable) {
     bool was_enabled = macroblock_analysis_enabled_;
@@ -845,7 +982,17 @@ void MediaPlayer::DecodeThread() {
         }
 
         int ret = av_read_frame(format_ctx_, packet);
-        if (ret < 0) { LOG_INFO("DecodeThread: av_read_frame EOF -> PlaybackFinished"); emit PlaybackFinished(); break; }
+        if (ret < 0) {
+            LOG_INFO("DecodeThread: av_read_frame EOF -> PlaybackFinished");
+            // 播到结尾: 把还开着的缺陷段闭合，否则最后一条缺陷要等下次播放才出现
+            if (visual_defect_analysis_enabled_) {
+                FlushVisualDefectSegments(visual_defect_last_sample_ts_ > 0.0
+                                              ? visual_defect_last_sample_ts_
+                                              : current_position_ms_.load() / 1000.0);
+            }
+            emit PlaybackFinished();
+            break;
+        }
 
         const int64_t pkt_ts = (packet->pts != AV_NOPTS_VALUE) ? packet->pts : packet->dts;
         const double packet_ts_sec = PacketTimestampSeconds(format_ctx_, packet);
@@ -1083,6 +1230,29 @@ void MediaPlayer::DecodeThread() {
                             LOG_ERROR("场景切换检测失败: " + std::string(e.what()));
                         }
                     }
+                    // 画面质量 / 视觉缺陷: 按采样档位抽取解码帧（降采样后投递分析器）
+                    if (drop_until_sec_.load() < 0.0 && visual_defect_analysis_enabled_) {
+                        try {
+                            double vd_ts = frame_data.timestamp;
+                            if ((vd_ts == 0.0 || std::isnan(vd_ts) || std::isinf(vd_ts)) &&
+                                format_ctx_ && video_stream_index_ >= 0) {
+                                AVStream* vs = format_ctx_->streams[video_stream_index_];
+                                if (vs && vs->time_base.den != 0) {
+                                    int64_t pts = frame_data.pts;
+                                    if (pts == AV_NOPTS_VALUE && packet->pts != AV_NOPTS_VALUE) {
+                                        pts = packet->pts;
+                                    }
+                                    if (pts != AV_NOPTS_VALUE) vd_ts = pts * av_q2d(vs->time_base);
+                                }
+                            }
+                            // 没有音频流的素材无从判断静音，按"不静音"处理（静止画面照报冻结）
+                            const bool vd_silent = (audio_stream_index_ >= 0) &&
+                                                   (last_audio_level_ < 0.005);
+                            FeedVisualDefectFrame(video_decoder_->GetLastRawFrame(), vd_ts, vd_silent);
+                        } catch (const std::exception& e) {
+                            LOG_ERROR("画面质量分析失败: " + std::string(e.what()));
+                        }
+                    }
                     if (drop_until_sec_.load() < 0.0 && analysis_enabled_) {
                         stream_analyzer_.AnalyzeVideoFrame(video_decoder_->GetLastPictureType());
                         analysis_frame_counter_++;
@@ -1167,6 +1337,8 @@ void MediaPlayer::DecodeThread() {
                         level = std::sqrt(static_cast<double>(sumsq / sample_count)) / 32768.0;
                         level = std::clamp(level, 0.0, 1.0);
                     }
+                    // 冻结帧判定要用: 画面静止 + 音频还在响 才是真的卡住了
+                    last_audio_level_ = level;
                     emit AudioLevelReady(level, ts);
 
                     // 音频可视化 (委托给 AudioVisualizer)

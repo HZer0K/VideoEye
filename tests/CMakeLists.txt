@@ -428,6 +428,19 @@ videoeye_add_test(test_streaming_qc_rules
 add_test(NAME StreamingQcRulesTests COMMAND test_streaming_qc_rules)
 
 # =================================================
+# 测试 21：视觉缺陷检测（黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 曝光 / 色偏 / 梳齿 / 黑边）
+# 说明: VisualDefectAnalyzer 只吃 model::FrameSample 里的降采样像素，不依赖 FFmpeg（
+#       AVFrame -> FrameSample 的缩放在 QualityAnalyzer::BuildSample），所以这里全部用
+#       合成图，不需要任何真实媒体文件。
+# =================================================
+videoeye_add_test(test_visual_defect
+    unit/test_visual_defect.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/VisualDefectAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/VisualDefect.cpp
+)
+add_test(NAME VisualDefectTests COMMAND test_visual_defect)
+
+# =================================================
 # 测试 20：VVC (H.266) 码流解析（VPS/SPS/PPS + vvcC 记录 + NAL header 位域）
 # 说明: VVC 的 NAL type 在第 2 字节高 5 位，和 HEVC 完全不同 —— 这一条
 #       单独有测试兜底，避免以后改 ExtradataParser 时静默读错类型。

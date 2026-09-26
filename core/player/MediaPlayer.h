@@ -5,6 +5,7 @@
 #include <QImage>
 #include <memory>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -35,6 +36,8 @@ extern "C" {
 #include "core/analyzer/ContainerStructureAnalyzer.h"
 #include "core/analyzer/MacroblockAnalyzer.h"
 #include "core/analyzer/SceneChangeAnalyzer.h"
+#include "core/analyzer/VisualDefectAnalyzer.h"
+#include "core/analyzer/QualityAnalyzer.h"
 #include "core/model/ContainerStructureInfo.h"
 #include "core/model/MacroblockInfo.h"
 
@@ -94,6 +97,15 @@ public:
     void SetContainerStructureEnabled(bool enable) { container_structure_enabled_ = enable; }
     void SetMacroblockAnalysisEnabled(bool enable);
     void SetSceneChangeAnalysisEnabled(bool enable) { scene_change_analysis_enabled_ = enable; }
+
+    // 画面质量 / 视觉缺陷（黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 曝光 / 色偏 / 梳齿 / 黑边）。
+    // 开关会顺带启停分析用的工作线程；换采样档位用 SetVisualDefectOptions()。
+    void SetVisualDefectAnalysisEnabled(bool enable);
+    bool IsVisualDefectAnalysisEnabled() const { return visual_defect_analysis_enabled_; }
+    void SetVisualDefectOptions(const analyzer::VisualDefectOptions& options);
+    const analyzer::VisualDefectOptions& GetVisualDefectOptions() const { return visual_defect_options_; }
+    // 播完 / 停止时把还开着的缺陷段闭合（否则最后一段要等下一次播放才显示）
+    void FlushVisualDefectSegments(double end_timestamp_seconds);
 
     // 硬件解码
     void SetHardwareDecodingEnabled(bool enable) { hw_decoding_enabled_ = enable; }
@@ -155,6 +167,13 @@ signals:
     void ContainerStructureReady(const videoeye::model::ContainerStructureResult& result);
     void MacroblockInfoReady(const videoeye::model::MacroblockFrameAnalysis& analysis);
     void SceneChangeReady(const analyzer::SceneChangeResult& result);
+    // 画面质量 / 视觉缺陷（实时播放时逐采样帧产出）
+    void VisualDefectReset();
+    void VisualDefectFrameReady(const model::FrameQualityMetric& metric);
+    void VisualDefectReady(const model::VisualDefect& defect);
+    // 分析进度: 已分析帧数 / 被丢弃帧数 / 全片有效画面区域（约每秒刷新一次）
+    void VisualDefectStatsReady(int analyzed_frames, int dropped_frames,
+                                const model::ActivePictureArea& effective_area);
     void VideoFrameExportStarted(int total_frames);
     void VideoFrameExportProgress(int exported_frames);
     void VideoFrameExportFinished(const QString& output_dir);
@@ -183,6 +202,13 @@ private:
     void StartContainerStructureAnalysis(const QString& url);
     void ReapContainerAnalysisThreads(bool wait_for_all);
     void Cleanup();
+
+    // 画面质量 / 视觉缺陷: 按采样档位抽取解码帧 -> 降采样 -> 投递分析器
+    void FeedVisualDefectFrame(const AVFrame* frame, double timestamp_seconds, bool audio_silent);
+    // 把分析器已产出的指标 / 缺陷转发成信号（在解码线程调用）
+    void DrainVisualDefectResults();
+    // 分析进度信号（内部做 1 秒节流，force=true 时立即发）
+    void EmitVisualDefectStats(bool force);
     
     // 状态
     std::atomic<model::PlayerState> state_ = model::PlayerState::Idle;
@@ -221,6 +247,7 @@ private:
     analyzer::StreamAnalyzer stream_analyzer_;
     analyzer::MacroblockAnalyzer macroblock_analyzer_;
     analyzer::SceneChangeAnalyzer scene_change_analyzer_;
+    analyzer::VisualDefectAnalyzer visual_defect_analyzer_;
     StreamInfoExtractor stream_info_extractor_;
     AudioVisualizer audio_visualizer_;
     QThread* frame_export_thread_ = nullptr;
@@ -248,6 +275,8 @@ private:
     bool container_structure_enabled_ = true;
     bool macroblock_analysis_enabled_ = false;
     bool scene_change_analysis_enabled_ = false;
+    bool visual_defect_analysis_enabled_ = false;
+    analyzer::VisualDefectOptions visual_defect_options_;
     bool hw_decoding_enabled_ = false; // 默认关闭硬件解码: D3D11/CUDA 等 HW 路径在部分 Windows 驱动下会导致"打开视频即闪退"(FFmpeg 内部段错误, 无法被 C++ 异常捕获, 进程直接终止)。软件解码稳定可靠; 如确需 HW 解码性能, 可显式调用 SetHardwareDecodingEnabled(true), 但仍建议保留下方解码线程的异常兜底。
     std::atomic<bool> rendering_suppressed_{false};  // 画面输出抑制 (播放区隐藏时置位)
     
@@ -256,6 +285,11 @@ private:
     int video_frame_index_ = 0;
     int macroblock_frame_index_ = 0;
     int scene_change_frame_index_ = 0;
+    int visual_defect_frame_index_ = 0;
+    double visual_defect_last_sample_ts_ = -1.0;
+    // 统计信号节流: 有效画面区域要取中位数，每秒算一次就够
+    std::chrono::steady_clock::time_point visual_defect_last_stats_emit_{};
+    double last_audio_level_ = 0.0;   // 最近一帧音频的 RMS（冻结帧判定要排除静音段）
     int audio_frame_index_ = 0;
     int packet_index_ = 0;
     int timeline_packet_index_ = 0;

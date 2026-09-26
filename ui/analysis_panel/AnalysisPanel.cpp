@@ -134,6 +134,8 @@ AnalysisPanel::AnalysisPanel(QWidget* parent)
     feature_enabled_[AnalysisFeature::Macroblock] = false;
     feature_enabled_[AnalysisFeature::SceneChange] = false;
     feature_enabled_[AnalysisFeature::Diagnostics] = true;
+    // 画面质量默认关: 播放时要额外做降采样与边缘统计，属于按需开启的重活
+    feature_enabled_[AnalysisFeature::VisualDefect] = false;
 
     SetupUI();
     
@@ -160,6 +162,7 @@ void AnalysisPanel::SetupUI() {
     SetupContainerStructureTab();
     SetupMacroblockTab();
     SetupSceneChangeTab();
+    SetupVisualDefectTab();
     SetupBitrateGopTab();
     SetupAudioQcTab();
     SetupColorHdrTab();
@@ -169,6 +172,9 @@ void AnalysisPanel::SetupUI() {
 
     qRegisterMetaType<analyzer::SceneChangeResult>();
     qRegisterMetaType<analyzer::AnalysisResult>();
+    qRegisterMetaType<model::FrameQualityMetric>();
+    qRegisterMetaType<model::VisualDefect>();
+    qRegisterMetaType<analyzer::VisualDefectOptions>();
 }
 
 bool AnalysisPanel::IsFeatureEnabled(AnalysisFeature feature) const {
@@ -186,6 +192,7 @@ void AnalysisPanel::EmitInitialFeatureStates() {
         AnalysisFeature::SyncSample,
         AnalysisFeature::Timeline,
         AnalysisFeature::Macroblock,
+        AnalysisFeature::VisualDefect,
     };
     for (auto feat : kFeatures) {
         bool enabled = feature_enabled_.value(feat, true);
@@ -2985,6 +2992,12 @@ void AnalysisPanel::FlushPendingUiUpdates() {
         FlushPendingSceneChangeTable();
         scene_change_dirty_ = false;
     }
+    if (visual_defect_dirty_) {
+        UpdateVisualDefectSummary();
+        UpdateVisualDefectCharts();
+        RebuildVisualDefectTable();
+        visual_defect_dirty_ = false;
+    }
     if (timeline_dirty_) {
         // 实时解码路径：用当前累积状态做一份快照（Finish 在副本上执行，不破坏累积状态）
         timeline_result_ = timeline_analyzer_.Snapshot();
@@ -3791,6 +3804,425 @@ void AnalysisPanel::OnExportMacroblockCsv() {
 
     QMessageBox::information(this, tr("成功"),
         tr("已导出 %1 条运动矢量到:\n%2").arg(ma.motion_vectors.size()).arg(filename));
+}
+
+// ===========================================================================
+// 画面质量 / 视觉缺陷标签页
+// ===========================================================================
+
+void AnalysisPanel::SetupVisualDefectTab() {
+    visual_defect_tab_ = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(visual_defect_tab_);
+    layout->setContentsMargins(4, 2, 4, 4);
+    layout->setSpacing(4);
+
+    // 标题 + 启用开关
+    {
+        QWidget* row = new QWidget(visual_defect_tab_);
+        QHBoxLayout* rl = new QHBoxLayout(row);
+        rl->setContentsMargins(0, 0, 0, 0);
+        QLabel* title = new QLabel(
+            tr("画面质量（黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 过曝欠曝 / 色偏 / 隔行梳齿 / 黑边）"), row);
+        title->setWordWrap(true);
+        rl->addWidget(title);
+        rl->addStretch();
+        QCheckBox* toggle = new QCheckBox(tr("启用检测"), row);
+        toggle->setChecked(feature_enabled_.value(AnalysisFeature::VisualDefect, false));
+        toggle->setToolTip(tr("播放时对视频帧做画面体检。开销主要在降采样与边缘统计，按需开启。"));
+        connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
+            feature_enabled_[AnalysisFeature::VisualDefect] = checked;
+            emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::VisualDefect), checked);
+        });
+        rl->addWidget(toggle);
+        layout->addWidget(row);
+    }
+
+    // 选项: 采样档位 / 模糊阈值 / 冻结阈值 / 是否采集缩略图
+    {
+        QHBoxLayout* ol = new QHBoxLayout();
+        ol->setContentsMargins(0, 0, 0, 0);
+
+        ol->addWidget(new QLabel(tr("采样档位:"), visual_defect_tab_));
+        visual_defect_preset_combo_ = new QComboBox(visual_defect_tab_);
+        visual_defect_preset_combo_->addItem(
+            tr("快速 (1 帧/秒)"), static_cast<int>(analyzer::VisualSamplingPreset::Fast));
+        visual_defect_preset_combo_->addItem(
+            tr("标准 (2 帧/秒)"), static_cast<int>(analyzer::VisualSamplingPreset::Standard));
+        visual_defect_preset_combo_->addItem(
+            tr("精细 (5 帧/秒)"), static_cast<int>(analyzer::VisualSamplingPreset::Fine));
+        visual_defect_preset_combo_->addItem(
+            tr("离线全帧 (逐帧，不丢帧)"), static_cast<int>(analyzer::VisualSamplingPreset::OfflineFull));
+        visual_defect_preset_combo_->setCurrentIndex(1);
+        visual_defect_preset_combo_->setToolTip(
+            tr("播放时默认抽样分析；分析队列有上限，压力大会丢分析帧但绝不拖慢播放。\n"
+               "「离线全帧」逐帧同步分析，适合不追求播放流畅度的全检场景。"));
+        connect(visual_defect_preset_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, &AnalysisPanel::OnVisualDefectOptionChanged);
+        ol->addWidget(visual_defect_preset_combo_);
+
+        ol->addWidget(new QLabel(tr("模糊阈值:"), visual_defect_tab_));
+        visual_defect_blur_spin_ = new QDoubleSpinBox(visual_defect_tab_);
+        visual_defect_blur_spin_->setRange(0.05, 50.0);
+        visual_defect_blur_spin_->setDecimals(2);
+        visual_defect_blur_spin_->setSingleStep(0.25);
+        visual_defect_blur_spin_->setValue(visual_defect_options_.blur_threshold);
+        visual_defect_blur_spin_->setToolTip(tr("锐度指数（拉普拉斯方差/1000）低于该值判模糊。调大更灵敏。"));
+        connect(visual_defect_blur_spin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                this, &AnalysisPanel::OnVisualDefectOptionChanged);
+        ol->addWidget(visual_defect_blur_spin_);
+
+        ol->addWidget(new QLabel(tr("冻结阈值:"), visual_defect_tab_));
+        visual_defect_freeze_spin_ = new QDoubleSpinBox(visual_defect_tab_);
+        visual_defect_freeze_spin_->setRange(0.001, 0.2);
+        visual_defect_freeze_spin_->setDecimals(3);
+        visual_defect_freeze_spin_->setSingleStep(0.001);
+        visual_defect_freeze_spin_->setValue(visual_defect_options_.freeze_diff);
+        visual_defect_freeze_spin_->setToolTip(tr("相邻采样帧的平均像素差低于该值判冻结（0.01 约等于 2.5 个灰阶）。"));
+        connect(visual_defect_freeze_spin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                this, &AnalysisPanel::OnVisualDefectOptionChanged);
+        ol->addWidget(visual_defect_freeze_spin_);
+
+        visual_defect_rgb_check_ = new QCheckBox(tr("采集缩略图（色偏 / 证据）"), visual_defect_tab_);
+        visual_defect_rgb_check_->setChecked(visual_defect_options_.capture_rgb);
+        visual_defect_rgb_check_->setToolTip(tr("多一次 RGB 降采样，用于色偏判定与缺陷证据图导出。"));
+        connect(visual_defect_rgb_check_, &QCheckBox::toggled,
+                this, &AnalysisPanel::OnVisualDefectOptionChanged);
+        ol->addWidget(visual_defect_rgb_check_);
+
+        ol->addStretch();
+        layout->addLayout(ol);
+    }
+
+    visual_defect_summary_label_ = new QLabel(
+        tr("启用检测后播放视频，将在此列出人眼可见的画面问题（黑场、冻结、马赛克、模糊、闪烁、曝光、色偏、梳齿、黑边）。"
+           "点击列表行可跳转播放器。"), visual_defect_tab_);
+    visual_defect_summary_label_->setWordWrap(true);
+    layout->addWidget(visual_defect_summary_label_);
+
+    // 曲线 1: 亮度 + 黑场比例（双 Y 轴）
+    visual_defect_luma_chart_ = new MetricChartWidget(visual_defect_tab_);
+    visual_defect_luma_chart_->SetTitle(tr("亮度与黑场比例"));
+    visual_defect_luma_series_ = visual_defect_luma_chart_->AddLineSeries(tr("亮度均值"), QColor("#fdd835"));
+    visual_defect_black_series_ = visual_defect_luma_chart_->AddLineSeries(tr("黑像素比例"), QColor("#e53935"));
+    visual_defect_black_series_->SetValueAxisIndex(1);
+    visual_defect_luma_chart_->SetAxisY2Visible(true);
+    visual_defect_luma_chart_->AttachAxis(visual_defect_black_series_,
+                                          visual_defect_luma_chart_->AxisY2());
+    visual_defect_luma_axis_x_ = visual_defect_luma_chart_->AxisX();
+    visual_defect_luma_axis_y_ = visual_defect_luma_chart_->AxisY();
+    visual_defect_luma_axis_y2_ = visual_defect_luma_chart_->AxisY2();
+    visual_defect_luma_axis_x_->SetTitleText(tr("时间 (秒)"));
+    visual_defect_luma_axis_y_->SetTitleText(tr("亮度"));
+    visual_defect_luma_axis_y_->SetRange(0, 255);
+    visual_defect_luma_axis_y2_->SetTitleText(tr("黑像素比例"));
+    visual_defect_luma_axis_y2_->SetRange(0, 1);
+    visual_defect_luma_chart_->setMinimumHeight(170);
+    layout->addWidget(visual_defect_luma_chart_);
+
+    // 曲线 2: 锐度 + 帧差
+    visual_defect_sharp_chart_ = new MetricChartWidget(visual_defect_tab_);
+    visual_defect_sharp_chart_->SetTitle(tr("锐度与帧间差异"));
+    visual_defect_blur_series_ = visual_defect_sharp_chart_->AddLineSeries(tr("锐度指数"), QColor("#42a5f5"));
+    visual_defect_diff_series_ = visual_defect_sharp_chart_->AddLineSeries(tr("帧间差异"), QColor("#8e24aa"));
+    visual_defect_sharp_axis_x_ = visual_defect_sharp_chart_->AxisX();
+    visual_defect_sharp_axis_y_ = visual_defect_sharp_chart_->AxisY();
+    visual_defect_sharp_axis_x_->SetTitleText(tr("时间 (秒)"));
+    visual_defect_sharp_axis_y_->SetTitleText(tr("指标值"));
+    visual_defect_sharp_chart_->setMinimumHeight(170);
+    layout->addWidget(visual_defect_sharp_chart_);
+
+    // 缺陷列表 + 证据预览
+    {
+        QHBoxLayout* dl = new QHBoxLayout();
+        visual_defect_table_ = new QTableWidget(0, 7, visual_defect_tab_);
+        visual_defect_table_->setHorizontalHeaderLabels(
+            {tr("类型"), tr("严重度"), tr("开始"), tr("结束"), tr("时长"), tr("触发值"), tr("说明")});
+        visual_defect_table_->verticalHeader()->setVisible(false);
+        visual_defect_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        visual_defect_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+        visual_defect_table_->setSelectionMode(QAbstractItemView::SingleSelection);
+        visual_defect_table_->horizontalHeader()->setStretchLastSection(true);
+        visual_defect_table_->setMinimumHeight(220);
+        connect(visual_defect_table_, &QTableWidget::cellClicked,
+                this, &AnalysisPanel::OnVisualDefectCellClicked);
+        connect(visual_defect_table_, &QTableWidget::itemSelectionChanged,
+                this, &AnalysisPanel::OnVisualDefectSelectionChanged);
+        dl->addWidget(visual_defect_table_, 1);
+
+        QVBoxLayout* el = new QVBoxLayout();
+        el->addWidget(new QLabel(tr("证据缩略图"), visual_defect_tab_));
+        visual_defect_evidence_label_ = new QLabel(visual_defect_tab_);
+        visual_defect_evidence_label_->setFixedSize(192, 120);
+        visual_defect_evidence_label_->setAlignment(Qt::AlignCenter);
+        visual_defect_evidence_label_->setStyleSheet(QStringLiteral("background:#1e1e1e; color:#9e9e9e;"));
+        visual_defect_evidence_label_->setText(tr("选中缺陷后显示"));
+        el->addWidget(visual_defect_evidence_label_);
+        el->addStretch();
+        dl->addLayout(el);
+        layout->addLayout(dl, 1);
+    }
+
+    // 导出
+    {
+        QHBoxLayout* bl = new QHBoxLayout();
+        bl->addStretch();
+        QPushButton* export_csv = new QPushButton(tr("导出缺陷 CSV"), visual_defect_tab_);
+        connect(export_csv, &QPushButton::clicked, this, &AnalysisPanel::OnExportVisualDefectCsv);
+        bl->addWidget(export_csv);
+        QPushButton* export_png = new QPushButton(tr("导出证据缩略图"), visual_defect_tab_);
+        connect(export_png, &QPushButton::clicked, this, &AnalysisPanel::OnExportVisualDefectEvidence);
+        bl->addWidget(export_png);
+        layout->addLayout(bl);
+    }
+
+    AddPageWithScroll(visual_defect_tab_, tr("画面质量"));
+}
+
+void AnalysisPanel::ApplyVisualDefectOptionsFromUi() {
+    visual_defect_options_.blur_threshold = visual_defect_blur_spin_
+                                                ? visual_defect_blur_spin_->value()
+                                                : visual_defect_options_.blur_threshold;
+    visual_defect_options_.freeze_diff = visual_defect_freeze_spin_
+                                             ? visual_defect_freeze_spin_->value()
+                                             : visual_defect_options_.freeze_diff;
+    visual_defect_options_.capture_rgb = visual_defect_rgb_check_
+                                             ? visual_defect_rgb_check_->isChecked()
+                                             : visual_defect_options_.capture_rgb;
+    if (visual_defect_preset_combo_) {
+        const int preset = visual_defect_preset_combo_->currentData().toInt();
+        visual_defect_options_.preset = static_cast<analyzer::VisualSamplingPreset>(preset);
+        // 档位自带采样率与分析宽度，改档位时清掉可能的显式覆盖值
+        visual_defect_options_.sample_fps = 0.0;
+        visual_defect_options_.analysis_width = 0;
+    }
+}
+
+void AnalysisPanel::OnVisualDefectStats(int analyzed_frames, int dropped_frames,
+                                        const model::ActivePictureArea& effective_area) {
+    visual_defect_analyzed_frames_ = analyzed_frames;
+    visual_defect_dropped_frames_ = dropped_frames;
+    visual_defect_effective_area_ = effective_area;
+    visual_defect_dirty_ = true;
+}
+
+void AnalysisPanel::OnVisualDefectOptionChanged() {
+    if (visual_defect_updating_options_) return;
+    ApplyVisualDefectOptionsFromUi();
+    emit VisualDefectOptionsChanged(visual_defect_options_);
+}
+
+void AnalysisPanel::OnVisualDefectFrame(const model::FrameQualityMetric& metric) {
+    visual_defect_samples_.push_back(metric);
+    if (visual_defect_samples_.size() > 20000) {
+        visual_defect_samples_.erase(visual_defect_samples_.begin(),
+                                     visual_defect_samples_.begin() + 4000);
+    }
+    visual_defect_dirty_ = true;
+}
+
+void AnalysisPanel::OnVisualDefectDetected(const model::VisualDefect& defect) {
+    visual_defect_records_.push_back(defect);
+    visual_defect_dirty_ = true;
+}
+
+void AnalysisPanel::OnVisualDefectReset() {
+    visual_defect_samples_.clear();
+    visual_defect_records_.clear();
+    visual_defect_effective_area_ = model::ActivePictureArea();
+    visual_defect_dropped_frames_ = 0;
+    visual_defect_analyzed_frames_ = 0;
+    if (visual_defect_luma_chart_) visual_defect_luma_chart_->ClearSeriesData();
+    if (visual_defect_sharp_chart_) visual_defect_sharp_chart_->ClearSeriesData();
+    if (visual_defect_table_) visual_defect_table_->setRowCount(0);
+    UpdateVisualDefectSummary();
+}
+
+void AnalysisPanel::UpdateVisualDefectSummary() {
+    if (!visual_defect_summary_label_) return;
+
+    if (visual_defect_samples_.empty() && visual_defect_records_.empty()) {
+        visual_defect_summary_label_->setText(
+            tr("暂无画面质量数据。启用检测后播放视频即可开始分析。"));
+        return;
+    }
+
+    int warning_or_above = 0;
+    for (const auto& d : visual_defect_records_) {
+        if (d.severity != model::VisualDefectSeverity::Info) ++warning_or_above;
+    }
+
+    QString area_text = tr("未检出");
+    if (visual_defect_effective_area_.valid) {
+        area_text = QStringLiteral("%1x%2 (偏移 %3,%4)")
+                        .arg(visual_defect_effective_area_.width)
+                        .arg(visual_defect_effective_area_.height)
+                        .arg(visual_defect_effective_area_.x)
+                        .arg(visual_defect_effective_area_.y);
+    }
+
+    visual_defect_summary_label_->setText(
+        tr("已分析 %1 帧，缺陷 %2 条（其中警告及以上 %3 条）；有效画面区域: %4%5")
+            .arg(visual_defect_analyzed_frames_)
+            .arg(visual_defect_records_.size())
+            .arg(warning_or_above)
+            .arg(area_text)
+            .arg(visual_defect_dropped_frames_ > 0
+                     ? tr("；播放压力大，已丢弃 %1 个分析帧").arg(visual_defect_dropped_frames_)
+                     : QString()));
+}
+
+void AnalysisPanel::UpdateVisualDefectCharts() {
+    if (!visual_defect_luma_chart_ || !visual_defect_sharp_chart_) return;
+
+    const size_t total = visual_defect_samples_.size();
+    const size_t max_points = 600;
+    const size_t stride = (total > max_points) ? (total + max_points - 1) / max_points : 1;
+
+    {
+        SeriesBatch luma(visual_defect_luma_series_);
+        SeriesBatch black(visual_defect_black_series_);
+        luma.Reserve(static_cast<int>(total / stride + 1));
+        black.Reserve(static_cast<int>(total / stride + 1));
+        for (size_t i = 0; i < total; i += stride) {
+            const auto& s = visual_defect_samples_[i];
+            luma.Add(s.timestamp_seconds, s.luma_mean);
+            black.Add(s.timestamp_seconds, s.black_ratio);
+        }
+    }
+    {
+        SeriesBatch blur(visual_defect_blur_series_);
+        SeriesBatch diff(visual_defect_diff_series_);
+        blur.Reserve(static_cast<int>(total / stride + 1));
+        diff.Reserve(static_cast<int>(total / stride + 1));
+        for (size_t i = 0; i < total; i += stride) {
+            const auto& s = visual_defect_samples_[i];
+            // 锐度可能远大于 1（清晰画面），放进同一张图会压平帧差曲线，这里做对数压缩
+            const double blur_display = std::log10(1.0 + std::max(0.0, s.blur_score));
+            blur.Add(s.timestamp_seconds, blur_display);
+            diff.Add(s.timestamp_seconds, s.frame_diff);
+        }
+    }
+}
+
+void AnalysisPanel::RebuildVisualDefectTable() {
+    if (!visual_defect_table_) return;
+
+    const int rows = static_cast<int>(visual_defect_records_.size());
+    TableBatch batch(visual_defect_table_);
+    batch.SetRowCount(rows);
+    for (int r = 0; r < rows; ++r) {
+        const auto& d = visual_defect_records_[static_cast<size_t>(r)];
+        batch.SetText(r, 0, QString::fromUtf8(model::ToString(d.type)));
+        batch.SetText(r, 1, QString::fromUtf8(model::ToString(d.severity)));
+        batch.SetText(r, 2, QString::number(d.start_seconds, 'f', 2));
+        batch.SetText(r, 3, QString::number(d.end_seconds, 'f', 2));
+        batch.SetText(r, 4, QString::number(d.DurationSeconds(), 'f', 2));
+        batch.SetText(r, 5, QString::number(d.score, 'f', 4));
+        batch.SetText(r, 6, QString::fromUtf8(d.description.c_str()));
+    }
+}
+
+QImage AnalysisPanel::VisualDefectEvidenceImage(const model::VisualDefect& defect) {
+    if (!defect.evidence.valid()) return QImage();
+    QImage img(defect.evidence.rgb.data(), defect.evidence.width, defect.evidence.height,
+               defect.evidence.width * 3, QImage::Format_RGB888);
+    return img.copy();   // 深拷贝: 源数据属于缺陷记录，随时可能被清掉
+}
+
+void AnalysisPanel::UpdateVisualDefectEvidencePreview(int defect_index) {
+    if (!visual_defect_evidence_label_) return;
+    if (defect_index < 0 || defect_index >= static_cast<int>(visual_defect_records_.size())) {
+        visual_defect_evidence_label_->setPixmap(QPixmap());
+        visual_defect_evidence_label_->setText(tr("选中缺陷后显示"));
+        return;
+    }
+    const auto& d = visual_defect_records_[static_cast<size_t>(defect_index)];
+    const QImage img = VisualDefectEvidenceImage(d);
+    if (img.isNull()) {
+        visual_defect_evidence_label_->setPixmap(QPixmap());
+        visual_defect_evidence_label_->setText(tr("该缺陷无证据图\n（未采集缩略图）"));
+        return;
+    }
+    visual_defect_evidence_label_->setText(QString());
+    visual_defect_evidence_label_->setPixmap(
+        QPixmap::fromImage(img.scaled(visual_defect_evidence_label_->size(),
+                                      Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+}
+
+void AnalysisPanel::OnVisualDefectCellClicked(int row, int) {
+    if (row < 0 || row >= static_cast<int>(visual_defect_records_.size())) return;
+    emit SeekRequested(visual_defect_records_[static_cast<size_t>(row)].start_seconds);
+}
+
+void AnalysisPanel::OnVisualDefectSelectionChanged() {
+    if (!visual_defect_table_) return;
+    const auto selected = visual_defect_table_->selectionModel()->selectedRows();
+    UpdateVisualDefectEvidencePreview(selected.isEmpty() ? -1 : selected.first().row());
+}
+
+void AnalysisPanel::OnExportVisualDefectCsv() {
+    if (visual_defect_records_.empty()) {
+        QMessageBox::information(this, tr("提示"), tr("当前没有画面质量缺陷数据可导出"));
+        return;
+    }
+    QString filename = QFileDialog::getSaveFileName(
+        this, tr("导出画面质量缺陷 CSV"), QStringLiteral("visual_defects.csv"),
+        tr("CSV 文件 (*.csv)"));
+    if (filename.isEmpty()) return;
+
+    QFile file(filename);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("错误"), tr("无法打开文件写入"));
+        return;
+    }
+    QTextStream stream(&file);
+    stream.setEncoding(QStringConverter::Utf8);
+    stream << "\xEF\xBB\xBF";   // BOM for Excel
+    stream << "序号,类型,类型代码,严重度,开始(秒),结束(秒),时长(秒),触发值,阈值,说明\n";
+    for (const auto& d : visual_defect_records_) {
+        stream << d.id << ","
+               << QString::fromUtf8(model::ToString(d.type)) << ","
+               << QString::fromUtf8(model::DefectTypeCode(d.type)) << ","
+               << QString::fromUtf8(model::ToString(d.severity)) << ","
+               << QString::number(d.start_seconds, 'f', 3) << ","
+               << QString::number(d.end_seconds, 'f', 3) << ","
+               << QString::number(d.DurationSeconds(), 'f', 3) << ","
+               << QString::number(d.score, 'f', 6) << ","
+               << QString::number(d.threshold, 'f', 6) << ","
+               << QString::fromUtf8(d.description.c_str()) << "\n";
+    }
+    file.close();
+    QMessageBox::information(this, tr("成功"),
+        tr("已导出 %1 条缺陷到:\n%2").arg(visual_defect_records_.size()).arg(filename));
+}
+
+void AnalysisPanel::OnExportVisualDefectEvidence() {
+    int available = 0;
+    for (const auto& d : visual_defect_records_) {
+        if (d.evidence.valid()) ++available;
+    }
+    if (available == 0) {
+        QMessageBox::information(this, tr("提示"),
+            tr("没有可导出的证据图。请勾选「采集缩略图（色偏 / 证据）」后重新分析。"));
+        return;
+    }
+    const QString dir = QFileDialog::getExistingDirectory(
+        this, tr("选择证据图导出目录"), QString(),
+        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+    if (dir.isEmpty()) return;
+
+    int written = 0;
+    for (const auto& d : visual_defect_records_) {
+        const QImage img = VisualDefectEvidenceImage(d);
+        if (img.isNull()) continue;
+        const QString name = QStringLiteral("%1_%2_%3s.png")
+                                 .arg(d.id, 3, 10, QLatin1Char('0'))
+                                 .arg(QString::fromUtf8(model::DefectTypeCode(d.type)))
+                                 .arg(QString::number(d.start_seconds, 'f', 2));
+        if (img.save(dir + QStringLiteral("/") + name, "PNG")) ++written;
+    }
+    QMessageBox::information(this, tr("成功"),
+        tr("已导出 %1 / %2 张证据图到:\n%3").arg(written).arg(available).arg(dir));
 }
 
 // ===========================================================================

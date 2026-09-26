@@ -20,6 +20,7 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 - **硬件加速**: VAAPI/CUDA/D3D11VA/QSV 等硬件解码（解码后统一转 CPU 图像渲染）
 - **音频可视化**: 波形快照、FFT 频谱、纯音频律动
 - **场景切换检测**: 灰度直方图 Bhattacharyya 距离实时检测镜头切换
+- **画面质量（视觉缺陷）**: 黑场 / 冻结 / 花屏马赛克 / 模糊 / 闪烁 / 过曝欠曝 / 色偏 / 隔行梳齿 / 黑边，带证据缩略图与缺陷列表
 - **质量评估**: 离线逐帧计算 PSNR / SSIM 及走势图
 - **帧导出**: 导出任意帧为 JPG / RGB / YUV，支持打开 .yuv / .rgb 原始图像
 
@@ -85,7 +86,7 @@ brew install cmake ninja qt@6 ffmpeg
 
 1. **打开**: `Ctrl+O` 打开文件 / `Ctrl+U` 打开 URL
 2. **播放控制**: 底部控制栏播放/暂停/停止 (`Space` / `Esc`)
-3. **分析**: 左侧边栏切换分析模块（媒体信息、流分析、视频帧、音频帧、数据包、异常事件、同步分析、时间轴、音频响度、直方图、容器结构、场景切换、质量评估），各模块顶部配有独立「启用分析」开关
+3. **分析**: 左侧边栏切换分析模块（媒体信息、流分析、视频帧、音频帧、数据包、异常事件、同步分析、时间轴、音频响度、直方图、容器结构、场景切换、画面质量、质量评估），各模块顶部配有独立「启用分析」开关
 4. **导出帧**: `文件` → `导出视频帧...`（jpg / rgb / yuv）
 5. **原始图像**: 打开 `.yuv`（YUV420P）/ `.rgb`（RGB24）时输入宽高
 
@@ -118,6 +119,7 @@ VideoEye/
 | [docs/COLOR_HDR_ANALYSIS.md](docs/COLOR_HDR_ANALYSIS.md) | 色彩与 HDR 元数据快照与告警 |
 | [docs/MP4_SAMPLE_TABLE.md](docs/MP4_SAMPLE_TABLE.md) | MP4/fMP4 样本表一致性校验 |
 | [docs/HLS_DASH_SEGMENT.md](docs/HLS_DASH_SEGMENT.md) | HLS/DASH 流媒体包检测（manifest + segment + 多码率 ladder） |
+| [docs/VISUAL_QC.md](docs/VISUAL_QC.md) | 画面质量与视觉缺陷检测（黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 曝光 / 色偏 / 梳齿 / 黑边） |
 
 ## 测试
 

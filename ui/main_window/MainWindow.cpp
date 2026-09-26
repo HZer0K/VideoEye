@@ -549,6 +549,18 @@ void MainWindow::SetupConnections() {
             player_panel_, &PlayerPanel::OnMacroblockInfoForOverlay);
     connect(player_, &player::MediaPlayer::SceneChangeReady,
             analysis_panel_, &ui::AnalysisPanel::OnSceneChangeDetected);
+    // 画面质量 / 视觉缺陷（播放时逐采样帧产出）
+    connect(player_, &player::MediaPlayer::VisualDefectReset,
+            analysis_panel_, &ui::AnalysisPanel::OnVisualDefectReset);
+    connect(player_, &player::MediaPlayer::VisualDefectFrameReady,
+            analysis_panel_, &ui::AnalysisPanel::OnVisualDefectFrame);
+    connect(player_, &player::MediaPlayer::VisualDefectReady,
+            analysis_panel_, &ui::AnalysisPanel::OnVisualDefectDetected);
+    connect(player_, &player::MediaPlayer::VisualDefectStatsReady,
+            analysis_panel_, &ui::AnalysisPanel::OnVisualDefectStats);
+    // 面板改采样档位 / 阈值 -> 播放器
+    connect(analysis_panel_, &ui::AnalysisPanel::VisualDefectOptionsChanged,
+            player_, &player::MediaPlayer::SetVisualDefectOptions);
     
     // 面板开关信号 -> MediaPlayer 控制
     connect(analysis_panel_, &ui::AnalysisPanel::AnalysisFeatureToggled,
@@ -590,6 +602,9 @@ void MainWindow::SetupConnections() {
                     break;
                 case AF::SceneChange:
                     player_->SetSceneChangeAnalysisEnabled(enabled);
+                    break;
+                case AF::VisualDefect:
+                    player_->SetVisualDefectAnalysisEnabled(enabled);
                     break;
                 default:
                     break;

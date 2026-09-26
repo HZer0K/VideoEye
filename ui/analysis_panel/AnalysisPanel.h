@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QWidget>
+#include <QImage>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QTabWidget>
@@ -52,6 +53,9 @@
 #include "core/model/TimelineDiagnostic.h"
 #include "core/model/QcReport.h"
 #include "core/model/AudioQcResult.h"
+#include "core/model/QualityMetric.h"
+#include "core/model/VisualDefect.h"
+#include "core/analyzer/VisualDefectAnalyzer.h"
 
 namespace videoeye {
 namespace ui {
@@ -74,7 +78,8 @@ public:
         ContainerStructure,  // 文件结构分析
         Macroblock,    // 宏块分析 (运动矢量/块统计)
         SceneChange,   // 场景切换检测 (镜头边界)
-        Diagnostics    // 诊断与报告 (全文件扫描 + QC 规则引擎)
+        Diagnostics,   // 诊断与报告 (全文件扫描 + QC 规则引擎)
+        VisualDefect   // 画面质量 (黑场/冻结/马赛克/模糊/闪烁/曝光/色偏/梳齿/黑边)
     };
 
     explicit AnalysisPanel(QWidget* parent = nullptr);
@@ -111,6 +116,9 @@ signals:
     // 分析功能开关变化信号 (供 MainWindow 连接 MediaPlayer)
     void AnalysisFeatureToggled(int feature, bool enabled);
 
+    // 画面质量分析的采样档位 / 阈值变化 (供 MainWindow 转发给 MediaPlayer)
+    void VisualDefectOptionsChanged(const analyzer::VisualDefectOptions& options);
+
     // 跳转到指定时间（秒）: 由"跳转到问题帧"触发, MainWindow 连接到播放器 Seek
     void SeekRequested(double seconds);
     
@@ -145,6 +153,18 @@ public slots:
     void OnContainerStructureReady(const model::ContainerStructureResult& result);
     void UpdateMacroblockInfo(const model::MacroblockFrameAnalysis& analysis);
     void OnSceneChangeDetected(const analyzer::SceneChangeResult& result);
+
+    // 画面质量 / 视觉缺陷（播放时逐采样帧产出）
+    void OnVisualDefectFrame(const model::FrameQualityMetric& metric);
+    void OnVisualDefectDetected(const model::VisualDefect& defect);
+    void OnVisualDefectReset();
+    void OnVisualDefectStats(int analyzed_frames, int dropped_frames,
+                             const model::ActivePictureArea& effective_area);
+    void OnVisualDefectOptionChanged();
+    void OnVisualDefectCellClicked(int row, int column);
+    void OnVisualDefectSelectionChanged();
+    void OnExportVisualDefectCsv();
+    void OnExportVisualDefectEvidence();
 
     // 音频 QC（响度 / 真峰值 / 削波 / 静音 / 声道相位）
     void OnStartAudioQcAnalysis();
@@ -334,6 +354,16 @@ private:
     void RefreshMacroblockUi();
     void OnExportMacroblockCsv();
 
+    // 画面质量 / 视觉缺陷
+    void SetupVisualDefectTab();
+    void ApplyVisualDefectOptionsFromUi();
+    void UpdateVisualDefectSummary();
+    void UpdateVisualDefectCharts();
+    void RebuildVisualDefectTable();
+    void UpdateVisualDefectEvidencePreview(int defect_index);
+    // 把模型里的 RGB 证据转成 QImage（空证据返回 null 图）
+    static QImage VisualDefectEvidenceImage(const model::VisualDefect& defect);
+
     // 场景切换检测
     void FlushPendingSceneChangeTable();
     void AppendSceneChangeRow(const analyzer::SceneChangeResult& result);
@@ -499,6 +529,35 @@ private:
     std::vector<analyzer::SceneChangeResult> scene_change_records_;
     bool scene_change_table_dirty_ = false;
     size_t scene_change_table_synced_count_ = 0;
+
+    // 画面质量 / 视觉缺陷标签页
+    QWidget* visual_defect_tab_ = nullptr;
+    QLabel* visual_defect_summary_label_ = nullptr;
+    QComboBox* visual_defect_preset_combo_ = nullptr;
+    QDoubleSpinBox* visual_defect_blur_spin_ = nullptr;
+    QDoubleSpinBox* visual_defect_freeze_spin_ = nullptr;
+    QCheckBox* visual_defect_rgb_check_ = nullptr;
+    MetricChartWidget* visual_defect_luma_chart_ = nullptr;
+    ChartSeries* visual_defect_luma_series_ = nullptr;
+    ChartSeries* visual_defect_black_series_ = nullptr;
+    ChartAxis* visual_defect_luma_axis_x_ = nullptr;
+    ChartAxis* visual_defect_luma_axis_y_ = nullptr;
+    ChartAxis* visual_defect_luma_axis_y2_ = nullptr;
+    MetricChartWidget* visual_defect_sharp_chart_ = nullptr;
+    ChartSeries* visual_defect_blur_series_ = nullptr;
+    ChartSeries* visual_defect_diff_series_ = nullptr;
+    ChartAxis* visual_defect_sharp_axis_x_ = nullptr;
+    ChartAxis* visual_defect_sharp_axis_y_ = nullptr;
+    QTableWidget* visual_defect_table_ = nullptr;
+    QLabel* visual_defect_evidence_label_ = nullptr;
+    std::vector<model::FrameQualityMetric> visual_defect_samples_;
+    std::vector<model::VisualDefect> visual_defect_records_;
+    model::ActivePictureArea visual_defect_effective_area_;
+    analyzer::VisualDefectOptions visual_defect_options_;
+    bool visual_defect_dirty_ = false;
+    int visual_defect_dropped_frames_ = 0;
+    int visual_defect_analyzed_frames_ = 0;
+    bool visual_defect_updating_options_ = false;
 
     // 统一文件结构分析标签页
     QWidget* container_tab_;

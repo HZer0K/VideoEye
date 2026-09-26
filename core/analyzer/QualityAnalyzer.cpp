@@ -57,11 +57,195 @@ QualityMetrics QualityAnalyzer::CompareFrames(const AVFrame* reference,
     return metrics;
 }
 
+QualityMetrics QualityAnalyzer::CompareSamples(const model::FrameSample& reference,
+                                                const model::FrameSample& distorted) {
+    QualityMetrics metrics;
+    metrics.frame_index = distorted.frame_index;
+    metrics.timestamp_seconds = distorted.timestamp_seconds;
+
+    GrayPlane reference_gray;
+    GrayPlane distorted_gray;
+    std::string error;
+    if (!MakeGrayPlane(reference, reference_gray, error)) {
+        metrics.error_message = error;
+        return metrics;
+    }
+    if (!MakeGrayPlane(distorted, distorted_gray, error)) {
+        metrics.error_message = error;
+        return metrics;
+    }
+    if (reference_gray.width != distorted_gray.width ||
+        reference_gray.height != distorted_gray.height ||
+        reference_gray.pixels.empty() ||
+        reference_gray.pixels.size() != distorted_gray.pixels.size()) {
+        metrics.error_message = "Frame samples have different dimensions";
+        return metrics;
+    }
+
+    metrics.width = reference_gray.width;
+    metrics.height = reference_gray.height;
+    metrics.mse = CalculateMse(reference_gray, distorted_gray);
+    metrics.psnr_nb = CalculatePsnr(metrics.mse);
+    metrics.ssim = CalculateSsim(reference_gray, distorted_gray);
+    metrics.vmaf = ComputeVmaf(reference, distorted);
+    metrics.valid = true;
+    return metrics;
+}
+
 double QualityAnalyzer::CalculatePsnr(double mse, double maxPixelValue) {
     if (mse <= 0.0) {
         return std::numeric_limits<double>::infinity();
     }
     return 10.0 * std::log10((maxPixelValue * maxPixelValue) / mse);
+}
+
+double QualityAnalyzer::ComputeVmaf(const model::FrameSample& reference,
+                                    const model::FrameSample& distorted) {
+    (void)reference;
+    (void)distorted;
+    // 第一阶段只做 PSNR / SSIM。VMAF 要带 libvmaf 与模型文件，属于可选依赖，
+    // 接进来时替换这里即可（调用方与报告字段都不用改）。
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
+bool QualityAnalyzer::VmafSupported() { return false; }
+
+namespace {
+
+// 按原比例算缩放后的高度，并保证至少 2 行且为偶数（隔行/场分析要成对的行）
+int ScaledHeight(int src_width, int src_height, int dst_width) {
+    if (src_width <= 0 || src_height <= 0 || dst_width <= 0) return 0;
+    double h = std::round(static_cast<double>(dst_width) * src_height / src_width);
+    int height = static_cast<int>(h);
+    if (height < 2) height = 2;
+    if ((height % 2) != 0) --height;
+    if (height < 2) height = 2;
+    return height;
+}
+
+}  // namespace
+
+bool QualityAnalyzer::BuildSample(const AVFrame* frame, int gray_width, int rgb_width,
+                                  bool capture_rgb, model::FrameSample& out,
+                                  std::string& error) {
+    out = model::FrameSample();
+    if (!frame) {
+        error = "Frame is null";
+        return false;
+    }
+    if (frame->width <= 0 || frame->height <= 0 || frame->format < 0 || !frame->data[0]) {
+        error = "Frame dimensions are invalid";
+        return false;
+    }
+
+    const int gw = gray_width > 16 ? gray_width : 16;
+    const int gh = ScaledHeight(frame->width, frame->height, gw);
+    if (gh <= 0) {
+        error = "Invalid scaled height";
+        return false;
+    }
+    std::vector<uint8_t> gray;
+    if (!ScaleToGray(frame, gw, gh, gray, error)) return false;
+    out.width = gw;
+    out.height = gh;
+    out.gray = std::move(gray);
+
+    if (capture_rgb) {
+        const int rw = rgb_width > 16 ? rgb_width : 16;
+        const int rh = ScaledHeight(frame->width, frame->height, rw);
+        std::vector<uint8_t> rgb;
+        // RGB 失败只影响色偏与证据图，不该把整帧分析废掉
+        if (rh > 0 && ScaleToRgb24(frame, rw, rh, rgb, error)) {
+            out.rgb_width = rw;
+            out.rgb_height = rh;
+            out.rgb = std::move(rgb);
+            error.clear();
+        }
+    }
+    return true;
+}
+
+bool QualityAnalyzer::ScaleToGray(const AVFrame* frame, int width, int height,
+                                  std::vector<uint8_t>& out, std::string& error) {
+    out.clear();
+    if (!frame || width <= 0 || height <= 0 || frame->format < 0 || !frame->data[0]) {
+        error = "Frame dimensions are invalid";
+        return false;
+    }
+    const auto src_fmt = static_cast<AVPixelFormat>(frame->format);
+    if (!av_pix_fmt_desc_get(src_fmt)) {
+        error = "Invalid pixel format";
+        return false;
+    }
+
+    out.resize(static_cast<size_t>(width) * height);
+    SwsContext* sws = sws_getContext(frame->width, frame->height, src_fmt,
+                                     width, height, AV_PIX_FMT_GRAY8,
+                                     SWS_BILINEAR, nullptr, nullptr, nullptr);
+    if (!sws) {
+        error = "Failed to create sws context (gray)";
+        out.clear();
+        return false;
+    }
+    uint8_t* dst_data[4] = {out.data(), nullptr, nullptr, nullptr};
+    const int dst_linesize[4] = {width, 0, 0, 0};
+    const int ret = sws_scale(sws, frame->data, frame->linesize, 0, frame->height,
+                              dst_data, dst_linesize);
+    sws_freeContext(sws);
+    if (ret < 0) {
+        error = "Failed to scale gray plane";
+        out.clear();
+        return false;
+    }
+    return true;
+}
+
+bool QualityAnalyzer::ScaleToRgb24(const AVFrame* frame, int width, int height,
+                                   std::vector<uint8_t>& out, std::string& error) {
+    out.clear();
+    if (!frame || width <= 0 || height <= 0 || frame->format < 0 || !frame->data[0]) {
+        error = "Frame dimensions are invalid";
+        return false;
+    }
+    const auto src_fmt = static_cast<AVPixelFormat>(frame->format);
+    if (!av_pix_fmt_desc_get(src_fmt)) {
+        error = "Invalid pixel format";
+        return false;
+    }
+
+    out.resize(static_cast<size_t>(width) * height * 3);
+    SwsContext* sws = sws_getContext(frame->width, frame->height, src_fmt,
+                                     width, height, AV_PIX_FMT_RGB24,
+                                     SWS_BILINEAR, nullptr, nullptr, nullptr);
+    if (!sws) {
+        error = "Failed to create sws context (rgb24)";
+        out.clear();
+        return false;
+    }
+    uint8_t* dst_data[4] = {out.data(), nullptr, nullptr, nullptr};
+    const int dst_linesize[4] = {width * 3, 0, 0, 0};
+    const int ret = sws_scale(sws, frame->data, frame->linesize, 0, frame->height,
+                              dst_data, dst_linesize);
+    sws_freeContext(sws);
+    if (ret < 0) {
+        error = "Failed to scale rgb plane";
+        out.clear();
+        return false;
+    }
+    return true;
+}
+
+bool QualityAnalyzer::MakeGrayPlane(const model::FrameSample& sample, GrayPlane& gray_plane,
+                                    std::string& error) {
+    gray_plane = GrayPlane();
+    if (!sample.valid()) {
+        error = "Frame sample is invalid";
+        return false;
+    }
+    gray_plane.width = sample.width;
+    gray_plane.height = sample.height;
+    gray_plane.pixels = sample.gray;
+    return true;
 }
 
 bool QualityAnalyzer::ExtractGrayPlane(const AVFrame* frame, GrayPlane& out, std::string& error) {
