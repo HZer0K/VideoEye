@@ -7,6 +7,11 @@
 //   2. 异步接收 stdout / stderr, 按行回吐给 UI, 长任务不阻塞界面;
 //   3. 记录退出码、耗时、停止/失败状态, 让"跑完了没、为什么没跑完"在界面上说得清。
 //
+// 停止节奏: 请求停止 → terminate()（让 ffmpeg 自己收尾、写出合法的 moov box）
+// → 宽限期到点还没退出才 kill()。那个宽限定时器**必须绑定本次运行的序号**
+// (run_id_): 旧任务先结束、用户立刻跑下一个时, 残留的定时器会去杀新一代的进程。
+// 进程自己结束也会把 run_id_ 推进, 让在飞的定时器自动作废。
+//
 // ffmpeg 的进度信息（frame= ... fps= ...）是**不换行**的: 它靠 \r 反复覆盖同一行。
 // 所以这里不能简单地"一行一发", 必须按 \r 也分行, 否则日志框会攒出一条几十 KB 的长行。
 // 同理, 输出编码不保证是 UTF-8（Windows 中文环境下 ffmpeg 可能吐本地编码）,
@@ -84,6 +89,9 @@ private:
     FfmpegRunResult last_result_;
     bool running_ = false;
     bool stop_requested_ = false;
+    // 本次运行的序号。每 Start() 一次 +1、每次进程收尾 +1 —— 用来让"上一代"
+    // 遗留的停止定时器自动失效，避免它杀掉新一代进程。
+    quint64 run_id_ = 0;
 };
 
 }  // namespace ffmpegtool

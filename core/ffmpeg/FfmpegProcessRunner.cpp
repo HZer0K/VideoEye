@@ -74,6 +74,9 @@ bool FfmpegProcessRunner::Start(const QString& program, const QStringList& argum
         return false;
     }
 
+    // 新一代开始。此后上一代遗留的停止定时器会因为序号不匹配而自动失效。
+    ++run_id_;
+
     last_result_ = FfmpegRunResult();
     last_result_.command_line = BuildDisplayCommand(program, arguments);
     pending_stdout_.clear();
@@ -120,7 +123,13 @@ void FfmpegProcessRunner::Stop(int grace_ms) {
     process_->terminate();
     // Windows 上 ffmpeg 是控制台程序，terminate() 发过去的 WM_CLOSE 没有人接；
     // 宽限一段时间让它自己收尾（写 moov box），到点还没退出就强杀。
-    QTimer::singleShot(grace_ms, this, [this]() {
+    const quint64 generation = run_id_;
+    QTimer::singleShot(grace_ms, this, [this, generation]() {
+        // 只对**发起停止时那一代**进程负责：期间任务结束又重跑了新命令的话，
+        // 这里再 kill 就是误杀新任务。
+        if (generation != run_id_) {
+            return;
+        }
         if (process_ && process_->state() != QProcess::NotRunning) {
             process_->kill();
         }
@@ -201,6 +210,8 @@ void FfmpegProcessRunner::OnProcessFinished(int exit_code, QProcess::ExitStatus 
     }
 
     running_ = false;
+    // 这一代到此为止：在飞的宽限定时器（如果有）就此作废，不会碰到下一次运行。
+    ++run_id_;
     last_result_.exit_code = exit_code;
     last_result_.elapsed_ms = timer_.elapsed();
 
@@ -220,6 +231,7 @@ void FfmpegProcessRunner::OnProcessFinished(int exit_code, QProcess::ExitStatus 
 void FfmpegProcessRunner::OnProcessError(QProcess::ProcessError error) {
     if (error == QProcess::FailedToStart) {
         running_ = false;
+        ++run_id_;   // 同上：让这一代遗留的停止定时器失效
         last_result_.status = FfmpegRunStatus::StartError;
         last_result_.elapsed_ms = timer_.elapsed();
         last_result_.error_message = DescribeProcessError(error);
