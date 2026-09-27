@@ -53,15 +53,60 @@ bool WritesTextOnly(const QString& format) {
     return kTextOnly.contains(format, Qt::CaseInsensitive);
 }
 
-// 从 from 往后还能不能再看到一个 -i（用于判断 -f 管的是输入还是输出）
-bool HasLaterInput(const QStringList& arguments, int from) {
-    for (int i = from; i < arguments.size(); ++i) {
-        if (arguments.at(i) == QLatin1String("-i")) {
-            return true;
+// 从 from 往后遇到的第一个"有结构意义的东西"是什么。
+//
+// 判断 -f 归输入还是输出，不能看"之前出现过几个输出" —— 合法命令完全可以在
+// 已有输出之后再加一个输入:
+//     ffmpeg -i a.mp4 out1.mp4 -f lavfi -i testsrc out2.mp4
+// 这里的 -f lavfi 依然是输入格式。要看的是: 它后面先遇到 -i，还是先遇到一个
+// 输出目标（裸 token）。走到末尾都没有 → None。
+enum class NextSignificant { None, Input, Output };
+
+NextSignificant FindNextSignificant(const QStringList& arguments, int from) {
+    int i = from;
+    while (i < arguments.size()) {
+        const QString token = arguments.at(i);
+        if (token == QLatin1String("-i")) {
+            return NextSignificant::Input;
         }
+        if (!IsOptionToken(token)) {
+            return NextSignificant::Output;   // 裸 token = 输出目标
+        }
+        const FfmpegCatalogEntry* entry = FfmpegCommandCatalog::Find(token);
+        const bool takes_value = (entry != nullptr && entry->takes_value) ||
+                                 (entry == nullptr && i + 1 < arguments.size() &&
+                                  !IsOptionToken(arguments.at(i + 1)));
+        i += takes_value ? 2 : 1;
     }
-    return false;
+    return NextSignificant::None;
 }
+
+// 只产出文本的信息查询命令。它们天生没有输入也没有输出。
+struct InfoOption {
+    const char* name;
+    const char* description;
+};
+
+const InfoOption kInfoOptions[] = {
+    {"-version", "打印 ffmpeg 的版本、编译配置与所链接的库版本"},
+    {"-buildconf", "打印这份 ffmpeg 的编译配置（--enable-* 开关）"},
+    {"-formats", "列出所有封装格式（D = 能读，E = 能写）"},
+    {"-demuxers", "列出能读的封装格式（demuxer）"},
+    {"-muxers", "列出能写的封装格式（muxer）"},
+    {"-encoders", "列出可用的编码器"},
+    {"-decoders", "列出可用的解码器"},
+    {"-filters", "列出可用的滤镜"},
+    {"-pix_fmts", "列出可用的像素格式"},
+    {"-layouts", "列出可用的音频声道布局"},
+    {"-sample_fmts", "列出可用的音频采样格式"},
+    {"-protocols", "列出可用的协议（file / http / rtmp …）"},
+    {"-devices", "列出可用的采集/输出设备"},
+    {"-hwaccels", "列出可用的硬件加速方式"},
+    {"-bsfs", "列出可用的比特流滤镜（bitstream filter）"},
+    {"-codecs", "列出所有编解码器"},
+    {"-h", "打印帮助；-h long / -h full 可以看到更完整的选项列表"},
+    {"-help", "打印帮助；-h long / -h full 可以看到更完整的选项列表"},
+};
 
 }  // namespace
 
@@ -75,6 +120,40 @@ bool LooksLikeFfmpegProgram(const QString& token) {
         name.chop(4);
     }
     return name.compare(QLatin1String("ffmpeg"), Qt::CaseInsensitive) == 0;
+}
+
+bool IsExplicitProgramPath(const QString& token) {
+    if (token.isEmpty()) {
+        return false;
+    }
+    if (token.contains(QLatin1Char('/')) || token.contains(QLatin1Char('\\'))) {
+        return true;
+    }
+    return token.startsWith(QLatin1String("./")) || token.startsWith(QLatin1String("../")) ||
+           token.startsWith(QLatin1String(".\\")) || token.startsWith(QLatin1String("..\\"));
+}
+
+bool IsInformationCommand(const QStringList& arguments) {
+    for (const QString& token : arguments) {
+        if (!IsOptionToken(token)) {
+            continue;
+        }
+        for (const InfoOption& info : kInfoOptions) {
+            if (token.compare(QLatin1String(info.name), Qt::CaseInsensitive) == 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+QString InformationOptionDescription(const QString& option) {
+    for (const InfoOption& info : kInfoOptions) {
+        if (option.compare(QLatin1String(info.name), Qt::CaseInsensitive) == 0) {
+            return QString::fromUtf8(info.description);
+        }
+    }
+    return QString();
 }
 
 ParsedCommand ParseCommandLine(const QString& text) {
@@ -149,6 +228,7 @@ ParsedCommand ParseCommandLine(const QString& text) {
     const QString& first = tokens.front();
     if (LooksLikeFfmpegProgram(first)) {
         result.program_token = first;
+        result.program_is_path = IsExplicitProgramPath(first);
         arg_start = 1;
     } else if (first.startsWith(QLatin1Char('-'))) {
         arg_start = 0;
@@ -211,9 +291,11 @@ FfmpegCommandStructure AnalyzeCommandStructure(const QStringList& arguments) {
                 value.role = FfmpegArgRole::OptionValue;
                 value.output_side = place.output_side;
                 if (token == QLatin1String("-f")) {
-                    // 还没产出任何输出、且后面还有 -i → 这个 -f 管下一个输入，
-                    // 否则它就是（下一个）输出的格式。
-                    place.applies_to_input = (outputs_seen == 0) && HasLaterInput(arguments, i + 2);
+                    // 方向由"它后面先遇到什么"决定，而不是"之前出过几个输出":
+                    // 后面紧接着一个 -i → 它是输入格式（哪怕前面已经有输出了）；
+                    // 后面先撞上输出目标 → 它是那个输出的格式。
+                    place.applies_to_input =
+                        (FindNextSignificant(arguments, i + 2) == NextSignificant::Input);
                     if (!place.applies_to_input) {
                         pending_output_format = arguments.at(i + 1);
                     }

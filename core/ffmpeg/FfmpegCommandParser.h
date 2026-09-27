@@ -30,17 +30,30 @@ struct ParsedCommand {
     CommandParseStatus status = CommandParseStatus::Empty;
     QString message;       // 失败时给用户的说明（成功时为空）
     QString program_token; // 命令里写的可执行程序 token（可能是 "ffmpeg" 或完整路径）
+    bool program_is_path = false;  // program_token 是一个路径（而不是裸的 "ffmpeg"）
     QStringList arguments; // 传给 ffmpeg 的参数，不含程序本身
 };
 
 /// 解析一行命令文本。
-/// 允许两种写法:
-///   ffmpeg -i in.mp4 out.mp4     （带程序名，程序名会被丢弃，实际用的是设置里的 ffmpeg）
-///   -i in.mp4 out.mp4            （省略程序名）
+/// 允许三种写法:
+///   C:/tools/ffmpeg.exe -i in.mp4 out.mp4   （完整路径 —— 用它，不用设置里那个）
+///   ffmpeg -i in.mp4 out.mp4                （裸程序名 —— 用设置里那个 ffmpeg）
+///   -i in.mp4 out.mp4                       （省略程序名 —— 同上）
 ParsedCommand ParseCommandLine(const QString& text);
 
 /// 判断 token 是否"看起来像 ffmpeg 可执行程序"（文件名去掉 .exe 后等于 ffmpeg）。
 bool LooksLikeFfmpegProgram(const QString& token);
+
+/// 判断 token 是否是一个**显式路径**（含 / 或 \，或 ./ ../ 开头）。
+/// "ffmpeg" 不是路径，"C:/tools/ffmpeg.exe" / "./ffmpeg" 才是。
+bool IsExplicitProgramPath(const QString& token);
+
+/// 这条命令是"查信息"的（-version / -encoders / -formats …）。
+/// 这类命令既不需要输入也不需要输出，不能按转码命令去挑它的毛病。
+bool IsInformationCommand(const QStringList& arguments);
+
+/// 信息查询选项的一句话说明；不是已知的查询选项时返回空串。
+QString InformationOptionDescription(const QString& option);
 
 // ---- 命令结构：输入组 / 输出组 ----
 //
@@ -63,7 +76,10 @@ struct FfmpegArgPlacement {
     FfmpegArgRole role = FfmpegArgRole::Uncertain;
     int value_index = -1;        // role == Option 时: 值的下标（-1 = 这个选项不带值）
     bool output_side = false;    // 位于至少一个输入组之后（而不是"-i 之前"）
-    bool applies_to_input = false;  // 仅 -f 有意义: 它管的是下一个输入还是下一个输出
+    /// 仅 -f 有意义: 它管的是**紧接着的那个输入**还是**紧接着的那个输出**。
+    /// 判据是"它后面先遇到 -i 还是先遇到输出目标"，与之前出过几个输出无关 ——
+    /// 输出之后继续加输入组是合法写法。
+    bool applies_to_input = false;
     int output_index = -1;       // role == OutputUrl: 第几个输出（0-based）
     QString output_format;       // role == OutputUrl: 落到这个输出上的 -f 值（可能为空）
 };

@@ -800,6 +800,22 @@ void FfmpegPanel::OnRun() {
         return;
     }
 
+    // 命令里写了完整路径 → **用它**。这是原生 ffmpeg 命令行的直觉：
+    // 用户把 C:\tools\ffmpeg.exe 写在命令头上，就是要跑那一个程序。
+    // 只写裸的 "ffmpeg"（或省略程序名）才用本页设置里的那个。
+    QString program = tool_info_.path;
+    if (parsed.program_is_path) {
+        if (!ffmpegtool::FfmpegToolLocator::IsExecutable(parsed.program_token)) {
+            QMessageBox::warning(this, tr("无法运行"),
+                                 tr("命令里的 ffmpeg 路径「%1」不存在或不可执行。\n\n"
+                                    "请改成一个真实存在的 ffmpeg；或者把命令开头写成不带路径的 "
+                                    "ffmpeg —— 那样会使用本页设置的「%2」。")
+                                     .arg(parsed.program_token, tool_info_.path));
+            return;
+        }
+        program = parsed.program_token;
+    }
+
     log_view_->clear();
     error_view_->clear();
     last_log_text_.clear();
@@ -811,14 +827,20 @@ void FfmpegPanel::OnRun() {
     output_tabs_->setCurrentWidget(log_view_);
 
     AppendLog(QStringLiteral("$ %1")
-                  .arg(ffmpegtool::FfmpegProcessRunner::BuildDisplayCommand(tool_info_.path,
-                                                                           parsed.arguments)),
+                  .arg(ffmpegtool::FfmpegProcessRunner::BuildDisplayCommand(program, parsed.arguments)),
               false);
+    if (program != tool_info_.path) {
+        AppendLog(tr("(命令里写了完整路径: 本次用它执行；本页设置的 %1 已被忽略)")
+                      .arg(tool_info_.path),
+                  false);
+    }
     SetRunUiState(true);
-    if (!runner_->Start(tool_info_.path, parsed.arguments)) {
+    const bool started = runner_->Start(program, parsed.arguments);
+    if (!started) {
         SetRunUiState(false);
     }
-    emit StatusMessage(tr("已启动 ffmpeg"));
+    // 启动失败时不能再说"已启动" —— 否则状态栏会前后矛盾
+    emit StatusMessage(started ? tr("已启动 ffmpeg") : tr("ffmpeg 启动失败"));
 }
 
 void FfmpegPanel::OnStop() {

@@ -195,14 +195,36 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
         out.notes.push_back(QStringLiteral("命令为空。"));
         return out;
     }
-    if (!out.has_input && !arguments.contains(QStringLiteral("-version")) &&
-        !arguments.contains(QStringLiteral("-encoders")) && !arguments.contains(QStringLiteral("-filters")) &&
-        !arguments.contains(QStringLiteral("-formats")) && !arguments.contains(QStringLiteral("-h"))) {
+
+    // 信息查询命令（-version / -encoders / -formats …）天生没有输入也没有输出，
+    // 拿转码命令的标准去挑它的毛病只会给出错误的纠正建议。
+    if (IsInformationCommand(arguments)) {
+        QStringList queried;
+        for (const QString& token : arguments) {
+            const QString description = InformationOptionDescription(token);
+            if (!description.isEmpty()) {
+                queried.push_back(QStringLiteral("· %1 —— %2").arg(token, description));
+            }
+        }
+        out.notes.push_back(
+            QStringLiteral("这是一条**查询命令**，不需要输入文件也不需要输出文件：ffmpeg 只把结果打印出来就退出。\n%1")
+                .arg(queried.isEmpty() ? QStringLiteral("· 运行后结果会输出在下面。")
+                                       : queried.join(QStringLiteral("\n"))));
+        out.flow = QStringLiteral("查询 ffmpeg 自身的能力/版本信息");
+        return out;
+    }
+
+    if (!out.has_input) {
         out.notes.push_back(QStringLiteral("没有 -i，ffmpeg 拿不到输入（除非用的是 -f lavfi 之类的虚拟输入）。"));
     }
     if (!out.has_output) {
         out.notes.push_back(QStringLiteral("没有输出文件。ffmpeg 至少要有一个输出目标，"
                                            "否则它只会报错退出（或把数据写到 stdout，而本页不支持那样做）。"));
+    }
+    if (arguments.contains(QStringLiteral("-nostdin"))) {
+        out.notes.push_back(QStringLiteral("命令里有 -nostdin: ffmpeg 不会读标准输入，"
+                                           "所以点击「停止」时无法用 q 让它优雅收尾，只能直接终止进程 —— "
+                                           "mp4 这类需要收尾写索引的输出**可能被截断**。"));
     }
     if (out.output_count > 1) {
         out.notes.push_back(QStringLiteral("这条命令有 %1 个输出目标。ffmpeg 会把写在两个输出之间的选项"
