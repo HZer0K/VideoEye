@@ -518,7 +518,8 @@ void FfmpegPanel::StartProbes() {
         probe_restart_pending_ = true;
         probe_program_ = program;
         ForgetCurrentProbe();
-        probe_runner_->Stop(0);
+        // 探测只是打印清单，没有输出文件要收尾 —— 直接终止，不用给优雅退出的时间
+        probe_runner_->Stop(0, 0);
         return;
     }
     probe_program_ = program;
@@ -535,7 +536,8 @@ void FfmpegPanel::CancelProbes() {
     probe_buffer_.clear();
     ForgetCurrentProbe();
     if (probe_runner_ != nullptr && probe_runner_->IsRunning()) {
-        probe_runner_->Stop(0);
+        // 探测只是打印清单，没有输出文件要收尾 —— 直接终止，不用给优雅退出的时间
+        probe_runner_->Stop(0, 0);
     }
 }
 
@@ -801,6 +803,7 @@ void FfmpegPanel::OnRun() {
     log_view_->clear();
     error_view_->clear();
     last_log_text_.clear();
+    current_arguments_ = parsed.arguments;
     status_label_->setText(tr("状态: 运行中"));
     status_label_->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(theme::color::kAccent)));
     exit_code_label_->setText(tr("退出码: —"));
@@ -822,7 +825,12 @@ void FfmpegPanel::OnStop() {
     if (!runner_->IsRunning()) {
         return;
     }
-    AppendLog(QStringLiteral("(用户请求停止，等待进程退出…)"), false);
+    if (ffmpegtool::FfmpegProcessRunner::CanQuitViaStdin(current_arguments_)) {
+        AppendLog(tr("(用户请求停止: 已向 ffmpeg 发送 q，等它正常收尾；超时后会强制终止)"), false);
+    } else {
+        AppendLog(tr("(用户请求停止: 命令里有 -nostdin，ffmpeg 不读标准输入，"
+                     "无法优雅收尾，只能直接终止 —— 输出文件可能不完整)"), true);
+    }
     runner_->Stop();
     emit StatusMessage(tr("正在停止 ffmpeg"));
 }
@@ -862,8 +870,12 @@ void FfmpegPanel::OnRunFinished(const ffmpegtool::FfmpegRunResult& result) {
         color = QLatin1String(theme::color::kDanger);
         break;
     case ffmpegtool::FfmpegRunStatus::Stopped:
-        text = tr("状态: 已停止");
-        color = QLatin1String(theme::color::kWarning);
+        // "停止"有两种：ffmpeg 自己收了尾（输出完整）和被强杀（输出多半坏了）。
+        // 一律显示"已停止"会让用户拿一个坏掉的 mp4 当结果。
+        text = result.stopped_cleanly() ? tr("状态: 已停止（正常收尾）")
+                                        : tr("状态: 已停止（输出可能不可用）");
+        color = result.stopped_cleanly() ? QLatin1String(theme::color::kWarning)
+                                         : QLatin1String(theme::color::kDanger);
         break;
     case ffmpegtool::FfmpegRunStatus::StartError:
         text = tr("状态: 无法启动");
@@ -889,7 +901,13 @@ void FfmpegPanel::OnRunFinished(const ffmpegtool::FfmpegRunResult& result) {
     } else if (result.status == ffmpegtool::FfmpegRunStatus::Finished) {
         emit StatusMessage(tr("ffmpeg 完成，耗时 %1").arg(FormatDuration(result.elapsed_ms)));
     } else if (result.status == ffmpegtool::FfmpegRunStatus::Stopped) {
-        emit StatusMessage(tr("ffmpeg 已停止"));
+        if (result.stopped_cleanly()) {
+            emit StatusMessage(tr("ffmpeg 已停止（正常收尾，输出文件完整）"));
+        } else {
+            AppendLog(tr("警告: ffmpeg 是被强制终止的 —— mp4/mov 这类需要先写完整索引的容器"
+                         "可能缺 moov box 而无法播放，建议重新跑一次。"), true);
+            emit StatusMessage(tr("ffmpeg 已停止，但输出可能不可用"));
+        }
     }
 }
 

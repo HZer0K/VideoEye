@@ -55,6 +55,12 @@ FfmpegProcessRunner::~FfmpegProcessRunner() {
     }
 }
 
+bool FfmpegProcessRunner::CanQuitViaStdin(const QStringList& arguments) {
+    // -nostdin 是唯一需要照顾的例外: 它让 ffmpeg 彻底不读 stdin，写 q 进去没人接。
+    // （-stdin 是它的反向开关，写了也只是"允许读"，不影响这里的判断。）
+    return !arguments.contains(QStringLiteral("-nostdin"));
+}
+
 QString FfmpegProcessRunner::BuildDisplayCommand(const QString& program, const QStringList& arguments) {
     QString line = program;
     for (const QString& a : arguments) {
@@ -82,6 +88,8 @@ bool FfmpegProcessRunner::Start(const QString& program, const QStringList& argum
     pending_stdout_.clear();
     pending_stderr_.clear();
     stop_requested_ = false;
+    stop_stage_ = FfmpegStopStage::None;
+    arguments_ = arguments;
 
     const QFileInfo info(program);
     if (!info.exists() || !info.isFile()) {
@@ -102,12 +110,14 @@ bool FfmpegProcessRunner::Start(const QString& program, const QStringList& argum
 
     process_->setProgram(program);
     process_->setArguments(arguments);
-    if (!working_directory.isEmpty()) {
-        process_->setWorkingDirectory(working_directory);
-    }
+    // 每次都显式设置: 空串 = 回到调用进程的工作目录。只在非空时设置的话，
+    // 上一次运行指定的目录会残留到下一次（QProcess 对象是被复用的）。
+    process_->setWorkingDirectory(working_directory);
 
     timer_.start();
-    process_->start(QIODevice::ReadOnly);
+    // ReadWrite: 要留着可写的 stdin —— 停止时往里写一个 "q" 是让 ffmpeg
+    // 正常收尾（写出 moov box）的唯一可靠办法，只读通道做不到这件事。
+    process_->start(QIODevice::ReadWrite);
     // start() 返回后进程可能还没真正起来（Windows 上 FailedToStart 是异步报的）。
     // 这里只标"正在跑"，真正的失败由 errorOccurred 兜住。
     running_ = true;
@@ -115,24 +125,55 @@ bool FfmpegProcessRunner::Start(const QString& program, const QStringList& argum
     return true;
 }
 
-void FfmpegProcessRunner::Stop(int grace_ms) {
+void FfmpegProcessRunner::Stop(int quit_grace_ms, int terminate_grace_ms) {
     if (!running_ || !process_) {
         return;
     }
+    if (stop_stage_ != FfmpegStopStage::None) {
+        return;   // 已经在停了：再点一次不该把宽限期往前提
+    }
     stop_requested_ = true;
-    process_->terminate();
-    // Windows 上 ffmpeg 是控制台程序，terminate() 发过去的 WM_CLOSE 没有人接；
-    // 宽限一段时间让它自己收尾（写 moov box），到点还没退出就强杀。
+
+    // 只对**发起停止时那一代**进程负责：期间任务结束又重跑了新命令的话，
+    // 下面这两个定时器再动手就是误杀新任务。
     const quint64 generation = run_id_;
-    QTimer::singleShot(grace_ms, this, [this, generation]() {
-        // 只对**发起停止时那一代**进程负责：期间任务结束又重跑了新命令的话，
-        // 这里再 kill 就是误杀新任务。
+
+    auto advance = [this, generation](FfmpegStopStage stage) {
         if (generation != run_id_) {
+            return false;
+        }
+        if (!process_ || process_->state() == QProcess::NotRunning) {
+            return false;
+        }
+        stop_stage_ = stage;
+        emit StopStageChanged(stage);
+        return true;
+    };
+
+    // 第一档: 写 "q" 让它自己收尾 —— 只有这一档能保证输出文件完整。
+    // -nostdin 时跳过（写了也没人接），直接进第二档。
+    const bool can_quit = CanQuitViaStdin(arguments_);
+    int delay_to_terminate = 0;
+    if (can_quit && advance(FfmpegStopStage::QuitSent)) {
+        process_->write("q\n");
+        process_->closeWriteChannel();   // 写完就关，避免 ffmpeg 等一个不会来的输入
+        delay_to_terminate = quit_grace_ms;
+    }
+
+    QTimer::singleShot(delay_to_terminate, this, [this, generation, advance, terminate_grace_ms]() {
+        if (!advance(FfmpegStopStage::Terminated)) {
             return;
         }
-        if (process_ && process_->state() != QProcess::NotRunning) {
+        // 第二档: Windows 控制台程序收不到这个（Qt 发的是 WM_CLOSE），
+        // 但 Unix 上 SIGTERM 会被 ffmpeg 接住并正常收尾，所以不能直接跳到 kill。
+        process_->terminate();
+        QTimer::singleShot(terminate_grace_ms, this, [this, generation, advance]() {
+            if (!advance(FfmpegStopStage::Killed)) {
+                return;
+            }
+            // 第三档: 强杀。走到这里输出文件多半已经不完整了，界面必须说清楚。
             process_->kill();
-        }
+        });
     });
 }
 
@@ -214,6 +255,8 @@ void FfmpegProcessRunner::OnProcessFinished(int exit_code, QProcess::ExitStatus 
     ++run_id_;
     last_result_.exit_code = exit_code;
     last_result_.elapsed_ms = timer_.elapsed();
+    // Stopped 只是"用户点过停止"，收尾干不干净要看当时走到哪一档
+    last_result_.stop_stage = stop_stage_;
 
     if (stop_requested_) {
         last_result_.status = FfmpegRunStatus::Stopped;

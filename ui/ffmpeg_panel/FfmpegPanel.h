@@ -155,6 +155,8 @@ private:
     bool probe_restart_pending_ = false;
 
     ffmpegtool::FfmpegToolInfo tool_info_;
+    /// 本次运行的参数。停止时要用它判断能不能靠写 q 让 ffmpeg 优雅收尾。
+    QStringList current_arguments_;
     QString tool_version_;
     QString current_media_path_;
     QString last_log_text_;
