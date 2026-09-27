@@ -58,6 +58,15 @@ struct FfmpegCatalogEntry {
     QStringList related;
 };
 
+// `ffmpeg -formats` 的两张清单。**必须分开存**：D 是"能读"（解复用 / demuxer），
+// E 是"能写"（复用 / muxer）。`-f xxx` 到底是读还是写，取决于它落在输入侧还是
+// 输出侧 —— 拿一张表互相替代就会在 `-f lavfi`（只有 D）、`-f ffmetadata`（只有 E）
+// 这类组合上误报"这个 ffmpeg 不支持 xxx"。
+struct FfmpegFormatLists {
+    QStringList demuxers;   // 能读
+    QStringList muxers;     // 能写
+};
+
 /// 当前 ffmpeg 实际支持的编码器 / 滤镜 / 格式。
 /// 页面启动时跑一次 `-encoders` / `-filters` / `-formats` 填进来；没查过之前
 /// HasXxx() 一律返回 true（不冤枉任何一个参数）。
@@ -67,11 +76,14 @@ public:
 
     void SetEncoders(const QStringList& names);
     void SetFilters(const QStringList& names);
-    void SetFormats(const QStringList& names);
+    void SetFormats(const QStringList& demuxers, const QStringList& muxers);
 
     bool HasEncoder(const QString& name) const;
     bool HasFilter(const QString& name) const;
+    /// 不区分方向：能读或能写都算有这个格式（用于无法确定方向时的保守判断）
     bool HasFormat(const QString& name) const;
+    bool HasDemuxer(const QString& name) const;
+    bool HasMuxer(const QString& name) const;
 
     bool encoders_known() const { return encoders_known_; }
     bool filters_known() const { return filters_known_; }
@@ -79,6 +91,8 @@ public:
 
     int encoder_count() const { return encoders_.size(); }
     int filter_count() const { return filters_.size(); }
+    int demuxer_count() const { return demuxers_.size(); }
+    int muxer_count() const { return muxers_.size(); }
 
     void Clear();
 
@@ -86,7 +100,8 @@ private:
     FfmpegCapabilityCache() = default;
     QStringList encoders_;
     QStringList filters_;
-    QStringList formats_;
+    QStringList demuxers_;
+    QStringList muxers_;
     bool encoders_known_ = false;
     bool filters_known_ = false;
     bool formats_known_ = false;
@@ -111,6 +126,9 @@ public:
     // ---- `ffmpeg -encoders` / `-filters` / `-formats` 输出解析 ----
     static QStringList ParseEncoderNames(const QString& output);
     static QStringList ParseFilterNames(const QString& output);
+    /// 一次拆出 demuxer / muxer 两张表（`-formats` 每行同时给出两个方向）
+    static FfmpegFormatLists ParseFormatNames(const QString& output);
+    static QStringList ParseDemuxerNames(const QString& output);
     static QStringList ParseMuxerNames(const QString& output);
 };
 

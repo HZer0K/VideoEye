@@ -520,7 +520,8 @@ FfmpegCapabilityCache& FfmpegCapabilityCache::Instance() {
 void FfmpegCapabilityCache::Clear() {
     encoders_.clear();
     filters_.clear();
-    formats_.clear();
+    demuxers_.clear();
+    muxers_.clear();
     encoders_known_ = false;
     filters_known_ = false;
     formats_known_ = false;
@@ -536,8 +537,9 @@ void FfmpegCapabilityCache::SetFilters(const QStringList& names) {
     filters_known_ = true;
 }
 
-void FfmpegCapabilityCache::SetFormats(const QStringList& names) {
-    formats_ = names;
+void FfmpegCapabilityCache::SetFormats(const QStringList& demuxers, const QStringList& muxers) {
+    demuxers_ = demuxers;
+    muxers_ = muxers;
     formats_known_ = true;
 }
 
@@ -559,7 +561,21 @@ bool FfmpegCapabilityCache::HasFormat(const QString& name) const {
     if (!formats_known_ || name.isEmpty()) {
         return true;
     }
-    return formats_.contains(name, Qt::CaseInsensitive);
+    return HasDemuxer(name) || HasMuxer(name);
+}
+
+bool FfmpegCapabilityCache::HasDemuxer(const QString& name) const {
+    if (!formats_known_ || name.isEmpty()) {
+        return true;
+    }
+    return demuxers_.contains(name, Qt::CaseInsensitive);
+}
+
+bool FfmpegCapabilityCache::HasMuxer(const QString& name) const {
+    if (!formats_known_ || name.isEmpty()) {
+        return true;
+    }
+    return muxers_.contains(name, Qt::CaseInsensitive);
 }
 
 // ===================== FfmpegCommandCatalog =====================
@@ -638,22 +654,70 @@ QStringList FfmpegCommandCatalog::ParseFilterNames(const QString& output) {
     return ParseNameColumn(output, 1);
 }
 
+QStringList FfmpegCommandCatalog::ParseDemuxerNames(const QString& output) {
+    return ParseFormatNames(output).demuxers;
+}
+
 QStringList FfmpegCommandCatalog::ParseMuxerNames(const QString& output) {
-    // 形如: " E mp4             MP4 (MPEG-4 Part 14)"；D 表示**解**复用，E 表示**复**用
-    QStringList muxers;
+    return ParseFormatNames(output).muxers;
+}
+
+FfmpegFormatLists FfmpegCommandCatalog::ParseFormatNames(const QString& output) {
+    // -formats 的每行是「一个对齐空格 + 两个标志位 + 名字 + 描述」:
+    //   " D  3dostr          3DO STR"      → 只能读
+    //   "  E 3g2             3GP2 ..."     → 只能写
+    //   " DE mov,mp4,m4a,3gp QuickTime"    → 读写皆可，名字列还带逗号分隔的别名
+    // ⚠️ 不能 trim() 之后看第一个字符是不是 'E': "  E" trim 完是 "E..."（碰巧对），
+    //    而 " DE" trim 完是 "DE..."（E 在第二位）—— 只读火力 cues "只能写" 的格式
+    //    就是这么整批漏掉的。必须按**固定列**读标志位。
+    FfmpegFormatLists out;
     const QStringList lines = output.split(QLatin1Char('\n'));
-    for (const QString& raw : lines) {
-        const QString line = raw.trimmed();
-        if (!line.startsWith(QLatin1Char('E'))) {
-            continue;   // 只要能"写"的格式；D 只是能读
-        }
-        const QStringList parts = line.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
-        if (parts.size() >= 2) {
-            muxers.append(parts.at(1));
+
+    // 表头与图例都在 "--" 分隔线之前（"File formats:" / " D. = Demuxing supported"）
+    int begin = 0;
+    for (int i = 0; i < lines.size(); ++i) {
+        if (lines.at(i).trimmed() == QLatin1String("--")) {
+            begin = i + 1;
+            break;
         }
     }
-    muxers.removeDuplicates();
-    return muxers;
+
+    const QRegularExpression spaces(QStringLiteral("\\s+"));
+    for (int i = begin; i < lines.size(); ++i) {
+        const QString raw = lines.at(i);
+        if (raw.trimmed().isEmpty()) {
+            continue;
+        }
+        // 吃掉列对齐用的那（至多）一个前导空格，剩下的第一个字符就是 D 位
+        int leading = 0;
+        while (leading < raw.size() && raw.at(leading).isSpace()) {
+            ++leading;
+        }
+        const QString body = raw.mid(leading > 1 ? 1 : leading);
+        if (body.size() < 3) {
+            continue;
+        }
+        const bool demuxer = body.at(0) == QLatin1Char('D');
+        const bool muxer = body.at(1) == QLatin1Char('E');
+        if (!demuxer && !muxer) {
+            continue;   // 既不能读也不能写 → 不是格式行
+        }
+        const QString name_field = body.mid(2).split(spaces, Qt::SkipEmptyParts).value(0);
+        if (name_field.isEmpty() || !name_field.at(0).isLetterOrNumber()) {
+            continue;   // ". = Demuxing supported" 这类图例行
+        }
+        for (const QString& alias : name_field.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+            if (demuxer) {
+                out.demuxers.append(alias);
+            }
+            if (muxer) {
+                out.muxers.append(alias);
+            }
+        }
+    }
+    out.demuxers.removeDuplicates();
+    out.muxers.removeDuplicates();
+    return out;
 }
 
 }  // namespace ffmpegtool

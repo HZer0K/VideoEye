@@ -542,7 +542,8 @@ void FfmpegPanel::OnProbeFinished(const ffmpegtool::FfmpegRunResult& result) {
     } else if (probe_current_ == QLatin1String("-filters")) {
         caps.SetFilters(ffmpegtool::FfmpegCommandCatalog::ParseFilterNames(probe_buffer_));
     } else if (probe_current_ == QLatin1String("-formats")) {
-        caps.SetFormats(ffmpegtool::FfmpegCommandCatalog::ParseMuxerNames(probe_buffer_));
+        const auto formats = ffmpegtool::FfmpegCommandCatalog::ParseFormatNames(probe_buffer_);
+        caps.SetFormats(formats.demuxers, formats.muxers);
     }
     RunNextProbe();
 }
