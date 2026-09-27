@@ -43,6 +43,11 @@ QString EscapeHtml(const QString& text) {
     return text.toHtmlEscaped();
 }
 
+void AppendLine(QPlainTextEdit* view, const QString& line) {
+    view->appendPlainText(line);
+    view->verticalScrollBar()->setValue(view->verticalScrollBar()->maximum());
+}
+
 }  // namespace
 
 FfmpegPanel::FfmpegPanel(QWidget* parent)
@@ -243,6 +248,7 @@ QWidget* FfmpegPanel::BuildOutputArea() {
     log_view_->setFont(theme::font::monoFont(9));
     log_view_->setLineWrapMode(QPlainTextEdit::NoWrap);
     log_view_->setMaximumBlockCount(20000);
+    log_view_->setToolTip(tr("按到达顺序合并 stdout 与 stderr；来自 stderr 的行以 [err] 开头。"));
     output_tabs_->addTab(log_view_, tr("运行日志"));
 
     error_view_ = new QPlainTextEdit(output_tabs_);
@@ -250,6 +256,8 @@ QWidget* FfmpegPanel::BuildOutputArea() {
     error_view_->setFont(theme::font::monoFont(9));
     error_view_->setLineWrapMode(QPlainTextEdit::NoWrap);
     error_view_->setMaximumBlockCount(20000);
+    error_view_->setToolTip(tr("只显示 stderr。ffmpeg 的正常进度与 banner 也写在 stderr 上，"
+                               "所以这里往往是完整输出；要看时间顺序请回到「运行日志」。"));
     error_view_->setStyleSheet(
         QStringLiteral("QPlainTextEdit { color: %1; }").arg(QLatin1String(theme::color::kWarning)));
     output_tabs_->addTab(error_view_, tr("错误输出"));
@@ -495,15 +503,46 @@ void FfmpegPanel::OnToolPathEdited() {
 }
 
 void FfmpegPanel::StartProbes() {
-    if (tool_info_.path.isEmpty() || !tool_info_.exists) {
+    const QString program = tool_info_.path;
+    if (program.isEmpty() || !tool_info_.exists) {
+        CancelProbes();
         return;
     }
     if (probe_runner_->IsRunning()) {
+        if (probe_program_ == program && !probe_restart_pending_) {
+            return;   // 同一个程序的探测还在跑，让它跑完
+        }
+        // 程序换了：这一轮剩下的探测如果继续用新路径去跑，就会拼出
+        // "旧程序的版本号 + 新程序的编码器列表"这种混杂结果。作废这一轮，
+        // 让回调全部失效，等旧进程退出后再用新路径重新起一轮。
+        probe_restart_pending_ = true;
+        probe_program_ = program;
+        ForgetCurrentProbe();
+        probe_runner_->Stop(0);
         return;
     }
+    probe_program_ = program;
+    ++probe_generation_;
     probe_queue_ = {QStringLiteral("-version"), QStringLiteral("-encoders"),
                     QStringLiteral("-filters"), QStringLiteral("-formats")};
     RunNextProbe();
+}
+
+void FfmpegPanel::CancelProbes() {
+    probe_queue_.clear();
+    probe_restart_pending_ = false;
+    probe_current_.clear();
+    probe_buffer_.clear();
+    ForgetCurrentProbe();
+    if (probe_runner_ != nullptr && probe_runner_->IsRunning()) {
+        probe_runner_->Stop(0);
+    }
+}
+
+void FfmpegPanel::ForgetCurrentProbe() {
+    // 让在飞的回调失效：Stop() 之后进程还会补一个 finished()，那一路上
+    // 的 buffer / probe_current_ 都属于被作废的那一轮。
+    ++probe_generation_;
 }
 
 void FfmpegPanel::RunNextProbe() {
@@ -515,14 +554,26 @@ void FfmpegPanel::RunNextProbe() {
     }
     probe_current_ = probe_queue_.takeFirst();
     probe_buffer_.clear();
-    probe_runner_->Start(tool_info_.path, {QStringLiteral("-hide_banner"), probe_current_});
+    // 整轮绑定同一个程序：中途即使界面上的路径变了，这一趟也照旧用 probe_program_。
+    probe_launch_generation_ = probe_generation_;
+    probe_runner_->Start(probe_program_, {QStringLiteral("-hide_banner"), probe_current_});
 }
 
 void FfmpegPanel::OnProbeOutput(const QString& text, bool /*is_error*/) {
+    if (probe_launch_generation_ != probe_generation_) {
+        return;   // 上一轮的残余输出，丢弃，别混进 buffer
+    }
     probe_buffer_ += text + QLatin1Char('\n');
 }
 
 void FfmpegPanel::OnProbeFinished(const ffmpegtool::FfmpegRunResult& result) {
+    if (probe_launch_generation_ != probe_generation_) {
+        // 被"换程序"作废的一趟。它的结果一个字都不能用。
+        probe_buffer_.clear();
+        MaybeRestartProbes();
+        return;
+    }
+
     if (result.status == ffmpegtool::FfmpegRunStatus::Failed ||
         result.status == ffmpegtool::FfmpegRunStatus::StartError) {
         // -version 失败就别继续了：后面的能力清单同样拿不到
@@ -531,6 +582,7 @@ void FfmpegPanel::OnProbeFinished(const ffmpegtool::FfmpegRunResult& result) {
         if (!result.error_message.isEmpty()) {
             emit StatusMessage(tr("ffmpeg 探测失败: %1").arg(result.error_message));
         }
+        MaybeRestartProbes();
         return;
     }
 
@@ -546,6 +598,14 @@ void FfmpegPanel::OnProbeFinished(const ffmpegtool::FfmpegRunResult& result) {
         caps.SetFormats(formats.demuxers, formats.muxers);
     }
     RunNextProbe();
+}
+
+void FfmpegPanel::MaybeRestartProbes() {
+    if (!probe_restart_pending_) {
+        return;
+    }
+    probe_restart_pending_ = false;
+    StartProbes();
 }
 
 // ===================== 命令编辑 =====================
@@ -772,11 +832,16 @@ void FfmpegPanel::OnRunOutput(const QString& text, bool is_error) {
 }
 
 void FfmpegPanel::AppendLog(const QString& text, bool is_error) {
-    QPlainTextEdit* view = is_error ? error_view_ : log_view_;
-    view->appendPlainText(text);
-    view->verticalScrollBar()->setValue(view->verticalScrollBar()->maximum());
+    // ffmpeg 把 banner、正常进度、报错**全都**写在 stderr 上（本机 7.0.2 验证），
+    // 按通道分页会让「运行日志」只剩一条命令抬头。所以主视图按到达顺序合并两路，
+    // 来自 stderr 的行加 [err] 前缀保留原始通道；纯 stderr 另有分页便于单独排障。
+    const QString merged = is_error ? QStringLiteral("[err] %1").arg(text) : text;
+    AppendLine(log_view_, merged);
+    if (is_error) {
+        AppendLine(error_view_, text);
+    }
     if (last_log_text_.size() < kMaxLogChars) {
-        last_log_text_ += text + QLatin1Char('\n');
+        last_log_text_ += merged + QLatin1Char('\n');
     }
 }
 

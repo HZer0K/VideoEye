@@ -86,6 +86,12 @@ private:
     void RefreshToolInfo();
     void StartProbes();
     void RunNextProbe();
+    /// 作废当前这一轮探测：让还在飞的回调失效（结果一律丢弃）
+    void ForgetCurrentProbe();
+    /// 停掉探测并清掉队列（ffmpeg 不可用 / 页面关闭时用）
+    void CancelProbes();
+    /// 上一轮是被"换程序"打断的 → 用新路径重来一轮
+    void MaybeRestartProbes();
     /// 拼装"没找到 ffmpeg"时的安装指引对话框正文（纯文本，便于复制）
     QString BuildInstallGuideText() const;
 
@@ -133,11 +139,20 @@ private:
     QPushButton* dict_insert_button_ = nullptr;
 
     // ---- 状态 ----
+    //
+    // 一轮探测（-version → -encoders → -filters → -formats）必须绑定**同一个**
+    // ffmpeg 程序：中途换了路径，剩下几步如果继续用新路径跑，就会出现
+    // "旧程序的版本号 + 新程序的编码器列表"。probe_program_ 是这一轮锁定的程序，
+    // probe_generation_ 是这一轮的序号 —— 换程序时让旧序号失效，结果一律丢弃。
     ffmpegtool::FfmpegProcessRunner* runner_ = nullptr;
     ffmpegtool::FfmpegProcessRunner* probe_runner_ = nullptr;
+    QString probe_program_;
     QStringList probe_queue_;
     QString probe_current_;
     QString probe_buffer_;
+    int probe_generation_ = 0;
+    int probe_launch_generation_ = 0;
+    bool probe_restart_pending_ = false;
 
     ffmpegtool::FfmpegToolInfo tool_info_;
     QString tool_version_;
