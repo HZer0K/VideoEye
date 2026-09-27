@@ -30,6 +30,17 @@ QString ConfiguredAtBuildTime() {
     return QString::fromLatin1(VIDEOEYE_FFMPEG_TOOL_PATH);
 }
 
+// 构建期探测到的绝对路径是**构建机**的事实。
+// Debug（开发机自己跑）优先用它；Release / 安装版则让 PATH 与常见安装目录先试 ——
+// 否则用户在自己机器上装了新版 ffmpeg 也还是会用构建机那一份。
+bool PreferBuildTimePath() {
+#if VIDEOEYE_FFMPEG_TOOL_PREFER_BUILDTIME
+    return true;
+#else
+    return false;
+#endif
+}
+
 QStringList CandidateNames() {
 #ifdef Q_OS_WIN
     return {QStringLiteral("ffmpeg.exe"), QStringLiteral("ffmpeg")};
@@ -155,9 +166,9 @@ FfmpegToolInfo FfmpegToolLocator::Resolve(const QString& configured_path) {
         return info;
     }
 
-    // 3) 构建期探测到的绝对路径
+    // 3) 构建期探测到的绝对路径 —— 只在 Debug 构建（或显式开关）下插队到 PATH 前面
     const QString buildtime = ConfiguredAtBuildTime();
-    if (!buildtime.isEmpty() && IsExecutable(buildtime)) {
+    if (PreferBuildTimePath() && !buildtime.isEmpty() && IsExecutable(buildtime)) {
         info.path = buildtime;
         info.exists = true;
         info.origin = QStringLiteral("构建期探测");
@@ -184,6 +195,16 @@ FfmpegToolInfo FfmpegToolLocator::Resolve(const QString& configured_path) {
             info.origin = QStringLiteral("常见安装位置");
             return info;
         }
+    }
+
+    // 6) 构建期路径兜底：这台机器上 PATH 里没有、常见目录里也没有，
+    //    但构建时确实见过一份 —— 开发机上总比直接说"没找到"强。
+    //    （安装版走到这里说明用户环境里真没有 ffmpeg，页面会给安装指引。）
+    if (!buildtime.isEmpty() && IsExecutable(buildtime)) {
+        info.path = buildtime;
+        info.exists = true;
+        info.origin = QStringLiteral("构建期探测");
+        return info;
     }
 
     // 都没找到: 至少把"随包那份本来应该在哪"告诉用户，比空着好排查

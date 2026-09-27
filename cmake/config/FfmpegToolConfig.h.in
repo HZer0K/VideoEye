@@ -13,3 +13,8 @@
 
 // 是否把 ffmpeg 可执行程序复制到了可执行文件旁（Windows 预编译包场景）。
 #define VIDEOEYE_FFMPEG_TOOL_BUNDLED @VIDEOEYE_FFMPEG_TOOL_BUNDLED_LITERAL@
+
+// 1 = 上面那个构建期路径优先于 PATH 与常见安装目录（Debug 构建为 1）。
+// Release / 安装版为 0: 那时它降级成兜底项，先在用户自己的环境里找，
+// 免得安装包隐式依赖一台它不该知道的开发机。
+#define VIDEOEYE_FFMPEG_TOOL_PREFER_BUILDTIME @VIDEOEYE_FFMPEG_TOOL_PREFER_BUILDTIME_LITERAL@
