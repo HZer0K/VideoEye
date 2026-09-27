@@ -34,6 +34,9 @@ using videoeye::ffmpegtool::FfmpegInstallGuide;
 using videoeye::ffmpegtool::FfmpegTokenRole;
 using videoeye::ffmpegtool::FfmpegToolInfo;
 using videoeye::ffmpegtool::FfmpegToolLocator;
+using videoeye::ffmpegtool::InformationOptionDescription;
+using videoeye::ffmpegtool::IsExplicitProgramPath;
+using videoeye::ffmpegtool::IsInformationCommand;
 using videoeye::ffmpegtool::LooksLikeFfmpegProgram;
 using videoeye::ffmpegtool::ParseCommandLine;
 
@@ -86,6 +89,43 @@ TEST(FfmpegCommandParser, AcceptsFullPathToFfmpeg) {
     const auto parsed = ParseCommandLine(QStringLiteral("C:/tools/ffmpeg.exe -i in.mp4 out.mp4"));
     ASSERT_EQ(parsed.status, CommandParseStatus::Ok);
     EXPECT_EQ(parsed.arguments.at(0), QStringLiteral("-i"));
+}
+
+TEST(FfmpegCommandParser, MarksExplicitProgramPath) {
+    // 命令里写了完整路径就必须**真的执行它**（原生命令行的直觉）；
+    // 只写裸的 "ffmpeg" 才用页面设置里那个程序。
+    EXPECT_TRUE(IsExplicitProgramPath(QStringLiteral("C:/tools/ffmpeg-8.1/bin/ffmpeg.exe")));
+    EXPECT_TRUE(IsExplicitProgramPath(QStringLiteral("C:\\tools\\ffmpeg.exe")));
+    EXPECT_TRUE(IsExplicitProgramPath(QStringLiteral("./ffmpeg")));
+    EXPECT_FALSE(IsExplicitProgramPath(QStringLiteral("ffmpeg")));
+    EXPECT_FALSE(IsExplicitProgramPath(QStringLiteral("ffmpeg.exe")));
+
+    const auto with_path = ParseCommandLine(QStringLiteral("C:/tools/ffmpeg.exe -i in.mp4 out.mp4"));
+    ASSERT_EQ(with_path.status, CommandParseStatus::Ok);
+    EXPECT_TRUE(with_path.program_is_path);
+    EXPECT_EQ(with_path.program_token, QStringLiteral("C:/tools/ffmpeg.exe"));
+
+    const auto bare = ParseCommandLine(QStringLiteral("ffmpeg -i in.mp4 out.mp4"));
+    ASSERT_EQ(bare.status, CommandParseStatus::Ok);
+    EXPECT_FALSE(bare.program_is_path);
+}
+
+TEST(FfmpegCommandParser, RecognizesInformationCommands) {
+    for (const QString& option : {
+             QStringLiteral("-version"), QStringLiteral("-buildconf"), QStringLiteral("-formats"),
+             QStringLiteral("-demuxers"), QStringLiteral("-muxers"), QStringLiteral("-encoders"),
+             QStringLiteral("-decoders"), QStringLiteral("-filters"), QStringLiteral("-pix_fmts"),
+             QStringLiteral("-layouts"), QStringLiteral("-sample_fmts"), QStringLiteral("-protocols"),
+             QStringLiteral("-devices"), QStringLiteral("-hwaccels"), QStringLiteral("-bsfs"),
+             QStringLiteral("-h"),
+         }) {
+        EXPECT_TRUE(IsInformationCommand({option})) << option.toStdString();
+        EXPECT_FALSE(InformationOptionDescription(option).isEmpty()) << option.toStdString();
+    }
+    // 转码命令不能因为参数里恰好有个 -h 之类就被当成查询命令
+    EXPECT_FALSE(IsInformationCommand({QStringLiteral("-i"), QStringLiteral("in.mp4"),
+                                       QStringLiteral("out.mp4")}));
+    EXPECT_TRUE(InformationOptionDescription(QStringLiteral("-i")).isEmpty());
 }
 
 TEST(FfmpegCommandParser, RejectsUnterminatedQuote) {
@@ -201,6 +241,32 @@ TEST(FfmpegCommandStructure, InputSideFormatIsNotTreatedAsOutputFormat) {
     EXPECT_EQ(structure.output_count, 1);
     EXPECT_TRUE(structure.args.at(0).applies_to_input);
     EXPECT_TRUE(structure.args.at(4).output_format.isEmpty());
+}
+
+TEST(FfmpegCommandStructure, FormatAfterAnOutputStillBelongsToTheNextInput) {
+    // 回归: 判断 -f 方向不能看"之前出过几个输出"。合法命令可以在已有输出之后
+    // 继续添加输入组 —— 这里的 -f lavfi 依然是**输入**格式。
+    const auto structure = AnalyzeCommandStructure(
+        {QStringLiteral("-i"), QStringLiteral("a.mp4"), QStringLiteral("out1.mp4"),
+         QStringLiteral("-f"), QStringLiteral("lavfi"), QStringLiteral("-i"),
+         QStringLiteral("testsrc=size=640x360"), QStringLiteral("out2.mp4")});
+
+    ASSERT_EQ(structure.input_count, 2);
+    ASSERT_EQ(structure.output_count, 2);
+    // 第二个 -f 在下标 3
+    EXPECT_TRUE(structure.args.at(3).applies_to_input);
+    // 它是输入格式，不能挂到后一个输出头上
+    EXPECT_TRUE(structure.args.at(7).output_format.isEmpty());
+
+    // 反过来：同一条命令里"输出前的 -f"仍然要算输出格式
+    const auto with_output_format = AnalyzeCommandStructure(
+        {QStringLiteral("-i"), QStringLiteral("a.mp4"), QStringLiteral("out1.mp4"),
+         QStringLiteral("-f"), QStringLiteral("lavfi"), QStringLiteral("-i"),
+         QStringLiteral("testsrc"), QStringLiteral("-f"), QStringLiteral("mp4"),
+         QStringLiteral("out2.mp4")});
+    EXPECT_TRUE(with_output_format.args.at(3).applies_to_input);
+    EXPECT_FALSE(with_output_format.args.at(7).applies_to_input);
+    EXPECT_EQ(with_output_format.args.at(9).output_format, QStringLiteral("mp4"));
 }
 
 TEST(FfmpegCommandStructure, UnknownOptionLeavesNextTokenUnresolved) {
@@ -434,6 +500,44 @@ TEST(FfmpegCommandExplainer, NotesMissingOutput) {
         {QStringLiteral("-i"), QStringLiteral("in.mp4")});
     EXPECT_FALSE(result.has_output);
     EXPECT_FALSE(result.notes.empty());
+}
+
+TEST(FfmpegCommandExplainer, InformationCommandsAreNotToldTheyLackIo) {
+    // -version 这类命令天生没有输入也没有输出，挑它"缺输入/缺输出"是错的
+    for (const QString& option : {QStringLiteral("-version"), QStringLiteral("-encoders"),
+                                  QStringLiteral("-formats"), QStringLiteral("-filters"),
+                                  QStringLiteral("-h")}) {
+        const auto result = FfmpegCommandExplainer::Explain({option});
+        for (const QString& note : result.notes) {
+            EXPECT_FALSE(note.contains(QStringLiteral("没有 -i"))) << option.toStdString();
+            EXPECT_FALSE(note.contains(QStringLiteral("没有输出文件"))) << option.toStdString();
+        }
+        EXPECT_TRUE(result.flow.contains(QStringLiteral("查询"))) << option.toStdString();
+        EXPECT_FALSE(result.notes.empty());
+    }
+    // 而普通的转码命令仍然要照常提醒缺输出
+    const auto transcode = FfmpegCommandExplainer::Explain(
+        {QStringLiteral("-i"), QStringLiteral("in.mp4")});
+    bool warned = false;
+    for (const QString& note : transcode.notes) {
+        if (note.contains(QStringLiteral("没有输出文件"))) {
+            warned = true;
+        }
+    }
+    EXPECT_TRUE(warned);
+}
+
+TEST(FfmpegCommandExplainer, WarnsThatNostdinCannotBeStoppedGracefully) {
+    const auto result = FfmpegCommandExplainer::Explain(
+        {QStringLiteral("-nostdin"), QStringLiteral("-i"), QStringLiteral("in.mp4"),
+         QStringLiteral("-c"), QStringLiteral("copy"), QStringLiteral("out.mp4")});
+    bool warned = false;
+    for (const QString& note : result.notes) {
+        if (note.contains(QStringLiteral("-nostdin"))) {
+            warned = true;
+        }
+    }
+    EXPECT_TRUE(warned);
 }
 
 TEST(FfmpegCommandExplainer, EmptyCommandIsSafe) {

@@ -494,3 +494,25 @@ videoeye_add_test_core(test_ffmpeg_command
 )
 target_link_libraries(test_ffmpeg_command PRIVATE Qt6::Core)
 add_test(NAME FfmpegCommandTests COMMAND test_ffmpeg_command)
+
+# =================================================
+# 测试 30：FFmpeg 进程执行器（QProcess 生命周期）
+#
+# 说明: 覆盖面是"纯逻辑测试碰不到"的那一层 —— 启动失败怎么报、stdout/stderr
+#       有没有分流、点停止时到底有没有往 stdin 写 q、停完会不会误杀下一次运行、
+#       工作目录会不会残留。这些都只发生在真实子进程上，光看代码看不出来。
+#
+#       为什么手工 add_executable 而不是用 videoeye_add_test(): 这个测试文件
+#       自己写 main()（子进程模式要在进 gtest 之前接管），而 videoeye_add_test()
+#       固定链 GTest::gtest_main，两个 main 会直接冲突。所以这里链 GTest::gtest。
+# =================================================
+add_executable(test_ffmpeg_process
+    unit/test_ffmpeg_process.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/ffmpeg/FfmpegProcessRunner.cpp
+)
+target_include_directories(test_ffmpeg_process PRIVATE ${TEST_INCLUDE_DIRS})
+target_link_libraries(test_ffmpeg_process PRIVATE GTest::gtest Qt6::Core)
+set_target_properties(test_ffmpeg_process PROPERTIES AUTOMOC ON)
+videoeye_set_ffmpeg_rpath(test_ffmpeg_process)
+videoeye_register_runtime_target(test_ffmpeg_process ${VIDEOEYE_GTEST_DLLS})
+add_test(NAME FfmpegProcessTests COMMAND test_ffmpeg_process)
