@@ -15,6 +15,8 @@
 
 #include "utils/QcReportExporter.h"
 
+#include "ui/reporting_panel/report_path.h"
+
 namespace videoeye {
 namespace ui {
 namespace {
@@ -62,14 +64,19 @@ ReportingPanel::ReportingPanel(QWidget* parent) : QWidget(parent) {
 }
 
 ReportingPanel::~ReportingPanel() {
-    // 取消 + detach：等 join 会让关闭窗口卡住好几秒。
-    // 队列里没跑完的回调由 Qt 随 QObject 销毁丢弃，不会用到悬垂的 this。
-    // 批量/单文件分析在 worker 内部靠 atomic 标记中断，Run() 返回前会 join 掉所有线程，
-    // 不会遗留后台线程（12.6 的要求）。
-    single_cancelled_.store(true);
-    batch_cancelled_.store(true);
-    if (single_worker_.joinable()) single_worker_.detach();
-    if (batch_worker_.joinable()) batch_worker_.detach();
+    // 取消 + 置 alive=false + join：worker 在 join 返回前结束，其回调看到 alive=false
+    // 不会再触碰 this；已入队的 UI 事件由 Qt 在对象销毁时自动移除，不会跑到销毁后的 this。
+    // （P0：原先对仍 joinable 的 std::thread 直接 detach，且第二次启动会对其赋值导致 terminate。）
+    if (single_task_) {
+        single_task_->cancelled.store(true, std::memory_order_release);
+        single_task_->alive.store(false, std::memory_order_release);
+        if (single_task_->thread.joinable()) single_task_->thread.join();
+    }
+    if (batch_task_) {
+        batch_task_->cancelled.store(true, std::memory_order_release);
+        batch_task_->alive.store(false, std::memory_order_release);
+        if (batch_task_->thread.joinable()) batch_task_->thread.join();
+    }
 }
 
 // ===========================================================================
@@ -374,7 +381,7 @@ void ReportingPanel::OnStartBatch() {
 }
 
 void ReportingPanel::OnCancelBatch() {
-    batch_cancelled_.store(true);
+    if (batch_task_) batch_task_->cancelled.store(true, std::memory_order_release);
     batch_summary_label_->setText(tr("正在停止…（已经完成的文件保留结果）"));
 }
 
@@ -418,35 +425,41 @@ void ReportingPanel::OnExportBatchSummary() {
 // 分析执行
 // ===========================================================================
 
-void ReportingPanel::PostToUi(const std::function<void()>& updater) {
+void ReportingPanel::PostToUi(std::shared_ptr<AnalysisTask> task,
+                               const std::function<void()>& updater) {
+    // 任务已不再存活（面板正在销毁）时丢弃，避免触碰已销毁的 UI 对象
+    if (!task || !task->alive.load(std::memory_order_acquire)) return;
     QMetaObject::invokeMethod(this, updater, Qt::QueuedConnection);
 }
 
 void ReportingPanel::StartSingleAnalysis(const std::string& path) {
+    RecycleTask(single_task_);  // 回收上一次（busy_ 已拦住重复启动，这里兜底）
     SetBusy(true);
     verdict_label_->setText(tr("分析中…"));
     issue_count_label_->setText(QString());
-    single_cancelled_.store(false);
-    single_worker_ = std::thread(&ReportingPanel::RunSingle, this, path);
+    auto task = std::make_shared<AnalysisTask>();
+    task->cancelled.store(false, std::memory_order_release);
+    single_task_ = task;
+    task->thread = std::thread(&ReportingPanel::RunSingle, this, task, path);
 }
 
-void ReportingPanel::RunSingle(const std::string& path) {
+void ReportingPanel::RunSingle(std::shared_ptr<AnalysisTask> task, const std::string& path) {
     const qc::QcProfile profile = profile_;
     qc::QcRunner runner;
     qc::QcRunCallbacks callbacks;
-    callbacks.progress = [this](double percent, const std::string& stage) {
-        PostToUi([this, percent, stage]() {
+    callbacks.progress = [this, task](double percent, const std::string& stage) {
+        PostToUi(task, [this, percent, stage]() {
             batch_progress_->setValue(static_cast<int>(percent));
             emit StatusMessage(tr("分析进度 %1% %2")
                                    .arg(static_cast<int>(percent))
                                    .arg(QString::fromStdString(stage)));
         });
     };
-    callbacks.should_cancel = [this]() { return single_cancelled_.load(); };
+    callbacks.should_cancel = [task]() { return task->cancelled.load(std::memory_order_acquire); };
 
     qc::QcRunResult result = runner.AnalyzeFile(path, profile,
                                                qc::OptionsForDepth(profile.depth), callbacks);
-    PostToUi([this, result]() {
+    PostToUi(task, [this, result]() {
         last_result_ = result;
         UpdateVerdictLabel(result);
         if (result.ok) {
@@ -471,7 +484,6 @@ void ReportingPanel::StartBatchScan(const std::string& directory) {
     batch_table_->setRowCount(0);
     batch_progress_->setValue(0);
     batch_summary_label_->setText(tr("正在扫描目录…"));
-    batch_cancelled_.store(false);
 
     // 所有控件读取都在这一帧（主线程）里完成
     BatchRequest request;
@@ -483,14 +495,18 @@ void ReportingPanel::StartBatchScan(const std::string& directory) {
     request.jobs = jobs_spin_->value();
     request.recursive = recursive_check_->isChecked();
 
-    batch_worker_ = std::thread(&ReportingPanel::RunBatch, this, request);
+    RecycleTask(batch_task_);  // 回收上一次（busy_ 已拦住重复启动，这里兜底）
+    auto task = std::make_shared<AnalysisTask>();
+    task->cancelled.store(false, std::memory_order_release);
+    batch_task_ = task;
+    task->thread = std::thread(&ReportingPanel::RunBatch, this, task, request);
 }
 
-void ReportingPanel::RunBatch(const BatchRequest& request) {
+void ReportingPanel::RunBatch(std::shared_ptr<AnalysisTask> task, const BatchRequest& request) {
     auto items = qc::BatchQcRunner::Discover(request.directory, request.recursive,
                                              request.extensions);
     if (items.empty()) {
-        PostToUi([this]() {
+        PostToUi(task, [this]() {
             batch_summary_label_->setText(tr("目录下没有匹配的文件"));
             SetBusy(false);
         });
@@ -506,32 +522,21 @@ void ReportingPanel::RunBatch(const BatchRequest& request) {
     const std::string out_dir = request.out_dir;
     const std::vector<qc::QcReportFormat> formats = request.formats;
     const qc::QcProfile profile = request.profile;
-    if (!out_dir.empty()) {
-        options.output_path_factory = [directory, out_dir, formats](const std::string& path) {
-            std::error_code error;
-            const auto relative = std::filesystem::relative(path, directory, error);
-            const auto rel = error ? std::filesystem::path(path).filename() : relative;
-            auto target = std::filesystem::path(out_dir) / rel.parent_path() / rel.stem();
-            target += qc::QcReportExtension(formats.empty() ? qc::QcReportFormat::Json
-                                                            : formats.front());
-            return target.string();
-        };
-    }
 
     const int total = static_cast<int>(items.size());
 
     qc::BatchQcCallbacks callbacks;
-    callbacks.is_cancelled = [this]() { return batch_cancelled_.load(); };
-    callbacks.progress = [this, total](int finished, int) {
-        PostToUi([this, finished, total]() {
+    callbacks.is_cancelled = [task]() { return task->cancelled.load(std::memory_order_acquire); };
+    callbacks.progress = [this, task, total](int finished, int) {
+        PostToUi(task, [this, finished, total]() {
             batch_progress_->setRange(0, std::max(1, total));
             batch_progress_->setValue(finished);
         });
     };
-    callbacks.item_finished = [this](const qc::BatchQcItemResult& item) {
+    callbacks.item_finished = [this, task](const qc::BatchQcItemResult& item) {
         // 注意：item 是 worker 线程的栈对象，跨线程投递前必须先拷一份
         const qc::BatchQcItemResult copy = item;
-        PostToUi([this, copy]() {
+        PostToUi(task, [this, copy]() {
             const int row = batch_table_->rowCount();
             batch_table_->insertRow(row);
             batch_table_->setItem(row, 0, new QTableWidgetItem(QString::fromStdString(copy.path)));
@@ -551,26 +556,15 @@ void ReportingPanel::RunBatch(const BatchRequest& request) {
     };
 
     const auto analyze = qc::QcRunner::MakeAnalyzeFunction(profile, qc::OptionsForDepth(profile.depth));
-    // 每个文件分析完立刻按选中格式落盘（keep_reports=false，报告本体没留内存）
+    // 每个文件分析完立刻按选中格式落盘（keep_reports=false，报告本体没留内存）。
+    // 关键修复（P0）：导出与 UI 共用同一组"保留相对子目录"的预定路径（ApplyExportPaths），
+    // 避免不同子目录同名文件互相覆盖、且表格路径 = 真实落盘路径；导出失败时也能区分
+    // "分析成功 / 导出失败"。
     const qc::QcAnalyzeFn analyze_with_export =
-        [analyze, out_dir, formats, profile](const qc::QcAnalyzeRequest& req) {
+        [analyze, out_dir, directory, formats, profile](const qc::QcAnalyzeRequest& req) {
             qc::QcRunResult result = analyze(req);
-            if (out_dir.empty() || !result.ok) return result;
-            utils::QcExportBundle bundle;
-            bundle.profile_id = profile.id;
-            bundle.profile_name = profile.name;
-            bundle.run = result;
-            for (const auto format : formats) {
-                if (format == qc::QcReportFormat::Pdf) {
-                    // UI 里已经提示过字形限制，这里不弹窗打扰
-                    utils::QcReportExporter::ExportPdf(
-                        utils::QcReportOutputPath(out_dir, BaseNameOf(req.path), format),
-                        bundle);
-                } else {
-                    utils::QcReportExporter::Export(
-                        utils::QcReportOutputPath(out_dir, BaseNameOf(req.path), format),
-                        bundle, format);
-                }
+            if (!out_dir.empty() && result.ok) {
+                ApplyExportPaths(result, out_dir, directory, req.path, formats, profile);
             }
             return result;
         };
@@ -578,7 +572,7 @@ void ReportingPanel::RunBatch(const BatchRequest& request) {
     qc::BatchQcRunner runner;
     const auto run = runner.Run(items, options, analyze_with_export, callbacks);
 
-    PostToUi([this, run, total]() {
+    PostToUi(task, [this, run, total]() {
         batch_progress_->setRange(0, std::max(1, total));
         batch_progress_->setValue(batch_table_->rowCount());
         batch_summary_label_->setText(

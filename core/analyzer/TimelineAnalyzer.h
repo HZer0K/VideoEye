@@ -30,6 +30,7 @@ public:
         double vfr_relative_spread = 0.02;            // (p95-p5)/中位数 阈值
         int max_issues_per_type = 40;                 // 同类问题最多记录条数
         int histogram_max_ms = 200;                   // 直方图覆盖的最大间隔
+        int64_t max_curve_points = 0;                 // 0=不限制；超过则对逐包 delta 曲线做有界降采样
     };
 
     TimelineAnalyzer() = default;

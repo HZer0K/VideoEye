@@ -605,7 +605,8 @@ std::string QcReportExporter::BuildHtml(const QcExportBundle& bundle) {
     out << "  <p class=\"meta\">模板: " << Html(bundle.profile_name) << " ("
         << Html(bundle.profile_id) << ") ｜ 生成时间: " << Html(report.generated_at)
         << " ｜ 分析耗时: " << Fixed(run.elapsed_ms, 0) << " ms"
-        << (report.completed ? "" : " ｜ <b>分析未跑完</b>") << "</p>\n";
+        << (report.completed ? (report.partial ? " ｜ <b>抽样完成·非全量</b>" : "")
+                             : " ｜ <b>分析未跑完</b>") << "</p>\n";
 
     out << "  <h2>总体结论</h2>\n";
     out << "  <p class=\"score " << verdict_class << "\">" << Fixed(report.score, 1)
@@ -732,7 +733,8 @@ std::string QcReportExporter::BuildText(const QcExportBundle& bundle) {
     out << "生成时间: " << report.generated_at << "\n";
     out << "分析耗时: " << Fixed(run.elapsed_ms, 0) << " ms\n";
     out << "评分: " << Fixed(report.score, 1) << " / 100 (" << report.verdict << ")\n";
-    if (!report.completed) out << "注意: 分析未跑完，结果不完整\n";
+    if (report.partial) out << "注意: 本次为抽样扫描（命中包数上限），结果仅覆盖部分数据，结论仅供参考\n";
+    else if (!report.completed) out << "注意: 分析未跑完，结果不完整\n";
     if (!run.error.empty()) out << "错误: " << run.error << "\n";
 
     out << "\n--- 汇总 ---\n";

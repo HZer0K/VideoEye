@@ -30,6 +30,7 @@ enum class BatchItemStatus {
     Failed,     // 打开失败 / 分析器报错
     Cancelled,  // 取消后未执行，或执行中被中断
     Skipped,    // 被选项排除（如超过大小上限）
+    ExportFailed,  // 分析成功，但报告导出失败（目录不可写 / 写入异常）
 };
 
 const char* ToString(BatchItemStatus status);

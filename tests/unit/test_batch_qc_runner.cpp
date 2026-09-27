@@ -11,6 +11,7 @@
 
 #include "core/qc/BatchQcRunner.h"
 
+using videoeye::qc::BatchItemStatus;
 using videoeye::qc::BatchQcCallbacks;
 using videoeye::qc::BatchQcItem;
 using videoeye::qc::BatchQcOptions;
@@ -136,5 +137,47 @@ TEST(BatchQcRunnerTest, CancelStopsDispatchAndReportsStatus) {
     EXPECT_GT(run.summary.cancelled, 0);
     // 关键：Run 返回时所有线程已结束（无残留）
     EXPECT_EQ(active.load(), 0);
+}
+
+// 分析成功但导出失败时，必须标记为 ExportFailed 而非 Succeeded（P0#2 的收口）：
+// "分析成功 / 导出失败" 要能区分，汇总里按失败计数。
+QcAnalyzeFn MakeResultAnalyze(bool ok, bool export_failed) {
+    return [ok, export_failed](const QcAnalyzeRequest& req) {
+        QcRunResult r;
+        r.ok = ok;
+        r.report.score = 100.0;
+        r.report.verdict = "通过";
+        r.output_path = req.path + ".json";
+        r.export_failed = export_failed;
+        return r;
+    };
+}
+
+TEST(BatchQcRunnerTest, SucceededVsExportFailed) {
+    std::vector<BatchQcItem> items;
+    BatchQcItem it;
+    it.path = "file.mp4";
+    items.push_back(it);
+
+    {
+        BatchQcRunner runner;
+        const auto run = runner.Run(items, BatchQcOptions{}, MakeResultAnalyze(true, false), {});
+        EXPECT_EQ(run.items[0].status, BatchItemStatus::Succeeded);
+        EXPECT_EQ(run.summary.failed, 0);
+        EXPECT_EQ(run.summary.succeeded, 1);
+    }
+    {
+        BatchQcRunner runner;
+        const auto run = runner.Run(items, BatchQcOptions{}, MakeResultAnalyze(true, true), {});
+        EXPECT_EQ(run.items[0].status, BatchItemStatus::ExportFailed);
+        EXPECT_EQ(run.summary.failed, 1);  // 导出失败计入失败
+        EXPECT_EQ(run.summary.succeeded, 0);
+    }
+    {
+        BatchQcRunner runner;
+        const auto run = runner.Run(items, BatchQcOptions{}, MakeResultAnalyze(false, false), {});
+        EXPECT_EQ(run.items[0].status, BatchItemStatus::Failed);
+        EXPECT_EQ(run.summary.failed, 1);
+    }
 }
 }  // namespace

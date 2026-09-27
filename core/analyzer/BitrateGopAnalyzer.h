@@ -44,6 +44,11 @@ struct BitrateGopOptions {
 
     // 单类型异常的最大保留条数（防止长视频刷屏）
     int max_anomalies_per_type = 200;
+
+    // 逐帧样本上限（0 = 不限制）。长文件（小时级）的 samples_ 会无界增长，
+    // 超过上限即对样本做有界降采样（保留偶数下标），把内存夹在 ~max_samples，
+    // 展示曲线本就是近似，降采样不影响 GOP 统计（GOP 由增量状态维护，不依赖 samples_）。
+    int64_t max_samples = 0;
 };
 
 // 异常类型
@@ -142,6 +147,9 @@ struct BitrateGopAnalysis {
     std::vector<SceneKeyMatch> scene_matches;
 
     std::string ToString() const;
+
+    // 是否因超过 max_samples 而做过有界降采样（曲线为近似）
+    bool downsampled = false;
 };
 
 // 码率与 GOP 深度分析器

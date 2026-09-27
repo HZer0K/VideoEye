@@ -38,12 +38,13 @@ std::string ExtensionOf(const std::string& path) {
 
 const char* ToString(BatchItemStatus status) {
     switch (status) {
-        case BatchItemStatus::Pending:   return "等待中";
-        case BatchItemStatus::Running:   return "分析中";
-        case BatchItemStatus::Succeeded: return "完成";
-        case BatchItemStatus::Failed:    return "失败";
-        case BatchItemStatus::Cancelled: return "已取消";
-        case BatchItemStatus::Skipped:   return "已跳过";
+        case BatchItemStatus::Pending:      return "等待中";
+        case BatchItemStatus::Running:      return "分析中";
+        case BatchItemStatus::Succeeded:    return "完成";
+        case BatchItemStatus::Failed:       return "失败";
+        case BatchItemStatus::Cancelled:    return "已取消";
+        case BatchItemStatus::Skipped:      return "已跳过";
+        case BatchItemStatus::ExportFailed: return "导出失败";
     }
     return "未知";
 }
@@ -160,7 +161,11 @@ BatchQcRun BatchQcRunner::Run(const std::vector<BatchQcItem>& items,
 
                     try {
                         const QcRunResult result = analyze(request);
-                        if (options.output_path_factory) {
+                        // 显示路径以实际落盘路径为准（与导出共用同一组路径）；
+                        // 未导出时退回工厂给出的路径，避免表格路径与实际文件不一致。
+                        if (!result.output_path.empty()) {
+                            item.output_path = result.output_path;
+                        } else if (options.output_path_factory) {
                             item.output_path = options.output_path_factory(item.path);
                         }
                         item.elapsed_ms =
@@ -180,7 +185,8 @@ BatchQcRun BatchQcRunner::Run(const std::vector<BatchQcItem>& items,
                         }
 
                         if (result.ok) {
-                            item.status = BatchItemStatus::Succeeded;
+                            item.status = result.export_failed ? BatchItemStatus::ExportFailed
+                                                              : BatchItemStatus::Succeeded;
                         } else if (result.error == "分析被取消") {
                             item.status = BatchItemStatus::Cancelled;
                             item.error = result.error;
@@ -221,6 +227,7 @@ BatchQcRun BatchQcRunner::Run(const std::vector<BatchQcItem>& items,
         switch (item.status) {
             case BatchItemStatus::Succeeded: ++summary.succeeded; break;
             case BatchItemStatus::Failed:    ++summary.failed;    break;
+            case BatchItemStatus::ExportFailed: ++summary.failed; break;  // 当作需要处理的问题
             case BatchItemStatus::Cancelled: ++summary.cancelled; break;
             case BatchItemStatus::Skipped:   ++summary.skipped;   break;
             case BatchItemStatus::Pending:

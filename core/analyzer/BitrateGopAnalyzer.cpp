@@ -259,6 +259,17 @@ void BitrateGopAnalyzer::AddSample(int stream_index, double timestamp_seconds, i
     }
 
     samples_.push_back(Sample{timestamp_seconds, size, type, is_idr});
+
+    // 有界降采样：超过 max_samples 时对样本做减半（保留偶数下标），
+    // 把内存夹在 ~max_samples，避免小时级长文件把内存撑爆。
+    if (options_.max_samples > 0 &&
+        static_cast<int64_t>(samples_.size()) >= options_.max_samples) {
+        std::vector<Sample> kept;
+        kept.reserve(samples_.size() / 2 + 1);
+        for (size_t i = 0; i < samples_.size(); i += 2) kept.push_back(samples_[i]);
+        samples_.swap(kept);
+        result_.downsampled = true;
+    }
 }
 
 void BitrateGopAnalyzer::StartGop(double timestamp_seconds, int stream_index, bool closed) {

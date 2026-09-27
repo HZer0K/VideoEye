@@ -9,6 +9,7 @@
 #include <QMetaType>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -24,6 +25,8 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
+#include <libavutil/error.h>
+#include <libavutil/time.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
@@ -36,6 +39,25 @@ namespace {
 constexpr int kProgressMinIntervalMs = 100;
 constexpr int kProgressMinPackets = 2000;
 constexpr int64_t kMaxLayoutScanBytes = 8 * 1024 * 1024;  // moov/mdat 顺序扫描上限
+
+// ---- FFmpeg 中断机制 ----
+// 让 avformat_open_input / avformat_find_stream_info / av_read_frame 在"打开超时"或
+// "用户取消"时能及时从阻塞的网络 IO 中退出（否则离线分析遇到不可达 RTSP/HTTP 会长时间卡死）。
+// 打开/探测阶段给一个绝对截止时间；进入逐包扫描阶段后只响应取消（不误伤长本地文件）。
+struct AvInterruptState {
+    std::atomic<bool>* cancel = nullptr;  // 指向协调器的取消标记
+    int64_t deadline_us = 0;              // >0 表示有绝对截止时间
+};
+
+int AvIoInterruptCallback(void* opaque) {
+    const auto* state = reinterpret_cast<const AvInterruptState*>(opaque);
+    if (state->cancel && state->cancel->load(std::memory_order_acquire)) return 1;
+    if (state->deadline_us > 0 && av_gettime() > state->deadline_us) return 1;
+    return 0;
+}
+
+constexpr int64_t kOpenTimeoutUs = 15'000'000;    // 打开输入的最大等待
+constexpr int64_t kProbeTimeoutUs = 30'000'000;   // 探测流信息的最大等待
 
 // 大端读取（MP4 box header）
 uint32_t ReadBe32(const unsigned char* p) {
@@ -211,6 +233,16 @@ struct ColorFrameProbe {
 
 }  // namespace
 
+const char* ToString(AnalysisStatus status) {
+    switch (status) {
+        case AnalysisStatus::Complete:  return "complete";
+        case AnalysisStatus::Sampled:   return "sampled";
+        case AnalysisStatus::Cancelled: return "cancelled";
+        case AnalysisStatus::Failed:    return "failed";
+    }
+    return "unknown";
+}
+
 AnalysisCoordinator::AnalysisCoordinator(QObject* parent) : QObject(parent) {
     qRegisterMetaType<AnalysisResult>("videoeye::analyzer::AnalysisResult");
     qRegisterMetaType<AnalysisResult>("AnalysisResult");
@@ -266,7 +298,20 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
         return;
     }
 
-    AVFormatContext* fmt = nullptr;
+    AVFormatContext* fmt = avformat_alloc_context();
+    if (fmt == nullptr) {
+        running_.store(false, std::memory_order_release);
+        emit AnalysisFailed(generation, QString::fromStdString("无法分配解封装上下文: " + file_path));
+        return;
+    }
+
+    // 中断回调：打开/探测阶段带绝对超时；扫描阶段只响应取消（见下方重置）。
+    AvInterruptState interrupt;
+    interrupt.cancel = &cancel_requested_;
+    interrupt.deadline_us = av_gettime() + kOpenTimeoutUs;
+    fmt->interrupt_callback.callback = &AvIoInterruptCallback;
+    fmt->interrupt_callback.opaque = &interrupt;
+
     int open_ret = 0;
     {
         VE_PERF("avformat_open_input");
@@ -275,6 +320,7 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
     if (open_ret < 0) {
         char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
         av_strerror(open_ret, errbuf, sizeof(errbuf));
+        avformat_close_input(&fmt);
         running_.store(false, std::memory_order_release);
         std::string msg = "无法打开文件: " + file_path + " (" + errbuf + ")";
         // 定向诊断: FFmpeg 通用报错往往不含可操作的修复建议 (如 fMP4 分片缺 init 段)
@@ -287,6 +333,8 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
     int find_ret = 0;
     {
         VE_PERF("avformat_find_stream_info");
+        // 探测阶段允许更长时间，但仍受取消/超时约束
+        interrupt.deadline_us = av_gettime() + kProbeTimeoutUs;
         find_ret = avformat_find_stream_info(fmt, nullptr);
     }
     if (find_ret < 0) {
@@ -299,6 +347,10 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
                                                   QString::fromUtf8(errbuf)));
         return;
     }
+
+    // 进入逐包扫描：关闭绝对截止时间，仅由取消标记中断，
+    // 避免长本地文件的正常读取被早期打开超时误杀。
+    interrupt.deadline_us = 0;
 
     result.container_format = fmt->iformat && fmt->iformat->name ? fmt->iformat->name : "";
     result.duration_seconds = (fmt->duration > 0)
@@ -622,11 +674,33 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
     VE_PERF("逐包扫描(全文件 demux + 音频解码 + GOP)");
     while (true) {
         if (cancel_requested_.load(std::memory_order_acquire)) {
-            result.completed = false;
+            result.scan_status = AnalysisStatus::Cancelled;
             break;
         }
         const int ret = av_read_frame(fmt, pkt);
-        if (ret < 0) break;  // EOF 或错误
+        if (ret < 0) {
+            if (ret == AVERROR_EOF) {
+                result.scan_status = AnalysisStatus::Complete;
+            } else {
+                // 读取数据包阶段出现错误（文件截断 / IO 错误 / 网络中断）。
+                // 这与"完整扫到 EOF"不同：必须作为失败处理，不能把半成品当完整 QC 报告。
+                char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+                av_strerror(ret, errbuf, sizeof(errbuf));
+                result.scan_status = AnalysisStatus::Failed;
+                result.scan_error_code = ret;
+                result.error_message = "读取数据包失败（文件可能截断或 IO 错误）: " +
+                                       std::string(errbuf);
+                running_.store(false, std::memory_order_release);
+                av_packet_free(&pkt);
+                avformat_close_input(&fmt);
+                probe.Release();
+                color_probe.Release();
+                if (options.analyze_audio_qc && audio_probe.ready) audio_probe.Release();
+                emit AnalysisFailed(generation, QString::fromStdString(result.error_message));
+                return;
+            }
+            break;  // EOF
+        }
 
         if (pkt->stream_index < 0 ||
             pkt->stream_index >= static_cast<int>(fmt->nb_streams)) {
@@ -807,7 +881,13 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
 
         // 进度上报（限频）
         ++packet_index;
-        if (options.max_packets > 0 && packet_index >= options.max_packets) break;
+        if (options.max_packets > 0 && packet_index >= options.max_packets) {
+            // 命中包数上限：只完成了抽样扫描，不是完整结果。
+            if (result.scan_status == AnalysisStatus::Complete) {
+                result.scan_status = AnalysisStatus::Sampled;
+            }
+            break;
+        }
         if (packet_index % kProgressMinPackets == 0) {
             const auto now = std::chrono::steady_clock::now();
             if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_progress).count() >=
@@ -978,13 +1058,15 @@ void AnalysisCoordinator::Run(quint64 generation, std::string file_path, Analysi
                  " metadata=" + std::to_string(result.aux_data.metadata.size()));
     }
 
+    result.scanned_packets = result.total_packets;
     LOG_INFO("全文件分析完成: packets=" + std::to_string(result.total_packets) +
              " duration=" + std::to_string(result.duration_seconds) +
-             " completed=" + std::to_string(result.completed ? 1 : 0));
+             " status=" + std::string(ToString(result.scan_status)));
 
     running_.store(false, std::memory_order_release);
     emit ProgressReported(generation, 100.0, QStringLiteral("分析完成"));
-    emit AnalysisFinished(generation, result.completed, result);
+    // 第二个参数沿用旧语义（true = 到达终态而非被取消），Failed 不会走到这里。
+    emit AnalysisFinished(generation, result.scan_status != AnalysisStatus::Cancelled, result);
 }
 
 void AnalysisCoordinator::RunStreamingManifest(quint64 generation, const std::string& file_path,
@@ -1032,7 +1114,7 @@ void AnalysisCoordinator::RunStreamingManifest(quint64 generation, const std::st
         result.duration_seconds = longest;
     }
     result.seekable = true;
-    result.completed = true;
+    result.scan_status = AnalysisStatus::Complete;
 
     LOG_INFO("流媒体清单分析完成: kind=" + std::to_string(static_cast<int>(pkg.kind)) +
              " ladder=" + std::to_string(pkg.ladder.size()) +
@@ -1041,7 +1123,7 @@ void AnalysisCoordinator::RunStreamingManifest(quint64 generation, const std::st
 
     running_.store(false, std::memory_order_release);
     emit ProgressReported(generation, 100.0, QStringLiteral("清单分析完成"));
-    emit AnalysisFinished(generation, result.completed, result);
+    emit AnalysisFinished(generation, true, result);
 }
 
 } // namespace analyzer

@@ -516,3 +516,15 @@ set_target_properties(test_ffmpeg_process PROPERTIES AUTOMOC ON)
 videoeye_set_ffmpeg_rpath(test_ffmpeg_process)
 videoeye_register_runtime_target(test_ffmpeg_process ${VIDEOEYE_GTEST_DLLS})
 add_test(NAME FfmpegProcessTests COMMAND test_ffmpeg_process)
+
+# =================================================
+# 测试 31：报告页助手（导出路径唯一性 / 不可写目录导出失败 / 线程回收 / 扫描状态映射）
+# 说明: ReportingPanel 的导出与线程逻辑抽到 ui/reporting_panel/{report_path,analysis_task}.h，
+#       这里只测纯逻辑，不需要 Qt 事件循环或真实媒体文件。QcRuleEngine 的扫描状态映射
+#       依赖整库规则表，链 VideoEyeCore。
+# =================================================
+videoeye_add_test_core(test_reporting_helpers
+    unit/test_reporting_helpers.cpp
+)
+target_link_libraries(test_reporting_helpers PRIVATE Qt6::Core)
+add_test(NAME ReportingHelpersTests COMMAND test_reporting_helpers)

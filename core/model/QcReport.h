@@ -35,7 +35,8 @@ struct QcReport {
     std::string verdict;             // 通过 / 警告 / 不通过
     std::string generated_at;        // 本地时间字符串
     double analysis_elapsed_ms = 0.0;
-    bool completed = true;           // false 表示分析被取消，结果不完整
+    bool completed = true;           // false 表示分析被取消/失败，结果不完整
+    bool partial = false;            // true 表示命中包数上限的抽样扫描，仅部分结果
 
     int CountBySeverity(IssueSeverity severity) const;
     int CountByCategory(IssueCategory category) const;

@@ -19,6 +19,19 @@
 namespace videoeye {
 namespace analyzer {
 
+// 全文件扫描的执行状态（取代原先的 bool completed）
+//
+// 区分"完整扫到 EOF"、"命中包数上限只抽样"、"被取消"、"读取/打开失败"，
+// 让报告与 UI 能明确标注非完整结果，避免把截断/IO 错误或抽样当成完整 QC 结论。
+enum class AnalysisStatus {
+    Complete,    // 完整扫描到 EOF
+    Sampled,     // 命中 max_packets 上限，仅完成抽样
+    Cancelled,   // 被用户取消
+    Failed,      // 打开 / 探测 / 读取数据包失败
+};
+
+const char* ToString(AnalysisStatus status);
+
 // 全文件分析的可选项
 struct AnalysisOptions {
     double sample_interval_seconds = 1.0;  // 码率/帧率序列的采样粒度
@@ -183,7 +196,9 @@ struct AnalysisResult {
     bool aux_data_analyzed = false;
 
     // 执行状态
-    bool completed = true;        // false = 被取消
+    AnalysisStatus scan_status = AnalysisStatus::Complete;
+    int scan_error_code = 0;        // 0 = 无；否则为 FFmpeg 错误码或 -1
+    int64_t scanned_packets = 0;    // 已扫描包数（取消/截断时也是部分结果）
     std::string error_message;
 
     int VideoStreamCount() const;

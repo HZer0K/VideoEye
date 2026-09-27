@@ -130,6 +130,17 @@ void TimelineAnalyzer::OnPacket(const model::PacketTiming& packet) {
             // 包时间戳 delta 曲线
             result_.packet_delta_ms.Add(packet.pts_ms, delta);
 
+            // 有界降采样：超过 max_curve_points 时对曲线减半（保留偶数下标），
+            // 避免小时级长文件的逐包 delta 曲线把内存撑爆。
+            if (options_.max_curve_points > 0 &&
+                static_cast<int64_t>(result_.packet_delta_ms.Size()) >= options_.max_curve_points) {
+                auto& s = result_.packet_delta_ms.samples;
+                std::vector<model::MetricSample> kept;
+                kept.reserve(s.size() / 2 + 1);
+                for (size_t i = 0; i < s.size(); i += 2) kept.push_back(s[i]);
+                s.swap(kept);
+            }
+
             // 非视频流用 duration 推算断流（视频流交由帧级统计判断，避免重复报）
             if (state.media_type != 0 &&
                 model::IsValidTimestamp(state.expected_next_pts_ms)) {

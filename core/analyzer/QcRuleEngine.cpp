@@ -132,7 +132,10 @@ model::QcReport QcRuleEngine::Evaluate(const AnalysisResult& result) const {
     report.overall_bitrate_bps = result.overall_bitrate_bps;
     report.video_stream_count = result.VideoStreamCount();
     report.audio_stream_count = result.AudioStreamCount();
-    report.completed = result.completed;
+    // 终态且非取消/失败 → 报告视为"完整/可结算"；命中包数上限的抽样属于部分结果
+    report.completed = (result.scan_status == AnalysisStatus::Complete ||
+                        result.scan_status == AnalysisStatus::Sampled);
+    report.partial = (result.scan_status == AnalysisStatus::Sampled);
     report.rules = rules_;
     report.color_hdr = result.color_hdr;
     report.generated_at = model::CurrentTimestampString();
@@ -158,6 +161,10 @@ model::QcReport QcRuleEngine::Evaluate(const AnalysisResult& result) const {
 
     report.score = model::ComputeQcScore(report.issues);
     report.verdict = model::ComputeQcVerdict(report.score);
+    if (report.partial) {
+        // 抽样扫描（命中 max_packets 上限）不完整，禁止给出"通过"结论：仅供参考
+        report.verdict = "抽样完成·仅供参考";
+    }
     return report;
 }
 

@@ -35,6 +35,8 @@
 #include "core/qc/QcReportFormat.h"
 #include "core/qc/QcRunner.h"
 
+#include "ui/reporting_panel/analysis_task.h"
+
 namespace videoeye {
 namespace ui {
 
@@ -66,15 +68,21 @@ private slots:
     void OnExportBatchSummary();
 
 private:
+    // 后台任务的明确所有权载体（线程 / 取消标记 / 生命周期守卫）定义在
+    // ui/reporting_panel/analysis_task.h，并配套 RecycleTask() 回收逻辑，
+    // 避免对仍 joinable 的 std::thread 直接赋值导致 std::terminate（连续分析两次的根因）。
+
     void BuildUi();
     void AppendSummary(const QString& text);
     void UpdateVerdictLabel(const qc::QcRunResult& result);
     void SetBusy(bool busy);
 
-    void PostToUi(const std::function<void()>& updater);
+    // 仅当任务仍存活时把更新投递回主线程；否则静默丢弃（面板正在销毁）
+    void PostToUi(std::shared_ptr<AnalysisTask> task, const std::function<void()>& updater);
+
     void StartSingleAnalysis(const std::string& path);
     void StartBatchScan(const std::string& directory);
-    void RunSingle(const std::string& path);
+    void RunSingle(std::shared_ptr<AnalysisTask> task, const std::string& path);
 
     // 批量请求的所有参数。必须在主线程里采集完再交给 worker ——
     // Qt 的控件只能在创建它的线程上访问，worker 里碰 QSpinBox / QCheckBox 是未定义行为。
@@ -87,7 +95,8 @@ private:
         int jobs = 4;
         bool recursive = true;
     };
-    void RunBatch(const BatchRequest& request);
+
+    void RunBatch(std::shared_ptr<AnalysisTask> task, const BatchRequest& request);
 
     qc::QcProfile CurrentProfile() const;
     std::vector<qc::QcReportFormat> SelectedFormats() const;
@@ -127,10 +136,8 @@ private:
     qc::QcProfile profile_;                     // 当前模板（可能是从文件加载的自定义模板）
     qc::QcRunResult last_result_;               // 最近一次单文件分析结果，导出按钮用它
     std::string current_path_;
-    std::atomic<bool> single_cancelled_{false};
-    std::atomic<bool> batch_cancelled_{false};
-    std::thread single_worker_;
-    std::thread batch_worker_;
+    std::shared_ptr<AnalysisTask> single_task_;
+    std::shared_ptr<AnalysisTask> batch_task_;
     std::vector<qc::BatchQcItemResult> batch_results_;
     bool busy_ = false;
 };

@@ -24,6 +24,12 @@ struct QcRunResult {
     analyzer::AnalysisResult analysis;  // 原始数据，对比模式要靠它拿详细的编码参数
     std::string profile_id;
     double elapsed_ms = 0.0;
+
+    // 批量导出：导出的实际落盘路径与是否全部格式成功。
+    // 让 UI 表格显示的路径 = 真实文件，并让"分析成功但导出失败"可区分。
+    std::string output_path;                       // 主格式（第一个勾选格式）的落盘路径
+    std::vector<std::string> output_paths;         // 各选中格式的实际路径（与 formats 一一对应）
+    bool export_failed = false;                    // 任一格式导出失败（仅当 out_dir 非空且分析成功时）
 };
 
 // 一次分析请求。批量扫描会把自己的 cancel 标记塞进来，用来中断正在跑的单文件分析

@@ -129,17 +129,31 @@ QcRunResult QcRunner::AnalyzeFile(const std::string& path,
     if (outcome.failed) {
         output.ok = false;
         output.error = outcome.error;
+        // 把扫描失败的状态也带出来，便于上层区分
+        output.analysis.scan_status = analyzer::AnalysisStatus::Failed;
+        if (!outcome.error.empty()) output.analysis.error_message = outcome.error;
         return output;
     }
 
     output.analysis = std::move(outcome.result);
     output.report = engine.Evaluate(output.analysis);
-    if (!output.analysis.completed) {
-        // 被取消时报告里的数据是不完整的，但仍然保留（UI 要显示"取消了"而不是白屏）
-        output.ok = false;
-        output.error = "分析被取消";
-        return output;
+
+    // 区分终态：取消 / 失败都算没跑完；抽样(命中包数上限)是部分结果但可算成功
+    switch (output.analysis.scan_status) {
+        case analyzer::AnalysisStatus::Cancelled:
+            output.ok = false;
+            output.error = "分析被取消";
+            return output;
+        case analyzer::AnalysisStatus::Failed:
+            output.ok = false;
+            output.error = output.analysis.error_message.empty()
+                              ? "分析失败" : output.analysis.error_message;
+            return output;
+        case analyzer::AnalysisStatus::Complete:
+        case analyzer::AnalysisStatus::Sampled:
+            break;  // 到达终态，继续判定
     }
+
     if (!output.analysis.error_message.empty()) {
         output.ok = false;
         output.error = output.analysis.error_message;
