@@ -1,0 +1,15 @@
+// 由 CMake 生成，请勿编辑。
+//
+// 记录「FFmpeg 命令工作台」页的 ffmpeg 可执行程序默认值。
+// 用户可在页面设置里覆盖，因此这里的值只是"探测到的最佳猜测"，不是硬约束。
+#pragma once
+
+// 配置期探测到的 ffmpeg 可执行程序绝对路径；找不到时为空串。
+#define VIDEOEYE_FFMPEG_TOOL_PATH "@VIDEOEYE_FFMPEG_TOOL@"
+
+// ffmpeg 可执行程序的文件名（"ffmpeg.exe" / "ffmpeg"）；找不到时为空串。
+// 随包分发时用它拼 "<可执行文件目录>/<name>"。
+#define VIDEOEYE_FFMPEG_TOOL_NAME "@VIDEOEYE_FFMPEG_TOOL_NAME@"
+
+// 是否把 ffmpeg 可执行程序复制到了可执行文件旁（Windows 预编译包场景）。
+#define VIDEOEYE_FFMPEG_TOOL_BUNDLED @VIDEOEYE_FFMPEG_TOOL_BUNDLED_LITERAL@

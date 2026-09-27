@@ -147,6 +147,21 @@ function(videoeye_add_test name)
 endfunction()
 
 # ============================================================
+# 变体: 直接链 VideoEyeCore, 不再手工列生产源码
+#
+# 什么时候用它: 被测模块处在分析链路里(QcRuleEngine 引用各种 Analyzer、Analyzer
+# 又互相引用), 手工清单迟早会漏 —— 给 QcRuleEngine 加一条前缀分支、新加一个 model,
+# 依赖它的测试就 LNK2019, 而"漏补清单"只有链接期才暴露, 本地全绿、CI 才红。
+#
+# 什么时候不用: 想断言"这个模块零依赖"的测试(纯 stdlib 的 parser / model)。
+# 那种继续手写清单 —— 清单本身就是断言: 它证明这段代码不碰 Qt / FFmpeg。
+# ============================================================
+function(videoeye_add_test_core name)
+    videoeye_add_test(${name} ${ARGN})
+    target_link_libraries(${name} PRIVATE VideoEyeCore)
+endfunction()
+
+# ============================================================
 # 测试 1: FormatDetector (仅依赖 Qt)
 # ============================================================
 videoeye_add_test(test_format_detector
@@ -169,24 +184,12 @@ add_test(NAME ConfigManagerTests COMMAND test_config_manager)
 
 # ============================================================
 # 测试 3: ReportExporter (依赖 StreamStats 结构体)
+#
+# 说明: 这个目标横跨 utils + analyzer + model 三层, 手工清单每次动 QC 结构都要补,
+#       改为直接链 VideoEyeCore(见 videoeye_add_test_core 的说明)。
 # ============================================================
-videoeye_add_test(test_report_exporter
+videoeye_add_test_core(test_report_exporter
     unit/test_report_exporter.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/ReportExporter.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/Logger.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/StreamAnalyzer.cpp
-    # ReportExporter 的「色彩与 HDR」章节复用 ColorHdrAnalyzer 的行构造
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/ColorHdrAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/ColorInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/HdrMetadataInfo.cpp
-    # ReportExporter 还会输出 QC 报告：QcModels 提供 ToString(...) 重载，
-    # 少了它链接期会报一堆 "无法解析的外部符号"。
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcModels.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcReport.cpp
-)
-target_link_libraries(test_report_exporter PRIVATE
-    Qt6::Core
-    FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swscale FFmpeg::swresample
 )
 add_test(NAME ReportExporterTests COMMAND test_report_exporter)
 
@@ -252,25 +255,9 @@ add_test(NAME AudioQcAnalyzerTests COMMAND test_audio_qc_analyzer)
 # =================================================
 # 测试 9：音频 QC 规则 (AudioQcAnalyzer + QcRuleEngine，不依赖 FFmpeg)
 # =================================================
-videoeye_add_test(test_audio_qc_rules
+# 说明: QcRuleEngine 会牵出几乎所有 model + analyzer, 清单长且易漏 —— 链整库。
+videoeye_add_test_core(test_audio_qc_rules
     unit/test_audio_qc_rules.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/AudioQcAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/QcRuleEngine.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/AnalysisTask.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AudioQcResult.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcModels.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcReport.cpp
-    # QcRuleEngine 会用到色彩/HDR 模型的成员函数 (EffectiveBitDepth / CompatibilityText ...)
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/ColorInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/HdrMetadataInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/BitrateGopAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/BitratePoint.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/GopInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimelineDiagnostic.cpp
-    # QcRuleEngine 的 subtitle.*/timecode.*/chapter.*/scte35.* 分支需要这三个模型
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/SubtitleCueInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimecodeInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AuxiliaryDataInfo.cpp
 )
 add_test(NAME AudioQcRulesTests COMMAND test_audio_qc_rules)
 
@@ -279,28 +266,8 @@ add_test(NAME AudioQcRulesTests COMMAND test_audio_qc_rules)
 # 说明: BuildColorRows / BuildHdrRows 定义在 ColorHdrAnalyzer.cpp（依赖 FFmpeg 头文件），
 #       所以本目标需要链接 FFmpeg；规则判定本身仍是纯模型层，无需解码任何文件。
 # =================================================
-videoeye_add_test(test_color_hdr_rules
+videoeye_add_test_core(test_color_hdr_rules
     unit/test_color_hdr_rules.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/ColorHdrAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/QcRuleEngine.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/AnalysisTask.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/BitrateGopAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/AudioQcAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcModels.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcReport.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/ColorInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/HdrMetadataInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AudioQcResult.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/BitratePoint.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/GopInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimelineDiagnostic.cpp
-    # QcRuleEngine 的 subtitle.*/timecode.*/chapter.*/scte35.* 分支需要这三个模型
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/SubtitleCueInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimecodeInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AuxiliaryDataInfo.cpp
-)
-target_link_libraries(test_color_hdr_rules PRIVATE
-    FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swscale FFmpeg::swresample
 )
 add_test(NAME ColorHdrRulesTests COMMAND test_color_hdr_rules)
 
@@ -412,30 +379,8 @@ add_test(NAME StreamingPackageTests COMMAND test_streaming_package)
 #          container.streaming.* 三个前缀分支）
 # 说明: 依赖清单与测试 10（色彩/HDR 规则）同构，再叠加三个清单分析器。
 # =================================================
-videoeye_add_test(test_streaming_qc_rules
+videoeye_add_test_core(test_streaming_qc_rules
     unit/test_streaming_qc_rules.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/HlsManifestAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/DashManifestAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/SegmentQcAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/Mp4SampleTableAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/QcRuleEngine.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/AnalysisTask.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/BitrateGopAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/AudioQcAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcModels.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcReport.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/ColorInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/HdrMetadataInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AudioQcResult.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/BitratePoint.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/GopInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimelineDiagnostic.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/IsobmffParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/Logger.cpp
-    # QcRuleEngine 的 subtitle.*/timecode.*/chapter.*/scte35.* 分支需要这三个模型
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/SubtitleCueInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimecodeInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AuxiliaryDataInfo.cpp
 )
 add_test(NAME StreamingQcRulesTests COMMAND test_streaming_qc_rules)
 
@@ -459,18 +404,9 @@ add_test(NAME VisualDefectTests COMMAND test_visual_defect)
 #       唯一需要 FFmpeg 的是 ParsePacketPayload 里的 codec id 分派，
 #       所以这个目标要链 avcodec/avformat。
 # =================================================
-videoeye_add_test(test_subtitle_timecode_aux
+videoeye_add_test_core(test_subtitle_timecode_aux
     unit/test_subtitle_timecode_aux.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/SubtitleAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/TimecodeAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/Scte35Analyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/AuxDataAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/SubtitleCueInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimecodeInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AuxiliaryDataInfo.cpp
 )
-target_link_libraries(test_subtitle_timecode_aux PRIVATE
-    FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swscale FFmpeg::swresample)
 add_test(NAME SubtitleTimecodeAuxTests COMMAND test_subtitle_timecode_aux)
 
 # =================================================
@@ -479,27 +415,8 @@ add_test(NAME SubtitleTimecodeAuxTests COMMAND test_subtitle_timecode_aux)
 # 说明: 测的是"分析器发现的问题有没有被规则引擎转成报告条目、级别对不对"。
 #       规则表被人改了 id 或严重度时，只有这一层能发现。
 # =================================================
-videoeye_add_test(test_aux_qc_rules
+videoeye_add_test_core(test_aux_qc_rules
     unit/test_aux_qc_rules.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/QcRuleEngine.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/AnalysisTask.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/BitrateGopAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/AudioQcAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/SegmentQcAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/Mp4SampleTableAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcModels.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/QcReport.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/ColorInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/HdrMetadataInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AudioQcResult.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/BitratePoint.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/GopInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimelineDiagnostic.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/SubtitleCueInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/TimecodeInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/model/AuxiliaryDataInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/IsobmffParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/Logger.cpp
 )
 add_test(NAME AuxQcRulesTests COMMAND test_aux_qc_rules)
 
@@ -565,3 +482,15 @@ videoeye_add_test(test_qc_report_exporter
 )
 target_link_libraries(test_qc_report_exporter PRIVATE VideoEyeCore)
 add_test(NAME QcReportExporterTests COMMAND test_qc_report_exporter)
+
+# =================================================
+# 测试 29：FFmpeg 命令工作台（命令行解析 / 指令字典 / 命令解释）
+# 说明: 只测"文本 → 参数数组 → 解释"这条链，不启动任何子进程 ——
+#       真跑 ffmpeg 依赖机器上有没有装，属于集成验收而不是单元测试。
+#       链 VideoEyeCore 是因为 FfmpegProcessRunner 用了 QProcess（Qt Core）。
+# =================================================
+videoeye_add_test_core(test_ffmpeg_command
+    unit/test_ffmpeg_command.cpp
+)
+target_link_libraries(test_ffmpeg_command PRIVATE Qt6::Core)
+add_test(NAME FfmpegCommandTests COMMAND test_ffmpeg_command)

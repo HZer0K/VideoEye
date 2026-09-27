@@ -24,6 +24,7 @@
 #include "core/analyzer/MediaInfoAnalyzer.h"
 #include "core/analyzer/EbmlAnalyzer.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
+#include "ui/ffmpeg_panel/FfmpegPanel.h"
 #include "ui/player/PlayerPanel.h"
 
 namespace videoeye {
@@ -102,6 +103,9 @@ protected:
 
     // 分析面板
     ui::AnalysisPanel* analysis_panel_;  // 分析面板
+
+    // FFmpeg 命令工作台 (原生 ffmpeg 的图形入口; 不依赖当前是否打开了媒体)
+    ui::FfmpegPanel* ffmpeg_panel_ = nullptr;
 
     // 菜单和工具栏
     QMenuBar* menu_bar_;

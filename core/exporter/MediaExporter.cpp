@@ -2,6 +2,7 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QStringList>
 #include <algorithm>
 #include <limits>
 #include <vector>
@@ -71,6 +72,28 @@ void resolve_encoder_names(const ExportOptions& opt, QString& video_enc, QString
         video_enc = "libx264";
         audio_enc = "aac";
     }
+}
+
+// 编码器候选链: 首选在前, 逐个降级
+//
+// 为什么需要这条链: libx264 是 **GPL-only** 组件, LGPL 构建的 FFmpeg 里没有它。
+// VideoEye 自身是 MIT, 允许用 LGPL 构建的 FFmpeg 来构建它（见
+// docs/FFMPEG_COMMAND_WORKBENCH.md「许可证」一节）—— 那时不能因为缺 libx264
+// 就让整个导出功能废掉, 于是退到 libopenh264（Cisco 的 OpenH264, BSD 授权,
+// 同样是 H.264），再退到 mpeg4（MPEG-4 Part 2, LGPL）。
+// 用 GPL 构建时首选仍是 libx264, 行为完全不变。
+QStringList video_encoder_candidates(const QString& preferred) {
+    QStringList list;
+    list << preferred;
+    if (preferred == QLatin1String("libvpx-vp9")) {
+        // webm 只认 VPx/AV1, mpeg4 塞不进去
+        list << QStringLiteral("libvpx");
+    } else {
+        list << QStringLiteral("libx264") << QStringLiteral("libopenh264")
+             << QStringLiteral("mpeg4");
+    }
+    list.removeDuplicates();
+    return list;
 }
 
 bool open_output(AVFormatContext*& out_fmt, const std::string& out_path, QString& err) {
@@ -219,16 +242,25 @@ void MediaExporter::Export(const ExportOptions& opt) {
             }
             sc.dec = dec;
 
-            QString enc_name = (mt == AVMEDIA_TYPE_VIDEO) ? video_enc_name : audio_enc_name;
-            QByteArray enc_name_bytes = enc_name.toUtf8();
-            const AVCodec* enc_codec = avcodec_find_encoder_by_name(enc_name_bytes.constData());
-            if (!enc_codec) {
-                enc_name = (mt == AVMEDIA_TYPE_VIDEO) ? QStringLiteral("mpeg4") : QStringLiteral("aac");
-                enc_name_bytes = enc_name.toUtf8();
-                enc_codec = avcodec_find_encoder_by_name(enc_name_bytes.constData());
+            const bool is_video = (mt == AVMEDIA_TYPE_VIDEO);
+            const QStringList candidates =
+                is_video ? video_encoder_candidates(video_enc_name)
+                         : QStringList{audio_enc_name, QStringLiteral("aac")};
+
+            QString enc_name;
+            const AVCodec* enc_codec = nullptr;
+            for (const QString& candidate : candidates) {
+                const QByteArray name_bytes = candidate.toUtf8();
+                enc_codec = avcodec_find_encoder_by_name(name_bytes.constData());
+                if (enc_codec) {
+                    enc_name = candidate;
+                    break;
+                }
             }
             if (!enc_codec) {
-                err_msg = QString("找不到编码器: %1 (该格式可能需要完整版 FFmpeg)").arg(enc_name);
+                err_msg = QString("找不到 %1 编码器（已尝试: %2；该 FFmpeg 构建可能未包含它们）")
+                              .arg(is_video ? QStringLiteral("视频") : QStringLiteral("音频"),
+                                   candidates.join(QStringLiteral(" / ")));
                 cleanup_and_emit(true, err_msg);
                 return;
             }

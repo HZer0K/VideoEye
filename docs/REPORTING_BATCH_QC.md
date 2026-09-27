@@ -12,8 +12,6 @@
 | 规则模板 | JSON 模板，覆盖音频/视频/容器/字幕/流媒体包的阈值与严重度；内置 5 套 |
 | 多格式导出 | JSON（机器可读）/ CSV（每问题一行）/ HTML / PDF / 纯文本 |
 | 双文件对比 | 对比编码参数、时长、码率、GOP、响度、色彩 metadata，可用于转码前后校验 |
-| 命令行 | `videoeye-cli` 支持 analyze / batch / compare / profiles |
-| CI 集成 | 发现 error 及以上问题时返回非 0 退出码 |
 
 ## 2. 模块架构
 
@@ -25,12 +23,13 @@ core/qc/QcComparator.h|.cpp     双文件对比行构造
 core/qc/QcAnalyzeRequest.h      单文件分析的请求/结果契约（批量层零 Qt 依赖）
 core/qc/QcReportFormat.h|.cpp   导出格式枚举与扩展名
 utils/QcReportExporter.h|.cpp   单文件 / 对比 / 批量汇总 的 JSON·CSV·HTML·PDF·TXT 导出
-cli/videoeye-cli.cpp            命令行前端
 ui/reporting_panel/             「报告与批量 QC」侧边栏页面
 ```
 
-`core/qc` 与 `utils` 被抽进 `VideoEyeCore` 静态库，**GUI 与 CLI 共用同一套逻辑**，
-避免「UI 一份实现、CLI 又抄一份」导致的判定分歧。批量扫描层（`BatchQcRunner`）
+`core/qc` 与 `utils` 被抽进 `VideoEyeCore` 静态库，GUI 与单元测试共用同一套逻辑
+（tests 直接 `target_link_libraries(... VideoEyeCore)`）。
+QC 的入口是 GUI 的「报告与批量 QC」页 —— 项目不再提供独立的命令行程序。
+批量扫描层（`BatchQcRunner`）
 只依赖 `QcAnalyzeRequest` 这个轻量契约，因此单测可以喂一个「睡 20ms 就返回」的假分析函数，
 无需任何媒体文件。
 
@@ -63,42 +62,9 @@ ui/reporting_panel/             「报告与批量 QC」侧边栏页面
 | `short-video` | 短视频 | 短视频平台：响度 -14 LUFS、移动端兼容、快速转码 |
 | `archive-master` | 归档母版 | 归档母版：保留时码、完整色彩/HDR 标注、无损优先 |
 
-模板可由 UI「另存为…」导出，或 CLI 用 `--profile <路径>` 加载自定义模板（未识别的规则 id 会被跳过并提示）。
+模板可由 UI「加载…」导入或「另存为…」导出，未识别的规则 id 会被跳过并提示。
 
-## 4. 命令行
-
-```bash
-# 单文件：分析并导出 JSON（默认_fail-on=error，仅 error 及以上才非 0 退出）
-videoeye-cli analyze input.mp4 --profile hls-vod --json report.json
-
-# 批量：扫描目录，每个文件按选中格式落盘，再出一份汇总 CSV
-videoeye-cli batch D:\media --profile broadcast --out reports --summary reports\summary.csv
-
-# 对比：转码前后一致性校验
-videoeye-cli compare source.mov transcoded.mp4 --csv diff.csv
-
-# 列出内置模板（--json 直接导出 JSON 供二次加工）
-videoeye-cli profiles
-```
-
-常用参数：
-
-| 参数 | 含义 |
-| --- | --- |
-| `--profile <id\|路径>` | 内置模板 id 或 JSON 模板文件路径 |
-| `--json/--csv/--html/--txt/--pdf <路径>` | 导出对应格式报告 |
-| `--out <目录>` | 批量扫描的报告输出目录（目录同构，默认不落盘） |
-| `--summary <路径>` | 批量汇总报告路径 |
-| `--ext <mp4,mov,mxf>` | 扩展名过滤（默认全部文件） |
-| `--jobs <N>` | 并发数（默认 4，上限 16） |
-| `--fail-on <级别>` | `info\|warning\|error\|critical\|none`，达到该级别返回非 0 |
-
-退出码：`0` 无阻断问题；`1` 存在 `--fail-on` 指定级别以上的问题（供 CI 判定构建失败）。
-
-> PDF 限制：内置 Helvetica（base-14）字体只编码拉丁字符，中文字形无法嵌入，会被替换成 `?`。
-> 需要完整中文请改用 `--html`。
-
-## 5. UI 用法
+## 4. UI 用法
 
 「报告与批量 QC」页提供：
 
@@ -113,7 +79,7 @@ videoeye-cli profiles
 取消时置原子标记，worker 取下一个任务前检查，正在跑的分析也能通过请求级 `cancel` 感知到；
 `Run()` 返回前必然 `join` 完所有 worker，**不会遗留后台线程**。
 
-## 6. 对比模式
+## 5. 对比模式
 
 `QcComparator::CompareRuns(left, right)` 逐字段对比，输出 `QcCompareRow`：
 
@@ -127,12 +93,11 @@ videoeye-cli profiles
 数值字段按容差判定（时长差 3ms、响度差 0.1 LU 不视为差异）；单侧缺失标记为 OnlyLeft/OnlyRight，
 两侧都没有标为 Unavailable（不算差异）。
 
-## 7. 测试验收
+## 6. 测试验收
 
 - JSON 报告 schema 稳定：顶层 `profile` / `file` / `metrics` / `streams` / `rules` / `issues` 并列，
   总览字段（评分、结论、问题计数）收在 `summary` 对象里 —— 注意**没有** `report` 包裹层。
 - CSV 严格「一个问题一行」（表头 + N 行 issue），批量汇总同理。
 - 批量任务取消后不遗留后台线程（`Run()` 内 `join`），且未跑到的项落成 `Cancelled`。
-- CLI 发现 error 及以上问题时返回非 0 退出码。
 - 单元测试覆盖：JSON 工具、QC 模板（内置 5 套 / 序列化往返 / 覆盖项 / 未知规则检测）、
   批量扫描（发现 / 过滤 / 取消无残留 / 并发上限）、对比、报告导出。

@@ -32,7 +32,16 @@ list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 include(cmake/deps/FFmpegPrebuilt.cmake)
+include(cmake/deps/FfmpegTool.cmake)
 include(cmake/deps/RuntimeDeploy.cmake)
+
+# 原生 ffmpeg 可执行程序: 生成的头文件里带着"配置期探测到的路径 / 是否随包分发",
+# 「FFmpeg 命令工作台」页据此给出默认值，用户仍可在设置里覆盖。
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/config/FfmpegToolConfig.h.in"
+    "${VIDEOEYE_GENERATED_INCLUDE_DIR}/videoeye/FfmpegToolConfig.h"
+    @ONLY
+)
 
 # ============================================================
 # 目标
@@ -57,9 +66,9 @@ set(CMAKE_AUTOUIC ON)
 # ============================================================
 # 核心静态库: core/ + utils/
 #
-# 抽出来的唯一理由: videoeye-cli 要复用同一批代码。
-# 以前它们直接编进 GUI 可执行文件，CLI 想链同样的逻辑只能像 tests/ 那样
-# 手工列一串源文件 —— 每加一个 analyzer 就可能 LNK2019。
+# 把业务逻辑与 UI 分开, 只编一次就能同时喂给 GUI 主程序与单元测试
+# (tests/ 直接 target_link_libraries(xxx PRIVATE VideoEyeCore), 不必像早期那样
+#  手工列一串源文件 —— 每加一个 analyzer 就可能 LNK2019)。
 # ============================================================
 add_library(VideoEyeCore STATIC
     ${CORE_SOURCES}
@@ -67,11 +76,15 @@ add_library(VideoEyeCore STATIC
     ${HEADERS}
 )
 set_target_properties(VideoEyeCore PROPERTIES OUTPUT_NAME videoeye_core AUTOMOC ON)
+# 注意这里没有 ui/: core/ 与 utils/ 不 include 任何 ui 头文件, 把它挂成 PUBLIC
+# 等于告诉每个使用者(含 tests)"你可以 include ui 下的东西" —— 而那些头文件
+# 带 Q_OBJECT, 一旦有人真的 include 了, 就会踩到 AUTOMOC 重复生成 moc_*.cpp 的坑。
+# ui/*.cpp 用的是 "ui/xxx/yyy.h" 这种从源码根开始的写法, 根目录已经在搜索路径里。
 target_include_directories(VideoEyeCore PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/ui
     ${CMAKE_CURRENT_SOURCE_DIR}/utils
+    ${VIDEOEYE_GENERATED_INCLUDE_DIR}
 )
 target_link_libraries(VideoEyeCore PUBLIC
     Qt6::Core
@@ -101,6 +114,10 @@ add_executable(${PROJECT_NAME}
     ${UI_SOURCES}
     ${UI_HEADERS}
 )
+# ui/ 只给 GUI 自己用(ui 内部有按子目录写的 include)
+target_include_directories(${PROJECT_NAME} PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/ui
+)
 target_link_libraries(${PROJECT_NAME} PRIVATE
     VideoEyeCore
     Qt6::Widgets
@@ -108,6 +125,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 # FFmpeg 运行时部署 (Windows 拷 DLL / Linux、macOS 拷 .so、.dylib 并设 rpath)
 videoeye_deploy_ffmpeg(${PROJECT_NAME})
+# 原生 ffmpeg 可执行程序 (Windows 随包分发时拷到可执行文件旁)
+videoeye_deploy_ffmpeg_tool(${PROJECT_NAME})
 
 # ============================================================
 # Windows 运行时部署 (Qt)
@@ -153,44 +172,31 @@ if(WIN32)
 endif()
 
 # ============================================================
-# 命令行工具: videoeye-cli
-#
-# 专门抽核心静态库就是为了这个目标 —— CLI 不需要任何 UI 代码，
-# 只要链 VideoEyeCore 就能拿到完整的分析 + 报告导出能力。
-# ============================================================
-option(VIDEOEYE_BUILD_CLI "构建 videoeye-cli 命令行工具" ON)
-if(VIDEOEYE_BUILD_CLI)
-    add_executable(videoeye-cli cli/videoeye-cli.cpp)
-    target_link_libraries(videoeye-cli PRIVATE VideoEyeCore)
-    # Linux/macOS 靠 rpath 找 build/lib 里的 FFmpeg 动态库
-    videoeye_set_ffmpeg_rpath(videoeye-cli)
-    if(WIN32)
-        # DLL 由 videoeye-runtime 一次性铺好（各目标分别拷会撞文件锁）
-        videoeye_register_runtime_target(videoeye-cli)
-    endif()
-endif()
-
-# ============================================================
 # 安装
 # ============================================================
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
-if(VIDEOEYE_BUILD_CLI)
-    install(TARGETS videoeye-cli RUNTIME DESTINATION bin)
-endif()
 # FFmpeg 动态库: Windows 扁平布局进 bin/, Linux/macOS 进 lib/ (由 INSTALL_RPATH 指过去)
 videoeye_install_ffmpeg()
+# 原生 ffmpeg 可执行程序: 只装 Windows 随包的那份; Linux/macOS 用系统 ffmpeg, 不塞进安装树
+videoeye_install_ffmpeg_tool()
 
 if(WIN32)
     # 安装树同样要跑一遍依赖闭包 —— 打包出去的东西比 build 目录更容易漏文件,
     # 而且漏了之后只有目标机器上才会暴露。
     videoeye_windows_runtime_search_dirs(_install_search_dirs)
 
-    # 安装期要扫的可执行文件（GUI + CLI）
-    if(VIDEOEYE_BUILD_CLI)
-        set(_install_inputs
-            "${CMAKE_INSTALL_PREFIX}/bin/$<TARGET_FILE_NAME:${PROJECT_NAME}>;${CMAKE_INSTALL_PREFIX}/bin/$<TARGET_FILE_NAME:videoeye-cli>")
-    else()
-        set(_install_inputs "${CMAKE_INSTALL_PREFIX}/bin/$<TARGET_FILE_NAME:${PROJECT_NAME}>")
+    # 安装期要扫的可执行文件（GUI，以及 Windows 下随包分发的 ffmpeg.exe）
+    #
+    # 注意 \${CMAKE_INSTALL_PREFIX}: 必须让它在安装时才求值。写成 ${CMAKE_INSTALL_PREFIX}
+    # 的话, 这里烤进去的是配置期的默认值(C:/Program Files (x86)/VideoEye), 于是
+    # `cmake --install build/release --prefix <别的目录>` 会去扫一个并不存在的路径,
+    # 报 "输入文件不存在" —— 安装到默认前缀时恰好对得上, 所以这个坑一直没暴露。
+    set(_install_inputs "\${CMAKE_INSTALL_PREFIX}/bin/$<TARGET_FILE_NAME:${PROJECT_NAME}>")
+    # 随包分发的 ffmpeg.exe 也要扫: 它可能不是我们预编译包里的那份(用户显式指定),
+    # 那样它依赖的 DLL 未必在 FFMPEG_WINDOWS_DLLS 里。
+    if(VIDEOEYE_FFMPEG_TOOL_BUNDLE AND VIDEOEYE_FFMPEG_TOOL_NAME)
+        string(APPEND _install_inputs
+            ";\${CMAKE_INSTALL_PREFIX}/bin/${VIDEOEYE_FFMPEG_TOOL_NAME}")
     endif()
 
     # Qt 插件这一步必须在配置期就决定好。

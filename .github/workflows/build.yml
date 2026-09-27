@@ -48,12 +48,56 @@ jobs:
         if: runner.os == 'Linux'
         run: cmake --build --preset ${{ matrix.preset }}
 
+      # 必须从 install 出来的目录上传: 构建目录里的可执行文件靠 RPATH 指到
+      # build/release/lib 才能找到 FFmpeg, 而上传物只有 bin/ —— 下载下来就是
+      # 一个跑不起来的包。install 会把 bin/ + lib/ 一起铺好。
+      - name: Install (Linux)
+        if: runner.os == 'Linux'
+        run: cmake --install build/release --prefix build/release/dist
+
+      # 冒烟检查装出来的东西: 依赖解析 + 原生 ffmpeg + GUI 存活
+      - name: Smoke test (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          dist="$PWD/build/release/dist"
+          echo "== 产物 =="; ls -l "$dist/bin" "$dist/lib"
+
+          # 1) 动态依赖必须全部解析(linux 上 FFmpeg 装在 lib/ 靠 $ORIGIN/../lib 找)
+          if ldd "$dist/bin/VideoEye" | grep -i "not found"; then
+            echo "::error::存在无法解析的动态库依赖"; exit 1
+          fi
+
+          # 2) 原生 ffmpeg 冒烟: Linux 不随包分发, 用系统那份即可
+          #    (命令工作台页会显示它的路径与版本; 缺了只是该页不可用, 不影响 GUI)
+          if command -v ffmpeg >/dev/null 2>&1; then
+            ffmpeg -version | head -1
+          else
+            echo "::warning::runner 上没有 ffmpeg, 跳过命令工作台的程序冒烟"
+          fi
+
+          # 3) GUI 存活: 无显示器环境用 offscreen 插件起 8s。
+          #    若 runner 上没装这个插件(qt.qpa.plugin 报错), 只警告 —— 那是环境
+          #    缺插件, 不是打包缺库, 不该把 CI 打红。
+          set +e
+          QT_QPA_PLATFORM=offscreen timeout 8 "$dist/bin/VideoEye" > gui-smoke.log 2>&1
+          code=$?
+          set -e
+          if [ "$code" -eq 124 ]; then
+            echo "GUI 存活 8s (被 timeout 结束) —— 通过"
+          elif grep -q "qt.qpa.plugin" gui-smoke.log; then
+            echo "::warning::offscreen 平台插件不可用, 跳过 GUI 存活检查"
+            cat gui-smoke.log
+          else
+            echo "::error::GUI 提前退出 (code=$code)"; cat gui-smoke.log; exit 1
+          fi
+
       - name: Upload artifact (Linux)
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: VideoEye-linux
-          path: build/release/bin
+          path: build/release/dist
 
       # ─────────────── Windows ───────────────
       - name: Setup vcpkg (Windows)
@@ -102,12 +146,33 @@ jobs:
         run: |
           build.bat release
 
+      # 与 Linux 一样: 上传 install 出来的目录, 顺带验证安装规则本身
+      # (FFmpeg DLL / Qt 插件 / 依赖闭包都在这一步铺进 dist\bin)
+      - name: Install (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: cmake --install build\release --prefix build\release\dist
+
       - name: Smoke test (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $exe = "build\release\bin\VideoEye.exe"
-          if (-not (Test-Path $exe)) { Write-Error "VideoEye.exe not found"; exit 1 }
+          $dist = "build\release\dist"
+          $exe  = "$dist\bin\VideoEye.exe"
+          $ff   = "$dist\bin\ffmpeg.exe"
+          if (-not (Test-Path $exe)) { Write-Error "missing $exe"; exit 1 }
+
+          # ffmpeg 冒烟: 默认**不**随包分发(GPLv3, 见 docs/FFMPEG_COMMAND_WORKBENCH.md),
+          # 所以只有当打包者显式开了 -DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON 才会出现。
+          # 有就验证它能跑(说明依赖的 av*.dll 都在 dist\bin 里), 没有则只是该页
+          # 需要用户自行安装, 不该把 CI 打红。
+          if (Test-Path $ff) {
+            & (Resolve-Path $ff) -version
+            if ($LASTEXITCODE -ne 0) { Write-Error "ffmpeg smoke failed (exit $LASTEXITCODE)"; exit 1 }
+          } else {
+            Write-Warning "dist\bin 里没有 ffmpeg.exe (默认不随包分发), 跳过命令工作台的程序冒烟"
+          }
+
           $p = Start-Process -FilePath (Resolve-Path $exe) -PassThru
           Start-Sleep -Seconds 8
           if ($p.HasExited) {
@@ -122,7 +187,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: VideoEye-windows
-          path: build/release/bin
+          path: build/release/dist
 
   # ─────────────── 单元测试 ───────────────
   # 单独的 job: 测试用 Debug + vcpkg feature "tests"(gtest)，

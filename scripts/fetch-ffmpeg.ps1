@@ -15,12 +15,28 @@
 #
 # 为什么固定用 release-full-shared 系列: gyan.dev 唯一带 include/ 头文件与 lib/
 # 导入库的共享构建。essentials 变体只有 bin/, 没法拿来链接。
+#
+# ⚠️ 许可证（这条决定了脚本默认怎么处理 ffmpeg.exe）:
+#   gyan.dev 的 full/essentials 构建都是 **GPLv3**（启用 --enable-gpl，含 libx264 等
+#   GPL-only 组件）。VideoEye 链接它、并把 av*.dll 随包分发，这部分本身就需要按
+#   GPL 履约；但 **ffmpeg.exe 这个命令行程序是另一回事** —— 把它塞进安装包，等于
+#   再多分发一个 GPL 程序，而它只服务于「FFmpeg 命令工作台」这一个辅助页面。
+#
+#   所以默认删除 ffmpeg.exe：
+#     · 仓库与安装树里少一个 27MB 的 GPL 二进制，分发物保持 MIT 的实际自由度；
+#     · 真要用这一页，由用户自己装 ffmpeg（页面有安装指引），他们装到的多半是
+#       含 libx264/libx265 的完整版，功能比我们随包的更好；
+#   -KeepFfmpegExe 只影响**本机的 third_party 目录**，要不要进安装包另由
+#   -DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON 决定（见 cmake/deps/FfmpegTool.cmake）。
 
 param(
     [string]$DestDir = "",
     [string]$Version = "",
     [switch]$Force,
-    [switch]$SkipChecksum
+    [switch]$SkipChecksum,
+    # 保留 ffmpeg.exe（默认删除，见文件头的许可证说明）。
+    # 打包者确定要随包分发 ffmpeg CLI、或本机想直接调试「FFmpeg 命令工作台」时打开。
+    [switch]$KeepFfmpegExe
 )
 
 $ErrorActionPreference = "Stop"
@@ -262,12 +278,24 @@ if ($ffVersion) { Write-Host "  ffmpeg.exe 自报版本: $ffVersion" }
 Write-Host "  Include: $DestDir\include"
 Write-Host "  Lib:     $DestDir\lib"
 Write-Host "  Bin:     $DestDir\bin"
-
-# ── 清理运行时不需要的东西 (约 -27MB): ffmpeg.exe/ffplay.exe/doc/ ──
-# 放在版本探测之后, 因为版本号是从 ffmpeg.exe -version 读出来的
-foreach ($exe in @("ffmpeg.exe", "ffplay.exe", "ffprobe.exe")) {
+# ── 清理运行时不需要的东西: ffmpeg.exe/ffplay.exe/ffprobe.exe/doc/presets ──
+# 放在版本探测之后, 因为版本号是从 ffmpeg.exe -version 读出来的。
+#
+# ⚠️ ffmpeg.exe **默认删除**（GPLv3，约 27MB，只服务于「FFmpeg 命令工作台」这一个
+# 辅助页面）。留着它的唯一理由是本机调试这一页，或打包者确实要随包分发 ——
+# 那就加 -KeepFfmpegExe，并配合 -DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON。
+# 删掉之后工作台页会显示"未找到 ffmpeg"并引导用户安装，不是构建坏了。
+$cleanupExes = @("ffplay.exe", "ffprobe.exe")
+if (-not $KeepFfmpegExe) { $cleanupExes += "ffmpeg.exe" }
+foreach ($exe in $cleanupExes) {
     $exePath = Join-Path $DestDir "bin\$exe"
     if (Test-Path $exePath) { Remove-Item $exePath -Force -ErrorAction SilentlyContinue }
+}
+
+if (Test-Path $ffExe) {
+    Write-Host "  CLI:     ffmpeg.exe 已保留 (-KeepFfmpegExe) —— 仅供本机调试, 默认不会进安装包"
+} else {
+    Write-Host "  CLI:     ffmpeg.exe 已删除 (许可证: GPLv3; 需要本机调试请加 -KeepFfmpegExe)"
 }
 foreach ($dir in @("doc", "presets")) {
     $dirPath = Join-Path $DestDir $dir

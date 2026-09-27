@@ -23,6 +23,8 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 - **画面质量（视觉缺陷）**: 黑场 / 冻结 / 花屏马赛克 / 模糊 / 闪烁 / 过曝欠曝 / 色偏 / 隔行梳齿 / 黑边，带证据缩略图与缺陷列表
 - **字幕 / 时码 / 辅助数据**: 字幕 cue（SRT / ASS-SSA / WebVTT / tx3g / CEA-608）重叠与空字幕检查、SMPTE 时码与章节、data 流与 SCTE-35 广告插入点
 - **质量评估**: 离线逐帧计算 PSNR / SSIM 及走势图
+- **报告与批量 QC**: 5 套规则模板 → 单文件/目录批量分析 → 评分与结论 → JSON/CSV/HTML/PDF/TXT 导出
+- **FFmpeg 命令工作台**: 直接调用原生 `ffmpeg` 程序 —— 写命令、看实时日志、查参数含义（内置指令字典与逐项解释）
 - **帧导出**: 导出任意帧为 JPG / RGB / YUV，支持打开 .yuv / .rgb 原始图像
 
 ## 技术栈
@@ -46,8 +48,39 @@ Qt 走 vcpkg manifest（Windows）或系统包管理器（apt/brew）；FFmpeg �
 | Windows | `third_party/prebuilt/windows-x64/ffmpeg/`，缺则由 `scripts/fetch-ffmpeg.ps1` 下载（版本 + URL + SHA256 锁在 `cmake/ffmpeg-version.json`，校验不过直接失败） |
 | Linux / macOS | `pkg-config` 找系统开发包（`libavcodec-dev` / `brew install ffmpeg`），找不到才回退 `third_party/prebuilt/<platform>/ffmpeg/` |
 
+显式传 `-DFFMPEG_ROOT=<dir>` 时该目录优先级最高（盖过系统包），目录不完整会直接报错而不是
+静默回退。
+
+「FFmpeg 命令工作台」还需要**可执行程序**（与上面用于链接的开发包是两回事）。
+**默认不随包分发** —— 分发物里没有 `ffmpeg.exe`，用户由页面引导自行安装；
+打包者要随包才显式加 `-DFFMPEG_TOOL=<path> -DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON`。原因见下。
+
+> **许可证：为什么默认不随包分发 ffmpeg**
+>
+> 能下载到的 ffmpeg 构建绝大多数是 **GPLv3**（gyan.dev 的 full/essentials、Debian 与
+> Homebrew 的包都启用了 `--enable-gpl`）。把一个 GPLv3 的 `ffmpeg.exe` 放进安装包，整个
+> 分发物就要按 GPLv3 履约 —— 而它只服务于「FFmpeg 命令工作台」这一个辅助页面。
+>
+> 所以我们不替用户做这个决定：默认不分发，页面引导用户自己装一份（用户自用不受分发条款
+> 约束，装到的多半还是含 libx264/libx265 的完整版，功能反而更好）；打包者确信自己那份是
+> LGPL 构建、或愿意让分发物整体走 GPLv3 时，用上面的开关显式打开并自行完成合规动作。
+>
+> 另需如实说明：VideoEye 链接并随包分发 FFmpeg 的 `av*.dll`，而当前锁定的 Windows 预编译包
+> 本身就是 GPLv3 构建。想让分发物真正 MIT-clean，需要把 `cmake/ffmpeg-version.json` 里的
+> 包换成 LGPL 构建（导出功能已做编码器降级：`libx264 → libopenh264 → mpeg4`，换过去不会废）。
+> 完整取舍见 [docs/FFMPEG_COMMAND_WORKBENCH.md](docs/FFMPEG_COMMAND_WORKBENCH.md)「许可证」一节。
+
+> **用户机器上没装 ffmpeg 不会拖累其它功能。** 工作台的本质是把命令交给原生 ffmpeg 程序执行，
+> 这件事没法用内置库替代，所以缺程序时该页会禁用「运行」并给出按平台的安装指引（包管理器命令 /
+> 下载页 / 手动指定），而媒体信息、流分析、QC 报告、播放器全部照常工作 —— 它们用的是内置链接的
+> libav*。详见 [docs/FFMPEG_COMMAND_WORKBENCH.md](docs/FFMPEG_COMMAND_WORKBENCH.md) 第 5 节。
+
 构建配置的唯一来源是 `CMakePresets.json`；动态库部署由 CMake 完成（Windows 与 exe 同目录，
 Linux/macOS 进相邻 `lib/` 并写入 RPATH），构建后会校验确实到位。
+
+Linux/macOS 部署时会展开版本化 `.so` 的 symlink 链（`libavcodec.so` → `.so.61` → `.so.61.19.100`）：
+真实文件拷一份，链上其余名字建成指向它的相对 symlink —— 加载器按 SONAME（`.so.61`）找库，
+只拷最外层或只拷最终文件都会让装出来的程序在别的机器上 `cannot open shared object file`。
 
 ## 构建
 
@@ -87,24 +120,17 @@ brew install cmake ninja qt@6 ffmpeg
 
 1. **打开**: `Ctrl+O` 打开文件 / `Ctrl+U` 打开 URL
 2. **播放控制**: 底部控制栏播放/暂停/停止 (`Space` / `Esc`)
-3. **分析**: 左侧边栏切换分析模块（媒体信息、流分析、视频帧、音频帧、数据包、异常事件、同步分析、时间轴、音频响度、直方图、容器结构、场景切换、画面质量、质量评估），各模块顶部配有独立「启用分析」开关
-4. **导出帧**: `文件` → `导出视频帧...`（jpg / rgb / yuv）
-5. **原始图像**: 打开 `.yuv`（YUV420P）/ `.rgb`（RGB24）时输入宽高
+3. **分析**: 左侧边栏切换分析模块（媒体信息、流分析、视频帧、音频帧、数据包、异常事件、同步分析、时间轴、音频响度、直方图、容器结构、场景切换、画面质量、质量评估、报告与批量 QC），各模块顶部配有独立「启用分析」开关
+4. **FFmpeg 命令工作台**: 侧边栏「FFmpeg 命令」—— 写一条 ffmpeg 命令并运行，右侧字典可以查参数含义
+5. **导出帧**: `文件` → `导出视频帧...`（jpg / rgb / yuv）
+6. **原始图像**: 打开 `.yuv`（YUV420P）/ `.rgb`（RGB24）时输入宽高
 
-### 命令行工具 `videoeye-cli`
+### 批量 QC 与报告
 
-除 GUI 外，项目还提供 `videoeye-cli` 做批量与 CI 场景的分析：
-
-```bash
-videoeye-cli analyze input.mp4 --profile hls-vod --json report.json
-videoeye-cli batch D:\media --profile broadcast --out reports --summary reports\summary.csv
-videoeye-cli compare source.mov transcoded.mp4 --csv diff.csv
-videoeye-cli profiles          # 列出内置 QC 模板
-```
-
-`--profile` 接受内置模板 id（`general` / `broadcast` / `hls-vod` / `short-video` / `archive-master`）
-或一份 JSON 模板文件路径；`--json/--csv/--html/--txt/--pdf` 选择导出格式；`--fail-on` 控制何时返回非 0
-退出码（供 CI 判定构建失败）。详见 [docs/REPORTING_BATCH_QC.md](docs/REPORTING_BATCH_QC.md)。
+单文件分析、目录批量扫描、双文件对比与报告导出都在 GUI 的「报告与批量 QC」页完成：
+选模板 → 分析 → 看结论 → 导出（JSON / CSV / HTML / PDF / TXT）。
+模板接受内置 id（`general` / `broadcast` / `hls-vod` / `short-video` / `archive-master`）或自定义 JSON 文件。
+详见 [docs/REPORTING_BATCH_QC.md](docs/REPORTING_BATCH_QC.md)。
 
 ## 项目结构
 
@@ -113,6 +139,8 @@ VideoEye/
 ├── core/                 # 核心业务层
 │   ├── player/           # 播放引擎 (MediaPlayer / 解码器 / 音频输出)
 │   ├── analyzer/         # 分析引擎 (容器结构 / 场景切换 / 质量评估)
+│   ├── qc/               # QC 模板与批量扫描 / 对比
+│   ├── ffmpeg/           # 命令工作台 (命令解析 / 进程执行 / 指令字典 / 解释器)
 │   └── model/            # 数据模型
 ├── ui/                   # UI 层 (主题 / 主窗口 / 分析面板 / 自绘图表)
 ├── utils/                # 工具类 (Logger / ConfigManager / ReportExporter / IsobmffParser)
@@ -137,7 +165,8 @@ VideoEye/
 | [docs/HLS_DASH_SEGMENT.md](docs/HLS_DASH_SEGMENT.md) | HLS/DASH 流媒体包检测（manifest + segment + 多码率 ladder） |
 | [docs/VISUAL_QC.md](docs/VISUAL_QC.md) | 画面质量与视觉缺陷检测（黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 曝光 / 色偏 / 梳齿 / 黑边） |
 | [docs/SUBTITLE_TIMECODE_AUX.md](docs/SUBTITLE_TIMECODE_AUX.md) | 字幕 cue、SMPTE 时码 / 章节、data 流与 SCTE-35 插入点 |
-| [docs/REPORTING_BATCH_QC.md](docs/REPORTING_BATCH_QC.md) | 报告与批量 QC：模板、单文件/批量分析、CLI、对比、导出、CI |
+| [docs/REPORTING_BATCH_QC.md](docs/REPORTING_BATCH_QC.md) | 报告与批量 QC：模板、单文件/批量分析、对比、导出 |
+| [docs/FFMPEG_COMMAND_WORKBENCH.md](docs/FFMPEG_COMMAND_WORKBENCH.md) | FFmpeg 命令工作台：命令解析、进程执行、指令字典与解释 |
 
 ## 测试
 
@@ -164,7 +193,10 @@ ISOBMFF、QC 规则、码率/GOP、色彩 HDR、导出器等纯逻辑路径。
 
 ## 开源协议
 
-本项目采用 [MIT](LICENSE) 协议。
+VideoEye 自身源码采用 [MIT](LICENSE) 协议。
+
+随分发物附带的 FFmpeg 二进制（`av*.dll` / `libav*.so`）按其自身许可证（当前锁定的预编译包为
+GPLv3）履约；`ffmpeg` 命令行程序默认不随包分发，理由见上方「许可证」提示。
 
 ## 致谢
 

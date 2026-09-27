@@ -270,6 +270,13 @@ void MainWindow::SetupContentArea() {
     analysis_panel_->PopulateStackedWidget(content_stack_);
     analysis_panel_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
+    // Page N: FFmpeg 命令工作台
+    // 与上面的分析页不同，这一页不套 QScrollArea —— 它自己内部就有 splitter 与滚动条，
+    // 再套一层会让"输出区"拿不到剩余高度。
+    ffmpeg_panel_ = new ui::FfmpegPanel(content_stack_);
+    ffmpeg_panel_->setProperty("pageTitle", tr("FFmpeg 命令"));
+    content_stack_->addWidget(ffmpeg_panel_);
+
     // 页面全部注册完毕后才生成侧边栏条目，保证行号 == stack 下标
     PopulateSidebarItems();
     
@@ -631,6 +638,10 @@ void MainWindow::SetupConnections() {
             this, [this](const QString& text) {
                 if (statusBar()) statusBar()->showMessage(text);
             });
+    connect(ffmpeg_panel_, &ui::FfmpegPanel::StatusMessage,
+            this, [this](const QString& text) {
+                if (statusBar()) statusBar()->showMessage(text);
+            });
     // 实时码流统计: 空串表示停止/换源, 隐藏常驻区
     connect(player_panel_, &PlayerPanel::StreamStatsDisplayReady,
             this, [this](const QString& text) {
@@ -740,9 +751,10 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
                 tr("%1 [PCM %2, %3 Hz, %4 ch]").arg(source, demuxer_name).arg(sample_rate).arg(channels));
         }
         current_media_url_ = source;
-        analysis_panel_->SetCurrentVideoPath(source);
+    analysis_panel_->SetCurrentVideoPath(source);
+    if (ffmpeg_panel_) ffmpeg_panel_->SetCurrentFile(source);
 
-        // 媒体信息解析 PCM (裸流无法自动探测, 需带上用户选择的格式参数)
+    // 媒体信息解析 PCM (裸流无法自动探测, 需带上用户选择的格式参数)
         {
             analyzer::MediaInfoAnalyzer mi;
             mi.SetRawPcmHints(demuxer_name, sample_rate, channels);
@@ -779,6 +791,7 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
     }
     current_media_url_ = source;
     analysis_panel_->SetCurrentVideoPath(source);
+    if (ffmpeg_panel_) ffmpeg_panel_->SetCurrentFile(source);
 
     // 媒体信息解析 (异常文件也可能部分解析成功, 尽力而为)。
     // 大文件/复杂容器下 avformat 全量探测可能要到秒级, 放在后台线程跑,
