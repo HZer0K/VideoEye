@@ -119,9 +119,14 @@ if(NOT _tool)
         "  想让本机的这一页直接可用: Windows 装 winget install --id Gyan.FFmpeg -e，\n"
         "  Debian/Ubuntu: sudo apt install -y ffmpeg，macOS: brew install ffmpeg。")
 elseif(NOT _tool_bundle)
+    # 口径必须与 docs/FFMPEG_COMMAND_WORKBENCH.md 第 8 节一致:
+    # 不随包 ffmpeg.exe 只是**不额外分发一个 GPL 程序**，不等于分发物整体是 MIT ——
+    # 链接进来并随包的 av*.dll 本身就有自己的条款，由 FFmpeg 包决定。
     message(STATUS
-        "[ffmpeg-tool] 找到 ${_tool}，按默认策略**不**随包分发（安装树里不会有它）。\n"
-        "  分发物保持 MIT；终端用户由工作台页引导自行安装。\n"
+        "[ffmpeg-tool] 找到 ${_tool}，按默认策略**不**随包分发（安装树里不会有它）；\n"
+        "  终端用户由工作台页引导自行安装。\n"
+        "  注意: 这不额外增加新的义务，但也**不等于分发物整体是 MIT** —— 最终许可证取决于\n"
+        "  链接进来并随包的那份 FFmpeg（当前 Windows 包是 GPLv3），见 docs/FFMPEG_COMMAND_WORKBENCH.md 第 8 节。\n"
         "  确实要随包打包: -DFFMPEG_TOOL=<path> -DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON（注意 GPLv3 义务）。")
 endif()
 
