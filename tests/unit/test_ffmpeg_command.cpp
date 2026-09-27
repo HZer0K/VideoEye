@@ -20,12 +20,16 @@
 
 namespace {
 
+using videoeye::ffmpegtool::AnalyzeCommandStructure;
 using videoeye::ffmpegtool::CommandParseStatus;
 using videoeye::ffmpegtool::DetectStdoutMediaOutput;
+using videoeye::ffmpegtool::FfmpegArgRole;
+using videoeye::ffmpegtool::FfmpegCapabilityCache;
 using videoeye::ffmpegtool::FfmpegCatalogEntry;
 using videoeye::ffmpegtool::FfmpegCommandCatalog;
 using videoeye::ffmpegtool::FfmpegCommandExplainer;
 using videoeye::ffmpegtool::FfmpegEntryKind;
+using videoeye::ffmpegtool::FfmpegFormatLists;
 using videoeye::ffmpegtool::FfmpegInstallGuide;
 using videoeye::ffmpegtool::FfmpegTokenRole;
 using videoeye::ffmpegtool::FfmpegToolInfo;
@@ -127,6 +131,85 @@ TEST(FfmpegCommandParser, DetectsPipeOutput) {
                                          QStringLiteral("-c"), QStringLiteral("copy"),
                                          QStringLiteral("out.mp4")})
                     .isEmpty());
+    // 只产出文本的 muxer 写到管道上也只是几行字，不必拦
+    EXPECT_TRUE(DetectStdoutMediaOutput({QStringLiteral("-i"), QStringLiteral("in.mp4"),
+                                         QStringLiteral("-f"), QStringLiteral("md5"),
+                                         QStringLiteral("-")})
+                    .isEmpty());
+}
+
+TEST(FfmpegCommandParser, DetectsPipeWriteToStderr) {
+    // pipe:2 写的是标准错误，一样会把二进制灌进日志区
+    EXPECT_EQ(DetectStdoutMediaOutput({QStringLiteral("-i"), QStringLiteral("in.mp4"),
+                                       QStringLiteral("-c:v"), QStringLiteral("copy"),
+                                       QStringLiteral("pipe:2")}),
+              QStringLiteral("pipe:2"));
+}
+
+TEST(FfmpegCommandParser, DetectsLaterPipeOutputInMultiOutputCommand) {
+    // 这正是"-f null 被记成全命令状态"漏掉的情形: 前一个输出是基准测试用的 -f null -，
+    // 后一个输出才是真的往通道写 —— 必须各自按自己生效的 -f 判断。
+    EXPECT_EQ(DetectStdoutMediaOutput({QStringLiteral("-i"), QStringLiteral("in.mp4"),
+                                       QStringLiteral("-f"), QStringLiteral("null"),
+                                       QStringLiteral("-"),
+                                       QStringLiteral("-c"), QStringLiteral("copy"),
+                                       QStringLiteral("-f"), QStringLiteral("matroska"),
+                                       QStringLiteral("pipe:2")}),
+              QStringLiteral("pipe:2"));
+    // 反过来：两个输出都是文件，不该因为命令里有管道名而误报
+    EXPECT_TRUE(DetectStdoutMediaOutput({QStringLiteral("-i"), QStringLiteral("in.mp4"),
+                                         QStringLiteral("-f"), QStringLiteral("null"),
+                                         QStringLiteral("-"),
+                                         QStringLiteral("-f"), QStringLiteral("mp4"),
+                                         QStringLiteral("out.mp4")})
+                    .isEmpty());
+}
+
+// ===================== 命令结构（输入组 / 输出组）=====================
+
+TEST(FfmpegCommandStructure, SplitsInputsAndOutputs) {
+    const auto structure = AnalyzeCommandStructure(
+        {QStringLiteral("-i"), QStringLiteral("a.mp4"), QStringLiteral("-i"), QStringLiteral("b.mp4"),
+         QStringLiteral("-c:v"), QStringLiteral("copy"), QStringLiteral("out1.mp4"),
+         QStringLiteral("out2.mkv")});
+    EXPECT_EQ(structure.input_count, 2);
+    EXPECT_EQ(structure.output_count, 2);
+    EXPECT_TRUE(structure.complete);
+    EXPECT_EQ(structure.args.at(1).role, FfmpegArgRole::InputUrl);
+    EXPECT_EQ(structure.args.at(3).role, FfmpegArgRole::InputUrl);
+    EXPECT_EQ(structure.args.at(6).role, FfmpegArgRole::OutputUrl);
+    EXPECT_EQ(structure.args.at(6).output_index, 0);
+    EXPECT_EQ(structure.args.at(7).role, FfmpegArgRole::OutputUrl);
+    EXPECT_EQ(structure.args.at(7).output_index, 1);
+}
+
+TEST(FfmpegCommandStructure, ResolvesFormatPerOutput) {
+    const auto structure = AnalyzeCommandStructure(
+        {QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-f"), QStringLiteral("null"),
+         QStringLiteral("-"), QStringLiteral("-c"), QStringLiteral("copy"),
+         QStringLiteral("-f"), QStringLiteral("matroska"), QStringLiteral("-")});
+    ASSERT_EQ(structure.output_count, 2);
+    EXPECT_EQ(structure.args.at(4).output_format, QStringLiteral("null"));
+    EXPECT_EQ(structure.args.at(9).output_format, QStringLiteral("matroska"));
+}
+
+TEST(FfmpegCommandStructure, InputSideFormatIsNotTreatedAsOutputFormat) {
+    const auto structure = AnalyzeCommandStructure(
+        {QStringLiteral("-f"), QStringLiteral("lavfi"), QStringLiteral("-i"),
+         QStringLiteral("testsrc"), QStringLiteral("out.mp4")});
+    EXPECT_EQ(structure.input_count, 1);
+    EXPECT_EQ(structure.output_count, 1);
+    EXPECT_TRUE(structure.args.at(0).applies_to_input);
+    EXPECT_TRUE(structure.args.at(4).output_format.isEmpty());
+}
+
+TEST(FfmpegCommandStructure, UnknownOptionLeavesNextTokenUnresolved) {
+    // 字典没有这个选项 → 后面那个 token 是它的值还是输出文件，不能猜
+    const auto structure = AnalyzeCommandStructure(
+        {QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-x264-params"),
+         QStringLiteral("out.mp4")});
+    EXPECT_FALSE(structure.complete);
+    EXPECT_EQ(structure.args.at(3).role, FfmpegArgRole::Uncertain);
 }
 
 // ===================== 字典 =====================
@@ -182,6 +265,50 @@ TEST(FfmpegCommandCatalog, FiltersAreMarkedAndInsertable) {
     EXPECT_FALSE(scale->insert_text.isEmpty());
 }
 
+// `ffmpeg -formats` 的行: 列对齐空格 + D/E 两个标志位 + 名字（可带逗号别名）
+TEST(FfmpegCommandCatalog, SplitsFormatsIntoDemuxersAndMuxers) {
+    const QString formats = QStringLiteral(
+        "File formats:\n"
+        " D. = Demuxing supported\n"
+        " .E = Muxing supported\n"
+        " --\n"
+        " D  3dostr          3DO STR\n"
+        "  E 3g2             3GP2 (3GPP2 file format)\n"
+        " DE mov,mp4,m4a     QuickTime / MPEG-4\n");
+    const FfmpegFormatLists lists = FfmpegCommandCatalog::ParseFormatNames(formats);
+
+    // "  E" 与 " DE" 都表示能写 —— trim() 之后只看首字母会把后者整批漏掉
+    EXPECT_TRUE(lists.muxers.contains(QStringLiteral("3g2")));
+    EXPECT_TRUE(lists.muxers.contains(QStringLiteral("mp4")));
+    // 逗号分隔的别名要拆开，否则用户写 `-f mp4` 时查不到
+    EXPECT_TRUE(lists.muxers.contains(QStringLiteral("m4a")));
+    EXPECT_TRUE(lists.demuxers.contains(QStringLiteral("mov")));
+    EXPECT_TRUE(lists.demuxers.contains(QStringLiteral("3dostr")));
+    // 只能读的格式不该出现在能写清单里（反之亦然）
+    EXPECT_FALSE(lists.muxers.contains(QStringLiteral("3dostr")));
+    EXPECT_FALSE(lists.demuxers.contains(QStringLiteral("3g2")));
+    // 表头与图例行不能混进来
+    EXPECT_FALSE(lists.muxers.contains(QStringLiteral("=")));
+    EXPECT_FALSE(lists.demuxers.contains(QStringLiteral("=")));
+}
+
+TEST(FfmpegCommandCatalog, CapabilityCacheKeepsDemuxersApartFromMuxers) {
+    FfmpegCapabilityCache::Instance().Clear();
+    FfmpegCapabilityCache::Instance().SetFormats({QStringLiteral("lavfi")},
+                                                 {QStringLiteral("ffmetadata")});
+    auto& caps = FfmpegCapabilityCache::Instance();
+    EXPECT_TRUE(caps.HasDemuxer(QStringLiteral("lavfi")));
+    EXPECT_FALSE(caps.HasMuxer(QStringLiteral("lavfi")));
+    EXPECT_TRUE(caps.HasMuxer(QStringLiteral("ffmetadata")));
+    EXPECT_FALSE(caps.HasDemuxer(QStringLiteral("ffmetadata")));
+    EXPECT_TRUE(caps.HasFormat(QStringLiteral("lavfi")));
+    EXPECT_FALSE(caps.HasFormat(QStringLiteral("unknown-fmt")));
+    caps.Clear();
+    // 清过之后回到"不知道"，不能反过来给用户造假报错
+    EXPECT_TRUE(caps.HasMuxer(QStringLiteral("whatever")));
+    EXPECT_FALSE(caps.formats_known());
+}
+
 TEST(FfmpegCommandCatalog, ParsesCapabilityLists) {
     const QString encoders = QStringLiteral(
         "Encoders:\n"
@@ -219,6 +346,57 @@ TEST(FfmpegCommandExplainer, ExplainsTypicalTranscode) {
     EXPECT_TRUE(result.flow.contains(QStringLiteral("输出文件")));
     EXPECT_TRUE(result.flow.contains(QStringLiteral("视频编码器")));
     EXPECT_TRUE(result.flow.contains(QStringLiteral("视频质量 (CRF)")));
+}
+
+TEST(FfmpegCommandExplainer, RecognizesMultipleOutputs) {
+    // 一条命令可以有两个输出：写在两个输出之间的参数归属后一个输出
+    const auto result = FfmpegCommandExplainer::Explain(
+        {QStringLiteral("-i"), QStringLiteral("in.mp4"),
+         QStringLiteral("-s"), QStringLiteral("hd480"), QStringLiteral("out1.mp4"),
+         QStringLiteral("-s"), QStringLiteral("hd720"), QStringLiteral("out2.mp4")});
+
+    EXPECT_TRUE(result.has_output);
+    EXPECT_EQ(result.output_count, 2);
+    int output_tokens = 0;
+    for (const auto& token : result.tokens) {
+        if (token.role == FfmpegTokenRole::OutputFile) {
+            ++output_tokens;
+        }
+    }
+    EXPECT_EQ(output_tokens, 2);
+    EXPECT_EQ(result.tokens.back().role, FfmpegTokenRole::OutputFile);
+    EXPECT_EQ(result.tokens.back().group_index, 1);
+    EXPECT_FALSE(result.notes.empty());
+}
+
+TEST(FfmpegCommandExplainer, SecondOutputIsNotCalledMisplaced) {
+    // 旧实现只认最后一个裸参数，前面的输出文件会被说成"位置不明"
+    const auto result = FfmpegCommandExplainer::Explain(
+        {QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("out1.mp4"),
+         QStringLiteral("-c"), QStringLiteral("copy"), QStringLiteral("out2.mp4")});
+    for (const auto& token : result.tokens) {
+        if (token.token == QStringLiteral("out1.mp4") || token.token == QStringLiteral("out2.mp4")) {
+            EXPECT_EQ(token.role, FfmpegTokenRole::OutputFile) << token.token.toStdString();
+            EXPECT_TRUE(token.warning.isEmpty()) << token.token.toStdString();
+        }
+    }
+}
+
+TEST(FfmpegCommandExplainer, UnresolvedTokensCarryNoAdvice) {
+    // 认不出来的结构必须说"未解析"，而不是给一条可能错的纠正建议
+    const auto result = FfmpegCommandExplainer::Explain(
+        {QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-x264-params"),
+         QStringLiteral("x"), QStringLiteral("out.mp4")});
+    bool found_unresolved = false;
+    for (const auto& token : result.tokens) {
+        if (token.role == FfmpegTokenRole::Unresolved) {
+            found_unresolved = true;
+            EXPECT_TRUE(token.warning.isEmpty());
+            EXPECT_TRUE(!token.description.isEmpty());
+        }
+    }
+    EXPECT_TRUE(found_unresolved);
+    EXPECT_FALSE(result.structure_known);
 }
 
 TEST(FfmpegCommandExplainer, UnknownOptionIsNotInvented) {
