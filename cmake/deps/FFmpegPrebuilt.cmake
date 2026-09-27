@@ -12,8 +12,10 @@
 #           FFmpeg::swscale FFmpeg::swresample
 #
 # 可用开关:
-#   -DFFMPEG_ROOT=<dir>                    强制使用某个 FFmpeg 根目录
-#   -DVIDEOEYE_FFMPEG_USE_PKGCONFIG=ON|OFF Linux/macOS 是否优先用系统 FFmpeg
+#   -DFFMPEG_ROOT=<dir>                    强制使用某个 FFmpeg 根目录（优先级最高，
+#                                          Linux/macOS 上也会盖过系统 FFmpeg）
+#   -DVIDEOEYE_FFMPEG_USE_PKGCONFIG=ON|OFF 未指定 FFMPEG_ROOT 时，Linux/macOS 是否
+#                                          优先用系统 FFmpeg
 #   -DVIDEOEYE_BUNDLE_FFMPEG=ON|OFF        是否把动态库复制进构建产物 / 安装目录
 #
 # 为什么不统一成一种方式:
@@ -27,10 +29,15 @@ if(DEFINED __VIDEOEYE_FFMPEG_INCLUDED)
 endif()
 set(__VIDEOEYE_FFMPEG_INCLUDED TRUE)
 
-# 在 file scope 里先算好脚本路径。
-# 不能在 function 内部用 CMAKE_CURRENT_LIST_DIR —— 函数体读到的是"调用方"的目录,
-# 那样会拼出 <源码根>/FFmpegRuntimeDeploy.cmake 这种不存在的路径。
-set(_FFMPEG_DEPLOY_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/FFmpegRuntimeDeploy.cmake")
+# 部署脚本路径。
+# 两个坑:
+#   1) 不能在 function 内部用 CMAKE_CURRENT_LIST_DIR —— 函数体读到的是"调用方"的
+#      目录, 那样会拼出 <源码根>/FFmpegRuntimeDeploy.cmake 这种不存在的路径。
+#   2) 普通变量也不行 —— videoeye_install_ffmpeg() 生成的 install(CODE) 是安装
+#      时才执行的独立 cmake 进程, 那时连目录作用域都没了。所以用 CACHE INTERNAL。
+set(VIDEOEYE_FFMPEG_DEPLOY_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/FFmpegRuntimeDeploy.cmake"
+    CACHE INTERNAL "FFmpeg 运行时部署脚本")
+set(_FFMPEG_DEPLOY_SCRIPT "${VIDEOEYE_FFMPEG_DEPLOY_SCRIPT}")
 
 set(_ffmpeg_components avcodec avformat avutil swscale swresample)
 
@@ -369,30 +376,57 @@ endfunction()
 # ============================================================
 # 6) 选一条路
 # ============================================================
+# 优先级: 显式 FFMPEG_ROOT  >  (Linux/macOS) 系统 pkg-config  >  默认预编译包目录
+#
+# 为什么 FFMPEG_ROOT 必须压过 pkg-config:
+#   以前 Linux/macOS 上先试 pkg-config，成功就直接用了系统 FFmpeg, 于是
+#   -DFFMPEG_ROOT=... 指定的那份被静默忽略 —— 明明想编 8.1, 实际编的是系统 6.x,
+#   而且 FFmpeg: system (pkg-config) 这行配置摘要看起来完全正常, 排查成本极高。
+#   显式指定了一个目录, 就只应该有两种结果: 用它, 或者明确说它为什么不能用。
 set(_pc_ok FALSE)
-if(VIDEOEYE_FFMPEG_USE_PKGCONFIG AND NOT WIN32)
-    _ffmpeg_try_pkgconfig(_pc_ok)
-endif()
+set(_prebuilt_ok FALSE)
 
-if(NOT _pc_ok)
+if(FFMPEG_ROOT)
+    if(NOT EXISTS "${FFMPEG_ROOT}/include/libavcodec/avcodec.h")
+        message(FATAL_ERROR
+            "FFMPEG_ROOT 指向的不是可用的 FFmpeg 开发包: ${FFMPEG_ROOT}\n"
+            "在该目录下找不到 include/libavcodec/avcodec.h。\n"
+            "期望结构: <FFMPEG_ROOT>/{include/, lib/}（Windows 还要 bin/*.dll）。\n"
+            "想改用系统 FFmpeg 的话, 请不要设置 FFMPEG_ROOT（或把它置为空）。")
+    endif()
+    # _ffmpeg_try_prebuilt() 把 FFMPEG_ROOT 放在候选列表第一位; 目录里缺某个组件的
+    # 库文件时它自己会 FATAL_ERROR 并列出缺什么, 这里只是兜底。
     _ffmpeg_try_prebuilt(_prebuilt_ok)
     if(NOT _prebuilt_ok)
-        if(WIN32)
-            message(FATAL_ERROR
-                "未找到 FFmpeg 预编译包。\n"
-                "期望目录: ${VIDEOEYE_PREBUILT_ROOT}/${_ffmpeg_platform}/ffmpeg/{include,lib,bin}\n"
-                "修复方式:\n"
-                "  powershell -ExecutionPolicy Bypass -File scripts\\fetch-ffmpeg.ps1\n")
-        else()
-            message(FATAL_ERROR
-                "未找到 FFmpeg。已尝试两条路径:\n"
-                "  1) pkg-config: 缺少 ${_ffmpeg_components} 对应的 lib*.pc\n"
-                "  2) 预编译包:   ${VIDEOEYE_PREBUILT_ROOT}/${_ffmpeg_platform}/ffmpeg/{include,lib,bin}\n"
-                "修复方式 (任选其一):\n"
-                "  Debian/Ubuntu: sudo apt install -y libavcodec-dev libavformat-dev libavutil-dev \\\n"
-                "                 libswscale-dev libswresample-dev\n"
-                "  macOS:         brew install ffmpeg\n"
-                "  已有机:        cmake -DFFMPEG_ROOT=/path/to/ffmpeg ...\n")
+        message(FATAL_ERROR
+            "FFMPEG_ROOT 指定的包不完整: ${FFMPEG_ROOT}\n"
+            "链接需要 include/ + lib/（Windows 还需要 bin/ 下的运行时 DLL）。")
+    endif()
+else()
+    if(VIDEOEYE_FFMPEG_USE_PKGCONFIG AND NOT WIN32)
+        _ffmpeg_try_pkgconfig(_pc_ok)
+    endif()
+
+    if(NOT _pc_ok)
+        _ffmpeg_try_prebuilt(_prebuilt_ok)
+        if(NOT _prebuilt_ok)
+            if(WIN32)
+                message(FATAL_ERROR
+                    "未找到 FFmpeg 预编译包。\n"
+                    "期望目录: ${VIDEOEYE_PREBUILT_ROOT}/${_ffmpeg_platform}/ffmpeg/{include,lib,bin}\n"
+                    "修复方式:\n"
+                    "  powershell -ExecutionPolicy Bypass -File scripts\\fetch-ffmpeg.ps1\n")
+            else()
+                message(FATAL_ERROR
+                    "未找到 FFmpeg。已尝试两条路径:\n"
+                    "  1) pkg-config: 缺少 ${_ffmpeg_components} 对应的 lib*.pc\n"
+                    "  2) 预编译包:   ${VIDEOEYE_PREBUILT_ROOT}/${_ffmpeg_platform}/ffmpeg/{include,lib,bin}\n"
+                    "修复方式 (任选其一):\n"
+                    "  Debian/Ubuntu: sudo apt install -y libavcodec-dev libavformat-dev libavutil-dev \\\n"
+                    "                 libswscale-dev libswresample-dev\n"
+                    "  macOS:         brew install ffmpeg\n"
+                    "  已有机:        cmake -DFFMPEG_ROOT=/path/to/ffmpeg ...\n")
+            endif()
         endif()
     endif()
 endif()
@@ -485,10 +519,17 @@ function(videoeye_ffmpeg_rpath out_var)
     else()
         set(_rpath "\$ORIGIN/../lib;\$ORIGIN")
     endif()
-    # 原始库目录也带上: 关掉 VIDEOEYE_BUNDLE_FFMPEG 时靠它兜底
-    foreach(_dir IN LISTS FFMPEG_LIBRARY_DIRS)
-        list(APPEND _rpath "${_dir}")
-    endforeach()
+    # 构建机上的原始库目录只在"不随包部署"时才有意义 —— 那时 lib/ 里没有 FFmpeg,
+    # 只能指回系统目录。开了 VIDEOEYE_BUNDLE_FFMPEG 就绝不能带:
+    #   1) 安装产物的 RPATH 里会留下 /usr/lib/x86_64-linux-gnu 这种构建机绝对路径,
+    #      拷到别的机器上读的是一个不存在的目录;
+    #   2) 更糟的是它会掩盖部署错误 —— 库没拷全时程序照样能跑(用的是系统那份),
+    #      等换台机器才炸, 而那时已经分不清是部署问题还是构建问题。
+    if(NOT VIDEOEYE_BUNDLE_FFMPEG)
+        foreach(_dir IN LISTS FFMPEG_LIBRARY_DIRS)
+            list(APPEND _rpath "${_dir}")
+        endforeach()
+    endif()
     set(${out_var} "${_rpath}" PARENT_SCOPE)
 endfunction()
 
@@ -541,6 +582,24 @@ function(videoeye_install_ffmpeg)
     if(WIN32 AND FFMPEG_WINDOWS_DLLS)
         install(FILES ${FFMPEG_WINDOWS_DLLS} DESTINATION bin)
     elseif(NOT WIN32 AND FFMPEG_RUNTIME_FILES)
-        install(FILES ${FFMPEG_RUNTIME_FILES} DESTINATION lib)
+        # 与构建期共用同一个部署脚本, 而不是 install(FILES):
+        # 版本化 .so 是一条 symlink 链 (libavcodec.so -> .so.61 -> .so.61.19.100),
+        # install(FILES) 只会往目标目录放一个文件, 既丢掉 SONAME 名(.so.61, 加载器
+        # 真正按这个名字找), 也不会带上链上的其余名字 —— 装出来的程序在装了 FFmpeg
+        # 的机器上看着正常, 换台机器就 "cannot open shared object file"。
+        install(CODE "
+            execute_process(
+                COMMAND \"\${CMAKE_COMMAND}\"
+                        \"-DVE_LIBS=${FFMPEG_RUNTIME_FILES}\"
+                        \"-DVE_DEST=\${CMAKE_INSTALL_PREFIX}/lib\"
+                        -P \"${VIDEOEYE_FFMPEG_DEPLOY_SCRIPT}\"
+                RESULT_VARIABLE _res
+                OUTPUT_VARIABLE _out
+                ERROR_VARIABLE _err)
+            message(STATUS \"\${_out}\")
+            if(NOT _res EQUAL 0)
+                message(FATAL_ERROR \"FFmpeg 运行时库安装失败: \${_err}\")
+            endif()
+        ")
     endif()
 endfunction()

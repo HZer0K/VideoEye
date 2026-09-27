@@ -93,10 +93,13 @@ build/test-release/bin/   ← 带单元测试的构建
 | Windows | `third_party/prebuilt/windows-x64/ffmpeg/{include,lib,bin}` | 必须有 `.lib` 导入库才能链接；缺失时 `build.bat` 自动调 `scripts/fetch-ffmpeg.ps1` |
 | Linux / macOS | `pkg-config` 找系统包（`libavcodec`…） | 找不到才回退到 `third_party/prebuilt/<platform>/ffmpeg/` |
 
+优先级：**`-DFFMPEG_ROOT=…` > 系统 `pkg-config` > 默认预编译目录**。显式指定了 `FFMPEG_ROOT`
+就一定用它（目录不完整直接报错，不会悄悄换回系统包），否则 Linux/macOS 先试系统包。
+
 相关开关：
 
 ```bash
--DFFMPEG_ROOT=/path/to/ffmpeg          # 强制指定 FFmpeg 根目录
+-DFFMPEG_ROOT=/path/to/ffmpeg          # 强制指定 FFmpeg 根目录（优先级最高）
 -DVIDEOEYE_FFMPEG_USE_PKGCONFIG=OFF    # 关掉 pkg-config，只用预编译包
 -DVIDEOEYE_BUNDLE_FFMPEG=OFF           # 不把动态库复制进产物（用系统库路径运行）
 ```

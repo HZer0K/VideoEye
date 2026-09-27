@@ -56,7 +56,7 @@ Windows 的 `-test-` preset 额外带 `VCPKG_MANIFEST_FEATURES=tests`，gtest �
 | 依赖 | Windows 来源 | Linux / macOS 来源 |
 |------|-------------|-----------|
 | Qt6 (Widgets) | vcpkg manifest | apt (`qt6-base-dev`) / brew (`qt@6`) |
-| FFmpeg | `scripts/fetch-ffmpeg.ps1`（gyan.dev 预编译，版本锁在 `cmake/ffmpeg-version.json`） | 系统包 + `pkg-config`（找不到才回退 `third_party/prebuilt/<platform>/ffmpeg/`） |
+| FFmpeg | `scripts/fetch-ffmpeg.ps1`（gyan.dev 预编译，**GPLv3 构建**，版本锁在 `cmake/ffmpeg-version.json`） | 系统包 + `pkg-config`（找不到才回退 `third_party/prebuilt/<platform>/ffmpeg/`；显式给 `-DFFMPEG_ROOT` 时以它为准） |
 | GoogleTest（仅测试） | vcpkg feature `tests` | apt (`libgtest-dev`) / brew (`googletest`) |
 
 **项目只有 Qt Widgets + FFmpeg 两个硬依赖。** 媒体信息（FFmpeg `libavformat`）、图表
