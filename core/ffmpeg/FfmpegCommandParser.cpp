@@ -2,6 +2,8 @@
 
 #include <QFileInfo>
 
+#include "core/ffmpeg/FfmpegCommandCatalog.h"
+
 namespace videoeye {
 namespace ffmpegtool {
 namespace {
@@ -25,6 +27,40 @@ QString ShellOperatorName(QChar c) {
     case '$': return QStringLiteral("变量/命令替换 $");
     default:  return QString(c);
     }
+}
+
+// 单独的 "-" 是"标准输入/输出"的约定写法，它不是选项。
+bool IsOptionToken(const QString& token) {
+    return token.startsWith(QLatin1Char('-')) && token != QLatin1String("-");
+}
+
+// 往进程通道（而不是文件）写的输出目标。注意 pipe:2 写的是 stderr，
+// 一样会把二进制灌进本页的日志区。
+bool IsPipeOutputTarget(const QString& target) {
+    return target == QLatin1String("-") ||
+           target.startsWith(QLatin1String("pipe:"), Qt::CaseInsensitive);
+}
+
+// 只产出文本的 muxer。它们即使写到管道上也只是几行文本，不会灌满日志框。
+bool WritesTextOnly(const QString& format) {
+    if (format.isEmpty()) {
+        return false;
+    }
+    static const QStringList kTextOnly = {
+        QStringLiteral("null"), QStringLiteral("md5"), QStringLiteral("framemd5"),
+        QStringLiteral("framecrc"), QStringLiteral("ffmetadata"),
+    };
+    return kTextOnly.contains(format, Qt::CaseInsensitive);
+}
+
+// 从 from 往后还能不能再看到一个 -i（用于判断 -f 管的是输入还是输出）
+bool HasLaterInput(const QStringList& arguments, int from) {
+    for (int i = from; i < arguments.size(); ++i) {
+        if (arguments.at(i) == QLatin1String("-i")) {
+            return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace
@@ -130,35 +166,112 @@ ParsedCommand ParseCommandLine(const QString& text) {
     return result;
 }
 
-QString DetectStdoutMediaOutput(const QStringList& arguments) {
-    // `-f null -` 是常见的"只解码不出片"基准测试写法, 它不往 stdout 写任何东西,
-    // 不能因为末尾有个 `-` 就误判。
-    bool null_muxer = false;
-    for (int i = 0; i + 1 < arguments.size(); ++i) {
-        if (arguments.at(i) == QLatin1String("-f") &&
-            arguments.at(i + 1).compare(QLatin1String("null"), Qt::CaseInsensitive) == 0) {
-            null_muxer = true;
-        }
-        if (arguments.at(i) == QLatin1String("-f") &&
-            arguments.at(i + 1).startsWith(QLatin1String("pipe"), Qt::CaseInsensitive)) {
-            return arguments.at(i + 1);   // -f pipe / -f pipe:1 明确走管道
-        }
+FfmpegCommandStructure AnalyzeCommandStructure(const QStringList& arguments) {
+    FfmpegCommandStructure out;
+    const int n = arguments.size();
+    out.args.resize(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        out.args[static_cast<size_t>(i)].index = i;
     }
 
-    for (int i = 0; i < arguments.size(); ++i) {
-        const QString& a = arguments.at(i);
-        // 注意顺序: 裸 "-" 自己也以 '-' 开头, 必须先单独判断再跳过其它选项
-        if (a.compare(QLatin1String("pipe:1"), Qt::CaseInsensitive) == 0 ||
-            a.compare(QLatin1String("pipe:"), Qt::CaseInsensitive) == 0) {
-            return a;
-        }
-        // 紧跟 -i 的 "-" 是从 stdin 读(工作台也没法喂 stdin), 末尾的 "-" 是往 stdout 写
-        if (a == QLatin1String("-") && !null_muxer) {
-            return a;
-        }
-        if (a.startsWith(QLatin1Char('-'))) {
+    int inputs_seen = 0;
+    int outputs_seen = 0;
+    QString pending_output_format;   // 尚未落地的那个输出组当前的 -f 值
+
+    for (int i = 0; i < n; ++i) {
+        const QString token = arguments.at(i);
+        FfmpegArgPlacement& place = out.args[static_cast<size_t>(i)];
+        place.output_side = (inputs_seen > 0);
+
+        if (token == QLatin1String("-i")) {
+            place.role = FfmpegArgRole::Option;
+            if (i + 1 >= n) {
+                out.complete = false;   // -i 少了文件名
+                continue;
+            }
+            place.value_index = i + 1;
+            out.args[static_cast<size_t>(i + 1)].role = FfmpegArgRole::InputUrl;
+            ++inputs_seen;
+            ++i;
             continue;
         }
+
+        if (IsOptionToken(token)) {
+            place.role = FfmpegArgRole::Option;
+            const FfmpegCatalogEntry* entry = FfmpegCommandCatalog::Find(token);
+
+            if (entry != nullptr && entry->takes_value) {
+                // 值 '-' 开头的不吞（-ss -10 这种负数值极罕见，吞了输出文件更亏）
+                const bool has_value = (i + 1 < n) && !arguments.at(i + 1).startsWith(QLatin1Char('-'));
+                if (!has_value) {
+                    continue;
+                }
+                place.value_index = i + 1;
+                FfmpegArgPlacement& value = out.args[static_cast<size_t>(i + 1)];
+                value.role = FfmpegArgRole::OptionValue;
+                value.output_side = place.output_side;
+                if (token == QLatin1String("-f")) {
+                    // 还没产出任何输出、且后面还有 -i → 这个 -f 管下一个输入，
+                    // 否则它就是（下一个）输出的格式。
+                    place.applies_to_input = (outputs_seen == 0) && HasLaterInput(arguments, i + 2);
+                    if (!place.applies_to_input) {
+                        pending_output_format = arguments.at(i + 1);
+                    }
+                }
+                ++i;
+                continue;
+            }
+
+            if (entry == nullptr && i + 1 < n && !IsOptionToken(arguments.at(i + 1))) {
+                // 字典里没有这个选项 → 不知道它带不带值。紧跟着的裸 token 可能是它的值，
+                // 也可能是输出文件。认不出来就标 Uncertain，不替用户下结论。
+                FfmpegArgPlacement& next = out.args[static_cast<size_t>(i + 1)];
+                next.role = FfmpegArgRole::Uncertain;
+                next.output_side = place.output_side;
+                out.complete = false;
+                ++i;
+            }
+            continue;
+        }
+
+        // 裸 token（含单独的 "-"）
+        if (inputs_seen == 0) {
+            // 任何 -i 之前就出现的裸参数不合 ffmpeg 语法，多半是漏写了 -i
+            place.role = FfmpegArgRole::Uncertain;
+            out.complete = false;
+            continue;
+        }
+        place.role = FfmpegArgRole::OutputUrl;
+        place.output_index = outputs_seen++;
+        place.output_format = pending_output_format;
+        pending_output_format.clear();
+    }
+
+    out.input_count = inputs_seen;
+    out.output_count = outputs_seen;
+    out.has_input = (inputs_seen > 0);
+    return out;
+}
+
+QString DetectStdoutMediaOutput(const QStringList& arguments) {
+    const FfmpegCommandStructure structure = AnalyzeCommandStructure(arguments);
+    for (const FfmpegArgPlacement& place : structure.args) {
+        // 输出组里的明晰目标 + 归属不明但落在输出侧的候选，都要看一眼 ——
+        // 后者宁可多问一次，也不能让二进制灌进日志框。
+        const bool candidate = place.role == FfmpegArgRole::OutputUrl ||
+                               (place.role == FfmpegArgRole::Uncertain && place.output_side);
+        if (!candidate) {
+            continue;
+        }
+        const QString& target = arguments.at(place.index);
+        if (!IsPipeOutputTarget(target)) {
+            continue;
+        }
+        // -f null / md5 ... 这类"只解码/只算摘要"的写法写到管道上也是文本
+        if (WritesTextOnly(place.output_format)) {
+            continue;
+        }
+        return target;
     }
     return QString();
 }
