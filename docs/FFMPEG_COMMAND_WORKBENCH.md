@@ -31,13 +31,24 @@ VideoEye 自带一整套基于 libav* 的分析能力，但有些事只有**原�
 * 引号没闭合 → 报"缺少一个引号"，不猜；
 * 第一个 token 必须是 `ffmpeg` / `ffmpeg.exe` / 指向它的完整路径，也可以直接省略。
 
-实际执行的可执行程序由 `FfmpegToolLocator` 解析，优先级：
+实际执行的可执行程序按下面的规则定：
 
-1. 页面里手填的路径（存 `QSettings`，Linux/macOS 上系统 ffmpeg 不在 PATH 时用它）
-2. 随包分发的那份（**默认没有** —— 只有打包者开了 `-DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON` 才有）
-3. 构建期探测到的绝对路径（`cmake/deps/FfmpegTool.cmake` 写进生成头文件）
-4. `PATH`
-5. 各平台常见安装目录（详见第 5.1 节）
+* **命令里写了完整路径**（`C:\tools\ffmpeg.exe -i in.mp4 out.mp4`）→ 就执行那一个程序。
+  这是原生命令行的直觉：把某个路径写在命令头上，意思就是要跑它。路径不存在会直接拦下，
+  不会悄悄换成别的一个。
+* 只写了裸的 `ffmpeg`（或省略程序名）→ 用 `FfmpegToolLocator` 解析出来的那个，优先级：
+
+  1. 页面里手填的路径（存 `QSettings`，Linux/macOS 上系统 ffmpeg 不在 PATH 时用它）
+  2. 随包分发的那份（**默认没有** —— 只有打包者开了 `-DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON` 才有）
+  3. 构建期探测到的绝对路径（**仅 Debug 构建**；见下）
+  4. `PATH`
+  5. 各平台常见安装目录（详见第 5.1 节）
+  6. 构建期探测到的绝对路径（兜底）
+
+  第 3 项为什么要分两处：构建期路径是**构建机**的事实。开发机自己跑它最合适，
+  但安装版如果还认它，用户新装/升级了 PATH 里的 ffmpeg 也仍会用构建机那一份，
+  安装包还要凭空依赖一台它不该知道的开发机。所以 Release 下它降级成兜底
+  （开关：`-DVIDEOEYE_FFMPEG_TOOL_PREFER_BUILDTIME=ON|OFF`，默认随 Debug 打开）。
 
 页面顶部会显示**实际使用的程序路径、来源和 `-version` 输出**。这一点很重要：
 GUI 链接的是预编译开发包（用来做分析），执行的可能是系统里另一份 ffmpeg，两者版本可以不同。
@@ -101,8 +112,19 @@ ui/ffmpeg_panel/FfmpegPanel.h|.cpp          页面（编辑 / 输出 / 字典三
   按 `\n` 分行会攒出一条几十 KB 的长行，所以这里 `\r` 也当行分隔；
 * 输出编码不保证是 UTF-8（Windows 中文环境下 ffmpeg 可能吐本地编码），
   解码失败会退到 `QString::fromLocal8Bit`；
-* 「停止」先 `terminate()` 给进程 3 秒收尾时间（让它写出合法的 `moov` box），
-  到点没退出再 `kill()`。
+* 「停止」分三档递进，**先保证输出文件是完整的**：
+
+  1. 向 stdin 写一个 `q\n` —— ffmpeg 官方支持的交互方式，它会正常收尾并写出 `moov` box；
+  2. 3 秒后还没退出 → `terminate()`（Unix 的 SIGTERM 会被 ffmpeg 接住并按正常流程收尾）；
+  3. 再 3 秒还没退出 → `kill()`。
+
+  为什么必须先试 `q`：Windows 控制台版 ffmpeg 既不响应 `terminate()` 也没有 CTRL_BREAK
+  可发，直接强杀只会得到一个没有 `moov` box 的 mp4 —— 实测 48 字节、`ffprobe` 报
+  `moov atom not found`；而写 `q` 那次退出码 0、输出文件完整可读（21.24s）。
+  唯一例外是命令里带 `-nostdin`：那时 ffmpeg 根本不读 stdin，写进去没人接，
+  页面会提前说明"无法优雅收尾，输出可能被截断"。
+  结果里的 `stop_stage` 会告诉界面走到了哪一档，被强杀时状态栏显示
+  **「已停止（输出可能不可用）」** 而不是一律显示"已停止"。
 
 ## 5. 用户机器上没装 ffmpeg 怎么办
 
@@ -120,12 +142,16 @@ ffmpeg 命令行不是一层薄壳 —— 它是封装格式、滤镜图、编�
 | --- | --- | --- |
 | 1 | 用户在页面里指定的路径 | 用 QSettings 记住，重启后仍生效；路径不存在也会原样显示，方便排查 |
 | 2 | 随包分发的 `ffmpeg.exe` | 仅当打包者显式开了 `-DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON` 才存在；默认没有（见「许可证」一节） |
-| 3 | 构建期探测到的绝对路径 | configure 时写进 `FfmpegToolConfig.h` |
+| 3 | 构建期探测到的绝对路径 | 仅 Debug 构建插队在这里；Release 下让位给 PATH（见第 2 节） |
 | 4 | `PATH` | 最常见的安装方式 |
 | 5 | 各平台常见安装目录 | scoop / Chocolatey / winget / Homebrew / MacPorts / snap / flatpak / 手工解压目录 |
+| 6 | 构建期探测到的绝对路径 | 兜底：本机哪儿都找不到时的最后一次尝试 |
 
 第 5 项专门解决"装了但没进 PATH"：Windows 上 scoop / choco 经常不写 PATH，
 macOS 的 Homebrew 在 Apple Silicon 上跑到了 `/opt/homebrew/bin`。
+
+另外还有一种不在表里的情况：**命令里直接写了完整路径**（`C:\tools\ffmpeg.exe -i ...`）。
+那一条命令就执行那一个程序，不走上面任何一项（详见第 2 节）。
 
 ### 5.2 页面上的表现
 
@@ -147,9 +173,14 @@ macOS 的 Homebrew 在 Apple Silicon 上跑到了 `/opt/homebrew/bin`。
 **三个平台都刻意不随包分发**，两条理由：一是许可证（见下面一节），二是把系统的 ffmpeg
 拷进安装树会和系统的 `libav*` 版本打架。
 
-打包者确实要随包时才用
-`-DFFMPEG_TOOL=<path> -DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON`：Windows 上若那份 ffmpeg 不在
-预编译包 `bin/` 里，需确认它自包含，否则只拷一个 exe 过去会以 `0xc0000135` 起不来。
+打包者确实要随包时才用 `-DFFMPEG_TOOL=<path> -DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON`。
+这个开关**只支持 Windows**：Linux 的 `.so` 与 macOS 的 `@rpath`/签名都不是"复制一个文件"
+能解决的事，配置了直接 `FATAL_ERROR`（而不是给一个必然坏掉的安装树）。
+
+Windows 上也不再有"自包含"这个前提：configure 期会对那个 `ffmpeg.exe` 跑一次
+`file(GET_RUNTIME_DEPENDENCIES)`，把它真正依赖的 DLL（只限 ffmpeg 自己目录 /
+预编译包 `bin/` 里的那些，系统 DLL 不跟着分发）一起纳入构建期拷贝与 `install()`；
+解析不出来的依赖会明确列出来警告。
 
 ## 6. 构建与打包
 
@@ -172,11 +203,17 @@ CI 冒烟：Windows 只在 `dist\bin\ffmpeg.exe` **存在时**才跑 `-version`�
 3. 无效参数 —— 退出码非 0，自动切到「错误输出」页
 4. 缺失输入 —— ffmpeg 报错，页面显示"无法启动/失败"而不是静默
 5. 已存在的输出文件 —— 不带 `-y` 时 ffmpeg 会卡住等输入，字典里 `-y` 说了原因
-6. 运行中停止 —— 状态显示"已停止"，耗时正常，界面不卡
+6. 运行中停止 —— 状态显示"已停止（正常收尾）"，耗时正常，界面不卡；
+   **停完拿 ffprobe 打开输出文件，必须能读出时长**（这才是"停止没弄坏文件"的判据）。
+   命令里带 `-nostdin` 时改成显示"已停止（输出可能不可用）"，并附有警告
 7. 长时间任务 —— 日志实时滚动，主线程不阻塞
 8. 含 `\|` / `&&` 的命令 —— 被拦截并给出说明
 9. `pipe:1` / `pipe:2` 输出 —— 被拦截，提示改成文件输出
    （`-f null -`、`-f md5 -` 这类只出文本的写法不拦；多输出命令里靠后的那个 `-f matroska -` 也要拦住）
+10. 命令里写完整路径（`C:\tools\ffmpeg.exe -i a.mp4 b.mp4`）—— 日志抬头显示的就是那一个程序，
+    页面设置里的另一个路径会被明确标注"已被忽略"；路径不存在时直接拦下并提示
+11. 信息查询命令（`-version` / `-encoders` / `-formats`）—— 只解释它的查询作用，
+    不出现"没有输入文件 / 没有输出文件"
 10. 页面上手动指定到 `PATH` 里的 / 自定义路径的 ffmpeg —— 都能正确显示路径与版本；
     探测途中改路径，能力清单不会出现"旧版本 + 新编码器列表"的混杂结果
 11. 机器上完全没有 ffmpeg —— 「运行」禁用且 tooltip 说明原因，补救条三个按钮可点，
