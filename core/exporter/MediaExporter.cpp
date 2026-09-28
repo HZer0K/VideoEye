@@ -124,6 +124,10 @@ void MediaExporter::Export(const ExportOptions& opt) {
 
     QString err_msg;
 
+    // 原子替换: 先写入同目录临时文件, 成功写完并关闭后才重命名为目标路径,
+    // 这样导出失败/取消时原目标文件不受影响 (避免数据丢失)。
+    const QString temp_path = opt.output_path + QStringLiteral(".part");
+
     auto cleanup_and_emit = [&](bool is_error, const QString& msg) {
         if (pkt) av_packet_free(&pkt);
         if (frame) av_frame_free(&frame);
@@ -136,7 +140,7 @@ void MediaExporter::Export(const ExportOptions& opt) {
         if (in_fmt) { avformat_close_input(&in_fmt); in_fmt = nullptr; }
         exporting_ = false;
         if (is_error) {
-            QFile::remove(opt.output_path); // 删除不完整产物
+            QFile::remove(temp_path); // 删除不完整产物 (不碰原目标文件)
             emit ExportError(msg.isEmpty() ? "导出失败" : msg);
         } else {
             emit ExportFinished(opt.output_path);
@@ -155,7 +159,7 @@ void MediaExporter::Export(const ExportOptions& opt) {
         return;
     }
 
-    if (!open_output(out_fmt, opt.output_path.toStdString(), err_msg)) {
+    if (!open_output(out_fmt, temp_path.toStdString(), err_msg)) {
         // out_fmt 可能为 nullptr
         if (out_fmt) { avformat_free_context(out_fmt); out_fmt = nullptr; }
         if (in_fmt) avformat_close_input(&in_fmt);
@@ -370,8 +374,9 @@ void MediaExporter::Export(const ExportOptions& opt) {
         while (avcodec_receive_packet(s.enc, epkt) >= 0) {
             epkt->stream_index = s.out_idx;
             av_packet_rescale_ts(epkt, s.enc->time_base, out_fmt->streams[s.out_idx]->time_base);
-            av_interleaved_write_frame(out_fmt, epkt);
+            const int wr = av_interleaved_write_frame(out_fmt, epkt);
             av_packet_unref(epkt);
+            if (wr < 0 && err_msg.isEmpty()) err_msg = "写入编码输出包失败";
         }
         av_packet_free(&epkt);
     };
@@ -440,7 +445,14 @@ void MediaExporter::Export(const ExportOptions& opt) {
     bool reached_end = false;
     while (!cancel_) {
         const int ret = av_read_frame(in_fmt, pkt);
-        if (ret < 0) { reached_end = true; break; }
+        if (ret < 0) {
+            if (ret == AVERROR_EOF) {
+                reached_end = true;   // 正常读到文件尾
+            } else if (err_msg.isEmpty()) {
+                err_msg = "读取输入文件失败";   // 真实读错误, 不应被当作成功结束
+            }
+            break;
+        }
 
         StreamCtx* sc = nullptr;
         for (auto& s : streams) if (s.in_idx == pkt->stream_index) { sc = &s; break; }
@@ -491,6 +503,9 @@ void MediaExporter::Export(const ExportOptions& opt) {
             av_packet_unref(pkt);
         }
 
+        // 写入失败立即停止, 避免后续包继续写入并掩盖错误 (否则会被误报为成功)
+        if (!err_msg.isEmpty()) break;
+
         // 进度
         if (progress_percent >= 0 && progress_percent != last_progress) {
             last_progress = progress_percent;
@@ -499,6 +514,7 @@ void MediaExporter::Export(const ExportOptions& opt) {
     }
 
     // flush 编码器
+    bool flushed_ok = false;
     if (!cancel_ && err_msg.isEmpty()) {
         for (auto& s : streams) {
             if (!s.do_encode) continue;
@@ -510,18 +526,25 @@ void MediaExporter::Export(const ExportOptions& opt) {
             }
             avcodec_send_frame(s.enc, nullptr);
             write_encoded_packets(s);
+            if (!err_msg.isEmpty()) break;   // 写入失败则停止 flush
         }
-        av_write_trailer(out_fmt);
-        emit ExportProgress(100);
+        if (err_msg.isEmpty()) {
+            if (av_write_trailer(out_fmt) < 0) {
+                err_msg = "写入文件尾失败";
+            } else {
+                emit ExportProgress(100);
+                flushed_ok = true;
+            }
+        }
     }
 
-    // 统一清理
+    // 统一清理 (先关闭 pb 与 context, 再做文件替换)
     if (pkt) av_packet_free(&pkt);
     if (frame) av_frame_free(&frame);
     free_streams(streams);
 
     const bool canceled = cancel_.load();
-    if (out_fmt->pb) avio_closep(&out_fmt->pb);
+    if (out_fmt && out_fmt->pb) avio_closep(&out_fmt->pb);
     avformat_free_context(out_fmt);
     out_fmt = nullptr;
     if (in_fmt) avformat_close_input(&in_fmt);
@@ -529,14 +552,22 @@ void MediaExporter::Export(const ExportOptions& opt) {
     exporting_ = false;
 
     if (canceled) {
-        QFile::remove(opt.output_path);
+        // 取消: 只删除临时文件, 保留原目标文件
+        QFile::remove(temp_path);
         emit ExportCanceled(opt.output_path);
-    } else if (reached_end) {
-        emit ExportFinished(opt.output_path);
-    } else {
-        // 非取消也非正常结束 (读取出错但已写部分) -> 视为错误
+    } else if (reached_end && err_msg.isEmpty() && flushed_ok) {
+        // 成功: 写完临时文件并关闭后才原子替换目标, 失败时原文件保留
         QFile::remove(opt.output_path);
-        emit ExportError(err_msg.isEmpty() ? "导出过程中读取失败" : err_msg);
+        if (QFile::rename(temp_path, opt.output_path)) {
+            emit ExportFinished(opt.output_path);
+        } else {
+            QFile::remove(temp_path);
+            emit ExportError("导出成功但无法写入目标路径 (重命名失败)");
+        }
+    } else {
+        // 读/写/封装失败: 删除临时文件, 保留原目标文件
+        QFile::remove(temp_path);
+        emit ExportError(err_msg.isEmpty() ? "导出过程中读取/写入失败" : err_msg);
     }
 }
 

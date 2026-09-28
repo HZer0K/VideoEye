@@ -80,8 +80,10 @@ void StreamAnalyzer::AnalyzePacket(const AVPacket* packet, const AVFormatContext
     stats_.min_packet_size = std::min(stats_.min_packet_size, packet->size);
     stats_.avg_packet_size = stats_.total_bytes / stats_.total_packets;
     
-    // 更新 GOP 信息
-    if (media_type == AVMEDIA_TYPE_VIDEO || !format_ctx) {
+    // 更新 GOP 信息: 只统计视频流的关键帧/帧数.
+    // 注意: 必须用 media_type 明确判定为视频, 不能退化为 "!format_ctx" 兜底——
+    // 否则在拿不到 format_ctx 时, 音频包/数据包也会按 GOP 帧累加, 污染 key_frame_count 与 GOP 统计.
+    if (media_type == AVMEDIA_TYPE_VIDEO) {
         UpdateGopInfo(packet);
     }
     

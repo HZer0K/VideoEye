@@ -23,6 +23,9 @@ extern "C" {
 #include "core/player/AudioVisualizer.h"
 #include "core/player/AudioOutput.h"
 #include "core/player/VideoFrameExporter.h"
+#include "core/player/AnalysisSession.h"
+#include "core/player/PlaybackSession.h"
+#include "core/task/TaskManager.h"
 #include "core/exporter/MediaExporter.h"
 #include "core/model/AnalysisEvent.h"
 #include "core/model/AudioVisualizationFrame.h"
@@ -66,13 +69,13 @@ public:
     void SetSeekMode(model::SeekMode mode) { seek_mode_.store(mode); }
     model::SeekMode GetSeekMode() const { return seek_mode_.load(); }
     // 拖动进度条期间调用: 抑制音频输出, 避免关键帧预览时从多个位置传出杂音
-    void SetSeekDragging(bool dragging) { drag_seeking_.store(dragging); }
-    
+    void SetSeekDragging(bool dragging) { playback_session_.SetSeekDragging(dragging); }
+
     // 状态查询
-    model::PlayerState GetState() const { return state_; }
+    model::PlayerState GetState() const { return playback_session_.state(); }
     model::StreamInfo GetStreamInfo() const { return stream_info_; }
-    int GetDuration() const { return duration_ms_; }
-    int GetCurrentPosition() const { return current_position_ms_.load(); }
+    int GetDuration() const { return playback_session_.duration_ms(); }
+    int GetCurrentPosition() const { return playback_session_.current_position_ms(); }
 
     // 最近一次打开失败的详细原因 (成功打开后清空)。用于"打开异常文件仍进入分析模式"的
     // 场景: MainWindow 据此在状态栏/分析模块展示失败原因, 而不是弹模态框阻断。
@@ -87,28 +90,30 @@ public:
     
     // 分析控制
     void EnableAnalysis(bool enable);
-    bool IsAnalysisEnabled() const { return analysis_enabled_; }
+    bool IsAnalysisEnabled() const { return analysis_session_.IsAnalysisEnabled(); }
     void SetFrameTypeAnalysisEnabled(bool enable);
-    void SetAudioFrameAnalysisEnabled(bool enable) { audio_frame_analysis_enabled_ = enable; }
-    void SetPacketAnalysisEnabled(bool enable) { packet_analysis_enabled_ = enable; }
-    void SetEventAnalysisEnabled(bool enable) { event_analysis_enabled_ = enable; }
-    void SetSyncAnalysisEnabled(bool enable) { sync_analysis_enabled_ = enable; }
-    void SetTimelineAnalysisEnabled(bool enable) { timeline_analysis_enabled_ = enable; }
-    void SetContainerStructureEnabled(bool enable) { container_structure_enabled_ = enable; }
+    void SetAudioFrameAnalysisEnabled(bool enable) { analysis_session_.SetAudioFrameAnalysisEnabled(enable); }
+    void SetPacketAnalysisEnabled(bool enable) { analysis_session_.SetPacketAnalysisEnabled(enable); }
+    void SetEventAnalysisEnabled(bool enable) { analysis_session_.SetEventAnalysisEnabled(enable); }
+    void SetSyncAnalysisEnabled(bool enable) { analysis_session_.SetSyncAnalysisEnabled(enable); }
+    void SetTimelineAnalysisEnabled(bool enable) { analysis_session_.SetTimelineAnalysisEnabled(enable); }
+    void SetContainerStructureEnabled(bool enable) { analysis_session_.SetContainerStructureEnabled(enable); }
     void SetMacroblockAnalysisEnabled(bool enable);
-    void SetSceneChangeAnalysisEnabled(bool enable) { scene_change_analysis_enabled_ = enable; }
+    void SetSceneChangeAnalysisEnabled(bool enable) { analysis_session_.SetSceneChangeAnalysisEnabled(enable); }
 
     // 画面质量 / 视觉缺陷（黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 曝光 / 色偏 / 梳齿 / 黑边）。
     // 开关会顺带启停分析用的工作线程；换采样档位用 SetVisualDefectOptions()。
     void SetVisualDefectAnalysisEnabled(bool enable);
-    bool IsVisualDefectAnalysisEnabled() const { return visual_defect_analysis_enabled_; }
+    bool IsVisualDefectAnalysisEnabled() const { return analysis_session_.IsVisualDefectAnalysisEnabled(); }
     void SetVisualDefectOptions(const analyzer::VisualDefectOptions& options);
-    const analyzer::VisualDefectOptions& GetVisualDefectOptions() const { return visual_defect_options_; }
+    // 线程安全地取视觉缺陷采样选项副本: 解码线程逐帧读取, UI 线程写入,
+    // 普通值类型直接跨线程访问存在数据竞争, 故加锁后返回副本。
+    analyzer::VisualDefectOptions GetVisualDefectOptions() const;
     // 播完 / 停止时把还开着的缺陷段闭合（否则最后一段要等下一次播放才显示）
     void FlushVisualDefectSegments(double end_timestamp_seconds);
 
     // 硬件解码
-    void SetHardwareDecodingEnabled(bool enable) { hw_decoding_enabled_ = enable; }
+    void SetHardwareDecodingEnabled(bool enable) { analysis_session_.SetHardwareDecodingEnabled(enable); }
     bool IsHardwareDecoding() const;
     std::string GetHwDeviceName() const;
 
@@ -123,14 +128,14 @@ public:
     // 渲染抑制: 播放区被隐藏时跳过画面输出 (sws_scale + FrameReady),
     // 解码线程、实时分析与音频照常运行; 重新展开播放区即恢复画面。
     void SetRenderingSuppressed(bool suppressed) {
-        rendering_suppressed_.store(suppressed, std::memory_order_relaxed);
+        playback_session_.SetRenderingSuppressed(suppressed);
     }
     bool IsRenderingSuppressed() const {
-        return rendering_suppressed_.load(std::memory_order_relaxed);
+        return playback_session_.IsRenderingSuppressed();
     }
     
     // 获取分析器
-    analyzer::StreamAnalyzer& GetStreamAnalyzer() { return stream_analyzer_; }
+    analyzer::StreamAnalyzer& GetStreamAnalyzer() { return analysis_session_.stream_analyzer(); }
     analyzer::StreamStats GetCurrentStats() const;
     
 signals:
@@ -188,8 +193,6 @@ signals:
     void MediaExportError(const QString& message);
 
 private:
-    // 解码线程
-    void DecodeThread();
     bool OpenInternal(const QString& url, const AVInputFormat* input_format, AVDictionary* input_options);
     void EmitAnalysisEvent(const QString& severity, const QString& type, int stream_index,
                            qint64 pts, double timestamp_seconds,
@@ -200,8 +203,21 @@ private:
     void EmitAudioVisualization(const AudioVisualizationResult& vis_result,
                                 int sample_rate, int channels, double timestamp_seconds, double level);
     void StartContainerStructureAnalysis(const QString& url);
-    void ReapContainerAnalysisThreads(bool wait_for_all);
-    void Cleanup();
+
+    // PlaybackSession 的回调入口: 解码线程在 demux / 解码 / 定位 / 播完的时机会调进来,
+    // 由 MediaPlayer 决定"要不要发分析信号、要不要计数"。详见 core/player/PlaybackSession.h。
+    void InstallPlaybackHooks();
+    void OnPlaybackPacket(const PacketContext& ctx);
+    void OnPlaybackVideoFrame(const VideoFrameContext& ctx);
+    void OnPlaybackAudioFrame(const AudioFrameContext& ctx);
+    void OnPlaybackSeekDone(double target_ms, model::SeekMode mode);
+    void OnPlaybackEndOfStream();
+
+    // 后台任务 slot 名: 容器结构分析 / 抽帧 / 媒体导出。
+    // 同一 slot 上永远只有一个任务在跑(见 core/task/TaskManager.h)。
+    static constexpr const char* kSlotContainerStructure = "container-structure";
+    static constexpr const char* kSlotFrameExport = "frame-export";
+    static constexpr const char* kSlotMediaExport = "media-export";
 
     // 画面质量 / 视觉缺陷: 按采样档位抽取解码帧 -> 降采样 -> 投递分析器
     void FeedVisualDefectFrame(const AVFrame* frame, double timestamp_seconds, bool audio_silent);
@@ -210,41 +226,23 @@ private:
     // 分析进度信号（内部做 1 秒节流，force=true 时立即发）
     void EmitVisualDefectStats(bool force);
     
-    // 状态
-    std::atomic<model::PlayerState> state_ = model::PlayerState::Idle;
-    std::atomic<bool> should_stop_ = false;
-    
-    // FFmpeg 上下文
-    AVFormatContext* format_ctx_ = nullptr;
-    std::unique_ptr<VideoDecoder> video_decoder_;
-    std::unique_ptr<AudioDecoder> audio_decoder_;
-    std::unique_ptr<AudioOutput> audio_output_;  // 平台原生音频输出 (PCM -> 声卡)
-    int video_stream_index_ = -1;
-    int audio_stream_index_ = -1;
-    
-    // 线程
-    std::thread decode_thread_;
-    std::mutex mutex_;
-    std::condition_variable cv_;
-    
+    // 播放会话: demux / 解码 / 音频输出 / 解码线程 / 播放时钟 / 播放状态机
+    // 全部住在 PlaybackSession 里; 状态、位置、时长都从它读。
+    PlaybackSession playback_session_;
+
     // 播放信息
     model::StreamInfo stream_info_;
-    int duration_ms_ = 0;
-    std::atomic<int> current_position_ms_{0};
     int volume_ = 100;
     QString current_url_;
     QString last_open_error_;   // 最近一次 Open/OpenRawPcm 失败的详细原因
 
-    // 定位方式 (进度条拖动策略)
-    std::atomic<model::SeekMode> seek_mode_{model::SeekMode::NearestKeyframe}; // 用户选择的定位方式 (菜单设置)
-    std::atomic<bool> pending_seek_{false};   // 解码线程据此执行 av_seek_frame + flush
-    std::atomic<model::SeekMode> pending_seek_mode_{model::SeekMode::NearestKeyframe}; // 本次定位使用的模式
-    double seek_request_ms_ = 0;              // 待定位目标 (seek/解码线程在 mutex_ 下访问)
-    std::atomic<double> drop_until_sec_{-1.0}; // 精确帧模式: 丢弃此秒数之前的帧; <0 表示不丢弃
-    std::atomic<bool> drag_seeking_{false};    // 拖动进度条期间: 抑制音频输出, 避免关键帧预览时杂音
+    // 用户选择的定位方式 (菜单设置)。实际执行在 PlaybackSession::Seek()。
+    std::atomic<model::SeekMode> seek_mode_{model::SeekMode::NearestKeyframe};
     
     // 分析器
-    analyzer::StreamAnalyzer stream_analyzer_;
+    // 分析会话: 12 个分析开关 + StreamAnalyzer + 视觉缺陷采样选项 (见 AnalysisSession.h)。
+    // MediaPlayer 经它转发开关/统计, 自身不再持有这些散落成员。
+    AnalysisSession analysis_session_;
     analyzer::MacroblockAnalyzer macroblock_analyzer_;
     analyzer::SceneChangeAnalyzer scene_change_analyzer_;
     analyzer::VisualDefectAnalyzer visual_defect_analyzer_;
@@ -253,33 +251,15 @@ private:
     QThread* frame_export_thread_ = nullptr;
     VideoFrameExporter* frame_exporter_ = nullptr;
 
-    struct ContainerAnalysisWorker {
-        std::thread thread;
-        std::shared_ptr<std::atomic<bool>> finished;
-    };
-    std::vector<ContainerAnalysisWorker> container_analysis_workers_;
-    std::atomic<uint64_t> container_analysis_generation_{0};
+    // 后台任务统一调度: 任务 ID / 取消标志 / 终态 / 过期结果丢弃。
+    // 容器结构分析走它的受管线程; 抽帧与媒体导出的 worker 是 QObject(要发进度信号),
+    // 仍留在 QThread 上, 但生命周期(Begin/End/Cancel)也登记在这里。
+    task::TaskManager task_manager_;
 
     // 音视频导出 (后台线程)
     QThread* media_export_thread_ = nullptr;
     exporter::MediaExporter* media_exporter_ = nullptr;
 
-    // 分析开关
-    bool analysis_enabled_ = false;
-    bool frame_type_analysis_enabled_ = false;
-    bool audio_frame_analysis_enabled_ = false;
-    bool packet_analysis_enabled_ = false;
-    bool event_analysis_enabled_ = false;
-    bool sync_analysis_enabled_ = false;
-    bool timeline_analysis_enabled_ = false;
-    bool container_structure_enabled_ = true;
-    bool macroblock_analysis_enabled_ = false;
-    bool scene_change_analysis_enabled_ = false;
-    bool visual_defect_analysis_enabled_ = false;
-    analyzer::VisualDefectOptions visual_defect_options_;
-    bool hw_decoding_enabled_ = false; // 默认关闭硬件解码: D3D11/CUDA 等 HW 路径在部分 Windows 驱动下会导致"打开视频即闪退"(FFmpeg 内部段错误, 无法被 C++ 异常捕获, 进程直接终止)。软件解码稳定可靠; 如确需 HW 解码性能, 可显式调用 SetHardwareDecodingEnabled(true), 但仍建议保留下方解码线程的异常兜底。
-    std::atomic<bool> rendering_suppressed_{false};  // 画面输出抑制 (播放区隐藏时置位)
-    
     // 分析索引/状态
     int analysis_frame_counter_ = 0;
     int video_frame_index_ = 0;
@@ -300,8 +280,6 @@ private:
     std::map<int, double> last_packet_ts_by_stream_;
     std::map<int, bool> missing_packet_ts_reported_;
     std::map<int, bool> missing_audio_pts_reported_;
-    double last_video_sync_ts_ = std::numeric_limits<double>::quiet_NaN();
-    double last_audio_sync_ts_ = std::numeric_limits<double>::quiet_NaN();
     int audio_timeline_sample_counter_ = 0;
 };
 

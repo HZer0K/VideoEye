@@ -207,6 +207,36 @@ target_link_libraries(test_stream_analyzer PRIVATE
 add_test(NAME StreamAnalyzerTests COMMAND test_stream_analyzer)
 
 # ============================================================
+# 测试 4c: TaskManager (统一后台任务调度) —— 任务 ID / 取消 / 终态 / 过期丢弃
+#
+# 走 videoeye_add_test_core: TaskManager 本身只依赖 stdlib, 但 std::thread 在
+# Linux 需要显式链 pthread, 直接链 VideoEyeCore 比手写清单省事且不会漏。
+# ============================================================
+videoeye_add_test_core(test_task_manager unit/test_task_manager.cpp)
+add_test(NAME TaskManagerTests COMMAND test_task_manager)
+
+# ============================================================
+# 测试 4d: PlaybackSession (播放机械: 状态机 / 资源生命周期)
+#
+# 只覆盖"不需要真实媒体文件"的行为; 解码循环需要真实文件与音频设备, 不进 gtest。
+# ============================================================
+videoeye_add_test_core(test_playback_session unit/test_playback_session.cpp)
+add_test(NAME PlaybackSessionTests COMMAND test_playback_session)
+
+# ============================================================
+# 测试 4b: AnalysisSession (依赖 FFmpeg) —— 评审 Phase 3 抽取的分析会话类
+# ============================================================
+videoeye_add_test(test_analysis_session
+    unit/test_analysis_session.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analyzer/StreamAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/Logger.cpp
+)
+target_link_libraries(test_analysis_session PRIVATE
+    FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swscale FFmpeg::swresample
+)
+add_test(NAME AnalysisSessionTests COMMAND test_analysis_session)
+
+# ============================================================
 # 测试 5: FrameData 模型 (依赖 FFmpeg)
 # ============================================================
 videoeye_add_test(test_frame_data

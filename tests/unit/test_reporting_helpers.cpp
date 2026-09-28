@@ -131,7 +131,10 @@ TEST(ApplyExportPathsTest, UnwritableDirMarksExportFailed) {
     // blocker 是一个普通文件：以它为 out_dir 时 create_directories 必然失败，
     // 后续写文件也会失败 —— 模拟"目标目录不可写"。
     const auto blocker = tmp / "blocker";
-    { std::ofstream(blocker); }
+    // 注意: 不能写成 `{ std::ofstream(blocker); }` —— 那是 most vexing parse,
+    // 会被解析成"声明一个名为 blocker 的 ofstream 变量", 文件根本没被创建,
+    // 于是这个用例其实一直在测一个可写目录（恒定失败）。必须给出变量名。
+    { std::ofstream f(blocker); }
 
     const auto root = tmp / "root";
     fs::create_directories(root / "a", ec);
