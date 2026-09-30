@@ -19,11 +19,11 @@ targe —— 目录只是命名习惯，编译器不认识；能被机器检查�
 | `core/media/codec`<br>`core/media/container`<br>`core/media/probe`<br>`core/media/streaming` | `VideoEyeMedia` | 容器字节级解析、码流参数集解析、文件探测 | domain、infrastructure |
 | `core/analysis/stream`<br>`core/analysis/orchestration`<br>`core/analysis/codec`<br>`core/analysis/container`<br>`core/analysis/quality`<br>`core/analysis/diagnostics` | `VideoEyeAnalysis` | 各分析器、执行引擎与编排 | domain、media、infrastructure、FFmpeg |
 | `core/exporter/` | `VideoEyeExporter` | 转码 / remux 导出 | domain、infrastructure、FFmpeg |
-| `core/player/` | `VideoEyePlayback` | 播放会话、解码、抽帧 | domain、analysis、exporter、infrastructure、FFmpeg |
+| `core/player/` | `VideoEyePlayback` | 播放会话、解码、抽帧 | domain、analysis、exporter、infrastructure、qt、FFmpeg |
 | `core/qc/` | `VideoEyeQc` | 规则表、模板映射、批处理、对比 | domain、analysis、infrastructure |
 | `core/reporting/` | `VideoEyeReporting` | 报告导出（JSON / CSV / HTML / PDF / TXT） | domain、qc、infrastructure |
 | `core/ffmpeg/` | `VideoEyeFfmpegTools` | 原生 ffmpeg 命令行工作台 | infrastructure、Qt Core |
-| `core/qt/` | `VideoEyeQtAdapters` | 把不带 Qt 的执行引擎接进信号 / 线程 | domain、analysis、Qt Core |
+| `core/qt/` | `VideoEyeQtAdapters` | 把不带 Qt 的执行引擎接进信号 / 线程；`QtWorkerOwner` 是所有自带 `QThread` 的后台 worker 的统一所有者 | domain、analysis、Qt Core |
 | `ui/` | （主程序） | 界面 | 以上全部 + Qt Widgets |
 
 迁移期那个把十层全部 PUBLIC 出去的 `VideoEyeCore` INTERFACE 聚合层**已经删除** ——
@@ -50,6 +50,7 @@ graph TD
     EXPORTER[core/exporter] --> INFRA
     PLAYBACK[core/player] --> ANALYSIS
     PLAYBACK --> EXPORTER
+    PLAYBACK --> QTADAPTER
     QC[core/qc] --> ANALYSIS
     REPORTING[core/reporting] --> QC
     QTADAPTER[core/qt] --> ANALYSIS
@@ -70,6 +71,23 @@ graph TD
    generation 与信号。
 3. **`media` 不依赖 FFmpeg**（除 video 解码那一层以外）。MP4 与 extradata 都是自研解析，
    这也是它们能被纯 stdlib 单元测试直接覆盖的原因。
+
+### 3.1 后台线程的归属
+
+后台任务分两类，归属不同，别混：
+
+* **受管线程**（纯计算，不需要 Qt 信号）—— `task::TaskManager::Run()`，线程由
+  TaskManager 持有并 join，`TaskId` + `CancelToken` + `IsCurrent()` 解决"过期结果回包"。
+  容器结构分析、媒体信息解析走这条路。
+* **自带 `QThread` 的 worker**（要发进度信号的 QObject）—— `qt::QtWorkerOwner`，
+  线程与 worker 一起登记在所有者名下。这类线程**不可强制终止**（FFmpeg 可能卡在
+  网络 IO 里，`quit()` 传不进去），所以取消超时后**绝不许丢弃句柄**：句柄转入待回收
+  列表继续持有，析构时仍退不出来的才断开连接并脱管（宁可泄漏一个卡死的线程，
+  也不能让 `QThread` 在运行时被销毁）。生命周期契约（Begin / End / Cancel）仍然登记在
+  TaskManager 上，两边不冲突：TaskManager 管"任务"，QtWorkerOwner 管"线程"。
+
+配套约定：取消令牌在**线程启动之前**注入 worker，worker 内部只读写、不重置取消状态，
+否则"启动前立即取消"会被吃掉。
 
 ## 4. 结果类型与执行者的分离
 
@@ -104,6 +122,49 @@ core/analysis/AnalysisResult.h        AnalysisResult
 链接 FFmpeg（`StreamAnalyzer.h` 里有真正的 `libav*`）。拆开并把 `StreamStats` 下放到
 domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
 
+### 4.1 分析面板的页面组件
+
+`AnalysisPanel` 曾经是一个 7700 行的"上帝面板"：建页面、存数据、刷表格、导 CSV、发扫描请求
+全在一个类里。现在按"页面内聚"拆出独立组件，规则是：
+
+- **组件本体就是 `QWidget`**，建好后交给 `AddPageWithScroll()` 直接变成外部 `QStackedWidget`
+  的一页，不再额外包一层 tab widget（页面顺序 = `SetupUI()` 里的调用顺序，改顺序会动侧边栏）。
+- **数据进来**：`SetResult()` / `ApplySampleTable()` / `SetQcReport()` / `SetScanActive()` …
+- **意图出去**：`ScanRequested` / `CancelRequested` / `SeekRequested` / `StartTimecodeReady` …
+  由 `AnalysisPanel` 转发（它才知道 `current_video_path_` 和全局 feature 表）。
+- 组件内部**不许再碰 `AnalysisPanel` 的成员**：需要什么就从接缝拿。
+- **扫描总控也归页面**：`DiagnosticsPage` 是唯一持有 `AnalysisFacade`、`QcReport`、
+  扫描代数与时间轴状态的地方。面板只做两件跨页的事 —— 把 `ScanStarted` / `ProgressChanged` /
+  `ScanFinished` / `ScanCancelled` 同步给共用同一次扫描的几页，以及把结果分发给它们。
+  需要跨页改选项（如字幕阈值从规则表同步）时用 `SetBeforeScanHook()` 注入钩子，
+  页面之间不互相 include。
+
+| 组件 | 内容 |
+|------|------|
+| `ContainerStructurePage` | 结构树 + MP4/EBML 详情 + MP4 Sample Table + 结构导出 |
+| `SceneChangePage` | 镜头边界检测：切换点表 + 强度柱状图 + CSV；`records()` 供码率页联动 |
+| `VisualDefectPage` | 采样帧指标曲线（亮度 / 黑场比例 / 锐度 / 帧间差异）+ 缺陷表 + 证据缩略图 + CSV / 证据图导出 |
+| `BitrateGopPage` | 滑动窗口码率曲线（I 帧 / 场景切换 / 峰值标记）+ GOP 表 + 异常 + 建议 |
+| `AudioQcPage` | 响度 / 真峰值 / 削波 / 静音 / 声道相位 / metadata 一致性 |
+| `ColorHdrPage` | primaries / transfer / matrix / range / HDR 元数据 |
+| `SubtitleAuxPage` | 字幕 cue / SMPTE 时码 / 章节 / SCTE-35 / metadata |
+| `DiagnosticsPage` | 全文件扫描 + QC 规则引擎：问题清单（逐秒码率/帧率曲线 + 问题表）、规则与阈值表、时间轴与同步子页；报告重算、`ApplySceneLink()` 与导出都在这里 |
+
+几个页面共用的无状态小工具（`SeriesBatch` 批量提交曲线、`TableBatch` 批量填表、
+`SetTableItemText` 写单元格、`FormatMetricValue` / `FormatKb` / `AppendDecimated`）
+在 `ui/analysis_panel/AnalysisPageSupport.h`。
+
+**共享状态归属**：拆页面时最容易卡住的就是"两份数据谁持有"。这一轮定下来的规则是
+**谁产生谁持有，别人只读快照**：
+
+- 场景切换记录由 `SceneChangePage` 持有（播放回调产生），「码率与 GOP」页要画标记 /
+  关联关键帧时由面板在批量刷新里推一份 `SetSceneChanges(records)` 过去；
+- 「关联场景切换」会改 facade 的 `result` 并让新产生的问题进入诊断报告：这一步**归
+  `DiagnosticsPage`**（`ApplySceneLink()`：改 facade + `Evaluate()` + 重刷问题表 + 外发
+  `QcReportChanged`），面板只负责收尾回调 `ShowSceneLinkSummary()`；
+- 扫描结果 / QC 报告由 `DiagnosticsPage` 持有，其它页（码率 GOP、音频 QC、色彩 HDR、
+  字幕辅助、流媒体包、参数集）一律用 `result()` / `qcReport()` / `hasResult()` 取只读快照。
+
 ## 5. 已知的历史包袱
 
 - **命名空间没跟着目录走**。文件和 CMake target 已经分层了，但代码里仍叫
@@ -117,9 +178,15 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   `VideoEyeDomainQt`（Qt 容器适配）。
 - **UI 侧仍有直接吃分析器的地方**。`AnalysisPanel` 已经只通过 `ui/AnalysisFacade` 拿
   编排 / QC / 时间轴三件事，facade 的公开头也只剩 `AnalysisOptions`、`AnalysisResult` 与
-  domain model；但 `AnalysisPanel.cpp` 自己仍显式 include `ColorHdrAnalyzer.h` /
-  `BitrateGopAnalyzer.h`（用 `BuildColorRows` 与 `BitrateAnomalyType`）。这两个函数/枚举
-  下放到 domain 之后，UI 的 cpp 也能彻底不碰分析器。
+  domain model；但 `ColorHdrPage.cpp` 仍显式 include `ColorHdrAnalyzer.h`、
+  `BitrateGopPage.cpp` 仍 include `BitrateGopAnalyzer.h`（用 `BuildColorRows` 与
+  `BitrateAnomalyType`）。这两个函数/枚举下放到 domain 之后，UI 的 cpp 也能彻底不碰分析器。
+- **`AnalysisPanel.cpp` 仍剩约 3500 行**。已拆出 8 个页面组件（见 4.1），包括最难的
+  「诊断与报告」—— 它既是页面，也是所有页面共用那一次 demux 的扫描总控
+  （`AnalysisFacade` + `QcReport` + 扫描代数 + 时间轴状态都进了 `DiagnosticsPage`，
+  面板只剩进度同步与结果分发）。剩下没拆的是「码流分析」（合并了流/帧/包三页的
+  `bitstream_tab_` 与 `event_analysis_tab_`、`macroblock_tab_`），那一坨还是
+  建页面 + 攒记录 + 刷表 + 导 CSV 的老写法，属于"页面内聚"没走完的另一半。
 
 ## 6. 怎么校验边界
 

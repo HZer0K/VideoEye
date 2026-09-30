@@ -25,6 +25,15 @@
 #include "ui/charts/MetricChartWidget.h"
 #include "ui/reporting_panel/ReportingPanel.h"
 #include "ui/AnalysisFacade.h"
+#include "ui/analysis_panel/AnalysisPageSupport.h"
+#include "ui/analysis_panel/ContainerStructurePage.h"
+#include "ui/analysis_panel/SceneChangePage.h"
+#include "ui/analysis_panel/BitrateGopPage.h"
+#include "ui/analysis_panel/AudioQcPage.h"
+#include "ui/analysis_panel/ColorHdrPage.h"
+#include "ui/analysis_panel/SubtitleAuxPage.h"
+#include "ui/analysis_panel/VisualDefectPage.h"
+#include "ui/analysis_panel/DiagnosticsPage.h"
 #include <chrono>
 #include <deque>
 #include <vector>
@@ -98,13 +107,20 @@ public:
     // 设置当前视频文件路径 (供导出报告)
     void SetCurrentVideoPath(const QString& path) {
         current_video_path_ = path.toStdString();
-        // 切换文件后重置时间轴累计状态 (避免上一文件的数据混入)
-        if (analysis_facade_) analysis_facade_->Reset();
-        timeline_result_ = model::TimelineAnalysisResult{};
-        timeline_offline_ = false;
-        timeline_dirty_ = false;
+        // 切换文件后重置时间轴累计状态 (避免上一文件的数据混入)；
+        // 时间轴与 facade 都在诊断页里，由它自己清空
+        if (diagnostics_page_) diagnostics_page_->ResetForNewFile();
         // 报告与批量 QC 页需要当前文件来"按模板重新分析"
         if (reporting_panel_) reporting_panel_->SetCurrentFile(path);
+        // 拆出去的页面用当前路径拼导出 CSV 的默认文件名
+        if (scene_change_page_) scene_change_page_->SetSourcePath(path);
+        if (bitrate_gop_page_) bitrate_gop_page_->SetSourcePath(path);
+        if (audio_qc_page_) audio_qc_page_->SetSourcePath(path);
+        if (color_hdr_page_) color_hdr_page_->SetSourcePath(path);
+        // 扫描总控在诊断页，换文件要同步它手里的当前路径
+        if (diagnostics_page_) diagnostics_page_->SetSourcePath(path);
+        // 场景切换记录是播放期的累计结果，换文件必须清零（与帧/包那几页一致）
+        if (scene_change_page_) scene_change_page_->Reset();
     }
     
     // 重新发射所有启用状态的开关信号 (用于文件打开后同步播放器状态)
@@ -135,17 +151,6 @@ public slots:
     // 更新统计数据
     void UpdateStreamStats(const model::StreamStats& stats);
 
-    // 码率与 GOP 深度分析
-    void OnStartBitrateGopAnalysis();
-    void OnCancelBitrateGopAnalysis();
-    void OnBitrateGopWindowChanged();
-    void OnBitrateGopOptionChanged();
-    void OnLinkSceneChanges();
-    void OnBitrateGopCellClicked(int row, int column);
-    void OnBitrateAnomalyCellClicked(int row, int column);
-    void OnExportBitrateGopCsv();
-    void OnExportBitrateCurveCsv();
-    void OnExportBitrateAnomalyCsv();
     void ResetVideoFrameList();
     void AppendVideoFrameInfo(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds);
     void ResetAudioFrameList();
@@ -170,55 +175,22 @@ public slots:
     void OnVisualDefectStats(int analyzed_frames, int dropped_frames,
                              const model::ActivePictureArea& effective_area);
     void OnVisualDefectOptionChanged();
-    void OnVisualDefectCellClicked(int row, int column);
-    void OnVisualDefectSelectionChanged();
-    void OnExportVisualDefectCsv();
-    void OnExportVisualDefectEvidence();
 
-    // 音频 QC（响度 / 真峰值 / 削波 / 静音 / 声道相位）
-    void OnStartAudioQcAnalysis();
-    void OnCancelAudioQcAnalysis();
-    void OnAudioQcOptionChanged();
-    void OnAudioQcClipCellClicked(int row, int column);
-    void OnAudioQcSilenceCellClicked(int row, int column);
-    void OnExportAudioQcCsv();
-
-    // 色彩与 HDR（primaries / transfer / matrix / range / bit depth / HDR 元数据）
-    void OnStartColorHdrAnalysis();
-    void OnCancelColorHdrAnalysis();
-    void OnColorHdrOptionChanged();
     // 参数集页「重新扫描」：复用同一次全文件扫描
     void OnBitstreamRefreshRequested();
-    void OnExportColorHdrCsv();
-
-    // 字幕 / 时码 / 辅助数据（功能 9：字幕 cue、SMPTE 时码、章节、SCTE-35、metadata）
-    void OnStartSubtitleAuxAnalysis();
-    void OnSubtitleStreamChanged(int index);
-    void OnExportSubtitleCsv();
-    void OnExportTimecodeCsv();
-    void OnExportScte35Csv();
-    void OnExportMetadataCsv();
-    void OnSubtitleCueCellClicked(int row, int column);
 
     // 导出报告
     void OnExportReport();
 
-    // 诊断与报告 (全文件扫描 + QC 规则引擎)
-    void OnStartDiagnostics();
-    void OnCancelDiagnostics();
-    void OnExportQcReport();
-    void OnResetQcRules();
-    void OnQcRuleItemChanged(QTableWidgetItem* item);
-    void OnDiagnosticsProgress(quint64 generation, double percent, const QString& stage);
-    void OnDiagnosticsFinished(quint64 generation, bool completed,
-                               const analyzer::AnalysisResult& result);
-    void OnDiagnosticsFailed(quint64 generation, const QString& message);
+    // 扫描生命周期由 DiagnosticsPage 编排，面板只把进度同步给其它几页
+    void OnScanStarted();
+    void OnScanCancelled();
+    void OnDiagnosticsProgress(double percent, const QString& stage);
+    void OnDiagnosticsFinished(bool completed);
 
-    // 时间轴与同步诊断（播放实时数据）
+    // 时间轴与同步诊断（播放实时数据 → 转交诊断页）
     void OnTimelinePacket(const model::PacketTiming& timing);
     void OnFrameTiming(const model::FrameTimingInfo& timing);
-    void OnTimelineMarkerHovered(const QPointF& point, bool state);
-    void OnJumpToTimelineIssue();
 
     // 包表/帧表按 PTS 互跳联动
     void OnPacketTableSelectionChanged();
@@ -300,8 +272,6 @@ private:
 
     // 初始化UI
     void SetupUI();
-    // 在每个标签页中创建带开关的标题栏
-    QWidget* CreateToggleHeader(AnalysisFeature feature, const QString& title, QWidget* parent);
     // 将页面包裹 QScrollArea 并添加到页面列表
     void AddPageWithScroll(QWidget* tab_widget, const QString& title);
     void SetupStreamTab();
@@ -312,17 +282,25 @@ private:
     void SetupEventTab();
     void SetupSyncTab();
     void SetupTimelineTab();
-    void SetupContainerStructureTab();
     void SetupMacroblockTab();
-    void SetupSceneChangeTab();
-    void SetupBitrateGopTab();
-    void SetupColorHdrTab();
     // 编码参数集（SPS/PPS/VPS/Sequence Header）解析页，与「码流分析」页是两回事：
     // 那一页看的是包/帧/码率，这一页看的是 extradata 里的编码参数。
     void SetupParameterSetTab();
     // HLS / DASH 流媒体包页（manifest + segment + 多码率 ladder）
     void SetupStreamingPackageTab();
-    void SetupDiagnosticsTab();
+    // 诊断与报告页（全文件扫描 + QC 规则引擎 + 时间轴/同步诊断）：扫描总控已在页面内，
+    // 面板这一层只负责建页、把页面意图接到全局，以及把进度同步给共用同一次扫描的几页。
+    void SetupDiagnosticsPage();
+    // 报告与批量 QC 页（功能 12）：模板选择 / 单文件报告 / 目录批量扫描 / 导出
+    void SetupReportingPanelTab();
+    // 已拆成独立页面组件的四个页，在这里建好并接上信号（本体是 QWidget，
+    // 直接交给 AddPageWithScroll 变成外部 stack 的一页）。
+    void SetupContainerStructurePage();
+    void SetupSceneChangePage();
+    void SetupBitrateGopPage();
+    void SetupAudioQcPage();
+    void SetupColorHdrPage();
+    void SetupSubtitleAuxPage();
     void RebuildFrameTable();
     void RebuildGopTable();
     void RebuildAudioFrameTable();
@@ -367,99 +345,22 @@ private:
     void OnExportSyncCsv();
     void OnExportTimelineCsv();
     void OnExportMp4Box();
-    void OnExportContainerStructure();
     void OnFrameFilterChanged();
     void RefreshMacroblockUi();
     void OnExportMacroblockCsv();
 
-    // 画面质量 / 视觉缺陷
-    void SetupVisualDefectTab();
-    void ApplyVisualDefectOptionsFromUi();
-    void UpdateVisualDefectSummary();
-    void UpdateVisualDefectCharts();
-    void RebuildVisualDefectTable();
-    void UpdateVisualDefectEvidencePreview(int defect_index);
-    // 把模型里的 RGB 证据转成 QImage（空证据返回 null 图）
-    static QImage VisualDefectEvidenceImage(const model::VisualDefect& defect);
+    // 画面质量 / 视觉缺陷（已拆成独立的 VisualDefectPage）
+    void SetupVisualDefectPage();
+    // 「关联场景切换」：页面不持有 facade，这一步由面板编排（重算 QC + 刷新问题表）
+    void OnSceneLinkRequested(const std::vector<model::SceneChangeResult>& records,
+                              const analyzer::BitrateGopOptions& options);
 
-    // 场景切换检测
-    void FlushPendingSceneChangeTable();
-    void AppendSceneChangeRow(const model::SceneChangeResult& result);
-    void UpdateSceneChangeChart();
-    void UpdateSceneChangeSummary();
-    void OnExportSceneChangeCsv();
-
-    // 码率与 GOP 深度分析页
-    void StartDiagnosticsScan(const analyzer::AnalysisOptions& options);
-    void ApplyBitrateGopOptionsFromUi();
-    void UpdateBitrateGopUi();          // 汇总 + 曲线 + GOP 表 + 异常 + 建议 一次刷新
-    void UpdateBitrateGopSummary();
-    void UpdateBitrateGopChart();
-    void RebuildBitrateGopTable();
-    void RebuildBitrateAnomalyTable();
-    void UpdateBitrateGopSuggestions();
-
-    // 音频 QC 页
-    void SetupAudioQcTab();
-    void ApplyAudioQcOptionsFromUi();
-    void UpdateAudioQcUi();          // 汇总 + 曲线 + 表格 + 判定 一次刷新
-    void UpdateAudioQcSummary();
-    void UpdateAudioQcCharts();
-    void RebuildAudioQcClipTable();
-    void RebuildAudioQcSilenceTable();
-    void RebuildAudioQcVerdictTable();
-    void RebuildAudioQcMetadataTable();
-
-    // 色彩与 HDR 页
-    void ApplyColorHdrOptionsFromUi();
-    void UpdateColorHdrUi();          // 汇总 + 两张信息表 + 异常表 一次刷新
-    void UpdateColorHdrSummary();
     void UpdateBitstreamUi();         // 参数集页：结构树 + 容器/码流对比 + 不一致表
+    // 字幕的「过短 / 过长 / 阅读速度」阈值以「规则与阈值」那张可编辑的表为准，
+    // 每次扫描前同步一次，避免选项与规则两处阈值各说各话。
+    void SyncSubtitleThresholds(analyzer::AnalysisOptions& options);
     void OnStreamingRefreshRequested();
     void UpdateStreamingUi();         // 流媒体包页：结构树 + ladder + 分片时间轴 + 问题
-    void RebuildColorHdrTables();
-    void RebuildColorHdrIssueTable();
-
-    // 字幕 / 时码 / 辅助数据页（功能 9）
-    void SetupSubtitleAuxTab();
-    void UpdateSubtitleAuxUi();          // 汇总 + 6 张表 + SCTE-35 标记图 一次刷新
-    void UpdateSubtitleAuxSummary();
-    void RebuildSubtitleStreamTable();
-    void RebuildSubtitleCueTable();
-    void RebuildTimecodeTable();
-    void RebuildChapterTable();
-    void RebuildAuxStreamTable();
-    void RebuildScte35Table();
-    void RebuildMetadataTable();
-    void UpdateScte35MarkerChart();
-    // 当前 cue 表要展示的流（-1 = 全部字幕流）
-    int CurrentSubtitleStreamIndex() const;
-    // 字幕阈值以「规则与阈值」页的可编辑规则表为准，扫描前同步一次
-    void SyncSubtitleThresholdsFromRules(analyzer::SubtitleOptions& options) const;
-
-    // 诊断与报告页
-    // MP4/fMP4 样本表子页（容器页）
-    void SetupMp4SampleTableSubPage(QWidget* parent);
-    void RebuildMp4SampleTable();
-    void RebuildMp4IssueTable();
-    void RebuildMp4FragmentTable();
-    void UpdateMp4SampleSummary();
-    // 结构树点击 stts/ctts/stss/stco/stsz 等样本表 box 时联动到样本表
-    void OnContainerTreeSelectionChanged();
-    void OnMp4SampleTrackChanged(int index);
-    void OnExportMp4SampleCsv();
-
-    void RebuildIssueTable();
-    void UpdateQcSummary();
-    void UpdateQcChart();
-    void RebuildRuleTable();
-    // 用 analysis_facade_->result() + QC 规则引擎生成报告并刷新 UI
-    void EvaluateDiagnostics();
-    // 时间轴与同步页
-    void SetupTimelineDiagnosticsSubPage();
-    void RefreshTimelineUi();
-    void UpdateTimelineDiagnosticChart();
-    void UpdateTimelineDiagnosticSummary();
 
     // 更新图表
     void UpdateBitrateChart(const model::StreamStats& stats);
@@ -553,174 +454,27 @@ private:
     model::MacroblockFrameAnalysis current_macroblock_analysis_;
     bool macroblock_dirty_ = false;
 
-    // 场景切换检测标签页
-    QWidget* scene_change_tab_;
-    QLabel* scene_change_summary_label_;
-    QTableWidget* scene_change_table_;
-    MetricChartWidget* scene_change_chart_ = nullptr;
-    ChartSeries* scene_change_series_ = nullptr;
-    ChartAxis* scene_change_axis_x_ = nullptr;
-    ChartAxis* scene_change_axis_y_ = nullptr;
-    std::vector<model::SceneChangeResult> scene_change_records_;
-    bool scene_change_table_dirty_ = false;
-    size_t scene_change_table_synced_count_ = 0;
+    // 场景切换检测页（已拆成独立的 SceneChangePage）
+    SceneChangePage* scene_change_page_ = nullptr;
 
-    // 画面质量 / 视觉缺陷标签页
-    QWidget* visual_defect_tab_ = nullptr;
-    QLabel* visual_defect_summary_label_ = nullptr;
-    QComboBox* visual_defect_preset_combo_ = nullptr;
-    QDoubleSpinBox* visual_defect_blur_spin_ = nullptr;
-    QDoubleSpinBox* visual_defect_freeze_spin_ = nullptr;
-    QCheckBox* visual_defect_rgb_check_ = nullptr;
-    MetricChartWidget* visual_defect_luma_chart_ = nullptr;
-    ChartSeries* visual_defect_luma_series_ = nullptr;
-    ChartSeries* visual_defect_black_series_ = nullptr;
-    ChartAxis* visual_defect_luma_axis_x_ = nullptr;
-    ChartAxis* visual_defect_luma_axis_y_ = nullptr;
-    ChartAxis* visual_defect_luma_axis_y2_ = nullptr;
-    MetricChartWidget* visual_defect_sharp_chart_ = nullptr;
-    ChartSeries* visual_defect_blur_series_ = nullptr;
-    ChartSeries* visual_defect_diff_series_ = nullptr;
-    ChartAxis* visual_defect_sharp_axis_x_ = nullptr;
-    ChartAxis* visual_defect_sharp_axis_y_ = nullptr;
-    QTableWidget* visual_defect_table_ = nullptr;
-    QLabel* visual_defect_evidence_label_ = nullptr;
-    std::vector<model::FrameQualityMetric> visual_defect_samples_;
-    std::vector<model::VisualDefect> visual_defect_records_;
-    model::ActivePictureArea visual_defect_effective_area_;
+    // 画面质量 / 视觉缺陷页（已拆成独立的 VisualDefectPage）
+    VisualDefectPage* visual_defect_page_ = nullptr;
+    // 面板仍持有这一份选项，作为新页面的初值与「重新发射开关」时的基准
     model::VisualDefectOptions visual_defect_options_;
-    bool visual_defect_dirty_ = false;
-    int visual_defect_dropped_frames_ = 0;
-    int visual_defect_analyzed_frames_ = 0;
-    bool visual_defect_updating_options_ = false;
 
-    // 统一文件结构分析标签页
-    QWidget* container_tab_;
-    QLabel* container_title_label_;       // 动态标题
-    QLabel* container_summary_label_;
-    QTreeWidget* container_tree_;         // 通用结构树
-    QStackedWidget* container_detail_stack_;  // 右侧详情区
-    // Page 0: 通用信息
-    QTableWidget* container_stream_table_;
-    QTableWidget* container_metadata_table_;
-    // Page 1: MP4 专用
-    QTabWidget* mp4_detail_tabs_;
-    QTableWidget* stts_table_;
-    QTableWidget* stco_table_;
-    QTableWidget* stsc_table_;
-    QTableWidget* stsz_table_;
-    QTableWidget* co64_table_;
-    QTableWidget* stss_table_;
-    // Sample Table 子页（MP4/fMP4 样本级一致性）
-    QWidget* mp4_sample_sub_;
-    QComboBox* mp4_sample_track_combo_;
-    QLabel* mp4_sample_summary_label_;
-    QLabel* mp4_sample_focus_label_;
-    QTableWidget* mp4_sample_table_;
-    QTableWidget* mp4_issue_table_;
-    QTableWidget* mp4_fragment_table_;
-    QPushButton* export_mp4_sample_button_;
-    model::Mp4SampleTableResult mp4_samples_;
-    QString mp4_sample_focus_box_;   // 结构树点击的 box 名（"" = 不过滤）
-    // Page 2: EBML 专用
-    QTabWidget* ebml_detail_tabs_;
-    QTableWidget* ebml_track_table_;
-    QTableWidget* ebml_cue_table_;
-    QTableWidget* ebml_block_table_;
-    QPushButton* export_container_button_;
-    model::ContainerStructureResult current_container_result_;
-    
-    // 码率与 GOP 深度分析标签页
-    QWidget* bitrate_gop_tab_;
-    QLabel* bitrate_gop_summary_label_;
-    QProgressBar* bitrate_gop_progress_bar_;
-    QPushButton* bitrate_gop_start_button_;
-    QPushButton* bitrate_gop_cancel_button_;
-    QComboBox* bitrate_window_combo_;
-    QDoubleSpinBox* bitrate_target_peak_spin_;
-    QDoubleSpinBox* bitrate_max_gop_seconds_spin_;
-    QSpinBox* bitrate_max_gop_frames_spin_;
-    QCheckBox* bitrate_decode_types_check_;
-    MetricChartWidget* bitrate_gop_chart_ = nullptr;
-    ChartSeries* bitrate_gop_series_ = nullptr;
-    ChartSeries* bitrate_target_series_ = nullptr;
-    ChartSeries* bitrate_iframe_series_ = nullptr;
-    ChartSeries* bitrate_scene_series_ = nullptr;
-    ChartSeries* bitrate_anomaly_series_ = nullptr;
-    ChartAxis* bitrate_gop_axis_x_ = nullptr;
-    ChartAxis* bitrate_gop_axis_y_ = nullptr;
-    QTabWidget* bitrate_gop_sub_tabs_;
-    QTableWidget* bitrate_gop_table_;
-    QTableWidget* bitrate_anomaly_table_;
-    QListWidget* bitrate_suggestion_list_;
-    analyzer::BitrateGopOptions bitrate_gop_options_;
-    analyzer::AnalysisOptions diagnostics_options_;
-    double bitrate_gop_display_window_ = 1.0;   // 当前图表显示的窗口长度
+    // 统一文件结构分析标签页（已拆成独立的 ContainerStructurePage）
+    ContainerStructurePage* container_page_ = nullptr;
 
-    // 音频 QC 标签页
-    QWidget* audio_qc_tab_;
-    QLabel* audio_qc_summary_label_;
-    QProgressBar* audio_qc_progress_bar_;
-    QPushButton* audio_qc_start_button_;
-    QPushButton* audio_qc_cancel_button_;
-    QDoubleSpinBox* audio_qc_target_lufs_spin_;
-    QDoubleSpinBox* audio_qc_silence_spin_;
-    QDoubleSpinBox* audio_qc_min_silence_spin_;
-    QDoubleSpinBox* audio_qc_clip_spin_;
-    QCheckBox* audio_qc_loudness_check_;
-    QCheckBox* audio_qc_true_peak_check_;
-    QCheckBox* audio_qc_correlation_check_;
-    QTabWidget* audio_qc_sub_tabs_;
-    // 响度曲线
-    MetricChartWidget* audio_lufs_chart_ = nullptr;
-    ChartSeries* audio_momentary_series_ = nullptr;
-    ChartSeries* audio_short_term_series_ = nullptr;
-    ChartSeries* audio_integrated_series_ = nullptr;
-    ChartSeries* audio_target_series_ = nullptr;
-    ChartAxis* audio_lufs_axis_x_ = nullptr;
-    ChartAxis* audio_lufs_axis_y_ = nullptr;
-    // 电平曲线
-    MetricChartWidget* audio_level_chart_ = nullptr;
-    ChartSeries* audio_rms_series_ = nullptr;
-    ChartSeries* audio_peak_series_ = nullptr;
-    ChartSeries* audio_true_peak_series_ = nullptr;
-    ChartAxis* audio_level_axis_x_ = nullptr;
-    ChartAxis* audio_level_axis_y_ = nullptr;
-    // 静音段 / 削波点时间轴
-    MetricChartWidget* audio_event_chart_ = nullptr;
-    ChartSeries* audio_silence_series_ = nullptr;
-    ChartSeries* audio_clip_series_ = nullptr;
-    ChartAxis* audio_event_axis_x_ = nullptr;
-    ChartAxis* audio_event_axis_y_ = nullptr;
-    // 声道能量柱状图
-    MetricChartWidget* audio_channel_chart_ = nullptr;
-    ChartSeries* audio_channel_series_ = nullptr;        // RMS dBFS
-    ChartSeries* audio_channel_peak_series_ = nullptr;   // 峰值 dBFS
-    ChartAxis* audio_channel_axis_x_ = nullptr;
-    ChartAxis* audio_channel_axis_y_ = nullptr;
-    // 声道相关性曲线
-    MetricChartWidget* audio_corr_chart_ = nullptr;
-    ChartSeries* audio_corr_series_ = nullptr;
-    ChartAxis* audio_corr_axis_x_ = nullptr;
-    ChartAxis* audio_corr_axis_y_ = nullptr;
-    QTableWidget* audio_clip_table_;
-    QTableWidget* audio_silence_table_;
-    QTableWidget* audio_verdict_table_;
-    QTableWidget* audio_metadata_table_;
-    analyzer::AudioQcOptions audio_qc_options_;
+    // 码率与 GOP 深度分析页（已拆成独立的 BitrateGopPage）
+    BitrateGopPage* bitrate_gop_page_ = nullptr;
+    // 诊断与报告页（已拆成独立的 DiagnosticsPage：扫描总控 + 问题表 + 规则表 + 时间轴）
+    DiagnosticsPage* diagnostics_page_ = nullptr;
 
-    // 色彩与 HDR 标签页
-    QWidget* color_hdr_tab_;
-    QLabel* color_hdr_summary_label_;
-    QProgressBar* color_hdr_progress_bar_;
-    QPushButton* color_hdr_start_button_;
-    QPushButton* color_hdr_cancel_button_;
-    QCheckBox* color_hdr_probe_frame_check_;
-    QTabWidget* color_hdr_sub_tabs_;
-    QTableWidget* color_info_table_;      // 色彩信息（项目/值/说明）
-    QTableWidget* hdr_info_table_;        // HDR 元数据（项目/值/说明）
-    QTableWidget* color_issue_table_;     // 异常组合（来自 QC 规则，category=色彩/HDR）
-    analyzer::ColorHdrOptions color_hdr_options_;
+    // 音频 QC 标签页（已拆成独立的 AudioQcPage）
+    AudioQcPage* audio_qc_page_ = nullptr;
+
+    // 色彩与 HDR 标签页（已拆成独立的 ColorHdrPage）
+    ColorHdrPage* color_hdr_page_ = nullptr;
 
     // 编码参数集解析页（SPS / PPS / VPS / AV1 Sequence Header）
     BitstreamPanel* bitstream_params_panel_ = nullptr;
@@ -728,65 +482,11 @@ private:
     // 流媒体包页（HLS / DASH 清单 + 分片 + 码率阶梯）
     StreamingPanel* streaming_panel_ = nullptr;
 
-    // 字幕 / 时码 / 辅助数据页（功能 9）
-    QWidget* subtitle_aux_tab_ = nullptr;
-    QLabel* subtitle_aux_summary_label_ = nullptr;
-    QPushButton* subtitle_aux_start_button_ = nullptr;
-    QTabWidget* subtitle_aux_sub_tabs_ = nullptr;
-    QComboBox* subtitle_stream_combo_ = nullptr;
-    QCheckBox* subtitle_issues_only_check_ = nullptr;
-    QTableWidget* subtitle_stream_table_ = nullptr;
-    QTableWidget* subtitle_cue_table_ = nullptr;
-    QTableWidget* timecode_table_ = nullptr;
-    QTableWidget* chapter_table_ = nullptr;
-    QTableWidget* aux_stream_table_ = nullptr;
-    QTableWidget* scte35_table_ = nullptr;
-    QTableWidget* metadata_table_ = nullptr;
-    MetricChartWidget* scte35_marker_chart_ = nullptr;
-    ChartSeries* scte35_marker_series_ = nullptr;
-    ChartAxis* scte35_marker_axis_x_ = nullptr;
-    ChartAxis* scte35_marker_axis_y_ = nullptr;
-
-    // 诊断与报告标签页
-    QWidget* diagnostics_tab_;
+    // 字幕 / 时码 / 辅助数据页（已拆成独立的 SubtitleAuxPage）
+    SubtitleAuxPage* subtitle_aux_page_ = nullptr;
 
     // 报告与批量 QC 页（功能 12）：模板选择 / 单文件报告 / 目录批量扫描 / 导出
     ui::ReportingPanel* reporting_panel_ = nullptr;
-    QPushButton* qc_start_button_;
-    QPushButton* qc_cancel_button_;
-    QPushButton* qc_export_button_;
-    QProgressBar* qc_progress_bar_;
-    QLabel* qc_summary_label_;
-    QTabWidget* qc_sub_tabs_;
-    QTableWidget* qc_issue_table_;
-    MetricChartWidget* qc_chart_view_ = nullptr;
-    ChartSeries* qc_bitrate_series_ = nullptr;
-    ChartSeries* qc_fps_series_ = nullptr;
-    ChartAxis* qc_axis_x_ = nullptr;
-    ChartAxis* qc_axis_bitrate_ = nullptr;
-    ChartAxis* qc_axis_fps_ = nullptr;
-    QTableWidget* qc_rule_table_;
-    bool qc_rule_table_updating_ = false;
-
-    // 时间轴与同步（诊断与报告页的子页）
-    QWidget* timeline_sub_;
-    QLabel* timeline_diag_summary_label_;
-    MetricChartWidget* timeline_issue_chart_ = nullptr;
-    ChartSeries* timeline_interval_series_ = nullptr;
-    ChartSeries* timeline_marker_series_ = nullptr;
-    ChartAxis* timeline_chart_axis_x_ = nullptr;
-    ChartAxis* timeline_chart_axis_y_ = nullptr;
-    QTableWidget* timeline_issue_table_;
-    QVector<int> timeline_marker_issue_index_;   // 散点序号 -> 问题序号
-    model::TimelineAnalysisResult timeline_result_;
-    bool timeline_dirty_ = false;
-    bool timeline_offline_ = false;              // true = 数据来自全文件扫描
-
-    model::QcReport current_qc_report_;
-    quint64 diagnostics_generation_ = 0;
-    bool has_diagnostics_result_ = false;
-    ui::AnalysisFacade* analysis_facade_ = nullptr;
-    std::chrono::steady_clock::time_point diagnostics_start_time_;
 
     // 控制按钮
     QPushButton* export_button_;          // 流统计导出 (HTML/JSON/TXT)
@@ -838,8 +538,6 @@ private:
     std::deque<qreal> bitrate_chart_values_;
     std::deque<qreal> fps_chart_values_;
     std::deque<qreal> sync_chart_values_;
-
-    bool scene_change_dirty_ = false;
 
     // 当前视频文件路径 (供导出报告使用)
     std::string current_video_path_;
