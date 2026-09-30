@@ -1,7 +1,9 @@
 #include "core/player/VideoFrameExporter.h"
+
 #include <QDir>
 #include <QFile>
 #include <QImage>
+#include <limits>
 #include <vector>
 
 extern "C" {
@@ -15,17 +17,47 @@ extern "C" {
 namespace videoeye {
 namespace player {
 
+namespace {
+
+// FFmpeg 错误码 -> 可读描述。不用 av_err2str 宏 (MSVC 不支持其 compound literal 写法)。
+QString AvErrorString(int ret) {
+    char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+    if (av_strerror(ret, errbuf, sizeof(errbuf)) != 0) {
+        return QStringLiteral("错误码 %1").arg(ret);
+    }
+    return QString::fromUtf8(errbuf);
+}
+
+// 取帧循环的三种结局: 必须分清楚，否则"文件损坏导致提前收尾"会被报成导出成功。
+enum class DrainResult {
+    Drained,   // 正常排空 (EAGAIN / EOF)
+    Canceled,  // 用户中止
+    Failed,    // 解码或写文件出错
+};
+
+} // namespace
+
 VideoFrameExporter::VideoFrameExporter(QObject* parent)
     : QObject(parent) {}
 
+bool VideoFrameExporter::IsCanceled() const {
+    return cancel_.load(std::memory_order_acquire) || cancel_token_.IsCanceled();
+}
+
 void VideoFrameExporter::Cancel() {
-    cancel_ = true;
+    cancel_.store(true, std::memory_order_release);
 }
 
 void VideoFrameExporter::Export(const QString& url, const QString& output_dir,
                                  const QString& format, int jpg_quality, int frame_interval) {
     exporting_ = true;
-    cancel_ = false;
+    // 取消状态只由外部写，这里绝不重置：启动前点的取消必须能被看到，
+    // 否则"立即取消"会被吃掉、导出照常跑完全片。
+    if (IsCanceled()) {
+        emit ExportCanceled(0, output_dir);
+        exporting_ = false;
+        return;
+    }
 
     AVFormatContext* fmt = nullptr;
     AVCodecContext* dec_ctx = nullptr;
@@ -43,17 +75,35 @@ void VideoFrameExporter::Export(const QString& url, const QString& output_dir,
         if (fmt) { avformat_close_input(&fmt); fmt = nullptr; }
     };
 
-    std::string url_str = url.toStdString();
-    if (avformat_open_input(&fmt, url_str.c_str(), nullptr, nullptr) < 0) {
-        emit ExportError(QString("Failed to open: %1").arg(url));
+    // 统一收尾: 任何退出路径都只发**一个**终态信号。
+    // 少了 UI 永远卡在"导出中"(QThread 也不会 quit)，多了会出现"先报完成再报失败"。
+    QString err_msg;
+    int exported = 0;
+    auto finish = [&](bool canceled, bool failed) {
         cleanup();
         exporting_ = false;
+        emit ExportProgress(exported);
+        if (canceled) {
+            emit ExportCanceled(exported, output_dir);
+        } else if (failed) {
+            emit ExportError(err_msg.isEmpty() ? QStringLiteral("抽帧导出失败") : err_msg);
+        } else {
+            emit ExportFinished(output_dir);
+        }
+    };
+    // 准备阶段的失败: 还没有任何产物，直接报错退出
+    auto fail_now = [&](const QString& msg) {
+        err_msg = msg;
+        finish(false, true);
+    };
+
+    std::string url_str = url.toStdString();
+    if (avformat_open_input(&fmt, url_str.c_str(), nullptr, nullptr) < 0) {
+        fail_now(QString("Failed to open: %1").arg(url));
         return;
     }
     if (avformat_find_stream_info(fmt, nullptr) < 0) {
-        emit ExportError("Failed to find stream info");
-        cleanup();
-        exporting_ = false;
+        fail_now(QStringLiteral("Failed to find stream info"));
         return;
     }
 
@@ -78,9 +128,7 @@ void VideoFrameExporter::Export(const QString& url, const QString& output_dir,
     }
 
     if (vindex < 0 || !fmt->streams || !fmt->streams[vindex] || !fmt->streams[vindex]->codecpar) {
-        emit ExportError("No video stream found");
-        cleanup();
-        exporting_ = false;
+        fail_now(QStringLiteral("No video stream found"));
         return;
     }
 
@@ -105,23 +153,17 @@ void VideoFrameExporter::Export(const QString& url, const QString& output_dir,
 
     const AVCodec* codec = best_video_codec ? best_video_codec : avcodec_find_decoder(vs->codecpar->codec_id);
     if (!codec) {
-        emit ExportError("Video codec not found");
-        cleanup();
-        exporting_ = false;
+        fail_now(QStringLiteral("Video codec not found"));
         return;
     }
 
     dec_ctx = avcodec_alloc_context3(codec);
     if (!dec_ctx) {
-        emit ExportError("Failed to alloc codec context");
-        cleanup();
-        exporting_ = false;
+        fail_now(QStringLiteral("Failed to alloc codec context"));
         return;
     }
     if (avcodec_parameters_to_context(dec_ctx, vs->codecpar) < 0) {
-        emit ExportError("Failed to copy codec parameters");
-        cleanup();
-        exporting_ = false;
+        fail_now(QStringLiteral("Failed to copy codec parameters"));
         return;
     }
     if (vs->time_base.den != 0) {
@@ -129,18 +171,14 @@ void VideoFrameExporter::Export(const QString& url, const QString& output_dir,
         dec_ctx->time_base = vs->time_base;
     }
     if (avcodec_open2(dec_ctx, codec, nullptr) < 0) {
-        emit ExportError("Failed to open video decoder");
-        cleanup();
-        exporting_ = false;
+        fail_now(QStringLiteral("Failed to open video decoder"));
         return;
     }
 
     pkt = av_packet_alloc();
     frame = av_frame_alloc();
     if (!pkt || !frame) {
-        emit ExportError("Failed to alloc packet/frame");
-        cleanup();
-        exporting_ = false;
+        fail_now(QStringLiteral("Failed to alloc packet/frame"));
         return;
     }
 
@@ -149,22 +187,17 @@ void VideoFrameExporter::Export(const QString& url, const QString& output_dir,
     const bool as_yuv = (format == "yuv");
     const AVPixelFormat export_pix_fmt = as_rgb ? AV_PIX_FMT_RGB24 : (as_yuv ? AV_PIX_FMT_YUV420P : AV_PIX_FMT_NONE);
     if (!as_jpg && !as_rgb && !as_yuv) {
-        emit ExportError("Unsupported format (use jpg/rgb/yuv)");
-        cleanup();
-        exporting_ = false;
+        fail_now(QStringLiteral("Unsupported format (use jpg/rgb/yuv)"));
         return;
     }
     if (export_pix_fmt != AV_PIX_FMT_NONE) {
         export_frame = av_frame_alloc();
         if (!export_frame) {
-            emit ExportError("Failed to alloc export frame");
-            cleanup();
-            exporting_ = false;
+            fail_now(QStringLiteral("Failed to alloc export frame"));
             return;
         }
     }
 
-    int exported = 0;
     int decoded_index = 0;
     int sws_src_w = 0, sws_src_h = 0, sws_src_fmt = AV_PIX_FMT_NONE;
     int export_dst_w = 0, export_dst_h = 0;
@@ -186,7 +219,7 @@ void VideoFrameExporter::Export(const QString& url, const QString& output_dir,
             !export_buffer.empty()) return true;
         export_buffer_size = av_image_get_buffer_size(export_pix_fmt, width, height, 1);
         if (export_buffer_size <= 0) {
-            emit ExportError("Failed to calc export buffer size");
+            err_msg = QStringLiteral("Failed to calc export buffer size");
             return false;
         }
         export_buffer.resize(static_cast<size_t>(export_buffer_size));
@@ -198,7 +231,7 @@ void VideoFrameExporter::Export(const QString& url, const QString& output_dir,
                                                    export_buffer.data(), export_pix_fmt,
                                                    width, height, 1);
         if (fill_ret < 0) {
-            emit ExportError("Failed to setup export frame buffer");
+            err_msg = QStringLiteral("Failed to setup export frame buffer");
             return false;
         }
         export_frame->extended_data = export_frame->data;
@@ -208,8 +241,9 @@ void VideoFrameExporter::Export(const QString& url, const QString& output_dir,
         return true;
     };
 
+    // 导出单帧。失败时只写 err_msg、不发信号 —— 终态信号统一由 finish() 发。
     auto export_one_frame = [&](AVFrame* src) -> bool {
-        if (cancel_) return false;
+        if (IsCanceled()) return false;
         if (src->width <= 0 || src->height <= 0 || src->format < 0) return true;
 
         int64_t pts = src->pts;
@@ -232,18 +266,19 @@ void VideoFrameExporter::Export(const QString& url, const QString& output_dir,
         if (as_jpg) {
             sws = sws_getCachedContext(sws, width, height, static_cast<AVPixelFormat>(src->format),
                                        width, height, AV_PIX_FMT_BGRA, SWS_BILINEAR, nullptr, nullptr, nullptr);
-            if (!sws) { emit ExportError("Failed to init sws for jpg"); return false; }
+            if (!sws) { err_msg = QStringLiteral("Failed to init sws for jpg"); return false; }
             QImage img(width, height, QImage::Format_ARGB32);
-            if (img.isNull()) { emit ExportError("Failed to alloc QImage"); return false; }
+            if (img.isNull()) { err_msg = QStringLiteral("Failed to alloc QImage"); return false; }
             uint8_t* dst_slices[4] = {img.bits(), nullptr, nullptr, nullptr};
             int dst_linesize[4] = {static_cast<int>(img.bytesPerLine()), 0, 0, 0};
-            sws_scale(sws, src->data, src->linesize, 0, height, dst_slices, dst_linesize);
+            const int scaled = sws_scale(sws, src->data, src->linesize, 0, height, dst_slices, dst_linesize);
+            if (scaled != height) { err_msg = QStringLiteral("Failed to convert frame"); return false; }
             QString filename = QString("frame_%1").arg(decoded_index, 8, 10, QChar('0'));
             if (pts != AV_NOPTS_VALUE) filename += QString("_pts_%1").arg(static_cast<qint64>(pts));
             if (ts_ms >= 0) filename += QString("_tsms_%1").arg(static_cast<qint64>(ts_ms));
             filename += ".jpg";
             if (!img.save(QDir(output_dir).filePath(filename), "JPG", jpg_quality)) {
-                emit ExportError(QString("Failed to save jpg"));
+                err_msg = QStringLiteral("Failed to save jpg");
                 return false;
             }
             return true;
@@ -254,15 +289,17 @@ void VideoFrameExporter::Export(const QString& url, const QString& output_dir,
             AVPixelFormat dst_fmt = as_rgb ? AV_PIX_FMT_RGB24 : AV_PIX_FMT_YUV420P;
             sws = sws_getCachedContext(sws, width, height, static_cast<AVPixelFormat>(src->format),
                                        width, height, dst_fmt, SWS_BILINEAR, nullptr, nullptr, nullptr);
-            if (!sws) { emit ExportError("Failed to init sws"); return false; }
-            sws_scale(sws, src->data, src->linesize, 0, height, export_frame->data, export_frame->linesize);
+            if (!sws) { err_msg = QStringLiteral("Failed to init sws"); return false; }
+            const int scaled = sws_scale(sws, src->data, src->linesize, 0, height,
+                                         export_frame->data, export_frame->linesize);
+            if (scaled != height) { err_msg = QStringLiteral("Failed to convert frame"); return false; }
             QString ext = as_rgb ? ".rgb" : ".yuv";
             QString filename = QString("frame_%1").arg(decoded_index, 8, 10, QChar('0'));
             if (pts != AV_NOPTS_VALUE) filename += QString("_pts_%1").arg(static_cast<qint64>(pts));
             if (ts_ms >= 0) filename += QString("_tsms_%1").arg(static_cast<qint64>(ts_ms));
             filename += ext;
             if (!write_file(QDir(output_dir).filePath(filename), export_buffer.data(), export_buffer_size)) {
-                emit ExportError(QString("Failed to write %1").arg(ext));
+                err_msg = QStringLiteral("Failed to write %1").arg(ext);
                 return false;
             }
             return true;
@@ -270,52 +307,87 @@ void VideoFrameExporter::Export(const QString& url, const QString& output_dir,
         return true;
     };
 
-    // 主解码循环
-    while (!cancel_) {
-        int r = av_read_frame(fmt, pkt);
-        if (r < 0) break;
+    // 取走解码器里已就绪的帧
+    auto drain_decoder = [&]() -> DrainResult {
+        while (!IsCanceled()) {
+            const int r = avcodec_receive_frame(dec_ctx, frame);
+            if (r == AVERROR(EAGAIN) || r == AVERROR_EOF) return DrainResult::Drained;
+            if (r < 0) {   // 真正的解码错误, 不能当成"读完了"
+                err_msg = QStringLiteral("解码失败: %1").arg(AvErrorString(r));
+                return DrainResult::Failed;
+            }
+            decoded_index++;
+            if (frame_interval <= 1 || ((decoded_index - 1) % frame_interval) == 0) {
+                if (!export_one_frame(frame)) {
+                    return IsCanceled() ? DrainResult::Canceled : DrainResult::Failed;
+                }
+                exported++;
+            }
+            if (exported % 25 == 0) emit ExportProgress(exported);
+            av_frame_unref(frame);
+        }
+        return DrainResult::Canceled;
+    };
+
+    // 主解码循环: EOF / 取消 / 真实错误三种结局必须分清
+    bool canceled = false;
+    bool failed = false;
+    while (!canceled && !failed) {
+        if (IsCanceled()) { canceled = true; break; }
+
+        const int r = av_read_frame(fmt, pkt);
+        if (r == AVERROR_EOF) {   // 正常读到文件尾
+            av_packet_unref(pkt);
+            break;
+        }
+        if (r < 0) {   // 损坏 / 截断 / IO 错误: 不能报成功
+            err_msg = QStringLiteral("读取数据包失败: %1").arg(AvErrorString(r));
+            av_packet_unref(pkt);
+            failed = true;
+            break;
+        }
         if (pkt->stream_index != vindex) { av_packet_unref(pkt); continue; }
-        if (avcodec_send_packet(dec_ctx, pkt) < 0) { av_packet_unref(pkt); continue; }
+
+        int sr = avcodec_send_packet(dec_ctx, pkt);
+        if (sr == AVERROR(EAGAIN)) {
+            // 解码器输出队列满: 先取走已解码的帧, 再重试一次
+            const DrainResult d = drain_decoder();
+            if (d != DrainResult::Drained) {
+                canceled = (d == DrainResult::Canceled);
+                failed = (d == DrainResult::Failed);
+                av_packet_unref(pkt);
+                break;
+            }
+            sr = avcodec_send_packet(dec_ctx, pkt);
+        }
         av_packet_unref(pkt);
-        while (!cancel_) {
-            r = avcodec_receive_frame(dec_ctx, frame);
-            if (r == AVERROR(EAGAIN) || r == AVERROR_EOF) break;
-            if (r < 0) break;
-            decoded_index++;
-            if (frame_interval <= 1 || ((decoded_index - 1) % frame_interval) == 0) {
-                if (!export_one_frame(frame)) { cleanup(); exporting_ = false; return; }
-                exported++;
-            }
-            if (exported % 25 == 0) emit ExportProgress(exported);
-            av_frame_unref(frame);
+        if (sr < 0) {
+            err_msg = QStringLiteral("送入解码器失败: %1").arg(AvErrorString(sr));
+            failed = true;
+            break;
+        }
+
+        const DrainResult d = drain_decoder();
+        if (d == DrainResult::Drained) continue;
+        canceled = (d == DrainResult::Canceled);
+        failed = (d == DrainResult::Failed);
+        break;
+    }
+
+    // 排空解码器 (只有既没取消也没出错才值得做)
+    if (!canceled && !failed) {
+        const int fr = avcodec_send_packet(dec_ctx, nullptr);
+        if (fr < 0 && fr != AVERROR_EOF) {
+            err_msg = QStringLiteral("结束解码失败: %1").arg(AvErrorString(fr));
+            failed = true;
+        } else {
+            const DrainResult d = drain_decoder();
+            canceled = (d == DrainResult::Canceled);
+            failed = (d == DrainResult::Failed);
         }
     }
 
-    // 排空解码器
-    if (!cancel_) {
-        avcodec_send_packet(dec_ctx, nullptr);
-        while (!cancel_) {
-            int r = avcodec_receive_frame(dec_ctx, frame);
-            if (r == AVERROR_EOF || r == AVERROR(EAGAIN)) break;
-            if (r < 0) break;
-            decoded_index++;
-            if (frame_interval <= 1 || ((decoded_index - 1) % frame_interval) == 0) {
-                if (!export_one_frame(frame)) { cleanup(); exporting_ = false; return; }
-                exported++;
-            }
-            if (exported % 25 == 0) emit ExportProgress(exported);
-            av_frame_unref(frame);
-        }
-    }
-
-    emit ExportProgress(exported);
-    if (!cancel_) {
-        emit ExportFinished(output_dir);
-    } else {
-        emit ExportCanceled(exported, output_dir);
-    }
-    cleanup();
-    exporting_ = false;
+    finish(canceled, failed);
 }
 
 } // namespace player

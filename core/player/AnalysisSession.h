@@ -25,8 +25,10 @@ namespace player {
 //
 // 设计约定:
 //   - MediaPlayer 的公共 API (EnableAnalysis / SetXxxEnabled / IsXxxEnabled /
-//     GetStreamAnalyzer / GetVisualDefectOptions ...) 保持不变, 仅内部转发到本类,
+//     GetVisualDefectOptions ...) 保持不变, 仅内部转发到本类,
 //     因此 UI 层 (AnalysisPanel / PlayerPanel / MainWindow) 无需改动.
+//     StreamAnalyzer 不再对外暴露可变引用: 需要读统计/历史就用本类的 GetStats()
+//     与 StreamAnalyzer 的加锁快照接口。
 //   - 真正的视觉缺陷分析器 (VisualDefectAnalyzer) 仍留在 MediaPlayer: 它要发信号、
 //     与解码线程的 Feed/Drain 流程耦合, 不适合塞进本类; 它读开关/选项时走本类的
 //     IsVisualDefectAnalysisEnabled() / GetVisualDefectOptions().
@@ -153,8 +155,9 @@ public:
         return stream_analyzer_.GetStats();
     }
 
-    // 暴露底层引用: 已有的 MediaPlayer 代码通过它访问 StreamAnalyzer 的具体方法
-    // (GetRecentPackets / 历史曲线等), 避免再给每个方法都写一层转发.
+    // 底层引用只给 MediaPlayer 自己用(它要调 AnalyzePacket / Reset 等写接口)。
+    // 对外不再暴露可变引用: 解码线程在更新这些状态, 外部拿可变引用等于开了一条
+    // 绕锁的读写通道(历史曲线接口尤其明显)。
     analyzer::StreamAnalyzer& stream_analyzer() {
         return stream_analyzer_;
     }

@@ -193,6 +193,16 @@ std::vector<PacketInfo> StreamAnalyzer::GetRecentPackets(int count) const {
     );
 }
 
+std::vector<double> StreamAnalyzer::GetFpsHistory() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return fps_history_;
+}
+
+std::vector<int> StreamAnalyzer::GetBitrateHistory() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return bitrate_history_;
+}
+
 void StreamAnalyzer::CalculateFps() {
     if (frame_count_ > 0) {
         auto now = std::chrono::steady_clock::now();

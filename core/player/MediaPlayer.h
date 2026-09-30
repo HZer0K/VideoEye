@@ -26,6 +26,7 @@ extern "C" {
 #include "core/player/AnalysisSession.h"
 #include "core/player/PlaybackSession.h"
 #include "infrastructure/concurrency/TaskManager.h"
+#include "core/qt/QtWorkerOwner.h"
 #include "core/exporter/MediaExporter.h"
 #include "core/domain/model/AnalysisEvent.h"
 #include "core/domain/model/AudioVisualizationFrame.h"
@@ -135,7 +136,11 @@ public:
     }
     
     // 获取分析器
-    analyzer::StreamAnalyzer& GetStreamAnalyzer() { return analysis_session_.stream_analyzer(); }
+    //
+    // 不再对外暴露可变的 StreamAnalyzer&: 它的内部状态由解码线程更新,
+    // 外部拿可变引用等于开了一条绕锁的读写通道(历史曲线接口尤其明显)。
+    // 需要统计就用 GetCurrentStats()/下面这些快照。
+    const analyzer::StreamAnalyzer& stream_analyzer() const { return analysis_session_.stream_analyzer(); }
     analyzer::StreamStats GetCurrentStats() const;
     
 signals:
@@ -248,6 +253,12 @@ private:
     analyzer::VisualDefectAnalyzer visual_defect_analyzer_;
     StreamInfoExtractor stream_info_extractor_;
     AudioVisualizer audio_visualizer_;
+    // 抽帧 / 媒体导出的 worker 线程全部归 export_workers_ 所有:
+    // 取消超时也不许丢句柄(丢弃 = 宿主析构时 QThread 还在跑 = 崩溃),
+    // 见 core/qt/QtWorkerOwner.h。下面两组裸指针只是"当前任务"的标记,
+    // 线程结束后由 finished 回调清空, 所有权不在它们身上。
+    qt::QtWorkerOwner export_workers_;
+
     QThread* frame_export_thread_ = nullptr;
     VideoFrameExporter* frame_exporter_ = nullptr;
 
@@ -256,7 +267,7 @@ private:
     // 仍留在 QThread 上, 但生命周期(Begin/End/Cancel)也登记在这里。
     task::TaskManager task_manager_;
 
-    // 音视频导出 (后台线程)
+    // 音视频导出 (后台线程; 线程本身同样归 export_workers_ 所有)
     QThread* media_export_thread_ = nullptr;
     exporter::MediaExporter* media_exporter_ = nullptr;
 

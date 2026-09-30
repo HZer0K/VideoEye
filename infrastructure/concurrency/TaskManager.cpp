@@ -17,8 +17,8 @@ TaskManager::TaskManager(std::size_t max_concurrent) : max_concurrent_(max_concu
 
 TaskManager::~TaskManager() {
     CancelAll();
-    // 限时 5s: 析构期没有 UI 可响应, 但不能因为某个任务拒不退出就把整个退出流程卡死。
-    // 受管线程(Run)无论如何都会被 join —— 它的 body 一定走到 End, 不会真的永远挂着。
+    // 等终态限时 5s: 析构期没有 UI 可响应, 但不能因为某个任务拒不退出就把整个退出流程卡死。
+    // 之后的受管线程回收没有时限(必须 join, 否则进程退出时崩在还在跑的线程上)。
     WaitForAll(5000);
 }
 
@@ -236,7 +236,21 @@ bool TaskManager::WaitForIdle(const std::string& slot, int timeout_ms) {
     return true;
 }
 
+int TaskManager::RemainingMs(std::chrono::steady_clock::time_point deadline, bool bounded) {
+    if (!bounded) return -1;
+    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          deadline - std::chrono::steady_clock::now())
+                          .count();
+    return left > 0 ? static_cast<int>(left) : 0;
+}
+
 void TaskManager::WaitForAll(int timeout_ms) {
+    // timeout_ms 是**总预算**: 以前每个 slot 各等一份, N 个 slot 最坏要等 N * timeout_ms,
+    // 于是"析构 5 秒超时"从来就没兑现过。
+    const bool bounded = timeout_ms >= 0;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(bounded ? timeout_ms : 0);
+
     std::vector<std::string> names;
     {
         std::lock_guard<std::mutex> lk(mutex_);
@@ -244,8 +258,11 @@ void TaskManager::WaitForAll(int timeout_ms) {
         for (const auto& kv : slots_)
             names.push_back(kv.first);
     }
-    for (const auto& name : names)
-        WaitForIdle(name, timeout_ms);
+    for (const auto& name : names) {
+        WaitForIdle(name, RemainingMs(deadline, bounded));
+        if (bounded && RemainingMs(deadline, bounded) <= 0)
+            break;   // 预算用完: 剩下的 slot 交给下面的强制收尾
+    }
 
     std::vector<std::thread> pending;
     bool forced = false;
@@ -269,6 +286,8 @@ void TaskManager::WaitForAll(int timeout_ms) {
     }
     if (forced)
         cv_.notify_all();
+    // 阶段二: 受管线程无论如何都要 join, 这一段没有超时保证(见头文件注释)。
+    // 它们都是 Run() 起的, body 一定走到 End, 所以不会真的永远挂着。
     for (auto& t : pending) {
         if (t.joinable())
             t.join();

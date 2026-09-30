@@ -1,0 +1,161 @@
+#include "core/qt/QtWorkerOwner.h"
+
+#include <algorithm>
+#include <string>
+
+#include "infrastructure/logging/Logger.h"
+
+namespace videoeye {
+namespace qt {
+
+namespace {
+// 析构时的最后等待预算: 析构路径上没有 UI 可响应，卡太久会让整个退出流程假死。
+constexpr int kDestructorWaitMs = 3000;
+} // namespace
+
+QtWorkerOwner::QtWorkerOwner(QObject* parent) : QObject(parent) {}
+
+QtWorkerOwner::~QtWorkerOwner() {
+    StopAll(kDestructorWaitMs);
+
+    // 走到这里还没退出来的线程（典型场景: FFmpeg 卡在网络 IO / 驱动调用里，
+    // quit() 根本传不进去），绝不能让它跟着本对象一起被销毁 —— QThread 对象被析构
+    // 而线程仍在跑，Qt 会直接报 "QThread: Destroyed while thread is still running"。
+    //
+    // 处理办法: 断开全部连接（避免回调打到已经析构的宿主）后脱管，
+    // 把这个线程连同 worker 一起泄漏掉。泄漏一个卡死的线程（进程退出时由 OS 回收）
+    // 的代价，远小于析构期崩溃。
+    for (Entry& e : entries_) {
+        if (!e.thread) continue;
+        LOG_ERROR("后台 worker 线程超时未退出, 已脱管(避免析构期崩溃)");
+        if (e.worker) e.worker->disconnect();
+        e.thread->disconnect();
+        e.thread->setParent(nullptr);  // 从子对象列表摘掉 -> QObject 析构不会 delete 它
+    }
+    entries_.clear();
+}
+
+QThread* QtWorkerOwner::StartWorker(QObject* worker, std::function<void()> body,
+                                    std::function<void()> request_stop) {
+    if (!worker) return nullptr;
+
+    auto* thread = new QThread(this);
+    // worker 不挂成 QThread 的子对象: 它住在新线程里，由 deleteLater 在该线程回收，
+    // 挂父子关系反而会让 QThread 析构时从错误的线程 delete 它。
+    worker->setParent(nullptr);
+    worker->moveToThread(thread);
+
+    Entry entry;
+    entry.thread = thread;
+    entry.worker = worker;
+    entry.request_stop = std::move(request_stop);
+    entries_.push_back(std::move(entry));
+
+    // body 在 worker 线程执行（接收者上下文是 worker，Qt 会自动判成直连）。
+    // 任务体一返回就退出事件循环: 否则线程会一直挂在 exec() 上不结束 ——
+    // 以前是靠调用方把 worker 的每个终态信号都连到 thread->quit，漏连一个就漏退一次。
+    QObject::connect(thread, &QThread::started, worker,
+                     [thread, body = std::move(body)]() {
+                         body();
+                         thread->quit();
+                     });
+    // 终态清理: 排队回所有者线程，worker 与 QThread 各自在正确的线程被回收
+    QObject::connect(thread, &QThread::finished, this, [this, thread, worker]() {
+        worker->deleteLater();
+        thread->deleteLater();
+        RemoveEntry(thread);
+    });
+
+    thread->start();
+    return thread;
+}
+
+bool QtWorkerOwner::StopWorker(QThread* thread, int wait_ms) {
+    if (!thread) return true;
+    Entry* entry = FindEntry(thread);
+    if (!entry) return true;  // 不是本对象持有的线程，不管
+
+    if (entry->request_stop) entry->request_stop();
+    thread->quit();
+
+    bool finished = false;
+    if (thread == QThread::currentThread()) {
+        // 从 worker 线程自己调进来时不能 wait(): 等自己退出 = 直接死锁
+        finished = thread->isFinished();
+    } else {
+        finished = thread->wait(wait_ms);
+    }
+
+    if (finished) {
+        RemoveEntry(thread);  // deleteLater 已由 finished 回调排队，对象交给 Qt 回收
+        return true;
+    }
+    entry->retiring = true;  // 仍在跑: 转入待回收，句柄继续由本对象持有
+    LOG_WARN("后台 worker 线程在 " + std::to_string(wait_ms) +
+             "ms 内未退出, 转入待回收列表(句柄不丢弃)");
+    return false;
+}
+
+int QtWorkerOwner::RemainingMs(std::chrono::steady_clock::time_point deadline, bool bounded) {
+    if (!bounded) return -1;
+    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          deadline - std::chrono::steady_clock::now())
+                          .count();
+    return left > 0 ? static_cast<int>(left) : 0;
+}
+
+bool QtWorkerOwner::StopAll(int timeout_ms) {
+    const bool bounded = timeout_ms >= 0;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(bounded ? timeout_ms : 0);
+
+    // 先把停止请求发给所有线程，让它们并行退出；
+    // 逐个"请求 + 等待"会把总耗时累加成 N * timeout。
+    std::vector<QThread*> targets;
+    targets.reserve(entries_.size());
+    for (const Entry& e : entries_) {
+        if (!e.thread) continue;
+        if (e.request_stop) e.request_stop();
+        e.thread->quit();
+        targets.push_back(e.thread);
+    }
+
+    bool all_stopped = true;
+    for (QThread* thread : targets) {
+        // StopWorker 内部会再发一次 request_stop / quit，二者都是幂等的
+        if (!StopWorker(thread, RemainingMs(deadline, bounded))) all_stopped = false;
+    }
+    return all_stopped;
+}
+
+QtWorkerOwner::Entry* QtWorkerOwner::FindEntry(QThread* thread) {
+    for (Entry& e : entries_) {
+        if (e.thread == thread) return &e;
+    }
+    return nullptr;
+}
+
+void QtWorkerOwner::RemoveEntry(QThread* thread) {
+    entries_.erase(std::remove_if(entries_.begin(), entries_.end(),
+                                  [thread](const Entry& e) { return e.thread == thread; }),
+                   entries_.end());
+}
+
+int QtWorkerOwner::ActiveCount() const {
+    int n = 0;
+    for (const Entry& e : entries_) {
+        if (!e.retiring) ++n;
+    }
+    return n;
+}
+
+int QtWorkerOwner::RetiringCount() const {
+    int n = 0;
+    for (const Entry& e : entries_) {
+        if (e.retiring) ++n;
+    }
+    return n;
+}
+
+} // namespace qt
+} // namespace videoeye

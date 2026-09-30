@@ -55,12 +55,12 @@ public:
     
     // 获取最近的数据包历史 (用于图表显示)
     std::vector<PacketInfo> GetRecentPackets(int count = 100) const;
-    
-    // 获取帧率历史
-    std::vector<double> GetFpsHistory() const { return fps_history_; }
-    
-    // 获取码率历史
-    std::vector<int> GetBitrateHistory() const { return bitrate_history_; }
+
+    // 历史曲线: 一律在锁内取快照后返回副本。
+    // 以前这两个是"直接返回成员 vector"的内联函数 —— 调用方拿到的是副本没错,
+    // 但拷贝过程本身没有锁保护, 解码线程正在 push_back/erase 时就是数据竞争。
+    std::vector<double> GetFpsHistory() const;
+    std::vector<int> GetBitrateHistory() const;
 
     void AnalyzeVideoFrame(AVPictureType type);
     void AnalyzeAudioFrame();

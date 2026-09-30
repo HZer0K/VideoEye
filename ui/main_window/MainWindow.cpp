@@ -30,6 +30,7 @@
 #include <QActionGroup>
 #include <algorithm>
 #include <QProgressDialog>
+#include <QPointer>
 #include <QFileInfo>
 #include <QFile>
 #include <QByteArray>
@@ -90,11 +91,12 @@ MainWindow::~MainWindow() {
     if (player_) {
         player_->Stop();
     }
-    // 媒体信息后台线程可能还在跑: 先标记失效再 join, 避免回调打到已析构的控件
-    ++mediainfo_generation_;
-    if (mediainfo_worker_.joinable()) {
-        mediainfo_worker_.join();
-    }
+    // 媒体信息后台线程可能还在跑: 先标记失效再取消+回收。
+    // 线程由 background_tasks_ 持有并在它析构时 join, 这里不再自己 join 裸线程 ——
+    // 析构路径上 join 一个正在做网络 IO 的线程会把整个关闭流程卡住。
+    mediainfo_generation_.fetch_add(1);
+    background_tasks_.CancelAll();
+    background_tasks_.WaitForAll(3000);
 }
 
 void MainWindow::SetupUI() {
@@ -818,24 +820,27 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
 }
 
 void MainWindow::StartMediaInfoAnalysis(const QString& source) {
-    const quint64 generation = ++mediainfo_generation_;
+    const quint64 generation = mediainfo_generation_.fetch_add(1) + 1;
     mediainfo_text_->setPlainText(tr("(正在解析媒体信息…)"));
 
-    if (mediainfo_worker_.joinable()) {
-        // 上一次还没跑完: 等它结束再起新的, 避免并发持有 avformat 上下文
-        mediainfo_worker_.join();
-    }
-
-    mediainfo_worker_ = std::thread([this, source, generation]() {
+    // 交给统一任务调度: 打开新文件时旧任务只被置取消标志, 本函数立刻返回。
+    // 以前这里直接 join() 上一次的线程 —— 大文件/网络源/异常文件的 avformat 探测
+    // 动辄几秒, 连着打开第二个文件就会把界面卡住。
+    // 旧线程由 TaskManager 持有并在下次启动/析构时回收, 过期结果靠 generation 丢弃。
+    QPointer<MainWindow> self = this;
+    background_tasks_.Run(kSlotMediaInfo,
+                          [self, source, generation](task::TaskId, task::CancelToken token) {
         QString text;
         {
             VE_PERF("媒体信息解析(后台线程)");
             analyzer::MediaInfoAnalyzer mi;
-            text = mi.Open(source) ? mi.GetCompleteInfo() : tr("(无法解析媒体信息)");
+            text = mi.Open(source) ? mi.GetCompleteInfo() : MainWindow::tr("(无法解析媒体信息)");
         }
-        QMetaObject::invokeMethod(this, [this, generation, text]() {
-            if (generation != mediainfo_generation_) return;   // 已经切到别的文件
-            mediainfo_text_->setPlainText(text);
+        if (!self || token.IsCanceled()) return;
+        if (generation != self->mediainfo_generation_.load()) return;
+        QMetaObject::invokeMethod(self, [self, generation, text]() {
+            if (!self || generation != self->mediainfo_generation_.load()) return;  // 已经切到别的文件
+            self->mediainfo_text_->setPlainText(text);
         }, Qt::QueuedConnection);
     });
 }

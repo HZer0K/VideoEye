@@ -163,6 +163,8 @@ target_link_libraries(VideoEyePlayback
     PRIVATE VideoEyeAnalysis
             VideoEyeExporter
             VideoEyeInfrastructure
+            # MediaPlayer 用 core/qt/QtWorkerOwner.h 统一持有导出用的 QThread
+            VideoEyeQtAdapters
 )
 if(WIN32)
     # WASAPI: CoCreateInstance 在 ole32

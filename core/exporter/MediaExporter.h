@@ -4,6 +4,8 @@
 #include <QString>
 #include <atomic>
 
+#include "infrastructure/concurrency/TaskManager.h"
+
 namespace videoeye {
 namespace exporter {
 
@@ -35,10 +37,15 @@ class MediaExporter : public QObject {
 public:
     explicit MediaExporter(QObject* parent = nullptr);
 
+    // 取消令牌由所有者在**线程启动之前**注入。
+    // Export() 只读不写取消状态: 否则"启动前立即取消"会被 worker 开头的重置吃掉。
+    void SetCancelToken(const task::CancelToken& token) { cancel_token_ = token; }
+
     // 同步执行导出 (应在 worker 线程中调用)
     void Export(const ExportOptions& opt);
     void Cancel();
     bool IsExporting() const { return exporting_.load(); }
+    bool IsCanceled() const;
 
 signals:
     void ExportStarted(qint64 duration_ms);
@@ -48,7 +55,9 @@ signals:
     void ExportError(const QString& message);
 
 private:
+    // 外部直接置位（Cancel()）与 TaskManager 令牌取或：两者任一置位都算取消。
     std::atomic<bool> cancel_{false};
+    task::CancelToken cancel_token_;
     std::atomic<bool> exporting_{false};
 };
 

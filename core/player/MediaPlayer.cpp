@@ -118,10 +118,9 @@ MediaPlayer::MediaPlayer(QObject* parent)
 MediaPlayer::~MediaPlayer() {
     CancelVideoFrameExport();
     CancelMediaExport();
-    if (media_export_thread_) {
-        media_export_thread_->quit();
-        media_export_thread_->wait(5000);
-    }
+    // 两类导出线程统一再收一轮: 由 export_workers_ 持有, 超时也不会被遗忘
+    // (实在退不出来的会在它析构时脱管, 而不是被销毁)。
+    export_workers_.StopAll(5000);
     // 取消全部后台任务并等待退出。必须在 Stop()/Release() 之前:
     // 容器结构分析线程自己持有 AVFormatContext, 让它先退干净再去 avformat_network_deinit()。
     task_manager_.CancelAll();
@@ -736,21 +735,20 @@ void MediaPlayer::StartVideoFrameExport(const QString& output_dir, const QString
     const QString normalized_format = format.toLower();
     const int normalized_interval = std::max(1, frame_interval);
 
-    auto* thread = new QThread(this);
+    // 取消令牌必须在线程启动**之前**注入 worker: 用户若在 worker 起来之前点了取消,
+    // worker 一进门就能看到, 不会出现"取消被清空、导出照常跑完"的竞态。
     auto* exporter = new VideoFrameExporter();
-    exporter->moveToThread(thread);
+    exporter->SetCancelToken(task_manager_.Token(kSlotFrameExport));
 
-    frame_export_thread_ = thread;
-    frame_exporter_ = exporter;
-
-    // 转发信号
+    // 信号必须**先连好再起线程**: worker 一进门就可能因为参数不对而立刻报错,
+    // 晚一步连就会漏掉这次终态(TaskManager 永远等不到 End)。
     connect(exporter, &VideoFrameExporter::ExportStarted, this, &MediaPlayer::VideoFrameExportStarted);
     connect(exporter, &VideoFrameExporter::ExportProgress, this, &MediaPlayer::VideoFrameExportProgress);
     connect(exporter, &VideoFrameExporter::ExportFinished, this, &MediaPlayer::VideoFrameExportFinished);
     connect(exporter, &VideoFrameExporter::ExportCanceled, this, &MediaPlayer::VideoFrameExportCanceled);
     connect(exporter, &VideoFrameExporter::ExportError, this, &MediaPlayer::VideoFrameExportError);
 
-    // 终态上报 (登记在 quit 之前, 保证 WaitForIdle 看到的是终态而不是"还在跑")
+    // 终态上报: 保证 WaitForIdle 看到的是终态而不是"还在跑"
     connect(exporter, &VideoFrameExporter::ExportFinished, this, [this, task_id](const QString&) {
         task_manager_.End(kSlotFrameExport, task_id, task::TaskState::Succeeded);
     });
@@ -762,20 +760,29 @@ void MediaPlayer::StartVideoFrameExport(const QString& output_dir, const QString
         task_manager_.End(kSlotFrameExport, task_id, task::TaskState::Failed);
     });
 
-    connect(exporter, &VideoFrameExporter::ExportFinished, thread, &QThread::quit);
-    connect(exporter, &VideoFrameExporter::ExportCanceled, thread, &QThread::quit);
-    connect(exporter, &VideoFrameExporter::ExportError, thread, &QThread::quit);
-    connect(thread, &QThread::finished, thread, &QThread::deleteLater);
-    connect(thread, &QThread::finished, exporter, &QObject::deleteLater);
-    connect(thread, &QThread::finished, this, [this, thread, exporter]() {
+    auto* thread = export_workers_.StartWorker(
+        exporter,
+        [exporter, url, output_dir, normalized_format, jpg_quality, normalized_interval]() {
+            exporter->Export(url, output_dir, normalized_format, jpg_quality, normalized_interval);
+        },
+        [exporter]() { exporter->Cancel(); });
+
+    frame_export_thread_ = thread;
+    frame_exporter_ = exporter;
+
+    // 线程退出后清掉"当前任务"标记。线程的 deleteLater 由 QtWorkerOwner 负责,
+    // 这里只清指针, 不碰对象。
+    auto clear_marks = [this, thread, exporter]() {
         if (frame_export_thread_ == thread) frame_export_thread_ = nullptr;
         if (frame_exporter_ == exporter) frame_exporter_ = nullptr;
-    });
-    connect(thread, &QThread::started, exporter,
-            [exporter, url, output_dir, normalized_format, jpg_quality, normalized_interval]() {
-                exporter->Export(url, output_dir, normalized_format, jpg_quality, normalized_interval);
-            });
-    thread->start();
+    };
+    // finished 是在 isFinished 置位之后发出的, 所以这里判 isFinished 就够:
+    // 已经跑完的线程不会再发 finished, 只能就地清标记。
+    if (thread->isFinished()) {
+        clear_marks();
+    } else {
+        connect(thread, &QThread::finished, this, clear_marks);
+    }
 }
 
 void MediaPlayer::CancelVideoFrameExport() {
@@ -787,13 +794,14 @@ void MediaPlayer::CancelVideoFrameExport() {
     if (!exporter && !thread) return;
 
     if (exporter) exporter->Cancel();
-    if (thread) {
-        thread->quit();
-        // 从 worker 线程自己调进来时不能 wait(), 否则等自己退出 = 直接死锁
-        if (thread != QThread::currentThread()) thread->wait(5000);
+    // 交由 owner 停止: 超时也不丢句柄 —— 线程转入待回收列表,
+    // 继续由 export_workers_ 持有并在析构时收尾(不再出现"QThread 还在跑就被遗忘")。
+    const bool stopped = thread ? export_workers_.StopWorker(thread, 5000) : true;
+    if (!stopped && exporter) {
+        // 还在跑: 断开它与本对象的连接, 避免旧任务的进度/终态串到新任务上
+        exporter->disconnect(this);
     }
-    // thread->finished 的清理回调是排队投递的, wait() 返回时不一定已经跑过, 这里兜底清指针。
-    // (原实现在 thread 为空时仍会 thread->quit(), 直接空指针崩溃)
+    // finished 的清理回调是排队投递的, wait() 返回时不一定已经跑过, 这里兜底清指针。
     if (frame_exporter_ == exporter) frame_exporter_ = nullptr;
     if (frame_export_thread_ == thread) frame_export_thread_ = nullptr;
 }
@@ -801,14 +809,18 @@ void MediaPlayer::CancelVideoFrameExport() {
 // --- 音视频导出 (后台线程运行 MediaExporter) ---
 
 void MediaPlayer::StartMediaExport(const exporter::ExportOptions& opt) {
-    // 先彻底结束可能正在进行的旧导出, 避免同一输出路径上的新旧任务并发冲突与状态错乱。
-    // 旧任务取消后写入的是独立临时文件, 但等待其退出可保证不会与本次导出重叠写入同一目标。
-    // 先取消同 slot 上的旧导出并等其退出, 再登记新任务
+    // 先请求可能正在进行的旧导出退出。
+    // 旧任务写的是带 UUID 的独立临时文件, 即使它卡住不退也不会和本次导出撞文件;
+    // 真退不出来时线程由 export_workers_ 继续持有(不再是把裸指针置空了事)。
     task_manager_.Cancel(kSlotMediaExport);
-    if (media_export_thread_) {
+    if (media_export_thread_ || media_exporter_) {
         if (media_exporter_) media_exporter_->Cancel();
-        media_export_thread_->quit();
-        media_export_thread_->wait(30000);
+        const bool stopped = media_export_thread_
+                                 ? export_workers_.StopWorker(media_export_thread_, 30000)
+                                 : true;
+        if (!stopped && media_exporter_) {
+            media_exporter_->disconnect(this);  // 旧任务的进度/终态不许串到新任务上
+        }
         media_export_thread_ = nullptr;
         media_exporter_ = nullptr;
     }
@@ -824,13 +836,11 @@ void MediaPlayer::StartMediaExport(const exporter::ExportOptions& opt) {
     // 注意: 不再预先删除目标文件。MediaExporter 先写同目录临时文件, 成功后才原子替换目标,
     // 因此导出失败/取消时原文件完好保留, 不会出现"旧文件被删、新导出又失败"的数据丢失。
 
-    auto* thread = new QThread(this);
+    // 取消令牌在线程启动**之前**注入: 启动前的"立即取消"必须能被 worker 看到。
     auto* exporter = new exporter::MediaExporter();
-    exporter->moveToThread(thread);
+    exporter->SetCancelToken(task_manager_.Token(kSlotMediaExport));
 
-    media_export_thread_ = thread;
-    media_exporter_ = exporter;
-
+    // 同样先连信号再起线程: worker 可能一进门就因为参数不对而立刻报错。
     connect(exporter, &exporter::MediaExporter::ExportStarted, this, &MediaPlayer::MediaExportStarted);
     connect(exporter, &exporter::MediaExporter::ExportProgress, this, &MediaPlayer::MediaExportProgress);
     connect(exporter, &exporter::MediaExporter::ExportFinished, this, &MediaPlayer::MediaExportFinished);
@@ -850,23 +860,22 @@ void MediaPlayer::StartMediaExport(const exporter::ExportOptions& opt) {
         task_manager_.End(kSlotMediaExport, task_id, task::TaskState::Failed);
     });
 
-    // 导出结束 -> 退出线程, 随后自清理 (不触碰 this 的成员指针, 避免覆盖新导出)
-    connect(exporter, &exporter::MediaExporter::ExportFinished, thread, &QThread::quit);
-    connect(exporter, &exporter::MediaExporter::ExportCanceled, thread, &QThread::quit);
-    connect(exporter, &exporter::MediaExporter::ExportError, thread, &QThread::quit);
-    connect(thread, &QThread::finished, thread, &QThread::deleteLater);
-    connect(thread, &QThread::finished, exporter, &QObject::deleteLater);
-    connect(thread, &QThread::finished, this, [this, thread, exporter]() {
+    auto* thread = export_workers_.StartWorker(exporter, [exporter, opt]() { exporter->Export(opt); },
+                                               [exporter]() { exporter->Cancel(); });
+    media_export_thread_ = thread;
+    media_exporter_ = exporter;
+
+    // 线程退出后清标记 (不覆盖后来启动的新导出: 两个指针都比过再清)。
+    // 对象回收由 QtWorkerOwner 负责。
+    auto clear_marks = [this, thread, exporter]() {
         if (media_export_thread_ == thread) media_export_thread_ = nullptr;
         if (media_exporter_ == exporter) media_exporter_ = nullptr;
-    });
-
-    // 线程启动后执行导出 (在 worker 线程中同步运行)
-    connect(thread, &QThread::started, exporter, [exporter, opt]() {
-        exporter->Export(opt);
-    });
-
-    thread->start();
+    };
+    if (thread->isFinished()) {
+        clear_marks();
+    } else {
+        connect(thread, &QThread::finished, this, clear_marks);
+    }
 }
 
 void MediaPlayer::CancelMediaExport() {

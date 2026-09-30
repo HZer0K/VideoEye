@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -105,8 +106,17 @@ public:
 
     // 等待 slot 上的任务进入终态; Run() 起的任务会顺带 join。
     // timeout_ms: <0=不限时。返回 true 表示已空闲, false 表示超时。
+    // 注意: 本类只管"任务状态", 管不了调用方自管的线程 —— 那种线程卡住了就是卡住了。
     bool WaitForIdle(const std::string& slot, int timeout_ms);
-    // 等待所有 slot 空闲, 并回收所有受管线程。
+
+    // 等待所有 slot 空闲并回收线程。分两段, 语义不同, 别混为一谈:
+    //   1) 等终态 —— **有**超时保证: timeout_ms 是总预算, 不是每个 slot 各等一份;
+    //      超时后仍没报终态的调用方自管线程(QThread 等)被强制写成 Canceled,
+    //      免得 slot 永远卡在 Running 让后续 Begin 每次白等一轮。
+    //   2) 回收受管线程(Run 起的 std::thread)—— **没有**超时保证: 它们必须被 join,
+    //      detach 会让进程退出时崩在还在跑的线程上; body 一定走到 End, 所以 join
+    //      不会无限期, 但耗时取决于任务体自己有没有轮询取消令牌。
+    // 换句话说: 本类能保证"等状态"不超过 timeout_ms, 保证不了"整个函数"不超过。
     void WaitForAll(int timeout_ms);
 
 private:
@@ -123,6 +133,9 @@ private:
     Slot* FindLocked(const std::string& slot) const;
     std::size_t RunningCountLocked() const;
     void JoinThreadLocked(Slot* s); // 仅回收已结束的线程, 不阻塞在仍运行的任务上
+
+    // 距离 deadline 还剩多少毫秒; bounded=false(不限时)时恒返回 -1。
+    static int RemainingMs(std::chrono::steady_clock::time_point deadline, bool bounded);
 
     const std::size_t max_concurrent_;
     mutable std::mutex mutex_;

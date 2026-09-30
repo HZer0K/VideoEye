@@ -1,8 +1,10 @@
 #include "core/exporter/MediaExporter.h"
 
+#include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
 #include <QStringList>
+#include <QUuid>
 #include <algorithm>
 #include <limits>
 #include <vector>
@@ -23,8 +25,12 @@ namespace exporter {
 MediaExporter::MediaExporter(QObject* parent)
     : QObject(parent) {}
 
+bool MediaExporter::IsCanceled() const {
+    return cancel_.load(std::memory_order_acquire) || cancel_token_.IsCanceled();
+}
+
 void MediaExporter::Cancel() {
-    cancel_ = true;
+    cancel_.store(true, std::memory_order_release);
 }
 
 namespace {
@@ -96,6 +102,55 @@ QStringList video_encoder_candidates(const QString& preferred) {
     return list;
 }
 
+// 给临时文件/Rename 备份生成一个全局唯一后缀。
+//
+// 为什么不能用固定的 ".part": 上一次导出被取消后线程可能还没退出(FFmpeg 卡在网络 IO)，
+// 用户立刻再导出一次到同一个目标路径 —— 两个进程/两个线程就会写同一个临时文件，
+// 互相把对方的产物截断。带上 PID + UUID 后，同目录并发也各写各的。
+QString UniqueSuffix() {
+    return QString::number(static_cast<qint64>(QCoreApplication::applicationPid())) +
+           QStringLiteral("-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+}
+
+// 原子替换目标文件。
+//
+// 不能"先删除目标再 rename 临时文件": rename 一旦失败(目标被占用/磁盘满/权限问题)，
+// 原文件已经被删掉，用户同时失去新旧两份。这里的顺序是
+//   目标 -> 备份   (rename)
+//   临时 -> 目标   (rename)
+//   删除备份
+// 任一步失败都把备份改回目标，保证"要么换成功，要么原文件完好"。
+bool ReplaceTargetAtomic(const QString& temp_path, const QString& target_path, QString* err) {
+    const bool target_exists = QFileInfo::exists(target_path);
+    QString backup_path;
+    if (target_exists) {
+        backup_path = target_path + QStringLiteral(".bak-") + UniqueSuffix();
+        QFile::remove(backup_path);  // UUID 撞名的概率可以忽略, 这里只是兜底
+        if (!QFile::rename(target_path, backup_path)) {
+            *err = QStringLiteral("无法备份已存在的目标文件 (替换已中止, 原文件未改动)");
+            return false;
+        }
+    }
+
+    if (QFile::rename(temp_path, target_path)) {
+        if (target_exists) QFile::remove(backup_path);
+        return true;
+    }
+
+    // 替换失败: 把备份改回去, 目标文件恢复原样
+    if (target_exists) {
+        if (QFile::rename(backup_path, target_path)) {
+            *err = QStringLiteral("无法写入目标路径 (重命名失败, 原文件已恢复)");
+            return false;
+        }
+        *err = QStringLiteral("无法写入目标路径, 且恢复原文件失败 (原文件已备份到: %1)")
+                   .arg(backup_path);
+        return false;
+    }
+    *err = QStringLiteral("无法写入目标路径 (重命名失败)");
+    return false;
+}
+
 bool open_output(AVFormatContext*& out_fmt, const std::string& out_path, QString& err) {
     if (avformat_alloc_output_context2(&out_fmt, nullptr, nullptr, out_path.c_str()) < 0 || !out_fmt) {
         err = QString("无法确定输出格式 (扩展名可能不被支持)");
@@ -113,8 +168,13 @@ bool open_output(AVFormatContext*& out_fmt, const std::string& out_path, QString
 } // namespace
 
 void MediaExporter::Export(const ExportOptions& opt) {
+    // 取消状态只由外部写，这里绝不重置：启动前点的取消必须能被看到，
+    // 否则"立即取消"会被吃掉、导出照常跑完。
+    if (IsCanceled()) {
+        emit ExportCanceled(opt.output_path);
+        return;
+    }
     exporting_ = true;
-    cancel_ = false;
 
     AVFormatContext* in_fmt = nullptr;
     AVFormatContext* out_fmt = nullptr;
@@ -124,9 +184,10 @@ void MediaExporter::Export(const ExportOptions& opt) {
 
     QString err_msg;
 
-    // 原子替换: 先写入同目录临时文件, 成功写完并关闭后才重命名为目标路径,
+    // 原子替换: 先写入同目录临时文件, 成功写完并关闭后才替换目标路径,
     // 这样导出失败/取消时原目标文件不受影响 (避免数据丢失)。
-    const QString temp_path = opt.output_path + QStringLiteral(".part");
+    // 临时文件名带 PID + UUID: 上一次导出卡住没退出时, 新导出不会写同一个 .part。
+    const QString temp_path = opt.output_path + QStringLiteral(".part-") + UniqueSuffix();
 
     auto cleanup_and_emit = [&](bool is_error, const QString& msg) {
         if (pkt) av_packet_free(&pkt);
@@ -443,7 +504,7 @@ void MediaExporter::Export(const ExportOptions& opt) {
 
     // 主读取循环
     bool reached_end = false;
-    while (!cancel_) {
+    while (!IsCanceled()) {
         const int ret = av_read_frame(in_fmt, pkt);
         if (ret < 0) {
             if (ret == AVERROR_EOF) {
@@ -515,7 +576,7 @@ void MediaExporter::Export(const ExportOptions& opt) {
 
     // flush 编码器
     bool flushed_ok = false;
-    if (!cancel_ && err_msg.isEmpty()) {
+    if (!IsCanceled() && err_msg.isEmpty()) {
         for (auto& s : streams) {
             if (!s.do_encode) continue;
             avcodec_send_packet(s.dec, nullptr);
@@ -543,7 +604,7 @@ void MediaExporter::Export(const ExportOptions& opt) {
     if (frame) av_frame_free(&frame);
     free_streams(streams);
 
-    const bool canceled = cancel_.load();
+    const bool canceled = IsCanceled();
     if (out_fmt && out_fmt->pb) avio_closep(&out_fmt->pb);
     avformat_free_context(out_fmt);
     out_fmt = nullptr;
@@ -556,13 +617,15 @@ void MediaExporter::Export(const ExportOptions& opt) {
         QFile::remove(temp_path);
         emit ExportCanceled(opt.output_path);
     } else if (reached_end && err_msg.isEmpty() && flushed_ok) {
-        // 成功: 写完临时文件并关闭后才原子替换目标, 失败时原文件保留
-        QFile::remove(opt.output_path);
-        if (QFile::rename(temp_path, opt.output_path)) {
+        // 成功: 写完临时文件并关闭后才替换目标。
+        // 替换走"目标改名备份 -> 临时改名目标 -> 删备份", 任一步失败都能把备份改回来,
+        // 不会出现"旧文件已删、新文件又没换上"的双向丢失。
+        QString replace_err;
+        if (ReplaceTargetAtomic(temp_path, opt.output_path, &replace_err)) {
             emit ExportFinished(opt.output_path);
         } else {
             QFile::remove(temp_path);
-            emit ExportError("导出成功但无法写入目标路径 (重命名失败)");
+            emit ExportError(replace_err);
         }
     } else {
         // 读/写/封装失败: 删除临时文件, 保留原目标文件

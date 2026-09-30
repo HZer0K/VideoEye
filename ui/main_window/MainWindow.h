@@ -21,6 +21,7 @@
 #include <thread>
 
 #include "core/player/MediaPlayer.h"
+#include "infrastructure/concurrency/TaskManager.h"
 #include "core/analysis/orchestration/MediaInfoAnalyzer.h"
 #include "core/analysis/container/EbmlAnalyzer.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
@@ -125,8 +126,12 @@ protected:
 
     // 媒体信息后台解析 (避免大文件解析卡住主线程)
     void StartMediaInfoAnalysis(const QString& source);
-    std::thread mediainfo_worker_;
-    quint64 mediainfo_generation_ = 0;
+
+    // 后台任务 slot: 媒体信息解析。UI 线程只登记任务, 从不 join ——
+    // 大文件/网络源解析慢时, 打开下一个文件要能立刻返回。
+    static constexpr const char* kSlotMediaInfo = "media-info";
+    task::TaskManager background_tasks_;
+    std::atomic<quint64> mediainfo_generation_{0};
 };
 
 } // namespace ui

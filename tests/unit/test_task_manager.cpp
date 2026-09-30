@@ -88,6 +88,21 @@ TEST(TaskManagerTest, WaitForAllForcesTerminalOnUnreportedTask) {
     EXPECT_EQ(mgr.RunningCount(), 0u);
 }
 
+TEST(TaskManagerTest, WaitForAllTreatsTimeoutAsTotalBudget) {
+    TaskManager mgr;
+    for (int i = 0; i < 3; ++i)
+        mgr.Begin("slot-" + std::to_string(i));   // 故意都不报终态
+
+    const auto start = std::chrono::steady_clock::now();
+    mgr.WaitForAll(200);
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start)
+                                .count();
+
+    EXPECT_LT(elapsed_ms, 600) << "timeout 是总预算, 不是每个 slot 各等一份 (3 个 slot 不该等 600ms)";
+    EXPECT_EQ(mgr.RunningCount(), 0u) << "超时的自管线程任务应被强制收尾";
+}
+
 // --- 取消 ---
 
 TEST(TaskManagerTest, CancelIsObservableByTaskBody) {
