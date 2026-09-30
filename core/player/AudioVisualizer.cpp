@@ -1,4 +1,4 @@
-#include "AudioVisualizer.h"
+#include "core/player/AudioVisualizer.h"
 #include <algorithm>
 #include <cmath>
 #include <mutex>

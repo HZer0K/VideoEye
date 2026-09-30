@@ -13,9 +13,9 @@
 #include <memory>
 
 #include "core/player/MediaPlayer.h"
-#include "core/analyzer/StreamAnalyzer.h"
-#include "core/model/MacroblockInfo.h"
-#include "core/model/TimecodeInfo.h"
+#include "core/analysis/stream/StreamAnalyzer.h"
+#include "core/domain/model/MacroblockInfo.h"
+#include "core/domain/model/TimecodeInfo.h"
 #include "ui/main_window/VideoWidget.h"
 
 namespace videoeye {

@@ -38,7 +38,7 @@ if(DEFINED __VIDEOEYE_FFMPEG_TOOL_INCLUDED)
 endif()
 set(__VIDEOEYE_FFMPEG_TOOL_INCLUDED TRUE)
 
-# 生成头文件的落点（VideoEyeCore 已把它加进 PUBLIC include 目录）
+# 生成头文件的落点（各模块都把 VIDEOEYE_GENERATED_INCLUDE_DIR 挂在 PUBLIC include 目录里）
 set(VIDEOEYE_GENERATED_INCLUDE_DIR "${CMAKE_BINARY_DIR}/generated" CACHE INTERNAL
     "CMake 生成头文件的目录")
 

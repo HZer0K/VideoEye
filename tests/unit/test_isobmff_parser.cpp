@@ -18,7 +18,7 @@
 #include <utility>
 #include <vector>
 
-#include "utils/IsobmffParser.h"
+#include "core/media/container/IsobmffParser.h"
 
 using namespace videoeye;
 

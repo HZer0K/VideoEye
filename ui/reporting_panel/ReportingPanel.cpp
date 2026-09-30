@@ -13,7 +13,8 @@
 #include <QMessageBox>
 #include <QVBoxLayout>
 
-#include "utils/QcReportExporter.h"
+#include "core/qc/QcProfileMapper.h"
+#include "core/reporting/QcReportExporter.h"
 
 #include "ui/reporting_panel/report_path.h"
 
@@ -330,7 +331,7 @@ void ReportingPanel::OnExportSingleReport() {
     const QString directory = QFileDialog::getExistingDirectory(this, tr("选择报告输出目录"));
     if (directory.isEmpty()) return;
 
-    utils::QcExportBundle bundle;
+    reporting::QcExportBundle bundle;
     bundle.profile_id = profile_.id;
     bundle.profile_name = profile_.name;
     bundle.run = last_result_;
@@ -340,9 +341,9 @@ void ReportingPanel::OnExportSingleReport() {
                                             ? current_path_
                                             : last_result_.report.file_path);
     for (const auto format : SelectedFormats()) {
-        const std::string target = utils::QcReportOutputPath(directory.toStdString(), base, format);
+        const std::string target = reporting::QcReportOutputPath(directory.toStdString(), base, format);
         if (format == qc::QcReportFormat::Pdf) {
-            const auto pdf = utils::QcReportExporter::ExportPdf(target, bundle);
+            const auto pdf = reporting::QcReportExporter::ExportPdf(target, bundle);
             ok &= pdf.ok;
             if (pdf.text_loss) {
                 QMessageBox::information(
@@ -350,7 +351,7 @@ void ReportingPanel::OnExportSingleReport() {
                     tr("PDF 使用非嵌入字体，报告里的中文已被替换为 '?'。需要完整中文请勾选 HTML。"));
             }
         } else {
-            ok &= utils::QcReportExporter::Export(target, bundle, format);
+            ok &= reporting::QcReportExporter::Export(target, bundle, format);
         }
     }
     emit StatusMessage(ok ? tr("报告已导出到 %1").arg(directory)
@@ -414,9 +415,9 @@ void ReportingPanel::OnExportBatchSummary() {
     }
     run.summary.completed = (run.summary.cancelled == 0);
 
-    const auto input = utils::QcReportExporter::MakeBatchSummary(
+    const auto input = reporting::QcReportExporter::MakeBatchSummary(
         batch_dir_edit_->text().toStdString(), run, profile_);
-    emit StatusMessage(utils::QcReportExporter::ExportBatchSummaryAuto(path.toStdString(), input)
+    emit StatusMessage(reporting::QcReportExporter::ExportBatchSummaryAuto(path.toStdString(), input)
                            ? tr("汇总已导出到 %1").arg(path)
                            : tr("汇总导出失败"));
 }
@@ -463,9 +464,9 @@ void ReportingPanel::RunSingle(std::shared_ptr<AnalysisTask> task, const std::st
         last_result_ = result;
         UpdateVerdictLabel(result);
         if (result.ok) {
-            log_view_->setPlainText(QString::fromStdString(utils::QcReportExporter::BuildText(
+            log_view_->setPlainText(QString::fromStdString(reporting::QcReportExporter::BuildText(
                 [&result, this]() {
-                    utils::QcExportBundle bundle;
+                    reporting::QcExportBundle bundle;
                     bundle.profile_id = profile_.id;
                     bundle.profile_name = profile_.name;
                     bundle.run = result;

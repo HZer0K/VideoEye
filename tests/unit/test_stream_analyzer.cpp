@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "core/analyzer/StreamAnalyzer.h"
+#include "core/analysis/stream/StreamAnalyzer.h"
 
 extern "C" {
 #include <libavcodec/packet.h>

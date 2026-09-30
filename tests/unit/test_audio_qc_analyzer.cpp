@@ -18,7 +18,7 @@
 
 #include <gtest/gtest.h>
 
-#include "core/analyzer/AudioQcAnalyzer.h"
+#include "core/analysis/quality/AudioQcAnalyzer.h"
 
 namespace {
 

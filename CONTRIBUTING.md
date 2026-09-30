@@ -60,7 +60,7 @@ Windows 的 `-test-` preset 额外带 `VCPKG_MANIFEST_FEATURES=tests`，gtest �
 | GoogleTest（仅测试） | vcpkg feature `tests` | apt (`libgtest-dev`) / brew (`googletest`) |
 
 **项目只有 Qt Widgets + FFmpeg 两个硬依赖。** 媒体信息（FFmpeg `libavformat`）、图表
-（`ui/charts/MetricChartWidget`，QPainter 自绘）、MP4 样本表（`utils/IsobmffParser`）、
+（`ui/charts/MetricChartWidget`，QPainter 自绘）、MP4 样本表（`core/media/container/IsobmffParser`）、
 音频输出（WASAPI / ALSA / AudioQueue）全部自研或走平台原生 API，不再引入
 MediaInfoLib / Bento4 / SDL2 / QtCharts / Vulkan。
 

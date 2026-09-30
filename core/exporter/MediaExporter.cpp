@@ -1,4 +1,4 @@
-#include "MediaExporter.h"
+#include "core/exporter/MediaExporter.h"
 
 #include <QFile>
 #include <QFileInfo>

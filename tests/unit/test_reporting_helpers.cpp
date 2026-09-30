@@ -5,8 +5,9 @@
 #include <string>
 #include <vector>
 
-#include "core/analyzer/AnalysisTask.h"
-#include "core/analyzer/QcRuleEngine.h"
+#include "core/analysis/AnalysisOptions.h"
+#include "core/analysis/AnalysisResult.h"
+#include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/qc/QcProfile.h"
 #include "core/qc/QcReportFormat.h"
 #include "ui/reporting_panel/analysis_task.h"

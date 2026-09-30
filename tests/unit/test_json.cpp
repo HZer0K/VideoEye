@@ -3,7 +3,7 @@
 #include <cmath>
 #include <string>
 
-#include "utils/Json.h"
+#include "infrastructure/serialization/Json.h"
 
 using videoeye::utils::JsonParse;
 using videoeye::utils::JsonValue;

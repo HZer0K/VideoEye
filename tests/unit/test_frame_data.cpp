@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "core/model/FrameData.h"
+#include "core/player/FrameData.h"
 
 extern "C" {
 #include <libavutil/pixfmt.h>

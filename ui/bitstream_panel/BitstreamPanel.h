@@ -6,7 +6,7 @@
 #include <QTreeWidget>
 #include <QWidget>
 
-#include "core/model/BitstreamInfo.h"
+#include "core/domain/model/BitstreamInfo.h"
 
 namespace videoeye {
 namespace ui {
@@ -14,7 +14,7 @@ namespace ui {
 // ==========================================================================
 // BitstreamPanel - 编码参数集解析面板
 //
-// 数据来源：core/analyzer/BitstreamAnalyzer（只读 extradata，不解码），
+// 数据来源：core/analysis/codec/BitstreamAnalyzer.h（只读 extradata，不解码），
 // 结果由 AnalysisCoordinator 汇总到 AnalysisResult::bitstream_analysis。
 //
 // 布局：

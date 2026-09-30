@@ -3,7 +3,7 @@
 #include <QByteArray>
 #include <QTemporaryFile>
 
-#include "core/analyzer/FormatDetector.h"
+#include "core/analysis/orchestration/FormatDetector.h"
 
 namespace {
 

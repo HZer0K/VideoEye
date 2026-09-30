@@ -179,7 +179,7 @@ for (const auto& inconsistency : result.inconsistencies) {
 ### 5.1 基本用法
 
 ```cpp
-#include "core/analyzer/BitstreamAnalyzer.h"
+#include "core/analysis/codec/BitstreamAnalyzer.h"
 
 // 准备数据
 const uint8_t* extradata = av_stream->codecpar->extradata;
@@ -449,18 +449,18 @@ TEST(H264BitstreamParserTest, ParseHighProfileSPS) {
 
 ### 文件清单
 
-1. `utils/BitReader.h/.cpp` - 位流读取器
-2. `utils/ExtradataParser.h` - 封装格式识别接口
-3. `core/model/BitstreamInfo.h` - 数据模型
-4. `core/analyzer/H264BitstreamParser.h/.cpp` - H.264 解析器
-5. `core/analyzer/HevcBitstreamParser.h/.cpp` - H.265 解析器
-6. `core/analyzer/BitstreamAnalyzer.h/.cpp` - 统一接口
-7. `core/analyzer/AnalysisTask.h` - 扩展（已添加 bitstream_analysis 字段）
+1. `core/media/codec/BitReader.h/.cpp` - 位流读取器
+2. `core/media/codec/ExtradataParser.h` - 封装格式识别接口
+3. `core/domain/model/BitstreamInfo.h` - 数据模型
+4. `core/analysis/codec/H264BitstreamParser.h/.cpp` - H.264 解析器
+5. `core/analysis/codec/HevcBitstreamParser.h/.cpp` - H.265 解析器
+6. `core/analysis/codec/BitstreamAnalyzer.h/.cpp` - 统一接口
+7. `core/analysis/orchestration/AnalysisTask.h` - 扩展（已添加 bitstream_analysis 字段）
 8. `ui/bitstream_panel/BitstreamPanel.h` - UI 组件框架
 
-9. `utils/ExtradataParser.cpp` - 封装格式识别实现（avcC / hvcC / av1C）
-10. `core/analyzer/Av1BitstreamParser.h/.cpp` - AV1 解析器
-11. `core/analyzer/VvcBitstreamParser.h` - VVC 解析器（仅基础头信息，简化版）
+9. `core/media/codec/ExtradataParser.cpp` - 封装格式识别实现（avcC / hvcC / av1C）
+10. `core/analysis/codec/Av1BitstreamParser.h/.cpp` - AV1 解析器
+11. `core/analysis/codec/VvcBitstreamParser.h` - VVC 解析器（仅基础头信息，简化版）
 12. `ui/bitstream_panel/BitstreamPanel.cpp` - UI 实现
 13. `tests/unit/test_h264_bitstream_parser.cpp`、`tests/unit/test_hevc_bitstream_parser.cpp` - 单元测试
 

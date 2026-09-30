@@ -1,4 +1,4 @@
-#include "MediaExportDialog.h"
+#include "ui/dialogs/MediaExportDialog.h"
 
 #include <QComboBox>
 #include <QDialogButtonBox>

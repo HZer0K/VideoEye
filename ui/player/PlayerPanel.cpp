@@ -1,7 +1,7 @@
 #include "ui/player/PlayerPanel.h"
 
 #include "ui/theme/AppTheme.h"
-#include "utils/Logger.h"
+#include "infrastructure/logging/Logger.h"
 
 #include <chrono>
 

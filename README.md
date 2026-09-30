@@ -136,19 +136,32 @@ brew install cmake ninja qt@6 ffmpeg
 
 ```
 VideoEye/
-├── core/                 # 核心业务层
-│   ├── player/           # 播放引擎 (MediaPlayer / 解码器 / 音频输出)
-│   ├── analyzer/         # 分析引擎 (容器结构 / 场景切换 / 质量评估)
-│   ├── qc/               # QC 模板与批量扫描 / 对比
+├── core/
+│   ├── domain/model/     # 结果类型与值对象（不依赖分析器、不依赖 FFmpeg）
+│   ├── media/            # 容器解析 (container) / 码流参数集 (codec) / 文件探测 (probe) / 清单文本 (streaming)
+│   ├── analysis/         # 分析器与执行引擎
+│   │   ├── codec/        #   H.264 / HEVC / AV1 / VVC 参数集
+│   │   ├── container/    #   MP4 / MOV / MKV / FLV / TS / ASF / AVI / OGG 结构
+│   │   ├── quality/      #   码率与 GOP、音频 QC、画质指标、视觉缺陷
+│   │   ├── diagnostics/  #   字幕 / 时码 / 辅助数据 / QC 规则引擎
+│   │   ├── streaming/    #   HLS / DASH 清单与分片
+│   │   ├── stream/       #   播放态实时流分析
+│   │   └── orchestration/#   全文件分析的执行引擎
+│   ├── player/           # 播放会话 (PlaybackSession / 解码器 / 音频输出 / 抽帧)
+│   ├── exporter/         # 转码 / remux 导出
+│   ├── qc/               # QC 模板、规则映射、批量扫描与对比
+│   ├── reporting/        # 报告导出 (JSON / CSV / HTML / PDF / TXT)
 │   ├── ffmpeg/           # 命令工作台 (命令解析 / 进程执行 / 指令字典 / 解释器)
-│   └── model/            # 数据模型
-├── ui/                   # UI 层 (主题 / 主窗口 / 分析面板 / 自绘图表)
-├── utils/                # 工具类 (Logger / ConfigManager / ReportExporter / IsobmffParser)
+│   └── qt/               # 把不带 Qt 的执行引擎接进信号与线程
+├── infrastructure/       # 配置 / JSON 序列化 / 日志 / 后台任务调度
+├── ui/                   # UI 层 (主题 / 主窗口 / 各分析页 / 自绘图表)
 ├── third_party/prebuilt/ # FFmpeg 预编译包（不入库，脚本下载）
 ├── docs/                 # 文档
 ├── vcpkg.json            # vcpkg 依赖清单
 └── build.bat / build.sh  # 构建脚本
 ```
+
+分层规则与依赖边界见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 ## 文档
 
@@ -156,6 +169,7 @@ VideoEye/
 |------|------|
 | [QUICKSTART.md](QUICKSTART.md) | 快速入门：构建、打开媒体、使用各分析页 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 环境要求、构建选项、代码规范 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 分层结构、依赖方向、CMake target 划分 |
 | [docs/BITSTREAM_ANALYSIS.md](docs/BITSTREAM_ANALYSIS.md) | 编码码流解析（H.264 / HEVC / AV1 / VVC） |
 | [docs/DIAGNOSTICS_QC.md](docs/DIAGNOSTICS_QC.md) | 诊断扫描与 QC 报告、规则集与导出 |
 | [docs/AUDIO_QC.md](docs/AUDIO_QC.md) | 音频 QC：响度、真峰值、削波、相位 |

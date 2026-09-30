@@ -39,7 +39,7 @@ flowchart LR
 
 严重度 → 扣分：`Critical -30 / Error -12 / Warning -5 / Info -1`，评分 ≥90 通过、≥70 警告、否则不通过。
 
-## 3. 扫描产出（core/analyzer/AnalysisTask.h）
+## 3. 扫描产出（core/analysis/orchestration/AnalysisTask.h）
 
 `AnalysisResult` 是规则引擎的唯一输入，字段分四组：
 
@@ -70,7 +70,7 @@ flowchart LR
 
 ### 新增一条规则
 
-1. 在 `core/model/QcModels.cpp` 的 `DefaultQcRules()` 里追加一条（id / 名称 / 类别 / 严重度 / 判定 / 阈值 / 建议）；
+1. 在 `core/domain/model/QcModels.cpp` 的 `DefaultQcRules()` 里追加一条（id / 名称 / 类别 / 严重度 / 判定 / 阈值 / 建议）；
 2. 在 `QcRuleEngine::CheckRule()` 中按 id 增加分支，从 `AnalysisResult` 取数并调用 `Triggered(rule, value)`；
 3. UI 的「规则与阈值」表与 JSON/HTML 导出都会自动带上新规则，无需改 UI 代码。
 

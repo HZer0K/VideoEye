@@ -1,7 +1,8 @@
-#include "AnalysisPanel.h"
-#include "utils/Logger.h"
-#include "utils/ScopedTimer.h"
-#include "utils/ReportExporter.h"
+#include "ui/analysis_panel/AnalysisPanel.h"
+#include "infrastructure/logging/Logger.h"
+#include "infrastructure/logging/ScopedTimer.h"
+#include "core/reporting/QcReportExporter.h"
+#include "core/reporting/StreamStatsExporter.h"
 #include "ui/theme/AppTheme.h"
 #include "ui/reporting_panel/ReportingPanel.h"
 #include <QGroupBox>
@@ -3456,18 +3457,18 @@ void AnalysisPanel::OnExportReport() {
     }
     
     if (ext == "html") {
-        success = utils::ReportExporter::ExportHTMLReport(
+        success = reporting::StreamStatsExporter::ExportHTMLReport(
             fname, current_stats_, fps_history, bitrate_history, current_video_path_);
     } else if (ext == "json") {
-        success = utils::ReportExporter::ExportJSON(
+        success = reporting::StreamStatsExporter::ExportJSON(
             fname, current_stats_, current_video_path_);
     } else if (ext == "txt") {
-        success = utils::ReportExporter::ExportTextReport(
+        success = reporting::StreamStatsExporter::ExportTextReport(
             fname, current_stats_, current_video_path_);
     } else {
         // 未知扩展名，默认生成 HTML
         filename += ".html";
-        success = utils::ReportExporter::ExportHTMLReport(
+        success = reporting::StreamStatsExporter::ExportHTMLReport(
             filename.toStdString(), current_stats_, fps_history, bitrate_history, current_video_path_);
     }
     
@@ -5007,7 +5008,7 @@ void AnalysisPanel::RebuildBitrateAnomalyTable() {
         const auto& a = anomalies[i];
         const QString unit = QString::fromStdString(a.unit);
         SetTableItemText(bitrate_anomaly_table_, i, 0,
-                         QString::fromStdString(analyzer::ToString(a.type)));
+                         QString::fromStdString(model::ToString(a.type)));
         SetTableItemText(bitrate_anomaly_table_, i, 1,
                          QString::fromStdString(
                              model::TimeRange::Between(a.start_seconds, a.end_seconds).ToString()));
@@ -5122,7 +5123,7 @@ void AnalysisPanel::OnExportBitrateAnomalyCsv() {
     stream << "\xEF\xBB\xBF";
     stream << "type,start_seconds,end_seconds,value,threshold,unit,detail,suggestion\n";
     for (const auto& a : diagnostics_result_.bitrate_gop.anomalies) {
-        stream << QString::fromStdString(analyzer::ToString(a.type)) << ","
+        stream << QString::fromStdString(model::ToString(a.type)) << ","
                << QString::number(a.start_seconds, 'f', 3) << ","
                << QString::number(a.end_seconds, 'f', 3) << ","
                << QString::number(a.value, 'f', 3) << ","
@@ -6099,7 +6100,7 @@ void AnalysisPanel::RebuildColorHdrTables() {
     if (!color_info_table_ || !hdr_info_table_) return;
 
     const auto fill = [this](QTableWidget* table,
-                             const std::vector<analyzer::ColorKeyValueRow>& rows) {
+                             const std::vector<model::ColorKeyValueRow>& rows) {
         table->setRowCount(0);
         table->setRowCount(static_cast<int>(rows.size()));
         for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
@@ -6207,7 +6208,7 @@ void AnalysisPanel::OnExportColorHdrCsv() {
     out << "\xEF\xBB\xBF";  // UTF-8 BOM for Excel
     out << "分组,项目,值,说明\n";
     auto write_rows = [&](const char* /*unused*/, const QString& group,
-                          const std::vector<analyzer::ColorKeyValueRow>& rows) {
+                          const std::vector<model::ColorKeyValueRow>& rows) {
         for (const auto& row : rows) {
             out << csv_field(group) << ','
                 << csv_field(QString::fromStdString(row.key)) << ','
@@ -7447,7 +7448,7 @@ void AnalysisPanel::OnExportQcReport() {
         tr("HTML 报告 (*.html);;JSON 报告 (*.json);;CSV 报告 (*.csv);;文本报告 (*.txt)"));
     if (filename.isEmpty()) return;
 
-    if (utils::ReportExporter::ExportQcReport(filename.toStdString(), current_qc_report_)) {
+    if (reporting::QcReportExporter::ExportReport(filename.toStdString(), current_qc_report_)) {
         QMessageBox::information(this, tr("成功"),
             tr("诊断报告已导出到:\n%1").arg(filename));
     } else {

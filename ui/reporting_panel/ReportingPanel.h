@@ -4,7 +4,7 @@
 //
 // 这一页把功能 12 的能力凑到一个地方：选模板 → 分析（单文件 / 目录批量）→
 // 看总体结论 → 选导出格式 → 落盘。UI 只做编排，真正的分析逻辑在
-// core/qc/{QcRunner,BatchQcRunner,QcProfile}，导出在 utils/QcReportExporter。
+// core/qc/{QcRunner,BatchQcRunner,QcProfile}，导出在 core/reporting/QcReportExporter.h。
 //
 // 线程模型（与项目其余部分一致，不用 QtConcurrent）：
 //   * 后台用 std::thread 跑分析，回调在 worker 线程触发；

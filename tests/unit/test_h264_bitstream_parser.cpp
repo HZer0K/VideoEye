@@ -4,8 +4,8 @@
 #include <cstdint>
 #include <vector>
 
-#include "core/analyzer/H264BitstreamParser.h"
-#include "utils/ExtradataParser.h"
+#include "core/analysis/codec/H264BitstreamParser.h"
+#include "core/media/codec/ExtradataParser.h"
 
 namespace {
 

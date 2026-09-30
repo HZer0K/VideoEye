@@ -1,4 +1,4 @@
-#include "VideoFrameExporter.h"
+#include "core/player/VideoFrameExporter.h"
 #include <QDir>
 #include <QFile>
 #include <QImage>

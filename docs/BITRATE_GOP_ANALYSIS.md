@@ -10,11 +10,11 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `core/model/BitratePoint.h/.cpp` | 帧类型枚举 `FrameType`、滑动窗口码率采样点 `BitratePoint` |
-| `core/model/GopInfo.h/.cpp` | 单条 GOP 记录 `GopInfo`（起止时间/帧数/字节/I-P-B/closed/最大帧） |
-| `core/analyzer/BitrateGopAnalyzer.h/.cpp` | 分析器本体：窗口码率、I/P/B、GOP 维护、异常识别、场景关联 |
-| `core/analyzer/AnalysisCoordinator.cpp` | 在既有全文件 demux 循环中喂数据（无额外 I/O） |
-| `core/model/QcModels.cpp` + `core/analyzer/QcRuleEngine.cpp` | 6 条 QC 规则，异常进入诊断报告 |
+| `core/domain/model/BitratePoint.h/.cpp` | 帧类型枚举 `FrameType`、滑动窗口码率采样点 `BitratePoint` |
+| `core/domain/model/GopInfo.h/.cpp` | 单条 GOP 记录 `GopInfo`（起止时间/帧数/字节/I-P-B/closed/最大帧） |
+| `core/analysis/quality/BitrateGopAnalyzer.h/.cpp` | 分析器本体：窗口码率、I/P/B、GOP 维护、异常识别、场景关联 |
+| `core/analysis/orchestration/AnalysisCoordinator.cpp` | 在既有全文件 demux 循环中喂数据（无额外 I/O） |
+| `core/domain/model/QcModels.cpp` + `core/analysis/diagnostics/QcRuleEngine.cpp` | 6 条 QC 规则，异常进入诊断报告 |
 | `ui/analysis_panel/AnalysisPanel.*` | 「码率与 GOP」页：曲线 / GOP 表 / 异常 / 建议 + CSV 导出 |
 | `tests/unit/test_bitrate_gop_analyzer.cpp` | 10 个 gtest 用例，覆盖 4.6 四项验收 |
 
@@ -144,5 +144,5 @@ UI「诊断与报告」页的问题表会带上时间区间，可直接跳转。
 ```bash
 # 用 cl 独立编译冒烟程序（放项目外目录，避免被 CMake GLOB 收进主目标）
 cl /std:c++17 /EHsc /utf-8 /I <项目根> smoke.cpp \
-   core/analyzer/BitrateGopAnalyzer.cpp core/model/BitratePoint.cpp core/model/GopInfo.cpp
+   core/analysis/quality/BitrateGopAnalyzer.cpp core/domain/model/BitratePoint.cpp core/domain/model/GopInfo.cpp
 ```

@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "utils/ConfigManager.h"
+#include "infrastructure/config/ConfigManager.h"
 
 namespace {
 

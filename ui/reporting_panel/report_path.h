@@ -14,7 +14,7 @@
 #include "core/qc/QcAnalyzeRequest.h"
 #include "core/qc/QcProfile.h"
 #include "core/qc/QcReportFormat.h"
-#include "utils/QcReportExporter.h"
+#include "core/reporting/QcReportExporter.h"
 
 namespace videoeye {
 namespace ui {
@@ -44,7 +44,7 @@ inline void ApplyExportPaths(qc::QcRunResult& result,
     const std::filesystem::path base = ReportBasePath(out_dir, root, file_path);
     std::error_code ec;
     std::filesystem::create_directories(base.parent_path(), ec);  // 创建保留下来的子目录
-    utils::QcExportBundle bundle;
+    reporting::QcExportBundle bundle;
     bundle.profile_id = profile.id;
     bundle.profile_name = profile.name;
     bundle.run = result;
@@ -55,8 +55,8 @@ inline void ApplyExportPaths(qc::QcRunResult& result,
     for (const auto format : fmts) {
         const std::string target = base.string() + qc::QcReportExtension(format);
         const bool ok = (format == qc::QcReportFormat::Pdf)
-                           ? utils::QcReportExporter::ExportPdf(target, bundle).ok
-                           : utils::QcReportExporter::Export(target, bundle, format);
+                           ? reporting::QcReportExporter::ExportPdf(target, bundle).ok
+                           : reporting::QcReportExporter::Export(target, bundle, format);
         if (!ok) any_fail = true;
     }
     result.output_path = base.string() + qc::QcReportExtension(fmts.front());

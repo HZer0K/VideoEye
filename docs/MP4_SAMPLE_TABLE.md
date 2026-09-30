@@ -17,15 +17,15 @@ MP4 的「索引」和「数据」是分开写的：mdat 里是一坨连续的�
 
 | 文件 | 职责 |
 |---|---|
-| `core/model/Mp4SampleInfo.h` | 样本 / 轨道表 / 分片 / 结果的数据契约（纯 C++，不依赖 Qt 与第三方库） |
-| `utils/IsobmffParser.h/.cpp` | 自研 ISOBMFF 解析：box 树 + stbl 全表 + fMP4 moof/traf（纯 C++17 标准库） |
-| `core/model/Mp4ConsistencyIssue.h` | 一致性问题（含问题码常量 + 转 `DiagnosticIssue`） |
-| `core/analyzer/Mp4SampleTableAnalyzer.h/.cpp` | 基于 IsobmffParser 展开逐样本 + 纯逻辑校验 `Validate()` |
-| `core/model/QcModels.cpp` | `container.mp4.*` 规则定义（阈值与级别） |
-| `core/analyzer/QcRuleEngine.cpp` | 把 finding 转成 QC 报告条目（按规则级别/阈值再过滤） |
-| `core/analyzer/AnalysisTask.h` | `AnalysisOptions::analyze_mp4_sample_table` / `AnalysisResult::mp4_samples` |
-| `core/analyzer/AnalysisCoordinator.cpp` | 全文件扫描时对 MP4 家族顺带跑一遍 |
-| `core/analyzer/ContainerStructureAnalyzer.cpp` | 打开文件做结构分析时顺带跑一遍（供容器页展示） |
+| `core/domain/model/Mp4SampleInfo.h` | 样本 / 轨道表 / 分片 / 结果的数据契约（纯 C++，不依赖 Qt 与第三方库） |
+| `core/media/container/IsobmffParser.h/.cpp` | 自研 ISOBMFF 解析：box 树 + stbl 全表 + fMP4 moof/traf（纯 C++17 标准库） |
+| `core/domain/model/Mp4ConsistencyIssue.h` | 一致性问题（含问题码常量 + 转 `DiagnosticIssue`） |
+| `core/analysis/container/Mp4SampleTableAnalyzer.h/.cpp` | 基于 IsobmffParser 展开逐样本 + 纯逻辑校验 `Validate()` |
+| `core/domain/model/QcModels.cpp` | `container.mp4.*` 规则定义（阈值与级别） |
+| `core/analysis/diagnostics/QcRuleEngine.cpp` | 把 finding 转成 QC 报告条目（按规则级别/阈值再过滤） |
+| `core/analysis/orchestration/AnalysisTask.h` | `AnalysisOptions::analyze_mp4_sample_table` / `AnalysisResult::mp4_samples` |
+| `core/analysis/orchestration/AnalysisCoordinator.cpp` | 全文件扫描时对 MP4 家族顺带跑一遍 |
+| `core/analysis/container/ContainerStructureAnalyzer.cpp` | 打开文件做结构分析时顺带跑一遍（供容器页展示） |
 | `ui/analysis_panel/AnalysisPanel.cpp` | 容器页「Sample Table」子页 + 结构树联动 |
 
 ## 3. 数据流
@@ -46,7 +46,7 @@ MP4 的「索引」和「数据」是分开写的：mdat 里是一坨连续的�
 
 ## 4. 解析实现要点（自研 IsobmffParser）
 
-`utils/IsobmffParser` 直接把 stbl / moof 的原始表项读出来，
+`core/media/container/IsobmffParser.h` 直接把 stbl / moof 的原始表项读出来，
 `Mp4SampleTableAnalyzer::ExpandSamples()` 再按规范展开成逐样本：
 
 - `IsobmffTrack::stts / ctts / stsc / stsz / stss / chunk_offsets / elst` — 裸表，可直接遍历；

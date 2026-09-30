@@ -6,7 +6,7 @@
 #include <QTreeWidget>
 #include <QWidget>
 
-#include "core/model/StreamPackageInfo.h"
+#include "core/domain/model/StreamPackageInfo.h"
 
 namespace videoeye {
 namespace ui {

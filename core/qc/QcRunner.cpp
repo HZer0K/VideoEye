@@ -1,12 +1,13 @@
 #include "core/qc/QcRunner.h"
 
-#include <QObject>
-
 #include <condition_variable>
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <utility>
+
+#include "core/analysis/orchestration/AnalysisEngine.h"
 
 namespace videoeye {
 namespace qc {
@@ -55,7 +56,7 @@ QcRunResult QcRunner::AnalyzeFile(const std::string& path,
 
     const auto started_at = std::chrono::steady_clock::now();
     analyzer::QcRuleEngine engine(BuildRulesForProfile(profile));
-    analyzer::AnalysisCoordinator coordinator;
+    analyzer::AnalysisEngine analysis;
 
     // worker 线程与等待线程之间的交接区。std::promise 也能做，但需要额外处理
     // "进度回调要持续转发"这件事，条件变量版本更直观。
@@ -78,50 +79,44 @@ QcRunResult QcRunner::AnalyzeFile(const std::string& path,
         cv.notify_all();
     };
 
-    // 注意 Qt6 的 form：带 ConnectionType 的仿函数连接必须显式给 context（这里就是 sender 自己）。
-    QObject::connect(&coordinator, &analyzer::AnalysisCoordinator::AnalysisFinished,
-                     &coordinator,
-                     [&settle](quint64, bool, const analyzer::AnalysisResult& result) {
-                         Outcome next;
-                         next.result = result;
-                         settle(std::move(next));
-                     },
-                     Qt::DirectConnection);
-
-    QObject::connect(&coordinator, &analyzer::AnalysisCoordinator::AnalysisFailed,
-                     &coordinator,
-                     [&settle](quint64, const QString& message) {
-                         Outcome next;
-                         next.failed = true;
-                         next.error = message.toStdString();
-                         settle(std::move(next));
-                     },
-                     Qt::DirectConnection);
+    // 以前这里要通过 AnalysisCoordinator 绕一圈 Qt 信号（还要挂 QObject 上下文），
+    // 现在直接用 AnalysisEngine 的回调 —— QC 批处理不需要任何 Qt 事件循环。
+    analyzer::AnalysisCallbacks engine_callbacks;
+    engine_callbacks.on_finished = [&settle](bool, const analyzer::AnalysisResult& result) {
+        Outcome next;
+        next.result = result;
+        settle(std::move(next));
+    };
+    engine_callbacks.on_failed = [&settle](const std::string& message) {
+        Outcome next;
+        next.failed = true;
+        next.error = message;
+        settle(std::move(next));
+    };
+    if (callbacks.progress) {
+        engine_callbacks.on_progress = [&callbacks](double percent, const std::string& stage) {
+            callbacks.progress(percent, stage);
+        };
+    }
 
     auto merged_should_cancel = [this, &callbacks]() {
         if (cancel_.load(std::memory_order_acquire)) return true;
         return callbacks.should_cancel ? callbacks.should_cancel() : false;
     };
 
-    if (callbacks.progress) {
-        QObject::connect(&coordinator, &analyzer::AnalysisCoordinator::ProgressReported,
-                         &coordinator,
-                         [&callbacks](quint64, double percent, const QString& stage) {
-                             callbacks.progress(percent, stage.toStdString());
-                         },
-                         Qt::DirectConnection);
-    }
-
-    coordinator.StartAnalysis(path, options);
+    std::thread worker([&analysis, &path, &options, &engine_callbacks]() {
+        analysis.Run(path, options, engine_callbacks);
+    });
 
     {
         std::unique_lock<std::mutex> lock(mutex);
         while (!outcome.settled) {
             if (cv.wait_for(lock, kCancelPollInterval) == std::cv_status::timeout) {
-                if (merged_should_cancel()) coordinator.Cancel();
+                if (merged_should_cancel()) analysis.Cancel();
             }
         }
     }
+    worker.join();
 
     const auto elapsed = std::chrono::steady_clock::now() - started_at;
     output.elapsed_ms = std::chrono::duration<double, std::milli>(elapsed).count();

@@ -6,7 +6,7 @@
 #include <mutex>
 #include <thread>
 
-#include "utils/Logger.h"
+#include "infrastructure/logging/Logger.h"
 
 namespace videoeye {
 namespace qc {

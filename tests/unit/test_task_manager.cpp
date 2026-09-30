@@ -14,7 +14,7 @@
 
 #include <gtest/gtest.h>
 
-#include "core/task/TaskManager.h"
+#include "infrastructure/concurrency/TaskManager.h"
 
 namespace {
 

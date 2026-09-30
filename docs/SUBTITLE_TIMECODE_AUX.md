@@ -24,13 +24,13 @@ AnalysisPanel「字幕 / 辅助数据」页 + PlayerPanel 时间轴旁的 SMPTE 
 
 | 文件 | 职责 |
 | --- | --- |
-| `core/model/SubtitleCueInfo.h/.cpp` | 字幕流 / cue / 问题的数据模型 |
-| `core/model/TimecodeInfo.h/.cpp` | SMPTE 时码换算（含 drop-frame）、时码轨、章节 |
-| `core/model/AuxiliaryDataInfo.h/.cpp` | data 流、SCTE-35 cue、metadata tag |
-| `core/analyzer/SubtitleAnalyzer.h/.cpp` | SRT/ASS/WebVTT/tx3g/CEA-608 解析与校验 |
-| `core/analyzer/TimecodeAnalyzer.h/.cpp` | tmcd 样本解码、metadata 时码、章节检查 |
-| `core/analyzer/Scte35Analyzer.h/.cpp` | SCTE-35 二进制解析（无 FFmpeg 依赖） |
-| `core/analyzer/AuxDataAnalyzer.h/.cpp` | FFmpeg 侧：data 流枚举、喂包、metadata 采集 |
+| `core/domain/model/SubtitleCueInfo.h/.cpp` | 字幕流 / cue / 问题的数据模型 |
+| `core/domain/model/TimecodeInfo.h/.cpp` | SMPTE 时码换算（含 drop-frame）、时码轨、章节 |
+| `core/domain/model/AuxiliaryDataInfo.h/.cpp` | data 流、SCTE-35 cue、metadata tag |
+| `core/analysis/diagnostics/SubtitleAnalyzer.h/.cpp` | SRT/ASS/WebVTT/tx3g/CEA-608 解析与校验 |
+| `core/analysis/diagnostics/TimecodeAnalyzer.h/.cpp` | tmcd 样本解码、metadata 时码、章节检查 |
+| `core/analysis/diagnostics/Scte35Analyzer.h/.cpp` | SCTE-35 二进制解析（无 FFmpeg 依赖） |
+| `core/analysis/diagnostics/AuxDataAnalyzer.h/.cpp` | FFmpeg 侧：data 流枚举、喂包、metadata 采集 |
 
 依赖边界与 `VisualDefectAnalyzer` 一致：**解析算法不依赖 FFmpeg**，
 只有"从 AVFormatContext 里把流找出来"那一层碰 avformat，

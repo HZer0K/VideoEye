@@ -21,8 +21,8 @@
 #include <thread>
 
 #include "core/player/MediaPlayer.h"
-#include "core/analyzer/MediaInfoAnalyzer.h"
-#include "core/analyzer/EbmlAnalyzer.h"
+#include "core/analysis/orchestration/MediaInfoAnalyzer.h"
+#include "core/analysis/container/EbmlAnalyzer.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/ffmpeg_panel/FfmpegPanel.h"
 #include "ui/player/PlayerPanel.h"

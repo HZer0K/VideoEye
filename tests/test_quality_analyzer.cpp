@@ -3,7 +3,7 @@
 #include <cmath>
 #include <cstdint>
 
-#include "core/analyzer/QualityAnalyzer.h"
+#include "core/analysis/quality/QualityAnalyzer.h"
 
 extern "C" {
 #include<libavutil/frame.h>

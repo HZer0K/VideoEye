@@ -4,8 +4,8 @@
 #include <string>
 #include <vector>
 
-#include "core/analyzer/BitstreamAnalyzer.h"
-#include "core/model/BitstreamInfo.h"
+#include "core/analysis/codec/BitstreamAnalyzer.h"
+#include "core/domain/model/BitstreamInfo.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>

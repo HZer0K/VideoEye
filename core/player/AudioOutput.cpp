@@ -1,4 +1,4 @@
-#include "AudioOutput.h"
+#include "core/player/AudioOutput.h"
 
 #include <algorithm>
 #include <condition_variable>
@@ -8,8 +8,8 @@
 #include <mutex>
 #include <string>
 
-#include "utils/Logger.h"
-#include "utils/ScopedTimer.h"
+#include "infrastructure/logging/Logger.h"
+#include "infrastructure/logging/ScopedTimer.h"
 
 // ============================================================
 // 平台后端

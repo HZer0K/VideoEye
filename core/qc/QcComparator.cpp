@@ -5,8 +5,8 @@
 #include <cstdio>
 #include <string>
 
-#include "core/model/ColorInfo.h"
-#include "core/model/HdrMetadataInfo.h"
+#include "core/domain/model/ColorInfo.h"
+#include "core/domain/model/HdrMetadataInfo.h"
 
 namespace videoeye {
 namespace qc {

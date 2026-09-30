@@ -3,23 +3,23 @@
 // 统一的单文件 QC 入口
 //
 // 背景：以前"分析一个文件"这件事散落在两条路径上 ——
-//   UI: AnalysisCoordinator（异步，Qt 信号）→ QcRuleEngine::Evaluate
+//   UI: QtAnalysisController（异步，Qt 信号）→ QcRuleEngine::Evaluate
 //   CLI/批量: 需要同步调用，且不能依赖 Qt 事件循环
 // QcRunner 把这两步缝成一个同步接口：AnalyzeFile() 返回就一定能拿到报告，
-// AnalysisCoordinator 内部那条 worker 线程在返回前已经 join 干净。
+// AnalyzeFile 内部那条 worker 线程在返回前已经 join 干净。
 //
-// 同步的实现方式是用 Qt::DirectConnection 接收 worker 线程的信号（回调跑在 worker 线程里），
-// 再用条件变量等待结果 —— 因此调用方不需要 QCoreApplication，也不会拖起事件循环。
-// 代价是 progress / should_cancel 回调同样在 worker 线程触发，跨线程更新 UI 前要自己投递回主线程。
+// 实现方式：AnalyzeFile 起一条 worker 线程跑 AnalysisEngine（不依赖 QObject），
+// 用条件变量等待结果 —— 调用方不需要 QCoreApplication，也不会拖起事件循环。
+// 代价是 progress / should_cancel 回调同样在 worker 线程触发，
+// 跨线程更新 UI 前要自己投递回主线程。
 
 #include <atomic>
 #include <functional>
 #include <string>
 
-#include "core/analyzer/AnalysisCoordinator.h"
-#include "core/analyzer/AnalysisTask.h"
-#include "core/analyzer/QcRuleEngine.h"
-#include "core/model/QcReport.h"
+#include "core/analysis/AnalysisOptions.h"
+#include "core/analysis/diagnostics/QcRuleEngine.h"
+#include "core/domain/model/QcReport.h"
 #include "core/qc/QcAnalyzeRequest.h"
 #include "core/qc/QcProfile.h"
 

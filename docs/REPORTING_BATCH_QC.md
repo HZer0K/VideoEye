@@ -22,7 +22,7 @@ core/qc/BatchQcRunner.h|.cpp    目录发现 / 过滤 / 有限并发 / 取消 / 
 core/qc/QcComparator.h|.cpp     双文件对比行构造
 core/qc/QcAnalyzeRequest.h      单文件分析的请求/结果契约（批量层零 Qt 依赖）
 core/qc/QcReportFormat.h|.cpp   导出格式枚举与扩展名
-utils/QcReportExporter.h|.cpp   单文件 / 对比 / 批量汇总 的 JSON·CSV·HTML·PDF·TXT 导出
+core/reporting/QcReportExporter.h|.cpp   单文件 / 对比 / 批量汇总 的 JSON·CSV·HTML·PDF·TXT 导出
 ui/reporting_panel/             「报告与批量 QC」侧边栏页面
 ```
 

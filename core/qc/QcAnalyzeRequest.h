@@ -10,8 +10,8 @@
 #include <functional>
 #include <string>
 
-#include "core/analyzer/AnalysisTask.h"
-#include "core/model/QcReport.h"
+#include "core/analysis/AnalysisResult.h"
+#include "core/domain/model/QcReport.h"
 
 namespace videoeye {
 namespace qc {

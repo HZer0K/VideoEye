@@ -14,13 +14,13 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `core/model/ColorInfo.h/.cpp` | 色彩模型：语义枚举 + FFmpeg 原始枚举值映射 + 像素格式描述 |
-| `core/model/HdrMetadataInfo.h/.cpp` | HDR 模型：母版显示、MaxCLL/MaxFALL、Dolby Vision 配置记录、HDR 格式判别 |
-| `core/analyzer/ColorHdrAnalyzer.h/.cpp` | 分析器：从 codecpar / coded_side_data / AVPacket / AVFrame 抽取并汇总 |
-| `core/analyzer/AnalysisTask.h` | `AnalysisOptions::analyze_color_hdr` + `AnalysisResult::color_hdr` |
-| `core/analyzer/AnalysisCoordinator.cpp` | 在既有全文件 demux 循环中更新（几乎零额外 I/O） |
-| `core/model/QcModels.cpp` + `core/analyzer/QcRuleEngine.cpp` | 8 条 `video.color.*` 规则，异常进入诊断报告 |
-| `utils/ReportExporter.cpp` | 报告的「色彩与 HDR」章节（HTML / JSON / TXT） |
+| `core/domain/model/ColorInfo.h/.cpp` | 色彩模型：语义枚举 + FFmpeg 原始枚举值映射 + 像素格式描述 |
+| `core/domain/model/HdrMetadataInfo.h/.cpp` | HDR 模型：母版显示、MaxCLL/MaxFALL、Dolby Vision 配置记录、HDR 格式判别 |
+| `core/analysis/quality/ColorHdrAnalyzer.h/.cpp` | 分析器：从 codecpar / coded_side_data / AVPacket / AVFrame 抽取并汇总 |
+| `core/analysis/orchestration/AnalysisTask.h` | `AnalysisOptions::analyze_color_hdr` + `AnalysisResult::color_hdr` |
+| `core/analysis/orchestration/AnalysisCoordinator.cpp` | 在既有全文件 demux 循环中更新（几乎零额外 I/O） |
+| `core/domain/model/QcModels.cpp` + `core/analysis/diagnostics/QcRuleEngine.cpp` | 8 条 `video.color.*` 规则，异常进入诊断报告 |
+| `core/reporting/ReportExporter.cpp` | 报告的「色彩与 HDR」章节（HTML / JSON / TXT） |
 | `ui/analysis_panel/AnalysisPanel.*` | 「色彩与 HDR」页：色彩信息 / HDR 元数据 / 异常组合 + CSV 导出 |
 | `tests/unit/test_color_hdr_rules.cpp` | 14 个 gtest 用例，覆盖 6.6 四项验收 |
 
@@ -35,7 +35,7 @@
    因此 `AnalysisTask.h`、`QcReport.h` 都能安全包含它；
 3. FFmpeg 枚举一旦变值会**编译失败**而不是静默误判——
    `ColorHdrAnalyzer.cpp` 里有一组 `static_assert` 把 `AVCOL_TRC_SMPTE2084` 等
-   与 `core/model/ColorInfo.h` 的 `ffmpeg_expect::*` 常量对齐。
+   与 `core/domain/model/ColorInfo.h` 的 `ffmpeg_expect::*` 常量对齐。
 
 ## 2. 数据来源（四级兜底）
 

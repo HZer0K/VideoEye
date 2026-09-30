@@ -29,9 +29,9 @@ flowchart LR
 
 | 文件 | 作用 |
 |------|------|
-| `core/model/LoudnessPoint.h` | 响度/电平曲线上的点（100 ms 步进）：M / S / I + RMS + 峰值 + 真峰值 + 相关性 |
-| `core/model/AudioQcResult.h/.cpp` | 结果模型：metadata、电平、响度、相关性、削波/静音事件、曲线 |
-| `core/analyzer/AudioQcAnalyzer.h/.cpp` | 分析器（BS.1770 K 加权、4× 过采样真峰值、电平/相位统计） |
+| `core/domain/model/LoudnessPoint.h` | 响度/电平曲线上的点（100 ms 步进）：M / S / I + RMS + 峰值 + 真峰值 + 相关性 |
+| `core/domain/model/AudioQcResult.h/.cpp` | 结果模型：metadata、电平、响度、相关性、削波/静音事件、曲线 |
+| `core/analysis/quality/AudioQcAnalyzer.h/.cpp` | 分析器（BS.1770 K 加权、4× 过采样真峰值、电平/相位统计） |
 | `ui/analysis_panel/*` | 「音频 QC」页（第 10 个侧边栏页面） |
 | `tests/unit/test_audio_qc_analyzer.cpp` | 分析器单测（合成 PCM） |
 | `tests/unit/test_audio_qc_rules.cpp` | 规则判定单测（响度偏离 → warning / error） |

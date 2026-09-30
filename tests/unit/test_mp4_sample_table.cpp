@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <string>
 
-#include "core/analyzer/Mp4SampleTableAnalyzer.h"
+#include "core/analysis/container/Mp4SampleTableAnalyzer.h"
 
 using namespace videoeye;
 

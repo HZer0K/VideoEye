@@ -1,4 +1,4 @@
-#include "StreamInfoExtractor.h"
+#include "core/player/StreamInfoExtractor.h"
 #include <QFileInfo>
 #include <cmath>
 #include <limits>

@@ -1,7 +1,7 @@
 #pragma once
 
 #include <QString>
-#include "core/model/FrameData.h"
+#include "core/player/FrameData.h"
 
 extern "C" {
 #include <libavformat/avformat.h>

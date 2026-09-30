@@ -1,5 +1,5 @@
 // ============================================================================
-// 色彩与 HDR 元数据（core/analyzer/ColorHdrAnalyzer 的模型层 + QC 规则）单元测试
+// 色彩与 HDR 元数据（core/analysis/quality/ColorHdrAnalyzer.h 的模型层 + QC 规则）单元测试
 //
 // 覆盖第 6 节功能的验收场景：
 //   1) SDR Rec.709 样本 -> BT.709 / BT.709 / BT.709
@@ -17,10 +17,10 @@
 
 #include <gtest/gtest.h>
 
-#include "core/analyzer/AnalysisTask.h"
-#include "core/analyzer/ColorHdrAnalyzer.h"
-#include "core/analyzer/QcRuleEngine.h"
-#include "core/model/QcReport.h"
+#include "core/analysis/AnalysisResult.h"
+#include "core/analysis/quality/ColorHdrAnalyzer.h"
+#include "core/analysis/diagnostics/QcRuleEngine.h"
+#include "core/domain/model/QcReport.h"
 
 namespace {
 
@@ -86,9 +86,9 @@ model::MasteringDisplayMetadata MakeMastering() {
     return md;
 }
 
-analyzer::ColorHdrAnalysis MakeAnalysis(const model::ColorInfo& color,
+model::ColorHdrAnalysis MakeAnalysis(const model::ColorInfo& color,
                                         const model::HdrMetadataInfo& hdr) {
-    analyzer::ColorHdrAnalysis analysis;
+    model::ColorHdrAnalysis analysis;
     analysis.analyzed = true;
     analysis.stream_index = color.stream_index;
     analysis.color = color;
@@ -98,7 +98,7 @@ analyzer::ColorHdrAnalysis MakeAnalysis(const model::ColorInfo& color,
     return analysis;
 }
 
-analyzer::AnalysisResult MakeResult(const analyzer::ColorHdrAnalysis& analysis) {
+analyzer::AnalysisResult MakeResult(const model::ColorHdrAnalysis& analysis) {
     analyzer::AnalysisResult result;
     result.file_path = "test.mp4";
     result.container_format = "mov,mp4,m4a,3gp,3g2,mj2";

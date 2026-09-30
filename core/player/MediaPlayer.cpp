@@ -1,6 +1,6 @@
-#include "MediaPlayer.h"
-#include "utils/Logger.h"
-#include "utils/FileProbe.h"
+#include "core/player/MediaPlayer.h"
+#include "infrastructure/logging/Logger.h"
+#include "core/media/probe/FileProbe.h"
 #include <QFileInfo>
 #include <QDebug>
 #include <QMetaObject>

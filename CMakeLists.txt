@@ -51,64 +51,187 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 # 源文件 (CONFIGURE_DEPENDS: 新增/删除文件自动触发重新配置)
-file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS "core/*.cpp")
+#
+# 按模块目录分开 glob —— 一个 glob 对应一个 CMake target，目录归属就是依赖边界。
 file(GLOB_RECURSE UI_SOURCES CONFIGURE_DEPENDS "ui/*.cpp")
-file(GLOB_RECURSE UTILS_SOURCES CONFIGURE_DEPENDS "utils/*.cpp")
-# 头文件按归属分开挂: ui/*.h 里有 Q_OBJECT，如果同时挂给静态库和主程序，
-# AUTOMOC 会各生成一份 moc_*.cpp，链接期撞 LNK2005 重复定义。
-file(GLOB_RECURSE HEADERS CONFIGURE_DEPENDS "core/*.h" "utils/*.h")
-file(GLOB_RECURSE UI_HEADERS CONFIGURE_DEPENDS "ui/*.h")
+file(GLOB UI_HEADERS CONFIGURE_DEPENDS "ui/*.h")
+
+file(GLOB_RECURSE DOMAIN_SOURCES CONFIGURE_DEPENDS "core/domain/*.cpp" "core/domain/*.h")
+file(GLOB_RECURSE INFRA_SOURCES CONFIGURE_DEPENDS "infrastructure/*.cpp" "infrastructure/*.h")
+file(GLOB_RECURSE MEDIA_SOURCES CONFIGURE_DEPENDS "core/media/*.cpp" "core/media/*.h")
+file(GLOB_RECURSE ANALYSIS_SOURCES CONFIGURE_DEPENDS "core/analysis/*.cpp" "core/analysis/*.h")
+file(GLOB_RECURSE PLAYBACK_SOURCES CONFIGURE_DEPENDS "core/player/*.cpp" "core/player/*.h")
+file(GLOB_RECURSE EXPORTER_SOURCES CONFIGURE_DEPENDS "core/exporter/*.cpp" "core/exporter/*.h")
+file(GLOB_RECURSE QC_SOURCES CONFIGURE_DEPENDS "core/qc/*.cpp" "core/qc/*.h")
+file(GLOB_RECURSE REPORTING_SOURCES CONFIGURE_DEPENDS "core/reporting/*.cpp" "core/reporting/*.h")
+file(GLOB_RECURSE FFMPEGTOOL_SOURCES CONFIGURE_DEPENDS "core/ffmpeg/*.cpp" "core/ffmpeg/*.h")
+file(GLOB_RECURSE QTADAPTER_SOURCES CONFIGURE_DEPENDS "core/qt/*.cpp" "core/qt/*.h")
+
+# ui/*.h 里有 Q_OBJECT，如果同时挂给静态库和主程序，AUTOMOC 会各生成一份
+# moc_*.cpp，链接期撞 LNK2005 重复定义 —— 所以 ui 头文件只给主程序自己用。
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
+find_package(Threads REQUIRED)
+
 # ============================================================
-# 核心静态库: core/ + utils/
+# 模块目标
 #
-# 把业务逻辑与 UI 分开, 只编一次就能同时喂给 GUI 主程序与单元测试
-# (tests/ 直接 target_link_libraries(xxx PRIVATE VideoEyeCore), 不必像早期那样
-#  手工列一串源文件 —— 每加一个 analyzer 就可能 LNK2019)。
+# 分层的大前提是**依赖方向单向**（箭头指向被依赖方，反向一律不允许）:
+#
+#     domain          纯结果/值类型 (无 FFmpeg, 无 analyzer)
+#     infrastructure  配置 / 序列化 / 日志 / 线程
+#     media           容器字节级解析 + 码流参数集解析 (codec / container / probe / streaming)
+#     analysis        分析器与编排
+#     qc              规则 / 批处理 / 对比
+#     reporting       报告导出
+#     playback        播放会话 / 解码 / 抽帧
+#     exporter        转码导出
+#     ffmpegtools     命令行工作台的执行器与字典
+#
+# 之所以要让每个层次的 UR 都真成为一个 target（而不是只建目录）：目录只是命名习惯，
+# 编译器不认识；target_link_libraries 才是唯一能被机器检查的依赖约束 ——
+# 谁想跨层 include，链接期就会因为没有这一条边而报错。
 # ============================================================
-add_library(VideoEyeCore STATIC
-    ${CORE_SOURCES}
-    ${UTILS_SOURCES}
-    ${HEADERS}
-)
-set_target_properties(VideoEyeCore PROPERTIES OUTPUT_NAME videoeye_core AUTOMOC ON)
-# 注意这里没有 ui/: core/ 与 utils/ 不 include 任何 ui 头文件, 把它挂成 PUBLIC
-# 等于告诉每个使用者(含 tests)"你可以 include ui 下的东西" —— 而那些头文件
-# 带 Q_OBJECT, 一旦有人真的 include 了, 就会踩到 AUTOMOC 重复生成 moc_*.cpp 的坑。
-# ui/*.cpp 用的是 "ui/xxx/yyy.h" 这种从源码根开始的写法, 根目录已经在搜索路径里。
-target_include_directories(VideoEyeCore PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/utils
-    ${VIDEOEYE_GENERATED_INCLUDE_DIR}
-)
-target_link_libraries(VideoEyeCore PUBLIC
-    Qt6::Core
-    Qt6::Gui
-    FFmpeg::avcodec
-    FFmpeg::avformat
-    FFmpeg::avutil
-    FFmpeg::swscale
-    FFmpeg::swresample
+function(videoeye_add_module name)
+    add_library(${name} STATIC ${ARGN})
+    # 所有模块的 include 都写成从仓库根算起（"core/analysis/xxx.h"），所以只需要根目录。
+    target_include_directories(${name} PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${VIDEOEYE_GENERATED_INCLUDE_DIR}
+    )
+    set_target_properties(${name} PROPERTIES AUTOMOC ON)
+endfunction()
+
+# --- domain: 结果类型 / 值对象，谁都能用，自己不依赖任何人 ---
+videoeye_add_module(VideoEyeDomain ${DOMAIN_SOURCES})
+# 注意: Mp4BoxInfo / TimelineEvent 等还在用 QVector / QMap / QString，这是历史包袱 ——
+# 本轮的成果是"domain 不再依赖 FFmpeg、也不再反向 include analyzer"，
+# Qt 容器换成 std:: 动了几十处 UI，留到下一步单独做。
+target_link_libraries(VideoEyeDomain PUBLIC Qt6::Core)
+
+# --- infrastructure: 配置 / JSON / 日志 / 后台任务 ---
+videoeye_add_module(VideoEyeInfrastructure ${INFRA_SOURCES})
+target_link_libraries(VideoEyeInfrastructure PUBLIC Threads::Threads)
+
+# --- media: 容器与码流的字节级解析 ---
+videoeye_add_module(VideoEyeMedia ${MEDIA_SOURCES})
+target_link_libraries(VideoEyeMedia
+    PUBLIC VideoEyeDomain
+    PRIVATE VideoEyeInfrastructure
 )
 
-# 音频输出用的是平台原生 API，各平台补一下系统库
+# --- analysis: 各分析器与 orchestration ---
+videoeye_add_module(VideoEyeAnalysis ${ANALYSIS_SOURCES})
+# FFmpeg 与 Qt 挂 PUBLIC 而不是 PRIVATE: 这一层的公共头文件里就有真的 libav*
+# （AnalysisResult.h -> StreamAnalyzer.h -> avformat.h），任何 include 它的人
+# 都必须拿到 FFmpeg 的 include 目录，而静态库的 PRIVATE 依赖只传 link、不传目录。
+target_link_libraries(VideoEyeAnalysis
+    PUBLIC VideoEyeDomain
+           FFmpeg::avcodec
+           FFmpeg::avformat
+           FFmpeg::avutil
+           FFmpeg::swscale
+           FFmpeg::swresample
+           Qt6::Core
+           Qt6::Gui
+    PRIVATE VideoEyeMedia
+            VideoEyeInfrastructure
+)
+
+# --- playback: 播放会话 / 解码 / 抽帧 / 可视化 ---
+videoeye_add_module(VideoEyePlayback ${PLAYBACK_SOURCES})
+# MediaPlayer::StartMediaExport 直接用 exporter::MediaExporter，这条边一直存在，
+# 只是以前大家都链 VideoEyeCore 所以看不出来。
+# 同理：MediaPlayer.h / PlaybackSession.h 里有 AVFormatContext* 与 QImage。
+target_link_libraries(VideoEyePlayback
+    PUBLIC VideoEyeDomain
+           FFmpeg::avcodec
+           FFmpeg::avformat
+           FFmpeg::avutil
+           FFmpeg::swscale
+           FFmpeg::swresample
+           Qt6::Core
+           Qt6::Gui
+    PRIVATE VideoEyeAnalysis
+            VideoEyeExporter
+            VideoEyeInfrastructure
+)
 if(WIN32)
     # WASAPI: CoCreateInstance 在 ole32
-    target_link_libraries(VideoEyeCore PUBLIC ole32)
+    target_link_libraries(VideoEyePlayback PRIVATE ole32)
 elseif(APPLE)
     find_library(AUDIOTOOLBOX_FRAMEWORK AudioToolbox)
     if(AUDIOTOOLBOX_FRAMEWORK)
-        target_link_libraries(VideoEyeCore PUBLIC ${AUDIOTOOLBOX_FRAMEWORK})
+        target_link_libraries(VideoEyePlayback PRIVATE ${AUDIOTOOLBOX_FRAMEWORK})
     endif()
 else()
     # ALSA 走 dlopen，只需 libdl
-    target_link_libraries(VideoEyeCore PUBLIC ${CMAKE_DL_LIBS})
+    target_link_libraries(VideoEyePlayback PRIVATE ${CMAKE_DL_LIBS})
 endif()
+
+# --- exporter: 转码 / remux 导出 ---
+videoeye_add_module(VideoEyeExporter ${EXPORTER_SOURCES})
+target_link_libraries(VideoEyeExporter
+    PUBLIC VideoEyeDomain
+           FFmpeg::avcodec
+           FFmpeg::avformat
+           FFmpeg::avutil
+           FFmpeg::swscale
+           FFmpeg::swresample
+           Qt6::Core
+    PRIVATE VideoEyeInfrastructure
+)
+
+# --- qc: 规则引擎 / 批处理 / 对比 ---
+videoeye_add_module(VideoEyeQc ${QC_SOURCES})
+target_link_libraries(VideoEyeQc
+    PUBLIC VideoEyeDomain
+    PRIVATE VideoEyeAnalysis
+            VideoEyeInfrastructure
+            Qt6::Core
+)
+
+# reporting 现在只吃纯结果类型：QC 报告走 QcExportBundle，流统计快照走
+# model::StreamStats（已从 StreamAnalyzer.h 下放到 domain）。因此这一层不需要
+# FFmpeg 的头文件 —— 上一次它挂 FFmpeg，是因为老的 ReportExporter 签名里带着
+# analyzer::StreamStats，而 StreamAnalyzer.h 真的 include 了 libav*。
+videoeye_add_module(VideoEyeReporting ${REPORTING_SOURCES})
+target_link_libraries(VideoEyeReporting
+    PUBLIC VideoEyeDomain
+    PRIVATE VideoEyeQc
+            VideoEyeInfrastructure
+)
+
+# --- ffmpegtools: 原生 ffmpeg 命令行工作台 ---
+videoeye_add_module(VideoEyeFfmpegTools ${FFMPEGTOOL_SOURCES})
+target_link_libraries(VideoEyeFfmpegTools
+    PRIVATE VideoEyeInfrastructure
+            Qt6::Core
+)
+
+# --- qt adapters: 把不带 QObject 的执行引擎接进 Qt 信号/线程 (见 core/qt/) ---
+if(QTADAPTER_SOURCES)
+    videoeye_add_module(VideoEyeQtAdapters ${QTADAPTER_SOURCES})
+    target_link_libraries(VideoEyeQtAdapters
+        PUBLIC VideoEyeDomain
+        PRIVATE VideoEyeAnalysis
+                VideoEyeInfrastructure
+                Qt6::Core
+    )
+endif()
+
+# ============================================================
+# 迁移期兼容层已删除
+#
+# VideoEyeCore 曾经是唯一的静态库(core/ + utils/ 塞在一起), 分层之后退化成一个
+# "把十层全部 PUBLIC 出去"的 INTERFACE target。它让每个调用方都能编译, 代价是
+# 依赖关系重新变得不可见 —— 上次正是因为它, Playback -> Exporter 这条边一直没暴露。
+# 现在主程序与全部测试都显式链自己需要的模块, 这个 target 也就没有存在意义了。
+# 如果哪天确实需要"全部模块", 请显式列出来, 别再引入聚合层。
+# ============================================================
 
 add_executable(${PROJECT_NAME}
     ${UI_SOURCES}
@@ -118,10 +241,23 @@ add_executable(${PROJECT_NAME}
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/ui
 )
+# UI 是唯一需要全部模块的目标，把每一层显式列出来 —— 以前这里只写 VideoEyeCore,
+# 于是"界面到底依赖了什么"这条信息是藏在兼容层里的。
 target_link_libraries(${PROJECT_NAME} PRIVATE
-    VideoEyeCore
+    VideoEyePlayback
+    VideoEyeExporter
+    VideoEyeReporting
+    VideoEyeQc
+    VideoEyeFfmpegTools
+    VideoEyeAnalysis
+    VideoEyeMedia
+    VideoEyeDomain
+    VideoEyeInfrastructure
     Qt6::Widgets
 )
+if(QTADAPTER_SOURCES)
+    target_link_libraries(${PROJECT_NAME} PRIVATE VideoEyeQtAdapters)
+endif()
 
 # FFmpeg 运行时部署 (Windows 拷 DLL / Linux、macOS 拷 .so、.dylib 并设 rpath)
 videoeye_deploy_ffmpeg(${PROJECT_NAME})

@@ -6,17 +6,17 @@
 #include <string>
 
 #include "core/qc/QcAnalyzeRequest.h"
-#include "core/model/QcReport.h"
-#include "utils/Json.h"
-#include "utils/QcReportExporter.h"
+#include "core/domain/model/QcReport.h"
+#include "infrastructure/serialization/Json.h"
+#include "core/reporting/QcReportExporter.h"
 
 using videoeye::qc::QcRunResult;
 using videoeye::model::DiagnosticIssue;
 using videoeye::model::IssueCategory;
 using videoeye::model::IssueSeverity;
-using videoeye::utils::QcExportBundle;
-using videoeye::utils::QcReportExporter;
-using videoeye::utils::QcReportOutputPath;
+using videoeye::reporting::QcExportBundle;
+using videoeye::reporting::QcReportExporter;
+using videoeye::reporting::QcReportOutputPath;
 using videoeye::utils::JsonParse;
 using videoeye::utils::JsonValue;
 
@@ -141,12 +141,12 @@ TEST(QcReportExporterTest, OutputPathUsesExtension) {
 }
 
 TEST(QcReportExporterTest, BatchSummaryCsvOneRowPerFile) {
-    videoeye::utils::QcBatchSummaryInput input;
+    videoeye::reporting::QcBatchSummaryInput input;
     input.root = "/media";
     input.profile_id = "general";
     input.profile_name = "通用";
     for (int i = 0; i < 4; ++i) {
-        videoeye::utils::QcBatchSummaryRow row;
+        videoeye::reporting::QcBatchSummaryRow row;
         row.path = "/media/file" + std::to_string(i) + ".mp4";
         row.status = "完成";
         row.score = 80.0 + i;

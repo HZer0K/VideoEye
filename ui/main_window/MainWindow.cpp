@@ -1,12 +1,12 @@
-#include "MainWindow.h"
+#include "ui/main_window/MainWindow.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/theme/AppTheme.h"
 #include "ui/dialogs/MediaExportDialog.h"
 #include "core/exporter/MediaExporter.h"
-#include "utils/Logger.h"
-#include "utils/ScopedTimer.h"
-#include "core/model/EbmlInfo.h"
-#include "core/model/ContainerStructureInfo.h"
+#include "infrastructure/logging/Logger.h"
+#include "infrastructure/logging/ScopedTimer.h"
+#include "core/domain/model/EbmlInfo.h"
+#include "core/domain/model/ContainerStructureInfo.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>

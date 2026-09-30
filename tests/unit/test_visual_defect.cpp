@@ -12,7 +12,7 @@
 #include <utility>
 #include <vector>
 
-#include "core/analyzer/VisualDefectAnalyzer.h"
+#include "core/analysis/quality/VisualDefectAnalyzer.h"
 
 namespace {
 

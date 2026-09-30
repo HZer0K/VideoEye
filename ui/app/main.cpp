@@ -2,12 +2,12 @@
 #include <QMetaType>
 #include <QTimer>
 
-#include "utils/Logger.h"
-#include "core/model/AnalysisEvent.h"
-#include "core/model/AudioVisualizationFrame.h"
-#include "core/model/PacketInfo.h"
-#include "core/model/SyncSample.h"
-#include "core/model/TimelineEvent.h"
+#include "infrastructure/logging/Logger.h"
+#include "core/domain/model/AnalysisEvent.h"
+#include "core/domain/model/AudioVisualizationFrame.h"
+#include "core/domain/model/PacketInfo.h"
+#include "core/domain/model/SyncSample.h"
+#include "core/domain/model/TimelineEvent.h"
 #include "ui/main_window/MainWindow.h"
 
 int main(int argc, char* argv[]) {

@@ -17,11 +17,11 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 }
 
-#include "core/analyzer/Scte35Analyzer.h"
-#include "core/analyzer/SubtitleAnalyzer.h"
-#include "core/analyzer/TimecodeAnalyzer.h"
-#include "core/model/SubtitleCueInfo.h"
-#include "core/model/TimecodeInfo.h"
+#include "core/analysis/diagnostics/Scte35Analyzer.h"
+#include "core/analysis/diagnostics/SubtitleAnalyzer.h"
+#include "core/analysis/diagnostics/TimecodeAnalyzer.h"
+#include "core/domain/model/SubtitleCueInfo.h"
+#include "core/domain/model/TimecodeInfo.h"
 
 namespace {
 

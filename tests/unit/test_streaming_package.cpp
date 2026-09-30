@@ -17,9 +17,9 @@
 #include <string>
 #include <vector>
 
-#include "core/analyzer/DashManifestAnalyzer.h"
-#include "core/analyzer/HlsManifestAnalyzer.h"
-#include "core/analyzer/SegmentQcAnalyzer.h"
+#include "core/analysis/streaming/DashManifestAnalyzer.h"
+#include "core/analysis/streaming/HlsManifestAnalyzer.h"
+#include "core/analysis/streaming/SegmentQcAnalyzer.h"
 
 namespace fs = std::filesystem;
 

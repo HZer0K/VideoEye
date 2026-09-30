@@ -1,5 +1,5 @@
-#include "VideoWidget.h"
-#include "utils/Logger.h"
+#include "ui/main_window/VideoWidget.h"
+#include "infrastructure/logging/Logger.h"
 #include <QPainter>
 #include <QPaintEvent>
 #include <QResizeEvent>

@@ -18,8 +18,8 @@ extern "C" {
 #include <libavformat/avformat.h>
 }
 
-#include "core/model/FrameData.h"
-#include "core/model/SeekMode.h"
+#include "core/player/FrameData.h"
+#include "core/domain/model/SeekMode.h"
 #include "core/player/AudioOutput.h"
 #include "core/player/Decoders.h"
 #include "core/player/PlaybackClock.h"

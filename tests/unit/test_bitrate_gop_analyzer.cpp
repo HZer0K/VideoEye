@@ -12,7 +12,7 @@
 #include <cmath>
 #include <vector>
 
-#include "core/analyzer/BitrateGopAnalyzer.h"
+#include "core/analysis/quality/BitrateGopAnalyzer.h"
 
 using namespace videoeye;
 using namespace videoeye::analyzer;

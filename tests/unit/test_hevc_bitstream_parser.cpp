@@ -3,8 +3,8 @@
 #include <cstdint>
 #include <vector>
 
-#include "core/analyzer/HevcBitstreamParser.h"
-#include "utils/ExtradataParser.h"
+#include "core/analysis/codec/HevcBitstreamParser.h"
+#include "core/media/codec/ExtradataParser.h"
 
 namespace {
 

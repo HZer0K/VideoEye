@@ -6,7 +6,7 @@
 #include <QPointer>
 #include <QRectF>
 
-#include "core/model/MacroblockInfo.h"
+#include "core/domain/model/MacroblockInfo.h"
 
 namespace videoeye {
 namespace ui {

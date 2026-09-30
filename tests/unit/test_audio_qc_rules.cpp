@@ -14,10 +14,10 @@
 
 #include <gtest/gtest.h>
 
-#include "core/analyzer/AudioQcAnalyzer.h"
-#include "core/analyzer/AnalysisTask.h"
-#include "core/analyzer/QcRuleEngine.h"
-#include "core/model/QcReport.h"
+#include "core/analysis/quality/AudioQcAnalyzer.h"
+#include "core/analysis/AnalysisResult.h"
+#include "core/analysis/diagnostics/QcRuleEngine.h"
+#include "core/domain/model/QcReport.h"
 
 namespace {
 

@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-#include "core/model/QcReport.h"
+#include "core/domain/model/QcReport.h"
 #include "core/qc/QcAnalyzeRequest.h"
 #include "core/qc/QcReportFormat.h"
 

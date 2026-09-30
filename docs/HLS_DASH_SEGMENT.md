@@ -38,8 +38,8 @@ flowchart LR
 
 | 文件 | 内容 |
 | --- | --- |
-| `core/model/SegmentInfo.h` | `SegmentInfo`：一个分片的 URI / 序号 / 时长 / 起点 / 容器形态 / 落盘情况 / fMP4 的 tfdt |
-| `core/model/StreamPackageInfo.h` | `HlsVariantInfo` / `HlsRenditionInfo` / `MediaPlaylistInfo` / `DashPeriodInfo` / `DashAdaptationSetInfo` / `DashRepresentationInfo` / `StreamingLadderEntry` / `StreamingPackageResult` / `StreamingIssue` |
+| `core/domain/model/SegmentInfo.h` | `SegmentInfo`：一个分片的 URI / 序号 / 时长 / 起点 / 容器形态 / 落盘情况 / fMP4 的 tfdt |
+| `core/domain/model/StreamPackageInfo.h` | `HlsVariantInfo` / `HlsRenditionInfo` / `MediaPlaylistInfo` / `DashPeriodInfo` / `DashAdaptationSetInfo` / `DashRepresentationInfo` / `StreamingLadderEntry` / `StreamingPackageResult` / `StreamingIssue` |
 
 `StreamingLadderEntry` 是把 HLS 的 variant 与 DASH 的 representation 投影出来的统一视图，
 UI 与 ladder 级校验只认这个结构，不必区分协议。
@@ -52,7 +52,7 @@ UI 与 ladder 级校验只认这个结构，不必区分协议。
 
 ## 3. 解析器能力
 
-### 3.1 HLS（core/analyzer/HlsManifestAnalyzer）
+### 3.1 HLS（core/analysis/streaming/HlsManifestAnalyzer.h）
 
 | 标签 | 处理 |
 | --- | --- |
@@ -69,7 +69,7 @@ UI 与 ladder 级校验只认这个结构，不必区分协议。
 master playlist 会递归加载子播放列表（本地文件），受 `max_variants` / `max_playlists` /
 `max_segments_per_playlist` 保护。
 
-### 3.2 DASH（core/analyzer/DashManifestAnalyzer）
+### 3.2 DASH（core/analysis/streaming/DashManifestAnalyzer.h）
 
 极简 XML 标签扫描器（不引入第三方 XML 库），识别：
 
@@ -83,7 +83,7 @@ initialization / media）→ `SegmentTimeline`（`<S t= d= r=/>`），
 `$Bandwidth$` / `$RepresentationID$` / `$Time$`。
 `Representation` 未自带 `SegmentTemplate` 时继承 `AdaptationSet` 级的那一份。
 
-### 3.3 分片级与 ladder 级校验（core/analyzer/SegmentQcAnalyzer）
+### 3.3 分片级与 ladder 级校验（core/analysis/streaming/SegmentQcAnalyzer.h）
 
 | 检查 | 问题码 | 级别 |
 | --- | --- | --- |
@@ -127,13 +127,13 @@ initialization / media）→ `SegmentTimeline`（`<S t= d= r=/>`），
 
 | 位置 | 改动 |
 | --- | --- |
-| `core/model/ContainerStructureInfo.h` | `ContainerFormat` 增加 `HLS` / `DASH`；结果增加 `streaming_package` |
-| `core/analyzer/FormatDetector.cpp` | `DetectByExtension` 识别 `.m3u8` / `.mpd`，补 `FormatName` / `FormatTitle` |
-| `core/analyzer/ContainerStructureAnalyzer.cpp` | 新增 `AnalyzeStreamingManifest` / `BuildStreamingTree` / `ProbeTsSegments` |
-| `core/analyzer/AnalysisTask.h` | `AnalysisOptions::analyze_streaming_package` + `AnalysisResult::streaming_package` |
-| `core/analyzer/AnalysisCoordinator.cpp` | `Run()` 前置分流 + `RunStreamingManifest()` |
-| `core/model/QcModels.cpp` | 新增 22 条规则（HLS 12 / DASH 8 / streaming 2），id 与问题码同名 |
-| `core/analyzer/QcRuleEngine.cpp` | 新增 `container.hls.` / `container.dash.` / `container.streaming.` 三个前缀分支 |
+| `core/domain/model/ContainerStructureInfo.h` | `ContainerFormat` 增加 `HLS` / `DASH`；结果增加 `streaming_package` |
+| `core/analysis/orchestration/FormatDetector.cpp` | `DetectByExtension` 识别 `.m3u8` / `.mpd`，补 `FormatName` / `FormatTitle` |
+| `core/analysis/container/ContainerStructureAnalyzer.cpp` | 新增 `AnalyzeStreamingManifest` / `BuildStreamingTree` / `ProbeTsSegments` |
+| `core/analysis/orchestration/AnalysisTask.h` | `AnalysisOptions::analyze_streaming_package` + `AnalysisResult::streaming_package` |
+| `core/analysis/orchestration/AnalysisCoordinator.cpp` | `Run()` 前置分流 + `RunStreamingManifest()` |
+| `core/domain/model/QcModels.cpp` | 新增 22 条规则（HLS 12 / DASH 8 / streaming 2），id 与问题码同名 |
+| `core/analysis/diagnostics/QcRuleEngine.cpp` | 新增 `container.hls.` / `container.dash.` / `container.streaming.` 三个前缀分支 |
 | `ui/main_window/MainWindow.cpp` | 打开对话框补「流媒体清单 (*.m3u8 *.mpd)」 |
 
 ## 6. 测试
