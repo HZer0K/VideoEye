@@ -24,7 +24,7 @@ MP4 的「索引」和「数据」是分开写的：mdat 里是一坨连续的�
 | `core/domain/model/QcModels.cpp` | `container.mp4.*` 规则定义（阈值与级别） |
 | `core/analysis/diagnostics/QcRuleEngine.cpp` | 把 finding 转成 QC 报告条目（按规则级别/阈值再过滤） |
 | `core/analysis/orchestration/AnalysisTask.h` | `AnalysisOptions::analyze_mp4_sample_table` / `AnalysisResult::mp4_samples` |
-| `core/analysis/orchestration/AnalysisCoordinator.cpp` | 全文件扫描时对 MP4 家族顺带跑一遍 |
+| `core/analysis/orchestration/AnalysisEngine.cpp` | 全文件扫描时对 MP4 家族顺带跑一遍 |
 | `core/analysis/container/ContainerStructureAnalyzer.cpp` | 打开文件做结构分析时顺带跑一遍（供容器页展示） |
 | `ui/analysis_panel/AnalysisPanel.cpp` | 容器页「Sample Table」子页 + 结构树联动 |
 

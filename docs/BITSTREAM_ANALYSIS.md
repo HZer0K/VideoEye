@@ -249,7 +249,7 @@ std::string json = result.ToJson();
 ### 5.2 集成到 AnalysisResult
 
 ```cpp
-// 在 AnalysisCoordinator 中
+// 在 QtAnalysisController 中
 void Run() {
     // ... 其他分析 ...
     
@@ -413,7 +413,7 @@ TEST(H264BitstreamParserTest, ParseHighProfileSPS) {
 ## 10. 当前接入状态与已知限制
 
 全文件诊断由 `AnalysisOptions::analyze_bitstream`（默认开）控制，
-在 `AnalysisCoordinator::Run()` 里对第一条视频流的 `AVCodecParameters::extradata`
+在 `AnalysisEngine::Run()` 里对第一条视频流的 `AVCodecParameters::extradata`
 调用 `BitstreamAnalyzer::Analyze()`，结果放进 `AnalysisResult::bitstream_analysis`
 （`bitstream_analyzed=true` 表示跑过）。这一步不解码，只读 KB 级 extradata。
 

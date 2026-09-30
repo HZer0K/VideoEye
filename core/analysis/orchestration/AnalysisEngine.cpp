@@ -3,6 +3,14 @@
 #include "core/analysis/streaming/DashManifestAnalyzer.h"
 #include "core/analysis/streaming/HlsManifestAnalyzer.h"
 #include "core/analysis/diagnostics/TimelineAnalyzer.h"
+// 下面这些分析器是本 cpp 真正要用到的执行者。以前是 AnalysisResult.h 顺带把它们
+// 全带进来的 —— 那个头文件现在只认 domain 的结果类型，于是"谁用谁 include"。
+#include "core/analysis/diagnostics/AuxDataAnalyzer.h"
+#include "core/analysis/diagnostics/SubtitleAnalyzer.h"
+#include "core/analysis/diagnostics/TimecodeAnalyzer.h"
+#include "core/analysis/quality/AudioQcAnalyzer.h"
+#include "core/analysis/quality/ColorHdrAnalyzer.h"
+#include "core/analysis/streaming/SegmentQcAnalyzer.h"
 #include "core/media/probe/FileProbe.h"
 #include "core/media/streaming/ManifestText.h"
 

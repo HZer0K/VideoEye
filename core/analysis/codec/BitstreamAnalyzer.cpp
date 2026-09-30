@@ -92,6 +92,20 @@ bool LooksLikeConfigRecord(utils::ExtradataFormat cfg, const uint8_t* data, size
     }
 }
 
+// media 层（ExtradataParser）产出的 NAL / OBU 是解析器内部载体，
+// 对外暴露的结果要换成 domain 层的同名结构 —— 这两条转换函数就是两层的边界。
+// 方向固定 media -> domain：domain 不认识 utils::NalUnit。
+model::NalUnit ToModelNalUnit(const utils::NalUnit& n) {
+    return model::NalUnit(n.type, n.size, n.data, n.is_idr, n.is_keyframe);
+}
+
+model::ObuUnit ToModelObuUnit(const utils::ObuUnit& o) {
+    model::ObuUnit unit(o.type, o.size, o.data, o.has_extension_header, o.is_sequence_header);
+    unit.temporal_id = o.temporal_id;
+    unit.spatial_id = o.spatial_id;
+    return unit;
+}
+
 }  // namespace
 
 BitstreamAnalyzer::BitstreamAnalyzer() {
@@ -122,7 +136,31 @@ void BitstreamAnalyzer::ApplyContainerSnapshot() {
     result_.container_color_range = container_metadata_.color_range;
 }
 
-model::BitstreamAnalysisResult BitstreamAnalyzer::Analyze(const uint8_t* extradata, 
+// 收纳 media 层解析出的单元：
+//   * nal_units_ / obu_units_ 留 utils 版 —— codec parser（H264/HEVC/AV1/VVC）
+//     只认这一版，没必要让四个解析器跟着改签名；
+//   * result_.nal_units / obu_units 放 domain 版 —— 这是对外结果，UI 与报告只读它。
+// 两者字段一一对应，转换只在入库这一处发生。
+void BitstreamAnalyzer::IngestUnits(const utils::ExtradataResult& parsed) {
+    nal_units_.clear();
+    obu_units_.clear();
+    result_.nal_units.clear();
+    result_.obu_units.clear();
+    nal_units_.reserve(parsed.nal_units.size());
+    obu_units_.reserve(parsed.obu_units.size());
+    result_.nal_units.reserve(parsed.nal_units.size());
+    result_.obu_units.reserve(parsed.obu_units.size());
+    for (const auto& nal : parsed.nal_units) {
+        nal_units_.push_back(nal);
+        result_.nal_units.push_back(ToModelNalUnit(nal));
+    }
+    for (const auto& obu : parsed.obu_units) {
+        obu_units_.push_back(obu);
+        result_.obu_units.push_back(ToModelObuUnit(obu));
+    }
+}
+
+model::BitstreamAnalysisResult BitstreamAnalyzer::Analyze(const uint8_t* extradata,
                                                            size_t size,
                                                            int codec_id) {
     result_ = model::BitstreamAnalysisResult();
@@ -144,8 +182,7 @@ model::BitstreamAnalysisResult BitstreamAnalyzer::Analyze(const uint8_t* extrada
             ? utils::ExtradataParser::ParseWithFormat(cfg, extradata, size)
             : utils::ExtradataParser::ParseWithFormat(utils::ExtradataFormat::AnnexB, extradata,
                                                       size, NalSyntaxForCodec(codec_id));
-    result_.nal_units = parsed.nal_units;
-    result_.obu_units = parsed.obu_units;
+    IngestUnits(parsed);
     PopulateAv1Config(parsed.config);
     if (parsed.format == utils::ExtradataFormat::VvcC) {
         PopulateVvcConfig(parsed.config);
@@ -176,8 +213,7 @@ model::BitstreamAnalysisResult BitstreamAnalyzer::AnalyzeWithFormat(
 
     const utils::ExtradataResult parsed =
         utils::ExtradataParser::ParseWithFormat(format, data, size);
-    result_.nal_units = parsed.nal_units;
-    result_.obu_units = parsed.obu_units;
+    IngestUnits(parsed);
     if (format == utils::ExtradataFormat::Av1C) {
         PopulateAv1Config(parsed.config);
     }
@@ -227,13 +263,13 @@ void BitstreamAnalyzer::Dispatch(int codec_id, const uint8_t* data, size_t size)
 
 void BitstreamAnalyzer::ParseH264(const uint8_t* data, size_t size) {
     // NAL 列表已在 Analyze() 里抽好，这里只挑出 SPS / PPS
-    for (const auto& nal : result_.nal_units) {
+    for (const auto& nal : nal_units_) {
         if (H264BitstreamParser::IsSpsNalUnit(nal)) {
             result_.h264_sps = H264BitstreamParser::ParseFromNalUnit(nal);
             break;
         }
     }
-    for (const auto& nal : result_.nal_units) {
+    for (const auto& nal : nal_units_) {
         if (H264BitstreamParser::IsPpsNalUnit(nal)) {
             // 直接从这个 NAL 解析，不要回头 ParsePps(extradata) 把整个
             // extradata 再拆一遍（旧代码这么写，结果对但白跑一趟）
@@ -271,19 +307,19 @@ void BitstreamAnalyzer::ApplyH264Summary() {
 void BitstreamAnalyzer::ParseHevc(const uint8_t* data, size_t size) {
     (void)data;
     (void)size;
-    for (const auto& nal : result_.nal_units) {
+    for (const auto& nal : nal_units_) {
         if (HevcBitstreamParser::IsVpsNalUnit(nal)) {
             result_.hevc_vps = HevcBitstreamParser::ParseVpsFromNalUnit(nal);
             break;
         }
     }
-    for (const auto& nal : result_.nal_units) {
+    for (const auto& nal : nal_units_) {
         if (HevcBitstreamParser::IsSpsNalUnit(nal)) {
             result_.hevc_sps = HevcBitstreamParser::ParseSpfFromNalUnit(nal);
             break;
         }
     }
-    for (const auto& nal : result_.nal_units) {
+    for (const auto& nal : nal_units_) {
         if (HevcBitstreamParser::IsPpsNalUnit(nal)) {
             result_.hevc_pps = HevcBitstreamParser::ParsePpsFromNalUnit(nal);
             break;
@@ -316,7 +352,7 @@ void BitstreamAnalyzer::ApplyHevcSummary() {
 void BitstreamAnalyzer::ParseAv1(const uint8_t* data, size_t size) {
     (void)data;
     (void)size;
-    for (const auto& obu : result_.obu_units) {
+    for (const auto& obu : obu_units_) {
         if (Av1BitstreamParser::IsSequenceHeaderObu(obu)) {
             result_.av1_seq_header = Av1BitstreamParser::ParseFromObuUnit(obu);
             break;
@@ -389,19 +425,19 @@ void BitstreamAnalyzer::ApplyAv1Summary() {
 void BitstreamAnalyzer::ParseVvc(const uint8_t* data, size_t size) {
     (void)data;
     (void)size;
-    for (const auto& nal : result_.nal_units) {
+    for (const auto& nal : nal_units_) {
         if (VvcBitstreamParser::IsVpsNalUnit(nal)) {
             result_.vvc_vps = VvcBitstreamParser::ParseVpsFromNalUnit(nal);
             break;
         }
     }
-    for (const auto& nal : result_.nal_units) {
+    for (const auto& nal : nal_units_) {
         if (VvcBitstreamParser::IsSpsNalUnit(nal)) {
             result_.vvc_sps = VvcBitstreamParser::ParseSpsFromNalUnit(nal);
             break;
         }
     }
-    for (const auto& nal : result_.nal_units) {
+    for (const auto& nal : nal_units_) {
         if (VvcBitstreamParser::IsPpsNalUnit(nal)) {
             result_.vvc_pps = VvcBitstreamParser::ParsePpsFromNalUnit(nal);
             // conformance window 的裁剪单位由 SPS 的色度采样决定
@@ -532,7 +568,7 @@ void BitstreamAnalyzer::AddInconsistency(model::BitstreamAnalysisResult& result,
     inconsistency.severity = severity;
     inconsistency.description = description;
     inconsistency.suggestion = suggestion;
-    
+
     result.inconsistencies.push_back(std::move(inconsistency));
 }
 

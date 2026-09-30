@@ -123,4 +123,4 @@ AnalysisPanel「画面质量」页    曲线 + 缺陷列表 + 证据缩略图 + 
 - 色偏是统计意义的判定，本身是暖色调风格的素材（日落、钨丝灯）可能误报，可调阈值。
 - 模糊阈值基于降采样后的锐度指数，与分辨率/内容相关，实际使用建议按素材微调。
 - 当前是**播放时实时分析**；离线全文件批量体检（不播放、一次扫完出报告）尚未接入
-  `AnalysisCoordinator`，后续可复用同一套 `VisualDefectAnalyzer` 补齐。
+  `QtAnalysisController`，后续可复用同一套 `VisualDefectAnalyzer` 补齐。

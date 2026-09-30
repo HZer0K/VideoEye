@@ -36,7 +36,7 @@ std::vector<ColorKeyValueRow> BuildHdrRows(const ColorHdrAnalysis& analysis);
 //   4) 解码首帧的 AVFrame side data: HDR10+ / DV RPU / HDR Vivid / 环境光等动态元数据兜底
 //
 // 反复调用 UpdateFromXxx() 是安全的：已有字段不会被覆盖，后来的调用只补充缺失项。
-// 因此 AnalysisCoordinator 可以在 find_stream_info 后、逐包扫描中、解码首帧后各调用一次。
+// 因此 QtAnalysisController 可以在 find_stream_info 后、逐包扫描中、解码首帧后各调用一次。
 class ColorHdrAnalyzer {
 public:
     void Reset(const ColorHdrOptions& options = ColorHdrOptions{});
@@ -50,7 +50,7 @@ public:
     const ColorHdrAnalysis& result() const { return result_; }
     bool finished() const { return finished_; }
 
-    // 是否还有必要为补元数据去解一帧（供 AnalysisCoordinator 判断是否开解码器）
+    // 是否还有必要为补元数据去解一帧（供 QtAnalysisController 判断是否开解码器）
     bool NeedsFrameProbe() const;
 
 private:

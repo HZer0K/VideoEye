@@ -64,9 +64,10 @@ graph TD
    过去 `QcReport.h` 为了拿 `ColorHdrAnalysis` 去 include `ColorHdrAnalyzer.h`，等于让
    "报告""导出""UI"全都间接吃下一个分析器 —— 现在结果类型住在
    `core/domain/model/ColorHdrResult.h`，分析器也只是它的生产者之一。
-2. **`analysis` 不依赖 Qt Widgets**。`AnalysisCoordinator` 曾经同时承担"跑分析"和
-   "用 Qt 信号抛给 UI"，现在两者拆开：执行逻辑在 `AnalysisEngine`（普通回调，可在离线/批处理/单测里跑），
-   `core/qt/QtAnalysisController` 只负责线程、generation 与信号。
+2. **`analysis` 不依赖 Qt Widgets**。编排层（老名字 `AnalysisCoordinator`，已删除）曾经
+   同时承担"跑分析"和"用 Qt 信号抛给 UI"，现在两者拆开：执行逻辑在 `AnalysisEngine`
+   （普通回调，可在离线/批处理/单测里跑），`core/qt/QtAnalysisController` 只负责线程、
+   generation 与信号。
 3. **`media` 不依赖 FFmpeg**（除 video 解码那一层以外）。MP4 与 extradata 都是自研解析，
    这也是它们能被纯 stdlib 单元测试直接覆盖的原因。
 
@@ -79,7 +80,7 @@ core/domain/model/ColorHdrResult.h    ColorHdrAnalysis / ColorKeyValueRow
 core/domain/model/BitrateGopResult.h  BitrateGopAnalysis / BitrateAnomaly / BitrateAnomalyType
 core/domain/model/SceneChangeResult.h SceneChangeResult
 core/domain/model/StreamStats.h       StreamStats
-core/media/codec/ExtradataTypes.h     NalUnit / ObuUnit / ExtradataResult
+core/domain/model/BitstreamUnits.h    NalUnit / ObuUnit（对外结果；media 层 utils:: 同名结构是解析器内部载体）
 core/analysis/AnalysisTypes.h         StreamDigest
 core/analysis/AnalysisOptions.h       所有 *Options 与 AnalysisOptions
 core/analysis/AnalysisResult.h        AnalysisResult
@@ -109,11 +110,16 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   `videoeye::analyzer::*`；`utils/` 目录拆进 `core/media/**` 与 `infrastructure/**` 之后，
   那些类型还在 `videoeye::utils` 命名空间里（`utils::BitReader`、`utils::JsonValue`…），
   全仓 200+ 处引用。改命名空间是纯机械替换，但每换一个就要动一批调用点，单独一轮做。
-- `core/domain/model/` 里仍有 `QVector` / `QMap` / `QString`（如 `Mp4BoxInfo`、
-  `ContainerStructureInfo`、`EbmlInfo`，共 6 个头文件约 70 处）。换成 STL 容器会牵动
-  UI 表格与树控件的构造代码，和下面第 6 条一起留作独立一步。
-- **UI 直接 include 分析器**。`AnalysisPanel` 一个人 include 了二十多个 `core/` 头文件，
-  还没有收敛到 facade。这是下一轮的主题。
+- `core/domain/model/` 里仍有 `QVector` / `QMap` / `QString` / `QMetaType`（如 `Mp4BoxInfo`、
+  `ContainerStructureInfo`、`EbmlInfo`、`PacketInfo`、`TimelineEvent`，共 9 个头文件约 80 处）。
+  换成 STL 容器会牵动 UI 表格与树控件的构造代码，留作独立一步（`VideoEyeDomain` 目前因此
+  还 PUBLIC 链着 `Qt6::Core`）—— 要做就是把它们拆成 `VideoEyeDomain`（纯 stdlib）与
+  `VideoEyeDomainQt`（Qt 容器适配）。
+- **UI 侧仍有直接吃分析器的地方**。`AnalysisPanel` 已经只通过 `ui/AnalysisFacade` 拿
+  编排 / QC / 时间轴三件事，facade 的公开头也只剩 `AnalysisOptions`、`AnalysisResult` 与
+  domain model；但 `AnalysisPanel.cpp` 自己仍显式 include `ColorHdrAnalyzer.h` /
+  `BitrateGopAnalyzer.h`（用 `BuildColorRows` 与 `BitrateAnomalyType`）。这两个函数/枚举
+  下放到 domain 之后，UI 的 cpp 也能彻底不碰分析器。
 
 ## 6. 怎么校验边界
 
@@ -123,8 +129,10 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
 python scripts/check_layering.py
 ```
 
-它只依赖 Python 标准库，不需要构建。规则写在脚本顶部的 `RULES` 里，允许三处迁移期例外
-（`EXCEPTIONS`，都对应 §5 的历史包袱）。日常提交前跑一次比事后 review 更省事。
+它只依赖 Python 标准库，不需要构建。规则写在脚本顶部的 `RULES` 里；`EXCEPTIONS` 现在
+是**空的**（原来那两条迁移期例外——`AnalysisCoordinator` 别名层与 domain 复用 media 的
+`NalUnit`/`ObuUnit`——都已各自解决），别再往里加新条目：那里每多一行就等于欠一张
+"依赖方向没闭合"的条子。日常提交前跑一次比事后 review 更省事。
 
 ## 7. 新增代码放哪
 

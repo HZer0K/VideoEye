@@ -15,7 +15,7 @@ namespace ui {
 // BitstreamPanel - 编码参数集解析面板
 //
 // 数据来源：core/analysis/codec/BitstreamAnalyzer.h（只读 extradata，不解码），
-// 结果由 AnalysisCoordinator 汇总到 AnalysisResult::bitstream_analysis。
+// 结果由 QtAnalysisController 汇总到 AnalysisResult::bitstream_analysis。
 //
 // 布局：
 //   顶部  一行摘要（codec / 分辨率 / profile / level / 位深 / 参数集 / 不一致数）

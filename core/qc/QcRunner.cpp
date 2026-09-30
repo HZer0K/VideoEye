@@ -79,7 +79,7 @@ QcRunResult QcRunner::AnalyzeFile(const std::string& path,
         cv.notify_all();
     };
 
-    // 以前这里要通过 AnalysisCoordinator 绕一圈 Qt 信号（还要挂 QObject 上下文），
+    // 以前这里要通过 QtAnalysisController 绕一圈 Qt 信号（还要挂 QObject 上下文），
     // 现在直接用 AnalysisEngine 的回调 —— QC 批处理不需要任何 Qt 事件循环。
     analyzer::AnalysisCallbacks engine_callbacks;
     engine_callbacks.on_finished = [&settle](bool, const analyzer::AnalysisResult& result) {

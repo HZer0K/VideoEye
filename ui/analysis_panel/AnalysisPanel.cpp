@@ -3,6 +3,11 @@
 #include "infrastructure/logging/ScopedTimer.h"
 #include "core/reporting/QcReportExporter.h"
 #include "core/reporting/StreamStatsExporter.h"
+// facade 的公开头只暴露 AnalysisOptions / AnalysisResult / domain model，
+// 下面两个分析器头是本 cpp 自己要用的（异常类型枚举与色彩/HDR 行构造器），
+// 不再经由 facade 间接带入。
+#include "core/analysis/quality/BitrateGopAnalyzer.h"
+#include "core/analysis/quality/ColorHdrAnalyzer.h"
 // 帧类型 / 包标志 / 媒体类型常量（AV_PICTURE_TYPE_* / AV_PKT_FLAG_* / AVMEDIA_TYPE_*）。
 // 原先由被移除的 core/analysis 头文件间接带入；现在 UI 直接依赖 FFmpeg 公共常量，
 // 显式 include（与"静态库 PRIVATE 不传 include 目录"的一致）。
@@ -177,7 +182,7 @@ void AnalysisPanel::SetupUI() {
     SetupSubtitleAuxTab();
     SetupDiagnosticsTab();
 
-    qRegisterMetaType<analyzer::SceneChangeResult>();
+    qRegisterMetaType<model::SceneChangeResult>();
     qRegisterMetaType<analyzer::AnalysisResult>();
     qRegisterMetaType<model::FrameQualityMetric>();
     qRegisterMetaType<model::VisualDefect>();
@@ -4297,7 +4302,7 @@ void AnalysisPanel::SetupSceneChangeTab() {
     AddPageWithScroll(scene_change_tab_, tr("场景切换"));
 }
 
-void AnalysisPanel::OnSceneChangeDetected(const analyzer::SceneChangeResult& result) {
+void AnalysisPanel::OnSceneChangeDetected(const model::SceneChangeResult& result) {
     scene_change_records_.push_back(result);
     scene_change_table_dirty_ = true;
     scene_change_dirty_ = true;
@@ -4316,7 +4321,7 @@ void AnalysisPanel::FlushPendingSceneChangeTable() {
     UpdateSceneChangeSummary();
 }
 
-void AnalysisPanel::AppendSceneChangeRow(const analyzer::SceneChangeResult& result) {
+void AnalysisPanel::AppendSceneChangeRow(const model::SceneChangeResult& result) {
     const int row = scene_change_table_->rowCount();
     scene_change_table_->insertRow(row);
     SetTableItemText(scene_change_table_, row, 0, QString::number(result.frame_index));

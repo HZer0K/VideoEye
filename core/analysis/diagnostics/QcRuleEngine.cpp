@@ -61,7 +61,7 @@ const std::map<std::string, std::string>& ExtensionAliasMap() {
         {"mpg", "mpeg"}, {"mpe", "mpeg"}, {"vob", "mpeg"}, {"m2p", "mpeg"},
         {"m4v", "mov"},
         {"3gpp", "3gp"},
-        // 流媒体清单：container_format 由 AnalysisCoordinator 直接写 "hls" / "dash"
+        // 流媒体清单：container_format 由 QtAnalysisController 直接写 "hls" / "dash"
         {"m3u8", "hls"}, {"m3u", "hls"}, {"mpd", "dash"},
     };
     return kAlias;

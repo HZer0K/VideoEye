@@ -17,7 +17,7 @@
 
 ```
 core/qc/QcProfile.h|.cpp        模板定义、5 套内置模板、序列化、覆盖项应用
-core/qc/QcRunner.h|.cpp         统一分析入口（包装 AnalysisCoordinator + QcRuleEngine）
+core/qc/QcRunner.h|.cpp         统一分析入口（包装 AnalysisEngine + QcRuleEngine，不碰 Qt）
 core/qc/BatchQcRunner.h|.cpp    目录发现 / 过滤 / 有限并发 / 取消 / 汇总
 core/qc/QcComparator.h|.cpp     双文件对比行构造
 core/qc/QcAnalyzeRequest.h      单文件分析的请求/结果契约（批量层零 Qt 依赖）

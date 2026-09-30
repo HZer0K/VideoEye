@@ -8,7 +8,7 @@
 ## 1. 模块划分
 
 ```
-AnalysisCoordinator::Run()       全文件 demux（与码率/GOP、音频 QC 共用同一次扫描）
+AnalysisEngine::Run()       全文件 demux（与码率/GOP、音频 QC 共用同一次扫描）
         │
         ├─ SubtitleAnalyzer      字幕流登记 + 包载荷解析 + cue 校验
         ├─ TimecodeAnalyzer      tmcd 时码轨 / metadata timecode tag / 章节

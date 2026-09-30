@@ -7,7 +7,7 @@
 
 ```mermaid
 flowchart LR
-    UI[AnalysisPanel 音频 QC 页] -->|StartAnalysis| CO[AnalysisCoordinator]
+    UI[AnalysisPanel 音频 QC 页] -->|StartAnalysis| CO[QtAnalysisController]
     CO -->|demux + 音频解码| DEC[AVCodecContext]
     DEC -->|FLTP 或 swr 转换| FLT[float planar PCM]
     FLT -->|OnSamples| AQC[AudioQcAnalyzer]
@@ -18,7 +18,7 @@ flowchart LR
 
 设计要点：
 
-- **与播放解耦、与码率扫描共用一次 demux**：音频 QC 挂在 `AnalysisCoordinator`（全文件扫描）里，
+- **与播放解耦、与码率扫描共用一次 demux**：音频 QC 挂在 `QtAnalysisController`（全文件扫描）里，
   与「码率与 GOP」「诊断与报告」三个页面共用同一次扫描，不额外读文件。
 - **分析器不依赖 FFmpeg / Qt**：`AudioQcAnalyzer` 只吃 `float planar + 采样率 + 声道信息`，
   因此可以用合成 PCM 直接单测（见 [第 6 节](#6-测试验收)）。
@@ -37,7 +37,7 @@ flowchart LR
 | `tests/unit/test_audio_qc_rules.cpp` | 规则判定单测（响度偏离 → warning / error） |
 
 改动点：`AnalysisTask.h`（`AnalysisOptions.analyze_audio_qc` / `AnalysisResult.audio_qc`）、
-`AnalysisCoordinator.cpp`（音频解码通路）、`QcModels.cpp`（11 条新规则）、
+`QtAnalysisController.cpp`（音频解码通路）、`QcModels.cpp`（11 条新规则）、
 `QcRuleEngine.cpp`（`audio.*` 规则分支）。
 
 ## 3. 指标与算法
@@ -67,7 +67,7 @@ flowchart LR
   曲线上的累计值是增量近似，避免 O(n²)）。
 - **LRA**：EBU Tech 3341，对 S 序列做 -70 LUFS 绝对门限 + -20 LU 相对门限，取 P95 - P10。
 - **声道加权**：前置 1.0 / 环绕 1.41（+1.5 dB）/ LFE 0（不参与响度）。角色由
-  `AnalysisCoordinator` 把 `AVChannel` 翻译成 `AudioChannelRole` 后传入，分析器不认识 FFmpeg 枚举。
+  `QtAnalysisController` 把 `AVChannel` 翻译成 `AudioChannelRole` 后传入，分析器不认识 FFmpeg 枚举。
 - **True Peak**：4× 过采样。插值核为 Hann 窗 sinc（截止 = 原始奈奎斯特），与 libebur128 同一设计；
   48 kHz 用 48 抽头，采样率每翻倍抽头翻倍（上限 192）。
 

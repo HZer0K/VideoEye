@@ -4,24 +4,25 @@
 //
 // 这里是"分析产出了什么"，线路执行相关的东西不在此文件：
 //   * 参数 -> core/analysis/AnalysisOptions.h
-//   * 编排 -> core/analysis/orchestration/AnalysisCoordinator.h
+//   * 编排 -> core/qt/QtAnalysisController.h（Qt 信号）/ core/analysis/orchestration/AnalysisEngine.h（执行）
 
 #include <cstdint>
 #include <string>
 #include <vector>
 
+#include "core/analysis/AnalysisOptions.h"   // AnalysisStatus（扫描结果状态）目前住在参数头里
 #include "core/analysis/AnalysisTypes.h"
-#include "core/analysis/container/Mp4SampleTableAnalyzer.h"
-#include "core/analysis/diagnostics/AuxDataAnalyzer.h"
-#include "core/analysis/diagnostics/SubtitleAnalyzer.h"
-#include "core/analysis/diagnostics/TimecodeAnalyzer.h"
-#include "core/analysis/quality/AudioQcAnalyzer.h"
-#include "core/analysis/quality/ColorHdrAnalyzer.h"
-#include "core/analysis/streaming/SegmentQcAnalyzer.h"
+#include "core/domain/model/AudioQcResult.h"
+#include "core/domain/model/AuxiliaryDataInfo.h"
 #include "core/domain/model/BitrateGopResult.h"
 #include "core/domain/model/BitstreamInfo.h"
+#include "core/domain/model/ColorHdrResult.h"
 #include "core/domain/model/MetricSeries.h"
+#include "core/domain/model/Mp4SampleInfo.h"
 #include "core/domain/model/SceneChangeResult.h"
+#include "core/domain/model/StreamPackageInfo.h"
+#include "core/domain/model/SubtitleCueInfo.h"
+#include "core/domain/model/TimecodeInfo.h"
 #include "core/domain/model/TimelineDiagnostic.h"
 
 namespace videoeye {
@@ -72,7 +73,7 @@ struct AnalysisResult {
     model::AudioQcResult audio_qc;
 
     // 色彩与 HDR 元数据（demux 层 + 可选的首帧解码，见 core/analysis/quality/ColorHdrAnalyzer.h）
-    ColorHdrAnalysis color_hdr;
+    model::ColorHdrAnalysis color_hdr;
 
     // 时间轴与同步诊断（demux 层，不解码）
     model::TimelineAnalysisResult timeline;

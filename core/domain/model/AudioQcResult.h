@@ -11,7 +11,7 @@ namespace model {
 
 // 声道在混音中的角色
 //
-// 由调用方（AnalysisCoordinator）把 FFmpeg 的 AVChannel 位置翻译成角色后再喂给分析器，
+// 由调用方（QtAnalysisController）把 FFmpeg 的 AVChannel 位置翻译成角色后再喂给分析器，
 // 分析器本身不依赖 FFmpeg。角色的唯一用途是决定 BS.1770 的声道加权：
 //   Front = 1.0 / Surround = 1.41（+1.5 dB）/ LowFrequency = 0（LFE 不参与响度）
 enum class AudioChannelRole {

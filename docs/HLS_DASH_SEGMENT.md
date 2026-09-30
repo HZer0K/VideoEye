@@ -26,7 +26,7 @@ flowchart LR
 - **清单不走 FFmpeg**。`avformat_open_input()` 会把 `.m3u8` / `.mpd` 当播放列表去发网络
   请求，离线分析时既不可控（卡在网络超时），也拿不到有意义的时长/码率序列。
   因此 `FormatDetector` 先用扩展名把清单分流到自研解析器，
-  `AnalysisCoordinator::Run()` 在任何 IO 之前就分流到 `RunStreamingManifest()`。
+  `AnalysisEngine::Run()` 在任何 IO 之前就分流到 `RunStreamingManifest()`。
 - **清单不是容器但复用容器页**。`ContainerFormat` 新增 `HLS` / `DASH` 两个枚举，
   结果挂在 `ContainerStructureResult::streaming_package` 上，
   「文件结构」页与「流媒体包」页消费同一份结果，只是视图不同。
@@ -131,7 +131,7 @@ initialization / media）→ `SegmentTimeline`（`<S t= d= r=/>`），
 | `core/analysis/orchestration/FormatDetector.cpp` | `DetectByExtension` 识别 `.m3u8` / `.mpd`，补 `FormatName` / `FormatTitle` |
 | `core/analysis/container/ContainerStructureAnalyzer.cpp` | 新增 `AnalyzeStreamingManifest` / `BuildStreamingTree` / `ProbeTsSegments` |
 | `core/analysis/orchestration/AnalysisTask.h` | `AnalysisOptions::analyze_streaming_package` + `AnalysisResult::streaming_package` |
-| `core/analysis/orchestration/AnalysisCoordinator.cpp` | `Run()` 前置分流 + `RunStreamingManifest()` |
+| `core/analysis/orchestration/AnalysisEngine.cpp` | `Run()` 前置分流 + `RunStreamingManifest()` |
 | `core/domain/model/QcModels.cpp` | 新增 22 条规则（HLS 12 / DASH 8 / streaming 2），id 与问题码同名 |
 | `core/analysis/diagnostics/QcRuleEngine.cpp` | 新增 `container.hls.` / `container.dash.` / `container.streaming.` 三个前缀分支 |
 | `ui/main_window/MainWindow.cpp` | 打开对话框补「流媒体清单 (*.m3u8 *.mpd)」 |

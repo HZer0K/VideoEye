@@ -1,15 +1,32 @@
 #include "ui/AnalysisFacade.h"
 
+// 具体分析器的头文件只出现在这里 —— 它们是实现细节，不进 facade 的公开头。
+#include "core/analysis/diagnostics/QcRuleEngine.h"
+#include "core/analysis/diagnostics/TimelineAnalyzer.h"
+#include "core/analysis/quality/BitrateGopAnalyzer.h"
+#include "core/qt/QtAnalysisController.h"
+
 namespace videoeye {
 namespace ui {
 
-AnalysisFacade::AnalysisFacade(QObject* parent) : QObject(parent) {
+// 分析机件的实际持有者。全部按值存放：它们不是 QObject（QtAnalysisController
+// 除外，但它挂在 facade 的 QObject 树之外，由 Impl 的析构顺序负责释放），
+// 不设 Qt 父对象以免与 unique_ptr 双重析构。
+struct AnalysisFacade::Impl {
+    qt::QtAnalysisController coordinator;
+    analyzer::QcRuleEngine qc_rule_engine;
+    analyzer::TimelineAnalyzer timeline_analyzer;
+    analyzer::AnalysisResult result;
+};
+
+AnalysisFacade::AnalysisFacade(QObject* parent)
+    : QObject(parent), impl_(std::make_unique<Impl>()) {
     // 底层协调器的信号原样转发给本 facade 的信号，UI 只连 facade。
-    connect(&coordinator_, &qt::QtAnalysisController::ProgressReported,
+    connect(&impl_->coordinator, &qt::QtAnalysisController::ProgressReported,
             this, &AnalysisFacade::ProgressReported);
-    connect(&coordinator_, &qt::QtAnalysisController::AnalysisFinished,
+    connect(&impl_->coordinator, &qt::QtAnalysisController::AnalysisFinished,
             this, &AnalysisFacade::AnalysisFinished);
-    connect(&coordinator_, &qt::QtAnalysisController::AnalysisFailed,
+    connect(&impl_->coordinator, &qt::QtAnalysisController::AnalysisFailed,
             this, &AnalysisFacade::AnalysisFailed);
 }
 
@@ -17,19 +34,68 @@ AnalysisFacade::~AnalysisFacade() = default;
 
 quint64 AnalysisFacade::StartAnalysis(const std::string& file_path,
                                       const analyzer::AnalysisOptions& options) {
-    return coordinator_.StartAnalysis(file_path, options);
+    return impl_->coordinator.StartAnalysis(file_path, options);
 }
 
 void AnalysisFacade::Cancel() {
-    coordinator_.Cancel();
+    impl_->coordinator.Cancel();
 }
 
 bool AnalysisFacade::IsRunning() const {
-    return coordinator_.IsRunning();
+    return impl_->coordinator.IsRunning();
 }
 
 quint64 AnalysisFacade::generation() const {
-    return coordinator_.generation();
+    return impl_->coordinator.generation();
+}
+
+const analyzer::AnalysisResult& AnalysisFacade::result() const {
+    return impl_->result;
+}
+
+void AnalysisFacade::SetResult(const analyzer::AnalysisResult& r) {
+    impl_->result = r;
+}
+
+const std::vector<model::QcRule>& AnalysisFacade::rules() const {
+    return impl_->qc_rule_engine.rules();
+}
+
+std::vector<model::QcRule>& AnalysisFacade::rules() {
+    return impl_->qc_rule_engine.rules();
+}
+
+void AnalysisFacade::SetRules(const std::vector<model::QcRule>& rules) {
+    impl_->qc_rule_engine.SetRules(rules);
+}
+
+model::QcReport AnalysisFacade::Evaluate(const analyzer::AnalysisResult& r) const {
+    return impl_->qc_rule_engine.Evaluate(r);
+}
+
+void AnalysisFacade::OnSyncSample(double audio_ms, double video_ms) {
+    impl_->timeline_analyzer.OnSyncSample(audio_ms, video_ms);
+}
+
+void AnalysisFacade::OnPacket(const model::PacketTiming& packet) {
+    impl_->timeline_analyzer.OnPacket(packet);
+}
+
+void AnalysisFacade::OnFrame(const model::FrameTimingInfo& frame) {
+    impl_->timeline_analyzer.OnFrame(frame);
+}
+
+model::TimelineAnalysisResult AnalysisFacade::Snapshot() const {
+    return impl_->timeline_analyzer.Snapshot();
+}
+
+void AnalysisFacade::Reset() {
+    impl_->timeline_analyzer.Reset();
+}
+
+void AnalysisFacade::ApplySceneChanges(const std::vector<model::SceneChangeResult>& changes,
+                                       const analyzer::BitrateGopOptions& options) {
+    analyzer::BitrateGopAnalyzer::ApplySceneChanges(impl_->result.bitrate_gop, changes, options);
 }
 
 } // namespace ui

@@ -1,4 +1,4 @@
-# 诊断与 QC 报告（AnalysisCoordinator + QcRuleEngine）
+# 诊断与 QC 报告（QtAnalysisController + QcRuleEngine）
 
 > 目标：把"播放时的实时统计"与"离线全文件体检"彻底分离，并用一套统一的数据契约
 > （`DiagnosticIssue` / `QcReport`）串起「扫描 → 规则判定 → UI 呈现 → 报告导出」。
@@ -7,7 +7,7 @@
 
 ```mermaid
 flowchart LR
-    UI[AnalysisPanel 诊断与报告页] -->|StartAnalysis(path)| CO[AnalysisCoordinator]
+    UI[AnalysisPanel 诊断与报告页] -->|StartAnalysis(path)| CO[QtAnalysisController]
     CO -->|后台 std::thread| SCAN[avformat 全文件 demux 扫描]
     SCAN -->|ProgressReported| UI
     SCAN -->|AnalysisFinished| UI
@@ -19,7 +19,7 @@ flowchart LR
 
 设计要点：
 
-- **与播放解耦**：`StreamAnalyzer` 只负责播放过程中的实时统计；`AnalysisCoordinator`
+- **与播放解耦**：`StreamAnalyzer` 只负责播放过程中的实时统计；`QtAnalysisController`
   独立打开同一个文件做一遍 demux，互不干扰（代价是一次额外 I/O，故默认手动触发）。
 - **generation 防串扰**：`StartAnalysis()` 每次递增 `generation`，UI 侧
   `OnDiagnosticsProgress/Finished/Failed` 首行即校验 generation，快速切换文件时

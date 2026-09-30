@@ -18,7 +18,7 @@
 | `core/domain/model/HdrMetadataInfo.h/.cpp` | HDR 模型：母版显示、MaxCLL/MaxFALL、Dolby Vision 配置记录、HDR 格式判别 |
 | `core/analysis/quality/ColorHdrAnalyzer.h/.cpp` | 分析器：从 codecpar / coded_side_data / AVPacket / AVFrame 抽取并汇总 |
 | `core/analysis/orchestration/AnalysisTask.h` | `AnalysisOptions::analyze_color_hdr` + `AnalysisResult::color_hdr` |
-| `core/analysis/orchestration/AnalysisCoordinator.cpp` | 在既有全文件 demux 循环中更新（几乎零额外 I/O） |
+| `core/analysis/orchestration/AnalysisEngine.cpp` | 在既有全文件 demux 循环中更新（几乎零额外 I/O） |
 | `core/domain/model/QcModels.cpp` + `core/analysis/diagnostics/QcRuleEngine.cpp` | 8 条 `video.color.*` 规则，异常进入诊断报告 |
 | `core/reporting/ReportExporter.cpp` | 报告的「色彩与 HDR」章节（HTML / JSON / TXT） |
 | `ui/analysis_panel/AnalysisPanel.*` | 「色彩与 HDR」页：色彩信息 / HDR 元数据 / 异常组合 + CSV 导出 |

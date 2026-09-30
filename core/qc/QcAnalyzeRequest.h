@@ -3,7 +3,7 @@
 // 单文件分析的最小契约
 //
 // 单独一个头文件的原因：BatchQcRunner 只需要知道"把一个路径交给某个函数，能拿到 QcRunResult"，
-// 并不需要知道背后是 QcRunner（那条路会把 Qt / AnalysisCoordinator 全拖进来）。
+// 并不需要知道背后是 QcRunner（那条路会把 Qt / QtAnalysisController 全拖进来）。
 // 抽出去之后批量扫描这一层就没有任何 Qt / FFmpeg 符号依赖，单测可以直接喂假实现。
 
 #include <atomic>

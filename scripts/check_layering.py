@@ -41,13 +41,14 @@ def walk(d):
 
 
 # 白名单: 迁移期明确允许的例外（都写进了 docs/ARCHITECTURE.md 的"已知历史包袱"）
-# 迁移期允许的两条反向 include。改完就该从这里删掉，别往里加。
-EXCEPTIONS = {
-    # AnalysisCoordinator.h 现在只是一层别名（= QtAnalysisController），保留给旧调用方。
-    ("core/analysis/orchestration/AnalysisCoordinator.h", "core/qt/QtAnalysisController.h"),
-    # BitstreamInfo 直接复用码流层的 NalUnit / ObuUnit 结果类型（下放到 domain 前的过渡）。
-    ("core/domain/model/BitstreamInfo.h", "core/media/codec/ExtradataTypes.h"),
-}
+#
+# 现在是空的 —— 两条历史例外已经各自解决：
+#   * QtAnalysisController.h（别名层，反向 include core/qt）已删除；
+#   * domain 直接复用 media 的 NalUnit / ObuUnit 已改为 domain 自有结果类型
+#     core/domain/model/BitstreamUnits.h，由 BitstreamAnalyzer 做 media -> domain 转换。
+#
+# 别往里加新条目：这里的每一行都是"依赖方向没闭合"的欠条，迁移完就该删掉。
+EXCEPTIONS = set()
 
 violations = []
 for layer, banned in RULES.items():

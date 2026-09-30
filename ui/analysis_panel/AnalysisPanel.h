@@ -36,6 +36,7 @@
 #include "core/domain/model/AnalysisEvent.h"
 #include "core/domain/model/AudioVisualizationFrame.h"
 #include "core/domain/model/PacketInfo.h"
+#include "core/domain/model/SceneChangeResult.h"
 #include "core/domain/model/SyncSample.h"
 #include "core/domain/model/TimelineEvent.h"
 #include "core/domain/model/Mp4BoxInfo.h"
@@ -160,7 +161,7 @@ public slots:
     void AppendTimelineEvent(const model::TimelineEvent& event);
     void OnContainerStructureReady(const model::ContainerStructureResult& result);
     void UpdateMacroblockInfo(const model::MacroblockFrameAnalysis& analysis);
-    void OnSceneChangeDetected(const analyzer::SceneChangeResult& result);
+    void OnSceneChangeDetected(const model::SceneChangeResult& result);
 
     // 画面质量 / 视觉缺陷（播放时逐采样帧产出）
     void OnVisualDefectFrame(const model::FrameQualityMetric& metric);
@@ -383,7 +384,7 @@ private:
 
     // 场景切换检测
     void FlushPendingSceneChangeTable();
-    void AppendSceneChangeRow(const analyzer::SceneChangeResult& result);
+    void AppendSceneChangeRow(const model::SceneChangeResult& result);
     void UpdateSceneChangeChart();
     void UpdateSceneChangeSummary();
     void OnExportSceneChangeCsv();
@@ -560,7 +561,7 @@ private:
     ChartSeries* scene_change_series_ = nullptr;
     ChartAxis* scene_change_axis_x_ = nullptr;
     ChartAxis* scene_change_axis_y_ = nullptr;
-    std::vector<analyzer::SceneChangeResult> scene_change_records_;
+    std::vector<model::SceneChangeResult> scene_change_records_;
     bool scene_change_table_dirty_ = false;
     size_t scene_change_table_synced_count_ = 0;
 

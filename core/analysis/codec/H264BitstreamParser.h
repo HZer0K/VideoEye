@@ -3,6 +3,9 @@
 #include <vector>
 #include <cstdint>
 #include "core/domain/model/BitstreamInfo.h"
+// 本 parser 的输入是 media 层解析出的 utils::NalUnit；BitstreamInfo.h 不再间接
+// 带它（domain 不反向依赖 media），所以这里显式 include。
+#include "core/media/codec/ExtradataTypes.h"
 #include "core/media/codec/BitReader.h"
 
 namespace videoeye {

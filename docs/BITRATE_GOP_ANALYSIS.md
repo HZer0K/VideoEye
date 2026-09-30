@@ -13,7 +13,7 @@
 | `core/domain/model/BitratePoint.h/.cpp` | 帧类型枚举 `FrameType`、滑动窗口码率采样点 `BitratePoint` |
 | `core/domain/model/GopInfo.h/.cpp` | 单条 GOP 记录 `GopInfo`（起止时间/帧数/字节/I-P-B/closed/最大帧） |
 | `core/analysis/quality/BitrateGopAnalyzer.h/.cpp` | 分析器本体：窗口码率、I/P/B、GOP 维护、异常识别、场景关联 |
-| `core/analysis/orchestration/AnalysisCoordinator.cpp` | 在既有全文件 demux 循环中喂数据（无额外 I/O） |
+| `core/analysis/orchestration/AnalysisEngine.cpp` | 在既有全文件 demux 循环中喂数据（无额外 I/O） |
 | `core/domain/model/QcModels.cpp` + `core/analysis/diagnostics/QcRuleEngine.cpp` | 6 条 QC 规则，异常进入诊断报告 |
 | `ui/analysis_panel/AnalysisPanel.*` | 「码率与 GOP」页：曲线 / GOP 表 / 异常 / 建议 + CSV 导出 |
 | `tests/unit/test_bitrate_gop_analyzer.cpp` | 10 个 gtest 用例，覆盖 4.6 四项验收 |

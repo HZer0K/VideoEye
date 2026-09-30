@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
-#include "core/media/codec/ExtradataTypes.h"
+#include "core/domain/model/BitstreamUnits.h"
 
 namespace videoeye {
 namespace model {
@@ -1020,8 +1020,8 @@ struct BitstreamAnalysisResult {
     bool has_vvc_config = false;
     
     // 提取的 NAL/OBU 列表
-    std::vector<utils::NalUnit> nal_units;
-    std::vector<utils::ObuUnit> obu_units;
+    std::vector<NalUnit> nal_units;
+    std::vector<ObuUnit> obu_units;
     
     // 不一致警告（与容器 metadata 对比）
     struct Inconsistency {
