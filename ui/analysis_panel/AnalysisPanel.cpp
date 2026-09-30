@@ -3,6 +3,10 @@
 #include "infrastructure/logging/ScopedTimer.h"
 #include "core/reporting/QcReportExporter.h"
 #include "core/reporting/StreamStatsExporter.h"
+// 帧类型 / 包标志 / 媒体类型常量（AV_PICTURE_TYPE_* / AV_PKT_FLAG_* / AVMEDIA_TYPE_*）。
+// 原先由被移除的 core/analysis 头文件间接带入；现在 UI 直接依赖 FFmpeg 公共常量，
+// 显式 include（与"静态库 PRIVATE 不传 include 目录"的一致）。
+#include <libavcodec/avcodec.h>
 #include "ui/theme/AppTheme.h"
 #include "ui/reporting_panel/ReportingPanel.h"
 #include <QGroupBox>
@@ -177,7 +181,7 @@ void AnalysisPanel::SetupUI() {
     qRegisterMetaType<analyzer::AnalysisResult>();
     qRegisterMetaType<model::FrameQualityMetric>();
     qRegisterMetaType<model::VisualDefect>();
-    qRegisterMetaType<analyzer::VisualDefectOptions>();
+    qRegisterMetaType<model::VisualDefectOptions>();
 }
 
 bool AnalysisPanel::IsFeatureEnabled(AnalysisFeature feature) const {
@@ -1858,7 +1862,7 @@ void AnalysisPanel::OnExportContainerStructure() {
 }
 
 
-void AnalysisPanel::UpdateStreamStats(const analyzer::StreamStats& stats) {
+void AnalysisPanel::UpdateStreamStats(const model::StreamStats& stats) {
     if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
         !feature_enabled_.value(AnalysisFeature::StreamStats, true)) return;
     current_stats_ = stats;
@@ -2147,7 +2151,7 @@ void AnalysisPanel::AppendSyncSample(const model::SyncSample& sample) {
     TrimRecords(sync_sample_records_, sync_table_synced_record_count_, sync_table_, sync_table_dirty_, kMaxSyncRecords);
 
     // 同步采样同时喂给时间轴分析器（构建音视频偏移曲线）
-    timeline_analyzer_.OnSyncSample(sample.audio_timestamp_seconds * 1000.0,
+    analysis_facade_->OnSyncSample(sample.audio_timestamp_seconds * 1000.0,
                                     sample.video_timestamp_seconds * 1000.0);
     timeline_dirty_ = true;
 }
@@ -3003,7 +3007,7 @@ void AnalysisPanel::FlushPendingUiUpdates() {
     }
     if (timeline_dirty_) {
         // 实时解码路径：用当前累积状态做一份快照（Finish 在副本上执行，不破坏累积状态）
-        timeline_result_ = timeline_analyzer_.Snapshot();
+        timeline_result_ = analysis_facade_->Snapshot();
         timeline_offline_ = false;
         RefreshTimelineUi();
         timeline_dirty_ = false;
@@ -3144,7 +3148,7 @@ void AnalysisPanel::FlushPendingTimelineTableUpdates() {
     }
 }
 
-void AnalysisPanel::RefreshStreamStatsUi(const analyzer::StreamStats& stats) {
+void AnalysisPanel::RefreshStreamStatsUi(const model::StreamStats& stats) {
     if (!stats_table_) {
         return;
     }
@@ -3281,7 +3285,7 @@ void AnalysisPanel::UpdateGopRowInTable(int row, const GopSummary& summary) {
     SetTableItemText(gop_table_, row, 8, QString::number(summary.b_count));
 }
 
-void AnalysisPanel::UpdateBitrateChart(const analyzer::StreamStats& stats) {
+void AnalysisPanel::UpdateBitrateChart(const model::StreamStats& stats) {
     Q_UNUSED(stats);
     if (!bitrate_series_ || !bitrate_axis_x_ || !bitrate_axis_y_) {
         return;
@@ -3303,7 +3307,7 @@ void AnalysisPanel::UpdateBitrateChart(const analyzer::StreamStats& stats) {
     bitrate_axis_y_->SetRange(0, std::max<qreal>(100.0, max_value * 1.1));
 }
 
-void AnalysisPanel::UpdateFPSChart(const analyzer::StreamStats& stats) {
+void AnalysisPanel::UpdateFPSChart(const model::StreamStats& stats) {
     Q_UNUSED(stats);
     if (!fps_series_ || !fps_axis_x_ || !fps_axis_y_) {
         return;
@@ -3848,13 +3852,13 @@ void AnalysisPanel::SetupVisualDefectTab() {
         ol->addWidget(new QLabel(tr("采样档位:"), visual_defect_tab_));
         visual_defect_preset_combo_ = new QComboBox(visual_defect_tab_);
         visual_defect_preset_combo_->addItem(
-            tr("快速 (1 帧/秒)"), static_cast<int>(analyzer::VisualSamplingPreset::Fast));
+            tr("快速 (1 帧/秒)"), static_cast<int>(model::VisualSamplingPreset::Fast));
         visual_defect_preset_combo_->addItem(
-            tr("标准 (2 帧/秒)"), static_cast<int>(analyzer::VisualSamplingPreset::Standard));
+            tr("标准 (2 帧/秒)"), static_cast<int>(model::VisualSamplingPreset::Standard));
         visual_defect_preset_combo_->addItem(
-            tr("精细 (5 帧/秒)"), static_cast<int>(analyzer::VisualSamplingPreset::Fine));
+            tr("精细 (5 帧/秒)"), static_cast<int>(model::VisualSamplingPreset::Fine));
         visual_defect_preset_combo_->addItem(
-            tr("离线全帧 (逐帧，不丢帧)"), static_cast<int>(analyzer::VisualSamplingPreset::OfflineFull));
+            tr("离线全帧 (逐帧，不丢帧)"), static_cast<int>(model::VisualSamplingPreset::OfflineFull));
         visual_defect_preset_combo_->setCurrentIndex(1);
         visual_defect_preset_combo_->setToolTip(
             tr("播放时默认抽样分析；分析队列有上限，压力大会丢分析帧但绝不拖慢播放。\n"
@@ -3993,7 +3997,7 @@ void AnalysisPanel::ApplyVisualDefectOptionsFromUi() {
                                              : visual_defect_options_.capture_rgb;
     if (visual_defect_preset_combo_) {
         const int preset = visual_defect_preset_combo_->currentData().toInt();
-        visual_defect_options_.preset = static_cast<analyzer::VisualSamplingPreset>(preset);
+        visual_defect_options_.preset = static_cast<model::VisualSamplingPreset>(preset);
         // 档位自带采样率与分析宽度，改档位时清掉可能的显式覆盖值
         visual_defect_options_.sample_fps = 0.0;
         visual_defect_options_.analysis_width = 0;
@@ -4752,7 +4756,7 @@ void AnalysisPanel::OnStartBitrateGopAnalysis() {
 }
 
 void AnalysisPanel::OnCancelBitrateGopAnalysis() {
-    diagnostics_coordinator_.Cancel();
+    analysis_facade_->Cancel();
     bitrate_gop_cancel_button_->setEnabled(false);
     bitrate_gop_progress_bar_->setFormat(tr("取消中..."));
 }
@@ -4781,17 +4785,16 @@ void AnalysisPanel::OnLinkSceneChanges() {
         return;
     }
     ApplyBitrateGopOptionsFromUi();
-    analyzer::BitrateGopAnalyzer::ApplySceneChanges(diagnostics_result_.bitrate_gop,
-                                                    scene_change_records_, bitrate_gop_options_);
+    analysis_facade_->ApplySceneChanges(scene_change_records_, bitrate_gop_options_);
     // 让新产生的"场景切换缺少关键帧"问题进入诊断报告
-    current_qc_report_ = qc_rule_engine_.Evaluate(diagnostics_result_);
+    current_qc_report_ = analysis_facade_->Evaluate(analysis_facade_->result());
     RebuildIssueTable();
     UpdateQcSummary();
     UpdateBitrateGopUi();
 
-    const size_t matched = diagnostics_result_.bitrate_gop.scene_matches.size();
+    const size_t matched = analysis_facade_->result().bitrate_gop.scene_matches.size();
     size_t missing = 0;
-    for (const auto& m : diagnostics_result_.bitrate_gop.scene_matches) {
+    for (const auto& m : analysis_facade_->result().bitrate_gop.scene_matches) {
         if (!m.has_nearby_keyframe) ++missing;
     }
     QMessageBox::information(this, tr("已关联"),
@@ -4801,14 +4804,14 @@ void AnalysisPanel::OnLinkSceneChanges() {
 
 void AnalysisPanel::OnBitrateGopCellClicked(int row, int) {
     if (!bitrate_gop_table_ || row < 0) return;
-    const auto& gops = diagnostics_result_.bitrate_gop.gops;
+    const auto& gops = analysis_facade_->result().bitrate_gop.gops;
     if (row >= static_cast<int>(gops.size())) return;
     emit SeekRequested(gops[row].start_seconds);
 }
 
 void AnalysisPanel::OnBitrateAnomalyCellClicked(int row, int) {
     if (!bitrate_anomaly_table_ || row < 0) return;
-    const auto& anomalies = diagnostics_result_.bitrate_gop.anomalies;
+    const auto& anomalies = analysis_facade_->result().bitrate_gop.anomalies;
     if (row >= static_cast<int>(anomalies.size())) return;
     emit SeekRequested(anomalies[row].start_seconds);
 }
@@ -4825,7 +4828,7 @@ void AnalysisPanel::UpdateBitrateGopSummary() {
     if (!bitrate_gop_summary_label_) return;
     if (!has_diagnostics_result_) return;
 
-    const auto& bg = diagnostics_result_.bitrate_gop;
+    const auto& bg = analysis_facade_->result().bitrate_gop;
     if (bg.total_frames == 0) {
         bitrate_gop_summary_label_->setText(tr("未检测到视频帧，无法进行码率与 GOP 分析。"));
         return;
@@ -4881,7 +4884,7 @@ void AnalysisPanel::UpdateBitrateGopChart() {
     bitrate_anomaly_series_->Clear();
     if (!has_diagnostics_result_) return;
 
-    const auto& bg = diagnostics_result_.bitrate_gop;
+    const auto& bg = analysis_facade_->result().bitrate_gop;
     if (bg.bitrate_points.empty() && bg.window_curves.empty()) return;
 
     // 取当前窗口对应的曲线；找不到时回退到默认窗口的采样点
@@ -4965,7 +4968,7 @@ void AnalysisPanel::RebuildBitrateGopTable() {
     bitrate_gop_table_->setRowCount(0);
     if (!has_diagnostics_result_) return;
 
-    const auto& gops = diagnostics_result_.bitrate_gop.gops;
+    const auto& gops = analysis_facade_->result().bitrate_gop.gops;
     const int rows = std::min(static_cast<int>(gops.size()), kMaxGopTableRows);
     bitrate_gop_table_->setRowCount(rows);
     for (int i = 0; i < rows; ++i) {
@@ -5001,7 +5004,7 @@ void AnalysisPanel::RebuildBitrateAnomalyTable() {
     bitrate_anomaly_table_->setRowCount(0);
     if (!has_diagnostics_result_) return;
 
-    const auto& anomalies = diagnostics_result_.bitrate_gop.anomalies;
+    const auto& anomalies = analysis_facade_->result().bitrate_gop.anomalies;
     const int rows = std::min(static_cast<int>(anomalies.size()), kMaxAnomalyTableRows);
     bitrate_anomaly_table_->setRowCount(rows);
     for (int i = 0; i < rows; ++i) {
@@ -5023,13 +5026,13 @@ void AnalysisPanel::UpdateBitrateGopSuggestions() {
     if (!bitrate_suggestion_list_) return;
     bitrate_suggestion_list_->clear();
     if (!has_diagnostics_result_) return;
-    for (const auto& s : diagnostics_result_.bitrate_gop.suggestions) {
+    for (const auto& s : analysis_facade_->result().bitrate_gop.suggestions) {
         bitrate_suggestion_list_->addItem(QString::fromStdString(s));
     }
 }
 
 void AnalysisPanel::OnExportBitrateGopCsv() {
-    if (!has_diagnostics_result_ || diagnostics_result_.bitrate_gop.gops.empty()) {
+    if (!has_diagnostics_result_ || analysis_facade_->result().bitrate_gop.gops.empty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有可导出的 GOP 数据。"));
         return;
     }
@@ -5049,7 +5052,7 @@ void AnalysisPanel::OnExportBitrateGopCsv() {
     stream << "index,start_seconds,end_seconds,duration_seconds,frame_count,byte_count,"
               "avg_bitrate_kbps,i_count,p_count,b_count,unknown_count,max_frame_bytes,"
               "closed_gop,complete\n";
-    for (const auto& g : diagnostics_result_.bitrate_gop.gops) {
+    for (const auto& g : analysis_facade_->result().bitrate_gop.gops) {
         stream << g.index << "," << QString::number(g.start_seconds, 'f', 3) << ","
                << QString::number(g.end_seconds, 'f', 3) << ","
                << QString::number(g.DurationSeconds(), 'f', 3) << "," << g.frame_count << ","
@@ -5060,7 +5063,7 @@ void AnalysisPanel::OnExportBitrateGopCsv() {
     }
     file.close();
     QMessageBox::information(this, tr("成功"),
-        tr("已导出 %1 个 GOP 到:\n%2").arg(diagnostics_result_.bitrate_gop.gops.size()).arg(filename));
+        tr("已导出 %1 个 GOP 到:\n%2").arg(analysis_facade_->result().bitrate_gop.gops.size()).arg(filename));
 }
 
 void AnalysisPanel::OnExportBitrateCurveCsv() {
@@ -5068,7 +5071,7 @@ void AnalysisPanel::OnExportBitrateCurveCsv() {
         QMessageBox::information(this, tr("提示"), tr("请先完成一次扫描。"));
         return;
     }
-    const auto& bg = diagnostics_result_.bitrate_gop;
+    const auto& bg = analysis_facade_->result().bitrate_gop;
     if (bg.window_curves.empty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有可导出的码率曲线数据。"));
         return;
@@ -5104,7 +5107,7 @@ void AnalysisPanel::OnExportBitrateCurveCsv() {
 }
 
 void AnalysisPanel::OnExportBitrateAnomalyCsv() {
-    if (!has_diagnostics_result_ || diagnostics_result_.bitrate_gop.anomalies.empty()) {
+    if (!has_diagnostics_result_ || analysis_facade_->result().bitrate_gop.anomalies.empty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有可导出的异常数据。"));
         return;
     }
@@ -5122,7 +5125,7 @@ void AnalysisPanel::OnExportBitrateAnomalyCsv() {
     stream.setEncoding(QStringConverter::Utf8);
     stream << "\xEF\xBB\xBF";
     stream << "type,start_seconds,end_seconds,value,threshold,unit,detail,suggestion\n";
-    for (const auto& a : diagnostics_result_.bitrate_gop.anomalies) {
+    for (const auto& a : analysis_facade_->result().bitrate_gop.anomalies) {
         stream << QString::fromStdString(model::ToString(a.type)) << ","
                << QString::number(a.start_seconds, 'f', 3) << ","
                << QString::number(a.end_seconds, 'f', 3) << ","
@@ -5135,7 +5138,7 @@ void AnalysisPanel::OnExportBitrateAnomalyCsv() {
     file.close();
     QMessageBox::information(this, tr("成功"),
         tr("已导出 %1 条异常到:\n%2")
-            .arg(diagnostics_result_.bitrate_gop.anomalies.size()).arg(filename));
+            .arg(analysis_facade_->result().bitrate_gop.anomalies.size()).arg(filename));
 }
 
 // ===========================================================================
@@ -5495,14 +5498,14 @@ void AnalysisPanel::OnAudioQcOptionChanged() {
 
 void AnalysisPanel::OnAudioQcClipCellClicked(int row, int) {
     if (!has_diagnostics_result_ || row < 0) return;
-    const auto& events = diagnostics_result_.audio_qc.clipping_events;
+    const auto& events = analysis_facade_->result().audio_qc.clipping_events;
     if (row >= static_cast<int>(events.size())) return;
     emit SeekRequested(events[static_cast<size_t>(row)].start_seconds);
 }
 
 void AnalysisPanel::OnAudioQcSilenceCellClicked(int row, int) {
     if (!has_diagnostics_result_ || row < 0) return;
-    const auto& ranges = diagnostics_result_.audio_qc.silence_ranges;
+    const auto& ranges = analysis_facade_->result().audio_qc.silence_ranges;
     if (row >= static_cast<int>(ranges.size())) return;
     emit SeekRequested(ranges[static_cast<size_t>(row)].start_seconds);
 }
@@ -5518,7 +5521,7 @@ void AnalysisPanel::UpdateAudioQcUi() {
 
 void AnalysisPanel::UpdateAudioQcSummary() {
     if (!audio_qc_summary_label_) return;
-    const auto& qc = diagnostics_result_.audio_qc;
+    const auto& qc = analysis_facade_->result().audio_qc;
     if (!has_diagnostics_result_ || !qc.analyzed) {
         audio_qc_summary_label_->setText(
             tr("暂无音频 QC 结果。点击「开始分析」扫描当前文件（需要有音频流且能解码）。"));
@@ -5592,7 +5595,7 @@ void AnalysisPanel::UpdateAudioQcCharts() {
     audio_clip_series_->Clear();
     audio_corr_series_->Clear();
 
-    const auto& qc = diagnostics_result_.audio_qc;
+    const auto& qc = analysis_facade_->result().audio_qc;
     if (!has_diagnostics_result_ || !qc.analyzed) return;
 
     constexpr int kMaxPoints = 4000;
@@ -5669,7 +5672,7 @@ void AnalysisPanel::RebuildAudioQcClipTable() {
     if (!audio_clip_table_) return;
     audio_clip_table_->setRowCount(0);
     if (!has_diagnostics_result_) return;
-    const auto& qc = diagnostics_result_.audio_qc;
+    const auto& qc = analysis_facade_->result().audio_qc;
     const int rows = std::min<int>(static_cast<int>(qc.clipping_events.size()), 2000);
     audio_clip_table_->setRowCount(rows);
     for (int i = 0; i < rows; ++i) {
@@ -5692,7 +5695,7 @@ void AnalysisPanel::RebuildAudioQcSilenceTable() {
     if (!audio_silence_table_) return;
     audio_silence_table_->setRowCount(0);
     if (!has_diagnostics_result_) return;
-    const auto& qc = diagnostics_result_.audio_qc;
+    const auto& qc = analysis_facade_->result().audio_qc;
     const int rows = std::min<int>(static_cast<int>(qc.silence_ranges.size()), 2000);
     audio_silence_table_->setRowCount(rows);
     for (int i = 0; i < rows; ++i) {
@@ -5745,7 +5748,7 @@ void AnalysisPanel::RebuildAudioQcMetadataTable() {
     if (!audio_metadata_table_) return;
     audio_metadata_table_->setRowCount(0);
     if (!has_diagnostics_result_) return;
-    const auto& meta = diagnostics_result_.audio_qc.metadata;
+    const auto& meta = analysis_facade_->result().audio_qc.metadata;
 
     auto add_row = [this](const QString& key, const QString& value) {
         const int row = audio_metadata_table_->rowCount();
@@ -5776,7 +5779,7 @@ void AnalysisPanel::RebuildAudioQcMetadataTable() {
 }
 
 void AnalysisPanel::OnExportAudioQcCsv() {
-    if (!has_diagnostics_result_ || !diagnostics_result_.audio_qc.analyzed) {
+    if (!has_diagnostics_result_ || !analysis_facade_->result().audio_qc.analyzed) {
         QMessageBox::information(this, tr("提示"), tr("请先完成一次音频 QC 分析。"));
         return;
     }
@@ -5794,7 +5797,7 @@ void AnalysisPanel::OnExportAudioQcCsv() {
     QTextStream out(&file);
     out << "time_s,momentary_lufs,short_term_lufs,integrated_lufs,rms_dbfs,"
            "sample_peak_dbfs,true_peak_dbtp,correlation,silent\n";
-    for (const auto& p : diagnostics_result_.audio_qc.loudness_points) {
+    for (const auto& p : analysis_facade_->result().audio_qc.loudness_points) {
         out << QString::number(p.timestamp_seconds, 'f', 3) << ','
             << QString::number(p.momentary_lufs, 'f', 2) << ','
             << QString::number(p.short_term_lufs, 'f', 2) << ','
@@ -5808,7 +5811,7 @@ void AnalysisPanel::OnExportAudioQcCsv() {
     file.close();
     QMessageBox::information(this, tr("导出完成"),
                              tr("已导出 %1 个采样点。")
-                                 .arg(diagnostics_result_.audio_qc.loudness_points.size()));
+                                 .arg(analysis_facade_->result().audio_qc.loudness_points.size()));
 }
 
 // ==========================================================================
@@ -5975,8 +5978,8 @@ void AnalysisPanel::UpdateStreamingUi() {
         streaming_panel_->SetResult(current_container_result_.streaming_package);
         return;
     }
-    if (has_diagnostics_result_ && diagnostics_result_.streaming_analyzed) {
-        streaming_panel_->SetResult(diagnostics_result_.streaming_package);
+    if (has_diagnostics_result_ && analysis_facade_->result().streaming_analyzed) {
+        streaming_panel_->SetResult(analysis_facade_->result().streaming_package);
         return;
     }
     streaming_panel_->Clear();
@@ -6002,11 +6005,11 @@ void AnalysisPanel::OnBitstreamRefreshRequested() {
 
 void AnalysisPanel::UpdateBitstreamUi() {
     if (!bitstream_params_panel_) return;
-    if (!has_diagnostics_result_ || !diagnostics_result_.bitstream_analyzed) {
+    if (!has_diagnostics_result_ || !analysis_facade_->result().bitstream_analyzed) {
         bitstream_params_panel_->Clear();
         return;
     }
-    bitstream_params_panel_->SetResult(diagnostics_result_.bitstream_analysis);
+    bitstream_params_panel_->SetResult(analysis_facade_->result().bitstream_analysis);
 }
 
 void AnalysisPanel::ApplyColorHdrOptionsFromUi() {
@@ -6036,7 +6039,7 @@ void AnalysisPanel::UpdateColorHdrUi() {
 
 void AnalysisPanel::UpdateColorHdrSummary() {
     if (!color_hdr_summary_label_) return;
-    const auto& analysis = diagnostics_result_.color_hdr;
+    const auto& analysis = analysis_facade_->result().color_hdr;
     if (!has_diagnostics_result_ || !analysis.analyzed) {
         color_hdr_summary_label_->setText(
             tr("暂无色彩/HDR 结果。点击「开始分析」扫描当前文件（需要有视频流）。"));
@@ -6123,7 +6126,7 @@ void AnalysisPanel::RebuildColorHdrTables() {
         table->resizeColumnsToContents();
     };
 
-    const auto& analysis = diagnostics_result_.color_hdr;
+    const auto& analysis = analysis_facade_->result().color_hdr;
     if (!has_diagnostics_result_ || !analysis.analyzed) {
         color_info_table_->setRowCount(0);
         hdr_info_table_->setRowCount(0);
@@ -6181,7 +6184,7 @@ void AnalysisPanel::RebuildColorHdrIssueTable() {
 }
 
 void AnalysisPanel::OnExportColorHdrCsv() {
-    if (!has_diagnostics_result_ || !diagnostics_result_.color_hdr.analyzed) {
+    if (!has_diagnostics_result_ || !analysis_facade_->result().color_hdr.analyzed) {
         QMessageBox::information(this, tr("提示"), tr("请先完成一次色彩/HDR 分析。"));
         return;
     }
@@ -6203,7 +6206,7 @@ void AnalysisPanel::OnExportColorHdrCsv() {
         return QLatin1Char('"') + out + QLatin1Char('"');
     };
 
-    const auto& analysis = diagnostics_result_.color_hdr;
+    const auto& analysis = analysis_facade_->result().color_hdr;
     QTextStream out(&file);
     out << "\xEF\xBB\xBF";  // UTF-8 BOM for Excel
     out << "分组,项目,值,说明\n";
@@ -6425,7 +6428,7 @@ void AnalysisPanel::SetupSubtitleAuxTab() {
 }
 
 void AnalysisPanel::SyncSubtitleThresholdsFromRules(analyzer::SubtitleOptions& options) const {
-    const std::vector<model::QcRule>& rules = qc_rule_engine_.rules();
+    const std::vector<model::QcRule>& rules = analysis_facade_->rules();
     if (const model::QcRule* rule = model::FindQcRule(rules, "subtitle.cue_too_short")) {
         if (rule->threshold > 0.0) options.min_cue_duration_seconds = rule->threshold;
     }
@@ -6462,16 +6465,16 @@ void AnalysisPanel::UpdateSubtitleAuxUi() {
     UpdateScte35MarkerChart();
 
     // 拿到素材自带起始时码就同步给播放器（时间轴旁的 SMPTE 时码以它为基准）
-    if (diagnostics_result_.timecode_analyzed && diagnostics_result_.timecode.has_primary) {
+    if (analysis_facade_->result().timecode_analyzed && analysis_facade_->result().timecode.has_primary) {
         emit StartTimecodeReady(
-            QString::fromStdString(diagnostics_result_.timecode.primary.ToString()),
-            diagnostics_result_.timecode.primary_frame_rate);
+            QString::fromStdString(analysis_facade_->result().timecode.primary.ToString()),
+            analysis_facade_->result().timecode.primary_frame_rate);
     }
 }
 
 void AnalysisPanel::UpdateSubtitleAuxSummary() {
     if (subtitle_aux_summary_label_ == nullptr) return;
-    const analyzer::AnalysisResult& r = diagnostics_result_;
+    const analyzer::AnalysisResult& r = analysis_facade_->result();
 
     if (!r.subtitle_analyzed && !r.timecode_analyzed && !r.aux_data_analyzed) {
         subtitle_aux_summary_label_->setText(
@@ -6508,7 +6511,7 @@ void AnalysisPanel::UpdateSubtitleAuxSummary() {
 
 void AnalysisPanel::RebuildSubtitleStreamTable() {
     if (subtitle_stream_table_ == nullptr) return;
-    const analyzer::AnalysisResult& r = diagnostics_result_;
+    const analyzer::AnalysisResult& r = analysis_facade_->result();
 
     // 流下拉: 重建时保留"全部"选项
     const int previous = CurrentSubtitleStreamIndex();
@@ -6550,7 +6553,7 @@ void AnalysisPanel::RebuildSubtitleStreamTable() {
 
 void AnalysisPanel::RebuildSubtitleCueTable() {
     if (subtitle_cue_table_ == nullptr) return;
-    const analyzer::AnalysisResult& r = diagnostics_result_;
+    const analyzer::AnalysisResult& r = analysis_facade_->result();
     const int stream_filter = CurrentSubtitleStreamIndex();
     const bool issues_only = (subtitle_issues_only_check_ != nullptr) &&
                              subtitle_issues_only_check_->isChecked();
@@ -6598,7 +6601,7 @@ void AnalysisPanel::RebuildSubtitleCueTable() {
 
 void AnalysisPanel::RebuildTimecodeTable() {
     if (timecode_table_ == nullptr) return;
-    const model::TimecodeAnalysisResult& tc = diagnostics_result_.timecode;
+    const model::TimecodeAnalysisResult& tc = analysis_facade_->result().timecode;
 
     struct Row {
         QString key;
@@ -6644,7 +6647,7 @@ void AnalysisPanel::RebuildTimecodeTable() {
 
 void AnalysisPanel::RebuildChapterTable() {
     if (chapter_table_ == nullptr) return;
-    const model::TimecodeAnalysisResult& tc = diagnostics_result_.timecode;
+    const model::TimecodeAnalysisResult& tc = analysis_facade_->result().timecode;
 
     chapter_table_->setRowCount(static_cast<int>(tc.chapters.size()));
     for (int row = 0; row < static_cast<int>(tc.chapters.size()); ++row) {
@@ -6677,7 +6680,7 @@ void AnalysisPanel::RebuildChapterTable() {
 
 void AnalysisPanel::RebuildAuxStreamTable() {
     if (aux_stream_table_ == nullptr) return;
-    const model::AuxiliaryDataResult& aux = diagnostics_result_.aux_data;
+    const model::AuxiliaryDataResult& aux = analysis_facade_->result().aux_data;
 
     aux_stream_table_->setRowCount(static_cast<int>(aux.streams.size()));
     for (int row = 0; row < static_cast<int>(aux.streams.size()); ++row) {
@@ -6698,7 +6701,7 @@ void AnalysisPanel::RebuildAuxStreamTable() {
 
 void AnalysisPanel::RebuildScte35Table() {
     if (scte35_table_ == nullptr) return;
-    const model::AuxiliaryDataResult& aux = diagnostics_result_.aux_data;
+    const model::AuxiliaryDataResult& aux = analysis_facade_->result().aux_data;
 
     scte35_table_->setRowCount(static_cast<int>(aux.cues.size()));
     for (int row = 0; row < static_cast<int>(aux.cues.size()); ++row) {
@@ -6736,7 +6739,7 @@ void AnalysisPanel::RebuildScte35Table() {
 
 void AnalysisPanel::RebuildMetadataTable() {
     if (metadata_table_ == nullptr) return;
-    const model::AuxiliaryDataResult& aux = diagnostics_result_.aux_data;
+    const model::AuxiliaryDataResult& aux = analysis_facade_->result().aux_data;
 
     metadata_table_->setRowCount(static_cast<int>(aux.metadata.size()));
     for (int row = 0; row < static_cast<int>(aux.metadata.size()); ++row) {
@@ -6752,7 +6755,7 @@ void AnalysisPanel::UpdateScte35MarkerChart() {
     if (scte35_marker_chart_ == nullptr || scte35_marker_series_ == nullptr) return;
     scte35_marker_series_->Clear();
 
-    const model::AuxiliaryDataResult& aux = diagnostics_result_.aux_data;
+    const model::AuxiliaryDataResult& aux = analysis_facade_->result().aux_data;
     for (const model::Scte35Cue& cue : aux.cues) {
         const double t = cue.has_splice_time ? cue.splice_time_seconds : cue.packet_pts_seconds;
         if (t < 0.0) continue;
@@ -6761,7 +6764,7 @@ void AnalysisPanel::UpdateScte35MarkerChart() {
         scte35_marker_series_->Append(t, y);
     }
 
-    double max_time = diagnostics_result_.duration_seconds;
+    double max_time = analysis_facade_->result().duration_seconds;
     for (const model::Scte35Cue& cue : aux.cues) {
         const double t = cue.has_splice_time ? cue.splice_time_seconds : cue.packet_pts_seconds;
         if (t > max_time) max_time = t;
@@ -6787,7 +6790,7 @@ void AnalysisPanel::OnSubtitleCueCellClicked(int row, int /*column*/) {
 }
 
 void AnalysisPanel::OnExportSubtitleCsv() {
-    const analyzer::AnalysisResult& r = diagnostics_result_;
+    const analyzer::AnalysisResult& r = analysis_facade_->result();
     if (r.subtitle.cues.empty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有字幕 cue 数据可导出"));
         return;
@@ -6828,7 +6831,7 @@ void AnalysisPanel::OnExportSubtitleCsv() {
 }
 
 void AnalysisPanel::OnExportTimecodeCsv() {
-    const model::TimecodeAnalysisResult& tc = diagnostics_result_.timecode;
+    const model::TimecodeAnalysisResult& tc = analysis_facade_->result().timecode;
     if (!tc.has_primary && tc.chapters.empty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有时码 / 章节数据可导出"));
         return;
@@ -6870,7 +6873,7 @@ void AnalysisPanel::OnExportTimecodeCsv() {
 }
 
 void AnalysisPanel::OnExportScte35Csv() {
-    const model::AuxiliaryDataResult& aux = diagnostics_result_.aux_data;
+    const model::AuxiliaryDataResult& aux = analysis_facade_->result().aux_data;
     if (aux.cues.empty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有 SCTE-35 cue 数据可导出"));
         return;
@@ -6916,7 +6919,7 @@ void AnalysisPanel::OnExportScte35Csv() {
 }
 
 void AnalysisPanel::OnExportMetadataCsv() {
-    const model::AuxiliaryDataResult& aux = diagnostics_result_.aux_data;
+    const model::AuxiliaryDataResult& aux = analysis_facade_->result().aux_data;
     if (aux.metadata.empty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有 metadata 数据可导出"));
         return;
@@ -7066,12 +7069,15 @@ void AnalysisPanel::SetupDiagnosticsTab() {
     // 规则表初始内容
     RebuildRuleTable();
 
+    // 分析机件统一收口到 facade（UI 不再直接持有分析器）
+    analysis_facade_ = new ui::AnalysisFacade(this);
+
     // 扫描线程回调 -> UI 线程
-    connect(&diagnostics_coordinator_, &analyzer::AnalysisCoordinator::ProgressReported,
+    connect(analysis_facade_, &ui::AnalysisFacade::ProgressReported,
             this, &AnalysisPanel::OnDiagnosticsProgress);
-    connect(&diagnostics_coordinator_, &analyzer::AnalysisCoordinator::AnalysisFinished,
+    connect(analysis_facade_, &ui::AnalysisFacade::AnalysisFinished,
             this, &AnalysisPanel::OnDiagnosticsFinished);
-    connect(&diagnostics_coordinator_, &analyzer::AnalysisCoordinator::AnalysisFailed,
+    connect(analysis_facade_, &ui::AnalysisFacade::AnalysisFailed,
             this, &AnalysisPanel::OnDiagnosticsFailed);
 
     AddPageWithScroll(diagnostics_tab_, tr("诊断与报告"));
@@ -7090,7 +7096,7 @@ void AnalysisPanel::StartDiagnosticsScan(const analyzer::AnalysisOptions& option
         QMessageBox::information(this, tr("提示"), tr("请先打开一个媒体文件。"));
         return;
     }
-    if (diagnostics_coordinator_.IsRunning()) {
+    if (analysis_facade_->IsRunning()) {
         QMessageBox::information(this, tr("提示"), tr("分析正在进行中。"));
         return;
     }
@@ -7129,7 +7135,7 @@ void AnalysisPanel::StartDiagnosticsScan(const analyzer::AnalysisOptions& option
     analyzer::AnalysisOptions effective_options = options;
     SyncSubtitleThresholdsFromRules(effective_options.subtitle_options);
 
-    diagnostics_generation_ = diagnostics_coordinator_.StartAnalysis(current_video_path_, effective_options);
+    diagnostics_generation_ = analysis_facade_->StartAnalysis(current_video_path_, effective_options);
 }
 
 void AnalysisPanel::OnStartDiagnostics() {
@@ -7138,12 +7144,12 @@ void AnalysisPanel::OnStartDiagnostics() {
 
 void AnalysisPanel::StartDiagnosticsScanForCurrentFile() {
     // 播放器打开失败时的自动扫描入口: 静默失败路径, 不弹"请先打开文件"提示框
-    if (current_video_path_.empty() || diagnostics_coordinator_.IsRunning()) return;
+    if (current_video_path_.empty() || analysis_facade_->IsRunning()) return;
     StartDiagnosticsScan(diagnostics_options_);
 }
 
 void AnalysisPanel::OnCancelDiagnostics() {
-    diagnostics_coordinator_.Cancel();
+    analysis_facade_->Cancel();
     qc_cancel_button_->setEnabled(false);
     bitrate_gop_cancel_button_->setEnabled(false);
     audio_qc_cancel_button_->setEnabled(false);
@@ -7170,7 +7176,7 @@ void AnalysisPanel::OnDiagnosticsFinished(quint64 generation, bool completed,
                                           const analyzer::AnalysisResult& result) {
     if (generation != diagnostics_generation_) return;
 
-    diagnostics_result_ = result;
+    analysis_facade_->SetResult(result);
     has_diagnostics_result_ = true;
 
     const double elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -7250,10 +7256,10 @@ void AnalysisPanel::OnDiagnosticsFailed(quint64 generation, const QString& messa
 
 void AnalysisPanel::EvaluateDiagnostics() {
     if (!has_diagnostics_result_) return;
-    current_qc_report_ = qc_rule_engine_.Evaluate(diagnostics_result_);
+    current_qc_report_ = analysis_facade_->Evaluate(analysis_facade_->result());
 
     // 时间轴与同步诊断：直接复用全文件扫描的 demux 层结果
-    timeline_result_ = diagnostics_result_.timeline;
+    timeline_result_ = analysis_facade_->result().timeline;
     timeline_offline_ = true;
     RefreshTimelineUi();
 
@@ -7301,7 +7307,7 @@ void AnalysisPanel::UpdateQcSummary() {
     }
 
     const auto& report = current_qc_report_;
-    const auto& result = diagnostics_result_;
+    const auto& result = analysis_facade_->result();
     const int critical = report.CountBySeverity(model::IssueSeverity::Critical);
     const int error = report.CountBySeverity(model::IssueSeverity::Error);
     const int warning = report.CountBySeverity(model::IssueSeverity::Warning);
@@ -7327,9 +7333,9 @@ void AnalysisPanel::UpdateQcChart() {
     qc_bitrate_series_->Clear();
     qc_fps_series_->Clear();
 
-    const auto& bitrate = diagnostics_result_.video_bitrate_kbps.IsEmpty()
-                              ? diagnostics_result_.total_bitrate_kbps
-                              : diagnostics_result_.video_bitrate_kbps;
+    const auto& bitrate = analysis_facade_->result().video_bitrate_kbps.IsEmpty()
+                              ? analysis_facade_->result().total_bitrate_kbps
+                              : analysis_facade_->result().video_bitrate_kbps;
     {
         SeriesBatch batch(qc_bitrate_series_);
         batch.Reserve(static_cast<int>(bitrate.samples.size()));
@@ -7339,20 +7345,20 @@ void AnalysisPanel::UpdateQcChart() {
     }
     {
         SeriesBatch batch(qc_fps_series_);
-        batch.Reserve(static_cast<int>(diagnostics_result_.video_fps.samples.size()));
-        for (const auto& sample : diagnostics_result_.video_fps.samples) {
+        batch.Reserve(static_cast<int>(analysis_facade_->result().video_fps.samples.size()));
+        for (const auto& sample : analysis_facade_->result().video_fps.samples) {
             batch.Add(sample.timestamp_seconds, sample.value);
         }
     }
 
     double max_t = 1.0;
     if (!bitrate.samples.empty()) max_t = std::max(max_t, bitrate.samples.back().timestamp_seconds);
-    if (!diagnostics_result_.video_fps.samples.empty()) {
-        max_t = std::max(max_t, diagnostics_result_.video_fps.samples.back().timestamp_seconds);
+    if (!analysis_facade_->result().video_fps.samples.empty()) {
+        max_t = std::max(max_t, analysis_facade_->result().video_fps.samples.back().timestamp_seconds);
     }
     qc_axis_x_->SetRange(0, max_t);
     qc_axis_bitrate_->SetRange(0, std::max(1.0, bitrate.Max() * 1.2));
-    qc_axis_fps_->SetRange(0, std::max(1.0, diagnostics_result_.video_fps.Max() * 1.2));
+    qc_axis_fps_->SetRange(0, std::max(1.0, analysis_facade_->result().video_fps.Max() * 1.2));
 }
 
 void AnalysisPanel::RebuildRuleTable() {
@@ -7360,7 +7366,7 @@ void AnalysisPanel::RebuildRuleTable() {
     qc_rule_table_updating_ = true;
     qc_rule_table_->setRowCount(0);
 
-    const auto& rules = qc_rule_engine_.rules();
+    const auto& rules = analysis_facade_->rules();
     qc_rule_table_->setRowCount(static_cast<int>(rules.size()));
     for (int i = 0; i < static_cast<int>(rules.size()); ++i) {
         const auto& rule = rules[i];
@@ -7395,7 +7401,7 @@ void AnalysisPanel::OnQcRuleItemChanged(QTableWidgetItem* item) {
     const QString rule_id = item->data(Qt::UserRole).toString();
     if (rule_id.isEmpty()) return;
 
-    model::QcRule* rule = model::FindQcRule(qc_rule_engine_.rules(), rule_id.toStdString());
+    model::QcRule* rule = model::FindQcRule(analysis_facade_->rules(), rule_id.toStdString());
     if (!rule) return;
 
     if (item->column() == 0) {
@@ -7428,7 +7434,7 @@ void AnalysisPanel::OnQcRuleItemChanged(QTableWidgetItem* item) {
 }
 
 void AnalysisPanel::OnResetQcRules() {
-    qc_rule_engine_.SetRules(model::DefaultQcRules());
+    analysis_facade_->SetRules(model::DefaultQcRules());
     RebuildRuleTable();
     if (has_diagnostics_result_) EvaluateDiagnostics();
 }
@@ -7511,12 +7517,12 @@ void AnalysisPanel::SetupTimelineDiagnosticsSubPage() {
 }
 
 void AnalysisPanel::OnTimelinePacket(const model::PacketTiming& timing) {
-    timeline_analyzer_.OnPacket(timing);
+    analysis_facade_->OnPacket(timing);
     timeline_dirty_ = true;
 }
 
 void AnalysisPanel::OnFrameTiming(const model::FrameTimingInfo& timing) {
-    timeline_analyzer_.OnFrame(timing);
+    analysis_facade_->OnFrame(timing);
     timeline_dirty_ = true;
 }
 

@@ -127,37 +127,6 @@ std::string DescribeDefect(model::VisualDefectType type, double duration,
 }  // namespace
 
 // ===========================================================================
-// VisualDefectOptions
-// ===========================================================================
-
-double VisualDefectOptions::EffectiveSampleFps() const {
-    if (sample_fps > 0.0) return sample_fps;
-    switch (preset) {
-        case VisualSamplingPreset::Fast:        return 1.0;
-        case VisualSamplingPreset::Standard:    return 2.0;
-        case VisualSamplingPreset::Fine:        return 5.0;
-        case VisualSamplingPreset::OfflineFull: return 0.0;   // 每帧
-    }
-    return 2.0;
-}
-
-int VisualDefectOptions::EffectiveAnalysisWidth() const {
-    if (analysis_width > 0) return analysis_width;
-    switch (preset) {
-        case VisualSamplingPreset::Fast:        return 160;
-        case VisualSamplingPreset::Standard:    return 256;
-        case VisualSamplingPreset::Fine:        return 384;
-        case VisualSamplingPreset::OfflineFull: return 256;
-    }
-    return 256;
-}
-
-int VisualDefectOptions::EffectiveEvidenceWidth() const {
-    const int w = EffectiveAnalysisWidth() / 2;
-    return w < 32 ? 32 : w;
-}
-
-// ===========================================================================
 // 单帧指标（纯算法，不碰任何内部状态）
 // ===========================================================================
 

@@ -24,6 +24,7 @@
 #include <QVariantMap>
 #include "ui/charts/MetricChartWidget.h"
 #include "ui/reporting_panel/ReportingPanel.h"
+#include "ui/AnalysisFacade.h"
 #include <chrono>
 #include <deque>
 #include <vector>
@@ -32,7 +33,6 @@
 #include <atomic>
 #include <memory>
 
-#include "core/analysis/stream/StreamAnalyzer.h"
 #include "core/domain/model/AnalysisEvent.h"
 #include "core/domain/model/AudioVisualizationFrame.h"
 #include "core/domain/model/PacketInfo.h"
@@ -42,24 +42,19 @@
 #include "core/domain/model/EbmlInfo.h"
 #include "core/domain/model/ContainerStructureInfo.h"
 #include "core/domain/model/MacroblockInfo.h"
-#include "core/analysis/quality/SceneChangeAnalyzer.h"
-#include "core/analysis/orchestration/AnalysisCoordinator.h"
-#include "core/analysis/quality/BitrateGopAnalyzer.h"
-#include "core/analysis/quality/ColorHdrAnalyzer.h"
 #include "ui/bitstream_panel/BitstreamPanel.h"
 #include "ui/streaming_panel/StreamingPanel.h"
-#include "core/analysis/diagnostics/QcRuleEngine.h"
-#include "core/analysis/diagnostics/TimelineAnalyzer.h"
 #include "core/domain/model/FrameTimingInfo.h"
 #include "core/domain/model/TimelineDiagnostic.h"
 #include "core/domain/model/QcReport.h"
 #include "core/domain/model/AudioQcResult.h"
 #include "core/domain/model/QualityMetric.h"
 #include "core/domain/model/VisualDefect.h"
+#include "core/domain/model/VisualDefectOptions.h"
+#include "core/domain/model/StreamStats.h"
 #include "core/domain/model/SubtitleCueInfo.h"
 #include "core/domain/model/TimecodeInfo.h"
 #include "core/domain/model/AuxiliaryDataInfo.h"
-#include "core/analysis/quality/VisualDefectAnalyzer.h"
 
 namespace videoeye {
 namespace ui {
@@ -103,7 +98,7 @@ public:
     void SetCurrentVideoPath(const QString& path) {
         current_video_path_ = path.toStdString();
         // 切换文件后重置时间轴累计状态 (避免上一文件的数据混入)
-        timeline_analyzer_.Reset();
+        if (analysis_facade_) analysis_facade_->Reset();
         timeline_result_ = model::TimelineAnalysisResult{};
         timeline_offline_ = false;
         timeline_dirty_ = false;
@@ -123,7 +118,7 @@ signals:
     void AnalysisFeatureToggled(int feature, bool enabled);
 
     // 画面质量分析的采样档位 / 阈值变化 (供 MainWindow 转发给 MediaPlayer)
-    void VisualDefectOptionsChanged(const analyzer::VisualDefectOptions& options);
+    void VisualDefectOptionsChanged(const model::VisualDefectOptions& options);
 
     // 跳转到指定时间（秒）: 由"跳转到问题帧"触发, MainWindow 连接到播放器 Seek
     void SeekRequested(double seconds);
@@ -137,7 +132,7 @@ signals:
     
 public slots:
     // 更新统计数据
-    void UpdateStreamStats(const analyzer::StreamStats& stats);
+    void UpdateStreamStats(const model::StreamStats& stats);
 
     // 码率与 GOP 深度分析
     void OnStartBitrateGopAnalysis();
@@ -354,7 +349,7 @@ private:
     void FlushPendingEventTableUpdates();
     void FlushPendingSyncTableUpdates();
     void FlushPendingTimelineTableUpdates();
-    void RefreshStreamStatsUi(const analyzer::StreamStats& stats);
+    void RefreshStreamStatsUi(const model::StreamStats& stats);
     void SetTableItemText(QTableWidget* table, int row, int column, const QString& text);
     void AppendFrameRowToTable(const VideoFrameRecord& record);
     void AppendAudioFrameRowToTable(const AudioFrameRecord& record);
@@ -457,7 +452,7 @@ private:
     void UpdateQcSummary();
     void UpdateQcChart();
     void RebuildRuleTable();
-    // 用 diagnostics_result_ + qc_rule_engine_ 生成报告并刷新 UI
+    // 用 analysis_facade_->result() + QC 规则引擎生成报告并刷新 UI
     void EvaluateDiagnostics();
     // 时间轴与同步页
     void SetupTimelineDiagnosticsSubPage();
@@ -466,8 +461,8 @@ private:
     void UpdateTimelineDiagnosticSummary();
 
     // 更新图表
-    void UpdateBitrateChart(const analyzer::StreamStats& stats);
-    void UpdateFPSChart(const analyzer::StreamStats& stats);
+    void UpdateBitrateChart(const model::StreamStats& stats);
+    void UpdateFPSChart(const model::StreamStats& stats);
     // GOP 曲线数据源为 UI 侧 gop_summaries_ (统一口径, 见 RebuildGopTable)
     void UpdateGOPChart();
     void ResetStreamCharts();
@@ -592,7 +587,7 @@ private:
     std::vector<model::FrameQualityMetric> visual_defect_samples_;
     std::vector<model::VisualDefect> visual_defect_records_;
     model::ActivePictureArea visual_defect_effective_area_;
-    analyzer::VisualDefectOptions visual_defect_options_;
+    model::VisualDefectOptions visual_defect_options_;
     bool visual_defect_dirty_ = false;
     int visual_defect_dropped_frames_ = 0;
     int visual_defect_analyzed_frames_ = 0;
@@ -782,17 +777,14 @@ private:
     ChartAxis* timeline_chart_axis_y_ = nullptr;
     QTableWidget* timeline_issue_table_;
     QVector<int> timeline_marker_issue_index_;   // 散点序号 -> 问题序号
-    analyzer::TimelineAnalyzer timeline_analyzer_;
     model::TimelineAnalysisResult timeline_result_;
     bool timeline_dirty_ = false;
     bool timeline_offline_ = false;              // true = 数据来自全文件扫描
 
-    analyzer::AnalysisCoordinator diagnostics_coordinator_;
-    analyzer::QcRuleEngine qc_rule_engine_;
-    analyzer::AnalysisResult diagnostics_result_;
     model::QcReport current_qc_report_;
     quint64 diagnostics_generation_ = 0;
     bool has_diagnostics_result_ = false;
+    ui::AnalysisFacade* analysis_facade_ = nullptr;
     std::chrono::steady_clock::time_point diagnostics_start_time_;
 
     // 控制按钮
@@ -812,7 +804,7 @@ private:
     QTimer* update_timer_;
     
     // 当前数据
-    analyzer::StreamStats current_stats_;
+    model::StreamStats current_stats_;
     std::vector<VideoFrameRecord> frame_records_;
     std::vector<AudioFrameRecord> audio_frame_records_;
     std::vector<PacketRecord> packet_records_;
@@ -820,7 +812,7 @@ private:
     std::vector<SyncSampleRecord> sync_sample_records_;
     std::vector<TimelineEventRecord> timeline_event_records_;
     std::vector<GopSummary> gop_summaries_;
-    analyzer::StreamStats pending_stream_stats_;
+    model::StreamStats pending_stream_stats_;
     bool has_pending_stream_stats_ = false;
     bool frame_table_dirty_ = false;
     bool gop_table_dirty_ = false;
