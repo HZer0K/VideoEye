@@ -13,6 +13,7 @@
 //
 // 不变量与 utils 版保持一致：`data` 只含 payload，不带起始码、不带 NAL/OBU header。
 
+#include <cstddef>
 #include <cstdint>
 #include <utility>
 #include <vector>

@@ -1,8 +1,13 @@
 #pragma once
 
-#include <vector>
+#include <cstddef>
 #include <cstdint>
+#include <string>
+#include <vector>
+
 #include "core/domain/model/BitstreamInfo.h"
+// 公开接口带 utils::ExtradataFormat / utils::ExtradataResult，成员也是 utils::NalUnit / ObuUnit，
+// 所以这是 analysis 的真实公开依赖（CMakeLists 里 VideoEyeMedia 挂的是 PUBLIC）。
 #include "core/media/codec/ExtradataTypes.h"
 
 namespace videoeye {

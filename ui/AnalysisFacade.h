@@ -16,6 +16,7 @@
 // 本文件不再 include 任何 core/analysis/*Analyzer.h 与 core/qt/*。
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <QObject>

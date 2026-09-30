@@ -125,11 +125,17 @@ target_link_libraries(VideoEyeMedia
 
 # --- analysis: 各分析器与 orchestration ---
 videoeye_add_module(VideoEyeAnalysis ${ANALYSIS_SOURCES})
-# FFmpeg 与 Qt 挂 PUBLIC 而不是 PRIVATE: 这一层的公共头文件里就有真的 libav*
-# （AnalysisResult.h -> StreamAnalyzer.h -> avformat.h），任何 include 它的人
+# FFmpeg 与 Qt 挂 PUBLIC 而不是 PRIVATE: 这一层有多个公共头文件直接 include libav*
+# （stream/StreamAnalyzer.h、container/ContainerStructureAnalyzer.h、
+#   quality/QualityAnalyzer.h、quality/MacroblockAnalyzer.h），任何 include 它们的人
 # 都必须拿到 FFmpeg 的 include 目录，而静态库的 PRIVATE 依赖只传 link、不传目录。
+# 同理 VideoEyeMedia 也是 PUBLIC: codec/BitstreamAnalyzer.h 的公开接口带着
+# utils::ExtradataFormat（AnalyzeWithFormat），成员也是 utils::NalUnit / ObuUnit，
+# 头文件本身就要求调用方能看见 core/media/codec/ExtradataTypes.h。
+# 想要降级成 PRIVATE，得先把这些 media 类型从该头文件里挪走（转 domain 或 pimpl）。
 target_link_libraries(VideoEyeAnalysis
     PUBLIC VideoEyeDomain
+           VideoEyeMedia
            FFmpeg::avcodec
            FFmpeg::avformat
            FFmpeg::avutil
@@ -137,8 +143,7 @@ target_link_libraries(VideoEyeAnalysis
            FFmpeg::swresample
            Qt6::Core
            Qt6::Gui
-    PRIVATE VideoEyeMedia
-            VideoEyeInfrastructure
+    PRIVATE VideoEyeInfrastructure
 )
 
 # --- playback: 播放会话 / 解码 / 抽帧 / 可视化 ---
