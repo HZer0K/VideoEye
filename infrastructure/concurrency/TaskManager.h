@@ -46,6 +46,13 @@ public:
         return static_cast<bool>(flag_);
     }
 
+    // 暴露底层取消标志（shared_ptr 保活）。供调用方把指针交给 FFmpeg 的
+    // AVIOInterruptCB.opaque，使 avformat_open_input 等阻塞 IO 在 CancelAll()
+    // 之后能及时中断（否则关闭流程会在 join 受管线程时挂死）。无令牌时返回空。
+    std::shared_ptr<std::atomic<bool>> flag() const {
+        return flag_;
+    }
+
 private:
     std::shared_ptr<std::atomic<bool>> flag_;
 };

@@ -261,6 +261,9 @@ private:
 
     QThread* frame_export_thread_ = nullptr;
     VideoFrameExporter* frame_exporter_ = nullptr;
+    // 每次发起抽帧导出自增的代际号: 转发信号时只接受当前代际,
+    // 旧任务已排队到 UI 线程的终态信号(进度/完成/取消/错误)会因此被丢弃, 不会串到新任务。
+    quint64 frame_export_gen_ = 0;
 
     // 后台任务统一调度: 任务 ID / 取消标志 / 终态 / 过期结果丢弃。
     // 容器结构分析走它的受管线程; 抽帧与媒体导出的 worker 是 QObject(要发进度信号),
@@ -270,6 +273,8 @@ private:
     // 音视频导出 (后台线程; 线程本身同样归 export_workers_ 所有)
     QThread* media_export_thread_ = nullptr;
     exporter::MediaExporter* media_exporter_ = nullptr;
+    // 同 frame_export_gen_: 媒体导出信号只接受当前代际, 防止旧任务排队信号串到新任务。
+    quint64 media_export_gen_ = 0;
 
     // 分析索引/状态
     int analysis_frame_counter_ = 0;

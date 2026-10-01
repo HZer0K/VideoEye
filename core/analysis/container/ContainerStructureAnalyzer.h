@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+#include <memory>
 #include <QString>
 #include "core/domain/model/ContainerStructureInfo.h"
 
@@ -18,7 +20,10 @@ public:
     ~ContainerStructureAnalyzer();
 
     /// 分析文件容器结构
-    bool Analyze(const QString& file_path, model::ContainerStructureResult& result);
+    /// @param cancel 可选取消标志: 非空时交给 FFmpeg 的 AVIO 中断回调,
+    ///               使关闭流程（CancelAll）能及时中止阻塞 IO。传空则不做取消。
+    bool Analyze(const QString& file_path, model::ContainerStructureResult& result,
+                 std::shared_ptr<std::atomic<bool>> cancel = {});
 
     /// 重置
     void Reset();
@@ -41,7 +46,9 @@ private:
                                model::ContainerStructureResult& result);
 
     /// FFmpeg 通用元数据回退分析
-    bool AnalyzeWithFFmpeg(const QString& file_path, model::ContainerStructureResult& result);
+    /// @param cancel 可选取消标志, 交给 FFmpeg 的 AVIO 中断回调(见 ffmpeg_interrupt.h)
+    bool AnalyzeWithFFmpeg(const QString& file_path, model::ContainerStructureResult& result,
+                           std::shared_ptr<std::atomic<bool>> cancel = {});
 
     /// HLS (.m3u8) / DASH (.mpd) 清单解析。
     /// 只走自研解析器（std::ifstream），绝不把清单交给 FFmpeg ——

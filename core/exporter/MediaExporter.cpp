@@ -442,12 +442,12 @@ void MediaExporter::Export(const ExportOptions& opt) {
         av_packet_free(&epkt);
     };
 
-    auto encode_video_frame = [&](StreamCtx& s, AVFrame* src) {
+    auto encode_video_frame = [&](StreamCtx& s, AVFrame* src) -> bool {
         if (!s.sws) {
             s.sws = sws_getContext(src->width, src->height, (AVPixelFormat)src->format,
                                    s.enc->width, s.enc->height, s.enc_pix_fmt,
                                    SWS_BILINEAR, nullptr, nullptr, nullptr);
-            if (!s.sws) return;
+            if (!s.sws) { err_msg = "初始化图像缩放器失败"; return false; }
         }
         AVFrame* out_frame = av_frame_alloc();
         out_frame->format = s.enc_pix_fmt;
@@ -455,27 +455,30 @@ void MediaExporter::Export(const ExportOptions& opt) {
         out_frame->height = s.enc->height;
         if (av_frame_get_buffer(out_frame, 0) < 0) {
             av_frame_free(&out_frame);
-            return;
+            err_msg = "分配编码帧缓冲区失败";
+            return false;
         }
         sws_scale(s.sws, src->data, src->linesize, 0, src->height,
                   out_frame->data, out_frame->linesize);
         out_frame->pts = (src->pts == AV_NOPTS_VALUE) ? s.enc_pts++ : src->pts;
         s.enc_pts = out_frame->pts + 1;
-        if (avcodec_send_frame(s.enc, out_frame) == 0) {
-            write_encoded_packets(s);
-        }
+        const int send_ret = avcodec_send_frame(s.enc, out_frame);
         av_frame_free(&out_frame);
+        if (send_ret < 0) { err_msg = "送入编码帧失败"; return false; }
+        write_encoded_packets(s);   // 写入失败会在内部写 err_msg
+        return err_msg.isEmpty();
     };
 
-    auto encode_audio_frame = [&](StreamCtx& s, AVFrame* src) {
+    auto encode_audio_frame = [&](StreamCtx& s, AVFrame* src) -> bool {
         if (!s.swr) {
             if (swr_alloc_set_opts2(&s.swr,
                                     &s.enc->ch_layout, s.enc->sample_fmt, s.enc->sample_rate,
                                     &src->ch_layout, (AVSampleFormat)src->format, src->sample_rate,
                                     0, nullptr) < 0 || !s.swr) {
-                return;
+                err_msg = "初始化音频重采样器失败";
+                return false;
             }
-            if (swr_init(s.swr) < 0) { swr_free(&s.swr); return; }
+            if (swr_init(s.swr) < 0) { swr_free(&s.swr); err_msg = "初始化音频重采样器失败"; return false; }
         }
         const int dst_nb = av_rescale_rnd(src->nb_samples, s.enc->sample_rate,
                                           src->sample_rate, AV_ROUND_UP);
@@ -486,20 +489,22 @@ void MediaExporter::Export(const ExportOptions& opt) {
         out_frame->nb_samples = dst_nb;
         if (av_frame_get_buffer(out_frame, 0) < 0) {
             av_frame_free(&out_frame);
-            return;
+            err_msg = "分配编码帧缓冲区失败";
+            return false;
         }
         // swr_convert 需要 const uint8_t**；AVFrame::data 是 uint8_t*[8]
         const uint8_t** src_data = (const uint8_t**)src->data;
         const int got = swr_convert(s.swr, out_frame->data, dst_nb,
                                     src_data, src->nb_samples);
-        if (got < 0) { av_frame_free(&out_frame); return; }
+        if (got < 0) { av_frame_free(&out_frame); err_msg = "音频重采样失败"; return false; }
         out_frame->nb_samples = got;
         out_frame->pts = s.enc_pts;
         s.enc_pts += got;
-        if (avcodec_send_frame(s.enc, out_frame) == 0) {
-            write_encoded_packets(s);
-        }
+        const int send_ret = avcodec_send_frame(s.enc, out_frame);
         av_frame_free(&out_frame);
+        if (send_ret < 0) { err_msg = "送入编码帧失败"; return false; }
+        write_encoded_packets(s);
+        return err_msg.isEmpty();
     };
 
     // 主读取循环
@@ -546,20 +551,18 @@ void MediaExporter::Export(const ExportOptions& opt) {
             }
         } else {
             const AVMediaType mt = sc->dec->codec_type;
-            if (mt == AVMEDIA_TYPE_VIDEO) {
-                if (avcodec_send_packet(sc->dec, pkt) == 0) {
-                    while (avcodec_receive_frame(sc->dec, frame) >= 0) {
-                        encode_video_frame(*sc, frame);
-                        av_frame_unref(frame);
-                    }
+            // 解码输入: 真实错误(非 EAGAIN)要记录, 否则损坏输入会被当成正常结束
+            const int send_ret = avcodec_send_packet(sc->dec, pkt);
+            if (send_ret == 0) {
+                while (avcodec_receive_frame(sc->dec, frame) >= 0) {
+                    const bool ok = (mt == AVMEDIA_TYPE_VIDEO)
+                                        ? encode_video_frame(*sc, frame)
+                                        : encode_audio_frame(*sc, frame);
+                    av_frame_unref(frame);
+                    if (!ok) break;   // 编码/重采样失败 -> err_msg 已置, 外层据此停止
                 }
-            } else {
-                if (avcodec_send_packet(sc->dec, pkt) == 0) {
-                    while (avcodec_receive_frame(sc->dec, frame) >= 0) {
-                        encode_audio_frame(*sc, frame);
-                        av_frame_unref(frame);
-                    }
-                }
+            } else if (send_ret != AVERROR(EAGAIN)) {
+                if (err_msg.isEmpty()) err_msg = "解码输入失败";
             }
             av_packet_unref(pkt);
         }
@@ -581,10 +584,13 @@ void MediaExporter::Export(const ExportOptions& opt) {
             if (!s.do_encode) continue;
             avcodec_send_packet(s.dec, nullptr);
             while (avcodec_receive_frame(s.dec, frame) >= 0) {
-                if (s.dec->codec_type == AVMEDIA_TYPE_VIDEO) encode_video_frame(s, frame);
-                else encode_audio_frame(s, frame);
+                const bool ok = (s.dec->codec_type == AVMEDIA_TYPE_VIDEO)
+                                    ? encode_video_frame(s, frame)
+                                    : encode_audio_frame(s, frame);
                 av_frame_unref(frame);
+                if (!ok) break;   // 编码/重采样失败, err_msg 已置
             }
+            if (!err_msg.isEmpty()) break;   // 编码失败则停止 flush
             avcodec_send_frame(s.enc, nullptr);
             write_encoded_packets(s);
             if (!err_msg.isEmpty()) break;   // 写入失败则停止 flush

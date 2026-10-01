@@ -1,4 +1,5 @@
 #include "core/analysis/container/ContainerStructureAnalyzer.h"
+#include "core/analysis/orchestration/ffmpeg_interrupt.h"  // 共享 FFmpeg 中断回调
 #include "core/analysis/orchestration/FormatDetector.h"
 #include "core/analysis/container/Mp4BoxAnalyzer.h"
 #include "core/analysis/container/Mp4SampleTableAnalyzer.h"
@@ -53,10 +54,17 @@ ContainerStructureAnalyzer::ContainerStructureAnalyzer() = default;
 ContainerStructureAnalyzer::~ContainerStructureAnalyzer() = default;
 
 bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
-                                          model::ContainerStructureResult& result) {
+                                          model::ContainerStructureResult& result,
+                                          std::shared_ptr<std::atomic<bool>> cancel) {
     VE_PERF("ContainerStructureAnalyzer::Analyze");
     result.file_path = file_path;
     LOG_INFO("ContainerStructureAnalyzer::Analyze ENTER: " + file_path.toStdString());
+
+    // 已经被取消（如关闭流程触发 CancelAll）就别再启动重型解析，避免关闭挂死
+    if (cancel && cancel->load(std::memory_order_acquire)) {
+        result.valid = false;
+        return false;
+    }
 
     // 1. 检测格式
     auto fmt = FormatDetector::Detect(file_path);
@@ -117,7 +125,7 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
         } else {
             // MP4 解析失败, 回退到 FFmpeg
             LOG_WARN("MP4 专用解析器失败, 回退到 FFmpeg 通用分析");
-            return AnalyzeWithFFmpeg(file_path, result);
+            return AnalyzeWithFFmpeg(file_path, result, cancel);
         }
         return result.valid;
     }
@@ -144,7 +152,7 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
                                  .arg(result.streams.size());
         } else {
             LOG_WARN("EBML 专用解析器失败, 回退到 FFmpeg 通用分析");
-            return AnalyzeWithFFmpeg(file_path, result);
+            return AnalyzeWithFFmpeg(file_path, result, cancel);
         }
         return result.valid;
     }
@@ -153,42 +161,42 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
         AviStructureAnalyzer avi;
         if (avi.Analyze(file_path, result)) return true;
         LOG_WARN("AVI 专用解析器失败, 回退到 FFmpeg");
-        return AnalyzeWithFFmpeg(file_path, result);
+        return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
     case model::ContainerFormat::FLV: {
         FlvStructureAnalyzer flv;
         if (flv.Analyze(file_path, result)) return true;
         LOG_WARN("FLV 专用解析器失败, 回退到 FFmpeg");
-        return AnalyzeWithFFmpeg(file_path, result);
+        return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
     case model::ContainerFormat::MPEG_TS: {
         TsStructureAnalyzer ts;
         if (ts.Analyze(file_path, result)) return true;
         LOG_WARN("TS 专用解析器失败, 回退到 FFmpeg");
-        return AnalyzeWithFFmpeg(file_path, result);
+        return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
     case model::ContainerFormat::HLS:
     case model::ContainerFormat::DASH: {
         if (AnalyzeStreamingManifest(file_path, result)) return true;
         LOG_WARN("流媒体清单解析失败, 回退到 FFmpeg");
-        return AnalyzeWithFFmpeg(file_path, result);
+        return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
     case model::ContainerFormat::ASF: {
         AsfStructureAnalyzer asf;
         if (asf.Analyze(file_path, result)) return true;
         LOG_WARN("ASF 专用解析器失败, 回退到 FFmpeg");
-        return AnalyzeWithFFmpeg(file_path, result);
+        return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
     case model::ContainerFormat::OGG: {
         OggStructureAnalyzer ogg;
         if (ogg.Analyze(file_path, result)) return true;
         LOG_WARN("OGG 专用解析器失败, 回退到 FFmpeg");
-        return AnalyzeWithFFmpeg(file_path, result);
+        return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
 
     default:
         // FFmpeg 通用回退
-        return AnalyzeWithFFmpeg(file_path, result);
+        return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
 }
 
@@ -419,10 +427,28 @@ void ContainerStructureAnalyzer::ConvertEbmlTree(const QVector<model::EbmlElemen
 }
 
 bool ContainerStructureAnalyzer::AnalyzeWithFFmpeg(const QString& file_path,
-                                                    model::ContainerStructureResult& result) {
-    AVFormatContext* fmt_ctx = nullptr;
+                                                    model::ContainerStructureResult& result,
+                                                    std::shared_ptr<std::atomic<bool>> cancel) {
+    AVFormatContext* fmt_ctx = avformat_alloc_context();
+    if (!fmt_ctx) {
+        result.format = model::ContainerFormat::FFmpeg_Generic;
+        result.format_name = "Generic";
+        result.error_message = "无法分配解封装上下文";
+        result.valid = false;
+        return false;
+    }
+
+    // 安装中断回调: 打开/探测阶段带绝对超时, 关闭流程(CancelAll)置标志后能及时退出,
+    // 不再让后台 std::thread 卡在 FFmpeg 阻塞 IO 上、导致 WaitForAll 在 join 时挂死。
+    AvInterruptState interrupt;
+    interrupt.cancel = cancel.get();
+    interrupt.deadline_us = av_gettime() + kOpenTimeoutUs;
+    fmt_ctx->interrupt_callback.callback = &AvIoInterruptCallback;
+    fmt_ctx->interrupt_callback.opaque = &interrupt;
+
     int ret = avformat_open_input(&fmt_ctx, file_path.toUtf8().constData(), nullptr, nullptr);
     if (ret < 0) {
+        avformat_close_input(&fmt_ctx);
         result.format = model::ContainerFormat::FFmpeg_Generic;
         result.format_name = "Generic";
         result.error_message = "FFmpeg 无法打开文件";
@@ -430,6 +456,8 @@ bool ContainerStructureAnalyzer::AnalyzeWithFFmpeg(const QString& file_path,
         return false;
     }
 
+    // 探测阶段允许更长时间, 但仍受取消/超时约束
+    interrupt.deadline_us = av_gettime() + kProbeTimeoutUs;
     ret = avformat_find_stream_info(fmt_ctx, nullptr);
     if (ret < 0) {
         avformat_close_input(&fmt_ctx);

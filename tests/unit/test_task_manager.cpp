@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -236,3 +237,47 @@ TEST(TaskManagerTest, DestructorWaitsForRunningBody) {
     } // 析构: 取消 + 等待
     EXPECT_TRUE(body_done.load()) << "析构后任务体必须已经跑完(否则线程会在对象销毁后继续跑)";
 }
+
+// --- 关闭路径可中断性（配合 FFmpeg AVIO 中断回调）---
+
+// flag() 必须把底层取消标志暴露出来, 且 Cancel 之后该标志必须置位 ——
+// 这正是关闭流程里 CancelAll() 能让卡在 FFmpeg 阻塞 IO 的受管线程及时退出的前提。
+TEST(TaskManagerTest, CancelTokenExposesFlagReflectsCancel) {
+    TaskManager mgr(1);
+    const TaskId id = mgr.Begin(kSlot);
+    ASSERT_NE(id, 0u);
+
+    CancelToken token = mgr.Token(kSlot);
+    ASSERT_NE(token.flag(), nullptr)
+        << "flag() 必须返回底层取消标志, 供 FFmpeg 中断回调读取";
+    EXPECT_FALSE(token.IsCanceled());
+
+    mgr.Cancel(kSlot);
+    EXPECT_TRUE(token.IsCanceled());
+    EXPECT_TRUE(token.flag()->load())
+        << "Cancel 后底层标志必须置位, 否则 WaitForAll 不会因中断而返回";
+
+    mgr.End(kSlot, id, TaskState::Succeeded);
+}
+
+// 取消后受管任务必须在有界时间内到达终态, 关闭路径(WaitForAll)才不会在 join 上挂死。
+// 这里的轮询循环与 FFmpeg 中断回调同源: 都只读同一个取消标志。
+TEST(TaskManagerTest, RunTaskReachesTerminalAfterCancel) {
+    TaskManager mgr(1);
+    std::atomic<bool> saw_cancel{false};
+    mgr.Run(kSlot, [&](TaskId, CancelToken token) {
+        while (!token.IsCanceled()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        saw_cancel = true;
+    });
+
+    EXPECT_TRUE(mgr.IsRunning(kSlot));
+    mgr.Cancel(kSlot);
+
+    EXPECT_TRUE(mgr.WaitForIdle(kSlot, 2000))
+        << "取消后受管任务必须及时到达终态, 关闭路径才不会挂死";
+    EXPECT_TRUE(saw_cancel.load());
+    EXPECT_FALSE(mgr.IsRunning(kSlot));
+}
+

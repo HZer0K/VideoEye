@@ -834,7 +834,7 @@ void MainWindow::StartMediaInfoAnalysis(const QString& source) {
         {
             VE_PERF("媒体信息解析(后台线程)");
             analyzer::MediaInfoAnalyzer mi;
-            text = mi.Open(source) ? mi.GetCompleteInfo() : MainWindow::tr("(无法解析媒体信息)");
+            text = mi.Open(source, token.flag()) ? mi.GetCompleteInfo() : MainWindow::tr("(无法解析媒体信息)");
         }
         if (!self || token.IsCanceled()) return;
         if (generation != self->mediainfo_generation_.load()) return;

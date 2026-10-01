@@ -36,7 +36,8 @@ QtWorkerOwner::~QtWorkerOwner() {
 }
 
 QThread* QtWorkerOwner::StartWorker(QObject* worker, std::function<void()> body,
-                                    std::function<void()> request_stop) {
+                                    std::function<void()> request_stop,
+                                    std::function<void(QThread*)> on_finished) {
     if (!worker) return nullptr;
 
     auto* thread = new QThread(this);
@@ -65,6 +66,15 @@ QThread* QtWorkerOwner::StartWorker(QObject* worker, std::function<void()> body,
         thread->deleteLater();
         RemoveEntry(thread);
     });
+
+    // 调用方自己的终态清理回调（如清"当前任务"指针）。必须在 start() 之前连好:
+    // 否则线程若秒级完成，finished 已发出而本回调还没连上，清理永不执行，
+    // frame_exporter_/media_exporter_ 等成员会保留失效对象（下一次取消/启动即越界访问）。
+    if (on_finished) {
+        // 把已创建的 thread 传给回调，回调里直接拿形参比较，无需捕获本地变量。
+        QObject::connect(thread, &QThread::finished, this,
+                         [on_finished, thread]() { on_finished(thread); });
+    }
 
     thread->start();
     return thread;

@@ -31,6 +31,12 @@ namespace player {
 
 using SteadyClock = std::chrono::steady_clock;
 
+// 析构时等待后台任务退出的总预算(ms)。受管 std::thread 在 CancelAll 之后会因
+// 中断回调及时退出, 这里给一个上限而不是无限等(-1), 避免极端情况下进程退出挂死。
+// 注意: WaitForAll 的 join 阶段本身无超时保证, 此上限只约束"等终态"阶段;
+// 中断机制确保受管任务会先到达终态, 所以实际不会触达 join 上限。
+constexpr int kShutdownWaitMs = 8000;
+
 // FFmpeg 错误码 -> 可读描述。不用 av_err2str 宏 (MSVC 不支持其 compound literal 写法)。
 static QString AvErrorString(int ret) {
     char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
@@ -124,7 +130,7 @@ MediaPlayer::~MediaPlayer() {
     // 取消全部后台任务并等待退出。必须在 Stop()/Release() 之前:
     // 容器结构分析线程自己持有 AVFormatContext, 让它先退干净再去 avformat_network_deinit()。
     task_manager_.CancelAll();
-    task_manager_.WaitForAll(-1);
+    task_manager_.WaitForAll(kShutdownWaitMs);
     Stop();
     playback_session_.Release();
     avformat_network_deinit();
@@ -740,13 +746,34 @@ void MediaPlayer::StartVideoFrameExport(const QString& output_dir, const QString
     auto* exporter = new VideoFrameExporter();
     exporter->SetCancelToken(task_manager_.Token(kSlotFrameExport));
 
+    // 每次发起自增代际号: 下面所有转发信号都只接受当前代际,
+    // 旧任务(被取消但线程还在排队终态)的信号会被丢弃, 不会串到本次新任务。
+    const quint64 gen = ++frame_export_gen_;
+
     // 信号必须**先连好再起线程**: worker 一进门就可能因为参数不对而立刻报错,
     // 晚一步连就会漏掉这次终态(TaskManager 永远等不到 End)。
-    connect(exporter, &VideoFrameExporter::ExportStarted, this, &MediaPlayer::VideoFrameExportStarted);
-    connect(exporter, &VideoFrameExporter::ExportProgress, this, &MediaPlayer::VideoFrameExportProgress);
-    connect(exporter, &VideoFrameExporter::ExportFinished, this, &MediaPlayer::VideoFrameExportFinished);
-    connect(exporter, &VideoFrameExporter::ExportCanceled, this, &MediaPlayer::VideoFrameExportCanceled);
-    connect(exporter, &VideoFrameExporter::ExportError, this, &MediaPlayer::VideoFrameExportError);
+    // 转发前先做代际校验, 丢弃非当前任务的(已排队但迟到的)信号。
+    connect(exporter, &VideoFrameExporter::ExportStarted, this, [this, gen](int total) {
+        if (frame_export_gen_ != gen) return;
+        emit VideoFrameExportStarted(total);
+    });
+    connect(exporter, &VideoFrameExporter::ExportProgress, this, [this, gen](int n) {
+        if (frame_export_gen_ != gen) return;
+        emit VideoFrameExportProgress(n);
+    });
+    connect(exporter, &VideoFrameExporter::ExportFinished, this, [this, gen](const QString& dir) {
+        if (frame_export_gen_ != gen) return;
+        emit VideoFrameExportFinished(dir);
+    });
+    connect(exporter, &VideoFrameExporter::ExportCanceled, this,
+            [this, gen](int n, const QString& dir) {
+                if (frame_export_gen_ != gen) return;
+                emit VideoFrameExportCanceled(n, dir);
+            });
+    connect(exporter, &VideoFrameExporter::ExportError, this, [this, gen](const QString& msg) {
+        if (frame_export_gen_ != gen) return;
+        emit VideoFrameExportError(msg);
+    });
 
     // 终态上报: 保证 WaitForIdle 看到的是终态而不是"还在跑"
     connect(exporter, &VideoFrameExporter::ExportFinished, this, [this, task_id](const QString&) {
@@ -760,29 +787,24 @@ void MediaPlayer::StartVideoFrameExport(const QString& output_dir, const QString
         task_manager_.End(kSlotFrameExport, task_id, task::TaskState::Failed);
     });
 
+    // 线程退出后清掉"当前任务"标记。线程的 deleteLater 由 QtWorkerOwner 负责,
+    // 这里只清指针, 不碰对象。作为 on_finished 在 start() 之前连接, 消除竞态
+    // (否则线程秒级完成时清理回调还没连上, frame_exporter_ 会保留失效对象)。
+    auto clear_marks = [this, exporter](QThread* finished_thread) {
+        if (frame_export_thread_ == finished_thread) frame_export_thread_ = nullptr;
+        if (frame_exporter_ == exporter) frame_exporter_ = nullptr;
+    };
+
     auto* thread = export_workers_.StartWorker(
         exporter,
         [exporter, url, output_dir, normalized_format, jpg_quality, normalized_interval]() {
             exporter->Export(url, output_dir, normalized_format, jpg_quality, normalized_interval);
         },
-        [exporter]() { exporter->Cancel(); });
+        [exporter]() { exporter->Cancel(); },
+        clear_marks);
 
     frame_export_thread_ = thread;
     frame_exporter_ = exporter;
-
-    // 线程退出后清掉"当前任务"标记。线程的 deleteLater 由 QtWorkerOwner 负责,
-    // 这里只清指针, 不碰对象。
-    auto clear_marks = [this, thread, exporter]() {
-        if (frame_export_thread_ == thread) frame_export_thread_ = nullptr;
-        if (frame_exporter_ == exporter) frame_exporter_ = nullptr;
-    };
-    // finished 是在 isFinished 置位之后发出的, 所以这里判 isFinished 就够:
-    // 已经跑完的线程不会再发 finished, 只能就地清标记。
-    if (thread->isFinished()) {
-        clear_marks();
-    } else {
-        connect(thread, &QThread::finished, this, clear_marks);
-    }
 }
 
 void MediaPlayer::CancelVideoFrameExport() {
@@ -841,11 +863,32 @@ void MediaPlayer::StartMediaExport(const exporter::ExportOptions& opt) {
     exporter->SetCancelToken(task_manager_.Token(kSlotMediaExport));
 
     // 同样先连信号再起线程: worker 可能一进门就因为参数不对而立刻报错。
-    connect(exporter, &exporter::MediaExporter::ExportStarted, this, &MediaPlayer::MediaExportStarted);
-    connect(exporter, &exporter::MediaExporter::ExportProgress, this, &MediaPlayer::MediaExportProgress);
-    connect(exporter, &exporter::MediaExporter::ExportFinished, this, &MediaPlayer::MediaExportFinished);
-    connect(exporter, &exporter::MediaExporter::ExportCanceled, this, &MediaPlayer::MediaExportCanceled);
-    connect(exporter, &exporter::MediaExporter::ExportError, this, &MediaPlayer::MediaExportError);
+    // 每次发起自增代际号: 转发信号只接受当前代际,
+    // 旧任务(被取消但线程还在排队终态)的信号会被丢弃, 不会串到本次新任务。
+    const quint64 gen = ++media_export_gen_;
+
+    // 先连信号再起线程: worker 可能一进门就因为参数不对而立刻报错。
+    // 转发前做代际校验, 丢弃非当前任务的迟到信号。
+    connect(exporter, &exporter::MediaExporter::ExportStarted, this, [this, gen](qint64 d) {
+        if (media_export_gen_ != gen) return;
+        emit MediaExportStarted(d);
+    });
+    connect(exporter, &exporter::MediaExporter::ExportProgress, this, [this, gen](int p) {
+        if (media_export_gen_ != gen) return;
+        emit MediaExportProgress(p);
+    });
+    connect(exporter, &exporter::MediaExporter::ExportFinished, this, [this, gen](const QString& p) {
+        if (media_export_gen_ != gen) return;
+        emit MediaExportFinished(p);
+    });
+    connect(exporter, &exporter::MediaExporter::ExportCanceled, this, [this, gen](const QString& p) {
+        if (media_export_gen_ != gen) return;
+        emit MediaExportCanceled(p);
+    });
+    connect(exporter, &exporter::MediaExporter::ExportError, this, [this, gen](const QString& m) {
+        if (media_export_gen_ != gen) return;
+        emit MediaExportError(m);
+    });
 
     // 终态上报 (登记在 quit 之前, 保证 WaitForIdle 看到的是终态而不是"还在跑")
     connect(exporter, &exporter::MediaExporter::ExportFinished, this,
@@ -860,22 +903,18 @@ void MediaPlayer::StartMediaExport(const exporter::ExportOptions& opt) {
         task_manager_.End(kSlotMediaExport, task_id, task::TaskState::Failed);
     });
 
-    auto* thread = export_workers_.StartWorker(exporter, [exporter, opt]() { exporter->Export(opt); },
-                                               [exporter]() { exporter->Cancel(); });
-    media_export_thread_ = thread;
-    media_exporter_ = exporter;
-
     // 线程退出后清标记 (不覆盖后来启动的新导出: 两个指针都比过再清)。
-    // 对象回收由 QtWorkerOwner 负责。
-    auto clear_marks = [this, thread, exporter]() {
-        if (media_export_thread_ == thread) media_export_thread_ = nullptr;
+    // 作为 on_finished 在 start() 之前连接, 消除竞态。对象回收由 QtWorkerOwner 负责。
+    auto clear_marks = [this, exporter](QThread* finished_thread) {
+        if (media_export_thread_ == finished_thread) media_export_thread_ = nullptr;
         if (media_exporter_ == exporter) media_exporter_ = nullptr;
     };
-    if (thread->isFinished()) {
-        clear_marks();
-    } else {
-        connect(thread, &QThread::finished, this, clear_marks);
-    }
+
+    auto* thread = export_workers_.StartWorker(exporter, [exporter, opt]() { exporter->Export(opt); },
+                                               [exporter]() { exporter->Cancel(); },
+                                               clear_marks);
+    media_export_thread_ = thread;
+    media_exporter_ = exporter;
 }
 
 void MediaPlayer::CancelMediaExport() {
@@ -896,7 +935,7 @@ void MediaPlayer::StartContainerStructureAnalysis(const QString& url) {
         bool ok = false;
         try {
             analyzer::ContainerStructureAnalyzer analyzer;
-            ok = analyzer.Analyze(url_copy, cs_result);
+            ok = analyzer.Analyze(url_copy, cs_result, token.flag());
         } catch (const std::exception& e) {
             LOG_ERROR("后台容器结构分析异常: " + std::string(e.what()));
         } catch (...) {

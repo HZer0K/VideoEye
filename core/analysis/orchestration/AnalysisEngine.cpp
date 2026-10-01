@@ -11,6 +11,7 @@
 #include "core/analysis/quality/AudioQcAnalyzer.h"
 #include "core/analysis/quality/ColorHdrAnalyzer.h"
 #include "core/analysis/streaming/SegmentQcAnalyzer.h"
+#include "core/analysis/orchestration/ffmpeg_interrupt.h"  // 共享的 FFmpeg 中断回调
 #include "core/media/probe/FileProbe.h"
 #include "core/media/streaming/ManifestText.h"
 
@@ -48,23 +49,8 @@ constexpr int kProgressMinPackets = 2000;
 constexpr int64_t kMaxLayoutScanBytes = 8 * 1024 * 1024;  // moov/mdat 顺序扫描上限
 
 // ---- FFmpeg 中断机制 ----
-// 让 avformat_open_input / avformat_find_stream_info / av_read_frame 在"打开超时"或
-// "用户取消"时能及时从阻塞的网络 IO 中退出（否则离线分析遇到不可达 RTSP/HTTP 会长时间卡死）。
-// 打开/探测阶段给一个绝对截止时间；进入逐包扫描阶段后只响应取消（不误伤长本地文件）。
-struct AvInterruptState {
-    std::atomic<bool>* cancel = nullptr;  // 指向 AnalysisEngine 的取消标记
-    int64_t deadline_us = 0;              // >0 表示有绝对截止时间
-};
-
-int AvIoInterruptCallback(void* opaque) {
-    const auto* state = reinterpret_cast<const AvInterruptState*>(opaque);
-    if (state->cancel && state->cancel->load(std::memory_order_acquire)) return 1;
-    if (state->deadline_us > 0 && av_gettime() > state->deadline_us) return 1;
-    return 0;
-}
-
-constexpr int64_t kOpenTimeoutUs = 15'000'000;    // 打开输入的最大等待
-constexpr int64_t kProbeTimeoutUs = 30'000'000;   // 探测流信息的最大等待
+// AvInterruptState / AvIoInterruptCallback / kOpenTimeoutUs / kProbeTimeoutUs
+// 已抽到 ffmpeg_interrupt.h 供所有分析器共享（见上方 include）。
 
 // 大端读取（MP4 box header）
 uint32_t ReadBe32(const unsigned char* p) {
