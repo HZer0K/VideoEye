@@ -279,6 +279,11 @@ void DiagnosticsPage::OnFacadeFinished(quint64 generation, bool completed,
                                        const analyzer::AnalysisResult& result) {
     if (generation != generation_) return;
 
+    // P0 修复: 把扫描结果写回 facade。之前这里只置了 has_result_ 却没调用
+    // facade_->SetResult(result)，导致下面 Evaluate() 读到的是默认构造的空
+    // AnalysisResult —— 问题清单/评分/码率-GOP/音频QC/HDR/字幕页面全部拿到空数据，
+    // 报告导出也基于空结果。现在统一以本次扫描结果作为唯一数据源。
+    facade_->SetResult(result);
     has_result_ = true;
 
     const double elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -294,6 +299,10 @@ void DiagnosticsPage::OnFacadeFinished(quint64 generation, bool completed,
     SetScanButtonState(false);
     progress_bar_->setValue(100);
     progress_bar_->setFormat(completed ? tr("分析完成") : tr("已取消（结果不完整）"));
+
+    // 扫描拿到结果后恢复报告导出按钮: 之前只在扫描开始禁用、完成时漏恢复,
+    // 导致导出按钮永远处于禁用态。completed 与否都允许导出(已取消时也保留了部分结果)。
+    export_button_->setEnabled(has_result_);
 
     emit ScanFinished(completed);
 }
