@@ -72,10 +72,21 @@ private:
     // 被 join 的线程已经返回，只剩线程收尾）。
     void OnWorkerExited(quint64 finished_generation);
 
+    // 回收句柄。**仅在线程体已返回时调用**，否则会在调用线程上阻塞 ——
+    // 这正是本类要避免的事情，所以每个调用点都得先用 worker_finished_ 判过。
+    void ReapFinishedWorker();
+
     std::atomic<bool> running_{false};
     std::atomic<quint64> generation_{0};
     // 正在跑的那个线程对应的代际号，用来忽略迟到的 WorkerExited。
     std::atomic<quint64> worker_generation_{0};
+    // worker_ 对应的线程体**是否已经返回**。初值 true(还没有线程)。
+    //
+    // 为什么需要它: "句柄可 join" ≠ "线程还在跑"。上一轮结束的 WorkerExited 一旦被
+    // 处理过（哪怕当时没有排队请求，什么都没做），就再也不会来第二次；此时若只看
+    // worker_.joinable() 就判"旧线程还活着"，新请求会被排进 pending_ 而永远没人叫醒。
+    // 有了这个标志，StartAnalysis 才能安全地区分「真在跑 → 排队」和「已结束 → 就地回收」。
+    std::atomic<bool> worker_finished_{true};
     std::thread worker_;
     analyzer::AnalysisEngine engine_;
 

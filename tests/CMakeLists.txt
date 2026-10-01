@@ -544,6 +544,23 @@ target_link_libraries(test_media_exporter PRIVATE
 add_test(NAME MediaExporterTests COMMAND test_media_exporter)
 
 # =================================================
+# 测试 38：QtAnalysisController 线程句柄回收（复查 P1-1）
+# 说明: 上一轮分析结束的 WorkerExited 被消费后若没有 join，句柄会一直 joinable，
+#       于是下一次 StartAnalysis 误判"旧线程还活着"而把请求排进 pending_ 永久等待。
+#       用极小 HLS 清单做输入（纯 stdlib 清单解析，快且确定），完整穿过
+#       "工作线程 -> 引擎 -> 回调 -> 排队投递" 这条链。不需要 QPA 平台插件。
+# =================================================
+videoeye_add_test(test_qt_analysis_controller
+    unit/test_qt_analysis_controller.cpp
+)
+target_link_libraries(test_qt_analysis_controller PRIVATE
+    VideoEyeQtAdapters
+    VideoEyeAnalysis
+    VideoEyeDomain
+    Qt6::Core)
+add_test(NAME QtAnalysisControllerLifecycleTests COMMAND test_qt_analysis_controller)
+
+# =================================================
 # 测试 32：EventTimelineView 三个开关的初始状态（评审 P1-4）
 # 说明: 控件是在 AnalysisPanel 注入功能开关钩子之前建的，注入后必须回写，
 #       否则界面显示「启用分析」而面板里其实是关的。用 offscreen 平台跑，
