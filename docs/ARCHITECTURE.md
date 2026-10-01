@@ -16,10 +16,11 @@ targe —— 目录只是命名习惯，编译器不认识；能被机器检查�
 |------|--------------|------|----------|
 | `core/domain/model/` | `VideoEyeDomain` | 纯结果类型与值对象 | standard library、Qt Core（历史包袱，见 §5） |
 | `infrastructure/config`<br>`infrastructure/serialization`<br>`infrastructure/logging`<br>`infrastructure/concurrency` | `VideoEyeInfrastructure` | 配置、JSON、日志、后台任务调度 | standard library |
+| `core/ffmpeg_io/` | `VideoEyeFfmpegIo` | FFmpeg 阻塞 IO 的中断与超时（**叶子模块**，分析/播放/导出共用） | FFmpeg |
 | `core/media/codec`<br>`core/media/container`<br>`core/media/probe`<br>`core/media/streaming` | `VideoEyeMedia` | 容器字节级解析、码流参数集解析、文件探测 | domain、infrastructure |
-| `core/analysis/stream`<br>`core/analysis/orchestration`<br>`core/analysis/codec`<br>`core/analysis/container`<br>`core/analysis/quality`<br>`core/analysis/diagnostics` | `VideoEyeAnalysis` | 各分析器、执行引擎与编排 | domain、media、infrastructure、FFmpeg |
-| `core/exporter/` | `VideoEyeExporter` | 转码 / remux 导出 | domain、infrastructure、FFmpeg |
-| `core/player/` | `VideoEyePlayback` | 播放会话、解码、抽帧 | domain、analysis、exporter、infrastructure、qt、FFmpeg |
+| `core/analysis/stream`<br>`core/analysis/orchestration`<br>`core/analysis/codec`<br>`core/analysis/container`<br>`core/analysis/quality`<br>`core/analysis/diagnostics` | `VideoEyeAnalysis` | 各分析器、执行引擎与编排 | domain、media、infrastructure、ffmpeg_io、FFmpeg |
+| `core/exporter/` | `VideoEyeExporter` | 转码 / remux 导出 | domain、infrastructure、ffmpeg_io、FFmpeg |
+| `core/player/` | `VideoEyePlayback` | 播放会话、解码、抽帧 | domain、analysis、exporter、infrastructure、ffmpeg_io、qt、FFmpeg |
 | `core/qc/` | `VideoEyeQc` | 规则表、模板映射、批处理、对比 | domain、analysis、infrastructure |
 | `core/reporting/` | `VideoEyeReporting` | 报告导出（JSON / CSV / HTML / PDF / TXT） | domain、qc、infrastructure |
 | `core/ffmpeg/` | `VideoEyeFfmpegTools` | 原生 ffmpeg 命令行工作台 | infrastructure、Qt Core |
@@ -42,6 +43,7 @@ include 目录 —— 挂 PRIVATE 会让下游"能编译符号、找不到头文
 graph TD
     DOMAIN[core/domain<br/>结果类型] --> STD[(stdlib / Qt Core)]
     INFRA[infrastructure<br/>配置/日志/序列化/任务] --> STD
+    FFIO[core/ffmpeg_io<br/>阻塞 IO 中断/超时] --> STD
     MEDIA[core/media<br/>容器与码流解析] --> DOMAIN
     MEDIA --> INFRA
     ANALYSIS[core/analysis<br/>分析器与执行引擎] --> DOMAIN
@@ -71,6 +73,24 @@ graph TD
    generation 与信号。
 3. **`media` 不依赖 FFmpeg**（除 video 解码那一层以外）。MP4 与 extradata 都是自研解析，
    这也是它们能被纯 stdlib 单元测试直接覆盖的原因。
+
+### 3.0 `core/ffmpeg_io`：为什么"取消能不能及时生效"要单独成一层
+
+`AVIOInterruptCB`（让 `avformat_open_input` / `avformat_find_stream_info` / `av_read_frame`
+从阻塞的网络 IO 里退出来）对每个碰 FFmpeg 的模块都是同一件事，但它的**归属**曾经是错的：
+这套机制住在 `core/analysis/orchestration`，导出层（`VideoEyeExporter`）够不着，于是导出
+链路只能在 `av_read_frame()` **返回之后**查取消标志 —— 输入是网络地址或管道时，那个返回
+永远不会来，`Cancel()` 形同虚设，关窗还会卡在后台线程回收上。
+
+所以它被下沉成一个**叶子模块**：只依赖 FFmpeg 公共头，不 include 任何 `core/` 层，
+analysis / playback / exporter 都能依赖它。`scripts/check_layering.py` 里对应一条
+"`core/ffmpeg_io` 不得 include 任何 core 层"的规则。
+
+API 有两条硬约束（写在 `FfmpegInterrupt.h` 顶部）：回调必须在 `avformat_open_input`
+**之前**装好（因此 `AVFormatContext` 得自己 `avformat_alloc_context`，不能传 `nullptr`
+让 FFmpeg 自己分配），且 `AvInterruptState` 的生命周期必须覆盖整个 IO 过程 ——
+它会被 `AVIOContext` / `URLContext` 各复制一份 `opaque` 指针，栈上的状态一返回就悬垂
+（`MediaPlayer::open_interrupt_` 因此是成员而不是局部变量）。
 
 ### 3.1 后台线程的归属
 

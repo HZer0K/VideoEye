@@ -1,5 +1,7 @@
 #include "core/player/VideoFrameExporter.h"
 
+#include "core/ffmpeg_io/FfmpegInterrupt.h"  // FFmpeg 阻塞 IO 的中断/超时
+
 #include <QDir>
 #include <QFile>
 #include <QImage>
@@ -98,14 +100,45 @@ void VideoFrameExporter::Export(const QString& url, const QString& output_dir,
     };
 
     std::string url_str = url.toStdString();
-    if (avformat_open_input(&fmt, url_str.c_str(), nullptr, nullptr) < 0) {
-        fail_now(QString("Failed to open: %1").arg(url));
+
+    // 输入上下文自己分配: AVIOInterruptCB 必须在 avformat_open_input 之前装好。
+    // 没有它时, 输入是网络地址/管道会一直阻塞在 IO 里, 用户点取消只能等 FFmpeg 自己超时
+    // (通常是无限期), 于是"取消抽帧"看起来完全没反应。
+    fmt = avformat_alloc_context();
+    if (!fmt) {
+        fail_now(QStringLiteral("Failed to alloc format context"));
         return;
     }
-    if (avformat_find_stream_info(fmt, nullptr) < 0) {
-        fail_now(QStringLiteral("Failed to find stream info"));
+    ffmpeg_io::AvInterruptState interrupt;
+    interrupt.cancel = &cancel_;
+    ffmpeg_io::AttachInterrupt(fmt, interrupt, ffmpeg_io::kOpenTimeoutUs);
+
+    const int open_ret = avformat_open_input(&fmt, url_str.c_str(), nullptr, nullptr);
+    if (open_ret < 0) {
+        // AVERROR_EXIT 只可能来自我们的中断回调(取消 / 打开超时): 取消不是失败。
+        if (open_ret == AVERROR_EXIT && IsCanceled()) {
+            finish(true, false);
+            return;
+        }
+        fail_now(open_ret == AVERROR_EXIT ? QStringLiteral("Open timed out")
+                                          : QString("Failed to open: %1").arg(url));
         return;
     }
+
+    // 探测阶段允许更长时间, 但仍受取消约束
+    interrupt.deadline_us = av_gettime() + ffmpeg_io::kProbeTimeoutUs;
+    const int probe_ret = avformat_find_stream_info(fmt, nullptr);
+    if (probe_ret < 0) {
+        if (probe_ret == AVERROR_EXIT && IsCanceled()) {
+            finish(true, false);
+            return;
+        }
+        fail_now(probe_ret == AVERROR_EXIT ? QStringLiteral("Probe timed out")
+                                           : QStringLiteral("Failed to find stream info"));
+        return;
+    }
+    // 进入逐帧读取: 关掉绝对截止时间, 只保留取消响应(长素材的正常读取可以远超打开超时)
+    interrupt.deadline_us = 0;
 
     const AVCodec* best_video_codec = nullptr;
     int vindex = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, &best_video_codec, 0);
@@ -338,6 +371,11 @@ void VideoFrameExporter::Export(const QString& url, const QString& output_dir,
         const int r = av_read_frame(fmt, pkt);
         if (r == AVERROR_EOF) {   // 正常读到文件尾
             av_packet_unref(pkt);
+            break;
+        }
+        if (r == AVERROR_EXIT) {   // 中断回调打断 = 用户取消, 不是读错误
+            av_packet_unref(pkt);
+            canceled = true;
             break;
         }
         if (r < 0) {   // 损坏 / 截断 / IO 错误: 不能报成功

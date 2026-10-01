@@ -66,6 +66,7 @@ file(GLOB_RECURSE QC_SOURCES CONFIGURE_DEPENDS "core/qc/*.cpp" "core/qc/*.h")
 file(GLOB_RECURSE REPORTING_SOURCES CONFIGURE_DEPENDS "core/reporting/*.cpp" "core/reporting/*.h")
 file(GLOB_RECURSE FFMPEGTOOL_SOURCES CONFIGURE_DEPENDS "core/ffmpeg/*.cpp" "core/ffmpeg/*.h")
 file(GLOB_RECURSE QTADAPTER_SOURCES CONFIGURE_DEPENDS "core/qt/*.cpp" "core/qt/*.h")
+file(GLOB_RECURSE FFMPEG_IO_SOURCES CONFIGURE_DEPENDS "core/ffmpeg_io/*.cpp" "core/ffmpeg_io/*.h")
 
 # ui/*.h 里有 Q_OBJECT，如果同时挂给静态库和主程序，AUTOMOC 会各生成一份
 # moc_*.cpp，链接期撞 LNK2005 重复定义 —— 所以 ui 头文件只给主程序自己用。
@@ -83,6 +84,7 @@ find_package(Threads REQUIRED)
 #
 #     domain          纯结果/值类型 (无 FFmpeg, 无 analyzer)
 #     infrastructure  配置 / 序列化 / 日志 / 线程
+#     ffmpeg_io       FFmpeg 阻塞 IO 的中断/超时 (叶子模块: 分析/播放/导出共用)
 #     media           容器字节级解析 + 码流参数集解析 (codec / container / probe / streaming)
 #     analysis        分析器与编排
 #     qc              规则 / 批处理 / 对比
@@ -116,6 +118,16 @@ target_link_libraries(VideoEyeDomain PUBLIC Qt6::Core)
 videoeye_add_module(VideoEyeInfrastructure ${INFRA_SOURCES})
 target_link_libraries(VideoEyeInfrastructure PUBLIC Threads::Threads)
 
+# --- ffmpeg_io: FFmpeg 阻塞 IO 的中断/超时（叶子模块） ---
+# 只依赖 FFmpeg 公共头，不 include 任何 core/ 层 —— 因此 analysis / playback /
+# exporter 三条链路都能安全地依赖它，不用把"取消能不能及时生效"各写一遍
+# （以前它住在 analysis 里，导出层够不着，于是导出的取消在网络输入下完全失效）。
+videoeye_add_module(VideoEyeFfmpegIo ${FFMPEG_IO_SOURCES})
+target_link_libraries(VideoEyeFfmpegIo
+    PUBLIC FFmpeg::avformat
+           FFmpeg::avutil
+)
+
 # --- media: 容器与码流的字节级解析 ---
 videoeye_add_module(VideoEyeMedia ${MEDIA_SOURCES})
 target_link_libraries(VideoEyeMedia
@@ -144,6 +156,8 @@ target_link_libraries(VideoEyeAnalysis
            Qt6::Core
            Qt6::Gui
     PRIVATE VideoEyeInfrastructure
+            # 分析器的打开/探测阶段装 FFmpeg 中断回调（core/ffmpeg_io）
+            VideoEyeFfmpegIo
 )
 
 # --- playback: 播放会话 / 解码 / 抽帧 / 可视化 ---
@@ -160,6 +174,9 @@ target_link_libraries(VideoEyePlayback
            FFmpeg::swresample
            Qt6::Core
            Qt6::Gui
+           # PUBLIC: MediaPlayer.h 里直接持有 ffmpeg_io::AvInterruptState 成员
+           # （打开/探测阶段的中断状态，生命周期必须覆盖上下文 —— 见该成员注释）
+           VideoEyeFfmpegIo
     PRIVATE VideoEyeAnalysis
             VideoEyeExporter
             VideoEyeInfrastructure
@@ -190,6 +207,8 @@ target_link_libraries(VideoEyeExporter
            FFmpeg::swresample
            Qt6::Core
     PRIVATE VideoEyeInfrastructure
+            # 导出的取消必须能打断 avformat_open_input / av_read_frame（core/ffmpeg_io）
+            VideoEyeFfmpegIo
 )
 
 # --- qc: 规则引擎 / 批处理 / 对比 ---

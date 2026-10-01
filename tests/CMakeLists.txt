@@ -561,6 +561,38 @@ target_link_libraries(test_qt_analysis_controller PRIVATE
 add_test(NAME QtAnalysisControllerLifecycleTests COMMAND test_qt_analysis_controller)
 
 # =================================================
+# 测试 39：FFmpeg 阻塞 IO 的中断/超时工具（复查 P1-3）
+# 说明: core/ffmpeg_io 是叶子模块, 只依赖 FFmpeg 公共头 —— 分析/播放/导出共用它
+#       把阻塞中的 avformat_* 踢出来。这里锁定它的判定语义(取消/超时/关闭超时)。
+# =================================================
+videoeye_add_test(test_ffmpeg_interrupt
+    unit/test_ffmpeg_interrupt.cpp
+)
+target_link_libraries(test_ffmpeg_interrupt PRIVATE VideoEyeFfmpegIo)
+add_test(NAME FfmpegInterruptTests COMMAND test_ffmpeg_interrupt)
+
+# =================================================
+# 测试 40：换媒体必须终止进行中的导出（复查 P1-2）
+# 说明: 用"只监听、从不回包"的本地端口做输入, 让旧导出稳定卡在阻塞 IO 里,
+#       再 Open() 一个新文件 —— 要求旧任务被真正终止(新导出请求不会被永久排队),
+#       且旧任务的终态信号不得串回新媒体上下文。需要事件循环, 不需要 QPA 平台插件。
+# =================================================
+videoeye_add_test(test_media_switch_export
+    unit/test_media_switch_export.cpp
+)
+target_link_libraries(test_media_switch_export PRIVATE
+    VideoEyePlayback
+    Qt6::Core)
+add_test(NAME MediaSwitchExportTests COMMAND test_media_switch_export)
+
+# 上面两个用例用 BlockingTcpEndpoint.h 起本地监听端口做"可控阻塞输入"，
+# 直接用 winsock，需要显式链 ws2_32（FFmpeg 的导入库不会替我们带进来）。
+if(WIN32)
+    target_link_libraries(test_media_exporter PRIVATE ws2_32)
+    target_link_libraries(test_media_switch_export PRIVATE ws2_32)
+endif()
+
+# =================================================
 # 测试 32：EventTimelineView 三个开关的初始状态（评审 P1-4）
 # 说明: 控件是在 AnalysisPanel 注入功能开关钩子之前建的，注入后必须回写，
 #       否则界面显示「启用分析」而面板里其实是关的。用 offscreen 平台跑，

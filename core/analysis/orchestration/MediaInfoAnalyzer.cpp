@@ -1,5 +1,5 @@
 #include "core/analysis/orchestration/MediaInfoAnalyzer.h"
-#include "core/analysis/orchestration/ffmpeg_interrupt.h"  // 共享 FFmpeg 中断回调
+#include "core/ffmpeg_io/FfmpegInterrupt.h"  // 共享 FFmpeg 中断回调
 
 #include <QFileInfo>
 
@@ -191,11 +191,9 @@ bool MediaInfoAnalyzer::Open(const QString& filePath, std::shared_ptr<std::atomi
 
     // 安装中断回调: 打开/探测阶段带绝对超时, 关闭流程(CancelAll)置标志后能及时退出,
     // 不再让后台 std::thread 卡在 FFmpeg 阻塞 IO 上、导致 WaitForAll 在 join 时挂死。
-    AvInterruptState interrupt;
+    ffmpeg_io::AvInterruptState interrupt;
     interrupt.cancel = cancel.get();
-    interrupt.deadline_us = av_gettime() + kOpenTimeoutUs;
-    fmt->interrupt_callback.callback = &AvIoInterruptCallback;
-    fmt->interrupt_callback.opaque = &interrupt;
+    ffmpeg_io::AttachInterrupt(fmt, interrupt, ffmpeg_io::kOpenTimeoutUs);
 
     AVDictionary* opts = nullptr;
     const AVInputFormat* iformat = nullptr;
@@ -231,7 +229,7 @@ bool MediaInfoAnalyzer::Open(const QString& filePath, std::shared_ptr<std::atomi
     }
 
     // 探测阶段允许更长时间, 但仍受取消/超时约束
-    interrupt.deadline_us = av_gettime() + kProbeTimeoutUs;
+    interrupt.deadline_us = av_gettime() + ffmpeg_io::kProbeTimeoutUs;
     if (avformat_find_stream_info(fmt, nullptr) < 0) {
         // 部分损坏文件拿不到完整流信息, 仍然保留已探测到的部分
         LOG_WARN("MediaInfoAnalyzer: find_stream_info 失败, 使用已探测到的部分信息");

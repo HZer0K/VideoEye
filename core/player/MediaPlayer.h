@@ -18,6 +18,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 }
 
+#include "core/ffmpeg_io/FfmpegInterrupt.h"
 #include "core/player/Decoders.h"
 #include "core/player/PlaybackClock.h"
 #include "core/player/StreamInfoExtractor.h"
@@ -132,6 +133,16 @@ public:
     void StartMediaExport(const exporter::ExportOptions& opt);
     // 同 CancelVideoFrameExport: 请求停止但不等待。
     void CancelMediaExport();
+
+    // 取消**全部**导出（抽帧 + 音视频），并作废各自的排队请求与代际号。
+    //
+    // 谁该调它: 任何"媒体上下文要换了"的时刻 —— 打开新文件（OpenInternal 会自己调）、
+    // 关闭/析构。以前这件事散在 UI 里做（MainWindow::OpenMedia 只调了抽帧那一半），
+    // 于是"媒体导出进行中打开新文件"会留下一个仍在跑、且终态信号还能串回界面的旧任务。
+    // 生命周期保证必须住在播放器里，UI 只负责重置自己的进度框。
+    // 代际号一并推进: 旧任务迟到的进度/完成/错误信号会被代际校验丢弃，
+    // 不会覆盖新媒体的界面状态。
+    void CancelAllExports();
 
     // 渲染抑制: 播放区被隐藏时跳过画面输出 (sws_scale + FrameReady),
     // 解码线程、实时分析与音频照常运行; 重新展开播放区即恢复画面。
@@ -265,6 +276,15 @@ private:
     int volume_ = 100;
     QString current_url_;
     QString last_open_error_;   // 最近一次 Open/OpenRawPcm 失败的详细原因
+
+    // 打开媒体时的 FFmpeg 中断状态（打开/探测阶段带绝对超时）。
+    //
+    // 为什么是**成员**而不是 OpenInternal 里的局部变量: 装到 AVFormatContext 上的回调
+    // 会被它派生出的 AVIOContext / URLContext 各复制一份，而上下文在打开之后归
+    // 播放会话所有、解复用阶段仍在用 —— 指向栈上状态的 opaque 一返回就悬垂。
+    // 作为成员，它的生命周期天然覆盖上下文；探测结束后 deadline 清零、cancel 保持
+    // 为空，于是对那些残留副本而言它只是个恒返回 0 的空钩子。
+    ffmpeg_io::AvInterruptState open_interrupt_;
 
     // 用户选择的定位方式 (菜单设置)。实际执行在 PlaybackSession::Seek()。
     std::atomic<model::SeekMode> seek_mode_{model::SeekMode::NearestKeyframe};

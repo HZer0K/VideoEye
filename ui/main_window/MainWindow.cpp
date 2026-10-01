@@ -702,9 +702,12 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
         return false;
     }
 
-    // 打开新文件前先终止进行中的导出 (与停止播放配套)
-    if (export_progress_dialog_ && export_progress_dialog_->isVisible()) {
-        player_->CancelVideoFrameExport();
+    // 打开新文件前收掉导出进度框。注意这里**只**管界面那部分 ——
+    // "终止进行中的导出"是媒体生命周期的保证, 归 MediaPlayer::CancelAllExports(),
+    // 由 OpenInternal() 统一负责（打开媒体的入口不止这一个）。以前这里只调了
+    // CancelVideoFrameExport(): 媒体转码导出既不会被取消、排队请求也没清,
+    // 旧任务还能把完成信号串回新媒体的界面。
+    if (export_progress_dialog_) {
         export_progress_dialog_->reset();
         export_progress_dialog_->hide();
     }
@@ -714,6 +717,9 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
     const QString suffix = QFileInfo(source).suffix().toLower();
     if (suffix == "yuv" || suffix == "nv12" || suffix == "rgb" ||
         suffix == "bgr" || suffix == "yuy2" || suffix == "raw") {
+        // 裸图像不走 player_->Open(), 拿不到 OpenInternal 里那次统一取消 ——
+        // 这里显式补上, 否则旧媒体的抽帧/转码导出会继续在后台跑。
+        player_->CancelAllExports();
         player_panel_->SetRawImageMode(true);
         player_panel_->SetCurrentSource(QString());
         current_media_url_.clear();

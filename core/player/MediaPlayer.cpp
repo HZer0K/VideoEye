@@ -125,10 +125,7 @@ MediaPlayer::~MediaPlayer() {
     // 先立"关机"标志: 析构期间线程收尾触发的 finished 回调绝不能再续跑排队的导出请求,
     // 否则会在 export_workers_ 正被拆掉的时候往里塞新线程。
     export_shutdown_ = true;
-    pending_frame_export_.reset();
-    pending_media_export_.reset();
-    CancelVideoFrameExport();
-    CancelMediaExport();
+    CancelAllExports();
     // 两类导出线程统一再收一轮: 由 export_workers_ 持有, 超时也不会被遗忘
     // (实在退不出来的会在它析构时脱管, 而不是被销毁)。
     export_workers_.StopAll(5000);
@@ -226,6 +223,13 @@ bool MediaPlayer::OpenRawPcm(const QString& url, const QString& demuxer_name, in
 
 bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_format, AVDictionary* input_options) {
     LOG_INFO("OpenInternal: " + url.toStdString());
+
+    // 换媒体 = 换上下文: 两类导出(抽帧 + 音视频转码)都必须在这里统一终止。
+    // 放在本函数而不是 UI 里, 是因为打开媒体的入口不止一个（Open / OpenRawPcm /
+    // 播放列表切换），任何一个入口漏掉"取消导出"都会留下旧任务写旧文件、
+    // 并把终态信号串回新媒体界面的问题。
+    CancelAllExports();
+
     Stop();
     playback_session_.Release();
 
@@ -278,24 +282,53 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     // 打开输入
     std::string url_str = url.toStdString();
     AVDictionary* open_options = input_options;
-    AVFormatContext* fmt = nullptr;
+
+    // 中断回调 + 打开/探测超时。
+    // 不可达的 URL、损坏文件、异常设备都会让 avformat_open_input /
+    // avformat_find_stream_info 长时间阻塞在 IO 上，而这条路径是在 UI 线程同步执行的
+    // —— 阻塞多久，界面就冻多久。装上回调后至少能靠绝对超时兜住。
+    // 这里不挂取消标志: 打开在 UI 线程上是串行发生的，不存在并发的第二个入口；
+    // 真正的问题（把打开整个挪到后台线程）见后续计划。
+    open_interrupt_.cancel = nullptr;
+    open_interrupt_.deadline_us = 0;
+
+    // 上下文必须自己分配: 回调要在 avformat_open_input **之前**装好。
+    AVFormatContext* fmt = avformat_alloc_context();
+    ffmpeg_io::AttachInterrupt(fmt, open_interrupt_, ffmpeg_io::kOpenTimeoutUs);
+
     int ret = avformat_open_input(&fmt, url_str.c_str(), input_format, open_options ? &open_options : nullptr);
     playback_session_.AdoptFormatContext(fmt);
     fmt = playback_session_.format_ctx();
     if (open_options) av_dict_free(&open_options);
     if (ret < 0) {
-        last_open_error_ = QString("打开输入失败: %1 | FFmpeg: %2").arg(url, AvErrorString(ret));
-        // 定向诊断: fMP4 分片缺 init 段等特征, 给出可操作的修复建议
-        const std::string extra = utils::DiagnoseUnopenableFile(url_str);
-        if (!extra.empty()) last_open_error_ += QString::fromStdString("；" + extra);
+        if (ret == AVERROR_EXIT) {
+            last_open_error_ = QString("打开输入超时 (超过 %1 秒): %2")
+                                   .arg(ffmpeg_io::kOpenTimeoutUs / 1000000)
+                                   .arg(url);
+        } else {
+            last_open_error_ = QString("打开输入失败: %1 | FFmpeg: %2").arg(url, AvErrorString(ret));
+            // 定向诊断: fMP4 分片缺 init 段等特征, 给出可操作的修复建议
+            const std::string extra = utils::DiagnoseUnopenableFile(url_str);
+            if (!extra.empty()) last_open_error_ += QString::fromStdString("；" + extra);
+        }
         emit OpenFailed(last_open_error_);
         return false;
     }
     LOG_INFO("OpenInternal: avformat_open_input OK");
 
+    // 探测阶段允许更长时间，但同样受绝对超时约束
+    open_interrupt_.deadline_us = av_gettime() + ffmpeg_io::kProbeTimeoutUs;
     ret = avformat_find_stream_info(fmt, nullptr);
+    // 探测一结束就关掉截止时间: 之后进入解复用/播放阶段，不能让打开期的超时
+    // 误杀正常的长素材读取。（回调本身留着，但已是一个恒返回 0 的空钩子。）
+    open_interrupt_.deadline_us = 0;
     if (ret < 0) {
-        last_open_error_ = QString("无法解析流信息 (文件可能损坏、截断或格式不受支持) | FFmpeg: %1").arg(AvErrorString(ret));
+        last_open_error_ = (ret == AVERROR_EXIT)
+                               ? QString("解析流信息超时 (超过 %1 秒): %2")
+                                     .arg(ffmpeg_io::kProbeTimeoutUs / 1000000)
+                                     .arg(url)
+                               : QString("无法解析流信息 (文件可能损坏、截断或格式不受支持) | FFmpeg: %1")
+                                     .arg(AvErrorString(ret));
         emit OpenFailed(last_open_error_);
         playback_session_.Release();
         return false;
@@ -983,6 +1016,16 @@ void MediaPlayer::CancelMediaExport() {
     // 用户主动取消: 排队中的请求一并作废(否则旧线程退出后界面还是会把导出跑完)。
     pending_media_export_.reset();
     RequestStopMediaExport();
+}
+
+void MediaPlayer::CancelAllExports() {
+    // 先推进代际号再请求停止: 旧任务随后投递到 UI 线程的终态/进度信号会被代际校验丢弃
+    // (它们属于"上一个媒体"的上下文, 覆盖到新媒体的界面状态就是错的)。
+    // 这一步也顺带让旧任务的 clear_marks 续跑逻辑失去意义 —— pending 紧接着就被清空。
+    ++frame_export_gen_;
+    ++media_export_gen_;
+    CancelVideoFrameExport();
+    CancelMediaExport();
 }
 
 void MediaPlayer::RequestStopMediaExport() {

@@ -4,6 +4,8 @@
   domain        不能 include core/analysis、core/media、core/player、core/qc、
                 core/reporting、FFmpeg
   infrastructure 不能 include core/*（只能靠 stdlib）
+  ffmpeg_io     叶子模块: 不能 include 任何 core/* 与 infrastructure/*
+                （只靠 FFmpeg 公共头，analysis/playback/exporter 共享它）
   media         不能 include core/analysis、core/player、core/qc、core/reporting
   analysis      不能 include core/player、core/qc、core/reporting
   qc            不能 include core/player、core/reporting
@@ -21,6 +23,11 @@ RULES = {
     "core/domain": ["core/analysis", "core/media", "core/player", "core/qc",
                     "core/reporting", "core/ffmpeg", "core/qt"],
     "infrastructure": ["core/"],
+    # 叶子模块: 只依赖 FFmpeg 公共头。这里逐层列名而不是写 "core/" ——
+    # 模块自己的头文件也长着 "core/..." 前缀，写 "core/" 会把自引用算成违规。
+    "core/ffmpeg_io": ["core/domain", "core/media", "core/analysis", "core/player",
+                       "core/qc", "core/reporting", "core/ffmpeg", "core/qt",
+                       "infrastructure/"],
     "core/media": ["core/analysis", "core/player", "core/qc", "core/reporting",
                    "core/ffmpeg", "core/qt"],
     "core/analysis": ["core/player", "core/qc", "core/reporting", "core/ffmpeg", "core/qt"],
@@ -50,6 +57,19 @@ def walk(d):
 # 别往里加新条目：这里的每一行都是"依赖方向没闭合"的欠条，迁移完就该删掉。
 EXCEPTIONS = set()
 
+def matches_banned(include, banned):
+    """include 是否落在禁区的**目录**里。
+
+    必须按路径段比较，不能裸 startswith: 禁 "core/ffmpeg" 时
+    "core/ffmpeg_io/xxx.h" 会被朴素前缀匹配误判成违规 —— 而这是两个不相干的层。
+    """
+    for entry in banned:
+        prefix = entry.rstrip("/")
+        if include == prefix or include.startswith(prefix + "/"):
+            return True
+    return False
+
+
 violations = []
 for layer, banned in RULES.items():
     for path in walk(layer):
@@ -60,7 +80,7 @@ for layer, banned in RULES.items():
         for inc in INC.findall(body):
             if (rel, inc) in EXCEPTIONS:
                 continue
-            if any(inc.startswith(b) for b in banned):
+            if matches_banned(inc, banned):
                 violations.append((layer, rel, "include " + inc))
         if layer in NO_FFMPEG and FFMPEG.search(body):
             violations.append((layer, rel, "include FFmpeg 头文件"))

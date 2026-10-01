@@ -1,5 +1,7 @@
 #include "core/exporter/MediaExporter.h"
 
+#include "core/ffmpeg_io/FfmpegInterrupt.h"  // FFmpeg 阻塞 IO 的中断/超时
+
 #include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
@@ -209,7 +211,8 @@ void MediaExporter::Export(const ExportOptions& opt) {
     // 临时文件名带 PID + UUID: 上一次导出卡住没退出时, 新导出不会写同一个 .part。
     const QString temp_path = opt.output_path + QStringLiteral(".part-") + UniqueSuffix();
 
-    auto cleanup_and_emit = [&](bool is_error, const QString& msg) {
+    // 释放全部 FFmpeg 对象。三条收尾路径(成功 / 失败 / 取消)都从这里走。
+    auto release_all = [&]() {
         if (pkt) av_packet_free(&pkt);
         if (frame) av_frame_free(&frame);
         free_streams(streams);
@@ -219,6 +222,10 @@ void MediaExporter::Export(const ExportOptions& opt) {
             out_fmt = nullptr;
         }
         if (in_fmt) { avformat_close_input(&in_fmt); in_fmt = nullptr; }
+    };
+
+    auto cleanup_and_emit = [&](bool is_error, const QString& msg) {
+        release_all();
         exporting_ = false;
         if (is_error) {
             QFile::remove(temp_path); // 删除不完整产物 (不碰原目标文件)
@@ -228,17 +235,64 @@ void MediaExporter::Export(const ExportOptions& opt) {
         }
     };
 
+    // 被取消打断的收尾: 只删临时文件, 保留原目标文件, 且**不报错** ——
+    // 取消不是失败, 报成 ExportError 会让界面弹出"导出失败"的假告警。
+    auto cancel_and_emit = [&]() {
+        release_all();
+        exporting_ = false;
+        QFile::remove(temp_path);
+        emit ExportCanceled(opt.output_path);
+    };
+
     const std::string in_path = opt.input_path.toStdString();
-    if (avformat_open_input(&in_fmt, in_path.c_str(), nullptr, nullptr) < 0) {
-        err_msg = QString("无法打开输入文件: %1").arg(opt.input_path);
+
+    // 输入上下文**必须自己分配**: AVIOInterruptCB 要在 avformat_open_input 之前装好，
+    // 而 avformat_open_input(&ctx=nullptr, ...) 会让 FFmpeg 内部自己分配，没有地方装。
+    in_fmt = avformat_alloc_context();
+    if (!in_fmt) {
+        err_msg = QStringLiteral("无法分配解封装上下文");
         cleanup_and_emit(true, err_msg);
         return;
     }
-    if (avformat_find_stream_info(in_fmt, nullptr) < 0) {
-        err_msg = "无法获取输入流信息";
+    // 打开阶段带绝对超时: 网络地址/管道/异常设备可能永远不返回;
+    // 取消标志复用本对象的 cancel_ —— 它正是 RequestStopMediaExport 置位的那个。
+    ffmpeg_io::AvInterruptState interrupt;
+    interrupt.cancel = &cancel_;
+    ffmpeg_io::AttachInterrupt(in_fmt, interrupt, ffmpeg_io::kOpenTimeoutUs);
+
+    const int open_ret = avformat_open_input(&in_fmt, in_path.c_str(), nullptr, nullptr);
+    if (open_ret < 0) {
+        // AVERROR_EXIT 只可能来自我们自己的中断回调: 取消 -> 走取消收尾; 超时 -> 报打开超时。
+        // (以前这里不看返回值来源, 被取消也会被报成"无法打开输入文件"。)
+        if (open_ret == AVERROR_EXIT && IsCanceled()) {
+            cancel_and_emit();
+            return;
+        }
+        err_msg = (open_ret == AVERROR_EXIT)
+                      ? QString("打开输入超时 (%1 秒): %2")
+                            .arg(ffmpeg_io::kOpenTimeoutUs / 1000000)
+                            .arg(opt.input_path)
+                      : QString("无法打开输入文件: %1").arg(opt.input_path);
         cleanup_and_emit(true, err_msg);
         return;
     }
+
+    // 探测阶段允许更长时间, 但仍受取消约束
+    interrupt.deadline_us = av_gettime() + ffmpeg_io::kProbeTimeoutUs;
+    const int probe_ret = avformat_find_stream_info(in_fmt, nullptr);
+    if (probe_ret < 0) {
+        if (probe_ret == AVERROR_EXIT && IsCanceled()) {
+            cancel_and_emit();
+            return;
+        }
+        err_msg = (probe_ret == AVERROR_EXIT) ? QStringLiteral("获取输入流信息超时")
+                                              : QStringLiteral("无法获取输入流信息");
+        cleanup_and_emit(true, err_msg);
+        return;
+    }
+    // 进入逐包读取/编码阶段: 关掉绝对截止时间, 只保留取消响应。
+    // (长素材的正常读取可以远超打开超时, 留着它会误杀。)
+    interrupt.deadline_us = 0;
 
     if (!open_output(out_fmt, temp_path.toStdString(), err_msg)) {
         // out_fmt 可能为 nullptr
@@ -546,11 +600,17 @@ void MediaExporter::Export(const ExportOptions& opt) {
 
     // 主读取循环
     bool reached_end = false;
+    // 被中断回调打断的读: 必须与"读错了"分开 —— 前者是取消, 后者是失败。
+    // (前者以前会被当成"读取输入文件失败", 用户点取消却看到一条报错。)
+    bool interrupted = false;
     while (!IsCanceled()) {
         const int ret = av_read_frame(in_fmt, pkt);
         if (ret < 0) {
             if (ret == AVERROR_EOF) {
                 reached_end = true;   // 正常读到文件尾
+            } else if (ret == AVERROR_EXIT) {
+                // 中断回调打断。导出阶段已把 deadline 清零, 所以只可能是用户取消。
+                interrupted = true;
             } else if (err_msg.isEmpty()) {
                 err_msg = "读取输入文件失败";   // 真实读错误, 不应被当作成功结束
             }
@@ -677,7 +737,7 @@ void MediaExporter::Export(const ExportOptions& opt) {
     if (frame) av_frame_free(&frame);
     free_streams(streams);
 
-    const bool canceled = IsCanceled();
+    const bool canceled = IsCanceled() || interrupted;
     if (out_fmt && out_fmt->pb) avio_closep(&out_fmt->pb);
     avformat_free_context(out_fmt);
     out_fmt = nullptr;

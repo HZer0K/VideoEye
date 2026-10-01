@@ -46,7 +46,8 @@ private:
                                model::ContainerStructureResult& result);
 
     /// FFmpeg 通用元数据回退分析
-    /// @param cancel 可选取消标志, 交给 FFmpeg 的 AVIO 中断回调(见 ffmpeg_interrupt.h)
+    /// @param cancel 可选取消标志, 交给 FFmpeg 的 AVIO 中断回调
+    ///               (见 core/ffmpeg_io/FfmpegInterrupt.h)
     bool AnalyzeWithFFmpeg(const QString& file_path, model::ContainerStructureResult& result,
                            std::shared_ptr<std::atomic<bool>> cancel = {});
 

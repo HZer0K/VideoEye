@@ -11,7 +11,7 @@
 #include "core/analysis/quality/AudioQcAnalyzer.h"
 #include "core/analysis/quality/ColorHdrAnalyzer.h"
 #include "core/analysis/streaming/SegmentQcAnalyzer.h"
-#include "core/analysis/orchestration/ffmpeg_interrupt.h"  // 共享的 FFmpeg 中断回调
+#include "core/ffmpeg_io/FfmpegInterrupt.h"  // 共享的 FFmpeg 中断回调
 #include "core/media/probe/FileProbe.h"
 #include "core/media/streaming/ManifestText.h"
 
@@ -50,7 +50,7 @@ constexpr int64_t kMaxLayoutScanBytes = 8 * 1024 * 1024;  // moov/mdat 顺序扫
 
 // ---- FFmpeg 中断机制 ----
 // AvInterruptState / AvIoInterruptCallback / kOpenTimeoutUs / kProbeTimeoutUs
-// 已抽到 ffmpeg_interrupt.h 供所有分析器共享（见上方 include）。
+// 已抽到 core/ffmpeg_io/FfmpegInterrupt.h 供所有分析器共享（见上方 include）。
 
 // 大端读取（MP4 box header）
 uint32_t ReadBe32(const unsigned char* p) {
@@ -297,11 +297,9 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     }
 
     // 中断回调：打开/探测阶段带绝对超时；扫描阶段只响应取消（见下方重置）。
-    AvInterruptState interrupt;
+    ffmpeg_io::AvInterruptState interrupt;
     interrupt.cancel = &cancel_requested_;
-    interrupt.deadline_us = av_gettime() + kOpenTimeoutUs;
-    fmt->interrupt_callback.callback = &AvIoInterruptCallback;
-    fmt->interrupt_callback.opaque = &interrupt;
+    ffmpeg_io::AttachInterrupt(fmt, interrupt, ffmpeg_io::kOpenTimeoutUs);
 
     int open_ret = 0;
     {
@@ -324,7 +322,7 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     {
         VE_PERF("avformat_find_stream_info");
         // 探测阶段允许更长时间，但仍受取消/超时约束
-        interrupt.deadline_us = av_gettime() + kProbeTimeoutUs;
+        interrupt.deadline_us = av_gettime() + ffmpeg_io::kProbeTimeoutUs;
         find_ret = avformat_find_stream_info(fmt, nullptr);
     }
     if (find_ret < 0) {

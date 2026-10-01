@@ -1,5 +1,5 @@
 #include "core/analysis/container/ContainerStructureAnalyzer.h"
-#include "core/analysis/orchestration/ffmpeg_interrupt.h"  // 共享 FFmpeg 中断回调
+#include "core/ffmpeg_io/FfmpegInterrupt.h"  // 共享 FFmpeg 中断回调
 #include "core/analysis/orchestration/FormatDetector.h"
 #include "core/analysis/container/Mp4BoxAnalyzer.h"
 #include "core/analysis/container/Mp4SampleTableAnalyzer.h"
@@ -440,11 +440,9 @@ bool ContainerStructureAnalyzer::AnalyzeWithFFmpeg(const QString& file_path,
 
     // 安装中断回调: 打开/探测阶段带绝对超时, 关闭流程(CancelAll)置标志后能及时退出,
     // 不再让后台 std::thread 卡在 FFmpeg 阻塞 IO 上、导致 WaitForAll 在 join 时挂死。
-    AvInterruptState interrupt;
+    ffmpeg_io::AvInterruptState interrupt;
     interrupt.cancel = cancel.get();
-    interrupt.deadline_us = av_gettime() + kOpenTimeoutUs;
-    fmt_ctx->interrupt_callback.callback = &AvIoInterruptCallback;
-    fmt_ctx->interrupt_callback.opaque = &interrupt;
+    ffmpeg_io::AttachInterrupt(fmt_ctx, interrupt, ffmpeg_io::kOpenTimeoutUs);
 
     int ret = avformat_open_input(&fmt_ctx, file_path.toUtf8().constData(), nullptr, nullptr);
     if (ret < 0) {
@@ -457,7 +455,7 @@ bool ContainerStructureAnalyzer::AnalyzeWithFFmpeg(const QString& file_path,
     }
 
     // 探测阶段允许更长时间, 但仍受取消/超时约束
-    interrupt.deadline_us = av_gettime() + kProbeTimeoutUs;
+    interrupt.deadline_us = av_gettime() + ffmpeg_io::kProbeTimeoutUs;
     ret = avformat_find_stream_info(fmt_ctx, nullptr);
     if (ret < 0) {
         avformat_close_input(&fmt_ctx);
