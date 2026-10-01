@@ -516,6 +516,34 @@ target_link_libraries(test_qc_report_exporter PRIVATE VideoEyeReporting)
 add_test(NAME QcReportExporterTests COMMAND test_qc_report_exporter)
 
 # =================================================
+# 测试 30：诊断结果流转（评审 P0 契约）
+# 锁定 AnalysisFacade::SetResult -> result() -> Evaluate 使用同一份结果,
+# 防止 DiagnosticsPage 漏写结果导致报告/评分/问题表全部为空。
+# =================================================
+videoeye_add_test(test_diagnostics_result_flow
+    unit/test_diagnostics_result_flow.cpp
+)
+target_sources(test_diagnostics_result_flow PRIVATE ../ui/AnalysisFacade.cpp)
+target_link_libraries(test_diagnostics_result_flow PRIVATE
+    VideoEyeQtAdapters
+    VideoEyeAnalysis
+    VideoEyeDomain
+    Qt6::Core)
+add_test(NAME DiagnosticsResultFlowTests COMMAND test_diagnostics_result_flow)
+
+# =================================================
+# 测试 31：MediaExporter 错误传播（评审 P1）
+# 损坏输入必须上报 ExportError, 绝不误报 ExportFinished。
+# =================================================
+videoeye_add_test(test_media_exporter
+    unit/test_media_exporter.cpp
+)
+target_link_libraries(test_media_exporter PRIVATE
+    VideoEyeExporter
+    Qt6::Core)
+add_test(NAME MediaExporterTests COMMAND test_media_exporter)
+
+# =================================================
 # 测试 29：FFmpeg 命令工作台（命令行解析 / 指令字典 / 命令解释）
 # 说明: 只测"文本 → 参数数组 → 解释"这条链，不启动任何子进程 ——
 #       真跑 ffmpeg 依赖机器上有没有装，属于集成验收而不是单元测试。

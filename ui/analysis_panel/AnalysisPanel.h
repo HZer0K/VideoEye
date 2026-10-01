@@ -34,6 +34,7 @@
 #include "ui/analysis_panel/SubtitleAuxPage.h"
 #include "ui/analysis_panel/VisualDefectPage.h"
 #include "ui/analysis_panel/DiagnosticsPage.h"
+#include "ui/analysis_panel/EventTimelineView.h"
 #include <chrono>
 #include <deque>
 #include <vector>
@@ -243,33 +244,6 @@ private:
         double timestamp_seconds = 0.0;
     };
 
-    struct AnalysisEventRecord {
-        int index = 0;
-        QString severity;
-        QString type;
-        int stream_index = -1;
-        qint64 pts = 0;
-        double timestamp_seconds = 0.0;
-        QString summary;
-        QString detail;
-    };
-
-    struct SyncSampleRecord {
-        int index = 0;
-        double audio_timestamp_seconds = 0.0;
-        double video_timestamp_seconds = 0.0;
-        double diff_ms = 0.0;
-        bool audio_anchor = false;
-    };
-
-    struct TimelineEventRecord {
-        int index = 0;
-        QString category;
-        double timestamp_seconds = 0.0;
-        QString label;
-        QString detail;
-    };
-
     // 初始化UI
     void SetupUI();
     // 将页面包裹 QScrollArea 并添加到页面列表
@@ -278,10 +252,6 @@ private:
     void SetupFrameTab();
     void SetupPacketTab();
     void SetupBitstreamTab();
-    void SetupEventAnalysisTab();
-    void SetupEventTab();
-    void SetupSyncTab();
-    void SetupTimelineTab();
     void SetupMacroblockTab();
     // 编码参数集（SPS/PPS/VPS/Sequence Header）解析页，与「码流分析」页是两回事：
     // 那一页看的是包/帧/码率，这一页看的是 extradata 里的编码参数。
@@ -301,20 +271,16 @@ private:
     void SetupAudioQcPage();
     void SetupColorHdrPage();
     void SetupSubtitleAuxPage();
+    // 事件 / 同步 / 时间轴三表聚合页：本体是 EventTimelineView，建页后注入 feature 钩子，
+    // 诊断页指针在 SetupUI 末尾注入（AppendSyncSample 需要喂同步样本给诊断页）。
+    void SetupEventTimelineView();
     void RebuildFrameTable();
     void RebuildGopTable();
     void RebuildAudioFrameTable();
     void RebuildPacketTable();
-    void RebuildEventTable();
-    void RebuildSyncTable();
-    void RebuildTimelineTable();
     void UpdateFrameSummary();
     void UpdateAudioFrameSummary();
     void UpdatePacketSummary();
-    void UpdateEventSummary();
-    void UpdateSyncSummary();
-    void UpdateTimelineSummary();
-    void UpdateTimelineChart();
     QString FrameTypeToString(int frame_type) const;
     QString PacketFlagsToString(int flags) const;
     QString PacketStreamTypeToName(int type) const;
@@ -325,25 +291,16 @@ private:
     void FlushPendingGopTableUpdates();
     void FlushPendingAudioFrameTableUpdates();
     void FlushPendingPacketTableUpdates();
-    void FlushPendingEventTableUpdates();
-    void FlushPendingSyncTableUpdates();
-    void FlushPendingTimelineTableUpdates();
     void RefreshStreamStatsUi(const model::StreamStats& stats);
     void SetTableItemText(QTableWidget* table, int row, int column, const QString& text);
     void AppendFrameRowToTable(const VideoFrameRecord& record);
     void AppendAudioFrameRowToTable(const AudioFrameRecord& record);
     void AppendPacketRowToTable(const PacketRecord& record);
-    void AppendEventRowToTable(const AnalysisEventRecord& record);
-    void AppendSyncRowToTable(const SyncSampleRecord& record);
-    void AppendTimelineRowToTable(const TimelineEventRecord& record);
     void UpdateGopRowInTable(int row, const GopSummary& summary);
     void OnExportFrameCsv();
     void OnExportAudioFrameCsv();
     void OnExportGopCsv();
     void OnExportPacketCsv();
-    void OnExportEventCsv();
-    void OnExportSyncCsv();
-    void OnExportTimelineCsv();
     void OnExportMp4Box();
     void OnFrameFilterChanged();
     void RefreshMacroblockUi();
@@ -368,7 +325,6 @@ private:
     // GOP 曲线数据源为 UI 侧 gop_summaries_ (统一口径, 见 RebuildGopTable)
     void UpdateGOPChart();
     void ResetStreamCharts();
-    void UpdateSyncChart();
     
     // 分析功能开关
     QMap<AnalysisFeature, bool> feature_enabled_;
@@ -423,26 +379,6 @@ private:
     QPushButton* export_packet_csv_button_;
     int packet_filter_mode_ = -1;  // -1=全部, 0=视频流, 1=音频流, 2=其他流
 
-    QWidget* event_analysis_tab_;
-    QTabWidget* event_analysis_sub_tabs_;
-
-    QWidget* event_tab_;
-    QLabel* event_summary_label_;
-    QTableWidget* event_table_;
-    QPushButton* export_event_csv_button_;
-
-    QWidget* sync_tab_;
-    QLabel* sync_summary_label_;
-    MetricChartWidget* sync_chart_ = nullptr;
-    QTableWidget* sync_table_;
-    QPushButton* export_sync_csv_button_;
-
-    QWidget* timeline_tab_;
-    QLabel* timeline_summary_label_;
-    MetricChartWidget* timeline_chart_ = nullptr;
-    QTableWidget* timeline_table_;
-    QPushButton* export_timeline_csv_button_;
-
     // 宏块分析标签页
     QWidget* macroblock_tab_;
     QLabel* macroblock_summary_label_;
@@ -485,21 +421,14 @@ private:
     // 字幕 / 时码 / 辅助数据页（已拆成独立的 SubtitleAuxPage）
     SubtitleAuxPage* subtitle_aux_page_ = nullptr;
 
+    // 事件 / 同步 / 时间轴三表聚合页（从 AnalysisPanel 拆出的 EventTimelineView）
+    EventTimelineView* event_timeline_view_ = nullptr;
+
     // 报告与批量 QC 页（功能 12）：模板选择 / 单文件报告 / 目录批量扫描 / 导出
     ui::ReportingPanel* reporting_panel_ = nullptr;
 
     // 控制按钮
     QPushButton* export_button_;          // 流统计导出 (HTML/JSON/TXT)
-    
-    // 图表数据系列
-    ChartSeries* sync_series_ = nullptr;
-    ChartSeries* timeline_video_series_ = nullptr;
-    ChartSeries* timeline_audio_series_ = nullptr;
-    ChartSeries* timeline_event_series_ = nullptr;
-    ChartAxis* sync_axis_x_ = nullptr;
-    ChartAxis* sync_axis_y_ = nullptr;
-    ChartAxis* timeline_axis_x_ = nullptr;
-    ChartAxis* timeline_axis_y_ = nullptr;
     
     // 定时器
     QTimer* update_timer_;
@@ -509,9 +438,6 @@ private:
     std::vector<VideoFrameRecord> frame_records_;
     std::vector<AudioFrameRecord> audio_frame_records_;
     std::vector<PacketRecord> packet_records_;
-    std::vector<AnalysisEventRecord> analysis_event_records_;
-    std::vector<SyncSampleRecord> sync_sample_records_;
-    std::vector<TimelineEventRecord> timeline_event_records_;
     std::vector<GopSummary> gop_summaries_;
     model::StreamStats pending_stream_stats_;
     bool has_pending_stream_stats_ = false;
@@ -522,22 +448,12 @@ private:
     bool audio_frame_summary_dirty_ = false;
     bool packet_table_dirty_ = false;
     bool packet_summary_dirty_ = false;
-    bool event_table_dirty_ = false;
-    bool event_summary_dirty_ = false;
-    bool sync_table_dirty_ = false;
-    bool sync_summary_dirty_ = false;
-    bool timeline_table_dirty_ = false;
-    bool timeline_summary_dirty_ = false;
     size_t frame_table_synced_record_count_ = 0;
     size_t gop_table_synced_count_ = 0;
     size_t audio_frame_table_synced_record_count_ = 0;
     size_t packet_table_synced_record_count_ = 0;
-    size_t event_table_synced_record_count_ = 0;
-    size_t sync_table_synced_record_count_ = 0;
-    size_t timeline_table_synced_record_count_ = 0;
     std::deque<qreal> bitrate_chart_values_;
     std::deque<qreal> fps_chart_values_;
-    std::deque<qreal> sync_chart_values_;
 
     // 当前视频文件路径 (供导出报告使用)
     std::string current_video_path_;

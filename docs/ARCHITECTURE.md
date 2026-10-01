@@ -148,7 +148,14 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
 | `AudioQcPage` | 响度 / 真峰值 / 削波 / 静音 / 声道相位 / metadata 一致性 |
 | `ColorHdrPage` | primaries / transfer / matrix / range / HDR 元数据 |
 | `SubtitleAuxPage` | 字幕 cue / SMPTE 时码 / 章节 / SCTE-35 / metadata |
+| `EventTimelineView` | 「事件与时间轴」聚合页：异常事件 / 时间轴 / 同步分析三个子页 + 各自表格、曲线、CSV 导出；内部用 0/1/2 编号，由面板注入 feature 钩子映射到 `AnalysisFeature` |
 | `DiagnosticsPage` | 全文件扫描 + QC 规则引擎：问题清单（逐秒码率/帧率曲线 + 问题表）、规则与阈值表、时间轴与同步子页；报告重算、`ApplySceneLink()` 与导出都在这里 |
+
+部分页面不持有全局状态但需要读写分析功能开关（`feature_enabled_`），用**注入钩子**代替反向
+依赖面板：`EventTimelineView::SetFeatureHooks(is_enabled, set_enabled)`，视图只认自己内部的
+0/1/2 编号，编号到 `AnalysisFeature` 的映射与 `AnalysisFeatureToggled` 转发由面板完成。
+同理，视图要把同步样本喂给诊断页时用 `SetDiagnosticsPage()` 注入（建页顺序解耦：在
+`SetupUI()` 末尾所有页都建好后注入）。
 
 几个页面共用的无状态小工具（`SeriesBatch` 批量提交曲线、`TableBatch` 批量填表、
 `SetTableItemText` 写单元格、`FormatMetricValue` / `FormatKb` / `AppendDecimated`）
@@ -181,12 +188,14 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   domain model；但 `ColorHdrPage.cpp` 仍显式 include `ColorHdrAnalyzer.h`、
   `BitrateGopPage.cpp` 仍 include `BitrateGopAnalyzer.h`（用 `BuildColorRows` 与
   `BitrateAnomalyType`）。这两个函数/枚举下放到 domain 之后，UI 的 cpp 也能彻底不碰分析器。
-- **`AnalysisPanel.cpp` 仍剩约 3500 行**。已拆出 8 个页面组件（见 4.1），包括最难的
+- **`AnalysisPanel.cpp` 仍剩约 2800 行**。已拆出 9 个页面组件（见 4.1），包括最难的
   「诊断与报告」—— 它既是页面，也是所有页面共用那一次 demux 的扫描总控
   （`AnalysisFacade` + `QcReport` + 扫描代数 + 时间轴状态都进了 `DiagnosticsPage`，
-  面板只剩进度同步与结果分发）。剩下没拆的是「码流分析」（合并了流/帧/包三页的
-  `bitstream_tab_` 与 `event_analysis_tab_`、`macroblock_tab_`），那一坨还是
-  建页面 + 攒记录 + 刷表 + 导 CSV 的老写法，属于"页面内聚"没走完的另一半。
+  面板只剩进度同步与结果分发），以及「事件与时间轴」聚合页（`EventTimelineView`，
+  异常事件 / 时间轴 / 同步分析三个子页连同表格、曲线、CSV 一起搬走）。
+  剩下没拆的是「码流分析」（合并了流/帧/包三页的 `bitstream_tab_` 与
+  `macroblock_tab_`），那一坨还是建页面 + 攒记录 + 刷表 + 导 CSV 的老写法，
+  属于"页面内聚"没走完的另一半。
 
 ## 6. 怎么校验边界
 
