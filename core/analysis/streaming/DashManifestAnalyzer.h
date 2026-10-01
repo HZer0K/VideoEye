@@ -14,6 +14,7 @@
 //     MPD 是结构固定的 XML，一个极简的标签扫描器就够用（不处理 CDATA / 实体 / DTD）。
 //   - 只读本地文件；远程 URI 只登记不下载。
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -41,15 +42,20 @@ public:
     DashManifestAnalyzer();
     ~DashManifestAnalyzer();
 
+    // cancel: 可选的取消标志（nullptr = 不关心取消）。SegmentTimeline 的 <S r=...> 展开
+    // 与分片枚举都可能极大，解析期间必须能被中断。
     bool AnalyzeFile(const std::string& file_path, model::StreamingPackageResult& out,
-                     const DashManifestOptions& options = DashManifestOptions{});
+                     const DashManifestOptions& options = DashManifestOptions{},
+                     const std::atomic<bool>* cancel = nullptr);
 
     static bool ParseText(const std::string& text, const std::string& base_dir, model::StreamingPackageResult& out,
-                          const DashManifestOptions& options = DashManifestOptions{});
+                          const DashManifestOptions& options = DashManifestOptions{},
+                          const std::atomic<bool>* cancel = nullptr);
 
     // 纯逻辑校验：在 out 上补齐 DASH 侧 issues。幂等（只删自己产出的 code 再重加）。
     static void Validate(model::StreamingPackageResult& out,
-                         const DashManifestOptions& options = DashManifestOptions{});
+                         const DashManifestOptions& options = DashManifestOptions{},
+                         const std::atomic<bool>* cancel = nullptr);
 
     void Reset();
 

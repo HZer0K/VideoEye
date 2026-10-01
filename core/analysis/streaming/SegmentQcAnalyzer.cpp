@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "core/media/streaming/ManifestText.h"
+#include "core/analysis/streaming/StreamingCancel.h"
 
 namespace videoeye {
 namespace analyzer {
@@ -125,9 +126,11 @@ bool ProbeFmp4Segment(model::SegmentInfo& seg, uint32_t fallback_timescale) {
 
 // 探测一组分片（HLS 的一个 media playlist / DASH 的一个 representation）
 void ProbeSegmentRange(std::vector<model::SegmentInfo>& segments, uint32_t init_timescale,
-                       const SegmentQcOptions& options) {
+                       const SegmentQcOptions& options, const std::atomic<bool>* cancel) {
     uint32_t probed = 0;
     for (model::SegmentInfo& seg : segments) {
+        // 这层是逐分片的磁盘 stat + fMP4 头解析，大型包最耗时的就是它
+        if (ShouldCheckStreamingCancel(probed) && IsStreamingCancelled(cancel)) return;
         if (seg.partial)
             continue;
         if (probed >= options.max_probe_segments)
@@ -178,11 +181,13 @@ std::vector<double> KeyframeTimesOf(const std::vector<model::SegmentInfo>& segme
 // 公开接口
 // ---------------------------------------------------------------------------
 
-bool SegmentQcAnalyzer::ProbeSegments(model::StreamingPackageResult& result, const SegmentQcOptions& options) {
+bool SegmentQcAnalyzer::ProbeSegments(model::StreamingPackageResult& result, const SegmentQcOptions& options,
+                                      const std::atomic<bool>* cancel) {
     uint32_t probed_units = 0;
     const uint32_t kMaxUnits = 64; // package 级上限：再多的码率层也没必要全探测
 
     for (model::MediaPlaylistInfo& pl : result.playlists) {
+        if (IsStreamingCancelled(cancel)) return true;
         if (probed_units >= kMaxUnits)
             break;
         ++probed_units;
@@ -190,10 +195,11 @@ bool SegmentQcAnalyzer::ProbeSegments(model::StreamingPackageResult& result, con
         if (pl.has_init_section && !pl.init_resolved_path.empty()) {
             timescale = ProbeInitTimescale(pl.init_resolved_path);
         }
-        ProbeSegmentRange(pl.segments, timescale, options);
+        ProbeSegmentRange(pl.segments, timescale, options, cancel);
     }
 
     for (model::DashRepresentationInfo& rep : result.representations) {
+        if (IsStreamingCancelled(cancel)) return true;
         if (probed_units >= kMaxUnits)
             break;
         ++probed_units;
@@ -201,7 +207,7 @@ bool SegmentQcAnalyzer::ProbeSegments(model::StreamingPackageResult& result, con
         if (!rep.init_resolved_path.empty()) {
             timescale = ProbeInitTimescale(rep.init_resolved_path);
         }
-        ProbeSegmentRange(rep.segments, timescale, options);
+        ProbeSegmentRange(rep.segments, timescale, options, cancel);
     }
 
     return true;
@@ -291,7 +297,8 @@ void SegmentQcAnalyzer::BuildLadder(model::StreamingPackageResult& result) {
     }
 }
 
-void SegmentQcAnalyzer::Validate(model::StreamingPackageResult& result, const SegmentQcOptions& options) {
+void SegmentQcAnalyzer::Validate(model::StreamingPackageResult& result, const SegmentQcOptions& options,
+                                 const std::atomic<bool>* cancel) {
     static const std::vector<const char*> kOwnCodes = {
         model::StreamingIssueCode::kHlsVariantResolutionMismatch,
         model::StreamingIssueCode::kHlsVariantCodecMismatch,
@@ -317,6 +324,7 @@ void SegmentQcAnalyzer::Validate(model::StreamingPackageResult& result, const Se
         int invalid = 0;
         std::string first_missing;
         for (const model::MediaPlaylistInfo& pl : result.playlists) {
+            if (IsStreamingCancelled(cancel)) return;
             for (const model::SegmentInfo& seg : pl.segments) {
                 if (seg.partial || seg.resolved_path.empty())
                     continue;
@@ -628,13 +636,17 @@ void SegmentQcAnalyzer::Validate(model::StreamingPackageResult& result, const Se
     }
 }
 
-bool SegmentQcAnalyzer::Analyze(model::StreamingPackageResult& result, const SegmentQcOptions& options) {
+bool SegmentQcAnalyzer::Analyze(model::StreamingPackageResult& result, const SegmentQcOptions& options,
+                                const std::atomic<bool>* cancel) {
     if (!result.valid)
         return false;
     if (options.probe_segments)
-        ProbeSegments(result, options);
+        ProbeSegments(result, options, cancel);
+    // 已被取消就别再建 ladder / 跑校验了：结果注定会被调用方丢弃，
+    // 继续跑只是让"取消"更晚生效。
+    if (IsStreamingCancelled(cancel)) return true;
     BuildLadder(result);
-    Validate(result, options);
+    Validate(result, options, cancel);
     return true;
 }
 

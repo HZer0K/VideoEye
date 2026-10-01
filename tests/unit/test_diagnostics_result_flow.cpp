@@ -1,17 +1,22 @@
-// 诊断结果流转回归测试（对应评审 P0）
+// 诊断结果流转回归测试（对应评审 P0 / P2）
 //
-// 根因: DiagnosticsPage::OnFacadeFinished 收到扫描结果却没有调用
+// 根因(已修): DiagnosticsPage::OnFacadeFinished 收到扫描结果却没有调用
 // facade_->SetResult(result)，导致 Evaluate() 读到默认构造的空 AnalysisResult，
 // 问题清单/评分/码率-GOP/音频QC/HDR/字幕页面全部拿到空数据，报告导出也基于空结果。
 //
-// 本测试锁定 facade 的契约：SetResult 之后 result() 必须返回写回的那一份，
-// 且 Evaluate 必须基于这份数据（而不是隐藏的默认空结果）。这正是"结果 / 评分 /
-// 问题表 / 报告导出都使用同一份结果"的前提。DiagnosticsPage::OnFacadeFinished
-// 现在已按此契约调用 SetResult。
+// 现在保存职责上移到 AnalysisFacade：它在发出 AnalysisFinished **之前**先把结果写进
+// result()，页面只负责展示。前两个测试锁定 SetResult/result 的契约；最后一个
+// 端到端跑通 controller 线程 -> 引擎 -> 回包 -> facade 落库 -> 信号 这条真实链路，
+// 证明"信号到达时结果已经就位"，而不是只证明 SetResult 能被调用。
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
+#include <QDir>
+#include <QElapsedTimer>
+#include <QFile>
 #include <QString>
+#include <QThread>
 
 #include "core/analysis/AnalysisResult.h"
 #include "core/domain/model/QcReport.h"
@@ -65,6 +70,73 @@ TEST(DiagnosticsResultFlow, WithoutSetResultResultStaysEmpty) {
     facade.SetResult(scan);
     facade.Evaluate(facade.result());
     EXPECT_EQ(facade.result().total_packets, 1357);  // 写回后才是真实数据
+}
+
+// 端到端信号链路：观察者在 AnalysisFinished 里读 facade.result()，必须已经是本次结果。
+//
+// 输入用一份极小的 HLS 清单 —— 清单解析走纯 stdlib 路径（不经 FFmpeg 解码），
+// 快且确定，但仍然完整地穿过"工作线程跑引擎 -> 回调 -> 排队投递 -> facade 落库 -> 信号"
+// 这一整条链。这正是以前漏写 SetResult 时唯一能暴露问题的位置：只测 SetResult 本身
+// 是测不出"页面忘了写"的。
+TEST(DiagnosticsResultFlow, FacadeSavesResultBeforeEmittingFinished) {
+    int argc = 1;
+    char arg0[] = "test_diagnostics_result_flow";
+    char* argv[] = {arg0, nullptr};
+    QCoreApplication app(argc, argv);
+
+    const QString manifest = QDir::tempPath() + "/videoeye_result_flow.m3u8";
+    {
+        QFile f(manifest);
+        ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Truncate)) << "无法写入测试清单";
+        f.write("#EXTM3U\n"
+                "#EXT-X-VERSION:3\n"
+                "#EXT-X-TARGETDURATION:4\n"
+                "#EXT-X-MEDIA-SEQUENCE:0\n"
+                "#EXTINF:4.0,\n"
+                "seg0.ts\n"
+                "#EXTINF:4.0,\n"
+                "seg1.ts\n"
+                "#EXT-X-ENDLIST\n");
+        f.close();
+    }
+
+    ui::AnalysisFacade facade;
+
+    bool finished = false;
+    bool completed = false;
+    quint64 observed_gen = 0;
+    // 观察者故意**只读 facade.result()**，不碰回调参数里的 result ——
+    // 这样一旦 facade 没保存，断言必然失败（正是旧 bug 的表现）。
+    analyzer::AnalysisResult seen_from_facade;
+
+    QObject::connect(&facade, &ui::AnalysisFacade::AnalysisFinished, &facade,
+                     [&](quint64 generation, bool done, const analyzer::AnalysisResult&) {
+                         seen_from_facade = facade.result();
+                         observed_gen = generation;
+                         completed = done;
+                         finished = true;
+                     });
+
+    const quint64 gen = facade.StartAnalysis(manifest.toStdString());
+    QElapsedTimer timer;
+    timer.start();
+    while (!finished && timer.elapsed() < 15000) {
+        QCoreApplication::processEvents();
+        QThread::msleep(5);
+    }
+
+    ASSERT_TRUE(finished) << "分析未在超时前回包";
+    EXPECT_EQ(observed_gen, gen);
+    EXPECT_TRUE(completed);
+
+    // 核心断言: 信号到达时 facade.result() 已经是本次扫描的结果。
+    EXPECT_EQ(seen_from_facade.container_format, "hls");
+    EXPECT_TRUE(seen_from_facade.streaming_analyzed);
+    EXPECT_EQ(seen_from_facade.streaming_package.playlists.size(), 1u);
+    EXPECT_DOUBLE_EQ(seen_from_facade.duration_seconds, 8.0);
+    EXPECT_GT(seen_from_facade.file_size_bytes, 0);
+
+    QFile::remove(manifest);
 }
 
 } // namespace

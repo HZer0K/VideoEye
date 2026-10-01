@@ -1,7 +1,6 @@
 #include "ui/analysis_panel/EventTimelineView.h"
 
 #include "ui/analysis_panel/AnalysisPageSupport.h"
-#include "ui/analysis_panel/DiagnosticsPage.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -12,6 +11,7 @@
 #include <QFileDialog>
 #include <QFile>
 #include <QMessageBox>
+#include <QSignalBlocker>
 #include <QTextStream>
 
 #include <deque>
@@ -63,10 +63,34 @@ void EventTimelineView::SetFeatureHooks(std::function<bool(int)> is_enabled,
                                         std::function<void(int, bool)> set_enabled) {
     is_enabled_ = std::move(is_enabled);
     set_enabled_ = std::move(set_enabled);
+    // 控件建得比钩子早，这里必须补一次回写（评审 P1-4）。
+    SyncTogglesFromHooks();
 }
 
-void EventTimelineView::SetDiagnosticsPage(DiagnosticsPage* page) {
-    diagnostics_page_ = page;
+void EventTimelineView::SyncTogglesFromHooks() {
+    // 三个 QCheckBox 在构造函数里就已建好，那时钩子还不存在，只能按默认值创建。
+    // 不回写的话界面显示"启用分析"，而面板 feature_enabled_ 里其实是关的 ——
+    // 数据处理被静默过滤，用户看到的界面与实际行为不一致。
+    const struct {
+        QCheckBox* box;
+        ViewFeature feature;
+    } toggles[] = {
+        {event_toggle_, ViewFeature::Event},
+        {sync_toggle_, ViewFeature::Sync},
+        {timeline_toggle_, ViewFeature::Timeline},
+    };
+
+    for (const auto& t : toggles) {
+        if (!t.box) continue;
+        // 没有钩子（独立使用本视图时）就保持控件现状，不做无意义的改写。
+        const bool enabled =
+            is_enabled_ ? is_enabled_(static_cast<int>(t.feature)) : t.box->isChecked();
+        // 必须屏蔽信号：setChecked() 会触发 toggled，而那个槽会回调 set_enabled_
+        // 改写面板的 feature_enabled_ 并转发 AnalysisFeatureToggled —— 那是"用户操作"
+        // 的语义，不该由一次初始化同步伪造出来。
+        const QSignalBlocker blocker(t.box);
+        t.box->setChecked(enabled);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -86,12 +110,12 @@ void EventTimelineView::SetupEventTab() {
     export_event_csv_button_ = new QPushButton(tr("导出 CSV"), event_tab_);
     toolbar_layout->addWidget(export_event_csv_button_);
 
-    QCheckBox* toggle = new QCheckBox(tr("启用分析"), event_tab_);
-    toggle->setChecked(is_enabled_ ? is_enabled_(static_cast<int>(ViewFeature::Event)) : true);
-    connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
+    event_toggle_ = new QCheckBox(tr("启用分析"), event_tab_);
+    event_toggle_->setChecked(is_enabled_ ? is_enabled_(static_cast<int>(ViewFeature::Event)) : true);
+    connect(event_toggle_, &QCheckBox::toggled, this, [this](bool checked) {
         if (set_enabled_) set_enabled_(static_cast<int>(ViewFeature::Event), checked);
     });
-    toolbar_layout->addWidget(toggle);
+    toolbar_layout->addWidget(event_toggle_);
     layout->addLayout(toolbar_layout);
 
     QGroupBox* table_group = new QGroupBox(tr("异常事件"), event_tab_);
@@ -137,12 +161,12 @@ void EventTimelineView::SetupSyncTab() {
     export_sync_csv_button_ = new QPushButton(tr("导出 CSV"), sync_tab_);
     toolbar_layout->addWidget(export_sync_csv_button_);
 
-    QCheckBox* toggle = new QCheckBox(tr("启用分析"), sync_tab_);
-    toggle->setChecked(is_enabled_ ? is_enabled_(static_cast<int>(ViewFeature::Sync)) : true);
-    connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
+    sync_toggle_ = new QCheckBox(tr("启用分析"), sync_tab_);
+    sync_toggle_->setChecked(is_enabled_ ? is_enabled_(static_cast<int>(ViewFeature::Sync)) : true);
+    connect(sync_toggle_, &QCheckBox::toggled, this, [this](bool checked) {
         if (set_enabled_) set_enabled_(static_cast<int>(ViewFeature::Sync), checked);
     });
-    toolbar_layout->addWidget(toggle);
+    toolbar_layout->addWidget(sync_toggle_);
     layout->addLayout(toolbar_layout);
 
     QGroupBox* chart_group = new QGroupBox(tr("音视频时间差"), sync_tab_);
@@ -201,12 +225,12 @@ void EventTimelineView::SetupTimelineTab() {
     export_timeline_csv_button_ = new QPushButton(tr("导出 CSV"), timeline_tab_);
     toolbar_layout->addWidget(export_timeline_csv_button_);
 
-    QCheckBox* toggle = new QCheckBox(tr("启用分析"), timeline_tab_);
-    toggle->setChecked(is_enabled_ ? is_enabled_(static_cast<int>(ViewFeature::Timeline)) : true);
-    connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
+    timeline_toggle_ = new QCheckBox(tr("启用分析"), timeline_tab_);
+    timeline_toggle_->setChecked(is_enabled_ ? is_enabled_(static_cast<int>(ViewFeature::Timeline)) : true);
+    connect(timeline_toggle_, &QCheckBox::toggled, this, [this](bool checked) {
         if (set_enabled_) set_enabled_(static_cast<int>(ViewFeature::Timeline), checked);
     });
-    toolbar_layout->addWidget(toggle);
+    toolbar_layout->addWidget(timeline_toggle_);
     layout->addLayout(toolbar_layout);
 
     QGroupBox* chart_group = new QGroupBox(tr("统一时间轴"), timeline_tab_);
@@ -334,11 +358,11 @@ void EventTimelineView::AppendSyncSample(const model::SyncSample& sample) {
     sync_summary_dirty_ = true;
     TrimRecords(sync_sample_records_, sync_table_synced_record_count_, sync_table_, sync_table_dirty_, kMaxSyncRecords);
 
-    // 同步采样同时喂给时间轴分析器（构建音视频偏移曲线）
-    if (diagnostics_page_) {
-        diagnostics_page_->OnSyncSample(sample.audio_timestamp_seconds * 1000.0,
-                                        sample.video_timestamp_seconds * 1000.0);
-    }
+    // 同步采样同时喂给时间轴分析器（构建音视频偏移曲线）。
+    // 广播信号而不是直调诊断页：谁来消费由 AnalysisPanel 决定，本视图不再认识
+    // DiagnosticsPage，两者可以各自单独构造与测试。
+    emit SyncSampleReceived(sample.audio_timestamp_seconds * 1000.0,
+                            sample.video_timestamp_seconds * 1000.0);
 }
 
 void EventTimelineView::ResetTimelineEventList() {

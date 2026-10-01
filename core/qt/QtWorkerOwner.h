@@ -69,6 +69,15 @@ public:
     int ActiveCount() const;
     int RetiringCount() const;
 
+    // 该线程是否仍归本对象持有且尚未结束（含"已请求停止但还卡在任务体里"的待回收线程）。
+    //
+    // 为什么需要它: 抽帧导出这类任务把产物写到**调用方指定的同一个目录**，文件名又只由
+    // 帧序号决定。旧线程超时没退出来时若照常启动新任务，两个线程会写同名的 frame_*.jpg
+    // 互相覆盖。调用方拿本方法确认旧线程真的结束了，再决定"直接启动"还是"排队等它"。
+    // 注意判定是保守的: finished 信号经队列投递，实际结束到 RemoveEntry 生效之间会有
+    // 极短暂的窗口仍返回 true —— 只会让调用方多排一次队，不会造成误判为"已结束"。
+    bool IsActive(QThread* thread) const;
+
 private:
     struct Entry {
         QThread* thread = nullptr;

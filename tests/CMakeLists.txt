@@ -544,6 +544,50 @@ target_link_libraries(test_media_exporter PRIVATE
 add_test(NAME MediaExporterTests COMMAND test_media_exporter)
 
 # =================================================
+# 测试 32：EventTimelineView 三个开关的初始状态（评审 P1-4）
+# 说明: 控件是在 AnalysisPanel 注入功能开关钩子之前建的，注入后必须回写，
+#       否则界面显示「启用分析」而面板里其实是关的。用 offscreen 平台跑，
+#       不需要显示器；只构造控件、不渲染，因此直接编 EventTimelineView 的源。
+# =================================================
+videoeye_add_test(test_event_timeline_view
+    unit/test_event_timeline_view.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/EventTimelineView.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+)
+target_link_libraries(test_event_timeline_view PRIVATE
+    VideoEyeDomain
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME EventTimelineViewToggleTests COMMAND test_event_timeline_view)
+set_tests_properties(EventTimelineViewToggleTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 37：码流/宏块新组件（评审 P2-8）
+# 说明: 与测试 32 同一类坑 —— 「启用分析」控件在组件构造时就建好了，而面板注入
+#       feature 钩子发生在那之后，注入时必须把真实状态回写控件。另外守住
+#       FramePacketView → StreamOverviewView 的 GOP 摘要桥接：这条链断了不会崩，
+#       只会让「最大GOP大小」与 GOP 分布曲线永远停在上一次的值，最难在界面上发现。
+#       用 offscreen 平台跑，不需要显示器；直接编这三个组件的源。
+# =================================================
+videoeye_add_test(test_stream_views
+    unit/test_stream_views.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/FramePacketView.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/StreamOverviewView.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/MacroblockView.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+)
+# FramePacketView.cpp 直接用 AV_PICTURE_TYPE_* / AV_PKT_FLAG_* / AVMEDIA_TYPE_*
+# （FFmpeg 公共常量），所以这里要拿到 avcodec 的 include 目录。
+target_link_libraries(test_stream_views PRIVATE
+    VideoEyeDomain
+    VideoEyeReporting
+    FFmpeg::avcodec
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME StreamViewsToggleTests COMMAND test_stream_views)
+set_tests_properties(StreamViewsToggleTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
 # 测试 29：FFmpeg 命令工作台（命令行解析 / 指令字典 / 命令解释）
 # 说明: 只测"文本 → 参数数组 → 解释"这条链，不启动任何子进程 ——
 #       真跑 ffmpeg 依赖机器上有没有装，属于集成验收而不是单元测试。

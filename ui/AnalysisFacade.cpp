@@ -24,8 +24,20 @@ AnalysisFacade::AnalysisFacade(QObject* parent)
     // 底层协调器的信号原样转发给本 facade 的信号，UI 只连 facade。
     connect(&impl_->coordinator, &qt::QtAnalysisController::ProgressReported,
             this, &AnalysisFacade::ProgressReported);
+    // AnalysisFinished 不是"原样转发"，而是 facade 自己先落库再转发。
+    //
+    // 为什么放在这里: 扫描结果必须先写进 facade，任何监听 AnalysisFinished 的人
+    // （页面、报告导出）才可能读到。以前这一步散在 DiagnosticsPage::OnFacadeFinished 里，
+    // 结果就是"页面忘了写"成了整个功能的单点故障 —— 信号发了、result() 还是默认空结果，
+    // 问题清单/评分/报告全空。编排层自己保存，页面只负责展示，才不会再漏。
     connect(&impl_->coordinator, &qt::QtAnalysisController::AnalysisFinished,
-            this, &AnalysisFacade::AnalysisFinished);
+            this, [this](quint64 generation, bool completed, const analyzer::AnalysisResult& result) {
+                // 只认当前代际: 旧任务迟到的回包不能覆盖新结果（与页面的过滤规则一致）。
+                if (generation == impl_->coordinator.generation()) {
+                    impl_->result = result;
+                }
+                emit AnalysisFinished(generation, completed, result);
+            });
     connect(&impl_->coordinator, &qt::QtAnalysisController::AnalysisFailed,
             this, &AnalysisFacade::AnalysisFailed);
 }

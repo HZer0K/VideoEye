@@ -138,6 +138,10 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   `ScanFinished` / `ScanCancelled` 同步给共用同一次扫描的几页，以及把结果分发给它们。
   需要跨页改选项（如字幕阈值从规则表同步）时用 `SetBeforeScanHook()` 注入钩子，
   页面之间不互相 include。
+- **一个页面可以是多个组件的组合**：外部 stack 的一页不一定等于一个组件。
+  「码流分析」页就是 `StreamOverviewView`（顶部流概览，固定高度让曲线一直可见）+
+  分隔条 + `FramePacketView`（底部视频帧/包/GOP/音频帧四张表，占剩余高度）拼成的，
+  拼装与两者之间的数据桥接在 `SetupBitstreamTab()` 里。
 
 | 组件 | 内容 |
 |------|------|
@@ -148,18 +152,25 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
 | `AudioQcPage` | 响度 / 真峰值 / 削波 / 静音 / 声道相位 / metadata 一致性 |
 | `ColorHdrPage` | primaries / transfer / matrix / range / HDR 元数据 |
 | `SubtitleAuxPage` | 字幕 cue / SMPTE 时码 / 章节 / SCTE-35 / metadata |
-| `EventTimelineView` | 「事件与时间轴」聚合页：异常事件 / 时间轴 / 同步分析三个子页 + 各自表格、曲线、CSV 导出；内部用 0/1/2 编号，由面板注入 feature 钩子映射到 `AnalysisFeature` |
+| `EventTimelineView` | 「事件与时间轴」聚合页：异常事件 / 时间轴 / 同步分析三个子页 + 各自表格、曲线、CSV 导出 |
+| `StreamOverviewView` | 「码流分析」页顶部：流概览 5 指标 + 码率 / 帧率 / GOP 三条趋势曲线 + 导出分析报告 |
+| `FramePacketView` | 「码流分析」页底部：视频帧 / 包 / GOP 摘要 / 音频帧四张表 + 记录缓存 + 增量刷新 + CSV + 帧包按 PTS 互跳 |
+| `MacroblockView` | 宏块分析：运动矢量表 + 矢量可视化 + 块大小 / 运动幅度分布 + CSV |
 | `DiagnosticsPage` | 全文件扫描 + QC 规则引擎：问题清单（逐秒码率/帧率曲线 + 问题表）、规则与阈值表、时间轴与同步子页；报告重算、`ApplySceneLink()` 与导出都在这里 |
 
 部分页面不持有全局状态但需要读写分析功能开关（`feature_enabled_`），用**注入钩子**代替反向
-依赖面板：`EventTimelineView::SetFeatureHooks(is_enabled, set_enabled)`，视图只认自己内部的
-0/1/2 编号，编号到 `AnalysisFeature` 的映射与 `AnalysisFeatureToggled` 转发由面板完成。
-同理，视图要把同步样本喂给诊断页时用 `SetDiagnosticsPage()` 注入（建页顺序解耦：在
-`SetupUI()` 末尾所有页都建好后注入）。
+依赖面板：`SetFeatureHooks(is_enabled, set_enabled)`，视图只认自己内部的编号
+（单开关的页如 `MacroblockView` / `StreamOverviewView` 用 0；多开关的如
+`EventTimelineView` / `FramePacketView` 用 0/1/2），编号到 `AnalysisFeature` 的映射与
+`AnalysisFeatureToggled` 转发由面板完成。**钩子注入时必须顺手把控件状态回写到界面**：
+「启用分析」勾选框是组件构造函数里建的，那时钩子还不存在，只记钩子不回写就会出现
+"界面显示已启用、面板里其实是关的"——数据被静默丢弃而界面毫无提示。
 
 几个页面共用的无状态小工具（`SeriesBatch` 批量提交曲线、`TableBatch` 批量填表、
 `SetTableItemText` 写单元格、`FormatMetricValue` / `FormatKb` / `AppendDecimated`）
-在 `ui/analysis_panel/AnalysisPageSupport.h`。
+在 `ui/analysis_panel/AnalysisPageSupport.h`；「码流分析」两个组件共用的记录结构
+（`VideoFrameRecord` / `GopSummary` / `AudioFrameRecord` / `PacketRecord`）在
+`ui/analysis_panel/StreamRecords.h`。
 
 **共享状态归属**：拆页面时最容易卡住的就是"两份数据谁持有"。这一轮定下来的规则是
 **谁产生谁持有，别人只读快照**：
@@ -170,7 +181,15 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   `DiagnosticsPage`**（`ApplySceneLink()`：改 facade + `Evaluate()` + 重刷问题表 + 外发
   `QcReportChanged`），面板只负责收尾回调 `ShowSceneLinkSummary()`；
 - 扫描结果 / QC 报告由 `DiagnosticsPage` 持有，其它页（码率 GOP、音频 QC、色彩 HDR、
-  字幕辅助、流媒体包、参数集）一律用 `result()` / `qcReport()` / `hasResult()` 取只读快照。
+  字幕辅助、流媒体包、参数集）一律用 `result()` / `qcReport()` / `hasResult()` 取只读快照；
+- GOP 摘要由 `FramePacketView` 从解码帧 `pict_type` 推导产出（`GopSummary`），
+  `StreamOverviewView` 用同一份数据填「最大GOP大小」并画「GOP 帧数分布」曲线。
+  两边不互相持有指针：`FramePacketView::FlushPending()` 在 GOP 数据有变化时发一次
+  `GopSummariesChanged()`，面板把它接到 `StreamOverviewView::SetGopSummaries()`。
+  刻意放在刷新节拍上发（而不是每个 GOP 边界都发），避免大向量被反复拷贝。
+- 页面之间**不互相 include、不互相持有指针**，跨页数据一律经面板接线，这样每个组件都能
+  单独构造、单独测试（`EventTimelineView::SyncSampleReceived` → `DiagnosticsPage::OnSyncSample`
+  也是同一套路，替代了早先的 `SetDiagnosticsPage()` 指针注入）。
 
 ## 5. 已知的历史包袱
 
@@ -188,14 +207,15 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   domain model；但 `ColorHdrPage.cpp` 仍显式 include `ColorHdrAnalyzer.h`、
   `BitrateGopPage.cpp` 仍 include `BitrateGopAnalyzer.h`（用 `BuildColorRows` 与
   `BitrateAnomalyType`）。这两个函数/枚举下放到 domain 之后，UI 的 cpp 也能彻底不碰分析器。
-- **`AnalysisPanel.cpp` 仍剩约 2800 行**。已拆出 9 个页面组件（见 4.1），包括最难的
-  「诊断与报告」—— 它既是页面，也是所有页面共用那一次 demux 的扫描总控
-  （`AnalysisFacade` + `QcReport` + 扫描代数 + 时间轴状态都进了 `DiagnosticsPage`，
-  面板只剩进度同步与结果分发），以及「事件与时间轴」聚合页（`EventTimelineView`，
-  异常事件 / 时间轴 / 同步分析三个子页连同表格、曲线、CSV 一起搬走）。
-  剩下没拆的是「码流分析」（合并了流/帧/包三页的 `bitstream_tab_` 与
-  `macroblock_tab_`），那一坨还是建页面 + 攒记录 + 刷表 + 导 CSV 的老写法，
-  属于"页面内聚"没走完的另一半。
+- **`AnalysisPanel.cpp` 已从 2787 行降到 745 行**，拆出 12 个页面组件（见 4.1）。
+  面板现在只剩协调职责：建页 → 注入 feature 钩子 → 播放期按开关过滤后转发数据 →
+  扫描结束后分发结果。历史上它同时兼着"页面 + 数据仓库 + 表格控制器"三个角色，
+  这一轮把最后两块也搬走了：「码流分析」（原 `bitstream_tab_` 合并的流/帧/包三页 →
+  `StreamOverviewView` + `FramePacketView`）与「宏块分析」（原 `macroblock_tab_` →
+  `MacroblockView`）。顺带清掉了随页面搬走后遗留的死代码：面板里那份从未被连接的
+  `OnExportMp4Box()` 与匿名命名空间的 `PopulateMp4BoxTablesInContainer()`（真正的实现
+  已在 `ContainerStructurePage.cpp` 里）、只写不读的 `bitstream_page_index_`、
+  以及三段属于码率 GOP / 音频 QC 页的重复格式化辅助函数。
 
 ## 6. 怎么校验边界
 

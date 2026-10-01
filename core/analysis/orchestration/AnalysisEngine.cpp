@@ -1062,18 +1062,34 @@ void AnalysisEngine::RunStreamingManifest(const std::string& file_path,
     const bool is_dash = (result.file_extension == "mpd");
     result.container_format = is_dash ? "dash" : "hls";
 
+    // 清单解析的全部循环（逐行 / 逐分片 / 逐时间轴条目 / 逐分片落盘探测）都会轮询它。
+    // 没有这条通道时，一个几十万行 EXTINF 的 m3u8 会让"取消"和"重新扫描"都点不动 ——
+    // QtAnalysisController 启动新扫描会 join 旧线程，而旧线程正卡在解析循环里。
+    const std::atomic<bool>* cancel = &cancel_requested_;
+
     model::StreamingPackageResult& pkg = result.streaming_package;
     bool ok = false;
     {
         VE_PERF("流媒体清单解析");
         if (is_dash) {
             DashManifestAnalyzer dash;
-            ok = dash.AnalyzeFile(file_path, pkg);
+            ok = dash.AnalyzeFile(file_path, pkg, DashManifestOptions{}, cancel);
         } else {
             HlsManifestAnalyzer hls;
-            ok = hls.AnalyzeFile(file_path, pkg);
+            ok = hls.AnalyzeFile(file_path, pkg, HlsManifestOptions{}, cancel);
         }
     }
+
+    // 取消优先于失败判定：解析被中断时 pkg 里只有半份数据，此时报"无法解析清单"
+    // 会把用户主动取消说成文件有问题。与逐包扫描路径一致：保留已扫到的部分，
+    // 以 scan_status=Cancelled + completed=false 收尾。
+    if (IsCancelRequested()) {
+        result.scan_status = AnalysisStatus::Cancelled;
+        NotifyProgress(callbacks, 100.0, "已取消");
+        NotifyFinished(callbacks, false, result);
+        return;
+    }
+
     if (!ok) {
         NotifyFailed(callbacks, pkg.error_message.empty() ? ("无法解析清单: " + file_path)
                                                      : pkg.error_message);
@@ -1082,7 +1098,13 @@ void AnalysisEngine::RunStreamingManifest(const std::string& file_path,
 
     {
         VE_PERF("SegmentQcAnalyzer::Analyze");
-        SegmentQcAnalyzer::Analyze(pkg, options.streaming_package_options);
+        SegmentQcAnalyzer::Analyze(pkg, options.streaming_package_options, cancel);
+    }
+    if (IsCancelRequested()) {
+        result.scan_status = AnalysisStatus::Cancelled;
+        NotifyProgress(callbacks, 100.0, "已取消");
+        NotifyFinished(callbacks, false, result);
+        return;
     }
     result.streaming_analyzed = true;
 

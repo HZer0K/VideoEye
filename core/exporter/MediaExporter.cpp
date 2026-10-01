@@ -35,6 +35,26 @@ void MediaExporter::Cancel() {
 
 namespace {
 
+// FFmpeg 错误码 -> 可读描述。不用 av_err2str 宏 (MSVC 不支持其 compound literal 写法)。
+QString AvErrorString(int ret) {
+    char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+    if (av_strerror(ret, errbuf, sizeof(errbuf)) != 0) {
+        return QStringLiteral("错误码 %1").arg(ret);
+    }
+    return QString::fromUtf8(errbuf);
+}
+
+// FFmpeg send/receive 返回值的分类约定（本文件内所有收发点统一遵守）:
+//   * ret >= 0                        -> 正常
+//   * AVERROR(EAGAIN)                 -> 正常: 送入队列暂满 / 输出还没就绪, 稍后重试
+//   * AVERROR_EOF                     -> 正常: 该方向已排空
+//   * 其它负值                         -> **真实错误**, 必须写 err_msg 并立即停止
+//
+// 为什么必须分: 旧代码写的是 `while (avcodec_receive_packet(enc, pkt) >= 0)` /
+// `while (avcodec_receive_frame(dec, frame) >= 0)`, 编解码器报真错时循环直接退出、
+// err_msg 仍是空的 —— 截断/损坏的输入会被当成"读完了", 最终错误地发出 ExportFinished
+// 并原子替换掉用户的目标文件。
+
 // 单条流的上下文 (copy 或 encode)
 struct StreamCtx {
     int in_idx = -1;
@@ -432,7 +452,16 @@ void MediaExporter::Export(const ExportOptions& opt) {
     // 把一帧送进编码器并写出数据包
     auto write_encoded_packets = [&](StreamCtx& s) {
         AVPacket* epkt = av_packet_alloc();
-        while (avcodec_receive_packet(s.enc, epkt) >= 0) {
+        for (;;) {
+            const int ret = avcodec_receive_packet(s.enc, epkt);
+            // EAGAIN(输出还没就绪) / EOF(编码器已排空) 都是正常状态, 不算错误
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
+            if (ret < 0) {
+                // 编码器真实错误: 必须记下来, 否则外层会把它当成"正常结束"并报成功
+                if (err_msg.isEmpty())
+                    err_msg = QString("取出编码输出包失败: %1").arg(AvErrorString(ret));
+                break;
+            }
             epkt->stream_index = s.out_idx;
             av_packet_rescale_ts(epkt, s.enc->time_base, out_fmt->streams[s.out_idx]->time_base);
             const int wr = av_interleaved_write_frame(out_fmt, epkt);
@@ -458,8 +487,16 @@ void MediaExporter::Export(const ExportOptions& opt) {
             err_msg = "分配编码帧缓冲区失败";
             return false;
         }
-        sws_scale(s.sws, src->data, src->linesize, 0, src->height,
-                  out_frame->data, out_frame->linesize);
+        // sws_scale 成功时返回输出图像的高度, 负值表示缩放失败。
+        // 原来这里完全没看返回值: 缩放失败会继续把未初始化/残缺的帧送进编码器,
+        // 产物是花屏甚至空轨, 却因为 err_msg 仍为空而被判成"导出成功"。
+        const int scaled = sws_scale(s.sws, src->data, src->linesize, 0, src->height,
+                                     out_frame->data, out_frame->linesize);
+        if (scaled < s.enc->height) {
+            av_frame_free(&out_frame);
+            err_msg = "图像缩放失败";
+            return false;
+        }
         out_frame->pts = (src->pts == AV_NOPTS_VALUE) ? s.enc_pts++ : src->pts;
         s.enc_pts = out_frame->pts + 1;
         const int send_ret = avcodec_send_frame(s.enc, out_frame);
@@ -554,7 +591,17 @@ void MediaExporter::Export(const ExportOptions& opt) {
             // 解码输入: 真实错误(非 EAGAIN)要记录, 否则损坏输入会被当成正常结束
             const int send_ret = avcodec_send_packet(sc->dec, pkt);
             if (send_ret == 0) {
-                while (avcodec_receive_frame(sc->dec, frame) >= 0) {
+                for (;;) {
+                    const int recv_ret = avcodec_receive_frame(sc->dec, frame);
+                    // EAGAIN(还要继续喂包) / EOF(解码器已排空) 都是正常状态
+                    if (recv_ret == AVERROR(EAGAIN) || recv_ret == AVERROR_EOF) break;
+                    if (recv_ret < 0) {
+                        // 真实解码错误。旧代码写成 `while (... >= 0)`, 这里会静默退出,
+                        // 截断/损坏的输入于是被当成"读完了", 最终误报导出成功。
+                        if (err_msg.isEmpty())
+                            err_msg = QString("解码失败: %1").arg(AvErrorString(recv_ret));
+                        break;
+                    }
                     const bool ok = (mt == AVMEDIA_TYPE_VIDEO)
                                         ? encode_video_frame(*sc, frame)
                                         : encode_audio_frame(*sc, frame);
@@ -562,7 +609,8 @@ void MediaExporter::Export(const ExportOptions& opt) {
                     if (!ok) break;   // 编码/重采样失败 -> err_msg 已置, 外层据此停止
                 }
             } else if (send_ret != AVERROR(EAGAIN)) {
-                if (err_msg.isEmpty()) err_msg = "解码输入失败";
+                if (err_msg.isEmpty())
+                    err_msg = QString("解码输入失败: %1").arg(AvErrorString(send_ret));
             }
             av_packet_unref(pkt);
         }
@@ -582,16 +630,35 @@ void MediaExporter::Export(const ExportOptions& opt) {
     if (!IsCanceled() && err_msg.isEmpty()) {
         for (auto& s : streams) {
             if (!s.do_encode) continue;
-            avcodec_send_packet(s.dec, nullptr);
-            while (avcodec_receive_frame(s.dec, frame) >= 0) {
+
+            // 排空解码器。AVERROR_EOF 表示此前已排空过, 与 EAGAIN 一样属于正常状态。
+            const int dp = avcodec_send_packet(s.dec, nullptr);
+            if (dp < 0 && dp != AVERROR_EOF) {
+                err_msg = QString("结束解码失败: %1").arg(AvErrorString(dp));
+                break;
+            }
+            for (;;) {
+                const int rr = avcodec_receive_frame(s.dec, frame);
+                if (rr == AVERROR(EAGAIN) || rr == AVERROR_EOF) break;
+                if (rr < 0) {
+                    err_msg = QString("解码失败: %1").arg(AvErrorString(rr));
+                    break;
+                }
                 const bool ok = (s.dec->codec_type == AVMEDIA_TYPE_VIDEO)
                                     ? encode_video_frame(s, frame)
                                     : encode_audio_frame(s, frame);
                 av_frame_unref(frame);
                 if (!ok) break;   // 编码/重采样失败, err_msg 已置
             }
-            if (!err_msg.isEmpty()) break;   // 编码失败则停止 flush
-            avcodec_send_frame(s.enc, nullptr);
+            if (!err_msg.isEmpty()) break;   // 解码/编码失败则停止 flush
+
+            // 排空编码器。AVERROR_EOF 表示编码器此前已被 flush 过, 不是错误;
+            // 原来这里连返回值都不看, 编码器真出错时照样会走到"替换目标文件"那一步。
+            const int ef = avcodec_send_frame(s.enc, nullptr);
+            if (ef < 0 && ef != AVERROR_EOF) {
+                err_msg = QString("结束编码失败: %1").arg(AvErrorString(ef));
+                break;
+            }
             write_encoded_packets(s);
             if (!err_msg.isEmpty()) break;   // 写入失败则停止 flush
         }

@@ -151,6 +151,14 @@ void QtWorkerOwner::RemoveEntry(QThread* thread) {
                    entries_.end());
 }
 
+bool QtWorkerOwner::IsActive(QThread* thread) const {
+    if (!thread) return false;
+    for (const Entry& e : entries_) {
+        if (e.thread == thread) return true;
+    }
+    return false;
+}
+
 int QtWorkerOwner::ActiveCount() const {
     int n = 0;
     for (const Entry& e : entries_) {

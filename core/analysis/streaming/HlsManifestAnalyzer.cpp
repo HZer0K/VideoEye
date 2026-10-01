@@ -8,6 +8,7 @@
 #include <sstream>
 
 #include "core/media/streaming/ManifestText.h"
+#include "core/analysis/streaming/StreamingCancel.h"
 
 namespace videoeye {
 namespace analyzer {
@@ -128,7 +129,8 @@ bool ReadFileText(const std::string& path, std::string& text) {
 // ---------------------------------------------------------------------------
 
 void ParseMediaPlaylistBody(const std::vector<std::string>& lines, const std::string& base_dir,
-                            model::MediaPlaylistInfo& pl, const HlsManifestOptions& options) {
+                            model::MediaPlaylistInfo& pl, const HlsManifestOptions& options,
+                            const std::atomic<bool>* cancel) {
     bool pending_discontinuity = false;
     bool pending_gap = false;
     double pending_duration = 0.0;
@@ -148,7 +150,14 @@ void ParseMediaPlaylistBody(const std::vector<std::string>& lines, const std::st
         pending_range_off = -1;
     };
 
-    for (const std::string& raw_line : lines) {
+    for (size_t li = 0; li < lines.size(); ++li) {
+        // 超大 / 恶意清单（几十万行 EXTINF）的逐行解析必须能被中断，
+        // 否则用户点了取消，分析线程还在这里跑，UI 只能干等。
+        if (ShouldCheckStreamingCancel(li) && IsStreamingCancelled(cancel)) {
+            pl.truncated = true;   // 半途而废的结果不能当成完整清单
+            break;
+        }
+        const std::string& raw_line = lines[li];
         const std::string raw = mt::Trim(raw_line);
         if (raw.empty())
             continue;
@@ -290,7 +299,8 @@ void ParseMediaPlaylistBody(const std::vector<std::string>& lines, const std::st
 // ---------------------------------------------------------------------------
 
 void ParseMasterBody(const std::vector<std::string>& lines, const std::string& base_dir,
-                     model::StreamingPackageResult& out, const HlsManifestOptions& options) {
+                     model::StreamingPackageResult& out, const HlsManifestOptions& options,
+                     const std::atomic<bool>* cancel) {
     (void)base_dir;
     bool pending_variant = false;
     int pending_variant_index = -1;
@@ -307,7 +317,12 @@ void ParseMasterBody(const std::vector<std::string>& lines, const std::string& b
         return static_cast<int>(out.playlists.size()) - 1;
     };
 
-    for (const std::string& raw_line : lines) {
+    for (size_t li = 0; li < lines.size(); ++li) {
+        if (ShouldCheckStreamingCancel(li) && IsStreamingCancelled(cancel)) {
+            out.truncated = true;
+            break;
+        }
+        const std::string& raw_line = lines[li];
         const std::string raw = mt::Trim(raw_line);
         if (raw.empty())
             continue;
@@ -377,8 +392,14 @@ void ParseMasterBody(const std::vector<std::string>& lines, const std::string& b
 // 子播放列表加载 / 落盘标记
 // ---------------------------------------------------------------------------
 
-void LoadSubPlaylists(model::StreamingPackageResult& out, const HlsManifestOptions& options) {
+void LoadSubPlaylists(model::StreamingPackageResult& out, const HlsManifestOptions& options,
+                      const std::atomic<bool>* cancel) {
     for (size_t i = 0; i < out.playlists.size(); ++i) {
+        // 每个子播放列表都是一次文件读 + 一次逐行解析，逐个检查取消最划算
+        if (IsStreamingCancelled(cancel)) {
+            out.truncated = true;
+            break;
+        }
         if (static_cast<uint32_t>(i) >= options.max_playlists) {
             out.truncated = true;
             break;
@@ -396,19 +417,24 @@ void LoadSubPlaylists(model::StreamingPackageResult& out, const HlsManifestOptio
             pl.error_message = "子播放列表无法读取: " + pl.uri;
             continue;
         }
-        ParseMediaPlaylistBody(SplitLines(text), mt::DirOf(pl.resolved_path), pl, options);
+        ParseMediaPlaylistBody(SplitLines(text), mt::DirOf(pl.resolved_path), pl, options, cancel);
         if (pl.has_init_section) {
             pl.init_resolved_path = mt::ResolveLocalUri(mt::DirOf(pl.resolved_path), pl.init_uri);
         }
     }
 }
 
-void MarkLocalFiles(model::StreamingPackageResult& out) {
+void MarkLocalFiles(model::StreamingPackageResult& out, const std::atomic<bool>* cancel) {
     for (model::MediaPlaylistInfo& pl : out.playlists) {
+        if (IsStreamingCancelled(cancel)) return;
         if (pl.has_init_section && !pl.init_resolved_path.empty()) {
             pl.init_exists = mt::FileSizeOf(pl.init_resolved_path, pl.init_file_size);
         }
+        size_t stat_count = 0;
         for (model::SegmentInfo& seg : pl.segments) {
+            // 这条循环最多做 max_segments_per_playlist 次磁盘 stat（默认 5000 × 64 个播放列表），
+            // 是纯 IO 的耗时大户，必须在里面也留取消检查。
+            if (ShouldCheckStreamingCancel(stat_count++) && IsStreamingCancelled(cancel)) return;
             if (seg.resolved_path.empty()) {
                 if (!seg.uri.empty())
                     out.remote = true;
@@ -494,7 +520,7 @@ void HlsManifestAnalyzer::Reset() {
 }
 
 bool HlsManifestAnalyzer::AnalyzeFile(const std::string& file_path, model::StreamingPackageResult& out,
-                                      const HlsManifestOptions& options) {
+                                      const HlsManifestOptions& options, const std::atomic<bool>* cancel) {
     options_ = options;
     out = model::StreamingPackageResult{};
     out.manifest_path = file_path;
@@ -506,17 +532,18 @@ bool HlsManifestAnalyzer::AnalyzeFile(const std::string& file_path, model::Strea
         out.error_message = "无法读取清单文件: " + file_path;
         return false;
     }
-    if (!ParseText(text, out.manifest_dir, out, options)) {
+    if (!ParseText(text, out.manifest_dir, out, options, cancel)) {
         if (out.error_message.empty())
             out.error_message = "不是有效的 HLS 清单";
         return false;
     }
-    Validate(out, options);
+    Validate(out, options, cancel);
     return true;
 }
 
 bool HlsManifestAnalyzer::ParseText(const std::string& text, const std::string& base_dir,
-                                    model::StreamingPackageResult& out, const HlsManifestOptions& options) {
+                                    model::StreamingPackageResult& out, const HlsManifestOptions& options,
+                                    const std::atomic<bool>* cancel) {
     out.manifest_dir = base_dir;
     out.kind = model::StreamingKind::Unknown;
 
@@ -547,9 +574,9 @@ bool HlsManifestAnalyzer::ParseText(const std::string& text, const std::string& 
 
     if (master) {
         out.kind = model::StreamingKind::HlsMaster;
-        ParseMasterBody(lines, base_dir, out, options);
+        ParseMasterBody(lines, base_dir, out, options, cancel);
         if (options.load_sub_playlists)
-            LoadSubPlaylists(out, options);
+            LoadSubPlaylists(out, options, cancel);
         out.valid = !out.variants.empty();
         if (!out.valid)
             out.error_message = "主播放列表里没有 EXT-X-STREAM-INF";
@@ -560,7 +587,7 @@ bool HlsManifestAnalyzer::ParseText(const std::string& text, const std::string& 
         pl.role = "main";
         pl.resolved_path = out.manifest_path;
         out.playlists.push_back(pl);
-        ParseMediaPlaylistBody(lines, base_dir, out.playlists[0], options);
+        ParseMediaPlaylistBody(lines, base_dir, out.playlists[0], options, cancel);
         if (out.playlists[0].has_init_section) {
             out.playlists[0].init_resolved_path = mt::ResolveLocalUri(base_dir, out.playlists[0].init_uri);
         }
@@ -569,11 +596,12 @@ bool HlsManifestAnalyzer::ParseText(const std::string& text, const std::string& 
             out.error_message = "媒体播放列表里没有分片";
     }
 
-    MarkLocalFiles(out);
+    MarkLocalFiles(out, cancel);
     return out.valid;
 }
 
-void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const HlsManifestOptions& options) {
+void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const HlsManifestOptions& options,
+                                   const std::atomic<bool>* cancel) {
     static const std::vector<const char*> kOwnCodes = {
         model::StreamingIssueCode::kHlsMissingTargetDuration, model::StreamingIssueCode::kHlsSegmentOverTarget,
         model::StreamingIssueCode::kHlsSegmentJitter,         model::StreamingIssueCode::kHlsDiscontinuityUnpaired,
@@ -583,6 +611,8 @@ void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Hls
     model::RemoveIssuesByCode(out.issues, kOwnCodes);
 
     for (size_t pi = 0; pi < out.playlists.size(); ++pi) {
+        // 校验是"每个播放列表若干趟遍历"，播放列表多时同样要能被中断
+        if (IsStreamingCancelled(cancel)) return;
         const model::MediaPlaylistInfo& pl = out.playlists[pi];
         if (pl.parse_failed)
             continue;
@@ -629,6 +659,12 @@ void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Hls
         {
             std::vector<double> durations;
             for (size_t i = 0; i < pl.segments.size(); ++i) {
+                // 这一段每轮还要向后扫一遍找"最后一个完整分片"，整体是 O(n²)。
+                // 5000 分片的播放列表在这里能跑出上千万次迭代，必须留取消口。
+                if (ShouldCheckStreamingCancel(static_cast<unsigned long long>(i)) &&
+                    IsStreamingCancelled(cancel)) {
+                    return;
+                }
                 const model::SegmentInfo& seg = pl.segments[i];
                 if (seg.partial || !seg.has_duration)
                     continue;

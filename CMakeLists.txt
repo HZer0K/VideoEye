@@ -312,6 +312,50 @@ if(WIN32)
     else()
         message(STATUS "未找到 windeployqt，跳过 Qt 插件部署（仅影响打包分发，不影响构建）")
     endif()
+
+    # offscreen 平台插件补一份。
+    #
+    # windeployqt 只带"当前桌面需要的那个平台插件"（Windows 上就是 qwindows），于是
+    # 无显示器环境（CI、远程会话、干净的构建机）里跑 QApplication 会在平台插件加载阶段
+    # 直接 qFatal 崩掉，报错还看不出跟测试有什么关系。offscreen 是 Qt 官方的无头平台
+    # 插件，显式补上之后 UI 单元测试用 QT_QPA_PLATFORM=offscreen 就能稳定跑。
+    set(_qt_extra_platform_plugins "")
+    list(APPEND _qt_plugin_root_candidates
+        "${_qt_root}/plugins" "${_qt_root}/Qt6/plugins"
+        "${Qt6_DIR}/../../plugins" "${Qt6_DIR}/../../Qt6/plugins")
+    # 从 Qt6::Core 的导入库/库文件位置反推 kit 根：不同发行布局层级不同
+    # （官方安装包 <Qt>/<ver>/<kit>/plugins；vcpkg <installed>/<triplet>/Qt6/plugins），
+    # 硬算层级迟早会踩到另一种布局。
+    if(TARGET Qt6::Core)
+        get_target_property(_qt_core_loc Qt6::Core IMPORTED_IMPLIB_RELEASE)
+        if(NOT _qt_core_loc)
+            get_target_property(_qt_core_loc Qt6::Core IMPORTED_LOCATION_RELEASE)
+        endif()
+        if(_qt_core_loc)
+            get_filename_component(_qt_lib_dir "${_qt_core_loc}" DIRECTORY)
+            get_filename_component(_qt_kit_root "${_qt_lib_dir}" DIRECTORY)
+            list(PREPEND _qt_plugin_root_candidates "${_qt_kit_root}/plugins")
+        endif()
+    endif()
+    foreach(_plugin_root ${_qt_plugin_root_candidates})
+        foreach(_platform_plugin qoffscreen qminimal)
+            if(EXISTS "${_plugin_root}/platforms/${_platform_plugin}.dll")
+                list(APPEND _qt_extra_platform_plugins "${_plugin_root}/platforms/${_platform_plugin}.dll")
+            endif()
+        endforeach()
+    endforeach()
+    list(REMOVE_DUPLICATES _qt_extra_platform_plugins)
+    if(_qt_extra_platform_plugins)
+        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${PROJECT_NAME}>/platforms"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_qt_extra_platform_plugins}
+                    "$<TARGET_FILE_DIR:${PROJECT_NAME}>/platforms"
+            COMMENT "Deploy extra Qt platform plugins (offscreen/minimal)"
+            VERBATIM
+        )
+    else()
+        message(STATUS "未找到 offscreen/minimal 平台插件，UI 测试将使用默认平台")
+    endif()
 endif()
 
 # ============================================================

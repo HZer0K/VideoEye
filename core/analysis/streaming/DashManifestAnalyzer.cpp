@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "core/media/streaming/ManifestText.h"
+#include "core/analysis/streaming/StreamingCancel.h"
 
 namespace videoeye {
 namespace analyzer {
@@ -181,9 +182,16 @@ bool ReadTag(const std::string& text, size_t lt, XmlTag& tag, size_t& end_pos) {
 // ---------------------------------------------------------------------------
 
 void BuildSegments(model::StreamingPackageResult& out, model::DashRepresentationInfo& rep,
-                   const DashManifestOptions& options) {
+                   const DashManifestOptions& options, const std::atomic<bool>* cancel) {
     if (!rep.has_template || rep.media_template.empty())
         return;
+
+    // SegmentTimeline 展开是这一层最大的放大点：每条 <S r=N> 会展开成 N 个分片，
+    // 上限 max_segments_per_representation（默认 5000）也只是"每个表示各自的上限"。
+    if (IsStreamingCancelled(cancel)) {
+        rep.truncated = true;
+        return;
+    }
 
     const double timescale = rep.timescale > 0 ? static_cast<double>(rep.timescale) : 0.0;
     const std::string rep_dir = mt::JoinPath(out.manifest_dir, rep.base_url);
@@ -211,7 +219,12 @@ void BuildSegments(model::StreamingPackageResult& out, model::DashRepresentation
     if (rep.has_segment_timeline) {
         uint64_t cursor = rep.presentation_time_offset;
         uint64_t number = rep.start_number;
-        for (const model::DashTimelineEntry& e : rep.timeline) {
+        for (size_t ti = 0; ti < rep.timeline.size(); ++ti) {
+            if (IsStreamingCancelled(cancel)) {
+                rep.truncated = true;
+                break;
+            }
+            const model::DashTimelineEntry& e = rep.timeline[ti];
             const uint64_t start = e.has_t ? e.t : cursor;
             for (uint32_t k = 0; k <= e.r; ++k) {
                 push_segment(number, start + static_cast<uint64_t>(k) * e.d, e.d);
@@ -231,6 +244,10 @@ void BuildSegments(model::StreamingPackageResult& out, model::DashRepresentation
             std::ceil(period_duration / (static_cast<double>(d) / static_cast<double>(rep.timescale))));
         uint64_t cursor = rep.presentation_time_offset;
         for (uint64_t i = 0; i < count; ++i) {
+            if (ShouldCheckStreamingCancel(i) && IsStreamingCancelled(cancel)) {
+                rep.truncated = true;
+                break;
+            }
             push_segment(rep.start_number + i, cursor, d);
             cursor += d;
         }
@@ -242,7 +259,13 @@ void BuildSegments(model::StreamingPackageResult& out, model::DashRepresentation
     }
 
     double total = 0.0;
+    size_t stat_count = 0;
     for (model::SegmentInfo& seg : rep.segments) {
+        // 每个分片都是一次磁盘 stat，和 HLS 的 MarkLocalFiles 同一个量级
+        if (ShouldCheckStreamingCancel(stat_count++) && IsStreamingCancelled(cancel)) {
+            rep.truncated = true;
+            break;
+        }
         seg.exists = mt::FileSizeOf(seg.resolved_path, seg.file_size_bytes);
         total += seg.duration_seconds;
     }
@@ -287,7 +310,7 @@ void DashManifestAnalyzer::Reset() {
 }
 
 bool DashManifestAnalyzer::AnalyzeFile(const std::string& file_path, model::StreamingPackageResult& out,
-                                       const DashManifestOptions& options) {
+                                       const DashManifestOptions& options, const std::atomic<bool>* cancel) {
     options_ = options;
     out = model::StreamingPackageResult{};
     out.manifest_path = file_path;
@@ -303,17 +326,18 @@ bool DashManifestAnalyzer::AnalyzeFile(const std::string& file_path, model::Stre
     ss << file.rdbuf();
     const std::string text = ss.str();
 
-    if (!ParseText(text, out.manifest_dir, out, options)) {
+    if (!ParseText(text, out.manifest_dir, out, options, cancel)) {
         if (out.error_message.empty())
             out.error_message = "不是有效的 DASH MPD";
         return false;
     }
-    Validate(out, options);
+    Validate(out, options, cancel);
     return true;
 }
 
 bool DashManifestAnalyzer::ParseText(const std::string& text, const std::string& base_dir,
-                                     model::StreamingPackageResult& out, const DashManifestOptions& options) {
+                                     model::StreamingPackageResult& out, const DashManifestOptions& options,
+                                     const std::atomic<bool>* cancel) {
     out.manifest_dir = base_dir;
     out.kind = model::StreamingKind::Dash;
 
@@ -333,7 +357,13 @@ bool DashManifestAnalyzer::ParseText(const std::string& text, const std::string&
     };
 
     size_t pos = 0;
+    size_t tag_count = 0;
     while (pos < text.size()) {
+        // MPD 的解析是标签扫描 + 逐标签建表示，超大 MPD 同样要能被中断
+        if (ShouldCheckStreamingCancel(tag_count++) && IsStreamingCancelled(cancel)) {
+            out.truncated = true;
+            break;
+        }
         const size_t lt = text.find('<', pos);
         if (lt == std::string::npos)
             break;
@@ -537,7 +567,7 @@ bool DashManifestAnalyzer::ParseText(const std::string& text, const std::string&
 
     if (options.expand_segments) {
         for (model::DashRepresentationInfo& rep : out.representations) {
-            BuildSegments(out, rep, options);
+            BuildSegments(out, rep, options, cancel);
         }
     }
 
@@ -551,7 +581,8 @@ bool DashManifestAnalyzer::ParseText(const std::string& text, const std::string&
     return true;
 }
 
-void DashManifestAnalyzer::Validate(model::StreamingPackageResult& out, const DashManifestOptions& options) {
+void DashManifestAnalyzer::Validate(model::StreamingPackageResult& out, const DashManifestOptions& options,
+                                    const std::atomic<bool>* cancel) {
     static const std::vector<const char*> kOwnCodes = {
         model::StreamingIssueCode::kDashSegmentTimelineGap,
         model::StreamingIssueCode::kDashSegmentTimelineOverlap,
@@ -560,6 +591,8 @@ void DashManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Da
     model::RemoveIssuesByCode(out.issues, kOwnCodes);
 
     for (size_t ri = 0; ri < out.representations.size(); ++ri) {
+        // SegmentTimeline 的缺口/重叠比对是"每个表示扫一遍时间轴"，表示多时要能中断
+        if (IsStreamingCancelled(cancel)) return;
         const model::DashRepresentationInfo& rep = out.representations[ri];
         const int rep_index = static_cast<int>(ri);
         const std::string label = "Representation " + (rep.id.empty() ? std::to_string(ri) : rep.id);

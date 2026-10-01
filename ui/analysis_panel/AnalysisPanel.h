@@ -1,71 +1,59 @@
 #pragma once
 
-#include <QWidget>
-#include <QImage>
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QTabWidget>
-#include <QTreeWidget>
-#include <QLabel>
-#include <QPushButton>
-#include <QTextEdit>
-#include <QTableWidget>
-#include <QProgressBar>
-#include <QTimer>
-#include <QComboBox>
-#include <QCheckBox>
-#include <QDoubleSpinBox>
-#include <QListWidget>
-#include <QScrollArea>
-#include <QSpinBox>
-#include <QStackedWidget>
+// 分析面板 = 各分析页的协调层。
+//
+// 面板自己不再持有明细数据与表格控件：各页（含「码流分析」拆出的
+// StreamOverviewView / FramePacketView、「宏块分析」拆出的 MacroblockView）都是
+// 独立的 QWidget 组件，面板只负责
+//   1. 建页并把它们交给外部 QStackedWidget（AddPageWithScroll / PopulateStackedWidget）；
+//   2. 注入 feature 钩子，把页面内部的开关编号映射到全局 AnalysisFeature 并转发信号；
+//   3. 播放期把播放器回吐的数据按开关过滤后转发给对应页；
+//   4. 全文件扫描结束后把同一份结果分发给共用该次扫描的几页。
+// 页面之间不互相持有指针，跨页数据一律经面板接线（如 FramePacketView 的 GOP 摘要
+// → StreamOverviewView）。
+
+#include <QList>
 #include <QMap>
-#include <QVariantList>
-#include <QVariantMap>
-#include "ui/charts/MetricChartWidget.h"
-#include "ui/reporting_panel/ReportingPanel.h"
-#include "ui/AnalysisFacade.h"
-#include "ui/analysis_panel/AnalysisPageSupport.h"
-#include "ui/analysis_panel/ContainerStructurePage.h"
-#include "ui/analysis_panel/SceneChangePage.h"
-#include "ui/analysis_panel/BitrateGopPage.h"
-#include "ui/analysis_panel/AudioQcPage.h"
-#include "ui/analysis_panel/ColorHdrPage.h"
-#include "ui/analysis_panel/SubtitleAuxPage.h"
-#include "ui/analysis_panel/VisualDefectPage.h"
-#include "ui/analysis_panel/DiagnosticsPage.h"
-#include "ui/analysis_panel/EventTimelineView.h"
-#include <chrono>
-#include <deque>
-#include <vector>
+#include <QStackedWidget>
+#include <QString>
+#include <QStringList>
+#include <QTimer>
+#include <QWidget>
+
 #include <string>
-#include <thread>
-#include <atomic>
-#include <memory>
+#include <vector>
 
 #include "core/domain/model/AnalysisEvent.h"
-#include "core/domain/model/AudioVisualizationFrame.h"
-#include "core/domain/model/PacketInfo.h"
-#include "core/domain/model/SceneChangeResult.h"
-#include "core/domain/model/SyncSample.h"
-#include "core/domain/model/TimelineEvent.h"
-#include "core/domain/model/Mp4BoxInfo.h"
-#include "core/domain/model/EbmlInfo.h"
 #include "core/domain/model/ContainerStructureInfo.h"
-#include "core/domain/model/MacroblockInfo.h"
-#include "ui/bitstream_panel/BitstreamPanel.h"
-#include "ui/streaming_panel/StreamingPanel.h"
 #include "core/domain/model/FrameTimingInfo.h"
-#include "core/domain/model/TimelineDiagnostic.h"
-#include "core/domain/model/QcReport.h"
-#include "core/domain/model/AudioQcResult.h"
+#include "core/domain/model/MacroblockInfo.h"
+#include "core/domain/model/PacketInfo.h"
 #include "core/domain/model/QualityMetric.h"
+#include "core/domain/model/SceneChangeResult.h"
+#include "core/domain/model/StreamStats.h"
+#include "core/domain/model/SyncSample.h"
+#include "core/domain/model/TimelineDiagnostic.h"
+#include "core/domain/model/TimelineEvent.h"
 #include "core/domain/model/VisualDefect.h"
 #include "core/domain/model/VisualDefectOptions.h"
-#include "core/domain/model/StreamStats.h"
-#include "core/domain/model/SubtitleCueInfo.h"
-#include "core/domain/model/TimecodeInfo.h"
-#include "core/domain/model/AuxiliaryDataInfo.h"
+
+#include "ui/AnalysisFacade.h"
+#include "ui/bitstream_panel/BitstreamPanel.h"
+#include "ui/reporting_panel/ReportingPanel.h"
+#include "ui/streaming_panel/StreamingPanel.h"
+
+#include "ui/analysis_panel/AudioQcPage.h"
+#include "ui/analysis_panel/BitrateGopPage.h"
+#include "ui/analysis_panel/ColorHdrPage.h"
+#include "ui/analysis_panel/ContainerStructurePage.h"
+#include "ui/analysis_panel/DiagnosticsPage.h"
+#include "ui/analysis_panel/EventTimelineView.h"
+#include "ui/analysis_panel/FramePacketView.h"
+#include "ui/analysis_panel/MacroblockView.h"
+#include "ui/analysis_panel/SceneChangePage.h"
+#include "ui/analysis_panel/StreamOverviewView.h"
+#include "ui/analysis_panel/SubtitleAuxPage.h"
+#include "ui/analysis_panel/VisualDefectPage.h"
 
 namespace videoeye {
 namespace ui {
@@ -149,6 +137,8 @@ signals:
     void StatusMessage(const QString& text);
     
 public slots:
+    // 以下播放期回吐的槽都只做两件事：套用 Master/功能开关的过滤，再转发给
+    // 对应的页面组件。数据本身不再由面板持有（评审 P2：面板退化为协调层）。
     // 更新统计数据
     void UpdateStreamStats(const model::StreamStats& stats);
 
@@ -180,9 +170,6 @@ public slots:
     // 参数集页「重新扫描」：复用同一次全文件扫描
     void OnBitstreamRefreshRequested();
 
-    // 导出报告
-    void OnExportReport();
-
     // 扫描生命周期由 DiagnosticsPage 编排，面板只把进度同步给其它几页
     void OnScanStarted();
     void OnScanCancelled();
@@ -193,65 +180,16 @@ public slots:
     void OnTimelinePacket(const model::PacketTiming& timing);
     void OnFrameTiming(const model::FrameTimingInfo& timing);
 
-    // 包表/帧表按 PTS 互跳联动
-    void OnPacketTableSelectionChanged();
-    void OnVideoFrameTableSelectionChanged();
-
 private:
-    struct VideoFrameRecord {
-        int index = 0;
-        int frame_type = 0;
-        bool is_key_frame = false;
-        qint64 pts = 0;
-        double timestamp_seconds = 0.0;
-        int gop_index = 0;
-        int gop_position = 0;
-    };
-
-    struct GopSummary {
-        int gop_index = 0;
-        int start_frame = 0;
-        int end_frame = 0;
-        double start_ts = 0.0;
-        double end_ts = 0.0;
-        int total_frames = 0;
-        int i_count = 0;
-        int p_count = 0;
-        int b_count = 0;
-        int key_count = 0;
-    };
-
-    struct AudioFrameRecord {
-        int index = 0;
-        qint64 pts = 0;
-        double timestamp_seconds = 0.0;
-        int sample_count = 0;
-        int sample_rate = 0;
-        int channels = 0;
-        int byte_count = 0;
-    };
-
-    struct PacketRecord {
-        int index = 0;
-        int stream_index = -1;
-        int stream_type = -1;
-        qint64 pts = 0;
-        qint64 dts = 0;
-        qint64 duration = 0;
-        int size = 0;
-        int flags = 0;
-        qint64 pos = -1;
-        double timestamp_seconds = 0.0;
-    };
-
     // 初始化UI
     void SetupUI();
     // 将页面包裹 QScrollArea 并添加到页面列表
     void AddPageWithScroll(QWidget* tab_widget, const QString& title);
-    void SetupStreamTab();
-    void SetupFrameTab();
-    void SetupPacketTab();
+    // 「码流分析」页：把流概览（StreamOverviewView）与帧/包明细（FramePacketView）
+    // 两个组件拼成一页（顶部固定 + 分隔线 + 底部可伸展），并把 GOP 摘要从产出方
+    // 桥接到消费方。
     void SetupBitstreamTab();
+    // 宏块分析页：本体是 MacroblockView，建页后注入 feature 钩子。
     void SetupMacroblockTab();
     // 编码参数集（SPS/PPS/VPS/Sequence Header）解析页，与「码流分析」页是两回事：
     // 那一页看的是包/帧/码率，这一页看的是 extradata 里的编码参数。
@@ -263,7 +201,7 @@ private:
     void SetupDiagnosticsPage();
     // 报告与批量 QC 页（功能 12）：模板选择 / 单文件报告 / 目录批量扫描 / 导出
     void SetupReportingPanelTab();
-    // 已拆成独立页面组件的四个页，在这里建好并接上信号（本体是 QWidget，
+    // 已拆成独立页面组件的页，在这里建好并接上信号（本体是 QWidget，
     // 直接交给 AddPageWithScroll 变成外部 stack 的一页）。
     void SetupContainerStructurePage();
     void SetupSceneChangePage();
@@ -274,37 +212,7 @@ private:
     // 事件 / 同步 / 时间轴三表聚合页：本体是 EventTimelineView，建页后注入 feature 钩子，
     // 诊断页指针在 SetupUI 末尾注入（AppendSyncSample 需要喂同步样本给诊断页）。
     void SetupEventTimelineView();
-    void RebuildFrameTable();
-    void RebuildGopTable();
-    void RebuildAudioFrameTable();
-    void RebuildPacketTable();
-    void UpdateFrameSummary();
-    void UpdateAudioFrameSummary();
-    void UpdatePacketSummary();
-    QString FrameTypeToString(int frame_type) const;
-    QString PacketFlagsToString(int flags) const;
-    QString PacketStreamTypeToName(int type) const;
-    bool PacketMatchesFilter(const PacketRecord& record) const;
-    bool MatchesFrameFilter(const VideoFrameRecord& record) const;
     void FlushPendingUiUpdates();
-    void FlushPendingFrameTableUpdates();
-    void FlushPendingGopTableUpdates();
-    void FlushPendingAudioFrameTableUpdates();
-    void FlushPendingPacketTableUpdates();
-    void RefreshStreamStatsUi(const model::StreamStats& stats);
-    void SetTableItemText(QTableWidget* table, int row, int column, const QString& text);
-    void AppendFrameRowToTable(const VideoFrameRecord& record);
-    void AppendAudioFrameRowToTable(const AudioFrameRecord& record);
-    void AppendPacketRowToTable(const PacketRecord& record);
-    void UpdateGopRowInTable(int row, const GopSummary& summary);
-    void OnExportFrameCsv();
-    void OnExportAudioFrameCsv();
-    void OnExportGopCsv();
-    void OnExportPacketCsv();
-    void OnExportMp4Box();
-    void OnFrameFilterChanged();
-    void RefreshMacroblockUi();
-    void OnExportMacroblockCsv();
 
     // 画面质量 / 视觉缺陷（已拆成独立的 VisualDefectPage）
     void SetupVisualDefectPage();
@@ -318,13 +226,6 @@ private:
     void SyncSubtitleThresholds(analyzer::AnalysisOptions& options);
     void OnStreamingRefreshRequested();
     void UpdateStreamingUi();         // 流媒体包页：结构树 + ladder + 分片时间轴 + 问题
-
-    // 更新图表
-    void UpdateBitrateChart(const model::StreamStats& stats);
-    void UpdateFPSChart(const model::StreamStats& stats);
-    // GOP 曲线数据源为 UI 侧 gop_summaries_ (统一口径, 见 RebuildGopTable)
-    void UpdateGOPChart();
-    void ResetStreamCharts();
     
     // 分析功能开关
     QMap<AnalysisFeature, bool> feature_enabled_;
@@ -333,62 +234,15 @@ private:
     QList<QWidget*> page_widgets_;      // 各页面的 QScrollArea (含内容)
     QStringList page_titles_;           // 各页面标题
     QStackedWidget* external_stack_ = nullptr;  // 外部 QStackedWidget (由 MainWindow 提供)
-    int bitstream_page_index_ = -1;      // 码流分析页在 page_widgets_ 中的索引 (合并了旧的流/帧/包三页)
-    bool linking_ = false;              // 包/帧互跳回调重入保护
 
-    // 码流分析页 (合并自原流分析/帧分析/包分析三个独立页)
-    QWidget* bitstream_tab_;
-    QWidget* stream_section_;           // 顶部区: 6 指标 + 3 chart + 导出按钮
-    QWidget* detail_sub_tabs_container_; // 底部区: QTabWidget 容器
+    // 「码流分析」页拆成的两个组件：顶部流概览 + 底部帧/包明细。
+    // 两者在 SetupBitstreamTab 里拼进同一页；GOP 摘要在后者产出、前者消费，
+    // 由面板在 SetupBitstreamTab 末尾把信号接起来（两个组件互不认识）。
+    StreamOverviewView* stream_overview_view_ = nullptr;
+    FramePacketView* frame_packet_view_ = nullptr;
 
-    // 流概览子区 (bitstream_tab_ 顶部)
-    QTableWidget* stats_table_;
-    MetricChartWidget* bitrate_chart_ = nullptr;
-    ChartSeries* bitrate_series_ = nullptr;
-    ChartAxis* bitrate_axis_x_ = nullptr;
-    ChartAxis* bitrate_axis_y_ = nullptr;
-    MetricChartWidget* fps_chart_ = nullptr;
-    ChartSeries* fps_series_ = nullptr;
-    ChartAxis* fps_axis_x_ = nullptr;
-    ChartAxis* fps_axis_y_ = nullptr;
-    MetricChartWidget* gop_chart_ = nullptr;
-    ChartSeries* gop_series_ = nullptr;
-    ChartAxis* gop_axis_x_ = nullptr;
-    ChartAxis* gop_axis_y_ = nullptr;
-
-    // 码流明细子 TabWidget (bitstream_tab_ 底部, 4 个子页)
-    QTabWidget* detail_sub_tabs_;
-    QWidget* video_sub_;                // 子页 0: 视频帧
-    QWidget* packet_sub_;               // 子页 1: 包
-    QWidget* gop_summary_sub_;          // 子页 2: GOP 摘要
-    QWidget* audio_frame_sub_;          // 子页 3: 音频帧
-
-    QComboBox* frame_filter_combo_;
-    QLabel* frame_summary_label_;
-    QTableWidget* frame_table_;
-    QPushButton* export_frame_csv_button_;
-    QTableWidget* gop_table_;
-
-    QLabel* audio_frame_summary_label_;
-    QTableWidget* audio_frame_table_;
-    QPushButton* export_audio_frame_csv_button_;
-
-    QLabel* packet_summary_label_;
-    QComboBox* packet_filter_combo_;
-    QTableWidget* packet_table_;
-    QPushButton* export_packet_csv_button_;
-    int packet_filter_mode_ = -1;  // -1=全部, 0=视频流, 1=音频流, 2=其他流
-
-    // 宏块分析标签页
-    QWidget* macroblock_tab_;
-    QLabel* macroblock_summary_label_;
-    QTableWidget* macroblock_table_;        // 运动矢量表格
-    QLabel* macroblock_viz_label_;          // 运动矢量可视化预览
-    QTableWidget* macroblock_blocksize_table_;  // 块大小分布
-    QTableWidget* macroblock_mag_table_;    // 运动幅度分布
-    QPushButton* export_macroblock_csv_button_;
-    model::MacroblockFrameAnalysis current_macroblock_analysis_;
-    bool macroblock_dirty_ = false;
+    // 宏块分析页（已拆成独立的 MacroblockView）
+    MacroblockView* macroblock_view_ = nullptr;
 
     // 场景切换检测页（已拆成独立的 SceneChangePage）
     SceneChangePage* scene_change_page_ = nullptr;
@@ -427,33 +281,8 @@ private:
     // 报告与批量 QC 页（功能 12）：模板选择 / 单文件报告 / 目录批量扫描 / 导出
     ui::ReportingPanel* reporting_panel_ = nullptr;
 
-    // 控制按钮
-    QPushButton* export_button_;          // 流统计导出 (HTML/JSON/TXT)
-    
     // 定时器
     QTimer* update_timer_;
-    
-    // 当前数据
-    model::StreamStats current_stats_;
-    std::vector<VideoFrameRecord> frame_records_;
-    std::vector<AudioFrameRecord> audio_frame_records_;
-    std::vector<PacketRecord> packet_records_;
-    std::vector<GopSummary> gop_summaries_;
-    model::StreamStats pending_stream_stats_;
-    bool has_pending_stream_stats_ = false;
-    bool frame_table_dirty_ = false;
-    bool gop_table_dirty_ = false;
-    bool frame_summary_dirty_ = false;
-    bool audio_frame_table_dirty_ = false;
-    bool audio_frame_summary_dirty_ = false;
-    bool packet_table_dirty_ = false;
-    bool packet_summary_dirty_ = false;
-    size_t frame_table_synced_record_count_ = 0;
-    size_t gop_table_synced_count_ = 0;
-    size_t audio_frame_table_synced_record_count_ = 0;
-    size_t packet_table_synced_record_count_ = 0;
-    std::deque<qreal> bitrate_chart_values_;
-    std::deque<qreal> fps_chart_values_;
 
     // 当前视频文件路径 (供导出报告使用)
     std::string current_video_path_;

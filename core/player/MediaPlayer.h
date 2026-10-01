@@ -10,6 +10,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -119,11 +120,17 @@ public:
     std::string GetHwDeviceName() const;
 
     // 视频帧导出
+    //
+    // 若上一次抽帧的线程还没退出来，本次请求**排队**而不是立即启动：两次任务写的是
+    // 同一个输出目录、文件名又只由帧序号决定，并行跑会互相覆盖产物。排队请求会在旧
+    // 线程真正结束的 finished 回调里自动续跑（用户不必再点一次）。
     void StartVideoFrameExport(const QString& output_dir, const QString& format, int jpg_quality = 90, int frame_interval = 1);
+    // 只置取消标志并请求线程退出，**不等待**：调用方在 UI 线程，绝不能被卡住。
     void CancelVideoFrameExport();
 
-    // 音视频导出 (remux / transcode)
+    // 音视频导出 (remux / transcode)。排队语义同 StartVideoFrameExport。
     void StartMediaExport(const exporter::ExportOptions& opt);
+    // 同 CancelVideoFrameExport: 请求停止但不等待。
     void CancelMediaExport();
 
     // 渲染抑制: 播放区被隐藏时跳过画面输出 (sws_scale + FrameReady),
@@ -209,6 +216,24 @@ private:
                                 int sample_rate, int channels, double timestamp_seconds, double level);
     void StartContainerStructureAnalysis(const QString& url);
 
+    // --- 导出的实际启动与"上一次任务是否还活着"判定 ---
+    //
+    // StartXxxExport 对外是"发起一次导出"，内部先判定旧线程是否还在跑:
+    //   * 已在跑 -> 把请求存进 pending_xxx_export_ 并请求旧任务停止，直接返回；
+    //   * 已结束 -> 走下面的 XxxNow() 真正起线程。
+    // 旧线程的 finished 回调（QtWorkerOwner 的 on_finished）会清掉"当前任务"标记，
+    // 若此刻还有排队的请求就就地续跑 —— 这样"取消旧任务 + 立刻发起新任务"既不会
+    // 让两个线程写同一个目录，也不会在 UI 线程上等 5~30 秒。
+    bool IsFrameExportWorkerAlive() const;
+    bool IsMediaExportWorkerAlive() const;
+    void StartVideoFrameExportNow(const QString& output_dir, const QString& format,
+                                  int jpg_quality, int frame_interval);
+    void StartMediaExportNow(const exporter::ExportOptions& opt);
+    // 只请求旧线程停止(置取消标志 / 断开信号 / 不限时地"看一眼"是否已结束),
+    // 绝不阻塞等待。排队请求由它保留; 用户主动取消请走 CancelXxxExport()。
+    void RequestStopFrameExport();
+    void RequestStopMediaExport();
+
     // PlaybackSession 的回调入口: 解码线程在 demux / 解码 / 定位 / 播完的时机会调进来,
     // 由 MediaPlayer 决定"要不要发分析信号、要不要计数"。详见 core/player/PlaybackSession.h。
     void InstallPlaybackHooks();
@@ -264,6 +289,21 @@ private:
     // 每次发起抽帧导出自增的代际号: 转发信号时只接受当前代际,
     // 旧任务已排队到 UI 线程的终态信号(进度/完成/取消/错误)会因此被丢弃, 不会串到新任务。
     quint64 frame_export_gen_ = 0;
+
+    // 排队的导出请求（旧任务线程还没退出时用）。用 optional 而非裸指针:
+    // 无请求、有请求、被覆盖都只有一处状态，不存在"忘了置空"。
+    struct PendingFrameExport {
+        QString url;          // 发起时打开的媒体: 续跑前若已换文件, 本次请求作废
+        QString output_dir;
+        QString format;
+        int jpg_quality = 90;
+        int frame_interval = 1;
+    };
+    std::optional<PendingFrameExport> pending_frame_export_;
+    std::optional<exporter::ExportOptions> pending_media_export_;
+    // 析构开始后不再续跑排队请求: 此时线程正在被 StopAll 收尾，
+    // 若 finished 回调又起一个新线程，就等于在析构途中往 export_workers_ 里塞新 Entry。
+    bool export_shutdown_ = false;
 
     // 后台任务统一调度: 任务 ID / 取消标志 / 终态 / 过期结果丢弃。
     // 容器结构分析走它的受管线程; 抽帧与媒体导出的 worker 是 QObject(要发进度信号),

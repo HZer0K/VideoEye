@@ -278,12 +278,12 @@ void DiagnosticsPage::OnFacadeProgress(quint64 generation, double percent, const
 void DiagnosticsPage::OnFacadeFinished(quint64 generation, bool completed,
                                        const analyzer::AnalysisResult& result) {
     if (generation != generation_) return;
+    Q_UNUSED(result);
 
-    // P0 修复: 把扫描结果写回 facade。之前这里只置了 has_result_ 却没调用
-    // facade_->SetResult(result)，导致下面 Evaluate() 读到的是默认构造的空
-    // AnalysisResult —— 问题清单/评分/码率-GOP/音频QC/HDR/字幕页面全部拿到空数据，
-    // 报告导出也基于空结果。现在统一以本次扫描结果作为唯一数据源。
-    facade_->SetResult(result);
+    // 结果已经由 AnalysisFacade 在发出 AnalysisFinished 之前写好了（编排层的职责，
+    // 见 AnalysisFacade 构造函数）。本页只负责展示，不再自己 SetResult ——
+    // 以前这一步漏掉过一次（只置了 has_result_ 没写回 facade），
+    // 导致问题清单/评分/报告全基于默认空结果。现在不存在"漏写"这个失败模式了。
     has_result_ = true;
 
     const double elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(

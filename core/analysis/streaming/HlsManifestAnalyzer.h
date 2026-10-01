@@ -18,6 +18,7 @@
 //
 // 规模保护: 全部列表都有 max_* 上限，超限置 truncated 后停止收录。
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -46,15 +47,21 @@ public:
     ~HlsManifestAnalyzer();
 
     // 解析 + 校验。返回 true 表示清单被成功解析（不代表没有问题）。
+    //
+    // cancel: 可选的取消标志（nullptr = 不关心取消）。清单越大越该传 —— 解析中途被取消时
+    // 会提前返回，并把已经收到的部分保留在 out 里（out.truncated 置位表示结果不完整）。
     bool AnalyzeFile(const std::string& file_path, model::StreamingPackageResult& out,
-                     const HlsManifestOptions& options = HlsManifestOptions{});
+                     const HlsManifestOptions& options = HlsManifestOptions{},
+                     const std::atomic<bool>* cancel = nullptr);
 
     // 从文本解析（单测与网络阶段共用）。base_dir 是相对 URI 的解析基准。
     static bool ParseText(const std::string& text, const std::string& base_dir, model::StreamingPackageResult& out,
-                          const HlsManifestOptions& options = HlsManifestOptions{});
+                          const HlsManifestOptions& options = HlsManifestOptions{},
+                          const std::atomic<bool>* cancel = nullptr);
 
     // 纯逻辑校验：在 out 上补齐 HLS 侧 issues。幂等（只删自己产出的 code 再重加）。
-    static void Validate(model::StreamingPackageResult& out, const HlsManifestOptions& options = HlsManifestOptions{});
+    static void Validate(model::StreamingPackageResult& out, const HlsManifestOptions& options = HlsManifestOptions{},
+                         const std::atomic<bool>* cancel = nullptr);
 
     void Reset();
 

@@ -16,6 +16,7 @@
 //     MPEG-TS 分片的逐包解析要用到 TsStructureAnalyzer（依赖 Qt），
 //     由 ContainerStructureAnalyzer 在 Qt 侧补做，不进这个纯 C++ 层。
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -30,17 +31,22 @@ namespace analyzer {
 class SegmentQcAnalyzer {
 public:
     // 探测 + 建 ladder + 校验。result 必须已经由 Hls/Dash 解析器填好数据。
-    static bool Analyze(model::StreamingPackageResult& result, const SegmentQcOptions& options = SegmentQcOptions{});
+    // cancel: 可选的取消标志（nullptr = 不关心取消）。分片落盘探测是逐文件的磁盘 IO，
+    // 大型包（上千分片）在这里耗时最久，必须能被中断。
+    static bool Analyze(model::StreamingPackageResult& result, const SegmentQcOptions& options = SegmentQcOptions{},
+                        const std::atomic<bool>* cancel = nullptr);
 
     // 落盘探测：分片是否存在、多大、fMP4 分片的 tfdt 起点（关键帧时间）。
     static bool ProbeSegments(model::StreamingPackageResult& result,
-                              const SegmentQcOptions& options = SegmentQcOptions{});
+                              const SegmentQcOptions& options = SegmentQcOptions{},
+                              const std::atomic<bool>* cancel = nullptr);
 
     // 把 variants / representations 投影成统一的 ladder（UI 只认这个）
     static void BuildLadder(model::StreamingPackageResult& result);
 
     // 纯逻辑校验：在 result 上补齐跨分片 / 跨码率的 issues。幂等。
-    static void Validate(model::StreamingPackageResult& result, const SegmentQcOptions& options = SegmentQcOptions{});
+    static void Validate(model::StreamingPackageResult& result, const SegmentQcOptions& options = SegmentQcOptions{},
+                         const std::atomic<bool>* cancel = nullptr);
 
 private:
     SegmentQcAnalyzer() = delete;

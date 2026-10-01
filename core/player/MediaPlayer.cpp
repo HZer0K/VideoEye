@@ -122,6 +122,11 @@ MediaPlayer::MediaPlayer(QObject* parent)
 }
 
 MediaPlayer::~MediaPlayer() {
+    // 先立"关机"标志: 析构期间线程收尾触发的 finished 回调绝不能再续跑排队的导出请求,
+    // 否则会在 export_workers_ 正被拆掉的时候往里塞新线程。
+    export_shutdown_ = true;
+    pending_frame_export_.reset();
+    pending_media_export_.reset();
     CancelVideoFrameExport();
     CancelMediaExport();
     // 两类导出线程统一再收一轮: 由 export_workers_ 持有, 超时也不会被遗忘
@@ -720,8 +725,18 @@ analyzer::StreamStats MediaPlayer::GetCurrentStats() const { return analysis_ses
 
 // --- 视频帧导出 (委托给 VideoFrameExporter) ---
 
+bool MediaPlayer::IsFrameExportWorkerAlive() const {
+    // 只看线程是否还归 export_workers_ 持有: 取消超时后线程转入"待回收"但**仍被持有**,
+    // 直到真的 finished 才从表里移除 —— 正好等于"还在往输出目录里写文件"。
+    return frame_export_thread_ != nullptr && export_workers_.IsActive(frame_export_thread_);
+}
+
+bool MediaPlayer::IsMediaExportWorkerAlive() const {
+    return media_export_thread_ != nullptr && export_workers_.IsActive(media_export_thread_);
+}
+
 void MediaPlayer::StartVideoFrameExport(const QString& output_dir, const QString& format, int jpg_quality, int frame_interval) {
-    CancelVideoFrameExport();
+    // 先把参数校验做完再动旧任务: 参数不合法时不该顺手打断正在跑的导出。
     if (current_url_.isEmpty()) { emit VideoFrameExportError("No media opened"); return; }
     if (output_dir.isEmpty()) { emit VideoFrameExportError("Output directory is empty"); return; }
     QDir dir(output_dir);
@@ -730,6 +745,21 @@ void MediaPlayer::StartVideoFrameExport(const QString& output_dir, const QString
         return;
     }
 
+    // 旧抽帧线程还在跑(已取消但仍卡在 FFmpeg 里退不出来): 不许并行再起一个 ——
+    // 两次任务写的是同一个输出目录, 文件名又只由帧序号决定, 会互相覆盖出半新半旧的产物。
+    // 这里把请求排进 pending, 等旧线程真正结束的 finished 回调续跑, 用户不必再点一次。
+    if (IsFrameExportWorkerAlive()) {
+        pending_frame_export_ =
+            PendingFrameExport{current_url_, output_dir, format, jpg_quality, frame_interval};
+        LOG_WARN("上一次抽帧导出尚未结束, 本次请求已排队等待其退出");
+        RequestStopFrameExport();
+        return;
+    }
+
+    StartVideoFrameExportNow(output_dir, format, jpg_quality, frame_interval);
+}
+
+void MediaPlayer::StartVideoFrameExportNow(const QString& output_dir, const QString& format, int jpg_quality, int frame_interval) {
     // 登记到统一任务调度 (任务 ID / 取消标志 / 终态)
     const task::TaskId task_id = task_manager_.Begin(kSlotFrameExport);
     if (task_id == 0) {
@@ -793,6 +823,19 @@ void MediaPlayer::StartVideoFrameExport(const QString& output_dir, const QString
     auto clear_marks = [this, exporter](QThread* finished_thread) {
         if (frame_export_thread_ == finished_thread) frame_export_thread_ = nullptr;
         if (frame_exporter_ == exporter) frame_exporter_ = nullptr;
+
+        // 线程真正结束了: 从这一行起,"两个抽帧任务同时写同一个输出目录"已不可能,
+        // 于是把排队中的请求接上（用户"取消后立刻重试"就靠这里自动续跑）。
+        if (!pending_frame_export_.has_value() || export_shutdown_) return;
+        PendingFrameExport req = *pending_frame_export_;
+        pending_frame_export_.reset();
+        if (req.url != current_url_) {
+            // 排队期间换了媒体: 续跑会拿新文件往旧目录里导, 语义已经不对, 直接作废。
+            LOG_INFO("排队中的抽帧导出请求已作废: 期间已切换媒体");
+            return;
+        }
+        LOG_INFO("上一次抽帧导出已退出, 启动排队中的请求");
+        StartVideoFrameExportNow(req.output_dir, req.format, req.jpg_quality, req.frame_interval);
     };
 
     auto* thread = export_workers_.StartWorker(
@@ -808,6 +851,13 @@ void MediaPlayer::StartVideoFrameExport(const QString& output_dir, const QString
 }
 
 void MediaPlayer::CancelVideoFrameExport() {
+    // 用户主动取消: 排队中的请求一并作废 —— 否则旧线程退出后会"自作主张"接着跑一遍,
+    // 用户看到的就是"点了取消, 界面还是导完了"。
+    pending_frame_export_.reset();
+    RequestStopFrameExport();
+}
+
+void MediaPlayer::RequestStopFrameExport() {
     // 统一置取消标志(供外部查询 / 后续 Begin 取代旧任务)
     task_manager_.Cancel(kSlotFrameExport);
 
@@ -816,37 +866,40 @@ void MediaPlayer::CancelVideoFrameExport() {
     if (!exporter && !thread) return;
 
     if (exporter) exporter->Cancel();
-    // 交由 owner 停止: 超时也不丢句柄 —— 线程转入待回收列表,
-    // 继续由 export_workers_ 持有并在析构时收尾(不再出现"QThread 还在跑就被遗忘")。
-    const bool stopped = thread ? export_workers_.StopWorker(thread, 5000) : true;
-    if (!stopped && exporter) {
-        // 还在跑: 断开它与本对象的连接, 避免旧任务的进度/终态串到新任务上
-        exporter->disconnect(this);
+    // **不在这里等线程退出**: 取消/重新导出/关窗都发生在 UI 线程, 一旦 FFmpeg 卡在不可
+    // 中断的调用里, 等 5 秒就是 5 秒界面冻结。线程会在自己的 Export() 里看到取消标志后
+    // 走到终态; 真退不出来也只是"这次取消晚点生效", 句柄仍归 export_workers_ 持有。
+    const bool stopped = thread ? export_workers_.StopWorker(thread, 0) : true;
+    if (stopped) {
+        // 线程已结束(或本来就没有): 直接清标记。clear_marks 是排队投递的, 此刻可能还没跑。
+        if (frame_exporter_ == exporter) frame_exporter_ = nullptr;
+        if (frame_export_thread_ == thread) frame_export_thread_ = nullptr;
+        return;
     }
-    // finished 的清理回调是排队投递的, wait() 返回时不一定已经跑过, 这里兜底清指针。
-    if (frame_exporter_ == exporter) frame_exporter_ = nullptr;
-    if (frame_export_thread_ == thread) frame_export_thread_ = nullptr;
+    // 还在跑: 断开它与本对象的连接, 避免旧任务的进度/终态串到新任务上。
+    // 但**保留** frame_export_thread_/frame_exporter_, StartVideoFrameExport 要靠
+    // IsFrameExportWorkerAlive() 判断旧任务还活着, 从而把新请求排队而不是并行写同一目录。
+    // 线程真正结束时 clear_marks 会清掉这两个成员。
+    if (exporter) exporter->disconnect(this);
 }
 
 // --- 音视频导出 (后台线程运行 MediaExporter) ---
 
 void MediaPlayer::StartMediaExport(const exporter::ExportOptions& opt) {
-    // 先请求可能正在进行的旧导出退出。
-    // 旧任务写的是带 UUID 的独立临时文件, 即使它卡住不退也不会和本次导出撞文件;
-    // 真退不出来时线程由 export_workers_ 继续持有(不再是把裸指针置空了事)。
-    task_manager_.Cancel(kSlotMediaExport);
-    if (media_export_thread_ || media_exporter_) {
-        if (media_exporter_) media_exporter_->Cancel();
-        const bool stopped = media_export_thread_
-                                 ? export_workers_.StopWorker(media_export_thread_, 30000)
-                                 : true;
-        if (!stopped && media_exporter_) {
-            media_exporter_->disconnect(this);  // 旧任务的进度/终态不许串到新任务上
-        }
-        media_export_thread_ = nullptr;
-        media_exporter_ = nullptr;
+    // 旧任务还没退出时排队而非等待。旧导出写的是带 PID+UUID 的独立临时文件, 并行起来
+    // 不会撞文件, 但两个转码任务抢同一批编解码线程只会互相拖慢; 更关键的是原来那套
+    // "StopWorker(30s)" 是**在 UI 线程上同步等**, FFmpeg 一旦卡住界面就冻结 30 秒。
+    if (IsMediaExportWorkerAlive()) {
+        pending_media_export_ = opt;
+        LOG_WARN("上一次媒体导出尚未结束, 本次请求已排队等待其退出");
+        RequestStopMediaExport();
+        return;
     }
 
+    StartMediaExportNow(opt);
+}
+
+void MediaPlayer::StartMediaExportNow(const exporter::ExportOptions& opt) {
     const task::TaskId task_id = task_manager_.Begin(kSlotMediaExport);
     if (task_id == 0) { emit MediaExportError("已有后台任务在运行, 请稍后再试"); return; }
     auto fail = [this, task_id](const QString& msg) {
@@ -908,6 +961,15 @@ void MediaPlayer::StartMediaExport(const exporter::ExportOptions& opt) {
     auto clear_marks = [this, exporter](QThread* finished_thread) {
         if (media_export_thread_ == finished_thread) media_export_thread_ = nullptr;
         if (media_exporter_ == exporter) media_exporter_ = nullptr;
+
+        // 线程真正结束了: 排队中的导出请求在这里续跑（"取消后立刻重导出"的路径）。
+        // 重新走 StartMediaExportNow 而不是 StartMediaExport: 此刻旧线程已确认结束，
+        // 不必再排队一轮。
+        if (!pending_media_export_.has_value() || export_shutdown_) return;
+        const exporter::ExportOptions req = *pending_media_export_;
+        pending_media_export_.reset();
+        LOG_INFO("上一次媒体导出已退出, 启动排队中的请求");
+        StartMediaExportNow(req);
     };
 
     auto* thread = export_workers_.StartWorker(exporter, [exporter, opt]() { exporter->Export(opt); },
@@ -918,9 +980,29 @@ void MediaPlayer::StartMediaExport(const exporter::ExportOptions& opt) {
 }
 
 void MediaPlayer::CancelMediaExport() {
+    // 用户主动取消: 排队中的请求一并作废(否则旧线程退出后界面还是会把导出跑完)。
+    pending_media_export_.reset();
+    RequestStopMediaExport();
+}
+
+void MediaPlayer::RequestStopMediaExport() {
     // 统一置取消标志
     task_manager_.Cancel(kSlotMediaExport);
-    if (media_exporter_) media_exporter_->Cancel();
+
+    exporter::MediaExporter* exporter = media_exporter_;
+    QThread* thread = media_export_thread_;
+    if (!exporter && !thread) return;
+    if (exporter) exporter->Cancel();
+
+    // 同抽帧: 只请求停止, 不在 UI 线程等待。原实现等 30 秒, FFmpeg 卡住时界面直接假死。
+    const bool stopped = thread ? export_workers_.StopWorker(thread, 0) : true;
+    if (stopped) {
+        if (media_exporter_ == exporter) media_exporter_ = nullptr;
+        if (media_export_thread_ == thread) media_export_thread_ = nullptr;
+        return;
+    }
+    // 仍在跑: 断开信号防串台, 但保留标记供 IsMediaExportWorkerAlive() 判定, 把新请求排队。
+    if (exporter) exporter->disconnect(this);
 }
 
 void MediaPlayer::StartContainerStructureAnalysis(const QString& url) {
