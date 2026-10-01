@@ -56,6 +56,9 @@ public:
 
     // 扫描生命周期由面板驱动（与诊断页、音频 QC、色彩/HDR 保持同步）
     void SetScanActive(bool active);
+    // 与 SetScanActive 配对的状态查询。三页共用同一次扫描，任何一页卡在 active
+    // 都是 bug（取消按钮亮着、"开始分析"永久禁用），所以这个状态必须能被观察到。
+    bool IsScanActive() const { return scan_active_; }
     void SetProgress(int percent);
     void SetProgressFormat(const QString& format);
 
@@ -75,6 +78,9 @@ public slots:
     void Refresh();
 
 private:
+    // 扫描态（由 SetScanActive 写入；面板成功/取消/失败三种终态都必须把它复位）
+    bool scan_active_ = false;
+
     void SetupUi();
     void ApplyOptionsFromUi();
     void OnStartAnalysis();

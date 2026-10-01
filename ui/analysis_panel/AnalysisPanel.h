@@ -172,9 +172,10 @@ public slots:
 
     // 扫描生命周期由 DiagnosticsPage 编排，面板只把进度同步给其它几页
     void OnScanStarted();
-    void OnScanCancelled();
     void OnDiagnosticsProgress(double percent, const QString& stage);
-    void OnDiagnosticsFinished(bool completed);
+    // 唯一的扫描终态收尾: 恢复共用页的按钮/进度（三种终态一视同仁），
+    // 非失败时再把同一份结果分发下去。不再有"成功/取消各走一半"的分裂路径。
+    void OnScanEnded(DiagnosticsPage::ScanEndReason reason);
 
     // 时间轴与同步诊断（播放实时数据 → 转交诊断页）
     void OnTimelinePacket(const model::PacketTiming& timing);

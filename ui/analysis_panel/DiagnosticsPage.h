@@ -5,7 +5,7 @@
 // 从 AnalysisPanel 拆出来的独立页面组件，同时是「扫描总控」的落点：
 // AnalysisFacade、当前 QC 报告、扫描代数、时间轴（离线/实时）状态都归本页所有，
 // 面板只做两件事 —— 把 current_video_path_ 与播放期的包/帧/同步采样喂进来，
-// 以及把 ScanStarted / ProgressChanged / ScanFinished 转发给共用同一次扫描的
+// 以及把 ScanStarted / ProgressChanged / ScanEnded 转发给共用同一次扫描的
 // 其它几页（码率与 GOP / 音频 QC / 色彩与 HDR）。
 //
 // 面板侧要拿结果时用 result() / qcReport() / hasResult() 取只读快照，
@@ -44,6 +44,19 @@ class DiagnosticsPage : public QWidget {
     Q_OBJECT
 
 public:
+    // 一次扫描的**终态**。
+    //
+    // 为什么是一个三值枚举而不是"成功一个信号、取消一个信号"：本页编排的这次扫描被
+    // 码率 GOP / 音频 QC / 色彩 HDR / 字幕辅助 几页共用，它们必须在同一时刻一起回到
+    // Idle。以前只在"成功"和"取消"时通知，失败时其它几页就一直停在扫描态
+    // （取消按钮还亮着、"开始分析"永久禁用），和诊断页的"失败"状态互相矛盾。
+    enum class ScanEndReason {
+        Completed,  // 正常跑完（含用户中途取消后回包 completed=false 的情形见 Cancelled）
+        Cancelled,  // 被取消（结果不完整，但可用）
+        Failed,     // 打开 / 探测 / 读取失败，没有可用结果
+    };
+    Q_ENUM(ScanEndReason)
+
     explicit DiagnosticsPage(QWidget* parent = nullptr);
 
     // 面板换文件时同步：本页自己持有默认扫描选项与当前文件路径（StartScan 用）
@@ -86,9 +99,13 @@ signals:
     // 扫描生命周期：面板收到后同步其它几页的按钮 / 进度条
     void ScanStarted();
     void ProgressChanged(double percent, const QString& stage);
-    void ScanFinished(bool completed);
-    // 用户点了取消：面板要把共用扫描的其它几页一起退出扫描态
-    void ScanCancelled();
+    // 扫描终态，**每次扫描恰好发一次**。共用同一次扫描的几页只认这个事件来恢复
+    // 按钮与进度状态 —— 成功、取消、失败都走同一条路径，不会再出现"诊断页失败了、
+    // 其它页还在扫描中"这种页面之间状态不一致。
+    // (以前用户点取消时还会额外发一个"取消"，而那一刻任务其实还在跑 ——
+    //  那个"假终态"和"真终态"混在一起，正是状态收不干净的原因。)
+    void ScanEnded(videoeye::ui::DiagnosticsPage::ScanEndReason reason);
+
     // 报告重算（改规则 / 关联场景切换）后通知面板再刷一遍音频 QC 与色彩 HDR
     void QcReportChanged(const model::QcReport& report);
     // 点「跳转到问题帧」

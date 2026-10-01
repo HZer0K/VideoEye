@@ -43,6 +43,8 @@ public:
 
     // 扫描生命周期由面板驱动（与码率/GOP、色彩/HDR、诊断页保持同步）
     void SetScanActive(bool active);
+    // 同 BitrateGopPage::IsScanActive: 状态必须可观察，否则"某页卡在扫描中"只能靠肉眼发现
+    bool IsScanActive() const { return scan_active_; }
     void SetProgress(int percent);
     void SetProgressFormat(const QString& format);
 
@@ -56,6 +58,9 @@ public slots:
     void Refresh();
 
 private:
+    // 扫描态（由 SetScanActive 写入；面板成功/取消/失败三种终态都必须把它复位）
+    bool scan_active_ = false;
+
     void SetupUi();
     void ApplyOptionsFromUi();
     void OnStartAnalysis();

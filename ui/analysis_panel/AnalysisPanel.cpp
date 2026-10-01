@@ -641,10 +641,9 @@ void AnalysisPanel::SetupDiagnosticsPage() {
             this, &AnalysisPanel::OnScanStarted);
     connect(diagnostics_page_, &DiagnosticsPage::ProgressChanged,
             this, &AnalysisPanel::OnDiagnosticsProgress);
-    connect(diagnostics_page_, &DiagnosticsPage::ScanFinished,
-            this, &AnalysisPanel::OnDiagnosticsFinished);
-    connect(diagnostics_page_, &DiagnosticsPage::ScanCancelled,
-            this, &AnalysisPanel::OnScanCancelled);
+    // 终态只有一个入口: 成功 / 取消 / 失败都从这里收尾共用同一次扫描的几页
+    connect(diagnostics_page_, &DiagnosticsPage::ScanEnded,
+            this, &AnalysisPanel::OnScanEnded);
     // 报告重算（改规则 / 关联场景切换）后，音频 QC 与色彩 HDR 的判定表要跟着换
     connect(diagnostics_page_, &DiagnosticsPage::QcReportChanged,
             this, [this](const model::QcReport& report) {
@@ -677,49 +676,47 @@ void AnalysisPanel::OnScanStarted() {
     if (color_hdr_page_) color_hdr_page_->SetScanActive(true);
 }
 
-void AnalysisPanel::OnScanCancelled() {
-    if (bitrate_gop_page_) bitrate_gop_page_->SetScanActive(false);
-    if (audio_qc_page_) audio_qc_page_->SetScanActive(false);
-    if (color_hdr_page_) color_hdr_page_->SetScanActive(false);
-}
+void AnalysisPanel::OnScanEnded(DiagnosticsPage::ScanEndReason reason) {
+    const bool failed = (reason == DiagnosticsPage::ScanEndReason::Failed);
+    const bool completed = (reason == DiagnosticsPage::ScanEndReason::Completed);
 
-void AnalysisPanel::OnDiagnosticsProgress(double percent, const QString& stage) {
-    if (bitrate_gop_page_) {
-        bitrate_gop_page_->SetProgress(static_cast<int>(percent));
-        bitrate_gop_page_->SetProgressFormat(stage + " %p%");
-    }
-    if (audio_qc_page_) {
-        audio_qc_page_->SetProgress(static_cast<int>(percent));
-        audio_qc_page_->SetProgressFormat(stage + " %p%");
-    }
-    if (color_hdr_page_) {
-        color_hdr_page_->SetProgress(static_cast<int>(percent));
-        color_hdr_page_->SetProgressFormat(stage + " %p%");
-    }
-}
+    // 共用同一次扫描的三页在这里**一起**回到 Idle。成功 / 取消 / 失败走同一条路径 ——
+    // 以前失败时一个信号都不发，这三页就永远停在扫描态（取消按钮还亮着、"开始分析"
+    // 永久禁用），与诊断页显示的"失败"互相矛盾，用户只能重开文件才恢复。
+    const QString final_format = failed ? tr("扫描失败")
+                                        : (completed ? tr("分析完成") : tr("已取消（结果不完整）"));
+    const int final_progress = failed ? 0 : 100;
+    auto settle = [&](auto* page) {
+        if (!page) return;
+        page->SetScanActive(false);
+        page->SetProgress(final_progress);
+        page->SetProgressFormat(final_format);
+    };
+    settle(bitrate_gop_page_);
+    settle(audio_qc_page_);
+    settle(color_hdr_page_);
 
-void AnalysisPanel::OnDiagnosticsFinished(bool completed) {
+    // 失败没有可用结果: 状态恢复完就结束, 不要用空结果盖掉页面上的旧内容。
+    if (failed) return;
+
+    // ---- 以下把同一次扫描的结果分发给各页（失败的路径已在上面返回）----
     if (!diagnostics_page_) return;
     VE_PERF("AnalysisPanel 分发扫描结果");
 
     // 「关联场景切换」要用场景切换页的记录，先喂给码率页
     if (bitrate_gop_page_) {
-        bitrate_gop_page_->SetScanActive(false);
-        bitrate_gop_page_->SetProgress(100);
-        bitrate_gop_page_->SetProgressFormat(completed ? tr("分析完成") : tr("已取消（结果不完整）"));
         bitrate_gop_page_->SetSceneChanges(scene_change_page_ ? scene_change_page_->records()
                                                               : std::vector<model::SceneChangeResult>());
         bitrate_gop_page_->SetResult(diagnostics_page_->result());
     }
     // 音频 QC / 色彩 HDR 的异常表来自 QC 规则引擎，所以连报告一起给
     if (audio_qc_page_) {
-        audio_qc_page_->SetScanActive(false);
         audio_qc_page_->SetResult(diagnostics_page_->result(), diagnostics_page_->qcReport());
     }
     if (color_hdr_page_) {
-        color_hdr_page_->SetScanActive(false);
         color_hdr_page_->SetResult(diagnostics_page_->result(), diagnostics_page_->qcReport());
     }
+
     {
         VE_PERF("UpdateBitstreamUi");
         UpdateBitstreamUi();  // 参数集页（SPS/PPS/Sequence Header）同样共用同一次扫描结果
@@ -738,6 +735,22 @@ void AnalysisPanel::OnDiagnosticsFinished(bool completed) {
     if (result.mp4_samples_analyzed && result.mp4_samples.valid) {
         VE_PERF("诊断后刷新 MP4 样本表");
         if (container_page_) container_page_->ApplySampleTable(result.mp4_samples);
+    }
+}
+
+// 扫描进行中的进度同步（只在扫描中才有意义；终态收口统一在 OnScanEnded）
+void AnalysisPanel::OnDiagnosticsProgress(double percent, const QString& stage) {
+    if (bitrate_gop_page_) {
+        bitrate_gop_page_->SetProgress(static_cast<int>(percent));
+        bitrate_gop_page_->SetProgressFormat(stage + " %p%");
+    }
+    if (audio_qc_page_) {
+        audio_qc_page_->SetProgress(static_cast<int>(percent));
+        audio_qc_page_->SetProgressFormat(stage + " %p%");
+    }
+    if (color_hdr_page_) {
+        color_hdr_page_->SetProgress(static_cast<int>(percent));
+        color_hdr_page_->SetProgressFormat(stage + " %p%");
     }
 }
 

@@ -651,6 +651,7 @@ void BitrateGopPage::FillScanOptions(analyzer::AnalysisOptions& options) {
 }
 
 void BitrateGopPage::SetScanActive(bool active) {
+    scan_active_ = active;
     if (start_button_) start_button_->setEnabled(!active);
     if (cancel_button_) cancel_button_->setEnabled(active);
 }

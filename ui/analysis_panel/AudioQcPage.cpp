@@ -718,6 +718,7 @@ void AudioQcPage::FillScanOptions(analyzer::AnalysisOptions& options) {
 }
 
 void AudioQcPage::SetScanActive(bool active) {
+    scan_active_ = active;
     if (start_button_) start_button_->setEnabled(!active);
     if (cancel_button_) cancel_button_->setEnabled(active);
 }

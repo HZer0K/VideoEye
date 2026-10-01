@@ -593,6 +593,46 @@ if(WIN32)
 endif()
 
 # =================================================
+# 测试 41：扫描失败必须复位所有共用页面（复查 P1-4）
+#
+# 说明: 码率/GOP、音频 QC、色彩/HDR 三页共用同一次扫描，它们的扫描态由面板转发
+#       维护；而 DiagnosticsPage 失败时以前只重置自己、**不发任何终态信号** ——
+#       于是失败后这三页永远停在"扫描中"（取消按钮亮着、"开始分析"永久禁用），
+#       和诊断页显示的"失败"互相矛盾。这里跑一次真实的失败扫描（损坏输入），
+#       断言三个页面都回到 Idle，并且一次扫描只产生一个终态事件。
+#
+# 为什么把整个 ui/ 都编进来: 被测对象是 AnalysisPanel 本体，而 UI 目前只编译进
+#   主程序，没有独立的静态库可链。所以这里取 UI_SOURCES 去掉自带 main() 的
+#   ui/app/main.cpp。每个 Q_OBJECT 头都有同名 .cpp，AUTOMOC 靠同名匹配就能生成
+#   moc，无需再列头文件（列了反而会和主程序各生成一份）。
+#   用 offscreen 平台跑，不需要显示器。
+# =================================================
+set(VIDEOEYE_UI_TEST_SOURCES ${UI_SOURCES})
+list(FILTER VIDEOEYE_UI_TEST_SOURCES EXCLUDE REGEX "ui/app/main\\.cpp$")
+videoeye_add_test(test_scan_terminal_state
+    unit/test_scan_terminal_state.cpp
+    ${VIDEOEYE_UI_TEST_SOURCES}
+)
+# 与主程序一致: ui/ 内部有按子目录写的 include，需要把 ui/ 自己加进来。
+target_include_directories(test_scan_terminal_state PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui)
+target_link_libraries(test_scan_terminal_state PRIVATE
+    VideoEyeQtAdapters
+    VideoEyePlayback
+    VideoEyeExporter
+    VideoEyeReporting
+    VideoEyeQc
+    VideoEyeFfmpegTools
+    VideoEyeAnalysis
+    VideoEyeMedia
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    Qt6::Widgets Qt6::Gui Qt6::Core)
+add_test(NAME ScanTerminalStateTests COMMAND test_scan_terminal_state)
+set_tests_properties(ScanTerminalStateTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
 # 测试 32：EventTimelineView 三个开关的初始状态（评审 P1-4）
 # 说明: 控件是在 AnalysisPanel 注入功能开关钩子之前建的，注入后必须回写，
 #       否则界面显示「启用分析」而面板里其实是关的。用 offscreen 平台跑，

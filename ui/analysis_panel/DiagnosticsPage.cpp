@@ -20,9 +20,15 @@ namespace ui {
 
 DiagnosticsPage::DiagnosticsPage(QWidget* parent)
     : QWidget(parent) {
-    SetupUi();
-
-    // 分析机件统一收口到 facade（UI 不再直接持有分析器）
+    // ⚠️ facade_ 必须**先于** SetupUi() 建好。
+    //
+    // SetupUi() 最后一步是 RebuildRuleTable()，而规则表的来源就是 facade_->rules()。
+    // 这里以前是反的（先 SetupUi() 再 new AnalysisFacade），于是 RebuildRuleTable()
+    // 解引用了一个还是 nullptr 的 facade_ —— 对空指针调非虚成员函数是 UB：
+    // 优化构建下表现为进程启动即 0xC0000005（打开软件就闪退），未优化构建下同样崩。
+    // 构造函数里"先建 UI、后建数据"的顺序看着自然，但只要有一步 UI 初始化要读数据，
+    // 就会踩这个坑；所以这里把 facade_ 提到最前面，并把它当成不变式：
+    // **SetupUi() 返回后，facade_ / 各子控件一律可用。**
     facade_ = new AnalysisFacade(this);
     connect(facade_, &AnalysisFacade::ProgressReported,
             this, &DiagnosticsPage::OnFacadeProgress);
@@ -30,6 +36,8 @@ DiagnosticsPage::DiagnosticsPage(QWidget* parent)
             this, &DiagnosticsPage::OnFacadeFinished);
     connect(facade_, &AnalysisFacade::AnalysisFailed,
             this, &DiagnosticsPage::OnFacadeFailed);
+
+    SetupUi();
 
     // 播放期时间轴的批量刷新节拍：与面板其它表的刷新同频，别每包都重画
     flush_timer_ = new QTimer(this);
@@ -257,8 +265,9 @@ void DiagnosticsPage::CancelScan() {
     facade_->Cancel();
     cancel_button_->setEnabled(false);
     progress_bar_->setFormat(tr("取消中..."));
-    // 与诊断页共用同一次扫描的几页也要一起退出扫描态（由面板收尾）
-    emit ScanCancelled();
+    // 注意这里**不发终态信号**: 取消只是请求, 任务还在跑。终态由 OnFacadeFinished
+    // 统一发出 —— 共用同一次扫描的几页在真正结束时才一起回到 Idle, 不会出现
+    // "面板说取消了、后台其实还在跑"的中间态。
 }
 
 void DiagnosticsPage::SetScanButtonState(bool running) {
@@ -304,7 +313,8 @@ void DiagnosticsPage::OnFacadeFinished(quint64 generation, bool completed,
     // 导致导出按钮永远处于禁用态。completed 与否都允许导出(已取消时也保留了部分结果)。
     export_button_->setEnabled(has_result_);
 
-    emit ScanFinished(completed);
+    // 终态: 一次扫描恰好发一次。共用同一次扫描的几页据此一起恢复按钮 / 进度。
+    emit ScanEnded(completed ? ScanEndReason::Completed : ScanEndReason::Cancelled);
 }
 
 void DiagnosticsPage::OnFacadeFailed(quint64 generation, const QString& message) {
@@ -316,6 +326,11 @@ void DiagnosticsPage::OnFacadeFailed(quint64 generation, const QString& message)
 
     // 不再弹模态框: 失败原因已写入上方汇总标签, 在本页直接可见
     // (异常文件打开时也会自动触发扫描, 弹窗会打断"打开即分析"的流程)。
+
+    // 失败同样是**终态**, 必须发出去 —— 以前这里什么都不发, 于是共用同一次扫描的
+    // 几页永远停在扫描态: 取消按钮还亮着、"开始分析"按钮永久禁用, 与诊断页显示的
+    // "失败"互相矛盾, 用户只能靠重开文件才恢复。
+    emit ScanEnded(ScanEndReason::Failed);
 }
 
 // ---------------------------------------------------------------------------
