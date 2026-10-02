@@ -89,8 +89,6 @@ deliverables/
 overview.md
 local_docs/
 
-# 本地实施文档（不推送到远程仓库）
-docs/bitstream/
-
-# 本地开发文档（不推送到远程仓库）
-docs/local/
+# 开发文档（暂时整体不上传：ARCHITECTURE / BITSTREAM_ANALYSIS 等 12 篇）
+# 覆盖原 docs/bitstream、docs/local；如需恢复推送，删掉本条并 git add docs/
+docs/
