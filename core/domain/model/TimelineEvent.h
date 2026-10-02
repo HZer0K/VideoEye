@@ -1,20 +1,17 @@
 #pragma once
 
-#include <QMetaType>
-#include <QString>
+#include <string>
 
 namespace videoeye {
 namespace model {
 
 struct TimelineEvent {
     int index = 0;
-    QString category;
+    std::string category;
     double timestamp_seconds = 0.0;
-    QString label;
-    QString detail;
+    std::string label;
+    std::string detail;
 };
 
 } // namespace model
 } // namespace videoeye
-
-Q_DECLARE_METATYPE(videoeye::model::TimelineEvent)

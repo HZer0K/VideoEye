@@ -15,7 +15,6 @@
 #include "infrastructure/logging/ScopedTimer.h"
 #include "ui/analysis_panel/AnalysisPageSupport.h"
 
-#include "core/analysis/quality/ColorHdrAnalyzer.h"
 #include "core/domain/model/ColorHdrResult.h"
 #include "core/domain/model/ColorInfo.h"
 #include "core/domain/model/HdrMetadataInfo.h"
@@ -280,8 +279,8 @@ void ColorHdrPage::RebuildTables() {
         hdr_info_table_->setRowCount(0);
         return;
     }
-    fill(color_info_table_, analyzer::BuildColorRows(analysis));
-    fill(hdr_info_table_, analyzer::BuildHdrRows(analysis));
+    fill(color_info_table_, model::BuildColorRows(analysis));
+    fill(hdr_info_table_, model::BuildHdrRows(analysis));
 }
 
 void ColorHdrPage::RebuildIssueTable() {
@@ -367,12 +366,12 @@ void ColorHdrPage::OnExportCsv() {
                 << csv_field(QString::fromStdString(row.note)) << '\n';
         }
     };
-    write_rows(nullptr, tr("色彩信息"), analyzer::BuildColorRows(analysis));
-    write_rows(nullptr, tr("HDR 元数据"), analyzer::BuildHdrRows(analysis));
+    write_rows(nullptr, tr("色彩信息"), model::BuildColorRows(analysis));
+    write_rows(nullptr, tr("HDR 元数据"), model::BuildHdrRows(analysis));
     file.close();
 
-    const int rows = static_cast<int>(analyzer::BuildColorRows(analysis).size() +
-                                      analyzer::BuildHdrRows(analysis).size());
+    const int rows = static_cast<int>(model::BuildColorRows(analysis).size() +
+                                      model::BuildHdrRows(analysis).size());
     QMessageBox::information(this, tr("导出完成"), tr("已导出 %1 行。").arg(rows));
 }
 

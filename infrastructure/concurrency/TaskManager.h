@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -28,6 +29,25 @@ enum class TaskState {
 };
 
 bool IsTerminalState(TaskState state);
+
+// 关闭阶段能不能"放弃"这个任务。这个区分是 WaitForAll() 能否给出**整个函数**的耗时
+// 上限的前提 —— 详见 WaitForAll 的注释。默认 Cooperative, 即沿用"必须 join"的保守策略。
+enum class TaskKind {
+    // 协作式可取消任务: 任务体会轮询取消令牌, 且不会长时间停在第三方阻塞调用里。
+    // 关闭时 TaskManager **一定会** join 它 —— join 是唯一能证明它已经不再访问外部对象的
+    // 手段, 所以契约被破坏时宁可多等, 也不冒悬空访问的风险。
+    Cooperative,
+
+    // 可能卡在第三方阻塞调用上的任务: FFmpeg 的网络 IO、异常设备读取等。这类调用即使
+    // 装了 AVIOInterruptCB 也不保证一定响应 —— 比如回调只在下一个网络包到来时才被检查。
+    // 关闭时在预算内等不到它就 **放弃** 这个线程(detach), 不再拖住整个关闭流程。
+    //
+    // 代价是一条更严格的生命周期约定, 调用得遵守, 否则 detach 之后就是悬空访问:
+    //   * 任务体只能按值 / shared_ptr 捕获依赖, 不得持有任何可能在它结束前销毁的裸引用;
+    //   * 不得依赖"任务一定会被 join"这件事做任何清理;
+    //   * 结果发布必须自己判过期(TaskManager::IsCurrent / QPointer 之类的存活判定)。
+    BlockingIo,
+};
 
 // 取消令牌: 由任务体在循环里轮询。
 //
@@ -86,13 +106,22 @@ public:
     //   先置其取消标志, 再按 wait_for_previous_ms 限时等待其退出。
     //   超时也放行 —— 旧任务继续在后台跑完, 但 IsCurrent() 会判它过期, 结果不会覆盖新结果。
     // wait_for_previous_ms: 0=不等待, <0=等到它结束为止。
+    // kind: 见 TaskKind 注释, 决定关闭时这个任务的线程能不能被放弃。
     // 返回 0 表示并发已满(调用方应把这次请求当作失败处理)。
-    TaskId Begin(const std::string& slot, int wait_for_previous_ms = 0);
+    TaskId Begin(const std::string& slot, int wait_for_previous_ms = 0,
+                 TaskKind kind = TaskKind::Cooperative);
 
     // 便捷入口: 在受管 std::thread 上执行 body(id, token), 收尾自动写入终态。
     // body 里的异常会被捕获并记成 Failed(MSVC 的 std::thread 入口是 noexcept,
     // 异常逃逸会直接 terminate, 所以必须在线程内兜住)。
-    TaskId Run(const std::string& slot, std::function<void(TaskId, CancelToken)> body, int wait_for_previous_ms = 0);
+    TaskId Run(const std::string& slot, std::function<void(TaskId, CancelToken)> body,
+               int wait_for_previous_ms = 0, TaskKind kind = TaskKind::Cooperative);
+
+    // Run() 的 TaskKind::BlockingIo 版本。执行语义完全一样, 只有关闭策略不同。
+    // 单独起个名字而不是塞个默认参数: 这是为了让调用点自己把"这里会阻塞在第三方 IO 上"
+    // 这件事写出来, 顺带把上面那条生命周期约定钉在调用点旁边。
+    TaskId RunBlockingIo(const std::string& slot, std::function<void(TaskId, CancelToken)> body,
+                         int wait_for_previous_ms = 0);
 
     // 取该 slot 当前任务的取消令牌(供自带线程的任务体轮询)。
     CancelToken Token(const std::string& slot) const;
@@ -116,40 +145,59 @@ public:
     // 注意: 本类只管"任务状态", 管不了调用方自管的线程 —— 那种线程卡住了就是卡住了。
     bool WaitForIdle(const std::string& slot, int timeout_ms);
 
-    // 等待所有 slot 空闲并回收线程。分两段, 语义不同, 别混为一谈:
-    //   1) 等终态 —— **有**超时保证: timeout_ms 是总预算, 不是每个 slot 各等一份;
-    //      超时后仍没报终态的调用方自管线程(QThread 等)被强制写成 Canceled,
+    // 等待所有 slot 空闲并回收线程。timeout_ms >= 0 时它是 **整个函数** 的总预算,
+    // 而不是"每个阶段各一份"或"每个 slot 各一份"。分三段, 语义不同, 别混为一谈:
+    //
+    //   1) 等终态          —— 有超时保证, 消耗的是 timeout_ms 预算;
+    //      超时仍没报终态的调用方自管线程(QThread 等)被强制写成 Canceled,
     //      免得 slot 永远卡在 Running 让后续 Begin 每次白等一轮。
-    //   2) 回收受管线程(Run 起的 std::thread)—— **没有**超时保证: 它们必须被 join,
-    //      detach 会让进程退出时崩在还在跑的线程上; body 一定走到 End, 所以 join
-    //      不会无限期, 但耗时取决于任务体自己有没有轮询取消令牌。
-    // 换句话说: 本类能保证"等状态"不超过 timeout_ms, 保证不了"整个函数"不超过。
+    //   2) 回收受管线程    —— 同样消耗 timeout_ms 的剩余预算。因为 std::thread 没有
+    //      带超时的 join, 这里用一个 promise 判断"线程是否真的跑完", 只在判定为跑完时
+    //      才 join(瞬间返回), 预算耗尽则按 kind 分类处置:
+    //        * TaskKind::BlockingIo  -> detach 放弃。TaskManager 会先于线程析构,
+    //          线程只持有 Core 的 shared_ptr, 所以它是自洽的, 不会踩到已销毁的对象。
+    //        * TaskKind::Cooperative -> 仍然 join。契约上它必须响应取消, 走到这一步说明
+    //          任务体坏了; 此时 detach 等于放任它访问可能已销毁的对象, 所以宁可多等。
+    //   3) timeout_ms < 0  —— 不限时, 与旧行为一致(全部 join)。
+    //
+    // 所以这条函数的耗时保证是: **timeout_ms 有界, 除非存在违反契约的 Cooperative 任务。**
+    // 这也是为什么可能阻塞在第三方 IO 上的任务必须声明成 BlockingIo —— 那是唯一肯承认
+    // "它可能不响应取消"的种类。
     void WaitForAll(int timeout_ms);
 
+    // 上一次 WaitForAll() 放弃掉的线程数(BlockingIo 任务超预算时才会 > 0)。
+    // 正常业务代码不需要看它; 关闭耗时回归测试用它确认"确实放弃了而不是 join 到底"。
+    std::size_t AbandonedCount() const;
+
 private:
-    struct Slot {
-        std::atomic<TaskId> current_id{0};
-        std::atomic<bool> running{false};
-        std::atomic<TaskState> state{TaskState::Idle};
-        std::shared_ptr<std::atomic<bool>> cancel{std::make_shared<std::atomic<bool>>(false)};
-        std::thread thread; // 仅 Run() 使用
-        std::atomic<bool> thread_needs_join{false};
+    // 受管线程可能比 TaskManager 活得久(被放弃时), 所以它依赖的东西必须装在一个
+    // shared_ptr 里由线程自己保活 —— 这就是为什么 Slot / mutex / cv 不直接是本类成员。
+    // Slot 与 Core 的定义都在 .cpp 里: 调用方只需要拿到不透明的对象, 不需要看见内部字段。
+    struct Slot;
+    struct Core;
+
+    // 被取代但仍未跑完的受管线程, 下次 Begin / WaitForAll 时回收。
+    struct OwnedThread {
+        TaskKind kind = TaskKind::Cooperative;
+        std::thread thread;
+        std::future<void> done; // 线程真正跑完时置位
+        TaskId id = 0;          // 该线程对应的任务 id (放弃后据此给 slot 写终态)
+        std::string slot;       // 仅用于日志
     };
 
-    Slot* FindOrCreateLocked(const std::string& slot);
-    Slot* FindLocked(const std::string& slot) const;
-    std::size_t RunningCountLocked() const;
-    void JoinThreadLocked(Slot* s); // 仅回收已结束的线程, 不阻塞在仍运行的任务上
-
-    // 距离 deadline 还剩多少毫秒; bounded=false(不限时)时恒返回 -1。
     static int RemainingMs(std::chrono::steady_clock::time_point deadline, bool bounded);
 
+    // 做成静态成员而不是普通成员: worker 线程手上只有 Core, 没有 this, 而这组函数
+    // 本来也只依赖传进来的 Core。
+    static void EndTask(Core& st, const std::string& slot, TaskId id, TaskState terminal);
+    static Slot* FindOrCreateLocked(Core& st, const std::string& slot);
+    static Slot* FindLocked(Core& st, const std::string& slot);
+    static std::size_t RunningCountLocked(Core& st);
+
     const std::size_t max_concurrent_;
-    mutable std::mutex mutex_;
-    std::condition_variable cv_;
-    std::unordered_map<std::string, std::unique_ptr<Slot>> slots_;
-    std::vector<std::thread> orphans_; // 被取代但仍未跑完的受管线程, 析构前统一回收
-    TaskId next_id_ = 0;
+    const std::shared_ptr<Core> core_;
+    std::vector<OwnedThread> orphans_; // 受 mutex_ 保护
+    std::size_t abandoned_ = 0;
 };
 
 } // namespace task

@@ -682,7 +682,7 @@ void PlayerPanel::OnPlaybackFinished() {
     emit StatusMessage(tr("播放完成"), 0);
 }
 
-void PlayerPanel::OnStreamStatsUpdate(const analyzer::StreamStats& stats) {
+void PlayerPanel::OnStreamStatsUpdate(const model::StreamStats& stats) {
     // StreamAnalyzer 起步阶段统计窗口未满, current_fps 会先报若干个 0。
     // 此时不下发, 避免状态栏与叠加层闪现 "FPS 0.0 / 码率 0"。
     if (stats.current_fps <= 0.0) return;
@@ -747,8 +747,8 @@ void PlayerPanel::OnAudioLevelReady(double level, double timestamp_seconds) {
 
 void PlayerPanel::OnAudioVisualizationForDisplay(const model::AudioVisualizationFrame& frame) {
     if (!audio_only_mode_) return;
-    latest_spectrum_bins_ = frame.spectrum_bins;
-    latest_waveform_points_ = frame.waveform_points;
+    latest_spectrum_bins_ = QVector<double>(frame.spectrum_bins.begin(), frame.spectrum_bins.end());
+    latest_waveform_points_ = QVector<double>(frame.waveform_points.begin(), frame.waveform_points.end());
 
     // Smooth spectrum with fast attack, slow decay for persistence
     const int n = static_cast<int>(latest_spectrum_bins_.size());

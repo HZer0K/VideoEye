@@ -109,10 +109,10 @@ endfunction()
 
 # --- domain: 结果类型 / 值对象，谁都能用，自己不依赖任何人 ---
 videoeye_add_module(VideoEyeDomain ${DOMAIN_SOURCES})
-# 注意: Mp4BoxInfo / TimelineEvent 等还在用 QVector / QMap / QString，这是历史包袱 ——
-# 本轮的成果是"domain 不再依赖 FFmpeg、也不再反向 include analyzer"，
-# Qt 容器换成 std:: 动了几十处 UI，留到下一步单独做。
-target_link_libraries(VideoEyeDomain PUBLIC Qt6::Core)
+# domain 层零 Qt、零 FFmpeg：全部模型字段都是 std:: 容器（vector/map/string/optional），
+# 编译期不拉 Qt6::Core，任何上层想只依赖 domain 就能编译（测试、命令行工具等）。
+# Qt 类型与 domain 之间的转换统一收在 core/qt/ 与各生产侧的显式 toStdString() / fromStdString()。
+# Q_DECLARE_METATYPE 之类的 Qt 反射需求集中在 core/qt/DomainMetatypes.h。
 
 # --- infrastructure: 配置 / JSON / 日志 / 后台任务 ---
 videoeye_add_module(VideoEyeInfrastructure ${INFRA_SOURCES})

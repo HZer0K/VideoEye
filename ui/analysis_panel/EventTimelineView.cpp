@@ -304,13 +304,13 @@ void EventTimelineView::AppendAnalysisEvent(const model::AnalysisEvent& event_in
 
     AnalysisEventRecord record;
     record.index = event_info.index;
-    record.severity = event_info.severity;
-    record.type = event_info.type;
+    record.severity = QString::fromStdString(event_info.severity);
+    record.type = QString::fromStdString(event_info.type);
     record.stream_index = event_info.stream_index;
     record.pts = event_info.pts;
     record.timestamp_seconds = event_info.timestamp_seconds;
-    record.summary = event_info.summary;
-    record.detail = event_info.detail;
+    record.summary = QString::fromStdString(event_info.summary);
+    record.detail = QString::fromStdString(event_info.detail);
 
     analysis_event_records_.push_back(record);
     event_table_dirty_ = true;
@@ -400,10 +400,10 @@ void EventTimelineView::AppendTimelineEvent(const model::TimelineEvent& event) {
 
     TimelineEventRecord record;
     record.index = event.index;
-    record.category = event.category;
+    record.category = QString::fromStdString(event.category);
     record.timestamp_seconds = event.timestamp_seconds;
-    record.label = event.label;
-    record.detail = event.detail;
+    record.label = QString::fromStdString(event.label);
+    record.detail = QString::fromStdString(event.detail);
 
     timeline_event_records_.push_back(record);
     timeline_table_dirty_ = true;

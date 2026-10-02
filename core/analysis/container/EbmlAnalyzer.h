@@ -1,9 +1,13 @@
 #pragma once
 
-#include <QString>
+#include <cstdint>
+#include <map>
+#include <string>
+#include <vector>
+
 #include <QFile>
-#include <QMap>
 #include <QDataStream>
+
 #include "core/domain/model/EbmlInfo.h"
 
 namespace videoeye {
@@ -38,10 +42,10 @@ private:
     /// 深度解析 Block 二进制格式
     /// @param data  Block 的原始数据
     /// @param result 填充 EbmlBlockSummary
-    static QString ParseBlockData(const QByteArray& data, model::EbmlBlockSummary& summary);
+    static std::string ParseBlockData(const QByteArray& data, model::EbmlBlockSummary& summary);
 
     /// 深度解析 SimpleBlock 二进制格式 (比 Block 多 TrackNumber+Timecode+Flags 头部)
-    static QString ParseSimpleBlockData(const QByteArray& data, model::EbmlBlockSummary& summary);
+    static std::string ParseSimpleBlockData(const QByteArray& data, model::EbmlBlockSummary& summary);
 
     /// 解析 TrackEntry 子树 → 填充 result.tracks
     void ExtractTrackInfo(const model::EbmlElementNode& track_entry,
@@ -52,10 +56,10 @@ private:
                         model::EbmlAnalysisResult& result);
 
     // --- 辅助 ---
-    static QString ElementName(uint64_t id);
-    static QString CodecIdToName(const QString& codec_id);
-    static QString TrackTypeName(int type);
-    static QMap<uint64_t, QString>& ElementNames();
+    static std::string ElementName(uint64_t id);
+    static std::string CodecIdToName(const std::string& codec_id);
+    static std::string TrackTypeName(int type);
+    static std::map<uint64_t, std::string>& ElementNames();
 
     /// 判断是否为容器元素 (含子元素的复合类型)
     static bool IsContainerElement(uint64_t id);

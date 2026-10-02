@@ -200,9 +200,11 @@ void MediaExporter::Export(const ExportOptions& opt) {
 
     AVFormatContext* in_fmt = nullptr;
     AVFormatContext* out_fmt = nullptr;
+    // pkt / frame 会被下面的 release_all lambda 使用，所以必须先在这里声明；
+    // 真正的分配推迟到主循环之前（见下方 av_packet_alloc / av_frame_alloc）。
+    AVPacket* pkt = nullptr;
+    AVFrame* frame = nullptr;
     std::vector<StreamCtx> streams;
-    AVPacket* pkt = av_packet_alloc();
-    AVFrame* frame = av_frame_alloc();
 
     QString err_msg;
 
@@ -245,6 +247,16 @@ void MediaExporter::Export(const ExportOptions& opt) {
     };
 
     const std::string in_path = opt.input_path.toStdString();
+
+    // pkt / frame 在主循环的每一轮都要用：拿到空指针不会报错，而是让 av_read_frame()
+    // 和 av_frame_unref() 直接解引用 nullptr。低内存下 av_packet_alloc() 是会失败的，
+    // 所以在动 FFmpeg 之前先把它俩要到手。
+    pkt = av_packet_alloc();
+    frame = av_frame_alloc();
+    if (!pkt || !frame) {
+        cleanup_and_emit(true, QStringLiteral("内存不足: 无法分配导出用的包/帧对象"));
+        return;
+    }
 
     // 输入上下文**必须自己分配**: AVIOInterruptCB 要在 avformat_open_input 之前装好，
     // 而 avformat_open_input(&ctx=nullptr, ...) 会让 FFmpeg 内部自己分配，没有地方装。
@@ -294,14 +306,10 @@ void MediaExporter::Export(const ExportOptions& opt) {
     // (长素材的正常读取可以远超打开超时, 留着它会误杀。)
     interrupt.deadline_us = 0;
 
+    // 失败收尾统一交给 cleanup_and_emit: 它比手写的这堆 free 多做了两件事 ——
+    // 关掉可能已经打开的输出 pb、删掉可能已经生成的临时文件。
     if (!open_output(out_fmt, temp_path.toStdString(), err_msg)) {
-        // out_fmt 可能为 nullptr
-        if (out_fmt) { avformat_free_context(out_fmt); out_fmt = nullptr; }
-        if (in_fmt) avformat_close_input(&in_fmt);
-        if (pkt) av_packet_free(&pkt);
-        if (frame) av_frame_free(&frame);
-        exporting_ = false;
-        emit ExportError(err_msg);
+        cleanup_and_emit(true, err_msg);
         return;
     }
 
@@ -356,10 +364,21 @@ void MediaExporter::Export(const ExportOptions& opt) {
         sc.out_idx = static_cast<int>(out_st->index);
         sc.do_encode = do_encode;
 
+        // sc 要到本轮循环体末尾才 push_back 进 streams, 在此之前 release_all() /
+        // free_streams() 都看不见它。所以这段里所有提前 return 都必须走这个函数 ——
+        // 否则 dec / enc 就漏在半路上了。
+        auto abort_stream_setup = [&](const QString& msg) {
+            if (sc.sws) { sws_freeContext(sc.sws); sc.sws = nullptr; }
+            if (sc.swr) { swr_free(&sc.swr); sc.swr = nullptr; }
+            if (sc.dec) { avcodec_free_context(&sc.dec); sc.dec = nullptr; }
+            if (sc.enc) { avcodec_free_context(&sc.enc); sc.enc = nullptr; }
+            cleanup_and_emit(true, msg);
+            return;
+        };
+
         if (!do_encode) {
             if (avcodec_parameters_copy(out_st->codecpar, in_st->codecpar) < 0) {
-                err_msg = "复制流参数失败";
-                cleanup_and_emit(true, err_msg);
+                abort_stream_setup("复制流参数失败");
                 return;
             }
             out_st->codecpar->codec_tag = 0;
@@ -367,19 +386,27 @@ void MediaExporter::Export(const ExportOptions& opt) {
         } else {
             const AVCodec* dec_codec = avcodec_find_decoder(in_st->codecpar->codec_id);
             if (!dec_codec) {
-                err_msg = QString("找不到解码器: %1").arg(avcodec_get_name(in_st->codecpar->codec_id));
-                cleanup_and_emit(true, err_msg);
+                abort_stream_setup(QString("找不到解码器: %1")
+                                       .arg(avcodec_get_name(in_st->codecpar->codec_id)));
                 return;
             }
+            // 两处 AVCodecContext 都必须先看返回值: 紧接着就是 `enc->width = ...`，
+            // 拿到 nullptr 会当场崩，而不是报出可读的 ExportError。
             AVCodecContext* dec = avcodec_alloc_context3(dec_codec);
-            avcodec_parameters_to_context(dec, in_st->codecpar);
-            if (avcodec_open2(dec, dec_codec, nullptr) < 0) {
-                avcodec_free_context(&dec);
-                err_msg = "打开解码器失败";
-                cleanup_and_emit(true, err_msg);
+            if (!dec) {
+                abort_stream_setup(QStringLiteral("内存不足: 无法分配解码器上下文"));
                 return;
             }
-            sc.dec = dec;
+            sc.dec = dec;   // 从这里起所有权归 sc, 后续任一路径都由 abort_stream_setup 收回
+            // 参数拷不过来时后续要用的是半初始化的上下文，宁可停在这里。
+            if (avcodec_parameters_to_context(dec, in_st->codecpar) < 0) {
+                abort_stream_setup(QStringLiteral("解码器参数拷贝失败"));
+                return;
+            }
+            if (avcodec_open2(dec, dec_codec, nullptr) < 0) {
+                abort_stream_setup("打开解码器失败");
+                return;
+            }
 
             const bool is_video = (mt == AVMEDIA_TYPE_VIDEO);
             const QStringList candidates =
@@ -397,13 +424,17 @@ void MediaExporter::Export(const ExportOptions& opt) {
                 }
             }
             if (!enc_codec) {
-                err_msg = QString("找不到 %1 编码器（已尝试: %2；该 FFmpeg 构建可能未包含它们）")
-                              .arg(is_video ? QStringLiteral("视频") : QStringLiteral("音频"),
-                                   candidates.join(QStringLiteral(" / ")));
-                cleanup_and_emit(true, err_msg);
+                abort_stream_setup(QString("找不到 %1 编码器（已尝试: %2；该 FFmpeg 构建可能未包含它们）")
+                                       .arg(is_video ? QStringLiteral("视频") : QStringLiteral("音频"),
+                                            candidates.join(QStringLiteral(" / "))));
                 return;
             }
             AVCodecContext* enc = avcodec_alloc_context3(enc_codec);
+            if (!enc) {
+                abort_stream_setup(QStringLiteral("内存不足: 无法分配编码器上下文"));
+                return;
+            }
+            sc.enc = enc;   // 同上: 交给 sc 之后就不存在漏释放的路径
             if (mt == AVMEDIA_TYPE_VIDEO) {
                 enc->width = dec->width;
                 enc->height = dec->height;
@@ -433,9 +464,20 @@ void MediaExporter::Export(const ExportOptions& opt) {
                     enc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
             } else {
                 enc->sample_rate = dec->sample_rate > 0 ? dec->sample_rate : 44100;
-                av_channel_layout_copy(&enc->ch_layout, &dec->ch_layout);
-                if (enc->ch_layout.nb_channels == 0) {
-                    av_channel_layout_default(&enc->ch_layout, dec->ch_layout.nb_channels ? dec->ch_layout.nb_channels : 2);
+                // av_channel_layout_copy() 返回负值表示失败，此时 dst 处于未定义状态，
+                // 不能直接拿去编码。先按源声道数兜一次默认值，兜不住才判失败。
+                int layout_ret = av_channel_layout_copy(&enc->ch_layout, &dec->ch_layout);
+                if (layout_ret >= 0 && enc->ch_layout.nb_channels == 0) {
+                    // av_channel_layout_default() 返回 void（FFmpeg 里本来就没有返回值），
+                    // 不能赋值给 layout_ret —— 成功与否看下面 enc->ch_layout.nb_channels 即可。
+                    av_channel_layout_default(
+                        &enc->ch_layout,
+                        dec->ch_layout.nb_channels > 0 ? dec->ch_layout.nb_channels : 2);
+                }
+                if (layout_ret < 0 || enc->ch_layout.nb_channels == 0) {
+                    abort_stream_setup(QStringLiteral("声道布局初始化失败: %1")
+                                           .arg(AvErrorString(layout_ret)));
+                    return;
                 }
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 19, 100)   // FFmpeg >= 7.1
                 {
@@ -456,16 +498,12 @@ void MediaExporter::Export(const ExportOptions& opt) {
                     enc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
             }
             if (avcodec_open2(enc, enc_codec, nullptr) < 0) {
-                avcodec_free_context(&enc);
-                avcodec_free_context(&dec);
-                err_msg = "打开编码器失败";
-                cleanup_and_emit(true, err_msg);
+                abort_stream_setup("打开编码器失败");
                 return;
             }
-            sc.enc = enc;
             if (avcodec_parameters_from_context(out_st->codecpar, enc) < 0) {
-                err_msg = "写入编码器参数失败";
-                cleanup_and_emit(true, err_msg);
+                // 这条路径以前会连带漏掉 dec / enc: sc 还没进 streams, release_all() 看不见它。
+                abort_stream_setup("写入编码器参数失败");
                 return;
             }
             out_st->time_base = enc->time_base;
@@ -506,6 +544,12 @@ void MediaExporter::Export(const ExportOptions& opt) {
     // 把一帧送进编码器并写出数据包
     auto write_encoded_packets = [&](StreamCtx& s) {
         AVPacket* epkt = av_packet_alloc();
+        if (!epkt) {
+            // 每写一轮都重新分配, 所以这里失败只影响本轮; 记进 err_msg 让外层按失败收尾。
+            if (err_msg.isEmpty())
+                err_msg = QStringLiteral("内存不足: 无法分配编码输出包");
+            return;
+        }
         for (;;) {
             const int ret = avcodec_receive_packet(s.enc, epkt);
             // EAGAIN(输出还没就绪) / EOF(编码器已排空) 都是正常状态, 不算错误
@@ -533,6 +577,7 @@ void MediaExporter::Export(const ExportOptions& opt) {
             if (!s.sws) { err_msg = "初始化图像缩放器失败"; return false; }
         }
         AVFrame* out_frame = av_frame_alloc();
+        if (!out_frame) { err_msg = QStringLiteral("内存不足: 无法分配视频编码帧"); return false; }
         out_frame->format = s.enc_pix_fmt;
         out_frame->width = s.enc->width;
         out_frame->height = s.enc->height;
@@ -574,9 +619,17 @@ void MediaExporter::Export(const ExportOptions& opt) {
         const int dst_nb = av_rescale_rnd(src->nb_samples, s.enc->sample_rate,
                                           src->sample_rate, AV_ROUND_UP);
         AVFrame* out_frame = av_frame_alloc();
+        if (!out_frame) { err_msg = QStringLiteral("内存不足: 无法分配音频编码帧"); return false; }
         out_frame->format = s.enc->sample_fmt;
         out_frame->sample_rate = s.enc->sample_rate;
-        av_channel_layout_copy(&out_frame->ch_layout, &s.enc->ch_layout);
+        // 布局拷不过来时, av_frame_get_buffer() 会按 nb_channels=0 分配出 0 字节缓冲,
+        // 后面 swr_convert() 就写成越界。这里是每帧都要做的操作, 必须看返回值。
+        const int layout_ret = av_channel_layout_copy(&out_frame->ch_layout, &s.enc->ch_layout);
+        if (layout_ret < 0) {
+            av_frame_free(&out_frame);
+            err_msg = QStringLiteral("拷贝声道布局失败: %1").arg(AvErrorString(layout_ret));
+            return false;
+        }
         out_frame->nb_samples = dst_nb;
         if (av_frame_get_buffer(out_frame, 0) < 0) {
             av_frame_free(&out_frame);

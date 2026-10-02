@@ -2,7 +2,10 @@
 
 #include <atomic>
 #include <memory>
+#include <vector>
+
 #include <QString>
+
 #include "core/domain/model/ContainerStructureInfo.h"
 
 extern "C" {
@@ -30,15 +33,15 @@ public:
 
 private:
     /// 将 Mp4BoxNode 树映射为 ContainerElement 树
-    void ConvertMp4Tree(const QVector<model::Mp4BoxNode>& nodes, int depth,
-                        QVector<model::ContainerElement>& out);
+    void ConvertMp4Tree(const std::vector<model::Mp4BoxNode>& nodes, int depth,
+                        std::vector<model::ContainerElement>& out);
 
     /// 将 EbmlElementNode 树映射为 ContainerElement 树
-    void ConvertEbmlTree(const QVector<model::EbmlElementNode>& nodes, int depth,
-                         QVector<model::ContainerElement>& out);
+    void ConvertEbmlTree(const std::vector<model::EbmlElementNode>& nodes, int depth,
+                         std::vector<model::ContainerElement>& out);
 
     /// 从 MP4 Box 树中提取丰富的流信息
-    void ExtractMp4StreamInfo(const QVector<model::Mp4BoxNode>& box_tree,
+    void ExtractMp4StreamInfo(const std::vector<model::Mp4BoxNode>& box_tree,
                               model::ContainerStructureResult& result);
 
     /// 从 EBML 树中提取丰富的流信息

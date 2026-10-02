@@ -20,9 +20,10 @@
 #include "ui/analysis_panel/AnalysisPageSupport.h"
 #include "ui/theme/AppTheme.h"
 
-// BitrateAnomalyType 与 model::ToString(BitrateAnomalyType) 只在这个分析器的头里，
-// 与 AnalysisPanel.cpp 一样显式 include（facade 的公开头不暴露分析器）。
-#include "core/analysis/quality/BitrateGopAnalyzer.h"
+// BitrateAnomalyType 与 model::ToString(BitrateAnomalyType) 住在 domain 的
+// BitrateGopResult.h 里。以前它们在 BitrateGopAnalyzer.h，UI 为此不得不 include 分析器，
+// 把具体表达式实现拖进页面的编译图；现在直接 include 结果头就够了。
+#include "core/domain/model/BitrateGopResult.h"
 #include "core/domain/model/MetricSeries.h"
 #include "core/domain/model/TimeRange.h"
 
@@ -444,7 +445,7 @@ void BitrateGopPage::UpdateChart() {
     {
         SeriesBatch batch(anomaly_series_);
         for (const auto& a : bg.anomalies) {
-            if (a.type != analyzer::BitrateAnomalyType::PeakOvershoot) continue;
+            if (a.type != model::BitrateAnomalyType::PeakOvershoot) continue;
             batch.Add((a.start_seconds + a.end_seconds) * 0.5, a.value);
             y_max = std::max(y_max, a.value * 1.1);
         }

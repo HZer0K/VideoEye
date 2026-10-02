@@ -74,7 +74,7 @@ bool TsStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStru
 
     result.format = model::ContainerFormat::MPEG_TS;
     result.format_name = "MPEG-TS";
-    result.file_path = file_path;
+    result.file_path = file_path.toStdString();
 
     // 查找 sync byte
     QByteArray sync_search = file.read(1024);
@@ -208,25 +208,25 @@ bool TsStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStru
     // 构建结构树: PAT → Program → Elementary Stream → PES 采样
     for (auto it = pat_programs.begin(); it != pat_programs.end(); ++it) {
         model::ContainerElement prog;
-        prog.name = QString("Program %1").arg(it.key());
+        prog.name = QString("Program %1").arg(it.key()).toStdString();
         prog.type = "Program";
         prog.depth = 1;
-        prog.value = QString("PMT PID=%1").arg(it.value());
+        prog.value = QString("PMT PID=%1").arg(it.value()).toStdString();
 
         if (pmt_streams.contains(it.value())) {
             for (const auto& es : pmt_streams[it.value()]) {
                 model::ContainerElement stream_elem;
-                stream_elem.name = QString("PID %1 - %2").arg(es.elem_pid).arg(StreamTypeToName(es.stream_type));
+                stream_elem.name = QString("PID %1 - %2").arg(es.elem_pid).arg(StreamTypeToName(es.stream_type)).toStdString();
                 stream_elem.type = "Elementary Stream";
                 stream_elem.depth = 2;
 
                 // 附加 PES 采样
                 if (pes_by_pid.contains(es.elem_pid)) {
                     const auto& list = pes_by_pid[es.elem_pid];
-                    stream_elem.value = QString("%1 PES 采样").arg(list.size());
+                    stream_elem.value = QString("%1 PES 采样").arg(list.size()).toStdString();
                     for (const auto& pe : list) {
                         model::ContainerElement pes_elem;
-                        pes_elem.name = StreamIdName(pe.stream_id);
+                        pes_elem.name = StreamIdName(pe.stream_id).toStdString();
                         pes_elem.type = "PES";
                         pes_elem.depth = 3;
                         pes_elem.offset = static_cast<uint64_t>(pe.file_offset);
@@ -234,16 +234,16 @@ bool TsStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStru
                         if (pe.has_pts) v += "PTS=" + tsToStr(pe.pts);
                         if (pe.has_dts) v += (v.isEmpty() ? "" : " ") + QString("DTS=") + tsToStr(pe.dts);
                         if (v.isEmpty()) v = "(无时间戳)";
-                        pes_elem.value = v;
-                        stream_elem.children.append(pes_elem);
+                        pes_elem.value = v.toStdString();
+                        stream_elem.children.push_back(pes_elem);
                     }
                 }
-                prog.children.append(stream_elem);
+                prog.children.push_back(stream_elem);
 
                 // 添加到流信息
                 model::ContainerStreamInfo si;
                 si.index = result.streams.size();
-                si.codec = StreamTypeToName(es.stream_type);
+                si.codec = StreamTypeToName(es.stream_type).toStdString();
                 switch (es.stream_type) {
                 case 0x01: case 0x02: case 0x10: case 0x1B: case 0x20: case 0x24:
                     si.type = "video"; break;
@@ -252,11 +252,11 @@ bool TsStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStru
                 default:
                     si.type = "data"; break;
                 }
-                si.details = QString("PID %1").arg(es.elem_pid);
-                result.streams.append(si);
+                si.details = QString("PID %1").arg(es.elem_pid).toStdString();
+                result.streams.push_back(si);
             }
         }
-        root.children.append(prog);
+        root.children.push_back(prog);
     }
 
     // PID 分布统计
@@ -264,24 +264,25 @@ bool TsStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStru
     pid_stats.name = "PID Distribution";
     pid_stats.type = "Statistics";
     pid_stats.depth = 1;
-    pid_stats.value = QString("scanned %1 packets, %2 unique PIDs").arg(total_packets).arg(pid_counts.size());
+    pid_stats.value = QString("scanned %1 packets, %2 unique PIDs").arg(total_packets).arg(pid_counts.size()).toStdString();
 
     int shown = 0;
     for (auto it = pid_counts.begin(); it != pid_counts.end() && shown < 20; ++it, ++shown) {
         model::ContainerElement pid_elem;
-        pid_elem.name = QString("PID %1").arg(it.key());
+        pid_elem.name = QString("PID %1").arg(it.key()).toStdString();
         pid_elem.type = "PID";
         pid_elem.depth = 2;
-        pid_elem.value = QString("%1 packets").arg(it.value());
-        pid_stats.children.append(pid_elem);
+        pid_elem.value = QString("%1 packets").arg(it.value()).toStdString();
+        pid_stats.children.push_back(pid_elem);
     }
-    root.children.append(pid_stats);
+    root.children.push_back(pid_stats);
 
-    result.element_tree.append(root);
+    result.element_tree.push_back(root);
     result.valid = true;
-    result.summary = QString("MPEG-TS | %1 包/已扫描 | %2 节目 | %3 流 | %4 PES 采样")
-                         .arg(total_packets).arg(pat_programs.size())
-                         .arg(result.streams.size()).arg(total_pes);
+    result.summary = (QString("MPEG-TS | %1 包/已扫描 | %2 节目 | %3 流 | %4 PES 采样")
+                          .arg(total_packets).arg(pat_programs.size())
+                          .arg(result.streams.size()).arg(total_pes))
+                         .toStdString();
 
     file.close();
     return true;

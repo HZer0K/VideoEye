@@ -1,6 +1,5 @@
 #pragma once
 
-#include <QMetaType>
 #include <cstdint>
 
 namespace videoeye {
@@ -21,5 +20,3 @@ struct PacketInfo {
 
 } // namespace model
 } // namespace videoeye
-
-Q_DECLARE_METATYPE(videoeye::model::PacketInfo)

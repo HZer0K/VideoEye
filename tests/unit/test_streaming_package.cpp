@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -20,6 +21,7 @@
 #include "core/analysis/streaming/DashManifestAnalyzer.h"
 #include "core/analysis/streaming/HlsManifestAnalyzer.h"
 #include "core/analysis/streaming/SegmentQcAnalyzer.h"
+#include "core/media/streaming/ManifestReader.h"
 
 namespace fs = std::filesystem;
 
@@ -27,6 +29,7 @@ using videoeye::model::IssueSeverity;
 // 问题码是 namespace 而非类型，用别名而不是 using-declaration
 // （C++ 的 using-declaration 不允许指名命名空间，MSVC 会直接报错）
 namespace StreamingIssueCode = videoeye::model::StreamingIssueCode;
+using videoeye::model::MediaPlaylistInfo;
 using videoeye::model::StreamingLadderEntry;
 using videoeye::model::StreamingPackageResult;
 
@@ -417,6 +420,259 @@ TEST(StreamingPackageTest, MissingSegmentFileIsReported) {
     const auto* issue = result.FindIssue(StreamingIssueCode::kSegmentMissingFile);
     ASSERT_NE(nullptr, issue);
     EXPECT_EQ(2, issue->occurrence_count);
+
+    fs::remove_all(root);
+}
+
+// ===========================================================================
+// 清单读取层：体积上限 / 可取消 / 行切分一致性
+//
+// 这些用例盯的是"读文件"这一步本身，而不是解析结果：以前 AnalyzeFile 是
+// `ostringstream << rdbuf()` 一把梭，读的过程中既不知道有取消也不知道有上限，
+// 表现为"点取消没反应"和"多大的文件都敢读"。
+// ===========================================================================
+namespace {
+
+using videoeye::analyzer::DashManifestOptions;
+using videoeye::analyzer::HlsManifestOptions;
+namespace manifest_read = videoeye::utils::manifest;
+
+std::string MakeMediaPlaylistText(int segment_count, bool crlf = false) {
+    const char* eol = crlf ? "\r\n" : "\n";
+    std::string text = std::string("#EXTM3U") + eol + "#EXT-X-TARGETDURATION:4" + eol;
+    for (int i = 0; i < segment_count; ++i) {
+        text += std::string("#EXTINF:4.000,") + eol + "seg" + std::to_string(i) + ".ts" + eol;
+    }
+    text += std::string("#EXT-X-ENDLIST") + eol;
+    return text;
+}
+
+} // namespace
+
+// ---- 超过 max_manifest_bytes 的清单必须被明确拒绝，而不是"读到哪算哪" ----
+TEST(StreamingPackageTest, HlsManifestOverSizeLimitIsRejected) {
+    const fs::path root = MakeTempDir("hls_oversize");
+    const std::string text = MakeMediaPlaylistText(20000);
+    ASSERT_TRUE(WriteFile(root / "index.m3u8", text));
+    ASSERT_LT(4096u, text.size()); // 用例前提：确实超限
+
+    HlsManifestOptions opt;
+    opt.max_manifest_bytes = 4096;
+    StreamingPackageResult result;
+    videoeye::analyzer::HlsManifestAnalyzer hls;
+    EXPECT_FALSE(hls.AnalyzeFile((root / "index.m3u8").string(), result, opt));
+    EXPECT_TRUE(result.truncated);
+    EXPECT_FALSE(result.valid);
+    EXPECT_NE(std::string::npos, result.error_message.find("超过大小上限"));
+
+    fs::remove_all(root);
+}
+
+// ---- 上限必须精确到字节：等于文件大小放行，小一个字节就拒绝（防 off-by-one）----
+TEST(StreamingPackageTest, HlsManifestSizeLimitBoundaryIsExact) {
+    const fs::path root = MakeTempDir("hls_size_boundary");
+    ASSERT_TRUE(WriteFile(root / "index.m3u8", MakeMediaPlaylistText(4)));
+
+    std::error_code ec;
+    const uintmax_t exact = fs::file_size(root / "index.m3u8", ec);
+    ASSERT_FALSE(ec);
+
+    videoeye::analyzer::HlsManifestAnalyzer hls;
+
+    HlsManifestOptions at_limit;
+    at_limit.max_manifest_bytes = exact;
+    StreamingPackageResult ok_result;
+    EXPECT_TRUE(hls.AnalyzeFile((root / "index.m3u8").string(), ok_result, at_limit));
+    EXPECT_FALSE(ok_result.truncated);
+    EXPECT_EQ(4, ok_result.playlists[0].SegmentCount());
+
+    HlsManifestOptions below_limit;
+    below_limit.max_manifest_bytes = exact - 1;
+    StreamingPackageResult rejected;
+    EXPECT_FALSE(hls.AnalyzeFile((root / "index.m3u8").string(), rejected, below_limit));
+    EXPECT_TRUE(rejected.truncated);
+
+    fs::remove_all(root);
+}
+
+// ---- 取消标志已置位时，连盘都不该读 ----
+TEST(StreamingPackageTest, HlsManifestReadHonoursCancelFlag) {
+    const fs::path root = MakeTempDir("hls_read_cancel");
+    ASSERT_TRUE(WriteFile(root / "index.m3u8", MakeMediaPlaylistText(8)));
+
+    videoeye::analyzer::HlsManifestAnalyzer hls;
+    const HlsManifestOptions opt;
+
+    std::atomic<bool> cancelled{true};
+    StreamingPackageResult cancelled_result;
+    EXPECT_FALSE(hls.AnalyzeFile((root / "index.m3u8").string(), cancelled_result, opt, &cancelled));
+    EXPECT_TRUE(cancelled_result.truncated);
+    EXPECT_NE(std::string::npos, cancelled_result.error_message.find("已取消"));
+
+    // 同一个文件、取消标志没置位时必须照常解析 —— 证明失败确实由取消引起
+    std::atomic<bool> not_cancelled{false};
+    StreamingPackageResult normal_result;
+    EXPECT_TRUE(hls.AnalyzeFile((root / "index.m3u8").string(), normal_result, opt, &not_cancelled));
+    EXPECT_FALSE(normal_result.truncated);
+
+    fs::remove_all(root);
+}
+
+// ---- 已知超限的文件一个字节都不该读：既不浪费 IO，也不产出"像清单"的半成品 ----
+TEST(StreamingPackageTest, ManifestLineReaderRefusesOversizeFile) {
+    const fs::path root = MakeTempDir("manifest_oversize_read");
+    const int kLines = 20000;
+    ASSERT_TRUE(WriteFile(root / "index.m3u8", MakeMediaPlaylistText(kLines)));
+
+    manifest_read::ManifestReadOptions read_options;
+    read_options.max_bytes = 8192;
+    std::vector<std::string> lines;
+    EXPECT_EQ(manifest_read::ManifestReadStatus::TooLarge,
+              manifest_read::ReadManifestLines((root / "index.m3u8").string(), read_options, nullptr, lines));
+    EXPECT_TRUE(lines.empty());
+
+    fs::remove_all(root);
+}
+
+// ---- 读到一半被取消时，必须在一个块的粒度内停下，而不是把文件读完 ----
+TEST(StreamingPackageTest, ManifestLineReaderStopsWhenCancelledMidway) {
+    const fs::path root = MakeTempDir("manifest_cancel_midway");
+    const int kLines = 20000;
+    ASSERT_TRUE(WriteFile(root / "index.m3u8", MakeMediaPlaylistText(kLines)));
+
+    std::atomic<bool> cancel{false};
+    size_t seen = 0;
+    // 第一行就把取消位置上。断言"停得下来"而不是"停在第几行"—— 后者取决于分块大小，
+    // 把这个数字写死只会让将来调 chunk_size 的改动白白挂掉。
+    const manifest_read::ManifestReadStatus status = manifest_read::ForEachManifestLine(
+        (root / "index.m3u8").string(), manifest_read::ManifestReadOptions{}, &cancel,
+        [&cancel, &seen](const std::string&) {
+            ++seen;
+            cancel.store(true, std::memory_order_release);
+            return true;
+        });
+    EXPECT_EQ(manifest_read::ManifestReadStatus::Cancelled, status);
+    EXPECT_LT(seen, static_cast<size_t>(kLines * 2));
+
+    fs::remove_all(root);
+}
+
+// ---- 分读取出来的行，必须和"整块文本直接切行"完全一致（CRLF 也不能有差异）----
+TEST(StreamingPackageTest, ReadFileAndInMemoryTextSplitTheSameWay) {
+    const fs::path root = MakeTempDir("manifest_crlf");
+    ASSERT_TRUE(WriteFile(root / "crlf.m3u8", MakeMediaPlaylistText(3, true)));
+    ASSERT_TRUE(WriteFile(root / "lf.m3u8", MakeMediaPlaylistText(3, false)));
+
+    HlsManifestOptions opt;
+    opt.load_sub_playlists = false;
+    videoeye::analyzer::HlsManifestAnalyzer hls;
+
+    StreamingPackageResult crlf_result;
+    ASSERT_TRUE(hls.AnalyzeFile((root / "crlf.m3u8").string(), crlf_result, opt));
+    StreamingPackageResult lf_result;
+    ASSERT_TRUE(hls.AnalyzeFile((root / "lf.m3u8").string(), lf_result, opt));
+
+    ASSERT_EQ(1u, crlf_result.playlists.size());
+    ASSERT_EQ(1u, lf_result.playlists.size());
+    EXPECT_EQ(lf_result.playlists[0].SegmentCount(), crlf_result.playlists[0].SegmentCount());
+    EXPECT_DOUBLE_EQ(lf_result.playlists[0].total_duration_seconds,
+                     crlf_result.playlists[0].total_duration_seconds);
+    EXPECT_EQ(lf_result.playlists[0].segments[0].uri, crlf_result.playlists[0].segments[0].uri);
+
+    fs::remove_all(root);
+}
+
+// ---- DASH 走的是整块读取那条路，上限与取消同样要生效 ----
+TEST(StreamingPackageTest, DashManifestSizeLimitAndCancelAreEnforced) {
+    const fs::path root = MakeTempDir("dash_oversize");
+    const std::string mpd = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                            "<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" type=\"static\" "
+                            "mediaPresentationDuration=\"PT16S\">\n"
+                            "  <Period id=\"0\" duration=\"PT16S\">\n"
+                            "    <AdaptationSet contentType=\"video\" mimeType=\"video/mp4\">\n"
+                            "      <Representation id=\"v0\" bandwidth=\"800000\" width=\"640\" height=\"360\" "
+                            "codecs=\"avc1.64001f\">\n"
+                            "        <SegmentTemplate timescale=\"1000\" media=\"v0/seg-$Number%03d$.m4s\">\n"
+                            "          <SegmentTimeline>\n"
+                            "            <S t=\"0\" d=\"4000\" r=\"1\"/>\n"
+                            "            <S d=\"4000\"/>\n"
+                            "            <S d=\"4000\"/>\n"
+                            "          </SegmentTimeline>\n"
+                            "        </SegmentTemplate>\n"
+                            "      </Representation>\n"
+                            "    </AdaptationSet>\n"
+                            "  </Period>\n"
+                            // 注释是合法 XML 噪声，扫描器会跳过；用它把文件撑到超限
+                            "  <!-- " + MakeBytes(8192) + " -->\n</MPD>\n";
+    ASSERT_TRUE(WriteFile(root / "index.mpd", mpd));
+
+    videoeye::analyzer::DashManifestAnalyzer dash;
+
+    DashManifestOptions capped;
+    capped.max_manifest_bytes = 4096;
+    StreamingPackageResult oversize;
+    EXPECT_FALSE(dash.AnalyzeFile((root / "index.mpd").string(), oversize, capped));
+    EXPECT_TRUE(oversize.truncated);
+    EXPECT_NE(std::string::npos, oversize.error_message.find("超过大小上限"));
+
+    std::atomic<bool> cancelled{true};
+    StreamingPackageResult cancelled_result;
+    EXPECT_FALSE(dash.AnalyzeFile((root / "index.mpd").string(), cancelled_result,
+                                  DashManifestOptions{}, &cancelled));
+    EXPECT_TRUE(cancelled_result.truncated);
+
+    // 限制放宽后同一个文件必须照常解析 —— 证明失败确实由上限/取消引起，而非解析器不认这个 MPD
+    StreamingPackageResult good;
+    ASSERT_TRUE(dash.AnalyzeFile((root / "index.mpd").string(), good));
+    EXPECT_TRUE(good.valid);
+    ASSERT_EQ(1u, good.representations.size());
+    EXPECT_EQ(4u, good.representations[0].segments.size());
+
+    fs::remove_all(root);
+}
+
+// ---- 子播放列表超限：master 自己仍然可用，超限的那一条要有明确标记 ----
+TEST(StreamingPackageTest, OversizeSubPlaylistIsMarkedInsteadOfBreakingMaster) {
+    const fs::path root = MakeTempDir("hls_oversize_sub");
+    ASSERT_TRUE(WriteValidHlsVodPackage(root));
+    ASSERT_TRUE(WriteFile(root / "v0" / "index.m3u8", MakeMediaPlaylistText(20000)));
+
+    HlsManifestOptions opt;
+    opt.max_manifest_bytes = 4096;
+    StreamingPackageResult result;
+    videoeye::analyzer::HlsManifestAnalyzer hls;
+    ASSERT_TRUE(hls.AnalyzeFile((root / "master.m3u8").string(), result, opt));
+
+    EXPECT_TRUE(result.valid);
+    EXPECT_EQ(2u, result.variants.size());
+    ASSERT_EQ(3u, result.playlists.size());
+
+    // 按 URI 定位，不假设遍历顺序
+    const MediaPlaylistInfo* oversize_pl = nullptr;
+    const MediaPlaylistInfo* v1_pl = nullptr;
+    const MediaPlaylistInfo* audio_pl = nullptr;
+    for (const auto& pl : result.playlists) {
+        if (pl.uri == "v0/index.m3u8")
+            oversize_pl = &pl;
+        else if (pl.uri == "v1/index.m3u8")
+            v1_pl = &pl;
+        else if (pl.uri == "audio/index.m3u8")
+            audio_pl = &pl;
+    }
+    ASSERT_NE(nullptr, oversize_pl);
+    ASSERT_NE(nullptr, v1_pl);
+    ASSERT_NE(nullptr, audio_pl);
+
+    // 超限的那条：标记不完整，原因写在自己的 error_message 里
+    EXPECT_TRUE(oversize_pl->parse_failed);
+    EXPECT_TRUE(oversize_pl->truncated);
+    EXPECT_NE(std::string::npos, oversize_pl->error_message.find("超过大小上限"));
+    // 没超限的两条照常解析 —— 一条坏子清单不能拖垮整个包
+    EXPECT_FALSE(v1_pl->parse_failed);
+    EXPECT_FALSE(v1_pl->truncated);
+    EXPECT_EQ(3, v1_pl->SegmentCount());
+    EXPECT_FALSE(audio_pl->parse_failed);
+    EXPECT_EQ(3, audio_pl->SegmentCount());
 
     fs::remove_all(root);
 }

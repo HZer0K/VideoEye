@@ -22,8 +22,6 @@
 
 #include "core/player/MediaPlayer.h"
 #include "infrastructure/concurrency/TaskManager.h"
-#include "core/analysis/orchestration/MediaInfoAnalyzer.h"
-#include "core/analysis/container/EbmlAnalyzer.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/ffmpeg_panel/FfmpegPanel.h"
 #include "ui/player/PlayerPanel.h"

@@ -1,6 +1,7 @@
 #include "core/analysis/container/FlvStructureAnalyzer.h"
 #include <QFile>
 #include <QByteArray>
+#include <QMap>
 #include <QtEndian>
 #include <cstring>
 
@@ -57,7 +58,10 @@ int flvSoundRate(int r) {
 
 // ---- 最小 AMF0 解析器：从 Script Tag(onMetadata) 提取 metadata 键值 ----
 double readBeDouble(const uint8_t* p) {
-    quint64 be = qFromBigEndian<quint64>(p);
+    // 真 Qt 有 qFromBigEndian(const void*)，此处本可直接调用；
+    // 这里逐字节拼大端，语义等价且避免对 uint8_t* 做 8 字节对齐假设。
+    quint64 be = 0;
+    for (int i = 0; i < 8; ++i) be = (be << 8) | static_cast<quint64>(p[i]);
     double d; std::memcpy(&d, &be, 8); return d;
 }
 QString amfNumToStr(double d) {
@@ -147,7 +151,7 @@ bool FlvStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
 
     result.format = model::ContainerFormat::FLV;
     result.format_name = "FLV";
-    result.file_path = file_path;
+    result.file_path = file_path.toStdString();
 
     // FLV Header: "FLV" + version(1) + flags(1) + header_size(4)
     QByteArray header = file.read(9);
@@ -170,7 +174,7 @@ bool FlvStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
     root.size = header_size;
     root.offset = 0;
     root.depth = 0;
-    root.value = QString("version=%1 video=%2 audio=%3").arg(version).arg(has_video).arg(has_audio);
+    root.value = QString("version=%1 video=%2 audio=%3").arg(version).arg(has_video).arg(has_audio).toStdString();
 
     int video_stream_idx = -1;
     int audio_stream_idx = -1;
@@ -180,7 +184,7 @@ bool FlvStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
         vs.type = "video";
         vs.codec = "FLV Video";
         video_stream_idx = vs.index;
-        result.streams.append(vs);
+        result.streams.push_back(vs);
     }
     if (has_audio) {
         model::ContainerStreamInfo as;
@@ -188,7 +192,7 @@ bool FlvStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
         as.type = "audio";
         as.codec = "FLV Audio";
         audio_stream_idx = as.index;
-        result.streams.append(as);
+        result.streams.push_back(as);
     }
 
     // 跳过 PreviousTagSize0
@@ -225,7 +229,7 @@ bool FlvStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
         case 8: {
             tag.name = "Audio Tag";
             tag.type = "Audio";
-            tag.value = QString("ts=%1 size=%2").arg(timestamp).arg(data_size);
+            tag.value = QString("ts=%1 size=%2").arg(timestamp).arg(data_size).toStdString();
             audio_tags++;
             if (!audio_codec_found && data_size >= 1) {
                 uint8_t sound = static_cast<uint8_t>(file.read(1).at(0));
@@ -234,15 +238,15 @@ bool FlvStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
                 int size = (sound >> 1) & 0x01;
                 int chan = sound & 0x01;
                 QString codec = flvAudioCodec(fmt);
-                tag.value += QString(" | %1 %2Hz %3 %4bit")
+                tag.value += (QString(" | %1 %2Hz %3 %4bit")
                                  .arg(codec).arg(flvSoundRate(rate))
-                                 .arg(chan ? "stereo" : "mono").arg(size ? 16 : 8);
+                                 .arg(chan ? "stereo" : "mono").arg(size ? 16 : 8)).toStdString();
                 if (audio_stream_idx >= 0) {
                     auto& s = result.streams[audio_stream_idx];
-                    s.codec = codec;
-                    s.details = QString("%1 Hz, %2, %3-bit")
+                    s.codec = codec.toStdString();
+                    s.details = (QString("%1 Hz, %2, %3-bit")
                                     .arg(flvSoundRate(rate))
-                                    .arg(chan ? "stereo" : "mono").arg(size ? 16 : 8);
+                                    .arg(chan ? "stereo" : "mono").arg(size ? 16 : 8)).toStdString();
                 }
                 audio_codec_found = true;
             }
@@ -251,7 +255,7 @@ bool FlvStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
         case 9: {
             tag.name = "Video Tag";
             tag.type = "Video";
-            tag.value = QString("ts=%1 size=%2").arg(timestamp).arg(data_size);
+            tag.value = QString("ts=%1 size=%2").arg(timestamp).arg(data_size).toStdString();
             video_tags++;
             if (!video_codec_found && data_size >= 1) {
                 uint8_t vh = static_cast<uint8_t>(file.read(1).at(0));
@@ -269,8 +273,8 @@ bool FlvStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
                     int codec_id = vh & 0x0F;
                     codec = flvVideoCodec(codec_id);
                 }
-                tag.value += QString(" | %1").arg(codec);
-                if (video_stream_idx >= 0) result.streams[video_stream_idx].codec = codec;
+                tag.value += QString(" | %1").arg(codec).toStdString();
+                if (video_stream_idx >= 0) result.streams[video_stream_idx].codec = codec.toStdString();
                 video_codec_found = true;
             }
             break;
@@ -278,7 +282,7 @@ bool FlvStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
         case 18: {
             tag.name = "Script Tag";
             tag.type = "Script";
-            tag.value = QString("ts=%1 size=%2").arg(timestamp).arg(data_size);
+            tag.value = QString("ts=%1 size=%2").arg(timestamp).arg(data_size).toStdString();
             script_tags++;
             if (!metadata_found && data_size > 0 && data_size < 1024 * 1024) {
                 QByteArray sdata = file.read(data_size);
@@ -290,39 +294,43 @@ bool FlvStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
                 QMap<QString, QString> meta;
                 parseAmf0Value(sdata, pos, QString(), meta, 0);
                 for (auto it = meta.begin(); it != meta.end(); ++it) {
-                    if (!result.metadata.contains(it.key()))
-                        result.metadata[it.key()] = it.value();
+                    // meta 仍是 analysis 层内部的 QMap（Qt 不进 domain）；
+                    // 落到 result.metadata 时统一转成 std::string。
+                    const std::string k = it.key().toStdString();
+                    if (!result.metadata.count(k))
+                        result.metadata[k] = it.value().toStdString();
                 }
                 if (!meta.isEmpty()) {
                     tag.value += " | onMetadata";
-                    tag.extra = QStringLiteral("%1 项元数据").arg(meta.size());
+                    tag.extra = QStringLiteral("%1 项元数据").arg(meta.size()).toStdString();
                 }
                 metadata_found = true;
             }
             break;
         }
         default:
-            tag.name = QString("Tag type=%1").arg(tag_type);
+            tag.name = QString("Tag type=%1").arg(tag_type).toStdString();
             tag.type = "Unknown";
-            tag.value = QString("ts=%1 size=%2").arg(timestamp).arg(data_size);
+            tag.value = QString("ts=%1 size=%2").arg(timestamp).arg(data_size).toStdString();
             break;
         }
 
-        root.children.append(tag);
+        root.children.push_back(tag);
 
         // 跳过 tag data + PreviousTagSize (4 bytes)，始终基于 data_start 定位以避免上面读了部分数据
         file.seek(data_start + data_size + 4);
         tag_count++;
     }
 
-    result.element_tree.append(root);
+    result.element_tree.push_back(root);
     result.valid = true;
-    QString summary = QString("FLV | Video Tags: %1 | Audio Tags: %2 | Script Tags: %3")
-                          .arg(video_tags).arg(audio_tags).arg(script_tags);
-    if (result.metadata.contains("width") && result.metadata.contains("height"))
-        summary += QString(" | %1x%2").arg(result.metadata["width"], result.metadata["height"]);
-    if (result.metadata.contains("duration"))
-        summary += QString(" | %1s").arg(result.metadata["duration"]);
+    std::string summary = "FLV | Video Tags: " + std::to_string(video_tags) +
+                          " | Audio Tags: " + std::to_string(audio_tags) +
+                          " | Script Tags: " + std::to_string(script_tags);
+    if (result.metadata.count("width") && result.metadata.count("height"))
+        summary += " | " + result.metadata["width"] + "x" + result.metadata["height"];
+    if (result.metadata.count("duration"))
+        summary += " | " + result.metadata["duration"] + "s";
     result.summary = summary;
 
     file.close();

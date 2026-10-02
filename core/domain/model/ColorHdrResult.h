@@ -42,5 +42,13 @@ struct ColorKeyValueRow {
     std::string note;
 };
 
+// 把结果摆成"键值 + 说明"的行 —— UI 表格与报告导出都用它。
+//
+// 为什么放在这里而不是留在 ColorHdrAnalyzer.h: 这是纯展示逻辑, 只吃 domain 类型。
+// 以前它俩挂在分析器头上, UI 页面为了用这几十行, 必须把整个分析器(连同它 FFmpeg 侧的
+// 前向声明和具体分析器依赖)拖进自己的编译图。放回来之后 UI 只依赖 domain。
+std::vector<ColorKeyValueRow> BuildColorRows(const ColorHdrAnalysis& analysis);
+std::vector<ColorKeyValueRow> BuildHdrRows(const ColorHdrAnalysis& analysis);
+
 } // namespace model
 } // namespace videoeye

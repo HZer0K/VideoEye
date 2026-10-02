@@ -35,6 +35,9 @@ struct DashManifestOptions {
     // 给 1 是为了容忍 t 的整数舍入，不给会让正常的静态 MPD 大量误报。
     uint64_t timeline_tolerance = 1;
     bool expand_segments = true; // 是否把 <S> / duration 展开成 SegmentInfo
+    // 单个 MPD 文件的字节上限。MPD 的标签扫描器要保留整块文本（跨标签做栈配对），
+    // 所以这里不像 HLS 那样做成逐行流，但同样需要一个硬上限来保证可回收的资源上界。
+    uint64_t max_manifest_bytes = 32ULL * 1024ULL * 1024ULL;
 };
 
 class DashManifestAnalyzer {

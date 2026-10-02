@@ -1,5 +1,5 @@
 // ============================================================================
-// 色彩与 HDR 元数据（core/analysis/quality/ColorHdrAnalyzer.h 的模型层 + QC 规则）单元测试
+// 色彩与 HDR 元数据的模型层 + QC 规则单元测试（只依赖 domain + 规则层，不 include 具体分析器）
 //
 // 覆盖第 6 节功能的验收场景：
 //   1) SDR Rec.709 样本 -> BT.709 / BT.709 / BT.709
@@ -18,7 +18,7 @@
 #include <gtest/gtest.h>
 
 #include "core/analysis/AnalysisResult.h"
-#include "core/analysis/quality/ColorHdrAnalyzer.h"
+#include "core/domain/model/ColorHdrResult.h"
 #include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/domain/model/QcReport.h"
 
@@ -194,7 +194,7 @@ TEST(ColorHdrTest, Hdr10SampleIsRecognizedWithoutWarnings) {
     EXPECT_EQ(CountColorIssues(report), 0);
 
     // MaxCLL / MaxFALL 要出现在导出的 HDR 表格里
-    const auto rows = analyzer::BuildHdrRows(analysis);
+    const auto rows = model::BuildHdrRows(analysis);
     bool has_maxcll = false;
     bool has_maxfall = false;
     for (const auto& row : rows) {

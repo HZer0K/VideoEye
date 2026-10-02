@@ -1,7 +1,6 @@
 #pragma once
 
-#include <QMetaType>
-#include <QVector>
+#include <vector>
 
 namespace videoeye {
 namespace model {
@@ -12,8 +11,8 @@ struct AudioVisualizationFrame {
     double level = 0.0;
     int sample_rate = 0;
     int channels = 0;
-    QVector<double> waveform_points;
-    QVector<double> spectrum_bins;
+    std::vector<double> waveform_points;
+    std::vector<double> spectrum_bins;
     // 响度指标
     double loudness_momentary_lufs = -70.0;  // 400ms 窗口 LUFS
     double peak_dbfs = -70.0;                // 峰值 dBFS
@@ -22,5 +21,3 @@ struct AudioVisualizationFrame {
 
 } // namespace model
 } // namespace videoeye
-
-Q_DECLARE_METATYPE(videoeye::model::AudioVisualizationFrame)

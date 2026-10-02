@@ -13,7 +13,9 @@
 #include <memory>
 
 #include "core/player/MediaPlayer.h"
-#include "core/analysis/stream/StreamAnalyzer.h"
+// StreamAnalyzer.h 会把 FFmpeg 的 avcodec/avformat 头文件一起拖进来,
+// 而这个头只需要 StreamStats 这一个值类型 —— 直接用 domain 头就够了。
+#include "core/domain/model/StreamStats.h"
 #include "core/domain/model/MacroblockInfo.h"
 #include "core/domain/model/TimecodeInfo.h"
 #include "ui/main_window/VideoWidget.h"
@@ -78,7 +80,7 @@ signals:
 
 public slots:
     void OnMacroblockInfoForOverlay(const model::MacroblockFrameAnalysis& analysis);
-    void OnStreamStatsUpdate(const analyzer::StreamStats& stats);
+    void OnStreamStatsUpdate(const model::StreamStats& stats);
 
 private slots:
     // 播放控制

@@ -4,7 +4,9 @@
 #include "infrastructure/logging/ScopedTimer.h"
 // OnSceneLinkRequested 的形参用到 analyzer::BitrateGopOptions（关联场景切换的判定表），
 // 面板只把这份记录转交给诊断页，不自己算。
-#include "core/analysis/quality/BitrateGopAnalyzer.h"
+// 这个结构体住在 AnalysisOptions.h —— 以前这里 include 的是具体实现它的
+// BitrateGopAnalyzer.h，等于为了一个参数把整个码率分析器拖进面板的编译图。
+#include "core/analysis/AnalysisOptions.h"
 
 #include <QFrame>
 #include <QScrollArea>

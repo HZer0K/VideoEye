@@ -21,6 +21,7 @@ namespace {
 
 using videoeye::task::CancelToken;
 using videoeye::task::TaskId;
+using videoeye::task::TaskKind;
 using videoeye::task::TaskManager;
 using videoeye::task::TaskState;
 
@@ -279,5 +280,93 @@ TEST(TaskManagerTest, RunTaskReachesTerminalAfterCancel) {
         << "取消后受管任务必须及时到达终态, 关闭路径才不会挂死";
     EXPECT_TRUE(saw_cancel.load());
     EXPECT_FALSE(mgr.IsRunning(kSlot));
+}
+
+// --- 关闭阶段的耗时上限 ---
+//
+// 评审 P2 的原话是"别把'状态超时'误认为'函数返回超时'": WaitForAll(t) 以前只保证"等
+// 终态"不超过 t, 之后还要无条件 join 受管线程, 任务体不理取消时整个关闭就无限期了。
+// 现在的约定是: t 是**整个函数**的总预算; 只有 TaskKind::BlockingIo 允许在超时后被放弃,
+// Cooperative 仍然 join(它随时可能还在访问外部对象, detach 会造成悬空访问)。
+
+// 不响应取消的 BlockingIo 任务: 必须在预算内被放弃, WaitForAll 不能陪它耗到底。
+TEST(TaskManagerTest, WaitForAllAbandonsBlockingIoTaskWithinBudget) {
+    constexpr char slot[] = "blocking-io-slot";
+    TaskManager mgr(2);
+    std::atomic<bool> entered{false};
+    // 故意完全不轮询取消令牌: 模拟连 AVIOInterruptCB 都不响应的那种卡死的 FFmpeg IO。
+    mgr.RunBlockingIo(slot, [&](TaskId, CancelToken) {
+        entered.store(true);
+        SleepMs(3000);   // 远超本次关闭预算
+    });
+    while (!entered.load())
+        SleepMs(1);      // 等 body 真的跑起来, 否则测到的就不是"卡住"了
+
+    const auto start = std::chrono::steady_clock::now();
+    mgr.WaitForAll(200);
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start)
+                                .count();
+
+    EXPECT_LT(elapsed_ms, 2000) << "BlockingIo 任务超预算时必须被放弃, 不能 join 到它跑完(3s); "
+                                   "实测耗时 " << elapsed_ms << "ms";
+    EXPECT_EQ(mgr.AbandonedCount(), 1u) << "确实应该走'放弃'这条路径";
+    // 放弃了它, slot 也必须能立刻重新投入使用 —— 否则之后每次 Begin 都要白等一整轮预算
+    EXPECT_FALSE(mgr.IsRunning(slot));
+    EXPECT_EQ(mgr.State(slot), TaskState::Canceled);
+    const TaskId reused = mgr.Begin(slot);
+    EXPECT_NE(reused, 0u);
+    mgr.End(slot, reused, TaskState::Succeeded);
+}
+
+// 响应取消的 Cooperative 任务: 即使收尾慢一点也必须被 join 到底, 绝不能被 detach。
+TEST(TaskManagerTest, WaitForAllJoinsCooperativeTask) {
+    TaskManager mgr(2);
+    std::atomic<bool> body_done{false};
+    mgr.Run(kSlot, [&](TaskId, CancelToken token) {
+        // 会响应取消, 只是退出前还要花点时间: 正常的协作式任务就是这个样子
+        while (!token.IsCanceled())
+            SleepMs(5);
+        SleepMs(50);
+        body_done.store(true);
+    });
+    while (!mgr.IsRunning(kSlot))
+        SleepMs(1);
+
+    mgr.CancelAll();
+    mgr.WaitForAll(2000);
+
+    EXPECT_TRUE(body_done.load()) << "协作式任务必须 join 到真正退出, 不能中途扔掉";
+    EXPECT_EQ(mgr.AbandonedCount(), 0u);
+    EXPECT_FALSE(mgr.IsRunning(kSlot));
+}
+
+// TaskKind 要能从 Begin 一路带到 WaitForAll: 同一次 WaitForAll 里混着两种任务时,
+// 只有 BlockingIo 那一个被放弃。
+TEST(TaskManagerTest, WaitForAllAppliesKindPerTask) {
+    TaskManager mgr(4);
+    std::atomic<bool> coop_done{false};
+    std::atomic<bool> blocking_entered{false};
+
+    mgr.Run("coop", [&](TaskId, CancelToken token) {
+        while (!token.IsCanceled())
+            SleepMs(5);
+        coop_done.store(true);
+    });
+    mgr.RunBlockingIo("io", [&](TaskId, CancelToken) {
+        blocking_entered.store(true);
+        SleepMs(3000);
+    });
+    // coop 要等 CancelAll 才会退出, 这里只能等 io 的 body 真的跑起来
+    while (!blocking_entered.load())
+        SleepMs(1);
+
+    mgr.CancelAll();
+    mgr.WaitForAll(300);
+
+    EXPECT_TRUE(coop_done.load()) << "协作式任务要被 join 完, 不能因为旁边的任务超时被一起扔掉";
+    EXPECT_EQ(mgr.AbandonedCount(), 1u) << "只有一个任务是 BlockingIo, 也只有一个该被放弃";
+    EXPECT_FALSE(mgr.IsRunning("coop"));
+    EXPECT_FALSE(mgr.IsRunning("io"));
 }
 

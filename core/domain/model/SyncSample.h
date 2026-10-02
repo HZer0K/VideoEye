@@ -1,6 +1,5 @@
 #pragma once
 
-#include <QMetaType>
 
 namespace videoeye {
 namespace model {
@@ -15,5 +14,3 @@ struct SyncSample {
 
 } // namespace model
 } // namespace videoeye
-
-Q_DECLARE_METATYPE(videoeye::model::SyncSample)

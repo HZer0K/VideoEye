@@ -39,6 +39,10 @@ struct HlsManifestOptions {
     bool load_sub_playlists = true;             // master 是否递归加载子播放列表
     double target_duration_tolerance_s = 0.001; // EXTINF 与目标时长的比较容差（秒）
     double duration_jitter_ratio = 0.25;        // (max-min)/mean 超过即判为时长抖动
+    // 单个清单文件的字节上限（master 与每个子播放列表各自计数）。
+    // 读到上限就放弃而不是"读到哪算哪" —— 半份清单的校验结论没有意义，
+    // 宁可明确报"文件过大"。见 utils::manifest::ManifestReadOptions::max_bytes。
+    uint64_t max_manifest_bytes = 32ULL * 1024ULL * 1024ULL;
 };
 
 class HlsManifestAnalyzer {

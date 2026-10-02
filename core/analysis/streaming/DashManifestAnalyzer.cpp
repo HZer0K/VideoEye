@@ -3,14 +3,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <fstream>
 #include <map>
-#include <sstream>
 #include <string>
 #include <vector>
 
-#include "core/media/streaming/ManifestText.h"
 #include "core/analysis/streaming/StreamingCancel.h"
+#include "core/media/streaming/ManifestReader.h"
+#include "core/media/streaming/ManifestText.h"
 
 namespace videoeye {
 namespace analyzer {
@@ -316,15 +315,19 @@ bool DashManifestAnalyzer::AnalyzeFile(const std::string& file_path, model::Stre
     out.manifest_path = file_path;
     out.manifest_dir = mt::DirOf(file_path);
 
-    std::ifstream file(file_path, std::ios::binary);
-    if (!file) {
+    // MPD 是 XML，扫描器按字符前进，只能整块读；但照样要"分块读 + 每块检查取消
+    // + 体积上限"这三件套，否则一个大 MPD 会把取消按钮卡死在读盘阶段。
+    mt::ManifestReadOptions read_options;
+    read_options.max_bytes = options.max_manifest_bytes;
+    std::string text;
+    const mt::ManifestReadStatus status = mt::ReadManifestText(file_path, read_options, cancel, text);
+    if (status != mt::ManifestReadStatus::Ok) {
         out.valid = false;
-        out.error_message = "无法读取清单文件: " + file_path;
+        out.truncated = (status == mt::ManifestReadStatus::TooLarge ||
+                         status == mt::ManifestReadStatus::Cancelled);
+        out.error_message = mt::ManifestReadErrorMessage(status, file_path, options.max_manifest_bytes);
         return false;
     }
-    std::ostringstream ss;
-    ss << file.rdbuf();
-    const std::string text = ss.str();
 
     if (!ParseText(text, out.manifest_dir, out, options, cancel)) {
         if (out.error_message.empty())

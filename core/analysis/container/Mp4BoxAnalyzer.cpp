@@ -14,85 +14,81 @@ constexpr int kMaxPreviewEntries = 8;
 // 单表最多往 TrackBoxTables 里塞多少条（大文件保护）
 constexpr uint32_t kMaxTableEntries = 50000;
 
-void PushField(model::Mp4BoxNode& node, const char* name, const QString& value) {
+void PushField(model::Mp4BoxNode& node, const std::string& name, const std::string& value) {
     model::Mp4BoxNode::Field f;
-    f.name = QString::fromLatin1(name);
+    f.name = name;
     f.value = value;
     node.fields.push_back(f);
 }
 
-void PushFieldInt(model::Mp4BoxNode& node, const char* name, uint64_t value) {
-    PushField(node, name, QString::number(static_cast<qulonglong>(value)));
+void PushFieldInt(model::Mp4BoxNode& node, const std::string& name, uint64_t value) {
+    PushField(node, name, std::to_string(value));
 }
 
 // 从自研解析器产出的轨道数据里给样本表 box 填字段
 void FillTableFields(model::Mp4BoxNode& node, const utils::IsobmffTrack& track) {
-    const QString& type = node.type;
-    if (type == QLatin1String("stts")) {
+    const std::string& type = node.type;
+    if (type == "stts") {
         PushFieldInt(node, "entry_count", track.stts.size());
         PushFieldInt(node, "sample_count", track.SttsSampleCount());
         for (int i = 0; i < std::min<int>(kMaxPreviewEntries, static_cast<int>(track.stts.size())); ++i) {
-            PushField(node, QString("entry[%1]").arg(i).toUtf8().constData(),
-                      QString("sample_count=%1, sample_duration=%2")
-                          .arg(track.stts[i].sample_count)
-                          .arg(track.stts[i].sample_delta));
+            PushField(node, "entry[" + std::to_string(i) + "]",
+                      "sample_count=" + std::to_string(track.stts[i].sample_count)
+                          + ", sample_duration=" + std::to_string(track.stts[i].sample_delta));
         }
-    } else if (type == QLatin1String("ctts")) {
+    } else if (type == "ctts") {
         PushFieldInt(node, "entry_count", track.ctts.size());
         for (int i = 0; i < std::min<int>(kMaxPreviewEntries, static_cast<int>(track.ctts.size())); ++i) {
-            PushField(node, QString("entry[%1]").arg(i).toUtf8().constData(),
-                      QString("sample_count=%1, sample_offset=%2")
-                          .arg(track.ctts[i].sample_count)
-                          .arg(track.ctts[i].sample_offset));
+            PushField(node, "entry[" + std::to_string(i) + "]",
+                      "sample_count=" + std::to_string(track.ctts[i].sample_count)
+                          + ", sample_offset=" + std::to_string(track.ctts[i].sample_offset));
         }
-    } else if (type == QLatin1String("stco") || type == QLatin1String("co64")) {
+    } else if (type == "stco" || type == "co64") {
         PushFieldInt(node, "entry_count", track.chunk_offsets.size());
         for (int i = 0; i < std::min<int>(kMaxPreviewEntries,
                                           static_cast<int>(track.chunk_offsets.size())); ++i) {
-            PushField(node, QString("entry[%1]").arg(i).toUtf8().constData(),
-                      QString("chunk_offset=%1").arg(static_cast<qulonglong>(track.chunk_offsets[i])));
+            PushField(node, "entry[" + std::to_string(i) + "]",
+                      "chunk_offset=" + std::to_string(track.chunk_offsets[i]));
         }
-    } else if (type == QLatin1String("stsc")) {
+    } else if (type == "stsc") {
         PushFieldInt(node, "entry_count", track.stsc.size());
         for (int i = 0; i < std::min<int>(kMaxPreviewEntries, static_cast<int>(track.stsc.size())); ++i) {
-            PushField(node, QString("entry[%1]").arg(i).toUtf8().constData(),
-                      QString("first_chunk=%1, samples_per_chunk=%2, sample_description_index=%3")
-                          .arg(track.stsc[i].first_chunk)
-                          .arg(track.stsc[i].samples_per_chunk)
-                          .arg(track.stsc[i].sample_description_index));
+            PushField(node, "entry[" + std::to_string(i) + "]",
+                      "first_chunk=" + std::to_string(track.stsc[i].first_chunk)
+                          + ", samples_per_chunk=" + std::to_string(track.stsc[i].samples_per_chunk)
+                          + ", sample_description_index=" + std::to_string(track.stsc[i].sample_description_index));
         }
-    } else if (type == QLatin1String("stsz")) {
+    } else if (type == "stsz") {
         PushFieldInt(node, "sample_size", track.stsz.default_size);
         PushFieldInt(node, "sample_count", track.stsz.sample_count);
         for (int i = 0; i < std::min<int>(kMaxPreviewEntries,
                                           static_cast<int>(track.stsz.sizes.size())); ++i) {
-            PushField(node, QString("entry[%1]").arg(i).toUtf8().constData(),
-                      QString("size=%1").arg(track.stsz.sizes[i]));
+            PushField(node, "entry[" + std::to_string(i) + "]",
+                      "size=" + std::to_string(track.stsz.sizes[i]));
         }
-    } else if (type == QLatin1String("stz2")) {
+    } else if (type == "stz2") {
         PushFieldInt(node, "field_size", track.stsz.field_size);
         PushFieldInt(node, "sample_count", track.stsz.sample_count);
-    } else if (type == QLatin1String("stss")) {
+    } else if (type == "stss") {
         PushFieldInt(node, "entry_count", track.stss.size());
         for (int i = 0; i < std::min<int>(kMaxPreviewEntries, static_cast<int>(track.stss.size())); ++i) {
-            PushField(node, QString("entry[%1]").arg(i).toUtf8().constData(),
-                      QString("sample_number=%1").arg(track.stss[i]));
+            PushField(node, "entry[" + std::to_string(i) + "]",
+                      "sample_number=" + std::to_string(track.stss[i]));
         }
-    } else if (type == QLatin1String("elst")) {
+    } else if (type == "elst") {
         PushFieldInt(node, "entry_count", track.elst.size());
         for (int i = 0; i < std::min<int>(4, static_cast<int>(track.elst.size())); ++i) {
-            PushField(node, QString("entry[%1]").arg(i).toUtf8().constData(),
-                      QString("segment_duration=%1, media_time=%2")
-                          .arg(static_cast<qulonglong>(track.elst[i].segment_duration))
-                          .arg(static_cast<qlonglong>(track.elst[i].media_time)));
+            PushField(node, "entry[" + std::to_string(i) + "]",
+                      "segment_duration=" + std::to_string(track.elst[i].segment_duration)
+                          + ", media_time=" + std::to_string(track.elst[i].media_time));
         }
-    } else if (type == QLatin1String("stsd")) {
-        PushField(node, "format", QString::fromStdString(track.codec));
-    } else if (type == QLatin1String("tkhd")) {
+    } else if (type == "stsd") {
+        PushField(node, "format", track.codec);
+    } else if (type == "tkhd") {
         PushFieldInt(node, "track_id", track.track_id);
-    } else if (type == QLatin1String("hdlr")) {
-        PushField(node, "handler_type", QString::fromStdString(track.handler));
-    } else if (type == QLatin1String("mdhd")) {
+    } else if (type == "hdlr") {
+        PushField(node, "handler_type", track.handler);
+    } else if (type == "mdhd") {
         PushFieldInt(node, "timescale", track.media_timescale);
         PushFieldInt(node, "duration", track.media_duration);
     }
@@ -102,7 +98,7 @@ void FillTableFields(model::Mp4BoxNode& node, const utils::IsobmffTrack& track) 
 model::Mp4BoxNode ConvertBox(const utils::IsobmffBox& src,
                              const utils::IsobmffTrack* track) {
     model::Mp4BoxNode node;
-    node.type = QString::fromStdString(src.type);
+    node.type = src.type;
     node.size = src.size;
     node.offset = src.offset;
     node.depth = src.depth;
@@ -123,7 +119,7 @@ model::Mp4BoxNode ConvertBox(const utils::IsobmffBox& src,
 model::TrackBoxTables ConvertTrackTables(const utils::IsobmffTrack& src) {
     model::TrackBoxTables t;
     t.track_id = static_cast<int>(src.track_id);
-    t.track_type = QString::fromStdString(src.TypeName());
+    t.track_type = src.TypeName();
 
     const uint32_t cap = kMaxTableEntries;
     for (const auto& e : src.stts) {
@@ -180,14 +176,14 @@ Mp4BoxAnalyzer::~Mp4BoxAnalyzer() = default;
 bool Mp4BoxAnalyzer::AnalyzeFile(const QString& file_path,
                                  model::Mp4BoxAnalysisResult& result) {
     result = model::Mp4BoxAnalysisResult();
-    result.file_path = file_path;
+    result.file_path = file_path.toStdString();
 
     utils::IsobmffParser::Options opt;
     opt.max_entries_per_table = kMaxTableEntries;
     utils::IsobmffFile file;
     if (!utils::IsobmffParser::Parse(file_path.toStdString(), file, opt)) {
-        result.error_message = QString::fromStdString(file.error_message);
-        LOG_WARN(("Mp4BoxAnalyzer: " + result.error_message).toStdString());
+        result.error_message = file.error_message;
+        LOG_WARN("Mp4BoxAnalyzer: " + result.error_message);
         return false;
     }
 
@@ -196,7 +192,7 @@ bool Mp4BoxAnalyzer::AnalyzeFile(const QString& file_path,
     for (const auto& top : file.top_level) {
         if (top.type == "moov") {
             model::Mp4BoxNode moov;
-            moov.type = QStringLiteral("moov");
+            moov.type = "moov";
             moov.size = top.size;
             moov.offset = top.offset;
             moov.depth = top.depth;

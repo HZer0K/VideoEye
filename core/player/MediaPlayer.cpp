@@ -33,8 +33,9 @@ using SteadyClock = std::chrono::steady_clock;
 
 // 析构时等待后台任务退出的总预算(ms)。受管 std::thread 在 CancelAll 之后会因
 // 中断回调及时退出, 这里给一个上限而不是无限等(-1), 避免极端情况下进程退出挂死。
-// 注意: WaitForAll 的 join 阶段本身无超时保证, 此上限只约束"等终态"阶段;
-// 中断机制确保受管任务会先到达终态, 所以实际不会触达 join 上限。
+// 注意: 这个预算现在约束的是 WaitForAll **整个函数**(含受管线程回收阶段), 不再是只管
+// "等终态"。可能卡住的任务已改用 RunBlockingIo 登记 —— 那种任务超预算会被放弃(detach),
+// 不会再拖住退出流程; 剩下的协作式任务有中断机制兜底, 实际不会走到上限。
 constexpr int kShutdownWaitMs = 8000;
 
 // FFmpeg 错误码 -> 可读描述。不用 av_err2str 宏 (MSVC 不支持其 compound literal 写法)。
@@ -146,13 +147,13 @@ void MediaPlayer::EmitAnalysisEvent(const QString& severity, const QString& type
     if (!analysis_session_.IsEventAnalysisEnabled()) return;
     model::AnalysisEvent event_info;
     event_info.index = analysis_event_index_++;
-    event_info.severity = severity;
-    event_info.type = type;
+    event_info.severity = severity.toStdString();
+    event_info.type = type.toStdString();
     event_info.stream_index = stream_index;
     event_info.pts = pts;
     event_info.timestamp_seconds = timestamp_seconds;
-    event_info.summary = summary;
-    event_info.detail = detail;
+    event_info.summary = summary.toStdString();
+    event_info.detail = detail.toStdString();
     emit AnalysisEventReady(event_info);
     EmitTimelineEvent(QStringLiteral("事件"), timestamp_seconds, summary, detail);
 }
@@ -175,10 +176,10 @@ void MediaPlayer::EmitTimelineEvent(const QString& category, double timestamp_se
     if (!std::isfinite(timestamp_seconds)) return;
     model::TimelineEvent event;
     event.index = timeline_event_index_++;
-    event.category = category;
+    event.category = category.toStdString();
     event.timestamp_seconds = timestamp_seconds;
-    event.label = label;
-    event.detail = detail;
+    event.label = label.toStdString();
+    event.detail = detail.toStdString();
     emit TimelineEventReady(event);
 }
 
@@ -191,8 +192,8 @@ void MediaPlayer::EmitAudioVisualization(const AudioVisualizationResult& vis,
     frame.level = level;
     frame.sample_rate = sample_rate;
     frame.channels = channels;
-    frame.waveform_points = QVector<double>(vis.waveform_points.begin(), vis.waveform_points.end());
-    frame.spectrum_bins = QVector<double>(vis.spectrum_bins.begin(), vis.spectrum_bins.end());
+    frame.waveform_points = vis.waveform_points;
+    frame.spectrum_bins = vis.spectrum_bins;
     frame.peak_dbfs = vis.peak_dbfs;
     frame.loudness_momentary_lufs = vis.loudness_momentary_lufs;
     frame.true_peak_dbtp = vis.true_peak_dbtp;
@@ -1054,7 +1055,12 @@ void MediaPlayer::StartContainerStructureAnalysis(const QString& url) {
 
     // 交给统一的任务调度: 同 slot 上只允许一个任务, 换文件时旧任务被取消且结果作废,
     // 线程由 TaskManager 持有并在下次启动 / 析构时回收, 不再每次分析都新建并堆积线程。
-    task_manager_.Run(kSlotContainerStructure,
+    //
+    // 用 RunBlockingIo: 这里要走 FFmpeg 的 avformat_open_input / find_stream_info,
+    // 网络源或异常设备上即使装了 AVIOInterruptCB 也可能不响应, 关闭时不能 join 到底 ——
+    // 代价是必须遵守 TaskKind::BlockingIo 的生命周期约定(见 infra/concurrency/TaskManager.h):
+    // 本任务体只按值捕获 (QPointer self + QString url_copy), 不持有裸引用, 符合约定。
+    task_manager_.RunBlockingIo(kSlotContainerStructure,
                       [self, url_copy](task::TaskId id, task::CancelToken token) {
         model::ContainerStructureResult cs_result;
         bool ok = false;

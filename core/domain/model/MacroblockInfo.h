@@ -1,6 +1,5 @@
 #pragma once
 
-#include <QMetaType>
 #include <cstdint>
 #include <vector>
 
@@ -79,5 +78,3 @@ inline bool IsHevc(int codec_id) { return codec_id == kHevc; }
 } // namespace CodecType
 
 } // namespace videoeye
-
-Q_DECLARE_METATYPE(videoeye::model::MacroblockFrameAnalysis)

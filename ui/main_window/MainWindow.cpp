@@ -7,6 +7,9 @@
 #include "infrastructure/logging/ScopedTimer.h"
 #include "core/domain/model/EbmlInfo.h"
 #include "core/domain/model/ContainerStructureInfo.h"
+// MediaInfoAnalyzer 以前挂在 MainWindow.h 上, 于是每个包含 MainWindow.h 的文件都被迫
+// 连带编译 FFmpeg 侧的分析器。它只在这个 .cpp 里当局部变量用, include 挪到这里。
+#include "core/analysis/orchestration/MediaInfoAnalyzer.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
@@ -833,8 +836,13 @@ void MainWindow::StartMediaInfoAnalysis(const QString& source) {
     // 以前这里直接 join() 上一次的线程 —— 大文件/网络源/异常文件的 avformat 探测
     // 动辄几秒, 连着打开第二个文件就会把界面卡住。
     // 旧线程由 TaskManager 持有并在下次启动/析构时回收, 过期结果靠 generation 丢弃。
+    //
+    // 用 RunBlockingIo: 媒体信息解析要先做 FFmpeg 打开+探测, 网络源/异常设备上这一步
+    // 可能既不返回也不响应中断回调, 关闭时不该为了 join 它把整个退出流程拖死。
+    // 本任务体只按值捕获 (QPointer self + QString source), 满足 TaskKind::BlockingIo 的
+    // "不得持有可能先于线程销毁的裸引用"约定。
     QPointer<MainWindow> self = this;
-    background_tasks_.Run(kSlotMediaInfo,
+    background_tasks_.RunBlockingIo(kSlotMediaInfo,
                           [self, source, generation](task::TaskId, task::CancelToken token) {
         QString text;
         {

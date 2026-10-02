@@ -51,7 +51,7 @@ bool AviStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
 
     result.format = model::ContainerFormat::AVI;
     result.format_name = "AVI";
-    result.file_path = file_path;
+    result.file_path = file_path.toStdString();
 
     // 读取 RIFF header: "RIFF" + size(4) + "AVI "
     QByteArray header = file.read(12);
@@ -69,15 +69,15 @@ bool AviStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
     root.size = riff_size + 8;
     root.offset = 0;
     root.depth = 0;
-    root.value = QString("size=%1").arg(riff_size + 8);
+    root.value = QString("size=%1").arg(riff_size + 8).toStdString();
 
     // 递归解析子块
     qint64 end_offset = qMin(static_cast<qint64>(riff_size + 8), file.size());
     ParseChunk(file, end_offset, 1, root, result);
 
-    result.element_tree.append(root);
+    result.element_tree.push_back(root);
     result.valid = true;
-    result.summary = QString("AVI (RIFF) | 文件大小: %1 字节").arg(file.size());
+    result.summary = QString("AVI (RIFF) | 文件大小: %1 字节").arg(file.size()).toStdString();
 
     file.close();
     return true;
@@ -102,7 +102,7 @@ bool AviStructureAnalyzer::ParseChunk(QFile& file, qint64 end_offset, int depth,
         qint64 chunk_offset = file.pos() - 8;
 
         model::ContainerElement elem;
-        elem.name = QString::fromLatin1(fourcc);
+        elem.name = QString::fromLatin1(fourcc).toStdString();
         elem.size = chunk_size;
         elem.offset = chunk_offset;
         elem.depth = depth;
@@ -110,10 +110,12 @@ bool AviStructureAnalyzer::ParseChunk(QFile& file, qint64 end_offset, int depth,
         // 判断是否为 LIST 容器
         if (fourcc == "LIST" || fourcc == "RIFF") {
             QByteArray list_type = file.read(4);
-            elem.name = QString("%1 '%2'").arg(QString::fromLatin1(fourcc),
-                                                QString::fromLatin1(list_type));
+            elem.name = QString("%1 '%2'")
+                                .arg(QString::fromLatin1(fourcc),
+                                     QString::fromLatin1(list_type))
+                                .toStdString();
             elem.type = "LIST";
-            elem.value = QString("size=%1").arg(chunk_size);
+            elem.value = QString("size=%1").arg(chunk_size).toStdString();
 
             qint64 list_end = file.pos() + chunk_size - 4;
             if (list_end > file.size()) list_end = file.size();
@@ -133,16 +135,16 @@ bool AviStructureAnalyzer::ParseChunk(QFile& file, qint64 end_offset, int depth,
             if (data.size() >= 8) {
                 QString fcc_type = QString::fromLatin1(data.left(4));
                 QString fcc_handler = QString::fromLatin1(data.mid(4, 4));
-                elem.value = QString("type=%1 codec=%2").arg(fcc_type, fcc_handler);
+                elem.value = QString("type=%1 codec=%2").arg(fcc_type, fcc_handler).toStdString();
 
                 model::ContainerStreamInfo si;
                 si.index = result.streams.size();
                 if (fcc_type == "vids") si.type = "video";
                 else if (fcc_type == "auds") si.type = "audio";
                 else if (fcc_type == "txts" || fcc_type == "subs") si.type = "subtitle";
-                else si.type = fcc_type;
-                si.codec = fcc_handler.trimmed();
-                result.streams.append(si);
+                else si.type = fcc_type.toStdString();
+                si.codec = fcc_handler.trimmed().toStdString();
+                result.streams.push_back(si);
 
                 cur_strh_type = fcc_type;
                 cur_stream_idx = si.index;
@@ -163,14 +165,14 @@ bool AviStructureAnalyzer::ParseChunk(QFile& file, qint64 end_offset, int depth,
                 QString fourccStr = QString::fromLatin1(comp).trimmed();
                 bool rawRgb = (readLE32(data, 16) == 0);
                 QString codecName = rawRgb ? QString("RGB") : fourccStr;
-                elem.value = QString("%1x%2 %3bit codec=%4")
+                elem.value = (QString("%1x%2 %3bit codec=%4")
                                  .arg(biWidth).arg(qAbs(biHeight))
-                                 .arg(biBitCount).arg(codecName);
+                                 .arg(biBitCount).arg(codecName)).toStdString();
                 if (cur_stream_idx >= 0 && cur_stream_idx < result.streams.size()) {
                     auto& s = result.streams[cur_stream_idx];
-                    if (!codecName.isEmpty()) s.codec = codecName;
-                    s.details = QString("%1x%2, %3-bit")
-                                    .arg(biWidth).arg(qAbs(biHeight)).arg(biBitCount);
+                    if (!codecName.isEmpty()) s.codec = codecName.toStdString();
+                    s.details = (QString("%1x%2, %3-bit")
+                                    .arg(biWidth).arg(qAbs(biHeight)).arg(biBitCount)).toStdString();
                 }
             } else if (cur_strh_type == "auds" && data.size() >= 16) {
                 uint16_t wFormatTag     = readLE16(data, 0);
@@ -179,18 +181,18 @@ bool AviStructureAnalyzer::ParseChunk(QFile& file, qint64 end_offset, int depth,
                 uint32_t nAvgBytesPerSec = readLE32(data, 8);
                 uint16_t wBitsPerSample = readLE16(data, 14);
                 QString codecName = waveFormatName(wFormatTag);
-                elem.value = QString("%1 %2Hz %3ch %4bit %5kbps")
+                elem.value = (QString("%1 %2Hz %3ch %4bit %5kbps")
                                  .arg(codecName).arg(nSamplesPerSec).arg(nChannels)
-                                 .arg(wBitsPerSample).arg(nAvgBytesPerSec * 8 / 1000);
+                                 .arg(wBitsPerSample).arg(nAvgBytesPerSec * 8 / 1000)).toStdString();
                 if (cur_stream_idx >= 0 && cur_stream_idx < result.streams.size()) {
                     auto& s = result.streams[cur_stream_idx];
-                    s.codec = codecName;
-                    s.details = QString("%1 Hz, %2 ch, %3-bit, %4 kbps")
+                    s.codec = codecName.toStdString();
+                    s.details = (QString("%1 Hz, %2 ch, %3-bit, %4 kbps")
                                     .arg(nSamplesPerSec).arg(nChannels)
-                                    .arg(wBitsPerSample).arg(nAvgBytesPerSec * 8 / 1000);
+                                    .arg(wBitsPerSample).arg(nAvgBytesPerSec * 8 / 1000)).toStdString();
                 }
             } else {
-                elem.value = QString("size=%1").arg(chunk_size);
+                elem.value = QString("size=%1").arg(chunk_size).toStdString();
             }
             qint64 next_pos = chunk_offset + 8 + chunk_size;
             if (chunk_size % 2 != 0) next_pos++;
@@ -198,7 +200,7 @@ bool AviStructureAnalyzer::ParseChunk(QFile& file, qint64 end_offset, int depth,
         } else {
             // 普通叶子块
             elem.type = "Chunk";
-            elem.value = QString("size=%1").arg(chunk_size);
+            elem.value = QString("size=%1").arg(chunk_size).toStdString();
 
             // 跳过数据
             qint64 next_pos = chunk_offset + 8 + chunk_size;
@@ -210,7 +212,7 @@ bool AviStructureAnalyzer::ParseChunk(QFile& file, qint64 end_offset, int depth,
             }
         }
 
-        parent.children.append(elem);
+        parent.children.push_back(elem);
     }
     return true;
 }

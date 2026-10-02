@@ -1,20 +1,48 @@
 #include "core/analysis/container/EbmlAnalyzer.h"
 #include "infrastructure/logging/Logger.h"
+
 #include <QFile>
 #include <QDataStream>
 #include <QStack>
 #include <QSet>
 #include <QBuffer>
 
+#include <iomanip>
+#include <sstream>
+#include <string>
+
 namespace videoeye {
 namespace analyzer {
+
+namespace {
+
+// 替代 QString::toInt()/toULongLong()/toDouble() 的宽松语义
+// （解析失败返回默认值，而不是抛异常），保持 EbmlAnalyzer 原有行为。
+int64_t ParseInt(const std::string& s, int64_t def = 0) {
+    try { return std::stoll(s); } catch (...) { return def; }
+}
+uint64_t ParseUInt(const std::string& s, uint64_t def = 0) {
+    try { return std::stoull(s); } catch (...) { return def; }
+}
+double ParseDouble(const std::string& s, double def = 0.0) {
+    try { return std::stod(s); } catch (...) { return def; }
+}
+
+// 补零到两位，替代 QString::arg(v, 2, 10, QChar('0'))
+std::string Pad2(long long v) {
+    std::ostringstream oss;
+    oss << std::setfill('0') << std::setw(2) << v;
+    return oss.str();
+}
+
+}  // namespace
 
 // ============================================================
 // 已知 EBML 元素名称映射 (Matroska / WebM)
 // ============================================================
-QMap<uint64_t, QString>& EbmlAnalyzer::ElementNames() {
-    static QMap<uint64_t, QString> map;
-    if (map.isEmpty()) {
+std::map<uint64_t, std::string>& EbmlAnalyzer::ElementNames() {
+    static std::map<uint64_t, std::string> map;
+    if (map.empty()) {
         // EBML Header
         map[0x1A45DFA3] = "EBML";
         map[0x4286]    = "EBMLVersion";
@@ -270,7 +298,7 @@ bool EbmlAnalyzer::IsContainerElement(uint64_t id) {
 // ============================================================
 // CodecID 可读名称
 // ============================================================
-QString EbmlAnalyzer::CodecIdToName(const QString& codec_id) {
+std::string EbmlAnalyzer::CodecIdToName(const std::string& codec_id) {
     if (codec_id == "V_VP8")            return "VP8";
     if (codec_id == "V_VP9")            return "VP9";
     if (codec_id == "V_AV1")            return "AV1";
@@ -304,26 +332,27 @@ QString EbmlAnalyzer::CodecIdToName(const QString& codec_id) {
     return codec_id;
 }
 
-QString EbmlAnalyzer::TrackTypeName(int type) {
+std::string EbmlAnalyzer::TrackTypeName(int type) {
     switch (type) {
-        case 1:  return QString("视频 (Video)");
-        case 2:  return QString("音频 (Audio)");
-        case 3:  return QString("复合 (Complex)");
-        case 0x10: return QString("Logo");
-        case 0x11: return QString("字幕 (Subtitle)");
-        case 0x12: return QString("按钮 (Buttons)");
-        case 0x20: return QString("控制 (Control)");
-        default:  return QString("类型%1").arg(type);
+        case 1:  return "视频 (Video)";
+        case 2:  return "音频 (Audio)";
+        case 3:  return "复合 (Complex)";
+        case 0x10: return "Logo";
+        case 0x11: return "字幕 (Subtitle)";
+        case 0x12: return "按钮 (Buttons)";
+        case 0x20: return "控制 (Control)";
+        default:  return "类型" + std::to_string(type);
     }
 }
 
-QString EbmlAnalyzer::ElementName(uint64_t id) {
+std::string EbmlAnalyzer::ElementName(uint64_t id) {
     auto& names = ElementNames();
     auto it = names.find(id);
-    if (it != names.end()) return it.value();
-    if (id <= 0xFF) return QString("0x%1").arg(id, 2, 16, QChar('0'));
-    if (id <= 0xFFFF) return QString("0x%1").arg(id, 4, 16, QChar('0'));
-    return QString("0x%1").arg(id, 0, 16);
+    if (it != names.end()) return it->second;
+    std::ostringstream oss;
+    oss << "0x" << std::hex << std::nouppercase << std::setfill('0')
+        << std::setw(id <= 0xFF ? 2 : (id <= 0xFFFF ? 4 : 0)) << id;
+    return oss.str();
 }
 
 // ============================================================
@@ -436,7 +465,8 @@ static uint64_t readIdVInt(QDataStream& ds, int& size_out) {
 // Block 解析 (BlockGroup 的子元素 Block)
 // Block 格式: TrackNumber(VINT) Timecode(int16) Flags(u8) [Lacing data]
 // ============================================================
-QString EbmlAnalyzer::ParseBlockData(const QByteArray& data, model::EbmlBlockSummary& summary) {
+std::string EbmlAnalyzer::ParseBlockData(const QByteArray& data,
+                                        model::EbmlBlockSummary& summary) {
     if (data.size() < 3) return "数据过短";
 
     int off = 0;
@@ -461,27 +491,30 @@ QString EbmlAnalyzer::ParseBlockData(const QByteArray& data, model::EbmlBlockSum
 
     summary.data_size = data.size() - off;
 
-    QString lacetype;
+    std::string lacetype;
     if (flags & 0x06) {
         int lt = (flags >> 1) & 0x03;
         lacetype = (lt == 1) ? " Xiph-lacing" : (lt == 2) ? " fixed-lacing" : " EBML-lacing";
     }
 
-    return QString("Track=%1 Timecode=%2 Flags=0x%3%4%5%6 [%7 bytes]")
-        .arg(summary.track_number)
-        .arg(summary.timecode)
-        .arg(flags, 2, 16, QChar('0'))
-        .arg(summary.keyframe ? " KEY" : "")
-        .arg(summary.discardable ? " DISCARD" : "")
-        .arg(lacetype)
-        .arg(summary.data_size);
+    std::ostringstream oss;
+    oss << "Track=" << summary.track_number
+        << " Timecode=" << summary.timecode
+        << " Flags=0x" << std::hex << std::nouppercase << std::setfill('0')
+        << std::setw(2) << static_cast<unsigned>(flags) << std::setfill(' ') << std::dec
+        << (summary.keyframe ? " KEY" : "")
+        << (summary.discardable ? " DISCARD" : "")
+        << lacetype
+        << " [" << summary.data_size << " bytes]";
+    return oss.str();
 }
 
 // ============================================================
 // SimpleBlock 解析 (Cluster 直接子元素)
 // SimpleBlock 数据的解析与 Block 相同 (都包含 TrackNumber+Timecode+Flags 头部)
 // ============================================================
-QString EbmlAnalyzer::ParseSimpleBlockData(const QByteArray& data, model::EbmlBlockSummary& summary) {
+std::string EbmlAnalyzer::ParseSimpleBlockData(const QByteArray& data,
+                                              model::EbmlBlockSummary& summary) {
     return "S-" + ParseBlockData(data, summary);
 }
 
@@ -493,53 +526,53 @@ void EbmlAnalyzer::ParseLeafValue(model::EbmlElementNode& node,
                                    model::EbmlAnalysisResult& result) {
     if (data.isEmpty()) return;
 
-    auto tryString = [&]() -> QString {
-        QString s = QString::fromUtf8(data);
+    auto tryString = [&]() -> std::string {
+        const QString s = QString::fromUtf8(data);
         if (s.isEmpty()) return {};
         for (int i = 0; i < s.size(); ++i) {
             ushort ch = s[i].unicode();
             if (ch == 0xFFFD) return {};
             if (ch < 0x20 && ch != '\n' && ch != '\r' && ch != '\t') return {};
         }
-        return s;
+        return s.toStdString();
     };
 
     // --- 根据元素 ID 提取数值 + 关键数据 ---
     switch (node.id) {
         // 1-byte unsigned
-        case 0x4286: { uint8_t v = readBeUInt(data, 1); node.value = QString::number(v); result.ebml_version = v; return; }
-        case 0x42F7: { uint8_t v = readBeUInt(data, 1); node.value = QString::number(v); result.ebml_read_version = v; return; }
-        case 0x42F2: { uint8_t v = readBeUInt(data, 1); node.value = QString::number(v); result.ebml_max_id_length = v; return; }
-        case 0x42F3: { uint8_t v = readBeUInt(data, 1); node.value = QString::number(v); result.ebml_max_size_length = v; return; }
-        case 0x4287: { uint8_t v = readBeUInt(data, 1); node.value = QString::number(v); result.doc_type_version = v; return; }
-        case 0x4285: { uint8_t v = readBeUInt(data, 1); node.value = QString::number(v); result.doc_type_read_version = v; return; }
+        case 0x4286: { uint8_t v = readBeUInt(data, 1); node.value = std::to_string(v); result.ebml_version = v; return; }
+        case 0x42F7: { uint8_t v = readBeUInt(data, 1); node.value = std::to_string(v); result.ebml_read_version = v; return; }
+        case 0x42F2: { uint8_t v = readBeUInt(data, 1); node.value = std::to_string(v); result.ebml_max_id_length = v; return; }
+        case 0x42F3: { uint8_t v = readBeUInt(data, 1); node.value = std::to_string(v); result.ebml_max_size_length = v; return; }
+        case 0x4287: { uint8_t v = readBeUInt(data, 1); node.value = std::to_string(v); result.doc_type_version = v; return; }
+        case 0x4285: { uint8_t v = readBeUInt(data, 1); node.value = std::to_string(v); result.doc_type_read_version = v; return; }
         case 0x83: { uint8_t v = readBeUInt(data, 1); node.value = TrackTypeName(v); return; }
         case 0xB9: case 0x88: case 0x55AA: case 0x9C: case 0xAA: case 0x9A: case 0x9D:
         case 0x53B8: case 0x53C0: case 0x54B2: case 0x54B3:
         case 0x98: case 0x4598: case 0x4484: case 0x68CA:
-            node.value = QString::number(static_cast<uint8_t>(readBeUInt(data, 1))); return;
+            node.value = std::to_string(static_cast<uint8_t>(readBeUInt(data, 1))); return;
 
         // 2-byte
         case 0x6DE7: case 0x6DF8:
-            node.value = QString::number(static_cast<uint16_t>(readBeUInt(data, 2))); return;
+            node.value = std::to_string(static_cast<uint16_t>(readBeUInt(data, 2))); return;
 
         // 4-byte
-        case 0xD7: case 0x73C5: node.value = QString::number(static_cast<uint32_t>(readBeUInt(data, 4))); return;
+        case 0xD7: case 0x73C5: node.value = std::to_string(static_cast<uint32_t>(readBeUInt(data, 4))); return;
 
         // 8-byte
         case 0x23E383: case 0x23314F:
-            { node.value = QString::number(readBeUInt(data, 8)); return; }
+            { node.value = std::to_string(readBeUInt(data, 8)); return; }
 
         // float (4 byte)
         case 0xB5: case 0x78B5: case 0x2FB523:
-            node.value = QString::number(readBeFloat(data, 4), 'f', 6); return;
+            node.value = std::to_string(readBeFloat(data, 4)); return;
 
         // 字符串
         case 0x4282: { node.value = tryString(); result.doc_type = node.value; return; }
 
         // TimestampScale
         case 0x2AD7B1: {
-            node.value = QString::number(readBeUInt(data, 8));
+            node.value = std::to_string(readBeUInt(data, 8));
             result.timestamp_scale = readBeUInt(data, 8);
             return;
         }
@@ -548,24 +581,24 @@ void EbmlAnalyzer::ParseLeafValue(model::EbmlElementNode& node,
             double dur = readBeFloat(data, 4);
             if (result.timestamp_scale > 0)
                 result.duration_seconds = dur * result.timestamp_scale / 1e9;
-            node.value = QString::number(dur, 'f', 6);
+            node.value = std::to_string(dur);
             if (result.duration_seconds > 0) {
                 int h = static_cast<int>(result.duration_seconds / 3600);
                 int m = static_cast<int>(result.duration_seconds) % 3600 / 60;
                 int s = static_cast<int>(result.duration_seconds) % 60;
-                node.value += QString(" (%1:%2:%3)").arg(h, 2, 10, QChar('0')).arg(m, 2, 10, QChar('0')).arg(s, 2, 10, QChar('0'));
+                node.value += " (" + Pad2(h) + ":" + Pad2(m) + ":" + Pad2(s) + ")";
             }
             return;
         }
         // Timecode (Cluster)
         case 0xE7: case 0xA7: case 0xAB: case 0xF1:
-            node.value = QString::number(readBeUInt(data, 8)); return;
+            node.value = std::to_string(readBeUInt(data, 8)); return;
 
         // pixel dims (变长)
         case 0xB0: case 0xBA:
         case 0x54AA: case 0x54BB: case 0x54CC: case 0x54DD:
         case 0x54B0: case 0x54BA:
-            node.value = QString::number(readBeUInt(data, data.size())); return;
+            node.value = std::to_string(readBeUInt(data, data.size())); return;
 
         // 字符串
         case 0x4D80: case 0x5741: case 0x7384: case 0x7BA9:
@@ -581,11 +614,11 @@ void EbmlAnalyzer::ParseLeafValue(model::EbmlElementNode& node,
 
         // SegmentUID / PrevUID / NextUID (16 bytes binary)
         case 0x73A4: case 0x3CB923: case 0x3C83AB: case 0x73C4:
-            { node.value = data.toHex(); if (node.id == 0x73A4) result.segment_uid = node.value; return; }
+            { node.value = data.toHex().toStdString(); if (node.id == 0x73A4) result.segment_uid = node.value; return; }
 
         // CodecPrivate (二进制)
         case 0x63A2:
-            node.value = QString("二进制 %1 字节").arg(data.size()); return;
+            node.value = "二进制 " + std::to_string(data.size()) + " 字节"; return;
 
         // Block 数据
         case 0xA1: { // Block
@@ -619,11 +652,11 @@ void EbmlAnalyzer::ParseLeafValue(model::EbmlElementNode& node,
         case 0xB0: case 0xBA:
         case 0x54AA: case 0x54BB: case 0x54CC: case 0x54DD:
         case 0x54B0: case 0x54BA:
-            node.value = QString::number(readBeUInt(data, data.size())); return;
+            node.value = std::to_string(readBeUInt(data, data.size())); return;
         case 0x9F: // Channels
-            node.value = QString::number(static_cast<uint32_t>(readBeUInt(data, data.size()))); return;
+            node.value = std::to_string(static_cast<uint32_t>(readBeUInt(data, data.size()))); return;
         case 0x6264: // BitDepth
-            node.value = QString::number(static_cast<uint32_t>(readBeUInt(data, data.size()))); return;
+            node.value = std::to_string(static_cast<uint32_t>(readBeUInt(data, data.size()))); return;
         default: break;
     }
 
@@ -644,12 +677,12 @@ void EbmlAnalyzer::ParseLeafValue(model::EbmlElementNode& node,
     }
 
     // 尝试字符串
-    QString s = tryString();
-    if (!s.isEmpty() && s.size() <= 256) { node.value = s; return; }
+    std::string s = tryString();
+    if (!s.empty() && s.size() <= 256) { node.value = s; return; }
 
     // 十六进制截断
-    if (data.size() <= 64) { node.value = data.toHex(); return; }
-    node.value = data.left(32).toHex() + "...(" + QString::number(data.size()) + " bytes)";
+    if (data.size() <= 64) { node.value = data.toHex().toStdString(); return; }
+    node.value = data.left(32).toHex().toStdString() + "...(" + std::to_string(data.size()) + " bytes)";
 }
 
 // ============================================================
@@ -659,26 +692,26 @@ void EbmlAnalyzer::ExtractTrackInfo(const model::EbmlElementNode& track_entry,
                                      model::EbmlAnalysisResult& result) {
     model::EbmlTrackInfo ti;
     int tn = result.tracks.size() + 1;
-    std::function<void(const QVector<model::EbmlElementNode>&)> walk;
-    walk = [&](const QVector<model::EbmlElementNode>& nodes) {
+    std::function<void(const std::vector<model::EbmlElementNode>&)> walk;
+    walk = [&](const std::vector<model::EbmlElementNode>& nodes) {
         for (const auto& n : nodes) {
             switch (n.id) {
-                case 0xD7: ti.track_number = n.value.toInt(); break;
-                case 0x73C5: ti.track_uid = n.value.toULongLong(); break;
-                case 0x83:   ti.track_type = n.value.toInt(); break;
+                case 0xD7: ti.track_number = ParseInt(n.value); break;
+                case 0x73C5: ti.track_uid = ParseUInt(n.value); break;
+                case 0x83:   ti.track_type = ParseInt(n.value); break;
                 case 0x86:   ti.codec_id = n.value; break;
                 case 0x22B59C: ti.language = n.value; break;
                 case 0x536E: ti.track_name = n.value; break;
-                case 0xB9:   ti.enabled = (n.value.toInt() != 0); break;
-                case 0x88:   ti.default_track = (n.value.toInt() != 0); break;
-                case 0x55AA: ti.forced = (n.value.toInt() != 0); break;
-                case 0x9C:   ti.lacing = (n.value.toInt() != 0); break;
-                case 0x23E383: ti.default_duration = n.value.toULongLong(); break;
-                case 0xB0:   ti.pixel_width = n.value.toInt(); break;
-                case 0xBA:   ti.pixel_height = n.value.toInt(); break;
-                case 0xB5:   ti.sampling_frequency = n.value.toDouble(); break;
-                case 0x9F:   ti.channels = n.value.toInt(); break;
-                case 0x6264: ti.bit_depth = n.value.toInt(); break;
+                case 0xB9:   ti.enabled = (ParseInt(n.value) != 0); break;
+                case 0x88:   ti.default_track = (ParseInt(n.value) != 0); break;
+                case 0x55AA: ti.forced = (ParseInt(n.value) != 0); break;
+                case 0x9C:   ti.lacing = (ParseInt(n.value) != 0); break;
+                case 0x23E383: ti.default_duration = ParseUInt(n.value); break;
+                case 0xB0:   ti.pixel_width = ParseInt(n.value); break;
+                case 0xBA:   ti.pixel_height = ParseInt(n.value); break;
+                case 0xB5:   ti.sampling_frequency = ParseDouble(n.value); break;
+                case 0x9F:   ti.channels = ParseInt(n.value); break;
+                case 0x6264: ti.bit_depth = ParseInt(n.value); break;
                 case 0x63A2: ti.codec_private_size = static_cast<int>(n.size); break;
                 default: break;
             }
@@ -705,14 +738,14 @@ void EbmlAnalyzer::ExtractTrackInfo(const model::EbmlElementNode& track_entry,
 void EbmlAnalyzer::ExtractCueInfo(const model::EbmlElementNode& cue_point,
                                    model::EbmlAnalysisResult& result) {
     model::EbmlCueEntry ce;
-    std::function<void(const QVector<model::EbmlElementNode>&)> walk;
-    walk = [&](const QVector<model::EbmlElementNode>& nodes) {
+    std::function<void(const std::vector<model::EbmlElementNode>&)> walk;
+    walk = [&](const std::vector<model::EbmlElementNode>& nodes) {
         for (const auto& n : nodes) {
             switch (n.id) {
-                case 0xB3: ce.time = n.value.toULongLong(); break;
-                case 0xF7: ce.track_number = n.value.toInt(); break;
-                case 0xF1: ce.cluster_position = n.value.toULongLong(); break;
-                case 0x5378: ce.block_number = n.value.toULongLong(); break;
+                case 0xB3: ce.time = ParseUInt(n.value); break;
+                case 0xF7: ce.track_number = ParseInt(n.value); break;
+                case 0xF1: ce.cluster_position = ParseUInt(n.value); break;
+                case 0x5378: ce.block_number = ParseUInt(n.value); break;
                 default: break;
             }
             walk(n.children);
@@ -739,7 +772,11 @@ bool EbmlAnalyzer::ParseElement(QDataStream& ds, qint64 end_offset, int depth,
 
         model::EbmlElementNode node;
         node.id = id;
-        node.id_hex = QString("0x%1").arg(id, 0, 16);
+        {
+            std::ostringstream idoss;
+            idoss << "0x" << std::hex << std::nouppercase << id;
+            node.id_hex = idoss.str();
+        }
         node.name = ElementName(id);
         node.size = size;
         node.header_size = static_cast<uint64_t>(id_size + size_size);
@@ -750,7 +787,7 @@ bool EbmlAnalyzer::ParseElement(QDataStream& ds, qint64 end_offset, int depth,
         if (IsContainerElement(id) && size > 0 && size != 0xFFFFFFFFFFFFFFULL) {
             qint64 child_end = node.offset + static_cast<qint64>(size);
             parent->children.push_back(node);
-            model::EbmlElementNode& child = parent->children.last();
+            model::EbmlElementNode& child = parent->children.back();
 
             // 进入 Cluster 前记录其元素起始偏移，供内部 Block 归属；退出后恢复 (支持嵌套)
             uint64_t saved_cluster_offset = current_cluster_offset_;
@@ -800,12 +837,12 @@ void EbmlAnalyzer::Reset() {}
 
 bool EbmlAnalyzer::Analyze(const QString& filePath, model::EbmlAnalysisResult& result) {
     result = model::EbmlAnalysisResult{};
-    result.file_path = filePath;
+    result.file_path = filePath.toStdString();
 
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly)) {
-        result.error_message = QString("无法打开文件: %1").arg(filePath);
-        LOG_ERROR(result.error_message.toStdString());
+        result.error_message = "无法打开文件: " + filePath.toStdString();
+        LOG_ERROR(result.error_message);
         return false;
     }
 
@@ -814,7 +851,7 @@ bool EbmlAnalyzer::Analyze(const QString& filePath, model::EbmlAnalysisResult& r
         static_cast<uint8_t>(header[1]) != 0x45 ||
         static_cast<uint8_t>(header[2]) != 0xDF ||
         static_cast<uint8_t>(header[3]) != 0xA3) {
-        result.error_message = QString("不是有效的 EBML/Matroska/WebM 文件");
+        result.error_message = "不是有效的 EBML/Matroska/WebM 文件";
         return false;
     }
 
@@ -830,8 +867,8 @@ bool EbmlAnalyzer::Analyze(const QString& filePath, model::EbmlAnalysisResult& r
 
     // 统计 BlockGroup / SimpleBlock 计数
     int bg = 0, sb = 0;
-    std::function<void(const QVector<model::EbmlElementNode>&)> countBlocks;
-    countBlocks = [&](const QVector<model::EbmlElementNode>& nodes) {
+    std::function<void(const std::vector<model::EbmlElementNode>&)> countBlocks;
+    countBlocks = [&](const std::vector<model::EbmlElementNode>& nodes) {
         for (const auto& n : nodes) {
             if (n.id == 0xA0) bg++;       // BlockGroup
             if (n.id == 0xA3) sb++;       // SimpleBlock
@@ -845,7 +882,7 @@ bool EbmlAnalyzer::Analyze(const QString& filePath, model::EbmlAnalysisResult& r
     result.element_tree = root.children;
     result.valid = true;
 
-    LOG_INFO("EBML 分析完成: " + result.doc_type.toStdString()
+    LOG_INFO("EBML 分析完成: " + result.doc_type
              + " | " + std::to_string(result.tracks.size()) + " 轨道"
              + " | " + std::to_string(result.cues.size()) + " 索引点"
              + " | " + std::to_string(result.total_clusters) + " Cluster");

@@ -69,6 +69,28 @@ UI 与 ladder 级校验只认这个结构，不必区分协议。
 master playlist 会递归加载子播放列表（本地文件），受 `max_variants` / `max_playlists` /
 `max_segments_per_playlist` 保护。
 
+#### 清单文件的读取（`core/media/streaming/ManifestReader.h`）
+
+两个解析器不再各自 `ostringstream << rdbuf()` 一把梭，而是共用这一层的读取入口：
+
+| 入口 | 用在哪 | 特点 |
+| --- | --- | --- |
+| `ReadManifestLines()` | HLS（master 与每个子播放列表） | 边读边切行，内存里只有行数组 + 一个 64 KiB 读缓冲，不再出现"整块文本 + 行数组"两份拷贝 |
+| `ReadManifestText()` | DASH MPD | XML 扫描器要按字符前进并跨标签做栈配对，只能整块读，但同样分块 + 可取消 |
+| `ForEachManifestLine()` | 未来真正逐行解析的场景 | 每行直接交给回调，连行数组都不持有 |
+
+三条路径共享同一套约束：
+
+- **按块读 + 每块前后检查取消**：`cancel` 置位后最多再处理一个块就返回 `Cancelled`，
+  不会把几十 MB 读完之后才发现用户按了取消；
+- **`max_manifest_bytes`（默认 32 MiB）**：先 stat，超限就直接返回 `TooLarge` 且一个字节都不读 ——
+  半份清单的校验结论没有意义，宁可明确报"文件过大"；读的过程中再按上限兜一次底，
+  防文件在 stat 之后长大；
+- **统一的错误文案** `ManifestReadErrorMessage()`：HLS 与 DASH 对同一种失败说同一句话。
+
+超限 / 取消时 `AnalyzeFile()` 返回 false：`out.truncated` 置位、`out.error_message` 写明原因；
+子播放列表超限时只标记那一条（`parse_failed` + `truncated`），不影响 master 与其它子清单的解析。
+
 ### 3.2 DASH（core/analysis/streaming/DashManifestAnalyzer.h）
 
 极简 XML 标签扫描器（不引入第三方 XML 库），识别：

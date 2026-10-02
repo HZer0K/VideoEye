@@ -86,7 +86,7 @@ bool AsfStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
 
     result.format = model::ContainerFormat::ASF;
     result.format_name = "ASF";
-    result.file_path = file_path;
+    result.file_path = file_path.toStdString();
 
     // Read top-level Header Object
     QByteArray guid = file.read(16);
@@ -113,7 +113,7 @@ bool AsfStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
     root.size = header_size;
     root.offset = 0;
     root.depth = 0;
-    root.value = QString("objects=%1").arg(num_objects);
+    root.value = QString("objects=%1").arg(num_objects).toStdString();
 
     // Parse child objects
     qint64 header_end = static_cast<qint64>(header_size);
@@ -129,7 +129,7 @@ bool AsfStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
         QString obj_name = GuidToName(obj_guid);
 
         model::ContainerElement elem;
-        elem.name = obj_name;
+        elem.name = obj_name.toStdString();
         elem.type = "ASF Object";
         elem.size = obj_size;
         elem.offset = obj_start;
@@ -144,8 +144,9 @@ bool AsfStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
                 uint64_t preroll_ms = asfLE64(data, 56);
                 double duration_sec = play_100ns / 10000000.0 - preroll_ms / 1000.0;
                 if (duration_sec < 0) duration_sec = play_100ns / 10000000.0;
-                elem.value = QString("duration=%1s").arg(QString::number(duration_sec, 'f', 2));
-                result.metadata["duration"] = QString::number(duration_sec, 'f', 2) + "s";
+                elem.value = QString("duration=%1s").arg(QString::number(duration_sec, 'f', 2)).toStdString();
+                result.metadata["duration"] =
+                    (QString::number(duration_sec, 'f', 2) + "s").toStdString();
             }
         } else if (obj_guid == kStreamPropertiesGuid) {
             QByteArray data = file.read(qMin(static_cast<qint64>(obj_size - 24), static_cast<qint64>(256)));
@@ -160,9 +161,10 @@ bool AsfStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
                     uint32_t h = asfLE32(data, 58);
                     // BITMAPINFOHEADER biCompression @ 54+11+16 = 81
                     QString fourcc = QString::fromLatin1(data.mid(81, 4)).trimmed();
-                    si.codec = fourcc.isEmpty() ? "Video" : fourcc;
-                    si.details = QString("%1x%2").arg(w).arg(h);
-                    elem.value = QString("Video %1x%2 %3").arg(w).arg(h).arg(si.codec);
+                    si.codec = fourcc.isEmpty() ? "Video" : fourcc.toStdString();
+                    si.details = QString("%1x%2").arg(w).arg(h).toStdString();
+                    elem.value = QString("Video %1x%2 %3")
+                        .arg(w).arg(h).arg(QString::fromStdString(si.codec)).toStdString();
                 } else if (stream_type_guid == kAudioStreamGuid) {
                     si.type = "audio";
                     // WAVEFORMATEX 从 offset 54
@@ -170,15 +172,16 @@ bool AsfStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
                     uint16_t ch = asfLE16(data, 56);
                     uint32_t sr = asfLE32(data, 58);
                     uint16_t bits = asfLE16(data, 68);
-                    si.codec = waveFormatName(tag);
-                    si.details = QString("%1 Hz, %2 ch, %3-bit").arg(sr).arg(ch).arg(bits);
-                    elem.value = QString("Audio %1 %2Hz %3ch").arg(si.codec).arg(sr).arg(ch);
+                    si.codec = waveFormatName(tag).toStdString();
+                    si.details = QString("%1 Hz, %2 ch, %3-bit").arg(sr).arg(ch).arg(bits).toStdString();
+                    elem.value = QString("Audio %1 %2Hz %3ch")
+                        .arg(QString::fromStdString(si.codec)).arg(sr).arg(ch).toStdString();
                 } else {
                     si.type = "data";
                     si.codec = "ASF Data";
                     elem.value = "Data Stream";
                 }
-                result.streams.append(si);
+                result.streams.push_back(si);
             }
         } else if (obj_guid == kContentDescriptionGuid) {
             QByteArray data = file.read(qMin(static_cast<qint64>(obj_size - 24), static_cast<qint64>(64 * 1024)));
@@ -191,17 +194,17 @@ bool AsfStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
                 QString copyright = asfUtf16(data, p, cl); p += cl;
                 QString desc = asfUtf16(data, p, dl); p += dl;
                 QString rating = asfUtf16(data, p, rl); p += rl;
-                if (!title.isEmpty()) result.metadata["title"] = title;
-                if (!author.isEmpty()) result.metadata["author"] = author;
-                if (!copyright.isEmpty()) result.metadata["copyright"] = copyright;
-                if (!desc.isEmpty()) result.metadata["description"] = desc;
-                if (!rating.isEmpty()) result.metadata["rating"] = rating;
-                elem.value = title.isEmpty() ? "Metadata" : ("Title: " + title);
+                if (!title.isEmpty()) result.metadata["title"] = title.toStdString();
+                if (!author.isEmpty()) result.metadata["author"] = author.toStdString();
+                if (!copyright.isEmpty()) result.metadata["copyright"] = copyright.toStdString();
+                if (!desc.isEmpty()) result.metadata["description"] = desc.toStdString();
+                if (!rating.isEmpty()) result.metadata["rating"] = rating.toStdString();
+                elem.value = title.isEmpty() ? "Metadata" : ("Title: " + title).toStdString();
             } else {
                 elem.value = "Metadata";
             }
         } else {
-            elem.value = QString("size=%1").arg(obj_size);
+            elem.value = QString("size=%1").arg(obj_size).toStdString();
         }
 
         // Ensure we're at the right position for the next object
@@ -210,11 +213,11 @@ bool AsfStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
             file.seek(next_pos);
         } else {
             file.seek(file.size());
-            root.children.append(elem);
+            root.children.push_back(elem);
             break;
         }
 
-        root.children.append(elem);
+        root.children.push_back(elem);
     }
 
     // Scan for Data Object and Index Object after header
@@ -227,21 +230,21 @@ bool AsfStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
         uint64_t obj_size = asfLE64(obj_size_buf, 0);
 
         model::ContainerElement elem;
-        elem.name = GuidToName(obj_guid);
+        elem.name = GuidToName(obj_guid).toStdString();
         elem.type = "ASF Object";
         elem.size = obj_size;
         elem.offset = file.pos() - 24;
         elem.depth = 1;
-        elem.value = QString("size=%1").arg(obj_size);
-        root.children.append(elem);
+        elem.value = QString("size=%1").arg(obj_size).toStdString();
+        root.children.push_back(elem);
 
         if (obj_size < 24) break;
         file.seek(file.pos() - 24 + static_cast<qint64>(obj_size));
     }
 
-    result.element_tree.append(root);
+    result.element_tree.push_back(root);
     result.valid = true;
-    result.summary = QString("ASF | 文件大小: %1 字节 | 流: %2 个").arg(file.size()).arg(result.streams.size());
+    result.summary = QString("ASF | 文件大小: %1 字节 | 流: %2 个").arg(file.size()).arg(result.streams.size()).toStdString();
 
     file.close();
     return true;

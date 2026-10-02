@@ -3,12 +3,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <fstream>
 #include <numeric>
-#include <sstream>
 
-#include "core/media/streaming/ManifestText.h"
 #include "core/analysis/streaming/StreamingCancel.h"
+#include "core/media/streaming/ManifestReader.h"
+#include "core/media/streaming/ManifestText.h"
 
 namespace videoeye {
 namespace analyzer {
@@ -16,25 +15,17 @@ namespace {
 
 namespace mt = videoeye::utils::manifest;
 
+// 清单文件的读法（分块 + 可取消 + 体积上限）统一由 utils::manifest::ManifestReader
+// 提供，两个解析器共用一套，避免"同样的大文件，HLS 能读、DASH 读不动"。
+mt::ManifestReadOptions ReadOptionsFor(const HlsManifestOptions& options) {
+    mt::ManifestReadOptions read_options;
+    read_options.max_bytes = options.max_manifest_bytes;
+    return read_options;
+}
+
 // ---------------------------------------------------------------------------
 // 文本小工具
 // ---------------------------------------------------------------------------
-
-std::vector<std::string> SplitLines(const std::string& text) {
-    std::vector<std::string> lines;
-    size_t i = 0;
-    while (i < text.size()) {
-        const size_t nl = text.find('\n', i);
-        std::string line = (nl == std::string::npos) ? text.substr(i) : text.substr(i, nl - i);
-        if (!line.empty() && line.back() == '\r')
-            line.pop_back();
-        lines.push_back(line);
-        if (nl == std::string::npos)
-            break;
-        i = nl + 1;
-    }
-    return lines;
-}
 
 // "#EXTINF:4.0,title" -> "#EXTINF"
 std::string TagName(const std::string& line) {
@@ -112,16 +103,6 @@ model::SegmentContainer ContainerFromUri(const std::string& uri) {
         return model::SegmentContainer::PackedAudio;
     }
     return model::SegmentContainer::Other;
-}
-
-bool ReadFileText(const std::string& path, std::string& text) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file)
-        return false;
-    std::ostringstream ss;
-    ss << file.rdbuf();
-    text = ss.str();
-    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -411,13 +392,24 @@ void LoadSubPlaylists(model::StreamingPackageResult& out, const HlsManifestOptio
                 out.remote = true;
             continue;
         }
-        std::string text;
-        if (!ReadFileText(pl.resolved_path, text)) {
+        // 直接切成行，不再经过"整块文本"这道中转 —— 一个 20 MB 的子播放列表
+        // 以前要同时在堆上放 text 和 lines 两份，现在只有 lines 加一个读缓冲块。
+        std::vector<std::string> lines;
+        const mt::ManifestReadStatus status =
+            mt::ReadManifestLines(pl.resolved_path, ReadOptionsFor(options), cancel, lines);
+        if (status != mt::ManifestReadStatus::Ok) {
             pl.parse_failed = true;
-            pl.error_message = "子播放列表无法读取: " + pl.uri;
+            pl.error_message = mt::ManifestReadErrorMessage(status, pl.resolved_path, options.max_manifest_bytes);
+            // 超限与被取消都是"没读完"，结果不完整，不能当整份清单去校验。
+            pl.truncated = (status == mt::ManifestReadStatus::TooLarge ||
+                            status == mt::ManifestReadStatus::Cancelled);
+            if (status == mt::ManifestReadStatus::Cancelled) {
+                out.truncated = true;
+                break;
+            }
             continue;
         }
-        ParseMediaPlaylistBody(SplitLines(text), mt::DirOf(pl.resolved_path), pl, options, cancel);
+        ParseMediaPlaylistBody(lines, mt::DirOf(pl.resolved_path), pl, options, cancel);
         if (pl.has_init_section) {
             pl.init_resolved_path = mt::ResolveLocalUri(mt::DirOf(pl.resolved_path), pl.init_uri);
         }
@@ -506,48 +498,15 @@ bool SameTimes(const std::vector<double>& a, const std::vector<double>& b, doubl
     return true;
 }
 
-} // namespace
-
 // ---------------------------------------------------------------------------
-// 公开接口
+// ParseText / AnalyzeFile 的共同正文：入口只负责把内容变成行，剩下的都一样。
 // ---------------------------------------------------------------------------
 
-HlsManifestAnalyzer::HlsManifestAnalyzer() = default;
-HlsManifestAnalyzer::~HlsManifestAnalyzer() = default;
-
-void HlsManifestAnalyzer::Reset() {
-    options_ = HlsManifestOptions{};
-}
-
-bool HlsManifestAnalyzer::AnalyzeFile(const std::string& file_path, model::StreamingPackageResult& out,
-                                      const HlsManifestOptions& options, const std::atomic<bool>* cancel) {
-    options_ = options;
-    out = model::StreamingPackageResult{};
-    out.manifest_path = file_path;
-    out.manifest_dir = mt::DirOf(file_path);
-
-    std::string text;
-    if (!ReadFileText(file_path, text)) {
-        out.valid = false;
-        out.error_message = "无法读取清单文件: " + file_path;
-        return false;
-    }
-    if (!ParseText(text, out.manifest_dir, out, options, cancel)) {
-        if (out.error_message.empty())
-            out.error_message = "不是有效的 HLS 清单";
-        return false;
-    }
-    Validate(out, options, cancel);
-    return true;
-}
-
-bool HlsManifestAnalyzer::ParseText(const std::string& text, const std::string& base_dir,
-                                    model::StreamingPackageResult& out, const HlsManifestOptions& options,
-                                    const std::atomic<bool>* cancel) {
+bool ParseLines(const std::vector<std::string>& lines, const std::string& base_dir,
+                model::StreamingPackageResult& out, const HlsManifestOptions& options,
+                const std::atomic<bool>* cancel) {
     out.manifest_dir = base_dir;
     out.kind = model::StreamingKind::Unknown;
-
-    const std::vector<std::string> lines = SplitLines(text);
 
     // 第一行必须是 #EXTM3U
     bool has_magic = false;
@@ -598,6 +557,54 @@ bool HlsManifestAnalyzer::ParseText(const std::string& text, const std::string& 
 
     MarkLocalFiles(out, cancel);
     return out.valid;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// 公开接口
+// ---------------------------------------------------------------------------
+
+HlsManifestAnalyzer::HlsManifestAnalyzer() = default;
+HlsManifestAnalyzer::~HlsManifestAnalyzer() = default;
+
+void HlsManifestAnalyzer::Reset() {
+    options_ = HlsManifestOptions{};
+}
+
+bool HlsManifestAnalyzer::AnalyzeFile(const std::string& file_path, model::StreamingPackageResult& out,
+                                      const HlsManifestOptions& options, const std::atomic<bool>* cancel) {
+    options_ = options;
+    out = model::StreamingPackageResult{};
+    out.manifest_path = file_path;
+    out.manifest_dir = mt::DirOf(file_path);
+
+    // 直接读成行：不先攒出整份文本，省一遍全量拷贝，且读的过程中就能响应取消。
+    std::vector<std::string> lines;
+    const mt::ManifestReadStatus status =
+        mt::ReadManifestLines(file_path, ReadOptionsFor(options), cancel, lines);
+    if (status != mt::ManifestReadStatus::Ok) {
+        out.valid = false;
+        out.truncated = (status == mt::ManifestReadStatus::TooLarge ||
+                         status == mt::ManifestReadStatus::Cancelled);
+        out.error_message = mt::ManifestReadErrorMessage(status, file_path, options.max_manifest_bytes);
+        return false;
+    }
+    if (!ParseLines(lines, out.manifest_dir, out, options, cancel)) {
+        if (out.error_message.empty())
+            out.error_message = "不是有效的 HLS 清单";
+        return false;
+    }
+    Validate(out, options, cancel);
+    return true;
+}
+
+bool HlsManifestAnalyzer::ParseText(const std::string& text, const std::string& base_dir,
+                                    model::StreamingPackageResult& out, const HlsManifestOptions& options,
+                                    const std::atomic<bool>* cancel) {
+    // 文本已经在调用方手上时走这里。切行用的是同一个 SplitManifestLines，
+    // 保证"读文件"与"直接喂字符串"两条路的行定义完全一致。
+    return ParseLines(mt::SplitManifestLines(text), base_dir, out, options, cancel);
 }
 
 void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const HlsManifestOptions& options,

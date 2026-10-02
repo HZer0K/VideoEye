@@ -22,8 +22,10 @@ namespace analyzer {
 using model::ColorHdrAnalysis;
 using model::ColorKeyValueRow;
 
-std::vector<ColorKeyValueRow> BuildColorRows(const ColorHdrAnalysis& analysis);
-std::vector<ColorKeyValueRow> BuildHdrRows(const ColorHdrAnalysis& analysis);
+// 注意: BuildColorRows / BuildHdrRows 于 2026-10 下放到了
+// core/domain/model/ColorHdrResult.h —— 它们是纯展示逻辑(吃 domain 结果、吐
+// ColorKeyValueRow), 留在分析器头上会让 UI 页面为了几行格式化被迫 include 分析器。
+// 现在 UI / 报告请直接用 model::BuildColorRows / model::BuildHdrRows。
 
 // 色彩与 HDR 元数据分析器
 //
