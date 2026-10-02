@@ -1,11 +1,21 @@
 #!/usr/bin/env python3
 """审计：core 生产侧是否存在「Qt 类型直接写进 domain 的 std::string 字段」。
 
+这是 scripts/check_layering.py 的补充：check_layering 只管 #include 方向，
+管不到「Qt 类型从生产侧直接落进 domain 的 std::string 字段」这种字段级污染。
+
+用法：
+    python scripts/audit_qt_domain_border.py
+
 做法：
 1. 扫描 core/domain/model/*.h，抽取所有声明为 std::string 的成员名（含嵌套 struct）。
 2. 扫描 core/analysis、core/player、core/exporter、core/media、infrastructure 下的 .cpp/.h，
    找出对域字段的赋值语句，其右值含 QString / QByteArray / QLatin1String / QStringLiteral 等 Qt 类型，
    且未显式 .toStdString()。
+3. 另查 QString::arg() 直接吃 domain std::string 成员——arg() 没有 std::string 重载，必然编译不过。
+
+输出里的 [疑似] 是静态审计判定不了类型的（arg() 吃的是与域字段同名的纯局部变量），
+需人工确认，不是确定违规。
 """
 from __future__ import annotations
 
