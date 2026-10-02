@@ -38,99 +38,101 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 | MP4 解析 | 自研 `utils::IsobmffParser` |
 | 构建 | CMake 3.23+ / Ninja + CMakePresets |
 
-**依赖只有两个硬依赖：Qt Widgets + FFmpeg。** 其余能力（媒体信息展示、图表、MP4 样本表解析、音频输出）全部自研或走平台原生 API，
-不再集成 MediaInfoLib / Bento4 / SDL2 / QtCharts / Vulkan。
-
-Qt 走 vcpkg manifest（Windows）或系统包管理器（apt/brew）；FFmpeg 分平台取源：
+**依赖只有两个硬依赖：Qt Widgets + FFmpeg。** 其余能力（媒体信息展示、图表、MP4 样本表解析、音频输出）全部自研或走平台原生 API，不再集成 MediaInfoLib / Bento4 / SDL2 / QtCharts / Vulkan。
 
 | 平台 | FFmpeg 来源 |
 |------|------------|
-| Windows | `third_party/prebuilt/windows-x64/ffmpeg/`，缺则由 `scripts/fetch-ffmpeg.ps1` 下载（版本 + URL + SHA256 锁在 `cmake/ffmpeg-version.json`，校验不过直接失败） |
-| Linux / macOS | `pkg-config` 找系统开发包（`libavcodec-dev` / `brew install ffmpeg`），找不到才回退 `third_party/prebuilt/<platform>/ffmpeg/` |
+| Windows | `third_party/prebuilt/windows-x64/ffmpeg/`，缺则由 `scripts/fetch-ffmpeg.ps1` 下载（版本 + URL + SHA256 锁在 `cmake/ffmpeg-version.json`） |
+| Linux / macOS | `pkg-config` 找系统开发包（`libavcodec-dev` / `brew install ffmpeg`），找不到才回退预编译包 |
 
-显式传 `-DFFMPEG_ROOT=<dir>` 时该目录优先级最高（盖过系统包），目录不完整会直接报错而不是
-静默回退。
+> **许可证**: 随包分发的 FFmpeg 二进制（`av*.dll` / `libav*.so`）按其自身许可证履约（当前锁定的预编译包为 GPLv3）；`ffmpeg` 命令行程序默认不随包分发，由页面引导用户自行安装。VideoEye 自身源码为 MIT。
 
-「FFmpeg 命令工作台」还需要**可执行程序**（与上面用于链接的开发包是两回事）。
-**默认不随包分发** —— 分发物里没有 `ffmpeg.exe`，用户由页面引导自行安装；
-打包者要随包才显式加 `-DFFMPEG_TOOL=<path> -DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON`。原因见下。
+## 项目架构
 
-> **许可证：为什么默认不随包分发 ffmpeg**
->
-> 能下载到的 ffmpeg 构建绝大多数是 **GPLv3**（gyan.dev 的 full/essentials、Debian 与
-> Homebrew 的包都启用了 `--enable-gpl`）。把一个 GPLv3 的 `ffmpeg.exe` 放进安装包，整个
-> 分发物就要按 GPLv3 履约 —— 而它只服务于「FFmpeg 命令工作台」这一个辅助页面。
->
-> 所以我们不替用户做这个决定：默认不分发，页面引导用户自己装一份（用户自用不受分发条款
-> 约束，装到的多半还是含 libx264/libx265 的完整版，功能反而更好）；打包者确信自己那份是
-> LGPL 构建、或愿意让分发物整体走 GPLv3 时，用上面的开关显式打开并自行完成合规动作。
->
-> 另需如实说明：VideoEye 链接并随包分发 FFmpeg 的 `av*.dll`，而当前锁定的 Windows 预编译包
-> 本身就是 GPLv3 构建。想让分发物真正 MIT-clean，需要把 `cmake/ffmpeg-version.json` 里的
-> 包换成 LGPL 构建（导出功能已做编码器降级：`libx264 → libopenh264 → mpeg4`，换过去不会废）。
-> 完整取舍见 [docs/FFMPEG_COMMAND_WORKBENCH.md](docs/FFMPEG_COMMAND_WORKBENCH.md)「许可证」一节。
+VideoEye 采用严格分层架构：`domain` 不反向依赖任何层，`analysis` 不碰 Qt Widgets，`media` 不依赖 FFmpeg，`ffmpeg_io` 作为叶子模块为分析 / 播放 / 导出共用。每层在 CMake 中对应一个真实 target，依赖方向由 `target_link_libraries` 与 `scripts/check_layering.py` 强制校验。
 
-> **用户机器上没装 ffmpeg 不会拖累其它功能。** 工作台的本质是把命令交给原生 ffmpeg 程序执行，
-> 这件事没法用内置库替代，所以缺程序时该页会禁用「运行」并给出按平台的安装指引（包管理器命令 /
-> 下载页 / 手动指定），而媒体信息、流分析、QC 报告、播放器全部照常工作 —— 它们用的是内置链接的
-> libav*。详见 [docs/FFMPEG_COMMAND_WORKBENCH.md](docs/FFMPEG_COMMAND_WORKBENCH.md) 第 5 节。
+```mermaid
+flowchart TD
+    subgraph EXT[" 外部依赖 "]
+        direction LR
+        E1["Qt 6<br/>Widgets · Core · Gui"]
+        E2["FFmpeg 8.x<br/>avcodec / avformat / avutil<br/>swscale / swresample"]
+        E3["平台原生<br/>WASAPI · ALSA · AudioQueue"]
+        E4["C++17 标准库"]
+    end
 
-构建配置的唯一来源是 `CMakePresets.json`；动态库部署由 CMake 完成（Windows 与 exe 同目录，
-Linux/macOS 进相邻 `lib/` 并写入 RPATH），构建后会校验确实到位。
+    subgraph LUI[" 界面层 · ui/ "]
+        direction LR
+        U1["main_window<br/>主窗口 · 主题"]
+        U2["analysis_panel<br/>分析页组件"]
+        U3["player · bitstream · streaming<br/>reporting · ffmpeg 面板"]
+        U4["charts<br/>自绘图表"]
+        U5["dialogs"]
+    end
 
-Linux/macOS 部署时会展开版本化 `.so` 的 symlink 链（`libavcodec.so` → `.so.61` → `.so.61.19.100`）：
-真实文件拷一份，链上其余名字建成指向它的相对 symlink —— 加载器按 SONAME（`.so.61`）找库，
-只拷最外层或只拷最终文件都会让装出来的程序在别的机器上 `cannot open shared object file`。
+    subgraph LAD[" 适配层 · core/qt "]
+        direction LR
+        D1["QtAnalysisController<br/>线程 · generation · 信号"]
+        D2["QtWorkerOwner<br/>后台 worker 线程归属"]
+    end
 
-## 构建
+    subgraph LAPP[" 应用服务层 "]
+        direction LR
+        P1["core/player<br/>播放会话 · 解码 · 抽帧"]
+        P2["core/exporter<br/>转码 / remux"]
+        P3["core/ffmpeg<br/>命令工作台"]
+        C1["core/qc<br/>规则 · 模板 · 批量 · 对比"]
+        C2["core/reporting<br/>JSON/CSV/HTML/PDF/TXT"]
+    end
 
-### Windows (Ninja + MSVC)
+    subgraph LAN[" 分析层 · core/analysis "]
+        direction LR
+        A1["codec<br/>H.264/HEVC/AV1/VVC"]
+        A2["container<br/>MP4/MKV/FLV/TS/ASF/AVI/OGG"]
+        A3["quality<br/>码率GOP · 音频QC · 画质 · 视觉缺陷"]
+        A4["diagnostics<br/>字幕 · 时码 · 辅助数据 · QC规则"]
+        A5["streaming<br/>HLS / DASH"]
+        A6["stream<br/>播放态实时分析"]
+        A7["orchestration<br/>AnalysisEngine 执行引擎"]
+    end
 
-> **前置要求**：Visual Studio 2022 (带 C++/CMake/Ninja） + vcpkg (设置环境变量 `VCPKG_ROOT`)
+    subgraph LCORE[" 核心基础层 "]
+        direction LR
+        B1["core/media<br/>容器 · 码流参数集 · 探测"]
+        B2["core/ffmpeg_io<br/>阻塞 IO 中断 / 超时"]
+        B3["core/domain/model<br/>结果类型 · 值对象"]
+        B4["infrastructure<br/>配置 · 日志 · JSON · 任务调度"]
+    end
 
-```powershell
-# 一键构建（自动加载 MSVC 环境 + 自动下载 FFmpeg 预编译库 + 自动安装 vcpkg 依赖）
-.\build.bat           # Release 构建
-.\build.bat debug     # Debug 构建
-.\build.bat test      # Release 构建 + 跑单元测试
+    %% 依赖方向：箭头指向被依赖方
+    LUI --> LAD
+    LUI --> LAPP
+    LUI --> LAN
+    LUI --> E1
+    LAD --> LAN
+    LAPP --> LAN
+    LAPP --> B2
+    LAPP --> B3
+    LAPP --> B4
+    LAPP --> E2
+    LAN --> B1
+    LAN --> B2
+    LAN --> B3
+    LAN --> B4
+    LAN --> E2
+    B1 --> B3
+    B1 --> B4
+    B2 --> E2
+    B3 --> E4
+    B4 --> E4
 ```
 
-产物：`build\release\bin\VideoEye.exe` / `build\debug\bin\VideoEye.exe`
+**四条分层硬规则：**
 
-> **vcpkg 说明：项目使用 `vcpkg.json` manifest + `CMakePresets.json` 自动集成 Qt6；首次构建较慢（qtbase 编译需要 30~60 分钟），vcpkg 会缓存后增量构建秒级完成。
-
-### Linux / macOS
-
-```bash
-# Ubuntu/Debian 系统依赖（FFmpeg 用系统开发包，由 pkg-config 查找）
-sudo apt install -y build-essential cmake ninja-build pkg-config qt6-base-dev \
-  libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
-
-# macOS
-brew install cmake ninja qt@6 ffmpeg
-
-# 构建
-./build.sh             # Release
-./build.sh debug      # Debug
-```
-
-产物：`build/release/bin/VideoEye` / `build/debug/bin/VideoEye`
-
-## 使用指南
-
-1. **打开**: `Ctrl+O` 打开文件 / `Ctrl+U` 打开 URL
-2. **播放控制**: 底部控制栏播放/暂停/停止 (`Space` / `Esc`)
-3. **分析**: 左侧边栏切换分析模块（媒体信息、流分析、视频帧、音频帧、数据包、异常事件、同步分析、时间轴、音频响度、直方图、容器结构、场景切换、画面质量、质量评估、报告与批量 QC），各模块顶部配有独立「启用分析」开关
-4. **FFmpeg 命令工作台**: 侧边栏「FFmpeg 命令」—— 写一条 ffmpeg 命令并运行，右侧字典可以查参数含义
-5. **导出帧**: `文件` → `导出视频帧...`（jpg / rgb / yuv）
-6. **原始图像**: 打开 `.yuv`（YUV420P）/ `.rgb`（RGB24）时输入宽高
-
-### 批量 QC 与报告
-
-单文件分析、目录批量扫描、双文件对比与报告导出都在 GUI 的「报告与批量 QC」页完成：
-选模板 → 分析 → 看结论 → 导出（JSON / CSV / HTML / PDF / TXT）。
-模板接受内置 id（`general` / `broadcast` / `hls-vod` / `short-video` / `archive-master`）或自定义 JSON 文件。
-详见 [docs/REPORTING_BATCH_QC.md](docs/REPORTING_BATCH_QC.md)。
+1. **`core/domain`（结果类型）不反向依赖任何人** —— 它不认识分析器、不认识 FFmpeg，保证结果类型可被报告 / 导出 / UI 随意复用。
+2. **`core/analysis` 不依赖 Qt Widgets** —— 执行逻辑在纯回调的 `AnalysisEngine`（可离线 / 批处理 / 单测运行），`core/qt` 只负责线程、generation 与信号。
+3. **`core/media` 不依赖 FFmpeg**（video 解码层除外）—— MP4 与 extradata 均为自研解析，可被纯 stdlib 单元测试直接覆盖。
+4. **`core/ffmpeg_io` 是叶子模块** —— 统一 `avformat_open_input` / `av_read_frame` 的中断与超时，让取消能即时生效，不 include 任何 `core/` 层。
 
 ## 项目结构
 
@@ -139,6 +141,7 @@ VideoEye/
 ├── core/
 │   ├── domain/model/     # 结果类型与值对象（不依赖分析器、不依赖 FFmpeg）
 │   ├── media/            # 容器解析 (container) / 码流参数集 (codec) / 文件探测 (probe) / 清单文本 (streaming)
+│   ├── ffmpeg_io/        # 阻塞 IO 的中断与超时（叶子模块，分析/播放/导出共用）
 │   ├── analysis/         # 分析器与执行引擎
 │   │   ├── codec/        #   H.264 / HEVC / AV1 / VVC 参数集
 │   │   ├── container/    #   MP4 / MOV / MKV / FLV / TS / ASF / AVI / OGG 结构
@@ -156,31 +159,56 @@ VideoEye/
 ├── infrastructure/       # 配置 / JSON 序列化 / 日志 / 后台任务调度
 ├── ui/                   # UI 层 (主题 / 主窗口 / 各分析页 / 自绘图表)
 ├── third_party/prebuilt/ # FFmpeg 预编译包（不入库，脚本下载）
-├── docs/                 # 文档
 ├── vcpkg.json            # vcpkg 依赖清单
 └── build.bat / build.sh  # 构建脚本
 ```
 
-分层规则与依赖边界见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+## 构建
 
-## 文档
+### Windows (Ninja + MSVC)
 
-| 文档 | 内容 |
-|------|------|
-| [QUICKSTART.md](QUICKSTART.md) | 快速入门：构建、打开媒体、使用各分析页 |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | 环境要求、构建选项、代码规范 |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 分层结构、依赖方向、CMake target 划分 |
-| [docs/BITSTREAM_ANALYSIS.md](docs/BITSTREAM_ANALYSIS.md) | 编码码流解析（H.264 / HEVC / AV1 / VVC） |
-| [docs/DIAGNOSTICS_QC.md](docs/DIAGNOSTICS_QC.md) | 诊断扫描与 QC 报告、规则集与导出 |
-| [docs/AUDIO_QC.md](docs/AUDIO_QC.md) | 音频 QC：响度、真峰值、削波、相位 |
-| [docs/BITRATE_GOP_ANALYSIS.md](docs/BITRATE_GOP_ANALYSIS.md) | 滑动窗口码率、GOP 重建与异常识别 |
-| [docs/COLOR_HDR_ANALYSIS.md](docs/COLOR_HDR_ANALYSIS.md) | 色彩与 HDR 元数据快照与告警 |
-| [docs/MP4_SAMPLE_TABLE.md](docs/MP4_SAMPLE_TABLE.md) | MP4/fMP4 样本表一致性校验 |
-| [docs/HLS_DASH_SEGMENT.md](docs/HLS_DASH_SEGMENT.md) | HLS/DASH 流媒体包检测（manifest + segment + 多码率 ladder） |
-| [docs/VISUAL_QC.md](docs/VISUAL_QC.md) | 画面质量与视觉缺陷检测（黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 曝光 / 色偏 / 梳齿 / 黑边） |
-| [docs/SUBTITLE_TIMECODE_AUX.md](docs/SUBTITLE_TIMECODE_AUX.md) | 字幕 cue、SMPTE 时码 / 章节、data 流与 SCTE-35 插入点 |
-| [docs/REPORTING_BATCH_QC.md](docs/REPORTING_BATCH_QC.md) | 报告与批量 QC：模板、单文件/批量分析、对比、导出 |
-| [docs/FFMPEG_COMMAND_WORKBENCH.md](docs/FFMPEG_COMMAND_WORKBENCH.md) | FFmpeg 命令工作台：命令解析、进程执行、指令字典与解释 |
+> **前置要求**：Visual Studio 2022（带 C++/CMake/Ninja） + vcpkg（设置环境变量 `VCPKG_ROOT`）
+
+```powershell
+# 一键构建（自动加载 MSVC 环境 + 自动下载 FFmpeg 预编译库 + 自动安装 vcpkg 依赖）
+.\build.bat           # Release 构建
+.\build.bat debug     # Debug 构建
+.\build.bat test      # Release 构建 + 跑单元测试
+```
+
+产物：`build\release\bin\VideoEye.exe` / `build\debug\bin\VideoEye.exe`
+
+> 首次构建较慢（vcpkg 编译 qtbase 需 30~60 分钟），之后增量构建秒级完成。
+
+### Linux / macOS
+
+```bash
+# Ubuntu/Debian 系统依赖（FFmpeg 用系统开发包，由 pkg-config 查找）
+sudo apt install -y build-essential cmake ninja-build pkg-config qt6-base-dev \
+  libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
+
+# macOS
+brew install cmake ninja qt@6 ffmpeg
+
+# 构建
+./build.sh             # Release
+./build.sh debug       # Debug
+```
+
+产物：`build/release/bin/VideoEye` / `build/debug/bin/VideoEye`
+
+构建配置的唯一来源是 `CMakePresets.json`；动态库部署由 CMake 完成（Windows 与 exe 同目录，Linux/macOS 进相邻 `lib/` 并写入 RPATH），构建后校验到位。
+
+## 使用指南
+
+1. **打开**: `Ctrl+O` 打开文件 / `Ctrl+U` 打开 URL
+2. **播放控制**: 底部控制栏播放/暂停/停止 (`Space` / `Esc`)
+3. **分析**: 左侧边栏切换分析模块（媒体信息、流分析、视频帧、音频帧、数据包、异常事件、同步分析、时间轴、音频响度、直方图、容器结构、场景切换、画面质量、质量评估、报告与批量 QC），各模块顶部配有独立「启用分析」开关
+4. **FFmpeg 命令工作台**: 侧边栏「FFmpeg 命令」—— 写一条 ffmpeg 命令并运行，右侧字典可以查参数含义
+5. **导出帧**: `文件` → `导出视频帧...`（jpg / rgb / yuv）
+6. **原始图像**: 打开 `.yuv`（YUV420P）/ `.rgb`（RGB24）时输入宽高
+
+**批量 QC 与报告**：单文件分析、目录批量扫描、双文件对比与报告导出都在 GUI 的「报告与批量 QC」页完成 —— 选模板 → 分析 → 看结论 → 导出（JSON / CSV / HTML / PDF / TXT）。模板接受内置 id（`general` / `broadcast` / `hls-vod` / `short-video` / `archive-master`）或自定义 JSON 文件。
 
 ## 测试
 
@@ -198,19 +226,11 @@ cmake --build --preset linux-test-debug
 ctest --preset linux-test-debug
 ```
 
-共 18 个可执行文件 + 17 组 ctest 用例，覆盖码流解析（H.264/HEVC/AV1/VVC）、MP4 样本表、
-ISOBMFF、QC 规则、码率/GOP、色彩 HDR、导出器等纯逻辑路径。
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request。Fork 本仓库 → 创建特性分支 → 提交更改 → 开启 Pull Request。
+共 18 个可执行文件 + 17 组 ctest 用例，覆盖码流解析、MP4 样本表、ISOBMFF、QC 规则、码率/GOP、色彩 HDR、导出器等纯逻辑路径。
 
 ## 开源协议
 
-VideoEye 自身源码采用 [MIT](LICENSE) 协议。
-
-随分发物附带的 FFmpeg 二进制（`av*.dll` / `libav*.so`）按其自身许可证（当前锁定的预编译包为
-GPLv3）履约；`ffmpeg` 命令行程序默认不随包分发，理由见上方「许可证」提示。
+VideoEye 自身源码采用 [MIT](LICENSE) 协议。随分发物附带的 FFmpeg 二进制按其自身许可证履约，`ffmpeg` 命令行程序默认不随包分发。
 
 ## 致谢
 
