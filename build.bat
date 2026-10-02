@@ -47,23 +47,30 @@ REM   CMakeUserPresets.json ????? preset ???????????þŸ
 set "ISTEST=0"
 set "USE_PRESET="
 if /i "%PRESET%"=="test" set "PRESET=test-release"
-if /i "!PRESET!"=="test-release" set "USE_PRESET=win-test-release"
-if /i "!PRESET!"=="test-debug" set "USE_PRESET=win-test-debug"
 
-REM ??????????¡Â??? CMakeUserPresets.json (gitignore), ????§Õ?? VS/SDK/cl.exe
-REM ?????¡¤??; ??§Ú???????? CMakePresets.json ?????? preset.
+REM CMakeUserPresets.json (gitignored) pins this machine VS/SDK/cl.exe paths and
+REM provides the "*-local" presets. Prefer them whenever that file exists.
+set "HAS_LOCAL=0"
+if exist "%~dp0CMakeUserPresets.json" set "HAS_LOCAL=1"
+set "LOCAL_SUFFIX="
+if "!HAS_LOCAL!"=="1" set "LOCAL_SUFFIX=-local"
+
+if /i "!PRESET!"=="release" set "USE_PRESET=win-release!LOCAL_SUFFIX!"
+if /i "!PRESET!"=="debug" set "USE_PRESET=win-debug!LOCAL_SUFFIX!"
+if /i "!PRESET!"=="test-release" set "USE_PRESET=win-test-release!LOCAL_SUFFIX!"
+if /i "!PRESET!"=="test-debug" set "USE_PRESET=win-test-debug!LOCAL_SUFFIX!"
+if /i "!PRESET!"=="test-release" set "ISTEST=1"
+if /i "!PRESET!"=="test-debug" set "ISTEST=1"
+
 if "!USE_PRESET!"=="" (
-    set "USE_PRESET=!PRESET!"
-    if not exist "%~dp0CMakeUserPresets.json" (
-        if /i "!PRESET!"=="release" set "USE_PRESET=win-release"
-        if /i "!PRESET!"=="debug" set "USE_PRESET=win-debug"
-        echo       ¦Ä??? CMakeUserPresets.json, ?????? preset: !USE_PRESET!
-    )
-) else (
-    set "ISTEST=1"
-    echo       ????????????? preset: !USE_PRESET!
+    echo [ERROR] unknown preset: !PRESET!
+    echo usage: build.bat [release^|debug^|test^|test-debug^|clean]
+    exit /b 1
 )
-if "!USE_PRESET:~0,4!"=="win-" (
+if "!HAS_LOCAL!"=="0" (
+    echo       CMakeUserPresets.json not found, using base preset: !USE_PRESET!
+)
+if "!HAS_LOCAL!"=="0" (
     if "!VCPKG_ROOT!"=="" (
         echo [ERROR] ¦Ä???? VCPKG_ROOT ????????
         echo         ??? preset ????????¦Ë vcpkg toolchain??

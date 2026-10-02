@@ -173,11 +173,16 @@ add_test(NAME ConfigManagerTests COMMAND test_config_manager)
 # 输入是 model::StreamStats(domain 的纯值对象), 所以只链 VideoEyeReporting 就够了 ——
 # 不需要 FFmpeg。这一条以前是 ReportExporterTests, 那时的导出器签名带着
 # analyzer::StreamStats, 被迫把整个 analysis 层拉进来。
+#
+# 注意: VideoEyeDomain 这一轮摘掉了 PUBLIC Qt6::Core（domain 现在零 Qt），
+# 所以 Qt 的头文件不再从 VideoEyeReporting 透传过来。本测试用 QTemporaryDir /
+# QString 建临时文件，必须自己显式链 Qt6::Core —— 别再指望透传。
 # ============================================================
 videoeye_add_test(test_stream_stats_exporter
     unit/test_stream_stats_exporter.cpp
 )
 target_link_libraries(test_stream_stats_exporter PRIVATE VideoEyeReporting)
+target_link_libraries(test_stream_stats_exporter PRIVATE Qt6::Core)
 add_test(NAME StreamStatsExporterTests COMMAND test_stream_stats_exporter)
 
 # ============================================================

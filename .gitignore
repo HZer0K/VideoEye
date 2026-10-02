@@ -10,6 +10,7 @@ build-ninja-debug/
 build-ninja-test/
 cmake-build-*/
 out/
+.cache/
 
 # IDE / 编辑器
 .vs/
@@ -54,6 +55,8 @@ third_party/FFmpeg/
 
 # FFmpeg 预编译包 (scripts/fetch-ffmpeg.ps1 下载)
 third_party/prebuilt/
+# 下载到本地的原始压缩包 (几十 MB 级, 不入库)
+third_party/downloads/
 .videoeye-ffmpeg.json
 
 # 测试
