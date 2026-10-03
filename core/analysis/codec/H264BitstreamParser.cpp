@@ -11,6 +11,16 @@ namespace {
 // 解析中途失败时的兜底：保留已读到的字段，但不置 present
 constexpr int kMaxSpsId = 31;
 
+// SPS / PPS 里几个「循环次数直接来自 ue(v)」的字段，畸形码流能把循环顶到几十亿次。
+// 取规范允许的上界：超界一律判非法并停止继续读，别为了读几个字段把 CPU 烧干。
+// num_ref_frames_in_pic_order_cnt_cycle 最多 255（NumRefFramesInPicOrderCntCycle）。
+constexpr uint32_t kMaxNumRefFramesInPocCycle = 255;
+// pic_size_in_map_units（map_type==6 时的 slice_group_id 数组长度）按 1080p 量级给足：
+// 一个 4K 帧也就 4 万多个 map unit，1M 是几十倍余量。
+constexpr uint32_t kMaxPicSizeInMapUnits = 1u << 20;
+// slice group 数量上限，规范明确 num_slice_groups_minus1 <= 7（最多 8 组）。
+constexpr uint32_t kMaxSliceGroups = 8;
+
 } // namespace
 
 // --------------------------------------------------------------------------
@@ -300,6 +310,11 @@ model::H264SpsInfo H264BitstreamParser::ParseFromNalUnit(const utils::NalUnit& n
         reader.ReadSE();    // offset_for_non_ref_pic
         reader.ReadSE();    // offset_for_top_to_bottom_field
         const uint32_t cycle = reader.ReadUE();
+        // num_ref_frames_in_pic_order_cnt_cycle（本函数里叫 cycle）：畸形 SPS 能报出
+        // 上亿个 offset_for_ref_frame，后面那个 ReadSE 循环会直接卡死
+        if (cycle > kMaxNumRefFramesInPocCycle) {
+            return sps; // 非法，交给调用方按 HasError() 处理
+        }
         for (uint32_t i = 0; i < cycle; ++i) {
             reader.ReadSE(); // offset_for_ref_frame[i]
         }
@@ -381,6 +396,11 @@ model::H264PpsInfo H264BitstreamParser::ParsePpsFromNalUnit(const utils::NalUnit
     reader.SkipBits(1); // bottom_field_pic_order_in_frame_present_flag
 
     const uint32_t num_slice_groups_minus1 = reader.ReadUE();
+    // slice group 数量是后面循环的上界（map_type==6 时还要按它算 slice_group_id 的位宽），
+    // 不封顶的话一个大 ue(v) 就能让下面几层循环跑 n 遍
+    if (num_slice_groups_minus1 >= kMaxSliceGroups) {
+        return pps; // 非法，交给调用方按 HasError() 处理
+    }
     if (num_slice_groups_minus1 > 0) {
         const uint32_t map_type = reader.ReadUE();
         if (map_type == 0) {
@@ -397,6 +417,11 @@ model::H264PpsInfo H264BitstreamParser::ParsePpsFromNalUnit(const utils::NalUnit
             reader.ReadUE();    // slice_group_change_rate_minus1
         } else if (map_type == 6) {
             const uint32_t pic_size_in_map_units_minus1 = reader.ReadUE();
+            // slice_group_id[] 的条目数就由这个值决定，每条目至少 1 bit；
+            // 不封顶的话一个超大 ue(v) 会让这个 for 跑几百万遍
+            if (pic_size_in_map_units_minus1 >= kMaxPicSizeInMapUnits) {
+                return pps; // 非法，交给调用方按 HasError() 处理
+            }
             int bits = 0;
             uint32_t groups = num_slice_groups_minus1 + 1;
             while ((1u << bits) < groups) {

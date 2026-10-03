@@ -199,8 +199,11 @@ NalUnit ExtradataParser::ParseHevcNalUnit(const uint8_t* data, size_t size) {
     if (size < 2) return nal;
     
     // HEVC NAL header: [forbidden_zero_bit: 1][nuh_reserved_zero_2bits: 2][nal_unit_type: 6][nuh_layer_id: 6][nuh_temporal_id_plus1: 3]
-    uint16_t header = (static_cast<uint16_t>(data[0]) << 8) | data[1];
-    nal.type = (header >> 3) & 0x3F; // 位 3-8
+    //
+    // ⚠️ nal_unit_type 是 byte0 的 bit6..1（(byte0 >> 1) & 0x3F），不是 bit4..0。
+    // 旧实现把整个 2 字节 header 右移 3 位再取 6 位，取到的是 nuh_layer_id，
+    // type 恒为 0 → 下游的 SPS(33) / PPS(34) / VPS(32) 一个都认不出来。
+    nal.type = static_cast<uint8_t>((data[0] >> 1) & 0x3F);
     
     // 检查关键帧（CLVS 通常是关键帧）
     if (nal.type >= 32 && nal.type <= 35) {
@@ -483,23 +486,82 @@ ExtradataResult ExtradataParser::ParseHvcC(const uint8_t* data, size_t size) {
     result.format = ExtradataFormat::HvcC;
     result.valid = true;
     
-    if (size < 12) {
+    // hvcC = HEVCDecoderConfigurationRecord（ISO/IEC 14496-15）。字节偏移从记录开头算：
+    //   0      configurationVersion
+    //   1      general_profile_space(2) | general_tier_flag(1) | general_profile_idc(5)
+    //   2..9   general_profile_compatibility_flags[8]
+    //   10..12 general_constraint_indicator_flags（3 字节）
+    //   13     general_level_idc
+    //   14     reserved(5) | max_sub_layers_minus1(3)
+    //   15     reserved(6) | lengthSizeMinusOne(2)
+    //   16     numOfSequenceParameterSets
+    //   17..   SPS 数组（u16 长度前缀 + payload）… 末尾再是 numOfPictureParameterSets(1B) + PPS 数组
+    //
+    // 旧实现只读了 byte1 就收工（offset 一路推到 20）—— general_level_idc、
+    // lengthSizeMinusOne、SPS/PPS 数组全都没解析，HEVC 的 profile / level 因此恒为空。
+    // 注意「最少要读到 numOfSequenceParameterSets 才算一条完整记录」。
+    if (size < 17) {
         result.error_message = "hvcC too small";
         return result;
     }
-    
-    // Parse hvcC configuration record
-    // Simplified parsing
-    
-    int offset = 0;
-    
-    // version
-    result.config.general_profile_space = data[offset + 1] >> 6;
-    result.config.general_tier_flag = (data[offset + 1] >> 5) & 0x01;
-    result.config.general_profile_idc = data[offset + 1] & 0x1F;
-    
-    offset += 20; // Skip to config_NAL_bit_depth_luma_minus8
-    
+
+    // version(0) + general_profile_space / tier / profile_idc(1)
+    const uint8_t ptl = data[1];
+    result.config.general_profile_space = ptl >> 6;
+    result.config.general_tier_flag = (ptl >> 5) & 0x01;
+    result.config.general_profile_idc = ptl & 0x1F;
+
+    // 2..12 是兼容位 + 约束位（共 11 字节），跳过才能走到 general_level_idc；
+    // CodecConfig 里没有 HEVC 的兼容位 / 约束位槽位，不往 H.264 的 profile_compatibility
+    // 上硬塞，免得给后面读它的人一个错语义。
+    result.config.general_level_idc = data[13];
+
+    // 15 的高 6 位是保留位，低 2 位才是 lengthSizeMinusOne
+    result.config.length_size_minus_one = data[15] & 0x03;
+
+    // 16：numOfSequenceParameterSets 的高 3 位是保留位
+    const uint8_t num_sps = data[16] & 0x1F;
+
+    const uint8_t* pos = data + 17;
+    const uint8_t* end = data + size;
+
+    for (int i = 0; i < num_sps; ++i) {
+        if (end - pos < 2) break;
+        const uint16_t sps_length = BytesToUint16BE(pos);
+        pos += 2;
+        if (sps_length == 0 || pos + sps_length > end) break;
+
+        // 与 avcC / AnnexB 路径一致：NalUnit::data 只放 RBSP payload，剥掉 2 字节 NAL header
+        NalUnit nal;
+        nal.type = 33; // HEVC SPS
+        nal.size = sps_length - 1;
+        nal.data.assign(pos + 1, pos + sps_length);
+        nal.is_keyframe = true;
+        result.nal_units.push_back(std::move(nal));
+
+        pos += sps_length;
+    }
+
+    // 末尾是 numOfPictureParameterSets(1 字节) 后接 PPS 数组
+    if (end - pos < 1) return result;
+
+    const uint8_t num_pps = *pos++;
+
+    for (int i = 0; i < num_pps; ++i) {
+        if (end - pos < 2) break;
+        const uint16_t pps_length = BytesToUint16BE(pos);
+        pos += 2;
+        if (pps_length == 0 || pos + pps_length > end) break;
+
+        NalUnit nal;
+        nal.type = 34; // HEVC PPS
+        nal.size = pps_length - 1;
+        nal.data.assign(pos + 1, pos + pps_length);
+        result.nal_units.push_back(std::move(nal));
+
+        pos += pps_length;
+    }
+
     return result;
 }
 
@@ -735,9 +797,27 @@ ExtradataResult ExtradataParser::ParseWithFormat(ExtradataFormat format,
             
         case ExtradataFormat::LengthPrefix1:
         case ExtradataFormat::LengthPrefix2:
-        case ExtradataFormat::LengthPrefix4:
-            // Convert to Annex B and parse
-            return ParseAnnexB(data, size, syntax);
+        case ExtradataFormat::LengthPrefix4: {
+            // 长度前缀流必须先转成 Annex B 再解析：Annex B 的起始码定位（FindStartCode）
+            // 只认 00 00 01 / 00 00 00 01，直接把「长度 + payload」喂进去一条都抽不出来。
+            //
+            // 前缀宽度由 DetectFormat() 按 data[0] & 0x03 定下，两边必须一致，
+            // 否则 NAL 边界会整体错位。
+            const int prefix_bytes = (format == ExtradataFormat::LengthPrefix1)
+                                         ? 1
+                                         : ((format == ExtradataFormat::LengthPrefix2) ? 2 : 4);
+            // ConvertLengthPrefixToAnnexB 吃的是 vector，先包一层（不用拷，只做一次视图）
+            const std::vector<uint8_t> input(data, data + size);
+            std::vector<uint8_t> annexb = ConvertLengthPrefixToAnnexB(input, prefix_bytes);
+            if (annexb.empty()) {
+                ExtradataResult failed;
+                failed.format = format;
+                failed.valid = false;
+                failed.error_message = "length-prefix to Annex B conversion failed";
+                return failed;
+            }
+            return ParseAnnexB(annexb.data(), annexb.size(), syntax);
+        }
             
         default:
             ExtradataResult result;

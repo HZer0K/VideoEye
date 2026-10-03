@@ -19,6 +19,15 @@ int SubWidthC(int chroma_format_idc) {
 
 int SubHeightC(int chroma_format_idc) { return (chroma_format_idc == 1) ? 2 : 1; }
 
+// SPS / PPS / VPS 里所有「循环次数来自 ue(v) / u(n)」的字段，畸形码流都能顶到天文数字。
+// 一律按「每条目至少 1 bit」给出界，超界即判非法并停止继续读 —— 解析中途失败不能
+// 顺手把 present 置成 true，否则下游会拿着一堆垃圾值当成有效参数集。
+constexpr int kMaxNumSubpics = 1024;           // sps / pps 的 subpic 数量
+constexpr int kMaxNumRefPicLists = 64;         // 单条 ref_pic_list 里的参考项数
+constexpr int kMaxRefPicListEntries = 4096;     // ref_pic_list 的条目数上限
+constexpr int kMaxVirtualBoundaries = 4095;    // 虚拟边界条数（每条至少 1 bit）
+constexpr int kMaxHrdCpbCntMinus1 = 31;        // HRD 参数集里的 cpb_cnt - 1
+
 // ceil(log2(v))，v >= 1
 int CeilLog2(uint32_t v) {
     int bits = 0;
@@ -181,6 +190,11 @@ void VvcBitstreamParser::SkipGeneralTimingHrdParameters(utils::BitReader& reader
         reader.SkipBits(4);              // cpb_size_scale
         if (du_hrd) reader.SkipBits(4);  // cpb_size_du_scale
         cpb_cnt_minus1 = reader.ReadUE();
+        // HRD 每个 cpb 要读 3~5 个 ue(v)，cpb_cnt 直接是外层 SkipSubLayerHrdParameters 的
+        // 循环上界；不封顶时一层子层就能跑出上亿倍
+        if (cpb_cnt_minus1 > static_cast<uint32_t>(kMaxHrdCpbCntMinus1)) {
+            cpb_cnt_minus1 = static_cast<uint32_t>(kMaxHrdCpbCntMinus1);
+        }
     }
 
     if (ctx) {
@@ -214,6 +228,11 @@ void VvcBitstreamParser::SkipRefPicListStruct(utils::BitReader& reader, int poc_
                                               bool long_term_ref_pics,
                                               bool inter_layer_prediction) {
     const uint32_t num_ref_entries = reader.ReadUE();
+    // 每条参考项至少读 1 bit（inter_layer_ref_pic_flag 或 st_ref_pic_flag），
+    // 不封顶就是一个 ue(v) 撑起几十亿次循环
+    if (num_ref_entries > static_cast<uint32_t>(kMaxRefPicListEntries)) {
+        return; // 非法，交给调用方按 HasError() 处理
+    }
     bool ltrp_in_header = false;
     if (long_term_ref_pics && num_ref_entries > 0) {
         ltrp_in_header = reader.ReadBit();
@@ -389,9 +408,11 @@ model::VvcVpsInfo VvcBitstreamParser::ParseVpsFromNalUnit(const utils::NalUnit& 
             SkipProfileTierLevel(reader, pt_present[i] != 0, ptl_max_tid[i]);
         }
     }
-    vps.present = true;
 
+    // present 只在解析真的走完时才置位：旧实现在 HasError() 之前就置了 true，
+    // 下游于是拿着一堆 0 当成「参数集有效」去比对容器
     if (reader.HasError()) return vps;
+    vps.present = true;
 
     // OLS -> PTL 索引
     for (int i = 0; i < total_num_olss; ++i) {
@@ -461,6 +482,11 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const utils::NalUnit& 
     // ---- subpicture ----
     if (reader.ReadBit()) {  // sps_subpic_info_present_flag
         sps.sps_num_subpics_minus1 = static_cast<int>(reader.ReadUE());
+        // 每个 subpic 要读若干 SkipBits，最后那个 subpic_id 循环更是 × subpic 数；
+        // 不封顶的话一个 ue(v) 就能把解析时间顶到无穷
+        if (sps.sps_num_subpics_minus1 > kMaxNumSubpics) {
+            return sps; // 非法，不置 present
+        }
         bool independent_subpics = true;
         bool same_size = false;
         if (sps.sps_num_subpics_minus1 > 0) {
@@ -603,6 +629,11 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const utils::NalUnit& 
 
     for (int i = 0; i < (rpl1_same_as_rpl0 ? 1 : 2); ++i) {
         sps.sps_num_ref_pic_lists[i] = static_cast<int>(reader.ReadUE());
+        // 双重循环：list 数 × 每条里的参考项数（后者在 SkipRefPicListStruct 里也封了顶），
+        // 外层的这个 ue(v) 同样要夹住
+        if (sps.sps_num_ref_pic_lists[i] > kMaxNumRefPicLists) {
+            return sps; // 非法，不置 present
+        }
         for (int j = 0; j < sps.sps_num_ref_pic_lists[i]; ++j) {
             SkipRefPicListStruct(reader, sps.sps_log2_max_pic_order_cnt_lsb_minus4 + 4,
                                  sps.sps_long_term_ref_pics_flag,
@@ -688,8 +719,14 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const utils::NalUnit& 
     if (reader.ReadBit()) {  // sps_virtual_boundaries_enabled_flag
         if (reader.ReadBit()) {  // sps_virtual_boundaries_present_flag
             const uint32_t num_ver = reader.ReadUE();
+            if (num_ver > static_cast<uint32_t>(kMaxVirtualBoundaries)) {
+                return sps; // 非法，不置 present
+            }
             for (uint32_t i = 0; i < num_ver; ++i) reader.ReadUE();
             const uint32_t num_hor = reader.ReadUE();
+            if (num_hor > static_cast<uint32_t>(kMaxVirtualBoundaries)) {
+                return sps; // 非法，不置 present
+            }
             for (uint32_t i = 0; i < num_hor; ++i) reader.ReadUE();
         }
     }
@@ -716,6 +753,8 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const utils::NalUnit& 
         ParseVuiParameters(reader, sps.vui);
     }
 
+    // 与 VPS 同理：解析中途出错了就不能把 present 置 true
+    if (reader.HasError()) return sps;
     sps.present = true;
     return sps;
 }
@@ -744,6 +783,8 @@ model::VvcPpsInfo VvcBitstreamParser::ParsePpsFromNalUnit(const utils::NalUnit& 
         pps.pps_conf_win_top_offset = static_cast<int>(reader.ReadUE());
         pps.pps_conf_win_bottom_offset = static_cast<int>(reader.ReadUE());
     }
+
+    if (reader.HasError()) return pps;
 
     if (reader.ReadBit()) {  // pps_scaling_window_explicit_signalling_flag
         reader.ReadSE();

@@ -84,10 +84,18 @@ struct ParseContext {
     FileReader* reader = nullptr;
     const IsobmffParser::Options* opt = nullptr;
 
-    // 当前 trak 上下文（进入 trak 时压栈，退出时出栈并归档）
-    IsobmffTrack* trak = nullptr;
-    // 当前 moof/traf 上下文
-    IsobmffFragment* frag = nullptr;
+    // 当前 trak / moof-traf 上下文，用**下标**而不是裸指针。
+    // ⚠️ 旧实现在这里存的是 IsobmffTrack* / IsobmffFragment*：解析过程中
+    // tracks / fragments 会不断 push_back，vector 一扩容，先前取到的地址就失效了，
+    // 嵌套 trak（trak 里再套 trak）时这条路径必踩 use-after-free。
+    // 一律改成下标，取当前对象统一走下面的访问器。
+    int trak_index = -1;
+    int frag_index = -1;
+
+    // 当前 trak / frag 的访问器：-1 表示不在该上下文里，调用前先判下标
+    IsobmffTrack& trak() { return out->tracks[static_cast<size_t>(trak_index)]; }
+    IsobmffFragment& frag() { return out->fragments[static_cast<size_t>(frag_index)]; }
+
     uint32_t moof_index = 0;
     uint32_t moof_counter = 0;
     uint32_t frag_seq = 0;
@@ -323,9 +331,9 @@ void ParseMvhd(IsobmffFile& out, const uint8_t* p, uint64_t n) {
 }
 
 void ParseTfhd(ParseContext& ctx, const uint8_t* p, uint64_t n) {
-    if (!ctx.frag || n < 8) return;
+    if (ctx.frag_index < 0 || n < 8) return;
     const uint32_t flags = Rd32(p) & 0x00FFFFFF;
-    IsobmffFragment& f = *ctx.frag;
+    IsobmffFragment& f = ctx.frag();
     f.base_data_offset_present = (flags & 0x000001) != 0;
     f.sample_description_index_present = (flags & 0x000002) != 0;
     f.default_sample_duration_present = (flags & 0x000008) != 0;
@@ -351,22 +359,22 @@ void ParseTfhd(ParseContext& ctx, const uint8_t* p, uint64_t n) {
 }
 
 void ParseTfdt(ParseContext& ctx, const uint8_t* p, uint64_t n) {
-    if (!ctx.frag || n < 8) return;
+    if (ctx.frag_index < 0 || n < 8) return;
     const uint8_t version = p[0];
-    ctx.frag->has_tfdt = true;
+    ctx.frag().has_tfdt = true;
     if (version == 1 && n >= 12) {
-        ctx.frag->base_media_decode_time = Rd64(p + 4);
+        ctx.frag().base_media_decode_time = Rd64(p + 4);
     } else if (n >= 8) {
-        ctx.frag->base_media_decode_time = Rd32(p + 4);
+        ctx.frag().base_media_decode_time = Rd32(p + 4);
     }
 }
 
 void ParseTrun(ParseContext& ctx, const uint8_t* p, uint64_t n, uint32_t max_entries) {
-    if (!ctx.frag || n < 8) return;
+    if (ctx.frag_index < 0 || n < 8) return;
     const uint8_t version = p[0];
     const uint32_t flags = Rd32(p) & 0x00FFFFFF;
     const uint32_t sample_count = Rd32(p + 4);
-    IsobmffFragment& f = *ctx.frag;
+    IsobmffFragment& f = ctx.frag();
     ++f.trun_count;
 
     const bool data_offset_present = (flags & 0x000001) != 0;
@@ -471,7 +479,7 @@ void ParseBoxes(ParseContext& ctx, uint64_t start, uint64_t end, int depth,
         if (depth == 0) ctx.out->top_level_order.push_back(type);
 
         // 样本表与元数据只在 trak 上下文里解析
-        const bool in_trak = (ctx.trak != nullptr);
+        const bool in_trak = (ctx.trak_index >= 0);
         if (in_trak && !ctx.opt->skip_sample_tables && IsTableBox(type)) {
             // 表可能很大: 直接按条目上限算需要的字节数，不整块读
             const uint64_t payload = size - header_size;
@@ -480,25 +488,25 @@ void ParseBoxes(ParseContext& ctx, uint64_t start, uint64_t end, int depth,
             ReadPayload(ctx, box, buf, cap);
             if (!buf.empty()) {
                 const uint32_t max_entries = ctx.opt->max_entries_per_table;
-                if (type == "stts") ParseStts(*ctx.trak, buf.data(), buf.size(), max_entries);
-                else if (type == "ctts") ParseCtts(*ctx.trak, buf.data(), buf.size(), max_entries);
-                else if (type == "stss") ParseStss(*ctx.trak, buf.data(), buf.size(), max_entries);
-                else if (type == "stsz") ParseStsz(*ctx.trak, buf.data(), buf.size(), max_entries);
-                else if (type == "stz2") ParseStz2(*ctx.trak, buf.data(), buf.size(), max_entries);
-                else if (type == "stsc") ParseStsc(*ctx.trak, buf.data(), buf.size(), max_entries);
-                else if (type == "stco") ParseChunkOffsets(*ctx.trak, buf.data(), buf.size(), false, max_entries);
-                else if (type == "co64") ParseChunkOffsets(*ctx.trak, buf.data(), buf.size(), true, max_entries);
-                else if (type == "elst") ParseElst(*ctx.trak, buf.data(), buf.size(), max_entries);
+                if (type == "stts") ParseStts(ctx.trak(), buf.data(), buf.size(), max_entries);
+                else if (type == "ctts") ParseCtts(ctx.trak(), buf.data(), buf.size(), max_entries);
+                else if (type == "stss") ParseStss(ctx.trak(), buf.data(), buf.size(), max_entries);
+                else if (type == "stsz") ParseStsz(ctx.trak(), buf.data(), buf.size(), max_entries);
+                else if (type == "stz2") ParseStz2(ctx.trak(), buf.data(), buf.size(), max_entries);
+                else if (type == "stsc") ParseStsc(ctx.trak(), buf.data(), buf.size(), max_entries);
+                else if (type == "stco") ParseChunkOffsets(ctx.trak(), buf.data(), buf.size(), false, max_entries);
+                else if (type == "co64") ParseChunkOffsets(ctx.trak(), buf.data(), buf.size(), true, max_entries);
+                else if (type == "elst") ParseElst(ctx.trak(), buf.data(), buf.size(), max_entries);
             }
         } else if (in_trak && (type == "tkhd" || type == "hdlr" || type == "mdhd" ||
                                type == "stsd")) {
             std::vector<uint8_t> buf;
             ReadPayload(ctx, box, buf, 4096);
             if (!buf.empty()) {
-                if (type == "tkhd") ParseTkhd(*ctx.trak, buf.data(), buf.size());
-                else if (type == "hdlr") ParseHdlr(*ctx.trak, buf.data(), buf.size());
-                else if (type == "mdhd") ParseMdhd(*ctx.trak, buf.data(), buf.size());
-                else if (type == "stsd") ParseStsdCodec(*ctx.trak, buf.data(), buf.size());
+                if (type == "tkhd") ParseTkhd(ctx.trak(), buf.data(), buf.size());
+                else if (type == "hdlr") ParseHdlr(ctx.trak(), buf.data(), buf.size());
+                else if (type == "mdhd") ParseMdhd(ctx.trak(), buf.data(), buf.size());
+                else if (type == "stsd") ParseStsdCodec(ctx.trak(), buf.data(), buf.size());
             }
         } else if (type == "mvhd" && depth >= 1) {
             std::vector<uint8_t> buf;
@@ -528,27 +536,41 @@ void ParseBoxes(ParseContext& ctx, uint64_t start, uint64_t end, int depth,
             f.sequence_number = ctx.frag_seq;
             f.offset = ctx.moof_offset;
             f.size = ctx.moof_size;
+            // push_back 之后 vector 可能已重分配，这里只记住下标，
+            // 后续一切访问都走 ctx.frag()，不再拿 push_back 的返回值
             ctx.out->fragments.push_back(f);
-            ctx.frag = &ctx.out->fragments.back();
+            ctx.frag_index = static_cast<int>(ctx.out->fragments.size()) - 1;
             ctx.tfhd_default_duration = 0;
             ctx.tfhd_default_size = 0;
             ParseBoxes(ctx, pos + header_size, pos + size, depth + 1, &box.children);
-            ctx.frag = nullptr;
+            ctx.frag_index = -1;
         } else if (IsContainer(type)) {
-            IsobmffTrack* saved_trak = ctx.trak;
-            if (type == "trak") {
-                ctx.out->tracks.emplace_back();
-                ctx.trak = &ctx.out->tracks.back();
+            // stsd / meta 都是 FullBox，子 box 要从 FullBox 头之后开始：
+            //   stsd: version/flags(4) + entry_count(4) = 8 字节
+            //   meta: version/flags(4) = 4 字节
+            // 不跳这些字节，meta 里每个子 box 的 header（size/type）都会错位，
+            // 解析出来的 type 全是垃圾。
+            uint64_t child_start = pos + header_size;
+            if (type == "stsd") {
+                child_start += 8;
+            } else if (type == "meta") {
+                child_start += 4;
             }
-            ParseBoxes(ctx, pos + header_size, pos + size, depth + 1, &box.children);
+            const int saved_trak = ctx.trak_index;
+            if (type == "trak") {
+                // 同理：只记住新 trak 的下标，别把 tracks.back() 的地址留下来
+                ctx.out->tracks.emplace_back();
+                ctx.trak_index = static_cast<int>(ctx.out->tracks.size()) - 1;
+            }
+            ParseBoxes(ctx, child_start, pos + size, depth + 1, &box.children);
             if (type == "trak") {
                 // 只保留有媒体时基的轨道（hint/空 trak 直接丢弃）
-                if (ctx.trak->media_timescale == 0 && ctx.trak->handler.empty()) {
+                if (ctx.trak().media_timescale == 0 && ctx.trak().handler.empty()) {
                     ctx.out->tracks.pop_back();
                 }
-                ctx.trak = saved_trak;
+                ctx.trak_index = saved_trak;
             }
-        } else if (ctx.frag && (type == "tfhd" || type == "tfdt" || type == "trun")) {
+        } else if (ctx.frag_index >= 0 && (type == "tfhd" || type == "tfdt" || type == "trun")) {
             std::vector<uint8_t> buf;
             ReadPayload(ctx, box, buf, std::min<uint64_t>(size - header_size, 16ull * 1024 * 1024));
             if (!buf.empty()) {
@@ -579,16 +601,33 @@ std::string IsobmffTrack::TypeName() const {
     return "unknown";
 }
 
+// stts / ctts 的 sample_count 直接相加容易溢出回绕：stts 一条 entry 常常覆盖几万个
+// 样本，几个轨道叠起来就能把 uint32 顶回去，上层拿到的「样本总数」变成个小得离谱的数。
+// 用 64 位累加并饱和截断（接口仍是 uint32），宁可报上限也不报一个错误的数。
+namespace {
+constexpr uint64_t kSampleCountSaturation = 0xFFFFFFFFull;
+
+// stts / ctts 的条目类型不同，抽成模板只在这里用一次，不额外开公共接口
+template <typename EntryT>
+uint32_t SaturateSampleCount(const std::vector<EntryT>& entries) {
+    uint64_t n = 0;
+    for (const auto& e : entries) {
+        n += e.sample_count;
+        if (n > kSampleCountSaturation) {
+            n = kSampleCountSaturation;
+            break;
+        }
+    }
+    return static_cast<uint32_t>(n);
+}
+}  // namespace
+
 uint32_t IsobmffTrack::SttsSampleCount() const {
-    uint32_t n = 0;
-    for (const auto& e : stts) n += e.sample_count;
-    return n;
+    return SaturateSampleCount(stts);
 }
 
 uint32_t IsobmffTrack::CttsSampleCount() const {
-    uint32_t n = 0;
-    for (const auto& e : ctts) n += e.sample_count;
-    return n;
+    return SaturateSampleCount(ctts);
 }
 
 bool IsobmffParser::Parse(const std::string& file_path, IsobmffFile& out,

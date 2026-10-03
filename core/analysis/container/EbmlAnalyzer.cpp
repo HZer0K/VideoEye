@@ -7,6 +7,7 @@
 #include <QSet>
 #include <QBuffer>
 
+#include <algorithm>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -387,6 +388,9 @@ static uint64_t readVIntFromBytes(const QByteArray& data, int& offset, int& size
     uint8_t mask = 0x80;
     while (mask && !(first & mask)) { width++; mask >>= 1; }
     width++;
+    // 8 字节 VINT 的 continuation 位占满整个首字节，长度无意义；
+    // 旧实现会算出 size=0 并白读 7 个字节，TrackNumber 之类的字段全乱
+    if (width >= 8) { size_out = 0; return 0; }
     size_out = width;
     uint64_t value = first & (0xFF >> width);
     for (int i = 1; i < width; ++i) {
@@ -407,6 +411,10 @@ uint64_t EbmlAnalyzer::ReadVInt(QDataStream& ds, int& size_out) const {
     uint8_t mask = 0x80;
     while (mask && !(first & mask)) { width++; mask >>= 1; }
     width++;
+    // 8 字节 VINT：continuation 位把 8 位全占满，去掉标记位后长度本身无意义，
+    // 旧实现照样吃进 7 个字节算出一个恒为 0 的 size —— 上层拿到 0 会当成"size 0"
+    // 反复处理，甚至一个元素都读不出来。这里直接判失败（size_out=0）。
+    if (width >= 8) { size_out = 0; return 0; }
     size_out = width;
     uint64_t value = first & (0xFF >> width);
     for (int i = 1; i < width; ++i) {
@@ -429,6 +437,9 @@ static uint64_t readIdVInt(const QByteArray& data, int& offset, int& size_out) {
     uint8_t mask = 0x80;
     while (mask && !(first & mask)) { width++; mask >>= 1; }
     width++;
+    // 8 字节 VINT 的 continuation 位被占满（首字节 0x00），长度本身没有意义，
+    // 算出来的 value 恒为 0 还会白读 7 个字节
+    if (width >= 8) { size_out = 0; return 0; }
     size_out = width;
     // ID 保留全部原始字节，不去除标记位
     uint64_t value = first;
@@ -449,6 +460,8 @@ static uint64_t readIdVInt(QDataStream& ds, int& size_out) {
     uint8_t mask = 0x80;
     while (mask && !(first & mask)) { width++; mask >>= 1; }
     width++;
+    // 同 ReadVInt：8 字节 VINT 没有合法长度，直接判失败，别把 8 个字节吃进去
+    if (width >= 8) { size_out = 0; return 0; }
     size_out = width;
     // ID 保留全部原始字节
     uint64_t value = first;
@@ -761,7 +774,14 @@ void EbmlAnalyzer::ExtractCueInfo(const model::EbmlElementNode& cue_point,
 bool EbmlAnalyzer::ParseElement(QDataStream& ds, qint64 end_offset, int depth,
                                  model::EbmlElementNode* parent,
                                  model::EbmlAnalysisResult& result) {
+    // 深度 / 节点数双上限：一个"自己套自己"的畸形元素树能在这儿无限递归下去
+    if (depth >= kMaxDepth) return false;
+    if (node_count_ >= kMaxNodes) return false;
+
     while (ds.device() && ds.device()->pos() < end_offset) {
+        // 元素数上限：一个元素最少 2 字节（ID + size），到顶就停，
+        // 免得往 result.element_tree 里无限塞节点
+        if (++node_count_ > kMaxNodes) return false;
         int id_size = 0;
         uint64_t id = readIdVInt(ds, id_size);   // ID 保留原始字节值
         if (id_size == 0 || ds.status() != QDataStream::Ok) break;
@@ -783,8 +803,20 @@ bool EbmlAnalyzer::ParseElement(QDataStream& ds, qint64 end_offset, int depth,
         node.offset = static_cast<uint64_t>(ds.device()->pos());
         node.depth = depth;
 
+        // --- unknown size 元素 ---
+        // EBML 规定 size 全 1（kUnknownSize）表示长度未知：实际内容一直延伸到
+        // **当前父元素的末尾**。旧实现遇到这种情况只是把节点挂上去就 continue，
+        // 于是解析一直顺着同一个 end_offset 往下走、节点无限增长 → OOM；
+        // 容器类元素还会被反复递归。这里统一换算成"延伸到父元素末尾"再走正常流程。
+        if (size == kUnknownSize) {
+            size = (end_offset > static_cast<qint64>(node.offset))
+                       ? static_cast<uint64_t>(end_offset - static_cast<qint64>(node.offset))
+                       : 0u;
+            node.size = size;
+        }
+
         // --- 容器元素：递归解析子元素 ---
-        if (IsContainerElement(id) && size > 0 && size != 0xFFFFFFFFFFFFFFULL) {
+        if (IsContainerElement(id) && size > 0) {
             qint64 child_end = node.offset + static_cast<qint64>(size);
             parent->children.push_back(node);
             model::EbmlElementNode& child = parent->children.back();
@@ -810,19 +842,17 @@ bool EbmlAnalyzer::ParseElement(QDataStream& ds, qint64 end_offset, int depth,
             continue;
         }
 
-        // --- 未知大小 ---
-        if (size == 0xFFFFFFFFFFFFFFULL) {
-            parent->children.push_back(node);
-            continue;
-        }
-
         // --- 叶子节点 ---
         if (size > 0 && size < 16 * 1024 * 1024) {
             QByteArray data = ds.device()->read(static_cast<qint64>(size));
             ParseLeafValue(node, data, result);
             parent->children.push_back(node);
         } else if (size > 0) {
-            ds.device()->skip(static_cast<qint64>(size));
+            // 跳过时要夹在父元素末尾（end_offset）之内：skip 超出会一路跑到文件尾，
+            // 后面的元素全落在 end_offset 之外，解析结果就只剩下半棵树
+            const qint64 remain = end_offset - ds.device()->pos();
+            const qint64 to_skip = std::min<qint64>(static_cast<qint64>(size), remain > 0 ? remain : 0);
+            ds.device()->skip(to_skip);
         } else {
             parent->children.push_back(node);
         }
@@ -838,6 +868,8 @@ void EbmlAnalyzer::Reset() {}
 bool EbmlAnalyzer::Analyze(const QString& filePath, model::EbmlAnalysisResult& result) {
     result = model::EbmlAnalysisResult{};
     result.file_path = filePath.toStdString();
+    // 每次分析都从头计数（Reset() 之外也要清，免得上次的节点数被下一份文件接着算）
+    node_count_ = 0;
 
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly)) {

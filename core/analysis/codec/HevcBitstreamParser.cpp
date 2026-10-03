@@ -1,10 +1,18 @@
 #include "core/analysis/codec/HevcBitstreamParser.h"
 
+#include <algorithm>
+
 #include "core/media/codec/BitReader.h"
 #include "core/media/codec/ExtradataParser.h"
 
 namespace videoeye {
 namespace analyzer {
+
+// SPS / VPS 里几个「循环次数直接来自 ue(v)」的字段，畸形码流能把循环顶到上亿次。
+// 取值取规范允许的上界：超界一律判非法并停止继续读。
+constexpr int kMaxNumShortTermRefPicSets = 64;  // MaxNumRefPicSet
+constexpr int kMaxNumLongTermRefPics = 64;      // num_long_term_ref_pics_sps
+constexpr int kMaxNumLayerSets = 1023;          // num_layer_sets_minus1（VPS 的层集合数）
 
 // --------------------------------------------------------------------------
 // Profile / Tier / Level
@@ -392,6 +400,11 @@ model::HevcVpsInfo HevcBitstreamParser::ParseVpsFromNalUnit(const utils::NalUnit
 
     vps.vps_max_layer_id = static_cast<int>(reader.ReadBits(6));
     const uint32_t num_layer_sets_minus1 = reader.ReadUE();
+    // 层集合是「i × (max_layer_id + 1)」的二维 flag 循环，是个乘法级的上界，
+    // 畸形 VPS 报一个 num_layer_sets 就能把它顶到天文数字
+    if (num_layer_sets_minus1 >= static_cast<uint32_t>(kMaxNumLayerSets)) {
+        return vps; // 非法，不置 present
+    }
     for (uint32_t i = 1; i <= num_layer_sets_minus1; ++i) {
         for (int j = 0; j <= vps.vps_max_layer_id; ++j) {
             reader.SkipBits(1); // layer_id_included_flag[i][j]
@@ -517,11 +530,20 @@ model::HevcSpsInfo HevcBitstreamParser::ParseSpfFromNalUnit(const utils::NalUnit
     }
 
     sps.num_short_term_ref_pic_sets = static_cast<int>(reader.ReadUE());
+    // short_term_ref_pic_set 的层数直接决定了 SkipShortTermRefPicSets 的循环次数
+    if (sps.num_short_term_ref_pic_sets > kMaxNumShortTermRefPicSets) {
+        return sps; // 非法，不置 present
+    }
     SkipShortTermRefPicSets(reader, sps.num_short_term_ref_pic_sets);
 
     sps.long_term_ref_pics_present_flag = static_cast<int>(reader.ReadBit());
     if (sps.long_term_ref_pics_present_flag) {
         sps.num_long_term_ref_pics_sps = static_cast<int>(reader.ReadUE());
+        // 每个 long term ref pic 要读 (log2_max_pic_order_cnt_lsb_minus4 + 4 + 1) 位，
+        // 不封顶就是一个 ue(v) 撑起几十亿次读取
+        if (sps.num_long_term_ref_pics_sps > kMaxNumLongTermRefPics) {
+            return sps; // 非法，不置 present
+        }
         const int bits = sps.log2_max_pic_order_cnt_lsb_minus4 + 4;
         for (int i = 0; i < sps.num_long_term_ref_pics_sps; ++i) {
             reader.ReadBits(bits); // lt_ref_pic_poc_lsb_sps[i]
