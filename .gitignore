@@ -89,6 +89,15 @@ deliverables/
 overview.md
 local_docs/
 
-# 开发文档（暂时整体不上传：ARCHITECTURE / BITSTREAM_ANALYSIS 等 12 篇）
+# 开发文档（暂时整体不上传：BITSTREAM_ANALYSIS 等 12 篇）
 # 覆盖原 docs/bitstream、docs/local；如需恢复推送，删掉本条并 git add docs/
-docs/
+#
+# 写成 docs/* 而不是 docs/，是 gitignore 的一个硬约束：目录一旦被整体排除，git
+# 就不会再进去遍历，写在里面的 !docs/xxx 反向放行**不会生效**。所以这里排除的是
+# "目录下的内容"而不是"目录本身"。
+#
+# ARCHITECTURE.md 单独放行：它是分层设计的唯一权威说明，必须和代码在同一次提交里
+# 被评审 —— 文档不在版本控制里，就只能靠人记得同步，而人是记不住的（2026-10-04
+# 复核时就发现 §5 有一条早已还清却没删的包袱）。
+docs/*
+!docs/ARCHITECTURE.md
