@@ -728,3 +728,24 @@ videoeye_add_test(test_reporting_helpers
 target_link_libraries(test_reporting_helpers PRIVATE VideoEyeReporting)
 target_link_libraries(test_reporting_helpers PRIVATE Qt6::Core)
 add_test(NAME ReportingHelpersTests COMMAND test_reporting_helpers)
+
+# =================================================
+# 测试 32：五个容器结构分析器的参数化健壮性（评审第 10 项）
+# 说明: Asf / Avi / Flv / Ogg / Ts 的 Analyze() 签名完全一致，却长期零覆盖。
+#       这里用 TEST_P 跑"五分析器 × 三种输入"：文件不存在 / 魔数对不上 /
+#       最小合法文件。样本字节全部内存合成，不依赖任何真实媒体文件。
+#
+#       只链这五个 .cpp 而不是整个 VideoEyeAnalysis: 它们只依赖 Qt 的文件 IO
+#       加 domain 的值类型，链整层会把 FFmpeg 和一众分析器拖进来，编译慢一个量级。
+#       Ogg 不校验魔数（刻意的容错），单独一个用例把这个差异固化下来。
+# =================================================
+videoeye_add_test(test_container_structure_analyzers
+    unit/test_container_structure_analyzers.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/AsfStructureAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/AviStructureAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/FlvStructureAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/OggStructureAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/TsStructureAnalyzer.cpp
+)
+target_link_libraries(test_container_structure_analyzers PRIVATE Qt6::Core VideoEyeDomain)
+add_test(NAME ContainerStructureAnalyzerTests COMMAND test_container_structure_analyzers)
