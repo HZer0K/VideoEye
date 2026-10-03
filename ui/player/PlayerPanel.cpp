@@ -216,11 +216,14 @@ void PlayerPanel::SetupConnections() {
         if (player_) player_->SetSeekDragging(true); // 拖动期间抑制音频, 避免杂音
     });
     connect(seek_slider_, &QSlider::sliderMoved, this, [this](int v) {
-        // 拖动中: 实时关键帧预览 (画面跟手)。节流到 ~100ms 一次, 避免每像素都调 av_seek_frame。
-        if (showing_raw_image_) { ShowRawFrame(v); return; }
+        // 拖动中: 实时预览 (画面跟手)。两条分支都要节流到 ~100ms 一次 ——
+        // 非 Raw 分支每像素调一次 av_seek_frame 早就卡，Raw 序列这边更卡：
+        // 每像素 ShowRawFrame 要整帧读盘 + 做 YUV->RGB 转换，1080p 一次几十毫秒，
+        // 一拖就滑不动了。
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         if (now - last_drag_seek_ms_ < 100) return;
         last_drag_seek_ms_ = now;
+        if (showing_raw_image_) { ShowRawFrame(v); return; }
         if (player_) player_->Seek(v, model::SeekMode::NearestKeyframe);
     });
     connect(seek_slider_, &QSlider::valueChanged, this, [this](int v) {
@@ -1154,27 +1157,28 @@ bool PlayerPanel::ShowRawFrame(int frame_index) {
         return false;
     }
 
+    // 三处失败都不弹模态框了：原始帧是逐帧/拖动连续到达的，弹窗会把 UI 直接卡死
+    // （拖动滑块时一个 MessageBox 叠一个，窗口再也点不动）。原因统一走状态栏。
     QFile file(raw_image_path_);
     if (!file.open(QIODevice::ReadOnly)) {
-        QMessageBox::warning(this, tr("打开失败"), tr("无法读取文件: %1").arg(raw_image_path_));
+        emit StatusMessage(tr("无法读取文件: %1").arg(raw_image_path_), 0);
         return false;
     }
 
     const qint64 offset = static_cast<qint64>(frame_index) * raw_frame_size_;
     if (!file.seek(offset)) {
-        QMessageBox::warning(this, tr("定位失败"),
-                             tr("无法定位到第 %1 帧。").arg(frame_index + 1));
+        emit StatusMessage(tr("无法定位到第 %1 帧。").arg(frame_index + 1), 0);
         return false;
     }
 
     const QByteArray data = file.read(raw_frame_size_);
     file.close();
     if (data.size() != raw_frame_size_) {
-        QMessageBox::warning(this, tr("读取失败"),
-                             tr("读取第 %1 帧失败，期望 %2 字节，实际 %3 字节。")
-                                 .arg(frame_index + 1)
-                                 .arg(raw_frame_size_)
-                                 .arg(data.size()));
+        emit StatusMessage(
+            tr("读取第 %1 帧失败，期望 %2 字节，实际 %3 字节。")
+                .arg(frame_index + 1)
+                .arg(raw_frame_size_)
+                .arg(data.size()), 0);
         return false;
     }
 

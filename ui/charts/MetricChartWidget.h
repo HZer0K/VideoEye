@@ -69,47 +69,59 @@ private:
     QStringList categories_;
 };
 
+// 本类在文件末尾定义；ChartSeries 只持有它的裸指针，先前置声明一下
+class MetricChartWidget;
+
 // 数据系列。内存由 MetricChartWidget 独占，外部持有裸指针即可。
+//
+// owner 是"本系列画在哪个图表上"：AddSeries 创建时由图表填进来。有了它，
+// 改数据（Append / Replace / Clear）与改外观（SetColor / SetMarkerSize ...）
+// 都能顺手排一次重绘，不再依赖别的事件顺带把界面刷出来。
 class ChartSeries {
 public:
-    ChartSeries(ChartSeriesKind kind, const QString& name, const QColor& color)
-        : kind_(kind), name_(name), color_(color), border_color_(color) {}
+    ChartSeries(ChartSeriesKind kind, const QString& name, const QColor& color,
+                MetricChartWidget* owner = nullptr)
+        : kind_(kind), name_(name), color_(color), border_color_(color), owner_(owner) {}
 
     ChartSeriesKind Kind() const { return kind_; }
 
-    void SetName(const QString& name) { name_ = name; }
+    void SetName(const QString& name) { name_ = name; NotifyUpdate(); }
     const QString& Name() const { return name_; }
 
-    void SetColor(const QColor& color) { color_ = color; }
+    void SetColor(const QColor& color) { color_ = color; NotifyUpdate(); }
     QColor Color() const { return color_; }
 
-    void SetBorderColor(const QColor& color) { border_color_ = color; }
+    void SetBorderColor(const QColor& color) { border_color_ = color; NotifyUpdate(); }
     QColor BorderColor() const { return border_color_; }
 
-    void SetMarkerSize(double size) { marker_size_ = size < 1.0 ? 1.0 : size; }
+    void SetMarkerSize(double size) { marker_size_ = size < 1.0 ? 1.0 : size; NotifyUpdate(); }
     double MarkerSize() const { return marker_size_; }
 
-    void SetMarkerShape(ChartMarkerShape shape) { marker_shape_ = shape; }
+    void SetMarkerShape(ChartMarkerShape shape) { marker_shape_ = shape; NotifyUpdate(); }
     ChartMarkerShape MarkerShape() const { return marker_shape_; }
 
-    void SetPointsVisible(bool visible) { points_visible_ = visible; }
+    void SetPointsVisible(bool visible) { points_visible_ = visible; NotifyUpdate(); }
     bool PointsVisible() const { return points_visible_; }
 
     // 0 = 左轴, 1 = 右轴
-    void SetValueAxisIndex(int index) { value_axis_ = (index == 1) ? 1 : 0; }
+    void SetValueAxisIndex(int index) { value_axis_ = (index == 1) ? 1 : 0; NotifyUpdate(); }
     int ValueAxisIndex() const { return value_axis_; }
 
-    void Clear() { points_.clear(); }
-    void Append(double x, double y) { points_.append(QPointF(x, y)); }
-    void Append(const QPointF& point) { points_.append(point); }
-    ChartSeries& operator<<(const QPointF& point) { points_.append(point); return *this; }
-    void Replace(QVector<QPointF> points) { points_ = std::move(points); }
+    void Clear() { points_.clear(); NotifyUpdate(); }
+    void Append(double x, double y) { points_.append(QPointF(x, y)); NotifyUpdate(); }
+    void Append(const QPointF& point) { points_.append(point); NotifyUpdate(); }
+    ChartSeries& operator<<(const QPointF& point) { points_.append(point); NotifyUpdate(); return *this; }
+    void Replace(QVector<QPointF> points) { points_ = std::move(points); NotifyUpdate(); }
 
     const QVector<QPointF>& Points() const { return points_; }
     int Count() const { return points_.size(); }
     bool IsEmpty() const { return points_.isEmpty(); }
 
 private:
+    // 定义在 .cpp：那里 ChartSeries 与 MetricChartWidget 都已是完整类型
+    void NotifyUpdate();
+
+    MetricChartWidget* owner_ = nullptr;   // 本系列所属图表，nullptr = 还没挂上
     ChartSeriesKind kind_ = ChartSeriesKind::Line;
     QString name_;
     QColor color_ = QColor("#42a5f5");

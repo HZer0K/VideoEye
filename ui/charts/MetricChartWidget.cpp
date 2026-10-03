@@ -43,6 +43,14 @@ bool FinitePoint(const QPointF& p) {
 
 }  // namespace
 
+void ChartSeries::NotifyUpdate() {
+    // 数据或外观一变就排一次重绘，不等别的事件顺带刷出去 —— 以前改完数据
+    // 界面停在旧曲线上，要等切页/缩放之类的随机事件才更新，用户看到的就是"没刷新"。
+    // update() 是排期不是立即画，Qt 会把同一帧内的多次调用合并成一次 paint，
+    // 所以批量 Append / Replace 不会退化成逐点重绘。
+    if (owner_) owner_->update();
+}
+
 MetricChartWidget::MetricChartWidget(QWidget* parent)
     : QWidget(parent)
     , axis_x_(std::make_unique<ChartAxis>())
@@ -64,7 +72,9 @@ void MetricChartWidget::SetLegendVisible(bool visible) {
 }
 
 ChartSeries* MetricChartWidget::AddSeries(const QString& name, ChartSeriesKind kind, const QColor& color) {
-    series_.push_back(std::make_unique<ChartSeries>(kind, name, color));
+    // 建系列时把"我画在哪个图表上"交代给系列，后面的 Append / Replace / setter
+    // 才能自己排重绘
+    series_.push_back(std::make_unique<ChartSeries>(kind, name, color, this));
     update();
     return series_.back().get();
 }

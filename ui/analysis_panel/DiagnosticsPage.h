@@ -69,7 +69,9 @@ public:
 
     // 全文件扫描（一次 demux 供多页共用：诊断页 / 码率 GOP / 音频 QC /
     // 色彩 HDR / 字幕辅助 / 流媒体包 / 参数集）
-    void StartScan(const analyzer::AnalysisOptions& options);
+    // silent=true 时不弹 QMessageBox（打开失败自动补扫这类静默/批量入口），
+    // 提示一律写进本页的汇总标签，免得弹窗打断流程。
+    void StartScan(const analyzer::AnalysisOptions& options, bool silent = false);
     void CancelScan();
 
     // 每次扫描前的钩子：面板挂上「字幕阈值从规则表同步」这类跨页逻辑，

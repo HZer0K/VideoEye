@@ -94,7 +94,8 @@ std::vector<uint8_t> BuildSpliceInsertSection() {
     const std::vector<uint8_t> seg_bytes = seg_body.Bytes();
     const size_t descriptor_length = 4 + seg_bytes.size();   // identifier("CUEI") + body
 
-    const size_t descriptor_loop_length = 2 + 1 + descriptor_length;  // tag + length + body
+    // descriptor_loop_length = tag(8) + length(8) + body，与下面按 8 bit 写 tag 对应
+    const size_t descriptor_loop_length = 2 + descriptor_length;
     const size_t section_length = 1 /*protocol_version*/ + 5 /*flags + pts_adjustment*/ +
                                   1 /*cw_index*/ + 3 /*tier + splice_command_length*/ +
                                   1 /*splice_command_type*/ + command_length +
@@ -117,7 +118,10 @@ std::vector<uint8_t> BuildSpliceInsertSection() {
     out.Write(0x05, 8);                  // splice_command_type = splice_insert
     out.WriteBytes(command_body);
     out.Write(descriptor_loop_length, 16);
-    out.Write(0x02, 16);                 // splice_descriptor_tag = segmentation
+    // splice_descriptor_tag 按 8 bit 写（SCTE-35 里就是 1 字节）：
+    // 写成 16 bit 会多吐一个前导 0x00，Scte35Analyzer 读出的 tag 恒为 0x00，
+    // segmentation 描述符整段被当成"不认识的描述符"跳过，插入点永远判不出来。
+    out.Write(0x02, 8);                  // splice_descriptor_tag = segmentation
     out.Write(descriptor_length, 8);
     out.Write('C', 8);                   // identifier "CUEI"
     out.Write('U', 8);

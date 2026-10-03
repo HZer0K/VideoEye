@@ -18,6 +18,12 @@
 namespace videoeye {
 namespace ui {
 
+namespace {
+// 自绘曲线一次最多喂多少点。长片分析 pts 轻松上万，全量喂进去 ComputeGeometry
+// 每帧都要扫一遍点集，重绘直接把 UI 卡住；超过就按组抽稀（每组取最大值）。
+constexpr int kMaxChartPoints = 4000;
+}  // namespace
+
 DiagnosticsPage::DiagnosticsPage(QWidget* parent)
     : QWidget(parent) {
     // ⚠️ facade_ 必须**先于** SetupUi() 建好。
@@ -233,13 +239,15 @@ void DiagnosticsPage::SetupTimelineSubTab() {
 // 全文件扫描
 // ---------------------------------------------------------------------------
 
-void DiagnosticsPage::StartScan(const analyzer::AnalysisOptions& options) {
+void DiagnosticsPage::StartScan(const analyzer::AnalysisOptions& options, bool silent) {
+    // 静默模式（打开失败自动补扫等）不弹模态框：这是流程里的必经一步，
+    // 弹窗会打断流程、扫到一半卡在模态循环里等不到人点。条件不满足就悄悄放弃。
     if (source_path_.isEmpty()) {
-        QMessageBox::information(this, tr("提示"), tr("请先打开一个媒体文件。"));
+        if (!silent) QMessageBox::information(this, tr("提示"), tr("请先打开一个媒体文件。"));
         return;
     }
     if (facade_->IsRunning()) {
-        QMessageBox::information(this, tr("提示"), tr("分析正在进行中。"));
+        if (!silent) QMessageBox::information(this, tr("提示"), tr("分析正在进行中。"));
         return;
     }
 
@@ -433,20 +441,9 @@ void DiagnosticsPage::UpdateQcChart() {
     const auto& bitrate = result.video_bitrate_kbps.IsEmpty()
                               ? result.total_bitrate_kbps
                               : result.video_bitrate_kbps;
-    {
-        SeriesBatch batch(qc_bitrate_series_);
-        batch.Reserve(static_cast<int>(bitrate.samples.size()));
-        for (const auto& sample : bitrate.samples) {
-            batch.Add(sample.timestamp_seconds, sample.value);
-        }
-    }
-    {
-        SeriesBatch batch(qc_fps_series_);
-        batch.Reserve(static_cast<int>(result.video_fps.samples.size()));
-        for (const auto& sample : result.video_fps.samples) {
-            batch.Add(sample.timestamp_seconds, sample.value);
-        }
-    }
+    // 抽稀后再提交：长时间分析的采样点上万，全量喂给自绘图表重绘会卡死 UI
+    AppendDecimated(qc_bitrate_series_, bitrate, kMaxChartPoints);
+    AppendDecimated(qc_fps_series_, result.video_fps, kMaxChartPoints);
 
     double max_t = 1.0;
     if (!bitrate.samples.empty()) max_t = std::max(max_t, bitrate.samples.back().timestamp_seconds);
@@ -658,18 +655,19 @@ void DiagnosticsPage::UpdateTimelineChart() {
     const auto& r = timeline_result_;
     double max_interval = 1.0;
     double max_time = 1.0;
-    {
-        SeriesBatch batch(timeline_interval_series_);
-        batch.Reserve(static_cast<int>(r.frame_interval_ms.samples.size()));
-        for (const auto& sample : r.frame_interval_ms.samples) {
-            const double t = sample.timestamp_seconds / 1000.0;   // ms -> s
-            batch.Add(t, sample.value);
-            max_interval = std::max(max_interval, sample.value);
-            max_time = std::max(max_time, t);
-        }
+    AppendDecimated(timeline_interval_series_, r.frame_interval_ms, kMaxChartPoints);
+    // 量程取抽稀**前**的真实极值：抽稀只作用于喂给图表的点数，不该把峰值裁掉
+    for (const auto& sample : r.frame_interval_ms.samples) {
+        const double t = sample.timestamp_seconds / 1000.0;   // ms -> s
+        max_interval = std::max(max_interval, sample.value);
+        max_time = std::max(max_time, t);
     }
 
-    // 问题标记：按严重度着色，y 取该时刻的帧间隔（无数据则取 0）
+    // 问题标记：y 取该时刻的帧间隔（无数据则取 0）；散点是整条系列一起着色的，
+    // 所以颜色按**本批最高严重度**定一次 —— 以前边加边 SetColor，最后一条的颜色
+    // 会盖掉前面所有标记，红/黄的等级区分就看不见了。
+    // （IssueSeverity 的声明顺序就是严重程度递增：Info < Warning < Error < Critical）
+    model::IssueSeverity peak_severity = model::IssueSeverity::Info;
     for (int i = 0; i < static_cast<int>(r.issues.size()); ++i) {
         const auto& issue = r.issues[i];
         const double t = issue.range.start_seconds;
@@ -677,16 +675,19 @@ void DiagnosticsPage::UpdateTimelineChart() {
         const double y = r.frame_interval_ms.ValueAt(issue.range.start_seconds * 1000.0);
         *timeline_marker_series_ << QPointF(t, y);
         timeline_marker_issue_index_.append(i);
-
-        QColor color = QColor("#1565c0");
-        switch (issue.severity) {
-            case model::IssueSeverity::Critical: color = QColor("#c62828"); break;
-            case model::IssueSeverity::Error:    color = QColor("#e53935"); break;
-            case model::IssueSeverity::Warning:  color = QColor("#ef6c00"); break;
-            case model::IssueSeverity::Info:     color = QColor("#1565c0"); break;
+        if (static_cast<int>(issue.severity) > static_cast<int>(peak_severity)) {
+            peak_severity = issue.severity;
         }
-        timeline_marker_series_->SetColor(color);  // 颜色以最后一组为准（散点整体着色）
     }
+
+    QColor marker_color = QColor("#1565c0");
+    switch (peak_severity) {
+        case model::IssueSeverity::Critical: marker_color = QColor("#c62828"); break;
+        case model::IssueSeverity::Error:    marker_color = QColor("#e53935"); break;
+        case model::IssueSeverity::Warning:  marker_color = QColor("#ef6c00"); break;
+        case model::IssueSeverity::Info:     marker_color = QColor("#1565c0"); break;
+    }
+    timeline_marker_series_->SetColor(marker_color);
 
     timeline_axis_x_->SetRange(0, max_time);
     timeline_axis_y_->SetRange(0, max_interval * 1.2);

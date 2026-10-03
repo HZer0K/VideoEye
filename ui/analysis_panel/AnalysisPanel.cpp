@@ -207,8 +207,9 @@ void AnalysisPanel::UpdateStreamStats(const model::StreamStats& stats) {
 }
 
 void AnalysisPanel::ResetVideoFrameList() {
-    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
-        !feature_enabled_.value(AnalysisFeature::VideoFrame, true)) return;
+    // 手动清空不受 feature 开关约束：以前被 Master/VideoFrame 挡着，关掉开关后
+    // 用户点「清空」没反应（数据还在，看起来像坏了）。开关只管"要不要收新数据"，
+    // 不兼管"用户想不想清"。
     if (frame_packet_view_) frame_packet_view_->ResetVideoFrames();
     // 换文件时曲线也要清零：原先由面板自己 reset，现在曲线归流概览区。
     // （GOP 相关的那一份数据由 FramePacketView::ResetVideoFrames 清空后
@@ -226,8 +227,7 @@ void AnalysisPanel::AppendVideoFrameInfo(int index, int frame_type, bool is_key_
 }
 
 void AnalysisPanel::ResetAudioFrameList() {
-    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
-        !feature_enabled_.value(AnalysisFeature::AudioFrame, true)) return;
+    // 同 ResetVideoFrameList：清空不收 feature 开关的约束
     if (frame_packet_view_) frame_packet_view_->ResetAudioFrames();
 }
 
@@ -242,8 +242,7 @@ void AnalysisPanel::AppendAudioFrameInfo(int index, qint64 pts, double timestamp
 }
 
 void AnalysisPanel::ResetPacketList() {
-    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
-        !feature_enabled_.value(AnalysisFeature::Packet, true)) return;
+    // 同 ResetVideoFrameList：清空不收 feature 开关的约束
     if (frame_packet_view_) frame_packet_view_->ResetPackets();
 }
 
@@ -357,7 +356,8 @@ void AnalysisPanel::UpdateBitstreamUi() {
 // 静默失败路径 —— 不弹"请先打开文件"提示框，原因写进诊断页自己的汇总标签。
 void AnalysisPanel::StartDiagnosticsScanForCurrentFile() {
     if (!diagnostics_page_ || current_video_path_.empty()) return;
-    diagnostics_page_->StartScan(diagnostics_page_->options());
+    // 静默路径：打开失败后自动补扫一次，不能弹窗打断"打开即分析"的流程
+    diagnostics_page_->StartScan(diagnostics_page_->options(), /*silent=*/true);
 }
 
 // ---------------------------------------------------------------------------
