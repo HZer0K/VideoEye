@@ -228,6 +228,17 @@ ctest --preset linux-test-debug
 
 共 18 个可执行文件 + 17 组 ctest 用例，覆盖码流解析、MP4 样本表、ISOBMFF、QC 规则、码率/GOP、色彩 HDR、导出器等纯逻辑路径。
 
+## 文档
+
+完整索引见 [`docs/README.md`](docs/README.md)。
+
+- **改代码前先看** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) —— 9 层分层、依赖方向与
+  强制手段、Qt/domain 边界，以及「加一个分析维度要动哪些文件」的实证清单。
+- **各分析维度**的设计说明（码流 / MP4 样本表 / 码率 GOP / 色彩 HDR / 音频 QC /
+  画面缺陷 / 字幕时码 / HLS-DASH）在 `docs/` 下按主题各有一篇。
+- **横切能力**：`docs/DIAGNOSTICS_QC.md`（规则引擎）、`docs/REPORTING_BATCH_QC.md`（批量与导出）。
+- **历史审计快照**在 `docs/audit/`，是某一时刻的记录，不随代码演进。
+
 ## 开源协议
 
 VideoEye 自身源码采用 [MIT](LICENSE) 协议。随分发物附带的 FFmpeg 二进制按其自身许可证履约，`ffmpeg` 命令行程序默认不随包分发。

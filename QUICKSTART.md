@@ -248,6 +248,7 @@ cmake --build build/release -- -j2
 
 - [项目说明与文档导航](README.md)
 - [构建与贡献](CONTRIBUTING.md)
+- [文档总索引](docs/README.md) · [分层架构与依赖边界](docs/ARCHITECTURE.md)
 - [编码码流解析](docs/BITSTREAM_ANALYSIS.md)
 - [诊断与 QC 报告](docs/DIAGNOSTICS_QC.md)
 - [音频 QC](docs/AUDIO_QC.md)
@@ -256,6 +257,9 @@ cmake --build build/release -- -j2
 - [MP4/fMP4 容器一致性校验](docs/MP4_SAMPLE_TABLE.md)
 - [画面质量与视觉缺陷检测](docs/VISUAL_QC.md)
 - [字幕、时码与辅助数据轨](docs/SUBTITLE_TIMECODE_AUX.md)
+- [HLS / DASH 流媒体包检测](docs/HLS_DASH_SEGMENT.md)
+- [报告与批量 QC](docs/REPORTING_BATCH_QC.md)
+- [FFmpeg 命令工作台](docs/FFMPEG_COMMAND_WORKBENCH.md)
 
 ---
 
