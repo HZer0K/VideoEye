@@ -6,6 +6,7 @@
 #include <ctime>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
 
 #include "infrastructure/serialization/Json.h"
@@ -64,13 +65,24 @@ std::string Html(const std::string& text) {
     return out;
 }
 
+// CSV 转义（RFC 4180）：字段整体用双引号包住，内部的双引号翻倍。
+//
+// 另外对以 = + - @ 开头的字段前置一个单引号：Excel / LibreOffice / Google Sheets
+// 会把这样的单元格当成公式执行（=cmd|'/c ...、@SUM(...) 等），导出的报告会被
+// 打开它的表格软件执行的载荷，前置 ' 之后它只是普通文本。
 std::string CsvField(const std::string& text) {
-    std::string out = "\"";
+    std::string out;
+    if (!text.empty()) {
+        const char first = text.front();
+        if (first == '=' || first == '+' || first == '-' || first == '@')
+            out += '\'';
+    }
+    out += '"';
     for (char c : text) {
         if (c == '"') out += "\"\"";
-        else out += c;
+        else out += c;   // 逗号/换行/CR 本来就落在引号里面，属于 RFC 4180 的合法转义
     }
-    out += "\"";
+    out += '"';
     return out;
 }
 
@@ -247,10 +259,16 @@ JsonValue BuildMetricsObject(const analyzer::AnalysisResult& result) {
 //
 // 为什么不用 Qt 的打印模块：Qt6 PrintSupport 不在当前依赖里（只有 Widgets），
 // 为一个"偶尔导出 PDF"的功能加一个 Qt 模块不划算。这里只做最朴素的多页文本 PDF：
-// 每个字符先解码成 codepoint，落在 WinAnsi 之外的（中文、日文……）一律替换成 '?'。
+// 每个字符先解码成 codepoint，落在 WinAnsi 之外的（中文、日文……）改由第二套字体
+// （Identity-H + ToUnicode）按 UTF-16BE 十六进制画出来，不再一律替换成 '?'。
 // ===========================================================================
 class MiniPdfWriter {
 public:
+    // F1/F2: WinAnsi 的单字节字体（ASCII + Latin-1）。
+    // F3: 中文用的 Type0/Identity-H 字体，喝 ToUnicode CMap 一起吃十六进制串。
+    static constexpr int kFontWinAnsi1 = 3;
+    static constexpr int kFontWinAnsi2 = 4;
+
     static constexpr double kPageWidth = 595.0;    // A4 纵向（pt）
     static constexpr double kPageHeight = 842.0;
     static constexpr double kMarginX = 48.0;
@@ -260,7 +278,7 @@ public:
 
     void AddLine(const std::string& text) { lines_.push_back(text); }
 
-    bool Build(std::string& out) const {
+    bool Build(std::string& out) {
         std::vector<std::vector<std::string>> pages;
         std::vector<std::string> current;
         for (const auto& line : lines_) {
@@ -272,16 +290,25 @@ public:
         }
         if (!current.empty() || pages.empty()) pages.push_back(current);
 
+        // ⚠️ 对象编号必须在 kids 落位**之前**算完：以前是等全部对象都填好才
+        // `objects.insert(begin()+1, kids)`，插入把后面所有的下标整体顶掉一位，
+        // 而 /Contents 与 /Kids 里已经按老编号写死了 —— 两边差一号，PDF 全废。
+        // 这里让 kids 一开始就占住下标 1（对象 2），此后"下标 i 恒等于对象 i+1"，
+        // 编号随 push 顺序自然算出，不再有插入错位。
         std::vector<std::string> objects;  // objects[0] 对应 PDF 对象 1
-        // 1: Catalog
-        objects.push_back("<< /Type /Catalog /Pages 2 0 R >>");
-        // 2: Pages（Kids 稍后补）
-        // 3: Helvetica
+        objects.push_back("<< /Type /Catalog /Pages 2 0 R >>");  // 1: Catalog
+        objects.push_back(std::string());                        // 2: Pages（Kids，最后填）
         objects.push_back("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
-                          "/Encoding /WinAnsiEncoding >>");
-        // 4: Helvetica-Bold
+                          "/Encoding /WinAnsiEncoding >>");            // 3: F1
         objects.push_back("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold "
-                          "/Encoding /WinAnsiEncoding >>");
+                          "/Encoding /WinAnsiEncoding >>");            // 4: F2
+
+        // 5: F3（中文, Identity-H）与 6: ToUnicode CMap。两个都要等页面内容扫完才填得出来
+        // （CMap 得知道这整份报告里都出现过哪些非 Latin 字符），所以先占位、编号先定。
+        const int font_object = static_cast<int>(objects.size()) + 1;
+        const int cmap_object = font_object + 1;
+        objects.push_back(std::string());  // 5: F3
+        objects.push_back(std::string());  // 6: ToUnicode
 
         const int first_content = static_cast<int>(objects.size()) + 1;
         for (const auto& page : pages) {
@@ -290,7 +317,14 @@ public:
             stream << "BT /F1 10 Tf " << kLeading << " TL " << kMarginX << " " << top
                    << " Td\n";
             for (const auto& line : page) {
-                stream << "T* (" << EscapePdfText(line) << ") Tj\n";
+                // 一行切成若干 run：Latin 段用 F1 画，中文段用 F3 画。
+                // 不能整行二选一 —— 报告里"中文问题标题 + 英文 rule_id"这种行很常见。
+                for (const Run& run : MakeRuns(line, codepoints_)) {
+                    if (run.IsHex())
+                        stream << "/F3 10 Tf <" << run.hex << "> Tj\n";
+                    else
+                        stream << "/F1 10 Tf (" << run.text << ") Tj\n";
+                }
             }
             stream << "ET";
             const std::string content = stream.str();
@@ -303,17 +337,26 @@ public:
             const int resource_object = first_content + static_cast<int>(i);
             objects.push_back("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " +
                               Fixed(kPageWidth, 0) + " " + Fixed(kPageHeight, 0) + "] " +
-                              "/Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> " +
+                              "/Resources << /Font << /F1 " + std::to_string(kFontWinAnsi1) +
+                              " 0 R /F2 " + std::to_string(kFontWinAnsi2) + " 0 R /F3 " +
+                              std::to_string(font_object) + " 0 R >> >> " +
                               "/Contents " + std::to_string(resource_object) + " 0 R >>");
         }
 
-        // 2: Pages（这里才填 Kids）
+        objects[font_object - 1] =
+            "<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /Identity-H "
+            "/DescendantFonts [ << /Type /Font /Subtype /CIDFontType2 /BaseFont /STSong-Light "
+            "/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> /DW 1000 "
+            "/CIDToGIDMap /Identity >> ] /ToUnicode " + std::to_string(cmap_object) + " 0 R >>";
+        objects[cmap_object - 1] = BuildToUnicodeCMap();
+
+        // 2: Pages（Kids 填回占位槽，下标 1 -> 对象 2，编号不受影响）
         std::string kids = "<< /Type /Pages /Count " + std::to_string(pages.size()) + " /Kids [";
         for (std::size_t i = 0; i < pages.size(); ++i) {
             kids += " " + std::to_string(first_page + static_cast<int>(i)) + " 0 R";
         }
         kids += " ] >>";
-        objects.insert(objects.begin() + 1, kids);
+        objects[1] = kids;
 
         std::string body = "%PDF-1.4\n";
         std::vector<std::size_t> offsets;
@@ -343,11 +386,26 @@ public:
     static bool HasLossyText(const std::string& text);
 
 private:
-    // WinAnsi 之外 => '?'。返回是否发生了替换。
-    static std::string EscapePdfText(const std::string& text) {
-        std::string out;
-        std::size_t i = 0;
-        while (i < text.size()) {
+    // 一行文本切成的一段连续字节：
+    //   text —— WinAnsi 单字节段，交给 F1 直接画（括号/反斜杠已转义）
+    //   hex  —— UTF-16BE 十六进制段（不含尖括号），交给 F3 画
+    struct Run {
+        std::string text;
+        std::string hex;
+        bool IsHex() const { return !hex.empty(); }
+    };
+
+    // 逐段（run）生成器：ASCII / Latin-1 走 WinAnsi，其它（中文、日文……）走 UTF-16BE。
+    //
+    // 以前这里是"整行统一处理"，落到 WinAnsi 之外的字符一律写成 '?'，中文报告全是问号。
+    // 现在按 run 切：一行里中英混排很常见，英文部分照旧走 F1，中文部分单独成段走 F3，
+    // 两边都不丢。
+    //
+    // 非 Latin 的 codepoint 顺手记进 codepoints —— ToUnicode CMap 要用。
+    static std::vector<Run> MakeRuns(const std::string& text, std::set<unsigned int>& codepoints) {
+        std::vector<Run> runs;
+        Run run;
+        for (std::size_t i = 0; i < text.size();) {
             const unsigned char c = static_cast<unsigned char>(text[i]);
             unsigned int codepoint = c;
             std::size_t advance = 1;
@@ -360,31 +418,63 @@ private:
             } else if (c >= 0xE0 && i + 2 < text.size()) {
                 codepoint = ((c & 0x0Fu) << 12) |
                             ((static_cast<unsigned int>(text[i + 1]) & 0x3Fu) << 6) |
-                            (static_cast<unsigned int>(text[i + 2]) & 0x3Fu);
+                            ((static_cast<unsigned int>(text[i + 2]) & 0x3Fu));
                 advance = 3;
             } else if (c >= 0xC0 && i + 1 < text.size()) {
                 codepoint = ((c & 0x1Fu) << 6) | (static_cast<unsigned int>(text[i + 1]) & 0x3Fu);
                 advance = 2;
             }
-            i += advance;
 
-            if (codepoint < 0x80) {
+            const bool latin = (codepoint < 0x100);  // WinAnsi 覆盖得住
+            if (latin) {
+                if (run.IsHex()) { runs.push_back(run); run = Run(); }
                 switch (codepoint) {
-                    case '(': out += "\\("; break;
-                    case ')': out += "\\)"; break;
-                    case '\\': out += "\\\\"; break;
-                    default: out += static_cast<char>(codepoint); break;
+                    case '(': run.text += "\\("; break;
+                    case ')': run.text += "\\)"; break;
+                    case '\\': run.text += "\\\\"; break;
+                    default:  run.text += static_cast<char>(codepoint); break;
                 }
-            } else if (codepoint >= 0xA0 && codepoint <= 0xFF) {
-                out += static_cast<char>(codepoint);  // Latin-1 与 WinAnsi 在这段一致
             } else {
-                out += '?';
+                if (!run.IsHex()) { runs.push_back(run); run = Run(); }
+                AppendHexPair(run.hex, 0xFEFF);  // BOM：让阅读器认出后面是 UCS-2 码点
+                AppendHexPair(run.hex, codepoint);
+                codepoints.insert(codepoint);
             }
+            i += advance;
         }
-        return out;
+        if (!run.text.empty() || !run.hex.empty()) runs.push_back(run);
+        return runs;
+    }
+
+    // 追加一个 UTF-16BE 码元（4 位十六进制）
+    static void AppendHexPair(std::string& out, unsigned int codepoint) {
+        char buf[8];
+        std::snprintf(buf, sizeof(buf), "%04X", codepoint & 0xFFFFu);
+        out += buf;
+    }
+
+    // ToUnicode CMap：把 F3 用到的每个码点映射回它自己（Identity-H 下码点就等于码元值）。
+    // 少了它，阅读器只能按字形索引认字，复制/搜索中文全文全是乱码。
+    std::string BuildToUnicodeCMap() const {
+        std::ostringstream cmap;
+        cmap << "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n"
+             << "/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n"
+             << "/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n"
+             << "1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n";
+        cmap << codepoints_.size() << " beginbfchar\n";
+        char buf[24];
+        for (const unsigned int codepoint : codepoints_) {
+            std::snprintf(buf, sizeof(buf), "<%04X> <%04X>\n", codepoint & 0xFFFFu,
+                          codepoint & 0xFFFFu);
+            cmap << buf;
+        }
+        cmap << "endbfchar\nendcmap\nCMapName currentdict /CMap defineresource pop\nend\nend";
+        return "<< /Length " + std::to_string(cmap.str().size()) + " >>\nstream\n" +
+               cmap.str() + "\nendstream";
     }
 
     std::vector<std::string> lines_;
+    std::set<unsigned int> codepoints_;  // 整份报告里出现过的非 Latin 码点
 };
 
 bool MiniPdfWriter::HasLossyText(const std::string& text) {

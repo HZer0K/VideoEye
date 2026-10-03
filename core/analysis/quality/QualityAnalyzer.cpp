@@ -148,6 +148,8 @@ bool QualityAnalyzer::BuildSample(const AVFrame* frame, int gray_width, int rgb_
     if (!ScaleToGray(frame, gw, gh, gray, error)) return false;
     out.width = gw;
     out.height = gh;
+    // 记下源宽：下游要把编码块这类"源像素量级"的判定换算到样本像素（见块效应检测）
+    out.source_width = frame->width;
     out.gray = std::move(gray);
 
     if (capture_rgb) {

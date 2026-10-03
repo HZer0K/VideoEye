@@ -590,7 +590,11 @@ void SubtitleAnalyzer::ValidateCues(std::vector<model::SubtitleCue>& cues,
 
         if (flagged) cue.has_issue = true;
         prev_start = cue.start_seconds;
-        prev_end = (cue.end_seconds > cue.start_seconds) ? cue.end_seconds : cue.start_seconds;
+        // prev_end 必须单调不减：字幕时间轴只会往前走。畸形样本（end 早于 start）会把
+        // 它拉回起点，之后的重叠率、停留时长、丢帧判定全都跟着倒退 —— 一条坏数据会
+        // 放大成一片误报，所以这里只取"不比历史更靠前"的那个值。
+        const double cue_end = std::max(cue.end_seconds, cue.start_seconds);
+        prev_end = std::max(prev_end, cue_end);
     }
 }
 

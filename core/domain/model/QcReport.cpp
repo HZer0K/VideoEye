@@ -50,6 +50,14 @@ std::string ComputeQcVerdict(double score) {
     return "不通过";
 }
 
+std::string ComputeQcVerdict(double score, bool has_critical, bool has_error) {
+    if (has_critical) return "不通过";
+    const std::string verdict = ComputeQcVerdict(score);
+    // Error 不允许被判成"通过"，往下降一档即可（分数本来也不会到 Critical 那种程度）
+    if (has_error && verdict == "通过") return "警告";
+    return verdict;
+}
+
 std::string CurrentTimestampString() {
     const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     std::tm tm_now{};

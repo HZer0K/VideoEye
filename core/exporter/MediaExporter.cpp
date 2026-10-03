@@ -68,6 +68,13 @@ struct StreamCtx {
     SwrContext* swr = nullptr;
     AVPixelFormat enc_pix_fmt = AV_PIX_FMT_YUV420P;
     int64_t enc_pts = 0; // 音频输出采样累计 (用于 pts)
+    // sws 是按"建它的那一刻"的源规格建出来的。同一条流里源分辨率/像素格式变了
+    // （多分辨率拼接、流的规格中途切换、编码器改了 pix_fmt）时，旧的那份 sws 还按老规格
+    // 换到 enc_pix_fmt，画面缩放/转换全错，极端情况下直接崩。这三项记下建 sws 时用的源规格，
+    // 送帧时比对，不一致就重建。
+    int sws_src_w = 0;
+    int sws_src_h = 0;
+    AVPixelFormat sws_src_fmt = AV_PIX_FMT_NONE;
 };
 
 void free_streams(std::vector<StreamCtx>& streams) {
@@ -173,9 +180,25 @@ bool ReplaceTargetAtomic(const QString& temp_path, const QString& target_path, Q
     return false;
 }
 
-bool open_output(AVFormatContext*& out_fmt, const std::string& out_path, QString& err) {
-    if (avformat_alloc_output_context2(&out_fmt, nullptr, nullptr, out_path.c_str()) < 0 || !out_fmt) {
-        err = QString("无法确定输出格式 (扩展名可能不被支持)");
+// ExportOptions.format 里 UI 传的是"扩展名"写法（mp4/mkv/ts/m4a/...），而
+// av_guess_format() 的第一个参数是 FFmpeg 的**封装器名**（matroska/mpegts/ipod/...）。
+// 两者对不上时 av_guess_format() 返回空，不能让 UI 去背这套名字。
+QString MuxerNameForFormat(const QString& format) {
+    if (format == QLatin1String("mkv")) return QStringLiteral("matroska");
+    if (format == QLatin1String("ts"))  return QStringLiteral("mpegts");
+    if (format == QLatin1String("m4a")) return QStringLiteral("ipod");
+    return format;
+}
+
+// 真实路径是"临时文件"（xxx.mp4.part-<pid>-<uuid>），交给 avformat 按文件名猜封装时
+// 它取的是**最后一个 '.'** 之后的那段（"part-<pid>-<uuid>"），匹配不到任何封装器 ——
+// 导出因此 100% 失败。所以封装格式必须显式指定，不能靠猜。
+bool open_output(AVFormatContext*& out_fmt, const ExportOptions& opt, const std::string& out_path,
+                 QString& err) {
+    const QString muxer = MuxerNameForFormat(opt.format);
+    if (avformat_alloc_output_context2(&out_fmt, av_guess_format(muxer.toUtf8().constData(), nullptr, nullptr),
+                                       nullptr, out_path.c_str()) < 0 || !out_fmt) {
+        err = QString("无法确定输出格式 (扩展名可能不被支持): %1").arg(opt.format);
         return false;
     }
     if (!(out_fmt->oformat->flags & AVFMT_NOFILE)) {
@@ -308,7 +331,7 @@ void MediaExporter::Export(const ExportOptions& opt) {
 
     // 失败收尾统一交给 cleanup_and_emit: 它比手写的这堆 free 多做了两件事 ——
     // 关掉可能已经打开的输出 pb、删掉可能已经生成的临时文件。
-    if (!open_output(out_fmt, temp_path.toStdString(), err_msg)) {
+    if (!open_output(out_fmt, opt, temp_path.toStdString(), err_msg)) {
         cleanup_and_emit(true, err_msg);
         return;
     }
@@ -540,6 +563,12 @@ void MediaExporter::Export(const ExportOptions& opt) {
     }
 
     int last_progress = -1;
+    // 进度基线。各个流的 PTS 互不相通（time_base / 时基起点都不同），所以逐流记一份
+    // "已见到的最大 PTS(ms)"，取全局最大当进度位置 —— 任一流的 PTS 回退（环绕时基、
+    // 非单调时间轴）都不会把进度条往回拽。
+    std::vector<qint64> stream_seen_ms(static_cast<size_t>(in_fmt->nb_streams), 0);
+    qint64 max_seen_ms = 0;   // 各流已见最大 PTS(ms)，只增不减
+    qint64 base_pts = start_ms;  // 进度零点（导出的起点）
 
     // 把一帧送进编码器并写出数据包
     auto write_encoded_packets = [&](StreamCtx& s) {
@@ -570,11 +599,21 @@ void MediaExporter::Export(const ExportOptions& opt) {
     };
 
     auto encode_video_frame = [&](StreamCtx& s, AVFrame* src) -> bool {
+        // 源规格变了（或首次）就重建 sws。原来只建一份、之后一直复用，源流中途改
+        // 分辨率/像素格式时缩放结果全错。
+        if (s.sws && (s.sws_src_w != src->width || s.sws_src_h != src->height ||
+                      s.sws_src_fmt != (AVPixelFormat)src->format)) {
+            sws_freeContext(s.sws);
+            s.sws = nullptr;
+        }
         if (!s.sws) {
             s.sws = sws_getContext(src->width, src->height, (AVPixelFormat)src->format,
                                    s.enc->width, s.enc->height, s.enc_pix_fmt,
                                    SWS_BILINEAR, nullptr, nullptr, nullptr);
             if (!s.sws) { err_msg = "初始化图像缩放器失败"; return false; }
+            s.sws_src_w = src->width;
+            s.sws_src_h = src->height;
+            s.sws_src_fmt = (AVPixelFormat)src->format;
         }
         AVFrame* out_frame = av_frame_alloc();
         if (!out_frame) { err_msg = QStringLiteral("内存不足: 无法分配视频编码帧"); return false; }
@@ -675,11 +714,11 @@ void MediaExporter::Export(const ExportOptions& opt) {
         if (!sc) { av_packet_unref(pkt); continue; }
 
         AVStream* in_st = in_fmt->streams[pkt->stream_index];
-        int progress_percent = -1;
         if (pkt->pts != AV_NOPTS_VALUE && duration_ms > 0) {
-            qint64 cur = static_cast<qint64>(pkt->pts * av_q2d(in_st->time_base) * 1000.0);
-            progress_percent = static_cast<int>((cur - start_ms) * 100 / (end_ms - start_ms));
-            progress_percent = qBound(0, progress_percent, 100);
+            const qint64 pts_ms = static_cast<qint64>(pkt->pts * av_q2d(in_st->time_base) * 1000.0);
+            qint64& seen = stream_seen_ms[static_cast<size_t>(pkt->stream_index)];
+            if (pts_ms > seen) seen = pts_ms;
+            if (seen > max_seen_ms) max_seen_ms = seen;
         }
 
         // 区间终点检查
@@ -731,10 +770,21 @@ void MediaExporter::Export(const ExportOptions& opt) {
         // 写入失败立即停止, 避免后续包继续写入并掩盖错误 (否则会被误报为成功)
         if (!err_msg.isEmpty()) break;
 
-        // 进度
-        if (progress_percent >= 0 && progress_percent != last_progress) {
-            last_progress = progress_percent;
-            emit ExportProgress(progress_percent);
+        // 进度：按"已见最大 PTS"算，不再用当前包单点，因此只会往前走。
+        if (duration_ms > 0) {
+            const qint64 span = end_ms - start_ms;
+            int progress_percent = 0;
+            if (span > 0) {
+                // 先比大小再乘：end_ms 可能是 int64 上限（时长未知时），直接乘 100 会溢出。
+                const qint64 elapsed = max_seen_ms - base_pts;
+                progress_percent = (elapsed >= span) ? 100
+                                                     : static_cast<int>(elapsed * 100 / span);
+            }
+            progress_percent = qBound(0, progress_percent, 100);
+            if (progress_percent != last_progress) {
+                last_progress = progress_percent;
+                emit ExportProgress(progress_percent);
+            }
         }
     }
 

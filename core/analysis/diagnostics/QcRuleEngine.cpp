@@ -160,7 +160,12 @@ model::QcReport QcRuleEngine::Evaluate(const AnalysisResult& result) const {
                      });
 
     report.score = model::ComputeQcScore(report.issues);
-    report.verdict = model::ComputeQcVerdict(report.score);
+    // 结论不能只靠分数：Critical 只扣 30 分，有 Critical 的素材分数照样能落"警告"档，
+    // 结论与严重度脱钩（形同虚设）。这里把严重度也带进去再判。
+    report.verdict = model::ComputeQcVerdict(
+        report.score,
+        report.CountBySeverity(model::IssueSeverity::Critical) > 0,
+        report.CountBySeverity(model::IssueSeverity::Error) > 0);
     if (report.partial) {
         // 抽样扫描（命中 max_packets 上限）不完整，禁止给出"通过"结论：仅供参考
         report.verdict = "抽样完成·仅供参考";

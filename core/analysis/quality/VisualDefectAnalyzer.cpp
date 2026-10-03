@@ -241,7 +241,16 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(
     // 块边界处的像素落差明显大于块内部落差时，画面就是被 8x8 块切过的。
     // 内部统计跳过紧邻边界的一列/一行（x%bs == 1），否则会把边界落差算进"内部"。
     if (options.detect_blockiness && w >= 16 && h >= 16) {
-        const int bs = options.block_size > 1 ? options.block_size : 8;
+        const int nominal_bs = options.block_size > 1 ? options.block_size : 8;
+        // block_size 是源图像素量级的编码块边长，判边界前要按 源宽/样本宽 缩到样本空间。
+        // 缩样本后一个块不足 2px（例如 1920 源 -> 256 采样，8px 的块只剩 1px 多）时，
+        // 块结构已经被降采样抹平，剩下那些"看起来像块边界"的落差全是缩放痕迹 ——
+        // 照旧按周期找边界只会误报，这种情况置 NoValue，不参与判定。
+        // 源宽未知（手造样本）时按 1:1 处理。
+        const int bs = (sample.source_width > w)
+                           ? static_cast<int>(nominal_bs * static_cast<double>(w) /
+                                              static_cast<double>(sample.source_width))
+                           : nominal_bs;
         long double boundary = 0.0;
         long double interior = 0.0;
         long long bc = 0;
@@ -275,7 +284,10 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(
                 }
             }
         }
-        if (bc > 0 && ic > 0) {
+        if (bs < 2) {
+            // 上面的统计也就没有意义了，块效应置 NoValue（而不是照常给出个分数）
+            m.blockiness_score = NoValue();
+        } else if (bc > 0 && ic > 0) {
             const double b = static_cast<double>(boundary / bc);
             const double i = static_cast<double>(interior / ic);
             const double denom = b + i;
@@ -685,6 +697,17 @@ void VisualDefectAnalyzer::ProcessSampleLocked(const model::FrameSample& sample)
         u.score = m.combing_score;
         u.aux = NoValue();
         u.threshold = options_.combing_score;
+        u.reverse = false;
+        UpdateSegmentLocked(u, sample);
+    }
+    // 块效应：ComputeFrameMetrics 一直都在算 blockiness_score，但没有任何一段消费它，
+    // 这个缺陷等于永远检测不到（算出来的分数连"有没有命中"这一步都走不到）。
+    if (options_.detect_blockiness) {
+        u.type = model::VisualDefectType::Blockiness;
+        u.hit = Valid(m.blockiness_score) && m.blockiness_score >= options_.blockiness_score;
+        u.score = m.blockiness_score;
+        u.aux = NoValue();
+        u.threshold = options_.blockiness_score;
         u.reverse = false;
         UpdateSegmentLocked(u, sample);
     }

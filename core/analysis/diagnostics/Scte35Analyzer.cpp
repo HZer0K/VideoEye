@@ -11,7 +11,7 @@ namespace {
 
 constexpr uint8_t kScte35TableId = 0xFC;
 constexpr uint32_t kCueiIdentifier = 0x43554549;   // "CUEI"
-constexpr uint16_t kSegmentationDescriptorTag = 0x02;
+constexpr uint8_t kSegmentationDescriptorTag = 0x02;
 constexpr int64_t kPtsModulus = INT64_C(1) << 33;
 constexpr double kScte35Timebase = 90000.0;
 
@@ -416,8 +416,13 @@ bool Scte35Analyzer::ParseSection(const uint8_t* data, size_t size, model::Scte3
     // descriptor_loop_length
     const uint64_t descriptor_loop_length = reader.Read(16);
     const size_t descriptor_end = reader.BytePos() + static_cast<size_t>(descriptor_loop_length);
+    // descriptor_loop 里每个描述符的结构是 descriptor_tag(8) + descriptor_length(8)
+    // + descriptor()（segmentation 的头 4 字节是 identifier "CUEI"）。
+    // tag 必须按 8 bit 读：按 16 bit 读会把 tag 和 length 各串掉半个字节，
+    // 后面 identifier、segmentation_event_id 一路整体错位 —— 表现就是插入/切点事件
+    // 全程判不出来（tag 恒不等于 0x02，segmentation 描述符永远被当成"跳过"的一类）。
     while (reader.BytePos() + 5 <= descriptor_end && !reader.overflow()) {
-        const uint16_t tag = static_cast<uint16_t>(reader.Read(16));
+        const uint8_t tag = static_cast<uint8_t>(reader.Read(8));
         const uint64_t descriptor_length = reader.Read(8);
         const size_t descriptor_body_end = reader.BytePos() + static_cast<size_t>(descriptor_length);
         if (descriptor_body_end > descriptor_end) {

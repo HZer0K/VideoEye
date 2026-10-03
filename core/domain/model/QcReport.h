@@ -49,6 +49,13 @@ double ComputeQcScore(const std::vector<DiagnosticIssue>& issues);
 // 评分 -> 结论文案（>=90 通过, >=70 警告, 否则不通过）
 std::string ComputeQcVerdict(double score);
 
+// 带严重度优先级的结论。分数扣不掉"问题有多严重"这件事：Critical 只扣 30 分，
+// 一条 Critical 的素材分数照样落在"警告"档，结论与严重度脱钩。所以：
+//   * 有 Critical  -> 直接"不通过"
+//   * 有 Error     -> 结论封顶到"警告"（宁可虚高，也不让 Error 显得"通过"）
+//   * 都没有       -> 按分数结论
+std::string ComputeQcVerdict(double score, bool has_critical, bool has_error);
+
 // 当前本地时间字符串 "YYYY-MM-DD HH:MM:SS"
 std::string CurrentTimestampString();
 

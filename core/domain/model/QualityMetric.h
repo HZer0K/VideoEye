@@ -64,6 +64,9 @@ struct FrameSample {
 
     int width = 0;
     int height = 0;
+    // 降采样前的源帧宽度（为 0 表示未知，例如单测里手造的样本）。
+    // 视觉缺陷检测要用它把"源图像素"量级的参数（如编码块边长）换算到样本像素。
+    int source_width = 0;
     std::vector<uint8_t> gray;      // width * height，GRAY8，无行对齐
 
     int rgb_width = 0;
