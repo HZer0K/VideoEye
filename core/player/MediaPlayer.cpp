@@ -614,6 +614,60 @@ void MediaPlayer::EnableAnalysis(bool enable) {
 
 void MediaPlayer::SetFrameTypeAnalysisEnabled(bool enable) { analysis_session_.SetFrameTypeAnalysisEnabled(enable); }
 
+// 原来这些是头文件的内联转发。收进 .cpp 是因为它们现在只是 SetAnalysisFeature()
+// 的分派目标，不打算再被直接调用 —— 放在 .cpp 里既避免头文件暴露实现，也让
+// "新增一个维度要改什么"这件事只落在一个文件里。
+void MediaPlayer::SetAudioFrameAnalysisEnabled(bool enable) { analysis_session_.SetAudioFrameAnalysisEnabled(enable); }
+void MediaPlayer::SetPacketAnalysisEnabled(bool enable) { analysis_session_.SetPacketAnalysisEnabled(enable); }
+void MediaPlayer::SetEventAnalysisEnabled(bool enable) { analysis_session_.SetEventAnalysisEnabled(enable); }
+void MediaPlayer::SetSyncAnalysisEnabled(bool enable) { analysis_session_.SetSyncAnalysisEnabled(enable); }
+void MediaPlayer::SetTimelineAnalysisEnabled(bool enable) { analysis_session_.SetTimelineAnalysisEnabled(enable); }
+void MediaPlayer::SetContainerStructureEnabled(bool enable) { analysis_session_.SetContainerStructureEnabled(enable); }
+void MediaPlayer::SetSceneChangeAnalysisEnabled(bool enable) { analysis_session_.SetSceneChangeAnalysisEnabled(enable); }
+
+void MediaPlayer::SetAnalysisFeature(model::AnalysisFeature feature, bool enable) {
+    switch (feature) {
+    case model::AnalysisFeature::Master:
+    case model::AnalysisFeature::StreamStats:
+        EnableAnalysis(enable);
+        break;
+    case model::AnalysisFeature::VideoFrame:
+        SetFrameTypeAnalysisEnabled(enable);
+        break;
+    case model::AnalysisFeature::AudioFrame:
+        SetAudioFrameAnalysisEnabled(enable);
+        break;
+    case model::AnalysisFeature::Packet:
+        SetPacketAnalysisEnabled(enable);
+        break;
+    case model::AnalysisFeature::Event:
+        SetEventAnalysisEnabled(enable);
+        break;
+    case model::AnalysisFeature::SyncSample:
+        SetSyncAnalysisEnabled(enable);
+        break;
+    case model::AnalysisFeature::Timeline:
+        SetTimelineAnalysisEnabled(enable);
+        break;
+    case model::AnalysisFeature::ContainerStructure:
+        SetContainerStructureEnabled(enable);
+        break;
+    case model::AnalysisFeature::Macroblock:
+        SetMacroblockAnalysisEnabled(enable);
+        break;
+    case model::AnalysisFeature::SceneChange:
+        SetSceneChangeAnalysisEnabled(enable);
+        break;
+    case model::AnalysisFeature::VisualDefect:
+        SetVisualDefectAnalysisEnabled(enable);
+        break;
+    case model::AnalysisFeature::Diagnostics:
+        // 全文件扫描 + QC 不在播放会话里，由面板侧的 DiagnosticsPage 单独驱动，
+        // 这里刻意什么都不做（以前 MainWindow 的 switch 也是落到 default 分支）。
+        break;
+    }
+}
+
 // --- 画面质量 / 视觉缺陷 ---
 
 void MediaPlayer::SetVisualDefectAnalysisEnabled(bool enable) {

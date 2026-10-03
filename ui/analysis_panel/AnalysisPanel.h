@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "core/domain/model/AnalysisEvent.h"
+#include "core/domain/model/AnalysisFeature.h"
 #include "core/domain/model/ContainerStructureInfo.h"
 #include "core/domain/model/FrameTimingInfo.h"
 #include "core/domain/model/MacroblockInfo.h"
@@ -64,21 +65,13 @@ class AnalysisPanel : public QWidget {
     
 public:
     // 分析功能开关枚举
-    enum class AnalysisFeature {
-        Master,        // 全局主开关
-        StreamStats,   // 流统计
-        VideoFrame,    // 视频帧
-        AudioFrame,    // 音频帧
-        Packet,        // 数据包
-        Event,         // 分析事件
-        SyncSample,    // 音视频同步
-        Timeline,      // 时间线
-        ContainerStructure,  // 文件结构分析
-        Macroblock,    // 宏块分析 (运动矢量/块统计)
-        SceneChange,   // 场景切换检测 (镜头边界)
-        Diagnostics,   // 诊断与报告 (全文件扫描 + QC 规则引擎)
-        VisualDefect   // 画面质量 (黑场/冻结/马赛克/模糊/闪烁/曝光/色偏/梳齿/黑边)
-    };
+    //
+    // 已下放到 core/domain/model/AnalysisFeature.h：MediaPlayer 现在直接认这个枚举
+    // （SetAnalysisFeature），面板与播放器说的是同一种语言，MainWindow 不再需要
+    // 一个 10 分支的 switch 做翻译。
+    // 这里是类内别名，为了让既有代码里的 AnalysisPanel::AnalysisFeature 继续可用
+    // （面板内部与页面组件共 70+ 处引用），不用挨个改。
+    using AnalysisFeature = model::AnalysisFeature;
 
     explicit AnalysisPanel(QWidget* parent = nullptr);
     ~AnalysisPanel();

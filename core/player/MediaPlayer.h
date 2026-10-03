@@ -31,6 +31,7 @@ extern "C" {
 #include "core/qt/QtWorkerOwner.h"
 #include "core/exporter/MediaExporter.h"
 #include "core/domain/model/AnalysisEvent.h"
+#include "core/domain/model/AnalysisFeature.h"
 #include "core/domain/model/AudioVisualizationFrame.h"
 #include "core/player/FrameData.h"
 #include "core/domain/model/SeekMode.h"
@@ -94,19 +95,22 @@ public:
     // 分析控制
     void EnableAnalysis(bool enable);
     bool IsAnalysisEnabled() const { return analysis_session_.IsAnalysisEnabled(); }
-    void SetFrameTypeAnalysisEnabled(bool enable);
-    void SetAudioFrameAnalysisEnabled(bool enable) { analysis_session_.SetAudioFrameAnalysisEnabled(enable); }
-    void SetPacketAnalysisEnabled(bool enable) { analysis_session_.SetPacketAnalysisEnabled(enable); }
-    void SetEventAnalysisEnabled(bool enable) { analysis_session_.SetEventAnalysisEnabled(enable); }
-    void SetSyncAnalysisEnabled(bool enable) { analysis_session_.SetSyncAnalysisEnabled(enable); }
-    void SetTimelineAnalysisEnabled(bool enable) { analysis_session_.SetTimelineAnalysisEnabled(enable); }
-    void SetContainerStructureEnabled(bool enable) { analysis_session_.SetContainerStructureEnabled(enable); }
-    void SetMacroblockAnalysisEnabled(bool enable);
-    void SetSceneChangeAnalysisEnabled(bool enable) { analysis_session_.SetSceneChangeAnalysisEnabled(enable); }
+    // 播放期分析功能的统一开关。UI 侧只走这一个入口。
+    //
+    // 以前每个维度一个 SetXxxAnalysisEnabled()，新增一个播放期分析维度要同时改三处：
+    // domain 的 AnalysisFeature、MediaPlayer 的 setter、MainWindow 里那个把枚举翻译
+    // 成 setter 调用的 switch。现在 MediaPlayer 直接认 model::AnalysisFeature，UI 只做
+    // 转发，新增维度只需在枚举里加一项 + 在本函数的实现里加一行。
+    //
+    // 语义上要留意两点：
+    //   * Master 与 StreamStats 都映射到 EnableAnalysis()（总开关）；
+    //   * Diagnostics（全文件扫描 + QC）不在播放会话里，这里对它不做任何事 ——
+    //     扫描由面板侧的 DiagnosticsPage 单独驱动。
+    void SetAnalysisFeature(model::AnalysisFeature feature, bool enable);
 
     // 画面质量 / 视觉缺陷（黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 曝光 / 色偏 / 梳齿 / 黑边）。
     // 开关会顺带启停分析用的工作线程；换采样档位用 SetVisualDefectOptions()。
-    void SetVisualDefectAnalysisEnabled(bool enable);
+    // 开关请经 SetAnalysisFeature(AnalysisFeature::VisualDefect, ...) 调用。
     bool IsVisualDefectAnalysisEnabled() const { return analysis_session_.IsVisualDefectAnalysisEnabled(); }
     void SetVisualDefectOptions(const analyzer::VisualDefectOptions& options);
     // 线程安全地取视觉缺陷采样选项副本: 解码线程逐帧读取, UI 线程写入,
@@ -216,6 +220,23 @@ signals:
     void MediaExportError(const QString& message);
 
 private:
+    // --- SetAnalysisFeature() 的分派目标 ---
+    //
+    // 各维度开关的实际实现。UI 不要直接调这些，一律走 SetAnalysisFeature()：
+    // 那才是"按 AnalysisFeature 设开关"的唯一入口，也是新增维度时唯一要改的地方。
+    // 其中几个不是单纯转发 —— VisualDefect / Macroblock / FrameType 还会启停工作
+    // 线程或重置分析器状态，所以必须以函数而不是内联赋值的形式存在。
+    void SetFrameTypeAnalysisEnabled(bool enable);
+    void SetAudioFrameAnalysisEnabled(bool enable);
+    void SetPacketAnalysisEnabled(bool enable);
+    void SetEventAnalysisEnabled(bool enable);
+    void SetSyncAnalysisEnabled(bool enable);
+    void SetTimelineAnalysisEnabled(bool enable);
+    void SetContainerStructureEnabled(bool enable);
+    void SetMacroblockAnalysisEnabled(bool enable);
+    void SetSceneChangeAnalysisEnabled(bool enable);
+    void SetVisualDefectAnalysisEnabled(bool enable);
+
     bool OpenInternal(const QString& url, const AVInputFormat* input_format, AVDictionary* input_options);
     void EmitAnalysisEvent(const QString& severity, const QString& type, int stream_index,
                            qint64 pts, double timestamp_seconds,

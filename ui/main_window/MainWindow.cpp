@@ -583,46 +583,14 @@ void MainWindow::SetupConnections() {
                 using AF = ui::AnalysisPanel::AnalysisFeature;
                 AF feat = static_cast<AF>(feature);
                 if (!player_) return;
-                switch (feat) {
-                case AF::StreamStats:
-                    player_->EnableAnalysis(enabled);
-                    break;
-                case AF::VideoFrame:
-                    player_->SetFrameTypeAnalysisEnabled(enabled);
-                    break;
-                case AF::AudioFrame:
-                    player_->SetAudioFrameAnalysisEnabled(enabled);
-                    break;
-                case AF::Packet:
-                    player_->SetPacketAnalysisEnabled(enabled);
-                    break;
-                case AF::Event:
-                    player_->SetEventAnalysisEnabled(enabled);
-                    break;
-                case AF::SyncSample:
-                    player_->SetSyncAnalysisEnabled(enabled);
-                    break;
-                case AF::Timeline:
-                    player_->SetTimelineAnalysisEnabled(enabled);
-                    break;
-                case AF::ContainerStructure:
-                    player_->SetContainerStructureEnabled(enabled);
-                    break;
-                case AF::Macroblock:
-                    player_->SetMacroblockAnalysisEnabled(enabled);
-                    // 宏块分析关闭时联动关闭 MV 叠加
-                    if (!enabled) {
-                        player_panel_->SetMvOverlayEnabled(false);
-                    }
-                    break;
-                case AF::SceneChange:
-                    player_->SetSceneChangeAnalysisEnabled(enabled);
-                    break;
-                case AF::VisualDefect:
-                    player_->SetVisualDefectAnalysisEnabled(enabled);
-                    break;
-                default:
-                    break;
+
+                // MediaPlayer 直接认 model::AnalysisFeature（面板的 AF 就是它的别名），
+                // 所以这里不再需要一个逐个翻译的 switch —— 只剩转发，外加一条纯 UI
+                // 侧的联动。新增分析维度时本文件不用改。
+                player_->SetAnalysisFeature(feat, enabled);
+                // 宏块分析关闭时联动关闭 MV 叠加
+                if (feat == AF::Macroblock && !enabled) {
+                    player_panel_->SetMvOverlayEnabled(false);
                 }
             });
     

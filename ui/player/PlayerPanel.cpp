@@ -1337,7 +1337,7 @@ void PlayerPanel::OnMvOverlayToggled(bool enabled) {
     if (enabled) {
         // 开启 MV 叠加: 自动启用宏块分析 (会触发软件解码切换)
         if (player_) {
-            player_->SetMacroblockAnalysisEnabled(true);
+            player_->SetAnalysisFeature(model::AnalysisFeature::Macroblock, true);
         }
         video_widget_->SetMvOverlayMode(ui::MvOverlayMode::Arrows);
         emit StatusMessage(tr("运动矢量叠加已开启"), 3000);
