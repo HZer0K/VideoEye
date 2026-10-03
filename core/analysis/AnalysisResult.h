@@ -10,8 +10,7 @@
 #include <string>
 #include <vector>
 
-#include "core/analysis/AnalysisOptions.h"   // AnalysisStatus（扫描结果状态）目前住在参数头里
-#include "core/analysis/AnalysisTypes.h"
+#include "core/analysis/AnalysisTypes.h"   // StreamDigest + AnalysisStatus
 #include "core/domain/model/AudioQcResult.h"
 #include "core/domain/model/AuxiliaryDataInfo.h"
 #include "core/domain/model/BitrateGopResult.h"

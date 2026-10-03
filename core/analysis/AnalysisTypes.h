@@ -11,6 +11,24 @@
 namespace videoeye {
 namespace analyzer {
 
+// 全文件扫描的执行状态（取代原先的 bool completed）
+//
+// 区分"完整扫到 EOF"、"命中包数上限只抽样"、"被取消"、"读取/打开失败"，
+// 让报告与 UI 能明确标注非完整结果，避免把截断/IO 错误或抽样当成完整 QC 结论。
+//
+// 为什么住在这里而不是 AnalysisOptions.h：它是**产出的状态**而不是**输入的参数**。
+// 以前 AnalysisResult.h 为了拿它不得不 include 整个参数头，等于"读结果的人"被迫
+// 拖着"传参数的人"—— reporting / UI 只想消费结果，却被 options 绑住。
+// AnalysisOptions.h 仍然 include 本文件，所以老的调用点不用改。
+enum class AnalysisStatus {
+    Complete,    // 完整扫描到 EOF
+    Sampled,     // 命中 max_packets 上限，仅完成抽样
+    Cancelled,   // 被用户取消
+    Failed,      // 打开 / 探测 / 读取数据包失败
+};
+
+const char* ToString(AnalysisStatus status);
+
 // 单条流的静态摘要（demux 层，不解码）
 struct StreamDigest {
     int index = -1;

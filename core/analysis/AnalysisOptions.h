@@ -7,29 +7,20 @@
 // 依赖面被撑到最大, 改一个分析器的注释都要重编译半个工程。
 //
 // 现在 Analyzer 反过来 include 本文件取自己的选项, 依赖方向变成:
-//   analysis -> AnalysisOptions.h -> (仅 stdlib)
+//   analysis -> AnalysisOptions.h -> (AnalysisTypes.h + 仅 stdlib)
 // 本文件不 include 任何 Analyzer、不 include FFmpeg。
 
 #include <cstdint>
 #include <string>
 #include <vector>
 
+// AnalysisStatus 已经挪到 AnalysisTypes.h（它是产出状态，不是输入参数）。
+// 这里继续 include 是为了让既有调用点不受影响 —— 谁 include 本文件，谁就仍能
+// 看见 AnalysisStatus，不必挨个补 include。新代码请直接 include AnalysisTypes.h。
+#include "core/analysis/AnalysisTypes.h"
+
 namespace videoeye {
 namespace analyzer {
-
-// 全文件扫描的执行状态（取代原先的 bool completed）
-//
-// 区分"完整扫到 EOF"、"命中包数上限只抽样"、"被取消"、"读取/打开失败"，
-// 让报告与 UI 能明确标注非完整结果，避免把截断/IO 错误或抽样当成完整 QC 结论。
-enum class AnalysisStatus {
-    Complete,    // 完整扫描到 EOF
-    Sampled,     // 命中 max_packets 上限，仅完成抽样
-    Cancelled,   // 被用户取消
-    Failed,      // 打开 / 探测 / 读取数据包失败
-};
-
-const char* ToString(AnalysisStatus status);
-
 
 // 码率与 GOP 深度分析的配置项
 //
