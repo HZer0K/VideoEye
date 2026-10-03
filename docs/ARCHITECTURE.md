@@ -229,6 +229,23 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   Qt 类型与 domain 之间的转换统一收在 `core/qt/DomainMetatypes.h` 与各生产侧的显式
   `toStdString()` / `fromStdString()`。**别再把 Qt 容器写回 domain**：那一层的价值就在于
   它能在没有 Qt 的环境里被编译和复用。
+
+### 5.2 刻意保留、别去"修"的东西
+
+- **`ui/analysis_panel/FramePacketView.cpp` 直接 include `<libavcodec/avcodec.h>`**。
+  它看起来像"UI 碰了 FFmpeg"的分层违规，其实不是：这个文件只在做
+  **「FFmpeg 常量 → 显示文案」的边界映射**，依赖三组稳定且跨版本不变的公共常量 ——
+  `AV_PICTURE_TYPE_*`（帧类型，10 处）、`AVMEDIA_TYPE_*`（流类型，12 处）、
+  `AV_PKT_FLAG_*`（包标志位掩码，5 处），共 27 处。
+
+  要把它换成 domain 常量，就得在 domain 里复刻 FFmpeg 的取值表并保证永不漂移，
+  而 `AV_PKT_FLAG_*` 是位掩码、`AVMEDIA_TYPE_*` 的值必须与 FFmpeg 对齐 ——
+  一旦某处对不齐，表格会**静默**显示错误（比如所有流都变成"未知"），比现在这个
+  显式 include 难查得多。
+
+  所以：**别为了"UI 不该碰 FFmpeg"这条洁癖去动它。** 真正要盯的是另一条 ——
+  UI 里不许出现 FFmpeg 的**调用**（`av_read_frame` / `sws_scale` / `avformat_*`
+  这类），常量映射不算。
 - **UI 侧仍有直接吃分析器的地方**。`AnalysisPanel` 已经只通过 `ui/AnalysisFacade` 拿
   编排 / QC / 时间轴三件事，facade 的公开头也只剩 `AnalysisOptions`、`AnalysisResult` 与
   domain model；但 `ColorHdrPage.cpp` 仍显式 include `ColorHdrAnalyzer.h`、
