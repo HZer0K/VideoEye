@@ -633,7 +633,7 @@ void BitrateGopPage::OnExportAnomalyCsv() {
             .arg(result_.bitrate_gop.anomalies.size()).arg(filename));
 }
 
-void BitrateGopPage::SetResult(const analyzer::AnalysisResult& result) {
+void BitrateGopPage::SetResult(const model::AnalysisResult& result) {
     result_ = result;
     has_result_ = true;
     Refresh();

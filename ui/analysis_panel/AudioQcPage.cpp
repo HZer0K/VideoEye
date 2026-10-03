@@ -698,7 +698,7 @@ void AudioQcPage::OnExportCsv() {
                                  .arg(result_.audio_qc.loudness_points.size()));
 }
 
-void AudioQcPage::SetResult(const analyzer::AnalysisResult& result,
+void AudioQcPage::SetResult(const model::AnalysisResult& result,
                             const model::QcReport& qc_report) {
     result_ = result;
     qc_report_ = qc_report;

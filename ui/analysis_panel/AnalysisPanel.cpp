@@ -400,7 +400,7 @@ void AnalysisPanel::SetupUI() {
     SetupReportingPanelTab();
 
     qRegisterMetaType<model::SceneChangeResult>();
-    qRegisterMetaType<analyzer::AnalysisResult>();
+    qRegisterMetaType<model::AnalysisResult>();
     qRegisterMetaType<model::FrameQualityMetric>();
     qRegisterMetaType<model::VisualDefect>();
     qRegisterMetaType<model::VisualDefectOptions>();
@@ -733,7 +733,7 @@ void AnalysisPanel::OnScanEnded(DiagnosticsPage::ScanEndReason reason) {
     }
 
     // MP4 样本表：扫描跑过就顺带刷新容器页（与打开文件时那次解析结果一致）
-    const analyzer::AnalysisResult& result = diagnostics_page_->result();
+    const model::AnalysisResult& result = diagnostics_page_->result();
     if (result.mp4_samples_analyzed && result.mp4_samples.valid) {
         VE_PERF("诊断后刷新 MP4 样本表");
         if (container_page_) container_page_->ApplySampleTable(result.mp4_samples);

@@ -46,7 +46,7 @@ public:
     void SetSourcePath(const QString& path) { source_path_ = path; }
 
     // 扫描结束（或规则重算后）由面板喂结果
-    void SetResult(const analyzer::AnalysisResult& result);
+    void SetResult(const model::AnalysisResult& result);
 
     // 「场景切换」页的检测记录：曲线上画标记，「关联场景切换」按钮要用
     void SetSceneChanges(const std::vector<model::SceneChangeResult>& records);
@@ -101,7 +101,7 @@ private:
 
     QString source_path_;
     bool has_result_ = false;
-    analyzer::AnalysisResult result_;
+    model::AnalysisResult result_;
     analyzer::BitrateGopOptions options_;
     bool decode_frame_types_ = false;
     std::vector<model::SceneChangeResult> scene_changes_;

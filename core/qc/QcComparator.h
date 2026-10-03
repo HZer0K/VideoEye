@@ -2,7 +2,7 @@
 
 // 两个文件的对比（转码前后 / 归档前后 / 上游与自研转码对比）
 //
-// 对比的数据源是 analyzer::AnalysisResult 而不是 QcReport —— 后者只有问题清单，
+// 对比的数据源是 model::AnalysisResult 而不是 QcReport —— 后者只有问题清单，
 // 拿不到"第二个 GOP 多长"这类对判断是否同一次重编码很有用的原始指标。
 //
 // 输出的最小单元是 QcCompareRow：一行一个字段，含左右两侧的字符串展示值、

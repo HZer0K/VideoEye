@@ -120,7 +120,7 @@ void QcRuleEngine::SetRules(std::vector<model::QcRule> rules) {
     rules_ = std::move(rules);
 }
 
-model::QcReport QcRuleEngine::Evaluate(const AnalysisResult& result) const {
+model::QcReport QcRuleEngine::Evaluate(const model::AnalysisResult& result) const {
     model::QcReport report;
     report.file_path = result.file_path;
     const size_t slash = result.file_path.find_last_of("/\\");
@@ -133,9 +133,9 @@ model::QcReport QcRuleEngine::Evaluate(const AnalysisResult& result) const {
     report.video_stream_count = result.VideoStreamCount();
     report.audio_stream_count = result.AudioStreamCount();
     // 终态且非取消/失败 → 报告视为"完整/可结算"；命中包数上限的抽样属于部分结果
-    report.completed = (result.scan_status == AnalysisStatus::Complete ||
-                        result.scan_status == AnalysisStatus::Sampled);
-    report.partial = (result.scan_status == AnalysisStatus::Sampled);
+    report.completed = (result.scan_status == model::AnalysisStatus::Complete ||
+                        result.scan_status == model::AnalysisStatus::Sampled);
+    report.partial = (result.scan_status == model::AnalysisStatus::Sampled);
     report.rules = rules_;
     report.color_hdr = result.color_hdr;
     report.generated_at = model::CurrentTimestampString();
@@ -174,7 +174,7 @@ model::QcReport QcRuleEngine::Evaluate(const AnalysisResult& result) const {
 }
 
 std::vector<model::DiagnosticIssue> QcRuleEngine::CheckRule(const model::QcRule& rule,
-                                                            const AnalysisResult& result) const {
+                                                            const model::AnalysisResult& result) const {
     std::vector<model::DiagnosticIssue> issues;
 
     auto make_issue = [&rule](double value, const std::string& detail,
@@ -357,7 +357,7 @@ std::vector<model::DiagnosticIssue> QcRuleEngine::CheckRule(const model::QcRule&
         return issues;
     }
     if (rule.id == "video.bitrate.low_bpp") {
-        const StreamDigest* video = result.FirstVideoStream();
+        const model::StreamDigest* video = result.FirstVideoStream();
         if (video && video->width > 0 && video->height > 0) {
             double fps = video->avg_fps;
             if (fps <= 0.0) fps = result.video_fps.Mean();
@@ -455,7 +455,7 @@ std::vector<model::DiagnosticIssue> QcRuleEngine::CheckRule(const model::QcRule&
         return issues;
     }
     if (rule.id == "video.resolution.odd") {
-        const StreamDigest* video = result.FirstVideoStream();
+        const model::StreamDigest* video = result.FirstVideoStream();
         if (video && (video->width % 2 != 0 || video->height % 2 != 0)) {
             issues.push_back(make_issue(1.0,
                 "分辨率为 " + std::to_string(video->width) + "x" + std::to_string(video->height) +
@@ -511,7 +511,7 @@ std::vector<model::DiagnosticIssue> QcRuleEngine::CheckRule(const model::QcRule&
         const auto& qc = result.audio_qc;
         if (!qc.analyzed) return issues;
 
-        const StreamDigest* audio = result.FirstAudioStream();
+        const model::StreamDigest* audio = result.FirstAudioStream();
         const int audio_stream = (audio != nullptr) ? audio->index : -1;
         const bool has_loudness = qc.integrated_lufs > model::kSilenceLufs + 1.0;
 

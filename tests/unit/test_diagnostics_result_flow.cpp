@@ -18,7 +18,7 @@
 #include <QString>
 #include <QThread>
 
-#include "core/analysis/AnalysisResult.h"
+#include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/QcReport.h"
 #include "ui/AnalysisFacade.h"
 
@@ -33,7 +33,7 @@ TEST(DiagnosticsResultFlow, SetResultThenResultReflectsScan) {
     EXPECT_EQ(facade.result().total_packets, 0);
     EXPECT_DOUBLE_EQ(facade.result().duration_seconds, 0.0);
 
-    analyzer::AnalysisResult scan;
+    model::AnalysisResult scan;
     scan.container_format = "mov,mp4,m4a,3gp,3g2,mj2";
     scan.duration_seconds = 12.0;
     scan.total_packets = 1357;
@@ -59,7 +59,7 @@ TEST(DiagnosticsResultFlow, SetResultThenResultReflectsScan) {
 TEST(DiagnosticsResultFlow, WithoutSetResultResultStaysEmpty) {
     ui::AnalysisFacade facade;
 
-    analyzer::AnalysisResult scan;
+    model::AnalysisResult scan;
     scan.total_packets = 1357;
     scan.duration_seconds = 12.0;
 
@@ -107,10 +107,10 @@ TEST(DiagnosticsResultFlow, FacadeSavesResultBeforeEmittingFinished) {
     quint64 observed_gen = 0;
     // 观察者故意**只读 facade.result()**，不碰回调参数里的 result ——
     // 这样一旦 facade 没保存，断言必然失败（正是旧 bug 的表现）。
-    analyzer::AnalysisResult seen_from_facade;
+    model::AnalysisResult seen_from_facade;
 
     QObject::connect(&facade, &ui::AnalysisFacade::AnalysisFinished, &facade,
-                     [&](quint64 generation, bool done, const analyzer::AnalysisResult&) {
+                     [&](quint64 generation, bool done, const model::AnalysisResult&) {
                          seen_from_facade = facade.result();
                          observed_gen = generation;
                          completed = done;

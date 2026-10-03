@@ -15,7 +15,7 @@
 #include <gtest/gtest.h>
 
 #include "core/analysis/quality/AudioQcAnalyzer.h"
-#include "core/analysis/AnalysisResult.h"
+#include "core/domain/model/AnalysisResult.h"
 #include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/domain/model/QcReport.h"
 
@@ -27,7 +27,7 @@ constexpr int kSampleRate = 48000;
 constexpr double kPi = 3.14159265358979323846;
 
 // 用合成 PCM 跑一遍 AudioQcAnalyzer，填出 AnalysisResult.audio_qc
-analyzer::AnalysisResult BuildResult(int channels, int frames, double amplitude,
+model::AnalysisResult BuildResult(int channels, int frames, double amplitude,
                                      bool invert_second_channel = false, double dc = 0.0,
                                      double container_duration = 0.0) {
     std::vector<std::vector<float>> planes(static_cast<size_t>(channels),
@@ -62,11 +62,11 @@ analyzer::AnalysisResult BuildResult(int channels, int frames, double amplitude,
     }
     analyzer.OnSamples(ptrs.data(), frames, 0.0);
 
-    analyzer::AnalysisResult result;
+    model::AnalysisResult result;
     result.file_path = "test.wav";
     result.container_format = "wav";
     result.duration_seconds = container_duration;
-    analyzer::StreamDigest audio_stream;
+    model::StreamDigest audio_stream;
     audio_stream.index = 1;
     audio_stream.media_type = 1;   // AVMEDIA_TYPE_AUDIO
     audio_stream.sample_rate = kSampleRate;
@@ -132,7 +132,7 @@ TEST(AudioQcRulesTest, FullScaleTriggersTruePeakAndClipping) {
     analyzer.SetStreamInfo(kSampleRate, 1, "fltp", 32);
     analyzer.OnSamples(ptrs, static_cast<int>(plane.size()), 0.0);
 
-    analyzer::AnalysisResult result;
+    model::AnalysisResult result;
     result.file_path = "clip.wav";
     result.audio_qc = analyzer.Finish();
 
@@ -182,7 +182,7 @@ TEST(AudioQcRulesTest, DurationMismatchIsReported) {
 }
 
 TEST(AudioQcRulesTest, NoFalsePositiveWithoutAudioAnalysis) {
-    analyzer::AnalysisResult result;
+    model::AnalysisResult result;
     result.file_path = "noaudio.mp4";
     result.duration_seconds = 10.0;
     // audio_qc 保持默认: analyzed=false

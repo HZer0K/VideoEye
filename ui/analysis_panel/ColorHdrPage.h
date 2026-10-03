@@ -28,7 +28,7 @@ public:
 
     void SetSourcePath(const QString& path) { source_path_ = path; }
     // 异常表来自 QC 规则引擎（category=色彩/HDR），所以要连报告一起给
-    void SetResult(const analyzer::AnalysisResult& result, const model::QcReport& qc_report);
+    void SetResult(const model::AnalysisResult& result, const model::QcReport& qc_report);
 
     // 只换报告（用户在「规则与阈值」页改了规则后重新评估）再刷一次
     void SetQcReport(const model::QcReport& qc_report);
@@ -64,7 +64,7 @@ private:
 
     QString source_path_;
     bool has_result_ = false;
-    analyzer::AnalysisResult result_;
+    model::AnalysisResult result_;
     model::QcReport qc_report_;
     analyzer::ColorHdrOptions options_;
 

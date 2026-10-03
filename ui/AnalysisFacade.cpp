@@ -16,7 +16,7 @@ struct AnalysisFacade::Impl {
     qt::QtAnalysisController coordinator;
     analyzer::QcRuleEngine qc_rule_engine;
     analyzer::TimelineAnalyzer timeline_analyzer;
-    analyzer::AnalysisResult result;
+    model::AnalysisResult result;
 };
 
 AnalysisFacade::AnalysisFacade(QObject* parent)
@@ -31,7 +31,7 @@ AnalysisFacade::AnalysisFacade(QObject* parent)
     // 结果就是"页面忘了写"成了整个功能的单点故障 —— 信号发了、result() 还是默认空结果，
     // 问题清单/评分/报告全空。编排层自己保存，页面只负责展示，才不会再漏。
     connect(&impl_->coordinator, &qt::QtAnalysisController::AnalysisFinished,
-            this, [this](quint64 generation, bool completed, const analyzer::AnalysisResult& result) {
+            this, [this](quint64 generation, bool completed, const model::AnalysisResult& result) {
                 // 只认当前代际: 旧任务迟到的回包不能覆盖新结果（与页面的过滤规则一致）。
                 if (generation == impl_->coordinator.generation()) {
                     impl_->result = result;
@@ -61,11 +61,11 @@ quint64 AnalysisFacade::generation() const {
     return impl_->coordinator.generation();
 }
 
-const analyzer::AnalysisResult& AnalysisFacade::result() const {
+const model::AnalysisResult& AnalysisFacade::result() const {
     return impl_->result;
 }
 
-void AnalysisFacade::SetResult(const analyzer::AnalysisResult& r) {
+void AnalysisFacade::SetResult(const model::AnalysisResult& r) {
     impl_->result = r;
 }
 
@@ -81,7 +81,7 @@ void AnalysisFacade::SetRules(const std::vector<model::QcRule>& rules) {
     impl_->qc_rule_engine.SetRules(rules);
 }
 
-model::QcReport AnalysisFacade::Evaluate(const analyzer::AnalysisResult& r) const {
+model::QcReport AnalysisFacade::Evaluate(const model::AnalysisResult& r) const {
     return impl_->qc_rule_engine.Evaluate(r);
 }
 

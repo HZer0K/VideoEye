@@ -93,7 +93,7 @@ public:
 
     // 只读快照：面板分发给共用同一次扫描的其它页
     const std::vector<model::QcRule>& rules() const;
-    const analyzer::AnalysisResult& result() const;
+    const model::AnalysisResult& result() const;
     const model::QcReport& qcReport() const { return report_; }
     bool hasResult() const { return has_result_; }
 
@@ -120,7 +120,7 @@ private slots:
     void OnResetRulesClicked();
     void OnFacadeProgress(quint64 generation, double percent, const QString& stage);
     void OnFacadeFinished(quint64 generation, bool completed,
-                          const analyzer::AnalysisResult& result);
+                          const model::AnalysisResult& result);
     void OnFacadeFailed(quint64 generation, const QString& message);
     void OnTimelineMarkerHovered(const QPointF& point, bool state);
     void OnJumpToIssue();

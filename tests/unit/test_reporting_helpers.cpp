@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "core/analysis/AnalysisOptions.h"
-#include "core/analysis/AnalysisResult.h"
+#include "core/domain/model/AnalysisResult.h"
 #include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/qc/QcProfile.h"
 #include "core/qc/QcReportFormat.h"
@@ -15,8 +15,12 @@
 
 namespace fs = std::filesystem;
 
-using videoeye::analyzer::AnalysisResult;
-using videoeye::analyzer::AnalysisStatus;
+// 本文件的断言一律写 model::Xxx, 但它不像其它测试那样 using namespace videoeye,
+// 所以这里补一个命名空间别名，免得把每条 using 都改成 videoeye::model::Xxx。
+namespace model = videoeye::model;
+
+using videoeye::model::AnalysisResult;
+using videoeye::model::AnalysisStatus;
 using videoeye::analyzer::QcRuleEngine;
 using videoeye::qc::QcProfile;
 using videoeye::qc::QcReportFormat;
@@ -195,11 +199,11 @@ TEST(AnalysisTaskTest, RecycleNullAndUnstartedSafe) {
 // 抽样不得给出"通过"结论，失败 / 取消不得视为完整。
 // ---------------------------------------------------------------------------
 TEST(QcScanStatusTest, CompleteIsFull) {
-    AnalysisResult r;
+    model::AnalysisResult r;
     r.file_path = "x.mp4";
     r.file_extension = "mp4";
     r.container_format = "mp4";
-    r.scan_status = AnalysisStatus::Complete;
+    r.scan_status = model::AnalysisStatus::Complete;
 
     const auto report = QcRuleEngine().Evaluate(r);
     EXPECT_TRUE(report.completed);
@@ -207,11 +211,11 @@ TEST(QcScanStatusTest, CompleteIsFull) {
 }
 
 TEST(QcScanStatusTest, SampledIsPartialAndNotPass) {
-    AnalysisResult r;
+    model::AnalysisResult r;
     r.file_path = "x.mp4";
     r.file_extension = "mp4";
     r.container_format = "mp4";
-    r.scan_status = AnalysisStatus::Sampled;
+    r.scan_status = model::AnalysisStatus::Sampled;
 
     const auto report = QcRuleEngine().Evaluate(r);
     EXPECT_TRUE(report.completed);  // 抽样是"跑完"的部分结果，可结算
@@ -220,11 +224,11 @@ TEST(QcScanStatusTest, SampledIsPartialAndNotPass) {
 }
 
 TEST(QcScanStatusTest, FailedIsNotCompleted) {
-    AnalysisResult r;
+    model::AnalysisResult r;
     r.file_path = "x.mp4";
     r.file_extension = "mp4";
     r.container_format = "mp4";
-    r.scan_status = AnalysisStatus::Failed;
+    r.scan_status = model::AnalysisStatus::Failed;
 
     const auto report = QcRuleEngine().Evaluate(r);
     EXPECT_FALSE(report.completed);
@@ -232,11 +236,11 @@ TEST(QcScanStatusTest, FailedIsNotCompleted) {
 }
 
 TEST(QcScanStatusTest, CancelledIsNotCompleted) {
-    AnalysisResult r;
+    model::AnalysisResult r;
     r.file_path = "x.mp4";
     r.file_extension = "mp4";
     r.container_format = "mp4";
-    r.scan_status = AnalysisStatus::Cancelled;
+    r.scan_status = model::AnalysisStatus::Cancelled;
 
     const auto report = QcRuleEngine().Evaluate(r);
     EXPECT_FALSE(report.completed);

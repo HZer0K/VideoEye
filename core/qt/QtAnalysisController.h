@@ -20,7 +20,7 @@
 #include <QString>
 
 #include "core/analysis/AnalysisOptions.h"
-#include "core/analysis/AnalysisResult.h"
+#include "core/domain/model/AnalysisResult.h"
 #include "core/analysis/orchestration/AnalysisEngine.h"
 
 namespace videoeye {
@@ -52,7 +52,7 @@ public:
 signals:
     // percent: 0..100
     void ProgressReported(quint64 generation, double percent, const QString& stage);
-    void AnalysisFinished(quint64 generation, bool completed, const analyzer::AnalysisResult& result);
+    void AnalysisFinished(quint64 generation, bool completed, const model::AnalysisResult& result);
     void AnalysisFailed(quint64 generation, const QString& message);
 
     // 内部信号：工作线程体返回时发出（由工作线程 emit，自动排队回本对象所在线程）。

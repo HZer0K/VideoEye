@@ -1,7 +1,7 @@
-#include "core/analysis/AnalysisResult.h"
+#include "core/domain/model/AnalysisResult.h"
 
 namespace videoeye {
-namespace analyzer {
+namespace model {
 
 int AnalysisResult::VideoStreamCount() const {
     int count = 0;
@@ -33,5 +33,5 @@ const StreamDigest* AnalysisResult::FirstAudioStream() const {
     return nullptr;
 }
 
-} // namespace analyzer
+} // namespace model
 } // namespace videoeye

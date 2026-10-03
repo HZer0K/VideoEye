@@ -29,7 +29,7 @@ public:
     explicit SubtitleAuxPage(QWidget* parent = nullptr);
 
     // 扫描结束后由面板喂结果并整体刷新（顺带把起始时码冒泡给播放器）
-    void SetResult(const analyzer::AnalysisResult& result);
+    void SetResult(const model::AnalysisResult& result);
 
     // 字幕阈值以「规则与阈值」页那张可编辑规则表为准，扫描前同步一次，
     // 避免选项与规则两处阈值各说各话。
@@ -67,7 +67,7 @@ private:
     // 当前 cue 表要展示的流（-1 = 全部字幕流）
     int CurrentSubtitleStreamIndex() const;
 
-    analyzer::AnalysisResult result_;
+    model::AnalysisResult result_;
 
     QLabel* summary_label_ = nullptr;
     QPushButton* start_button_ = nullptr;

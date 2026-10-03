@@ -119,14 +119,19 @@ core/domain/model/BitrateGopResult.h  BitrateGopAnalysis / BitrateAnomaly / Bitr
 core/domain/model/SceneChangeResult.h SceneChangeResult
 core/domain/model/StreamStats.h       StreamStats
 core/domain/model/BitstreamUnits.h    NalUnit / ObuUnit（对外结果；media 层 utils:: 同名结构是解析器内部载体）
-core/analysis/AnalysisTypes.h         StreamDigest
+core/domain/model/AnalysisTypes.h     StreamDigest / AnalysisStatus
+core/domain/model/AnalysisResult.h    AnalysisResult（由上面这一排 *Result 拼成的聚合）
 core/analysis/AnalysisOptions.h       所有 *Options 与 AnalysisOptions
-core/analysis/AnalysisResult.h        AnalysisResult
 ```
 
 `AnalysisOptions` 单独成一个文件的意义：以前各分析器把 options 定义在自己的头文件里，
 于是任何"只想传个参数"的模块都要 include 一整排分析器。现在反过来 —— 分析器 include
 `AnalysisOptions.h` 取自己的选项，参数层一棵 import 树都往下也不传导到 FFmpeg。
+
+`AnalysisResult` 与 `AnalysisTypes.h` 住到 domain 是 2026-10-04 才完成的：两者都是纯值
+类型（整个 `AnalysisResult` 由 domain 的 `*Result` 拼成，不含任何分析逻辑），原先放在
+`core/analysis/`、`videoeye::analyzer` 里，等于"读结果的人"必须依赖"生产结果的人"。
+搬走之后命名空间也跟着目录走（`videoeye::model`），调用点全部改成 `model::X`。
 
 下放结果类型时都在原分析器头文件里留了 `using model::Xxx;` 别名，既有调用方不用改命名空间。
 但这些别名是**单向便利**：新代码请直接写 `model::Xxx`，别再让读结果的人绕道分析器头文件。
@@ -284,7 +289,7 @@ python scripts/check_layering.py
 |--------------|------|
 | 一种新的分析维度 | `core/analysis/<类别>/`（容器 / 码流 / 质量 / 流媒体 / 诊断） |
 | 新分析维度的开关 | `core/analysis/AnalysisOptions.h` 里的对应 options 结构 |
-| 分析结果里的新字段 | 先在 `core/domain/model/` 起结果类型，再让 `AnalysisResult` 引用它 |
+| 分析结果里的新字段 | 先在 `core/domain/model/` 起结果类型，再让 `core/domain/model/AnalysisResult.h` 引用它 |
 | 一种新的 QC 规则 | `QcRuleEngine::DefaultQcRules()` + 对应 `CheckRule()` 分支 |
 | 新的报告格式 | `core/reporting/` |
 | 界面 | `ui/`，通过 facade / controller 调一层之下的东西 |
@@ -301,7 +306,7 @@ python scripts/check_layering.py
 | 1 | `core/domain/model/XxxInfo.h`（+ `.cpp`） | 结果类型（必须先于分析器存在） |
 | 2 | `core/analysis/<类别>/XxxAnalyzer.{h,cpp}` | 分析器本体 |
 | 3 | `core/analysis/AnalysisOptions.h` | 开关字段 + 对应的 options 结构 |
-| 4 | `core/analysis/AnalysisResult.h` | 结果字段 + 配套的 `xxx_analyzed` 标志位 |
+| 4 | `core/domain/model/AnalysisResult.h` | 结果字段 + 配套的 `xxx_analyzed` 标志位 |
 | 5 | `core/analysis/orchestration/AnalysisEngine.cpp` | **至少 4 处**：建分析器、`OnPacket` 分支、收尾 `Finish()`、`Finish()` 里再判一次标志位（取消/截断时不能算跑过） |
 | 6 | `core/analysis/diagnostics/QcRuleEngine.cpp` | 可选：要加 QC 规则时改 `DefaultQcRules()` + `CheckRule()` |
 | 7 | `ui/analysis_panel/*.cpp` | 展示。可以新建页面，也可以并入现有页（`timecode` 就并进了 `SubtitleAuxPage`） |

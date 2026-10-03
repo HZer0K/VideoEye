@@ -2,7 +2,7 @@
 
 #include <vector>
 
-#include "core/analysis/AnalysisResult.h"
+#include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/DiagnosticIssue.h"
 #include "core/domain/model/QcReport.h"
 #include "core/domain/model/QcRule.h"
@@ -27,12 +27,12 @@ public:
     std::vector<model::QcRule>& rules() { return rules_; }
 
     // 执行一次评估
-    model::QcReport Evaluate(const AnalysisResult& result) const;
+    model::QcReport Evaluate(const model::AnalysisResult& result) const;
 
 private:
     // 单条规则判定：命中则返回 issue，否则返回 std::nullopt
     std::vector<model::DiagnosticIssue> CheckRule(const model::QcRule& rule,
-                                                  const AnalysisResult& result) const;
+                                                  const model::AnalysisResult& result) const;
 
     std::vector<model::QcRule> rules_;
 };

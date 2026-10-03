@@ -10,7 +10,7 @@
 #include <functional>
 #include <string>
 
-#include "core/analysis/AnalysisResult.h"
+#include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/QcReport.h"
 
 namespace videoeye {
@@ -21,7 +21,7 @@ struct QcRunResult {
     bool ok = false;               // 分析是否跑完（false = 打开失败 / 被取消）
     std::string error;             // ok=false 时的原因
     model::QcReport report;
-    analyzer::AnalysisResult analysis;  // 原始数据，对比模式要靠它拿详细的编码参数
+    model::AnalysisResult analysis;  // 原始数据，对比模式要靠它拿详细的编码参数
     std::string profile_id;
     double elapsed_ms = 0.0;
 

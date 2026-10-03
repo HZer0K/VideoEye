@@ -113,7 +113,7 @@ JsonValue BuildIssueObject(const model::DiagnosticIssue& issue) {
     return object;
 }
 
-JsonValue BuildStreamObject(const analyzer::StreamDigest& stream) {
+JsonValue BuildStreamObject(const model::StreamDigest& stream) {
     JsonValue object = JsonValue::MakeObject();
     const char* type = stream.IsVideo() ? "video" : (stream.IsAudio() ? "audio" : "other");
     object.Set("index", JNumber(static_cast<double>(stream.index)));
@@ -155,10 +155,10 @@ JsonValue BuildRuleObject(const model::QcRule& rule) {
     return object;
 }
 
-JsonValue BuildMetricsObject(const analyzer::AnalysisResult& result) {
+JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
     JsonValue metrics = JsonValue::MakeObject();
 
-    if (const analyzer::StreamDigest* video = result.FirstVideoStream()) {
+    if (const model::StreamDigest* video = result.FirstVideoStream()) {
         JsonValue node = JsonValue::MakeObject();
         node.Set("codec_name", JText(video->codec_name));
         node.Set("profile_name", JText(video->profile_name));
@@ -170,7 +170,7 @@ JsonValue BuildMetricsObject(const analyzer::AnalysisResult& result) {
         node.Set("key_frame_count", JNumber(static_cast<double>(video->key_frame_count)));
         metrics.Set("video", node);
     }
-    if (const analyzer::StreamDigest* audio = result.FirstAudioStream()) {
+    if (const model::StreamDigest* audio = result.FirstAudioStream()) {
         JsonValue node = JsonValue::MakeObject();
         node.Set("codec_name", JText(audio->codec_name));
         node.Set("sample_rate", JNumber(static_cast<double>(audio->sample_rate)));

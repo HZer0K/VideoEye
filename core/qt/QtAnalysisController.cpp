@@ -10,8 +10,8 @@ namespace qt {
 QtAnalysisController::QtAnalysisController(QObject* parent) : QObject(parent) {
     // AnalysisResult 要跨线程走队列连接，必须先在元类型系统里注册，
     // 否则排队时会报 "QObject::connect: Cannot queue arguments" 而槽永远不被调用。
-    qRegisterMetaType<analyzer::AnalysisResult>("videoeye::analyzer::AnalysisResult");
-    qRegisterMetaType<analyzer::AnalysisResult>("AnalysisResult");
+    qRegisterMetaType<model::AnalysisResult>("videoeye::model::AnalysisResult");
+    qRegisterMetaType<model::AnalysisResult>("AnalysisResult");
 
     // 工作线程体返回后通知回本对象所在线程，用来接手排队请求。
     // 显式声明 QueuedConnection: 发送方是纯 std::thread，接收方在 UI 线程，
@@ -72,7 +72,7 @@ void QtAnalysisController::Launch(const std::string& file_path, const analyzer::
         running_.store(false, std::memory_order_release);
         emit AnalysisFailed(gen, QString::fromStdString(message));
     };
-    callbacks.on_finished = [this, gen](bool completed, const analyzer::AnalysisResult& result) {
+    callbacks.on_finished = [this, gen](bool completed, const model::AnalysisResult& result) {
         running_.store(false, std::memory_order_release);
         emit AnalysisFinished(gen, completed, result);
     };

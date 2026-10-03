@@ -66,7 +66,7 @@ struct TerminalSink {
 void WireSink(videoeye::qt::QtAnalysisController& controller, TerminalSink& sink) {
     QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFinished,
                      &controller,
-                     [&sink](quint64 gen, bool, const analyzer::AnalysisResult&) { sink.Record(gen); });
+                     [&sink](quint64 gen, bool, const model::AnalysisResult&) { sink.Record(gen); });
     QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFailed,
                      &controller, [&sink](quint64 gen, const QString&) { sink.Record(gen); });
 }

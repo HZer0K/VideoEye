@@ -375,7 +375,7 @@ void ColorHdrPage::OnExportCsv() {
     QMessageBox::information(this, tr("导出完成"), tr("已导出 %1 行。").arg(rows));
 }
 
-void ColorHdrPage::SetResult(const analyzer::AnalysisResult& result,
+void ColorHdrPage::SetResult(const model::AnalysisResult& result,
                              const model::QcReport& qc_report) {
     result_ = result;
     qc_report_ = qc_report;

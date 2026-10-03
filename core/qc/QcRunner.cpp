@@ -64,7 +64,7 @@ QcRunResult QcRunner::AnalyzeFile(const std::string& path,
         bool settled = false;
         bool failed = false;
         std::string error;
-        analyzer::AnalysisResult result;
+        model::AnalysisResult result;
     };
     Outcome outcome;
     std::mutex mutex;
@@ -82,7 +82,7 @@ QcRunResult QcRunner::AnalyzeFile(const std::string& path,
     // 以前这里要通过 QtAnalysisController 绕一圈 Qt 信号（还要挂 QObject 上下文），
     // 现在直接用 AnalysisEngine 的回调 —— QC 批处理不需要任何 Qt 事件循环。
     analyzer::AnalysisCallbacks engine_callbacks;
-    engine_callbacks.on_finished = [&settle](bool, const analyzer::AnalysisResult& result) {
+    engine_callbacks.on_finished = [&settle](bool, const model::AnalysisResult& result) {
         Outcome next;
         next.result = result;
         settle(std::move(next));
@@ -125,7 +125,7 @@ QcRunResult QcRunner::AnalyzeFile(const std::string& path,
         output.ok = false;
         output.error = outcome.error;
         // 把扫描失败的状态也带出来，便于上层区分
-        output.analysis.scan_status = analyzer::AnalysisStatus::Failed;
+        output.analysis.scan_status = model::AnalysisStatus::Failed;
         if (!outcome.error.empty()) output.analysis.error_message = outcome.error;
         return output;
     }
@@ -135,17 +135,17 @@ QcRunResult QcRunner::AnalyzeFile(const std::string& path,
 
     // 区分终态：取消 / 失败都算没跑完；抽样(命中包数上限)是部分结果但可算成功
     switch (output.analysis.scan_status) {
-        case analyzer::AnalysisStatus::Cancelled:
+        case model::AnalysisStatus::Cancelled:
             output.ok = false;
             output.error = "分析被取消";
             return output;
-        case analyzer::AnalysisStatus::Failed:
+        case model::AnalysisStatus::Failed:
             output.ok = false;
             output.error = output.analysis.error_message.empty()
                               ? "分析失败" : output.analysis.error_message;
             return output;
-        case analyzer::AnalysisStatus::Complete:
-        case analyzer::AnalysisStatus::Sampled:
+        case model::AnalysisStatus::Complete:
+        case model::AnalysisStatus::Sampled:
             break;  // 到达终态，继续判定
     }
 

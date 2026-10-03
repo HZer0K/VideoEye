@@ -15,7 +15,7 @@
 #include <string>
 
 #include "core/analysis/AnalysisOptions.h"
-#include "core/analysis/AnalysisResult.h"
+#include "core/domain/model/AnalysisResult.h"
 
 namespace videoeye {
 namespace analyzer {
@@ -27,7 +27,7 @@ struct AnalysisCallbacks {
     // 打开 / 探测 / 读取失败等"没能产出完整结果"的情况
     std::function<void(const std::string& message)> on_failed;
     // completed = 到达终态而非被取消；result 在 Failed 前不会走到 on_finished
-    std::function<void(bool completed, const AnalysisResult& result)> on_finished;
+    std::function<void(bool completed, const model::AnalysisResult& result)> on_finished;
 };
 
 class AnalysisEngine {
@@ -53,7 +53,7 @@ private:
     // FFmpeg 会把清单当播放列表去发网络请求，离线 QC 既不可控也无法单测。
     void RunStreamingManifest(const std::string& file_path,
                               const AnalysisOptions& options,
-                              AnalysisResult& result,
+                              model::AnalysisResult& result,
                               const AnalysisCallbacks& callbacks);
 
     std::atomic<bool> cancel_requested_{false};

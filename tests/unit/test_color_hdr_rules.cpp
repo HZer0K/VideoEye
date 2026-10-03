@@ -17,7 +17,7 @@
 
 #include <gtest/gtest.h>
 
-#include "core/analysis/AnalysisResult.h"
+#include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/ColorHdrResult.h"
 #include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/domain/model/QcReport.h"
@@ -98,13 +98,13 @@ model::ColorHdrAnalysis MakeAnalysis(const model::ColorInfo& color,
     return analysis;
 }
 
-analyzer::AnalysisResult MakeResult(const model::ColorHdrAnalysis& analysis) {
-    analyzer::AnalysisResult result;
+model::AnalysisResult MakeResult(const model::ColorHdrAnalysis& analysis) {
+    model::AnalysisResult result;
     result.file_path = "test.mp4";
     result.container_format = "mov,mp4,m4a,3gp,3g2,mj2";
     result.duration_seconds = 10.0;
 
-    analyzer::StreamDigest video;
+    model::StreamDigest video;
     video.index = 0;
     video.media_type = 0;   // AVMEDIA_TYPE_VIDEO
     video.codec_name = "hevc";
@@ -389,7 +389,7 @@ TEST(ColorHdrTest, DolbyVisionWithoutCompatibilityLayerIsReported) {
 
 // 未分析过色彩/HDR 时不得误报
 TEST(ColorHdrTest, UnanalyzedResultProducesNoColorIssues) {
-    analyzer::AnalysisResult result;
+    model::AnalysisResult result;
     result.file_path = "unknown.bin";
     analyzer::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);

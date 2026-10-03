@@ -9,7 +9,7 @@
 
 #include <gtest/gtest.h>
 
-#include "core/analysis/AnalysisResult.h"
+#include "core/domain/model/AnalysisResult.h"
 #include "core/analysis/streaming/DashManifestAnalyzer.h"
 #include "core/analysis/streaming/HlsManifestAnalyzer.h"
 #include "core/analysis/diagnostics/QcRuleEngine.h"
@@ -63,7 +63,7 @@ const char* kGapMpd = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
 // ---------------- HLS: 分片时长超过目标时长 -> Warning ----------------
 
 TEST(StreamingQcRulesTest, HlsSegmentOverTargetBecomesWarningIssue) {
-    analyzer::AnalysisResult result;
+    model::AnalysisResult result;
     result.file_path = "over.m3u8";
     result.file_extension = "m3u8";
     result.container_format = "hls";
@@ -90,7 +90,7 @@ TEST(StreamingQcRulesTest, HlsSegmentOverTargetBecomesWarningIssue) {
 // ---------------- DASH: SegmentTimeline 缺口 -> Error ----------------
 
 TEST(StreamingQcRulesTest, DashSegmentTimelineGapBecomesErrorIssue) {
-    analyzer::AnalysisResult result;
+    model::AnalysisResult result;
     result.file_path = "gap.mpd";
     result.file_extension = "mpd";
     result.container_format = "dash";
@@ -115,7 +115,7 @@ TEST(StreamingQcRulesTest, DashSegmentTimelineGapBecomesErrorIssue) {
 // ---------------- 没跑过流媒体分析时不应有流媒体问题 ----------------
 
 TEST(StreamingQcRulesTest, NoStreamingIssuesWhenNotAnalyzed) {
-    analyzer::AnalysisResult result;
+    model::AnalysisResult result;
     result.file_path = "over.m3u8";
     result.file_extension = "m3u8";
     result.container_format = "hls";
@@ -136,7 +136,7 @@ TEST(StreamingQcRulesTest, NoStreamingIssuesWhenNotAnalyzed) {
 // ---------------- 规则可关：enabled=false 时不上报 ----------------
 
 TEST(StreamingQcRulesTest, DisabledRuleSuppressesStreamingIssue) {
-    analyzer::AnalysisResult result;
+    model::AnalysisResult result;
     result.file_path = "over.m3u8";
     result.file_extension = "m3u8";
     result.container_format = "hls";

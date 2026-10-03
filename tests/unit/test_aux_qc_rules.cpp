@@ -10,7 +10,7 @@
 
 #include <gtest/gtest.h>
 
-#include "core/analysis/AnalysisResult.h"
+#include "core/domain/model/AnalysisResult.h"
 #include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/domain/model/QcReport.h"
 #include "core/domain/model/QcRule.h"
@@ -31,9 +31,9 @@ bool HasIssue(const model::QcReport& report, const std::string& rule_id,
 }
 
 // 造一个"字幕分析过、带指定问题"的最小 AnalysisResult
-analyzer::AnalysisResult MakeSubtitleResult(model::SubtitleIssueType type,
+model::AnalysisResult MakeSubtitleResult(model::SubtitleIssueType type,
                                             model::IssueSeverity severity, int count = 1) {
-    analyzer::AnalysisResult result;
+    model::AnalysisResult result;
     result.subtitle_analyzed = true;
 
     model::SubtitleStreamInfo stream;
@@ -75,7 +75,7 @@ TEST(AuxQcRulesTest, DefaultRulesCoverFeatureNine) {
 }
 
 TEST(AuxQcRulesTest, SubtitleOverlapIsReportedAsWarning) {
-    const analyzer::AnalysisResult result =
+    const model::AnalysisResult result =
         MakeSubtitleResult(model::SubtitleIssueType::Overlap, model::IssueSeverity::Warning, 2);
 
     const analyzer::QcRuleEngine engine;
@@ -91,7 +91,7 @@ TEST(AuxQcRulesTest, SubtitleOverlapIsReportedAsWarning) {
 }
 
 TEST(AuxQcRulesTest, SubtitleEmptyCueIsReportedAsWarning) {
-    const analyzer::AnalysisResult result =
+    const model::AnalysisResult result =
         MakeSubtitleResult(model::SubtitleIssueType::EmptyText, model::IssueSeverity::Warning, 3);
 
     const analyzer::QcRuleEngine engine;
@@ -107,7 +107,7 @@ TEST(AuxQcRulesTest, SubtitleEmptyCueIsReportedAsWarning) {
 }
 
 TEST(AuxQcRulesTest, SubtitleOrderIsErrorNotWarning) {
-    const analyzer::AnalysisResult result =
+    const model::AnalysisResult result =
         MakeSubtitleResult(model::SubtitleIssueType::NonMonotonic, model::IssueSeverity::Error);
 
     const analyzer::QcRuleEngine engine;
@@ -119,9 +119,9 @@ TEST(AuxQcRulesTest, SubtitleOrderIsErrorNotWarning) {
 }
 
 TEST(AuxQcRulesTest, SubtitleRulesStaySilentWhenNotAnalyzed) {
-    const analyzer::AnalysisResult result =
+    const model::AnalysisResult result =
         MakeSubtitleResult(model::SubtitleIssueType::Overlap, model::IssueSeverity::Warning);
-    analyzer::AnalysisResult skipped = result;
+    model::AnalysisResult skipped = result;
     skipped.subtitle_analyzed = false;   // 没跑过字幕分析（如没有字幕流）
 
     const analyzer::QcRuleEngine engine;
@@ -130,7 +130,7 @@ TEST(AuxQcRulesTest, SubtitleRulesStaySilentWhenNotAnalyzed) {
 }
 
 TEST(AuxQcRulesTest, MissingTimecodeIsReported) {
-    analyzer::AnalysisResult result;
+    model::AnalysisResult result;
     result.timecode_analyzed = true;     // 跑过但没找到时码
     result.timecode.has_primary = false;
 
@@ -139,7 +139,7 @@ TEST(AuxQcRulesTest, MissingTimecodeIsReported) {
     EXPECT_TRUE(HasIssue(report, "timecode.missing"));
 
     // 找到了时码就不再报
-    analyzer::AnalysisResult with_tc = result;
+    model::AnalysisResult with_tc = result;
     with_tc.timecode.has_primary = true;
     with_tc.timecode.primary = model::TimecodeFromString("00:59:58:00");
     with_tc.timecode.primary_frame_rate = 25.0;
@@ -147,7 +147,7 @@ TEST(AuxQcRulesTest, MissingTimecodeIsReported) {
 }
 
 TEST(AuxQcRulesTest, DropFrameMismatchOnNtscFootage) {
-    analyzer::AnalysisResult result;
+    model::AnalysisResult result;
     result.timecode_analyzed = true;
     result.timecode.has_primary = true;
     result.timecode.primary = model::TimecodeFromString("00:00:00:00");   // non-drop 写法
@@ -159,13 +159,13 @@ TEST(AuxQcRulesTest, DropFrameMismatchOnNtscFootage) {
     EXPECT_TRUE(HasIssue(report, "timecode.drop_frame_mismatch"));
 
     // 25 fps + non-drop 是匹配的，不该报
-    analyzer::AnalysisResult pal = result;
+    model::AnalysisResult pal = result;
     pal.timecode.primary_frame_rate = 25.0;
     EXPECT_FALSE(HasIssue(engine.Evaluate(pal), "timecode.drop_frame_mismatch"));
 }
 
 TEST(AuxQcRulesTest, ChapterOverlapIsReported) {
-    analyzer::AnalysisResult result;
+    model::AnalysisResult result;
     result.timecode_analyzed = true;
     result.timecode.media_duration_seconds = 60.0;
 
@@ -188,7 +188,7 @@ TEST(AuxQcRulesTest, ChapterOverlapIsReported) {
 }
 
 TEST(AuxQcRulesTest, Scte35MissingDurationIsReported) {
-    analyzer::AnalysisResult result;
+    model::AnalysisResult result;
     result.aux_data_analyzed = true;
 
     model::Scte35Cue cue;
@@ -205,7 +205,7 @@ TEST(AuxQcRulesTest, Scte35MissingDurationIsReported) {
     EXPECT_TRUE(HasIssue(report, "scte35.duration_missing"));
 
     // 带上 duration 就不该报
-    analyzer::AnalysisResult with_duration = result;
+    model::AnalysisResult with_duration = result;
     with_duration.aux_data.cues[0].has_duration = true;
     EXPECT_FALSE(HasIssue(engine.Evaluate(with_duration), "scte35.duration_missing"));
 }

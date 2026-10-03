@@ -23,7 +23,7 @@
 #include <QString>
 
 #include "core/analysis/AnalysisOptions.h"
-#include "core/analysis/AnalysisResult.h"
+#include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/FrameTimingInfo.h"
 #include "core/domain/model/QcReport.h"
 #include "core/domain/model/QcRule.h"
@@ -52,14 +52,14 @@ public:
     quint64 generation() const;
 
     // ---- 全文件扫描结果（诊断唯一数据源）----
-    const analyzer::AnalysisResult& result() const;
-    void SetResult(const analyzer::AnalysisResult& r);
+    const model::AnalysisResult& result() const;
+    void SetResult(const model::AnalysisResult& r);
 
     // ---- QC 规则引擎 ----
     const std::vector<model::QcRule>& rules() const;
     std::vector<model::QcRule>& rules();
     void SetRules(const std::vector<model::QcRule>& rules);
-    model::QcReport Evaluate(const analyzer::AnalysisResult& r) const;
+    model::QcReport Evaluate(const model::AnalysisResult& r) const;
 
     // ---- 时间轴实时分析（播放逐包 / 逐帧 / 音视频偏移）----
     void OnSyncSample(double audio_ms, double video_ms);
@@ -74,7 +74,7 @@ public:
 
 signals:
     void ProgressReported(quint64 generation, double percent, const QString& stage);
-    void AnalysisFinished(quint64 generation, bool completed, const analyzer::AnalysisResult& result);
+    void AnalysisFinished(quint64 generation, bool completed, const model::AnalysisResult& result);
     void AnalysisFailed(quint64 generation, const QString& message);
 
 private:

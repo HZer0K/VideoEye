@@ -5,12 +5,19 @@
 // 这里是"分析产出了什么"，线路执行相关的东西不在此文件：
 //   * 参数 -> core/analysis/AnalysisOptions.h
 //   * 编排 -> core/qt/QtAnalysisController.h（Qt 信号）/ core/analysis/orchestration/AnalysisEngine.h（执行）
+//
+// 住在这里（而不是 core/analysis/）的原因和 AnalysisTypes.h 一样：整个结构体
+// 由 domain 的值类型拼成，不含任何分析逻辑。放在 domain 之后，"消费结果的人"
+// （报告导出 / UI / QC 对比）不再需要为了一个容器去依赖"生产结果的人"。
+//
+// 历史：本文件原为 core/analysis/AnalysisResult.h（namespace videoeye::analyzer）。
+// 2026-10-04 下放到 domain，命名空间随之改成 model。
 
 #include <cstdint>
 #include <string>
 #include <vector>
 
-#include "core/analysis/AnalysisTypes.h"   // StreamDigest + AnalysisStatus
+#include "core/domain/model/AnalysisTypes.h"   // StreamDigest + AnalysisStatus
 #include "core/domain/model/AudioQcResult.h"
 #include "core/domain/model/AuxiliaryDataInfo.h"
 #include "core/domain/model/BitrateGopResult.h"
@@ -25,7 +32,7 @@
 #include "core/domain/model/TimelineDiagnostic.h"
 
 namespace videoeye {
-namespace analyzer {
+namespace model {
 
 // 全文件扫描结果（诊断的唯一数据源）
 struct AnalysisResult {
@@ -43,9 +50,9 @@ struct AnalysisResult {
     std::vector<StreamDigest> streams;
 
     // 时间序列指标
-    model::MetricSeries total_bitrate_kbps;
-    model::MetricSeries video_bitrate_kbps;
-    model::MetricSeries video_fps;
+    MetricSeries total_bitrate_kbps;
+    MetricSeries video_bitrate_kbps;
+    MetricSeries video_fps;
 
     // GOP / 关键帧（demux 层的轻量统计，供 QC 规则与报告使用）
     std::vector<double> gop_intervals_seconds;
@@ -54,7 +61,7 @@ struct AnalysisResult {
     int max_gop_frames = 0;
 
     // 码率与 GOP 深度分析结果（滑动窗口码率、I/P/B、GOP 列表、异常与建议）
-    model::BitrateGopAnalysis bitrate_gop;
+    BitrateGopAnalysis bitrate_gop;
 
     // 时间戳健康度（PTS 非单调 / 时间戳跳变现由 TimelineAnalyzer 统一产出，
     // 不再在此重复统计；DTS 缺失占比仍用于 timing.dts_missing 规则）
@@ -69,40 +76,40 @@ struct AnalysisResult {
     double avg_packet_bytes = 0.0;
 
     // 音频 QC（解码 + 重采样/格式归一后统计，见 core/analysis/quality/AudioQcAnalyzer.h）
-    model::AudioQcResult audio_qc;
+    AudioQcResult audio_qc;
 
     // 色彩与 HDR 元数据（demux 层 + 可选的首帧解码，见 core/analysis/quality/ColorHdrAnalyzer.h）
-    model::ColorHdrAnalysis color_hdr;
+    ColorHdrAnalysis color_hdr;
 
     // 时间轴与同步诊断（demux 层，不解码）
-    model::TimelineAnalysisResult timeline;
+    TimelineAnalysisResult timeline;
 
     // MP4/fMP4 容器一致性（自研 IsobmffParser 解析，见 core/analysis/container/Mp4SampleTableAnalyzer.h）
     // mp4_samples_analyzed=true 才表示跑过（非 MP4 家族或解析失败时不跑）
-    model::Mp4SampleTableResult mp4_samples;
+    Mp4SampleTableResult mp4_samples;
     bool mp4_samples_analyzed = false;
 
     // 编码码流解析（从 extradata 解析 SPS/VPS/OBU 等，见 core/analysis/codec/BitstreamAnalyzer.h）
     // bitstream_analysis 不为空表示已执行码流分析
-    model::BitstreamAnalysisResult bitstream_analysis;
+    BitstreamAnalysisResult bitstream_analysis;
     bool bitstream_analyzed = false;
 
     // HLS / DASH 流媒体包（见 core/analysis/streaming/HlsManifestAnalyzer.h / DashManifestAnalyzer.h）
     // 只有输入是清单文件时才跑；streaming_analyzed=true 才表示跑过。
-    model::StreamingPackageResult streaming_package;
+    StreamingPackageResult streaming_package;
     bool streaming_analyzed = false;
 
     // 字幕轨（见 core/analysis/diagnostics/SubtitleAnalyzer.h）
     // subtitle_analyzed=true 才表示跑过（没有字幕流时不跑）
-    model::SubtitleAnalysisResult subtitle;
+    SubtitleAnalysisResult subtitle;
     bool subtitle_analyzed = false;
 
     // 时码与章节（见 core/analysis/diagnostics/TimecodeAnalyzer.h）
-    model::TimecodeAnalysisResult timecode;
+    TimecodeAnalysisResult timecode;
     bool timecode_analyzed = false;
 
     // 辅助数据轨（见 core/analysis/diagnostics/AuxDataAnalyzer.h：data 流 + SCTE-35 + metadata）
-    model::AuxiliaryDataResult aux_data;
+    AuxiliaryDataResult aux_data;
     bool aux_data_analyzed = false;
 
     // 执行状态
@@ -117,5 +124,5 @@ struct AnalysisResult {
     const StreamDigest* FirstAudioStream() const;
 };
 
-} // namespace analyzer
+} // namespace model
 } // namespace videoeye

@@ -142,8 +142,8 @@ QcComparison CompareRuns(const QcRunResult& left, const QcRunResult& right,
     comparison.left_verdict = left.report.verdict;
     comparison.right_verdict = right.report.verdict;
 
-    const analyzer::AnalysisResult& a = left.analysis;
-    const analyzer::AnalysisResult& b = right.analysis;
+    const model::AnalysisResult& a = left.analysis;
+    const model::AnalysisResult& b = right.analysis;
     RowBuilder rows(comparison.rows, tolerance);
 
     // ---- 文件级差异：人类最关心的"叫什么名、判定如何、评多少分" ----
@@ -191,8 +191,8 @@ QcComparison CompareRuns(const QcRunResult& left, const QcRunResult& right,
     }
 
     // ---- 视频 ----
-    const analyzer::StreamDigest* va = a.FirstVideoStream();
-    const analyzer::StreamDigest* vb = b.FirstVideoStream();
+    const model::StreamDigest* va = a.FirstVideoStream();
+    const model::StreamDigest* vb = b.FirstVideoStream();
     if (va != nullptr || vb != nullptr) {
         rows.Text("视频", "编码", va ? va->codec_name : "", vb ? vb->codec_name : "");
         rows.Text("视频", "Profile", va ? va->profile_name : "", vb ? vb->profile_name : "");
@@ -247,8 +247,8 @@ QcComparison CompareRuns(const QcRunResult& left, const QcRunResult& right,
     }
 
     // ---- 音频 ----
-    const analyzer::StreamDigest* aa = a.FirstAudioStream();
-    const analyzer::StreamDigest* ab = b.FirstAudioStream();
+    const model::StreamDigest* aa = a.FirstAudioStream();
+    const model::StreamDigest* ab = b.FirstAudioStream();
     if (aa != nullptr || ab != nullptr) {
         rows.Text("音频", "编码", aa ? aa->codec_name : "", ab ? ab->codec_name : "");
         rows.Count("音频", "采样率", "Hz", aa && ab, aa ? aa->sample_rate : 0,

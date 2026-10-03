@@ -276,7 +276,7 @@ void SubtitleAuxPage::RefreshUi() {
 
 void SubtitleAuxPage::UpdateSummary() {
     if (summary_label_ == nullptr) return;
-    const analyzer::AnalysisResult& r = result_;
+    const model::AnalysisResult& r = result_;
 
     if (!r.subtitle_analyzed && !r.timecode_analyzed && !r.aux_data_analyzed) {
         summary_label_->setText(
@@ -313,7 +313,7 @@ void SubtitleAuxPage::UpdateSummary() {
 
 void SubtitleAuxPage::RebuildSubtitleStreamTable() {
     if (stream_table_ == nullptr) return;
-    const analyzer::AnalysisResult& r = result_;
+    const model::AnalysisResult& r = result_;
 
     // 流下拉: 重建时保留"全部"选项
     const int previous = CurrentSubtitleStreamIndex();
@@ -355,7 +355,7 @@ void SubtitleAuxPage::RebuildSubtitleStreamTable() {
 
 void SubtitleAuxPage::RebuildSubtitleCueTable() {
     if (cue_table_ == nullptr) return;
-    const analyzer::AnalysisResult& r = result_;
+    const model::AnalysisResult& r = result_;
     const int stream_filter = CurrentSubtitleStreamIndex();
     const bool issues_only = (issues_only_check_ != nullptr) &&
                              issues_only_check_->isChecked();
@@ -592,7 +592,7 @@ void SubtitleAuxPage::OnCueCellClicked(int row, int /*column*/) {
 }
 
 void SubtitleAuxPage::OnExportSubtitleCsv() {
-    const analyzer::AnalysisResult& r = result_;
+    const model::AnalysisResult& r = result_;
     if (r.subtitle.cues.empty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有字幕 cue 数据可导出"));
         return;
@@ -749,7 +749,7 @@ void SubtitleAuxPage::OnExportMetadataCsv() {
                              tr("已导出 %1 行。").arg(static_cast<int>(aux.metadata.size())));
 }
 
-void SubtitleAuxPage::SetResult(const analyzer::AnalysisResult& result) {
+void SubtitleAuxPage::SetResult(const model::AnalysisResult& result) {
     result_ = result;
     RefreshUi();
 }

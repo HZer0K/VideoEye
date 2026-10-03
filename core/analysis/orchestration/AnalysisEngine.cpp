@@ -226,16 +226,6 @@ struct ColorFrameProbe {
 
 }  // namespace
 
-const char* ToString(AnalysisStatus status) {
-    switch (status) {
-        case AnalysisStatus::Complete:  return "complete";
-        case AnalysisStatus::Sampled:   return "sampled";
-        case AnalysisStatus::Cancelled: return "cancelled";
-        case AnalysisStatus::Failed:    return "failed";
-    }
-    return "unknown";
-}
-
 // 回调是可选的（批处理可能不关心进度），逐个判空再调用。
 void NotifyProgress(const AnalysisCallbacks& callbacks, double percent, const std::string& stage) {
     if (callbacks.on_progress) callbacks.on_progress(percent, stage);
@@ -245,7 +235,7 @@ void NotifyFailed(const AnalysisCallbacks& callbacks, const std::string& message
     if (callbacks.on_failed) callbacks.on_failed(message);
 }
 
-void NotifyFinished(const AnalysisCallbacks& callbacks, bool completed, const AnalysisResult& result) {
+void NotifyFinished(const AnalysisCallbacks& callbacks, bool completed, const model::AnalysisResult& result) {
     if (callbacks.on_finished) callbacks.on_finished(completed, result);
 }
 
@@ -264,7 +254,7 @@ bool AnalysisEngine::IsCancelRequested() const {
 void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& options,
                          const AnalysisCallbacks& callbacks) {
     VE_PERF("AnalysisEngine::Run");
-    AnalysisResult result;
+    model::AnalysisResult result;
     result.file_path = file_path;
 
     // 提取小写扩展名（供"扩展名与实际容器不符"规则使用）
@@ -373,7 +363,7 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     result.streams.reserve(fmt->nb_streams);
     for (unsigned i = 0; i < fmt->nb_streams; ++i) {
         AVStream* st = fmt->streams[i];
-        StreamDigest digest;
+        model::StreamDigest digest;
         digest.index = static_cast<int>(i);
         digest.media_type = static_cast<int>(st->codecpar->codec_type);
         const AVCodecID codec_id = st->codecpar->codec_id;
@@ -660,19 +650,19 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     VE_PERF("逐包扫描(全文件 demux + 音频解码 + GOP)");
     while (true) {
         if (cancel_requested_.load(std::memory_order_acquire)) {
-            result.scan_status = AnalysisStatus::Cancelled;
+            result.scan_status = model::AnalysisStatus::Cancelled;
             break;
         }
         const int ret = av_read_frame(fmt, pkt);
         if (ret < 0) {
             if (ret == AVERROR_EOF) {
-                result.scan_status = AnalysisStatus::Complete;
+                result.scan_status = model::AnalysisStatus::Complete;
             } else {
                 // 读取数据包阶段出现错误（文件截断 / IO 错误 / 网络中断）。
                 // 这与"完整扫到 EOF"不同：必须作为失败处理，不能把半成品当完整 QC 报告。
                 char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
                 av_strerror(ret, errbuf, sizeof(errbuf));
-                result.scan_status = AnalysisStatus::Failed;
+                result.scan_status = model::AnalysisStatus::Failed;
                 result.scan_error_code = ret;
                 result.error_message = "读取数据包失败（文件可能截断或 IO 错误）: " +
                                        std::string(errbuf);
@@ -694,7 +684,7 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
         }
 
         AVStream* st = fmt->streams[pkt->stream_index];
-        StreamDigest& digest = result.streams[pkt->stream_index];
+        model::StreamDigest& digest = result.streams[pkt->stream_index];
         const double tb = av_q2d(st->time_base);
         const bool is_video = (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO);
         const bool has_pts = (pkt->pts != AV_NOPTS_VALUE);
@@ -868,8 +858,8 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
         ++packet_index;
         if (options.max_packets > 0 && packet_index >= options.max_packets) {
             // 命中包数上限：只完成了抽样扫描，不是完整结果。
-            if (result.scan_status == AnalysisStatus::Complete) {
-                result.scan_status = AnalysisStatus::Sampled;
+            if (result.scan_status == model::AnalysisStatus::Complete) {
+                result.scan_status = model::AnalysisStatus::Sampled;
             }
             break;
         }
@@ -984,11 +974,11 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
 
     // 音频 QC 收尾（与上面共用同一次 demux）
     if (options.analyze_audio_qc && audio_stream_index >= 0) {
-        const StreamDigest* audio =
+        const model::StreamDigest* audio =
             (audio_stream_index < static_cast<int>(result.streams.size()))
                 ? &result.streams[static_cast<size_t>(audio_stream_index)]
                 : nullptr;
-        const StreamDigest* video = result.FirstVideoStream();
+        const model::StreamDigest* video = result.FirstVideoStream();
         audio_qc.SetDurations(audio ? audio->duration_seconds : 0.0, result.duration_seconds,
                               video ? video->duration_seconds : 0.0, video != nullptr);
         result.audio_qc = audio_qc.Finish();
@@ -1049,12 +1039,12 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
              " status=" + std::string(ToString(result.scan_status)));
     NotifyProgress(callbacks, 100.0, "分析完成");
     // 第二个参数沿用旧语义（true = 到达终态而非被取消），Failed 不会走到这里。
-    NotifyFinished(callbacks, result.scan_status != AnalysisStatus::Cancelled, result);
+    NotifyFinished(callbacks, result.scan_status != model::AnalysisStatus::Cancelled, result);
 }
 
 void AnalysisEngine::RunStreamingManifest(const std::string& file_path,
                                           const AnalysisOptions& options,
-                                          AnalysisResult& result,
+                                          model::AnalysisResult& result,
                                           const AnalysisCallbacks& callbacks) {
     VE_PERF("AnalysisEngine::RunStreamingManifest");
     const bool is_dash = (result.file_extension == "mpd");
@@ -1082,7 +1072,7 @@ void AnalysisEngine::RunStreamingManifest(const std::string& file_path,
     // 会把用户主动取消说成文件有问题。与逐包扫描路径一致：保留已扫到的部分，
     // 以 scan_status=Cancelled + completed=false 收尾。
     if (IsCancelRequested()) {
-        result.scan_status = AnalysisStatus::Cancelled;
+        result.scan_status = model::AnalysisStatus::Cancelled;
         NotifyProgress(callbacks, 100.0, "已取消");
         NotifyFinished(callbacks, false, result);
         return;
@@ -1099,7 +1089,7 @@ void AnalysisEngine::RunStreamingManifest(const std::string& file_path,
         SegmentQcAnalyzer::Analyze(pkg, options.streaming_package_options, cancel);
     }
     if (IsCancelRequested()) {
-        result.scan_status = AnalysisStatus::Cancelled;
+        result.scan_status = model::AnalysisStatus::Cancelled;
         NotifyProgress(callbacks, 100.0, "已取消");
         NotifyFinished(callbacks, false, result);
         return;
@@ -1120,7 +1110,7 @@ void AnalysisEngine::RunStreamingManifest(const std::string& file_path,
         result.duration_seconds = longest;
     }
     result.seekable = true;
-    result.scan_status = AnalysisStatus::Complete;
+    result.scan_status = model::AnalysisStatus::Complete;
 
     LOG_INFO("流媒体清单分析完成: kind=" + std::to_string(static_cast<int>(pkg.kind)) +
              " ladder=" + std::to_string(pkg.ladder.size()) +

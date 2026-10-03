@@ -293,7 +293,7 @@ void DiagnosticsPage::OnFacadeProgress(quint64 generation, double percent, const
 }
 
 void DiagnosticsPage::OnFacadeFinished(quint64 generation, bool completed,
-                                       const analyzer::AnalysisResult& result) {
+                                       const model::AnalysisResult& result) {
     if (generation != generation_) return;
     Q_UNUSED(result);
 
@@ -766,7 +766,7 @@ void DiagnosticsPage::ResetForNewFile() {
 
 const std::vector<model::QcRule>& DiagnosticsPage::rules() const { return facade_->rules(); }
 
-const analyzer::AnalysisResult& DiagnosticsPage::result() const { return facade_->result(); }
+const model::AnalysisResult& DiagnosticsPage::result() const { return facade_->result(); }
 
 } // namespace ui
 } // namespace videoeye

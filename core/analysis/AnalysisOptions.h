@@ -17,7 +17,7 @@
 // AnalysisStatus 已经挪到 AnalysisTypes.h（它是产出状态，不是输入参数）。
 // 这里继续 include 是为了让既有调用点不受影响 —— 谁 include 本文件，谁就仍能
 // 看见 AnalysisStatus，不必挨个补 include。新代码请直接 include AnalysisTypes.h。
-#include "core/analysis/AnalysisTypes.h"
+#include "core/domain/model/AnalysisTypes.h"
 
 namespace videoeye {
 namespace analyzer {
