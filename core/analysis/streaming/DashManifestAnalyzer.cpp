@@ -260,8 +260,16 @@ void BuildSegments(model::StreamingPackageResult& out, model::DashRepresentation
                     rep.truncated = true;
                     break;
                 }
-                const uint64_t offset = MulU64Checked(e.d, static_cast<uint64_t>(k));
-                if (offset == 0 && e.d > 0) break;                        // 乘法溢出
+                // r 展开的第 k 段起点是 t + d*k。注意不能直接拿
+                // "MulU64Checked 返回 0" 当溢出判据 —— k==0 时 d*0 本来就是 0，
+                // 那是**第一个分片**的合法起点。以前这里写成 offset==0 就 break，
+                // 结果每条 <S> 都在 k=0 处退出，整条时间轴一个分片都展开不出来
+                // (StreamingPackageTests 的两条 DASH 用例就是这么红的)。
+                // 所以溢出单独判，乘法在无溢出的前提下才做。
+                const bool mul_overflow =
+                    e.d != 0 && static_cast<uint64_t>(k) > std::numeric_limits<uint64_t>::max() / e.d;
+                if (mul_overflow) break;
+                const uint64_t offset = e.d * static_cast<uint64_t>(k);
                 if (AddU64WillOverflow(start, offset)) break;             // 加法溢出
                 push_segment(number, start + offset, e.d);
                 ++number;
