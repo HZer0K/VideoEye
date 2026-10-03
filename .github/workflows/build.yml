@@ -8,6 +8,26 @@ on:
   workflow_dispatch:
 
 jobs:
+  # 分层边界检查: 只依赖 Python 标准库, 不需要构建, 几秒跑完, 所以放在最前面 ——
+  # 分层违规应该在编译之前就被拦住, 而不是等二十分钟构建完才发现。
+  #
+  # 为什么必须单独跑脚本, 不能指望 CMake: 每个模块的 include 目录都是仓库根
+  # (见 CMakeLists.txt 里的 videoeye_add_module), 所以任何模块都能 #include "core/xxx.h"
+  # 并且编译一定通过; 链接期只对"没声明这条边"的跨层调用报错, 而主程序 ui 显式链了全部
+  # 模块 —— 对 ui 层来说 CMake 的约束力是零。真正守住依赖方向的就是这两个脚本。
+  layering:
+    name: Layering check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check include direction
+        run: python3 scripts/check_layering.py
+
+      - name: Check Qt/domain border
+        run: python3 scripts/audit_qt_domain_border.py
+
   build:
     name: Build (${{ matrix.os }})
     strategy:

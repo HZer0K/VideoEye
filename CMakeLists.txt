@@ -93,9 +93,14 @@ find_package(Threads REQUIRED)
 #     exporter        转码导出
 #     ffmpegtools     命令行工作台的执行器与字典
 #
-# 之所以要让每个层次的 UR 都真成为一个 target（而不是只建目录）：目录只是命名习惯，
-# 编译器不认识；target_link_libraries 才是唯一能被机器检查的依赖约束 ——
-# 谁想跨层 include，链接期就会因为没有这一条边而报错。
+# 之所以要让每一层都真成为一个 target（而不是只建目录）：目录只是命名习惯，编译器
+# 不认识 —— 能被机器检查的只有 target_link_libraries 那条边，缺了它跨层调用会在链接期
+# 报 undefined reference。
+#
+# 但要清楚这条约束**拦不住什么**：所有模块的 include 目录都是仓库根（见下面的
+# videoeye_add_module），所以任何模块写 #include "core/xxx.h" 都能编译通过。链接期能
+# 拦的只有"没声明这条边的调用"，而主程序 ui 显式链了全部模块 —— 对 ui 层来说约束力为零。
+# 依赖**方向**的检查在 scripts/check_layering.py（CI 与 pre-commit 都跑），别指望 CMake。
 # ============================================================
 function(videoeye_add_module name)
     add_library(${name} STATIC ${ARGN})

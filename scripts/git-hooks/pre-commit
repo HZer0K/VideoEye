@@ -1,6 +1,42 @@
 #!/bin/sh
-# pre-commit: 提交前对暂存的 C++ 文件运行 clang-format 检查
+# pre-commit: 提交前跑两道门
+#   1. 分层边界检查（scripts/check_layering.py）—— 依赖方向违规直接阻止提交
+#   2. 暂存的 C++ 文件跑 clang-format
 # 安装: bash scripts/setup-hooks.sh
+#
+# 为什么第 1 道门必须在本地也跑一遍，不能只靠 CI：
+# CMake 拦不住跨层 include —— 每个模块的 include 目录都是仓库根（见 CMakeLists.txt
+# 的 videoeye_add_module），#include "core/xxx.h" 一定能编译通过；链接期只对"没声明
+# 这条边"的调用报错，而主程序 ui 显式链了全部模块，对 ui 层约束力为零。
+# 所以依赖方向唯一真实的检查就是 check_layering.py，让它等到 CI 红就太晚了。
+
+# 没有任何暂存文件（纯 amend 之类）就什么都不做
+if [ -z "$(git diff --cached --name-only)" ]; then
+    exit 0
+fi
+
+PY=""
+for c in python3 python py; do
+    if command -v "$c" >/dev/null 2>&1; then
+        PY="$c"
+        break
+    fi
+done
+
+if [ -n "$PY" ]; then
+    # 工作区版本，不是暂存版本：check_layering.py 扫的是磁盘上的 #include，
+    # 而提交的内容就是工作区内容（有差异时本该先 stash 再提交）。
+    if ! "$PY" scripts/check_layering.py; then
+        echo "" >&2
+        echo "提交已阻止：存在跨层反向依赖。" >&2
+        echo "  上面的输出给出了违规的 文件:行 与违反的规则。" >&2
+        echo "  规则写在 scripts/check_layering.py 顶部的 RULES；" >&2
+        echo "  别往 EXCEPTIONS 里加条目 —— 那里每多一行就等于欠一张「依赖方向没闭合」的条子。" >&2
+        exit 1
+    fi
+else
+    echo "warning: 未找到 python，跳过分层检查（CI 仍会跑 scripts/check_layering.py）" >&2
+fi
 
 staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.cpp' '*.h' '*.hpp' '*.c')
 if [ -z "$staged" ]; then
