@@ -15,6 +15,7 @@ namespace player {
 // VideoDecoder 实现
 VideoDecoder::VideoDecoder() {
     frame_ = av_frame_alloc();
+    sw_frame_ = av_frame_alloc();
 }
 
 VideoDecoder::~VideoDecoder() {
@@ -210,19 +211,73 @@ found_codec:
     return true;
 }
 
-bool VideoDecoder::DownloadHwFrame(AVFrame* sw_frame) {
+bool VideoDecoder::DownloadHwFrame(AVFrame* sw_frame, AVFrame* hw_frame) {
+    if (!sw_frame || !hw_frame) {
+        return false;
+    }
+
     AVFrame* tmp = av_frame_alloc();
     if (!tmp) return false;
 
-    int ret = av_hwframe_transfer_data(tmp, frame_, 0);
+    int ret = av_hwframe_transfer_data(tmp, hw_frame, 0);
     if (ret < 0) {
         av_frame_free(&tmp);
         return false;
     }
-    av_frame_copy_props(tmp, frame_);
+    av_frame_copy_props(tmp, hw_frame);
     av_frame_move_ref(sw_frame, tmp);
     av_frame_free(&tmp);
     return true;
+}
+
+AVFrame* VideoDecoder::PrepareSwFrame(AVFrame* decoded) {
+    if (!decoded || !sw_frame_) {
+        return nullptr;
+    }
+
+    const AVPixFmtDescriptor* desc =
+        (decoded->format == AV_PIX_FMT_NONE) ? nullptr
+                                             : av_pix_fmt_desc_get(static_cast<AVPixelFormat>(decoded->format));
+
+    if (desc && (desc->flags & AV_PIX_FMT_FLAG_HWACCEL)) {
+        // 硬件帧: data[0] 是设备指针, 必须先下载到系统内存才能交给下游
+        if (!DownloadHwFrame(sw_frame_, decoded)) {
+            std::cerr << "Failed to download hardware frame" << std::endl;
+            return nullptr;
+        }
+        return sw_frame_;
+    }
+
+    // 软件解码: 解码帧本身就在系统内存, 直接接管(复用同一个 AVFrame, 不逐帧分配)
+    av_frame_unref(sw_frame_);
+    if (!desc) {
+        // 未知格式: 保留 sw_frame_ 里上一次的内容, 下游拿到的仍是最近一个有效帧
+        return nullptr;
+    }
+    av_frame_move_ref(sw_frame_, decoded);
+    return sw_frame_;
+}
+
+void VideoDecoder::StashBufferedFrames() {
+    if (!codec_ctx_ || !frame_) {
+        return;
+    }
+
+    // EAGAIN 的正确语义是"先把内部已解码还没取走的帧收干", 不是放弃这个包
+    while (true) {
+        int ret = avcodec_receive_frame(codec_ctx_, frame_);
+        if (ret < 0) {
+            return;  // EAGAIN / EOF: 已经收干
+        }
+        // 收下的帧要存住: 它存在 frame_ 里会被下一次 receive 覆盖,
+        // 之后由 ReceiveFrame 按先入先出交出去。
+        AVFrame* stashed = av_frame_clone(frame_);
+        if (!stashed) {
+            std::cerr << "Failed to clone frame" << std::endl;
+            return;
+        }
+        pending_frames_.push_back(stashed);
+    }
 }
 
 bool VideoDecoder::SendPacket(AVPacket* packet) {
@@ -231,10 +286,15 @@ bool VideoDecoder::SendPacket(AVPacket* packet) {
     }
 
     int ret = avcodec_send_packet(codec_ctx_, packet);
+    if (ret == AVERROR(EAGAIN)) {
+        // 输出队列满(上一批帧还没被取走), 送包被拒。
+        // 这里不能直接 return false: 那样整包被丢弃、已解码的帧也永远取不出来,
+        // 表现为卡帧 / 音画不同步 / 长时间播放状态错乱。
+        // 先把缓冲里的帧收进 pending_frames_ 腾出位置, 这个包 FFmpeg 已经收下,
+        // 帧由 ReceiveFrame 补齐, 于是什么都不丢。
+        StashBufferedFrames();
+    }
     if (ret < 0) {
-        if (ret == AVERROR(EAGAIN)) {
-            return false;
-        }
         std::cerr << "Error sending packet to decoder" << std::endl;
         return false;
     }
@@ -247,35 +307,38 @@ bool VideoDecoder::ReceiveFrame(model::FrameData& output_frame) {
         return false;
     }
 
-    int ret = avcodec_receive_frame(codec_ctx_, frame_);
-    if (ret < 0) {
-        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+    // 上次 SendPacket 撞 EAGAIN 时收下的帧还排着队: 必须先入先出把它们交出去,
+    // 否则解码顺序就乱了(画面跳变 / 音画不同步)。
+    AVFrame* decoded = frame_;
+    if (!pending_frames_.empty()) {
+        decoded = pending_frames_.front();
+    } else {
+        int ret = avcodec_receive_frame(codec_ctx_, frame_);
+        if (ret < 0) {
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                return false;
+            }
+            std::cerr << "Error receiving frame from decoder" << std::endl;
             return false;
         }
-        std::cerr << "Error receiving frame from decoder" << std::endl;
+    }
+
+    last_pict_type_ = decoded->pict_type;
+
+    // 统一落到 sw_frame_: 硬件帧下载到系统内存, 软件帧直接接管。
+    // 下游(渲染 / 宏块 / 画质分析)只读它, 拿到的永远是可 CPU 读的帧。
+    AVFrame* src_frame = PrepareSwFrame(decoded);
+    if (!src_frame) {
         return false;
     }
 
-    last_pict_type_ = frame_->pict_type;
-
-    // 硬件帧需要下载到系统内存
-    AVFrame* src_frame = frame_;
-    AVFrame* sw_frame = nullptr;
-    if (frame_->format == AV_PIX_FMT_NONE || av_pix_fmt_desc_get(static_cast<AVPixelFormat>(frame_->format)) == nullptr) {
-        // 未知格式, 跳过
-    } else {
-        const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(frame_->format));
-        if (desc && (desc->flags & AV_PIX_FMT_FLAG_HWACCEL)) {
-            // 这是硬件帧, 需要下载
-            sw_frame = av_frame_alloc();
-            if (!sw_frame || !DownloadHwFrame(sw_frame)) {
-                av_frame_free(&sw_frame);
-                return false;
-            }
-            src_frame = sw_frame;
-        }
+    // 队列里那一帧已被接管(软件路径 move 走、硬件路径已下载完), 出队并释放空壳;
+    // decoded == frame_ 时不走这里 —— 它的生命周期归解码器。
+    if (decoded != frame_) {
+        pending_frames_.pop_front();
+        av_frame_free(&decoded);
     }
-    
+
     // 复制帧数据
     output_frame.Clear();
 
@@ -320,10 +383,6 @@ bool VideoDecoder::ReceiveFrame(model::FrameData& output_frame) {
         output_frame.data[i] = output_frame.owned[i].data();
     }
 
-    if (sw_frame) {
-        av_frame_free(&sw_frame);
-    }
-    
     return true;
 }
 
@@ -349,12 +408,26 @@ AVCodecID VideoDecoder::GetCodecId() const {
 }
 
 void VideoDecoder::Flush() {
+    // 队列里暂存的是定位前就已经收下的帧: 它们和解码器缓冲里的旧帧一样过期,
+    // 必须一并丢掉, 否则会在新位置之后被当新画面放出来(画面先跳回旧位置再回来)。
+    while (!pending_frames_.empty()) {
+        av_frame_free(&pending_frames_.front());
+        pending_frames_.pop_front();
+    }
     if (codec_ctx_) {
         avcodec_flush_buffers(codec_ctx_);
     }
 }
 
 void VideoDecoder::Close() {
+    // 排队的帧不能漏: 它们已经从解码器里收出来了, 不释放就是泄漏
+    for (AVFrame* f : pending_frames_) {
+        av_frame_free(&f);
+    }
+    pending_frames_.clear();
+    if (sw_frame_) {
+        av_frame_free(&sw_frame_);
+    }
     if (codec_ctx_) {
         // 清除 hw_device_ctx 引用 (codec_ctx_ 持有自己的 ref)
         if (codec_ctx_->hw_device_ctx) {

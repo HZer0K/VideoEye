@@ -288,9 +288,11 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     // 不可达的 URL、损坏文件、异常设备都会让 avformat_open_input /
     // avformat_find_stream_info 长时间阻塞在 IO 上，而这条路径是在 UI 线程同步执行的
     // —— 阻塞多久，界面就冻多久。装上回调后至少能靠绝对超时兜住。
-    // 这里不挂取消标志: 打开在 UI 线程上是串行发生的，不存在并发的第二个入口；
-    // 真正的问题（把打开整个挪到后台线程）见后续计划。
-    open_interrupt_.cancel = nullptr;
+    // 挂上取消标志: 打开/探测期间 Stop() 会置位 open_cancel_，让卡在 IO 上的
+    // avformat_open_input / avformat_find_stream_info 及时返回 AVERROR_EXIT。
+    // 取消标志在换文件时于打开流程开头复位，因此不会串到下一次打开。
+    open_cancel_.store(false);
+    open_interrupt_.cancel = &open_cancel_;
     open_interrupt_.deadline_us = 0;
 
     // 上下文必须自己分配: 回调要在 avformat_open_input **之前**装好。
@@ -573,6 +575,11 @@ void MediaPlayer::Pause() {
 
 void MediaPlayer::Stop() {
     LOG_INFO("Stop");
+    // 先置中断、再停会话：网络源此刻可能正卡在 avformat_open_input / av_read_frame 上，
+    // 置位后那些阻塞 IO 会立刻退出，playback_session_.Stop() 的 join 才等得到返回。
+    // 打开/探测阶段的截止时间一并不留（deadline 只服务于打开期，播放期的正常长读不该被误杀）。
+    open_cancel_.store(true);
+    open_interrupt_.deadline_us = 0;
     playback_session_.Stop();
     // 停止播放时闭合未结束的缺陷段（UI 立刻能看到最后一条）
     if (analysis_session_.IsVisualDefectAnalysisEnabled()) {

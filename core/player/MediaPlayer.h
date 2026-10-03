@@ -282,9 +282,14 @@ private:
     // 为什么是**成员**而不是 OpenInternal 里的局部变量: 装到 AVFormatContext 上的回调
     // 会被它派生出的 AVIOContext / URLContext 各复制一份，而上下文在打开之后归
     // 播放会话所有、解复用阶段仍在用 —— 指向栈上状态的 opaque 一返回就悬垂。
-    // 作为成员，它的生命周期天然覆盖上下文；探测结束后 deadline 清零、cancel 保持
-    // 为空，于是对那些残留副本而言它只是个恒返回 0 的空钩子。
+    // 作为成员，它的生命周期天然覆盖上下文；探测结束后 deadline 清零，于是对那些
+    // 残留副本而言它只是个只响应取消的空钩子。
+    //
+    // open_cancel_ 是挂给上面的 cancel 的那个取消标志: 网络源卡在
+    // avformat_open_input / av_read_frame 里时，deadline 只会"等到超时"，
+    // 只有它能让阻塞的 IO 立刻退出来(见 MediaPlayer::Stop())。
     ffmpeg_io::AvInterruptState open_interrupt_;
+    std::atomic<bool> open_cancel_{false};
 
     // 用户选择的定位方式 (菜单设置)。实际执行在 PlaybackSession::Seek()。
     std::atomic<model::SeekMode> seek_mode_{model::SeekMode::NearestKeyframe};

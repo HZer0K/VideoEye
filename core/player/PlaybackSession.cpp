@@ -83,20 +83,30 @@ bool PlaybackSession::Play() {
     if (state_.load() == model::PlayerState::Playing)
         return true;
 
+    // 状态迁移与 cv_ 唤醒必须在同一把锁里完成。
+    // 否则解码线程可能已经求值完谓词、正准备进阻塞，唤醒却在它之前落到空处 ——
+    // 这一次通知就丢了，等待线程永久挂住（表现为 Pause 后 Play 失效、Stop 卡在 join）。
     if (state_.load() == model::PlayerState::Paused) {
-        should_stop_.store(false);
-        state_.store(model::PlayerState::Playing);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            should_stop_.store(false);
+            state_.store(model::PlayerState::Playing);
+            cv_.notify_one();
+        }
         emit StateChanged(state_.load());
         if (audio_output_)
             audio_output_->Play();
-        cv_.notify_one();
         return true;
     }
 
     if (decode_thread_.joinable())
         decode_thread_.join();
-    should_stop_.store(false);
-    state_.store(model::PlayerState::Playing);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        should_stop_.store(false);
+        state_.store(model::PlayerState::Playing);
+        cv_.notify_one();
+    }
     emit StateChanged(state_.load());
     if (audio_output_)
         audio_output_->Play();
@@ -107,18 +117,27 @@ bool PlaybackSession::Play() {
 
 void PlaybackSession::Pause() {
     if (state_.load() == model::PlayerState::Playing) {
-        state_.store(model::PlayerState::Paused);
+        {
+            // 同上: 状态迁移 + 唤醒在锁内, 消除丢失唤醒的窗口
+            std::lock_guard<std::mutex> lock(mutex_);
+            state_.store(model::PlayerState::Paused);
+            cv_.notify_one();
+        }
         emit StateChanged(state_.load());
         if (audio_output_)
             audio_output_->Pause();
-        cv_.notify_one();
     }
 }
 
 void PlaybackSession::Stop() {
-    should_stop_.store(true);
-    state_.store(model::PlayerState::Stopped);
-    cv_.notify_one();
+    {
+        // 状态迁移 + 唤醒进同一把锁: 解码线程要么在进阻塞前看到 new 状态,
+        // 要么在阻塞中被这次唤醒叫醒 —— 不会再出现"通知打在没人的地方"。
+        std::lock_guard<std::mutex> lock(mutex_);
+        should_stop_.store(true);
+        state_.store(model::PlayerState::Stopped);
+        cv_.notify_one();
+    }
     // 先停设备, 唤醒可能在 Enqueue 中阻塞的解码线程
     if (audio_output_)
         audio_output_->Stop();
@@ -147,13 +166,15 @@ void PlaybackSession::Seek(int position_ms, model::SeekMode mode) {
         pending_seek_mode_.store(mode);
         seek_request_ms_ = target_ms;
         pending_seek_.store(true);
+        // 唤醒与置位在同一把锁内: 解码线程正卡在 Pause 分支的 cv_.wait 上,
+        // 只置标志不唤醒, 这个定位请求就会一直排着不执行。
+        cv_.notify_one();
     }
     // 丢弃已缓冲的旧音频, 避免 seek 后播放过期声音
     if (audio_output_)
         audio_output_->Clear();
     current_position_ms_.store(target_ms);
     emit PositionChanged(current_position_ms_.load(), duration_ms_);
-    cv_.notify_one();
 }
 
 void PlaybackSession::SetIdle() {
@@ -377,7 +398,14 @@ void PlaybackSession::DecodeThread() {
                     int out_size = 0;
                     while (audio_decoder_->ReceiveFrame(audio_buffer.data(), static_cast<int>(audio_buffer.size()),
                                                         out_size)) {
-                        // 精确帧定位追赶阶段 / 拖动进度条期间: 丢弃音频输出与分析事件, 避免过期声音
+                        // 精确帧定位追赶阶段 / 拖动进度条期间: 丢弃音频输出与分析事件, 避免过期声音。
+                        // 越过目标时间戳后必须像视频路径一样把标志清掉: 原来只有视频分支清,
+                        // 纯音频流(永远等不到视频帧来清)会一直停在丢弃状态 —— 音频永久静音,
+                        // 剩下的视频帧也因 catching_up 恒真而关掉全部视频分析。
+                        if (drop_until_sec_.load() >= 0.0 && packet_ts_sec + 0.001 >= drop_until_sec_.load()) {
+                            drop_until_sec_.store(-1.0);
+                        }
+
                         if (drop_until_sec_.load() >= 0.0 || drag_seeking_.load())
                             continue;
 

@@ -7,6 +7,7 @@ extern "C" {
 #include <libswresample/swresample.h>
 }
 
+#include <deque>
 #include <memory>
 #include <string>
 #include <vector>
@@ -45,9 +46,13 @@ public:
 
     // === 原始 AVFrame 访问 ===
 
-    // 获取当前解码帧的 AVFrame 指针 (时间轴诊断 / 宏块分析需要读 side data)
-    // 返回的 AVFrame 仅在下次 ReceiveFrame 调用前有效
-    const AVFrame* GetLastRawFrame() const { return frame_; }
+    // 获取当前"可 CPU 读"的解码帧的 AVFrame 指针 (时间轴诊断 / 宏块分析需要读 side data)。
+    //
+    // 返回的永远是**转换/下载之后**的那一帧: 硬件解码时 frame_ 里的 data[0] 是设备指针,
+    // 直接交给下游的 sws / 像素分析必然跑不出结果(逐帧刷错), 所以这里给出的是
+    // 硬件帧下载到系统内存之后、存在 sw_frame_ 里的版本; 软件解码时它就是解码帧本身。
+    // 返回的 AVFrame 仅在下次 ReceiveFrame 调用前有效。
+    const AVFrame* GetLastRawFrame() const { return sw_frame_; }
 
     // 解码流程拆分：先送包，再持续取出所有可用帧。
     bool SendPacket(AVPacket* packet);
@@ -70,11 +75,21 @@ public:
     void Close();
     
 private:
-    // 将硬件帧下载到系统内存 (输出到 sw_frame)
-    bool DownloadHwFrame(AVFrame* sw_frame);
+    // 将硬件帧 hw_frame 下载到系统内存 (输出到 sw_frame)
+    bool DownloadHwFrame(AVFrame* sw_frame, AVFrame* hw_frame);
+    // 把解码帧（可能是硬件帧）转成可 CPU 读的 sw_frame_，返回可访问的数据（取不到时返回 nullptr）
+    AVFrame* PrepareSwFrame(AVFrame* decoded);
+    // 把解码器内部已解码、但调用方还没取走的帧收进 pending_frames_（腾出送包空间）
+    void StashBufferedFrames();
 
     AVCodecContext* codec_ctx_ = nullptr;
     AVFrame* frame_ = nullptr;
+    // 可 CPU 读的那一帧（硬件帧下载后的结果 / 软件解码帧本身）。
+    // 复用同一个 AVFrame：解码循环里不再逐帧分配，Close() 统一释放。
+    AVFrame* sw_frame_ = nullptr;
+    // SendPacket 撞上 AVERROR(EAGAIN) 时暂存下来的、还没取走的解码帧，
+    // 由 ReceiveFrame 按先入先出取走，保证解码顺序不乱。
+    std::deque<AVFrame*> pending_frames_;
     AVBufferRef* hw_device_ctx_ = nullptr;   // 硬件设备上下文
     AVHWDeviceType hw_device_type_ = AV_HWDEVICE_TYPE_NONE;
     AVPixelFormat hw_pix_fmt_ = AV_PIX_FMT_NONE;  // 硬件像素格式
