@@ -1,8 +1,11 @@
 #include "core/media/container/IsobmffParser.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <fstream>
+
+#include "infrastructure/concurrency/Cancellation.h"
 
 namespace videoeye {
 namespace utils {
@@ -83,6 +86,8 @@ struct ParseContext {
     IsobmffFile* out = nullptr;
     FileReader* reader = nullptr;
     const IsobmffParser::Options* opt = nullptr;
+    // 来自 IsobmffOptions::cancel 的取消标志。box 循环里每个 box 都查一次。
+    const std::atomic<bool>* cancel = nullptr;
 
     // 当前 trak / moof-traf 上下文，用**下标**而不是裸指针。
     // ⚠️ 旧实现在这里存的是 IsobmffTrack* / IsobmffFragment*：解析过程中
@@ -431,6 +436,8 @@ void ParseBoxes(ParseContext& ctx, uint64_t start, uint64_t end, int depth,
     uint8_t hdr[16] = {0};
     int guard = 0;
     while (pos + 8 <= end && ++guard < 1000000) {
+        // 逐个 box 检查取消：只有入口查一次的话，取消后仍会把整个文件扫完。
+        if (infrastructure::Checkpoint(ctx.cancel)) return;
         if (!ctx.reader->ReadAt(pos, hdr, 8)) break;
         uint64_t size = Rd32(hdr);
         std::string type = FourCC(hdr + 4);
@@ -650,8 +657,15 @@ bool IsobmffParser::Parse(const std::string& file_path, IsobmffFile& out,
     ctx.out = &out;
     ctx.reader = &reader;
     ctx.opt = &options;
+    ctx.cancel = options.cancel;
 
     ParseBoxes(ctx, 0, out.file_size, 0, &out.top_level);
+
+    if (infrastructure::IsCanceled(ctx.cancel)) {
+        // 明确区分"被取消"和"解析失败"：上层据此把任务标成已取消，而不是报失败。
+        out.error_message = "已取消";
+        return false;
+    }
 
     if (out.top_level.empty()) {
         out.error_message = "未解析到任何 box（不是有效的 ISOBMFF 文件？）";

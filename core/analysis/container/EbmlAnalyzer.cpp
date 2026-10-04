@@ -1,4 +1,5 @@
 #include "core/analysis/container/EbmlAnalyzer.h"
+#include "infrastructure/concurrency/Cancellation.h"
 #include "infrastructure/logging/Logger.h"
 
 #include <QFile>
@@ -773,12 +774,16 @@ void EbmlAnalyzer::ExtractCueInfo(const model::EbmlElementNode& cue_point,
 // ============================================================
 bool EbmlAnalyzer::ParseElement(QDataStream& ds, qint64 end_offset, int depth,
                                  model::EbmlElementNode* parent,
-                                 model::EbmlAnalysisResult& result) {
+                                 model::EbmlAnalysisResult& result,
+                                 const std::atomic<bool>* cancel) {
     // 深度 / 节点数双上限：一个"自己套自己"的畸形元素树能在这儿无限递归下去
     if (depth >= kMaxDepth) return false;
     if (node_count_ >= kMaxNodes) return false;
 
     while (ds.device() && ds.device()->pos() < end_offset) {
+        // 每个元素查一次取消：只有 Analyze 入口查的话，取消前已经读进来的半个文件
+        // 还得继续扫完
+        if (infrastructure::Checkpoint(cancel)) return false;
         // 元素数上限：一个元素最少 2 字节（ID + size），到顶就停，
         // 免得往 result.element_tree 里无限塞节点
         if (++node_count_ > kMaxNodes) return false;
@@ -826,7 +831,7 @@ bool EbmlAnalyzer::ParseElement(QDataStream& ds, qint64 end_offset, int depth,
             if (id == 0x1F43B675) { // Cluster
                 current_cluster_offset_ = node.offset - node.header_size;
             }
-            ParseElement(ds, child_end, depth + 1, &child, result);
+            ParseElement(ds, child_end, depth + 1, &child, result, cancel);
             current_cluster_offset_ = saved_cluster_offset;
 
             // --- 后处理：提取表格数据 ---
@@ -865,7 +870,8 @@ EbmlAnalyzer::EbmlAnalyzer() = default;
 EbmlAnalyzer::~EbmlAnalyzer() = default;
 void EbmlAnalyzer::Reset() {}
 
-bool EbmlAnalyzer::Analyze(const QString& filePath, model::EbmlAnalysisResult& result) {
+bool EbmlAnalyzer::Analyze(const QString& filePath, model::EbmlAnalysisResult& result,
+                           const std::atomic<bool>* cancel) {
     result = model::EbmlAnalysisResult{};
     result.file_path = filePath.toStdString();
     // 每次分析都从头计数（Reset() 之外也要清，免得上次的节点数被下一份文件接着算）
@@ -895,7 +901,12 @@ bool EbmlAnalyzer::Analyze(const QString& filePath, model::EbmlAnalysisResult& r
     root.name = "root";
     root.depth = -1;
 
-    ParseElement(ds, file.size(), 0, &root, result);
+    ParseElement(ds, file.size(), 0, &root, result, cancel);
+    if (infrastructure::IsCanceled(cancel)) {
+        result.error_message = "已取消";
+        result.valid = false;
+        return false;
+    }
 
     // 统计 BlockGroup / SimpleBlock 计数
     int bg = 0, sb = 0;

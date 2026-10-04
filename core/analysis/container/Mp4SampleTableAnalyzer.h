@@ -14,6 +14,7 @@
 //   - 解析只依赖 core/media/container/IsobmffParser.h（纯 C++17 标准库）；
 //   - 校验逻辑 Validate() 是纯函数，单测直接喂合成 Mp4SampleTableResult。
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 
@@ -29,9 +30,13 @@ public:
     ~Mp4SampleTableAnalyzer();
 
     // 解析 + 校验。返回 true 表示文件被成功解析（不代表没有问题）。
+    //
+    // cancel: 可选的取消标志（nullptr = 不关心取消）。样本表展开会把每个 chunk 的
+    // 样本全展开，长片动辄上亿个样本，是取消时最该立刻停手的地方。
     bool AnalyzeFile(const std::string& file_path,
                      model::Mp4SampleTableResult& out,
-                     const Mp4SampleTableOptions& options = Mp4SampleTableOptions{});
+                     const Mp4SampleTableOptions& options = Mp4SampleTableOptions{},
+                     const std::atomic<bool>* cancel = nullptr);
 
     // 纯逻辑校验：在 out 上补齐 issues 与逐样本 flags。
     // 单测与"只改阈值重新评估"都走这里；幂等（每次调用先清空 issues）。

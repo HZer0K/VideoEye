@@ -1,3 +1,4 @@
+#include "infrastructure/concurrency/Cancellation.h"
 #include "core/analysis/container/TsStructureAnalyzer.h"
 #include <QFile>
 #include <QByteArray>
@@ -65,7 +66,8 @@ QString tsToStr(uint64_t ts) {
 }
 } // namespace
 
-bool TsStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStructureResult& result) {
+bool TsStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStructureResult& result,
+                                  const std::atomic<bool>* cancel) {
     QFile file(file_path);
     if (!file.open(QIODevice::ReadOnly)) {
         result.error_message = "无法打开文件";
@@ -115,6 +117,7 @@ bool TsStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStru
 
     QByteArray pkt_buf(188, Qt::Uninitialized);
     while (total_packets < max_scan_packets && file.read(pkt_buf.data(), 188) == 188) {
+        if (infrastructure::Checkpoint(cancel)) { result.error_message = "已取消"; return false; }
         if (static_cast<uint8_t>(pkt_buf[0]) != 0x47) break;
 
         qint64 pkt_offset = file.pos() - 188;

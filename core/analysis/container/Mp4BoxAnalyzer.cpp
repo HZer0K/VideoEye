@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "core/media/container/IsobmffParser.h"
+#include "infrastructure/concurrency/Cancellation.h"
 #include "infrastructure/logging/Logger.h"
 
 namespace videoeye {
@@ -174,12 +175,14 @@ Mp4BoxAnalyzer::Mp4BoxAnalyzer() = default;
 Mp4BoxAnalyzer::~Mp4BoxAnalyzer() = default;
 
 bool Mp4BoxAnalyzer::AnalyzeFile(const QString& file_path,
-                                 model::Mp4BoxAnalysisResult& result) {
+                                 model::Mp4BoxAnalysisResult& result,
+                                 const std::atomic<bool>* cancel) {
     result = model::Mp4BoxAnalysisResult();
     result.file_path = file_path.toStdString();
 
     utils::IsobmffParser::Options opt;
     opt.max_entries_per_table = kMaxTableEntries;
+    opt.cancel = cancel;
     utils::IsobmffFile file;
     if (!utils::IsobmffParser::Parse(file_path.toStdString(), file, opt)) {
         result.error_message = file.error_message;
@@ -190,6 +193,10 @@ bool Mp4BoxAnalyzer::AnalyzeFile(const QString& file_path,
     // 顶层 box 树（trak 逐步与 file.tracks 对齐，用于给样本表 box 填字段）
     size_t track_cursor = 0;
     for (const auto& top : file.top_level) {
+        if (infrastructure::Checkpoint(cancel)) {
+            result.error_message = "已取消";
+            return false;
+        }
         if (top.type == "moov") {
             model::Mp4BoxNode moov;
             moov.type = "moov";

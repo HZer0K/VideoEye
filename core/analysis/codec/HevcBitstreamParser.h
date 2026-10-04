@@ -60,6 +60,9 @@ private:
 
     static void SkipScalingListData(utils::BitReader& reader);
     static void SkipHrdParameters(utils::BitReader& reader, int max_sub_layers_minus1);
+    // hrd_parameters 里 nal / vcl 两份 CPB 列表结构完全相同，抽出来避免抄两遍。
+    // 返回 false 表示位流已经失效（读越界）。
+    static bool SkipOneHrdCpbList(utils::BitReader& reader, uint32_t cpb_cnt_minus1, bool sub_pic);
     static void SkipShortTermRefPicSets(utils::BitReader& reader, int num_sets);
     static void ParseVuiParameters(utils::BitReader& reader,
                                    model::HevcSpsInfo& sps,

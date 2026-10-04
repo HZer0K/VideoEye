@@ -199,11 +199,23 @@ def main() -> int:
             if any(norm(h[0]) == rel for h in skipped):
                 print("  %s   <- %s" % (rel, ALLOWED_HINTS.get(rel, "")))
 
-    if not arg_hits and not arg_probable:
+    # 早退分支只能在「三类全空」时才走，否则会出现
+    # 「打印了 [命中] 却 return 0」——CI 上方块徽章是绿的，违规照旧合并进主干。
+    # （scripts/test_audit_qt_domain_border.py 对这条路径有专门断言。）
+    if not real_hits and not arg_hits and not arg_probable:
+        print("\n[OK] 未发现 Qt 类型直接写进 domain std::string 的赋值")
         print("\n[OK] 未发现 QString::arg() 直接吃 domain std::string 的成员")
-        if arg_probable:
-            pass
+        print("\n[退出码] 0 —— 无确定命中，CI / pre-commit 放行")
         return 0
+
+    if real_hits:
+        print("\n[命中] 域字段被 Qt 类型污染: %d 处" % len(real_hits))
+        cur = None
+        for rel, idx, text in real_hits:
+            if cur != rel:
+                cur = rel
+                print("\n--- %s ---" % rel)
+            print("  %4d: %s" % (idx, text))
 
     if arg_hits:
         print("\n[命中] QString::arg() 直接吃 domain std::string 成员: %d 处" % len(arg_hits))
@@ -223,15 +235,14 @@ def main() -> int:
                 cur = rel
                 print("\n--- %s ---" % rel)
             print("  arg(%s)   <<  %s" % (expr, text[:120]))
-    return 0
 
-    print("\n[命中] %d 处疑似:" % len(hits))
-    cur = None
-    for rel, idx, text in hits:
-        if cur != rel:
-            cur = rel
-            print("\n--- %s ---" % rel)
-        print("  %4d: %s" % (idx, text))
+    # 只有「确定命中」（域字段被 Qt 类型直接赋值 / arg() 吃域字段成员）才让 CI / pre-commit 红。
+    # arg_probable 是静态判定不了类型的（名字撞车），属于人工确认项，不能让脚本红，
+    # 否则一次误报之后所有人都会习惯性加 --no-verify，真命中也就跟着一起被忽略了。
+    if real_hits or arg_hits:
+        print("\n[退出码] 1 —— 存在确定命中，需修复或显式加白名单")
+        return 1
+    print("\n[退出码] 0 —— 仅『疑似』项，按 warning 处理")
     return 0
 
 

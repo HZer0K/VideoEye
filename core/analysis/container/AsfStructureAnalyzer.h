@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <QString>
 #include "core/domain/model/ContainerStructureInfo.h"
 
@@ -9,7 +10,9 @@ namespace analyzer {
 /// ASF/WMV/WMA 容器结构轻量级解析器
 class AsfStructureAnalyzer {
 public:
-    bool Analyze(const QString& file_path, model::ContainerStructureResult& result);
+    // cancel: 可选的取消标志（nullptr = 不关心取消）。
+    bool Analyze(const QString& file_path, model::ContainerStructureResult& result,
+                 const std::atomic<bool>* cancel = nullptr);
 };
 
 } // namespace analyzer

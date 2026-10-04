@@ -30,16 +30,27 @@ AnalysisFacade::AnalysisFacade(QObject* parent)
     // （页面、报告导出）才可能读到。以前这一步散在 DiagnosticsPage::OnFacadeFinished 里，
     // 结果就是"页面忘了写"成了整个功能的单点故障 —— 信号发了、result() 还是默认空结果，
     // 问题清单/评分/报告全空。编排层自己保存，页面只负责展示，才不会再漏。
+    // 过期事件在 facade 这一层就丢掉，不往下游传。
+    //
+    // 以前只挡住了写入 impl_->result，信号照样发出去 —— 过滤责任被推给了每个监听者。
+    // 页面只要有一处忘了判代际，旧任务的完成/失败就会把当前任务的状态顶掉：
+    // 界面显示"分析完成"但 result() 是新任务的（或反过来弹一条上一个文件的错误）。
+    // 统一在源头拦，所有监听者就都只剩"收到的一定是新鲜事件"这一条假设。
     connect(&impl_->coordinator, &qt::QtAnalysisController::AnalysisFinished,
             this, [this](quint64 generation, bool completed, const model::AnalysisResult& result) {
-                // 只认当前代际: 旧任务迟到的回包不能覆盖新结果（与页面的过滤规则一致）。
-                if (generation == impl_->coordinator.generation()) {
-                    impl_->result = result;
-                }
+                if (generation != impl_->coordinator.generation())
+                    return;
+                impl_->result = result;
                 emit AnalysisFinished(generation, completed, result);
             });
+    // 失败同理：on_failed 带的是**失败那次任务**的代际号，切文件后来迟到的那条
+    // 不该弹给现在的用户。
     connect(&impl_->coordinator, &qt::QtAnalysisController::AnalysisFailed,
-            this, &AnalysisFacade::AnalysisFailed);
+            this, [this](quint64 generation, const QString& message) {
+                if (generation != impl_->coordinator.generation())
+                    return;
+                emit AnalysisFailed(generation, message);
+            });
 }
 
 AnalysisFacade::~AnalysisFacade() = default;

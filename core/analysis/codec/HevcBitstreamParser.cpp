@@ -198,41 +198,60 @@ void HevcBitstreamParser::SkipScalingListData(utils::BitReader& reader) {
 // --------------------------------------------------------------------------
 void HevcBitstreamParser::SkipHrdParameters(utils::BitReader& reader,
                                             int max_sub_layers_minus1) {
-    const bool nal_hrd = reader.ReadBit();
-    const bool vcl_hrd = reader.ReadBit();
-    if (nal_hrd || vcl_hrd) {
-        reader.SkipBits(1); // sub_pic_hrd_params_present_flag
-        if (reader.HasError()) return;
-        reader.SkipBits(4); // tick_divisor_minus2
-        reader.SkipBits(5); // du_cpb_removal_delay_increment_length_minus1
-        reader.SkipBits(1); // sub_pic_cpb_params_in_pic_timing_sei_flag
-        reader.SkipBits(5); // dpb_output_delay_du_length_minus1
-        reader.SkipBits(5); // bit_rate_scale
-        reader.SkipBits(5); // cpb_size_scale
+    // 严格按 7.3.5 / 7.3.5.1 走。以前这里把 sub_pic 写死成 false、位宽又多算了一位，
+    // HRD 一旦存在，读指针就偏到 VUI 后面去了 —— 表现为 SPS 里的 aspect_ratio /
+    // colour_description 全乱、甚至后续字段被当成 next_start_code 解析。
+    const bool nal_hrd = reader.ReadBit();   // nal_hrd_parameters_present_flag
+    const bool vcl_hrd = reader.ReadBit();   // vcl_hrd_parameters_present_flag
+    if (!nal_hrd && !vcl_hrd) return;
+
+    const bool sub_pic = reader.ReadBit();   // sub_pic_hrd_params_present_flag
+    if (sub_pic) {
+        reader.SkipBits(4);                  // tick_divisor_minus2（仅 sub_pic 时出现）
+    }
+    reader.SkipBits(5);                      // du_delay_increment_length_minus1
+    reader.SkipBits(1);                      // sub_pic_cpb_params_in_pic_timing_sei_flag
+    reader.SkipBits(5);                      // dpb_output_delay_du_length_minus1
+    reader.SkipBits(4);                      // bit_rate_scale
+    reader.SkipBits(4);                      // cpb_size_scale
+    if (reader.HasError()) return;
+
+    // sub_pic 为真时 HRD 同时维护帧级与 DU 级两份 CPB（cpb_cnt_minus1 = 1），
+    // 否则只有一份（cpb_cnt_minus1 = 0）。两份意味着每类 HRD 的 UE 组数翻倍。
+    const uint32_t cpb_cnt_minus1 = sub_pic ? 1u : 0u;
+
+    for (int i = 0; i <= max_sub_layers_minus1; ++i) {
+        const bool fixed_rate = reader.ReadBit();  // fixed_pic_rate_within_cvs_flag
+        if (fixed_rate) {
+            reader.ReadUE();                       // elemental_duration_in_tc_minus1
+        } else {
+            reader.ReadBit();                      // low_delay_hrd_flag
+        }
+        if (sub_pic) {
+            reader.SkipBits(4);                    // pic_duration_in_tc_minus_du_zero_hotBits
+        }
+        reader.SkipBits(1);                        // fixed_pic_rate_in_exact_ticks_flag
         if (reader.HasError()) return;
 
-        const bool sub_pic = false; // 上面已跳过，简化为不展开
-        const uint32_t cpb_cnt = sub_pic ? 0u : 1u;
-        for (int i = 0; i <= max_sub_layers_minus1; ++i) {
-            const bool fixed_rate = reader.ReadBit();
-            (void)fixed_rate;
-            reader.SkipBits(1); // nal_hrd_parameters_present_flag(占位，实际 fixed_pic_rate_within_cvs_flag 后)
-            if (reader.HasError()) return;
-            if (!fixed_rate) {
-                reader.SkipBits(1); // elemental_duration_in_tc_minus1 前的 low_delay_hrd_flag
-            } else {
-                reader.SkipBits(1);
-            }
-            for (uint32_t j = 0; j < cpb_cnt; ++j) {
-                reader.ReadUE(); // bit_rate_value_minus1
-                reader.ReadUE(); // cpb_size_value_minus1
-                if (!sub_pic) {
-                    reader.ReadUE(); // cpb_size_du_value_minus1
-                }
-                reader.SkipBits(1); // cbr_flag
-            }
-        }
+        // nal / vcl 两类参数各自带一份完整（且各自独立）的 CPB 列表
+        if (nal_hrd && !SkipOneHrdCpbList(reader, cpb_cnt_minus1, sub_pic)) return;
+        if (vcl_hrd && !SkipOneHrdCpbList(reader, cpb_cnt_minus1, sub_pic)) return;
     }
+}
+
+bool HevcBitstreamParser::SkipOneHrdCpbList(utils::BitReader& reader, uint32_t cpb_cnt_minus1,
+                                            bool sub_pic) {
+    for (uint32_t j = 0; j <= cpb_cnt_minus1; ++j) {
+        reader.ReadUE();                    // bit_rate_value_minus1
+        reader.ReadUE();                    // cpb_size_value_minus1
+        if (sub_pic) {
+            reader.ReadUE();                // cpb_size_du_value_minus1
+            reader.ReadUE();                // bit_rate_du_value_minus1
+        }
+        reader.SkipBits(1);                 // cbr_flag
+        if (reader.HasError()) return false;
+    }
+    return true;
 }
 
 // --------------------------------------------------------------------------

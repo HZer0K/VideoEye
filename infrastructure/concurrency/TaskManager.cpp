@@ -34,6 +34,9 @@ struct TaskManager::Core {
     std::condition_variable cv;
     std::unordered_map<std::string, std::unique_ptr<Slot>> slots;
     TaskId next_id = 0;
+    // 被顶下来的孤儿线程数(与 TaskManager::orphans_ 同步递增)。并发预算必须把它算进去:
+    // 孤儿不在任何 slot 里, 只数 slot 的话"旧任务超时 + 新任务立刻再来"就能一路超发线程。
+    std::size_t orphan_count = 0;
 };
 
 namespace {
@@ -99,6 +102,9 @@ std::size_t TaskManager::RunningCountLocked(Core& st) {
         if (kv.second->running.load(std::memory_order_acquire))
             ++n;
     }
+    // orphan 是被新任务顶下来、还在后台跑完的旧线程: 它不在任何 slot 里, 不数进来的话
+    // Begin 的并发判定只看得见当前 slot, 于是"旧任务超时 + 新任务立刻再来"就能一路超发。
+    n += st.orphan_count;
     return n;
 }
 
@@ -156,6 +162,7 @@ TaskId TaskManager::Begin(const std::string& slot, int wait_for_previous_ms, Tas
             } else {
                 orphans_.push_back(OwnedThread{s->kind, std::move(s->thread), std::move(s->done),
                                               s->current_id.load(std::memory_order_acquire), slot});
+                ++core_->orphan_count;
             }
             s->done = std::future<void>();
         }
@@ -226,6 +233,7 @@ TaskId TaskManager::Run(const std::string& slot, std::function<void(TaskId, Canc
         } else {
             // 极端情况: 刚启动就被取代了 —— 线程已经跑起来了, 只能转待回收
             orphans_.push_back(OwnedThread{kind, std::move(worker), std::move(finished), id, slot});
+            ++core_->orphan_count;
         }
     } catch (const std::exception& e) {
         LOG_ERROR("后台任务无法启动 [" + slot + "]: " + std::string(e.what()));
@@ -369,6 +377,9 @@ void TaskManager::WaitForAll(int timeout_ms) {
     {
         std::lock_guard<std::mutex> lk(core_->mutex);
         pending.swap(orphans_);
+        // 这批孤儿已整批转入 pending, 从这一刻起它们要么被 join、要么被放弃,
+        // 不再由 orphans_ 持有 -> 并发预算里的那一票在这里归还。
+        core_->orphan_count = 0;
         for (auto& kv : core_->slots) {
             Slot* s = kv.second.get();
             if (s->thread.joinable()) {

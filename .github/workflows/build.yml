@@ -28,6 +28,11 @@ jobs:
       - name: Check Qt/domain border
         run: python3 scripts/audit_qt_domain_border.py
 
+      # 审计脚本自己的退出码也得被测：它历史上出过「打印了 [命中] 却 return 0」，
+      # 光看输出人肉是看不出来的（命中信息都打出来了），只有退出码能被机器盯住。
+      - name: Self-check audit exit codes
+        run: python3 scripts/test_audit_qt_domain_border.py
+
   build:
     name: Build (${{ matrix.os }})
     strategy:

@@ -239,6 +239,19 @@ void NotifyFinished(const AnalysisCallbacks& callbacks, bool completed, const mo
     if (callbacks.on_finished) callbacks.on_finished(completed, result);
 }
 
+// 取消收尾：与 NotifyFailed 互斥的两条终态之一（另一条是 NotifyFinished(completed=true)）。
+// 以前取消信号是从「失败」分支里漏出去的，界面就会弹"文件损坏"这类文案 ——
+// 可用户明明是自己按的取消。现在统一走这里。
+void NotifyCancelled(const AnalysisCallbacks& callbacks, model::AnalysisResult& result) {
+    result.scan_status = model::AnalysisStatus::Cancelled;
+    NotifyProgress(callbacks, 100.0, "已取消");
+    NotifyFinished(callbacks, false, result);
+}
+
+bool AnalysisEngine::IsCancelledExit(int ret) const {
+    return IsCancelRequested() && ret == AVERROR_EXIT;
+}
+
 void AnalysisEngine::Cancel() {
     cancel_requested_.store(true, std::memory_order_release);
 }
@@ -304,6 +317,12 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
         // 定向诊断: FFmpeg 通用报错往往不含可操作的修复建议 (如 fMP4 分片缺 init 段)
         const std::string extra = utils::DiagnoseUnopenableFile(file_path);
         if (!extra.empty()) msg += "。" + extra;
+        // 打开阶段被中断回调打断 = 用户取消（含"文件根本不存在也超时"的网络源场景），
+        // 不能反过来告诉用户"无法打开文件"
+        if (IsCancelledExit(open_ret)) {
+            NotifyCancelled(callbacks, result);
+            return;
+        }
         NotifyFailed(callbacks, msg);
         return;
     }
@@ -319,6 +338,10 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
         char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
         av_strerror(find_ret, errbuf, sizeof(errbuf));
         avformat_close_input(&fmt);
+        if (IsCancelledExit(find_ret)) {
+            NotifyCancelled(callbacks, result);
+            return;
+        }
         NotifyFailed(callbacks, "无法解析流信息: " + file_path + " (" + std::string(errbuf) +
                            ", 文件可能损坏或截断)");
         return;
@@ -646,6 +669,16 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     auto last_progress = std::chrono::steady_clock::now();
     NotifyProgress(callbacks, 0.0, "扫描数据包");
 
+    // 逐包扫描的统一收尾：取消和真·IO 错误都要走同一份清理，
+    // 免得以后改一处漏一处（漏 avformat_close_input 就是句柄泄漏）。
+    auto teardown_scan = [&]() {
+        av_packet_free(&pkt);
+        avformat_close_input(&fmt);
+        probe.Release();
+        color_probe.Release();
+        if (options.analyze_audio_qc && audio_probe.ready) audio_probe.Release();
+    };
+
     {
     VE_PERF("逐包扫描(全文件 demux + 音频解码 + GOP)");
     while (true) {
@@ -662,15 +695,19 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
                 // 这与"完整扫到 EOF"不同：必须作为失败处理，不能把半成品当完整 QC 报告。
                 char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
                 av_strerror(ret, errbuf, sizeof(errbuf));
+                // 取消标记的轮询在循环开头，但 av_read_frame 可能在两次轮询之间
+                // 就被中断回调打断（网络/磁盘 IO 里根本轮不到那次检查），
+                // 这种"取消 + AVERROR_EXIT"必须报成 Cancelled 而不是半成品失败。
+                if (IsCancelledExit(ret)) {
+                    teardown_scan();
+                    NotifyCancelled(callbacks, result);
+                    return;
+                }
                 result.scan_status = model::AnalysisStatus::Failed;
                 result.scan_error_code = ret;
                 result.error_message = "读取数据包失败（文件可能截断或 IO 错误）: " +
                                        std::string(errbuf);
-                av_packet_free(&pkt);
-                avformat_close_input(&fmt);
-                probe.Release();
-                color_probe.Release();
-                if (options.analyze_audio_qc && audio_probe.ready) audio_probe.Release();
+                teardown_scan();
                 NotifyFailed(callbacks, result.error_message);
                 return;
             }

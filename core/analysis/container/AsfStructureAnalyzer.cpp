@@ -1,3 +1,4 @@
+#include "infrastructure/concurrency/Cancellation.h"
 #include "core/analysis/container/AsfStructureAnalyzer.h"
 #include <QFile>
 #include <QByteArray>
@@ -77,7 +78,8 @@ static QString GuidToName(const QByteArray& guid) {
     return "Unknown Object";
 }
 
-bool AsfStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStructureResult& result) {
+bool AsfStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStructureResult& result,
+                                   const std::atomic<bool>* cancel) {
     QFile file(file_path);
     if (!file.open(QIODevice::ReadOnly)) {
         result.error_message = "无法打开文件";
@@ -223,6 +225,7 @@ bool AsfStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
     // Scan for Data Object and Index Object after header
     file.seek(header_end);
     while (file.pos() < file.size() - 24) {
+        if (infrastructure::Checkpoint(cancel)) { result.error_message = "已取消"; return false; }
         QByteArray obj_guid = file.read(16);
         QByteArray obj_size_buf = file.read(8);
         if (obj_guid.size() < 16 || obj_size_buf.size() < 8) break;

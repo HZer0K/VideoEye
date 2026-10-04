@@ -9,6 +9,7 @@
 //
 // 依赖边界: 纯 C++17 + 标准库，不碰 Qt / FFmpeg / Bento4，便于单测。
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -159,6 +160,9 @@ struct IsobmffOptions {
     int max_depth = 8;
     // 是否只扫顶层 + 容器结构，不解析样本表（更快）
     bool skip_sample_tables = false;
+    // 可选取消标志（nullptr = 不关心取消）。box 级扫描是 GB 级文件里最耗时的一段，
+    // 切换媒体/关闭窗口置位后必须能当场停手，否则旧任务会继续和新任务抢 CPU 与磁盘。
+    const std::atomic<bool>* cancel = nullptr;
 };
 
 class IsobmffParser {

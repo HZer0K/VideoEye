@@ -749,3 +749,20 @@ videoeye_add_test(test_container_structure_analyzers
 )
 target_link_libraries(test_container_structure_analyzers PRIVATE Qt6::Core VideoEyeDomain)
 add_test(NAME ContainerStructureAnalyzerTests COMMAND test_container_structure_analyzers)
+# =================================================
+# 测试 33：取消 / 异常 / 畸形码流的回归（VVC QP 表无上界、容器解析器不传取消令牌、
+#孤儿线程不计并发预算、Qt worker 异常逃逸）
+# 说明: 这里刻意只链用到的几个 .cpp，不拉整层 VideoEyeAnalysis —— IsobmffParser 在
+#       core/media、VvcBitstreamParser 在 core/analysis/codec，都不该为一次单测
+#       把 FFmpeg 拖进来。TaskManager 与 Cancellation 是纯基础设施，单独链。
+# =================================================
+videoeye_add_test(test_cancel_and_robustness
+    unit/test_cancel_and_robustness.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/VvcBitstreamParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/BitReader.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/container/IsobmffParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/qt/QtWorkerOwner.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/concurrency/TaskManager.cpp
+)
+target_link_libraries(test_cancel_and_robustness PRIVATE Qt6::Core VideoEyeDomain VideoEyeInfrastructure)
+add_test(NAME CancelAndRobustnessTests COMMAND test_cancel_and_robustness)

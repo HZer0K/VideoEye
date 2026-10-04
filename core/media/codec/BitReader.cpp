@@ -93,6 +93,14 @@ uint32_t BitReader::ReadUE() {
     return suffix + (1U << leading_zeros) - 1U;
 }
 
+uint32_t BitReader::ReadUEBounded(uint32_t max_value) {
+    const uint32_t v = ReadUE();
+    if (HasError()) {
+        return 0;
+    }
+    return v > max_value ? max_value : v;
+}
+
 int32_t BitReader::ReadSE() {
     // se(v)：按 k = ue(v) 解码后做交错映射
     //   k:  0  1  2  3  4  5 ...

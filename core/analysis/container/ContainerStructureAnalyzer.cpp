@@ -1,4 +1,5 @@
 #include "core/analysis/container/ContainerStructureAnalyzer.h"
+#include "infrastructure/concurrency/Cancellation.h"
 #include "core/ffmpeg_io/FfmpegInterrupt.h"  // 共享 FFmpeg 中断回调
 #include "core/analysis/orchestration/FormatDetector.h"
 #include "core/analysis/container/Mp4BoxAnalyzer.h"
@@ -17,6 +18,7 @@
 #include <QStringList>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <string>
@@ -108,15 +110,23 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
         bool mp4_ok = false;
         {
             VE_PERF("Mp4BoxAnalyzer::AnalyzeFile(box 树)");
-            mp4_ok = mp4_analyzer.AnalyzeFile(file_path, result.mp4_detail);
+            mp4_ok = mp4_analyzer.AnalyzeFile(file_path, result.mp4_detail, cancel.get());
         }
         if (mp4_ok) {
             auto t0 = std::chrono::steady_clock::now();
-            ConvertMp4Tree(result.mp4_detail.box_tree, 0, result.element_tree);
+            if (!ConvertMp4Tree(result.mp4_detail.box_tree, 0, result.element_tree, cancel.get())) {
+                result.valid = false;
+                result.error_message = "已取消";
+                return false;
+            }
             auto t1 = std::chrono::steady_clock::now();
             LOG_INFO("ContainerStructureAnalyzer: ConvertMp4Tree 耗时 = " +
                      std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()) + " ms");
-            ExtractMp4StreamInfo(result.mp4_detail.box_tree, result);
+            if (!ExtractMp4StreamInfo(result.mp4_detail.box_tree, result, cancel.get())) {
+                result.valid = false;
+                result.error_message = "已取消";
+                return false;
+            }
             auto t2 = std::chrono::steady_clock::now();
             LOG_INFO("ContainerStructureAnalyzer: ExtractMp4StreamInfo 耗时 = " +
                      std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count()) + " ms");
@@ -129,7 +139,10 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
             bool sample_ok = false;
             {
                 VE_PERF("Mp4SampleTableAnalyzer::AnalyzeFile(容器页)");
-                sample_ok = sample_analyzer.AnalyzeFile(file_path.toStdString(), result.mp4_samples);
+                sample_ok = sample_analyzer.AnalyzeFile(file_path.toStdString(),
+                                                        result.mp4_samples,
+                                                        Mp4SampleTableOptions{},
+                                                        cancel.get());
             }
             if (sample_ok) {
                 LOG_INFO("ContainerStructureAnalyzer: MP4 样本表校验 issues=" +
@@ -160,8 +173,13 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
     case model::ContainerFormat::MKV:
     case model::ContainerFormat::WebM: {
         EbmlAnalyzer ebml_analyzer;
-        if (ebml_analyzer.Analyze(file_path, result.ebml_detail)) {
-            ConvertEbmlTree(result.ebml_detail.element_tree, 0, result.element_tree);
+        if (ebml_analyzer.Analyze(file_path, result.ebml_detail, cancel.get())) {
+            if (!ConvertEbmlTree(result.ebml_detail.element_tree, 0, result.element_tree,
+                                 cancel.get())) {
+                result.valid = false;
+                result.error_message = "已取消";
+                return false;
+            }
             ExtractEbmlStreamInfo(result.ebml_detail, result);
             result.valid = true;
 
@@ -187,37 +205,37 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
 
     case model::ContainerFormat::AVI: {
         AviStructureAnalyzer avi;
-        if (avi.Analyze(file_path, result)) return true;
+        if (avi.Analyze(file_path, result, cancel.get())) return true;
         LOG_WARN("AVI 专用解析器失败, 回退到 FFmpeg");
         return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
     case model::ContainerFormat::FLV: {
         FlvStructureAnalyzer flv;
-        if (flv.Analyze(file_path, result)) return true;
+        if (flv.Analyze(file_path, result, cancel.get())) return true;
         LOG_WARN("FLV 专用解析器失败, 回退到 FFmpeg");
         return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
     case model::ContainerFormat::MPEG_TS: {
         TsStructureAnalyzer ts;
-        if (ts.Analyze(file_path, result)) return true;
+        if (ts.Analyze(file_path, result, cancel.get())) return true;
         LOG_WARN("TS 专用解析器失败, 回退到 FFmpeg");
         return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
     case model::ContainerFormat::HLS:
     case model::ContainerFormat::DASH: {
-        if (AnalyzeStreamingManifest(file_path, result)) return true;
+        if (AnalyzeStreamingManifest(file_path, result, cancel.get())) return true;
         LOG_WARN("流媒体清单解析失败, 回退到 FFmpeg");
         return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
     case model::ContainerFormat::ASF: {
         AsfStructureAnalyzer asf;
-        if (asf.Analyze(file_path, result)) return true;
+        if (asf.Analyze(file_path, result, cancel.get())) return true;
         LOG_WARN("ASF 专用解析器失败, 回退到 FFmpeg");
         return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
     case model::ContainerFormat::OGG: {
         OggStructureAnalyzer ogg;
-        if (ogg.Analyze(file_path, result)) return true;
+        if (ogg.Analyze(file_path, result, cancel.get())) return true;
         LOG_WARN("OGG 专用解析器失败, 回退到 FFmpeg");
         return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
@@ -228,12 +246,14 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
     }
 }
 
-void ContainerStructureAnalyzer::ExtractMp4StreamInfo(const std::vector<model::Mp4BoxNode>& box_tree,
-                                                        model::ContainerStructureResult& result) {
+bool ContainerStructureAnalyzer::ExtractMp4StreamInfo(const std::vector<model::Mp4BoxNode>& box_tree,
+                                                        model::ContainerStructureResult& result,
+                                                        const std::atomic<bool>* cancel) {
     // 遍历 box 树, 找到所有 trak, 提取流信息
     std::function<void(const std::vector<model::Mp4BoxNode>&)> walk;
     walk = [&](const std::vector<model::Mp4BoxNode>& nodes) {
         for (const auto& node : nodes) {
+            if (infrastructure::Checkpoint(cancel)) return;
             if (node.type == "trak") {
                 model::ContainerStreamInfo si;
                 si.index = result.streams.size();
@@ -337,6 +357,7 @@ void ContainerStructureAnalyzer::ExtractMp4StreamInfo(const std::vector<model::M
         }
     };
     walk(box_tree);
+    return true;
 }
 
 void ContainerStructureAnalyzer::ExtractEbmlStreamInfo(const model::EbmlAnalysisResult& ebml_detail,
@@ -389,10 +410,12 @@ void ContainerStructureAnalyzer::ExtractEbmlStreamInfo(const model::EbmlAnalysis
     }
 }
 
-void ContainerStructureAnalyzer::ConvertMp4Tree(const std::vector<model::Mp4BoxNode>& nodes,
+bool ContainerStructureAnalyzer::ConvertMp4Tree(const std::vector<model::Mp4BoxNode>& nodes,
                                                   int depth,
-                                                  std::vector<model::ContainerElement>& out) {
+                                                  std::vector<model::ContainerElement>& out,
+                                                  const std::atomic<bool>* cancel) {
     for (const auto& node : nodes) {
+        if (infrastructure::Checkpoint(cancel)) return false;
         model::ContainerElement elem;
         elem.name = node.type;
         elem.type = "Box";
@@ -437,15 +460,18 @@ void ContainerStructureAnalyzer::ConvertMp4Tree(const std::vector<model::Mp4BoxN
         elem.value = value.toStdString();
         elem.extra = all_props.toStdString();
 
-        ConvertMp4Tree(node.children, depth + 1, elem.children);
+        if (!ConvertMp4Tree(node.children, depth + 1, elem.children, cancel)) return false;
         out.push_back(elem);
     }
+    return true;
 }
 
-void ContainerStructureAnalyzer::ConvertEbmlTree(const std::vector<model::EbmlElementNode>& nodes,
+bool ContainerStructureAnalyzer::ConvertEbmlTree(const std::vector<model::EbmlElementNode>& nodes,
                                                    int depth,
-                                                   std::vector<model::ContainerElement>& out) {
+                                                   std::vector<model::ContainerElement>& out,
+                                                   const std::atomic<bool>* cancel) {
     for (const auto& node : nodes) {
+        if (infrastructure::Checkpoint(cancel)) return false;
         model::ContainerElement elem;
         elem.name = node.name;
         elem.type = "EBML";
@@ -455,9 +481,10 @@ void ContainerStructureAnalyzer::ConvertEbmlTree(const std::vector<model::EbmlEl
         elem.value = node.value;
         elem.extra = node.extra;
 
-        ConvertEbmlTree(node.children, depth + 1, elem.children);
+        if (!ConvertEbmlTree(node.children, depth + 1, elem.children, cancel)) return false;
         out.push_back(elem);
     }
+    return true;
 }
 
 bool ContainerStructureAnalyzer::AnalyzeWithFFmpeg(const QString& file_path,
@@ -597,7 +624,8 @@ bool ContainerStructureAnalyzer::AnalyzeWithFFmpeg(const QString& file_path,
 }
 
 bool ContainerStructureAnalyzer::AnalyzeStreamingManifest(const QString& file_path,
-                                                          model::ContainerStructureResult& result) {
+                                                          model::ContainerStructureResult& result,
+                                                          const std::atomic<bool>* cancel) {
     VE_PERF("AnalyzeStreamingManifest");
     const std::string path = file_path.toStdString();
     model::StreamingPackageResult& pkg = result.streaming_package;
@@ -618,21 +646,23 @@ bool ContainerStructureAnalyzer::AnalyzeStreamingManifest(const QString& file_pa
 
     // 分片级 / ladder 级交叉校验。fMP4 分片在这里被 Mp4SampleTableAnalyzer 解析，
     // MPEG-TS 分片的逐包解析要依赖 Qt，放到下面的 ProbeTsSegments。
-    SegmentQcAnalyzer::Analyze(pkg, SegmentQcOptions{});
+    SegmentQcAnalyzer::Analyze(pkg, SegmentQcOptions{}, cancel);
 
-    ProbeTsSegments(result);
+    ProbeTsSegments(result, cancel);
     BuildStreamingTree(result);
 
     result.valid = true;
     return true;
 }
 
-void ContainerStructureAnalyzer::ProbeTsSegments(model::ContainerStructureResult& result) {
+void ContainerStructureAnalyzer::ProbeTsSegments(model::ContainerStructureResult& result,
+                                                 const std::atomic<bool>* cancel) {
     model::StreamingPackageResult& pkg = result.streaming_package;
     constexpr int kMaxTsProbe = 3;  // 抽查头几个就够了：分片是同一次切片产出的
     int probed = 0;
 
     auto probe_one = [&](model::SegmentInfo& seg) {
+        if (infrastructure::Checkpoint(cancel)) return;
         if (probed >= kMaxTsProbe) return;
         if (seg.partial || seg.container != model::SegmentContainer::MPEG_TS) return;
         if (!seg.exists || seg.resolved_path.empty()) return;
@@ -650,10 +680,16 @@ void ContainerStructureAnalyzer::ProbeTsSegments(model::ContainerStructureResult
     };
 
     for (model::MediaPlaylistInfo& pl : pkg.playlists) {
-        for (model::SegmentInfo& seg : pl.segments) probe_one(seg);
+        for (model::SegmentInfo& seg : pl.segments) {
+            if (infrastructure::Checkpoint(cancel)) return;
+            probe_one(seg);
+        }
     }
     for (model::DashRepresentationInfo& rep : pkg.representations) {
-        for (model::SegmentInfo& seg : rep.segments) probe_one(seg);
+        for (model::SegmentInfo& seg : rep.segments) {
+            if (infrastructure::Checkpoint(cancel)) return;
+            probe_one(seg);
+        }
     }
 }
 

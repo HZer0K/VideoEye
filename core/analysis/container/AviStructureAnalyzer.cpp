@@ -3,6 +3,8 @@
 #include <QDataStream>
 #include <QByteArray>
 
+#include "infrastructure/concurrency/Cancellation.h"
+
 namespace videoeye {
 namespace analyzer {
 
@@ -42,7 +44,8 @@ QString waveFormatName(uint16_t tag) {
 }
 } // namespace
 
-bool AviStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStructureResult& result) {
+bool AviStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStructureResult& result,
+                                   const std::atomic<bool>* cancel) {
     QFile file(file_path);
     if (!file.open(QIODevice::ReadOnly)) {
         result.error_message = "无法打开文件";
@@ -73,7 +76,7 @@ bool AviStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
 
     // 递归解析子块
     qint64 end_offset = qMin(static_cast<qint64>(riff_size + 8), file.size());
-    ParseChunk(file, end_offset, 1, root, result);
+    if (!ParseChunk(file, end_offset, 1, root, result, cancel)) return false;
 
     result.element_tree.push_back(root);
     result.valid = true;
@@ -85,7 +88,8 @@ bool AviStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
 
 bool AviStructureAnalyzer::ParseChunk(QFile& file, qint64 end_offset, int depth,
                                        model::ContainerElement& parent,
-                                       model::ContainerStructureResult& result) {
+                                       model::ContainerStructureResult& result,
+                                       const std::atomic<bool>* cancel) {
     // 限制递归深度防止栈溢出
     if (depth > 8) return false;
 
@@ -94,6 +98,7 @@ bool AviStructureAnalyzer::ParseChunk(QFile& file, qint64 end_offset, int depth,
     int cur_stream_idx = -1;
 
     while (file.pos() < end_offset - 8) {
+        if (infrastructure::Checkpoint(cancel)) return false;
         QByteArray chunk_header = file.read(8);
         if (chunk_header.size() < 8) break;
 
@@ -120,7 +125,7 @@ bool AviStructureAnalyzer::ParseChunk(QFile& file, qint64 end_offset, int depth,
             qint64 list_end = file.pos() + chunk_size - 4;
             if (list_end > file.size()) list_end = file.size();
 
-            ParseChunk(file, list_end, depth + 1, elem, result);
+            ParseChunk(file, list_end, depth + 1, elem, result, cancel);
 
             // 确保跳到正确位置 (chunk_size 对齐到偶数)
             qint64 expected_pos = chunk_offset + 8 + chunk_size;

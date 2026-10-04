@@ -48,6 +48,12 @@ public:
              const AnalysisCallbacks& callbacks);
 
 private:
+    // FFmpeg 的中断回调一旦被触发，open / 探测 / 逐包读三个阶段都会用 AVERROR_EXIT 收场。
+    // 判「这一路是用户取消」必须两个条件同时成立：取消标记已被置位、且 FFmpeg 侧确实
+    // 以 EXIT 结束。只看 ret 会把「取消前恰好撞上一次真的 IO 错误」误判成取消，
+    // 只看标记又会把「刚点取消、FFmpeg 还没来得及响应」的失败误判成完成。
+    bool IsCancelledExit(int ret) const;
+
     // 流媒体清单（.m3u8 / .mpd）分支：只跑自研清单解析，不做 FFmpeg demux。
     // 从 Run 里单独拆出来是因为这条路径完全不碰 avformat ——
     // FFmpeg 会把清单当播放列表去发网络请求，离线 QC 既不可控也无法单测。

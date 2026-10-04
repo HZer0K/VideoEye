@@ -1,3 +1,4 @@
+#include "infrastructure/concurrency/Cancellation.h"
 #include "core/analysis/container/OggStructureAnalyzer.h"
 #include <QFile>
 
@@ -49,7 +50,8 @@ void parseVorbisComments(const QByteArray& d, int start,
 }
 } // namespace
 
-bool OggStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStructureResult& result) {
+bool OggStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStructureResult& result,
+                                   const std::atomic<bool>* cancel) {
     QFile file(file_path);
     if (!file.open(QIODevice::ReadOnly)) {
         result.error_message = "无法打开文件";
@@ -82,6 +84,7 @@ bool OggStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
     const int max_pages = 2000;
 
     while (file.pos() < file.size() - 27 && total_pages < max_pages) {
+        if (infrastructure::Checkpoint(cancel)) { result.error_message = "已取消"; return false; }
         // Ogg Page Header: "OggS" (4) + version(1) + type(1) + granule(8) + serial(4) + page_seq(4) + checksum(4) + segments(1)
         QByteArray header = file.read(27);
         if (header.size() < 27) break;

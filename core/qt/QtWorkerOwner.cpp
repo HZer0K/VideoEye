@@ -37,7 +37,8 @@ QtWorkerOwner::~QtWorkerOwner() {
 
 QThread* QtWorkerOwner::StartWorker(QObject* worker, std::function<void()> body,
                                     std::function<void()> request_stop,
-                                    std::function<void(QThread*)> on_finished) {
+                                    std::function<void(QThread*)> on_finished,
+                                    std::function<void(QThread*, const std::string&)> on_error) {
     if (!worker) return nullptr;
 
     auto* thread = new QThread(this);
@@ -56,8 +57,26 @@ QThread* QtWorkerOwner::StartWorker(QObject* worker, std::function<void()> body,
     // 任务体一返回就退出事件循环: 否则线程会一直挂在 exec() 上不结束 ——
     // 以前是靠调用方把 worker 的每个终态信号都连到 thread->quit，漏连一个就漏退一次。
     QObject::connect(thread, &QThread::started, worker,
-                     [thread, body = std::move(body)]() {
-                         body();
+                     [thread, body = std::move(body), on_error]() {
+                         // 异常必须就地吃掉: Qt 的线程入口（QThreadPrivate::start 里
+                         // 调 run()）不设 try/catch，异常一路逃逸出去就没人接，
+                         // 进程直接 std::terminate() 退出 —— 一个 worker 里的
+                         // std::bad_alloc / 断言失败就把整个程序带走了。
+                         // 同时对应的 TaskManager 任务会永远停在 Running，没终态。
+                         try {
+                             body();
+                         } catch (const std::exception& ex) {
+                             const std::string what =
+                                 "worker 任务体抛出 std::exception: " + std::string(ex.what());
+                             LOG_ERROR(what);
+                             if (on_error) on_error(thread, what);
+                         } catch (...) {
+                             const std::string what = "worker 任务体抛出未知异常(非 std::exception)";
+                             LOG_ERROR(what);
+                             if (on_error) on_error(thread, what);
+                         }
+                         // quit() 与异常无关：成功路径、失败路径、以及上面两个 catch
+                         // 都必须走到这里，否则线程会一直挂在 exec() 上变成泄漏。
                          thread->quit();
                      });
     // 终态清理: 排队回所有者线程，worker 与 QThread 各自在正确的线程被回收

@@ -23,8 +23,10 @@ public:
     ~ContainerStructureAnalyzer();
 
     /// 分析文件容器结构
-    /// @param cancel 可选取消标志: 非空时交给 FFmpeg 的 AVIO 中断回调,
-    ///               使关闭流程（CancelAll）能及时中止阻塞 IO。传空则不做取消。
+    /// @param cancel 可选取消标志: 非空时（1）交给 FFmpeg 的 AVIO 中断回调, 使关闭流程
+    ///               （CancelAll）能及时中止阻塞 IO；（2）往下传给每种容器解析器,
+    ///               在 box / element / segment / 分片级别轮询。传空则不做取消。
+    ///               MP4 / MKV / AVI / FLV / TS / ASF / OGG 路径都吃这一套。
     bool Analyze(const QString& file_path, model::ContainerStructureResult& result,
                  std::shared_ptr<std::atomic<bool>> cancel = {});
 
@@ -32,17 +34,22 @@ public:
     void Reset();
 
 private:
+    // 下面三个"树转换"函数返回 bool：false 表示中途被取消（不再堆出半成品树），
+    // 让 Analyze() 能把结果归成"已取消"，而不是把半棵树当成有效的结构树交出去。
     /// 将 Mp4BoxNode 树映射为 ContainerElement 树
-    void ConvertMp4Tree(const std::vector<model::Mp4BoxNode>& nodes, int depth,
-                        std::vector<model::ContainerElement>& out);
+    bool ConvertMp4Tree(const std::vector<model::Mp4BoxNode>& nodes, int depth,
+                        std::vector<model::ContainerElement>& out,
+                        const std::atomic<bool>* cancel);
 
     /// 将 EbmlElementNode 树映射为 ContainerElement 树
-    void ConvertEbmlTree(const std::vector<model::EbmlElementNode>& nodes, int depth,
-                         std::vector<model::ContainerElement>& out);
+    bool ConvertEbmlTree(const std::vector<model::EbmlElementNode>& nodes, int depth,
+                         std::vector<model::ContainerElement>& out,
+                         const std::atomic<bool>* cancel);
 
     /// 从 MP4 Box 树中提取丰富的流信息
-    void ExtractMp4StreamInfo(const std::vector<model::Mp4BoxNode>& box_tree,
-                              model::ContainerStructureResult& result);
+    bool ExtractMp4StreamInfo(const std::vector<model::Mp4BoxNode>& box_tree,
+                              model::ContainerStructureResult& result,
+                              const std::atomic<bool>* cancel);
 
     /// 从 EBML 树中提取丰富的流信息
     void ExtractEbmlStreamInfo(const model::EbmlAnalysisResult& ebml_detail,
@@ -58,13 +65,15 @@ private:
     /// 只走自研解析器（std::ifstream），绝不把清单交给 FFmpeg ——
     /// avformat 会把它当播放列表去发网络请求，离线 QC 场景不可控也无法单测。
     bool AnalyzeStreamingManifest(const QString& file_path,
-                                  model::ContainerStructureResult& result);
+                                  model::ContainerStructureResult& result,
+                                  const std::atomic<bool>* cancel);
 
     /// 清单结构 -> 通用结构树 / 流信息 / 元数据（供"文件结构"页复用同一套渲染）
     void BuildStreamingTree(model::ContainerStructureResult& result);
 
     /// 用 TsStructureAnalyzer 抽查若干 TS 分片（复用已有 TS 容器分析）
-    void ProbeTsSegments(model::ContainerStructureResult& result);
+    void ProbeTsSegments(model::ContainerStructureResult& result,
+                         const std::atomic<bool>* cancel);
 };
 
 } // namespace analyzer

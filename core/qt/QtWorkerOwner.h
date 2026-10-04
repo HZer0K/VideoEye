@@ -50,10 +50,14 @@ public:
     //                   回调里直接用形参比较即可，无需捕获尚未声明的本地 thread 变量。
     //                   必须在 thread->start() 之前由本方法连接，否则线程若秒级完成、
     //                   调用方还没连上 finished，清理回调永不执行、成员指针保留失效对象。
+    //   on_error     —— body 抛异常时的失败回调，签名 void(QThread*, const std::string&)。
+    //                   在**线程**上下文执行（与 body 同级），调用方需要跨线程投递。
+    //                   这是导出任务写入 Failed 终态、发错误信号的入口；不传则只记日志。
     // 返回线程指针仅供连线；所有权仍在本对象。
     QThread* StartWorker(QObject* worker, std::function<void()> body,
                          std::function<void()> request_stop = {},
-                         std::function<void(QThread*)> on_finished = {});
+                         std::function<void(QThread*)> on_finished = {},
+                         std::function<void(QThread*, const std::string&)> on_error = {});
 
     // 请求停止某个线程: 置取消标志 -> quit -> 限时 wait。
     // 返回 true = 线程已结束（可以放心遗忘）；false = 超时仍在跑。

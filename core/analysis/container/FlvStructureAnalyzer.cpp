@@ -1,3 +1,4 @@
+#include "infrastructure/concurrency/Cancellation.h"
 #include "core/analysis/container/FlvStructureAnalyzer.h"
 #include <QFile>
 #include <QByteArray>
@@ -142,7 +143,8 @@ void parseAmf0Value(const QByteArray& b, int& pos, const QString& key,
 }
 } // namespace
 
-bool FlvStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStructureResult& result) {
+bool FlvStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStructureResult& result,
+                                   const std::atomic<bool>* cancel) {
     QFile file(file_path);
     if (!file.open(QIODevice::ReadOnly)) {
         result.error_message = "无法打开文件";
@@ -205,6 +207,7 @@ bool FlvStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
     const int max_tags = 500;
 
     while (file.pos() < file.size() - 11 && tag_count < max_tags) {
+        if (infrastructure::Checkpoint(cancel)) { result.error_message = "已取消"; return false; }
         QByteArray tag_header = file.read(11);
         if (tag_header.size() < 11) break;
 

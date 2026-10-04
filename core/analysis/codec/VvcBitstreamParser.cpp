@@ -27,6 +27,7 @@ constexpr int kMaxNumRefPicLists = 64;         // 单条 ref_pic_list 里的参�
 constexpr int kMaxRefPicListEntries = 4096;     // ref_pic_list 的条目数上限
 constexpr int kMaxVirtualBoundaries = 4095;    // 虚拟边界条数（每条至少 1 bit）
 constexpr int kMaxHrdCpbCntMinus1 = 31;        // HRD 参数集里的 cpb_cnt - 1
+constexpr uint32_t kMaxQpTablePoints = 1024;   // 单张 QP 表的点数（每点至少 2 个 ue(v)）
 
 // ceil(log2(v))，v >= 1
 int CeilLog2(uint32_t v) {
@@ -604,8 +605,17 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const utils::NalUnit& 
         const int num_qp_tables = same_qp_table ? 1 : (sps.sps_joint_cbcr_enabled_flag ? 3 : 2);
         for (int i = 0; i < num_qp_tables; ++i) {
             reader.ReadSE();  // sps_qp_table_start_minus26[i]
-            const uint32_t num_points = reader.ReadUE();
-            for (uint32_t j = 0; j <= num_points; ++j) {
+            // 这里是 sps_num_delta_of_qp_points_minus1[i]：点的**个数减一**，
+            // 所以循环下标要跑到它（含）—— 与 HEVC 的 sps_qp_table_num_points_minus1
+            // 同一套语义。曾经为了"消除无符号回绕"把它改成 j < num_points，
+            // 少读一位就把后面的 SAO/ALF/LMCS 字段全带偏（回归测试这两条正是抓这个）。
+            //
+            // 真正的雷不在 <= 上，而在 ReadUE() 没有上界：畸形码流能把返回值顶到
+            // UINT32_MAX，j++ 到最大值后回绕成 0，循环就永远出不来 —— 分析线程
+            // 直接被占满。所以这里有界读，拿到手的数一定 <= kMaxQpTablePoints，
+            // j <= 那个数最多多跑一轮，回绕和超长循环一起没了。
+            const uint32_t num_points_minus1 = reader.ReadUEBounded(kMaxQpTablePoints);
+            for (uint32_t j = 0; j <= num_points_minus1; ++j) {
                 reader.ReadUE();  // delta_qp_in_val_minus1
                 reader.ReadUE();  // delta_qp_diff_val
             }

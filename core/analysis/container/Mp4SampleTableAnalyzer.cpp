@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "infrastructure/concurrency/Cancellation.h"
 #include "infrastructure/logging/Logger.h"
 
 #include "core/media/container/IsobmffParser.h"
@@ -653,13 +654,15 @@ Mp4SampleTableAnalyzer::Mp4SampleTableAnalyzer() = default;
 
 bool Mp4SampleTableAnalyzer::AnalyzeFile(const std::string& file_path,
                                          model::Mp4SampleTableResult& out,
-                                         const Mp4SampleTableOptions& options) {
+                                         const Mp4SampleTableOptions& options,
+                                         const std::atomic<bool>* cancel) {
     options_ = options;
     out = model::Mp4SampleTableResult{};
     out.file_path = file_path;
 
     utils::IsobmffParser::Options parse_options;
     parse_options.skip_sample_tables = !options.expand_samples;
+    parse_options.cancel = cancel;
 
     utils::IsobmffFile parsed;
     if (!utils::IsobmffParser::Parse(file_path, parsed, parse_options)) {
@@ -668,6 +671,11 @@ bool Mp4SampleTableAnalyzer::AnalyzeFile(const std::string& file_path,
                                 ? std::string("无法按 ISOBMFF (MP4/MOV) 解析该文件")
                                 : parsed.error_message;
         LOG_WARN("MP4 样本表分析失败: " + file_path + " -> " + out.error_message);
+        return false;
+    }
+    if (infrastructure::IsCanceled(cancel)) {
+        out.valid = false;
+        out.error_message = "已取消";
         return false;
     }
 
@@ -686,6 +694,11 @@ bool Mp4SampleTableAnalyzer::AnalyzeFile(const std::string& file_path,
 
     out.tracks.reserve(parsed.tracks.size());
     for (const auto& src : parsed.tracks) {
+        if (infrastructure::Checkpoint(cancel)) {
+            out.valid = false;
+            out.error_message = "已取消";
+            return false;
+        }
         model::Mp4TrackSampleTable t;
         CollectTrack(src, t, options);
         out.tracks.push_back(std::move(t));
@@ -693,6 +706,11 @@ bool Mp4SampleTableAnalyzer::AnalyzeFile(const std::string& file_path,
 
     out.fragments.reserve(parsed.fragments.size());
     for (const auto& f : parsed.fragments) {
+        if (infrastructure::Checkpoint(cancel)) {
+            out.valid = false;
+            out.error_message = "已取消";
+            return false;
+        }
         out.fragments.push_back(ConvertFragment(f));
     }
 

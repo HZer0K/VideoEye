@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <string>
@@ -31,7 +32,10 @@ public:
     EbmlAnalyzer(const EbmlAnalyzer&) = delete;
     EbmlAnalyzer& operator=(const EbmlAnalyzer&) = delete;
 
-    bool Analyze(const QString& filePath, model::EbmlAnalysisResult& result);
+    // cancel: 可选的取消标志（nullptr = 不关心取消）。MKV 的 Cluster 数随片长线性增长，
+    // 解析中途被取消必须当场停，否则切了媒体旧的解析还在后台刷盘。
+    bool Analyze(const QString& filePath, model::EbmlAnalysisResult& result,
+                 const std::atomic<bool>* cancel = nullptr);
     void Reset();
 
 private:
@@ -45,7 +49,8 @@ private:
     // --- 元素解析 ---
     bool ParseElement(QDataStream& ds, qint64 end_offset, int depth,
                       model::EbmlElementNode* parent,
-                      model::EbmlAnalysisResult& result);
+                      model::EbmlAnalysisResult& result,
+                      const std::atomic<bool>* cancel = nullptr);
 
     /// 解析叶子元素值，同时提取关键数据 (如 DocType, TimestampScale 等)
     void ParseLeafValue(model::EbmlElementNode& node, const QByteArray& data,

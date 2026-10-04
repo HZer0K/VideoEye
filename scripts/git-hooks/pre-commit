@@ -1,7 +1,9 @@
 #!/bin/sh
-# pre-commit: 提交前跑两道门
+# pre-commit: 提交前跑四道门
 #   1. 分层边界检查（scripts/check_layering.py）—— 依赖方向违规直接阻止提交
-#   2. 暂存的 C++ 文件跑 clang-format
+#   2. Qt/domain 边界审计（scripts/audit_qt_domain_border.py）—— 确定命中直接阻止提交
+#   3. 审计退出码自测（scripts/test_audit_qt_domain_border.py）—— 保证第 2 道门真能拦住
+#   4. 暂存的 C++ 文件跑 clang-format
 # 安装: bash scripts/setup-hooks.sh
 #
 # 为什么第 1 道门必须在本地也跑一遍，不能只靠 CI：
@@ -36,6 +38,38 @@ if [ -n "$PY" ]; then
     fi
 else
     echo "warning: 未找到 python，跳过分层检查（CI 仍会跑 scripts/check_layering.py）" >&2
+fi
+
+# 第 2 道门: Qt 类型不得从生产侧直接落进 domain 的 std::string 字段。
+# 典型形态是 QString 直接赋给 result.error_message —— 编译能过（QString 有隐式
+# std::string 转换），但领域模型从此不再是纯 std 结构，domain 也就再没资格说自己零依赖。
+# 与 check_layering 的区别: 那条管 #include 方向，这条管字段级污染，查的不是同一件事。
+if [ -n "$PY" ]; then
+    if ! "$PY" scripts/audit_qt_domain_border.py > /dev/null; then
+        echo "" >&2
+        echo "提交已阻止：Qt 类型污染 domain std::string 字段（下方为详细输出）" >&2
+        echo "  真违规就显式 .toStdString()；确属 Qt 侧自有结构的，把文件加进" >&2
+        echo "  scripts/audit_qt_domain_border.py 的 ALLOWED_FILES 并写明原因。" >&2
+        echo "  arg_probable（名字撞车的『疑似』项）不拦截，只提示。" >&2
+        "$PY" scripts/audit_qt_domain_border.py >&2
+        exit 1
+    fi
+else
+    echo "warning: 未找到 python，跳过 Qt/domain 边界审计（CI 仍会跑）" >&2
+fi
+
+# 第 3 道门: 审计脚本自己的退出码自测。
+# 第 2 道门靠退出码拦人，那"退出码对不对"本身谁在盯？
+# 它出过「打印 [命中] 却 return 0」的 bug，人肉读输出看不出问题，
+# 所以自测用临时目录造四种场景把退出码钉死。审计逻辑一改就跑这个。
+if [ -n "$PY" ]; then
+    if ! "$PY" scripts/test_audit_qt_domain_border.py; then
+        echo "" >&2
+        echo "提交已阻止：审计脚本的退出码语义被改坏了（回归：打印 [命中] 却 return 0）" >&2
+        exit 1
+    fi
+else
+    echo "warning: 未找到 python，跳过审计退出码自测（CI 仍会跑）" >&2
 fi
 
 staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.cpp' '*.h' '*.hpp' '*.c')
