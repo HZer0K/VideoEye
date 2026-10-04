@@ -114,8 +114,19 @@ public:
     // 便捷入口: 在受管 std::thread 上执行 body(id, token), 收尾自动写入终态。
     // body 里的异常会被捕获并记成 Failed(MSVC 的 std::thread 入口是 noexcept,
     // 异常逃逸会直接 terminate, 所以必须在线程内兜住)。
+    //
+    // 注意: 正常返回一律按 Succeeded 记。任务体若自己知道"这趟没成", 请用下面的
+    // RunWithResult 显式返回终态 —— 靠 UI 回调补写 End() 是不行的: 那条消息排队到
+    // UI 线程时才落地, 届时 slot 可能已经记过一次终态(终态一次性, 后到的会被丢弃),
+    // 也可能已经换了新任务。
     TaskId Run(const std::string& slot, std::function<void(TaskId, CancelToken)> body,
                int wait_for_previous_ms = 0, TaskKind kind = TaskKind::Cooperative);
+
+    // Run() 的"任务体自己声明终态"版本: body 的返回值就是要写入 slot 的终态。
+    // 返回值是过程态(Idle/Running)时按 Failed 记 —— 那是任务体违约, 不能让它把
+    // slot 挂在 Running 上。异常同样记 Failed; 被取消时一律记 Canceled。
+    TaskId RunWithResult(const std::string& slot, std::function<TaskState(TaskId, CancelToken)> body,
+                         int wait_for_previous_ms = 0, TaskKind kind = TaskKind::Cooperative);
 
     // Run() 的 TaskKind::BlockingIo 版本。执行语义完全一样, 只有关闭策略不同。
     // 单独起个名字而不是塞个默认参数: 这是为了让调用点自己把"这里会阻塞在第三方 IO 上"
@@ -123,14 +134,31 @@ public:
     TaskId RunBlockingIo(const std::string& slot, std::function<void(TaskId, CancelToken)> body,
                          int wait_for_previous_ms = 0);
 
+    // RunWithResult() 的 TaskKind::BlockingIo 版本。
+    TaskId RunBlockingIoWithResult(const std::string& slot,
+                                   std::function<TaskState(TaskId, CancelToken)> body,
+                                   int wait_for_previous_ms = 0);
+
     // 取该 slot 当前任务的取消令牌(供自带线程的任务体轮询)。
     CancelToken Token(const std::string& slot) const;
 
-    // 任务体收尾时上报终态。id 与 slot 当前任务不匹配时忽略(说明已被新任务取代)。
+    // 任务体收尾时上报终态。
+    //
+    // 写入是**一次性**的: 只允许 Running -> 终态。已经写过终态的 slot 再收到 End()
+    // (Succeeded -> Failed、Canceled -> Succeeded 这类覆盖)一律丢弃 —— 终态一旦写入
+    // 就不再变化, 否则"worker 正常返回记成功 + 排队到 UI 的失败消息后到"会互相改写。
+    // id 与 slot 当前任务不匹配时同样忽略(说明已被新任务取代)。
     void End(const std::string& slot, TaskId id, TaskState terminal);
 
     // 结果是否仍然新鲜: 已被取消 / 已被同 slot 的新任务取代 -> false, 任务体应丢弃结果。
     bool IsCurrent(const std::string& slot, TaskId id) const;
+
+    // slot 上当前任务的 id(没有则 0)。
+    //
+    // 与 IsCurrent 的区别: IsCurrent 额外要求"状态仍是 Running", 所以任务一收尾它就
+    // 变 false —— 这让它没法用来判定"排队到 UI 线程的收尾消息是不是过期的"
+    // (那种消息落地时 slot 必然已经终态)。那种场景请用这个 id 比对。
+    TaskId CurrentId(const std::string& slot) const;
 
     bool IsRunning(const std::string& slot) const;
     TaskState State(const std::string& slot) const;

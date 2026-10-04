@@ -62,8 +62,12 @@ private:
                               const std::atomic<bool>* cancel);
 
     /// 从 EBML 树中提取丰富的流信息
-    void ExtractEbmlStreamInfo(const model::EbmlAnalysisResult& ebml_detail,
-                               model::ContainerStructureResult& result);
+    /// 返回 false 表示中途被取消（与 ConvertEbmlTree / ExtractMp4StreamInfo 同契约）：
+    /// 轨道数是 MKV 里唯一能长到"值得中断"的列表，取消必须冒泡到返回值，
+    /// 否则外层会把一份只填了一半的 result 当成有效结果发出去。
+    bool ExtractEbmlStreamInfo(const model::EbmlAnalysisResult& ebml_detail,
+                               model::ContainerStructureResult& result,
+                               const std::atomic<bool>* cancel);
 
     /// FFmpeg 通用元数据回退分析
     /// @param cancel 可选取消标志, 交给 FFmpeg 的 AVIO 中断回调

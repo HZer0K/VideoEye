@@ -117,6 +117,14 @@ void TaskManager::EndTask(Core& st, const std::string& slot, TaskId id, TaskStat
         return;
     if (s->current_id.load(std::memory_order_acquire) != id)
         return; // 已被新任务取代
+    // 终态一次性: 只允许 Running -> 终态。已经写过终态的 slot 再收 End() 一律丢弃。
+    //
+    // 没有这层判断时, "任务体正常返回 -> Run 记 Succeeded" 与 "排到 UI 线程的失败
+    // 消息后到 -> 回调里再记 Failed" 会互相覆盖, 终态取决于两条路径谁后跑完;
+    // 更糟的是旧任务的失败消息可能在新任务开始之后才落地。终态一旦写入就不再变化,
+    // 后到的那次必须被丢弃。
+    if (IsTerminalState(s->state.load(std::memory_order_acquire)))
+        return;
     s->state.store(terminal, std::memory_order_release);
     s->running.store(false, std::memory_order_release);
     st.cv.notify_all();
@@ -181,9 +189,29 @@ TaskId TaskManager::Begin(const std::string& slot, int wait_for_previous_ms, Tas
 
 TaskId TaskManager::Run(const std::string& slot, std::function<void(TaskId, CancelToken)> body,
                         int wait_for_previous_ms, TaskKind kind) {
-    const TaskId id = Begin(slot, wait_for_previous_ms, kind);
-    if (id == 0 || !body)
+    if (!body) {
+        // 没有任务体却有 id: 直接登记再立刻记失败, 别把 slot 挂在 Running 上
+        const TaskId id = Begin(slot, wait_for_previous_ms, kind);
+        if (id != 0) EndTask(*core_, slot, id, TaskState::Failed);
         return id;
+    }
+    // 转交给带返回值的版本: 那边才是真正的实现, 免得两份线程启动逻辑各错各的。
+    return RunWithResult(slot,
+                         [body = std::move(body)](TaskId id, CancelToken token) {
+                             body(id, token);
+                             return TaskState::Succeeded;
+                         },
+                         wait_for_previous_ms, kind);
+}
+
+TaskId TaskManager::RunWithResult(const std::string& slot,
+                                  std::function<TaskState(TaskId, CancelToken)> body,
+                                  int wait_for_previous_ms, TaskKind kind) {
+    const TaskId id = Begin(slot, wait_for_previous_ms, kind);
+    if (id == 0 || !body) {
+        if (id != 0) EndTask(*core_, slot, id, TaskState::Failed);
+        return id;
+    }
 
     std::shared_ptr<std::atomic<bool>> cancel;
     {
@@ -210,12 +238,17 @@ TaskId TaskManager::Run(const std::string& slot, std::function<void(TaskId, Canc
             SignalOnExit signal(done_sig);
             TaskState terminal = TaskState::Succeeded;
             try {
-                body(id, CancelToken(cancel));
+                terminal = body(id, CancelToken(cancel));
             } catch (const std::exception& e) {
                 LOG_ERROR("后台任务异常终止 [" + slot + "]: " + std::string(e.what()));
                 terminal = TaskState::Failed;
             } catch (...) {
                 LOG_ERROR("后台任务异常终止 [" + slot + "]: 未知异常");
+                terminal = TaskState::Failed;
+            }
+            // 任务体返回过程态属于违约(等于没给结论): 按失败记, 不能让 slot 挂在 Running 上。
+            if (!IsTerminalState(terminal)) {
+                LOG_ERROR("后台任务返回了非终态 [" + slot + "], 按失败处理");
                 terminal = TaskState::Failed;
             }
             // 已被取消 / 被新任务取代时, 终态按 Canceled 记, 避免把"被丢弃"报成成功
@@ -250,6 +283,12 @@ TaskId TaskManager::RunBlockingIo(const std::string& slot,
     return Run(slot, std::move(body), wait_for_previous_ms, TaskKind::BlockingIo);
 }
 
+TaskId TaskManager::RunBlockingIoWithResult(const std::string& slot,
+                                            std::function<TaskState(TaskId, CancelToken)> body,
+                                            int wait_for_previous_ms) {
+    return RunWithResult(slot, std::move(body), wait_for_previous_ms, TaskKind::BlockingIo);
+}
+
 // ---------------------------------------------------------------------------
 // 查询
 // ---------------------------------------------------------------------------
@@ -276,6 +315,12 @@ bool TaskManager::IsCurrent(const std::string& slot, TaskId id) const {
     if (s->state.load(std::memory_order_acquire) != TaskState::Running)
         return false;
     return !s->cancel->load(std::memory_order_acquire);
+}
+
+TaskId TaskManager::CurrentId(const std::string& slot) const {
+    std::lock_guard<std::mutex> lk(core_->mutex);
+    const Slot* s = FindLocked(*core_, slot);
+    return s ? s->current_id.load(std::memory_order_acquire) : 0;
 }
 
 bool TaskManager::IsRunning(const std::string& slot) const {
@@ -461,6 +506,10 @@ void TaskManager::WaitForAll(int timeout_ms) {
             Slot* s = FindLocked(*core_, g.slot);
             if (!s || s->current_id.load(std::memory_order_acquire) != g.id)
                 continue;   // 期间被新任务接管了, 那是新任务的事
+            // 终态一次性: 放弃之后它自己跑完并写了终态(可能是真的成功了)的话,
+            // 这里再补一个 Canceled 就会把那个结论盖掉 —— 只在它还没收尾时才补。
+            if (!s->running.load(std::memory_order_acquire))
+                continue;
             s->state.store(TaskState::Canceled, std::memory_order_release);
             s->running.store(false, std::memory_order_release);
         }

@@ -292,7 +292,10 @@ TEST(QtWorkerOwner, ThrowingErrorCallbackStillEndsTaskAsFailed) {
     QCoreApplication app(argc, nullptr);
 
     TaskManager mgr(1);
-    const TaskId id = mgr.Run("export", [](TaskId, CancelToken) {});
+    // 用 Begin 而不是 Run: Run 的受管线程跑完会自己写 Succeeded, 而终态是**一次性**
+    // 的, 那之后 on_error 再补写 Failed 就会被丢弃(这正是终态不可重复覆盖的语义)。
+    // 生产侧本来也是这个形状 —— MediaPlayer 用 Begin() 登记, 终态由 UI 回调 End()。
+    const TaskId id = mgr.Begin("export");
     ASSERT_NE(id, 0u);
 
     std::atomic<bool> entered{false};

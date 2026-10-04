@@ -750,6 +750,22 @@ videoeye_add_test(test_container_structure_analyzers
 target_link_libraries(test_container_structure_analyzers PRIVATE Qt6::Core VideoEyeDomain)
 add_test(NAME ContainerStructureAnalyzerTests COMMAND test_container_structure_analyzers)
 # =================================================
+# 测试 34：ContainerStructureAnalyzer 四条分发路径的取消传播（复查 P2）
+# 说明: EBML(MKV/WebM) 这一路以前没把取消令牌传给 ExtractEbmlStreamInfo, valid 在
+#       它返回后立刻置位, 元素计数递归连一次检查都没有 —— 取消只有恰好落在
+#       EbmlAnalyzer 自己的循环里才生效。这里把 MP4 / MKV / HLS / DASH 压成同一组
+#       断言: 取消后不得产出 valid 结果、不得回退 FFmpeg、且取消必须发生在格式分派
+#       之后(否则测到的只是入口守卫)。取消点由"不取消跑一遍"的耗时校准, 不靠固定
+#       sleep —— 免得快机器/慢机器上落点漂移。
+#       样本全部内存合成后落盘, 不依赖任何真实媒体文件。
+# =================================================
+videoeye_add_test(test_container_cancel_paths
+    unit/test_container_cancel_paths.cpp
+)
+target_link_libraries(test_container_cancel_paths PRIVATE VideoEyeAnalysis Qt6::Core)
+add_test(NAME ContainerCancelPathTests COMMAND test_container_cancel_paths)
+
+# =================================================
 # 测试 33：取消 / 异常 / 畸形码流的回归（VVC QP 表无上界、容器解析器不传取消令牌、
 #孤儿线程不计并发预算、Qt worker 异常逃逸）
 # 说明: 这里刻意只链用到的几个 .cpp，不拉整层 VideoEyeAnalysis —— IsobmffParser 在

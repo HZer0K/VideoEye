@@ -1158,24 +1158,36 @@ void MediaPlayer::StartContainerStructureAnalysis(const QString& url) {
     // 网络源或异常设备上即使装了 AVIOInterruptCB 也可能不响应, 关闭时不能 join 到底 ——
     // 代价是必须遵守 TaskKind::BlockingIo 的生命周期约定(见 infra/concurrency/TaskManager.h):
     // 本任务体只按值捕获 (QPointer self + QString url_copy), 不持有裸引用, 符合约定。
-    task_manager_.RunBlockingIo(kSlotContainerStructure,
-                      [self, url_copy](task::TaskId id, task::CancelToken token) {
-        // 分析异常必须写成**任务终态 + 失败信号**，不能只记日志再正常返回：
-        // 这里跑在 TaskManager 的受管线程上，body 顺顺当当返回过去 -> Run 把任务记为
-        // Succeeded，而界面一个字都收不到 —— 看起来"分析成功"了，其实什么都没出来。
-        // 也不能把异常抛出去交给 TaskManager 兜：那会把终态记成 Failed，
-        // 但 UI 仍然没有出口（TaskManager 不认识 ContainerStructureFailed）。
+    //
+    // 用 WithResult 版本: 终态由**任务体自己**声明, TaskManager 只负责一次性写入。
+    // 以前终态写在 UI 回调里, 于是"body 正常返回 -> Run 记 Succeeded" 与 "排在 UI 队列
+    // 里的失败消息后到 -> 回调再记 Failed" 会互相改写, 终态取决于谁后跑完; 旧任务的
+    // 失败消息甚至可能在新任务开始之后才落地。
+    task_manager_.RunBlockingIoWithResult(
+        kSlotContainerStructure,
+        [self, url_copy](task::TaskId id, task::CancelToken token) -> task::TaskState {
+        // self 失效(播放器在分析期间被销毁)时必须立刻退出: 下面任何一次 self->...
+        // 都是悬空访问 —— 包括"取消 + 销毁"这种两件事先后到达的时序。
+        if (!self) return task::TaskState::Canceled;
+
+        // 只发失败信号, 不写终态(终态是本任务体的返回值)。
+        //
+        // 落地时还要复查一次 current id: 排到 UI 队列之后可能已经换了文件 / 重新分析过,
+        // 那时这条失败属于上一个任务, 不该弹到当前界面上。
+        // 这里用 CurrentId 而不是 IsCurrent —— 消息落地时 slot 必然已经是终态,
+        // IsCurrent 会一律判 false, 把正常的失败也一起丢掉。
         const auto report_failure = [self, id](const QString& msg) {
-            if (!self ||
-                self->task_manager_.State(kSlotContainerStructure) != task::TaskState::Running)
-                return;
+            if (!self) return;
             // 本任务体在 std::thread 上，直接 emit 会走直连把 UI 槽拖进后台线程，
-            // 所以终态与信号都排回 UI 线程落地。
+            // 所以信号排回 UI 线程落地。
             QMetaObject::invokeMethod(
                 self,
                 [self, id, msg]() {
                     if (!self) return;
-                    self->task_manager_.End(kSlotContainerStructure, id, task::TaskState::Failed);
+                    if (self->task_manager_.CurrentId(kSlotContainerStructure) != id) {
+                        LOG_INFO("容器结构分析的失败消息已过期, 丢弃");
+                        return;
+                    }
                     emit self->ContainerStructureFailed(msg);
                 },
                 Qt::QueuedConnection);
@@ -1183,41 +1195,42 @@ void MediaPlayer::StartContainerStructureAnalysis(const QString& url) {
 
         model::ContainerStructureResult cs_result;
         bool ok = false;
+        QString failure_msg;
         try {
             analyzer::ContainerStructureAnalyzer analyzer;
             ok = analyzer.Analyze(url_copy, cs_result, token.flag());
         } catch (const std::exception& e) {
             LOG_ERROR("后台容器结构分析异常: " + std::string(e.what()));
-            // 被取消时按 Canceled 记，不写 Failed：取消是用户动作，不是分析出错。
-            if (!token.IsCanceled())
-                report_failure(QString::fromStdString(e.what()));
+            failure_msg = QString::fromStdString(e.what());
         } catch (...) {
             LOG_ERROR("后台容器结构分析发生未知异常");
-            if (!token.IsCanceled())
-                report_failure(QStringLiteral("未知异常"));
+            failure_msg = QStringLiteral("未知异常");
         }
 
-        if (!ok || !self) {
-            // 没给出有效结果也必须有终态。以前这里只是 return，slot 永远停在 Running：
-            // 下一次分析 Begin 时要白等一轮，WaitForAll 也会多耗一个关闭预算。
-            // 取消归 Canceled（用户动作不是错误），解析不出来归 Failed。
-            if (token.IsCanceled())
-                self->task_manager_.End(kSlotContainerStructure, id, task::TaskState::Canceled);
-            else
-                report_failure(QStringLiteral("容器结构分析未能产出结果"));
-            return;
+        // 取消是用户动作, 不是分析出错 —— 优先级高于"没解析出来"。
+        if (token.IsCanceled()) return task::TaskState::Canceled;
+        // 播放器已被销毁: 结果无处可送, 也不能再碰 self。
+        if (!self) return task::TaskState::Canceled;
+
+        // 失败消息只在这里发一次。以前 catch 里发一次、!ok 分支再发一次,
+        // 异常路径会连着弹出两条 ContainerStructureFailed。
+        if (!ok) {
+            if (failure_msg.isEmpty())
+                failure_msg = QStringLiteral("容器结构分析未能产出结果");
+            report_failure(failure_msg);
+            return task::TaskState::Failed;
         }
         // 过期结果丢弃: 期间换了文件或关了播放器, 这次扫描的结果不能再覆盖新结果。
         // (以前靠 generation 比对, 现在统一由 TaskManager 的 IsCurrent 判定)
-        if (token.IsCanceled() ||
-            !self->task_manager_.IsCurrent(kSlotContainerStructure, id)) {
+        if (!self->task_manager_.IsCurrent(kSlotContainerStructure, id)) {
             LOG_INFO("容器结构分析结果已过期, 丢弃");
-            return;
+            return task::TaskState::Canceled;
         }
         QMetaObject::invokeMethod(self, [self, result = std::move(cs_result)]() mutable {
             if (self) emit self->ContainerStructureReady(result);
         }, Qt::QueuedConnection);
         LOG_INFO("OpenInternal: 容器结构分析完成");
+        return task::TaskState::Succeeded;
     });
     LOG_INFO("OpenInternal: 容器结构分析已派发到后台线程");
 }

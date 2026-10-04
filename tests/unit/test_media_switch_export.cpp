@@ -102,6 +102,33 @@ QString WriteCorruptInput() {
     return path;
 }
 
+// 一个"解析要花点时间"的合法 EBML 输入: EBML header + 一大批顶级 Void 元素。
+// 用来让"播放器被销毁"这件事稳定地落在解析中途, 而不是等任务早就跑完了才销毁。
+QString WriteBigEbmlInput() {
+    const QString path = QDir::tempPath() + "/videoeye_container_big.mkv";
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return QString();
+
+    QByteArray head;
+    head.append(char(0x1A)).append(char(0x45)).append(char(0xDF)).append(char(0xA3));
+    head.append(char(0x83));                                              // size = 3
+    head.append(char(0xEC)).append(char(0x81)).append(char(0x00));        // 载荷: 一个 Void
+
+    // 一块 4096 个 Void 元素, 重复若干块 —— 元素个数决定解析耗时
+    QByteArray chunk;
+    chunk.resize(3 * 4096);
+    for (int i = 0; i + 2 < chunk.size(); i += 3) {
+        chunk[i] = char(0xEC);
+        chunk[i + 1] = char(0x81);
+        chunk[i + 2] = char(0x00);
+    }
+
+    f.write(head);
+    for (int i = 0; i < 15; ++i) f.write(chunk);
+    f.close();
+    return path;
+}
+
 exporter::ExportOptions MakeOptions(const QString& input, const QString& output) {
     exporter::ExportOptions opt;
     opt.input_path = input;
@@ -194,4 +221,74 @@ TEST(MediaContainerStructure, FailureProducesFailedTerminalWithoutReady) {
     EXPECT_FALSE(failure_message.trimmed().isEmpty()) << "失败信号必须带原因, 界面才能告诉用户到底哪一步没过";
 
     QFile::remove(corrupt);
+}
+
+// ===========================================================================
+// 过期失败信号必须被丢弃（复查 P1: 终态一次性 + UI 回调不得补写终态）
+//
+// 修复前: 失败信号是在 UI 线程落地的, 而落地那一刻 slot 上跑的可能是**新任务** ——
+// 于是旧任务的失败既弹到了界面上, 又有机会改写新任务的终态(Succeeded -> Failed)。
+// 现在终态由任务体自己声明, UI 回调只发信号, 且发之前先比对 current id。
+//
+// 用例刻意在这两次请求之间**只睡、不泵事件**, 让第一条失败消息稳定地压在 UI 队列
+// 里, 从而复现"旧消息在新任务开始之后才落地"这个时序。
+// ===========================================================================
+TEST(MediaContainerStructure, StaleFailureIsDroppedAfterNewTaskStarts) {
+    AppScope app_scope;
+
+    const QString missing_a = QDir::tempPath() + "/videoeye_container_missing_a.mkv";
+    const QString missing_b = QDir::tempPath() + "/videoeye_container_missing_b.mkv";
+    QFile::remove(missing_a);
+    QFile::remove(missing_b);
+
+    player::MediaPlayer player;
+    int failed = 0;
+    int ready = 0;
+    QObject::connect(&player, &player::MediaPlayer::ContainerStructureFailed, &player,
+                     [&failed](const QString&) { ++failed; });
+    QObject::connect(&player, &player::MediaPlayer::ContainerStructureReady, &player,
+                     [&ready](const videoeye::model::ContainerStructureResult&) { ++ready; });
+
+    player.RequestContainerStructureAnalysis(missing_a);
+    // 关键: 不泵事件 —— 第一个任务的失败消息必须还留在队列里没落地
+    QThread::msleep(500);
+    player.RequestContainerStructureAnalysis(missing_b);
+
+    ASSERT_TRUE(PumpUntil([&] { return failed > 0 || ready > 0; }, 10000))
+        << "第二个任务的失败信号没有到达";
+    PumpFor(300);
+    EXPECT_EQ(1, failed) << "第一个任务的失败消息在新任务开始之后落地时必须被丢弃";
+    EXPECT_EQ(0, ready);
+
+    QFile::remove(missing_a);
+    QFile::remove(missing_b);
+}
+
+// ===========================================================================
+// 分析进行中销毁播放器（复查 P1: 空指针解引用）
+//
+// 修复前: `if (!ok || !self) { if (token.IsCanceled()) self->task_manager_.End(...); }`
+// 在 self 已失效且令牌已取消时会直接解引用空 QPointer。现在任务体一进来先判 self,
+// 中途每一处 self-> 之前也都判过。
+//
+// 任务体只按值捕获 QPointer self + QString, 所以 TaskManager 在关闭预算内放弃它
+// (detach) 也不会踩到已销毁的对象 —— 这条用例同时守住这条生命周期约定。
+// ===========================================================================
+TEST(MediaContainerStructure, DestroyingPlayerDuringAnalysisIsSafe) {
+    AppScope app_scope;
+
+    const QString big = WriteBigEbmlInput();
+    ASSERT_FALSE(big.isEmpty());
+
+    auto* player = new player::MediaPlayer;
+    player->RequestContainerStructureAnalysis(big);
+    QThread::msleep(30);   // 让任务体真的进入 EBML 解析
+
+    QElapsedTimer timer;
+    timer.start();
+    delete player;         // 析构: CancelAll + WaitForAll, 此时任务体仍在解析中途
+    const qint64 elapsed = timer.elapsed();
+
+    EXPECT_LT(elapsed, 10000) << "销毁播放器不得被后台分析任务拖住";
+    QFile::remove(big);
 }

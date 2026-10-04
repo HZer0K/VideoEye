@@ -66,6 +66,116 @@ TEST(TaskManagerTest, EndRecordsTerminalStateOnly) {
     EXPECT_EQ(mgr.State(kSlot), TaskState::Succeeded);
 }
 
+// --- 终态一次性 ---
+//
+// 终态"一旦写入就不再变化"是 TaskManager 的核心契约: 做不到这一点,
+// "任务体正常返回 -> 记 Succeeded" 与 "排队到 UI 线程的失败消息后到 -> 记 Failed"
+// 就会互相覆盖, 终态取决于两条路径谁后跑完。下面这两条正对着那两种覆盖。
+
+TEST(TaskManagerTest, TerminalStateIsNotOverwrittenByLaterEnd) {
+    TaskManager mgr;
+    const TaskId id = mgr.Begin(kSlot);
+    mgr.End(kSlot, id, TaskState::Succeeded);
+    ASSERT_EQ(mgr.State(kSlot), TaskState::Succeeded);
+
+    mgr.End(kSlot, id, TaskState::Failed);
+    EXPECT_EQ(mgr.State(kSlot), TaskState::Succeeded) << "Succeeded 不得被后到的 Failed 改写";
+    mgr.End(kSlot, id, TaskState::Canceled);
+    EXPECT_EQ(mgr.State(kSlot), TaskState::Succeeded) << "Succeeded 不得被后到的 Canceled 改写";
+}
+
+TEST(TaskManagerTest, CanceledIsNotOverwrittenBySucceeded) {
+    TaskManager mgr;
+    const TaskId id = mgr.Begin(kSlot);
+    mgr.Cancel(kSlot);
+    mgr.End(kSlot, id, TaskState::Canceled);
+    ASSERT_EQ(mgr.State(kSlot), TaskState::Canceled);
+
+    mgr.End(kSlot, id, TaskState::Succeeded);
+    EXPECT_EQ(mgr.State(kSlot), TaskState::Canceled) << "Canceled 不得被后到的 Succeeded 改写";
+}
+
+// 同一任务的两次 End() 只有第一次算数; 且"旧任务的失败消息在新任务开始后才落地"
+// 不得影响新任务的终态(这正是 UI 回调补写终态的现场)。
+TEST(TaskManagerTest, StaleFailureAfterSupersedeKeepsNewTerminal) {
+    TaskManager mgr;
+    const TaskId first = mgr.Begin(kSlot);
+    const TaskId second = mgr.Begin(kSlot);
+    mgr.End(kSlot, second, TaskState::Succeeded);
+    mgr.End(kSlot, first, TaskState::Failed);  // 旧任务的失败消息后到
+    EXPECT_EQ(mgr.State(kSlot), TaskState::Succeeded);
+
+    // 反过来: 新任务先失败, 旧任务的"成功"后到, 同样不得改写
+    const TaskId third = mgr.Begin(kSlot);
+    mgr.End(kSlot, third, TaskState::Failed);
+    mgr.End(kSlot, second, TaskState::Succeeded);
+    EXPECT_EQ(mgr.State(kSlot), TaskState::Failed);
+}
+
+// --- 任务体自己声明终态 (RunWithResult) ---
+
+TEST(TaskManagerTest, RunWithResultHonorsBodyTerminal) {
+    TaskManager mgr;
+    mgr.RunWithResult(kSlot, [](TaskId, CancelToken) { return TaskState::Failed; });
+    EXPECT_TRUE(mgr.WaitForIdle(kSlot, 5000));
+    EXPECT_EQ(mgr.State(kSlot), TaskState::Failed);
+}
+
+// 任务体返回过程态等于没给结论, 按违约处理: 记 Failed, 不能让 slot 挂在 Running 上。
+TEST(TaskManagerTest, RunWithResultTreatsNonTerminalAsFailed) {
+    TaskManager mgr;
+    mgr.RunWithResult(kSlot, [](TaskId, CancelToken) { return TaskState::Running; });
+    EXPECT_TRUE(mgr.WaitForIdle(kSlot, 5000));
+    EXPECT_EQ(mgr.State(kSlot), TaskState::Failed);
+}
+
+// 取消优先于任务体自己报的成功 —— 否则"用户取消了, 任务体却说成功"会盖掉取消。
+TEST(TaskManagerTest, RunWithResultCancelWinsOverSucceeded) {
+    TaskManager mgr;
+    std::atomic<bool> entered{false};
+    mgr.RunWithResult(kSlot, [&](TaskId, CancelToken token) {
+        entered.store(true);
+        while (!token.IsCanceled())
+            SleepMs(5);
+        return TaskState::Succeeded;
+    });
+    while (!entered.load())
+        SleepMs(1);
+    mgr.Cancel(kSlot);
+    EXPECT_TRUE(mgr.WaitForIdle(kSlot, 5000));
+    EXPECT_EQ(mgr.State(kSlot), TaskState::Canceled);
+}
+
+// 任务体已经声明过终态之后, Run 收尾时的那次写入必须被丢弃(终态一次性)。
+TEST(TaskManagerTest, RunWithResultKeepsBodyTerminalEvenIfBodyEndsFirst) {
+    TaskManager mgr;
+    mgr.RunWithResult(kSlot, [&](TaskId id, CancelToken) {
+        mgr.End(kSlot, id, TaskState::Canceled);  // 任务体自己先收尾
+        return TaskState::Succeeded;              // 返回值的这次写入必须被丢弃
+    });
+    EXPECT_TRUE(mgr.WaitForIdle(kSlot, 5000));
+    EXPECT_EQ(mgr.State(kSlot), TaskState::Canceled);
+}
+
+// CurrentId 在"任务已终态"之后仍然能报出当前任务的 id —— 这是判定"排队到 UI 线程
+// 的收尾消息是否过期"的唯一手段(IsCurrent 那时必然是 false, 会把正常消息一起丢掉)。
+TEST(TaskManagerTest, CurrentIdSurvivesTerminalState) {
+    TaskManager mgr;
+    EXPECT_EQ(mgr.CurrentId("never-used"), 0u);
+    const TaskId id = mgr.Begin(kSlot);
+    EXPECT_EQ(mgr.CurrentId(kSlot), id);
+    EXPECT_TRUE(mgr.IsCurrent(kSlot, id));
+
+    mgr.End(kSlot, id, TaskState::Failed);
+    EXPECT_EQ(mgr.CurrentId(kSlot), id) << "终态之后 current id 仍然是它, 过期消息才能被认出来";
+    EXPECT_FALSE(mgr.IsCurrent(kSlot, id));
+
+    const TaskId next = mgr.Begin(kSlot);
+    EXPECT_EQ(mgr.CurrentId(kSlot), next);
+    EXPECT_NE(mgr.CurrentId(kSlot), id);
+    mgr.End(kSlot, next, TaskState::Succeeded);
+}
+
 TEST(TaskManagerTest, EndIgnoresStaleTaskId) {
     TaskManager mgr;
     const TaskId old_id = mgr.Begin(kSlot);

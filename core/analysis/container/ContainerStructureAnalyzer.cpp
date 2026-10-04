@@ -98,8 +98,7 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
 
     // 已经被取消（如关闭流程触发 CancelAll）就别再启动重型解析，避免关闭挂死
     if (cancel && cancel->load(std::memory_order_acquire)) {
-        result.valid = false;
-        return false;
+        return MarkCancelled(result);
     }
 
     // 1. 检测格式
@@ -177,13 +176,22 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
 
         {
             int box_count = 0;
+            bool count_cancelled = false;
             std::function<int(const std::vector<model::Mp4BoxNode>&)> count;
             count = [&](const std::vector<model::Mp4BoxNode>& nodes) -> int {
+                if (count_cancelled) return 0;
+                if (infrastructure::Checkpoint(cancel.get())) {
+                    count_cancelled = true;
+                    return 0;
+                }
                 int c = nodes.size();
                 for (const auto& n : nodes) c += count(n.children);
                 return c;
             };
             box_count = count(result.mp4_detail.box_tree);
+            // 与 EBML 侧同一条规则: 计数递归被取消就必须整条放弃, 不能把半成品 summary
+            // 配着 valid=true 发出去。
+            if (count_cancelled) return MarkCancelled(result);
             result.summary = (QString("MP4 Box | 顶级: %1 | 总计: %2 | Track: %3")
                                   .arg(result.mp4_detail.box_tree.size())
                                   .arg(box_count)
@@ -199,26 +207,41 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
         if (ebml_analyzer.Analyze(file_path, result.ebml_detail, cancel.get())) {
             if (!ConvertEbmlTree(result.ebml_detail.element_tree, 0, result.element_tree,
                                  cancel.get())) {
-                result.valid = false;
-                result.error_message = "已取消";
-                return false;
+                return MarkCancelled(result);
             }
-            ExtractEbmlStreamInfo(result.ebml_detail, result);
-            result.valid = true;
+            if (infrastructure::Checkpoint(cancel.get())) return MarkCancelled(result);
+
+            // 取消令牌必须传下去（以前漏了）：轨道列表是这一段里唯一可能长到
+            // "值得中断"的循环，不传的话点取消要等整个 Tracks 段读完才生效。
+            if (!ExtractEbmlStreamInfo(result.ebml_detail, result, cancel.get())) {
+                return MarkCancelled(result);
+            }
 
             int elem_count = 0;
+            bool count_cancelled = false;
             std::function<int(const std::vector<model::EbmlElementNode>&)> count;
             count = [&](const std::vector<model::EbmlElementNode>& nodes) -> int {
+                if (count_cancelled) return 0;
+                if (infrastructure::Checkpoint(cancel.get())) {
+                    count_cancelled = true;
+                    return 0;
+                }
                 int c = nodes.size();
                 for (const auto& n : nodes) c += count(n.children);
                 return c;
             };
             elem_count = count(result.ebml_detail.element_tree);
+            if (count_cancelled) return MarkCancelled(result);
+
+            // valid 只在所有阶段都跑完之后才置：中间任何一步被取消都要能把它清掉
+            // （MarkCancelled 负责清）。以前它在 ExtractEbmlStreamInfo 之后就置了，
+            // 后面的计数递归即使被取消也已经来不及。
             result.summary = (QString("%1 | %2 个元素 | %3 轨道")
                                   .arg(QString::fromStdString(result.ebml_detail.doc_type))
                                   .arg(elem_count)
                                   .arg(result.streams.size()))
                                  .toStdString();
+            result.valid = true;
         } else {
             // 同上：解析被中断不是"失败"，此时回退 FFmpeg 会把一次取消换成"分析成功"。
             if (infrastructure::Checkpoint(cancel.get())) return MarkCancelled(result);
@@ -400,9 +423,13 @@ bool ContainerStructureAnalyzer::ExtractMp4StreamInfo(const std::vector<model::M
     return !cancelled;
 }
 
-void ContainerStructureAnalyzer::ExtractEbmlStreamInfo(const model::EbmlAnalysisResult& ebml_detail,
-                                                         model::ContainerStructureResult& result) {
+bool ContainerStructureAnalyzer::ExtractEbmlStreamInfo(const model::EbmlAnalysisResult& ebml_detail,
+                                                         model::ContainerStructureResult& result,
+                                                         const std::atomic<bool>* cancel) {
     for (const auto& track : ebml_detail.tracks) {
+        // 取消必须冒泡到**返回值**（与 ExtractMp4StreamInfo 同理）：以前只管往
+        // result.streams 里塞，外层拿到半份流表照样置 valid=true 发布出去。
+        if (infrastructure::Checkpoint(cancel)) return false;
         model::ContainerStreamInfo si;
         si.index = track.track_number;
         si.type = track.track_type_name;
@@ -440,6 +467,8 @@ void ContainerStructureAnalyzer::ExtractEbmlStreamInfo(const model::EbmlAnalysis
         result.streams.push_back(si);
     }
 
+    if (infrastructure::Checkpoint(cancel)) return false;
+
     // 提取 EBML 元数据
     if (!ebml_detail.title.empty()) result.metadata["title"] = ebml_detail.title;
     if (!ebml_detail.muxing_app.empty()) result.metadata["muxing_app"] = ebml_detail.muxing_app;
@@ -448,6 +477,7 @@ void ContainerStructureAnalyzer::ExtractEbmlStreamInfo(const model::EbmlAnalysis
         result.metadata["duration"] =
             QString("%1s").arg(ebml_detail.duration_seconds, 0, 'f', 2).toStdString();
     }
+    return true;
 }
 
 bool ContainerStructureAnalyzer::ConvertMp4Tree(const std::vector<model::Mp4BoxNode>& nodes,
@@ -692,7 +722,20 @@ ContainerStructureAnalyzer::StageStatus ContainerStructureAnalyzer::AnalyzeStrea
 
     // 分片级 / ladder 级交叉校验。fMP4 分片在这里被 Mp4SampleTableAnalyzer 解析，
     // MPEG-TS 分片的逐包解析要依赖 Qt，放到下面的 ProbeTsSegments。
-    SegmentQcAnalyzer::Analyze(pkg, SegmentQcOptions{}, cancel);
+    //
+    // 返回值必须接住：以前只查全局取消标志, 于是"分片校验自己判了取消却返回 kDone"、
+    // 或"校验阶段失败"两种情况都会让本函数继续往下建树, 最后照样置 valid=true ——
+    // 阶段失败被外层悄悄吞掉, 用户拿到一份没做过分片校验的结果。
+    // 注意: 两个 StageStatus 是各自类里的独立枚举(不是同一个类型), 只能逐个映射,
+    // 不能拿 == 直接比。
+    switch (SegmentQcAnalyzer::Analyze(pkg, SegmentQcOptions{}, cancel)) {
+    case SegmentQcAnalyzer::StageStatus::kCancelled:
+        return StageStatus::kCancelled;
+    case SegmentQcAnalyzer::StageStatus::kFailed:
+        return StageStatus::kFailed;
+    case SegmentQcAnalyzer::StageStatus::kDone:
+        break;
+    }
     if (infrastructure::Checkpoint(cancel)) return StageStatus::kCancelled;
 
     if (!ProbeTsSegments(result, cancel)) return StageStatus::kCancelled;
