@@ -44,8 +44,15 @@ public:
     bool IsCancelRequested() const;
 
     // 执行一次全文件分析。同步阻塞，调用方自行决定是否放到后台线程。
+    //
+    // out_result: 可选的终态回传出参（默认 nullptr = 不回传，保持旧行为）。
+    // 失败分支只发 on_failed、**不**走 on_finished，而 scan_status / error_message
+    // 又写在结果对象里 —— 上层（批处理、单测）想拿到"失败时到底是个什么状态"
+    // 就必须有这条通道，否则只能像 QcRunner 那样在外面凭失败信号自己补一个状态。
+    // 取消分支同样会回传（scan_status=Cancelled）。
     void Run(const std::string& file_path, const AnalysisOptions& options,
-             const AnalysisCallbacks& callbacks);
+             const AnalysisCallbacks& callbacks,
+             model::AnalysisResult* out_result = nullptr);
 
 private:
     // FFmpeg 的中断回调一旦被触发，open / 探测 / 逐包读三个阶段都会用 AVERROR_EXIT 收场。

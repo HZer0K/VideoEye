@@ -224,6 +224,31 @@ struct ColorFrameProbe {
     }
 };
 
+// AnalysisResult::scan_error_code 的约定是"0 = 无；否则为 FFmpeg 错误码或 -1"。
+// 清单解析 / 分片校验这类自研路径没有 FFmpeg 错误码，失败时记这个值 ——
+// 保持"失败 => scan_error_code != 0"，同时不冒充某个具体的 AVERROR。
+constexpr int kNoFfmpegErrorCode = -1;
+
+// 终态回传守卫：Run() 的失败/取消分支只发回调、不走 on_finished，调用方想拿到
+// 结果对象里的终态（scan_status / error_message）只能靠出参。用析构兜住所有
+// return 路径，免得以后每加一条失败分支就漏一处赋值。
+class ResultSink {
+public:
+    ResultSink(model::AnalysisResult* out, const model::AnalysisResult* src) noexcept
+        : out_(out), src_(src) {}
+
+    ~ResultSink() {
+        if (out_ != nullptr) *out_ = *src_;
+    }
+
+    ResultSink(const ResultSink&) = delete;
+    ResultSink& operator=(const ResultSink&) = delete;
+
+private:
+    model::AnalysisResult* out_;
+    const model::AnalysisResult* src_;
+};
+
 }  // namespace
 
 // 回调是可选的（批处理可能不关心进度），逐个判空再调用。
@@ -248,6 +273,20 @@ void NotifyCancelled(const AnalysisCallbacks& callbacks, model::AnalysisResult& 
     NotifyFinished(callbacks, false, result);
 }
 
+// 失败终态的统一写法：状态、文案、错误码三件事必须一起落进结果对象。
+//
+// AnalysisResult::scan_status 的默认值是 Complete，只调 NotifyFailed 而不同步改它，
+// 就会留下"回调说失败、结果对象却说完成"的不一致 —— 结果一旦被上层缓存 / 复用
+// （批处理回传、对比视图、报告导出），就会拿一份空的流媒体包当成跑完的结果展示。
+//
+// scan_error_code 只在还没有值时才补 kNoFfmpegErrorCode：逐包扫描那条路已经记了
+// 真实的 AVERROR，不能被覆盖掉。
+void MarkFailed(model::AnalysisResult& result, const std::string& message) {
+    result.scan_status = model::AnalysisStatus::Failed;
+    result.error_message = message;
+    if (result.scan_error_code == 0) result.scan_error_code = kNoFfmpegErrorCode;
+}
+
 bool AnalysisEngine::IsCancelledExit(int ret) const {
     return IsCancelRequested() && ret == AVERROR_EXIT;
 }
@@ -265,10 +304,13 @@ bool AnalysisEngine::IsCancelRequested() const {
 }
 
 void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& options,
-                         const AnalysisCallbacks& callbacks) {
+                         const AnalysisCallbacks& callbacks,
+                         model::AnalysisResult* out_result) {
     VE_PERF("AnalysisEngine::Run");
     model::AnalysisResult result;
     result.file_path = file_path;
+    // 声明在 result 之后：析构顺序反过来，回传时 result 仍然活着。
+    const ResultSink result_sink(out_result, &result);
 
     // 提取小写扩展名（供"扩展名与实际容器不符"规则使用）
     {
@@ -295,7 +337,10 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
 
     AVFormatContext* fmt = avformat_alloc_context();
     if (fmt == nullptr) {
-        NotifyFailed(callbacks, "无法分配解封装上下文: " + file_path);
+        // 同样是失败终态: 只发回调不改状态, 结果对象会停在默认的 Complete。
+        // 这里连 FFmpeg 错误码都没有（分配在 avformat 之外就失败了），记 -1。
+        MarkFailed(result, "无法分配解封装上下文: " + file_path);
+        NotifyFailed(callbacks, result.error_message);
         return;
     }
 
@@ -323,7 +368,9 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
             NotifyCancelled(callbacks, result);
             return;
         }
-        NotifyFailed(callbacks, msg);
+        result.scan_error_code = open_ret;  // 真 AVERROR 优先，MarkFailed 不会覆盖它
+        MarkFailed(result, msg);
+        NotifyFailed(callbacks, result.error_message);
         return;
     }
 
@@ -342,8 +389,10 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
             NotifyCancelled(callbacks, result);
             return;
         }
-        NotifyFailed(callbacks, "无法解析流信息: " + file_path + " (" + std::string(errbuf) +
-                           ", 文件可能损坏或截断)");
+        result.scan_error_code = find_ret;  // 同上：真 AVERROR 优先
+        MarkFailed(result, "无法解析流信息: " + file_path + " (" + std::string(errbuf) +
+                               ", 文件可能损坏或截断)");
+        NotifyFailed(callbacks, result.error_message);
         return;
     }
 
@@ -703,10 +752,9 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
                     NotifyCancelled(callbacks, result);
                     return;
                 }
-                result.scan_status = model::AnalysisStatus::Failed;
-                result.scan_error_code = ret;
-                result.error_message = "读取数据包失败（文件可能截断或 IO 错误）: " +
-                                       std::string(errbuf);
+                result.scan_error_code = ret;  // 真 AVERROR 优先，MarkFailed 不会覆盖它
+                MarkFailed(result, "读取数据包失败（文件可能截断或 IO 错误）: " +
+                                       std::string(errbuf));
                 teardown_scan();
                 NotifyFailed(callbacks, result.error_message);
                 return;
@@ -1116,8 +1164,11 @@ void AnalysisEngine::RunStreamingManifest(const std::string& file_path,
     }
 
     if (!ok) {
-        NotifyFailed(callbacks, pkg.error_message.empty() ? ("无法解析清单: " + file_path)
+        // 清单解析失败也是失败终态：pkg 里只有半截数据，scan_status 必须跟着改成
+        // Failed（默认值 Complete 会让"回调报失败 + 结果报完成"同时成立）。
+        MarkFailed(result, pkg.error_message.empty() ? ("无法解析清单: " + file_path)
                                                      : pkg.error_message);
+        NotifyFailed(callbacks, result.error_message);
         return;
     }
 
@@ -1130,9 +1181,10 @@ void AnalysisEngine::RunStreamingManifest(const std::string& file_path,
             SegmentQcAnalyzer::Analyze(pkg, options.streaming_package_options, cancel);
         if (qc == SegmentQcAnalyzer::StageStatus::kFailed) {
             // 走失败收尾: pkg 里已经填了 error_message / issues, 交给 NotifyFailed 报出去。
-            NotifyFailed(callbacks, pkg.error_message.empty()
-                                       ? ("分片级校验失败: " + file_path)
-                                       : pkg.error_message);
+            // 与清单解析失败同理: 状态必须一起改, 否则结果是 Failed 的回调 + Complete 的对象。
+            MarkFailed(result, pkg.error_message.empty() ? ("分片级校验失败: " + file_path)
+                                                         : pkg.error_message);
+            NotifyFailed(callbacks, result.error_message);
             return;
         }
         if (qc == SegmentQcAnalyzer::StageStatus::kCancelled) {

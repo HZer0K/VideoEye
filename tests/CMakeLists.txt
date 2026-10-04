@@ -409,6 +409,19 @@ videoeye_add_test(test_streaming_package
 add_test(NAME StreamingPackageTests COMMAND test_streaming_package)
 
 # =================================================
+# 测试 18b：AnalysisEngine 的失败终态一致性（复查 P2）
+# 说明: 断言失败分支把 scan_status 改成 Failed —— 它的默认值是 Complete，
+#       只发 on_failed 不动状态会让"回调说失败、结果对象说完成"同时成立。
+#       失败分支不走 on_finished，所以结果对象只能靠 Run() 的 out_result 出参取。
+#       清单分支（解析失败）不需要真实媒体文件；打开失败那条用"文件不存在"触发。
+# =================================================
+videoeye_add_test(test_streaming_scan_status
+    unit/test_streaming_scan_status.cpp
+)
+target_link_libraries(test_streaming_scan_status PRIVATE VideoEyeAnalysis)
+add_test(NAME StreamingManifestScanStatusTests COMMAND test_streaming_scan_status)
+
+# =================================================
 # 测试 19：流媒体包 QC 规则（QcRuleEngine 的 container.hls.* / container.dash.* /
 #          container.streaming.* 三个前缀分支）
 # 说明: 依赖清单与测试 10（色彩/HDR 规则）同构，再叠加三个清单分析器。
