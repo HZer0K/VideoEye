@@ -206,8 +206,17 @@ TaskId TaskManager::Begin(const std::string& slot, int wait_for_previous_ms, Tas
             if (!s->running.load(std::memory_order_acquire)) {
                 stale = std::move(s->thread);
             } else {
-                orphans_.push_back(OwnedThread{s->kind, std::move(s->thread), std::move(s->done),
-                                              s->current_id.load(std::memory_order_acquire), slot});
+                // 两阶段登记(与 RunWithResult 里那段同理, 详细理由见那里): 可能抛异常的
+                // 部分(字符串拷贝 / 容器扩容)全部做完, 最后一步才把线程**无异常地**搬进来。
+                // 这里比那边还要紧一点 —— 一旦在 s->thread 已被搬空之后抛异常, 这条线程
+                // 就既不在 slot 上也不在孤儿表里, 临时对象析构时直接 std::terminate()。
+                OwnedThread orphan;                            // 不含线程
+                orphan.kind = s->kind;
+                orphan.id = s->current_id.load(std::memory_order_acquire);
+                orphan.slot = slot;                            // 可能抛(bad_alloc)
+                orphan.done = std::move(s->done);
+                orphans_.push_back(std::move(orphan));          // 可能抛(扩容)
+                orphans_.back().thread = std::move(s->thread);  // noexcept: 交出所有权
                 ++core_->orphan_count;
             }
             s->done = std::future<void>();
@@ -266,18 +275,14 @@ TaskId TaskManager::RunWithResult(const std::string& slot,
     auto done_sig = std::make_shared<std::promise<void>>();
     std::future<void> finished = done_sig->get_future();
     // 线程一旦起来, 后面任何一步抛异常都会让局部 std::thread 带着 joinable 状态析构,
-    // 那等于直接 std::terminate()。所以能提前做完的容器准备一律提前:
-    // orphans_ 的扩容是登记阶段唯一需要分配内存的动作, 在这里先 reserve 掉。
-    // (这不是"把异常消灭干净" —— 剩下的拷贝仍可能抛 —— 而是把最可能发生的那次挪到
-    //  线程启动之前; 之后真抛了还有 ThreadGuard 兜底, 不会 terminate。)
-    try {
-        orphans_.reserve(orphans_.size() + 1);
-    } catch (const std::exception& e) {
-        LOG_ERROR("后台任务登记准备失败 [" + slot + "]: " + std::string(e.what()));
-        EndTask(*core_, slot, id, TaskState::Failed);
-        SetDoneOnce(done_sig);
-        return id;
-    }
+    // 那等于直接 std::terminate()。登记阶段由此一律按"两阶段"写: 可能抛异常的动作
+    // (容器扩容 / 字符串拷贝)全部在线程还握在 ThreadGuard 手里时做完, 最后一步才是
+    // noexcept 的线程所有权转移。
+    //
+    // 以前这里改成"起线程之前先 reserve 一次 orphans_", 把最可能发生的那次分配提前到
+    // 线程启动之前。那条路已经堵死了: reserve 在取 core_->mutex **之前**执行, 而
+    // orphans_ 声称由这把锁保护 —— 它和别的线程锁内的 push_back 会并发访问同一个
+    // vector。两阶段登记做完之后, 这次预留也不再有任何作用。
     try {
         // worker **不能**捕获 this: BlockingIo 任务在关闭时可能被放弃(detach),
         // 那种情况下 TaskManager 会先于线程析构, 任何对 this 的访问都是悬空的。
@@ -317,8 +322,21 @@ TaskId TaskManager::RunWithResult(const std::string& slot,
             s->thread = guard.Release();
             s->done = std::move(finished);
         } else {
-            // 极端情况: 刚启动就被取代了 —— 线程已经跑起来了, 只能转待回收
-            orphans_.push_back(OwnedThread{kind, guard.Release(), std::move(finished), id, slot});
+            // 极端情况: 刚启动就被取代了 —— 线程已经跑起来了, 只能转待回收。
+            //
+            // 两阶段登记: 先把**不含线程**的 OwnedThread 整个准备好并插进容器, 最后才把
+            // 线程无异常地移动进去。顺序反过来的话(把 guard.Release() 写进构造实参),
+            // push_back 扩容失败、或 slot 字符串拷贝失败, 都会让那个临时对象带着
+            // joinable 的线程析构 —— std::thread 的析构直接 std::terminate(), 连日志都
+            // 来不及打。现在前两步仍可能抛, 但那时线程还在 guard 手里(异常时 detach),
+            // 容器与 orphan_count 也都还没被改动。
+            OwnedThread orphan;                            // 不含线程
+            orphan.kind = kind;
+            orphan.id = id;
+            orphan.slot = slot;                            // 可能抛(bad_alloc)
+            orphan.done = std::move(finished);
+            orphans_.push_back(std::move(orphan));          // 可能抛(扩容); 抛时元素未被改动
+            orphans_.back().thread = guard.Release();       // noexcept: 交出所有权
             ++core_->orphan_count;
         }
     } catch (const std::exception& e) {
@@ -482,8 +500,16 @@ void TaskManager::WaitForAll(int timeout_ms) {
         for (auto& kv : core_->slots) {
             Slot* s = kv.second.get();
             if (s->thread.joinable()) {
-                pending.push_back(OwnedThread{s->kind, std::move(s->thread), std::move(s->done),
-                                              s->current_id.load(std::memory_order_acquire), kv.first});
+                // 与登记路径同一套两阶段写法: 线程所有权最后一步才转移。写成
+                // push_back(OwnedThread{..., std::move(s->thread), ...}) 的话, 扩容一失败
+                // 那个临时对象就带着 joinable 的线程析构 —— 直接 std::terminate()。
+                OwnedThread adopted;                        // 不含线程
+                adopted.kind = s->kind;
+                adopted.id = s->current_id.load(std::memory_order_acquire);
+                adopted.slot = kv.first;                    // 可能抛(bad_alloc)
+                adopted.done = std::move(s->done);
+                pending.push_back(std::move(adopted));       // 可能抛(扩容)
+                pending.back().thread = std::move(s->thread); // noexcept: 交出所有权
                 s->done = std::future<void>();
             } else if (s->running.load(std::memory_order_acquire)) {
                 // 调用方自管线程(QThread 等)超时没报终态: 强制收尾。

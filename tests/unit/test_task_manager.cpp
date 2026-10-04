@@ -484,8 +484,13 @@ TEST(TaskManagerTest, WaitForAllAppliesKindPerTask) {
 //
 // RunWithResult 里"线程已经起来、但还没交到 slot / orphans_ 手上"这段窗口上, 任何
 // 一步抛异常都会让局部 std::thread 带着 joinable 状态析构 —— 那是直接 std::terminate(),
-// 连日志都来不及打。现在这段由 RAII 守卫兜住: 异常时 detach(不是 join, 这里在调用方
-// 线程上, 而任务体可能正卡在第三方 IO), 容器的内存准备则尽量挪到线程启动之前。
+// 连日志都来不及打。现在这段由两件事兜住:
+//   1) RAII 守卫: 异常时 detach(不是 join —— 这里在调用方线程上, 而任务体可能正卡在
+//      第三方 IO);
+//   2) 两阶段登记: 可能抛异常的动作(字符串拷贝 / 容器扩容)全部在线程还握在守卫手里时
+//      做完, 最后一步才是 noexcept 的线程所有权转移。
+// 以前 (2) 的位置是"起线程之前先 reserve 一次 orphans_", 那次预留发生在取锁**之前**,
+// 与别的线程锁内的 push_back 构成数据竞争 —— 见下一条用例。
 //
 // 故障注入本身不好做: 要让 orphans_.push_back 抛 bad_alloc 就得接管全局 operator new,
 // 那会污染同一个进程里的其它用例。所以这里守住的是**主路径**: 高频取代会不断把
@@ -530,5 +535,57 @@ TEST(TaskManagerTest, RunWithResultWithoutBodyEndsFailedImmediately) {
     EXPECT_EQ(mgr.State(kSlot), TaskState::Failed);
     EXPECT_EQ(mgr.CurrentId(kSlot), id);
     EXPECT_FALSE(mgr.IsRunning(kSlot));
+}
+
+// --- 多线程并发登记（复查 P2）---
+//
+// orphans_ 的注释一直写着"受 mutex 保护", 但登记阶段的**扩容**以前发生在取锁之前
+// (RunWithResult 里那段 reserve, 本意是把最可能的分配提前到线程启动之前)。多个线程
+// 同时登记时, 那个 reserve 与别的线程锁内的 push_back 会并发访问同一个 vector ——
+// 这类"注释与实际不一致"的竞争, 单线程怎么压都撞不出来, 只有真的从多个线程同时
+// 登记才碰得到。
+//
+// 与上面那条一样不做故障注入: 守的是**不崩 + 状态自洽**。vector 被并发写坏的典型表现
+// 是回收阶段崩溃或死锁, 用例根本走不到下面的断言那一行。
+TEST(TaskManagerTest, ConcurrentRegistrationFromManyThreadsStaysConsistent) {
+    constexpr int kThreads = 6;
+    constexpr int kRounds = 12;
+    // 预算给足: 本用例压的是"并发登记", 不是"并发上限"。孤儿线程要等 WaitForAll 才归还
+    // 名额, 给小了后面的 Begin 会被"并发已满"拒掉 —— 那时测的就是拒绝路径了。
+    TaskManager mgr(256);
+
+    const std::string shared = "concurrent-shared";
+    std::atomic<int> launched{0};
+    std::vector<std::thread> starters;
+    starters.reserve(kThreads);
+    for (int t = 0; t < kThreads; ++t) {
+        starters.emplace_back([&, t]() {
+            const std::string own = "concurrent-slot-" + std::to_string(t);
+            for (int r = 0; r < kRounds; ++r) {
+                // 偶数轮打自己的 slot(多个 slot 并发登记), 奇数轮打共享 slot —— 后者才是
+                // 把线程顶进 orphans_ 的那条路径: 同一 slot 被多个线程同时取代。
+                const std::string& slot = (r % 2 == 0) ? own : shared;
+                mgr.RunWithResult(slot,
+                                  [&](TaskId, CancelToken) {
+                                      launched.fetch_add(1);
+                                      SleepMs(1);
+                                      return TaskState::Succeeded;
+                                  },
+                                  0, TaskKind::BlockingIo);
+            }
+        });
+    }
+    for (auto& th : starters)
+        th.join();
+
+    EXPECT_GT(launched.load(), 0) << "一个任务体都没跑起来, 这条用例等于没测";
+
+    // 每个 slot 都必须走到终态: 登记路径漏了线程 / 写坏了容器, 表现就是永远停在 Running
+    for (int t = 0; t < kThreads; ++t)
+        EXPECT_TRUE(mgr.WaitForIdle("concurrent-slot-" + std::to_string(t), 5000));
+    EXPECT_TRUE(mgr.WaitForIdle(shared, 5000));
+
+    mgr.WaitForAll(5000);
+    EXPECT_EQ(mgr.RunningCount(), 0u) << "所有线程收尾之后并发占用必须归零(孤儿也要回收)";
 }
 

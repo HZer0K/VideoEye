@@ -84,6 +84,12 @@ private:
 // 必须留在 QThread 上; 容器结构分析是纯计算, 用受管 std::thread 就够。
 // 统一的是"生命周期契约"(Begin/End/Cancel/IsCurrent), 不是线程种类。
 //
+// 线程安全: Begin / Run* / End / Token / IsCurrent / CurrentId / IsRunning / State /
+// RunningCount / Cancel* / WaitForIdle 都可以从**任意线程并发调用** —— 内部状态(含孤儿
+// 线程表)统一由 core_->mutex 串行化, 不同 slot 之间不会互相干扰。
+// 例外是关闭路径: WaitForAll() 与读它的 AbandonedCount() 之间没有同步, 按约定只在关闭
+// 阶段由单一线程调用(典型现场是析构函数)。
+//
 // 用法(受管线程):
 //     const auto id = tasks_.Run("container-structure", [&](TaskId id, CancelToken token) {
 //         ... 长耗时计算 ...
@@ -224,7 +230,10 @@ private:
 
     const std::size_t max_concurrent_;
     const std::shared_ptr<Core> core_;
-    std::vector<OwnedThread> orphans_; // 受 mutex_ 保护
+    // 受 core_->mutex 保护 —— **包括扩容**。登记路径上"扩容"必须与"插入"在同一把锁内
+    // 完成: 以前把 reserve() 挪到锁外(想把它提前到线程启动之前), 于是它和别的线程锁内
+    // 的 push_back 并发访问同一个 vector, "受保护"就成了空话。
+    std::vector<OwnedThread> orphans_;
     std::size_t abandoned_ = 0;
 };
 
