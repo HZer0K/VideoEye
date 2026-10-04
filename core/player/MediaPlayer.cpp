@@ -933,13 +933,35 @@ void MediaPlayer::StartVideoFrameExportNow(const QString& output_dir, const QStr
         StartVideoFrameExportNow(req.output_dir, req.format, req.jpg_quality, req.frame_interval);
     };
 
+    // 任务体抛异常时的失败闭环。以前只靠 exporter 自己的终态信号，而 Export() 一旦抛异常
+    // 就发不出任何信号：线程照常退出(quit 由 QtWorkerOwner 兜住)，但 TaskManager 任务永远
+    // 停在 Running，界面既看不到"导出结束"也看不到"导出出错"，卡在一个谁也不认的半死状态里。
+    // QtWorkerOwner 在**线程**上下文调 on_error，所以这里只把终态排回 UI 线程再落地。
+    // 与 exporter 的 ExportError 是互补的两条路：那条是"导出失败后好好报错"，
+    // 这条是"导出直接崩了、连报错都发不出来"——异常只有在这里才有出口。
+    const auto on_frame_export_error = [this, task_id, gen](QThread*, const std::string& msg) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, task_id, gen, msg]() {
+                // 只在"还在跑"时写失败终态：exporter 若自己发过终态（那条排在前面投递），
+                // 再覆盖一次会把 Succeeded/Canceled 改写成 Failed。
+                if (task_manager_.State(kSlotFrameExport) != task::TaskState::Running) return;
+                task_manager_.End(kSlotFrameExport, task_id, task::TaskState::Failed);
+                // 代际校验：期间换了媒体或点了取消，这次失败不该串到界面上。
+                if (frame_export_gen_ == gen)
+                    emit VideoFrameExportError(QString::fromStdString(msg));
+            },
+            Qt::QueuedConnection);
+    };
+
     auto* thread = export_workers_.StartWorker(
         exporter,
         [exporter, url, output_dir, normalized_format, jpg_quality, normalized_interval]() {
             exporter->Export(url, output_dir, normalized_format, jpg_quality, normalized_interval);
         },
         [exporter]() { exporter->Cancel(); },
-        clear_marks);
+        clear_marks,
+        on_frame_export_error);
 
     frame_export_thread_ = thread;
     frame_exporter_ = exporter;
@@ -1067,9 +1089,24 @@ void MediaPlayer::StartMediaExportNow(const exporter::ExportOptions& opt) {
         StartMediaExportNow(req);
     };
 
+    // 任务体抛异常时的失败闭环(与抽帧侧同理): MediaExporter::Export() 一抛就发不出终态
+    // 信号，TaskManager 任务会永远停在 Running，界面也收不到 MediaExportError。
+    // 这条是异常唯一的出口，必须一直连到 TaskManager::End(Failed)。
+    const auto on_media_export_error = [this, task_id, gen](QThread*, const std::string& msg) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, task_id, gen, msg]() {
+                if (task_manager_.State(kSlotMediaExport) != task::TaskState::Running) return;
+                task_manager_.End(kSlotMediaExport, task_id, task::TaskState::Failed);
+                if (media_export_gen_ == gen) emit MediaExportError(QString::fromStdString(msg));
+            },
+            Qt::QueuedConnection);
+    };
+
     auto* thread = export_workers_.StartWorker(exporter, [exporter, opt]() { exporter->Export(opt); },
                                                [exporter]() { exporter->Cancel(); },
-                                               clear_marks);
+                                               clear_marks,
+                                               on_media_export_error);
     media_export_thread_ = thread;
     media_exporter_ = exporter;
 }
@@ -1123,6 +1160,27 @@ void MediaPlayer::StartContainerStructureAnalysis(const QString& url) {
     // 本任务体只按值捕获 (QPointer self + QString url_copy), 不持有裸引用, 符合约定。
     task_manager_.RunBlockingIo(kSlotContainerStructure,
                       [self, url_copy](task::TaskId id, task::CancelToken token) {
+        // 分析异常必须写成**任务终态 + 失败信号**，不能只记日志再正常返回：
+        // 这里跑在 TaskManager 的受管线程上，body 顺顺当当返回过去 -> Run 把任务记为
+        // Succeeded，而界面一个字都收不到 —— 看起来"分析成功"了，其实什么都没出来。
+        // 也不能把异常抛出去交给 TaskManager 兜：那会把终态记成 Failed，
+        // 但 UI 仍然没有出口（TaskManager 不认识 ContainerStructureFailed）。
+        const auto report_failure = [self, id](const QString& msg) {
+            if (!self ||
+                self->task_manager_.State(kSlotContainerStructure) != task::TaskState::Running)
+                return;
+            // 本任务体在 std::thread 上，直接 emit 会走直连把 UI 槽拖进后台线程，
+            // 所以终态与信号都排回 UI 线程落地。
+            QMetaObject::invokeMethod(
+                self,
+                [self, id, msg]() {
+                    if (!self) return;
+                    self->task_manager_.End(kSlotContainerStructure, id, task::TaskState::Failed);
+                    emit self->ContainerStructureFailed(msg);
+                },
+                Qt::QueuedConnection);
+        };
+
         model::ContainerStructureResult cs_result;
         bool ok = false;
         try {
@@ -1130,11 +1188,25 @@ void MediaPlayer::StartContainerStructureAnalysis(const QString& url) {
             ok = analyzer.Analyze(url_copy, cs_result, token.flag());
         } catch (const std::exception& e) {
             LOG_ERROR("后台容器结构分析异常: " + std::string(e.what()));
+            // 被取消时按 Canceled 记，不写 Failed：取消是用户动作，不是分析出错。
+            if (!token.IsCanceled())
+                report_failure(QString::fromStdString(e.what()));
         } catch (...) {
             LOG_ERROR("后台容器结构分析发生未知异常");
+            if (!token.IsCanceled())
+                report_failure(QStringLiteral("未知异常"));
         }
 
-        if (!ok || !self) return;
+        if (!ok || !self) {
+            // 没给出有效结果也必须有终态。以前这里只是 return，slot 永远停在 Running：
+            // 下一次分析 Begin 时要白等一轮，WaitForAll 也会多耗一个关闭预算。
+            // 取消归 Canceled（用户动作不是错误），解析不出来归 Failed。
+            if (token.IsCanceled())
+                self->task_manager_.End(kSlotContainerStructure, id, task::TaskState::Canceled);
+            else
+                report_failure(QStringLiteral("容器结构分析未能产出结果"));
+            return;
+        }
         // 过期结果丢弃: 期间换了文件或关了播放器, 这次扫描的结果不能再覆盖新结果。
         // (以前靠 generation 比对, 现在统一由 TaskManager 的 IsCurrent 判定)
         if (token.IsCanceled() ||

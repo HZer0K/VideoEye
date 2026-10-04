@@ -57,14 +57,43 @@ TEST(InfrastructureCancellation, NullTokenNeverCancels) {
     EXPECT_TRUE(videoeye::infrastructure::Checkpoint(&flag));
 }
 
-TEST(BitReaderBounded, ReadUEBoundedClampsMalformedValue) {
-    // 前导零连续 8 个的 ue(v) 在规范里非法，但畸形码流里很常见。
-    // 无界实现会返回接近 UINT32_MAX 的值，有界实现必须夹到 max_value。
-    const std::vector<uint8_t> data = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+namespace {
+
+// 一个**语法完全合法**却超出上界的 ue(v)：6 个前导零 + 终止位 1 + 6 位 suffix=0
+//   bit 序列: 0 0 0 0 0 0 | 1 | 0 0 0 0 0 0 ...
+//   -> value = 0 + 2^6 - 1 = 63，上界取 32 必然越界。
+// 刻意不用"一串 0x00"当输入：前导零多到 64 个时 ReadUE 会越过数据末尾，
+// 那条路径置的 error 是"位耗尽"而不是"数值超上限"，拿来断言语义会张冠李戴。
+const std::vector<uint8_t> kOutOfRangeUe = {0x02, 0x00, 0x00};
+constexpr uint32_t kOutOfRangeValue = 63;
+constexpr uint32_t kBoundedMax = 32;
+
+}  // namespace
+
+TEST(BitReaderBounded, ReadUEClampedSilentlyClampsMalformedValue) {
+    // 语法合法但码值超过上限：夹断版必须把它压回 max_value，并且**不置错误**。
+    // 夹断是"诊断优先"——只改数值，不因一个字段就把整份参数集判死。
     BitReader reader;
-    reader.Reset(data.data(), data.size());
-    const uint32_t value = reader.ReadUEBounded(64);
-    EXPECT_LE(value, 64u) << "越界码值必须被夹到上界, 不能被当成巨大循环次数";
+    reader.Reset(kOutOfRangeUe.data(), kOutOfRangeUe.size());
+    EXPECT_EQ(kOutOfRangeValue, reader.ReadUE()) << "用例前提: 裸 ReadUE 读出来是 63";
+
+    BitReader clamped_reader;
+    clamped_reader.Reset(kOutOfRangeUe.data(), kOutOfRangeUe.size());
+    EXPECT_EQ(kBoundedMax, clamped_reader.ReadUEClamped(kBoundedMax))
+        << "越界码值必须被夹到上界, 不能被当成巨大循环次数";
+    EXPECT_FALSE(clamped_reader.HasError()) << "夹断不该置错误: 字段读偏了不等于整份参数集不可用";
+}
+
+TEST(BitReaderBounded, ReadUEBoundedFlagsOutOfRangeValue) {
+    // 与上一条对照。这是 P2 里点出来的坑：旧实现静默夹断，于是"码流非法"和
+    // "码流正常但字段偏小"在结果上完全一致 —— 参数集带着 valid=true 出去，
+    // 字段却已经全面错位，比直接判无效难查得多。
+    BitReader reader;
+    reader.Reset(kOutOfRangeUe.data(), kOutOfRangeUe.size());
+    const uint32_t value = reader.ReadUEBounded(kBoundedMax);
+    EXPECT_LE(value, kBoundedMax) << "越界也要保证返回值不超上界, 不能当循环次数用";
+    EXPECT_TRUE(reader.HasError()) << "语法合法但数值超上限 -> 必须置错误, 让参数集判为无效";
+    EXPECT_FALSE(reader.GetError().empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +270,57 @@ TEST(QtWorkerOwner, BodyExceptionStillQuitsThreadAndReportsError) {
     EXPECT_TRUE(error_called.load()) << "body 抛异常应触发 on_error 失败回调";
     EXPECT_NE(error_message.find("body 故意抛异常"), std::string::npos)
         << "on_error 要带上原始异常文本, 否则界面上只会看到一句干巴巴的失败";
+}
+
+// ---------------------------------------------------------------------------
+// 6. Qt worker 异常 -> 业务任务终态（MediaPlayer 导出 / 容器分析走同一条链）
+//
+// 这次复查找出的问题是: worker 线程崩了之后, 线程本身退出得干干净净, 可对应的
+// TaskManager 任务停在 Running, 界面既收不到 ExportFinished 也收不到 ExportError
+// —— 一个谁也不认的半死状态。修法是把 on_error 接到 TaskManager::End(Failed)。
+// 这里把整条链走通, 并且让 on_error 自己再抛一次, 顺带压住"失败回调再抛就会
+// 跳掉 quit()" 这个更隐蔽的版本。
+// ---------------------------------------------------------------------------
+
+TEST(QtWorkerOwner, ThrowingErrorCallbackStillEndsTaskAsFailed) {
+    using videoeye::qt::QtWorkerOwner;
+    using videoeye::task::CancelToken;
+    using videoeye::task::TaskId;
+    using videoeye::task::TaskState;
+
+    int argc = 0;
+    QCoreApplication app(argc, nullptr);
+
+    TaskManager mgr(1);
+    const TaskId id = mgr.Run("export", [](TaskId, CancelToken) {});
+    ASSERT_NE(id, 0u);
+
+    std::atomic<bool> entered{false};
+    QtWorkerOwner owner;
+    QThread* thread = owner.StartWorker(
+        new QObject(),
+        [&]() {
+            entered.store(true, std::memory_order_release);
+            throw std::runtime_error("导出任务体崩了");
+        },
+        []() {},
+        [](QThread*) {},
+        [&](QThread*, const std::string&) {
+            // 与 MediaPlayer 里 on_error 的落地逻辑一致
+            mgr.End("export", id, TaskState::Failed);
+            // 失败回调自己再抛一次：这条路径以前会直接跳过 thread->quit()
+            throw std::runtime_error("on_error 自己也抛");
+        });
+
+    ASSERT_NE(thread, nullptr);
+    thread->wait(3000);
+
+    EXPECT_TRUE(entered.load()) << "必须真的跑到任务体, 否则这条用例什么都没验证到";
+    EXPECT_FALSE(thread->isRunning())
+        << "on_error 自身抛异常也必须保证 thread->quit(), 否则线程挂在 exec() 上越积越多";
+    mgr.WaitForAll(3000);
+    EXPECT_EQ(TaskState::Failed, mgr.State("export"))
+        << "worker 抛异常后任务必须落在 Failed: 停在 Running 会让界面永远等不到终态";
 }
 
 }  // namespace

@@ -157,3 +157,41 @@ TEST(MediaContextSwitch, OpenCancelsRunningMediaExport) {
     QFile::remove(new_output);
     QFile::remove(missing);
 }
+
+// ===========================================================================
+// 容器结构分析失败必须有终态（分析异常/失败被吞掉的回归）
+//
+// 修复前: StartContainerStructureAnalysis 的任务体里 catch 到异常只记一行日志就
+// 正常返回，RunBlockingIo 顺手把任务记为 Succeeded —— 界面既收不到失败也收不到
+// 成功，一个"看起来分析过了但什么都没出来"的空状态。现在失败路径必须走
+// Failed 终态 + ContainerStructureFailed，且**不得**发布 ContainerStructureReady。
+// ===========================================================================
+TEST(MediaContainerStructure, FailureProducesFailedTerminalWithoutReady) {
+    AppScope app_scope;
+
+    const QString corrupt = WriteCorruptInput();
+    ASSERT_FALSE(corrupt.isEmpty());
+
+    player::MediaPlayer player;
+    int ready = 0;
+    int failed = 0;
+    QString failure_message;
+    QObject::connect(&player, &player::MediaPlayer::ContainerStructureReady, &player,
+                     [&ready](const videoeye::model::ContainerStructureResult&) { ++ready; });
+    QObject::connect(&player, &player::MediaPlayer::ContainerStructureFailed, &player,
+                     [&failed, &failure_message](const QString& msg) {
+                         ++failed;
+                         failure_message = msg;
+                     });
+
+    // 公开入口: 播放器 Open 失败后进入"分析模式"用的就是这一条
+    player.RequestContainerStructureAnalysis(corrupt);
+
+    EXPECT_TRUE(PumpUntil([&] { return failed > 0 || ready > 0; }, 10000))
+        << "容器结构分析既没给 Ready 也没给 Failed: 后台任务会永远停在 Running";
+    EXPECT_GT(failed, 0) << "失败必须落到 ContainerStructureFailed, 不能只记一行日志了事";
+    EXPECT_EQ(0, ready) << "失败路径不得发布有效结果: 半份结构树会被当结论显示出来";
+    EXPECT_FALSE(failure_message.trimmed().isEmpty()) << "失败信号必须带原因, 界面才能告诉用户到底哪一步没过";
+
+    QFile::remove(corrupt);
+}

@@ -190,12 +190,11 @@ void VvcBitstreamParser::SkipGeneralTimingHrdParameters(utils::BitReader& reader
         reader.SkipBits(4);              // bit_rate_scale
         reader.SkipBits(4);              // cpb_size_scale
         if (du_hrd) reader.SkipBits(4);  // cpb_size_du_scale
-        cpb_cnt_minus1 = reader.ReadUE();
         // HRD 每个 cpb 要读 3~5 个 ue(v)，cpb_cnt 直接是外层 SkipSubLayerHrdParameters 的
-        // 循环上界；不封顶时一层子层就能跑出上亿倍
-        if (cpb_cnt_minus1 > static_cast<uint32_t>(kMaxHrdCpbCntMinus1)) {
-            cpb_cnt_minus1 = static_cast<uint32_t>(kMaxHrdCpbCntMinus1);
-        }
+        // 循环上界；不封顶时一层子层就能跑出上亿倍。
+        // 这里用**夹断**而非报错：cpb 个数多一个少一个不影响后续字段的位置判断
+        // （每进来一个 cpb 就固定读 3~5 个 ue(v)），宁可诊断不准也不能把整份 SPS 判死。
+        cpb_cnt_minus1 = reader.ReadUEClamped(static_cast<uint32_t>(kMaxHrdCpbCntMinus1));
     }
 
     if (ctx) {
@@ -228,11 +227,16 @@ void VvcBitstreamParser::SkipOlsTimingHrdParameters(utils::BitReader& reader, in
 void VvcBitstreamParser::SkipRefPicListStruct(utils::BitReader& reader, int poc_lsb_bits,
                                               bool long_term_ref_pics,
                                               bool inter_layer_prediction) {
-    const uint32_t num_ref_entries = reader.ReadUE();
     // 每条参考项至少读 1 bit（inter_layer_ref_pic_flag 或 st_ref_pic_flag），
-    // 不封顶就是一个 ue(v) 撑起几十亿次循环
-    if (num_ref_entries > static_cast<uint32_t>(kMaxRefPicListEntries)) {
-        return; // 非法，交给调用方按 HasError() 处理
+    // 不封顶就是一个 ue(v) 撑起几十亿次循环。
+    //
+    // 用**有界报错**而不是夹断或裸 return：码值语法合法却超过上限就是非法参数集，
+    // 该被判 present=false。以前超上限时直接 return，reader 停在半截码流上、错误位
+    // 仍然是空的，外层的 HasError() 检查点看不见，于是继续把后面的字段按错误偏移
+    // 读下去 —— 读出来的是一份"看着挺自洽"的垃圾，比直接报错难查。
+    const uint32_t num_ref_entries = reader.ReadUEBounded(static_cast<uint32_t>(kMaxRefPicListEntries));
+    if (reader.HasError()) {
+        return;
     }
     bool ltrp_in_header = false;
     if (long_term_ref_pics && num_ref_entries > 0) {
@@ -612,8 +616,11 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const utils::NalUnit& 
             //
             // 真正的雷不在 <= 上，而在 ReadUE() 没有上界：畸形码流能把返回值顶到
             // UINT32_MAX，j++ 到最大值后回绕成 0，循环就永远出不来 —— 分析线程
-            // 直接被占满。所以这里有界读，拿到手的数一定 <= kMaxQpTablePoints，
-            // j <= 那个数最多多跑一轮，回绕和超长循环一起没了。
+            // 直接被占满。所以这里有界读。
+            //
+            // 用**报错**版（ReadUEBounded）而不是夹断版：点的个数超上限意味着码流本身就
+            // 不对，此时继续按 kMax 个点把后面的 SAO/ALF/LMCS 字段读下去，只会得到一份
+            // 字段全面错位却 valid=true 的 SPS —— 比直接判无效难查得多。
             const uint32_t num_points_minus1 = reader.ReadUEBounded(kMaxQpTablePoints);
             for (uint32_t j = 0; j <= num_points_minus1; ++j) {
                 reader.ReadUE();  // delta_qp_in_val_minus1

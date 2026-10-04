@@ -50,6 +50,14 @@ std::string Format(const char* fmt, double v) {
     return std::string(buf);
 }
 
+// 收尾成"已取消"：valid 必须清掉（调用方可能已经把 valid 置过 true 又在后面
+// 被取消），否则界面会把一份被中断的分析当成成功结果签收。
+bool MarkCancelled(model::ContainerStructureResult& result) {
+    result.valid = false;
+    if (result.error_message.empty()) result.error_message = "已取消";
+    return false;
+}
+
 // MP4 stsd 采样描述 fourcc → 可读编码名。
 // 覆盖 AV1 (av01) / VP9 (vp09) 及常见 H.264/HEVC/AAC 等，
 // 未匹配的 fourcc 返回空串，调用方回退显示原始 fourcc。
@@ -112,24 +120,34 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
             VE_PERF("Mp4BoxAnalyzer::AnalyzeFile(box 树)");
             mp4_ok = mp4_analyzer.AnalyzeFile(file_path, result.mp4_detail, cancel.get());
         }
-        if (mp4_ok) {
+        if (!mp4_ok) {
+            // 专用解析器挂了才回退 FFmpeg；被中断不算"失败"。
+            if (infrastructure::Checkpoint(cancel.get())) return MarkCancelled(result);
+            LOG_WARN("MP4 专用解析器失败, 回退到 FFmpeg 通用分析");
+            return AnalyzeWithFFmpeg(file_path, result, cancel);
+        }
+
+        // 每个阶段之间都补一次取消检查：辅助函数各自会查，但它们返回 false 只说明
+        // "这一次没走完"，到底是取消还是解析失败得由这里判定 —— 只有取消才禁止回退 FFmpeg。
+        {
             auto t0 = std::chrono::steady_clock::now();
             if (!ConvertMp4Tree(result.mp4_detail.box_tree, 0, result.element_tree, cancel.get())) {
-                result.valid = false;
-                result.error_message = "已取消";
-                return false;
+                return MarkCancelled(result);
             }
             auto t1 = std::chrono::steady_clock::now();
             LOG_INFO("ContainerStructureAnalyzer: ConvertMp4Tree 耗时 = " +
                      std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()) + " ms");
+            if (infrastructure::Checkpoint(cancel.get())) return MarkCancelled(result);
+
             if (!ExtractMp4StreamInfo(result.mp4_detail.box_tree, result, cancel.get())) {
-                result.valid = false;
-                result.error_message = "已取消";
-                return false;
+                return MarkCancelled(result);
             }
             auto t2 = std::chrono::steady_clock::now();
             LOG_INFO("ContainerStructureAnalyzer: ExtractMp4StreamInfo 耗时 = " +
                      std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count()) + " ms");
+            if (infrastructure::Checkpoint(cancel.get())) return MarkCancelled(result);
+
+            // valid 只在所有阶段都跑完之后才置：中间任何一步被取消都要能把它清掉。
             result.valid = true;
 
             // 样本级一致性校验（stbl 全表交叉校验 / elst / moof-traf-trun / faststart）。
@@ -144,11 +162,20 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
                                                         Mp4SampleTableOptions{},
                                                         cancel.get());
             }
-            if (sample_ok) {
+            // 样本表这一路是"额外"的分析：它解析失败只是少几条一致性结论，可以继续出图；
+            // 但**被取消就必须整条放弃** —— 否则上面那份 valid=true 的结果会被发出去，
+            // 用户看到的"分析完成"其实是被打断的半成品。
+            if (!sample_ok) {
+                if (infrastructure::Checkpoint(cancel.get())) return MarkCancelled(result);
+                LOG_WARN("MP4 样本表校验失败: " + result.mp4_samples.error_message);
+            } else {
                 LOG_INFO("ContainerStructureAnalyzer: MP4 样本表校验 issues=" +
                          std::to_string(result.mp4_samples.issues.size()));
             }
+            if (infrastructure::Checkpoint(cancel.get())) return MarkCancelled(result);
+        }
 
+        {
             int box_count = 0;
             std::function<int(const std::vector<model::Mp4BoxNode>&)> count;
             count = [&](const std::vector<model::Mp4BoxNode>& nodes) -> int {
@@ -162,10 +189,6 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
                                   .arg(box_count)
                                   .arg(result.streams.size()))
                                  .toStdString();
-        } else {
-            // MP4 解析失败, 回退到 FFmpeg
-            LOG_WARN("MP4 专用解析器失败, 回退到 FFmpeg 通用分析");
-            return AnalyzeWithFFmpeg(file_path, result, cancel);
         }
         return result.valid;
     }
@@ -197,6 +220,8 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
                                   .arg(result.streams.size()))
                                  .toStdString();
         } else {
+            // 同上：解析被中断不是"失败"，此时回退 FFmpeg 会把一次取消换成"分析成功"。
+            if (infrastructure::Checkpoint(cancel.get())) return MarkCancelled(result);
             LOG_WARN("EBML 专用解析器失败, 回退到 FFmpeg 通用分析");
             return AnalyzeWithFFmpeg(file_path, result, cancel);
         }
@@ -206,36 +231,43 @@ bool ContainerStructureAnalyzer::Analyze(const QString& file_path,
     case model::ContainerFormat::AVI: {
         AviStructureAnalyzer avi;
         if (avi.Analyze(file_path, result, cancel.get())) return true;
+        if (infrastructure::Checkpoint(cancel.get())) return MarkCancelled(result);
         LOG_WARN("AVI 专用解析器失败, 回退到 FFmpeg");
         return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
     case model::ContainerFormat::FLV: {
         FlvStructureAnalyzer flv;
         if (flv.Analyze(file_path, result, cancel.get())) return true;
+        if (infrastructure::Checkpoint(cancel.get())) return MarkCancelled(result);
         LOG_WARN("FLV 专用解析器失败, 回退到 FFmpeg");
         return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
     case model::ContainerFormat::MPEG_TS: {
         TsStructureAnalyzer ts;
         if (ts.Analyze(file_path, result, cancel.get())) return true;
+        if (infrastructure::Checkpoint(cancel.get())) return MarkCancelled(result);
         LOG_WARN("TS 专用解析器失败, 回退到 FFmpeg");
         return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
     case model::ContainerFormat::HLS:
     case model::ContainerFormat::DASH: {
-        if (AnalyzeStreamingManifest(file_path, result, cancel.get())) return true;
+        // 三态：被取消时不得回退 FFmpeg，也不得把半份清单当有效结果。
+        if (AnalyzeStreamingManifest(file_path, result, cancel.get()) == StageStatus::kDone) return true;
+        if (infrastructure::Checkpoint(cancel.get())) return MarkCancelled(result);
         LOG_WARN("流媒体清单解析失败, 回退到 FFmpeg");
         return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
     case model::ContainerFormat::ASF: {
         AsfStructureAnalyzer asf;
         if (asf.Analyze(file_path, result, cancel.get())) return true;
+        if (infrastructure::Checkpoint(cancel.get())) return MarkCancelled(result);
         LOG_WARN("ASF 专用解析器失败, 回退到 FFmpeg");
         return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
     case model::ContainerFormat::OGG: {
         OggStructureAnalyzer ogg;
         if (ogg.Analyze(file_path, result, cancel.get())) return true;
+        if (infrastructure::Checkpoint(cancel.get())) return MarkCancelled(result);
         LOG_WARN("OGG 专用解析器失败, 回退到 FFmpeg");
         return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
@@ -250,10 +282,18 @@ bool ContainerStructureAnalyzer::ExtractMp4StreamInfo(const std::vector<model::M
                                                         model::ContainerStructureResult& result,
                                                         const std::atomic<bool>* cancel) {
     // 遍历 box 树, 找到所有 trak, 提取流信息
+    //
+    // 取消必须冒泡到**函数返回值**：以前只是 `return;` 跳回当前这层 walk，
+    // 外层循环接着往下走，最后照样 return true —— 结果就是取消之后 ExtractMp4StreamInfo
+    // 仍报告"成功"，调用方照常把 valid 置 true 发出去。
+    bool cancelled = false;
     std::function<void(const std::vector<model::Mp4BoxNode>&)> walk;
     walk = [&](const std::vector<model::Mp4BoxNode>& nodes) {
         for (const auto& node : nodes) {
-            if (infrastructure::Checkpoint(cancel)) return;
+            if (infrastructure::Checkpoint(cancel)) {
+                cancelled = true;
+                return;
+            }
             if (node.type == "trak") {
                 model::ContainerStreamInfo si;
                 si.index = result.streams.size();
@@ -357,7 +397,7 @@ bool ContainerStructureAnalyzer::ExtractMp4StreamInfo(const std::vector<model::M
         }
     };
     walk(box_tree);
-    return true;
+    return !cancelled;
 }
 
 void ContainerStructureAnalyzer::ExtractEbmlStreamInfo(const model::EbmlAnalysisResult& ebml_detail,
@@ -623,9 +663,10 @@ bool ContainerStructureAnalyzer::AnalyzeWithFFmpeg(const QString& file_path,
     return true;
 }
 
-bool ContainerStructureAnalyzer::AnalyzeStreamingManifest(const QString& file_path,
-                                                          model::ContainerStructureResult& result,
-                                                          const std::atomic<bool>* cancel) {
+ContainerStructureAnalyzer::StageStatus ContainerStructureAnalyzer::AnalyzeStreamingManifest(
+    const QString& file_path,
+    model::ContainerStructureResult& result,
+    const std::atomic<bool>* cancel) {
     VE_PERF("AnalyzeStreamingManifest");
     const std::string path = file_path.toStdString();
     model::StreamingPackageResult& pkg = result.streaming_package;
@@ -633,29 +674,38 @@ bool ContainerStructureAnalyzer::AnalyzeStreamingManifest(const QString& file_pa
     bool ok = false;
     if (result.format == model::ContainerFormat::DASH) {
         DashManifestAnalyzer dash;
-        ok = dash.AnalyzeFile(path, pkg);
+        // 取消令牌必须传下去: 大清单解析是这一段里最耗时的一环，
+        // 不传的话"点取消"要等整份 MPD/m3u8 读完才生效。
+        ok = dash.AnalyzeFile(path, pkg, DashManifestOptions{}, cancel);
     } else {
         HlsManifestAnalyzer hls;
-        ok = hls.AnalyzeFile(path, pkg);
+        ok = hls.AnalyzeFile(path, pkg, HlsManifestOptions{}, cancel);
     }
+    // 取消比失败优先：pkg 里只有半份数据时报"无法解析清单"，
+    // 会把用户主动取消说成文件有问题。
+    if (infrastructure::Checkpoint(cancel)) return StageStatus::kCancelled;
     if (!ok) {
         result.valid = false;
         result.error_message = pkg.error_message;
-        return false;
+        return StageStatus::kFailed;
     }
 
     // 分片级 / ladder 级交叉校验。fMP4 分片在这里被 Mp4SampleTableAnalyzer 解析，
     // MPEG-TS 分片的逐包解析要依赖 Qt，放到下面的 ProbeTsSegments。
     SegmentQcAnalyzer::Analyze(pkg, SegmentQcOptions{}, cancel);
+    if (infrastructure::Checkpoint(cancel)) return StageStatus::kCancelled;
 
-    ProbeTsSegments(result, cancel);
-    BuildStreamingTree(result);
+    if (!ProbeTsSegments(result, cancel)) return StageStatus::kCancelled;
+    if (!BuildStreamingTree(result, cancel)) return StageStatus::kCancelled;
+
+    // 建完树再复查一次：树本身是纯拼装，但同样可能在一万个分片的循环里被取消。
+    if (infrastructure::Checkpoint(cancel)) return StageStatus::kCancelled;
 
     result.valid = true;
-    return true;
+    return StageStatus::kDone;
 }
 
-void ContainerStructureAnalyzer::ProbeTsSegments(model::ContainerStructureResult& result,
+bool ContainerStructureAnalyzer::ProbeTsSegments(model::ContainerStructureResult& result,
                                                  const std::atomic<bool>* cancel) {
     model::StreamingPackageResult& pkg = result.streaming_package;
     constexpr int kMaxTsProbe = 3;  // 抽查头几个就够了：分片是同一次切片产出的
@@ -669,7 +719,9 @@ void ContainerStructureAnalyzer::ProbeTsSegments(model::ContainerStructureResult
         ++probed;
         TsStructureAnalyzer ts;
         model::ContainerStructureResult ts_result;
-        if (ts.Analyze(QString::fromStdString(seg.resolved_path), ts_result)) {
+        // 取消令牌跟着走：TS 分片解析要逐包扫几百到几千个 TS 包，
+        // 大型包这里能跑出好几秒，取消只是"抽查头三个"时也已经晚了。
+        if (ts.Analyze(QString::fromStdString(seg.resolved_path), ts_result, cancel)) {
             seg.probed = true;
             return;
         }
@@ -681,20 +733,25 @@ void ContainerStructureAnalyzer::ProbeTsSegments(model::ContainerStructureResult
 
     for (model::MediaPlaylistInfo& pl : pkg.playlists) {
         for (model::SegmentInfo& seg : pl.segments) {
-            if (infrastructure::Checkpoint(cancel)) return;
+            if (infrastructure::Checkpoint(cancel)) return false;
             probe_one(seg);
         }
     }
     for (model::DashRepresentationInfo& rep : pkg.representations) {
         for (model::SegmentInfo& seg : rep.segments) {
-            if (infrastructure::Checkpoint(cancel)) return;
+            if (infrastructure::Checkpoint(cancel)) return false;
             probe_one(seg);
         }
     }
+    return true;
 }
 
-void ContainerStructureAnalyzer::BuildStreamingTree(model::ContainerStructureResult& result) {
+bool ContainerStructureAnalyzer::BuildStreamingTree(model::ContainerStructureResult& result,
+                                                    const std::atomic<bool>* cancel) {
     const model::StreamingPackageResult& pkg = result.streaming_package;
+    // 分段复查取消：这一函数是纯拼装，但外层规模是由清单决定的（几千个 playlist 的
+    // master 完全可能存在），拼到一半被取消时不能把半棵树交给 UI。
+    const auto cancelled = [cancel] { return infrastructure::Checkpoint(cancel); };
 
     // 入参保持 QString（调用方大量用 .arg() 拼装），落地到 domain 时统一转 std::string
     auto make_elem = [](const QString& name, const QString& type, int depth,
@@ -720,6 +777,7 @@ void ContainerStructureAnalyzer::BuildStreamingTree(model::ContainerStructureRes
                           .arg(pkg.representations.size()))
                          .toStdString();
         for (const model::DashPeriodInfo& period : pkg.periods) {
+            if (cancelled()) return false;
             model::ContainerElement period_elem =
                 make_elem(QString("Period %1").arg(period.index), "Period", 1,
                           QString("duration=%1s").arg(period.duration_seconds, 0, 'f', 3));
@@ -809,6 +867,7 @@ void ContainerStructureAnalyzer::BuildStreamingTree(model::ContainerStructureRes
         model::ContainerElement variants_elem =
             make_elem(QString("Variants (%1)").arg(pkg.variants.size()), "Group", 1);
         for (const model::HlsVariantInfo& v : pkg.variants) {
+            if (cancelled()) return false;
             model::ContainerElement v_elem = make_elem(
                 QString("variant #%1").arg(v.index), "Variant", 2,
                 QString("%1 kbps %2").arg(v.bandwidth_bps / 1000).arg(QString::fromStdString(v.resolution)));
@@ -833,6 +892,7 @@ void ContainerStructureAnalyzer::BuildStreamingTree(model::ContainerStructureRes
             make_elem(QString("Media playlists (%1)").arg(pkg.playlists.size()), "Group", 1);
         constexpr int kMaxSegmentNodes = 100;
         for (const model::MediaPlaylistInfo& pl : pkg.playlists) {
+            if (cancelled()) return false;
             model::ContainerElement one =
                 make_elem(QString("%1 #%2").arg(QString::fromStdString(pl.role)).arg(pl.index),
                           "Playlist", 2,
@@ -900,7 +960,10 @@ void ContainerStructureAnalyzer::BuildStreamingTree(model::ContainerStructureRes
                              .toStdString();
     }
 
+    if (cancelled()) return false;  // 树拼完了但取消也到了: 半棵树照样不算结果
+
     result.element_tree.push_back(root);
+    return true;
 }
 
 void ContainerStructureAnalyzer::Reset() {

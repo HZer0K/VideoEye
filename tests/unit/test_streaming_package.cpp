@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/analysis/streaming/DashManifestAnalyzer.h"
@@ -126,7 +127,8 @@ TEST(StreamingPackageTest, ValidHlsVodPackageHasNoWarningOrError) {
     videoeye::analyzer::HlsManifestAnalyzer hls;
     StreamingPackageResult result;
     ASSERT_TRUE(hls.AnalyzeFile((root / "master.m3u8").string(), result));
-    ASSERT_TRUE(videoeye::analyzer::SegmentQcAnalyzer::Analyze(result));
+    ASSERT_EQ(videoeye::analyzer::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::analyzer::SegmentQcAnalyzer::Analyze(result));
 
     EXPECT_TRUE(result.valid);
     EXPECT_EQ(videoeye::model::StreamingKind::HlsMaster, result.kind);
@@ -675,4 +677,95 @@ TEST(StreamingPackageTest, OversizeSubPlaylistIsMarkedInsteadOfBreakingMaster) {
     EXPECT_EQ(3, audio_pl->SegmentCount());
 
     fs::remove_all(root);
+}
+
+// ===========================================================================
+// 取消链路：大包被取消后必须停手，且绝不允许把半成品当成有效结果发布
+//
+// 复查里点名的 P1：HLS/DASH 的 AnalyzeFile() 与 fMP4 分片探测都没把取消令牌
+// 传下去，取消之后照样读完整份清单、照常建 ladder 跑校验，最后无条件置
+// valid = true —— 用户点了"取消"，界面却收到一份看起来正常的成功结果。
+// 这里守住两道闸门：
+//   1) 清单解析阶段：已取消就不该把 4000 行读满（truncated 必须置位）；
+//   2) SegmentQc 阶段：被取消必须返回 kCancelled，且**不得**产出 ladder / issues。
+// ===========================================================================
+
+namespace {
+
+// 造一份有 N 个分片的 media playlist 文本。
+// 复用上面那个带 crlf 参数的同名辅助函数 —— 这里只需要"行数够多"，不需要 CRLF 变体。
+// （两个重载同时可见会让 call site 变成歧义，所以不另写一个）
+
+// 手工铺一个大包（分片实体落盘，探测阶段会真的去 stat 它们）
+bool MakeBigPackage(const fs::path& root, int seg_count, StreamingPackageResult& out) {
+    for (int i = 0; i < seg_count; ++i) {
+        if (!WriteFile(root / ("seg" + std::to_string(i) + ".ts"), "")) return false;
+    }
+    StreamingPackageResult result;
+    result.valid = true;
+    MediaPlaylistInfo pl;
+    pl.index = 0;
+    pl.uri = "media.m3u8";
+    for (int i = 0; i < seg_count; ++i) {
+        videoeye::model::SegmentInfo seg;
+        seg.sequence = i;
+        seg.duration_seconds = 4.0;
+        seg.has_duration = true;
+        seg.resolved_path = (root / ("seg" + std::to_string(i) + ".ts")).string();
+        seg.container = videoeye::model::SegmentContainer::MPEG_TS;
+        pl.segments.push_back(std::move(seg));
+    }
+    result.playlists.push_back(std::move(pl));
+    out = std::move(result);
+    return true;
+}
+
+}  // namespace
+
+TEST(StreamingPackageCancelTest, HugeManifestIsNotReadToTheEndWhenCancelled) {
+    const fs::path root = MakeTempDir("cancel_manifest");
+    ASSERT_TRUE(WriteFile(root / "media.m3u8", MakeMediaPlaylistText(4000, false)));
+
+    // 进门前就是取消态：令牌只要真传进了清单解析，4000 行绝不可能读满
+    std::atomic<bool> cancel{true};
+    StreamingPackageResult result;
+    videoeye::analyzer::HlsManifestAnalyzer hls;
+    hls.AnalyzeFile((root / "media.m3u8").string(), result, {}, &cancel);
+
+    const size_t parsed = result.playlists.empty() ? 0 : result.playlists[0].segments.size();
+    EXPECT_LT(parsed, 4000u)
+        << "取消令牌没传到清单解析: 4000 行的清单在已取消的情况下被读满了";
+}
+
+TEST(StreamingPackageCancelTest, CancelledSegmentQcSkipsLadderAndValidation) {
+    constexpr int kSegCount = 2000;
+    const fs::path root = MakeTempDir("cancel_segments");
+    StreamingPackageResult pkg;
+    ASSERT_TRUE(MakeBigPackage(root, kSegCount, pkg));
+
+    // 必须在 analyzer 域里取: 与 SegmentQcAnalyzer 同命名空间, 测试文件里没有这个 using
+    videoeye::analyzer::SegmentQcOptions options;
+    options.probe_segments = true;
+    options.max_probe_segments = 64;  // 放宽上限, 保证"分片落盘探测"这个最耗时的阶段真会跑到
+
+    // 对照组：不取消就必须跑完并产出 ladder —— 防止实现退化成"一律 kCancelled"
+    std::atomic<bool> run_cancel{false};
+    StreamingPackageResult control = pkg;
+    // 先取返回值再比: 直接把 Analyze(...) 塞进 EXPECT_EQ 会被宏外的逗号拆成多个参数
+    const auto control_status = videoeye::analyzer::SegmentQcAnalyzer::Analyze(control, options, &run_cancel);
+    ASSERT_EQ(videoeye::analyzer::SegmentQcAnalyzer::StageStatus::kDone, control_status);
+    EXPECT_FALSE(control.ladder.empty()) << "不取消时 ladder 必须建出来, 否则这条用例失去对照意义";
+
+    // 取消态：三态必须落在 Cancelled，且不得产出 ladder / issues
+    // （ladder 与 issues 都是 BuildLadder / Validate 的活，拿半份分片数据算出来的结论是假的）
+    std::atomic<bool> cancel{true};
+    StreamingPackageResult canceled = pkg;
+    const auto cancel_status = videoeye::analyzer::SegmentQcAnalyzer::Analyze(canceled, options, &cancel);
+    EXPECT_EQ(videoeye::analyzer::SegmentQcAnalyzer::StageStatus::kCancelled, cancel_status)
+        << "探测链被取消时必须是 kCancelled, 不能走成 kDone";
+    EXPECT_TRUE(canceled.ladder.empty()) << "取消后不得再建 ladder: 半份分片数据算不出可用的码率梯度";
+    EXPECT_TRUE(canceled.issues.empty()) << "取消后不得再跑校验: 对着半份数据报问题等于报假问题";
+    EXPECT_TRUE(canceled.playlists.empty() || canceled.playlists[0].segments.empty() ||
+                canceled.playlists[0].segments[0].probed == false)
+        << "探测阶段被取消时至少不该把分片标记为已探测";
 }

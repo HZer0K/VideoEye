@@ -93,12 +93,31 @@ uint32_t BitReader::ReadUE() {
     return suffix + (1U << leading_zeros) - 1U;
 }
 
-uint32_t BitReader::ReadUEBounded(uint32_t max_value) {
+uint32_t BitReader::ReadUEClamped(uint32_t max_value) {
+    // 静默夹断：只保证返回值不超上界（循环次数因此不可能失控），不置错误 ——
+    // 诊断场景下"这字段不对"和"整份参数集不可用"是两件事，别把后者强加给前者。
     const uint32_t v = ReadUE();
     if (HasError()) {
         return 0;
     }
     return v > max_value ? max_value : v;
+}
+
+uint32_t BitReader::ReadUEBounded(uint32_t max_value) {
+    const uint32_t v = ReadUE();
+    if (HasError()) {
+        return 0;
+    }
+    if (v > max_value) {
+        // 关键区别: 这里必须置错误。只夹断的话，一个荒谬大的 ue(v) 会变成一个
+        // "看起来合法"的小数，后续字段全按错的偏移继续读下去 —— 最后产出一份
+        // 字段错位但 valid=true 的结果，比直接判参数集无效难查得多。
+        error_ = true;
+        error_message_ =
+            "ue(v) 超过上限: 读得 " + std::to_string(v) + ", 上限 " + std::to_string(max_value);
+        return max_value;
+    }
+    return v;
 }
 
 int32_t BitReader::ReadSE() {

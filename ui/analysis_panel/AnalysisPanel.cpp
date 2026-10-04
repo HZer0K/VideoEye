@@ -548,6 +548,12 @@ void AnalysisPanel::OnContainerStructureReady(const model::ContainerStructureRes
     if (streaming_panel_) UpdateStreamingUi();
 }
 
+void AnalysisPanel::OnContainerStructureFailed(const QString& message) {
+    // feature 关掉时页面本来就不画，这里也不该冒出错误提示
+    if (!feature_enabled_.value(AnalysisFeature::Master, true)) return;
+    if (container_page_) container_page_->SetError(message);
+}
+
 void AnalysisPanel::OnSceneChangeDetected(const model::SceneChangeResult& result) {
     if (scene_change_page_) scene_change_page_->AppendResult(result);
 }

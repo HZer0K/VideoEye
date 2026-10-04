@@ -58,6 +58,17 @@ QThread* QtWorkerOwner::StartWorker(QObject* worker, std::function<void()> body,
     // 以前是靠调用方把 worker 的每个终态信号都连到 thread->quit，漏连一个就漏退一次。
     QObject::connect(thread, &QThread::started, worker,
                      [thread, body = std::move(body), on_error]() {
+                         // quit() 必须与任务体结果无关 —— 成功、body 抛异常、on_error 自己
+                         // 再抛，三条路都得退出事件循环，否则线程永远挂在 exec() 上。
+                         // 手写quit() 意味着每加一条路径就漏一次，所以交给析构函数兜底：
+                         // 就算当前正在栈展开（异常穿透出 lambda），作用域退出照样执行。
+                         // 注意不能写成 finally 风格：这里没有异常规范保护的析构会吞掉
+                         // 「新异常替换旧异常」的路径，RAII 是唯一稳的做法。
+                         struct QuitOnScopeExit {
+                             QThread* thread;
+                             ~QuitOnScopeExit() { thread->quit(); }
+                         } quit_guard{thread};
+
                          // 异常必须就地吃掉: Qt 的线程入口（QThreadPrivate::start 里
                          // 调 run()）不设 try/catch，异常一路逃逸出去就没人接，
                          // 进程直接 std::terminate() 退出 —— 一个 worker 里的
@@ -65,19 +76,31 @@ QThread* QtWorkerOwner::StartWorker(QObject* worker, std::function<void()> body,
                          // 同时对应的 TaskManager 任务会永远停在 Running，没终态。
                          try {
                              body();
-                         } catch (const std::exception& ex) {
-                             const std::string what =
-                                 "worker 任务体抛出 std::exception: " + std::string(ex.what());
-                             LOG_ERROR(what);
-                             if (on_error) on_error(thread, what);
                          } catch (...) {
-                             const std::string what = "worker 任务体抛出未知异常(非 std::exception)";
-                             LOG_ERROR(what);
-                             if (on_error) on_error(thread, what);
+                             // 先归一化消息再重新抛：单一 catch(...) 之后没法再按类型拆，
+                             // 也避免 ex.what() 这条路径自己的内存申请再抛一次。
+                             std::string what;
+                             try {
+                                 throw;
+                             } catch (const std::exception& ex) {
+                                 what = std::string("worker 任务体抛出 std::exception: ") + ex.what();
+                             } catch (...) {
+                                 what = "worker 任务体抛出未知异常(非 std::exception)";
+                             }
+
+                             // 任务体失败的终态必须走出去(cancel 之外的唯一 Failed 来源)，
+                             // 但 on_error 回调本身也可能抛 —— 上面那条 catch 正在处理异常，
+                             // 没法再嵌套一层捕获。不在这里接住，异常会从这里穿过 Qt 线程入口。
+                             if (on_error) {
+                                 try {
+                                     on_error(thread, what);
+                                 } catch (const std::exception& ex) {
+                                     LOG_ERROR(std::string("on_error 回调抛出 std::exception: ") + ex.what());
+                                 } catch (...) {
+                                     LOG_ERROR("on_error 回调抛出未知异常(非 std::exception)");
+                                 }
+                             }
                          }
-                         // quit() 与异常无关：成功路径、失败路径、以及上面两个 catch
-                         // 都必须走到这里，否则线程会一直挂在 exec() 上变成泄漏。
-                         thread->quit();
                      });
     // 终态清理: 排队回所有者线程，worker 与 QThread 各自在正确的线程被回收
     QObject::connect(thread, &QThread::finished, this, [this, thread, worker]() {

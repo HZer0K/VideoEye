@@ -34,6 +34,16 @@ public:
     void Reset();
 
 private:
+    // 阶段终态。三态而不是 bool 是有原因的:「失败」允许回退 FFmpeg 再试一次，
+    // 「取消」绝不允许 —— 取消时 result 里只有半份数据，既不能设 valid=true 发布出去，
+    // 也不能再让 FFmpeg 兜底把同一份取消悄悄换成"分析成功"（FFmpeg 回退成功还会
+    // 把 format 改写成 FFmpeg_Generic，用户看到的结论完全变了）。
+    enum class StageStatus {
+        kDone,      // 走完且产出了可用结果
+        kCancelled, // 中途被取消，外层必须放弃本次结果
+        kFailed,    // 走完但失败，允许回退 FFmpeg
+    };
+
     // 下面三个"树转换"函数返回 bool：false 表示中途被取消（不再堆出半成品树），
     // 让 Analyze() 能把结果归成"已取消"，而不是把半棵树当成有效的结构树交出去。
     /// 将 Mp4BoxNode 树映射为 ContainerElement 树
@@ -64,15 +74,21 @@ private:
     /// HLS (.m3u8) / DASH (.mpd) 清单解析。
     /// 只走自研解析器（std::ifstream），绝不把清单交给 FFmpeg ——
     /// avformat 会把它当播放列表去发网络请求，离线 QC 场景不可控也无法单测。
-    bool AnalyzeStreamingManifest(const QString& file_path,
-                                  model::ContainerStructureResult& result,
-                                  const std::atomic<bool>* cancel);
+    ///
+    /// 返回三态：kCancelled 时 result 里的清单数据只到"被取消那一刻"为止，
+    /// 调用方必须整条放弃（置 valid=false + error_message="已取消"，不得回退 FFmpeg）。
+    StageStatus AnalyzeStreamingManifest(const QString& file_path,
+                                         model::ContainerStructureResult& result,
+                                         const std::atomic<bool>* cancel);
 
     /// 清单结构 -> 通用结构树 / 流信息 / 元数据（供"文件结构"页复用同一套渲染）
-    void BuildStreamingTree(model::ContainerStructureResult& result);
+    /// 返回 false 表示中途被取消：树没建完，外层不得把半成品树发出去。
+    bool BuildStreamingTree(model::ContainerStructureResult& result,
+                            const std::atomic<bool>* cancel);
 
     /// 用 TsStructureAnalyzer 抽查若干 TS 分片（复用已有 TS 容器分析）
-    void ProbeTsSegments(model::ContainerStructureResult& result,
+    /// 返回 false 表示中途被取消（已置位 container_parse_failed 的那一两个分片不算）。
+    bool ProbeTsSegments(model::ContainerStructureResult& result,
                          const std::atomic<bool>* cancel);
 };
 

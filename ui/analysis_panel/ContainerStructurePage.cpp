@@ -409,6 +409,21 @@ static void PopulateMp4BoxTablesInContainer(const model::Mp4BoxAnalysisResult& r
     }
 }
 
+void ContainerStructurePage::SetError(const QString& message) {
+    // 与 SetResult 里 !valid 那条分支同一套表现：不画结构树，只留一条原因。
+    // 少了这条，分析器抛异常时页面会一直停在"打开媒体文件后将自动分析"，
+    // 用户分不清是还没分析还是分析崩了。
+    title_label_->setText(tr("文件结构"));
+    title_label_->setStyleSheet("font-size: 13px; font-weight: bold; color: #8B949E; padding: 2px 4px;");
+
+    summary_label_->setText(message.isEmpty() ? tr("无法分析该格式") : message);
+    summary_label_->setStyleSheet("font-size: 12px; color: #8B949E; padding: 2px 4px;");
+    // 一并清掉上一段分析留下的结构树 / 详情表，别让旧内容冒充新结果
+    tree_->clear();
+    detail_stack_->setCurrentIndex(0);
+    result_ = model::ContainerStructureResult{};
+}
+
 void ContainerStructurePage::SetResult(const model::ContainerStructureResult& result) {
     VE_PERF("ContainerStructurePage::SetResult 总计");
     result_ = result;

@@ -197,6 +197,10 @@ signals:
     void MediaModeChanged(bool has_video);
     void AudioLevelReady(double level, double timestamp_seconds);
     void ContainerStructureReady(const videoeye::model::ContainerStructureResult& result);
+    // 结构分析**没出结果**时发出（解析失败 / 任务体抛异常）。
+    // 与 Ready 互斥：Ready 出去时本信号一定不会来，反之亦然 —— 页面据此决定
+    // 是画结构树还是显示一条错误。
+    void ContainerStructureFailed(const QString& message);
     void MacroblockInfoReady(const videoeye::model::MacroblockFrameAnalysis& analysis);
     void SceneChangeReady(const analyzer::SceneChangeResult& result);
     // 画面质量 / 视觉缺陷（实时播放时逐采样帧产出）

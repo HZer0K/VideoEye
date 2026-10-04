@@ -149,6 +149,8 @@ public slots:
     void ResetTimelineEventList();
     void AppendTimelineEvent(const model::TimelineEvent& event);
     void OnContainerStructureReady(const model::ContainerStructureResult& result);
+    // 结构分析没出结果（解析失败 / 分析器抛异常）
+    void OnContainerStructureFailed(const QString& message);
     void UpdateMacroblockInfo(const model::MacroblockFrameAnalysis& analysis);
     void OnSceneChangeDetected(const model::SceneChangeResult& result);
 

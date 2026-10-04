@@ -554,6 +554,9 @@ void MainWindow::SetupConnections() {
     // 统一容器结构分析信号
     connect(player_, &player::MediaPlayer::ContainerStructureReady,
             analysis_panel_, &ui::AnalysisPanel::OnContainerStructureReady);
+    // 结构分析失败（解析不出来 / 分析器抛异常）：页面显示原因，别让结构页一直空着
+    connect(player_, &player::MediaPlayer::ContainerStructureFailed,
+            analysis_panel_, &ui::AnalysisPanel::OnContainerStructureFailed);
     connect(player_, &player::MediaPlayer::MacroblockInfoReady,
             analysis_panel_, &ui::AnalysisPanel::UpdateMacroblockInfo);
     // MV 叠加: 同时转发到播放模块的视频叠加层

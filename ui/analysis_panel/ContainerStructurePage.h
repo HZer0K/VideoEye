@@ -35,6 +35,11 @@ public:
     // 打开文件时容器解析完成：刷新结构树 / 详情表 / 样本表
     void SetResult(const model::ContainerStructureResult& result);
 
+    // 结构分析没出结果（解析失败 / 分析器抛异常）。与 SetResult 走同一套"空页面"表现，
+    // 只是把原因换成调用方给的文字 —— 否则页面会一直停在"打开媒体文件后将自动分析"，
+    // 用户看不出是没分析还是分析崩了。
+    void SetError(const QString& message);
+
     // 全文件诊断扫描也跑了样本表时，只刷新样本相关的四张表（不重建结构树）
     void ApplySampleTable(const model::Mp4SampleTableResult& samples);
 

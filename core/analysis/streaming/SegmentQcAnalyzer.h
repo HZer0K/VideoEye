@@ -30,16 +30,26 @@ namespace analyzer {
 
 class SegmentQcAnalyzer {
 public:
+    // 阶段终态。三态而不是 bool：被取消和"跑完但没查出问题"必须分开 ——
+    // 取消时 result 里只有半份数据，外层必须整包丢弃，不能拿它去建 ladder / 比对齐
+    // （会拿半截 keyframe 时间轴算出假的"关键帧不对齐"）。
+    enum class StageStatus {
+        kDone,      // 走完（可能被取消提前退出，调用方仍需复查一次取消）
+        kCancelled, // 中途被取消
+        kFailed,    // 走完但出错了
+    };
+
     // 探测 + 建 ladder + 校验。result 必须已经由 Hls/Dash 解析器填好数据。
     // cancel: 可选的取消标志（nullptr = 不关心取消）。分片落盘探测是逐文件的磁盘 IO，
     // 大型包（上千分片）在这里耗时最久，必须能被中断。
-    static bool Analyze(model::StreamingPackageResult& result, const SegmentQcOptions& options = SegmentQcOptions{},
-                        const std::atomic<bool>* cancel = nullptr);
+    static StageStatus Analyze(model::StreamingPackageResult& result,
+                               const SegmentQcOptions& options = SegmentQcOptions{},
+                               const std::atomic<bool>* cancel = nullptr);
 
     // 落盘探测：分片是否存在、多大、fMP4 分片的 tfdt 起点（关键帧时间）。
-    static bool ProbeSegments(model::StreamingPackageResult& result,
-                              const SegmentQcOptions& options = SegmentQcOptions{},
-                              const std::atomic<bool>* cancel = nullptr);
+    static StageStatus ProbeSegments(model::StreamingPackageResult& result,
+                                     const SegmentQcOptions& options = SegmentQcOptions{},
+                                     const std::atomic<bool>* cancel = nullptr);
 
     // 把 variants / representations 投影成统一的 ladder（UI 只认这个）
     static void BuildLadder(model::StreamingPackageResult& result);

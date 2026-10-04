@@ -57,15 +57,21 @@ const char* Code(const model::StreamingPackageResult& out, const char* hls_code,
 // ---------------------------------------------------------------------------
 
 // 从初始化段（含 moov）拿 timescale；拿不到返回 0
-uint32_t ProbeInitTimescale(const std::string& init_path) {
+//
+// cancel: 只用来决定"要不要开工"。初始化段是单个文件，比整包探测短得多，
+// 但大包（上百个分片）叠起来也必须能被一次取消收住 —— 所以这里一旦看到取消
+// 就直接返回 0，让它由 ProbeSegmentRange 的外层循环收尾。
+uint32_t ProbeInitTimescale(const std::string& init_path, const std::atomic<bool>* cancel) {
     if (init_path.empty())
+        return 0;
+    if (IsStreamingCancelled(cancel))
         return 0;
     Mp4SampleTableOptions opt;
     opt.expand_samples = false;
     opt.max_samples_per_track = 1;
     model::Mp4SampleTableResult res;
     Mp4SampleTableAnalyzer analyzer;
-    if (!analyzer.AnalyzeFile(init_path, res, opt))
+    if (!analyzer.AnalyzeFile(init_path, res, opt, cancel))
         return 0;
     uint32_t timescale = 0;
     for (const model::Mp4TrackSampleTable& t : res.tracks) {
@@ -78,15 +84,22 @@ uint32_t ProbeInitTimescale(const std::string& init_path) {
 }
 
 // 探测一个 fMP4 媒体分片：拿首个 moof 的 tfdt 作为关键帧时间
-bool ProbeFmp4Segment(model::SegmentInfo& seg, uint32_t fallback_timescale) {
+bool ProbeFmp4Segment(model::SegmentInfo& seg, uint32_t fallback_timescale,
+                      const std::atomic<bool>* cancel) {
+    if (IsStreamingCancelled(cancel))
+        return false;  // 别开工：开了也只是白跑一趟然后被外层丢掉
     Mp4SampleTableOptions opt;
     opt.expand_samples = false; // 只要 moof/traf/tfdt，展开样本表是纯浪费
     opt.max_samples_per_track = 1;
     model::Mp4SampleTableResult res;
     Mp4SampleTableAnalyzer analyzer;
-    if (!analyzer.AnalyzeFile(seg.resolved_path, res, opt)) {
-        seg.container_parse_failed = true;
-        seg.container_error = res.error_message;
+    if (!analyzer.AnalyzeFile(seg.resolved_path, res, opt, cancel)) {
+        // 解析失败要记账（UI 上"分片容器解析失败"这条 issue 就是它）；
+        // 被取消则不清账 —— 取消不是分片的问题，不该让用户看到假问题。
+        if (!IsStreamingCancelled(cancel)) {
+            seg.container_parse_failed = true;
+            seg.container_error = res.error_message;
+        }
         return false;
     }
     if (res.fragments.empty())
@@ -143,7 +156,7 @@ void ProbeSegmentRange(std::vector<model::SegmentInfo>& segments, uint32_t init_
         if (!seg.exists)
             continue;
         if (seg.container == model::SegmentContainer::FMP4) {
-            ProbeFmp4Segment(seg, init_timescale);
+            ProbeFmp4Segment(seg, init_timescale, cancel);
         }
     }
 }
@@ -181,36 +194,38 @@ std::vector<double> KeyframeTimesOf(const std::vector<model::SegmentInfo>& segme
 // 公开接口
 // ---------------------------------------------------------------------------
 
-bool SegmentQcAnalyzer::ProbeSegments(model::StreamingPackageResult& result, const SegmentQcOptions& options,
-                                      const std::atomic<bool>* cancel) {
+SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::ProbeSegments(model::StreamingPackageResult& result,
+                                                                const SegmentQcOptions& options,
+                                                                const std::atomic<bool>* cancel) {
     uint32_t probed_units = 0;
     const uint32_t kMaxUnits = 64; // package 级上限：再多的码率层也没必要全探测
 
     for (model::MediaPlaylistInfo& pl : result.playlists) {
-        if (IsStreamingCancelled(cancel)) return true;
+        if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
         if (probed_units >= kMaxUnits)
             break;
         ++probed_units;
         uint32_t timescale = 0;
         if (pl.has_init_section && !pl.init_resolved_path.empty()) {
-            timescale = ProbeInitTimescale(pl.init_resolved_path);
+            timescale = ProbeInitTimescale(pl.init_resolved_path, cancel);
         }
         ProbeSegmentRange(pl.segments, timescale, options, cancel);
     }
 
     for (model::DashRepresentationInfo& rep : result.representations) {
-        if (IsStreamingCancelled(cancel)) return true;
+        if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
         if (probed_units >= kMaxUnits)
             break;
         ++probed_units;
         uint32_t timescale = 0;
         if (!rep.init_resolved_path.empty()) {
-            timescale = ProbeInitTimescale(rep.init_resolved_path);
+            timescale = ProbeInitTimescale(rep.init_resolved_path, cancel);
         }
         ProbeSegmentRange(rep.segments, timescale, options, cancel);
     }
 
-    return true;
+    if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
+    return StageStatus::kDone;
 }
 
 void SegmentQcAnalyzer::BuildLadder(model::StreamingPackageResult& result) {
@@ -636,18 +651,22 @@ void SegmentQcAnalyzer::Validate(model::StreamingPackageResult& result, const Se
     }
 }
 
-bool SegmentQcAnalyzer::Analyze(model::StreamingPackageResult& result, const SegmentQcOptions& options,
-                                const std::atomic<bool>* cancel) {
+SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Analyze(model::StreamingPackageResult& result,
+                                                          const SegmentQcOptions& options,
+                                                          const std::atomic<bool>* cancel) {
     if (!result.valid)
-        return false;
-    if (options.probe_segments)
-        ProbeSegments(result, options, cancel);
+        return StageStatus::kFailed;
+    if (options.probe_segments) {
+        const StageStatus probe = ProbeSegments(result, options, cancel);
+        if (probe != StageStatus::kDone) return probe;
+    }
     // 已被取消就别再建 ladder / 跑校验了：结果注定会被调用方丢弃，
     // 继续跑只是让"取消"更晚生效。
-    if (IsStreamingCancelled(cancel)) return true;
+    if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
     BuildLadder(result);
     Validate(result, options, cancel);
-    return true;
+    if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
+    return StageStatus::kDone;
 }
 
 } // namespace analyzer
