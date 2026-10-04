@@ -265,6 +265,128 @@ TEST(MediaContainerStructure, StaleFailureIsDroppedAfterNewTaskStarts) {
 }
 
 // ===========================================================================
+// 取消阻塞中的导出: 取消立即返回、线程稍后退出、终态必须是 Canceled（复查 P1）
+//
+// 修复前 RequestStopMediaExport() 在"线程没立刻停下来"时调 exporter->disconnect(this)，
+// 把导出器到播放器的连接整批断掉 —— 其中就包括三条终态上报
+// (ExportFinished/Canceled/Error -> TaskManager::End)。于是旧线程随后即便好好收尾，
+// 终态也写不进去: slot 一直挂在 Running，界面既收不到"已取消"也没有任何错误提示，
+// 只能等下一次任务接管或播放器析构时被强制收尾。
+//
+// 用例刻意走"卡住 -> 取消 -> 靠中断回调自己退出来"这条真实路径:
+//   * 输入是只监听不回包的本地端口, avformat_open_input 稳定卡在阻塞 IO 上;
+//   * CancelMediaExport() 置位取消标志, FFmpeg 的 AVIOInterruptCB 把 open 打断成
+//     AVERROR_EXIT, MediaExporter 走 cancel_and_emit() -> emit ExportCanceled;
+//   * 这条信号必须穿过 UI 队列到达 MediaPlayer —— 断过连接的话它就到不了。
+// 代际号在这里**不会**被推进(只有 CancelAllExports 才推), 所以到达与否只取决于
+// 连接还在不在, 不会被代际校验干扰 —— 正是要测的那件事。
+// ===========================================================================
+TEST(MediaExportCancel, BlockingExportStillReportsCanceledAfterWorkerExits) {
+    AppScope app_scope;
+
+    videoeye_test::BlockingTcpEndpoint endpoint;
+    ASSERT_TRUE(endpoint.valid()) << "无法创建本地监听端口";
+
+    player::MediaPlayer player;
+    ExportTerminals terminals;
+    WireTerminals(player, terminals);
+
+    const QString output = QDir::tempPath() + "/videoeye_cancel_blocking.mp4";
+    QFile::remove(output);
+    player.StartMediaExport(MakeOptions(QString::fromStdString(endpoint.tcp_url()), output));
+    ASSERT_TRUE(PumpUntil([&] { return terminals.Total() > 0; }, 300) == false)
+        << "导出不该在卡进阻塞 IO 之前就出终态, 这条用例的前提不成立";
+    PumpFor(400);   // 让它真的卡进 avformat_open_input
+
+    // 取消必须立即返回: 调用方在 UI 线程, 绝不能被卡住的 worker 拖住。
+    QElapsedTimer timer;
+    timer.start();
+    player.CancelMediaExport();
+    const qint64 cancel_cost = timer.elapsed();
+    EXPECT_LT(cancel_cost, 1000) << "取消被阻塞的导出拖住了 " << cancel_cost << " ms";
+
+    // 线程稍后自己退出(靠中断回调), 终态必须照常落地 —— 连接被断掉的话收不到。
+    ASSERT_TRUE(PumpUntil([&] { return terminals.Total() > 0; }, 10000))
+        << "取消后线程退出了却没有任何终态: 终态上报连接被 disconnect(this) 一起断掉了, "
+           "任务会永远停在 Running";
+    PumpFor(300);
+    EXPECT_EQ(1, terminals.Total()) << "一次取消只该有一个终态";
+    EXPECT_EQ(1, terminals.canceled)
+        << "阻塞中的导出被取消后终态必须是 Canceled; 实际 canceled=" << terminals.canceled
+        << " error=" << terminals.error << " finished=" << terminals.finished;
+
+    // 收尾: 取消不能留下产物
+    EXPECT_FALSE(QFile::exists(output)) << "取消的导出不得留下输出文件";
+    QFile::remove(output);
+}
+
+// ===========================================================================
+// 过期的成功结果必须被丢弃（复查 P1: 容器分析成功结果的竞态）
+//
+// 修复前成功结果的过期校验只做一次, 而且是在**投递之前**: 校验通过后, 旧任务完全
+// 可能在 UI 队列真正执行这条 lambda 之前收尾并让位给新任务 —— 于是旧文件的结果
+// 被当成新文件的结果弹到界面上(结构树显示的是上一个媒体的内容)。
+//
+// 时序构造(与 StaleFailureIsDroppedAfterNewTaskStarts 同一套手法):
+//   请求 A -> 睡到 A 跑完并投递(期间**不泵**事件, 消息压在 UI 队列里) -> 请求 B
+//   -> 开始泵。此时 A 的消息落地时 current id 已经是 B, 必须丢弃。
+// 校验用的是 CurrentId 而不是 IsCurrent: 消息落地那一刻 slot 必然已是终态,
+// IsCurrent 会一律判 false, 连正常的结果也一起丢了。
+// ===========================================================================
+TEST(MediaContainerStructure, StaleSuccessIsDroppedAfterNewTaskStarts) {
+    AppScope app_scope;
+
+    const QString path_a = QDir::tempPath() + "/videoeye_container_stale_a.mkv";
+    const QString path_b = QDir::tempPath() + "/videoeye_container_stale_b.mkv";
+    QFile::remove(path_a);
+    QFile::remove(path_b);
+    ASSERT_TRUE(QFile::copy(WriteBigEbmlInput(), path_a));
+    ASSERT_TRUE(QFile::copy(WriteBigEbmlInput(), path_b));
+
+    player::MediaPlayer player;
+    int ready = 0;
+    int failed = 0;
+    std::string last_ready_path;
+    QObject::connect(&player, &player::MediaPlayer::ContainerStructureReady, &player,
+                     [&ready, &last_ready_path](const videoeye::model::ContainerStructureResult& r) {
+                         ++ready;
+                         last_ready_path = r.file_path;
+                     });
+    QObject::connect(&player, &player::MediaPlayer::ContainerStructureFailed, &player,
+                     [&failed](const QString&) { ++failed; });
+
+    // --- 标定: 先单独跑一遍, 量出"请求 -> 结果落地"要多久 ---
+    // 直接写死 sleep 会在慢机器上落进"A 还没跑完就被取代"的分支, 那样测到的其实是
+    // 投递之前那次 IsCurrent 守卫(它本来就存在), 而不是这里要守的竞态。
+    QElapsedTimer timer;
+    timer.start();
+    player.RequestContainerStructureAnalysis(path_a);
+    ASSERT_TRUE(PumpUntil([&] { return ready > 0 || failed > 0; }, 15000))
+        << "标定阶段既没给 Ready 也没给 Failed";
+    ASSERT_GT(ready, 0) << "合法 EBML 输入必须产出结构结果, 否则这条用例没有意义";
+    const qint64 baseline_ms = timer.elapsed();
+    const int ready_after_baseline = ready;
+
+    // --- 竞态: A 跑完并投递 -> 不泵 -> B 开始 -> 才泵 ---
+    player.RequestContainerStructureAnalysis(path_a);
+    QThread::msleep(static_cast<unsigned long>(baseline_ms) * 3 + 1000);
+    player.RequestContainerStructureAnalysis(path_b);
+
+    ASSERT_TRUE(PumpUntil([&] { return ready > ready_after_baseline || failed > 0; }, 15000))
+        << "第二个任务的结果没有到达";
+    PumpFor(500);   // 给迟到的旧消息一个落地的机会
+
+    EXPECT_EQ(ready_after_baseline + 1, ready)
+        << "旧任务的成功结果在新任务开始之后落地时必须被丢弃; 多出来的那份属于上一个媒体";
+    EXPECT_EQ(0, failed);
+    EXPECT_EQ(path_b.toStdString(), last_ready_path)
+        << "界面上留下的必须是最后一次请求的结果";
+
+    QFile::remove(path_a);
+    QFile::remove(path_b);
+}
+
+// ===========================================================================
 // 分析进行中销毁播放器（复查 P1: 空指针解引用）
 //
 // 修复前: `if (!ok || !self) { if (token.IsCanceled()) self->task_manager_.End(...); }`

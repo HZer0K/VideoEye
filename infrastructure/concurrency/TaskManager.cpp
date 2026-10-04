@@ -41,6 +41,22 @@ struct TaskManager::Core {
 
 namespace {
 
+// 给"线程已跑完"这个 promise 置位, 幂等。
+//
+// 为什么必须幂等: 同一个 promise 置两次会抛 promise_already_satisfied, 而 set_value()
+// 的两个调用点(线程内的 SignalOnExit、父作用域 catch 里的收尾)在"线程已启动且已跑到
+// 收尾 + 父作用域登记失败"这条路径上会撞车。这个函数的调用点包括析构函数, 在那里抛
+// 异常等于 std::terminate()。
+void SetDoneOnce(std::shared_ptr<std::promise<void>>& p) {
+    if (!p)
+        return;
+    try {
+        p->set_value();
+    } catch (...) {
+        // 已经置过值了: 这正是本次调用想达到的状态, 不是错误。
+    }
+}
+
 // worker 线程结束时给 promise 置位。必须是 RAII: body 之后的 EndTask() 万一抛异常,
 // 少置这一次位会让 WaitForAll 把"已经跑完"误判成"还在跑", 白白多等一整个预算。
 class SignalOnExit {
@@ -49,13 +65,35 @@ public:
     SignalOnExit(SignalOnExit&& other) noexcept : p_(std::move(other.p_)) {}
     SignalOnExit(const SignalOnExit&) = delete;
     SignalOnExit& operator=(const SignalOnExit&) = delete;
-    ~SignalOnExit() {
-        if (p_)
-            p_->set_value();
-    }
+    ~SignalOnExit() { SetDoneOnce(p_); }
 
 private:
     std::shared_ptr<std::promise<void>> p_;
+};
+
+// 线程已经跑起来、但还没交到 slot / orphans_ 手里时的守卫。
+//
+// 为什么需要它: std::thread 带着 joinable 状态析构会直接 std::terminate()。登记阶段
+// (加锁、查 slot、push_back 到 orphans_)每一步都可能因内存分配失败抛异常, 异常一出,
+// 局部 std::thread 就会在进 catch 之前析构 —— 程序当场终止, 连日志都来不及打。
+//
+// 处置方式只能是 detach 而不是 join: 这里处在调用方线程(通常是 UI 线程), 而任务体
+// 可能正卡在第三方 IO 上, join 会把调用方一起拖死。detach 是安全的 —— worker 只按值
+// 捕获 Core 的 shared_ptr 与任务体, 脱离后仍能自己跑到结束, 不碰 TaskManager。
+class ThreadGuard {
+public:
+    explicit ThreadGuard(std::thread t) : t_(std::move(t)) {}
+    ThreadGuard(const ThreadGuard&) = delete;
+    ThreadGuard& operator=(const ThreadGuard&) = delete;
+    ~ThreadGuard() {
+        if (t_.joinable())
+            t_.detach();
+    }
+    // 登记成功: 交出所有权, 守卫不再处置它。
+    std::thread Release() { return std::move(t_); }
+
+private:
+    std::thread t_;
 };
 
 } // namespace
@@ -227,6 +265,19 @@ TaskId TaskManager::RunWithResult(const std::string& slot,
     // 下面 catch 里的 set_value() 就会解引用已经被 move 空的 shared_ptr。
     auto done_sig = std::make_shared<std::promise<void>>();
     std::future<void> finished = done_sig->get_future();
+    // 线程一旦起来, 后面任何一步抛异常都会让局部 std::thread 带着 joinable 状态析构,
+    // 那等于直接 std::terminate()。所以能提前做完的容器准备一律提前:
+    // orphans_ 的扩容是登记阶段唯一需要分配内存的动作, 在这里先 reserve 掉。
+    // (这不是"把异常消灭干净" —— 剩下的拷贝仍可能抛 —— 而是把最可能发生的那次挪到
+    //  线程启动之前; 之后真抛了还有 ThreadGuard 兜底, 不会 terminate。)
+    try {
+        orphans_.reserve(orphans_.size() + 1);
+    } catch (const std::exception& e) {
+        LOG_ERROR("后台任务登记准备失败 [" + slot + "]: " + std::string(e.what()));
+        EndTask(*core_, slot, id, TaskState::Failed);
+        SetDoneOnce(done_sig);
+        return id;
+    }
     try {
         // worker **不能**捕获 this: BlockingIo 任务在关闭时可能被放弃(detach),
         // 那种情况下 TaskManager 会先于线程析构, 任何对 this 的访问都是悬空的。
@@ -257,22 +308,25 @@ TaskId TaskManager::RunWithResult(const std::string& slot,
             }
             EndTask(*st, slot, id, terminal);
         });
+        // 从这一行起线程已经在跑了: 交给守卫, 保证任何异常路径都不会让它 joinable 着析构。
+        ThreadGuard guard(std::move(worker));
 
         std::lock_guard<std::mutex> lk(core_->mutex);
         Slot* s = FindLocked(*core_, slot);
         if (s && s->current_id.load(std::memory_order_acquire) == id) {
-            s->thread = std::move(worker);
+            s->thread = guard.Release();
             s->done = std::move(finished);
         } else {
             // 极端情况: 刚启动就被取代了 —— 线程已经跑起来了, 只能转待回收
-            orphans_.push_back(OwnedThread{kind, std::move(worker), std::move(finished), id, slot});
+            orphans_.push_back(OwnedThread{kind, guard.Release(), std::move(finished), id, slot});
             ++core_->orphan_count;
         }
     } catch (const std::exception& e) {
         LOG_ERROR("后台任务无法启动 [" + slot + "]: " + std::string(e.what()));
         EndTask(*core_, slot, id, TaskState::Failed);
-        // 线程没能起来, promise 还留在自己手上: 不置位就会让 future 一直挂着
-        done_sig->set_value();
+        // 线程已经跑起来时 promise 由线程内的 SignalOnExit 置位, 没起来时还留在自己手上
+        // (不置位就会让 WaitForAll 里的 future 一直挂着)。两种情况都交给幂等版本处理。
+        SetDoneOnce(done_sig);
     }
     return id;
 }

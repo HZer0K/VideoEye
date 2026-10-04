@@ -769,3 +769,68 @@ TEST(StreamingPackageCancelTest, CancelledSegmentQcSkipsLadderAndValidation) {
                 canceled.playlists[0].segments[0].probed == false)
         << "探测阶段被取消时至少不该把分片标记为已探测";
 }
+
+// ===========================================================================
+// Validate 内部的取消检查必须覆盖 DASH 分支（复查 P2）
+//
+// 修复前 Validate 的取消检查只写在"HLS playlist 的外层循环"上: DASH 包走的是
+// representations 那条循环，从入口到出口一次都不查；关键帧比对、码率遍历、音视频
+// 分片比对同样没有。于是"取消"要等这一整段跑完才生效 —— 分片数 × 码率层的量级，
+// 关键帧比对还是 O(n²)，大型清单下点取消要等好几秒。
+//
+// 两个刻意的设计:
+//   * 直接调 Validate 而不是 Analyze —— Analyze 末尾还有一次兜底的取消检查, 它会把
+//     "Validate 内部根本没查"这件事擦干净, 测不出来;
+//   * 单条流就给 4096 个分片(远大于 1024 的检查间隔), 且只有 representation 没有
+//     playlist —— 免得"外层循环查一次"就误打误撞地提前退出, 那样测不到内层。
+//
+// 判定用"取消态不得产出任何 issue": 第 1 段要跑完全部分片才会 PushIssue,
+// 在入口就退出则一个 issue 都不会有。对照组负责证明这条路径真的会报 issue。
+// ===========================================================================
+TEST(StreamingPackageCancelTest, ValidateChecksCancelInsideDashLoops) {
+    constexpr int kRepCount = 8;
+    constexpr int kSegCount = 4096;
+    StreamingPackageResult pkg;
+    pkg.valid = true;
+    pkg.kind = videoeye::model::StreamingKind::Dash;
+    for (int r = 0; r < kRepCount; ++r) {
+        videoeye::model::DashRepresentationInfo rep;
+        rep.index = r;
+        rep.id = "v" + std::to_string(r);
+        rep.content_type = "video";
+        rep.bandwidth_bps = 800000 + r * 100000;
+        rep.width = 640;
+        rep.height = 360;
+        for (int i = 0; i < kSegCount; ++i) {
+            videoeye::model::SegmentInfo seg;
+            seg.sequence = i;
+            seg.duration_seconds = 4.0;
+            seg.has_duration = true;
+            seg.resolved_path = "/definitely/not/on/disk/seg" + std::to_string(i) + ".m4s";
+            seg.exists = false;  // 磁盘上没有 -> 第 1 段跑完必然报 kSegmentMissingFile
+            rep.segments.push_back(std::move(seg));
+        }
+        pkg.representations.push_back(std::move(rep));
+    }
+
+    videoeye::analyzer::SegmentQcOptions options;
+    options.probe_segments = false;  // 探测阶段自带取消检查, 会掩盖 Validate 这一段
+
+    // 对照组: 不取消必须跑完并真的报出缺失分片, 否则"取消态没有 issue"可能只是
+    // "压根没进循环"的假通过。
+    std::atomic<bool> run_cancel{false};
+    StreamingPackageResult control = pkg;
+    const auto control_status =
+        videoeye::analyzer::SegmentQcAnalyzer::Validate(control, options, &run_cancel);
+    ASSERT_EQ(videoeye::analyzer::SegmentQcAnalyzer::StageStatus::kDone, control_status);
+    ASSERT_FALSE(control.issues.empty()) << "对照组必须报出缺失分片, 否则本用例失去意义";
+
+    std::atomic<bool> cancel{true};
+    StreamingPackageResult canceled = pkg;
+    const auto cancel_status =
+        videoeye::analyzer::SegmentQcAnalyzer::Validate(canceled, options, &cancel);
+    EXPECT_EQ(videoeye::analyzer::SegmentQcAnalyzer::StageStatus::kCancelled, cancel_status)
+        << "Validate 必须自己报告取消, 不能让调用方靠 Analyze 末尾的兜底检查来擦屁股";
+    EXPECT_TRUE(canceled.issues.empty())
+        << "取消态下 Validate 必须在跑完长循环之前退出: 带着半份统计报出来的 issue 是假问题";
+}

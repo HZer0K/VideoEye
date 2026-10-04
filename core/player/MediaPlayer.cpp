@@ -915,9 +915,19 @@ void MediaPlayer::StartVideoFrameExportNow(const QString& output_dir, const QStr
     // 线程退出后清掉"当前任务"标记。线程的 deleteLater 由 QtWorkerOwner 负责,
     // 这里只清指针, 不碰对象。作为 on_finished 在 start() 之前连接, 消除竞态
     // (否则线程秒级完成时清理回调还没连上, frame_exporter_ 会保留失效对象)。
-    auto clear_marks = [this, exporter](QThread* finished_thread) {
+    auto clear_marks = [this, exporter, task_id](QThread* finished_thread) {
         if (frame_export_thread_ == finished_thread) frame_export_thread_ = nullptr;
         if (frame_exporter_ == exporter) frame_exporter_ = nullptr;
+
+        // 终态兜底: 线程都已经退出了, slot 却还是 Running, 说明终态没能落地
+        // (终态信号还在 UI 队列里没排到、或 exporter 在退出途中把信号丢了)。
+        // 不能再等下一次任务接管或播放器析构来强制收尾 —— 届时界面早就没有"已取消"
+        // 的反馈了。只在"本次确实被请求过取消"时补, 免得把一次真正的失败误报成取消。
+        //
+        // End 自带两道保护, 所以这行是幂等的: id 不匹配(已被新任务取代)直接丢弃,
+        // 已经写过终态(终态信号抢先落地写了 Succeeded/Failed)也直接丢弃。
+        if (task_manager_.Token(kSlotFrameExport).IsCanceled())
+            task_manager_.End(kSlotFrameExport, task_id, task::TaskState::Canceled);
 
         // 线程真正结束了: 从这一行起,"两个抽帧任务同时写同一个输出目录"已不可能,
         // 于是把排队中的请求接上（用户"取消后立刻重试"就靠这里自动续跑）。
@@ -993,11 +1003,17 @@ void MediaPlayer::RequestStopFrameExport() {
         if (frame_export_thread_ == thread) frame_export_thread_ = nullptr;
         return;
     }
-    // 还在跑: 断开它与本对象的连接, 避免旧任务的进度/终态串到新任务上。
-    // 但**保留** frame_export_thread_/frame_exporter_, StartVideoFrameExport 要靠
+    // 还在跑: **保留** frame_export_thread_/frame_exporter_, StartVideoFrameExport 要靠
     // IsFrameExportWorkerAlive() 判断旧任务还活着, 从而把新请求排队而不是并行写同一目录。
     // 线程真正结束时 clear_marks 会清掉这两个成员。
-    if (exporter) exporter->disconnect(this);
+    //
+    // 这里**不能**用 exporter->disconnect(this)。那会把它到本对象的连接整批断掉,
+    // 其中包括三条终态上报(ExportFinished/Canceled/Error -> TaskManager::End)。
+    // 断了它们, 旧线程随后即便正常收尾也写不进终态, slot 会一直挂在 Running 上,
+    // 直到下次 Begin 取代它、或播放器析构时被强制收尾。
+    // 防串台不靠断开连接: 每条 UI 转发 lambda 都有代际校验(frame_export_gen_),
+    // 新任务一起动代际号就变了, 旧任务的进度/完成消息自然被丢弃; 而终态必须保留,
+    // 因为"任务到底怎么结束的"是 TaskManager 的账, 与界面上显示哪一代无关。
 }
 
 // --- 音视频导出 (后台线程运行 MediaExporter) ---
@@ -1075,9 +1091,15 @@ void MediaPlayer::StartMediaExportNow(const exporter::ExportOptions& opt) {
 
     // 线程退出后清标记 (不覆盖后来启动的新导出: 两个指针都比过再清)。
     // 作为 on_finished 在 start() 之前连接, 消除竞态。对象回收由 QtWorkerOwner 负责。
-    auto clear_marks = [this, exporter](QThread* finished_thread) {
+    auto clear_marks = [this, exporter, task_id](QThread* finished_thread) {
         if (media_export_thread_ == finished_thread) media_export_thread_ = nullptr;
         if (media_exporter_ == exporter) media_exporter_ = nullptr;
+
+        // 终态兜底, 与抽帧侧同理: 线程已退出却还没终态, 说明终态信号没落地。
+        // 只补 Canceled 且只在本次确实被取消过时才补; End 的 id 匹配 + 终态一次性
+        // 保证它不会盖掉已经写好的 Succeeded/Failed。
+        if (task_manager_.Token(kSlotMediaExport).IsCanceled())
+            task_manager_.End(kSlotMediaExport, task_id, task::TaskState::Canceled);
 
         // 线程真正结束了: 排队中的导出请求在这里续跑（"取消后立刻重导出"的路径）。
         // 重新走 StartMediaExportNow 而不是 StartMediaExport: 此刻旧线程已确认结束，
@@ -1143,8 +1165,11 @@ void MediaPlayer::RequestStopMediaExport() {
         if (media_export_thread_ == thread) media_export_thread_ = nullptr;
         return;
     }
-    // 仍在跑: 断开信号防串台, 但保留标记供 IsMediaExportWorkerAlive() 判定, 把新请求排队。
-    if (exporter) exporter->disconnect(this);
+    // 仍在跑: 保留标记供 IsMediaExportWorkerAlive() 判定, 把新请求排队。
+    //
+    // 与抽帧侧同理, 这里不能用 exporter->disconnect(this): 它会连三条终态上报一起断掉,
+    // 旧线程随后收尾时写不进终态, slot 永久停在 Running。串台由 media_export_gen_ 的
+    // 代际校验拦住, 不需要靠断开连接。
 }
 
 void MediaPlayer::StartContainerStructureAnalysis(const QString& url) {
@@ -1226,9 +1251,22 @@ void MediaPlayer::StartContainerStructureAnalysis(const QString& url) {
             LOG_INFO("容器结构分析结果已过期, 丢弃");
             return task::TaskState::Canceled;
         }
-        QMetaObject::invokeMethod(self, [self, result = std::move(cs_result)]() mutable {
-            if (self) emit self->ContainerStructureReady(result);
-        }, Qt::QueuedConnection);
+        // 落地时**再**校一次 current id: 上面的 IsCurrent 是投递前查的, 而从查完到这条
+        // lambda 在 UI 线程上真正执行之间, 旧任务完全可能已经收尾、新任务也已经起步
+        // (换文件 / 重新分析)。那时这条成功结果属于上一个任务, 弹出去就会把新任务的
+        // 界面状态覆盖掉。用 CurrentId 而不是 IsCurrent —— 消息落地时 slot 必然已是
+        // 终态, IsCurrent 会一律判 false, 连正常的成功结果也一起丢了。
+        QMetaObject::invokeMethod(
+            self,
+            [self, id, result = std::move(cs_result)]() mutable {
+                if (!self) return;
+                if (self->task_manager_.CurrentId(kSlotContainerStructure) != id) {
+                    LOG_INFO("容器结构分析的成功结果已过期, 丢弃");
+                    return;
+                }
+                emit self->ContainerStructureReady(result);
+            },
+            Qt::QueuedConnection);
         LOG_INFO("OpenInternal: 容器结构分析完成");
         return task::TaskState::Succeeded;
     });

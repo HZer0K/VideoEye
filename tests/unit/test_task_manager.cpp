@@ -480,3 +480,55 @@ TEST(TaskManagerTest, WaitForAllAppliesKindPerTask) {
     EXPECT_FALSE(mgr.IsRunning("io"));
 }
 
+// --- 线程登记路径的健壮性（复查 P2）---
+//
+// RunWithResult 里"线程已经起来、但还没交到 slot / orphans_ 手上"这段窗口上, 任何
+// 一步抛异常都会让局部 std::thread 带着 joinable 状态析构 —— 那是直接 std::terminate(),
+// 连日志都来不及打。现在这段由 RAII 守卫兜住: 异常时 detach(不是 join, 这里在调用方
+// 线程上, 而任务体可能正卡在第三方 IO), 容器的内存准备则尽量挪到线程启动之前。
+//
+// 故障注入本身不好做: 要让 orphans_.push_back 抛 bad_alloc 就得接管全局 operator new,
+// 那会污染同一个进程里的其它用例。所以这里守住的是**主路径**: 高频取代会不断把
+// 线程推进 orphans_, 只要登记或守卫有任何一处漏了 joinable 的线程, 进程就会在
+// 析构时 terminate —— 用例根本走不到断言那一行。
+TEST(TaskManagerTest, RapidSupersedeOnOneSlotKeepsSlotUsable) {
+    constexpr int kRounds = 20;
+    // 预算给到远大于轮数: 孤儿线程要等下一次 WaitForAll 才归还预算, 给小了后面的
+    // Begin 会被"并发已满"拒掉 —— 那时测的就是拒绝路径, 不是这里要压的登记路径。
+    // (顺带说明 Begin 的语义: 被拒绝时它也会置当前任务的取消标志, 所以一旦有轮次
+    //  被拒, 最后一个任务的终态会是 Canceled 而不是 Succeeded。)
+    TaskManager mgr(64);
+    std::atomic<int> launched{0};
+
+    for (int i = 0; i < kRounds; ++i) {
+        // 任务体不理取消令牌: 上一个任务会被下一起 Begin 顶成孤儿, 正是要压的路径。
+        mgr.RunWithResult(kSlot,
+                          [&](TaskId, CancelToken) {
+                              launched.fetch_add(1);
+                              SleepMs(20);
+                              return TaskState::Succeeded;
+                          },
+                          0, TaskKind::BlockingIo);
+    }
+
+    const TaskId last = mgr.CurrentId(kSlot);
+    EXPECT_NE(last, 0u);
+    // 最后一个任务必须能正常收尾: 孤儿收纳要是漏了线程, Begin 的并发预算会被占满,
+    // 后面的任务就会被"并发已满"拒掉(返回 0)。
+    EXPECT_TRUE(mgr.WaitForIdle(kSlot, 5000))
+        << "高频取代之后 slot 必须还能到达终态; 终态卡住说明有线程没被正确收纳";
+    EXPECT_EQ(mgr.State(kSlot), TaskState::Succeeded);
+    EXPECT_GT(launched.load(), 0) << "任务体一个都没跑起来, 这条用例等于没测";
+}
+
+// 空任务体的 RunWithResult 必须记 Failed 而不是把 slot 挂在 Running 上。
+// 与 Begin 分开看: 这里的 id 已经发出来了, 失败要写在同一个 id 上。
+TEST(TaskManagerTest, RunWithResultWithoutBodyEndsFailedImmediately) {
+    TaskManager mgr;
+    const TaskId id = mgr.RunWithResult(kSlot, nullptr);
+    EXPECT_NE(id, 0u) << "没有任务体也该登记出一个 id, 调用方要能统一处理";
+    EXPECT_EQ(mgr.State(kSlot), TaskState::Failed);
+    EXPECT_EQ(mgr.CurrentId(kSlot), id);
+    EXPECT_FALSE(mgr.IsRunning(kSlot));
+}
+

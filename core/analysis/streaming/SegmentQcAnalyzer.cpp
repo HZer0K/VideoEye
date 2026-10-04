@@ -312,8 +312,9 @@ void SegmentQcAnalyzer::BuildLadder(model::StreamingPackageResult& result) {
     }
 }
 
-void SegmentQcAnalyzer::Validate(model::StreamingPackageResult& result, const SegmentQcOptions& options,
-                                 const std::atomic<bool>* cancel) {
+SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPackageResult& result,
+                                                            const SegmentQcOptions& options,
+                                                            const std::atomic<bool>* cancel) {
     static const std::vector<const char*> kOwnCodes = {
         model::StreamingIssueCode::kHlsVariantResolutionMismatch,
         model::StreamingIssueCode::kHlsVariantCodecMismatch,
@@ -334,13 +335,19 @@ void SegmentQcAnalyzer::Validate(model::StreamingPackageResult& result, const Se
         BuildLadder(result);
 
     // ---- 1) 分片文件缺失 / 容器解析失败 ----
+    // 这里是全函数里迭代次数最多的地方: 分片数 × 码率层, 大包轻松上百万次。
+    // 内层按 ShouldCheckStreamingCancel 的间隔查, 外层每个 playlist / representation 必查
+    // (单条流也可能很长, 只查外层会漏掉"只有一条流但分片特别多"的包)。
     {
         int missing = 0;
         int invalid = 0;
+        unsigned long long scanned = 0;
         std::string first_missing;
         for (const model::MediaPlaylistInfo& pl : result.playlists) {
-            if (IsStreamingCancelled(cancel)) return;
+            if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
             for (const model::SegmentInfo& seg : pl.segments) {
+                if (ShouldCheckStreamingCancel(scanned++) && IsStreamingCancelled(cancel))
+                    return StageStatus::kCancelled;
                 if (seg.partial || seg.resolved_path.empty())
                     continue;
                 if (!seg.exists) {
@@ -353,7 +360,10 @@ void SegmentQcAnalyzer::Validate(model::StreamingPackageResult& result, const Se
             }
         }
         for (const model::DashRepresentationInfo& rep : result.representations) {
+            if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
             for (const model::SegmentInfo& seg : rep.segments) {
+                if (ShouldCheckStreamingCancel(scanned++) && IsStreamingCancelled(cancel))
+                    return StageStatus::kCancelled;
                 if (seg.resolved_path.empty())
                     continue;
                 if (!seg.exists) {
@@ -383,7 +393,7 @@ void SegmentQcAnalyzer::Validate(model::StreamingPackageResult& result, const Se
     }
 
     if (result.ladder.size() < 2)
-        return;
+        return StageStatus::kDone;
 
     // ---- 2) 分辨率一致性 ----
     if (options.check_variant_consistency) {
@@ -463,6 +473,8 @@ void SegmentQcAnalyzer::Validate(model::StreamingPackageResult& result, const Se
     }
 
     // ---- 4) 关键帧（分片起点）时间轴对齐 ----
+    // 逐条流 × 逐关键帧的 O(n·m) 比对: 上千分片的包在这里要跑上百万次比较,
+    // 不查取消的话"点取消"要等这一整段跑完才有反应。
     if (options.check_keyframe_alignment) {
         const model::StreamingLadderEntry* reference = nullptr;
         int entries_with_keyframes = 0;
@@ -479,13 +491,17 @@ void SegmentQcAnalyzer::Validate(model::StreamingPackageResult& result, const Se
             double worst_delta = 0.0;
             double first_at = -1.0;
             std::string worst_detail;
+            unsigned long long compared = 0;
             for (const model::StreamingLadderEntry& e : result.ladder) {
                 if (&e == reference || e.keyframe_times.empty())
                     continue;
+                if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
                 const size_t n = std::min(reference->keyframe_times.size(), e.keyframe_times.size());
                 double local_worst = 0.0;
                 int local_bad = 0;
                 for (size_t i = 0; i < n; ++i) {
+                    if (ShouldCheckStreamingCancel(compared++) && IsStreamingCancelled(cancel))
+                        return StageStatus::kCancelled;
                     const double delta = std::fabs(e.keyframe_times[i] - reference->keyframe_times[i]);
                     if (delta > options.keyframe_align_tolerance_s) {
                         ++local_bad;
@@ -526,19 +542,24 @@ void SegmentQcAnalyzer::Validate(model::StreamingPackageResult& result, const Se
     }
 
     // ---- 5) 声明码率 vs 实测峰值段码率 ----
+    // 每条流都要把它的全部分片扫一遍取峰值, 与第 1 段同量级。
     {
         int over = 0;
         double worst_ratio = 0.0;
         std::string worst_label;
+        unsigned long long scanned = 0;
         for (const model::StreamingLadderEntry& e : result.ladder) {
             if (e.bandwidth_bps <= 0)
                 continue;
+            if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
             int64_t peak = 0;
             if (result.IsDash()) {
                 if (e.source_index < 0 || static_cast<size_t>(e.source_index) >= result.representations.size()) {
                     continue;
                 }
                 for (const model::SegmentInfo& seg : result.representations[e.source_index].segments) {
+                    if (ShouldCheckStreamingCancel(scanned++) && IsStreamingCancelled(cancel))
+                        return StageStatus::kCancelled;
                     peak = std::max(peak, seg.MeasuredBitrateBps());
                 }
             } else {
@@ -554,6 +575,8 @@ void SegmentQcAnalyzer::Validate(model::StreamingPackageResult& result, const Se
                     continue;
                 }
                 for (const model::SegmentInfo& seg : result.playlists[variant->playlist_index].segments) {
+                    if (ShouldCheckStreamingCancel(scanned++) && IsStreamingCancelled(cancel))
+                        return StageStatus::kCancelled;
                     peak = std::max(peak, seg.MeasuredBitrateBps());
                 }
             }
@@ -612,6 +635,8 @@ void SegmentQcAnalyzer::Validate(model::StreamingPackageResult& result, const Se
         if (result.IsDash()) {
             // 每个 Period 内取第一条视频 Representation 与第一条音频 Representation 比对
             for (const model::DashPeriodInfo& period : result.periods) {
+                // 内层是 O(period × representation), 多 Period 长清单下迭代量不小
+                if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
                 const model::DashRepresentationInfo* video = nullptr;
                 const model::DashRepresentationInfo* audio = nullptr;
                 for (const model::DashRepresentationInfo& rep : result.representations) {
@@ -634,6 +659,7 @@ void SegmentQcAnalyzer::Validate(model::StreamingPackageResult& result, const Se
                     continue;
                 if (static_cast<size_t>(variant.playlist_index) >= result.playlists.size())
                     continue;
+                if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
                 const model::MediaPlaylistInfo& video_pl = result.playlists[variant.playlist_index];
                 for (const model::HlsRenditionInfo& r : result.renditions) {
                     if (r.type != "audio" || r.group_id != variant.audio_group)
@@ -649,6 +675,7 @@ void SegmentQcAnalyzer::Validate(model::StreamingPackageResult& result, const Se
             }
         }
     }
+    return StageStatus::kDone;
 }
 
 SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Analyze(model::StreamingPackageResult& result,
@@ -664,7 +691,10 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Analyze(model::StreamingPackag
     // 继续跑只是让"取消"更晚生效。
     if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
     BuildLadder(result);
-    Validate(result, options, cancel);
+    // Validate 现在自己会报告"中途被取消", 必须接着它的结论走: 它提前返回时 issues
+    // 只补了一半(result 是半截状态), 继续当 kDone 处理会让调用方拿这份半截结果去收尾。
+    const StageStatus validated = Validate(result, options, cancel);
+    if (validated != StageStatus::kDone) return validated;
     if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
     return StageStatus::kDone;
 }

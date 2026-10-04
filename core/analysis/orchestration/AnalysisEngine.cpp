@@ -1123,7 +1123,24 @@ void AnalysisEngine::RunStreamingManifest(const std::string& file_path,
 
     {
         VE_PERF("SegmentQcAnalyzer::Analyze");
-        SegmentQcAnalyzer::Analyze(pkg, options.streaming_package_options, cancel);
+        // 必须接住返回值: Analyze 是三态的, 丢掉它、下面再无条件置 streaming_analyzed /
+        // Complete, 等于把"QC 阶段失败"和"QC 阶段被取消"一律报成完整成功 ——
+        // 界面上会显示一份只有半截 issues 的分析结果为"分析完成"。
+        const SegmentQcAnalyzer::StageStatus qc =
+            SegmentQcAnalyzer::Analyze(pkg, options.streaming_package_options, cancel);
+        if (qc == SegmentQcAnalyzer::StageStatus::kFailed) {
+            // 走失败收尾: pkg 里已经填了 error_message / issues, 交给 NotifyFailed 报出去。
+            NotifyFailed(callbacks, pkg.error_message.empty()
+                                       ? ("分片级校验失败: " + file_path)
+                                       : pkg.error_message);
+            return;
+        }
+        if (qc == SegmentQcAnalyzer::StageStatus::kCancelled) {
+            result.scan_status = model::AnalysisStatus::Cancelled;
+            NotifyProgress(callbacks, 100.0, "已取消");
+            NotifyFinished(callbacks, false, result);
+            return;
+        }
     }
     if (IsCancelRequested()) {
         result.scan_status = model::AnalysisStatus::Cancelled;

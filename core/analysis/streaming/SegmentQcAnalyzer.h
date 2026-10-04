@@ -55,8 +55,13 @@ public:
     static void BuildLadder(model::StreamingPackageResult& result);
 
     // 纯逻辑校验：在 result 上补齐跨分片 / 跨码率的 issues。幂等。
-    static void Validate(model::StreamingPackageResult& result, const SegmentQcOptions& options = SegmentQcOptions{},
-                         const std::atomic<bool>* cancel = nullptr);
+    //
+    // 返回 StageStatus 而不是 void：这里的循环规模完全由清单内容决定（分片数 × 码率层，
+    // 关键帧比对还是 O(n²)），大型包必须能被中断，而"被中断"和"跑完"对调用方是两回事 ——
+    // 中断时 issues 只补了一半，调用方必须整包丢弃而不是当成功结果用。
+    // 返回 kCancelled 时 result 处于半截状态，靠幂等性重跑一次即可恢复一致。
+    static StageStatus Validate(model::StreamingPackageResult& result, const SegmentQcOptions& options = SegmentQcOptions{},
+                                const std::atomic<bool>* cancel = nullptr);
 
 private:
     SegmentQcAnalyzer() = delete;
