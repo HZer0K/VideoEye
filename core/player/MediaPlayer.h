@@ -22,13 +22,13 @@ extern "C" {
 #include "core/player/Decoders.h"
 #include "core/player/PlaybackClock.h"
 #include "core/player/StreamInfoExtractor.h"
-#include "core/player/AudioVisualizer.h"
 #include "core/player/AudioOutput.h"
 #include "core/player/VideoFrameExporter.h"
 #include "core/player/AnalysisSession.h"
 #include "core/player/ContainerInspectionController.h"
 #include "core/player/ExportController.h"
 #include "core/player/PlaybackSession.h"
+#include "core/player/RealtimeAnalysisController.h"
 #include "infrastructure/concurrency/TaskManager.h"
 #include "core/qt/QtWorkerOwner.h"
 #include "core/exporter/MediaExporter.h"
@@ -41,11 +41,11 @@ extern "C" {
 #include "core/domain/model/SyncSample.h"
 #include "core/domain/model/TimelineEvent.h"
 #include "core/domain/model/FrameTimingInfo.h"
+// 下面两个只为信号/入口里出现的 analyzer:: 值类型（SceneChangeResult / VisualDefectOptions）
+// 提供定义；逐帧分析器实体已随实时分析搬进 RealtimeAnalysisController。
 #include "core/analysis/stream/StreamAnalyzer.h"
-#include "core/analysis/quality/MacroblockAnalyzer.h"
 #include "core/analysis/quality/SceneChangeAnalyzer.h"
 #include "core/analysis/quality/VisualDefectAnalyzer.h"
-#include "core/analysis/quality/QualityAnalyzer.h"
 #include "core/domain/model/ContainerStructureInfo.h"
 #include "core/domain/model/MacroblockInfo.h"
 
@@ -243,34 +243,10 @@ private:
     void SetVisualDefectAnalysisEnabled(bool enable);
 
     bool OpenInternal(const QString& url, const AVInputFormat* input_format, AVDictionary* input_options);
-    void EmitAnalysisEvent(const QString& severity, const QString& type, int stream_index,
-                           qint64 pts, double timestamp_seconds,
-                           const QString& summary, const QString& detail = QString());
-    void EmitSyncSample(double audio_timestamp_seconds, double video_timestamp_seconds, bool audio_anchor);
-    void EmitTimelineEvent(const QString& category, double timestamp_seconds,
-                           const QString& label, const QString& detail = QString());
-    void EmitAudioVisualization(const AudioVisualizationResult& vis_result,
-                                int sample_rate, int channels, double timestamp_seconds, double level);
 
     // 导出的实际启动 / 排队 / 代际 / 取消全部在 ExportController 里
     // （见 core/player/ExportController.h），本类不保留任何导出状态。
 
-    // PlaybackSession 的回调入口: 解码线程在 demux / 解码 / 定位 / 播完的时机会调进来,
-    // 由 MediaPlayer 决定"要不要发分析信号、要不要计数"。详见 core/player/PlaybackSession.h。
-    void InstallPlaybackHooks();
-    void OnPlaybackPacket(const PacketContext& ctx);
-    void OnPlaybackVideoFrame(const VideoFrameContext& ctx);
-    void OnPlaybackAudioFrame(const AudioFrameContext& ctx);
-    void OnPlaybackSeekDone(double target_ms, model::SeekMode mode);
-    void OnPlaybackEndOfStream();
-
-    // 画面质量 / 视觉缺陷: 按采样档位抽取解码帧 -> 降采样 -> 投递分析器
-    void FeedVisualDefectFrame(const AVFrame* frame, double timestamp_seconds, bool audio_silent);
-    // 把分析器已产出的指标 / 缺陷转发成信号（在解码线程调用）
-    void DrainVisualDefectResults();
-    // 分析进度信号（内部做 1 秒节流，force=true 时立即发）
-    void EmitVisualDefectStats(bool force);
-    
     // 播放会话: demux / 解码 / 音频输出 / 解码线程 / 播放时钟 / 播放状态机
     // 全部住在 PlaybackSession 里; 状态、位置、时长都从它读。
     PlaybackSession playback_session_;
@@ -302,11 +278,14 @@ private:
     // 分析会话: 12 个分析开关 + StreamAnalyzer + 视觉缺陷采样选项 (见 AnalysisSession.h)。
     // MediaPlayer 经它转发开关/统计, 自身不再持有这些散落成员。
     AnalysisSession analysis_session_;
-    analyzer::MacroblockAnalyzer macroblock_analyzer_;
-    analyzer::SceneChangeAnalyzer scene_change_analyzer_;
-    analyzer::VisualDefectAnalyzer visual_defect_analyzer_;
     StreamInfoExtractor stream_info_extractor_;
-    AudioVisualizer audio_visualizer_;
+
+    // 播放期实时分析的全部编排（六个 hook / 19 个逐帧计数器 / 逐帧分析器 / 视觉缺陷
+    // 采样与工作线程）住在 RealtimeAnalysisController 里，本类只转发入口与信号。
+    // 必须声明在 analysis_session_ 与 playback_session_ **之后**: 控制器借用这两个会话
+    // （只持引用），而成员按声明顺序初始化。
+    RealtimeAnalysisController realtime_analysis_;
+
     // 后台任务统一调度: 任务 ID / 取消标志 / 终态 / 过期结果丢弃。
     // 容器结构分析走它的受管线程; 抽帧与媒体导出的 worker 是 QObject(要发进度信号),
     // 仍留在 QThread 上, 但生命周期(Begin/End/Cancel)也登记在这里。
@@ -321,28 +300,6 @@ private:
     // ContainerInspectionController 里，本类只负责"该不该分析"和转发两条信号。
     // 同上: 必须声明在 task_manager_ 之后。
     ContainerInspectionController container_inspection_;
-
-    // 分析索引/状态
-    int analysis_frame_counter_ = 0;
-    int video_frame_index_ = 0;
-    int macroblock_frame_index_ = 0;
-    int scene_change_frame_index_ = 0;
-    int visual_defect_frame_index_ = 0;
-    double visual_defect_last_sample_ts_ = -1.0;
-    // 统计信号节流: 有效画面区域要取中位数，每秒算一次就够
-    std::chrono::steady_clock::time_point visual_defect_last_stats_emit_{};
-    double last_audio_level_ = 0.0;   // 最近一帧音频的 RMS（冻结帧判定要排除静音段）
-    int audio_frame_index_ = 0;
-    int packet_index_ = 0;
-    int timeline_packet_index_ = 0;
-    int analysis_event_index_ = 0;
-    int sync_sample_index_ = 0;
-    int timeline_event_index_ = 0;
-    int audio_visualization_index_ = 0;
-    std::map<int, double> last_packet_ts_by_stream_;
-    std::map<int, bool> missing_packet_ts_reported_;
-    std::map<int, bool> missing_audio_pts_reported_;
-    int audio_timeline_sample_counter_ = 0;
 };
 
 } // namespace player
