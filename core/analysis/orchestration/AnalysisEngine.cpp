@@ -11,7 +11,9 @@
 #include "core/analysis/quality/AudioQcAnalyzer.h"
 #include "core/analysis/quality/ColorHdrAnalyzer.h"
 #include "core/analysis/streaming/SegmentQcAnalyzer.h"
-#include "core/ffmpeg_io/FfmpegInterrupt.h"  // 共享的 FFmpeg 中断回调
+// 打开 / 探测 / 中断 / 取消 / 容器级事实 / 流摘要 都在 AnalysisInputSession 里；
+// FFmpeg 中断回调本身住在 core/ffmpeg_io/FfmpegInterrupt.h（叶子模块），由会话去 include。
+#include "core/analysis/orchestration/AnalysisInputSession.h"
 #include "core/media/probe/FileProbe.h"
 #include "core/media/streaming/ManifestText.h"
 
@@ -46,71 +48,16 @@ namespace {
 
 constexpr int kProgressMinIntervalMs = 100;
 constexpr int kProgressMinPackets = 2000;
-constexpr int64_t kMaxLayoutScanBytes = 8 * 1024 * 1024;  // moov/mdat 顺序扫描上限
-
 // ---- FFmpeg 中断机制 ----
 // AvInterruptState / AvIoInterruptCallback / kOpenTimeoutUs / kProbeTimeoutUs
 // 已抽到 core/ffmpeg_io/FfmpegInterrupt.h 供所有分析器共享（见上方 include）。
-
-// 大端读取（MP4 box header）
-uint32_t ReadBe32(const unsigned char* p) {
-    return (static_cast<uint32_t>(p[0]) << 24) |
-           (static_cast<uint32_t>(p[1]) << 16) |
-           (static_cast<uint32_t>(p[2]) << 8) |
-           static_cast<uint32_t>(p[3]);
-}
-
-bool IsMp4Family(const std::string& format_name) {
-    static const char* kNames[] = {"mov", "mp4", "m4v", "3gp", "3g2", "isom", "quicktime", "f4v"};
-    for (const char* name : kNames) {
-        if (format_name == name) return true;
-    }
-    return false;
-}
+// 打开/探测阶段对它们的具体用法（含 moov 顺序扫描、MP4 sample table、流摘要）
+// 已随 AnalysisInputSession 一起搬走，见 core/analysis/orchestration/AnalysisInputSession.cpp。
 
 // 流媒体清单的扩展名。清单是纯文本，扩展名是唯一的识别手段
 // （魔数检测对 "#EXTM3U" / "<MPD" 无能为力）。
 bool IsStreamingManifestExtension(const std::string& ext) {
     return ext == "m3u8" || ext == "m3u" || ext == "mpd";
-}
-
-// 扫描顶层 box 顺序，判断 moov 是否在 mdat 之后（未 faststart）
-bool ScanMoovAfterMdat(const std::string& path) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file) return false;
-
-    int64_t offset = 0;
-    while (offset < kMaxLayoutScanBytes) {
-        unsigned char header[16] = {0};
-        file.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
-        file.read(reinterpret_cast<char*>(header), sizeof(header));
-        const std::streamsize got = file.gcount();
-        if (got < 8) return false;
-
-        const uint32_t size32 = ReadBe32(header);
-        const std::string box_type(reinterpret_cast<char*>(header + 4), 4);
-
-        int64_t box_size = static_cast<int64_t>(size32);
-        int64_t header_size = 8;
-        if (size32 == 1) {  // 64 位 largesize
-            if (got < 16) return false;
-            const uint64_t large = (static_cast<uint64_t>(ReadBe32(header + 8)) << 32) |
-                                   static_cast<uint64_t>(ReadBe32(header + 12));
-            if (large < 16) return false;
-            box_size = static_cast<int64_t>(large);
-            header_size = 16;
-        } else if (size32 == 0) {
-            return false;  // 延伸到文件尾，无法继续遍历
-        }
-
-        if (box_size < header_size) return false;
-
-        if (box_type == "moov") return false;
-        if (box_type == "mdat") return true;
-
-        offset += box_size;
-    }
-    return false;
 }
 
 struct Bucket {
@@ -224,68 +171,11 @@ struct ColorFrameProbe {
     }
 };
 
-// AnalysisResult::scan_error_code 的约定是"0 = 无；否则为 FFmpeg 错误码或 -1"。
-// 清单解析 / 分片校验这类自研路径没有 FFmpeg 错误码，失败时记这个值 ——
-// 保持"失败 => scan_error_code != 0"，同时不冒充某个具体的 AVERROR。
-constexpr int kNoFfmpegErrorCode = -1;
-
-// 终态回传守卫：Run() 的失败/取消分支只发回调、不走 on_finished，调用方想拿到
-// 结果对象里的终态（scan_status / error_message）只能靠出参。用析构兜住所有
-// return 路径，免得以后每加一条失败分支就漏一处赋值。
-class ResultSink {
-public:
-    ResultSink(model::AnalysisResult* out, const model::AnalysisResult* src) noexcept
-        : out_(out), src_(src) {}
-
-    ~ResultSink() {
-        if (out_ != nullptr) *out_ = *src_;
-    }
-
-    ResultSink(const ResultSink&) = delete;
-    ResultSink& operator=(const ResultSink&) = delete;
-
-private:
-    model::AnalysisResult* out_;
-    const model::AnalysisResult* src_;
-};
+// 回报通道（AnalysisCallbacks）与终态写法（MarkFailed / Notify* / ResultSink /
+// kNoFfmpegErrorCode）已搬到 core/analysis/orchestration/AnalysisTerminalState.{h,cpp} ——
+// 引擎拆开之后每一片都要用，留在某一个 cpp 的匿名命名空间里就只能被抄走一份。
 
 }  // namespace
-
-// 回调是可选的（批处理可能不关心进度），逐个判空再调用。
-void NotifyProgress(const AnalysisCallbacks& callbacks, double percent, const std::string& stage) {
-    if (callbacks.on_progress) callbacks.on_progress(percent, stage);
-}
-
-void NotifyFailed(const AnalysisCallbacks& callbacks, const std::string& message) {
-    if (callbacks.on_failed) callbacks.on_failed(message);
-}
-
-void NotifyFinished(const AnalysisCallbacks& callbacks, bool completed, const model::AnalysisResult& result) {
-    if (callbacks.on_finished) callbacks.on_finished(completed, result);
-}
-
-// 取消收尾：与 NotifyFailed 互斥的两条终态之一（另一条是 NotifyFinished(completed=true)）。
-// 以前取消信号是从「失败」分支里漏出去的，界面就会弹"文件损坏"这类文案 ——
-// 可用户明明是自己按的取消。现在统一走这里。
-void NotifyCancelled(const AnalysisCallbacks& callbacks, model::AnalysisResult& result) {
-    result.scan_status = model::AnalysisStatus::Cancelled;
-    NotifyProgress(callbacks, 100.0, "已取消");
-    NotifyFinished(callbacks, false, result);
-}
-
-// 失败终态的统一写法：状态、文案、错误码三件事必须一起落进结果对象。
-//
-// AnalysisResult::scan_status 的默认值是 Complete，只调 NotifyFailed 而不同步改它，
-// 就会留下"回调说失败、结果对象却说完成"的不一致 —— 结果一旦被上层缓存 / 复用
-// （批处理回传、对比视图、报告导出），就会拿一份空的流媒体包当成跑完的结果展示。
-//
-// scan_error_code 只在还没有值时才补 kNoFfmpegErrorCode：逐包扫描那条路已经记了
-// 真实的 AVERROR，不能被覆盖掉。
-void MarkFailed(model::AnalysisResult& result, const std::string& message) {
-    result.scan_status = model::AnalysisStatus::Failed;
-    result.error_message = message;
-    if (result.scan_error_code == 0) result.scan_error_code = kNoFfmpegErrorCode;
-}
 
 bool AnalysisEngine::IsCancelledExit(int ret) const {
     return IsCancelRequested() && ret == AVERROR_EXIT;
@@ -353,136 +243,27 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
         return;
     }
 
-    AVFormatContext* fmt = avformat_alloc_context();
-    if (fmt == nullptr) {
-        // 同样是失败终态: 只发回调不改状态, 结果对象会停在默认的 Complete。
-        // 这里连 FFmpeg 错误码都没有（分配在 avformat 之外就失败了），记 -1。
-        MarkFailed(result, "无法分配解封装上下文: " + file_path);
+    // ---- 打开 / 探测 / 容器级事实 / 流摘要（AnalysisInputSession）----
+    //
+    // 取消源交进去而不是自备一颗: 引擎接了外部令牌时，FFmpeg 的中断回调必须看同一颗，
+    // 否则"用户点取消"对 avformat_open_input 是隐形的。
+    AnalysisInputSession input(file_path, options, CancelSource());
+    const AnalysisInputSession::Outcome outcome = input.Open(result);
+    if (outcome == AnalysisInputSession::Outcome::Failed) {
+        // 失败终态（含 error_message / scan_error_code）已由会话写进 result，这里只发回调。
+        // 文案一律取 result.error_message：另拼一份就会出现"回调说的"和"结果里写的"不一致。
         NotifyFailed(callbacks, result.error_message);
         return;
     }
-
-    // 中断回调：打开/探测阶段带绝对超时；扫描阶段只响应取消（见下方重置）。
-    ffmpeg_io::AvInterruptState interrupt;
-    // 用 CancelSource() 而不是引擎自己的成员: 接了外部取消源（后台任务令牌）时，
-    // FFmpeg 的中断回调也必须看同一颗标志，否则"用户点取消"对 avformat_open_input
-    // 是隐形的 —— 取消了半天还卡在打开上。
-    interrupt.cancel = CancelSource();
-    ffmpeg_io::AttachInterrupt(fmt, interrupt, ffmpeg_io::kOpenTimeoutUs);
-
-    int open_ret = 0;
-    {
-        VE_PERF("avformat_open_input");
-        open_ret = avformat_open_input(&fmt, file_path.c_str(), nullptr, nullptr);
-    }
-    if (open_ret < 0) {
-        char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
-        av_strerror(open_ret, errbuf, sizeof(errbuf));
-        avformat_close_input(&fmt);
-        std::string msg = "无法打开文件: " + file_path + " (" + errbuf + ")";
-        // 定向诊断: FFmpeg 通用报错往往不含可操作的修复建议 (如 fMP4 分片缺 init 段)
-        const std::string extra = utils::DiagnoseUnopenableFile(file_path);
-        if (!extra.empty()) msg += "。" + extra;
-        // 打开阶段被中断回调打断 = 用户取消（含"文件根本不存在也超时"的网络源场景），
-        // 不能反过来告诉用户"无法打开文件"
-        if (IsCancelledExit(open_ret)) {
-            NotifyCancelled(callbacks, result);
-            return;
-        }
-        result.scan_error_code = open_ret;  // 真 AVERROR 优先，MarkFailed 不会覆盖它
-        MarkFailed(result, msg);
-        NotifyFailed(callbacks, result.error_message);
+    if (outcome == AnalysisInputSession::Outcome::Cancelled) {
+        NotifyCancelled(callbacks, result);
         return;
     }
-
-    int find_ret = 0;
-    {
-        VE_PERF("avformat_find_stream_info");
-        // 探测阶段允许更长时间，但仍受取消/超时约束
-        interrupt.deadline_us = av_gettime() + ffmpeg_io::kProbeTimeoutUs;
-        find_ret = avformat_find_stream_info(fmt, nullptr);
-    }
-    if (find_ret < 0) {
-        char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
-        av_strerror(find_ret, errbuf, sizeof(errbuf));
-        avformat_close_input(&fmt);
-        if (IsCancelledExit(find_ret)) {
-            NotifyCancelled(callbacks, result);
-            return;
-        }
-        result.scan_error_code = find_ret;  // 同上：真 AVERROR 优先
-        MarkFailed(result, "无法解析流信息: " + file_path + " (" + std::string(errbuf) +
-                               ", 文件可能损坏或截断)");
-        NotifyFailed(callbacks, result.error_message);
-        return;
-    }
-
-    // 进入逐包扫描：关闭绝对截止时间，仅由取消标记中断，
-    // 避免长本地文件的正常读取被早期打开超时误杀。
-    interrupt.deadline_us = 0;
-
-    result.container_format = fmt->iformat && fmt->iformat->name ? fmt->iformat->name : "";
-    result.duration_seconds = (fmt->duration > 0)
-                                  ? static_cast<double>(fmt->duration) / static_cast<double>(AV_TIME_BASE)
-                                  : 0.0;
-    result.file_size_bytes = fmt->pb ? avio_size(fmt->pb) : 0;
-    result.overall_bitrate_bps = (fmt->bit_rate > 0) ? fmt->bit_rate : 0;
-    result.seekable = (fmt->pb == nullptr) ? false : ((fmt->pb->seekable & AVIO_SEEKABLE_NORMAL) != 0);
-
-    if (options.detect_container_layout && IsMp4Family(result.container_format)) {
-        result.moov_after_mdat = ScanMoovAfterMdat(file_path);
-    }
-
-    // MP4/fMP4 容器一致性校验（自研 IsobmffParser 解析 stbl / moof，与 FFmpeg demux 独立）
-    // 只对 MP4 家族执行：其它格式 ISOBMFF 解析必然失败，白跑一遍还要多开一次文件句柄。
-    if (options.analyze_mp4_sample_table && IsMp4Family(result.container_format)) {
-        Mp4SampleTableAnalyzer mp4_analyzer;
-        bool mp4_ok = false;
-        {
-            VE_PERF("Mp4SampleTableAnalyzer::AnalyzeFile(诊断扫描)");
-            mp4_ok = mp4_analyzer.AnalyzeFile(file_path, result.mp4_samples,
-                                              options.mp4_sample_table_options);
-        }
-        if (mp4_ok) {
-            result.mp4_samples_analyzed = true;
-        } else if (!result.mp4_samples.error_message.empty()) {
-            // 解析失败不致命，记一条日志即可（诊断仍走 FFmpeg 那条通路）
-            LOG_WARN("MP4 样本表分析失败: " + result.mp4_samples.error_message);
-        }
-    }
-
-    // ---- 流摘要 ----
+    // 会话仍然持有上下文，**关闭的时点由本函数决定**（色彩 HDR 要在关闭前刷一次，
+    // 字幕 / 时码的 Finish 要在关闭后跑）。
+    AVFormatContext* fmt = input.context();
+    // 来自容器头的总时长；流摘要与下面几处"没有流级时长时回退"的场合都要用
     const double file_duration = result.duration_seconds;
-    result.streams.reserve(fmt->nb_streams);
-    for (unsigned i = 0; i < fmt->nb_streams; ++i) {
-        AVStream* st = fmt->streams[i];
-        model::StreamDigest digest;
-        digest.index = static_cast<int>(i);
-        digest.media_type = static_cast<int>(st->codecpar->codec_type);
-        const AVCodecID codec_id = st->codecpar->codec_id;
-        const char* codec_name = avcodec_get_name(codec_id);
-        digest.codec_name = codec_name ? codec_name : "";
-        const char* profile = avcodec_profile_name(codec_id, st->codecpar->profile);
-        digest.profile_name = profile ? profile : "";
-        digest.width = st->codecpar->width;
-        digest.height = st->codecpar->height;
-        if (st->avg_frame_rate.num > 0 && st->avg_frame_rate.den > 0) {
-            digest.avg_fps = av_q2d(st->avg_frame_rate);
-        }
-        digest.sample_rate = st->codecpar->sample_rate;
-        digest.channels = st->codecpar->ch_layout.nb_channels;
-        digest.bitrate_bps = (st->codecpar->bit_rate > 0) ? st->codecpar->bit_rate : 0;
-        const double tb = av_q2d(st->time_base);
-        if (st->start_time != AV_NOPTS_VALUE && tb > 0.0) {
-            digest.start_seconds = static_cast<double>(st->start_time) * tb;
-        }
-        if (st->duration != AV_NOPTS_VALUE && tb > 0.0) {
-            digest.duration_seconds = static_cast<double>(st->duration) * tb;
-        } else {
-            digest.duration_seconds = file_duration;
-        }
-        result.streams.push_back(std::move(digest));
-    }
 
     // ---- 字幕 / 时码 / 辅助数据轨准备（只在存在对应流时才有实际工作量）----
     SubtitleAnalyzer subtitle_analyzer;
@@ -741,9 +522,13 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
 
     // 逐包扫描的统一收尾：取消和真·IO 错误都要走同一份清理，
     // 免得以后改一处漏一处（漏 avformat_close_input 就是句柄泄漏）。
+    //
+    // 关上下文必须走 input.Close()：会话自己也持着这枚指针，直接 avformat_close_input(&fmt)
+    // 只会清掉这里的局部变量，会话析构时会对已释放的上下文再关一次。
     auto teardown_scan = [&]() {
         av_packet_free(&pkt);
-        avformat_close_input(&fmt);
+        input.Close();
+        fmt = nullptr;
         probe.Release();
         color_probe.Release();
         if (options.analyze_audio_qc && audio_probe.ready) audio_probe.Release();
@@ -994,7 +779,8 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     if (options.analyze_color_hdr && color_video_stream_index >= 0) {
         color_hdr.UpdateFromStream(fmt->streams[color_video_stream_index]);
     }
-    avformat_close_input(&fmt);
+    // 上下文归输入会话所有，关闭也走它（会话析构时同样只会看到空指针）
+    input.Close();
     probe.Release();
     color_probe.Release();
 

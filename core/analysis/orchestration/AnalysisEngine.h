@@ -11,25 +11,20 @@
 //   core/qt/QtAnalysisController —— 负责线程、generation 与 Qt 信号（UI 用它）
 
 #include <atomic>
-#include <functional>
 #include <memory>
 #include <string>
 
 #include "core/analysis/AnalysisOptions.h"
+// 回报通道（AnalysisCallbacks）与终态写法（MarkFailed / Notify* / ResultSink）住在
+// AnalysisTerminalState.h：引擎拆成输入会话 / 扫描循环 / 分析管线 / 结果汇编器之后，
+// 每一片都要发进度、写失败终态，这些工具必须全项目只有一份。
+// 这里仍然 include 它，是为了让"只想跑一次分析"的调用方（QcRunner、单测）不必知道
+// 引擎内部的拆分 —— 它们照旧只 include 本文件就能拿到 AnalysisCallbacks。
+#include "core/analysis/orchestration/AnalysisTerminalState.h"
 #include "core/domain/model/AnalysisResult.h"
 
 namespace videoeye {
 namespace analyzer {
-
-// 执行过程中的回报通道。全部从**工作线程**调用，实现方自己负责跨线程投递。
-struct AnalysisCallbacks {
-    // percent: 0..100
-    std::function<void(double percent, const std::string& stage)> on_progress;
-    // 打开 / 探测 / 读取失败等"没能产出完整结果"的情况
-    std::function<void(const std::string& message)> on_failed;
-    // completed = 到达终态而非被取消；result 在 Failed 前不会走到 on_finished
-    std::function<void(bool completed, const model::AnalysisResult& result)> on_finished;
-};
 
 class AnalysisEngine {
 public:
