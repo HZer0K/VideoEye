@@ -26,6 +26,7 @@ extern "C" {
 #include "core/player/AudioOutput.h"
 #include "core/player/VideoFrameExporter.h"
 #include "core/player/AnalysisSession.h"
+#include "core/player/ContainerInspectionController.h"
 #include "core/player/ExportController.h"
 #include "core/player/PlaybackSession.h"
 #include "infrastructure/concurrency/TaskManager.h"
@@ -41,7 +42,6 @@ extern "C" {
 #include "core/domain/model/TimelineEvent.h"
 #include "core/domain/model/FrameTimingInfo.h"
 #include "core/analysis/stream/StreamAnalyzer.h"
-#include "core/analysis/container/ContainerStructureAnalyzer.h"
 #include "core/analysis/quality/MacroblockAnalyzer.h"
 #include "core/analysis/quality/SceneChangeAnalyzer.h"
 #include "core/analysis/quality/VisualDefectAnalyzer.h"
@@ -251,7 +251,6 @@ private:
                            const QString& label, const QString& detail = QString());
     void EmitAudioVisualization(const AudioVisualizationResult& vis_result,
                                 int sample_rate, int channels, double timestamp_seconds, double level);
-    void StartContainerStructureAnalysis(const QString& url);
 
     // 导出的实际启动 / 排队 / 代际 / 取消全部在 ExportController 里
     // （见 core/player/ExportController.h），本类不保留任何导出状态。
@@ -264,10 +263,6 @@ private:
     void OnPlaybackAudioFrame(const AudioFrameContext& ctx);
     void OnPlaybackSeekDone(double target_ms, model::SeekMode mode);
     void OnPlaybackEndOfStream();
-
-    // 后台任务 slot 名: 容器结构分析（抽帧 / 媒体导出的两个 slot 在 ExportController 里）。
-    // 同一 slot 上永远只有一个任务在跑(见 core/task/TaskManager.h)。
-    static constexpr const char* kSlotContainerStructure = "container-structure";
 
     // 画面质量 / 视觉缺陷: 按采样档位抽取解码帧 -> 降采样 -> 投递分析器
     void FeedVisualDefectFrame(const AVFrame* frame, double timestamp_seconds, bool audio_silent);
@@ -321,6 +316,11 @@ private:
     // 住在 ExportController 里，本类只转发入口与信号。
     // 必须声明在 task_manager_ **之后**: 构造时把它的引用交给控制器, 而成员按声明顺序初始化。
     ExportController export_controller_;
+
+    // 容器结构分析的后台编排（派发 / 作废 / 过期结果丢弃）住在
+    // ContainerInspectionController 里，本类只负责"该不该分析"和转发两条信号。
+    // 同上: 必须声明在 task_manager_ 之后。
+    ContainerInspectionController container_inspection_;
 
     // 分析索引/状态
     int analysis_frame_counter_ = 0;
