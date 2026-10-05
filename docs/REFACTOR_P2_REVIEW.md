@@ -194,10 +194,13 @@ RealtimeAnalysisController 对应的是**还没搬走的播放回调**（下面�
 2) refactor(analysis): 终端态收口 + 拆 AnalysisInputSession   ✔ aad97a9
 3) refactor(player): 拆 ExportController                    ✔ ce2abb2
 4) refactor(analysis): 拆 AnalysisResultAssembler + 清单路径  ✔ f05509b
-5) refactor(analysis): 拆 AnalysisPipeline                  ← 下一步（收益最大、改动最密）
-6) refactor(analysis): 拆 PacketScanLoop
+5) refactor(analysis): 拆 AnalysisPipeline                  ✔ 17b0a3f
+6) refactor(analysis): 拆 PacketScanLoop                    ✔ f874854
 7) refactor(player): 拆 ContainerInspectionController → RealtimeAnalysisController → OpenController
 8) chore(ui): 删 AnalysisFacade::SetResult，给 ApplySceneChanges 补约束注释
+
+P2-1 **已全部落地**：`AnalysisEngine.cpp` 1251 → 216 行，`Run()` 829 → ~110 行。
+剩下的是 MediaPlayer 的三块（M2 / M3 / M4）与 AnalysisFacade 的两处收口。
 ```
 
 ## 6. 已落地切片的实测
@@ -209,6 +212,17 @@ RealtimeAnalysisController 对应的是**还没搬走的播放回调**（下面�
 | M1 `ExportController` | `MediaPlayer.cpp` 1619 → 1291，`.h` 393 → 349；10 个成员 + 7 个私有方法 + 4 个入口实现搬走；对外 API 与 10 条信号契约一字未改 | 构建 EXIT=0、ctest 45/45、check_layering OK |
 | A2 `AnalysisResultAssembler` | 8 个 `FinalizeXxx()` + `Finish()`；`ScanBucket` 提到汇编器头（生产者和消费者都要用） | ctest 45/45 |
 | A5 `StreamingManifestScan` | 清单路径整体搬走；三处手写取消收尾换成 `NotifyCancelled()` | ctest 45/45 |
+| A3 `AnalysisPipeline` | 六个维度的分析器 + 三个解码通路 RAII（`AudioQcProbe` / `FrameTypeProbe` / `ColorFrameProbe`）成为成员；`Prepare` / `OnPacket` / `BeforeClose` / `FlushAudio` / `ReleaseProbes` 五个入口。GOP 的中间态（`frames_since_key` / `last_key_ts` / `has_key`）从 Run 的局部变量变成成员 | `AnalysisEngine.cpp` 825 → 319；构建 EXIT=0、ctest 45/45 |
+| A4 `PacketScanLoop` | `ScanOutcome{Complete,Cancelled,Failed}`；扫描事实统计 + 限频进度；`AVPacket` 析构释放，上下文与解码通路**不归它** | `AnalysisEngine.cpp` 319 → **216**，`Run()` ~110 行；ctest 45/45 |
+
+### 搬动过程中改掉的两个真问题
+
+| # | 问题 | 处理 |
+|---|---|---|
+| 1 | `IsCancelledExit()` 只看引擎自有的 `cancel_requested_`，而 FFmpeg 中断回调盯的是 `CancelSource()`（接了外部取消源时是外部令牌）。批处理任务被取消时，逐包扫描阶段会被判成失败，界面弹"文件可能截断或 IO 错误" | 改看 `CancelSource()`，与打开/探测阶段的 `AnalysisInputSession::IsCancelledExit` 一致 |
+| 2 | 取消的两条路结果不一样：循环开头轮询到取消 → `break` 出来走完收尾；`av_read_frame` 被中断回调打断 → 直接 `NotifyCancelled` 返回、一个分析器都不收尾 | 统一：取消与正常结束都走收尾，终态仍由 `scan_status` 决定 |
+| 3 | `audio_rate_changed` / `audio_decoder_ready` 在 `FlushAudio()` **之前**抓取，flush 期间喂帧发现的中途改采样率被漏记 | 改到 flush 之后、释放之前抓取 |
+| 4 | 逐秒桶的 `video_bytes` / `video_frames` 挂在缩进错位的 `if (is_video)` 块里，实际对所有包累加（与 `total_bytes` 重复） | 按媒体类型分流 |
 
 当前 `AnalysisEngine.cpp` **830 行**（起点 1251），`MediaPlayer.cpp` **1291 行**（起点 1619）。
 `Run()` 剩下的两块就是 A3（六个分析器的创建 + 逐包分发）与 A4（读包循环本体）。
