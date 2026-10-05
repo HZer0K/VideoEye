@@ -190,12 +190,35 @@ RealtimeAnalysisController 对应的是**还没搬走的播放回调**（下面�
 ## 5. 建议的 commit 序列
 
 ```
-1) chore(refactor): AnalysisEngine 终端态 helper 抽成 TerminalState，补失败分支回归
-2) refactor(analysis): 拆 AnalysisInputSession
-3) refactor(player): 拆 ExportController                  ← 与 2 并行风险更低
+1) chore(docs): P2 重构评审                                 ✔ 073cf45
+2) refactor(analysis): 终端态收口 + 拆 AnalysisInputSession   ✔ aad97a9
+3) refactor(player): 拆 ExportController                    ✔ ce2abb2
 4) refactor(analysis): 拆 AnalysisResultAssembler + streaming 路径
 5) refactor(analysis): 拆 AnalysisPipeline
 6) refactor(analysis): 拆 PacketScanLoop
 7) refactor(player): 拆 ContainerInspectionController → RealtimeAnalysisController → OpenController
 8) chore(ui): 删 AnalysisFacade::SetResult，给 ApplySceneChanges 补约束注释
 ```
+
+## 6. 已落地切片的实测
+
+| 切片 | 变化 | 验证 |
+|---|---|---|
+| A0 终端态收口 | `AnalysisTerminalState.{h,cpp}`：`AnalysisCallbacks` + `MarkFailed` / `Notify*` / `ResultSink`；`AnalysisEngine.h` 仍 include 它，调用方无感 | ctest 45/45 |
+| A1 `AnalysisInputSession` | `AnalysisEngine.cpp` 1251 → 1037，`Run()` 829 → ~615；`Open()` 返回 `Outcome{Ok,Failed,Cancelled}`，失败终态在会话里写进 result，引擎只发回调 | 构建 EXIT=0、ctest 45/45、check_layering OK |
+| M1 `ExportController` | `MediaPlayer.cpp` 1619 → 1291，`.h` 393 → 349；10 个成员 + 7 个私有方法 + 4 个入口实现搬走；对外 API 与 10 条信号契约一字未改 | 构建 EXIT=0、ctest 45/45、check_layering OK |
+
+### 搬运时踩到的两个坑（后面几片照着避）
+
+1. **双关指针**：`teardown_scan` 里原来是 `avformat_close_input(&fmt)`（`fmt` 是 Run 的局部变量），
+   而会话自己也持这枚指针 —— 会话析构会对已释放的上下文再关一次。必须改走 `input.Close()`
+   并把局部的 `fmt` 置空。凡是"对象 + 局部别名"同时持有同一个裸资源的，搬的时候都要检查。
+2. **搬段漏符号**：`const double file_duration` 原本定义在"流摘要"那段里，整段搬走后
+   `timecode_analyzer.RegisterStreams(fmt, file_duration)` 才报未定义。搬完要 grep
+   段内每个局部量的**下游**引用，不能只看被搬的那段自己能不能编。
+
+### 已知抖动用例
+
+`ContainerCancelPathTest.EbmlCancelYieldsNoResult` 时序敏感：它用"实测耗时的 90% 处落取消"
+来命中建树之后的尾段，落点随机器负载漂移（单独重跑 13 次红 1 次，全量重跑 45/45）。
+与本次重构无关（改动不碰 `core/analysis/container/*`），但值得单独整治成确定性用例。
