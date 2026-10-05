@@ -895,3 +895,26 @@ videoeye_add_test(test_analysis_text_util
     unit/test_analysis_text_util.cpp
 )
 add_test(NAME AnalysisTextUtilTests COMMAND test_analysis_text_util)
+
+# =================================================
+# 测试 48：画面质量页（评审 P3「组件可单独测试只兑现了一部分」的补测）
+# 说明: VisualDefectPage 是全面板唯一同时具备 ①UI<->options 双向往返 ②档位枚举->下拉
+#       userData 一对一映射 ③只在 pending 上置脏、定时器到点才重绘 三条链的组件。
+#       这三条断了都不崩，只会静默用错参数或界面停在旧值。
+#       只编 VisualDefectPage 与它唯一的外部依赖 MetricChartWidget（header-only 的
+#       AnalysisPageSupport 不用编），不整层拉 analysis —— 单测不该为一次界面检查
+#       拖进 FFmpeg。控件加了 objectName（VisualDefectPreset / VisualDefectBlurThreshold /
+#       VisualDefectFreezeThreshold / VisualDefectCaptureRgb / VisualDefectEnable），
+#       测试才不必靠创建顺序猜 findChildren 的下标。
+# =================================================
+videoeye_add_test(test_visual_defect_page
+    unit/test_visual_defect_page.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/VisualDefectPage.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+)
+target_link_libraries(test_visual_defect_page PRIVATE
+    VideoEyeDomain
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME VisualDefectPageTests COMMAND test_visual_defect_page)
+set_tests_properties(VisualDefectPageTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

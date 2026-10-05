@@ -44,6 +44,7 @@ void VisualDefectPage::SetupUi() {
         rl->addWidget(title);
         rl->addStretch();
         QCheckBox* toggle = new QCheckBox(tr("启用检测"), row);
+        toggle->setObjectName(QStringLiteral("VisualDefectEnable"));
         toggle->setChecked(feature_checked_);
         toggle->setToolTip(tr("播放时对视频帧做画面体检。开销主要在降采样与边缘统计，按需开启。"));
         connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
@@ -61,6 +62,9 @@ void VisualDefectPage::SetupUi() {
 
         ol->addWidget(new QLabel(tr("采样档位:"), this));
         preset_combo_ = new QComboBox(this);
+        // objectName: UI 单测靠 findChild() 精确定位（页面里 QComboBox / QDoubleSpinBox
+        // 都不止一个），不给名字就只能靠创建顺序猜，猜中了也是假绿。
+        preset_combo_->setObjectName(QStringLiteral("VisualDefectPreset"));
         preset_combo_->addItem(
             tr("快速 (1 帧/秒)"), static_cast<int>(model::VisualSamplingPreset::Fast));
         preset_combo_->addItem(
@@ -79,6 +83,7 @@ void VisualDefectPage::SetupUi() {
 
         ol->addWidget(new QLabel(tr("模糊阈值:"), this));
         blur_spin_ = new QDoubleSpinBox(this);
+        blur_spin_->setObjectName(QStringLiteral("VisualDefectBlurThreshold"));
         blur_spin_->setRange(0.05, 50.0);
         blur_spin_->setDecimals(2);
         blur_spin_->setSingleStep(0.25);
@@ -90,6 +95,7 @@ void VisualDefectPage::SetupUi() {
 
         ol->addWidget(new QLabel(tr("冻结阈值:"), this));
         freeze_spin_ = new QDoubleSpinBox(this);
+        freeze_spin_->setObjectName(QStringLiteral("VisualDefectFreezeThreshold"));
         freeze_spin_->setRange(0.001, 0.2);
         freeze_spin_->setDecimals(3);
         freeze_spin_->setSingleStep(0.001);
@@ -100,6 +106,7 @@ void VisualDefectPage::SetupUi() {
         ol->addWidget(freeze_spin_);
 
         rgb_check_ = new QCheckBox(tr("采集缩略图（色偏 / 证据）"), this);
+        rgb_check_->setObjectName(QStringLiteral("VisualDefectCaptureRgb"));
         rgb_check_->setChecked(options_.capture_rgb);
         rgb_check_->setToolTip(tr("多一次 RGB 降采样，用于色偏判定与缺陷证据图导出。"));
         connect(rgb_check_, &QCheckBox::toggled, this, &VisualDefectPage::OnOptionChanged);

@@ -300,6 +300,70 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   已在 `ContainerStructurePage.cpp` 里）、只写不读的 `bitstream_page_index_`、
   以及三段属于码率 GOP / 音频 QC 页的重复格式化辅助函数。
 
+### 5.4 CMake 管得住什么、管不住什么
+
+**管得住**：`target_link_libraries` 那条边。缺了它，跨层调用在**链接期**报
+undefined reference。
+
+**管不住**：`#include`。`videoeye_add_module()` 给每个模块挂的 include 目录是
+
+```cmake
+target_include_directories(${name} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+```
+
+也就是**仓库根** —— 全仓 777 处 `#include` 里有 604 处写成 `core/xxx.h`、96 处 `ui/xxx.h`、
+73 处 `infrastructure/xxx.h`，全部从根算起。于是任何模块都能 `#include "core/anything.h"`
+且编译必过。**真正守住分层方向的是 `scripts/check_layering.py`，不是 CMake**。
+2026-10-04 的评审报告把这句话从 CMakeLists.txt 的注释里改了过来，别再改回去。
+
+#### 测试目标怎么声明依赖（三种套路，都是对的）
+
+`tests/unit/` 里 46 个测试目标，用 `target_link_libraries` 追加自己的额外依赖
+（`videoeye_add_test()` 本身只链 `GTest::gtest_main`）。逐个比对了「源文件 include 了哪个
+模块」与「显式链了哪个 target」之后，2026-10-05 实测 32 个目标"include 了某模块却没显式链
+它"，**没有一处是真漏**，全是下面两种合法套路：
+
+1. **靠传递链**。`test_streaming_qc_rules` include 了 `core/domain/model/QcReport.h`，
+   却只链 `VideoEyeAnalysis` —— `VideoEyeAnalysis` 的 PUBLIC 边会把 `VideoEyeDomain` 一起带
+   进来，include 目录又是根，所以编得过。断言用的是 domain 类型，边却挂在 analysis 上：
+   **将来谁把这条边拿掉，这条用例会第一个红**，这正是想保留的状态。
+2. **定向编译**。`test_visual_defect` 只链 `VideoEyeInfrastructure`，但它 include 了
+   `VisualDefectAnalyzer.h` —— 因为 CMake 里把
+   `${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/quality/VisualDefectAnalyzer.cpp` 直接
+   列进了这个可执行目标，实现就在自己的 .o 里，根本不需要那条边。它刻意这么做，
+   只为同时编进 `VisualDefect.cpp`（domain）而不牵 analysis 那一片。
+
+顺带一提，`check_layering.py` 的 `RULES` 里没有 `ui` 与 `tests` 两条：ui 按设计就能 include
+一切，测试按设计就能反向 include 被测对象，加了只会产生噪声。别去"补上"。
+
+#### 一处已知的"界面与生效值分家"：`VisualDefectPage` 的采样档位
+
+`ui/analysis_panel/VisualDefectPage.cpp` 里档位下拉的初始化顺序是
+`preset_combo_->setCurrentIndex(1)` → **之后**才 `connect(..., &VisualDefectPage::OnOptionChanged)`。
+于是构造时既不会 emit `OptionsChanged`，也没有谁把 `options_` 拉成控件状态：
+
+| 传入的 preset | `page.options().preset` | 下拉显示 | 一致？ |
+|---|---|---|---|
+| `Standard`（默认，面板传的就是这个） | Standard | 索引 1 = 标准 | ✅ |
+| `Fine` / `OfflineFull` 等非默认值 | **原样保留** | 索引 1 = **标准** | ❌ |
+
+也就是说调用方传了非默认档位时，**生效的是传入值，界面显示的是"标准"**，得用户手动再拨一次
+才对得上。目前面板只建一次页面且传的都是自己持有的那份（默认标准），所以看不出来；
+页面一旦要重建（切文件 / 恢复上次配置）或者接入"记住上次的档位"，这条就会浮出来。
+
+测试已经把它钉死了（`tests/unit/test_visual_defect_page.cpp` 的
+`IncomingPresetIsKeptButComboStaysOnItsDefaultEntry`），两个修法：
+
+1. **让控件跟着 options 走**（推荐）：`setCurrentIndex(1)` 换成
+   `setCurrentIndex(qMax(0, preset_combo_->findData(static_cast<int>(options_.preset))))`，
+   行为和"界面永远等于生效值"对齐；
+2. **让 options 跟着控件走**：把 `setCurrentIndex(1)` 挪到 `connect()` 之后，
+   靠构造期那一次 `OnOptionChanged` 回写 —— 但这样又回到"构造即覆写调用方传参"，
+   与上一个用例 `ConstructorKeepsIncomingFieldValues` 钉住的语义相反。
+
+选哪个取决于一句产品问题：**"恢复上次设置"时，页面该显示上次的档位，还是显示默认档位？**
+2026-10-05 先不改，钉住现状。
+
 ## 6. 怎么校验边界
 
 `scripts/check_layering.py` 直接扫 `#include` 检查上面的方向是否被违反：

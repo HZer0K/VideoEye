@@ -248,18 +248,18 @@ TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红�
 
 | 指标 | 数量 |
 |---|---|
-| 测试可执行文件 | 47 |
-| ctest 用例组（gtest 可执行文件） | 47 |
+| 测试可执行文件 | 48 |
+| ctest 用例组（gtest 可执行文件） | 48 |
 | 架构规则用例组（python 脚本，非 gtest） | 6 |
-| gtest 用例（含 `TEST` / `TEST_F` / `TEST_P`） | 432 |
+| gtest 用例（含 `TEST` / `TEST_F` / `TEST_P`） | 441 |
 
-`ctest -N` 会显示 **53 = 47 + 6**，多出来的 6 个不是 gtest 可执行文件，而是直接
+`ctest -N` 会显示 **54 = 48 + 6**，多出来的 6 个不是 gtest 可执行文件，而是直接
 `add_test` 调 python 脚本的架构规则门：`check_layering.py` 与它的自测、
 `audit_qt_analysis_border.py` 与它的自测、`audit_namespace_layout.py` 与它的自测。
 它们的「测试」是退出码 + 输出断言，没有 gtest 用例，所以脚本不计入 gtest 那两个数。
 
 这个数字以前是「18 个可执行文件 + 17 组 ctest」，长期没跟着测试用例涨 —— 所以改成脚本
-现算。CI 里可用 `python scripts/summarize_tests.py --expect 47` 卡住「加了测试忘了改文档」。
+现算。CI 里可用 `python scripts/summarize_tests.py --expect 48` 卡住「加了测试忘了改文档」。
 
 跑之前注意：这 6 条脚本用例用「`VIDEOEYE_ROOT` 或当前目录」当仓库根，所以 CMake 里给它们
 钉了 `WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}`。不加的话 ctest 的工作目录是
