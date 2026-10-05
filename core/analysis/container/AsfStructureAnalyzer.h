@@ -5,7 +5,6 @@
 #include "core/domain/model/ContainerStructureInfo.h"
 
 namespace videoeye {
-namespace analyzer {
 
 /// ASF/WMV/WMA 容器结构轻量级解析器
 class AsfStructureAnalyzer {
@@ -15,5 +14,4 @@ public:
                  const std::atomic<bool>* cancel = nullptr);
 };
 
-} // namespace analyzer
 } // namespace videoeye

@@ -239,7 +239,7 @@ void DiagnosticsPage::SetupTimelineSubTab() {
 // 全文件扫描
 // ---------------------------------------------------------------------------
 
-void DiagnosticsPage::StartScan(const analyzer::AnalysisOptions& options, bool silent) {
+void DiagnosticsPage::StartScan(const videoeye::AnalysisOptions& options, bool silent) {
     // 静默模式（打开失败自动补扫等）不弹模态框：这是流程里的必经一步，
     // 弹窗会打断流程、扫到一半卡在模态循环里等不到人点。条件不满足就悄悄放弃。
     if (source_path_.isEmpty()) {
@@ -263,7 +263,7 @@ void DiagnosticsPage::StartScan(const analyzer::AnalysisOptions& options, bool s
     emit ScanStarted();
 
     // 字幕阈值同步之类的跨页逻辑由面板在扫描前注入
-    analyzer::AnalysisOptions effective = options;
+    videoeye::AnalysisOptions effective = options;
     if (before_scan_) before_scan_(effective);
 
     generation_ = facade_->StartAnalysis(source_path_.toStdString(), effective);
@@ -361,7 +361,7 @@ void DiagnosticsPage::Evaluate() {
 }
 
 void DiagnosticsPage::ApplySceneLink(const std::vector<model::SceneChangeResult>& records,
-                                     const analyzer::BitrateGopOptions& gop_options) {
+                                     const videoeye::BitrateGopOptions& gop_options) {
     if (!has_result_) {
         QMessageBox::information(this, tr("提示"), tr("请先在本页点击「开始分析」完成一次扫描。"));
         return;

@@ -13,10 +13,9 @@
 #include "core/media/streaming/ManifestText.h"
 
 namespace videoeye {
-namespace analyzer {
 namespace {
 
-namespace mt = videoeye::utils::manifest;
+namespace mt = videoeye::manifest;
 
 // ---------------------------------------------------------------------------
 // 模板占位符展开
@@ -734,5 +733,4 @@ void DashManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Da
     }
 }
 
-} // namespace analyzer
 } // namespace videoeye

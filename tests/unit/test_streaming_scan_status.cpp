@@ -26,8 +26,8 @@
 
 namespace fs = std::filesystem;
 
-using videoeye::analyzer::AnalysisEngine;
-using videoeye::analyzer::AnalysisOptions;
+using videoeye::AnalysisEngine;
+using videoeye::AnalysisOptions;
 using videoeye::model::AnalysisResult;
 using videoeye::model::AnalysisStatus;
 
@@ -61,7 +61,7 @@ struct RunOutcome {
 // 失败分支不会走 on_finished，所以结果对象只能靠 Run() 的出参拿到。
 RunOutcome RunEngine(const fs::path& path) {
     RunOutcome out;
-    videoeye::analyzer::AnalysisCallbacks callbacks;
+    videoeye::AnalysisCallbacks callbacks;
     callbacks.on_failed = [&out](const std::string& message) {
         ++out.failed_calls;
         out.failed_message = message;

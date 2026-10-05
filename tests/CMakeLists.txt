@@ -147,9 +147,19 @@ if(VIDEOEYE_PYTHON_EXE)
              COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/audit_qt_analysis_border.py)
     add_test(NAME QtAnalysisBorderSelfTestTests
              COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test_audit_qt_analysis_border.py)
+    # 命名空间跟不跟目录走（2026-10-05 清完 analyzer / utils 之后立的门）。
+    # 三条规则：不许再声明 namespace analyzer / utils、不许写回 analyzer:: 或 utils::
+    # 形式的引用、videoeye 下的具名子命名空间必须与所在文件路径的上级目录同名。
+    # 最后一条会顺带抓出新冒出来的偏差 —— 只有登记进 KNOWN_DEVIATIONS 的才放行。
+    add_test(NAME NamespaceLayoutTests
+             COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/audit_namespace_layout.py)
+    add_test(NAME NamespaceLayoutSelfTestTests
+             COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test_audit_namespace_layout.py)
     set_tests_properties(LayeringRulesTests LayeringSelfTestTests
                                             QtAnalysisBorderTests
-                                            QtAnalysisBorderSelfTestTests PROPERTIES
+                                            QtAnalysisBorderSelfTestTests
+                                            NamespaceLayoutTests
+                                            NamespaceLayoutSelfTestTests PROPERTIES
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 else()
     message(STATUS "未找到 python，跳过分层规则测试（CI 与 pre-commit 仍会跑）")

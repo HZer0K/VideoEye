@@ -11,7 +11,6 @@
 #include "core/media/codec/ExtradataTypes.h"
 
 namespace videoeye {
-namespace utils {
 
 // ==========================================================================
 // Extradata 解析器
@@ -78,5 +77,4 @@ private:
     static const uint8_t* FindStartCode(const uint8_t* pos, const uint8_t* end);
 };
 
-} // namespace utils
 } // namespace videoeye

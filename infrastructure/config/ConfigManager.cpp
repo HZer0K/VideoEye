@@ -5,7 +5,6 @@
 #include <algorithm>
 
 namespace videoeye {
-namespace utils {
 
 ConfigManager& ConfigManager::GetInstance() {
     static ConfigManager instance;
@@ -205,5 +204,4 @@ std::string ConfigManager::Serialize() const {
     return oss.str();
 }
 
-} // namespace utils
 } // namespace videoeye

@@ -7,7 +7,6 @@
 #include <memory>
 
 namespace videoeye {
-namespace utils {
 
 // 配置管理器 - 线程安全的单例模式
 class ConfigManager {
@@ -65,7 +64,6 @@ private:
 };
 
 // 便捷宏定义
-#define CONFIG videoeye::utils::ConfigManager::GetInstance()
+#define CONFIG videoeye::ConfigManager::GetInstance()
 
-} // namespace utils
 } // namespace videoeye

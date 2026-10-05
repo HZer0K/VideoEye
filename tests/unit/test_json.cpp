@@ -5,8 +5,8 @@
 
 #include "infrastructure/serialization/Json.h"
 
-using videoeye::utils::JsonParse;
-using videoeye::utils::JsonValue;
+using videoeye::JsonParse;
+using videoeye::JsonValue;
 
 namespace {
 // 解析一个典型的 QC 模板 JSON，校验取数路径与转义

@@ -46,7 +46,6 @@ extern "C" {
 }
 
 namespace videoeye {
-namespace analyzer {
 
 // 音频 QC 的解码通路：解码器 + 到 float planar 的转换（swr）。
 // 解码器输出本身就是 FLTP 时直接用 AVFrame::data，省掉一次无谓的拷贝。
@@ -212,5 +211,4 @@ private:
     bool has_key_ = false;
 };
 
-}  // namespace analyzer
 }  // namespace videoeye

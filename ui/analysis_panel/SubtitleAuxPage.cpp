@@ -230,7 +230,7 @@ void SubtitleAuxPage::SetupUi() {
 }
 
 void SubtitleAuxPage::ApplyRuleThresholds(const std::vector<model::QcRule>& rules,
-                                         analyzer::SubtitleOptions& options) const {
+                                         videoeye::SubtitleOptions& options) const {
     if (const model::QcRule* rule = model::FindQcRule(rules, "subtitle.cue_too_short")) {
         if (rule->threshold > 0.0) options.min_cue_duration_seconds = rule->threshold;
     }

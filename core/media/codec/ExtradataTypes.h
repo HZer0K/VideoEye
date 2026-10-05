@@ -12,7 +12,6 @@
 #include <vector>
 
 namespace videoeye {
-namespace utils {
 
 enum class H264NalType {
     UNSPECIFIED = 0,
@@ -218,5 +217,4 @@ struct ExtradataResult {
     int height = 0;
 };
 
-} // namespace utils
 } // namespace videoeye

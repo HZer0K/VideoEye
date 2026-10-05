@@ -3,7 +3,6 @@
 #include <string>
 
 namespace videoeye {
-namespace utils {
 
 // 文件头轻量探测结果（纯 ISOBMFF 盒型特征，不依赖 FFmpeg/Qt，便于单测）
 struct FileHeaderInfo {
@@ -20,5 +19,4 @@ FileHeaderInfo ProbeFileHeader(const std::string& file_path);
 // 无已知特征时返回空串，调用方沿用 FFmpeg 的通用错误描述。
 std::string DiagnoseUnopenableFile(const std::string& file_path);
 
-} // namespace utils
 } // namespace videoeye

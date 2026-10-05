@@ -33,7 +33,7 @@ public:
     // 只换报告（用户在「规则与阈值」页改了规则后重新评估）再刷一次
     void SetQcReport(const model::QcReport& qc_report);
 
-    void FillScanOptions(analyzer::AnalysisOptions& options);
+    void FillScanOptions(videoeye::AnalysisOptions& options);
 
     void SetScanActive(bool active);
     // 同 BitrateGopPage::IsScanActive: 状态必须可观察，否则"某页卡在扫描中"只能靠肉眼发现
@@ -66,7 +66,7 @@ private:
     bool has_result_ = false;
     model::AnalysisResult result_;
     model::QcReport qc_report_;
-    analyzer::ColorHdrOptions options_;
+    videoeye::ColorHdrOptions options_;
 
     QLabel* summary_label_ = nullptr;
     QProgressBar* progress_bar_ = nullptr;

@@ -4,7 +4,6 @@
 #include "core/domain/model/ContainerStructureInfo.h"
 
 namespace videoeye {
-namespace analyzer {
 
 /// 容器格式检测器
 /// 通过文件魔数 (magic bytes) 和扩展名检测容器格式
@@ -26,5 +25,4 @@ public:
     static std::string FormatTitle(model::ContainerFormat fmt);
 };
 
-} // namespace analyzer
 } // namespace videoeye

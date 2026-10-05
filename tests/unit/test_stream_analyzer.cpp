@@ -34,7 +34,7 @@ TEST(StreamAnalyzerTest, ClassifiesPacketsAndFramesByMediaType) {
     ASSERT_NE(audio->codecpar, nullptr);
     audio->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
 
-    videoeye::analyzer::StreamAnalyzer analyzer;
+    videoeye::StreamAnalyzer analyzer;
     analyzer.Start();
 
     AVPacket* packet = av_packet_alloc();
@@ -82,7 +82,7 @@ TEST(StreamAnalyzerTest, GopCountsOnlyVideoKeyframes) {
     ASSERT_NE(audio->codecpar, nullptr);
     audio->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
 
-    videoeye::analyzer::StreamAnalyzer analyzer;
+    videoeye::StreamAnalyzer analyzer;
     analyzer.Start();
 
     AVPacket* packet = av_packet_alloc();
@@ -127,7 +127,7 @@ TEST(StreamAnalyzerTest, ResetClearsStats) {
     ASSERT_NE(video->codecpar, nullptr);
     video->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
 
-    videoeye::analyzer::StreamAnalyzer analyzer;
+    videoeye::StreamAnalyzer analyzer;
     analyzer.Start();
 
     AVPacket* packet = av_packet_alloc();

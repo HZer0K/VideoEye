@@ -13,7 +13,6 @@
 #include <atomic>
 
 namespace videoeye {
-namespace analyzer {
 
 // 取消标志为 nullptr 表示"调用方不关心取消"（离线批处理、单测），此时恒返回 false。
 // 用 memory_order_acquire 读取: 解析线程与置位线程之间需要建立可见性。
@@ -29,5 +28,4 @@ inline bool ShouldCheckStreamingCancel(unsigned long long processed) {
     return (processed & kStreamingCancelCheckMask) == 0;
 }
 
-} // namespace analyzer
 } // namespace videoeye

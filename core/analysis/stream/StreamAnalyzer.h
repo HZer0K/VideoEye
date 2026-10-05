@@ -14,7 +14,6 @@ extern "C" {
 }
 
 namespace videoeye {
-namespace analyzer {
 
 // StreamStats 已下放到 core/domain/model/StreamStats.h（纯值对象，报告层也要读）。
 // 这里留别名，免得既有调用方为了换个位置改几十行。
@@ -95,5 +94,4 @@ private:
     static constexpr int MAX_HISTORY_SIZE = 300; // 5分钟 @ 1fps
 };
 
-} // namespace analyzer
 } // namespace videoeye

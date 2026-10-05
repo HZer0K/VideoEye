@@ -6,7 +6,6 @@
 #include "core/domain/model/SceneChangeResult.h"
 
 namespace videoeye {
-namespace analyzer {
 
 // SceneChangeResult 已下放到 core/domain/model/SceneChangeResult.h ——
 // MediaPlayer 每帧都要产出一个，不该为此 include 整个检测器。别名保留。
@@ -45,5 +44,4 @@ private:
     double last_score_ = 0.0;
 };
 
-} // namespace analyzer
 } // namespace videoeye

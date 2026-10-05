@@ -738,7 +738,7 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
 
     // 媒体信息解析 PCM (裸流无法自动探测, 需带上用户选择的格式参数)
         {
-            analyzer::MediaInfoAnalyzer mi;
+            videoeye::MediaInfoAnalyzer mi;
             // 只有这一个调用点需要跨 Qt 边界：MediaInfoAnalyzer 已经不碰 Qt。
             mi.SetRawPcmHints(demuxer_name.toStdString(), sample_rate, channels);
             if (mi.Open(source.toStdString())) {
@@ -821,7 +821,7 @@ void MainWindow::StartMediaInfoAnalysis(const QString& source) {
         std::string text;
         {
             VE_PERF("媒体信息解析(后台线程)");
-            analyzer::MediaInfoAnalyzer mi;
+            videoeye::MediaInfoAnalyzer mi;
             const bool opened = mi.Open(source.toStdString(), token.flag());
             text = opened ? mi.GetCompleteInfo() : std::string("(无法解析媒体信息)");
         }

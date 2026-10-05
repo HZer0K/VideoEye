@@ -10,12 +10,11 @@
 #include "core/media/streaming/ManifestText.h"
 
 namespace videoeye {
-namespace analyzer {
 namespace {
 
-namespace mt = videoeye::utils::manifest;
+namespace mt = videoeye::manifest;
 
-// 清单文件的读法（分块 + 可取消 + 体积上限）统一由 utils::manifest::ManifestReader
+// 清单文件的读法（分块 + 可取消 + 体积上限）统一由 videoeye::manifest::ManifestReader
 // 提供，两个解析器共用一套，避免"同样的大文件，HLS 能读、DASH 读不动"。
 mt::ManifestReadOptions ReadOptionsFor(const HlsManifestOptions& options) {
     mt::ManifestReadOptions read_options;
@@ -830,5 +829,4 @@ void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Hls
     }
 }
 
-} // namespace analyzer
 } // namespace videoeye

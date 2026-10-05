@@ -9,8 +9,8 @@
 
 namespace {
 
-using videoeye::analyzer::H264BitstreamParser;
-using videoeye::utils::NalUnit;
+using videoeye::H264BitstreamParser;
+using videoeye::NalUnit;
 
 // 测试数据由 _smoke/gen_h264_sps.py 按 H.264 7.3.2.1.1 / 附录 E 逐位生成，
 // 不是手工凑的常量。每个数组已带 emulation prevention 字节。
@@ -81,11 +81,11 @@ TEST(H264BitstreamParserTest, LevelVersionConversion) {
 TEST(ExtradataParserFormatDetectionTest, DetectAnnexBFormat) {
     const std::vector<uint8_t> annex_b_data = {0, 0, 0, 1, 7};
 
-    auto result = videoeye::utils::ExtradataParser::Parse(
+    auto result = videoeye::ExtradataParser::Parse(
         annex_b_data.data(), annex_b_data.size());
 
     EXPECT_TRUE(result.valid);
-    EXPECT_EQ(result.format, videoeye::utils::ExtradataFormat::AnnexB);
+    EXPECT_EQ(result.format, videoeye::ExtradataFormat::AnnexB);
     EXPECT_GT(result.nal_units.size(), 0u);
 }
 
@@ -101,11 +101,11 @@ TEST(ExtradataParserFormatDetectionTest, DetectAvcCFormat) {
         0x00, 0x02, 0x68, 0xEB,              // 2 字节 PPS（含 NAL header）
     };
 
-    auto result = videoeye::utils::ExtradataParser::Parse(
+    auto result = videoeye::ExtradataParser::Parse(
         avcc_data.data(), avcc_data.size());
 
     EXPECT_TRUE(result.valid);
-    EXPECT_EQ(result.format, videoeye::utils::ExtradataFormat::AvcC);
+    EXPECT_EQ(result.format, videoeye::ExtradataFormat::AvcC);
     EXPECT_EQ(result.config.profile_idc, 100);
     EXPECT_EQ(result.config.level_idc, 41u);
     EXPECT_EQ(result.config.length_size_minus_one, 3u);

@@ -15,7 +15,6 @@
 #include "core/analysis/quality/BitrateGopAnalyzer.h"
 
 using namespace videoeye;
-using namespace videoeye::analyzer;
 
 namespace {
 

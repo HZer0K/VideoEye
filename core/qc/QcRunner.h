@@ -52,13 +52,13 @@ public:
     // 上时整条批量扫描会永久挂死, 而"有一份结果"和"卡死"之间只有这个预算可区分。
     QcRunResult AnalyzeFile(const std::string& path,
                             const QcProfile& profile,
-                            analyzer::AnalysisOptions options = analyzer::AnalysisOptions{},
+                            videoeye::AnalysisOptions options = videoeye::AnalysisOptions{},
                             const QcRunCallbacks& callbacks = QcRunCallbacks{},
                             int join_budget_ms = kDefaultJoinBudgetMs);
 
     // 生成一个绑定了 profile + options 的分析闭包（批量扫描的每个 worker 各持一份 QcRunner）
     static QcAnalyzeFn MakeAnalyzeFunction(const QcProfile& profile,
-                                           analyzer::AnalysisOptions options);
+                                           videoeye::AnalysisOptions options);
 
     // 异步取消（批量任务的"取消"按钮最终走到这里）。
     //

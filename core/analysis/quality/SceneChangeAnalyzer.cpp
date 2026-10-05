@@ -5,7 +5,6 @@
 #include <algorithm>
 
 namespace videoeye {
-namespace analyzer {
 
 void SceneChangeAnalyzer::Reset() {
     prev_hist_.clear();
@@ -54,5 +53,4 @@ std::optional<SceneChangeResult> SceneChangeAnalyzer::Feed(int frame_index, doub
     return result;
 }
 
-} // namespace analyzer
 } // namespace videoeye

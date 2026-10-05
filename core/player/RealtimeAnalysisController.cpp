@@ -175,7 +175,7 @@ void RealtimeAnalysisController::ResetForNewMedia() {
     visual_defect_analyzer_.Reset(GetVisualDefectOptions());
     // 视觉缺陷的工作线程在换媒体后要重新起: 分析器 Reset 会清掉队列与线程状态。
     if (analysis_.IsVisualDefectAnalysisEnabled() &&
-        GetVisualDefectOptions().preset != analyzer::VisualSamplingPreset::OfflineFull) {
+        GetVisualDefectOptions().preset != videoeye::VisualSamplingPreset::OfflineFull) {
         visual_defect_analyzer_.StartWorker(8);
     }
     audio_frame_index_ = 0;
@@ -212,13 +212,13 @@ void RealtimeAnalysisController::SetVisualDefectAnalysisEnabled(bool enable) {
     if (analysis_.IsVisualDefectAnalysisEnabled() == enable) return;
     analysis_.SetVisualDefectAnalysisEnabled(enable);
     if (enable) {
-        const analyzer::VisualDefectOptions vd_opts = GetVisualDefectOptions();
+        const videoeye::VisualDefectOptions vd_opts = GetVisualDefectOptions();
         visual_defect_analyzer_.Reset(vd_opts);
         visual_defect_frame_index_ = 0;
         visual_defect_last_sample_ts_ = -1.0;
         // 实时档位走工作线程 + 有上限队列: 播放压力大时丢分析帧，绝不反压解码线程。
         // 离线全帧档位不需要队列（Feed 是同步的），开线程反而多一次拷贝。
-        if (vd_opts.preset != analyzer::VisualSamplingPreset::OfflineFull) {
+        if (vd_opts.preset != videoeye::VisualSamplingPreset::OfflineFull) {
             visual_defect_analyzer_.StartWorker(8);
         }
         LOG_INFO("画面质量检测已启用");
@@ -231,12 +231,12 @@ void RealtimeAnalysisController::SetVisualDefectAnalysisEnabled(bool enable) {
     }
 }
 
-analyzer::VisualDefectOptions RealtimeAnalysisController::GetVisualDefectOptions() const {
+videoeye::VisualDefectOptions RealtimeAnalysisController::GetVisualDefectOptions() const {
     return analysis_.GetVisualDefectOptions();
 }
 
 void RealtimeAnalysisController::SetVisualDefectOptions(
-    const analyzer::VisualDefectOptions& options) {
+    const videoeye::VisualDefectOptions& options) {
     const bool was_enabled = analysis_.IsVisualDefectAnalysisEnabled();
     analysis_.SetVisualDefectOptions(options);
     if (!was_enabled) return;
@@ -244,7 +244,7 @@ void RealtimeAnalysisController::SetVisualDefectOptions(
     visual_defect_analyzer_.Reset(options);
     visual_defect_frame_index_ = 0;
     visual_defect_last_sample_ts_ = -1.0;
-    if (options.preset != analyzer::VisualSamplingPreset::OfflineFull) {
+    if (options.preset != videoeye::VisualSamplingPreset::OfflineFull) {
         visual_defect_analyzer_.StartWorker(8);
     }
     emit VisualDefectReset();
@@ -273,7 +273,7 @@ void RealtimeAnalysisController::FeedVisualDefectFrame(const AVFrame* frame,
     if (!frame) return;
 
     // 解码线程逐帧读取视觉缺陷选项: 取一次加锁副本, 避免反复加锁且与 UI 线程写入互斥。
-    const analyzer::VisualDefectOptions vd_opts = GetVisualDefectOptions();
+    const videoeye::VisualDefectOptions vd_opts = GetVisualDefectOptions();
 
     const double fps = vd_opts.EffectiveSampleFps();
     if (fps > 0.0 && visual_defect_last_sample_ts_ >= 0.0 &&
@@ -293,7 +293,7 @@ void RealtimeAnalysisController::FeedVisualDefectFrame(const AVFrame* frame,
 
     model::FrameSample sample;
     std::string error;
-    if (!analyzer::QualityAnalyzer::BuildSample(frame,
+    if (!videoeye::QualityAnalyzer::BuildSample(frame,
                                                 vd_opts.EffectiveAnalysisWidth(),
                                                 vd_opts.EffectiveEvidenceWidth(),
                                                 vd_opts.capture_rgb,
@@ -306,7 +306,7 @@ void RealtimeAnalysisController::FeedVisualDefectFrame(const AVFrame* frame,
     sample.audio_silent = audio_silent;
     visual_defect_last_sample_ts_ = timestamp_seconds;
 
-    if (vd_opts.preset == analyzer::VisualSamplingPreset::OfflineFull) {
+    if (vd_opts.preset == videoeye::VisualSamplingPreset::OfflineFull) {
         // 离线档位: 同步分析每一帧，一帧都不丢（代价是播放会变慢）
         visual_defect_analyzer_.Feed(sample);
     } else if (!visual_defect_analyzer_.Submit(sample)) {

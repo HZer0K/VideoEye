@@ -7,7 +7,7 @@
 //   「导出分析报告」），输入是 model::StreamStats；
 //   QcReportExporter 导出的是 QC 体检报告，输入是 QcExportBundle(QcRunResult)。
 //
-// 以前这两件事都堆在 utils::ReportExporter 里，一个头文件同时 include StreamAnalyzer.h
+// 以前这两件事都堆在 videoeye::ReportExporter 里，一个头文件同时 include StreamAnalyzer.h
 // 和 QcReport.h，导致 reporting 层必须连全套 FFmpeg。拆开之后 reporting 只剩
 // StreamAnalyzer 这一处 FFmpeg 依赖。
 

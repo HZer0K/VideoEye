@@ -156,7 +156,7 @@ TEST(ColorHdrTest, SdrBt709ClassifiesTo709AcrossPrimariesTransferMatrix) {
     model::HdrMetadataInfo hdr;
     EXPECT_EQ(model::ClassifyHdrFormat(color, hdr), model::HdrFormat::Sdr);
 
-    analyzer::QcRuleEngine engine;
+    videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(MakeResult(MakeAnalysis(color, hdr)));
     // 一套标准 SDR 组合不应产生任何色彩/HDR 告警
     EXPECT_EQ(CountColorIssues(report), 0);
@@ -183,7 +183,7 @@ TEST(ColorHdrTest, Hdr10SampleIsRecognizedWithoutWarnings) {
     ASSERT_EQ(model::ClassifyHdrFormat(color, hdr), model::HdrFormat::Hdr10);
 
     const auto analysis = MakeAnalysis(color, hdr);
-    analyzer::QcRuleEngine engine;
+    videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(MakeResult(analysis));
 
     EXPECT_FALSE(HasIssue(report, "video.color.hdr_missing_mastering"));
@@ -218,7 +218,7 @@ TEST(ColorHdrTest, HlgDoesNotRequireStaticMetadata) {
 
     ASSERT_EQ(model::ClassifyHdrFormat(color, hdr), model::HdrFormat::Hlg);
 
-    analyzer::QcRuleEngine engine;
+    videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(MakeResult(MakeAnalysis(color, hdr)));
     EXPECT_FALSE(HasIssue(report, "video.color.hdr_missing_mastering"));
     EXPECT_FALSE(HasIssue(report, "video.color.hdr_missing_light_level"));
@@ -233,7 +233,7 @@ TEST(ColorHdrTest, PqWithoutMetadataWarns) {
 
     ASSERT_EQ(model::ClassifyHdrFormat(color, hdr), model::HdrFormat::Hdr10Basic);
 
-    analyzer::QcRuleEngine engine;
+    videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(MakeResult(MakeAnalysis(color, hdr)));
 
     model::DiagnosticIssue mastering;
@@ -255,7 +255,7 @@ TEST(ColorHdrTest, EightBitPqIsAnError) {
     hdr.content_light.max_cll = 1000;
     hdr.content_light.max_fall = 400;
 
-    analyzer::QcRuleEngine engine;
+    videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(MakeResult(MakeAnalysis(color, hdr)));
 
     model::DiagnosticIssue issue;
@@ -270,7 +270,7 @@ TEST(ColorHdrTest, WideGamutWithSdrTransferWarns) {
         MakeColor(kPriBt2020, kTrcBt709, kSpcBt2020Ncl, kRangeLimited, 10, "yuv420p10le");
     model::HdrMetadataInfo hdr;
 
-    analyzer::QcRuleEngine engine;
+    videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(MakeResult(MakeAnalysis(color, hdr)));
 
     model::DiagnosticIssue issue;
@@ -288,7 +288,7 @@ TEST(ColorHdrTest, MatrixMismatchWarns) {
     hdr.content_light.max_cll = 1000;
     hdr.content_light.max_fall = 400;
 
-    analyzer::QcRuleEngine engine;
+    videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(MakeResult(MakeAnalysis(color, hdr)));
     EXPECT_TRUE(HasIssue(report, "video.color.matrix_mismatch"));
 }
@@ -298,7 +298,7 @@ TEST(ColorHdrTest, TotallyUnspecifiedMetadataIsReported) {
                                              kRangeUnspecified, 8, "yuv420p");
     model::HdrMetadataInfo hdr;
 
-    analyzer::QcRuleEngine engine;
+    videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(MakeResult(MakeAnalysis(color, hdr)));
 
     model::DiagnosticIssue issue;
@@ -325,7 +325,7 @@ TEST(ColorHdrTest, FullAndLimitedRangeAreDistinguished) {
 
     // 两种都不应触发 range 冲突（像素格式没有隐含范围）
     model::HdrMetadataInfo hdr;
-    analyzer::QcRuleEngine engine;
+    videoeye::QcRuleEngine engine;
     EXPECT_FALSE(HasIssue(engine.Evaluate(MakeResult(MakeAnalysis(limited, hdr))),
                           "video.color.range_conflict"));
     EXPECT_FALSE(HasIssue(engine.Evaluate(MakeResult(MakeAnalysis(full, hdr))),
@@ -346,7 +346,7 @@ TEST(ColorHdrTest, YuvjMarkedAsLimitedIsAConflict) {
         MakeColor(kPriBt709, kTrcBt709, kSpcBt709, kRangeLimited, 8, "yuvj420p");
     model::HdrMetadataInfo hdr;
 
-    analyzer::QcRuleEngine engine;
+    videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(MakeResult(MakeAnalysis(color, hdr)));
 
     model::DiagnosticIssue issue;
@@ -360,7 +360,7 @@ TEST(ColorHdrTest, RgbMarkedAsLimitedIsAConflict) {
     color.pixel_format.rgb = true;
     model::HdrMetadataInfo hdr;
 
-    analyzer::QcRuleEngine engine;
+    videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(MakeResult(MakeAnalysis(color, hdr)));
     EXPECT_TRUE(HasIssue(report, "video.color.range_conflict"));
 }
@@ -379,7 +379,7 @@ TEST(ColorHdrTest, DolbyVisionWithoutCompatibilityLayerIsReported) {
 
     ASSERT_EQ(model::ClassifyHdrFormat(color, hdr), model::HdrFormat::DolbyVision);
 
-    analyzer::QcRuleEngine engine;
+    videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(MakeResult(MakeAnalysis(color, hdr)));
 
     EXPECT_TRUE(HasIssue(report, "video.color.dv_no_compatibility"));
@@ -391,7 +391,7 @@ TEST(ColorHdrTest, DolbyVisionWithoutCompatibilityLayerIsReported) {
 TEST(ColorHdrTest, UnanalyzedResultProducesNoColorIssues) {
     model::AnalysisResult result;
     result.file_path = "unknown.bin";
-    analyzer::QcRuleEngine engine;
+    videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
     EXPECT_EQ(CountColorIssues(report), 0);
 }

@@ -10,7 +10,6 @@
 #include "infrastructure/logging/ScopedTimer.h"
 
 namespace videoeye {
-namespace analyzer {
 
 bool StreamingManifestScan::CancelRequested(const std::atomic<bool>* cancel_source) {
     return cancel_source != nullptr && cancel_source->load(std::memory_order_acquire);
@@ -80,7 +79,7 @@ void StreamingManifestScan::Run(const std::string& file_path, const AnalysisOpti
     result.streaming_analyzed = true;
 
     int64_t manifest_size = 0;
-    utils::manifest::FileSizeOf(file_path, manifest_size);
+    videoeye::manifest::FileSizeOf(file_path, manifest_size);
     result.file_size_bytes = manifest_size;
     // 时长取清单声明值：分片本体不 demux，拿不到更精确的数字
     if (is_dash) {
@@ -103,5 +102,4 @@ void StreamingManifestScan::Run(const std::string& file_path, const AnalysisOpti
     NotifyFinished(callbacks, true, result);
 }
 
-}  // namespace analyzer
 }  // namespace videoeye

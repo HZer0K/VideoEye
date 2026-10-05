@@ -123,11 +123,11 @@ public:
     }
 
     // —— 视觉缺陷采样选项 (值类型, 跨线程加锁取副本) ——
-    void SetVisualDefectOptions(const analyzer::VisualDefectOptions& options) {
+    void SetVisualDefectOptions(const videoeye::VisualDefectOptions& options) {
         std::lock_guard<std::mutex> lk(visual_defect_options_mutex_);
         visual_defect_options_ = options;
     }
-    analyzer::VisualDefectOptions GetVisualDefectOptions() const {
+    videoeye::VisualDefectOptions GetVisualDefectOptions() const {
         std::lock_guard<std::mutex> lk(visual_defect_options_mutex_);
         return visual_defect_options_;
     }
@@ -151,17 +151,17 @@ public:
     void AnalyzeAudioFrame() {
         stream_analyzer_.AnalyzeAudioFrame();
     }
-    analyzer::StreamStats GetStats() const {
+    videoeye::StreamStats GetStats() const {
         return stream_analyzer_.GetStats();
     }
 
     // 底层引用只给 MediaPlayer 自己用(它要调 AnalyzePacket / Reset 等写接口)。
     // 对外不再暴露可变引用: 解码线程在更新这些状态, 外部拿可变引用等于开了一条
     // 绕锁的读写通道(历史曲线接口尤其明显)。
-    analyzer::StreamAnalyzer& stream_analyzer() {
+    videoeye::StreamAnalyzer& stream_analyzer() {
         return stream_analyzer_;
     }
-    const analyzer::StreamAnalyzer& stream_analyzer() const {
+    const videoeye::StreamAnalyzer& stream_analyzer() const {
         return stream_analyzer_;
     }
 
@@ -180,9 +180,9 @@ private:
     std::atomic<bool> hw_decoding_enabled_{false};
 
     mutable std::mutex visual_defect_options_mutex_;
-    analyzer::VisualDefectOptions visual_defect_options_;
+    videoeye::VisualDefectOptions visual_defect_options_;
 
-    analyzer::StreamAnalyzer stream_analyzer_;
+    videoeye::StreamAnalyzer stream_analyzer_;
 };
 
 } // namespace player

@@ -11,7 +11,6 @@
 #include "core/domain/model/EbmlInfo.h"
 
 namespace videoeye {
-namespace analyzer {
 
 /// EBML/MKV/WebM 结构分析器
 /// 按 MKV 规范深度解析 EBML 元素树、Track 表、Cues 索引、Block 二进制格式
@@ -102,5 +101,4 @@ private:
     uint64_t node_count_ = 0;
 };
 
-} // namespace analyzer
 } // namespace videoeye

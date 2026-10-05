@@ -5,7 +5,6 @@
 #include "core/media/codec/BitReader.h"
 
 namespace videoeye {
-namespace analyzer {
 namespace {
 
 // H.266 7.3.1.3（Table 5）：VPS / SPS / PPS 的 NAL unit type
@@ -44,21 +43,21 @@ int CeilShift(int v, int s) { return (v + (1 << s) - 1) >> s; }
 // --------------------------------------------------------------------------
 // NAL 单元判定 / RBSP
 // --------------------------------------------------------------------------
-bool VvcBitstreamParser::IsVpsNalUnit(const utils::NalUnit& nal_unit) {
+bool VvcBitstreamParser::IsVpsNalUnit(const videoeye::NalUnit& nal_unit) {
     return nal_unit.type == kVvcNutVps;
 }
 
-bool VvcBitstreamParser::IsSpsNalUnit(const utils::NalUnit& nal_unit) {
+bool VvcBitstreamParser::IsSpsNalUnit(const videoeye::NalUnit& nal_unit) {
     return nal_unit.type == kVvcNutSps;
 }
 
-bool VvcBitstreamParser::IsPpsNalUnit(const utils::NalUnit& nal_unit) {
+bool VvcBitstreamParser::IsPpsNalUnit(const videoeye::NalUnit& nal_unit) {
     return nal_unit.type == kVvcNutPps;
 }
 
-std::vector<uint8_t> VvcBitstreamParser::GetRbsp(const utils::NalUnit& nal_unit) {
+std::vector<uint8_t> VvcBitstreamParser::GetRbsp(const videoeye::NalUnit& nal_unit) {
     if (nal_unit.data.empty()) return {};
-    return utils::UnescapeRbsp(nal_unit.data.data(), nal_unit.data.size());
+    return videoeye::UnescapeRbsp(nal_unit.data.data(), nal_unit.data.size());
 }
 
 std::string VvcBitstreamParser::GetProfileName(int general_profile_idc) {
@@ -76,7 +75,7 @@ std::string VvcBitstreamParser::GetLevelVersion(uint32_t general_level_idc) {
 // --------------------------------------------------------------------------
 // 通用语法结构（只跳过，不落地字段）
 // --------------------------------------------------------------------------
-void VvcBitstreamParser::SkipGeneralConstraintsInfo(utils::BitReader& reader) {
+void VvcBitstreamParser::SkipGeneralConstraintsInfo(videoeye::BitReader& reader) {
     const bool gci_present = reader.ReadBit();
     if (!gci_present) {
         reader.AlignToByte();
@@ -107,7 +106,7 @@ void VvcBitstreamParser::SkipGeneralConstraintsInfo(utils::BitReader& reader) {
     reader.AlignToByte();
 }
 
-void VvcBitstreamParser::ParseProfileTierLevel(utils::BitReader& reader, bool profile_tier_present,
+void VvcBitstreamParser::ParseProfileTierLevel(videoeye::BitReader& reader, bool profile_tier_present,
                                                int max_num_sub_layers_minus1, int* profile_idc,
                                                int* tier_flag, uint32_t* level_idc,
                                                int* num_sub_profiles) {
@@ -145,13 +144,13 @@ void VvcBitstreamParser::ParseProfileTierLevel(utils::BitReader& reader, bool pr
     }
 }
 
-void VvcBitstreamParser::SkipProfileTierLevel(utils::BitReader& reader, bool profile_tier_present,
+void VvcBitstreamParser::SkipProfileTierLevel(videoeye::BitReader& reader, bool profile_tier_present,
                                               int max_num_sub_layers_minus1) {
     ParseProfileTierLevel(reader, profile_tier_present, max_num_sub_layers_minus1, nullptr,
                           nullptr, nullptr, nullptr);
 }
 
-void VvcBitstreamParser::SkipDpbParameters(utils::BitReader& reader, int max_sublayers_minus1,
+void VvcBitstreamParser::SkipDpbParameters(videoeye::BitReader& reader, int max_sublayers_minus1,
                                            bool sublayer_info_flag) {
     const int first = sublayer_info_flag ? 0 : max_sublayers_minus1;
     for (int i = first; i <= max_sublayers_minus1; ++i) {
@@ -161,7 +160,7 @@ void VvcBitstreamParser::SkipDpbParameters(utils::BitReader& reader, int max_sub
     }
 }
 
-void VvcBitstreamParser::SkipSubLayerHrdParameters(utils::BitReader& reader,
+void VvcBitstreamParser::SkipSubLayerHrdParameters(videoeye::BitReader& reader,
                                                    const TimingHrdContext& ctx) {
     for (uint32_t i = 0; i <= ctx.hrd_cpb_cnt_minus1; ++i) {
         reader.ReadUE();  // bit_rate_value_minus1
@@ -174,7 +173,7 @@ void VvcBitstreamParser::SkipSubLayerHrdParameters(utils::BitReader& reader,
     }
 }
 
-void VvcBitstreamParser::SkipGeneralTimingHrdParameters(utils::BitReader& reader,
+void VvcBitstreamParser::SkipGeneralTimingHrdParameters(videoeye::BitReader& reader,
                                                         TimingHrdContext* ctx) {
     reader.SkipBits(32);  // num_units_in_tick
     reader.SkipBits(32);  // time_scale
@@ -205,7 +204,7 @@ void VvcBitstreamParser::SkipGeneralTimingHrdParameters(utils::BitReader& reader
     }
 }
 
-void VvcBitstreamParser::SkipOlsTimingHrdParameters(utils::BitReader& reader, int first_sublayer,
+void VvcBitstreamParser::SkipOlsTimingHrdParameters(videoeye::BitReader& reader, int first_sublayer,
                                                     int max_sublayers_minus1,
                                                     const TimingHrdContext& ctx) {
     for (int i = first_sublayer; i <= max_sublayers_minus1; ++i) {
@@ -224,7 +223,7 @@ void VvcBitstreamParser::SkipOlsTimingHrdParameters(utils::BitReader& reader, in
     }
 }
 
-void VvcBitstreamParser::SkipRefPicListStruct(utils::BitReader& reader, int poc_lsb_bits,
+void VvcBitstreamParser::SkipRefPicListStruct(videoeye::BitReader& reader, int poc_lsb_bits,
                                               bool long_term_ref_pics,
                                               bool inter_layer_prediction) {
     // 每条参考项至少读 1 bit（inter_layer_ref_pic_flag 或 st_ref_pic_flag），
@@ -270,7 +269,7 @@ void VvcBitstreamParser::SkipRefPicListStruct(utils::BitReader& reader, int poc_
 // --------------------------------------------------------------------------
 // VUI
 // --------------------------------------------------------------------------
-void VvcBitstreamParser::ParseVuiParameters(utils::BitReader& reader, model::VvcVuiInfo& vui) {
+void VvcBitstreamParser::ParseVuiParameters(videoeye::BitReader& reader, model::VvcVuiInfo& vui) {
     vui.present = true;
 
     vui.progressive_source_flag = reader.ReadBit();
@@ -315,12 +314,12 @@ void VvcBitstreamParser::ParseVuiParameters(utils::BitReader& reader, model::Vvc
 // --------------------------------------------------------------------------
 // VPS
 // --------------------------------------------------------------------------
-model::VvcVpsInfo VvcBitstreamParser::ParseVpsFromNalUnit(const utils::NalUnit& nal_unit) {
+model::VvcVpsInfo VvcBitstreamParser::ParseVpsFromNalUnit(const videoeye::NalUnit& nal_unit) {
     model::VvcVpsInfo vps;
     const std::vector<uint8_t> rbsp = GetRbsp(nal_unit);
     if (rbsp.empty()) return vps;
 
-    utils::BitReader reader;
+    videoeye::BitReader reader;
     reader.Reset(rbsp.data(), rbsp.size());
 
     vps.vps_video_parameter_set_id = static_cast<int>(reader.ReadBits(4));
@@ -440,12 +439,12 @@ model::VvcVpsInfo VvcBitstreamParser::ParseVpsFromNalUnit(const utils::NalUnit& 
 // --------------------------------------------------------------------------
 // SPS
 // --------------------------------------------------------------------------
-model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const utils::NalUnit& nal_unit) {
+model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUnit& nal_unit) {
     model::VvcSpsInfo sps;
     const std::vector<uint8_t> rbsp = GetRbsp(nal_unit);
     if (rbsp.empty()) return sps;
 
-    utils::BitReader reader;
+    videoeye::BitReader reader;
     reader.Reset(rbsp.data(), rbsp.size());
 
     sps.sps_seq_parameter_set_id = static_cast<int>(reader.ReadBits(4));
@@ -779,12 +778,12 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const utils::NalUnit& 
 // --------------------------------------------------------------------------
 // PPS
 // --------------------------------------------------------------------------
-model::VvcPpsInfo VvcBitstreamParser::ParsePpsFromNalUnit(const utils::NalUnit& nal_unit) {
+model::VvcPpsInfo VvcBitstreamParser::ParsePpsFromNalUnit(const videoeye::NalUnit& nal_unit) {
     model::VvcPpsInfo pps;
     const std::vector<uint8_t> rbsp = GetRbsp(nal_unit);
     if (rbsp.empty()) return pps;
 
-    utils::BitReader reader;
+    videoeye::BitReader reader;
     reader.Reset(rbsp.data(), rbsp.size());
 
     pps.pps_pic_parameter_set_id = static_cast<int>(reader.ReadBits(6));
@@ -828,5 +827,4 @@ model::VvcPpsInfo VvcBitstreamParser::ParsePpsFromNalUnit(const utils::NalUnit& 
     return pps;
 }
 
-}  // namespace analyzer
 }  // namespace videoeye

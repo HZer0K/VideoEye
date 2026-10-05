@@ -2,7 +2,6 @@
 #include "core/media/codec/BitReader.h"
 
 namespace videoeye {
-namespace utils {
 
 // 查找 Annex B 起始码：00 00 00 01 或 00 00 01
 const uint8_t* ExtradataParser::FindStartCode(const uint8_t* pos, const uint8_t* end) {
@@ -848,5 +847,4 @@ ExtradataResult ExtradataParser::Parse(const uint8_t* extradata, size_t size) {
     return ParseWithFormat(format, extradata, size);
 }
 
-} // namespace utils
 } // namespace videoeye

@@ -644,7 +644,7 @@ void BitrateGopPage::SetSceneChanges(const std::vector<model::SceneChangeResult>
     UpdateChart();
 }
 
-void BitrateGopPage::FillScanOptions(analyzer::AnalysisOptions& options) {
+void BitrateGopPage::FillScanOptions(videoeye::AnalysisOptions& options) {
     ApplyOptionsFromUi();
     options.bitrate_gop_options = options_;
     options.analyze_bitrate_gop = true;

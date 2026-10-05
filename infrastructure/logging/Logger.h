@@ -6,7 +6,6 @@
 #include <memory>
 
 namespace videoeye {
-namespace utils {
 
 // 日志级别枚举
 enum class LogLevel {
@@ -65,11 +64,10 @@ private:
 };
 
 // 便捷宏定义
-#define LOG_DEBUG(msg)  videoeye::utils::Logger::GetInstance().Debug(msg, __FUNCTION__)
-#define LOG_INFO(msg)   videoeye::utils::Logger::GetInstance().Info(msg, __FUNCTION__)
-#define LOG_WARN(msg)   videoeye::utils::Logger::GetInstance().Warning(msg, __FUNCTION__)
-#define LOG_ERROR(msg)  videoeye::utils::Logger::GetInstance().Error(msg, __FUNCTION__)
-#define LOG_FATAL(msg)  videoeye::utils::Logger::GetInstance().Fatal(msg, __FUNCTION__)
+#define LOG_DEBUG(msg)  videoeye::Logger::GetInstance().Debug(msg, __FUNCTION__)
+#define LOG_INFO(msg)   videoeye::Logger::GetInstance().Info(msg, __FUNCTION__)
+#define LOG_WARN(msg)   videoeye::Logger::GetInstance().Warning(msg, __FUNCTION__)
+#define LOG_ERROR(msg)  videoeye::Logger::GetInstance().Error(msg, __FUNCTION__)
+#define LOG_FATAL(msg)  videoeye::Logger::GetInstance().Fatal(msg, __FUNCTION__)
 
-} // namespace utils
 } // namespace videoeye

@@ -9,7 +9,6 @@
 #include "core/analysis/AnalysisOptions.h"
 
 namespace videoeye {
-namespace analyzer {
 
 // 二阶 IIR（transposed direct form II，状态用 double 保精度）
 // 放在类外是为了让 K 加权系数的构造函数可以访问它
@@ -171,5 +170,4 @@ private:
     bool finished_ = false;
 };
 
-}  // namespace analyzer
 }  // namespace videoeye

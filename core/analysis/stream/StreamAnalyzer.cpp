@@ -7,7 +7,6 @@
 #include <climits>
 
 namespace videoeye {
-namespace analyzer {
 
 StreamAnalyzer::StreamAnalyzer()
     : is_analyzing_(false)
@@ -276,5 +275,4 @@ void StreamAnalyzer::UpdateGopInfo(const AVPacket* packet) {
     stats_.current_gop_size++;
 }
 
-} // namespace analyzer
 } // namespace videoeye

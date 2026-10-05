@@ -33,7 +33,6 @@
 #include "core/domain/model/AnalysisResult.h"
 
 namespace videoeye {
-namespace analyzer {
 
 // 逐秒桶: 扫描循环按时间戳把包大小 / 帧数攒到这里，收尾时换算成码率与帧率序列。
 // 放在本头文件而不是扫描循环那边的匿名命名空间里 —— 它同时被"生产者"（逐包扫描）
@@ -81,5 +80,4 @@ private:
     const AnalysisOptions& options_;
 };
 
-}  // namespace analyzer
 }  // namespace videoeye

@@ -36,11 +36,11 @@
 
 namespace {
 
-using videoeye::analyzer::VvcBitstreamParser;
+using videoeye::VvcBitstreamParser;
 using videoeye::model::VvcSpsInfo;
 using videoeye::task::TaskManager;
-using videoeye::utils::BitReader;
-using videoeye::utils::NalUnit;
+using videoeye::BitReader;
+using videoeye::NalUnit;
 
 // ---------------------------------------------------------------------------
 // 取消标志的统一入口
@@ -163,12 +163,12 @@ TEST(IsobmffParserCancel, ScanObservesCancelInsideBoxLoop) {
     ASSERT_FALSE(path.empty());
 
     std::atomic<bool> cancel{false};
-    videoeye::utils::IsobmffFile out;
-    videoeye::utils::IsobmffParser::Options opt;
+    videoeye::IsobmffFile out;
+    videoeye::IsobmffParser::Options opt;
     opt.cancel = &cancel;
 
     auto task = std::async(std::launch::async, [&]() {
-        return videoeye::utils::IsobmffParser::Parse(path, out, opt);
+        return videoeye::IsobmffParser::Parse(path, out, opt);
     });
 
     // 解析中途翻标志：只要实现在 box 循环里查过取消，就一定会被打断。

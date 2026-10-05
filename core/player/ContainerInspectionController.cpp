@@ -76,7 +76,7 @@ void ContainerInspectionController::Start(const QString& url) {
         bool ok = false;
         QString failure_msg;
         try {
-            analyzer::ContainerStructureAnalyzer analyzer;
+            videoeye::ContainerStructureAnalyzer analyzer;
             ok = analyzer.Analyze(url_copy, cs_result, token.flag());
         } catch (const std::exception& e) {
             LOG_ERROR("后台容器结构分析异常: " + std::string(e.what()));

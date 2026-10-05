@@ -3,7 +3,6 @@
 #include <fstream>
 
 namespace videoeye {
-namespace utils {
 
 namespace {
 
@@ -55,5 +54,4 @@ std::string DiagnoseUnopenableFile(const std::string& file_path) {
     return "";
 }
 
-} // namespace utils
 } // namespace videoeye

@@ -124,11 +124,11 @@ TEST(StreamingPackageTest, ValidHlsVodPackageHasNoWarningOrError) {
     const fs::path root = MakeTempDir("valid_vod");
     ASSERT_TRUE(WriteValidHlsVodPackage(root));
 
-    videoeye::analyzer::HlsManifestAnalyzer hls;
+    videoeye::HlsManifestAnalyzer hls;
     StreamingPackageResult result;
     ASSERT_TRUE(hls.AnalyzeFile((root / "master.m3u8").string(), result));
-    ASSERT_EQ(videoeye::analyzer::SegmentQcAnalyzer::StageStatus::kDone,
-              videoeye::analyzer::SegmentQcAnalyzer::Analyze(result));
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Analyze(result));
 
     EXPECT_TRUE(result.valid);
     EXPECT_EQ(videoeye::model::StreamingKind::HlsMaster, result.kind);
@@ -164,7 +164,7 @@ TEST(StreamingPackageTest, ValidHlsVodPackageHasNoWarningOrError) {
 // 验收 2: segment duration 超过 target duration 时必须 warning
 // ===========================================================================
 TEST(StreamingPackageTest, SegmentDurationOverTargetIsWarning) {
-    videoeye::analyzer::HlsManifestAnalyzer hls;
+    videoeye::HlsManifestAnalyzer hls;
     StreamingPackageResult result;
     result.manifest_path = "over_target.m3u8";
 
@@ -224,7 +224,7 @@ TEST(StreamingPackageTest, VariantKeyframeMisalignIsWarning) {
     result.ladder.push_back(low);
     result.ladder.push_back(high);
 
-    videoeye::analyzer::SegmentQcAnalyzer::Validate(result);
+    videoeye::SegmentQcAnalyzer::Validate(result);
 
     const auto* issue = result.FindIssue(StreamingIssueCode::kHlsVariantKeyframeMisalign);
     ASSERT_NE(nullptr, issue);
@@ -234,7 +234,7 @@ TEST(StreamingPackageTest, VariantKeyframeMisalignIsWarning) {
 
     // 对齐的包不该报警：把第二条改成完全一致，重新跑一遍（Validate 幂等）
     result.ladder[1].keyframe_times = {0.0, 4.0, 8.0};
-    videoeye::analyzer::SegmentQcAnalyzer::Validate(result);
+    videoeye::SegmentQcAnalyzer::Validate(result);
     EXPECT_EQ(nullptr, result.FindIssue(StreamingIssueCode::kHlsVariantKeyframeMisalign));
 }
 
@@ -261,7 +261,7 @@ TEST(StreamingPackageTest, DashSegmentTimelineGapIsError) {
                             "  </Period>\n"
                             "</MPD>\n";
 
-    videoeye::analyzer::DashManifestAnalyzer dash;
+    videoeye::DashManifestAnalyzer dash;
     StreamingPackageResult result;
     ASSERT_TRUE(dash.ParseText(mpd, ".", result));
     dash.Validate(result);
@@ -292,7 +292,7 @@ TEST(StreamingPackageTest, DashSegmentTimelineOverlapIsError) {
                             "</MPD>\n";
 
     StreamingPackageResult result;
-    videoeye::analyzer::DashManifestAnalyzer dash;
+    videoeye::DashManifestAnalyzer dash;
     ASSERT_TRUE(dash.ParseText(mpd, ".", result));
     dash.Validate(result);
 
@@ -326,7 +326,7 @@ TEST(StreamingPackageTest, DashStaticPackageExpandsSegments) {
                             "</MPD>\n";
 
     StreamingPackageResult result;
-    videoeye::analyzer::DashManifestAnalyzer dash;
+    videoeye::DashManifestAnalyzer dash;
     ASSERT_TRUE(dash.ParseText(mpd, ".", result));
 
     ASSERT_EQ(1u, result.representations.size());
@@ -369,7 +369,7 @@ TEST(StreamingPackageTest, HlsParsesMapKeyPartAndDiscontinuity) {
 
     StreamingPackageResult result;
     result.manifest_path = "ll.m3u8";
-    videoeye::analyzer::HlsManifestAnalyzer hls;
+    videoeye::HlsManifestAnalyzer hls;
     ASSERT_TRUE(hls.ParseText(text, ".", result));
 
     ASSERT_EQ(1u, result.playlists.size());
@@ -415,9 +415,9 @@ TEST(StreamingPackageTest, MissingSegmentFileIsReported) {
     ASSERT_TRUE(WriteFile(root / "index.m3u8", text));
 
     StreamingPackageResult result;
-    videoeye::analyzer::HlsManifestAnalyzer hls;
+    videoeye::HlsManifestAnalyzer hls;
     ASSERT_TRUE(hls.AnalyzeFile((root / "index.m3u8").string(), result));
-    videoeye::analyzer::SegmentQcAnalyzer::Analyze(result);
+    videoeye::SegmentQcAnalyzer::Analyze(result);
 
     const auto* issue = result.FindIssue(StreamingIssueCode::kSegmentMissingFile);
     ASSERT_NE(nullptr, issue);
@@ -435,9 +435,9 @@ TEST(StreamingPackageTest, MissingSegmentFileIsReported) {
 // ===========================================================================
 namespace {
 
-using videoeye::analyzer::DashManifestOptions;
-using videoeye::analyzer::HlsManifestOptions;
-namespace manifest_read = videoeye::utils::manifest;
+using videoeye::DashManifestOptions;
+using videoeye::HlsManifestOptions;
+namespace manifest_read = videoeye::manifest;
 
 std::string MakeMediaPlaylistText(int segment_count, bool crlf = false) {
     const char* eol = crlf ? "\r\n" : "\n";
@@ -461,7 +461,7 @@ TEST(StreamingPackageTest, HlsManifestOverSizeLimitIsRejected) {
     HlsManifestOptions opt;
     opt.max_manifest_bytes = 4096;
     StreamingPackageResult result;
-    videoeye::analyzer::HlsManifestAnalyzer hls;
+    videoeye::HlsManifestAnalyzer hls;
     EXPECT_FALSE(hls.AnalyzeFile((root / "index.m3u8").string(), result, opt));
     EXPECT_TRUE(result.truncated);
     EXPECT_FALSE(result.valid);
@@ -479,7 +479,7 @@ TEST(StreamingPackageTest, HlsManifestSizeLimitBoundaryIsExact) {
     const uintmax_t exact = fs::file_size(root / "index.m3u8", ec);
     ASSERT_FALSE(ec);
 
-    videoeye::analyzer::HlsManifestAnalyzer hls;
+    videoeye::HlsManifestAnalyzer hls;
 
     HlsManifestOptions at_limit;
     at_limit.max_manifest_bytes = exact;
@@ -502,7 +502,7 @@ TEST(StreamingPackageTest, HlsManifestReadHonoursCancelFlag) {
     const fs::path root = MakeTempDir("hls_read_cancel");
     ASSERT_TRUE(WriteFile(root / "index.m3u8", MakeMediaPlaylistText(8)));
 
-    videoeye::analyzer::HlsManifestAnalyzer hls;
+    videoeye::HlsManifestAnalyzer hls;
     const HlsManifestOptions opt;
 
     std::atomic<bool> cancelled{true};
@@ -567,7 +567,7 @@ TEST(StreamingPackageTest, ReadFileAndInMemoryTextSplitTheSameWay) {
 
     HlsManifestOptions opt;
     opt.load_sub_playlists = false;
-    videoeye::analyzer::HlsManifestAnalyzer hls;
+    videoeye::HlsManifestAnalyzer hls;
 
     StreamingPackageResult crlf_result;
     ASSERT_TRUE(hls.AnalyzeFile((root / "crlf.m3u8").string(), crlf_result, opt));
@@ -608,7 +608,7 @@ TEST(StreamingPackageTest, DashManifestSizeLimitAndCancelAreEnforced) {
                             "  <!-- " + MakeBytes(8192) + " -->\n</MPD>\n";
     ASSERT_TRUE(WriteFile(root / "index.mpd", mpd));
 
-    videoeye::analyzer::DashManifestAnalyzer dash;
+    videoeye::DashManifestAnalyzer dash;
 
     DashManifestOptions capped;
     capped.max_manifest_bytes = 4096;
@@ -642,7 +642,7 @@ TEST(StreamingPackageTest, OversizeSubPlaylistIsMarkedInsteadOfBreakingMaster) {
     HlsManifestOptions opt;
     opt.max_manifest_bytes = 4096;
     StreamingPackageResult result;
-    videoeye::analyzer::HlsManifestAnalyzer hls;
+    videoeye::HlsManifestAnalyzer hls;
     ASSERT_TRUE(hls.AnalyzeFile((root / "master.m3u8").string(), result, opt));
 
     EXPECT_TRUE(result.valid);
@@ -729,7 +729,7 @@ TEST(StreamingPackageCancelTest, HugeManifestIsNotReadToTheEndWhenCancelled) {
     // 进门前就是取消态：令牌只要真传进了清单解析，4000 行绝不可能读满
     std::atomic<bool> cancel{true};
     StreamingPackageResult result;
-    videoeye::analyzer::HlsManifestAnalyzer hls;
+    videoeye::HlsManifestAnalyzer hls;
     hls.AnalyzeFile((root / "media.m3u8").string(), result, {}, &cancel);
 
     const size_t parsed = result.playlists.empty() ? 0 : result.playlists[0].segments.size();
@@ -744,7 +744,7 @@ TEST(StreamingPackageCancelTest, CancelledSegmentQcSkipsLadderAndValidation) {
     ASSERT_TRUE(MakeBigPackage(root, kSegCount, pkg));
 
     // 必须在 analyzer 域里取: 与 SegmentQcAnalyzer 同命名空间, 测试文件里没有这个 using
-    videoeye::analyzer::SegmentQcOptions options;
+    videoeye::SegmentQcOptions options;
     options.probe_segments = true;
     options.max_probe_segments = 64;  // 放宽上限, 保证"分片落盘探测"这个最耗时的阶段真会跑到
 
@@ -752,16 +752,16 @@ TEST(StreamingPackageCancelTest, CancelledSegmentQcSkipsLadderAndValidation) {
     std::atomic<bool> run_cancel{false};
     StreamingPackageResult control = pkg;
     // 先取返回值再比: 直接把 Analyze(...) 塞进 EXPECT_EQ 会被宏外的逗号拆成多个参数
-    const auto control_status = videoeye::analyzer::SegmentQcAnalyzer::Analyze(control, options, &run_cancel);
-    ASSERT_EQ(videoeye::analyzer::SegmentQcAnalyzer::StageStatus::kDone, control_status);
+    const auto control_status = videoeye::SegmentQcAnalyzer::Analyze(control, options, &run_cancel);
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone, control_status);
     EXPECT_FALSE(control.ladder.empty()) << "不取消时 ladder 必须建出来, 否则这条用例失去对照意义";
 
     // 取消态：三态必须落在 Cancelled，且不得产出 ladder / issues
     // （ladder 与 issues 都是 BuildLadder / Validate 的活，拿半份分片数据算出来的结论是假的）
     std::atomic<bool> cancel{true};
     StreamingPackageResult canceled = pkg;
-    const auto cancel_status = videoeye::analyzer::SegmentQcAnalyzer::Analyze(canceled, options, &cancel);
-    EXPECT_EQ(videoeye::analyzer::SegmentQcAnalyzer::StageStatus::kCancelled, cancel_status)
+    const auto cancel_status = videoeye::SegmentQcAnalyzer::Analyze(canceled, options, &cancel);
+    EXPECT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kCancelled, cancel_status)
         << "探测链被取消时必须是 kCancelled, 不能走成 kDone";
     EXPECT_TRUE(canceled.ladder.empty()) << "取消后不得再建 ladder: 半份分片数据算不出可用的码率梯度";
     EXPECT_TRUE(canceled.issues.empty()) << "取消后不得再跑校验: 对着半份数据报问题等于报假问题";
@@ -813,7 +813,7 @@ TEST(StreamingPackageCancelTest, ValidateChecksCancelInsideDashLoops) {
         pkg.representations.push_back(std::move(rep));
     }
 
-    videoeye::analyzer::SegmentQcOptions options;
+    videoeye::SegmentQcOptions options;
     options.probe_segments = false;  // 探测阶段自带取消检查, 会掩盖 Validate 这一段
 
     // 对照组: 不取消必须跑完并真的报出缺失分片, 否则"取消态没有 issue"可能只是
@@ -821,15 +821,15 @@ TEST(StreamingPackageCancelTest, ValidateChecksCancelInsideDashLoops) {
     std::atomic<bool> run_cancel{false};
     StreamingPackageResult control = pkg;
     const auto control_status =
-        videoeye::analyzer::SegmentQcAnalyzer::Validate(control, options, &run_cancel);
-    ASSERT_EQ(videoeye::analyzer::SegmentQcAnalyzer::StageStatus::kDone, control_status);
+        videoeye::SegmentQcAnalyzer::Validate(control, options, &run_cancel);
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone, control_status);
     ASSERT_FALSE(control.issues.empty()) << "对照组必须报出缺失分片, 否则本用例失去意义";
 
     std::atomic<bool> cancel{true};
     StreamingPackageResult canceled = pkg;
     const auto cancel_status =
-        videoeye::analyzer::SegmentQcAnalyzer::Validate(canceled, options, &cancel);
-    EXPECT_EQ(videoeye::analyzer::SegmentQcAnalyzer::StageStatus::kCancelled, cancel_status)
+        videoeye::SegmentQcAnalyzer::Validate(canceled, options, &cancel);
+    EXPECT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kCancelled, cancel_status)
         << "Validate 必须自己报告取消, 不能让调用方靠 Analyze 末尾的兜底检查来擦屁股";
     EXPECT_TRUE(canceled.issues.empty())
         << "取消态下 Validate 必须在跑完长循环之前退出: 带着半份统计报出来的 issue 是假问题";

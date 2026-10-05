@@ -6,7 +6,6 @@
 #include "core/media/codec/ExtradataParser.h"
 
 namespace videoeye {
-namespace analyzer {
 
 // SPS / VPS 里几个「循环次数直接来自 ue(v)」的字段，畸形码流能把循环顶到上亿次。
 // 取值取规范允许的上界：超界一律判非法并停止继续读。
@@ -46,29 +45,29 @@ std::string HevcBitstreamParser::GetLevelVersion(uint32_t general_level_idc) {
     return std::to_string(level) + "." + std::to_string(sub_level);
 }
 
-bool HevcBitstreamParser::IsVpsNalUnit(const utils::NalUnit& nal_unit) {
+bool HevcBitstreamParser::IsVpsNalUnit(const videoeye::NalUnit& nal_unit) {
     return nal_unit.type == 32;
 }
 
-bool HevcBitstreamParser::IsSpsNalUnit(const utils::NalUnit& nal_unit) {
+bool HevcBitstreamParser::IsSpsNalUnit(const videoeye::NalUnit& nal_unit) {
     return nal_unit.type == 33;
 }
 
-bool HevcBitstreamParser::IsPpsNalUnit(const utils::NalUnit& nal_unit) {
+bool HevcBitstreamParser::IsPpsNalUnit(const videoeye::NalUnit& nal_unit) {
     return nal_unit.type == 34;
 }
 
-std::vector<uint8_t> HevcBitstreamParser::GetRbsp(const utils::NalUnit& nal_unit) {
+std::vector<uint8_t> HevcBitstreamParser::GetRbsp(const videoeye::NalUnit& nal_unit) {
     if (nal_unit.data.empty()) {
         return {};
     }
-    return utils::UnescapeRbsp(nal_unit.data.data(), nal_unit.data.size());
+    return videoeye::UnescapeRbsp(nal_unit.data.data(), nal_unit.data.size());
 }
 
 // --------------------------------------------------------------------------
 // profile_tier_level() —— 7.3.3
 // --------------------------------------------------------------------------
-void HevcBitstreamParser::ParseProfileTierLevel(utils::BitReader& reader,
+void HevcBitstreamParser::ParseProfileTierLevel(videoeye::BitReader& reader,
                                                 int max_sub_layers_minus1,
                                                 int& profile_space,
                                                 int& tier_flag,
@@ -172,7 +171,7 @@ void HevcBitstreamParser::ParseProfileTierLevel(utils::BitReader& reader,
 // --------------------------------------------------------------------------
 // scaling_list_data() —— 7.3.4
 // --------------------------------------------------------------------------
-void HevcBitstreamParser::SkipScalingListData(utils::BitReader& reader) {
+void HevcBitstreamParser::SkipScalingListData(videoeye::BitReader& reader) {
     for (int size_id = 0; size_id < 4; ++size_id) {
         for (int matrix_id = 0; matrix_id < 6; matrix_id += (size_id == 3 ? 3 : 1)) {
             const bool pred_mode = reader.ReadBit(); // scaling_list_pred_mode_flag
@@ -196,7 +195,7 @@ void HevcBitstreamParser::SkipScalingListData(utils::BitReader& reader) {
 // --------------------------------------------------------------------------
 // hrd_parameters() —— 7.3.5（附录 E.2.2）
 // --------------------------------------------------------------------------
-void HevcBitstreamParser::SkipHrdParameters(utils::BitReader& reader,
+void HevcBitstreamParser::SkipHrdParameters(videoeye::BitReader& reader,
                                             int max_sub_layers_minus1) {
     // 严格按 7.3.5 / 7.3.5.1 走。以前这里把 sub_pic 写死成 false、位宽又多算了一位，
     // HRD 一旦存在，读指针就偏到 VUI 后面去了 —— 表现为 SPS 里的 aspect_ratio /
@@ -239,7 +238,7 @@ void HevcBitstreamParser::SkipHrdParameters(utils::BitReader& reader,
     }
 }
 
-bool HevcBitstreamParser::SkipOneHrdCpbList(utils::BitReader& reader, uint32_t cpb_cnt_minus1,
+bool HevcBitstreamParser::SkipOneHrdCpbList(videoeye::BitReader& reader, uint32_t cpb_cnt_minus1,
                                             bool sub_pic) {
     for (uint32_t j = 0; j <= cpb_cnt_minus1; ++j) {
         reader.ReadUE();                    // bit_rate_value_minus1
@@ -257,7 +256,7 @@ bool HevcBitstreamParser::SkipOneHrdCpbList(utils::BitReader& reader, uint32_t c
 // --------------------------------------------------------------------------
 // short_term_ref_pic_set() —— 7.3.7
 // --------------------------------------------------------------------------
-void HevcBitstreamParser::SkipShortTermRefPicSets(utils::BitReader& reader, int num_sets) {
+void HevcBitstreamParser::SkipShortTermRefPicSets(videoeye::BitReader& reader, int num_sets) {
     std::vector<int> num_delta_pocs(num_sets > 0 ? num_sets : 1, 0);
 
     for (int i = 0; i < num_sets; ++i) {
@@ -299,7 +298,7 @@ void HevcBitstreamParser::SkipShortTermRefPicSets(utils::BitReader& reader, int 
 // --------------------------------------------------------------------------
 // vui_parameters() —— 附录 E.2.1
 // --------------------------------------------------------------------------
-void HevcBitstreamParser::ParseVuiParameters(utils::BitReader& reader,
+void HevcBitstreamParser::ParseVuiParameters(videoeye::BitReader& reader,
                                              model::HevcSpsInfo& sps,
                                              int max_sub_layers_minus1) {
     sps.aspect_ratio_info_present_flag = static_cast<int>(reader.ReadBit());
@@ -376,7 +375,7 @@ void HevcBitstreamParser::ParseVuiParameters(utils::BitReader& reader,
 // --------------------------------------------------------------------------
 // VPS —— 7.3.2.2
 // --------------------------------------------------------------------------
-model::HevcVpsInfo HevcBitstreamParser::ParseVpsFromNalUnit(const utils::NalUnit& nal_unit) {
+model::HevcVpsInfo HevcBitstreamParser::ParseVpsFromNalUnit(const videoeye::NalUnit& nal_unit) {
     model::HevcVpsInfo vps;
 
     if (!IsVpsNalUnit(nal_unit)) {
@@ -388,7 +387,7 @@ model::HevcVpsInfo HevcBitstreamParser::ParseVpsFromNalUnit(const utils::NalUnit
         return vps;
     }
 
-    utils::BitReader reader;
+    videoeye::BitReader reader;
     reader.ResetFromData(rbsp.data(), rbsp.size());
 
     vps.vps_video_parameter_set_id = static_cast<int>(reader.ReadBits(4));
@@ -455,7 +454,7 @@ model::HevcVpsInfo HevcBitstreamParser::ParseVpsFromNalUnit(const utils::NalUnit
 // --------------------------------------------------------------------------
 // SPS —— 7.3.2.2.1
 // --------------------------------------------------------------------------
-model::HevcSpsInfo HevcBitstreamParser::ParseSpfFromNalUnit(const utils::NalUnit& nal_unit) {
+model::HevcSpsInfo HevcBitstreamParser::ParseSpfFromNalUnit(const videoeye::NalUnit& nal_unit) {
     model::HevcSpsInfo sps;
 
     if (!IsSpsNalUnit(nal_unit)) {
@@ -467,7 +466,7 @@ model::HevcSpsInfo HevcBitstreamParser::ParseSpfFromNalUnit(const utils::NalUnit
         return sps;
     }
 
-    utils::BitReader reader;
+    videoeye::BitReader reader;
     reader.ResetFromData(rbsp.data(), rbsp.size());
 
     sps.sps_video_parameter_set_id = static_cast<int>(reader.ReadBits(4));
@@ -597,7 +596,7 @@ model::HevcSpsInfo HevcBitstreamParser::ParseSpfFromNalUnit(const utils::NalUnit
 // --------------------------------------------------------------------------
 // PPS —— 7.3.2.3.1
 // --------------------------------------------------------------------------
-model::HevcPpsInfo HevcBitstreamParser::ParsePpsFromNalUnit(const utils::NalUnit& nal_unit) {
+model::HevcPpsInfo HevcBitstreamParser::ParsePpsFromNalUnit(const videoeye::NalUnit& nal_unit) {
     model::HevcPpsInfo pps;
 
     if (!IsPpsNalUnit(nal_unit)) {
@@ -609,7 +608,7 @@ model::HevcPpsInfo HevcBitstreamParser::ParsePpsFromNalUnit(const utils::NalUnit
         return pps;
     }
 
-    utils::BitReader reader;
+    videoeye::BitReader reader;
     reader.ResetFromData(rbsp.data(), rbsp.size());
 
     pps.pic_parameter_set_id = static_cast<int>(reader.ReadUE());
@@ -689,7 +688,7 @@ model::HevcPpsInfo HevcBitstreamParser::ParsePpsFromNalUnit(const utils::NalUnit
 model::HevcVpsInfo HevcBitstreamParser::ParseVps(const uint8_t* extradata, size_t size) {
     if (!extradata || size == 0) return model::HevcVpsInfo();
 
-    auto result = utils::ExtradataParser::Parse(extradata, size);
+    auto result = videoeye::ExtradataParser::Parse(extradata, size);
     for (const auto& nal : result.nal_units) {
         if (IsVpsNalUnit(nal)) {
             return ParseVpsFromNalUnit(nal);
@@ -701,7 +700,7 @@ model::HevcVpsInfo HevcBitstreamParser::ParseVps(const uint8_t* extradata, size_
 model::HevcSpsInfo HevcBitstreamParser::ParseSpf(const uint8_t* extradata, size_t size) {
     if (!extradata || size == 0) return model::HevcSpsInfo();
 
-    auto result = utils::ExtradataParser::Parse(extradata, size);
+    auto result = videoeye::ExtradataParser::Parse(extradata, size);
     for (const auto& nal : result.nal_units) {
         if (IsSpsNalUnit(nal)) {
             return ParseSpfFromNalUnit(nal);
@@ -713,7 +712,7 @@ model::HevcSpsInfo HevcBitstreamParser::ParseSpf(const uint8_t* extradata, size_
 model::HevcPpsInfo HevcBitstreamParser::ParsePps(const uint8_t* extradata, size_t size) {
     if (!extradata || size == 0) return model::HevcPpsInfo();
 
-    auto result = utils::ExtradataParser::Parse(extradata, size);
+    auto result = videoeye::ExtradataParser::Parse(extradata, size);
     for (const auto& nal : result.nal_units) {
         if (IsPpsNalUnit(nal)) {
             return ParsePpsFromNalUnit(nal);
@@ -766,5 +765,4 @@ std::vector<model::HevcSeiMessage> HevcBitstreamParser::ParseSeiMessages(
     return sei_messages;
 }
 
-} // namespace analyzer
 } // namespace videoeye

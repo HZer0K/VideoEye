@@ -14,11 +14,10 @@ struct AVPacket;
 struct AVPacketSideData;
 
 namespace videoeye {
-namespace analyzer {
 
 // 结果类型（ColorHdrAnalysis / ColorKeyValueRow）住在
 // core/domain/model/ColorHdrResult.h —— model 层要消费结果，但不能为了拿类型
-// 反向包含分析器。这里做别名，既有调用方继续用 analyzer:: 前缀也不用改。
+// 反向包含分析器。这里做别名，既有调用方继续用 videoeye:: 前缀也不用改。
 using model::ColorHdrAnalysis;
 using model::ColorKeyValueRow;
 
@@ -70,5 +69,4 @@ private:
     bool finished_ = false;
 };
 
-}  // namespace analyzer
 }  // namespace videoeye

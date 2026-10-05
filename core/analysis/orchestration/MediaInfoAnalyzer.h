@@ -15,7 +15,6 @@
 //   * 不解析编解码器内部比特流（那是「码流分析」页的职责）；
 //   * 换来的好处是零额外依赖、解析速度与 avformat 探测一致。
 namespace videoeye {
-namespace analyzer {
 
 class MediaInfoAnalyzer {
 public:
@@ -50,5 +49,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace analyzer
 } // namespace videoeye

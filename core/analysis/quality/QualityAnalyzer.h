@@ -11,7 +11,6 @@ extern "C" {
 #include "core/domain/model/QualityMetric.h"
 
 namespace videoeye {
-namespace analyzer {
 
 // 单帧参考质量评估结果，基于灰度/亮度平面计算全帧 MSE、PSNR、SSIM。
 // 取值约定（全类统一，不要再引入哨兵值）:
@@ -91,5 +90,4 @@ private:
 
 };
 
-} // namespace analyzer
 } // namespace videoeye

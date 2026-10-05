@@ -28,7 +28,6 @@ struct AVStream;
 struct AVDictionary;
 
 namespace videoeye {
-namespace analyzer {
 
 class AuxDataAnalyzer {
 public:
@@ -59,5 +58,4 @@ private:
     bool registered_ = false;
 };
 
-}  // namespace analyzer
 }  // namespace videoeye

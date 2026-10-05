@@ -13,8 +13,8 @@ extern "C" {
 
 namespace {
 
-using videoeye::analyzer::BitstreamAnalyzer;
-using videoeye::analyzer::ContainerMetadata;
+using videoeye::BitstreamAnalyzer;
+using videoeye::ContainerMetadata;
 using videoeye::model::BitstreamAnalysisResult;
 
 // 与 tests/unit/test_h264_bitstream_parser.cpp 同一套真实 SPS：

@@ -39,7 +39,7 @@ public:
     void SetQcReport(const model::QcReport& qc_report);
 
     // 面板发起扫描前调用：把 UI 上的阈值同步进 AnalysisOptions
-    void FillScanOptions(analyzer::AnalysisOptions& options);
+    void FillScanOptions(videoeye::AnalysisOptions& options);
 
     // 扫描生命周期由面板驱动（与码率/GOP、色彩/HDR、诊断页保持同步）
     void SetScanActive(bool active);
@@ -80,7 +80,7 @@ private:
     bool has_result_ = false;
     model::AnalysisResult result_;
     model::QcReport qc_report_;
-    analyzer::AudioQcOptions options_;
+    videoeye::AudioQcOptions options_;
 
     QLabel* summary_label_ = nullptr;
     QProgressBar* progress_bar_ = nullptr;

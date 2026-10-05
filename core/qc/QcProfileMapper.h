@@ -15,7 +15,7 @@ namespace qc {
 
 // 分析强度 -> AnalysisOptions。基础档位与"具体要分析哪些维度"无关，
 // 后者由调用方决定（UI 有自己的开关面板）。
-analyzer::AnalysisOptions OptionsForDepth(QcAnalysisDepth depth);
+videoeye::AnalysisOptions OptionsForDepth(QcAnalysisDepth depth);
 
 }  // namespace qc
 }  // namespace videoeye

@@ -6,7 +6,6 @@
 #include "infrastructure/logging/Logger.h"
 
 namespace videoeye {
-namespace analyzer {
 
 AnalysisResultAssembler::AnalysisResultAssembler(model::AnalysisResult& result,
                                                  const AnalysisOptions& options)
@@ -148,5 +147,4 @@ void AnalysisResultAssembler::Finish(const AnalysisCallbacks& callbacks) {
     NotifyFinished(callbacks, completed, result_);
 }
 
-}  // namespace analyzer
 }  // namespace videoeye

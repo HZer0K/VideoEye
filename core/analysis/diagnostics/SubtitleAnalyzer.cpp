@@ -17,7 +17,6 @@ extern "C" {
 }
 
 namespace videoeye {
-namespace analyzer {
 namespace {
 
 constexpr uint32_t kTagCea608 = MKTAG('c', '6', '0', '8');
@@ -782,5 +781,4 @@ void SubtitleAnalyzer::Finish(double media_duration_seconds) {
     result_.analyzed = true;
 }
 
-}  // namespace analyzer
 }  // namespace videoeye

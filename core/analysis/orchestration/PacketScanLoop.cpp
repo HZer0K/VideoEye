@@ -11,7 +11,6 @@ extern "C" {
 }
 
 namespace videoeye {
-namespace analyzer {
 namespace {
 
 constexpr int kProgressMinIntervalMs = 100;
@@ -158,5 +157,4 @@ bool PacketScanLoop::ReportProgress(int64_t packet_index, int64_t last_pos, doub
     return true;
 }
 
-}  // namespace analyzer
 }  // namespace videoeye

@@ -38,6 +38,19 @@ jobs:
       - name: Self-check layering exit codes
         run: python3 scripts/test_check_layering.py
 
+      - name: Check Qt/analysis border
+        run: python3 scripts/audit_qt_analysis_border.py
+
+      - name: Self-check Qt/analysis audit exit codes
+        run: python3 scripts/test_audit_qt_analysis_border.py
+
+      # 命名空间跟不跟目录走（2026-10-05 清完 analyzer / utils 之后立的门）。
+      - name: Check namespace layout
+        run: python3 scripts/audit_namespace_layout.py
+
+      - name: Self-check namespace layout exit codes
+        run: python3 scripts/test_audit_namespace_layout.py
+
   build:
     name: Build (${{ matrix.os }})
     strategy:

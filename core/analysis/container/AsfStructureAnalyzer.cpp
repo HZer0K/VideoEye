@@ -6,7 +6,6 @@
 #include <string>
 
 namespace videoeye {
-namespace analyzer {
 
 // ASF GUIDs (以文件中的字节序存储: 前3字段小端, 后8字节原序)
 static const std::string kHeaderObjectGuid =
@@ -259,5 +258,4 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
     return true;
 }
 
-} // namespace analyzer
 } // namespace videoeye

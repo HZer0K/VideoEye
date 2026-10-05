@@ -3,7 +3,7 @@
 // MP4/fMP4 容器一致性校验器
 //
 // 职责:
-//   1) 基于自研 utils::IsobmffParser 解析 stbl 全表
+//   1) 基于自研 videoeye::IsobmffParser 解析 stbl 全表
 //      （stts/ctts/stss/stsz/stsc/stco/co64/elst）与 fMP4 的 moof/traf/tfhd/tfdt/trun，
 //      展开每个样本（offset/DTS/PTS/size/keyframe）；
 //   2) 交叉校验各表是否自洽、chunk offset 是否越界、elst 是否造成首帧偏移、
@@ -22,7 +22,6 @@
 #include "core/analysis/AnalysisOptions.h"
 
 namespace videoeye {
-namespace analyzer {
 
 class Mp4SampleTableAnalyzer {
 public:
@@ -49,5 +48,4 @@ private:
     Mp4SampleTableOptions options_;
 };
 
-}  // namespace analyzer
 }  // namespace videoeye

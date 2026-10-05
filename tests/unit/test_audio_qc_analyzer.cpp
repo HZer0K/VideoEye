@@ -22,8 +22,8 @@
 
 namespace {
 
-using videoeye::analyzer::AudioQcAnalyzer;
-using videoeye::analyzer::AudioQcOptions;
+using videoeye::AudioQcAnalyzer;
+using videoeye::AudioQcOptions;
 using videoeye::model::AudioChannelInfo;
 using videoeye::model::AudioChannelRole;
 using videoeye::model::AudioQcResult;

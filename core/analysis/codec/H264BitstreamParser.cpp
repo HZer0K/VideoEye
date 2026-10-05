@@ -4,7 +4,6 @@
 #include "core/media/codec/ExtradataParser.h"
 
 namespace videoeye {
-namespace analyzer {
 
 namespace {
 
@@ -67,11 +66,11 @@ void H264BitstreamParser::ParseProfileLevelInfo(uint32_t profile_idc,
 // --------------------------------------------------------------------------
 // NAL 类型判断
 // --------------------------------------------------------------------------
-bool H264BitstreamParser::IsSpsNalUnit(const utils::NalUnit& nal_unit) {
+bool H264BitstreamParser::IsSpsNalUnit(const videoeye::NalUnit& nal_unit) {
     return nal_unit.type == 7; // SPS
 }
 
-bool H264BitstreamParser::IsPpsNalUnit(const utils::NalUnit& nal_unit) {
+bool H264BitstreamParser::IsPpsNalUnit(const videoeye::NalUnit& nal_unit) {
     return nal_unit.type == 8; // PPS
 }
 
@@ -89,20 +88,20 @@ bool H264BitstreamParser::HasChromaFormatExtension(int profile_idc) {
     }
 }
 
-std::vector<uint8_t> H264BitstreamParser::GetRbsp(const utils::NalUnit& nal_unit) {
+std::vector<uint8_t> H264BitstreamParser::GetRbsp(const videoeye::NalUnit& nal_unit) {
     // NalUnit::data 已不含 NAL header（见 core/media/codec/ExtradataParser.h 的不变量说明），
     // 这里只需要做 emulation_prevention_three_byte 的反转义。
     if (nal_unit.data.empty()) {
         return {};
     }
-    return utils::UnescapeRbsp(nal_unit.data.data(), nal_unit.data.size());
+    return videoeye::UnescapeRbsp(nal_unit.data.data(), nal_unit.data.size());
 }
 
 // --------------------------------------------------------------------------
 // scaling_list( sizeOfScalingList ) —— 7.3.2.1.1.1
 // 我们只需要跳过它，但仍要正确跟踪 nextScale，否则 delta_scale 的取舍会错位。
 // --------------------------------------------------------------------------
-void H264BitstreamParser::SkipScalingList(utils::BitReader& reader, int size) {
+void H264BitstreamParser::SkipScalingList(videoeye::BitReader& reader, int size) {
     int last_scale = 8;
     int next_scale = 8;
     for (int j = 0; j < size; ++j) {
@@ -117,7 +116,7 @@ void H264BitstreamParser::SkipScalingList(utils::BitReader& reader, int size) {
 // --------------------------------------------------------------------------
 // hrd_parameters() —— 7.3.2.1.2 / 附录 E.1.2
 // --------------------------------------------------------------------------
-void H264BitstreamParser::SkipHrdParameters(utils::BitReader& reader,
+void H264BitstreamParser::SkipHrdParameters(videoeye::BitReader& reader,
                                             model::H264VuiInfo& vui) {
     const uint32_t cpb_cnt_minus1 = reader.ReadUE();
     if (cpb_cnt_minus1 > 31) {
@@ -148,7 +147,7 @@ void H264BitstreamParser::SkipHrdParameters(utils::BitReader& reader,
 // --------------------------------------------------------------------------
 // vui_parameters() —— 附录 E.1.1
 // --------------------------------------------------------------------------
-void H264BitstreamParser::ParseVuiParameters(utils::BitReader& reader,
+void H264BitstreamParser::ParseVuiParameters(videoeye::BitReader& reader,
                                              model::H264VuiInfo& vui) {
     vui.present = true;
 
@@ -230,7 +229,7 @@ void H264BitstreamParser::ParseVuiParameters(utils::BitReader& reader,
 // --------------------------------------------------------------------------
 // seq_parameter_set_data() —— 7.3.2.1.1
 // --------------------------------------------------------------------------
-model::H264SpsInfo H264BitstreamParser::ParseFromNalUnit(const utils::NalUnit& nal_unit) {
+model::H264SpsInfo H264BitstreamParser::ParseFromNalUnit(const videoeye::NalUnit& nal_unit) {
     model::H264SpsInfo sps;
 
     if (!IsSpsNalUnit(nal_unit)) {
@@ -242,7 +241,7 @@ model::H264SpsInfo H264BitstreamParser::ParseFromNalUnit(const utils::NalUnit& n
         return sps;
     }
 
-    utils::BitReader reader;
+    videoeye::BitReader reader;
     reader.Reset(rbsp.data(), rbsp.size());
 
     // profile_idc u(8)
@@ -374,7 +373,7 @@ model::H264SpsInfo H264BitstreamParser::ParseFromNalUnit(const utils::NalUnit& n
 // --------------------------------------------------------------------------
 // pic_parameter_set_rbsp() —— 7.3.2.2
 // --------------------------------------------------------------------------
-model::H264PpsInfo H264BitstreamParser::ParsePpsFromNalUnit(const utils::NalUnit& nal_unit) {
+model::H264PpsInfo H264BitstreamParser::ParsePpsFromNalUnit(const videoeye::NalUnit& nal_unit) {
     model::H264PpsInfo pps;
 
     if (!IsPpsNalUnit(nal_unit)) {
@@ -386,7 +385,7 @@ model::H264PpsInfo H264BitstreamParser::ParsePpsFromNalUnit(const utils::NalUnit
         return pps;
     }
 
-    utils::BitReader reader;
+    videoeye::BitReader reader;
     reader.Reset(rbsp.data(), rbsp.size());
 
     pps.pic_parameter_set_id = static_cast<int>(reader.ReadUE());
@@ -460,7 +459,7 @@ model::H264SpsInfo H264BitstreamParser::ParseSpf(const uint8_t* extradata, size_
         return model::H264SpsInfo();
     }
 
-    auto result = utils::ExtradataParser::Parse(extradata, size);
+    auto result = videoeye::ExtradataParser::Parse(extradata, size);
 
     for (const auto& nal : result.nal_units) {
         if (IsSpsNalUnit(nal)) {
@@ -476,7 +475,7 @@ model::H264PpsInfo H264BitstreamParser::ParsePps(const uint8_t* extradata, size_
         return model::H264PpsInfo();
     }
 
-    auto result = utils::ExtradataParser::Parse(extradata, size);
+    auto result = videoeye::ExtradataParser::Parse(extradata, size);
 
     for (const auto& nal : result.nal_units) {
         if (IsPpsNalUnit(nal)) {
@@ -491,5 +490,4 @@ model::H264VuiInfo H264BitstreamParser::ParseVui(const uint8_t* extradata, size_
     return ParseSpf(extradata, size).vui;
 }
 
-} // namespace analyzer
 } // namespace videoeye

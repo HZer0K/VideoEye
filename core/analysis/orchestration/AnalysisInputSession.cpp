@@ -21,7 +21,6 @@ extern "C" {
 #include "infrastructure/logging/ScopedTimer.h"
 
 namespace videoeye {
-namespace analyzer {
 namespace {
 
 constexpr int64_t kMaxLayoutScanBytes = 8 * 1024 * 1024;  // moov/mdat 顺序扫描上限
@@ -133,7 +132,7 @@ AnalysisInputSession::Outcome AnalysisInputSession::Open(model::AnalysisResult& 
         Close();
         std::string msg = "无法打开文件: " + file_path_ + " (" + errbuf + ")";
         // 定向诊断: FFmpeg 通用报错往往不含可操作的修复建议 (如 fMP4 分片缺 init 段)
-        const std::string extra = utils::DiagnoseUnopenableFile(file_path_);
+        const std::string extra = videoeye::DiagnoseUnopenableFile(file_path_);
         if (!extra.empty()) msg += "。" + extra;
         // 打开阶段被中断回调打断 = 用户取消（含"文件根本不存在也超时"的网络源场景），
         // 不能反过来告诉用户"无法打开文件"
@@ -237,5 +236,4 @@ void AnalysisInputSession::BuildStreamDigests(model::AnalysisResult& result) {
     }
 }
 
-}  // namespace analyzer
 }  // namespace videoeye

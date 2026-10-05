@@ -3,8 +3,8 @@
 namespace videoeye {
 namespace qc {
 
-analyzer::AnalysisOptions OptionsForDepth(QcAnalysisDepth depth) {
-    analyzer::AnalysisOptions options;
+videoeye::AnalysisOptions OptionsForDepth(QcAnalysisDepth depth) {
+    videoeye::AnalysisOptions options;
     // 强度只动"要不要解码"的开关，各分析维度本身仍保持默认开启。
     switch (depth) {
         case QcAnalysisDepth::Fast:

@@ -22,7 +22,6 @@
 #include "core/domain/model/StreamPackageInfo.h"
 
 namespace videoeye {
-namespace analyzer {
 
 // 见 HlsManifestOptions 的注释：带 NSDMI 的结构体必须在 namespace 作用域。
 struct DashManifestOptions {
@@ -66,5 +65,4 @@ private:
     DashManifestOptions options_;
 };
 
-} // namespace analyzer
 } // namespace videoeye

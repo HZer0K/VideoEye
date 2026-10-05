@@ -42,7 +42,7 @@ bool IsAnalyzableFile(const std::string& path, std::string& reason) {
 
 QcRunResult QcRunner::AnalyzeFile(const std::string& path,
                                   const QcProfile& profile,
-                                  analyzer::AnalysisOptions options,
+                                  videoeye::AnalysisOptions options,
                                   const QcRunCallbacks& callbacks,
                                   int join_budget_ms) {
     QcRunResult output;
@@ -56,7 +56,7 @@ QcRunResult QcRunner::AnalyzeFile(const std::string& path,
     }
 
     const auto started_at = std::chrono::steady_clock::now();
-    analyzer::QcRuleEngine engine(BuildRulesForProfile(profile));
+    videoeye::QcRuleEngine engine(BuildRulesForProfile(profile));
 
     // 登记到统一协议: 这条分析从此有一个 TaskId、一份取消令牌, 终态也写回同一条 slot。
     // 调用方自带线程(这里是自建 std::thread)时走 BeginHandle 而不是 Run —— 执行方式照旧,
@@ -65,7 +65,7 @@ QcRunResult QcRunner::AnalyzeFile(const std::string& path,
     const bool admitted = handle.valid();
     // 引擎含 atomic 成员、不可移动, 只能按 shared_ptr 交给 worker —— 这正好是
     // "任务只携带自持有的 shared state" 的形态。
-    auto engine_ptr = std::make_shared<analyzer::AnalysisEngine>();
+    auto engine_ptr = std::make_shared<videoeye::AnalysisEngine>();
 
     // worker 与等待线程之间的交接区。std::promise 也能做, 但需要额外处理
     // "进度回调要持续转发"这件事, 条件变量版本更直观。
@@ -83,10 +83,10 @@ QcRunResult QcRunner::AnalyzeFile(const std::string& path,
         model::AnalysisResult result;
         std::mutex mutex;
         std::condition_variable cv;
-        analyzer::AnalysisEngine* engine = nullptr;
+        videoeye::AnalysisEngine* engine = nullptr;
         std::string path;
-        analyzer::AnalysisOptions options;
-        analyzer::AnalysisCallbacks callbacks;
+        videoeye::AnalysisOptions options;
+        videoeye::AnalysisCallbacks callbacks;
     };
     auto box = std::make_shared<Box>();
     box->engine = engine_ptr.get();
@@ -214,9 +214,9 @@ QcRunResult QcRunner::AnalyzeFile(const std::string& path,
 }
 
 QcAnalyzeFn QcRunner::MakeAnalyzeFunction(const QcProfile& profile,
-                                          analyzer::AnalysisOptions options) {
+                                          videoeye::AnalysisOptions options) {
     // profile / options 在闭包之间共享（只读），cancel 状态每次调用由 request 带入。
-    auto shared = std::make_shared<std::pair<QcProfile, analyzer::AnalysisOptions>>(
+    auto shared = std::make_shared<std::pair<QcProfile, videoeye::AnalysisOptions>>(
         profile, options);
 
     return [shared](const QcAnalyzeRequest& request) -> QcRunResult {

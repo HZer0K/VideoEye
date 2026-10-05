@@ -218,13 +218,6 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
 
 ## 5. 已知的历史包袱
 
-- **命名空间没跟着目录走**。文件和 CMake target 已经分层了，但代码里仍叫
-  `videoeye::analyzer::*`；`utils/` 目录拆进 `core/media/**` 与 `infrastructure/**` 之后，
-  那些类型还在 `videoeye::utils` 命名空间里（`utils::BitReader`、`utils::JsonValue`…），
-  当前全仓 85 处引用（2026-10-04 复核），集中在 `core/analysis/codec/*BitstreamParser.*`
-  与 `core/media/codec/ExtradataParser.*`。改命名空间是纯机械替换，但每换一个就要动一批
-  调用点，单独一轮做。
-
 ### 5.1 已还清的包袱
 
 - **domain 已完全脱离 Qt**（2026-10-04 复核）。`core/domain/model/` 里的 `QVector` / `QMap` /
@@ -235,7 +228,48 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   `toStdString()` / `fromStdString()`。**别再把 Qt 容器写回 domain**：那一层的价值就在于
   它能在没有 Qt 的环境里被编译和复用。
 
-### 5.2 刻意保留、别去"修"的东西
+- **命名空间已跟着目录走**（2026-10-05 还清，评审第 7 项）。此前两条包袱：
+
+  | 旧命名空间 | 由来 | 现在 |
+  |----------|------|------|
+  | `videoeye::analyzer` | `core/analysis/**` 那一层 | 拍平，直接进 `videoeye` |
+  | `videoeye::utils` | `utils/` 目录已拆进 `core/media/**` 与 `infrastructure/**`，名字没跟上 | 拍平，直接进 `videoeye` |
+
+  两段都是纯机械替换：`namespace analyzer {` 的配对层删掉即可（`.clang-format` 的
+  `NamespaceIndentation: None`，删一层不牵动任何一行的缩进），再把 `analyzer::X` /
+  `utils::X` 的引用改成 `videoeye::X`。**82 层 analyzer + 18 层 utils 全部拍平，0 残留**，
+  全仓引用改为全限定 `videoeye::X`（`core/**` 里本来就在 `namespace videoeye` 内，
+  全限定反而更清楚归属）。`core/media/streaming` 里的 `utils::manifest` 顺势落成
+  `videoeye::manifest` —— 它本来就是「子命名空间跟目录走」的样板，调用方一律写
+  `namespace mt = videoeye::manifest;` 再 `mt::X`。
+
+  顺手被顶出来的两个坑，都记在这里以免重踩：
+
+  * `core/analysis/quality/AudioQcAnalyzer.cpp` 原本自带一份本地 `Fixed(double,int)`，
+    与过渡头 `core/analysis/detail/AnalysisTextUtil.h` 的 `videoeye::Fixed` 同名同参
+    → `C2668` 调用不明确。过渡形态只允许一份，本地那份已删。
+  * `core/analysis/diagnostics/Scte35Analyzer.cpp` 在匿名命名空间里自建过一个
+    `BitReader`。`utils` 拍平后两个同名类型同时进了 `namespace videoeye`，MSVC 会**把
+    匿名命名空间的成员当外层成员一起参与歧义判定**（`C2872 "BitReader": 不明确的符号`），
+    随后级联出一堆「不是 `videoeye::BitReader` 的成员」。本地类已改名 `ScteBitReader`。
+    **同类地雷**：任何匿名命名空间里的类型名，都别和 `core/media/**` 的公开类型撞。
+
+  这条规矩由 `scripts/audit_namespace_layout.py` 守（进 ctest + pre-commit）：不许再声明
+  `namespace analyzer` / `namespace utils`、不许写回 `analyzer::` / `utils::` 形式的引用、
+  `videoeye` 下的具名子命名空间必须与所在目录同名。
+
+### 5.2 在册的命名空间偏差（下一轮待清）
+
+上面两条还清之后，`audit_namespace_layout.py` 的 R3 又抓出三处目录/命名空间错配。
+它们同样登记进了 `KNOWN_DEVIATIONS`，属于「明文列出来、有人认领」的债，不是漂移：
+
+| 位置 | 现状 | 为什么要留到下一轮 |
+|------|------|------------------|
+| `core/ffmpeg/`（10 文件） | 叫 `videoeye::ffmpegtool` | 改名到 `videoeye::ffmpeg` 是纯机械替换，但连带 `namespace ffmpegtool = videoeye::ffmpegtool;` 别名，且别和 `videoeye::ffmpeg_io`（`core/ffmpeg_io`）混 |
+| `core/player/FrameData.{h,cpp}` | 类型是 `videoeye::model` 的，文件却躺在 `core/player/` | 要么搬去 `core/domain/model/`（真正的跟目录走），要么开一条正例豁免；搬文件要同步改 include 链路与 CMake GLOB |
+| `infrastructure/concurrency/TaskManager.{h,cpp}` | 叫 `videoeye::task` | **有意保留**：任务协议 2026-10-05 已下沉到 `core/domain/task`，这里只放调度实现，属「协议与实现分家」 |
+
+### 5.3 刻意保留、别去"修"的东西
 
 - **`ui/analysis_panel/FramePacketView.cpp` 直接 include `<libavcodec/avcodec.h>`**。
   它看起来像"UI 碰了 FFmpeg"的分层违规，其实不是：这个文件只在做

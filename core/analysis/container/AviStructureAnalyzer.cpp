@@ -6,7 +6,6 @@
 #include "infrastructure/concurrency/Cancellation.h"
 
 namespace videoeye {
-namespace analyzer {
 
 namespace {
 // 小端读取辅助 (AVI/RIFF 为小端)
@@ -212,5 +211,4 @@ bool AviStructureAnalyzer::ParseChunk(SeqFileReader& file, int64_t end_offset, i
     return true;
 }
 
-} // namespace analyzer
 } // namespace videoeye

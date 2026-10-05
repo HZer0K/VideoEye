@@ -8,10 +8,10 @@
 
 namespace {
 
-using videoeye::analyzer::Av1BitstreamParser;
-using videoeye::utils::ExtradataParser;
-using videoeye::utils::ExtradataFormat;
-using videoeye::utils::ObuUnit;
+using videoeye::Av1BitstreamParser;
+using videoeye::ExtradataParser;
+using videoeye::ExtradataFormat;
+using videoeye::ObuUnit;
 
 // 测试数据由 _smoke/gen_av1_seqhdr.py 逐位生成，语法元素顺序以 dav1d 的
 // parse_seq_hdr()（src/obu.c）为准，不参考本项目 parser 的既有实现 ——

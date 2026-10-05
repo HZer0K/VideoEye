@@ -69,14 +69,14 @@ TEST(StreamingQcRulesTest, HlsSegmentOverTargetBecomesWarningIssue) {
     result.container_format = "hls";
     result.duration_seconds = 12.0;
 
-    analyzer::HlsManifestAnalyzer hls;
+    videoeye::HlsManifestAnalyzer hls;
     model::StreamingPackageResult& pkg = result.streaming_package;
     pkg.manifest_path = "over.m3u8";
     ASSERT_TRUE(hls.ParseText(kOverTargetPlaylist, ".", pkg));
     hls.Validate(pkg);
     result.streaming_analyzed = true;
 
-    analyzer::QcRuleEngine engine;
+    videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     model::DiagnosticIssue issue;
@@ -96,13 +96,13 @@ TEST(StreamingQcRulesTest, DashSegmentTimelineGapBecomesErrorIssue) {
     result.container_format = "dash";
     result.duration_seconds = 16.0;
 
-    analyzer::DashManifestAnalyzer dash;
+    videoeye::DashManifestAnalyzer dash;
     model::StreamingPackageResult& pkg = result.streaming_package;
     ASSERT_TRUE(dash.ParseText(kGapMpd, ".", pkg));
     dash.Validate(pkg);
     result.streaming_analyzed = true;
 
-    analyzer::QcRuleEngine engine;
+    videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     model::DiagnosticIssue issue;
@@ -120,7 +120,7 @@ TEST(StreamingQcRulesTest, NoStreamingIssuesWhenNotAnalyzed) {
     result.file_extension = "m3u8";
     result.container_format = "hls";
 
-    analyzer::HlsManifestAnalyzer hls;
+    videoeye::HlsManifestAnalyzer hls;
     model::StreamingPackageResult& pkg = result.streaming_package;
     pkg.manifest_path = "over.m3u8";
     ASSERT_TRUE(hls.ParseText(kOverTargetPlaylist, ".", pkg));
@@ -128,7 +128,7 @@ TEST(StreamingQcRulesTest, NoStreamingIssuesWhenNotAnalyzed) {
     // 故意不置 streaming_analyzed：规则引擎必须整体跳过这一族规则
     result.streaming_analyzed = false;
 
-    analyzer::QcRuleEngine engine;
+    videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
     EXPECT_FALSE(HasIssue(report, model::StreamingIssueCode::kHlsSegmentOverTarget));
 }
@@ -141,14 +141,14 @@ TEST(StreamingQcRulesTest, DisabledRuleSuppressesStreamingIssue) {
     result.file_extension = "m3u8";
     result.container_format = "hls";
 
-    analyzer::HlsManifestAnalyzer hls;
+    videoeye::HlsManifestAnalyzer hls;
     model::StreamingPackageResult& pkg = result.streaming_package;
     pkg.manifest_path = "over.m3u8";
     ASSERT_TRUE(hls.ParseText(kOverTargetPlaylist, ".", pkg));
     hls.Validate(pkg);
     result.streaming_analyzed = true;
 
-    analyzer::QcRuleEngine engine;
+    videoeye::QcRuleEngine engine;
     std::vector<model::QcRule> rules = engine.rules();
     model::QcRule* rule = model::FindQcRule(rules, model::StreamingIssueCode::kHlsSegmentOverTarget);
     ASSERT_NE(nullptr, rule);

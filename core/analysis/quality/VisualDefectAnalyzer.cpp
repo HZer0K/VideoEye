@@ -12,7 +12,6 @@
 #include "infrastructure/logging/Logger.h"
 
 namespace videoeye {
-namespace analyzer {
 
 namespace {
 
@@ -944,5 +943,4 @@ model::VisualDefectSeverity VisualDefectAnalyzer::SeverityFor(model::VisualDefec
     return VisualDefectSeverity::Info;
 }
 
-}  // namespace analyzer
 }  // namespace videoeye

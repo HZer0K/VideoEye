@@ -6,7 +6,6 @@
 #include <sstream>
 
 namespace videoeye {
-namespace utils {
 
 Logger::Logger()
     : current_level_(LogLevel::Debug)
@@ -132,5 +131,4 @@ std::string Logger::GetCurrentTime() const {
     return oss.str();
 }
 
-} // namespace utils
 } // namespace videoeye

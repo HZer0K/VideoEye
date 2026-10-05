@@ -5,7 +5,6 @@
 #include "core/domain/model/ContainerStructureInfo.h"
 
 namespace videoeye {
-namespace analyzer {
 
 /// OGG 容器结构轻量级解析器
 /// 解析 Ogg Page 头, 识别 codec 类型, 统计 logical stream 分布
@@ -16,5 +15,4 @@ public:
                  const std::atomic<bool>* cancel = nullptr);
 };
 
-} // namespace analyzer
 } // namespace videoeye

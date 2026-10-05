@@ -41,7 +41,7 @@ extern "C" {
 #include "core/domain/model/SyncSample.h"
 #include "core/domain/model/TimelineEvent.h"
 #include "core/domain/model/FrameTimingInfo.h"
-// 下面两个只为信号/入口里出现的 analyzer:: 值类型（SceneChangeResult / VisualDefectOptions）
+// 下面两个只为信号/入口里出现的 videoeye:: 值类型（SceneChangeResult / VisualDefectOptions）
 // 提供定义；逐帧分析器实体已随实时分析搬进 RealtimeAnalysisController。
 #include "core/analysis/stream/StreamAnalyzer.h"
 #include "core/analysis/quality/SceneChangeAnalyzer.h"
@@ -113,10 +113,10 @@ public:
     // 开关会顺带启停分析用的工作线程；换采样档位用 SetVisualDefectOptions()。
     // 开关请经 SetAnalysisFeature(AnalysisFeature::VisualDefect, ...) 调用。
     bool IsVisualDefectAnalysisEnabled() const { return analysis_session_.IsVisualDefectAnalysisEnabled(); }
-    void SetVisualDefectOptions(const analyzer::VisualDefectOptions& options);
+    void SetVisualDefectOptions(const videoeye::VisualDefectOptions& options);
     // 线程安全地取视觉缺陷采样选项副本: 解码线程逐帧读取, UI 线程写入,
     // 普通值类型直接跨线程访问存在数据竞争, 故加锁后返回副本。
-    analyzer::VisualDefectOptions GetVisualDefectOptions() const;
+    videoeye::VisualDefectOptions GetVisualDefectOptions() const;
     // 播完 / 停止时把还开着的缺陷段闭合（否则最后一段要等下一次播放才显示）
     void FlushVisualDefectSegments(double end_timestamp_seconds);
 
@@ -163,8 +163,8 @@ public:
     // 不再对外暴露可变的 StreamAnalyzer&: 它的内部状态由解码线程更新,
     // 外部拿可变引用等于开了一条绕锁的读写通道(历史曲线接口尤其明显)。
     // 需要统计就用 GetCurrentStats()/下面这些快照。
-    const analyzer::StreamAnalyzer& stream_analyzer() const { return analysis_session_.stream_analyzer(); }
-    analyzer::StreamStats GetCurrentStats() const;
+    const videoeye::StreamAnalyzer& stream_analyzer() const { return analysis_session_.stream_analyzer(); }
+    videoeye::StreamStats GetCurrentStats() const;
     
 signals:
     void StateChanged(model::PlayerState state);
@@ -177,7 +177,7 @@ signals:
     void PlaybackFinished();
     
     // 分析数据信号
-    void StreamStatsReady(const analyzer::StreamStats& stats);
+    void StreamStatsReady(const videoeye::StreamStats& stats);
     void VideoFrameListReset();
     void VideoFrameInfoReady(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds);
     void AudioFrameListReset();
@@ -203,7 +203,7 @@ signals:
     // 是画结构树还是显示一条错误。
     void ContainerStructureFailed(const QString& message);
     void MacroblockInfoReady(const videoeye::model::MacroblockFrameAnalysis& analysis);
-    void SceneChangeReady(const analyzer::SceneChangeResult& result);
+    void SceneChangeReady(const videoeye::SceneChangeResult& result);
     // 画面质量 / 视觉缺陷（实时播放时逐采样帧产出）
     void VisualDefectReset();
     void VisualDefectFrameReady(const model::FrameQualityMetric& metric);

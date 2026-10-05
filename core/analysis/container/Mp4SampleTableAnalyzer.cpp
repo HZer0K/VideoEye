@@ -15,7 +15,6 @@
 
 #include "core/media/container/IsobmffParser.h"
 namespace videoeye {
-namespace analyzer {
 
 namespace {
 
@@ -457,7 +456,7 @@ void Mp4SampleTableAnalyzer::Validate(model::Mp4SampleTableResult& out,
 
 
 // ---------------------------------------------------------------------------
-// 解析部分: utils::IsobmffParser 的输出 -> model::Mp4SampleTableResult
+// 解析部分: videoeye::IsobmffParser 的输出 -> model::Mp4SampleTableResult
 //
 // 这一段原先由 Bento4 (AP4_File / AP4_Track::GetSample) 承担。自研 IsobmffParser
 // 已经把 stts/ctts/stss/stsz/stsc/stco/co64/elst 与 fMP4 的 traf/tfhd/tfdt/trun
@@ -466,15 +465,15 @@ void Mp4SampleTableAnalyzer::Validate(model::Mp4SampleTableResult& out,
 
 namespace {
 
-using utils::IsobmffTrack;
+using videoeye::IsobmffTrack;
 
-uint32_t SampleSizeAt(const utils::StszTable& stsz, uint32_t index) {
+uint32_t SampleSizeAt(const videoeye::StszTable& stsz, uint32_t index) {
     if (stsz.default_size != 0) return stsz.default_size;
     if (index < stsz.sizes.size()) return stsz.sizes[index];
     return 0;
 }
 
-uint64_t TotalSampleBytes(const utils::StszTable& stsz, uint32_t sample_count) {
+uint64_t TotalSampleBytes(const videoeye::StszTable& stsz, uint32_t sample_count) {
     if (stsz.default_size != 0) {
         return static_cast<uint64_t>(stsz.default_size) * sample_count;
     }
@@ -622,7 +621,7 @@ void CollectTrack(const IsobmffTrack& src, model::Mp4TrackSampleTable& t,
     }
 }
 
-model::Mp4FragmentInfo ConvertFragment(const utils::IsobmffFragment& f) {
+model::Mp4FragmentInfo ConvertFragment(const videoeye::IsobmffFragment& f) {
     model::Mp4FragmentInfo out;
     out.moof_index = f.moof_index;
     out.index = f.index;
@@ -660,12 +659,12 @@ bool Mp4SampleTableAnalyzer::AnalyzeFile(const std::string& file_path,
     out = model::Mp4SampleTableResult{};
     out.file_path = file_path;
 
-    utils::IsobmffParser::Options parse_options;
+    videoeye::IsobmffParser::Options parse_options;
     parse_options.skip_sample_tables = !options.expand_samples;
     parse_options.cancel = cancel;
 
-    utils::IsobmffFile parsed;
-    if (!utils::IsobmffParser::Parse(file_path, parsed, parse_options)) {
+    videoeye::IsobmffFile parsed;
+    if (!videoeye::IsobmffParser::Parse(file_path, parsed, parse_options)) {
         out.valid = false;
         out.error_message = parsed.error_message.empty()
                                 ? std::string("无法按 ISOBMFF (MP4/MOV) 解析该文件")
@@ -724,5 +723,4 @@ void Mp4SampleTableAnalyzer::Reset() {
     options_ = Mp4SampleTableOptions{};
 }
 
-}  // namespace analyzer
 }  // namespace videoeye

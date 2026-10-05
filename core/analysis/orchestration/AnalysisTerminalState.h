@@ -15,7 +15,6 @@
 #include "core/domain/model/AnalysisResult.h"
 
 namespace videoeye {
-namespace analyzer {
 
 // 执行过程中的回报通道。全部从**工作线程**调用，实现方自己负责跨线程投递。
 struct AnalysisCallbacks {
@@ -73,5 +72,4 @@ private:
     const model::AnalysisResult* src_;
 };
 
-}  // namespace analyzer
 }  // namespace videoeye

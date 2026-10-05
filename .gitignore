@@ -71,6 +71,12 @@ third_party/downloads/
 test_*
 !tests/**/test_*.cpp
 !tests/**/test_*.h
+# scripts/test_*.py 是架构审计脚本的**退出码自测**（check_layering / audit_qt_domain_border /
+# audit_qt_analysis_border / audit_namespace_layout 四个各配一份），必须入库：
+# pre-commit 和 CI 都在调它们，漏进仓库等于那几步在干净检出里直接报 "No such file"。
+# 2026-10-05 补：上面那条 `test_*` 不带扩展名，把这里也一起吞了，导致前三份自测
+# 从来没进过 git（一直只在本地工作区存在）。
+!scripts/test_*.py
 *_test_runner
 
 # 覆盖率

@@ -34,7 +34,6 @@ extern "C" {
 }
 
 namespace videoeye {
-namespace analyzer {
 namespace {
 
 // 进度限频的两个阈值已随逐包扫描一起搬到 PacketScanLoop.cpp。
@@ -223,5 +222,4 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     assembler.Finish(callbacks);
 }
 
-} // namespace analyzer
 } // namespace videoeye

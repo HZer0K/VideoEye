@@ -1,7 +1,7 @@
 // Mp4SampleTableAnalyzer 单元测试
 //
 // 只测校验逻辑（Validate）：手工构造合成样本表，不依赖 Qt / 第三方库 / 真实文件。
-// 解析部分（utils::IsobmffParser 读 stbl / moof）靠实机打开验证，见 docs/MP4_SAMPLE_TABLE.md。
+// 解析部分（videoeye::IsobmffParser 读 stbl / moof）靠实机打开验证，见 docs/MP4_SAMPLE_TABLE.md。
 
 #include <gtest/gtest.h>
 
@@ -14,8 +14,8 @@ using namespace videoeye;
 
 namespace {
 
-using analyzer::Mp4SampleTableAnalyzer;
-using analyzer::Mp4SampleTableOptions;
+using videoeye::Mp4SampleTableAnalyzer;
+using videoeye::Mp4SampleTableOptions;
 using model::IssueSeverity;
 using model::Mp4ConsistencyIssue;
 using model::Mp4Sample;

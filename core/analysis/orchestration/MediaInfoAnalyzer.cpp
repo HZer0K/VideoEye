@@ -1,6 +1,6 @@
 #include "core/analysis/orchestration/MediaInfoAnalyzer.h"
 #include "core/analysis/detail/AnalysisTextUtil.h"  // Fixed / StrCat
-#include "core/media/streaming/ManifestText.h"      // utils::manifest::FileSizeOf
+#include "core/media/streaming/ManifestText.h"      // videoeye::manifest::FileSizeOf
 #include "core/ffmpeg_io/FfmpegInterrupt.h"  // 共享 FFmpeg 中断回调
 
 
@@ -21,7 +21,6 @@ extern "C" {
 #include "infrastructure/logging/Logger.h"
 
 namespace videoeye {
-namespace analyzer {
 
 namespace {
 
@@ -251,7 +250,7 @@ bool MediaInfoAnalyzer::Open(const std::string& filePath, std::shared_ptr<std::a
     // 换成 core/media 的 FileSizeOf：它一次 stat 同时给出"存在"和"大小"，
     // 省掉 QFileInfo 那层对象，也让这行不和 UI 侧的类型纠缠。
     int64_t file_size = 0;
-    if (utils::manifest::FileSizeOf(filePath, file_size) && file_size > 0) {
+    if (videoeye::manifest::FileSizeOf(filePath, file_size) && file_size > 0) {
         out += kIndent + "File size                  : " + FormatFileSize(file_size) + '\n';
     }
     if (fmt->iformat) {
@@ -446,5 +445,4 @@ std::string MediaInfoAnalyzer::GetLastError() const {
     return impl_->error;
 }
 
-} // namespace analyzer
 } // namespace videoeye

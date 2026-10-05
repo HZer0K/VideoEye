@@ -343,11 +343,11 @@ void MediaPlayer::SetVisualDefectAnalysisEnabled(bool enable) {
     realtime_analysis_.SetVisualDefectAnalysisEnabled(enable);
 }
 
-analyzer::VisualDefectOptions MediaPlayer::GetVisualDefectOptions() const {
+videoeye::VisualDefectOptions MediaPlayer::GetVisualDefectOptions() const {
     return realtime_analysis_.GetVisualDefectOptions();
 }
 
-void MediaPlayer::SetVisualDefectOptions(const analyzer::VisualDefectOptions& options) {
+void MediaPlayer::SetVisualDefectOptions(const videoeye::VisualDefectOptions& options) {
     realtime_analysis_.SetVisualDefectOptions(options);
 }
 
@@ -379,7 +379,7 @@ void MediaPlayer::SetMacroblockAnalysisEnabled(bool enable) {
     }
 }
 
-analyzer::StreamStats MediaPlayer::GetCurrentStats() const { return analysis_session_.stream_analyzer().GetStats(); }
+videoeye::StreamStats MediaPlayer::GetCurrentStats() const { return analysis_session_.stream_analyzer().GetStats(); }
 
 // --- 导出: 全部委托给 ExportController ---
 //

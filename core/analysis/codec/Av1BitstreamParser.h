@@ -8,7 +8,6 @@
 #include "core/media/codec/BitReader.h"
 
 namespace videoeye {
-namespace analyzer {
 
 // AV1 码流解析器
 //
@@ -29,10 +28,10 @@ public:
     static model::Av1SequenceHeaderInfo ParseSequenceHeader(const uint8_t* extradata, size_t size);
 
     // 从 OBU 单元解析（data 只含 payload，不含 OBU header）
-    static model::Av1SequenceHeaderInfo ParseFromObuUnit(const utils::ObuUnit& obu_unit);
+    static model::Av1SequenceHeaderInfo ParseFromObuUnit(const videoeye::ObuUnit& obu_unit);
 
     // 判断是否为 Sequence Header OBU
-    static bool IsSequenceHeaderObu(const utils::ObuUnit& obu_unit);
+    static bool IsSequenceHeaderObu(const videoeye::ObuUnit& obu_unit);
 
     // Profile 名称转换（单元测试亦直接调用）
     static std::string GetProfileName(int profile);
@@ -41,13 +40,12 @@ public:
     static std::string GetLevelString(int seq_level_idx);
 
 private:
-    static bool SkipTimingInfo(utils::BitReader& reader,
+    static bool SkipTimingInfo(videoeye::BitReader& reader,
                               model::Av1SequenceHeaderInfo& sh);
-    static bool SkipOperatingPoints(utils::BitReader& reader,
+    static bool SkipOperatingPoints(videoeye::BitReader& reader,
                                    model::Av1SequenceHeaderInfo& sh);
-    static bool ParseColorConfig(utils::BitReader& reader,
+    static bool ParseColorConfig(videoeye::BitReader& reader,
                                 model::Av1SequenceHeaderInfo& sh);
 };
 
-} // namespace analyzer
 } // namespace videoeye

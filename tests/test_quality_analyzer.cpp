@@ -64,7 +64,7 @@ TEST(QualityAnalyzerTest, IdenticalFramesHaveInfinitePsnrAndPerfectSsim) {
     ASSERT_NE(reference.get(), nullptr);
     ASSERT_NE(distorted.get(), nullptr);
 
-    const auto metrics = videoeye::analyzer::QualityAnalyzer::CompareFrames(
+    const auto metrics = videoeye::QualityAnalyzer::CompareFrames(
         reference.get(), distorted.get(), 7, 1.25);
 
     ASSERT_TRUE(metrics.valid) << metrics.error_message;
@@ -82,7 +82,7 @@ TEST(QualityAnalyzerTest, ConstantPixelDeltaProducesExpectedPsnr) {
     ASSERT_NE(reference.get(), nullptr);
     ASSERT_NE(distorted.get(), nullptr);
 
-    const auto metrics = videoeye::analyzer::QualityAnalyzer::CompareFrames(
+    const auto metrics = videoeye::QualityAnalyzer::CompareFrames(
         reference.get(), distorted.get());
 
     ASSERT_TRUE(metrics.valid) << metrics.error_message;
@@ -112,7 +112,7 @@ TEST(QualityAnalyzerTest, InvertedFrameYieldsNegativeSsim) {
         }
     }
 
-    const auto metrics = videoeye::analyzer::QualityAnalyzer::CompareFrames(
+    const auto metrics = videoeye::QualityAnalyzer::CompareFrames(
         reference.get(), distorted.get());
 
     ASSERT_TRUE(metrics.valid) << metrics.error_message;
@@ -129,7 +129,7 @@ TEST(QualityAnalyzerTest, RejectsSizeMismatch) {
     ASSERT_NE(reference.get(), nullptr);
     ASSERT_NE(distorted.get(), nullptr);
 
-    const auto metrics = videoeye::analyzer::QualityAnalyzer::CompareFrames(
+    const auto metrics = videoeye::QualityAnalyzer::CompareFrames(
         reference.get(), distorted.get());
 
     EXPECT_FALSE(metrics.valid);

@@ -30,10 +30,10 @@
 #include "core/domain/model/VisualDefectOptions.h"
 
 namespace videoeye {
-namespace analyzer {
 
 // 采样档位（对应 UI 的"快速 / 标准 / 精细 / 离线全帧"）
-// 向后兼容别名：player / ui / tests 里仍用 analyzer::VisualDefectOptions / VisualSamplingPreset。
+// 别名落在 namespace videoeye 里（2026-10 拍平 analyzer 层后），player / ui / tests
+// 继续用 videoeye::VisualDefectOptions / VisualSamplingPreset 不用改。
 using model::VisualDefectOptions;
 using model::VisualSamplingPreset;
 
@@ -164,5 +164,4 @@ private:
     int next_defect_id_ = 1;
 };
 
-}  // namespace analyzer
 }  // namespace videoeye

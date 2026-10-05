@@ -78,7 +78,7 @@ TEST(AuxQcRulesTest, SubtitleOverlapIsReportedAsWarning) {
     const model::AnalysisResult result =
         MakeSubtitleResult(model::SubtitleIssueType::Overlap, model::IssueSeverity::Warning, 2);
 
-    const analyzer::QcRuleEngine engine;
+    const videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     model::DiagnosticIssue issue;
@@ -94,7 +94,7 @@ TEST(AuxQcRulesTest, SubtitleEmptyCueIsReportedAsWarning) {
     const model::AnalysisResult result =
         MakeSubtitleResult(model::SubtitleIssueType::EmptyText, model::IssueSeverity::Warning, 3);
 
-    const analyzer::QcRuleEngine engine;
+    const videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     model::DiagnosticIssue issue;
@@ -110,7 +110,7 @@ TEST(AuxQcRulesTest, SubtitleOrderIsErrorNotWarning) {
     const model::AnalysisResult result =
         MakeSubtitleResult(model::SubtitleIssueType::NonMonotonic, model::IssueSeverity::Error);
 
-    const analyzer::QcRuleEngine engine;
+    const videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     model::DiagnosticIssue issue;
@@ -124,7 +124,7 @@ TEST(AuxQcRulesTest, SubtitleRulesStaySilentWhenNotAnalyzed) {
     model::AnalysisResult skipped = result;
     skipped.subtitle_analyzed = false;   // 没跑过字幕分析（如没有字幕流）
 
-    const analyzer::QcRuleEngine engine;
+    const videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(skipped);
     EXPECT_FALSE(HasIssue(report, "subtitle.cue_overlap"));
 }
@@ -134,7 +134,7 @@ TEST(AuxQcRulesTest, MissingTimecodeIsReported) {
     result.timecode_analyzed = true;     // 跑过但没找到时码
     result.timecode.has_primary = false;
 
-    const analyzer::QcRuleEngine engine;
+    const videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
     EXPECT_TRUE(HasIssue(report, "timecode.missing"));
 
@@ -154,7 +154,7 @@ TEST(AuxQcRulesTest, DropFrameMismatchOnNtscFootage) {
     result.timecode.primary_drop_frame = false;
     result.timecode.primary_frame_rate = 30000.0 / 1001.0;                // 29.97
 
-    const analyzer::QcRuleEngine engine;
+    const videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
     EXPECT_TRUE(HasIssue(report, "timecode.drop_frame_mismatch"));
 
@@ -178,7 +178,7 @@ TEST(AuxQcRulesTest, ChapterOverlapIsReported) {
     issue.detail = "章节 1 起点早于上一章节终点";
     result.timecode.chapter_issues.push_back(issue);
 
-    const analyzer::QcRuleEngine engine;
+    const videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     model::DiagnosticIssue reported;
@@ -200,7 +200,7 @@ TEST(AuxQcRulesTest, Scte35MissingDurationIsReported) {
     result.aux_data.cues.push_back(cue);
     result.aux_data.scte35_cue_count = 1;
 
-    const analyzer::QcRuleEngine engine;
+    const videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
     EXPECT_TRUE(HasIssue(report, "scte35.duration_missing"));
 

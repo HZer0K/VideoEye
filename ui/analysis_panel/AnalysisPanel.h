@@ -214,12 +214,12 @@ private:
     void SetupVisualDefectPage();
     // 「关联场景切换」：页面不持有 facade，这一步由面板编排（重算 QC + 刷新问题表）
     void OnSceneLinkRequested(const std::vector<model::SceneChangeResult>& records,
-                              const analyzer::BitrateGopOptions& options);
+                              const videoeye::BitrateGopOptions& options);
 
     void UpdateBitstreamUi();         // 参数集页：结构树 + 容器/码流对比 + 不一致表
     // 字幕的「过短 / 过长 / 阅读速度」阈值以「规则与阈值」那张可编辑的表为准，
     // 每次扫描前同步一次，避免选项与规则两处阈值各说各话。
-    void SyncSubtitleThresholds(analyzer::AnalysisOptions& options);
+    void SyncSubtitleThresholds(videoeye::AnalysisOptions& options);
     void OnStreamingRefreshRequested();
     void UpdateStreamingUi();         // 流媒体包页：结构树 + ladder + 分片时间轴 + 问题
     

@@ -15,7 +15,6 @@ extern "C" {
 #include <algorithm>
 
 namespace videoeye {
-namespace analyzer {
 
 MacroblockAnalyzer::MacroblockAnalyzer() {
     LOG_INFO("宏块分析器已初始化");
@@ -219,5 +218,4 @@ void MacroblockAnalyzer::AccumulateMagnitude(model::MacroblockStats& stats, doub
     }
 }
 
-} // namespace analyzer
 } // namespace videoeye

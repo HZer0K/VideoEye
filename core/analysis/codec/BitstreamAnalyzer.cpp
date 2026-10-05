@@ -14,7 +14,6 @@ extern "C" {
 }
 
 namespace videoeye {
-namespace analyzer {
 namespace {
 
 // 便于日志与报告里直接读枚举名；没落在已知分支上的编码返回 NONE
@@ -45,24 +44,24 @@ constexpr int kGeometryTolerancePixels = 8;
 // 每种编码在 MP4 里的 extradata 配置记录类型。
 // 自动检测只能可靠地认出 AnnexB 与 avcC，hvcC / av1C 的签名太模糊，
 // 而调用方本来就知道 codec —— 直接按 codec 指定格式比猜更准。
-utils::ExtradataFormat ConfigFormatForCodec(int codec_id) {
+videoeye::ExtradataFormat ConfigFormatForCodec(int codec_id) {
     switch (static_cast<AVCodecID>(codec_id)) {
-        case AV_CODEC_ID_H264: return utils::ExtradataFormat::AvcC;
-        case AV_CODEC_ID_HEVC: return utils::ExtradataFormat::HvcC;
-        case AV_CODEC_ID_AV1:  return utils::ExtradataFormat::Av1C;
-        case AV_CODEC_ID_VVC:  return utils::ExtradataFormat::VvcC;
-        default:               return utils::ExtradataFormat::Unknown;
+        case AV_CODEC_ID_H264: return videoeye::ExtradataFormat::AvcC;
+        case AV_CODEC_ID_HEVC: return videoeye::ExtradataFormat::HvcC;
+        case AV_CODEC_ID_AV1:  return videoeye::ExtradataFormat::Av1C;
+        case AV_CODEC_ID_VVC:  return videoeye::ExtradataFormat::VvcC;
+        default:               return videoeye::ExtradataFormat::Unknown;
     }
 }
 
 // AnnexB 流要按 codec 指定 NAL header 的解读方式：
 // VVC 的 nal_unit_type 在第 2 字节，靠首字节的启发式一定会读错。
-utils::NalSyntax NalSyntaxForCodec(int codec_id) {
+videoeye::NalSyntax NalSyntaxForCodec(int codec_id) {
     switch (static_cast<AVCodecID>(codec_id)) {
-        case AV_CODEC_ID_H264: return utils::NalSyntax::H264;
-        case AV_CODEC_ID_HEVC: return utils::NalSyntax::Hevc;
-        case AV_CODEC_ID_VVC:  return utils::NalSyntax::Vvc;
-        default:               return utils::NalSyntax::Auto;
+        case AV_CODEC_ID_H264: return videoeye::NalSyntax::H264;
+        case AV_CODEC_ID_HEVC: return videoeye::NalSyntax::Hevc;
+        case AV_CODEC_ID_VVC:  return videoeye::NalSyntax::Vvc;
+        default:               return videoeye::NalSyntax::Auto;
     }
 }
 
@@ -72,18 +71,18 @@ utils::NalSyntax NalSyntaxForCodec(int codec_id) {
 // configurationVersion=1。av1C 的第 0 字节是 marker(1)+version(7) = 0x81，
 // 永远不等于 1 —— 结果 AV1 的 extradata 一律落到自动检测分支，
 // 又被 `data[0] & 0x03` 误判成长度前缀格式，OBU 列表恒为空。
-bool LooksLikeConfigRecord(utils::ExtradataFormat cfg, const uint8_t* data, size_t size) {
+bool LooksLikeConfigRecord(videoeye::ExtradataFormat cfg, const uint8_t* data, size_t size) {
     if (data == nullptr) return false;
     switch (cfg) {
-        case utils::ExtradataFormat::AvcC:
+        case videoeye::ExtradataFormat::AvcC:
             // configurationVersion=1，且第 5 字节高 6 位是保留位（全 1）
             return size >= 8 && data[0] == 1 && (data[4] & 0xFC) == 0xFC;
-        case utils::ExtradataFormat::HvcC:
+        case videoeye::ExtradataFormat::HvcC:
             return size >= 23 && data[0] == 1;
-        case utils::ExtradataFormat::Av1C:
+        case videoeye::ExtradataFormat::Av1C:
             // marker=1 且 version<=1，即 0x80 或 0x81
             return size >= 4 && (data[0] & 0x80) != 0 && (data[0] & 0x7F) <= 1;
-        case utils::ExtradataFormat::VvcC:
+        case videoeye::ExtradataFormat::VvcC:
             // vvcC 第 0 字节高 5 位是保留位，恒为 11111（0xF8）。
             // FFmpeg 的 ff_isom_write_vvcc() 用的就是这条判据。
             return size >= 2 && (data[0] & 0xF8) == 0xF8;
@@ -94,12 +93,12 @@ bool LooksLikeConfigRecord(utils::ExtradataFormat cfg, const uint8_t* data, size
 
 // media 层（ExtradataParser）产出的 NAL / OBU 是解析器内部载体，
 // 对外暴露的结果要换成 domain 层的同名结构 —— 这两条转换函数就是两层的边界。
-// 方向固定 media -> domain：domain 不认识 utils::NalUnit。
-model::NalUnit ToModelNalUnit(const utils::NalUnit& n) {
+// 方向固定 media -> domain：domain 不认识 videoeye::NalUnit。
+model::NalUnit ToModelNalUnit(const videoeye::NalUnit& n) {
     return model::NalUnit(n.type, n.size, n.data, n.is_idr, n.is_keyframe);
 }
 
-model::ObuUnit ToModelObuUnit(const utils::ObuUnit& o) {
+model::ObuUnit ToModelObuUnit(const videoeye::ObuUnit& o) {
     model::ObuUnit unit(o.type, o.size, o.data, o.has_extension_header, o.is_sequence_header);
     unit.temporal_id = o.temporal_id;
     unit.spatial_id = o.spatial_id;
@@ -141,7 +140,7 @@ void BitstreamAnalyzer::ApplyContainerSnapshot() {
 //     只认这一版，没必要让四个解析器跟着改签名；
 //   * result_.nal_units / obu_units 放 domain 版 —— 这是对外结果，UI 与报告只读它。
 // 两者字段一一对应，转换只在入库这一处发生。
-void BitstreamAnalyzer::IngestUnits(const utils::ExtradataResult& parsed) {
+void BitstreamAnalyzer::IngestUnits(const videoeye::ExtradataResult& parsed) {
     nal_units_.clear();
     obu_units_.clear();
     result_.nal_units.clear();
@@ -176,15 +175,15 @@ model::BitstreamAnalysisResult BitstreamAnalyzer::Analyze(const uint8_t* extrada
     // 先把 avcC / hvcC / AnnexB / av1C 统一抽成 NAL / OBU 列表。
     // extradata 以 configurationVersion=1 开头时按 codec 指定配置记录格式，
     // 其余情况（AnnexB / 长度前缀）走自动检测。
-    const utils::ExtradataFormat cfg = ConfigFormatForCodec(codec_id);
-    const utils::ExtradataResult parsed =
+    const videoeye::ExtradataFormat cfg = ConfigFormatForCodec(codec_id);
+    const videoeye::ExtradataResult parsed =
         LooksLikeConfigRecord(cfg, extradata, size)
-            ? utils::ExtradataParser::ParseWithFormat(cfg, extradata, size)
-            : utils::ExtradataParser::ParseWithFormat(utils::ExtradataFormat::AnnexB, extradata,
+            ? videoeye::ExtradataParser::ParseWithFormat(cfg, extradata, size)
+            : videoeye::ExtradataParser::ParseWithFormat(videoeye::ExtradataFormat::AnnexB, extradata,
                                                       size, NalSyntaxForCodec(codec_id));
     IngestUnits(parsed);
     PopulateAv1Config(parsed.config);
-    if (parsed.format == utils::ExtradataFormat::VvcC) {
+    if (parsed.format == videoeye::ExtradataFormat::VvcC) {
         PopulateVvcConfig(parsed.config);
     }
     ApplyContainerSnapshot();
@@ -200,7 +199,7 @@ model::BitstreamAnalysisResult BitstreamAnalyzer::Analyze(const uint8_t* extrada
 }
 
 model::BitstreamAnalysisResult BitstreamAnalyzer::AnalyzeWithFormat(
-    utils::ExtradataFormat format,
+    videoeye::ExtradataFormat format,
     const uint8_t* data, size_t size,
     int codec_id) {
     result_ = model::BitstreamAnalysisResult();
@@ -211,13 +210,13 @@ model::BitstreamAnalysisResult BitstreamAnalyzer::AnalyzeWithFormat(
         return result_;
     }
 
-    const utils::ExtradataResult parsed =
-        utils::ExtradataParser::ParseWithFormat(format, data, size);
+    const videoeye::ExtradataResult parsed =
+        videoeye::ExtradataParser::ParseWithFormat(format, data, size);
     IngestUnits(parsed);
-    if (format == utils::ExtradataFormat::Av1C) {
+    if (format == videoeye::ExtradataFormat::Av1C) {
         PopulateAv1Config(parsed.config);
     }
-    if (format == utils::ExtradataFormat::VvcC) {
+    if (format == videoeye::ExtradataFormat::VvcC) {
         PopulateVvcConfig(parsed.config);
     }
     ApplyContainerSnapshot();
@@ -361,7 +360,7 @@ void BitstreamAnalyzer::ParseAv1(const uint8_t* data, size_t size) {
     ApplyAv1Summary();
 }
 
-void BitstreamAnalyzer::PopulateAv1Config(const utils::ExtradataResult::CodecConfig& cfg) {
+void BitstreamAnalyzer::PopulateAv1Config(const videoeye::ExtradataResult::CodecConfig& cfg) {
     model::Av1CodecConfigInfo& out = result_.av1_config;
     out = model::Av1CodecConfigInfo();
     out.present = true;
@@ -378,7 +377,7 @@ void BitstreamAnalyzer::PopulateAv1Config(const utils::ExtradataResult::CodecCon
     result_.has_av1_config = true;
 }
 
-void BitstreamAnalyzer::PopulateVvcConfig(const utils::ExtradataResult::CodecConfig& cfg) {
+void BitstreamAnalyzer::PopulateVvcConfig(const videoeye::ExtradataResult::CodecConfig& cfg) {
     model::VvcCodecConfigInfo& out = result_.vvc_config;
     out = model::VvcCodecConfigInfo();
     out.present = true;
@@ -572,5 +571,4 @@ void BitstreamAnalyzer::AddInconsistency(model::BitstreamAnalysisResult& result,
     result.inconsistencies.push_back(std::move(inconsistency));
 }
 
-} // namespace analyzer
 } // namespace videoeye

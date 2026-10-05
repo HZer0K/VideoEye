@@ -33,7 +33,6 @@ extern "C" {
 }
 
 namespace videoeye {
-namespace analyzer {
 
 enum class ScanOutcome {
     Complete,
@@ -81,5 +80,4 @@ private:
     std::chrono::steady_clock::time_point last_progress_;
 };
 
-}  // namespace analyzer
 }  // namespace videoeye

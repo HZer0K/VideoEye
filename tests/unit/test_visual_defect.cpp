@@ -16,9 +16,9 @@
 
 namespace {
 
-using videoeye::analyzer::VisualDefectAnalyzer;
-using videoeye::analyzer::VisualDefectOptions;
-using videoeye::analyzer::VisualSamplingPreset;
+using videoeye::VisualDefectAnalyzer;
+using videoeye::VisualDefectOptions;
+using videoeye::VisualSamplingPreset;
 using videoeye::model::FrameQualityMetric;
 using videoeye::model::FrameSample;
 using videoeye::model::VisualDefectType;

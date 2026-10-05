@@ -14,7 +14,6 @@
 #include <string>
 
 namespace videoeye {
-namespace analyzer {
 
 namespace {
 
@@ -937,5 +936,4 @@ bool EbmlAnalyzer::Analyze(const std::string& filePath, model::EbmlAnalysisResul
     return true;
 }
 
-} // namespace analyzer
 } // namespace videoeye

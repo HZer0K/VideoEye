@@ -15,7 +15,7 @@ struct Mp4BoxNode {
     int depth = 0;              // 树深度
     std::vector<Mp4BoxNode> children;
 
-    // 字段信息 (从自研 utils::IsobmffParser 收集)
+    // 字段信息 (从自研 videoeye::IsobmffParser 收集)
     struct Field {
         std::string name;
         std::string value;      // 字符串表示

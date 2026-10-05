@@ -14,7 +14,6 @@ extern "C" {
 }
 
 namespace videoeye {
-namespace analyzer {
 namespace {
 
 constexpr int kMediaTypeData = 4;        // AVMEDIA_TYPE_DATA
@@ -227,5 +226,4 @@ void AuxDataAnalyzer::Finish() {
     result_.analyzed = registered_;
 }
 
-}  // namespace analyzer
 }  // namespace videoeye

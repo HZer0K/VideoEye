@@ -2,7 +2,7 @@
 
 // QC 报告导出（JSON / CSV / HTML / PDF / TXT）
 //
-// 相对老的 utils::ReportExporter::ExportQcReport*（已删）多做了两件事 ——
+// 相对老的 videoeye::ReportExporter::ExportQcReport*（已删）多做了两件事 ——
 //   1) 固定机器可读 schema（含 profile、metrics、streams、rules 快照），供 CI 二次消费；
 //   2) 支持批量汇总与双文件对比的导出。
 // 手头只有裸 QcReport 时用 ExportReport()，它现场包一个最小 bundle。

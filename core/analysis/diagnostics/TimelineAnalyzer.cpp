@@ -6,7 +6,6 @@
 #include <string>
 
 namespace videoeye {
-namespace analyzer {
 namespace {
 
 std::string FormatMs(double value, int decimals = 2) {
@@ -375,5 +374,4 @@ void TimelineAnalyzer::FinalizeStreamSummary() {
     }
 }
 
-} // namespace analyzer
 } // namespace videoeye

@@ -64,19 +64,19 @@ public:
 
     // 默认扫描选项：其它页 FillScanOptions(options) 的基线，也允许就地改单项开关
     // （「流媒体包」「参数集解析」页的「重新扫描」就是改一个 analyze_* 开关）
-    analyzer::AnalysisOptions& options() { return options_; }
-    const analyzer::AnalysisOptions& options() const { return options_; }
+    videoeye::AnalysisOptions& options() { return options_; }
+    const videoeye::AnalysisOptions& options() const { return options_; }
 
     // 全文件扫描（一次 demux 供多页共用：诊断页 / 码率 GOP / 音频 QC /
     // 色彩 HDR / 字幕辅助 / 流媒体包 / 参数集）
     // silent=true 时不弹 QMessageBox（打开失败自动补扫这类静默/批量入口），
     // 提示一律写进本页的汇总标签，免得弹窗打断流程。
-    void StartScan(const analyzer::AnalysisOptions& options, bool silent = false);
+    void StartScan(const videoeye::AnalysisOptions& options, bool silent = false);
     void CancelScan();
 
     // 每次扫描前的钩子：面板挂上「字幕阈值从规则表同步」这类跨页逻辑，
     // 页面自己不认识 SubtitleAuxPage（避免页面之间互相 include）
-    using ScanHook = std::function<void(analyzer::AnalysisOptions&)>;
+    using ScanHook = std::function<void(videoeye::AnalysisOptions&)>;
     void SetBeforeScanHook(ScanHook hook) { before_scan_ = std::move(hook); }
 
     // 播放期实时统计入口（MediaPlayer 回调 → 面板转发 → 本页）
@@ -86,7 +86,7 @@ public:
 
     // 「关联场景切换」：报告重算留在诊断页，码率页只负责展示自己的结果
     void ApplySceneLink(const std::vector<model::SceneChangeResult>& records,
-                        const analyzer::BitrateGopOptions& gop_options);
+                        const videoeye::BitrateGopOptions& gop_options);
 
     // 换文件：清掉上一文件的扫描结果 / 时间轴累计状态
     void ResetForNewFile();
@@ -143,7 +143,7 @@ private:
     void SetScanButtonState(bool running);
 
     QString source_path_;
-    analyzer::AnalysisOptions options_;
+    videoeye::AnalysisOptions options_;
     model::QcReport report_;
     quint64 generation_ = 0;
     bool has_result_ = false;

@@ -9,7 +9,6 @@
 #include <string>
 
 namespace videoeye {
-namespace analyzer {
 namespace {
 
 std::string FormatValue(double value, int decimals = 2) {
@@ -965,5 +964,4 @@ std::vector<model::DiagnosticIssue> QcRuleEngine::CheckRule(const model::QcRule&
     return issues;
 }
 
-} // namespace analyzer
 } // namespace videoeye

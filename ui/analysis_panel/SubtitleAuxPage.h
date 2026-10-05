@@ -34,7 +34,7 @@ public:
     // 字幕阈值以「规则与阈值」页那张可编辑规则表为准，扫描前同步一次，
     // 避免选项与规则两处阈值各说各话。
     void ApplyRuleThresholds(const std::vector<model::QcRule>& rules,
-                             analyzer::SubtitleOptions& options) const;
+                             videoeye::SubtitleOptions& options) const;
 
 signals:
     void ScanRequested();

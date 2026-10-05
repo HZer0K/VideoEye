@@ -28,7 +28,6 @@
 #include <cstdio>
 
 namespace videoeye {
-namespace analyzer {
 
 namespace {
 // domain 侧早就不用 std::string 了，这两个小工具只在本文件内部用：
@@ -964,5 +963,4 @@ void ContainerStructureAnalyzer::Reset() {
     // 无状态, 无需重置
 }
 
-} // namespace analyzer
 } // namespace videoeye

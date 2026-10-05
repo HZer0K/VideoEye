@@ -3,13 +3,12 @@
 #include <vector>
 #include <cstdint>
 #include "core/domain/model/BitstreamInfo.h"
-// 本 parser 的输入是 media 层解析出的 utils::NalUnit；BitstreamInfo.h 不再间接
+// 本 parser 的输入是 media 层解析出的 videoeye::NalUnit；BitstreamInfo.h 不再间接
 // 带它（domain 不反向依赖 media），所以这里显式 include。
 #include "core/media/codec/ExtradataTypes.h"
 #include "core/media/codec/BitReader.h"
 
 namespace videoeye {
-namespace analyzer {
 
 // H.264 码流解析器
 // 
@@ -31,16 +30,16 @@ public:
     static model::H264VuiInfo ParseVui(const uint8_t* extradata, size_t size);
     
     // 从 NAL 单元解析（用于实时解析）
-    static model::H264SpsInfo ParseFromNalUnit(const utils::NalUnit& nal_unit);
+    static model::H264SpsInfo ParseFromNalUnit(const videoeye::NalUnit& nal_unit);
     
     // 从 PPS NAL 单元解析（用于实时解析）
-    static model::H264PpsInfo ParsePpsFromNalUnit(const utils::NalUnit& nal_unit);
+    static model::H264PpsInfo ParsePpsFromNalUnit(const videoeye::NalUnit& nal_unit);
     
     // 判断是否为 SPS NAL 单元
-    static bool IsSpsNalUnit(const utils::NalUnit& nal_unit);
+    static bool IsSpsNalUnit(const videoeye::NalUnit& nal_unit);
     
     // 判断是否为 PPS NAL 单元
-    static bool IsPpsNalUnit(const utils::NalUnit& nal_unit);
+    static bool IsPpsNalUnit(const videoeye::NalUnit& nal_unit);
     
     // Profile / Level 名称转换（单元测试亦直接调用）
     static std::string GetProfileName(int profile_idc);
@@ -58,15 +57,14 @@ private:
     // 取出 RBSP：去掉可能存在的 1 字节 NAL header，再做 emulation prevention 反转义。
     // ExtradataParser 的两条路径对 data 是否含 header 并不一致
     // （AnnexB 剥掉、avcC 保留），这里统一处理。
-    static std::vector<uint8_t> GetRbsp(const utils::NalUnit& nal_unit);
+    static std::vector<uint8_t> GetRbsp(const videoeye::NalUnit& nal_unit);
     
     // 判断 profile 是否带 chroma_format_idc / bit_depth 等扩展字段
     static bool HasChromaFormatExtension(int profile_idc);
     
-    static void SkipScalingList(utils::BitReader& reader, int size);
-    static void SkipHrdParameters(utils::BitReader& reader, model::H264VuiInfo& vui);
-    static void ParseVuiParameters(utils::BitReader& reader, model::H264VuiInfo& vui);
+    static void SkipScalingList(videoeye::BitReader& reader, int size);
+    static void SkipHrdParameters(videoeye::BitReader& reader, model::H264VuiInfo& vui);
+    static void ParseVuiParameters(videoeye::BitReader& reader, model::H264VuiInfo& vui);
 };
 
-} // namespace analyzer
 } // namespace videoeye

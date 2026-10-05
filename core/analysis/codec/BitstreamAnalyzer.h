@@ -6,12 +6,11 @@
 #include <vector>
 
 #include "core/domain/model/BitstreamInfo.h"
-// 公开接口带 utils::ExtradataFormat / utils::ExtradataResult，成员也是 utils::NalUnit / ObuUnit，
+// 公开接口带 videoeye::ExtradataFormat / videoeye::ExtradataResult，成员也是 videoeye::NalUnit / ObuUnit，
 // 所以这是 analysis 的真实公开依赖（CMakeLists 里 VideoEyeMedia 挂的是 PUBLIC）。
 #include "core/media/codec/ExtradataTypes.h"
 
 namespace videoeye {
-namespace analyzer {
 
 // 容器 metadata 信息
 struct ContainerMetadata {
@@ -61,7 +60,7 @@ public:
 
     // 指定封装格式解析（调用方已经知道是 avcC / hvcC / AnnexB 时用）
     model::BitstreamAnalysisResult AnalyzeWithFormat(
-        utils::ExtradataFormat format,
+        videoeye::ExtradataFormat format,
         const uint8_t* data, size_t size,
         int codec_id);
 
@@ -91,14 +90,14 @@ private:
 
     // 收纳 media 层解析出的 NAL / OBU：内部留 utils 版喂 codec parser，
     // 对外结果（result_）转成 domain 版（见 core/domain/model/BitstreamUnits.h）
-    void IngestUnits(const utils::ExtradataResult& parsed);
+    void IngestUnits(const videoeye::ExtradataResult& parsed);
 
     // 从 av1C 配置记录填充 av1_config（序列头 OBU 缺失时的兜底数据源）
-    void PopulateAv1Config(const utils::ExtradataResult::CodecConfig& cfg);
+    void PopulateAv1Config(const videoeye::ExtradataResult::CodecConfig& cfg);
 
     // 从 vvcC 配置记录填充 vvc_config（MP4 的 VVC extradata 只有 vvcC，
     // 没有 VPS，profile/level/位深只能从这里拿）
-    void PopulateVvcConfig(const utils::ExtradataResult::CodecConfig& cfg);
+    void PopulateVvcConfig(const videoeye::ExtradataResult::CodecConfig& cfg);
 
     // 把容器侧数值写进 result_（UI 对比表的左侧列）。必须在 result_ 重置之后调用。
     void ApplyContainerSnapshot();
@@ -121,11 +120,10 @@ private:
 
     model::BitstreamAnalysisResult result_;
     // media 层的原始单元：只在解析过程中喂给 codec parser，不出现在对外结果里
-    std::vector<utils::NalUnit> nal_units_;
-    std::vector<utils::ObuUnit> obu_units_;
+    std::vector<videoeye::NalUnit> nal_units_;
+    std::vector<videoeye::ObuUnit> obu_units_;
     ContainerMetadata container_metadata_;
     bool has_container_metadata_ = false;
 };
 
-} // namespace analyzer
 } // namespace videoeye

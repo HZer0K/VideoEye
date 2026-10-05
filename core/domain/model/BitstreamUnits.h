@@ -3,7 +3,7 @@
 // 码流单元（NAL / OBU）的**纯结果类型**。
 //
 // 与 core/media/codec/ExtradataTypes.h 里那两个同名结构的区别：
-//   * media 层那两个是**解析器内部**的载体（utils::NalUnit / utils::ObuUnit），
+//   * media 层那两个是**解析器内部**的载体（videoeye::NalUnit / videoeye::ObuUnit），
 //     由 ExtradataParser 生产，也只喂给 codec parser；
 //   * 这里是**对外暴露**的结果快照，字段相同但归 domain 所有，
 //     所以 BitstreamInfo.h（以及报告导出、UI）不必反向 include media。

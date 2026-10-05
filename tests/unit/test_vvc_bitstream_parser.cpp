@@ -8,15 +8,15 @@
 
 namespace {
 
-using videoeye::analyzer::VvcBitstreamParser;
+using videoeye::VvcBitstreamParser;
 using videoeye::model::VvcPpsInfo;
 using videoeye::model::VvcSpsInfo;
 using videoeye::model::VvcVpsInfo;
-using videoeye::utils::ExtradataFormat;
-using videoeye::utils::ExtradataParser;
-using videoeye::utils::ExtradataResult;
-using videoeye::utils::NalSyntax;
-using videoeye::utils::NalUnit;
+using videoeye::ExtradataFormat;
+using videoeye::ExtradataParser;
+using videoeye::ExtradataResult;
+using videoeye::NalSyntax;
+using videoeye::NalUnit;
 
 // 测试数据由 _smoke/gen_vvc_ps.py 按 H.266 7.3.2.x 逐位生成。
 // 语法顺序以 FFmpeg libavcodec/cbs_h266_syntax_template.c 为准。

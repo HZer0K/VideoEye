@@ -130,7 +130,7 @@ std::vector<uint8_t> BuildSpliceInsertSection() {
     out.WriteBytes(seg_bytes);
 
     std::vector<uint8_t> bytes = out.Bytes();
-    const uint32_t crc = analyzer::Scte35Analyzer::Crc32Mpeg2(bytes.data(), bytes.size());
+    const uint32_t crc = videoeye::Scte35Analyzer::Crc32Mpeg2(bytes.data(), bytes.size());
     bytes.push_back(static_cast<uint8_t>((crc >> 24) & 0xFF));
     bytes.push_back(static_cast<uint8_t>((crc >> 16) & 0xFF));
     bytes.push_back(static_cast<uint8_t>((crc >> 8) & 0xFF));
@@ -148,7 +148,7 @@ model::SubtitleCue MakeCue(int index, double start, double end, const std::strin
     cue.text = text;
     cue.raw_text = text;
     cue.format = model::SubtitleFormat::Srt;
-    cue.char_count = analyzer::SubtitleAnalyzer::CountVisibleChars(text);
+    cue.char_count = videoeye::SubtitleAnalyzer::CountVisibleChars(text);
     cue.empty = (cue.char_count == 0);
     return cue;
 }
@@ -178,8 +178,8 @@ TEST(SubtitleAnalyzerTest, ParseSrtCues) {
         "第二行\n"
         "换行也在一起\n";
 
-    std::vector<analyzer::ParsedSubtitleCue> cues;
-    ASSERT_TRUE(analyzer::SubtitleAnalyzer::ParseSrtText(srt, cues));
+    std::vector<videoeye::ParsedSubtitleCue> cues;
+    ASSERT_TRUE(videoeye::SubtitleAnalyzer::ParseSrtText(srt, cues));
     ASSERT_EQ(cues.size(), 2u);
 
     EXPECT_EQ(cues[0].cue_number, 1);
@@ -203,8 +203,8 @@ TEST(SubtitleAnalyzerTest, ParseWebVttSkipsHeaderAndNote) {
         "00:00:02.000 --> 00:00:05.000 align:start position:10%\n"
         "<v Speaker>你好</v>\n";
 
-    std::vector<analyzer::ParsedSubtitleCue> cues;
-    ASSERT_TRUE(analyzer::SubtitleAnalyzer::ParseWebVttText(vtt, cues));
+    std::vector<videoeye::ParsedSubtitleCue> cues;
+    ASSERT_TRUE(videoeye::SubtitleAnalyzer::ParseWebVttText(vtt, cues));
     ASSERT_EQ(cues.size(), 1u);
     EXPECT_NEAR(cues[0].start_seconds, 2.0, 1e-6);
     EXPECT_NEAR(cues[0].end_seconds, 5.0, 1e-6);
@@ -214,8 +214,8 @@ TEST(SubtitleAnalyzerTest, ParseWebVttSkipsHeaderAndNote) {
 TEST(SubtitleAnalyzerTest, ParseAssDialogueLine) {
     const std::string line =
         "Dialogue: 0,0:00:01.50,0:00:04.00,Default,,0,0,0,,{\\pos(10,20)}你好\\N世界";
-    analyzer::ParsedSubtitleCue cue;
-    ASSERT_TRUE(analyzer::SubtitleAnalyzer::ParseAssDialogueLine(line, cue));
+    videoeye::ParsedSubtitleCue cue;
+    ASSERT_TRUE(videoeye::SubtitleAnalyzer::ParseAssDialogueLine(line, cue));
     EXPECT_NEAR(cue.start_seconds, 1.5, 1e-6);
     EXPECT_NEAR(cue.end_seconds, 4.0, 1e-6);
     EXPECT_EQ(cue.text, "你好 世界");   // 覆盖指令与 \N 都处理掉
@@ -230,8 +230,8 @@ TEST(SubtitleAnalyzerTest, ParseMovTextPacketPayload) {
     for (char c : payload) data.push_back(static_cast<uint8_t>(c));
     data.push_back(0x00);   // 尾部样式 box，应当被忽略
 
-    analyzer::ParsedSubtitleCue cue;
-    ASSERT_TRUE(analyzer::SubtitleAnalyzer::ParsePacketPayload(
+    videoeye::ParsedSubtitleCue cue;
+    ASSERT_TRUE(videoeye::SubtitleAnalyzer::ParsePacketPayload(
         AV_CODEC_ID_MOV_TEXT, data.data(), data.size(), 12.0, 2.0, cue));
     EXPECT_EQ(cue.text, "Hello");
     EXPECT_NEAR(cue.start_seconds, 12.0, 1e-6);   // 包里没写时间 -> 用 PTS
@@ -241,7 +241,7 @@ TEST(SubtitleAnalyzerTest, ParseMovTextPacketPayload) {
 TEST(SubtitleAnalyzerTest, DecodeCea608BasicText) {
     // 'H' 'i' 后面跟一个控制码对 (0x14 0x20)，控制码不应出现在文本里
     const std::vector<uint8_t> data = {'H', 'i', 0x14, 0x20, 'y', 'o'};
-    const std::string text = analyzer::SubtitleAnalyzer::DecodeCea608Field(data.data(), data.size());
+    const std::string text = videoeye::SubtitleAnalyzer::DecodeCea608Field(data.data(), data.size());
     EXPECT_EQ(text, "Hiyo");
 }
 
@@ -255,7 +255,7 @@ TEST(SubtitleAnalyzerTest, OverlappingCuesProduceWarning) {
     cues.push_back(MakeCue(1, 3.0, 5.0, "第二条"));   // 3.0 < 4.0 -> 重叠
 
     std::vector<model::SubtitleIssue> issues;
-    analyzer::SubtitleAnalyzer::ValidateCues(cues, issues, analyzer::SubtitleOptions{}, 60.0);
+    videoeye::SubtitleAnalyzer::ValidateCues(cues, issues, videoeye::SubtitleOptions{}, 60.0);
 
     ASSERT_EQ(CountType(issues, model::SubtitleIssueType::Overlap), 1);
     const model::SubtitleIssue& overlap = issues.front();
@@ -272,7 +272,7 @@ TEST(SubtitleAnalyzerTest, EmptyCueProducesWarning) {
     cues.push_back(MakeCue(1, 5.0, 8.0, "   "));   // 只有空白也算空
 
     std::vector<model::SubtitleIssue> issues;
-    analyzer::SubtitleAnalyzer::ValidateCues(cues, issues, analyzer::SubtitleOptions{}, 60.0);
+    videoeye::SubtitleAnalyzer::ValidateCues(cues, issues, videoeye::SubtitleOptions{}, 60.0);
 
     EXPECT_EQ(CountType(issues, model::SubtitleIssueType::EmptyText), 2);
     for (const model::SubtitleIssue& issue : issues) {
@@ -286,7 +286,7 @@ TEST(SubtitleAnalyzerTest, NonMonotonicCuesProduceError) {
     cues.push_back(MakeCue(1, 5.0, 7.0, "前"));
 
     std::vector<model::SubtitleIssue> issues;
-    analyzer::SubtitleAnalyzer::ValidateCues(cues, issues, analyzer::SubtitleOptions{}, 60.0);
+    videoeye::SubtitleAnalyzer::ValidateCues(cues, issues, videoeye::SubtitleOptions{}, 60.0);
 
     EXPECT_EQ(CountType(issues, model::SubtitleIssueType::NonMonotonic), 1);
     for (const model::SubtitleIssue& issue : issues) {
@@ -303,7 +303,7 @@ TEST(SubtitleAnalyzerTest, DurationWindowAndOutOfRange) {
     cues.push_back(MakeCue(2, 90.0, 92.0, "超出时长"));  // 媒体只有 30s
 
     std::vector<model::SubtitleIssue> issues;
-    analyzer::SubtitleAnalyzer::ValidateCues(cues, issues, analyzer::SubtitleOptions{}, 30.0);
+    videoeye::SubtitleAnalyzer::ValidateCues(cues, issues, videoeye::SubtitleOptions{}, 30.0);
 
     EXPECT_EQ(CountType(issues, model::SubtitleIssueType::TooShort), 1);
     EXPECT_EQ(CountType(issues, model::SubtitleIssueType::TooLong), 1);
@@ -317,7 +317,7 @@ TEST(SubtitleAnalyzerTest, AdjacentCuesAreNotOverlap) {
     cues.push_back(MakeCue(1, 2.0, 3.0, "乙"));
 
     std::vector<model::SubtitleIssue> issues;
-    analyzer::SubtitleAnalyzer::ValidateCues(cues, issues, analyzer::SubtitleOptions{}, 60.0);
+    videoeye::SubtitleAnalyzer::ValidateCues(cues, issues, videoeye::SubtitleOptions{}, 60.0);
     EXPECT_EQ(CountType(issues, model::SubtitleIssueType::Overlap), 0);
 }
 
@@ -367,15 +367,15 @@ TEST(TimecodeTest, TmcdSampleGivesFirstFrameTimecode) {
     // tmcd 样本是 4 字节大端帧序号：360 帧 @30fps = 00:00:12:00
     const std::vector<uint8_t> sample = {0x00, 0x00, 0x01, 0x68};
     model::Timecode tc;
-    ASSERT_TRUE(analyzer::TimecodeAnalyzer::DecodeTmcdSample(sample.data(), sample.size(), 30.0,
+    ASSERT_TRUE(videoeye::TimecodeAnalyzer::DecodeTmcdSample(sample.data(), sample.size(), 30.0,
                                                              false, tc));
     ASSERT_TRUE(tc.valid);
     EXPECT_EQ(tc.ToString(), "00:00:12:00");
 
     // 载荷太短 / 帧率为 0 都要失败，不能给出假时码
     model::Timecode bad;
-    EXPECT_FALSE(analyzer::TimecodeAnalyzer::DecodeTmcdSample(sample.data(), 2, 30.0, false, bad));
-    EXPECT_FALSE(analyzer::TimecodeAnalyzer::DecodeTmcdSample(sample.data(), 4, 0.0, false, bad));
+    EXPECT_FALSE(videoeye::TimecodeAnalyzer::DecodeTmcdSample(sample.data(), 2, 30.0, false, bad));
+    EXPECT_FALSE(videoeye::TimecodeAnalyzer::DecodeTmcdSample(sample.data(), 4, 0.0, false, bad));
 }
 
 TEST(TimecodeTest, DropFrameDetectionAndValidity) {
@@ -399,7 +399,7 @@ TEST(TimecodeTest, DropFrameDetectionAndValidity) {
 
 TEST(Scte35AnalyzerTest, Crc32Mpeg2CheckValue) {
     const std::string check = "123456789";
-    const uint32_t crc = analyzer::Scte35Analyzer::Crc32Mpeg2(
+    const uint32_t crc = videoeye::Scte35Analyzer::Crc32Mpeg2(
         reinterpret_cast<const uint8_t*>(check.data()), check.size());
     EXPECT_EQ(crc, 0x0376E6E7u);   // CRC-32/MPEG-2 的标准校验值
 }
@@ -407,7 +407,7 @@ TEST(Scte35AnalyzerTest, Crc32Mpeg2CheckValue) {
 TEST(Scte35AnalyzerTest, ParseSpliceInsertWithSegmentation) {
     const std::vector<uint8_t> section = BuildSpliceInsertSection();
     model::Scte35Cue cue;
-    ASSERT_TRUE(analyzer::Scte35Analyzer::ParseSection(section.data(), section.size(), cue))
+    ASSERT_TRUE(videoeye::Scte35Analyzer::ParseSection(section.data(), section.size(), cue))
         << cue.parse_error;
 
     EXPECT_TRUE(cue.valid);
@@ -439,10 +439,10 @@ TEST(Scte35AnalyzerTest, ParseSpliceInsertWithSegmentation) {
 TEST(Scte35AnalyzerTest, TruncatedPayloadFails) {
     const std::vector<uint8_t> section = BuildSpliceInsertSection();
     model::Scte35Cue cue;
-    EXPECT_FALSE(analyzer::Scte35Analyzer::ParseSection(section.data(), 12, cue));
+    EXPECT_FALSE(videoeye::Scte35Analyzer::ParseSection(section.data(), 12, cue));
     EXPECT_FALSE(cue.valid);
     EXPECT_FALSE(cue.parse_error.empty());
 
     model::Scte35Cue empty;
-    EXPECT_FALSE(analyzer::Scte35Analyzer::ParseSection(nullptr, 0, empty));
+    EXPECT_FALSE(videoeye::Scte35Analyzer::ParseSection(nullptr, 0, empty));
 }

@@ -104,19 +104,19 @@ QByteArray OggMinimal() {
 std::vector<AnalyzerCase> AllCases() {
     return {
         {"Asf",  [](const std::string& p, model::ContainerStructureResult& r) {
-             return analyzer::AsfStructureAnalyzer().Analyze(p, r);
+             return videoeye::AsfStructureAnalyzer().Analyze(p, r);
          }, model::ContainerFormat::ASF, "ASF", AsfMinimal(), true},
         {"Avi",  [](const std::string& p, model::ContainerStructureResult& r) {
-             return analyzer::AviStructureAnalyzer().Analyze(p, r);
+             return videoeye::AviStructureAnalyzer().Analyze(p, r);
          }, model::ContainerFormat::AVI, "AVI", AviMinimal(), true},
         {"Flv",  [](const std::string& p, model::ContainerStructureResult& r) {
-             return analyzer::FlvStructureAnalyzer().Analyze(p, r);
+             return videoeye::FlvStructureAnalyzer().Analyze(p, r);
          }, model::ContainerFormat::FLV, "FLV", FlvMinimal(), true},
         {"Ogg",  [](const std::string& p, model::ContainerStructureResult& r) {
-             return analyzer::OggStructureAnalyzer().Analyze(p, r);
+             return videoeye::OggStructureAnalyzer().Analyze(p, r);
          }, model::ContainerFormat::OGG, "OGG", OggMinimal(), false},
         {"Ts",   [](const std::string& p, model::ContainerStructureResult& r) {
-             return analyzer::TsStructureAnalyzer().Analyze(p, r);
+             return videoeye::TsStructureAnalyzer().Analyze(p, r);
          }, model::ContainerFormat::MPEG_TS, "MPEG-TS", TsMinimal(), true},
     };
 }
@@ -225,7 +225,7 @@ TEST(OggAnalyzerLeniency, AcceptsArbitraryBytesByDesign) {
     ASSERT_FALSE(path.empty());
 
     model::ContainerStructureResult result;
-    EXPECT_TRUE(analyzer::OggStructureAnalyzer().Analyze(path, result));
+    EXPECT_TRUE(videoeye::OggStructureAnalyzer().Analyze(path, result));
     EXPECT_TRUE(result.valid);
     EXPECT_EQ(result.format, model::ContainerFormat::OGG);
 }

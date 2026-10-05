@@ -7,7 +7,6 @@
 #include "core/domain/model/TimelineDiagnostic.h"
 
 namespace videoeye {
-namespace analyzer {
 
 // 时间轴与同步诊断分析器
 //
@@ -81,5 +80,4 @@ private:
     bool finished_ = false;
 };
 
-} // namespace analyzer
 } // namespace videoeye

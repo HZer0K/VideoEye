@@ -17,7 +17,7 @@ namespace reporting {
 
 // JsonValue 还住在历史命名空间 videoeye::utils —— utils/ 目录已经拆进
 // infrastructure/，命名空间没跟着改（全仓 200+ 处引用，单独一轮做）。
-using utils::JsonValue;
+using videoeye::JsonValue;
 
 namespace {
 

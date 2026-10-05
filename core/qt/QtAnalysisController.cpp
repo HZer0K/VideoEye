@@ -37,7 +37,7 @@ QtAnalysisController::~QtAnalysisController() {
 }
 
 quint64 QtAnalysisController::StartAnalysis(const std::string& file_path,
-                                            const analyzer::AnalysisOptions& options) {
+                                            const videoeye::AnalysisOptions& options) {
     Cancel();
     // 代际号**立刻**分配并返回：调用方（诊断页）拿它做结果过滤。排队也不改变语义 ——
     // 这次请求将来完成时发出的仍是这个号，旧任务迟到的回包照样被丢弃。
@@ -80,7 +80,7 @@ quint64 QtAnalysisController::StartAnalysis(const std::string& file_path,
     return handle.id;
 }
 
-void QtAnalysisController::Launch(const std::string& file_path, const analyzer::AnalysisOptions& options,
+void QtAnalysisController::Launch(const std::string& file_path, const videoeye::AnalysisOptions& options,
                                   const task::TaskHandle& handle) {
     // 上一条工作线程一定已经退出了（到这里之前都判过 worker_finished_），
     // join 只是收句柄。这里再兜一次，免得将来有人漏判一步就把线程赋值成 joinable 的
@@ -117,7 +117,7 @@ void QtAnalysisController::Launch(const std::string& file_path, const analyzer::
         emit self->WorkerExited(id);
     };
 
-    analyzer::AnalysisCallbacks& callbacks = box->callbacks;
+    videoeye::AnalysisCallbacks& callbacks = box->callbacks;
     callbacks.on_progress = [self, alive = alive_, id = handle.id](double percent, const std::string& stage) {
         if (!self || !alive->load(std::memory_order_acquire)) return;
         emit self->ProgressReported(id, percent, QString::fromStdString(stage));

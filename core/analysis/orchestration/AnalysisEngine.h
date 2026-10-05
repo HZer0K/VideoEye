@@ -24,7 +24,6 @@
 #include "core/domain/model/AnalysisResult.h"
 
 namespace videoeye {
-namespace analyzer {
 
 class AnalysisEngine {
 public:
@@ -101,5 +100,4 @@ private:
     AnalysisEngine& owner_;
 };
 
-} // namespace analyzer
 } // namespace videoeye

@@ -8,7 +8,6 @@
 #include <string>
 
 namespace videoeye {
-namespace analyzer {
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
@@ -21,11 +20,10 @@ constexpr double kShortTermSeconds = 3.0;
 // 真峰值过采样系数（BS.1770-4 要求至少 4×）
 constexpr int kOversampleFactor = 4;
 
-std::string Fixed(double value, int decimals) {
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), ("%." + std::to_string(decimals) + "f").c_str(), value);
-    return std::string(buf);
-}
+// 注意：这里原先有一个本地 Fixed(double,int)，与 FileExtension 那批迁移留下的
+// 过渡头 videoeye::Fixed 签名完全相同 —— 两个同名同参函数同时进重载候选集，
+// MSVC 直接 C2668「调用不明确」。过渡形态只允许存在一份，统一走
+// core/analysis/detail/AnalysisTextUtil.h（本文件第 2 行已 include），别再另写。
 
 // K 加权 stage 1: 高频搁架（spherical head diffraction）
 // 参数与 FFmpeg ebur128.c / libebur128 完全一致（含原标准里的量化偏置）
@@ -874,5 +872,4 @@ void AudioQcAnalyzer::FinalizeMetadata() {
 
 void AudioQcAnalyzer::AddNote(const std::string& note) { result_.notes.push_back(note); }
 
-}  // namespace analyzer
 }  // namespace videoeye

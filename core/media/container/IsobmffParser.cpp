@@ -8,7 +8,6 @@
 #include "infrastructure/concurrency/Cancellation.h"
 
 namespace videoeye {
-namespace utils {
 namespace {
 
 // ---- 大端读取 ----
@@ -676,5 +675,4 @@ bool IsobmffParser::Parse(const std::string& file_path, IsobmffFile& out,
     return true;
 }
 
-}  // namespace utils
 }  // namespace videoeye

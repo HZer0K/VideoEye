@@ -34,7 +34,6 @@ extern "C" {
 #include "core/ffmpeg_io/FfmpegInterrupt.h"
 
 namespace videoeye {
-namespace analyzer {
 
 class AnalysisInputSession {
 public:
@@ -85,5 +84,4 @@ private:
     ffmpeg_io::AvInterruptState interrupt_;
 };
 
-}  // namespace analyzer
 }  // namespace videoeye

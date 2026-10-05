@@ -16,8 +16,8 @@ int main(int argc, char* argv[]) {
     // 调试日志: 写入 exe 同目录, 便于 Windows GUI 下排查卡死/崩溃 (默认仅写控制台不可见)
     {
         std::string log_path = app.applicationDirPath().toStdString() + "/videoeye_debug.log";
-        videoeye::utils::Logger::GetInstance().SetLogFile(log_path);
-        videoeye::utils::Logger::GetInstance().SetLevel(videoeye::utils::LogLevel::Debug);
+        videoeye::Logger::GetInstance().SetLogFile(log_path);
+        videoeye::Logger::GetInstance().SetLevel(videoeye::LogLevel::Debug);
     }
 
     app.setApplicationName("VideoEye");

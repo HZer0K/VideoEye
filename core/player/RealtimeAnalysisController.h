@@ -82,10 +82,10 @@ public:
 
     // 开关会顺带启停分析用的工作线程；换采样档位用 SetVisualDefectOptions()。
     void SetVisualDefectAnalysisEnabled(bool enable);
-    void SetVisualDefectOptions(const analyzer::VisualDefectOptions& options);
+    void SetVisualDefectOptions(const videoeye::VisualDefectOptions& options);
     // 线程安全地取采样选项副本: 解码线程逐帧读取, UI 线程写入,
     // 普通值类型直接跨线程访问存在数据竞争, 故加锁后返回副本。
-    analyzer::VisualDefectOptions GetVisualDefectOptions() const;
+    videoeye::VisualDefectOptions GetVisualDefectOptions() const;
     // 播完 / 停止时把还开着的缺陷段闭合
     void FlushVisualDefectSegments(double end_timestamp_seconds);
 
@@ -99,7 +99,7 @@ signals:
     void TimelineEventListReset();
 
     // --- 实时分析结果 ---
-    void StreamStatsReady(const analyzer::StreamStats& stats);
+    void StreamStatsReady(const videoeye::StreamStats& stats);
     void VideoFrameInfoReady(int index, int frame_type, bool is_key_frame, qint64 pts,
                              double timestamp_seconds);
     void AudioFrameInfoReady(int index, qint64 pts, double timestamp_seconds,
@@ -114,7 +114,7 @@ signals:
     void AudioVisualizationReady(const model::AudioVisualizationFrame& frame);
     void AudioLevelReady(double level, double timestamp_seconds);
     void MacroblockInfoReady(const videoeye::model::MacroblockFrameAnalysis& analysis);
-    void SceneChangeReady(const analyzer::SceneChangeResult& result);
+    void SceneChangeReady(const videoeye::SceneChangeResult& result);
     // 画面质量 / 视觉缺陷（实时播放时逐采样帧产出）
     void VisualDefectReset();
     void VisualDefectFrameReady(const model::FrameQualityMetric& metric);
@@ -155,9 +155,9 @@ private:
     PlaybackSession& playback_;
 
     // 逐帧分析器
-    analyzer::MacroblockAnalyzer macroblock_analyzer_;
-    analyzer::SceneChangeAnalyzer scene_change_analyzer_;
-    analyzer::VisualDefectAnalyzer visual_defect_analyzer_;
+    videoeye::MacroblockAnalyzer macroblock_analyzer_;
+    videoeye::SceneChangeAnalyzer scene_change_analyzer_;
+    videoeye::VisualDefectAnalyzer visual_defect_analyzer_;
     AudioVisualizer audio_visualizer_;
 
     // --- 逐帧计数器 ---

@@ -20,7 +20,6 @@
 #include "core/domain/model/AnalysisTypes.h"
 
 namespace videoeye {
-namespace analyzer {
 
 // 码率与 GOP 深度分析的配置项
 //
@@ -257,5 +256,4 @@ struct AnalysisOptions {
     AuxDataOptions aux_data_options;
 };
 
-} // namespace analyzer
 } // namespace videoeye

@@ -6,7 +6,6 @@
 #include "core/domain/model/ContainerStructureInfo.h"
 
 namespace videoeye {
-namespace analyzer {
 
 /// AVI (RIFF) 容器结构轻量级解析器
 /// 解析 RIFF 容器结构: RIFF 'AVI ' -> LIST hdrl, LIST movi, idx1 等
@@ -24,5 +23,4 @@ private:
                     const std::atomic<bool>* cancel = nullptr);
 };
 
-} // namespace analyzer
 } // namespace videoeye

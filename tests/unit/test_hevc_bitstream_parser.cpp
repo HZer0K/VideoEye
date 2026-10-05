@@ -8,8 +8,8 @@
 
 namespace {
 
-using videoeye::analyzer::HevcBitstreamParser;
-using videoeye::utils::NalUnit;
+using videoeye::HevcBitstreamParser;
+using videoeye::NalUnit;
 
 // 测试数据由 _smoke/gen_hevc_ps.py 按 HEVC 7.3.2.2 / 7.3.2.2.1 / 7.3.2.3.1 逐位生成。
 // NalUnit::data 只含 RBSP payload（NAL header 已由 ExtradataParser 剥离）。

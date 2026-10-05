@@ -23,7 +23,7 @@ namespace model = videoeye::model;
 
 using videoeye::model::AnalysisResult;
 using videoeye::model::AnalysisStatus;
-using videoeye::analyzer::QcRuleEngine;
+using videoeye::QcRuleEngine;
 using videoeye::qc::QcProfile;
 using videoeye::qc::QcReportFormat;
 using videoeye::qc::QcRunResult;

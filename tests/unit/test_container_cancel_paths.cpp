@@ -250,7 +250,7 @@ struct Outcome {
 Outcome AnalyzeOnce(const QString& path, const std::shared_ptr<std::atomic<bool>>& cancel) {
     Outcome o;
     const auto t0 = std::chrono::steady_clock::now();
-    analyzer::ContainerStructureAnalyzer analyzer;
+    videoeye::ContainerStructureAnalyzer analyzer;
     // 分析器这一侧已经不认 Qt 了（去 Qt 之后签名是 const std::string&），
     // 所以 QString 只在这一条边界函数上收口，转成 std::string 再喂进去。
     o.ok = analyzer.Analyze(path.toStdString(), o.result, cancel);

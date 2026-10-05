@@ -5,7 +5,6 @@
 #include <cstdlib>
 
 namespace videoeye {
-namespace utils {
 namespace {
 
 constexpr int kMaxParseDepth = 64;
@@ -427,5 +426,4 @@ std::string JsonEscape(const std::string& text) {
     return out;
 }
 
-}  // namespace utils
 }  // namespace videoeye

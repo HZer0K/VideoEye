@@ -13,7 +13,6 @@ extern "C" {
 }
 
 namespace videoeye {
-namespace analyzer {
 namespace {
 
 // 把 FFmpeg 的声道位置翻译成 BS.1770 需要的角色（决定声道加权）
@@ -462,5 +461,4 @@ void AnalysisPipeline::FeedAudioFrame(AVFrame* frame) {
     }
 }
 
-}  // namespace analyzer
 }  // namespace videoeye

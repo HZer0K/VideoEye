@@ -143,7 +143,7 @@ bool OpenController::OpenAndProbe(const QString& url, const AVInputFormat* input
         } else {
             out_error = QString("打开输入失败: %1 | FFmpeg: %2").arg(url, AvErrorString(ret));
             // 定向诊断: fMP4 分片缺 init 段等特征, 给出可操作的修复建议
-            const std::string extra = utils::DiagnoseUnopenableFile(url_str);
+            const std::string extra = videoeye::DiagnoseUnopenableFile(url_str);
             if (!extra.empty()) out_error += QString::fromStdString("；" + extra);
         }
         return false;

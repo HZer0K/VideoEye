@@ -4,7 +4,6 @@
 #include <string>
 
 namespace videoeye {
-namespace analyzer {
 
 model::ContainerFormat FormatDetector::DetectByMagic(const std::string& file_path) {
     SeqFileReader file(file_path);
@@ -184,5 +183,4 @@ std::string FormatDetector::FormatTitle(model::ContainerFormat fmt) {
     }
 }
 
-} // namespace analyzer
 } // namespace videoeye

@@ -15,7 +15,6 @@
 #include <vector>
 
 namespace videoeye {
-namespace utils {
 
 // ---- box 树 ----
 struct IsobmffBox {
@@ -174,5 +173,4 @@ public:
                       const Options& options = Options{});
 };
 
-}  // namespace utils
 }  // namespace videoeye

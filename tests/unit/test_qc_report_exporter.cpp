@@ -17,8 +17,8 @@ using videoeye::model::IssueSeverity;
 using videoeye::reporting::QcExportBundle;
 using videoeye::reporting::QcReportExporter;
 using videoeye::reporting::QcReportOutputPath;
-using videoeye::utils::JsonParse;
-using videoeye::utils::JsonValue;
+using videoeye::JsonParse;
+using videoeye::JsonValue;
 
 namespace {
 DiagnosticIssue MakeIssue(const std::string& rule_id, IssueSeverity sev,

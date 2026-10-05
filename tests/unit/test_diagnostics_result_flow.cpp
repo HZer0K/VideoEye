@@ -122,7 +122,7 @@ TEST(DiagnosticsResultFlow, FacadeSavesResultBeforeEmittingFinished) {
     const int64_t before_size = facade.result().file_size_bytes;
     facade.ApplySceneChanges({model::SceneChangeResult{0, 1.0, 0.9},
                               model::SceneChangeResult{120, 5.0, 0.8}},
-                             analyzer::BitrateGopOptions{});
+                             videoeye::BitrateGopOptions{});
     EXPECT_EQ(facade.result().container_format, before_container);
     EXPECT_DOUBLE_EQ(facade.result().duration_seconds, before_duration);
     EXPECT_EQ(facade.result().file_size_bytes, before_size);

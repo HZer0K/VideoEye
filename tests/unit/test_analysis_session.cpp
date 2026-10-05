@@ -78,13 +78,13 @@ TEST(AnalysisSessionTest, SettersPropagateToGetters) {
 TEST(AnalysisSessionTest, VisualDefectOptionsRoundTrip) {
     videoeye::player::AnalysisSession session;
 
-    videoeye::analyzer::VisualDefectOptions opts;
-    opts.preset = videoeye::analyzer::VisualSamplingPreset::Fine;
+    videoeye::VisualDefectOptions opts;
+    opts.preset = videoeye::VisualSamplingPreset::Fine;
     opts.capture_rgb = false;
     session.SetVisualDefectOptions(opts);
 
     const auto got = session.GetVisualDefectOptions();
-    EXPECT_EQ(got.preset, videoeye::analyzer::VisualSamplingPreset::Fine);
+    EXPECT_EQ(got.preset, videoeye::VisualSamplingPreset::Fine);
     EXPECT_FALSE(got.capture_rgb);
 }
 

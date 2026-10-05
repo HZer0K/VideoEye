@@ -19,7 +19,7 @@ TEST(FormatDetectorTest, detectsMpegTsSyncPattern) {
     file.close();
 
     EXPECT_EQ(videoeye::model::ContainerFormat::MPEG_TS,
-              videoeye::analyzer::FormatDetector::Detect(file.fileName().toStdString()));
+              videoeye::FormatDetector::Detect(file.fileName().toStdString()));
 }
 
 TEST(FormatDetectorTest, detectsMpegTsWithLeadingOffset) {
@@ -34,7 +34,7 @@ TEST(FormatDetectorTest, detectsMpegTsWithLeadingOffset) {
     file.close();
 
     EXPECT_EQ(videoeye::model::ContainerFormat::MPEG_TS,
-              videoeye::analyzer::FormatDetector::Detect(file.fileName().toStdString()));
+              videoeye::FormatDetector::Detect(file.fileName().toStdString()));
 }
 
 } // namespace

@@ -10,7 +10,6 @@
 #include <vector>
 
 namespace videoeye {
-namespace analyzer {
 
 static std::string StreamTypeToName(uint8_t stream_type) {
     switch (stream_type) {
@@ -303,5 +302,4 @@ bool TsStructureAnalyzer::Analyze(const std::string& file_path, model::Container
     return true;
 }
 
-} // namespace analyzer
 } // namespace videoeye

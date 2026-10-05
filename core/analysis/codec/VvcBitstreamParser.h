@@ -9,7 +9,6 @@
 #include "core/media/codec/BitReader.h"
 
 namespace videoeye {
-namespace analyzer {
 
 // ==========================================================================
 // VVC (H.266) 码流解析器
@@ -31,13 +30,13 @@ namespace analyzer {
 // ==========================================================================
 class VvcBitstreamParser {
 public:
-    static model::VvcVpsInfo ParseVpsFromNalUnit(const utils::NalUnit& nal_unit);
-    static model::VvcSpsInfo ParseSpsFromNalUnit(const utils::NalUnit& nal_unit);
-    static model::VvcPpsInfo ParsePpsFromNalUnit(const utils::NalUnit& nal_unit);
+    static model::VvcVpsInfo ParseVpsFromNalUnit(const videoeye::NalUnit& nal_unit);
+    static model::VvcSpsInfo ParseSpsFromNalUnit(const videoeye::NalUnit& nal_unit);
+    static model::VvcPpsInfo ParsePpsFromNalUnit(const videoeye::NalUnit& nal_unit);
 
-    static bool IsVpsNalUnit(const utils::NalUnit& nal_unit);
-    static bool IsSpsNalUnit(const utils::NalUnit& nal_unit);
-    static bool IsPpsNalUnit(const utils::NalUnit& nal_unit);
+    static bool IsVpsNalUnit(const videoeye::NalUnit& nal_unit);
+    static bool IsSpsNalUnit(const videoeye::NalUnit& nal_unit);
+    static bool IsPpsNalUnit(const videoeye::NalUnit& nal_unit);
 
     // Profile / Level 名称转换（单元测试亦直接调用）
     static std::string GetProfileName(int general_profile_idc);
@@ -46,7 +45,7 @@ public:
 
 private:
     // 取出 RBSP：NalUnit::data 只含 payload，只需做 emulation prevention 反转义
-    static std::vector<uint8_t> GetRbsp(const utils::NalUnit& nal_unit);
+    static std::vector<uint8_t> GetRbsp(const videoeye::NalUnit& nal_unit);
 
     struct TimingHrdContext {
         bool nal_hrd_present = false;
@@ -55,23 +54,22 @@ private:
         uint32_t hrd_cpb_cnt_minus1 = 0;
     };
 
-    static void SkipGeneralConstraintsInfo(utils::BitReader& reader);
-    static void SkipProfileTierLevel(utils::BitReader& reader, bool profile_tier_present,
+    static void SkipGeneralConstraintsInfo(videoeye::BitReader& reader);
+    static void SkipProfileTierLevel(videoeye::BitReader& reader, bool profile_tier_present,
                                      int max_num_sub_layers_minus1);
     // 返回解析出的 PTL 关键字段（profile_tier_present 时有效）
-    static void ParseProfileTierLevel(utils::BitReader& reader, bool profile_tier_present,
+    static void ParseProfileTierLevel(videoeye::BitReader& reader, bool profile_tier_present,
                                       int max_num_sub_layers_minus1, int* profile_idc,
                                       int* tier_flag, uint32_t* level_idc, int* num_sub_profiles);
-    static void SkipDpbParameters(utils::BitReader& reader, int max_sublayers_minus1,
+    static void SkipDpbParameters(videoeye::BitReader& reader, int max_sublayers_minus1,
                                   bool sublayer_info_flag);
-    static void SkipGeneralTimingHrdParameters(utils::BitReader& reader, TimingHrdContext* ctx);
-    static void SkipSubLayerHrdParameters(utils::BitReader& reader, const TimingHrdContext& ctx);
-    static void SkipOlsTimingHrdParameters(utils::BitReader& reader, int first_sublayer,
+    static void SkipGeneralTimingHrdParameters(videoeye::BitReader& reader, TimingHrdContext* ctx);
+    static void SkipSubLayerHrdParameters(videoeye::BitReader& reader, const TimingHrdContext& ctx);
+    static void SkipOlsTimingHrdParameters(videoeye::BitReader& reader, int first_sublayer,
                                            int max_sublayers_minus1, const TimingHrdContext& ctx);
-    static void SkipRefPicListStruct(utils::BitReader& reader, int poc_lsb_bits,
+    static void SkipRefPicListStruct(videoeye::BitReader& reader, int poc_lsb_bits,
                                      bool long_term_ref_pics, bool inter_layer_prediction);
-    static void ParseVuiParameters(utils::BitReader& reader, model::VvcVuiInfo& vui);
+    static void ParseVuiParameters(videoeye::BitReader& reader, model::VvcVuiInfo& vui);
 };
 
-}  // namespace analyzer
 }  // namespace videoeye

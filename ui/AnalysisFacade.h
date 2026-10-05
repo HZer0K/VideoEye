@@ -46,7 +46,7 @@ public:
 
     // ---- 编排（转发自底层 Qt 协调器）----
     quint64 StartAnalysis(const std::string& file_path,
-                          const analyzer::AnalysisOptions& options = analyzer::AnalysisOptions{});
+                          const videoeye::AnalysisOptions& options = videoeye::AnalysisOptions{});
     void Cancel();
     bool IsRunning() const;
     quint64 generation() const;
@@ -86,7 +86,7 @@ public:
     //   * 不重新发 AnalysisFinished —— 页面自己负责刷新，别让"改了一支字段"
     //     伪装成"跑完了一次扫描"。
     void ApplySceneChanges(const std::vector<model::SceneChangeResult>& changes,
-                           const analyzer::BitrateGopOptions& options);
+                           const videoeye::BitrateGopOptions& options);
 
 signals:
     void ProgressReported(quint64 generation, double percent, const QString& stage);

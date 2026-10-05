@@ -8,7 +8,6 @@
 #include <cstring>
 
 namespace videoeye {
-namespace analyzer {
 
 namespace {
 // FLV 视频 CodecID → 名称
@@ -339,5 +338,4 @@ bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
     return true;
 }
 
-} // namespace analyzer
 } // namespace videoeye

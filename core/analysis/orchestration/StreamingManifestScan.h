@@ -22,7 +22,6 @@
 #include "core/domain/model/AnalysisResult.h"
 
 namespace videoeye {
-namespace analyzer {
 
 class StreamingManifestScan {
 public:
@@ -39,5 +38,4 @@ private:
     static bool CancelRequested(const std::atomic<bool>* cancel_source);
 };
 
-}  // namespace analyzer
 }  // namespace videoeye

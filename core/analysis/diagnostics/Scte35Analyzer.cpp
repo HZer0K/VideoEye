@@ -6,7 +6,6 @@
 #include "core/media/codec/BitReader.h"
 
 namespace videoeye {
-namespace analyzer {
 namespace {
 
 constexpr uint8_t kScte35TableId = 0xFC;
@@ -17,9 +16,12 @@ constexpr double kScte35Timebase = 90000.0;
 
 // 简易大端比特读取器。越界读会被记住（overflow_），返回 0，
 // 调用方靠 overflow() 判断"这段 section 被截断"。
-class BitReader {
+// 名字带 Scte 前缀，避免和 core/media/codec/BitReader.h 里的 videoeye::BitReader 撞名：
+// 曾经这里叫 BitReader，utils 层拍平后两个同名类型都进了 namespace videoeye，
+// MSVC 会把匿名命名空间成员当外层成员一起参与歧义判定（C2872）并级联出一堆 "不是成员" 的错。
+class ScteBitReader {
 public:
-    BitReader(const uint8_t* data, size_t size) : data_(data), size_(size) {}
+    ScteBitReader(const uint8_t* data, size_t size) : data_(data), size_(size) {}
 
     void Skip(int bits) { pos_ += static_cast<size_t>(bits); }
     void ByteAlign() { pos_ = (pos_ + 7) & ~static_cast<size_t>(7); }
@@ -100,7 +102,7 @@ std::string UpidSummary(uint8_t type, const std::vector<uint8_t>& bytes) {
 }
 
 // splice_time(): time_specified_flag(1) + reserved(6) + [pts_time(33)]
-bool ReadSpliceTime(BitReader& reader, int64_t pts_adjustment, double& seconds_out,
+bool ReadSpliceTime(ScteBitReader& reader, int64_t pts_adjustment, double& seconds_out,
                     bool& has_time_out) {
     const uint64_t time_specified = reader.Read(1);
     reader.Skip(6);
@@ -113,7 +115,7 @@ bool ReadSpliceTime(BitReader& reader, int64_t pts_adjustment, double& seconds_o
 }
 
 // break_duration(): auto_return(1) + reserved(6) + duration(33)
-bool ReadBreakDuration(BitReader& reader, bool& auto_return, double& duration_seconds,
+bool ReadBreakDuration(ScteBitReader& reader, bool& auto_return, double& duration_seconds,
                        bool& has_duration) {
     auto_return = reader.Read(1) != 0;
     reader.Skip(6);
@@ -124,7 +126,7 @@ bool ReadBreakDuration(BitReader& reader, bool& auto_return, double& duration_se
     return true;
 }
 
-bool ParseSegmentationDescriptor(BitReader& reader, size_t end_byte,
+bool ParseSegmentationDescriptor(ScteBitReader& reader, size_t end_byte,
                                  model::Scte35Segmentation& seg) {
     seg.present = true;
     seg.segmentation_event_id = static_cast<uint32_t>(reader.Read(32));
@@ -189,7 +191,7 @@ bool ParseSegmentationDescriptor(BitReader& reader, size_t end_byte,
     return true;
 }
 
-bool ParseCommand(BitReader& reader, uint8_t command_type, int command_length,
+bool ParseCommand(ScteBitReader& reader, uint8_t command_type, int command_length,
                   model::Scte35Cue& cue) {
     const size_t command_end = reader.BytePos() + static_cast<size_t>(command_length);
 
@@ -370,7 +372,7 @@ bool Scte35Analyzer::ParseSection(const uint8_t* data, size_t size, model::Scte3
         }
     }
 
-    BitReader reader(data + start, size - start);
+    ScteBitReader reader(data + start, size - start);
 
     cue.table_id = static_cast<uint8_t>(reader.Read(8));
     reader.Skip(1);   // section_syntax_indicator
@@ -467,5 +469,4 @@ bool Scte35Analyzer::ParseSection(const uint8_t* data, size_t size, model::Scte3
     return true;
 }
 
-}  // namespace analyzer
 }  // namespace videoeye

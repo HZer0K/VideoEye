@@ -11,7 +11,6 @@ extern "C" {
 }
 
 namespace videoeye {
-namespace analyzer {
 
 QualityMetrics QualityAnalyzer::CompareFrames(const AVFrame* reference, 
                                             const AVFrame* distorted, 
@@ -386,5 +385,4 @@ double QualityAnalyzer::CalculateSsim(const GrayPlane& reference,
     return static_cast<double>(numerator / denominator);
 }
 
-} // namespace analyzer
 } // namespace videoeye

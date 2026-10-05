@@ -10,7 +10,6 @@ extern "C" {
 #include "core/domain/model/MacroblockInfo.h"
 
 namespace videoeye {
-namespace analyzer {
 
 // 宏块/CTU 分析器 - 从解码帧提取运动矢量与块级编码信息
 //
@@ -63,5 +62,4 @@ private:
     static void AccumulateMagnitude(model::MacroblockStats& stats, double magnitude);
 };
 
-} // namespace analyzer
 } // namespace videoeye

@@ -13,7 +13,6 @@ extern "C" {
 }
 
 namespace videoeye {
-namespace analyzer {
 
 /// 统一容器结构分析调度器
 /// 根据文件格式自动选择对应的解析器, 输出统一的 ContainerStructureResult
@@ -96,5 +95,4 @@ private:
                          const std::atomic<bool>* cancel);
 };
 
-} // namespace analyzer
 } // namespace videoeye

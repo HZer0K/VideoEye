@@ -229,20 +229,20 @@ const QcProfile* FindBuiltinQcProfile(const std::string& id) {
 }
 
 std::string SerializeQcProfile(const QcProfile& profile, bool pretty) {
-    utils::JsonValue root = utils::JsonValue::MakeObject();
-    root.Set("version", utils::JsonValue(profile.version));
-    root.Set("id", utils::JsonValue(profile.id));
-    root.Set("name", utils::JsonValue(profile.name));
-    root.Set("description", utils::JsonValue(profile.description));
-    root.Set("analysis_depth", utils::JsonValue(std::string(ToString(profile.depth))));
+    videoeye::JsonValue root = videoeye::JsonValue::MakeObject();
+    root.Set("version", videoeye::JsonValue(profile.version));
+    root.Set("id", videoeye::JsonValue(profile.id));
+    root.Set("name", videoeye::JsonValue(profile.name));
+    root.Set("description", videoeye::JsonValue(profile.description));
+    root.Set("analysis_depth", videoeye::JsonValue(std::string(ToString(profile.depth))));
 
-    utils::JsonValue rules = utils::JsonValue::MakeObject();
+    videoeye::JsonValue rules = videoeye::JsonValue::MakeObject();
     for (const auto& item : profile.overrides) {
-        utils::JsonValue entry = utils::JsonValue::MakeObject();
-        if (item.has_enabled) entry.Set("enabled", utils::JsonValue(item.enabled));
-        if (item.has_threshold) entry.Set("threshold", utils::JsonValue(item.threshold));
+        videoeye::JsonValue entry = videoeye::JsonValue::MakeObject();
+        if (item.has_enabled) entry.Set("enabled", videoeye::JsonValue(item.enabled));
+        if (item.has_threshold) entry.Set("threshold", videoeye::JsonValue(item.threshold));
         if (item.has_severity) {
-            entry.Set("severity", utils::JsonValue(ToStableString(item.severity)));
+            entry.Set("severity", videoeye::JsonValue(ToStableString(item.severity)));
         }
         rules.Set(item.id, entry);
     }
@@ -252,8 +252,8 @@ std::string SerializeQcProfile(const QcProfile& profile, bool pretty) {
 }
 
 bool ParseQcProfileJson(const std::string& json, QcProfile& out, std::string& error) {
-    utils::JsonValue root;
-    if (!utils::JsonParse(json, root, &error)) {
+    videoeye::JsonValue root;
+    if (!videoeye::JsonParse(json, root, &error)) {
         error = "JSON 解析失败: " + error;
         return false;
     }
@@ -274,14 +274,14 @@ bool ParseQcProfileJson(const std::string& json, QcProfile& out, std::string& er
     profile.description =
         root.Find("description") != nullptr ? root.Find("description")->StringValueOr("") : "";
 
-    if (const utils::JsonValue* depth = root.Find("analysis_depth")) {
+    if (const videoeye::JsonValue* depth = root.Find("analysis_depth")) {
         if (!ParseQcAnalysisDepth(depth->StringValueOr(""), profile.depth)) {
             error = "analysis_depth 只能取 fast / standard / deep，实际为 " + depth->StringValueOr("");
             return false;
         }
     }
 
-    if (const utils::JsonValue* rules = root.Find("rules")) {
+    if (const videoeye::JsonValue* rules = root.Find("rules")) {
         if (!rules->IsObject()) {
             error = "rules 必须是对象";
             return false;
@@ -289,22 +289,22 @@ bool ParseQcProfileJson(const std::string& json, QcProfile& out, std::string& er
         const auto& keys = rules->MemberKeys();
         const auto& values = rules->MemberValues();
         for (std::size_t i = 0; i < keys.size(); ++i) {
-            const utils::JsonValue& entry = values[i];
+            const videoeye::JsonValue& entry = values[i];
             if (!entry.IsObject()) {
                 error = "规则 " + keys[i] + " 的覆盖项必须是对象";
                 return false;
             }
             QcRuleOverride item;
             item.id = keys[i];
-            if (const utils::JsonValue* enabled = entry.Find("enabled")) {
+            if (const videoeye::JsonValue* enabled = entry.Find("enabled")) {
                 item.has_enabled = enabled->IsBool();
                 item.enabled = enabled->BoolValueOr(true);
             }
-            if (const utils::JsonValue* threshold = entry.Find("threshold")) {
+            if (const videoeye::JsonValue* threshold = entry.Find("threshold")) {
                 item.has_threshold = threshold->IsNumber();
                 item.threshold = threshold->NumberValueOr(0.0);
             }
-            if (const utils::JsonValue* severity = entry.Find("severity")) {
+            if (const videoeye::JsonValue* severity = entry.Find("severity")) {
                 if (!ParseIssueSeverity(severity->StringValueOr(""), item.severity)) {
                     error = "规则 " + keys[i] + " 的 severity 无法识别: " + severity->StringValueOr("");
                     return false;

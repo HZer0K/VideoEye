@@ -14,7 +14,6 @@ extern "C" {
 }
 
 namespace videoeye {
-namespace analyzer {
 namespace {
 
 constexpr uint32_t kTagTmcd = MKTAG('t', 'm', 'c', 'd');
@@ -314,5 +313,4 @@ void TimecodeAnalyzer::Finish() {
     result_.analyzed = true;
 }
 
-}  // namespace analyzer
 }  // namespace videoeye

@@ -18,7 +18,6 @@
 #include <vector>
 
 namespace videoeye {
-namespace utils {
 
 enum class JsonType {
     Null,
@@ -92,5 +91,4 @@ bool JsonParse(const std::string& text, JsonValue& out, std::string* error_out =
 // 序列化时对字符串做 JSON 转义（双引号 / 反斜杠 / 控制字符），非 ASCII 原样输出 UTF-8。
 std::string JsonEscape(const std::string& text);
 
-}  // namespace utils
 }  // namespace videoeye

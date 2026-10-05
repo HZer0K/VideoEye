@@ -52,7 +52,7 @@ public:
     void SetSceneChanges(const std::vector<model::SceneChangeResult>& records);
 
     // 面板发起扫描前调用：把 UI 上的窗口 / 阈值同步进 AnalysisOptions
-    void FillScanOptions(analyzer::AnalysisOptions& options);
+    void FillScanOptions(videoeye::AnalysisOptions& options);
 
     // 扫描生命周期由面板驱动（与诊断页、音频 QC、色彩/HDR 保持同步）
     void SetScanActive(bool active);
@@ -72,7 +72,7 @@ signals:
     void SeekRequested(double seconds);
     // 用「场景切换」页的记录检查附近是否有关键帧
     void SceneLinkRequested(const std::vector<model::SceneChangeResult>& records,
-                            const analyzer::BitrateGopOptions& options);
+                            const videoeye::BitrateGopOptions& options);
 
 public slots:
     void Refresh();
@@ -102,7 +102,7 @@ private:
     QString source_path_;
     bool has_result_ = false;
     model::AnalysisResult result_;
-    analyzer::BitrateGopOptions options_;
+    videoeye::BitrateGopOptions options_;
     bool decode_frame_types_ = false;
     std::vector<model::SceneChangeResult> scene_changes_;
     double display_window_ = 1.0;   // 当前图表显示的窗口长度

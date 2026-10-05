@@ -26,7 +26,6 @@
 #include "core/analysis/AnalysisOptions.h"
 
 namespace videoeye {
-namespace analyzer {
 
 class SegmentQcAnalyzer {
 public:
@@ -67,5 +66,4 @@ private:
     SegmentQcAnalyzer() = delete;
 };
 
-} // namespace analyzer
 } // namespace videoeye

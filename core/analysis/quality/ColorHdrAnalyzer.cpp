@@ -13,7 +13,6 @@ extern "C" {
 }
 
 namespace videoeye {
-namespace analyzer {
 namespace {
 
 // ---- core/domain/model/ColorInfo.h 里镜像的 FFmpeg 枚举值交叉校验 ----
@@ -333,5 +332,4 @@ const ColorHdrAnalysis& ColorHdrAnalyzer::Finish() {
     return result_;
 }
 
-}  // namespace analyzer
 }  // namespace videoeye

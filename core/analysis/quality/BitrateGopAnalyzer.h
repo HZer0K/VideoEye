@@ -12,7 +12,6 @@
 #include "core/domain/model/SceneChangeResult.h"
 
 namespace videoeye {
-namespace analyzer {
 
 // 码率/GOP 的结果类型（BitrateAnomalyType / BitrateAnomaly /
 // BitrateGopAnalysis）与 SceneChangeResult 都已下放到 domain ——
@@ -108,5 +107,4 @@ private:
     bool finished_ = false;
 };
 
-}  // namespace analyzer
 }  // namespace videoeye

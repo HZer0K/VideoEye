@@ -711,7 +711,7 @@ void AudioQcPage::SetQcReport(const model::QcReport& qc_report) {
     Refresh();
 }
 
-void AudioQcPage::FillScanOptions(analyzer::AnalysisOptions& options) {
+void AudioQcPage::FillScanOptions(videoeye::AnalysisOptions& options) {
     ApplyOptionsFromUi();
     options.audio_qc_options = options_;
     options.analyze_audio_qc = true;

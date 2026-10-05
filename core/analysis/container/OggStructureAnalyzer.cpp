@@ -9,7 +9,6 @@
 #include <string>
 
 namespace videoeye {
-namespace analyzer {
 
 namespace {
 uint32_t oggLE32(const std::string& d, int off) {
@@ -234,5 +233,4 @@ bool OggStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
     return true;
 }
 
-} // namespace analyzer
 } // namespace videoeye

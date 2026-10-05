@@ -27,7 +27,6 @@ struct AVPacket;
 struct AVStream;
 
 namespace videoeye {
-namespace analyzer {
 
 // 解析出的裸 cue（还没有流/语言这些上下文）
 struct ParsedSubtitleCue {
@@ -95,5 +94,4 @@ private:
     model::SubtitleAnalysisResult result_;
 };
 
-}  // namespace analyzer
 }  // namespace videoeye

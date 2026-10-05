@@ -9,7 +9,6 @@
 #include "infrastructure/logging/Logger.h"
 
 namespace videoeye {
-namespace utils {
 
 class ScopedTimer {
 public:
@@ -37,10 +36,9 @@ private:
     std::chrono::steady_clock::time_point start_;
 };
 
-}  // namespace utils
 }  // namespace videoeye
 
 // 用法: { VE_PERF("MediaInfo 解析"); ... }
 #define VE_PERF_CONCAT_IMPL(a, b) a##b
 #define VE_PERF_CONCAT(a, b) VE_PERF_CONCAT_IMPL(a, b)
-#define VE_PERF(name) ::videoeye::utils::ScopedTimer VE_PERF_CONCAT(_ve_perf_timer_, __LINE__)(name)
+#define VE_PERF(name) ::videoeye::ScopedTimer VE_PERF_CONCAT(_ve_perf_timer_, __LINE__)(name)

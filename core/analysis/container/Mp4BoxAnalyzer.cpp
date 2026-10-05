@@ -7,7 +7,6 @@
 #include "infrastructure/logging/Logger.h"
 
 namespace videoeye {
-namespace analyzer {
 namespace {
 
 // 展示用的字段上限: box 树里只列前若干条样本, 完整表走 track_tables / 导出报告
@@ -27,7 +26,7 @@ void PushFieldInt(model::Mp4BoxNode& node, const std::string& name, uint64_t val
 }
 
 // 从自研解析器产出的轨道数据里给样本表 box 填字段
-void FillTableFields(model::Mp4BoxNode& node, const utils::IsobmffTrack& track) {
+void FillTableFields(model::Mp4BoxNode& node, const videoeye::IsobmffTrack& track) {
     const std::string& type = node.type;
     if (type == "stts") {
         PushFieldInt(node, "entry_count", track.stts.size());
@@ -96,8 +95,8 @@ void FillTableFields(model::Mp4BoxNode& node, const utils::IsobmffTrack& track) 
 }
 
 // 解析器 box -> UI 模型 box（递归）
-model::Mp4BoxNode ConvertBox(const utils::IsobmffBox& src,
-                             const utils::IsobmffTrack* track) {
+model::Mp4BoxNode ConvertBox(const videoeye::IsobmffBox& src,
+                             const videoeye::IsobmffTrack* track) {
     model::Mp4BoxNode node;
     node.type = src.type;
     node.size = src.size;
@@ -117,7 +116,7 @@ model::Mp4BoxNode ConvertBox(const utils::IsobmffBox& src,
     return node;
 }
 
-model::TrackBoxTables ConvertTrackTables(const utils::IsobmffTrack& src) {
+model::TrackBoxTables ConvertTrackTables(const videoeye::IsobmffTrack& src) {
     model::TrackBoxTables t;
     t.track_id = static_cast<int>(src.track_id);
     t.track_type = src.TypeName();
@@ -180,11 +179,11 @@ bool Mp4BoxAnalyzer::AnalyzeFile(const std::string& file_path,
     result = model::Mp4BoxAnalysisResult();
     result.file_path = file_path;
 
-    utils::IsobmffParser::Options opt;
+    videoeye::IsobmffParser::Options opt;
     opt.max_entries_per_table = kMaxTableEntries;
     opt.cancel = cancel;
-    utils::IsobmffFile file;
-    if (!utils::IsobmffParser::Parse(file_path, file, opt)) {
+    videoeye::IsobmffFile file;
+    if (!videoeye::IsobmffParser::Parse(file_path, file, opt)) {
         result.error_message = file.error_message;
         LOG_WARN("Mp4BoxAnalyzer: " + result.error_message);
         return false;
@@ -204,7 +203,7 @@ bool Mp4BoxAnalyzer::AnalyzeFile(const std::string& file_path,
             moov.offset = top.offset;
             moov.depth = top.depth;
             for (const auto& child : top.children) {
-                const utils::IsobmffTrack* track = nullptr;
+                const videoeye::IsobmffTrack* track = nullptr;
                 if (child.type == "trak" && track_cursor < file.tracks.size()) {
                     track = &file.tracks[track_cursor++];
                 }
@@ -230,5 +229,4 @@ void Mp4BoxAnalyzer::Reset() {
     // 无状态需要清理
 }
 
-}  // namespace analyzer
 }  // namespace videoeye

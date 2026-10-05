@@ -22,7 +22,6 @@
 #include "core/analysis/AnalysisOptions.h"
 
 namespace videoeye {
-namespace analyzer {
 
 class Scte35Analyzer {
 public:
@@ -38,5 +37,4 @@ private:
     Scte35Analyzer() = delete;
 };
 
-}  // namespace analyzer
 }  // namespace videoeye

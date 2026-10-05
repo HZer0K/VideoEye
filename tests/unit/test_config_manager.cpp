@@ -5,7 +5,7 @@
 namespace {
 
 TEST(ConfigManagerTest, StoresTypeValuesAndDefaults) {
-    auto& config = videoeye::utils::ConfigManager::GetInstance();
+    auto& config = videoeye::ConfigManager::GetInstance();
     config.Clear();
 
     config.SetString("ui.theme", "dark");

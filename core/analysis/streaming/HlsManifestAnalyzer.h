@@ -26,7 +26,6 @@
 #include "core/domain/model/StreamPackageInfo.h"
 
 namespace videoeye {
-namespace analyzer {
 
 // 注意: 带默认成员初始化器的结构体必须定义在 namespace 作用域。
 // 嵌进类里 GCC 会报 "default member initializer ... required before the end of
@@ -41,7 +40,7 @@ struct HlsManifestOptions {
     double duration_jitter_ratio = 0.25;        // (max-min)/mean 超过即判为时长抖动
     // 单个清单文件的字节上限（master 与每个子播放列表各自计数）。
     // 读到上限就放弃而不是"读到哪算哪" —— 半份清单的校验结论没有意义，
-    // 宁可明确报"文件过大"。见 utils::manifest::ManifestReadOptions::max_bytes。
+    // 宁可明确报"文件过大"。见 videoeye::manifest::ManifestReadOptions::max_bytes。
     uint64_t max_manifest_bytes = 32ULL * 1024ULL * 1024ULL;
 };
 
@@ -73,5 +72,4 @@ private:
     HlsManifestOptions options_;
 };
 
-} // namespace analyzer
 } // namespace videoeye

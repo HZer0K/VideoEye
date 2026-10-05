@@ -33,7 +33,6 @@
 #include "core/media/streaming/ManifestText.h"
 
 namespace videoeye {
-namespace utils {
 namespace manifest {
 
 // 清单读取的终态。调用方据此区分"文件有问题"与"用户叫停了两件事"。
@@ -285,5 +284,4 @@ inline ManifestReadStatus ReadManifestText(const std::string& path, const Manife
 }
 
 } // namespace manifest
-} // namespace utils
 } // namespace videoeye

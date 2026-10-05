@@ -17,7 +17,6 @@
 #include <vector>
 
 namespace videoeye {
-namespace utils {
 namespace manifest {
 
 inline std::string Trim(const std::string& s) {
@@ -412,5 +411,4 @@ inline void SplitCodecs(const std::string& codecs, std::string& video_codec, std
 }
 
 } // namespace manifest
-} // namespace utils
 } // namespace videoeye

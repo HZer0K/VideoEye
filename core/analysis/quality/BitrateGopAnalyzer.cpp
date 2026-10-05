@@ -7,7 +7,6 @@
 #include <numeric>
 
 namespace videoeye {
-namespace analyzer {
 namespace {
 
 // 单条曲线最多保留的采样点。超过则自动加大 hop（步进），避免长视频把 UI 图表打爆。
@@ -751,5 +750,4 @@ const model::MetricSeries* BitrateGopAnalyzer::WindowCurve(double window_seconds
     return nullptr;
 }
 
-}  // namespace analyzer
 }  // namespace videoeye

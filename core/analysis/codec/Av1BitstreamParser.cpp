@@ -3,7 +3,6 @@
 #include "core/media/codec/BitReader.h"
 
 namespace videoeye {
-namespace analyzer {
 
 namespace {
 // AV1 规范附录 6.4.2 的 CICP 取值，dav1d 里同名常量
@@ -32,12 +31,12 @@ std::string Av1BitstreamParser::GetLevelString(int seq_level_idx) {
     return std::to_string(2 + seq_level_idx / 4) + "." + std::to_string(seq_level_idx % 4);
 }
 
-bool Av1BitstreamParser::IsSequenceHeaderObu(const utils::ObuUnit& obu_unit) {
-    return obu_unit.type == static_cast<uint8_t>(utils::Av1ObuType::SequenceHeader);
+bool Av1BitstreamParser::IsSequenceHeaderObu(const videoeye::ObuUnit& obu_unit) {
+    return obu_unit.type == static_cast<uint8_t>(videoeye::Av1ObuType::SequenceHeader);
 }
 
 // timing_info() + decoder_model_info()（AV1 规范 5.5.1）
-bool Av1BitstreamParser::SkipTimingInfo(utils::BitReader& reader,
+bool Av1BitstreamParser::SkipTimingInfo(videoeye::BitReader& reader,
                                        model::Av1SequenceHeaderInfo& sh) {
     sh.timing_info_present_flag = reader.ReadBit();
     if (!sh.timing_info_present_flag) {
@@ -63,7 +62,7 @@ bool Av1BitstreamParser::SkipTimingInfo(utils::BitReader& reader,
 }
 
 // operating_points 循环（AV1 规范 5.5.1）
-bool Av1BitstreamParser::SkipOperatingPoints(utils::BitReader& reader,
+bool Av1BitstreamParser::SkipOperatingPoints(videoeye::BitReader& reader,
                                             model::Av1SequenceHeaderInfo& sh) {
     sh.display_model_info_present_flag = reader.ReadBit();
     sh.operating_points_count = static_cast<int>(reader.ReadBits(5)) + 1;
@@ -110,7 +109,7 @@ bool Av1BitstreamParser::SkipOperatingPoints(utils::BitReader& reader,
 }
 
 // color_config()（AV1 规范 6.4.2）
-bool Av1BitstreamParser::ParseColorConfig(utils::BitReader& reader,
+bool Av1BitstreamParser::ParseColorConfig(videoeye::BitReader& reader,
                                          model::Av1SequenceHeaderInfo& sh) {
     model::Av1ColorConfigInfo& cc = sh.color_config;
 
@@ -192,13 +191,13 @@ bool Av1BitstreamParser::ParseColorConfig(utils::BitReader& reader,
     return !reader.HasError();
 }
 
-model::Av1SequenceHeaderInfo Av1BitstreamParser::ParseFromObuUnit(const utils::ObuUnit& obu_unit) {
+model::Av1SequenceHeaderInfo Av1BitstreamParser::ParseFromObuUnit(const videoeye::ObuUnit& obu_unit) {
     model::Av1SequenceHeaderInfo sh;
     if (!IsSequenceHeaderObu(obu_unit) || obu_unit.data.empty()) {
         return sh;
     }
 
-    utils::BitReader reader;
+    videoeye::BitReader reader;
     reader.Reset(obu_unit.data.data(), obu_unit.data.size());
 
     sh.profile = static_cast<int>(reader.ReadBits(3));
@@ -288,9 +287,9 @@ model::Av1SequenceHeaderInfo Av1BitstreamParser::ParseSequenceHeader(const uint8
 
     // av1C 走 ParseAv1C（会顺带解析尾部 configOBUs），裸 OBU 流走 DetectFormat 的兜底。
     // 两条路最终都把 OBU 放进 obu_units。
-    utils::ExtradataResult parsed = utils::ExtradataParser::Parse(extradata, size);
+    videoeye::ExtradataResult parsed = videoeye::ExtradataParser::Parse(extradata, size);
 
-    for (const utils::ObuUnit& obu : parsed.obu_units) {
+    for (const videoeye::ObuUnit& obu : parsed.obu_units) {
         if (IsSequenceHeaderObu(obu)) {
             return ParseFromObuUnit(obu);
         }
@@ -299,5 +298,4 @@ model::Av1SequenceHeaderInfo Av1BitstreamParser::ParseSequenceHeader(const uint8
     return model::Av1SequenceHeaderInfo();
 }
 
-} // namespace analyzer
 } // namespace videoeye

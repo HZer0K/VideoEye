@@ -1,4 +1,4 @@
-// utils::IsobmffParser 真实解析路径单元测试
+// videoeye::IsobmffParser 真实解析路径单元测试
 //
 // 目的: test_mp4_sample_table.cpp 只测 Mp4SampleTableAnalyzer::Validate()（纯静态校验），
 // 覆盖不到「从字节流里把 stbl 读出来」这一段。自研 IsobmffParser 替换掉第三方库之后，
@@ -165,12 +165,12 @@ bool WriteTemp(const std::string& path, const std::vector<uint8_t>& data) {
 }
 
 // 拼文件 → 解析 → 返回第一条轨道（解析失败返回 nullptr 由调用方判空）
-utils::IsobmffFile ParseFirstTrackFile(const std::vector<uint8_t>& stbl_body,
-                                       utils::IsobmffParser::Options opt = {}) {
+videoeye::IsobmffFile ParseFirstTrackFile(const std::vector<uint8_t>& stbl_body,
+                                       videoeye::IsobmffParser::Options opt = {}) {
     const std::string path = "isobmff_parser_test_tmp.mp4";
     EXPECT_TRUE(WriteTemp(path, MakeFile(stbl_body)));
-    utils::IsobmffFile out;
-    EXPECT_TRUE(utils::IsobmffParser::Parse(path, out, opt));
+    videoeye::IsobmffFile out;
+    EXPECT_TRUE(videoeye::IsobmffParser::Parse(path, out, opt));
     std::remove(path.c_str());
     return out;
 }
@@ -181,11 +181,11 @@ utils::IsobmffFile ParseFirstTrackFile(const std::vector<uint8_t>& stbl_body,
 TEST(IsobmffParserTest, SttsParsesAllEntriesNotJustTheFirst) {
     // 两条 entry 一共 150 个样本。旧实现用 added += sample_count 与 entry_count 比，
     // 第一条的 sample_count=100 立刻超过 entry_count=2，导致只解析出 1 条。
-    const utils::IsobmffFile f = ParseFirstTrackFile(
+    const videoeye::IsobmffFile f = ParseFirstTrackFile(
         Cat(MakeStts({{100, 3000}, {50, 3000}}), MakeStsz(100, 150)));
 
     ASSERT_EQ(f.tracks.size(), 1u);
-    const utils::IsobmffTrack& t = f.tracks[0];
+    const videoeye::IsobmffTrack& t = f.tracks[0];
     EXPECT_TRUE(t.has_stts);
     ASSERT_EQ(t.stts.size(), 2u);
     EXPECT_EQ(t.stts[0].sample_count, 100u);
@@ -199,11 +199,11 @@ TEST(IsobmffParserTest, SttsParsesAllEntriesNotJustTheFirst) {
 // ---------------------------------------------------------------------------
 TEST(IsobmffParserTest, CttsVersion1KeepsSignedOffsets) {
     const uint32_t neg3000 = static_cast<uint32_t>(-3000);
-    const utils::IsobmffFile f = ParseFirstTrackFile(
+    const videoeye::IsobmffFile f = ParseFirstTrackFile(
         Cat(MakeCtts(1, {{1, neg3000}, {1, 3000}}), MakeStsz(100, 2)));
 
     ASSERT_EQ(f.tracks.size(), 1u);
-    const utils::IsobmffTrack& t = f.tracks[0];
+    const videoeye::IsobmffTrack& t = f.tracks[0];
     EXPECT_TRUE(t.has_ctts);
     ASSERT_EQ(t.ctts.size(), 2u);
     EXPECT_EQ(t.ctts[0].sample_offset, -3000);
@@ -214,11 +214,11 @@ TEST(IsobmffParserTest, CttsVersion1KeepsSignedOffsets) {
 // ctts v0: 偏移是无符号的，超大值夹到 INT32_MAX 而不是变成负数
 // ---------------------------------------------------------------------------
 TEST(IsobmffParserTest, CttsVersion0TreatsOffsetAsUnsigned) {
-    const utils::IsobmffFile f = ParseFirstTrackFile(
+    const videoeye::IsobmffFile f = ParseFirstTrackFile(
         Cat(MakeCtts(0, {{1, 0xFFFFFFF0u}}), MakeStsz(100, 1)));
 
     ASSERT_EQ(f.tracks.size(), 1u);
-    const utils::IsobmffTrack& t = f.tracks[0];
+    const videoeye::IsobmffTrack& t = f.tracks[0];
     ASSERT_EQ(t.ctts.size(), 1u);
     EXPECT_EQ(t.ctts[0].sample_offset, std::numeric_limits<int32_t>::max());
 }
@@ -228,11 +228,11 @@ TEST(IsobmffParserTest, CttsVersion0TreatsOffsetAsUnsigned) {
 // ---------------------------------------------------------------------------
 TEST(IsobmffParserTest, Stz2FourBitOddSampleCountDropsPaddingNibble) {
     // 0x12 -> 1, 2；0x30 -> 3, (0x0 是填充)
-    const utils::IsobmffFile f =
+    const videoeye::IsobmffFile f =
         ParseFirstTrackFile(MakeStz2(4, 3, {0x12, 0x30}));
 
     ASSERT_EQ(f.tracks.size(), 1u);
-    const utils::IsobmffTrack& t = f.tracks[0];
+    const videoeye::IsobmffTrack& t = f.tracks[0];
     EXPECT_TRUE(t.has_stz2);
     EXPECT_EQ(t.stsz.field_size, 4u);
     ASSERT_EQ(t.stsz.sizes.size(), 3u);
@@ -242,11 +242,11 @@ TEST(IsobmffParserTest, Stz2FourBitOddSampleCountDropsPaddingNibble) {
 }
 
 TEST(IsobmffParserTest, Stz2FourBitEvenSampleCountUsesBothNibbles) {
-    const utils::IsobmffFile f =
+    const videoeye::IsobmffFile f =
         ParseFirstTrackFile(MakeStz2(4, 4, {0x12, 0x34}));
 
     ASSERT_EQ(f.tracks.size(), 1u);
-    const utils::IsobmffTrack& t = f.tracks[0];
+    const videoeye::IsobmffTrack& t = f.tracks[0];
     ASSERT_EQ(t.stsz.sizes.size(), 4u);
     EXPECT_EQ(t.stsz.sizes[3], 4u);
 }
@@ -255,9 +255,9 @@ TEST(IsobmffParserTest, Stz2FourBitEvenSampleCountUsesBothNibbles) {
 // 超大文件的保护: 撞到 max_entries 时要置 tables_truncated
 // ---------------------------------------------------------------------------
 TEST(IsobmffParserTest, MaxEntriesTruncatesAndFlags) {
-    utils::IsobmffParser::Options opt;
+    videoeye::IsobmffParser::Options opt;
     opt.max_entries_per_table = 1;
-    const utils::IsobmffFile f = ParseFirstTrackFile(
+    const videoeye::IsobmffFile f = ParseFirstTrackFile(
         Cat(MakeStts({{100, 3000}, {50, 3000}}), MakeStsz(100, 150)), opt);
 
     ASSERT_EQ(f.tracks.size(), 1u);
@@ -269,7 +269,7 @@ TEST(IsobmffParserTest, MaxEntriesTruncatesAndFlags) {
 // 基本容器结构（保证上面的断言不是建立在一条空轨道上）
 // ---------------------------------------------------------------------------
 TEST(IsobmffParserTest, ParsesContainerAndTrackBasics) {
-    const utils::IsobmffFile f = ParseFirstTrackFile(
+    const videoeye::IsobmffFile f = ParseFirstTrackFile(
         CatAll({MakeStsd(), MakeStts({{10, 3000}}), MakeStsz(100, 10)}));
 
     EXPECT_TRUE(f.ok);

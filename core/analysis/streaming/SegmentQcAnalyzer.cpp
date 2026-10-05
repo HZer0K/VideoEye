@@ -12,10 +12,9 @@
 #include "core/analysis/streaming/StreamingCancel.h"
 
 namespace videoeye {
-namespace analyzer {
 namespace {
 
-namespace mt = videoeye::utils::manifest;
+namespace mt = videoeye::manifest;
 
 std::string FormatSeconds(double seconds) {
     char buf[32];
@@ -699,5 +698,4 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Analyze(model::StreamingPackag
     return StageStatus::kDone;
 }
 
-} // namespace analyzer
 } // namespace videoeye

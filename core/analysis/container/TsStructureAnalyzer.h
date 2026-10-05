@@ -5,7 +5,6 @@
 #include "core/domain/model/ContainerStructureInfo.h"
 
 namespace videoeye {
-namespace analyzer {
 
 /// MPEG-TS 容器结构轻量级解析器
 /// 扫描 TS 包, 解析 PAT/PMT 提取节目和流信息
@@ -16,5 +15,4 @@ public:
                  const std::atomic<bool>* cancel = nullptr);
 };
 
-} // namespace analyzer
 } // namespace videoeye

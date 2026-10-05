@@ -8,7 +8,6 @@
 #include "core/domain/model/QcRule.h"
 
 namespace videoeye {
-namespace analyzer {
 
 // 质量检查规则引擎
 //
@@ -37,5 +36,4 @@ private:
     std::vector<model::QcRule> rules_;
 };
 
-} // namespace analyzer
 } // namespace videoeye

@@ -57,7 +57,7 @@ public:
     // 返回值语义不变：排队时也立刻分配代际号，将来完成时发的就是这个号；返回 0 表示
     // 并发已满（调用方应当按失败处理）。
     quint64 StartAnalysis(const std::string& file_path,
-                          const analyzer::AnalysisOptions& options = analyzer::AnalysisOptions{});
+                          const videoeye::AnalysisOptions& options = videoeye::AnalysisOptions{});
 
     // 请求取消当前分析（异步，结果仍会以 completed=false 返回）。排队中的请求一并作废。
     void Cancel();
@@ -91,11 +91,11 @@ private:
     // 永远停在 Running。
     struct PendingRequest {
         std::string file_path;
-        analyzer::AnalysisOptions options;
+        videoeye::AnalysisOptions options;
         task::TaskHandle handle;
     };
 
-    void Launch(const std::string& file_path, const analyzer::AnalysisOptions& options,
+    void Launch(const std::string& file_path, const videoeye::AnalysisOptions& options,
                 const task::TaskHandle& handle);
     // WorkerExited 的处理体：回收已结束的工作线程并启动排队请求（不阻塞 UI，因为
     // 被 join 的线程已经返回，只剩线程收尾）。
@@ -122,11 +122,11 @@ private:
     // 以前的写法是线程体捕获 this、直接跑成员上的 engine_，放弃路径就是悬空访问；
     // 现在引擎住在盒子里由盒子自己保活。
     struct Box {
-        analyzer::AnalysisEngine engine;
+        videoeye::AnalysisEngine engine;
         task::TaskHandle handle;
-        analyzer::AnalysisOptions options;
+        videoeye::AnalysisOptions options;
         std::string path;
-        analyzer::AnalysisCallbacks callbacks;
+        videoeye::AnalysisCallbacks callbacks;
         std::shared_ptr<std::atomic<bool>> alive;
         // 线程体是否已经返回。以前这是个 bool 成员，工作线程与 UI 线程同时读写它 ——
         // 既是数据竞争，也让线程体必须碰到 this。挪进盒子之后，工作线程只读盒子，

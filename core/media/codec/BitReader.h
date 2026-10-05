@@ -7,7 +7,6 @@
 #include <vector>
 
 namespace videoeye {
-namespace utils {
 
 // ==========================================================================
 // 位流读取器（Big-Endian / MSB-first）
@@ -138,5 +137,4 @@ inline uint32_t ReadLengthPrefix(const uint8_t*& ptr, size_t remaining, int pref
     return 0;
 }
 
-} // namespace utils
 } // namespace videoeye

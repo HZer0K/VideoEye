@@ -2,7 +2,7 @@
 
 #include "infrastructure/logging/Logger.h"
 #include "infrastructure/logging/ScopedTimer.h"
-// OnSceneLinkRequested 的形参用到 analyzer::BitrateGopOptions（关联场景切换的判定表），
+// OnSceneLinkRequested 的形参用到 videoeye::BitrateGopOptions（关联场景切换的判定表），
 // 面板只把这份记录转交给诊断页，不自己算。
 // 这个结构体住在 AnalysisOptions.h —— 以前这里 include 的是具体实现它的
 // BitrateGopAnalyzer.h，等于为了一个参数把整个码率分析器拖进面板的编译图。
@@ -486,7 +486,7 @@ void AnalysisPanel::SetupBitrateGopPage() {
     bitrate_gop_page_->SetSourcePath(QString::fromStdString(current_video_path_));
     // 扫描请求统一由诊断页编排（页面才持有 facade 与进度条总控）
     connect(bitrate_gop_page_, &BitrateGopPage::ScanRequested, this, [this]() {
-        analyzer::AnalysisOptions options = diagnostics_page_->options();
+        videoeye::AnalysisOptions options = diagnostics_page_->options();
         bitrate_gop_page_->FillScanOptions(options);
         diagnostics_page_->StartScan(options);
     });
@@ -502,7 +502,7 @@ void AnalysisPanel::SetupAudioQcPage() {
     audio_qc_page_ = new AudioQcPage(this);
     audio_qc_page_->SetSourcePath(QString::fromStdString(current_video_path_));
     connect(audio_qc_page_, &AudioQcPage::ScanRequested, this, [this]() {
-        analyzer::AnalysisOptions options = diagnostics_page_->options();
+        videoeye::AnalysisOptions options = diagnostics_page_->options();
         audio_qc_page_->FillScanOptions(options);
         diagnostics_page_->StartScan(options);
     });
@@ -515,7 +515,7 @@ void AnalysisPanel::SetupColorHdrPage() {
     color_hdr_page_ = new ColorHdrPage(this);
     color_hdr_page_->SetSourcePath(QString::fromStdString(current_video_path_));
     connect(color_hdr_page_, &ColorHdrPage::ScanRequested, this, [this]() {
-        analyzer::AnalysisOptions options = diagnostics_page_->options();
+        videoeye::AnalysisOptions options = diagnostics_page_->options();
         color_hdr_page_->FillScanOptions(options);
         diagnostics_page_->StartScan(options);
     });
@@ -527,7 +527,7 @@ void AnalysisPanel::SetupSubtitleAuxPage() {
     subtitle_aux_page_ = new SubtitleAuxPage(this);
     connect(subtitle_aux_page_, &SubtitleAuxPage::ScanRequested, this, [this]() {
         // 字幕页自己不发 demux：字幕包本来就在同一次扫描里过了一遍
-        analyzer::AnalysisOptions options = diagnostics_page_->options();
+        videoeye::AnalysisOptions options = diagnostics_page_->options();
         diagnostics_page_->StartScan(options);
     });
     connect(subtitle_aux_page_, &SubtitleAuxPage::StartTimecodeReady,
@@ -584,7 +584,7 @@ void AnalysisPanel::OnVisualDefectOptionChanged() {
 // 「关联场景切换」：判定表归码率页，报告重算留在诊断页（那里才有 facade 与问题表），
 // 面板这一层只做转发 + 让码率页弹出自己的汇总。
 void AnalysisPanel::OnSceneLinkRequested(const std::vector<model::SceneChangeResult>& records,
-                                         const analyzer::BitrateGopOptions& options) {
+                                         const videoeye::BitrateGopOptions& options) {
     if (diagnostics_page_) {
         diagnostics_page_->ApplySceneLink(records, options);
     }
@@ -642,7 +642,7 @@ void AnalysisPanel::SetupDiagnosticsPage() {
     // 装成扫描前的钩子，任何入口发起的扫描（本页按钮 / 其它几页 / 流媒体包 /
     // 参数集）都会先同步一次，免得选项与规则两处阈值各说各话。
     diagnostics_page_->SetBeforeScanHook(
-        [this](analyzer::AnalysisOptions& options) { SyncSubtitleThresholds(options); });
+        [this](videoeye::AnalysisOptions& options) { SyncSubtitleThresholds(options); });
 
     // 扫描生命周期 -> 面板同步其它几页的按钮 / 进度条
     connect(diagnostics_page_, &DiagnosticsPage::ScanStarted,
@@ -663,7 +663,7 @@ void AnalysisPanel::SetupDiagnosticsPage() {
     AddPageWithScroll(diagnostics_page_, tr("诊断与报告"));
 }
 
-void AnalysisPanel::SyncSubtitleThresholds(analyzer::AnalysisOptions& options) {
+void AnalysisPanel::SyncSubtitleThresholds(videoeye::AnalysisOptions& options) {
     if (!subtitle_aux_page_ || !diagnostics_page_) return;
     subtitle_aux_page_->ApplyRuleThresholds(diagnostics_page_->rules(), options.subtitle_options);
 }

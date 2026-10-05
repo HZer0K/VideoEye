@@ -14,8 +14,8 @@ namespace ui {
 // 不设 Qt 父对象以免与 unique_ptr 双重析构。
 struct AnalysisFacade::Impl {
     qt::QtAnalysisController coordinator;
-    analyzer::QcRuleEngine qc_rule_engine;
-    analyzer::TimelineAnalyzer timeline_analyzer;
+    videoeye::QcRuleEngine qc_rule_engine;
+    videoeye::TimelineAnalyzer timeline_analyzer;
     model::AnalysisResult result;
 };
 
@@ -56,7 +56,7 @@ AnalysisFacade::AnalysisFacade(QObject* parent)
 AnalysisFacade::~AnalysisFacade() = default;
 
 quint64 AnalysisFacade::StartAnalysis(const std::string& file_path,
-                                      const analyzer::AnalysisOptions& options) {
+                                      const videoeye::AnalysisOptions& options) {
     return impl_->coordinator.StartAnalysis(file_path, options);
 }
 
@@ -113,8 +113,8 @@ void AnalysisFacade::Reset() {
 }
 
 void AnalysisFacade::ApplySceneChanges(const std::vector<model::SceneChangeResult>& changes,
-                                       const analyzer::BitrateGopOptions& options) {
-    analyzer::BitrateGopAnalyzer::ApplySceneChanges(impl_->result.bitrate_gop, changes, options);
+                                       const videoeye::BitrateGopOptions& options) {
+    videoeye::BitrateGopAnalyzer::ApplySceneChanges(impl_->result.bitrate_gop, changes, options);
 }
 
 } // namespace ui

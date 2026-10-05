@@ -1,7 +1,6 @@
 #include "core/media/codec/BitReader.h"
 
 namespace videoeye {
-namespace utils {
 
 void BitReader::Reset(const uint8_t* data, size_t size) {
     ResetFromData(data, size);
@@ -194,5 +193,4 @@ std::vector<uint8_t> UnescapeRbsp(const uint8_t* data, size_t size) {
     return out;
 }
 
-} // namespace utils
 } // namespace videoeye

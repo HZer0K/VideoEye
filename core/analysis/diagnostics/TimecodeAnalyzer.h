@@ -27,7 +27,6 @@ struct AVPacket;
 struct AVStream;
 
 namespace videoeye {
-namespace analyzer {
 
 class TimecodeAnalyzer {
 public:
@@ -61,5 +60,4 @@ private:
     double inferred_fps_ = 0.0;
 };
 
-}  // namespace analyzer
 }  // namespace videoeye

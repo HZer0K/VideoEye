@@ -7,7 +7,6 @@
 #include "core/media/codec/BitReader.h"
 
 namespace videoeye {
-namespace analyzer {
 
 // H.265 (HEVC) 码流解析器
 // 
@@ -27,14 +26,14 @@ public:
     static model::HevcPpsInfo ParsePps(const uint8_t* extradata, size_t size);
     
     // 从 NAL 单元解析（用于实时解析）
-    static model::HevcVpsInfo ParseVpsFromNalUnit(const utils::NalUnit& nal_unit);
-    static model::HevcSpsInfo ParseSpfFromNalUnit(const utils::NalUnit& nal_unit);
-    static model::HevcPpsInfo ParsePpsFromNalUnit(const utils::NalUnit& nal_unit);
+    static model::HevcVpsInfo ParseVpsFromNalUnit(const videoeye::NalUnit& nal_unit);
+    static model::HevcSpsInfo ParseSpfFromNalUnit(const videoeye::NalUnit& nal_unit);
+    static model::HevcPpsInfo ParsePpsFromNalUnit(const videoeye::NalUnit& nal_unit);
     
     // 判断是否为 VPS/SPS/PPS NAL 单元
-    static bool IsVpsNalUnit(const utils::NalUnit& nal_unit);
-    static bool IsSpsNalUnit(const utils::NalUnit& nal_unit);
-    static bool IsPpsNalUnit(const utils::NalUnit& nal_unit);
+    static bool IsVpsNalUnit(const videoeye::NalUnit& nal_unit);
+    static bool IsSpsNalUnit(const videoeye::NalUnit& nal_unit);
+    static bool IsPpsNalUnit(const videoeye::NalUnit& nal_unit);
     
     // 解析 SEI 消息
     static std::vector<model::HevcSeiMessage> ParseSeiMessages(const uint8_t* data, size_t size);
@@ -46,10 +45,10 @@ public:
 
 private:
     // NalUnit::data 已不含 NAL header，这里只做 emulation prevention 反转义
-    static std::vector<uint8_t> GetRbsp(const utils::NalUnit& nal_unit);
+    static std::vector<uint8_t> GetRbsp(const videoeye::NalUnit& nal_unit);
 
     // profile_tier_level() —— 7.3.3
-    static void ParseProfileTierLevel(utils::BitReader& reader,
+    static void ParseProfileTierLevel(videoeye::BitReader& reader,
                                       int max_sub_layers_minus1,
                                       int& profile_space,
                                       int& tier_flag,
@@ -58,16 +57,15 @@ private:
                                       std::vector<bool>& sub_layer_profile_present,
                                       std::vector<bool>& sub_layer_level_present);
 
-    static void SkipScalingListData(utils::BitReader& reader);
-    static void SkipHrdParameters(utils::BitReader& reader, int max_sub_layers_minus1);
+    static void SkipScalingListData(videoeye::BitReader& reader);
+    static void SkipHrdParameters(videoeye::BitReader& reader, int max_sub_layers_minus1);
     // hrd_parameters 里 nal / vcl 两份 CPB 列表结构完全相同，抽出来避免抄两遍。
     // 返回 false 表示位流已经失效（读越界）。
-    static bool SkipOneHrdCpbList(utils::BitReader& reader, uint32_t cpb_cnt_minus1, bool sub_pic);
-    static void SkipShortTermRefPicSets(utils::BitReader& reader, int num_sets);
-    static void ParseVuiParameters(utils::BitReader& reader,
+    static bool SkipOneHrdCpbList(videoeye::BitReader& reader, uint32_t cpb_cnt_minus1, bool sub_pic);
+    static void SkipShortTermRefPicSets(videoeye::BitReader& reader, int num_sets);
+    static void ParseVuiParameters(videoeye::BitReader& reader,
                                    model::HevcSpsInfo& sps,
                                    int max_sub_layers_minus1);
 };
 
-} // namespace analyzer
 } // namespace videoeye

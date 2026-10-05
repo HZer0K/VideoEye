@@ -388,7 +388,7 @@ void ColorHdrPage::SetQcReport(const model::QcReport& qc_report) {
     Refresh();
 }
 
-void ColorHdrPage::FillScanOptions(analyzer::AnalysisOptions& options) {
+void ColorHdrPage::FillScanOptions(videoeye::AnalysisOptions& options) {
     ApplyOptionsFromUi();
     options.color_hdr_options = options_;
     options.analyze_color_hdr = true;
