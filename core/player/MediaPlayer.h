@@ -21,12 +21,12 @@ extern "C" {
 #include "core/ffmpeg_io/FfmpegInterrupt.h"
 #include "core/player/Decoders.h"
 #include "core/player/PlaybackClock.h"
-#include "core/player/StreamInfoExtractor.h"
 #include "core/player/AudioOutput.h"
 #include "core/player/VideoFrameExporter.h"
 #include "core/player/AnalysisSession.h"
 #include "core/player/ContainerInspectionController.h"
 #include "core/player/ExportController.h"
+#include "core/player/OpenController.h"
 #include "core/player/PlaybackSession.h"
 #include "core/player/RealtimeAnalysisController.h"
 #include "infrastructure/concurrency/TaskManager.h"
@@ -278,7 +278,6 @@ private:
     // 分析会话: 12 个分析开关 + StreamAnalyzer + 视觉缺陷采样选项 (见 AnalysisSession.h)。
     // MediaPlayer 经它转发开关/统计, 自身不再持有这些散落成员。
     AnalysisSession analysis_session_;
-    StreamInfoExtractor stream_info_extractor_;
 
     // 播放期实时分析的全部编排（六个 hook / 19 个逐帧计数器 / 逐帧分析器 / 视觉缺陷
     // 采样与工作线程）住在 RealtimeAnalysisController 里，本类只转发入口与信号。
@@ -300,6 +299,11 @@ private:
     // ContainerInspectionController 里，本类只负责"该不该分析"和转发两条信号。
     // 同上: 必须声明在 task_manager_ 之后。
     ContainerInspectionController container_inspection_;
+
+    // 打开媒体的全部编排（超时中断 / 探测 / 选流 / 封面图 / 解码器初始化 / 流信息提取）
+    // 住在 OpenController 里，本类只做"换媒体前的复位"与"打开成功后派发容器分析"。
+    // 中断状态与取消标志仍由本类持有（见上方 open_interrupt_ 的注释），控制器只借引用。
+    OpenController open_controller_;
 };
 
 } // namespace player
