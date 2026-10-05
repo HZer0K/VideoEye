@@ -3,6 +3,8 @@
 // 各自要开的解码器、parser、swr 全在 AnalysisPipeline 里；本文件只负责"什么时候
 // 创建、什么时候分发、什么时候收尾"，不直接 include 任何具体分析器。
 #include "core/analysis/orchestration/AnalysisPipeline.h"
+// 逐包扫描循环（读包 / 三种出口定性 / 扫描事实 / 进度）在 PacketScanLoop 里。
+#include "core/analysis/orchestration/PacketScanLoop.h"
 // 打开 / 探测 / 中断 / 取消 / 容器级事实 / 流摘要 都在 AnalysisInputSession 里；
 // FFmpeg 中断回调本身住在 core/ffmpeg_io/FfmpegInterrupt.h（叶子模块），由会话去 include。
 #include "core/analysis/orchestration/AnalysisInputSession.h"
@@ -35,8 +37,8 @@ namespace videoeye {
 namespace analyzer {
 namespace {
 
-constexpr int kProgressMinIntervalMs = 100;
-constexpr int kProgressMinPackets = 2000;
+// 进度限频的两个阈值已随逐包扫描一起搬到 PacketScanLoop.cpp。
+//
 // ---- FFmpeg 中断机制 ----
 // AvInterruptState / AvIoInterruptCallback / kOpenTimeoutUs / kProbeTimeoutUs
 // 已抽到 core/ffmpeg_io/FfmpegInterrupt.h 供所有分析器共享（见上方 include）。
@@ -60,7 +62,12 @@ bool IsStreamingManifestExtension(const std::string& ext) {
 }  // namespace
 
 bool AnalysisEngine::IsCancelledExit(int ret) const {
-    return IsCancelRequested() && ret == AVERROR_EXIT;
+    // 看 CancelSource()（外部源优先，没有就用引擎自己那颗）而不是只看引擎自己的
+    // cancel_requested_: FFmpeg 的中断回调盯的就是 CancelSource() 那一颗，判据必须
+    // 跟它一致。以前这里只看引擎自有标志，于是"接了外部取消源的批处理任务被取消"
+    // 会走到失败分支，界面弹出"文件可能截断或 IO 错误"——与打开/探测阶段
+    // （AnalysisInputSession::IsCancelledExit 一直看的是 cancel_source_）不一致。
+    return CancelSource()->load(std::memory_order_acquire) && ret == AVERROR_EXIT;
 }
 
 void AnalysisEngine::Cancel() {
@@ -155,134 +162,35 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     pipeline.Prepare(fmt, result, file_duration);
 
     // ---- 逐包扫描 ----
-    const double interval = (options.sample_interval_seconds > 0.0) ? options.sample_interval_seconds : 1.0;
-    ScanBuckets buckets;
-
-    AVPacket* pkt = av_packet_alloc();
-    int64_t packet_index = 0;
-    int64_t last_pos = 0;
-
-    auto last_progress = std::chrono::steady_clock::now();
-    NotifyProgress(callbacks, 0.0, "扫描数据包");
-
-    // 逐包扫描的统一收尾：取消和真·IO 错误都要走同一份清理，
-    // 免得以后改一处漏一处（漏 avformat_close_input 就是句柄泄漏）。
     //
-    // 关上下文必须走 input.Close()：会话自己也持着这枚指针，直接 avformat_close_input(&fmt)
-    // 只会清掉这里的局部变量，会话析构时会对已释放的上下文再关一次。
-    auto teardown_scan = [&]() {
-        av_packet_free(&pkt);
-        input.Close();
-        fmt = nullptr;
-        // 解码器 / parser / swr 归管道所有（各 probe 的 Release 自带幂等，
-        // 正常路径已经释放过一次，这里再调一次是空操作）。
-        pipeline.ReleaseProbes();
-    };
-
+    // 循环本身（读包 / 三种出口的定性 / 扫描事实统计 / 限频进度）在 PacketScanLoop 里。
+    // 它**不做清理**: AVPacket 由它的析构释放，AVFormatContext 与解码通路仍归本函数 ——
+    // 错误出口下"关上下文之前还要不要刷一次 HDR"只有这里知道。
+    const double interval =
+        (options.sample_interval_seconds > 0.0) ? options.sample_interval_seconds : 1.0;
+    ScanBuckets buckets;
+    ScanOutcome scan_outcome = ScanOutcome::Complete;
     {
-    VE_PERF("逐包扫描(全文件 demux + 音频解码 + GOP)");
-    while (true) {
-        if (CancelRequested()) {
-            result.scan_status = model::AnalysisStatus::Cancelled;
-            break;
-        }
-        const int ret = av_read_frame(fmt, pkt);
-        if (ret < 0) {
-            if (ret == AVERROR_EOF) {
-                result.scan_status = model::AnalysisStatus::Complete;
-            } else {
-                // 读取数据包阶段出现错误（文件截断 / IO 错误 / 网络中断）。
-                // 这与"完整扫到 EOF"不同：必须作为失败处理，不能把半成品当完整 QC 报告。
-                char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
-                av_strerror(ret, errbuf, sizeof(errbuf));
-                // 取消标记的轮询在循环开头，但 av_read_frame 可能在两次轮询之间
-                // 就被中断回调打断（网络/磁盘 IO 里根本轮不到那次检查），
-                // 这种"取消 + AVERROR_EXIT"必须报成 Cancelled 而不是半成品失败。
-                if (IsCancelledExit(ret)) {
-                    teardown_scan();
-                    NotifyCancelled(callbacks, result);
-                    return;
-                }
-                result.scan_error_code = ret;  // 真 AVERROR 优先，MarkFailed 不会覆盖它
-                MarkFailed(result, "读取数据包失败（文件可能截断或 IO 错误）: " +
-                                       std::string(errbuf));
-                teardown_scan();
-                NotifyFailed(callbacks, result.error_message);
-                return;
-            }
-            break;  // EOF
-        }
-
-        if (pkt->stream_index < 0 ||
-            pkt->stream_index >= static_cast<int>(fmt->nb_streams)) {
-            av_packet_unref(pkt);
-            continue;
-        }
-
-        AVStream* st = fmt->streams[pkt->stream_index];
-        model::StreamDigest& digest = result.streams[pkt->stream_index];
-        const double tb = av_q2d(st->time_base);
-        const bool is_video = (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO);
-        const bool has_pts = (pkt->pts != AV_NOPTS_VALUE);
-        const double ts = has_pts ? static_cast<double>(pkt->pts) * tb : -1.0;
-
-        // 维度分发：时间轴 / 字幕 / 时码 / 辅助 / 音频 / 关键帧与 GOP / 色彩与 HDR。
-        // 只喂 pkt —— 时间戳、逐秒桶与下面这些计数是"扫描事实"而不是"维度"，
-        // 所以留在本函数里（A4 拆 PacketScanLoop 时它们跟着循环一起走）。
-        pipeline.OnPacket(fmt, pkt, result, packet_index);
-
-        result.total_packets += 1;
-        result.total_bytes += pkt->size;
-        digest.packet_count += 1;
-        digest.byte_count += pkt->size;
-        if (is_video) digest.frame_count += 1;
-        if (pkt->size > result.max_packet_bytes) result.max_packet_bytes = pkt->size;
-        if (pkt->dts == AV_NOPTS_VALUE) result.packets_missing_dts += 1;
-        if (is_video) result.video_packets += 1;
-
-        // 逐秒桶：码率 + 帧率（视频字节/帧数只记视频包，总字节记所有包）
-        if (ts >= 0.0) {
-            const int64_t bucket_index = static_cast<int64_t>(std::floor(ts / interval));
-            ScanBucket& bucket = buckets[bucket_index];
-            bucket.total_bytes += pkt->size;
-            if (is_video) {
-                bucket.video_bytes += pkt->size;
-                bucket.video_frames += 1;
-            }
-        }
-
-        last_pos = (pkt->pos > 0) ? pkt->pos : last_pos;
-        av_packet_unref(pkt);
-
-        // 进度上报（限频）
-        ++packet_index;
-        if (options.max_packets > 0 && packet_index >= options.max_packets) {
-            // 命中包数上限：只完成了抽样扫描，不是完整结果。
-            if (result.scan_status == model::AnalysisStatus::Complete) {
-                result.scan_status = model::AnalysisStatus::Sampled;
-            }
-            break;
-        }
-        if (packet_index % kProgressMinPackets == 0) {
-            const auto now = std::chrono::steady_clock::now();
-            if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_progress).count() >=
-                kProgressMinIntervalMs) {
-                last_progress = now;
-                double percent = 0.0;
-                if (result.file_size_bytes > 0 && last_pos > 0) {
-                    percent = 100.0 * static_cast<double>(last_pos) /
-                              static_cast<double>(result.file_size_bytes);
-                } else if (result.duration_seconds > 0.0 && ts > 0.0) {
-                    percent = 100.0 * ts / result.duration_seconds;
-                }
-                percent = std::clamp(percent, 0.0, 99.0);
-                NotifyProgress(callbacks, percent,
-                                      "扫描数据包 " + std::to_string(packet_index) + " 个");
-            }
-        }
+        PacketScanLoop loop(fmt, options, result, callbacks);
+        // 取消判定的两个谓词按引擎的策略注入："看哪一颗标志"（外部源优先于引擎自有）
+        // 是引擎的事，循环只是借来问一句。
+        scan_outcome = loop.Run(pipeline, buckets, interval, [&] { return CancelRequested(); },
+                                [&](int ret) { return IsCancelledExit(ret); });
     }
+    if (scan_outcome == ScanOutcome::Failed) {
+        // 失败终态（含 error_message / scan_error_code）已由循环写进 result，这里只发回调。
+        pipeline.ReleaseProbes();
+        input.Close();
+        NotifyFailed(callbacks, result.error_message);
+        return;
     }
-    av_packet_free(&pkt);
+    // Complete 与 Cancelled 都往下走收尾：取消时各分析器照样 Finish，界面因此能拿到
+    // 已扫到一半的字幕 / 时码 / 音频 QC，而不是一个空壳。终态仍由 scan_status 决定
+    // （Assembler::Finish 的 completed 与进度文案都跟着它走）。
+    //
+    // 顺带消掉了以前的不一致：取消标记在循环开头被轮询到时，原来是 break 出来走收尾；
+    // 而 av_read_frame 被中断回调打断时，原来是直接 NotifyCancelled 返回、一个分析器
+    // 都不收尾。同样是按了取消，两条路给出的结果不一样。
 
     // 关闭上下文之前的最后一眼：部分封装的 HDR 元数据要读到包后才补进 codecpar。
     pipeline.BeforeClose(fmt);
