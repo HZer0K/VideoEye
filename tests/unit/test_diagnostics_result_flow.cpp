@@ -5,9 +5,14 @@
 // 问题清单/评分/码率-GOP/音频QC/HDR/字幕页面全部拿到空数据，报告导出也基于空结果。
 //
 // 现在保存职责上移到 AnalysisFacade：它在发出 AnalysisFinished **之前**先把结果写进
-// result()，页面只负责展示。前两个测试锁定 SetResult/result 的契约；最后一个
-// 端到端跑通 controller 线程 -> 引擎 -> 回包 -> facade 落库 -> 信号 这条真实链路，
-// 证明"信号到达时结果已经就位"，而不是只证明 SetResult 能被调用。
+// result()，页面只负责展示。
+//
+// （P2 收口）对外写入口 SetResult() 已删除 —— 结果存储是只读快照，页面不再有
+// "改写分析结果"的手段，从根上杜绝"页面忘了写回"。因此这里的回归不再测 SetResult，
+// 而是守住两件事：
+//   1. 扫描前 result() 是空快照、且 QC 引擎对空结果仍然给出合法评分（不崩、不越界）；
+//   2. 端到端: 信号到达时 result() 已经是本次扫描的结果；
+//   3. 唯一允许的就地改动（ApplySceneChanges）不得波及扫描事实字段。
 
 #include <gtest/gtest.h>
 
@@ -26,50 +31,23 @@ namespace {
 
 using namespace videoeye;
 
-TEST(DiagnosticsResultFlow, SetResultThenResultReflectsScan) {
+// 扫描前 result() 必须是默认空快照 —— 它是"只读快照"而不是可写槽位，
+// 页面拿不到写入口，也就无从"忘记写回"。
+// 顺带锁住 QC 引擎对空结果的健壮性：空结果正是当年 P0 在界面上的表现形式，
+// 即便真拿到一份空的，评分也必须落在合法区间而不是崩掉或越界。
+TEST(DiagnosticsResultFlow, ResultIsEmptySnapshotBeforeAnyAnalysis) {
     ui::AnalysisFacade facade;
 
-    // 扫描前: result() 是默认构造的空结果
     EXPECT_EQ(facade.result().total_packets, 0);
     EXPECT_DOUBLE_EQ(facade.result().duration_seconds, 0.0);
+    EXPECT_EQ(facade.result().key_frame_count, 0);
 
-    model::AnalysisResult scan;
-    scan.container_format = "mov,mp4,m4a,3gp,3g2,mj2";
-    scan.duration_seconds = 12.0;
-    scan.total_packets = 1357;
-    scan.key_frame_count = 24;
-    scan.overall_bitrate_bps = 3500000;
-    scan.file_size_bytes = 5250000;
-
-    facade.SetResult(scan);
-
-    // P0 核心断言: SetResult 之后 result() 必须返回刚才写回的那一份,
-    // 不能再是默认空结果。这正是旧 DiagnosticsPage 漏掉的一步。
-    EXPECT_EQ(facade.result().total_packets, 1357);
-    EXPECT_DOUBLE_EQ(facade.result().duration_seconds, 12.0);
-    EXPECT_EQ(facade.result().key_frame_count, 24);
-
-    // Evaluate 必须基于 result() 这份数据, 产出合法区间内的评分报告
     model::QcReport report = facade.Evaluate(facade.result());
     EXPECT_GE(report.score, 0.0);
     EXPECT_LE(report.score, 100.0);
-}
 
-// 直接演示"不调用 SetResult"时 result() 仍是默认空结果 —— 即 P0 bug 的表现形式。
-TEST(DiagnosticsResultFlow, WithoutSetResultResultStaysEmpty) {
-    ui::AnalysisFacade facade;
-
-    model::AnalysisResult scan;
-    scan.total_packets = 1357;
-    scan.duration_seconds = 12.0;
-
-    // 模拟旧 DiagnosticsPage: 拿到 result 却没调用 SetResult, 直接用 facade->result()
-    facade.Evaluate(facade.result());
-    EXPECT_EQ(facade.result().total_packets, 0);  // 默认空结果, 不是 1357
-
-    facade.SetResult(scan);
-    facade.Evaluate(facade.result());
-    EXPECT_EQ(facade.result().total_packets, 1357);  // 写回后才是真实数据
+    // Evaluate 是纯函数（只读入参），不改动存储里的快照
+    EXPECT_EQ(facade.result().total_packets, 0);
 }
 
 // 端到端信号链路：观察者在 AnalysisFinished 里读 facade.result()，必须已经是本次结果。
@@ -135,6 +113,19 @@ TEST(DiagnosticsResultFlow, FacadeSavesResultBeforeEmittingFinished) {
     EXPECT_EQ(seen_from_facade.streaming_package.playlists.size(), 1u);
     EXPECT_DOUBLE_EQ(seen_from_facade.duration_seconds, 8.0);
     EXPECT_GT(seen_from_facade.file_size_bytes, 0);
+
+    // 唯一允许的就地改动: ApplySceneChanges 只该动 bitrate_gop 这一支。
+    // 扫描事实（容器格式 / 时长 / 文件大小）一旦落库就是历史 —— 页面改它不是"刷新"
+    // 而是篡改诊断结论。这里顺手用一份真实结果（本测试正好刚跑完一次扫描）锁住它。
+    const auto before_container = facade.result().container_format;
+    const double before_duration = facade.result().duration_seconds;
+    const int64_t before_size = facade.result().file_size_bytes;
+    facade.ApplySceneChanges({model::SceneChangeResult{0, 1.0, 0.9},
+                              model::SceneChangeResult{120, 5.0, 0.8}},
+                             analyzer::BitrateGopOptions{});
+    EXPECT_EQ(facade.result().container_format, before_container);
+    EXPECT_DOUBLE_EQ(facade.result().duration_seconds, before_duration);
+    EXPECT_EQ(facade.result().file_size_bytes, before_size);
 
     QFile::remove(manifest);
 }

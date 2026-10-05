@@ -76,10 +76,6 @@ const model::AnalysisResult& AnalysisFacade::result() const {
     return impl_->result;
 }
 
-void AnalysisFacade::SetResult(const model::AnalysisResult& r) {
-    impl_->result = r;
-}
-
 const std::vector<model::QcRule>& AnalysisFacade::rules() const {
     return impl_->qc_rule_engine.rules();
 }
