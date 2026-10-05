@@ -112,6 +112,50 @@ if(WIN32)
 endif()
 
 # ============================================================
+# 架构规则本身也进 ctest
+#
+# 以前 check_layering.py 只挂在 pre-commit 和 CI 的 lint job 里 —— 本地 ctest 里
+# 看不到；而它又有过「打印 [!] 却 return 0」的历史（那等于门是白装的，2026-10-05 修）。
+# 放进 ctest 之后规则有了能被机器盯住的落点，两个用例都是秒级。
+#
+# 这两条不是 gtest 可执行文件，走不了 videoeye_add_test()（那个固定链 GTest::gtest_main），
+# 所以直接 add_test 调 python。
+find_program(VIDEOEYE_PYTHON_EXE NAMES python3 python py)
+if(VIDEOEYE_PYTHON_EXE)
+    # 这四条脚本都用「VIDEOEYE_ROOT 或者当前目录」当仓库根，而 add_test 的默认工作
+    # 目录是二进制目录（build/test-release/tests）—— 不加 WORKING_DIRECTORY 的话
+    # ROOT 会落在 build 里，os.walk 扫到一个不存在的 core/，于是「一个依赖都没查到」
+    # 直接被当成「没有跨层反向依赖」放行。这是假绿，不是通过。
+    # 改成把工作目录钉在源码根，与 pre-commit / CI 跑脚本时的目录一致。
+    #
+    # 用法：
+    #     ctest -R LayeringRulesTests --preset win-test-release-local
+    add_test(NAME LayeringRulesTests
+             COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/check_layering.py)
+    # 光看退出码不够：check_layering.py 有「打印了 [!] 却 return 0」的前科，
+    # 再加一道输出断言，逼它必须真的打印放行文案才算过。
+    set_tests_properties(LayeringRulesTests PROPERTIES
+        PASS_REGULAR_EXPRESSION "没有跨层反向依赖")
+    add_test(NAME LayeringSelfTestTests
+             COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test_check_layering.py)
+    # analysis 层不许沾 Qt。查的是比 check_layering 更粗也更该管的一件事：
+    # Qt 类型在 core/analysis 内部的使用（QString / QByteArray / QFile / QDataStream /
+    # QMap ...）。check_layering 看不见它们，因为那层的 Qt include 全写成尖括号
+    # #include <QString>（相对仓库根的引号形式检查会漏掉），而 audit_qt_domain_border
+    # 只管"Qt 有没有落进 domain 的 std::string 字段"，是字段级、不是文件级。
+    add_test(NAME QtAnalysisBorderTests
+             COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/audit_qt_analysis_border.py)
+    add_test(NAME QtAnalysisBorderSelfTestTests
+             COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test_audit_qt_analysis_border.py)
+    set_tests_properties(LayeringRulesTests LayeringSelfTestTests
+                                            QtAnalysisBorderTests
+                                            QtAnalysisBorderSelfTestTests PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+else()
+    message(STATUS "未找到 python，跳过分层规则测试（CI 与 pre-commit 仍会跑）")
+endif()
+
+# ============================================================
 # 公共 include 目录 (与主项目一致)
 # ============================================================
 # 源码里的 #include 都写成"从仓库根算起"（"core/analysis/xxx.h"），所以只要根目录；
@@ -640,6 +684,10 @@ target_include_directories(test_scan_terminal_state PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui)
 target_link_libraries(test_scan_terminal_state PRIVATE
     VideoEyeQtAdapters
+    #ReportingPanel 已经从 UI_SOURCES 里剔出去了（ui/reporting_panel 独立成库，
+    # 否则同一份 Q_OBJECT 会被主程序和这个测试各编一份），所以这里补链它 ——
+    # AnalysisPanel / MainWindow 都直接引用 ReportingPanel。
+    VideoEyeReportingPanel
     VideoEyePlayback
     VideoEyeExporter
     VideoEyeReporting
@@ -747,6 +795,28 @@ target_link_libraries(test_reporting_helpers PRIVATE Qt6::Core)
 add_test(NAME ReportingHelpersTests COMMAND test_reporting_helpers)
 
 # =================================================
+# 测试 33：报告页关闭时仍有阻塞任务（评审第 5 项）
+# 说明: 面板的关停路径（取消 + alive=false + 带预算回收）过去零覆盖，而它是 ui/ 里
+#       唯一带后台线程的一页 —— 卡在阻塞 IO 上关界面，历史上是"无限等待"级别的缺陷。
+#       面板已从 ui/*.cpp 剔出成 VideoEyeReportingPanel（Q_OBJECT 类编两份 = ODR 违规），
+#       测试才能把它链进来。跑这个用例要 offscreen 平台，见下面的 ENVIRONMENT。
+# =================================================
+videoeye_add_test(test_reporting_panel_lifecycle
+    unit/test_reporting_panel_lifecycle.cpp
+)
+target_link_libraries(test_reporting_panel_lifecycle PRIVATE
+    VideoEyeReportingPanel
+    Qt6::Widgets
+)
+# BlockingTcpEndpoint.h 走 winsock，Windows 上需要显式 ws2_32（FFmpeg 的导入库不带它）。
+if(WIN32)
+    target_link_libraries(test_reporting_panel_lifecycle PRIVATE ws2_32)
+endif()
+add_test(NAME ReportingPanelLifecycleTests COMMAND test_reporting_panel_lifecycle)
+set_tests_properties(ReportingPanelLifecycleTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
 # 测试 32：五个容器结构分析器的参数化健壮性（评审第 10 项）
 # 说明: Asf / Avi / Flv / Ogg / Ts 的 Analyze() 签名完全一致，却长期零覆盖。
 #       这里用 TEST_P 跑"五分析器 × 三种输入"：文件不存在 / 魔数对不上 /
@@ -799,3 +869,19 @@ videoeye_add_test(test_cancel_and_robustness
 )
 target_link_libraries(test_cancel_and_robustness PRIVATE Qt6::Core VideoEyeDomain VideoEyeInfrastructure)
 add_test(NAME CancelAndRobustnessTests COMMAND test_cancel_and_robustness)
+
+# =================================================
+# 测试 40：analysis 去 Qt 留下的三件过渡形态（AnalysisTextUtil / BytesOrder /
+# SeqFileReader）
+# 说明: 这三个头都是 analysis 层内部的 Qt 替身，写它们的初衷是"迁移期唯一允许的
+# 过渡形态"（scripts/audit_qt_analysis_border.py 只放行它们）。替身自己也会漂 ——
+# 尤其是 StrCat 的 %% 语义和 SeqFileReader "EOF 之后还能 seek 回去"这两处，
+# 出了岔子都只在打开真实媒体文件时才看得见，所以钉成单测。
+#
+# 这里刻意**不链任何 VideoEye*/Qt 目标**：被测的三件东西全是 header-only，
+# 这条用例因此也顺带成了"analysis 的过渡头不拖依赖"的证据。
+# =================================================
+videoeye_add_test(test_analysis_text_util
+    unit/test_analysis_text_util.cpp
+)
+add_test(NAME AnalysisTextUtilTests COMMAND test_analysis_text_util)

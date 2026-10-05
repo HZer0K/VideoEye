@@ -22,7 +22,11 @@ void ContainerInspectionController::Cancel() {
 }
 
 void ContainerInspectionController::Start(const QString& url) {
-    const QString url_copy = url;
+    // 以前这里是 QString url_copy, 直接整个喂给 ContainerStructureAnalyzer::Analyze。
+    // 那个签名是域/分析侧的 std::string, 于是"QString 跨到无 Qt 那一层"这条依赖
+    // 一直藏在调用方身上。边界转换在**这一行**明写出来: Qt 侧的值进了任务体就
+    // 立刻落成本层的 std::string, 任务体再也不持有任何 Qt 类型。
+    const std::string url_copy = url.toStdString();
     QPointer<ContainerInspectionController> self = this;
 
     // 交给统一的任务调度: 同 slot 上只允许一个任务, 换文件时旧任务被取消且结果作废,
@@ -31,7 +35,8 @@ void ContainerInspectionController::Start(const QString& url) {
     // 用 RunBlockingIo: 这里要走 FFmpeg 的 avformat_open_input / find_stream_info,
     // 网络源或异常设备上即使装了 AVIOInterruptCB 也可能不响应, 关闭时不能 join 到底 ——
     // 代价是必须遵守 TaskKind::BlockingIo 的生命周期约定(见 infra/concurrency/TaskManager.h):
-    // 本任务体只按值捕获 (QPointer self + QString url_copy), 不持有裸引用, 符合约定。
+    // 本任务体只按值捕获 (QPointer self + std::string url_copy), 不持有裸引用,
+    // 也不持有 Qt 类型, 符合约定。
     //
     // 用 WithResult 版本: 终态由**任务体自己**声明, TaskManager 只负责一次性写入。
     // 以前终态写在 UI 回调里, 于是"body 正常返回 -> Run 记 Succeeded" 与 "排在 UI 队列

@@ -1,29 +1,29 @@
 #include "core/analysis/orchestration/FormatDetector.h"
-#include <QFile>
-#include <QFileInfo>
-#include <QByteArray>
+#include "core/analysis/detail/AnalysisTextUtil.h"
+#include "core/analysis/detail/SeqFileReader.h"
+#include <string>
 
 namespace videoeye {
 namespace analyzer {
 
-model::ContainerFormat FormatDetector::DetectByMagic(const QString& file_path) {
-    QFile file(file_path);
-    if (!file.open(QIODevice::ReadOnly)) {
+model::ContainerFormat FormatDetector::DetectByMagic(const std::string& file_path) {
+    SeqFileReader file(file_path);
+    if (!file.IsOpen()) {
         return model::ContainerFormat::Unknown;
     }
 
-    QByteArray header = file.read(1024);
-    file.close();
+    std::string header = file.Read(1024);
+    file.Close();
 
     if (header.size() < 4) {
         return model::ContainerFormat::Unknown;
     }
 
     // MP4/MOV: offset 4-7 = "ftyp"
-    if (header.size() >= 8 && header.mid(4, 4) == "ftyp") {
+    if (header.size() >= 8 && header.substr(4, 4) == "ftyp") {
         // 区分 MP4 vs MOV: 检查 ftyp 后的 brand
-        QByteArray brand = header.mid(8, 4);
-        if (brand == "qt  " || brand == "mdat" || brand.startsWith("qt")) {
+        std::string brand = header.substr(8, 4);
+        if (brand == "qt  " || brand == "mdat" || StartsWith(brand, "qt")) {
             return model::ContainerFormat::MOV;
         }
         return model::ContainerFormat::MP4;
@@ -33,7 +33,7 @@ model::ContainerFormat FormatDetector::DetectByMagic(const QString& file_path) {
     // 属于 ISOBMFF 家族，交给 MP4 Box 解析器可直接展示 styp/moof/mdat 盒树；
     // 若按扩展名兜底 (如 .ts) 会误分发到 TS 分析器。
     if (header.size() >= 8) {
-        const QByteArray first_box = header.mid(4, 4);
+        const std::string first_box = header.substr(4, 4);
         if (first_box == "styp" || first_box == "moof") {
             return model::ContainerFormat::MP4;
         }
@@ -46,7 +46,7 @@ model::ContainerFormat FormatDetector::DetectByMagic(const QString& file_path) {
         (unsigned char)header[2] == 0xDF &&
         (unsigned char)header[3] == 0xA3) {
         // 在头部区域搜索 DocType 来区分 MKV vs WebM
-        if (header.contains("webm")) {
+        if (header.find("webm") != std::string::npos) {
             return model::ContainerFormat::WebM;
         }
         return model::ContainerFormat::MKV;
@@ -54,13 +54,13 @@ model::ContainerFormat FormatDetector::DetectByMagic(const QString& file_path) {
 
     // AVI: "RIFF" + 4 bytes size + "AVI "
     if (header.size() >= 12 &&
-        header.left(4) == "RIFF" &&
-        header.mid(8, 4) == "AVI ") {
+        header.substr(0, 4) == "RIFF" &&
+        header.substr(8, 4) == "AVI ") {
         return model::ContainerFormat::AVI;
     }
 
     // FLV: "FLV"
-    if (header.size() >= 3 && header.left(3) == "FLV") {
+    if (header.size() >= 3 && header.substr(0, 3) == "FLV") {
         return model::ContainerFormat::FLV;
     }
 
@@ -90,15 +90,15 @@ model::ContainerFormat FormatDetector::DetectByMagic(const QString& file_path) {
     }
 
     // OGG: "OggS"
-    if (header.size() >= 4 && header.left(4) == "OggS") {
+    if (header.size() >= 4 && header.substr(0, 4) == "OggS") {
         return model::ContainerFormat::OGG;
     }
 
     return model::ContainerFormat::Unknown;
 }
 
-model::ContainerFormat FormatDetector::DetectByExtension(const QString& file_path) {
-    QString ext = QFileInfo(file_path).suffix().toLower();
+model::ContainerFormat FormatDetector::DetectByExtension(const std::string& file_path) {
+    std::string ext = FileExtension(file_path);
 
     if (ext == "mp4" || ext == "m4v" || ext == "m4a" || ext == "f4v") {
         return model::ContainerFormat::MP4;
@@ -138,7 +138,7 @@ model::ContainerFormat FormatDetector::DetectByExtension(const QString& file_pat
     return model::ContainerFormat::Unknown;
 }
 
-model::ContainerFormat FormatDetector::Detect(const QString& file_path) {
+model::ContainerFormat FormatDetector::Detect(const std::string& file_path) {
     // 优先用魔数检测
     auto fmt = DetectByMagic(file_path);
     if (fmt != model::ContainerFormat::Unknown) {
@@ -148,7 +148,7 @@ model::ContainerFormat FormatDetector::Detect(const QString& file_path) {
     return DetectByExtension(file_path);
 }
 
-QString FormatDetector::FormatName(model::ContainerFormat fmt) {
+std::string FormatDetector::FormatName(model::ContainerFormat fmt) {
     switch (fmt) {
     case model::ContainerFormat::MP4:            return "MP4";
     case model::ContainerFormat::MOV:            return "MOV";
@@ -166,7 +166,7 @@ QString FormatDetector::FormatName(model::ContainerFormat fmt) {
     }
 }
 
-QString FormatDetector::FormatTitle(model::ContainerFormat fmt) {
+std::string FormatDetector::FormatTitle(model::ContainerFormat fmt) {
     switch (fmt) {
     case model::ContainerFormat::MP4:            return "MP4 Box 结构";
     case model::ContainerFormat::MOV:            return "MOV (QuickTime) 结构";

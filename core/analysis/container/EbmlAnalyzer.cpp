@@ -2,11 +2,11 @@
 #include "infrastructure/concurrency/Cancellation.h"
 #include "infrastructure/logging/Logger.h"
 
-#include <QFile>
-#include <QDataStream>
-#include <QStack>
-#include <QSet>
-#include <QBuffer>
+#include "core/analysis/detail/AnalysisTextUtil.h"
+#include "core/analysis/detail/SeqFileReader.h"
+#include <functional>
+#include <vector>
+#include <set>
 
 #include <algorithm>
 #include <iomanip>
@@ -18,7 +18,7 @@ namespace analyzer {
 
 namespace {
 
-// 替代 QString::toInt()/toULongLong()/toDouble() 的宽松语义
+// 替代 std::string::toInt()/toULongLong()/toDouble() 的宽松语义
 // （解析失败返回默认值，而不是抛异常），保持 EbmlAnalyzer 原有行为。
 int64_t ParseInt(const std::string& s, int64_t def = 0) {
     try { return std::stoll(s); } catch (...) { return def; }
@@ -30,7 +30,7 @@ double ParseDouble(const std::string& s, double def = 0.0) {
     try { return std::stod(s); } catch (...) { return def; }
 }
 
-// 补零到两位，替代 QString::arg(v, 2, 10, QChar('0'))
+// 补零到两位，替代 std::string::arg(v, 2, 10, '0')
 std::string Pad2(long long v) {
     std::ostringstream oss;
     oss << std::setfill('0') << std::setw(2) << v;
@@ -360,14 +360,14 @@ std::string EbmlAnalyzer::ElementName(uint64_t id) {
 // ============================================================
 // 二进制 IO 辅助
 // ============================================================
-static uint64_t readBeUInt(const QByteArray& data, int size) {
+static uint64_t readBeUInt(const std::string& data, int size) {
     uint64_t val = 0;
     for (int i = 0; i < size && i < data.size(); ++i)
         val = (val << 8) | static_cast<uint8_t>(data[i]);
     return val;
 }
 
-static double readBeFloat(const QByteArray& data, int size) {
+static double readBeFloat(const std::string& data, int size) {
     if (size == 4 && data.size() >= 4) {
         union { uint32_t u; float f; } uf;
         uf.u = static_cast<uint32_t>(readBeUInt(data, 4));
@@ -381,8 +381,8 @@ static double readBeFloat(const QByteArray& data, int size) {
     return 0.0;
 }
 
-// 从 QByteArray 流式读取 VINT
-static uint64_t readVIntFromBytes(const QByteArray& data, int& offset, int& size_out) {
+// 从 std::string 流式读取 VINT
+static uint64_t readVIntFromBytes(const std::string& data, int& offset, int& size_out) {
     if (offset >= data.size()) { size_out = 0; return 0; }
     uint8_t first = static_cast<uint8_t>(data[offset++]);
     int width = 0;
@@ -402,12 +402,13 @@ static uint64_t readVIntFromBytes(const QByteArray& data, int& offset, int& size
 }
 
 // ============================================================
-// VINT 读取 (QDataStream 版) — 用于 Size 字段，去除标记位
+// VINT 读取 (std::istream 版) — 用于 Size 字段，去除标记位
 // ============================================================
-uint64_t EbmlAnalyzer::ReadVInt(QDataStream& ds, int& size_out) const {
-    uint8_t first;
-    ds >> first;
-    if (ds.status() != QDataStream::Ok) { size_out = 0; return 0; }
+uint64_t EbmlAnalyzer::ReadVInt(const std::string& buf, int64_t& pos, int& size_out) const {
+    const int64_t kSize = static_cast<int64_t>(buf.size());  // size() 不是常量表达式，不能 constexpr
+    if (pos >= kSize) { size_out = 0; return 0; }
+    const uint8_t first = static_cast<uint8_t>(buf[pos]);
+    ++pos;
     int width = 0;
     uint8_t mask = 0x80;
     while (mask && !(first & mask)) { width++; mask >>= 1; }
@@ -419,10 +420,9 @@ uint64_t EbmlAnalyzer::ReadVInt(QDataStream& ds, int& size_out) const {
     size_out = width;
     uint64_t value = first & (0xFF >> width);
     for (int i = 1; i < width; ++i) {
-        uint8_t b;
-        ds >> b;
-        if (ds.status() != QDataStream::Ok) return 0;
-        value = (value << 8) | b;
+        if (pos >= kSize) return 0;
+        value = (value << 8) | static_cast<uint8_t>(buf[pos]);
+        ++pos;
     }
     return value;
 }
@@ -431,7 +431,7 @@ uint64_t EbmlAnalyzer::ReadVInt(QDataStream& ds, int& size_out) const {
 // EBML ID 读取 — 保留标记位，ID 的原始字节值
 // e.g. 0x1A45DFA3 保留为 0x1A45DFA3，不被 VINT 解码为 0x0A45DFA3
 // ============================================================
-static uint64_t readIdVInt(const QByteArray& data, int& offset, int& size_out) {
+static uint64_t readIdVInt(const std::string& data, int& offset, int& size_out) {
     if (offset >= data.size()) { size_out = 0; return 0; }
     uint8_t first = static_cast<uint8_t>(data[offset]);
     int width = 0;
@@ -452,11 +452,12 @@ static uint64_t readIdVInt(const QByteArray& data, int& offset, int& size_out) {
     return value;
 }
 
-// 从 QDataStream 读取 ID
-static uint64_t readIdVInt(QDataStream& ds, int& size_out) {
-    uint8_t first;
-    ds >> first;
-    if (ds.status() != QDataStream::Ok) { size_out = 0; return 0; }
+// 从字节缓冲读取 ID（游标为引用，读完往前推）
+static uint64_t readIdVInt(const std::string& buf, int64_t& pos, int& size_out) {
+    const int64_t kSize = static_cast<int64_t>(buf.size());  // size() 不是常量表达式，不能 constexpr
+    if (pos >= kSize) { size_out = 0; return 0; }
+    const uint8_t first = static_cast<uint8_t>(buf[pos]);
+    ++pos;
     int width = 0;
     uint8_t mask = 0x80;
     while (mask && !(first & mask)) { width++; mask >>= 1; }
@@ -467,10 +468,9 @@ static uint64_t readIdVInt(QDataStream& ds, int& size_out) {
     // ID 保留全部原始字节
     uint64_t value = first;
     for (int i = 1; i < width; ++i) {
-        uint8_t b;
-        ds >> b;
-        if (ds.status() != QDataStream::Ok) return 0;
-        value = (value << 8) | b;
+        if (pos >= kSize) return 0;
+        value = (value << 8) | static_cast<uint8_t>(buf[pos]);
+        ++pos;
     }
     return value;
 }
@@ -479,7 +479,7 @@ static uint64_t readIdVInt(QDataStream& ds, int& size_out) {
 // Block 解析 (BlockGroup 的子元素 Block)
 // Block 格式: TrackNumber(VINT) Timecode(int16) Flags(u8) [Lacing data]
 // ============================================================
-std::string EbmlAnalyzer::ParseBlockData(const QByteArray& data,
+std::string EbmlAnalyzer::ParseBlockData(const std::string& data,
                                         model::EbmlBlockSummary& summary) {
     if (data.size() < 3) return "数据过短";
 
@@ -491,7 +491,7 @@ std::string EbmlAnalyzer::ParseBlockData(const QByteArray& data,
     // Timecode int16 (signed)
     int16_t tc;
     {
-        uint16_t raw = static_cast<uint16_t>(readBeUInt(data.mid(off, 2), 2));
+        uint16_t raw = static_cast<uint16_t>(readBeUInt(data.substr(off, 2), 2));
         memcpy(&tc, &raw, 2);
     }
     off += 2;
@@ -527,7 +527,7 @@ std::string EbmlAnalyzer::ParseBlockData(const QByteArray& data,
 // SimpleBlock 解析 (Cluster 直接子元素)
 // SimpleBlock 数据的解析与 Block 相同 (都包含 TrackNumber+Timecode+Flags 头部)
 // ============================================================
-std::string EbmlAnalyzer::ParseSimpleBlockData(const QByteArray& data,
+std::string EbmlAnalyzer::ParseSimpleBlockData(const std::string& data,
                                               model::EbmlBlockSummary& summary) {
     return "S-" + ParseBlockData(data, summary);
 }
@@ -536,19 +536,19 @@ std::string EbmlAnalyzer::ParseSimpleBlockData(const QByteArray& data,
 // 叶子元素值解析 + 提取关键数据
 // ============================================================
 void EbmlAnalyzer::ParseLeafValue(model::EbmlElementNode& node,
-                                   const QByteArray& data,
+                                   const std::string& data,
                                    model::EbmlAnalysisResult& result) {
-    if (data.isEmpty()) return;
+    if (data.empty()) return;
 
     auto tryString = [&]() -> std::string {
-        const QString s = QString::fromUtf8(data);
-        if (s.isEmpty()) return {};
+        const std::string s = (data);
+        if (s.empty()) return {};
         for (int i = 0; i < s.size(); ++i) {
-            ushort ch = s[i].unicode();
+            const unsigned char ch = static_cast<unsigned char>(s[i]);
             if (ch == 0xFFFD) return {};
             if (ch < 0x20 && ch != '\n' && ch != '\r' && ch != '\t') return {};
         }
-        return s.toStdString();
+        return s;
     };
 
     // --- 根据元素 ID 提取数值 + 关键数据 ---
@@ -628,7 +628,7 @@ void EbmlAnalyzer::ParseLeafValue(model::EbmlElementNode& node,
 
         // SegmentUID / PrevUID / NextUID (16 bytes binary)
         case 0x73A4: case 0x3CB923: case 0x3C83AB: case 0x73C4:
-            { node.value = data.toHex().toStdString(); if (node.id == 0x73A4) result.segment_uid = node.value; return; }
+            { node.value = BytesToHex(data); if (node.id == 0x73A4) result.segment_uid = node.value; return; }
 
         // CodecPrivate (二进制)
         case 0x63A2:
@@ -695,8 +695,8 @@ void EbmlAnalyzer::ParseLeafValue(model::EbmlElementNode& node,
     if (!s.empty() && s.size() <= 256) { node.value = s; return; }
 
     // 十六进制截断
-    if (data.size() <= 64) { node.value = data.toHex().toStdString(); return; }
-    node.value = data.left(32).toHex().toStdString() + "...(" + std::to_string(data.size()) + " bytes)";
+    if (data.size() <= 64) { node.value = BytesToHex(data); return; }
+    node.value = BytesToHex(data.substr(0, 32)) + "...(" + std::to_string(data.size()) + " bytes)";
 }
 
 // ============================================================
@@ -772,7 +772,8 @@ void EbmlAnalyzer::ExtractCueInfo(const model::EbmlElementNode& cue_point,
 // ============================================================
 // 主解析循环
 // ============================================================
-bool EbmlAnalyzer::ParseElement(QDataStream& ds, qint64 end_offset, int depth,
+bool EbmlAnalyzer::ParseElement(const std::string& buf, int64_t& pos, int64_t end_offset,
+                                 int depth,
                                  model::EbmlElementNode* parent,
                                  model::EbmlAnalysisResult& result,
                                  const std::atomic<bool>* cancel) {
@@ -780,7 +781,7 @@ bool EbmlAnalyzer::ParseElement(QDataStream& ds, qint64 end_offset, int depth,
     if (depth >= kMaxDepth) return false;
     if (node_count_ >= kMaxNodes) return false;
 
-    while (ds.device() && ds.device()->pos() < end_offset) {
+    while (pos < end_offset && pos < static_cast<int64_t>(buf.size())) {
         // 每个元素查一次取消：只有 Analyze 入口查的话，取消前已经读进来的半个文件
         // 还得继续扫完
         if (infrastructure::Checkpoint(cancel)) return false;
@@ -788,12 +789,12 @@ bool EbmlAnalyzer::ParseElement(QDataStream& ds, qint64 end_offset, int depth,
         // 免得往 result.element_tree 里无限塞节点
         if (++node_count_ > kMaxNodes) return false;
         int id_size = 0;
-        uint64_t id = readIdVInt(ds, id_size);   // ID 保留原始字节值
-        if (id_size == 0 || ds.status() != QDataStream::Ok) break;
+        uint64_t id = readIdVInt(buf, pos, id_size);   // ID 保留原始字节值
+        if (id_size == 0) break;
 
         int size_size = 0;
-        uint64_t size = ReadVInt(ds, size_size);
-        if (size_size == 0 || ds.status() != QDataStream::Ok) break;
+        uint64_t size = ReadVInt(buf, pos, size_size);
+        if (size_size == 0) break;
 
         model::EbmlElementNode node;
         node.id = id;
@@ -805,7 +806,7 @@ bool EbmlAnalyzer::ParseElement(QDataStream& ds, qint64 end_offset, int depth,
         node.name = ElementName(id);
         node.size = size;
         node.header_size = static_cast<uint64_t>(id_size + size_size);
-        node.offset = static_cast<uint64_t>(ds.device()->pos());
+        node.offset = static_cast<uint64_t>(pos);
         node.depth = depth;
 
         // --- unknown size 元素 ---
@@ -814,15 +815,15 @@ bool EbmlAnalyzer::ParseElement(QDataStream& ds, qint64 end_offset, int depth,
         // 于是解析一直顺着同一个 end_offset 往下走、节点无限增长 → OOM；
         // 容器类元素还会被反复递归。这里统一换算成"延伸到父元素末尾"再走正常流程。
         if (size == kUnknownSize) {
-            size = (end_offset > static_cast<qint64>(node.offset))
-                       ? static_cast<uint64_t>(end_offset - static_cast<qint64>(node.offset))
+            size = (end_offset > static_cast<int64_t>(node.offset))
+                       ? static_cast<uint64_t>(end_offset - static_cast<int64_t>(node.offset))
                        : 0u;
             node.size = size;
         }
 
         // --- 容器元素：递归解析子元素 ---
         if (IsContainerElement(id) && size > 0) {
-            qint64 child_end = node.offset + static_cast<qint64>(size);
+            int64_t child_end = node.offset + static_cast<int64_t>(size);
             parent->children.push_back(node);
             model::EbmlElementNode& child = parent->children.back();
 
@@ -831,7 +832,7 @@ bool EbmlAnalyzer::ParseElement(QDataStream& ds, qint64 end_offset, int depth,
             if (id == 0x1F43B675) { // Cluster
                 current_cluster_offset_ = node.offset - node.header_size;
             }
-            ParseElement(ds, child_end, depth + 1, &child, result, cancel);
+            ParseElement(buf, pos, child_end, depth + 1, &child, result, cancel);
             current_cluster_offset_ = saved_cluster_offset;
 
             // --- 后处理：提取表格数据 ---
@@ -849,15 +850,17 @@ bool EbmlAnalyzer::ParseElement(QDataStream& ds, qint64 end_offset, int depth,
 
         // --- 叶子节点 ---
         if (size > 0 && size < 16 * 1024 * 1024) {
-            QByteArray data = ds.device()->read(static_cast<qint64>(size));
+            const std::string data = buf.substr(static_cast<size_t>(pos),
+                                                static_cast<size_t>(size));
+            pos += static_cast<int64_t>(size);
             ParseLeafValue(node, data, result);
             parent->children.push_back(node);
         } else if (size > 0) {
-            // 跳过时要夹在父元素末尾（end_offset）之内：skip 超出会一路跑到文件尾，
+            // 跳过时要夹在父元素末尾（end_offset）之内：跳过超出会一路跑到文件尾，
             // 后面的元素全落在 end_offset 之外，解析结果就只剩下半棵树
-            const qint64 remain = end_offset - ds.device()->pos();
-            const qint64 to_skip = std::min<qint64>(static_cast<qint64>(size), remain > 0 ? remain : 0);
-            ds.device()->skip(to_skip);
+            const int64_t remain = end_offset - pos;
+            const int64_t to_skip = std::min<int64_t>(static_cast<int64_t>(size), remain > 0 ? remain : 0);
+            pos += to_skip;
         } else {
             parent->children.push_back(node);
         }
@@ -870,21 +873,21 @@ EbmlAnalyzer::EbmlAnalyzer() = default;
 EbmlAnalyzer::~EbmlAnalyzer() = default;
 void EbmlAnalyzer::Reset() {}
 
-bool EbmlAnalyzer::Analyze(const QString& filePath, model::EbmlAnalysisResult& result,
+bool EbmlAnalyzer::Analyze(const std::string& filePath, model::EbmlAnalysisResult& result,
                            const std::atomic<bool>* cancel) {
     result = model::EbmlAnalysisResult{};
-    result.file_path = filePath.toStdString();
+    result.file_path = filePath;
     // 每次分析都从头计数（Reset() 之外也要清，免得上次的节点数被下一份文件接着算）
     node_count_ = 0;
 
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        result.error_message = "无法打开文件: " + filePath.toStdString();
+    SeqFileReader file(filePath);
+    if (!file.IsOpen()) {
+        result.error_message = "无法打开文件: " + filePath;
         LOG_ERROR(result.error_message);
         return false;
     }
 
-    QByteArray header = file.read(4);
+    std::string header = file.Read(4);
     if (header.size() < 4 || static_cast<uint8_t>(header[0]) != 0x1A ||
         static_cast<uint8_t>(header[1]) != 0x45 ||
         static_cast<uint8_t>(header[2]) != 0xDF ||
@@ -893,15 +896,17 @@ bool EbmlAnalyzer::Analyze(const QString& filePath, model::EbmlAnalysisResult& r
         return false;
     }
 
-    file.seek(0);
-    QDataStream ds(&file);
-    ds.setByteOrder(QDataStream::BigEndian);
+    file.Seek(0);
+    // Matroska 的头部（Segment 之前那几百字节 + Segment 里的索引表）都是小体量，
+    // 整份读进内存比维护一份 istream 更简单，也和 Ts/Flv/Asf/Avi 的解析方式一致。
+    const std::string buf = file.ReadAll();
+    int64_t pos = 0;
 
     model::EbmlElementNode root;
     root.name = "root";
     root.depth = -1;
 
-    ParseElement(ds, file.size(), 0, &root, result, cancel);
+    ParseElement(buf, pos, static_cast<int64_t>(buf.size()), 0, &root, result, cancel);
     if (infrastructure::IsCanceled(cancel)) {
         result.error_message = "已取消";
         result.valid = false;

@@ -1,19 +1,18 @@
 #include "infrastructure/concurrency/Cancellation.h"
+#include "core/analysis/detail/AnalysisTextUtil.h"
 #include "core/analysis/container/OggStructureAnalyzer.h"
-#include <QFile>
+#include "core/analysis/detail/SeqFileReader.h"
 
 #include <algorithm>
 #include <cctype>
 #include <map>
 #include <string>
-#include <QByteArray>
-#include <QMap>
 
 namespace videoeye {
 namespace analyzer {
 
 namespace {
-uint32_t oggLE32(const QByteArray& d, int off) {
+uint32_t oggLE32(const std::string& d, int off) {
     if (off + 4 > d.size()) return 0;
     return static_cast<uint32_t>(static_cast<uint8_t>(d[off])) |
            (static_cast<uint32_t>(static_cast<uint8_t>(d[off + 1])) << 8) |
@@ -22,13 +21,13 @@ uint32_t oggLE32(const QByteArray& d, int off) {
 }
 // 解析 Vorbis/Opus 注释块 (vendor + KEY=VALUE 列表)，从 start 起
 // 结果直接写进 domain 的 metadata（std::string），所以内部一律用 std 类型。
-void parseVorbisComments(const QByteArray& d, int start,
+void parseVorbisComments(const std::string& d, int start,
                         std::map<std::string, std::string>& out) {
     int pos = start;
     if (pos + 4 > d.size()) return;
     uint32_t vlen = oggLE32(d, pos); pos += 4;
     if (pos + static_cast<int>(vlen) > d.size()) return;
-    const std::string vendor = QString::fromUtf8(d.mid(pos, vlen)).toStdString();
+    const std::string vendor = d.substr(pos, vlen);
     pos += vlen;
     if (!vendor.empty()) out["vendor"] = vendor;
     if (pos + 4 > d.size()) return;
@@ -36,7 +35,7 @@ void parseVorbisComments(const QByteArray& d, int start,
     for (uint32_t i = 0; i < count && pos + 4 <= d.size(); ++i) {
         uint32_t clen = oggLE32(d, pos); pos += 4;
         if (pos + static_cast<int>(clen) > d.size()) break;
-        const std::string comment = QString::fromUtf8(d.mid(pos, clen)).toStdString();
+        const std::string comment = d.substr(pos, clen);
         pos += clen;
         size_t eq = comment.find('=');
         if (eq != std::string::npos && eq > 0) {
@@ -50,52 +49,52 @@ void parseVorbisComments(const QByteArray& d, int start,
 }
 } // namespace
 
-bool OggStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStructureResult& result,
+bool OggStructureAnalyzer::Analyze(const std::string& file_path, model::ContainerStructureResult& result,
                                    const std::atomic<bool>* cancel) {
-    QFile file(file_path);
-    if (!file.open(QIODevice::ReadOnly)) {
+    SeqFileReader file(file_path);
+    if (!file.IsOpen()) {
         result.error_message = "无法打开文件";
         return false;
     }
 
     result.format = model::ContainerFormat::OGG;
     result.format_name = "OGG";
-    result.file_path = file_path.toStdString();
+    result.file_path = file_path;
 
     model::ContainerElement root;
     root.name = "OGG Stream";
     root.type = "OGG";
-    root.size = file.size();
+    root.size = file.Size();
     root.offset = 0;
     root.depth = 0;
 
     // 跟踪 logical streams
     struct StreamInfo {
         int page_count = 0;
-        QString codec_name;
+        std::string codec_name;
         bool bos_seen = false;
         uint32_t sample_rate = 0;
         int channels = 0;
         bool comments_parsed = false;
     };
-    QMap<uint32_t, StreamInfo> streams;
+    std::map<uint32_t, StreamInfo> streams;
 
     int total_pages = 0;
     const int max_pages = 2000;
 
-    while (file.pos() < file.size() - 27 && total_pages < max_pages) {
+    while (file.Pos() < file.Size() - 27 && total_pages < max_pages) {
         if (infrastructure::Checkpoint(cancel)) { result.error_message = "已取消"; return false; }
         // Ogg Page Header: "OggS" (4) + version(1) + type(1) + granule(8) + serial(4) + page_seq(4) + checksum(4) + segments(1)
-        QByteArray header = file.read(27);
+        std::string header = file.Read(27);
         if (header.size() < 27) break;
 
-        if (header.left(4) != "OggS") {
+        if (header.substr(0, 4) != "OggS") {
             // 尝试重新同步
-            QByteArray sync = file.read(1);
-            while (!file.atEnd() && sync != "O") {
-                sync = file.read(1);
+            std::string sync = file.Read(1);
+            while (!file.AtEnd() && sync != "O") {
+                sync = file.Read(1);
             }
-            if (file.atEnd()) break;
+            if (file.AtEnd()) break;
             continue;
         }
 
@@ -116,7 +115,7 @@ bool OggStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
         uint8_t num_segments = static_cast<uint8_t>(header[26]);
 
         // 读取 segment table
-        QByteArray seg_table = file.read(num_segments);
+        std::string seg_table = file.Read(num_segments);
         if (seg_table.size() < num_segments) break;
 
         uint32_t page_data_size = 0;
@@ -125,11 +124,11 @@ bool OggStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
         }
 
         // 读取页面数据 (前 4096 字节，足以覆盖标识头与注释头，用于 codec 识别与元数据)
-        qint64 page_data_offset = file.pos();
-        QByteArray page_data = file.read(qMin(static_cast<qint64>(page_data_size), static_cast<qint64>(4096)));
+        int64_t page_data_offset = file.Pos();
+        std::string page_data = file.Read(std::min(static_cast<int64_t>(page_data_size), static_cast<int64_t>(4096)));
 
         // 跳到下一页
-        file.seek(page_data_offset + page_data_size);
+        file.Seek(page_data_offset + page_data_size);
 
         // 更新流信息
         auto& si = streams[serial];
@@ -137,27 +136,27 @@ bool OggStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
 
         // BOS 页面识别 codec + 标识头解析 (采样率/声道)
         if (is_bos && page_data.size() >= 7) {
-            if (page_data.mid(1, 6) == "vorbis") {
+            if (page_data.substr(1, 6) == "vorbis") {
                 si.codec_name = "Vorbis";
                 // \x01vorbis(7) + version(4) + channels(1) + sample_rate(4 LE)
                 if (page_data.size() >= 16) {
                     si.channels = static_cast<uint8_t>(page_data[11]);
                     si.sample_rate = oggLE32(page_data, 12);
                 }
-            } else if (page_data.startsWith("OpusHead")) {
+            } else if (StartsWith(page_data,"OpusHead")) {
                 si.codec_name = "Opus";
                 // OpusHead(8)+version(1)+channels(1)+preskip(2)+input_sample_rate(4 LE)
                 if (page_data.size() >= 16) {
                     si.channels = static_cast<uint8_t>(page_data[9]);
                     si.sample_rate = oggLE32(page_data, 12);
                 }
-            } else if (page_data.mid(0, 4) == "fLaC" || page_data.startsWith(QByteArray("\x7F" "FLAC", 5))) {
+            } else if (page_data.substr(0, 4) == "fLaC" || StartsWith(page_data,std::string("\x7F" "FLAC", 5))) {
                 si.codec_name = "FLAC";
-            } else if (page_data.mid(1, 6) == "theora") {
+            } else if (page_data.substr(1, 6) == "theora") {
                 si.codec_name = "Theora";
-            } else if (page_data.mid(0, 5) == "\x80theora") {
+            } else if (page_data.substr(0, 5) == "\x80theora") {
                 si.codec_name = "Theora";
-            } else if (page_data.startsWith("Speex")) {
+            } else if (StartsWith(page_data,"Speex")) {
                 si.codec_name = "Speex";
             } else {
                 si.codec_name = "Unknown";
@@ -166,11 +165,11 @@ bool OggStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
 
         // 注释头解析 (通常在 BOS 之后的第二个包)
         if (!si.comments_parsed) {
-            if (page_data.size() > 7 && page_data.mid(1, 6) == "vorbis" &&
+            if (page_data.size() > 7 && page_data.substr(1, 6) == "vorbis" &&
                 static_cast<uint8_t>(page_data[0]) == 0x03) {
                 parseVorbisComments(page_data, 7, result.metadata);
                 si.comments_parsed = true;
-            } else if (page_data.startsWith("OpusTags")) {
+            } else if (StartsWith(page_data,"OpusTags")) {
                 parseVorbisComments(page_data, 8, result.metadata);
                 si.comments_parsed = true;
             }
@@ -179,17 +178,17 @@ bool OggStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
         // 创建页面元素 (仅前 200 个页面加入树)
         if (total_pages < 200) {
             model::ContainerElement page;
-            page.name = QString("Page #%1").arg(page_seq).toStdString();
+            page.name = StrCat("Page #%1", page_seq);
             page.type = "Ogg Page";
             page.size = 27 + num_segments + page_data_size;
             page.offset = page_data_offset - 27 - num_segments;
             page.depth = 1;
 
-            QString flags;
+            std::string flags;
             if (is_bos) flags += "BOS ";
             if (is_eos) flags += "EOS ";
-            page.value = (QString("serial=%1 %2size=%3")
-                             .arg(serial).arg(flags, QString::number(page_data_size))).toStdString();
+            page.value = StrCat("serial=%1 %2size=%3", serial, flags,
+                                std::to_string(page_data_size));
             root.children.push_back(page);
         }
 
@@ -198,25 +197,23 @@ bool OggStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
 
     // 添加流信息
     for (auto it = streams.begin(); it != streams.end(); ++it) {
-        const auto& info = it.value();
-        QString detail;
+        const auto& info = it->second;
+        std::string detail;
         if (info.sample_rate > 0)
-            detail = QString("%1 Hz, %2 ch").arg(info.sample_rate).arg(info.channels);
+            detail = StrCat("%1 Hz, %2 ch", info.sample_rate, info.channels);
 
         model::ContainerElement stream_elem;
-        stream_elem.name = QString("Logical Stream (serial=%1)").arg(it.key()).toStdString();
+        stream_elem.name = StrCat("Logical Stream (serial=%1)", it->first);
         stream_elem.type = "Logical Stream";
         stream_elem.depth = 1;
-        stream_elem.value = (QString("codec=%1 pages=%2%3")
-                                .arg(info.codec_name).arg(info.page_count)
-                                .arg(detail.isEmpty() ? "" : " | " + detail)).toStdString();
+        stream_elem.value = (StrCat("codec=%1 pages=%2%3", info.codec_name, info.page_count, detail.empty() ? "" : " | " + detail));
 
         model::ContainerStreamInfo csi;
         csi.index = result.streams.size();
-        csi.codec = info.codec_name.toStdString();
-        csi.details = detail.toStdString();
+        csi.codec = info.codec_name;
+        csi.details = detail;
         // 根据 codec 推断类型
-        QString codec_lower = info.codec_name.toLower();
+        std::string codec_lower = ToLowerCopy(info.codec_name);
         if (codec_lower == "vorbis" || codec_lower == "opus" || codec_lower == "flac" || codec_lower == "speex") {
             csi.type = "audio";
         } else if (codec_lower == "theora") {
@@ -231,9 +228,9 @@ bool OggStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
 
     result.element_tree.push_back(root);
     result.valid = true;
-    result.summary = QString("OGG | %1 页/已解析 | %2 逻辑流").arg(total_pages).arg(streams.size()).toStdString();
+    result.summary = StrCat("OGG | %1 页/已解析 | %2 逻辑流", total_pages, streams.size());
 
-    file.close();
+    file.Close();
     return true;
 }
 

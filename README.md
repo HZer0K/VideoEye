@@ -226,7 +226,46 @@ cmake --build --preset linux-test-debug
 ctest --preset linux-test-debug
 ```
 
-共 18 个可执行文件 + 17 组 ctest 用例，覆盖码流解析、MP4 样本表、ISOBMFF、QC 规则、码率/GOP、色彩 HDR、导出器等纯逻辑路径。
+内存 / 数据竞争体检（Linux 专用，只跑单测、不产出发布物）：
+
+```bash
+# ASan + UBSan：堆破坏 / 越界 / 未初始化读
+cmake --preset linux-test-asan && cmake --build --preset linux-test-asan
+ctest --preset linux-test-asan -j 1 --output-on-failure
+
+# ThreadSanitizer：数据竞争
+cmake --preset linux-test-tsan && cmake --build --preset linux-test-tsan
+ctest --preset linux-test-tsan -j 1 --output-on-failure
+```
+
+TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红的时候先看报头落在不在
+我们自己的 `.cpp` 上；`TSAN_OPTIONS` 可挂 suppression 文件。漏检检测在 preset 里
+已关（`ASAN_OPTIONS=detect_leaks=0`）—— Qt / FFmpeg 在退出阶段必然报一堆假阳性。
+
+覆盖码流解析、MP4 样本表、ISOBMFF、QC 规则、码率/GOP、色彩 HDR、导出器等纯逻辑路径。
+
+规模（用 `python scripts/summarize_tests.py` 现算，别手改）：
+
+| 指标 | 数量 |
+|---|---|
+| 测试可执行文件 | 47 |
+| ctest 用例组（gtest 可执行文件） | 47 |
+| 架构规则用例组（python 脚本，非 gtest） | 4 |
+| gtest 用例（含 `TEST` / `TEST_F` / `TEST_P`） | 432 |
+
+`ctest -N` 会显示 **51 = 47 + 4**，多出来的 4 个不是 gtest 可执行文件，而是直接
+`add_test` 调 python 脚本的架构规则门：`check_layering.py` 与它的自测、
+`audit_qt_analysis_border.py` 与它的自测。它们的「测试」是退出码 + 输出断言，
+没有 gtest 用例，所以脚本不计入 gtest 那两个数。
+
+这个数字以前是「18 个可执行文件 + 17 组 ctest」，长期没跟着测试用例涨 —— 所以改成脚本
+现算。CI 里可用 `python scripts/summarize_tests.py --expect 47` 卡住「加了测试忘了改文档」。
+
+跑之前注意：这 4 条脚本用例用「`VIDEOEYE_ROOT` 或当前目录」当仓库根，所以 CMake 里给它们
+钉了 `WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}`。不加的话 ctest 的工作目录是
+`build/test-release/tests`，`os.walk` 会扫到一个不存在的 `core/`，于是「一个依赖都没查到」
+被当成「没有跨层反向依赖」放行 —— 那是一道假绿。改了分层/边界规则脚本后，先跑一次
+`ctest -R LayeringRulesTests` 确认它真的在扫仓库。
 
 ## 文档
 

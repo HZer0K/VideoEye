@@ -55,6 +55,15 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # 按模块目录分开 glob —— 一个 glob 对应一个 CMake target，目录归属就是依赖边界。
 file(GLOB_RECURSE UI_SOURCES CONFIGURE_DEPENDS "ui/*.cpp")
 file(GLOB UI_HEADERS CONFIGURE_DEPENDS "ui/*.h")
+# ui/reporting_panel 单独成一个 target（见下面 VideoEyeReportingPanel）。
+#
+# 为什么从这里剔掉: 它是 ui/ 里**唯一带后台线程**的页面，而 ui/*.cpp 整包编进主
+# 可执行文件 —— 一个测试想 include 它，就得把同一个 Q_OBJECT 类再编一份进测试 exe，
+# 于是同一个类有两份 vtable/metacall 实现（ODR 违规），症状是随机的
+# 0xc0000374 / 诡异的槽位调不到。把它拆成库，主程序和测试链的是各自那一份，两边都干净。
+file(GLOB_RECURSE REPORTING_PANEL_SOURCES CONFIGURE_DEPENDS
+    "ui/reporting_panel/*.cpp" "ui/reporting_panel/*.h")
+list(FILTER UI_SOURCES EXCLUDE REGEX "ui/reporting_panel/")
 
 file(GLOB_RECURSE DOMAIN_SOURCES CONFIGURE_DEPENDS "core/domain/*.cpp" "core/domain/*.h")
 file(GLOB_RECURSE INFRA_SOURCES CONFIGURE_DEPENDS "infrastructure/*.cpp" "infrastructure/*.h")
@@ -158,8 +167,14 @@ target_link_libraries(VideoEyeAnalysis
            FFmpeg::avutil
            FFmpeg::swscale
            FFmpeg::swresample
-           Qt6::Core
-           Qt6::Gui
+        # 这里已经完全不挂 Qt 了（Gui 更早摘掉，Core 于 analysis 去 Qt 时摘掉）：
+        # core/analysis 的公开头文件现在只吐 std::string / std::vector / 结果类型，
+        # 一层 Qt 符号都不漏，所以谁链 VideoEyeAnalysis 都不该白拿 Qt 的 include 目录
+        # 和编译期宏（UNICODE / _UNICODE 等）。
+        #
+        # 想要 Qt 的调用方必须自己显式链(Qt6::Core / Qt6::Widgets)—— 别再从 analysis
+        # 白拿。这一条现在是 scripts/audit_qt_analysis_border.py 守着的：
+        # core/analysis 里再出现任何 Qt 名字就算违规，审计与编译双重拦下。
     PRIVATE VideoEyeInfrastructure
             # 分析器的打开/探测阶段装 FFmpeg 中断回调（core/ffmpeg_io）
             VideoEyeFfmpegIo
@@ -254,6 +269,19 @@ if(QTADAPTER_SOURCES)
     )
 endif()
 
+# --- reporting panel: 「报告与批量 QC」页，ui/ 里唯一带后台线程的一页 ---
+# 单独成库不是为了分层好看，是为了**能被单测**：它编在主程序里时，测试没法 include
+# （同一份 Q_OBJECT 类编两遍 = ODR 违规）。拆出来之后主程序和测试各链一份自己的静态库。
+if(REPORTING_PANEL_SOURCES)
+    videoeye_add_module(VideoEyeReportingPanel ${REPORTING_PANEL_SOURCES})
+    target_link_libraries(VideoEyeReportingPanel
+        PRIVATE VideoEyeQc
+                VideoEyeReporting
+                VideoEyeInfrastructure
+                Qt6::Widgets
+    )
+endif()
+
 # ============================================================
 # 迁移期兼容层已删除
 #
@@ -279,6 +307,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     VideoEyeExporter
     VideoEyeReporting
     VideoEyeQc
+    # ui/reporting_panel 已经从 ui/*.cpp 剔出去了（见上面的 GLOB），主程序靠这个库拿它
+    VideoEyeReportingPanel
     VideoEyeFfmpegTools
     VideoEyeAnalysis
     VideoEyeMedia

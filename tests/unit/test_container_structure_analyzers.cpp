@@ -1,7 +1,7 @@
 // 五个容器结构分析器的参数化健壮性测试
 //
 // Asf / Avi / Flv / Ogg / Ts 五个 StructureAnalyzer 的接口完全一致：
-//     bool Analyze(const QString& file_path, model::ContainerStructureResult& result);
+//     bool Analyze(const std::string& file_path, model::ContainerStructureResult& result);
 // 但此前一个单测都没有（见 docs/ARCHITECTURE_REVIEW_2026-10-04 第 10 项）。
 // 这里用 TEST_P 把"五个分析器 × 三种输入"压成一个矩阵，覆盖的是最容易出错、
 // 又最不依赖真实媒体文件的三类边界：
@@ -33,7 +33,7 @@ using namespace videoeye;
 
 namespace {
 
-using AnalyzeFn = std::function<bool(const QString&, model::ContainerStructureResult&)>;
+using AnalyzeFn = std::function<bool(const std::string&, model::ContainerStructureResult&)>;
 
 struct AnalyzerCase {
     const char* name;                // gtest 打印用的参数名
@@ -103,19 +103,19 @@ QByteArray OggMinimal() {
 
 std::vector<AnalyzerCase> AllCases() {
     return {
-        {"Asf",  [](const QString& p, model::ContainerStructureResult& r) {
+        {"Asf",  [](const std::string& p, model::ContainerStructureResult& r) {
              return analyzer::AsfStructureAnalyzer().Analyze(p, r);
          }, model::ContainerFormat::ASF, "ASF", AsfMinimal(), true},
-        {"Avi",  [](const QString& p, model::ContainerStructureResult& r) {
+        {"Avi",  [](const std::string& p, model::ContainerStructureResult& r) {
              return analyzer::AviStructureAnalyzer().Analyze(p, r);
          }, model::ContainerFormat::AVI, "AVI", AviMinimal(), true},
-        {"Flv",  [](const QString& p, model::ContainerStructureResult& r) {
+        {"Flv",  [](const std::string& p, model::ContainerStructureResult& r) {
              return analyzer::FlvStructureAnalyzer().Analyze(p, r);
          }, model::ContainerFormat::FLV, "FLV", FlvMinimal(), true},
-        {"Ogg",  [](const QString& p, model::ContainerStructureResult& r) {
+        {"Ogg",  [](const std::string& p, model::ContainerStructureResult& r) {
              return analyzer::OggStructureAnalyzer().Analyze(p, r);
          }, model::ContainerFormat::OGG, "OGG", OggMinimal(), false},
-        {"Ts",   [](const QString& p, model::ContainerStructureResult& r) {
+        {"Ts",   [](const std::string& p, model::ContainerStructureResult& r) {
              return analyzer::TsStructureAnalyzer().Analyze(p, r);
          }, model::ContainerFormat::MPEG_TS, "MPEG-TS", TsMinimal(), true},
     };
@@ -134,13 +134,15 @@ auto CaseName = [](const testing::TestParamInfo<AnalyzerCase>& info) {
 };
 
 // 把一个字节串写成临时文件，返回路径（失败返回空串）
-QString WriteTemp(const QTemporaryDir& dir, const QString& name, const QByteArray& bytes) {
+// 返回 std::string 而不是 QString：样本落盘后交给的是已经不碰 Qt 的容器分析器，
+// 边界转换就落在这一行，调用点不必再各自 toStdString()。
+std::string WriteTemp(const QTemporaryDir& dir, const QString& name, const QByteArray& bytes) {
     const QString path = dir.filePath(name);
     QFile f(path);
-    if (!f.open(QIODevice::WriteOnly)) return QString();
+    if (!f.open(QIODevice::WriteOnly)) return std::string();
     f.write(bytes);
     f.close();
-    return path;
+    return path.toStdString();
 }
 
 // ---- 1. 文件不存在 --------------------------------------------------------
@@ -152,7 +154,7 @@ TEST_P(MissingFileTest, ReportsOpenFailureWithoutTouchingResult) {
     ASSERT_TRUE(dir.isValid());
 
     model::ContainerStructureResult result;
-    const bool ok = c.run(dir.filePath("does_not_exist.dat"), result);
+    const bool ok = c.run(dir.filePath("does_not_exist.dat").toStdString(), result);
 
     EXPECT_FALSE(ok);
     EXPECT_FALSE(result.valid);
@@ -172,8 +174,8 @@ TEST_P(ForeignMagicTest, RejectsNonMatchingSignature) {
     ASSERT_TRUE(dir.isValid());
 
     // 64 字节的定长垃圾：既不是任何一家的魔数，也足够长到能走完各自的头部读取。
-    const QString path = WriteTemp(dir, "garbage.dat", QByteArray(64, char(0xAB)));
-    ASSERT_FALSE(path.isEmpty());
+    const std::string path = WriteTemp(dir, "garbage.dat", QByteArray(64, char(0xAB)));
+    ASSERT_FALSE(path.empty());
 
     model::ContainerStructureResult result;
     const bool ok = c.run(path, result);
@@ -195,8 +197,8 @@ TEST_P(MinimalValidTest, AcceptsAndFillsCoreFields) {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
 
-    const QString path = WriteTemp(dir, "minimal.dat", c.minimal_valid);
-    ASSERT_FALSE(path.isEmpty());
+    const std::string path = WriteTemp(dir, "minimal.dat", c.minimal_valid);
+    ASSERT_FALSE(path.empty());
 
     model::ContainerStructureResult result;
     const bool ok = c.run(path, result);
@@ -219,8 +221,8 @@ INSTANTIATE_TEST_SUITE_P(AllAnalyzers, MinimalValidTest,
 TEST(OggAnalyzerLeniency, AcceptsArbitraryBytesByDesign) {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
-    const QString path = WriteTemp(dir, "not_ogg.dat", QByteArray(64, char(0xAB)));
-    ASSERT_FALSE(path.isEmpty());
+    const std::string path = WriteTemp(dir, "not_ogg.dat", QByteArray(64, char(0xAB)));
+    ASSERT_FALSE(path.empty());
 
     model::ContainerStructureResult result;
     EXPECT_TRUE(analyzer::OggStructureAnalyzer().Analyze(path, result));

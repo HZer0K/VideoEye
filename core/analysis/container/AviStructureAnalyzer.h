@@ -1,8 +1,8 @@
 #pragma once
 
 #include <atomic>
-#include <QString>
-#include <QFile>
+#include <string>
+#include "core/analysis/detail/SeqFileReader.h"
 #include "core/domain/model/ContainerStructureInfo.h"
 
 namespace videoeye {
@@ -13,12 +13,12 @@ namespace analyzer {
 class AviStructureAnalyzer {
 public:
     // cancel: 可选的取消标志（nullptr = 不关心取消）。
-    bool Analyze(const QString& file_path, model::ContainerStructureResult& result,
+    bool Analyze(const std::string& file_path, model::ContainerStructureResult& result,
                  const std::atomic<bool>* cancel = nullptr);
 
 private:
     /// 递归解析 RIFF 子块
-    bool ParseChunk(QFile& file, qint64 end_offset, int depth,
+    bool ParseChunk(SeqFileReader& file, int64_t end_offset, int depth,
                     model::ContainerElement& parent,
                     model::ContainerStructureResult& result,
                     const std::atomic<bool>* cancel = nullptr);

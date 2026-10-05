@@ -1,4 +1,5 @@
 #include "core/analysis/quality/AudioQcAnalyzer.h"
+#include "core/analysis/detail/AnalysisTextUtil.h"
 
 #include <algorithm>
 #include <cmath>

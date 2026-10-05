@@ -35,6 +35,18 @@ struct AnalysisTask {
     std::atomic<bool> body_done{false};
 };
 
+// 造一个"宿主真的能置位"的取消令牌。
+//
+// 为什么不直接 `task->cancel = task::CancelToken{}`：默认构造出来的令牌**没有标志**
+// （flag 为空），于是 IsCanceled() 恒为 false、RequestCancel() 是空操作 —— 任务体
+// 把它当取消标志就等于"永远取消不掉"。平时看不出来（任务照常跑完），只在关停 /
+// 取消那条路径上炸成"析构卡死"或"取消按钮点了没反应"。
+// ReportingPanel 走的是 `task->cancel = handle.cancel`（真令牌），所以生产侧一直是对的；
+// 但这个结构体可以被别处拷贝使用，默认的坑就留在这儿。起任务请用这个工厂。
+inline task::CancelToken MakeCancelToken() {
+    return task::CancelToken(std::make_shared<std::atomic<bool>>(false));
+}
+
 // 回收预算（见 ReportingPanel::RetireTask）。
 inline constexpr int kDefaultRecycleBudgetMs = 5000;
 

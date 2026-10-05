@@ -4,7 +4,7 @@
 #include <memory>
 #include <vector>
 
-#include <QString>
+#include <string>
 
 #include "core/domain/model/ContainerStructureInfo.h"
 
@@ -27,7 +27,7 @@ public:
     ///               （CancelAll）能及时中止阻塞 IO；（2）往下传给每种容器解析器,
     ///               在 box / element / segment / 分片级别轮询。传空则不做取消。
     ///               MP4 / MKV / AVI / FLV / TS / ASF / OGG 路径都吃这一套。
-    bool Analyze(const QString& file_path, model::ContainerStructureResult& result,
+    bool Analyze(const std::string& file_path, model::ContainerStructureResult& result,
                  std::shared_ptr<std::atomic<bool>> cancel = {});
 
     /// 重置
@@ -72,7 +72,7 @@ private:
     /// FFmpeg 通用元数据回退分析
     /// @param cancel 可选取消标志, 交给 FFmpeg 的 AVIO 中断回调
     ///               (见 core/ffmpeg_io/FfmpegInterrupt.h)
-    bool AnalyzeWithFFmpeg(const QString& file_path, model::ContainerStructureResult& result,
+    bool AnalyzeWithFFmpeg(const std::string& file_path, model::ContainerStructureResult& result,
                            std::shared_ptr<std::atomic<bool>> cancel = {});
 
     /// HLS (.m3u8) / DASH (.mpd) 清单解析。
@@ -81,7 +81,7 @@ private:
     ///
     /// 返回三态：kCancelled 时 result 里的清单数据只到"被取消那一刻"为止，
     /// 调用方必须整条放弃（置 valid=false + error_message="已取消"，不得回退 FFmpeg）。
-    StageStatus AnalyzeStreamingManifest(const QString& file_path,
+    StageStatus AnalyzeStreamingManifest(const std::string& file_path,
                                          model::ContainerStructureResult& result,
                                          const std::atomic<bool>* cancel);
 

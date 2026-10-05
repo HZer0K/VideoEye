@@ -14,6 +14,7 @@
 """
 import os
 import re
+import sys
 
 ROOT = os.environ.get("VIDEOEYE_ROOT") or os.getcwd()
 INC = re.compile(r'#\s*include\s+"(core/[^"]+|infrastructure/[^"]+|utils/[^"]+)"')
@@ -96,10 +97,19 @@ for layer, banned in RULES.items():
         if layer in NO_FFMPEG and FFMPEG.search(body):
             violations.append((layer, rel, "include FFmpeg 头文件"))
 
+# 退出码必须非零，否则这道门是白装的。
+#
+# 历史（2026-10-05 修）：这里只 print 了 [!] 就走完，进程照常 return 0 —— 也就是说
+# .git/hooks/pre-commit 里那句 `if ! "$PY" scripts/check_layering.py` 永远不成立，
+# CI .github/workflows/build.yml 的 lint 步骤（run: python3 scripts/check_layering.py）
+# 也是一路绿。违规信息人肉看得到，机器永远拦不住，跟 audit_qt_domain_border.py 当年
+# 「打印了 [命中] 却 return 0」是同一类 bug。scripts/test_check_layering.py 专门盯这个。
 if violations:
     print("[!] 违反依赖方向:")
     for layer, rel, why in sorted(violations):
         print("   [%-16s] %-52s %s" % (layer, rel, why))
-else:
-    print("OK: 没有跨层反向依赖")
+    print("\n[退出码] 1 —— 依赖方向违规，提交/流水线会被拦下")
+    sys.exit(1)
+
+print("OK: 没有跨层反向依赖")
 print("检查了 %d 个目录层" % len(RULES))

@@ -1,58 +1,66 @@
 #include "infrastructure/concurrency/Cancellation.h"
+#include "core/analysis/detail/AnalysisTextUtil.h"
 #include "core/analysis/container/AsfStructureAnalyzer.h"
-#include <QFile>
-#include <QByteArray>
-#include <QUuid>
+#include "core/analysis/detail/SeqFileReader.h"
+#include <string>
+#include <string>
 
 namespace videoeye {
 namespace analyzer {
 
 // ASF GUIDs (以文件中的字节序存储: 前3字段小端, 后8字节原序)
-static const QByteArray kHeaderObjectGuid =
-    QByteArray::fromHex("3026B2758E66CF11A6D900AA0062CE6C");
-static const QByteArray kFilePropertiesGuid =
-    QByteArray::fromHex("A1DCAB8C47A9CF118EE400C00C205365");
-static const QByteArray kStreamPropertiesGuid =
-    QByteArray::fromHex("9107DCB7B7A9CF118EE600C00C205365");
-static const QByteArray kContentDescriptionGuid =
-    QByteArray::fromHex("3326B2758E66CF11A6D900AA0062CE6C");
-static const QByteArray kExtContentDescGuid =
-    QByteArray::fromHex("40A4D0D207E3D21197F000A0C95EA850");
-static const QByteArray kDataObjectGuid =
-    QByteArray::fromHex("3626B2758E66CF11A6D900AA0062CE6C");
-static const QByteArray kIndexObjectGuid =
-    QByteArray::fromHex("90080033B1E5CF1189F400A0C90349CB");
-static const QByteArray kVideoStreamGuid =
-    QByteArray::fromHex("C0EF19BC4D5BCF11A8FD00805F5C442B");
-static const QByteArray kAudioStreamGuid =
-    QByteArray::fromHex("409E69F84D5BCF11A8FD00805F5C442B");
+static const std::string kHeaderObjectGuid =
+    HexToBytes("3026B2758E66CF11A6D900AA0062CE6C");
+static const std::string kFilePropertiesGuid =
+    HexToBytes("A1DCAB8C47A9CF118EE400C00C205365");
+static const std::string kStreamPropertiesGuid =
+    HexToBytes("9107DCB7B7A9CF118EE600C00C205365");
+static const std::string kContentDescriptionGuid =
+    HexToBytes("3326B2758E66CF11A6D900AA0062CE6C");
+static const std::string kExtContentDescGuid =
+    HexToBytes("40A4D0D207E3D21197F000A0C95EA850");
+static const std::string kDataObjectGuid =
+    HexToBytes("3626B2758E66CF11A6D900AA0062CE6C");
+static const std::string kIndexObjectGuid =
+    HexToBytes("90080033B1E5CF1189F400A0C90349CB");
+static const std::string kVideoStreamGuid =
+    HexToBytes("C0EF19BC4D5BCF11A8FD00805F5C442B");
+static const std::string kAudioStreamGuid =
+    HexToBytes("409E69F84D5BCF11A8FD00805F5C442B");
 
 namespace {
-uint16_t asfLE16(const QByteArray& d, int off) {
+uint16_t asfLE16(const std::string& d, int off) {
     if (off + 2 > d.size()) return 0;
     return static_cast<uint16_t>(static_cast<uint8_t>(d[off])) |
            (static_cast<uint16_t>(static_cast<uint8_t>(d[off + 1])) << 8);
 }
-uint32_t asfLE32(const QByteArray& d, int off) {
+uint32_t asfLE32(const std::string& d, int off) {
     if (off + 4 > d.size()) return 0;
     return static_cast<uint32_t>(static_cast<uint8_t>(d[off])) |
            (static_cast<uint32_t>(static_cast<uint8_t>(d[off + 1])) << 8) |
            (static_cast<uint32_t>(static_cast<uint8_t>(d[off + 2])) << 16) |
            (static_cast<uint32_t>(static_cast<uint8_t>(d[off + 3])) << 24);
 }
-uint64_t asfLE64(const QByteArray& d, int off) {
+uint64_t asfLE64(const std::string& d, int off) {
     uint64_t v = 0;
     for (int i = 0; i < 8 && off + i < d.size(); ++i)
         v |= static_cast<uint64_t>(static_cast<uint8_t>(d[off + i])) << (i * 8);
     return v;
 }
 // UTF-16LE 定长字符串 (含结尾 NUL)
-QString asfUtf16(const QByteArray& d, int off, int bytes) {
-    if (bytes <= 0 || off + bytes > d.size()) return QString();
-    QString s = QString::fromUtf16(reinterpret_cast<const char16_t*>(d.constData() + off), bytes / 2);
-    return s.remove(QChar('\0')).trimmed();
+std::string asfUtf16(const std::string& d, int off, int bytes) {
+    if (bytes <= 0 || off + bytes > d.size()) return std::string();
+    // 逐字节拷出 UTF-16LE 的裸字节：跳过 char16_t* → wchar_t* 的隐式转换，
+    // 也免得用逗号运算符把构造调用的实参列表吃掉。
+    std::string s;
+    s.reserve(static_cast<size_t>(bytes) / 2);
+    for (int i = 0; i + 1 < bytes; i += 2) {
+        s.push_back(static_cast<char>(static_cast<unsigned char>(d[off + i])));
+        s.push_back(static_cast<char>(static_cast<unsigned char>(d[off + i + 1])));
+    }
+    return TrimCopy(RemoveAllCopy(s, '\0'));
 }
-QString waveFormatName(uint16_t tag) {
+std::string waveFormatName(uint16_t tag) {
     switch (tag) {
         case 0x0001: return "PCM";
         case 0x0002: return "ADPCM";
@@ -62,12 +70,12 @@ QString waveFormatName(uint16_t tag) {
         case 0x0163: return "WMA Lossless";
         case 0x00FF: return "AAC";
         case 0x2000: return "AC-3";
-        default: return QString("0x%1").arg(tag, 4, 16, QChar('0')).toUpper();
+        default: return HexFill(tag, 4);
     }
 }
 } // namespace
 
-static QString GuidToName(const QByteArray& guid) {
+static std::string GuidToName(const std::string& guid) {
     if (guid == kHeaderObjectGuid) return "Header Object";
     if (guid == kFilePropertiesGuid) return "File Properties";
     if (guid == kStreamPropertiesGuid) return "Stream Properties";
@@ -78,36 +86,36 @@ static QString GuidToName(const QByteArray& guid) {
     return "Unknown Object";
 }
 
-bool AsfStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStructureResult& result,
+bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::ContainerStructureResult& result,
                                    const std::atomic<bool>* cancel) {
-    QFile file(file_path);
-    if (!file.open(QIODevice::ReadOnly)) {
+    SeqFileReader file(file_path);
+    if (!file.IsOpen()) {
         result.error_message = "无法打开文件";
         return false;
     }
 
     result.format = model::ContainerFormat::ASF;
     result.format_name = "ASF";
-    result.file_path = file_path.toStdString();
+    result.file_path = file_path;
 
     // Read top-level Header Object
-    QByteArray guid = file.read(16);
+    std::string guid = file.Read(16);
     if (guid.size() < 16 || guid != kHeaderObjectGuid) {
         result.error_message = "不是有效的 ASF 文件";
         return false;
     }
 
     // Size (8 bytes, little-endian)
-    QByteArray size_buf = file.read(8);
+    std::string size_buf = file.Read(8);
     if (size_buf.size() < 8) return false;
     uint64_t header_size = asfLE64(size_buf, 0);
 
     // Number of header objects (4 bytes LE)
-    QByteArray count_buf = file.read(4);
+    std::string count_buf = file.Read(4);
     uint32_t num_objects = count_buf.size() >= 4 ? asfLE32(count_buf, 0) : 0;
 
     // Skip 2 reserved bytes
-    file.read(2);
+    file.Read(2);
 
     model::ContainerElement root;
     root.name = "ASF Header";
@@ -115,23 +123,23 @@ bool AsfStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
     root.size = header_size;
     root.offset = 0;
     root.depth = 0;
-    root.value = QString("objects=%1").arg(num_objects).toStdString();
+    root.value = StrCat("objects=%1", num_objects);
 
     // Parse child objects
-    qint64 header_end = static_cast<qint64>(header_size);
-    if (header_end > file.size()) header_end = file.size();
+    int64_t header_end = static_cast<int64_t>(header_size);
+    if (header_end > file.Size()) header_end = file.Size();
 
-    for (uint32_t i = 0; i < num_objects && file.pos() < header_end - 24; ++i) {
-        QByteArray obj_guid = file.read(16);
-        QByteArray obj_size_buf = file.read(8);
+    for (uint32_t i = 0; i < num_objects && file.Pos() < header_end - 24; ++i) {
+        std::string obj_guid = file.Read(16);
+        std::string obj_size_buf = file.Read(8);
         if (obj_guid.size() < 16 || obj_size_buf.size() < 8) break;
 
         uint64_t obj_size = asfLE64(obj_size_buf, 0);
-        qint64 obj_start = file.pos() - 24;
-        QString obj_name = GuidToName(obj_guid);
+        int64_t obj_start = file.Pos() - 24;
+        std::string obj_name = GuidToName(obj_guid);
 
         model::ContainerElement elem;
-        elem.name = obj_name.toStdString();
+        elem.name = obj_name;
         elem.type = "ASF Object";
         elem.size = obj_size;
         elem.offset = obj_start;
@@ -139,21 +147,21 @@ bool AsfStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
 
         // Parse specific objects
         if (obj_guid == kFilePropertiesGuid) {
-            QByteArray data = file.read(qMin(static_cast<qint64>(obj_size - 24), static_cast<qint64>(104)));
+            std::string data = file.Read(std::min(static_cast<int64_t>(obj_size - 24), static_cast<int64_t>(104)));
             if (data.size() >= 64) {
                 // Play Duration @40 (8, 100ns), Preroll @56 (8, ms)
                 uint64_t play_100ns = asfLE64(data, 40);
                 uint64_t preroll_ms = asfLE64(data, 56);
                 double duration_sec = play_100ns / 10000000.0 - preroll_ms / 1000.0;
                 if (duration_sec < 0) duration_sec = play_100ns / 10000000.0;
-                elem.value = QString("duration=%1s").arg(QString::number(duration_sec, 'f', 2)).toStdString();
+                elem.value = StrCat("duration=%1s", Fixed(duration_sec, 2));
                 result.metadata["duration"] =
-                    (QString::number(duration_sec, 'f', 2) + "s").toStdString();
+                    (Fixed(duration_sec, 2) + "s");
             }
         } else if (obj_guid == kStreamPropertiesGuid) {
-            QByteArray data = file.read(qMin(static_cast<qint64>(obj_size - 24), static_cast<qint64>(256)));
+            std::string data = file.Read(std::min(static_cast<int64_t>(obj_size - 24), static_cast<int64_t>(256)));
             if (data.size() >= 54) {
-                QByteArray stream_type_guid = data.left(16);
+                std::string stream_type_guid = data.substr(0, 16);
                 model::ContainerStreamInfo si;
                 si.index = result.streams.size();
                 if (stream_type_guid == kVideoStreamGuid) {
@@ -162,11 +170,10 @@ bool AsfStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
                     uint32_t w = asfLE32(data, 54);
                     uint32_t h = asfLE32(data, 58);
                     // BITMAPINFOHEADER biCompression @ 54+11+16 = 81
-                    QString fourcc = QString::fromLatin1(data.mid(81, 4)).trimmed();
-                    si.codec = fourcc.isEmpty() ? "Video" : fourcc.toStdString();
-                    si.details = QString("%1x%2").arg(w).arg(h).toStdString();
-                    elem.value = QString("Video %1x%2 %3")
-                        .arg(w).arg(h).arg(QString::fromStdString(si.codec)).toStdString();
+                    std::string fourcc = TrimCopy(data.substr(81, 4));
+                    si.codec = fourcc.empty() ? "Video" : fourcc;
+                    si.details = StrCat("%1x%2", w, h);
+                    elem.value = StrCat("Video %1x%2 %3", w, h, (si.codec));
                 } else if (stream_type_guid == kAudioStreamGuid) {
                     si.type = "audio";
                     // WAVEFORMATEX 从 offset 54
@@ -174,10 +181,9 @@ bool AsfStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
                     uint16_t ch = asfLE16(data, 56);
                     uint32_t sr = asfLE32(data, 58);
                     uint16_t bits = asfLE16(data, 68);
-                    si.codec = waveFormatName(tag).toStdString();
-                    si.details = QString("%1 Hz, %2 ch, %3-bit").arg(sr).arg(ch).arg(bits).toStdString();
-                    elem.value = QString("Audio %1 %2Hz %3ch")
-                        .arg(QString::fromStdString(si.codec)).arg(sr).arg(ch).toStdString();
+                    si.codec = waveFormatName(tag);
+                    si.details = StrCat("%1 Hz, %2 ch, %3-bit", sr, ch, bits);
+                    elem.value = StrCat("Audio %1 %2Hz %3ch", (si.codec), sr, ch);
                 } else {
                     si.type = "data";
                     si.codec = "ASF Data";
@@ -186,35 +192,35 @@ bool AsfStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
                 result.streams.push_back(si);
             }
         } else if (obj_guid == kContentDescriptionGuid) {
-            QByteArray data = file.read(qMin(static_cast<qint64>(obj_size - 24), static_cast<qint64>(64 * 1024)));
+            std::string data = file.Read(std::min(static_cast<int64_t>(obj_size - 24), static_cast<int64_t>(64 * 1024)));
             if (data.size() >= 10) {
                 int tl = asfLE16(data, 0), al = asfLE16(data, 2), cl = asfLE16(data, 4);
                 int dl = asfLE16(data, 6), rl = asfLE16(data, 8);
                 int p = 10;
-                QString title = asfUtf16(data, p, tl); p += tl;
-                QString author = asfUtf16(data, p, al); p += al;
-                QString copyright = asfUtf16(data, p, cl); p += cl;
-                QString desc = asfUtf16(data, p, dl); p += dl;
-                QString rating = asfUtf16(data, p, rl); p += rl;
-                if (!title.isEmpty()) result.metadata["title"] = title.toStdString();
-                if (!author.isEmpty()) result.metadata["author"] = author.toStdString();
-                if (!copyright.isEmpty()) result.metadata["copyright"] = copyright.toStdString();
-                if (!desc.isEmpty()) result.metadata["description"] = desc.toStdString();
-                if (!rating.isEmpty()) result.metadata["rating"] = rating.toStdString();
-                elem.value = title.isEmpty() ? "Metadata" : ("Title: " + title).toStdString();
+                std::string title = asfUtf16(data, p, tl); p += tl;
+                std::string author = asfUtf16(data, p, al); p += al;
+                std::string copyright = asfUtf16(data, p, cl); p += cl;
+                std::string desc = asfUtf16(data, p, dl); p += dl;
+                std::string rating = asfUtf16(data, p, rl); p += rl;
+                if (!title.empty()) result.metadata["title"] = title;
+                if (!author.empty()) result.metadata["author"] = author;
+                if (!copyright.empty()) result.metadata["copyright"] = copyright;
+                if (!desc.empty()) result.metadata["description"] = desc;
+                if (!rating.empty()) result.metadata["rating"] = rating;
+                elem.value = title.empty() ? "Metadata" : ("Title: " + title);
             } else {
                 elem.value = "Metadata";
             }
         } else {
-            elem.value = QString("size=%1").arg(obj_size).toStdString();
+            elem.value = StrCat("size=%1", obj_size);
         }
 
         // Ensure we're at the right position for the next object
-        qint64 next_pos = obj_start + static_cast<qint64>(obj_size);
-        if (obj_size >= 24 && next_pos <= file.size()) {
-            file.seek(next_pos);
+        int64_t next_pos = obj_start + static_cast<int64_t>(obj_size);
+        if (obj_size >= 24 && next_pos <= file.Size()) {
+            file.Seek(next_pos);
         } else {
-            file.seek(file.size());
+            file.Seek(file.Size());
             root.children.push_back(elem);
             break;
         }
@@ -223,33 +229,33 @@ bool AsfStructureAnalyzer::Analyze(const QString& file_path, model::ContainerStr
     }
 
     // Scan for Data Object and Index Object after header
-    file.seek(header_end);
-    while (file.pos() < file.size() - 24) {
+    file.Seek(header_end);
+    while (file.Pos() < file.Size() - 24) {
         if (infrastructure::Checkpoint(cancel)) { result.error_message = "已取消"; return false; }
-        QByteArray obj_guid = file.read(16);
-        QByteArray obj_size_buf = file.read(8);
+        std::string obj_guid = file.Read(16);
+        std::string obj_size_buf = file.Read(8);
         if (obj_guid.size() < 16 || obj_size_buf.size() < 8) break;
 
         uint64_t obj_size = asfLE64(obj_size_buf, 0);
 
         model::ContainerElement elem;
-        elem.name = GuidToName(obj_guid).toStdString();
+        elem.name = GuidToName(obj_guid);
         elem.type = "ASF Object";
         elem.size = obj_size;
-        elem.offset = file.pos() - 24;
+        elem.offset = file.Pos() - 24;
         elem.depth = 1;
-        elem.value = QString("size=%1").arg(obj_size).toStdString();
+        elem.value = StrCat("size=%1", obj_size);
         root.children.push_back(elem);
 
         if (obj_size < 24) break;
-        file.seek(file.pos() - 24 + static_cast<qint64>(obj_size));
+        file.Seek(file.Pos() - 24 + static_cast<int64_t>(obj_size));
     }
 
     result.element_tree.push_back(root);
     result.valid = true;
-    result.summary = QString("ASF | 文件大小: %1 字节 | 流: %2 个").arg(file.size()).arg(result.streams.size()).toStdString();
+    result.summary = StrCat("ASF | 文件大小: %1 字节 | 流: %2 个", file.Size(), result.streams.size());
 
-    file.close();
+    file.Close();
     return true;
 }
 

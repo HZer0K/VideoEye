@@ -174,17 +174,17 @@ Mp4BoxAnalyzer::Mp4BoxAnalyzer() = default;
 
 Mp4BoxAnalyzer::~Mp4BoxAnalyzer() = default;
 
-bool Mp4BoxAnalyzer::AnalyzeFile(const QString& file_path,
+bool Mp4BoxAnalyzer::AnalyzeFile(const std::string& file_path,
                                  model::Mp4BoxAnalysisResult& result,
                                  const std::atomic<bool>* cancel) {
     result = model::Mp4BoxAnalysisResult();
-    result.file_path = file_path.toStdString();
+    result.file_path = file_path;
 
     utils::IsobmffParser::Options opt;
     opt.max_entries_per_table = kMaxTableEntries;
     opt.cancel = cancel;
     utils::IsobmffFile file;
-    if (!utils::IsobmffParser::Parse(file_path.toStdString(), file, opt)) {
+    if (!utils::IsobmffParser::Parse(file_path, file, opt)) {
         result.error_message = file.error_message;
         LOG_WARN("Mp4BoxAnalyzer: " + result.error_message);
         return false;

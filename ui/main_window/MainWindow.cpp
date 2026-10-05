@@ -739,9 +739,10 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
     // 媒体信息解析 PCM (裸流无法自动探测, 需带上用户选择的格式参数)
         {
             analyzer::MediaInfoAnalyzer mi;
-            mi.SetRawPcmHints(demuxer_name, sample_rate, channels);
-            if (mi.Open(source)) {
-                mediainfo_text_->setPlainText(mi.GetCompleteInfo());
+            // 只有这一个调用点需要跨 Qt 边界：MediaInfoAnalyzer 已经不碰 Qt。
+            mi.SetRawPcmHints(demuxer_name.toStdString(), sample_rate, channels);
+            if (mi.Open(source.toStdString())) {
+                mediainfo_text_->setPlainText(QString::fromStdString(mi.GetCompleteInfo()));
             } else {
                 mediainfo_text_->setPlainText(tr("(无法解析 PCM 媒体信息)"));
             }
@@ -815,17 +816,20 @@ void MainWindow::StartMediaInfoAnalysis(const QString& source) {
     QPointer<MainWindow> self = this;
     background_tasks_.RunBlockingIo(kSlotMediaInfo,
                           [self, source, generation](task::TaskId, task::CancelToken token) {
-        QString text;
+        // MediaInfoAnalyzer 现在返回 std::string；后台线程到 UI 这一段都在用 std::string 传，
+        // 转换点只有 setPlainText() 处一处（Qt 6 的 fromStdString）。
+        std::string text;
         {
             VE_PERF("媒体信息解析(后台线程)");
             analyzer::MediaInfoAnalyzer mi;
-            text = mi.Open(source, token.flag()) ? mi.GetCompleteInfo() : MainWindow::tr("(无法解析媒体信息)");
+            const bool opened = mi.Open(source.toStdString(), token.flag());
+            text = opened ? mi.GetCompleteInfo() : std::string("(无法解析媒体信息)");
         }
         if (!self || token.IsCanceled()) return;
         if (generation != self->mediainfo_generation_.load()) return;
         QMetaObject::invokeMethod(self, [self, generation, text]() {
             if (!self || generation != self->mediainfo_generation_.load()) return;  // 已经切到别的文件
-            self->mediainfo_text_->setPlainText(text);
+            self->mediainfo_text_->setPlainText(QString::fromStdString(text));
         }, Qt::QueuedConnection);
     });
 }

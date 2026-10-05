@@ -2,7 +2,7 @@
 
 #include <atomic>
 #include <memory>
-#include <QString>
+#include <string>
 
 // 媒体信息解析封装（FFmpeg 实现）。
 //
@@ -28,13 +28,13 @@ public:
     /// 打开媒体文件并解析（阻塞，建议在后台线程调用）
     /// @param cancel 可选取消标志: 非空时交给 FFmpeg 的 AVIO 中断回调,
     ///               使关闭流程（CancelAll）能及时中止阻塞 IO。传空则不做取消。
-    bool Open(const QString& filePath, std::shared_ptr<std::atomic<bool>> cancel = {});
+    bool Open(const std::string& filePath, std::shared_ptr<std::atomic<bool>> cancel = {});
 
     /// 裸 PCM 打开提示（*.pcm 无法被 avformat 自动探测，需调用方给出参数）
-    void SetRawPcmHints(const QString& demuxer, int sample_rate, int channels);
+    void SetRawPcmHints(const std::string& demuxer, int sample_rate, int channels);
 
     /// 获取完整媒体信息（类 mediainfo CLI 的纯文本输出）
-    QString GetCompleteInfo() const;
+    std::string GetCompleteInfo() const;
 
     /// 关闭当前文件
     void Close();
@@ -43,7 +43,7 @@ public:
     bool IsReady() const;
 
     /// 上一次失败的原因（Open 返回 false 时有意义）
-    QString GetLastError() const;
+    std::string GetLastError() const;
 
 private:
     struct Impl;

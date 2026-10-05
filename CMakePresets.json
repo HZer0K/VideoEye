@@ -119,6 +119,30 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug"
       }
+    },
+    {
+      "name": "linux-test-asan",
+      "displayName": "Linux/macOS ASan+UBSan + Unit Tests",
+      "inherits": "linux-test-base",
+      "binaryDir": "${sourceDir}/build/test-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -g",
+        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -g",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    },
+    {
+      "name": "linux-test-tsan",
+      "displayName": "Linux/macOS TSan + Unit Tests",
+      "inherits": "linux-test-base",
+      "binaryDir": "${sourceDir}/build/test-tsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer -g",
+        "CMAKE_C_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer -g",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread"
+      }
     }
   ],
   "buildPresets": [
@@ -149,6 +173,14 @@
     {
       "name": "linux-test-debug",
       "configurePreset": "linux-test-debug"
+    },
+    {
+      "name": "linux-test-asan",
+      "configurePreset": "linux-test-asan"
+    },
+    {
+      "name": "linux-test-tsan",
+      "configurePreset": "linux-test-tsan"
     }
   ],
   "testPresets": [
@@ -183,6 +215,27 @@
       "execution": {
         "noTestsAction": "error",
         "stopOnFailure": true
+      }
+    },
+    {
+      "name": "linux-test-asan",
+      "configurePreset": "linux-test-asan",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "ASAN_OPTIONS": "detect_leaks=0:abort_on_error=0",
+        "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=0"
+      }
+    },
+    {
+      "name": "linux-test-tsan",
+      "configurePreset": "linux-test-tsan",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "TSAN_OPTIONS": "second_deadlock_stack=1:history_size=4"
       }
     }
   ]

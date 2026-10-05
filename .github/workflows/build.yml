@@ -33,12 +33,25 @@ jobs:
       - name: Self-check audit exit codes
         run: python3 scripts/test_audit_qt_domain_border.py
 
+      # check_layering.py 是同一类 bug 的重灾区（2026-10-05 修的：它曾经打印 [!] 却
+      # return 0，于是 pre-commit 和这里都是一路绿），所以它的退出码同样要被自测盯住。
+      - name: Self-check layering exit codes
+        run: python3 scripts/test_check_layering.py
+
   build:
     name: Build (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         include:
+          # ─────────────── 打包 / 冒烟 ───────────────
+          # 跑的是可发布产物，UI 层的 offscreen 冒烟走 linux-test-debug。
+          #
+          # 注意: sanitizer 的 linux-test-asan / linux-test-tsan **不**进这个矩阵。
+          # 它们的 binaryDir 是 build/test-{asan,tsan}，而这个 job 的 install / 上传
+          # 产物全写死 build/release/dist —— 塞进来只会让 install 找不到目录，并且
+          # 拿一个 Debug+Sanitizer 的构建去覆盖同名 VideoEye-linux 产物。
+          # 那两个 preset 归下面单独的 sanitizer job 管，那里只 ctest、不打包。
           - os: ubuntu-latest
             preset: linux-release
           - os: windows-latest
@@ -295,3 +308,51 @@ jobs:
       - name: Run ctest
         if: runner.os == 'Linux'
         run: ctest --preset ${{ matrix.preset }}
+
+  # ─────────────── 内存 / 数据竞争体检 ───────────────
+  # 单独一个 job，不并进 test：sanitizer 会把测试跑得慢一个量级、产出也大，
+  # 而且 TSan/ASan 的报错会让 ctest 输出淹没，混在一起没人看得见真正挂的那个。
+  #
+  # 为什么必须有：本项目历史上那类**随机** 0xc0000374（堆破坏）在本地怎么复现都测不出来
+  # （加探针症状就消失），只有 sanitizer 能给出确定性结论。TSan 那一路盯的是
+  # TaskManager / 取消令牌 / 面板关停这几处"两颗原子标志 + 一把锁"的并发协议。
+  #
+  # 已知噪声：TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红了先看
+  # 报头是不是我们自己那几个 .cpp；必要时在 TSAN_OPTIONS 里加 suppression 文件。
+  sanitizer:
+    name: Sanitizer (${{ matrix.sanitizer }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sanitizer: asan
+            preset: linux-test-asan
+          - sanitizer: tsan
+            preset: linux-test-tsan
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 与 test job 同一套依赖；不装 FFmpeg 的 GUI 部分之外的东西，sanitizer 只跑单测。
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake pkg-config ninja-build \
+            qt6-base-dev libgtest-dev \
+            libavcodec-dev libavformat-dev libavutil-dev \
+            libswscale-dev libswresample-dev
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      # 不 --stop-on-failure: sanitizer 场景下想一次看到所有问题（ASan 报完进程就死，
+      # 逐个跑能省很多轮）。Linux 上 ctest 默认并行跑，这里关掉以免互相抢 CPU 拖时间。
+      - name: Run ctest
+        run: ctest --preset ${{ matrix.preset }} -j 1 --output-on-failure

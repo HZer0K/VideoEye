@@ -6,8 +6,7 @@
 #include <string>
 #include <vector>
 
-#include <QFile>
-#include <QDataStream>
+#include "core/analysis/detail/SeqFileReader.h"
 
 #include "core/domain/model/EbmlInfo.h"
 
@@ -34,35 +33,39 @@ public:
 
     // cancel: 可选的取消标志（nullptr = 不关心取消）。MKV 的 Cluster 数随片长线性增长，
     // 解析中途被取消必须当场停，否则切了媒体旧的解析还在后台刷盘。
-    bool Analyze(const QString& filePath, model::EbmlAnalysisResult& result,
+    bool Analyze(const std::string& filePath, model::EbmlAnalysisResult& result,
                  const std::atomic<bool>* cancel = nullptr);
     void Reset();
 
 private:
     // --- 二进制 IO ---
-    uint64_t ReadVInt(QDataStream& ds, int& size_out) const;
+    // 读游标是**引用**：调用方（ParseElement）持有它，ReadVInt 读完就把字节流往前推。
+    // 以前这里是 std::istream&，那是 QDataStream 时代的写法（ds.status() / ds.device()
+    // 全是 QDataStream 的 API，换成 std::ifstream 后一个都不存在）。整份 EBML 头部
+    // 很小，用"字节缓冲 + 游标"和 Ts/Flv/Asf/Avi 几层保持一致。
+    uint64_t ReadVInt(const std::string& buf, int64_t& pos, int& size_out) const;
 
     // EBML 的 "unknown size"：size 字段全 1（7 字节），表示长度未知。
     // 这种元素的实际内容一直延伸到父元素末尾，不能再当 size 用。
     static constexpr uint64_t kUnknownSize = 0xFFFFFFFFFFFFFFULL;
     
     // --- 元素解析 ---
-    bool ParseElement(QDataStream& ds, qint64 end_offset, int depth,
+    bool ParseElement(const std::string& buf, int64_t& pos, int64_t end_offset, int depth,
                       model::EbmlElementNode* parent,
                       model::EbmlAnalysisResult& result,
                       const std::atomic<bool>* cancel = nullptr);
 
     /// 解析叶子元素值，同时提取关键数据 (如 DocType, TimestampScale 等)
-    void ParseLeafValue(model::EbmlElementNode& node, const QByteArray& data,
+    void ParseLeafValue(model::EbmlElementNode& node, const std::string& data,
                         model::EbmlAnalysisResult& result);
 
     /// 深度解析 Block 二进制格式
     /// @param data  Block 的原始数据
     /// @param result 填充 EbmlBlockSummary
-    static std::string ParseBlockData(const QByteArray& data, model::EbmlBlockSummary& summary);
+    static std::string ParseBlockData(const std::string& data, model::EbmlBlockSummary& summary);
 
     /// 深度解析 SimpleBlock 二进制格式 (比 Block 多 TrackNumber+Timecode+Flags 头部)
-    static std::string ParseSimpleBlockData(const QByteArray& data, model::EbmlBlockSummary& summary);
+    static std::string ParseSimpleBlockData(const std::string& data, model::EbmlBlockSummary& summary);
 
     /// 解析 TrackEntry 子树 → 填充 result.tracks
     void ExtractTrackInfo(const model::EbmlElementNode& track_entry,
