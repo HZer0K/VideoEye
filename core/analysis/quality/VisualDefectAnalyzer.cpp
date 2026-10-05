@@ -6,7 +6,10 @@
 #include <limits>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
+
+#include "infrastructure/logging/Logger.h"
 
 namespace videoeye {
 namespace analyzer {
@@ -422,6 +425,9 @@ void VisualDefectAnalyzer::StartWorker(size_t queue_capacity) {
         queue_.clear();
     }
     worker_running_.store(true);
+    // 必须在起线程**之前**清掉: 线程一起来就可能立刻跑到收尾(队列空且已经被告知停止),
+    // 晚一步清会让 StopWorker 把一个已经结束的线程误判成"还没回来"。
+    worker_exited_.store(false, std::memory_order_release);
     worker_ = std::thread(&VisualDefectAnalyzer::WorkerLoop, this);
 }
 
@@ -432,12 +438,35 @@ void VisualDefectAnalyzer::StopWorker() {
             worker_running_.store(false);
         }
         cv_.notify_all();
+        // 为什么这里是**有预算的等待 + 仍然 join**, 而不是像 QcRunner 那样超预算就放弃:
+        // 那条 ledger 的关键在于任务体持不持有宿主。这里的线程跑的是成员函数
+        // (std::thread(&VisualDefectAnalyzer::WorkerLoop, this)), 一旦 detach, 它会在宿主
+        // 析构之后继续读写 m_/queue_/options_ —— 放弃比多等危险得多。
+        // 所以预算的用处是**观测**: 把"任务体没按契约响应停止"这件事报出来, 而不是替它收尾。
+        //
+        // 契约上它一定回得来: WorkerLoop 每轮都看 worker_running_(而且 cv_ 已经 notify 过),
+        // 单帧处理又是纯计算, 不会卡在第三方阻塞调用上。
+        if (!AwaitWorkerExit(kStopBudgetMs)) {
+            LOG_ERROR("画面质检工作线程未在 " + std::to_string(kStopBudgetMs) +
+                      "ms 内响应停止请求, 将继续等待它退出(线程体每轮都会检查停止标志)");
+        }
         worker_.join();
+        worker_exited_.store(true, std::memory_order_release);
     } else {
         worker_running_.store(false);
     }
     std::lock_guard<std::mutex> lock(m_);
     queue_.clear();
+}
+
+bool VisualDefectAnalyzer::AwaitWorkerExit(int budget_ms) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget_ms);
+    while (!worker_exited_.load(std::memory_order_acquire)) {
+        if (std::chrono::steady_clock::now() >= deadline)
+            return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return true;
 }
 
 bool VisualDefectAnalyzer::Submit(const model::FrameSample& sample) {
@@ -454,22 +483,33 @@ bool VisualDefectAnalyzer::Submit(const model::FrameSample& sample) {
     return true;
 }
 
+// 收尾必须托底: 无论从哪个出口离开都要把 worker_exited_ 置位, 否则 StopWorker 会把
+// 一个已经结束的线程判成"还没回来", 白白等到预算耗尽才 join。
+// 顺带把异常兜住 —— 成员函数作线程入口时 std::thread 的入口是 noexcept, 异常逃逸
+// 会直接 std::terminate(), 连"分析线程为什么不见了"都无从查起。
 void VisualDefectAnalyzer::WorkerLoop() {
-    for (;;) {
-        model::FrameSample sample;
-        {
-            std::unique_lock<std::mutex> lock(m_);
-            cv_.wait(lock, [this] { return !queue_.empty() || !worker_running_.load(); });
-            if (queue_.empty()) {
-                if (!worker_running_.load()) return;
-                continue;
+    try {
+        for (;;) {
+            model::FrameSample sample;
+            {
+                std::unique_lock<std::mutex> lock(m_);
+                cv_.wait(lock, [this] { return !queue_.empty() || !worker_running_.load(); });
+                if (queue_.empty()) {
+                    if (!worker_running_.load()) break;
+                    continue;
+                }
+                sample = std::move(queue_.front());
+                queue_.pop_front();
             }
-            sample = std::move(queue_.front());
-            queue_.pop_front();
+            std::lock_guard<std::mutex> lock(m_);
+            ProcessSampleLocked(sample);
         }
-        std::lock_guard<std::mutex> lock(m_);
-        ProcessSampleLocked(sample);
+    } catch (const std::exception& e) {
+        LOG_ERROR("画面质检工作线程异常终止: " + std::string(e.what()));
+    } catch (...) {
+        LOG_ERROR("画面质检工作线程异常终止: 未知异常");
     }
+    worker_exited_.store(true, std::memory_order_release);
 }
 
 void VisualDefectAnalyzer::Feed(const model::FrameSample& sample) {

@@ -443,6 +443,10 @@ videoeye_add_test(test_visual_defect
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/quality/VisualDefectAnalyzer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/VisualDefect.cpp
 )
+# StopWorker() 在"工作线程没按时响应停止"时会打一条 ERROR —— 那是这类问题唯一的可观测
+# 出口: 它跑在析构路径上, 不适合抛异常, 调用方也普遍不查返回值。只要被测实现还在用
+# Logger, 这条边就必须在这里显式声明 —— 本目标刻意只链了算法那两个源文件, 拿不到基础设施。
+target_link_libraries(test_visual_defect PRIVATE VideoEyeInfrastructure)
 add_test(NAME VisualDefectTests COMMAND test_visual_defect)
 
 # =================================================

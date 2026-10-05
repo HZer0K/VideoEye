@@ -13,6 +13,7 @@
 //      停止后（或 Flush）才落一条 VisualDefect。
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
@@ -121,12 +122,26 @@ private:
     void WorkerLoop();
     void PushDefectLocked(model::VisualDefect defect);
 
+    // 停止工作线程时允许等多久（见 StopWorker 里的理由）。
+    static constexpr int kStopBudgetMs = 3000;
+
+    // 在预算内等 WorkerLoop 真正退出来。返回 false 表示超时。
+    //
+    // 它是给自己那只 task::TaskKind::Cooperative 任务的"健康检查": 线程体每轮都会看
+    // worker_running_, 单次处理又只是纯计算, 理论上必然在毫秒级回来 —— 所以这里只是把
+    // "它没按契约退出"这件事**报出来**, 而不是替它做决定。
+    bool AwaitWorkerExit(int budget_ms);
+
     VisualDefectOptions options_;
 
     mutable std::mutex m_;
     std::condition_variable cv_;
     std::thread worker_;
     std::atomic<bool> worker_running_{false};
+    // 工作线程体是否已经返回。StopWorker 靠它给 join 设上界, 但**不能用它决定是否
+    // join** —— 见 StopWorker 的注释: 这里的线程是成员函数(隐式 this), 放弃之后它
+    // 会继续访问正在析构的对象, 所以没得选, 只能等它回来。
+    std::atomic<bool> worker_exited_{true};
     std::deque<model::FrameSample> queue_;
     size_t queue_capacity_ = 8;
 

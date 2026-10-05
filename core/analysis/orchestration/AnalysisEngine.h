@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <functional>
+#include <memory>
 #include <string>
 
 #include "core/analysis/AnalysisOptions.h"
@@ -45,6 +46,13 @@ public:
 
     // 执行一次全文件分析。同步阻塞，调用方自行决定是否放到后台线程。
     //
+    // cancel_source: 可选的**外部**取消源，通常是后台任务协议里那颗取消令牌
+    // (task::CancelToken::flag())。传入后本次 Run 的所有取消轮询点（逐包扫描、流媒体
+    // 清单解析、分片校验）都改看它，引擎自己的 Cancel() 就退化成"没人用"的兜底。
+    // 这么留口子是为了让"用户点了取消"这件事在项目里只有**一份**标志：
+    // 宿主置位令牌（TaskManager::Cancel），引擎只是它的观察者，不再自备一套。
+    // 传 nullptr（默认）时行为与以前完全一致。
+    //
     // out_result: 可选的终态回传出参（默认 nullptr = 不回传，保持旧行为）。
     // 失败分支只发 on_failed、**不**走 on_finished，而 scan_status / error_message
     // 又写在结果对象里 —— 上层（批处理、单测）想拿到"失败时到底是个什么状态"
@@ -52,9 +60,19 @@ public:
     // 取消分支同样会回传（scan_status=Cancelled）。
     void Run(const std::string& file_path, const AnalysisOptions& options,
              const AnalysisCallbacks& callbacks,
-             model::AnalysisResult* out_result = nullptr);
+             model::AnalysisResult* out_result = nullptr,
+             std::shared_ptr<std::atomic<bool>> cancel_source = nullptr);
 
 private:
+    // 本次 Run 是否要取消。外部取消源优先于引擎自己的 Cancel()，
+    // 两者都看是为了让"没接外部源的旧调用点"继续按原语义工作。
+    bool CancelRequested() const;
+
+    // 本次 Run 实际使用的那颗取消标志（供 FFmpeg 中断回调与流媒体解析器复用同一颗），
+    // 外部源为空时返回引擎自己的那颗。
+    std::atomic<bool>* CancelSource() const;
+
+    struct CancelSourceScope;
     // FFmpeg 的中断回调一旦被触发，open / 探测 / 逐包读三个阶段都会用 AVERROR_EXIT 收场。
     // 判「这一路是用户取消」必须两个条件同时成立：取消标记已被置位、且 FFmpeg 侧确实
     // 以 EXIT 结束。只看 ret 会把「取消前恰好撞上一次真的 IO 错误」误判成取消，
@@ -70,6 +88,26 @@ private:
                               const AnalysisCallbacks& callbacks);
 
     std::atomic<bool> cancel_requested_{false};
+    // 仅在 Run() 执行期间非空（由 CancelSourceScope 管理），所以这里不需要额外加锁：
+    // 读它只发生在正在跑的那一次 Run 的同一个线程里。
+    std::shared_ptr<std::atomic<bool>> active_cancel_source_;
+};
+
+// 把外部取消源挂到本次 Run 上，出作用域即摘掉。
+// 必须做成 RAII: Run() 的失败分支（avformat_open_input 失败、清单解析失败……）都会
+// 提前 return，而取消源是要一直跟着的 —— 漏摘一次，下一次 Run 就会误判"被取消了"。
+class AnalysisEngine::CancelSourceScope {
+public:
+    explicit CancelSourceScope(AnalysisEngine& owner, std::shared_ptr<std::atomic<bool>> source)
+        : owner_(owner) {
+        owner_.active_cancel_source_ = std::move(source);
+    }
+    CancelSourceScope(const CancelSourceScope&) = delete;
+    CancelSourceScope& operator=(const CancelSourceScope&) = delete;
+    ~CancelSourceScope() { owner_.active_cancel_source_.reset(); }
+
+private:
+    AnalysisEngine& owner_;
 };
 
 } // namespace analyzer

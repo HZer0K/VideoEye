@@ -855,8 +855,14 @@ void MediaPlayer::StartVideoFrameExport(const QString& output_dir, const QString
 }
 
 void MediaPlayer::StartVideoFrameExportNow(const QString& output_dir, const QString& format, int jpg_quality, int frame_interval) {
-    // 登记到统一任务调度 (任务 ID / 取消标志 / 终态)
-    const task::TaskId task_id = task_manager_.Begin(kSlotFrameExport);
+    // 登记到统一任务调度 (任务 ID / 取消标志 / 终态)。
+    //
+    // 用 BeginHandle 而不是 Begin + Token 两步：句柄要一路传到 QtWorkerOwner，
+    // 由它在 worker 线程退出的那一刻 EndHandle 还回终态 —— 于是"这条 QThread
+    // 结束了"这件事也走同一个 TaskManager，不再有两种线程各有各的收尾方式。
+    const task::TaskHandle export_handle =
+        task_manager_.BeginHandle(kSlotFrameExport, 0, task::TaskKind::BlockingIo);
+    const task::TaskId task_id = export_handle.id;
     if (task_id == 0) {
         emit VideoFrameExportError("已有后台任务在运行, 请稍后再试");
         return;
@@ -869,7 +875,10 @@ void MediaPlayer::StartVideoFrameExportNow(const QString& output_dir, const QStr
     // 取消令牌必须在线程启动**之前**注入 worker: 用户若在 worker 起来之前点了取消,
     // worker 一进门就能看到, 不会出现"取消被清空、导出照常跑完"的竞态。
     auto* exporter = new VideoFrameExporter();
-    exporter->SetCancelToken(task_manager_.Token(kSlotFrameExport));
+    // 注入的就是句柄里那颗令牌 —— 全项目"取消"在这一条链路上只剩这一处来源:
+    // 用户点取消 -> RequestStopFrameExport 置位 slot 令牌 -> 这里的 exporter 读到
+    // -> Export() 收尾，同时 QtWorkerOwner 在线程结束时按同一颗令牌判 Canceled。
+    exporter->SetCancelToken(export_handle.cancel);
 
     // 每次发起自增代际号: 下面所有转发信号都只接受当前代际,
     // 旧任务(被取消但线程还在排队终态)的信号会被丢弃, 不会串到本次新任务。
@@ -922,12 +931,17 @@ void MediaPlayer::StartVideoFrameExportNow(const QString& output_dir, const QStr
         // 终态兜底: 线程都已经退出了, slot 却还是 Running, 说明终态没能落地
         // (终态信号还在 UI 队列里没排到、或 exporter 在退出途中把信号丢了)。
         // 不能再等下一次任务接管或播放器析构来强制收尾 —— 届时界面早就没有"已取消"
-        // 的反馈了。只在"本次确实被请求过取消"时补, 免得把一次真正的失败误报成取消。
+        // 的反馈了。
         //
+        // 这里是**唯一**的兜底写入者: QtWorkerOwner 不碰 TaskManager(它不持调度器,
+        // 句柄与终态都在本函数这一侧), 所以"QThread 任务怎么还终态"这件事只有一条路。
         // End 自带两道保护, 所以这行是幂等的: id 不匹配(已被新任务取代)直接丢弃,
         // 已经写过终态(终态信号抢先落地写了 Succeeded/Failed)也直接丢弃。
-        if (task_manager_.Token(kSlotFrameExport).IsCanceled())
-            task_manager_.End(kSlotFrameExport, task_id, task::TaskState::Canceled);
+        if (task_manager_.State(kSlotFrameExport) == task::TaskState::Running)
+            task_manager_.End(kSlotFrameExport, task_id,
+                              task_manager_.Token(kSlotFrameExport).IsCanceled()
+                                  ? task::TaskState::Canceled
+                                  : task::TaskState::Succeeded);
 
         // 线程真正结束了: 从这一行起,"两个抽帧任务同时写同一个输出目录"已不可能,
         // 于是把排队中的请求接上（用户"取消后立刻重试"就靠这里自动续跑）。
@@ -969,7 +983,8 @@ void MediaPlayer::StartVideoFrameExportNow(const QString& output_dir, const QStr
         [exporter, url, output_dir, normalized_format, jpg_quality, normalized_interval]() {
             exporter->Export(url, output_dir, normalized_format, jpg_quality, normalized_interval);
         },
-        [exporter]() { exporter->Cancel(); },
+        export_handle,
+        {} /* request_stop 留空: 取消就是置上面那颗令牌，exporter 自己读它 */,
         clear_marks,
         on_frame_export_error);
 
@@ -1033,7 +1048,11 @@ void MediaPlayer::StartMediaExport(const exporter::ExportOptions& opt) {
 }
 
 void MediaPlayer::StartMediaExportNow(const exporter::ExportOptions& opt) {
-    const task::TaskId task_id = task_manager_.Begin(kSlotMediaExport);
+    // 与抽帧侧同理：句柄交给 QtWorkerOwner 在线程退出时归还终态，slot / 令牌 / id
+    // 仍然只有这一份，写入者只有一个。
+    const task::TaskHandle export_handle =
+        task_manager_.BeginHandle(kSlotMediaExport, 0, task::TaskKind::BlockingIo);
+    const task::TaskId task_id = export_handle.id;
     if (task_id == 0) { emit MediaExportError("已有后台任务在运行, 请稍后再试"); return; }
     auto fail = [this, task_id](const QString& msg) {
         task_manager_.End(kSlotMediaExport, task_id, task::TaskState::Failed);
@@ -1046,7 +1065,7 @@ void MediaPlayer::StartMediaExportNow(const exporter::ExportOptions& opt) {
 
     // 取消令牌在线程启动**之前**注入: 启动前的"立即取消"必须能被 worker 看到。
     auto* exporter = new exporter::MediaExporter();
-    exporter->SetCancelToken(task_manager_.Token(kSlotMediaExport));
+    exporter->SetCancelToken(export_handle.cancel);
 
     // 同样先连信号再起线程: worker 可能一进门就因为参数不对而立刻报错。
     // 每次发起自增代际号: 转发信号只接受当前代际,
@@ -1098,8 +1117,13 @@ void MediaPlayer::StartMediaExportNow(const exporter::ExportOptions& opt) {
         // 终态兜底, 与抽帧侧同理: 线程已退出却还没终态, 说明终态信号没落地。
         // 只补 Canceled 且只在本次确实被取消过时才补; End 的 id 匹配 + 终态一次性
         // 保证它不会盖掉已经写好的 Succeeded/Failed。
-        if (task_manager_.Token(kSlotMediaExport).IsCanceled())
-            task_manager_.End(kSlotMediaExport, task_id, task::TaskState::Canceled);
+        // 与抽帧侧一致: 这里是唯一的兜底写入者, QtWorkerOwner 不持 TaskManager,
+        // 不在别处抢着 End。
+        if (task_manager_.State(kSlotMediaExport) == task::TaskState::Running)
+            task_manager_.End(kSlotMediaExport, task_id,
+                              task_manager_.Token(kSlotMediaExport).IsCanceled()
+                                  ? task::TaskState::Canceled
+                                  : task::TaskState::Succeeded);
 
         // 线程真正结束了: 排队中的导出请求在这里续跑（"取消后立刻重导出"的路径）。
         // 重新走 StartMediaExportNow 而不是 StartMediaExport: 此刻旧线程已确认结束，
@@ -1126,7 +1150,8 @@ void MediaPlayer::StartMediaExportNow(const exporter::ExportOptions& opt) {
     };
 
     auto* thread = export_workers_.StartWorker(exporter, [exporter, opt]() { exporter->Export(opt); },
-                                               [exporter]() { exporter->Cancel(); },
+                                               export_handle,
+                                               {} /* request_stop 留空: 取消走上面那颗令牌 */,
                                                clear_marks,
                                                on_media_export_error);
     media_export_thread_ = thread;

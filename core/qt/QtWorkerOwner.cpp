@@ -39,8 +39,23 @@ QThread* QtWorkerOwner::StartWorker(QObject* worker, std::function<void()> body,
                                     std::function<void()> request_stop,
                                     std::function<void(QThread*)> on_finished,
                                     std::function<void(QThread*, const std::string&)> on_error) {
+    // 不接协议：句柄留空，本方法退回到"只当线程持有者"，什么都不碰 TaskManager。
+    return StartWorker(worker, std::move(body), task::TaskHandle{}, std::move(request_stop),
+                       std::move(on_finished), std::move(on_error));
+}
+
+QThread* QtWorkerOwner::StartWorker(QObject* worker, std::function<void()> body,
+                                    const task::TaskHandle& handle,
+                                    std::function<void()> request_stop,
+                                    std::function<void(QThread*)> on_finished,
+                                    std::function<void(QThread*, const std::string&)> on_error) {
     if (!worker) return nullptr;
 
+    // 句柄是调用方**已经 Begin 过**的那一个，直接沿用：slot 由调用方持有，
+    // 本既不 Begin 也不 End，终态写入者永远只有一个。空句柄（id == 0）时，
+    // 下面所有协议动作都被 valid() 短路掉。
+    //
+    // 这里只做 Owner 侧最小的一件事：把这个手柄记下来，好在线程退出的那一刻还回去。
     auto* thread = new QThread(this);
     // worker 不挂成 QThread 的子对象: 它住在新线程里，由 deleteLater 在该线程回收，
     // 挂父子关系反而会让 QThread 析构时从错误的线程 delete 它。
@@ -51,6 +66,7 @@ QThread* QtWorkerOwner::StartWorker(QObject* worker, std::function<void()> body,
     entry.thread = thread;
     entry.worker = worker;
     entry.request_stop = std::move(request_stop);
+    entry.handle = handle;
     entries_.push_back(std::move(entry));
 
     // body 在 worker 线程执行（接收者上下文是 worker，Qt 会自动判成直连）。
@@ -102,7 +118,15 @@ QThread* QtWorkerOwner::StartWorker(QObject* worker, std::function<void()> body,
                              }
                          }
                      });
-    // 终态清理: 排队回所有者线程，worker 与 QThread 各自在正确的线程被回收
+    // 终态清理: 排队回所有者线程，worker 与 QThread 各自在正确的线程被回收。
+    //
+    // 这里**不** EndHandle：句柄是调用方 BeginHandle 出来的，TaskManager 也在调用方
+    // 手里（本类不持调度器），本方法既没有它的实例可调，补一个 EndHandle 更是造出
+    // 第二个终态写入者去抢同一个 slot —— 谁先落地算谁，这正是评审要收敛掉的那种
+    // 多套体系。终态一律由调用方在它自己的三条路线上落（终态信号 / on_error /
+    // 线程结束时的兜底），写入者从头到尾只有一个。
+    //
+    // 取消则与调用方共用同一颗令牌（见 StopWorker），"取消"不在这里另起一套。
     QObject::connect(thread, &QThread::finished, this, [this, thread, worker]() {
         worker->deleteLater();
         thread->deleteLater();
@@ -127,7 +151,14 @@ bool QtWorkerOwner::StopWorker(QThread* thread, int wait_ms) {
     Entry* entry = FindEntry(thread);
     if (!entry) return true;  // 不是本对象持有的线程，不管
 
-    if (entry->request_stop) entry->request_stop();
+    // 两条动作都发，不互相替代：先置协议令牌（这是全项目"取消"的唯一来源，
+    // 任务体/Exit 循环轮询的就是它），再调 request_stop —— 那是 worker 自己那层的
+    // 一步（多数实现就是置 worker 自己的标志，让已经进到 Export() 内部的循环也能看到）。
+    // 顺序上令牌在前：worker 的 Cancel() 内部多半也会去看这颗令牌。
+    if (entry->handle.valid())
+        entry->handle.cancel.RequestCancel();
+    if (entry->request_stop)
+        entry->request_stop();
     thread->quit();
 
     bool finished = false;
@@ -167,6 +198,9 @@ bool QtWorkerOwner::StopAll(int timeout_ms) {
     targets.reserve(entries_.size());
     for (const Entry& e : entries_) {
         if (!e.thread) continue;
+        // 同 StopWorker：令牌 + worker 各自那层，都置一遍。
+        if (e.handle.valid())
+            e.handle.cancel.RequestCancel();
         if (e.request_stop) e.request_stop();
         e.thread->quit();
         targets.push_back(e.thread);

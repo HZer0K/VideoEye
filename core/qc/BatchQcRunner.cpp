@@ -137,7 +137,16 @@ BatchQcRun BatchQcRunner::Run(const std::vector<BatchQcItem>& items,
                               &callback_mutex, &finished, &next_index]() {
             active_workers_.fetch_add(1, std::memory_order_acq_rel);
             while (true) {
-                if (IsCancelled(callbacks)) break;
+                if (IsCancelled(callbacks)) {
+                    // 取消必须在这里**立刻立起来**, 不能只是自己退出: 每支 worker 手上正在
+                    // 跑的那个 analyze 只认 request.cancel(它指向_cancel_), 而它下次查看
+                    // 自己的结束条件要等到当前这一项整个跑完。统一置位之后, 其它 worker
+                    // 才能在各自分析**过程中**感知到 —— 这既是"点停止后多久能真正停"的关键,
+                    // 也是下面那段 join 唯一的耗时上界来源: 跑得最慢的那一项能被中断, join
+                    // 就不可能拖到它自然跑完。
+                    cancel_.store(true, std::memory_order_release);
+                    break;
+                }
                 const std::size_t index = next_index.fetch_add(1, std::memory_order_acq_rel);
                 if (index >= items.size()) break;
 
@@ -212,6 +221,17 @@ BatchQcRun BatchQcRunner::Run(const std::vector<BatchQcItem>& items,
         });
     }
 
+    // 这里**故意**是无上界的 join, 与 QcRunner / QtAnalysisController / ReportingPanel
+    // 那三处"预算内等待"不同 —— 区别不在偷懒, 而在契约:
+    //   * Run() 是**同步 API**: 调用方拿到返回值时, run.items 里每一项都必须是最终状态。
+    //     换成 detach 或超时放行, 就会出现"函数已返回、结果还在被别的线程写"的竞态。
+    //   * worker 体按引用捕获了 this 与 run / items / callbacks 等**栈上对象**, 一旦 detach
+    //     之后它们会随 Run() 返回而消失 —— 放弃线程等于批准悬空访问, 比多等危险得多。
+    //
+    // 所以它的上界来自**取消**而不是超时: 上面那个"取消一进来就置 cancel_"的传播让最慢的
+    // 一项也能被打断, 每支 worker 都必然在下一个 item 边界退出。真正卡住的场景是某一项
+    // 的 analyze() 完全不看取消 —— 那时多等 = 让 UI 察觉"它卡住了", 而 detach = 静默地
+    // 把成果丢掉, 这里选前者。
     for (auto& worker : workers) {
         if (worker.joinable()) worker.join();
     }

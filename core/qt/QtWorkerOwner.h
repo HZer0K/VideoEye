@@ -20,13 +20,37 @@
 //
 // 线程约定: 所有方法只应在"所有者所在线程"（通常是 UI 线程）调用；
 // finished 回调经 Qt 排队回到该线程，因此内部容器不需要加锁。
+//
+// 与统一协议的关系(评审 P1-2 划的两层职责):
+//   * TaskManager      —— 管普通 std::thread，也是**唯一**定义"任务身份 / 取消令牌 /
+//                         终态"的地方；
+//   * QtWorkerOwner    —— 只管 QThread worker（QObject 住在 QThread 上才能发信号）。
+//
+// 本类**不持有 TaskManager、不自己 Begin、不 End、也不判终态语义**：句柄是调用方从它
+// 自己的 TaskManager 那儿拿来的，本方法只把它接过来（顺带用它当默认取消源）。"这条
+// QThread 结束了"该翻译成哪个终态，一律由调用方在它自己的路线上写 —— MediaPlayer 的
+// 终态信号 / on_*_error / 线程退出时的兜底三条路，写入者从头到尾只有一个。
+//
+// 两个曾经走过的弯路，都记在这儿免得再绕回去：
+//   * 让本类自己也 Begin 一次同 slot 的任务 —— 于是有两个终态写入者抢同一个 slot，
+//     谁先落地算谁（本类线上线程更早 finished，会把调用方的 Failed 挡掉）；
+//   * 让本类 EndHandle —— 本类压根没有 TaskManager 实例可调，这条想通了就得放弃。
+//
+// 同理，本类也不定义取消协议：StopWorker 置的是**句柄里那颗令牌**，也就是调用方
+// TaskManager slot 上那颗；worker 自己去读它（VideoFrameExporter::SetCancelToken
+// 注入的就是它）。于是"取消"在抽帧 / 媒体导出这两条链路上只有一处来源。
 
 #include <chrono>
 #include <functional>
+#include <string>
 #include <vector>
 
 #include <QObject>
 #include <QThread>
+
+// 只用协议层（TaskId / CancelToken / TaskHandle），不 include 调度实现 ——
+// 本类不持 TaskManager，也就不需要看见它的类定义。
+#include "core/domain/task/TaskProtocol.h"
 
 namespace videoeye {
 namespace qt {
@@ -41,10 +65,10 @@ public:
     QtWorkerOwner(const QtWorkerOwner&) = delete;
     QtWorkerOwner& operator=(const QtWorkerOwner&) = delete;
 
-    // 起一个归本对象所有的 worker 线程。
+    // 起一个归本对象所有的 worker 线程（不参与统一协议的用法：句柄留空）。
     //   worker       —— 会被 moveToThread，生命周期归本对象
     //   body         —— 线程启动后在 worker 线程执行（通常就是 worker->Export(...)）
-    //   request_stop —— 请求停止时先调它（置 worker 自己的取消标志），再 quit
+    //   request_stop —— 请求停止时先调它（置 worker **自己**的取消标志），再 quit
     //   on_finished  —— 线程终态时在本对象线程执行的清理回调（如清"当前任务"指针）。
     //                   签名为 void(QThread*)，由本方法把已创建的 thread 传入，
     //                   回调里直接用形参比较即可，无需捕获尚未声明的本地 thread 变量。
@@ -55,6 +79,24 @@ public:
     //                   这是导出任务写入 Failed 终态、发错误信号的入口；不传则只记日志。
     // 返回线程指针仅供连线；所有权仍在本对象。
     QThread* StartWorker(QObject* worker, std::function<void()> body,
+                         std::function<void()> request_stop = {},
+                         std::function<void(QThread*)> on_finished = {},
+                         std::function<void(QThread*, const std::string&)> on_error = {});
+
+    // 参与统一协议的版本：复用调用方**已有的**句柄（由调用方的 TaskManager 在
+    // BeginHandle() 里拿到，slot / 令牌 / id 全在那儿，本类不另建、不另判）。
+    //   handle        —— 任务身份 + 唯一的取消令牌。worker 的取消标志由调用方用
+    //                    SetCancelToken() 注入这颗令牌；句柄还能继续给调用方用
+    //                    （IsCurrent / 代际校验 / 排队判重）。
+    //   request_stop  —— 留空则 StopWorker 只置令牌；传了则令牌照置，再调一次
+    //                    worker 自己的那步（多数实现就是置 worker 自己的标志，
+    //                    给已经进到 Export() 内部的循环多一条看见取消的路）。
+    //   on_finished / on_error 与旧版同义。
+    //
+    // 句柄放第 3 位（排在 request_stop 之前）：接上协议之后 request_stop 通常就该留空，
+    // 让它站在前排，免得读代码的人以为这里还有第二颗取消标志。
+    QThread* StartWorker(QObject* worker, std::function<void()> body,
+                         const task::TaskHandle& handle,
                          std::function<void()> request_stop = {},
                          std::function<void(QThread*)> on_finished = {},
                          std::function<void(QThread*, const std::string&)> on_error = {});
@@ -87,6 +129,8 @@ private:
         QThread* thread = nullptr;
         QObject* worker = nullptr;
         std::function<void()> request_stop;
+        // 默认构造即空句柄（id == 0）：那条路完全不碰 TaskManager，与改造前一致。
+        task::TaskHandle handle;
         bool retiring = false;
     };
 

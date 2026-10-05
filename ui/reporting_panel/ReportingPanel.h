@@ -34,6 +34,7 @@
 #include "core/qc/QcProfile.h"
 #include "core/qc/QcReportFormat.h"
 #include "core/qc/QcRunner.h"
+#include "infrastructure/concurrency/TaskManager.h"
 
 #include "ui/reporting_panel/analysis_task.h"
 
@@ -68,8 +69,8 @@ private slots:
     void OnExportBatchSummary();
 
 private:
-    // 后台任务的明确所有权载体（线程 / 取消标记 / 生命周期守卫）定义在
-    // ui/reporting_panel/analysis_task.h，并配套 RecycleTask() 回收逻辑，
+    // 后台任务的明确所有权载体（线程 / 取消令牌 / 生命周期守卫）定义在
+    // ui/reporting_panel/analysis_task.h，并配套 WaitTaskBody() 的预算等待逻辑，
     // 避免对仍 joinable 的 std::thread 直接赋值导致 std::terminate（连续分析两次的根因）。
 
     void BuildUi();
@@ -83,6 +84,13 @@ private:
     void StartSingleAnalysis(const std::string& path);
     void StartBatchScan(const std::string& directory);
     void RunSingle(std::shared_ptr<AnalysisTask> task, const std::string& path);
+
+    // 报告页任务（单文件 / 批量）的槽位。取消与终态都归到这个 slot 上，与诊断页、
+    // QcRunner 共用同一套 task::TaskHandle 协议，不再各写一份。
+    //
+    // 归还终态只能发生在宿主线程：任务体捕获了 this（要往面板上刷结果），关停预算
+    // 耗尽时它会被放弃，那时 tasks_ 比它先析构，从线程里 EndHandle 就是悬空访问。
+    void RetireTask(std::shared_ptr<AnalysisTask>& task);
 
     // 批量请求的所有参数。必须在主线程里采集完再交给 worker ——
     // Qt 的控件只能在创建它的线程上访问，worker 里碰 QSpinBox / QCheckBox 是未定义行为。
@@ -133,6 +141,11 @@ private:
     QTextEdit* log_view_ = nullptr;
 
     // ---- 状态 ----
+    // 报告页后台任务调度器：任务身份（TaskId）、取消令牌（CancelToken）、终态都在这里，
+    // 与诊断页 / QcRunner 是同一个 TaskManager 协议，只是 slot 不同。
+    task::TaskManager tasks_{2};
+    static constexpr const char* kTaskSlot = "reporting-panel";
+
     qc::QcProfile profile_;                     // 当前模板（可能是从文件加载的自定义模板）
     qc::QcRunResult last_result_;               // 最近一次单文件分析结果，导出按钮用它
     std::string current_path_;

@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "core/analysis/AnalysisOptions.h"
@@ -165,22 +167,36 @@ TEST(ApplyExportPathsTest, UnwritableDirMarksExportFailed) {
 // ---------------------------------------------------------------------------
 // P0#1：线程回收 —— 对仍 joinable 的 std::thread 直接赋值会 terminate；
 // RecycleTask 先 join 再 reset，连续分析两次不会崩。
+//
+// 注意线程体里要自己置 body_done：RecycleTask 靠它判断"任务体在预算内回来了"
+// （std::thread 没有带超时的 join），真实任务体本来就是这么干的。
 // ---------------------------------------------------------------------------
-TEST(AnalysisTaskTest, RecycleJoinsJoinableAndResets) {
+namespace {
+
+// 起一个"立刻跑完并自报回来"的线程，模拟一次秒结束的分析任务体。
+std::shared_ptr<AnalysisTask> MakeFinishedTask() {
     auto task = std::make_shared<AnalysisTask>();
-    task->thread = std::thread([] { /* 立即返回 */ });
+    task->thread = std::thread([task] {
+        task->body_done.store(true, std::memory_order_release);
+    });
+    return task;
+}
+
+}  // namespace
+
+TEST(AnalysisTaskTest, RecycleJoinsJoinableAndResets) {
+    auto task = MakeFinishedTask();
     RecycleTask(task);
     EXPECT_FALSE(task);  // 已 reset
 }
 
 TEST(AnalysisTaskTest, RestartAfterRecycleDoesNotTerminate) {
-    std::shared_ptr<AnalysisTask> task = std::make_shared<AnalysisTask>();
-    task->thread = std::thread([] {});
+    auto task = MakeFinishedTask();
     RecycleTask(task);  // 第一次"运行"结束并回收
+    EXPECT_FALSE(task);
 
-    // 第二次运行：若第一次仍 joinable，下面这行（对 std::thread 赋值）会 terminate
-    task = std::make_shared<AnalysisTask>();
-    task->thread = std::thread([] {});
+    // 第二次运行：若第一次仍 joinable，下面对 task 重新赋值（std::thread 赋值）会 terminate
+    task = MakeFinishedTask();
     RecycleTask(task);
     EXPECT_FALSE(task);
 }
@@ -190,8 +206,26 @@ TEST(AnalysisTaskTest, RecycleNullAndUnstartedSafe) {
     EXPECT_NO_THROW(RecycleTask(nulltask));
 
     auto empty = std::make_shared<AnalysisTask>();  // 默认构造，未启动线程
+    // 未启动的线程立刻放行（不让 WaitTaskBody 白等满整个预算）
     RecycleTask(empty);
     EXPECT_FALSE(empty);
+}
+
+// 预算耗尽不能变成永久等待：任务体自始至终不置 body_done 时，RecycleTask 也必须在
+// 预算上（加上 join 这一次性开销）返回，否则析构路径就是评审 P1-3 点名的"无限等待"。
+TEST(AnalysisTaskTest, RecycleGivesUpAfterBudget) {
+    auto task = std::make_shared<AnalysisTask>();
+    task->thread = std::thread([] { /* 故意不置 body_done，模拟卡在不可中断的调用里 */ });
+
+    const auto start = std::chrono::steady_clock::now();
+    RecycleTask(task, 300);
+    const auto elapsed_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)
+            .count();
+
+    EXPECT_GE(elapsed_ms, 300);   // 真的等过预算
+    EXPECT_LT(elapsed_ms, 5000);  // 但没有逾越上界
+    EXPECT_FALSE(task);           // 无论如何都把句柄还了出来
 }
 
 // ---------------------------------------------------------------------------

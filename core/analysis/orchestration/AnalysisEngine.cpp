@@ -303,10 +303,28 @@ bool AnalysisEngine::IsCancelRequested() const {
     return cancel_requested_.load(std::memory_order_acquire);
 }
 
+bool AnalysisEngine::CancelRequested() const {
+    if (active_cancel_source_ && active_cancel_source_->load(std::memory_order_acquire))
+        return true;
+    return cancel_requested_.load(std::memory_order_acquire);
+}
+
+// 返回可变指针而不是 const: 调用方（FFmpeg 的 AvInterruptState）要往里置位，
+// 而"能不能改"这件事由谁能调 Cancel() 决定，跟"这次读的是哪颗标志"是两回事。
+// 本方法是 const 的事实不变 —— 它只读自己，不因多返回一个可写引用就获得改自身的权限。
+std::atomic<bool>* AnalysisEngine::CancelSource() const {
+    if (active_cancel_source_)
+        return active_cancel_source_.get();
+    return const_cast<std::atomic<bool>*>(&cancel_requested_);
+}
+
 void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& options,
-                         const AnalysisCallbacks& callbacks,
-                         model::AnalysisResult* out_result) {
+                         const AnalysisCallbacks& callbacks, model::AnalysisResult* out_result,
+                         std::shared_ptr<std::atomic<bool>> cancel_source) {
     VE_PERF("AnalysisEngine::Run");
+    // 必须第一件事就挂上: 下面的"流媒体清单分流"会立刻走到另一条路径，
+    // 那里读的是同一个 CancelSource()，晚一步挂就等于本次 Run 没接外部取消源。
+    CancelSourceScope cancel_scope(*this, std::move(cancel_source));
     model::AnalysisResult result;
     result.file_path = file_path;
     // 声明在 result 之后：析构顺序反过来，回传时 result 仍然活着。
@@ -346,7 +364,10 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
 
     // 中断回调：打开/探测阶段带绝对超时；扫描阶段只响应取消（见下方重置）。
     ffmpeg_io::AvInterruptState interrupt;
-    interrupt.cancel = &cancel_requested_;
+    // 用 CancelSource() 而不是引擎自己的成员: 接了外部取消源（后台任务令牌）时，
+    // FFmpeg 的中断回调也必须看同一颗标志，否则"用户点取消"对 avformat_open_input
+    // 是隐形的 —— 取消了半天还卡在打开上。
+    interrupt.cancel = CancelSource();
     ffmpeg_io::AttachInterrupt(fmt, interrupt, ffmpeg_io::kOpenTimeoutUs);
 
     int open_ret = 0;
@@ -731,7 +752,7 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     {
     VE_PERF("逐包扫描(全文件 demux + 音频解码 + GOP)");
     while (true) {
-        if (cancel_requested_.load(std::memory_order_acquire)) {
+        if (CancelRequested()) {
             result.scan_status = model::AnalysisStatus::Cancelled;
             break;
         }
@@ -1138,7 +1159,7 @@ void AnalysisEngine::RunStreamingManifest(const std::string& file_path,
     // 清单解析的全部循环（逐行 / 逐分片 / 逐时间轴条目 / 逐分片落盘探测）都会轮询它。
     // 没有这条通道时，一个几十万行 EXTINF 的 m3u8 会让"取消"和"重新扫描"都点不动 ——
     // QtAnalysisController 启动新扫描会 join 旧线程，而旧线程正卡在解析循环里。
-    const std::atomic<bool>* cancel = &cancel_requested_;
+    const std::atomic<bool>* cancel = CancelSource();
 
     model::StreamingPackageResult& pkg = result.streaming_package;
     bool ok = false;
@@ -1156,7 +1177,7 @@ void AnalysisEngine::RunStreamingManifest(const std::string& file_path,
     // 取消优先于失败判定：解析被中断时 pkg 里只有半份数据，此时报"无法解析清单"
     // 会把用户主动取消说成文件有问题。与逐包扫描路径一致：保留已扫到的部分，
     // 以 scan_status=Cancelled + completed=false 收尾。
-    if (IsCancelRequested()) {
+    if (CancelRequested()) {
         result.scan_status = model::AnalysisStatus::Cancelled;
         NotifyProgress(callbacks, 100.0, "已取消");
         NotifyFinished(callbacks, false, result);
@@ -1194,7 +1215,7 @@ void AnalysisEngine::RunStreamingManifest(const std::string& file_path,
             return;
         }
     }
-    if (IsCancelRequested()) {
+    if (CancelRequested()) {
         result.scan_status = model::AnalysisStatus::Cancelled;
         NotifyProgress(callbacks, 100.0, "已取消");
         NotifyFinished(callbacks, false, result);
