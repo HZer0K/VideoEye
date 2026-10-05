@@ -26,6 +26,7 @@ extern "C" {
 #include "core/player/AudioOutput.h"
 #include "core/player/VideoFrameExporter.h"
 #include "core/player/AnalysisSession.h"
+#include "core/player/ExportController.h"
 #include "core/player/PlaybackSession.h"
 #include "infrastructure/concurrency/TaskManager.h"
 #include "core/qt/QtWorkerOwner.h"
@@ -252,23 +253,8 @@ private:
                                 int sample_rate, int channels, double timestamp_seconds, double level);
     void StartContainerStructureAnalysis(const QString& url);
 
-    // --- 导出的实际启动与"上一次任务是否还活着"判定 ---
-    //
-    // StartXxxExport 对外是"发起一次导出"，内部先判定旧线程是否还在跑:
-    //   * 已在跑 -> 把请求存进 pending_xxx_export_ 并请求旧任务停止，直接返回；
-    //   * 已结束 -> 走下面的 XxxNow() 真正起线程。
-    // 旧线程的 finished 回调（QtWorkerOwner 的 on_finished）会清掉"当前任务"标记，
-    // 若此刻还有排队的请求就就地续跑 —— 这样"取消旧任务 + 立刻发起新任务"既不会
-    // 让两个线程写同一个目录，也不会在 UI 线程上等 5~30 秒。
-    bool IsFrameExportWorkerAlive() const;
-    bool IsMediaExportWorkerAlive() const;
-    void StartVideoFrameExportNow(const QString& output_dir, const QString& format,
-                                  int jpg_quality, int frame_interval);
-    void StartMediaExportNow(const exporter::ExportOptions& opt);
-    // 只请求旧线程停止(置取消标志 / 断开信号 / 不限时地"看一眼"是否已结束),
-    // 绝不阻塞等待。排队请求由它保留; 用户主动取消请走 CancelXxxExport()。
-    void RequestStopFrameExport();
-    void RequestStopMediaExport();
+    // 导出的实际启动 / 排队 / 代际 / 取消全部在 ExportController 里
+    // （见 core/player/ExportController.h），本类不保留任何导出状态。
 
     // PlaybackSession 的回调入口: 解码线程在 demux / 解码 / 定位 / 播完的时机会调进来,
     // 由 MediaPlayer 决定"要不要发分析信号、要不要计数"。详见 core/player/PlaybackSession.h。
@@ -279,11 +265,9 @@ private:
     void OnPlaybackSeekDone(double target_ms, model::SeekMode mode);
     void OnPlaybackEndOfStream();
 
-    // 后台任务 slot 名: 容器结构分析 / 抽帧 / 媒体导出。
+    // 后台任务 slot 名: 容器结构分析（抽帧 / 媒体导出的两个 slot 在 ExportController 里）。
     // 同一 slot 上永远只有一个任务在跑(见 core/task/TaskManager.h)。
     static constexpr const char* kSlotContainerStructure = "container-structure";
-    static constexpr const char* kSlotFrameExport = "frame-export";
-    static constexpr const char* kSlotMediaExport = "media-export";
 
     // 画面质量 / 视觉缺陷: 按采样档位抽取解码帧 -> 降采样 -> 投递分析器
     void FeedVisualDefectFrame(const AVFrame* frame, double timestamp_seconds, bool audio_silent);
@@ -328,43 +312,15 @@ private:
     analyzer::VisualDefectAnalyzer visual_defect_analyzer_;
     StreamInfoExtractor stream_info_extractor_;
     AudioVisualizer audio_visualizer_;
-    // 抽帧 / 媒体导出的 worker 线程全部归 export_workers_ 所有:
-    // 取消超时也不许丢句柄(丢弃 = 宿主析构时 QThread 还在跑 = 崩溃),
-    // 见 core/qt/QtWorkerOwner.h。下面两组裸指针只是"当前任务"的标记,
-    // 线程结束后由 finished 回调清空, 所有权不在它们身上。
-    qt::QtWorkerOwner export_workers_;
-
-    QThread* frame_export_thread_ = nullptr;
-    VideoFrameExporter* frame_exporter_ = nullptr;
-    // 每次发起抽帧导出自增的代际号: 转发信号时只接受当前代际,
-    // 旧任务已排队到 UI 线程的终态信号(进度/完成/取消/错误)会因此被丢弃, 不会串到新任务。
-    quint64 frame_export_gen_ = 0;
-
-    // 排队的导出请求（旧任务线程还没退出时用）。用 optional 而非裸指针:
-    // 无请求、有请求、被覆盖都只有一处状态，不存在"忘了置空"。
-    struct PendingFrameExport {
-        QString url;          // 发起时打开的媒体: 续跑前若已换文件, 本次请求作废
-        QString output_dir;
-        QString format;
-        int jpg_quality = 90;
-        int frame_interval = 1;
-    };
-    std::optional<PendingFrameExport> pending_frame_export_;
-    std::optional<exporter::ExportOptions> pending_media_export_;
-    // 析构开始后不再续跑排队请求: 此时线程正在被 StopAll 收尾，
-    // 若 finished 回调又起一个新线程，就等于在析构途中往 export_workers_ 里塞新 Entry。
-    bool export_shutdown_ = false;
-
     // 后台任务统一调度: 任务 ID / 取消标志 / 终态 / 过期结果丢弃。
     // 容器结构分析走它的受管线程; 抽帧与媒体导出的 worker 是 QObject(要发进度信号),
     // 仍留在 QThread 上, 但生命周期(Begin/End/Cancel)也登记在这里。
     task::TaskManager task_manager_;
 
-    // 音视频导出 (后台线程; 线程本身同样归 export_workers_ 所有)
-    QThread* media_export_thread_ = nullptr;
-    exporter::MediaExporter* media_exporter_ = nullptr;
-    // 同 frame_export_gen_: 媒体导出信号只接受当前代际, 防止旧任务排队信号串到新任务。
-    quint64 media_export_gen_ = 0;
+    // 抽帧 / 音视频导出的全部编排（发起、排队、代际、取消、worker 线程生命周期）
+    // 住在 ExportController 里，本类只转发入口与信号。
+    // 必须声明在 task_manager_ **之后**: 构造时把它的引用交给控制器, 而成员按声明顺序初始化。
+    ExportController export_controller_;
 
     // 分析索引/状态
     int analysis_frame_counter_ = 0;
