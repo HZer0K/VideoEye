@@ -193,8 +193,8 @@ RealtimeAnalysisController 对应的是**还没搬走的播放回调**（下面�
 1) chore(docs): P2 重构评审                                 ✔ 073cf45
 2) refactor(analysis): 终端态收口 + 拆 AnalysisInputSession   ✔ aad97a9
 3) refactor(player): 拆 ExportController                    ✔ ce2abb2
-4) refactor(analysis): 拆 AnalysisResultAssembler + streaming 路径
-5) refactor(analysis): 拆 AnalysisPipeline
+4) refactor(analysis): 拆 AnalysisResultAssembler + 清单路径  ✔ f05509b
+5) refactor(analysis): 拆 AnalysisPipeline                  ← 下一步（收益最大、改动最密）
 6) refactor(analysis): 拆 PacketScanLoop
 7) refactor(player): 拆 ContainerInspectionController → RealtimeAnalysisController → OpenController
 8) chore(ui): 删 AnalysisFacade::SetResult，给 ApplySceneChanges 补约束注释
@@ -207,6 +207,11 @@ RealtimeAnalysisController 对应的是**还没搬走的播放回调**（下面�
 | A0 终端态收口 | `AnalysisTerminalState.{h,cpp}`：`AnalysisCallbacks` + `MarkFailed` / `Notify*` / `ResultSink`；`AnalysisEngine.h` 仍 include 它，调用方无感 | ctest 45/45 |
 | A1 `AnalysisInputSession` | `AnalysisEngine.cpp` 1251 → 1037，`Run()` 829 → ~615；`Open()` 返回 `Outcome{Ok,Failed,Cancelled}`，失败终态在会话里写进 result，引擎只发回调 | 构建 EXIT=0、ctest 45/45、check_layering OK |
 | M1 `ExportController` | `MediaPlayer.cpp` 1619 → 1291，`.h` 393 → 349；10 个成员 + 7 个私有方法 + 4 个入口实现搬走；对外 API 与 10 条信号契约一字未改 | 构建 EXIT=0、ctest 45/45、check_layering OK |
+| A2 `AnalysisResultAssembler` | 8 个 `FinalizeXxx()` + `Finish()`；`ScanBucket` 提到汇编器头（生产者和消费者都要用） | ctest 45/45 |
+| A5 `StreamingManifestScan` | 清单路径整体搬走；三处手写取消收尾换成 `NotifyCancelled()` | ctest 45/45 |
+
+当前 `AnalysisEngine.cpp` **830 行**（起点 1251），`MediaPlayer.cpp` **1291 行**（起点 1619）。
+`Run()` 剩下的两块就是 A3（六个分析器的创建 + 逐包分发）与 A4（读包循环本体）。
 
 ### 搬运时踩到的两个坑（后面几片照着避）
 
