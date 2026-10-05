@@ -21,7 +21,9 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -256,6 +258,19 @@ Outcome AnalyzeOnce(const QString& path, const std::shared_ptr<std::atomic<bool>
     return o;
 }
 
+// 睡掉大段、末段自旋: sleep_for 在 Windows 上默认带着 ~15ms 的粒度与超调, 那 15ms 直接
+// 决定了"取消点必须离解析结束多远" —— 尾部最后那两步(提取流信息 / 计数递归)一共也就
+// 十几毫秒, 用 sleep_for 根本挤不进去。末段改成自旋把超调压到微秒级, 探测点才敢贴着
+// 解析末尾落。
+void WaitUntilDeadline(const std::chrono::steady_clock::time_point& deadline) {
+    constexpr auto kSpinWindow = std::chrono::milliseconds(3);
+    const auto now = std::chrono::steady_clock::now();
+    if (deadline - now > kSpinWindow) std::this_thread::sleep_for(deadline - now - kSpinWindow);
+    while (std::chrono::steady_clock::now() < deadline) {
+        /* 自旋逼近, 不用 yield: yield 在 Windows 上可能让出整个时间片 */
+    }
+}
+
 // 先起分析线程, 等它真的开始跑之后过 delay_ms 再置位 —— 这样取消一定落在
 // 入口守卫之后、解析结束之前, 而不是命中守卫(那等于没测到任何分发路径)。
 Outcome AnalyzeAndCancelMidway(const QString& path, int delay_ms) {
@@ -268,27 +283,82 @@ Outcome AnalyzeAndCancelMidway(const QString& path, int delay_ms) {
     });
     while (!started.load(std::memory_order_acquire))
         std::this_thread::yield();
-    std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+    WaitUntilDeadline(std::chrono::steady_clock::now() + std::chrono::milliseconds(delay_ms));
     cancel->store(true, std::memory_order_release);
     worker.join();
     return o;
 }
 
-// 取消点的取值(对照耗时的百分比)。
+// ---------------------------------------------------------------------------
+// 取消点怎么定: 不再猜百分比, 改成"每一发自己证明取消确实落在解析中途"
 //
-// 两个落点: 早(10%) + 一个由调用方给的晚落点。
+// 原来那个 90% 为什么会偶发变红: 对照组是这批里的第一次解析(要付冷读 + 堆增长的代价),
+// 被取消的那一发跑在它后面, 文件已经进了页缓存, 实际耗时比对照组短一截 —— 于是
+// "对照耗时的 90%"有可能整发都落在解析结束之后, ok 就变成 true。调百分比压不住:
+// 机器越空闲, 缓存命中带来的差异越明显。
 //
-// 不能只测早落点的原因: 每条路径里最早那个阶段(EbmlAnalyzer / Mp4BoxAnalyzer /
-// 清单读取自己的循环)本来就有取消检查, 取消落在那里即使修复前也能正确中断 ——
-// 只测一个早点等于什么都没测。
+// 现在让每一发自证: 取消点 delay 与这次解析自己的耗时 elapsed 是**同一次运行**里量出来
+// 的两个数, delay 明显小于 elapsed 就说明取消标志是在解析还在跑的时候置上的 —— 这种
+// 探测必须返回 false, 否则就是某个阶段漏了取消检查。反过来 delay 已经贴近/超过 elapsed
+// 说明解析先跑完了, 这一发不作数(跳过, 不算失败)。
 //
-// 早落点固定 10%, 晚落点按路径给: 耗时随样本规模线性变化, 所以按实测耗时折算
-// (而不是写死毫秒)才能同时保证"越过入口守卫"与"解析还没跑完"。
-constexpr int kEarlyFractionPercent = 10;
+// 光"落在中途"还不够: 若所有探测都只落在头部解析器自己的循环里(Mp4BoxAnalyzer /
+// EbmlAnalyzer / 清单读取), 那一阶段本来就有检查, 修复前后都能中断 —— 等于什么都没测。
+// 所以还要用结果里的**进度痕迹**要求至少一发进到了尾部深处(提取流信息 / 建树 / 计数递归)。
+//
+// 深部这一发只能靠二分去捞: 实测 EBML 的尾部只占整条解析的 1/8 左右, 线性扫描的点大概率
+// 全落在头部, 拿百分比硬撞撞不进去。谓词"进到尾部"对延迟单调(取消得越晚, 解析走得越深)。
+//
+// 覆盖边界(实测, 别指望这套能测到更深处): EBML 最后两步"提取流信息 / 计数递归"加起来
+// 只占整条解析的约 2%, 而同一样本连跑两次的收尾时刻能差 10% —— 定位误差比要测的窗口还
+// 大, 任何按时间落点的办法都进不去。以前那个 90% 之所以"看起来测到了", 只是偶尔撞进去,
+// 它变红也多半是这个原因而不是代码有问题。要真正锁住那两步, 得给解析器加进度回调之类的
+// 测试接缝, 让取消能在确定的阶段边界上触发 —— 那是另一件事, 这里不做。
+// ---------------------------------------------------------------------------
+
+struct Probe {
+    long long delay_ms = 0;
+    Outcome outcome;
+};
+
+// 取消确实是在解析还在跑的时候置上的?
+//   ok=false  -> 只可能是被中断(对照组已证明样本本身能解析完)
+//   ok=true   -> 得靠 delay 与 elapsed 比。余量取 10ms 与 1.5% 的大者: 最后一步之后
+//                (summary 拼装到 return 之间)确实没有取消检查, 加上收尾本身的抖动,
+//                太小会把那一小段算成漏检而误报; 太大则把尾部最后那两步整个划到"不作数"
+//                里, 能测的洞就少了。
+bool LandedMidParse(const Probe& p) {
+    if (!p.outcome.ok) return true;
+    const long long margin = std::max<long long>(10, p.outcome.elapsed_ms * 3 / 200);
+    return p.delay_ms + margin < p.outcome.elapsed_ms;
+}
+
+// 进度痕迹谓词: 为真表示这一发已经越过头部解析器进到尾部, 而不是还卡在头部自己的循环里。
+// 判据取**外层 result 的进度**, 不取解析器自己那份 detail: detail 是边解析边填的, 取消
+// 在半路也会留下残骸; 而 element_tree / streaming_package 只有头部整段成功之后才被赋值
+// (比如 EbmlAnalyzer 是解析完了才 result.element_tree = root.children)。
+using DeepEnough = std::function<bool(const model::ContainerStructureResult&)>;
 
 // 四条路径共用的断言
+void ExpectNoResult(const Outcome& o, model::ContainerFormat expected, const char* label,
+                    const char* when) {
+    EXPECT_FALSE(o.ok) << label << "/" << when << ": 取消之后 Analyze 必须返回 false";
+    EXPECT_FALSE(o.result.valid) << label << "/" << when << ": 取消之后绝不能产出有效结果";
+    // format 还等于预期值, 同时证明两件事: 取消确实发生在格式分派之后(越过入口
+    // 守卫), 且这条路径没有回退 FFmpeg —— 回退成功会把 format 改成 FFmpeg_Generic。
+    EXPECT_EQ(o.result.format, expected) << label << "/" << when << ": 取消后不得回退 FFmpeg";
+    EXPECT_FALSE(o.result.error_message.empty())
+        << label << "/" << when << ": 取消必须给出可读的说明";
+}
+
+// @param deep_enough 尾部深处的进度痕迹谓词, 用来证明扫描确实覆盖到了那几步。
 void ExpectCancelPath(const QString& path, model::ContainerFormat expected, const char* label,
-                      int late_percent = 60) {
+                      const DeepEnough& deep_enough) {
+    // 对照组之前先空跑一次把页缓存与堆预热: 少了这一句, 对照组要付冷读的代价而系统性
+    // 偏长, 后面按它折算出来的取消点就会整体往后飘(这正是 90% 那个点偶尔飘出解析末尾
+    // 的原因)。
+    AnalyzeOnce(path, nullptr);
+
     // 对照组: 不取消必须成功。少了这一句, 后面那个 false 完全说明不了问题 ——
     // 样本本身解析失败也会返回 false。
     const Outcome control = AnalyzeOnce(path, nullptr);
@@ -296,24 +366,75 @@ void ExpectCancelPath(const QString& path, model::ContainerFormat expected, cons
     ASSERT_TRUE(control.result.valid);
     ASSERT_EQ(control.result.format, expected);
 
-    for (const int percent : {kEarlyFractionPercent, late_percent}) {
-        // 取消点按对照耗时折算: 既保证越过入口守卫, 也保证解析还没跑完。
-        const long long delay_ms = std::max<long long>(1, control.elapsed_ms * percent / 100);
-        const Outcome cancelled = AnalyzeAndCancelMidway(path, static_cast<int>(delay_ms));
+    std::string trace;
+    int mid_parse = 0;         // 已证明落在中途的探测数
+    int deep_mid_parse = 0;    // 其中进到尾部深处、且确实落在中途的探测数
 
-        EXPECT_FALSE(cancelled.ok) << label << ": 取消之后 Analyze 必须返回 false";
-        EXPECT_FALSE(cancelled.result.valid)
-            << label << ": 取消之后绝不能产出有效结果(耗时对照 " << control.elapsed_ms
-            << "ms, 取消点 " << percent << "% = " << delay_ms << "ms)"
-            << (cancelled.ok ? " —— 若这里显示 ok=true, 说明取消到达时解析已经跑完,"
-                               "先确认机器负载再判定代码有问题"
-                             : "");
-        // format 还等于预期值, 同时证明两件事: 取消确实发生在格式分派之后(越过入口
-        // 守卫), 且这条路径没有回退 FFmpeg —— 回退成功会把 format 改成 FFmpeg_Generic。
-        EXPECT_EQ(cancelled.result.format, expected) << label << ": 取消后不得回退 FFmpeg";
-        EXPECT_FALSE(cancelled.result.error_message.empty()) << label << ": 取消必须给出可读的说明";
+    auto run = [&](long long delay_ms) {
+        Probe p;
+        p.delay_ms = std::max<long long>(1, delay_ms);
+        p.outcome = AnalyzeAndCancelMidway(path, static_cast<int>(p.delay_ms));
+        trace += "    " + std::to_string(p.delay_ms) + "ms -> " +
+                 (p.outcome.ok ? "解析跑完了" : "被中断") + " (本次耗时 " +
+                 std::to_string(p.outcome.elapsed_ms) + "ms)\n";
+        if (!LandedMidParse(p)) return p;  // 取消到得太晚, 这一发不作数
+        ++mid_parse;
+        if (deep_enough(p.outcome.result)) ++deep_mid_parse;
+        ExpectNoResult(p.outcome, expected, label, "取消");
+        return p;
+    };
+
+    // 基准耗时必须取"探测模式下"的: 派一个取消点远在解析结束之后的探测, 它必然跑完,
+    // 它自己量出来的 elapsed 就是这种模式下的一条完整耗时。对照组那条是在主线程里跑的,
+    // 实测比工作线程里跑的慢约 10% —— 拿它当基准, 尾部最后那两步(提取流信息 / 计数递归)
+    // 会整个落到"解析已结束"里被判成不作数, 最深的洞就没人看了。
+    const Probe full = run(control.elapsed_ms * 2);
+    ASSERT_TRUE(full.outcome.ok) << label << ": 取消点远在解析结束之后时解析必须跑完。\n" << trace;
+    const long long full_ms = full.outcome.elapsed_ms;
+
+    // 1) 粗扫: 从头到尾都得被中断。
+    for (const int percent : {20, 45, 70, 85}) {
+        run(full_ms * percent / 100);
     }
+    // 2) 贴着解析末尾补几点: 尾部最后那两步(提取流信息 / 计数递归)最靠后, 只有贴着落才
+    //    进得去。收尾时刻 run-to-run 能差 10%, 一次估不准 —— 凡是"取消到得太晚"的探测,
+    //    就用它实测出来的耗时当新基准再往前贴一次, 逐轮逼近。
+    long long est = full_ms;
+    for (int i = 0; i < 5; ++i) {
+        const long long back_ms = 15 + 20 * i;  // 15 / 35 / 55 / 75 / 95ms
+        if (est <= back_ms + 1) break;
+        const Probe p = run(est - back_ms);
+        // 被中断 -> 这一发有效, 继续往更深处贴; 落在中途却跑完 -> run() 已经报错, 收工;
+        // 取消到得太晚 -> 用本次实测收缩基准。
+        if (p.outcome.ok && !LandedMidParse(p)) est = p.outcome.elapsed_ms;
+    }
+
+    // 3) 二分往深处捞。收敛过程中凡是谓词为真的探测都是深部覆盖点。上界用基准耗时:
+    //    到那儿解析肯定跑完了, 谓词必为真。
+    long long lo = 0;
+    long long hi = full_ms;
+    for (int i = 0; i < 10 && lo < hi; ++i) {
+        const long long mid = lo + (hi - lo) / 2;
+        if (mid <= lo) break;
+        const Probe p = run(mid);
+        if (deep_enough(p.outcome.result)) hi = mid;
+        else lo = mid;
+    }
+
+    EXPECT_GE(mid_parse, 3) << label << ": 落在解析中途的探测太少(基准耗时 " << full_ms
+                            << "ms), 样本规模需要调大。\n" << trace;
+    EXPECT_GE(deep_mid_parse, 1)
+        << label << ": 没有一发取消既落在解析中途、又进到尾部深处 —— 头部解析器自己的循环"
+                    "本来就有检查, 只测到它等于什么都没测。调大样本规模, 别放宽判定。\n"
+        << trace;
 }
+
+// 尾部痕迹(MP4 / EBML): 通用结构树由头部解析器成功之后的建树阶段填, 树非空 = 已越过
+// 头部解析器(Mp4BoxAnalyzer / EbmlAnalyzer), 后面是建树 / 提取流信息 / 计数递归。
+bool TreeStarted(const model::ContainerStructureResult& r) { return !r.element_tree.empty(); }
+
+// 尾部痕迹(流媒体): 清单阶段的产物被置为有效 = 已越过清单解析, 后面是分片校验 / 建树。
+bool ManifestDone(const model::ContainerStructureResult& r) { return r.streaming_package.valid; }
 
 }  // namespace
 
@@ -323,23 +444,24 @@ TEST(ContainerCancelPathTest, Mp4CancelYieldsNoResult) {
     const fs::path dir = MakeTempDir("mp4");
     const fs::path path = dir / "big.mp4";
     ASSERT_TRUE(WriteBytes(path, MakeMp4(50000)));
-    ExpectCancelPath(QString::fromStdString(path.string()), model::ContainerFormat::MP4, "MP4");
+    ExpectCancelPath(QString::fromStdString(path.string()), model::ContainerFormat::MP4, "MP4",
+                     TreeStarted);
 }
 
 // --- MKV / WebM (EBML) ---
 //
 // 这一条锁的就是本轮补的三个洞: ExtractEbmlStreamInfo 拿到令牌、valid 挪到最后、
 // 元素计数递归里加取消检查。取消只要落在"建树之后"的任何一步, 以前都会照样出结果。
+//
+// 取消点用二分定位(见 FindTailCancel), 不再写死百分比: 这条路径实测 EbmlAnalyzer 独占
+// 约 3/4 耗时, 尾部(建树 / 提取流信息 / 计数递归)只占约 1/4, 写死百分比时窗口太窄,
+// 机器一空闲就会整个飘到解析结束之后 —— 那时用例红的不是代码, 是计时。
 TEST(ContainerCancelPathTest, EbmlCancelYieldsNoResult) {
     const fs::path dir = MakeTempDir("mkv");
     const fs::path path = dir / "big.mkv";
     ASSERT_TRUE(WriteBytes(path, MakeMkv(20000, 20000)));
-    // 晚落点取 90% 是这条路径独有的: 实测 EbmlAnalyzer 独占约 3/4 的耗时, 取消落在
-    // 10% / 60% 时**修复前后都能中断**(那一阶段本来就有检查), 只有落在建树之后
-    // 的尾部才分得出好坏 —— 而 EBML 的尾部(建树 / 提取流信息 / 计数递归)占约 1/4,
-    // 90% 正好稳稳落进去。流媒体那两条路径的收尾太短, 90% 会撞到"解析已结束",
-    // 所以它们用默认的 60%。
-    ExpectCancelPath(QString::fromStdString(path.string()), model::ContainerFormat::MKV, "MKV", 90);
+    ExpectCancelPath(QString::fromStdString(path.string()), model::ContainerFormat::MKV, "MKV",
+                     TreeStarted);
 }
 
 // --- HLS ---
@@ -348,7 +470,7 @@ TEST(ContainerCancelPathTest, HlsCancelYieldsNoResult) {
     const fs::path dir = MakeTempDir("hls");
     ASSERT_TRUE(WriteHlsPackage(dir, 4, 3000));
     ExpectCancelPath(QString::fromStdString((dir / "master.m3u8").string()),
-                     model::ContainerFormat::HLS, "HLS");
+                     model::ContainerFormat::HLS, "HLS", ManifestDone);
 }
 
 // --- DASH ---
@@ -357,7 +479,8 @@ TEST(ContainerCancelPathTest, DashCancelYieldsNoResult) {
     const fs::path dir = MakeTempDir("dash");
     const fs::path path = dir / "index.mpd";
     ASSERT_TRUE(WriteText(path, MakeDashMpd(20000)));
-    ExpectCancelPath(QString::fromStdString(path.string()), model::ContainerFormat::DASH, "DASH");
+    ExpectCancelPath(QString::fromStdString(path.string()), model::ContainerFormat::DASH, "DASH",
+                     ManifestDone);
 }
 
 // --- 关闭流程: 进门就是取消态 ---
