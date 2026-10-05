@@ -41,6 +41,11 @@ Makefile
 *.obj
 *.lib
 *.exp
+# MSVC 调试符号。构建系统在 link 时若没有显式指定 /pdb:<path>，会把 vc140.pdb
+# 直接落在**当前工作目录** —— 也就是仓库根，躲过了下面那条 `build/`。
+*.pdb
+*.ilk
+*.idb
 
 # Qt 生成文件
 .moc

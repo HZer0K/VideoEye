@@ -14,68 +14,15 @@
 #include <unordered_map>
 #include <vector>
 
+#include "core/domain/task/TaskProtocol.h"
+
 namespace videoeye {
 namespace task {
 
-using TaskId = std::uint64_t;
-
-// 任务终态。Idle/Running 是过程态, 其余三种是一旦写入就不再变化的终态。
-enum class TaskState {
-    Idle,      // 该 slot 上当前没有任务
-    Running,   // 运行中
-    Succeeded, // 终态: 成功
-    Failed,    // 终态: 出错(含异常逃逸)
-    Canceled,  // 终态: 被取消 / 被同 slot 的新任务取代
-};
-
-bool IsTerminalState(TaskState state);
-
-// 关闭阶段能不能"放弃"这个任务。这个区分是 WaitForAll() 能否给出**整个函数**的耗时
-// 上限的前提 —— 详见 WaitForAll 的注释。默认 Cooperative, 即沿用"必须 join"的保守策略。
-enum class TaskKind {
-    // 协作式可取消任务: 任务体会轮询取消令牌, 且不会长时间停在第三方阻塞调用里。
-    // 关闭时 TaskManager **一定会** join 它 —— join 是唯一能证明它已经不再访问外部对象的
-    // 手段, 所以契约被破坏时宁可多等, 也不冒悬空访问的风险。
-    Cooperative,
-
-    // 可能卡在第三方阻塞调用上的任务: FFmpeg 的网络 IO、异常设备读取等。这类调用即使
-    // 装了 AVIOInterruptCB 也不保证一定响应 —— 比如回调只在下一个网络包到来时才被检查。
-    // 关闭时在预算内等不到它就 **放弃** 这个线程(detach), 不再拖住整个关闭流程。
-    //
-    // 代价是一条更严格的生命周期约定, 调用得遵守, 否则 detach 之后就是悬空访问:
-    //   * 任务体只能按值 / shared_ptr 捕获依赖, 不得持有任何可能在它结束前销毁的裸引用;
-    //   * 不得依赖"任务一定会被 join"这件事做任何清理;
-    //   * 结果发布必须自己判过期(TaskManager::IsCurrent / QPointer 之类的存活判定)。
-    BlockingIo,
-};
-
-// 取消令牌: 由任务体在循环里轮询。
-//
-// 令牌内部持有一份 shared_ptr 的取消标志, 因此即使 TaskManager 先于任务线程析构,
-// 任务体调用 IsCanceled() 仍然是安全的(析构前会把所有标志置位)。
-class CancelToken {
-public:
-    CancelToken() = default;
-    explicit CancelToken(std::shared_ptr<std::atomic<bool>> flag) : flag_(std::move(flag)) {
-    }
-
-    bool IsCanceled() const {
-        return flag_ && flag_->load(std::memory_order_acquire);
-    }
-    explicit operator bool() const {
-        return static_cast<bool>(flag_);
-    }
-
-    // 暴露底层取消标志（shared_ptr 保活）。供调用方把指针交给 FFmpeg 的
-    // AVIOInterruptCB.opaque，使 avformat_open_input 等阻塞 IO 在 CancelAll()
-    // 之后能及时中断（否则关闭流程会在 join 受管线程时挂死）。无令牌时返回空。
-    std::shared_ptr<std::atomic<bool>> flag() const {
-        return flag_;
-    }
-
-private:
-    std::shared_ptr<std::atomic<bool>> flag_;
-};
+// 协议类型(TaskId / TaskState / TaskKind / CancelToken / TaskHandle)住在
+// core/domain/task/TaskProtocol.h —— 分层上只允许 infrastructure 依赖 core/*,
+// 若把协议留在本文件, 想接入这套约定的 core/qc、core/qt 就**看不见**它, 统一无从谈起。
+// 这里只承载唯一的调度实现。
 
 // 后台任务调度约定: 每个逻辑位置(slot)同时只允许一个任务在跑,
 // 并统一提供「任务 ID / 取消标志 / 终态结果 / 过期结果丢弃」。
@@ -147,6 +94,17 @@ public:
 
     // 取该 slot 当前任务的取消令牌(供自带线程的任务体轮询)。
     CancelToken Token(const std::string& slot) const;
+
+    // 与 Begin() 同一语义, 但把取消令牌一并返回 —— 调用方自带线程(QThread / 自建
+    // std::thread)时用它就不必再走一次 Token(slot), 顺便也把"这是一次完整任务"这件事
+    // 在调用点写清楚。handle 是这份任务在宿主里的唯一凭证, 任务体认的是它, 不是调用方
+    // 自己另起的那套标志。
+    TaskHandle BeginHandle(const std::string& slot, int wait_for_previous_ms = 0,
+                            TaskKind kind = TaskKind::Cooperative);
+
+    // 任务体收尾时用手柄归还终态(与 End(slot, id, terminal) 同语义; id 对不上 slot 当前
+    // 任务时静默丢弃 —— 也就是"这个任务已经被取代"或"句柄已经失效")。
+    void EndHandle(const TaskHandle& handle, TaskState terminal);
 
     // 任务体收尾时上报终态。
     //

@@ -22,7 +22,16 @@ FFMPEG = re.compile(r'#\s*include\s*<(libav|libsw)')
 RULES = {
     "core/domain": ["core/analysis", "core/media", "core/player", "core/qc",
                     "core/reporting", "core/ffmpeg", "core/qt"],
-    "infrastructure": ["core/"],
+    # infrastructure 可以依赖 core/domain, 但不能碰 core 里的业务层。
+    #
+    # 这条例外是这次改出来的(2026-10-05): 后台任务的协议(TaskId / TaskState / TaskKind /
+    # CancelToken / TaskHandle)原先定义在 infrastructure/concurrency/TaskManager.h 里,
+    # 可分层规则只允许 infrastructure 单向依赖 core/* —— 于是 QcRunner(core/qc)、
+    # QtAnalysisController(core/qt)这两处最该接入统一协议的地方**看不见**这个协议。
+    # 把协议下沉到 core/domain/task 之后, 方向就闭合了: 协议在叶子层, 谁都能用;
+    # infrastructure 只保留调度实现。所以禁区里去掉 core/domain, 其余业务层照旧。
+    "infrastructure": ["core/analysis", "core/media", "core/player", "core/qc",
+                       "core/reporting", "core/ffmpeg", "core/qt"],
     # 叶子模块: 只依赖 FFmpeg 公共头。这里逐层列名而不是写 "core/" ——
     # 模块自己的头文件也长着 "core/..." 前缀，写 "core/" 会把自引用算成违规。
     "core/ffmpeg_io": ["core/domain", "core/media", "core/analysis", "core/player",
@@ -31,6 +40,8 @@ RULES = {
     "core/media": ["core/analysis", "core/player", "core/qc", "core/reporting",
                    "core/ffmpeg", "core/qt"],
     "core/analysis": ["core/player", "core/qc", "core/reporting", "core/ffmpeg", "core/qt"],
+    # 不需要把 infrastructure/ 列进禁区: 其它 core 层都没列, 本来就允许依赖它 ——
+    # core/qc 既用 infrastructure/logging, 也用 infrastructure/concurrency(TaskManager)。
     "core/qc": ["core/player", "core/reporting"],
     "core/reporting": ["core/player", "core/analysis", "core/qt"],
     "core/ffmpeg": ["core/analysis", "core/player", "core/qc"],

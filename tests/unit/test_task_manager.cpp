@@ -5,6 +5,7 @@
 //   - 并发上限
 //   - 析构等待在跑的任务收尾
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -588,4 +589,270 @@ TEST(TaskManagerTest, ConcurrentRegistrationFromManyThreadsStaysConsistent) {
     mgr.WaitForAll(5000);
     EXPECT_EQ(mgr.RunningCount(), 0u) << "所有线程收尾之后并发占用必须归零(孤儿也要回收)";
 }
+
+
+// 压测用的共享收集盒: 任务外侧(调用方)和任务内侧(任务体)都往里记 id, 最后在这里比对。
+//
+// 为什么必须是 shared_ptr, 不能让任务体直接引用 TEST 栈上的容器 ——
+// BlockingIo 任务在关闭超时时会被放弃(detach), 那时候**任务体比调用方活得久**。
+// 任务体若捕获 TEST 栈上的 vector, TEST 一返回那些引用就是悬垂的: 压测表现为随机
+// exit 139, 而且崩溃点落在任务体执行期间, 与被测代码本身的缺陷长得一模一样, 极难区分。
+// 按 P1-3 的约定, 后台任务只能携带"自己持有的 shared state"; 按值捕获 shared_ptr
+// 就属于这一类 —— 谁持有盒子谁负责保活, 任务被放弃也照样安全。
+struct IdRelay {
+    std::mutex m;
+    std::vector<TaskId> returned;  // 任务外侧: RunWithResult 的返回值
+    std::vector<TaskId> body;      // 任务内侧: 任务体实际收到的 id
+    std::atomic<int> seen{0};      // 任务体跑过的次数
+};
+
+// --- Begin() 返回的任务 id 必须属于"发起它的那次调用" ---
+//
+// 回归: Begin() 原来在**解锁之后**才 `return s->current_id.load(...)`。同一个 slot 被
+// 两个线程同时登记时, 后一个可以在前一个读到返回值之前把 id 推进一格 —— 于是前一个
+// 拿到的是**别人的** id。后果不是"返回了个较大的数"这么简单: 那份 id 会一路带到
+// End() / IsCurrent(), 于是旧任务的终态被判成"当前任务写的"、新任务的终态被判成过期,
+// 整个 slot 的任务归属永久错位。下面三条用例分别压住"唯一性""id 与回调一致""终态不串台"。
+
+// 一轮屏障: 让 N 个线程几乎同时冲进同一段临界区。
+//
+// 为什么需要它: Begin() 那个 id 竞态的窗口只有"解锁后到 return 前"这一瞬。八个线程
+// 各自跑各自的, 真正同时卡进这个窗口的概率极低 —— 实测过, 不加屏障时把 Begin 改回
+// 有缺陷的写法(锁外回读 current_id), 连跑 30 次一条用例都不红, 等于没守住。
+// 屏障把"各跑各的"变成"同时冲", 这个窗口才会反复被真实撞上。
+class Phase {
+public:
+    explicit Phase(int n) : n_(n) {}
+
+    void Sync() {
+        const int gen = generation_.load(std::memory_order_acquire);
+        if (count_.fetch_add(1, std::memory_order_acq_rel) == n_ - 1) {
+            generation_.fetch_add(1, std::memory_order_release);
+            count_.store(0, std::memory_order_release);
+            return;
+        }
+        while (generation_.load(std::memory_order_acquire) == gen)
+            std::this_thread::yield();
+    }
+
+private:
+    int n_;
+    std::atomic<int> count_{0};
+    std::atomic<int> generation_{0};
+};
+
+// 1) 多线程并发打同一个 slot: 每次返回的非 0 id 必须两两不同。
+TEST(TaskManagerTest, ConcurrentBeginOnOneSlotReturnsUniqueIds) {
+    constexpr int kThreads = 8;
+    constexpr int kRounds = 40;
+    constexpr int kWaves = 4;
+    // 预算给足, 尽量让每一轮都能登记成功 —— 一旦走进"并发已满"的拒绝分支, 那次_begin
+    // 就不会分配 id, 用例压的就不是这里要压的登记路径了。
+    TaskManager mgr(4096);
+    const std::string slot = "unique-ids";
+
+    std::mutex ids_mutex;
+    std::vector<TaskId> ids;
+    std::atomic<int> accepted{0};
+
+    for (int w = 0; w < kWaves; ++w) {
+        Phase barrier(kThreads);
+        std::vector<std::thread> starters;
+        starters.reserve(kThreads);
+        for (int t = 0; t < kThreads; ++t) {
+            starters.emplace_back([&, t]() {
+                const std::string own = slot + "-" + std::to_string(t);
+                for (int r = 0; r < kRounds; ++r) {
+                    barrier.Sync();   // 同一轮的所有线程一起冲进 Begin
+                    const std::string use = (r % 2 == 0) ? own : slot;  // 一半落在共享 slot 上
+                    const TaskId id = mgr.Begin(use);
+                    if (id == 0)
+                        continue;
+                    {
+                        std::lock_guard<std::mutex> lk(ids_mutex);
+                        ids.push_back(id);
+                    }
+                    accepted.fetch_add(1);
+                    mgr.End(use, id, TaskState::Succeeded);
+                }
+            });
+        }
+        for (auto& th : starters)
+            th.join();
+        // 孤儿线程要等 WaitForAll 才归还并发名额, 不收一轮后面的 Begin 会被拒。
+        mgr.WaitForAll(5000);
+        EXPECT_EQ(mgr.RunningCount(), 0u) << "一轮收尾之后并发占用必须归零";
+    }
+
+    EXPECT_GT(accepted.load(), 0) << "一个任务都没登记成功, 这条用例等于没测";
+    std::sort(ids.begin(), ids.end());
+    const auto unique_end = std::unique(ids.begin(), ids.end());
+    EXPECT_EQ(static_cast<std::size_t>(unique_end - ids.begin()), ids.size())
+        << "并发登记同一 slot 时返回的 TaskId 必须两两不同, 总数 " << ids.size();
+    EXPECT_EQ(mgr.RunningCount(), 0u);
+}
+
+// 2) 调用方拿到的 id 必须是**它自己那次**任务体收到的 id。
+//
+// 这一条正对着上面那个竞态: 用错的 id 时, 集合回来的是"这个 id 从没被任何任务体见过",
+// 所以判定不依赖任何时序, 只要把所有任务体都等到跑过一遍就能断言。
+//
+// 规模与屏障是量出来的, 不是拍的。Begin() 的竞态窗口只有"解锁后到 return 前"这一瞬,
+// 八个线程各跑各的时真正撞进这个窗口的概率极低 —— **实测过**: 把 Begin 改回有缺陷的
+// 写法(锁外回读 current_id)、规模 8×30、不加屏障, 连跑 30 次零检出; 换成 16 线程 ×150 轮
+// 并加 Phase 屏障后, 同一份缺陷写法稳定 abort(exit 3), 正常实现则稳定全绿。
+// 调小这个用例的线程数 / 轮数、或删掉 Phase 屏障, 都会把它变回"看着在跑、其实没守"的摆设。
+TEST(TaskManagerTest, ConcurrentBeginReturnsIdWhoseBodyWasLaunchedWithIt) {
+    constexpr int kThreads = 16;
+    constexpr int kRounds = 150;
+    TaskManager mgr(4096);
+    const std::string slot = "id-identity";
+
+    auto relay = std::make_shared<IdRelay>();
+    Phase barrier(kThreads);
+
+    std::vector<std::thread> starters;
+    starters.reserve(kThreads);
+    for (int t = 0; t < kThreads; ++t) {
+        starters.emplace_back([&, t]() {
+            for (int r = 0; r < kRounds; ++r) {
+                barrier.Sync();   // 同一轮的所有线程一起冲进 Begin 的临界区
+                const TaskId id = mgr.RunWithResult(
+                    slot,
+                    // 按值捕获盒子(不是引用): 任务体可能被放弃后继续跑, 只有自己持有的
+                    // shared state 是安全的, 理由见 IdRelay 的注释。
+                    [relay](TaskId body_id, CancelToken) {
+                        {
+                            std::lock_guard<std::mutex> lk(relay->m);
+                            relay->body.push_back(body_id);
+                        }
+                        relay->seen.fetch_add(1);
+                        SleepMs(1);
+                        return TaskState::Succeeded;
+                    },
+                    0, TaskKind::BlockingIo);   // 故意不理取消: 让每次 Begin 都把上一个顶成孤儿
+                if (id == 0)
+                    continue;
+                {
+                    std::lock_guard<std::mutex> lk(relay->m);
+                    relay->returned.push_back(id);
+                }
+            }
+        });
+    }
+    for (auto& th : starters)
+        th.join();
+
+    // 调用方的列表在 starter 线程返回那一刻就定稿了; 任务体的列表要等它们真的跑过一遍。
+    std::vector<TaskId> returned_ids;
+    int registered = 0;
+    {
+        std::lock_guard<std::mutex> lk(relay->m);
+        returned_ids = relay->returned;
+        registered = static_cast<int>(returned_ids.size());
+    }
+    EXPECT_GT(registered, 0) << "一个任务都没登记成功, 这条用例等于没测";
+
+    const int limit = 20000;   // 上限只防死等, 正常情况下这轮几十轮就跑完了
+    for (int spin = 0; relay->seen.load() < registered && spin < limit; ++spin)
+        SleepMs(1);
+
+    // 两边必须是**同一个多重集**。这正是 Begin 那个竞态的判据: 调用方拿到别人的 id 时,
+    // 那个 id 从来没被任何任务体见过(或反之), 两边就对不上, 且不需要任何时序配合。
+    {
+        std::lock_guard<std::mutex> lk(relay->m);
+        std::sort(returned_ids.begin(), returned_ids.end());
+        std::sort(relay->body.begin(), relay->body.end());
+        EXPECT_EQ(returned_ids, relay->body)
+            << "调用方返回的 TaskId 必须与它自己那次任务体收到的 TaskId 完全一致";
+    }
+}
+
+// 3) 被取代的旧任务不得改写新任务的终态。
+//
+//    (a) 确定性一例: 旧任务"迟到的失败消息"在新任务收尾之后才落地;
+//    (b) 并发压测: 多线程高频取代同一 slot, 每个任务体自己报终态 ——
+//        收尾之后 slot 的终态必须仍是"最后登记的那个任务"写的。
+TEST(TaskManagerTest, SupersededTaskEndCannotOverwriteNewTerminalState) {
+    // (a)
+    {
+        TaskManager mgr;
+        const std::string slot = "stale-crosstalk";
+        const TaskId first = mgr.Begin(slot);
+        ASSERT_NE(first, 0u);
+        const TaskId second = mgr.Begin(slot);       // 取代它( Begin 会给 first 置取消标志 )
+        ASSERT_NE(second, 0u);
+        ASSERT_NE(first, second);
+
+        mgr.End(slot, second, TaskState::Succeeded); // 新任务先收尾
+        SleepMs(20);
+        mgr.End(slot, first, TaskState::Failed);     // 旧任务迟到的失败消息
+        EXPECT_EQ(mgr.State(slot), TaskState::Succeeded)
+            << "被取代的旧任务不得改写新任务的终态";
+
+        // 方向反过来同样成立: 旧任务的"成功"后到, 也不得改写新任务的 Failed。
+        const TaskId third = mgr.Begin(slot);
+        mgr.End(slot, third, TaskState::Failed);
+        SleepMs(20);
+        mgr.End(slot, second, TaskState::Succeeded);
+        EXPECT_EQ(mgr.State(slot), TaskState::Failed);
+    }
+
+    // (b)
+    {
+        constexpr int kThreads = 8;
+        constexpr int kRounds = 25;
+        TaskManager mgr(4096);   // 预算给足, 尽量不走"并发已满"的拒绝分支
+        const std::string slot = "concurrent-crosstalk";
+
+        // 记录每个调用方拿到的 id, 收尾后用来认领 slot 的终态。
+        // 用盒子而不是局部变量: 任务体可能被放弃后继续跑, 只能带自己持有的 shared state。
+        auto relay = std::make_shared<IdRelay>();
+
+        std::vector<std::thread> starters;
+        starters.reserve(kThreads);
+        for (int t = 0; t < kThreads; ++t) {
+            starters.emplace_back([&]() {
+                for (int r = 0; r < kRounds; ++r) {
+                    const TaskId id = mgr.RunWithResult(
+                        slot,
+                        [relay, r](TaskId, CancelToken) {
+                            SleepMs(1 + (r % 3));
+                            // 任务体**不**自己 End: 让 Run 收尾统一写 Succeeded。
+                            // 迟到的旧任务只能靠"补写终态"这个动作来污染, 正中要防的靶子。
+                            return TaskState::Succeeded;
+                        },
+                        0, TaskKind::BlockingIo);
+                    if (id == 0)
+                        continue;
+                    {
+                        std::lock_guard<std::mutex> lk(relay->m);
+                        relay->returned.push_back(id);
+                    }
+                }
+            });
+        }
+        for (auto& th : starters)
+            th.join();
+
+        ASSERT_GT(relay->returned.size(), 0u) << "一个任务都没登记成功, 这条用例等于没测";
+        mgr.WaitForAll(5000);
+
+        EXPECT_EQ(mgr.State(slot), TaskState::Succeeded)
+            << "每个任务都自报 Succeeded; 任何一次迟到的旧任务补写都不得改写终态";
+        EXPECT_EQ(mgr.RunningCount(), 0u);
+
+        // 终态必须属于记录在案的某个 id, 且一定是最后登记的那个。
+        const TaskId last = mgr.CurrentId(slot);
+        EXPECT_NE(last, 0u);
+        {
+            std::lock_guard<std::mutex> lk(relay->m);
+            EXPECT_NE(std::find(relay->returned.begin(), relay->returned.end(), last),
+                      relay->returned.end())
+                << "slot 的当前 id 必须是某次真实登记返回的 id";
+            EXPECT_GT(relay->returned.size(), 1u);
+        }
+    }
+}
+
 

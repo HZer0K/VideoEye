@@ -9,9 +9,7 @@
 namespace videoeye {
 namespace task {
 
-bool IsTerminalState(TaskState state) {
-    return state == TaskState::Succeeded || state == TaskState::Failed || state == TaskState::Canceled;
-}
+// IsTerminalState 是协议的一部分, 在 core/domain/task/TaskProtocol.h 里定义成 inline。
 
 // ---------------------------------------------------------------------------
 // 内部类型
@@ -187,6 +185,7 @@ TaskId TaskManager::Begin(const std::string& slot, int wait_for_previous_ms, Tas
     if (wait_for_previous_ms != 0)
         WaitForIdle(slot, wait_for_previous_ms);
 
+    TaskId own_id = 0;
     std::thread stale;
     {
         std::lock_guard<std::mutex> lk(core_->mutex);
@@ -224,14 +223,24 @@ TaskId TaskManager::Begin(const std::string& slot, int wait_for_previous_ms, Tas
 
         s->kind = kind;
         s->cancel = std::make_shared<std::atomic<bool>>(false);
-        s->current_id.store(++core_->next_id, std::memory_order_release);
+        // 直接用 ++ 的结果, 不要在锁外回读 s->current_id: 这个 id 是本次 Begin 的身份,
+        // 它的唯一性由这把锁保证, 一旦出了锁就没有别的线程再动它 —— 但**别人**会动
+        // current_id 这个成员, 所以只能在锁内取值、带出去返回。
+        own_id = ++core_->next_id;
+        s->current_id.store(own_id, std::memory_order_release);
         s->state.store(TaskState::Running, std::memory_order_release);
         s->running.store(true, std::memory_order_release);
     }
 
     if (stale.joinable())
         stale.join();
-    return s->current_id.load(std::memory_order_acquire);
+
+    // 必须返回**本次自己登记的那个 id**, 不能在解锁之后回去重读 s->current_id ——
+    // 那条路有真实的竞态窗口: 解锁后到返回前, 另一个线程若对同一个 slot 调了 Begin(),
+    // 会把 current_id 推进到它自己那格, 于是调用方拿到的是**别人的** id。此后
+    // End() / IsCurrent() 都对着新任务生效: 旧任务的结果被当成"当前", 新任务的
+    // 终态被判成过期(那条 slot 上的任务归属就永久错位了)。
+    return own_id;
 }
 
 TaskId TaskManager::Run(const std::string& slot, std::function<void(TaskId, CancelToken)> body,
@@ -359,6 +368,26 @@ TaskId TaskManager::RunBlockingIoWithResult(const std::string& slot,
                                             std::function<TaskState(TaskId, CancelToken)> body,
                                             int wait_for_previous_ms) {
     return RunWithResult(slot, std::move(body), wait_for_previous_ms, TaskKind::BlockingIo);
+}
+
+TaskHandle TaskManager::BeginHandle(const std::string& slot, int wait_for_previous_ms,
+                                    TaskKind kind) {
+    TaskHandle handle;
+    handle.id = Begin(slot, wait_for_previous_ms, kind);
+    if (handle.id == 0)
+        return handle;   // 并发已满: id 为 0 就是唯一的失败信号, cancel/slot 一律留空
+    handle.slot = slot;
+    handle.kind = kind;
+    // 必须在 Begin 之后取: Begin 会换掉 slot 上的取消标志(每次 Begin 一份新的),
+    // 取早了拿到的是上一个任务的。
+    handle.cancel = Token(slot);
+    return handle;
+}
+
+void TaskManager::EndHandle(const TaskHandle& handle, TaskState terminal) {
+    if (handle.id == 0 || handle.slot.empty())
+        return;
+    End(handle.slot, handle.id, terminal);
 }
 
 // ---------------------------------------------------------------------------
