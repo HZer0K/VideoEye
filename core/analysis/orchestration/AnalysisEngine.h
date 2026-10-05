@@ -74,13 +74,9 @@ private:
     // 只看标记又会把「刚点取消、FFmpeg 还没来得及响应」的失败误判成完成。
     bool IsCancelledExit(int ret) const;
 
-    // 流媒体清单（.m3u8 / .mpd）分支：只跑自研清单解析，不做 FFmpeg demux。
-    // 从 Run 里单独拆出来是因为这条路径完全不碰 avformat ——
-    // FFmpeg 会把清单当播放列表去发网络请求，离线 QC 既不可控也无法单测。
-    void RunStreamingManifest(const std::string& file_path,
-                              const AnalysisOptions& options,
-                              model::AnalysisResult& result,
-                              const AnalysisCallbacks& callbacks);
+    // 流媒体清单（.m3u8 / .mpd）分支已搬到 StreamingManifestScan：那条路径完全不碰
+    // avformat（FFmpeg 会把清单当播放列表去发网络请求，离线 QC 既不可控也无法单测），
+    // 由 Run() 在打开任何 IO 之前分流过去，取消标志仍传引擎这一颗。
 
     std::atomic<bool> cancel_requested_{false};
     // 仅在 Run() 执行期间非空（由 CancelSourceScope 管理），所以这里不需要额外加锁：

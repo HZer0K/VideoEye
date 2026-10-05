@@ -1,7 +1,5 @@
 #include "core/analysis/orchestration/AnalysisEngine.h"
 #include "core/analysis/codec/BitstreamAnalyzer.h"
-#include "core/analysis/streaming/DashManifestAnalyzer.h"
-#include "core/analysis/streaming/HlsManifestAnalyzer.h"
 #include "core/analysis/diagnostics/TimelineAnalyzer.h"
 // 下面这些分析器是本 cpp 真正要用到的执行者。以前是 AnalysisResult.h 顺带把它们
 // 全带进来的 —— 那个头文件现在只认 domain 的结果类型，于是"谁用谁 include"。
@@ -10,12 +8,13 @@
 #include "core/analysis/diagnostics/TimecodeAnalyzer.h"
 #include "core/analysis/quality/AudioQcAnalyzer.h"
 #include "core/analysis/quality/ColorHdrAnalyzer.h"
-#include "core/analysis/streaming/SegmentQcAnalyzer.h"
 // 打开 / 探测 / 中断 / 取消 / 容器级事实 / 流摘要 都在 AnalysisInputSession 里；
 // FFmpeg 中断回调本身住在 core/ffmpeg_io/FfmpegInterrupt.h（叶子模块），由会话去 include。
 #include "core/analysis/orchestration/AnalysisInputSession.h"
-#include "core/media/probe/FileProbe.h"
-#include "core/media/streaming/ManifestText.h"
+// 扫描跑完之后的结果归并在 AnalysisResultAssembler；流媒体清单那条独立路径在
+// StreamingManifestScan。两者都不碰 FFmpeg 上下文，只消费中间态。
+#include "core/analysis/orchestration/AnalysisResultAssembler.h"
+#include "core/analysis/orchestration/StreamingManifestScan.h"
 
 #include <algorithm>
 #include <atomic>
@@ -59,12 +58,6 @@ constexpr int kProgressMinPackets = 2000;
 bool IsStreamingManifestExtension(const std::string& ext) {
     return ext == "m3u8" || ext == "m3u" || ext == "mpd";
 }
-
-struct Bucket {
-    int64_t total_bytes = 0;
-    int64_t video_bytes = 0;
-    int64_t video_frames = 0;
-};
 
 // 把 FFmpeg 的声道位置翻译成 BS.1770 需要的角色（决定声道加权）
 model::AudioChannelRole AudioChannelRoleOf(AVChannel channel) {
@@ -239,7 +232,7 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     // 所以这里在打开任何 IO 之前就分流到自研的清单解析器。
     if (options.analyze_streaming_package && IsStreamingManifestExtension(result.file_extension) &&
         file_path.find("://") == std::string::npos) {
-        RunStreamingManifest(file_path, options, result, callbacks);
+        StreamingManifestScan::Run(file_path, options, result, callbacks, CancelSource());
         return;
     }
 
@@ -507,7 +500,7 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
 
     // ---- 逐包扫描 ----
     const double interval = (options.sample_interval_seconds > 0.0) ? options.sample_interval_seconds : 1.0;
-    std::map<int64_t, Bucket> buckets;
+    ScanBuckets buckets;
     std::vector<int64_t> frames_since_key(fmt->nb_streams, 0);
     double last_key_ts = -1.0;
     bool has_key = false;
@@ -731,7 +724,7 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
         // 逐秒桶：码率 + 帧率
         if (ts >= 0.0) {
             const int64_t bucket_index = static_cast<int64_t>(std::floor(ts / interval));
-            Bucket& bucket = buckets[bucket_index];
+            ScanBucket& bucket = buckets[bucket_index];
             bucket.video_bytes += pkt->size;
             bucket.video_frames += 1;
         }
@@ -811,226 +804,21 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
         audio_probe.Release();
     }
 
-    // ---- 汇总 ----
-    if (result.total_packets > 0) {
-        result.avg_packet_bytes = static_cast<double>(result.total_bytes) /
-                                  static_cast<double>(result.total_packets);
-    }
-    const double measured_duration = (result.duration_seconds > 0.0)
-                                         ? result.duration_seconds
-                                         : (buckets.empty() ? 0.0
-                                                            : (static_cast<double>(buckets.rbegin()->first) + 1.0) * interval);
-    if (result.overall_bitrate_bps <= 0 && measured_duration > 0.0) {
-        result.overall_bitrate_bps = static_cast<int64_t>(result.total_bytes * 8 / measured_duration);
-    }
-    for (auto& digest : result.streams) {
-        if (digest.bitrate_bps <= 0 && digest.duration_seconds > 0.0) {
-            digest.bitrate_bps = static_cast<int64_t>(digest.byte_count * 8 / digest.duration_seconds);
-        }
-        if (digest.duration_seconds <= 0.0) digest.duration_seconds = measured_duration;
-    }
-
-    const double kbps_per_byte_per_sec = 8.0 / 1000.0 / interval;
-    result.total_bitrate_kbps.name = "total_bitrate";
-    result.total_bitrate_kbps.unit = "kbps";
-    result.video_bitrate_kbps.name = "video_bitrate";
-    result.video_bitrate_kbps.unit = "kbps";
-    result.video_fps.name = "video_fps";
-    result.video_fps.unit = "fps";
-    result.total_bitrate_kbps.Reserve(buckets.size());
-    result.video_bitrate_kbps.Reserve(buckets.size());
-    result.video_fps.Reserve(buckets.size());
-    for (const auto& [index, bucket] : buckets) {
-        const double t = static_cast<double>(index) * interval;
-        result.total_bitrate_kbps.Add(t, static_cast<double>(bucket.total_bytes) * kbps_per_byte_per_sec);
-        result.video_bitrate_kbps.Add(t, static_cast<double>(bucket.video_bytes) * kbps_per_byte_per_sec);
-        result.video_fps.Add(t, static_cast<double>(bucket.video_frames) / interval);
-    }
-
-    // ---- 时间轴与同步汇总 ----
-    timeline_analyzer.Finish();
-    result.timeline = timeline_analyzer.result();
-
-    if (result.max_gop_frames == 0 && !result.gop_frame_sizes.empty()) {
-        result.max_gop_frames = *std::max_element(result.gop_frame_sizes.begin(),
-                                                  result.gop_frame_sizes.end());
-    }
-
-    // 码率与 GOP 深度分析收尾（必须在 probe.Release() 之后、发信号之前）
-    if (options.analyze_bitrate_gop && video_stream_index >= 0) {
-        result.bitrate_gop = bitrate_gop.Finish();
-        LOG_INFO("码率与 GOP 分析: frames=" + std::to_string(result.bitrate_gop.total_frames) +
-                 " gops=" + std::to_string(result.bitrate_gop.gops.size()) +
-                 " anomalies=" + std::to_string(result.bitrate_gop.anomalies.size()));
-    }
-
-    // 音频 QC 收尾（与上面共用同一次 demux）
-    if (options.analyze_audio_qc && audio_stream_index >= 0) {
-        const model::StreamDigest* audio =
-            (audio_stream_index < static_cast<int>(result.streams.size()))
-                ? &result.streams[static_cast<size_t>(audio_stream_index)]
-                : nullptr;
-        const model::StreamDigest* video = result.FirstVideoStream();
-        audio_qc.SetDurations(audio ? audio->duration_seconds : 0.0, result.duration_seconds,
-                              video ? video->duration_seconds : 0.0, video != nullptr);
-        result.audio_qc = audio_qc.Finish();
-        if (!result.audio_qc.analyzed) {
-            result.audio_qc.notes.push_back(audio_decoder_ready
-                                                ? "音频解码未产出 PCM，未执行音频 QC"
-                                                : "音频解码器打开失败，未执行音频 QC");
-        }
-        if (audio_rate_changed) {
-            result.audio_qc.notes.push_back("音频采样率/声道数中途改变，部分样本未参与统计");
-        }
-        LOG_INFO("音频 QC: " + result.audio_qc.ToString());
-    }
-
-    // 色彩与 HDR 元数据收尾（必须在 color_probe.Release() 之后、发信号之前）
-    if (options.analyze_color_hdr && color_video_stream_index >= 0) {
-        result.color_hdr = color_hdr.Finish();
-        LOG_INFO("色彩与 HDR: " + result.color_hdr.ToString());
-    }
-
-    // 字幕轨收尾（必须在 avformat_close_input 之后、发信号之前）
-    if (options.analyze_subtitle) {
-        // 用实测时长兜底：容器没给时长时用桶估算值，否则"超出媒体时长"会全漏
-        const double cue_limit = (result.duration_seconds > 0.0) ? result.duration_seconds
-                                                                 : measured_duration;
-        subtitle_analyzer.Finish(cue_limit);
-        result.subtitle = subtitle_analyzer.result();
-        result.subtitle_analyzed = result.subtitle.analyzed && !result.subtitle.streams.empty();
-        LOG_INFO("字幕分析: streams=" + std::to_string(result.subtitle.streams.size()) +
-                 " cues=" + std::to_string(result.subtitle.cues.size()) +
-                 " issues=" + std::to_string(result.subtitle.issues.size()));
-    }
-
-    // 时码与章节收尾
-    if (options.analyze_timecode) {
-        timecode_analyzer.Finish();
-        result.timecode = timecode_analyzer.result();
-        result.timecode_analyzed = result.timecode.analyzed;
-        LOG_INFO("时码与章节: tracks=" + std::to_string(result.timecode.tracks.size()) +
-                 " 首帧时码=" + (result.timecode.has_primary ? result.timecode.primary.ToString()
-                                                             : std::string("无")) +
-                 " chapters=" + std::to_string(result.timecode.chapters.size()));
-    }
-
-    // 辅助数据轨收尾
-    if (options.analyze_aux_data) {
-        aux_analyzer.Finish();
-        result.aux_data = aux_analyzer.result();
-        result.aux_data_analyzed = result.aux_data.analyzed;
-        LOG_INFO("辅助数据轨: streams=" + std::to_string(result.aux_data.streams.size()) +
-                 " scte35=" + std::to_string(result.aux_data.scte35_cue_count) +
-                 " metadata=" + std::to_string(result.aux_data.metadata.size()));
-    }
-
-    result.scanned_packets = result.total_packets;
-    LOG_INFO("全文件分析完成: packets=" + std::to_string(result.total_packets) +
-             " duration=" + std::to_string(result.duration_seconds) +
-             " status=" + std::string(ToString(result.scan_status)));
-    NotifyProgress(callbacks, 100.0, "分析完成");
-    // 第二个参数沿用旧语义（true = 到达终态而非被取消），Failed 不会走到这里。
-    NotifyFinished(callbacks, result.scan_status != model::AnalysisStatus::Cancelled, result);
-}
-
-void AnalysisEngine::RunStreamingManifest(const std::string& file_path,
-                                          const AnalysisOptions& options,
-                                          model::AnalysisResult& result,
-                                          const AnalysisCallbacks& callbacks) {
-    VE_PERF("AnalysisEngine::RunStreamingManifest");
-    const bool is_dash = (result.file_extension == "mpd");
-    result.container_format = is_dash ? "dash" : "hls";
-
-    // 清单解析的全部循环（逐行 / 逐分片 / 逐时间轴条目 / 逐分片落盘探测）都会轮询它。
-    // 没有这条通道时，一个几十万行 EXTINF 的 m3u8 会让"取消"和"重新扫描"都点不动 ——
-    // QtAnalysisController 启动新扫描会 join 旧线程，而旧线程正卡在解析循环里。
-    const std::atomic<bool>* cancel = CancelSource();
-
-    model::StreamingPackageResult& pkg = result.streaming_package;
-    bool ok = false;
-    {
-        VE_PERF("流媒体清单解析");
-        if (is_dash) {
-            DashManifestAnalyzer dash;
-            ok = dash.AnalyzeFile(file_path, pkg, DashManifestOptions{}, cancel);
-        } else {
-            HlsManifestAnalyzer hls;
-            ok = hls.AnalyzeFile(file_path, pkg, HlsManifestOptions{}, cancel);
-        }
-    }
-
-    // 取消优先于失败判定：解析被中断时 pkg 里只有半份数据，此时报"无法解析清单"
-    // 会把用户主动取消说成文件有问题。与逐包扫描路径一致：保留已扫到的部分，
-    // 以 scan_status=Cancelled + completed=false 收尾。
-    if (CancelRequested()) {
-        result.scan_status = model::AnalysisStatus::Cancelled;
-        NotifyProgress(callbacks, 100.0, "已取消");
-        NotifyFinished(callbacks, false, result);
-        return;
-    }
-
-    if (!ok) {
-        // 清单解析失败也是失败终态：pkg 里只有半截数据，scan_status 必须跟着改成
-        // Failed（默认值 Complete 会让"回调报失败 + 结果报完成"同时成立）。
-        MarkFailed(result, pkg.error_message.empty() ? ("无法解析清单: " + file_path)
-                                                     : pkg.error_message);
-        NotifyFailed(callbacks, result.error_message);
-        return;
-    }
-
-    {
-        VE_PERF("SegmentQcAnalyzer::Analyze");
-        // 必须接住返回值: Analyze 是三态的, 丢掉它、下面再无条件置 streaming_analyzed /
-        // Complete, 等于把"QC 阶段失败"和"QC 阶段被取消"一律报成完整成功 ——
-        // 界面上会显示一份只有半截 issues 的分析结果为"分析完成"。
-        const SegmentQcAnalyzer::StageStatus qc =
-            SegmentQcAnalyzer::Analyze(pkg, options.streaming_package_options, cancel);
-        if (qc == SegmentQcAnalyzer::StageStatus::kFailed) {
-            // 走失败收尾: pkg 里已经填了 error_message / issues, 交给 NotifyFailed 报出去。
-            // 与清单解析失败同理: 状态必须一起改, 否则结果是 Failed 的回调 + Complete 的对象。
-            MarkFailed(result, pkg.error_message.empty() ? ("分片级校验失败: " + file_path)
-                                                         : pkg.error_message);
-            NotifyFailed(callbacks, result.error_message);
-            return;
-        }
-        if (qc == SegmentQcAnalyzer::StageStatus::kCancelled) {
-            result.scan_status = model::AnalysisStatus::Cancelled;
-            NotifyProgress(callbacks, 100.0, "已取消");
-            NotifyFinished(callbacks, false, result);
-            return;
-        }
-    }
-    if (CancelRequested()) {
-        result.scan_status = model::AnalysisStatus::Cancelled;
-        NotifyProgress(callbacks, 100.0, "已取消");
-        NotifyFinished(callbacks, false, result);
-        return;
-    }
-    result.streaming_analyzed = true;
-
-    int64_t manifest_size = 0;
-    utils::manifest::FileSizeOf(file_path, manifest_size);
-    result.file_size_bytes = manifest_size;
-    // 时长取清单声明值：分片本体不 demux，拿不到更精确的数字
-    if (is_dash) {
-        result.duration_seconds = pkg.media_presentation_duration_s;
-    } else {
-        double longest = 0.0;
-        for (const model::MediaPlaylistInfo& pl : pkg.playlists) {
-            if (pl.total_duration_seconds > longest) longest = pl.total_duration_seconds;
-        }
-        result.duration_seconds = longest;
-    }
-    result.seekable = true;
-    result.scan_status = model::AnalysisStatus::Complete;
-
-    LOG_INFO("流媒体清单分析完成: kind=" + std::to_string(static_cast<int>(pkg.kind)) +
-             " ladder=" + std::to_string(pkg.ladder.size()) +
-             " segments=" + std::to_string(pkg.TotalSegments()) +
-             " issues=" + std::to_string(pkg.issues.size()));
-    NotifyProgress(callbacks, 100.0, "清单分析完成");
-    NotifyFinished(callbacks, true, result);
+    // ---- 结果归并 ----
+    //
+    // 顺序不是随意的（详见 AnalysisResultAssembler.h）: 桶先算（它给出实测时长，
+    // 字幕收尾要拿它兜底），各分析器 Finish 完之后才能发终态。
+    AnalysisResultAssembler assembler(result, options);
+    const double measured_duration = assembler.FinalizeBuckets(buckets, interval);
+    assembler.FinalizeTimeline(timeline_analyzer);
+    assembler.FinalizeGopFrames();
+    assembler.FinalizeBitrateGop(bitrate_gop, video_stream_index);
+    assembler.FinalizeAudioQc(audio_qc, audio_stream_index, audio_decoder_ready, audio_rate_changed);
+    assembler.FinalizeColorHdr(color_hdr, color_video_stream_index);
+    assembler.FinalizeSubtitle(subtitle_analyzer, measured_duration);
+    assembler.FinalizeTimecode(timecode_analyzer);
+    assembler.FinalizeAuxData(aux_analyzer);
+    assembler.Finish(callbacks);
 }
 
 } // namespace analyzer
