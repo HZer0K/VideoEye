@@ -196,11 +196,15 @@ RealtimeAnalysisController 对应的是**还没搬走的播放回调**（下面�
 4) refactor(analysis): 拆 AnalysisResultAssembler + 清单路径  ✔ f05509b
 5) refactor(analysis): 拆 AnalysisPipeline                  ✔ 17b0a3f
 6) refactor(analysis): 拆 PacketScanLoop                    ✔ f874854
-7) refactor(player): 拆 ContainerInspectionController → RealtimeAnalysisController → OpenController
-8) chore(ui): 删 AnalysisFacade::SetResult，给 ApplySceneChanges 补约束注释
+7) refactor(player): 拆 ContainerInspectionController       ✔ 4c9def0
+8) refactor(player): 拆 RealtimeAnalysisController          ✔ b5e605f
+9) refactor(player): 拆 OpenController                      ✔ ed41017
+10) refactor(ui): 删 SetResult + ApplySceneChanges 补约束    ✔ e14cee0
 
-P2-1 **已全部落地**：`AnalysisEngine.cpp` 1251 → 216 行，`Run()` 829 → ~110 行。
-剩下的是 MediaPlayer 的三块（M2 / M3 / M4）与 AnalysisFacade 的两处收口。
+**P2 三条全部落地**：
+- P2-1 `AnalysisEngine.cpp` 1251 → **216** 行，`Run()` 829 → ~110 行
+- P2-2 `MediaPlayer.cpp` 1619 → **455** 行，`.h` 393 → **310** 行
+- P2-3 结果存储收成只读快照（不拆类，只删写入口 + 补约束注释）
 ```
 
 ## 6. 已落地切片的实测
@@ -214,6 +218,10 @@ P2-1 **已全部落地**：`AnalysisEngine.cpp` 1251 → 216 行，`Run()` 829 �
 | A5 `StreamingManifestScan` | 清单路径整体搬走；三处手写取消收尾换成 `NotifyCancelled()` | ctest 45/45 |
 | A3 `AnalysisPipeline` | 六个维度的分析器 + 三个解码通路 RAII（`AudioQcProbe` / `FrameTypeProbe` / `ColorFrameProbe`）成为成员；`Prepare` / `OnPacket` / `BeforeClose` / `FlushAudio` / `ReleaseProbes` 五个入口。GOP 的中间态（`frames_since_key` / `last_key_ts` / `has_key`）从 Run 的局部变量变成成员 | `AnalysisEngine.cpp` 825 → 319；构建 EXIT=0、ctest 45/45 |
 | A4 `PacketScanLoop` | `ScanOutcome{Complete,Cancelled,Failed}`；扫描事实统计 + 限频进度；`AVPacket` 析构释放，上下文与解码通路**不归它** | `AnalysisEngine.cpp` 319 → **216**，`Run()` ~110 行；ctest 45/45 |
+| M2 `ContainerInspectionController` | 容器结构分析的任务体整体搬走；slot 常量私有化；`QPointer` 主体从 MediaPlayer 换成控制器 | `MediaPlayer.cpp` 1291 → 1198；ctest 45/45 |
+| M3 `RealtimeAnalysisController` | 六个 hook + 四个 Emit 出口 + 19 个逐帧计数器 + 4 个逐帧分析器 + 视觉缺陷采样编排；换媒体复位收成 `ResetForNewMedia()`、停止收成 `FlushOnStop()`；23 条信号转发 | `MediaPlayer.cpp` 1198 → 715，`.h` 349 → 306；ctest 45/45 |
+| M4 `OpenController` | 300 行的打开链路拆成 6 个步骤函数；8 处"emit + Release + return false" 收敛成单一失败出口；封面图降级不再依赖"有没有解出来" | `MediaPlayer.cpp` 715 → **455**；ctest 45/45 |
+| P2-3 `AnalysisFacade` | 删 `SetResult()`（无生产调用者，只有一条回归测试在用）；`ApplySceneChanges` 补三条约束；测试改写而不是删 | ctest 45/45 |
 
 ### 搬动过程中改掉的两个真问题
 
@@ -224,8 +232,35 @@ P2-1 **已全部落地**：`AnalysisEngine.cpp` 1251 → 216 行，`Run()` 829 �
 | 3 | `audio_rate_changed` / `audio_decoder_ready` 在 `FlushAudio()` **之前**抓取，flush 期间喂帧发现的中途改采样率被漏记 | 改到 flush 之后、释放之前抓取 |
 | 4 | 逐秒桶的 `video_bytes` / `video_frames` 挂在缩进错位的 `if (is_video)` 块里，实际对所有包累加（与 `total_bytes` 重复） | 按媒体类型分流 |
 
-当前 `AnalysisEngine.cpp` **830 行**（起点 1251），`MediaPlayer.cpp` **1291 行**（起点 1619）。
-`Run()` 剩下的两块就是 A3（六个分析器的创建 + 逐包分发）与 A4（读包循环本体）。
+### 最终形态
+
+| 文件 | 起点 | 现在 |
+|---|---|---|
+| `core/analysis/orchestration/AnalysisEngine.cpp` | 1251 | **216**（`Run()` 829 → ~110） |
+| `core/player/MediaPlayer.cpp` | 1619 | **455** |
+| `core/player/MediaPlayer.h` | 393 | **310** |
+
+`AnalysisEngine` 现在是纯粹的编排链：InputSession（打开/探测/中断）→ Pipeline（六个分析器）
+→ PacketScanLoop（读包）→ ResultAssembler（归并）+ StreamingManifestScan（清单旁路）。
+
+`MediaPlayer` 现在只剩：换媒体前的复位、播放控制、12 个分析开关的分派、
+四个控制器（`Export` / `ContainerInspection` / `RealtimeAnalysis` / `Open`）的入口转发，
+以及 33 条信号转发。四个控制器一律"借用"调用方的会话与 TaskManager（只持引用），
+自己不拥有线程 —— 生命周期仍归 MediaPlayer 的析构路径。
+
+### M3 / M4 搬动时改掉的两个真问题
+
+| # | 问题 | 处理 |
+|---|---|---|
+| 5 | 封面图的视频流降级写在解码成功路径末尾：若 `attached_pic` 解不出来（找不到解码器 / `avcodec_open2` 失败），这条封面轨会被当成可播放视频送去初始化解码器 | 只要带 `AV_DISPOSITION_ATTACHED_PIC` 就降级，解图独立成 `EmitCoverArt()` |
+| 6 | 打开链路 8 个失败分支各写一遍 `emit OpenFailed + Release + return false`，漏一处就是 `AVFormatContext` 句柄泄漏 | 收敛成 `Open()` 的单一失败出口，各步骤只给原因 |
+
+### M4 的一条硬约束（写进 `OpenController.h` 了）
+
+`open_interrupt_` / `open_cancel_` **必须留在 MediaPlayer**，控制器只借引用。
+原因：中断回调会被 `AVIOContext` / `URLContext` 各复制一份，播放期仍在用，
+它的生命周期必须覆盖 `AVFormatContext`；而成员按声明**逆序**析构 ——
+若随控制器搬走、且控制器声明在播放会话之后，中断状态会先于上下文析构，留下悬垂 opaque。
 
 ### 搬运时踩到的两个坑（后面几片照着避）
 
