@@ -1,29 +1,15 @@
 #include "core/player/MediaPlayer.h"
 #include "infrastructure/logging/Logger.h"
-#include "core/media/probe/FileProbe.h"
-#include <QFileInfo>
 #include <QDebug>
-#include <QMetaObject>
-#include <QPointer>
 #include <algorithm>
 #include <cstdint>
-#include <chrono>
 #include <limits>
-#include <exception>
 #include <utility>
-#include <QDir>
-#include <QThread>
-#include <thread>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
-#include <libavcodec/packet.h>
-#include <libavcodec/version.h>
-#include <libswscale/swscale.h>
 #include <libavutil/avutil.h>
-#include <libavutil/channel_layout.h>
 #include <libavutil/dict.h>
-#include <libavutil/imgutils.h>
 }
 
 namespace videoeye {
@@ -37,15 +23,6 @@ using SteadyClock = std::chrono::steady_clock;
 // "等终态"。可能卡住的任务已改用 RunBlockingIo 登记 —— 那种任务超预算会被放弃(detach),
 // 不会再拖住退出流程; 剩下的协作式任务有中断机制兜底, 实际不会走到上限。
 constexpr int kShutdownWaitMs = 8000;
-
-// FFmpeg 错误码 -> 可读描述。不用 av_err2str 宏 (MSVC 不支持其 compound literal 写法)。
-static QString AvErrorString(int ret) {
-    char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
-    if (av_strerror(ret, errbuf, sizeof(errbuf)) != 0) {
-        return QStringLiteral("错误码 %1").arg(ret);
-    }
-    return QString::fromUtf8(errbuf);
-}
 
 MediaPlayer::MediaPlayer(QObject* parent)
     : QObject(parent),
