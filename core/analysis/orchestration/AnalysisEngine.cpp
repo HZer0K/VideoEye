@@ -1,13 +1,8 @@
 #include "core/analysis/orchestration/AnalysisEngine.h"
-#include "core/analysis/codec/BitstreamAnalyzer.h"
-#include "core/analysis/diagnostics/TimelineAnalyzer.h"
-// 下面这些分析器是本 cpp 真正要用到的执行者。以前是 AnalysisResult.h 顺带把它们
-// 全带进来的 —— 那个头文件现在只认 domain 的结果类型，于是"谁用谁 include"。
-#include "core/analysis/diagnostics/AuxDataAnalyzer.h"
-#include "core/analysis/diagnostics/SubtitleAnalyzer.h"
-#include "core/analysis/diagnostics/TimecodeAnalyzer.h"
-#include "core/analysis/quality/AudioQcAnalyzer.h"
-#include "core/analysis/quality/ColorHdrAnalyzer.h"
+// 各分析维度（时间轴 / 字幕 / 时码 / 辅助 / 音频 QC / 码率 GOP / 色彩 HDR）以及它们
+// 各自要开的解码器、parser、swr 全在 AnalysisPipeline 里；本文件只负责"什么时候
+// 创建、什么时候分发、什么时候收尾"，不直接 include 任何具体分析器。
+#include "core/analysis/orchestration/AnalysisPipeline.h"
 // 打开 / 探测 / 中断 / 取消 / 容器级事实 / 流摘要 都在 AnalysisInputSession 里；
 // FFmpeg 中断回调本身住在 core/ffmpeg_io/FfmpegInterrupt.h（叶子模块），由会话去 include。
 #include "core/analysis/orchestration/AnalysisInputSession.h"
@@ -34,11 +29,6 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
 #include <libavutil/error.h>
-#include <libavutil/time.h>
-#include <libavutil/channel_layout.h>
-#include <libavutil/samplefmt.h>
-#include <libswresample/swresample.h>
-#include "core/analysis/quality/BitrateGopAnalyzer.h"
 }
 
 namespace videoeye {
@@ -59,110 +49,9 @@ bool IsStreamingManifestExtension(const std::string& ext) {
     return ext == "m3u8" || ext == "m3u" || ext == "mpd";
 }
 
-// 把 FFmpeg 的声道位置翻译成 BS.1770 需要的角色（决定声道加权）
-model::AudioChannelRole AudioChannelRoleOf(AVChannel channel) {
-    switch (channel) {
-        case AV_CHAN_LOW_FREQUENCY:
-            return model::AudioChannelRole::LowFrequency;
-        case AV_CHAN_SIDE_LEFT:
-        case AV_CHAN_SIDE_RIGHT:
-        case AV_CHAN_BACK_LEFT:
-        case AV_CHAN_BACK_RIGHT:
-        case AV_CHAN_BACK_CENTER:
-        case AV_CHAN_TOP_BACK_LEFT:
-        case AV_CHAN_TOP_BACK_RIGHT:
-            return model::AudioChannelRole::Surround;
-        default:
-            return model::AudioChannelRole::Front;
-    }
-}
-
-// 音频 QC 的解码通路：解码器 + 到 float planar 的转换（swr）。
-// 解码器输出本身就是 FLTP 时直接用 AVFrame::data，省掉一次无谓的拷贝。
-struct AudioQcProbe {
-    bool ready = false;
-    bool rate_changed = false;
-    AVCodecContext* decoder = nullptr;
-    AVFrame* frame = nullptr;
-    SwrContext* swr = nullptr;
-    uint8_t** out_data = nullptr;
-    int out_frames = 0;
-    int channels = 0;
-    int sample_rate = 0;
-    std::vector<model::AudioChannelInfo> channel_info;
-
-    void Release() {
-        if (out_data) {
-            av_freep(&out_data[0]);
-            av_freep(&out_data);
-        }
-        if (swr) swr_free(&swr);
-        if (frame) av_frame_free(&frame);
-        if (decoder) avcodec_free_context(&decoder);
-        ready = false;
-    }
-};
-
-// 帧类型探测：优先用解码器（准确但慢），否则用 codec parser（几乎零成本）。
-// 两者都拿不到时，调用方退回 OnPacket()，只按 AV_PKT_FLAG_KEY 识别 I 帧。
-struct FrameTypeProbe {
-    AVCodecContext* parser_ctx = nullptr;    // 仅供 av_parser_parse2 使用的参数上下文
-    AVCodecParserContext* parser = nullptr;
-    AVCodecContext* decoder = nullptr;
-    AVFrame* frame = nullptr;
-    bool use_decoder = false;
-
-    void Release() {
-        if (parser) av_parser_close(parser);
-        if (parser_ctx) avcodec_free_context(&parser_ctx);
-        if (frame) av_frame_free(&frame);
-        if (decoder) avcodec_free_context(&decoder);
-        parser = nullptr;
-        parser_ctx = nullptr;
-        frame = nullptr;
-        decoder = nullptr;
-        use_decoder = false;
-    }
-};
-
-// 色彩与 HDR 的帧级兜底探测：容器/码流层信息不全时，解码前几帧读 AVFrame side data
-// （HDR10+/DV RPU 这类动态元数据通常只在解码帧上出现）
-struct ColorFrameProbe {
-    AVCodecContext* decoder = nullptr;
-    AVFrame* frame = nullptr;
-    bool opened = false;
-    bool failed = false;
-    int frames_read = 0;
-
-    bool Ready() const { return decoder != nullptr && frame != nullptr && !failed; }
-
-    // 惰性打开解码器；打开失败会被记住，不会重复尝试
-    bool EnsureOpen(AVStream* stream) {
-        if (failed) return false;
-        if (opened) return Ready();
-        opened = true;
-        const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
-        if (codec != nullptr) {
-            decoder = avcodec_alloc_context3(codec);
-            if (decoder != nullptr &&
-                avcodec_parameters_to_context(decoder, stream->codecpar) >= 0) {
-                decoder->pkt_timebase = stream->time_base;
-                frame = av_frame_alloc();
-                if (frame != nullptr && avcodec_open2(decoder, codec, nullptr) == 0) {
-                    return true;
-                }
-            }
-        }
-        Release();
-        failed = true;
-        return false;
-    }
-
-    void Release() {
-        if (frame) av_frame_free(&frame);
-        if (decoder) avcodec_free_context(&decoder);
-    }
-};
+// 各分析维度的**创建 / 逐包分发 / 收尾钩子**（含它们各自要开的解码器、parser、swr）
+// 已搬到 core/analysis/orchestration/AnalysisPipeline.{h,cpp} ——
+// 匿名命名空间里的那三个探测结构也一并跟过去了（它们现在是管道的成员类型）。
 
 // 回报通道（AnalysisCallbacks）与终态写法（MarkFailed / Notify* / ResultSink /
 // kNoFfmpegErrorCode）已搬到 core/analysis/orchestration/AnalysisTerminalState.{h,cpp} ——
@@ -258,257 +147,20 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     // 来自容器头的总时长；流摘要与下面几处"没有流级时长时回退"的场合都要用
     const double file_duration = result.duration_seconds;
 
-    // ---- 字幕 / 时码 / 辅助数据轨准备（只在存在对应流时才有实际工作量）----
-    SubtitleAnalyzer subtitle_analyzer;
-    TimecodeAnalyzer timecode_analyzer;
-    AuxDataAnalyzer aux_analyzer;
-    if (options.analyze_subtitle) {
-        subtitle_analyzer.Reset(options.subtitle_options);
-        subtitle_analyzer.RegisterStreams(fmt);
-    }
-    if (options.analyze_timecode) {
-        timecode_analyzer.Reset(options.timecode_options);
-        timecode_analyzer.RegisterStreams(fmt, file_duration);
-    }
-    if (options.analyze_aux_data) {
-        aux_analyzer.Reset(options.aux_data_options);
-        aux_analyzer.RegisterStreams(fmt);
-    }
-
-    // ---- 编码码流解析（只读 extradata，不解码；必须在 avformat_close_input 之前）----
-    // 只取第一条视频流：诊断关心的是主视频的编码参数，多视频流取第一条足够。
-    if (options.analyze_bitstream) {
-        for (unsigned i = 0; i < fmt->nb_streams; ++i) {
-            AVStream* st = fmt->streams[i];
-            if (st->codecpar->codec_type != AVMEDIA_TYPE_VIDEO) continue;
-            if (st->codecpar->extradata == nullptr || st->codecpar->extradata_size <= 0) continue;
-
-            ContainerMetadata meta;
-            meta.codec_name = (i < result.streams.size()) ? result.streams[i].codec_name : "";
-            meta.width = st->codecpar->width;
-            meta.height = st->codecpar->height;
-            meta.bit_depth = (st->codecpar->bits_per_raw_sample > 0)
-                                 ? st->codecpar->bits_per_raw_sample
-                                 : 8;
-            meta.color_primaries = st->codecpar->color_primaries;
-            meta.transfer_characteristics = st->codecpar->color_trc;
-            meta.matrix_coefficients = st->codecpar->color_space;
-            meta.color_range = st->codecpar->color_range;
-
-            BitstreamAnalyzer bitstream;
-            bitstream.SetContainerMetadata(meta);
-            model::BitstreamAnalysisResult bs = bitstream.Analyze(
-                st->codecpar->extradata,
-                static_cast<size_t>(st->codecpar->extradata_size),
-                static_cast<int>(st->codecpar->codec_id));
-            bs.stream_index = static_cast<int>(i);
-            if (bs.analyzed) {
-                result.bitstream_analysis = std::move(bs);
-                result.bitstream_analyzed = true;
-                LOG_INFO("码流解析: codec=" + result.bitstream_analysis.codec_name +
-                         " " + std::to_string(result.bitstream_analysis.width) + "x" +
-                         std::to_string(result.bitstream_analysis.height) +
-                         " 不一致=" + std::to_string(result.bitstream_analysis.inconsistencies.size()));
-                break;
-            }
-        }
-    }
-
-    // ---- 色彩与 HDR 元数据分析（读 AVCodecParameters + coded_side_data，几乎零成本）----
-    int color_video_stream_index = -1;
-    if (options.analyze_color_hdr) {
-        for (unsigned i = 0; i < fmt->nb_streams; ++i) {
-            if (fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-                color_video_stream_index = static_cast<int>(i);
-                break;
-            }
-        }
-    }
-    ColorHdrAnalyzer color_hdr;
-    ColorFrameProbe color_probe;
-    if (options.analyze_color_hdr && color_video_stream_index >= 0) {
-        color_hdr.Reset(options.color_hdr_options);
-        color_hdr.UpdateFromStream(fmt->streams[color_video_stream_index]);
-    }
-
-    // ---- 码率与 GOP 深度分析准备 ----
-    int video_stream_index = -1;
-    if (options.analyze_bitrate_gop) {
-        for (unsigned i = 0; i < fmt->nb_streams; ++i) {
-            if (fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-                video_stream_index = static_cast<int>(i);
-                break;
-            }
-        }
-    }
-
-    BitrateGopAnalyzer bitrate_gop;
-    FrameTypeProbe probe;
-    if (options.analyze_bitrate_gop && video_stream_index >= 0) {
-        bitrate_gop.Reset(options.bitrate_gop_options);
-        AVStream* vst = fmt->streams[video_stream_index];
-
-        if (options.decode_frame_types) {
-            const AVCodec* codec = avcodec_find_decoder(vst->codecpar->codec_id);
-            if (codec != nullptr) {
-                probe.decoder = avcodec_alloc_context3(codec);
-                if (probe.decoder != nullptr &&
-                    avcodec_parameters_to_context(probe.decoder, vst->codecpar) >= 0) {
-                    probe.decoder->pkt_timebase = vst->time_base;
-                    probe.frame = av_frame_alloc();
-                    if (probe.frame != nullptr &&
-                        avcodec_open2(probe.decoder, codec, nullptr) == 0) {
-                        probe.use_decoder = true;
-                    }
-                }
-                if (!probe.use_decoder) {
-                    // 打开失败 → 退回 parser
-                    if (probe.frame) { av_frame_free(&probe.frame); }
-                    if (probe.decoder) { avcodec_free_context(&probe.decoder); }
-                }
-            }
-        }
-        if (!probe.use_decoder) {
-            probe.parser = av_parser_init(vst->codecpar->codec_id);
-            if (probe.parser != nullptr) {
-                // 我们喂的是完整访问单元（一个包 = 一帧），告诉解析器不要做拼接
-                probe.parser->flags |= PARSER_FLAG_COMPLETE_FRAMES;
-                probe.parser_ctx = avcodec_alloc_context3(nullptr);
-                if (probe.parser_ctx != nullptr) {
-                    avcodec_parameters_to_context(probe.parser_ctx, vst->codecpar);
-                }
-            }
-        }
-    }
-
-    // ---- 音频 QC 准备（解码 + 归一到 float planar）----
-    int audio_stream_index = -1;
-    if (options.analyze_audio_qc) {
-        for (unsigned i = 0; i < fmt->nb_streams; ++i) {
-            if (fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-                audio_stream_index = static_cast<int>(i);
-                break;
-            }
-        }
-    }
-    const double audio_time_base =
-        (audio_stream_index >= 0) ? av_q2d(fmt->streams[audio_stream_index]->time_base) : 0.0;
-
-    AudioQcAnalyzer audio_qc;
-    AudioQcProbe audio_probe;
-    if (options.analyze_audio_qc && audio_stream_index >= 0) {
-        audio_qc.Reset(options.audio_qc_options);
-        AVStream* ast = fmt->streams[audio_stream_index];
-        const AVCodec* codec = avcodec_find_decoder(ast->codecpar->codec_id);
-        if (codec != nullptr) {
-            audio_probe.decoder = avcodec_alloc_context3(codec);
-            if (audio_probe.decoder != nullptr &&
-                avcodec_parameters_to_context(audio_probe.decoder, ast->codecpar) >= 0) {
-                audio_probe.decoder->pkt_timebase = ast->time_base;
-                if (avcodec_open2(audio_probe.decoder, codec, nullptr) == 0) {
-                    audio_probe.frame = av_frame_alloc();
-                    audio_probe.ready = (audio_probe.frame != nullptr);
-                }
-            }
-            if (!audio_probe.ready) {
-                if (audio_probe.frame) av_frame_free(&audio_probe.frame);
-                if (audio_probe.decoder) avcodec_free_context(&audio_probe.decoder);
-            }
-        }
-
-        if (audio_probe.ready) {
-            AVChannelLayout layout{};
-            av_channel_layout_copy(&layout, &audio_probe.decoder->ch_layout);
-            audio_probe.channels = layout.nb_channels;
-            audio_probe.sample_rate = audio_probe.decoder->sample_rate;
-
-            for (int c = 0; c < audio_probe.channels; ++c) {
-                const AVChannel ch = av_channel_layout_channel_from_index(&layout, c);
-                char name_buf[32] = {0};
-                av_channel_name(name_buf, sizeof(name_buf), ch);
-                const std::string name = (name_buf[0] != '\0') ? std::string(name_buf)
-                                                               : ("Ch" + std::to_string(c + 1));
-                audio_probe.channel_info.emplace_back(name, AudioChannelRoleOf(ch));
-            }
-
-            const AVSampleFormat in_fmt = audio_probe.decoder->sample_fmt;
-            const char* fmt_name = av_get_sample_fmt_name(in_fmt);
-            audio_qc.SetStreamInfo(audio_probe.sample_rate, audio_probe.channels,
-                                   fmt_name ? fmt_name : "",
-                                   av_get_bytes_per_sample(in_fmt) * 8);
-            audio_qc.SetChannelInfo(audio_probe.channel_info);
-
-            // 非 float planar 输出需要 swr 转换（s16 / flt / s32 ...）
-            if (in_fmt != AV_SAMPLE_FMT_FLTP && audio_probe.channels > 0 &&
-                audio_probe.sample_rate > 0) {
-                AVChannelLayout out_layout{};
-                av_channel_layout_copy(&out_layout, &layout);
-                int linesize = 0;
-                if (swr_alloc_set_opts2(&audio_probe.swr, &out_layout, AV_SAMPLE_FMT_FLTP,
-                                        audio_probe.sample_rate, &layout, in_fmt,
-                                        audio_probe.sample_rate, 0, nullptr) >= 0 &&
-                    swr_init(audio_probe.swr) >= 0 &&
-                    av_samples_alloc_array_and_samples(&audio_probe.out_data, &linesize,
-                                                       audio_probe.channels, 8192,
-                                                       AV_SAMPLE_FMT_FLTP, 0) >= 0) {
-                    audio_probe.out_frames = 8192;
-                } else if (audio_probe.swr != nullptr) {
-                    swr_free(&audio_probe.swr);
-                }
-                av_channel_layout_uninit(&out_layout);
-            }
-            av_channel_layout_uninit(&layout);
-        }
-    }
-
-    // 喂一帧解码后的音频给 QC 分析器（内部按 100 ms 步进出块）
-    auto feed_audio_frame = [&](AVFrame* frame) {
-        if (!audio_probe.ready || frame == nullptr || frame->nb_samples <= 0) return;
-        const int channels = frame->ch_layout.nb_channels;
-        if (channels <= 0) return;
-        if (frame->sample_rate != audio_probe.sample_rate || channels != audio_probe.channels) {
-            audio_probe.rate_changed = true;   // 参数中途变化（罕见），该帧丢弃
-            return;
-        }
-        double ts = (frame->pts != AV_NOPTS_VALUE && audio_time_base > 0.0)
-                        ? static_cast<double>(frame->pts) * audio_time_base
-                        : -1.0;
-
-        std::vector<const float*> planes(static_cast<size_t>(channels));
-        if (frame->format == AV_SAMPLE_FMT_FLTP) {
-            for (int c = 0; c < channels; ++c) {
-                planes[static_cast<size_t>(c)] = reinterpret_cast<const float*>(frame->data[c]);
-            }
-            audio_qc.OnSamples(planes.data(), frame->nb_samples, ts);
-            return;
-        }
-        if (audio_probe.swr == nullptr || audio_probe.out_data == nullptr) return;
-
-        int got = swr_convert(audio_probe.swr, audio_probe.out_data, audio_probe.out_frames,
-                              const_cast<const uint8_t**>(frame->data), frame->nb_samples);
-        while (got > 0) {
-            for (int c = 0; c < channels; ++c) {
-                planes[static_cast<size_t>(c)] =
-                    reinterpret_cast<const float*>(audio_probe.out_data[c]);
-            }
-            audio_qc.OnSamples(planes.data(), got, ts);
-            ts = -1.0;   // 后续块沿用内部时钟
-            got = swr_convert(audio_probe.swr, audio_probe.out_data, audio_probe.out_frames,
-                              nullptr, 0);
-        }
-    };
+    // ---- 分析维度集合（建分析器 / 注册流 / 开解码器）----
+    //
+    // 六个维度的创建与逐包分发都收在 AnalysisPipeline 里：新增一个维度只需要改那一个
+    // 文件，不用再同时改这里的创建段、下面的分发段和最后的收尾段。
+    AnalysisPipeline pipeline(options);
+    pipeline.Prepare(fmt, result, file_duration);
 
     // ---- 逐包扫描 ----
     const double interval = (options.sample_interval_seconds > 0.0) ? options.sample_interval_seconds : 1.0;
     ScanBuckets buckets;
-    std::vector<int64_t> frames_since_key(fmt->nb_streams, 0);
-    double last_key_ts = -1.0;
-    bool has_key = false;
 
     AVPacket* pkt = av_packet_alloc();
     int64_t packet_index = 0;
     int64_t last_pos = 0;
-    TimelineAnalyzer timeline_analyzer;
 
     auto last_progress = std::chrono::steady_clock::now();
     NotifyProgress(callbacks, 0.0, "扫描数据包");
@@ -522,9 +174,9 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
         av_packet_free(&pkt);
         input.Close();
         fmt = nullptr;
-        probe.Release();
-        color_probe.Release();
-        if (options.analyze_audio_qc && audio_probe.ready) audio_probe.Release();
+        // 解码器 / parser / swr 归管道所有（各 probe 的 Release 自带幂等，
+        // 正常路径已经释放过一次，这里再调一次是空操作）。
+        pipeline.ReleaseProbes();
     };
 
     {
@@ -574,165 +226,29 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
         const bool has_pts = (pkt->pts != AV_NOPTS_VALUE);
         const double ts = has_pts ? static_cast<double>(pkt->pts) * tb : -1.0;
 
-        // 时间轴与同步诊断（demux 层：PTS/DTS/B 帧/首帧偏移/关键帧索引）
-        {
-            model::PacketTiming timing;
-            timing.index = static_cast<int>(packet_index);
-            timing.stream_index = pkt->stream_index;
-            timing.media_type = static_cast<int>(st->codecpar->codec_type);
-            timing.pts_ms = has_pts ? ts * 1000.0 : model::kNoTimestamp;
-            timing.dts_ms = (pkt->dts != AV_NOPTS_VALUE)
-                                ? static_cast<double>(pkt->dts) * tb * 1000.0
-                                : model::kNoTimestamp;
-            timing.duration_ms = (pkt->duration > 0)
-                                     ? static_cast<double>(pkt->duration) * tb * 1000.0
-                                     : model::kNoTimestamp;
-            timing.pos = pkt->pos;
-            timing.size = pkt->size;
-            timing.flags = pkt->flags;
-            timing.key_frame = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
-            timeline_analyzer.OnPacket(timing);
-        }
-
-        // 字幕 / 时码 / 辅助数据轨（内部先按流号过滤，非目标流直接返回）
-        if (options.analyze_subtitle) subtitle_analyzer.OnPacket(pkt, st);
-        if (options.analyze_timecode) timecode_analyzer.OnPacket(pkt, st);
-        if (options.analyze_aux_data) aux_analyzer.OnPacket(pkt, st);
-
-        // 音频 QC：解码后归一为 float planar 再喂给分析器
-        if (options.analyze_audio_qc && pkt->stream_index == audio_stream_index &&
-            audio_probe.ready) {
-            if (avcodec_send_packet(audio_probe.decoder, pkt) == 0) {
-                while (avcodec_receive_frame(audio_probe.decoder, audio_probe.frame) >= 0) {
-                    feed_audio_frame(audio_probe.frame);
-                    av_frame_unref(audio_probe.frame);
-                }
-            }
-        }
+        // 维度分发：时间轴 / 字幕 / 时码 / 辅助 / 音频 / 关键帧与 GOP / 色彩与 HDR。
+        // 只喂 pkt —— 时间戳、逐秒桶与下面这些计数是"扫描事实"而不是"维度"，
+        // 所以留在本函数里（A4 拆 PacketScanLoop 时它们跟着循环一起走）。
+        pipeline.OnPacket(fmt, pkt, result, packet_index);
 
         result.total_packets += 1;
         result.total_bytes += pkt->size;
         digest.packet_count += 1;
         digest.byte_count += pkt->size;
+        if (is_video) digest.frame_count += 1;
         if (pkt->size > result.max_packet_bytes) result.max_packet_bytes = pkt->size;
         if (pkt->dts == AV_NOPTS_VALUE) result.packets_missing_dts += 1;
+        if (is_video) result.video_packets += 1;
 
-        if (is_video) {
-                result.video_packets += 1;
-            digest.frame_count += 1;
-            frames_since_key[pkt->stream_index] += 1;
-
-            if (pkt->flags & AV_PKT_FLAG_KEY) {
-                result.key_frame_count += 1;
-                digest.key_frame_count += 1;
-                if (has_key && ts >= 0.0 && last_key_ts >= 0.0) {
-                    const double gap = ts - last_key_ts;
-                    if (gap > 0.0) {
-                        result.gop_intervals_seconds.push_back(gap);
-                        result.gop_frame_sizes.push_back(
-                            static_cast<int>(frames_since_key[pkt->stream_index]));
-                        if (gap > result.max_gop_interval_seconds) {
-                            result.max_gop_interval_seconds = gap;
-                        }
-                    }
-                }
-                if (frames_since_key[pkt->stream_index] > result.max_gop_frames) {
-                    result.max_gop_frames = static_cast<int>(frames_since_key[pkt->stream_index]);
-                }
-                frames_since_key[pkt->stream_index] = 0;
-                if (ts >= 0.0) {
-                    last_key_ts = ts;
-                    has_key = true;
-                }
-            }
-
-            // 码率与 GOP 深度分析（仅第一条视频流）
-            if (options.analyze_bitrate_gop && pkt->stream_index == video_stream_index) {
-                const double sample_ts = has_pts
-                                             ? ts
-                                             : ((pkt->dts != AV_NOPTS_VALUE)
-                                                    ? static_cast<double>(pkt->dts) * tb
-                                                    : 0.0);
-                model::FrameType frame_type = model::FrameType::Unknown;
-                bool is_idr = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
-                bool fed = false;
-
-                if (probe.use_decoder) {
-                    if (avcodec_send_packet(probe.decoder, pkt) == 0) {
-                        while (avcodec_receive_frame(probe.decoder, probe.frame) >= 0) {
-                            frame_type = static_cast<model::FrameType>(probe.frame->pict_type);
-                            // 注: FFmpeg 8.x 已移除 AVFrame::key_frame，统一用 AV_FRAME_FLAG_KEY
-                            is_idr = ((probe.frame->flags & AV_FRAME_FLAG_KEY) != 0);
-                            const double frame_ts =
-                                (probe.frame->pts != AV_NOPTS_VALUE)
-                                    ? static_cast<double>(probe.frame->pts) * tb
-                                    : sample_ts;
-                            bitrate_gop.OnFrame(pkt->stream_index, frame_ts, pkt->size,
-                                                frame_type, is_idr);
-                            fed = true;
-                            av_frame_unref(probe.frame);
-                        }
-                    }
-                } else if (probe.parser != nullptr) {
-                    uint8_t* out_data = nullptr;
-                    int out_size = 0;
-                    av_parser_parse2(probe.parser, probe.parser_ctx, &out_data, &out_size,
-                                     pkt->data, pkt->size, pkt->pts, pkt->dts, pkt->pos);
-                    if (probe.parser->pict_type != AV_PICTURE_TYPE_NONE) {
-                        frame_type = static_cast<model::FrameType>(probe.parser->pict_type);
-                        if (probe.parser->key_frame >= 1) {
-                            is_idr = true;
-                        } else if (probe.parser->key_frame == 0) {
-                            is_idr = false;
-                        }
-                        fed = true;
-                    }
-                }
-
-                if (fed) {
-                    bitrate_gop.OnFrame(pkt->stream_index, sample_ts, pkt->size, frame_type,
-                                        is_idr);
-                } else {
-                    bitrate_gop.OnPacket(pkt->stream_index, sample_ts, pkt->size, is_idr);
-                }
-            }
-
-        // 色彩与 HDR：包级 side data 补充 + 需要时解码首帧读 AVFrame side data
-        if (options.analyze_color_hdr && is_video &&
-            pkt->stream_index == color_video_stream_index) {
-            if (pkt->side_data != nullptr && pkt->side_data_elems > 0) {
-                color_hdr.UpdateFromPacket(pkt, pkt->stream_index);
-            }
-            if (color_hdr.NeedsFrameProbe() && !color_probe.failed &&
-                color_probe.frames_read < options.color_hdr_options.max_probe_frames) {
-                if (color_probe.EnsureOpen(st)) {
-                    if (avcodec_send_packet(color_probe.decoder, pkt) == 0) {
-                        while (avcodec_receive_frame(color_probe.decoder, color_probe.frame) >= 0) {
-                            color_hdr.UpdateFromFrame(color_probe.frame);
-                            av_frame_unref(color_probe.frame);
-                            ++color_probe.frames_read;
-                            if (color_probe.frames_read >=
-                                options.color_hdr_options.max_probe_frames) {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 逐秒桶：码率 + 帧率
+        // 逐秒桶：码率 + 帧率（视频字节/帧数只记视频包，总字节记所有包）
         if (ts >= 0.0) {
             const int64_t bucket_index = static_cast<int64_t>(std::floor(ts / interval));
             ScanBucket& bucket = buckets[bucket_index];
-            bucket.video_bytes += pkt->size;
-            bucket.video_frames += 1;
-        }
-        }
-
-        if (ts >= 0.0) {
-            const int64_t bucket_index = static_cast<int64_t>(std::floor(ts / interval));
-            buckets[bucket_index].total_bytes += pkt->size;
+            bucket.total_bytes += pkt->size;
+            if (is_video) {
+                bucket.video_bytes += pkt->size;
+                bucket.video_frames += 1;
+            }
         }
 
         last_pos = (pkt->pos > 0) ? pkt->pos : last_pos;
@@ -768,41 +284,18 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     }
     av_packet_free(&pkt);
 
-    // 部分封装的 HDR 元数据要读到数据包后才补充进 codecpar，关闭输入前再刷一次
-    if (options.analyze_color_hdr && color_video_stream_index >= 0) {
-        color_hdr.UpdateFromStream(fmt->streams[color_video_stream_index]);
-    }
+    // 关闭上下文之前的最后一眼：部分封装的 HDR 元数据要读到包后才补进 codecpar。
+    pipeline.BeforeClose(fmt);
+    // flush 音频解码器与 swr 缓存里残留的样本（不碰 fmt，因此可以先于关闭执行）。
+    pipeline.FlushAudio();
+    // 这两个标记必须在 ReleaseProbes 之前读：释放之后 ready 就变 false 了。
+    // 放在 FlushAudio 之后而不是之前 —— flush 自己也会喂帧，那里发现的中途改采样率
+    // 同样该记一笔（以前是在 flush 之前抓的，flush 期间的变更会被漏掉）。
+    const bool audio_decoder_ready = pipeline.audio_decoder_ready();
+    const bool audio_rate_changed = pipeline.audio_rate_changed();
+    pipeline.ReleaseProbes();
     // 上下文归输入会话所有，关闭也走它（会话析构时同样只会看到空指针）
     input.Close();
-    probe.Release();
-    color_probe.Release();
-
-    // ---- 音频解码收尾（flush 解码器与 swr 缓存）----
-    const bool audio_decoder_ready = audio_probe.ready;
-    const bool audio_rate_changed = audio_probe.rate_changed;
-    if (options.analyze_audio_qc && audio_decoder_ready) {
-        avcodec_send_packet(audio_probe.decoder, nullptr);
-        while (avcodec_receive_frame(audio_probe.decoder, audio_probe.frame) >= 0) {
-            feed_audio_frame(audio_probe.frame);
-            av_frame_unref(audio_probe.frame);
-        }
-        if (audio_probe.swr != nullptr && audio_probe.out_data != nullptr &&
-            audio_probe.channels > 0) {
-            std::vector<const float*> planes(static_cast<size_t>(audio_probe.channels));
-            int got = swr_convert(audio_probe.swr, audio_probe.out_data, audio_probe.out_frames,
-                                  nullptr, 0);
-            while (got > 0) {
-                for (int c = 0; c < audio_probe.channels; ++c) {
-                    planes[static_cast<size_t>(c)] =
-                        reinterpret_cast<const float*>(audio_probe.out_data[c]);
-                }
-                audio_qc.OnSamples(planes.data(), got, -1.0);
-                got = swr_convert(audio_probe.swr, audio_probe.out_data, audio_probe.out_frames,
-                                  nullptr, 0);
-            }
-        }
-        audio_probe.Release();
-    }
 
     // ---- 结果归并 ----
     //
@@ -810,14 +303,15 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     // 字幕收尾要拿它兜底），各分析器 Finish 完之后才能发终态。
     AnalysisResultAssembler assembler(result, options);
     const double measured_duration = assembler.FinalizeBuckets(buckets, interval);
-    assembler.FinalizeTimeline(timeline_analyzer);
+    assembler.FinalizeTimeline(pipeline.timeline());
     assembler.FinalizeGopFrames();
-    assembler.FinalizeBitrateGop(bitrate_gop, video_stream_index);
-    assembler.FinalizeAudioQc(audio_qc, audio_stream_index, audio_decoder_ready, audio_rate_changed);
-    assembler.FinalizeColorHdr(color_hdr, color_video_stream_index);
-    assembler.FinalizeSubtitle(subtitle_analyzer, measured_duration);
-    assembler.FinalizeTimecode(timecode_analyzer);
-    assembler.FinalizeAuxData(aux_analyzer);
+    assembler.FinalizeBitrateGop(pipeline.bitrate_gop(), pipeline.video_stream_index());
+    assembler.FinalizeAudioQc(pipeline.audio_qc(), pipeline.audio_stream_index(),
+                              audio_decoder_ready, audio_rate_changed);
+    assembler.FinalizeColorHdr(pipeline.color_hdr(), pipeline.color_video_stream_index());
+    assembler.FinalizeSubtitle(pipeline.subtitle(), measured_duration);
+    assembler.FinalizeTimecode(pipeline.timecode());
+    assembler.FinalizeAuxData(pipeline.aux_data());
     assembler.Finish(callbacks);
 }
 
