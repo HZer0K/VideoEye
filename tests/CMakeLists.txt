@@ -752,6 +752,10 @@ set_tests_properties(EventTimelineViewToggleTests PROPERTIES
 videoeye_add_test(test_stream_views
     unit/test_stream_views.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/FramePacketView.cpp
+    # FramePacketView 的视频帧/GOP 子页与音频帧子页已各自抽成独立组件，本目标
+    # 手工列源（不走 UI_SOURCES），漏了会在链接期报符号未解析。
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/VideoFrameTableWidget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioFrameTableWidget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/StreamOverviewView.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/MacroblockView.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
@@ -928,4 +932,28 @@ target_link_libraries(test_visual_defect_page PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME VisualDefectPageTests COMMAND test_visual_defect_page)
 set_tests_properties(VisualDefectPageTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 49：文件结构页（容器结构 / MP4 样本表 / EBML 详情的页路由）
+# 说明: 这个页同时接通用结构树、MP4 box 表、MP4 样本表、EBML 详情表四种数据源，
+#       并按 format 在 QStackedWidget 上切到正确详情页。几条路由写错一个分支界面就
+#       停在旧页/空表且不崩，属于最难手动点测发现的回归。直接编页面源 +
+#       MetricChartWidget（AnalysisPageSupport.h 的 TableBatch 在那里），不整层拉
+#       analysis / FFmpeg。VE_PERF 走 infrastructure 的 Logger，所以补链
+#       VideoEyeInfrastructure。用 offscreen 平台跑，不需要显示器。
+# =================================================
+videoeye_add_test(test_container_structure_page
+    unit/test_container_structure_page.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/ContainerStructurePage.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/Mp4SampleTableWidget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+)
+target_link_libraries(test_container_structure_page PRIVATE
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    VideoEyeReporting
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME ContainerStructurePageTests COMMAND test_container_structure_page)
+set_tests_properties(ContainerStructurePageTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

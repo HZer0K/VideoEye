@@ -23,6 +23,10 @@
 namespace videoeye {
 namespace ui {
 
+class ControlBarWidget;  // 前向声明：控制栏独立组件 (见 ui/player/ControlBarWidget.{h,cpp})
+class AudioVizRenderer;   // 前向声明：音频可视化渲染器 (见 ui/player/AudioVizRenderer.{h,cpp})
+class RawImageSequence;   // 前向声明：Raw 图像序列 (见 ui/player/RawImageSequence.{h,cpp})
+
 // 播放区模块 (视频显示 + 控制栏 + 音频可视化 + Raw 序列)。
 //
 // VideoEye 的核心定位是视频文件分析, 播放只是辅助定位手段, 因此播放相关的一切
@@ -58,7 +62,7 @@ public:
     void ResetVideoUI();
     bool LoadRawImageFile(const QString& filename);
     void SetRawImageMode(bool on);             // 打开 raw/pcm/媒体时同步模式
-    bool IsShowingRawImage() const { return showing_raw_image_; }
+    bool IsShowingRawImage() const;            // 委托 RawImageSequence
     void SetMvOverlayEnabled(bool enabled);    // 宏块分析关闭时联动取消勾选
     // 当前媒体源: 停止后再次点播放需要重新 Open, 由 MainWindow 在 OpenMedia 时同步。
     // 同时负责换源时清掉上一份文件的叠加层缓存与状态栏统计。
@@ -87,10 +91,6 @@ private slots:
     void OnPlayPause();
     void OnStop();
     void OnSeek(int value);
-    void OnVolumeChanged(int value);
-    void OnMuteButtonClicked();
-    void OnPrevRawFrame();
-    void OnNextRawFrame();
 
     // MediaPlayer 信号
     void OnStateChanged(model::PlayerState state);
@@ -116,10 +116,6 @@ private:
     // 刷新分辨率与编码: 编码从 StreamInfo 取一次即缓存, 分辨率随实际帧尺寸变化更新。
     void RefreshOverlayMediaInfo(const QImage* frame = nullptr);
 
-    bool ShowRawFrame(int frame_index);
-    void UpdateRawNavigationState();
-    void RenderAudioVisualization(double timestamp_seconds);
-
     // === 时码显示（功能 9）===
     // 把当前播放位置换算成 SMPTE 时码显示在时间标签旁。起始时码默认 00:00:00:00，
     // 素材自带（tmcd 轨 / timecode tag）时由 SetStartTimecode 注入基准。
@@ -134,36 +130,25 @@ private:
 
     // === UI ===
     VideoWidget* video_widget_ = nullptr;
-    QWidget* control_bar_ = nullptr;
-    QPushButton* play_pause_button_ = nullptr;
-    QPushButton* stop_button_ = nullptr;
-    QPushButton* prev_frame_button_ = nullptr;
-    QPushButton* next_frame_button_ = nullptr;
-    QPushButton* volume_button_ = nullptr;
-    QSlider* volume_slider_ = nullptr;
-    QLabel* timecode_label_ = nullptr;
+    // 控制栏已抽为独立组件 ControlBarWidget (见 ui/player/ControlBarWidget.{h,cpp})。
+    // PlayerPanel 仅通过它的访问器取子控件并连信号 / 回写状态, 自身仍是协调层。
+    ControlBarWidget* control_bar_ = nullptr;
     double timecode_fps_ = 0.0;
     bool timecode_fps_resolved_ = false;
     bool timecode_start_valid_ = false;
     model::Timecode timecode_start_;
-    QPushButton* mv_overlay_button_ = nullptr;
-    QPushButton* collapse_player_button_ = nullptr;
-    QSlider* seek_slider_ = nullptr;
-    QLabel* time_label_ = nullptr;
 
     // 进度条交互状态
     bool slider_dragging_ = false;
     qint64 last_drag_seek_ms_ = 0;
     int last_seek_value_ = -1;
     qint64 last_seek_time_ = 0;
-    int last_volume_ = 100;
 
     // 当前媒体源 (停止后再次点播放需重新 Open)
     QString current_source_;
 
     // 模式标志
     bool audio_only_mode_ = false;
-    bool showing_raw_image_ = false;
     bool mv_overlay_enabled_ = false;
 
     // 叠加层缓存
@@ -173,27 +158,10 @@ private:
     QString last_status_text_;   // OnStateChanged 生成, UpdateOverlay 复用
     model::PlayerState last_known_state_ = model::PlayerState::Stopped;
 
-    // Raw 序列
-    QString raw_image_path_;
-    QString raw_pixel_format_;
-    int raw_width_ = 0;
-    int raw_height_ = 0;
-    qint64 raw_frame_size_ = 0;
-    int raw_total_frames_ = 0;
-    int raw_current_frame_ = 0;
-
-    // 音频可视化状态
-    QImage album_cover_;
-
-    std::deque<double> audio_level_history_;
-    std::deque<double> spectrum_history_;
-    QElapsedTimer audio_vis_timer_;
-    qint64 audio_vis_last_render_ms_ = -1;
-    double audio_vis_smoothed_ = 0.0;
-    double audio_vis_target_ = 0.0;
-    QVector<double> latest_spectrum_bins_;
-    QVector<double> latest_waveform_points_;
-    QVector<double> smoothed_spectrum_bins_;
+    // 音频可视化：状态与渲染逻辑已抽到 AudioVizRenderer（委托 + 模式门控在此）。
+    AudioVizRenderer* audio_vis_ = nullptr;
+    // Raw 图像序列：加载与逐帧浏览逻辑已抽到 RawImageSequence（Panel 仅做委托 + overlay 收口）。
+    RawImageSequence* raw_seq_ = nullptr;
 
     // 显隐状态
     QList<int> saved_splitter_sizes_;

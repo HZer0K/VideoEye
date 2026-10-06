@@ -26,21 +26,9 @@ constexpr size_t kMaxEventRecords = 5000;
 constexpr size_t kMaxSyncRecords = 5000;
 constexpr size_t kMaxTimelineRecords = 5000;
 constexpr int kMaxChartSamples = 300;
-
-// 裁剪记录向量到指定上限，移除最早的多余记录并重置表格（与 AnalysisPanel 内那份同语义）。
-template<typename T>
-void TrimRecords(std::vector<T>& records, size_t& synced_count,
-                 QTableWidget* table, bool& table_dirty, size_t max_count) {
-    if (records.size() <= max_count) return;
-    const size_t remove_count = records.size() - max_count;
-    records.erase(records.begin(), records.begin() + remove_count);
-    if (table) {
-        table->setRowCount(0);
-    }
-    synced_count = 0;
-    table_dirty = true;
-}
 } // namespace
+// 注：TrimRecords 原本在这里有一份匿名命名空间副本（与 FramePacketView 那份同语义），
+// 现已统一提到 AnalysisPageSupport.h，本文件直接用共享版本，不再各抄一份。
 
 EventTimelineView::EventTimelineView(QWidget* parent)
     : QWidget(parent) {

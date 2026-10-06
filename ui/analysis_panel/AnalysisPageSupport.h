@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <vector>
 
 #include "core/domain/model/MetricSeries.h"
 #include "ui/charts/MetricChartWidget.h"
@@ -91,6 +92,24 @@ inline void AppendDecimated(ChartSeries* series, const model::MetricSeries& curv
         for (std::size_t j = i + 1; j < end; ++j) v = std::max(v, curve.samples[j].value);
         batch.Add(curve.samples[i].timestamp_seconds, v);
     }
+}
+
+// 裁剪记录向量到指定上限：移除最早的多余记录，并让表格从头重建
+// （synced_count 归零 + 置脏，下一次 FlushPending 会整表重填）。
+//
+// 原为各页面里的匿名命名空间副本，随「音频帧子页」从 FramePacketView 抽出时提到这里：
+// 视频帧 / GOP / 包 / 音频帧四张表共用同一套裁剪语义，不该每拆一个子页就抄一份。
+template<typename T>
+inline void TrimRecords(std::vector<T>& records, std::size_t& synced_count,
+                        QTableWidget* table, bool& table_dirty, std::size_t max_count) {
+    if (records.size() <= max_count) return;
+    const std::size_t remove_count = records.size() - max_count;
+    records.erase(records.begin(), records.begin() + remove_count);
+    if (table) {
+        table->setRowCount(0);
+    }
+    synced_count = 0;
+    table_dirty = true;
 }
 
 // 大表批量填充: 先关掉刷新与重绘, 一次性预分配行数, 比逐行 insertRow 快一个量级

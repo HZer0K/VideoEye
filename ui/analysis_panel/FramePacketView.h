@@ -38,6 +38,9 @@ class QCheckBox;
 namespace videoeye {
 namespace ui {
 
+class AudioFrameTableWidget;  // 前向声明：音频帧子页 (见 AudioFrameTableWidget.{h,cpp})
+class VideoFrameTableWidget;  // 前向声明：视频帧 + GOP 摘要子页 (见 VideoFrameTableWidget.{h,cpp})
+
 class FramePacketView : public QWidget {
     Q_OBJECT
 
@@ -52,7 +55,9 @@ public:
                          std::function<void(int, bool)> set_enabled);
 
     // GOP 摘要的最新快照（面板在收到 GopSummariesChanged 后转给「流概览」区）
-    const std::vector<GopSummary>& GopSummaries() const { return gop_summaries_; }
+    // 视频帧记录与 GOP 推导都在 VideoFrameTableWidget 里，本页只转发快照。
+    // 定义在 .cpp：VideoFrameTableWidget 在这里只有前向声明，内联解引用不完整类型会编译失败。
+    const std::vector<GopSummary>& GopSummaries() const;
 
     bool HasPending() const;
     void FlushPending();
@@ -80,33 +85,16 @@ private:
     void SetupUi();
     void SyncTogglesFromHooks();
 
-    void RebuildFrameTable();
-    void RebuildGopTable();
-    void RebuildAudioFrameTable();
     void RebuildPacketTable();
-    void UpdateFrameSummary();
-    void UpdateAudioFrameSummary();
     void UpdatePacketSummary();
 
-    QString FrameTypeToString(int frame_type) const;
     QString PacketFlagsToString(int flags) const;
     QString PacketStreamTypeToName(int type) const;
     bool PacketMatchesFilter(const PacketRecord& record) const;
-    bool MatchesFrameFilter(const VideoFrameRecord& record) const;
 
-    void FlushPendingFrameTableUpdates();
-    void FlushPendingGopTableUpdates();
-    void FlushPendingAudioFrameTableUpdates();
     void FlushPendingPacketTableUpdates();
-    void AppendFrameRowToTable(const VideoFrameRecord& record);
-    void AppendAudioFrameRowToTable(const AudioFrameRecord& record);
     void AppendPacketRowToTable(const PacketRecord& record);
-    void UpdateGopRowInTable(int row, const GopSummary& summary);
 
-    void OnFrameFilterChanged();
-    void OnExportFrameCsv();
-    void OnExportAudioFrameCsv();
-    void OnExportGopCsv();
     void OnExportPacketCsv();
 
     // 包表选中 → 帧表按 PTS 跳转；帧表选中 → 包表按 PTS 跳转
@@ -117,53 +105,35 @@ private:
     std::function<void(int, bool)> set_enabled_;
 
     QTabWidget* sub_tabs_ = nullptr;
-    QWidget* video_sub_ = nullptr;      // 子页 0: 视频帧
     QWidget* packet_sub_ = nullptr;     // 子页 1: 包
-    QWidget* gop_sub_ = nullptr;        // 子页 2: GOP 摘要
-    QWidget* audio_sub_ = nullptr;      // 子页 3: 音频帧
-
-    QComboBox* frame_filter_combo_ = nullptr;
-    QLabel* frame_summary_label_ = nullptr;
-    QTableWidget* frame_table_ = nullptr;
-    QPushButton* export_frame_csv_button_ = nullptr;
-    QTableWidget* gop_table_ = nullptr;
-
-    QLabel* audio_frame_summary_label_ = nullptr;
-    QTableWidget* audio_frame_table_ = nullptr;
-    QPushButton* export_audio_frame_csv_button_ = nullptr;
+    // 子页 0（视频帧）与子页 2（GOP 摘要）已抽为 VideoFrameTableWidget，
+    // 子页 3（音频帧）已抽为 AudioFrameTableWidget，本页只持有指针并转发数据。
 
     QLabel* packet_summary_label_ = nullptr;
     QComboBox* packet_filter_combo_ = nullptr;
     QTableWidget* packet_table_ = nullptr;
     QPushButton* export_packet_csv_button_ = nullptr;
 
-    // 三个「启用分析」勾选框。必须留成员：SetFeatureHooks 注入钩子后要拿它们
-    // 把真实开关状态回写到界面，否则界面与实际行为不一致（评审 P1）。
-    QCheckBox* video_toggle_ = nullptr;
-    QCheckBox* audio_toggle_ = nullptr;
+    // 「启用分析」勾选框（视频帧 / 音频帧那两个在子页组件里，经各自的 toggle() 取）。
+    // 必须留成员：SetFeatureHooks 注入钩子后要拿它们把真实开关状态回写到界面，
+    // 否则界面与实际行为不一致（评审 P1）。
     QCheckBox* packet_toggle_ = nullptr;
+
+    // 已抽出的子页组件：记录缓存 / 脏标志 / 增量游标 / CSV 导出全在里面，本页只转发。
+    VideoFrameTableWidget* video_page_ = nullptr;  // 视频帧 + GOP 摘要
+    AudioFrameTableWidget* audio_page_ = nullptr;  // 音频帧
 
     int packet_filter_mode_ = -1;  // -1=全部, 0=视频流, 1=音频流, 2=其他流
     bool linking_ = false;         // 包/帧互跳回调重入保护
 
     // 记录缓存 + 增量同步游标（表格只在 FlushPending 时按游标补差量）
-    std::vector<VideoFrameRecord> frame_records_;
-    std::vector<AudioFrameRecord> audio_frame_records_;
+    // 视频帧 / GOP / 音频帧的记录缓存已随各自子页抽出，这里只剩包。
     std::vector<PacketRecord> packet_records_;
-    std::vector<GopSummary> gop_summaries_;
 
-    bool frame_table_dirty_ = false;
-    bool gop_table_dirty_ = false;
-    bool frame_summary_dirty_ = false;
-    bool audio_frame_table_dirty_ = false;
-    bool audio_frame_summary_dirty_ = false;
     bool packet_table_dirty_ = false;
     bool packet_summary_dirty_ = false;
 
-    size_t frame_table_synced_record_count_ = 0;
-    size_t gop_table_synced_count_ = 0;
-    size_t audio_frame_table_synced_record_count_ = 0;
-    size_t packet_table_synced_record_count_ = 0;
+    std::size_t packet_table_synced_record_count_ = 0;
 };
 
 }  // namespace ui

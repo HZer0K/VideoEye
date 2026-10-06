@@ -258,15 +258,16 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   `namespace analyzer` / `namespace utils`、不许写回 `analyzer::` / `utils::` 形式的引用、
   `videoeye` 下的具名子命名空间必须与所在目录同名。
 
-### 5.2 在册的命名空间偏差（下一轮待清）
+### 5.2 在册的命名空间偏差（已对齐，仅 `task` 有意保留）
 
 上面两条还清之后，`audit_namespace_layout.py` 的 R3 又抓出三处目录/命名空间错配。
-它们同样登记进了 `KNOWN_DEVIATIONS`，属于「明文列出来、有人认领」的债，不是漂移：
+它们同样登记进了 `KNOWN_DEVIATIONS`，属于「明文列出来、有人认领」的债，不是漂移。
+其中两处已在本轮对齐消除，`task` 是有意保留：
 
-| 位置 | 现状 | 为什么要留到下一轮 |
-|------|------|------------------|
-| `core/ffmpeg/`（10 文件） | 叫 `videoeye::ffmpegtool` | 改名到 `videoeye::ffmpeg` 是纯机械替换，但连带 `namespace ffmpegtool = videoeye::ffmpegtool;` 别名，且别和 `videoeye::ffmpeg_io`（`core/ffmpeg_io`）混 |
-| `core/player/FrameData.{h,cpp}` | 类型是 `videoeye::model` 的，文件却躺在 `core/player/` | 要么搬去 `core/domain/model/`（真正的跟目录走），要么开一条正例豁免；搬文件要同步改 include 链路与 CMake GLOB |
+| 位置 | 现状 | 处置 |
+|------|------|------|
+| `core/ffmpeg/`（10 文件） | 原叫 `videoeye::ffmpegtool` | ✅ 已改名为 `videoeye::ffmpeg`（跟目录走）；别名 `namespace ffmpegtool = videoeye::ffmpegtool;` 一并改为 `namespace ffmpeg = videoeye::ffmpeg;`，与 `videoeye::ffmpeg_io`（`core/ffmpeg_io`）无关、不混 |
+| `core/player/FrameData.{h,cpp}` | 类型属 `videoeye::model`，原躺在 `core/player/` | ✅ 已搬去 `core/domain/model/FrameData.{h,cpp}`（真正的跟目录走）；同步改了 Decoders.h / MediaPlayer.h / PlaybackSession.h / StreamInfoExtractor.h / test_frame_data.cpp 的 include 与 tests/CMakeLists.txt 的源路径；CMake GLOB 自动纳入 |
 | `infrastructure/concurrency/TaskManager.{h,cpp}` | 叫 `videoeye::task` | **有意保留**：任务协议 2026-10-05 已下沉到 `core/domain/task`，这里只放调度实现，属「协议与实现分家」 |
 
 ### 5.3 刻意保留、别去"修"的东西
@@ -285,11 +286,13 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   所以：**别为了"UI 不该碰 FFmpeg"这条洁癖去动它。** 真正要盯的是另一条 ——
   UI 里不许出现 FFmpeg 的**调用**（`av_read_frame` / `sws_scale` / `avformat_*`
   这类），常量映射不算。
-- **UI 侧仍有直接吃分析器的地方**。`AnalysisPanel` 已经只通过 `ui/AnalysisFacade` 拿
-  编排 / QC / 时间轴三件事，facade 的公开头也只剩 `AnalysisOptions`、`AnalysisResult` 与
-  domain model；但 `ColorHdrPage.cpp` 仍显式 include `ColorHdrAnalyzer.h`、
-  `BitrateGopPage.cpp` 仍 include `BitrateGopAnalyzer.h`（用 `BuildColorRows` 与
-  `BitrateAnomalyType`）。这两个函数/枚举下放到 domain 之后，UI 的 cpp 也能彻底不碰分析器。
+- **UI 侧直接吃分析器的地方已基本清掉**。`AnalysisPanel` 只通过 `ui/AnalysisFacade` 拿
+  编排 / QC / 时间轴；`ColorHdrPage.cpp` 与 `BitrateGopPage.cpp` 原先直连的
+  `ColorHdrAnalyzer.h` / `BitrateGopAnalyzer.h` 已下放——`BuildColorRows`、`BitrateAnomalyType`
+  与 `model::ToString(BitrateAnomalyType)` 都进了 `core/domain/model/`，两页现在只 include
+  结果头；`PlayerPanel.h` 的 `StreamAnalyzer.h`、`MainWindow.h` 的 `MediaInfoAnalyzer.h` /
+  `EbmlAnalyzer.h` 也已移除。仅剩：`AnalysisFacade.cpp`（门面，按设计本就该见分析器）与
+  `MainWindow.cpp:12` 仍 include `MediaInfoAnalyzer.h` 一处。
 - **`AnalysisPanel.cpp` 已从 2787 行降到 745 行**，拆出 12 个页面组件（见 4.1）。
   面板现在只剩协调职责：建页 → 注入 feature 钩子 → 播放期按开关过滤后转发数据 →
   扫描结束后分发结果。历史上它同时兼着"页面 + 数据仓库 + 表格控制器"三个角色，
@@ -299,6 +302,57 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   `OnExportMp4Box()` 与匿名命名空间的 `PopulateMp4BoxTablesInContainer()`（真正的实现
   已在 `ContainerStructurePage.cpp` 里）、只写不读的 `bitstream_page_index_`、
   以及三段属于码率 GOP / 音频 QC 页的重复格式化辅助函数。
+- **大文件拆解进展（2026-10-06 复核）**。`MediaPlayer.cpp` 已从 1404 行降到 **432 行**
+  （拆成 `export_controller_` / `container_inspection_` / `realtime_analysis_` / `open_controller_`
+  四个会话/控制器，播放机械对分析一无所知）；`AnalysisEngine.cpp` 从 1134 行降到 **225 行**
+  （拆成 `AnalysisPipeline` / `PacketScanLoop` / `AnalysisInputSession` /
+  `AnalysisResultAssembler` / `StreamingManifestScan`，本文件只管"何时建、何时分发、何时收尾"，
+  不再直接 include 任何具体分析器，§7.1 提到的 25 处 `if (options.analyze_xxx)` 随之消解，
+  注册表方案彻底作废）。  五个历史性大文件里，`ContainerStructurePage.cpp` 已抽出 `Mp4SampleTableWidget`
+  （MP4 样本表子页：轨道下拉 + 样本/问题/分片三表 + CSV 导出 + 结构树联动），退化为只做
+  "建页 → 注入数据 → 转发联动"的协调层，行数随之下降；`PlayerPanel.cpp` 也已迈出第一步，
+  抽出独立组件 `ControlBarWidget`（控制栏：播放/暂停/停止/逐帧/进度条/时间时码/音量/静音/MV/收起，
+  其中音量 / 静音两个纯本地 handler 留在组件内，其余用户意图经访问器交回 PlayerPanel 协调层，
+  `ui/player/ControlBarWidget.{h,cpp}`）；`PlayerPanel` 又抽出了 `AudioVizRenderer`（`ui/player/AudioVizRenderer.{h,cpp}`，
+  纯音频模式下把音量/频谱/波形画到 `VideoWidget` 的渲染器，自带全部音频可视化状态，面板仅做委托 +
+  `audio_only_mode_` 门控，构造时注入 `VideoWidget*`）；`PlayerPanel` 再抽出 `RawImageSequence`
+  （`ui/player/RawImageSequence.{h,cpp}`，Raw 裸数据序列：文件名推断尺寸 → 弹参数对话框 → 读盘解码 →
+  绘到 `VideoWidget` → 回写控制栏导航状态，9 个 `raw_*` 成员整体迁入，面板只留
+  `LoadRawImageFile` / `SetRawImageMode` / `IsShowingRawImage` 三个对 MainWindow 的委托接口）。
+  ⚠️ 构造顺序约束：`raw_seq_` 必须在 `SetupConnections()` **之前**建好 —— 逐帧按钮要连到它，
+  连 nullptr 会静默失效（与 §5.5「先建 UI 后建数据」同源）。至此 `PlayerPanel.cpp` 三刀拆完
+  （控制栏 / 音频可视化 / Raw 序列），自身仍是协调层，行数 1363 → 636。
+  `FramePacketView.cpp`（1121 行）也已抽出第一刀：`AudioFrameTableWidget`
+  （`ui/analysis_panel/AudioFrameTableWidget.{h,cpp}`，音频帧子页：明细表 + 汇总行 + CSV 导出 +
+  「启用分析」开关，记录缓存 / 脏标志 / 增量游标 / flush 全在组件内；开关经 `toggle()` 访问器
+  交回父页接线，父页只留 `ResetAudioFrames` / `AppendAudioFrame` 转发与 `HasPending`/`FlushPending`
+  汇总），行数 1121 → 928。随这一刀把 `TrimRecords` 从各页面的匿名命名空间副本统一提到
+  `AnalysisPageSupport.h`（视频帧/GOP/包/音频帧/事件时间轴共用同一套裁剪语义），并清掉
+  `RebuildGopTable` / `RebuildAudioFrameTable` 两个定义了却从未被调用的死函数。
+  `FramePacketView.cpp` 第二刀抽出 `VideoFrameTableWidget`
+  （`ui/analysis_panel/VideoFrameTableWidget.{h,cpp}`，**同时持有「视频帧」与「GOP 摘要」两个子页 widget**：
+  GOP 不是独立数据源，而是从帧的 pict_type/is_key_frame 推导出来的派生结果 —— 帧记录被裁剪时
+  GOP 要一并清空重建，帧汇总行要显示 GOP 段数，拆成两个组件就得把帧记录再暴露一遍做传导。
+  组件外露 `videoFramePage()` / `gopPage()` 由父页按**原顺序** addTab（0 视频帧 / 1 包 / 2 GOP / 3 音频帧），
+  tab 序号是帧表↔包表互跳 `setCurrentIndex(0/1)` 的依据，不能因搬家而变；另外露 `FrameRecords()` /
+  `frameTable()` 供父页做跨表 PTS 互跳，`GopSummariesChanged` 由组件发出、父页信号转发给面板）。
+  至此 `FramePacketView.cpp` 1121 → 543 行，只剩「包」子页 + tab 容器 + 跨表联动协调。
+  `FfmpegPanel.cpp` 第一刀抽出 `FfmpegDictionaryWidget`
+  （`ui/ffmpeg_panel/FfmpegDictionaryWidget.{h,cpp}`，右侧指令字典区：搜索 + 分类 + 词条列表 +
+  详情 + 「插入到命令」。唯一外耦是最后一步要写页面的命令输入框，解法是不持有 `command_edit_`、
+  改为发 `InsertRequested(snippet)` 信号由页面插入，组件因此不被页面的布局绑死），1076 → 949 行。
+  ⚠️ 新增 `ui/*.cpp` 时，**手工列源的测试目标要同步加**（`test_stream_views` 手列
+  `FramePacketView.cpp`，漏加 `AudioFrameTableWidget.cpp` / `VideoFrameTableWidget.cpp`
+  会在链接期 LNK2019；走 `${UI_SOURCES}` 的目标如 `test_scan_terminal_state` 由 GLOB 自动纳入，无需改）。
+  ⚠️ 头文件里**不要内联解引用仅前向声明的组件类型**（`GopSummaries()` 想返回
+  `video_page_->GopSummaries()` 就得把定义挪到 .cpp）：类的完整上下文只对本类成员有效，
+  对别的 incomplete type 无效，会报 C2027。
+  其余待拆页 / 文件：`FfmpegPanel.cpp` / `MainWindow.cpp` / `FramePacketView.cpp` 剩余三张表
+  （视频帧 / GOP / 包，可沿 `AudioFrameTableWidget` 同一套路继续切）。
+  12 个页面组件已有 5 个有测试（`VisualDefectPage` / `EventTimelineView` /
+  `StreamOverviewView` / `FramePacketView` / `ContainerStructurePage`；`test_container_structure_page`
+  覆盖 MP4→详情页1、MKV→详情页2、无效→通用页的页路由 + 结构树/样本轨下拉填充 + 开关 `FeatureToggled`，
+  且因只经 `findChild` 探测对象树，拆出 `Mp4SampleTableWidget` 后测试仍有效）。
 
 ### 5.4 CMake 管得住什么、管不住什么
 

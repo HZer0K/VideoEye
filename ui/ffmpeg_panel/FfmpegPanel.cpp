@@ -18,6 +18,7 @@
 
 #include "core/ffmpeg/FfmpegCommandParser.h"
 #include "core/ffmpeg/FfmpegToolLocator.h"
+#include "ui/ffmpeg_panel/FfmpegDictionaryWidget.h"
 #include "ui/theme/AppTheme.h"
 
 namespace videoeye {
@@ -54,16 +55,16 @@ FfmpegPanel::FfmpegPanel(QWidget* parent)
     : QWidget(parent) {
     BuildUi();
 
-    runner_ = new ffmpegtool::FfmpegProcessRunner(this);
-    connect(runner_, &ffmpegtool::FfmpegProcessRunner::OutputLine,
+    runner_ = new ffmpeg::FfmpegProcessRunner(this);
+    connect(runner_, &ffmpeg::FfmpegProcessRunner::OutputLine,
             this, &FfmpegPanel::OnRunOutput);
-    connect(runner_, &ffmpegtool::FfmpegProcessRunner::Finished,
+    connect(runner_, &ffmpeg::FfmpegProcessRunner::Finished,
             this, &FfmpegPanel::OnRunFinished);
 
-    probe_runner_ = new ffmpegtool::FfmpegProcessRunner(this);
-    connect(probe_runner_, &ffmpegtool::FfmpegProcessRunner::OutputLine,
+    probe_runner_ = new ffmpeg::FfmpegProcessRunner(this);
+    connect(probe_runner_, &ffmpeg::FfmpegProcessRunner::OutputLine,
             this, &FfmpegPanel::OnProbeOutput);
-    connect(probe_runner_, &ffmpegtool::FfmpegProcessRunner::Finished,
+    connect(probe_runner_, &ffmpeg::FfmpegProcessRunner::Finished,
             this, &FfmpegPanel::OnProbeFinished);
 
     const QString saved = settings_.value(QStringLiteral("ffmpeg/toolPath")).toString();
@@ -71,7 +72,6 @@ FfmpegPanel::FfmpegPanel(QWidget* parent)
         tool_path_edit_->setText(saved);
     }
 
-    RefreshDictionary();
     RefreshToolInfo();
     RefreshExplanation();
     StartProbes();
@@ -97,10 +97,19 @@ void FfmpegPanel::BuildUi() {
     left_layout->addWidget(BuildCommandArea(), 0);
     left_layout->addWidget(BuildOutputArea(), 1);
 
-    QWidget* right = BuildDictionaryArea();
-    right->setMinimumWidth(280);
+    // 指令字典区（右侧）：搜索 / 分类 / 详情 / 插入全在组件内。构造顺序要求它先建好，
+    // 下面 InsertRequested 才能接到命令输入框上。
+    dict_widget_ = new FfmpegDictionaryWidget(splitter);
+    // 「插入到命令」的目标（命令编辑框）属于页面，组件只发片段，这里负责落地。
+    connect(dict_widget_, &FfmpegDictionaryWidget::InsertRequested,
+            this, [this](const QString& snippet) {
+        command_edit_->insert(snippet);
+        command_edit_->setFocus();
+    });
+
+    dict_widget_->setMinimumWidth(280);
     splitter->addWidget(left);
-    splitter->addWidget(right);
+    splitter->addWidget(dict_widget_);
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 0);
     splitter->setSizes({760, 320});
@@ -266,44 +275,6 @@ QWidget* FfmpegPanel::BuildOutputArea() {
     return box;
 }
 
-QWidget* FfmpegPanel::BuildDictionaryArea() {
-    QGroupBox* box = new QGroupBox(tr("指令字典"), this);
-    QVBoxLayout* layout = new QVBoxLayout(box);
-    layout->setContentsMargins(10, 10, 10, 10);
-    layout->setSpacing(6);
-
-    search_edit_ = new QLineEdit(box);
-    search_edit_->setPlaceholderText(tr("搜索参数或滤镜，如 crf / scale / 码率"));
-    connect(search_edit_, &QLineEdit::textChanged, this, &FfmpegPanel::OnSearchTextChanged);
-    layout->addWidget(search_edit_);
-
-    category_combo_ = new QComboBox(box);
-    category_combo_->addItem(tr("全部分类"));
-    for (const QString& name : ffmpegtool::FfmpegCommandCatalog::CategoryNames()) {
-        category_combo_->addItem(name);
-    }
-    connect(category_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &FfmpegPanel::OnCategoryChanged);
-    layout->addWidget(category_combo_);
-
-    dict_list_ = new QListWidget(box);
-    dict_list_->setAlternatingRowColors(true);
-    connect(dict_list_, &QListWidget::currentItemChanged,
-            this, [this](QListWidgetItem*, QListWidgetItem*) { OnDictionaryCurrentChanged(); });
-    layout->addWidget(dict_list_, 1);
-
-    dict_insert_button_ = new QPushButton(tr("插入到命令"), box);
-    connect(dict_insert_button_, &QPushButton::clicked, this, &FfmpegPanel::OnInsertEntry);
-    layout->addWidget(dict_insert_button_);
-
-    dict_detail_ = new QTextBrowser(box);
-    dict_detail_->setOpenExternalLinks(true);
-    dict_detail_->setMinimumHeight(180);
-    layout->addWidget(dict_detail_, 1);
-
-    return box;
-}
-
 // ===================== 程序路径 =====================
 
 QString FfmpegPanel::CurrentToolPath() const {
@@ -311,7 +282,7 @@ QString FfmpegPanel::CurrentToolPath() const {
 }
 
 void FfmpegPanel::RefreshToolInfo() {
-    tool_info_ = ffmpegtool::FfmpegToolLocator::Resolve(CurrentToolPath());
+    tool_info_ = ffmpeg::FfmpegToolLocator::Resolve(CurrentToolPath());
     const bool usable = !tool_info_.path.isEmpty() && tool_info_.exists;
 
     QString text;
@@ -329,10 +300,10 @@ void FfmpegPanel::RefreshToolInfo() {
         const QString version = tool_version_.isEmpty() ? tr("(版本未知)") : tool_version_;
         text = tr("程序: %1\n来源: %2\n版本: %3")
                    .arg(tool_info_.path, tool_info_.origin, version);
-        if (ffmpegtool::FfmpegCapabilityCache::Instance().encoders_known()) {
+        if (ffmpeg::FfmpegCapabilityCache::Instance().encoders_known()) {
             text += tr("\n已加载 %1 个编码器、%2 个滤镜")
-                        .arg(ffmpegtool::FfmpegCapabilityCache::Instance().encoder_count())
-                        .arg(ffmpegtool::FfmpegCapabilityCache::Instance().filter_count());
+                        .arg(ffmpeg::FfmpegCapabilityCache::Instance().encoder_count())
+                        .arg(ffmpeg::FfmpegCapabilityCache::Instance().filter_count());
         }
         color = QLatin1String(theme::color::kSuccess);
     }
@@ -355,7 +326,7 @@ void FfmpegPanel::RefreshToolInfo() {
 }
 
 void FfmpegPanel::OnShowInstallGuide() {
-    const ffmpegtool::FfmpegInstallGuide guide = ffmpegtool::FfmpegToolLocator::InstallGuide();
+    const ffmpeg::FfmpegInstallGuide guide = ffmpeg::FfmpegToolLocator::InstallGuide();
 
     QString html = QStringLiteral("<h3 style='margin:2px'>%1</h3>")
                        .arg(tr("安装 ffmpeg（%1）").arg(guide.platform));
@@ -421,7 +392,7 @@ void FfmpegPanel::OnShowInstallGuide() {
 }
 
 QString FfmpegPanel::BuildInstallGuideText() const {
-    const ffmpegtool::FfmpegInstallGuide guide = ffmpegtool::FfmpegToolLocator::InstallGuide();
+    const ffmpeg::FfmpegInstallGuide guide = ffmpeg::FfmpegToolLocator::InstallGuide();
     QString out = tr("安装 ffmpeg（%1）\n").arg(guide.platform);
     out += guide.headline + QLatin1Char('\n');
     if (!guide.package_commands.isEmpty()) {
@@ -444,7 +415,7 @@ QString FfmpegPanel::BuildInstallGuideText() const {
 }
 
 void FfmpegPanel::OnOpenDownloadPage() {
-    const QString url = ffmpegtool::FfmpegToolLocator::InstallGuide().download_url;
+    const QString url = ffmpeg::FfmpegToolLocator::InstallGuide().download_url;
     if (url.isEmpty()) {
         return;
     }
@@ -454,7 +425,7 @@ void FfmpegPanel::OnOpenDownloadPage() {
 
 void FfmpegPanel::OnRedetectTool() {
     tool_version_.clear();
-    ffmpegtool::FfmpegCapabilityCache::Instance().Clear();
+    ffmpeg::FfmpegCapabilityCache::Instance().Clear();
     RefreshToolInfo();
     StartProbes();
     emit StatusMessage(tool_info_.exists ? tr("已找到 ffmpeg: %1").arg(tool_info_.path)
@@ -475,7 +446,7 @@ void FfmpegPanel::OnBrowseTool() {
     tool_path_edit_->setText(path);
     settings_.setValue(QStringLiteral("ffmpeg/toolPath"), path);
     tool_version_.clear();
-    ffmpegtool::FfmpegCapabilityCache::Instance().Clear();
+    ffmpeg::FfmpegCapabilityCache::Instance().Clear();
     RefreshToolInfo();
     StartProbes();
 }
@@ -484,7 +455,7 @@ void FfmpegPanel::OnResetTool() {
     tool_path_edit_->clear();
     settings_.remove(QStringLiteral("ffmpeg/toolPath"));
     tool_version_.clear();
-    ffmpegtool::FfmpegCapabilityCache::Instance().Clear();
+    ffmpeg::FfmpegCapabilityCache::Instance().Clear();
     RefreshToolInfo();
     StartProbes();
 }
@@ -497,7 +468,7 @@ void FfmpegPanel::OnToolPathEdited() {
         settings_.setValue(QStringLiteral("ffmpeg/toolPath"), path);
     }
     tool_version_.clear();
-    ffmpegtool::FfmpegCapabilityCache::Instance().Clear();
+    ffmpeg::FfmpegCapabilityCache::Instance().Clear();
     RefreshToolInfo();
     StartProbes();
 }
@@ -568,7 +539,7 @@ void FfmpegPanel::OnProbeOutput(const QString& text, bool /*is_error*/) {
     probe_buffer_ += text + QLatin1Char('\n');
 }
 
-void FfmpegPanel::OnProbeFinished(const ffmpegtool::FfmpegRunResult& result) {
+void FfmpegPanel::OnProbeFinished(const ffmpeg::FfmpegRunResult& result) {
     if (probe_launch_generation_ != probe_generation_) {
         // 被"换程序"作废的一趟。它的结果一个字都不能用。
         probe_buffer_.clear();
@@ -576,8 +547,8 @@ void FfmpegPanel::OnProbeFinished(const ffmpegtool::FfmpegRunResult& result) {
         return;
     }
 
-    if (result.status == ffmpegtool::FfmpegRunStatus::Failed ||
-        result.status == ffmpegtool::FfmpegRunStatus::StartError) {
+    if (result.status == ffmpeg::FfmpegRunStatus::Failed ||
+        result.status == ffmpeg::FfmpegRunStatus::StartError) {
         // -version 失败就别继续了：后面的能力清单同样拿不到
         probe_queue_.clear();
         RefreshToolInfo();
@@ -588,15 +559,15 @@ void FfmpegPanel::OnProbeFinished(const ffmpegtool::FfmpegRunResult& result) {
         return;
     }
 
-    auto& caps = ffmpegtool::FfmpegCapabilityCache::Instance();
+    auto& caps = ffmpeg::FfmpegCapabilityCache::Instance();
     if (probe_current_ == QLatin1String("-version")) {
-        tool_version_ = ffmpegtool::FfmpegToolLocator::ParseVersionLine(probe_buffer_);
+        tool_version_ = ffmpeg::FfmpegToolLocator::ParseVersionLine(probe_buffer_);
     } else if (probe_current_ == QLatin1String("-encoders")) {
-        caps.SetEncoders(ffmpegtool::FfmpegCommandCatalog::ParseEncoderNames(probe_buffer_));
+        caps.SetEncoders(ffmpeg::FfmpegCommandCatalog::ParseEncoderNames(probe_buffer_));
     } else if (probe_current_ == QLatin1String("-filters")) {
-        caps.SetFilters(ffmpegtool::FfmpegCommandCatalog::ParseFilterNames(probe_buffer_));
+        caps.SetFilters(ffmpeg::FfmpegCommandCatalog::ParseFilterNames(probe_buffer_));
     } else if (probe_current_ == QLatin1String("-formats")) {
-        const auto formats = ffmpegtool::FfmpegCommandCatalog::ParseFormatNames(probe_buffer_);
+        const auto formats = ffmpeg::FfmpegCommandCatalog::ParseFormatNames(probe_buffer_);
         caps.SetFormats(formats.demuxers, formats.muxers);
     }
     RunNextProbe();
@@ -657,9 +628,9 @@ void FfmpegPanel::RefreshExplanation() {
     explain_list_->blockSignals(false);
     explain_detail_->clear();
 
-    const auto parsed = ffmpegtool::ParseCommandLine(command_edit_->text());
-    if (parsed.status != ffmpegtool::CommandParseStatus::Ok) {
-        if (parsed.status != ffmpegtool::CommandParseStatus::Empty) {
+    const auto parsed = ffmpeg::ParseCommandLine(command_edit_->text());
+    if (parsed.status != ffmpeg::CommandParseStatus::Ok) {
+        if (parsed.status != ffmpeg::CommandParseStatus::Empty) {
             explain_detail_->setHtml(
                 QStringLiteral("<p style='color:%1'>%2</p>")
                     .arg(QLatin1String(theme::color::kDanger), EscapeHtml(parsed.message)));
@@ -667,7 +638,7 @@ void FfmpegPanel::RefreshExplanation() {
         return;
     }
 
-    explanation_ = ffmpegtool::FfmpegCommandExplainer::Explain(parsed.arguments);
+    explanation_ = ffmpeg::FfmpegCommandExplainer::Explain(parsed.arguments);
 
     explain_list_->blockSignals(true);
     for (const auto& item : explanation_.tokens) {
@@ -679,7 +650,7 @@ void FfmpegPanel::RefreshExplanation() {
             label += QStringLiteral("  ⚠");
         }
         QListWidgetItem* row = new QListWidgetItem(label);
-        if (!item.known && item.role == ffmpegtool::FfmpegTokenRole::UnknownOption) {
+        if (!item.known && item.role == ffmpeg::FfmpegTokenRole::UnknownOption) {
             row->setForeground(QColor(QLatin1String(theme::color::kTextMuted)));
         }
         explain_list_->addItem(row);
@@ -755,8 +726,8 @@ void FfmpegPanel::OnRun() {
         return;
     }
 
-    const auto parsed = ffmpegtool::ParseCommandLine(command_edit_->text());
-    if (parsed.status != ffmpegtool::CommandParseStatus::Ok) {
+    const auto parsed = ffmpeg::ParseCommandLine(command_edit_->text());
+    if (parsed.status != ffmpeg::CommandParseStatus::Ok) {
         QMessageBox::warning(this, tr("无法运行"), parsed.message);
         return;
     }
@@ -767,7 +738,7 @@ void FfmpegPanel::OnRun() {
         return;
     }
 
-    const QString pipe = ffmpegtool::DetectStdoutMediaOutput(parsed.arguments);
+    const QString pipe = ffmpeg::DetectStdoutMediaOutput(parsed.arguments);
     if (!pipe.isEmpty()) {
         QMessageBox::warning(this, tr("无法运行"),
                              tr("参数「%1」会把媒体数据写到标准输出（管道）。\n"
@@ -776,7 +747,7 @@ void FfmpegPanel::OnRun() {
         return;
     }
 
-    tool_info_ = ffmpegtool::FfmpegToolLocator::Resolve(CurrentToolPath());
+    tool_info_ = ffmpeg::FfmpegToolLocator::Resolve(CurrentToolPath());
     if (tool_info_.path.isEmpty() || !tool_info_.exists) {
         QMessageBox warning_box(this);
         warning_box.setWindowTitle(tr("无法运行"));
@@ -805,7 +776,7 @@ void FfmpegPanel::OnRun() {
     // 只写裸的 "ffmpeg"（或省略程序名）才用本页设置里的那个。
     QString program = tool_info_.path;
     if (parsed.program_is_path) {
-        if (!ffmpegtool::FfmpegToolLocator::IsExecutable(parsed.program_token)) {
+        if (!ffmpeg::FfmpegToolLocator::IsExecutable(parsed.program_token)) {
             QMessageBox::warning(this, tr("无法运行"),
                                  tr("命令里的 ffmpeg 路径「%1」不存在或不可执行。\n\n"
                                     "请改成一个真实存在的 ffmpeg；或者把命令开头写成不带路径的 "
@@ -827,7 +798,7 @@ void FfmpegPanel::OnRun() {
     output_tabs_->setCurrentWidget(log_view_);
 
     AppendLog(QStringLiteral("$ %1")
-                  .arg(ffmpegtool::FfmpegProcessRunner::BuildDisplayCommand(program, parsed.arguments)),
+                  .arg(ffmpeg::FfmpegProcessRunner::BuildDisplayCommand(program, parsed.arguments)),
               false);
     if (program != tool_info_.path) {
         AppendLog(tr("(命令里写了完整路径: 本次用它执行；本页设置的 %1 已被忽略)")
@@ -847,7 +818,7 @@ void FfmpegPanel::OnStop() {
     if (!runner_->IsRunning()) {
         return;
     }
-    if (ffmpegtool::FfmpegProcessRunner::CanQuitViaStdin(current_arguments_)) {
+    if (ffmpeg::FfmpegProcessRunner::CanQuitViaStdin(current_arguments_)) {
         AppendLog(tr("(用户请求停止: 已向 ffmpeg 发送 q，等它正常收尾；超时后会强制终止)"), false);
     } else {
         AppendLog(tr("(用户请求停止: 命令里有 -nostdin，ffmpeg 不读标准输入，"
@@ -875,7 +846,7 @@ void FfmpegPanel::AppendLog(const QString& text, bool is_error) {
     }
 }
 
-void FfmpegPanel::OnRunFinished(const ffmpegtool::FfmpegRunResult& result) {
+void FfmpegPanel::OnRunFinished(const ffmpeg::FfmpegRunResult& result) {
     SetRunUiState(false);
     exit_code_label_->setText(tr("退出码: %1").arg(result.exit_code));
     elapsed_label_->setText(tr("耗时: %1").arg(FormatDuration(result.elapsed_ms)));
@@ -883,15 +854,15 @@ void FfmpegPanel::OnRunFinished(const ffmpegtool::FfmpegRunResult& result) {
     QString text;
     QString color;
     switch (result.status) {
-    case ffmpegtool::FfmpegRunStatus::Finished:
+    case ffmpeg::FfmpegRunStatus::Finished:
         text = tr("状态: 完成");
         color = QLatin1String(theme::color::kSuccess);
         break;
-    case ffmpegtool::FfmpegRunStatus::Failed:
+    case ffmpeg::FfmpegRunStatus::Failed:
         text = tr("状态: 失败（退出码 %1）").arg(result.exit_code);
         color = QLatin1String(theme::color::kDanger);
         break;
-    case ffmpegtool::FfmpegRunStatus::Stopped:
+    case ffmpeg::FfmpegRunStatus::Stopped:
         // "停止"有两种：ffmpeg 自己收了尾（输出完整）和被强杀（输出多半坏了）。
         // 一律显示"已停止"会让用户拿一个坏掉的 mp4 当结果。
         text = result.stopped_cleanly() ? tr("状态: 已停止（正常收尾）")
@@ -899,7 +870,7 @@ void FfmpegPanel::OnRunFinished(const ffmpegtool::FfmpegRunResult& result) {
         color = result.stopped_cleanly() ? QLatin1String(theme::color::kWarning)
                                          : QLatin1String(theme::color::kDanger);
         break;
-    case ffmpegtool::FfmpegRunStatus::StartError:
+    case ffmpeg::FfmpegRunStatus::StartError:
         text = tr("状态: 无法启动");
         color = QLatin1String(theme::color::kDanger);
         break;
@@ -914,15 +885,15 @@ void FfmpegPanel::OnRunFinished(const ffmpegtool::FfmpegRunResult& result) {
     if (!result.error_message.isEmpty()) {
         AppendLog(QStringLiteral("错误: %1").arg(result.error_message), true);
     }
-    if (result.status == ffmpegtool::FfmpegRunStatus::Failed) {
+    if (result.status == ffmpeg::FfmpegRunStatus::Failed) {
         // ffmpeg 的错误原因几乎都在 stderr 上，帮用户直接切过去
         if (!error_view_->toPlainText().trimmed().isEmpty()) {
             output_tabs_->setCurrentWidget(error_view_);
         }
         emit StatusMessage(tr("ffmpeg 失败（退出码 %1）：请看「错误输出」").arg(result.exit_code));
-    } else if (result.status == ffmpegtool::FfmpegRunStatus::Finished) {
+    } else if (result.status == ffmpeg::FfmpegRunStatus::Finished) {
         emit StatusMessage(tr("ffmpeg 完成，耗时 %1").arg(FormatDuration(result.elapsed_ms)));
-    } else if (result.status == ffmpegtool::FfmpegRunStatus::Stopped) {
+    } else if (result.status == ffmpeg::FfmpegRunStatus::Stopped) {
         if (result.stopped_cleanly()) {
             emit StatusMessage(tr("ffmpeg 已停止（正常收尾，输出文件完整）"));
         } else {
@@ -970,106 +941,6 @@ void FfmpegPanel::SetCurrentFile(const QString& path) {
     insert_input_button_->setToolTip(path.isEmpty()
                                          ? tr("还没有打开媒体文件")
                                          : tr("插入: %1").arg(path));
-}
-
-// ===================== 字典 =====================
-
-void FfmpegPanel::RefreshDictionary() {
-    QString category = category_combo_->currentText();
-    if (category == tr("全部分类")) {
-        category.clear();
-    }
-    dict_results_ = ffmpegtool::FfmpegCommandCatalog::Search(search_edit_->text(), category);
-
-    const int keep = dict_list_->currentRow();
-    dict_list_->blockSignals(true);
-    dict_list_->clear();
-    for (const auto* entry : dict_results_) {
-        const QString label = entry->kind == ffmpegtool::FfmpegEntryKind::Filter
-                                  ? QStringLiteral("%1（滤镜）").arg(entry->name)
-                                  : entry->name;
-        QListWidgetItem* item = new QListWidgetItem(QStringLiteral("%1  %2").arg(label, entry->title));
-        item->setToolTip(entry->summary);
-        dict_list_->addItem(item);
-    }
-    dict_list_->blockSignals(false);
-
-    if (!dict_results_.empty()) {
-        const int row = (keep >= 0 && keep < dict_list_->count()) ? keep : 0;
-        dict_list_->setCurrentRow(row);
-    } else {
-        ShowEntryDetail(nullptr);
-    }
-}
-
-void FfmpegPanel::OnSearchTextChanged() {
-    RefreshDictionary();
-}
-
-void FfmpegPanel::OnCategoryChanged() {
-    RefreshDictionary();
-}
-
-void FfmpegPanel::OnDictionaryCurrentChanged() {
-    const int row = dict_list_->currentRow();
-    if (row < 0 || row >= static_cast<int>(dict_results_.size())) {
-        ShowEntryDetail(nullptr);
-        return;
-    }
-    ShowEntryDetail(dict_results_.at(row));
-}
-
-void FfmpegPanel::ShowEntryDetail(const ffmpegtool::FfmpegCatalogEntry* entry) {
-    if (entry == nullptr) {
-        dict_detail_->setHtml(
-            QStringLiteral("<p style='color:%1'>没有匹配的词条。</p>")
-                .arg(QLatin1String(theme::color::kTextSecondary)));
-        dict_insert_button_->setEnabled(false);
-        return;
-    }
-    dict_insert_button_->setEnabled(true);
-
-    QString html = QStringLiteral("<h3 style='margin:2px'>%1</h3>").arg(EscapeHtml(entry->name));
-    html += QStringLiteral("<p style='color:%2'>%1</p>")
-                .arg(EscapeHtml(entry->title), QLatin1String(theme::color::kAccent));
-    html += QStringLiteral("<p>%1</p>").arg(EscapeHtml(entry->summary));
-    html += QStringLiteral("<p>%1</p>").arg(EscapeHtml(entry->detail));
-    html += QStringLiteral("<p><b>适用位置:</b> %1</p>").arg(EscapeHtml(entry->position));
-    html += QStringLiteral("<p><b>示例:</b> <code>%1</code></p>").arg(EscapeHtml(entry->example));
-    if (!entry->typical_values.isEmpty()) {
-        html += QStringLiteral("<p><b>常见取值:</b> <code>%1</code></p>")
-                    .arg(EscapeHtml(entry->typical_values.join(QStringLiteral(" / "))));
-    }
-    if (!entry->related.isEmpty()) {
-        html += QStringLiteral("<p><b>相关:</b> %1</p>").arg(EscapeHtml(entry->related.join(QStringLiteral("、"))));
-    }
-    if (entry->kind == ffmpegtool::FfmpegEntryKind::Filter) {
-        html += QStringLiteral("<p style='color:%1'>滤镜只能出现在 -vf / -af / -filter_complex 里，"
-                               "「插入到命令」会自动补上对应的 -vf / -af。</p>")
-                    .arg(QLatin1String(theme::color::kTextSecondary));
-    }
-    dict_detail_->setHtml(html);
-}
-
-void FfmpegPanel::OnInsertEntry() {
-    const int row = dict_list_->currentRow();
-    if (row < 0 || row >= static_cast<int>(dict_results_.size())) {
-        return;
-    }
-    const ffmpegtool::FfmpegCatalogEntry* entry = dict_results_.at(row);
-    QString snippet = entry->insert_text;
-    if (entry->kind == ffmpegtool::FfmpegEntryKind::Filter) {
-        // 滤镜自己不能独立出现，按它所属的分类补上 -vf / -af
-        const QString prefix = (entry->category == ffmpegtool::FfmpegEntryCategory::Audio)
-                                   ? QStringLiteral("-af ")
-                                   : QStringLiteral("-vf ");
-        snippet = prefix + snippet;
-    }
-    if (!snippet.endsWith(QLatin1Char(' '))) {
-        snippet += QLatin1Char(' ');
-    }
-    command_edit_->insert(snippet);
-    command_edit_->setFocus();
 }
 
 }  // namespace ui

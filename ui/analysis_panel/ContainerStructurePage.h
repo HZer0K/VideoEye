@@ -22,6 +22,8 @@
 
 #include "core/domain/model/ContainerStructureInfo.h"
 
+#include "ui/analysis_panel/Mp4SampleTableWidget.h"
+
 namespace videoeye {
 namespace ui {
 
@@ -52,14 +54,7 @@ signals:
 
 private:
     void SetupUi();
-    void SetupMp4SampleTableSubPage(QWidget* parent);
-    void UpdateMp4SampleSummary();
-    void RebuildMp4SampleTable();
-    void RebuildMp4IssueTable();
-    void RebuildMp4FragmentTable();
-    void OnMp4SampleTrackChanged(int index);
     void OnContainerTreeSelectionChanged();
-    void OnExportMp4SampleCsv();
     void OnExportContainerStructure();
 
     bool feature_checked_ = true;
@@ -82,15 +77,8 @@ private:
     QTableWidget* co64_table_ = nullptr;
     QTableWidget* stss_table_ = nullptr;
 
-    // Sample Table 子页（MP4/fMP4 样本级一致性）
-    QWidget* mp4_sample_sub_ = nullptr;
-    QComboBox* mp4_sample_track_combo_ = nullptr;
-    QLabel* mp4_sample_summary_label_ = nullptr;
-    QLabel* mp4_sample_focus_label_ = nullptr;
-    QTableWidget* mp4_sample_table_ = nullptr;
-    QTableWidget* mp4_issue_table_ = nullptr;
-    QTableWidget* mp4_fragment_table_ = nullptr;
-    QPushButton* export_mp4_sample_button_ = nullptr;
+    // Sample Table 子页（MP4/fMP4 样本级一致性）—— 抽到独立组件
+    Mp4SampleTableWidget* mp4_sample_widget_ = nullptr;
 
     // Page 2: EBML 专用
     QTabWidget* ebml_detail_tabs_ = nullptr;
@@ -100,8 +88,6 @@ private:
 
     QPushButton* export_button_ = nullptr;
 
-    model::Mp4SampleTableResult mp4_samples_;
-    QString mp4_sample_focus_box_;   // 结构树点击的 box 名（"" = 不过滤）
     model::ContainerStructureResult result_;
 };
 

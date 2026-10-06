@@ -35,6 +35,8 @@
 namespace videoeye {
 namespace ui {
 
+class FfmpegDictionaryWidget;  // 前向声明：指令字典区 (见 FfmpegDictionaryWidget.{h,cpp})
+
 class FfmpegPanel : public QWidget {
     Q_OBJECT
 
@@ -66,22 +68,18 @@ private slots:
     void OnCommandTextChanged();
 
     void OnRunOutput(const QString& text, bool is_error);
-    void OnRunFinished(const ffmpegtool::FfmpegRunResult& result);
+    void OnRunFinished(const ffmpeg::FfmpegRunResult& result);
 
     void OnProbeOutput(const QString& text, bool is_error);
-    void OnProbeFinished(const ffmpegtool::FfmpegRunResult& result);
+    void OnProbeFinished(const ffmpeg::FfmpegRunResult& result);
 
-    void OnSearchTextChanged();
-    void OnCategoryChanged();
-    void OnDictionaryCurrentChanged();
-    void OnInsertEntry();
     void OnExplanationCurrentChanged();
 
 private:
     void BuildUi();
     QWidget* BuildCommandArea();
     QWidget* BuildOutputArea();
-    QWidget* BuildDictionaryArea();
+    // 指令字典区已抽为 FfmpegDictionaryWidget（见同目录），页面只把它放进 splitter。
 
     void RefreshToolInfo();
     void StartProbes();
@@ -95,8 +93,6 @@ private:
     /// 拼装"没找到 ffmpeg"时的安装指引对话框正文（纯文本，便于复制）
     QString BuildInstallGuideText() const;
 
-    void RefreshDictionary();
-    void ShowEntryDetail(const ffmpegtool::FfmpegCatalogEntry* entry);
     void RefreshExplanation();
     void AppendLog(const QString& text, bool is_error);
     void SetRunUiState(bool running);
@@ -131,12 +127,10 @@ private:
     QPushButton* copy_button_ = nullptr;
     QPushButton* save_button_ = nullptr;
 
-    // ---- 字典区 ----
-    QLineEdit* search_edit_ = nullptr;
-    QComboBox* category_combo_ = nullptr;
-    QListWidget* dict_list_ = nullptr;
-    QTextBrowser* dict_detail_ = nullptr;
-    QPushButton* dict_insert_button_ = nullptr;
+    // ---- 指令字典区 ----
+    // 已抽为独立组件 FfmpegDictionaryWidget：搜索 / 分类 / 列表 / 详情 / 插入全在
+    // 组件内，页面只把它放进 splitter 并接 InsertRequested 插到命令输入框。
+    FfmpegDictionaryWidget* dict_widget_ = nullptr;
 
     // ---- 状态 ----
     //
@@ -144,8 +138,8 @@ private:
     // ffmpeg 程序：中途换了路径，剩下几步如果继续用新路径跑，就会出现
     // "旧程序的版本号 + 新程序的编码器列表"。probe_program_ 是这一轮锁定的程序，
     // probe_generation_ 是这一轮的序号 —— 换程序时让旧序号失效，结果一律丢弃。
-    ffmpegtool::FfmpegProcessRunner* runner_ = nullptr;
-    ffmpegtool::FfmpegProcessRunner* probe_runner_ = nullptr;
+    ffmpeg::FfmpegProcessRunner* runner_ = nullptr;
+    ffmpeg::FfmpegProcessRunner* probe_runner_ = nullptr;
     QString probe_program_;
     QStringList probe_queue_;
     QString probe_current_;
@@ -154,14 +148,13 @@ private:
     int probe_launch_generation_ = 0;
     bool probe_restart_pending_ = false;
 
-    ffmpegtool::FfmpegToolInfo tool_info_;
+    ffmpeg::FfmpegToolInfo tool_info_;
     /// 本次运行的参数。停止时要用它判断能不能靠写 q 让 ffmpeg 优雅收尾。
     QStringList current_arguments_;
     QString tool_version_;
     QString current_media_path_;
     QString last_log_text_;
-    std::vector<const ffmpegtool::FfmpegCatalogEntry*> dict_results_;
-    ffmpegtool::FfmpegCommandExplanation explanation_;
+    ffmpeg::FfmpegCommandExplanation explanation_;
     QSettings settings_;
 };
 
