@@ -9,6 +9,7 @@
 #include <set>
 
 #include <algorithm>
+#include <cstring>
 #include <iomanip>
 #include <sstream>
 #include <string>
