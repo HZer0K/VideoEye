@@ -35,7 +35,7 @@ extern "C" {
 #include "core/domain/model/AnalysisEvent.h"
 #include "core/domain/model/AnalysisFeature.h"
 #include "core/domain/model/AudioVisualizationFrame.h"
-#include "core/player/FrameData.h"
+#include "core/domain/model/FrameData.h"
 #include "core/domain/model/SeekMode.h"
 #include "core/domain/model/PacketInfo.h"
 #include "core/domain/model/SyncSample.h"

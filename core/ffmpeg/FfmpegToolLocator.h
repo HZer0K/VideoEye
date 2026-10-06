@@ -34,7 +34,7 @@
 #include "videoeye/FfmpegToolConfig.h"
 
 namespace videoeye {
-namespace ffmpegtool {
+namespace ffmpeg {
 
 struct FfmpegToolInfo {
     QString path;                // 解析出的路径（可能为空 = 没找到）
@@ -78,5 +78,5 @@ public:
     static QString FindInDirectory(const QString& dir);
 };
 
-}  // namespace ffmpegtool
+}  // namespace ffmpeg
 }  // namespace videoeye

@@ -20,25 +20,25 @@
 
 namespace {
 
-using videoeye::ffmpegtool::AnalyzeCommandStructure;
-using videoeye::ffmpegtool::CommandParseStatus;
-using videoeye::ffmpegtool::DetectStdoutMediaOutput;
-using videoeye::ffmpegtool::FfmpegArgRole;
-using videoeye::ffmpegtool::FfmpegCapabilityCache;
-using videoeye::ffmpegtool::FfmpegCatalogEntry;
-using videoeye::ffmpegtool::FfmpegCommandCatalog;
-using videoeye::ffmpegtool::FfmpegCommandExplainer;
-using videoeye::ffmpegtool::FfmpegEntryKind;
-using videoeye::ffmpegtool::FfmpegFormatLists;
-using videoeye::ffmpegtool::FfmpegInstallGuide;
-using videoeye::ffmpegtool::FfmpegTokenRole;
-using videoeye::ffmpegtool::FfmpegToolInfo;
-using videoeye::ffmpegtool::FfmpegToolLocator;
-using videoeye::ffmpegtool::InformationOptionDescription;
-using videoeye::ffmpegtool::IsExplicitProgramPath;
-using videoeye::ffmpegtool::IsInformationCommand;
-using videoeye::ffmpegtool::LooksLikeFfmpegProgram;
-using videoeye::ffmpegtool::ParseCommandLine;
+using videoeye::ffmpeg::AnalyzeCommandStructure;
+using videoeye::ffmpeg::CommandParseStatus;
+using videoeye::ffmpeg::DetectStdoutMediaOutput;
+using videoeye::ffmpeg::FfmpegArgRole;
+using videoeye::ffmpeg::FfmpegCapabilityCache;
+using videoeye::ffmpeg::FfmpegCatalogEntry;
+using videoeye::ffmpeg::FfmpegCommandCatalog;
+using videoeye::ffmpeg::FfmpegCommandExplainer;
+using videoeye::ffmpeg::FfmpegEntryKind;
+using videoeye::ffmpeg::FfmpegFormatLists;
+using videoeye::ffmpeg::FfmpegInstallGuide;
+using videoeye::ffmpeg::FfmpegTokenRole;
+using videoeye::ffmpeg::FfmpegToolInfo;
+using videoeye::ffmpeg::FfmpegToolLocator;
+using videoeye::ffmpeg::InformationOptionDescription;
+using videoeye::ffmpeg::IsExplicitProgramPath;
+using videoeye::ffmpeg::IsInformationCommand;
+using videoeye::ffmpeg::LooksLikeFfmpegProgram;
+using videoeye::ffmpeg::ParseCommandLine;
 
 std::vector<std::string> ToStdList(const QStringList& list) {
     std::vector<std::string> out;
@@ -315,12 +315,12 @@ TEST(FfmpegCommandCatalog, SearchHitsByKeywordAndCategory) {
 
     const auto in_encoding = FfmpegCommandCatalog::Search(
         QString(), FfmpegCommandCatalog::CategoryName(
-                       videoeye::ffmpegtool::FfmpegEntryCategory::Encoding));
+                       videoeye::ffmpeg::FfmpegEntryCategory::Encoding));
     ASSERT_FALSE(in_encoding.empty());
     for (const auto* entry : in_encoding) {
         EXPECT_EQ(FfmpegCommandCatalog::CategoryName(entry->category),
                   FfmpegCommandCatalog::CategoryName(
-                      videoeye::ffmpegtool::FfmpegEntryCategory::Encoding));
+                      videoeye::ffmpeg::FfmpegEntryCategory::Encoding));
     }
 }
 

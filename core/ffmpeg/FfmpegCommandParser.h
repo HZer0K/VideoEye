@@ -16,7 +16,7 @@
 #include <vector>
 
 namespace videoeye {
-namespace ffmpegtool {
+namespace ffmpeg {
 
 enum class CommandParseStatus {
     Ok,                 // 解析成功
@@ -106,5 +106,5 @@ FfmpegCommandStructure AnalyzeCommandStructure(const QStringList& arguments);
 ///   * `-f md5` / `-f ffmetadata` 这类只产出文本的 muxer 可以放过。
 QString DetectStdoutMediaOutput(const QStringList& arguments);
 
-}  // namespace ffmpegtool
+}  // namespace ffmpeg
 }  // namespace videoeye

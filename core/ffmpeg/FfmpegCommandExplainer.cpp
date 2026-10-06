@@ -4,7 +4,7 @@
 #include "core/ffmpeg/FfmpegCommandParser.h"
 
 namespace videoeye {
-namespace ffmpegtool {
+namespace ffmpeg {
 namespace {
 
 // 允许出现在第一个 -i 之前的选项：全局开关 + 输入侧选项 + 两侧都能用的少数几个。
@@ -289,5 +289,5 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
     return out;
 }
 
-}  // namespace ffmpegtool
+}  // namespace ffmpeg
 }  // namespace videoeye

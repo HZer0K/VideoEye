@@ -5,7 +5,7 @@
 #include <QTimer>
 
 namespace videoeye {
-namespace ffmpegtool {
+namespace ffmpeg {
 namespace {
 
 // UTF-8 解码失败时 Qt 会填 U+FFFD。出现它就说明这行不是 UTF-8（Windows 上常见的是
@@ -283,5 +283,5 @@ void FfmpegProcessRunner::OnProcessError(QProcess::ProcessError error) {
     // 其余错误（读/写失败、崩溃）都以 finished() 收尾，这里不重复发 Finished。
 }
 
-}  // namespace ffmpegtool
+}  // namespace ffmpeg
 }  // namespace videoeye

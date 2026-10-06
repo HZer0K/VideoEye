@@ -47,6 +47,10 @@ Makefile
 *.ilk
 *.idb
 
+# Python 字节码缓存（scripts/*.py 被 ctest 直接调用后产生）
+__pycache__/
+*.py[cod]
+
 # Qt 生成文件
 .moc
 .uic

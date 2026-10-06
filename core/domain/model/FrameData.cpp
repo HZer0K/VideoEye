@@ -1,11 +1,7 @@
-#include "core/player/FrameData.h"
+#include "core/domain/model/FrameData.h"
 #include <cstring>
 #include <iomanip>
 #include <sstream>
-
-extern "C" {
-#include <libavutil/pixdesc.h>
-}
 
 namespace videoeye {
 namespace model {
@@ -98,40 +94,6 @@ void FrameData::Clear() {
         owned[i].clear();
         data[i] = nullptr;
         linesize[i] = 0;
-    }
-}
-
-void FrameData::CopyFrom(const FrameData& other) {
-    Clear();
-    width = other.width;
-    height = other.height;
-    format = other.format;
-    pts = other.pts;
-    timestamp = other.timestamp;
-    
-    const AVPixFmtDescriptor* desc =
-        av_pix_fmt_desc_get(static_cast<AVPixelFormat>(other.format));
-
-    for (int i = 0; i < 8; ++i) {
-        linesize[i] = other.linesize[i];
-        if (other.data[i] && other.linesize[i] > 0) {
-            int plane_height = other.height;
-            if (desc && (i == 1 || i == 2)) {
-                const int shift = desc->log2_chroma_h;
-                if (shift > 0) {
-                    plane_height = (other.height + (1 << shift) - 1) >> shift;
-                }
-            }
-
-            const int size = other.linesize[i] * plane_height;
-            if (size > 0) {
-                owned[i].resize(size);
-                std::memcpy(owned[i].data(), other.data[i], size);
-                data[i] = owned[i].data();
-            }
-        } else {
-            data[i] = nullptr;
-        }
     }
 }
 

@@ -26,7 +26,7 @@ ROOT = os.environ.get("VIDEOEYE_ROOT") or os.path.abspath(os.path.join(os.path.d
 
 # .workbuddy 里全是历史快照 / 构建日志 / 修复脚本，不是源码 —— 不排除的话
 # 光 analysis_backup、ns_rebuild 两棵子树就能把审计刷出 400+ 条噪音。
-SKIP_DIRS = {".git", "build", "vcpkg_installed", ".cache", "docs", "node_modules", "out",
+SKIP_DIRS = {".git", "build", "build-ninja", "vcpkg_installed", ".cache", "docs", "node_modules", "out",
              ".workbuddy", "scripts"}
 
 # R3 的已知偏差：(文件路径, 命名空间, 理由)。新出现的偏差不在表里就会被判违规。
@@ -37,20 +37,14 @@ KNOWN_DEVIATIONS = [
      "调用方一律写 mt::X（namespace mt = videoeye::manifest），不再有歧义。"),
     ("core/media/streaming/ManifestReader.h", "manifest",
      "同 ManifestText.h —— manifest 是 streaming 这一层的对外子命名空间。"),
-    # 下面是 2026-10-05 顺手被 R3 抓出来的**在册偏差**。本轮只清 analyzer / utils 两条
-    # （评审清单里点名的 85 处），这三条动到 130+ 处调用点，放到下一轮单独做。
-    # 登记的意义是：它们已经是「明文列出来、有人认领」的债，不再是看不见的漂移；
-    # 而且只要再冒出一个没登记的偏差，脚本照样红。
+    # 2026-10-05 清掉 analyzer / utils 两条历史包袱（评审清单点名的 85 处）后，
+    # R3 又抓出三条在册偏差：
+    #   - core/ffmpeg/ 叫 videoeye::ffmpegtool  → 已改名为 videoeye::ffmpeg（跟目录走，已消除）；
+    #   - core/player/FrameData 是 videoeye::model 却躺在 core/player/ → 已搬去
+    #     core/domain/model/（跟目录走，已消除）；
+    #   - infrastructure/concurrency/TaskManager 的 namespace task 是**有意**保留
+    #     （协议与实现分家），不属于漂移，继续登记。
     # 匹配写法：路径以 / 结尾按目录前缀匹配，否则按文件前缀匹配。
-    ("core/ffmpeg/", "ffmpegtool",
-     "core/ffmpeg/ 整层都叫 videoeye::ffmpegtool（10 个文件，130+ 处引用）。"
-     "改名到 videoeye::ffmpeg 是纯机械替换，但要连带改别名 "
-     "namespace ffmpegtool = videoeye::ffmpegtool;，且 core/ffmpeg_io 那边是 "
-     "videoeye::ffmpeg_io，别混。"),
-    ("core/player/FrameData.", "model",
-     "FrameData 是 videoeye::model 的类型，文件却躺在 core/player/ 下。"
-     "要么把文件搬去 core/domain/model/（真正的「跟目录走」），要么在 R3 里给它开一条"
-     "正例豁免。2026-10-05 先登记不搬 —— 搬文件要同步改 include 链路与 CMake GLOB。"),
     ("infrastructure/concurrency/TaskManager.", "task",
      "任务协议（TaskId / TaskState / TaskKind / CancelToken / TaskHandle）2026-10-05 "
      "已下沉到 core/domain/task，namespace task 是**有意**保留的子命名空间："

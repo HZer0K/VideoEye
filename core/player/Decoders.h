@@ -17,7 +17,7 @@ extern "C" {
 #include <thread>
 #include <condition_variable>
 
-#include "core/player/FrameData.h"
+#include "core/domain/model/FrameData.h"
 
 namespace videoeye {
 namespace player {

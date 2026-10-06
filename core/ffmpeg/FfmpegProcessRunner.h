@@ -32,7 +32,7 @@
 #include <QStringList>
 
 namespace videoeye {
-namespace ffmpegtool {
+namespace ffmpeg {
 
 enum class FfmpegRunStatus {
     Idle,
@@ -143,5 +143,5 @@ private:
     quint64 run_id_ = 0;
 };
 
-}  // namespace ffmpegtool
+}  // namespace ffmpeg
 }  // namespace videoeye

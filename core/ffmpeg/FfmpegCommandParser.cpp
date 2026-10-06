@@ -5,7 +5,7 @@
 #include "core/ffmpeg/FfmpegCommandCatalog.h"
 
 namespace videoeye {
-namespace ffmpegtool {
+namespace ffmpeg {
 namespace {
 
 // shell 操作符。只在**引号外**检测 —— "-vf drawtext=text='a|b'" 里的竖线是参数内容。
@@ -358,5 +358,5 @@ QString DetectStdoutMediaOutput(const QStringList& arguments) {
     return QString();
 }
 
-}  // namespace ffmpegtool
+}  // namespace ffmpeg
 }  // namespace videoeye

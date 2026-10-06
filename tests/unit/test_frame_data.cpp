@@ -3,7 +3,8 @@
 #include <cstdint>
 #include <vector>
 
-#include "core/player/FrameData.h"
+#include "core/domain/model/FrameData.h"
+#include "core/player/FrameDataCopy.h"
 
 extern "C" {
 #include <libavutil/pixfmt.h>
@@ -31,7 +32,9 @@ TEST(FrameDataTest, CopyFromCreatesIndependentPlaneStorage) {
     source.linesize[2] = 2;
 
     videoeye::model::FrameData copy;
-    copy.CopyFrom(source);
+    // 拷贝在 player 层：要按 av_pix_fmt_desc_get 算色度平面行数，
+    // 而 core/domain 禁 FFmpeg（scripts/check_layering.py 的 NO_FFMPEG）。
+    EXPECT_TRUE(videoeye::player::CopyFrameData(source, copy));
 
     ASSERT_NE(copy.data[0], nullptr);
     ASSERT_NE(copy.data[1], nullptr);

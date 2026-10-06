@@ -16,7 +16,7 @@
 #include <vector>
 
 namespace videoeye {
-namespace ffmpegtool {
+namespace ffmpeg {
 
 enum class FfmpegEntryCategory {
     Global,           // 全局
@@ -132,5 +132,5 @@ public:
     static QStringList ParseMuxerNames(const QString& output);
 };
 
-}  // namespace ffmpegtool
+}  // namespace ffmpeg
 }  // namespace videoeye

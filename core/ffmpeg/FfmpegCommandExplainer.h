@@ -20,7 +20,7 @@
 #include <vector>
 
 namespace videoeye {
-namespace ffmpegtool {
+namespace ffmpeg {
 
 enum class FfmpegTokenRole {
     InputFile,      // -i 的值
@@ -63,5 +63,5 @@ public:
     static FfmpegCommandExplanation Explain(const QStringList& arguments);
 };
 
-}  // namespace ffmpegtool
+}  // namespace ffmpeg
 }  // namespace videoeye

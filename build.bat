@@ -48,28 +48,15 @@ set "ISTEST=0"
 set "USE_PRESET="
 if /i "%PRESET%"=="test" set "PRESET=test-release"
 
-REM CMakeUserPresets.json (gitignored) pins this machine VS/SDK/cl.exe paths and
-REM provides the "*-local" presets. Prefer them whenever that file exists.
+REM CMakeUserPresets.json (gitignored) pins this machine VS/SDK/cl.exe paths.
+REM Its preset names are NOT fixed by convention: scripts/setup-windows-env.ps1
+REM emits "win-<x>-local", a hand-written file may just use "<x>". Probe what
+REM cmake actually reports instead of hard-coding one spelling.
 set "HAS_LOCAL=0"
 if exist "%~dp0CMakeUserPresets.json" set "HAS_LOCAL=1"
-set "LOCAL_SUFFIX="
-if "!HAS_LOCAL!"=="1" set "LOCAL_SUFFIX=-local"
-
-if /i "!PRESET!"=="release" set "USE_PRESET=win-release!LOCAL_SUFFIX!"
-if /i "!PRESET!"=="debug" set "USE_PRESET=win-debug!LOCAL_SUFFIX!"
-if /i "!PRESET!"=="test-release" set "USE_PRESET=win-test-release!LOCAL_SUFFIX!"
-if /i "!PRESET!"=="test-debug" set "USE_PRESET=win-test-debug!LOCAL_SUFFIX!"
 if /i "!PRESET!"=="test-release" set "ISTEST=1"
 if /i "!PRESET!"=="test-debug" set "ISTEST=1"
 
-if "!USE_PRESET!"=="" (
-    echo [ERROR] unknown preset: !PRESET!
-    echo usage: build.bat [release^|debug^|test^|test-debug^|clean]
-    exit /b 1
-)
-if "!HAS_LOCAL!"=="0" (
-    echo       CMakeUserPresets.json not found, using base preset: !USE_PRESET!
-)
 if "!HAS_LOCAL!"=="0" (
     if "!VCPKG_ROOT!"=="" (
         echo [ERROR] ¦Ä???? VCPKG_ROOT ????????
@@ -103,6 +90,21 @@ if not exist "!VCVARS!" (
     exit /b 1
 )
 call "!VCVARS!" x64 >nul
+REM ---- resolve the preset name that really exists (win-<x>-local > <x> > win-<x>) ----
+set "USE_PRESET="
+for /f "usebackq tokens=1 delims= " %%p in (`cmake --list-presets 2^>nul`) do (
+    set "P=%%p"
+    set "P=!P:"=!"
+    if /i "!P!"=="win-!PRESET!-local" set "USE_PRESET=win-!PRESET!-local"
+    if /i "!P!"=="!PRESET!" if "!USE_PRESET!"=="" set "USE_PRESET=!PRESET!"
+    if /i "!P!"=="win-!PRESET!" if "!USE_PRESET!"=="" set "USE_PRESET=win-!PRESET!"
+)
+if "!USE_PRESET!"=="" set "USE_PRESET=win-!PRESET!"
+if "!HAS_LOCAL!"=="1" (
+    echo       local preset: !USE_PRESET!
+) else (
+    echo       CMakeUserPresets.json not found, using base preset: !USE_PRESET!
+)
 
 REM ?????? FFmpeg (?????)
 echo [2/3] ??? FFmpeg...

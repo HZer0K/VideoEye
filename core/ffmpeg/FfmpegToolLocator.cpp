@@ -8,7 +8,7 @@
 #include <QStandardPaths>
 
 namespace videoeye {
-namespace ffmpegtool {
+namespace ffmpeg {
 namespace {
 
 QString BundleName() {
@@ -300,5 +300,5 @@ QString FfmpegToolLocator::ParseVersionLine(const QString& version_output) {
     return first_line.isEmpty() ? QString() : first_line;
 }
 
-}  // namespace ffmpegtool
+}  // namespace ffmpeg
 }  // namespace videoeye

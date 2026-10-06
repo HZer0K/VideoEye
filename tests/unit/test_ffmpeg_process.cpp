@@ -34,8 +34,8 @@
 
 #include "core/ffmpeg/FfmpegProcessRunner.h"
 
-// 本文件统一写 ffmpegtool::，用一个别名把它从 videoeye 里拎出来
-namespace ffmpegtool = videoeye::ffmpegtool;
+// 本文件统一写 ffmpeg::，用一个别名把它从 videoeye 里拎出来
+namespace ffmpeg = videoeye::ffmpeg;
 
 namespace {
 
@@ -94,30 +94,30 @@ int RunChildMode(const std::string& mode, const std::vector<std::string>& rest) 
 struct RunCapture {
     int started_count = 0;
     int finished_count = 0;
-    ffmpegtool::FfmpegRunResult result;
+    ffmpeg::FfmpegRunResult result;
     QStringList out;                              // 来自 stdout
     QStringList err;                              // 来自 stderr
-    QList<ffmpegtool::FfmpegStopStage> stages;    // StopStageChanged 的顺序
+    QList<ffmpeg::FfmpegStopStage> stages;    // StopStageChanged 的顺序
 };
 
 /// 把进程跑完（或超时）。on_started 在 Started 信号之后被调用，用来在进程中途 Stop。
 RunCapture RunToCompletion(const QString& program, const QStringList& arguments,
                            const QString& working_directory = QString(),
                            int timeout_ms = 8000,
-                           const std::function<void(ffmpegtool::FfmpegProcessRunner*)>& on_started =
-                               std::function<void(ffmpegtool::FfmpegProcessRunner*)>()) {
+                           const std::function<void(ffmpeg::FfmpegProcessRunner*)>& on_started =
+                               std::function<void(ffmpeg::FfmpegProcessRunner*)>()) {
     RunCapture capture;
-    ffmpegtool::FfmpegProcessRunner runner;
-    QObject::connect(&runner, &ffmpegtool::FfmpegProcessRunner::Started,
+    ffmpeg::FfmpegProcessRunner runner;
+    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::Started,
                      [&capture](const QString&) { ++capture.started_count; });
-    QObject::connect(&runner, &ffmpegtool::FfmpegProcessRunner::OutputLine,
+    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::OutputLine,
                      [&capture](const QString& text, bool is_error) {
                          (is_error ? capture.err : capture.out).push_back(text);
                      });
-    QObject::connect(&runner, &ffmpegtool::FfmpegProcessRunner::StopStageChanged,
-                     [&capture](ffmpegtool::FfmpegStopStage stage) { capture.stages.push_back(stage); });
-    QObject::connect(&runner, &ffmpegtool::FfmpegProcessRunner::Finished,
-                     [&capture](const ffmpegtool::FfmpegRunResult& result) {
+    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::StopStageChanged,
+                     [&capture](ffmpeg::FfmpegStopStage stage) { capture.stages.push_back(stage); });
+    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::Finished,
+                     [&capture](const ffmpeg::FfmpegRunResult& result) {
                          ++capture.finished_count;
                          capture.result = result;
                      });
@@ -207,11 +207,11 @@ TEST(FfmpegProcessRunner, StartErrorIsReportedOnce) {
     // 程序不存在: 必须一次性把 StartError 抛出来，不能既返回 false 又什么都不说，
     // 更不能先发一次 Finished 再让 errorOccurred 补第二次。
     RunCapture capture;
-    ffmpegtool::FfmpegProcessRunner runner;
-    QObject::connect(&runner, &ffmpegtool::FfmpegProcessRunner::Started,
+    ffmpeg::FfmpegProcessRunner runner;
+    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::Started,
                      [&capture](const QString&) { ++capture.started_count; });
-    QObject::connect(&runner, &ffmpegtool::FfmpegProcessRunner::Finished,
-                     [&capture](const ffmpegtool::FfmpegRunResult& result) {
+    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::Finished,
+                     [&capture](const ffmpeg::FfmpegRunResult& result) {
                          ++capture.finished_count;
                          capture.result = result;
                      });
@@ -222,7 +222,7 @@ TEST(FfmpegProcessRunner, StartErrorIsReportedOnce) {
     EXPECT_FALSE(runner.IsRunning());
     EXPECT_EQ(capture.started_count, 0);
     EXPECT_EQ(capture.finished_count, 1);
-    EXPECT_EQ(capture.result.status, ffmpegtool::FfmpegRunStatus::StartError);
+    EXPECT_EQ(capture.result.status, ffmpeg::FfmpegRunStatus::StartError);
     EXPECT_FALSE(capture.result.error_message.isEmpty());
 }
 
@@ -232,7 +232,7 @@ TEST(FfmpegProcessRunner, StartErrorWhenWorkingDirectoryMissing) {
                                                            QStringLiteral("exit"), QStringLiteral("0")},
                                          QStringLiteral("/definitely/not/here/either"));
     EXPECT_EQ(capture.finished_count, 1);
-    EXPECT_EQ(capture.result.status, ffmpegtool::FfmpegRunStatus::StartError);
+    EXPECT_EQ(capture.result.status, ffmpeg::FfmpegRunStatus::StartError);
 }
 
 // ===================== 输出 =====================
@@ -242,7 +242,7 @@ TEST(FfmpegProcessRunner, SeparateStdoutAndStderr) {
     const auto capture = RunToCompletion(g_child_program, {QStringLiteral("--videoeye-child"),
                                                            QStringLiteral("exit"), QStringLiteral("3")});
     ASSERT_EQ(capture.finished_count, 1);
-    EXPECT_EQ(capture.result.status, ffmpegtool::FfmpegRunStatus::Failed);
+    EXPECT_EQ(capture.result.status, ffmpeg::FfmpegRunStatus::Failed);
     EXPECT_EQ(capture.result.exit_code, 3);
     EXPECT_TRUE(capture.out.contains(QStringLiteral("child:out")));
     EXPECT_TRUE(capture.err.contains(QStringLiteral("child:err")));
@@ -256,7 +256,7 @@ TEST(FfmpegProcessRunner, ZeroExitCodeIsFinished) {
     const auto capture = RunToCompletion(g_child_program, {QStringLiteral("--videoeye-child"),
                                                            QStringLiteral("exit"), QStringLiteral("0")});
     ASSERT_EQ(capture.finished_count, 1);
-    EXPECT_EQ(capture.result.status, ffmpegtool::FfmpegRunStatus::Finished);
+    EXPECT_EQ(capture.result.status, ffmpeg::FfmpegRunStatus::Finished);
     EXPECT_EQ(capture.result.exit_code, 0);
 }
 
@@ -278,15 +278,15 @@ TEST(FfmpegProcessRunner, StopWritesQuitToStdin) {
     // 最关键的一条: 停止必须先试着让 ffmpeg 自己收尾（写 q），
     // 因为强杀出来的 mp4 没有 moov box，等于白跑。
     RunCapture capture;
-    ffmpegtool::FfmpegProcessRunner runner;
-    QObject::connect(&runner, &ffmpegtool::FfmpegProcessRunner::OutputLine,
+    ffmpeg::FfmpegProcessRunner runner;
+    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::OutputLine,
                      [&capture](const QString& text, bool is_error) {
                          (is_error ? capture.err : capture.out).push_back(text);
                      });
-    QObject::connect(&runner, &ffmpegtool::FfmpegProcessRunner::StopStageChanged,
-                     [&capture](ffmpegtool::FfmpegStopStage stage) { capture.stages.push_back(stage); });
-    QObject::connect(&runner, &ffmpegtool::FfmpegProcessRunner::Finished,
-                     [&capture](const ffmpegtool::FfmpegRunResult& result) {
+    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::StopStageChanged,
+                     [&capture](ffmpeg::FfmpegStopStage stage) { capture.stages.push_back(stage); });
+    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::Finished,
+                     [&capture](const ffmpeg::FfmpegRunResult& result) {
                          ++capture.finished_count;
                          capture.result = result;
                      });
@@ -296,7 +296,7 @@ TEST(FfmpegProcessRunner, StopWritesQuitToStdin) {
     ASSERT_TRUE(WaitForLine(capture, QStringLiteral("child:ready"), 5000));
 
     runner.Stop();
-    EXPECT_EQ(runner.stop_stage(), ffmpegtool::FfmpegStopStage::QuitSent);
+    EXPECT_EQ(runner.stop_stage(), ffmpeg::FfmpegStopStage::QuitSent);
 
     QElapsedTimer timer;
     timer.start();
@@ -306,14 +306,14 @@ TEST(FfmpegProcessRunner, StopWritesQuitToStdin) {
     }
 
     ASSERT_EQ(capture.finished_count, 1);
-    EXPECT_EQ(capture.result.status, ffmpegtool::FfmpegRunStatus::Stopped);
-    EXPECT_EQ(capture.result.stop_stage, ffmpegtool::FfmpegStopStage::QuitSent);
+    EXPECT_EQ(capture.result.status, ffmpeg::FfmpegRunStatus::Stopped);
+    EXPECT_EQ(capture.result.stop_stage, ffmpeg::FfmpegStopStage::QuitSent);
     EXPECT_TRUE(capture.result.stopped_cleanly());
     // 子进程确实收到了 q —— 没有这一行就说明根本没写 stdin
     EXPECT_TRUE(capture.out.contains(QStringLiteral("stdin:q")));
     // 优雅退出就不该再升级到 terminate / kill
-    EXPECT_FALSE(capture.stages.contains(ffmpegtool::FfmpegStopStage::Terminated));
-    EXPECT_FALSE(capture.stages.contains(ffmpegtool::FfmpegStopStage::Killed));
+    EXPECT_FALSE(capture.stages.contains(ffmpeg::FfmpegStopStage::Terminated));
+    EXPECT_FALSE(capture.stages.contains(ffmpeg::FfmpegStopStage::Killed));
 }
 
 TEST(FfmpegProcessRunner, StopEscalatesWhenQuitIsIgnored) {
@@ -321,24 +321,24 @@ TEST(FfmpegProcessRunner, StopEscalatesWhenQuitIsIgnored) {
     const auto capture = RunToCompletion(
         g_child_program, {QStringLiteral("--videoeye-child"), QStringLiteral("sleep"),
                           QStringLiteral("5000")},
-        QString(), 8000, [](ffmpegtool::FfmpegProcessRunner* runner) { runner->Stop(150, 150); });
+        QString(), 8000, [](ffmpeg::FfmpegProcessRunner* runner) { runner->Stop(150, 150); });
 
     ASSERT_EQ(capture.finished_count, 1);
-    EXPECT_EQ(capture.result.status, ffmpegtool::FfmpegRunStatus::Stopped);
+    EXPECT_EQ(capture.result.status, ffmpeg::FfmpegRunStatus::Stopped);
     // 子进程不读 stdin，q 劝不住它 —— 必须升级到终止/强杀
-    EXPECT_NE(capture.result.stop_stage, ffmpegtool::FfmpegStopStage::QuitSent);
+    EXPECT_NE(capture.result.stop_stage, ffmpeg::FfmpegStopStage::QuitSent);
 }
 
 TEST(FfmpegProcessRunner, StoppingOneRunDoesNotKillTheNext) {
     SKIP_IF_NO_CHILD_PROCESS();
     // 回归: 宽限定时器如果只按时间触发，前一个任务留下的定时器会杀掉下一个任务。
     // 做法: 先让 run1 在定时器到点前自己结束，再立刻起 run2 —— run2 必须能正常跑完。
-    ffmpegtool::FfmpegProcessRunner runner;
+    ffmpeg::FfmpegProcessRunner runner;
     RunCapture first;
-    QObject::connect(&runner, &ffmpegtool::FfmpegProcessRunner::OutputLine,
+    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::OutputLine,
                      [&first](const QString& text, bool) { first.out.push_back(text); });
-    QObject::connect(&runner, &ffmpegtool::FfmpegProcessRunner::Finished,
-                     [&first](const ffmpegtool::FfmpegRunResult& result) {
+    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::Finished,
+                     [&first](const ffmpeg::FfmpegRunResult& result) {
                          ++first.finished_count;
                          first.result = result;
                      });
@@ -357,8 +357,8 @@ TEST(FfmpegProcessRunner, StoppingOneRunDoesNotKillTheNext) {
 
     // 立刻跑第二条: 900ms 时上一代遗留的定时器会到点，绝不能动手
     RunCapture second;
-    QObject::connect(&runner, &ffmpegtool::FfmpegProcessRunner::Finished,
-                     [&second](const ffmpegtool::FfmpegRunResult& result) {
+    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::Finished,
+                     [&second](const ffmpeg::FfmpegRunResult& result) {
                          ++second.finished_count;
                          second.result = result;
                      });
@@ -371,14 +371,14 @@ TEST(FfmpegProcessRunner, StoppingOneRunDoesNotKillTheNext) {
     }
 
     ASSERT_EQ(second.finished_count, 1);
-    EXPECT_EQ(second.result.status, ffmpegtool::FfmpegRunStatus::Finished);
-    EXPECT_EQ(second.result.stop_stage, ffmpegtool::FfmpegStopStage::None);
+    EXPECT_EQ(second.result.status, ffmpeg::FfmpegRunStatus::Finished);
+    EXPECT_EQ(second.result.stop_stage, ffmpeg::FfmpegStopStage::None);
 }
 
 TEST(FfmpegProcessRunner, NostdinCannotBeStoppedGracefully) {
-    EXPECT_TRUE(ffmpegtool::FfmpegProcessRunner::CanQuitViaStdin(
+    EXPECT_TRUE(ffmpeg::FfmpegProcessRunner::CanQuitViaStdin(
         {QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("out.mp4")}));
-    EXPECT_FALSE(ffmpegtool::FfmpegProcessRunner::CanQuitViaStdin(
+    EXPECT_FALSE(ffmpeg::FfmpegProcessRunner::CanQuitViaStdin(
         {QStringLiteral("-nostdin"), QStringLiteral("-i"), QStringLiteral("in.mp4"),
          QStringLiteral("out.mp4")}));
 }

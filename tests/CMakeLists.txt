@@ -129,7 +129,9 @@ if(VIDEOEYE_PYTHON_EXE)
     # 改成把工作目录钉在源码根，与 pre-commit / CI 跑脚本时的目录一致。
     #
     # 用法：
-    #     ctest -R LayeringRulesTests --preset win-test-release-local
+    #     ctest -R LayeringRulesTests --preset <本机 test preset>
+    # preset 名见 `cmake --list-presets`（本机文件可能叫 test-release，
+    # 也可能叫 win-test-release-local，build.bat 会自动探测，别写死）。
     add_test(NAME LayeringRulesTests
              COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/check_layering.py)
     # 光看退出码不够：check_layering.py 有「打印了 [!] 却 return 0」的前科，
@@ -155,12 +157,19 @@ if(VIDEOEYE_PYTHON_EXE)
              COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/audit_namespace_layout.py)
     add_test(NAME NamespaceLayoutSelfTestTests
              COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test_audit_namespace_layout.py)
+    # ⚠️ 这几个脚本测试都靠「VIDEOEYE_ROOT 或当前目录」当仓库根（见各脚本顶部
+    # ROOT = os.environ.get("VIDEOEYE_ROOT") or os.getcwd()）。WORKING_DIRECTORY 已经
+    # 钉在源码根，但开发者 shell 里万一 export 了一个**过时**的 VIDEOEYE_ROOT（旧 checkout），
+    # 脚本就会去扫那份旧树、报旧违规，于是 LayeringRulesTests 莫名其妙 FAIL，而自测
+    # （test_check_layering.py 里显式 pop 掉 VIDEOEYE_ROOT）却一路绿——极难排查。
+    # 这里把 VIDEOEYE_ROOT 强制钉到真实源码根，让测试与机器环境解耦，谁 export 歪了都不影响。
     set_tests_properties(LayeringRulesTests LayeringSelfTestTests
                                             QtAnalysisBorderTests
                                             QtAnalysisBorderSelfTestTests
                                             NamespaceLayoutTests
                                             NamespaceLayoutSelfTestTests PROPERTIES
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        ENVIRONMENT "VIDEOEYE_ROOT=${CMAKE_SOURCE_DIR}")
 else()
     message(STATUS "未找到 python，跳过分层规则测试（CI 与 pre-commit 仍会跑）")
 endif()
@@ -295,7 +304,9 @@ add_test(NAME AnalysisSessionTests COMMAND test_analysis_session)
 # ============================================================
 videoeye_add_test(test_frame_data
     unit/test_frame_data.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/player/FrameData.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/FrameData.cpp
+    # 深拷贝要按 av_pix_fmt_desc_get 算色度平面行数，属 player 层（domain 禁 FFmpeg）
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/player/FrameDataCopy.cpp
 )
 target_link_libraries(test_frame_data PRIVATE
     FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swscale FFmpeg::swresample

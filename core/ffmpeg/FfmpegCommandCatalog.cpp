@@ -4,7 +4,7 @@
 #include <algorithm>
 
 namespace videoeye {
-namespace ffmpegtool {
+namespace ffmpeg {
 namespace {
 
 using Cat = FfmpegEntryCategory;
@@ -720,5 +720,5 @@ FfmpegFormatLists FfmpegCommandCatalog::ParseFormatNames(const QString& output) 
     return out;
 }
 
-}  // namespace ffmpegtool
+}  // namespace ffmpeg
 }  // namespace videoeye

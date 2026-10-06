@@ -108,7 +108,10 @@ struct FrameData {
     
     ~FrameData();
     void Clear();
-    void CopyFrom(const FrameData& other);
+
+    // 深拷贝（含色度下采样的平面行数换算）在 core/player/FrameDataCopy.h 的
+    // player::CopyFrameData() —— 那一步要问 FFmpeg 的 av_pix_fmt_desc_get，
+    // 而本层禁 FFmpeg（scripts/check_layering.py 的 NO_FFMPEG）。
 };
 
 } // namespace model
