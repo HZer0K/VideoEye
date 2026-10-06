@@ -855,4 +855,95 @@ TEST(TaskManagerTest, SupersededTaskEndCannotOverwriteNewTerminalState) {
     }
 }
 
+// --- BeginHandle: 被拒时必须是"完全空"的句柄 ---
+//
+// BeginHandle 失败信号是 id==0, 但句柄的每个字段都必须留空: 半份句柄(比如带上了
+// 别人 slot 的取消令牌)会被调用方当成有效凭证去 End/轮询, 那比直接失败更难查。
+TEST(TaskManagerTest, BeginHandleRejectionReturnsFullyEmptyHandle) {
+    TaskManager mgr(1);
+    const auto first = mgr.BeginHandle("slot-a");
+    EXPECT_TRUE(first.valid());
+
+    const auto rejected = mgr.BeginHandle("slot-b");
+    EXPECT_FALSE(rejected.valid());
+    EXPECT_EQ(rejected.id, 0u);
+    EXPECT_EQ(rejected.cancel.flag(), nullptr)
+        << "被拒绝的句柄不得带上任何任务的取消令牌";
+    EXPECT_TRUE(rejected.slot.empty());
+
+    mgr.End("slot-a", first.id, TaskState::Succeeded);
+}
+
+// --- BeginHandle: id 与取消令牌必须属于同一个任务 ---
+//
+// 回归: BeginHandle 原来是 "id = Begin(...); cancel = Token(slot)" 两次取锁。
+// 并发下 A 拿到 id 之后、取 Token 之前, 同 slot 完全可能被 B 接管 ——
+// A 的句柄于是带上 B 的取消令牌: 此后 A 被取代(Cancel 置位的是 A 自己的标志)时,
+// A 的 handle.cancel 依然读不到取消; 而 B 的取消又会被 A 的句柄误报。
+//
+// 判定不依赖时序, 分两条:
+//   1) 句柄还是当前任务 -> 它手里的令牌必须就是 slot 上那颗(双检排除期间被取代);
+//   2) 句柄已被取代    -> 它手里的令牌必须已经被置位(取代动作在锁内先置位旧令牌);
+//   3) 所有成功登记的句柄, 令牌两两不同 —— 旧实现会把同一颗令牌发给两个任务。
+// 任一条在旧实现下都会出违规计数, 正常实现下恒为 0。
+TEST(TaskManagerTest, ConcurrentBeginHandleKeepsIdAndCancelPaired) {
+    constexpr int kThreads = 8;
+    constexpr int kRounds = 60;
+    TaskManager mgr(4096);
+    const std::string slot = "handle-identity";
+
+    std::mutex record_mutex;
+    std::vector<TaskId> ids;
+    std::vector<std::shared_ptr<std::atomic<bool>>> flags;
+    std::atomic<int> accepted{0};
+    std::atomic<int> mismatched_token{0};    // 当前任务却拿着别人的令牌
+    std::atomic<int> stale_uncancelled{0};   // 已被取代却还没看到取消
+
+    Phase barrier(kThreads);
+    std::vector<std::thread> starters;
+    starters.reserve(kThreads);
+    for (int t = 0; t < kThreads; ++t) {
+        starters.emplace_back([&]() {
+            for (int r = 0; r < kRounds; ++r) {
+                barrier.Sync();   // 同一轮一起冲进 BeginHandle 的临界区
+                const auto handle = mgr.BeginHandle(slot, 0, TaskKind::BlockingIo);
+                if (!handle.valid())
+                    continue;
+                accepted.fetch_add(1);
+
+                // 1)/2) 身份与令牌的配对判定(见用例头注释)
+                const TaskId cur = mgr.CurrentId(slot);
+                if (cur == handle.id) {
+                    const auto slot_flag = mgr.Token(slot).flag();
+                    // 双检: 两次读之间若被取代, 这次样本作废(不是被测代码的问题)
+                    if (mgr.CurrentId(slot) == handle.id && slot_flag != handle.cancel.flag())
+                        mismatched_token.fetch_add(1);
+                } else if (!handle.cancel.IsCanceled()) {
+                    stale_uncancelled.fetch_add(1);
+                }
+
+                {
+                    std::lock_guard<std::mutex> lk(record_mutex);
+                    ids.push_back(handle.id);
+                    flags.push_back(handle.cancel.flag());
+                }
+                mgr.End(slot, handle.id, TaskState::Succeeded);
+            }
+        });
+    }
+    for (auto& th : starters)
+        th.join();
+
+    EXPECT_GT(accepted.load(), 0) << "一个句柄都没登记成功, 这条用例等于没测";
+    EXPECT_EQ(mismatched_token.load(), 0)
+        << "句柄还是当前任务时, handle.cancel 必须就是 slot 上那颗令牌";
+    EXPECT_EQ(stale_uncancelled.load(), 0)
+        << "句柄被取代后, handle.cancel 必须已经被置位(取代在同一把锁内先置位旧令牌)";
+
+    // 3) 令牌两两不同: 旧实现里同一个 slot 上的两次登记可能拿到同一颗令牌。
+    std::sort(flags.begin(), flags.end());
+    EXPECT_EQ(std::unique(flags.begin(), flags.end()), flags.end())
+        << "每次成功登记都必须持有自己新建的取消令牌, 不能被两次登记共用";
+}
+
 

@@ -171,76 +171,10 @@ void TaskManager::EndTask(Core& st, const std::string& slot, TaskId id, TaskStat
 // ---------------------------------------------------------------------------
 
 TaskId TaskManager::Begin(const std::string& slot, int wait_for_previous_ms, TaskKind kind) {
-    Slot* s = nullptr;
-    {
-        std::lock_guard<std::mutex> lk(core_->mutex);
-        s = FindOrCreateLocked(*core_, slot);
-        if (s->running.load(std::memory_order_acquire)) {
-            // 请求旧任务退出。它是否真的会停下来取决于任务体有没有轮询令牌,
-            // 但无论停不停, 它的结果都会被 IsCurrent() 判为过期而丢弃。
-            s->cancel->store(true, std::memory_order_release);
-        }
-    }
-
-    if (wait_for_previous_ms != 0)
-        WaitForIdle(slot, wait_for_previous_ms);
-
-    TaskId own_id = 0;
-    std::thread stale;
-    {
-        std::lock_guard<std::mutex> lk(core_->mutex);
-        s = FindOrCreateLocked(*core_, slot);
-
-        // 本 slot 即将被新任务接管, 统计并发时先把它扣掉
-        std::size_t running = RunningCountLocked(*core_);
-        if (s->running.load(std::memory_order_acquire) && running > 0)
-            --running;
-        if (running >= max_concurrent_) {
-            LOG_WARN("后台任务并发已满(" + std::to_string(max_concurrent_) + "), 拒绝新任务: " + slot);
-            return 0;
-        }
-
-        // 处理上一个受管线程: 已结束就地回收, 还在跑则转入待回收列表(关闭时统一处置)
-        if (s->thread.joinable()) {
-            if (!s->running.load(std::memory_order_acquire)) {
-                stale = std::move(s->thread);
-            } else {
-                // 两阶段登记(与 RunWithResult 里那段同理, 详细理由见那里): 可能抛异常的
-                // 部分(字符串拷贝 / 容器扩容)全部做完, 最后一步才把线程**无异常地**搬进来。
-                // 这里比那边还要紧一点 —— 一旦在 s->thread 已被搬空之后抛异常, 这条线程
-                // 就既不在 slot 上也不在孤儿表里, 临时对象析构时直接 std::terminate()。
-                OwnedThread orphan;                            // 不含线程
-                orphan.kind = s->kind;
-                orphan.id = s->current_id.load(std::memory_order_acquire);
-                orphan.slot = slot;                            // 可能抛(bad_alloc)
-                orphan.done = std::move(s->done);
-                orphans_.push_back(std::move(orphan));          // 可能抛(扩容)
-                orphans_.back().thread = std::move(s->thread);  // noexcept: 交出所有权
-                ++core_->orphan_count;
-            }
-            s->done = std::future<void>();
-        }
-
-        s->kind = kind;
-        s->cancel = std::make_shared<std::atomic<bool>>(false);
-        // 直接用 ++ 的结果, 不要在锁外回读 s->current_id: 这个 id 是本次 Begin 的身份,
-        // 它的唯一性由这把锁保证, 一旦出了锁就没有别的线程再动它 —— 但**别人**会动
-        // current_id 这个成员, 所以只能在锁内取值、带出去返回。
-        own_id = ++core_->next_id;
-        s->current_id.store(own_id, std::memory_order_release);
-        s->state.store(TaskState::Running, std::memory_order_release);
-        s->running.store(true, std::memory_order_release);
-    }
-
-    if (stale.joinable())
-        stale.join();
-
-    // 必须返回**本次自己登记的那个 id**, 不能在解锁之后回去重读 s->current_id ——
-    // 那条路有真实的竞态窗口: 解锁后到返回前, 另一个线程若对同一个 slot 调了 Begin(),
-    // 会把 current_id 推进到它自己那格, 于是调用方拿到的是**别人的** id。此后
-    // End() / IsCurrent() 都对着新任务生效: 旧任务的结果被当成"当前", 新任务的
-    // 终态被判成过期(那条 slot 上的任务归属就永久错位了)。
-    return own_id;
+    // Begin 只要身份; 完整句柄(id + 取消令牌 + kind + slot)统一由 BeginHandle 在
+    // **同一把锁内**一次生成。以前 Begin 与 BeginHandle 是两条各自取锁的路径,
+    // "先 Begin 再 Token(slot)"之间那两次取锁就是缺陷所在(见 BeginHandle 注释)。
+    return BeginHandle(slot, wait_for_previous_ms, kind).id;
 }
 
 TaskId TaskManager::Run(const std::string& slot, std::function<void(TaskId, CancelToken)> body,
@@ -263,20 +197,18 @@ TaskId TaskManager::Run(const std::string& slot, std::function<void(TaskId, Canc
 TaskId TaskManager::RunWithResult(const std::string& slot,
                                   std::function<TaskState(TaskId, CancelToken)> body,
                                   int wait_for_previous_ms, TaskKind kind) {
-    const TaskId id = Begin(slot, wait_for_previous_ms, kind);
+    // 一次锁内拿到完整句柄: id 与取消令牌必然属于同一个任务。
+    const TaskHandle handle = BeginHandle(slot, wait_for_previous_ms, kind);
+    const TaskId id = handle.id;
     if (id == 0 || !body) {
         if (id != 0) EndTask(*core_, slot, id, TaskState::Failed);
         return id;
     }
 
-    std::shared_ptr<std::atomic<bool>> cancel;
-    {
-        std::lock_guard<std::mutex> lk(core_->mutex);
-        Slot* s = FindLocked(*core_, slot);
-        if (!s)
-            return id;
-        cancel = s->cancel;
-    }
+    // 取消令牌直接取句柄里的那一份, 不再"Begin 之后重新回读 slot 上的 cancel":
+    // 两次取锁之间若同 slot 已被新任务接管, 回读到的就是**别人的**令牌 ——
+    // 本任务的取消信号永远落不到自己身上, worker 却以为自己能被取消。
+    const std::shared_ptr<std::atomic<bool>> cancel = handle.cancel.flag();
 
     // done_sig 要**同时**留在父作用域和线程里, 不能 move 进 lambda:
     // std::thread 构造失败时临时 lambda 会连同它独占的那份 promise 一起销毁,
@@ -372,15 +304,87 @@ TaskId TaskManager::RunBlockingIoWithResult(const std::string& slot,
 
 TaskHandle TaskManager::BeginHandle(const std::string& slot, int wait_for_previous_ms,
                                     TaskKind kind) {
+    Slot* s = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(core_->mutex);
+        s = FindOrCreateLocked(*core_, slot);
+        if (s->running.load(std::memory_order_acquire)) {
+            // 请求旧任务退出。它是否真的会停下来取决于任务体有没有轮询令牌,
+            // 但无论停不停, 它的结果都会被 IsCurrent() 判为过期而丢弃。
+            s->cancel->store(true, std::memory_order_release);
+        }
+    }
+
+    if (wait_for_previous_ms != 0)
+        WaitForIdle(slot, wait_for_previous_ms);
+
     TaskHandle handle;
-    handle.id = Begin(slot, wait_for_previous_ms, kind);
-    if (handle.id == 0)
-        return handle;   // 并发已满: id 为 0 就是唯一的失败信号, cancel/slot 一律留空
-    handle.slot = slot;
-    handle.kind = kind;
-    // 必须在 Begin 之后取: Begin 会换掉 slot 上的取消标志(每次 Begin 一份新的),
-    // 取早了拿到的是上一个任务的。
-    handle.cancel = Token(slot);
+    std::thread stale;
+    {
+        std::lock_guard<std::mutex> lk(core_->mutex);
+        s = FindOrCreateLocked(*core_, slot);
+
+        // 本 slot 即将被新任务接管, 统计并发时先把它扣掉
+        std::size_t running = RunningCountLocked(*core_);
+        if (s->running.load(std::memory_order_acquire) && running > 0)
+            --running;
+        if (running >= max_concurrent_) {
+            LOG_WARN("后台任务并发已满(" + std::to_string(max_concurrent_) + "), 拒绝新任务: " + slot);
+            // 空句柄: id=0 / 取消令牌为空 / slot 为空。id 是唯一的失败信号,
+            // 但"空"必须在每个字段上都成立 —— 否则调用方可能拿半份句柄去 End。
+            return TaskHandle{};
+        }
+
+        // 处理上一个受管线程: 已结束就地回收, 还在跑则转入待回收列表(关闭时统一处置)
+        if (s->thread.joinable()) {
+            if (!s->running.load(std::memory_order_acquire)) {
+                stale = std::move(s->thread);
+            } else {
+                // 两阶段登记(与 RunWithResult 里那段同理, 详细理由见那里): 可能抛异常的
+                // 部分(字符串拷贝 / 容器扩容)全部做完, 最后一步才把线程**无异常地**搬进来。
+                // 这里比那边还要紧一点 —— 一旦在 s->thread 已被搬空之后抛异常, 这条线程
+                // 就既不在 slot 上也不在孤儿表里, 临时对象析构时直接 std::terminate()。
+                OwnedThread orphan;                            // 不含线程
+                orphan.kind = s->kind;
+                orphan.id = s->current_id.load(std::memory_order_acquire);
+                orphan.slot = slot;                            // 可能抛(bad_alloc)
+                orphan.done = std::move(s->done);
+                orphans_.push_back(std::move(orphan));          // 可能抛(扩容)
+                orphans_.back().thread = std::move(s->thread);  // noexcept: 交出所有权
+                ++core_->orphan_count;
+            }
+            s->done = std::future<void>();
+        }
+
+        // 被取代即被取消（锁内收口）：上面第一把锁发出的取消，针对的是那一刻的 occupant；
+        // 两个取锁之间它完全可能被另一个 BeginHandle 换掉 —— 于是"取代 A 的其实是更晚的 B,
+        // 而 B 的第一把锁没看见 A"。此刻正被本句柄顶掉的任务，其令牌马上就会被覆盖，
+        // 取消必须在这里补发：否则它永远等不到取消（旧任务从此不可取消，正是评审描述的
+        // "句柄拿错令牌"终态之一）。测试见 ConcurrentBeginHandleKeepsIdAndCancelPaired。
+        if (s->running.load(std::memory_order_acquire))
+            s->cancel->store(true, std::memory_order_release);
+
+        // 句柄的全部字段必须在**写入 slot 之前**构造完成: 字符串拷贝与 make_shared 都可能
+        // 抛, 而 s->current_id / s->cancel 一旦写上, 这个任务就已经"存在于 slot 上"了 ——
+        // 此时若抛异常, 调用方拿不到句柄, 却留下一个没有归属者的 Running 任务。
+        handle.slot = slot;                                                       // 可能抛
+        handle.kind = kind;
+        handle.cancel = CancelToken(std::make_shared<std::atomic<bool>>(false));  // 可能抛
+        handle.id = ++core_->next_id;   // 锁内取值: 解锁后别人会推进 current_id
+
+        s->kind = kind;
+        s->cancel = handle.cancel.flag();
+        s->current_id.store(handle.id, std::memory_order_release);
+        s->state.store(TaskState::Running, std::memory_order_release);
+        s->running.store(true, std::memory_order_release);
+    }
+
+    if (stale.joinable())
+        stale.join();
+
+    // 这份句柄在**同一把锁内**完成"分配 id / 创建令牌 / 写入 slot", 所以 id 与 cancel
+    // 必然同属一个任务 —— 以前"Begin() 拿 id 后再 Token(slot) 拿令牌"分两次取锁,
+    // 中间被同 slot 的新任务接管时, 句柄里的取消令牌就变成下一个任务的(旧任务从此不可取消)。
     return handle;
 }
 

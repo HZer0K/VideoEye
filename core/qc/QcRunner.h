@@ -5,25 +5,33 @@
 // 背景：以前"分析一个文件"这件事散落在两条路径上 ——
 //   UI: QtAnalysisController（异步，Qt 信号）→ QcRuleEngine::Evaluate
 //   CLI/批量: 需要同步调用，且不能依赖 Qt 事件循环
-// QcRunner 把这两步缝成一个同步接口：AnalyzeFile() 返回就一定能拿到报告，
-// AnalyzeFile 内部那条 worker 线程在返回前已经 join 干净。
+// QcRunner 把这两步缝成一个同步接口：AnalyzeFile() 返回就一定能拿到报告。
+//
+// 职责边界（评审 P1-2 收敛的结果）：QcRunner 是**无状态同步执行器** —— 不持有任务
+// 调度器，并发完全由调用方（BatchQcRunner / ReportingPanel）决定与限制。
+// 以前它自己持有一个 TaskManager{2}，而批量扫描里每个分析请求都新建一个 QcRunner，
+// 于是"并发上限 2"变成"每个 QcRunner 两个"，全局上限根本没生效；且被 TaskManager 拒绝
+// （handle.valid()==false）之后代码仍会创建线程，"拒绝"形同虚设。现在这两件事都归
+// 调用方的调度器：没有内部 slot，也就没有"未获准仍启动线程"这条路径。
+//
+// 取消入口只剩一个：AnalyzeFile 的 callbacks.should_cancel。它被接进引擎的
+// cancel_source（FFmpeg 中断回调也能看见）—— 一条链路上只有这一颗标志。
 //
 // 实现方式：AnalyzeFile 起一条 worker 线程跑 AnalysisEngine（不依赖 QObject），
 // 用条件变量等待结果 —— 调用方不需要 QCoreApplication，也不会拖起事件循环。
+// worker 只按值捕获自持有的 shared state（Box，内含引擎本体），所以超预算时可以安全
+// detach：没有栈引用、也没有"宿主局部 shared_ptr"可悬空。
 // 代价是 progress / should_cancel 回调同样在 worker 线程触发，
 // 跨线程更新 UI 前要自己投递回主线程。
 
-#include <atomic>
 #include <functional>
 #include <string>
 
 #include "core/analysis/AnalysisOptions.h"
 #include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/domain/model/QcReport.h"
-#include "core/domain/task/TaskProtocol.h"
 #include "core/qc/QcAnalyzeRequest.h"
 #include "core/qc/QcProfile.h"
-#include "infrastructure/concurrency/TaskManager.h"
 
 namespace videoeye {
 namespace qc {
@@ -60,22 +68,7 @@ public:
     static QcAnalyzeFn MakeAnalyzeFunction(const QcProfile& profile,
                                            videoeye::AnalysisOptions options);
 
-    // 异步取消（批量任务的"取消"按钮最终走到这里）。
-    //
-    // 这里只剩这一个取消源: 过去 QcRunner 自己还有一枚 cancel_ 原子标志, 是"任务外"
-    // 的一层, 与分析内部的取消令牌各走各的; 现在取消统一落到 TaskManager 的 slot 令牌上,
-    // 任务体轮询的就是它 —— 一条链路上不再有第二枚标志。
-    void Cancel() { tasks_.Cancel(kSlot); }
-    bool IsCancelling() const { return tasks_.Token(kSlot).IsCanceled(); }
-
     static constexpr int kDefaultJoinBudgetMs = 30000;
-
-private:
-    // 每个 QcRunner 一条 slot: 分析线程归它管, 终态与取消也都记在这条 slot 上。
-    // 令牌每次 Begin 换一份, 所以这里不缓存, 要取就现取 IsCancelling()。
-    static constexpr const char* kSlot = "qc-runner";
-
-    task::TaskManager tasks_{2};
 };
 
 // 文件是否可被分析器打开（存在且非空）。把"文件不存在""路径是目录""文件为空"分开 ——

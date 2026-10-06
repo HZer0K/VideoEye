@@ -51,6 +51,12 @@ jobs:
       - name: Self-check namespace layout exit codes
         run: python3 scripts/test_audit_namespace_layout.py
 
+      # 测试规模与 README 快照对齐: README 里的计数曾经长期落后（写 48, 实际 49）。
+      # 这里只数 `tests/` 目录, 不需要构建, 放在这个 job 最便宜; 加了测试就一起更新
+      # README 表格和这里的数字, 否则 CI 直接红。
+      - name: Check test-count snapshot (README table)
+        run: python3 scripts/summarize_tests.py --expect 50
+
   build:
     name: Build (${{ matrix.os }})
     strategy:

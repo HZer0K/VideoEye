@@ -211,20 +211,31 @@ TEST(AnalysisTaskTest, RecycleNullAndUnstartedSafe) {
     EXPECT_FALSE(empty);
 }
 
-// 预算耗尽不能变成永久等待：任务体自始至终不置 body_done 时，RecycleTask 也必须在
-// 预算上（加上 join 这一次性开销）返回，否则析构路径就是评审 P1-3 点名的"无限等待"。
+// 预算耗尽只是**告警线**，不是 join 的上界：报告页走严格 Cooperative（见 RecycleTask），
+// 超预算也必须等任务体真正退出，绝不 detach —— 任务体捕获了面板 this，detach 之后
+// 它会往已销毁的 QWidget 上排队消息。
+//
+// 这里用一个"600ms 才退出、且忘了置 body_done"的任务体：预算(150ms)必然错过，
+// 断言返回值如实反映观测结果(false)，同时总耗时必须覆盖任务体的 600ms ——
+// 也就是说 join 确实等到了它退出，而不是放弃。
 TEST(AnalysisTaskTest, RecycleGivesUpAfterBudget) {
     auto task = std::make_shared<AnalysisTask>();
-    task->thread = std::thread([] { /* 故意不置 body_done，模拟卡在不可中断的调用里 */ });
+    task->thread = std::thread([] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(600));
+        // 故意不置 body_done：模拟任务体没按约定自报返回
+    });
 
     const auto start = std::chrono::steady_clock::now();
-    RecycleTask(task, 300);
+    const bool body_back = RecycleTask(task, 150);
     const auto elapsed_ms =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)
             .count();
 
-    EXPECT_GE(elapsed_ms, 300);   // 真的等过预算
-    EXPECT_LT(elapsed_ms, 5000);  // 但没有逾越上界
+    EXPECT_FALSE(body_back) << "预算内没等到 body_done, 必须如实返回 false（告警线）";
+    EXPECT_GE(elapsed_ms, 600)
+        << "严格 Cooperative: 超预算后仍然 join 到任务体真正退出（不 detach）; 实测 "
+        << elapsed_ms << "ms";
+    EXPECT_LT(elapsed_ms, 5000);
     EXPECT_FALSE(task);           // 无论如何都把句柄还了出来
 }
 

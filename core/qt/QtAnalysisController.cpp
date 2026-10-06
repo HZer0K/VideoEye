@@ -1,6 +1,5 @@
 #include "core/qt/QtAnalysisController.h"
 
-#include <cstdio>
 #include <utility>
 
 #include <QMetaType>
@@ -13,7 +12,6 @@ namespace qt {
 
 QtAnalysisController::QtAnalysisController(QObject* parent)
     : QObject(parent), alive_(std::make_shared<std::atomic<bool>>(true)) {
-    std::fprintf(stderr, "[TF] controller ctor enter this=%p\n", static_cast<const void*>(this)); std::fflush(stderr);
     // AnalysisResult 要跨线程走队列连接，必须先在元类型系统里注册，
     // 否则排队时会报 "QObject::connect: Cannot queue arguments" 而槽永远不被调用。
     qRegisterMetaType<model::AnalysisResult>("videoeye::model::AnalysisResult");
@@ -24,16 +22,13 @@ QtAnalysisController::QtAnalysisController(QObject* parent)
     // 必须排队（顺便也避免任何人以后把本对象 moveToThread 之后语义悄悄变直连）。
     connect(this, &QtAnalysisController::WorkerExited,
             this, &QtAnalysisController::OnWorkerExited, Qt::QueuedConnection);
-    std::fprintf(stderr, "[TF] controller ctor leave\n"); std::fflush(stderr);
 }
 
 QtAnalysisController::~QtAnalysisController() {
-    std::fprintf(stderr, "[TF] controller dtor enter this=%p\n", static_cast<const void*>(this)); std::fflush(stderr);
     // 析构路径要设总预算：此时已经没有界面要响应，但也不接受无限等下去。
     shutting_down_ = true;
     if (alive_) alive_->store(false, std::memory_order_release);
     Shutdown();
-    std::fprintf(stderr, "[TF] controller dtor leave\n"); std::fflush(stderr);
 }
 
 quint64 QtAnalysisController::StartAnalysis(const std::string& file_path,
@@ -58,7 +53,11 @@ quint64 QtAnalysisController::StartAnalysis(const std::string& file_path,
         //
         // 但 id 得先占下来(与旧行为一致): 这个号将来完成时发的就是它,
         // 而且 Cancel() 要靠它把排队任务从 slot 上摘掉。
-        const task::TaskHandle handle = tasks_.BeginHandle(kSlot, 0, task::TaskKind::Cooperative);
+        //
+        // Kind 一律 BlockingIo: 分析链路里有 FFmpeg 网络 IO，即使装了中断回调也不保证
+        // 立刻返回 —— 关闭预算耗尽时 Shutdown() 会 detach（见那里的注释），这与协议里
+        // BlockingIo 的语义一致。任务体只按值捕获盒子，detach 后自洽。
+        const task::TaskHandle handle = tasks_.BeginHandle(kSlot, 0, task::TaskKind::BlockingIo);
         if (!handle.valid())
             return 0;  // 并发已满：交给调用方按失败处理（旧实现是永远排在 pending_ 里）
         pending_ = PendingRequest{file_path, options, handle};
@@ -73,7 +72,7 @@ quint64 QtAnalysisController::StartAnalysis(const std::string& file_path,
     // 若还按 (a) 之外的逻辑排队，第二次分析就会**永久卡在 pending_**（界面上表现为
     // 只能成功分析一次的"扫描中"）。这里 join 只是收句柄 —— 线程体已返回，不会阻塞。
     ReapWorker();
-    const task::TaskHandle handle = tasks_.BeginHandle(kSlot, 0, task::TaskKind::Cooperative);
+    const task::TaskHandle handle = tasks_.BeginHandle(kSlot, 0, task::TaskKind::BlockingIo);
     if (!handle.valid())
         return 0;
     Launch(file_path, options, handle);
@@ -224,22 +223,17 @@ void QtAnalysisController::OnWorkerExited(task::TaskId exited_id) {
 }
 
 void QtAnalysisController::Cancel() {
-    std::fprintf(stderr, "[TF] cancel enter\n"); std::fflush(stderr);
     // 排队中的请求一并作废：用户点了取消就不该再"自作主张"开始下一轮扫描。
     // 它已经占了一个 id（BeginHandle 时登记过），必须把终态还回去，否则那个 slot
     // 会一直停在 Running。
-    std::fprintf(stderr, "[TF] cancel check pending\n"); std::fflush(stderr);
     if (pending_) {
-        std::fprintf(stderr, "[TF] cancel pending engaged id=%llu slot=%s\n", (unsigned long long)pending_->handle.id, pending_->handle.slot.c_str()); std::fflush(stderr);
         tasks_.EndHandle(pending_->handle, task::TaskState::Canceled);
         pending_.reset();
     }
     // 置位 slot 上的取消令牌。工作线程里的引擎（Run 的 cancel_source）与
     // TaskManager 的终止判定看的是同一颗标志 —— 以前是 Cancel() 直接调 engine_.Cancel()，
     // 引擎那一颗与 slot 令牌互不相干，等于两套取消来源。
-    std::fprintf(stderr, "[TF] cancel before tasks_.Cancel\n"); std::fflush(stderr);
     tasks_.Cancel(kSlot);
-    std::fprintf(stderr, "[TF] cancel leave\n"); std::fflush(stderr);
 }
 
 bool QtAnalysisController::IsRunning() const {
@@ -247,26 +241,24 @@ bool QtAnalysisController::IsRunning() const {
 }
 
 void QtAnalysisController::Shutdown() {
-    std::fprintf(stderr, "[TF] shutdown enter\n"); std::fflush(stderr);
     // 先作废排队请求与取消令牌：任务体（引擎）看的就是这颗令牌。
     Cancel();
-    std::fprintf(stderr, "[TF] shutdown before AwaitWorker\n"); std::fflush(stderr);
     const bool body_returned = AwaitWorker(kJoinBudgetMs);
-    std::fprintf(stderr, "[TF] shutdown before handle\n"); std::fflush(stderr);
     const task::TaskHandle handle = worker_box_ ? worker_box_->handle : task::TaskHandle{};
 
-    std::fprintf(stderr, "[TF] shutdown before joinable\n"); std::fflush(stderr);
     if (worker_.joinable()) {
         if (body_returned) {
             ReapWorker();  // 线程体已返回，收句柄
             return;
         }
-        // 预算耗尽。任务体明明是协作式的（引擎会在取消令牌置位后收尾），走到这里说明它
-        // 卡在 FFmpeg 里没把令牌看一眼 —— 这种时候再等下去就是"关界面关不掉"。
-        // 只能放弃：所有 emit 都被 Alive() 挡着（上面已置 false），最坏是丢一次回包，
-        // 而不会让签发线程永远挂住退出流程。
+        // 预算耗尽。任务在 TaskManager 里登记的是 BlockingIo（见 StartAnalysis），
+        // 因为这条链路可能卡在 FFmpeg 的网络 IO 里 —— 即使有中断回调，也不保证回调
+        // 马上被检查（比如它只在下个网络包到来时才会被调用）。这种时候再等下去就是
+        // "关界面关不掉"，只能按协议放弃(detach)：线程只握着盒子，盒子自己保活到跑完；
+        // 所有 emit 都被 Alive() 挡着（上面已置 false），最坏是丢一次回包，
+        // 而不会让签发线程永远挂住退出流程，更不会访问已销毁的 QObject。
         LOG_WARN("分析工作线程在 " + std::to_string(kJoinBudgetMs) +
-                 "ms 内未响应取消，关闭时放弃该线程（任务体应轮询取消令牌）");
+                 "ms 内未响应取消，按 BlockingIo 契约放弃该线程（已置位取消令牌）");
         worker_.detach();   // 线程只握着盒子，盒子自己保活到跑完
         worker_id_ = 0;
         // 放弃之后它自己不会再回来写终态了，这里补一个 —— 否则 slot 永远停在 Running。
@@ -278,7 +270,6 @@ void QtAnalysisController::Shutdown() {
 
     // 线程体早已返回（OnWorkerExited / 上一条分支里收过），终态已经还过了 ——
     // SettleTask 是终态一次性的，这里什么都不用做。
-    std::fprintf(stderr, "[TF] shutdown before LOG_INFO\n"); std::fflush(stderr);
     LOG_INFO("分析工作线程已退出，关闭收尾完成");
 }
 

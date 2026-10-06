@@ -583,6 +583,18 @@ target_link_libraries(test_batch_qc_runner PRIVATE VideoEyeQc)
 add_test(NAME BatchQcRunnerTests COMMAND test_batch_qc_runner)
 
 # =================================================
+# 测试 26b：QcRunner 单文件执行器（生命周期错误路径 / 预算内结算 / join_budget_ms=0 超时 detach）
+# 说明: 用"垃圾内容 + .mp4 扩展名"的假文件触发引擎打开失败与超时, 不需要真实媒体样本;
+#       超时用例返回后测试继续存活, 是 ASan 对"detach 后悬空访问引擎"的回归落点。
+# 本目标只链 VideoEyeQc（不带 Qt）—— 同时也是"QC 模块零 Qt 依赖"的编译证据。
+# =================================================
+videoeye_add_test(test_qc_runner
+    unit/test_qc_runner.cpp
+)
+target_link_libraries(test_qc_runner PRIVATE VideoEyeQc)
+add_test(NAME QcRunnerTests COMMAND test_qc_runner)
+
+# =================================================
 # 测试 27：双文件对比（转码前后 / 同参数校验）
 # 说明: CompareRuns 读 QcRunResult.report 字段即可产生对比行，无需完整 analysis。
 # =================================================

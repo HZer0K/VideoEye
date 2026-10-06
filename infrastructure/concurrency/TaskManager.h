@@ -99,6 +99,12 @@ public:
     // std::thread)时用它就不必再走一次 Token(slot), 顺便也把"这是一次完整任务"这件事
     // 在调用点写清楚。handle 是这份任务在宿主里的唯一凭证, 任务体认的是它, 不是调用方
     // 自己另起的那套标志。
+    //
+    // handle 的所有字段(id / cancel / kind / slot)在**同一把锁内**一次生成, 所以
+    // handle.cancel 一定属于 handle.id 那条任务。不存在"先 Begin() 拿 id、再
+    // Token(slot) 拿令牌"那种两次取锁的写法 —— 那样写时, 两次取锁之间若同 slot 已被
+    // 新任务接管, 拿到的取消令牌就是下一个任务的, 本任务从此不可取消。
+    // Begin() 就是本函数的 id 版本(id == 0 即并发已满被拒, 此时其余字段也一律为空)。
     TaskHandle BeginHandle(const std::string& slot, int wait_for_previous_ms = 0,
                             TaskKind kind = TaskKind::Cooperative);
 

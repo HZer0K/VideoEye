@@ -88,8 +88,9 @@ private:
     // 报告页任务（单文件 / 批量）的槽位。取消与终态都归到这个 slot 上，与诊断页、
     // QcRunner 共用同一套 task::TaskHandle 协议，不再各写一份。
     //
-    // 归还终态只能发生在宿主线程：任务体捕获了 this（要往面板上刷结果），关停预算
-    // 耗尽时它会被放弃，那时 tasks_ 比它先析构，从线程里 EndHandle 就是悬空访问。
+    // 归还终态只能发生在宿主线程：任务体捕获了 this（要往面板上刷结果）。报告页走的是
+    // 严格 Cooperative（见 RecycleTask）：超预算也继续 join、不 detach，所以 tasks_ 一定
+    // 比任务体活得久；即便如此，终态也统一在宿主线程归还，不把调度器交到任务体手里。
     void RetireTask(std::shared_ptr<AnalysisTask>& task);
 
     // 批量请求的所有参数。必须在主线程里采集完再交给 worker ——

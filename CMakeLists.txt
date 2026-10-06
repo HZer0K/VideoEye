@@ -232,12 +232,16 @@ target_link_libraries(VideoEyeExporter
 )
 
 # --- qc: 规则引擎 / 批处理 / 对比 ---
+# core/qc 一层 Qt 符号都没有：QcRunner 直接跑 AnalysisEngine 回调（不依赖事件循环），
+# 报告与规则全是 std:: 类型。所以这里不再链 Qt6::Core —— 命令行 / headless / 单测
+# 链它就真的不带 Qt 编译环境；需要 Qt 的调用方（UI）自己显式链。
+# 回归证据 = 三个只链 VideoEyeQc 的测试目标：test_qc_profile / test_batch_qc_runner /
+# test_qc_comparator（加上 QcRunner 的 test_qc_runner），它们能编过就证明这条边可以不要。
 videoeye_add_module(VideoEyeQc ${QC_SOURCES})
 target_link_libraries(VideoEyeQc
     PUBLIC VideoEyeDomain
     PRIVATE VideoEyeAnalysis
             VideoEyeInfrastructure
-            Qt6::Core
 )
 
 # reporting 现在只吃纯结果类型：QC 报告走 QcExportBundle，流统计快照走

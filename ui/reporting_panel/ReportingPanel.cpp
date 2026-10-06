@@ -16,6 +16,8 @@
 #include "core/qc/QcProfileMapper.h"
 #include "core/reporting/QcReportExporter.h"
 
+#include "infrastructure/logging/Logger.h"
+
 #include "ui/reporting_panel/report_path.h"
 
 namespace videoeye {
@@ -451,10 +453,15 @@ void ReportingPanel::RetireTask(std::shared_ptr<AnalysisTask>& task) {
         tasks_.EndHandle(handle, handle.cancel.IsCanceled() ? task::TaskState::Canceled
                                                            : task::TaskState::Succeeded);
 
-    // 预算内等线程体返回 → join 收句柄 → 置空。报告页把自己归到协议里的 Cooperative
-    // 一边：任务体承诺响应取消令牌，超预算属于契约被破坏，宁可让退出流程多卡一会儿
-    // （有上界），也不冒 detach 之后往已销毁 QWidget 排队消息的风险。
-    RecycleTask(task);
+    // 回收：等线程体返回（观测预算）→ join 收句柄 → 置空。报告页归到协议的 Cooperative
+    // 一边，而且是**严格** Cooperative：任务体承诺响应取消令牌（取消链一路通到引擎与
+    // FFmpeg 中断回调），所以这里的 join 没有上界 —— 预算只是"预期多快收回来"的告警线。
+    // 任务体捕获了 this 并往面板上排队 UI 更新，detach 之后那些投递会落到已销毁的
+    // QWidget 上；在"硬性时间上限"与"不悬空访问"之间，报告页明确选后者。
+    if (!RecycleTask(task)) {
+        LOG_WARN("报告页任务回收超出预期预算 " + std::to_string(kDefaultRecycleBudgetMs) +
+                 "ms，按严格 Cooperative 继续等待其响应取消（不 detach）");
+    }
 }
 
 void ReportingPanel::StartSingleAnalysis(const std::string& path) {
@@ -501,11 +508,11 @@ void ReportingPanel::RunSingle(std::shared_ptr<AnalysisTask> task, const std::st
     // 取消只看令牌这一颗 —— 与批量扫描、诊断页、QcRunner 内部轮询的是同一个来源。
     callbacks.should_cancel = [task]() { return task->cancel.IsCanceled(); };
 
-    // 把这次分析的等待预算压到"回收预算"量级：面板关停时 RetireTask 只肯再等
-    // kDefaultRecycleBudgetMs，这里若还用 QcRunner 默认的 30s，关界面就变成
-    // 两段预算相加（5s 等任务体 + 30s 等引擎）—— 那不叫总预算，只是把卡住的
-    // 位置挪了个地方。超预算时 QcRunner 只持 Box 的 worker 会被放弃(detach)，
-    // RunSingle 照常返回，这里的最坏耗时就是两个数里大的那个。
+    // 把这次分析的等待预算压到"回收预算"量级：面板关停时 RetireTask 先置取消令牌，
+    // QcRunner 在等待循环里把它转成引擎的 cancel_source（FFmpeg 中断回调也能看见），
+    // 所以正常情况下任务体会很快自己收尾；这个预算只是兜底 —— 免得引擎卡在一次不响应
+    // 中断的调用里时，关界面变成"5s 等任务体 + 30s 等引擎"两段预算相加。超预算时
+    // QcRunner 只持 Box 的 worker 会被放弃(detach)，RunSingle 照常返回。
     qc::QcRunResult result = runner.AnalyzeFile(
         path, profile, qc::OptionsForDepth(profile.depth), callbacks, kDefaultRecycleBudgetMs);
     PostToUi(task, [this, result]() {
