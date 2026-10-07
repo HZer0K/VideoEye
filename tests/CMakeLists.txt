@@ -1319,3 +1319,30 @@ target_link_libraries(test_subtitle_aux_page PRIVATE
 add_test(NAME SubtitleAuxPageTests COMMAND test_subtitle_aux_page)
 set_tests_properties(SubtitleAuxPageTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 65：诊断与报告页（扫描终态三值 + 规则表改写 + 时间轴实时刷新）
+# 说明: 失败也是终态（不发 -> 共用同一扫描的几页永久停在扫描态）、silent 失败
+#       不弹框、HLS 清单成功扫描后问题表与 qcReport 逐行一致、规则表勾选/阈值
+#       改写落规则集且非法输入还原、FlushTimeline 的 isVisible 守卫与实时快照
+#       汇总，都是静默回归。本页自己持有 AnalysisFacade（扫描真跑），所以编
+#       AnalysisFacade.cpp + Logger（ScopedTimer/VE_PERF 走 LOG_INFO）；链
+#       QtAdapters（分析协调器）/Analysis/Reporting（报告导出）/Infrastructure。
+#       用 offscreen 平台跑。
+# =================================================
+videoeye_add_test(test_diagnostics_page
+    unit/test_diagnostics_page.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/DiagnosticsPage.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+)
+target_sources(test_diagnostics_page PRIVATE ../ui/AnalysisFacade.cpp)
+target_link_libraries(test_diagnostics_page PRIVATE
+    VideoEyeQtAdapters
+    VideoEyeAnalysis
+    VideoEyeReporting
+    VideoEyeInfrastructure
+    VideoEyeDomain
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME DiagnosticsPageTests COMMAND test_diagnostics_page)
+set_tests_properties(DiagnosticsPageTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
