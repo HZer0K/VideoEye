@@ -15,19 +15,18 @@
 #include <QStackedWidget>
 #include <QLabel>
 #include <QTimer>
-#include <atomic>
 #include <chrono>
 #include <memory>
-#include <thread>
 
 #include "core/player/MediaPlayer.h"
-#include "infrastructure/concurrency/TaskManager.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/ffmpeg_panel/FfmpegPanel.h"
 #include "ui/player/PlayerPanel.h"
 
 namespace videoeye {
 namespace ui {
+
+class MediaInfoCoordinator;
 
 // 主窗口: 菜单 / 侧边栏 / 分析内容栈 / 导出。
 //
@@ -129,14 +128,10 @@ protected:
     QTimer* ui_health_timer_ = nullptr;
     std::chrono::steady_clock::time_point ui_health_last_{};
 
-    // 媒体信息后台解析 (避免大文件解析卡住主线程)
-    void StartMediaInfoAnalysis(const QString& source);
-
-    // 后台任务 slot: 媒体信息解析。UI 线程只登记任务, 从不 join ——
-    // 大文件/网络源解析慢时, 打开下一个文件要能立刻返回。
-    static constexpr const char* kSlotMediaInfo = "media-info";
-    task::TaskManager background_tasks_;
-    std::atomic<quint64> mediainfo_generation_{0};
+    // 媒体信息后台解析 (避免大文件解析卡住主线程) —— 委托给独立协调器,
+    // MainWindow 只贴占位文本并在 InfoReady 信号里刷新文本框本身。
+    // unique_ptr 让本头文件不必 include 协调器头；析构点紧随 ~MainWindow 体。
+    std::unique_ptr<MediaInfoCoordinator> media_info_coordinator_;
 };
 
 } // namespace ui

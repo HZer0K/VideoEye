@@ -1,15 +1,13 @@
 #include "ui/main_window/MainWindow.h"
+#include "ui/main_window/MediaInfoCoordinator.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/theme/AppTheme.h"
 #include "ui/dialogs/MediaExportDialog.h"
 #include "core/exporter/MediaExporter.h"
 #include "infrastructure/logging/Logger.h"
-#include "infrastructure/logging/ScopedTimer.h"
+
 #include "core/domain/model/EbmlInfo.h"
 #include "core/domain/model/ContainerStructureInfo.h"
-// MediaInfoAnalyzer 以前挂在 MainWindow.h 上, 于是每个包含 MainWindow.h 的文件都被迫
-// 连带编译 FFmpeg 侧的分析器。它只在这个 .cpp 里当局部变量用, include 挪到这里。
-#include "core/analysis/orchestration/MediaInfoAnalyzer.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
@@ -33,7 +31,7 @@
 #include <QActionGroup>
 #include <algorithm>
 #include <QProgressDialog>
-#include <QPointer>
+
 #include <QFileInfo>
 #include <QFile>
 #include <QByteArray>
@@ -70,7 +68,8 @@ MainWindow::MainWindow(QWidget* parent)
     , stats_label_(nullptr)
     , analysis_panel_(nullptr)
     , menu_bar_(nullptr)
-    , status_bar_(nullptr) {
+    , status_bar_(nullptr)
+    , media_info_coordinator_(std::make_unique<MediaInfoCoordinator>()) {
 
     // 创建播放器实例 (MainWindow 拥有; 分析侧与播放模块共用)
     player_ = new player::MediaPlayer(this);
@@ -94,12 +93,6 @@ MainWindow::~MainWindow() {
     if (player_) {
         player_->Stop();
     }
-    // 媒体信息后台线程可能还在跑: 先标记失效再取消+回收。
-    // 线程由 background_tasks_ 持有并在它析构时 join, 这里不再自己 join 裸线程 ——
-    // 析构路径上 join 一个正在做网络 IO 的线程会把整个关闭流程卡住。
-    mediainfo_generation_.fetch_add(1);
-    background_tasks_.CancelAll();
-    background_tasks_.WaitForAll(3000);
 }
 
 void MainWindow::SetupUI() {
@@ -639,6 +632,11 @@ void MainWindow::SetupConnections() {
                 }
                 UpdateMinimumWindowSize();
             });
+    // 媒体信息解析结果回到 UI 线程后贴到文本框 (协调器只发文本, 不碰 UI 控件)
+    connect(media_info_coordinator_.get(), &MediaInfoCoordinator::InfoReady,
+            this, [this](const QString& text) {
+                mediainfo_text_->setPlainText(text);
+            });
 }
 
 void MainWindow::OnOpenFile() {
@@ -747,16 +745,8 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
     if (ffmpeg_panel_) ffmpeg_panel_->SetCurrentFile(source);
 
     // 媒体信息解析 PCM (裸流无法自动探测, 需带上用户选择的格式参数)
-        {
-            videoeye::MediaInfoAnalyzer mi;
-            // 只有这一个调用点需要跨 Qt 边界：MediaInfoAnalyzer 已经不碰 Qt。
-            mi.SetRawPcmHints(demuxer_name.toStdString(), sample_rate, channels);
-            if (mi.Open(source.toStdString())) {
-                mediainfo_text_->setPlainText(QString::fromStdString(mi.GetCompleteInfo()));
-            } else {
-                mediainfo_text_->setPlainText(tr("(无法解析 PCM 媒体信息)"));
-            }
-        }
+    mediainfo_text_->setPlainText(
+        media_info_coordinator_->DescribeRawPcm(source, demuxer_name, sample_rate, channels));
 
         if (autoplay) {
             player_->Play();
@@ -783,10 +773,9 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
     // 须放在 OpenAsync 之后: 它内部先做了换媒体复位。
     analysis_panel_->EmitInitialFeatureStates();
 
-    // 媒体信息解析 (异常文件也可能部分解析成功, 尽力而为)。
-    // 大文件/复杂容器下 avformat 全量探测可能要到秒级, 放在后台线程跑,
-    // 结果用 generation 校验后再回主线程贴文本, 避免快速切换文件时结果串台。
-    StartMediaInfoAnalysis(source);
+    // 媒体信息解析 (异常文件也可能部分解析成功, 尽力而为): 委托给协调器后台跑。
+    mediainfo_text_->setPlainText(tr("(正在解析媒体信息…)"));
+    media_info_coordinator_->StartAsync(source);
 
     return true;
 }
@@ -823,40 +812,6 @@ void MainWindow::OnPlayerOpenFinished(bool ok) {
         player_->RequestContainerStructureAnalysis(source);
         analysis_panel_->StartDiagnosticsScanForCurrentFile();
     }
-}
-
-void MainWindow::StartMediaInfoAnalysis(const QString& source) {
-    const quint64 generation = mediainfo_generation_.fetch_add(1) + 1;
-    mediainfo_text_->setPlainText(tr("(正在解析媒体信息…)"));
-
-    // 交给统一任务调度: 打开新文件时旧任务只被置取消标志, 本函数立刻返回。
-    // 以前这里直接 join() 上一次的线程 —— 大文件/网络源/异常文件的 avformat 探测
-    // 动辄几秒, 连着打开第二个文件就会把界面卡住。
-    // 旧线程由 TaskManager 持有并在下次启动/析构时回收, 过期结果靠 generation 丢弃。
-    //
-    // 用 RunBlockingIo: 媒体信息解析要先做 FFmpeg 打开+探测, 网络源/异常设备上这一步
-    // 可能既不返回也不响应中断回调, 关闭时不该为了 join 它把整个退出流程拖死。
-    // 本任务体只按值捕获 (QPointer self + QString source), 满足 TaskKind::BlockingIo 的
-    // "不得持有可能先于线程销毁的裸引用"约定。
-    QPointer<MainWindow> self = this;
-    background_tasks_.RunBlockingIo(kSlotMediaInfo,
-                          [self, source, generation](task::TaskId, task::CancelToken token) {
-        // MediaInfoAnalyzer 现在返回 std::string；后台线程到 UI 这一段都在用 std::string 传，
-        // 转换点只有 setPlainText() 处一处（Qt 6 的 fromStdString）。
-        std::string text;
-        {
-            VE_PERF("媒体信息解析(后台线程)");
-            videoeye::MediaInfoAnalyzer mi;
-            const bool opened = mi.Open(source.toStdString(), token.flag());
-            text = opened ? mi.GetCompleteInfo() : std::string("(无法解析媒体信息)");
-        }
-        if (!self || token.IsCanceled()) return;
-        if (generation != self->mediainfo_generation_.load()) return;
-        QMetaObject::invokeMethod(self, [self, generation, text]() {
-            if (!self || generation != self->mediainfo_generation_.load()) return;  // 已经切到别的文件
-            self->mediainfo_text_->setPlainText(QString::fromStdString(text));
-        }, Qt::QueuedConnection);
-    });
 }
 
 bool MainWindow::PromptForPcmSettings(QString& demuxer_name, int& sample_rate, int& channels) {

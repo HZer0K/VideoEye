@@ -293,7 +293,7 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   与 `model::ToString(BitrateAnomalyType)` 都进了 `core/domain/model/`，两页现在只 include
   结果头；`PlayerPanel.h` 的 `StreamAnalyzer.h`、`MainWindow.h` 的 `MediaInfoAnalyzer.h` /
   `EbmlAnalyzer.h` 也已移除。仅剩：`AnalysisFacade.cpp`（门面，按设计本就该见分析器）与
-  `MainWindow.cpp:12` 仍 include `MediaInfoAnalyzer.h` 一处。
+  `ui/main_window/MediaInfoCoordinator.cpp` 仍 include `MediaInfoAnalyzer.h` 一处。
 - **`AnalysisPanel.cpp` 已从 2787 行降到 745 行**，拆出 12 个页面组件（见 4.1）。
   面板现在只剩协调职责：建页 → 注入 feature 钩子 → 播放期按开关过滤后转发数据 →
   扫描结束后分发结果。历史上它同时兼着"页面 + 数据仓库 + 表格控制器"三个角色，
