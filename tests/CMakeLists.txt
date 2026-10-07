@@ -1256,3 +1256,66 @@ target_link_libraries(test_color_hdr_page PRIVATE
 add_test(NAME ColorHdrPageTests COMMAND test_color_hdr_page)
 set_tests_properties(ColorHdrPageTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 62：音频 QC 页（削波/静音表填充 + 响度偏离分档 + 规则判定着色）
+# 说明: 削波峰值 <=0 要回落 -120 dBFS、静音表 3/3/3/1 位小数、响度偏离按
+#       1/3 LU 两档边界切换达标/偏离/超标、规则表的严重度→文案→颜色映射，
+#       改错都是静默显示假值。页面内两张表表头「起始」相同，测试经页内唯一
+#       QTabWidget 按 tab 索引 + 列数定位。编页面源 + MetricChartWidget
+#       （AnalysisPageSupport.h 经它引入 Q_OBJECT 头，AUTOMOC 需要），
+#       链 VideoEyeDomain。用 offscreen 平台跑。
+# =================================================
+videoeye_add_test(test_audio_qc_page
+    unit/test_audio_qc_page.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioQcPage.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+)
+target_link_libraries(test_audio_qc_page PRIVATE
+    VideoEyeDomain
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME AudioQcPageTests COMMAND test_audio_qc_page)
+set_tests_properties(AudioQcPageTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 63：码率与 GOP 页（GOP 表高亮 + 异常表 2000 行上限 + 窗口联动汇总）
+# 说明: 超长 GOP 的时长列橙色高亮、异常表上限 2000、帧类型未解析时汇总换
+#       文案、目标峰值手动/自动（自动=均值×2）分支、窗口下拉联动汇总文案，
+#       写错都不崩只静默出错。页面内两个无后缀 spin 用 decimals 区分（0=目标
+#       峰值 / 1=GOP 秒上限）。编页面源 + MetricChartWidget（同测试 62 的
+#       AUTOMOC 依赖）+ AppTheme（formatTime 时间戳文案），链 VideoEyeDomain。
+#       用 offscreen 平台跑。
+# =================================================
+videoeye_add_test(test_bitrate_gop_page
+    unit/test_bitrate_gop_page.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/BitrateGopPage.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/theme/AppTheme.cpp
+)
+target_link_libraries(test_bitrate_gop_page PRIVATE
+    VideoEyeDomain
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME BitrateGopPageTests COMMAND test_bitrate_gop_page)
+set_tests_properties(BitrateGopPageTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 64：字幕/时码/辅助页（流过滤 + 时码信号 + SCTE-35 表 + 正阈值守卫）
+# 说明: 字幕流过滤叠加（流 + 仅问题 cue）、时码就绪信号只在 has_primary 时
+#       发射（drop-frame 文案差异）、SCTE-35 event_id 十六进制补零与 CRC 三态、
+#       规则阈值只认正存储位（<=0 不覆盖默认），四处静默回归。页内四张表用
+#       tab 索引区分同列表头。编页面源 + MetricChartWidget（同测试 62 的
+#       AUTOMOC 依赖），链 VideoEyeDomain。用 offscreen 平台跑。
+# =================================================
+videoeye_add_test(test_subtitle_aux_page
+    unit/test_subtitle_aux_page.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/SubtitleAuxPage.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+)
+target_link_libraries(test_subtitle_aux_page PRIVATE
+    VideoEyeDomain
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME SubtitleAuxPageTests COMMAND test_subtitle_aux_page)
+set_tests_properties(SubtitleAuxPageTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
