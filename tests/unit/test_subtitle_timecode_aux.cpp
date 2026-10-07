@@ -15,6 +15,8 @@
 
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/dict.h>
 }
 
 #include "core/analysis/diagnostics/Scte35Analyzer.h"
@@ -159,6 +161,37 @@ int CountType(const std::vector<model::SubtitleIssue>& issues, model::SubtitleIs
         if (issue.type == type) ++count;
     }
     return count;
+}
+
+// 造一条只含字幕轨的 AVFormatContext 跑 RegisterStreams + Finish，返回 issues。
+// 不需要真实媒体文件：RegisterStreams 只读 stream 的 codecpar 与 metadata。
+// language 为空串表示"这个 tag 压根不存在"。
+std::vector<model::SubtitleIssue> RunStreamLevelCheck(const std::string& language) {
+    std::vector<model::SubtitleIssue> issues;
+    AVFormatContext* fmt = avformat_alloc_context();
+    if (fmt == nullptr) return issues;
+    AVStream* st = avformat_new_stream(fmt, nullptr);
+    if (st == nullptr) {
+        avformat_free_context(fmt);
+        return issues;
+    }
+    st->codecpar->codec_type = AVMEDIA_TYPE_SUBTITLE;
+    st->codecpar->codec_id = AV_CODEC_ID_MOV_TEXT;
+    if (!language.empty()) av_dict_set(&st->metadata, "language", language.c_str(), 0);
+    // handler_name 一并写上：MP4 里 demuxer 一定会给，免得 missing_handler 混进计数
+    av_dict_set(&st->metadata, "handler_name", "SubtitleHandler", 0);
+
+    videoeye::SubtitleAnalyzer analyzer;
+    analyzer.Reset(videoeye::SubtitleOptions{});
+    analyzer.RegisterStreams(fmt);
+    analyzer.Finish(60.0);
+    issues = analyzer.result().issues;
+    avformat_free_context(fmt);
+    return issues;
+}
+
+int CountMissingLanguage(const std::string& language) {
+    return CountType(RunStreamLevelCheck(language), model::SubtitleIssueType::MissingLanguage);
 }
 
 }  // namespace
@@ -319,6 +352,30 @@ TEST(SubtitleAnalyzerTest, AdjacentCuesAreNotOverlap) {
     std::vector<model::SubtitleIssue> issues;
     videoeye::SubtitleAnalyzer::ValidateCues(cues, issues, videoeye::SubtitleOptions{}, 60.0);
     EXPECT_EQ(CountType(issues, model::SubtitleIssueType::Overlap), 0);
+}
+
+// und 是 demuxer 在文件没写语言时填的占位值（MP4 mdhd 的 0x55C4），非空但语义上
+// 等于"没标语言"。以前只判空串，这类字幕轨会被漏报。
+TEST(SubtitleAnalyzerTest, MissingLanguageCoversUnspecifiedPlaceholders) {
+    EXPECT_EQ(CountMissingLanguage(""), 1);      // 压根没写 tag
+    EXPECT_EQ(CountMissingLanguage("und"), 1);   // ISO 639-2 未指定
+    EXPECT_EQ(CountMissingLanguage("UND"), 1);   // 大小写不敏感
+    EXPECT_EQ(CountMissingLanguage("mul"), 1);   // 多语言
+    EXPECT_EQ(CountMissingLanguage("zxx"), 1);   // 无语言内容
+
+    EXPECT_EQ(CountMissingLanguage("chi"), 0);   // 真语言码不能误报
+    EXPECT_EQ(CountMissingLanguage("zh"), 0);
+    EXPECT_EQ(CountMissingLanguage("eng"), 0);
+}
+
+TEST(SubtitleAnalyzerTest, MissingLanguageDetailNamesPlaceholder) {
+    const std::vector<model::SubtitleIssue> issues = RunStreamLevelCheck("und");
+    ASSERT_EQ(CountType(issues, model::SubtitleIssueType::MissingLanguage), 1);
+    for (const model::SubtitleIssue& issue : issues) {
+        if (issue.type != model::SubtitleIssueType::MissingLanguage) continue;
+        // 文案要把 und 点出来：修法是改成具体语言码，不是"补一个 tag"
+        EXPECT_NE(issue.detail.find("und"), std::string::npos) << issue.detail;
+    }
 }
 
 // ============================================================

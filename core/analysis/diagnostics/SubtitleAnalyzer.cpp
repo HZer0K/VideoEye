@@ -53,6 +53,26 @@ bool IsAllDigits(const std::string& text) {
     return true;
 }
 
+// ISO 639-2 里这几个码都表示"没有确定的单一语言"：
+//   und 未指定（demuxer 在文件没写语言时填的就是它，MP4 mdhd 的 0x55C4）
+//   mul 多语言 / zxx 无语言内容 / xxx 保留未定义
+// 它们都不是空串，但语义上等于"没标语言"：播放器照样没法按界面语言自动选轨，
+// 所以 missing_language 要把它们和空串一样算缺失。unk / unknown 是非标准写法，一并覆盖。
+bool IsUnspecifiedLanguage(const std::string& language) {
+    if (language.empty()) return true;
+    static const char* const kPlaceholders[] = {"und", "undetermined", "unk", "unknown",
+                                                "mul", "zxx", "xxx"};
+    std::string lower;
+    lower.reserve(language.size());
+    for (char c : language) {
+        lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    for (const char* placeholder : kPlaceholders) {
+        if (lower == placeholder) return true;
+    }
+    return false;
+}
+
 bool StartsWithIgnoreCase(const std::string& text, const char* prefix) {
     if (prefix == nullptr) return false;
     const size_t n = std::strlen(prefix);
@@ -756,13 +776,18 @@ void SubtitleAnalyzer::Finish(double media_duration_seconds) {
 
     if (options_.check_language) {
         for (const model::SubtitleStreamInfo& stream : result_.streams) {
-            if (stream.language.empty()) {
+            // 空串和 und 要分开说：前者是压根没写 tag，后者是写了但等于没写，
+            // 两种情况的修法不同（补一个 vs 改成具体语言码）。
+            if (IsUnspecifiedLanguage(stream.language)) {
                 model::SubtitleIssue issue;
                 issue.type = model::SubtitleIssueType::MissingLanguage;
                 issue.severity = model::IssueSeverity::Info;
                 issue.stream_index = stream.stream_index;
                 issue.cue_index = -1;
-                issue.detail = "字幕流 " + std::to_string(stream.stream_index) + " 没有 language tag";
+                issue.detail = "字幕流 " + std::to_string(stream.stream_index) +
+                               (stream.language.empty()
+                                    ? " 没有 language tag"
+                                    : " 的 language tag 是 " + stream.language + "（未指定语言）");
                 result_.issues.push_back(std::move(issue));
             }
             if (!stream.codec_tag.empty() && stream.handler_name.empty()) {

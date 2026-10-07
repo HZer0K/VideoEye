@@ -456,7 +456,7 @@ std::vector<QcRule> DefaultQcRules() {
 
     add("subtitle.missing_language", "字幕缺少语言 tag", IssueCategory::Metadata,
         IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "条",
-        "字幕流没有 language tag，播放器无法按界面语言自动选轨。",
+        "字幕流没有 language tag，或写的是 und / mul 这类未指定值，播放器无法按界面语言自动选轨。",
         "封装时写语言：-metadata:s:s:0 language=chi（-c copy 即可）。");
 
     add("subtitle.missing_handler", "字幕缺少 handler name", IssueCategory::Metadata,
