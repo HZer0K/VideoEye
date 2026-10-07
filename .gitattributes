@@ -32,6 +32,10 @@ CMakeLists.txt text eol=lf
 
 # Shell 脚本必须 LF (否则 WSL/Linux 下报 bad interpreter)
 *.sh       text eol=lf
+# git hooks 是无扩展名的 shell 脚本, 会被上面的 *.sh 漏掉 —— 漏掉时在 autocrlf=true
+# 的 Windows 上签出为 CRLF, 钩子执行时报 `do\r: syntax error` / command not found,
+# 等于门没装 (2026-10-07 发现并补上)。
+scripts/git-hooks/* text eol=lf
 build.sh   text eol=lf
 setup.sh   text eol=lf
 run.sh     text eol=lf

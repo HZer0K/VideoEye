@@ -1,9 +1,12 @@
 #!/bin/sh
-# pre-commit: 提交前跑四道门
+# pre-commit: 提交前跑五道门
 #   1. 分层边界检查（scripts/check_layering.py）—— 依赖方向违规直接阻止提交
 #   2. Qt/domain 边界审计（scripts/audit_qt_domain_border.py）—— 确定命中直接阻止提交
 #   3. 审计退出码自测（scripts/test_audit_qt_domain_border.py）—— 保证第 2 道门真能拦住
-#   4. 暂存的 C++ 文件跑 clang-format
+#   4. 其余架构审计 + 各自退出码自测（Qt/analysis 边界 / 命名空间 / 链接可见性）
+#      —— 与 CI 的 layering job 清单对齐；这三组在 2026-10-07 之前只在 CI 跑，
+#      本地 pre-commit 一路绿、推送后 CI 红
+#   5. 暂存的 C++ 文件跑 clang-format
 # 安装: bash scripts/setup-hooks.sh
 #
 # 为什么第 1 道门必须在本地也跑一遍，不能只靠 CI：
@@ -70,6 +73,36 @@ if [ -n "$PY" ]; then
     fi
 else
     echo "warning: 未找到 python，跳过审计退出码自测（CI 仍会跑）" >&2
+fi
+
+# 第 4 道门: 其余架构审计 + 各自退出码自测（与 CI layering job 的清单对齐）。
+# 这组脚本与第 1、2 道门是同一个重灾区 —— 「打印了违规却 return 0」出现过不止一次，
+# 人肉看输出确认没问题，所以每个审计都要配一个自测把退出码钉死。
+# 以前这三组只在 CI 跑：本地提交全绿、推送后 layering job 红，落差归档在 2026-10-07。
+if [ -n "$PY" ]; then
+    audit_fail=0
+    for pair in \
+        "audit_qt_analysis_border.py test_audit_qt_analysis_border.py" \
+        "audit_namespace_layout.py test_audit_namespace_layout.py" \
+        "audit_link_visibility.py test_audit_link_visibility.py"
+    do
+        set -- $pair
+        if ! "$PY" "scripts/$1"; then
+            echo "" >&2
+            echo "提交已阻止：$1 未通过（详细输出见上）" >&2
+            audit_fail=1
+        fi
+        if ! "$PY" "scripts/$2"; then
+            echo "" >&2
+            echo "提交已阻止：$2 未通过（审计脚本的退出码语义被改坏了？）" >&2
+            audit_fail=1
+        fi
+    done
+    if [ "$audit_fail" -ne 0 ]; then
+        exit 1
+    fi
+else
+    echo "warning: 未找到 python，跳过其余架构审计（CI 仍会跑）" >&2
 fi
 
 staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.cpp' '*.h' '*.hpp' '*.c')

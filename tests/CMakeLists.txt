@@ -157,6 +157,14 @@ if(VIDEOEYE_PYTHON_EXE)
              COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/audit_namespace_layout.py)
     add_test(NAME NamespaceLayoutSelfTestTests
              COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test_audit_namespace_layout.py)
+    # 链接可见性（2026-10-07 立的门）: 公共头闭包需要的 Qt / FFmpeg 依赖必须由该
+    # target 的 PUBLIC 链接闭包提供 —— 挂错成 PRIVATE 时模块内部照样编译（include
+    # 目录是仓库根），只有外部目标 include 它才会炸（P2-8 的 Playback -> QtAdapters）。
+    # 立门时顺带修掉了三处历史不一致（FfmpegTools / QtAdapters / ReportingPanel）。
+    add_test(NAME LinkVisibilityTests
+             COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/audit_link_visibility.py)
+    add_test(NAME LinkVisibilitySelfTestTests
+             COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test_audit_link_visibility.py)
     # Qt 类型不许从生产侧直接落进 domain 的 std::string 字段（字段级污染）。
     # 与 check_layering（include 方向）、audit_qt_analysis_border（analysis 层整体
     # 不许沾 Qt）查的都不是同一件事。CI 的 layering job 一直在跑它，
@@ -176,6 +184,8 @@ if(VIDEOEYE_PYTHON_EXE)
                                             QtAnalysisBorderSelfTestTests
                                             NamespaceLayoutTests
                                             NamespaceLayoutSelfTestTests
+                                            LinkVisibilityTests
+                                            LinkVisibilitySelfTestTests
                                             QtDomainBorderTests
                                             QtDomainBorderSelfTestTests PROPERTIES
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}

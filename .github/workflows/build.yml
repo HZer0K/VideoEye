@@ -51,6 +51,15 @@ jobs:
       - name: Self-check namespace layout exit codes
         run: python3 scripts/test_audit_namespace_layout.py
 
+      # 链接可见性（2026-10-07 立的门）: 公共头闭包需要的 Qt / FFmpeg 依赖必须由该
+      # target 的 PUBLIC 链接闭包提供 —— 挂成 PRIVATE 时模块内部照样编译（include
+      # 目录是仓库根），只有外部目标 include 该模块公共头才会撞上（P2-8 形态）。
+      - name: Check link visibility
+        run: python3 scripts/audit_link_visibility.py
+
+      - name: Self-check link visibility audit exit codes
+        run: python3 scripts/test_audit_link_visibility.py
+
       # 测试规模与 README 快照对齐: README 里的计数曾经长期落后（写 48, 实际 49）。
       # 这里只数 `tests/` 目录, 不需要构建, 放在这个 job 最便宜; 加了测试就一起更新
       # README 表格和这里的数字, 否则 CI 直接红。

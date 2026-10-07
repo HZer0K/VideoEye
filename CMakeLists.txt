@@ -111,9 +111,11 @@ find_package(Threads REQUIRED)
 # 拦的只有"没声明这条边的调用"，而主程序 ui 显式链了全部模块 —— 对 ui 层来说约束力为零。
 # 依赖**方向**的检查在 scripts/check_layering.py（CI 与 pre-commit 都跑），别指望 CMake。
 #
-# 由 CMake 能真正约束的一条，是 PUBLIC/PRIVATE 的选择：**公共头**里出现的类型，其所属
-# 模块必须挂在 PUBLIC 上（否则 include 这个头的外部目标拿不到它的 include 目录）。
-# 这条只能靠人读代码守，反例见 VideoEyePlayback -> VideoEyeQtAdapters（P2-8）。
+# 由 CMake 能真正约束的一条，是 PUBLIC/PRIVATE 的选择：**公共头**里出现的类型与系统依赖，
+# 其所属 target 必须挂在 PUBLIC 上（否则 include 这个头的外部目标拿不到它的 include 目录）。
+# 反例见 VideoEyePlayback -> VideoEyeQtAdapters（P2-8）。这条不再"只能靠人读代码守"：
+# scripts/audit_link_visibility.py 检查"公共头闭包需要的 Qt / FFmpeg 依赖有没有从 PUBLIC
+# 边透出去"（CI / pre-commit / ctest 都跑）。
 # ============================================================
 function(videoeye_add_module name)
     add_library(${name} STATIC ${ARGN})
@@ -268,19 +270,29 @@ target_link_libraries(VideoEyeReporting
 
 # --- ffmpegtools: 原生 ffmpeg 命令行工作台 ---
 videoeye_add_module(VideoEyeFfmpegTools ${FFMPEGTOOL_SOURCES})
+# Qt6::Core 挂 PUBLIC（2026-10-07 由 audit_link_visibility 定位后修正）: core/ffmpeg 的
+# 公共头本身就用 Qt 类型 —— FfmpegToolLocator.h / FfmpegCommandCatalog.h /
+# FfmpegCommandParser.h / FfmpegCommandExplainer.h 里是 QString / QStringList，
+# FfmpegProcessRunner.h 还有 QObject / QProcess。挂 PRIVATE 只把依赖藏在库内部，
+# 外部目标 include 这些头时拿不到 Qt 的 include 目录与编译定义。
 target_link_libraries(VideoEyeFfmpegTools
+    PUBLIC Qt6::Core
     PRIVATE VideoEyeInfrastructure
-            Qt6::Core
 )
 
 # --- qt adapters: 把不带 QObject 的执行引擎接进 Qt 信号/线程 (见 core/qt/) ---
 if(QTADAPTER_SOURCES)
     videoeye_add_module(VideoEyeQtAdapters ${QTADAPTER_SOURCES})
+    # Qt6::Core 挂 PUBLIC: core/qt 的公共头就是 Qt 类型（QtWorkerOwner.h 的 QObject /
+    # QThread、QtAnalysisController.h 的 QObject / QString、DomainMetatypes.h 的
+    # QMetaType），PRIVATE 会把这条边藏进静态库内部 —— P2-8 时外部目标
+    # （VideoEyePlayback）include 这些头拿不到 Qt 的 include 目录，与"公共头依赖必须
+    # 从 PUBLIC 边透出"是同一条规则（scripts/audit_link_visibility.py 守）。
     target_link_libraries(VideoEyeQtAdapters
         PUBLIC VideoEyeDomain
+               Qt6::Core
         PRIVATE VideoEyeAnalysis
                 VideoEyeInfrastructure
-                Qt6::Core
     )
 endif()
 
@@ -289,11 +301,15 @@ endif()
 # （同一份 Q_OBJECT 类编两遍 = ODR 违规）。拆出来之后主程序和测试各链一份自己的静态库。
 if(REPORTING_PANEL_SOURCES)
     videoeye_add_module(VideoEyeReportingPanel ${REPORTING_PANEL_SOURCES})
+    # Qt6::Widgets 挂 PUBLIC: 这个库就是为了"被主程序与测试各自 include
+    # ReportingPanel.h"而拆出来的，而 ReportingPanel.h 本身就是 QWidget 系
+    # （QCheckBox / QTableWidget 等 14 个 Qt 头）。挂 PRIVATE 的话，链它的目标
+    # 编译这一页时直接找不到 Qt 的 include 目录。
     target_link_libraries(VideoEyeReportingPanel
+        PUBLIC Qt6::Widgets
         PRIVATE VideoEyeQc
                 VideoEyeReporting
                 VideoEyeInfrastructure
-                Qt6::Widgets
     )
 endif()
 
