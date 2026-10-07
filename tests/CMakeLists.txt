@@ -1147,3 +1147,25 @@ target_link_libraries(test_packet_table_widget PRIVATE
 add_test(NAME PacketTableWidgetTests COMMAND test_packet_table_widget)
 set_tests_properties(PacketTableWidgetTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 57：FFmpeg 输出与解释区（状态行 + 命令解释页 + 双通道日志 + 终态文案）
+# 说明: 这一区从 FfmpegPanel 抽出，把「命令一改就重算解释」「stderr 行加 [err] 前缀」
+#       「失败切错误页」「优雅停止与被强杀分开报」四条规则压在组件内部，写错都不崩、
+#       只静默显示旧值或错值。只编组件源 + 解释链的三个目录源（Parser / Explainer /
+#       Catalog）+ AppTheme（组件用 monoFont），不启动任何子进程、不链 FFmpeg。
+#       用 offscreen 平台跑。
+# =================================================
+videoeye_add_test(test_ffmpeg_output_widget
+    unit/test_ffmpeg_output_widget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/ffmpeg_panel/FfmpegOutputWidget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/theme/AppTheme.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/ffmpeg/FfmpegCommandParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/ffmpeg/FfmpegCommandExplainer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/ffmpeg/FfmpegCommandCatalog.cpp
+)
+target_link_libraries(test_ffmpeg_output_widget PRIVATE
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME FfmpegOutputWidgetTests COMMAND test_ffmpeg_output_widget)
+set_tests_properties(FfmpegOutputWidgetTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

@@ -342,6 +342,14 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   （`ui/ffmpeg_panel/FfmpegDictionaryWidget.{h,cpp}`，右侧指令字典区：搜索 + 分类 + 词条列表 +
   详情 + 「插入到命令」。唯一外耦是最后一步要写页面的命令输入框，解法是不持有 `command_edit_`、
   改为发 `InsertRequested(snippet)` 信号由页面插入，组件因此不被页面的布局绑死），1076 → 949 行。
+  `FfmpegPanel.cpp` 第二刀抽出 `FfmpegOutputWidget`
+  （`ui/ffmpeg_panel/FfmpegOutputWidget.{h,cpp}`，左侧「输出与解释」区：状态行 + 三个页签
+  （命令解释 / 运行日志 / 错误输出）。组件**就是** `QGroupBox` 本身（外面不包一层 QWidget），
+  标题 / 边距 / 页签顺序与拆分前一致 —— 视觉零变化；解释重算、双通道日志的 [err] 前缀、
+  失败切错误页、优雅停止与被强杀分开报全在组件内。页面只留三个运行期驱动入口
+  （`PrepareForRun` / `AppendLog` / `ShowRunResult`）和一个 `RefreshExplanation(command_text)`
+  转发（命令文本属于页面，组件不持有命令输入框）；组件不直接写状态栏，终态文案经
+  `StatusMessage` 信号交回页面发。至此 949 → 665 行，剩程序探测 / 命令区 / 按钮状态与设置持久化。
   ⚠️ 新增 `ui/*.cpp` 时，**手工列源的测试目标要同步加**（`test_stream_views` 手列
   `FramePacketView.cpp`，漏加 `AudioFrameTableWidget.cpp` / `VideoFrameTableWidget.cpp`
   会在链接期 LNK2019；走 `${UI_SOURCES}` 的目标如 `test_scan_terminal_state` 由 GLOB 自动纳入，无需改）。
@@ -353,16 +361,16 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   CSV 导出随组件走，外露 `packetTable()` / `PacketRecords()` 交回父页做帧表↔包表 PTS 互跳）。
   至此 `FramePacketView.cpp` 1121 → 230 行，四张表全部成为独立子页组件，本页只剩
   tab 容器 + 开关路由 + 跨表互跳协调 + 转发。
-  其余待拆页 / 文件：`FfmpegPanel.cpp` / `MainWindow.cpp`。
+  其余待拆页 / 文件：`MainWindow.cpp`（`FfmpegPanel.cpp` 两刀拆完，665 行，暂不继续强拆）。
   12 个页面组件已有 5 个有测试（`VisualDefectPage` / `EventTimelineView` /
   `StreamOverviewView` / `FramePacketView` / `ContainerStructurePage`；`test_container_structure_page`
   覆盖 MP4→详情页1、MKV→详情页2、无效→通用页的页路由 + 结构树/样本轨下拉填充 + 开关 `FeatureToggled`，
   且因只经 `findChild` 探测对象树，拆出 `Mp4SampleTableWidget` 后测试仍有效）。
-  2026-10-07 又给拆出来的独立组件补了单测（`tests/CMakeLists.txt` 测试 50-56，共 34 个
+  2026-10-07 又给拆出来的独立组件补了单测（`tests/CMakeLists.txt` 测试 50-57，共 40 个
   gtest 用例）：`ControlBarWidget` / `AudioVizRenderer` / `RawImageSequence`（player）、
   `AudioFrameTableWidget` / `VideoFrameTableWidget` / `PacketTableWidget`（帧表子页）、
-  `FfmpegDictionaryWidget`（指令字典）。每个测试只编组件源 + 直接依赖，不整层拉 FFmpeg / analysis；
-  模态对话框分支（如裸流参数对话框）不进单测。
+  `FfmpegDictionaryWidget` / `FfmpegOutputWidget`（命令工作台）。每个测试只编组件源 + 直接依赖，
+  不整层拉 FFmpeg / analysis；模态对话框分支（如裸流参数对话框）不进单测。
 
 ### 5.4 CMake 管得住什么、管不住什么
 

@@ -10,17 +10,15 @@
 // 页面不依赖"当前打开的媒体"：没加载素材也能打开这一页直接用。
 // 真正干活的三块在 core/ffmpeg/：解析（Parser）、执行（ProcessRunner）、
 // 解释（Catalog + Explainer）。
+//
+// 页面由三块拼成：命令区 / 程序区（本类）、输出与解释区（FfmpegOutputWidget）、
+// 指令字典区（FfmpegDictionaryWidget）—— 后两区的内部规则归各自组件。
 
-#include <QComboBox>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListWidget>
-#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSettings>
 #include <QSplitter>
-#include <QTabWidget>
-#include <QTextBrowser>
 #include <QWidget>
 
 #include <QString>
@@ -28,7 +26,6 @@
 #include <vector>
 
 #include "core/ffmpeg/FfmpegCommandCatalog.h"
-#include "core/ffmpeg/FfmpegCommandExplainer.h"
 #include "core/ffmpeg/FfmpegProcessRunner.h"
 #include "core/ffmpeg/FfmpegToolLocator.h"
 
@@ -36,6 +33,7 @@ namespace videoeye {
 namespace ui {
 
 class FfmpegDictionaryWidget;  // 前向声明：指令字典区 (见 FfmpegDictionaryWidget.{h,cpp})
+class FfmpegOutputWidget;      // 前向声明：输出与解释区 (见 FfmpegOutputWidget.{h,cpp})
 
 class FfmpegPanel : public QWidget {
     Q_OBJECT
@@ -63,8 +61,6 @@ private slots:
     void OnClearCommand();
     void OnRun();
     void OnStop();
-    void OnCopyLog();
-    void OnSaveLog();
     void OnCommandTextChanged();
 
     void OnRunOutput(const QString& text, bool is_error);
@@ -73,12 +69,9 @@ private slots:
     void OnProbeOutput(const QString& text, bool is_error);
     void OnProbeFinished(const ffmpeg::FfmpegRunResult& result);
 
-    void OnExplanationCurrentChanged();
-
 private:
     void BuildUi();
     QWidget* BuildCommandArea();
-    QWidget* BuildOutputArea();
     // 指令字典区已抽为 FfmpegDictionaryWidget（见同目录），页面只把它放进 splitter。
 
     void RefreshToolInfo();
@@ -93,8 +86,8 @@ private:
     /// 拼装"没找到 ffmpeg"时的安装指引对话框正文（纯文本，便于复制）
     QString BuildInstallGuideText() const;
 
+    /// 转发给输出区组件；命令文本属于页面，组件不持有命令输入框
     void RefreshExplanation();
-    void AppendLog(const QString& text, bool is_error);
     void SetRunUiState(bool running);
     QString CurrentToolPath() const;
 
@@ -115,17 +108,10 @@ private:
     QPushButton* run_button_ = nullptr;
     QPushButton* stop_button_ = nullptr;
 
-    // ---- 输出区 ----
-    QTabWidget* output_tabs_ = nullptr;
-    QPlainTextEdit* log_view_ = nullptr;
-    QPlainTextEdit* error_view_ = nullptr;
-    QListWidget* explain_list_ = nullptr;
-    QTextBrowser* explain_detail_ = nullptr;
-    QLabel* status_label_ = nullptr;
-    QLabel* exit_code_label_ = nullptr;
-    QLabel* elapsed_label_ = nullptr;
-    QPushButton* copy_button_ = nullptr;
-    QPushButton* save_button_ = nullptr;
+    // ---- 输出与解释区 ----
+    // 已抽为独立组件 FfmpegOutputWidget：状态行 / 三个页签 / 日志缓存全在组件内，
+    // 页面只管在运行时驱动它（PrepareForRun / AppendLog / ShowRunResult）并转发文案。
+    FfmpegOutputWidget* output_widget_ = nullptr;
 
     // ---- 指令字典区 ----
     // 已抽为独立组件 FfmpegDictionaryWidget：搜索 / 分类 / 列表 / 详情 / 插入全在
@@ -153,8 +139,6 @@ private:
     QStringList current_arguments_;
     QString tool_version_;
     QString current_media_path_;
-    QString last_log_text_;
-    ffmpeg::FfmpegCommandExplanation explanation_;
     QSettings settings_;
 };
 
