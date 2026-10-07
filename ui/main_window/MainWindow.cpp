@@ -571,22 +571,14 @@ void MainWindow::SetupConnections() {
 }
 
 void MainWindow::OnOpenFile() {
-    qDebug() << "\n========== OnOpenFile START ==========";
-    
     QString filename = QFileDialog::getOpenFileName(this,
         tr("打开媒体文件"), "",
         tr("媒体文件 (*.mp4 *.avi *.mkv *.flv *.ts *.mp3 *.aac *.wav *.pcm *.yuv *.nv12 *.rgb *.bgr *.yuy2 *.raw);;"
            "流媒体清单 (*.m3u8 *.mpd);;所有文件 (*)"));
-    
-    qDebug() << "[1] 选择的文件:" << filename;
-    
     if (filename.isEmpty()) {
-        qDebug() << "[1.5] 文件名为空，返回";
         return;
     }
     OpenMedia(filename, true);
-    
-    qDebug() << "========== OnOpenFile END ==========\n";
 }
 
 void MainWindow::OnOpenURL() {
