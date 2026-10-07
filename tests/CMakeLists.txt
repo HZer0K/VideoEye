@@ -1195,3 +1195,64 @@ endif()
 add_test(NAME ExportCoordinatorTests COMMAND test_export_coordinator)
 set_tests_properties(ExportCoordinatorTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 59：场景切换页（增量补表幂等 + 汇总聚合 + Reset 归零游标）
+# 说明: AppendResult 与 FlushPending 之间隔着面板的批量节拍，同步游标
+#       table_synced_count_ 算错（重复补行 / 漏行）或 Reset 忘归零都不会崩，
+#       只会静默少行多行、换文件后第一批切换点永远不显示。断言表格增量行与
+#       3 位小数汇总文案。编页面源 + MetricChartWidget（AnalysisPageSupport.h
+#       经它引入 Q_OBJECT 头，AUTOMOC 需要）+ AppTheme（formatTime 时间戳文案），
+#       链 VideoEyeDomain。用 offscreen 平台跑。
+# =================================================
+videoeye_add_test(test_scene_change_page
+    unit/test_scene_change_page.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/SceneChangePage.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/theme/AppTheme.cpp
+)
+target_link_libraries(test_scene_change_page PRIVATE
+    VideoEyeDomain
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME SceneChangePageTests COMMAND test_scene_change_page)
+set_tests_properties(SceneChangePageTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 60：宏块分析页（MV 像素精度换算 + HEVC/CTU 术语 + 500 行上限）
+# 说明: 运动矢量按 motion_scale 换算像素、scale=0 按 1 兜底、术语随编码切换
+#       （HEVC→CTU、块大小表 14 行分区）、I 帧预览文案、行数上限 500 —— 写错都不崩，
+#       只会静默显示假像素值 / 错误术语。编页面源 + MetricChartWidget（同测试 59 的
+#       AUTOMOC 依赖），链 VideoEyeDomain。用 offscreen 平台跑。
+# =================================================
+videoeye_add_test(test_macroblock_view
+    unit/test_macroblock_view.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/MacroblockView.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+)
+target_link_libraries(test_macroblock_view PRIVATE
+    VideoEyeDomain
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME MacroblockViewTests COMMAND test_macroblock_view)
+set_tests_properties(MacroblockViewTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 61：色彩与 HDR 页（缺失值高亮 + 异常表类别过滤 + 扫描态互斥）
+# 说明: 「缺失 / 未标注」橙色加粗掉了只会变普通黑字；异常表收进非 ColorHdr 类别
+#       会把视频 / 音频问题塞进色彩页；扫描态不同步会让页面卡在「扫描中」。三条
+#       都是静默回归。三张表里的色彩 / HDR 表表头相同，测试经页内唯一 QTabWidget
+#       按 tab 索引定位。编页面源 + MetricChartWidget（同测试 59 的 AUTOMOC 依赖），
+#       链 VideoEyeDomain（BuildColorRows / BuildHdrRows 在 domain）。用 offscreen 跑。
+# =================================================
+videoeye_add_test(test_color_hdr_page
+    unit/test_color_hdr_page.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/ColorHdrPage.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+)
+target_link_libraries(test_color_hdr_page PRIVATE
+    VideoEyeDomain
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME ColorHdrPageTests COMMAND test_color_hdr_page)
+set_tests_properties(ColorHdrPageTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
