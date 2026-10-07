@@ -809,9 +809,10 @@ set_tests_properties(EventTimelineViewToggleTests PROPERTIES
 videoeye_add_test(test_stream_views
     unit/test_stream_views.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/FramePacketView.cpp
-    # FramePacketView 的视频帧/GOP 子页与音频帧子页已各自抽成独立组件，本目标
-    # 手工列源（不走 UI_SOURCES），漏了会在链接期报符号未解析。
+    # FramePacketView 的四个子页（视频帧/GOP、包、音频帧）都已各自抽成独立组件，
+    # 本目标手工列源（不走 UI_SOURCES），漏了会在链接期报符号未解析。
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/VideoFrameTableWidget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/PacketTableWidget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioFrameTableWidget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/StreamOverviewView.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/MacroblockView.cpp
@@ -1127,4 +1128,22 @@ target_link_libraries(test_ffmpeg_dictionary_widget PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME FfmpegDictionaryWidgetTests COMMAND test_ffmpeg_dictionary_widget)
 set_tests_properties(FfmpegDictionaryWidgetTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 56：包表子页（增量刷新 + 筛选重建/增量同语义 + 单元格/汇总 + Reset）
+# 说明: 包表是帧表↔包表 PTS 互跳的记录侧，切筛选的「全量重建」与常规「增量补差」
+#       必须共用同一份筛选语义和同步游标，错位只会静默少行/错行。组件源直接拿
+#       AV_PKT_FLAG_* / AVMEDIA_TYPE_* 常量（编译期常量，无需链 FFmpeg 库）；
+#       同测试 53，补编 MetricChartWidget.cpp 满足 AUTOMOC。用 offscreen 平台跑。
+# =================================================
+videoeye_add_test(test_packet_table_widget
+    unit/test_packet_table_widget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/PacketTableWidget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+)
+target_link_libraries(test_packet_table_widget PRIVATE
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME PacketTableWidgetTests COMMAND test_packet_table_widget)
+set_tests_properties(PacketTableWidgetTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

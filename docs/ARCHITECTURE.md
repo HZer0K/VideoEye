@@ -348,17 +348,21 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   ⚠️ 头文件里**不要内联解引用仅前向声明的组件类型**（`GopSummaries()` 想返回
   `video_page_->GopSummaries()` 就得把定义挪到 .cpp）：类的完整上下文只对本类成员有效，
   对别的 incomplete type 无效，会报 C2027。
-  其余待拆页 / 文件：`FfmpegPanel.cpp` / `MainWindow.cpp` / `FramePacketView.cpp` 剩余三张表
-  （视频帧 / GOP / 包，可沿 `AudioFrameTableWidget` 同一套路继续切）。
+  2026-10-07 最后把「包」子页也抽成 `PacketTableWidget`
+  （`ui/analysis_panel/PacketTableWidget.{h,cpp}`：记录缓存 / 筛选 / 脏标志 / 增量游标 /
+  CSV 导出随组件走，外露 `packetTable()` / `PacketRecords()` 交回父页做帧表↔包表 PTS 互跳）。
+  至此 `FramePacketView.cpp` 1121 → 230 行，四张表全部成为独立子页组件，本页只剩
+  tab 容器 + 开关路由 + 跨表互跳协调 + 转发。
+  其余待拆页 / 文件：`FfmpegPanel.cpp` / `MainWindow.cpp`。
   12 个页面组件已有 5 个有测试（`VisualDefectPage` / `EventTimelineView` /
   `StreamOverviewView` / `FramePacketView` / `ContainerStructurePage`；`test_container_structure_page`
   覆盖 MP4→详情页1、MKV→详情页2、无效→通用页的页路由 + 结构树/样本轨下拉填充 + 开关 `FeatureToggled`，
   且因只经 `findChild` 探测对象树，拆出 `Mp4SampleTableWidget` 后测试仍有效）。
-  2026-10-07 又给拆出来的独立组件补了单测（`tests/CMakeLists.txt` 测试 50-55，共 29 个
+  2026-10-07 又给拆出来的独立组件补了单测（`tests/CMakeLists.txt` 测试 50-56，共 34 个
   gtest 用例）：`ControlBarWidget` / `AudioVizRenderer` / `RawImageSequence`（player）、
-  `AudioFrameTableWidget` / `VideoFrameTableWidget`（帧表子页）、`FfmpegDictionaryWidget`
-  （指令字典）。每个测试只编组件源 + 直接依赖，不整层拉 FFmpeg / analysis；模态对话框
-  分支（如裸流参数对话框）不进单测。
+  `AudioFrameTableWidget` / `VideoFrameTableWidget` / `PacketTableWidget`（帧表子页）、
+  `FfmpegDictionaryWidget`（指令字典）。每个测试只编组件源 + 直接依赖，不整层拉 FFmpeg / analysis；
+  模态对话框分支（如裸流参数对话框）不进单测。
 
 ### 5.4 CMake 管得住什么、管不住什么
 
