@@ -10,7 +10,6 @@
 #include <QStatusBar>
 #include <QAction>
 #include <QSplitter>
-#include <QProgressDialog>
 #include <QListWidget>
 #include <QStackedWidget>
 #include <QLabel>
@@ -21,6 +20,7 @@
 #include "core/player/MediaPlayer.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/ffmpeg_panel/FfmpegPanel.h"
+#include "ui/main_window/ExportCoordinator.h"
 #include "ui/player/PlayerPanel.h"
 
 namespace videoeye {
@@ -28,11 +28,13 @@ namespace ui {
 
 class MediaInfoCoordinator;
 
-// 主窗口: 菜单 / 侧边栏 / 分析内容栈 / 导出。
+// 主窗口: 菜单 / 侧边栏 / 分析内容栈。
 //
 // 播放相关的一切 (视频区、控制栏、音频可视化、Raw 序列)
 // 已剥离到 ui::PlayerPanel —— VideoEye 的核心定位是视频文件分析, 播放只是辅助
 // 定位手段。MainWindow 仍拥有 MediaPlayer (分析侧共用), 以裸指针注入 PlayerPanel。
+// 导出体系 (三个导出入口 + 十条播放器导出信号接线 + 进度框) 剥离到 ui::ExportCoordinator,
+// 本窗口只注入两个状态查询并把它的 StatusMessage 转发给状态栏。
 class MainWindow : public QMainWindow {
     Q_OBJECT
 
@@ -47,18 +49,6 @@ private slots:
     void OnOpenFile();
     void OnOpenURL();
     void OnExit();
-    void OnExportVideoFrames();
-    void OnExportVideo();
-    void OnExportAudio();
-
-    // 音视频导出
-    void OnMediaExportProgress(int percent);
-    void OnMediaExportFinished(const QString& output_path);
-    void OnMediaExportError(const QString& message);
-    // 视频帧导出
-    void OnVideoFrameExportProgress(int exported_frames);
-    void OnVideoFrameExportFinished(const QString& output_dir);
-    void OnVideoFrameExportError(const QString& message);
 
     // 播放区显隐 (实际逻辑在 PlayerPanel)
     void OnTogglePlayerArea(bool checked);
@@ -112,17 +102,16 @@ protected:
     // FFmpeg 命令工作台 (原生 ffmpeg 的图形入口; 不依赖当前是否打开了媒体)
     ui::FfmpegPanel* ffmpeg_panel_ = nullptr;
 
+    // 导出协调器: 三个导出入口 + 十条播放器导出信号接线 (构造时自连), 菜单动作
+    // 接收者就是它。对话框 parent 与状态查询在构造时注入; 查询 lambda 读本窗口
+    // 状态, 协调器不反向持有 MainWindow 的具体成员。
+    ExportCoordinator* export_coordinator_ = nullptr;
+
     // 菜单和工具栏
     QMenuBar* menu_bar_;
     QStatusBar* status_bar_;
     QAction* export_frames_action_ = nullptr;
     QAction* toggle_player_action_ = nullptr;  // 视图菜单: 显示播放区 (F9)
-    QProgressDialog* export_progress_dialog_ = nullptr;
-    int export_total_frames_ = 0;
-
-    // 导出类型跟踪 (用于进度对话框取消时调用正确的取消接口)
-    enum class ActiveExport { None, Frames, Media };
-    ActiveExport active_export_ = ActiveExport::None;
 
     // UI 健康度探针 (主线程阻塞检测, 仅用于定位卡顿)
     QTimer* ui_health_timer_ = nullptr;

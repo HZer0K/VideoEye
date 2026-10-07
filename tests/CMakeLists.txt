@@ -1169,3 +1169,29 @@ target_link_libraries(test_ffmpeg_output_widget PRIVATE
 add_test(NAME FfmpegOutputWidgetTests COMMAND test_ffmpeg_output_widget)
 set_tests_properties(FfmpegOutputWidgetTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 58：MainWindow 导出职责（进度框三态 + 双通道量程 + 取消路由 + 提示文案）
+# 说明: 导出三入口与十条播放器导出信号接线从 MainWindow 抽成 ExportCoordinator。
+#       进度框「建 / 复用 / 收」、帧导出 vs 音视频导出的量程差异、取消按钮路由都用
+#       invokeMethod 驱动私有槽验证（先例 test_reporting_panel_lifecycle）；信号本身
+#       是 MediaPlayer 侧契约，不从这里发射。编组件源 + MediaExportDialog（入口引用
+#       的对话框）+ 真实 MediaPlayer（空闲 Cancel 安全，仅作非空依赖，不打开媒体）。
+#       弹模态框的分支（三个导出入口与 Canceled / Error 收尾）不进单测。
+#       用 offscreen 平台跑。
+# =================================================
+videoeye_add_test(test_export_coordinator
+    unit/test_export_coordinator.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/main_window/ExportCoordinator.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/dialogs/MediaExportDialog.cpp
+)
+target_link_libraries(test_export_coordinator PRIVATE
+    VideoEyePlayback
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+# VideoEyePlayback 的阻塞打开走 winsock，Windows 上需要显式 ws2_32。
+if(WIN32)
+    target_link_libraries(test_export_coordinator PRIVATE ws2_32)
+endif()
+add_test(NAME ExportCoordinatorTests COMMAND test_export_coordinator)
+set_tests_properties(ExportCoordinatorTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

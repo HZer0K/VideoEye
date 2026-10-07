@@ -361,15 +361,21 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   CSV 导出随组件走，外露 `packetTable()` / `PacketRecords()` 交回父页做帧表↔包表 PTS 互跳）。
   至此 `FramePacketView.cpp` 1121 → 230 行，四张表全部成为独立子页组件，本页只剩
   tab 容器 + 开关路由 + 跨表互跳协调 + 转发。
-  其余待拆页 / 文件：`MainWindow.cpp`（`FfmpegPanel.cpp` 两刀拆完，665 行，暂不继续强拆）。
+  `MainWindow.cpp` 第二刀抽出 `ExportCoordinator`（`ui/main_window/ExportCoordinator.{h,cpp}`，
+  导出协调器：三个导出入口 + 十条播放器导出信号接线 + 进度框建/复用/收与取消路由整体迁出，
+  构造时自连信号、注入对话框 parent 与两个状态查询回调，只发 `StatusMessage` 文本交回窗口
+  转发状态栏），1027 → 804 行 —— 至此 `MainWindow.cpp` 两刀拆完（媒体信息协调 / 导出协调），
+  自身只剩菜单、侧边栏与内容栈装配。
+  其余待拆文件：`FfmpegPanel.cpp`（两刀拆完，665 行，暂不继续强拆）。
   12 个页面组件已有 5 个有测试（`VisualDefectPage` / `EventTimelineView` /
   `StreamOverviewView` / `FramePacketView` / `ContainerStructurePage`；`test_container_structure_page`
   覆盖 MP4→详情页1、MKV→详情页2、无效→通用页的页路由 + 结构树/样本轨下拉填充 + 开关 `FeatureToggled`，
   且因只经 `findChild` 探测对象树，拆出 `Mp4SampleTableWidget` 后测试仍有效）。
-  2026-10-07 又给拆出来的独立组件补了单测（`tests/CMakeLists.txt` 测试 50-57，共 40 个
+  2026-10-07 又给拆出来的独立组件补了单测（`tests/CMakeLists.txt` 测试 50-58，共 46 个
   gtest 用例）：`ControlBarWidget` / `AudioVizRenderer` / `RawImageSequence`（player）、
   `AudioFrameTableWidget` / `VideoFrameTableWidget` / `PacketTableWidget`（帧表子页）、
-  `FfmpegDictionaryWidget` / `FfmpegOutputWidget`（命令工作台）。每个测试只编组件源 + 直接依赖，
+  `FfmpegDictionaryWidget` / `FfmpegOutputWidget`（命令工作台）、`ExportCoordinator`（main_window）。
+  每个测试只编组件源 + 直接依赖，
   不整层拉 FFmpeg / analysis；模态对话框分支（如裸流参数对话框）不进单测。
 
 ### 5.4 CMake 管得住什么、管不住什么
