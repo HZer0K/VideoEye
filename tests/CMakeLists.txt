@@ -122,7 +122,7 @@ endif()
 # 所以直接 add_test 调 python。
 find_program(VIDEOEYE_PYTHON_EXE NAMES python3 python py)
 if(VIDEOEYE_PYTHON_EXE)
-    # 这四条脚本都用「VIDEOEYE_ROOT 或者当前目录」当仓库根，而 add_test 的默认工作
+    # 这些脚本大多用「VIDEOEYE_ROOT 或者当前目录」当仓库根，而 add_test 的默认工作
     # 目录是二进制目录（build/test-release/tests）—— 不加 WORKING_DIRECTORY 的话
     # ROOT 会落在 build 里，os.walk 扫到一个不存在的 core/，于是「一个依赖都没查到」
     # 直接被当成「没有跨层反向依赖」放行。这是假绿，不是通过。
@@ -157,6 +157,14 @@ if(VIDEOEYE_PYTHON_EXE)
              COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/audit_namespace_layout.py)
     add_test(NAME NamespaceLayoutSelfTestTests
              COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test_audit_namespace_layout.py)
+    # Qt 类型不许从生产侧直接落进 domain 的 std::string 字段（字段级污染）。
+    # 与 check_layering（include 方向）、audit_qt_analysis_border（analysis 层整体
+    # 不许沾 Qt）查的都不是同一件事。CI 的 layering job 一直在跑它，
+    # 本地 ctest 以前看不见 —— 2026-10-07 补注册，消掉「CI 红、本地绿」的落差。
+    add_test(NAME QtDomainBorderTests
+             COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/audit_qt_domain_border.py)
+    add_test(NAME QtDomainBorderSelfTestTests
+             COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test_audit_qt_domain_border.py)
     # ⚠️ 这几个脚本测试都靠「VIDEOEYE_ROOT 或当前目录」当仓库根（见各脚本顶部
     # ROOT = os.environ.get("VIDEOEYE_ROOT") or os.getcwd()）。WORKING_DIRECTORY 已经
     # 钉在源码根，但开发者 shell 里万一 export 了一个**过时**的 VIDEOEYE_ROOT（旧 checkout），
@@ -167,7 +175,9 @@ if(VIDEOEYE_PYTHON_EXE)
                                             QtAnalysisBorderTests
                                             QtAnalysisBorderSelfTestTests
                                             NamespaceLayoutTests
-                                            NamespaceLayoutSelfTestTests PROPERTIES
+                                            NamespaceLayoutSelfTestTests
+                                            QtDomainBorderTests
+                                            QtDomainBorderSelfTestTests PROPERTIES
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         ENVIRONMENT "VIDEOEYE_ROOT=${CMAKE_SOURCE_DIR}")
 else()

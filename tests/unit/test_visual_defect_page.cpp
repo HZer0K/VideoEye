@@ -162,16 +162,16 @@ TEST(VisualDefectPageTests, ControlsAreInitializedFromIncomingOptions) {
     EXPECT_DOUBLE_EQ(3.5, blur->value());
     EXPECT_DOUBLE_EQ(0.08, freeze->value());
     EXPECT_FALSE(rgb->isChecked());
-    // 档位控件停在组合框的默认项（索引 1）而不是跟着 options_ 走 —— 这条单独在下一个
-    // 用例里讲，那是本文件唯一"界面与生效值会分家"的地方
+    // 档位控件同样跟随入参：默认 opts 的 preset 是 Standard，落在索引 1
     EXPECT_EQ(1, combo->currentIndex());
+    EXPECT_EQ(static_cast<int>(opts.preset), combo->currentData().toInt());
 }
 
 // ---------------------------------------------------------------------------
-// 3. 档位只铺控件、不回写 options：界面显示与生效值分家（先把实测行为钉住）
+// 3. 档位跟随入参：界面显示与生效值一致（findData 定位，不写死索引）
 // ---------------------------------------------------------------------------
 
-TEST(VisualDefectPageTests, IncomingPresetIsKeptButComboStaysOnItsDefaultEntry) {
+TEST(VisualDefectPageTests, IncomingPresetIsMirroredByCombo) {
     EnsureApp();
 
     VisualDefectOptions opts;
@@ -185,16 +185,13 @@ TEST(VisualDefectPageTests, IncomingPresetIsKeptButComboStaysOnItsDefaultEntry) 
     QComboBox* combo = PresetCombo(page);
     ASSERT_TRUE(combo != nullptr);
 
-    // 实测两件事，都是**反直觉**的：
-    //   1. options_ 里保留调用方传进来的档位 —— 构造不回写控件状态；
-    //   2. 下拉却停在默认项（索引 1 = "标准 (2 帧/秒)"），因为 setCurrentIndex(1) 那行
-    //      写在 connect() 之前：既没触发 OnOptionChanged，也没人把 options_ 同步成控件。
-    // 结果就是「界面显示标准」与「实际送进分析器的是离线全帧」分家。
-    // 面板目前只建一次页面、传的都是自己持有的那一份（默认也是标准），所以感知不到；
-    // 一旦将来页面需要重建（切文件 / 恢复上次配置），或者有人传了非默认档位，
-    // 用户看到的档位就会是错的。这里先把现状钉住 —— 修法在 docs/ARCHITECTURE.md §5.4。
+    // 历史：这里曾经写死 setCurrentIndex(1)，于是「界面显示标准」与
+    // 「实际送进分析器的是离线全帧」分家（旧用例名 IncomingPresetIsKeptButCombo
+    // StaysOnItsDefaultEntry 钉的就是那个现状）。现在下拉必须跟着入参走。
     EXPECT_EQ(VisualSamplingPreset::OfflineFull, page.options().preset);
-    EXPECT_EQ(1, combo->currentIndex());
+    EXPECT_EQ(static_cast<int>(VisualSamplingPreset::OfflineFull),
+              combo->currentData().toInt());
+    EXPECT_EQ(3, combo->currentIndex());
     // 构造期不 emit（setCurrentIndex 排在 connect 前面），"改控件"的用例都以空基线起步
     EXPECT_TRUE(rec.emitted.empty());
 }

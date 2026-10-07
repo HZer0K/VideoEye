@@ -13,6 +13,9 @@
    找出对域字段的赋值语句，其右值含 QString / QByteArray / QLatin1String / QStringLiteral 等 Qt 类型，
    且未显式 .toStdString()。
 3. 另查 QString::arg() 直接吃 domain std::string 成员——arg() 没有 std::string 重载，必然编译不过。
+   这一关先用「接收者类型」澄清一次：arg(opt.format) 里若 opt 是 Qt 侧自有结构
+   （例如 exporter 的 ExportOptions），即便字段名与 domain 字段撞车也按合法用法放行，
+   归入 [跳过]；只有接收者类型解析不到、或解析到 core/domain 的 struct 才计入违规。
 
 输出里的 [疑似] 是静态审计判定不了类型的（arg() 吃的是与域字段同名的纯局部变量），
 需人工确认，不是确定违规。
@@ -78,6 +81,56 @@ def collect_string_fields() -> set[str]:
     return fields
 
 
+def collect_domain_structs() -> set[str]:
+    """扫描 core/domain 下所有头文件，抽取 struct/class 名。
+
+    为什么需要它: 字段名会撞车——domain 的 FrameData::format 是 std::string，
+    而 Qt 侧 ExportOptions::format 是 QString，两者同名。判断 .arg(X.format)
+    是否违规，光看字段名不够，得看 X 的类型是不是 domain 模型。
+    """
+    names: set[str] = set()
+    base = os.path.dirname(DOMAIN_DIR)  # core/domain
+    pat = re.compile(r"\b(?:struct|class)\s+([A-Za-z_][A-Za-z0-9_]*)")
+    for dirpath, _dirs, files in os.walk(base):
+        for n in files:
+            if not n.endswith(".h"):
+                continue
+            try:
+                with open(os.path.join(dirpath, n), "r", encoding="utf-8") as f:
+                    for line in f:
+                        m = pat.search(line)
+                        if m:
+                            names.add(m.group(1))
+            except Exception:
+                continue
+    return names
+
+
+# 纯成员访问链: opt.format / obj.inner.field。
+# 只有这种形式才能靠「变量声明」静态解析出接收者类型；
+# 带函数调用（.value().format）或下标的形式一律退回原启发式（保守）。
+MEMBER_CHAIN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$")
+MEMBER_PAIR_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def resolve_var_type(text: str, var: str) -> str | None:
+    """在文件文本里找 `Type var` / `Type& var` / `const Type& var` / 形参等声明，返回类型名。
+
+    只做单文件、单次出现级别的粗糙解析——够用即可：这是启发式的「澄清」，
+    解析不到时调用方按原保守逻辑处理，不因解析失败而放宽。
+    """
+    if not text:
+        return None
+    pat = re.compile(
+        r"(?:^|[;{}(,])\s*"
+        r"(?:const\s+|volatile\s+|static\s+|typename\s+)*"
+        r"([A-Za-z_][A-Za-z0-9_:]*(?:\s*<[^;{}()]*>)?)\s*"
+        r"(?:[&*]\s*|\s+)" + re.escape(var) + r"\b\s*[;=,)\[\{]",
+        re.MULTILINE)
+    m = pat.search(text)
+    return m.group(1).strip() if m else None
+
+
 def iter_files():
     for d in SCAN_DIRS:
         base = os.path.join(ROOT, d)
@@ -93,6 +146,8 @@ def main() -> int:
         print("未能从 domain 模型抽取到 std::string 字段")
         return 1
     print("domain std::string 字段样本: %d" % len(fields))
+    domain_structs = collect_domain_structs()
+    print("domain struct/class 样本: %d" % len(domain_structs))
 
     def norm(rel: str) -> str:
         return rel.replace("\\", "/")
@@ -100,6 +155,8 @@ def main() -> int:
     hits = []
     arg_hits = []     # 高置信：arg() 吃的是 obj.<域字段>
     arg_probable = [] # 疑似：arg() 吃的是纯局部变量（名字与域字段同名）
+    receiver_skipped = []  # 放行：接收者类型解析得到，但不是 domain 结构（字段名撞车）
+    file_texts: dict[str, str] = {}
     stmts: list[tuple[str, int, str]] = []
     field_pat = re.compile(r"\.(" + "|".join(sorted(fields, key=len, reverse=True)) + r")\s*=")
     # 把一条逻辑语句合并成单行后再判定（ MERGE 版本）：
@@ -114,6 +171,7 @@ def main() -> int:
                 text = f.read()
         except Exception:
             return
+        file_texts[norm(os.path.relpath(path, ROOT))] = text
         buf = ""
         start_line = 0
         for idx, raw in enumerate(text.splitlines(), 1):
@@ -164,6 +222,23 @@ def main() -> int:
             if "fromStdString(" in expr:
                 continue
             expr_stripped = expr.strip()
+            # 纯成员访问链（opt.format）：接收者类型可静态解析，先澄清一次。
+            # 字段名撞车（domain FrameData::format vs Qt 侧 ExportOptions::format）
+            # 就发生在这里——解析到 Qt 侧自有结构就放行，不再冤枉合法用法。
+            if MEMBER_CHAIN_RE.match(expr_stripped):
+                field_pairs = [(b, m) for (b, m) in MEMBER_PAIR_RE.findall(expr_stripped)
+                               if m in fields]
+                if field_pairs:
+                    base = field_pairs[-1][0]
+                    recv_type = resolve_var_type(file_texts.get(norm(rel), ""), base)
+                    short = recv_type.split("::")[-1] if recv_type else ""
+                    if recv_type and short not in domain_structs:
+                        receiver_skipped.append((rel, expr_stripped, recv_type, stmt[:160]))
+                        continue
+                    # 解析到 domain 结构；或类型解析不到（保守起见仍算确定命中）
+                    arg_hits.append((rel, stmt[:200]))
+                    break
+            # 其它形式（函数调用/下标等）静态拿不到类型，退回原启发式：
             # arg(obj.<域字段>) —— 元访问，静态可判定
             member_hit = "." in expr_stripped and any(
                 tok in fields for tok in token_pat.findall(expr_stripped))
@@ -183,14 +258,6 @@ def main() -> int:
 
     if not real_hits:
         print("\n[OK] 未发现 Qt 类型直接写进 domain std::string 的赋值")
-    else:
-        print("\n[命中] 域字段被 Qt 类型污染: %d 处" % len(real_hits))
-        cur = None
-        for rel, idx, text in real_hits:
-            if cur != rel:
-                cur = rel
-                print("\n--- %s ---" % rel)
-            print("  %4d: %s" % (idx, text))
 
     if skipped:
         print("\n[跳过] %d 处落在 Qt 侧自有结构（不属于 domain），按规则允许保留 QString："
@@ -199,12 +266,26 @@ def main() -> int:
             if any(norm(h[0]) == rel for h in skipped):
                 print("  %s   <- %s" % (rel, ALLOWED_HINTS.get(rel, "")))
 
+    def print_receiver_skipped():
+        if not receiver_skipped:
+            return
+        print("\n[跳过] %d 处 arg() 的接收者不是 domain 结构（字段名与 domain 撞车，"
+              "但接收者类型在 core/domain 之外声明），按合法用法放行："
+              % len(receiver_skipped))
+        cur = None
+        for rel, expr, recv_type, text in receiver_skipped:
+            if cur != rel:
+                cur = rel
+                print("\n--- %s ---" % rel)
+            print("  arg(%s)  <- 接收者类型 %s" % (expr, recv_type))
+            print("      << %s" % text[:120])
+
     # 早退分支只能在「三类全空」时才走，否则会出现
     # 「打印了 [命中] 却 return 0」——CI 上方块徽章是绿的，违规照旧合并进主干。
     # （scripts/test_audit_qt_domain_border.py 对这条路径有专门断言。）
     if not real_hits and not arg_hits and not arg_probable:
-        print("\n[OK] 未发现 Qt 类型直接写进 domain std::string 的赋值")
         print("\n[OK] 未发现 QString::arg() 直接吃 domain std::string 的成员")
+        print_receiver_skipped()
         print("\n[退出码] 0 —— 无确定命中，CI / pre-commit 放行")
         return 0
 
@@ -235,6 +316,9 @@ def main() -> int:
                 cur = rel
                 print("\n--- %s ---" % rel)
             print("  arg(%s)   <<  %s" % (expr, text[:120]))
+
+    # 接收者澄清属于「放行」而非「疑似」，上面两个分支都该看到这条提示
+    print_receiver_skipped()
 
     # 只有「确定命中」（域字段被 Qt 类型直接赋值 / arg() 吃域字段成员）才让 CI / pre-commit 红。
     # arg_probable 是静态判定不了类型的（名字撞车），属于人工确认项，不能让脚本红，

@@ -8,11 +8,13 @@
 这类 bug 的特征是**脚本本身看着是对的**（人肉读输出确认命中都在），
 所以只有退出码能兜住，光靠 review 盯输出拦不住。
 
-于是这里用临时目录造四种场景，直接断言 main() 的返回码：
+于是这里用临时目录造五种场景，直接断言 main() 的返回码：
     1. 干净仓库（QString 已 .toStdString()）           -> 0
     2. QString 直接赋给域字段  result.error_message    -> 1 且输出含 [命中]
     3. QString::arg(域字段成员)（没有 std::string 重载） -> 1 且输出含 [命中]
     4. QString::arg(同名局部变量)（静态判定不了类型）   -> 0，仍是 [疑似] warning
+    5. QString::arg(Qt 侧结构成员，字段名与域字段撞车)  -> 0 且输出含 [跳过]
+       —— 接收者类型解析得到且不在 core/domain，按合法用法放行（不是字段级污染）
 
 外加一项：拿真实仓库跑一遍，断言当前确实干净（退出 0）。
 
@@ -72,6 +74,18 @@ ARG_HIT_CPP = """void F(const FakeRecord& info, QString& label) {
 ARG_PROBABLE_CPP = """void F(QString& label) {
     QString error_message = QString("x");
     label = QString("v%1").arg(error_message);
+}
+"""
+
+# 接收者类型澄清: 字段名 error_message 与 domain 字段撞车, 但 res 的类型是
+# 文件内声明的 Qt 侧自有结构, 不是 domain 模型 —— 合法用法, 不得红。
+# （真实仓库的对应物: MediaExporter.cpp 的 .arg(opt.format)，
+#    opt 是 core/exporter 的 ExportOptions，而 domain 的 FrameData 也有 format。）
+QT_SIDE_RECEIVER_CPP = """struct QtSideResult {
+    QString error_message;
+};
+void F(const QtSideResult& res, QString& label) {
+    label = QString("v%1").arg(res.error_message);
 }
 """
 
@@ -176,6 +190,9 @@ def main():
     ok &= case("QString::arg(同名局部变量) -> 只 warning",
                dict(domain, **{"core/analysis/FakeLikely.cpp": ARG_PROBABLE_CPP}),
                0, "[疑似]")
+    ok &= case("QString::arg(Qt 侧结构成员，字段名撞车) -> 放行",
+               dict(domain, **{"core/analysis/FakeQtSide.cpp": QT_SIDE_RECEIVER_CPP}),
+               0, "[跳过]")
     print("-" * 60)
     ok &= check_real_repo(load_audit_module())
 

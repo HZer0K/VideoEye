@@ -391,33 +391,19 @@ target_include_directories(${name} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 顺带一提，`check_layering.py` 的 `RULES` 里没有 `ui` 与 `tests` 两条：ui 按设计就能 include
 一切，测试按设计就能反向 include 被测对象，加了只会产生噪声。别去"补上"。
 
-#### 一处已知的"界面与生效值分家"：`VisualDefectPage` 的采样档位
+#### 已修复：`VisualDefectPage` 的采样档位曾与生效值分家
 
-`ui/analysis_panel/VisualDefectPage.cpp` 里档位下拉的初始化顺序是
-`preset_combo_->setCurrentIndex(1)` → **之后**才 `connect(..., &VisualDefectPage::OnOptionChanged)`。
-于是构造时既不会 emit `OptionsChanged`，也没有谁把 `options_` 拉成控件状态：
+（2026-10-05 记录、2026-10-07 修复）`ui/analysis_panel/VisualDefectPage.cpp` 里档位下拉
+曾经写死 `preset_combo_->setCurrentIndex(1)`，且排在 `connect()` 之前。于是调用方传
+非默认档位（`Fine` / `OfflineFull`）时，**生效的是传入值，界面显示的却是"标准"**，
+得用户手动再拨一次才对得上。
 
-| 传入的 preset | `page.options().preset` | 下拉显示 | 一致？ |
-|---|---|---|---|
-| `Standard`（默认，面板传的就是这个） | Standard | 索引 1 = 标准 | ✅ |
-| `Fine` / `OfflineFull` 等非默认值 | **原样保留** | 索引 1 = **标准** | ❌ |
-
-也就是说调用方传了非默认档位时，**生效的是传入值，界面显示的是"标准"**，得用户手动再拨一次
-才对得上。目前面板只建一次页面且传的都是自己持有的那份（默认标准），所以看不出来；
-页面一旦要重建（切文件 / 恢复上次配置）或者接入"记住上次的档位"，这条就会浮出来。
-
-测试已经把它钉死了（`tests/unit/test_visual_defect_page.cpp` 的
-`IncomingPresetIsKeptButComboStaysOnItsDefaultEntry`），两个修法：
-
-1. **让控件跟着 options 走**（推荐）：`setCurrentIndex(1)` 换成
-   `setCurrentIndex(qMax(0, preset_combo_->findData(static_cast<int>(options_.preset))))`，
-   行为和"界面永远等于生效值"对齐；
-2. **让 options 跟着控件走**：把 `setCurrentIndex(1)` 挪到 `connect()` 之后，
-   靠构造期那一次 `OnOptionChanged` 回写 —— 但这样又回到"构造即覆写调用方传参"，
-   与上一个用例 `ConstructorKeepsIncomingFieldValues` 钉住的语义相反。
-
-选哪个取决于一句产品问题：**"恢复上次设置"时，页面该显示上次的档位，还是显示默认档位？**
-2026-10-05 先不改，钉住现状。
+修法选了「让控件跟着 options 走」，即产品问题取**"恢复上次设置时显示上次的档位"**：
+`setCurrentIndex(1)` 换成按 userData 定位的
+`findData(static_cast<int>(options_.preset))`（未知档位退回默认项「标准」）。
+用 `findData` 而不是硬编码索引，枚举与下拉项顺序调整后也不会错位。
+测试 `IncomingPresetIsMirroredByCombo`（原 `IncomingPresetIsKeptButComboStaysOnItsDefaultEntry`，
+命名与断言语义均已翻转）钉住新行为：传 `OfflineFull` 时下拉必须停在索引 3，且构造期不 emit。
 
 ## 6. 怎么校验边界
 

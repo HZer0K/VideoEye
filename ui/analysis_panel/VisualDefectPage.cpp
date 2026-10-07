@@ -73,7 +73,12 @@ void VisualDefectPage::SetupUi() {
             tr("精细 (5 帧/秒)"), static_cast<int>(model::VisualSamplingPreset::Fine));
         preset_combo_->addItem(
             tr("离线全帧 (逐帧，不丢帧)"), static_cast<int>(model::VisualSamplingPreset::OfflineFull));
-        preset_combo_->setCurrentIndex(1);
+        // 跟随传入的 options.preset。旧代码写死 setCurrentIndex(1)，把调用方显式
+        // 传进来的档位悄悄留在「标准」——界面显示与实际送进分析器的档位分家
+        // （docs/ARCHITECTURE.md §5.4）。用 findData 按 userData 定位而不是硬编码
+        // 索引，将来枚举与下拉项顺序调整也不会错位；未知档位退回默认项「标准」。
+        const int preset_index = preset_combo_->findData(static_cast<int>(options_.preset));
+        preset_combo_->setCurrentIndex(preset_index >= 0 ? preset_index : 1);
         preset_combo_->setToolTip(
             tr("播放时默认抽样分析；分析队列有上限，压力大会丢分析帧但绝不拖慢播放。\n"
                "「离线全帧」逐帧同步分析，适合不追求播放流畅度的全检场景。"));

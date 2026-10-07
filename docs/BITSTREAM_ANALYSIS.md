@@ -451,7 +451,7 @@ TEST(H264BitstreamParserTest, ParseHighProfileSPS) {
 
 1. `core/media/codec/BitReader.h/.cpp` - 位流读取器
 2. `core/media/codec/ExtradataParser.h` - 封装格式识别接口
-3. `core/domain/model/BitstreamInfo.h` - 数据模型
+3. `core/domain/model/BitstreamInfo.h` - 数据模型（umbrella 聚合；按 codec 拆有 `H264BitstreamInfo.h` / `HevcBitstreamInfo.h` / `Av1BitstreamInfo.h` / `VvcBitstreamInfo.h` 四个子头）
 4. `core/analysis/codec/H264BitstreamParser.h/.cpp` - H.264 解析器
 5. `core/analysis/codec/HevcBitstreamParser.h/.cpp` - H.265 解析器
 6. `core/analysis/codec/BitstreamAnalyzer.h/.cpp` - 统一接口
