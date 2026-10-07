@@ -57,6 +57,49 @@ jobs:
       - name: Check test-count snapshot (README table)
         run: python3 scripts/summarize_tests.py --expect 61
 
+  # 格式门禁: .clang-format 一直在仓库里, 但此前没有任何机器执行过它 —— pre-commit
+  # 钩子的第 4 道门在没装 clang-format 的机器上只 warning 跳过, CI 里则完全没有
+  # 这一环, 等于「配置存在, 无人执行」。这里补上 CI 兜底。
+  #
+  # 只卡本次改动/新增的 C++ 文件 (与钩子同语义, 基线规则见 scripts/ci-changed-files.sh):
+  # 历史文件没做过全量格式化, 一次性卡全量会把无关旧文件卷进同一个红, 不利于定位。
+  # 也刻意不做成 ctest 用例 —— 本机缺 clang-format 时它会假绿, 不如让它在 CI 里真跑。
+  format:
+    name: Format check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 增量检查要算改动范围, 浅克隆拿不到基线
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format
+          clang-format --version
+
+      - name: Check changed C++ files
+        run: |
+          set -euo pipefail
+          files=$(bash scripts/ci-changed-files.sh)
+          if [ -z "$files" ]; then
+            echo "本次改动没有 C++ 文件, 跳过"
+            exit 0
+          fi
+          echo "检查文件:"; echo "$files"
+          fail=0
+          for f in $files; do
+            if ! clang-format --dry-run --Werror "$f"; then
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::上述文件不符合 .clang-format (修复: clang-format -i <文件> 后重新提交)"
+            exit 1
+          fi
+          echo "格式检查通过"
+
   build:
     name: Build (${{ matrix.os }})
     strategy:
@@ -274,9 +317,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
+          # clang-tidy 供下面的静态检查摸底步骤使用 (只报告, 不拦截)
           sudo apt-get install -y \
             build-essential cmake pkg-config ninja-build \
-            qt6-base-dev libgtest-dev \
+            qt6-base-dev libgtest-dev clang-tidy \
             libavcodec-dev libavformat-dev libavutil-dev \
             libswscale-dev libswresample-dev
 
@@ -323,6 +367,27 @@ jobs:
       - name: Build (tests)
         if: runner.os == 'Linux'
         run: cmake --build --preset ${{ matrix.preset }}
+
+      # clang-tidy 摸底: .clang-tidy 配置存在但从未被机器执行过(钩子只查格式)。
+      # 全量跑必然是一屏存量告警, 所以第一版只对本次改动的 .cpp 跑, 且只报告不
+      # 拦截 —— 不传 --warnings-as-errors, 解析失败也只打日志。等存量告警清完、
+      # 噪声大的检查调好之后, 下一版再收紧成硬门。
+      # 依赖 compile_commands.json: linux-base preset 已开 CMAKE_EXPORT_COMPILE_COMMANDS。
+      - name: clang-tidy changed files (report-only)
+        if: runner.os == 'Linux'
+        run: |
+          set -uo pipefail   # 故意不用 -e: 本步只报告, 任何解析失败都不该拦 job
+          files=$(bash scripts/ci-changed-files.sh | grep -E '\.cpp$' || true)
+          if [ -z "$files" ]; then
+            echo "本次改动没有 .cpp 文件, 跳过"
+            exit 0
+          fi
+          for f in $files; do
+            echo "::group::clang-tidy $f"
+            clang-tidy -p build/test-debug "$f" 2>&1 | tail -n 200 || true
+            echo "::endgroup::"
+          done
+          echo "clang-tidy 摸底完成 (只报告, 不拦截)"
 
       - name: Run ctest
         if: runner.os == 'Linux'

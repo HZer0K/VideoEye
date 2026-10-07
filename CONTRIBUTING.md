@@ -82,6 +82,13 @@ bash scripts/setup-hooks.sh    # 安装 pre-commit hook（检查暂存文件格�
 clang-format -i $(git diff --name-only -- '*.cpp' '*.h')
 ```
 
+> CI 会复查这两项（范围都只限**本次改动/新增**的文件，历史文件不追溯）：
+> `format` job 对改动的 C++ 文件跑 `clang-format --dry-run --Werror`，不过直接红；
+> Linux 测试 job 对改动的 `.cpp` 跑一遍 `clang-tidy`，当前**只报告不拦截**，
+> 等存量告警清理完、检查项调好噪声后再收紧成硬门。
+> 本机没装 clang-format 时钩子只警告跳过 —— 请自行安装（Ubuntu: `apt install clang-format`，
+> Windows: `winget install LLVM.LLVM`），否则格式问题会留到 CI 才暴露。
+
 ## 提交流程
 
 1. Fork 仓库并创建特性分支：`git checkout -b feature/your-feature`
