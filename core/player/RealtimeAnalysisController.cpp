@@ -115,7 +115,7 @@ void RealtimeAnalysisController::EmitAnalysisEvent(const QString& severity, cons
     event_info.summary = summary.toStdString();
     event_info.detail = detail.toStdString();
     emit AnalysisEventReady(event_info);
-    EmitTimelineEvent(QStringLiteral("事件"), timestamp_seconds, summary, detail);
+    EmitTimelineEvent(model::TimelineEventCategory::Event, timestamp_seconds, summary, detail);
 }
 
 void RealtimeAnalysisController::EmitSyncSample(double audio_ts, double video_ts,
@@ -131,14 +131,14 @@ void RealtimeAnalysisController::EmitSyncSample(double audio_ts, double video_ts
     emit SyncSampleReady(sample);
 }
 
-void RealtimeAnalysisController::EmitTimelineEvent(const QString& category,
+void RealtimeAnalysisController::EmitTimelineEvent(model::TimelineEventCategory category,
                                                    double timestamp_seconds,
                                                    const QString& label, const QString& detail) {
     if (!analysis_.IsTimelineAnalysisEnabled()) return;
     if (!std::isfinite(timestamp_seconds)) return;
     model::TimelineEvent event;
     event.index = timeline_event_index_++;
-    event.category = category.toStdString();
+    event.category = category;
     event.timestamp_seconds = timestamp_seconds;
     event.label = label.toStdString();
     event.detail = detail.toStdString();
@@ -484,7 +484,7 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
             emit FrameTimingReady(timing);
         }
         if (is_key_frame) {
-            EmitTimelineEvent(QStringLiteral("视频关键帧"), ts,
+            EmitTimelineEvent(model::TimelineEventCategory::VideoKeyframe, ts,
                               QStringLiteral("关键帧 #%1").arg(emitted_index));
         }
     }
@@ -571,7 +571,7 @@ void RealtimeAnalysisController::OnAudioFrame(const AudioFrameContext& ctx) {
     }
     ++audio_timeline_sample_counter_;
     if (audio_timeline_sample_counter_ % 100 == 0) {
-        EmitTimelineEvent(QStringLiteral("音频采样"), ts,
+        EmitTimelineEvent(model::TimelineEventCategory::AudioSample, ts,
                           QStringLiteral("音频帧 #%1").arg(audio_frame_index_ - 1));
     }
     if (analysis_.IsAnalysisEnabled()) {

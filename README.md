@@ -248,12 +248,12 @@ TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红�
 
 | 指标 | 数量 |
 |---|---|
-| 测试可执行文件 | 69 |
-| ctest 用例组（gtest 可执行文件） | 69 |
+| 测试可执行文件 | 70 |
+| ctest 用例组（gtest 可执行文件） | 70 |
 | 架构规则用例组（python 脚本，非 gtest） | 10 |
-| gtest 用例（含 `TEST` / `TEST_F` / `TEST_P`） | 562 |
+| gtest 用例（含 `TEST` / `TEST_F` / `TEST_P`） | 565 |
 
-`ctest -N` 会显示 **79 = 69 + 10**，多出来的 10 个不是 gtest 可执行文件，而是直接
+`ctest -N` 会显示 **80 = 70 + 10**，多出来的 10 个不是 gtest 可执行文件，而是直接
 `add_test` 调 python 脚本的 5 道架构规则门及其自测：`check_layering.py` 与它的自测、
 `audit_qt_analysis_border.py` 与它的自测、`audit_namespace_layout.py` 与它的自测、
 `audit_qt_domain_border.py` 与它的自测、`audit_link_visibility.py` 与它的自测（最后一
@@ -261,7 +261,7 @@ TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红�
 没有 gtest 用例，所以脚本不计入 gtest 那两个数。
 
 这个数字以前是「18 个可执行文件 + 17 组 ctest」，长期没跟着测试用例涨 —— 所以改成脚本
-现算。CI 的 layering job 会跑 `python scripts/summarize_tests.py --expect 69`：加了测试
+现算。CI 的 layering job 会跑 `python scripts/summarize_tests.py --expect 70`：加了测试
 就一并更新这里和 CI 里的数字，否则那道门直接红，别让表格再飘。
 
 跑之前注意：这 10 条脚本用例用「`VIDEOEYE_ROOT` 或当前目录」当仓库根，所以 CMake 里给它们

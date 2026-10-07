@@ -158,7 +158,9 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
 全在一个类里。现在按"页面内聚"拆出独立组件，规则是：
 
 - **组件本体就是 `QWidget`**，建好后交给 `AddPageWithScroll()` 直接变成外部 `QStackedWidget`
-  的一页，不再额外包一层 tab widget（页面顺序 = `SetupUI()` 里的调用顺序，改顺序会动侧边栏）。
+  的一页，不再额外包一层 tab widget（页面顺序 = `SetupUI()` 里的调用顺序，决定侧边栏顺序与
+  分组归属；侧边栏页面项带 `UserRole` 下标，行号与 stack 下标已解耦，见
+  `MainWindow::PopulateSidebarItems()`）。
 - **数据进来**：`SetResult()` / `ApplySampleTable()` / `SetQcReport()` / `SetScanActive()` …
 - **意图出去**：`ScanRequested` / `CancelRequested` / `SeekRequested` / `StartTimecodeReady` …
   由 `AnalysisPanel` 转发（它才知道 `current_video_path_` 和全局 feature 表）。
@@ -182,7 +184,7 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
 | `AudioQcPage` | 响度 / 真峰值 / 削波 / 静音 / 声道相位 / metadata 一致性 |
 | `ColorHdrPage` | primaries / transfer / matrix / range / HDR 元数据 |
 | `SubtitleAuxPage` | 字幕 cue / SMPTE 时码 / 章节 / SCTE-35 / metadata |
-| `EventTimelineView` | 「事件与时间轴」聚合页：异常事件 / 时间轴 / 同步分析三个子页 + 各自表格、曲线、CSV 导出 |
+| `EventTimelineView` | 「事件与时间轴」聚合页：异常事件 / 统一时间轴 / 同步分析三个子页 + 各自表格、曲线、CSV 导出 |
 | `StreamOverviewView` | 「码流分析」页顶部：流概览 5 指标 + 码率 / 帧率 / GOP 三条趋势曲线 + 导出分析报告 |
 | `FramePacketView` | 「码流分析」页底部：视频帧 / 包 / GOP 摘要 / 音频帧四张表 + 记录缓存 + 增量刷新 + CSV + 帧包按 PTS 互跳 |
 | `MacroblockView` | 宏块分析：运动矢量表 + 矢量可视化 + 块大小 / 运动幅度分布 + CSV |
@@ -218,8 +220,9 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   `GopSummariesChanged()`，面板把它接到 `StreamOverviewView::SetGopSummaries()`。
   刻意放在刷新节拍上发（而不是每个 GOP 边界都发），避免大向量被反复拷贝。
 - 页面之间**不互相 include、不互相持有指针**，跨页数据一律经面板接线，这样每个组件都能
-  单独构造、单独测试（`EventTimelineView::SyncSampleReceived` → `DiagnosticsPage::OnSyncSample`
-  也是同一套路，替代了早先的 `SetDiagnosticsPage()` 指针注入）。
+  单独构造、单独测试（同步样本即一例：`AnalysisPanel::AppendSyncSample` 收到后直接分发给
+  时间轴视图与 `DiagnosticsPage::OnSyncSample`，替代了早先的 `SetDiagnosticsPage()` 指针注入
+  与经视图转发的中继信号）。
 
 ## 5. 已知的历史包袱
 

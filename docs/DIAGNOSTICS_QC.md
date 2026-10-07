@@ -81,8 +81,9 @@ flowchart LR
 - 子页「问题清单」：逐秒码率 + 帧率双轴曲线，问题表格（严重度按颜色区分）
 - 子页「规则与阈值」：启用勾选 + 阈值双击编辑，修改后立即用当前扫描结果重算报告；「恢复默认规则」
 
-> ⚠️ 侧边栏顺序耦合：新增页面会改变 `AnalysisPanel::PopulateStackedWidget` 的页面索引，
-> 必须同步 `MainWindow.cpp` 的 `nav_items`（二者按 0-based 位置一一对应）。
+> ℹ️ 侧边栏条目由 `content_stack_` 的 `pageTitle` 自动生成，页面项带 `UserRole` stack 下标，
+> 行号与页面索引已解耦（`MainWindow::PopulateSidebarItems/OnSidebarChanged`）。新增页面时只需
+> 关注分组范围：`MainWindow.cpp` 里的分组表按当前 16 页定义，页面数量不符会自动退化为平铺列表。
 
 ## 6. 报告导出
 

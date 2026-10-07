@@ -283,6 +283,17 @@ target_link_libraries(test_stream_analyzer PRIVATE
 add_test(NAME StreamAnalyzerTests COMMAND test_stream_analyzer)
 
 # ============================================================
+# 测试 4b: MediaInfoAnalyzer::FormatFromContext (依赖 FFmpeg)
+# 说明: 打开链路与媒体信息页共用同一个文本组装入口（评审 P1：消除第四遍读文件）。
+#       用合成的 AVFormatContext 验证空指针保护与文本骨架，不读真实媒体文件。
+# ============================================================
+videoeye_add_test(test_mediainfo_format
+    unit/test_mediainfo_format.cpp
+)
+target_link_libraries(test_mediainfo_format PRIVATE VideoEyeAnalysis)
+add_test(NAME MediaInfoFormatTests COMMAND test_mediainfo_format)
+
+# ============================================================
 # 测试 4c: TaskManager (统一后台任务调度) —— 任务 ID / 取消 / 终态 / 过期丢弃
 #
 # TaskManager 本身只依赖 stdlib; 链 VideoEyeInfrastructure 而不是手写清单,

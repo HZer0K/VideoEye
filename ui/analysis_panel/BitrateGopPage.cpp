@@ -155,6 +155,15 @@ void BitrateGopPage::SetupUi() {
     summary_label_->setWordWrap(true);
     layout->addWidget(summary_label_);
 
+    // GOP 口径说明：本页按关键帧/IDR 边界分段（全文件扫描）；「码流分析」页的 GOP 摘要
+    // 由播放期解码帧 pict_type 推导。两者口径不同、互为补充，数字不要直接横向对比。
+    QLabel* caliber_note = new QLabel(
+        tr("GOP 口径说明：本页 GOP 以关键帧/IDR 为边界分段统计（全文件扫描，"
+           "可选解码精确判定帧类型）；「码流分析」页的 GOP 摘要由播放期解码帧类型推导。"
+           "两者统计口径不同，数值可能不一致。"), this);
+    caliber_note->setWordWrap(true);
+    layout->addWidget(caliber_note);
+
     // 码率曲线（叠加 I 帧 / 场景切换 / 异常峰值标记）
     {
         chart_ = new MetricChartWidget(this);

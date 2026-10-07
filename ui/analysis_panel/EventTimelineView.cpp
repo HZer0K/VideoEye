@@ -265,7 +265,7 @@ void EventTimelineView::SetupTimelineTab() {
 
     connect(export_timeline_csv_button_, &QPushButton::clicked, this, &EventTimelineView::OnExportTimelineCsv);
 
-    event_analysis_sub_tabs_->addTab(timeline_tab_, tr("时间轴"));
+    event_analysis_sub_tabs_->addTab(timeline_tab_, tr("统一时间轴"));
 }
 
 // ---------------------------------------------------------------------------
@@ -345,12 +345,6 @@ void EventTimelineView::AppendSyncSample(const model::SyncSample& sample) {
     sync_table_dirty_ = true;
     sync_summary_dirty_ = true;
     TrimRecords(sync_sample_records_, sync_table_synced_record_count_, sync_table_, sync_table_dirty_, kMaxSyncRecords);
-
-    // 同步采样同时喂给时间轴分析器（构建音视频偏移曲线）。
-    // 广播信号而不是直调诊断页：谁来消费由 AnalysisPanel 决定，本视图不再认识
-    // DiagnosticsPage，两者可以各自单独构造与测试。
-    emit SyncSampleReceived(sample.audio_timestamp_seconds * 1000.0,
-                            sample.video_timestamp_seconds * 1000.0);
 }
 
 void EventTimelineView::ResetTimelineEventList() {
@@ -388,7 +382,7 @@ void EventTimelineView::AppendTimelineEvent(const model::TimelineEvent& event) {
 
     TimelineEventRecord record;
     record.index = event.index;
-    record.category = QString::fromStdString(event.category);
+    record.category = event.category;
     record.timestamp_seconds = event.timestamp_seconds;
     record.label = QString::fromStdString(event.label);
     record.detail = QString::fromStdString(event.detail);
@@ -397,6 +391,15 @@ void EventTimelineView::AppendTimelineEvent(const model::TimelineEvent& event) {
     timeline_table_dirty_ = true;
     timeline_summary_dirty_ = true;
     TrimRecords(timeline_event_records_, timeline_table_synced_record_count_, timeline_table_, timeline_table_dirty_, kMaxTimelineRecords);
+}
+
+QString EventTimelineView::CategoryDisplayName(model::TimelineEventCategory category) {
+    switch (category) {
+        case model::TimelineEventCategory::VideoKeyframe: return tr("视频关键帧");
+        case model::TimelineEventCategory::AudioSample: return tr("音频采样");
+        case model::TimelineEventCategory::Event: break;
+    }
+    return tr("事件");
 }
 
 // ---------------------------------------------------------------------------
@@ -492,12 +495,10 @@ void EventTimelineView::UpdateTimelineSummary() {
     int audio_count = 0;
     int event_count = 0;
     for (const auto& record : timeline_event_records_) {
-        if (record.category == tr("视频关键帧")) {
-            video_count++;
-        } else if (record.category == tr("音频采样")) {
-            audio_count++;
-        } else if (record.category == tr("事件")) {
-            event_count++;
+        switch (record.category) {
+            case model::TimelineEventCategory::VideoKeyframe: video_count++; break;
+            case model::TimelineEventCategory::AudioSample: audio_count++; break;
+            case model::TimelineEventCategory::Event: event_count++; break;
         }
     }
 
@@ -569,7 +570,7 @@ void EventTimelineView::OnExportTimelineCsv() {
             out << "index,category,timestamp_seconds,label,detail\n";
             for (const auto& record : timeline_event_records_) {
                 out << record.index << ','
-                    << '"' << record.category << '"' << ','
+                    << '"' << CategoryDisplayName(record.category) << '"' << ','
                     << QString::number(record.timestamp_seconds, 'f', 6) << ','
                     << '"' << record.label << '"' << ','
                     << '"' << record.detail << '"' << '\n';
@@ -614,7 +615,7 @@ void EventTimelineView::AppendTimelineRowToTable(const TimelineEventRecord& reco
         timeline_table_->setItem(row, col, new QTableWidgetItem(text));
     };
     cell(0, QString::number(record.index));
-    cell(1, record.category);
+    cell(1, CategoryDisplayName(record.category));
     cell(2, QString::number(record.timestamp_seconds, 'f', 6));
     cell(3, record.label);
     cell(4, record.detail);
@@ -673,12 +674,16 @@ void EventTimelineView::UpdateTimelineChart() {
         SeriesBatch event_batch(timeline_event_series_);
         for (int i = start; i < static_cast<int>(timeline_event_records_.size()); ++i) {
             const auto& record = timeline_event_records_[i];
-            if (record.category == tr("视频关键帧")) {
-                video_batch.Add(record.timestamp_seconds, 3.0);
-            } else if (record.category == tr("音频采样")) {
-                audio_batch.Add(record.timestamp_seconds, 2.0);
-            } else {
-                event_batch.Add(record.timestamp_seconds, 1.0);
+            switch (record.category) {
+                case model::TimelineEventCategory::VideoKeyframe:
+                    video_batch.Add(record.timestamp_seconds, 3.0);
+                    break;
+                case model::TimelineEventCategory::AudioSample:
+                    audio_batch.Add(record.timestamp_seconds, 2.0);
+                    break;
+                case model::TimelineEventCategory::Event:
+                    event_batch.Add(record.timestamp_seconds, 1.0);
+                    break;
             }
             min_ts = std::min(min_ts, record.timestamp_seconds);
             max_ts = std::max(max_ts, record.timestamp_seconds);

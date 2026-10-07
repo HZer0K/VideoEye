@@ -238,6 +238,17 @@ bool MediaInfoAnalyzer::Open(const std::string& filePath, std::shared_ptr<std::a
     impl_->fmt = fmt;
     impl_->opened = true;
     impl_->error.clear();
+    // 组装逻辑只有一份: 这里与 OpenController::Prepare 走同一个格式化函数，
+    // 文本字段不会因为"谁来探测"而漂移。
+    impl_->text = FormatFromContext(fmt, filePath);
+    return true;
+}
+
+std::string MediaInfoAnalyzer::FormatFromContext(const AVFormatContext* fmt,
+                                                 const std::string& filePath) {
+    // 已在别处完成打开/探测的调用方（打开链路）复用本函数：媒体信息不再触发
+    // 第二次 avformat_open_input + find_stream_info（同一个文件被读第四遍）。
+    if (!fmt) return std::string();
 
     // ---- 组装文本报告 ----
     std::string out;
@@ -420,8 +431,7 @@ bool MediaInfoAnalyzer::Open(const std::string& filePath, std::shared_ptr<std::a
         out += '\n';
     }
 
-    impl_->text = out;
-    return true;
+    return out;
 }
 
 std::string MediaInfoAnalyzer::GetCompleteInfo() const {

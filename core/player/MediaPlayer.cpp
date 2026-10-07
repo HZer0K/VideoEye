@@ -145,10 +145,12 @@ MediaPlayer::MediaPlayer(QObject* parent)
     connect(&realtime_analysis_, &RealtimeAnalysisController::VisualDefectStatsReady,
             this, &MediaPlayer::VisualDefectStatsReady);
 
-    // 打开链路的三条信号原样转发: 封面图 / 媒体模式 / 打开失败。
+    // 打开链路的四条信号原样转发: 封面图 / 媒体模式 / 媒体信息文本 / 打开失败。
     connect(&open_controller_, &OpenController::FrameReady, this, &MediaPlayer::FrameReady);
     connect(&open_controller_, &OpenController::MediaModeChanged,
             this, &MediaPlayer::MediaModeChanged);
+    connect(&open_controller_, &OpenController::MediaInfoTextReady,
+            this, &MediaPlayer::MediaInfoTextReady);
     connect(&open_controller_, &OpenController::OpenFailed, this, &MediaPlayer::OpenFailed);
 
 }

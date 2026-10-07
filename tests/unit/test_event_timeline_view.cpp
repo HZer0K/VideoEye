@@ -15,17 +15,31 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QLabel>
 #include <QString>
+#include <QTableWidget>
 #include <QTabWidget>
 
+#include "core/domain/model/TimelineEvent.h"
 #include "ui/analysis_panel/EventTimelineView.h"
 
 namespace {
 
 using videoeye::ui::EventTimelineView;
 
+QApplication* EnsureApp() {
+    qputenv("QT_QPA_PLATFORM", "offscreen");
+    static QApplication* app = [] {
+        static int argc = 1;
+        static char name[] = "test_event_timeline_view";
+        static char* argv[] = {name, nullptr};
+        return new QApplication(argc, argv);
+    }();
+    return app;
+}
+
 // 按子页标题定位该页的「启用分析」勾选框。
-// 之所以不按 findChildren 的顺序取：页签的创建顺序（异常事件 / 时间轴 / 同步分析）
+// 之所以不按 findChildren 的顺序取：页签的创建顺序（异常事件 / 统一时间轴 / 同步分析）
 // 与侧边栏期望顺序（Event / Sync / Timeline）并不一致，靠下标会写出一条脆弱的测试。
 QCheckBox* ToggleOf(EventTimelineView& view, const QString& tab_text) {
     auto* tabs = view.findChild<QTabWidget*>();
@@ -41,12 +55,7 @@ QCheckBox* ToggleOf(EventTimelineView& view, const QString& tab_text) {
 } // namespace
 
 TEST(EventTimelineViewToggleInit, TogglesFollowInjectedFeatureState) {
-    // offscreen 平台插件：CI / 无显示器环境也能跑（本测试不渲染到屏幕）。
-    qputenv("QT_QPA_PLATFORM", "offscreen");
-    int argc = 1;
-    char arg0[] = "test_event_timeline_view";
-    char* argv[] = {arg0, nullptr};
-    QApplication app(argc, argv);
+    EnsureApp();
 
     // AnalysisPanel 构造函数的默认值：Event / Sync / Timeline 三个都是关的。
     bool states[3] = {false, false, false};
@@ -65,10 +74,10 @@ TEST(EventTimelineViewToggleInit, TogglesFollowInjectedFeatureState) {
 
     QCheckBox* event_box = ToggleOf(view, QStringLiteral("异常事件"));
     QCheckBox* sync_box = ToggleOf(view, QStringLiteral("同步分析"));
-    QCheckBox* timeline_box = ToggleOf(view, QStringLiteral("时间轴"));
+    QCheckBox* timeline_box = ToggleOf(view, QStringLiteral("统一时间轴"));
     ASSERT_TRUE(event_box != nullptr) << "找不到「异常事件」页的启用开关";
     ASSERT_TRUE(sync_box != nullptr) << "找不到「同步分析」页的启用开关";
-    ASSERT_TRUE(timeline_box != nullptr) << "找不到「时间轴」页的启用开关";
+    ASSERT_TRUE(timeline_box != nullptr) << "找不到「统一时间轴」页的启用开关";
 
     // 1) 注入钩子后必须按真实状态回写 —— 默认全关时界面就应该是未勾选。
     //    修复前这里三条全是 checked（构造函数里 is_enabled_ 还是空的，落到默认 true）。
@@ -89,11 +98,78 @@ TEST(EventTimelineViewToggleInit, TogglesFollowInjectedFeatureState) {
 
     QCheckBox* event_on = ToggleOf(view_on, QStringLiteral("异常事件"));
     QCheckBox* sync_on = ToggleOf(view_on, QStringLiteral("同步分析"));
-    QCheckBox* timeline_on = ToggleOf(view_on, QStringLiteral("时间轴"));
+    QCheckBox* timeline_on = ToggleOf(view_on, QStringLiteral("统一时间轴"));
     ASSERT_TRUE(event_on != nullptr);
     ASSERT_TRUE(sync_on != nullptr);
     ASSERT_TRUE(timeline_on != nullptr);
     EXPECT_TRUE(event_on->isChecked());
     EXPECT_TRUE(sync_on->isChecked());
     EXPECT_TRUE(timeline_on->isChecked());
+}
+
+// 分类枚举驱动表格文本与摘要分组（对应评审 P1：时间轴分类改 enum）。
+// 追加三类事件 -> FlushPendingUiUpdates -> 断言表格「类别」列文本与摘要计数。
+// 修复前分类是 QString，摘要/曲线按 tr() 文本比较，翻译一变就错位；现在判断走枚举。
+TEST(EventTimelineViewTimelineCategory, EnumCategoriesDriveTableAndSummary) {
+    EnsureApp();
+
+    bool all_on[3] = {true, true, true};
+    EventTimelineView view;
+    view.SetFeatureHooks([&all_on](int feature) { return all_on[feature]; },
+                         [](int, bool) {});
+
+    videoeye::model::TimelineEvent keyframe;
+    keyframe.index = 0;
+    keyframe.category = videoeye::model::TimelineEventCategory::VideoKeyframe;
+    keyframe.timestamp_seconds = 1.0;
+    keyframe.label = "关键帧 #0";
+    view.AppendTimelineEvent(keyframe);
+
+    videoeye::model::TimelineEvent audio;
+    audio.index = 1;
+    audio.category = videoeye::model::TimelineEventCategory::AudioSample;
+    audio.timestamp_seconds = 2.0;
+    audio.label = "音频帧 #0";
+    view.AppendTimelineEvent(audio);
+
+    videoeye::model::TimelineEvent event;
+    event.index = 2;
+    event.category = videoeye::model::TimelineEventCategory::Event;
+    event.timestamp_seconds = 3.0;
+    event.label = "同步异常";
+    view.AppendTimelineEvent(event);
+
+    view.FlushPendingUiUpdates();
+
+    // 定位「统一时间轴」子页（表格与摘要都在这一页里）
+    auto* tabs = view.findChild<QTabWidget*>();
+    ASSERT_TRUE(tabs != nullptr);
+    QWidget* timeline_page = nullptr;
+    for (int i = 0; i < tabs->count(); ++i) {
+        if (tabs->tabText(i) == QStringLiteral("统一时间轴")) {
+            timeline_page = tabs->widget(i);
+            break;
+        }
+    }
+    ASSERT_TRUE(timeline_page != nullptr) << "找不到「统一时间轴」子页";
+
+    // 表格：类别列按枚举映射成显示文本
+    auto* table = timeline_page->findChild<QTableWidget*>();
+    ASSERT_TRUE(table != nullptr);
+    ASSERT_EQ(table->rowCount(), 3);
+    EXPECT_EQ(table->item(0, 1)->text(), QStringLiteral("视频关键帧"));
+    EXPECT_EQ(table->item(1, 1)->text(), QStringLiteral("音频采样"));
+    EXPECT_EQ(table->item(2, 1)->text(), QStringLiteral("事件"));
+
+    // 摘要：按枚举分组计数，与表格显示文本解耦
+    QLabel* summary = nullptr;
+    for (QLabel* label : timeline_page->findChildren<QLabel*>()) {
+        if (label->text().contains(QStringLiteral("事件数"))) {
+            summary = label;
+            break;
+        }
+    }
+    ASSERT_TRUE(summary != nullptr) << "找不到时间轴摘要标签";
+    EXPECT_EQ(summary->text(),
+              QStringLiteral("事件数: 3 | 视频关键帧: 1 | 音频采样: 1 | 异常事件: 1"));
 }

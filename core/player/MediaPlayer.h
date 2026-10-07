@@ -184,6 +184,9 @@ signals:
     // OpenAsync() 完成时发出: ok=true 表示已提交进播放会话, false 表示打开失败
     // （失败原因见 GetLastError()）。过期结果（期间又开了新文件）不会发这条信号。
     void OpenFinished(bool ok);
+    // 媒体信息文本: 打开链路在后台探测时顺带格式化（不再二次探测），提交成功后发出。
+    // 空文本不发；顺序上先于 OpenFinished（收尾逻辑能拿到文本再决定回退）。
+    void MediaInfoTextReady(const QString& text);
     void PlaybackFinished();
     
     // 分析数据信号

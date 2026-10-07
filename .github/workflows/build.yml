@@ -64,7 +64,7 @@ jobs:
       # 这里只数 `tests/` 目录, 不需要构建, 放在这个 job 最便宜; 加了测试就一起更新
       # README 表格和这里的数字, 否则 CI 直接红。
       - name: Check test-count snapshot (README table)
-        run: python3 scripts/summarize_tests.py --expect 69
+        run: python3 scripts/summarize_tests.py --expect 70
 
   # 格式门禁: .clang-format 一直在仓库里, 但此前没有任何机器执行过它 —— pre-commit
   # 钩子的第 4 道门在没装 clang-format 的机器上只 warning 跳过, CI 里则完全没有

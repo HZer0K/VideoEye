@@ -211,24 +211,62 @@ void MainWindow::SetupSidebar() {
 void MainWindow::PopulateSidebarItems() {
     if (!sidebar_ || !content_stack_) return;
 
+    const int page_count = content_stack_->count();
+
+    // 侧边栏按功能分组。两条硬规则：
+    //   1) 页面项一律带 UserRole=stack 下标，切换按下标走 —— 行号与下标彻底解耦
+    //      （分组标题会占行，靠行号当下标必然错位）；
+    //   2) 分组标题不可选中、没有 UserRole，OnSidebarChanged 遇到它直接返回。
+    // 分组范围依赖当前页序；页面数量与预期不符（增减页面）时退化为平铺列表，
+    // 宁可少分组也不静默错位（曾导致「码率与 GOP」显示成「诊断与报告」）。
+    constexpr int kExpectedPageCount = 16;
+    const struct { int first; int last; QString title; } groups[] = {
+        {0, 0, tr("媒体信息")},
+        {1, 6, tr("实时分析")},
+        {7, 12, tr("全文件扫描")},
+        {13, 14, tr("诊断与报告")},
+        {15, 15, tr("工具")},
+    };
+
     sidebar_->blockSignals(true);
     sidebar_->clear();
 
-    const int page_count = content_stack_->count();
-    for (int i = 0; i < page_count; ++i) {
-        QString title = content_stack_->widget(i)->property("pageTitle").toString();
+    auto add_page_item = [this](int stack_index) {
+        QString title = content_stack_->widget(stack_index)->property("pageTitle").toString();
         if (title.isEmpty()) {
             // 分析页由 AnalysisPanel 提供标题；媒体信息页等外部页走这里
-            title = (i == 0) ? tr("媒体信息") : tr("页面 %1").arg(i);
+            title = (stack_index == 0) ? tr("媒体信息") : tr("页面 %1").arg(stack_index);
         }
         QListWidgetItem* list_item = new QListWidgetItem(title);
         list_item->setSizeHint(QSize(200, 34));
+        list_item->setData(Qt::UserRole, stack_index);
         sidebar_->addItem(list_item);
+    };
+
+    if (page_count == kExpectedPageCount) {
+        for (const auto& group : groups) {
+            if (group.last > group.first) {
+                // 单页分组不加标题头（标题与唯一页面项同名，加了反而重复）
+                QListWidgetItem* header = new QListWidgetItem(group.title);
+                header->setFlags(Qt::NoItemFlags);
+                header->setSizeHint(QSize(200, 26));
+                sidebar_->addItem(header);
+            }
+            for (int i = group.first; i <= group.last; ++i) add_page_item(i);
+        }
+    } else {
+        for (int i = 0; i < page_count; ++i) add_page_item(i);
     }
     sidebar_->blockSignals(false);
 
-    // 默认选中第一项（blockSignals 期间 setCurrentRow 不会触发切换，显式同步一次）
-    sidebar_->setCurrentRow(0);
+    // 默认选中第一个页面项（分组标题没有 UserRole，落在它上面不会切换），
+    // 并显式同步一次 stack，保证界面与内容区一致。
+    for (int row = 0; row < sidebar_->count(); ++row) {
+        if (sidebar_->item(row)->data(Qt::UserRole).isValid()) {
+            sidebar_->setCurrentRow(row);
+            break;
+        }
+    }
     content_stack_->setCurrentIndex(0);
 }
 
@@ -294,10 +332,15 @@ void MainWindow::SetupContentArea() {
     content_splitter_->setCollapsible(1, false);
 }
 
-void MainWindow::OnSidebarChanged(int index) {
-    if (!content_stack_ || index < 0) return;
-    if (index >= content_stack_->count()) {
-        qWarning() << "侧边栏行号" << index << "超出页面数" << content_stack_->count()
+void MainWindow::OnSidebarChanged(int row) {
+    if (!content_stack_ || !sidebar_ || row < 0 || row >= sidebar_->count()) return;
+    // 页面项带 UserRole=stack 下标（行号因分组标题会错位，不能当下标用）；
+    // 分组标题没有 UserRole，选中它时直接返回。
+    const QVariant page_index = sidebar_->item(row)->data(Qt::UserRole);
+    if (!page_index.isValid()) return;
+    const int index = page_index.toInt();
+    if (index < 0 || index >= content_stack_->count()) {
+        qWarning() << "侧边栏页面项下标" << index << "超出页面数" << content_stack_->count()
                    << "，页面栈与导航列表不一致";
         return;
     }
@@ -440,6 +483,14 @@ void MainWindow::SetupConnections() {
     // 过期结果 (期间又开了新文件) 由 MediaPlayer 丢弃且不发此信号。
     connect(player_, &player::MediaPlayer::OpenFinished,
             this, &MainWindow::OnPlayerOpenFinished);
+
+    // 媒体信息文本: 打开链路在后台探测时顺带格式化 (不再二次探测), 提交成功后贴进
+    // 文本框; 顺序上先于 OpenFinished 到达。
+    connect(player_, &player::MediaPlayer::MediaInfoTextReady,
+            this, [this](const QString& text) {
+                if (!mediainfo_text_ || text.isEmpty()) return;
+                mediainfo_text_->setPlainText(text);
+            });
 
     // 播放器信号连接 - 分析功能 (实时分析)
     connect(player_, &player::MediaPlayer::StreamStatsReady,
@@ -693,9 +744,11 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
     // 须放在 OpenAsync 之后: 它内部先做了换媒体复位。
     analysis_panel_->EmitInitialFeatureStates();
 
-    // 媒体信息解析 (异常文件也可能部分解析成功, 尽力而为): 委托给协调器后台跑。
+    // 媒体信息解析: 不再独立探测 —— 打开链路在后台探测时已顺带把同一个上下文
+    // 格式化好，提交成功后经 MediaInfoTextReady 贴进文本框（见 SetupConnections）；
+    // 这里只放占位文本。打开失败的"分析模式"由 OnPlayerOpenFinished 退回协调器
+    // 做尽力而为的独立解析（此时没有可复用的上下文）。
     mediainfo_text_->setPlainText(tr("(正在解析媒体信息…)"));
-    media_info_coordinator_->StartAsync(source);
 
     return true;
 }
@@ -731,6 +784,9 @@ void MainWindow::OnPlayerOpenFinished(bool ok) {
         // 让「文件结构」「诊断与报告」「码率与 GOP」页展示该文件的具体错误。
         player_->RequestContainerStructureAnalysis(source);
         analysis_panel_->StartDiagnosticsScanForCurrentFile();
+        // 打开失败时没有可复用的 AVFormatContext（提交被整体丢弃），媒体信息
+        // 退回协调器做一次尽力而为的独立解析（异常文件也可能部分解析成功）。
+        media_info_coordinator_->StartAsync(source);
     }
 }
 

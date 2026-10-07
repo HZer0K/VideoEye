@@ -109,6 +109,9 @@ struct OpenResult {
     int audio_stream_index = -1;
     bool has_video = false;                          // 文件里有没有视频轨(含封面图)
     model::StreamInfo stream_info;
+    // 媒体信息文本: 在后台探测时顺带从同一个上下文格式化（MediaInfoAnalyzer::
+    // FormatFromContext），UI 不再为它单独跑一次 avformat 打开/探测。
+    std::string media_info_text;
     int duration_ms = 0;
     QImage cover_art;                                // 可能为空
 
@@ -146,6 +149,9 @@ signals:
     // 封面图（AV_DISPOSITION_ATTACHED_PIC）解出后作为一帧画面发出。
     void FrameReady(const QImage& frame);
     void MediaModeChanged(bool has_video);
+    // 媒体信息文本（提交成功且非空时发出）。文本在 Prepare 阶段由同一个上下文
+    // 格式化完成，这里只负责跨线程回到 UI；顺序保证先于 OpenFinished。
+    void MediaInfoTextReady(const QString& text);
 
 private:
     // --- Prepare() 的步骤。纯静态: 只依赖传入参数与 FFmpeg, 不依赖任何成员 ---

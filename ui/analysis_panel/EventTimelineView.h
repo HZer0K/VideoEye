@@ -42,9 +42,9 @@ public:
     void SetFeatureHooks(std::function<bool(int)> is_enabled,
                          std::function<void(int, bool)> set_enabled);
 
-    // AppendSyncSample 要把同步样本喂给诊断页构建音视频偏移曲线。
-    // 具体由 AnalysisPanel 在收到 SyncSampleReceived 后转交，本视图不持诊断页指针
-    // —— 页面间直接互相引用会让两者无法单独构造/单独测试。
+    // 同步样本的消费方由 AnalysisPanel 统一分发：本视图负责同步表/曲线，
+    // 诊断页负责音视频偏移曲线。本视图不持诊断页指针，也不做信号中继
+    // —— 页面间直接互相引用或经视图转发都会让两者难以单独构造/单独测试。
 
     // 以下方法由 AnalysisPanel 的同名槽薄转发（保持对外接口不变）。
     void ResetAnalysisEventList();
@@ -62,10 +62,6 @@ signals:
     // 视图内部功能开关变化（0/1/2 = Event/Sync/Timeline），由 AnalysisPanel 接回
     // feature_enabled_ 映射并转发 AnalysisFeatureToggled 信号。
     void FeatureToggled(int feature, bool enabled);
-
-    // 收到一条同步样本（毫秒）。由 AnalysisPanel 转交诊断页构建音视频偏移曲线；
-    // 本视图不关心谁在听，从而与诊断页解耦。
-    void SyncSampleReceived(double audio_ms, double video_ms);
 
 private:
     // 内部数据记录（原 AnalysisPanel 的同名结构体，移入本视图）。
@@ -91,13 +87,17 @@ private:
 
     struct TimelineEventRecord {
         int index = 0;
-        QString category;
+        model::TimelineEventCategory category = model::TimelineEventCategory::Event;
         double timestamp_seconds = 0.0;
         QString label;
         QString detail;
     };
 
     enum class ViewFeature { Event = 0, Sync = 1, Timeline = 2 };
+
+    // 分类枚举 -> 显示文本（"事件"/"视频关键帧"/"音频采样"）。
+    // 表格、CSV 与摘要统一走这里；分类判断只比较枚举，不再比较翻译文本。
+    static QString CategoryDisplayName(model::TimelineEventCategory category);
 
     // 建页（取代 AnalysisPanel::SetupEventAnalysisTab 内部的三段 Setup）
     void SetupEventTab();

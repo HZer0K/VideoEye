@@ -279,6 +279,8 @@ void AnalysisPanel::ResetAnalysisEventList() {
 
 
 void AnalysisPanel::ResetSyncSampleList() {
+    // 只复位时间轴视图内的同步表/曲线；诊断页的音视频偏移累积随换文件由
+    // SetCurrentVideoPath -> DiagnosticsPage::ResetForNewFile 统一清零，这里不重复复位。
     if (event_timeline_view_) event_timeline_view_->ResetSyncSampleList();
 }
 
@@ -294,7 +296,13 @@ void AnalysisPanel::AppendAnalysisEvent(const model::AnalysisEvent& event_info) 
 
 
 void AnalysisPanel::AppendSyncSample(const model::SyncSample& sample) {
+    // 同步样本统一在这里直发给两个消费方：视图建同步表/曲线，诊断页建音视频偏移曲线。
+    // 视图不再经信号中继（评审 P1：收敛同步链，避免一次样本绕两跳）。
     if (event_timeline_view_) event_timeline_view_->AppendSyncSample(sample);
+    if (diagnostics_page_) {
+        diagnostics_page_->OnSyncSample(sample.audio_timestamp_seconds * 1000.0,
+                                        sample.video_timestamp_seconds * 1000.0);
+    }
 }
 
 
@@ -421,14 +429,6 @@ void AnalysisPanel::SetupUI() {
     qRegisterMetaType<model::FrameQualityMetric>();
     qRegisterMetaType<model::VisualDefect>();
     qRegisterMetaType<model::VisualDefectOptions>();
-
-    // 事件与时间轴页要把同步样本喂给诊断页构建音视频偏移曲线，诊断页在后面才建好，
-    // 所以等所有页都建完再连线，避免建页顺序耦合。
-    // 用信号而不是给视图塞诊断页指针：两个页面组件不必互相认识，能各自单独测试。
-    if (event_timeline_view_ && diagnostics_page_) {
-        connect(event_timeline_view_, &EventTimelineView::SyncSampleReceived,
-                diagnostics_page_, &DiagnosticsPage::OnSyncSample);
-    }
 }
 
 void AnalysisPanel::SetupEventTimelineView() {

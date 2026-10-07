@@ -15,6 +15,7 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
+#include "core/analysis/orchestration/MediaInfoAnalyzer.h"  // FormatFromContext（复用本次探测）
 #include "core/media/probe/FileProbe.h"
 #include "core/player/AudioOutput.h"
 #include "core/player/Decoders.h"
@@ -74,6 +75,11 @@ bool OpenController::Commit(OpenResult&& result, model::StreamInfo& out_info, QS
     // has_video 是"文件里有没有视频轨"—— 封面图也算有（界面据此切布局），
     // 与降级后的 video_index（"有没有可播放的视频流"）是两件事。
     emit MediaModeChanged(result.has_video);
+    // 媒体信息文本: Prepare 阶段已从同一个上下文格式化好, 这里回 UI 线程。
+    // 空文本不发（避免把界面上的"正在解析…"占位覆盖成空）。
+    if (!result.media_info_text.empty()) {
+        emit MediaInfoTextReady(QString::fromStdString(result.media_info_text));
+    }
     out_error.clear();
     return true;
 }
@@ -103,6 +109,11 @@ OpenResult OpenController::Prepare(const OpenPrepareParams& params) {
         result.error = QStringLiteral("Format context is null");
         return result;
     }
+
+    // 媒体信息: 刚探测好的上下文直接格式化成文本（拿文件大小也只是 stat 一次）——
+    // 这条数据以前由 UI 侧再跑一次 avformat_open_input + find_stream_info 才拿到，
+    // 同一个文件被打开第四遍。文本随提交经 MediaInfoTextReady 回到 UI。
+    result.media_info_text = MediaInfoAnalyzer::FormatFromContext(fmt, url_str);
 
     int video_index = -1;
     int audio_index = -1;

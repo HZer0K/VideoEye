@@ -138,7 +138,7 @@ private:
                            const QString& summary, const QString& detail = QString());
     void EmitSyncSample(double audio_timestamp_seconds, double video_timestamp_seconds,
                         bool audio_anchor);
-    void EmitTimelineEvent(const QString& category, double timestamp_seconds,
+    void EmitTimelineEvent(model::TimelineEventCategory category, double timestamp_seconds,
                            const QString& label, const QString& detail = QString());
     void EmitAudioVisualization(const AudioVisualizationResult& vis_result,
                                 int sample_rate, int channels, double timestamp_seconds,
