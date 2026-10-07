@@ -131,6 +131,30 @@ function(videoeye_finalize_windows_runtime dest_dir)
         list(APPEND _known ${_extra})
     endif()
 
+    # 分批组装拷贝命令。全部 DLL 堆进一条 copy_if_different 会让命令行长度随
+    # 测试目标数量线性膨胀 —— 每个目标的 $<TARGET_RUNTIME_DLLS> 展开后都是一整
+    # 套 Qt 运行时（十几个 DLL、每条路径上百字符）。67 个测试目标时已达约 3.4
+    # 万字符，超过 Windows CreateProcess 的 32767 字符上限，cmd 直接报
+    # "The system cannot execute the specified program"，构建死在部署这一步。
+    # 按元素分批（每批 4 个）后单条命令保持在数千字符；同批/跨批重复的 DLL 由
+    # copy_if_different 的幂等语义兜底（项目最低要求 CMake 3.23，
+    # $<REMOVE_DUPLICATES> 生成表达式要 3.27 才可用，不能依赖）。
+    set(_copy_args "")
+    set(_copy_batch "")
+    foreach(_dll IN LISTS _known)
+        list(APPEND _copy_batch "${_dll}")
+        list(LENGTH _copy_batch _copy_batch_len)
+        if(_copy_batch_len EQUAL 4)
+            list(APPEND _copy_args
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_copy_batch} "${dest_dir}")
+            set(_copy_batch "")
+        endif()
+    endforeach()
+    if(_copy_batch)
+        list(APPEND _copy_args
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_copy_batch} "${dest_dir}")
+    endif()
+
     # ---- 3) 闭包扫描的输入: 拷过去的 Qt DLL ----
     # FFmpeg 整包 bin/ 已经拷全了，没必要再扫一遍；gtest 没有额外依赖。
     # 需要扫的就是 Qt —— zlib1 / pcre2-16 / double-conversion 只在这一层才现形。
@@ -144,8 +168,7 @@ function(videoeye_finalize_windows_runtime dest_dir)
 
     add_custom_target(videoeye-runtime ALL
         COMMAND ${CMAKE_COMMAND} -E make_directory "${dest_dir}"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${_known} "${dest_dir}"
+        ${_copy_args}
         COMMAND ${CMAKE_COMMAND}
                 "-DVE_INPUTS=${_qt_scan_inputs}"
                 "-DVE_DEST=${dest_dir}"
