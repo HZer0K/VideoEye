@@ -354,6 +354,11 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   `StreamOverviewView` / `FramePacketView` / `ContainerStructurePage`；`test_container_structure_page`
   覆盖 MP4→详情页1、MKV→详情页2、无效→通用页的页路由 + 结构树/样本轨下拉填充 + 开关 `FeatureToggled`，
   且因只经 `findChild` 探测对象树，拆出 `Mp4SampleTableWidget` 后测试仍有效）。
+  2026-10-07 又给拆出来的独立组件补了单测（`tests/CMakeLists.txt` 测试 50-55，共 29 个
+  gtest 用例）：`ControlBarWidget` / `AudioVizRenderer` / `RawImageSequence`（player）、
+  `AudioFrameTableWidget` / `VideoFrameTableWidget`（帧表子页）、`FfmpegDictionaryWidget`
+  （指令字典）。每个测试只编组件源 + 直接依赖，不整层拉 FFmpeg / analysis；模态对话框
+  分支（如裸流参数对话框）不进单测。
 
 ### 5.4 CMake 管得住什么、管不住什么
 

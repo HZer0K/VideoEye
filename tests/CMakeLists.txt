@@ -1014,3 +1014,117 @@ target_link_libraries(test_container_structure_page PRIVATE
 add_test(NAME ContainerStructurePageTests COMMAND test_container_structure_page)
 set_tests_properties(ContainerStructurePageTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 50：播放控制栏（音量/静音本地 handler + 控件初值）
+# 说明: ControlBarWidget 从 PlayerPanel 抽出后只保留音量/静音两个纯本地 handler，
+#       状态全压在组件内部（last_volume_）。一旦改错不会崩，只会让"静音后恢复"恢复成
+#       错误音量、或提示文案与滑块值分家。本目标只编组件源；注入 MediaPlayer 的那条
+#       用例要走到 SetVolume，所以链 VideoEyePlayback（它 PUBLIC 带出 domain/Qt/FFmpeg）。
+#       用 offscreen 平台跑，不需要显示器。
+# =================================================
+videoeye_add_test(test_control_bar_widget
+    unit/test_control_bar_widget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/player/ControlBarWidget.cpp
+)
+target_link_libraries(test_control_bar_widget PRIVATE
+    VideoEyePlayback
+    Qt6::Widgets)
+add_test(NAME ControlBarWidgetTests COMMAND test_control_bar_widget)
+set_tests_properties(ControlBarWidgetTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 51：音频可视化渲染器（未注入目标的防护 + 音量/频谱/波形落到渲染目标）
+# 说明: AudioVizRenderer 把音量/频谱/波形画到注入的 VideoWidget 上。渲染目标
+#       VideoWidget 还没有独立静态库（属 UI_SOURCES），所以这里显式编它的源；
+#       VideoWidget.cpp include 了 Logger 头，补链 VideoEyeInfrastructure；
+#       渲染结果靠 QWidget::render() 取像素比较，需要 offscreen 平台。
+# =================================================
+videoeye_add_test(test_audio_viz_renderer
+    unit/test_audio_viz_renderer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/player/AudioVizRenderer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/main_window/VideoWidget.cpp
+)
+target_link_libraries(test_audio_viz_renderer PRIVATE
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME AudioVizRendererTests COMMAND test_audio_viz_renderer)
+set_tests_properties(AudioVizRendererTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 52：Raw 图像序列（扩展名守卫 / 分帧越界防护 / 导航状态回写）
+# 说明: 裸流参数对话框（QInputDialog）必须人工输入，不进单测；这里覆盖的是它前后
+#       的纯逻辑分支。UpdateRawNavigationState 要回写 ControlBarWidget，所以连它的源
+#       一起编（ControlBarWidget.cpp 里的 SetVolume 调用链仍需 VideoEyePlayback 提供符号）。
+#       用 offscreen 平台跑，不需要显示器。
+# =================================================
+videoeye_add_test(test_raw_image_sequence
+    unit/test_raw_image_sequence.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/player/RawImageSequence.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/player/ControlBarWidget.cpp
+    # RawImageSequence::ShowRawFrame 直接调 VideoWidget::SetFrame（非内联），
+    # 渲染目标还没有独立静态库，所以把它的源一起编进来。
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/main_window/VideoWidget.cpp
+)
+target_link_libraries(test_raw_image_sequence PRIVATE
+    VideoEyePlayback
+    VideoEyeInfrastructure
+    Qt6::Widgets)
+add_test(NAME RawImageSequenceTests COMMAND test_raw_image_sequence)
+set_tests_properties(RawImageSequenceTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 53：音频帧表子页（脏标志 + 增量刷新 + 单元格 + 汇总聚合）
+# 说明: 组件自身的记录缓存/脏标志/同步游标三者对不上时，只会静默少行或汇总错。
+#       AnalysisPageSupport.h（header-only）里带 MetricChartWidget.h 的 Q_OBJECT，
+#       AUTOMOC 会为它生成 moc，所以把 MetricChartWidget.cpp 一并编进来（与测试 48/49/37
+#       同处理），不整层拉 analysis / FFmpeg。用 offscreen 平台跑。
+# =================================================
+videoeye_add_test(test_audio_frame_table_widget
+    unit/test_audio_frame_table_widget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioFrameTableWidget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+)
+target_link_libraries(test_audio_frame_table_widget PRIVATE
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME AudioFrameTableWidgetTests COMMAND test_audio_frame_table_widget)
+set_tests_properties(AudioFrameTableWidgetTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 54：视频帧表子页（GOP 派生 + 双表刷新 + 帧类型筛选 + Reset 通知）
+# 说明: GOP 分段是从帧记录 pict_type 推导的派生结果，段边界/计数错了界面不崩只停旧值。
+#       组件源直接 include <libavcodec/avcodec.h> 取 AV_PICTURE_TYPE_* 常量（编译期，无需
+#       链 FFmpeg 库）；同测试 53，补编 MetricChartWidget.cpp 满足 AUTOMOC。
+# =================================================
+videoeye_add_test(test_video_frame_table_widget
+    unit/test_video_frame_table_widget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/VideoFrameTableWidget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+)
+target_link_libraries(test_video_frame_table_widget PRIVATE
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME VideoFrameTableWidgetTests COMMAND test_video_frame_table_widget)
+set_tests_properties(VideoFrameTableWidgetTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 55：FFmpeg 指令字典（分类/搜索过滤 + 滤镜插入补 -vf/-af + 无匹配禁用）
+# 说明: 词条来自静态表 FfmpegCommandCatalog（core/ffmpeg，纯 Qt），组件自己搜；插入
+#       语义（滤镜补 -vf/-af、末尾空格）是唯一会静默写错命令的规则。只编组件源 +
+#       词典目录源，不启动任何子进程、不链 FFmpeg。用 offscreen 平台跑。
+# =================================================
+videoeye_add_test(test_ffmpeg_dictionary_widget
+    unit/test_ffmpeg_dictionary_widget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/ffmpeg_panel/FfmpegDictionaryWidget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/ffmpeg/FfmpegCommandCatalog.cpp
+)
+target_link_libraries(test_ffmpeg_dictionary_widget PRIVATE
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME FfmpegDictionaryWidgetTests COMMAND test_ffmpeg_dictionary_widget)
+set_tests_properties(FfmpegDictionaryWidgetTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
