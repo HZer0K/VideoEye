@@ -4,7 +4,7 @@
 **P2-2（MediaPlayer）方向对，但提案里有一半已经做过了**，重排后才有意义；
 **P2-3（AnalysisFacade）基本已经完成**，只剩两个可以直接删掉的小口子。
 
-本文所有行号都取自工作区（`E:/mycode/C/videoeye/VideoEye`），当前 HEAD `76e1346`。
+本文所有行号都取自当时的工作区（`d:/Coding/C/videoeye/VideoEye`），当时 HEAD `76e1346`。
 
 ---
 

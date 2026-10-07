@@ -33,7 +33,11 @@ targe —— 目录只是命名习惯，编译器不认识；能被机器检查�
 
 FFmpeg 与 Qt6::Core/Gui 在 `analysis` / `playback` / `exporter` 上是 **PUBLIC** 而不是 PRIVATE：
 这几层的公共头文件里有真正的 `libav*` 与 `QImage`，而静态库的 PRIVATE 依赖只传 link、不传
-include 目录 —— 挂 PRIVATE 会让下游"能编译符号、找不到头文件"。
+include 目录 —— 挂 PRIVATE 会让下游"能编译符号、找不到头文件"。同样的道理适用于
+`VideoEyeFfmpegTools` / `VideoEyeQtAdapters` 的 Qt6::Core 与 `VideoEyeReportingPanel` 的
+Qt6::Widgets（2026-10-07 从 PRIVATE 提到 PUBLIC）。这条规则不再靠人读代码守：
+`scripts/audit_link_visibility.py` 检查"公共头闭包需要的 Qt / FFmpeg 依赖有没有从 PUBLIC
+边透出去"（§5.4 / §6）。
 
 ## 3. 依赖方向
 
@@ -294,7 +298,7 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   结果头；`PlayerPanel.h` 的 `StreamAnalyzer.h`、`MainWindow.h` 的 `MediaInfoAnalyzer.h` /
   `EbmlAnalyzer.h` 也已移除。仅剩：`AnalysisFacade.cpp`（门面，按设计本就该见分析器）与
   `ui/main_window/MediaInfoCoordinator.cpp` 仍 include `MediaInfoAnalyzer.h` 一处。
-- **`AnalysisPanel.cpp` 已从 2787 行降到 745 行**，拆出 12 个页面组件（见 4.1）。
+- **`AnalysisPanel.cpp` 已从 2787 行降到 654 行**，拆出 12 个页面组件（见 4.1）。
   面板现在只剩协调职责：建页 → 注入 feature 钩子 → 播放期按开关过滤后转发数据 →
   扫描结束后分发结果。历史上它同时兼着"页面 + 数据仓库 + 表格控制器"三个角色，
   这一轮把最后两块也搬走了：「码流分析」（原 `bitstream_tab_` 合并的流/帧/包三页 →
@@ -303,9 +307,9 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   `OnExportMp4Box()` 与匿名命名空间的 `PopulateMp4BoxTablesInContainer()`（真正的实现
   已在 `ContainerStructurePage.cpp` 里）、只写不读的 `bitstream_page_index_`、
   以及三段属于码率 GOP / 音频 QC 页的重复格式化辅助函数。
-- **大文件拆解进展（2026-10-06 复核）**。`MediaPlayer.cpp` 已从 1404 行降到 **432 行**
+- **大文件拆解进展（2026-10-07 复核，行数按非空行计）**。`MediaPlayer.cpp` 已从 1404 行降到 **457 行**
   （拆成 `export_controller_` / `container_inspection_` / `realtime_analysis_` / `open_controller_`
-  四个会话/控制器，播放机械对分析一无所知）；`AnalysisEngine.cpp` 从 1134 行降到 **225 行**
+  四个会话/控制器，播放机械对分析一无所知）；`AnalysisEngine.cpp` 从 1134 行降到 **201 行**
   （拆成 `AnalysisPipeline` / `PacketScanLoop` / `AnalysisInputSession` /
   `AnalysisResultAssembler` / `StreamingManifestScan`，本文件只管"何时建、何时分发、何时收尾"，
   不再直接 include 任何具体分析器，§7.1 提到的 25 处 `if (options.analyze_xxx)` 随之消解，
@@ -322,7 +326,7 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   `LoadRawImageFile` / `SetRawImageMode` / `IsShowingRawImage` 三个对 MainWindow 的委托接口）。
   ⚠️ 构造顺序约束：`raw_seq_` 必须在 `SetupConnections()` **之前**建好 —— 逐帧按钮要连到它，
   连 nullptr 会静默失效（与 §5.5「先建 UI 后建数据」同源）。至此 `PlayerPanel.cpp` 三刀拆完
-  （控制栏 / 音频可视化 / Raw 序列），自身仍是协调层，行数 1363 → 636。
+  （控制栏 / 音频可视化 / Raw 序列），自身仍是协调层，行数 1363 → 561。
   `FramePacketView.cpp`（1121 行）也已抽出第一刀：`AudioFrameTableWidget`
   （`ui/analysis_panel/AudioFrameTableWidget.{h,cpp}`，音频帧子页：明细表 + 汇总行 + CSV 导出 +
   「启用分析」开关，记录缓存 / 脏标志 / 增量游标 / flush 全在组件内；开关经 `toggle()` 访问器
@@ -349,7 +353,7 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   失败切错误页、优雅停止与被强杀分开报全在组件内。页面只留三个运行期驱动入口
   （`PrepareForRun` / `AppendLog` / `ShowRunResult`）和一个 `RefreshExplanation(command_text)`
   转发（命令文本属于页面，组件不持有命令输入框）；组件不直接写状态栏，终态文案经
-  `StatusMessage` 信号交回页面发。至此 949 → 665 行，剩程序探测 / 命令区 / 按钮状态与设置持久化。
+  `StatusMessage` 信号交回页面发。至此 949 → 597 行，剩程序探测 / 命令区 / 按钮状态与设置持久化。
   ⚠️ 新增 `ui/*.cpp` 时，**手工列源的测试目标要同步加**（`test_stream_views` 手列
   `FramePacketView.cpp`，漏加 `AudioFrameTableWidget.cpp` / `VideoFrameTableWidget.cpp`
   会在链接期 LNK2019；走 `${UI_SOURCES}` 的目标如 `test_scan_terminal_state` 由 GLOB 自动纳入，无需改）。
@@ -364,9 +368,9 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   `MainWindow.cpp` 第二刀抽出 `ExportCoordinator`（`ui/main_window/ExportCoordinator.{h,cpp}`，
   导出协调器：三个导出入口 + 十条播放器导出信号接线 + 进度框建/复用/收与取消路由整体迁出，
   构造时自连信号、注入对话框 parent 与两个状态查询回调，只发 `StatusMessage` 文本交回窗口
-  转发状态栏），1027 → 804 行 —— 至此 `MainWindow.cpp` 两刀拆完（媒体信息协调 / 导出协调），
+  转发状态栏），1027 → 694 行 —— 至此 `MainWindow.cpp` 两刀拆完（媒体信息协调 / 导出协调），
   自身只剩菜单、侧边栏与内容栈装配。
-  其余待拆文件：`FfmpegPanel.cpp`（两刀拆完，665 行，暂不继续强拆）。
+  其余待拆文件：`FfmpegPanel.cpp`（两刀拆完，597 行，暂不继续强拆）。
   12 个页面组件已有 5 个有测试（`VisualDefectPage` / `EventTimelineView` /
   `StreamOverviewView` / `FramePacketView` / `ContainerStructurePage`；`test_container_structure_page`
   覆盖 MP4→详情页1、MKV→详情页2、无效→通用页的页路由 + 结构树/样本轨下拉填充 + 开关 `FeatureToggled`，
@@ -393,6 +397,13 @@ target_include_directories(${name} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 73 处 `infrastructure/xxx.h`，全部从根算起。于是任何模块都能 `#include "core/anything.h"`
 且编译必过。**真正守住分层方向的是 `scripts/check_layering.py`，不是 CMake**。
 2026-10-04 的评审报告把这句话从 CMakeLists.txt 的注释里改了过来，别再改回去。
+
+**半管得住**：PUBLIC / PRIVATE 的可见性选择。公共头里出现的类型与系统依赖（Qt / FFmpeg）
+必须从 PUBLIC 边透出去 —— 静态库的 PRIVATE 依赖只传 link、不传 include 目录与编译定义，
+下游一 include 就炸。这条由 `scripts/audit_link_visibility.py` 检查（2026-10-07 立门，
+立门时修掉三处历史不一致：`VideoEyeFfmpegTools` / `VideoEyeQtAdapters` 的 Qt6::Core、
+`VideoEyeReportingPanel` 的 Qt6::Widgets 从 PRIVATE 提到 PUBLIC）。刻意保留、别去翻的
+情形见该脚本顶部说明（模块边不翻、被 include 的头不带系统依赖）。
 
 #### 测试目标怎么声明依赖（三种套路，都是对的）
 
@@ -445,6 +456,24 @@ python scripts/check_layering.py
 在所有 build 之前），以及 `scripts/git-hooks/pre-commit`（`bash scripts/setup-hooks.sh`
 安装）。两处都跑是因为本地最快——等到 CI 红再改，改动已经和别的提交混在一起了。
 
+其余架构规则由一组审计脚本守，每个都配一个 `test_*.py` 自测把退出码语义钉死
+（历史上多次出现"打印了违规却 return 0"，光看输出人肉确认是看不出来的）：
+
+| 脚本 | 查什么 |
+|------|--------|
+| `scripts/check_layering.py` | 跨层反向 `#include`（§3 的允许依赖表） |
+| `scripts/audit_qt_analysis_border.py` | `core/analysis` 一个 Qt 符号都不许有 |
+| `scripts/audit_qt_domain_border.py` | Qt 类型不许直接落进 domain 的 `std::string` 字段 |
+| `scripts/audit_namespace_layout.py` | 命名空间跟目录走（§5.1 / §5.2） |
+| `scripts/audit_link_visibility.py` | 公共头闭包的系统依赖必须从 PUBLIC 边透出（§5.4） |
+
+进三处：CI 的 `layering` job、`pre-commit`（第 1~4 道门）、ctest（`LayeringRulesTests` /
+`NamespaceLayoutTests` / `LinkVisibilityTests` 等用例组，`ctest -R Tests` 一次跑全）。
+**三处清单必须同步**：新增一个审计脚本时一起接线，否则又会出现"本地绿、CI 红"的落差
+（2026-10-07 补齐时就发现 qt_analysis / namespace / link_visibility 三组只在 CI 跑）。
+另注意 hook 是无扩展名脚本，靠 `.gitattributes` 的 `scripts/git-hooks/* text eol=lf`
+保证 LF —— CRLF 的钩子在 sh 下根本跑不起来，等于门没装（2026-10-07 发现并修）。
+
 ## 7. 新增代码放哪
 
 | 你要加的东西 | 位置 |
@@ -480,7 +509,7 @@ python scripts/check_layering.py
 | 1 | `core/domain/model/XxxInfo.h` | 结果类型 |
 | 2 | `core/analysis/quality/XxxAnalyzer.{h,cpp}` | 分析器本体（`Reset/OnFrame/Finish` 或 `OnPacket`） |
 | 3 | `core/player/AnalysisSession.h` | 会话内持有分析器实例 |
-| 4 | `core/player/MediaPlayer.{h,cpp}` | `SetXxxAnalysisEnabled()` 开关 + 转发 + 取结果的 getter |
+| 4 | `core/player/MediaPlayer.{h,cpp}` | `SetAnalysisFeature(AnalysisFeature, bool)` 唯一开关入口 + 转发 + 取结果的 getter（旧 `SetXxxAnalysisEnabled` 已私有化） |
 | 5 | `core/qt/DomainMetatypes.h` | 结果要过信号槽跨线程传时加 `Q_DECLARE_METATYPE` |
 | 6 | `ui/analysis_panel/XxxView.{h,cpp}` | 页面组件（按 §4.1 的规则：只认自己内部的 feature 编号） |
 | 7 | `ui/analysis_panel/AnalysisPanel.{h,cpp}` | 建页、`SetupUI()` 里的顺序（决定侧边栏顺序）、feature 钩子注入与回写、数据转发 |
@@ -494,5 +523,7 @@ python scripts/check_layering.py
 从"改 5 个文件"变成"先理解一套注册机制"。
 
 代价就是上面这两张表。**别偷偷引入注册表来消除它**：真要减成本，先做第 4 项
-（`MediaPlayer` 的 10 个 `SetXxxAnalysisEnabled` 收敛成一个 `SetAnalysisFeatures(FeatureMask)`），
-那一项能把 B 路线的 3、4、7、8 四处接线合并成一处，且不引入任何抽象层。
+（`MediaPlayer` 的 10 个 `SetXxxAnalysisEnabled` 收敛成一个入口）—— **这一项已于
+2026-10-07 落地**：唯一入口是 `SetAnalysisFeature(model::AnalysisFeature, bool)`
+（`MediaPlayer.h`），旧 `SetXxx` 已私有化，`MainWindow` 只做枚举到调用的转发 ——
+B 路线 3、4、7、8 四处接线已经收敛，且没有引入任何抽象层。
