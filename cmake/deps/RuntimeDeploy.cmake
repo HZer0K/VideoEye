@@ -34,6 +34,8 @@ set(__VIDEOEYE_RUNTIME_DEPLOY_INCLUDED TRUE)
 
 set(VIDEOEYE_RUNTIME_DEPS_SCAN_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/RuntimeDepsScan.cmake"
     CACHE INTERNAL "运行时依赖闭包扫描脚本")
+set(VIDEOEYE_RUNTIME_COPY_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/RuntimeCopy.cmake"
+    CACHE INTERNAL "已知 DLL 拷贝脚本")
 
 # ------------------------------------------------------------
 # 搜索目录: 项目自带依赖 DLL 的所在位置
@@ -131,29 +133,17 @@ function(videoeye_finalize_windows_runtime dest_dir)
         list(APPEND _known ${_extra})
     endif()
 
-    # 分批组装拷贝命令。全部 DLL 堆进一条 copy_if_different 会让命令行长度随
-    # 测试目标数量线性膨胀 —— 每个目标的 $<TARGET_RUNTIME_DLLS> 展开后都是一整
-    # 套 Qt 运行时（十几个 DLL、每条路径上百字符）。67 个测试目标时已达约 3.4
-    # 万字符，超过 Windows CreateProcess 的 32767 字符上限，cmd 直接报
-    # "The system cannot execute the specified program"，构建死在部署这一步。
-    # 按元素分批（每批 4 个）后单条命令保持在数千字符；同批/跨批重复的 DLL 由
-    # copy_if_different 的幂等语义兜底（项目最低要求 CMake 3.23，
-    # $<REMOVE_DUPLICATES> 生成表达式要 3.27 才可用，不能依赖）。
-    set(_copy_args "")
-    set(_copy_batch "")
-    foreach(_dll IN LISTS _known)
-        list(APPEND _copy_batch "${_dll}")
-        list(LENGTH _copy_batch _copy_batch_len)
-        if(_copy_batch_len EQUAL 4)
-            list(APPEND _copy_args
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_copy_batch} "${dest_dir}")
-            set(_copy_batch "")
-        endif()
-    endforeach()
-    if(_copy_batch)
-        list(APPEND _copy_args
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_copy_batch} "${dest_dir}")
-    endif()
+    # 已知 DLL 写进一份清单, 由脚本逐条拷贝。
+    #
+    # 原来是「按 4 个一批拼 copy_if_different 命令」: 每批都含
+    # $<TARGET_RUNTIME_DLLS:...> 生成表达式, 而静态库目标(以及纯静态链接的可执行)
+    # 展开后是**空**的 —— 整条命令退化成 `copy_if_different <dest>`, 参数不足,
+    # cmake 直接报错, 构建死在部署这一步, 报出来的还只是一段 usage。
+    # 改成 file(GENERATE) 写出清单(生成表达式此时已求值) + 脚本逐条判空判存在再拷:
+    # 空批次自然变成"什么都不做", 命令行也只剩一个参数, 不再撞 Windows 的
+    # 32767 字符上限(67 个测试目标时单条命令曾达约 3.4 万字符)。
+    set(_known_list_file "${CMAKE_BINARY_DIR}/videoeye_runtime_known_dlls.txt")
+    file(GENERATE OUTPUT "${_known_list_file}" CONTENT "${_known}")
 
     # ---- 3) 闭包扫描的输入: 拷过去的 Qt DLL ----
     # FFmpeg 整包 bin/ 已经拷全了，没必要再扫一遍；gtest 没有额外依赖。
@@ -168,7 +158,10 @@ function(videoeye_finalize_windows_runtime dest_dir)
 
     add_custom_target(videoeye-runtime ALL
         COMMAND ${CMAKE_COMMAND} -E make_directory "${dest_dir}"
-        ${_copy_args}
+        COMMAND ${CMAKE_COMMAND}
+                "-DVE_LIST_FILE=${_known_list_file}"
+                "-DVE_DEST=${dest_dir}"
+                -P "${VIDEOEYE_RUNTIME_COPY_SCRIPT}"
         COMMAND ${CMAKE_COMMAND}
                 "-DVE_INPUTS=${_qt_scan_inputs}"
                 "-DVE_DEST=${dest_dir}"

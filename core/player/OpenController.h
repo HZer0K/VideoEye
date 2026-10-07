@@ -116,11 +116,31 @@ struct OpenResult {
     QImage cover_art;                                // 可能为空
 
     OpenResult() = default;
-    OpenResult(OpenResult&&) noexcept = default;
-    OpenResult& operator=(OpenResult&&) noexcept = default;
     OpenResult(const OpenResult&) = delete;
     OpenResult& operator=(const OpenResult&) = delete;
+    // 移动必须手写, 不能用 = default。
+    //
+    // format_ctx 是裸指针, 默认移动对它做的是**按值拷贝**: 移动之后源对象仍握着同一个
+    // AVFormatContext*, 而它一析构就 avformat_close_input —— 被搬到的新对象(UI 线程正在
+    // 提交、解码线程随后要 av_read_frame 的那一手)手里立刻变成悬垂指针, 先是段错误,
+    // 源对象再析构一次又变成 double free。
+    // OpenAsync 正是靠 lambda 捕获 `result = std::move(result)` 把产物从后台线程搬进
+    // UI 队列的, 这条路径一走就是"打开必崩"。
+    OpenResult(OpenResult&& other) noexcept { MoveFrom(other); }
+    OpenResult& operator=(OpenResult&& other) noexcept {
+        if (this != &other) {
+            Release();
+            MoveFrom(other);
+        }
+        return *this;
+    }
     ~OpenResult();
+
+private:
+    // 关掉本对象当前持有的上下文并释放解码器/音频输出, 之后回到空态(析构安全)。
+    void Release() noexcept;
+    // 接管 other 的全部资源; 返回后 other 为空, 其析构不再释放任何东西。
+    void MoveFrom(OpenResult& other) noexcept;
 };
 
 class OpenController : public QObject {

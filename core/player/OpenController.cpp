@@ -37,11 +37,51 @@ QString AvErrorString(int ret) {
 
 }  // namespace
 
-OpenResult::~OpenResult() {
-    // 没被 Commit 采用的上下文在这里关闭: 失败/被丢弃的结果不会泄漏。
+// --- OpenResult 的所有权 ---
+//
+// 析构与移动必须成对手写: format_ctx 是裸指针, 默认移动只会按值拷贝它 —— 移动之后源
+// 对象仍指向同一个 AVFormatContext。源一析构就 avformat_close_input, 而被搬到的新对象
+// (UI 线程正在提交、解码线程随后要 av_read_frame 的那一手)手里立刻是悬垂指针: 先是段
+// 错误, 源对象再析构一次又变成 double free。
+// 规则: 移动后源必须显式置空; 析构只关自己手里那一份。
+
+void OpenResult::Release() noexcept {
     if (format_ctx) {
         avformat_close_input(&format_ctx);
     }
+    format_ctx = nullptr;
+    video_decoder.reset();
+    audio_decoder.reset();
+    audio_output.reset();
+}
+
+void OpenResult::MoveFrom(OpenResult& other) noexcept {
+    ok = other.ok;
+    error = std::move(other.error);
+    // 关键一行: 源交出所有权, 它的析构不能再碰这个上下文
+    format_ctx = other.format_ctx;
+    other.format_ctx = nullptr;
+    video_decoder = std::move(other.video_decoder);
+    audio_decoder = std::move(other.audio_decoder);
+    audio_output = std::move(other.audio_output);
+    video_stream_index = other.video_stream_index;
+    audio_stream_index = other.audio_stream_index;
+    has_video = other.has_video;
+    stream_info = std::move(other.stream_info);
+    media_info_text = std::move(other.media_info_text);
+    duration_ms = other.duration_ms;
+    cover_art = std::move(other.cover_art);
+
+    other.ok = false;
+    other.error.clear();
+    other.video_stream_index = -1;
+    other.audio_stream_index = -1;
+    other.has_video = false;
+    other.duration_ms = 0;
+}
+
+OpenResult::~OpenResult() {
+    Release();
 }
 
 OpenController::OpenController(PlaybackSession& playback, QObject* parent)

@@ -126,6 +126,40 @@ TEST(PlayerOpenTransaction, CommitAdoptsResultAtomically) {
     EXPECT_NE(nullptr, session.format_ctx());
 }
 
+// ===========================================================================
+// 回归: OpenResult 的移动必须转移裸指针 format_ctx 的所有权
+//
+// 之前移动构造写的是 `= default`。默认移动对裸指针只做**按值拷贝**: 移动后源对象仍握着
+// 同一个 AVFormatContext*, 而它一析构就 avformat_close_input。OpenAsync 正是靠 lambda
+// 捕获 `result = std::move(result)` 把产物从后台线程搬进 UI 队列的 —— 后台那份析构时把
+// 上下文关掉, UI 线程提交进播放会话的就是悬垂指针(解码线程 av_read_frame 段错误),
+// 会话随后再关一次又是 double free。表现: 打开本地视频必崩。
+// ===========================================================================
+TEST(PlayerOpenTransaction, MoveTransfersContextOwnership) {
+    player::OpenResult source;
+    source.ok = true;
+    AVFormatContext* ctx = avformat_alloc_context();
+    ASSERT_TRUE(ctx != nullptr);
+    source.format_ctx = ctx;
+
+    player::OpenResult moved(std::move(source));
+    EXPECT_TRUE(moved.format_ctx == ctx) << "移动构造: 目标必须拿到同一个上下文";
+    EXPECT_TRUE(source.format_ctx == nullptr)
+        << "移动构造: 源必须交出所有权, 否则它的析构会关掉目标手里的上下文";
+
+    // 源在此析构: 目标手里的上下文必须还在(不能被顺手关掉)
+    { player::OpenResult sink(std::move(source)); }
+    EXPECT_TRUE(moved.format_ctx == ctx);
+
+    // 移动赋值同样必须转移所有权
+    player::OpenResult target;
+    target = std::move(moved);
+    EXPECT_TRUE(target.format_ctx == ctx);
+    EXPECT_TRUE(moved.format_ctx == nullptr) << "移动赋值: 源必须交出所有权";
+
+    // 走到这里不崩 => 只有 target 析构时关闭唯一那一份, 没有 double free。
+}
+
 TEST(PlayerOpenTransaction, CommitDiscardsFailedResultAndReleasesSession) {
     AppScope app_scope;
 
