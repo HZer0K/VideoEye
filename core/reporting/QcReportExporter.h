@@ -63,6 +63,7 @@ struct QcBatchSummaryInput {
     std::vector<QcBatchSummaryRow> rows;
     int succeeded = 0;
     int failed = 0;
+    int timed_out = 0;
     int cancelled = 0;
     int skipped = 0;
     int critical_count = 0;

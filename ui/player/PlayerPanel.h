@@ -100,6 +100,8 @@ private slots:
     void OnError(const QString& message);
     // 打开阶段失败: 不弹模态框, 只在状态栏提示 (文件仍会进入分析模块展示错误原因)
     void OnOpenFailed(const QString& message);
+    // 事务式异步打开完成: 若本次打开由"点播放"触发, 成功则自动续播。
+    void OnPlayerOpenFinished(bool ok);
     void OnPlaybackFinished();
     void OnAudioLevelReady(double level, double timestamp_seconds);
     void OnAudioVisualizationForDisplay(const model::AudioVisualizationFrame& frame);
@@ -146,6 +148,8 @@ private:
 
     // 当前媒体源 (停止后再次点播放需重新 Open)
     QString current_source_;
+    // 点播放触发的异步打开: 记住"打开成功后要续播", 由 OnPlayerOpenFinished 消费。
+    bool open_then_play_ = false;
 
     // 模式标志
     bool audio_only_mode_ = false;

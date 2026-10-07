@@ -1133,6 +1133,7 @@ QcBatchSummaryInput QcReportExporter::MakeBatchSummary(const std::string& root,
 
     input.succeeded = run.summary.succeeded;
     input.failed = run.summary.failed;
+    input.timed_out = run.summary.timed_out;
     input.cancelled = run.summary.cancelled;
     input.skipped = run.summary.skipped;
     input.critical_count = run.summary.critical_count;
@@ -1161,6 +1162,7 @@ bool QcReportExporter::ExportBatchSummaryJson(const std::string& path,
     counts.Set("total", JNumber(static_cast<double>(input.rows.size())));
     counts.Set("succeeded", JNumber(static_cast<double>(input.succeeded)));
     counts.Set("failed", JNumber(static_cast<double>(input.failed)));
+    counts.Set("timed_out", JNumber(static_cast<double>(input.timed_out)));
     counts.Set("cancelled", JNumber(static_cast<double>(input.cancelled)));
     counts.Set("skipped", JNumber(static_cast<double>(input.skipped)));
     counts.Set("critical", JNumber(static_cast<double>(input.critical_count)));
@@ -1222,7 +1224,8 @@ bool QcReportExporter::ExportBatchSummaryHtml(const std::string& path,
     out << "  <h1>VideoEye 批量 QC 汇总</h1>\n";
     out << "  <p class=\"meta\">目录: " << Html(input.root) << " ｜ 模板: "
         << Html(input.profile_name) << " (" << Html(input.profile_id) << ") ｜ 完成 "
-        << input.succeeded << " / 失败 " << input.failed << " / 取消 " << input.cancelled
+        << input.succeeded << " / 失败 " << input.failed << " / 超时 " << input.timed_out
+        << " / 取消 " << input.cancelled
         << " / 跳过 " << input.skipped << " ｜ 耗时 " << Fixed(input.elapsed_ms, 0)
         << " ms" << (input.completed ? "" : " ｜ <b>未完成（被取消）</b>") << "</p>\n";
     out << "  <table>\n    <tr><th>文件</th><th>状态</th><th>评分</th><th>结论</th>"

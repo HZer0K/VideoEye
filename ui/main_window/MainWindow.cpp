@@ -447,6 +447,10 @@ void MainWindow::SetupConnections() {
             });
     connect(player_, &player::MediaPlayer::VideoFrameExportError,
             this, &MainWindow::OnVideoFrameExportError);
+    // 事务式异步打开完成: 在 UI 线程统一收尾 (状态栏/标签/自动播放/诊断扫描)。
+    // 过期结果 (期间又开了新文件) 由 MediaPlayer 丢弃且不发此信号。
+    connect(player_, &player::MediaPlayer::OpenFinished,
+            this, &MainWindow::OnPlayerOpenFinished);
     connect(player_, &player::MediaPlayer::VideoFrameExportStarted,
             this, [this](int total_frames) {
                 export_total_frames_ = total_frames;
@@ -676,6 +680,12 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
         return false;
     }
 
+    // 任何一次新打开都先作废上一次异步打开的收尾回调: 只有真正走 OpenAsync 的
+    // 路径会在下面重新登记 pending_open_source_。这样 raw/pcm 等同步分支期间
+    // 若有旧的异步结果迟到, OnPlayerOpenFinished 会因 pending 为空而直接忽略。
+    pending_open_source_.clear();
+    pending_open_autoplay_ = false;
+
     // 打开新文件前收掉导出进度框。注意这里**只**管界面那部分 ——
     // "终止进行中的导出"是媒体生命周期的保证, 归 MediaPlayer::CancelAllExports(),
     // 由 OpenInternal() 统一负责（打开媒体的入口不止这一个）。以前这里只调了
@@ -756,35 +766,51 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
 
     player_panel_->SetRawImageMode(false);
     player_panel_->SetCurrentSource(source);
-    bool open_result = false;
-    {
-        VE_PERF("MediaPlayer::Open");
-        open_result = player_->Open(source);
-    }
-
-    // 打开失败 (文件损坏/截断/格式不受支持/无可播放流) 不再直接中止:
-    // 仍把文件加载到分析模块, 由媒体信息/文件结构/诊断扫描给出错误原因。
-    if (open_result) {
-        statusBar()->showMessage(tr("已打开: %1").arg(source));
-    } else {
-        statusBar()->showMessage(tr("无法播放 (已进入分析模式): %1").arg(player_->GetLastError()), 0);
-    }
-    if (current_media_label_) {
-        current_media_label_->setText(open_result ? source : tr("%1 (无法播放)").arg(source));
-    }
     current_media_url_ = source;
     analysis_panel_->SetCurrentVideoPath(source);
     if (ffmpeg_panel_) ffmpeg_panel_->SetCurrentFile(source);
+
+    // 事务式异步打开: UI 线程只做"换媒体复位"并登记收尾信息, 耗时的
+    // avformat 打开/探测被派到后台线程; 完成后经 OpenFinished 排回 UI 线程提交。
+    // 收尾 (状态栏/标签/自动播放/诊断扫描) 见 OnPlayerOpenFinished。
+    // 打开失败也不再直接中止: 仍把文件加载到分析模块, 由媒体信息/文件结构/
+    // 诊断扫描给出错误原因。
+    pending_open_source_ = source;
+    pending_open_autoplay_ = autoplay;
+    player_->OpenAsync(source);
+
+    // 同步已启用的分析功能到播放器 (复选框默认勾选但未触发信号)。
+    // 须放在 OpenAsync 之后: 它内部先做了换媒体复位。
+    analysis_panel_->EmitInitialFeatureStates();
 
     // 媒体信息解析 (异常文件也可能部分解析成功, 尽力而为)。
     // 大文件/复杂容器下 avformat 全量探测可能要到秒级, 放在后台线程跑,
     // 结果用 generation 校验后再回主线程贴文本, 避免快速切换文件时结果串台。
     StartMediaInfoAnalysis(source);
 
-    // 同步已启用的分析功能到播放器 (复选框默认勾选但未触发信号)
-    analysis_panel_->EmitInitialFeatureStates();
+    return true;
+}
 
-    if (open_result) {
+void MainWindow::OnPlayerOpenFinished(bool ok) {
+    const QString source = pending_open_source_;
+    const bool autoplay = pending_open_autoplay_;
+    pending_open_source_.clear();
+    pending_open_autoplay_ = false;
+    // 过期/无关的回调 (对应请求已被后续打开取代) 直接忽略。
+    if (source.isEmpty() || !player_) {
+        return;
+    }
+
+    if (ok) {
+        statusBar()->showMessage(tr("已打开: %1").arg(source));
+    } else {
+        statusBar()->showMessage(tr("无法播放 (已进入分析模式): %1").arg(player_->GetLastError()), 0);
+    }
+    if (current_media_label_) {
+        current_media_label_->setText(ok ? source : tr("%1 (无法播放)").arg(source));
+    }
+
+    if (ok) {
         if (autoplay) {
             player_->Play();
         }
@@ -797,7 +823,6 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
         player_->RequestContainerStructureAnalysis(source);
         analysis_panel_->StartDiagnosticsScanForCurrentFile();
     }
-    return true;
 }
 
 void MainWindow::StartMediaInfoAnalysis(const QString& source) {

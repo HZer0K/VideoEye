@@ -139,7 +139,7 @@ RealtimeAnalysisController 对应的是**还没搬走的播放回调**（下面�
 | **M1 `ExportController`** | 10 个成员（333–367 行）+ 833–1200 全部导出编排 + `CancelAllExports()` | **最该先拆的不是 AnalysisInputSession，而是它**。零 FFmpeg 生命周期、零取消源、对外只留 2 个信号和 2 个入口；是目前唯一能写单元测试的部分（已有 `test_media_switch_export.cpp` 可以直接扩）。而且它把"代际过滤 + 排队 + worker 生命周期"这三条最容易错的知识收进一个文件 |
 | **M2 `ContainerInspectionController`** | 555 + 1200–1299，含 `kSlotContainerStructure` | 已经跑在 `TaskManager` 上，纯搬运；顺手把 109 行注释里的"OpenInternal: 容器结构分析完成"这类过期日志正文去掉 |
 | **M3 `RealtimeAnalysisController`** | 1309–1605 + 370–389 的 15 个计数器 | 风险最高：`packet_index_ / video_frame_index_ / last_packet_ts_by_stream_ / missing_*_reported_` 等计数器和信号发射**交织**在同一个函数里，搬的时候要把"计数"和"发信号"一起搬，不能只搬计数。放到最后，且建议先把计数器合并成 `AnalysisCounters` 结构值对象再搬 |
-| **M4 `OpenController`** | 225–555 | 放在最后：`open_interrupt_` / `open_cancel_` 是**成员**是有意为之（309–316 行注释：回调会被 AVIO/URLContext 各复制一份，栈上状态会悬垂）。搬的时候必须把它一起搬进新对象，不能降级成局部变量 |
+| **M4 `OpenController`** | 225–555 | 放在最后：中断/取消状态必须活得比 `AVFormatContext` 长（回调会被 AVIO/URLContext 各复制一份，栈上状态会悬垂）。搬的时候一并搬进新对象，不能降级成局部变量。**（已落地：不再挂在 `MediaPlayer` 上，改为每次打开独立的 `OpenAttempt`，见下方 M4 硬约束的更新）** |
 
 **不建议照提案建的**：`PlaybackController`（= 已有的 `PlaybackSession`）。
 
@@ -257,10 +257,11 @@ RealtimeAnalysisController 对应的是**还没搬走的播放回调**（下面�
 
 ### M4 的一条硬约束（写进 `OpenController.h` 了）
 
-`open_interrupt_` / `open_cancel_` **必须留在 MediaPlayer**，控制器只借引用。
-原因：中断回调会被 `AVIOContext` / `URLContext` 各复制一份，播放期仍在用，
-它的生命周期必须覆盖 `AVFormatContext`；而成员按声明**逆序**析构 ——
-若随控制器搬走、且控制器声明在播放会话之后，中断状态会先于上下文析构，留下悬垂 opaque。
+`open_interrupt_` / `open_cancel_` **不再挂在 `MediaPlayer` 上做成员**：每次打开各自造一个
+`OpenAttempt`（`std::shared_ptr`），中断/取消状态随它活到该次 IO 结束，由 `OpenResult` 一并
+持有（见 `OpenController.h`）。原因不变：中断回调会被 `AVIOContext` / `URLContext` 各复制一份，
+播放期仍在用，它的生命周期必须覆盖 `AVFormatContext`；若降级成栈上局部变量，
+`avformat_open_input` / `av_read_frame` 返回后 opaque 就悬垂。
 
 ### 搬运时踩到的两个坑（后面几片照着避）
 

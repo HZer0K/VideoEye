@@ -55,7 +55,7 @@ jobs:
       # 这里只数 `tests/` 目录, 不需要构建, 放在这个 job 最便宜; 加了测试就一起更新
       # README 表格和这里的数字, 否则 CI 直接红。
       - name: Check test-count snapshot (README table)
-        run: python3 scripts/summarize_tests.py --expect 50
+        run: python3 scripts/summarize_tests.py --expect 52
 
   build:
     name: Build (${{ matrix.os }})

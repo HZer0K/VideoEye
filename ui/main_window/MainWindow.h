@@ -64,6 +64,9 @@ private slots:
     // 播放区显隐 (实际逻辑在 PlayerPanel)
     void OnTogglePlayerArea(bool checked);
 
+    // 事务式异步打开完成 (MediaPlayer::OpenFinished)。ok=true 表示已提交进播放会话。
+    void OnPlayerOpenFinished(bool ok);
+
 private:
     // 初始化UI
     void SetupUI();
@@ -99,6 +102,10 @@ protected:
     QLabel* current_media_label_; // 顶部显示当前媒体路径
     QLabel* stats_label_;         // 状态栏右端常驻: 实时 FPS/码率/关键帧
     QString current_media_url_;
+    // 异步打开的收尾信息: OpenAsync 发起时登记, OpenFinished 回来时消费。
+    // 过期结果由 MediaPlayer 侧丢弃 (不发信号), 这里只需记住最近一次请求。
+    QString pending_open_source_;
+    bool pending_open_autoplay_ = false;
 
     // 分析面板
     ui::AnalysisPanel* analysis_panel_;  // 分析面板

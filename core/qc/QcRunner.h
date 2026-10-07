@@ -26,6 +26,7 @@
 
 #include <functional>
 #include <string>
+#include <utility>
 
 #include "core/analysis/AnalysisOptions.h"
 #include "core/analysis/diagnostics/QcRuleEngine.h"
@@ -50,7 +51,11 @@ public:
     QcRunner(const QcRunner&) = delete;
     QcRunner& operator=(const QcRunner&) = delete;
 
-    // 统一入口：分析结果 = AnalyzeFile(path, profile, options)
+    // 统一入口（显式输入类型）：分析结果 = AnalyzeFile(input, profile, options)
+    //
+    // input.kind == LocalFile 时先过 IsAnalyzableFile（存在 / 非空 / 非目录）；
+    // input.kind == NetworkUri 时跳过本地存在性校验，直接交给 FFmpeg 打开
+    // （网络侧的预算由 join_budget_ms 与 FFmpeg 中断/超时共同保证）。
     //
     // options 由调用方给出时按调用方的来（UI 有自己的开关面板）；批量/CLI 场景通常
     // 直接传 OptionsForDepth(profile.depth)。
@@ -58,11 +63,22 @@ public:
     // join_budget_ms 是**这次分析本身的等待预算**: 到点还没出结果就按失败收尾,
     // 工作线程转入受控回收(不再无限等)。以前这里是无条件 join —— 引擎卡在第三方 IO
     // 上时整条批量扫描会永久挂死, 而"有一份结果"和"卡死"之间只有这个预算可区分。
-    QcRunResult AnalyzeFile(const std::string& path,
+    QcRunResult AnalyzeFile(const MediaInput& input,
                             const QcProfile& profile,
                             videoeye::AnalysisOptions options = videoeye::AnalysisOptions{},
                             const QcRunCallbacks& callbacks = QcRunCallbacks{},
                             int join_budget_ms = kDefaultJoinBudgetMs);
+
+    // 便捷重载：按 uri 自动归类（ClassifyMediaInput）。等价于把 ClassifyMediaInput(path)
+    // 交给上面那个重载 —— 只是省去调用方每次都写一遍归类。
+    QcRunResult AnalyzeFile(const std::string& path,
+                            const QcProfile& profile,
+                            videoeye::AnalysisOptions options = videoeye::AnalysisOptions{},
+                            const QcRunCallbacks& callbacks = QcRunCallbacks{},
+                            int join_budget_ms = kDefaultJoinBudgetMs) {
+        return AnalyzeFile(ClassifyMediaInput(path), profile, std::move(options), callbacks,
+                           join_budget_ms);
+    }
 
     // 生成一个绑定了 profile + options 的分析闭包（批量扫描的每个 worker 各持一份 QcRunner）
     static QcAnalyzeFn MakeAnalyzeFunction(const QcProfile& profile,
@@ -71,9 +87,14 @@ public:
     static constexpr int kDefaultJoinBudgetMs = 30000;
 };
 
-// 文件是否可被分析器打开（存在且非空）。把"文件不存在""路径是目录""文件为空"分开 ——
+// 本地文件是否可被分析器打开（存在且非空）。把"文件不存在""路径是目录""文件为空"分开 ——
 // 报告里这三件事的处置方式是不同的，混成一句"分析失败"会让批量扫描的结果没法看。
+// 只判本地文件；网络源请用下面的 IsAnalyzableInput。
 bool IsAnalyzableFile(const std::string& path, std::string& reason);
+
+// 输入是否可被分析：LocalFile 走 IsAnalyzableFile 的存在性/非空校验；
+// NetworkUri 只校验 uri 非空（是否存在、能否连上交给 FFmpeg，由分析预算兜底）。
+bool IsAnalyzableInput(const MediaInput& input, std::string& reason);
 
 }  // namespace qc
 }  // namespace videoeye

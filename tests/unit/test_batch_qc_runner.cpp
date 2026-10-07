@@ -19,6 +19,7 @@ using videoeye::qc::BatchQcRunner;
 using videoeye::qc::QcAnalyzeFn;
 using videoeye::qc::QcAnalyzeRequest;
 using videoeye::qc::QcRunResult;
+using videoeye::qc::ToString;
 
 namespace {
 // 假分析函数：睡 ~20ms 模拟解码，期间轮询 cancel 标记。
@@ -179,5 +180,63 @@ TEST(BatchQcRunnerTest, SucceededVsExportFailed) {
         EXPECT_EQ(run.items[0].status, BatchItemStatus::Failed);
         EXPECT_EQ(run.summary.failed, 1);
     }
+}
+
+// ---- 单项超时预算：透传 + TimedOut 终态（评审 P2-5）----
+//
+// per_item_timeout_ms 必须随请求下发给分析函数（不带，批量侧就没法为每个文件设定
+// 最长等待）；分析函数回传 timed_out 的条目要落成 TimedOut，且不与"引擎报错"混计。
+TEST(BatchQcRunnerTest, PerItemTimeoutPropagatesAndMarksTimedOut) {
+    std::atomic<int> seen_budget{-1};
+    QcAnalyzeFn analyze = [&seen_budget](const QcAnalyzeRequest& req) {
+        seen_budget.store(req.join_budget_ms, std::memory_order_release);
+        QcRunResult r;
+        r.ok = false;
+        r.timed_out = true;  // 执行器自己的等待预算耗尽，后台线程被放弃
+        r.error = "分析在等待预算内没有结束";
+        return r;
+    };
+
+    std::vector<BatchQcItem> items(2);
+    items[0].path = "a.mp4";
+    items[1].path = "b.mp4";
+
+    BatchQcOptions options;
+    options.max_parallel = 2;
+    options.per_item_timeout_ms = 1234;
+
+    BatchQcRunner runner;
+    const auto run = runner.Run(items, options, analyze, BatchQcCallbacks{});
+
+    EXPECT_EQ(seen_budget.load(), 1234) << "per_item_timeout_ms 没透传到 QcAnalyzeRequest::join_budget_ms";
+    EXPECT_EQ(run.items[0].status, BatchItemStatus::TimedOut);
+    EXPECT_EQ(run.items[1].status, BatchItemStatus::TimedOut);
+    EXPECT_EQ(run.summary.timed_out, 2);
+    EXPECT_EQ(run.summary.failed, 0) << "超时不该和引擎报错混在一个计数里";
+    EXPECT_EQ(std::string(ToString(BatchItemStatus::TimedOut)), std::string("超时"));
+}
+
+// 默认不设 per_item_timeout_ms：请求里保持 0（"用分析函数自带默认预算"），
+// 批量层不塞任何魔法值，也不误标 TimedOut。
+TEST(BatchQcRunnerTest, DefaultPerItemTimeoutStaysZeroAndDoesNotTimeOut) {
+    std::atomic<int> seen_budget{-1};
+    QcAnalyzeFn analyze = [&seen_budget](const QcAnalyzeRequest& req) {
+        seen_budget.store(req.join_budget_ms, std::memory_order_release);
+        QcRunResult r;
+        r.ok = true;
+        r.report.score = 100.0;
+        r.report.verdict = "通过";
+        return r;
+    };
+
+    std::vector<BatchQcItem> items(1);
+    items[0].path = "a.mp4";
+
+    BatchQcRunner runner;
+    const auto run = runner.Run(items, BatchQcOptions{}, analyze, BatchQcCallbacks{});
+
+    EXPECT_EQ(seen_budget.load(), 0);
+    EXPECT_EQ(run.items[0].status, BatchItemStatus::Succeeded);
+    EXPECT_EQ(run.summary.timed_out, 0);
 }
 }  // namespace

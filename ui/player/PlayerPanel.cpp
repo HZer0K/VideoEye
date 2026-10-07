@@ -153,6 +153,8 @@ void PlayerPanel::SetMediaPlayer(player::MediaPlayer* player) {
     connect(player_, &player::MediaPlayer::PositionChanged, this, &PlayerPanel::OnPositionChanged);
     connect(player_, &player::MediaPlayer::Error, this, &PlayerPanel::OnError);
     connect(player_, &player::MediaPlayer::OpenFailed, this, &PlayerPanel::OnOpenFailed);
+    // 点播放触发的异步打开完成后续播 (见 OnPlayPause / OnPlayerOpenFinished)。
+    connect(player_, &player::MediaPlayer::OpenFinished, this, &PlayerPanel::OnPlayerOpenFinished);
     connect(player_, &player::MediaPlayer::PlaybackFinished, this, &PlayerPanel::OnPlaybackFinished);
     connect(player_, &player::MediaPlayer::MediaModeChanged, this, &PlayerPanel::OnMediaModeChanged);
     connect(player_, &player::MediaPlayer::AudioLevelReady, this, &PlayerPanel::OnAudioLevelReady);
@@ -290,10 +292,11 @@ void PlayerPanel::OnPlayPause() {
          state == model::PlayerState::Stopped ||
          state == model::PlayerState::Error) &&
         !current_source_.isEmpty()) {
-        if (!player_->Open(current_source_)) {
-            emit StatusMessage(tr("打开失败: %1").arg(player_->GetLastError()), 0);
-            return;
-        }
+        // 事务式异步打开: 打开/探测放后台线程, 完成后经 OpenFinished 回 UI 再续播,
+        // 不在 UI 线程阻塞。open_then_play_ 记住"这次是点播放触发的"。
+        open_then_play_ = true;
+        player_->OpenAsync(current_source_);
+        return;
     }
 
     // 根据当前状态切换播放/暂停
@@ -302,6 +305,21 @@ void PlayerPanel::OnPlayPause() {
     } else {
         player_->Play();
     }
+}
+
+void PlayerPanel::OnPlayerOpenFinished(bool ok) {
+    if (!open_then_play_) {
+        return;   // 不是"点播放"触发的打开 (如 OpenMedia 主路径), 不在此续播
+    }
+    open_then_play_ = false;
+    if (!player_) {
+        return;
+    }
+    if (!ok) {
+        emit StatusMessage(tr("打开失败: %1").arg(player_->GetLastError()), 0);
+        return;
+    }
+    player_->Play();
 }
 
 void PlayerPanel::ResetVideoUI() {
@@ -321,6 +339,7 @@ void PlayerPanel::ResetVideoUI() {
 
 void PlayerPanel::OnStop() {
     // 清理状态（不立即清理视频UI，让 OnStateChanged 统一处理）
+    open_then_play_ = false;   // 停止即作废"打开后续播"意图
     audio_vis_->Reset();
     audio_vis_->SetAlbumCover(QImage());  // 停止即清空封面
     audio_only_mode_ = false;

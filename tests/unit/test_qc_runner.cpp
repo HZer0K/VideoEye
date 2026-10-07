@@ -32,7 +32,11 @@
 
 namespace fs = std::filesystem;
 
+using videoeye::qc::ClassifyMediaInput;
 using videoeye::qc::IsAnalyzableFile;
+using videoeye::qc::IsAnalyzableInput;
+using videoeye::qc::IsNetworkUri;
+using videoeye::qc::MediaInput;
 using videoeye::qc::OptionsForDepth;
 using videoeye::qc::QcAnalysisDepth;
 using videoeye::qc::QcAnalyzeRequest;
@@ -122,6 +126,7 @@ TEST(QcRunnerTest, ReturnsEngineFailureWithinBudgetWithoutTimeout) {
                                                   QcRunCallbacks{}, /*join_budget_ms=*/8000);
     EXPECT_FALSE(result.ok);
     EXPECT_NE(result.error, kTimeoutError);  // 走的是结算路径，不是超时
+    EXPECT_FALSE(result.timed_out);          // 预算内结算不得误标超时
     EXPECT_FALSE(result.error.empty());      // 失败原因来自引擎（FFmpeg 的打开错误）
     EXPECT_EQ(result.profile_id, "unit-test");
 
@@ -149,6 +154,9 @@ TEST(QcRunnerTest, JoinBudgetZeroTimesOutAndDetachesWithoutCrash) {
 
     EXPECT_FALSE(result.ok);
     EXPECT_EQ(result.error, kTimeoutError);
+    // 超时必须被标记出来（评审 P1-3）：调用方据此区分"引擎自己报失败"与"预算内没结算"，
+    // 也说明这次返回时后台线程已被放弃(detach)并收到强制取消请求。
+    EXPECT_TRUE(result.timed_out);
     // 预算 0 = 一秒都不等：引擎打开垃圾文件也要毫秒级，主线程不能等它。
     EXPECT_LT(wall_ms, 1000.0);
 
@@ -172,4 +180,72 @@ TEST(QcRunnerTest, MakeAnalyzeFunctionKeepsPathErrors) {
     EXPECT_FALSE(result.ok);
     EXPECT_NE(result.error.find("文件不存在"), std::string::npos);
     EXPECT_EQ(result.profile_id, "unit-test");
+}
+
+// ---- 统一输入类型：网络源 / 本地文件的归类（评审 P2-7）----
+//
+// 归类必须是纯字符串判定：不联网、不判存在性，否则这条用例就会依赖网络。
+TEST(QcRunnerTest, ClassifiesNetworkUrisAndLocalPaths) {
+    EXPECT_EQ(ClassifyMediaInput("http://host/a.mp4").kind, MediaInput::Kind::NetworkUri);
+    EXPECT_EQ(ClassifyMediaInput("https://host/a.m3u8").kind, MediaInput::Kind::NetworkUri);
+    EXPECT_EQ(ClassifyMediaInput("rtmp://host/live").kind, MediaInput::Kind::NetworkUri);
+    EXPECT_EQ(ClassifyMediaInput("rtsp://host/stream").kind, MediaInput::Kind::NetworkUri);
+    EXPECT_EQ(ClassifyMediaInput("rtsps://host/stream").kind, MediaInput::Kind::NetworkUri);
+    EXPECT_EQ(ClassifyMediaInput("udp://239.0.0.1:1234").kind, MediaInput::Kind::NetworkUri);
+    EXPECT_EQ(ClassifyMediaInput("srt://host:9000").kind, MediaInput::Kind::NetworkUri);
+    // scheme 大小写不敏感
+    EXPECT_EQ(ClassifyMediaInput("RTMP://host/live").kind, MediaInput::Kind::NetworkUri);
+
+    EXPECT_EQ(ClassifyMediaInput("/tmp/a.mp4").kind, MediaInput::Kind::LocalFile);
+    EXPECT_EQ(ClassifyMediaInput("C:/videos/a.mp4").kind, MediaInput::Kind::LocalFile);
+    EXPECT_EQ(ClassifyMediaInput("").kind, MediaInput::Kind::LocalFile);
+    // file:// 指向本地文件系统，不算网络源
+    EXPECT_EQ(ClassifyMediaInput("file:///tmp/a.mp4").kind, MediaInput::Kind::LocalFile);
+
+    EXPECT_TRUE(IsNetworkUri("http://host/a.mp4"));
+    EXPECT_FALSE(IsNetworkUri("/tmp/a.mp4"));
+
+    // 归类不改写 uri 本体
+    EXPECT_EQ(ClassifyMediaInput("rtmp://host/live").uri, std::string("rtmp://host/live"));
+}
+
+// 网络源的空地址在起线程前就被挡下；本地文件的三种非法形态仍照旧被拒。
+TEST(QcRunnerTest, IsAnalyzableInputSplitsNetworkAndLocalGates) {
+    std::string reason;
+
+    MediaInput network;
+    network.kind = MediaInput::Kind::NetworkUri;
+    network.uri = "rtsp://host/stream";
+    EXPECT_TRUE(IsAnalyzableInput(network, reason)) << reason;
+
+    MediaInput empty_network;
+    empty_network.kind = MediaInput::Kind::NetworkUri;
+    EXPECT_FALSE(IsAnalyzableInput(empty_network, reason));
+    EXPECT_FALSE(reason.empty());
+
+    MediaInput missing_local;
+    missing_local.kind = MediaInput::Kind::LocalFile;
+    missing_local.uri = (fs::temp_directory_path() / "videoeye_qc_absent.mp4").string();
+    std::error_code ec;
+    fs::remove(missing_local.uri, ec);
+    EXPECT_FALSE(IsAnalyzableInput(missing_local, reason));
+    EXPECT_NE(reason.find("文件不存在"), std::string::npos);
+}
+
+// 网络源进单文件 QC：不再被本地闸门判成"文件不存在"（评审 P2-7 的核心回归）。
+//
+// join_budget_ms = 0 让 AnalyzeFile 立刻超时返回，测试不依赖任何真实网络媒体；
+// 关键是错误原因不再是"文件不存在" —— 修复前 rtsp/http/rtmp 一进来就是这句。
+TEST(QcRunnerTest, NetworkUriIsNotRejectedAsMissingFile) {
+    QcRunner runner;
+    MediaInput input;
+    input.kind = MediaInput::Kind::NetworkUri;
+    input.uri = "rtsp://127.0.0.1:6553/videoeye-not-here";
+
+    const QcRunResult result = runner.AnalyzeFile(input, FastProfile(),
+                                                  OptionsForDepth(QcAnalysisDepth::Fast),
+                                                  QcRunCallbacks{}, /*join_budget_ms=*/0);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.error.find("文件不存在"), std::string::npos)
+        << "网络源被本地存在性闸门拦下了（分类没接通）: " << result.error;
 }

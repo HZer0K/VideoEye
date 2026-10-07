@@ -252,6 +252,9 @@ void ReportingPanel::BuildUi() {
 // ===========================================================================
 
 void ReportingPanel::SetCurrentFile(const QString& path) {
+    // 这里存什么就是什么 —— 主窗口可能同步过来一个网络源（http/rtmp/rtsp）。归类不在
+    // 这一层做：统一交给 qc::ClassifyMediaInput（QcRunner::AnalyzeFile 内部调用），
+    // 于是单文件 QC 能据 Kind 走 FFmpeg 网络输入，本地批量扫描则只接受本地文件。
     current_path_ = path.toStdString();
     current_file_label_->setText(path.isEmpty() ? tr("未选择") : path);
     if (path.isEmpty()) {
@@ -404,6 +407,8 @@ void ReportingPanel::OnExportBatchSummary() {
         switch (item.status) {
             case qc::BatchItemStatus::Succeeded: run.summary.succeeded += 1; break;
             case qc::BatchItemStatus::Failed:    run.summary.failed += 1;    break;
+            case qc::BatchItemStatus::ExportFailed: run.summary.failed += 1; break;
+            case qc::BatchItemStatus::TimedOut:  run.summary.timed_out += 1; break;
             case qc::BatchItemStatus::Cancelled: run.summary.cancelled += 1; break;
             case qc::BatchItemStatus::Skipped:   run.summary.skipped += 1;   break;
             default: break;
@@ -439,6 +444,12 @@ void ReportingPanel::RetireTask(std::shared_ptr<AnalysisTask>& task) {
     // 先要一份句柄副本：下面的 RecycleTask 会把 task 置空，句柄得先拿出来。
     const task::TaskHandle handle = task->handle;
 
+    // 运行时诊断（评审 P2-4 方案 A）：报告页走严格 Cooperative，**析构没有硬时间上限**。
+    // 这条日志把"开始回收、正在等任务体响应取消"这件事留痕 —— 万一关停久等，日志能区分
+    // 是"任务体在收尾"还是"取消没生效"。
+    LOG_INFO("报告页开始回收任务 #" + std::to_string(handle.id) +
+             "（严格 Cooperative：请求取消后等待线程体收尾，无硬时间上限）");
+
     // 请求取消并封死"还允许往面板上刷结果"这条路。顺序不能反 —— 先取消，任务体
     // 才可能在预算内自己收尾；先置 alive=false 也行，但取消必须做，否则取消按钮
     // 点了没反应（这条路径就是取消按钮 / 析构两条路共用的一份收尾逻辑）。
@@ -461,6 +472,26 @@ void ReportingPanel::RetireTask(std::shared_ptr<AnalysisTask>& task) {
     if (!RecycleTask(task)) {
         LOG_WARN("报告页任务回收超出预期预算 " + std::to_string(kDefaultRecycleBudgetMs) +
                  "ms，按严格 Cooperative 继续等待其响应取消（不 detach）");
+    }
+}
+
+void ReportingPanel::FinishTask(const std::shared_ptr<AnalysisTask>& task,
+                                task::TaskState terminal) {
+    if (!task) return;
+    // 终态一次性写入：EndHandle 只在 id 仍与 slot 当前任务匹配时才生效，否则静默丢弃
+    // （说明这个任务已被取代 / 句柄已失效）。写完之后 slot 不再停在 Running。
+    tasks_.EndHandle(task->handle, terminal);
+
+    // 归还句柄前必须先把线程收回（join）：任务体按值捕获了 task（shared_ptr），而
+    // AnalysisTask 又持有 std::thread —— 二者构成引用环。若这里只 reset 不 join，环
+    // 没人打破，AnalysisTask（连同尚可 join 的 std::thread）会永久泄漏。此时
+    // RunSingle / RunBatch 已经返回、body_done 已置位，join 几乎瞬间返回。
+    // 不归还句柄的话 slot 会一直停在 Running，任务切换时 single_task_ / batch_task_
+    // 长期持有过期句柄，RunningCount() 也会长时间不准确。
+    if (single_task_ == task) {
+        RecycleTask(single_task_);
+    } else if (batch_task_ == task) {
+        RecycleTask(batch_task_);
     }
 }
 
@@ -515,7 +546,13 @@ void ReportingPanel::RunSingle(std::shared_ptr<AnalysisTask> task, const std::st
     // QcRunner 只持 Box 的 worker 会被放弃(detach)，RunSingle 照常返回。
     qc::QcRunResult result = runner.AnalyzeFile(
         path, profile, qc::OptionsForDepth(profile.depth), callbacks, kDefaultRecycleBudgetMs);
-    PostToUi(task, [this, result]() {
+    // 终态由结果 + 取消令牌共同判定：用户取消 -> Canceled；分析跑完 -> Succeeded；
+    // 其余（打开失败 / 超时 / 引擎报错）-> Failed。
+    const task::TaskState terminal =
+        task->cancel.IsCanceled() ? task::TaskState::Canceled
+                                  : (result.ok ? task::TaskState::Succeeded
+                                               : task::TaskState::Failed);
+    PostToUi(task, [this, task, result, terminal]() {
         last_result_ = result;
         UpdateVerdictLabel(result);
         if (result.ok) {
@@ -531,6 +568,9 @@ void ReportingPanel::RunSingle(std::shared_ptr<AnalysisTask> task, const std::st
             log_view_->setPlainText(tr("分析失败: %1").arg(QString::fromStdString(result.error)));
         }
         SetBusy(false);
+        // 正常完成路径必须归还终态：否则 TaskManager::State() 会一直停在 Running，
+        // single_task_ / batch_task_ 长期持有过期句柄（见 FinishTask 注释）。
+        FinishTask(task, terminal);
     });
 }
 
@@ -643,14 +683,23 @@ void ReportingPanel::RunBatch(std::shared_ptr<AnalysisTask> task, const BatchReq
     qc::BatchQcRunner runner;
     const auto run = runner.Run(items, options, analyze_with_export, callbacks);
 
-    PostToUi(task, [this, run, total]() {
+    // 终态：用户取消 -> Canceled；有条目失败或超时 -> Failed；整批跑完且无失败/超时 -> Succeeded。
+    // 超时也算"没干净跑完"：它的后台线程被放弃、结果不完整，不能算成功。
+    const task::TaskState terminal =
+        task->cancel.IsCanceled()
+            ? task::TaskState::Canceled
+            : ((run.summary.failed == 0 && run.summary.timed_out == 0)
+                   ? task::TaskState::Succeeded
+                   : task::TaskState::Failed);
+    PostToUi(task, [this, task, run, total, terminal]() {
         batch_progress_->setRange(0, std::max(1, total));
         batch_progress_->setValue(batch_table_->rowCount());
         batch_summary_label_->setText(
-            tr("共 %1 个 ｜ 完成 %2 ｜ 失败 %3 ｜ 取消 %4 ｜ 跳过 %5 ｜ 致命 %6 错误 %7 警告 %8 提示 %9 ｜ 耗时 %10 ms")
+            tr("共 %1 个 ｜ 完成 %2 ｜ 失败 %3 ｜ 超时 %4 ｜ 取消 %5 ｜ 跳过 %6 ｜ 致命 %7 错误 %8 警告 %9 提示 %10 ｜ 耗时 %11 ms")
                 .arg(total)
                 .arg(run.summary.succeeded)
                 .arg(run.summary.failed)
+                .arg(run.summary.timed_out)
                 .arg(run.summary.cancelled)
                 .arg(run.summary.skipped)
                 .arg(run.summary.critical_count)
@@ -659,6 +708,8 @@ void ReportingPanel::RunBatch(std::shared_ptr<AnalysisTask> task, const BatchReq
                 .arg(run.summary.info_count)
                 .arg(static_cast<int>(run.summary.elapsed_ms)));
         SetBusy(false);
+        // 同 RunSingle：整批正常结束后归还终态并清掉 batch_task_ 句柄。
+        FinishTask(task, terminal);
     });
 }
 
@@ -693,6 +744,8 @@ void ReportingPanel::SetBusy(bool busy) {
 }
 
 qc::QcProfile ReportingPanel::CurrentProfile() const { return profile_; }
+
+bool ReportingPanel::IsTaskRunning() const { return tasks_.IsRunning(kTaskSlot); }
 
 std::vector<qc::QcReportFormat> ReportingPanel::SelectedFormats() const {
     std::vector<qc::QcReportFormat> formats;

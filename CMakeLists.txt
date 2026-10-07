@@ -110,6 +110,10 @@ find_package(Threads REQUIRED)
 # videoeye_add_module），所以任何模块写 #include "core/xxx.h" 都能编译通过。链接期能
 # 拦的只有"没声明这条边的调用"，而主程序 ui 显式链了全部模块 —— 对 ui 层来说约束力为零。
 # 依赖**方向**的检查在 scripts/check_layering.py（CI 与 pre-commit 都跑），别指望 CMake。
+#
+# 由 CMake 能真正约束的一条，是 PUBLIC/PRIVATE 的选择：**公共头**里出现的类型，其所属
+# 模块必须挂在 PUBLIC 上（否则 include 这个头的外部目标拿不到它的 include 目录）。
+# 这条只能靠人读代码守，反例见 VideoEyePlayback -> VideoEyeQtAdapters（P2-8）。
 # ============================================================
 function(videoeye_add_module name)
     add_library(${name} STATIC ${ARGN})
@@ -197,11 +201,18 @@ target_link_libraries(VideoEyePlayback
            # PUBLIC: MediaPlayer.h 里直接持有 ffmpeg_io::AvInterruptState 成员
            # （打开/探测阶段的中断状态，生命周期必须覆盖上下文 —— 见该成员注释）
            VideoEyeFfmpegIo
+           # PUBLIC(不是 PRIVATE): VideoEyePlayback 的**公共头**直接 include 了
+           # core/qt/QtWorkerOwner.h —— MediaPlayer.h / ExportController.h 都把它当作
+           # 成员类型使用。任何 include 这两个头的目标都必须拿到 VideoEyeQtAdapters 的
+           # include 目录与编译定义；PRIVATE 只会把这条边藏进静态库内部，外部目标要么
+           # 编译不过、要么白拿 Qt 的 include/宏。评审 P2-8 点名的正是这条"声明成
+           # PRIVATE 但公共头依赖它"的不一致。
+           # （它是**头文件依赖**才必须 PUBLIC；Analysis/Exporter/Infrastructure 只出现在
+           #   实现里，保持 PRIVATE，别顺手一起放大出去。）
+           VideoEyeQtAdapters
     PRIVATE VideoEyeAnalysis
             VideoEyeExporter
             VideoEyeInfrastructure
-            # MediaPlayer 用 core/qt/QtWorkerOwner.h 统一持有导出用的 QThread
-            VideoEyeQtAdapters
 )
 if(WIN32)
     # WASAPI: CoCreateInstance 在 ole32

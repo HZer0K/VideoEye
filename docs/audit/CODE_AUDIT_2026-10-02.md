@@ -118,6 +118,7 @@ void AnalysisPanel::FlushPendingUiUpdates() {
 
 `open_interrupt_.cancel = nullptr` 且 `:325` 把 `deadline_us` 归零后，回调恒返回 0。`av_read_frame` 在 RTSP/HTTP 断流时不返回 → `Stop()` → `join()` 无限等待，UI 冻结、进程退不掉。
 **修复**: `cancel` 指向一个由 `Stop()` 置真的 `std::atomic<bool>`。
+**后续**: 该状态已从 `MediaPlayer` 成员改为每次打开独立的 `OpenAttempt`（`core/player/OpenController.h`），上述语义不变。
 
 ### 11. 硬解时把 GPU 帧当 CPU 帧交给分析链路
 `core/player/PlaybackSession.cpp:361` + `core/player/Decoders.cpp:250/262`

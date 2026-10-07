@@ -1,6 +1,8 @@
 #include "core/player/MediaPlayer.h"
 #include "infrastructure/logging/Logger.h"
 #include <QDebug>
+#include <QMetaObject>
+#include <QPointer>
 #include <algorithm>
 #include <cstdint>
 #include <limits>
@@ -33,9 +35,9 @@ MediaPlayer::MediaPlayer(QObject* parent)
       // 控制器借用本类的 analysis_session_ / playback_session_（都声明在它之前），
       // 并在构造时把分析 hook 装进播放会话 —— 所以播放机械照旧对分析一无所知。
       realtime_analysis_(analysis_session_, playback_session_, this),
-      // 打开控制器借用本类的中断状态与取消标志: 它们的生命周期必须覆盖
-      // AVFormatContext（回调会被派生上下文复制，播放期仍在用），所以继续由本类持有。
-      open_controller_(playback_session_, analysis_session_, open_interrupt_, open_cancel_, this) {
+      // 打开控制器借用本类的播放会话（只持引用），并在提交时把成果一次性写进会话。
+      // 取消/中断状态（current_attempt_）由本类持有，Prepare 时经 OpenPrepareParams 传入。
+      open_controller_(playback_session_, this) {
     avformat_network_init();
     qRegisterMetaType<model::Mp4BoxAnalysisResult>("model::Mp4BoxAnalysisResult");
     qRegisterMetaType<model::ContainerStructureResult>("model::ContainerStructureResult");
@@ -187,11 +189,21 @@ bool MediaPlayer::OpenRawPcm(const QString& url, const QString& demuxer_name, in
     return OpenInternal(url, input_format, input_options);
 }
 
-bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_format, AVDictionary* input_options) {
-    LOG_INFO("OpenInternal: " + url.toStdString());
+void MediaPlayer::RequestCancel() {
+    // 置位后卡在 avformat_open_input / av_read_frame 上的阻塞 IO 会立刻退出 ——
+    // deadline 只会"等到超时"，只有它能让阻塞的 read 马上返回 AVERROR_EXIT。
+    if (current_attempt_) {
+        current_attempt_->cancel.store(true, std::memory_order_release);
+        current_attempt_->interrupt.deadline_us = 0;
+    }
+}
+
+void MediaPlayer::BeginMediaSwitch(const QString& url) {
+    // 上一次尝试立即作废: 它可能还卡在后台打开，也可能是已提交会话在播放期读取。
+    RequestCancel();
 
     // 换媒体 = 换上下文: 两类导出(抽帧 + 音视频转码)都必须在这里统一终止。
-    // 放在本函数而不是 UI 里, 是因为打开媒体的入口不止一个（Open / OpenRawPcm /
+    // 放在这里而不是 UI 里, 是因为打开媒体的入口不止一个（Open / OpenAsync / OpenRawPcm /
     // 播放列表切换），任何一个入口漏掉"取消导出"都会留下旧任务写旧文件、
     // 并把终态信号串回新媒体界面的问题。
     CancelAllExports();
@@ -208,18 +220,90 @@ bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_fo
     analysis_session_.stream_analyzer().Reset();
     playback_session_.ResetSyncTimestamps();
 
-    // 打开媒体本身（超时中断 / 探测 / 选流 / 封面图 / 解码器 / 流信息）在
-    // OpenController 里，见 core/player/OpenController.h。
-    const bool ok = open_controller_.Open(url, input_format, input_options, volume_,
-                                          stream_info_, last_open_error_);
+    // 新的一次打开尝试: 独立的取消标志/中断状态 —— 不与上一次共享。旧后台线程仍按
+    // 自己的标志退出（不会被本次复位掉的标志误放行）；提交后播放会话也继续用它取消。
+    current_attempt_ = std::make_shared<OpenAttempt>();
+}
 
+OpenPrepareParams MediaPlayer::MakeOpenParams(const QString& url, const AVInputFormat* input_format,
+                                              AVDictionary* input_options) {
+    OpenPrepareParams params;
+    params.url = url;
+    params.input_format = input_format;
+    params.input_options = input_options;
+    params.volume_percent = volume_;
+    params.prefer_hw_decoding = analysis_session_.IsHardwareDecodingEnabled();
+    params.macroblock_analysis = analysis_session_.IsMacroblockAnalysisEnabled();
+    params.attempt = current_attempt_;
+    return params;
+}
+
+bool MediaPlayer::CommitOpen(const QString& url, OpenResult&& result) {
+    model::StreamInfo info;
+    QString error;
+    const bool ok = open_controller_.Commit(std::move(result), info, error);
+    if (!ok) {
+        last_open_error_ = error;
+        return false;
+    }
+    stream_info_ = info;
+    last_open_error_.clear();
     // 容器结构分析 (统一调度, 后台线程) — 纯展示信息 (面板里看 Box 树 / 样本表),
     // 不该阻塞打开; 之前同步跑在 UI 线程, 大文件的 sample 表展开会让界面冻结数秒~数十秒。
-    if (ok && analysis_session_.IsContainerStructureEnabled()) {
+    if (analysis_session_.IsContainerStructureEnabled()) {
         container_inspection_.Start(url);
     }
-    if (ok) last_open_error_.clear();
-    return ok;
+    return true;
+}
+
+bool MediaPlayer::OpenInternal(const QString& url, const AVInputFormat* input_format, AVDictionary* input_options) {
+    LOG_INFO("OpenInternal(同步): " + url.toStdString());
+    // 同步路径: 换媒体复位 + Prepare/Commit 都在**调用线程**上完成（兼容旧调用与测试）。
+    BeginMediaSwitch(url);
+    const OpenPrepareParams params = MakeOpenParams(url, input_format, input_options);
+    OpenResult result = OpenController::Prepare(params);
+    return CommitOpen(url, std::move(result));
+}
+
+void MediaPlayer::OpenAsync(const QString& url) {
+    LOG_INFO("OpenAsync ENTER: " + url.toStdString());
+    // UI 线程只做换媒体复位；耗时的打开/探测丢到后台线程。
+    BeginMediaSwitch(url);
+    OpenPrepareParams params = MakeOpenParams(url, nullptr, nullptr);
+    const std::string url_copy = url.toStdString();
+
+    QPointer<MediaPlayer> self = this;
+    // 用 RunBlockingIoWithResult: 任务体要走 FFmpeg 的 avformat_open_input / find_stream_info，
+    // 网络源/异常设备上即使装了中断回调也可能不响应，关闭时不能 join 到底（超预算放弃）。
+    // 代价是必须遵守 BlockingIo 生命周期约定: 任务体只按值捕获依赖，不持有裸引用 ——
+    // 这里只捕获 QPointer self + 按值/共享指针的 params，且 Prepare 是 static 的，不碰本对象。
+    task_manager_.RunBlockingIoWithResult(
+        kSlotOpen,
+        [self, url_copy, params](task::TaskId id, task::CancelToken token) -> task::TaskState {
+            if (!self) return task::TaskState::Canceled;
+
+            OpenResult result = OpenController::Prepare(params);
+            if (token.IsCanceled()) return task::TaskState::Canceled;
+            if (!self) return task::TaskState::Canceled;
+
+            const bool ok = result.ok;
+            // 结果排回 UI 线程一次性提交。落地时复查 current id: 排进 UI 队列之后可能
+            // 已经换了文件/又开了一次，那条结果属于上一个任务，必须丢弃且不发 OpenFinished。
+            QMetaObject::invokeMethod(
+                self.data(),
+                [self, id, url_copy, result = std::move(result)]() mutable {
+                    if (!self) return;
+                    if (self->task_manager_.CurrentId(kSlotOpen) != id) {
+                        LOG_INFO("播放器打开结果已过期, 丢弃");
+                        return;
+                    }
+                    const bool committed =
+                        self->CommitOpen(QString::fromStdString(url_copy), std::move(result));
+                    emit self->OpenFinished(committed);
+                },
+                Qt::QueuedConnection);
+            return ok ? task::TaskState::Succeeded : task::TaskState::Failed;
+        });
 }
 
 void MediaPlayer::RequestContainerStructureAnalysis(const QString& url) {
@@ -247,8 +331,7 @@ void MediaPlayer::Stop() {
     LOG_INFO("Stop");
     // 先置中断、再停会话：网络源此刻可能正卡在 avformat_open_input / av_read_frame 上，
     // 置位后那些阻塞 IO 会立刻退出，playback_session_.Stop() 的 join 才等得到返回。
-    // 打开/探测阶段的截止时间一并不留（deadline 只服务于打开期，播放期的正常长读不该被误杀）。
-    open_controller_.RequestCancel();
+    RequestCancel();
     playback_session_.Stop();
     // 停止播放时闭合未结束的缺陷段（UI 立刻能看到最后一条）
     realtime_analysis_.FlushOnStop();

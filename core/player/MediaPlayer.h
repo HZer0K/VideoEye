@@ -63,7 +63,14 @@ public:
     ~MediaPlayer();
     
     // 播放控制
+    //
+    // Open(): 同步打开。在**调用线程**上完成"建上下文 + 探测 + 解码器"（事务的
+    // Prepare + Commit 都在本线程）—— 兼容旧调用与测试；在 UI 线程上它会阻塞界面。
     bool Open(const QString& url);
+    // OpenAsync(): 事务式异步打开。UI 线程只做"换媒体复位"，把耗时的打开/探测丢到
+    // 后台线程（TaskKind::BlockingIo），完成后排回 UI 线程一次性提交进播放会话。
+    // 结果经 OpenFinished(bool) 通知；过期结果（期间又开了新文件）会被丢弃且不发信号。
+    void OpenAsync(const QString& url);
     bool OpenRawPcm(const QString& url, const QString& demuxer_name, int sample_rate, int channels);
     void Play();
     void Pause();
@@ -174,6 +181,9 @@ signals:
     // 打开阶段失败 (avformat_open_input / find_stream_info / 无可播放流 / 解码器初始化失败)。
     // 与 Error 的区别: 不弹模态框, 只在状态栏提示, 文件仍会加载到分析模块。
     void OpenFailed(const QString& message);
+    // OpenAsync() 完成时发出: ok=true 表示已提交进播放会话, false 表示打开失败
+    // （失败原因见 GetLastError()）。过期结果（期间又开了新文件）不会发这条信号。
+    void OpenFinished(bool ok);
     void PlaybackFinished();
     
     // 分析数据信号
@@ -244,6 +254,21 @@ private:
 
     bool OpenInternal(const QString& url, const AVInputFormat* input_format, AVDictionary* input_options);
 
+    // 换媒体的公共复位（UI 线程）: 作废上一次尝试、取消全部导出、停播放、释放旧会话、
+    // 复位分析状态，并为本次打开新建一份独立的取消/中断状态。Open/OpenAsync 共用。
+    void BeginMediaSwitch(const QString& url);
+    // UI 线程提交: 把 Prepare 的成果交给 OpenController::Commit，成功时接管流信息、
+    // 清空错误、派发容器结构分析。Open/OpenAsync 共用。
+    bool CommitOpen(const QString& url, OpenResult&& result);
+    // 组装 Prepare 的输入（读当前音量 / 解码开关，并带上本次尝试的取消状态）。
+    OpenPrepareParams MakeOpenParams(const QString& url, const AVInputFormat* input_format,
+                                     AVDictionary* input_options);
+    // 让当前尝试（打开期后台线程，或已提交会话的播放期阻塞读）立刻退出。
+    void RequestCancel();
+
+    // 异步打开任务 slot。同一 slot 上只允许一个任务: 换文件时旧任务被取消、结果作废。
+    static constexpr const char* kSlotOpen = "player-open";
+
     // 导出的实际启动 / 排队 / 代际 / 取消全部在 ExportController 里
     // （见 core/player/ExportController.h），本类不保留任何导出状态。
 
@@ -257,19 +282,14 @@ private:
     QString current_url_;
     QString last_open_error_;   // 最近一次 Open/OpenRawPcm 失败的详细原因
 
-    // 打开媒体时的 FFmpeg 中断状态（打开/探测阶段带绝对超时）。
+    // 当前打开尝试的中断/取消状态。
     //
-    // 为什么是**成员**而不是 OpenInternal 里的局部变量: 装到 AVFormatContext 上的回调
-    // 会被它派生出的 AVIOContext / URLContext 各复制一份，而上下文在打开之后归
-    // 播放会话所有、解复用阶段仍在用 —— 指向栈上状态的 opaque 一返回就悬垂。
-    // 作为成员，它的生命周期天然覆盖上下文；探测结束后 deadline 清零，于是对那些
-    // 残留副本而言它只是个只响应取消的空钩子。
-    //
-    // open_cancel_ 是挂给上面的 cancel 的那个取消标志: 网络源卡在
-    // avformat_open_input / av_read_frame 里时，deadline 只会"等到超时"，
-    // 只有它能让阻塞的 IO 立刻退出来(见 MediaPlayer::Stop())。
-    ffmpeg_io::AvInterruptState open_interrupt_;
-    std::atomic<bool> open_cancel_{false};
+    // 为什么是 shared_ptr 而不是普通成员: 后台线程（OpenAsync）持有它做 FFmpeg 打开/
+    // 探测，提交后播放会话的解复用阶段仍在用（中断回调被 AVIOContext 复制了一份）——
+    // Stop() 靠设置它的取消标志把阻塞的 av_read_frame 打断。每次换媒体新建一份，
+    // 使旧后台线程与新尝试各有各的取消标志，互不干扰。生命周期由 shared_ptr 保证，
+    // 后台线程即使在播放器析构后才退出也不会踩到已释放的对象。
+    std::shared_ptr<OpenAttempt> current_attempt_;
 
     // 用户选择的定位方式 (菜单设置)。实际执行在 PlaybackSession::Seek()。
     std::atomic<model::SeekMode> seek_mode_{model::SeekMode::NearestKeyframe};
@@ -300,9 +320,9 @@ private:
     // 同上: 必须声明在 task_manager_ 之后。
     ContainerInspectionController container_inspection_;
 
-    // 打开媒体的全部编排（超时中断 / 探测 / 选流 / 封面图 / 解码器初始化 / 流信息提取）
-    // 住在 OpenController 里，本类只做"换媒体前的复位"与"打开成功后派发容器分析"。
-    // 中断状态与取消标志仍由本类持有（见上方 open_interrupt_ 的注释），控制器只借引用。
+    // 打开媒体的全部编排（事务式: Prepare 建独立上下文 / Commit 一次性提交）住在
+    // OpenController 里，本类只做"换媒体前的复位"、"后台派发"与"提交后派发容器分析"。
+    // 取消/中断状态由本类持有（current_attempt_），经 OpenPrepareParams 传给 Prepare。
     OpenController open_controller_;
 };
 

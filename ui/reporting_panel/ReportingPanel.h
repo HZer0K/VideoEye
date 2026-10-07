@@ -9,8 +9,12 @@
 // 线程模型（与项目其余部分一致，不用 QtConcurrent）：
 //   * 后台用 std::thread 跑分析，回调在 worker 线程触发；
 //   * 所有 UI 更新都经 QMetaObject::invokeMethod(..., Qt::QueuedConnection) 投递回主线程；
-//   * 析构时先置取消标记再 detach —— 队列里没跑完的回调会随 QObject 销毁自动丢弃，
-//     不会跑到已经析构的 this 上。
+//   * 析构走严格 Cooperative（评审 P2-4 方案 A）：先请求取消，再**等待线程体自己收尾并
+//     join** —— 不 detach。任务体捕获了 this 并往面板上排队 UI 更新，detach 之后那些投递
+//     会落到已销毁的 QWidget 上；在"给出硬性时间上限"与"不悬空访问"之间，本页明确选后者。
+//     代价要说清楚：**析构不保证硬时间上限**，取消链（令牌 → QcRunner → 引擎 → FFmpeg
+//     中断回调）必须一路通到任务体，否则关停可能长时间等待。回收预算只是告警线。
+//     （见 ui/reporting_panel/analysis_task.h 的 RecycleTask 与 ReportingPanel::RetireTask。）
 
 #include <atomic>
 #include <memory>
@@ -47,6 +51,12 @@ class ReportingPanel : public QWidget {
 public:
     explicit ReportingPanel(QWidget* parent = nullptr);
     ~ReportingPanel() override;
+
+    // 报告页 slot 上是否仍有任务在跑。
+    //
+    // 正常完成后必须为 false —— 终态已经归还（见 FinishTask）。若为 true 说明还留在
+    // Running，或有一次后台任务从未归还终态。供测试与关闭诊断查询。
+    bool IsTaskRunning() const;
 
 public slots:
     // 主窗口打开文件/切换文件时同步过来
@@ -92,6 +102,14 @@ private:
     // 严格 Cooperative（见 RecycleTask）：超预算也继续 join、不 detach，所以 tasks_ 一定
     // 比任务体活得久；即便如此，终态也统一在宿主线程归还，不把调度器交到任务体手里。
     void RetireTask(std::shared_ptr<AnalysisTask>& task);
+
+    // 任务**正常完成**时由 UI 线程归还终态并清掉当前任务句柄：
+    //   * EndHandle 把 slot 从 Running 写成 Succeeded/Canceled/Failed（终态一次性）；
+    //   * 命中 single_task_ / batch_task_ 时一并置空，避免句柄过期后仍被当成"在跑"。
+    // 与 RetireTask 的区别: RetireTask 是取消 + 回收（关停/换任务），这里只做"跑完了"。
+    // 不归还的话 slot 会一直停在 Running，任务切换时 single_task_/batch_task_ 长期持有
+    // 过期句柄，RunningCount() 也会长时间不准确。
+    void FinishTask(const std::shared_ptr<AnalysisTask>& task, task::TaskState terminal);
 
     // 批量请求的所有参数。必须在主线程里采集完再交给 worker ——
     // Qt 的控件只能在创建它的线程上访问，worker 里碰 QSpinBox / QCheckBox 是未定义行为。

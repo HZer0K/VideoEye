@@ -90,7 +90,8 @@ API 有两条硬约束（写在 `FfmpegInterrupt.h` 顶部）：回调必须在 
 **之前**装好（因此 `AVFormatContext` 得自己 `avformat_alloc_context`，不能传 `nullptr`
 让 FFmpeg 自己分配），且 `AvInterruptState` 的生命周期必须覆盖整个 IO 过程 ——
 它会被 `AVIOContext` / `URLContext` 各复制一份 `opaque` 指针，栈上的状态一返回就悬垂
-（`MediaPlayer::open_interrupt_` 因此是成员而不是局部变量）。
+（因此它不挂在 `MediaPlayer` 上，而是收进每次打开独立的 `OpenAttempt`，由
+`std::shared_ptr` 持有到该次 IO 结束；见 `core/player/OpenController.h`）。
 
 ### 3.1 后台线程的归属
 

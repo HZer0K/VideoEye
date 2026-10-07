@@ -254,4 +254,75 @@ TEST(ReportingPanelLifecycle, RepeatedStartAndDestructStaysStable) {
     }
 }
 
+// ---------- 6. 正常完成后终态必须归还 ----------
+//
+// 路径: 真面板 → SetCurrentFile(存在的非空文件) → OnAnalyzeCurrentFile() → 泵事件循环
+// 等任务收尾 → IsTaskRunning() 必须回到 false。
+//
+// 修复前: 正常完成路径不调 EndHandle，slot 会一直停在 Running，直到下一次启动 / 析构
+// 才靠 RetireTask 补写终态 —— 于是"任务已完成、状态仍运行"同时成立，RunningCount()
+// 长期不准，single_task_ / batch_task_ 长期持有过期句柄。这条用例直接断言完成后 slot
+// 不再 Running（StartSingleAnalysis → FinishTask → EndHandle）。
+TEST(ReportingPanelLifecycle, NormalCompletionReturnsSlotToTerminalState) {
+    const App app;
+    const std::string file = MakeProbeFile();
+    ASSERT_FALSE(file.empty()) << "临时目录不可用，本用例无法造探针文件";
+
+    auto* panel = new videoeye::ui::ReportingPanel;
+    panel->SetCurrentFile(QString::fromStdString(file));
+    ASSERT_FALSE(panel->IsTaskRunning()) << "未启动任务时 slot 应为空闲";
+
+    QMetaObject::invokeMethod(panel, "OnAnalyzeCurrentFile");
+    // BeginHandle 在起线程之前登记，且完成回调是排队投递 —— 没泵事件循环前必然仍是 Running。
+    const bool started = panel->IsTaskRunning();
+
+    const auto t0 = Clock::now();
+    while (panel->IsTaskRunning() && ElapsedMs(t0) < 8000) {
+        QCoreApplication::processEvents();
+        std::this_thread::sleep_for(Ms(5));
+    }
+    const int64_t dt = ElapsedMs(t0);
+    const bool still_running = panel->IsTaskRunning();
+    delete panel;
+
+    if (!started) {
+        GTEST_SKIP() << "任务没起来（并发被拒或事件队列未连接）—— 本轮不算测到正常完成路径";
+    }
+    EXPECT_FALSE(still_running)
+        << "分析正常完成后 slot 仍在 Running（终态没归还），等待了 " << dt << "ms";
+}
+
+// ---------- 7. 取消响应：协作体必须观察到取消令牌并自行收尾（P2-4） ----------
+//
+// 严格 Cooperative 方案（P2-4 方案 A）成立的**前提**就是"任务体一定会响应取消"，否则
+// "析构没有硬时间上限"这句话就是空头承诺。这条用例把前提本身测出来：任务体在
+// RequestCancel 之后必须观察到取消并退出，且 RecycleTask 在预算内把它 join 回来
+// （返回 true），而不是靠超时把线程丢下。
+TEST(ReportingPanelLifecycle, CooperativeBodyObservesCancelAndIsReclaimed) {
+    auto task = std::make_shared<AnalysisTask>();
+    task->cancel = videoeye::ui::MakeCancelToken();
+    task->body_done.store(false);
+    std::atomic<bool> observed_cancel{false};
+    task->thread = std::thread([task, &observed_cancel]() {
+        // 轮询同一颗取消令牌（与面板 / QcRunner 用的是同一来源）。
+        while (!task->cancel.IsCanceled()) {
+            std::this_thread::sleep_for(Ms(2));
+        }
+        observed_cancel.store(true, std::memory_order_release);
+        task->body_done.store(true, std::memory_order_release);
+    });
+
+    std::this_thread::sleep_for(Ms(5));
+    task->cancel.RequestCancel();
+
+    const auto t0 = Clock::now();
+    const bool body_back = RecycleTask(task, 5000);
+    const int64_t dt = ElapsedMs(t0);
+
+    EXPECT_TRUE(body_back) << "协作体应在预算内响应取消并收尾，而不是等超时";
+    EXPECT_TRUE(observed_cancel.load()) << "任务体没有观察到取消令牌 —— 取消链没接通";
+    EXPECT_LT(dt, 1000) << "取消到回收远不该接近预算（实测 " << dt << "ms）";
+    EXPECT_EQ(task, nullptr) << "RecycleTask 之后应当已置空";
+}
+
 }  // namespace

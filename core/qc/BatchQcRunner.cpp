@@ -42,6 +42,7 @@ const char* ToString(BatchItemStatus status) {
         case BatchItemStatus::Running:      return "分析中";
         case BatchItemStatus::Succeeded:    return "完成";
         case BatchItemStatus::Failed:       return "失败";
+        case BatchItemStatus::TimedOut:     return "超时";
         case BatchItemStatus::Cancelled:    return "已取消";
         case BatchItemStatus::Skipped:      return "已跳过";
         case BatchItemStatus::ExportFailed: return "导出失败";
@@ -163,6 +164,9 @@ BatchQcRun BatchQcRunner::Run(const std::vector<BatchQcItem>& items,
                     const auto item_started_at = std::chrono::steady_clock::now();
                     QcAnalyzeRequest request;
                     request.path = item.path;
+                    // 每个文件的等待预算随请求下发给分析函数（QcRunner 用它作为
+                    // AnalyzeFile 的 join_budget_ms）；超预算的条目会带着 timed_out 回来。
+                    request.join_budget_ms = options.per_item_timeout_ms;
                     // 把外部取消源（UI 停止按钮）最新的状态同步进内部标记，
                     // 这样正在跑的单文件分析也能通过 request.cancel 即时感知到取消。
                     cancel_.store(IsCancelled(callbacks), std::memory_order_release);
@@ -196,6 +200,12 @@ BatchQcRun BatchQcRunner::Run(const std::vector<BatchQcItem>& items,
                         if (result.ok) {
                             item.status = result.export_failed ? BatchItemStatus::ExportFailed
                                                               : BatchItemStatus::Succeeded;
+                        } else if (result.timed_out) {
+                            // 超预算：本函数照常返回，但被放弃的分析线程仍在后台收尾。
+                            // 单独记 TimedOut，别与"引擎自己报失败"混成一个 Failed —— 两者的
+                            // 处置方式不同（超时值得去看是不是网络源/大文件）。
+                            item.status = BatchItemStatus::TimedOut;
+                            item.error = result.error.empty() ? "分析超时" : result.error;
                         } else if (result.error == "分析被取消") {
                             item.status = BatchItemStatus::Cancelled;
                             item.error = result.error;
@@ -248,6 +258,7 @@ BatchQcRun BatchQcRunner::Run(const std::vector<BatchQcItem>& items,
             case BatchItemStatus::Succeeded: ++summary.succeeded; break;
             case BatchItemStatus::Failed:    ++summary.failed;    break;
             case BatchItemStatus::ExportFailed: ++summary.failed; break;  // 当作需要处理的问题
+            case BatchItemStatus::TimedOut:  ++summary.timed_out; break;  // 单列，不计入 failed
             case BatchItemStatus::Cancelled: ++summary.cancelled; break;
             case BatchItemStatus::Skipped:   ++summary.skipped;   break;
             case BatchItemStatus::Pending:

@@ -285,6 +285,20 @@ target_link_libraries(test_playback_session PRIVATE
 )
 add_test(NAME PlaybackSessionTests COMMAND test_playback_session)
 
+# =================================================
+# 测试 4e：OpenController 封面图判定的边界（评审 P0-1）
+# 说明: 旧实现先取 streams[video_index] 再判 video_index < 0，音频-only 文件里
+#       video_index == -1，越界读可能直接崩溃。判定抽成 IsCoverArtStream() 后，
+#       用内存合成的 AVFormatContext 覆盖 音频-only / 空上下文 / 越界 / 普通视频 /
+#       带封面图 五种输入，不需要真实媒体样本。
+# =================================================
+videoeye_add_test(test_open_controller_cover_art unit/test_open_controller_cover_art.cpp)
+target_link_libraries(test_open_controller_cover_art PRIVATE
+    VideoEyePlayback
+    Qt6::Core Qt6::Gui
+)
+add_test(NAME OpenControllerCoverArtTests COMMAND test_open_controller_cover_art)
+
 # ============================================================
 # 测试 4b: AnalysisSession (依赖 FFmpeg) —— 评审 Phase 3 抽取的分析会话类
 # ============================================================
@@ -690,6 +704,27 @@ if(WIN32)
     target_link_libraries(test_media_exporter PRIVATE ws2_32)
     target_link_libraries(test_media_switch_export PRIVATE ws2_32)
 endif()
+
+# =================================================
+# 测试 42：播放器的事务式异步打开（评审项 6）
+#
+# 说明: 打开/探测以前跑在 UI 线程上, 网络源/大文件会把界面整段冻住。现在拆成
+#       Prepare(后台线程) -> Commit(UI 线程) 两阶段事务。这里锁定三条契约 ——
+#       ① OpenResult 的采用/丢弃是原子的 ② OpenAsync 无论成败都恰好一个终态
+#       ③ 被后续打开取代的旧结果必须丢弃(不发 OpenFinished)。
+#       慢输入用 BlockingTcpEndpoint 造, 需要事件循环, 不需要 QPA 平台插件。
+# =================================================
+videoeye_add_test(test_player_open_async
+    unit/test_player_open_async.cpp
+)
+target_link_libraries(test_player_open_async PRIVATE
+    VideoEyePlayback
+    Qt6::Core Qt6::Gui)
+# BlockingTcpEndpoint.h 走 winsock，Windows 上需要显式 ws2_32。
+if(WIN32)
+    target_link_libraries(test_player_open_async PRIVATE ws2_32)
+endif()
+add_test(NAME PlayerOpenAsyncTests COMMAND test_player_open_async)
 
 # =================================================
 # 测试 41：扫描失败必须复位所有共用页面（复查 P1-4）

@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "core/analysis/orchestration/AnalysisEngine.h"
+#include "infrastructure/logging/Logger.h"
 
 namespace videoeye {
 namespace qc {
@@ -17,6 +18,33 @@ namespace {
 constexpr std::chrono::milliseconds kCancelPollInterval{100};
 
 }  // namespace
+
+MediaInput ClassifyMediaInput(const std::string& uri) {
+    MediaInput input;
+    input.uri = uri;
+    // 只有 "scheme://..." 才是 URI。本地路径（含 Windows 的 "C:\..."）没有 "://"，
+    // 一律按本地文件处理。
+    const std::size_t sep = uri.find("://");
+    if (sep == std::string::npos || sep == 0) {
+        input.kind = MediaInput::Kind::LocalFile;
+        return input;
+    }
+    std::string scheme;
+    scheme.reserve(sep);
+    for (std::size_t i = 0; i < sep; ++i) {
+        const char c = uri[i];
+        scheme += (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+    }
+    // "file://" 指向本地文件系统，仍按本地文件处理；其余 scheme 一律视为网络源
+    // （http/https/rtmp/rtmps/rtsp/rtsps/rtp/udp/tcp/srt/... 都在此列）。
+    input.kind = (scheme == "file") ? MediaInput::Kind::LocalFile
+                                    : MediaInput::Kind::NetworkUri;
+    return input;
+}
+
+bool IsNetworkUri(const std::string& uri) {
+    return ClassifyMediaInput(uri).kind == MediaInput::Kind::NetworkUri;
+}
 
 bool IsAnalyzableFile(const std::string& path, std::string& reason) {
     std::error_code ec;
@@ -41,7 +69,19 @@ bool IsAnalyzableFile(const std::string& path, std::string& reason) {
     return true;
 }
 
-QcRunResult QcRunner::AnalyzeFile(const std::string& path,
+bool IsAnalyzableInput(const MediaInput& input, std::string& reason) {
+    if (input.kind == MediaInput::Kind::NetworkUri) {
+        // 网络源不做本地存在性校验：连不连得上交给 FFmpeg，由等待预算兜底。
+        if (input.uri.empty()) {
+            reason = "网络源地址为空";
+            return false;
+        }
+        return true;
+    }
+    return IsAnalyzableFile(input.uri, reason);
+}
+
+QcRunResult QcRunner::AnalyzeFile(const MediaInput& input,
                                   const QcProfile& profile,
                                   videoeye::AnalysisOptions options,
                                   const QcRunCallbacks& callbacks,
@@ -49,12 +89,15 @@ QcRunResult QcRunner::AnalyzeFile(const std::string& path,
     QcRunResult output;
     output.profile_id = profile.id;
 
+    // 输入校验分两条口径：本地文件要存在且非空；网络源只要求地址非空 —— 以前这里
+    // 统一走 IsAnalyzableFile，于是 http/rtmp/rtsp 一律被判成"文件不存在"。
     std::string reason;
-    if (!IsAnalyzableFile(path, reason)) {
+    if (!IsAnalyzableInput(input, reason)) {
         output.ok = false;
         output.error = reason;
         return output;
     }
+    const std::string& path = input.uri;
 
     const auto started_at = std::chrono::steady_clock::now();
     videoeye::QcRuleEngine rules_engine(BuildRulesForProfile(profile));
@@ -120,6 +163,10 @@ QcRunResult QcRunner::AnalyzeFile(const std::string& path,
         };
         if (box->progress) effective.on_progress = box->progress;
         box->engine->Run(box->path, box->options, effective, nullptr, box->cancel_flag);
+        // 资源回收见证: 正常结算时这行紧跟返回；超时 detach 场景下它是"被放弃的后台线程
+        // 终于退出、FFmpeg / 内存 / 磁盘 / CPU 归还"的唯一可观测信号（盒子由线程自持,
+        // AnalyzeFile 早已返回, 没有别的出口能报这件事）。
+        LOG_DEBUG("QcRunner: 分析线程退出 (" + box->path + ")");
     });
 
     // 等结果: 带总预算。到点还没结算 -> 说明引擎既没回调、也没响应取消,
@@ -151,10 +198,18 @@ QcRunResult QcRunner::AnalyzeFile(const std::string& path,
         // 已经结算, join 只是收句柄(瞬间返回)。
         worker.join();
     } else if (worker.joinable()) {
-        // 超时: 这条线程只持有盒子(shared_ptr 自己保活, 含引擎本体), 于是可以脱离 ——
-        // 不会再有谁 join 它, 也不会读到已析构的引擎。
-        // 以前这里只能无限等或制造悬空访问: worker 持引擎裸指针、且依赖调用方栈上的
-        // analysis/path/options 引用, "不能 detach"和"不能挂死"当时二选一。
+        // 超时: detach **之前**必须先强制取消。
+        // 等待循环可能一次都没进（join_budget_ms == 0 时"预算检查先于首次 wait_for"就
+        // 命中 break），上面那条 should_cancel -> cancel_flag 的转换因此根本没机会执行。
+        // 不取消就 detach，后台 AnalysisEngine 会继续跑到自然结束，FFmpeg / 内存 / 磁盘 /
+        // CPU 继续被占用 —— 批量任务取消后会积累大量脱离的后台分析线程。
+        //
+        // 这里只持盒子(shared_ptr 自持, 含引擎本体), detach 后线程自洽, 不会读到已析构
+        // 的引擎；取消则保证它尽快自己收尾。
+        box->cancel_flag->store(true, std::memory_order_release);
+        box->engine->Cancel();
+        LOG_WARN("QcRunner 等待预算耗尽, 已请求取消后台分析 (" + box->path +
+                 "), 线程转入受控回收");
         worker.detach();
     }
 
@@ -163,6 +218,7 @@ QcRunResult QcRunner::AnalyzeFile(const std::string& path,
 
     if (box->timed_out) {
         output.ok = false;
+        output.timed_out = true;
         output.error = "分析在等待预算内没有结束";
         output.analysis.scan_status = model::AnalysisStatus::Failed;
         output.analysis.error_message = output.error;
@@ -219,7 +275,11 @@ QcAnalyzeFn QcRunner::MakeAnalyzeFunction(const QcProfile& profile,
         callbacks.should_cancel = [&request]() {
             return request.cancel != nullptr && request.cancel->load(std::memory_order_acquire);
         };
-        return runner.AnalyzeFile(request.path, shared->first, shared->second, callbacks);
+        // 每个文件的等待预算由请求带入（批量调度从 BatchQcOptions::per_item_timeout_ms
+        // 透传）；请求没给（<=0）时退回本执行器的默认预算。
+        const int budget = request.join_budget_ms > 0 ? request.join_budget_ms
+                                                      : QcRunner::kDefaultJoinBudgetMs;
+        return runner.AnalyzeFile(request.path, shared->first, shared->second, callbacks, budget);
     };
 }
 
