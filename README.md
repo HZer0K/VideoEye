@@ -251,7 +251,7 @@ TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红�
 | 测试可执行文件 | 68 |
 | ctest 用例组（gtest 可执行文件） | 68 |
 | 架构规则用例组（python 脚本，非 gtest） | 8 |
-| gtest 用例（含 `TEST` / `TEST_F` / `TEST_P`） | 557 |
+| gtest 用例（含 `TEST` / `TEST_F` / `TEST_P`） | 559 |
 
 `ctest -N` 会显示 **76 = 68 + 8**，多出来的 8 个不是 gtest 可执行文件，而是直接
 `add_test` 调 python 脚本的架构规则门：`check_layering.py` 与它的自测、

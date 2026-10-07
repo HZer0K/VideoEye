@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -21,13 +22,30 @@ public:
     ContainerStructureAnalyzer();
     ~ContainerStructureAnalyzer();
 
+    /// 解析完成后的尾部阶段（StageCallback 的取值）。
+    /// 这三个阶段加起来只占整条解析的约 2%，按耗时百分比落点不可能稳定命中
+    /// （定位误差比窗口还大），所以单列出来给测试当确定性接缝 ——
+    /// 覆盖边界与理由见 tests/unit/test_container_cancel_paths.cpp。
+    enum class Stage {
+        kBuildTree,          // 结构树转换（ConvertMp4Tree / ConvertEbmlTree）
+        kExtractStreamInfo,  // 流摘要提取（ExtractMp4StreamInfo / ExtractEbmlStreamInfo）
+        kElementCount,       // 元素计数递归
+    };
+
+    /// 尾部阶段入口回调（**测试接缝**）：每个阶段入口触发一次，测试可在回调里置取消
+    /// 标志，把"取消 ⇒ 绝不产出有效结果"钉死在确定的阶段边界上。生产调用方不传
+    /// （默认空，零开销）。只对 MP4 / MKV / WebM 路径触发（其他格式没有这三个阶段）。
+    using StageCallback = std::function<void(Stage)>;
+
     /// 分析文件容器结构
     /// @param cancel 可选取消标志: 非空时（1）交给 FFmpeg 的 AVIO 中断回调, 使关闭流程
     ///               （CancelAll）能及时中止阻塞 IO；（2）往下传给每种容器解析器,
     ///               在 box / element / segment / 分片级别轮询。传空则不做取消。
     ///               MP4 / MKV / AVI / FLV / TS / ASF / OGG 路径都吃这一套。
+    /// @param on_stage 可选尾部阶段回调（仅测试使用，见 StageCallback 说明）
     bool Analyze(const std::string& file_path, model::ContainerStructureResult& result,
-                 std::shared_ptr<std::atomic<bool>> cancel = {});
+                 std::shared_ptr<std::atomic<bool>> cancel = {},
+                 const StageCallback& on_stage = {});
 
     /// 重置
     void Reset();

@@ -10,8 +10,11 @@
 //   2. 取消绝不允许回退 FFmpeg —— 那条路会把"用户主动取消"悄悄换成"分析成功",
 //      而且 FFmpeg 回退成功还会把 format 改写成 FFmpeg_Generic, 结论完全变了个样;
 //   3. 取消必须发生在格式分派**之后**。这一点决定了用例怎么设计: 取消标志不能
-//      在调用前预置, 否则命中的只是 Analyze() 开头那句"已被取消就直接返回"的
+//      在调用前预置, 否则命中的只是 Analyze() 开头的"已被取消就直接返回"的
 //      入口守卫, 四条路径一行代码都跑不到。
+//
+// 文件末尾另有一组确定性用例(Stage 回调测试接缝): 在尾部阶段(建树 / 提取流信息 /
+// 计数递归)的入口直接置取消, 不再依赖耗时落点 —— 时间探测进不去那 2% 的窗口。
 
 #include <gtest/gtest.h>
 
@@ -247,13 +250,14 @@ struct Outcome {
     model::ContainerStructureResult result;
 };
 
-Outcome AnalyzeOnce(const QString& path, const std::shared_ptr<std::atomic<bool>>& cancel) {
+Outcome AnalyzeOnce(const QString& path, const std::shared_ptr<std::atomic<bool>>& cancel,
+                    const videoeye::ContainerStructureAnalyzer::StageCallback& on_stage = {}) {
     Outcome o;
     const auto t0 = std::chrono::steady_clock::now();
     videoeye::ContainerStructureAnalyzer analyzer;
     // 分析器这一侧已经不认 Qt 了（去 Qt 之后签名是 const std::string&），
     // 所以 QString 只在这一条边界函数上收口，转成 std::string 再喂进去。
-    o.ok = analyzer.Analyze(path.toStdString(), o.result, cancel);
+    o.ok = analyzer.Analyze(path.toStdString(), o.result, cancel, on_stage);
     o.elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                        std::chrono::steady_clock::now() - t0)
                        .count();
@@ -314,8 +318,10 @@ Outcome AnalyzeAndCancelMidway(const QString& path, int delay_ms) {
 // 覆盖边界(实测, 别指望这套能测到更深处): EBML 最后两步"提取流信息 / 计数递归"加起来
 // 只占整条解析的约 2%, 而同一样本连跑两次的收尾时刻能差 10% —— 定位误差比要测的窗口还
 // 大, 任何按时间落点的办法都进不去。以前那个 90% 之所以"看起来测到了", 只是偶尔撞进去,
-// 它变红也多半是这个原因而不是代码有问题。要真正锁住那两步, 得给解析器加进度回调之类的
-// 测试接缝, 让取消能在确定的阶段边界上触发 —— 那是另一件事, 这里不做。
+// 它变红也多半是这个原因而不是代码有问题。后来给解析器加了 Stage 回调测试接缝
+// (ContainerStructureAnalyzer::Stage), 让取消能在确定的阶段边界上触发 —— 尾部各阶段
+// 的确定性覆盖见文件末尾的 Mp4/EbmlCancelAtTailStagesYieldsNoResult; 这组按时间落位的
+// 探测保留, 负责粗扫与头部解析器的覆盖。
 // ---------------------------------------------------------------------------
 
 struct Probe {
@@ -455,9 +461,10 @@ TEST(ContainerCancelPathTest, Mp4CancelYieldsNoResult) {
 // 这一条锁的就是本轮补的三个洞: ExtractEbmlStreamInfo 拿到令牌、valid 挪到最后、
 // 元素计数递归里加取消检查。取消只要落在"建树之后"的任何一步, 以前都会照样出结果。
 //
-// 取消点用二分定位(见 FindTailCancel), 不再写死百分比: 这条路径实测 EbmlAnalyzer 独占
+// 取消点用二分定位(见 ExpectCancelPath 第 3 步), 不再写死百分比: 这条路径实测 EbmlAnalyzer 独占
 // 约 3/4 耗时, 尾部(建树 / 提取流信息 / 计数递归)只占约 1/4, 写死百分比时窗口太窄,
 // 机器一空闲就会整个飘到解析结束之后 —— 那时用例红的不是代码, 是计时。
+// (尾部那几步的确定性覆盖不靠这条时间探测, 见下方 Mp4/EbmlCancelAtTailStagesYieldsNoResult。)
 TEST(ContainerCancelPathTest, EbmlCancelYieldsNoResult) {
     const fs::path dir = MakeTempDir("mkv");
     const fs::path path = dir / "big.mkv";
@@ -483,6 +490,61 @@ TEST(ContainerCancelPathTest, DashCancelYieldsNoResult) {
     ASSERT_TRUE(WriteText(path, MakeDashMpd(20000)));
     ExpectCancelPath(QString::fromStdString(path.string()), model::ContainerFormat::DASH, "DASH",
                      ManifestDone);
+}
+
+// --- 尾部阶段的确定性取消: Stage 回调测试接缝 ---
+//
+// 上面四条路径的取消点靠时间落位, 尾部三步(建树 / 提取流信息 / 计数递归)加起来只占整条
+// 解析的约 2%, 定位误差比窗口还大 —— 二分也撞不进去(见上方"覆盖边界")。这组用例改用
+// 分析器的 Stage 回调: 在**确定的阶段入口**置取消标志, 样本可以很小、耗时完全不参与判定。
+// 它专门钉住这条契约: 取消落在任何尾部阶段, Analyze 都必须返回 false, 绝不把
+// valid=true 的半成品发出去。
+// ---------------------------------------------------------------------------
+
+using TailStage = videoeye::ContainerStructureAnalyzer::Stage;
+
+void ExpectCancelAtTailStage(const QString& path, model::ContainerFormat expected, TailStage target,
+                             const char* label) {
+    auto cancel = std::make_shared<std::atomic<bool>>(false);
+    bool reached = false;
+    const Outcome o = AnalyzeOnce(path, cancel, [&](TailStage stage) {
+        if (stage != target) return;
+        reached = true;
+        cancel->store(true, std::memory_order_release);
+    });
+    // 回调没被触发说明样本没走到这个阶段(或触发点被搬走了), 用例必须红:
+    // 否则"没测到"会被静默当成"测过了"。
+    ASSERT_TRUE(reached) << label << ": Stage 回调未被触发, 阶段枚举与触发点可能已对不上";
+    ExpectNoResult(o, expected, label, "阶段边界取消");
+}
+
+void ExpectAllTailStagesCancel(const QString& path, model::ContainerFormat expected,
+                               const char* label) {
+    // 对照组: 小样本本身必须能解析完, 否则下面的 false 说明不了问题。
+    const Outcome control = AnalyzeOnce(path, nullptr);
+    ASSERT_TRUE(control.ok) << label << ": 对照组必须解析成功(错误说明: "
+                            << control.result.error_message << ")";
+    ASSERT_TRUE(control.result.valid);
+    for (const TailStage stage : {TailStage::kBuildTree, TailStage::kExtractStreamInfo,
+                                  TailStage::kElementCount}) {
+        ExpectCancelAtTailStage(path, expected, stage, label);
+    }
+}
+
+TEST(ContainerCancelPathTest, Mp4CancelAtTailStagesYieldsNoResult) {
+    const fs::path dir = MakeTempDir("mp4_stage");
+    const fs::path path = dir / "small.mp4";
+    ASSERT_TRUE(WriteBytes(path, MakeMp4(8)));
+    ExpectAllTailStagesCancel(QString::fromStdString(path.string()), model::ContainerFormat::MP4,
+                              "MP4/尾阶段");
+}
+
+TEST(ContainerCancelPathTest, EbmlCancelAtTailStagesYieldsNoResult) {
+    const fs::path dir = MakeTempDir("mkv_stage");
+    const fs::path path = dir / "small.mkv";
+    ASSERT_TRUE(WriteBytes(path, MakeMkv(6, 6)));
+    ExpectAllTailStagesCancel(QString::fromStdString(path.string()), model::ContainerFormat::MKV,
+                              "MKV/尾阶段");
 }
 
 // --- 关闭流程: 进门就是取消态 ---

@@ -407,7 +407,7 @@ target_include_directories(${name} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 #### 测试目标怎么声明依赖（三种套路，都是对的）
 
-`tests/unit/` 里 46 个测试目标，用 `target_link_libraries` 追加自己的额外依赖
+`tests/unit/` 里 68 个测试目标（2026-10-05 逐项核对这批依赖时是 46 个），用 `target_link_libraries` 追加自己的额外依赖
 （`videoeye_add_test()` 本身只链 `GTest::gtest_main`）。逐个比对了「源文件 include 了哪个
 模块」与「显式链了哪个 target」之后，2026-10-05 实测 32 个目标"include 了某模块却没显式链
 它"，**没有一处是真漏**，全是下面两种合法套路：

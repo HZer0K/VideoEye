@@ -92,7 +92,8 @@ ContainerStructureAnalyzer::~ContainerStructureAnalyzer() = default;
 
 bool ContainerStructureAnalyzer::Analyze(const std::string& file_path,
                                           model::ContainerStructureResult& result,
-                                          std::shared_ptr<std::atomic<bool>> cancel) {
+                                          std::shared_ptr<std::atomic<bool>> cancel,
+                                          const StageCallback& on_stage) {
     VE_PERF("ContainerStructureAnalyzer::Analyze");
     result.file_path = file_path;
     LOG_INFO("ContainerStructureAnalyzer::Analyze ENTER: " + file_path);
@@ -130,6 +131,7 @@ bool ContainerStructureAnalyzer::Analyze(const std::string& file_path,
         // 每个阶段之间都补一次取消检查：辅助函数各自会查，但它们返回 false 只说明
         // "这一次没走完"，到底是取消还是解析失败得由这里判定 —— 只有取消才禁止回退 FFmpeg。
         {
+            if (on_stage) on_stage(Stage::kBuildTree);
             auto t0 = std::chrono::steady_clock::now();
             if (!ConvertMp4Tree(result.mp4_detail.box_tree, 0, result.element_tree, cancel.get())) {
                 return MarkCancelled(result);
@@ -138,6 +140,7 @@ bool ContainerStructureAnalyzer::Analyze(const std::string& file_path,
             LOG_INFO("ContainerStructureAnalyzer: ConvertMp4Tree 耗时 = " +
                      std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()) + " ms");
             if (infrastructure::Checkpoint(cancel.get())) return MarkCancelled(result);
+            if (on_stage) on_stage(Stage::kExtractStreamInfo);
 
             if (!ExtractMp4StreamInfo(result.mp4_detail.box_tree, result, cancel.get())) {
                 return MarkCancelled(result);
@@ -175,6 +178,7 @@ bool ContainerStructureAnalyzer::Analyze(const std::string& file_path,
             if (infrastructure::Checkpoint(cancel.get())) return MarkCancelled(result);
         }
 
+        if (on_stage) on_stage(Stage::kElementCount);
         {
             int box_count = 0;
             bool count_cancelled = false;
@@ -203,11 +207,13 @@ bool ContainerStructureAnalyzer::Analyze(const std::string& file_path,
     case model::ContainerFormat::WebM: {
         EbmlAnalyzer ebml_analyzer;
         if (ebml_analyzer.Analyze(file_path, result.ebml_detail, cancel.get())) {
+            if (on_stage) on_stage(Stage::kBuildTree);
             if (!ConvertEbmlTree(result.ebml_detail.element_tree, 0, result.element_tree,
                                  cancel.get())) {
                 return MarkCancelled(result);
             }
             if (infrastructure::Checkpoint(cancel.get())) return MarkCancelled(result);
+            if (on_stage) on_stage(Stage::kExtractStreamInfo);
 
             // 取消令牌必须传下去（以前漏了）：轨道列表是这一段里唯一可能长到
             // "值得中断"的循环，不传的话点取消要等整个 Tracks 段读完才生效。
@@ -215,6 +221,7 @@ bool ContainerStructureAnalyzer::Analyze(const std::string& file_path,
                 return MarkCancelled(result);
             }
 
+            if (on_stage) on_stage(Stage::kElementCount);
             int elem_count = 0;
             bool count_cancelled = false;
             std::function<int(const std::vector<model::EbmlElementNode>&)> count;
