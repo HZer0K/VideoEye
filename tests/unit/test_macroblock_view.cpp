@@ -51,13 +51,14 @@ QTableWidget* FindTableByFirstHeader(MacroblockView* view, const QString& header
 QLabel* FindLabelContaining(MacroblockView* view, const QString& needle) {
     const auto labels = view->findChildren<QLabel*>();
     for (QLabel* label : labels) {
-        if (label->text().contains(needle)) return label;
+        if (label->text().contains(needle))
+            return label;
     }
     return nullptr;
 }
 
-MotionVectorInfo MakeMv(int block_x, int block_y, int32_t motion_x, int32_t motion_y,
-                        uint16_t motion_scale, int32_t source) {
+MotionVectorInfo MakeMv(int block_x, int block_y, int32_t motion_x, int32_t motion_y, uint16_t motion_scale,
+                        int32_t source) {
     MotionVectorInfo mv;
     mv.block_x = block_x;
     mv.block_y = block_y;
@@ -68,7 +69,7 @@ MotionVectorInfo MakeMv(int block_x, int block_y, int32_t motion_x, int32_t moti
     return mv;
 }
 
-}  // namespace
+} // namespace
 
 // H.264 帧：MV 按 motion_scale 换算成像素、scale=0 按 1 兜底、参考方向三态齐全，
 // 且未 Flush 前不画行。
@@ -79,19 +80,19 @@ TEST(MacroblockViewTests, FlushRendersMotionVectorRowsWithPixelScale) {
     MacroblockFrameAnalysis analysis;
     analysis.frame_index = 12;
     analysis.timestamp = 1.5;
-    analysis.frame_type = 2;  // P 帧
-    analysis.codec_id = 27;   // AV_CODEC_ID_H264
+    analysis.frame_type = 2; // P 帧
+    analysis.codec_id = 27;  // AV_CODEC_ID_H264
     analysis.frame_width = 1280;
     analysis.frame_height = 720;
     analysis.has_motion_vectors = true;
 
-    MotionVectorInfo forward = MakeMv(0, 0, 8, -4, 4, -1);  // 1/4 像素精度
+    MotionVectorInfo forward = MakeMv(0, 0, 8, -4, 4, -1); // 1/4 像素精度
     forward.block_w = 16;
     forward.block_h = 16;
-    MotionVectorInfo backward = MakeMv(64, 0, 3, -2, 0, 1);  // scale=0 -> 分母按 1
+    MotionVectorInfo backward = MakeMv(64, 0, 3, -2, 0, 1); // scale=0 -> 分母按 1
     backward.block_w = 8;
     backward.block_h = 8;
-    MotionVectorInfo neutral = MakeMv(128, 0, 0, 0, 4, 0);  // 无参考方向
+    MotionVectorInfo neutral = MakeMv(128, 0, 0, 0, 4, 0); // 无参考方向
     analysis.motion_vectors = {forward, backward, neutral};
 
     analysis.stats.total_blocks = 3;
@@ -106,16 +107,16 @@ TEST(MacroblockViewTests, FlushRendersMotionVectorRowsWithPixelScale) {
 
     QTableWidget* mv_table = FindTableByFirstHeader(&view, QStringLiteral("序号"));
     ASSERT_TRUE(mv_table != nullptr);
-    EXPECT_EQ(mv_table->rowCount(), 0);  // 未 Flush 不画
+    EXPECT_EQ(mv_table->rowCount(), 0); // 未 Flush 不画
 
     view.FlushPending();
     EXPECT_FALSE(view.HasPending());
     ASSERT_EQ(mv_table->rowCount(), 3);
     EXPECT_EQ(mv_table->item(0, 3)->text(), QStringLiteral("16x16"));
-    EXPECT_EQ(mv_table->item(0, 4)->text(), QStringLiteral("2.00"));   // 8 / 4
-    EXPECT_EQ(mv_table->item(0, 5)->text(), QStringLiteral("-1.00"));  // -4 / 4
+    EXPECT_EQ(mv_table->item(0, 4)->text(), QStringLiteral("2.00"));  // 8 / 4
+    EXPECT_EQ(mv_table->item(0, 5)->text(), QStringLiteral("-1.00")); // -4 / 4
     EXPECT_EQ(mv_table->item(0, 8)->text(), QStringLiteral("前向"));
-    EXPECT_EQ(mv_table->item(1, 4)->text(), QStringLiteral("3.00"));   // scale=0 -> 分母 1
+    EXPECT_EQ(mv_table->item(1, 4)->text(), QStringLiteral("3.00")); // scale=0 -> 分母 1
     EXPECT_EQ(mv_table->item(1, 5)->text(), QStringLiteral("-2.00"));
     EXPECT_EQ(mv_table->item(1, 8)->text(), QStringLiteral("后向"));
     EXPECT_EQ(mv_table->item(2, 8)->text(), QStringLiteral("—"));
@@ -149,8 +150,8 @@ TEST(MacroblockViewTests, HevcUsesCtuTermAndLargeBlockSizes) {
 
     MacroblockFrameAnalysis analysis;
     analysis.frame_index = 5;
-    analysis.frame_type = 1;  // I 帧
-    analysis.codec_id = 173;  // AV_CODEC_ID_HEVC
+    analysis.frame_type = 1; // I 帧
+    analysis.codec_id = 173; // AV_CODEC_ID_HEVC
     analysis.frame_width = 1920;
     analysis.frame_height = 1080;
     analysis.has_motion_vectors = false;
@@ -168,10 +169,10 @@ TEST(MacroblockViewTests, HevcUsesCtuTermAndLargeBlockSizes) {
 
     QTableWidget* bs_table = FindTableByFirstHeader(&view, QStringLiteral("块大小"));
     ASSERT_TRUE(bs_table != nullptr);
-    EXPECT_EQ(bs_table->rowCount(), 14);  // HEVC 分区表
+    EXPECT_EQ(bs_table->rowCount(), 14); // HEVC 分区表
     EXPECT_EQ(bs_table->item(0, 0)->text(), QStringLiteral("64x64"));
     EXPECT_EQ(bs_table->item(0, 1)->text(), QStringLiteral("4"));
-    EXPECT_EQ(bs_table->item(0, 2)->text(), QStringLiteral("40.0%"));  // 4 / (4 + 6)
+    EXPECT_EQ(bs_table->item(0, 2)->text(), QStringLiteral("40.0%")); // 4 / (4 + 6)
     EXPECT_EQ(bs_table->item(6, 0)->text(), QStringLiteral("16x16"));
     EXPECT_EQ(bs_table->item(6, 1)->text(), QStringLiteral("6"));
     EXPECT_EQ(bs_table->item(6, 2)->text(), QStringLiteral("60.0%"));
@@ -194,8 +195,7 @@ TEST(MacroblockViewTests, MotionVectorTableCapsAt500Rows) {
     analysis.has_motion_vectors = true;
     analysis.motion_vectors.resize(520);
     for (std::size_t i = 0; i < analysis.motion_vectors.size(); ++i) {
-        analysis.motion_vectors[i] =
-            MakeMv(static_cast<int>(i) * 16, 0, 4, 4, 4, -1);
+        analysis.motion_vectors[i] = MakeMv(static_cast<int>(i) * 16, 0, 4, 4, 4, -1);
     }
 
     view.SetAnalysis(analysis);
@@ -203,7 +203,7 @@ TEST(MacroblockViewTests, MotionVectorTableCapsAt500Rows) {
 
     QTableWidget* mv_table = FindTableByFirstHeader(&view, QStringLiteral("序号"));
     ASSERT_TRUE(mv_table != nullptr);
-    ASSERT_EQ(mv_table->rowCount(), 500);  // 行数上限
+    ASSERT_EQ(mv_table->rowCount(), 500); // 行数上限
     EXPECT_EQ(mv_table->item(0, 0)->text(), QStringLiteral("0"));
-    EXPECT_EQ(mv_table->item(499, 0)->text(), QStringLiteral("499"));  // 保留的是前 500 条
+    EXPECT_EQ(mv_table->item(499, 0)->text(), QStringLiteral("499")); // 保留的是前 500 条
 }

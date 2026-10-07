@@ -62,12 +62,13 @@ QApplication* EnsureApp() {
 
 QTableWidget* TableInTab(QWidget* root, int tab_index, const QString& first_header) {
     auto* tabs = root->findChild<QTabWidget*>();
-    if (tabs == nullptr) return nullptr;
+    if (tabs == nullptr)
+        return nullptr;
     QWidget* page = tabs->widget(tab_index);
-    if (page == nullptr) return nullptr;
+    if (page == nullptr)
+        return nullptr;
     for (QTableWidget* table : page->findChildren<QTableWidget*>()) {
-        if (table->horizontalHeaderItem(0) != nullptr &&
-            table->horizontalHeaderItem(0)->text() == first_header) {
+        if (table->horizontalHeaderItem(0) != nullptr && table->horizontalHeaderItem(0)->text() == first_header) {
             return table;
         }
     }
@@ -76,7 +77,8 @@ QTableWidget* TableInTab(QWidget* root, int tab_index, const QString& first_head
 
 QLabel* FindLabelContaining(QWidget* root, const QString& needle) {
     for (QLabel* label : root->findChildren<QLabel*>()) {
-        if (label->text().contains(needle)) return label;
+        if (label->text().contains(needle))
+            return label;
     }
     return nullptr;
 }
@@ -84,14 +86,16 @@ QLabel* FindLabelContaining(QWidget* root, const QString& needle) {
 // 目标峰值框 decimals=0，GOP 秒上限 decimals=1，页内各自唯一
 QDoubleSpinBox* FindSpinByDecimals(QWidget* root, int decimals) {
     for (QDoubleSpinBox* spin : root->findChildren<QDoubleSpinBox*>()) {
-        if (spin->decimals() == decimals) return spin;
+        if (spin->decimals() == decimals)
+            return spin;
     }
     return nullptr;
 }
 
 QPushButton* FindButton(QWidget* root, const QString& text) {
     for (QPushButton* button : root->findChildren<QPushButton*>()) {
-        if (button->text() == text) return button;
+        if (button->text() == text)
+            return button;
     }
     return nullptr;
 }
@@ -102,8 +106,7 @@ QString Cell(const QTableWidget* table, int row, int column) {
 }
 
 void ClickCell(QTableWidget* table, int row, int column) {
-    QMetaObject::invokeMethod(table, "cellClicked", Qt::DirectConnection,
-                              Q_ARG(int, row), Q_ARG(int, column));
+    QMetaObject::invokeMethod(table, "cellClicked", Qt::DirectConnection, Q_ARG(int, row), Q_ARG(int, column));
 }
 
 // 一份典型结果：2 个 GOP（第 2 个 12 s > 默认上限 10 s）+ 2 条异常 + 2 条建议
@@ -123,7 +126,7 @@ BitrateGopAnalysis MakeBg() {
     bg.p_frame_count = 30;
     bg.b_frame_count = 65;
     bg.frame_types_known = true;
-    bg.i_frame_bytes_ = 0;   // 平均 I 帧回落为平均帧
+    bg.i_frame_bytes_ = 0; // 平均 I 帧回落为平均帧
 
     GopInfo g0;
     g0.index = 0;
@@ -131,20 +134,20 @@ BitrateGopAnalysis MakeBg() {
     g0.start_seconds = 65.0;
     g0.end_seconds = 67.0;
     g0.frame_count = 50;
-    g0.byte_count = 102400;   // 100.0 KB
+    g0.byte_count = 102400; // 100.0 KB
     g0.i_count = 5;
     g0.p_count = 15;
     g0.b_count = 30;
-    g0.max_frame_bytes = 20480;   // 20.0 KB
+    g0.max_frame_bytes = 20480; // 20.0 KB
     g0.closed_gop = true;
     g0.complete = true;
     GopInfo g1;
     g1.index = 1;
     g1.stream_index = 0;
     g1.start_seconds = 67.0;
-    g1.end_seconds = 79.0;   // 12 s，超过默认上限 10 s
+    g1.end_seconds = 79.0; // 12 s，超过默认上限 10 s
     g1.frame_count = 100;
-    g1.byte_count = 204800;   // 200.0 KB
+    g1.byte_count = 204800; // 200.0 KB
     g1.i_count = 1;
     g1.p_count = 20;
     g1.b_count = 79;
@@ -187,7 +190,7 @@ BitrateGopAnalysis MakeBg() {
     return bg;
 }
 
-}  // namespace
+} // namespace
 
 // 构造后未扫描 -> 引导文案 + 三个空的子页
 TEST(BitrateGopPageTests, UnanalyzedShowsInitialSummaryAndEmptyTables) {
@@ -277,8 +280,7 @@ TEST(BitrateGopPageTests, ResultFillsGopTableAndHighlightsLongGop) {
     auto* suggestions = page.findChild<QTabWidget*>()->widget(2)->findChild<QListWidget*>();
     ASSERT_NE(suggestions, nullptr);
     ASSERT_EQ(suggestions->count(), 2);
-    EXPECT_EQ(suggestions->item(0)->text(),
-              QStringLiteral("GOP #2 超长：建议把关键帧间隔压到 10 s 内"));
+    EXPECT_EQ(suggestions->item(0)->text(), QStringLiteral("GOP #2 超长：建议把关键帧间隔压到 10 s 内"));
 }
 
 // 汇总的三处开关：帧类型未解析 / 目标峰值手动 / 无视频帧兜底
@@ -296,8 +298,7 @@ TEST(BitrateGopPageTests, SummarySwitchesOnFrameTypesAndTargetPeak) {
     result.bitrate_gop.b_frame_count = 0;
     result.bitrate_gop.unknown_frame_count = 97;
     page.SetResult(result);
-    EXPECT_TRUE(summary->text().contains(
-        QStringLiteral("I 3 帧（其余未解析，勾选「精确帧类型」重新分析）")));
+    EXPECT_TRUE(summary->text().contains(QStringLiteral("I 3 帧（其余未解析，勾选「精确帧类型」重新分析）")));
 
     // 「手动 / 自动」由页面参数决定（spin -> options_），走真实链路设置
     QDoubleSpinBox* peak_spin = FindSpinByDecimals(&page, 0);
@@ -354,7 +355,7 @@ TEST(BitrateGopPageTests, WindowComboUpdatesSummary) {
     page.SetResult(result);
     EXPECT_TRUE(summary->text().contains(QStringLiteral("窗口 <b>1.00</b> 秒")));
 
-    combo->setCurrentIndex(3);   // 5.00 秒
+    combo->setCurrentIndex(3); // 5.00 秒
     EXPECT_TRUE(summary->text().contains(QStringLiteral("窗口 <b>5.00</b> 秒")));
 }
 
@@ -363,8 +364,7 @@ TEST(BitrateGopPageTests, SeekRequestedOnGopAndAnomalyRowClick) {
     EnsureApp();
     BitrateGopPage page;
     std::vector<double> seeks;
-    QObject::connect(&page, &BitrateGopPage::SeekRequested,
-                     [&seeks](double seconds) { seeks.push_back(seconds); });
+    QObject::connect(&page, &BitrateGopPage::SeekRequested, [&seeks](double seconds) { seeks.push_back(seconds); });
 
     AnalysisResult result;
     result.bitrate_gop = MakeBg();
@@ -421,8 +421,7 @@ TEST(BitrateGopPageTests, OptionsRoundTripAndScanLifecycle) {
     int scan_requests = 0;
     int cancel_requests = 0;
     QObject::connect(&page, &BitrateGopPage::ScanRequested, [&scan_requests] { ++scan_requests; });
-    QObject::connect(&page, &BitrateGopPage::CancelRequested,
-                     [&cancel_requests] { ++cancel_requests; });
+    QObject::connect(&page, &BitrateGopPage::CancelRequested, [&cancel_requests] { ++cancel_requests; });
     QPushButton* start_button = FindButton(&page, QStringLiteral("开始分析"));
     QPushButton* cancel_button = FindButton(&page, QStringLiteral("取消"));
     ASSERT_NE(start_button, nullptr);
@@ -434,7 +433,7 @@ TEST(BitrateGopPageTests, OptionsRoundTripAndScanLifecycle) {
 
     start_button->click();
     EXPECT_EQ(scan_requests, 1);
-    cancel_button->click();   // 禁用态点不动
+    cancel_button->click(); // 禁用态点不动
     EXPECT_EQ(cancel_requests, 0);
 
     page.SetScanActive(true);
@@ -470,14 +469,13 @@ TEST(BitrateGopPageTests, LinkSceneChangesEmitsRecordsAndOptions) {
     r2.frame_index = 30;
     r2.timestamp = 40.0;
     r2.score = 0.5;
-    page.SetSceneChanges({r1, r2});   // 仅刷新图表，不应崩
+    page.SetSceneChanges({r1, r2}); // 仅刷新图表，不应崩
 
     int link_calls = 0;
     std::vector<SceneChangeResult> got_records;
     videoeye::BitrateGopOptions got_options;
     QObject::connect(&page, &BitrateGopPage::SceneLinkRequested,
-                     [&](const std::vector<SceneChangeResult>& records,
-                         const videoeye::BitrateGopOptions& options) {
+                     [&](const std::vector<SceneChangeResult>& records, const videoeye::BitrateGopOptions& options) {
                          ++link_calls;
                          got_records = records;
                          got_options = options;

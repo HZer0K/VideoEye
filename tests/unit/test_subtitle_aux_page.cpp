@@ -71,12 +71,13 @@ QApplication* EnsureApp() {
 
 QTableWidget* TableInTab(QWidget* root, int tab_index, const QString& first_header) {
     auto* tabs = root->findChild<QTabWidget*>();
-    if (tabs == nullptr) return nullptr;
+    if (tabs == nullptr)
+        return nullptr;
     QWidget* page = tabs->widget(tab_index);
-    if (page == nullptr) return nullptr;
+    if (page == nullptr)
+        return nullptr;
     for (QTableWidget* table : page->findChildren<QTableWidget*>()) {
-        if (table->horizontalHeaderItem(0) != nullptr &&
-            table->horizontalHeaderItem(0)->text() == first_header) {
+        if (table->horizontalHeaderItem(0) != nullptr && table->horizontalHeaderItem(0)->text() == first_header) {
             return table;
         }
     }
@@ -85,14 +86,16 @@ QTableWidget* TableInTab(QWidget* root, int tab_index, const QString& first_head
 
 QLabel* FindLabelContaining(QWidget* root, const QString& needle) {
     for (QLabel* label : root->findChildren<QLabel*>()) {
-        if (label->text().contains(needle)) return label;
+        if (label->text().contains(needle))
+            return label;
     }
     return nullptr;
 }
 
 QPushButton* FindButton(QWidget* root, const QString& text) {
     for (QPushButton* button : root->findChildren<QPushButton*>()) {
-        if (button->text() == text) return button;
+        if (button->text() == text)
+            return button;
     }
     return nullptr;
 }
@@ -103,8 +106,7 @@ QString Cell(const QTableWidget* table, int row, int column) {
 }
 
 void ClickCell(QTableWidget* table, int row, int column) {
-    QMetaObject::invokeMethod(table, "cellClicked", Qt::DirectConnection,
-                              Q_ARG(int, row), Q_ARG(int, column));
+    QMetaObject::invokeMethod(table, "cellClicked", Qt::DirectConnection, Q_ARG(int, row), Q_ARG(int, column));
 }
 
 // 字幕夹具：2 条流（文本 + 图形）、3 条 cue、2 个问题（1 个 cue 级 + 1 个流级）
@@ -167,7 +169,7 @@ void FillSubtitle(AnalysisResult& result) {
     i1.type = SubtitleIssueType::MissingLanguage;
     i1.severity = videoeye::model::IssueSeverity::Warning;
     i1.stream_index = 3;
-    i1.cue_index = -1;   // 流级问题
+    i1.cue_index = -1; // 流级问题
     i1.detail = "流 3 缺少 language tag";
     sub.issues = {i0, i1};
     sub.text_stream_count = 1;
@@ -280,7 +282,7 @@ void FillAux(AnalysisResult& result) {
     result.aux_data_analyzed = true;
 }
 
-}  // namespace
+} // namespace
 
 // 构造后未分析 -> 提示文案 + 四个空表；点「重新扫描」发 ScanRequested
 TEST(SubtitleAuxPageTests, UnanalyzedShowsHintAndEmptyTables) {
@@ -328,8 +330,7 @@ TEST(SubtitleAuxPageTests, SubtitleTablesAndFilters) {
                      [&timecode_emits](const QString&, double) { ++timecode_emits; });
     page.SetResult(result);
 
-    EXPECT_TRUE(summary->text().contains(
-        QStringLiteral("字幕流 2 条（文本 1 / 图形 1），cue 3 条，问题 2 处")));
+    EXPECT_TRUE(summary->text().contains(QStringLiteral("字幕流 2 条（文本 1 / 图形 1），cue 3 条，问题 2 处")));
     // 只有字幕数据时不应冒泡播放器时码
     EXPECT_EQ(timecode_emits, 0);
 
@@ -342,18 +343,15 @@ TEST(SubtitleAuxPageTests, SubtitleTablesAndFilters) {
     ASSERT_EQ(streams->rowCount(), 2);
     EXPECT_EQ(Cell(streams, 0, 0), QStringLiteral("2"));
     EXPECT_EQ(Cell(streams, 0, 1), QStringLiteral("subrip"));
-    EXPECT_EQ(Cell(streams, 0, 2),
-              QString::fromStdString(videoeye::model::ToString(SubtitleFormat::Srt)));
-    EXPECT_EQ(Cell(streams, 0, 3),
-              QString::fromStdString(videoeye::model::ToString(SubtitleKind::Text)));
+    EXPECT_EQ(Cell(streams, 0, 2), QString::fromStdString(videoeye::model::ToString(SubtitleFormat::Srt)));
+    EXPECT_EQ(Cell(streams, 0, 3), QString::fromStdString(videoeye::model::ToString(SubtitleKind::Text)));
     EXPECT_EQ(Cell(streams, 0, 4), QStringLiteral("zh"));
     EXPECT_EQ(Cell(streams, 0, 5), QStringLiteral("SubRip"));
     EXPECT_EQ(Cell(streams, 0, 6), QStringLiteral("否"));
     EXPECT_EQ(Cell(streams, 0, 7), QStringLiteral("否"));
     EXPECT_EQ(Cell(streams, 0, 8), QStringLiteral("2"));
     EXPECT_EQ(Cell(streams, 0, 9), QStringLiteral("100"));
-    EXPECT_EQ(Cell(streams, 1, 3),
-              QString::fromStdString(videoeye::model::ToString(SubtitleKind::Bitmap)));
+    EXPECT_EQ(Cell(streams, 1, 3), QString::fromStdString(videoeye::model::ToString(SubtitleKind::Bitmap)));
     EXPECT_EQ(Cell(streams, 1, 10), QStringLiteral("图形字幕仅输出 metadata"));
 
     // 流下拉：全部 + 两条流，data 为流号
@@ -373,8 +371,7 @@ TEST(SubtitleAuxPageTests, SubtitleTablesAndFilters) {
     EXPECT_EQ(Cell(cue, 0, 3), QStringLiteral("2.500"));
     EXPECT_EQ(Cell(cue, 0, 4), QStringLiteral("12"));
     EXPECT_EQ(Cell(cue, 0, 5), QStringLiteral("zh"));
-    EXPECT_EQ(Cell(cue, 0, 6),
-              QString::fromStdString(videoeye::model::ToString(SubtitleIssueType::TooShort)));
+    EXPECT_EQ(Cell(cue, 0, 6), QString::fromStdString(videoeye::model::ToString(SubtitleIssueType::TooShort)));
     EXPECT_EQ(Cell(cue, 0, 7), QStringLiteral("你好世界"));
     EXPECT_EQ(cue->item(0, 0)->background().color(), QColor("#5a1f1f"));
     EXPECT_EQ(Cell(cue, 1, 6), QString());
@@ -417,12 +414,11 @@ TEST(SubtitleAuxPageTests, TimecodeChapterTablesAndStartTimecodeSignal) {
     int timecode_emits = 0;
     QString tc_text;
     double tc_fps = 0.0;
-    QObject::connect(&page, &SubtitleAuxPage::StartTimecodeReady,
-                     [&](const QString& timecode, double fps) {
-                         ++timecode_emits;
-                         tc_text = timecode;
-                         tc_fps = fps;
-                     });
+    QObject::connect(&page, &SubtitleAuxPage::StartTimecodeReady, [&](const QString& timecode, double fps) {
+        ++timecode_emits;
+        tc_text = timecode;
+        tc_fps = fps;
+    });
     page.SetResult(result);
     ASSERT_EQ(timecode_emits, 1);
     EXPECT_EQ(tc_text, QStringLiteral("10:00:00:00"));
@@ -453,8 +449,7 @@ TEST(SubtitleAuxPageTests, TimecodeChapterTablesAndStartTimecodeSignal) {
     EXPECT_EQ(Cell(chapter, 0, 4), QStringLiteral("开场"));
     EXPECT_EQ(Cell(chapter, 0, 5), QStringLiteral("zh"));
     EXPECT_EQ(Cell(chapter, 0, 6), QString());
-    EXPECT_EQ(Cell(chapter, 1, 6),
-              QString::fromStdString(videoeye::model::ToString(ChapterIssueType::Overlap)));
+    EXPECT_EQ(Cell(chapter, 1, 6), QString::fromStdString(videoeye::model::ToString(ChapterIssueType::Overlap)));
     EXPECT_EQ(chapter->item(1, 0)->background().color(), QColor("#5a1f1f"));
 
     // drop-frame 时码用 ';' 分隔，并在汇总里标注
@@ -498,8 +493,7 @@ TEST(SubtitleAuxPageTests, AuxStreamScte35AndMetadataTables) {
 
     ASSERT_EQ(streams->rowCount(), 1);
     EXPECT_EQ(Cell(streams, 0, 0), QStringLiteral("1"));
-    EXPECT_EQ(Cell(streams, 0, 1),
-              QString::fromStdString(videoeye::model::ToString(AuxStreamKind::Scte35)));
+    EXPECT_EQ(Cell(streams, 0, 1), QString::fromStdString(videoeye::model::ToString(AuxStreamKind::Scte35)));
     EXPECT_EQ(Cell(streams, 0, 2), QStringLiteral("scte35"));
     EXPECT_EQ(Cell(streams, 0, 3), QStringLiteral("0x86"));
     EXPECT_EQ(Cell(streams, 0, 7), QStringLiteral("1024"));
@@ -508,8 +502,7 @@ TEST(SubtitleAuxPageTests, AuxStreamScte35AndMetadataTables) {
     ASSERT_EQ(scte35->rowCount(), 2);
     EXPECT_EQ(Cell(scte35, 0, 0), QStringLiteral("1"));
     EXPECT_EQ(Cell(scte35, 0, 1), QStringLiteral("100.000"));
-    EXPECT_EQ(Cell(scte35, 0, 2),
-              QString::fromStdString(videoeye::model::ToString(Scte35Command::SpliceInsert)));
+    EXPECT_EQ(Cell(scte35, 0, 2), QString::fromStdString(videoeye::model::ToString(Scte35Command::SpliceInsert)));
     EXPECT_EQ(Cell(scte35, 0, 3), QStringLiteral("0xabcdef12"));
     EXPECT_EQ(Cell(scte35, 0, 4), QStringLiteral("OUT"));
     EXPECT_EQ(Cell(scte35, 0, 5), QStringLiteral("100.000"));
@@ -547,7 +540,7 @@ TEST(SubtitleAuxPageTests, ApplyRuleThresholdsUsesRulesWithPositiveGuard) {
     short_rule.threshold = 1.2;
     QcRule long_rule;
     long_rule.id = "subtitle.cue_too_long";
-    long_rule.threshold = 0.0;   // 0 不应覆盖默认值
+    long_rule.threshold = 0.0; // 0 不应覆盖默认值
     QcRule fast_rule;
     fast_rule.id = "subtitle.cue_too_fast";
     fast_rule.threshold = 15.0;
@@ -571,8 +564,7 @@ TEST(SubtitleAuxPageTests, SeekRequestedOnCueRowClick) {
     EnsureApp();
     SubtitleAuxPage page;
     std::vector<double> seeks;
-    QObject::connect(&page, &SubtitleAuxPage::SeekRequested,
-                     [&seeks](double seconds) { seeks.push_back(seconds); });
+    QObject::connect(&page, &SubtitleAuxPage::SeekRequested, [&seeks](double seconds) { seeks.push_back(seconds); });
 
     AnalysisResult result;
     FillSubtitle(result);
@@ -595,7 +587,7 @@ TEST(SubtitleAuxPageTests, SeekRequestedOnCueRowClick) {
     EXPECT_DOUBLE_EQ(seeks[1], 10.0);
 
     combo->setCurrentIndex(0);
-    ClickCell(cue, 9, 0);   // 越界行
-    ClickCell(cue, -1, 0);  // 负行号
+    ClickCell(cue, 9, 0);  // 越界行
+    ClickCell(cue, -1, 0); // 负行号
     EXPECT_EQ(seeks.size(), 2u);
 }

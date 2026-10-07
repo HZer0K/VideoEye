@@ -47,12 +47,13 @@ SceneChangeResult MakeRecord(int frame_index, double timestamp, double score) {
 QLabel* FindSummaryLabel(SceneChangePage* page) {
     const auto labels = page->findChildren<QLabel*>();
     for (QLabel* label : labels) {
-        if (label->text().contains(QStringLiteral("切换点"))) return label;
+        if (label->text().contains(QStringLiteral("切换点")))
+            return label;
     }
     return nullptr;
 }
 
-}  // namespace
+} // namespace
 
 // 「启用检测」开关：初值跟随构造参数，用户拨动双向同步 feature_checked_ 并发信号。
 TEST(SceneChangePageTests, FeatureToggleFollowsCtorAndEmits) {
@@ -73,11 +74,10 @@ TEST(SceneChangePageTests, FeatureToggleFollowsCtorAndEmits) {
 
     int emit_count = 0;
     bool last_value = true;
-    QObject::connect(&page, &SceneChangePage::FeatureToggled,
-                     [&emit_count, &last_value](bool enabled) {
-                         ++emit_count;
-                         last_value = enabled;
-                     });
+    QObject::connect(&page, &SceneChangePage::FeatureToggled, [&emit_count, &last_value](bool enabled) {
+        ++emit_count;
+        last_value = enabled;
+    });
 
     toggle->setChecked(true);
     EXPECT_EQ(emit_count, 1);
@@ -104,7 +104,7 @@ TEST(SceneChangePageTests, AppendOnlyQueuesUntilFlush) {
 
     EXPECT_TRUE(page.HasPending());
     EXPECT_EQ(page.records().size(), std::size_t{2});
-    EXPECT_EQ(table->rowCount(), 0);  // 未到节拍，一行都不许画
+    EXPECT_EQ(table->rowCount(), 0); // 未到节拍，一行都不许画
 }
 
 // FlushPending 只补增量行且幂等：再刷一次不重复补，再追加一条只多一行。
@@ -120,7 +120,7 @@ TEST(SceneChangePageTests, FlushAppendsIncrementalRowsIdempotently) {
     EXPECT_FALSE(page.HasPending());
     ASSERT_EQ(table->rowCount(), 1);
     EXPECT_EQ(table->item(0, 0)->text(), QStringLiteral("3"));
-    EXPECT_EQ(table->item(0, 1)->text(), QStringLiteral("00:01:05"));  // 65 s
+    EXPECT_EQ(table->item(0, 1)->text(), QStringLiteral("00:01:05")); // 65 s
     EXPECT_EQ(table->item(0, 2)->text(), QStringLiteral("0.900"));
 
     // 同一批数据再刷一次：幂等，不许重复补行
@@ -129,9 +129,9 @@ TEST(SceneChangePageTests, FlushAppendsIncrementalRowsIdempotently) {
 
     page.AppendResult(MakeRecord(7, 125.0, 0.4));
     page.FlushPending();
-    ASSERT_EQ(table->rowCount(), 2);  // 只补增量，不整表重建
+    ASSERT_EQ(table->rowCount(), 2); // 只补增量，不整表重建
     EXPECT_EQ(table->item(1, 0)->text(), QStringLiteral("7"));
-    EXPECT_EQ(table->item(1, 1)->text(), QStringLiteral("00:02:05"));  // 125 s
+    EXPECT_EQ(table->item(1, 1)->text(), QStringLiteral("00:02:05")); // 125 s
 }
 
 // 汇总行聚合：个数 / 平均强度 / 最大强度，全部 3 位小数。
@@ -148,7 +148,7 @@ TEST(SceneChangePageTests, SummaryAggregatesCountAverageAndMax) {
     ASSERT_TRUE(summary != nullptr);
     const QString text = summary->text();
     EXPECT_TRUE(text.contains(QStringLiteral("共检测到 3 个切换点")));
-    EXPECT_TRUE(text.contains(QStringLiteral("0.600")));  // (0.9 + 0.4 + 0.5) / 3
+    EXPECT_TRUE(text.contains(QStringLiteral("0.600"))); // (0.9 + 0.4 + 0.5) / 3
     EXPECT_TRUE(text.contains(QStringLiteral("0.900")));
 }
 
@@ -169,10 +169,10 @@ TEST(SceneChangePageTests, ResetAllowsRefillingTable) {
     EXPECT_TRUE(page.records().empty());
     EXPECT_FALSE(page.HasPending());
     EXPECT_EQ(table->rowCount(), 0);
-    EXPECT_TRUE(summary->text().contains(QStringLiteral("镜头切换点")));  // 回到引导文案
+    EXPECT_TRUE(summary->text().contains(QStringLiteral("镜头切换点"))); // 回到引导文案
 
     page.AppendResult(MakeRecord(9, 9.0, 0.3));
     page.FlushPending();
-    ASSERT_EQ(table->rowCount(), 1);  // 游标归零的守卫：不清零这里会是 0 行
+    ASSERT_EQ(table->rowCount(), 1); // 游标归零的守卫：不清零这里会是 0 行
     EXPECT_EQ(table->item(0, 0)->text(), QStringLiteral("9"));
 }

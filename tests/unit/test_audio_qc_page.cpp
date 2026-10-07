@@ -60,18 +60,19 @@ QApplication* EnsureApp() {
 }
 
 // 页内唯一 QTabWidget 的第 tab_index 页里，按表头首列文案（可选列数）找表
-QTableWidget* TableInTab(QWidget* root, int tab_index, const QString& first_header,
-                         int columns = -1) {
+QTableWidget* TableInTab(QWidget* root, int tab_index, const QString& first_header, int columns = -1) {
     auto* tabs = root->findChild<QTabWidget*>();
-    if (tabs == nullptr) return nullptr;
+    if (tabs == nullptr)
+        return nullptr;
     QWidget* page = tabs->widget(tab_index);
-    if (page == nullptr) return nullptr;
+    if (page == nullptr)
+        return nullptr;
     for (QTableWidget* table : page->findChildren<QTableWidget*>()) {
-        if (table->horizontalHeaderItem(0) == nullptr ||
-            table->horizontalHeaderItem(0)->text() != first_header) {
+        if (table->horizontalHeaderItem(0) == nullptr || table->horizontalHeaderItem(0)->text() != first_header) {
             continue;
         }
-        if (columns >= 0 && table->columnCount() != columns) continue;
+        if (columns >= 0 && table->columnCount() != columns)
+            continue;
         return table;
     }
     return nullptr;
@@ -79,14 +80,16 @@ QTableWidget* TableInTab(QWidget* root, int tab_index, const QString& first_head
 
 QLabel* FindLabelContaining(QWidget* root, const QString& needle) {
     for (QLabel* label : root->findChildren<QLabel*>()) {
-        if (label->text().contains(needle)) return label;
+        if (label->text().contains(needle))
+            return label;
     }
     return nullptr;
 }
 
 QDoubleSpinBox* FindSpinBySuffix(QWidget* root, const QString& suffix) {
     for (QDoubleSpinBox* spin : root->findChildren<QDoubleSpinBox*>()) {
-        if (spin->suffix() == suffix) return spin;
+        if (spin->suffix() == suffix)
+            return spin;
     }
     return nullptr;
 }
@@ -94,21 +97,24 @@ QDoubleSpinBox* FindSpinBySuffix(QWidget* root, const QString& suffix) {
 // 削波阈值框是唯一没有 suffix 的 4 位小数输入框
 QDoubleSpinBox* FindClipSpin(QWidget* root) {
     for (QDoubleSpinBox* spin : root->findChildren<QDoubleSpinBox*>()) {
-        if (spin->suffix().isEmpty() && spin->decimals() == 4) return spin;
+        if (spin->suffix().isEmpty() && spin->decimals() == 4)
+            return spin;
     }
     return nullptr;
 }
 
 QCheckBox* FindCheckBoxByText(QWidget* root, const QString& text) {
     for (QCheckBox* box : root->findChildren<QCheckBox*>()) {
-        if (box->text() == text) return box;
+        if (box->text() == text)
+            return box;
     }
     return nullptr;
 }
 
 QPushButton* FindButton(QWidget* root, const QString& text) {
     for (QPushButton* button : root->findChildren<QPushButton*>()) {
-        if (button->text() == text) return button;
+        if (button->text() == text)
+            return button;
     }
     return nullptr;
 }
@@ -120,8 +126,7 @@ QString Cell(const QTableWidget* table, int row, int column) {
 
 // 通过 meta-object 发射 cellClicked 信号，走与真实点击同一根接线
 void ClickCell(QTableWidget* table, int row, int column) {
-    QMetaObject::invokeMethod(table, "cellClicked", Qt::DirectConnection,
-                              Q_ARG(int, row), Q_ARG(int, column));
+    QMetaObject::invokeMethod(table, "cellClicked", Qt::DirectConnection, Q_ARG(int, row), Q_ARG(int, column));
 }
 
 // 「一切正常」的音频 QC 结果：2 声道、2 段削波（全声道 + 单声道）、2 段静音
@@ -206,7 +211,7 @@ DiagnosticIssue MakeIssue(const char* rule_id, IssueSeverity severity, const cha
     return issue;
 }
 
-}  // namespace
+} // namespace
 
 // 构造后未分析 -> 引导文案 + 四个空表；喂入「扫过但没有音频」的结果 -> 空态文案
 TEST(AudioQcPageTests, UnanalyzedShowsHintAndEmptyTables) {
@@ -331,7 +336,7 @@ TEST(AudioQcPageTests, SummaryGradesLoudnessDeviationWithBoundaries) {
     result.audio_qc = MakeAudioQc();
     QcReport report;
 
-    result.audio_qc.integrated_lufs = -23.5;   // 偏差 -0.50 -> 达标
+    result.audio_qc.integrated_lufs = -23.5; // 偏差 -0.50 -> 达标
     page.SetResult(result, report);
     EXPECT_TRUE(summary->text().contains(QStringLiteral("响度达标")));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("#43a047")));
@@ -340,17 +345,17 @@ TEST(AudioQcPageTests, SummaryGradesLoudnessDeviationWithBoundaries) {
     EXPECT_TRUE(summary->text().contains(QStringLiteral("立体声 (2.0)")));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("48000 Hz")));
 
-    result.audio_qc.integrated_lufs = -25.0;   // 偏差 -2.00 -> 偏离
+    result.audio_qc.integrated_lufs = -25.0; // 偏差 -2.00 -> 偏离
     page.SetResult(result, report);
     EXPECT_TRUE(summary->text().contains(QStringLiteral("响度偏离")));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("#fb8c00")));
 
-    result.audio_qc.integrated_lufs = -30.0;   // 偏差 -7.00 -> 超标
+    result.audio_qc.integrated_lufs = -30.0; // 偏差 -7.00 -> 超标
     page.SetResult(result, report);
     EXPECT_TRUE(summary->text().contains(QStringLiteral("响度超标")));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("#e53935")));
 
-    result.audio_qc.integrated_lufs = -120.0;  // 静音 -> -∞ + 超标
+    result.audio_qc.integrated_lufs = -120.0; // 静音 -> -∞ + 超标
     page.SetResult(result, report);
     EXPECT_TRUE(summary->text().contains(QStringLiteral("-∞")));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("响度超标")));
@@ -360,7 +365,7 @@ TEST(AudioQcPageTests, SummaryGradesLoudnessDeviationWithBoundaries) {
     ASSERT_NE(target, nullptr);
     result.audio_qc.integrated_lufs = -24.0;
     target->setValue(-25.0);
-    page.SetResult(result, report);   // 重新灌入让 summary 以新的目标值重算
+    page.SetResult(result, report); // 重新灌入让 summary 以新的目标值重算
     EXPECT_TRUE(summary->text().contains(QStringLiteral("响度达标")));
     target->setValue(-27.0);
     page.SetResult(result, report);
@@ -393,7 +398,7 @@ TEST(AudioQcPageTests, VerdictTableMapsSeverityColorAndRuleThreshold) {
     QcRule clip_rule;
     clip_rule.id = "audio.clipping";
     clip_rule.name = "削波段数";
-    clip_rule.threshold = 3.0;   // 无单位：阈值只显示数字
+    clip_rule.threshold = 3.0; // 无单位：阈值只显示数字
     clip_rule.unit = "";
     report.rules = {true_peak_rule, clip_rule};
     report.issues = {
@@ -428,7 +433,7 @@ TEST(AudioQcPageTests, VerdictTableMapsSeverityColorAndRuleThreshold) {
     EXPECT_EQ(Cell(verdict, 5, 1), QStringLiteral("提示"));
     EXPECT_EQ(verdict->item(5, 1)->foreground().color(), QColor("#1e88e5"));
 
-    EXPECT_EQ(Cell(verdict, 7, 1), QStringLiteral("失败"));   // Error 也映射「失败」
+    EXPECT_EQ(Cell(verdict, 7, 1), QStringLiteral("失败")); // Error 也映射「失败」
     EXPECT_EQ(verdict->item(7, 1)->foreground().color(), QColor("#e53935"));
     EXPECT_EQ(Cell(verdict, 8, 1), QStringLiteral("通过"));
 
@@ -497,7 +502,7 @@ TEST(AudioQcPageTests, OptionsRoundTripAndScanLifecycle) {
 
     start_button->click();
     EXPECT_EQ(scan_requests, 1);
-    cancel_button->click();   // 禁用态点不动
+    cancel_button->click(); // 禁用态点不动
     EXPECT_EQ(cancel_requests, 0);
 
     page.SetScanActive(true);
@@ -525,8 +530,7 @@ TEST(AudioQcPageTests, SeekRequestedOnClipAndSilenceRowClick) {
     EnsureApp();
     AudioQcPage page;
     std::vector<double> seeks;
-    QObject::connect(&page, &AudioQcPage::SeekRequested,
-                     [&seeks](double seconds) { seeks.push_back(seconds); });
+    QObject::connect(&page, &AudioQcPage::SeekRequested, [&seeks](double seconds) { seeks.push_back(seconds); });
 
     AnalysisResult result;
     result.audio_qc = MakeAudioQc();

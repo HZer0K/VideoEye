@@ -89,7 +89,8 @@ AnalysisResult MakeResultWith(const ColorHdrAnalysis& analysis) {
 // 只能经页内唯一 QTabWidget 的 tab 索引定位：0=色彩信息 / 1=HDR 元数据 / 2=异常组合。
 QTableWidget* TableInTab(ColorHdrPage* page, int index) {
     QTabWidget* tabs = page->findChild<QTabWidget*>();
-    if (!tabs || index < 0 || index >= tabs->count()) return nullptr;
+    if (!tabs || index < 0 || index >= tabs->count())
+        return nullptr;
     QWidget* tab = tabs->widget(index);
     return tab ? tab->findChild<QTableWidget*>() : nullptr;
 }
@@ -97,7 +98,8 @@ QTableWidget* TableInTab(ColorHdrPage* page, int index) {
 QPushButton* FindButton(ColorHdrPage* page, const QString& text) {
     const auto buttons = page->findChildren<QPushButton*>();
     for (QPushButton* button : buttons) {
-        if (button->text() == text) return button;
+        if (button->text() == text)
+            return button;
     }
     return nullptr;
 }
@@ -105,12 +107,13 @@ QPushButton* FindButton(ColorHdrPage* page, const QString& text) {
 QLabel* FindLabelContaining(ColorHdrPage* page, const QString& needle) {
     const auto labels = page->findChildren<QLabel*>();
     for (QLabel* label : labels) {
-        if (label->text().contains(needle)) return label;
+        if (label->text().contains(needle))
+            return label;
     }
     return nullptr;
 }
 
-}  // namespace
+} // namespace
 
 // 未喂结果时刷新：空态文案 + 三张表全空（异常表连占位行都不该有）。
 TEST(ColorHdrPageTests, UnanalyzedShowsEmptyState) {
@@ -141,10 +144,8 @@ TEST(ColorHdrPageTests, SetResultFillsTablesAndMarksMissingValues) {
     QTableWidget* hdr_table = TableInTab(&page, 1);
     ASSERT_TRUE(color_table != nullptr);
     ASSERT_TRUE(hdr_table != nullptr);
-    EXPECT_EQ(color_table->rowCount(),
-              static_cast<int>(videoeye::model::BuildColorRows(analysis).size()));
-    EXPECT_EQ(hdr_table->rowCount(),
-              static_cast<int>(videoeye::model::BuildHdrRows(analysis).size()));
+    EXPECT_EQ(color_table->rowCount(), static_cast<int>(videoeye::model::BuildColorRows(analysis).size()));
+    EXPECT_EQ(hdr_table->rowCount(), static_cast<int>(videoeye::model::BuildHdrRows(analysis).size()));
     EXPECT_GT(color_table->rowCount(), 0);
 
     // 色彩表里能找到「像素格式 → yuv420p10le」
@@ -161,7 +162,8 @@ TEST(ColorHdrPageTests, SetResultFillsTablesAndMarksMissingValues) {
     int missing_rows = 0;
     for (int row = 0; row < hdr_table->rowCount(); ++row) {
         QTableWidgetItem* item = hdr_table->item(row, 1);
-        if (!item || item->text() != QStringLiteral("缺失")) continue;
+        if (!item || item->text() != QStringLiteral("缺失"))
+            continue;
         ++missing_rows;
         EXPECT_EQ(item->foreground().color(), QColor("#fb8c00"));
         EXPECT_TRUE(item->font().bold());
@@ -199,9 +201,8 @@ TEST(ColorHdrPageTests, IssueTableOnlyKeepsColorHdrCategory) {
 
     QTableWidget* issue_table = TableInTab(&page, 2);
     ASSERT_TRUE(issue_table != nullptr);
-    ASSERT_EQ(issue_table->rowCount(), 1);  // Video 那条必须被过滤
-    EXPECT_EQ(issue_table->item(0, 0)->text(),
-              QString::fromStdString(color_issue.SeverityText()));
+    ASSERT_EQ(issue_table->rowCount(), 1); // Video 那条必须被过滤
+    EXPECT_EQ(issue_table->item(0, 0)->text(), QString::fromStdString(color_issue.SeverityText()));
     EXPECT_EQ(issue_table->item(0, 1)->text(), QString::fromStdString(color_issue.rule_id));
     EXPECT_EQ(issue_table->item(0, 2)->text(), QString::fromStdString(color_issue.detail));
     EXPECT_EQ(issue_table->item(0, 3)->text(), QString::fromStdString(color_issue.suggestion));
@@ -223,7 +224,7 @@ TEST(ColorHdrPageTests, OptionsRoundTripAndScanLifecycle) {
 
     QCheckBox* probe = page.findChild<QCheckBox*>();
     ASSERT_TRUE(probe != nullptr);
-    EXPECT_TRUE(probe->isChecked());  // ColorHdrOptions::probe_decoded_frame 默认 true
+    EXPECT_TRUE(probe->isChecked()); // ColorHdrOptions::probe_decoded_frame 默认 true
     EXPECT_FALSE(page.IsScanActive());
 
     // FillScanOptions：以本页勾选状态覆盖 options，并打开 analyze_color_hdr
@@ -247,10 +248,8 @@ TEST(ColorHdrPageTests, OptionsRoundTripAndScanLifecycle) {
 
     bool scan_requested = false;
     bool cancel_requested = false;
-    QObject::connect(&page, &ColorHdrPage::ScanRequested,
-                     [&scan_requested] { scan_requested = true; });
-    QObject::connect(&page, &ColorHdrPage::CancelRequested,
-                     [&cancel_requested] { cancel_requested = true; });
+    QObject::connect(&page, &ColorHdrPage::ScanRequested, [&scan_requested] { scan_requested = true; });
+    QObject::connect(&page, &ColorHdrPage::CancelRequested, [&cancel_requested] { cancel_requested = true; });
 
     start->click();
     EXPECT_TRUE(scan_requested);
