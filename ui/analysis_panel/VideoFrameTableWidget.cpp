@@ -389,35 +389,22 @@ void VideoFrameTableWidget::OnExportFrameCsv() {
         return;
     }
 
-    const QString filename = QFileDialog::getSaveFileName(
-        this,
+    ExportCsvStream(this,
         tr("导出视频帧 CSV"),
         QString("videoeye_frames_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
-        tr("CSV 文件 (*.csv);;所有文件 (*)"));
-    if (filename.isEmpty()) {
-        return;
-    }
-
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件:\n%1").arg(filename));
-        return;
-    }
-
-    QTextStream out(&file);
-    out.setEncoding(QStringConverter::Utf8);
-    out << "index,frame_type,is_key_frame,timestamp_seconds,pts,gop_index,gop_position\n";
-    for (const auto& record : frame_records_) {
-        out << record.index << ','
-            << FrameTypeToString(record.frame_type) << ','
-            << (record.is_key_frame ? 1 : 0) << ','
-            << QString::number(record.timestamp_seconds, 'f', 6) << ','
-            << record.pts << ','
-            << record.gop_index << ','
-            << record.gop_position << '\n';
-    }
-
-    QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
+        [this](QTextStream& out) {
+            out << "index,frame_type,is_key_frame,timestamp_seconds,pts,gop_index,gop_position\n";
+            for (const auto& record : frame_records_) {
+                out << record.index << ','
+                    << FrameTypeToString(record.frame_type) << ','
+                    << (record.is_key_frame ? 1 : 0) << ','
+                    << QString::number(record.timestamp_seconds, 'f', 6) << ','
+                    << record.pts << ','
+                    << record.gop_index << ','
+                    << record.gop_position << '\n';
+            }
+        },
+        static_cast<int>(frame_records_.size()));
 }
 
 void VideoFrameTableWidget::OnExportGopCsv() {
@@ -426,38 +413,25 @@ void VideoFrameTableWidget::OnExportGopCsv() {
         return;
     }
 
-    const QString filename = QFileDialog::getSaveFileName(
-        this,
+    ExportCsvStream(this,
         tr("导出 GOP 摘要 CSV"),
         QString("videoeye_gop_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
-        tr("CSV 文件 (*.csv);;所有文件 (*)"));
-    if (filename.isEmpty()) {
-        return;
-    }
-
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件:\n%1").arg(filename));
-        return;
-    }
-
-    QTextStream out(&file);
-    out.setEncoding(QStringConverter::Utf8);
-    out << "gop_index,start_frame,end_frame,start_ts,end_ts,total_frames,i_count,p_count,b_count,key_count\n";
-    for (const auto& s : gop_summaries_) {
-        out << s.gop_index << ','
-            << s.start_frame << ','
-            << s.end_frame << ','
-            << QString::number(s.start_ts, 'f', 6) << ','
-            << QString::number(s.end_ts, 'f', 6) << ','
-            << s.total_frames << ','
-            << s.i_count << ','
-            << s.p_count << ','
-            << s.b_count << ','
-            << s.key_count << '\n';
-    }
-
-    QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
+        [this](QTextStream& out) {
+            out << "gop_index,start_frame,end_frame,start_ts,end_ts,total_frames,i_count,p_count,b_count,key_count\n";
+            for (const auto& s : gop_summaries_) {
+                out << s.gop_index << ','
+                    << s.start_frame << ','
+                    << s.end_frame << ','
+                    << QString::number(s.start_ts, 'f', 6) << ','
+                    << QString::number(s.end_ts, 'f', 6) << ','
+                    << s.total_frames << ','
+                    << s.i_count << ','
+                    << s.p_count << ','
+                    << s.b_count << ','
+                    << s.key_count << '\n';
+            }
+        },
+        static_cast<int>(gop_summaries_.size()));
 }
 
 }  // namespace ui

@@ -5,16 +5,22 @@
 // 这里只放"批量提交/批量填充"这类与 Qt 控件打交道、但不依赖任何页面状态的
 // 无状态辅助类：AnalysisPanel 与从它拆出去的页面组件（ContainerStructurePage /
 // AudioQcPage / ColorHdrPage / SubtitleAuxPage ...）都要用，所以单独成头，
-// 避免每拆一个页面就抄一份。
+// 避免每拆一个页面就抄一份。导出 CSV 的统一写入端也在这里（见文件末尾）。
 
+#include <QCoreApplication>
+#include <QFile>
+#include <QFileDialog>
 #include <QFont>
+#include <QMessageBox>
 #include <QPointF>
 #include <QString>
 #include <QTableWidget>
+#include <QTextStream>
 #include <QVector>
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <vector>
 
 #include "core/domain/model/MetricSeries.h"
@@ -146,6 +152,58 @@ private:
     QTableWidget* table_ = nullptr;
     bool was_updates_enabled_ = true;
 };
+
+// ---------------------------------------------------------------------------
+// CSV 导出统一样板
+//
+// 各页 / 各表的导出原本每处手抄一遍：选文件名 -> QFile 打开 -> UTF-8 BOM ->
+// 写表头逐行 -> 成功弹窗。20 来处里过滤串、成功/失败文案、BOM 有无各不相同，
+// 其中一半漏了 BOM —— Excel 打开中文列直接乱码，要真导出一次才看得见。
+// 这里收成两层，共用同一份实现：
+//   WriteCsvStream  —— 纯写入（可单测）：编码 + BOM + 关闭，失败返回 false；
+//   ExportCsvStream —— UI 样板：选文件名 -> 写入 -> 成功/失败提示。
+// 空数据判断与默认文件名仍留给调用方（提示文案与命名规则各页不同）。
+// ---------------------------------------------------------------------------
+
+// 打开 path 写 CSV 正文：UTF-8 + BOM，正文由 write_body 往流里写。
+// 打开失败返回 false（不弹窗，调用方 / 单测自己决定怎么提示）。
+inline bool WriteCsvStream(const QString& path,
+                           const std::function<void(QTextStream&)>& write_body) {
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) return false;
+    // BOM 必须按原始字节直接写设备，不能 stream << "\xEF\xBB\xBF"：
+    // QTextStream 的 UTF-8 编码器会把写进流的开头 U+FEFF 当 BOM 标记消费掉，
+    // 那样落盘的文件头是空的（实测踩过），Excel 打开中文列照样乱码。
+    file.write("\xEF\xBB\xBF", 3);
+    QTextStream stream(&file);
+    stream.setEncoding(QStringConverter::Utf8);
+    write_body(stream);
+    file.close();
+    return true;
+}
+
+// UI 层导出样板：选择文件名 -> 写入 -> 结果提示。
+// exported_rows 只用于成功提示里的行数；用户取消返回 false（不弹任何框）。
+inline bool ExportCsvStream(QWidget* parent, const QString& dialog_title,
+                            const QString& default_name,
+                            const std::function<void(QTextStream&)>& write_body,
+                            int exported_rows) {
+    const QString path = QFileDialog::getSaveFileName(
+        parent, dialog_title, default_name,
+        QCoreApplication::translate("AnalysisPageSupport", "CSV 文件 (*.csv);;所有文件 (*)"));
+    if (path.isEmpty()) return false;
+    if (!WriteCsvStream(path, write_body)) {
+        QMessageBox::warning(parent,
+            QCoreApplication::translate("AnalysisPageSupport", "错误"),
+            QCoreApplication::translate("AnalysisPageSupport", "无法写入文件: %1").arg(path));
+        return false;
+    }
+    QMessageBox::information(parent,
+        QCoreApplication::translate("AnalysisPageSupport", "成功"),
+        QCoreApplication::translate("AnalysisPageSupport", "已导出 %1 行到:\n%2")
+            .arg(exported_rows).arg(path));
+    return true;
+}
 
 } // namespace ui
 } // namespace videoeye

@@ -51,6 +51,7 @@
 #include "ui/analysis_panel/EventTimelineView.h"
 #include "ui/analysis_panel/FramePacketView.h"
 #include "ui/analysis_panel/MacroblockView.h"
+#include "ui/analysis_panel/ScanClient.h"
 #include "ui/analysis_panel/SceneChangePage.h"
 #include "ui/analysis_panel/StreamOverviewView.h"
 #include "ui/analysis_panel/SubtitleAuxPage.h"
@@ -96,9 +97,8 @@ public:
         if (reporting_panel_) reporting_panel_->SetCurrentFile(path);
         // 拆出去的页面用当前路径拼导出 CSV 的默认文件名
         if (scene_change_page_) scene_change_page_->SetSourcePath(path);
-        if (bitrate_gop_page_) bitrate_gop_page_->SetSourcePath(path);
-        if (audio_qc_page_) audio_qc_page_->SetSourcePath(path);
-        if (color_hdr_page_) color_hdr_page_->SetSourcePath(path);
+        // 共用同一次扫描的页面统一走注册表（码率 GOP / 音频 QC / 色彩 HDR）
+        for (ScanClient* page : scan_clients_) page->SetSourcePath(path);
         // 扫描总控在诊断页，换文件要同步它手里的当前路径
         if (diagnostics_page_) diagnostics_page_->SetSourcePath(path);
         // 场景切换记录是播放期的累计结果，换文件必须清零（与帧/包那几页一致）
@@ -276,6 +276,15 @@ private:
 
     // 报告与批量 QC 页（功能 12）：模板选择 / 单文件报告 / 目录批量扫描 / 导出
     ui::ReportingPanel* reporting_panel_ = nullptr;
+
+    // 共用同一次全文件扫描的页面注册表（BitrateGopPage / AudioQcPage / ColorHdrPage）。
+    // 换文件、扫描起止、进度都按它循环转发 —— 再加一页只需 RegisterScanPage 一处接线。
+    std::vector<ScanClient*> scan_clients_;
+
+    // 注册一个共用扫描的页面：入队 + 把 ScanRequested / CancelRequested 接到诊断页总控。
+    // 模板定义在 .cpp —— 只有面板自己实例化，不需要把诊断页细节带进这个头。
+    template <typename PageT>
+    void RegisterScanPage(PageT* page);
 
     // 定时器
     QTimer* update_timer_;

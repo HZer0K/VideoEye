@@ -380,39 +380,28 @@ void Mp4SampleTableWidget::OnExportCsv() {
     if (track_index < 0 || track_index >= static_cast<int>(samples_.tracks.size())) return;
     const model::Mp4TrackSampleTable& track = samples_.tracks[track_index];
 
-    const QString filename = QFileDialog::getSaveFileName(
-        this, tr("导出 MP4 样本表 CSV"),
+    ExportCsvStream(this, tr("导出 MP4 样本表 CSV"),
         QString("videoeye_mp4_samples_track%1_%2.csv")
             .arg(track.track_id)
             .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
-        tr("CSV 文件 (*.csv);;所有文件 (*)"));
-    if (filename.isEmpty()) return;
-
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件:\n%1").arg(filename));
-        return;
-    }
-    QTextStream out(&file);
-    out.setEncoding(QStringConverter::Utf8);
-    out << "index,offset,dts,pts,cts_delta,duration,size,chunk,index_in_chunk,keyframe,flags\n";
-    const double ts = static_cast<double>(track.media_timescale);
-    for (const auto& s : track.samples) {
-        out << s.index << ','
-            << s.offset << ','
-            << QString::number(ts > 0 ? s.dts / ts : 0.0, 'f', 6) << ','
-            << QString::number(ts > 0 ? s.cts / ts : 0.0, 'f', 6) << ','
-            << s.cts_delta << ','
-            << s.duration << ','
-            << s.size << ','
-            << s.chunk_index << ','
-            << s.index_in_chunk << ','
-            << (s.keyframe ? 1 : 0) << ','
-            << s.flags << '\n';
-    }
-    file.close();
-    QMessageBox::information(this, tr("导出完成"),
-                             tr("已导出 %1 个样本到:\n%2").arg(track.samples.size()).arg(filename));
+        [this, &track](QTextStream& out) {
+            out << "index,offset,dts,pts,cts_delta,duration,size,chunk,index_in_chunk,keyframe,flags\n";
+            const double ts = static_cast<double>(track.media_timescale);
+            for (const auto& s : track.samples) {
+                out << s.index << ','
+                    << s.offset << ','
+                    << QString::number(ts > 0 ? s.dts / ts : 0.0, 'f', 6) << ','
+                    << QString::number(ts > 0 ? s.cts / ts : 0.0, 'f', 6) << ','
+                    << s.cts_delta << ','
+                    << s.duration << ','
+                    << s.size << ','
+                    << s.chunk_index << ','
+                    << s.index_in_chunk << ','
+                    << (s.keyframe ? 1 : 0) << ','
+                    << s.flags << '\n';
+            }
+        },
+        static_cast<int>(track.samples.size()));
 }
 
 } // namespace ui

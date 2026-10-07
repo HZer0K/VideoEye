@@ -1356,3 +1356,17 @@ target_link_libraries(test_diagnostics_page PRIVATE
 add_test(NAME DiagnosticsPageTests COMMAND test_diagnostics_page)
 set_tests_properties(DiagnosticsPageTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 66：CSV 导出助手（AnalysisPageSupport.h 的统一写入端）
+# 说明: 这段写入端（UTF-8 BOM + 编码 + 关闭）以前在 20 来处各抄一份，BOM 有的
+#       写有的没写 —— 漏的那一半用 Excel 打开中文列乱码，只有真导出一次才看得见。
+#       收成纯函数后在这里钉住：BOM 必须在、同名文件必须截断、打不开必须返回
+#       false。不建 QApplication、不弹对话框，只编 header-only 的助手本身。
+# =================================================
+videoeye_add_test(test_csv_export_helper
+    unit/test_csv_export_helper.cpp
+)
+target_link_libraries(test_csv_export_helper PRIVATE
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME CsvExportHelperTests COMMAND test_csv_export_helper)

@@ -5,6 +5,8 @@
 // 从 AnalysisPanel 拆出来的独立页面组件。数据与「诊断与报告」共用同一次全文件
 // 扫描，所以本页不自己发扫描请求 —— 只发 ScanRequested()，由面板统一编排
 // （面板才知道 current_video_path_ / diagnostics_options_ / 进度条总控）。
+// 与码率 GOP / 色彩 HDR 共有的生命周期动作（换文件路径 / 扫描态 / 进度 / 选项
+// 并入）实现在 ScanClient 接口里，由面板按注册表统一驱动。
 
 #include <QWidget>
 #include <QString>
@@ -18,19 +20,20 @@
 #include <QTableWidget>
 
 #include "ui/AnalysisFacade.h"
+#include "ui/analysis_panel/ScanClient.h"
 #include "ui/charts/MetricChartWidget.h"
 
 namespace videoeye {
 namespace ui {
 
-class AudioQcPage : public QWidget {
+class AudioQcPage : public QWidget, public ScanClient {
     Q_OBJECT
 
 public:
     explicit AudioQcPage(QWidget* parent = nullptr);
 
     // 导出 CSV 的默认文件名用当前文件路径拼，面板换文件时同步一次
-    void SetSourcePath(const QString& path) { source_path_ = path; }
+    void SetSourcePath(const QString& path) override { source_path_ = path; }
 
     // 扫描结束后由面板喂结果（qc_report 用于「规则判定」列）
     void SetResult(const model::AnalysisResult& result, const model::QcReport& qc_report);
@@ -39,14 +42,15 @@ public:
     void SetQcReport(const model::QcReport& qc_report);
 
     // 面板发起扫描前调用：把 UI 上的阈值同步进 AnalysisOptions
-    void FillScanOptions(videoeye::AnalysisOptions& options);
+    void FillScanOptions(videoeye::AnalysisOptions& options) override;
 
     // 扫描生命周期由面板驱动（与码率/GOP、色彩/HDR、诊断页保持同步）
-    void SetScanActive(bool active);
-    // 同 BitrateGopPage::IsScanActive: 状态必须可观察，否则"某页卡在扫描中"只能靠肉眼发现
+    void SetScanActive(bool active) override;
+    // 同 BitrateGopPage::IsScanActive: 状态必须可观察，否则"某页卡在扫描中"只能靠肉眼发现。
+    // 不在 ScanClient 接口里：它是给人/测试看的，不是面板驱动页面要用的。
     bool IsScanActive() const { return scan_active_; }
-    void SetProgress(int percent);
-    void SetProgressFormat(const QString& format);
+    void SetProgress(int percent) override;
+    void SetProgressFormat(const QString& format) override;
 
 signals:
     void ScanRequested();

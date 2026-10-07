@@ -515,36 +515,23 @@ void EventTimelineView::OnExportEventCsv() {
         return;
     }
 
-    const QString filename = QFileDialog::getSaveFileName(
-        this,
+    ExportCsvStream(this,
         tr("导出异常事件 CSV"),
         QString("videoeye_events_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
-        tr("CSV 文件 (*.csv);;所有文件 (*)"));
-    if (filename.isEmpty()) {
-        return;
-    }
-
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件:\n%1").arg(filename));
-        return;
-    }
-
-    QTextStream out(&file);
-    out.setEncoding(QStringConverter::Utf8);
-    out << "index,severity,type,stream_index,timestamp_seconds,pts,summary,detail\n";
-    for (const auto& record : analysis_event_records_) {
-        out << record.index << ','
-            << '"' << record.severity << '"' << ','
-            << '"' << record.type << '"' << ','
-            << record.stream_index << ','
-            << QString::number(record.timestamp_seconds, 'f', 6) << ','
-            << record.pts << ','
-            << '"' << record.summary << '"' << ','
-            << '"' << record.detail << '"' << '\n';
-    }
-
-    QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
+        [this](QTextStream& out) {
+            out << "index,severity,type,stream_index,timestamp_seconds,pts,summary,detail\n";
+            for (const auto& record : analysis_event_records_) {
+                out << record.index << ','
+                    << '"' << record.severity << '"' << ','
+                    << '"' << record.type << '"' << ','
+                    << record.stream_index << ','
+                    << QString::number(record.timestamp_seconds, 'f', 6) << ','
+                    << record.pts << ','
+                    << '"' << record.summary << '"' << ','
+                    << '"' << record.detail << '"' << '\n';
+            }
+        },
+        static_cast<int>(analysis_event_records_.size()));
 }
 
 void EventTimelineView::OnExportSyncCsv() {
@@ -553,33 +540,20 @@ void EventTimelineView::OnExportSyncCsv() {
         return;
     }
 
-    const QString filename = QFileDialog::getSaveFileName(
-        this,
+    ExportCsvStream(this,
         tr("导出同步分析 CSV"),
         QString("videoeye_sync_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
-        tr("CSV 文件 (*.csv);;所有文件 (*)"));
-    if (filename.isEmpty()) {
-        return;
-    }
-
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件:\n%1").arg(filename));
-        return;
-    }
-
-    QTextStream out(&file);
-    out.setEncoding(QStringConverter::Utf8);
-    out << "index,audio_timestamp_seconds,video_timestamp_seconds,diff_ms,anchor\n";
-    for (const auto& record : sync_sample_records_) {
-        out << record.index << ','
-            << QString::number(record.audio_timestamp_seconds, 'f', 6) << ','
-            << QString::number(record.video_timestamp_seconds, 'f', 6) << ','
-            << QString::number(record.diff_ms, 'f', 3) << ','
-            << '"' << (record.audio_anchor ? tr("音频") : tr("视频")) << '"' << '\n';
-    }
-
-    QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
+        [this](QTextStream& out) {
+            out << "index,audio_timestamp_seconds,video_timestamp_seconds,diff_ms,anchor\n";
+            for (const auto& record : sync_sample_records_) {
+                out << record.index << ','
+                    << QString::number(record.audio_timestamp_seconds, 'f', 6) << ','
+                    << QString::number(record.video_timestamp_seconds, 'f', 6) << ','
+                    << QString::number(record.diff_ms, 'f', 3) << ','
+                    << '"' << (record.audio_anchor ? tr("音频") : tr("视频")) << '"' << '\n';
+            }
+        },
+        static_cast<int>(sync_sample_records_.size()));
 }
 
 void EventTimelineView::OnExportTimelineCsv() {
@@ -588,33 +562,20 @@ void EventTimelineView::OnExportTimelineCsv() {
         return;
     }
 
-    const QString filename = QFileDialog::getSaveFileName(
-        this,
+    ExportCsvStream(this,
         tr("导出统一时间轴 CSV"),
         QString("videoeye_timeline_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
-        tr("CSV 文件 (*.csv);;所有文件 (*)"));
-    if (filename.isEmpty()) {
-        return;
-    }
-
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件:\n%1").arg(filename));
-        return;
-    }
-
-    QTextStream out(&file);
-    out.setEncoding(QStringConverter::Utf8);
-    out << "index,category,timestamp_seconds,label,detail\n";
-    for (const auto& record : timeline_event_records_) {
-        out << record.index << ','
-            << '"' << record.category << '"' << ','
-            << QString::number(record.timestamp_seconds, 'f', 6) << ','
-            << '"' << record.label << '"' << ','
-            << '"' << record.detail << '"' << '\n';
-    }
-
-    QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
+        [this](QTextStream& out) {
+            out << "index,category,timestamp_seconds,label,detail\n";
+            for (const auto& record : timeline_event_records_) {
+                out << record.index << ','
+                    << '"' << record.category << '"' << ','
+                    << QString::number(record.timestamp_seconds, 'f', 6) << ','
+                    << '"' << record.label << '"' << ','
+                    << '"' << record.detail << '"' << '\n';
+            }
+        },
+        static_cast<int>(timeline_event_records_.size()));
 }
 
 void EventTimelineView::AppendEventRowToTable(const AnalysisEventRecord& record) {

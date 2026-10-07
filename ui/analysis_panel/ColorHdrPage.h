@@ -3,7 +3,8 @@
 // 色彩与 HDR 页：primaries / transfer / matrix / range / bit depth / HDR 元数据。
 //
 // 从 AnalysisPanel 拆出来的独立页面组件。与音频 QC 页一样共用同一次全文件扫描，
-// 扫描请求通过 ScanRequested() 交给面板编排。
+// 扫描请求通过 ScanRequested() 交给面板编排；与另两页共有的生命周期动作
+// （换文件路径 / 扫描态 / 进度 / 选项并入）实现在 ScanClient 接口里。
 
 #include <QWidget>
 #include <QString>
@@ -16,30 +17,32 @@
 #include <QTableWidget>
 
 #include "ui/AnalysisFacade.h"
+#include "ui/analysis_panel/ScanClient.h"
 
 namespace videoeye {
 namespace ui {
 
-class ColorHdrPage : public QWidget {
+class ColorHdrPage : public QWidget, public ScanClient {
     Q_OBJECT
 
 public:
     explicit ColorHdrPage(QWidget* parent = nullptr);
 
-    void SetSourcePath(const QString& path) { source_path_ = path; }
+    void SetSourcePath(const QString& path) override { source_path_ = path; }
     // 异常表来自 QC 规则引擎（category=色彩/HDR），所以要连报告一起给
     void SetResult(const model::AnalysisResult& result, const model::QcReport& qc_report);
 
     // 只换报告（用户在「规则与阈值」页改了规则后重新评估）再刷一次
     void SetQcReport(const model::QcReport& qc_report);
 
-    void FillScanOptions(videoeye::AnalysisOptions& options);
+    void FillScanOptions(videoeye::AnalysisOptions& options) override;
 
-    void SetScanActive(bool active);
-    // 同 BitrateGopPage::IsScanActive: 状态必须可观察，否则"某页卡在扫描中"只能靠肉眼发现
+    void SetScanActive(bool active) override;
+    // 同 BitrateGopPage::IsScanActive: 状态必须可观察，否则"某页卡在扫描中"只能靠肉眼发现。
+    // 不在 ScanClient 接口里：它是给人/测试看的，不是面板驱动页面要用的。
     bool IsScanActive() const { return scan_active_; }
-    void SetProgress(int percent);
-    void SetProgressFormat(const QString& format);
+    void SetProgress(int percent) override;
+    void SetProgressFormat(const QString& format) override;
 
 signals:
     void ScanRequested();

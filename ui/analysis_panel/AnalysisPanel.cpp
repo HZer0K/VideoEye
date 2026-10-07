@@ -23,6 +23,23 @@ namespace {
 constexpr int kUiFlushIntervalMs = 120;
 }  // namespace
 
+// 共用同一次全文件扫描的页面接线：入注册表 + 把「开始/取消」意图接到诊断页总控。
+// 以前三页各写一份（连信号 + FillScanOptions + StartScan），差异只有 FillScanOptions
+// 的具体内容 —— 那由页面自己在 ScanClient 实现里决定。
+template <typename PageT>
+void AnalysisPanel::RegisterScanPage(PageT* page) {
+    scan_clients_.push_back(page);
+    connect(page, &PageT::ScanRequested, this, [this, page]() {
+        if (!diagnostics_page_) return;
+        videoeye::AnalysisOptions options = diagnostics_page_->options();
+        page->FillScanOptions(options);
+        diagnostics_page_->StartScan(options);
+    });
+    connect(page, &PageT::CancelRequested, this, [this]() {
+        if (diagnostics_page_) diagnostics_page_->CancelScan();
+    });
+}
+
 AnalysisPanel::AnalysisPanel(QWidget* parent)
     : QWidget(parent) {
     
@@ -484,14 +501,9 @@ void AnalysisPanel::SetupVisualDefectPage() {
 void AnalysisPanel::SetupBitrateGopPage() {
     bitrate_gop_page_ = new BitrateGopPage(this);
     bitrate_gop_page_->SetSourcePath(QString::fromStdString(current_video_path_));
-    // 扫描请求统一由诊断页编排（页面才持有 facade 与进度条总控）
-    connect(bitrate_gop_page_, &BitrateGopPage::ScanRequested, this, [this]() {
-        videoeye::AnalysisOptions options = diagnostics_page_->options();
-        bitrate_gop_page_->FillScanOptions(options);
-        diagnostics_page_->StartScan(options);
-    });
-    connect(bitrate_gop_page_, &BitrateGopPage::CancelRequested,
-            this, [this]() { if (diagnostics_page_) diagnostics_page_->CancelScan(); });
+    // 扫描请求统一由诊断页编排（页面才持有 facade 与进度条总控）；
+    // 信号接线与其它共用页一样收进 RegisterScanPage。
+    RegisterScanPage(bitrate_gop_page_);
     connect(bitrate_gop_page_, &BitrateGopPage::SeekRequested, this, &AnalysisPanel::SeekRequested);
     connect(bitrate_gop_page_, &BitrateGopPage::SceneLinkRequested,
             this, &AnalysisPanel::OnSceneLinkRequested);
@@ -501,12 +513,7 @@ void AnalysisPanel::SetupBitrateGopPage() {
 void AnalysisPanel::SetupAudioQcPage() {
     audio_qc_page_ = new AudioQcPage(this);
     audio_qc_page_->SetSourcePath(QString::fromStdString(current_video_path_));
-    connect(audio_qc_page_, &AudioQcPage::ScanRequested, this, [this]() {
-        videoeye::AnalysisOptions options = diagnostics_page_->options();
-        audio_qc_page_->FillScanOptions(options);
-        diagnostics_page_->StartScan(options);
-    });
-    connect(audio_qc_page_, &AudioQcPage::CancelRequested, this, [this]() { if (diagnostics_page_) diagnostics_page_->CancelScan(); });
+    RegisterScanPage(audio_qc_page_);
     connect(audio_qc_page_, &AudioQcPage::SeekRequested, this, &AnalysisPanel::SeekRequested);
     AddPageWithScroll(audio_qc_page_, tr("音频 QC"));
 }
@@ -514,12 +521,7 @@ void AnalysisPanel::SetupAudioQcPage() {
 void AnalysisPanel::SetupColorHdrPage() {
     color_hdr_page_ = new ColorHdrPage(this);
     color_hdr_page_->SetSourcePath(QString::fromStdString(current_video_path_));
-    connect(color_hdr_page_, &ColorHdrPage::ScanRequested, this, [this]() {
-        videoeye::AnalysisOptions options = diagnostics_page_->options();
-        color_hdr_page_->FillScanOptions(options);
-        diagnostics_page_->StartScan(options);
-    });
-    connect(color_hdr_page_, &ColorHdrPage::CancelRequested, this, [this]() { if (diagnostics_page_) diagnostics_page_->CancelScan(); });
+    RegisterScanPage(color_hdr_page_);
     AddPageWithScroll(color_hdr_page_, tr("色彩与 HDR"));
 }
 
@@ -678,31 +680,25 @@ void AnalysisPanel::SetupReportingPanelTab() {
 }
 
 void AnalysisPanel::OnScanStarted() {
-    // 与诊断页共用同一次扫描的三页：先把它们的开始/取消状态对齐
-    if (bitrate_gop_page_) bitrate_gop_page_->SetScanActive(true);
-    if (audio_qc_page_) audio_qc_page_->SetScanActive(true);
-    if (color_hdr_page_) color_hdr_page_->SetScanActive(true);
+    // 与诊断页共用同一次扫描的页面：先把它们的开始/取消状态对齐
+    for (ScanClient* page : scan_clients_) page->SetScanActive(true);
 }
 
 void AnalysisPanel::OnScanEnded(DiagnosticsPage::ScanEndReason reason) {
     const bool failed = (reason == DiagnosticsPage::ScanEndReason::Failed);
     const bool completed = (reason == DiagnosticsPage::ScanEndReason::Completed);
 
-    // 共用同一次扫描的三页在这里**一起**回到 Idle。成功 / 取消 / 失败走同一条路径 ——
-    // 以前失败时一个信号都不发，这三页就永远停在扫描态（取消按钮还亮着、"开始分析"
+    // 共用同一次扫描的几页在这里**一起**回到 Idle。成功 / 取消 / 失败走同一条路径 ——
+    // 以前失败时一个信号都不发，这几页就永远停在扫描态（取消按钮还亮着、"开始分析"
     // 永久禁用），与诊断页显示的"失败"互相矛盾，用户只能重开文件才恢复。
     const QString final_format = failed ? tr("扫描失败")
                                         : (completed ? tr("分析完成") : tr("已取消（结果不完整）"));
     const int final_progress = failed ? 0 : 100;
-    auto settle = [&](auto* page) {
-        if (!page) return;
+    for (ScanClient* page : scan_clients_) {
         page->SetScanActive(false);
         page->SetProgress(final_progress);
         page->SetProgressFormat(final_format);
-    };
-    settle(bitrate_gop_page_);
-    settle(audio_qc_page_);
-    settle(color_hdr_page_);
+    }
 
     // 失败没有可用结果: 状态恢复完就结束, 不要用空结果盖掉页面上的旧内容。
     if (failed) return;
@@ -748,17 +744,9 @@ void AnalysisPanel::OnScanEnded(DiagnosticsPage::ScanEndReason reason) {
 
 // 扫描进行中的进度同步（只在扫描中才有意义；终态收口统一在 OnScanEnded）
 void AnalysisPanel::OnDiagnosticsProgress(double percent, const QString& stage) {
-    if (bitrate_gop_page_) {
-        bitrate_gop_page_->SetProgress(static_cast<int>(percent));
-        bitrate_gop_page_->SetProgressFormat(stage + " %p%");
-    }
-    if (audio_qc_page_) {
-        audio_qc_page_->SetProgress(static_cast<int>(percent));
-        audio_qc_page_->SetProgressFormat(stage + " %p%");
-    }
-    if (color_hdr_page_) {
-        color_hdr_page_->SetProgress(static_cast<int>(percent));
-        color_hdr_page_->SetProgressFormat(stage + " %p%");
+    for (ScanClient* page : scan_clients_) {
+        page->SetProgress(static_cast<int>(percent));
+        page->SetProgressFormat(stage + " %p%");
     }
 }
 

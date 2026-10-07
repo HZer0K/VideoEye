@@ -336,49 +336,34 @@ void MacroblockView::OnExportCsv() {
         return;
     }
 
-    QString filename = QFileDialog::getSaveFileName(
-        this, tr("导出宏块分析 CSV"),
+    ExportCsvStream(this, tr("导出宏块分析 CSV"),
         QStringLiteral("macroblock_frame_%1.csv").arg(ma.frame_index),
-        tr("CSV 文件 (*.csv)"));
-    if (filename.isEmpty()) return;
+        [this, &ma](QTextStream& stream) {
+            stream << "序号,块X,块Y,块宽,块高,MVx(raw),MVy(raw),精度分母,MVx(px),MVy(px),幅度(px),角度(度),参考方向\n";
 
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("错误"), tr("无法打开文件写入"));
-        return;
-    }
+            for (int i = 0; i < static_cast<int>(ma.motion_vectors.size()); ++i) {
+                const auto& mv = ma.motion_vectors[i];
+                double scale = (mv.motion_scale > 0) ? static_cast<double>(mv.motion_scale) : 1.0;
+                double px_mx = mv.motion_x / scale;
+                double px_my = mv.motion_y / scale;
+                QString ref = (mv.source < 0) ? "forward" : (mv.source > 0) ? "backward" : "none";
 
-    QTextStream stream(&file);
-    stream.setEncoding(QStringConverter::Utf8);
-    // BOM for Excel
-    stream << "\xEF\xBB\xBF";
-    stream << "序号,块X,块Y,块宽,块高,MVx(raw),MVy(raw),精度分母,MVx(px),MVy(px),幅度(px),角度(度),参考方向\n";
-
-    for (int i = 0; i < static_cast<int>(ma.motion_vectors.size()); ++i) {
-        const auto& mv = ma.motion_vectors[i];
-        double scale = (mv.motion_scale > 0) ? static_cast<double>(mv.motion_scale) : 1.0;
-        double px_mx = mv.motion_x / scale;
-        double px_my = mv.motion_y / scale;
-        QString ref = (mv.source < 0) ? "forward" : (mv.source > 0) ? "backward" : "none";
-
-        stream << i << ","
-               << mv.block_x << ","
-               << mv.block_y << ","
-               << static_cast<int>(mv.block_w) << ","
-               << static_cast<int>(mv.block_h) << ","
-               << mv.motion_x << ","
-               << mv.motion_y << ","
-               << mv.motion_scale << ","
-               << QString::number(px_mx, 'f', 4) << ","
-               << QString::number(px_my, 'f', 4) << ","
-               << QString::number(mv.motion_magnitude, 'f', 4) << ","
-               << QString::number(mv.motion_angle, 'f', 2) << ","
-               << ref << "\n";
-    }
-    file.close();
-
-    QMessageBox::information(this, tr("成功"),
-        tr("已导出 %1 条运动矢量到:\n%2").arg(ma.motion_vectors.size()).arg(filename));
+                stream << i << ","
+                       << mv.block_x << ","
+                       << mv.block_y << ","
+                       << static_cast<int>(mv.block_w) << ","
+                       << static_cast<int>(mv.block_h) << ","
+                       << mv.motion_x << ","
+                       << mv.motion_y << ","
+                       << mv.motion_scale << ","
+                       << QString::number(px_mx, 'f', 4) << ","
+                       << QString::number(px_my, 'f', 4) << ","
+                       << QString::number(mv.motion_magnitude, 'f', 4) << ","
+                       << QString::number(mv.motion_angle, 'f', 2) << ","
+                       << ref << "\n";
+            }
+        },
+        static_cast<int>(ma.motion_vectors.size()));
 }
 
 }  // namespace ui

@@ -146,26 +146,16 @@ void SceneChangePage::OnExportCsv() {
         QMessageBox::information(this, tr("提示"), tr("当前没有可导出的切换点数据。"));
         return;
     }
-    const QString filename = QFileDialog::getSaveFileName(this, tr("导出切换点 CSV"),
+    ExportCsvStream(this, tr("导出切换点 CSV"),
         source_path_.section('/', -1) + "_scenecut.csv",
-        tr("CSV 文件 (*.csv)"));
-    if (filename.isEmpty()) return;
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("错误"), tr("无法打开文件: ") + filename);
-        return;
-    }
-    QTextStream stream(&file);
-    stream.setEncoding(QStringConverter::Utf8);
-    stream << "\xEF\xBB\xBF";
-    stream << "frame_index,timestamp_seconds,score\n";
-    for (const auto& r : records_) {
-        stream << r.frame_index << "," << QString::number(r.timestamp, 'f', 3) << ","
-               << QString::number(r.score, 'f', 4) << "\n";
-    }
-    file.close();
-    QMessageBox::information(this, tr("成功"), tr("已导出 %1 个切换点到:\n%2")
-        .arg(records_.size()).arg(filename));
+        [this](QTextStream& stream) {
+            stream << "frame_index,timestamp_seconds,score\n";
+            for (const auto& r : records_) {
+                stream << r.frame_index << "," << QString::number(r.timestamp, 'f', 3) << ","
+                       << QString::number(r.score, 'f', 4) << "\n";
+            }
+        },
+        static_cast<int>(records_.size()));
 }
 
 void SceneChangePage::Reset() {

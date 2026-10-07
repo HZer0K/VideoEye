@@ -173,35 +173,22 @@ void AudioFrameTableWidget::OnExportAudioFrameCsv() {
         return;
     }
 
-    const QString filename = QFileDialog::getSaveFileName(
-        this,
+    ExportCsvStream(this,
         tr("导出音频帧 CSV"),
         QString("videoeye_audio_frames_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
-        tr("CSV 文件 (*.csv);;所有文件 (*)"));
-    if (filename.isEmpty()) {
-        return;
-    }
-
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件:\n%1").arg(filename));
-        return;
-    }
-
-    QTextStream out(&file);
-    out.setEncoding(QStringConverter::Utf8);
-    out << "index,timestamp_seconds,pts,sample_count,sample_rate,channels,byte_count\n";
-    for (const auto& record : audio_frame_records_) {
-        out << record.index << ','
-            << QString::number(record.timestamp_seconds, 'f', 6) << ','
-            << record.pts << ','
-            << record.sample_count << ','
-            << record.sample_rate << ','
-            << record.channels << ','
-            << record.byte_count << '\n';
-    }
-
-    QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
+        [this](QTextStream& out) {
+            out << "index,timestamp_seconds,pts,sample_count,sample_rate,channels,byte_count\n";
+            for (const auto& record : audio_frame_records_) {
+                out << record.index << ','
+                    << QString::number(record.timestamp_seconds, 'f', 6) << ','
+                    << record.pts << ','
+                    << record.sample_count << ','
+                    << record.sample_rate << ','
+                    << record.channels << ','
+                    << record.byte_count << '\n';
+            }
+        },
+        static_cast<int>(audio_frame_records_.size()));
 }
 
 }  // namespace ui

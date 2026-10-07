@@ -667,35 +667,24 @@ void AudioQcPage::OnExportCsv() {
         QMessageBox::information(this, tr("提示"), tr("请先完成一次音频 QC 分析。"));
         return;
     }
-    const QString path = QFileDialog::getSaveFileName(
-        this, tr("导出响度曲线 CSV"),
+    ExportCsvStream(this, tr("导出响度曲线 CSV"),
         source_path_ + QStringLiteral("_audioqc.csv"),
-        QStringLiteral("CSV (*.csv)"));
-    if (path.isEmpty()) return;
-
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件: %1").arg(path));
-        return;
-    }
-    QTextStream out(&file);
-    out << "time_s,momentary_lufs,short_term_lufs,integrated_lufs,rms_dbfs,"
-           "sample_peak_dbfs,true_peak_dbtp,correlation,silent\n";
-    for (const auto& p : result_.audio_qc.loudness_points) {
-        out << QString::number(p.timestamp_seconds, 'f', 3) << ','
-            << QString::number(p.momentary_lufs, 'f', 2) << ','
-            << QString::number(p.short_term_lufs, 'f', 2) << ','
-            << QString::number(p.integrated_lufs, 'f', 2) << ','
-            << QString::number(p.rms_dbfs, 'f', 2) << ','
-            << QString::number(p.sample_peak_dbfs, 'f', 2) << ','
-            << QString::number(p.true_peak_dbtp, 'f', 2) << ','
-            << QString::number(p.correlation, 'f', 4) << ','
-            << (p.silent ? 1 : 0) << '\n';
-    }
-    file.close();
-    QMessageBox::information(this, tr("导出完成"),
-                             tr("已导出 %1 个采样点。")
-                                 .arg(result_.audio_qc.loudness_points.size()));
+        [this](QTextStream& out) {
+            out << "time_s,momentary_lufs,short_term_lufs,integrated_lufs,rms_dbfs,"
+                   "sample_peak_dbfs,true_peak_dbtp,correlation,silent\n";
+            for (const auto& p : result_.audio_qc.loudness_points) {
+                out << QString::number(p.timestamp_seconds, 'f', 3) << ','
+                    << QString::number(p.momentary_lufs, 'f', 2) << ','
+                    << QString::number(p.short_term_lufs, 'f', 2) << ','
+                    << QString::number(p.integrated_lufs, 'f', 2) << ','
+                    << QString::number(p.rms_dbfs, 'f', 2) << ','
+                    << QString::number(p.sample_peak_dbfs, 'f', 2) << ','
+                    << QString::number(p.true_peak_dbtp, 'f', 2) << ','
+                    << QString::number(p.correlation, 'f', 4) << ','
+                    << (p.silent ? 1 : 0) << '\n';
+            }
+        },
+        static_cast<int>(result_.audio_qc.loudness_points.size()));
 }
 
 void AudioQcPage::SetResult(const model::AnalysisResult& result,

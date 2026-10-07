@@ -256,37 +256,24 @@ void PacketTableWidget::OnExportPacketCsv() {
         return;
     }
 
-    const QString filename = QFileDialog::getSaveFileName(
-        this,
+    ExportCsvStream(this,
         tr("导出包分析 CSV"),
         QString("videoeye_packets_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
-        tr("CSV 文件 (*.csv);;所有文件 (*)"));
-    if (filename.isEmpty()) {
-        return;
-    }
-
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件:\n%1").arg(filename));
-        return;
-    }
-
-    QTextStream out(&file);
-    out.setEncoding(QStringConverter::Utf8);
-    out << "index,stream_index,timestamp_seconds,pts,dts,duration,size,flags,file_pos\n";
-    for (const auto& record : packet_records_) {
-        out << record.index << ','
-            << record.stream_index << ','
-            << QString::number(record.timestamp_seconds, 'f', 6) << ','
-            << record.pts << ','
-            << record.dts << ','
-            << record.duration << ','
-            << record.size << ','
-            << '"' << PacketFlagsToString(record.flags) << '"' << ','
-            << record.pos << '\n';
-    }
-
-    QMessageBox::information(this, tr("成功"), tr("CSV 已导出到:\n%1").arg(filename));
+        [this](QTextStream& out) {
+            out << "index,stream_index,timestamp_seconds,pts,dts,duration,size,flags,file_pos\n";
+            for (const auto& record : packet_records_) {
+                out << record.index << ','
+                    << record.stream_index << ','
+                    << QString::number(record.timestamp_seconds, 'f', 6) << ','
+                    << record.pts << ','
+                    << record.dts << ','
+                    << record.duration << ','
+                    << record.size << ','
+                    << '"' << PacketFlagsToString(record.flags) << '"' << ','
+                    << record.pos << '\n';
+            }
+        },
+        static_cast<int>(packet_records_.size()));
 }
 
 void PacketTableWidget::FlushPendingPacketTableUpdates() {

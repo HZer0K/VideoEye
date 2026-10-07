@@ -335,44 +335,31 @@ void ColorHdrPage::OnExportCsv() {
         QMessageBox::information(this, tr("提示"), tr("请先完成一次色彩/HDR 分析。"));
         return;
     }
-    const QString path = QFileDialog::getSaveFileName(
-        this, tr("导出色彩与 HDR 信息 CSV"),
-        source_path_ + QStringLiteral("_colorhdr.csv"),
-        QStringLiteral("CSV (*.csv)"));
-    if (path.isEmpty()) return;
-
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件: %1").arg(path));
-        return;
-    }
-
-    auto csv_field = [](const QString& text) {
-        QString out = text;
-        out.replace(QLatin1Char('"'), QStringLiteral("\"\""));
-        return QLatin1Char('"') + out + QLatin1Char('"');
-    };
-
     const auto& analysis = result_.color_hdr;
-    QTextStream out(&file);
-    out << "\xEF\xBB\xBF";  // UTF-8 BOM for Excel
-    out << "分组,项目,值,说明\n";
-    auto write_rows = [&](const char* /*unused*/, const QString& group,
-                          const std::vector<model::ColorKeyValueRow>& rows) {
-        for (const auto& row : rows) {
-            out << csv_field(group) << ','
-                << csv_field(QString::fromStdString(row.key)) << ','
-                << csv_field(QString::fromStdString(row.value)) << ','
-                << csv_field(QString::fromStdString(row.note)) << '\n';
-        }
-    };
-    write_rows(nullptr, tr("色彩信息"), model::BuildColorRows(analysis));
-    write_rows(nullptr, tr("HDR 元数据"), model::BuildHdrRows(analysis));
-    file.close();
+    ExportCsvStream(this, tr("导出色彩与 HDR 信息 CSV"),
+        source_path_ + QStringLiteral("_colorhdr.csv"),
+        [this, &analysis](QTextStream& out) {
+            auto csv_field = [](const QString& text) {
+                QString out = text;
+                out.replace(QLatin1Char('"'), QStringLiteral("\"\""));
+                return QLatin1Char('"') + out + QLatin1Char('"');
+            };
 
-    const int rows = static_cast<int>(model::BuildColorRows(analysis).size() +
-                                      model::BuildHdrRows(analysis).size());
-    QMessageBox::information(this, tr("导出完成"), tr("已导出 %1 行。").arg(rows));
+            out << "分组,项目,值,说明\n";
+            auto write_rows = [&](const char* /*unused*/, const QString& group,
+                                  const std::vector<model::ColorKeyValueRow>& rows) {
+                for (const auto& row : rows) {
+                    out << csv_field(group) << ','
+                        << csv_field(QString::fromStdString(row.key)) << ','
+                        << csv_field(QString::fromStdString(row.value)) << ','
+                        << csv_field(QString::fromStdString(row.note)) << '\n';
+                }
+            };
+            write_rows(nullptr, tr("色彩信息"), model::BuildColorRows(analysis));
+            write_rows(nullptr, tr("HDR 元数据"), model::BuildHdrRows(analysis));
+        },
+        static_cast<int>(model::BuildColorRows(analysis).size() +
+                         model::BuildHdrRows(analysis).size()));
 }
 
 void ColorHdrPage::SetResult(const model::AnalysisResult& result,

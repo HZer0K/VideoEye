@@ -597,39 +597,28 @@ void SubtitleAuxPage::OnExportSubtitleCsv() {
         QMessageBox::information(this, tr("提示"), tr("当前没有字幕 cue 数据可导出"));
         return;
     }
-    const QString filename = QFileDialog::getSaveFileName(
-        this, tr("导出字幕 cue CSV"), QStringLiteral("subtitle_cues.csv"), tr("CSV 文件 (*.csv)"));
-    if (filename.isEmpty()) return;
-
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("错误"), tr("无法打开文件写入"));
-        return;
-    }
-    QTextStream out(&file);
-    out.setEncoding(QStringConverter::Utf8);
-    out << "\xEF\xBB\xBF";
-    out << "流,序号,开始(秒),结束(秒),时长(秒),字符数,语言,问题代码,文本\n";
-    for (const model::SubtitleCue& cue : r.subtitle.cues) {
-        QStringList codes;
-        for (const model::SubtitleIssue& issue : r.subtitle.issues) {
-            if (issue.stream_index == cue.stream_index && issue.cue_index == cue.index) {
-                codes << QString::fromUtf8(model::SubtitleIssueCode(issue.type));
+    ExportCsvStream(this, tr("导出字幕 cue CSV"), QStringLiteral("subtitle_cues.csv"),
+        [this, &r](QTextStream& out) {
+            out << "流,序号,开始(秒),结束(秒),时长(秒),字符数,语言,问题代码,文本\n";
+            for (const model::SubtitleCue& cue : r.subtitle.cues) {
+                QStringList codes;
+                for (const model::SubtitleIssue& issue : r.subtitle.issues) {
+                    if (issue.stream_index == cue.stream_index && issue.cue_index == cue.index) {
+                        codes << QString::fromUtf8(model::SubtitleIssueCode(issue.type));
+                    }
+                }
+                out << cue.stream_index << ','
+                    << cue.index + 1 << ','
+                    << QString::number(cue.start_seconds, 'f', 3) << ','
+                    << QString::number(cue.end_seconds, 'f', 3) << ','
+                    << QString::number(cue.duration_seconds, 'f', 3) << ','
+                    << cue.char_count << ','
+                    << AuxCsvField(QString::fromStdString(cue.language)) << ','
+                    << AuxCsvField(codes.join(QStringLiteral(" "))) << ','
+                    << AuxCsvField(QString::fromStdString(cue.text)) << '\n';
             }
-        }
-        out << cue.stream_index << ','
-            << cue.index + 1 << ','
-            << QString::number(cue.start_seconds, 'f', 3) << ','
-            << QString::number(cue.end_seconds, 'f', 3) << ','
-            << QString::number(cue.duration_seconds, 'f', 3) << ','
-            << cue.char_count << ','
-            << AuxCsvField(QString::fromStdString(cue.language)) << ','
-            << AuxCsvField(codes.join(QStringLiteral(" "))) << ','
-            << AuxCsvField(QString::fromStdString(cue.text)) << '\n';
-    }
-    file.close();
-    QMessageBox::information(this, tr("导出完成"),
-                             tr("已导出 %1 行。").arg(static_cast<int>(r.subtitle.cues.size())));
+        },
+        static_cast<int>(r.subtitle.cues.size()));
 }
 
 void SubtitleAuxPage::OnExportTimecodeCsv() {
@@ -638,40 +627,26 @@ void SubtitleAuxPage::OnExportTimecodeCsv() {
         QMessageBox::information(this, tr("提示"), tr("当前没有时码 / 章节数据可导出"));
         return;
     }
-    const QString filename = QFileDialog::getSaveFileName(
-        this, tr("导出时码与章节 CSV"), QStringLiteral("timecode_chapters.csv"), tr("CSV 文件 (*.csv)"));
-    if (filename.isEmpty()) return;
-
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("错误"), tr("无法打开文件写入"));
-        return;
-    }
-    QTextStream out(&file);
-    out.setEncoding(QStringConverter::Utf8);
-    out << "\xEF\xBB\xBF";
-    out << "章节序号,起点(秒),终点(秒),时长(秒),标题,语言,问题\n";
-    for (const model::ChapterInfo& ch : tc.chapters) {
-        QStringList problems;
-        for (const model::ChapterIssue& issue : tc.chapter_issues) {
-            if (issue.chapter_index == ch.index) {
-                problems << QString::fromUtf8(model::ChapterIssueCode(issue.type));
+    ExportCsvStream(this, tr("导出时码与章节 CSV"), QStringLiteral("timecode_chapters.csv"),
+        [this, &tc](QTextStream& out) {
+            out << "章节序号,起点(秒),终点(秒),时长(秒),标题,语言,问题\n";
+            for (const model::ChapterInfo& ch : tc.chapters) {
+                QStringList problems;
+                for (const model::ChapterIssue& issue : tc.chapter_issues) {
+                    if (issue.chapter_index == ch.index) {
+                        problems << QString::fromUtf8(model::ChapterIssueCode(issue.type));
+                    }
+                }
+                out << ch.index + 1 << ','
+                    << QString::number(ch.start_seconds, 'f', 3) << ','
+                    << QString::number(ch.end_seconds, 'f', 3) << ','
+                    << QString::number(ch.Duration(), 'f', 3) << ','
+                    << AuxCsvField(QString::fromStdString(ch.title)) << ','
+                    << AuxCsvField(QString::fromStdString(ch.language)) << ','
+                    << AuxCsvField(problems.join(QStringLiteral(" "))) << '\n';
             }
-        }
-        out << ch.index + 1 << ','
-            << QString::number(ch.start_seconds, 'f', 3) << ','
-            << QString::number(ch.end_seconds, 'f', 3) << ','
-            << QString::number(ch.Duration(), 'f', 3) << ','
-            << AuxCsvField(QString::fromStdString(ch.title)) << ','
-            << AuxCsvField(QString::fromStdString(ch.language)) << ','
-            << AuxCsvField(problems.join(QStringLiteral(" "))) << '\n';
-    }
-    file.close();
-    QMessageBox::information(this, tr("导出完成"),
-                             tr("已导出 %1 行（首帧时码见时码页：%2）。")
-                                 .arg(static_cast<int>(tc.chapters.size()))
-                                 .arg(tc.has_primary ? QString::fromStdString(tc.primary.ToString())
-                                                     : tr("无")));
+        },
+        static_cast<int>(tc.chapters.size()));
 }
 
 void SubtitleAuxPage::OnExportScte35Csv() {
@@ -680,44 +655,33 @@ void SubtitleAuxPage::OnExportScte35Csv() {
         QMessageBox::information(this, tr("提示"), tr("当前没有 SCTE-35 cue 数据可导出"));
         return;
     }
-    const QString filename = QFileDialog::getSaveFileName(
-        this, tr("导出 SCTE-35 CSV"), QStringLiteral("scte35_cues.csv"), tr("CSV 文件 (*.csv)"));
-    if (filename.isEmpty()) return;
-
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("错误"), tr("无法打开文件写入"));
-        return;
-    }
-    QTextStream out(&file);
-    out.setEncoding(QStringConverter::Utf8);
-    out << "\xEF\xBB\xBF";
-    out << "序号,流,包时间(秒),命令,Event ID,OUT/IN,splice时间(秒),时长(秒),"
-           "分段类型ID,分段时长(秒),CRC\n";
-    for (const model::Scte35Cue& cue : aux.cues) {
-        const model::Scte35Segmentation* seg =
-            cue.segmentation.empty() ? nullptr : &cue.segmentation.front();
-        out << cue.index + 1 << ','
-            << cue.stream_index << ','
-            << QString::number(cue.packet_pts_seconds, 'f', 3) << ','
-            << QString::fromUtf8(model::Scte35CommandCode(cue.command)) << ','
-            << (cue.has_event_id ? QStringLiteral("0x%1").arg(cue.event_id, 8, 16, QLatin1Char('0'))
-                                 : QStringLiteral("-")) << ','
-            << QString::fromUtf8(cue.NetworkIndicatorText()) << ','
-            << (cue.has_splice_time ? QString::number(cue.splice_time_seconds, 'f', 3)
-                                    : QStringLiteral("-")) << ','
-            << (cue.has_duration ? QString::number(cue.break_duration_seconds, 'f', 3)
-                                 : QStringLiteral("-")) << ','
-            << (seg != nullptr ? QStringLiteral("0x%1").arg(seg->type_id, 2, 16, QLatin1Char('0'))
-                               : QStringLiteral("-")) << ','
-            << (seg != nullptr && seg->has_duration ? QString::number(seg->duration_seconds, 'f', 3)
-                                                    : QStringLiteral("-")) << ','
-            << (cue.crc_checked ? (cue.crc_valid ? QStringLiteral("ok") : QStringLiteral("bad"))
-                                : QStringLiteral("n/a")) << '\n';
-    }
-    file.close();
-    QMessageBox::information(this, tr("导出完成"),
-                             tr("已导出 %1 行。").arg(static_cast<int>(aux.cues.size())));
+    ExportCsvStream(this, tr("导出 SCTE-35 CSV"), QStringLiteral("scte35_cues.csv"),
+        [this, &aux](QTextStream& out) {
+            out << "序号,流,包时间(秒),命令,Event ID,OUT/IN,splice时间(秒),时长(秒),"
+                   "分段类型ID,分段时长(秒),CRC\n";
+            for (const model::Scte35Cue& cue : aux.cues) {
+                const model::Scte35Segmentation* seg =
+                    cue.segmentation.empty() ? nullptr : &cue.segmentation.front();
+                out << cue.index + 1 << ','
+                    << cue.stream_index << ','
+                    << QString::number(cue.packet_pts_seconds, 'f', 3) << ','
+                    << QString::fromUtf8(model::Scte35CommandCode(cue.command)) << ','
+                    << (cue.has_event_id ? QStringLiteral("0x%1").arg(cue.event_id, 8, 16, QLatin1Char('0'))
+                                         : QStringLiteral("-")) << ','
+                    << QString::fromUtf8(cue.NetworkIndicatorText()) << ','
+                    << (cue.has_splice_time ? QString::number(cue.splice_time_seconds, 'f', 3)
+                                            : QStringLiteral("-")) << ','
+                    << (cue.has_duration ? QString::number(cue.break_duration_seconds, 'f', 3)
+                                         : QStringLiteral("-")) << ','
+                    << (seg != nullptr ? QStringLiteral("0x%1").arg(seg->type_id, 2, 16, QLatin1Char('0'))
+                                       : QStringLiteral("-")) << ','
+                    << (seg != nullptr && seg->has_duration ? QString::number(seg->duration_seconds, 'f', 3)
+                                                            : QStringLiteral("-")) << ','
+                    << (cue.crc_checked ? (cue.crc_valid ? QStringLiteral("ok") : QStringLiteral("bad"))
+                                        : QStringLiteral("n/a")) << '\n';
+            }
+        },
+        static_cast<int>(aux.cues.size()));
 }
 
 void SubtitleAuxPage::OnExportMetadataCsv() {
@@ -726,27 +690,16 @@ void SubtitleAuxPage::OnExportMetadataCsv() {
         QMessageBox::information(this, tr("提示"), tr("当前没有 metadata 数据可导出"));
         return;
     }
-    const QString filename = QFileDialog::getSaveFileName(
-        this, tr("导出 metadata CSV"), QStringLiteral("metadata_tags.csv"), tr("CSV 文件 (*.csv)"));
-    if (filename.isEmpty()) return;
-
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("错误"), tr("无法打开文件写入"));
-        return;
-    }
-    QTextStream out(&file);
-    out.setEncoding(QStringConverter::Utf8);
-    out << "\xEF\xBB\xBF";
-    out << "作用域,键,值\n";
-    for (const model::MetadataTagEntry& tag : aux.metadata) {
-        out << AuxCsvField(QString::fromStdString(tag.scope)) << ','
-            << AuxCsvField(QString::fromStdString(tag.key)) << ','
-            << AuxCsvField(QString::fromStdString(tag.value)) << '\n';
-    }
-    file.close();
-    QMessageBox::information(this, tr("导出完成"),
-                             tr("已导出 %1 行。").arg(static_cast<int>(aux.metadata.size())));
+    ExportCsvStream(this, tr("导出 metadata CSV"), QStringLiteral("metadata_tags.csv"),
+        [this, &aux](QTextStream& out) {
+            out << "作用域,键,值\n";
+            for (const model::MetadataTagEntry& tag : aux.metadata) {
+                out << AuxCsvField(QString::fromStdString(tag.scope)) << ','
+                    << AuxCsvField(QString::fromStdString(tag.key)) << ','
+                    << AuxCsvField(QString::fromStdString(tag.value)) << '\n';
+            }
+        },
+        static_cast<int>(aux.metadata.size()));
 }
 
 void SubtitleAuxPage::SetResult(const model::AnalysisResult& result) {

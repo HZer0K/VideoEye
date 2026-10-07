@@ -527,3 +527,10 @@ python scripts/check_layering.py
 2026-10-07 落地**：唯一入口是 `SetAnalysisFeature(model::AnalysisFeature, bool)`
 （`MediaPlayer.h`），旧 `SetXxx` 已私有化，`MainWindow` 只做枚举到调用的转发 ——
 B 路线 3、4、7、8 四处接线已经收敛，且没有引入任何抽象层。
+
+**`MediaPlayer` 公共面按门面维护（2026-10-07 复核：37 个公共方法 / 43 条信号，不含
+构造与析构；`MediaPlayer.cpp` 457 行）**：播放机械已拆进 `ExportController` /
+`ContainerInspectionController` / `RealtimeAnalysisController` / `OpenController`
+四个控制器（§5.3），它只做"对外转发 + 会话编排"。新增能力**优先加在对应控制器上**，
+确需动 `MediaPlayer` 时先评估是不是既有控制器的职责 —— 公共面每多一个方法，
+调用方就多一条绕过控制器状态的路径，门面迟早重新长回上帝对象。

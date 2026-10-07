@@ -528,34 +528,23 @@ void BitrateGopPage::OnExportGopCsv() {
         QMessageBox::information(this, tr("提示"), tr("当前没有可导出的 GOP 数据。"));
         return;
     }
-    const QString filename = QFileDialog::getSaveFileName(
-        this, tr("导出 GOP 列表 CSV"),
+    ExportCsvStream(this, tr("导出 GOP 列表 CSV"),
         source_path_.section('/', -1) + "_gop.csv",
-        tr("CSV 文件 (*.csv)"));
-    if (filename.isEmpty()) return;
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("错误"), tr("无法打开文件: ") + filename);
-        return;
-    }
-    QTextStream stream(&file);
-    stream.setEncoding(QStringConverter::Utf8);
-    stream << "\xEF\xBB\xBF";
-    stream << "index,start_seconds,end_seconds,duration_seconds,frame_count,byte_count,"
-              "avg_bitrate_kbps,i_count,p_count,b_count,unknown_count,max_frame_bytes,"
-              "closed_gop,complete\n";
-    for (const auto& g : result_.bitrate_gop.gops) {
-        stream << g.index << "," << QString::number(g.start_seconds, 'f', 3) << ","
-               << QString::number(g.end_seconds, 'f', 3) << ","
-               << QString::number(g.DurationSeconds(), 'f', 3) << "," << g.frame_count << ","
-               << g.byte_count << "," << QString::number(g.AverageBitrateKbps(), 'f', 3) << ","
-               << g.i_count << "," << g.p_count << "," << g.b_count << "," << g.unknown_count << ","
-               << g.max_frame_bytes << "," << (g.closed_gop ? 1 : 0) << ","
-               << (g.complete ? 1 : 0) << "\n";
-    }
-    file.close();
-    QMessageBox::information(this, tr("成功"),
-        tr("已导出 %1 个 GOP 到:\n%2").arg(result_.bitrate_gop.gops.size()).arg(filename));
+        [this](QTextStream& stream) {
+            stream << "index,start_seconds,end_seconds,duration_seconds,frame_count,byte_count,"
+                      "avg_bitrate_kbps,i_count,p_count,b_count,unknown_count,max_frame_bytes,"
+                      "closed_gop,complete\n";
+            for (const auto& g : result_.bitrate_gop.gops) {
+                stream << g.index << "," << QString::number(g.start_seconds, 'f', 3) << ","
+                       << QString::number(g.end_seconds, 'f', 3) << ","
+                       << QString::number(g.DurationSeconds(), 'f', 3) << "," << g.frame_count << ","
+                       << g.byte_count << "," << QString::number(g.AverageBitrateKbps(), 'f', 3) << ","
+                       << g.i_count << "," << g.p_count << "," << g.b_count << "," << g.unknown_count << ","
+                       << g.max_frame_bytes << "," << (g.closed_gop ? 1 : 0) << ","
+                       << (g.complete ? 1 : 0) << "\n";
+            }
+        },
+        static_cast<int>(result_.bitrate_gop.gops.size()));
 }
 
 void BitrateGopPage::OnExportCurveCsv() {
@@ -568,34 +557,24 @@ void BitrateGopPage::OnExportCurveCsv() {
         QMessageBox::information(this, tr("提示"), tr("当前没有可导出的码率曲线数据。"));
         return;
     }
-    const QString filename = QFileDialog::getSaveFileName(
-        this, tr("导出码率曲线 CSV"),
+    ExportCsvStream(this, tr("导出码率曲线 CSV"),
         source_path_.section('/', -1) + "_bitrate.csv",
-        tr("CSV 文件 (*.csv)"));
-    if (filename.isEmpty()) return;
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("错误"), tr("无法打开文件: ") + filename);
-        return;
-    }
-    QTextStream stream(&file);
-    stream.setEncoding(QStringConverter::Utf8);
-    stream << "\xEF\xBB\xBF";
-    // 第一列时间，之后每个窗口一列
-    stream << "timestamp_seconds";
-    for (const auto& c : bg.window_curves) stream << "," << QString::fromStdString(c.name);
-    stream << "\n";
-    // 各窗口采样点数量不同，按默认窗口的时间轴输出，其余窗口按最近时刻取值
-    const auto& base = bg.window_curves.front();
-    for (const auto& s : base.samples) {
-        stream << QString::number(s.timestamp_seconds, 'f', 3);
-        for (const auto& c : bg.window_curves) {
-            stream << "," << QString::number(c.ValueAt(s.timestamp_seconds), 'f', 3);
-        }
-        stream << "\n";
-    }
-    file.close();
-    QMessageBox::information(this, tr("成功"), tr("已导出码率曲线到:\n%1").arg(filename));
+        [this, &bg](QTextStream& stream) {
+            // 第一列时间，之后每个窗口一列
+            stream << "timestamp_seconds";
+            for (const auto& c : bg.window_curves) stream << "," << QString::fromStdString(c.name);
+            stream << "\n";
+            // 各窗口采样点数量不同，按默认窗口的时间轴输出，其余窗口按最近时刻取值
+            const auto& base = bg.window_curves.front();
+            for (const auto& s : base.samples) {
+                stream << QString::number(s.timestamp_seconds, 'f', 3);
+                for (const auto& c : bg.window_curves) {
+                    stream << "," << QString::number(c.ValueAt(s.timestamp_seconds), 'f', 3);
+                }
+                stream << "\n";
+            }
+        },
+        static_cast<int>(bg.window_curves.front().samples.size()));
 }
 
 void BitrateGopPage::OnExportAnomalyCsv() {
@@ -603,34 +582,22 @@ void BitrateGopPage::OnExportAnomalyCsv() {
         QMessageBox::information(this, tr("提示"), tr("当前没有可导出的异常数据。"));
         return;
     }
-    const QString filename = QFileDialog::getSaveFileName(
-        this, tr("导出异常 CSV"),
+    ExportCsvStream(this, tr("导出异常 CSV"),
         source_path_.section('/', -1) + "_bitrate_anomaly.csv",
-        tr("CSV 文件 (*.csv)"));
-    if (filename.isEmpty()) return;
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("错误"), tr("无法打开文件: ") + filename);
-        return;
-    }
-    QTextStream stream(&file);
-    stream.setEncoding(QStringConverter::Utf8);
-    stream << "\xEF\xBB\xBF";
-    stream << "type,start_seconds,end_seconds,value,threshold,unit,detail,suggestion\n";
-    for (const auto& a : result_.bitrate_gop.anomalies) {
-        stream << QString::fromStdString(model::ToString(a.type)) << ","
-               << QString::number(a.start_seconds, 'f', 3) << ","
-               << QString::number(a.end_seconds, 'f', 3) << ","
-               << QString::number(a.value, 'f', 3) << ","
-               << QString::number(a.threshold, 'f', 3) << ","
-               << QString::fromStdString(a.unit) << ",\""
-               << QString::fromStdString(a.detail).replace('"', "'") << "\",\""
-               << QString::fromStdString(a.suggestion).replace('"', "'") << "\"\n";
-    }
-    file.close();
-    QMessageBox::information(this, tr("成功"),
-        tr("已导出 %1 条异常到:\n%2")
-            .arg(result_.bitrate_gop.anomalies.size()).arg(filename));
+        [this](QTextStream& stream) {
+            stream << "type,start_seconds,end_seconds,value,threshold,unit,detail,suggestion\n";
+            for (const auto& a : result_.bitrate_gop.anomalies) {
+                stream << QString::fromStdString(model::ToString(a.type)) << ","
+                       << QString::number(a.start_seconds, 'f', 3) << ","
+                       << QString::number(a.end_seconds, 'f', 3) << ","
+                       << QString::number(a.value, 'f', 3) << ","
+                       << QString::number(a.threshold, 'f', 3) << ","
+                       << QString::fromStdString(a.unit) << ",\""
+                       << QString::fromStdString(a.detail).replace('"', "'") << "\",\""
+                       << QString::fromStdString(a.suggestion).replace('"', "'") << "\"\n";
+            }
+        },
+        static_cast<int>(result_.bitrate_gop.anomalies.size()));
 }
 
 void BitrateGopPage::SetResult(const model::AnalysisResult& result) {

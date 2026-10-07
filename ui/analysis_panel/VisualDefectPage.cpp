@@ -388,35 +388,23 @@ void VisualDefectPage::OnExportCsv() {
         QMessageBox::information(this, tr("提示"), tr("当前没有画面质量缺陷数据可导出"));
         return;
     }
-    QString filename = QFileDialog::getSaveFileName(
-        this, tr("导出画面质量缺陷 CSV"), QStringLiteral("visual_defects.csv"),
-        tr("CSV 文件 (*.csv)"));
-    if (filename.isEmpty()) return;
-
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("错误"), tr("无法打开文件写入"));
-        return;
-    }
-    QTextStream stream(&file);
-    stream.setEncoding(QStringConverter::Utf8);
-    stream << "\xEF\xBB\xBF";   // BOM for Excel
-    stream << "序号,类型,类型代码,严重度,开始(秒),结束(秒),时长(秒),触发值,阈值,说明\n";
-    for (const auto& d : records_) {
-        stream << d.id << ","
-               << QString::fromUtf8(model::ToString(d.type)) << ","
-               << QString::fromUtf8(model::DefectTypeCode(d.type)) << ","
-               << QString::fromUtf8(model::ToString(d.severity)) << ","
-               << QString::number(d.start_seconds, 'f', 3) << ","
-               << QString::number(d.end_seconds, 'f', 3) << ","
-               << QString::number(d.DurationSeconds(), 'f', 3) << ","
-               << QString::number(d.score, 'f', 6) << ","
-               << QString::number(d.threshold, 'f', 6) << ","
-               << QString::fromUtf8(d.description.c_str()) << "\n";
-    }
-    file.close();
-    QMessageBox::information(this, tr("成功"),
-        tr("已导出 %1 条缺陷到:\n%2").arg(records_.size()).arg(filename));
+    ExportCsvStream(this, tr("导出画面质量缺陷 CSV"), QStringLiteral("visual_defects.csv"),
+        [this](QTextStream& stream) {
+            stream << "序号,类型,类型代码,严重度,开始(秒),结束(秒),时长(秒),触发值,阈值,说明\n";
+            for (const auto& d : records_) {
+                stream << d.id << ","
+                       << QString::fromUtf8(model::ToString(d.type)) << ","
+                       << QString::fromUtf8(model::DefectTypeCode(d.type)) << ","
+                       << QString::fromUtf8(model::ToString(d.severity)) << ","
+                       << QString::number(d.start_seconds, 'f', 3) << ","
+                       << QString::number(d.end_seconds, 'f', 3) << ","
+                       << QString::number(d.DurationSeconds(), 'f', 3) << ","
+                       << QString::number(d.score, 'f', 6) << ","
+                       << QString::number(d.threshold, 'f', 6) << ","
+                       << QString::fromUtf8(d.description.c_str()) << "\n";
+            }
+        },
+        static_cast<int>(records_.size()));
 }
 
 void VisualDefectPage::OnExportEvidence() {
