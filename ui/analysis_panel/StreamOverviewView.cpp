@@ -51,6 +51,7 @@ void StreamOverviewView::SetupUi() {
         rl->addStretch();
 
         toggle_ = new QCheckBox(tr("启用分析"), row);
+        toggle_->setToolTip(tr("播放时实时采集，复用播放所需数据，几乎无额外开销，默认开启。"));
         rl->addWidget(toggle_);
 
         export_button_ = new QPushButton(tr("导出分析报告"), row);

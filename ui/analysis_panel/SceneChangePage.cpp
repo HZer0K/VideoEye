@@ -41,8 +41,9 @@ void SceneChangePage::SetupUi() {
         QLabel* title = new QLabel(tr("场景切换检测（镜头边界）"), row);
         rl->addWidget(title);
         rl->addStretch();
-        QCheckBox* toggle = new QCheckBox(tr("启用检测"), row);
+        QCheckBox* toggle = new QCheckBox(tr("启用分析"), row);
         toggle->setChecked(feature_checked_);
+        toggle->setToolTip(tr("播放时实时采集，需要额外的解码与逐帧比较，默认关闭，按需开启。"));
         connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
             feature_checked_ = checked;
             emit FeatureToggled(checked);
@@ -52,7 +53,7 @@ void SceneChangePage::SetupUi() {
     }
 
     summary_label_ = new QLabel(
-        tr("启用检测并在播放中分析视频，将在此列出检测到的镜头切换点（时间戳 + 切换强度）。"));
+        tr("开启分析后播放视频，将在此列出检测到的镜头切换点（时间戳 + 切换强度）。"));
     summary_label_->setWordWrap(true);
     layout->addWidget(summary_label_);
 
@@ -130,7 +131,7 @@ void SceneChangePage::UpdateSummary() {
     const int n = static_cast<int>(records_.size());
     if (n == 0) {
         summary_label_->setText(
-            tr("启用检测并在播放中分析视频，将在此列出检测到的镜头切换点（时间戳 + 切换强度）。"));
+            tr("开启分析后播放视频，将在此列出检测到的镜头切换点（时间戳 + 切换强度）。"));
         return;
     }
     double sum = 0.0;

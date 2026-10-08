@@ -6,7 +6,7 @@
 //   - AppendResult()   播放回调喂检测结果（面板转发 MainWindow 的信号）
 //   - FlushPending()   面板的批量刷新定时器到点时调用，只补增量行
 //   - records()        「码率与 GOP」页画标记 / 关联关键帧时要读
-//   - FeatureToggled() 页内「启用检测」开关，由面板转成统一的 feature 信号
+//   - FeatureToggled() 页内「启用分析」开关，由面板转成统一的 feature 信号
 // 页面本体就是 QWidget（外部 QStackedWidget 的一页），不需要再包一层 tab widget。
 
 #include <QWidget>
@@ -29,7 +29,7 @@ class SceneChangePage : public QWidget {
     Q_OBJECT
 
 public:
-    // feature_checked: 「启用检测」开关的初值（面板按 AnalysisFeature 表给进来）
+    // feature_checked: 「启用分析」开关的初值（面板按 AnalysisFeature 表给进来）
     explicit SceneChangePage(bool feature_checked, QWidget* parent = nullptr);
 
     // 导出 CSV 的默认文件名用当前文件路径拼，面板换文件时同步一次

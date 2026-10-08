@@ -43,10 +43,10 @@ void VisualDefectPage::SetupUi() {
         title->setWordWrap(true);
         rl->addWidget(title);
         rl->addStretch();
-        QCheckBox* toggle = new QCheckBox(tr("启用检测"), row);
+        QCheckBox* toggle = new QCheckBox(tr("启用分析"), row);
         toggle->setObjectName(QStringLiteral("VisualDefectEnable"));
         toggle->setChecked(feature_checked_);
-        toggle->setToolTip(tr("播放时对视频帧做画面体检。开销主要在降采样与边缘统计，按需开启。"));
+        toggle->setToolTip(tr("播放时对视频帧做画面体检，需要额外的降采样与边缘统计，默认关闭，按需开启。"));
         connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
             feature_checked_ = checked;
             emit FeatureToggled(checked);
@@ -122,7 +122,7 @@ void VisualDefectPage::SetupUi() {
     }
 
     summary_label_ = new QLabel(
-        tr("启用检测后播放视频，将在此列出人眼可见的画面问题（黑场、冻结、马赛克、模糊、闪烁、曝光、色偏、梳齿、黑边）。"
+        tr("开启分析后播放视频，将在此列出人眼可见的画面问题（黑场、冻结、马赛克、模糊、闪烁、曝光、色偏、梳齿、黑边）。"
            "点击列表行可跳转播放器。"), this);
     summary_label_->setWordWrap(true);
     layout->addWidget(summary_label_);
@@ -265,7 +265,7 @@ void VisualDefectPage::UpdateSummary() {
 
     if (samples_.empty() && records_.empty()) {
         summary_label_->setText(
-            tr("暂无画面质量数据。启用检测后播放视频即可开始分析。"));
+            tr("暂无画面质量数据。开启分析后播放视频即可开始采集。"));
         return;
     }
 

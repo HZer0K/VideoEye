@@ -2,7 +2,6 @@
 
 // 具体分析器的头文件只出现在这里 —— 它们是实现细节，不进 facade 的公开头。
 #include "core/analysis/diagnostics/QcRuleEngine.h"
-#include "core/analysis/diagnostics/TimelineAnalyzer.h"
 #include "core/analysis/quality/BitrateGopAnalyzer.h"
 #include "core/qt/QtAnalysisController.h"
 
@@ -15,7 +14,6 @@ namespace ui {
 struct AnalysisFacade::Impl {
     qt::QtAnalysisController coordinator;
     videoeye::QcRuleEngine qc_rule_engine;
-    videoeye::TimelineAnalyzer timeline_analyzer;
     model::AnalysisResult result;
 };
 
@@ -90,26 +88,6 @@ void AnalysisFacade::SetRules(const std::vector<model::QcRule>& rules) {
 
 model::QcReport AnalysisFacade::Evaluate(const model::AnalysisResult& r) const {
     return impl_->qc_rule_engine.Evaluate(r);
-}
-
-void AnalysisFacade::OnSyncSample(double audio_ms, double video_ms) {
-    impl_->timeline_analyzer.OnSyncSample(audio_ms, video_ms);
-}
-
-void AnalysisFacade::OnPacket(const model::PacketTiming& packet) {
-    impl_->timeline_analyzer.OnPacket(packet);
-}
-
-void AnalysisFacade::OnFrame(const model::FrameTimingInfo& frame) {
-    impl_->timeline_analyzer.OnFrame(frame);
-}
-
-model::TimelineAnalysisResult AnalysisFacade::Snapshot() const {
-    return impl_->timeline_analyzer.Snapshot();
-}
-
-void AnalysisFacade::Reset() {
-    impl_->timeline_analyzer.Reset();
 }
 
 void AnalysisFacade::ApplySceneChanges(const std::vector<model::SceneChangeResult>& changes,

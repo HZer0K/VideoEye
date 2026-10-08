@@ -143,7 +143,7 @@ initialization / media）→ `SegmentTimeline`（`<S t= d= r=/>`），
   与参考层偏差超过 50 ms 的单元格标红
 - **问题表**：按严重度排序并着色（与 QC 页同一套配色）
 
-工具栏支持「重新扫描」「复制 JSON」「导出 JSON」。
+工具栏支持「开始分析」「复制 JSON」「导出 JSON」。
 
 ## 5. 接入点一览
 

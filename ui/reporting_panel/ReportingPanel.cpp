@@ -13,6 +13,7 @@
 #include <QMessageBox>
 #include <QVBoxLayout>
 
+#include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/qc/QcProfileMapper.h"
 #include "core/reporting/QcReportExporter.h"
 
@@ -245,6 +246,9 @@ void ReportingPanel::BuildUi() {
 
     connect(profile_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &ReportingPanel::OnProfileChanged);
+
+    // 初始没有结果：导出按钮必须是禁用的（BuildUi 里创建的控件默认 enabled）。
+    UpdateExportEnabled();
 }
 
 // ===========================================================================
@@ -255,20 +259,25 @@ void ReportingPanel::SetCurrentFile(const QString& path) {
     // 这里存什么就是什么 —— 主窗口可能同步过来一个网络源（http/rtmp/rtsp）。归类不在
     // 这一层做：统一交给 qc::ClassifyMediaInput（QcRunner::AnalyzeFile 内部调用），
     // 于是单文件 QC 能据 Kind 走 FFmpeg 网络输入，本地批量扫描则只接受本地文件。
-    current_path_ = path.toStdString();
+    const std::string new_path = path.toStdString();
+    const bool changed = (new_path != current_path_);
+    current_path_ = new_path;
     current_file_label_->setText(path.isEmpty() ? tr("未选择") : path);
-    if (path.isEmpty()) {
-        verdict_label_->setText(tr("尚无结果"));
-        issue_count_label_->setText(QString());
-    }
+    // 换文件后上一次的结果不再对应当前文件 —— 标为过期并禁用导出，避免把旧结果导出去。
+    // 同一个路径重复同步（主窗口可能不止一处发）不算切换，保留结果。
+    if (changed) InvalidateResult();
 }
 
 void ReportingPanel::OnProfileChanged(int index) {
     Q_UNUSED(index);
     const QString id = profile_combo_->currentData().toString();
     if (const qc::QcProfile* builtin = qc::FindBuiltinQcProfile(id.toStdString())) {
+        // 模板变了：上一次按旧模板算的结论不再作数，但原始 AnalysisResult 在满足
+        // 复用条件时可以直接拿来按新模板重算规则（见 RefreshResultForProfile）。
+        const bool changed = (profile_.id != builtin->id);
         profile_ = *builtin;
         profile_description_->setText(QString::fromStdString(profile_.description));
+        if (changed) RefreshResultForProfile();
     }
 }
 
@@ -295,6 +304,9 @@ void ReportingPanel::OnLoadProfileFile() {
     profile_description_->setText(tr("自定义模板: %1（%2）")
                                       .arg(QString::fromStdString(profile_.name),
                                            QString::fromStdString(profile_.description)));
+    // 自定义模板同样只决定"重算规则"：满足复用条件（同文件版本 + 选项覆盖 + 完整成功）
+    // 时按它重算，否则标为过期。
+    RefreshResultForProfile();
     emit StatusMessage(tr("已加载模板 %1").arg(path));
 }
 
@@ -323,14 +335,32 @@ void ReportingPanel::OnAnalyzeCurrentFile() {
 }
 
 void ReportingPanel::OnExportSingleReport() {
-    // 导出的是最近一次分析结果；没跑过就先跑一次，避免导出空报告
-    if (last_result_.report.rules.empty() && !last_result_.ok) {
-        OnAnalyzeCurrentFile();
+    if (current_path_.empty()) {
+        QMessageBox::information(this, tr("未选择文件"), tr("请先在主界面打开一个媒体文件。"));
         return;
     }
+    if (busy_) {
+        QMessageBox::information(this, tr("任务进行中"), tr("有任务正在运行，请先等待或停止。"));
+        return;
+    }
+
+    // 结果是否新鲜由 (文件, 模板) 共同决定。过期时不再"只启动分析就结束"，而是先取
+    // 好输出目录、登记待导出，待本次分析成功后在同一目录继续导出 —— 用户点一次导出
+    // 就能拿到当前文件 + 当前模板的报告，不会静默导出上一次的结果。
+    if (!HasFreshResult()) {
+        const QString directory = QFileDialog::getExistingDirectory(this, tr("选择报告输出目录"));
+        if (directory.isEmpty()) return;
+        pending_export_dir_ = directory;
+        StartSingleAnalysis(current_path_);
+        return;
+    }
+
     const QString directory = QFileDialog::getExistingDirectory(this, tr("选择报告输出目录"));
     if (directory.isEmpty()) return;
+    ExportSingleResult(directory);
+}
 
+void ReportingPanel::ExportSingleResult(const QString& directory) {
     reporting::QcExportBundle bundle;
     bundle.profile_id = profile_.id;
     bundle.profile_name = profile_.name;
@@ -526,6 +556,9 @@ void ReportingPanel::StartSingleAnalysis(const std::string& path) {
 
 void ReportingPanel::RunSingle(std::shared_ptr<AnalysisTask> task, const std::string& path) {
     const qc::QcProfile profile = profile_;
+    // 冻结这次分析实际用的参数（模板决定深度，见 OptionsForDepth）。它既是引擎的输入，
+    // 也是之后"换模板能否复用这份结果"的判据（见 result_stamp.h 的 AnalysisOptionsCovers）。
+    const videoeye::AnalysisOptions analyzed_options = qc::OptionsForDepth(profile.depth);
     qc::QcRunner runner;
     qc::QcRunCallbacks callbacks;
     callbacks.progress = [this, task](double percent, const std::string& stage) {
@@ -545,32 +578,46 @@ void ReportingPanel::RunSingle(std::shared_ptr<AnalysisTask> task, const std::st
     // 中断的调用里时，关界面变成"5s 等任务体 + 30s 等引擎"两段预算相加。超预算时
     // QcRunner 只持 Box 的 worker 会被放弃(detach)，RunSingle 照常返回。
     qc::QcRunResult result = runner.AnalyzeFile(
-        path, profile, qc::OptionsForDepth(profile.depth), callbacks, kDefaultRecycleBudgetMs);
+        path, profile, analyzed_options, callbacks, kDefaultRecycleBudgetMs);
     // 终态由结果 + 取消令牌共同判定：用户取消 -> Canceled；分析跑完 -> Succeeded；
     // 其余（打开失败 / 超时 / 引擎报错）-> Failed。
     const task::TaskState terminal =
         task->cancel.IsCanceled() ? task::TaskState::Canceled
                                   : (result.ok ? task::TaskState::Succeeded
                                                : task::TaskState::Failed);
-    PostToUi(task, [this, task, result, terminal]() {
-        last_result_ = result;
-        UpdateVerdictLabel(result);
+    // 结果的新鲜度要素在发起分析时（主线程已冻结 profile_ 与 path）就固定下来，
+    // 完成回调里按同一份身份登记，避免分析期间状态被改导致"结果对不上文件/模板"。
+    const std::string analyzed_path = path;
+    const std::string analyzed_profile_id = profile.id;
+    PostToUi(task, [this, task, result, terminal, analyzed_path, analyzed_profile_id,
+                    analyzed_options]() {
         if (result.ok) {
-            log_view_->setPlainText(QString::fromStdString(reporting::QcReportExporter::BuildText(
-                [&result, this]() {
-                    reporting::QcExportBundle bundle;
-                    bundle.profile_id = profile_.id;
-                    bundle.profile_name = profile_.name;
-                    bundle.run = result;
-                    return bundle;
-                }())));
+            last_result_ = result;
+            result_stamp_ = ResultStamp{};
+            result_stamp_.path = analyzed_path;
+            result_stamp_.profile_id = analyzed_profile_id;
+            result_stamp_.valid = true;
+            // 复用判据：这次用的参数、扫描终态、分析时本地文件版本（网络源为 invalid）。
+            result_stamp_.options = analyzed_options;
+            result_stamp_.scan_status = result.analysis.scan_status;
+            result_stamp_.version = QueryFileVersion(analyzed_path);
         } else {
-            log_view_->setPlainText(tr("分析失败: %1").arg(QString::fromStdString(result.error)));
+            // 失败结果不作数：导出继续禁用，等待用户重新分析。
+            result_stamp_ = ResultStamp{};
         }
+        ShowResult(result);
         SetBusy(false);
         // 正常完成路径必须归还终态：否则 TaskManager::State() 会一直停在 Running，
         // single_task_ / batch_task_ 长期持有过期句柄（见 FinishTask 注释）。
         FinishTask(task, terminal);
+
+        // 无结果时点导出 -> 分析成功后在同一目录继续导出；失败则丢弃待导出，避免
+        // 悄悄导出空报告。
+        if (!pending_export_dir_.isEmpty()) {
+            const QString directory = pending_export_dir_;
+            pending_export_dir_.clear();
+            if (result.ok) ExportSingleResult(directory);
+        }
     });
 }
 
@@ -734,13 +781,74 @@ void ReportingPanel::UpdateVerdictLabel(const qc::QcRunResult& result) {
             .arg(result.report.CountBySeverity(model::IssueSeverity::Info)));
 }
 
+void ReportingPanel::ShowResult(const qc::QcRunResult& result) {
+    UpdateVerdictLabel(result);
+    if (!result.ok) {
+        log_view_->setPlainText(
+            tr("分析失败: %1").arg(QString::fromStdString(result.error)));
+        return;
+    }
+    reporting::QcExportBundle bundle;
+    bundle.profile_id = profile_.id;
+    bundle.profile_name = profile_.name;
+    bundle.run = result;
+    log_view_->setPlainText(QString::fromStdString(reporting::QcReportExporter::BuildText(bundle)));
+}
+
+void ReportingPanel::RefreshResultForProfile() {
+    const videoeye::AnalysisOptions required = qc::OptionsForDepth(profile_.depth);
+    const FileVersionStamp current_version = QueryFileVersion(current_path_);
+    if (!CanReuseAnalysis(result_stamp_, current_path_, current_version, required)) {
+        // 文件版本变了 / 新模板要求更全的分析 / 上次没跑完 —— 都不能靠旧数据糊过去。
+        InvalidateResult();
+        return;
+    }
+
+    // 复用缓存的原始 AnalysisResult，只按新模板重算规则（不重跑 FFmpeg / 不解码）。
+    QcRuleEngine engine(qc::BuildRulesForProfile(profile_));
+    last_result_.report = engine.Evaluate(last_result_.analysis);
+    last_result_.profile_id = profile_.id;
+    // 重算后这份结果对应的就是新模板 —— 身份戳同步更新，导出保持可用。
+    result_stamp_.profile_id = profile_.id;
+    ShowResult(last_result_);
+    UpdateExportEnabled();
+    emit StatusMessage(tr("已复用现有分析结果，按模板 %1 重算规则")
+                           .arg(QString::fromStdString(profile_.name)));
+}
+
 void ReportingPanel::SetBusy(bool busy) {
     busy_ = busy;
     start_button_->setEnabled(!busy);
     analyze_button_->setEnabled(!busy);
-    export_button_->setEnabled(!busy);
     cancel_button_->setEnabled(busy);
     profile_combo_->setEnabled(!busy);
+    // 导出使能 = 空闲 && 结果新鲜。不能只看 busy_ —— 否则切换文件/模板后仍可点导出。
+    UpdateExportEnabled();
+}
+
+void ReportingPanel::InvalidateResult() {
+    result_stamp_ = ResultStamp{};
+    // 有文件时明确提示"过期需重分析"，没文件时回到初始文案。
+    if (current_path_.empty()) {
+        verdict_label_->setText(tr("尚无结果"));
+    } else {
+        verdict_label_->setText(tr("结果已过期，请重新分析"));
+    }
+    verdict_label_->setStyleSheet(QString());
+    issue_count_label_->setText(QString());
+    UpdateExportEnabled();
+}
+
+void ReportingPanel::UpdateExportEnabled() {
+    if (export_button_) export_button_->setEnabled(!busy_ && HasFreshResult());
+}
+
+bool ReportingPanel::HasFreshResult() const {
+    return IsResultFresh(result_stamp_, current_path_, profile_.id);
+}
+
+bool ReportingPanel::IsExportEnabled() const {
+    return export_button_ && export_button_->isEnabled();
 }
 
 qc::QcProfile ReportingPanel::CurrentProfile() const { return profile_; }

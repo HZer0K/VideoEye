@@ -325,4 +325,47 @@ TEST(ReportingPanelLifecycle, CooperativeBodyObservesCancelAndIsReclaimed) {
     EXPECT_EQ(task, nullptr) << "RecycleTask 之后应当已置空";
 }
 
+// ---------- 8. 导出使能 = 空闲 && 结果新鲜 ----------
+//
+// 回归: 旧实现里切换文件 / 模板后 last_result_ 仍留着，导出按钮也照样可用，
+// 于是会把上一次文件（或上一个模板）的结果导出去。现在无新鲜结果时导出必须禁用。
+TEST(ReportingPanelLifecycle, ExportDisabledWithoutFreshResult) {
+    const App app;
+    auto* panel = new videoeye::ui::ReportingPanel;
+    EXPECT_FALSE(panel->HasFreshResult()) << "新面板没有任何结果";
+    EXPECT_FALSE(panel->IsExportEnabled()) << "无结果时导出必须禁用";
+
+    const std::string file = MakeProbeFile();
+    panel->SetCurrentFile(QString::fromStdString(file));
+    EXPECT_FALSE(panel->HasFreshResult()) << "只切了文件、还没分析，不算新鲜";
+    EXPECT_FALSE(panel->IsExportEnabled());
+
+    // 再切到另一个文件：依旧不得出现"可导出"的状态。
+    panel->SetCurrentFile(QString::fromStdString(file + ".other"));
+    EXPECT_FALSE(panel->HasFreshResult());
+    EXPECT_FALSE(panel->IsExportEnabled());
+    delete panel;
+}
+
+// ---------- 9. 分析失败不产生新鲜结果，导出保持禁用 ----------
+TEST(ReportingPanelLifecycle, FailedAnalysisLeavesExportDisabled) {
+    const App app;
+    const std::string file = MakeProbeFile();
+    ASSERT_FALSE(file.empty());
+
+    auto* panel = new videoeye::ui::ReportingPanel;
+    panel->SetCurrentFile(QString::fromStdString(file));
+    QMetaObject::invokeMethod(panel, "OnAnalyzeCurrentFile");
+
+    const auto t0 = Clock::now();
+    while (panel->IsTaskRunning() && ElapsedMs(t0) < 8000) {
+        QCoreApplication::processEvents();
+        std::this_thread::sleep_for(Ms(5));
+    }
+
+    EXPECT_FALSE(panel->HasFreshResult()) << "垃圾文件分析必然失败，不得登记为新鲜结果";
+    EXPECT_FALSE(panel->IsExportEnabled()) << "失败后导出必须保持禁用";
+    delete panel;
+}
+
 }  // namespace

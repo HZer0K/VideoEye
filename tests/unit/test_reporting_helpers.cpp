@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -11,9 +12,11 @@
 #include "core/domain/model/AnalysisResult.h"
 #include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/qc/QcProfile.h"
+#include "core/qc/QcProfileMapper.h"
 #include "core/qc/QcReportFormat.h"
 #include "ui/reporting_panel/analysis_task.h"
 #include "ui/reporting_panel/report_path.h"
+#include "ui/reporting_panel/result_stamp.h"
 
 namespace fs = std::filesystem;
 
@@ -21,16 +24,23 @@ namespace fs = std::filesystem;
 // 所以这里补一个命名空间别名，免得把每条 using 都改成 videoeye::model::Xxx。
 namespace model = videoeye::model;
 
+using videoeye::AnalysisOptions;
 using videoeye::model::AnalysisResult;
 using videoeye::model::AnalysisStatus;
 using videoeye::QcRuleEngine;
 using videoeye::qc::QcProfile;
 using videoeye::qc::QcReportFormat;
 using videoeye::qc::QcRunResult;
+using videoeye::ui::AnalysisOptionsCovers;
 using videoeye::ui::AnalysisTask;
 using videoeye::ui::ApplyExportPaths;
+using videoeye::ui::CanReuseAnalysis;
+using videoeye::ui::FileVersionStamp;
+using videoeye::ui::IsResultFresh;
+using videoeye::ui::QueryFileVersion;
 using videoeye::ui::RecycleTask;
 using videoeye::ui::ReportBasePath;
+using videoeye::ui::ResultStamp;
 
 namespace {
 
@@ -290,6 +300,176 @@ TEST(QcScanStatusTest, CancelledIsNotCompleted) {
     const auto report = QcRuleEngine().Evaluate(r);
     EXPECT_FALSE(report.completed);
     EXPECT_FALSE(report.partial);
+}
+
+// ---------------------------------------------------------------------------
+// 报告页"结果新鲜度"：切换文件 / 模板后上一次结果必须作废，否则会把旧结果导出去。
+// （UI 侧的导出按钮使能就是这套判定的直接映射。）
+// ---------------------------------------------------------------------------
+TEST(ResultFreshnessTest, MatchingFileAndProfileIsFresh) {
+    const ResultStamp stamp{"a.mp4", "hls-vod", true};
+    EXPECT_TRUE(IsResultFresh(stamp, "a.mp4", "hls-vod"));
+}
+
+TEST(ResultFreshnessTest, SwitchingFileInvalidates) {
+    const ResultStamp stamp{"a.mp4", "hls-vod", true};
+    EXPECT_FALSE(IsResultFresh(stamp, "b.mp4", "hls-vod"))
+        << "切换到另一个文件后旧结果必须过期";
+}
+
+TEST(ResultFreshnessTest, SwitchingProfileInvalidates) {
+    const ResultStamp stamp{"a.mp4", "hls-vod", true};
+    EXPECT_FALSE(IsResultFresh(stamp, "a.mp4", "broadcast"))
+        << "切换到另一个模板后旧结果必须过期";
+}
+
+TEST(ResultFreshnessTest, InvalidStampOrEmptyPathIsNeverFresh) {
+    EXPECT_FALSE(IsResultFresh(ResultStamp{}, "a.mp4", "hls-vod"))
+        << "没产出过结果（失败/未分析）永远不新鲜";
+    EXPECT_FALSE(IsResultFresh(ResultStamp{"", "", true}, "a.mp4", "hls-vod"));
+    EXPECT_FALSE(IsResultFresh(ResultStamp{"a.mp4", "hls-vod", true}, "", "hls-vod"))
+        << "未选择文件时不新鲜（导出应禁用）";
+}
+
+// ---------------------------------------------------------------------------
+// 报告页结果复用：换模板时只有在"同一文件版本 + 所需分析选项已覆盖 + 扫描完整成功"
+// 三个条件同时成立时才复用缓存的原始 AnalysisResult，否则必须重新分析。
+// ---------------------------------------------------------------------------
+TEST(AnalysisOptionsCoversTest, DeeperCachedCoversShallowerRequired) {
+    const auto deep = videoeye::qc::OptionsForDepth(videoeye::qc::QcAnalysisDepth::Deep);
+    const auto standard = videoeye::qc::OptionsForDepth(videoeye::qc::QcAnalysisDepth::Standard);
+    const auto fast = videoeye::qc::OptionsForDepth(videoeye::qc::QcAnalysisDepth::Fast);
+
+    EXPECT_TRUE(AnalysisOptionsCovers(deep, deep));
+    EXPECT_TRUE(AnalysisOptionsCovers(deep, standard));
+    EXPECT_TRUE(AnalysisOptionsCovers(deep, fast));
+    EXPECT_TRUE(AnalysisOptionsCovers(standard, fast));
+    // 反向不行：更浅的结果覆盖不了更深的分析要求
+    EXPECT_FALSE(AnalysisOptionsCovers(fast, standard)) << "Fast 没跑音频 QC";
+    EXPECT_FALSE(AnalysisOptionsCovers(standard, deep)) << "Standard 没解帧类型";
+}
+
+TEST(AnalysisOptionsCoversTest, CoarserSampleIntervalDoesNotCover) {
+    AnalysisOptions cached;  // 默认 1.0s
+    AnalysisOptions required;
+    required.sample_interval_seconds = 0.5;  // 要求更细
+    EXPECT_FALSE(AnalysisOptionsCovers(cached, required));
+
+    required.sample_interval_seconds = 2.0;  // 要求更粗 -> 覆盖
+    EXPECT_TRUE(AnalysisOptionsCovers(cached, required));
+}
+
+namespace {
+
+videoeye::ui::ResultStamp MakeStamp(const std::string& path,
+                                    const videoeye::ui::FileVersionStamp& version,
+                                    const AnalysisOptions& options,
+                                    videoeye::model::AnalysisStatus status) {
+    videoeye::ui::ResultStamp stamp;
+    stamp.path = path;
+    stamp.profile_id = "deep";
+    stamp.valid = true;
+    stamp.options = options;
+    stamp.scan_status = status;
+    stamp.version = version;
+    return stamp;
+}
+
+videoeye::ui::FileVersionStamp VersionOf(std::uint64_t size, std::int64_t mtime_s) {
+    videoeye::ui::FileVersionStamp v;
+    v.valid = true;
+    v.size = size;
+    v.mtime_s = mtime_s;
+    return v;
+}
+
+}  // namespace
+
+TEST(CanReuseAnalysisTest, SameVersionCoveredAndCompleteIsReusable) {
+    const auto deep = videoeye::qc::OptionsForDepth(videoeye::qc::QcAnalysisDepth::Deep);
+    const auto standard = videoeye::qc::OptionsForDepth(videoeye::qc::QcAnalysisDepth::Standard);
+    const auto stamp = MakeStamp("a.mp4", VersionOf(1024, 100),
+                                 deep, videoeye::model::AnalysisStatus::Complete);
+    EXPECT_TRUE(CanReuseAnalysis(stamp, "a.mp4", VersionOf(1024, 100), standard));
+}
+
+TEST(CanReuseAnalysisTest, FileVersionChangeForcesReanalysis) {
+    const auto options = videoeye::qc::OptionsForDepth(videoeye::qc::QcAnalysisDepth::Deep);
+    const auto stamp = MakeStamp("a.mp4", VersionOf(1024, 100),
+                                 options, videoeye::model::AnalysisStatus::Complete);
+    // 大小变了
+    EXPECT_FALSE(CanReuseAnalysis(stamp, "a.mp4", VersionOf(2048, 100), options));
+    // 修改时间变了
+    EXPECT_FALSE(CanReuseAnalysis(stamp, "a.mp4", VersionOf(1024, 200), options));
+}
+
+TEST(CanReuseAnalysisTest, NetworkUriOrMissingVersionIsNeverReusable) {
+    const auto options = videoeye::qc::OptionsForDepth(videoeye::qc::QcAnalysisDepth::Deep);
+    // 网络源没有本地指纹（valid=false）—— 默认重新分析
+    const auto stamp = MakeStamp("http://host/a.m3u8", videoeye::ui::FileVersionStamp{},
+                                 options, videoeye::model::AnalysisStatus::Complete);
+    EXPECT_FALSE(CanReuseAnalysis(stamp, "http://host/a.m3u8", videoeye::ui::FileVersionStamp{},
+                                  options));
+    // 当前路径取不到指纹同样不复用
+    EXPECT_FALSE(CanReuseAnalysis(stamp, "a.mp4", videoeye::ui::FileVersionStamp{}, options));
+}
+
+TEST(CanReuseAnalysisTest, IncompleteScanIsNeverReusable) {
+    const auto options = videoeye::qc::OptionsForDepth(videoeye::qc::QcAnalysisDepth::Deep);
+    const auto version = VersionOf(1024, 100);
+    EXPECT_FALSE(CanReuseAnalysis(
+        MakeStamp("a.mp4", version, options, videoeye::model::AnalysisStatus::Failed),
+        "a.mp4", version, options));
+    EXPECT_FALSE(CanReuseAnalysis(
+        MakeStamp("a.mp4", version, options, videoeye::model::AnalysisStatus::Cancelled),
+        "a.mp4", version, options));
+    // 抽样完成属于"跑完"，可复用（报告本身会标 partial）
+    EXPECT_TRUE(CanReuseAnalysis(
+        MakeStamp("a.mp4", version, options, videoeye::model::AnalysisStatus::Sampled),
+        "a.mp4", version, options));
+}
+
+TEST(CanReuseAnalysisTest, InsufficientOptionsOrDifferentPathForcesReanalysis) {
+    const auto fast = videoeye::qc::OptionsForDepth(videoeye::qc::QcAnalysisDepth::Fast);
+    const auto deep = videoeye::qc::OptionsForDepth(videoeye::qc::QcAnalysisDepth::Deep);
+    const auto version = VersionOf(1024, 100);
+    const auto stamp = MakeStamp("a.mp4", version, fast, videoeye::model::AnalysisStatus::Complete);
+    // 缓存只跑了 Fast，新模板要求 Deep
+    EXPECT_FALSE(CanReuseAnalysis(stamp, "a.mp4", version, deep));
+    // 换了文件
+    EXPECT_FALSE(CanReuseAnalysis(stamp, "b.mp4", version, fast));
+    // 戳无效（没成功产出过结果）
+    videoeye::ui::ResultStamp invalid = stamp;
+    invalid.valid = false;
+    EXPECT_FALSE(CanReuseAnalysis(invalid, "a.mp4", version, fast));
+}
+
+TEST(QueryFileVersionTest, LocalFileYieldsConsistentVersion) {
+    const auto dir = fs::temp_directory_path() / "ve_result_stamp_version";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    const std::string file = (dir / "probe.bin").string();
+
+    {
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        out << "0123456789";
+    }
+    const auto first = QueryFileVersion(file);
+    const auto second = QueryFileVersion(file);
+    EXPECT_TRUE(first.valid);
+    EXPECT_EQ(first.size, 10u);
+    EXPECT_TRUE(first == second) << "同一文件两次取指纹必须一致";
+
+    fs::remove_all(dir, ec);
+}
+
+TEST(QueryFileVersionTest, MissingFileAndNetworkUriHaveNoVersion) {
+    EXPECT_FALSE(QueryFileVersion("").valid);
+    EXPECT_FALSE(QueryFileVersion("C:/definitely/not/here/ve_nope.mp4").valid)
+        << "取不到指纹时不得冒充可用版本";
+    EXPECT_FALSE(QueryFileVersion("http://127.0.0.1:9/live.m3u8").valid)
+        << "网络源没有本地指纹，默认重新分析";
 }
 
 }  // namespace

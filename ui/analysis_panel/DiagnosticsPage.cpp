@@ -1,16 +1,13 @@
 #include "ui/analysis_panel/DiagnosticsPage.h"
 
-#include <QCursor>
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QMessageBox>
-#include <QToolTip>
 #include <QVBoxLayout>
 
 #include <algorithm>
 #include <chrono>
-#include <limits>
 
 #include "core/reporting/QcReportExporter.h"
 #include "infrastructure/logging/ScopedTimer.h"
@@ -44,11 +41,6 @@ DiagnosticsPage::DiagnosticsPage(QWidget* parent)
             this, &DiagnosticsPage::OnFacadeFailed);
 
     SetupUi();
-
-    // 播放期时间轴的批量刷新节拍：与面板其它表的刷新同频，别每包都重画
-    flush_timer_ = new QTimer(this);
-    connect(flush_timer_, &QTimer::timeout, this, &DiagnosticsPage::FlushTimeline);
-    flush_timer_->start(120);
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +135,18 @@ void DiagnosticsPage::SetupUi() {
         issue_table_->setMinimumHeight(200);
         pl->addWidget(issue_table_);
 
+        // 跳转是按问题清单里选中那一行的位置 seek；时间轴的样本/曲线/导出已收敛到
+        // 「事件与时间轴」页，本页只保留"问题 -> 跳转"这一条动作。
+        QWidget* jump_row = new QWidget(page);
+        QHBoxLayout* jl = new QHBoxLayout(jump_row);
+        jl->setContentsMargins(0, 0, 0, 0);
+        jl->addStretch();
+        QPushButton* jump_button = new QPushButton(tr("跳转到问题位置"), jump_row);
+        jump_button->setToolTip(tr("按当前选中问题的位置执行 seek"));
+        connect(jump_button, &QPushButton::clicked, this, &DiagnosticsPage::OnJumpToIssue);
+        jl->addWidget(jump_button);
+        pl->addWidget(jump_row);
+
         sub_tabs_->addTab(page, tr("问题清单"));
     }
 
@@ -150,9 +154,6 @@ void DiagnosticsPage::SetupUi() {
     SetupRuleTab();
 
     layout->addWidget(sub_tabs_);
-
-    // 子页 2: 时间轴与同步
-    SetupTimelineSubTab();
 
     // 规则表初始内容
     RebuildRuleTable();
@@ -183,56 +184,6 @@ void DiagnosticsPage::SetupRuleTab() {
     pl->addWidget(reset_btn, 0, Qt::AlignRight);
 
     sub_tabs_->addTab(page, tr("规则与阈值"));
-}
-
-void DiagnosticsPage::SetupTimelineSubTab() {
-    timeline_summary_label_ = new QLabel(
-        tr("开启「事件与时间轴」分析并播放，或在本页执行一次全文件扫描，"
-           "将输出 PTS/DTS、音视频同步、帧间隔与 VFR/CFR 判定。"));
-    timeline_summary_label_->setWordWrap(true);
-
-    // 帧间隔曲线 + 问题标记散点
-    timeline_chart_ = new MetricChartWidget(this);
-    timeline_chart_->SetTitle(tr("帧间隔与问题分布"));
-    timeline_interval_series_ = timeline_chart_->AddLineSeries(tr("帧间隔 (ms)"),
-                                                               QColor("#1e88e5"));
-    timeline_marker_series_ = timeline_chart_->AddScatterSeries(tr("问题"), QColor("#e53935"));
-    timeline_marker_series_->SetMarkerSize(10.0);
-    timeline_axis_x_ = timeline_chart_->AxisX();
-    timeline_axis_y_ = timeline_chart_->AxisY();
-    timeline_axis_x_->SetTitleText(tr("时间 (s)"));
-    timeline_axis_y_->SetTitleText(tr("间隔 (ms)"));
-    timeline_chart_->setMinimumHeight(220);
-
-    timeline_issue_table_ = new QTableWidget(0, 6, this);
-    timeline_issue_table_->setHorizontalHeaderLabels(
-        {tr("类型"), tr("严重度"), tr("流"), tr("时间码"), tr("次数"), tr("说明")});
-    timeline_issue_table_->verticalHeader()->setVisible(false);
-    timeline_issue_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    timeline_issue_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    timeline_issue_table_->horizontalHeader()->setStretchLastSection(true);
-    timeline_issue_table_->setMinimumHeight(200);
-
-    QWidget* button_row = new QWidget(this);
-    QHBoxLayout* bl = new QHBoxLayout(button_row);
-    bl->setContentsMargins(0, 0, 0, 0);
-    bl->addStretch();
-    QPushButton* jump_button = new QPushButton(tr("跳转到问题帧"), button_row);
-    jump_button->setToolTip(tr("按当前选中问题的位置执行 seek"));
-    connect(jump_button, &QPushButton::clicked, this, &DiagnosticsPage::OnJumpToIssue);
-    bl->addWidget(jump_button);
-
-    QWidget* page = new QWidget(sub_tabs_);
-    QVBoxLayout* pl = new QVBoxLayout(page);
-    pl->setContentsMargins(2, 2, 2, 2);
-    pl->addWidget(timeline_summary_label_);
-    pl->addWidget(timeline_chart_);
-    pl->addWidget(timeline_issue_table_);
-    pl->addWidget(button_row);
-    sub_tabs_->addTab(page, tr("时间轴与同步"));
-
-    connect(timeline_chart_, &MetricChartWidget::PointHovered,
-            this, &DiagnosticsPage::OnTimelineMarkerHovered);
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +259,7 @@ void DiagnosticsPage::OnFacadeFinished(quint64 generation, bool completed,
                                   .count();
 
     {
-        VE_PERF("DiagnosticsPage::Evaluate(QC 规则 + 时间轴 + 图表)");
+        VE_PERF("DiagnosticsPage::Evaluate(QC 规则 + 图表)");
         Evaluate();
     }
     report_.analysis_elapsed_ms = elapsed_ms;
@@ -348,12 +299,6 @@ void DiagnosticsPage::OnFacadeFailed(quint64 generation, const QString& message)
 void DiagnosticsPage::Evaluate() {
     if (!has_result_) return;
     report_ = facade_->Evaluate(facade_->result());
-
-    // 时间轴与同步诊断：直接复用全文件扫描的 demux 层结果
-    timeline_result_ = facade_->result().timeline;
-    timeline_offline_ = true;
-    RefreshTimelineUi();
-
     RebuildIssueTable();
     UpdateQcChart();
     UpdateQcSummary();
@@ -368,7 +313,7 @@ void DiagnosticsPage::ApplySceneLink(const std::vector<model::SceneChangeResult>
     }
     if (records.empty()) {
         QMessageBox::information(this, tr("提示"),
-            tr("当前没有场景切换数据。请先在「场景切换」页启用检测并播放一段视频。"));
+            tr("当前没有场景切换数据。请先在「场景切换」页开启分析并播放一段视频。"));
         return;
     }
     facade_->ApplySceneChanges(records, gop_options);
@@ -556,181 +501,17 @@ void DiagnosticsPage::OnExportClicked() {
 }
 
 // ---------------------------------------------------------------------------
-// 时间轴与同步（实时：播放逐包/逐帧累积；离线：全文件扫描结果）
+// 跳转到问题位置（问题清单里选中那一行的位置）
 // ---------------------------------------------------------------------------
 
-void DiagnosticsPage::OnSyncSample(double audio_ms, double video_ms) {
-    facade_->OnSyncSample(audio_ms, video_ms);
-    timeline_dirty_ = true;
-}
-
-void DiagnosticsPage::OnPacketTiming(const model::PacketTiming& timing) {
-    facade_->OnPacket(timing);
-    timeline_dirty_ = true;
-}
-
-void DiagnosticsPage::OnFrameTiming(const model::FrameTimingInfo& timing) {
-    facade_->OnFrame(timing);
-    timeline_dirty_ = true;
-}
-
-void DiagnosticsPage::FlushTimeline() {
-    if (!isVisible() || !timeline_dirty_) return;
-    // 实时解码路径：用当前累积状态做一份快照（Finish 在副本上执行，不破坏累积状态）
-    timeline_result_ = facade_->Snapshot();
-    timeline_offline_ = false;
-    RefreshTimelineUi();
-    timeline_dirty_ = false;
-}
-
-void DiagnosticsPage::RefreshTimelineUi() {
-    UpdateTimelineSummary();
-    UpdateTimelineChart();
-
-    if (!timeline_issue_table_) return;
-    timeline_issue_table_->setRowCount(0);
-    const auto& issues = timeline_result_.issues;
-    timeline_issue_table_->setRowCount(static_cast<int>(issues.size()));
-    for (int i = 0; i < static_cast<int>(issues.size()); ++i) {
-        const auto& issue = issues[i];
-        SetTableItemText(timeline_issue_table_, i, 0, QString::fromStdString(issue.title));
-        SetTableItemText(timeline_issue_table_, i, 1, QString::fromStdString(issue.SeverityText()));
-        SetTableItemText(timeline_issue_table_, i, 2,
-                         issue.stream_index >= 0 ? QString::number(issue.stream_index)
-                                                 : tr("文件级"));
-        SetTableItemText(timeline_issue_table_, i, 3,
-                         QString::fromStdString(model::FormatTimestamp(issue.range.start_seconds)));
-        SetTableItemText(timeline_issue_table_, i, 4, QString::number(issue.occurrence_count));
-        SetTableItemText(timeline_issue_table_, i, 5, QString::fromStdString(issue.detail));
-
-        QColor color = QColor("#1565c0");
-        switch (issue.severity) {
-            case model::IssueSeverity::Critical: color = QColor("#c62828"); break;
-            case model::IssueSeverity::Error:    color = QColor("#e53935"); break;
-            case model::IssueSeverity::Warning:  color = QColor("#ef6c00"); break;
-            case model::IssueSeverity::Info:     color = QColor("#1565c0"); break;
-        }
-        if (QTableWidgetItem* cell = timeline_issue_table_->item(i, 1)) {
-            cell->setForeground(color);
-        }
-    }
-    timeline_issue_table_->resizeColumnsToContents();
-}
-
-void DiagnosticsPage::UpdateTimelineSummary() {
-    if (!timeline_summary_label_) return;
-    const auto& r = timeline_result_;
-    if (!r.has_data) {
-        timeline_summary_label_->setText(
-            tr("开启「时间轴与同步」分析并播放，或在本页执行一次全文件扫描，"
-               "将输出 PTS/DTS、音视频同步、帧间隔与 VFR/CFR 判定。"));
-        return;
-    }
-
-    timeline_summary_label_->setText(
-        tr("数据源: %1 ｜ 最大音视频偏移 <b>%2</b> ms ｜ 首帧偏移 %3 ms ｜ 平均帧间隔 %4 ms"
-           "（σ %5 ms, %6~%7 ms）｜ 帧率判定 <b>%8</b> ｜ 视频 %9 ms / 音频 %10 ms"
-           " ｜ 帧 %11 ｜ 关键帧 %12 ｜ 问题 %13")
-            .arg(timeline_offline_ ? tr("全文件扫描") : tr("播放实时"))
-            .arg(QString::number(r.max_av_offset_ms, 'f', 1))
-            .arg(QString::number(r.av_start_offset_ms, 'f', 1))
-            .arg(QString::number(r.avg_frame_interval_ms, 'f', 2))
-            .arg(QString::number(r.frame_interval_stddev_ms, 'f', 2))
-            .arg(QString::number(r.min_frame_interval_ms, 'f', 2))
-            .arg(QString::number(r.max_frame_interval_ms, 'f', 2))
-            .arg(QString::fromStdString(r.FrameRateVerdict()))
-            .arg(QString::number(r.video_duration_ms, 'f', 0))
-            .arg(QString::number(r.audio_duration_ms, 'f', 0))
-            .arg(r.frame_count)
-            .arg(r.key_frame_count)
-            .arg(static_cast<int>(r.issues.size())));
-}
-
-void DiagnosticsPage::UpdateTimelineChart() {
-    if (!timeline_interval_series_) return;
-    timeline_interval_series_->Clear();
-    timeline_marker_series_->Clear();
-    timeline_marker_issue_index_.clear();
-
-    const auto& r = timeline_result_;
-    double max_interval = 1.0;
-    double max_time = 1.0;
-    AppendDecimated(timeline_interval_series_, r.frame_interval_ms, kMaxChartPoints);
-    // 量程取抽稀**前**的真实极值：抽稀只作用于喂给图表的点数，不该把峰值裁掉
-    for (const auto& sample : r.frame_interval_ms.samples) {
-        const double t = sample.timestamp_seconds / 1000.0;   // ms -> s
-        max_interval = std::max(max_interval, sample.value);
-        max_time = std::max(max_time, t);
-    }
-
-    // 问题标记：y 取该时刻的帧间隔（无数据则取 0）；散点是整条系列一起着色的，
-    // 所以颜色按**本批最高严重度**定一次 —— 以前边加边 SetColor，最后一条的颜色
-    // 会盖掉前面所有标记，红/黄的等级区分就看不见了。
-    // （IssueSeverity 的声明顺序就是严重程度递增：Info < Warning < Error < Critical）
-    model::IssueSeverity peak_severity = model::IssueSeverity::Info;
-    for (int i = 0; i < static_cast<int>(r.issues.size()); ++i) {
-        const auto& issue = r.issues[i];
-        const double t = issue.range.start_seconds;
-        if (t < 0.0) continue;
-        const double y = r.frame_interval_ms.ValueAt(issue.range.start_seconds * 1000.0);
-        *timeline_marker_series_ << QPointF(t, y);
-        timeline_marker_issue_index_.append(i);
-        if (static_cast<int>(issue.severity) > static_cast<int>(peak_severity)) {
-            peak_severity = issue.severity;
-        }
-    }
-
-    QColor marker_color = QColor("#1565c0");
-    switch (peak_severity) {
-        case model::IssueSeverity::Critical: marker_color = QColor("#c62828"); break;
-        case model::IssueSeverity::Error:    marker_color = QColor("#e53935"); break;
-        case model::IssueSeverity::Warning:  marker_color = QColor("#ef6c00"); break;
-        case model::IssueSeverity::Info:     marker_color = QColor("#1565c0"); break;
-    }
-    timeline_marker_series_->SetColor(marker_color);
-
-    timeline_axis_x_->SetRange(0, max_time);
-    timeline_axis_y_->SetRange(0, max_interval * 1.2);
-}
-
-void DiagnosticsPage::OnTimelineMarkerHovered(const QPointF& point, bool state) {
-    if (!state || !timeline_marker_series_) return;
-
-    // 命中点定位到问题序号（按下标顺序一一对应）
-    const QList<QPointF> points = timeline_marker_series_->Points();
-    int index = -1;
-    double best = std::numeric_limits<double>::max();
-    for (int i = 0; i < points.size(); ++i) {
-        const double dx = points[i].x() - point.x();
-        const double dy = points[i].y() - point.y();
-        const double dist = dx * dx + dy * dy;
-        if (dist < best) { best = dist; index = i; }
-    }
-    if (index < 0 || index >= timeline_marker_issue_index_.size()) return;
-
-    const int issue_index = timeline_marker_issue_index_[index];
-    if (issue_index < 0 || issue_index >= static_cast<int>(timeline_result_.issues.size())) return;
-    const auto& issue = timeline_result_.issues[issue_index];
-
-    QToolTip::showText(QCursor::pos(),
-        tr("流 #%1\n时间码: %2\n%3 (%4)\n实测: %5 ms / 阈值: %6 ms\n%7")
-            .arg(issue.stream_index)
-            .arg(QString::fromStdString(model::FormatTimestamp(issue.range.start_seconds)))
-            .arg(QString::fromStdString(issue.title))
-            .arg(QString::fromStdString(issue.SeverityText()))
-            .arg(QString::number(issue.metric_value, 'f', 2))
-            .arg(QString::number(issue.threshold, 'f', 2))
-            .arg(QString::fromStdString(issue.detail)));
-}
-
 void DiagnosticsPage::OnJumpToIssue() {
-    if (!timeline_issue_table_) return;
-    const int row = timeline_issue_table_->currentRow();
-    if (row < 0 || row >= static_cast<int>(timeline_result_.issues.size())) {
+    if (!issue_table_) return;
+    const int row = issue_table_->currentRow();
+    if (row < 0 || row >= static_cast<int>(report_.issues.size())) {
         QMessageBox::information(this, tr("提示"), tr("请先在问题列表中选择一条记录。"));
         return;
     }
-    const double seconds = timeline_result_.issues[row].range.start_seconds;
+    const double seconds = report_.issues[row].range.start_seconds;
     if (seconds < 0.0) {
         QMessageBox::information(this, tr("提示"), tr("该问题为文件级问题，没有可跳转的时间点。"));
         return;
@@ -743,24 +524,14 @@ void DiagnosticsPage::OnJumpToIssue() {
 // ---------------------------------------------------------------------------
 
 void DiagnosticsPage::ResetForNewFile() {
-    // 时间轴分析器的累积状态（播放期逐包/逐帧喂进来的那份）也要一起清
-    facade_->Reset();
     has_result_ = false;
-    timeline_result_ = model::TimelineAnalysisResult{};
-    timeline_offline_ = false;
-    timeline_dirty_ = false;
     issue_table_->setRowCount(0);
-    timeline_issue_table_->setRowCount(0);
-    timeline_marker_issue_index_.clear();
     progress_bar_->setValue(0);
     progress_bar_->setFormat(tr("未开始"));
     summary_label_->setText(tr("点击「开始分析」对当前文件做一次完整扫描，"
                                "将按内置 QC 规则输出问题清单与评分。"));
-    timeline_summary_label_->setText(
-        tr("开启「时间轴与同步」分析并播放，或在本页执行一次全文件扫描，"
-           "将输出 PTS/DTS、音视频同步、帧间隔与 VFR/CFR 判定。"));
-    timeline_interval_series_->Clear();
-    timeline_marker_series_->Clear();
+    qc_bitrate_series_->Clear();
+    qc_fps_series_->Clear();
     export_button_->setEnabled(false);
 }
 

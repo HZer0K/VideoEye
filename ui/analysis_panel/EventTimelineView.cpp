@@ -99,6 +99,7 @@ void EventTimelineView::SetupEventTab() {
     toolbar_layout->addWidget(export_event_csv_button_);
 
     event_toggle_ = new QCheckBox(tr("启用分析"), event_tab_);
+    event_toggle_->setToolTip(tr("播放时实时采集，需要额外的数据留存，默认关闭，按需开启。"));
     event_toggle_->setChecked(is_enabled_ ? is_enabled_(static_cast<int>(ViewFeature::Event)) : true);
     connect(event_toggle_, &QCheckBox::toggled, this, [this](bool checked) {
         if (set_enabled_) set_enabled_(static_cast<int>(ViewFeature::Event), checked);
@@ -150,6 +151,7 @@ void EventTimelineView::SetupSyncTab() {
     toolbar_layout->addWidget(export_sync_csv_button_);
 
     sync_toggle_ = new QCheckBox(tr("启用分析"), sync_tab_);
+    sync_toggle_->setToolTip(tr("播放时实时采集，需要额外的数据留存，默认关闭，按需开启。"));
     sync_toggle_->setChecked(is_enabled_ ? is_enabled_(static_cast<int>(ViewFeature::Sync)) : true);
     connect(sync_toggle_, &QCheckBox::toggled, this, [this](bool checked) {
         if (set_enabled_) set_enabled_(static_cast<int>(ViewFeature::Sync), checked);
@@ -214,6 +216,7 @@ void EventTimelineView::SetupTimelineTab() {
     toolbar_layout->addWidget(export_timeline_csv_button_);
 
     timeline_toggle_ = new QCheckBox(tr("启用分析"), timeline_tab_);
+    timeline_toggle_->setToolTip(tr("播放时实时采集，需要额外的数据留存，默认关闭，按需开启。"));
     timeline_toggle_->setChecked(is_enabled_ ? is_enabled_(static_cast<int>(ViewFeature::Timeline)) : true);
     connect(timeline_toggle_, &QCheckBox::toggled, this, [this](bool checked) {
         if (set_enabled_) set_enabled_(static_cast<int>(ViewFeature::Timeline), checked);

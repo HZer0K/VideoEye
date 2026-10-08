@@ -77,6 +77,10 @@ signals:
     void ErrorMessage(const QString& text);
     void VisibilityChanged(bool visible);
     void RawImageInfoReady(const QString& info);   // 写入媒体信息文本框
+    // 运动矢量叠加开关变化。叠加层本身不直接开启/关闭宏块分析 —— 由协调层
+    // (MainWindow) 把"用户主动启用的分析"与"叠加需要分析"两者取或后统一下发，
+    // 于是关闭叠加能恢复到用户原先的分析状态（见 MainWindow::ApplyMacroblockAnalysisState）。
+    void MvOverlayToggled(bool enabled);
     // 实时码流统计文本 (FPS/码率/关键帧), 供 MainWindow 显示在状态栏常驻区。
     // 不用 StatusMessage 是因为后者走 showMessage 会被临时提示冲掉, 而统计需要常驻。
     // 传空串表示清空 (停止/换源)。

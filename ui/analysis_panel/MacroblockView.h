@@ -43,12 +43,16 @@ public:
     // 播放期逐帧回吐：与面板的批量刷新节拍一致，攒到 FlushPending() 再画
     void SetAnalysis(const model::MacroblockFrameAnalysis& analysis);
 
+    // 依据当前钩子（is_enabled_）把「启用分析」勾选框回写一次。协调层在叠加开关
+    // 改变实际分析状态后调用它，让页面显示与实际采集状态保持一致；内部用
+    // QSignalBlocker，不会反过来触发 set_enabled_ 回调造成循环。
+    void SyncToggleFromHooks();
+
     bool HasPending() const { return dirty_; }
     void FlushPending();
 
 private:
     void SetupUi();
-    void SyncToggleFromHooks();
     void RefreshUi();
     void OnExportCsv();
 

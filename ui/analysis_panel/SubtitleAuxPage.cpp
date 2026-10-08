@@ -78,17 +78,17 @@ void SubtitleAuxPage::SetupUi() {
     layout->setContentsMargins(4, 2, 4, 4);
     layout->setSpacing(4);
 
-    // 顶部: 汇总 + 重新扫描
+    // 顶部: 汇总 + 开始分析
     {
         QWidget* row = new QWidget(this);
         QHBoxLayout* rl = new QHBoxLayout(row);
         rl->setContentsMargins(0, 0, 0, 0);
         summary_label_ = new QLabel(
-            tr("未分析：点「重新扫描」对当前文件做一次全文件扫描（与「诊断与报告」共用同一次扫描结果）。"),
+            tr("未分析：点「开始分析」对当前文件做一次全文件扫描（与「诊断与报告」共用同一次扫描结果）。"),
             row);
         summary_label_->setWordWrap(true);
         rl->addWidget(summary_label_, 1);
-        start_button_ = new QPushButton(tr("重新扫描"), row);
+        start_button_ = new QPushButton(tr("开始分析"), row);
         start_button_->setToolTip(
             tr("字幕 cue、时码轨、章节、SCTE-35 与 metadata 都来自同一次全文件 demux，不额外读一遍文件。"));
         connect(start_button_, &QPushButton::clicked,
@@ -246,6 +246,11 @@ void SubtitleAuxPage::OnStartAnalysis() {
     emit ScanRequested();
 }
 
+void SubtitleAuxPage::SetScanActive(bool active) {
+    scan_active_ = active;
+    if (start_button_) start_button_->setEnabled(!active);
+}
+
 int SubtitleAuxPage::CurrentSubtitleStreamIndex() const {
     if (stream_combo_ == nullptr) return -1;
     return stream_combo_->currentData().toInt();
@@ -280,7 +285,7 @@ void SubtitleAuxPage::UpdateSummary() {
 
     if (!r.subtitle_analyzed && !r.timecode_analyzed && !r.aux_data_analyzed) {
         summary_label_->setText(
-            tr("未分析：点「重新扫描」对当前文件做一次全文件扫描。"));
+            tr("未分析：点「开始分析」对当前文件做一次全文件扫描。"));
         return;
     }
 

@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QLabel>
 #include <QTableWidget>
 
@@ -181,6 +182,61 @@ TEST(MacroblockViewTests, HevcUsesCtuTermAndLargeBlockSizes) {
     QLabel* viz = FindLabelContaining(&view, QStringLiteral("I 帧"));
     ASSERT_TRUE(viz != nullptr);
     EXPECT_TRUE(viz->text().contains(QStringLiteral("帧内块数: 10")));
+}
+
+// 「启用分析」勾选框与协调层的同步语义：
+//   - SetFeatureHooks 注入后立即按真实状态回写勾选框（否则界面显示"已启用"而面板为关）；
+//   - SyncToggleFromHooks 把勾选框同步到钩子状态，但不得回触发 set_enabled_ 回调（无循环）；
+//   - 用户手动勾选才回调 set_enabled_，供协调层记录"用户意图"。
+TEST(MacroblockViewTests, ToggleFollowsHooksWithoutFeedbackLoop) {
+    EnsureApp();
+    MacroblockView view;
+
+    QCheckBox* toggle = view.findChild<QCheckBox*>();
+    ASSERT_TRUE(toggle != nullptr);
+
+    bool state = false;
+    int set_call_count = 0;
+    bool last_set_value = false;
+    view.SetFeatureHooks([&state](int) { return state; },
+                         [&set_call_count, &last_set_value](int, bool enabled) {
+                             ++set_call_count;
+                             last_set_value = enabled;
+                         });
+
+    // SetFeatureHooks 立即同步：state=false -> 勾选框未选中，且不会触发回调
+    EXPECT_FALSE(toggle->isChecked());
+    EXPECT_EQ(set_call_count, 0);
+
+    // 钩子状态变化后同步勾选框，但仍不触发回调（QSignalBlocker 生效）
+    state = true;
+    view.SyncToggleFromHooks();
+    EXPECT_TRUE(toggle->isChecked());
+    EXPECT_EQ(set_call_count, 0);
+
+    state = false;
+    view.SyncToggleFromHooks();
+    EXPECT_FALSE(toggle->isChecked());
+    EXPECT_EQ(set_call_count, 0);
+
+    // 用户手动勾选：回调一次，值为 true（协调层据此更新"用户启用分析"）
+    toggle->setChecked(true);
+    EXPECT_EQ(set_call_count, 1);
+    EXPECT_TRUE(last_set_value);
+}
+
+// 无钩子时（组件脱离面板单独构造）同步不改变勾选框，也不崩。
+TEST(MacroblockViewTests, SyncToggleWithoutHooksKeepsCurrentState) {
+    EnsureApp();
+    MacroblockView view;
+
+    QCheckBox* toggle = view.findChild<QCheckBox*>();
+    ASSERT_TRUE(toggle != nullptr);
+    EXPECT_FALSE(toggle->isChecked());
+
+    toggle->setChecked(true);
+    view.SyncToggleFromHooks();
+    EXPECT_TRUE(toggle->isChecked());
 }
 
 // 运动矢量表的行数上限：第 501 条起不显示（保主线程流畅的硬约束）。

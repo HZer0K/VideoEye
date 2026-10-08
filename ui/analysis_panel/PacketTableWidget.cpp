@@ -52,6 +52,7 @@ void PacketTableWidget::SetupUi() {
     p_toolbar->addWidget(export_packet_csv_button_);
 
     packet_toggle_ = new QCheckBox(tr("启用分析"), this);
+    packet_toggle_->setToolTip(tr("播放时实时采集，需要额外的数据留存，默认关闭，按需开启。"));
     p_toolbar->addWidget(packet_toggle_);
     p_layout->addLayout(p_toolbar);
 

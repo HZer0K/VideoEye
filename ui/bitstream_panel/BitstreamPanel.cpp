@@ -47,7 +47,7 @@ BitstreamPanel::BitstreamPanel(QWidget* parent)
     main_layout->addWidget(summary_label_);
 
     auto* toolbar = new QHBoxLayout();
-    refresh_button_ = new QPushButton(tr("重新扫描"), this);
+    refresh_button_ = new QPushButton(tr("开始分析"), this);
     copy_json_button_ = new QPushButton(tr("复制 JSON"), this);
     export_json_button_ = new QPushButton(tr("导出 JSON"), this);
     toolbar->addWidget(refresh_button_);
@@ -125,6 +125,12 @@ void BitstreamPanel::Clear() {
     structure_tree_->clear();
     comparison_table_->setRowCount(0);
     inconsistency_table_->setRowCount(0);
+}
+
+void BitstreamPanel::SetScanActive(bool active) {
+    scan_active_ = active;
+    // 参数集只读 extradata，跟着全文件扫描一起跑；扫描中禁用按钮避免重复触发。
+    if (refresh_button_) refresh_button_->setEnabled(!active);
 }
 
 QString BitstreamPanel::ExportToJson() const {

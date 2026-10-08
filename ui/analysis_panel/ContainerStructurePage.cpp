@@ -48,9 +48,9 @@ void ContainerStructurePage::SetupUi() {
         title_label_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
         trl->addWidget(title_label_);
         trl->addStretch();
-        QCheckBox* toggle = new QCheckBox(tr("启用分析"), titleRow);
+        QCheckBox* toggle = new QCheckBox(tr("启用分析（打开文件时解析）"), titleRow);
         toggle->setChecked(feature_checked_);
-        toggle->setToolTip(tr("启用或禁用容器结构分析，关闭可跳过打开文件时的结构解析"));
+        toggle->setToolTip(tr("打开文件时解析容器结构，结果同时供「流媒体包」页使用，默认开启。"));
         connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
             feature_checked_ = checked;
             emit FeatureToggled(checked);

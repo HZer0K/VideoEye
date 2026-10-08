@@ -17,12 +17,13 @@
 #include <QTableWidget>
 
 #include "ui/AnalysisFacade.h"
+#include "ui/analysis_panel/ScanClient.h"
 #include "ui/charts/MetricChartWidget.h"
 
 namespace videoeye {
 namespace ui {
 
-class SubtitleAuxPage : public QWidget {
+class SubtitleAuxPage : public QWidget, public ScanClient {
     Q_OBJECT
 
 public:
@@ -30,6 +31,11 @@ public:
 
     // 扫描结束后由面板喂结果并整体刷新（顺带把起始时码冒泡给播放器）
     void SetResult(const model::AnalysisResult& result);
+
+    // ScanClient：本页与码率/音频/HDR 共用诊断页发起的那次全文件扫描，
+    // 扫描中「开始分析」按钮跟着禁用，终态一起复位。
+    void SetScanActive(bool active) override;
+    bool IsScanActive() const { return scan_active_; }
 
     // 字幕阈值以「规则与阈值」页那张可编辑规则表为准，扫描前同步一次，
     // 避免选项与规则两处阈值各说各话。
@@ -68,6 +74,7 @@ private:
     int CurrentSubtitleStreamIndex() const;
 
     model::AnalysisResult result_;
+    bool scan_active_ = false;
 
     QLabel* summary_label_ = nullptr;
     QPushButton* start_button_ = nullptr;

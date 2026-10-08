@@ -1,5 +1,6 @@
 #include "ui/main_window/MainWindow.h"
 #include "ui/main_window/MediaInfoCoordinator.h"
+#include "ui/main_window/navigation_model.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/theme/AppTheme.h"
 #include "infrastructure/logging/Logger.h"
@@ -25,7 +26,9 @@
 #include <QWindow>
 #include <QPainterPath>
 #include <QListWidget>
+#include <QLabel>
 #include <QStackedWidget>
+#include <QStyledItemDelegate>
 #include <QActionGroup>
 #include <algorithm>
 
@@ -48,6 +51,46 @@
 #endif
 #include <windows.h>
 #endif
+
+namespace {
+
+// 侧栏一行分两类：可点击的页面项，与不可点击的分组标题。
+// QSS 的 ::item 只能给整列统一样式，无法按行区分；把 QLabel 当作 item widget 挂在
+// 不可选中的标题行上也画不出来（只剩一条空行）。所以用委托按行绘制：页面项交给基类
+// （保留 QSS 的悬停/选中样式），分组标题用更小、更暗、加粗的字体画成小节标签。
+class SidebarItemDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option,
+               const QModelIndex& index) const override {
+        // 分组标题登记时置了 Qt::NoItemFlags，没有 ItemIsSelectable，以此区分两类行。
+        const bool is_header = !(index.flags() & Qt::ItemIsSelectable);
+        if (!is_header) {
+            QStyledItemDelegate::paint(painter, option, index);
+            return;
+        }
+
+        QStyleOptionViewItem opt = option;
+        initStyleOption(&opt, index);
+        const QString text = opt.text;
+        opt.text.clear();  // 文本自己画，不交给默认样式（否则又会拿到页面项的颜色）
+        const QWidget* widget = opt.widget;
+        QStyle* style = widget ? widget->style() : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
+
+        painter->save();
+        QFont font = opt.font;
+        font.setPointSizeF(std::max(7.5, font.pointSizeF() - 2.0));
+        font.setBold(true);
+        painter->setFont(font);
+        painter->setPen(QColor(0x6E, 0x76, 0x81));
+        painter->drawText(opt.rect.adjusted(16, 0, -12, 0), Qt::AlignLeft | Qt::AlignVCenter, text);
+        painter->restore();
+    }
+};
+
+}  // namespace
 
 namespace videoeye {
 namespace ui {
@@ -201,6 +244,8 @@ void MainWindow::SetupSidebar() {
     sidebar_->setIconSize(QSize(16, 16));
     sidebar_->setSpacing(0);
     sidebar_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // 分组标题与页面项在同一个列表里，靠委托按行区分绘制（见文件顶部 SidebarItemDelegate）。
+    sidebar_->setItemDelegate(new SidebarItemDelegate(sidebar_));
     
     // 注意：导航项不再硬编码，而是在 SetupContentArea() 末尾由
     // PopulateSidebarItems() 依据 content_stack_ 的真实页面生成，避免增减分析页
@@ -211,51 +256,52 @@ void MainWindow::SetupSidebar() {
 void MainWindow::PopulateSidebarItems() {
     if (!sidebar_ || !content_stack_) return;
 
-    const int page_count = content_stack_->count();
-
-    // 侧边栏按功能分组。两条硬规则：
+    // 页面元数据（pageId / 标题 / 分组 / 组内排序 / 口径）由各页面在登记时写入控件属性；
+    // 侧栏完全由这些元数据生成，不再依赖固定页序与硬编码分组下标 —— 以后增减或重排页面
+    // 时只改页面自己的登记，侧栏自动跟随（见 ui/main_window/navigation_model.h）。
     //   1) 页面项一律带 UserRole=stack 下标，切换按下标走 —— 行号与下标彻底解耦
-    //      （分组标题会占行，靠行号当下标必然错位）；
-    //   2) 分组标题不可选中、没有 UserRole，OnSidebarChanged 遇到它直接返回。
-    // 分组范围依赖当前页序；页面数量与预期不符（增减页面）时退化为平铺列表，
-    // 宁可少分组也不静默错位（曾导致「码率与 GOP」显示成「诊断与报告」）。
-    constexpr int kExpectedPageCount = 16;
-    const struct { int first; int last; QString title; } groups[] = {
-        {0, 0, tr("媒体信息")},
-        {1, 6, tr("实时分析")},
-        {7, 12, tr("全文件扫描")},
-        {13, 14, tr("诊断与报告")},
-        {15, 15, tr("工具")},
+    //      （过去分组标题会占行，靠行号当下标必然错位）；
+    //   2) 分组标题不可选中、没有 UserRole，OnSidebarChanged 遇到它直接返回；
+    //   3) 分组标题用委托（SidebarItemDelegate）画成更小更暗的小节标签，与可点击的
+    //      页面项在视觉上区分开（否则「概览」会和「媒体信息」长得一样却点不动）。
+    //      单页分组（如「概览」只有「媒体信息」）已由 BuildNavigationRows 去掉标题。
+    QVector<ui::PageNavigation> pages;
+    for (int i = 0; i < content_stack_->count(); ++i) {
+        QWidget* page = content_stack_->widget(i);
+        ui::PageNavigation nav;
+        nav.stack_index = i;
+        nav.page_id = page->property("pageId").toString();
+        nav.title = page->property("pageTitle").toString();
+        nav.group_id = page->property("pageGroup").toString();
+        nav.scope = page->property("pageScope").toString();
+        nav.order = page->property("pageOrder").toInt();
+        if (nav.title.isEmpty()) nav.title = tr("页面 %1").arg(i);
+        pages.append(nav);
+    }
+
+    // 分组 id 稳定（与页面登记对应），标题本地化；顺序即侧栏从上到下的分组顺序。
+    const QVector<ui::NavGroup> groups = {
+        {QStringLiteral("overview"), tr("概览")},
+        {QStringLiteral("playback"), tr("播放监看")},
+        {QStringLiteral("file_parse"), tr("文件解析")},
+        {QStringLiteral("full_quality"), tr("全片质量")},
+        {QStringLiteral("report_tools"), tr("报告与工具")},
     };
+    const QVector<ui::NavRow> rows = ui::BuildNavigationRows(pages, groups);
 
     sidebar_->blockSignals(true);
     sidebar_->clear();
-
-    auto add_page_item = [this](int stack_index) {
-        QString title = content_stack_->widget(stack_index)->property("pageTitle").toString();
-        if (title.isEmpty()) {
-            // 分析页由 AnalysisPanel 提供标题；媒体信息页等外部页走这里
-            title = (stack_index == 0) ? tr("媒体信息") : tr("页面 %1").arg(stack_index);
+    for (const ui::NavRow& row : rows) {
+        QListWidgetItem* item = new QListWidgetItem(row.text);
+        if (row.is_header) {
+            // 小节标签：不可选中，委托据此把它画成更小更暗的标题（见 SidebarItemDelegate）。
+            item->setFlags(Qt::NoItemFlags);
+            item->setSizeHint(QSize(200, 28));
+        } else {
+            item->setSizeHint(QSize(200, 34));
+            item->setData(Qt::UserRole, row.stack_index);
         }
-        QListWidgetItem* list_item = new QListWidgetItem(title);
-        list_item->setSizeHint(QSize(200, 34));
-        list_item->setData(Qt::UserRole, stack_index);
-        sidebar_->addItem(list_item);
-    };
-
-    if (page_count == kExpectedPageCount) {
-        for (const auto& group : groups) {
-            if (group.last > group.first) {
-                // 单页分组不加标题头（标题与唯一页面项同名，加了反而重复）
-                QListWidgetItem* header = new QListWidgetItem(group.title);
-                header->setFlags(Qt::NoItemFlags);
-                header->setSizeHint(QSize(200, 26));
-                sidebar_->addItem(header);
-            }
-            for (int i = group.first; i <= group.last; ++i) add_page_item(i);
-        }
-    } else {
-        for (int i = 0; i < page_count; ++i) add_page_item(i);
+        sidebar_->addItem(item);
     }
     sidebar_->blockSignals(false);
 
@@ -302,6 +348,10 @@ void MainWindow::SetupContentArea() {
     mediainfo_layout->addWidget(mediainfo_scroll);
     mediainfo_text_->setPlainText(tr("请打开一个媒体文件以查看详细信息"));
     mediainfo_page->setProperty("pageTitle", tr("媒体信息"));
+    mediainfo_page->setProperty("pageId", QStringLiteral("media_info"));
+    mediainfo_page->setProperty("pageGroup", QStringLiteral("overview"));
+    mediainfo_page->setProperty("pageOrder", 0);
+    mediainfo_page->setProperty("pageScope", QString());
     content_stack_->addWidget(mediainfo_page);
     
     // Page 1-N: 分析面板各页
@@ -315,6 +365,10 @@ void MainWindow::SetupContentArea() {
     // 再套一层会让"输出区"拿不到剩余高度。
     ffmpeg_panel_ = new ui::FfmpegPanel(content_stack_);
     ffmpeg_panel_->setProperty("pageTitle", tr("FFmpeg 命令"));
+    ffmpeg_panel_->setProperty("pageId", QStringLiteral("ffmpeg_command"));
+    ffmpeg_panel_->setProperty("pageGroup", QStringLiteral("report_tools"));
+    ffmpeg_panel_->setProperty("pageOrder", 1);
+    ffmpeg_panel_->setProperty("pageScope", QString());
     content_stack_->addWidget(ffmpeg_panel_);
 
     // 页面全部注册完毕后才生成侧边栏条目，保证行号 == stack 下标
@@ -349,6 +403,15 @@ void MainWindow::OnSidebarChanged(int row) {
 
 void MainWindow::OnTogglePlayerArea(bool checked) {
     player_panel_->SetPlayerAreaVisible(checked);
+}
+
+void MainWindow::ApplyMacroblockAnalysisState() {
+    // 实际采集状态 = 用户主动启用 || MV 叠加需求。两个来源分别记录，关闭叠加时
+    // 只回退到用户原先的选择，不会顺手把用户开启的分析也关掉。
+    const bool enabled = macroblock_.ActualEnabled();
+    if (player_) player_->SetAnalysisFeature(model::AnalysisFeature::Macroblock, enabled);
+    // 同步宏块页勾选框，避免"分析其实开着，页面却显示未启用"（反之亦然）。
+    if (analysis_panel_) analysis_panel_->SetMacroblockAnalysisEnabled(enabled);
 }
 
 void MainWindow::UpdateMinimumWindowSize() {
@@ -519,11 +582,6 @@ void MainWindow::SetupConnections() {
             analysis_panel_, &ui::AnalysisPanel::ResetTimelineEventList);
     connect(player_, &player::MediaPlayer::TimelineEventReady,
             analysis_panel_, &ui::AnalysisPanel::AppendTimelineEvent);
-    // 时间轴与同步诊断（demux 层 packet 时间 / decode 层 frame 时间）
-    connect(player_, &player::MediaPlayer::TimelinePacketReady,
-            analysis_panel_, &ui::AnalysisPanel::OnTimelinePacket);
-    connect(player_, &player::MediaPlayer::FrameTimingReady,
-            analysis_panel_, &ui::AnalysisPanel::OnFrameTiming);
     // 诊断页"跳转到问题帧" -> 播放器 seek
     connect(analysis_panel_, &ui::AnalysisPanel::SeekRequested,
             this, [this](double seconds) {
@@ -566,14 +624,29 @@ void MainWindow::SetupConnections() {
                 AF feat = static_cast<AF>(feature);
                 if (!player_) return;
 
-                // MediaPlayer 直接认 model::AnalysisFeature（面板的 AF 就是它的别名），
-                // 所以这里不再需要一个逐个翻译的 switch —— 只剩转发，外加一条纯 UI
-                // 侧的联动。新增分析维度时本文件不用改。
-                player_->SetAnalysisFeature(feat, enabled);
-                // 宏块分析关闭时联动关闭 MV 叠加
-                if (feat == AF::Macroblock && !enabled) {
-                    player_panel_->SetMvOverlayEnabled(false);
+                // 宏块分析要为 MV 叠加让路：它是"用户主动启用"与"叠加需求"的或。
+                // 页面开关只代表用户意图 —— 用户关掉它时，叠加也依赖不成立，一起关。
+                if (feat == AF::Macroblock) {
+                    macroblock_.OnUserToggle(enabled);
+                    if (!enabled && player_panel_) {
+                        // 同步叠加按钮（内部会回调 MvOverlayToggled(false)，幂等）。
+                        player_panel_->SetMvOverlayEnabled(false);
+                    }
+                    ApplyMacroblockAnalysisState();
+                    return;
                 }
+
+                // MediaPlayer 直接认 model::AnalysisFeature（面板的 AF 就是它的别名），
+                // 所以这里不再需要一个逐个翻译的 switch —— 只剩转发。
+                player_->SetAnalysisFeature(feat, enabled);
+            });
+
+    // MV 叠加开关 -> 宏块分析（叠加需要分析，但"需要"与"用户启用"分开记，
+    // 关闭叠加只回退到用户原先的选择，而不是无条件关掉分析）。
+    connect(player_panel_, &PlayerPanel::MvOverlayToggled,
+            this, [this](bool enabled) {
+                macroblock_.OnOverlayToggle(enabled);
+                ApplyMacroblockAnalysisState();
             });
     
     // 播放模块的信号桥接 (播放区内部的控件连接见 PlayerPanel::SetupConnections)
@@ -743,6 +816,9 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
     // 同步已启用的分析功能到播放器 (复选框默认勾选但未触发信号)。
     // 须放在 OpenAsync 之后: 它内部先做了换媒体复位。
     analysis_panel_->EmitInitialFeatureStates();
+    // 宏块分析不在 EmitInitialFeatureStates 里重发（见其注释），换文件后在此按
+    // "用户启用 || 叠加需求"重新下发，同时校准宏块页勾选框与播放器特征开关。
+    ApplyMacroblockAnalysisState();
 
     // 媒体信息解析: 不再独立探测 —— 打开链路在后台探测时已顺带把同一个上下文
     // 格式化好，提交成功后经 MediaInfoTextReady 贴进文本框（见 SetupConnections）；

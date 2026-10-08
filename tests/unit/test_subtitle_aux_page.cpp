@@ -284,12 +284,12 @@ void FillAux(AnalysisResult& result) {
 
 } // namespace
 
-// 构造后未分析 -> 提示文案 + 四个空表；点「重新扫描」发 ScanRequested
+// 构造后未分析 -> 提示文案 + 四个空表；点「开始分析」发 ScanRequested
 TEST(SubtitleAuxPageTests, UnanalyzedShowsHintAndEmptyTables) {
     EnsureApp();
     SubtitleAuxPage page;
 
-    EXPECT_NE(FindLabelContaining(&page, QStringLiteral("未分析：点「重新扫描」")), nullptr);
+    EXPECT_NE(FindLabelContaining(&page, QStringLiteral("未分析：点「开始分析」")), nullptr);
     auto* tabs = page.findChild<QTabWidget*>();
     ASSERT_NE(tabs, nullptr);
     ASSERT_EQ(tabs->count(), 4);
@@ -310,7 +310,7 @@ TEST(SubtitleAuxPageTests, UnanalyzedShowsHintAndEmptyTables) {
 
     int scan_requests = 0;
     QObject::connect(&page, &SubtitleAuxPage::ScanRequested, [&scan_requests] { ++scan_requests; });
-    QPushButton* rescan = FindButton(&page, QStringLiteral("重新扫描"));
+    QPushButton* rescan = FindButton(&page, QStringLiteral("开始分析"));
     ASSERT_NE(rescan, nullptr);
     rescan->click();
     EXPECT_EQ(scan_requests, 1);
@@ -320,7 +320,7 @@ TEST(SubtitleAuxPageTests, UnanalyzedShowsHintAndEmptyTables) {
 TEST(SubtitleAuxPageTests, SubtitleTablesAndFilters) {
     EnsureApp();
     SubtitleAuxPage page;
-    QLabel* summary = FindLabelContaining(&page, QStringLiteral("未分析：点「重新扫描」"));
+    QLabel* summary = FindLabelContaining(&page, QStringLiteral("未分析：点「开始分析」"));
     ASSERT_NE(summary, nullptr);
 
     AnalysisResult result;
@@ -404,7 +404,7 @@ TEST(SubtitleAuxPageTests, SubtitleTablesAndFilters) {
 TEST(SubtitleAuxPageTests, TimecodeChapterTablesAndStartTimecodeSignal) {
     EnsureApp();
     SubtitleAuxPage page;
-    QLabel* summary = FindLabelContaining(&page, QStringLiteral("未分析：点「重新扫描」"));
+    QLabel* summary = FindLabelContaining(&page, QStringLiteral("未分析：点「开始分析」"));
     ASSERT_NE(summary, nullptr);
 
     AnalysisResult result;
@@ -474,7 +474,7 @@ TEST(SubtitleAuxPageTests, TimecodeChapterTablesAndStartTimecodeSignal) {
 TEST(SubtitleAuxPageTests, AuxStreamScte35AndMetadataTables) {
     EnsureApp();
     SubtitleAuxPage page;
-    QLabel* summary = FindLabelContaining(&page, QStringLiteral("未分析：点「重新扫描」"));
+    QLabel* summary = FindLabelContaining(&page, QStringLiteral("未分析：点「开始分析」"));
     ASSERT_NE(summary, nullptr);
 
     AnalysisResult result;

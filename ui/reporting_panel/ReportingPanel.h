@@ -22,6 +22,8 @@
 #include <thread>
 #include <vector>
 
+#include <QString>
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QGroupBox>
@@ -41,6 +43,7 @@
 #include "infrastructure/concurrency/TaskManager.h"
 
 #include "ui/reporting_panel/analysis_task.h"
+#include "ui/reporting_panel/result_stamp.h"
 
 namespace videoeye {
 namespace ui {
@@ -57,6 +60,14 @@ public:
     // 正常完成后必须为 false —— 终态已经归还（见 FinishTask）。若为 true 说明还留在
     // Running，或有一次后台任务从未归还终态。供测试与关闭诊断查询。
     bool IsTaskRunning() const;
+
+    // 当前是否持有一份"与当前文件 + 当前模板都匹配"的分析结果。
+    // 切换文件或模板会让结果过期（返回 false），导出按钮也随之禁用；重新分析
+    // 成功后才恢复。导出永远只允许导出这份"新鲜"结果，杜绝把上一次结果导出去。
+    bool HasFreshResult() const;
+
+    // 导出按钮当前是否可用（供状态回归测试查询，等价于 !busy_ && HasFreshResult()）。
+    bool IsExportEnabled() const;
 
 public slots:
     // 主窗口打开文件/切换文件时同步过来
@@ -86,7 +97,22 @@ private:
     void BuildUi();
     void AppendSummary(const QString& text);
     void UpdateVerdictLabel(const qc::QcRunResult& result);
+    // 把一次结果刷到结论标签与分析摘要（分析完成、模板复用两条路径共用）。
+    void ShowResult(const qc::QcRunResult& result);
     void SetBusy(bool busy);
+
+    // 模板切换后的处置：结果仍可复用时按其原始 AnalysisResult 重算规则并保持导出可用，
+    // 否则标为过期。复用条件见 result_stamp.h 的 CanReuseAnalysis。
+    void RefreshResultForProfile();
+
+    // 把 last_result_ 标记为不可用（切换文件、模板不可复用、分析失败时调用）：
+    // 清 verdict 与问题计数、禁用导出按钮。真正的 last_result_ 数据仍留在内存里，
+    // 只是不再被 HasFreshResult() 认可，避免误导出上一次的结果。
+    void InvalidateResult();
+    // 依据 busy_ 与 HasFreshResult() 刷新导出按钮使能，SetBusy 与结果变化都走它。
+    void UpdateExportEnabled();
+    // 用 last_result_ + 当前模板把单文件报告导出到 directory（调用前须保证结果新鲜）。
+    void ExportSingleResult(const QString& directory);
 
     // 仅当任务仍存活时把更新投递回主线程；否则静默丢弃（面板正在销毁）
     void PostToUi(std::shared_ptr<AnalysisTask> task, const std::function<void()>& updater);
@@ -168,6 +194,11 @@ private:
     qc::QcProfile profile_;                     // 当前模板（可能是从文件加载的自定义模板）
     qc::QcRunResult last_result_;               // 最近一次单文件分析结果，导出按钮用它
     std::string current_path_;
+    // 结果"身份戳"：记录 last_result_ 属于哪个文件、按哪个模板算出（见 result_stamp.h）。
+    // 与当前 (current_path_, profile_.id) 一致才算新鲜 —— 切换文件/模板后自然过期。
+    ResultStamp result_stamp_;
+    // 无结果时点导出：先取输出目录挂在这里，分析成功后在完成回调里继续导出。
+    QString pending_export_dir_;
     std::shared_ptr<AnalysisTask> single_task_;
     std::shared_ptr<AnalysisTask> batch_task_;
     std::vector<qc::BatchQcItemResult> batch_results_;

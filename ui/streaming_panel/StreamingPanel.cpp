@@ -47,7 +47,7 @@ StreamingPanel::StreamingPanel(QWidget* parent) : QWidget(parent) {
 
     // ---- 工具栏 ----
     auto* toolbar = new QHBoxLayout();
-    refresh_button_ = new QPushButton(tr("重新扫描"), this);
+    refresh_button_ = new QPushButton(tr("开始分析"), this);
     copy_json_button_ = new QPushButton(tr("复制 JSON"), this);
     export_json_button_ = new QPushButton(tr("导出 JSON"), this);
     toolbar->addWidget(refresh_button_);
@@ -129,6 +129,12 @@ void StreamingPanel::Clear() {
     timeline_table_->setColumnCount(0);
     issue_table_->setRowCount(0);
     issue_table_->setColumnCount(0);
+}
+
+void StreamingPanel::SetScanActive(bool active) {
+    scan_active_ = active;
+    // 扫描中共用同一份清单解析，重复点「开始分析」只会被诊断页拦下；直接禁用按钮更清楚。
+    if (refresh_button_) refresh_button_->setEnabled(!active);
 }
 
 QString StreamingPanel::SeverityText(model::IssueSeverity severity) {

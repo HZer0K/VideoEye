@@ -627,16 +627,15 @@ void PlayerPanel::OnMvOverlayToggled(bool enabled) {
     mv_overlay_enabled_ = enabled;
 
     if (enabled) {
-        // 开启 MV 叠加: 自动启用宏块分析 (会触发软件解码切换)
-        if (player_) {
-            player_->SetAnalysisFeature(model::AnalysisFeature::Macroblock, true);
-        }
         video_widget_->SetMvOverlayMode(ui::MvOverlayMode::Arrows);
         emit StatusMessage(tr("运动矢量叠加已开启"), 3000);
     } else {
         video_widget_->SetMvOverlayMode(ui::MvOverlayMode::Off);
         emit StatusMessage(tr("运动矢量叠加已关闭"), 3000);
     }
+    // 叠加层不自己开关宏块分析：把意图冒泡给协调层，由它把"用户主动启用的分析"与
+    // "叠加需要分析"取或后统一下发（并同步宏块页的开关）。
+    emit MvOverlayToggled(enabled);
 }
 
 void PlayerPanel::OnMacroblockInfoForOverlay(

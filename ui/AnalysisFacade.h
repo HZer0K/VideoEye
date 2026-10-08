@@ -2,10 +2,10 @@
 
 // AnalysisPanel 与核心分析层的唯一接缝（UI facade）。
 //
-// 之前 AnalysisPanel 直接持有 QtAnalysisController / QcRuleEngine / TimelineAnalyzer
-// 并 include 一堆 core/analysis 头；现在这些分析机件全部收口到本 facade 的 Impl，
-// UI 只看到一个对象：编排（Start/Cancel/IsRunning）、QC 规则引擎、时间轴实时分析、
-// 全文件扫描结果，以及 3 个转发自底层协调器的 Qt 信号。
+// 之前 AnalysisPanel 直接持有 QtAnalysisController / QcRuleEngine（以及已被移除的
+// 播放期 TimelineAnalyzer）并 include 一堆 core/analysis 头；现在这些分析机件全部
+// 收口到本 facade 的 Impl，UI 只看到一个对象：编排（Start/Cancel/IsRunning）、
+// QC 规则引擎、全文件扫描结果，以及 3 个转发自底层协调器的 Qt 信号。
 //
 // 为什么用 Impl（pimpl）而不是直接成员变量：直接成员意味着这些分析器的头文件
 // 必须出现在 facade 的公开头里 —— 依赖只是从 AnalysisPanel 转移到了 facade，
@@ -24,16 +24,14 @@
 
 #include "core/analysis/AnalysisOptions.h"
 #include "core/domain/model/AnalysisResult.h"
-#include "core/domain/model/FrameTimingInfo.h"
 #include "core/domain/model/QcReport.h"
 #include "core/domain/model/QcRule.h"
 #include "core/domain/model/SceneChangeResult.h"
-#include "core/domain/model/TimelineDiagnostic.h"
 
 namespace videoeye {
 namespace ui {
 
-// 分析流程的 UI 接缝：把"跑分析 / QC 评估 / 时间轴实时统计"三件事收口成一个对象。
+// 分析流程的 UI 接缝：把"跑分析 / QC 评估"两件事（外加场景切换关联）收口成一个对象。
 //
 // 所有分析机件都在 Impl 里（不挂 Qt 父对象，避免双重析构）；底层协调器的信号
 // 原样转发，UI 侧的连接代码无需改动语义。
@@ -70,11 +68,10 @@ public:
     model::QcReport Evaluate(const model::AnalysisResult& r) const;
 
     // ---- 时间轴实时分析（播放逐包 / 逐帧 / 音视频偏移）----
-    void OnSyncSample(double audio_ms, double video_ms);
-    void OnPacket(const model::PacketTiming& packet);
-    void OnFrame(const model::FrameTimingInfo& frame);
-    model::TimelineAnalysisResult Snapshot() const;
-    void Reset();
+    //
+    // 播放期的时间轴样本 / 曲线已收敛到「事件与时间轴」页（EventTimelineView）自持，
+    // facade 不再维护第二份累积状态（播放热路径上每包/每帧都推一份进来、却无人消费）。
+    // 全文件扫描结果里的时间轴问题仍由 QcRuleEngine 在 Evaluate 时并入 QC 报告。
 
     // ---- 场景切换关联（就地刷新 result().bitrate_gop）----
     //

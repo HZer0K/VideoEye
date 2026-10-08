@@ -294,7 +294,7 @@ void BitrateGopPage::OnLinkSceneChanges() {
     }
     if (scene_changes_.empty()) {
         QMessageBox::information(this, tr("提示"),
-            tr("当前没有场景切换数据。请先在「场景切换」页启用检测并播放一段视频。"));
+            tr("当前没有场景切换数据。请先在「场景切换」页开启分析并播放一段视频。"));
         return;
     }
     ApplyOptionsFromUi();

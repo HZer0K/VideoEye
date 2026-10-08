@@ -1342,11 +1342,12 @@ set_tests_properties(SubtitleAuxPageTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # =================================================
-# 测试 65：诊断与报告页（扫描终态三值 + 规则表改写 + 时间轴实时刷新）
+# 测试 65：诊断与报告页（扫描终态三值 + 规则表改写）
 # 说明: 失败也是终态（不发 -> 共用同一扫描的几页永久停在扫描态）、silent 失败
 #       不弹框、HLS 清单成功扫描后问题表与 qcReport 逐行一致、规则表勾选/阈值
-#       改写落规则集且非法输入还原、FlushTimeline 的 isVisible 守卫与实时快照
-#       汇总，都是静默回归。本页自己持有 AnalysisFacade（扫描真跑），所以编
+#       改写落规则集且非法输入还原，都是静默回归。本页只保留「问题清单 / 规则与
+#       阈值」两个子页 —— 实时时间轴的样本/曲线/导出已收敛到「事件与时间轴」页。
+#       本页自己持有 AnalysisFacade（扫描真跑），所以编
 #       AnalysisFacade.cpp + Logger（ScopedTimer/VE_PERF 走 LOG_INFO）；链
 #       QtAdapters（分析协调器）/Analysis/Reporting（报告导出）/Infrastructure。
 #       用 offscreen 平台跑。

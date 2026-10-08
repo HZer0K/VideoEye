@@ -8,7 +8,7 @@
 //   - ApplyStats()                  播放器回报已分析帧数 / 丢弃帧数 / 有效画面区域
 //   - FlushPending()                面板的批量刷新定时器到点时重绘
 //   - ResetAll()                    换文件 / 重新分析清空
-//   - FeatureToggled()              页内「启用检测」开关，由面板转成 feature 信号
+//   - FeatureToggled()              页内「启用分析」开关，由面板转成 feature 信号
 //   - OptionsChanged()              采样档位 / 阈值改动，由面板转发给 MediaPlayer
 //   - SeekRequested()               点缺陷行跳到时间点，转发给播放器
 // 页面本体就是 QWidget（外部 QStackedWidget 的一页），不需要再包一层 tab widget。
@@ -38,7 +38,7 @@ class VisualDefectPage : public QWidget {
     Q_OBJECT
 
 public:
-    // feature_checked: 「启用检测」开关初值（面板按 AnalysisFeature 表给进来）
+    // feature_checked: 「启用分析」开关初值（面板按 AnalysisFeature 表给进来）
     // options:         面板当前持有的视觉缺陷选项（默认档位 / 阈值）
     explicit VisualDefectPage(bool feature_checked, const model::VisualDefectOptions& options,
                               QWidget* parent = nullptr);

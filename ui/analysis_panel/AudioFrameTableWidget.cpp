@@ -37,6 +37,7 @@ void AudioFrameTableWidget::SetupUi() {
     a_toolbar->addWidget(export_audio_frame_csv_button_);
 
     audio_toggle_ = new QCheckBox(tr("启用分析"), this);
+    audio_toggle_->setToolTip(tr("播放时实时采集，需要额外的数据留存，默认关闭，按需开启。"));
     a_toolbar->addWidget(audio_toggle_);
     a_layout->addLayout(a_toolbar);
 

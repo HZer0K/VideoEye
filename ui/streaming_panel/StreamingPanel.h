@@ -7,6 +7,7 @@
 #include <QWidget>
 
 #include "core/domain/model/StreamPackageInfo.h"
+#include "ui/analysis_panel/ScanClient.h"
 
 namespace videoeye {
 namespace ui {
@@ -23,7 +24,7 @@ namespace ui {
 //   中部  左侧 manifest 结构树，右侧「码率阶梯表 + 分片时间轴对齐表」
 //   底部  问题列表（级别着色）
 // ==========================================================================
-class StreamingPanel : public QWidget {
+class StreamingPanel : public QWidget, public ScanClient {
     Q_OBJECT
 
 public:
@@ -40,12 +41,17 @@ public:
         return has_result_;
     }
 
+    // ScanClient：本页共用诊断页发起的那次全文件扫描，扫描中「开始分析」按钮
+    // 跟着禁用，终态一起复位。
+    void SetScanActive(bool active) override;
+    bool IsScanActive() const { return scan_active_; }
+
     // 序列化：复制 JSON / 导出 JSON 文件共用
     QString ExportToJson() const;
     void CopyJsonToClipboard() const;
 
 signals:
-    // 用户点了「重新扫描」：由外层决定重新跑一次分析
+    // 用户点了「开始分析」：由外层决定重新跑一次全文件扫描
     void RefreshRequested();
 
 private slots:
@@ -75,6 +81,7 @@ private:
 
     model::StreamingPackageResult current_result_;
     bool has_result_ = false;
+    bool scan_active_ = false;
 };
 
 } // namespace ui

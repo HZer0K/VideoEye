@@ -9,12 +9,13 @@
 //      hasResult / 导出恢复 / 问题表与 qcReport() 逐行一致 / 汇总出评分；
 //   4) 规则表：勾选开关与阈值改写落到 facade 规则集、非法阈值还原显示、
 //      「恢复默认规则」重建；跨页钩子（BeforeScanHook）每次扫描前恰好跑一次；
-//   5) 时间轴实时刷新：FlushTimeline 只在**可见且置脏**时刷新（isVisible 守卫），
-//      刷新后汇总/问题表/坐标轴来自实时快照（重复时间戳 -> 1 条"提示"级问题）；
-//   6) CancelScan 只请求取消、不伪造终态；ResetForNewFile 回到初始态。
+//   5) CancelScan 只请求取消、不伪造终态；ResetForNewFile 回到初始态。
+//
+// 本页已收敛掉与「事件与时间轴」页重复的实时时间轴视图：只剩「问题清单 / 规则与阈值」
+// 两个子页，单测只覆盖这两页与扫描总控状态。
 //
 // 只构造控件、不渲染（offscreen 平台）；导出按钮会弹 QFileDialog 模态框，
-// 「未扫描就跳转问题帧 / 关联场景切换」会弹 QMessageBox，均不进单测。
+// 「未扫描就跳转问题位置 / 关联场景切换」会弹 QMessageBox，均不进单测。
 
 #include <gtest/gtest.h>
 
@@ -23,7 +24,6 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QLabel>
-#include <QMetaObject>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QTabWidget>
@@ -35,15 +35,12 @@
 #include <vector>
 
 #include "core/analysis/AnalysisOptions.h"
-#include "core/domain/model/FrameTimingInfo.h"
 #include "core/domain/model/QcReport.h"
 #include "core/domain/model/QcRule.h"
 #include "ui/analysis_panel/DiagnosticsPage.h"
 #include "ui/charts/MetricChartWidget.h"
 
 using videoeye::model::DefaultQcRules;
-using videoeye::model::FrameTimingInfo;
-using videoeye::model::PacketTiming;
 using videoeye::model::QcReport;
 using videoeye::model::QcRule;
 using videoeye::ui::DiagnosticsPage;
@@ -105,7 +102,7 @@ QPushButton* FindButton(QWidget* root, const QString& text) {
     return nullptr;
 }
 
-// 页内两个自绘图表靠标题区分（问题清单 / 时间轴）
+// 页内唯一自绘图表靠标题区分（问题清单）
 MetricChartWidget* FindChartByTitle(QWidget* root, const QString& title) {
     for (MetricChartWidget* chart : root->findChildren<MetricChartWidget*>()) {
         if (chart->Title() == title)
@@ -139,25 +136,6 @@ QString WriteManifest() {
     return path;
 }
 
-PacketTiming MakePacket(double pts_ms, double duration_ms, bool key_frame) {
-    PacketTiming packet;
-    packet.stream_index = 0;
-    packet.media_type = 0; // 视频流
-    packet.pts_ms = pts_ms;
-    packet.dts_ms = pts_ms;
-    packet.duration_ms = duration_ms;
-    packet.key_frame = key_frame;
-    return packet;
-}
-
-FrameTimingInfo MakeFrame(double display_ms, bool key_frame) {
-    FrameTimingInfo frame;
-    frame.stream_index = 0;
-    frame.display_ms = display_ms;
-    frame.key_frame = key_frame;
-    return frame;
-}
-
 // 扫描生命周期观察者：在页面构造后立即挂上，StartScan 前就位
 struct ScanTrace {
     int started = 0;
@@ -174,28 +152,23 @@ struct ScanTrace {
 
 } // namespace
 
-// 构造后未扫描 -> 引导文案 + 三个子页 + 规则表已填默认规则 + 按钮初态
+// 构造后未扫描 -> 引导文案 + 两个子页 + 规则表已填默认规则 + 按钮初态
 TEST(DiagnosticsPageTests, UnscannedPageShowsInitialStateAndRuleTable) {
     EnsureApp();
     DiagnosticsPage page;
 
     auto* tabs = page.findChild<QTabWidget*>();
     ASSERT_NE(tabs, nullptr);
-    ASSERT_EQ(tabs->count(), 3);
+    ASSERT_EQ(tabs->count(), 2);
     EXPECT_EQ(tabs->tabText(0), QStringLiteral("问题清单"));
     EXPECT_EQ(tabs->tabText(1), QStringLiteral("规则与阈值"));
-    EXPECT_EQ(tabs->tabText(2), QStringLiteral("时间轴与同步"));
 
     QTableWidget* issue_table = TableInTab(&page, 0, QStringLiteral("严重度"));
     QTableWidget* rule_table = TableInTab(&page, 1, QStringLiteral("启用"));
-    QTableWidget* timeline_table = TableInTab(&page, 2, QStringLiteral("类型"));
     ASSERT_NE(issue_table, nullptr);
     ASSERT_NE(rule_table, nullptr);
-    ASSERT_NE(timeline_table, nullptr);
     EXPECT_EQ(issue_table->columnCount(), 6);
-    EXPECT_EQ(timeline_table->columnCount(), 6);
     EXPECT_EQ(issue_table->rowCount(), 0);
-    EXPECT_EQ(timeline_table->rowCount(), 0);
 
     // 规则表在构造函数里就按 facade 的规则集填好（曾经是空指针解引用/闪退的源头）
     const std::vector<QcRule> defaults = DefaultQcRules();
@@ -222,9 +195,7 @@ TEST(DiagnosticsPageTests, UnscannedPageShowsInitialStateAndRuleTable) {
     EXPECT_EQ(progress->format(), QStringLiteral("未开始"));
 
     EXPECT_NE(FindLabelContaining(&page, QStringLiteral("点击「开始分析」对当前文件做一次完整扫描")), nullptr);
-    EXPECT_NE(FindLabelContaining(&page, QStringLiteral("PTS/DTS")), nullptr);
     EXPECT_NE(FindChartByTitle(&page, QStringLiteral("逐秒码率 / 帧率")), nullptr);
-    EXPECT_NE(FindChartByTitle(&page, QStringLiteral("帧间隔与问题分布")), nullptr);
 }
 
 // 空路径 + silent：静默放弃（不弹"请先打开文件"），不发任何扫描信号、界面原样
@@ -291,8 +262,6 @@ TEST(DiagnosticsPageTests, ResetForNewFileRestoresInitialState) {
     QLabel* summary = FindLabelContaining(&page, QStringLiteral("点击「开始分析」对当前文件做一次完整扫描"));
     ASSERT_NE(summary, nullptr);
     const QString initial_summary = summary->text();
-    QLabel* timeline_summary = FindLabelContaining(&page, QStringLiteral("PTS/DTS"));
-    ASSERT_NE(timeline_summary, nullptr);
 
     page.SetSourcePath(QDir::tempPath() + "/videoeye_no_such_input_20261007.mkv");
     page.StartScan(page.options(), /*silent=*/true);
@@ -303,15 +272,11 @@ TEST(DiagnosticsPageTests, ResetForNewFileRestoresInitialState) {
 
     EXPECT_FALSE(page.hasResult());
     EXPECT_EQ(summary->text(), initial_summary);
-    // 时间轴回到"无数据"占位（构造与复位用词不同：事件与时间轴 / 时间轴与同步，
-    // 这里只锁语义 —— 是占位而不是上一文件的快照）
-    EXPECT_TRUE(timeline_summary->text().contains(QStringLiteral("PTS/DTS"))) << timeline_summary->text().toStdString();
     auto* progress = page.findChild<QProgressBar*>();
     ASSERT_NE(progress, nullptr);
     EXPECT_EQ(progress->value(), 0);
     EXPECT_EQ(progress->format(), QStringLiteral("未开始"));
     EXPECT_EQ(TableInTab(&page, 0, QStringLiteral("严重度"))->rowCount(), 0);
-    EXPECT_EQ(TableInTab(&page, 2, QStringLiteral("类型"))->rowCount(), 0);
     EXPECT_FALSE(FindButton(&page, QStringLiteral("导出报告"))->isEnabled());
 }
 
@@ -424,67 +389,4 @@ TEST(DiagnosticsPageTests, RuleTableEditsUpdateFacadeRulesAndRevertInvalidInput)
     EXPECT_EQ(rule_table->item(0, 0)->checkState(), defaults[0].enabled ? Qt::Checked : Qt::Unchecked);
     EXPECT_EQ(Cell(rule_table, 0, 5),
               QString::number(defaults[0].threshold, 'f', 2) + QString::fromStdString(defaults[0].unit));
-}
-
-// 时间轴实时刷新有 isVisible 守卫：页面没显示时 FlushTimeline 是空操作
-TEST(DiagnosticsPageTests, TimelineFlushSkippedWhileHidden) {
-    EnsureApp();
-    DiagnosticsPage page;
-    EXPECT_FALSE(page.isVisible());
-
-    QLabel* timeline_summary = FindLabelContaining(&page, QStringLiteral("PTS/DTS"));
-    ASSERT_NE(timeline_summary, nullptr);
-    MetricChartWidget* chart = FindChartByTitle(&page, QStringLiteral("帧间隔与问题分布"));
-    ASSERT_NE(chart, nullptr);
-
-    page.OnFrameTiming(MakeFrame(0.0, true));
-    page.OnFrameTiming(MakeFrame(40.0, false));
-    QMetaObject::invokeMethod(&page, "FlushTimeline", Qt::DirectConnection);
-
-    // 仍是占位文案、图表量程未动（说明守卫真的挡住了刷新）
-    EXPECT_TRUE(timeline_summary->text().contains(QStringLiteral("PTS/DTS")));
-    EXPECT_FALSE(chart->AxisX()->HasRange());
-}
-
-// 显示后的实时刷新：汇总换"播放实时"、问题表来自快照、坐标轴取自帧间隔曲线
-TEST(DiagnosticsPageTests, TimelineFlushBuildsLiveSummaryTableAndAxis) {
-    EnsureApp();
-    DiagnosticsPage page;
-    page.show();
-    QCoreApplication::processEvents();
-    ASSERT_TRUE(page.isVisible());
-
-    QLabel* timeline_summary = FindLabelContaining(&page, QStringLiteral("PTS/DTS"));
-    ASSERT_NE(timeline_summary, nullptr);
-    MetricChartWidget* chart = FindChartByTitle(&page, QStringLiteral("帧间隔与问题分布"));
-    ASSERT_NE(chart, nullptr);
-    QTableWidget* timeline_table = TableInTab(&page, 2, QStringLiteral("类型"));
-    ASSERT_NE(timeline_table, nullptr);
-
-    // 3 帧（0/40/80 ms）-> 2 个 40 ms 间隔；包路径第三包 PTS 与上一包重复 -> 1 条提示级问题。
-    // 关键帧计数=2：首包与首帧各带关键帧标记（demux/decode 两条路径都计数）
-    page.OnPacketTiming(MakePacket(0.0, 40.0, true));
-    page.OnPacketTiming(MakePacket(40.0, 40.0, false));
-    page.OnPacketTiming(MakePacket(40.0, 40.0, false));
-    page.OnFrameTiming(MakeFrame(0.0, true));
-    page.OnFrameTiming(MakeFrame(40.0, false));
-    page.OnFrameTiming(MakeFrame(80.0, false));
-    QMetaObject::invokeMethod(&page, "FlushTimeline", Qt::DirectConnection);
-
-    EXPECT_TRUE(timeline_summary->text().contains(QStringLiteral("播放实时")))
-        << timeline_summary->text().toStdString();
-    EXPECT_TRUE(timeline_summary->text().contains(QStringLiteral("帧 3 ｜ 关键帧 2")))
-        << timeline_summary->text().toStdString();
-    EXPECT_TRUE(timeline_summary->text().contains(QStringLiteral("CFR")));
-
-    ASSERT_EQ(timeline_table->rowCount(), 1);
-    EXPECT_EQ(Cell(timeline_table, 0, 0), QStringLiteral("重复时间戳"));
-    EXPECT_EQ(Cell(timeline_table, 0, 1), QStringLiteral("提示"));
-    EXPECT_EQ(Cell(timeline_table, 0, 2), QStringLiteral("0"));
-    EXPECT_EQ(Cell(timeline_table, 0, 4), QStringLiteral("1"));
-
-    // Y 轴取真实峰值间隔 40 ms 的 1.2 倍；X 轴有 1 s 保底量程（样本仅 80 ms 也不坍缩）
-    EXPECT_TRUE(chart->AxisX()->HasRange());
-    EXPECT_DOUBLE_EQ(chart->AxisX()->Max(), 1.0);
-    EXPECT_NEAR(chart->AxisY()->Max(), 48.0, 1e-9);
 }

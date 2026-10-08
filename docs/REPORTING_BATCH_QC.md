@@ -24,6 +24,7 @@ core/qc/QcAnalyzeRequest.h      单文件分析的请求/结果契约（批量�
 core/qc/QcReportFormat.h|.cpp   导出格式枚举与扩展名
 core/reporting/QcReportExporter.h|.cpp   单文件 / 对比 / 批量汇总 的 JSON·CSV·HTML·PDF·TXT 导出
 ui/reporting_panel/             「报告与批量 QC」侧边栏页面
+ui/reporting_panel/result_stamp.h        结果新鲜度与复用判定（不依赖 Qt，UI 与单测共用）
 ```
 
 `core/qc` 与 `utils` 被抽进 `VideoEyeCore` 静态库，GUI 与单元测试共用同一套逻辑
@@ -74,6 +75,17 @@ QC 的入口是 GUI 的「报告与批量 QC」页 —— 项目不再提供独�
 - **批量扫描**：选择目录、扩展名、并发数、是否递归、输出目录；运行后表格逐行显示
   文件 / 状态 / 评分 / 结论 / 各类问题计数 / 耗时 / 输出路径，可随时「停止」（已完成的保留）。
 - **导出汇总**：把批量结果聚合成 CSV/JSON/HTML 汇总。
+
+**结果新鲜度与复用**（`ui/reporting_panel/result_stamp.h`）：导出的单文件报告永远绑定
+「当前文件 + 当前模板」。
+
+- 切换文件会让上一次结果立即失效、导出禁用（文件内容可能已不同），重新分析成功后才恢复；
+  「无结果时点导出」会先取好输出目录、待本次分析成功后在同目录继续导出，不会静默导出旧结果。
+- 切换模板不再一律作废：若缓存的原始 `AnalysisResult` 满足三个条件 —— 同一文件版本
+  （本地文件按大小与修改时间校验；网络源没有本地指纹，默认重新分析）、新模板要求的分析维度
+  都已被这次扫描覆盖（`AnalysisOptionsCovers`）、上次扫描完整成功（含抽样完成，不含取消/失败/超时）
+  —— 就直接用它按新模板重算规则（只跑 `QcRuleEngine::Evaluate`，不重跑 FFmpeg / 不解码），
+  结果仍算「新鲜」、导出保持可用；否则标为过期。
 
 线程模型：后台 `std::thread` 跑分析，UI 更新统一经 `QMetaObject::invokeMethod(QueuedConnection)` 回主线程；
 取消时置原子标记，worker 取下一个任务前检查，正在跑的分析也能通过请求级 `cancel` 感知到；

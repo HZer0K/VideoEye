@@ -7,7 +7,7 @@
 
 ```mermaid
 flowchart LR
-    UI[AnalysisPanel 诊断与报告页] -->|StartAnalysis(path)| CO[QtAnalysisController]
+    UI[AnalysisPanel 质量诊断页] -->|StartAnalysis(path)| CO[QtAnalysisController]
     CO -->|后台 std::thread| SCAN[avformat 全文件 demux 扫描]
     SCAN -->|ProgressReported| UI
     SCAN -->|AnalysisFinished| UI

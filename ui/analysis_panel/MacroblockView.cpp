@@ -53,6 +53,7 @@ void MacroblockView::SetupUi() {
     toolbar->addWidget(export_csv_button_);
 
     toggle_ = new QCheckBox(tr("启用分析"), this);
+    toggle_->setToolTip(tr("播放时实时采集运动矢量与块统计，需要额外解码残差，默认关闭，按需开启。"));
     toolbar->addWidget(toggle_);
     layout->addLayout(toolbar);
 

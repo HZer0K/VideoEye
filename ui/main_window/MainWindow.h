@@ -21,6 +21,7 @@
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/ffmpeg_panel/FfmpegPanel.h"
 #include "ui/main_window/ExportCoordinator.h"
+#include "ui/main_window/macroblock_coordination.h"
 #include "ui/player/PlayerPanel.h"
 
 namespace videoeye {
@@ -67,6 +68,9 @@ private:
     void SetupStatusBar();
     void SetupConnections();
     void OnSidebarChanged(int index);  // 侧边栏切换
+    // 宏块分析的实际采集状态 = "用户主动启用" 或 "MV 叠加需要"，两者由本窗口分别记录。
+    // 打开叠加时强制开启（并同步宏块页勾选框），关闭叠加后恢复到用户原先的选择。
+    void ApplyMacroblockAnalysisState();
     bool PromptForPcmSettings(QString& demuxer_name, int& sample_rate, int& channels);
     void UpdateMinimumWindowSize();
 
@@ -98,6 +102,11 @@ protected:
 
     // 分析面板
     ui::AnalysisPanel* analysis_panel_;  // 分析面板
+
+    // 宏块分析状态由本窗口协调（见 ApplyMacroblockAnalysisState）：
+    // 用户主动开启的分析与 MV 叠加需求分开记录，实际采集状态取两者的或。
+    // 协调规则封装在不依赖 Qt 的 MacroblockCoordination 里（可单测）。
+    MacroblockCoordination macroblock_;
 
     // FFmpeg 命令工作台 (原生 ffmpeg 的图形入口; 不依赖当前是否打开了媒体)
     ui::FfmpegPanel* ffmpeg_panel_ = nullptr;

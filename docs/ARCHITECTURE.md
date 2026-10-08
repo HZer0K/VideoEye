@@ -158,9 +158,18 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
 全在一个类里。现在按"页面内聚"拆出独立组件，规则是：
 
 - **组件本体就是 `QWidget`**，建好后交给 `AddPageWithScroll()` 直接变成外部 `QStackedWidget`
-  的一页，不再额外包一层 tab widget（页面顺序 = `SetupUI()` 里的调用顺序，决定侧边栏顺序与
-  分组归属；侧边栏页面项带 `UserRole` 下标，行号与 stack 下标已解耦，见
-  `MainWindow::PopulateSidebarItems()`）。
+  的一页，不再额外包一层 tab widget。侧边栏不再依赖固定页序：每个页面在
+  `AddPageWithScroll()` 时登记 `pageId` / `pageTitle` / `pageGroup` / `pageOrder` / `pageScope`，
+  由 `ui/main_window/navigation_model.h` 的 `BuildNavigationRows()` 按元数据生成分组与行，
+  行号与 stack 下标解耦（页面项带 `UserRole` 下标，见 `MainWindow::PopulateSidebarItems()`）。
+  以后增减或重排页面只需改页面自己的登记，不必再动「预期页数」与分组下标。
+  分组顺序为 概览 / 播放监看 / 文件解析 / 全片质量 / 报告与工具。页面只登记自己的标题与口径
+  （`pageScope`：播放期 / 全文件）；口径不逐页拼进标题，而是由组内口径汇总到分组标题
+  （如「播放监看（播放期）」「全片质量（全文件）」）—— 既区分了两种 GOP 统计（播放期摘要与
+  全文件「码率与 GOP」），又不必在每个页面标题里重复。分组标题由侧栏的 `SidebarItemDelegate`
+  按行绘制成不可交互的小节标签（更小、更暗、加粗），与可点击的页面项区分开；只有一个页面的
+  分组不显示标题，避免「标题 + 唯一页面」看起来像两条重复项（曾出现「概览」与「媒体信息」
+  长得一样、却只有后者可点）。
 - **数据进来**：`SetResult()` / `ApplySampleTable()` / `SetQcReport()` / `SetScanActive()` …
 - **意图出去**：`ScanRequested` / `CancelRequested` / `SeekRequested` / `StartTimecodeReady` …
   由 `AnalysisPanel` 转发（它才知道 `current_video_path_` 和全局 feature 表）。
@@ -171,7 +180,7 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   需要跨页改选项（如字幕阈值从规则表同步）时用 `SetBeforeScanHook()` 注入钩子，
   页面之间不互相 include。
 - **一个页面可以是多个组件的组合**：外部 stack 的一页不一定等于一个组件。
-  「码流分析」页就是 `StreamOverviewView`（顶部流概览，固定高度让曲线一直可见）+
+  「播放统计与帧包」页就是 `StreamOverviewView`（顶部流概览，固定高度让曲线一直可见）+
   分隔条 + `FramePacketView`（底部视频帧/包/GOP/音频帧四张表，占剩余高度）拼成的，
   拼装与两者之间的数据桥接在 `SetupBitstreamTab()` 里。
 
@@ -185,10 +194,10 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
 | `ColorHdrPage` | primaries / transfer / matrix / range / HDR 元数据 |
 | `SubtitleAuxPage` | 字幕 cue / SMPTE 时码 / 章节 / SCTE-35 / metadata |
 | `EventTimelineView` | 「事件与时间轴」聚合页：异常事件 / 统一时间轴 / 同步分析三个子页 + 各自表格、曲线、CSV 导出 |
-| `StreamOverviewView` | 「码流分析」页顶部：流概览 5 指标 + 码率 / 帧率 / GOP 三条趋势曲线 + 导出分析报告 |
-| `FramePacketView` | 「码流分析」页底部：视频帧 / 包 / GOP 摘要 / 音频帧四张表 + 记录缓存 + 增量刷新 + CSV + 帧包按 PTS 互跳 |
+| `StreamOverviewView` | 「播放统计与帧包」页顶部：流概览 5 指标 + 码率 / 帧率 / GOP 三条趋势曲线 + 导出分析报告 |
+| `FramePacketView` | 「播放统计与帧包」页底部：视频帧 / 包 / GOP 摘要 / 音频帧四张表 + 记录缓存 + 增量刷新 + CSV + 帧包按 PTS 互跳 |
 | `MacroblockView` | 宏块分析：运动矢量表 + 矢量可视化 + 块大小 / 运动幅度分布 + CSV |
-| `DiagnosticsPage` | 全文件扫描 + QC 规则引擎：问题清单（逐秒码率/帧率曲线 + 问题表）、规则与阈值表、时间轴与同步子页；报告重算、`ApplySceneLink()` 与导出都在这里 |
+| `DiagnosticsPage` | 全文件扫描 + QC 规则引擎：问题清单（逐秒码率/帧率曲线 + 问题表）与规则与阈值表两个子页；报告重算、`ApplySceneLink()` 与导出都在这里。时间相关的问题只做判定与「跳转到对应时间」，样本 / 曲线归「事件与时间轴」页，两页不重复持有同一份同步样本 |
 
 部分页面不持有全局状态但需要读写分析功能开关（`feature_enabled_`），用**注入钩子**代替反向
 依赖面板：`SetFeatureHooks(is_enabled, set_enabled)`，视图只认自己内部的编号
@@ -200,7 +209,7 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
 
 几个页面共用的无状态小工具（`SeriesBatch` 批量提交曲线、`TableBatch` 批量填表、
 `SetTableItemText` 写单元格、`FormatMetricValue` / `FormatKb` / `AppendDecimated`）
-在 `ui/analysis_panel/AnalysisPageSupport.h`；「码流分析」两个组件共用的记录结构
+在 `ui/analysis_panel/AnalysisPageSupport.h`；「播放统计与帧包」两个组件共用的记录结构
 （`VideoFrameRecord` / `GopSummary` / `AudioFrameRecord` / `PacketRecord`）在
 `ui/analysis_panel/StreamRecords.h`。
 
@@ -304,7 +313,7 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
 - **`AnalysisPanel.cpp` 已从 2787 行降到 654 行**，拆出 12 个页面组件（见 4.1）。
   面板现在只剩协调职责：建页 → 注入 feature 钩子 → 播放期按开关过滤后转发数据 →
   扫描结束后分发结果。历史上它同时兼着"页面 + 数据仓库 + 表格控制器"三个角色，
-  这一轮把最后两块也搬走了：「码流分析」（原 `bitstream_tab_` 合并的流/帧/包三页 →
+  这一轮把最后两块也搬走了：「播放统计与帧包」（原 `bitstream_tab_` 合并的流/帧/包三页 →
   `StreamOverviewView` + `FramePacketView`）与「宏块分析」（原 `macroblock_tab_` →
   `MacroblockView`）。顺带清掉了随页面搬走后遗留的死代码：面板里那份从未被连接的
   `OnExportMp4Box()` 与匿名命名空间的 `PopulateMp4BoxTablesInContainer()`（真正的实现

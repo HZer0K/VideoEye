@@ -26,9 +26,13 @@ constexpr int kUiFlushIntervalMs = 120;
 // 共用同一次全文件扫描的页面接线：入注册表 + 把「开始/取消」意图接到诊断页总控。
 // 以前三页各写一份（连信号 + FillScanOptions + StartScan），差异只有 FillScanOptions
 // 的具体内容 —— 那由页面自己在 ScanClient 实现里决定。
+void AnalysisPanel::AddScanClient(ScanClient* page) {
+    scan_clients_.push_back(page);
+}
+
 template <typename PageT>
 void AnalysisPanel::RegisterScanPage(PageT* page) {
-    scan_clients_.push_back(page);
+    AddScanClient(page);
     connect(page, &PageT::ScanRequested, this, [this, page]() {
         if (!diagnostics_page_) return;
         videoeye::AnalysisOptions options = diagnostics_page_->options();
@@ -43,7 +47,12 @@ void AnalysisPanel::RegisterScanPage(PageT* page) {
 AnalysisPanel::AnalysisPanel(QWidget* parent)
     : QWidget(parent) {
     
-    // 默认启用: 基础功能, 关闭: 高性能分析
+    // 播放期/打开期开关的默认值统一按「附加开销」分层（与界面文案、tooltip 一致）：
+    //   默认开 = 复用播放/打开本来就有的数据，几乎无额外开销（流统计、视频帧、容器结构）；
+    //   默认关 = 需要额外的解码、降采样或数据留存（音频帧、数据包、事件、同步、时间轴、
+    //            宏块、场景切换、画面质量），界面统一标注「按需开启」。
+    // 全文件扫描页（码率 GOP / 音频 QC / 色彩 HDR / 参数集 / 流媒体包 / 字幕 / 质量诊断）
+    // 不用常驻开关，统一由「开始分析」按钮触发共享扫描。
     feature_enabled_[AnalysisFeature::Master] = true;
     feature_enabled_[AnalysisFeature::StreamStats] = true;
     feature_enabled_[AnalysisFeature::VideoFrame] = true;
@@ -77,8 +86,19 @@ bool AnalysisPanel::IsFeatureEnabled(AnalysisFeature feature) const {
     return feature_enabled_.value(feature, true);
 }
 
+void AnalysisPanel::SetMacroblockAnalysisEnabled(bool enabled) {
+    feature_enabled_[AnalysisFeature::Macroblock] = enabled;
+    // 同步宏块页勾选框（钩子读的是 feature_enabled_）。SyncToggleFromHooks 内部屏蔽
+    // 信号，不会回调 set_enabled_，因此不会反过来又发一次 AnalysisFeatureToggled。
+    if (macroblock_view_) macroblock_view_->SyncToggleFromHooks();
+}
+
 void AnalysisPanel::EmitInitialFeatureStates() {
-    // 对每个启用状态的 feature 重新发射信号 (除了 Master 和 Mp4Box)
+    // 对每个启用状态的 feature 重新发射信号 (除了 Master 和 Mp4Box，以及 Macroblock)。
+    // Macroblock 不在这里重发：它的实际采集状态由协调层把"用户启用"与"叠加需求"取或
+    // 后通过 SetMacroblockAnalysisEnabled + SetAnalysisFeature 统一下发（见 MainWindow::
+    // ApplyMacroblockAnalysisState）。若在换文件时按 feature_enabled_ 重发，会在
+    // "仅因叠加而开启"的情况下把用户意图误标成开启，导致关闭叠加后回不到原状态。
     static const AnalysisFeature kFeatures[] = {
         AnalysisFeature::StreamStats,
         AnalysisFeature::VideoFrame,
@@ -87,7 +107,6 @@ void AnalysisPanel::EmitInitialFeatureStates() {
         AnalysisFeature::Event,
         AnalysisFeature::SyncSample,
         AnalysisFeature::Timeline,
-        AnalysisFeature::Macroblock,
         AnalysisFeature::VisualDefect,
     };
     for (auto feat : kFeatures) {
@@ -97,12 +116,19 @@ void AnalysisPanel::EmitInitialFeatureStates() {
 }
 
 
-void AnalysisPanel::AddPageWithScroll(QWidget* tab_widget, const QString& title) {
+void AnalysisPanel::AddPageWithScroll(QWidget* tab_widget, const QString& title,
+                                      const QString& page_id, const QString& group_id, int order,
+                                      const QString& scope) {
     QScrollArea* scroll = new QScrollArea();
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setWidget(tab_widget);
-    scroll->setProperty("pageTitle", title);  // MainWindow 用它生成侧边栏条目
+    // 导航元数据（MainWindow 用它生成侧栏条目与分组，见 navigation_model.h）
+    scroll->setProperty("pageTitle", title);
+    scroll->setProperty("pageId", page_id);
+    scroll->setProperty("pageGroup", group_id);
+    scroll->setProperty("pageOrder", order);
+    scroll->setProperty("pageScope", scope);
     page_widgets_.append(scroll);
     page_titles_.append(title);
 }
@@ -195,7 +221,8 @@ void AnalysisPanel::SetupBitstreamTab() {
     // 底部 4 子 Tab 区 (可伸展, 占剩余高度)
     layout->addWidget(frame_packet_view_, 1);
 
-    AddPageWithScroll(page, tr("码流分析"));
+    AddPageWithScroll(page, tr("播放统计与帧包"), QStringLiteral("playback_stats_packets"),
+                      QStringLiteral("playback"), 0, tr("播放期"));
 }
 
 void AnalysisPanel::SetupMacroblockTab() {
@@ -210,7 +237,8 @@ void AnalysisPanel::SetupMacroblockTab() {
             emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::Macroblock), enabled);
         });
 
-    AddPageWithScroll(macroblock_view_, tr("宏块分析"));
+    AddPageWithScroll(macroblock_view_, tr("运动矢量与块分析"), QStringLiteral("motion_vectors"),
+                      QStringLiteral("playback"), 1, tr("播放期"));
 }
 
 // ===========================================================================
@@ -279,8 +307,6 @@ void AnalysisPanel::ResetAnalysisEventList() {
 
 
 void AnalysisPanel::ResetSyncSampleList() {
-    // 只复位时间轴视图内的同步表/曲线；诊断页的音视频偏移累积随换文件由
-    // SetCurrentVideoPath -> DiagnosticsPage::ResetForNewFile 统一清零，这里不重复复位。
     if (event_timeline_view_) event_timeline_view_->ResetSyncSampleList();
 }
 
@@ -296,13 +322,9 @@ void AnalysisPanel::AppendAnalysisEvent(const model::AnalysisEvent& event_info) 
 
 
 void AnalysisPanel::AppendSyncSample(const model::SyncSample& sample) {
-    // 同步样本统一在这里直发给两个消费方：视图建同步表/曲线，诊断页建音视频偏移曲线。
-    // 视图不再经信号中继（评审 P1：收敛同步链，避免一次样本绕两跳）。
+    // 同步样本只喂给时间轴视图（同步表 / 曲线）。以前还直发一份给诊断页，让它维护
+    // 第二套音视频偏移曲线 —— 同一份样本绕两页、两处展示，已收敛到本视图一处。
     if (event_timeline_view_) event_timeline_view_->AppendSyncSample(sample);
-    if (diagnostics_page_) {
-        diagnostics_page_->OnSyncSample(sample.audio_timestamp_seconds * 1000.0,
-                                        sample.video_timestamp_seconds * 1000.0);
-    }
 }
 
 
@@ -322,8 +344,12 @@ void AnalysisPanel::SetupStreamingPackageTab() {
 
     connect(streaming_panel_, &StreamingPanel::RefreshRequested,
             this, &AnalysisPanel::OnStreamingRefreshRequested);
+    // 「开始分析」由本页自己发出、面板接线；这里只把它登记进共享扫描注册表，
+    // 让扫描中按钮跟着一起禁用、换文件同步，和码率/音频/HDR 表现一致。
+    AddScanClient(streaming_panel_);
 
-    AddPageWithScroll(streaming_panel_, tr("流媒体包"));
+    AddPageWithScroll(streaming_panel_, tr("流媒体包"), QStringLiteral("streaming_packets"),
+                      QStringLiteral("file_parse"), 2, tr("全文件"));
 }
 
 void AnalysisPanel::OnStreamingRefreshRequested() {
@@ -357,8 +383,11 @@ void AnalysisPanel::SetupParameterSetTab() {
 
     connect(bitstream_params_panel_, &BitstreamPanel::RefreshRequested,
             this, &AnalysisPanel::OnBitstreamRefreshRequested);
+    // 与流媒体包页一致：登记进共享扫描注册表，扫描中按钮一起禁用。
+    AddScanClient(bitstream_params_panel_);
 
-    AddPageWithScroll(bitstream_params_panel_, tr("参数集解析"));
+    AddPageWithScroll(bitstream_params_panel_, tr("编码参数集"), QStringLiteral("codec_parameters"),
+                      QStringLiteral("file_parse"), 1, tr("全文件"));
 }
 
 void AnalysisPanel::OnBitstreamRefreshRequested() {
@@ -383,18 +412,6 @@ void AnalysisPanel::StartDiagnosticsScanForCurrentFile() {
     if (!diagnostics_page_ || current_video_path_.empty()) return;
     // 静默路径：打开失败后自动补扫一次，不能弹窗打断"打开即分析"的流程
     diagnostics_page_->StartScan(diagnostics_page_->options(), /*silent=*/true);
-}
-
-// ---------------------------------------------------------------------------
-// 播放期时间轴统计：数据归诊断页（TimelineAnalyzer 也在那里），面板只转发
-// ---------------------------------------------------------------------------
-
-void AnalysisPanel::OnTimelinePacket(const model::PacketTiming& timing) {
-    if (diagnostics_page_) diagnostics_page_->OnPacketTiming(timing);
-}
-
-void AnalysisPanel::OnFrameTiming(const model::FrameTimingInfo& timing) {
-    if (diagnostics_page_) diagnostics_page_->OnFrameTiming(timing);
 }
 
 // ===========================================================================
@@ -457,7 +474,8 @@ void AnalysisPanel::SetupEventTimelineView() {
             emit AnalysisFeatureToggled(static_cast<int>(feat), enabled);
         });
 
-    AddPageWithScroll(event_timeline_view_, tr("事件与时间轴"));
+    AddPageWithScroll(event_timeline_view_, tr("事件与时间轴"), QStringLiteral("event_timeline"),
+                      QStringLiteral("playback"), 4);
 }
 
 void AnalysisPanel::SetupContainerStructurePage() {
@@ -469,7 +487,8 @@ void AnalysisPanel::SetupContainerStructurePage() {
                 emit AnalysisFeatureToggled(
                     static_cast<int>(AnalysisFeature::ContainerStructure), enabled);
             });
-    AddPageWithScroll(container_page_, tr("文件结构"));
+    AddPageWithScroll(container_page_, tr("文件结构"), QStringLiteral("file_structure"),
+                      QStringLiteral("file_parse"), 0, tr("全文件"));
 }
 
 void AnalysisPanel::SetupSceneChangePage() {
@@ -481,7 +500,8 @@ void AnalysisPanel::SetupSceneChangePage() {
                 emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::SceneChange), enabled);
             });
 
-    AddPageWithScroll(scene_change_page_, tr("场景切换"));
+    AddPageWithScroll(scene_change_page_, tr("场景切换"), QStringLiteral("scene_change"),
+                      QStringLiteral("playback"), 2, tr("播放期"));
 }
 
 void AnalysisPanel::SetupVisualDefectPage() {
@@ -495,7 +515,8 @@ void AnalysisPanel::SetupVisualDefectPage() {
     connect(visual_defect_page_, &VisualDefectPage::OptionsChanged,
             this, &AnalysisPanel::VisualDefectOptionsChanged);
     connect(visual_defect_page_, &VisualDefectPage::SeekRequested, this, &AnalysisPanel::SeekRequested);
-    AddPageWithScroll(visual_defect_page_, tr("画面质量"));
+    AddPageWithScroll(visual_defect_page_, tr("画面质量"), QStringLiteral("visual_quality"),
+                      QStringLiteral("playback"), 3, tr("播放期"));
 }
 
 void AnalysisPanel::SetupBitrateGopPage() {
@@ -507,7 +528,8 @@ void AnalysisPanel::SetupBitrateGopPage() {
     connect(bitrate_gop_page_, &BitrateGopPage::SeekRequested, this, &AnalysisPanel::SeekRequested);
     connect(bitrate_gop_page_, &BitrateGopPage::SceneLinkRequested,
             this, &AnalysisPanel::OnSceneLinkRequested);
-    AddPageWithScroll(bitrate_gop_page_, tr("码率与 GOP"));
+    AddPageWithScroll(bitrate_gop_page_, tr("码率与 GOP"), QStringLiteral("bitrate_gop"),
+                      QStringLiteral("full_quality"), 0, tr("全文件"));
 }
 
 void AnalysisPanel::SetupAudioQcPage() {
@@ -515,14 +537,16 @@ void AnalysisPanel::SetupAudioQcPage() {
     audio_qc_page_->SetSourcePath(QString::fromStdString(current_video_path_));
     RegisterScanPage(audio_qc_page_);
     connect(audio_qc_page_, &AudioQcPage::SeekRequested, this, &AnalysisPanel::SeekRequested);
-    AddPageWithScroll(audio_qc_page_, tr("音频 QC"));
+    AddPageWithScroll(audio_qc_page_, tr("音频 QC"), QStringLiteral("audio_qc"),
+                      QStringLiteral("full_quality"), 1, tr("全文件"));
 }
 
 void AnalysisPanel::SetupColorHdrPage() {
     color_hdr_page_ = new ColorHdrPage(this);
     color_hdr_page_->SetSourcePath(QString::fromStdString(current_video_path_));
     RegisterScanPage(color_hdr_page_);
-    AddPageWithScroll(color_hdr_page_, tr("色彩与 HDR"));
+    AddPageWithScroll(color_hdr_page_, tr("色彩与 HDR"), QStringLiteral("color_hdr"),
+                      QStringLiteral("full_quality"), 2, tr("全文件"));
 }
 
 void AnalysisPanel::SetupSubtitleAuxPage() {
@@ -535,7 +559,10 @@ void AnalysisPanel::SetupSubtitleAuxPage() {
     connect(subtitle_aux_page_, &SubtitleAuxPage::StartTimecodeReady,
             this, &AnalysisPanel::StartTimecodeReady);
     connect(subtitle_aux_page_, &SubtitleAuxPage::SeekRequested, this, &AnalysisPanel::SeekRequested);
-    AddPageWithScroll(subtitle_aux_page_, tr("字幕 / 辅助数据"));
+    // 字幕页同样共用同一次扫描：登记进注册表，扫描中「开始分析」跟着禁用、换文件同步。
+    AddScanClient(subtitle_aux_page_);
+    AddPageWithScroll(subtitle_aux_page_, tr("字幕与辅助数据"), QStringLiteral("subtitle_aux"),
+                      QStringLiteral("file_parse"), 3, tr("全文件"));
 }
 
 // ---------------------------------------------------------------------------
@@ -662,7 +689,8 @@ void AnalysisPanel::SetupDiagnosticsPage() {
             });
     connect(diagnostics_page_, &DiagnosticsPage::SeekRequested, this, &AnalysisPanel::SeekRequested);
 
-    AddPageWithScroll(diagnostics_page_, tr("诊断与报告"));
+    AddPageWithScroll(diagnostics_page_, tr("质量诊断"), QStringLiteral("quality_diagnostics"),
+                      QStringLiteral("full_quality"), 3, tr("全文件"));
 }
 
 void AnalysisPanel::SyncSubtitleThresholds(videoeye::AnalysisOptions& options) {
@@ -676,7 +704,8 @@ void AnalysisPanel::SetupReportingPanelTab() {
     reporting_panel_ = new ui::ReportingPanel(this);
     connect(reporting_panel_, &ui::ReportingPanel::StatusMessage,
             this, &AnalysisPanel::StatusMessage);
-    AddPageWithScroll(reporting_panel_, tr("报告与批量 QC"));
+    AddPageWithScroll(reporting_panel_, tr("报告与批量 QC"), QStringLiteral("report_batch_qc"),
+                      QStringLiteral("report_tools"), 0);
 }
 
 void AnalysisPanel::OnScanStarted() {

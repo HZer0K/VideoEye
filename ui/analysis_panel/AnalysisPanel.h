@@ -33,7 +33,6 @@
 #include "core/domain/model/SceneChangeResult.h"
 #include "core/domain/model/StreamStats.h"
 #include "core/domain/model/SyncSample.h"
-#include "core/domain/model/TimelineDiagnostic.h"
 #include "core/domain/model/TimelineEvent.h"
 #include "core/domain/model/VisualDefect.h"
 #include "core/domain/model/VisualDefectOptions.h"
@@ -86,6 +85,11 @@ public:
 
     // 检查某个分析功能是否启用
     bool IsFeatureEnabled(AnalysisFeature feature) const;
+
+    // 由协调层（MainWindow）下发"宏块分析的实际采集状态"：当 MV 叠加打开时会强制
+    // 开启，关闭叠加后恢复成用户原先主动开启的状态。这里只更新面板内部 feature 表
+    // 与宏块页勾选框，**不**发 AnalysisFeatureToggled —— 避免与协调层形成回环。
+    void SetMacroblockAnalysisEnabled(bool enabled);
 
     // 设置当前视频文件路径 (供导出报告)
     void SetCurrentVideoPath(const QString& path) {
@@ -162,7 +166,7 @@ public slots:
                              const model::ActivePictureArea& effective_area);
     void OnVisualDefectOptionChanged();
 
-    // 参数集页「重新扫描」：复用同一次全文件扫描
+    // 参数集页「开始分析」：复用同一次全文件扫描
     void OnBitstreamRefreshRequested();
 
     // 扫描生命周期由 DiagnosticsPage 编排，面板只把进度同步给其它几页
@@ -172,15 +176,14 @@ public slots:
     // 非失败时再把同一份结果分发下去。不再有"成功/取消各走一半"的分裂路径。
     void OnScanEnded(DiagnosticsPage::ScanEndReason reason);
 
-    // 时间轴与同步诊断（播放实时数据 → 转交诊断页）
-    void OnTimelinePacket(const model::PacketTiming& timing);
-    void OnFrameTiming(const model::FrameTimingInfo& timing);
-
 private:
     // 初始化UI
     void SetupUI();
-    // 将页面包裹 QScrollArea 并添加到页面列表
-    void AddPageWithScroll(QWidget* tab_widget, const QString& title);
+    // 将页面包裹 QScrollArea 并添加到页面列表。同时把导航元数据（稳定 pageId、
+    // 分组 id、组内排序键、口径）写成控件属性，供 MainWindow 生成侧栏；见
+    // ui/main_window/navigation_model.h。
+    void AddPageWithScroll(QWidget* tab_widget, const QString& title, const QString& page_id,
+                           const QString& group_id, int order, const QString& scope = QString());
     // 「码流分析」页：把流概览（StreamOverviewView）与帧/包明细（FramePacketView）
     // 两个组件拼成一页（顶部固定 + 分隔线 + 底部可伸展），并把 GOP 摘要从产出方
     // 桥接到消费方。
@@ -205,8 +208,8 @@ private:
     void SetupAudioQcPage();
     void SetupColorHdrPage();
     void SetupSubtitleAuxPage();
-    // 事件 / 同步 / 时间轴三表聚合页：本体是 EventTimelineView，建页后注入 feature 钩子，
-    // 诊断页指针在 SetupUI 末尾注入（AppendSyncSample 需要喂同步样本给诊断页）。
+    // 事件 / 同步 / 时间轴三表聚合页：本体是 EventTimelineView，建页后注入 feature 钩子。
+    // 播放期的同步样本只喂给本视图 —— 时间轴的样本 / 曲线 / 导出都收敛在这里。
     void SetupEventTimelineView();
     void FlushPendingUiUpdates();
 
@@ -253,7 +256,7 @@ private:
 
     // 码率与 GOP 深度分析页（已拆成独立的 BitrateGopPage）
     BitrateGopPage* bitrate_gop_page_ = nullptr;
-    // 诊断与报告页（已拆成独立的 DiagnosticsPage：扫描总控 + 问题表 + 规则表 + 时间轴）
+    // 诊断与报告页（已拆成独立的 DiagnosticsPage：扫描总控 + 问题表 + 规则表）
     DiagnosticsPage* diagnostics_page_ = nullptr;
 
     // 音频 QC 标签页（已拆成独立的 AudioQcPage）
@@ -277,11 +280,16 @@ private:
     // 报告与批量 QC 页（功能 12）：模板选择 / 单文件报告 / 目录批量扫描 / 导出
     ui::ReportingPanel* reporting_panel_ = nullptr;
 
-    // 共用同一次全文件扫描的页面注册表（BitrateGopPage / AudioQcPage / ColorHdrPage）。
-    // 换文件、扫描起止、进度都按它循环转发 —— 再加一页只需 RegisterScanPage 一处接线。
+    // 共用同一次全文件扫描的页面注册表。换文件、扫描起止、进度都按它循环转发。
     std::vector<ScanClient*> scan_clients_;
 
+    // 只把页面登记进注册表（换文件 / 扫描起止 / 进度一起作用到它）。
+    // 用它给"扫描意图信号已自行接线"的页面（流媒体包 / 编码参数集 / 字幕辅助）
+    // 补齐共享扫描状态，不重复接请求信号。
+    void AddScanClient(ScanClient* page);
+
     // 注册一个共用扫描的页面：入队 + 把 ScanRequested / CancelRequested 接到诊断页总控。
+    // 适用于码率 GOP / 音频 QC / 色彩 HDR 这类自带 ScanRequested/CancelRequested 的页面。
     // 模板定义在 .cpp —— 只有面板自己实例化，不需要把诊断页细节带进这个头。
     template <typename PageT>
     void RegisterScanPage(PageT* page);

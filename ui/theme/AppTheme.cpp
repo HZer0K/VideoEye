@@ -198,14 +198,6 @@ QListWidget#Sidebar::item:selected {
     border-left: 3px solid #58A6FF;
 }
 
-QLabel#SidebarGroupLabel {
-    color: #484F58;
-    font-size: 11px;
-    font-weight: 600;
-    padding: 8px 16px 4px 16px;
-    background-color: transparent;
-}
-
 /* ==== Control Bar ==== */
 QWidget#ControlBar {
     background-color: #161B22;
