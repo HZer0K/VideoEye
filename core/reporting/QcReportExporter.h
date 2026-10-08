@@ -10,8 +10,11 @@
 // CSV 的口径：一个问题一行，没有"文件占一行"的变体 —— 批量透视交给
 // summary CSV，混在一起会让行数失去意义。
 //
-// PDF 的限制：内置 Helvetica（base-14）字体只编码拉丁字符，中日韩字形无法嵌入。
-// 非拉丁字符会被替换成 '?'，需要完整中文请导出 HTML。
+// PDF 的实现：不依赖 Qt PrintSupport，自带一个极简写入器。拉丁字符走内置
+// Helvetica（WinAnsi），非拉丁字符走第二套 Type0/Identity-H 字体 + ToUnicode CMap，
+// 按 UTF-16BE 十六进制串画出 —— 中文不会被替换成 '?'，复制/搜索也能拿到正确文本。
+// 唯一会丢的是 BMP 以外的字符（emoji 等，Identity-H 的码元只有 16 位），
+// 那时 QcPdfExportResult::text_loss 为 true。
 
 #include <string>
 #include <vector>
@@ -37,7 +40,7 @@ struct QcExportBundle {
 // PDF 结果：除了成败还要告诉调用方"有没有丢字形"，CLI 据此给出提示。
 struct QcPdfExportResult {
     bool ok = false;
-    bool text_loss = false;   // true = 报告里有非拉丁字符被替换成 '?'
+    bool text_loss = false;   // true = 有字符（BMP 外，如 emoji）无法表示，被降级成 '?'
 };
 
 // 批量汇总的一行。用扁平结构而不是直接吃 BatchQcItemResult，

@@ -85,12 +85,16 @@ public:
             for (const auto& line : page) {
                 // 一行切成若干 run：Latin 段用 F1 画，中文段用 F3 画。
                 // 不能整行二选一 —— 报告里"中文问题标题 + 英文 rule_id"这种行很常见。
-                for (const Run& run : MakeRuns(line, codepoints_)) {
+                for (const Run& run : MakeRuns(line)) {
                     if (run.IsHex())
                         stream << "/F3 10 Tf <" << run.hex << "> Tj\n";
                     else
                         stream << "/F1 10 Tf (" << run.text << ") Tj\n";
                 }
+                // ⚠️ 每行画完必须换到下一行。Tj 只把光标往右推、不会换行，少了 T*
+                // 整页几十行会首尾相接画在同一条基线上（冲出页面、只剩开头可见），
+                // 而文件照样"写得出来" —— 这类缺陷只有真渲染或逐操作数校验才看得见。
+                stream << "T*\n";
             }
             stream << "ET";
             const std::string content = stream.str();
@@ -148,8 +152,12 @@ public:
         return true;
     }
 
-    // 有没有字会被丢掉（供调用方提示用户）
-    static bool HasLossyText(const std::string& text);
+    // 有没有字被降级成 '?'（供调用方提示用户）
+    //
+    // ⚠️ 语义：只有"这个字体真的表示不了"才算丢字（目前是 BMP 外的字符，如 emoji）。
+    // 以前这里是"凡出现非 ASCII 字节就算丢"，于是中文报告一律被判成 text_loss=true，
+    // 界面弹出"中文已被替换为 ?" —— 与实际情况正好相反。
+    bool HasLoss() const { return lossy_; }
 
 private:
     // 一行文本切成的一段连续字节：
@@ -168,9 +176,13 @@ private:
     // 两边都不丢。
     //
     // 非 Latin 的 codepoint 顺手记进 codepoints —— ToUnicode CMap 要用。
-    static std::vector<Run> MakeRuns(const std::string& text, std::set<unsigned int>& codepoints) {
+    std::vector<Run> MakeRuns(const std::string& text) {
         std::vector<Run> runs;
         Run run;
+        auto flush = [&]() {
+            if (!run.text.empty() || !run.hex.empty()) runs.push_back(run);
+            run = Run();
+        };
         for (std::size_t i = 0; i < text.size();) {
             const unsigned char c = static_cast<unsigned char>(text[i]);
             unsigned int codepoint = c;
@@ -193,7 +205,7 @@ private:
 
             const bool latin = (codepoint < 0x100);  // WinAnsi 覆盖得住
             if (latin) {
-                if (run.IsHex()) { runs.push_back(run); run = Run(); }
+                if (run.IsHex()) flush();
                 switch (codepoint) {
                     case '(': run.text += "\\("; break;
                     case ')': run.text += "\\)"; break;
@@ -201,14 +213,26 @@ private:
                     default:  run.text += static_cast<char>(codepoint); break;
                 }
             } else {
-                if (!run.IsHex()) { runs.push_back(run); run = Run(); }
-                AppendHexPair(run.hex, 0xFEFF);  // BOM：让阅读器认出后面是 UCS-2 码点
-                AppendHexPair(run.hex, codepoint);
-                codepoints.insert(codepoint);
+                if (!run.IsHex()) {
+                    flush();
+                    // BOM 只在这个 run 的开头写一次 —— 以前是每个字符前都写，
+                    // 于是中文之间被塞进一堆 CID 0xFEFF（字体里没有这个字形），
+                    // 阅读器在每个字之间画一个空白/缺字框。
+                    AppendHexPair(run.hex, 0xFEFF);
+                }
+                if (codepoint > 0xFFFF) {
+                    // Identity-H 的码元只有 16 位，装不下 BMP 以外的字符（emoji 等）。
+                    // 退化成 '?' 并置位 lossy_，让调用方如实提示。
+                    AppendHexPair(run.hex, '?');
+                    lossy_ = true;
+                } else {
+                    AppendHexPair(run.hex, codepoint);
+                    codepoints_.insert(codepoint);
+                }
             }
             i += advance;
         }
-        if (!run.text.empty() || !run.hex.empty()) runs.push_back(run);
+        flush();
         return runs;
     }
 
@@ -241,14 +265,8 @@ private:
 
     std::vector<std::string> lines_;
     std::set<unsigned int> codepoints_;  // 整份报告里出现过的非 Latin 码点
+    bool lossy_ = false;                 // 有字符被降级成 '?'（BMP 外字符）
 };
-
-bool MiniPdfWriter::HasLossyText(const std::string& text) {
-    for (unsigned char c : text) {
-        if (c >= 0x80) return true;  // 粗略判断：UTF-8 多字节序列一定有 >=0x80 的字节
-    }
-    return false;
-}
 
 }  // namespace
 
@@ -313,20 +331,8 @@ QcPdfExportResult QcReportExporter::ExportPdf(const std::string& path,
     if (!WriteUtf8File(path, bytes)) return result;
 
     result.ok = true;
-    // 报告里所有文本面一个个查代价太高（detail 字段最长），这里抽查标题/详情/建议三类。
-    for (const auto& issue : report.issues) {
-        if (MiniPdfWriter::HasLossyText(issue.title) ||
-            MiniPdfWriter::HasLossyText(issue.detail) ||
-            MiniPdfWriter::HasLossyText(issue.suggestion)) {
-            result.text_loss = true;
-            break;
-        }
-    }
-    if (MiniPdfWriter::HasLossyText(report.verdict) ||
-        MiniPdfWriter::HasLossyText(bundle.profile_name) ||
-        MiniPdfWriter::HasLossyText(report.file_path)) {
-        result.text_loss = true;
-    }
+    // 由写入器自己报告：它逐字符走过全部文本，知道哪些字真的没画出来。
+    result.text_loss = writer.HasLoss();
     return result;
 }
 

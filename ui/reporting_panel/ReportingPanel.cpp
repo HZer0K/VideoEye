@@ -378,7 +378,7 @@ void ReportingPanel::ExportSingleResult(const QString& directory) {
             if (pdf.text_loss) {
                 QMessageBox::information(
                     this, tr("PDF 提示"),
-                    tr("PDF 使用非嵌入字体，报告里的中文已被替换为 '?'。需要完整中文请勾选 HTML。"));
+                    tr("报告里有 PDF 字体无法表示的字符（如 emoji），已替换为 '?'。"));
             }
         } else {
             ok &= reporting::QcReportExporter::Export(target, bundle, format);

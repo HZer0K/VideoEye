@@ -650,11 +650,14 @@ target_link_libraries(test_qc_comparator PRIVATE VideoEyeQc)
 add_test(NAME QcComparatorTests COMMAND test_qc_comparator)
 
 # =================================================
-# 测试 28：报告导出（CSV 每 issue 一行 / JSON schema 稳定 / 批量汇总 / 扩展名）
-# 说明: 只测 CSV/JSON/汇总这些纯 std::string 路径；PDF 走 QPdfWriter 不在本测试覆盖。
+# 测试 28：报告导出（CSV / JSON / HTML / TXT / PDF 的产物矩阵 + 扩展名 + 批量汇总）
+# 说明: 五种格式都不再只断言"文件写出来了" —— JSON 重新解析、CSV 数行与转义、
+#       HTML/TXT 查关键字段、PDF 走 tests/support/PdfVerifier 校验对象关系与
+#       xref。验证器是纯 std::string 实现，不引入 qpdf / poppler 之类的外部依赖。
 # =================================================
 videoeye_add_test(test_qc_report_exporter
     unit/test_qc_report_exporter.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tests/support/PdfVerifier.cpp
 )
 target_link_libraries(test_qc_report_exporter PRIVATE VideoEyeReporting)
 add_test(NAME QcReportExporterTests COMMAND test_qc_report_exporter)
@@ -676,11 +679,16 @@ target_link_libraries(test_diagnostics_result_flow PRIVATE
 add_test(NAME DiagnosticsResultFlowTests COMMAND test_diagnostics_result_flow)
 
 # =================================================
-# 测试 31：MediaExporter 错误传播（评审 P1）
-# 损坏输入必须上报 ExportError, 绝不误报 ExportFinished。
+# 测试 31：MediaExporter 错误传播 + 成功路径（评审 P1 / 阶段 1）
+# 损坏输入必须上报 ExportError, 绝不误报 ExportFinished;
+# 成功路径用 tests/support/TestMediaFactory 现场生成的 H.264+AAC 样本跑通
+# remux / 转码 / 音频-only, 并把产物重新交给 FFmpeg 打开验证流数量与帧数。
+# 工厂自己要用 avcodec/avformat/swresample 编码，FFmpeg 的 include 与库都从
+# VideoEyeExporter 的 PUBLIC 依赖传过来，不必在这里重复列。
 # =================================================
 videoeye_add_test(test_media_exporter
     unit/test_media_exporter.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tests/support/TestMediaFactory.cpp
 )
 target_link_libraries(test_media_exporter PRIVATE
     VideoEyeExporter
