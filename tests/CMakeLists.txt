@@ -675,7 +675,13 @@ target_link_libraries(test_diagnostics_result_flow PRIVATE
     VideoEyeQtAdapters
     VideoEyeAnalysis
     VideoEyeDomain
+    # 导出报告 E2E 用 QcReportExporter::ExportReport（诊断页导出按钮的同一条纯函数路径）
+    VideoEyeReporting
     Qt6::Core)
+# 取消路径用 BlockingTcpEndpoint.h 起本地监听端口，Windows 上需要显式 ws2_32。
+if(WIN32)
+    target_link_libraries(test_diagnostics_result_flow PRIVATE ws2_32)
+endif()
 add_test(NAME DiagnosticsResultFlowTests COMMAND test_diagnostics_result_flow)
 
 # =================================================
@@ -710,6 +716,10 @@ target_link_libraries(test_qt_analysis_controller PRIVATE
     VideoEyeAnalysis
     VideoEyeDomain
     Qt6::Core)
+# 阻塞取消用例用 BlockingTcpEndpoint.h 起本地监听端口，Windows 上需要显式 ws2_32。
+if(WIN32)
+    target_link_libraries(test_qt_analysis_controller PRIVATE ws2_32)
+endif()
 add_test(NAME QtAnalysisControllerLifecycleTests COMMAND test_qt_analysis_controller)
 
 # =================================================
@@ -806,6 +816,10 @@ target_link_libraries(test_scan_terminal_state PRIVATE
     VideoEyeInfrastructure
     Qt6::Widgets Qt6::Gui Qt6::Core)
 add_test(NAME ScanTerminalStateTests COMMAND test_scan_terminal_state)
+# 取消路径用例用 BlockingTcpEndpoint.h 起本地监听端口，Windows 上需要显式 ws2_32。
+if(WIN32)
+    target_link_libraries(test_scan_terminal_state PRIVATE ws2_32)
+endif()
 set_tests_properties(ScanTerminalStateTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 

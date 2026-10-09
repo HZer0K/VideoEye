@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <functional>
 #include <vector>
 
@@ -27,6 +28,8 @@
 #include <QThread>
 
 #include "core/qt/QtAnalysisController.h"
+
+#include "BlockingTcpEndpoint.h"
 
 namespace {
 
@@ -172,3 +175,148 @@ TEST(QtAnalysisControllerLifecycle, RestartAfterCancelStillStarts) {
 
     QFile::remove(manifest);
 }
+
+namespace {
+
+// 损坏输入：打开 / 探测必然走到失败分支（而不是"扫描完但结果为空"）。
+// 用 8KB 伪随机字节，避免全 0 被某些探测当成空文件提前短路。
+QString WriteCorruptInput(const QString& name) {
+    const QString path = QDir::tempPath() + "/" + name;
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return QString();
+    QByteArray junk(8192, '\0');
+    for (int i = 0; i < junk.size(); ++i) junk[i] = static_cast<char>((i * 73 + 11) & 0xFF);
+    f.write(junk);
+    f.close();
+    return path;
+}
+
+} // namespace
+
+// 失败输入必须产生终态，且**不留下粘连状态** —— 失败之后立刻能重新开始一次分析。
+// 覆盖 2.1「失败后可以重新开始」与 2.3「任务最终一定进入终态」。
+TEST(QtAnalysisControllerLifecycle, FailedInputReachesTerminalAndAllowsRestart) {
+    EnsureApp();
+
+    const QString corrupt = WriteCorruptInput("videoeye_qtac_corrupt.mp4");
+    ASSERT_FALSE(corrupt.isEmpty());
+    const QString manifest = WriteManifest("videoeye_qtac_after_fail.m3u8");
+    ASSERT_FALSE(manifest.isEmpty());
+
+    videoeye::qt::QtAnalysisController controller;
+    TerminalSink sink;
+    WireSink(controller, sink);
+
+    // 第一次：损坏输入 -> 必须在预算内落到终态（成功或失败都算），且回到 Idle。
+    const quint64 gen_bad = controller.StartAnalysis(corrupt.toStdString());
+    ASSERT_GT(gen_bad, 0u);
+    ASSERT_TRUE(PumpUntil([&] { return sink.Saw(gen_bad); }, 15000))
+        << "损坏输入没有在超时前产生终态（gen=" << gen_bad << "）";
+    ASSERT_TRUE(PumpUntil([&] { return !controller.IsRunning(); }, 3000))
+        << "失败后 IsRunning() 仍为 true，界面会永久停在分析中";
+    PumpFor(120);  // 消费掉排队的 WorkerExited
+
+    // 第二次：失败之后仍能重新开始，且这次的分析真的启动并成功收尾。
+    const quint64 gen_good = controller.StartAnalysis(manifest.toStdString());
+    ASSERT_GT(gen_good, gen_bad) << "重新开始的代际必须仍是单调递增的";
+    ASSERT_TRUE(PumpUntil([&] { return sink.Saw(gen_good); }, 15000))
+        << "失败后重新开始的分析没有启动（gen=" << gen_good << "）";
+    ASSERT_TRUE(PumpUntil([&] { return !controller.IsRunning(); }, 3000));
+    EXPECT_EQ(sink.generations.back(), gen_good) << "失败后重启的终态必须属于新代际";
+
+    QFile::remove(corrupt);
+    QFile::remove(manifest);
+}
+
+// 阻塞网络输入下的取消：Stop/Cancel 必须在预算内回到终态，绝不永久停在"分析中"。
+//
+// 输入用"只监听、从不回包"的本地 TCP 端口 —— 引擎打开 / 探测阶段会卡在 recv 上，
+// 正是"取消链必须能打断阻塞 IO"那条契约唯一可离线复现的形态。
+TEST(QtAnalysisControllerLifecycle, CancelOnBlockingInputReturnsWithinBudget) {
+    EnsureApp();
+
+    videoeye_test::BlockingTcpEndpoint endpoint;
+    ASSERT_TRUE(endpoint.valid()) << "无法建立本地阻塞端口，本用例无法运行";
+
+    videoeye::qt::QtAnalysisController controller;
+    TerminalSink sink;
+    WireSink(controller, sink);
+
+    const quint64 gen = controller.StartAnalysis(endpoint.tcp_url());
+    ASSERT_GT(gen, 0u);
+
+    // 等它真的进入飞行态。若输入瞬间就回包（端口未按预期阻塞），说明本用例没测到
+    // "取消打断阻塞 IO"，跳过而不是把判定放宽成"随便什么时候回来都算过"。
+    ASSERT_TRUE(PumpUntil([&] { return controller.IsRunning(); }, 3000))
+        << "分析没有进入运行态，无法验证取消路径";
+    if (PumpUntil([&] { return sink.Saw(gen); }, 200)) {
+        GTEST_SKIP() << "阻塞输入瞬间就回包了（端口未真正阻塞），本轮不算测到取消路径";
+    }
+
+    const auto t0 = std::chrono::steady_clock::now();
+    controller.Cancel();
+    ASSERT_TRUE(PumpUntil([&] { return sink.Saw(gen); }, 8000))
+        << "取消后没有在预算内回到终态（gen=" << gen << "）";
+    const auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0)
+                        .count();
+
+    EXPECT_LT(dt, 5000) << "取消到终态耗时 " << dt << "ms，接近/超过预算"
+                        << "（取消链没打断阻塞的 avformat_open_input）";
+    ASSERT_TRUE(PumpUntil([&] { return !controller.IsRunning(); }, 3000))
+        << "取消后 IsRunning() 仍为 true —— 界面会永久停在'分析中'";
+    EXPECT_EQ(sink.generations.back(), gen);
+}
+
+namespace {
+
+QString WriteTextFile(const QString& name, const QByteArray& content) {
+    const QString path = QDir::tempPath() + "/" + name;
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return QString();
+    f.write(content);
+    f.close();
+    return path;
+}
+
+} // namespace
+
+// 残缺清单也必须收敛到终态（2.3「返回不完整的 HLS/DASH 清单」）。
+//
+// 清单解析走纯 stdlib 路径、绝不发网络请求 —— 这里守住的不是"解析出什么"，而是
+// "解析器面对残缺输入也必须返回"：任何一条没有终态的路径都会让界面永久停在"分析中"。
+TEST(QtAnalysisControllerLifecycle, MalformedManifestsReachTerminal) {
+    EnsureApp();
+
+    const struct {
+        const char* name;
+        QByteArray content;
+    } cases[] = {
+        // HLS: 有版本/分片时长头，但没有任何分片、也没有 ENDLIST。
+        {"videoeye_qtac_truncated.m3u8", QByteArray("#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:4.0,\n")},
+        // DASH: XML 在根元素中途被截断。
+        {"videoeye_qtac_truncated.mpd",
+         QByteArray("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<MPD mediaPresentationDuration=")},
+    };
+
+    for (const auto& c : cases) {
+        const QString path = WriteTextFile(QString::fromLatin1(c.name), c.content);
+        ASSERT_FALSE(path.isEmpty());
+
+        videoeye::qt::QtAnalysisController controller;
+        TerminalSink sink;
+        WireSink(controller, sink);
+
+        const quint64 gen = controller.StartAnalysis(path.toStdString());
+        ASSERT_GT(gen, 0u);
+        ASSERT_TRUE(PumpUntil([&] { return sink.Saw(gen); }, 15000))
+            << "残缺清单 " << c.name << " 没有在超时前产生终态（界面会永久停在'分析中'）";
+        ASSERT_TRUE(PumpUntil([&] { return !controller.IsRunning(); }, 3000))
+            << "残缺清单 " << c.name << " 结束后 IsRunning() 仍为 true";
+        EXPECT_EQ(sink.generations.back(), gen);
+
+        PumpFor(50);
+        QFile::remove(path);
+    }
+}
+

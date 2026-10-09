@@ -20,9 +20,11 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <functional>
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -32,16 +34,22 @@
 #include <QThread>
 
 #include "core/domain/model/AnalysisFeature.h"
+#include "core/domain/model/StreamStats.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/analysis_panel/AudioQcPage.h"
 #include "ui/analysis_panel/BitrateGopPage.h"
 #include "ui/analysis_panel/ColorHdrPage.h"
 #include "ui/analysis_panel/DiagnosticsPage.h"
+#include "ui/analysis_panel/FramePacketView.h"
 #include "ui/analysis_panel/SubtitleAuxPage.h"
+#include "ui/analysis_panel/VideoFrameTableWidget.h"
 #include "ui/bitstream_panel/BitstreamPanel.h"
 #include "ui/main_window/macroblock_coordination.h"
 #include "ui/main_window/navigation_model.h"
+#include "ui/reporting_panel/ReportingPanel.h"
 #include "ui/streaming_panel/StreamingPanel.h"
+
+#include "BlockingTcpEndpoint.h"
 
 namespace {
 
@@ -79,6 +87,58 @@ QString WriteCorruptInput() {
     f.write(junk);
     f.close();
     return path;
+}
+
+// 一份极小的 HLS 清单：清单解析走纯 stdlib 路径，能在测试里真正跑完成一次扫描，
+// 用来构造"有结果 / 换文件清结果"这类需要真实结果的场景。
+QString WriteHlsManifest(const QString& name) {
+    const QString path = QDir::tempPath() + "/" + name;
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return QString();
+    f.write("#EXTM3U\n"
+            "#EXT-X-VERSION:3\n"
+            "#EXT-X-TARGETDURATION:4\n"
+            "#EXT-X-MEDIA-SEQUENCE:0\n"
+            "#EXTINF:4.0,\n"
+            "seg0.ts\n"
+            "#EXTINF:4.0,\n"
+            "seg1.ts\n"
+            "#EXT-X-ENDLIST\n");
+    f.close();
+    return path;
+}
+
+// 从外部 stack 里把"共用同一次扫描"的几页一次性抓出来（与 MainWindow 同路径）。
+struct ScanPages {
+    ui::DiagnosticsPage* diagnostics = nullptr;
+    ui::BitrateGopPage* bitrate_gop = nullptr;
+    ui::AudioQcPage* audio_qc = nullptr;
+    ui::ColorHdrPage* color_hdr = nullptr;
+    ui::SubtitleAuxPage* subtitle = nullptr;
+    ui::StreamingPanel* streaming = nullptr;
+    ui::BitstreamPanel* bitstream = nullptr;
+
+    bool AllFound() const {
+        return diagnostics && bitrate_gop && audio_qc && color_hdr && subtitle && streaming &&
+               bitstream;
+    }
+    bool AllInactive() const {
+        return !bitrate_gop->IsScanActive() && !audio_qc->IsScanActive() &&
+               !color_hdr->IsScanActive() && !subtitle->IsScanActive() &&
+               !streaming->IsScanActive() && !bitstream->IsScanActive();
+    }
+};
+
+ScanPages FindScanPages(QStackedWidget& stack) {
+    ScanPages p;
+    p.diagnostics = stack.findChild<ui::DiagnosticsPage*>();
+    p.bitrate_gop = stack.findChild<ui::BitrateGopPage*>();
+    p.audio_qc = stack.findChild<ui::AudioQcPage*>();
+    p.color_hdr = stack.findChild<ui::ColorHdrPage*>();
+    p.subtitle = stack.findChild<ui::SubtitleAuxPage*>();
+    p.streaming = stack.findChild<ui::StreamingPanel*>();
+    p.bitstream = stack.findChild<ui::BitstreamPanel*>();
+    return p;
 }
 
 } // namespace
@@ -149,6 +209,258 @@ TEST(ScanTerminalState, FailedScanRestoresAllSharedPages) {
     EXPECT_FALSE(bitstream->IsScanActive()) << "编码参数集页仍停在扫描中";
 
     QFile::remove(corrupt);
+}
+
+// ---------------------------------------------------------------------------
+// 2.1：换文件必须清掉上一文件的扫描结果（旧结果不能挂到新文件上）。
+// ---------------------------------------------------------------------------
+TEST(ScanTerminalState, ReopenFileClearsPreviousScanResult) {
+    ASSERT_TRUE(EnsureApp() != nullptr);
+
+    const QString manifest_a = WriteHlsManifest("videoeye_scan_reopen_a.m3u8");
+    const QString manifest_b = WriteHlsManifest("videoeye_scan_reopen_b.m3u8");
+    ASSERT_FALSE(manifest_a.isEmpty());
+    ASSERT_FALSE(manifest_b.isEmpty());
+
+    ui::AnalysisPanel panel;
+    QStackedWidget stack;
+    panel.PopulateStackedWidget(&stack);
+    const ScanPages pages = FindScanPages(stack);
+    ASSERT_TRUE(pages.AllFound());
+
+    int terminal_count = 0;
+    QObject::connect(pages.diagnostics, &ui::DiagnosticsPage::ScanEnded, pages.diagnostics,
+                     [&](ui::DiagnosticsPage::ScanEndReason) { ++terminal_count; });
+
+    // 第一次打开 A 并扫描成功 -> 有结果。
+    panel.SetCurrentVideoPath(manifest_a);
+    pages.diagnostics->StartScan(pages.diagnostics->options());
+    ASSERT_TRUE(PumpUntil([&] { return terminal_count > 0; }, 20000)) << "首次扫描未回终态";
+    ASSERT_TRUE(pages.diagnostics->hasResult()) << "首次扫描后应持有结果";
+
+    // 第二次打开 B：上一文件的结果必须被清理，不能把 A 的结果展示在 B 上。
+    panel.SetCurrentVideoPath(manifest_b);
+    EXPECT_FALSE(pages.diagnostics->hasResult()) << "换文件后旧扫描结果没有被清理";
+
+    QFile::remove(manifest_a);
+    QFile::remove(manifest_b);
+}
+
+// ---------------------------------------------------------------------------
+// 2.1 / 2.3：取消扫描必须在预算内回到终态，且共用页一起复位（按钮恢复可用）。
+// ---------------------------------------------------------------------------
+TEST(ScanTerminalState, CancelScanRestoresSharedPagesWithinBudget) {
+    ASSERT_TRUE(EnsureApp() != nullptr);
+
+    videoeye_test::BlockingTcpEndpoint endpoint;
+    ASSERT_TRUE(endpoint.valid()) << "无法建立本地阻塞端口，本用例无法运行";
+
+    ui::AnalysisPanel panel;
+    QStackedWidget stack;
+    panel.PopulateStackedWidget(&stack);
+    const ScanPages pages = FindScanPages(stack);
+    ASSERT_TRUE(pages.AllFound());
+
+    int terminal_count = 0;
+    auto last_reason = ui::DiagnosticsPage::ScanEndReason::Completed;
+    QObject::connect(pages.diagnostics, &ui::DiagnosticsPage::ScanEnded, pages.diagnostics,
+                     [&](ui::DiagnosticsPage::ScanEndReason reason) {
+                         last_reason = reason;
+                         ++terminal_count;
+                     });
+
+    pages.diagnostics->SetSourcePath(QString::fromStdString(endpoint.tcp_url()));
+    pages.diagnostics->StartScan(pages.diagnostics->options());
+
+    ASSERT_TRUE(PumpUntil([&] { return pages.bitrate_gop->IsScanActive(); }, 3000))
+        << "扫描没有进入扫描态";
+    // 端口未真正阻塞（瞬间就回终态）时没测到取消路径，跳过。
+    if (PumpUntil([&] { return terminal_count > 0; }, 200)) {
+        GTEST_SKIP() << "阻塞输入瞬间就回终态（端口未真正阻塞），本轮不算测到取消路径";
+    }
+
+    const auto t0 = std::chrono::steady_clock::now();
+    pages.diagnostics->CancelScan();
+    ASSERT_TRUE(PumpUntil([&] { return terminal_count > 0; }, 8000))
+        << "取消后没有在预算内回到终态";
+    const auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0)
+                        .count();
+
+    EXPECT_LT(dt, 5000) << "取消到终态耗时 " << dt << "ms，接近/超过预算";
+    EXPECT_EQ(terminal_count, 1) << "一次扫描只应产生一个终态事件";
+    EXPECT_TRUE(last_reason == ui::DiagnosticsPage::ScanEndReason::Cancelled)
+        << "取消必须走 Cancelled 终态";
+    EXPECT_TRUE(pages.AllInactive()) << "取消后共用页必须回到 Idle（按钮恢复可用）";
+}
+
+// ---------------------------------------------------------------------------
+// 2.1：诊断页的单文件扫描与报告页的任务调度是两套独立状态，互不牵连。
+// ---------------------------------------------------------------------------
+TEST(ScanTerminalState, SingleFileScanDoesNotDisturbReportingTask) {
+    ASSERT_TRUE(EnsureApp() != nullptr);
+
+    const QString manifest = WriteHlsManifest("videoeye_scan_vs_batch.m3u8");
+    ASSERT_FALSE(manifest.isEmpty());
+
+    ui::AnalysisPanel panel;
+    QStackedWidget stack;
+    panel.PopulateStackedWidget(&stack);
+    const ScanPages pages = FindScanPages(stack);
+    ASSERT_TRUE(pages.AllFound());
+    auto* reporting = stack.findChild<ui::ReportingPanel*>();
+    ASSERT_TRUE(reporting != nullptr);
+
+    ASSERT_FALSE(reporting->IsTaskRunning()) << "初始时报告页不应有任务在跑";
+
+    int terminal_count = 0;
+    QObject::connect(pages.diagnostics, &ui::DiagnosticsPage::ScanEnded, pages.diagnostics,
+                     [&](ui::DiagnosticsPage::ScanEndReason) { ++terminal_count; });
+
+    panel.SetCurrentVideoPath(manifest);
+    pages.diagnostics->StartScan(pages.diagnostics->options());
+    EXPECT_FALSE(reporting->IsTaskRunning())
+        << "诊断页的单文件扫描不应把报告页任务状态置为运行中";
+
+    ASSERT_TRUE(PumpUntil([&] { return terminal_count > 0; }, 20000)) << "扫描未回终态";
+    EXPECT_TRUE(pages.diagnostics->hasResult());
+    EXPECT_FALSE(reporting->IsTaskRunning())
+        << "诊断扫描结束后报告页任务状态被牵连";
+    EXPECT_FALSE(reporting->HasFreshResult())
+        << "诊断扫描不应在报告页产生'新鲜结果'";
+
+    QFile::remove(manifest);
+}
+
+// ---------------------------------------------------------------------------
+// 2.2：播放期帧表持续刷新；停止/换文件后旧数据清空；关闭开关不再接收新帧；
+//      重新启用不会把旧数据叠加回来。
+// ---------------------------------------------------------------------------
+TEST(PlaybackLinkage, FrameTableRefreshesThenClearsAndDoesNotAccumulate) {
+    ASSERT_TRUE(EnsureApp() != nullptr);
+
+    ui::AnalysisPanel panel;
+    QStackedWidget stack;
+    panel.PopulateStackedWidget(&stack);
+
+    auto* frame_view = stack.findChild<ui::FramePacketView*>();
+    auto* video_page = stack.findChild<ui::VideoFrameTableWidget*>();
+    ASSERT_TRUE(frame_view != nullptr);
+    ASSERT_TRUE(video_page != nullptr);
+    auto* table = video_page->frameTable();
+    ASSERT_TRUE(table != nullptr);
+
+    // 视频帧默认开启（Master && VideoFrame 默认开）—— 播放期回吐的帧必须进表。
+    panel.AppendVideoFrameInfo(0, 1, true, 0, 0.0);      // I 帧
+    panel.AppendVideoFrameInfo(1, 2, false, 1000, 0.04);  // P 帧
+    panel.AppendVideoFrameInfo(2, 2, false, 2000, 0.08);
+    frame_view->FlushPending();
+    EXPECT_EQ(table->rowCount(), 3) << "播放期帧表没有持续刷新";
+
+    // 继续回吐 -> 行数持续增长（是"持续刷新"，不是只填一次）。
+    panel.AppendVideoFrameInfo(3, 1, true, 3000, 0.12);
+    panel.AppendVideoFrameInfo(4, 2, false, 4000, 0.16);
+    frame_view->FlushPending();
+    EXPECT_EQ(table->rowCount(), 5) << "新增帧没有继续进入帧表";
+
+    // 关闭「启用分析」：新的回吐不再进表（旧数据保持不动）。
+    auto* toggle = video_page->toggle();
+    ASSERT_TRUE(toggle != nullptr);
+    toggle->setChecked(false);
+    panel.AppendVideoFrameInfo(5, 2, false, 5000, 0.20);
+    frame_view->FlushPending();
+    EXPECT_EQ(table->rowCount(), 5) << "关闭开关后仍在接收新帧";
+
+    // 停止 / 换文件：清空旧数据。
+    panel.ResetVideoFrameList();
+    frame_view->FlushPending();
+    EXPECT_EQ(table->rowCount(), 0) << "停止后旧帧数据没有被清空";
+
+    // 重新启用：只应看到新回吐的帧，绝不把清空前的旧数据叠加回来。
+    toggle->setChecked(true);
+    panel.AppendVideoFrameInfo(6, 1, true, 6000, 0.24);
+    frame_view->FlushPending();
+    EXPECT_EQ(table->rowCount(), 1) << "重新启用后叠加了旧数据或未接收新数据";
+}
+
+// ---------------------------------------------------------------------------
+// 2.2：播放期回吐的统计 / 帧属于"播放期口径"，不得改写全文件扫描结果
+//      （两种口径互不混用）。
+// ---------------------------------------------------------------------------
+TEST(PlaybackLinkage, PlaybackFeedDoesNotBleedIntoFullFileResult) {
+    ASSERT_TRUE(EnsureApp() != nullptr);
+
+    const QString manifest = WriteHlsManifest("videoeye_playback_vs_fullfile.m3u8");
+    ASSERT_FALSE(manifest.isEmpty());
+
+    ui::AnalysisPanel panel;
+    QStackedWidget stack;
+    panel.PopulateStackedWidget(&stack);
+    const ScanPages pages = FindScanPages(stack);
+    ASSERT_TRUE(pages.AllFound());
+
+    int terminal_count = 0;
+    QObject::connect(pages.diagnostics, &ui::DiagnosticsPage::ScanEnded, pages.diagnostics,
+                     [&](ui::DiagnosticsPage::ScanEndReason) { ++terminal_count; });
+
+    panel.SetCurrentVideoPath(manifest);
+    pages.diagnostics->StartScan(pages.diagnostics->options());
+    ASSERT_TRUE(PumpUntil([&] { return terminal_count > 0; }, 20000)) << "扫描未回终态";
+    ASSERT_TRUE(pages.diagnostics->hasResult());
+
+    const QString full_container =
+        QString::fromStdString(pages.diagnostics->result().container_format);
+    const double full_duration = pages.diagnostics->result().duration_seconds;
+
+    // 播放期回吐：一份"大得离谱"的播放期统计 + 一帧解码帧。
+    model::StreamStats stats;
+    stats.total_packets = 999999;
+    stats.duration_seconds = 12345.0;
+    panel.UpdateStreamStats(stats);
+    panel.AppendVideoFrameInfo(0, 1, true, 0, 0.0);
+
+    // 全文件扫描结果必须纹丝不动 —— 播放期数据走的是另一条展示通道。
+    EXPECT_EQ(QString::fromStdString(pages.diagnostics->result().container_format), full_container);
+    EXPECT_DOUBLE_EQ(pages.diagnostics->result().duration_seconds, full_duration);
+
+    QFile::remove(manifest);
+}
+
+// ---------------------------------------------------------------------------
+// 2.2：在分析页面之间来回切换，不应改变已落库的扫描结果（数据在页间保持一致）。
+// ---------------------------------------------------------------------------
+TEST(PlaybackLinkage, SwitchingPagesKeepsScanResultConsistent) {
+    ASSERT_TRUE(EnsureApp() != nullptr);
+
+    const QString manifest = WriteHlsManifest("videoeye_page_switch.m3u8");
+    ASSERT_FALSE(manifest.isEmpty());
+
+    ui::AnalysisPanel panel;
+    QStackedWidget stack;
+    panel.PopulateStackedWidget(&stack);
+    const ScanPages pages = FindScanPages(stack);
+    ASSERT_TRUE(pages.AllFound());
+
+    int terminal_count = 0;
+    QObject::connect(pages.diagnostics, &ui::DiagnosticsPage::ScanEnded, pages.diagnostics,
+                     [&](ui::DiagnosticsPage::ScanEndReason) { ++terminal_count; });
+
+    panel.SetCurrentVideoPath(manifest);
+    pages.diagnostics->StartScan(pages.diagnostics->options());
+    ASSERT_TRUE(PumpUntil([&] { return terminal_count > 0; }, 20000)) << "扫描未回终态";
+
+    const QString container = QString::fromStdString(pages.diagnostics->result().container_format);
+    const double duration = pages.diagnostics->result().duration_seconds;
+
+    // 模拟用户点侧栏在分析页间来回切换。
+    for (int i = 0; i < stack.count(); ++i) stack.setCurrentIndex(i);
+    stack.setCurrentIndex(0);
+
+    EXPECT_TRUE(pages.diagnostics->hasResult()) << "切换页面把扫描结果弄丢了";
+    EXPECT_EQ(QString::fromStdString(pages.diagnostics->result().container_format), container);
+    EXPECT_DOUBLE_EQ(pages.diagnostics->result().duration_seconds, duration);
+
+    QFile::remove(manifest);
 }
 
 // ---------------------------------------------------------------------------
