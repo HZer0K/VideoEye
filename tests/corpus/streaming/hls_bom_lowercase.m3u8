@@ -1,0 +1,9 @@
+﻿#extm3u
+#ext-x-version:3
+#ext-x-targetduration:6
+#ext-x-media-sequence:0
+#extinf:6.000,
+seg-1.ts
+#extinf:6.000,
+seg-2.ts
+#ext-x-endlist

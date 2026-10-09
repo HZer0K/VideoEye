@@ -26,11 +26,24 @@ mt::ManifestReadOptions ReadOptionsFor(const HlsManifestOptions& options) {
 // 文本小工具
 // ---------------------------------------------------------------------------
 
+// 剥掉 UTF-8 BOM（0xEF 0xBB 0xBF）。带 BOM 的 m3u8 在真实世界很常见，
+// 过去 "#EXTM3U" 的严格比较会整份拒绝（阶段 3 语料 hls_bom_lowercase.m3u8）。
+std::string StripBom(const std::string& s) {
+    if (s.size() >= 3 && static_cast<unsigned char>(s[0]) == 0xEF && static_cast<unsigned char>(s[1]) == 0xBB &&
+        static_cast<unsigned char>(s[2]) == 0xBF) {
+        return s.substr(3);
+    }
+    return s;
+}
+
 // "#EXTINF:4.0,title" -> "#EXTINF"
+// 统一大写：所有标签比较都用大写字面量，大小写不规范的清单照样能解析；
+// BOM 在这里一并剥掉，第一行也与其它行同口径。
 std::string TagName(const std::string& line) {
-    const size_t colon = line.find(':');
-    std::string name = (colon == std::string::npos) ? line : line.substr(0, colon);
-    return mt::Trim(name);
+    const std::string trimmed = StripBom(mt::Trim(line));
+    const size_t colon = trimmed.find(':');
+    const std::string name = (colon == std::string::npos) ? trimmed : trimmed.substr(0, colon);
+    return mt::ToUpper(mt::Trim(name));
 }
 
 // "#EXTINF:4.0,title" -> "4.0,title"
@@ -134,7 +147,7 @@ void ParseMediaPlaylistBody(const std::vector<std::string>& lines, const std::st
         // 超大 / 恶意清单（几十万行 EXTINF）的逐行解析必须能被中断，
         // 否则用户点了取消，分析线程还在这里跑，UI 只能干等。
         if (ShouldCheckStreamingCancel(li) && IsStreamingCancelled(cancel)) {
-            pl.truncated = true;   // 半途而废的结果不能当成完整清单
+            pl.truncated = true; // 半途而废的结果不能当成完整清单
             break;
         }
         const std::string& raw_line = lines[li];
@@ -400,8 +413,7 @@ void LoadSubPlaylists(model::StreamingPackageResult& out, const HlsManifestOptio
             pl.parse_failed = true;
             pl.error_message = mt::ManifestReadErrorMessage(status, pl.resolved_path, options.max_manifest_bytes);
             // 超限与被取消都是"没读完"，结果不完整，不能当整份清单去校验。
-            pl.truncated = (status == mt::ManifestReadStatus::TooLarge ||
-                            status == mt::ManifestReadStatus::Cancelled);
+            pl.truncated = (status == mt::ManifestReadStatus::TooLarge || status == mt::ManifestReadStatus::Cancelled);
             if (status == mt::ManifestReadStatus::Cancelled) {
                 out.truncated = true;
                 break;
@@ -417,7 +429,8 @@ void LoadSubPlaylists(model::StreamingPackageResult& out, const HlsManifestOptio
 
 void MarkLocalFiles(model::StreamingPackageResult& out, const std::atomic<bool>* cancel) {
     for (model::MediaPlaylistInfo& pl : out.playlists) {
-        if (IsStreamingCancelled(cancel)) return;
+        if (IsStreamingCancelled(cancel))
+            return;
         if (pl.has_init_section && !pl.init_resolved_path.empty()) {
             pl.init_exists = mt::FileSizeOf(pl.init_resolved_path, pl.init_file_size);
         }
@@ -425,7 +438,8 @@ void MarkLocalFiles(model::StreamingPackageResult& out, const std::atomic<bool>*
         for (model::SegmentInfo& seg : pl.segments) {
             // 这条循环最多做 max_segments_per_playlist 次磁盘 stat（默认 5000 × 64 个播放列表），
             // 是纯 IO 的耗时大户，必须在里面也留取消检查。
-            if (ShouldCheckStreamingCancel(stat_count++) && IsStreamingCancelled(cancel)) return;
+            if (ShouldCheckStreamingCancel(stat_count++) && IsStreamingCancelled(cancel))
+                return;
             if (seg.resolved_path.empty()) {
                 if (!seg.uri.empty())
                     out.remote = true;
@@ -501,19 +515,18 @@ bool SameTimes(const std::vector<double>& a, const std::vector<double>& b, doubl
 // ParseText / AnalyzeFile 的共同正文：入口只负责把内容变成行，剩下的都一样。
 // ---------------------------------------------------------------------------
 
-bool ParseLines(const std::vector<std::string>& lines, const std::string& base_dir,
-                model::StreamingPackageResult& out, const HlsManifestOptions& options,
-                const std::atomic<bool>* cancel) {
+bool ParseLines(const std::vector<std::string>& lines, const std::string& base_dir, model::StreamingPackageResult& out,
+                const HlsManifestOptions& options, const std::atomic<bool>* cancel) {
     out.manifest_dir = base_dir;
     out.kind = model::StreamingKind::Unknown;
 
-    // 第一行必须是 #EXTM3U
+    // 第一行必须是 #EXTM3U（TagName 已做 BOM 剥离 + 大写归一）
     bool has_magic = false;
     for (const std::string& l : lines) {
         const std::string t = mt::Trim(l);
         if (t.empty())
             continue;
-        has_magic = (t == "#EXTM3U");
+        has_magic = (TagName(t) == "#EXTM3U");
         break;
     }
     if (!has_magic) {
@@ -524,7 +537,7 @@ bool ParseLines(const std::vector<std::string>& lines, const std::string& base_d
 
     bool master = false;
     for (const std::string& l : lines) {
-        if (mt::StartsWith(mt::Trim(l), "#EXT-X-STREAM-INF")) {
+        if (TagName(l) == "#EXT-X-STREAM-INF") {
             master = true;
             break;
         }
@@ -580,12 +593,10 @@ bool HlsManifestAnalyzer::AnalyzeFile(const std::string& file_path, model::Strea
 
     // 直接读成行：不先攒出整份文本，省一遍全量拷贝，且读的过程中就能响应取消。
     std::vector<std::string> lines;
-    const mt::ManifestReadStatus status =
-        mt::ReadManifestLines(file_path, ReadOptionsFor(options), cancel, lines);
+    const mt::ManifestReadStatus status = mt::ReadManifestLines(file_path, ReadOptionsFor(options), cancel, lines);
     if (status != mt::ManifestReadStatus::Ok) {
         out.valid = false;
-        out.truncated = (status == mt::ManifestReadStatus::TooLarge ||
-                         status == mt::ManifestReadStatus::Cancelled);
+        out.truncated = (status == mt::ManifestReadStatus::TooLarge || status == mt::ManifestReadStatus::Cancelled);
         out.error_message = mt::ManifestReadErrorMessage(status, file_path, options.max_manifest_bytes);
         return false;
     }
@@ -618,7 +629,8 @@ void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Hls
 
     for (size_t pi = 0; pi < out.playlists.size(); ++pi) {
         // 校验是"每个播放列表若干趟遍历"，播放列表多时同样要能被中断
-        if (IsStreamingCancelled(cancel)) return;
+        if (IsStreamingCancelled(cancel))
+            return;
         const model::MediaPlaylistInfo& pl = out.playlists[pi];
         if (pl.parse_failed)
             continue;
@@ -667,8 +679,7 @@ void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Hls
             for (size_t i = 0; i < pl.segments.size(); ++i) {
                 // 这一段每轮还要向后扫一遍找"最后一个完整分片"，整体是 O(n²)。
                 // 5000 分片的播放列表在这里能跑出上千万次迭代，必须留取消口。
-                if (ShouldCheckStreamingCancel(static_cast<unsigned long long>(i)) &&
-                    IsStreamingCancelled(cancel)) {
+                if (ShouldCheckStreamingCancel(static_cast<unsigned long long>(i)) && IsStreamingCancelled(cancel)) {
                     return;
                 }
                 const model::SegmentInfo& seg = pl.segments[i];

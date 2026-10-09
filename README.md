@@ -248,27 +248,36 @@ TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红�
 
 | 指标 | 数量 |
 |---|---|
-| 测试可执行文件 | 70 |
-| ctest 用例组（gtest 可执行文件） | 70 |
-| 架构规则用例组（python 脚本，非 gtest） | 10 |
-| gtest 用例（含 `TEST` / `TEST_F` / `TEST_P`） | 618 |
+| 测试可执行文件 | 71 |
+| ctest 用例组（gtest 可执行文件） | 71 |
+| python 脚本用例组（架构规则门 + 语料校验，非 gtest） | 11 |
+| gtest 用例（含 `TEST` / `TEST_F` / `TEST_P`） | 638 |
 
-`ctest -N` 会显示 **80 = 70 + 10**，多出来的 10 个不是 gtest 可执行文件，而是直接
+`ctest -N` 会显示 **82 = 71 + 11**，多出来的 11 个不是 gtest 可执行文件，而是直接
 `add_test` 调 python 脚本的 5 道架构规则门及其自测：`check_layering.py` 与它的自测、
 `audit_qt_analysis_border.py` 与它的自测、`audit_namespace_layout.py` 与它的自测、
 `audit_qt_domain_border.py` 与它的自测、`audit_link_visibility.py` 与它的自测（最后一
-道 2026-10-07 从「只有 CI 跑」补进 ctest）。它们的「测试」是退出码 + 输出断言，
+道 2026-10-07 从「只有 CI 跑」补进 ctest），加上 `generate_corpus.py --check`（阶段 3.1
+的异常语料与生成脚本一致性校验）。它们的「测试」是退出码 + 输出断言，
 没有 gtest 用例，所以脚本不计入 gtest 那两个数。
 
 这个数字以前是「18 个可执行文件 + 17 组 ctest」，长期没跟着测试用例涨 —— 所以改成脚本
-现算。CI 的 layering job 会跑 `python scripts/summarize_tests.py --expect 70`：加了测试
+现算。CI 的 layering job 会跑 `python scripts/summarize_tests.py --expect 71`：加了测试
 就一并更新这里和 CI 里的数字，否则那道门直接红，别让表格再飘。
 
-跑之前注意：这 10 条脚本用例用「`VIDEOEYE_ROOT` 或当前目录」当仓库根，所以 CMake 里给它们
+跑之前注意：架构规则那 10 条脚本用例用「`VIDEOEYE_ROOT` 或当前目录」当仓库根，所以 CMake 里给它们
 钉了 `WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}`。不加的话 ctest 的工作目录是
 `build/test-release/tests`，`os.walk` 会扫到一个不存在的 `core/`，于是「一个依赖都没查到」
 被当成「没有跨层反向依赖」放行 —— 那是一道假绿。改了分层/边界规则脚本后，先跑一次
 `ctest -R LayeringRulesTests` 确认它真的在扫仓库。
+
+阶段 3.3 起还有四个 libFuzzer 入口（`tests/fuzz/`）：码流参数集 + extradata、容器结构
+（MP4 / EBML / FLV / ASF）、HLS / DASH 清单、字幕 + SCTE-35。它们只在 **Linux + clang**
+下构建（Windows 上打开开关会在配置期直接报错，这是 libFuzzer 运行时的平台限制）：
+`cmake -DVIDEOEYE_ENABLE_FUZZERS=ON` 会把整个构建树带上 ASan/UBSan 插桩（`fuzzer-no-link`），
+四个入口各自链 fuzzer 运行时与 main。跑法示例：
+`./build/<preset>/bin/FuzzSubtitleAux -max_len=65536 tests/corpus/` —— 入口内的输入硬闸
+是 1 MiB，语料目录可以直接喂 `tests/corpus/` 里的确定性样本当种子。
 
 ## 文档
 

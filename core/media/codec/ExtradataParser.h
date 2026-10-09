@@ -28,8 +28,7 @@ public:
 
     // 直接指定格式解析。syntax 只对 AnnexB / 长度前缀流有意义（见 NalSyntax 注释）；
     // 配置记录（avcC/hvcC/vvcC）里 NAL 类型由数组头给出，不需要猜。
-    static ExtradataResult ParseWithFormat(ExtradataFormat format,
-                                           const uint8_t* data, size_t size,
+    static ExtradataResult ParseWithFormat(ExtradataFormat format, const uint8_t* data, size_t size,
                                            NalSyntax syntax = NalSyntax::Auto);
 
     // Annex B 流的 NAL 抽取（VVC 必须传 NalSyntax::Vvc，否则类型会读错）
@@ -40,12 +39,10 @@ public:
     static NalUnit ParseVvcNalUnit(const uint8_t* data, size_t size);
 
     // 转换封装格式（Annex B ↔ length-prefix）
-    static std::vector<uint8_t> ConvertAnnexBToLengthPrefix(
-        const std::vector<uint8_t>& annex_b);
+    static std::vector<uint8_t> ConvertAnnexBToLengthPrefix(const std::vector<uint8_t>& annex_b);
 
-    static std::vector<uint8_t> ConvertLengthPrefixToAnnexB(
-        const std::vector<uint8_t>& length_prefix,
-        int prefix_bytes);
+    static std::vector<uint8_t> ConvertLengthPrefixToAnnexB(const std::vector<uint8_t>& length_prefix,
+                                                            int prefix_bytes);
 
     // 从裸 OBU 流（或 av1C 尾部的 configOBUs）中依次抽出所有 OBU。
     // 对外可见：AV1 的序列头往往在 packet 里而不是 extradata 里，
@@ -56,9 +53,12 @@ private:
     // 格式检测
     static ExtradataFormat DetectFormat(const uint8_t* data, size_t size);
 
+    // 具体格式解析器（原样返回，不做「错误状态 ⇒ valid=false」归一化）
+    static ExtradataResult ParseWithFormatRaw(ExtradataFormat format, const uint8_t* data, size_t size,
+                                              NalSyntax syntax);
+
     // 具体格式解析器
-    static ExtradataResult ParseAnnexB(const uint8_t* data, size_t size,
-                                       NalSyntax syntax = NalSyntax::Auto);
+    static ExtradataResult ParseAnnexB(const uint8_t* data, size_t size, NalSyntax syntax = NalSyntax::Auto);
     static ExtradataResult ParseAvcC(const uint8_t* data, size_t size);
     static ExtradataResult ParseHvcC(const uint8_t* data, size_t size);
     static ExtradataResult ParseVvcC(const uint8_t* data, size_t size);

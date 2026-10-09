@@ -1,40 +1,32 @@
-#include "infrastructure/concurrency/Cancellation.h"
-#include "core/analysis/detail/AnalysisTextUtil.h"
 #include "core/analysis/container/AsfStructureAnalyzer.h"
+#include "core/analysis/detail/AnalysisTextUtil.h"
 #include "core/analysis/detail/SeqFileReader.h"
-#include <string>
+#include "infrastructure/concurrency/Cancellation.h"
 #include <string>
 
 namespace videoeye {
 
 // ASF GUIDs (以文件中的字节序存储: 前3字段小端, 后8字节原序)
-static const std::string kHeaderObjectGuid =
-    HexToBytes("3026B2758E66CF11A6D900AA0062CE6C");
-static const std::string kFilePropertiesGuid =
-    HexToBytes("A1DCAB8C47A9CF118EE400C00C205365");
-static const std::string kStreamPropertiesGuid =
-    HexToBytes("9107DCB7B7A9CF118EE600C00C205365");
-static const std::string kContentDescriptionGuid =
-    HexToBytes("3326B2758E66CF11A6D900AA0062CE6C");
-static const std::string kExtContentDescGuid =
-    HexToBytes("40A4D0D207E3D21197F000A0C95EA850");
-static const std::string kDataObjectGuid =
-    HexToBytes("3626B2758E66CF11A6D900AA0062CE6C");
-static const std::string kIndexObjectGuid =
-    HexToBytes("90080033B1E5CF1189F400A0C90349CB");
-static const std::string kVideoStreamGuid =
-    HexToBytes("C0EF19BC4D5BCF11A8FD00805F5C442B");
-static const std::string kAudioStreamGuid =
-    HexToBytes("409E69F84D5BCF11A8FD00805F5C442B");
+static const std::string kHeaderObjectGuid = HexToBytes("3026B2758E66CF11A6D900AA0062CE6C");
+static const std::string kFilePropertiesGuid = HexToBytes("A1DCAB8C47A9CF118EE400C00C205365");
+static const std::string kStreamPropertiesGuid = HexToBytes("9107DCB7B7A9CF118EE600C00C205365");
+static const std::string kContentDescriptionGuid = HexToBytes("3326B2758E66CF11A6D900AA0062CE6C");
+static const std::string kExtContentDescGuid = HexToBytes("40A4D0D207E3D21197F000A0C95EA850");
+static const std::string kDataObjectGuid = HexToBytes("3626B2758E66CF11A6D900AA0062CE6C");
+static const std::string kIndexObjectGuid = HexToBytes("90080033B1E5CF1189F400A0C90349CB");
+static const std::string kVideoStreamGuid = HexToBytes("C0EF19BC4D5BCF11A8FD00805F5C442B");
+static const std::string kAudioStreamGuid = HexToBytes("409E69F84D5BCF11A8FD00805F5C442B");
 
 namespace {
 uint16_t asfLE16(const std::string& d, int off) {
-    if (off + 2 > d.size()) return 0;
+    if (off + 2 > d.size())
+        return 0;
     return static_cast<uint16_t>(static_cast<uint8_t>(d[off])) |
            (static_cast<uint16_t>(static_cast<uint8_t>(d[off + 1])) << 8);
 }
 uint32_t asfLE32(const std::string& d, int off) {
-    if (off + 4 > d.size()) return 0;
+    if (off + 4 > d.size())
+        return 0;
     return static_cast<uint32_t>(static_cast<uint8_t>(d[off])) |
            (static_cast<uint32_t>(static_cast<uint8_t>(d[off + 1])) << 8) |
            (static_cast<uint32_t>(static_cast<uint8_t>(d[off + 2])) << 16) |
@@ -48,7 +40,8 @@ uint64_t asfLE64(const std::string& d, int off) {
 }
 // UTF-16LE 定长字符串 (含结尾 NUL)
 std::string asfUtf16(const std::string& d, int off, int bytes) {
-    if (bytes <= 0 || off + bytes > d.size()) return std::string();
+    if (bytes <= 0 || off + bytes > d.size())
+        return std::string();
     // 逐字节拷出 UTF-16LE 的裸字节：跳过 char16_t* → wchar_t* 的隐式转换，
     // 也免得用逗号运算符把构造调用的实参列表吃掉。
     std::string s;
@@ -61,27 +54,54 @@ std::string asfUtf16(const std::string& d, int off, int bytes) {
 }
 std::string waveFormatName(uint16_t tag) {
     switch (tag) {
-        case 0x0001: return "PCM";
-        case 0x0002: return "ADPCM";
-        case 0x0055: return "MP3";
-        case 0x0161: return "WMA v2";
-        case 0x0162: return "WMA Pro";
-        case 0x0163: return "WMA Lossless";
-        case 0x00FF: return "AAC";
-        case 0x2000: return "AC-3";
-        default: return HexFill(tag, 4);
+    case 0x0001:
+        return "PCM";
+    case 0x0002:
+        return "ADPCM";
+    case 0x0055:
+        return "MP3";
+    case 0x0161:
+        return "WMA v2";
+    case 0x0162:
+        return "WMA Pro";
+    case 0x0163:
+        return "WMA Lossless";
+    case 0x00FF:
+        return "AAC";
+    case 0x2000:
+        return "AC-3";
+    default:
+        return HexFill(tag, 4);
     }
+}
+
+// ASF 对象公共头是 24 字节（GUID 16 + 8 字节 size）。obj_size <= 24 是畸形值：
+// obj_size - 24 在 uint64 上会回绕成天文数字，直接拿去 Read 就是"按一个畸形
+// 字段申请一块内存"（阶段 3 语料 asf_object_short.wmv）。payload 夹到 0，
+// 并按调用方给的上限截断。
+int64_t AsfPayloadLen(uint64_t obj_size, int64_t cap) {
+    if (obj_size <= 24)
+        return 0;
+    const uint64_t payload = obj_size - 24;
+    return (payload > static_cast<uint64_t>(cap)) ? cap : static_cast<int64_t>(payload);
 }
 } // namespace
 
 static std::string GuidToName(const std::string& guid) {
-    if (guid == kHeaderObjectGuid) return "Header Object";
-    if (guid == kFilePropertiesGuid) return "File Properties";
-    if (guid == kStreamPropertiesGuid) return "Stream Properties";
-    if (guid == kContentDescriptionGuid) return "Content Description";
-    if (guid == kExtContentDescGuid) return "Extended Content Description";
-    if (guid == kDataObjectGuid) return "Data Object";
-    if (guid == kIndexObjectGuid) return "Index Object";
+    if (guid == kHeaderObjectGuid)
+        return "Header Object";
+    if (guid == kFilePropertiesGuid)
+        return "File Properties";
+    if (guid == kStreamPropertiesGuid)
+        return "Stream Properties";
+    if (guid == kContentDescriptionGuid)
+        return "Content Description";
+    if (guid == kExtContentDescGuid)
+        return "Extended Content Description";
+    if (guid == kDataObjectGuid)
+        return "Data Object";
+    if (guid == kIndexObjectGuid)
+        return "Index Object";
     return "Unknown Object";
 }
 
@@ -106,7 +126,8 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
 
     // Size (8 bytes, little-endian)
     std::string size_buf = file.Read(8);
-    if (size_buf.size() < 8) return false;
+    if (size_buf.size() < 8)
+        return false;
     uint64_t header_size = asfLE64(size_buf, 0);
 
     // Number of header objects (4 bytes LE)
@@ -126,12 +147,14 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
 
     // Parse child objects
     int64_t header_end = static_cast<int64_t>(header_size);
-    if (header_end > file.Size()) header_end = file.Size();
+    if (header_end > file.Size())
+        header_end = file.Size();
 
     for (uint32_t i = 0; i < num_objects && file.Pos() < header_end - 24; ++i) {
         std::string obj_guid = file.Read(16);
         std::string obj_size_buf = file.Read(8);
-        if (obj_guid.size() < 16 || obj_size_buf.size() < 8) break;
+        if (obj_guid.size() < 16 || obj_size_buf.size() < 8)
+            break;
 
         uint64_t obj_size = asfLE64(obj_size_buf, 0);
         int64_t obj_start = file.Pos() - 24;
@@ -146,19 +169,19 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
 
         // Parse specific objects
         if (obj_guid == kFilePropertiesGuid) {
-            std::string data = file.Read(std::min(static_cast<int64_t>(obj_size - 24), static_cast<int64_t>(104)));
+            std::string data = file.Read(AsfPayloadLen(obj_size, 104));
             if (data.size() >= 64) {
                 // Play Duration @40 (8, 100ns), Preroll @56 (8, ms)
                 uint64_t play_100ns = asfLE64(data, 40);
                 uint64_t preroll_ms = asfLE64(data, 56);
                 double duration_sec = play_100ns / 10000000.0 - preroll_ms / 1000.0;
-                if (duration_sec < 0) duration_sec = play_100ns / 10000000.0;
+                if (duration_sec < 0)
+                    duration_sec = play_100ns / 10000000.0;
                 elem.value = StrCat("duration=%1s", Fixed(duration_sec, 2));
-                result.metadata["duration"] =
-                    (Fixed(duration_sec, 2) + "s");
+                result.metadata["duration"] = (Fixed(duration_sec, 2) + "s");
             }
         } else if (obj_guid == kStreamPropertiesGuid) {
-            std::string data = file.Read(std::min(static_cast<int64_t>(obj_size - 24), static_cast<int64_t>(256)));
+            std::string data = file.Read(AsfPayloadLen(obj_size, 256));
             if (data.size() >= 54) {
                 std::string stream_type_guid = data.substr(0, 16);
                 model::ContainerStreamInfo si;
@@ -191,21 +214,31 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
                 result.streams.push_back(si);
             }
         } else if (obj_guid == kContentDescriptionGuid) {
-            std::string data = file.Read(std::min(static_cast<int64_t>(obj_size - 24), static_cast<int64_t>(64 * 1024)));
+            std::string data = file.Read(AsfPayloadLen(obj_size, 64 * 1024));
             if (data.size() >= 10) {
                 int tl = asfLE16(data, 0), al = asfLE16(data, 2), cl = asfLE16(data, 4);
                 int dl = asfLE16(data, 6), rl = asfLE16(data, 8);
                 int p = 10;
-                std::string title = asfUtf16(data, p, tl); p += tl;
-                std::string author = asfUtf16(data, p, al); p += al;
-                std::string copyright = asfUtf16(data, p, cl); p += cl;
-                std::string desc = asfUtf16(data, p, dl); p += dl;
-                std::string rating = asfUtf16(data, p, rl); p += rl;
-                if (!title.empty()) result.metadata["title"] = title;
-                if (!author.empty()) result.metadata["author"] = author;
-                if (!copyright.empty()) result.metadata["copyright"] = copyright;
-                if (!desc.empty()) result.metadata["description"] = desc;
-                if (!rating.empty()) result.metadata["rating"] = rating;
+                std::string title = asfUtf16(data, p, tl);
+                p += tl;
+                std::string author = asfUtf16(data, p, al);
+                p += al;
+                std::string copyright = asfUtf16(data, p, cl);
+                p += cl;
+                std::string desc = asfUtf16(data, p, dl);
+                p += dl;
+                std::string rating = asfUtf16(data, p, rl);
+                p += rl;
+                if (!title.empty())
+                    result.metadata["title"] = title;
+                if (!author.empty())
+                    result.metadata["author"] = author;
+                if (!copyright.empty())
+                    result.metadata["copyright"] = copyright;
+                if (!desc.empty())
+                    result.metadata["description"] = desc;
+                if (!rating.empty())
+                    result.metadata["rating"] = rating;
                 elem.value = title.empty() ? "Metadata" : ("Title: " + title);
             } else {
                 elem.value = "Metadata";
@@ -230,10 +263,14 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
     // Scan for Data Object and Index Object after header
     file.Seek(header_end);
     while (file.Pos() < file.Size() - 24) {
-        if (infrastructure::Checkpoint(cancel)) { result.error_message = "已取消"; return false; }
+        if (infrastructure::Checkpoint(cancel)) {
+            result.error_message = "已取消";
+            return false;
+        }
         std::string obj_guid = file.Read(16);
         std::string obj_size_buf = file.Read(8);
-        if (obj_guid.size() < 16 || obj_size_buf.size() < 8) break;
+        if (obj_guid.size() < 16 || obj_size_buf.size() < 8)
+            break;
 
         uint64_t obj_size = asfLE64(obj_size_buf, 0);
 
@@ -246,7 +283,8 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
         elem.value = StrCat("size=%1", obj_size);
         root.children.push_back(elem);
 
-        if (obj_size < 24) break;
+        if (obj_size < 24)
+            break;
         file.Seek(file.Pos() - 24 + static_cast<int64_t>(obj_size));
     }
 

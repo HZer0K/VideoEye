@@ -7,6 +7,8 @@
 
 #include "infrastructure/concurrency/Cancellation.h"
 
+#include "core/media/detail/ParserLimits.h"
+
 namespace videoeye {
 namespace {
 
@@ -17,7 +19,8 @@ uint32_t Rd32(const uint8_t* p) {
 }
 uint64_t Rd64(const uint8_t* p) {
     uint64_t v = 0;
-    for (int i = 0; i < 8; ++i) v = (v << 8) | static_cast<uint64_t>(p[i]);
+    for (int i = 0; i < 8; ++i)
+        v = (v << 8) | static_cast<uint64_t>(p[i]);
     return v;
 }
 uint16_t Rd16(const uint8_t* p) {
@@ -40,16 +43,17 @@ bool IsContainer(const std::string& type) {
         "meta", "moof", "traf", "mfra", "mvex", "stsd", "sinf", "schi",
     };
     for (const char* c : kContainers) {
-        if (type == c) return true;
+        if (type == c)
+            return true;
     }
     return false;
 }
 
 bool IsTableBox(const std::string& type) {
-    static const char* kTables[] = {"stts", "ctts", "stss", "stsz",
-                                    "stz2", "stsc", "stco", "co64", "elst"};
+    static const char* kTables[] = {"stts", "ctts", "stss", "stsz", "stz2", "stsc", "stco", "co64", "elst"};
     for (const char* c : kTables) {
-        if (type == c) return true;
+        if (type == c)
+            return true;
     }
     return false;
 }
@@ -57,16 +61,22 @@ bool IsTableBox(const std::string& type) {
 // 简单的顺序读文件封装：解析全程只有前向 + 少量回退，直接用 ifstream 足够
 class FileReader {
 public:
-    explicit FileReader(const std::string& path) : in_(path, std::ios::binary) {}
-    bool good() const { return in_.good(); }
-    uint64_t size() const { return size_; }
+    explicit FileReader(const std::string& path) : in_(path, std::ios::binary) {
+    }
+    bool good() const {
+        return in_.good();
+    }
+    uint64_t size() const {
+        return size_;
+    }
     bool Seek(uint64_t pos) {
         in_.clear();
         in_.seekg(static_cast<std::streamoff>(pos), std::ios::beg);
         return !in_.fail();
     }
     bool ReadAt(uint64_t pos, uint8_t* dst, uint64_t n) {
-        if (!Seek(pos)) return false;
+        if (!Seek(pos))
+            return false;
         in_.read(reinterpret_cast<char*>(dst), static_cast<std::streamsize>(n));
         return static_cast<uint64_t>(in_.gcount()) == n;
     }
@@ -97,8 +107,12 @@ struct ParseContext {
     int frag_index = -1;
 
     // 当前 trak / frag 的访问器：-1 表示不在该上下文里，调用前先判下标
-    IsobmffTrack& trak() { return out->tracks[static_cast<size_t>(trak_index)]; }
-    IsobmffFragment& frag() { return out->fragments[static_cast<size_t>(frag_index)]; }
+    IsobmffTrack& trak() {
+        return out->tracks[static_cast<size_t>(trak_index)];
+    }
+    IsobmffFragment& frag() {
+        return out->fragments[static_cast<size_t>(frag_index)];
+    }
 
     uint32_t moof_index = 0;
     uint32_t moof_counter = 0;
@@ -110,11 +124,11 @@ struct ParseContext {
 };
 
 // 读取 box 的载荷（限量），返回实际读到的字节数
-uint64_t ReadPayload(ParseContext& ctx, const IsobmffBox& box, std::vector<uint8_t>& buf,
-                     uint64_t limit) {
+uint64_t ReadPayload(ParseContext& ctx, const IsobmffBox& box, std::vector<uint8_t>& buf, uint64_t limit) {
     const uint64_t payload_size = (box.size > box.header_size) ? (box.size - box.header_size) : 0;
     const uint64_t want = std::min<uint64_t>(payload_size, limit);
-    if (want == 0) return 0;
+    if (want == 0)
+        return 0;
     buf.resize(static_cast<size_t>(want));
     if (!ctx.reader->ReadAt(box.offset + box.header_size, buf.data(), want)) {
         buf.clear();
@@ -130,11 +144,13 @@ uint64_t ReadPayload(ParseContext& ctx, const IsobmffBox& box, std::vector<uint8
 // 没能把声明的 count 条全部读出来就置位（载荷不够 or 撞到 max_entries 两种原因都算），
 // 便于上层区分「完整解析」和「只读到一部分」。
 void MarkTruncated(IsobmffTrack& t, size_t parsed, uint32_t count) {
-    if (parsed < count) t.tables_truncated = true;
+    if (parsed < count)
+        t.tables_truncated = true;
 }
 
 void ParseStts(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entries) {
-    if (n < 8) return;
+    if (n < 8)
+        return;
     const uint32_t count = Rd32(p + 4);
     uint64_t pos = 8;
     while (pos + 8 <= n && t.stts.size() < count && t.stts.size() < max_entries) {
@@ -149,7 +165,8 @@ void ParseStts(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entri
 }
 
 void ParseCtts(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entries) {
-    if (n < 8) return;
+    if (n < 8)
+        return;
     const uint8_t version = p[0];
     const uint32_t count = Rd32(p + 4);
     uint64_t pos = 8;
@@ -174,7 +191,8 @@ void ParseCtts(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entri
 }
 
 void ParseStss(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entries) {
-    if (n < 8) return;
+    if (n < 8)
+        return;
     const uint32_t count = Rd32(p + 4);
     uint64_t pos = 8;
     while (pos + 4 <= n && t.stss.size() < count && t.stss.size() < max_entries) {
@@ -186,7 +204,8 @@ void ParseStss(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entri
 }
 
 void ParseStsz(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entries) {
-    if (n < 12) return;
+    if (n < 12)
+        return;
     t.stsz.default_size = Rd32(p + 4);
     const uint32_t count = Rd32(p + 8);
     t.stsz.sample_count = count;
@@ -203,7 +222,8 @@ void ParseStsz(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entri
 
 void ParseStz2(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entries) {
     // stz2: version/flags(4) reserved(3)+field_size(1) sample_count(4) ...
-    if (n < 12) return;
+    if (n < 12)
+        return;
     t.stsz.field_size = p[7] & 0xFF;
     const uint32_t count = Rd32(p + 8);
     t.stsz.sample_count = count;
@@ -236,7 +256,8 @@ void ParseStz2(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entri
 }
 
 void ParseStsc(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entries) {
-    if (n < 8) return;
+    if (n < 8)
+        return;
     const uint32_t count = Rd32(p + 4);
     uint64_t pos = 8;
     while (pos + 12 <= n && t.stsc.size() < count && t.stsc.size() < max_entries) {
@@ -251,28 +272,30 @@ void ParseStsc(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entri
     t.has_stsc = true;
 }
 
-void ParseChunkOffsets(IsobmffTrack& t, const uint8_t* p, uint64_t n, bool co64,
-                       uint32_t max_entries) {
-    if (n < 8) return;
+void ParseChunkOffsets(IsobmffTrack& t, const uint8_t* p, uint64_t n, bool co64, uint32_t max_entries) {
+    if (n < 8)
+        return;
     const uint32_t count = Rd32(p + 4);
     uint64_t pos = 8;
     const uint64_t entry = co64 ? 8 : 4;
-    while (pos + entry <= n && t.chunk_offsets.size() < count &&
-           t.chunk_offsets.size() < max_entries) {
+    while (pos + entry <= n && t.chunk_offsets.size() < count && t.chunk_offsets.size() < max_entries) {
         t.chunk_offsets.push_back(co64 ? Rd64(p + pos) : Rd32(p + pos));
         pos += entry;
     }
     MarkTruncated(t, t.chunk_offsets.size(), count);
-    if (co64) t.has_co64 = true; else t.has_stco = true;
+    if (co64)
+        t.has_co64 = true;
+    else
+        t.has_stco = true;
 }
 
 void ParseElst(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entries) {
-    if (n < 8) return;
+    if (n < 8)
+        return;
     const uint8_t version = p[0];
     const uint32_t count = Rd32(p + 4);
     uint64_t pos = 8;
-    while (pos + (version == 1 ? 20 : 12) <= n && t.elst.size() < count &&
-           t.elst.size() < max_entries) {
+    while (pos + (version == 1 ? 20 : 12) <= n && t.elst.size() < count && t.elst.size() < max_entries) {
         ElstEntry e;
         if (version == 1) {
             e.segment_duration = Rd64(p + pos);
@@ -290,20 +313,24 @@ void ParseElst(IsobmffTrack& t, const uint8_t* p, uint64_t n, uint32_t max_entri
 }
 
 void ParseTkhd(IsobmffTrack& t, const uint8_t* p, uint64_t n) {
-    if (n < 8) return;
+    if (n < 8)
+        return;
     const uint8_t version = p[0];
     // version/flags(4) + [creation(4|8) modification(4|8)] + track_ID(4)
     const uint64_t id_off = (version == 1) ? (4 + 8 + 8) : (4 + 4 + 4);
-    if (id_off + 4 <= n) t.track_id = Rd32(p + id_off);
+    if (id_off + 4 <= n)
+        t.track_id = Rd32(p + id_off);
 }
 
 void ParseHdlr(IsobmffTrack& t, const uint8_t* p, uint64_t n) {
     // version/flags(4) + pre_defined(4) + handler_type(4)
-    if (n >= 12) t.handler = FourCC(p + 8);
+    if (n >= 12)
+        t.handler = FourCC(p + 8);
 }
 
 void ParseMdhd(IsobmffTrack& t, const uint8_t* p, uint64_t n) {
-    if (n < 8) return;
+    if (n < 8)
+        return;
     const uint8_t version = p[0];
     if (version == 1) {
         if (n >= 32) {
@@ -320,22 +347,27 @@ void ParseMdhd(IsobmffTrack& t, const uint8_t* p, uint64_t n) {
 
 void ParseStsdCodec(IsobmffTrack& t, const uint8_t* p, uint64_t n) {
     // version/flags(4) + entry_count(4) + 首个 entry: size(4) + format(4)
-    if (n < 16) return;
+    if (n < 16)
+        return;
     t.codec = FourCC(p + 12);
 }
 
 void ParseMvhd(IsobmffFile& out, const uint8_t* p, uint64_t n) {
-    if (n < 8) return;
+    if (n < 8)
+        return;
     const uint8_t version = p[0];
     if (version == 1) {
-        if (n >= 28) out.movie_timescale = Rd32(p + 20);
+        if (n >= 28)
+            out.movie_timescale = Rd32(p + 20);
     } else {
-        if (n >= 16) out.movie_timescale = Rd32(p + 12);
+        if (n >= 16)
+            out.movie_timescale = Rd32(p + 12);
     }
 }
 
 void ParseTfhd(ParseContext& ctx, const uint8_t* p, uint64_t n) {
-    if (ctx.frag_index < 0 || n < 8) return;
+    if (ctx.frag_index < 0 || n < 8)
+        return;
     const uint32_t flags = Rd32(p) & 0x00FFFFFF;
     IsobmffFragment& f = ctx.frag();
     f.base_data_offset_present = (flags & 0x000001) != 0;
@@ -345,13 +377,14 @@ void ParseTfhd(ParseContext& ctx, const uint8_t* p, uint64_t n) {
     f.default_base_is_moof = (flags & 0x020000) != 0;
     f.duration_is_empty = (flags & 0x010000) != 0;
 
-    uint64_t pos = 8;   // 跳过 version/flags(4) + track_ID(4)
+    uint64_t pos = 8; // 跳过 version/flags(4) + track_ID(4)
     f.track_id = (n >= 8) ? Rd32(p + 4) : 0;
     if (f.base_data_offset_present && pos + 8 <= n) {
         f.base_data_offset = Rd64(p + pos);
         pos += 8;
     }
-    if (f.sample_description_index_present && pos + 4 <= n) pos += 4;
+    if (f.sample_description_index_present && pos + 4 <= n)
+        pos += 4;
     if (f.default_sample_duration_present && pos + 4 <= n) {
         ctx.tfhd_default_duration = Rd32(p + pos);
         pos += 4;
@@ -363,7 +396,8 @@ void ParseTfhd(ParseContext& ctx, const uint8_t* p, uint64_t n) {
 }
 
 void ParseTfdt(ParseContext& ctx, const uint8_t* p, uint64_t n) {
-    if (ctx.frag_index < 0 || n < 8) return;
+    if (ctx.frag_index < 0 || n < 8)
+        return;
     const uint8_t version = p[0];
     ctx.frag().has_tfdt = true;
     if (version == 1 && n >= 12) {
@@ -374,7 +408,8 @@ void ParseTfdt(ParseContext& ctx, const uint8_t* p, uint64_t n) {
 }
 
 void ParseTrun(ParseContext& ctx, const uint8_t* p, uint64_t n, uint32_t max_entries) {
-    if (ctx.frag_index < 0 || n < 8) return;
+    if (ctx.frag_index < 0 || n < 8)
+        return;
     const uint8_t version = p[0];
     const uint32_t flags = Rd32(p) & 0x00FFFFFF;
     const uint32_t sample_count = Rd32(p + 4);
@@ -395,10 +430,12 @@ void ParseTrun(ParseContext& ctx, const uint8_t* p, uint64_t n, uint32_t max_ent
     uint64_t pos = 8;
     if (data_offset_present && pos + 4 <= n) {
         const int32_t off = static_cast<int32_t>(Rd32(p + pos));
-        if (f.trun_count == 1) f.trun_data_offset = off;
+        if (f.trun_count == 1)
+            f.trun_data_offset = off;
         pos += 4;
     }
-    if (first_sample_flags_present && pos + 4 <= n) pos += 4;
+    if (first_sample_flags_present && pos + 4 <= n)
+        pos += 4;
 
     for (uint32_t i = 0; i < sample_count && f.sample_count < max_entries; ++i) {
         uint32_t duration = ctx.tfhd_default_duration;
@@ -411,7 +448,8 @@ void ParseTrun(ParseContext& ctx, const uint8_t* p, uint64_t n, uint32_t max_ent
             size = Rd32(p + pos);
             pos += 4;
         }
-        if (sample_flags_present && pos + 4 <= n) pos += 4;
+        if (sample_flags_present && pos + 4 <= n)
+            pos += 4;
         if (sample_cts_present && pos + 4 <= n) {
             if (version == 1) {
                 pos += 4;
@@ -422,37 +460,51 @@ void ParseTrun(ParseContext& ctx, const uint8_t* p, uint64_t n, uint32_t max_ent
         ++f.sample_count;
         f.duration += duration;
         f.total_size += size;
-        if (pos > n) break;
+        if (pos > n)
+            break;
     }
 }
 
 // 解析一个 box 区间 [start, end) 内的所有 box，挂到 parent->children
-void ParseBoxes(ParseContext& ctx, uint64_t start, uint64_t end, int depth,
-                std::vector<IsobmffBox>* parent) {
-    if (depth > ctx.opt->max_depth || start >= end) return;
+void ParseBoxes(ParseContext& ctx, uint64_t start, uint64_t end, int depth, std::vector<IsobmffBox>* parent) {
+    if (depth > ctx.opt->max_depth || start >= end)
+        return;
 
     uint64_t pos = start;
     uint8_t hdr[16] = {0};
     int guard = 0;
     while (pos + 8 <= end && ++guard < 1000000) {
         // 逐个 box 检查取消：只有入口查一次的话，取消后仍会把整个文件扫完。
-        if (infrastructure::Checkpoint(ctx.cancel)) return;
-        if (!ctx.reader->ReadAt(pos, hdr, 8)) break;
+        if (infrastructure::Checkpoint(ctx.cancel))
+            return;
+        if (!ctx.reader->ReadAt(pos, hdr, 8))
+            break;
         uint64_t size = Rd32(hdr);
         std::string type = FourCC(hdr + 4);
         uint32_t header_size = 8;
 
         if (size == 1) {
-            if (!ctx.reader->ReadAt(pos + 8, hdr + 8, 8)) break;
+            if (!ctx.reader->ReadAt(pos + 8, hdr + 8, 8))
+                break;
             size = Rd64(hdr + 8);
             header_size = 16;
         } else if (size == 0) {
-            size = end - pos;   // 最后一个 box 延伸到父容器末尾
+            size = end - pos; // 最后一个 box 延伸到父容器末尾
         }
-        if (size < header_size || pos + size > end) {
+        // largesize 接近 UINT64_MAX 时 pos + size 会在 uint64 上回绕成小值：
+        // "pos + size > end" 的朴素比较会把越界 box 当合法（阶段 3 语料
+        // mp4_size_overflow.mp4 的 largesize=0xFFFFFFFFFFFFFFF8 正是这种情况）。
+        // 边界判断一律走 CheckedAdd，回绕不出安全结论。
+        uint64_t box_end = 0;
+        if (size < header_size || !CheckedAdd(pos, size, box_end) || box_end > end) {
             // 截断/损坏: 收缩到父容器末尾，之后停止（避免死循环）
-            if (size < header_size) break;
+            if (size < header_size)
+                break;
             size = end - pos;
+            // 父容器剩余字节连一个 box 头都装不下：继续按"延伸到末尾"处理
+            // 会让下面的 size - header_size 无符号下溢，直接停。
+            if (size < header_size)
+                break;
         }
 
         IsobmffBox box;
@@ -482,7 +534,8 @@ void ParseBoxes(ParseContext& ctx, uint64_t start, uint64_t end, int depth,
             ++ctx.out->styp_count;
         }
 
-        if (depth == 0) ctx.out->top_level_order.push_back(type);
+        if (depth == 0)
+            ctx.out->top_level_order.push_back(type);
 
         // 样本表与元数据只在 trak 上下文里解析
         const bool in_trak = (ctx.trak_index >= 0);
@@ -494,30 +547,43 @@ void ParseBoxes(ParseContext& ctx, uint64_t start, uint64_t end, int depth,
             ReadPayload(ctx, box, buf, cap);
             if (!buf.empty()) {
                 const uint32_t max_entries = ctx.opt->max_entries_per_table;
-                if (type == "stts") ParseStts(ctx.trak(), buf.data(), buf.size(), max_entries);
-                else if (type == "ctts") ParseCtts(ctx.trak(), buf.data(), buf.size(), max_entries);
-                else if (type == "stss") ParseStss(ctx.trak(), buf.data(), buf.size(), max_entries);
-                else if (type == "stsz") ParseStsz(ctx.trak(), buf.data(), buf.size(), max_entries);
-                else if (type == "stz2") ParseStz2(ctx.trak(), buf.data(), buf.size(), max_entries);
-                else if (type == "stsc") ParseStsc(ctx.trak(), buf.data(), buf.size(), max_entries);
-                else if (type == "stco") ParseChunkOffsets(ctx.trak(), buf.data(), buf.size(), false, max_entries);
-                else if (type == "co64") ParseChunkOffsets(ctx.trak(), buf.data(), buf.size(), true, max_entries);
-                else if (type == "elst") ParseElst(ctx.trak(), buf.data(), buf.size(), max_entries);
+                if (type == "stts")
+                    ParseStts(ctx.trak(), buf.data(), buf.size(), max_entries);
+                else if (type == "ctts")
+                    ParseCtts(ctx.trak(), buf.data(), buf.size(), max_entries);
+                else if (type == "stss")
+                    ParseStss(ctx.trak(), buf.data(), buf.size(), max_entries);
+                else if (type == "stsz")
+                    ParseStsz(ctx.trak(), buf.data(), buf.size(), max_entries);
+                else if (type == "stz2")
+                    ParseStz2(ctx.trak(), buf.data(), buf.size(), max_entries);
+                else if (type == "stsc")
+                    ParseStsc(ctx.trak(), buf.data(), buf.size(), max_entries);
+                else if (type == "stco")
+                    ParseChunkOffsets(ctx.trak(), buf.data(), buf.size(), false, max_entries);
+                else if (type == "co64")
+                    ParseChunkOffsets(ctx.trak(), buf.data(), buf.size(), true, max_entries);
+                else if (type == "elst")
+                    ParseElst(ctx.trak(), buf.data(), buf.size(), max_entries);
             }
-        } else if (in_trak && (type == "tkhd" || type == "hdlr" || type == "mdhd" ||
-                               type == "stsd")) {
+        } else if (in_trak && (type == "tkhd" || type == "hdlr" || type == "mdhd" || type == "stsd")) {
             std::vector<uint8_t> buf;
             ReadPayload(ctx, box, buf, 4096);
             if (!buf.empty()) {
-                if (type == "tkhd") ParseTkhd(ctx.trak(), buf.data(), buf.size());
-                else if (type == "hdlr") ParseHdlr(ctx.trak(), buf.data(), buf.size());
-                else if (type == "mdhd") ParseMdhd(ctx.trak(), buf.data(), buf.size());
-                else if (type == "stsd") ParseStsdCodec(ctx.trak(), buf.data(), buf.size());
+                if (type == "tkhd")
+                    ParseTkhd(ctx.trak(), buf.data(), buf.size());
+                else if (type == "hdlr")
+                    ParseHdlr(ctx.trak(), buf.data(), buf.size());
+                else if (type == "mdhd")
+                    ParseMdhd(ctx.trak(), buf.data(), buf.size());
+                else if (type == "stsd")
+                    ParseStsdCodec(ctx.trak(), buf.data(), buf.size());
             }
         } else if (type == "mvhd" && depth >= 1) {
             std::vector<uint8_t> buf;
             ReadPayload(ctx, box, buf, 4096);
-            if (!buf.empty()) ParseMvhd(*ctx.out, buf.data(), buf.size());
+            if (!buf.empty())
+                ParseMvhd(*ctx.out, buf.data(), buf.size());
         }
 
         // ---- moof / traf ----
@@ -580,30 +646,41 @@ void ParseBoxes(ParseContext& ctx, uint64_t start, uint64_t end, int depth,
             std::vector<uint8_t> buf;
             ReadPayload(ctx, box, buf, std::min<uint64_t>(size - header_size, 16ull * 1024 * 1024));
             if (!buf.empty()) {
-                if (type == "tfhd") ParseTfhd(ctx, buf.data(), buf.size());
-                else if (type == "tfdt") ParseTfdt(ctx, buf.data(), buf.size());
-                else if (type == "trun") ParseTrun(ctx, buf.data(), buf.size(),
-                                                   ctx.opt->max_entries_per_table);
+                if (type == "tfhd")
+                    ParseTfhd(ctx, buf.data(), buf.size());
+                else if (type == "tfdt")
+                    ParseTfdt(ctx, buf.data(), buf.size());
+                else if (type == "trun")
+                    ParseTrun(ctx, buf.data(), buf.size(), ctx.opt->max_entries_per_table);
             }
         }
 
         pos += size;
-        if (parent) parent->push_back(std::move(box));
+        if (parent)
+            parent->push_back(std::move(box));
     }
 }
 
-}  // namespace
+} // namespace
 
 // ---- 对外接口 ----
 std::string IsobmffTrack::TypeName() const {
-    if (handler == "vide") return "video";
-    if (handler == "soun") return "audio";
-    if (handler == "hint") return "hint";
-    if (handler == "text") return "text";
-    if (handler == "sbtl") return "subtitle";
-    if (handler == "subt") return "subtitle";
-    if (handler == "meta") return "meta";
-    if (!handler.empty()) return handler;
+    if (handler == "vide")
+        return "video";
+    if (handler == "soun")
+        return "audio";
+    if (handler == "hint")
+        return "hint";
+    if (handler == "text")
+        return "text";
+    if (handler == "sbtl")
+        return "subtitle";
+    if (handler == "subt")
+        return "subtitle";
+    if (handler == "meta")
+        return "meta";
+    if (!handler.empty())
+        return handler;
     return "unknown";
 }
 
@@ -626,7 +703,7 @@ uint32_t SaturateSampleCount(const std::vector<EntryT>& entries) {
     }
     return static_cast<uint32_t>(n);
 }
-}  // namespace
+} // namespace
 
 uint32_t IsobmffTrack::SttsSampleCount() const {
     return SaturateSampleCount(stts);
@@ -636,8 +713,7 @@ uint32_t IsobmffTrack::CttsSampleCount() const {
     return SaturateSampleCount(ctts);
 }
 
-bool IsobmffParser::Parse(const std::string& file_path, IsobmffFile& out,
-                          const Options& options) {
+bool IsobmffParser::Parse(const std::string& file_path, IsobmffFile& out, const Options& options) {
     out = IsobmffFile{};
 
     FileReader reader(file_path);
@@ -675,4 +751,4 @@ bool IsobmffParser::Parse(const std::string& file_path, IsobmffFile& out,
     return true;
 }
 
-}  // namespace videoeye
+} // namespace videoeye

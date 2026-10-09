@@ -26,6 +26,33 @@ if(MSVC)
 endif()
 
 # ============================================================
+# Fuzz 入口开关（阶段 3.3）
+#
+# libFuzzer 运行时只随 clang 分发，且本项目只在 Linux 上跑 fuzz（CI 同款）。
+# 打开后整个项目带 ASan/UBSan 插桩：库侧用 fuzzer-no-link（插桩但不接 fuzzer
+# main），四个入口在 tests/fuzz/ 各自补 -fsanitize=fuzzer 拿到运行时与 main。
+# 打开本开关的构建树**不用于发布**，只用于 fuzz 与 sanitizer 验证。
+# ============================================================
+option(VIDEOEYE_ENABLE_FUZZERS "构建 libFuzzer 入口（仅 Linux + clang）" OFF)
+if(VIDEOEYE_ENABLE_FUZZERS)
+    # 不满足条件时直接报错而不是静默跳过：否则会是"看起来开了、其实一个 fuzz
+    # 目标都没建"的假绿。守卫必须放在最前，早于任何 target 定义。
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(FATAL_ERROR
+            "VIDEOEYE_ENABLE_FUZZERS 只支持 Linux: libFuzzer 运行时不提供 Windows 版。\n"
+            "当前平台: ${CMAKE_SYSTEM_NAME}")
+    endif()
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "VIDEOEYE_ENABLE_FUZZERS 需要 clang（-fsanitize=fuzzer 是 clang 专属）。\n"
+            "当前编译器: ${CMAKE_CXX_COMPILER_ID}")
+    endif()
+    message(STATUS "Fuzz 入口已启用: 全项目 ASan/UBSan 插桩（fuzzer-no-link）")
+    add_compile_options(-fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=address,undefined)
+endif()
+
+# ============================================================
 # 依赖: 只有 Qt Widgets 与 FFmpeg（预编译）
 # ============================================================
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -518,6 +545,17 @@ option(BUILD_TESTING "Build unit tests" OFF)
 if(BUILD_TESTING)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+# ============================================================
+# fuzz 入口（阶段 3.3）
+#
+# 独立于 BUILD_TESTING：libFuzzer 不需要 GTest，也不该被"跑不跑单测"这一个
+# 开关绑住。源码在 tests/fuzz/，只链接分析/媒体层（无 Qt，headless 可跑）；
+# 平台守卫与 ASan/UBSan 插桩见文件开头的 VIDEOEYE_ENABLE_FUZZERS 块。
+# ============================================================
+if(VIDEOEYE_ENABLE_FUZZERS)
+    add_subdirectory(tests/fuzz)
 endif()
 
 # Windows 运行时部署要等所有可执行文件都登记完才能组装。

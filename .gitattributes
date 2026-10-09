@@ -54,6 +54,12 @@ run.sh     text eol=lf
 # Markdown 保持原样
 *.md       text eol=lf
 
+# 阶段 3.1 异常语料 (tests/corpus/): generate_corpus.py --check 逐字节比对磁盘
+# 与生成器产物 —— 文本样本(.m3u8/.mpd/.srt/.vtt)一旦在 Windows 上检出为 CRLF,
+# 校验就假红。text=auto 让二进制样本(.bin/.mkv/.mp4/...)仍按二进制跳过转换,
+# eol=lf 把文本样本固定为 LF 检出。
+tests/corpus/** text=auto eol=lf
+
 # 二进制文件 (不转换)
 *.png      binary
 *.jpg      binary

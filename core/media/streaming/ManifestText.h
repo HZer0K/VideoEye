@@ -37,6 +37,16 @@ inline std::string ToLower(std::string s) {
     return s;
 }
 
+// 标签名归一化用（HLS 标签按 RFC 应大写，但只做质检的工具不该因为
+// 小写标签就把整份清单判成"不是 HLS"——阶段 3 语料 hls_bom_lowercase.m3u8）。
+inline std::string ToUpper(std::string s) {
+    for (char& c : s) {
+        if (c >= 'a' && c <= 'z')
+            c = static_cast<char>(c - 'a' + 'A');
+    }
+    return s;
+}
+
 inline bool StartsWith(const std::string& s, const std::string& prefix) {
     return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
 }

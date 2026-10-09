@@ -1,5 +1,7 @@
 #include "core/media/codec/BitReader.h"
 
+#include "core/media/detail/ParserLimits.h"
+
 namespace videoeye {
 
 void BitReader::Reset(const uint8_t* data, size_t size) {
@@ -28,9 +30,8 @@ uint32_t BitReader::ReadBits(int count) {
     const int available = AvailableBits();
     if (available < count) {
         error_ = true;
-        error_message_ = "Not enough bits available: need " +
-                         std::to_string(count) + ", have " +
-                         std::to_string(available);
+        error_message_ =
+            "Not enough bits available: need " + std::to_string(count) + ", have " + std::to_string(available);
         return 0;
     }
 
@@ -77,9 +78,10 @@ uint32_t BitReader::ReadUE() {
         if (ReadBitUnchecked()) {
             break;
         }
-        if (++leading_zeros > 31) {
+        if (++leading_zeros > ParserLimits::kMaxVlcBits - 1) {
             error_ = true;
-            error_message_ = "ue(v) prefix too long (>31 leading zeros)";
+            error_message_ =
+                "ue(v) prefix too long (>" + std::to_string(ParserLimits::kMaxVlcBits - 1) + " leading zeros)";
             return 0;
         }
     }
@@ -112,8 +114,7 @@ uint32_t BitReader::ReadUEBounded(uint32_t max_value) {
         // "看起来合法"的小数，后续字段全按错的偏移继续读下去 —— 最后产出一份
         // 字段错位但 valid=true 的结果，比直接判参数集无效难查得多。
         error_ = true;
-        error_message_ =
-            "ue(v) 超过上限: 读得 " + std::to_string(v) + ", 上限 " + std::to_string(max_value);
+        error_message_ = "ue(v) 超过上限: 读得 " + std::to_string(v) + ", 上限 " + std::to_string(max_value);
         return max_value;
     }
     return v;
@@ -141,9 +142,8 @@ void BitReader::SkipBits(int count) {
     const int available = AvailableBits();
     if (available < count) {
         error_ = true;
-        error_message_ = "Not enough bits to skip: need " +
-                         std::to_string(count) + ", have " +
-                         std::to_string(available);
+        error_message_ =
+            "Not enough bits to skip: need " + std::to_string(count) + ", have " + std::to_string(available);
         return;
     }
 

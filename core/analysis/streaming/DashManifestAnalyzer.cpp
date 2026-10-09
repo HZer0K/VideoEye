@@ -95,14 +95,19 @@ std::string BaseUrlDir(const std::string& manifest_dir, const std::string& base_
 
 // 无符号乘法，溢出时返回 0（调用方按"这条时间轴推不动了"处理，不能再展开）。
 uint64_t MulU64Checked(uint64_t a, uint64_t b) {
-    if (a != 0 && b > std::numeric_limits<uint64_t>::max() / a) return 0;
+    if (a != 0 && b > std::numeric_limits<uint64_t>::max() / a)
+        return 0;
     return a * b;
 }
 
 // 时间戳加减前先判上界，避免回绕成天文数字把整条时间轴带歪。
-bool AddU64WillOverflow(uint64_t a, uint64_t b) { return a > std::numeric_limits<uint64_t>::max() - b; }
+bool AddU64WillOverflow(uint64_t a, uint64_t b) {
+    return a > std::numeric_limits<uint64_t>::max() - b;
+}
 
-uint64_t SubU64Clamped(uint64_t a, uint64_t b) { return a >= b ? a - b : 0; }
+uint64_t SubU64Clamped(uint64_t a, uint64_t b) {
+    return a >= b ? a - b : 0;
+}
 
 model::SegmentContainer ContainerFromMime(const std::string& mime, const std::string& uri) {
     const std::string m = mt::ToLower(mime);
@@ -230,11 +235,9 @@ void BuildSegments(model::StreamingPackageResult& out, model::DashRepresentation
         seg.has_duration = timescale > 0.0 && duration > 0;
         // PTO 是整条时间轴的全局起点，可能大于本分片的 decode_time。无符号相减前
         // 先比大小，否则直接下溢成一个天文数字（start_seconds 不再是"秒"而是巨大值）。
-        seg.start_seconds = timescale > 0.0
-                                ? static_cast<double>(
-                                      SubU64Clamped(decode_time, rep.presentation_time_offset)) /
-                                      timescale
-                                : 0.0;
+        seg.start_seconds =
+            timescale > 0.0 ? static_cast<double>(SubU64Clamped(decode_time, rep.presentation_time_offset)) / timescale
+                            : 0.0;
         seg.has_init_section = !rep.initialization_template.empty();
         seg.init_uri = rep.initialization_template;
         seg.container = ContainerFromMime(rep.mime_type, seg.uri);
@@ -267,15 +270,16 @@ void BuildSegments(model::StreamingPackageResult& out, model::DashRepresentation
                 // 所以溢出单独判，乘法在无溢出的前提下才做。
                 const bool mul_overflow =
                     e.d != 0 && static_cast<uint64_t>(k) > std::numeric_limits<uint64_t>::max() / e.d;
-                if (mul_overflow) break;
+                if (mul_overflow)
+                    break;
                 const uint64_t offset = e.d * static_cast<uint64_t>(k);
-                if (AddU64WillOverflow(start, offset)) break;             // 加法溢出
+                if (AddU64WillOverflow(start, offset))
+                    break; // 加法溢出
                 push_segment(number, start + offset, e.d);
                 ++number;
             }
             const uint64_t entry_span = MulU64Checked(e.d, static_cast<uint64_t>(e.r) + 1);
-            cursor = AddU64WillOverflow(start, entry_span) ? std::numeric_limits<uint64_t>::max()
-                                                           : start + entry_span;
+            cursor = AddU64WillOverflow(start, entry_span) ? std::numeric_limits<uint64_t>::max() : start + entry_span;
         }
     } else if (rep.segment_duration > 0 && rep.timescale > 0) {
         // 直播（dynamic）MPD 无法预知分片数，只能标记为未知
@@ -285,24 +289,43 @@ void BuildSegments(model::StreamingPackageResult& out, model::DashRepresentation
             return;
         }
         const uint64_t d = rep.segment_duration;
-        const uint64_t count = static_cast<uint64_t>(
-            std::ceil(period_duration / (static_cast<double>(d) / static_cast<double>(rep.timescale))));
+        const double seg_seconds = static_cast<double>(d) / static_cast<double>(rep.timescale);
+        const double raw_count = seg_seconds > 0.0 ? std::ceil(period_duration / seg_seconds) : 0.0;
+        // duration=1 / timescale=1e9 配一段极长 Period，算出来的分片数能到 1e15
+        // （阶段 3 语料 dash_extreme_count.mpd），甚至可能溢出成 inf/NaN ——
+        // ceil 的结果直接 static_cast<uint64_t> 是 UB。先夹到分片上限 +1：
+        // 超出上限的精确值没有任何用途，循环会在上限处截断退出。
+        const uint64_t max_segments = options.max_segments_per_representation;
+        uint64_t count = 0;
+        if (raw_count > 0.0) {
+            count =
+                (raw_count >= static_cast<double>(max_segments)) ? max_segments + 1 : static_cast<uint64_t>(raw_count);
+        }
         uint64_t cursor = rep.presentation_time_offset;
         for (uint64_t i = 0; i < count; ++i) {
+            // 分片上限硬约束：不能依赖 push_segment 内部那一道判 —— 它不阻止
+            // 循环继续推进（阶段 3 前这里就是"解析一份清单永不返回"的来源）。
+            if (rep.segments.size() >= max_segments) {
+                rep.truncated = true;
+                break;
+            }
             if (ShouldCheckStreamingCancel(i) && IsStreamingCancelled(cancel)) {
                 rep.truncated = true;
                 break;
             }
             push_segment(rep.start_number + i, cursor, d);
+            if (AddU64WillOverflow(cursor, d)) {
+                rep.truncated = true;
+                break;
+            }
             cursor += d;
         }
     }
 
     if (!rep.initialization_template.empty()) {
-        rep.init_resolved_path = remote_base
-                                     ? std::string()
-                                     : mt::ResolveLocalUri(
-                                           rep_dir, ExpandTemplate(rep.initialization_template, rep, 0, 0));
+        rep.init_resolved_path =
+            remote_base ? std::string()
+                        : mt::ResolveLocalUri(rep_dir, ExpandTemplate(rep.initialization_template, rep, 0, 0));
         rep.init_exists = mt::FileSizeOf(rep.init_resolved_path, rep.init_file_size);
     }
 
@@ -372,8 +395,7 @@ bool DashManifestAnalyzer::AnalyzeFile(const std::string& file_path, model::Stre
     const mt::ManifestReadStatus status = mt::ReadManifestText(file_path, read_options, cancel, text);
     if (status != mt::ManifestReadStatus::Ok) {
         out.valid = false;
-        out.truncated = (status == mt::ManifestReadStatus::TooLarge ||
-                         status == mt::ManifestReadStatus::Cancelled);
+        out.truncated = (status == mt::ManifestReadStatus::TooLarge || status == mt::ManifestReadStatus::Cancelled);
         out.error_message = mt::ManifestReadErrorMessage(status, file_path, options.max_manifest_bytes);
         return false;
     }
@@ -428,10 +450,8 @@ bool DashManifestAnalyzer::ParseText(const std::string& text, const std::string&
                 // max_* 选项卡住的，两层判据不一致时这里会越界。
                 if (cur_rep >= 0 && static_cast<size_t>(cur_rep) < out.representations.size()) {
                     out.representations[cur_rep].base_url = value;
-                } else if (cur_period >= 0 && cur_as >= 0 &&
-                           static_cast<size_t>(cur_period) < out.periods.size() &&
-                           static_cast<size_t>(cur_as) <
-                               out.periods[cur_period].adaptation_sets.size()) {
+                } else if (cur_period >= 0 && cur_as >= 0 && static_cast<size_t>(cur_period) < out.periods.size() &&
+                           static_cast<size_t>(cur_as) < out.periods[cur_period].adaptation_sets.size()) {
                     // AdaptationSet 级 BaseURL：下属 Representation 继承
                     const std::vector<int>& inherited =
                         out.periods[cur_period].adaptation_sets[cur_as].representation_indices;
@@ -538,13 +558,11 @@ bool DashManifestAnalyzer::ParseText(const std::string& text, const std::string&
                 // 这里读的是 Period / AdaptationSet 的内部内容，两个下标都要连上界一起查，
                 // 和上面 <Period> / <AdaptationSet> 两处 push 时的判据保持一致。
                 const model::DashPeriodInfo& cur_period_ref = out.periods[cur_period];
-                const model::DashAdaptationSetInfo& cur_as_ref =
-                    cur_period_ref.adaptation_sets[cur_as];
+                const model::DashAdaptationSetInfo& cur_as_ref = cur_period_ref.adaptation_sets[cur_as];
                 rep.content_type = InferContentType(cur_as_ref.content_type, rep.mime_type, rep);
                 // 时长：Period@duration 优先，其次整个 MPD 的 mediaPresentationDuration
                 rep.total_duration_seconds =
-                    cur_period_ref.has_duration ? cur_period_ref.duration_seconds
-                                                : out.media_presentation_duration_s;
+                    cur_period_ref.has_duration ? cur_period_ref.duration_seconds : out.media_presentation_duration_s;
                 out.representations.push_back(rep);
                 cur_rep = rep.index;
                 out.periods[cur_period].adaptation_sets[cur_as].representation_indices.push_back(cur_rep);
@@ -568,11 +586,18 @@ bool DashManifestAnalyzer::ParseText(const std::string& text, const std::string&
             model::DashTimelineEntry e;
             int64_t t = 0;
             if (mt::AttrInt64(tag.attrs, "t", t)) {
-                e.t = static_cast<uint64_t>(t);
+                // 负 t 直接 static_cast 到 uint64 会回绕成天文数字起点，后续
+                // 段起点全部错位。规范里 t 只允许非负，负值按 0 处理。
+                e.t = t > 0 ? static_cast<uint64_t>(t) : 0;
                 e.has_t = true;
             }
-            e.d = static_cast<uint64_t>(mt::AttrInt64Or(tag.attrs, "d", 0));
-            e.r = static_cast<uint32_t>(mt::AttrInt64Or(tag.attrs, "r", 0));
+            const int64_t d_raw = mt::AttrInt64Or(tag.attrs, "d", 0);
+            e.d = d_raw > 0 ? static_cast<uint64_t>(d_raw) : 0;
+            // r 是"额外重复次数"，规范只允许 >= 0。负值 static_cast 到 uint32
+            // 会回绕成 43 亿，时间轴要展开到分片上限才停（阶段 3 语料
+            // dash_negative_r.mpd）。夹到 [0, UINT32_MAX]，负值等价于不重复。
+            const int64_t r_raw = mt::AttrInt64Or(tag.attrs, "r", 0);
+            e.r = r_raw > 0 ? static_cast<uint32_t>(std::min<int64_t>(r_raw, 0xFFFFFFFFLL)) : 0;
             with_template_owner([&](auto& owner) {
                 if (owner.timeline.size() < options.max_timeline_entries) {
                     owner.timeline.push_back(e);
@@ -596,9 +621,8 @@ bool DashManifestAnalyzer::ParseText(const std::string& text, const std::string&
                 seg.resolved_path =
                     mt::IsRemoteUri(out.representations[cur_rep].base_url)
                         ? std::string()
-                        : mt::ResolveLocalUri(
-                              mt::JoinPath(out.manifest_dir, out.representations[cur_rep].base_url),
-                              seg.uri);
+                        : mt::ResolveLocalUri(mt::JoinPath(out.manifest_dir, out.representations[cur_rep].base_url),
+                                              seg.uri);
                 seg.container = ContainerFromMime(out.representations[cur_rep].mime_type, seg.uri);
                 out.representations[cur_rep].segments.push_back(std::move(seg));
             }
@@ -661,7 +685,8 @@ void DashManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Da
 
     for (size_t ri = 0; ri < out.representations.size(); ++ri) {
         // SegmentTimeline 的缺口/重叠比对是"每个表示扫一遍时间轴"，表示多时要能中断
-        if (IsStreamingCancelled(cancel)) return;
+        if (IsStreamingCancelled(cancel))
+            return;
         const model::DashRepresentationInfo& rep = out.representations[ri];
         const int rep_index = static_cast<int>(ri);
         const std::string label = "Representation " + (rep.id.empty() ? std::to_string(ri) : rep.id);
@@ -710,8 +735,8 @@ void DashManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Da
                 // 先判再乘/再加：d 与 r 都来自外部 MPD，乘出来回绕会把 cursor 推到
                 // 一个小数上，后面每一处"缺口/重叠"全部误判。
                 const uint64_t entry_span = MulU64Checked(e.d, static_cast<uint64_t>(e.r) + 1);
-                cursor = AddU64WillOverflow(start, entry_span) ? std::numeric_limits<uint64_t>::max()
-                                                              : start + entry_span;
+                cursor =
+                    AddU64WillOverflow(start, entry_span) ? std::numeric_limits<uint64_t>::max() : start + entry_span;
             }
 
             if (gaps > 0) {

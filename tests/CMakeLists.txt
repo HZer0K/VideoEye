@@ -173,6 +173,13 @@ if(VIDEOEYE_PYTHON_EXE)
              COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/audit_qt_domain_border.py)
     add_test(NAME QtDomainBorderSelfTestTests
              COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test_audit_qt_domain_border.py)
+    # 阶段 3.1: 异常语料与生成脚本的一致性校验。
+    # tests/corpus/ 里的每个畸形样本都由 generate_corpus.py 逐字节构造（这样做是为了让
+    # "改坏了哪个字段"在 review 里可读）。--check 逐文件对比磁盘字节与脚本产物，
+    # 改了脚本忘了重新生成时这条直接红，避免语料悄悄与脚本脱节。
+    # 脚本用自身路径定位 corpus 目录，不依赖 WORKING_DIRECTORY / VIDEOEYE_ROOT。
+    add_test(NAME CorpusGeneratorCheck
+             COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/corpus/generate_corpus.py --check)
     # ⚠️ 这几个脚本测试都靠「VIDEOEYE_ROOT 或当前目录」当仓库根（见各脚本顶部
     # ROOT = os.environ.get("VIDEOEYE_ROOT") or os.getcwd()）。WORKING_DIRECTORY 已经
     # 钉在源码根，但开发者 shell 里万一 export 了一个**过时**的 VIDEOEYE_ROOT（旧 checkout），
@@ -1404,3 +1411,23 @@ videoeye_add_test(test_csv_export_helper
 target_link_libraries(test_csv_export_helper PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME CsvExportHelperTests COMMAND test_csv_export_helper)
+
+# =================================================
+# 测试 67：异常语料回归（阶段 3.1/3.2 的确定性防线）
+# 说明: tests/corpus/ 下的样本由 generate_corpus.py 逐字节生成（截断/空/极短/
+#       错误长度字段/极大 ue(v)/负 DASH r/未知长度 EBML/深层嵌套/错误 largesize/
+#       错误 FLV header/ASF 短对象/BOM+小写 HLS/不完整字幕 cue/错误 SCTE-35 CRC）。
+#       伞形用例把每个样本喂给全部自研解析器：断言不崩溃、单样本 5 秒内终止、
+#       产物列表有界；专项用例钉住各解析器的明确语义（含"错误状态不得产出
+#       valid 结果"）。语料路径经 VIDEOEYE_CORPUS_DIR 注入，测试不依赖工作目录。
+#       TIMEOUT 300 是兜底：万一某个解析器又失去循环上界，ctest 直接杀掉并报红，
+#       而不是把整条流水线挂死。
+# =================================================
+videoeye_add_test(test_corpus_robustness
+    unit/test_corpus_robustness.cpp
+)
+target_compile_definitions(test_corpus_robustness PRIVATE
+    VIDEOEYE_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus")
+target_link_libraries(test_corpus_robustness PRIVATE VideoEyeAnalysis)
+add_test(NAME CorpusRobustnessTests COMMAND test_corpus_robustness)
+set_tests_properties(CorpusRobustnessTests PROPERTIES TIMEOUT 300)

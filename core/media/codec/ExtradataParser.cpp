@@ -5,22 +5,23 @@ namespace videoeye {
 
 // 查找 Annex B 起始码：00 00 00 01 或 00 00 01
 const uint8_t* ExtradataParser::FindStartCode(const uint8_t* pos, const uint8_t* end) {
-    if (pos + 4 > end) return nullptr;
-    
+    if (pos + 4 > end)
+        return nullptr;
+
     while (pos + 4 <= end) {
         // 检查 00 00 00 01
         if (pos[0] == 0 && pos[1] == 0 && pos[2] == 0 && pos[3] == 1) {
             return pos;
         }
-        
+
         // 检查 00 00 01
         if (pos + 3 <= end && pos[0] == 0 && pos[1] == 0 && pos[2] == 1) {
             return pos;
         }
-        
+
         pos++;
     }
-    
+
     return nullptr;
 }
 
@@ -28,26 +29,26 @@ ExtradataFormat ExtradataParser::DetectFormat(const uint8_t* data, size_t size) 
     if (size < 4) {
         return ExtradataFormat::Unknown;
     }
-    
+
     // 检查 avcC/hvcC/av1C配置记录
     if (size >= 11) {
         // 检查前 4 字节是否为 box type
         uint32_t box_type = BytesToUint32BE(data);
-        
+
         // avcC: "\0\0\0\rcvcC"
         if (box_type == 0x0000000A) { // length = 10
             if (data[4] == 'a' && data[5] == 'v' && data[6] == 'c' && data[7] == 'C') {
                 return ExtradataFormat::AvcC;
             }
         }
-        
+
         // hvcC: MP4 HEVC configuration record
         if (box_type == 0x00000014) { // length = 20
             if (data[4] == 'h' && data[5] == 'v' && data[6] == 'c' && data[7] == 'C') {
                 return ExtradataFormat::HvcC;
             }
         }
-        
+
         // av1C: AV1 configuration record
         if (box_type == 0x00000019) { // length = 25
             if (data[4] == 'a' && data[5] == 'v' && data[6] == '1' && data[7] == 'C') {
@@ -55,7 +56,7 @@ ExtradataFormat ExtradataParser::DetectFormat(const uint8_t* data, size_t size) 
             }
         }
     }
-    
+
     // FFmpeg 从 MP4 里取出来的 extradata 是配置记录本体，不含 box header。
     // avcC 的特征是 configurationVersion=1 + 第 5 字节的高 6 位保留位全 1（0xFC|n）。
     // 少了这一条，MP4 里的 H.264 extradata 会被误判成「长度前缀」格式。
@@ -67,8 +68,7 @@ ExtradataFormat ExtradataParser::DetectFormat(const uint8_t* data, size_t size) 
     // 第 2 字节是 seq_profile(3) | seq_level_idx_0(5)，profile 必须 <= 2。
     // FFmpeg 从 MP4 / WebM 取出的 AV1 extradata 就是这个记录本体（通常 4 字节）。
     // 少了这一条，0x81 会被下面的 `data[0] & 0x03` 误判成 1 字节长度前缀。
-    if (size >= 4 && (data[0] & 0x80) != 0 && (data[0] & 0x7F) <= 1 &&
-        ((data[1] >> 5) & 0x07) <= 2) {
+    if (size >= 4 && (data[0] & 0x80) != 0 && (data[0] & 0x7F) <= 1 && ((data[1] >> 5) & 0x07) <= 2) {
         return ExtradataFormat::Av1C;
     }
 
@@ -79,11 +79,11 @@ ExtradataFormat ExtradataParser::DetectFormat(const uint8_t* data, size_t size) 
             return ExtradataFormat::AnnexB;
         }
     }
-    
+
     // 检查长度前缀格式（通常 extradata 的第一个字节是 lengthSize-1）
     if (size >= 1) {
         int length_size = data[0] & 0x03;
-        
+
         if (length_size == 1 && size >= 5) {
             return ExtradataFormat::LengthPrefix1;
         } else if (length_size == 2 && size >= 6) {
@@ -92,92 +92,94 @@ ExtradataFormat ExtradataParser::DetectFormat(const uint8_t* data, size_t size) 
             return ExtradataFormat::LengthPrefix4;
         }
     }
-    
+
     return ExtradataFormat::Unknown;
 }
 
-std::vector<uint8_t> ExtradataParser::ConvertAnnexBToLengthPrefix(
-    const std::vector<uint8_t>& annex_b) {
-    
+std::vector<uint8_t> ExtradataParser::ConvertAnnexBToLengthPrefix(const std::vector<uint8_t>& annex_b) {
+
     std::vector<uint8_t> result;
     const uint8_t* pos = annex_b.data();
     const uint8_t* end = pos + annex_b.size();
-    
+
     while (pos < end) {
         const uint8_t* start_code = FindStartCode(pos, end);
-        
+
         if (start_code == nullptr) {
             // 没有更多起始码，添加剩余数据
             result.insert(result.end(), pos, end);
             break;
         }
-        
+
         // 添加起始码之前的数据（如果有）
         if (start_code > pos) {
             result.insert(result.end(), pos, start_code);
         }
-        
+
         // 跳过起始码
         size_t skip = (start_code[3] == 1 && start_code[2] == 0) ? 4 : 3;
         pos = start_code + skip;
     }
-    
+
     return result;
 }
 
-std::vector<uint8_t> ExtradataParser::ConvertLengthPrefixToAnnexB(
-    const std::vector<uint8_t>& length_prefix, int prefix_bytes) {
-    
+std::vector<uint8_t> ExtradataParser::ConvertLengthPrefixToAnnexB(const std::vector<uint8_t>& length_prefix,
+                                                                  int prefix_bytes) {
+
     std::vector<uint8_t> result;
     const uint8_t* pos = length_prefix.data();
     const uint8_t* end = pos + length_prefix.size();
-    
+
     while (pos < end) {
         // 读取长度前缀
         uint32_t nal_size = 0;
-        
+
         if (prefix_bytes == 1) {
-            if (pos >= end) break;
+            if (pos >= end)
+                break;
             nal_size = *pos++;
         } else if (prefix_bytes == 2) {
-            if (pos + 2 > end) break;
+            if (pos + 2 > end)
+                break;
             nal_size = (static_cast<uint32_t>(pos[0]) << 8) | pos[1];
             pos += 2;
         } else if (prefix_bytes == 4) {
-            if (pos + 4 > end) break;
-            nal_size = (static_cast<uint32_t>(pos[0]) << 24) |
-                      (static_cast<uint32_t>(pos[1]) << 16) |
-                      (static_cast<uint32_t>(pos[2]) << 8) |
-                      static_cast<uint32_t>(pos[3]);
+            if (pos + 4 > end)
+                break;
+            nal_size = (static_cast<uint32_t>(pos[0]) << 24) | (static_cast<uint32_t>(pos[1]) << 16) |
+                       (static_cast<uint32_t>(pos[2]) << 8) | static_cast<uint32_t>(pos[3]);
             pos += 4;
         }
-        
-        if (pos + nal_size > end) break;
-        
+
+        if (pos + nal_size > end)
+            break;
+
         // 添加 Annex B 起始码
         result.push_back(0);
         result.push_back(0);
         result.push_back(0);
         result.push_back(1);
-        
+
         // 添加 NAL 单元数据
         result.insert(result.end(), pos, pos + nal_size);
-        
+
         pos += nal_size;
     }
-    
+
     return result;
 }
 
 NalUnit ExtradataParser::ParseH264NalUnit(const uint8_t* data, size_t size) {
     NalUnit nal;
-    
-    if (size < 1) return nal;
-    
+
+    if (size < 1)
+        return nal;
+
     // H.264 NAL header: [forbidden_zero_bit: 1][nal_unit_type: 5][nuh_layer_id: 6][nuh_temporal_id_plus1: 3]
     uint8_t header = data[0];
     nal.type = header & 0x1F; // 低 5 位
-    
+
     // 检查是否为 IDR 帧
     if (nal.type == 5) { // CodedSliceDciIdr
         nal.is_idr = true;
@@ -185,40 +187,43 @@ NalUnit ExtradataParser::ParseH264NalUnit(const uint8_t* data, size_t size) {
     } else if (nal.type >= 1 && nal.type <= 12) {
         nal.is_keyframe = false;
     }
-    
+
     nal.size = static_cast<uint32_t>(size - 1);
     nal.data.assign(data + 1, data + size);
-    
+
     return nal;
 }
 
 NalUnit ExtradataParser::ParseHevcNalUnit(const uint8_t* data, size_t size) {
     NalUnit nal;
-    
-    if (size < 2) return nal;
-    
-    // HEVC NAL header: [forbidden_zero_bit: 1][nuh_reserved_zero_2bits: 2][nal_unit_type: 6][nuh_layer_id: 6][nuh_temporal_id_plus1: 3]
+
+    if (size < 2)
+        return nal;
+
+    // HEVC NAL header: [forbidden_zero_bit: 1][nuh_reserved_zero_2bits: 2][nal_unit_type: 6][nuh_layer_id:
+    // 6][nuh_temporal_id_plus1: 3]
     //
     // ⚠️ nal_unit_type 是 byte0 的 bit6..1（(byte0 >> 1) & 0x3F），不是 bit4..0。
     // 旧实现把整个 2 字节 header 右移 3 位再取 6 位，取到的是 nuh_layer_id，
     // type 恒为 0 → 下游的 SPS(33) / PPS(34) / VPS(32) 一个都认不出来。
     nal.type = static_cast<uint8_t>((data[0] >> 1) & 0x3F);
-    
+
     // 检查关键帧（CLVS 通常是关键帧）
     if (nal.type >= 32 && nal.type <= 35) {
         nal.is_keyframe = true;
     }
-    
+
     nal.size = static_cast<uint32_t>(size - 2);
     nal.data.assign(data + 2, data + size);
-    
+
     return nal;
 }
 
 NalUnit ExtradataParser::ParseVvcNalUnit(const uint8_t* data, size_t size) {
     NalUnit nal;
 
-    if (size < 2) return nal;
+    if (size < 2)
+        return nal;
 
     // VVC NAL header（H.266 7.3.1.2，共 2 字节）：
     //   forbidden_zero_bit      f(1)   byte0 bit7
@@ -245,7 +250,8 @@ NalUnit ExtradataParser::ParseVvcNalUnit(const uint8_t* data, size_t size) {
 
 ObuUnit ExtradataParser::ParseAv1Obu(const uint8_t*& ptr, size_t remaining) {
     ObuUnit obu;
-    if (ptr == nullptr || remaining < 1) return obu;
+    if (ptr == nullptr || remaining < 1)
+        return obu;
 
     // obu_header（AV1 规范 6.2.1）：
     //   obu_forbidden_bit   f(1)  bit7，必须为 0
@@ -255,7 +261,8 @@ ObuUnit ExtradataParser::ParseAv1Obu(const uint8_t*& ptr, size_t remaining) {
     //   obu_reserved_1bit   f(1)  bit0
     size_t pos = 0;
     const uint8_t header = ptr[pos++];
-    if ((header >> 7) & 0x01) return obu;   // forbidden bit 为 1，不是合法 OBU 起始
+    if ((header >> 7) & 0x01)
+        return obu; // forbidden bit 为 1，不是合法 OBU 起始
 
     obu.type = (header >> 3) & 0x0F;
     const bool extension_flag = ((header >> 2) & 0x01) != 0;
@@ -264,10 +271,11 @@ ObuUnit ExtradataParser::ParseAv1Obu(const uint8_t*& ptr, size_t remaining) {
 
     // obu_extension_header：temporal_id f(3) / spatial_id f(2) / reserved f(3)
     if (extension_flag) {
-        if (pos >= remaining) return obu;
+        if (pos >= remaining)
+            return obu;
         const uint8_t ext = ptr[pos++];
         obu.temporal_id = (ext >> 5) & 0x07;
-        obu.spatial_id  = (ext >> 3) & 0x03;
+        obu.spatial_id = (ext >> 3) & 0x03;
     }
 
     // obu_size：leb128，低 7 位有效、最高位表示还有后续字节。
@@ -277,7 +285,8 @@ ObuUnit ExtradataParser::ParseAv1Obu(const uint8_t*& ptr, size_t remaining) {
         int shift = 0;
         uint8_t byte = 0;
         do {
-            if (pos >= remaining || shift > 28) return obu;
+            if (pos >= remaining || shift > 28)
+                return obu;
             byte = ptr[pos++];
             obu_size |= static_cast<size_t>(byte & 0x7F) << shift;
             shift += 7;
@@ -294,8 +303,7 @@ ObuUnit ExtradataParser::ParseAv1Obu(const uint8_t*& ptr, size_t remaining) {
 
     obu.size = static_cast<uint32_t>(obu_size);
     obu.data.assign(ptr + pos, ptr + pos + obu_size);
-    obu.is_sequence_header =
-        (obu.type == static_cast<uint8_t>(Av1ObuType::SequenceHeader));
+    obu.is_sequence_header = (obu.type == static_cast<uint8_t>(Av1ObuType::SequenceHeader));
 
     ptr += (pos + obu_size);
     return obu;
@@ -303,7 +311,8 @@ ObuUnit ExtradataParser::ParseAv1Obu(const uint8_t*& ptr, size_t remaining) {
 
 std::vector<ObuUnit> ExtradataParser::ExtractObuUnits(const uint8_t* data, size_t size) {
     std::vector<ObuUnit> obu_units;
-    if (data == nullptr || size == 0) return obu_units;
+    if (data == nullptr || size == 0)
+        return obu_units;
 
     const uint8_t* ptr = data;
     size_t remaining = size;
@@ -315,7 +324,8 @@ std::vector<ObuUnit> ExtradataParser::ExtractObuUnits(const uint8_t* data, size_
         // 只在指针没有推进时停止，避免死循环。
         // 注意不能拿 `data.empty()` 当失败判据：OBU_TEMPORAL_DELIMITER
         // 是合法的 0 长度 OBU，会被误当成解析失败而提前结束。
-        if (ptr <= before) break;
+        if (ptr <= before)
+            break;
 
         obu_units.push_back(std::move(obu));
         remaining = static_cast<size_t>(data + size - ptr);
@@ -324,20 +334,19 @@ std::vector<ObuUnit> ExtradataParser::ExtractObuUnits(const uint8_t* data, size_
     return obu_units;
 }
 
-std::vector<NalUnit> ExtradataParser::ExtractAnnBNalUnits(const uint8_t* data, size_t size,
-                                                           NalSyntax syntax) {
+std::vector<NalUnit> ExtradataParser::ExtractAnnBNalUnits(const uint8_t* data, size_t size, NalSyntax syntax) {
     std::vector<NalUnit> nal_units;
-    
+
     const uint8_t* pos = data;
     const uint8_t* end = data + size;
-    
+
     while (pos < end) {
         const uint8_t* start_code = FindStartCode(pos, end);
-        
+
         if (start_code == nullptr) {
             break;
         }
-        
+
         // 起始码可能是 4 字节 (00 00 00 01) 或 3 字节 (00 00 01)
         // 00 00 00 01 的第 3 个字节是 0，00 00 01 的第 3 个字节是 1 —— 据此区分
         const size_t sc_len = (start_code[2] == 1) ? 3u : 4u;
@@ -348,41 +357,42 @@ std::vector<NalUnit> ExtradataParser::ExtractAnnBNalUnits(const uint8_t* data, s
         // 就会死循环；同时末尾那个 NAL 的长度会被算成 0 而整个丢掉。
         const uint8_t* next_start = end;
         const uint8_t* sc = FindStartCode(nal_begin, end);
-        if (sc != nullptr) next_start = sc;
+        if (sc != nullptr)
+            next_start = sc;
 
         const size_t nal_size = static_cast<size_t>(next_start - nal_begin);
 
         if (nal_size > 0) {
             switch (syntax) {
-                case NalSyntax::H264:
+            case NalSyntax::H264:
+                nal_units.push_back(ParseH264NalUnit(nal_begin, nal_size));
+                break;
+            case NalSyntax::Hevc:
+                nal_units.push_back(ParseHevcNalUnit(nal_begin, nal_size));
+                break;
+            case NalSyntax::Vvc:
+                nal_units.push_back(ParseVvcNalUnit(nal_begin, nal_size));
+                break;
+            default: {
+                // 自动判定：H.264 的 NAL header 只有 1 字节且低 5 位就是 type，
+                // 而 HEVC/VVC 的 byte0 高位还带着 forbidden(0) 与 type 位。
+                // 这条启发式认不出 VVC（它的 byte0 是 nuh_layer_id）——
+                // VVC 的 extradata 走 vvcC，或由调用方显式传 NalSyntax::Vvc。
+                const uint8_t first_byte = nal_begin[0];
+                if ((first_byte & 0x1F) < 32) {
                     nal_units.push_back(ParseH264NalUnit(nal_begin, nal_size));
-                    break;
-                case NalSyntax::Hevc:
+                } else {
                     nal_units.push_back(ParseHevcNalUnit(nal_begin, nal_size));
-                    break;
-                case NalSyntax::Vvc:
-                    nal_units.push_back(ParseVvcNalUnit(nal_begin, nal_size));
-                    break;
-                default: {
-                    // 自动判定：H.264 的 NAL header 只有 1 字节且低 5 位就是 type，
-                    // 而 HEVC/VVC 的 byte0 高位还带着 forbidden(0) 与 type 位。
-                    // 这条启发式认不出 VVC（它的 byte0 是 nuh_layer_id）——
-                    // VVC 的 extradata 走 vvcC，或由调用方显式传 NalSyntax::Vvc。
-                    const uint8_t first_byte = nal_begin[0];
-                    if ((first_byte & 0x1F) < 32) {
-                        nal_units.push_back(ParseH264NalUnit(nal_begin, nal_size));
-                    } else {
-                        nal_units.push_back(ParseHevcNalUnit(nal_begin, nal_size));
-                    }
-                    break;
                 }
+                break;
+            }
             }
         }
 
         // 保证每次迭代都前进：next_start 至少是 start_code + sc_len
         pos = (next_start > start_code) ? next_start : (nal_begin > start_code ? nal_begin : end);
     }
-    
+
     return nal_units;
 }
 
@@ -390,9 +400,9 @@ ExtradataResult ExtradataParser::ParseAnnexB(const uint8_t* data, size_t size, N
     ExtradataResult result;
     result.format = ExtradataFormat::AnnexB;
     result.valid = true;
-    
+
     result.nal_units = ExtractAnnBNalUnits(data, size, syntax);
-    
+
     return result;
 }
 
@@ -400,12 +410,12 @@ ExtradataResult ExtradataParser::ParseAvcC(const uint8_t* data, size_t size) {
     ExtradataResult result;
     result.format = ExtradataFormat::AvcC;
     result.valid = true;
-    
+
     if (size < 13) {
         result.error_message = "avcC too small";
         return result;
     }
-    
+
     // Parse avcC configuration record
     // Structure:
     //   version (1 byte)
@@ -416,7 +426,7 @@ ExtradataResult ExtradataParser::ParseAvcC(const uint8_t* data, size_t size) {
     //   reserved (6 bits)
     //   num_sps (1 byte, bits 1-5)
     //   sps[]
-    
+
     result.config.profile_idc = data[1];
     result.config.profile_compatibility = data[2];
     result.config.level_idc = data[3];
@@ -429,54 +439,61 @@ ExtradataResult ExtradataParser::ParseAvcC(const uint8_t* data, size_t size) {
     const uint8_t num_sps = data[5] & 0x1F;
 
     const uint8_t* pos = data + 6;
-    
+
     for (int i = 0; i < num_sps; ++i) {
-        if (pos + 4 > data + size) break;
-        
+        if (pos + 4 > data + size)
+            break;
+
         uint16_t sps_length = (static_cast<uint16_t>(pos[0]) << 8) | pos[1];
         pos += 2;
-        
-        if (pos + sps_length > data + size) break;
-        
+
+        if (pos + sps_length > data + size)
+            break;
+
         // 统一不变量：NalUnit::data 只放 RBSP payload，**不含 NAL header**
         // （与 ExtractAnnBNalUnits / ParseH264NalUnit 的 AnnexB 路径保持一致）。
         // 上层 parser 因此无需再判断"header 在不在"。
-        if (sps_length < 1) break;
+        if (sps_length < 1)
+            break;
         NalUnit nal;
         nal.type = 7; // SPS
         nal.size = sps_length - 1;
         nal.data.assign(pos + 1, pos + sps_length);
         nal.is_keyframe = true;
-        
+
         result.nal_units.push_back(nal);
-        
+
         pos += sps_length;
     }
-    
+
     // Parse PPS
-    if (pos + 1 > data + size) return result;
-    
+    if (pos + 1 > data + size)
+        return result;
+
     uint8_t num_pps = *pos++;
-    
+
     for (int i = 0; i < num_pps; ++i) {
-        if (pos + 4 > data + size) break;
-        
+        if (pos + 4 > data + size)
+            break;
+
         uint16_t pps_length = (static_cast<uint16_t>(pos[0]) << 8) | pos[1];
         pos += 2;
-        
-        if (pos + pps_length > data + size) break;
-        
-        if (pps_length < 1) break;
+
+        if (pos + pps_length > data + size)
+            break;
+
+        if (pps_length < 1)
+            break;
         NalUnit nal;
         nal.type = 8; // PPS
         nal.size = pps_length - 1;
         nal.data.assign(pos + 1, pos + pps_length);
-        
+
         result.nal_units.push_back(nal);
-        
+
         pos += pps_length;
     }
-    
+
     return result;
 }
 
@@ -484,7 +501,7 @@ ExtradataResult ExtradataParser::ParseHvcC(const uint8_t* data, size_t size) {
     ExtradataResult result;
     result.format = ExtradataFormat::HvcC;
     result.valid = true;
-    
+
     // hvcC = HEVCDecoderConfigurationRecord（ISO/IEC 14496-15）。字节偏移从记录开头算：
     //   0      configurationVersion
     //   1      general_profile_space(2) | general_tier_flag(1) | general_profile_idc(5)
@@ -525,10 +542,12 @@ ExtradataResult ExtradataParser::ParseHvcC(const uint8_t* data, size_t size) {
     const uint8_t* end = data + size;
 
     for (int i = 0; i < num_sps; ++i) {
-        if (end - pos < 2) break;
+        if (end - pos < 2)
+            break;
         const uint16_t sps_length = BytesToUint16BE(pos);
         pos += 2;
-        if (sps_length == 0 || pos + sps_length > end) break;
+        if (sps_length == 0 || pos + sps_length > end)
+            break;
 
         // 与 avcC / AnnexB 路径一致：NalUnit::data 只放 RBSP payload，剥掉 2 字节 NAL header
         NalUnit nal;
@@ -542,15 +561,18 @@ ExtradataResult ExtradataParser::ParseHvcC(const uint8_t* data, size_t size) {
     }
 
     // 末尾是 numOfPictureParameterSets(1 字节) 后接 PPS 数组
-    if (end - pos < 1) return result;
+    if (end - pos < 1)
+        return result;
 
     const uint8_t num_pps = *pos++;
 
     for (int i = 0; i < num_pps; ++i) {
-        if (end - pos < 2) break;
+        if (end - pos < 2)
+            break;
         const uint16_t pps_length = BytesToUint16BE(pos);
         pos += 2;
-        if (pps_length == 0 || pos + pps_length > end) break;
+        if (pps_length == 0 || pos + pps_length > end)
+            break;
 
         NalUnit nal;
         nal.type = 34; // HEVC PPS
@@ -633,7 +655,8 @@ ExtradataResult ExtradataParser::ParseVvcC(const uint8_t* data, size_t size) {
 
         // frame_only(1) + multilayer(1) + constraint info(8*n-2) bits
         int constraint_bits = num_bytes_constraint_info * 8 - 2;
-        if (constraint_bits < 0) constraint_bits = 0;
+        if (constraint_bits < 0)
+            constraint_bits = 0;
         const int ptl_bits = 2 + constraint_bits;
         if (pos + (ptl_bits + 7) / 8 > end) {
             result.error_message = "vvcC truncated (constraint bits)";
@@ -654,7 +677,7 @@ ExtradataResult ExtradataParser::ParseVvcC(const uint8_t* data, size_t size) {
                         result.error_message = "vvcC truncated (sublayer level)";
                         return result;
                     }
-                    ++pos;  // sublayer_level_idc[i]
+                    ++pos; // sublayer_level_idc[i]
                 }
             }
         }
@@ -676,7 +699,7 @@ ExtradataResult ExtradataParser::ParseVvcC(const uint8_t* data, size_t size) {
         }
         result.config.max_picture_width = static_cast<int>(BytesToUint16BE(pos));
         result.config.max_picture_height = static_cast<int>(BytesToUint16BE(pos + 2));
-        pos += 6;  // width + height + avg_frame_rate
+        pos += 6; // width + height + avg_frame_rate
     }
 
     if (pos >= end) {
@@ -688,27 +711,31 @@ ExtradataResult ExtradataParser::ParseVvcC(const uint8_t* data, size_t size) {
     result.height = result.config.max_picture_height;
 
     for (int i = 0; i < num_of_arrays; ++i) {
-        if (pos >= end) break;
+        if (pos >= end)
+            break;
         const uint8_t array_header = *pos++;
         const uint8_t nal_type = array_header & 0x1F;
 
         // DCI(13) / OPI(12) 组不带 numNalus 字段，固定 1 个
         int num_nalus = 1;
         if (nal_type != 13 && nal_type != 12) {
-            if (pos + 2 > end) break;
+            if (pos + 2 > end)
+                break;
             num_nalus = static_cast<int>(BytesToUint16BE(pos));
             pos += 2;
         }
 
         for (int j = 0; j < num_nalus; ++j) {
-            if (pos + 2 > end) break;
+            if (pos + 2 > end)
+                break;
             const uint16_t nal_length = BytesToUint16BE(pos);
             pos += 2;
-            if (pos + nal_length > end) break;
+            if (pos + nal_length > end)
+                break;
 
             // 与 AnnexB 路径一致：只保留 RBSP payload（剥掉 2 字节 NAL header）
             NalUnit nal = ParseVvcNalUnit(pos, nal_length);
-            nal.type = nal_type;  // 以数组头声明的类型为准
+            nal.type = nal_type; // 以数组头声明的类型为准
             result.nal_units.push_back(std::move(nal));
             pos += nal_length;
         }
@@ -721,7 +748,7 @@ ExtradataResult ExtradataParser::ParseAv1C(const uint8_t* data, size_t size) {
     ExtradataResult result;
     result.format = ExtradataFormat::Av1C;
     result.valid = true;
-    
+
     // av1C 记录最小 4 字节：
     //   https://aomediacodec.github.io/av1-isobmff/#av1c-record-structure
     //
@@ -743,7 +770,7 @@ ExtradataResult ExtradataParser::ParseAv1C(const uint8_t* data, size_t size) {
     }
 
     result.config.profile = (data[1] >> 5) & 0x07;
-    result.config.level_idc = (data[1] & 0x1F);   // seq_level_idx_0
+    result.config.level_idc = (data[1] & 0x1F); // seq_level_idx_0
     result.config.general_tier_flag = (data[2] >> 7) & 0x01;
     result.config.high_bitdepth = (data[2] >> 6) & 0x01;
     result.config.twelve_bit = (data[2] >> 5) & 0x01;
@@ -775,56 +802,67 @@ ExtradataResult ExtradataParser::ParseAv1C(const uint8_t* data, size_t size) {
     return result;
 }
 
-ExtradataResult ExtradataParser::ParseWithFormat(ExtradataFormat format,
-                                                 const uint8_t* data, size_t size,
-                                                 NalSyntax syntax) {
+ExtradataResult ExtradataParser::ParseWithFormatRaw(ExtradataFormat format, const uint8_t* data, size_t size,
+                                                    NalSyntax syntax) {
     switch (format) {
-        case ExtradataFormat::AnnexB:
-            return ParseAnnexB(data, size, syntax);
-            
-        case ExtradataFormat::AvcC:
-            return ParseAvcC(data, size);
-            
-        case ExtradataFormat::HvcC:
-            return ParseHvcC(data, size);
-            
-        case ExtradataFormat::VvcC:
-            return ParseVvcC(data, size);
-            
-        case ExtradataFormat::Av1C:
-            return ParseAv1C(data, size);
-            
-        case ExtradataFormat::LengthPrefix1:
-        case ExtradataFormat::LengthPrefix2:
-        case ExtradataFormat::LengthPrefix4: {
-            // 长度前缀流必须先转成 Annex B 再解析：Annex B 的起始码定位（FindStartCode）
-            // 只认 00 00 01 / 00 00 00 01，直接把「长度 + payload」喂进去一条都抽不出来。
-            //
-            // 前缀宽度由 DetectFormat() 按 data[0] & 0x03 定下，两边必须一致，
-            // 否则 NAL 边界会整体错位。
-            const int prefix_bytes = (format == ExtradataFormat::LengthPrefix1)
-                                         ? 1
-                                         : ((format == ExtradataFormat::LengthPrefix2) ? 2 : 4);
-            // ConvertLengthPrefixToAnnexB 吃的是 vector，先包一层（不用拷，只做一次视图）
-            const std::vector<uint8_t> input(data, data + size);
-            std::vector<uint8_t> annexb = ConvertLengthPrefixToAnnexB(input, prefix_bytes);
-            if (annexb.empty()) {
-                ExtradataResult failed;
-                failed.format = format;
-                failed.valid = false;
-                failed.error_message = "length-prefix to Annex B conversion failed";
-                return failed;
-            }
-            return ParseAnnexB(annexb.data(), annexb.size(), syntax);
+    case ExtradataFormat::AnnexB:
+        return ParseAnnexB(data, size, syntax);
+
+    case ExtradataFormat::AvcC:
+        return ParseAvcC(data, size);
+
+    case ExtradataFormat::HvcC:
+        return ParseHvcC(data, size);
+
+    case ExtradataFormat::VvcC:
+        return ParseVvcC(data, size);
+
+    case ExtradataFormat::Av1C:
+        return ParseAv1C(data, size);
+
+    case ExtradataFormat::LengthPrefix1:
+    case ExtradataFormat::LengthPrefix2:
+    case ExtradataFormat::LengthPrefix4: {
+        // 长度前缀流必须先转成 Annex B 再解析：Annex B 的起始码定位（FindStartCode）
+        // 只认 00 00 01 / 00 00 00 01，直接把「长度 + payload」喂进去一条都抽不出来。
+        //
+        // 前缀宽度由 DetectFormat() 按 data[0] & 0x03 定下，两边必须一致，
+        // 否则 NAL 边界会整体错位。
+        const int prefix_bytes =
+            (format == ExtradataFormat::LengthPrefix1) ? 1 : ((format == ExtradataFormat::LengthPrefix2) ? 2 : 4);
+        // ConvertLengthPrefixToAnnexB 吃的是 vector，先包一层（不用拷，只做一次视图）
+        const std::vector<uint8_t> input(data, data + size);
+        std::vector<uint8_t> annexb = ConvertLengthPrefixToAnnexB(input, prefix_bytes);
+        if (annexb.empty()) {
+            ExtradataResult failed;
+            failed.format = format;
+            failed.valid = false;
+            failed.error_message = "length-prefix to Annex B conversion failed";
+            return failed;
         }
-            
-        default:
-            ExtradataResult result;
-            result.format = ExtradataFormat::Unknown;
-            result.valid = false;
-            result.error_message = "Unsupported format";
-            return result;
+        return ParseAnnexB(annexb.data(), annexb.size(), syntax);
     }
+
+    default:
+        ExtradataResult result;
+        result.format = ExtradataFormat::Unknown;
+        result.valid = false;
+        result.error_message = "Unsupported format";
+        return result;
+    }
+}
+
+ExtradataResult ExtradataParser::ParseWithFormat(ExtradataFormat format, const uint8_t* data, size_t size,
+                                                 NalSyntax syntax) {
+    ExtradataResult result = ParseWithFormatRaw(format, data, size, syntax);
+    // 统一不变量：解析器一旦写下错误原因，就不能再声称结果有效（阶段 3.2
+    // "错误状态不可继续产出有效结果"）。avcC/hvcC/vvcC 的十几条截断早退路径
+    // 过去都会留下 valid=true —— 上层拿到"空 NAL 列表 + valid"会当成解析成功，
+    // 比直接判失败难查得多。归一化放在这里，一个新早退分支也不会漏。
+    if (!result.error_message.empty()) {
+        result.valid = false;
+    }
+    return result;
 }
 
 ExtradataResult ExtradataParser::Parse(const uint8_t* extradata, size_t size) {
@@ -834,16 +872,16 @@ ExtradataResult ExtradataParser::Parse(const uint8_t* extradata, size_t size) {
         result.error_message = "Empty extradata";
         return result;
     }
-    
+
     ExtradataFormat format = DetectFormat(extradata, size);
-    
+
     if (format == ExtradataFormat::Unknown) {
         ExtradataResult result;
         result.valid = false;
         result.error_message = "Unknown format";
         return result;
     }
-    
+
     return ParseWithFormat(format, extradata, size);
 }
 

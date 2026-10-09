@@ -5,8 +5,8 @@
 #include "core/analysis/detail/AnalysisTextUtil.h"
 #include "core/analysis/detail/SeqFileReader.h"
 #include <functional>
-#include <vector>
 #include <set>
+#include <vector>
 
 #include <algorithm>
 #include <cstring>
@@ -21,13 +21,25 @@ namespace {
 // 替代 std::string::toInt()/toULongLong()/toDouble() 的宽松语义
 // （解析失败返回默认值，而不是抛异常），保持 EbmlAnalyzer 原有行为。
 int64_t ParseInt(const std::string& s, int64_t def = 0) {
-    try { return std::stoll(s); } catch (...) { return def; }
+    try {
+        return std::stoll(s);
+    } catch (...) {
+        return def;
+    }
 }
 uint64_t ParseUInt(const std::string& s, uint64_t def = 0) {
-    try { return std::stoull(s); } catch (...) { return def; }
+    try {
+        return std::stoull(s);
+    } catch (...) {
+        return def;
+    }
 }
 double ParseDouble(const std::string& s, double def = 0.0) {
-    try { return std::stod(s); } catch (...) { return def; }
+    try {
+        return std::stod(s);
+    } catch (...) {
+        return def;
+    }
 }
 
 // 补零到两位，替代 std::string::arg(v, 2, 10, '0')
@@ -37,7 +49,7 @@ std::string Pad2(long long v) {
     return oss.str();
 }
 
-}  // namespace
+} // namespace
 
 // ============================================================
 // 已知 EBML 元素名称映射 (Matroska / WebM)
@@ -47,207 +59,207 @@ std::map<uint64_t, std::string>& EbmlAnalyzer::ElementNames() {
     if (map.empty()) {
         // EBML Header
         map[0x1A45DFA3] = "EBML";
-        map[0x4286]    = "EBMLVersion";
-        map[0x42F7]    = "EBMLReadVersion";
-        map[0x42F2]    = "EBMLMaxIDLength";
-        map[0x42F3]    = "EBMLMaxSizeLength";
-        map[0x4282]    = "DocType";
-        map[0x4287]    = "DocTypeVersion";
-        map[0x4285]    = "DocTypeReadVersion";
-        map[0x42BF]    = "CRC-32";
-        map[0xEC]      = "Void";
+        map[0x4286] = "EBMLVersion";
+        map[0x42F7] = "EBMLReadVersion";
+        map[0x42F2] = "EBMLMaxIDLength";
+        map[0x42F3] = "EBMLMaxSizeLength";
+        map[0x4282] = "DocType";
+        map[0x4287] = "DocTypeVersion";
+        map[0x4285] = "DocTypeReadVersion";
+        map[0x42BF] = "CRC-32";
+        map[0xEC] = "Void";
         // Segment
         map[0x18538067] = "Segment";
         // SeekHead
         map[0x114D9B74] = "SeekHead";
-        map[0x4DBB]     = "Seek";
-        map[0x53AB]     = "SeekID";
-        map[0x53AC]     = "SeekPosition";
+        map[0x4DBB] = "Seek";
+        map[0x53AB] = "SeekID";
+        map[0x53AC] = "SeekPosition";
         // Info
         map[0x1549A966] = "Info";
-        map[0x2AD7B1]   = "TimestampScale";
-        map[0x4489]     = "Duration";
-        map[0x4D80]     = "MuxingApp";
-        map[0x5741]     = "WritingApp";
-        map[0x7384]     = "SegmentFilename";
-        map[0x73A4]     = "SegmentUID";
-        map[0x7BA9]     = "Title";
-        map[0x3CB923]   = "PrevUID";
-        map[0x3C83AB]   = "NextUID";
-        map[0x4461]     = "DateUTC";
+        map[0x2AD7B1] = "TimestampScale";
+        map[0x4489] = "Duration";
+        map[0x4D80] = "MuxingApp";
+        map[0x5741] = "WritingApp";
+        map[0x7384] = "SegmentFilename";
+        map[0x73A4] = "SegmentUID";
+        map[0x7BA9] = "Title";
+        map[0x3CB923] = "PrevUID";
+        map[0x3C83AB] = "NextUID";
+        map[0x4461] = "DateUTC";
         // Cluster
         map[0x1F43B675] = "Cluster";
-        map[0xE7]       = "Timecode";
-        map[0xA7]       = "Position";
-        map[0xAB]       = "PrevSize";
-        map[0xA0]       = "BlockGroup";
-        map[0xA1]       = "Block";
-        map[0xA3]       = "SimpleBlock";
-        map[0xA2]       = "BlockVirtual";
-        map[0x9B]       = "BlockDuration";
-        map[0xFA]       = "ReferenceBlock";
-        map[0xFB]       = "ReferencePriority";
-        map[0xFD]       = "ReferenceVirtual";
-        map[0x75A1]     = "BlockAdditions";
-        map[0x75A2]     = "DiscardPadding";
-        map[0x41A4]     = "CodecState";
-        map[0xCB]       = "BlockAdditionID";
-        map[0xC8]       = "BlockAdditionMapping";
-        map[0x41E4]     = "BlockMore";
-        map[0xC9]       = "BlockAdditional";
-        map[0x41E7]     = "BlockAddID";
+        map[0xE7] = "Timecode";
+        map[0xA7] = "Position";
+        map[0xAB] = "PrevSize";
+        map[0xA0] = "BlockGroup";
+        map[0xA1] = "Block";
+        map[0xA3] = "SimpleBlock";
+        map[0xA2] = "BlockVirtual";
+        map[0x9B] = "BlockDuration";
+        map[0xFA] = "ReferenceBlock";
+        map[0xFB] = "ReferencePriority";
+        map[0xFD] = "ReferenceVirtual";
+        map[0x75A1] = "BlockAdditions";
+        map[0x75A2] = "DiscardPadding";
+        map[0x41A4] = "CodecState";
+        map[0xCB] = "BlockAdditionID";
+        map[0xC8] = "BlockAdditionMapping";
+        map[0x41E4] = "BlockMore";
+        map[0xC9] = "BlockAdditional";
+        map[0x41E7] = "BlockAddID";
         // Tracks
         map[0x1654AE6B] = "Tracks";
-        map[0xAE]       = "TrackEntry";
-        map[0xD7]       = "TrackNumber";
-        map[0x73C5]     = "TrackUID";
-        map[0x83]       = "TrackType";
-        map[0xB9]       = "FlagEnabled";
-        map[0x88]       = "FlagDefault";
-        map[0x55AA]     = "FlagForced";
-        map[0x9C]       = "FlagLacing";
-        map[0x6DE7]     = "MinCache";
-        map[0x6DF8]     = "MaxCache";
-        map[0x23E383]   = "DefaultDuration";
-        map[0x23314F]   = "DefaultDecodedFieldDuration";
-        map[0x536E]     = "Name";
-        map[0x22B59C]   = "Language";           // deprecated, use IETF
-        map[0x7D7B]     = "LanguageIETF";
-        map[0x86]       = "CodecID";
-        map[0x63A2]     = "CodecPrivate";
-        map[0x258688]   = "CodecName";
-        map[0x7446]     = "AttachmentLink";
-        map[0x3A9697]   = "CodecSettings";
-        map[0x3B4040]   = "CodecInfoURL";
-        map[0x26B240]   = "CodecDownloadURL";
-        map[0xAA]       = "CodecDecodeAll";
-        map[0x6FAB]     = "TrackOverlay";
-        map[0x56AA]     = "CodecDelay";
-        map[0x56BB]     = "SeekPreRoll";
+        map[0xAE] = "TrackEntry";
+        map[0xD7] = "TrackNumber";
+        map[0x73C5] = "TrackUID";
+        map[0x83] = "TrackType";
+        map[0xB9] = "FlagEnabled";
+        map[0x88] = "FlagDefault";
+        map[0x55AA] = "FlagForced";
+        map[0x9C] = "FlagLacing";
+        map[0x6DE7] = "MinCache";
+        map[0x6DF8] = "MaxCache";
+        map[0x23E383] = "DefaultDuration";
+        map[0x23314F] = "DefaultDecodedFieldDuration";
+        map[0x536E] = "Name";
+        map[0x22B59C] = "Language"; // deprecated, use IETF
+        map[0x7D7B] = "LanguageIETF";
+        map[0x86] = "CodecID";
+        map[0x63A2] = "CodecPrivate";
+        map[0x258688] = "CodecName";
+        map[0x7446] = "AttachmentLink";
+        map[0x3A9697] = "CodecSettings";
+        map[0x3B4040] = "CodecInfoURL";
+        map[0x26B240] = "CodecDownloadURL";
+        map[0xAA] = "CodecDecodeAll";
+        map[0x6FAB] = "TrackOverlay";
+        map[0x56AA] = "CodecDelay";
+        map[0x56BB] = "SeekPreRoll";
         // Video
-        map[0xE0]       = "Video";
-        map[0x9A]       = "FlagInterlaced";
-        map[0x9D]       = "FieldOrder";
-        map[0x53B8]     = "StereoMode";
-        map[0x53C0]     = "AlphaMode";
-        map[0xB0]       = "PixelWidth";
-        map[0xBA]       = "PixelHeight";
-        map[0x54AA]     = "PixelCropBottom";
-        map[0x54BB]     = "PixelCropTop";
-        map[0x54CC]     = "PixelCropLeft";
-        map[0x54DD]     = "PixelCropRight";
-        map[0x54B0]     = "DisplayWidth";
-        map[0x54BA]     = "DisplayHeight";
-        map[0x54B2]     = "DisplayUnit";
-        map[0x54B3]     = "AspectRatioType";
-        map[0x2EB524]   = "UncompressedFourCC";
-        map[0x2FB523]   = "GammaValue";
-        map[0x2383E3]   = "FrameRate";
-        map[0x55B0]     = "Colour";
-        map[0x55B1]     = "MatrixCoefficients";
-        map[0x55B2]     = "BitsPerChannel";
-        map[0x55B3]     = "ChromaSubsamplingHorz";
-        map[0x55B4]     = "ChromaSubsamplingVert";
-        map[0x55B5]     = "CbSubsamplingHorz";
-        map[0x55B6]     = "CbSubsamplingVert";
-        map[0x55B7]     = "ChromaSitingHorz";
-        map[0x55B8]     = "ChromaSitingVert";
-        map[0x55B9]     = "Range";
-        map[0x55BA]     = "TransferCharacteristics";
-        map[0x55BB]     = "Primaries";
-        map[0x55BC]     = "MaxCLL";
-        map[0x55BD]     = "MaxFALL";
-        map[0x55D0]     = "MasteringMetadata";
-        map[0x55D1]     = "PrimaryRChromaticityX";
-        map[0x55D2]     = "PrimaryRChromaticityY";
-        map[0x55D3]     = "PrimaryGChromaticityX";
-        map[0x55D4]     = "PrimaryGChromaticityY";
-        map[0x55D5]     = "PrimaryBChromaticityX";
-        map[0x55D6]     = "PrimaryBChromaticityY";
-        map[0x55D7]     = "WhitePointChromaticityX";
-        map[0x55D8]     = "WhitePointChromaticityY";
-        map[0x55D9]     = "LuminanceMax";
-        map[0x55DA]     = "LuminanceMin";
+        map[0xE0] = "Video";
+        map[0x9A] = "FlagInterlaced";
+        map[0x9D] = "FieldOrder";
+        map[0x53B8] = "StereoMode";
+        map[0x53C0] = "AlphaMode";
+        map[0xB0] = "PixelWidth";
+        map[0xBA] = "PixelHeight";
+        map[0x54AA] = "PixelCropBottom";
+        map[0x54BB] = "PixelCropTop";
+        map[0x54CC] = "PixelCropLeft";
+        map[0x54DD] = "PixelCropRight";
+        map[0x54B0] = "DisplayWidth";
+        map[0x54BA] = "DisplayHeight";
+        map[0x54B2] = "DisplayUnit";
+        map[0x54B3] = "AspectRatioType";
+        map[0x2EB524] = "UncompressedFourCC";
+        map[0x2FB523] = "GammaValue";
+        map[0x2383E3] = "FrameRate";
+        map[0x55B0] = "Colour";
+        map[0x55B1] = "MatrixCoefficients";
+        map[0x55B2] = "BitsPerChannel";
+        map[0x55B3] = "ChromaSubsamplingHorz";
+        map[0x55B4] = "ChromaSubsamplingVert";
+        map[0x55B5] = "CbSubsamplingHorz";
+        map[0x55B6] = "CbSubsamplingVert";
+        map[0x55B7] = "ChromaSitingHorz";
+        map[0x55B8] = "ChromaSitingVert";
+        map[0x55B9] = "Range";
+        map[0x55BA] = "TransferCharacteristics";
+        map[0x55BB] = "Primaries";
+        map[0x55BC] = "MaxCLL";
+        map[0x55BD] = "MaxFALL";
+        map[0x55D0] = "MasteringMetadata";
+        map[0x55D1] = "PrimaryRChromaticityX";
+        map[0x55D2] = "PrimaryRChromaticityY";
+        map[0x55D3] = "PrimaryGChromaticityX";
+        map[0x55D4] = "PrimaryGChromaticityY";
+        map[0x55D5] = "PrimaryBChromaticityX";
+        map[0x55D6] = "PrimaryBChromaticityY";
+        map[0x55D7] = "WhitePointChromaticityX";
+        map[0x55D8] = "WhitePointChromaticityY";
+        map[0x55D9] = "LuminanceMax";
+        map[0x55DA] = "LuminanceMin";
         // Audio
-        map[0xE1]       = "Audio";
-        map[0xB5]       = "SamplingFrequency";
-        map[0x78B5]     = "OutputSamplingFrequency";
-        map[0x9F]       = "Channels";
-        map[0x7D7B]     = "ChannelPositions";
-        map[0x6264]     = "BitDepth";
-        map[0x52F1]     = "Emphasis";
+        map[0xE1] = "Audio";
+        map[0xB5] = "SamplingFrequency";
+        map[0x78B5] = "OutputSamplingFrequency";
+        map[0x9F] = "Channels";
+        map[0x7D7B] = "ChannelPositions";
+        map[0x6264] = "BitDepth";
+        map[0x52F1] = "Emphasis";
         // ContentEncodings
-        map[0x6D80]     = "ContentEncodings";
-        map[0x6240]     = "ContentEncoding";
-        map[0x5031]     = "ContentEncodingOrder";
-        map[0x5032]     = "ContentEncodingScope";
-        map[0x5033]     = "ContentEncodingType";
-        map[0x5034]     = "ContentCompression";
-        map[0x5035]     = "ContentCompAlgo";
+        map[0x6D80] = "ContentEncodings";
+        map[0x6240] = "ContentEncoding";
+        map[0x5031] = "ContentEncodingOrder";
+        map[0x5032] = "ContentEncodingScope";
+        map[0x5033] = "ContentEncodingType";
+        map[0x5034] = "ContentCompression";
+        map[0x5035] = "ContentCompAlgo";
         // Cues
         map[0x1C53BB6B] = "Cues";
-        map[0xBB]       = "CuePoint";
-        map[0xB3]       = "CueTime";
-        map[0xB7]       = "CueTrackPositions";
-        map[0xF7]       = "CueTrack";
-        map[0xF1]       = "CueClusterPosition";
-        map[0xF0]       = "CueRelativePosition";
-        map[0xB2]       = "CueDuration";
-        map[0x5378]     = "CueBlockNumber";
-        map[0xEA]       = "CueCodecState";
-        map[0xDB]       = "CueReference";
-        map[0x96]       = "CueRefTime";
+        map[0xBB] = "CuePoint";
+        map[0xB3] = "CueTime";
+        map[0xB7] = "CueTrackPositions";
+        map[0xF7] = "CueTrack";
+        map[0xF1] = "CueClusterPosition";
+        map[0xF0] = "CueRelativePosition";
+        map[0xB2] = "CueDuration";
+        map[0x5378] = "CueBlockNumber";
+        map[0xEA] = "CueCodecState";
+        map[0xDB] = "CueReference";
+        map[0x96] = "CueRefTime";
         // Chapters
         map[0x1043A770] = "Chapters";
-        map[0x45B9]     = "EditionEntry";
-        map[0x45BC]     = "EditionUID";
-        map[0x45BD]     = "EditionFlagHidden";
-        map[0x45DB]     = "EditionFlagDefault";
-        map[0x45DD]     = "EditionFlagOrdered";
-        map[0xB6]       = "ChapterAtom";
-        map[0x73C4]     = "ChapterUID";
-        map[0x6E67]     = "ChapterStringUID";
-        map[0x91]       = "ChapterTimeStart";
-        map[0x92]       = "ChapterTimeEnd";
-        map[0x98]       = "ChapterFlagHidden";
-        map[0x4598]     = "ChapterFlagEnabled";
-        map[0x6EBC]     = "ChapterSegmentUID";
-        map[0x6E80]     = "ChapterSegmentEditionUID";
-        map[0x8F]       = "ChapterTrack";
-        map[0x89]       = "ChapterTrackUID";
-        map[0x63C3]     = "ChapterDisplay";
-        map[0x437C]     = "ChapLanguage";
-        map[0x437E]     = "ChapLanguageIETF";
-        map[0x437D]     = "ChapCountry";
-        map[0x80]       = "ChapProcess";
-        map[0x6944]     = "ChapProcessCommand";
-        map[0x6911]     = "ChapProcessTime";
-        map[0x6922]     = "ChapProcessData";
+        map[0x45B9] = "EditionEntry";
+        map[0x45BC] = "EditionUID";
+        map[0x45BD] = "EditionFlagHidden";
+        map[0x45DB] = "EditionFlagDefault";
+        map[0x45DD] = "EditionFlagOrdered";
+        map[0xB6] = "ChapterAtom";
+        map[0x73C4] = "ChapterUID";
+        map[0x6E67] = "ChapterStringUID";
+        map[0x91] = "ChapterTimeStart";
+        map[0x92] = "ChapterTimeEnd";
+        map[0x98] = "ChapterFlagHidden";
+        map[0x4598] = "ChapterFlagEnabled";
+        map[0x6EBC] = "ChapterSegmentUID";
+        map[0x6E80] = "ChapterSegmentEditionUID";
+        map[0x8F] = "ChapterTrack";
+        map[0x89] = "ChapterTrackUID";
+        map[0x63C3] = "ChapterDisplay";
+        map[0x437C] = "ChapLanguage";
+        map[0x437E] = "ChapLanguageIETF";
+        map[0x437D] = "ChapCountry";
+        map[0x80] = "ChapProcess";
+        map[0x6944] = "ChapProcessCommand";
+        map[0x6911] = "ChapProcessTime";
+        map[0x6922] = "ChapProcessData";
         // Tags
         map[0x1254C367] = "Tags";
-        map[0x7373]     = "Tag";
-        map[0x63C0]     = "Targets";
-        map[0x68CA]     = "TargetTypeValue";
-        map[0x63CA]     = "TargetType";
-        map[0x63C5]     = "TagTrackUID";
-        map[0x63C9]     = "TagEditionUID";
-        map[0x63C4]     = "TagChapterUID";
-        map[0x63C6]     = "TagAttachmentUID";
-        map[0x67C8]     = "SimpleTag";
-        map[0x45A3]     = "TagName";
-        map[0x447A]     = "TagLanguage";
-        map[0x447B]     = "TagLanguageIETF";
-        map[0x4484]     = "TagDefault";
-        map[0x4487]     = "TagString";
-        map[0x4485]     = "TagBinary";
+        map[0x7373] = "Tag";
+        map[0x63C0] = "Targets";
+        map[0x68CA] = "TargetTypeValue";
+        map[0x63CA] = "TargetType";
+        map[0x63C5] = "TagTrackUID";
+        map[0x63C9] = "TagEditionUID";
+        map[0x63C4] = "TagChapterUID";
+        map[0x63C6] = "TagAttachmentUID";
+        map[0x67C8] = "SimpleTag";
+        map[0x45A3] = "TagName";
+        map[0x447A] = "TagLanguage";
+        map[0x447B] = "TagLanguageIETF";
+        map[0x4484] = "TagDefault";
+        map[0x4487] = "TagString";
+        map[0x4485] = "TagBinary";
         // Attachments
         map[0x1941A469] = "Attachments";
-        map[0x61A7]     = "AttachedFile";
-        map[0x467E]     = "FileDescription";
-        map[0x466E]     = "FileName";
-        map[0x4660]     = "FileMimeType";
-        map[0x465C]     = "FileData";
-        map[0x46AE]     = "FileUID";
+        map[0x61A7] = "AttachedFile";
+        map[0x467E] = "FileDescription";
+        map[0x466E] = "FileName";
+        map[0x4660] = "FileMimeType";
+        map[0x465C] = "FileData";
+        map[0x46AE] = "FileUID";
     }
     return map;
 }
@@ -257,43 +269,43 @@ std::map<uint64_t, std::string>& EbmlAnalyzer::ElementNames() {
 // ============================================================
 bool EbmlAnalyzer::IsContainerElement(uint64_t id) {
     switch (id) {
-        case 0x1A45DFA3: // EBML
-        case 0x18538067: // Segment
-        case 0x114D9B74: // SeekHead
-        case 0x4DBB:     // Seek
-        case 0x1549A966: // Info
-        case 0x1F43B675: // Cluster
-        case 0xA0:       // BlockGroup
-        case 0x75A1:     // BlockAdditions
-        case 0x41E4:     // BlockMore
-        case 0x1654AE6B: // Tracks
-        case 0xAE:       // TrackEntry
-        case 0xE0:       // Video
-        case 0xE1:       // Audio
-        case 0x55B0:     // Colour
-        case 0x55D0:     // MasteringMetadata
-        case 0x6D80:     // ContentEncodings
-        case 0x6240:     // ContentEncoding
-        case 0x5034:     // ContentCompression
-        case 0x1C53BB6B: // Cues
-        case 0xBB:       // CuePoint
-        case 0xB7:       // CueTrackPositions
-        case 0x1043A770: // Chapters
-        case 0x45B9:     // EditionEntry
-        case 0xB6:       // ChapterAtom
-        case 0x63C3:     // ChapterDisplay
-        case 0x8F:       // ChapterTrack
-        case 0x80:       // ChapProcess
-        case 0x6944:     // ChapProcessCommand
-        case 0x1254C367: // Tags
-        case 0x7373:     // Tag
-        case 0x63C0:     // Targets
-        case 0x67C8:     // SimpleTag
-        case 0x1941A469: // Attachments
-        case 0x61A7:     // AttachedFile
-            return true;
-        default:
-            return false;
+    case 0x1A45DFA3: // EBML
+    case 0x18538067: // Segment
+    case 0x114D9B74: // SeekHead
+    case 0x4DBB:     // Seek
+    case 0x1549A966: // Info
+    case 0x1F43B675: // Cluster
+    case 0xA0:       // BlockGroup
+    case 0x75A1:     // BlockAdditions
+    case 0x41E4:     // BlockMore
+    case 0x1654AE6B: // Tracks
+    case 0xAE:       // TrackEntry
+    case 0xE0:       // Video
+    case 0xE1:       // Audio
+    case 0x55B0:     // Colour
+    case 0x55D0:     // MasteringMetadata
+    case 0x6D80:     // ContentEncodings
+    case 0x6240:     // ContentEncoding
+    case 0x5034:     // ContentCompression
+    case 0x1C53BB6B: // Cues
+    case 0xBB:       // CuePoint
+    case 0xB7:       // CueTrackPositions
+    case 0x1043A770: // Chapters
+    case 0x45B9:     // EditionEntry
+    case 0xB6:       // ChapterAtom
+    case 0x63C3:     // ChapterDisplay
+    case 0x8F:       // ChapterTrack
+    case 0x80:       // ChapProcess
+    case 0x6944:     // ChapProcessCommand
+    case 0x1254C367: // Tags
+    case 0x7373:     // Tag
+    case 0x63C0:     // Targets
+    case 0x67C8:     // SimpleTag
+    case 0x1941A469: // Attachments
+    case 0x61A7:     // AttachedFile
+        return true;
+    default:
+        return false;
     }
 }
 
@@ -301,56 +313,95 @@ bool EbmlAnalyzer::IsContainerElement(uint64_t id) {
 // CodecID 可读名称
 // ============================================================
 std::string EbmlAnalyzer::CodecIdToName(const std::string& codec_id) {
-    if (codec_id == "V_VP8")            return "VP8";
-    if (codec_id == "V_VP9")            return "VP9";
-    if (codec_id == "V_AV1")            return "AV1";
-    if (codec_id == "V_MPEG4/ISO/AVC")  return "H.264 (AVC)";
-    if (codec_id == "V_MPEGH/ISO/HEVC") return "H.265 (HEVC)";
-    if (codec_id == "V_MPEGI/ISO/VVC")  return "H.266 (VVC)";
-    if (codec_id == "V_THEORA")         return "Theora";
-    if (codec_id == "V_MS/VFW/FOURCC")  return "MS VFW (FOURCC)";
-    if (codec_id == "V_UNCOMPRESSED")    return "Uncompressed";
-    if (codec_id == "A_OPUS")           return "Opus";
-    if (codec_id == "A_VORBIS")         return "Vorbis";
-    if (codec_id == "A_AAC")            return "AAC";
-    if (codec_id == "A_MPEG/L3")        return "MP3";
-    if (codec_id == "A_MPEG/L2")        return "MP2";
-    if (codec_id == "A_MPEG/L1")        return "MP1";
-    if (codec_id == "A_PCM/INT/LIT")    return "PCM (int)";
-    if (codec_id == "A_PCM/FLOAT/IEEE") return "PCM (float)";
-    if (codec_id == "A_AC3")            return "AC-3";
-    if (codec_id == "A_EAC3")           return "E-AC-3";
-    if (codec_id == "A_TRUEHD")         return "TrueHD";
-    if (codec_id == "A_DTS")            return "DTS";
-    if (codec_id == "A_FLAC")           return "FLAC";
-    if (codec_id == "A_MLP")            return "MLP";
-    if (codec_id == "S_TEXT/UTF8")      return "SubRip/SRT";
-    if (codec_id == "S_TEXT/ASS")       return "ASS/SSA";
-    if (codec_id == "S_VOBSUB")         return "VobSub";
-    if (codec_id == "S_HDMV/PGS")       return "PGS";
-    if (codec_id == "S_DVBSUB")         return "DVB Subtitle";
-    if (codec_id == "S_KATE")           return "Kate";
-    if (codec_id == "S_TEXT/WEBVTT")    return "WebVTT";
+    if (codec_id == "V_VP8")
+        return "VP8";
+    if (codec_id == "V_VP9")
+        return "VP9";
+    if (codec_id == "V_AV1")
+        return "AV1";
+    if (codec_id == "V_MPEG4/ISO/AVC")
+        return "H.264 (AVC)";
+    if (codec_id == "V_MPEGH/ISO/HEVC")
+        return "H.265 (HEVC)";
+    if (codec_id == "V_MPEGI/ISO/VVC")
+        return "H.266 (VVC)";
+    if (codec_id == "V_THEORA")
+        return "Theora";
+    if (codec_id == "V_MS/VFW/FOURCC")
+        return "MS VFW (FOURCC)";
+    if (codec_id == "V_UNCOMPRESSED")
+        return "Uncompressed";
+    if (codec_id == "A_OPUS")
+        return "Opus";
+    if (codec_id == "A_VORBIS")
+        return "Vorbis";
+    if (codec_id == "A_AAC")
+        return "AAC";
+    if (codec_id == "A_MPEG/L3")
+        return "MP3";
+    if (codec_id == "A_MPEG/L2")
+        return "MP2";
+    if (codec_id == "A_MPEG/L1")
+        return "MP1";
+    if (codec_id == "A_PCM/INT/LIT")
+        return "PCM (int)";
+    if (codec_id == "A_PCM/FLOAT/IEEE")
+        return "PCM (float)";
+    if (codec_id == "A_AC3")
+        return "AC-3";
+    if (codec_id == "A_EAC3")
+        return "E-AC-3";
+    if (codec_id == "A_TRUEHD")
+        return "TrueHD";
+    if (codec_id == "A_DTS")
+        return "DTS";
+    if (codec_id == "A_FLAC")
+        return "FLAC";
+    if (codec_id == "A_MLP")
+        return "MLP";
+    if (codec_id == "S_TEXT/UTF8")
+        return "SubRip/SRT";
+    if (codec_id == "S_TEXT/ASS")
+        return "ASS/SSA";
+    if (codec_id == "S_VOBSUB")
+        return "VobSub";
+    if (codec_id == "S_HDMV/PGS")
+        return "PGS";
+    if (codec_id == "S_DVBSUB")
+        return "DVB Subtitle";
+    if (codec_id == "S_KATE")
+        return "Kate";
+    if (codec_id == "S_TEXT/WEBVTT")
+        return "WebVTT";
     return codec_id;
 }
 
 std::string EbmlAnalyzer::TrackTypeName(int type) {
     switch (type) {
-        case 1:  return "视频 (Video)";
-        case 2:  return "音频 (Audio)";
-        case 3:  return "复合 (Complex)";
-        case 0x10: return "Logo";
-        case 0x11: return "字幕 (Subtitle)";
-        case 0x12: return "按钮 (Buttons)";
-        case 0x20: return "控制 (Control)";
-        default:  return "类型" + std::to_string(type);
+    case 1:
+        return "视频 (Video)";
+    case 2:
+        return "音频 (Audio)";
+    case 3:
+        return "复合 (Complex)";
+    case 0x10:
+        return "Logo";
+    case 0x11:
+        return "字幕 (Subtitle)";
+    case 0x12:
+        return "按钮 (Buttons)";
+    case 0x20:
+        return "控制 (Control)";
+    default:
+        return "类型" + std::to_string(type);
     }
 }
 
 std::string EbmlAnalyzer::ElementName(uint64_t id) {
     auto& names = ElementNames();
     auto it = names.find(id);
-    if (it != names.end()) return it->second;
+    if (it != names.end())
+        return it->second;
     std::ostringstream oss;
     oss << "0x" << std::hex << std::nouppercase << std::setfill('0')
         << std::setw(id <= 0xFF ? 2 : (id <= 0xFFFF ? 4 : 0)) << id;
@@ -369,12 +420,18 @@ static uint64_t readBeUInt(const std::string& data, int size) {
 
 static double readBeFloat(const std::string& data, int size) {
     if (size == 4 && data.size() >= 4) {
-        union { uint32_t u; float f; } uf;
+        union {
+            uint32_t u;
+            float f;
+        } uf;
         uf.u = static_cast<uint32_t>(readBeUInt(data, 4));
         return uf.f;
     }
     if (size == 8 && data.size() >= 8) {
-        union { uint64_t u; double d; } ud;
+        union {
+            uint64_t u;
+            double d;
+        } ud;
         ud.u = readBeUInt(data, 8);
         return ud.d;
     }
@@ -383,19 +440,29 @@ static double readBeFloat(const std::string& data, int size) {
 
 // 从 std::string 流式读取 VINT
 static uint64_t readVIntFromBytes(const std::string& data, int& offset, int& size_out) {
-    if (offset >= data.size()) { size_out = 0; return 0; }
+    if (offset >= data.size()) {
+        size_out = 0;
+        return 0;
+    }
     uint8_t first = static_cast<uint8_t>(data[offset++]);
     int width = 0;
     uint8_t mask = 0x80;
-    while (mask && !(first & mask)) { width++; mask >>= 1; }
+    while (mask && !(first & mask)) {
+        width++;
+        mask >>= 1;
+    }
     width++;
     // 8 字节 VINT 的 continuation 位占满整个首字节，长度无意义；
     // 旧实现会算出 size=0 并白读 7 个字节，TrackNumber 之类的字段全乱
-    if (width >= 8) { size_out = 0; return 0; }
+    if (width >= 8) {
+        size_out = 0;
+        return 0;
+    }
     size_out = width;
     uint64_t value = first & (0xFF >> width);
     for (int i = 1; i < width; ++i) {
-        if (offset >= data.size()) return 0;
+        if (offset >= data.size())
+            return 0;
         value = (value << 8) | static_cast<uint8_t>(data[offset++]);
     }
     return value;
@@ -405,22 +472,33 @@ static uint64_t readVIntFromBytes(const std::string& data, int& offset, int& siz
 // VINT 读取 (std::istream 版) — 用于 Size 字段，去除标记位
 // ============================================================
 uint64_t EbmlAnalyzer::ReadVInt(const std::string& buf, int64_t& pos, int& size_out) const {
-    const int64_t kSize = static_cast<int64_t>(buf.size());  // size() 不是常量表达式，不能 constexpr
-    if (pos >= kSize) { size_out = 0; return 0; }
+    const int64_t kSize = static_cast<int64_t>(buf.size()); // size() 不是常量表达式，不能 constexpr
+    if (pos >= kSize) {
+        size_out = 0;
+        return 0;
+    }
     const uint8_t first = static_cast<uint8_t>(buf[pos]);
     ++pos;
     int width = 0;
     uint8_t mask = 0x80;
-    while (mask && !(first & mask)) { width++; mask >>= 1; }
+    while (mask && !(first & mask)) {
+        width++;
+        mask >>= 1;
+    }
     width++;
-    // 8 字节 VINT：continuation 位把 8 位全占满，去掉标记位后长度本身无意义，
-    // 旧实现照样吃进 7 个字节算出一个恒为 0 的 size —— 上层拿到 0 会当成"size 0"
-    // 反复处理，甚至一个元素都读不出来。这里直接判失败（size_out=0）。
-    if (width >= 8) { size_out = 0; return 0; }
+    // 8 字节 VINT（首字节 0x01）是合法且真实存在的编码：value 的标记位占 0 位，
+    // 其余 7 个字节拼出 56 位值，全 1 即"未知长度"的最常见写法（阶段 3 语料
+    // ebml_unknown_size.mkv）。这里过去直接判 width>=8 失败，导致这类文件
+    // 一个元素都读不出来。真正非法的是首字节 0x00（推不出宽度，算出 9）。
+    if (width > 8) {
+        size_out = 0;
+        return 0;
+    }
     size_out = width;
-    uint64_t value = first & (0xFF >> width);
+    uint64_t value = first & (0xFF >> width); // width==8 时掩码为 0，值全在后续字节里
     for (int i = 1; i < width; ++i) {
-        if (pos >= kSize) return 0;
+        if (pos >= kSize)
+            return 0;
         value = (value << 8) | static_cast<uint8_t>(buf[pos]);
         ++pos;
     }
@@ -432,20 +510,30 @@ uint64_t EbmlAnalyzer::ReadVInt(const std::string& buf, int64_t& pos, int& size_
 // e.g. 0x1A45DFA3 保留为 0x1A45DFA3，不被 VINT 解码为 0x0A45DFA3
 // ============================================================
 static uint64_t readIdVInt(const std::string& data, int& offset, int& size_out) {
-    if (offset >= data.size()) { size_out = 0; return 0; }
+    if (offset >= data.size()) {
+        size_out = 0;
+        return 0;
+    }
     uint8_t first = static_cast<uint8_t>(data[offset]);
     int width = 0;
     uint8_t mask = 0x80;
-    while (mask && !(first & mask)) { width++; mask >>= 1; }
+    while (mask && !(first & mask)) {
+        width++;
+        mask >>= 1;
+    }
     width++;
     // 8 字节 VINT 的 continuation 位被占满（首字节 0x00），长度本身没有意义，
     // 算出来的 value 恒为 0 还会白读 7 个字节
-    if (width >= 8) { size_out = 0; return 0; }
+    if (width >= 8) {
+        size_out = 0;
+        return 0;
+    }
     size_out = width;
     // ID 保留全部原始字节，不去除标记位
     uint64_t value = first;
     for (int i = 1; i < width; ++i) {
-        if (offset + i >= data.size()) return 0;
+        if (offset + i >= data.size())
+            return 0;
         value = (value << 8) | static_cast<uint8_t>(data[offset + i]);
     }
     offset += width;
@@ -454,21 +542,31 @@ static uint64_t readIdVInt(const std::string& data, int& offset, int& size_out) 
 
 // 从字节缓冲读取 ID（游标为引用，读完往前推）
 static uint64_t readIdVInt(const std::string& buf, int64_t& pos, int& size_out) {
-    const int64_t kSize = static_cast<int64_t>(buf.size());  // size() 不是常量表达式，不能 constexpr
-    if (pos >= kSize) { size_out = 0; return 0; }
+    const int64_t kSize = static_cast<int64_t>(buf.size()); // size() 不是常量表达式，不能 constexpr
+    if (pos >= kSize) {
+        size_out = 0;
+        return 0;
+    }
     const uint8_t first = static_cast<uint8_t>(buf[pos]);
     ++pos;
     int width = 0;
     uint8_t mask = 0x80;
-    while (mask && !(first & mask)) { width++; mask >>= 1; }
+    while (mask && !(first & mask)) {
+        width++;
+        mask >>= 1;
+    }
     width++;
     // 同 ReadVInt：8 字节 VINT 没有合法长度，直接判失败，别把 8 个字节吃进去
-    if (width >= 8) { size_out = 0; return 0; }
+    if (width >= 8) {
+        size_out = 0;
+        return 0;
+    }
     size_out = width;
     // ID 保留全部原始字节
     uint64_t value = first;
     for (int i = 1; i < width; ++i) {
-        if (pos >= kSize) return 0;
+        if (pos >= kSize)
+            return 0;
         value = (value << 8) | static_cast<uint8_t>(buf[pos]);
         ++pos;
     }
@@ -479,14 +577,15 @@ static uint64_t readIdVInt(const std::string& buf, int64_t& pos, int& size_out) 
 // Block 解析 (BlockGroup 的子元素 Block)
 // Block 格式: TrackNumber(VINT) Timecode(int16) Flags(u8) [Lacing data]
 // ============================================================
-std::string EbmlAnalyzer::ParseBlockData(const std::string& data,
-                                        model::EbmlBlockSummary& summary) {
-    if (data.size() < 3) return "数据过短";
+std::string EbmlAnalyzer::ParseBlockData(const std::string& data, model::EbmlBlockSummary& summary) {
+    if (data.size() < 3)
+        return "数据过短";
 
     int off = 0;
     int tn_size = 0;
     summary.track_number = static_cast<int>(readVIntFromBytes(data, off, tn_size));
-    if (tn_size == 0 || off + 3 > data.size()) return "解析失败";
+    if (tn_size == 0 || off + 3 > data.size())
+        return "解析失败";
 
     // Timecode int16 (signed)
     int16_t tc;
@@ -499,7 +598,7 @@ std::string EbmlAnalyzer::ParseBlockData(const std::string& data,
 
     // Flags
     uint8_t flags = static_cast<uint8_t>(data[off++]);
-    summary.keyframe = !(flags & 0x80);   // bit7=0 表示关键帧
+    summary.keyframe = !(flags & 0x80); // bit7=0 表示关键帧
     summary.discardable = (flags & 0x01);
     summary.lacing = (flags & 0x06) != 0; // bit2-1: 00=无 lacing, 01=Xiph, 11=EBML, 10=fixed
 
@@ -512,14 +611,10 @@ std::string EbmlAnalyzer::ParseBlockData(const std::string& data,
     }
 
     std::ostringstream oss;
-    oss << "Track=" << summary.track_number
-        << " Timecode=" << summary.timecode
-        << " Flags=0x" << std::hex << std::nouppercase << std::setfill('0')
-        << std::setw(2) << static_cast<unsigned>(flags) << std::setfill(' ') << std::dec
-        << (summary.keyframe ? " KEY" : "")
-        << (summary.discardable ? " DISCARD" : "")
-        << lacetype
-        << " [" << summary.data_size << " bytes]";
+    oss << "Track=" << summary.track_number << " Timecode=" << summary.timecode << " Flags=0x" << std::hex
+        << std::nouppercase << std::setfill('0') << std::setw(2) << static_cast<unsigned>(flags) << std::setfill(' ')
+        << std::dec << (summary.keyframe ? " KEY" : "") << (summary.discardable ? " DISCARD" : "") << lacetype << " ["
+        << summary.data_size << " bytes]";
     return oss.str();
 }
 
@@ -527,214 +622,384 @@ std::string EbmlAnalyzer::ParseBlockData(const std::string& data,
 // SimpleBlock 解析 (Cluster 直接子元素)
 // SimpleBlock 数据的解析与 Block 相同 (都包含 TrackNumber+Timecode+Flags 头部)
 // ============================================================
-std::string EbmlAnalyzer::ParseSimpleBlockData(const std::string& data,
-                                              model::EbmlBlockSummary& summary) {
+std::string EbmlAnalyzer::ParseSimpleBlockData(const std::string& data, model::EbmlBlockSummary& summary) {
     return "S-" + ParseBlockData(data, summary);
 }
 
 // ============================================================
 // 叶子元素值解析 + 提取关键数据
 // ============================================================
-void EbmlAnalyzer::ParseLeafValue(model::EbmlElementNode& node,
-                                   const std::string& data,
-                                   model::EbmlAnalysisResult& result) {
-    if (data.empty()) return;
+void EbmlAnalyzer::ParseLeafValue(model::EbmlElementNode& node, const std::string& data,
+                                  model::EbmlAnalysisResult& result) {
+    if (data.empty())
+        return;
 
     auto tryString = [&]() -> std::string {
         const std::string s = (data);
-        if (s.empty()) return {};
+        if (s.empty())
+            return {};
         for (int i = 0; i < s.size(); ++i) {
             const unsigned char ch = static_cast<unsigned char>(s[i]);
-            if (ch == 0xFFFD) return {};
-            if (ch < 0x20 && ch != '\n' && ch != '\r' && ch != '\t') return {};
+            if (ch == 0xFFFD)
+                return {};
+            if (ch < 0x20 && ch != '\n' && ch != '\r' && ch != '\t')
+                return {};
         }
         return s;
     };
 
     // --- 根据元素 ID 提取数值 + 关键数据 ---
     switch (node.id) {
-        // 1-byte unsigned
-        case 0x4286: { uint8_t v = readBeUInt(data, 1); node.value = std::to_string(v); result.ebml_version = v; return; }
-        case 0x42F7: { uint8_t v = readBeUInt(data, 1); node.value = std::to_string(v); result.ebml_read_version = v; return; }
-        case 0x42F2: { uint8_t v = readBeUInt(data, 1); node.value = std::to_string(v); result.ebml_max_id_length = v; return; }
-        case 0x42F3: { uint8_t v = readBeUInt(data, 1); node.value = std::to_string(v); result.ebml_max_size_length = v; return; }
-        case 0x4287: { uint8_t v = readBeUInt(data, 1); node.value = std::to_string(v); result.doc_type_version = v; return; }
-        case 0x4285: { uint8_t v = readBeUInt(data, 1); node.value = std::to_string(v); result.doc_type_read_version = v; return; }
-        case 0x83: { uint8_t v = readBeUInt(data, 1); node.value = TrackTypeName(v); return; }
-        case 0xB9: case 0x88: case 0x55AA: case 0x9C: case 0xAA: case 0x9A: case 0x9D:
-        case 0x53B8: case 0x53C0: case 0x54B2: case 0x54B3:
-        case 0x98: case 0x4598: case 0x4484: case 0x68CA:
-            node.value = std::to_string(static_cast<uint8_t>(readBeUInt(data, 1))); return;
+    // 1-byte unsigned
+    case 0x4286: {
+        uint8_t v = readBeUInt(data, 1);
+        node.value = std::to_string(v);
+        result.ebml_version = v;
+        return;
+    }
+    case 0x42F7: {
+        uint8_t v = readBeUInt(data, 1);
+        node.value = std::to_string(v);
+        result.ebml_read_version = v;
+        return;
+    }
+    case 0x42F2: {
+        uint8_t v = readBeUInt(data, 1);
+        node.value = std::to_string(v);
+        result.ebml_max_id_length = v;
+        return;
+    }
+    case 0x42F3: {
+        uint8_t v = readBeUInt(data, 1);
+        node.value = std::to_string(v);
+        result.ebml_max_size_length = v;
+        return;
+    }
+    case 0x4287: {
+        uint8_t v = readBeUInt(data, 1);
+        node.value = std::to_string(v);
+        result.doc_type_version = v;
+        return;
+    }
+    case 0x4285: {
+        uint8_t v = readBeUInt(data, 1);
+        node.value = std::to_string(v);
+        result.doc_type_read_version = v;
+        return;
+    }
+    case 0x83: {
+        uint8_t v = readBeUInt(data, 1);
+        node.value = TrackTypeName(v);
+        return;
+    }
+    case 0xB9:
+    case 0x88:
+    case 0x55AA:
+    case 0x9C:
+    case 0xAA:
+    case 0x9A:
+    case 0x9D:
+    case 0x53B8:
+    case 0x53C0:
+    case 0x54B2:
+    case 0x54B3:
+    case 0x98:
+    case 0x4598:
+    case 0x4484:
+    case 0x68CA:
+        node.value = std::to_string(static_cast<uint8_t>(readBeUInt(data, 1)));
+        return;
 
-        // 2-byte
-        case 0x6DE7: case 0x6DF8:
-            node.value = std::to_string(static_cast<uint16_t>(readBeUInt(data, 2))); return;
+    // 2-byte
+    case 0x6DE7:
+    case 0x6DF8:
+        node.value = std::to_string(static_cast<uint16_t>(readBeUInt(data, 2)));
+        return;
 
-        // 4-byte
-        case 0xD7: case 0x73C5: node.value = std::to_string(static_cast<uint32_t>(readBeUInt(data, 4))); return;
+    // 4-byte
+    case 0xD7:
+    case 0x73C5:
+        node.value = std::to_string(static_cast<uint32_t>(readBeUInt(data, 4)));
+        return;
 
-        // 8-byte
-        case 0x23E383: case 0x23314F:
-            { node.value = std::to_string(readBeUInt(data, 8)); return; }
+    // 8-byte
+    case 0x23E383:
+    case 0x23314F: {
+        node.value = std::to_string(readBeUInt(data, 8));
+        return;
+    }
 
-        // float (4 byte)
-        case 0xB5: case 0x78B5: case 0x2FB523:
-            node.value = std::to_string(readBeFloat(data, 4)); return;
+    // float (4 byte)
+    case 0xB5:
+    case 0x78B5:
+    case 0x2FB523:
+        node.value = std::to_string(readBeFloat(data, 4));
+        return;
 
-        // 字符串
-        case 0x4282: { node.value = tryString(); result.doc_type = node.value; return; }
+    // 字符串
+    case 0x4282: {
+        node.value = tryString();
+        result.doc_type = node.value;
+        return;
+    }
 
-        // TimestampScale
-        case 0x2AD7B1: {
-            node.value = std::to_string(readBeUInt(data, 8));
-            result.timestamp_scale = readBeUInt(data, 8);
-            return;
+    // TimestampScale
+    case 0x2AD7B1: {
+        node.value = std::to_string(readBeUInt(data, 8));
+        result.timestamp_scale = readBeUInt(data, 8);
+        return;
+    }
+    // Duration (float)
+    case 0x4489: {
+        double dur = readBeFloat(data, 4);
+        if (result.timestamp_scale > 0)
+            result.duration_seconds = dur * result.timestamp_scale / 1e9;
+        node.value = std::to_string(dur);
+        if (result.duration_seconds > 0) {
+            int h = static_cast<int>(result.duration_seconds / 3600);
+            int m = static_cast<int>(result.duration_seconds) % 3600 / 60;
+            int s = static_cast<int>(result.duration_seconds) % 60;
+            node.value += " (" + Pad2(h) + ":" + Pad2(m) + ":" + Pad2(s) + ")";
         }
-        // Duration (float)
-        case 0x4489: {
-            double dur = readBeFloat(data, 4);
-            if (result.timestamp_scale > 0)
-                result.duration_seconds = dur * result.timestamp_scale / 1e9;
-            node.value = std::to_string(dur);
-            if (result.duration_seconds > 0) {
-                int h = static_cast<int>(result.duration_seconds / 3600);
-                int m = static_cast<int>(result.duration_seconds) % 3600 / 60;
-                int s = static_cast<int>(result.duration_seconds) % 60;
-                node.value += " (" + Pad2(h) + ":" + Pad2(m) + ":" + Pad2(s) + ")";
-            }
-            return;
+        return;
+    }
+    // Timecode (Cluster)
+    case 0xE7:
+    case 0xA7:
+    case 0xAB:
+    case 0xF1:
+        node.value = std::to_string(readBeUInt(data, 8));
+        return;
+
+    // pixel dims (变长)
+    case 0xB0:
+    case 0xBA:
+    case 0x54AA:
+    case 0x54BB:
+    case 0x54CC:
+    case 0x54DD:
+    case 0x54B0:
+    case 0x54BA:
+        node.value = std::to_string(readBeUInt(data, data.size()));
+        return;
+
+    // 字符串
+    case 0x4D80:
+    case 0x5741:
+    case 0x7384:
+    case 0x7BA9:
+    case 0x86:
+    case 0x258688:
+    case 0x22B59C:
+    case 0x466E:
+    case 0x4660:
+    case 0x467E:
+    case 0x447A:
+    case 0x45A3:
+    case 0x447B:
+    case 0x63CA:
+    case 0x437C: {
+        node.value = tryString();
+        if (node.id == 0x4D80)
+            result.muxing_app = node.value;
+        else if (node.id == 0x5741)
+            result.writing_app = node.value;
+        else if (node.id == 0x7BA9)
+            result.title = node.value;
+        return;
+    }
+
+    // SegmentUID / PrevUID / NextUID (16 bytes binary)
+    case 0x73A4:
+    case 0x3CB923:
+    case 0x3C83AB:
+    case 0x73C4: {
+        node.value = BytesToHex(data);
+        if (node.id == 0x73A4)
+            result.segment_uid = node.value;
+        return;
+    }
+
+    // CodecPrivate (二进制)
+    case 0x63A2:
+        node.value = "二进制 " + std::to_string(data.size()) + " 字节";
+        return;
+
+    // Block 数据
+    case 0xA1: { // Block
+        model::EbmlBlockSummary s;
+        s.cluster_offset = current_cluster_offset_;
+        node.value = ParseBlockData(data, s);
+        node.extra = node.value;
+        if (result.blocks.size() < 1000) {
+            s.block_offset = node.offset;
+            result.blocks.push_back(s);
         }
-        // Timecode (Cluster)
-        case 0xE7: case 0xA7: case 0xAB: case 0xF1:
-            node.value = std::to_string(readBeUInt(data, 8)); return;
-
-        // pixel dims (变长)
-        case 0xB0: case 0xBA:
-        case 0x54AA: case 0x54BB: case 0x54CC: case 0x54DD:
-        case 0x54B0: case 0x54BA:
-            node.value = std::to_string(readBeUInt(data, data.size())); return;
-
-        // 字符串
-        case 0x4D80: case 0x5741: case 0x7384: case 0x7BA9:
-        case 0x86: case 0x258688:
-        case 0x22B59C: case 0x466E: case 0x4660: case 0x467E:
-        case 0x447A: case 0x45A3: case 0x447B:
-        case 0x63CA: case 0x437C:
-            { node.value = tryString(); 
-              if (node.id == 0x4D80) result.muxing_app = node.value;
-              else if (node.id == 0x5741) result.writing_app = node.value;
-              else if (node.id == 0x7BA9) result.title = node.value;
-              return; }
-
-        // SegmentUID / PrevUID / NextUID (16 bytes binary)
-        case 0x73A4: case 0x3CB923: case 0x3C83AB: case 0x73C4:
-            { node.value = BytesToHex(data); if (node.id == 0x73A4) result.segment_uid = node.value; return; }
-
-        // CodecPrivate (二进制)
-        case 0x63A2:
-            node.value = "二进制 " + std::to_string(data.size()) + " 字节"; return;
-
-        // Block 数据
-        case 0xA1: { // Block
-            model::EbmlBlockSummary s;
-            s.cluster_offset = current_cluster_offset_;
-            node.value = ParseBlockData(data, s);
-            node.extra = node.value;
-            if (result.blocks.size() < 1000) {
-                s.block_offset = node.offset;
-                result.blocks.push_back(s);
-            }
-            return;
+        return;
+    }
+    case 0xA3: { // SimpleBlock
+        model::EbmlBlockSummary s;
+        s.cluster_offset = current_cluster_offset_;
+        node.value = ParseSimpleBlockData(data, s);
+        node.extra = node.value;
+        if (result.blocks.size() < 1000) {
+            s.block_offset = node.offset;
+            result.blocks.push_back(s);
         }
-        case 0xA3: { // SimpleBlock
-            model::EbmlBlockSummary s;
-            s.cluster_offset = current_cluster_offset_;
-            node.value = ParseSimpleBlockData(data, s);
-            node.extra = node.value;
-            if (result.blocks.size() < 1000) {
-                s.block_offset = node.offset;
-                result.blocks.push_back(s);
-            }
-            return;
-        }
+        return;
+    }
 
-        default: break;
+    default:
+        break;
     }
 
     // 宽/高/采样率/声道/码率/帧率 (VINT 变长)
     switch (node.id) {
-        case 0xB0: case 0xBA:
-        case 0x54AA: case 0x54BB: case 0x54CC: case 0x54DD:
-        case 0x54B0: case 0x54BA:
-            node.value = std::to_string(readBeUInt(data, data.size())); return;
-        case 0x9F: // Channels
-            node.value = std::to_string(static_cast<uint32_t>(readBeUInt(data, data.size()))); return;
-        case 0x6264: // BitDepth
-            node.value = std::to_string(static_cast<uint32_t>(readBeUInt(data, data.size()))); return;
-        default: break;
+    case 0xB0:
+    case 0xBA:
+    case 0x54AA:
+    case 0x54BB:
+    case 0x54CC:
+    case 0x54DD:
+    case 0x54B0:
+    case 0x54BA:
+        node.value = std::to_string(readBeUInt(data, data.size()));
+        return;
+    case 0x9F: // Channels
+        node.value = std::to_string(static_cast<uint32_t>(readBeUInt(data, data.size())));
+        return;
+    case 0x6264: // BitDepth
+        node.value = std::to_string(static_cast<uint32_t>(readBeUInt(data, data.size())));
+        return;
+    default:
+        break;
     }
 
     // 已知字符串元素
     switch (node.id) {
-        case 0x536E: case 0x63A2: case 0x86: case 0x258688:
-        case 0x22B59C:
-        case 0x7384: case 0x7D7B: case 0x3A9697: case 0x3B4040: case 0x26B240:
-        case 0x6E67: case 0x6EBC: case 0x6E80:
-        case 0x467E: case 0x46AE: case 0x7446:
-        case 0x5032: case 0x5033:
-        case 0x4282: case 0x4660: case 0x466E:
-        case 0x4487: case 0x447A: case 0x45A3: case 0x447B:
-        case 0x63CA: case 0x437C:
-        case 0x4D80: case 0x5741: case 0x7BA9:
-            { node.value = tryString(); return; }
-        default: break;
+    case 0x536E:
+    case 0x63A2:
+    case 0x86:
+    case 0x258688:
+    case 0x22B59C:
+    case 0x7384:
+    case 0x7D7B:
+    case 0x3A9697:
+    case 0x3B4040:
+    case 0x26B240:
+    case 0x6E67:
+    case 0x6EBC:
+    case 0x6E80:
+    case 0x467E:
+    case 0x46AE:
+    case 0x7446:
+    case 0x5032:
+    case 0x5033:
+    case 0x4282:
+    case 0x4660:
+    case 0x466E:
+    case 0x4487:
+    case 0x447A:
+    case 0x45A3:
+    case 0x447B:
+    case 0x63CA:
+    case 0x437C:
+    case 0x4D80:
+    case 0x5741:
+    case 0x7BA9: {
+        node.value = tryString();
+        return;
+    }
+    default:
+        break;
     }
 
     // 尝试字符串
     std::string s = tryString();
-    if (!s.empty() && s.size() <= 256) { node.value = s; return; }
+    if (!s.empty() && s.size() <= 256) {
+        node.value = s;
+        return;
+    }
 
     // 十六进制截断
-    if (data.size() <= 64) { node.value = BytesToHex(data); return; }
+    if (data.size() <= 64) {
+        node.value = BytesToHex(data);
+        return;
+    }
     node.value = BytesToHex(data.substr(0, 32)) + "...(" + std::to_string(data.size()) + " bytes)";
 }
 
 // ============================================================
 // TrackEntry 子树 → 提取轨道信息
 // ============================================================
-void EbmlAnalyzer::ExtractTrackInfo(const model::EbmlElementNode& track_entry,
-                                     model::EbmlAnalysisResult& result) {
+void EbmlAnalyzer::ExtractTrackInfo(const model::EbmlElementNode& track_entry, model::EbmlAnalysisResult& result) {
     model::EbmlTrackInfo ti;
     int tn = result.tracks.size() + 1;
     std::function<void(const std::vector<model::EbmlElementNode>&)> walk;
     walk = [&](const std::vector<model::EbmlElementNode>& nodes) {
         for (const auto& n : nodes) {
             switch (n.id) {
-                case 0xD7: ti.track_number = ParseInt(n.value); break;
-                case 0x73C5: ti.track_uid = ParseUInt(n.value); break;
-                case 0x83:   ti.track_type = ParseInt(n.value); break;
-                case 0x86:   ti.codec_id = n.value; break;
-                case 0x22B59C: ti.language = n.value; break;
-                case 0x536E: ti.track_name = n.value; break;
-                case 0xB9:   ti.enabled = (ParseInt(n.value) != 0); break;
-                case 0x88:   ti.default_track = (ParseInt(n.value) != 0); break;
-                case 0x55AA: ti.forced = (ParseInt(n.value) != 0); break;
-                case 0x9C:   ti.lacing = (ParseInt(n.value) != 0); break;
-                case 0x23E383: ti.default_duration = ParseUInt(n.value); break;
-                case 0xB0:   ti.pixel_width = ParseInt(n.value); break;
-                case 0xBA:   ti.pixel_height = ParseInt(n.value); break;
-                case 0xB5:   ti.sampling_frequency = ParseDouble(n.value); break;
-                case 0x9F:   ti.channels = ParseInt(n.value); break;
-                case 0x6264: ti.bit_depth = ParseInt(n.value); break;
-                case 0x63A2: ti.codec_private_size = static_cast<int>(n.size); break;
-                default: break;
+            case 0xD7:
+                ti.track_number = ParseInt(n.value);
+                break;
+            case 0x73C5:
+                ti.track_uid = ParseUInt(n.value);
+                break;
+            case 0x83:
+                ti.track_type = ParseInt(n.value);
+                break;
+            case 0x86:
+                ti.codec_id = n.value;
+                break;
+            case 0x22B59C:
+                ti.language = n.value;
+                break;
+            case 0x536E:
+                ti.track_name = n.value;
+                break;
+            case 0xB9:
+                ti.enabled = (ParseInt(n.value) != 0);
+                break;
+            case 0x88:
+                ti.default_track = (ParseInt(n.value) != 0);
+                break;
+            case 0x55AA:
+                ti.forced = (ParseInt(n.value) != 0);
+                break;
+            case 0x9C:
+                ti.lacing = (ParseInt(n.value) != 0);
+                break;
+            case 0x23E383:
+                ti.default_duration = ParseUInt(n.value);
+                break;
+            case 0xB0:
+                ti.pixel_width = ParseInt(n.value);
+                break;
+            case 0xBA:
+                ti.pixel_height = ParseInt(n.value);
+                break;
+            case 0xB5:
+                ti.sampling_frequency = ParseDouble(n.value);
+                break;
+            case 0x9F:
+                ti.channels = ParseInt(n.value);
+                break;
+            case 0x6264:
+                ti.bit_depth = ParseInt(n.value);
+                break;
+            case 0x63A2:
+                ti.codec_private_size = static_cast<int>(n.size);
+                break;
+            default:
+                break;
             }
             walk(n.children);
         }
     };
     walk(track_entry.children);
 
-    if (ti.track_number == 0) ti.track_number = tn;
+    if (ti.track_number == 0)
+        ti.track_number = tn;
     ti.track_type_name = TrackTypeName(ti.track_type);
     ti.codec_name = CodecIdToName(ti.codec_id);
 
@@ -749,18 +1014,26 @@ void EbmlAnalyzer::ExtractTrackInfo(const model::EbmlElementNode& track_entry,
 // ============================================================
 // CuePoint → 提取 Cue 条目
 // ============================================================
-void EbmlAnalyzer::ExtractCueInfo(const model::EbmlElementNode& cue_point,
-                                   model::EbmlAnalysisResult& result) {
+void EbmlAnalyzer::ExtractCueInfo(const model::EbmlElementNode& cue_point, model::EbmlAnalysisResult& result) {
     model::EbmlCueEntry ce;
     std::function<void(const std::vector<model::EbmlElementNode>&)> walk;
     walk = [&](const std::vector<model::EbmlElementNode>& nodes) {
         for (const auto& n : nodes) {
             switch (n.id) {
-                case 0xB3: ce.time = ParseUInt(n.value); break;
-                case 0xF7: ce.track_number = ParseInt(n.value); break;
-                case 0xF1: ce.cluster_position = ParseUInt(n.value); break;
-                case 0x5378: ce.block_number = ParseUInt(n.value); break;
-                default: break;
+            case 0xB3:
+                ce.time = ParseUInt(n.value);
+                break;
+            case 0xF7:
+                ce.track_number = ParseInt(n.value);
+                break;
+            case 0xF1:
+                ce.cluster_position = ParseUInt(n.value);
+                break;
+            case 0x5378:
+                ce.block_number = ParseUInt(n.value);
+                break;
+            default:
+                break;
             }
             walk(n.children);
         }
@@ -772,29 +1045,40 @@ void EbmlAnalyzer::ExtractCueInfo(const model::EbmlElementNode& cue_point,
 // ============================================================
 // 主解析循环
 // ============================================================
-bool EbmlAnalyzer::ParseElement(const std::string& buf, int64_t& pos, int64_t end_offset,
-                                 int depth,
-                                 model::EbmlElementNode* parent,
-                                 model::EbmlAnalysisResult& result,
-                                 const std::atomic<bool>* cancel) {
-    // 深度 / 节点数双上限：一个"自己套自己"的畸形元素树能在这儿无限递归下去
-    if (depth >= kMaxDepth) return false;
-    if (node_count_ >= kMaxNodes) return false;
+bool EbmlAnalyzer::ParseElement(const std::string& buf, int64_t& pos, int64_t end_offset, int depth,
+                                model::EbmlElementNode* parent, model::EbmlAnalysisResult& result,
+                                const std::atomic<bool>* cancel) {
+    // 深度 / 节点数双上限：一个"自己套自己"的畸形元素树能在这儿无限递归下去。
+    // 撞上限时置 limit_reached_：调用方（Analyze）必须据此拒绝产出有效结果。
+    if (depth >= kMaxDepth) {
+        limit_reached_ = true;
+        return false;
+    }
+    if (node_count_ >= kMaxNodes) {
+        limit_reached_ = true;
+        return false;
+    }
 
     while (pos < end_offset && pos < static_cast<int64_t>(buf.size())) {
         // 每个元素查一次取消：只有 Analyze 入口查的话，取消前已经读进来的半个文件
         // 还得继续扫完
-        if (infrastructure::Checkpoint(cancel)) return false;
+        if (infrastructure::Checkpoint(cancel))
+            return false;
         // 元素数上限：一个元素最少 2 字节（ID + size），到顶就停，
         // 免得往 result.element_tree 里无限塞节点
-        if (++node_count_ > kMaxNodes) return false;
+        if (++node_count_ > kMaxNodes) {
+            limit_reached_ = true;
+            return false;
+        }
         int id_size = 0;
-        uint64_t id = readIdVInt(buf, pos, id_size);   // ID 保留原始字节值
-        if (id_size == 0) break;
+        uint64_t id = readIdVInt(buf, pos, id_size); // ID 保留原始字节值
+        if (id_size == 0)
+            break;
 
         int size_size = 0;
         uint64_t size = ReadVInt(buf, pos, size_size);
-        if (size_size == 0) break;
+        if (size_size == 0)
+            break;
 
         model::EbmlElementNode node;
         node.id = id;
@@ -810,11 +1094,14 @@ bool EbmlAnalyzer::ParseElement(const std::string& buf, int64_t& pos, int64_t en
         node.depth = depth;
 
         // --- unknown size 元素 ---
-        // EBML 规定 size 全 1（kUnknownSize）表示长度未知：实际内容一直延伸到
-        // **当前父元素的末尾**。旧实现遇到这种情况只是把节点挂上去就 continue，
-        // 于是解析一直顺着同一个 end_offset 往下走、节点无限增长 → OOM；
-        // 容器类元素还会被反复递归。这里统一换算成"延伸到父元素末尾"再走正常流程。
-        if (size == kUnknownSize) {
+        // EBML 规定 size 字段**该宽度下载荷位全 1** 表示长度未知（不只 8 字节
+        // 编码：1 字节 0xFF、2 字节 0x7FFF … 都算）。实际内容一直延伸到
+        // **当前父元素的末尾**。旧实现只认 8 字节全 1 那一种写法，其它宽度的
+        // 未知长度会被当成正数 size 用，元素边界全错；遇到认识的写法则把节点
+        // 挂上去就 continue，导致解析顺着同一个 end_offset 无限增长 → OOM。
+        // 这里按宽度归一：全 1 一律换算成"延伸到父元素末尾"再走正常流程。
+        const uint64_t unknown_size = (1ULL << (7 * size_size)) - 1;
+        if (size == unknown_size) {
             size = (end_offset > static_cast<int64_t>(node.offset))
                        ? static_cast<uint64_t>(end_offset - static_cast<int64_t>(node.offset))
                        : 0u;
@@ -832,8 +1119,17 @@ bool EbmlAnalyzer::ParseElement(const std::string& buf, int64_t& pos, int64_t en
             if (id == 0x1F43B675) { // Cluster
                 current_cluster_offset_ = node.offset - node.header_size;
             }
-            ParseElement(buf, pos, child_end, depth + 1, &child, result, cancel);
+            // 子解析返回 false 只可能因为取消或撞上深度/节点上限 —— 两种情况都不能
+            // 继续把这份"半棵树"当成功树接着用，必须向上传播（Analyze 负责把它翻译
+            // 成"已取消"或"超出安全上限"的终态）。旧实现丢掉了这个返回值：深层嵌套
+            // 在 depth>=kMaxDepth 处被截断后，父层继续把剩余嵌套元素当兄弟节点
+            // "扁平化"读完，顶层照样返回 true，于是 Analyze 的 !parsed 分支根本
+            // 进不去，半棵树以 valid=true 交了出去（tests/corpus/ 的
+            // ebml_deep_nesting.mkv 回归钉的就是这一条）。
+            const bool child_parsed = ParseElement(buf, pos, child_end, depth + 1, &child, result, cancel);
             current_cluster_offset_ = saved_cluster_offset;
+            if (!child_parsed)
+                return false;
 
             // --- 后处理：提取表格数据 ---
             if (id == 0xAE) { // TrackEntry
@@ -850,8 +1146,7 @@ bool EbmlAnalyzer::ParseElement(const std::string& buf, int64_t& pos, int64_t en
 
         // --- 叶子节点 ---
         if (size > 0 && size < 16 * 1024 * 1024) {
-            const std::string data = buf.substr(static_cast<size_t>(pos),
-                                                static_cast<size_t>(size));
+            const std::string data = buf.substr(static_cast<size_t>(pos), static_cast<size_t>(size));
             pos += static_cast<int64_t>(size);
             ParseLeafValue(node, data, result);
             parent->children.push_back(node);
@@ -871,7 +1166,8 @@ bool EbmlAnalyzer::ParseElement(const std::string& buf, int64_t& pos, int64_t en
 // ============================================================
 EbmlAnalyzer::EbmlAnalyzer() = default;
 EbmlAnalyzer::~EbmlAnalyzer() = default;
-void EbmlAnalyzer::Reset() {}
+void EbmlAnalyzer::Reset() {
+}
 
 bool EbmlAnalyzer::Analyze(const std::string& filePath, model::EbmlAnalysisResult& result,
                            const std::atomic<bool>* cancel) {
@@ -879,6 +1175,7 @@ bool EbmlAnalyzer::Analyze(const std::string& filePath, model::EbmlAnalysisResul
     result.file_path = filePath;
     // 每次分析都从头计数（Reset() 之外也要清，免得上次的节点数被下一份文件接着算）
     node_count_ = 0;
+    limit_reached_ = false;
 
     SeqFileReader file(filePath);
     if (!file.IsOpen()) {
@@ -888,10 +1185,8 @@ bool EbmlAnalyzer::Analyze(const std::string& filePath, model::EbmlAnalysisResul
     }
 
     std::string header = file.Read(4);
-    if (header.size() < 4 || static_cast<uint8_t>(header[0]) != 0x1A ||
-        static_cast<uint8_t>(header[1]) != 0x45 ||
-        static_cast<uint8_t>(header[2]) != 0xDF ||
-        static_cast<uint8_t>(header[3]) != 0xA3) {
+    if (header.size() < 4 || static_cast<uint8_t>(header[0]) != 0x1A || static_cast<uint8_t>(header[1]) != 0x45 ||
+        static_cast<uint8_t>(header[2]) != 0xDF || static_cast<uint8_t>(header[3]) != 0xA3) {
         result.error_message = "不是有效的 EBML/Matroska/WebM 文件";
         return false;
     }
@@ -906,9 +1201,17 @@ bool EbmlAnalyzer::Analyze(const std::string& filePath, model::EbmlAnalysisResul
     root.name = "root";
     root.depth = -1;
 
-    ParseElement(buf, pos, static_cast<int64_t>(buf.size()), 0, &root, result, cancel);
+    const bool parsed = ParseElement(buf, pos, static_cast<int64_t>(buf.size()), 0, &root, result, cancel);
     if (infrastructure::IsCanceled(cancel)) {
         result.error_message = "已取消";
+        result.valid = false;
+        return false;
+    }
+    // 撞到深度/节点上限时元素树只是"半份"：绝不能当有效结果交出去，
+    // 否则下游会拿着半棵树当"解析成功"用（阶段 3 要求：错误状态不可继续
+    // 产出"有效结果"）。
+    if (!parsed && limit_reached_) {
+        result.error_message = "解析超出安全上限（递归深度或节点数），结果不完整";
         result.valid = false;
         return false;
     }
@@ -918,8 +1221,10 @@ bool EbmlAnalyzer::Analyze(const std::string& filePath, model::EbmlAnalysisResul
     std::function<void(const std::vector<model::EbmlElementNode>&)> countBlocks;
     countBlocks = [&](const std::vector<model::EbmlElementNode>& nodes) {
         for (const auto& n : nodes) {
-            if (n.id == 0xA0) bg++;       // BlockGroup
-            if (n.id == 0xA3) sb++;       // SimpleBlock
+            if (n.id == 0xA0)
+                bg++; // BlockGroup
+            if (n.id == 0xA3)
+                sb++; // SimpleBlock
             countBlocks(n.children);
         }
     };
@@ -930,10 +1235,9 @@ bool EbmlAnalyzer::Analyze(const std::string& filePath, model::EbmlAnalysisResul
     result.element_tree = root.children;
     result.valid = true;
 
-    LOG_INFO("EBML 分析完成: " + result.doc_type
-             + " | " + std::to_string(result.tracks.size()) + " 轨道"
-             + " | " + std::to_string(result.cues.size()) + " 索引点"
-             + " | " + std::to_string(result.total_clusters) + " Cluster");
+    LOG_INFO("EBML 分析完成: " + result.doc_type + " | " + std::to_string(result.tracks.size()) + " 轨道" + " | " +
+             std::to_string(result.cues.size()) + " 索引点" + " | " + std::to_string(result.total_clusters) +
+             " Cluster");
     return true;
 }
 
