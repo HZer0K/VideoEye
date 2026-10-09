@@ -219,6 +219,9 @@ std::string QcReportExporter::BuildJson(const QcExportBundle& bundle) {
     summary.Set("score", JNumber(report.score));
     summary.Set("verdict", JText(report.verdict));
     summary.Set("completed", JsonValue(report.completed));
+    // partial：抽样扫描 / 未覆盖全部帧的结论。下游若当"完整全检"消费会误判，
+    // 落库前先看这个标志（此前导出会静默丢掉它，审计 P1）。
+    summary.Set("partial", JsonValue(report.partial));
     summary.Set("analysis_elapsed_ms", JNumber(run.elapsed_ms));
     if (!run.error.empty()) summary.Set("error", JText(run.error));
     JsonValue counts = JsonValue::MakeObject();

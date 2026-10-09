@@ -27,6 +27,7 @@ constexpr int kMaxRefPicListEntries = 4096;     // ref_pic_list 的条目数上�
 constexpr int kMaxVirtualBoundaries = 4095;    // 虚拟边界条数（每条至少 1 bit）
 constexpr int kMaxHrdCpbCntMinus1 = 31;        // HRD 参数集里的 cpb_cnt - 1
 constexpr uint32_t kMaxQpTablePoints = 1024;   // 单张 QP 表的点数（每点至少 2 个 ue(v)）
+constexpr int kMaxPictureSize = 65536;        // luma 尺寸上界：超界值只会来自垃圾码流
 
 // ceil(log2(v))，v >= 1
 int CeilLog2(uint32_t v) {
@@ -471,6 +472,14 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
 
     sps.sps_pic_width_max_in_luma_samples = static_cast<int>(reader.ReadUE());
     sps.sps_pic_height_max_in_luma_samples = static_cast<int>(reader.ReadUE());
+    // 合理性校验：垃圾码流（如全 0xFF）的 ue(v) 能把语法"走完"却读出 0/越界
+    // 尺寸 —— 后续 CeilShift 还会发生有符号溢出。这里直接判非法不置 present。
+    if (sps.sps_pic_width_max_in_luma_samples <= 0 ||
+        sps.sps_pic_height_max_in_luma_samples <= 0 ||
+        sps.sps_pic_width_max_in_luma_samples > kMaxPictureSize ||
+        sps.sps_pic_height_max_in_luma_samples > kMaxPictureSize) {
+        return sps;
+    }
 
     sps.sps_conformance_window_flag = reader.ReadBit();
     if (sps.sps_conformance_window_flag) {
@@ -530,6 +539,10 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
     }
 
     sps.sps_bitdepth_minus8 = static_cast<int>(reader.ReadUE());
+    // 规范约束 bitdepth_minus8 取值 0..8（位深 8..16），超界只可能来自垃圾码流
+    if (sps.sps_bitdepth_minus8 < 0 || sps.sps_bitdepth_minus8 > 8) {
+        return sps;
+    }
     sps.sps_entropy_coding_sync_enabled_flag = reader.ReadBit();
     sps.sps_entry_point_offsets_present_flag = reader.ReadBit();
     sps.sps_log2_max_pic_order_cnt_lsb_minus4 = static_cast<int>(reader.ReadBits(4));
@@ -791,6 +804,12 @@ model::VvcPpsInfo VvcBitstreamParser::ParsePpsFromNalUnit(const videoeye::NalUni
     pps.pps_mixed_nalu_types_in_pic_flag = reader.ReadBit();
     pps.pps_pic_width_in_luma_samples = static_cast<int>(reader.ReadUE());
     pps.pps_pic_height_in_luma_samples = static_cast<int>(reader.ReadUE());
+    // 与 SPS 相同的合理性校验：非正/超界尺寸只可能来自垃圾码流
+    if (pps.pps_pic_width_in_luma_samples <= 0 || pps.pps_pic_height_in_luma_samples <= 0 ||
+        pps.pps_pic_width_in_luma_samples > kMaxPictureSize ||
+        pps.pps_pic_height_in_luma_samples > kMaxPictureSize) {
+        return pps;
+    }
 
     pps.pps_conformance_window_flag = reader.ReadBit();
     if (pps.pps_conformance_window_flag) {
@@ -822,7 +841,10 @@ model::VvcPpsInfo VvcBitstreamParser::ParsePpsFromNalUnit(const videoeye::NalUni
         }
     }
 
-    // 后面是 tile / slice 划分（面板不展示），到此为止
+    // 后面是 tile / slice 划分（面板不展示），到此为止。
+    // 浅解析同样要拦越界：截断输入让最后几个 flag 读越界时必须拒绝置 present，
+    // 否则比 822 行门槛晚读的位会被静默当 0。
+    if (reader.HasError()) return pps;
     pps.present = true;
     return pps;
 }

@@ -15,7 +15,9 @@ namespace {
 
 using videoeye::BitstreamAnalyzer;
 using videoeye::ContainerMetadata;
+using videoeye::model::AnalysisCapability;
 using videoeye::model::BitstreamAnalysisResult;
+using videoeye::model::BitstreamParseOutcome;
 
 // 与 tests/unit/test_h264_bitstream_parser.cpp 同一套真实 SPS：
 // High / Level 3.1 / 1280x720 / 4:2:0 8bit / VUI(timing + colour)，
@@ -126,6 +128,106 @@ TEST(BitstreamAnalyzerTest, EmptyExtradataIsNotAnalyzed) {
     BitstreamAnalyzer analyzer;
     const BitstreamAnalysisResult r = analyzer.Analyze(nullptr, 0, AV_CODEC_ID_H264);
     EXPECT_FALSE(r.analyzed);
+}
+
+// --------------------------------------------------------------------------
+// 能力状态（阶段 4.1：消除"假完成"）
+// 五种口径：NoExtradata / UnsupportedCodec / TypeOnly / ParseFailed / FullParse
+// --------------------------------------------------------------------------
+TEST(BitstreamAnalyzerTest, H264FullParseIsSupported) {
+    const BitstreamAnalysisResult r = AnalyzeWith(MakeContainer(1280, 720));
+    EXPECT_EQ(r.parse_outcome, BitstreamParseOutcome::FullParse);
+    EXPECT_EQ(r.capability, AnalysisCapability::Supported);
+    EXPECT_FALSE(r.partial);
+    EXPECT_TRUE(r.capability_note.empty());
+}
+
+TEST(BitstreamAnalyzerTest, EmptyExtradataIsUnavailable) {
+    BitstreamAnalyzer analyzer;
+    const BitstreamAnalysisResult r = analyzer.Analyze(nullptr, 0, AV_CODEC_ID_H264);
+    EXPECT_EQ(r.parse_outcome, BitstreamParseOutcome::NoExtradata);
+    EXPECT_EQ(r.capability, AnalysisCapability::Unavailable);
+    EXPECT_TRUE(r.partial);
+    EXPECT_FALSE(r.capability_note.empty());
+}
+
+TEST(BitstreamAnalyzerTest, UnsupportedCodecIsUnavailable) {
+    const std::vector<uint8_t> avcc = MakeAvcC();
+    BitstreamAnalyzer analyzer;
+    const BitstreamAnalysisResult r =
+        analyzer.Analyze(avcc.data(), avcc.size(), AV_CODEC_ID_MPEG4);
+    EXPECT_EQ(r.parse_outcome, BitstreamParseOutcome::UnsupportedCodec);
+    EXPECT_EQ(r.capability, AnalysisCapability::Unavailable);
+    EXPECT_TRUE(r.partial);
+    EXPECT_FALSE(r.capability_note.empty());
+}
+
+TEST(BitstreamAnalyzerTest, TypeOnlyExtradataIsPartial) {
+    // AnnexB 里只有 SEI NAL：识别出编码类型，但没有任何参数集
+    const std::vector<uint8_t> annexb = {
+        0x00, 0x00, 0x00, 0x01,
+        0x06, 0x01, 0x04, 0x00, 0x00, 0x80,   // SEI（type 6）
+    };
+    BitstreamAnalyzer analyzer;
+    const BitstreamAnalysisResult r =
+        analyzer.Analyze(annexb.data(), annexb.size(), AV_CODEC_ID_H264);
+    EXPECT_TRUE(r.analyzed);
+    EXPECT_EQ(r.parse_outcome, BitstreamParseOutcome::TypeOnly);
+    EXPECT_EQ(r.capability, AnalysisCapability::Partial);
+    EXPECT_TRUE(r.partial);
+    EXPECT_FALSE(r.capability_note.empty());
+}
+
+TEST(BitstreamAnalyzerTest, TruncatedSpsIsParseFailed) {
+    // AnnexB 里带 SPS NAL 但只截了 2 字节：见过参数集却解析不出 → ParseFailed
+    std::vector<uint8_t> annexb = {0x00, 0x00, 0x00, 0x01, 0x67};
+    annexb.push_back(kSpsHigh720p[0]);
+    annexb.push_back(kSpsHigh720p[1]);
+    BitstreamAnalyzer analyzer;
+    const BitstreamAnalysisResult r =
+        analyzer.Analyze(annexb.data(), annexb.size(), AV_CODEC_ID_H264);
+    EXPECT_TRUE(r.analyzed);
+    EXPECT_EQ(r.parse_outcome, BitstreamParseOutcome::ParseFailed);
+    EXPECT_EQ(r.capability, AnalysisCapability::Failed);
+    EXPECT_TRUE(r.partial);
+    EXPECT_FALSE(r.capability_note.empty());
+}
+
+// VVC 按方案 A 标 Partial（解析链路可用，畸形验证不充分）：
+// 即使解析出完整字段，也不参与严格一致性比对 —— QC 不把未验证字段当"通过"依据。
+TEST(BitstreamAnalyzerTest, VvcIsPartialAndSkipsStrictComparison) {
+    // vvcC-only（无 NAL 数组）：Main 10 / 4:2:0 / 1920x1080（与 VVC 解析器测试同款）
+    const std::vector<uint8_t> kVvcCRecord = {
+        0xFF, 0x00, 0x01, 0x40, 0x01, 0x02, 0x33, 0x80, 0x00,
+        0x07, 0x80, 0x04, 0x38, 0x00, 0x00, 0x00,
+    };
+    // 容器故意报不一致的尺寸/位深：Partial 能力必须跳过严格比对，不产生告警
+    ContainerMetadata meta = MakeContainer(1280, 720, 8);
+    meta.codec_name = "vvc";
+    BitstreamAnalyzer analyzer;
+    analyzer.SetContainerMetadata(meta);
+    const BitstreamAnalysisResult r =
+        analyzer.Analyze(kVvcCRecord.data(), kVvcCRecord.size(), AV_CODEC_ID_VVC);
+
+    EXPECT_TRUE(r.analyzed);
+    EXPECT_TRUE(r.has_vvc);
+    EXPECT_EQ(r.parse_outcome, BitstreamParseOutcome::FullParse);
+    EXPECT_EQ(r.capability, AnalysisCapability::Partial);
+    EXPECT_TRUE(r.partial);
+    EXPECT_FALSE(r.capability_note.empty());
+    // 分辨率/位深来自 vvcC，但与容器不一致也不许产生严格比对告警
+    EXPECT_EQ(r.width, 1920);
+    EXPECT_EQ(r.height, 1080);
+    EXPECT_TRUE(r.inconsistencies.empty());
+}
+
+// 能力状态要进 JSON（面板"复制 JSON"与导出走的就是 ToJson）
+TEST(BitstreamAnalyzerTest, CapabilityFieldsAreSerialized) {
+    const BitstreamAnalysisResult r = AnalyzeWith(MakeContainer(1280, 720));
+    const std::string json = r.ToJson();
+    EXPECT_NE(json.find("\"parse_outcome\""), std::string::npos);
+    EXPECT_NE(json.find("\"capability\""), std::string::npos);
+    EXPECT_NE(json.find("\"partial\""), std::string::npos);
 }
 
 // --------------------------------------------------------------------------

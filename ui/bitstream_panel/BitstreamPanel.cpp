@@ -232,10 +232,25 @@ QString BitstreamPanel::DescribeCodec(const model::BitstreamAnalysisResult& resu
 }
 
 void BitstreamPanel::UpdateSummary(const model::BitstreamAnalysisResult& result) {
+    summary_label_->setToolTip(QString());
     if (!result.analyzed) {
-        summary_label_->setText(
-            tr("没有可用的参数集：该视频流没有 extradata，或编码格式暂不支持"
-               "（当前支持 H.264 / HEVC / AV1 / VVC）。"));
+        // 按 parse_outcome 区分"没有 extradata"与"编码不支持"，旧文案把两种
+        // 情况混成一句，用户无法判断换封装重解是否有用。
+        if (result.parse_outcome == model::BitstreamParseOutcome::NoExtradata) {
+            summary_label_->setText(
+                tr("没有可用的参数集：该视频流没有 extradata（常见于裸流 / TS），"
+                   "无法进行码流级解析。"));
+        } else {
+            const QString codec = result.codec_name.empty()
+                                      ? QString::fromStdString(result.codec_id_str)
+                                      : QString::fromStdString(result.codec_name);
+            summary_label_->setText(
+                tr("编码格式 %1 暂不支持码流级解析（当前支持 H.264 / HEVC / AV1 / VVC）。")
+                    .arg(codec.isEmpty() ? tr("未知") : codec));
+        }
+        if (!result.capability_note.empty()) {
+            summary_label_->setToolTip(QString::fromStdString(result.capability_note));
+        }
         return;
     }
 
@@ -252,14 +267,35 @@ void BitstreamPanel::UpdateSummary(const model::BitstreamAnalysisResult& result)
         resolution = QString("%1x%2").arg(result.width).arg(result.height);
     }
 
+    // 能力状态徽标：Supported 不打扰；Partial / Failed 显式标出，
+    // 鼠标悬停可看 capability_note 的具体原因（如 VVC 畸形码流验证不充分）。
+    QString capability_badge;
+    switch (result.capability) {
+        case model::AnalysisCapability::Supported:
+            break;
+        case model::AnalysisCapability::Partial:
+            capability_badge = tr("　<b>[部分支持]</b>");
+            break;
+        case model::AnalysisCapability::Failed:
+            capability_badge = tr("　<b>[解析失败]</b>");
+            break;
+        case model::AnalysisCapability::Unavailable:
+            capability_badge = tr("　<b>[不可用]</b>");
+            break;
+    }
+    if (!capability_badge.isEmpty() && !result.capability_note.empty()) {
+        summary_label_->setToolTip(QString::fromStdString(result.capability_note));
+    }
+
     summary_label_->setText(
-        tr("<b>%1</b>　流 #%2　%3　参数集: NAL %4 / OBU %5　不一致: %6")
+        tr("<b>%1</b>　流 #%2　%3　参数集: NAL %4 / OBU %5　不一致: %6%7")
             .arg(DescribeCodec(result))
             .arg(result.stream_index)
             .arg(resolution)
             .arg(result.nal_units.size())
             .arg(result.obu_units.size())
-            .arg(warning_count));
+            .arg(warning_count)
+            .arg(capability_badge));
 }
 
 // --------------------------------------------------------------------------

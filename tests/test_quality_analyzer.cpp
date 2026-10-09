@@ -136,4 +136,31 @@ TEST(QualityAnalyzerTest, RejectsSizeMismatch) {
     EXPECT_EQ(metrics.error_message, "Gray planes have different dimensions");
 }
 
+// VMAF 是可选依赖（libvmaf），默认构建不接入：
+// CompareSamples 的结果里 vmaf 必须是 nullopt 而非 NaN —— NaN 会静默流进
+// 曲线与 JSON 导出（JSON 不允许 NaN 字面量），"未启用"必须与"算失败"可区分。
+TEST(QualityAnalyzerTest, CompareSamplesLeavesVmafEmptyWhenUnsupported) {
+    videoeye::model::FrameSample reference;
+    reference.frame_index = 0;
+    reference.timestamp_seconds = 0.0;
+    reference.width = 8;
+    reference.height = 8;
+    reference.gray.assign(64, 100);
+
+    videoeye::model::FrameSample distorted;
+    distorted.frame_index = 1;
+    distorted.timestamp_seconds = 0.04;
+    distorted.width = 8;
+    distorted.height = 8;
+    distorted.gray.assign(64, 110);
+
+    const auto metrics = videoeye::QualityAnalyzer::CompareSamples(reference, distorted);
+
+    ASSERT_TRUE(metrics.valid) << metrics.error_message;
+    EXPECT_NEAR(metrics.mse, 100.0, 1e-9);
+    EXPECT_NEAR(metrics.psnr_nb, 28.1308036087, 1e-6);
+    EXPECT_FALSE(metrics.vmaf.has_value());
+    EXPECT_FALSE(videoeye::QualityAnalyzer::VmafSupported());
+}
+
 } // namespace

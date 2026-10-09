@@ -220,6 +220,12 @@ std::string BitstreamAnalysisResult::Summary() const {
     std::ostringstream oss;
     oss << "Codec: " << (codec_name.empty() ? std::string("unknown") : codec_name) << "\n";
     oss << "Stream index: " << stream_index << "\n";
+    oss << "Capability: " << CapabilityToString(capability)
+        << " (outcome: " << ParseOutcomeToString(parse_outcome)
+        << ", partial: " << (partial ? "true" : "false") << ")\n";
+    if (!capability_note.empty()) {
+        oss << "Note: " << capability_note << "\n";
+    }
     oss << "Resolution: " << width << "x" << height << "\n";
     oss << "Bit depth: " << bit_depth << "\n";
     oss << "Color: primaries=" << color_primaries
@@ -235,6 +241,12 @@ std::string BitstreamAnalysisResult::ToJson() const {
     std::ostringstream oss;
     oss << "{\n";
     oss << "  \"analyzed\": " << (analyzed ? "true" : "false") << ",\n";
+    oss << "  \"parse_outcome\": " << JsonString(ParseOutcomeToString(parse_outcome)) << ",\n";
+    oss << "  \"capability\": " << JsonString(CapabilityToString(capability)) << ",\n";
+    oss << "  \"partial\": " << (partial ? "true" : "false") << ",\n";
+    if (!capability_note.empty()) {
+        oss << "  \"capability_note\": " << JsonString(capability_note) << ",\n";
+    }
     oss << "  \"stream_index\": " << stream_index << ",\n";
     oss << "  \"codec_name\": " << JsonString(codec_name) << ",\n";
     oss << "  \"width\": " << width << ",\n";

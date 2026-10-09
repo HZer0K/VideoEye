@@ -283,15 +283,32 @@ void VisualDefectPage::UpdateSummary() {
                         .arg(effective_area_.y);
     }
 
+    // VMAF 是可选依赖（libvmaf），默认构建未接入。有采样数据但 vmaf 全空时
+    // 明示"未启用"，而不是让用户以为指标算丢了（NaN 假完成已按 optional 消除）。
+    const bool vmaf_absent = std::all_of(samples_.begin(), samples_.end(),
+                                         [](const model::FrameQualityMetric& s) {
+                                             return !s.vmaf.has_value();
+                                         });
+    const QString vmaf_note =
+        vmaf_absent ? tr("；VMAF 未启用") : QString();
+    if (vmaf_absent) {
+        summary_label_->setToolTip(
+            tr("VMAF 需要可选依赖 libvmaf（库 + 模型文件），当前构建未接入。\n"
+               "PSNR / SSIM 等其余指标不受影响。"));
+    } else {
+        summary_label_->setToolTip(QString());
+    }
+
     summary_label_->setText(
-        tr("已分析 %1 帧，缺陷 %2 条（其中警告及以上 %3 条）；有效画面区域: %4%5")
+        tr("已分析 %1 帧，缺陷 %2 条（其中警告及以上 %3 条）；有效画面区域: %4%5%6")
             .arg(analyzed_frames_)
             .arg(records_.size())
             .arg(warning_or_above)
             .arg(area_text)
             .arg(dropped_frames_ > 0
                      ? tr("；播放压力大，已丢弃 %1 个分析帧").arg(dropped_frames_)
-                     : QString()));
+                     : QString())
+            .arg(vmaf_note));
 }
 
 void VisualDefectPage::UpdateCharts() {

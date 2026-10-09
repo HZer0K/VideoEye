@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -126,7 +127,9 @@ struct FrameQualityMetric {
     // ---- 有参考指标（需要参考帧，见 QualityAnalyzer::CompareSamples）----
     double psnr_db = kQualityNoValue;
     double ssim = kQualityNoValue;
-    double vmaf = kQualityNoValue;   // 需要外部 libvmaf，默认构建恒为 NaN
+    // VMAF 需要可选依赖 libvmaf，默认构建未接入 —— 用 optional 而非 NaN：
+    // "未启用"（nullopt）必须与"算失败"（NaN）可区分，否则报告与曲线分不清
+    std::optional<double> vmaf;
 
     bool valid = false;
     std::string error_message;

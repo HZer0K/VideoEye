@@ -166,9 +166,15 @@ model::BitstreamAnalysisResult BitstreamAnalyzer::Analyze(const uint8_t* extrada
     result_.analyzed = true;
     result_.codec_id_str = CodecIdName(codec_id);
 
-    // 空 extradata 直接放弃：没有参数集就没有可比对的码流信息
+    // 空 extradata 直接放弃：没有参数集就没有可比对的码流信息。
+    // 状态上要和"编码不支持"区分开（NoExtradata vs UnsupportedCodec），
+    // 上层才能给出"换封装重新封装或许能分析"这类有针对性的提示。
     if (extradata == nullptr || size == 0) {
         result_.analyzed = false;
+        result_.parse_outcome = model::BitstreamParseOutcome::NoExtradata;
+        result_.capability = model::AnalysisCapability::Unavailable;
+        result_.partial = true;
+        result_.capability_note = "视频流没有 extradata，容器未携带参数集（常见于裸流 / TS）";
         return result_;
     }
 
@@ -182,13 +188,18 @@ model::BitstreamAnalysisResult BitstreamAnalyzer::Analyze(const uint8_t* extrada
             : videoeye::ExtradataParser::ParseWithFormat(videoeye::ExtradataFormat::AnnexB, extradata,
                                                       size, NalSyntaxForCodec(codec_id));
     IngestUnits(parsed);
-    PopulateAv1Config(parsed.config);
+    // av1C 配置记录只在输入确实是 av1C 时才回填 —— 无条件置 av1_config.present
+    // 会把 AnyParameterSet() 恒变 true，SEI-only / 截断输入也会被误判成 FullParse。
+    if (parsed.format == videoeye::ExtradataFormat::Av1C) {
+        PopulateAv1Config(parsed.config);
+    }
     if (parsed.format == videoeye::ExtradataFormat::VvcC) {
         PopulateVvcConfig(parsed.config);
     }
     ApplyContainerSnapshot();
 
     Dispatch(codec_id, extradata, size);
+    FinalizeCapability(codec_id);
 
     // 与容器 metadata 对比
     if (has_container_metadata_ && result_.analyzed) {
@@ -207,6 +218,10 @@ model::BitstreamAnalysisResult BitstreamAnalyzer::AnalyzeWithFormat(
     result_.codec_id_str = CodecIdName(codec_id);
     if (data == nullptr || size == 0) {
         result_.analyzed = false;
+        result_.parse_outcome = model::BitstreamParseOutcome::NoExtradata;
+        result_.capability = model::AnalysisCapability::Unavailable;
+        result_.partial = true;
+        result_.capability_note = "视频流没有 extradata，容器未携带参数集（常见于裸流 / TS）";
         return result_;
     }
 
@@ -222,6 +237,7 @@ model::BitstreamAnalysisResult BitstreamAnalyzer::AnalyzeWithFormat(
     ApplyContainerSnapshot();
 
     Dispatch(codec_id, data, size);
+    FinalizeCapability(codec_id);
 
     if (has_container_metadata_ && result_.analyzed) {
         CompareWithContainer(result_, result_);
@@ -256,6 +272,10 @@ void BitstreamAnalyzer::Dispatch(int codec_id, const uint8_t* data, size_t size)
             result_.analyzed = false;
             result_.codec_name.clear();
             result_.has_h264 = result_.has_hevc = result_.has_av1 = result_.has_vvc = false;
+            result_.parse_outcome = model::BitstreamParseOutcome::UnsupportedCodec;
+            result_.capability = model::AnalysisCapability::Unavailable;
+            result_.partial = true;
+            result_.capability_note = "编码格式不在支持列表（当前支持 H.264 / HEVC / AV1 / VVC）";
             break;
     }
 }
@@ -496,6 +516,106 @@ bool BitstreamAnalyzer::AnyParameterSet() const {
            result_.vvc_sps.present || result_.vvc_config.present;
 }
 
+bool BitstreamAnalyzer::SawParameterSetInput(int codec_id) const {
+    switch (static_cast<AVCodecID>(codec_id)) {
+        case AV_CODEC_ID_H264:
+            for (const auto& nal : nal_units_) {
+                if (H264BitstreamParser::IsSpsNalUnit(nal)) return true;
+            }
+            return false;
+        case AV_CODEC_ID_HEVC:
+            for (const auto& nal : nal_units_) {
+                if (HevcBitstreamParser::IsVpsNalUnit(nal) ||
+                    HevcBitstreamParser::IsSpsNalUnit(nal)) return true;
+            }
+            return false;
+        case AV_CODEC_ID_AV1:
+            for (const auto& obu : obu_units_) {
+                if (Av1BitstreamParser::IsSequenceHeaderObu(obu)) return true;
+            }
+            return result_.has_av1_config;
+        case AV_CODEC_ID_VVC:
+            for (const auto& nal : nal_units_) {
+                if (VvcBitstreamParser::IsVpsNalUnit(nal) ||
+                    VvcBitstreamParser::IsSpsNalUnit(nal)) return true;
+            }
+            return result_.has_vvc_config;
+        default:
+            return false;
+    }
+}
+
+void BitstreamAnalyzer::FinalizeCapability(int codec_id) {
+    using model::AnalysisCapability;
+    using model::BitstreamParseOutcome;
+
+    // Dispatch 已经落了 NoExtradata / UnsupportedCodec，这里只收敛"真的解析了"
+    // 的分支，不要覆盖前面的状态。
+    if (result_.parse_outcome == BitstreamParseOutcome::NoExtradata ||
+        result_.parse_outcome == BitstreamParseOutcome::UnsupportedCodec) {
+        return;
+    }
+
+    const bool parsed_ok = AnyParameterSet();
+    const bool saw_input = SawParameterSetInput(codec_id);
+
+    if (parsed_ok) {
+        result_.parse_outcome = BitstreamParseOutcome::FullParse;
+    } else if (saw_input) {
+        // 有参数集输入却没解析出来：截断 / 畸形 / 字段越界被拒绝
+        result_.parse_outcome = BitstreamParseOutcome::ParseFailed;
+        result_.capability_note = "检测到参数集但解析失败：码流可能截断或畸形，字段不可信";
+    } else {
+        result_.parse_outcome = BitstreamParseOutcome::TypeOnly;
+        result_.capability_note = "未找到可解析的参数集，仅识别出编码类型";
+    }
+
+    switch (static_cast<AVCodecID>(codec_id)) {
+        case AV_CODEC_ID_H264:
+        case AV_CODEC_ID_HEVC:
+            // 解析器按规范实现，真实 SPS fixture / avcC / hvcC / AnnexB / 裁剪 /
+            // 位深 / 色彩 / 错误 SPS 均有单测覆盖（见 tests/unit 对应文件）。
+            result_.capability = (result_.parse_outcome == BitstreamParseOutcome::FullParse)
+                                    ? AnalysisCapability::Supported
+                                    : (result_.parse_outcome == BitstreamParseOutcome::ParseFailed
+                                           ? AnalysisCapability::Failed
+                                           : AnalysisCapability::Partial);
+            break;
+        case AV_CODEC_ID_AV1:
+            // av1C 兜底给了位深/采样结构，但没有分辨率与色彩描述 —— 仍是 Partial。
+            if (result_.parse_outcome == BitstreamParseOutcome::FullParse &&
+                result_.av1_seq_header.present) {
+                result_.capability = AnalysisCapability::Supported;
+            } else if (result_.parse_outcome == BitstreamParseOutcome::ParseFailed) {
+                result_.capability = AnalysisCapability::Failed;
+            } else {
+                result_.capability = AnalysisCapability::Partial;
+                if (result_.has_av1_config) {
+                    result_.capability_note = "仅有 av1C 配置记录：位深/采样结构可信，"
+                                              "分辨率与色彩描述未知（仅识别类型级信息）";
+                }
+            }
+            break;
+        case AV_CODEC_ID_VVC:
+            // 方案 A：解析链路可用（含真实编码器回归），但畸形码流验证不充分，
+            // 即使 FullParse 也标 Partial —— QC 不把它当作"已验证通过"。
+            result_.capability =
+                (result_.parse_outcome == BitstreamParseOutcome::ParseFailed)
+                    ? AnalysisCapability::Failed
+                    : AnalysisCapability::Partial;
+            if (result_.parse_outcome == BitstreamParseOutcome::FullParse) {
+                result_.capability_note = "VVC 为部分支持：参数集可解析（含真实编码器回归），"
+                                          "但畸形码流验证尚不充分，结果仅供参考";
+            }
+            break;
+        default:
+            result_.capability = AnalysisCapability::Unavailable;
+            break;
+    }
+
+    result_.partial = (result_.capability != AnalysisCapability::Supported);
+}
+
 void BitstreamAnalyzer::CompareWithContainer(const model::BitstreamAnalysisResult& bitstream,
                                              model::BitstreamAnalysisResult& result) {
     (void)bitstream;
@@ -504,6 +624,11 @@ void BitstreamAnalyzer::CompareWithContainer(const model::BitstreamAnalysisResul
     }
     if (!kCompareParameterSetFields) {
         return;   // 见 kCompareParameterSetFields 的注释：解析器还没对齐规范
+    }
+    if (result.capability != model::AnalysisCapability::Supported) {
+        // Partial / Failed / Unavailable 能力（如 VVC）的解析字段未经全面验证，
+        // 不参与严格一致性比对 —— QC 不把未验证字段当"通过"依据。
+        return;
     }
 
     // Width/Height comparison（只在码流侧真的算出尺寸时比）

@@ -86,6 +86,8 @@ QualityMetrics QualityAnalyzer::CompareSamples(const model::FrameSample& referen
     metrics.mse = CalculateMse(reference_gray, distorted_gray);
     metrics.psnr_nb = CalculatePsnr(metrics.mse);
     metrics.ssim = CalculateSsim(reference_gray, distorted_gray);
+    // VMAF 未接入时 ComputeVmaf 返回 nullopt，vmaf 保持空 —— 报告与曲线
+    // 以 has_value() 判断可用性，不再有 NaN 静默落库
     metrics.vmaf = ComputeVmaf(reference, distorted);
     metrics.valid = true;
     return metrics;
@@ -98,13 +100,14 @@ double QualityAnalyzer::CalculatePsnr(double mse, double maxPixelValue) {
     return 10.0 * std::log10((maxPixelValue * maxPixelValue) / mse);
 }
 
-double QualityAnalyzer::ComputeVmaf(const model::FrameSample& reference,
-                                    const model::FrameSample& distorted) {
+std::optional<double> QualityAnalyzer::ComputeVmaf(const model::FrameSample& reference,
+                                                   const model::FrameSample& distorted) {
     (void)reference;
     (void)distorted;
-    // 第一阶段只做 PSNR / SSIM。VMAF 要带 libvmaf 与模型文件，属于可选依赖，
-    // 接进来时替换这里即可（调用方与报告字段都不用改）。
-    return std::numeric_limits<double>::quiet_NaN();
+    // 默认构建不带 libvmaf（可选依赖，不进基础安装）。返回 nullopt 表示
+    // "未启用"—— 调用方据此在 UI 显示"VMAF 未启用"、报告标记 available=false。
+    // 接入 libvmaf 后替换本实现（模型文件缺失 / 版本不匹配同样返回 nullopt）。
+    return std::nullopt;
 }
 
 bool QualityAnalyzer::VmafSupported() { return false; }

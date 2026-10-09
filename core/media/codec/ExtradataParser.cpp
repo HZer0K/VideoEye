@@ -502,85 +502,90 @@ ExtradataResult ExtradataParser::ParseHvcC(const uint8_t* data, size_t size) {
     result.format = ExtradataFormat::HvcC;
     result.valid = true;
 
-    // hvcC = HEVCDecoderConfigurationRecord（ISO/IEC 14496-15）。字节偏移从记录开头算：
+    // hvcC = HEVCDecoderConfigurationRecord（ISO/IEC 14496-15:2017 §8.3.2）。
+    // 完整布局（字节偏移从记录开头算）：
     //   0      configurationVersion
     //   1      general_profile_space(2) | general_tier_flag(1) | general_profile_idc(5)
-    //   2..9   general_profile_compatibility_flags[8]
-    //   10..12 general_constraint_indicator_flags（3 字节）
-    //   13     general_level_idc
-    //   14     reserved(5) | max_sub_layers_minus1(3)
-    //   15     reserved(6) | lengthSizeMinusOne(2)
-    //   16     numOfSequenceParameterSets
-    //   17..   SPS 数组（u16 长度前缀 + payload）… 末尾再是 numOfPictureParameterSets(1B) + PPS 数组
+    //   2..5   general_profile_compatibility_flags（4 字节）
+    //   6..11  general_constraint_indicator_flags（6 字节）
+    //   12     general_level_idc
+    //   13     reserved(4) | min_spatial_segmentation_idc 高 4 位
+    //   14     min_spatial_segmentation_idc 低 8 位
+    //   15     reserved(6) | parallelismType(2)
+    //   16     reserved(6) | chromaFormat(2)
+    //   17     reserved(5) | bitDepthLumaMinus8(3)
+    //   18     reserved(5) | bitDepthChromaMinus8(3)
+    //   19..20 avgFrameRate
+    //   21     constantFrameRate(2) | numTemporalLayers(3) | temporalIdNested(1)
+    //          | lengthSizeMinusOne(2)
+    //   22     numOfArrays
+    //   23..   每个 array：completeness(1) | reserved(1) | NAL_unit_type(6)，
+    //          numNalus(16)，再是 numNalus 条 nalUnitLength(16) + NAL 字节
     //
-    // 旧实现只读了 byte1 就收工（offset 一路推到 20）—— general_level_idc、
-    // lengthSizeMinusOne、SPS/PPS 数组全都没解析，HEVC 的 profile / level 因此恒为空。
-    // 注意「最少要读到 numOfSequenceParameterSets 才算一条完整记录」。
-    if (size < 17) {
+    // ⚠️ 历史教训：这里曾按自造的简化布局解析（level 当在 byte13、
+    // lengthSize 在 byte15、byte16 当 numOfSPS、SPS 后接 numOfPPS），与真实
+    // hvcC 完全对不上 —— 真实记录的 byte16 是 chromaFormat（0xFC | 1 = 0xFD），
+    // 旧代码 &0x1F 得 1，把 chromaFormat 误当 SPS 数量，第一个"长度"读到
+    // 0xFAF8 越界直接 break，产出 0 个参数集 + 错误的 level。配套测试
+    // （test_hevc_bitstream_parser.cpp 的 HvcCTest）按真实布局构造 fixture。
+    if (size < 23) {
         result.error_message = "hvcC too small";
         return result;
     }
 
-    // version(0) + general_profile_space / tier / profile_idc(1)
+    // byte 0：configurationVersion（规范要求为 1；容错处理只告警不拒收）
+    // byte 1：profile space / tier / profile_idc
     const uint8_t ptl = data[1];
     result.config.general_profile_space = ptl >> 6;
     result.config.general_tier_flag = (ptl >> 5) & 0x01;
     result.config.general_profile_idc = ptl & 0x1F;
 
-    // 2..12 是兼容位 + 约束位（共 11 字节），跳过才能走到 general_level_idc；
-    // CodecConfig 里没有 HEVC 的兼容位 / 约束位槽位，不往 H.264 的 profile_compatibility
-    // 上硬塞，免得给后面读它的人一个错语义。
-    result.config.general_level_idc = data[13];
+    // bytes 2..11：兼容位（4B）+ 约束位（6B），CodecConfig 没有对应槽位，跳过
+    // byte 12：general_level_idc（30 * major + 3 * minor）
+    result.config.general_level_idc = data[12];
 
-    // 15 的高 6 位是保留位，低 2 位才是 lengthSizeMinusOne
-    result.config.length_size_minus_one = data[15] & 0x03;
+    // byte 16 低 2 位：chromaFormat；byte 17/18 低 3 位：位深（色度位深与 luma
+    // 常相同；CodecConfig 只有 bit_depth_minus_8 一个共享槽位，存 luma）
+    result.config.chroma_format_idc = data[16] & 0x03;
+    result.config.bit_depth_minus_8 = data[17] & 0x07;
 
-    // 16：numOfSequenceParameterSets 的高 3 位是保留位
-    const uint8_t num_sps = data[16] & 0x1F;
+    // byte 21 低 2 位：lengthSizeMinusOne
+    result.config.length_size_minus_one = data[21] & 0x03;
 
-    const uint8_t* pos = data + 17;
+    // byte 22 起：NAL 数组
+    const uint8_t num_arrays = data[22];
+    const uint8_t* pos = data + 23;
     const uint8_t* end = data + size;
 
-    for (int i = 0; i < num_sps; ++i) {
-        if (end - pos < 2)
-            break;
-        const uint16_t sps_length = BytesToUint16BE(pos);
+    for (int a = 0; a < num_arrays; ++a) {
+        if (end - pos < 3)
+            break;   // 数组头（1B 描述 + 2B numNalus）都不够
+        const uint8_t array_header = pos[0];
+        pos += 1;
+        const uint16_t num_nalus = BytesToUint16BE(pos);
         pos += 2;
-        if (sps_length == 0 || pos + sps_length > end)
-            break;
 
-        // 与 avcC / AnnexB 路径一致：NalUnit::data 只放 RBSP payload，剥掉 2 字节 NAL header
-        NalUnit nal;
-        nal.type = 33; // HEVC SPS
-        nal.size = sps_length - 1;
-        nal.data.assign(pos + 1, pos + sps_length);
-        nal.is_keyframe = true;
-        result.nal_units.push_back(std::move(nal));
+        for (int i = 0; i < num_nalus; ++i) {
+            if (end - pos < 2)
+                break;
+            const uint16_t nal_length = BytesToUint16BE(pos);
+            pos += 2;
+            if (nal_length < 3 || pos + nal_length > end)
+                break;   // HEVC NAL 至少含 2 字节 header + 1 字节 payload
 
-        pos += sps_length;
-    }
+            // NalUnit::data 只放 RBSP payload（与 avcC / AnnexB 路径一致），
+            // 剥掉 2 字节 NAL header；type 从 NAL 首字节还原，而不是信 array 头
+            // —— 数组头只用于分桶，真实类型以 NAL 自身为准
+            NalUnit nal;
+            nal.type = (pos[0] >> 1) & 0x3F;
+            nal.size = nal_length - 2;
+            nal.data.assign(pos + 2, pos + nal_length);
+            nal.is_keyframe = (nal.type == 19 || nal.type == 20);   // IDR_W_RADL / IDR_N_LP
+            result.nal_units.push_back(std::move(nal));
 
-    // 末尾是 numOfPictureParameterSets(1 字节) 后接 PPS 数组
-    if (end - pos < 1)
-        return result;
-
-    const uint8_t num_pps = *pos++;
-
-    for (int i = 0; i < num_pps; ++i) {
-        if (end - pos < 2)
-            break;
-        const uint16_t pps_length = BytesToUint16BE(pos);
-        pos += 2;
-        if (pps_length == 0 || pos + pps_length > end)
-            break;
-
-        NalUnit nal;
-        nal.type = 34; // HEVC PPS
-        nal.size = pps_length - 1;
-        nal.data.assign(pos + 1, pos + pps_length);
-        result.nal_units.push_back(std::move(nal));
-
-        pos += pps_length;
+            pos += nal_length;
+        }
+        (void)array_header;   // completeness 位当前不消费，保留位
     }
 
     return result;

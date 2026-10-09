@@ -292,13 +292,54 @@ TEST_F(VvcSpsTest, Chroma422_12bit_4K) {
 TEST_F(VvcSpsTest, GarbageInputDoesNotCrash) {
     const std::vector<uint8_t> junk = {0xFF, 0xFF, 0xFF};
     const VvcSpsInfo sps = VvcBitstreamParser::ParseSpsFromNalUnit(MakeNal(15, junk));
-    // VPS id 越界 / 语法跑飞时允许解析失败，但绝不能崩、也不能把垃圾当结果
-    if (sps.present) {
-        EXPECT_TRUE(sps.width() >= 0);
-        EXPECT_TRUE(sps.height() >= 0);
-    }
+    // 全 0xFF 垃圾码流：ue(v) 全读成 0 → 0x0 分辨率，合理性校验必须拦下，
+    // 不能把垃圾当"解析成功"交给下游（旧实现会 present=true + 0x0 尺寸）。
+    EXPECT_FALSE(sps.present);
     const VvcSpsInfo empty = VvcBitstreamParser::ParseSpsFromNalUnit(MakeNal(15, {}));
     EXPECT_FALSE(empty.present);
+}
+
+TEST_F(VvcSpsTest, LongGarbageStreamIsRejected) {
+    // 足够长的 0xFF 流：位足够把语法"走完"，但宽高 ue(v)=0 —— 校验仍要拒绝
+    // 置 present，否则下游会拿到 0x0 分辨率 + 满屏垃圾工具开关。
+    const std::vector<uint8_t> junk(64, 0xFF);
+    const VvcSpsInfo sps = VvcBitstreamParser::ParseSpsFromNalUnit(MakeNal(15, junk));
+    EXPECT_FALSE(sps.present);
+
+    const VvcPpsInfo pps = VvcBitstreamParser::ParsePpsFromNalUnit(MakeNal(16, junk));
+    EXPECT_FALSE(pps.present);
+}
+
+TEST_F(VvcSpsTest, TruncatedSpsPrefixesAreRejected) {
+    // 截断测试：对每个严格前缀，解析必须失败（present=false）。
+    // SPS 的 VUI 段落在尾部且解析会一直读到接近末尾，任何截断前缀都会让
+    // BitReader 越界 → HasError → 不置 present。半截参数集绝不许进入结果。
+    // 例外：SPS A 的最后一个字节（0x40）是 rbsp_trailing_bits，无语义 ——
+    // 截到 n-1 字节时全部语义字段已完整，present=true 是正确行为，不算假完成。
+    // 因此循环上界是 size()-1，再用两条显式断言钉住这个边界。
+    for (size_t len = 1; len + 1 < kSpsMain10_1080p.size(); ++len) {
+        const std::vector<uint8_t> prefix(kSpsMain10_1080p.begin(),
+                                         kSpsMain10_1080p.begin() + len);
+        const VvcSpsInfo sps = VvcBitstreamParser::ParseSpsFromNalUnit(MakeNal(15, prefix));
+        EXPECT_FALSE(sps.present) << "SPS A 截断到 " << len << " 字节仍置了 present";
+    }
+    {
+        // n-2 字节：还缺 VUI 尾部字段，必须失败
+        const std::vector<uint8_t> prefix(kSpsMain10_1080p.begin(),
+                                         kSpsMain10_1080p.begin() + kSpsMain10_1080p.size() - 2);
+        EXPECT_FALSE(VvcBitstreamParser::ParseSpsFromNalUnit(MakeNal(15, prefix)).present);
+        // n-1 字节：只缺 trailing bits，语义字段完整，允许 present
+        const std::vector<uint8_t> full_fields(kSpsMain10_1080p.begin(),
+                                               kSpsMain10_1080p.end() - 1);
+        EXPECT_TRUE(VvcBitstreamParser::ParseSpsFromNalUnit(MakeNal(15, full_fields)).present);
+    }
+    // 带 conformance window / 无 VUI 的变体同样不许漏
+    for (size_t len = 1; len < kSpsMain10_1080pCrop.size(); ++len) {
+        const std::vector<uint8_t> prefix(kSpsMain10_1080pCrop.begin(),
+                                         kSpsMain10_1080pCrop.begin() + len);
+        const VvcSpsInfo sps = VvcBitstreamParser::ParseSpsFromNalUnit(MakeNal(15, prefix));
+        EXPECT_FALSE(sps.present) << "SPS B 截断到 " << len << " 字节仍置了 present";
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -325,6 +366,17 @@ TEST_F(VvcPpsTest, Main10_1080p) {
     EXPECT_FALSE(pps.pps_mixed_nalu_types_in_pic_flag);
     EXPECT_FALSE(pps.pps_no_pic_partition_flag);
     EXPECT_FALSE(pps.pps_output_flag_present_flag);
+}
+
+TEST_F(VvcPpsTest, TruncatedPpsPrefixesAreRejected) {
+    // PPS 解析是浅解析（读满 58 bit / 约 7.25 字节即置 present，尾部 tile
+    // 划分不读）。截到不足这些位的前缀必须失败；8 字节起的前缀包含全部
+    // 已读字段，允许 present —— 此时字段本身是完整的，不算"假完成"。
+    for (size_t len = 1; len <= 7; ++len) {
+        const std::vector<uint8_t> prefix(kPpsMain10.begin(), kPpsMain10.begin() + len);
+        const VvcPpsInfo pps = VvcBitstreamParser::ParsePpsFromNalUnit(MakeNal(16, prefix));
+        EXPECT_FALSE(pps.present) << "PPS 截断到 " << len << " 字节仍置了 present";
+    }
 }
 
 // --------------------------------------------------------------------------

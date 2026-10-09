@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "core/domain/model/AnalysisCapability.h"
 #include "core/domain/model/BitstreamUnits.h"
 #include "core/domain/model/H264BitstreamInfo.h"
 #include "core/domain/model/HevcBitstreamInfo.h"
@@ -35,6 +36,16 @@ struct BitstreamAnalysisResult {
     int stream_index = -1;
     std::string codec_name;           // "h264", "hevc", "av1", "vvc"
     std::string codec_id_str;         // "AV_CODEC_ID_H264" 等
+
+    // ---- 能力状态（阶段 4：消除"假完成"）----
+    // analyzed 只回答"有没有跑过解析"；下面两个字段回答"跑到了什么程度、
+    // 结果可信到什么程度"。UI 与报告必须同时消费它们，不能只看 analyzed。
+    BitstreamParseOutcome parse_outcome = BitstreamParseOutcome::NotAnalyzed;
+    AnalysisCapability capability = AnalysisCapability::Unavailable;
+    // partial=true：结果不完整或能力未全面验证（TypeOnly/ParseFailed/VVC 的
+    // FullParse 也算），消费方不得把它当成"已通过"。
+    bool partial = false;
+    std::string capability_note;      // 状态的人类可读说明（UI tooltip / 报告）
     
     // 基本视频属性（从码流解析）
     int width = 0;

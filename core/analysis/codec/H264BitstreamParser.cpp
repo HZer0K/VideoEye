@@ -299,11 +299,18 @@ model::H264SpsInfo H264BitstreamParser::ParseFromNalUnit(const videoeye::NalUnit
 
     // log2_max_frame_num_minus4 ue(v)
     sps.log2_max_frame_num_minus4 = static_cast<int>(reader.ReadUE());
+    if (sps.log2_max_frame_num_minus4 < 0 || sps.log2_max_frame_num_minus4 > 12) {
+        return sps; // 规范范围 0..12（frame_num 最多 16 bit）
+    }
 
     // pic_order_cnt_type ue(v)，决定后面有没有额外字段
     sps.pic_order_cnt_type = static_cast<int>(reader.ReadUE());
     if (sps.pic_order_cnt_type == 0) {
         sps.log2_max_pic_order_cnt_lsb_minus4 = static_cast<int>(reader.ReadUE());
+        if (sps.log2_max_pic_order_cnt_lsb_minus4 < 0 ||
+            sps.log2_max_pic_order_cnt_lsb_minus4 > 12) {
+            return sps; // 规范范围 0..12
+        }
     } else if (sps.pic_order_cnt_type == 1) {
         reader.SkipBits(1); // delta_pic_order_always_zero_flag
         reader.ReadSE();    // offset_for_non_ref_pic
@@ -332,7 +339,15 @@ model::H264SpsInfo H264BitstreamParser::ParseFromNalUnit(const videoeye::NalUnit
     sps.pic_width_in_mbs_minus1 = static_cast<int>(reader.ReadUE());
 
     // pic_height_in_map_units_minus1 ue(v)
+    // （结构体字段沿用 pic_height_in_mbs_minus1 命名，见 H264BitstreamInfo.h）
     sps.pic_height_in_mbs_minus1 = static_cast<int>(reader.ReadUE());
+    // 合理性校验：ue(v) 读出的巨值在 int 截断后可为负；像素换算（×16）超
+    // 65536 只可能来自垃圾码流 —— 拒绝，避免下游 width() 溢出。
+    if (sps.pic_width_in_mbs_minus1 < 0 || sps.pic_height_in_mbs_minus1 < 0 ||
+        (sps.pic_width_in_mbs_minus1 + 1) > 65536 / 16 ||
+        (sps.pic_height_in_mbs_minus1 + 1) > 65536 / 16) {
+        return sps;
+    }
 
     // frame_mbs_only_flag u(1)
     sps.frame_mbs_only_flag = reader.ReadBit();

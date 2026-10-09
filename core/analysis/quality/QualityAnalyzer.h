@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -33,8 +34,9 @@ struct QualityMetrics {
     //   <0  = 负相关（例如整帧反相），这是合法结果，不要当成异常裁到 0
     double ssim = 0.0;
     // VMAF 需要外部 libvmaf（库 + 模型文件），默认构建不带，见 ComputeVmaf()。
-    // 未接入时恒为 NaN。
-    double vmaf = model::kQualityNoValue;
+    // 未接入时为 std::nullopt —— 绝不能用 NaN 占位：NaN 会静默流进曲线与
+    // JSON 导出（JSON 不允许 NaN 字面量），而"未启用"与"算失败"必须可区分。
+    std::optional<double> vmaf;
     bool valid = false;
     std::string error_message;
 };
@@ -59,11 +61,13 @@ public:
     static bool BuildSample(const AVFrame* frame, int gray_width, int rgb_width,
                             bool capture_rgb, model::FrameSample& out, std::string& error);
 
-    // VMAF: 可选依赖。需要 libvmaf（体积大、模型文件另带），第一阶段不接入，
-    // 这里保留接口与字段占位 —— 未接入时恒返回 NaN，调用方无需改代码。
-    // 接入路径: 用 ffmpeg CLI 的 libvmaf filter 或链接 libvmaf，替换本函数实现即可。
-    static double ComputeVmaf(const model::FrameSample& reference,
-                              const model::FrameSample& distorted);
+    // VMAF: 可选依赖。需要 libvmaf（体积大、模型文件另带），默认构建不接入。
+    // 未接入时返回 std::nullopt（而非 NaN）—— "未启用"必须与"算出失败"可区分，
+    // 报告 / UI 据此显示"VMAF 未启用"并标记 available=false。
+    // 接入路径: 用 ffmpeg CLI 的 libvmaf filter 或链接 libvmaf，替换本函数实现
+    // （模型文件路径缺失 / 版本不匹配时同样返回 nullopt 并给出 error_message）。
+    static std::optional<double> ComputeVmaf(const model::FrameSample& reference,
+                                             const model::FrameSample& distorted);
     static bool VmafSupported();
 
 private:

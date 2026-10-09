@@ -41,11 +41,13 @@ struct ContainerMetadata {
 // 不要传 0/1/2/3 之类的自定义编号：历史上这里用过自定义枚举，结果调用方
 // 一旦写错就静默落到 default 分支，什么都不解析。
 //
-// 当前覆盖范围：
-//   - H.264 : SPS + PPS（含 VUI 色彩/时基）
-//   - HEVC  : VPS + SPS + PPS
-//   - AV1   : Sequence Header OBU（含 color_config）
-//   - VVC   : 只识别编码类型，参数集解析尚未实现（见 ParseVvc）
+// 当前覆盖范围（能力口径见 core/domain/model/AnalysisCapability.h）：
+//   - H.264 : SPS + PPS（含 VUI 色彩/时基）—— Supported
+//   - HEVC  : VPS + SPS + PPS —— Supported
+//   - AV1   : Sequence Header OBU（含 color_config）；MP4 里通常只有 av1C，
+//             此时仅位深/采样结构可信（TypeOnly）
+//   - VVC   : VPS/SPS/PPS/vvcC 均可解析（含真实编码器回归），但畸形码流验证
+//             不充分 —— 按方案 A 标 Partial，partial=true，不参与严格一致性比对
 // ==========================================================================
 class BitstreamAnalyzer {
 public:
@@ -104,6 +106,15 @@ private:
 
     // 是否真的解析出了参数集（决定要不要拿默认值去和容器层比对）
     bool AnyParameterSet() const;
+
+    // 解析结束后收敛能力状态四件套（parse_outcome / capability / partial /
+    // capability_note）。必须在 Dispatch 之后、CompareWithContainer 之前调用：
+    // 一致性比对要看 capability 决定是否参与。
+    void FinalizeCapability(int codec_id);
+
+    // extradata 里是否出现过参数集类型的单元（含 av1C/vvcC 配置记录）。
+    // 用于区分 TypeOnly（压根没有参数集）与 ParseFailed（有但没解析出来）。
+    bool SawParameterSetInput(int codec_id) const;
 
     // 对比容器和码流 metadata
     void CompareWithContainer(const model::BitstreamAnalysisResult& bitstream,

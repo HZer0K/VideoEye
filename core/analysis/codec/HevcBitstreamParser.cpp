@@ -494,6 +494,12 @@ model::HevcSpsInfo HevcBitstreamParser::ParseSpfFromNalUnit(const videoeye::NalU
 
     sps.pic_width_in_luma_samples = static_cast<int>(reader.ReadUE());
     sps.pic_height_in_luma_samples = static_cast<int>(reader.ReadUE());
+    // 合理性校验：0 / 负 / 超 65536 的尺寸只可能来自垃圾码流，拒绝置 present，
+    // 否则下游会拿到 0x0"有效"参数集参与容器比对
+    if (sps.pic_width_in_luma_samples <= 0 || sps.pic_height_in_luma_samples <= 0 ||
+        sps.pic_width_in_luma_samples > 65536 || sps.pic_height_in_luma_samples > 65536) {
+        return sps;
+    }
 
     sps.conformance_window_flag = static_cast<int>(reader.ReadBit());
     if (sps.conformance_window_flag) {
