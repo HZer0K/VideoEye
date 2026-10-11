@@ -1,6 +1,7 @@
 #include "core/exporter/MediaExporter.h"
 
 #include "core/ffmpeg_io/FfmpegInterrupt.h"  // FFmpeg 阻塞 IO 的中断/超时
+#include "infrastructure/logging/PerfMetrics.h"
 
 #include <QCoreApplication>
 #include <QFile>
@@ -45,6 +46,26 @@ QString AvErrorString(int ret) {
     }
     return QString::fromUtf8(errbuf);
 }
+
+// 导出耗时只在**真正导出成功**时记：取消/失败那次测的是"多久退出来"，混进平均值里
+// 会把正常样本拉低，看不出长素材导出的真实成本。
+// 成功 / 失败 / 取消的出口在 Export() 里散落多处（收尾漏斗 + 末尾三分支），
+// 每处手写一次 Discard() 迟早漏一处 —— 交给析构时看一眼标志位统一判。
+class ExportTimingGuard {
+public:
+    explicit ExportTimingGuard(const bool* succeeded)
+        : succeeded_(succeeded), scope_(videoeye::kMetricFrameExportMs) {}
+    ~ExportTimingGuard() {
+        if (succeeded_ == nullptr || !*succeeded_) scope_.Discard();
+    }
+
+    ExportTimingGuard(const ExportTimingGuard&) = delete;
+    ExportTimingGuard& operator=(const ExportTimingGuard&) = delete;
+
+private:
+    const bool* succeeded_;
+    videoeye::PerfScope scope_;
+};
 
 // FFmpeg send/receive 返回值的分类约定（本文件内所有收发点统一遵守）:
 //   * ret >= 0                        -> 正常
@@ -219,6 +240,9 @@ void MediaExporter::Export(const ExportOptions& opt) {
         emit ExportCanceled(opt.output_path);
         return;
     }
+    // 见上方 ExportTimingGuard：只有下面两处 ExportFinished 会把标志置起来
+    bool export_succeeded = false;
+    ExportTimingGuard export_timing(&export_succeeded);
     exporting_ = true;
 
     AVFormatContext* in_fmt = nullptr;
@@ -256,6 +280,7 @@ void MediaExporter::Export(const ExportOptions& opt) {
             QFile::remove(temp_path); // 删除不完整产物 (不碰原目标文件)
             emit ExportError(msg.isEmpty() ? "导出失败" : msg);
         } else {
+            export_succeeded = true;
             emit ExportFinished(opt.output_path);
         }
     };
@@ -858,6 +883,7 @@ void MediaExporter::Export(const ExportOptions& opt) {
         // 不会出现"旧文件已删、新文件又没换上"的双向丢失。
         QString replace_err;
         if (ReplaceTargetAtomic(temp_path, opt.output_path, &replace_err)) {
+            export_succeeded = true;
             emit ExportFinished(opt.output_path);
         } else {
             QFile::remove(temp_path);

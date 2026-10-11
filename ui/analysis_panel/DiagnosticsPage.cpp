@@ -15,6 +15,25 @@
 
 namespace videoeye {
 namespace ui {
+namespace {
+
+// 内存指标只在"干完一件大事"之后采一次（分析结束 / 导出结束），不轮询：
+//   * 峰值取 OS 维护的高水位，本来就不需要轮询；
+//   * 每次都写日志的话，长视频分析过程中会刷出成千上万行，反而看不清。
+// 采样失败返回 0 —— 与"真的用了 0 MB"区分不了，所以 0 时跳过，不写假指标。
+void RecordMemoryMetrics() {
+    const double peak_mb = PerfMetrics::PeakRssMb();
+    if (peak_mb > 0.0) {
+        PerfMetrics::GetInstance().RecordGauge(kMetricPeakMemoryMb, peak_mb, "MB");
+    }
+    const double rss_mb = PerfMetrics::CurrentRssMb();
+    if (rss_mb > 0.0) {
+        PerfMetrics::GetInstance().RecordGauge(kMetricRssMemoryMb, rss_mb, "MB");
+    }
+}
+
+}  // namespace
+
 // 曲线点数上限不再本地定义：统一走 ui/charts/ChartDecimation.h 的 kMaxChartPoints。
 // 这里以前有一份同名常量（4000），与统一常量处在同一命名空间层级，
 // 名字查找会直接歧义 —— 更要紧的是"多个页面各定一把尺子"本身就是本轮要消除的问题。
@@ -330,6 +349,13 @@ void DiagnosticsPage::OnFacadeFinished(quint64 generation, bool completed,
     }
     report_.analysis_elapsed_ms = elapsed_ms;
 
+    // 分析耗时只在**跑完**时记：被取消的那次测的是"多久退出来"，混进平均值里
+    // 会把正常样本拉低，看不出一小时视频的真实成本。
+    if (completed) {
+        PerfMetrics::GetInstance().RecordTiming(videoeye::kMetricAnalysisMs, elapsed_ms);
+    }
+    RecordMemoryMetrics();
+
     SetScanButtonState(false);
     progress_bar_->setValue(100);
     progress_bar_->setFormat(completed ? tr("分析完成") : tr("已取消（结果不完整）"));
@@ -561,7 +587,15 @@ void DiagnosticsPage::OnExportClicked() {
         tr("HTML 报告 (*.html);;JSON 报告 (*.json);;CSV 报告 (*.csv);;文本报告 (*.txt)"));
     if (filename.isEmpty()) return;
 
-    if (reporting::QcReportExporter::ExportReport(filename.toStdString(), report_)) {
+    bool exported = false;
+    {
+        // 只量"写文件"这一段：文件选择对话框是人操作，不该算进导出耗时
+        VE_METRIC_SCOPE(videoeye::kMetricReportExportMs, videoeye::kReportExportBudgetMs);
+        exported = reporting::QcReportExporter::ExportReport(filename.toStdString(), report_);
+    }
+    RecordMemoryMetrics();
+
+    if (exported) {
         QMessageBox::information(this, tr("成功"), tr("诊断报告已导出到:\n%1").arg(filename));
     } else {
         QMessageBox::warning(this, tr("失败"), tr("导出诊断报告失败。"));

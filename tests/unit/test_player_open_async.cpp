@@ -27,12 +27,15 @@ extern "C" {
 #include <QElapsedTimer>
 #include <QFile>
 #include <QString>
+#include <QTemporaryDir>
 #include <QThread>
 
 #include "BlockingTcpEndpoint.h"
 #include "core/player/MediaPlayer.h"
 #include "core/player/OpenController.h"
 #include "core/player/PlaybackSession.h"
+#include "infrastructure/logging/PerfMetrics.h"
+#include "tests/support/TestMediaFactory.h"
 
 namespace {
 
@@ -263,4 +266,42 @@ TEST(PlayerOpenAsync, StaleResultIsDroppedWhenSuperseded) {
     EXPECT_FALSE(last_ok) << "到达的应当是 B(不存在文件) 的结果";
 
     QFile::remove(missing_b);
+}
+
+// ===========================================================================
+// 打开耗时（阶段 5 指标）
+//
+// 指标的意义在于"能被取到"，所以必须有成功路径把它落一次地：上面几条用例用的都是
+// 不存在 / 阻塞 / 损坏的输入，那些打开全部失败、按设计**不记** open_ms
+// （失败时测的是"多快发现打不开"，混进平均值里会把正常样本拉低）。
+// 两边一起才完整：失败不记、成功记一次。
+// ===========================================================================
+TEST(PlayerOpenAsync, SuccessfulOpenRecordsOpenLatencyMetric) {
+    AppScope app_scope;
+
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const videoeye_test::TestMedia media =
+        videoeye_test::CreateTestMedia(dir.path().toStdString(), "clip");
+    ASSERT_TRUE(media.ok) << "样本生成失败: " << media.error;
+
+    auto& metrics = videoeye::PerfMetrics::GetInstance();
+    const auto before = metrics.Snapshot(kMetricOpenMs);
+
+    player::MediaPlayer player;
+    int finished = 0;
+    bool last_ok = false;
+    QObject::connect(&player, &player::MediaPlayer::OpenFinished, &player,
+                     [&finished, &last_ok](bool ok) { ++finished; last_ok = ok; });
+
+    player.OpenAsync(QString::fromStdString(media.path));
+
+    ASSERT_TRUE(PumpUntil([&] { return finished > 0; }, 10000))
+        << "成功打开没有给出终态";
+    EXPECT_TRUE(last_ok) << "样本应当能打开: " << player.GetLastError().toStdString();
+
+    const auto after = metrics.Snapshot(kMetricOpenMs);
+    EXPECT_EQ(after.count - before.count, 1) << "成功打开必须恰好记一条 open_ms";
+    EXPECT_GT(after.last, 0.0);
+    EXPECT_LE(after.last, kOpenBudgetMs) << "这个样本 1.6 秒，打开不该逼近预算";
 }

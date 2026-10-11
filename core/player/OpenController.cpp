@@ -20,6 +20,7 @@ extern "C" {
 #include "core/player/AudioOutput.h"
 #include "core/player/Decoders.h"
 #include "infrastructure/logging/Logger.h"
+#include "infrastructure/logging/PerfMetrics.h"
 
 namespace videoeye {
 namespace player {
@@ -34,6 +35,26 @@ QString AvErrorString(int ret) {
     }
     return QString::fromUtf8(errbuf);
 }
+
+// 打开耗时只在**成功打开**时记：失败时测的是"多快发现打不开"，混进平均值里会把
+// 正常样本拉低，看不出长视频打开的真实成本。
+// 失败 return 在 Prepare 里散落 7 处，每处手写一次 Discard() 迟早漏一处 ——
+// 交给析构时看一眼 result.ok 统一判。
+class OpenTimingScope {
+public:
+    explicit OpenTimingScope(const OpenResult* result)
+        : result_(result), scope_(kMetricOpenMs, kOpenBudgetMs) {}
+    ~OpenTimingScope() {
+        if (result_ == nullptr || !result_->ok) scope_.Discard();
+    }
+
+    OpenTimingScope(const OpenTimingScope&) = delete;
+    OpenTimingScope& operator=(const OpenTimingScope&) = delete;
+
+private:
+    const OpenResult* result_;
+    PerfScope scope_;
+};
 
 }  // namespace
 
@@ -128,6 +149,7 @@ bool OpenController::Commit(OpenResult&& result, model::StreamInfo& out_info, QS
 
 OpenResult OpenController::Prepare(const OpenPrepareParams& params) {
     OpenResult result;
+    OpenTimingScope open_timing(&result);
     const std::string url_str = params.url.toStdString();
 
     if (!CheckRuntimeVersion(result.error)) return result;

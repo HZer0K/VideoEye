@@ -827,9 +827,12 @@ endif()
 # =================================================
 videoeye_add_test(test_player_open_async
     unit/test_player_open_async.cpp
+    # 「成功打开」用例要一份真能被 FFmpeg 打开的样本（TestMediaFactory 现场生成）
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tests/support/TestMediaFactory.cpp
 )
 target_link_libraries(test_player_open_async PRIVATE
     VideoEyePlayback
+    VideoEyeInfrastructure
     Qt6::Core Qt6::Gui)
 # BlockingTcpEndpoint.h 走 winsock，Windows 上需要显式 ws2_32。
 if(WIN32)
