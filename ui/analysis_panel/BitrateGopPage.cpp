@@ -35,8 +35,9 @@ namespace videoeye {
 namespace ui {
 
 namespace {
-constexpr int kMaxBitrateChartPoints = 4000;   // 折线图最多绘制的点数
-constexpr int kMaxBitrateChartMarkers = 1500;  // 每类标记最多绘制的点数
+// 曲线/标记的点数上限统一走 ui/charts/ChartDecimation.h（kMaxChartPoints /
+// kMaxChartMarkers），这里不再各定一把 —— 以前本页是 4000 / 1500，
+// 画面质量页 600、流概览页 300，四套口径在同一份界面上并存。
 constexpr int kMaxGopTableRows = 5000;
 constexpr int kMaxAnomalyTableRows = 2000;
 }  // namespace
@@ -403,14 +404,14 @@ void BitrateGopPage::UpdateChart() {
         }
     }
     if (curve != nullptr) {
-        AppendDecimated(bitrate_series_, *curve, kMaxBitrateChartPoints);
+        AppendDecimated(bitrate_series_, *curve, kMaxChartPoints);
     } else {
         model::MetricSeries fallback;
         fallback.samples.reserve(bg.bitrate_points.size());
         for (const auto& p : bg.bitrate_points) {
             fallback.Add(p.timestamp_seconds, p.bitrate_kbps);
         }
-        AppendDecimated(bitrate_series_, fallback, kMaxBitrateChartPoints);
+        AppendDecimated(bitrate_series_, fallback, kMaxChartPoints);
     }
 
     const double duration = std::max(bg.duration_seconds, 1.0);
@@ -425,7 +426,7 @@ void BitrateGopPage::UpdateChart() {
     // I 帧标记（画在基线）
     {
         const int iframe_step =
-            std::max(1, static_cast<int>(bg.i_frame_seconds.size()) / kMaxBitrateChartMarkers);
+            std::max(1, static_cast<int>(bg.i_frame_seconds.size()) / kMaxChartMarkers);
         SeriesBatch batch(iframe_series_);
         for (size_t i = 0; i < bg.i_frame_seconds.size(); i += iframe_step) {
             batch.Add(bg.i_frame_seconds[i], 0.0);
@@ -437,13 +438,13 @@ void BitrateGopPage::UpdateChart() {
         SeriesBatch batch(scene_series_);
         if (!bg.scene_matches.empty()) {
             const int scene_step =
-                std::max(1, static_cast<int>(bg.scene_matches.size()) / kMaxBitrateChartMarkers);
+                std::max(1, static_cast<int>(bg.scene_matches.size()) / kMaxChartMarkers);
             for (size_t i = 0; i < bg.scene_matches.size(); i += scene_step) {
                 batch.Add(bg.scene_matches[i].timestamp_seconds, 0.0);
             }
         } else {
             const int scene_step =
-                std::max(1, static_cast<int>(scene_changes_.size()) / kMaxBitrateChartMarkers);
+                std::max(1, static_cast<int>(scene_changes_.size()) / kMaxChartMarkers);
             for (size_t i = 0; i < scene_changes_.size(); i += scene_step) {
                 batch.Add(scene_changes_[i].timestamp, 0.0);
             }

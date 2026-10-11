@@ -27,9 +27,8 @@
 namespace videoeye {
 namespace ui {
 
-namespace {
-constexpr int kMaxChartSamples = 300;   // 每条曲线最多保留的采样点
-}  // namespace
+// 曲线窗口上限不再本地定义：统一用 ui/charts/ChartDecimation.h 的 kMaxRecentChartItems
+// （滚动窗口语义，与"抽稀"的 kMaxChartPoints 是两回事，别混用）。
 
 StreamOverviewView::StreamOverviewView(QWidget* parent)
     : QWidget(parent) {
@@ -204,10 +203,10 @@ void StreamOverviewView::RefreshStatsUi() {
     const qreal fps = stats.current_fps;
     bitrate_chart_values_.push_back(bitrate_kbps);
     fps_chart_values_.push_back(fps);
-    if (bitrate_chart_values_.size() > kMaxChartSamples) {
+    if (bitrate_chart_values_.size() > kMaxRecentChartItems) {
         bitrate_chart_values_.pop_front();
     }
-    if (fps_chart_values_.size() > kMaxChartSamples) {
+    if (fps_chart_values_.size() > kMaxRecentChartItems) {
         fps_chart_values_.pop_front();
     }
 

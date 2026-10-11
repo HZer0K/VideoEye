@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "core/domain/model/MetricSeries.h"
+#include "ui/charts/ChartDecimation.h"
 #include "ui/charts/MetricChartWidget.h"
 
 namespace videoeye {
@@ -64,6 +65,9 @@ inline QString FormatKb(double bytes) { return QString::number(bytes / 1024.0, '
 // 逐点 Append() 每加一个点都会触发一次图表重算/重绘，几千点时主线程会被
 // 拖到秒级卡顿（实测 7 条曲线 × 4000 点 ≈ 3.5 s）。先在内存里攒好，析构时
 // 用 Replace() 一次性提交（只触发一次刷新）。
+//
+// 需要抽稀的场景请直接用 ui/charts/ChartDecimation.h 的 Decimate*()：
+// 它内部就是走这套批量提交，且统一了点数上限与"保留峰谷"的策略。
 class SeriesBatch {
 public:
     explicit SeriesBatch(ChartSeries* series) : series_(series) {}
@@ -80,24 +84,18 @@ private:
     QVector<QPointF> points_;
 };
 
-// 曲线抽稀后再提交：每组保留最大值（避免把峰值抹掉），并且走 SeriesBatch 一次性提交。
+// 曲线抽稀后再提交。
+//
+// 实现统一收到 ui/charts/ChartDecimation.h：原先这里是"每组取最大值"，
+// 峰值留下了、**谷值被抹掉** —— 码率塌陷、响度掉底这类缺陷在抽完稀的曲线上
+// 会变成一条平线，看着像没检测出来。现在走 MinMax（每桶保留 min 与 max 两点）。
 inline void AppendDecimated(ChartSeries* series, const model::MetricSeries& curve, int limit) {
-    const std::size_t n = curve.Size();
-    if (n == 0) return;
-    SeriesBatch batch(series);
-    if (n <= static_cast<std::size_t>(limit)) {
-        batch.Reserve(static_cast<int>(n));
-        for (const auto& s : curve.samples) batch.Add(s.timestamp_seconds, s.value);
-        return;
-    }
-    const std::size_t group = (n + limit - 1) / limit;
-    batch.Reserve(limit);
-    for (std::size_t i = 0; i < n; i += group) {
-        const std::size_t end = std::min(i + group, n);
-        double v = curve.samples[i].value;
-        for (std::size_t j = i + 1; j < end; ++j) v = std::max(v, curve.samples[j].value);
-        batch.Add(curve.samples[i].timestamp_seconds, v);
-    }
+    if (series == nullptr || curve.IsEmpty()) return;
+    SubmitDecimated(series,
+                    DecimateFrom(curve.samples,
+                                 [](const model::MetricSample& s) { return s.timestamp_seconds; },
+                                 [](const model::MetricSample& s) { return s.value; },
+                                 limit));
 }
 
 // 裁剪记录向量到指定上限：移除最早的多余记录，并让表格从头重建

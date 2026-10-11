@@ -25,7 +25,7 @@ namespace {
 constexpr size_t kMaxEventRecords = 5000;
 constexpr size_t kMaxSyncRecords = 5000;
 constexpr size_t kMaxTimelineRecords = 5000;
-constexpr int kMaxChartSamples = 300;
+// 曲线窗口上限不再本地定义：统一用 ui/charts/ChartDecimation.h 的 kMaxRecentChartItems。
 } // namespace
 // 注：TrimRecords 原本在这里有一份匿名命名空间副本（与 FramePacketView 那份同语义），
 // 现已统一提到 AnalysisPageSupport.h，本文件直接用共享版本，不再各抄一份。
@@ -631,7 +631,7 @@ void EventTimelineView::UpdateSyncChart() {
 
     sync_series_->Clear();
     sync_chart_values_.clear();
-    const int start = std::max(0, static_cast<int>(sync_sample_records_.size()) - kMaxChartSamples);
+    const int start = std::max(0, static_cast<int>(sync_sample_records_.size()) - kMaxRecentChartItems);
     {
         SeriesBatch batch(sync_series_);
         for (int i = start; i < static_cast<int>(sync_sample_records_.size()); ++i) {
@@ -668,7 +668,7 @@ void EventTimelineView::UpdateTimelineChart() {
         return;
     }
 
-    const int start = std::max(0, static_cast<int>(timeline_event_records_.size()) - kMaxChartSamples);
+    const int start = std::max(0, static_cast<int>(timeline_event_records_.size()) - kMaxRecentChartItems);
     double min_ts = timeline_event_records_[start].timestamp_seconds;
     double max_ts = timeline_event_records_[start].timestamp_seconds;
     {

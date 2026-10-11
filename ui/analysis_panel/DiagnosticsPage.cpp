@@ -15,11 +15,9 @@
 namespace videoeye {
 namespace ui {
 
-namespace {
-// 自绘曲线一次最多喂多少点。长片分析 pts 轻松上万，全量喂进去 ComputeGeometry
-// 每帧都要扫一遍点集，重绘直接把 UI 卡住；超过就按组抽稀（每组取最大值）。
-constexpr int kMaxChartPoints = 4000;
-}  // namespace
+// 曲线点数上限不再本地定义：统一走 ui/charts/ChartDecimation.h 的 kMaxChartPoints。
+// 这里以前有一份同名常量（4000），与统一常量处在同一命名空间层级，
+// 名字查找会直接歧义 —— 更要紧的是"多个页面各定一把尺子"本身就是本轮要消除的问题。
 
 DiagnosticsPage::DiagnosticsPage(QWidget* parent)
     : QWidget(parent) {

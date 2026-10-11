@@ -71,14 +71,13 @@ void AppendAudioPoints(ChartSeries* series, const std::vector<model::LoudnessPoi
         const double v = p.*member;
         return (v <= fallback + 1.0) ? fallback : v;
     };
-    const size_t n = points.size();
-    const size_t step = (n <= static_cast<size_t>(limit)) ? 1 : (n + limit - 1) / limit;
-    const size_t out_n = (n + step - 1) / step;
-    SeriesBatch batch(series);
-    batch.Reserve(static_cast<int>(out_n));
-    for (size_t i = 0; i < n; i += step) {
-        batch.Add(points[i].timestamp_seconds, get(points[i]));
-    }
+    // 抽稀走 ui/charts/ChartDecimation.h 的统一实现（MinMax，峰谷都留）：
+    // 这里是响度曲线，"掉到底"的静音段和"冲上去"的削波同样是要看的特征，
+    // 等间隔取点会把它们一并抽掉。
+    SubmitDecimated(series,
+                    DecimateFrom(points,
+                                 [](const model::LoudnessPoint& p) { return p.timestamp_seconds; },
+                                 get, limit));
 }
 
 }  // namespace
@@ -482,21 +481,20 @@ void AudioQcPage::UpdateCharts() {
     const auto& qc = result_.audio_qc;
     if (!has_result_ || !qc.analyzed) return;
 
-    constexpr int kMaxPoints = 4000;
     const auto& points = qc.loudness_points;
-    AppendAudioPoints(momentary_series_, points, kMaxPoints,
+    AppendAudioPoints(momentary_series_, points, kMaxChartPoints,
                       &model::LoudnessPoint::momentary_lufs, model::kSilenceLufs);
-    AppendAudioPoints(short_term_series_, points, kMaxPoints,
+    AppendAudioPoints(short_term_series_, points, kMaxChartPoints,
                       &model::LoudnessPoint::short_term_lufs, model::kSilenceLufs);
-    AppendAudioPoints(integrated_series_, points, kMaxPoints,
+    AppendAudioPoints(integrated_series_, points, kMaxChartPoints,
                       &model::LoudnessPoint::integrated_lufs, model::kSilenceLufs);
-    AppendAudioPoints(rms_series_, points, kMaxPoints,
+    AppendAudioPoints(rms_series_, points, kMaxChartPoints,
                       &model::LoudnessPoint::rms_dbfs, model::kSilenceLevelDb);
-    AppendAudioPoints(peak_series_, points, kMaxPoints,
+    AppendAudioPoints(peak_series_, points, kMaxChartPoints,
                       &model::LoudnessPoint::sample_peak_dbfs, model::kSilenceLevelDb);
-    AppendAudioPoints(true_peak_series_, points, kMaxPoints,
+    AppendAudioPoints(true_peak_series_, points, kMaxChartPoints,
                       &model::LoudnessPoint::true_peak_dbtp, model::kSilenceLevelDb);
-    AppendAudioPoints(corr_series_, points, kMaxPoints,
+    AppendAudioPoints(corr_series_, points, kMaxChartPoints,
                       &model::LoudnessPoint::correlation, -2.0);
 
     // 目标响度参考线
@@ -538,14 +536,21 @@ void AudioQcPage::UpdateCharts() {
     channel_peak_series_->Clear();
     if (!qc.channels.empty()) {
         QStringList categories;
+        // 多轨素材的声道数可以到几十（5.1 / 7.1 / 多语言音轨各一组），
+        // 逐点 Append 就是"每根柱子投一次重绘"，这里攒完一次性提交。
+        SeriesBatch channel(channel_series_);
+        SeriesBatch channel_peak(channel_peak_series_);
+        channel.Reserve(static_cast<int>(qc.channels.size()));
+        channel_peak.Reserve(static_cast<int>(qc.channels.size()));
         for (const auto& ch : qc.channels) {
             const QString name = ch.name.empty() ? QString("Ch%1").arg(ch.index + 1)
                                                  : QString::fromStdString(ch.name);
             categories << name;
             const double rms = (ch.rms_dbfs <= model::kSilenceLevelDb + 1.0) ? -120.0 : ch.rms_dbfs;
             const double peak = (ch.peak_dbfs <= model::kSilenceLevelDb + 1.0) ? -120.0 : ch.peak_dbfs;
-            channel_series_->Append(static_cast<double>(categories.size() - 1), rms);
-            channel_peak_series_->Append(static_cast<double>(categories.size() - 1), peak);
+            const double x = static_cast<double>(categories.size() - 1);
+            channel.Add(x, rms);
+            channel_peak.Add(x, peak);
         }
         channel_chart_->SetCategories(categories);
         channel_axis_y_->SetRange(-90.0, 6.0);

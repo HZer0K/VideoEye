@@ -563,12 +563,21 @@ void SubtitleAuxPage::UpdateScte35MarkerChart() {
     scte35_marker_series_->Clear();
 
     const model::AuxiliaryDataResult& aux = result_.aux_data;
-    for (const model::Scte35Cue& cue : aux.cues) {
-        const double t = cue.has_splice_time ? cue.splice_time_seconds : cue.packet_pts_seconds;
-        if (t < 0.0) continue;
-        // OUT（进广告）画在 1，IN（回节目）画在 0，一眼能看出插入点成对出现
-        const double y = cue.out_of_network ? 1.0 : 0.0;
-        scte35_marker_series_->Append(t, y);
+    {
+        // 攒完一次性提交：标记点逐点 Append 会每个 cue 投一次重绘，
+        // 长视频里 SCTE-35  cue 可以到几千条（每小时广告插入点）。
+        SeriesBatch batch(scte35_marker_series_);
+        batch.Reserve(static_cast<int>(std::min<std::size_t>(aux.cues.size(), kMaxChartMarkers)));
+        int drawn = 0;
+        for (const model::Scte35Cue& cue : aux.cues) {
+            if (drawn >= kMaxChartMarkers) break;
+            const double t = cue.has_splice_time ? cue.splice_time_seconds : cue.packet_pts_seconds;
+            if (t < 0.0) continue;
+            // OUT（进广告）画在 1，IN（回节目）画在 0，一眼能看出插入点成对出现
+            const double y = cue.out_of_network ? 1.0 : 0.0;
+            batch.Add(t, y);
+            ++drawn;
+        }
     }
 
     double max_time = result_.duration_seconds;

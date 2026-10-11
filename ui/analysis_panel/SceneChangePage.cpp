@@ -116,13 +116,18 @@ void SceneChangePage::AppendRow(const model::SceneChangeResult& result) {
 
 void SceneChangePage::UpdateChart() {
     if (!series_) return;
-    series_->Clear();
-    // 限制显示最近 200 个切换点, 避免柱状图过载
-    const int max_bars = 200;
-    const int start = records_.size() > static_cast<size_t>(max_bars)
-                          ? static_cast<int>(records_.size() - max_bars) : 0;
-    for (int i = start; i < static_cast<int>(records_.size()); ++i) {
-        series_->Append(static_cast<double>(i), records_[i].score);
+    // 柱状图每根柱子都要画一个矩形，几千根时绘制与悬停命中都会明显变慢，
+    // 所以这里不是"抽稀"而是**保留最近一段**（滚动窗口）—— 用户要看的是
+    // 刚播过的那几十秒。上限与抽稀口径都在 ui/charts/ChartDecimation.h。
+    const int start = records_.size() > static_cast<size_t>(kMaxRecentChartItems)
+                          ? static_cast<int>(records_.size() - kMaxRecentChartItems) : 0;
+    {
+        // 逐点 Append 会每根柱子投一次重绘，攒完一次性提交
+        SeriesBatch batch(series_);
+        batch.Reserve(static_cast<int>(records_.size()) - start);
+        for (int i = start; i < static_cast<int>(records_.size()); ++i) {
+            batch.Add(static_cast<double>(i), records_[i].score);
+        }
     }
     axis_x_->SetRange(start, std::max(start + 1, static_cast<int>(records_.size())));
 }

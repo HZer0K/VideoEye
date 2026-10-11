@@ -314,34 +314,34 @@ void VisualDefectPage::UpdateSummary() {
 void VisualDefectPage::UpdateCharts() {
     if (!luma_chart_ || !sharp_chart_) return;
 
-    const size_t total = samples_.size();
-    const size_t max_points = 600;
-    const size_t stride = (total > max_points) ? (total + max_points - 1) / max_points : 1;
+void VisualDefectPage::UpdateCharts() {
+    if (!luma_chart_ || !sharp_chart_) return;
 
-    {
-        SeriesBatch luma(luma_series_);
-        SeriesBatch black(black_series_);
-        luma.Reserve(static_cast<int>(total / stride + 1));
-        black.Reserve(static_cast<int>(total / stride + 1));
-        for (size_t i = 0; i < total; i += stride) {
-            const auto& s = samples_[i];
-            luma.Add(s.timestamp_seconds, s.luma_mean);
-            black.Add(s.timestamp_seconds, s.black_ratio);
-        }
-    }
-    {
-        SeriesBatch blur(blur_series_);
-        SeriesBatch diff(diff_series_);
-        blur.Reserve(static_cast<int>(total / stride + 1));
-        diff.Reserve(static_cast<int>(total / stride + 1));
-        for (size_t i = 0; i < total; i += stride) {
-            const auto& s = samples_[i];
-            // 锐度可能远大于 1（清晰画面），放进同一张图会压平帧差曲线，这里做对数压缩
-            const double blur_display = std::log10(1.0 + std::max(0.0, s.blur_score));
-            blur.Add(s.timestamp_seconds, blur_display);
-            diff.Add(s.timestamp_seconds, s.frame_diff);
-        }
-    }
+    // 抽稀统一走 ChartDecimation。以前这里是手写 stride（上限 600），与其余各页
+    // 4000 / 300 的口径并存；更要命的是等间隔取点会把"单帧黑场一闪"这类尖峰
+    // 整个跳过去 —— 而那恰恰是要抓的缺陷。现在每桶保留 min/max 两点，峰谷都留。
+    const auto ts = [](const model::FrameQualityMetric& s) { return s.timestamp_seconds; };
+
+    SubmitDecimated(luma_series_,
+                    DecimateFrom(samples_, ts,
+                                 [](const model::FrameQualityMetric& s) { return s.luma_mean; },
+                                 kMaxChartPoints));
+    SubmitDecimated(black_series_,
+                    DecimateFrom(samples_, ts,
+                                 [](const model::FrameQualityMetric& s) { return s.black_ratio; },
+                                 kMaxChartPoints));
+    SubmitDecimated(blur_series_,
+                    DecimateFrom(samples_, ts,
+                                 [](const model::FrameQualityMetric& s) {
+                                     // 锐度可能远大于 1（清晰画面），放进同一张图会
+                                     // 压平帧差曲线，这里做对数压缩
+                                     return std::log10(1.0 + std::max(0.0, s.blur_score));
+                                 },
+                                 kMaxChartPoints));
+    SubmitDecimated(diff_series_,
+                    DecimateFrom(samples_, ts,
+                                 [](const model::FrameQualityMetric& s) { return s.frame_diff; },
+                                 kMaxChartPoints));
 }
 
 void VisualDefectPage::RebuildTable() {

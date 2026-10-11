@@ -286,6 +286,20 @@ set(VIDEOEYE_PERF_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/Logger.cpp)
 
 # ============================================================
+# 测试 2c: ChartDecimation (曲线抽稀统一口径)
+#
+# ChartSeries 用 owner=nullptr 构造（NotifyUpdate 判空），所以本测试不需要
+# QApplication；但 MetricChartWidget.cpp 有 Q_OBJECT，仍要走 AUTOMOC。
+# ============================================================
+videoeye_add_test(test_chart_decimation
+    unit/test_chart_decimation.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/Logger.cpp
+)
+target_link_libraries(test_chart_decimation PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core)
+add_test(NAME ChartDecimationTests COMMAND test_chart_decimation)
+
+# ============================================================
 # 测试 3: StreamStatsExporter (流统计快照导出)
 #
 # 输入是 model::StreamStats(domain 的纯值对象), 所以只链 VideoEyeReporting 就够了 ——
