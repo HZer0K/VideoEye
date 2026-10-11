@@ -24,13 +24,17 @@ namespace videoeye {
 namespace ui {
 
 namespace {
-constexpr std::size_t kMaxPacketRecords = 10000;
+// 记录上限统一取 10 万（见 RecordTableModel.h）。以前本页是 1 万 —— 一小时视频的包
+// 数远不止一万（每帧至少一个视频包），1 万意味着只留得下开头几十秒的包。
+constexpr std::size_t kMaxPacketRecords = kDefaultMaxRecordCount;
 }  // namespace
 
 PacketTableWidget::PacketTableWidget(QWidget* parent)
     : QWidget(parent) {
     SetupUi();
 }
+
+PacketTableWidget::~PacketTableWidget() = default;
 
 void PacketTableWidget::SetupUi() {
     // 本组件直接充当「包」子页（父页 addTab 本组件），布局语义与原 packet_sub_ 一致。
@@ -58,12 +62,34 @@ void PacketTableWidget::SetupUi() {
 
     QGroupBox* p_table_group = new QGroupBox(tr("数据包信息"), this);
     QVBoxLayout* p_table_layout = new QVBoxLayout(p_table_group);
-    // 包表列名升级 + 删除面向开发者的列 (原 10 列 → 7 列, 去掉了「标记」「文件偏移」
-    // 等非用户语义字段, 合并「流索引」+「流类型」为单列, 协议术语 PTS/DTS 括注用途)
-    packet_table_ = new QTableWidget(0, 7, p_table_group);
-    packet_table_->setHorizontalHeaderLabels({
-        "#", "流", "播放时间(s)", "显示时间(PTS)", "解码时间(DTS)", "时长", "包大小"
-    });
+
+    // 模型由本组件持有并在析构里释放：QTableView::setModel 只是引用，不接管所有权。
+    auto columns = std::vector<RecordTableModel<PacketRecord>::ColumnSpec>();
+    using Spec = RecordTableModel<PacketRecord>::ColumnSpec;
+    columns.push_back(Spec{tr("#"),
+                           [](const PacketRecord& r) { return QString::number(r.index); }, {}});
+    columns.push_back(Spec{tr("流"), [this](const PacketRecord& r) {
+                               // 「流」列把流索引与类型合到一个单元格, 形如 "#0 视频"
+                               return QString("#%1 %2")
+                                   .arg(r.stream_index)
+                                   .arg(PacketStreamTypeToName(r.stream_type));
+                           }, {}});
+    columns.push_back(Spec{tr("播放时间(s)"),
+                           [](const PacketRecord& r) {
+                               return QString::number(r.timestamp_seconds, 'f', 3);
+                           }, {}});
+    columns.push_back(Spec{tr("显示时间(PTS)"),
+                           [](const PacketRecord& r) { return QString::number(r.pts); }, {}});
+    columns.push_back(Spec{tr("解码时间(DTS)"),
+                           [](const PacketRecord& r) { return QString::number(r.dts); }, {}});
+    columns.push_back(Spec{tr("时长"),
+                           [](const PacketRecord& r) { return QString::number(r.duration); }, {}});
+    columns.push_back(Spec{tr("包大小"),
+                           [](const PacketRecord& r) { return QString::number(r.size); }, {}});
+    packet_model_ = new RecordTableModel<PacketRecord>(std::move(columns), this);
+
+    packet_table_ = new QTableView(p_table_group);
+    packet_table_->setModel(packet_model_);
     packet_table_->verticalHeader()->setVisible(false);
     packet_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     packet_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -87,9 +113,13 @@ void PacketTableWidget::SetupUi() {
     connect(packet_filter_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int idx) {
         packet_filter_mode_ = idx - 1;  // 0->全部(-1), 1->视频(0), 2->音频(1), 3->其他(2)
-        RebuildPacketTable();
+        ApplyFilter();
     });
     connect(export_packet_csv_button_, &QPushButton::clicked, this, &PacketTableWidget::OnExportPacketCsv);
+}
+
+const std::vector<PacketRecord>& PacketTableWidget::PacketRecords() const {
+    return packet_model_->records();
 }
 
 bool PacketTableWidget::HasPending() const {
@@ -108,18 +138,17 @@ void PacketTableWidget::FlushPending() {
 }
 
 void PacketTableWidget::ResetPackets() {
-    packet_records_.clear();
-    packet_table_synced_record_count_ = 0;
+    pending_packets_.clear();
     packet_table_dirty_ = false;
     packet_summary_dirty_ = true;
-    if (packet_table_) {
-        packet_table_->setRowCount(0);
+    if (packet_model_) {
+        packet_model_->Clear();
     }
     UpdatePacketSummary();
 }
 
 void PacketTableWidget::AppendPacket(const model::PacketInfo& packet_info) {
-    if (!packet_table_) {
+    if (!packet_model_) {
         return;
     }
 
@@ -135,10 +164,10 @@ void PacketTableWidget::AppendPacket(const model::PacketInfo& packet_info) {
     record.pos = static_cast<qint64>(packet_info.pos);
     record.timestamp_seconds = packet_info.timestamp_seconds;
 
-    packet_records_.push_back(record);
+    // 只入队 + 置脏，FlushPending 时一次性交给模型（一次 rowsInserted 通知一批）
+    pending_packets_.push_back(record);
     packet_table_dirty_ = true;
     packet_summary_dirty_ = true;
-    TrimRecords(packet_records_, packet_table_synced_record_count_, packet_table_, packet_table_dirty_, kMaxPacketRecords);
 }
 
 QString PacketTableWidget::PacketFlagsToString(int flags) const {
@@ -182,25 +211,36 @@ bool PacketTableWidget::PacketMatchesFilter(const PacketRecord& record) const {
     }
 }
 
-void PacketTableWidget::RebuildPacketTable() {
-    if (!packet_table_) {
+// 筛选条件变了：让模型按新条件重算可见行。
+//
+// 以前这里是 setRowCount(0) + 逐条重插（O(n) 次 insertRow）。现在模型内部
+// 重排可见索引并 reset —— 记录本身不动，也不会因为"重建"丢掉刚进来的包。
+void PacketTableWidget::ApplyFilter() {
+    if (!packet_model_) return;
+    if (packet_filter_mode_ < 0) {
+        packet_model_->SetFilter(nullptr);
         return;
     }
-
-    packet_table_->setUpdatesEnabled(false);
-    packet_table_->setRowCount(0);
-    for (const auto& record : packet_records_) {
-        AppendPacketRowToTable(record);
-    }
-    packet_table_->setUpdatesEnabled(true);
-    packet_table_synced_record_count_ = packet_records_.size();
+    // 捕获 mode 的副本而不是 this 上的成员：筛选谓词会在模型里被长期持有，
+    // 捕获 this 的话每次判定都要解引用一个可能已经析构的组件。
+    const int mode = packet_filter_mode_;
+    packet_model_->SetFilter([mode](const PacketRecord& r) {
+        switch (mode) {
+            case 0: return r.stream_type == AVMEDIA_TYPE_VIDEO;
+            case 1: return r.stream_type == AVMEDIA_TYPE_AUDIO;
+            case 2: return r.stream_type != AVMEDIA_TYPE_VIDEO &&
+                           r.stream_type != AVMEDIA_TYPE_AUDIO;
+            default: return true;
+        }
+    });
 }
 
 void PacketTableWidget::UpdatePacketSummary() {
-    if (!packet_summary_label_) {
+    if (!packet_summary_label_ || !packet_model_) {
         return;
     }
 
+    const auto& records = packet_model_->records();
     int video_packets = 0;
     int audio_packets = 0;
     int other_packets = 0;
@@ -208,7 +248,7 @@ void PacketTableWidget::UpdatePacketSummary() {
     long long sum_size = 0;
     int max_size = 0;
     int min_size = INT32_MAX;
-    for (const auto& record : packet_records_) {
+    for (const auto& record : records) {
         if (record.stream_type == AVMEDIA_TYPE_VIDEO) {
             video_packets++;
         } else if (record.stream_type == AVMEDIA_TYPE_AUDIO) {
@@ -237,32 +277,33 @@ void PacketTableWidget::UpdatePacketSummary() {
         return QString::number(bytes) + " B";
     };
 
-    const int avg_size = packet_records_.empty() ? 0 : static_cast<int>(sum_size / packet_records_.size());
+    const int avg_size = records.empty() ? 0 : static_cast<int>(sum_size / records.size());
 
     packet_summary_label_->setText(
         tr("总包数: %1 | 总字节数: %2 | 视频包: %3 | 音频包: %4 | 其他包: %5 | 平均包大小: %6 B | 最大包大小: %7 B | 最小包大小: %8 B")
-            .arg(packet_records_.size())
+            .arg(records.size())
             .arg(format_bytes(total_bytes))
             .arg(video_packets)
             .arg(audio_packets)
             .arg(other_packets)
             .arg(avg_size)
             .arg(max_size)
-            .arg(packet_records_.empty() ? 0 : min_size));
+            .arg(records.empty() ? 0 : min_size));
 }
 
 void PacketTableWidget::OnExportPacketCsv() {
-    if (packet_records_.empty()) {
+    if (!packet_model_ || packet_model_->record_count() == 0) {
         QMessageBox::information(this, tr("提示"), tr("当前没有可导出的包分析数据。"));
         return;
     }
 
+    const int rows = static_cast<int>(packet_model_->record_count());
     ExportCsvStream(this,
         tr("导出包分析 CSV"),
         QString("videoeye_packets_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
         [this](QTextStream& out) {
             out << "index,stream_index,timestamp_seconds,pts,dts,duration,size,flags,file_pos\n";
-            for (const auto& record : packet_records_) {
+            for (const auto& record : packet_model_->records()) {
                 out << record.index << ','
                     << record.stream_index << ','
                     << QString::number(record.timestamp_seconds, 'f', 6) << ','
@@ -274,42 +315,27 @@ void PacketTableWidget::OnExportPacketCsv() {
                     << record.pos << '\n';
             }
         },
-        static_cast<int>(packet_records_.size()));
+        rows);
 }
 
 void PacketTableWidget::FlushPendingPacketTableUpdates() {
-    if (!packet_table_) {
+    if (!packet_model_ || !packet_table_) {
         return;
     }
 
-    packet_table_->setUpdatesEnabled(false);
-    for (size_t i = packet_table_synced_record_count_; i < packet_records_.size(); ++i) {
-        AppendPacketRowToTable(packet_records_[i]);
+    if (!pending_packets_.empty()) {
+        packet_model_->AppendRecords(std::move(pending_packets_));
+        pending_packets_.clear();
     }
-    packet_table_->setUpdatesEnabled(true);
-    packet_table_synced_record_count_ = packet_records_.size();
 
-    if (packet_table_->rowCount() > 0) {
+    const std::size_t count = packet_model_->record_count();
+    if (count > kMaxPacketRecords) {
+        packet_model_->TrimFront(count - kMaxPacketRecords);
+    }
+
+    if (packet_model_->rowCount() > 0) {
         packet_table_->scrollToBottom();
     }
-}
-
-// 与 SetupUi 包表表头一一对应 (7 列): #/流/播放时间(s)/显示时间(PTS)/解码时间(DTS)/时长/包大小
-void PacketTableWidget::AppendPacketRowToTable(const PacketRecord& record) {
-    if (!PacketMatchesFilter(record)) {
-        return;
-    }
-    const int row = packet_table_->rowCount();
-    packet_table_->insertRow(row);
-    SetTableItemText(packet_table_, row, 0, QString::number(record.index));
-    // 「流」列把流索引与类型合到一个单元格, 形如 "#0 视频"
-    SetTableItemText(packet_table_, row, 1,
-        QString("#%1 %2").arg(record.stream_index).arg(PacketStreamTypeToName(record.stream_type)));
-    SetTableItemText(packet_table_, row, 2, QString::number(record.timestamp_seconds, 'f', 3));
-    SetTableItemText(packet_table_, row, 3, QString::number(record.pts));
-    SetTableItemText(packet_table_, row, 4, QString::number(record.dts));
-    SetTableItemText(packet_table_, row, 5, QString::number(record.duration));
-    SetTableItemText(packet_table_, row, 6, QString::number(record.size));
 }
 
 }  // namespace ui

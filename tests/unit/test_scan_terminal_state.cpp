@@ -355,13 +355,13 @@ TEST(PlaybackLinkage, FrameTableRefreshesThenClearsAndDoesNotAccumulate) {
     panel.AppendVideoFrameInfo(1, 2, false, 1000, 0.04);  // P 帧
     panel.AppendVideoFrameInfo(2, 2, false, 2000, 0.08);
     frame_view->FlushPending();
-    EXPECT_EQ(table->rowCount(), 3) << "播放期帧表没有持续刷新";
+    EXPECT_EQ(table->model()->rowCount(), 3) << "播放期帧表没有持续刷新";
 
     // 继续回吐 -> 行数持续增长（是"持续刷新"，不是只填一次）。
     panel.AppendVideoFrameInfo(3, 1, true, 3000, 0.12);
     panel.AppendVideoFrameInfo(4, 2, false, 4000, 0.16);
     frame_view->FlushPending();
-    EXPECT_EQ(table->rowCount(), 5) << "新增帧没有继续进入帧表";
+    EXPECT_EQ(table->model()->rowCount(), 5) << "新增帧没有继续进入帧表";
 
     // 关闭「启用分析」：新的回吐不再进表（旧数据保持不动）。
     auto* toggle = video_page->toggle();
@@ -369,18 +369,18 @@ TEST(PlaybackLinkage, FrameTableRefreshesThenClearsAndDoesNotAccumulate) {
     toggle->setChecked(false);
     panel.AppendVideoFrameInfo(5, 2, false, 5000, 0.20);
     frame_view->FlushPending();
-    EXPECT_EQ(table->rowCount(), 5) << "关闭开关后仍在接收新帧";
+    EXPECT_EQ(table->model()->rowCount(), 5) << "关闭开关后仍在接收新帧";
 
     // 停止 / 换文件：清空旧数据。
     panel.ResetVideoFrameList();
     frame_view->FlushPending();
-    EXPECT_EQ(table->rowCount(), 0) << "停止后旧帧数据没有被清空";
+    EXPECT_EQ(table->model()->rowCount(), 0) << "停止后旧帧数据没有被清空";
 
     // 重新启用：只应看到新回吐的帧，绝不把清空前的旧数据叠加回来。
     toggle->setChecked(true);
     panel.AppendVideoFrameInfo(6, 1, true, 6000, 0.24);
     frame_view->FlushPending();
-    EXPECT_EQ(table->rowCount(), 1) << "重新启用后叠加了旧数据或未接收新数据";
+    EXPECT_EQ(table->model()->rowCount(), 1) << "重新启用后叠加了旧数据或未接收新数据";
 }
 
 // ---------------------------------------------------------------------------

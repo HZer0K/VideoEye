@@ -11,18 +11,22 @@
 //   - 开关：toggle() 交回面板接线 —— 开关编号（1 = 音频帧）到 AnalysisFeature 的映射、
 //     以及「钩子注入后回写真实状态」都由面板做，组件只认自己这个勾选框。
 //
-// 记录缓存上限 3 万条，超限裁剪最早一段并整表重建（TrimRecords 见 AnalysisPageSupport.h）。
+// 表是 QTableView + RecordTableModel（见 RecordTableModel.h）而不是 QTableWidget：
+// 音频帧在长视频里轻松到十万级，QTableWidget 的行数 = 记录数 = 十万 × 7 个 item，
+// 内存与填充耗时都跟着线性涨。换到 model 之后单元格文本是 data() 时现算的，
+// 只为可见的几十行生成。记录上限统一取 kDefaultMaxRecordCount（10 万）。
 
 #include <QWidget>
 
 #include <QCheckBox>
 #include <QLabel>
 #include <QPushButton>
-#include <QTableWidget>
+#include <QTableView>
 
 #include <cstddef>
 #include <vector>
 
+#include "ui/analysis_panel/RecordTableModel.h"
 #include "ui/analysis_panel/StreamRecords.h"
 
 namespace videoeye {
@@ -33,6 +37,7 @@ class AudioFrameTableWidget : public QWidget {
 
 public:
     explicit AudioFrameTableWidget(QWidget* parent = nullptr);
+    ~AudioFrameTableWidget() override;
 
     // === 数据进来（由 FramePacketView 转发）===
     void ResetAudioFrames();
@@ -43,6 +48,12 @@ public:
     bool HasPending() const;
     void FlushPending();
 
+    // 视图与模型：父页/测试要读行数与单元格都用 model()（QTableView 本身不存数据）。
+    QTableView* audioFrameTable() const { return audio_frame_table_; }
+    RecordTableModel<AudioFrameRecord>* audioFrameModel() const { return audio_frame_model_; }
+    // 记录缓存的唯一所有者是模型；这里只是转发，避免外部再拿一份副本。
+    const std::vector<AudioFrameRecord>& AudioFrameRecords() const;
+
     // 「启用分析」勾选框。必须外露：面板注入 SetFeatureHooks 后要拿它回写真实开关状态，
     // 否则界面与实际行为不一致（评审 P1）。
     QCheckBox* toggle() const { return audio_toggle_; }
@@ -51,19 +62,19 @@ private:
     void SetupUi();
     void UpdateAudioFrameSummary();
     void FlushPendingAudioFrameTableUpdates();
-    void AppendAudioFrameRowToTable(const AudioFrameRecord& record);
     void OnExportAudioFrameCsv();
 
     QLabel* audio_frame_summary_label_ = nullptr;
     QPushButton* export_audio_frame_csv_button_ = nullptr;
     QCheckBox* audio_toggle_ = nullptr;
-    QTableWidget* audio_frame_table_ = nullptr;
+    QTableView* audio_frame_table_ = nullptr;
+    RecordTableModel<AudioFrameRecord>* audio_frame_model_ = nullptr;
 
-    // 记录缓存 + 增量同步游标（表格只在 FlushPending 时按游标补差量）
-    std::vector<AudioFrameRecord> audio_frame_records_;
+    // 播放期回调只往这里入队 + 置脏；真正交给模型（一次 rowsInserted）在 FlushPending。
+    // 这么分是为了保住 120ms 节流 —— 每帧直接 AppendRecords 会把批量通知拆回逐条。
+    std::vector<AudioFrameRecord> pending_audio_frames_;
     bool audio_frame_table_dirty_ = false;
     bool audio_frame_summary_dirty_ = false;
-    std::size_t audio_frame_table_synced_record_count_ = 0;
 };
 
 }  // namespace ui

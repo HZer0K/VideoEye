@@ -20,6 +20,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QLabel>
+#include <QTableView>
 #include <QTableWidget>
 
 #include <libavcodec/avcodec.h>
@@ -41,14 +42,11 @@ QApplication* EnsureApp() {
     return app;
 }
 
-// 组件内有两张 QTableWidget；frameTable() 外露了帧表，另一张就是 GOP 表。
+// 组件内现在只有一张 QTableWidget：帧表已迁到 QTableView（十万级记录），
+// GOP 表是有限集（上限 5000 段）仍用 QTableWidget，所以直接取第一张即可。
 QTableWidget* GopTable(VideoFrameTableWidget& widget) {
-    for (QTableWidget* table : widget.findChildren<QTableWidget*>()) {
-        if (table != widget.frameTable()) {
-            return table;
-        }
-    }
-    return nullptr;
+    const auto tables = widget.findChildren<QTableWidget*>();
+    return tables.isEmpty() ? nullptr : tables.first();
 }
 
 QLabel* SummaryLabel(VideoFrameTableWidget& widget) {
@@ -68,6 +66,22 @@ void AppendStandardFrames(VideoFrameTableWidget& widget) {
     widget.AppendVideoFrame(4, AV_PICTURE_TYPE_I, true, 3000, 3.0);
 }
 
+
+int RowCount(QTableView* table) { return table->model()->rowCount(); }
+
+int ColumnCount(QTableView* table) { return table->model()->columnCount(); }
+
+QString Header(QTableView* table, int column) {
+    return table->model()->headerData(column, Qt::Horizontal).toString();
+}
+
+QString Cell(QTableView* table, int row, int column) {
+    return table->model()->index(row, column).data(Qt::DisplayRole).toString();
+}
+
+bool HasCell(QTableView* table, int row, int column) {
+    return table->model()->index(row, column).isValid();
+}
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -78,12 +92,12 @@ TEST(VideoFrameTableWidgetTests, SetupCreatesFrameAndGopTables) {
     EnsureApp();
 
     VideoFrameTableWidget widget;
-    QTableWidget* frame_table = widget.frameTable();
+    QTableView* frame_table = widget.frameTable();
     ASSERT_TRUE(frame_table != nullptr);
 
-    EXPECT_EQ(6, frame_table->columnCount());
-    EXPECT_EQ(QStringLiteral("帧类型"), frame_table->horizontalHeaderItem(1)->text());
-    EXPECT_EQ(QStringLiteral("GOP #"), frame_table->horizontalHeaderItem(4)->text());
+    EXPECT_EQ(6, ColumnCount(frame_table));
+    EXPECT_EQ(QStringLiteral("帧类型"), Header(frame_table, 1));
+    EXPECT_EQ(QStringLiteral("GOP #"), Header(frame_table, 4));
 
     QTableWidget* gop_table = GopTable(widget);
     ASSERT_TRUE(gop_table != nullptr);
@@ -115,6 +129,10 @@ TEST(VideoFrameTableWidgetTests, AppendDerivesGopBoundariesFromFrameTypes) {
 
     VideoFrameTableWidget widget;
     AppendStandardFrames(widget);
+    // GOP 归属与摘要是"批量提交时"派生的（帧表已迁到 model/view，播放期回调
+    // 只入队），所以这里要 flush 之后才看得到 —— 派生的正确性正是本用例要守的，
+    // 派生的**时机**由下一个用例（FlushFillsBothTables...）守。
+    widget.FlushPending();
 
     ASSERT_EQ(4u, widget.FrameRecords().size());
     ASSERT_EQ(2u, widget.GopSummaries().size());
@@ -145,7 +163,7 @@ TEST(VideoFrameTableWidgetTests, FlushFillsBothTablesAndEmitsGopChangedOnce) {
     EnsureApp();
 
     VideoFrameTableWidget widget;
-    QTableWidget* frame_table = widget.frameTable();
+    QTableView* frame_table = widget.frameTable();
     QTableWidget* gop_table = GopTable(widget);
     ASSERT_TRUE(frame_table != nullptr);
     ASSERT_TRUE(gop_table != nullptr);
@@ -156,23 +174,23 @@ TEST(VideoFrameTableWidgetTests, FlushFillsBothTablesAndEmitsGopChangedOnce) {
 
     AppendStandardFrames(widget);
     EXPECT_TRUE(widget.HasPending());
-    EXPECT_EQ(0, frame_table->rowCount());  // 增量提交前不落表
+    EXPECT_EQ(0, RowCount(frame_table));  // 增量提交前不落表
     EXPECT_EQ(0, gop_table->rowCount());
 
     widget.FlushPending();
     EXPECT_FALSE(widget.HasPending());
 
-    ASSERT_EQ(4, frame_table->rowCount());
+    ASSERT_EQ(4, RowCount(frame_table));
     ASSERT_EQ(2, gop_table->rowCount());
     // GOP 摘要只在这一处统一通知，避免每个 GOP 边界都拷一遍向量
     EXPECT_EQ(1, gop_changed);
 
-    ASSERT_TRUE(frame_table->item(0, 1) != nullptr);
-    EXPECT_EQ(QStringLiteral("I"), frame_table->item(0, 1)->text());
-    EXPECT_EQ(QStringLiteral("P"), frame_table->item(1, 1)->text());
-    EXPECT_EQ(QStringLiteral("1"), frame_table->item(1, 4)->text());  // GOP #
-    EXPECT_EQ(QStringLiteral("2"), frame_table->item(1, 5)->text());  // GOP 内
-    EXPECT_EQ(QStringLiteral("2"), frame_table->item(3, 4)->text());  // 第 4 帧属于第 2 段
+    ASSERT_TRUE(HasCell(frame_table, 0, 1));
+    EXPECT_EQ(QStringLiteral("I"), Cell(frame_table, 0, 1));
+    EXPECT_EQ(QStringLiteral("P"), Cell(frame_table, 1, 1));
+    EXPECT_EQ(QStringLiteral("1"), Cell(frame_table, 1, 4));  // GOP #
+    EXPECT_EQ(QStringLiteral("2"), Cell(frame_table, 1, 5));  // GOP 内
+    EXPECT_EQ(QStringLiteral("2"), Cell(frame_table, 3, 4));  // 第 4 帧属于第 2 段
 
     ASSERT_TRUE(gop_table->item(0, 6) != nullptr);
     EXPECT_EQ(QStringLiteral("3"), gop_table->item(0, 5)->text());  // 总帧数
@@ -188,25 +206,25 @@ TEST(VideoFrameTableWidgetTests, IFrameFilterRebuildsVisibleRows) {
     EnsureApp();
 
     VideoFrameTableWidget widget;
-    QTableWidget* frame_table = widget.frameTable();
+    QTableView* frame_table = widget.frameTable();
     QComboBox* filter = widget.findChild<QComboBox*>();
     ASSERT_TRUE(frame_table != nullptr);
     ASSERT_TRUE(filter != nullptr);
 
     AppendStandardFrames(widget);
     widget.FlushPending();
-    ASSERT_EQ(4, frame_table->rowCount());
+    ASSERT_EQ(4, RowCount(frame_table));
 
     filter->setCurrentIndex(1);  // 仅 I 帧
-    EXPECT_EQ(2, frame_table->rowCount());
-    EXPECT_EQ(QStringLiteral("I"), frame_table->item(0, 1)->text());
+    EXPECT_EQ(2, RowCount(frame_table));
+    EXPECT_EQ(QStringLiteral("I"), Cell(frame_table, 0, 1));
 
     QLabel* summary = SummaryLabel(widget);
     ASSERT_TRUE(summary != nullptr);
     EXPECT_TRUE(summary->text().contains(QStringLiteral("显示: 2")));
 
     filter->setCurrentIndex(0);  // 全部帧
-    EXPECT_EQ(4, frame_table->rowCount());
+    EXPECT_EQ(4, RowCount(frame_table));
 }
 
 // ---------------------------------------------------------------------------
@@ -217,15 +235,15 @@ TEST(VideoFrameTableWidgetTests, UnknownFrameTypeRendersQuestionMark) {
     EnsureApp();
 
     VideoFrameTableWidget widget;
-    QTableWidget* frame_table = widget.frameTable();
+    QTableView* frame_table = widget.frameTable();
     ASSERT_TRUE(frame_table != nullptr);
 
     widget.AppendVideoFrame(1, AV_PICTURE_TYPE_NONE, false, 0, 0.0);
     widget.FlushPending();
 
-    ASSERT_EQ(1, frame_table->rowCount());
-    ASSERT_TRUE(frame_table->item(0, 1) != nullptr);
-    EXPECT_EQ(QStringLiteral("?"), frame_table->item(0, 1)->text());
+    ASSERT_EQ(1, RowCount(frame_table));
+    ASSERT_TRUE(HasCell(frame_table, 0, 1));
+    EXPECT_EQ(QStringLiteral("?"), Cell(frame_table, 0, 1));
 }
 
 // ---------------------------------------------------------------------------
@@ -236,14 +254,14 @@ TEST(VideoFrameTableWidgetTests, ResetClearsTablesAndNotifiesGopChanged) {
     EnsureApp();
 
     VideoFrameTableWidget widget;
-    QTableWidget* frame_table = widget.frameTable();
+    QTableView* frame_table = widget.frameTable();
     QTableWidget* gop_table = GopTable(widget);
     ASSERT_TRUE(frame_table != nullptr);
     ASSERT_TRUE(gop_table != nullptr);
 
     AppendStandardFrames(widget);
     widget.FlushPending();
-    ASSERT_EQ(4, frame_table->rowCount());
+    ASSERT_EQ(4, RowCount(frame_table));
 
     int gop_changed = 0;
     QObject::connect(&widget, &VideoFrameTableWidget::GopSummariesChanged,
@@ -252,7 +270,7 @@ TEST(VideoFrameTableWidgetTests, ResetClearsTablesAndNotifiesGopChanged) {
     widget.ResetVideoFrames();
     EXPECT_TRUE(widget.FrameRecords().empty());
     EXPECT_TRUE(widget.GopSummaries().empty());
-    EXPECT_EQ(0, frame_table->rowCount());
+    EXPECT_EQ(0, RowCount(frame_table));
     EXPECT_EQ(0, gop_table->rowCount());
     EXPECT_TRUE(widget.HasPending());
 

@@ -4,10 +4,13 @@
 #include "ui/analysis_panel/PacketTableWidget.h"
 #include "ui/analysis_panel/VideoFrameTableWidget.h"
 
+#include <QAbstractItemView>
 #include <QCheckBox>
+#include <QHeaderView>
+#include <QItemSelectionModel>
 #include <QSignalBlocker>
 #include <QTabWidget>
-#include <QTableWidget>
+#include <QTableView>
 #include <QVBoxLayout>
 
 // 帧表 / 包表互跳要读 FFmpeg 媒体类型常量（AVMEDIA_TYPE_VIDEO）。原先由 core/analysis
@@ -69,10 +72,17 @@ void FramePacketView::SetupUi() {
 
     // 各子页内部的按钮与筛选框都连在各自组件内。
     // 帧表 ↔ 包表按 PTS 互跳要同时碰两张表，连线留在本页。
-    connect(packet_page_->packetTable(), &QTableWidget::itemSelectionChanged,
-            this, &FramePacketView::OnPacketTableSelectionChanged);
-    connect(video_page_->frameTable(), &QTableWidget::itemSelectionChanged,
-            this, &FramePacketView::OnVideoFrameTableSelectionChanged);
+    // 两张表现在都是 QTableView（model/view），所以监听的是 selectionModel 的
+    // currentRowChanged —— QTableView 没有 itemSelectionChanged（那是 QTableWidget 的
+    // 便利信号，依赖"每行都有 item 对象"，而 model 视图恰恰没有）。
+    if (auto* packet_selection = packet_page_->packetTable()->selectionModel()) {
+        connect(packet_selection, &QItemSelectionModel::currentRowChanged,
+                this, &FramePacketView::OnPacketTableSelectionChanged);
+    }
+    if (auto* frame_selection = video_page_->frameTable()->selectionModel()) {
+        connect(frame_selection, &QItemSelectionModel::currentRowChanged,
+                this, &FramePacketView::OnVideoFrameTableSelectionChanged);
+    }
 }
 
 void FramePacketView::SetFeatureHooks(std::function<bool(int)> is_enabled,
@@ -151,59 +161,75 @@ void FramePacketView::AppendPacket(const model::PacketInfo& packet_info) {
     packet_page_->AppendPacket(packet_info);
 }
 
+// 在记录序列里找 PTS 最接近的那条，返回记录索引（找不到返回 records.size()）。
+// 模板而不是两份复制：帧表→包表与包表→帧表要的是同一个"最近邻"语义，
+// 差别只在"要不要先按流类型过滤"（包序列里混着音频包，必须只看视频包；
+// 帧序列没有这个维度）—— 所以过滤条件做成谓词参数，而不是往模板里塞
+// `records[i].stream_type` 那种"对另一种记录类型根本不存在"的字段。
+template <typename Record, typename Pred>
+std::size_t NearestByPts(const std::vector<Record>& records, qint64 target_pts, Pred pred) {
+    std::size_t best = records.size();
+    qint64 best_diff = std::numeric_limits<qint64>::max();
+    for (std::size_t i = 0; i < records.size(); ++i) {
+        if (!pred(records[i])) continue;
+        const qint64 diff = std::llabs(records[i].pts - target_pts);
+        if (diff < best_diff) {
+            best_diff = diff;
+            best = i;
+        }
+    }
+    return best;
+}
+
+template <typename Record>
+std::size_t NearestByPts(const std::vector<Record>& records, qint64 target_pts) {
+    return NearestByPts(records, target_pts, [](const Record&) { return true; });
+}
+
+// 把视图的当前行移到"记录索引 -> 行号"对应的那一行。
+//
+// 这一步为什么必须走模型：筛选生效时行号 ≠ 记录索引（比如只看 I 帧时，
+// 第 3 条记录可能是第 0 行）。以前这里是逐行读"第 3 列文本"再 toLongLong
+// 反查 —— 既慢（O(可见行数) 次字符串解析），又依赖"第 3 列恰好写着 PTS"
+// 这个隐式契约；列顺序一改互跳就静默错位。现在映射是模型自己的职责，
+// 一次二分搞定，也不再碰单元格文本。
+bool SelectRecordRow(QTableView* view, int row) {
+    if (view == nullptr || row < 0) return false;
+    QAbstractItemModel* model = view->model();
+    if (!model || row >= model->rowCount()) return false;
+    view->setCurrentIndex(model->index(row, 0));
+    view->scrollTo(model->index(row, 0), QAbstractItemView::PositionAtCenter);
+    return true;
+}
+
 // 包表选中 → 在视频帧记录中找 PTS 最接近的视频帧, 跳转并高亮
 void FramePacketView::OnPacketTableSelectionChanged() {
     if (linking_) return;
     if (!video_page_ || !packet_page_) return;
 
-    QTableWidget* packet_table = packet_page_->packetTable();
-    if (!packet_table) return;
+    auto* packet_model = packet_page_->packetModel();
+    QTableView* packet_table = packet_page_->packetTable();
+    if (!packet_model || !packet_table) return;
 
-    // 帧记录与帧表都在 VideoFrameTableWidget 里（帧表 ↔ 包表互跳要同时碰两侧）
-    const std::vector<VideoFrameRecord>& frame_records = video_page_->FrameRecords();
-    QTableWidget* frame_table = video_page_->frameTable();
-    if (!frame_table) return;
+    auto* frame_model = video_page_->frameModel();
+    QTableView* frame_table = video_page_->frameTable();
+    if (!frame_model || !frame_table) return;
 
-    const int row = packet_table->currentRow();
-    if (row < 0 || row >= packet_table->rowCount()) return;
+    const int row = packet_table->currentIndex().row();
+    if (row < 0) return;
+    const PacketRecord* packet = packet_model->RecordAt(row);
+    if (packet == nullptr) return;
+    const qint64 target_pts = packet->pts;
 
-    // 从表中读 PTS (原始 timebase 单位) 用于匹配
-    QTableWidgetItem* pts_item = packet_table->item(row, 3);  // 列 3 = 显示时间(PTS)
-    if (!pts_item) return;
-    bool ok = false;
-    const qint64 target_pts = pts_item->text().toLongLong(&ok);
-    if (!ok) return;
+    const std::size_t best = NearestByPts(frame_model->records(), target_pts);
+    if (best >= frame_model->record_count()) return;
 
-    // 在帧记录中找 PTS 最接近的记录
-    int best_index = -1;
-    qint64 best_diff = std::numeric_limits<qint64>::max();
-    for (std::size_t i = 0; i < frame_records.size(); ++i) {
-        const qint64 diff = std::llabs(frame_records[i].pts - target_pts);
-        if (diff < best_diff) {
-            best_diff = diff;
-            best_index = static_cast<int>(i);
-        }
-    }
-    if (best_index < 0) return;
-
-    // 帧表可能被筛选过滤, 行号 != 下标. 反向查可见行.
-    int target_visible_row = -1;
-    for (int r = 0; r < frame_table->rowCount(); ++r) {
-        QTableWidgetItem* pts_cell = frame_table->item(r, 3);  // 列 3 = 原始 PTS
-        if (!pts_cell) continue;
-        bool ok2 = false;
-        const qint64 cell_pts = pts_cell->text().toLongLong(&ok2);
-        if (ok2 && cell_pts == frame_records[best_index].pts) {
-            target_visible_row = r;
-            break;
-        }
-    }
-    if (target_visible_row < 0) return;
+    // 帧表可能被筛选：记录索引 -> 行号要问模型
+    const int target_row = frame_model->RowOfRecord(best);
+    if (target_row < 0) return;   // 该帧被筛掉了，不动
 
     linking_ = true;
-    frame_table->setCurrentCell(target_visible_row, 0);
-    frame_table->scrollToItem(frame_table->item(target_visible_row, 0),
-                              QAbstractItemView::PositionAtCenter);
+    SelectRecordRow(frame_table, target_row);
     linking_ = false;
 
     // 自动切到「视频帧」子页
@@ -217,52 +243,31 @@ void FramePacketView::OnVideoFrameTableSelectionChanged() {
     if (linking_) return;
     if (!video_page_ || !packet_page_) return;
 
-    QTableWidget* frame_table = video_page_->frameTable();
-    QTableWidget* packet_table = packet_page_->packetTable();
-    if (!frame_table || !packet_table) return;
+    auto* frame_model = video_page_->frameModel();
+    QTableView* frame_table = video_page_->frameTable();
+    if (!frame_model || !frame_table) return;
 
-    const int row = frame_table->currentRow();
-    if (row < 0 || row >= frame_table->rowCount()) return;
+    auto* packet_model = packet_page_->packetModel();
+    QTableView* packet_table = packet_page_->packetTable();
+    if (!packet_model || !packet_table) return;
 
-    QTableWidgetItem* pts_item = frame_table->item(row, 3);  // 列 3 = 原始 PTS
-    if (!pts_item) return;
-    bool ok = false;
-    const qint64 target_pts = pts_item->text().toLongLong(&ok);
-    if (!ok) return;
+    const int row = frame_table->currentIndex().row();
+    if (row < 0) return;
+    const VideoFrameRecord* frame = frame_model->RecordAt(row);
+    if (frame == nullptr) return;
+    const qint64 target_pts = frame->pts;
 
     // 包记录含视频/音频包, 仅匹配视频包以保证 PTS 时基一致
-    const std::vector<PacketRecord>& packet_records = packet_page_->PacketRecords();
-    int best_index = -1;
-    qint64 best_diff = std::numeric_limits<qint64>::max();
-    for (size_t i = 0; i < packet_records.size(); ++i) {
-        if (packet_records[i].stream_type != AVMEDIA_TYPE_VIDEO) continue;
-        const qint64 diff = std::llabs(packet_records[i].pts - target_pts);
-        if (diff < best_diff) {
-            best_diff = diff;
-            best_index = static_cast<int>(i);
-        }
-    }
-    if (best_index < 0) return;
+    const std::size_t best = NearestByPts(
+        packet_model->records(), target_pts,
+        [](const PacketRecord& p) { return p.stream_type == AVMEDIA_TYPE_VIDEO; });
+    if (best >= packet_model->record_count()) return;
 
-    // 包表行号需要按 PacketMatchesFilter 过滤后映射; 为避免过滤导致错位,
-    // 通过遍历当前可见行做反向查找
-    int target_visible_row = -1;
-    for (int r = 0; r < packet_table->rowCount(); ++r) {
-        QTableWidgetItem* pts_cell = packet_table->item(r, 3);  // 列 3 = 显示时间(PTS)
-        if (!pts_cell) continue;
-        bool ok2 = false;
-        const qint64 cell_pts = pts_cell->text().toLongLong(&ok2);
-        if (ok2 && cell_pts == packet_records[best_index].pts) {
-            target_visible_row = r;
-            break;
-        }
-    }
-    if (target_visible_row < 0) return;
+    const int target_row = packet_model->RowOfRecord(best);
+    if (target_row < 0) return;   // 该包被筛掉了，不动
 
     linking_ = true;
-    packet_table->setCurrentCell(target_visible_row, 0);
-    packet_table->scrollToItem(packet_table->item(target_visible_row, 0),
-                               QAbstractItemView::PositionAtCenter);
+    SelectRecordRow(packet_table, target_row);
     linking_ = false;
 
     // 自动切到「包」子页

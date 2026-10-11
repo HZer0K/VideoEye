@@ -22,15 +22,19 @@ namespace videoeye {
 namespace ui {
 
 namespace {
-constexpr std::size_t kMaxFrameRecords = 50000;
-// GOP 段数远少于帧数（典型几百~几千），上限取帧上限的 1/10 足够。
-constexpr std::size_t kMaxGopSummaries = kMaxFrameRecords / 10;
+// 记录上限统一取 10 万（见 RecordTableModel.h）：1 小时 25fps ≈ 9 万帧，
+// 以前本页是 5 万，长视频的后半段会被静默丢掉。
+constexpr std::size_t kMaxFrameRecords = kDefaultMaxRecordCount;
+// GOP 段数远少于帧数（典型几百~几千），上限取 5000。
+constexpr std::size_t kMaxGopSummaries = 5000;
 }  // namespace
 
 VideoFrameTableWidget::VideoFrameTableWidget(QWidget* parent)
     : QWidget(parent) {
     SetupUi();
 }
+
+VideoFrameTableWidget::~VideoFrameTableWidget() = default;
 
 void VideoFrameTableWidget::SetupUi() {
     // 本组件自身是 QWidget 但不可见：它只是两个子页 widget 的宿主，由父页把
@@ -64,10 +68,29 @@ void VideoFrameTableWidget::SetupUi() {
     QVBoxLayout* table_layout = new QVBoxLayout(table_group);
     // 视频帧列名升级 + 删除冗余列 (原 7 列 → 6 列, 去掉了「关键帧」列, 该信息
     // 已由「帧类型」(I) 覆盖; 同时将协议术语 PTS 改为更易懂的「原始 PTS」)
-    frame_table_ = new QTableWidget(0, 6, table_group);
-    frame_table_->setHorizontalHeaderLabels({
-        "#", "帧类型", "播放时间(s)", "原始 PTS", "GOP #", "GOP 内"
-    });
+    using Spec = RecordTableModel<VideoFrameRecord>::ColumnSpec;
+    std::vector<Spec> columns;
+    columns.push_back(Spec{tr("#"),
+                           [](const VideoFrameRecord& r) { return QString::number(r.index); }, {}});
+    columns.push_back(Spec{tr("帧类型"), [this](const VideoFrameRecord& r) {
+                               return FrameTypeToString(r.frame_type);
+                           }, {}});
+    columns.push_back(Spec{tr("播放时间(s)"),
+                           [](const VideoFrameRecord& r) {
+                               return QString::number(r.timestamp_seconds, 'f', 3);
+                           }, {}});
+    columns.push_back(Spec{tr("原始 PTS"),
+                           [](const VideoFrameRecord& r) { return QString::number(r.pts); }, {}});
+    columns.push_back(Spec{tr("GOP #"),
+                           [](const VideoFrameRecord& r) { return QString::number(r.gop_index); },
+                           {}});
+    columns.push_back(Spec{tr("GOP 内"),
+                           [](const VideoFrameRecord& r) { return QString::number(r.gop_position); },
+                           {}});
+    frame_model_ = new RecordTableModel<VideoFrameRecord>(std::move(columns), this);
+
+    frame_table_ = new QTableView(table_group);
+    frame_table_->setModel(frame_model_);
     frame_table_->verticalHeader()->setVisible(false);
     frame_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     frame_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -125,6 +148,10 @@ void VideoFrameTableWidget::SetupUi() {
     // 连线留在 FramePacketView（它持有两侧）。
 }
 
+const std::vector<VideoFrameRecord>& VideoFrameTableWidget::FrameRecords() const {
+    return frame_model_->records();
+}
+
 bool VideoFrameTableWidget::HasPending() const {
     return frame_table_dirty_ || gop_table_dirty_ || frame_summary_dirty_;
 }
@@ -138,7 +165,7 @@ void VideoFrameTableWidget::FlushPending() {
         FlushPendingGopTableUpdates();
         gop_table_dirty_ = false;
         // GOP 摘要变化要通知「流概览」区（最大 GOP 指标 + GOP 分布曲线），
-        // 统一在这里发一次，避免每个 GOP 边界都拷一遍向量。
+        // 统一在这里发一次，避免每个 GOP 边界都拷一次向量。
         emit GopSummariesChanged();
     }
     if (frame_summary_dirty_) {
@@ -148,17 +175,18 @@ void VideoFrameTableWidget::FlushPending() {
 }
 
 void VideoFrameTableWidget::ResetVideoFrames() {
-    frame_records_.clear();
+    pending_frames_.clear();
+    last_gop_index_ = 0;
+    last_gop_position_ = 0;
     gop_summaries_.clear();
-    frame_table_synced_record_count_ = 0;
     gop_table_synced_count_ = 0;
     frame_table_dirty_ = false;
     // 清空 GOP 摘要后仍要走一次刷新：FlushPending 会据此发出 GopSummariesChanged()，
     // 让「流概览」区的最大 GOP 指标与分布曲线一并归零（两份缓存必须一起失效）。
     gop_table_dirty_ = true;
     frame_summary_dirty_ = true;
-    if (frame_table_) {
-        frame_table_->setRowCount(0);
+    if (frame_model_) {
+        frame_model_->Clear();
     }
     if (gop_table_) {
         gop_table_->setRowCount(0);
@@ -168,7 +196,7 @@ void VideoFrameTableWidget::ResetVideoFrames() {
 
 void VideoFrameTableWidget::AppendVideoFrame(int index, int frame_type, bool is_key_frame,
                                              qint64 pts, double timestamp_seconds) {
-    if (!frame_table_ || !gop_table_) {
+    if (!frame_model_ || !gop_table_) {
         return;
     }
 
@@ -179,36 +207,50 @@ void VideoFrameTableWidget::AppendVideoFrame(int index, int frame_type, bool is_
     record.pts = pts;
     record.timestamp_seconds = timestamp_seconds;
 
-    if (frame_records_.empty()) {
-        record.gop_index = 1;
-        record.gop_position = 1;
-    } else {
-        const VideoFrameRecord& last_record = frame_records_.back();
-        if (is_key_frame) {
-            record.gop_index = last_record.gop_index + 1;
-            record.gop_position = 1;
-        } else {
-            record.gop_index = last_record.gop_index;
-            record.gop_position = last_record.gop_position + 1;
-        }
-    }
-
-    frame_records_.push_back(record);
+    // 只入队 + 置脏：GOP 归属（gop_index / gop_position）与 GOP 摘要是**派生结果**，
+    // 放到 FlushPending 里连同批量提交一起算 —— 每帧都回头翻一遍记录缓存没必要，
+    // 而且 pending 还没进模型时"上一条记录"根本查不到。
+    pending_frames_.push_back(record);
     frame_table_dirty_ = true;
     frame_summary_dirty_ = true;
-    {
-        const std::size_t old_size = frame_records_.size();
-        TrimRecords(frame_records_, frame_table_synced_record_count_, frame_table_,
-                    frame_table_dirty_, kMaxFrameRecords);
-        if (frame_records_.size() != old_size) {
-            // 帧记录被裁剪时同步清理GOP数据
-            gop_summaries_.clear();
-            gop_table_synced_count_ = 0;
-            if (gop_table_) gop_table_->setRowCount(0);
-            gop_table_dirty_ = true;
-        }
+}
+
+QString VideoFrameTableWidget::FrameTypeToString(int frame_type) const {
+    if (frame_type == AV_PICTURE_TYPE_I) {
+        return "I";
+    }
+    if (frame_type == AV_PICTURE_TYPE_P) {
+        return "P";
+    }
+    if (frame_type == AV_PICTURE_TYPE_B) {
+        return "B";
+    }
+    return "?";
+}
+
+bool VideoFrameTableWidget::MatchesFrameFilter(const VideoFrameRecord& record) const {
+    if (!frame_filter_combo_) {
+        return true;
     }
 
+    switch (frame_filter_combo_->currentIndex()) {
+    case 1:
+        return record.frame_type == AV_PICTURE_TYPE_I;
+    default:
+        return true;
+    }
+}
+
+bool VideoFrameTableWidget::MatchesFrameFilterIsActive() const {
+    return frame_filter_combo_ != nullptr && frame_filter_combo_->currentIndex() == 1;
+}
+
+// 一条新帧落定后更新 GOP 摘要。
+//
+// 与帧记录同源同步：GOP 段是从 pict_type 推导出来的，所以只能在这里（帧真正被
+// 接受并算出 GOP 归属之后）更新，不能等到刷 GOP 表时再算 —— 那样"段边界"和
+// "帧的 gop_index"就是两个独立算出来的东西，迟早对不上。
+void VideoFrameTableWidget::UpdateGopSummariesFor(const VideoFrameRecord& record) {
     if (gop_summaries_.empty() || record.gop_position == 1) {
         GopSummary summary;
         summary.gop_index = record.gop_index;
@@ -243,67 +285,36 @@ void VideoFrameTableWidget::AppendVideoFrame(int index, int frame_type, bool is_
         }
     }
     gop_table_dirty_ = true;
-    TrimRecords(gop_summaries_, gop_table_synced_count_, gop_table_,
-                gop_table_dirty_, kMaxGopSummaries);
+    TrimRecords(gop_summaries_, gop_table_synced_count_, gop_table_, gop_table_dirty_,
+                kMaxGopSummaries);
 }
 
-QString VideoFrameTableWidget::FrameTypeToString(int frame_type) const {
-    if (frame_type == AV_PICTURE_TYPE_I) {
-        return "I";
-    }
-    if (frame_type == AV_PICTURE_TYPE_P) {
-        return "P";
-    }
-    if (frame_type == AV_PICTURE_TYPE_B) {
-        return "B";
-    }
-    return "?";
-}
-
-bool VideoFrameTableWidget::MatchesFrameFilter(const VideoFrameRecord& record) const {
-    if (!frame_filter_combo_) {
-        return true;
-    }
-
-    switch (frame_filter_combo_->currentIndex()) {
-    case 1:
-        return record.frame_type == AV_PICTURE_TYPE_I;
-    default:
-        return true;
-    }
-}
-
-void VideoFrameTableWidget::RebuildFrameTable() {
-    if (!frame_table_) {
+// 筛选条件变了：让模型按新条件重算可见行（记录本身不动）。
+void VideoFrameTableWidget::ApplyFrameFilter() {
+    if (!frame_model_) return;
+    if (!MatchesFrameFilterIsActive()) {
+        frame_model_->SetFilter(nullptr);
         return;
     }
-
-    frame_table_->setUpdatesEnabled(false);
-    frame_table_->setRowCount(0);
-    for (const auto& record : frame_records_) {
-        if (!MatchesFrameFilter(record)) {
-            continue;
-        }
-        AppendFrameRowToTable(record);
-    }
-    frame_table_->setUpdatesEnabled(true);
-    frame_table_synced_record_count_ = frame_records_.size();
+    // 捕获筛选模式的值而不是 this：谓词会被模型长期持有，捕获 this 的话
+    // 每次判定都要解引用一个可能已经析构的组件。
+    frame_model_->SetFilter([](const VideoFrameRecord& r) {
+        return r.frame_type == AV_PICTURE_TYPE_I;
+    });
 }
 
 void VideoFrameTableWidget::UpdateFrameSummary() {
-    if (!frame_summary_label_) {
+    if (!frame_summary_label_ || !frame_model_) {
         return;
     }
 
+    const auto& records = frame_model_->records();
     int visible_count = 0;
-    for (const auto& record : frame_records_) {
+    int key_count = 0;
+    for (const auto& record : records) {
         if (MatchesFrameFilter(record)) {
             visible_count++;
         }
-    }
-
-    int key_count = 0;
-    for (const auto& record : frame_records_) {
         if (record.is_key_frame) {
             key_count++;
         }
@@ -311,33 +322,58 @@ void VideoFrameTableWidget::UpdateFrameSummary() {
 
     frame_summary_label_->setText(
         tr("总帧数: %1 | 显示: %2 | 关键帧: %3 | GOP: %4")
-            .arg(frame_records_.size())
+            .arg(records.size())
             .arg(visible_count)
             .arg(key_count)
             .arg(gop_summaries_.size()));
 }
 
 void VideoFrameTableWidget::OnFrameFilterChanged() {
-    RebuildFrameTable();
+    ApplyFrameFilter();
     UpdateFrameSummary();
 }
 
 void VideoFrameTableWidget::FlushPendingFrameTableUpdates() {
-    if (!frame_table_) {
+    if (!frame_model_ || !frame_table_) {
         return;
     }
 
-    frame_table_->setUpdatesEnabled(false);
-    for (std::size_t i = frame_table_synced_record_count_; i < frame_records_.size(); ++i) {
-        if (!MatchesFrameFilter(frame_records_[i])) {
-            continue;
-        }
-        AppendFrameRowToTable(frame_records_[i]);
-    }
-    frame_table_->setUpdatesEnabled(true);
-    frame_table_synced_record_count_ = frame_records_.size();
+    if (!pending_frames_.empty()) {
+        // 派生 GOP 归属：只依赖"上一条帧落在哪个 GOP 的第几位"，
+        // 用成员游标而不是回查记录缓存 —— 记录被裁剪后索引会整体前移，
+        // 回查会算错。
+        for (auto& record : pending_frames_) {
+            if (last_gop_index_ == 0) {
+                record.gop_index = 1;
+                record.gop_position = 1;
+            } else if (record.is_key_frame) {
+                record.gop_index = last_gop_index_ + 1;
+                record.gop_position = 1;
+            } else {
+                record.gop_index = last_gop_index_;
+                record.gop_position = last_gop_position_ + 1;
+            }
+            last_gop_index_ = record.gop_index;
+            last_gop_position_ = record.gop_position;
 
-    if (frame_table_->rowCount() > 0) {
+            UpdateGopSummariesFor(record);
+        }
+        frame_model_->AppendRecords(std::move(pending_frames_));
+        pending_frames_.clear();
+    }
+
+    const std::size_t count = frame_model_->record_count();
+    if (count > kMaxFrameRecords) {
+        frame_model_->TrimFront(count - kMaxFrameRecords);
+        // 帧记录被裁剪时同步清理 GOP 数据：GOP 是从帧记录推导的派生结果，
+        // 帧都没了却留着 GOP 段，界面上就会出现"GOP 5 的帧一条都找不到"。
+        gop_summaries_.clear();
+        gop_table_synced_count_ = 0;
+        if (gop_table_) gop_table_->setRowCount(0);
+        gop_table_dirty_ = true;
+    }
+
+    if (frame_model_->rowCount() > 0) {
         frame_table_->scrollToBottom();
     }
 }
@@ -360,18 +396,60 @@ void VideoFrameTableWidget::FlushPendingGopTableUpdates() {
     gop_table_->setUpdatesEnabled(true);
 }
 
-// 与 SetupUi 帧表表头一一对应 (6 列): #/帧类型/播放时间(s)/原始 PTS/GOP #/GOP 内
-void VideoFrameTableWidget::AppendFrameRowToTable(const VideoFrameRecord& record) {
-    const int row = frame_table_->rowCount();
-    frame_table_->insertRow(row);
-    SetTableItemText(frame_table_, row, 0, QString::number(record.index));
-    SetTableItemText(frame_table_, row, 1, FrameTypeToString(record.frame_type));
-    SetTableItemText(frame_table_, row, 2, QString::number(record.timestamp_seconds, 'f', 3));
-    SetTableItemText(frame_table_, row, 3, QString::number(record.pts));
-    SetTableItemText(frame_table_, row, 4, QString::number(record.gop_index));
-    SetTableItemText(frame_table_, row, 5, QString::number(record.gop_position));
+void VideoFrameTableWidget::OnExportFrameCsv() {
+    if (!frame_model_ || frame_model_->record_count() == 0) {
+        QMessageBox::information(this, tr("提示"), tr("当前没有可导出的视频帧数据。"));
+        return;
+    }
+
+    const int rows = static_cast<int>(frame_model_->record_count());
+    ExportCsvStream(this,
+        tr("导出视频帧 CSV"),
+        QString("videoeye_frames_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
+        [this](QTextStream& out) {
+            out << "index,frame_type,timestamp_seconds,pts,gop_index,gop_position\n";
+            for (const auto& record : frame_model_->records()) {
+                out << record.index << ','
+                    << FrameTypeToString(record.frame_type) << ','
+                    << QString::number(record.timestamp_seconds, 'f', 6) << ','
+                    << record.pts << ','
+                    << record.gop_index << ','
+                    << record.gop_position << '\n';
+            }
+        },
+        rows);
 }
 
+void VideoFrameTableWidget::OnExportGopCsv() {
+    if (gop_summaries_.empty()) {
+        QMessageBox::information(this, tr("提示"), tr("当前没有可导出的 GOP 数据。"));
+        return;
+    }
+
+    ExportCsvStream(this,
+        tr("导出 GOP CSV"),
+        QString("videoeye_gop_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
+        [this](QTextStream& out) {
+            out << "gop_index,start_frame,end_frame,start_ts,end_ts,total_frames,key_count,"
+                   "i_count,p_count,b_count\n";
+            for (const auto& g : gop_summaries_) {
+                out << g.gop_index << ','
+                    << g.start_frame << ','
+                    << g.end_frame << ','
+                    << QString::number(g.start_ts, 'f', 6) << ','
+                    << QString::number(g.end_ts, 'f', 6) << ','
+                    << g.total_frames << ','
+                    << g.key_count << ','
+                    << g.i_count << ','
+                    << g.p_count << ','
+                    << g.b_count << '\n';
+            }
+        },
+        static_cast<int>(gop_summaries_.size()));
+}
+
+// 与 SetupUi GOP 表表头一一对应 (9 列):
+// GOP #/起始帧号/结束帧号/起始(s)/结束(s)/总帧数/I/P/B
 void VideoFrameTableWidget::UpdateGopRowInTable(int row, const GopSummary& summary) {
     SetTableItemText(gop_table_, row, 0, QString::number(summary.gop_index));
     SetTableItemText(gop_table_, row, 1, QString::number(summary.start_frame));
@@ -382,57 +460,6 @@ void VideoFrameTableWidget::UpdateGopRowInTable(int row, const GopSummary& summa
     SetTableItemText(gop_table_, row, 6, QString::number(summary.i_count));
     SetTableItemText(gop_table_, row, 7, QString::number(summary.p_count));
     SetTableItemText(gop_table_, row, 8, QString::number(summary.b_count));
-}
-
-void VideoFrameTableWidget::OnExportFrameCsv() {
-    if (frame_records_.empty()) {
-        QMessageBox::information(this, tr("提示"), tr("当前没有可导出的帧分析数据。"));
-        return;
-    }
-
-    ExportCsvStream(this,
-        tr("导出视频帧 CSV"),
-        QString("videoeye_frames_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
-        [this](QTextStream& out) {
-            out << "index,frame_type,is_key_frame,timestamp_seconds,pts,gop_index,gop_position\n";
-            for (const auto& record : frame_records_) {
-                out << record.index << ','
-                    << FrameTypeToString(record.frame_type) << ','
-                    << (record.is_key_frame ? 1 : 0) << ','
-                    << QString::number(record.timestamp_seconds, 'f', 6) << ','
-                    << record.pts << ','
-                    << record.gop_index << ','
-                    << record.gop_position << '\n';
-            }
-        },
-        static_cast<int>(frame_records_.size()));
-}
-
-void VideoFrameTableWidget::OnExportGopCsv() {
-    if (gop_summaries_.empty()) {
-        QMessageBox::information(this, tr("提示"), tr("当前没有可导出的 GOP 摘要数据。"));
-        return;
-    }
-
-    ExportCsvStream(this,
-        tr("导出 GOP 摘要 CSV"),
-        QString("videoeye_gop_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
-        [this](QTextStream& out) {
-            out << "gop_index,start_frame,end_frame,start_ts,end_ts,total_frames,i_count,p_count,b_count,key_count\n";
-            for (const auto& s : gop_summaries_) {
-                out << s.gop_index << ','
-                    << s.start_frame << ','
-                    << s.end_frame << ','
-                    << QString::number(s.start_ts, 'f', 6) << ','
-                    << QString::number(s.end_ts, 'f', 6) << ','
-                    << s.total_frames << ','
-                    << s.i_count << ','
-                    << s.p_count << ','
-                    << s.b_count << ','
-                    << s.key_count << '\n';
-            }
-        },
-        static_cast<int>(gop_summaries_.size()));
 }
 
 }  // namespace ui

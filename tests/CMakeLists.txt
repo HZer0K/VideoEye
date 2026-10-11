@@ -300,6 +300,19 @@ target_link_libraries(test_chart_decimation PRIVATE Qt6::Widgets Qt6::Gui Qt6::C
 add_test(NAME ChartDecimationTests COMMAND test_chart_decimation)
 
 # ============================================================
+# 测试 2d: RecordTableModel (十万级明细表的 model/view 底座)
+#
+# 纯 Qt Core + Gui（QColor），不需要 QApplication。
+# ============================================================
+videoeye_add_test(test_record_table_model
+    unit/test_record_table_model.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/PerfMetrics.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/Logger.cpp
+)
+target_link_libraries(test_record_table_model PRIVATE Qt6::Gui Qt6::Core)
+add_test(NAME RecordTableModelTests COMMAND test_record_table_model)
+
+# ============================================================
 # 测试 3: StreamStatsExporter (流统计快照导出)
 #
 # 输入是 model::StreamStats(domain 的纯值对象), 所以只链 VideoEyeReporting 就够了 ——
@@ -909,6 +922,7 @@ videoeye_add_test(test_stream_views
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/StreamOverviewView.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/MacroblockView.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+    ${VIDEOEYE_PERF_SOURCES}
 )
 # FramePacketView.cpp 直接用 AV_PICTURE_TYPE_* / AV_PKT_FLAG_* / AVMEDIA_TYPE_*
 # （FFmpeg 公共常量），所以这里要拿到 avcodec 的 include 目录。
@@ -1181,6 +1195,7 @@ videoeye_add_test(test_audio_frame_table_widget
     unit/test_audio_frame_table_widget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioFrameTableWidget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+    ${VIDEOEYE_PERF_SOURCES}
 )
 target_link_libraries(test_audio_frame_table_widget PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets)
@@ -1198,6 +1213,7 @@ videoeye_add_test(test_video_frame_table_widget
     unit/test_video_frame_table_widget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/VideoFrameTableWidget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+    ${VIDEOEYE_PERF_SOURCES}
 )
 target_link_libraries(test_video_frame_table_widget PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets)
@@ -1233,6 +1249,7 @@ videoeye_add_test(test_packet_table_widget
     unit/test_packet_table_widget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/PacketTableWidget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+    ${VIDEOEYE_PERF_SOURCES}
 )
 target_link_libraries(test_packet_table_widget PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets)
@@ -1321,6 +1338,7 @@ videoeye_add_test(test_macroblock_view
     unit/test_macroblock_view.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/MacroblockView.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+    ${VIDEOEYE_PERF_SOURCES}
 )
 target_link_libraries(test_macroblock_view PRIVATE
     VideoEyeDomain

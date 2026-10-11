@@ -22,6 +22,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QLabel>
+#include <QTableView>
 #include <QTableWidget>
 
 #include <libavcodec/avcodec.h>
@@ -71,6 +72,22 @@ PacketInfo MakePacket(int index, int stream_index, int stream_type, int64_t pts,
     return info;
 }
 
+
+int RowCount(QTableView* table) { return table->model()->rowCount(); }
+
+int ColumnCount(QTableView* table) { return table->model()->columnCount(); }
+
+QString Header(QTableView* table, int column) {
+    return table->model()->headerData(column, Qt::Horizontal).toString();
+}
+
+QString Cell(QTableView* table, int row, int column) {
+    return table->model()->index(row, column).data(Qt::DisplayRole).toString();
+}
+
+bool HasCell(QTableView* table, int row, int column) {
+    return table->model()->index(row, column).isValid();
+}
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -81,14 +98,14 @@ TEST(PacketTableWidgetTests, SetupCreatesSevenColumnTableAndFilterOptions) {
     EnsureApp();
 
     PacketTableWidget widget;
-    QTableWidget* table = widget.packetTable();
+    QTableView* table = widget.packetTable();
     ASSERT_TRUE(table != nullptr);
 
-    EXPECT_EQ(7, table->columnCount());
-    EXPECT_EQ(QStringLiteral("流"), table->horizontalHeaderItem(1)->text());
-    EXPECT_EQ(QStringLiteral("显示时间(PTS)"), table->horizontalHeaderItem(3)->text());
-    EXPECT_EQ(QStringLiteral("包大小"), table->horizontalHeaderItem(6)->text());
-    EXPECT_EQ(0, table->rowCount());
+    EXPECT_EQ(7, ColumnCount(table));
+    EXPECT_EQ(QStringLiteral("流"), Header(table, 1));
+    EXPECT_EQ(QStringLiteral("显示时间(PTS)"), Header(table, 3));
+    EXPECT_EQ(QStringLiteral("包大小"), Header(table, 6));
+    EXPECT_EQ(0, RowCount(table));
 
     QComboBox* filter = widget.findChild<QComboBox*>();
     ASSERT_TRUE(filter != nullptr);
@@ -116,28 +133,28 @@ TEST(PacketTableWidgetTests, AppendMarksPendingAndFlushFillsCells) {
     EnsureApp();
 
     PacketTableWidget widget;
-    QTableWidget* table = widget.packetTable();
+    QTableView* table = widget.packetTable();
     QLabel* summary = SummaryLabel(widget);
     ASSERT_TRUE(table != nullptr);
     ASSERT_TRUE(summary != nullptr);
 
     widget.AppendPacket(MakePacket(1, 0, AVMEDIA_TYPE_VIDEO, 1000, 900, 40, 1234, 0.5));
     EXPECT_TRUE(widget.HasPending());
-    EXPECT_EQ(0, table->rowCount());  // 增量提交前不落到表上
+    EXPECT_EQ(0, RowCount(table));  // 增量提交前不落到表上
 
     widget.FlushPending();
     EXPECT_FALSE(widget.HasPending());
-    ASSERT_EQ(1, table->rowCount());
+    ASSERT_EQ(1, RowCount(table));
 
-    ASSERT_TRUE(table->item(0, 0) != nullptr);
-    ASSERT_TRUE(table->item(0, 6) != nullptr);
-    EXPECT_EQ(QStringLiteral("1"), table->item(0, 0)->text());          // #
-    EXPECT_EQ(QStringLiteral("#0 视频"), table->item(0, 1)->text());     // 流（索引+类型合并列）
-    EXPECT_EQ(QStringLiteral("0.500"), table->item(0, 2)->text());      // 播放时间(s)
-    EXPECT_EQ(QStringLiteral("1000"), table->item(0, 3)->text());       // 显示时间(PTS)
-    EXPECT_EQ(QStringLiteral("900"), table->item(0, 4)->text());        // 解码时间(DTS)
-    EXPECT_EQ(QStringLiteral("40"), table->item(0, 5)->text());         // 时长
-    EXPECT_EQ(QStringLiteral("1234"), table->item(0, 6)->text());       // 包大小
+    ASSERT_TRUE(HasCell(table, 0, 0));
+    ASSERT_TRUE(HasCell(table, 0, 6));
+    EXPECT_EQ(QStringLiteral("1"), Cell(table, 0, 0));          // #
+    EXPECT_EQ(QStringLiteral("#0 视频"), Cell(table, 0, 1));     // 流（索引+类型合并列）
+    EXPECT_EQ(QStringLiteral("0.500"), Cell(table, 0, 2));      // 播放时间(s)
+    EXPECT_EQ(QStringLiteral("1000"), Cell(table, 0, 3));       // 显示时间(PTS)
+    EXPECT_EQ(QStringLiteral("900"), Cell(table, 0, 4));        // 解码时间(DTS)
+    EXPECT_EQ(QStringLiteral("40"), Cell(table, 0, 5));         // 时长
+    EXPECT_EQ(QStringLiteral("1234"), Cell(table, 0, 6));       // 包大小
 
     EXPECT_EQ(QStringLiteral("总包数: 1 | 总字节数: 1.2 KB | 视频包: 1 | 音频包: 0 | 其他包: 0 | "
                              "平均包大小: 1234 B | 最大包大小: 1234 B | 最小包大小: 1234 B"),
@@ -152,7 +169,7 @@ TEST(PacketTableWidgetTests, FlushIsIncrementalAndSummaryAggregates) {
     EnsureApp();
 
     PacketTableWidget widget;
-    QTableWidget* table = widget.packetTable();
+    QTableView* table = widget.packetTable();
     QLabel* summary = SummaryLabel(widget);
     ASSERT_TRUE(table != nullptr);
     ASSERT_TRUE(summary != nullptr);
@@ -161,19 +178,19 @@ TEST(PacketTableWidgetTests, FlushIsIncrementalAndSummaryAggregates) {
     widget.AppendPacket(MakePacket(2, 1, AVMEDIA_TYPE_AUDIO, 2000, 1900, 20, 500, 1.0));
     widget.FlushPending();
 
-    ASSERT_EQ(2, table->rowCount());
-    EXPECT_EQ(QStringLiteral("#1 音频"), table->item(1, 1)->text());
+    ASSERT_EQ(2, RowCount(table));
+    EXPECT_EQ(QStringLiteral("#1 音频"), Cell(table, 1, 1));
 
     // 再追加一行（数据流）：只补这一行，已有行的内容不能被重排/丢失
     widget.AppendPacket(MakePacket(3, 2, AVMEDIA_TYPE_DATA, 3000, 2900, 10, 400, 1.5));
     EXPECT_TRUE(widget.HasPending());
     widget.FlushPending();
 
-    ASSERT_EQ(3, table->rowCount());
-    EXPECT_EQ(QStringLiteral("1"), table->item(0, 0)->text());
-    EXPECT_EQ(QStringLiteral("2"), table->item(1, 0)->text());
-    EXPECT_EQ(QStringLiteral("3"), table->item(2, 0)->text());
-    EXPECT_EQ(QStringLiteral("#2 数据"), table->item(2, 1)->text());
+    ASSERT_EQ(3, RowCount(table));
+    EXPECT_EQ(QStringLiteral("1"), Cell(table, 0, 0));
+    EXPECT_EQ(QStringLiteral("2"), Cell(table, 1, 0));
+    EXPECT_EQ(QStringLiteral("3"), Cell(table, 2, 0));
+    EXPECT_EQ(QStringLiteral("#2 数据"), Cell(table, 2, 1));
 
     // 总字节 1900 -> 1.9 KB；平均 633；最大 1000；最小 400
     EXPECT_EQ(QStringLiteral("总包数: 3 | 总字节数: 1.9 KB | 视频包: 1 | 音频包: 1 | 其他包: 1 | "
@@ -182,7 +199,7 @@ TEST(PacketTableWidgetTests, FlushIsIncrementalAndSummaryAggregates) {
 
     // 无新数据时再刷一次是 no-op，行数不翻倍
     widget.FlushPending();
-    EXPECT_EQ(3, table->rowCount());
+    EXPECT_EQ(3, RowCount(table));
 }
 
 // ---------------------------------------------------------------------------
@@ -193,7 +210,7 @@ TEST(PacketTableWidgetTests, FilterRebuildsTableAndAlsoAppliesToIncrementalRows)
     EnsureApp();
 
     PacketTableWidget widget;
-    QTableWidget* table = widget.packetTable();
+    QTableView* table = widget.packetTable();
     QComboBox* filter = widget.findChild<QComboBox*>();
     ASSERT_TRUE(table != nullptr);
     ASSERT_TRUE(filter != nullptr);
@@ -202,32 +219,32 @@ TEST(PacketTableWidgetTests, FilterRebuildsTableAndAlsoAppliesToIncrementalRows)
     widget.AppendPacket(MakePacket(2, 1, AVMEDIA_TYPE_AUDIO, 2000, 1900, 20, 500, 1.0));
     widget.AppendPacket(MakePacket(3, 2, AVMEDIA_TYPE_DATA, 3000, 2900, 10, 400, 1.5));
     widget.FlushPending();
-    ASSERT_EQ(3, table->rowCount());
+    ASSERT_EQ(3, RowCount(table));
 
     // 切「视频流」：立即整表重建，只留视频包
     filter->setCurrentIndex(1);
-    ASSERT_EQ(1, table->rowCount());
-    EXPECT_EQ(QStringLiteral("#0 视频"), table->item(0, 1)->text());
+    ASSERT_EQ(1, RowCount(table));
+    EXPECT_EQ(QStringLiteral("#0 视频"), Cell(table, 0, 1));
 
     // 之后新数据走增量路径：不匹配筛选的行不能出现
     widget.AppendPacket(MakePacket(4, 1, AVMEDIA_TYPE_AUDIO, 4000, 3900, 20, 600, 2.0));
     widget.FlushPending();
-    EXPECT_EQ(1, table->rowCount());
+    EXPECT_EQ(1, RowCount(table));
 
     // 匹配的仍要补进来
     widget.AppendPacket(MakePacket(5, 0, AVMEDIA_TYPE_VIDEO, 5000, 4900, 40, 1100, 2.5));
     widget.FlushPending();
-    ASSERT_EQ(2, table->rowCount());
-    EXPECT_EQ(QStringLiteral("5"), table->item(1, 0)->text());
+    ASSERT_EQ(2, RowCount(table));
+    EXPECT_EQ(QStringLiteral("5"), Cell(table, 1, 0));
 
     // 切回「全部流」：重建后恢复全量（含前两步被挡掉的记录）
     filter->setCurrentIndex(0);
-    EXPECT_EQ(5, table->rowCount());
+    EXPECT_EQ(5, RowCount(table));
 
     // 切「其他流」：只留非视频非音频
     filter->setCurrentIndex(3);
-    ASSERT_EQ(1, table->rowCount());
-    EXPECT_EQ(QStringLiteral("#2 数据"), table->item(0, 1)->text());
+    ASSERT_EQ(1, RowCount(table));
+    EXPECT_EQ(QStringLiteral("#2 数据"), Cell(table, 0, 1));
 }
 
 // ---------------------------------------------------------------------------
@@ -238,7 +255,7 @@ TEST(PacketTableWidgetTests, ResetClearsTableAndSummary) {
     EnsureApp();
 
     PacketTableWidget widget;
-    QTableWidget* table = widget.packetTable();
+    QTableView* table = widget.packetTable();
     QLabel* summary = SummaryLabel(widget);
     ASSERT_TRUE(table != nullptr);
     ASSERT_TRUE(summary != nullptr);
@@ -246,10 +263,10 @@ TEST(PacketTableWidgetTests, ResetClearsTableAndSummary) {
     widget.AppendPacket(MakePacket(1, 0, AVMEDIA_TYPE_VIDEO, 1000, 900, 40, 1000, 0.5));
     widget.AppendPacket(MakePacket(2, 1, AVMEDIA_TYPE_AUDIO, 2000, 1900, 20, 500, 1.0));
     widget.FlushPending();
-    ASSERT_EQ(2, table->rowCount());
+    ASSERT_EQ(2, RowCount(table));
 
     widget.ResetPackets();
-    EXPECT_EQ(0, table->rowCount());
+    EXPECT_EQ(0, RowCount(table));
     EXPECT_EQ(QStringLiteral("总包数: 0 | 总字节数: 0 B | 视频包: 0 | 音频包: 0 | 其他包: 0 | "
                              "平均包大小: 0 B | 最大包大小: 0 B | 最小包大小: 0 B"),
               summary->text());
@@ -258,5 +275,5 @@ TEST(PacketTableWidgetTests, ResetClearsTableAndSummary) {
     // no-op 汇总），显式刷掉后应恢复干净状态
     widget.FlushPending();
     EXPECT_FALSE(widget.HasPending());
-    EXPECT_EQ(0, table->rowCount());
+    EXPECT_EQ(0, RowCount(table));
 }
