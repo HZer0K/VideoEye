@@ -235,8 +235,8 @@ gtest 链接方式（`GTest::gtest_main` 目标，CMake 会自动带 `GTEST_LINK
 保留：`build/release`(758M)、`build/debug`(22M)、`build/test-release`(669M，重建后)、
 `build/_recheck_test`(840M，唯一全绿基线)。
 
-`build-ninja/`(324M) **未删** —— 证据已足够（`bin/VideoEye.exe` 停在 2026-09-23、
-零脚本引用、已 gitignore），但按 §6 的约定留给你确认。
+`build-ninja/`(324M) **已删**（2026-10-11 确认：`bin/VideoEye.exe` 停在 2026-09-23、零脚本引用、已 gitignore）。
+至此 `build/` 从 4.1G 降到 2.3G。
 
 **建议删除（约 2.5G）：**
 
