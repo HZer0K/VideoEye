@@ -33,6 +33,8 @@ namespace StreamingIssueCode = videoeye::model::StreamingIssueCode;
 using videoeye::model::MediaPlaylistInfo;
 using videoeye::model::StreamingLadderEntry;
 using videoeye::model::StreamingPackageResult;
+using videoeye::model::DashRepresentationInfo;
+using videoeye::model::StreamingIssue;
 
 namespace {
 
@@ -833,4 +835,384 @@ TEST(StreamingPackageCancelTest, ValidateChecksCancelInsideDashLoops) {
         << "Validate 必须自己报告取消, 不能让调用方靠 Analyze 末尾的兜底检查来擦屁股";
     EXPECT_TRUE(canceled.issues.empty())
         << "取消态下 Validate 必须在跑完长循环之前退出: 带着半份统计报出来的 issue 是假问题";
+}
+
+// ===========================================================================
+// 直播（live）语义
+//
+// 这一族用例盯的就是 CODE_AUDIT_2026-10-02 §3.7 里那条 "live 语义缺失"：
+//   * dynamic MPD 的 availabilityStartTime / minimumUpdatePeriod / timeShiftBufferDepth
+//     以前一个都不解析 —— 既不摊分片、也不报错，打开一份直播包看到的是"空空如也"；
+//   * HLS 的 EXT-X-ENDLIST / PLAYLIST-TYPE / MEDIA-SEQUENCE 解析完就没再用过，
+//     滑窗直播最要命的那条缺陷（缺序号基准）因此从来报不出来；
+//   * 直播窗口滚动删掉的旧分片被当成"分片丢失"，报一条永远修不好的 Warning。
+// ===========================================================================
+namespace {
+
+// dynamic MPD：SegmentTemplate@duration 寻址，窗口长度靠 timeShiftBufferDepth 描述。
+// 三个 live 属性做成开关，用来逐个验证"缺哪个 → 报哪条"。
+std::string MakeDashLiveMpd(bool with_availability_start_time, bool with_minimum_update_period,
+                            bool with_time_shift_buffer_depth, const std::string& update_period = "PT2S") {
+    std::string text = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                       "<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" type=\"dynamic\" "
+                       "profiles=\"urn:mpeg:dash:profile:isoff-live:2011\" "
+                       "publishTime=\"2026-01-01T00:05:00Z\"";
+    if (with_availability_start_time)
+        text += " availabilityStartTime=\"2026-01-01T00:00:00Z\"";
+    if (with_minimum_update_period)
+        text += " minimumUpdatePeriod=\"" + update_period + "\"";
+    if (with_time_shift_buffer_depth)
+        text += " timeShiftBufferDepth=\"PT32S\"";
+    text += ">\n"
+            "  <Period id=\"p0\">\n"
+            "    <AdaptationSet contentType=\"video\" mimeType=\"video/mp4\">\n"
+            "      <Representation id=\"v0\" bandwidth=\"800000\" width=\"640\" height=\"360\" "
+            "codecs=\"avc1.64001f\">\n"
+            "        <SegmentTemplate timescale=\"1000\" duration=\"4000\" startNumber=\"1\" "
+            "initialization=\"init.mp4\" media=\"seg-$Number$.m4s\"/>\n"
+            "      </Representation>\n"
+            "    </AdaptationSet>\n"
+            "  </Period>\n"
+            "</MPD>\n";
+    return text;
+}
+
+// 窗口 32 秒 / 分片 4 秒 = 8 个分片
+bool WriteDashLivePackage(const fs::path& root, const std::string& mpd_text) {
+    if (!WriteFile(root / "live.mpd", mpd_text))
+        return false;
+    if (!WriteFile(root / "init.mp4", MakeBytes(512)))
+        return false;
+    for (int i = 1; i <= 8; ++i) {
+        if (!WriteFile(root / ("seg-" + std::to_string(i) + ".m4s"), MakeBytes(1024)))
+            return false;
+    }
+    return true;
+}
+
+const StreamingIssue* IssueOf(const StreamingPackageResult& result, const std::string& code) {
+    return result.FindIssue(code);
+}
+
+} // namespace
+
+
+// ---- dynamic MPD 必须从 timeShiftBufferDepth 推出窗口内的分片 ----
+TEST(StreamingPackageLiveTest, DashLiveExpandsSegmentsFromTimeShiftBufferDepth) {
+    const fs::path root = MakeTempDir("dash_live_window");
+    ASSERT_TRUE(WriteDashLivePackage(root, MakeDashLiveMpd(true, true, true)));
+
+    StreamingPackageResult result;
+    videoeye::DashManifestAnalyzer dash;
+    ASSERT_TRUE(dash.AnalyzeFile((root / "live.mpd").string(), result));
+
+    EXPECT_TRUE(result.IsLive());
+    EXPECT_EQ("dynamic", result.mpd_type);
+    EXPECT_DOUBLE_EQ(2.0, result.minimum_update_period_s);
+    EXPECT_DOUBLE_EQ(32.0, result.time_shift_buffer_depth_s);
+    EXPECT_TRUE(result.has_availability_start_time);
+
+    ASSERT_EQ(1u, result.representations.size());
+    const DashRepresentationInfo& rep = result.representations[0];
+    EXPECT_FALSE(rep.segment_count_unknown) << "有时移窗口就该能算出窗口里有哪些分片";
+    EXPECT_EQ(8u, rep.segments.size());
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kDashLiveSegmentCountUnknown));
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentMissingFile));
+
+    fs::remove_all(root);
+}
+
+// ---- 缺 availabilityStartTime：dynamic MPD 的必填项，Error 级 ----
+TEST(StreamingPackageLiveTest, DashLiveMissingAvailabilityStartTimeIsError) {
+    const fs::path root = MakeTempDir("dash_live_no_ast");
+    ASSERT_TRUE(WriteDashLivePackage(root, MakeDashLiveMpd(false, true, true)));
+
+    StreamingPackageResult result;
+    videoeye::DashManifestAnalyzer dash;
+    ASSERT_TRUE(dash.AnalyzeFile((root / "live.mpd").string(), result));
+
+    EXPECT_FALSE(result.has_availability_start_time);
+    const StreamingIssue* issue = IssueOf(result, StreamingIssueCode::kDashLiveMissingAvailabilityStartTime);
+    ASSERT_TRUE(issue != nullptr) << "dynamic MPD 缺 availabilityStartTime 必须报出来，客户端算不出分片可用时间";
+    EXPECT_EQ(IssueSeverity::Error, issue->severity);
+    // 缺 AST 不影响窗口枚举：这条照样要有分片
+    EXPECT_EQ(8u, result.representations[0].segments.size());
+
+    fs::remove_all(root);
+}
+
+// ---- minimumUpdatePeriod：缺失与"比一个分片还长"是两件事 ----
+TEST(StreamingPackageLiveTest, DashLiveMinimumUpdatePeriodIsChecked) {
+    const fs::path root_no_period = MakeTempDir("dash_live_no_mup");
+    ASSERT_TRUE(WriteDashLivePackage(root_no_period, MakeDashLiveMpd(true, false, true)));
+
+    StreamingPackageResult missing_period;
+    videoeye::DashManifestAnalyzer dash;
+    ASSERT_TRUE(dash.AnalyzeFile((root_no_period / "live.mpd").string(), missing_period));
+    EXPECT_FALSE(missing_period.has_minimum_update_period);
+    EXPECT_TRUE(missing_period.HasIssue(StreamingIssueCode::kDashLiveMissingMinimumUpdatePeriod));
+    EXPECT_FALSE(missing_period.HasIssue(StreamingIssueCode::kDashLiveUpdatePeriodTooLong));
+    fs::remove_all(root_no_period);
+
+    // 10 秒重载一次、分片只有 4 秒 —— 两次重载之间整段新分片都不可见
+    const fs::path root_slow = MakeTempDir("dash_live_slow_mup");
+    ASSERT_TRUE(WriteDashLivePackage(root_slow, MakeDashLiveMpd(true, true, true, "PT10S")));
+
+    StreamingPackageResult slow;
+    ASSERT_TRUE(dash.AnalyzeFile((root_slow / "live.mpd").string(), slow));
+    const StreamingIssue* too_long = IssueOf(slow, StreamingIssueCode::kDashLiveUpdatePeriodTooLong);
+    ASSERT_TRUE(too_long != nullptr);
+    EXPECT_DOUBLE_EQ(10.0, too_long->metric_value);
+    EXPECT_DOUBLE_EQ(4.0, too_long->threshold);
+    fs::remove_all(root_slow);
+}
+
+// ---- 没有任何窗口线索时必须明确告知，而不是静默产出 0 分片 ----
+//
+// 这正是审计里点名的那条路径：dynamic MPD + SegmentTemplate@duration 而没有
+// Period@duration / mediaPresentationDuration / timeShiftBufferDepth / SegmentTimeline，
+// 修复前 BuildSegments 直接 return，界面上一片空白且不报任何问题。
+TEST(StreamingPackageLiveTest, DashLiveWithoutWindowClueReportsInsteadOfSilence) {
+    const fs::path root = MakeTempDir("dash_live_unknown");
+    ASSERT_TRUE(WriteDashLivePackage(root, MakeDashLiveMpd(true, true, false)));
+
+    StreamingPackageResult result;
+    videoeye::DashManifestAnalyzer dash;
+    ASSERT_TRUE(dash.AnalyzeFile((root / "live.mpd").string(), result));
+
+    ASSERT_EQ(1u, result.representations.size());
+    EXPECT_TRUE(result.representations[0].segment_count_unknown);
+    EXPECT_TRUE(result.representations[0].segments.empty());
+
+    // "推不出来"这件事本身要出现在报告里，否则用户只会以为软件坏了
+    const StreamingIssue* unknown =
+        IssueOf(result, StreamingIssueCode::kDashLiveSegmentCountUnknown);
+    ASSERT_TRUE(unknown != nullptr);
+    EXPECT_EQ(IssueSeverity::Info, unknown->severity) << "这是离线快照的边界，不是清单缺陷";
+    EXPECT_TRUE(result.HasIssue(StreamingIssueCode::kDashLiveMissingTimeShiftBuffer));
+
+    fs::remove_all(root);
+}
+
+// ---- 点播 MPD 不该被这些直播检查打扰 ----
+TEST(StreamingPackageLiveTest, DashStaticMpdHasNoLiveIssues) {
+    const fs::path root = MakeTempDir("dash_static");
+    ASSERT_TRUE(WriteFile(root / "vod.mpd",
+                          "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                          "<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" type=\"static\" "
+                          "mediaPresentationDuration=\"PT16S\">\n"
+                          "  <Period id=\"p0\" duration=\"PT16S\">\n"
+                          "    <AdaptationSet contentType=\"video\" mimeType=\"video/mp4\">\n"
+                          "      <Representation id=\"v0\" bandwidth=\"800000\" width=\"640\" height=\"360\">\n"
+                          "        <SegmentTemplate timescale=\"1000\" duration=\"4000\" startNumber=\"1\" "
+                          "media=\"seg-$Number$.m4s\"/>\n"
+                          "      </Representation>\n"
+                          "    </AdaptationSet>\n"
+                          "  </Period>\n"
+                          "</MPD>\n"));
+    for (int i = 1; i <= 4; ++i) {
+        ASSERT_TRUE(WriteFile(root / ("seg-" + std::to_string(i) + ".m4s"), MakeBytes(1024)));
+    }
+
+    StreamingPackageResult result;
+    videoeye::DashManifestAnalyzer dash;
+    ASSERT_TRUE(dash.AnalyzeFile((root / "vod.mpd").string(), result));
+
+    EXPECT_FALSE(result.IsLive());
+    EXPECT_EQ(4u, result.representations[0].segments.size());
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kDashLiveMissingAvailabilityStartTime));
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kDashLiveMissingMinimumUpdatePeriod));
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kDashLiveMissingTimeShiftBuffer));
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kDashLiveSegmentCountUnknown));
+
+    fs::remove_all(root);
+}
+
+// ===========================================================================
+// HLS 直播语义
+// ===========================================================================
+namespace {
+
+// 一张单 media playlist 的包：segments 里列出的那些落盘，没列的就当"磁盘上没有"
+bool WriteHlsPlaylistPackage(const fs::path& root, int segment_count, const std::vector<int>& existing,
+                             bool endlist, const std::string& playlist_type, bool with_media_sequence) {
+    std::string text = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n";
+    if (with_media_sequence)
+        text += "#EXT-X-MEDIA-SEQUENCE:120\n";
+    if (!playlist_type.empty())
+        text += "#EXT-X-PLAYLIST-TYPE:" + playlist_type + "\n";
+    for (int i = 0; i < segment_count; ++i) {
+        text += "#EXTINF:4.000,\nseg" + std::to_string(i) + ".ts\n";
+    }
+    if (endlist)
+        text += "#EXT-X-ENDLIST\n";
+
+    if (!WriteFile(root / "index.m3u8", text))
+        return false;
+    for (int i : existing) {
+        if (!WriteFile(root / ("seg" + std::to_string(i) + ".ts"), MakeBytes(2048)))
+            return false;
+    }
+    return true;
+}
+
+std::vector<int> Sequenced(int from, int count) {
+    std::vector<int> v;
+    for (int i = 0; i < count; ++i)
+        v.push_back(from + i);
+    return v;
+}
+
+} // namespace
+
+// ---- 滑窗直播缺 EXT-X-MEDIA-SEQUENCE：序号失去基准 ----
+TEST(StreamingPackageLiveTest, HlsSlidingWindowWithoutMediaSequenceIsReported) {
+    const fs::path root = MakeTempDir("hls_live_no_seq");
+    ASSERT_TRUE(WriteHlsPlaylistPackage(root, 3, Sequenced(0, 3), /*endlist=*/false,
+                                        /*playlist_type=*/"", /*with_media_sequence=*/false));
+
+    StreamingPackageResult result;
+    videoeye::HlsManifestAnalyzer hls;
+    ASSERT_TRUE(hls.AnalyzeFile((root / "index.m3u8").string(), result));
+
+    ASSERT_EQ(1u, result.playlists.size());
+    EXPECT_TRUE(result.playlists[0].IsLive());
+    EXPECT_TRUE(result.playlists[0].IsSlidingWindowLive());
+    EXPECT_TRUE(result.HasIssue(StreamingIssueCode::kHlsLiveMissingMediaSequence))
+        << "滑窗直播缺序号基准，重载前后同一个序号会指向不同分片";
+
+    fs::remove_all(root);
+}
+
+// ---- EVENT（只增不减）与 VOD 不该被这条规则打扰 ----
+TEST(StreamingPackageLiveTest, HlsEventAndVodPlaylistsAreExemptFromSequenceRule) {
+    struct Case {
+        const char* name;
+        bool endlist;
+        std::string playlist_type;
+    };
+    const Case cases[] = {
+        {"event", false, "EVENT"},
+        {"vod", true, "VOD"},
+        {"endlist_only", true, ""},
+    };
+
+    for (const Case& c : cases) {
+        const fs::path root = MakeTempDir(std::string("hls_live_exempt_") + c.name);
+        ASSERT_TRUE(WriteHlsPlaylistPackage(root, 3, Sequenced(0, 3), c.endlist, c.playlist_type, false));
+
+        StreamingPackageResult result;
+        videoeye::HlsManifestAnalyzer hls;
+        ASSERT_TRUE(hls.AnalyzeFile((root / "index.m3u8").string(), result)) << c.name;
+        EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kHlsLiveMissingMediaSequence))
+            << c.name << ": EVENT / VOD / 已 ENDLIST 的清单不会淘汰头部旧分片，不该报序号基准";
+
+        fs::remove_all(root);
+    }
+}
+
+// ---- 直播降噪：头部被淘汰的旧分片 ≠ 传丢的分片 ----
+//
+// 布局：seg0 / seg1 已随窗口滚动删除，seg2 还在，seg3 却在窗口中间丢了。
+// 期望：前两块计入"已淘汰"（Info），seg3 仍按"分片丢失"（Warning）报。
+// 圆盘对照组写成点播：同样的缺块一块都不能被洗白。
+namespace {
+
+struct MissingTally {
+    int missing = 0;
+    int evicted = 0;
+};
+
+MissingTally TallyMissing(const fs::path& root) {
+    StreamingPackageResult result;
+    videoeye::HlsManifestAnalyzer hls;
+    if (!hls.AnalyzeFile((root / "index.m3u8").string(), result))
+        return MissingTally{};
+
+    videoeye::SegmentQcOptions options;
+    options.probe_segments = false; // 只跑校验层，不碰 fMP4 探测
+    std::atomic<bool> cancel{false};
+    videoeye::SegmentQcAnalyzer::Validate(result, options, &cancel);
+
+    MissingTally tally;
+    for (const videoeye::model::StreamingIssue& issue : result.issues) {
+        if (issue.code == StreamingIssueCode::kSegmentMissingFile)
+            tally.missing = issue.occurrence_count;
+        if (issue.code == StreamingIssueCode::kSegmentEvictedLiveWindow)
+            tally.evicted = issue.occurrence_count;
+    }
+    return tally;
+}
+
+} // namespace
+
+TEST(StreamingPackageLiveTest, LiveWindowEvictionIsSeparatedFromRealMissing) {
+    // existing = {2, 4}：0/1 在头部已被淘汰，3 夹在窗口中间 -> 真丢
+    const std::vector<int> existing = {2, 4};
+
+    const fs::path live_root = MakeTempDir("hls_live_eviction");
+    ASSERT_TRUE(WriteHlsPlaylistPackage(live_root, 5, existing, false, "", true));
+    const MissingTally live = TallyMissing(live_root);
+    EXPECT_EQ(2, live.evicted) << "头部连续缺失就是窗口淘汰的特征";
+    EXPECT_EQ(1, live.missing) << "夹在窗口中间的 seg3 是真丢，不能一起洗掉";
+    fs::remove_all(live_root);
+
+    // 对照组：同样的磁盘布局但写成点播，缺块一律按真缺失算
+    const fs::path vod_root = MakeTempDir("hls_vod_eviction");
+    ASSERT_TRUE(WriteHlsPlaylistPackage(vod_root, 5, existing, true, "VOD", true));
+    const MissingTally vod = TallyMissing(vod_root);
+    EXPECT_EQ(0, vod.evicted) << "点播包不存在窗口滚动，不该有'已淘汰'这一项";
+    EXPECT_EQ(3, vod.missing);
+    fs::remove_all(vod_root);
+}
+
+// ---- 一层分片全部缺失时不能被"已淘汰"洗白 ----
+TEST(StreamingPackageLiveTest, FullyMissingLiveLayerStillCountsAsMissing) {
+    const fs::path root = MakeTempDir("hls_live_all_missing");
+    // 清单里有 4 个分片，磁盘上一个都没有：这是路径不对，不是窗口滚动
+    ASSERT_TRUE(WriteHlsPlaylistPackage(root, 4, {}, false, "", true));
+    const MissingTally tally = TallyMissing(root);
+    EXPECT_EQ(0, tally.evicted);
+    EXPECT_EQ(4, tally.missing);
+    fs::remove_all(root);
+}
+
+// ---- 直播包各层整体平移不算关键帧不对齐 ----
+//
+// 直播各码率层进入当前窗口的时刻不同，绝对时间天然差一个或几个分片；
+// 逐片漂移才是真的 GOP 错位。这条盯的是"别把平移当成不对齐"。
+TEST(StreamingPackageLiveTest, KeyframeAlignmentIgnoresWholeLayerShiftOnLivePackage) {
+    auto build_keyframe_package = [](const std::string& mpd_type) {
+        StreamingPackageResult pkg;
+        pkg.valid = true;
+        pkg.kind = videoeye::model::StreamingKind::Dash;
+        pkg.mpd_type = mpd_type; // IsLive() 只看 type 是否为 dynamic
+        for (int r = 0; r < 2; ++r) {
+            StreamingLadderEntry entry;
+            entry.label = "rep" + std::to_string(r);
+            entry.source_index = r;
+            entry.segment_count = 3;
+            // 两层一模一样的切片节奏，但整体错开一个分片（4 秒）
+            entry.keyframe_times = {4.0 * r, 4.0 * r + 4.0, 4.0 * r + 8.0};
+            pkg.ladder.push_back(std::move(entry));
+        }
+        return pkg;
+    };
+
+    videoeye::SegmentQcOptions options;
+    options.probe_segments = false;
+    std::atomic<bool> cancel{false};
+
+    StreamingPackageResult live = build_keyframe_package("dynamic");
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(live, options, &cancel));
+    EXPECT_FALSE(live.HasIssue(StreamingIssueCode::kDashVariantKeyframeMisalign))
+        << "直播各层绝对起点本来就不同，整体平移不该算不对齐";
+
+    // 对照组：同一组数据标成点播，平移就是实打实的错位
+    StreamingPackageResult vod = build_keyframe_package("static");
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(vod, options, &cancel));
+    EXPECT_TRUE(vod.HasIssue(StreamingIssueCode::kDashVariantKeyframeMisalign))
+        << "点播侧必须照旧报出来，否则这条用例只是在证明分支没跑到";
 }

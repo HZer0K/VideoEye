@@ -267,6 +267,46 @@ std::vector<QcRule> DefaultQcRules() {
         "分片文件存在，但用已有的容器分析器解析失败。",
         "单独打开该分片看具体报错；常见原因是分片被截断或缺少初始化段。");
 
+    // ---- HLS / DASH 直播（live）语义 ----
+    // 直播包不是"格式不同"，而是"这份清单只是某一时刻的快照"。下面几条只在
+    // type="dynamic" 的 MPD 或没有 EXT-X-ENDLIST 的播放列表上产出，与点播规则互不干扰。
+    add("container.dash.live_missing_availability_start_time", "直播 MPD 缺少 availabilityStartTime",
+        IssueCategory::Container, IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "",
+        "dynamic MPD 未给出 availabilityStartTime，客户端无法由分片起点算出该分片此刻是否可用。",
+        "在 <MPD> 上补 availabilityStartTime=\"<UTC 时间>\"（如 2026-01-01T00:00:00Z）；规范对 dynamic MPD 强制要求。");
+
+    add("container.dash.live_missing_minimum_update_period", "直播 MPD 缺少 minimumUpdatePeriod",
+        IssueCategory::Container, IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "直播 MPD 未声明该隔多久重载一次清单，客户端只能自行猜测（不同实现行为不一）。",
+        "在 <MPD> 上补 minimumUpdatePeriod=\"PT2S\"，典型取值为一个分片时长。");
+
+    add("container.dash.live_update_period_too_long", "清单重载间隔过长", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::MaxExceeded, 0.0, "s",
+        "minimumUpdatePeriod 大于一个分片的时长，两次重载之间新产出的分片对客户端不可见。",
+        "把 minimumUpdatePeriod 调到不大于 SegmentTemplate@duration；LL-DASH 通常两者等值。");
+
+    add("container.dash.live_missing_time_shift_buffer_depth", "直播 MPD 未声明时移缓冲区", IssueCategory::Container,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "",
+        "未声明 timeShiftBufferDepth，按规范意味着服务端需无限期保留全部历史分片，且离线快照无从估计窗口长度。",
+        "按业务需要的可回退时长显式声明 timeShiftBufferDepth（如 PT30S）。");
+
+    add("container.dash.live_segment_count_unknown", "直播包分片数无法推算", IssueCategory::Container,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "",
+        "这份 dynamic MPD 既无可用的 Period@duration / mediaPresentationDuration，也没有 timeShiftBufferDepth，"
+        "因此枚举不出具体有哪些分片（不是清单缺陷，是离线单张快照的边界）。",
+        "补齐 timeShiftBufferDepth 后即可按窗口枚举；也可改用 SegmentTimeline 显式给出每个分片的起点。");
+
+    add("container.hls.live_missing_media_sequence", "直播播放列表缺少序号基准", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "滑窗直播每次重载都会淘汰头部旧分片，却没有 EXT-X-MEDIA-SEQUENCE 说明剩下的分片从第几号开始。",
+        "补 #EXT-X-MEDIA-SEQUENCE:<当前首片的绝对序号>；若内容为录制下来的活动直播，"
+        "加 #EXT-X-PLAYLIST-TYPE:EVENT 同样可以消除。");
+
+    add("container.streaming.segment_evicted_live_window", "旧分片已随直播窗口滚动删除", IssueCategory::Container,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "个",
+        "清单头部的若干分片已不在磁盘上，与滑窗直播的淘汰行为一致，不是缺陷。",
+        "无需处理；若要完整体检该时段内容，请在它仍处于时移窗口内时导出整包，或直接分析录制归档件。");
+
     // ---- 码率 ----
     add("video.bitrate.peak_ratio", "码率波动过大", IssueCategory::Bitrate,
         IssueSeverity::Warning, QcRuleOp::MaxExceeded, 3.0, "倍",

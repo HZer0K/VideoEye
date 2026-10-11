@@ -320,10 +320,10 @@ void AnalysisPanel::FlushPendingUiUpdates() {
 | P1 | `DashManifestAnalyzer.cpp:553/495` | Rep 级 SegmentTemplate 一旦存在就整段跳过 AS 级继承，timescale 默认 1 → **分片时长放大 90000 倍** |
 | P1 | `DashManifestAnalyzer.cpp:210` | `decode_time - presentation_time_offset` 两个 uint64 相减，@t < PTO 时下溢成 1.8e19 → 关键帧对齐全错 |
 | P1 | `DashManifestAnalyzer.cpp:196/205` | `JoinPath`→`NormalizePath` 把 `http://cdn/p` 压成 `http:/cdn/p`；`IsRemoteUri` 只查 seg.uri 不查 base_url → 远程包全量报"分片不存在" |
-| P1 | `DashManifestAnalyzer.cpp:420-429` | 未解析 minimumUpdatePeriod，live MPD 静默产出 0 分片且无任何 issue |
+| P1 ✅ | `DashManifestAnalyzer.cpp:420-429` | 未解析 minimumUpdatePeriod，live MPD 静默产出 0 分片且无任何 issue |
 | P1 | `HlsManifestAnalyzer.cpp:517` | BOM 未剥离 → `t == "#EXTM3U"` 失败 → 整份清单被判"不是 HLS" |
 | P1 | `HlsManifestAnalyzer.cpp:528` | 标签比较大小写敏感 → 小写标签的 master 被判为 media → 整份清单解析为空 |
-| P1 | `HlsManifestAnalyzer.cpp:185/195/201` | `has_endlist`/`playlist_type_vod`/`media_sequence` 解析了但 Validate 从不检查；EXTINF 累加从不与 tfdt 比对 |
+| P1 ✅ | `HlsManifestAnalyzer.cpp:185/195/201` | `has_endlist`/`playlist_type_vod`/`media_sequence` 解析了但 Validate 从不检查；（仅修前半条：三个字段已进 Validate；EXTINF 累加与 tfdt 的比对仍未做） |
 | P1 | `SegmentQcAnalyzer.cpp:328-330` | 统计缺失分片时未跳过 `seg.gap` → EXT-X-GAP 的合法缺失被误报 |
 | P1 | `SegmentQcAnalyzer.cpp:451-511` | 只探测前 8 个分片，关键帧列表为空则整项静默跳过且不告知用户 |
 | P2 | `DashManifestAnalyzer.cpp:495/514` | timescale 强转 uint32（>2^32 截断为 0）；`<S>` 未校验 d>0，d=0 时 cursor 不前进 |
@@ -490,6 +490,10 @@ void AnalysisPanel::FlushPendingUiUpdates() {
 | DASH 远程 BaseURL | `IsRemoteUri` 时不走本地 `JoinPath` |
 | EXT-X-GAP 误报缺失 | 缺失分片统计跳过 `seg.gap` |
 | 清单 BOM | `ManifestReader` 三处入口统一剥 UTF-8 BOM（带 BOM 的 m3u8 原来被判"不是 HLS 清单"） |
+| live 语义缺失（DASH） | MPD 解析 `availabilityStartTime` / `publishTime` / `minimumUpdatePeriod` / `timeShiftBufferDepth` / `suggestedPresentationDelay`；窗口依次取 `Period@duration` → `mediaPresentationDuration` → `timeShiftBufferDepth`；推不出时明确产出 `container.dash.live_segment_count_unknown`，不再是"0 分片且零告警" |
+| live 语义缺失（HLS） | `EXT-X-PLAYLIST-TYPE` 保留原文并新增 `IsSlidingWindowLive()`；滑窗直播缺 `EXT-X-MEDIA-SEQUENCE` 产出 Warning，EVENT / VOD / 已 ENDLIST 的清单豁免 |
+| 直播误报"分片丢失" | `ScanMissing()` 把"第一个找得到的分片之前的连续缺失"按"窗口淘汰"（Info）计，夹在窗口中间的缺块仍按真缺失（Warning）；整层全缺不适用，防止把坏包洗白 |
+| 直播关键帧误判不对齐 | 直播包改按"相对本层首个关键帧的偏移"比对，容忍各层整体平移整数个分片 |
 
 ## 第四批：UI 与体验
 

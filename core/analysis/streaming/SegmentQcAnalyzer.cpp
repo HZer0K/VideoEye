@@ -51,6 +51,41 @@ const char* Code(const model::StreamingPackageResult& out, const char* hls_code,
     return out.IsDash() ? dash_code : hls_code;
 }
 
+// 统计一个码率层的缺失分片，并把"直播滑窗淘汰的旧分片"单独挑出来。
+//
+// 判据：淘汰永远发生在窗口头部，真正传丢的分片前后都还有找得到的兄弟。
+// 所以"排在第一个找得到的分片之前的那段连续缺失"按淘汰计；一旦某个分片找得到，
+// 它后面再缺就一定是真丢。整条一层都找不到时不适用（那多半是路径不对，
+// 不是窗口滚动），否则任何坏包都会被这条规则洗白。
+void ScanMissing(const std::vector<model::SegmentInfo>& segments, bool live_window, int& missing, int& evicted,
+                 std::string& first_missing) {
+    int existing = 0;
+    for (const model::SegmentInfo& seg : segments) {
+        if (seg.partial || seg.resolved_path.empty())
+            continue;
+        if (seg.exists)
+            ++existing;
+    }
+    const bool all_missing = (existing == 0);
+    bool seen_existing = false;
+
+    for (const model::SegmentInfo& seg : segments) {
+        if (seg.partial || seg.resolved_path.empty())
+            continue;
+        if (seg.exists) {
+            seen_existing = true;
+            continue;
+        }
+        if (live_window && !all_missing && !seen_existing) {
+            ++evicted;
+            continue;
+        }
+        ++missing;
+        if (first_missing.empty())
+            first_missing = seg.uri;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // fMP4 探测
 // ---------------------------------------------------------------------------
@@ -327,6 +362,7 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPacka
         model::StreamingIssueCode::kDashBandwidthMismatch,
         model::StreamingIssueCode::kSegmentMissingFile,
         model::StreamingIssueCode::kSegmentContainerInvalid,
+        model::StreamingIssueCode::kSegmentEvictedLiveWindow,
     };
     model::RemoveIssuesByCode(result.issues, kOwnCodes);
 
@@ -340,38 +376,32 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPacka
     {
         int missing = 0;
         int invalid = 0;
+        int evicted = 0;
         unsigned long long scanned = 0;
         std::string first_missing;
         for (const model::MediaPlaylistInfo& pl : result.playlists) {
             if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
+            // 只有滑窗直播才会淘汰头部旧分片；EVENT / VOD 缺片一律按真缺失算。
+            ScanMissing(pl.segments, pl.IsSlidingWindowLive(), missing, evicted, first_missing);
             for (const model::SegmentInfo& seg : pl.segments) {
                 if (ShouldCheckStreamingCancel(scanned++) && IsStreamingCancelled(cancel))
                     return StageStatus::kCancelled;
                 if (seg.partial || seg.resolved_path.empty())
                     continue;
-                if (!seg.exists) {
-                    ++missing;
-                    if (first_missing.empty())
-                        first_missing = seg.uri;
-                } else if (seg.container_parse_failed) {
+                if (seg.exists && seg.container_parse_failed)
                     ++invalid;
-                }
             }
         }
         for (const model::DashRepresentationInfo& rep : result.representations) {
             if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
+            ScanMissing(rep.segments, result.IsLive(), missing, evicted, first_missing);
             for (const model::SegmentInfo& seg : rep.segments) {
                 if (ShouldCheckStreamingCancel(scanned++) && IsStreamingCancelled(cancel))
                     return StageStatus::kCancelled;
                 if (seg.resolved_path.empty())
                     continue;
-                if (!seg.exists) {
-                    ++missing;
-                    if (first_missing.empty())
-                        first_missing = seg.uri;
-                } else if (seg.container_parse_failed) {
+                if (seg.exists && seg.container_parse_failed)
                     ++invalid;
-                }
             }
         }
         if (missing > 0) {
@@ -381,6 +411,15 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPacka
                       "补齐分片文件或修正清单里的相对路径；若分片在远端，"
                       "请以完整包（含分片）的形式提供，当前版本不自动下载。",
                       model::IssueSeverity::Warning, static_cast<double>(missing), 0.0, missing, -1.0, -1);
+        }
+        if (evicted > 0) {
+            PushIssue(result, model::StreamingIssueCode::kSegmentEvictedLiveWindow, "旧分片已随直播窗口滚动删除",
+                      "有 " + std::to_string(evicted) +
+                          " 个分片在清单里位于窗口头部但已不在磁盘上，"
+                          "与滑窗直播的淘汰行为一致（这些分片对应更早的时间点）。",
+                      "这不是缺陷：直播源只保留窗口长度内的分片，旧分片必然随时间被删除。"
+                      "若要完整体检这段内容，请在它仍处于时移窗口内时导出整包，或直接分析录制归档件。",
+                      model::IssueSeverity::Info, static_cast<double>(evicted), 0.0, evicted, -1.0, -1);
         }
         if (invalid > 0) {
             PushIssue(result, model::StreamingIssueCode::kSegmentContainerInvalid, "分片容器解析失败",
@@ -475,6 +514,22 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPacka
     // 逐条流 × 逐关键帧的 O(n·m) 比对: 上千分片的包在这里要跑上百万次比较,
     // 不查取消的话"点取消"要等这一整段跑完才有反应。
     if (options.check_keyframe_alignment) {
+        // 直播包各层的绝对起点本来就不一样：HLS 各轨有自己的 MEDIA-SEQUENCE，
+        // DASH 各 Representation 有各自的 PTO 与 availabilityStartTime，
+        // 谁先"进入当前窗口"取决于各自的上一次重载时刻。这时比绝对秒必然误报，
+        // 改比"相对本层第一个关键帧的偏移"：整层被平移整数个分片是直播的正常现象，
+        // 而真正的 GOP 错位会表现为逐片漂移，照样逃不掉。
+        const bool live_package = result.IsLive();
+        auto comparable_times = [live_package](const std::vector<double>& times) {
+            if (!live_package || times.empty())
+                return times;
+            std::vector<double> shifted = times;
+            const double base = shifted.front();
+            for (double& t : shifted)
+                t -= base;
+            return shifted;
+        };
+
         const model::StreamingLadderEntry* reference = nullptr;
         int entries_with_keyframes = 0;
         for (const model::StreamingLadderEntry& e : result.ladder) {
@@ -486,6 +541,7 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPacka
             }
         }
         if (reference != nullptr && entries_with_keyframes >= 2) {
+            const std::vector<double> reference_times = comparable_times(reference->keyframe_times);
             int mismatched = 0;
             double worst_delta = 0.0;
             double first_at = -1.0;
@@ -495,13 +551,14 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPacka
                 if (&e == reference || e.keyframe_times.empty())
                     continue;
                 if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
-                const size_t n = std::min(reference->keyframe_times.size(), e.keyframe_times.size());
+                const std::vector<double> current_times = comparable_times(e.keyframe_times);
+                const size_t n = std::min(reference_times.size(), current_times.size());
                 double local_worst = 0.0;
                 int local_bad = 0;
                 for (size_t i = 0; i < n; ++i) {
                     if (ShouldCheckStreamingCancel(compared++) && IsStreamingCancelled(cancel))
                         return StageStatus::kCancelled;
-                    const double delta = std::fabs(e.keyframe_times[i] - reference->keyframe_times[i]);
+                    const double delta = std::fabs(current_times[i] - reference_times[i]);
                     if (delta > options.keyframe_align_tolerance_s) {
                         ++local_bad;
                         if (delta > local_worst)

@@ -58,6 +58,21 @@ const char* kGapMpd = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
                       "  </Period>\n"
                       "</MPD>\n";
 
+// 直播 MPD：dynamic 但缺 availabilityStartTime（规范对 dynamic MPD 的强制项）
+const char* kLiveMpdNoAst = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                            "<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" type=\"dynamic\" "
+                            "minimumUpdatePeriod=\"PT2S\" timeShiftBufferDepth=\"PT32S\">\n"
+                            "  <Period id=\"p0\">\n"
+                            "    <AdaptationSet contentType=\"video\" mimeType=\"video/mp4\">\n"
+                            "      <Representation id=\"v0\" bandwidth=\"800000\" width=\"640\" height=\"360\" "
+                            "codecs=\"avc1.64001f\">\n"
+                            "        <SegmentTemplate timescale=\"1000\" duration=\"4000\" startNumber=\"1\" "
+                            "media=\"v0/seg-$Number$.m4s\"/>\n"
+                            "      </Representation>\n"
+                            "    </AdaptationSet>\n"
+                            "  </Period>\n"
+                            "</MPD>\n";
+
 } // namespace
 
 // ---------------- HLS: 分片时长超过目标时长 -> Warning ----------------
@@ -110,6 +125,29 @@ TEST(StreamingQcRulesTest, DashSegmentTimelineGapBecomesErrorIssue) {
     EXPECT_EQ(model::IssueSeverity::Error, issue.severity);
     EXPECT_EQ("SegmentTimeline 存在时间缺口", issue.title);
     EXPECT_DOUBLE_EQ(4.0, issue.metric_value);
+}
+
+// ---------------- DASH 直播: 缺 availabilityStartTime -> Error ----------------
+
+TEST(StreamingQcRulesTest, DashLiveMissingAvailabilityStartTimeBecomesErrorIssue) {
+    model::AnalysisResult result;
+    result.file_path = "live.mpd";
+    result.file_extension = "mpd";
+    result.container_format = "dash";
+
+    videoeye::DashManifestAnalyzer dash;
+    model::StreamingPackageResult& pkg = result.streaming_package;
+    ASSERT_TRUE(dash.ParseText(kLiveMpdNoAst, ".", pkg));
+    dash.Validate(pkg);
+    result.streaming_analyzed = true;
+
+    videoeye::QcRuleEngine engine;
+    const model::QcReport report = engine.Evaluate(result);
+
+    model::DiagnosticIssue issue;
+    ASSERT_TRUE(HasIssue(report, model::StreamingIssueCode::kDashLiveMissingAvailabilityStartTime, &issue));
+    EXPECT_EQ(model::IssueSeverity::Error, issue.severity);
+    EXPECT_TRUE(issue.IsGlobal()) << "这条是整份清单级的问题，不该被定位到某个时间点";
 }
 
 // ---------------- 没跑过流媒体分析时不应有流媒体问题 ----------------
@@ -167,4 +205,13 @@ TEST(StreamingQcRulesTest, DefaultRulesContainStreamingFamily) {
     EXPECT_NE(nullptr, model::FindQcRule(rules, model::StreamingIssueCode::kHlsVariantKeyframeMisalign));
     EXPECT_NE(nullptr, model::FindQcRule(rules, model::StreamingIssueCode::kDashSegmentTimelineGap));
     EXPECT_NE(nullptr, model::FindQcRule(rules, model::StreamingIssueCode::kSegmentMissingFile));
+    // live 语义这一族：级别各不相同（Error / Warning / Info），每条都要能在规则表里被找到，
+    // 否则分析器报出来也进不了报告
+    EXPECT_NE(nullptr, model::FindQcRule(rules, model::StreamingIssueCode::kDashLiveMissingAvailabilityStartTime));
+    EXPECT_NE(nullptr, model::FindQcRule(rules, model::StreamingIssueCode::kDashLiveMissingMinimumUpdatePeriod));
+    EXPECT_NE(nullptr, model::FindQcRule(rules, model::StreamingIssueCode::kDashLiveUpdatePeriodTooLong));
+    EXPECT_NE(nullptr, model::FindQcRule(rules, model::StreamingIssueCode::kDashLiveMissingTimeShiftBuffer));
+    EXPECT_NE(nullptr, model::FindQcRule(rules, model::StreamingIssueCode::kDashLiveSegmentCountUnknown));
+    EXPECT_NE(nullptr, model::FindQcRule(rules, model::StreamingIssueCode::kHlsLiveMissingMediaSequence));
+    EXPECT_NE(nullptr, model::FindQcRule(rules, model::StreamingIssueCode::kSegmentEvictedLiveWindow));
 }

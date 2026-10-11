@@ -282,15 +282,21 @@ void BuildSegments(model::StreamingPackageResult& out, model::DashRepresentation
             cursor = AddU64WillOverflow(start, entry_span) ? std::numeric_limits<uint64_t>::max() : start + entry_span;
         }
     } else if (rep.segment_duration > 0 && rep.timescale > 0) {
-        // 直播（dynamic）MPD 无法预知分片数，只能标记为未知
-        const double period_duration = rep.total_duration_seconds;
-        if (period_duration <= 0.0) {
+        // 窗口长度：先看 Period@duration / mediaPresentationDuration，两者都没有时
+        // 退到 timeShiftBufferDepth —— 它描述服务端保留多久的历史分片，
+        // 对 dynamic MPD 来说就是"这份快照大致覆盖了多长"的唯一线索。
+        // 以前这里只看 Period 时长，直播包因此一步就落到"分片数未知"分支，
+        // 结果是 0 分片、0 告警，用户完全不知道为什么什么都分析不出来。
+        double window_seconds = rep.total_duration_seconds;
+        if (window_seconds <= 0.0)
+            window_seconds = out.EffectiveWindowSeconds();
+        if (window_seconds <= 0.0) {
             rep.segment_count_unknown = true;
             return;
         }
         const uint64_t d = rep.segment_duration;
         const double seg_seconds = static_cast<double>(d) / static_cast<double>(rep.timescale);
-        const double raw_count = seg_seconds > 0.0 ? std::ceil(period_duration / seg_seconds) : 0.0;
+        const double raw_count = seg_seconds > 0.0 ? std::ceil(window_seconds / seg_seconds) : 0.0;
         // duration=1 / timescale=1e9 配一段极长 Period，算出来的分片数能到 1e15
         // （阶段 3 语料 dash_extreme_count.mpd），甚至可能溢出成 inf/NaN ——
         // ceil 的结果直接 static_cast<uint64_t> 是 UB。先夹到分片上限 +1：
@@ -503,6 +509,34 @@ bool DashManifestAnalyzer::ParseText(const std::string& text, const std::string&
             out.min_buffer_time_s = mt::ParseIso8601Duration(mt::AttrString(tag.attrs, "minBufferTime"));
             const std::string max_seg = mt::AttrString(tag.attrs, "maxSegmentDuration");
             out.max_segment_duration_s = mt::ParseIso8601Duration(max_seg);
+
+            // ---- 直播（dynamic）语义三件套 ----
+            // availabilityStartTime / minimumUpdatePeriod / timeShiftBufferDepth 都在 MPD 元素上，
+            // 以前一个都没解析：dynamic MPD 因此既不展开分片、也不报任何 issue，
+            // 界面上就是"打开了一份直播包，结果空空如也"。
+            const std::string ast = mt::AttrString(tag.attrs, "availabilityStartTime");
+            if (!ast.empty()) {
+                out.availability_start_time = ast;
+                out.has_availability_start_time = true;
+            }
+            out.publish_time = mt::AttrString(tag.attrs, "publishTime");
+            const std::string mup = mt::AttrString(tag.attrs, "minimumUpdatePeriod");
+            if (!mup.empty()) {
+                // MUP=0 是合法值（表示分片一可用就立刻更新策略），要靠"属性是否存在"
+                // 而不是"值是否为 0"来判缺失。
+                out.minimum_update_period_s = mt::ParseIso8601Duration(mup);
+                out.has_minimum_update_period = true;
+            }
+            const std::string tsbd = mt::AttrString(tag.attrs, "timeShiftBufferDepth");
+            if (!tsbd.empty()) {
+                out.time_shift_buffer_depth_s = mt::ParseIso8601Duration(tsbd);
+                out.has_time_shift_buffer_depth = true;
+            }
+            const std::string spd = mt::AttrString(tag.attrs, "suggestedPresentationDelay");
+            if (!spd.empty()) {
+                out.suggested_presentation_delay_s = mt::ParseIso8601Duration(spd);
+                out.has_suggested_presentation_delay = true;
+            }
         } else if (tag.name == "Period") {
             if (out.periods.size() >= options.max_periods) {
                 out.truncated = true;
@@ -680,8 +714,15 @@ void DashManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Da
         model::StreamingIssueCode::kDashSegmentTimelineGap,
         model::StreamingIssueCode::kDashSegmentTimelineOverlap,
         model::StreamingIssueCode::kDashMissingSegmentInfo,
+        model::StreamingIssueCode::kDashLiveMissingAvailabilityStartTime,
+        model::StreamingIssueCode::kDashLiveMissingMinimumUpdatePeriod,
+        model::StreamingIssueCode::kDashLiveUpdatePeriodTooLong,
+        model::StreamingIssueCode::kDashLiveMissingTimeShiftBuffer,
+        model::StreamingIssueCode::kDashLiveSegmentCountUnknown,
     };
     model::RemoveIssuesByCode(out.issues, kOwnCodes);
+
+    const bool live = out.IsLive();
 
     for (size_t ri = 0; ri < out.representations.size(); ++ri) {
         // SegmentTimeline 的缺口/重叠比对是"每个表示扫一遍时间轴"，表示多时要能中断
@@ -754,6 +795,76 @@ void DashManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Da
                           "修正 <S> 的 t / d / r，让各区段首尾相接；重叠会导致重复播放与音画错位。",
                           model::IssueSeverity::Error, worst_overlap, 0.0, overlaps, overlap_at, rep_index);
             }
+        }
+
+    }
+
+    // ---- 4) 直播（dynamic MPD）语义：一条清单级别的检查 ----
+    // 这几样都在 MPD 元素上，每个 Representation 报一遍只是刷屏，所以放在循环外。
+    if (live) {
+        // availabilityStartTime：dynamic MPD 的必填项
+        if (!out.has_availability_start_time) {
+            PushIssue(out, model::StreamingIssueCode::kDashLiveMissingAvailabilityStartTime,
+                      "直播 MPD 缺少 availabilityStartTime",
+                      "MPD 的 type=\"dynamic\" 表示这是一个直播包，但没有给出 availabilityStartTime，"
+                      "客户端无法由分片起点算出\"这一片现在是否可用\"。",
+                      "在 <MPD> 上补 availabilityStartTime=\"<UTC 时间>\"（ISO 8601，如 2026-01-01T00:00:00Z）；"
+                      "规范对 dynamic MPD 强制要求该属性。",
+                      model::IssueSeverity::Error, 0.0, 0.0, 1, -1.0, -1);
+        }
+
+        // minimumUpdatePeriod：重载间隔。缺失则客户端只能自己猜（常见做法是退回
+        // minBufferTime 或直接用分片时长，各家实现不一，行为不可预期）。
+        if (!out.has_minimum_update_period) {
+            PushIssue(out, model::StreamingIssueCode::kDashLiveMissingMinimumUpdatePeriod,
+                      "直播 MPD 缺少 minimumUpdatePeriod",
+                      "直播 MPD 没有声明 minimumUpdatePeriod，客户端不知道该隔多久重载一次清单，"
+                      "重载慢了会停在旧窗口、快了则白白打 CDN。",
+                      "在 <MPD> 上补 minimumUpdatePeriod=\"PT2S\"（典型值等于或略小于一个分片时长）。",
+                      model::IssueSeverity::Warning, 0.0, 0.0, 1, -1.0, -1);
+        } else {
+            double seg_seconds = 0.0;
+            for (const model::DashRepresentationInfo& rep : out.representations) {
+                seg_seconds = std::max(seg_seconds, rep.SegmentDurationSeconds());
+            }
+            if (seg_seconds > 0.0 && out.minimum_update_period_s > seg_seconds + 0.001) {
+                PushIssue(out, model::StreamingIssueCode::kDashLiveUpdatePeriodTooLong, "清单重载间隔过长",
+                          "minimumUpdatePeriod=" + FormatSeconds(out.minimum_update_period_s) +
+                              " 秒，比一个分片的时长（" + FormatSeconds(seg_seconds) +
+                              " 秒）还长；客户端两次重载之间可能整段新分片都不可见，表现为直播起播慢或卡在旧画面。",
+                          "把 minimumUpdatePeriod 调整到不大于分片时长；LL-DASH 场景通常与 SegmentTemplate@duration 等值。",
+                          model::IssueSeverity::Warning, out.minimum_update_period_s, seg_seconds, 1, -1.0, -1);
+            }
+        }
+
+        // timeShiftBufferDepth：既是服务端的历史保留窗口，也是快照能覆盖多长的唯一线索
+        if (!out.has_time_shift_buffer_depth) {
+            PushIssue(out, model::StreamingIssueCode::kDashLiveMissingTimeShiftBuffer,
+                      "直播 MPD 未声明 timeShiftBufferDepth",
+                      "MPD 没有 timeShiftBufferDepth，按规范意味着服务端必须一直保留全部历史分片"
+                      "（可回退窗口无上界）；同时离线分析也失去了估计窗口长度的依据。",
+                      "按业务需要的时移时长显式声明 timeShiftBufferDepth（如 PT30S），"
+                      "既能限制服务端留存成本，也让这份快照的分片数可以被推算。",
+                      model::IssueSeverity::Info, 0.0, 0.0, 1, -1.0, -1);
+        }
+
+        // 既没有可用时长线索又不是 SegmentTimeline → 分片数推不出来。
+        // 以前这种情况是"静默产出 0 分片"，界面上一片空白，用户只会以为软件坏了。
+        int unknown_reps = 0;
+        for (const model::DashRepresentationInfo& rep : out.representations) {
+            if (rep.segment_count_unknown)
+                ++unknown_reps;
+        }
+        if (unknown_reps > 0) {
+            PushIssue(out, model::StreamingIssueCode::kDashLiveSegmentCountUnknown,
+                      "直播包的分片数无法从快照推算",
+                      std::to_string(unknown_reps) + "/" + std::to_string(out.representations.size()) +
+                          " 个 Representation 使用 SegmentTemplate@duration 寻址，"
+                          "而这份清单既没有 Period@duration / mediaPresentationDuration，也没有 timeShiftBufferDepth，"
+                          "因此枚举不出具体有哪些分片。",
+                      "这是离线单张快照的固有边界，不是清单缺陷："
+                      "补齐 timeShiftBufferDepth 后即可按窗口枚举；也可改用 SegmentTimeline 显式列出每个分片的起点。",
+                      model::IssueSeverity::Info, static_cast<double>(unknown_reps), 0.0, unknown_reps, -1.0, -1);
         }
     }
 }

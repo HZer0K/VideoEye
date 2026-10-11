@@ -215,7 +215,10 @@ void ParseMediaPlaylistBody(const std::vector<std::string>& lines, const std::st
                 pl.has_discontinuity_sequence = true;
             }
         } else if (name == "#EXT-X-PLAYLIST-TYPE") {
-            pl.playlist_type_vod = (mt::ToLower(body) == "vod");
+            // 保留原文：VOD / EVENT /（空）。IsLive() 只看是不是 VOD，
+            // 但 EVENT 列表只增不减、不会淘汰头部旧分片，live 侧的检查要区分它。
+            pl.playlist_type = mt::ToLower(body);
+            pl.playlist_type_vod = (pl.playlist_type == "vod");
         } else if (name == "#EXT-X-ENDLIST") {
             pl.has_endlist = true;
         } else if (name == "#EXT-X-INDEPENDENT-SEGMENTS") {
@@ -622,8 +625,9 @@ void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Hls
     static const std::vector<const char*> kOwnCodes = {
         model::StreamingIssueCode::kHlsMissingTargetDuration, model::StreamingIssueCode::kHlsSegmentOverTarget,
         model::StreamingIssueCode::kHlsSegmentJitter,         model::StreamingIssueCode::kHlsDiscontinuityUnpaired,
-        model::StreamingIssueCode::kHlsMissingInitSection,    model::StreamingIssueCode::kHlsEncryptionKey,
+        model::StreamingIssueCode::kHlsMissingInitSection,            model::StreamingIssueCode::kHlsEncryptionKey,
         model::StreamingIssueCode::kHlsPartialSegment,
+        model::StreamingIssueCode::kHlsLiveMissingMediaSequence,
     };
     model::RemoveIssuesByCode(out.issues, kOwnCodes);
 
@@ -784,7 +788,33 @@ void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Hls
         }
     }
 
-    // ---- 8) 跨播放列表的 discontinuity 对齐（同一个 variant 的视频轨与其音轨）----
+    // ---- 8) 直播播放列表的序号基准 ----
+    // 滑窗直播每次重载都会淘汰头部若干分片，剩下分片的 EXTINF 序列起点永远是 0，
+    // 于是"第 0 片到底是哪个"只能靠 EXT-X-MEDIA-SEQUENCE 回答。缺了它，
+    // 重载前后同一个序号指向的是两个不同的分片 —— 播放列表持久化、seek、
+    // 断点续传全都会错。既往 media_sequence / has_endlist / playlist_type_vod
+    // 三个字段解析完就没再用过，直播包的这条典型缺陷因此一直没被报出来。
+    // EVENT 列表只增不减（分片级降噪同样据此区分），不该刷这条告警。
+    for (size_t pi = 0; pi < out.playlists.size(); ++pi) {
+        if (IsStreamingCancelled(cancel))
+            return;
+        const model::MediaPlaylistInfo& pl = out.playlists[pi];
+        if (pl.parse_failed || !pl.IsSlidingWindowLive() || pl.has_media_sequence)
+            continue;
+        if (pl.SegmentCount() <= 0)
+            continue;
+        const int playlist_index = static_cast<int>(pi);
+        PushIssue(out, model::StreamingIssueCode::kHlsLiveMissingMediaSequence, "直播播放列表缺少序号基准",
+                  PlaylistLabel(pl, playlist_index) + " 没有 EXT-X-ENDLIST，也不是 EVENT/VOD，"
+                                                     "每次重载都会淘汰头部旧分片，但没有 EXT-X-MEDIA-SEQUENCE "
+                                                     "说明剩下的分片从第几号开始。",
+                  "在播放列表开头补 #EXT-X-MEDIA-SEQUENCE:<当前首片的绝对序号>；"
+                  "若这份内容是录制下来的活动直播，加 #EXT-X-PLAYLIST-TYPE:EVENT 同样能消除该告警。",
+                  model::IssueSeverity::Warning, static_cast<double>(pl.SegmentCount()), 0.0, 1, -1.0, playlist_index,
+                  pl.variant_index);
+    }
+
+    // ---- 9) 跨播放列表的 discontinuity 对齐（同一个 variant 的视频轨与其音轨）----
     for (size_t vi = 0; vi < out.variants.size(); ++vi) {
         const model::HlsVariantInfo& variant = out.variants[vi];
         if (variant.playlist_index < 0 || variant.audio_group.empty())

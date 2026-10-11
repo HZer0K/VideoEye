@@ -77,9 +77,26 @@ constexpr const char* kDashVariantCodecMismatch = "container.dash.representation
 constexpr const char* kDashVariantKeyframeMisalign = "container.dash.variant_keyframe_misalign";
 constexpr const char* kDashAvSegmentCountMismatch = "container.dash.av_segment_count_mismatch";
 
+// ---- 直播（live）语义 ----
+// 直播包与点播包的差别不在于清单格式，而在于「这份清单只是一段时间的快照」：
+//   - HLS：滑窗每次重载都会淘汰头部旧分片，序号必须靠 EXT-X-MEDIA-SEQUENCE 标识；
+//   - DASH：dynamic MPD 靠 availabilityStartTime + minimumUpdatePeriod 描述
+//     "此刻哪些分片可用、多久重载一次"，缺失其一客户端就无从算可用性；
+//   - 两者：旧分片被淘汰造成的文件缺失是正常现象，不能按点播口径报"分片丢失"。
+// 这一类检查产出的 finding 单独给 code，才能在规则表里独立调整级别/开关。
+constexpr const char* kDashLiveMissingAvailabilityStartTime = "container.dash.live_missing_availability_start_time";
+constexpr const char* kDashLiveMissingMinimumUpdatePeriod = "container.dash.live_missing_minimum_update_period";
+constexpr const char* kDashLiveUpdatePeriodTooLong = "container.dash.live_update_period_too_long";
+constexpr const char* kDashLiveMissingTimeShiftBuffer = "container.dash.live_missing_time_shift_buffer_depth";
+constexpr const char* kDashLiveSegmentCountUnknown = "container.dash.live_segment_count_unknown";
+constexpr const char* kHlsLiveMissingMediaSequence = "container.hls.live_missing_media_sequence";
+
 // ---- 通用 ----
 constexpr const char* kSegmentMissingFile = "container.streaming.segment_missing_file";
 constexpr const char* kSegmentContainerInvalid = "container.streaming.segment_container_invalid";
+// 直播窗口滚动时被淘汰的旧分片（ NOT a defect）—— 与上面的"真的找不到"分开计，
+// 否则每次分析直播包都会被一条无法修复的告警刷屏。
+constexpr const char* kSegmentEvictedLiveWindow = "container.streaming.segment_evicted_live_window";
 } // namespace StreamingIssueCode
 
 // 一条流媒体包问题
@@ -182,6 +199,7 @@ struct MediaPlaylistInfo {
     int64_t discontinuity_sequence = 0; // EXT-X-DISCONTINUITY-SEQUENCE
     bool has_discontinuity_sequence = false;
     bool playlist_type_vod = false; // EXT-X-PLAYLIST-TYPE:VOD
+    std::string playlist_type;      // EXT-X-PLAYLIST-TYPE 原文（小写 vod / event），空 = 未声明
     bool has_endlist = false;       // EXT-X-ENDLIST（有即为点播，否则当作直播）
     bool independent_segments = false;
 
@@ -216,6 +234,20 @@ struct MediaPlaylistInfo {
 
     bool IsLive() const {
         return !has_endlist && !playlist_type_vod;
+    }
+    // 真正的"滑窗直播"：既不是 VOD，也不是只增不减的 EVENT，且没有 ENDLIST。
+    //
+    // 只有这一种清单每次重载都会淘汰头部旧分片 —— 于是两个后果:
+    //   1) 序号会从 media_sequence 起算，缺 EXT-X-MEDIA-SEQUENCE 就无法区分新旧同序号分片；
+    //   2) 头部若干分片在磁盘上找不到（已被淘汰），不是缺陷。
+    // EVENT 列表只会不断追加，缺少 MEDIA-SEQUENCE 没有这两重影响，不该拿它去刷告警。
+    bool IsSlidingWindowLive() const {
+        return IsLive() && playlist_type != "event";
+    }
+    // 窗口时长：这份快照实际覆盖的秒数。直播侧的真实缓冲长度由服务端决定，
+    // 离线单张快照只能给出"清单里这些分片合计多长"这一个可观测值。
+    double WindowSeconds() const {
+        return total_duration_seconds;
     }
     // 只统计完整分片（EXT-X-PART 不算）
     int64_t SegmentCount() const {
@@ -405,6 +437,31 @@ struct StreamingPackageResult {
     double media_presentation_duration_s = 0.0;
     double max_segment_duration_s = 0.0;
     double min_buffer_time_s = 0.0;
+
+    // ---- DASH 直播（type="dynamic"）语义 ----
+    // availabilityStartTime 是 dynamic MPD 的必填项：客户端用它加上分片起点算出
+    // "这一片现在能不能取"。保留原文而不换算成 epoch —— 跨时区/闰秒的换算结果与
+    // 播放器口径可能不一致，校验只需要"有没有声明"，展示只需要原文。
+    std::string availability_start_time;
+    bool has_availability_start_time = false;
+    std::string publish_time; // MPD@publishTime（最近一次发布时间，原文）
+    // minimumUpdatePeriod：客户端应当隔多久重载一次 MPD。比单个分片还长的话，
+    // 播放器在两次重载之间可能整段新分片都拿不到。
+    double minimum_update_period_s = 0.0;
+    bool has_minimum_update_period = false;
+    // timeShiftBufferDepth：服务端保留多久的历史分片（即可回退的时移窗口）。
+    // 它同时是"这份快照大致覆盖多长"的唯一线索 —— dynamic MPD 通常不写 Period@duration。
+    double time_shift_buffer_depth_s = 0.0;
+    bool has_time_shift_buffer_depth = false;
+    double suggested_presentation_delay_s = 0.0; // 推荐的直播时延
+    bool has_suggested_presentation_delay = false;
+
+    // 给定的线索里能不能推出本次快照的可用窗口长度（秒）。推不出来就是 0。
+    double EffectiveWindowSeconds() const {
+        if (media_presentation_duration_s > 0.0)
+            return media_presentation_duration_s;
+        return has_time_shift_buffer_depth ? time_shift_buffer_depth_s : 0.0;
+    }
     std::vector<DashPeriodInfo> periods;
     // 展平后的 representation 列表（UI 与 ladder 直接消费）
     std::vector<DashRepresentationInfo> representations;

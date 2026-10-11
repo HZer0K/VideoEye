@@ -186,6 +186,32 @@ void StreamingPanel::UpdateSummary(const model::StreamingPackageResult& result) 
     if (result.truncated) {
         text += tr(" | 输出已按上限截断");
     }
+    if (result.IsLive()) {
+        // 直播包只是一次快照，摘要里必须说清"它自己声称多久更新、窗口多长"，
+        // 否则单看分片数根本判断不了这份清单是否完整。
+        if (result.IsDash()) {
+            if (result.has_minimum_update_period) {
+                text += tr(" | minimumUpdatePeriod=%1 s").arg(Seconds(result.minimum_update_period_s));
+            }
+            if (result.has_time_shift_buffer_depth) {
+                text += tr(" | 时移窗口=%1 s").arg(Seconds(result.time_shift_buffer_depth_s));
+            }
+            if (!result.has_availability_start_time) {
+                text += tr(" | 缺 availabilityStartTime");
+            }
+        } else {
+            int live_playlists = 0;
+            double window = 0.0;
+            for (const model::MediaPlaylistInfo& pl : result.playlists) {
+                if (!pl.IsLive())
+                    continue;
+                ++live_playlists;
+                if (pl.WindowSeconds() > window)
+                    window = pl.WindowSeconds();
+            }
+            text += tr(" | %1 条直播清单，窗口=%2 s").arg(live_playlists).arg(Seconds(window));
+        }
+    }
     summary_label_->setText(text);
 }
 
@@ -213,6 +239,23 @@ void StreamingPanel::BuildStructureTree(const model::StreamingPackageResult& res
         add(root, tr("MPD 类型"), QString::fromStdString(result.mpd_type));
         if (result.media_presentation_duration_s > 0.0) {
             add(root, tr("总时长"), Seconds(result.media_presentation_duration_s) + " s");
+        }
+        // ---- 直播三件套：清单多久更新一次、能回退多久、可用性时间基准 ----
+        // dynamic MPD 的分片数全靠这几项推算，缺了任一项界面上的"分片数"都会是 0。
+        if (result.has_availability_start_time) {
+            add(root, tr("availabilityStartTime"), QString::fromStdString(result.availability_start_time));
+        }
+        if (!result.publish_time.empty()) {
+            add(root, tr("publishTime"), QString::fromStdString(result.publish_time));
+        }
+        if (result.has_minimum_update_period) {
+            add(root, tr("minimumUpdatePeriod"), Seconds(result.minimum_update_period_s) + " s");
+        }
+        if (result.has_time_shift_buffer_depth) {
+            add(root, tr("timeShiftBufferDepth"), Seconds(result.time_shift_buffer_depth_s) + " s");
+        }
+        if (result.has_suggested_presentation_delay) {
+            add(root, tr("suggestedPresentationDelay"), Seconds(result.suggested_presentation_delay_s) + " s");
         }
         for (const model::DashPeriodInfo& period : result.periods) {
             auto* p = add(root, QString("Period %1").arg(period.index),
@@ -255,6 +298,17 @@ void StreamingPanel::BuildStructureTree(const model::StreamingPackageResult& res
         for (const model::MediaPlaylistInfo& pl : result.playlists) {
             auto* p = add(root, QString("%1 #%2").arg(QString::fromStdString(pl.role)).arg(pl.index),
                           QString("%1 分片 target=%2 s").arg(pl.SegmentCount()).arg(pl.target_duration_s));
+            // 直播清单要有明确的"类型 + 序号基准"：滑窗每次重载都会淘汰头部旧分片，
+            // 没有 EXT-X-MEDIA-SEQUENCE 就没法知道剩下的分片从第几号开始。
+            QString type_text = tr("点播");
+            if (!pl.has_endlist) {
+                type_text = (pl.playlist_type == "event") ? tr("直播 EVENT（只增不减）") : tr("直播滑窗");
+            } else if (pl.playlist_type_vod) {
+                type_text = tr("点播 VOD");
+            }
+            auto* meta = add(p, tr("清单类型"), type_text);
+            add(meta, tr("序号基准"), pl.has_media_sequence ? QString::number(pl.media_sequence) : tr("未声明"));
+            add(meta, tr("窗口时长"), Seconds(pl.WindowSeconds()) + " s");
             if (pl.encrypted)
                 add(p, tr("加密"), QString::fromStdString(pl.key_method));
             if (pl.has_init_section)
@@ -430,6 +484,33 @@ QString StreamingPanel::ExportToJson() const {
     root["kind"] = QString::fromUtf8(model::ToString(current_result_.kind));
     root["valid"] = current_result_.valid;
     root["live"] = current_result_.IsLive();
+    if (current_result_.IsDash()) {
+        QJsonObject dash_live;
+        dash_live["type"] = QString::fromStdString(current_result_.mpd_type);
+        dash_live["availability_start_time"] = QString::fromStdString(current_result_.availability_start_time);
+        dash_live["publish_time"] = QString::fromStdString(current_result_.publish_time);
+        dash_live["minimum_update_period"] = current_result_.minimum_update_period_s;
+        dash_live["time_shift_buffer_depth"] = current_result_.time_shift_buffer_depth_s;
+        dash_live["suggested_presentation_delay"] = current_result_.suggested_presentation_delay_s;
+        root["dash_live"] = dash_live;
+    } else {
+        QJsonArray playlists;
+        for (const model::MediaPlaylistInfo& pl : current_result_.playlists) {
+            QJsonObject o;
+            o["uri"] = QString::fromStdString(pl.uri);
+            o["role"] = QString::fromStdString(pl.role);
+            o["playlist_type"] = QString::fromStdString(pl.playlist_type);
+            o["has_endlist"] = pl.has_endlist;
+            o["live"] = pl.IsLive();
+            o["sliding_window"] = pl.IsSlidingWindowLive();
+            o["media_sequence"] = static_cast<qint64>(pl.media_sequence);
+            o["has_media_sequence"] = pl.has_media_sequence;
+            o["window_seconds"] = pl.WindowSeconds();
+            o["segment_count"] = static_cast<qint64>(pl.SegmentCount());
+            playlists.append(o);
+        }
+        root["playlists"] = playlists;
+    }
 
     QJsonArray ladder;
     for (const model::StreamingLadderEntry& e : current_result_.ladder) {

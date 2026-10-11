@@ -105,6 +105,23 @@ initialization / media）→ `SegmentTimeline`（`<S t= d= r=/>`），
 `$Bandwidth$` / `$RepresentationID$` / `$Time$`。
 `Representation` 未自带 `SegmentTemplate` 时继承 `AdaptationSet` 级的那一份。
 
+#### 直播属性（`type="dynamic"`）
+
+MPD 元素上的四个 live 属性现在都会解析（`StreamingPackageResult` 上带 `has_*` 标记，区分"没写"与"写了 0"）：
+
+| 属性 | 用途 | 缺失时的后果 |
+| --- | --- | --- |
+| `availabilityStartTime` | 算分片可用时间的基准 | dynamic MPD 缺它 → **Error**（必填项） |
+| `minimumUpdatePeriod` | 客户端应隔多久重载 MPD | 缺 → Warning；比一个分片还长 → Warning（两次重载之间新分片不可见） |
+| `timeShiftBufferDepth` | 服务端保留多久历史分片 | 缺 → Info（窗口无上界）；同时它是离线推算分片数的唯一线索 |
+| `suggestedPresentationDelay` | 推荐的直播时延 | 只登记，用于 UI 展示 |
+
+**动态 MPD 的分片枚举**：`SegmentTemplate@duration` 寻址时，窗口长度依次尝试
+`Period@duration` → `mediaPresentationDuration` → `timeShiftBufferDepth`。三者皆无且没有
+`SegmentTimeline` 时，`BuildSegments` 置 `segment_count_unknown`，`Validate` 产出
+`container.dash.live_segment_count_unknown`（Info）—— 以前这里是"静默产出 0 分片且不报任何问题"，
+界面上一片空白，用户只会以为软件坏了。
+
 ### 3.3 分片级与 ladder 级校验（core/analysis/streaming/SegmentQcAnalyzer.h）
 
 | 检查 | 问题码 | 级别 |
@@ -115,9 +132,14 @@ initialization / media）→ `SegmentTimeline`（`<S t= d= r=/>`），
 | fMP4 缺 EXT-X-MAP | `container.hls.missing_init_section` | Warning |
 | 加密标签（登记） | `container.hls.encryption_key` | Info |
 | LL-HLS 部分分片（登记） | `container.hls.partial_segment` | Info |
+| HLS 滑窗直播缺 `EXT-X-MEDIA-SEQUENCE` | `container.hls.live_missing_media_sequence` | Warning |
 | SegmentTimeline 时间缺口 | `container.dash.segment_timeline_gap` | **Error** |
 | SegmentTimeline 时间重叠 | `container.dash.segment_timeline_overlap` | Error |
-| 完全没有分片定位信息 | `container.dash.missing_segment_info` | Error |
+| DASH 缺 `availabilityStartTime` | `container.dash.live_missing_availability_start_time` | Error |
+| DASH 缺 `minimumUpdatePeriod` | `container.dash.live_missing_minimum_update_period` | Warning |
+| `minimumUpdatePeriod` 比一个分片还长 | `container.dash.live_update_period_too_long` | Warning |
+| DASH 缺 `timeShiftBufferDepth` | `container.dash.live_missing_time_shift_buffer_depth` | Info |
+| 动态 MPD 推不出窗口、枚举不出分片 | `container.dash.live_segment_count_unknown` | Info |
 | ladder 分辨率缺失或与码率顺序矛盾 | `container.{hls,dash}.variant_resolution_mismatch` | Warning |
 | ladder 混用不同视频编码 | `container.{hls,dash}.variant_codec_mismatch` | Warning |
 | 多码率关键帧（分片起点）不对齐 | `container.{hls,dash}.variant_keyframe_misalign` | Warning |
@@ -125,6 +147,18 @@ initialization / media）→ `SegmentTimeline`（`<S t= d= r=/>`），
 | 音视频分片数量/时长对不上 | `container.{hls,dash}.av_segment_count_mismatch` | Warning |
 | 分片文件不存在 | `container.streaming.segment_missing_file` | Warning |
 | 分片容器解析失败 | `container.streaming.segment_container_invalid` | Error |
+| 窗口头部旧分片已被直播淘汰（非缺陷） | `container.streaming.segment_evicted_live_window` | Info |
+
+**直播降噪的两处口径**（只在确认为直播时生效：HLS 的滑窗清单、DASH 的 dynamic MPD；
+`EVENT` 与 VOD 不参与）：
+
+- **缺失分片要分两类**。滑窗直播每次重载都会删掉头部旧分片，把这部分当"分片丢失"会报出一条
+  永远修不好的 Warning。`ScanMissing()` 的判据：淘汰只发生在窗口头部 —— 排在**第一个找得到的
+  分片之前**的那段连续缺失按"已淘汰"计（Info），其后如果再缺就一定是真丢（Warning）。
+  整层一片都找不到时不适用（那是路径不对，不是窗口滚动），否则任何坏包都能被这条规则洗白。
+- **关键帧对齐改比相对偏移**。直播各层的绝对起点天然不同（HLS 各轨自己的 MEDIA-SEQUENCE、
+  DASH 各 Representation 各自的 PTO），比绝对秒必然误报。直播包改按"相对本层第一个关键帧的
+  偏移"比对：整层平移整数个分片属正常，逐片漂移照样会被抓出来。
 
 关键帧对齐的口径：CMAF/fMP4 分片必须以 IDR 开头，因此**分片的 tfdt 起点即关键帧时间**。
 `SegmentQcAnalyzer::ProbeSegments()` 先解析初始化段拿 timescale，再逐个分片读首个
@@ -135,9 +169,13 @@ initialization / media）→ `SegmentTimeline`（`<S t= d= r=/>`），
 「流媒体包」页（由 `AnalysisPanel::SetupStreamingPackageTab()` 注册，
 侧边栏条目由 `content_stack_` 的 `pageTitle` 自动生成）：
 
-- **顶部摘要**：清单类型 / 点播或直播 / 码率层数 / 分片数 / 各级问题数
+- **顶部摘要**：清单类型 / 点播或直播 / 码率层数 / 分片数 / 各级问题数；直播包追加自身的时效信息
+  （DASH 的 `minimumUpdatePeriod` / 时移窗口 / 是否缺 `availabilityStartTime`，HLS 的直播清单条数与窗口时长）
 - **左侧 manifest 结构树**：HLS 的 variant / rendition / media playlist / segment，
-  DASH 的 Period / AdaptationSet / Representation / Segment
+  DASH 的 Period / AdaptationSet / Representation / Segment；结构树的根节点展示 MPD 的
+  `availabilityStartTime` / `publishTime` / `minimumUpdatePeriod` / `timeShiftBufferDepth` /
+  `suggestedPresentationDelay`，HLS 的每个播放列表节点展示「清单类型（VOD / 直播 EVENT /
+  直播滑窗）+ 序号基准 + 窗口时长」
 - **右上码率阶梯表**：分辨率 / 码率 / 编码 / 容器 / 分片数 / 平均与最长分片时长 / 初始化段 / 关键帧数
 - **右下分片时间轴对齐表**：行是分片序号，列是各码率层，单元格是该层的分片起点；
   与参考层偏差超过 50 ms 的单元格标红
@@ -154,7 +192,7 @@ initialization / media）→ `SegmentTimeline`（`<S t= d= r=/>`），
 | `core/analysis/container/ContainerStructureAnalyzer.cpp` | 新增 `AnalyzeStreamingManifest` / `BuildStreamingTree` / `ProbeTsSegments` |
 | `core/analysis/AnalysisOptions.h` + `core/domain/model/AnalysisResult.h` | `analyze_streaming_package` 开关 + `streaming_package` 结果字段 |
 | `core/analysis/orchestration/AnalysisEngine.cpp` | `Run()` 前置分流 + `RunStreamingManifest()` |
-| `core/domain/model/QcModels.cpp` | 新增 22 条规则（HLS 12 / DASH 8 / streaming 2），id 与问题码同名 |
+| `core/domain/model/QcModels.cpp` | 新增 29 条规则（HLS 13 / DASH 13 / streaming 3），id 与问题码同名 |
 | `core/analysis/diagnostics/QcRuleEngine.cpp` | 新增 `container.hls.` / `container.dash.` / `container.streaming.` 三个前缀分支 |
 | `ui/main_window/MainWindow.cpp` | 打开对话框补「流媒体清单 (*.m3u8 *.mpd)」 |
 
@@ -162,9 +200,12 @@ initialization / media）→ `SegmentTimeline`（`<S t= d= r=/>`），
 
 - `tests/unit/test_streaming_package.cpp`：解析与校验（合法 VOD 包不误报、
   时长越界 Warning、关键帧不对齐 Warning、SegmentTimeline 缺口/重叠 Error、
-  EXT-X-MAP / KEY / PART 解析、分片缺失告警）
+  EXT-X-MAP / KEY / PART 解析、分片缺失告警）+ 直播语义（`StreamingPackageLiveTest`：
+  动态 MPD 按 `timeShiftBufferDepth` 枚举窗口内分片、缺 AST / MUP / TSBD 各自报对应级别、
+  无窗口线索时明确报"推不出分片数"、滑窗缺 EXT-X-MEDIA-SEQUENCE、EVENT/VOD 豁免、
+  头部淘汰与真缺块分账、直播相对关键帧对齐）
 - `tests/unit/test_streaming_qc_rules.cpp`：规则引擎把 finding 转成 `DiagnosticIssue`
-  （级别、标题、阈值、可关闭、未分析时不产出）
+  （级别、标题、阈值、可关闭、未分析时不产出）+ 新增的 live 规则确实注册在规则表里
 
 ```bash
 cmake --preset win-test-release
@@ -173,8 +214,15 @@ ctest --preset win-test-release
 
 ## 7. 当前限制与后续
 
+- **直播只做"单张快照"的体检**。live 语义目前覆盖的是：识别动态清单、按声明的窗口枚举分片、
+  校验 live 必填/推荐属性、以及把"窗口滚动淘汰"从"分片丢失"里摘出去。它**不**跟踪清单随时间的变化：
+  `minimumUpdatePeriod` 只用于判定"客户端会不会重载太慢"，工具本身不会按它去重读 MPD / m3u8。
+  想看 live 包随时间增长需要上层做轮询 + 增量分析，尚未实现。
+- **不做可用性时间的实时推算**。`availabilityStartTime` 只保留原文并校验"有没有声明"，
+  不换算成 epoch，也不回答"此刻哪些分片已经可以取" —— 那需要把"现在"和一个可信的时钟引入分析，
+  而离线体检没有这个输入。
 - **第一阶段只支持本地包**。清单里的 `http(s)://` URI 只登记（`StreamingPackageResult::remote`），
-  不下载。第二阶段计划用 Qt Network 增加超时 / 重试 / Range 请求，并只采样头尾与前 N 个分片。
+  不下载。后续计划用 Qt Network 增加超时 / 重试 / Range 请求，并只采样头尾与前 N 个分片。
 - **TS 分片只抽查前 3 个**（`ContainerStructureAnalyzer::ProbeTsSegments`）。
   同一批分片由同一次切片产出，抽查足以暴露结构性问题。
 - **关键帧对齐对 TS 是"声明值对齐"**。要判断 TS 段首是否真的是 IDR，需要逐包解析，
