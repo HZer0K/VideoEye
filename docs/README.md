@@ -39,6 +39,7 @@
 | [`DIAGNOSTICS_QC.md`](DIAGNOSTICS_QC.md) | 诊断与 QC 报告：`DiagnosticIssue` / `QcReport` 数据契约、规则引擎、16 条默认规则 |
 | [`REPORTING_BATCH_QC.md`](REPORTING_BATCH_QC.md) | 报告导出与批量 QC：模板、批处理、对比、接入 CI |
 | [`FFMPEG_COMMAND_WORKBENCH.md`](FFMPEG_COMMAND_WORKBENCH.md) | FFmpeg 命令工作台：为什么它不是终端，以及这条边界带来的设计约束 |
+| [`PERFORMANCE.md`](PERFORMANCE.md) | 长视频与 UI 性能：指标口径与预算、增长上限、表格/曲线的模型化与抽稀、取消的两个延迟预算 |
 
 ## 审计快照（`audit/`，只读）
 
