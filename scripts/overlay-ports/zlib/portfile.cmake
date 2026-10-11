@@ -37,9 +37,22 @@ vcpkg_copy_pdbs()
 
 # 手动安装 zlib.pc (SKIP_INSTALL_FILES=ON 阻止了 CMake 自动安装)
 # 下游包 (libpng, freetype 等) 的 vcpkg_fixup_pkgconfig 需要 zlib.pc
-set(_zlib_pc "${CURRENT_BUILDTREES_DIR}/${TARGET_TRIPLET}-rel/zlib.pc")
-if(EXISTS "${_zlib_pc}")
-    file(INSTALL "${_zlib_pc}" DESTINATION "${CURRENT_PACKAGES_DIR}/lib/pkgconfig")
+#
+# 注意: 必须同时装出 release / debug 两份。
+#   - x64-windows-release triplet 设了 VCPKG_BUILD_TYPE=release, 只会构建 -rel,
+#     下游的 fixup 在 lib/pkgconfig 里找 zlib.pc, 一份即可。
+#   - x64-windows-debug triplet 未设 VCPKG_BUILD_TYPE, 会同时构建 -rel 和 -dbg,
+#     下游包 (libpng 等) 构建 debug 配置时, fixup 把 PKG_CONFIG_PATH 指向
+#     <installed>/debug/lib/pkgconfig, 而该目录里没有 zlib.pc 就会
+#     报 'Package zlib was not found', 导致 BUILD_FAILED。
+set(_zlib_pc_rel "${CURRENT_BUILDTREES_DIR}/${TARGET_TRIPLET}-rel/zlib.pc")
+if(EXISTS "${_zlib_pc_rel}")
+    file(INSTALL "${_zlib_pc_rel}" DESTINATION "${CURRENT_PACKAGES_DIR}/lib/pkgconfig")
+endif()
+
+set(_zlib_pc_dbg "${CURRENT_BUILDTREES_DIR}/${TARGET_TRIPLET}-dbg/zlib.pc")
+if(EXISTS "${_zlib_pc_dbg}")
+    file(INSTALL "${_zlib_pc_dbg}" DESTINATION "${CURRENT_PACKAGES_DIR}/debug/lib/pkgconfig")
 endif()
 
 if(VCPKG_LIBRARY_LINKAGE STREQUAL "static")
