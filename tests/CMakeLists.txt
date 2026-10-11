@@ -1090,6 +1090,7 @@ videoeye_add_test(test_visual_defect_page
     unit/test_visual_defect_page.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/VisualDefectPage.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
+    ${VIDEOEYE_PERF_SOURCES}
 )
 target_link_libraries(test_visual_defect_page PRIVATE
     VideoEyeDomain

@@ -13,6 +13,7 @@
 #include <QTextStream>
 #include <QVBoxLayout>
 
+#include "infrastructure/logging/PerfMetrics.h"
 #include "ui/analysis_panel/AnalysisPageSupport.h"
 
 #include <algorithm>
@@ -20,6 +21,22 @@
 
 namespace videoeye {
 namespace ui {
+
+namespace {
+// 采样点上限。够画抽稀后的曲线（kMaxChartPoints = 4000）就行 —— 1 小时视频
+// 每秒一个采样点也才 3600 个，2 万是"开着高采样档也够用"的量级。
+constexpr std::size_t kMaxQualitySamples = 20000;
+
+// 缺陷条数上限。表格行数 = 条数，超限丢最早的。五千条足够覆盖任何正常素材的
+// 问题清单（再多就说明阈值设得太松，该调阈值而不是堆列表）。
+constexpr std::size_t kMaxDefectRecords = 5000;
+
+// 同时保留的证据缩略图张数。
+//
+// 一张缩略图按 options 的小图尺寸算，典型几十 KB。全片留着就是几十 MB 起步，
+// 而列表里能翻到的也就最近那一段 —— 这是本轮"长视频内存"里最容易失控的一项。
+constexpr std::size_t kMaxEvidenceFrames = 200;
+}  // namespace
 
 VisualDefectPage::VisualDefectPage(bool feature_checked, const model::VisualDefectOptions& options,
                                    QWidget* parent)
@@ -227,16 +244,50 @@ void VisualDefectPage::OnOptionChanged() {
 
 void VisualDefectPage::AppendFrame(const model::FrameQualityMetric& metric) {
     samples_.push_back(metric);
-    // 长播放时限制内存：窗口滑出最早的一批（保留最新 2 万个采样点）
-    if (samples_.size() > 20000) {
-        samples_.erase(samples_.begin(), samples_.begin() + 4000);
+    // 长播放时限制内存：整批滑掉最早的一段（一次 erase 掉一整块，比逐条 pop_front
+    // 便宜得多；扣掉的量取上限的 1/5，避免每次到底就擦一次）
+    if (samples_.size() > kMaxQualitySamples) {
+        const std::size_t drop = kMaxQualitySamples / 5;
+        samples_.erase(samples_.begin(), samples_.begin() + static_cast<long>(drop));
+        PerfMetrics::GetInstance().RecordCount("quality_samples_trimmed",
+                                               static_cast<long long>(drop));
     }
     dirty_ = true;
 }
 
-void VisualDefectPage::AppendDefect(const model::VisualDefect& defect) {
-    records_.push_back(defect);
+void VisualDefectPage::AppendDefect(model::VisualDefect defect) {
+    // 按值进来就地 move：证据图是几十 KB 的 RGB，走 const& 再 push_back 会多拷一份。
+    records_.push_back(std::move(defect));
+
+    if (records_.size() > kMaxDefectRecords) {
+        const std::size_t drop = records_.size() - kMaxDefectRecords;
+        records_.erase(records_.begin(), records_.begin() + static_cast<long>(drop));
+    }
+    TrimEvidenceFrames();
     dirty_ = true;
+}
+
+// 证据图是这条缺陷里唯一"大"的成员（一张缩略图几十 KB），而列表里同时能看到的
+// 也就最近那一段 —— 全片几千条缺陷各留一张图，内存是几百 MB 量级，用户却永远
+// 翻不到第 3000 条。所以只保留最近若干张，更早的释放 RGB：
+// 记录本身（时间/类型/严重度/结论）一条不少，只是不再有图。
+void VisualDefectPage::TrimEvidenceFrames() {
+    std::size_t kept = 0;
+    std::size_t released = 0;
+    for (std::size_t i = records_.size(); i-- > 0;) {
+        auto& record = records_[i];
+        if (record.evidence.rgb.empty()) continue;
+        if (++kept > kMaxEvidenceFrames) {
+            record.evidence.rgb.clear();
+            record.evidence.rgb.shrink_to_fit();   // 光 clear 不还内存，必须 shrink
+            ++released;
+        }
+    }
+    if (released > 0) {
+        evidence_trimmed_ = true;
+        PerfMetrics::GetInstance().RecordCount("evidence_frames_released",
+                                               static_cast<long long>(released));
+    }
 }
 
 void VisualDefectPage::ResetAll() {
@@ -314,9 +365,6 @@ void VisualDefectPage::UpdateSummary() {
 void VisualDefectPage::UpdateCharts() {
     if (!luma_chart_ || !sharp_chart_) return;
 
-void VisualDefectPage::UpdateCharts() {
-    if (!luma_chart_ || !sharp_chart_) return;
-
     // 抽稀统一走 ChartDecimation。以前这里是手写 stride（上限 600），与其余各页
     // 4000 / 300 的口径并存；更要命的是等间隔取点会把"单帧黑场一闪"这类尖峰
     // 整个跳过去 —— 而那恰恰是要抓的缺陷。现在每桶保留 min/max 两点，峰谷都留。
@@ -380,7 +428,13 @@ void VisualDefectPage::UpdateEvidencePreview(int defect_index) {
     const QImage img = EvidenceImage(d);
     if (img.isNull()) {
         evidence_label_->setPixmap(QPixmap());
-        evidence_label_->setText(tr("该缺陷无证据图\n（未采集缩略图）"));
+        // 两种"没有图"必须分开说：一种是压根没采集（勾选项关着），
+        // 另一种是采集过但被限额释放了。给同一句提示会让人以为功能坏了。
+        evidence_label_->setText(
+            evidence_trimmed_
+                ? tr("该缺陷的证据图已释放\n（只保留最近 %1 张，见「证据缩略图」限额）")
+                      .arg(kMaxEvidenceFrames)
+                : tr("该缺陷无证据图\n（未采集缩略图）"));
         return;
     }
     evidence_label_->setText(QString());

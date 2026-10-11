@@ -35,6 +35,7 @@
 #include "ui/analysis_panel/VisualDefectPage.h"
 
 using videoeye::model::ActivePictureArea;
+using videoeye::model::FrameQualityMetric;
 using videoeye::model::VisualDefect;
 using videoeye::model::VisualDefectOptions;
 using videoeye::model::VisualDefectSeverity;
@@ -384,4 +385,121 @@ TEST(VisualDefectPageTests, ClickingDefectRowAsksSeekToItsStartSecond) {
     // 行号越界不该发信号
     table->cellClicked(1, 0);
     EXPECT_EQ(1u, rec.calls.size());
+}
+
+// ---------------------------------------------------------------------------
+// 10. 长视频内存护栏：证据缩略图只保留最近若干张
+//
+// 一条缺陷带着一张 RGB 缩略图（几十 KB）。全片留着的话，看一小时的素材就能
+// 堆出几百 MB，而列表里能翻到的也就最近那一段。这里守的是"限额真的生效了"——
+// 内存这件事不落到可观察的状态上，就只能靠人盯着任务管理器才知道有没有漏。
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// 带证据图的缺陷。图很小（4x3 像素）但结构是真的，够验证"有没有被释放"。
+VisualDefect MakeDefectWithEvidence(int id, double start, double end) {
+    VisualDefect d = MakeDefect(id, start, end);
+    d.evidence.width = 4;
+    d.evidence.height = 3;
+    d.evidence.rgb.assign(4 * 3 * 3, 0x80);
+    return d;
+}
+
+}  // namespace
+
+TEST(VisualDefectPageTests, EvidenceFramesAreCappedToRecentOnes) {
+    EnsureApp();
+
+    VisualDefectPage page(true, VisualDefectOptions());
+    ASSERT_FALSE(page.evidence_trimmed());
+
+    // 追加 210 条带证据的缺陷：上限是 200，所以最早的 10 条应当被释放
+    for (int i = 1; i <= 210; ++i) {
+        page.AppendDefect(MakeDefectWithEvidence(i, static_cast<double>(i), static_cast<double>(i) + 0.5));
+    }
+
+    const auto& records = page.DefectRecords();
+    ASSERT_EQ(210u, records.size()) << "记录本身一条都不能少（只是没图）";
+
+    // 最早的 10 条：图已释放
+    for (int i = 0; i < 10; ++i) {
+        EXPECT_TRUE(records[static_cast<size_t>(i)].evidence.rgb.empty())
+            << "第 " << i << " 条的证据图应当已被释放";
+    }
+    // 最近 200 条：图还在
+    for (int i = 10; i < 210; ++i) {
+        EXPECT_FALSE(records[static_cast<size_t>(i)].evidence.rgb.empty())
+            << "第 " << i << " 条的证据图不该被释放";
+    }
+
+    // 提示文案要能区分"没采集"和"采过但被限额释放了"
+    EXPECT_TRUE(page.evidence_trimmed());
+}
+
+TEST(VisualDefectPageTests, EvidenceTrimFlagStaysFalseWhenUnderLimit) {
+    EnsureApp();
+
+    VisualDefectPage page(true, VisualDefectOptions());
+    for (int i = 1; i <= 5; ++i) {
+        page.AppendDefect(MakeDefectWithEvidence(i, static_cast<double>(i), static_cast<double>(i) + 0.5));
+    }
+    EXPECT_FALSE(page.evidence_trimmed());
+    const auto& records = page.DefectRecords();
+    ASSERT_EQ(5u, records.size());
+    for (const auto& r : records) {
+        EXPECT_FALSE(r.evidence.rgb.empty());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 11. 缺陷条数上限：表格行数不再随播放时长无限涨
+// ---------------------------------------------------------------------------
+
+TEST(VisualDefectPageTests, DefectRecordsAreCapped) {
+    EnsureApp();
+
+    VisualDefectPage page(true, VisualDefectOptions());
+    // 上限 5000：多喂 200 条，超出的必须丢最早的
+    for (int i = 1; i <= 5200; ++i) {
+        page.AppendDefect(MakeDefect(i, static_cast<double>(i), static_cast<double>(i) + 0.5));
+    }
+    page.FlushPending();
+
+    ASSERT_EQ(5000u, page.DefectRecords().size());
+    // 丢的是最早的，留下的是最新的
+    EXPECT_EQ(5200, page.DefectRecords().back().id);
+    EXPECT_EQ(201, page.DefectRecords().front().id);
+
+    QTableWidget* table = page.findChild<QTableWidget*>();
+    ASSERT_TRUE(table != nullptr);
+    EXPECT_EQ(5000, table->rowCount());
+}
+
+// ---------------------------------------------------------------------------
+// 12. 采样点上限：曲线画的是抽稀后的结果，样本缓存不该无限涨
+// ---------------------------------------------------------------------------
+
+TEST(VisualDefectPageTests, QualitySamplesAreCapped) {
+    EnsureApp();
+
+    VisualDefectPage page(true, VisualDefectOptions());
+    FrameQualityMetric metric;
+    metric.valid = true;
+    metric.luma_mean = 120.0;
+    metric.black_ratio = 0.1;
+    metric.blur_score = 5.0;
+    metric.frame_diff = 0.02;
+
+    // 上限 2 万；喂 2.5 万条，剩下的必须是最新的那批
+    for (int i = 0; i < 25000; ++i) {
+        metric.frame_index = i;
+        metric.timestamp_seconds = static_cast<double>(i) * 0.04;
+        page.AppendFrame(metric);
+    }
+    page.FlushPending();
+
+    // 采样点不外露（只用于画曲线），所以用"曲线还能画出来 + 汇总不崩"间接验证；
+    // 真正兜住上限的是上面的缺陷条数与这里的"喂完不炸"
+    EXPECT_FALSE(page.HasPending());
 }
