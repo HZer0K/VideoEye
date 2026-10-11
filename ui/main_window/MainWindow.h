@@ -51,6 +51,9 @@ private slots:
     void OnOpenURL();
     void OnExit();
 
+    // 帮助菜单: 支持的格式与编解码器（现场枚举本进程链接的 FFmpeg 能力）
+    void OnShowFormatSupport();
+
     // 播放区显隐 (实际逻辑在 PlayerPanel)
     void OnTogglePlayerArea(bool checked);
 

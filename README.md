@@ -26,6 +26,7 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 - **报告与批量 QC**: 5 套规则模板 → 单文件/目录批量分析 → 评分与结论 → JSON/CSV/HTML/PDF/TXT 导出
 - **FFmpeg 命令工作台**: 直接调用原生 `ffmpeg` 程序 —— 写命令、看实时日志、查参数含义（内置指令字典与逐项解释）
 - **帧导出**: 导出任意帧为 JPG / RGB / YUV，支持打开 .yuv / .rgb 原始图像
+- **支持清单**: `帮助` → `支持的格式与编解码器` 现场枚举本进程链接的 FFmpeg 能读写的封装格式 / 编解码器 / 协议 / 硬件加速类型（换了 FFmpeg 构建，清单跟着变）
 
 ## 技术栈
 
@@ -207,6 +208,7 @@ brew install cmake ninja qt@6 ffmpeg
 4. **FFmpeg 命令工作台**: 侧边栏「FFmpeg 命令」—— 写一条 ffmpeg 命令并运行，右侧字典可以查参数含义
 5. **导出帧**: `文件` → `导出视频帧...`（jpg / rgb / yuv）
 6. **原始图像**: 打开 `.yuv`（YUV420P）/ `.rgb`（RGB24）时输入宽高
+7. **查支持范围**: `帮助` → `支持的格式与编解码器...` —— 封装格式（读/写）、编解码器（解码/编码）、协议、硬件加速类型，可按关键字搜索并导出 CSV
 
 **批量 QC 与报告**：单文件分析、目录批量扫描、双文件对比与报告导出都在 GUI 的「报告与批量 QC」页完成 —— 选模板 → 分析 → 看结论 → 导出（JSON / CSV / HTML / PDF / TXT）。模板接受内置 id（`general` / `broadcast` / `hls-vod` / `short-video` / `archive-master`）或自定义 JSON 文件。
 
@@ -248,12 +250,12 @@ TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红�
 
 | 指标 | 数量 |
 |---|---|
-| 测试可执行文件 | 74 |
-| ctest 用例组（gtest 可执行文件） | 74 |
+| 测试可执行文件 | 75 |
+| ctest 用例组（gtest 可执行文件） | 75 |
 | python 脚本用例组（架构规则门 + 语料校验，非 gtest） | 11 |
-| gtest 用例（含 `TEST` / `TEST_F` / `TEST_P`） | 714 |
+| gtest 用例（含 `TEST` / `TEST_F` / `TEST_P`） | 720 |
 
-`ctest -N` 会显示 **85 = 74 + 11**，多出来的 11 个不是 gtest 可执行文件，而是直接
+`ctest -N` 会显示 **86 = 75 + 11**，多出来的 11 个不是 gtest 可执行文件，而是直接
 `add_test` 调 python 脚本的 5 道架构规则门及其自测：`check_layering.py` 与它的自测、
 `audit_qt_analysis_border.py` 与它的自测、`audit_namespace_layout.py` 与它的自测、
 `audit_qt_domain_border.py` 与它的自测、`audit_link_visibility.py` 与它的自测（最后一
@@ -262,7 +264,7 @@ TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红�
 没有 gtest 用例，所以脚本不计入 gtest 那两个数。
 
 这个数字以前是「18 个可执行文件 + 17 组 ctest」，长期没跟着测试用例涨 —— 所以改成脚本
-现算。CI 的 layering job 会跑 `python scripts/summarize_tests.py --expect 74`：加了测试
+现算。CI 的 layering job 会跑 `python scripts/summarize_tests.py --expect 75`：加了测试
 就一并更新这里和 CI 里的数字，否则那道门直接红，别让表格再飘。
 
 跑之前注意：架构规则那 10 条脚本用例用「`VIDEOEYE_ROOT` 或当前目录」当仓库根，所以 CMake 里给它们

@@ -1499,3 +1499,30 @@ target_compile_definitions(test_corpus_robustness PRIVATE
 target_link_libraries(test_corpus_robustness PRIVATE VideoEyeAnalysis)
 add_test(NAME CorpusRobustnessTests COMMAND test_corpus_robustness)
 set_tests_properties(CorpusRobustnessTests PROPERTIES TIMEOUT 300)
+
+# =================================================
+# 测试 68：支持的格式与编解码器（帮助菜单）
+# 说明: 页面上每一行都必须由 av_*_iterate() 现场问出来 —— 换一份 FFmpeg 构建，
+#       清单就该跟着变，写死的常量表只会骗人。这里钉住三件事：
+#         1) 枚举结果来自本进程链接的库（h264/aac/file 都在，方向没错）；
+#         2) 同名 demuxer/muxer、decoder/encoder 合成一行（avi 双向都置位），
+#            而 mp4 这种"读挂别名表、写是独立注册"的按库原样分两行；
+#         3) 搜索与过滤只动行隐藏 —— 「仅能解码」的可见行数必须正好等于
+#            数据里的解码器条数（这条同时兜住"过滤后导出仍写全量"的错）。
+#       只编两个新源文件（探针 + 对话框），不拉整个 ui/，用 offscreen 平台跑。
+# =================================================
+videoeye_add_test(test_format_support
+    unit/test_format_support.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/dialogs/FfmpegSupportProbe.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/dialogs/FormatSupportDialog.cpp
+)
+target_include_directories(test_format_support PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui)
+# FFmpeg 的 include 目录与库都从 VideoEyePlayback 的 PUBLIC 依赖传过来，
+# 不必在这里重复列（FfmpegSupportProbe.cpp 是唯一 include libav* 的 TU）。
+target_link_libraries(test_format_support PRIVATE
+    VideoEyePlayback
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME FormatSupportTests COMMAND test_format_support)
+set_tests_properties(FormatSupportTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

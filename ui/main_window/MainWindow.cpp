@@ -1,6 +1,7 @@
 #include "ui/main_window/MainWindow.h"
 #include "ui/main_window/MediaInfoCoordinator.h"
 #include "ui/main_window/navigation_model.h"
+#include "ui/dialogs/FormatSupportDialog.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/theme/AppTheme.h"
 #include "infrastructure/logging/Logger.h"
@@ -476,6 +477,8 @@ void MainWindow::SetupMenuBar() {
     
     // 帮助菜单 (先声明, 以便在其之前插入"播放设置")
     QMenu* help_menu = menu_bar_->addMenu(tr("帮助"));
+    help_menu->addAction(tr("支持的格式与编解码器..."), this, &MainWindow::OnShowFormatSupport);
+    help_menu->addSeparator();
     help_menu->addAction(tr("关于"), this, []() {
         QMessageBox::about(nullptr, QObject::tr("关于"),
                           QObject::tr("VideoEye 2.0\n现代化的视频流分析软件"));
@@ -715,6 +718,13 @@ void MainWindow::OnOpenURL() {
     if (ok && !url.isEmpty()) {
         OpenMedia(url, true);
     }
+}
+
+void MainWindow::OnShowFormatSupport() {
+    // 清单是现场从本进程链接的 FFmpeg 库枚举出来的，每次打开都重问一遍 ——
+    // 换过 FFmpeg 构建（或用户换了一台机器）时不会显示过时的答案。
+    FormatSupportDialog dialog(this);
+    dialog.exec();
 }
 
 bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
