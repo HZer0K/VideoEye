@@ -2,8 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build-debug}"
 MEDIA_PATH="${1:-}"
+
+# 构建目录由 preset linux-debug 决定(build/debug)，不再让 BUILD_DIR 环境变量
+# 指着别处 —— 以前这里手搓 `cmake -S . -B build-debug`，产物落在 build-debug/，
+# 和 preset 约定的 build/<config>/ 两套目录并存，谁都不知道该跑哪一个。
 
 if [[ -z "$MEDIA_PATH" ]]; then
     echo "Usage: $0 <media-file>"
@@ -18,8 +21,8 @@ if [[ ! -f "$MEDIA_PATH" ]]; then
     exit 1
 fi
 
-cmake -S "$ROOT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Debug
-cmake --build "$BUILD_DIR" -j"$(nproc)"
+cmake --preset linux-debug
+cmake --build --preset linux-debug -j"$(nproc)"
 
 cat <<'EOF'
 Manual verification checklist:
@@ -31,4 +34,4 @@ Manual verification checklist:
 6. Optionally click the CSV export button in "音频可视化" and confirm the file contains both waveform and spectrum sections.
 EOF
 
-"$BUILD_DIR/bin/VideoEye" "$MEDIA_PATH"
+"$ROOT_DIR/build/debug/bin/VideoEye" "$MEDIA_PATH"

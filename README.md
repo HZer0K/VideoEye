@@ -161,7 +161,9 @@ VideoEye/
 ├── ui/                   # UI 层 (主题 / 主窗口 / 各分析页 / 自绘图表)
 ├── third_party/prebuilt/ # FFmpeg 预编译包（不入库，脚本下载）
 ├── vcpkg.json            # vcpkg 依赖清单
-└── build.bat / build.sh  # 构建脚本
+├── build.bat / build.sh  # 构建入口（前者 cmd/CI，后者 bash 环境）
+├── run.sh                # 快速启动
+└── scripts/              # 环境准备与依赖脚本（setup-*.sh/ps1、fetch-ffmpeg、run-vcpkg-install）
 ```
 
 ## 构建

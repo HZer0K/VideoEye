@@ -2,9 +2,9 @@
 chcp 936 >nul 2>&1
 REM ========================================
 REM  VideoEye - ??????? (Windows / MSVC)
-REM  ?÷?: build.bat [release|debug|clean]
+REM  build.bat [release|debug|test|test-debug|clean]
 REM  ???: release
-REM  ???: ???????????? GBK ???? + CRLF ????,
+REM  ???: ???????????? GB18030 ???? + CRLF ????,
 REM        ???? cmd.exe ??????????????????
 REM        "'xxx' ???????????????"??
 REM ========================================
@@ -15,17 +15,19 @@ if "%PRESET%"=="" set "PRESET=release"
 if /i "%PRESET%"=="ninja" set "PRESET=release"
 if /i "%PRESET%"=="default" set "PRESET=release"
 
-REM clean ??????: ??????????????
+REM clean 子命令: 清掉 build\ 下的全部构建目录。以前这里只写死清 release 与 debug，
+REM   于是各次验证手工建出来的 _recheck / _verify / cfg18 之类永远清不掉，越攒越多。
 if /i "%PRESET%"=="clean" (
-    if exist "%~dp0build\release" (
-        rmdir /s /q "%~dp0build\release"
-        echo ?????: build\release
+    echo 清理 build 下的构建目录...
+    if not exist "%~dp0build" (
+        echo   build 目录不存在，无需清理
+        exit /b 0
     )
-    if exist "%~dp0build\debug" (
-        rmdir /s /q "%~dp0build\debug"
-        echo ?????: build\debug
+    for /d %%d in ("%~dp0build\*") do (
+        echo   已删除: %%~nxd
+        rmdir /s /q "%%d"
     )
-    echo ????????????
+    echo 构建目录已清理
     exit /b 0
 )
 
@@ -41,9 +43,10 @@ if "!VALID!"=="0" (
     exit /b 1
 )
 
-REM ???? preset ????? CMakePresets.json ??? win-test-*:
-REM   ??????? VCPKG_MANIFEST_FEATURES=tests, ????? gtest ???;
-REM   CMakeUserPresets.json ????? preset ???????????䶮
+REM 测试 preset 对应 CMakePresets.json 里的 win-test-*:
+REM   Windows 上带 VCPKG_MANIFEST_FEATURES=tests, 由它装 gtest;
+REM   CMakeUserPresets.json 里的本机 preset 用短名(release / debug / test-release / test-debug),
+REM   通用 preset 才带 win- 前缀 —— 下面统一先试短名、再回退 win-*。
 set "ISTEST=0"
 set "USE_PRESET="
 if /i "%PRESET%"=="test" set "PRESET=test-release"
@@ -90,13 +93,16 @@ if not exist "!VCVARS!" (
     exit /b 1
 )
 call "!VCVARS!" x64 >nul
-REM ---- resolve the preset name that really exists (win-<x>-local > <x> > win-<x>) ----
+REM ---- resolve the preset name that really exists (<x> > win-<x>) ----
+REM CMakeUserPresets.json 里的本机 preset 用短名(release / debug / test-release / test-debug)，
+REM 通用的 CMakePresets.json 只有带前缀的 win-* —— 先问 cmake 实际列出什么，再决定用哪个。
+REM 以前还要试 win-<x>-local 这第三种拼写（setup-windows-env.ps1 的历史输出格式）；
+REM 生成器已统一输出短名，这里就不再猜它了。老机器上若还有 win-*-local，重跑一次生成器即可。
 set "USE_PRESET="
 for /f "usebackq tokens=1 delims= " %%p in (`cmake --list-presets 2^>nul`) do (
     set "P=%%p"
     set "P=!P:"=!"
-    if /i "!P!"=="win-!PRESET!-local" set "USE_PRESET=win-!PRESET!-local"
-    if /i "!P!"=="!PRESET!" if "!USE_PRESET!"=="" set "USE_PRESET=!PRESET!"
+    if /i "!P!"=="!PRESET!" set "USE_PRESET=!PRESET!"
     if /i "!P!"=="win-!PRESET!" if "!USE_PRESET!"=="" set "USE_PRESET=win-!PRESET!"
 )
 if "!USE_PRESET!"=="" set "USE_PRESET=win-!PRESET!"

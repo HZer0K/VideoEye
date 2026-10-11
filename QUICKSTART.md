@@ -11,7 +11,7 @@ cd VideoEye
 
 ### 2. 构建项目
 
-> **构建配置的唯一来源是 `CMakePresets.json`。** `build.bat` / `build.sh` / `build_ninja.ps1`
+> **构建配置的唯一来源是 `CMakePresets.json`。** `build.bat` / `build.sh`
 > 都只是它的薄封装（搭好编译器环境 + 取 FFmpeg + 调 `cmake --preset`），不要再往脚本里
 > 加 `-DCMAKE_XXX` 参数。
 
@@ -26,6 +26,11 @@ build.bat clean      :: 清理构建目录
 
 前置：Visual Studio 2022（勾「使用 C++ 的桌面开发」）+ `VCPKG_ROOT` 环境变量。
 首次构建由 vcpkg 编译 qtbase（30~60 分钟），之后走缓存增量。
+
+`build.bat` 会自己用 vswhere + vcvars 把 `cl.exe` / `ninja` 铺进 PATH，所以在 cmd.exe 里、
+以及还没有 `CMakeUserPresets.json` 的机器（含 CI）上都能直接用。
+在 Git Bash / MSYS2 里请改用 `./build.sh release` —— 它靠 `CMakeUserPresets.json` 里
+钉死的绝对路径工作，不需要 vcvars。
 
 #### Linux (Ubuntu/Debian)
 
@@ -63,13 +68,16 @@ build\release\bin\VideoEye.exe
 
 | 命令 | 说明 |
 |------|------|
-| `build.bat` / `build.bat release` | Windows Release **推荐** |
+| `build.bat` / `build.bat release` | Windows Release **推荐**（cmd / CI） |
 | `build.bat debug` | Windows Debug |
 | `build.bat test` | Windows Release + 跑单元测试（自带 gtest） |
-| `build_ninja.ps1 [-BuildType Debug]` | `build.bat` 的转发器（历史入口，保留兼容） |
-| `./build.sh [release\|debug\|test\|clean]` | Linux / macOS 构建（`test` 带 ctest） |
-| `./setup.sh` | Linux / macOS 环境自检 + 调用 `build.sh` |
+| `./build.sh [release\|debug\|test\|clean]` | Linux / macOS / WSL 构建（`test` 带 ctest）；Windows 的 Git Bash、MSYS2 同样可用 |
+| `./scripts/setup-linux-env.sh` | Linux / macOS 环境自检 + 调用 `build.sh` |
 | `./run.sh [release\|debug]` | 构建过就直接跑，没构建过先构建 |
+
+Windows 上两个入口按"谁负责注入 MSVC 环境"分工：`build.bat` 自带 vswhere + vcvars，
+`build.sh` 依赖 `CMakeUserPresets.json` 里钉死的 `cl.exe` / `INCLUDE` / `LIB` 绝对路径
+（跑不了 `cmd.exe` 的环境就用它）。两者的 preset 与产物目录完全一致。
 
 产物路径统一为 `build/<config>/bin/VideoEye[.exe]`：
 

@@ -14,8 +14,8 @@
 
 ## 一键构建
 
-> `CMakePresets.json` 是构建配置的唯一来源，`build.bat` / `build.sh` / `build_ninja.ps1`
-> 只是它的薄封装。新增构建选项请改 preset，不要往脚本里塞 `-DCMAKE_XXX`。
+> `CMakePresets.json` 是构建配置的唯一来源，`build.bat` / `build.sh` 只是它的薄封装。
+> 新增构建选项请改 preset，不要往脚本里塞 `-DCMAKE_XXX`。
 
 ### Windows
 ```powershell
@@ -37,7 +37,7 @@ sudo apt install -y build-essential cmake ninja-build pkg-config qt6-base-dev \
   libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
 
 ./build.sh release            # 等价于 cmake --preset linux-release && cmake --build --preset linux-release
-./setup.sh                    # 依赖自检 + 调用 build.sh
+./scripts/setup-linux-env.sh  # 依赖自检 + 调用 build.sh
 ```
 
 ## 单元测试

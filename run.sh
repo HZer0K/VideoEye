@@ -18,6 +18,10 @@ esac
 
 BUILD_DIR="${SCRIPT_DIR}/build/${BUILD_TYPE}"
 EXECUTABLE="${BUILD_DIR}/bin/VideoEye"
+# build.sh 在 Windows 的 Git Bash / MSYS2 下同样可用，产物带 .exe
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) EXECUTABLE="${EXECUTABLE}.exe" ;;
+esac
 
 echo "====================================="
 echo "VideoEye 2.0 启动器"

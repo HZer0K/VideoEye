@@ -247,7 +247,7 @@ $presetJson = @"
   },
   "configurePresets": [
     {
-      "name": "win-release-local",
+      "name": "release",
       "inherits": "win-release",
       "environment": {
         "VCPKG_ROOT": "$VcpkgRoot",
@@ -264,7 +264,7 @@ $presetJson = @"
       }
     },
     {
-      "name": "win-debug-local",
+      "name": "debug",
       "inherits": "win-debug",
       "environment": {
         "VCPKG_ROOT": "$VcpkgRoot",
@@ -281,7 +281,7 @@ $presetJson = @"
       }
     },
     {
-      "name": "win-test-release-local",
+      "name": "test-release",
       "inherits": "win-test-release",
       "environment": {
         "VCPKG_ROOT": "$VcpkgRoot",
@@ -298,7 +298,7 @@ $presetJson = @"
       }
     },
     {
-      "name": "win-test-debug-local",
+      "name": "test-debug",
       "inherits": "win-test-debug",
       "environment": {
         "VCPKG_ROOT": "$VcpkgRoot",
@@ -338,13 +338,13 @@ Write-Host @"
 PowerShell 均可，因为 CMakeUserPresets.json 已钉死工具链路径）：
 
   构建 Release:
-      cmake --preset win-release-local
-      cmake --build --preset win-release-local --parallel %NUMBER_OF_PROCESSORS%
+      cmake --preset release
+      cmake --build --preset release --parallel %NUMBER_OF_PROCESSORS%
 
   构建 + 跑单元测试:
-      cmake --preset win-test-release-local
-      cmake --build --preset win-test-release-local
-      ctest --preset win-test-release-local
+      cmake --preset test-release
+      cmake --build --preset test-release
+      ctest --preset test-release
 
   或直接用项目脚本:
       build.bat release        (需 VCPKG_ROOT 已设置，已设)
@@ -355,6 +355,10 @@ PowerShell 均可，因为 CMakeUserPresets.json 已钉死工具链路径）：
 
 说明:
   - 本机专有路径已写入 gitignore 的 CMakeUserPresets.json，不会进仓库。
+  - 这里生成的 preset 一律用**短名**(release / debug / test-release / test-debug)。
+    历史上生成的是 win-<名字>-local，而手工维护的文件常写成短名，
+    两种拼写逼着 build.bat / build.sh 在三种候选里猜；统一成短名后，
+    脚本只需要"有短名用短名，没有就回退通用 win-* 名"两级判断。
   - 若重装/升级了 VS 或 Windows SDK，重新运行本脚本即可刷新。
   - 当前沙箱环境的 linker 可能被拦截、无法跑完整 ctest；
     以上构建请在你的真机（普通 Windows + VS2022）上执行。

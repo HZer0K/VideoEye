@@ -118,13 +118,16 @@ flowchart LR
 | 静音/DC/反相/时长不一致 | `SilenceGapInTheMiddleIsDetected`、`DcOffsetIsMeasured`、`OutOfPhaseStereoIsDetected`、`DurationMismatchIsReported` |
 | 无数据不误报 | `NoFalsePositiveWithoutAudioAnalysis` |
 
-沙箱内快速跑分析器单测：
+配置好测试 preset 后只跑音频 QC 相关用例：
 
 ```bash
-bash scripts/run-audioqc-tests.sh     # 直接 cl 编译 + 运行（gtest 用 .workbuddy/tmp/gtest_main_shim.cpp 补 main）
+ctest --preset test-release -R "AudioQc" --output-on-failure
+# Windows 没有 CMakeUserPresets.json 时(如 CI)：ctest --preset win-test-release -R "AudioQc"
 ```
 
-CMake 方式：`cmake -DBUILD_TESTING=ON` 后 `ctest -R "AudioQc"`。
+> 以前这里推荐 `scripts/run-audioqc-tests.sh`（绕开 CMake 直接调 `cl.exe`，还把 MSVC 版本号
+> 硬编码在脚本里）。那两个用例早已进 ctest（`AudioQcAnalyzerTests` / `AudioQcRulesTests`），
+> 脚本已于 2026-10-11 删除。
 
 ## 7. 已知边界
 

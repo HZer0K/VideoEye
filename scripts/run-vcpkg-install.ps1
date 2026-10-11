@@ -23,7 +23,7 @@ foreach ($v in @("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")) {
     Remove-Item "Env:$v" -ErrorAction SilentlyContinue
 }
 
-# 通过 vcvars64.bat 加载完整 MSVC 环境（与 build_ninja.ps1 同一套做法）
+# 通过 vcvars64.bat 加载完整 MSVC 环境（与 build.bat 同一套做法）
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 if (-not (Test-Path $vswhere)) {
     $vswhere = "${env:ProgramFiles}\Microsoft Visual Studio\Installer\vswhere.exe"
