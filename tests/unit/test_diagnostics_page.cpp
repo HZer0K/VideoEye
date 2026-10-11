@@ -9,7 +9,10 @@
 //      hasResult / 导出恢复 / 问题表与 qcReport() 逐行一致 / 汇总出评分；
 //   4) 规则表：勾选开关与阈值改写落到 facade 规则集、非法阈值还原显示、
 //      「恢复默认规则」重建；跨页钩子（BeforeScanHook）每次扫描前恰好跑一次；
-//   5) CancelScan 只请求取消、不伪造终态；ResetForNewFile 回到初始态。
+//   5) CancelScan 只请求取消、不伪造终态；ResetForNewFile 回到初始态；
+//   6) 取消延迟预算（阶段 5）：请求 -> 界面状态更新必须落在 kCancelResponseBudgetMs 内，
+//      请求 -> 后台收敛记 kMetricCancelSettleMs，收敛前看门狗只改进度条文案、
+//      全程不弹模态框；空闲态误调取消不进"取消中"、也不留一个永不停止的看门狗。
 //
 // 本页已收敛掉与「事件与时间轴」页重复的实时时间轴视图：只剩「问题清单 / 规则与阈值」
 // 两个子页，单测只覆盖这两页与扫描总控状态。
@@ -20,15 +23,19 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QDialog>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QEvent>
 #include <QFile>
 #include <QLabel>
+#include <QMetaObject>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QThread>
+#include <QTimer>
 
 #include <functional>
 #include <string>
@@ -37,9 +44,13 @@
 #include "core/analysis/AnalysisOptions.h"
 #include "core/domain/model/QcReport.h"
 #include "core/domain/model/QcRule.h"
+#include "infrastructure/logging/PerfMetrics.h"
 #include "ui/analysis_panel/DiagnosticsPage.h"
 #include "ui/charts/MetricChartWidget.h"
 
+#include "BlockingTcpEndpoint.h"
+
+using videoeye::PerfMetrics;
 using videoeye::model::DefaultQcRules;
 using videoeye::model::QcReport;
 using videoeye::model::QcRule;
@@ -48,16 +59,37 @@ using videoeye::ui::MetricChartWidget;
 
 namespace {
 
-QApplication* EnsureApp() {
+// 模态框探针：取消路径（请求 -> 后台收敛）全程不许弹任何模态框。
+// 弹框会把"打开即分析"这类自动流程卡在模态循环里等不到人点，连续取消还会叠出多个框。
+// 只有 QApplication::notify 能看到所有事件 —— 事件过滤器得挂到具体对象上，
+// 而弹框是运行时才 new 出来的，挂不上。
+class ModalProbeApp : public QApplication {
+public:
+    ModalProbeApp(int& argc, char** argv) : QApplication(argc, argv) {}
+
+    int dialogs_shown = 0;
+
+    bool notify(QObject* receiver, QEvent* event) override {
+        if (event != nullptr && event->type() == QEvent::Show &&
+            qobject_cast<QDialog*>(receiver) != nullptr) {
+            ++dialogs_shown;
+        }
+        return QApplication::notify(receiver, event);
+    }
+};
+
+ModalProbeApp* EnsureApp() {
     qputenv("QT_QPA_PLATFORM", "offscreen");
-    static QApplication* app = [] {
+    static ModalProbeApp* app = [] {
         static int argc = 1;
         static char name[] = "test_diagnostics_page";
         static char* argv[] = {name, nullptr};
-        return new QApplication(argc, argv);
+        return new ModalProbeApp(argc, argv);
     }();
     return app;
 }
+
+int ModalDialogsShown() { return EnsureApp()->dialogs_shown; }
 
 // 泵事件直到条件满足；返回最终是否满足（扫描在工作线程里跑，靠排队信号回主线程）
 bool PumpEventsUntil(const std::function<bool()>& done, int timeout_ms = 30000) {
@@ -100,6 +132,16 @@ QPushButton* FindButton(QWidget* root, const QString& text) {
             return button;
     }
     return nullptr;
+}
+
+// 取消收敛看门狗：SetupUi 里给了对象名，避免和将来加进来的其它定时器混淆
+QTimer* FindCancelWatchdog(QWidget* root) {
+    return root->findChild<QTimer*>(QStringLiteral("cancel_watchdog"));
+}
+
+QString ProgressFormat(QWidget* root) {
+    const QProgressBar* bar = root->findChild<QProgressBar*>();
+    return bar == nullptr ? QString() : bar->format();
 }
 
 // 页内唯一自绘图表靠标题区分（问题清单）
@@ -341,19 +383,130 @@ TEST(DiagnosticsPageTests, SuccessfulManifestScanFillsIssueTableAndEnablesExport
     QFile::remove(manifest);
 }
 
-// CancelScan 只发取消请求、不伪造终态：终态由 OnFacadeFinished/OnFacadeFailed 统一发
-TEST(DiagnosticsPageTests, CancelScanDoesNotEmitTerminalSignal) {
+// ---------------------------------------------------------------------------
+// 取消体验（阶段 5）
+//
+// 三条互相独立的保证，分开测：
+//   1) **立刻更新状态**：请求 -> 按钮置灰 + 进度条转"取消中"，落在 kCancelResponseBudgetMs 内；
+//   2) **只发请求、不伪造终态**：终态仍由 OnFacadeFinished/OnFacadeFailed 统一发；
+//   3) **后台最终收敛**：终态一到，取消态清掉、看门狗停；收敛前看门狗只把等待时长
+//      写进进度条，**绝不弹框**（弹框会把"打开即分析"这类自动流程卡在模态循环里）。
+//
+// 要测到"真的在跑"的取消，必须有一个不会自己结束的扫描：本地只监听、从不回包的
+// TCP 端口就是这个东西（BlockingTcpEndpoint），FFmpeg 卡在读上，只能靠中断回调退出。
+// ---------------------------------------------------------------------------
+
+// 起一个卡住的扫描。返回 false 表示端口没阻塞住（扫描瞬间回了终态），调用方应跳过。
+bool StartBlockingScan(DiagnosticsPage* page, const ScanTrace& trace,
+                       const videoeye_test::BlockingTcpEndpoint& endpoint) {
+    page->SetSourcePath(QString::fromStdString(endpoint.tcp_url()));
+    page->StartScan(page->options());
+    // 等它真的卡进去：阻塞输入不会自己结束，正常情况下这段时间里不会有终态。
+    // 若终态自己来了说明端口没阻塞住，这次没测到取消路径。
+    return !PumpEventsUntil([&trace] { return !trace.ends.empty(); }, 400);
+}
+
+// 空闲态（没有在跑的扫描）误调取消：不进"取消中"、也不留一个永远等不到终态的看门狗。
+// 取消按钮在空闲态本来就是禁用的，这里是防面板那种把各页 CancelRequested 都转进来的
+// 批量入口误调 —— 以前会留下一个每秒刷一次"仍在收尾"的定时器，而界面上什么都没在做。
+TEST(DiagnosticsPageTests, CancelScanWithoutRunningScanDoesNotEnterCancellingState) {
     EnsureApp();
     ScanTrace trace;
     DiagnosticsPage page;
     trace.Observe(&page);
 
+    auto& metrics = PerfMetrics::GetInstance();
+    const auto before = metrics.Snapshot(videoeye::kMetricCancelResponseMs);
+    const QString format_before = ProgressFormat(&page);
+
     page.CancelScan();
 
+    EXPECT_EQ(ProgressFormat(&page), format_before) << "没有任务在跑时不该进入『取消中』态";
+    EXPECT_FALSE(FindCancelWatchdog(&page)->isActive()) << "没有任务在跑时不该起看门狗";
     EXPECT_TRUE(trace.ends.empty());
     EXPECT_EQ(trace.started, 0);
-    EXPECT_EQ(page.findChild<QProgressBar*>()->format(), QStringLiteral("取消中..."));
+    // 没有可取消的任务，"响应延迟"这个数没有意义，不该混进正常样本里
+    EXPECT_EQ(metrics.Snapshot(videoeye::kMetricCancelResponseMs).count, before.count);
+}
+
+// 1) + 2)：取消后立刻更新状态，且响应延迟落在预算内；终态仍然不在这里发
+TEST(DiagnosticsPageTests, CancelScanUpdatesStateImmediatelyWithinResponseBudget) {
+    EnsureApp();
+    videoeye_test::BlockingTcpEndpoint endpoint;
+    ASSERT_TRUE(endpoint.valid()) << "无法建立本地阻塞端口，本用例无法运行";
+
+    ScanTrace trace;
+    DiagnosticsPage page;
+    trace.Observe(&page);
+    if (!StartBlockingScan(&page, trace, endpoint)) {
+        GTEST_SKIP() << "阻塞输入瞬间就回终态（端口未真正阻塞），本轮不算测到取消路径";
+    }
+
+    auto& metrics = PerfMetrics::GetInstance();
+    const auto before = metrics.Snapshot(videoeye::kMetricCancelResponseMs);
+
+    page.CancelScan();
+
+    const auto after = metrics.Snapshot(videoeye::kMetricCancelResponseMs);
+    EXPECT_EQ(after.count - before.count, 1) << "取消必须恰好记一次响应延迟";
+    EXPECT_LE(after.last, videoeye::kCancelResponseBudgetMs)
+        << "取消响应 " << after.last << "ms 超出预算：这条路径上夹了同步等待";
+
+    EXPECT_EQ(ProgressFormat(&page), QStringLiteral("取消中..."));
     EXPECT_FALSE(FindButton(&page, QStringLiteral("取消"))->isEnabled());
+    EXPECT_TRUE(trace.ends.empty()) << "取消只发请求，终态由 OnFacadeFinished/OnFacadeFailed 发";
+
+    // 收尾：等后台真的退出来，别把还在跑的扫描留给析构函数
+    ASSERT_TRUE(PumpEventsUntil([&trace] { return !trace.ends.empty(); }, 8000))
+        << "取消后后台没有收敛";
+}
+
+// 3)：收敛前看门狗只报等待时长（不弹框、不伪造终态），终态一到立刻停手
+TEST(DiagnosticsPageTests, CancelWatchdogReportsWaitingUntilTerminalStopsIt) {
+    EnsureApp();
+    videoeye_test::BlockingTcpEndpoint endpoint;
+    ASSERT_TRUE(endpoint.valid()) << "无法建立本地阻塞端口，本用例无法运行";
+
+    ScanTrace trace;
+    DiagnosticsPage page;
+    trace.Observe(&page);
+    if (!StartBlockingScan(&page, trace, endpoint)) {
+        GTEST_SKIP() << "阻塞输入瞬间就回终态（端口未真正阻塞），本轮不算测到取消路径";
+    }
+
+    auto& metrics = PerfMetrics::GetInstance();
+    const auto settle_before = metrics.Snapshot(videoeye::kMetricCancelSettleMs);
+    const int modals_before = ModalDialogsShown();
+
+    page.CancelScan();
+    QTimer* watchdog = FindCancelWatchdog(&page);
+    ASSERT_NE(watchdog, nullptr);
+    EXPECT_TRUE(watchdog->isActive()) << "取消后收敛看门狗必须起来";
+
+    // 直接进私有槽：看门狗的预算是 3 秒，单测里等不起，也不需要等 ——
+    // 要验的是"超预算还没收敛时它会说什么"。
+    // 中间**不能泵事件**：一泵就可能把后台的终态信号送进来，cancel_pending_ 就清掉了。
+    ASSERT_TRUE(QMetaObject::invokeMethod(&page, "OnCancelWatchdog"));
+    EXPECT_TRUE(ProgressFormat(&page).contains(QStringLiteral("收尾")))
+        << "超预算未收敛必须把等待时长显示出来，否则用户只能以为卡死了";
+    EXPECT_TRUE(trace.ends.empty()) << "看门狗绝不许伪造终态";
+    EXPECT_FALSE(FindButton(&page, QStringLiteral("取消"))->isEnabled());
+    EXPECT_EQ(ModalDialogsShown(), modals_before) << "取消未收敛时不许弹模态框";
+
+    // 后台最终必须收敛（预算写进日志，这里只守"一定会收敛 + 恰好一个终态"）
+    ASSERT_TRUE(PumpEventsUntil([&trace] { return !trace.ends.empty(); }, 8000))
+        << "取消后后台没有收敛";
+    EXPECT_EQ(trace.ends.size(), 1u) << "一次扫描只应产生一个终态事件";
+
+    const auto settle_after = metrics.Snapshot(videoeye::kMetricCancelSettleMs);
+    EXPECT_EQ(settle_after.count - settle_before.count, 1)
+        << "取消收敛延迟必须被记下来（请求 -> 后台真正退出）";
+    EXPECT_GE(settle_after.last, 0.0);
+
+    EXPECT_FALSE(watchdog->isActive()) << "终态到了看门狗必须停，否则它会一直每秒刷进度条";
+    EXPECT_FALSE(ProgressFormat(&page).contains(QStringLiteral("取消中")))
+        << "收敛后必须离开『取消中』态";
+    EXPECT_EQ(ModalDialogsShown(), modals_before) << "取消路径全程不许弹模态框";
 }
 
 // 规则表：勾选开关与阈值改写落到规则集；非法阈值还原显示；「恢复默认规则」重建

@@ -28,7 +28,9 @@
 #include <QLabel>
 #include <QTableWidget>
 #include <QTabWidget>
+#include <QTimer>
 
+#include "infrastructure/logging/PerfMetrics.h"
 #include "ui/AnalysisFacade.h"
 #include "ui/analysis_panel/AnalysisPageSupport.h"
 #include "ui/charts/MetricChartWidget.h"
@@ -110,6 +112,7 @@ signals:
 
 private slots:
     void OnCancelClicked();
+    void OnCancelWatchdog();
     void OnExportClicked();
     void OnRuleItemChanged(QTableWidgetItem* item);
     void OnResetRulesClicked();
@@ -129,6 +132,8 @@ private:
     void UpdateQcChart();
     void RebuildRuleTable();
     void SetScanButtonState(bool running);
+    // 终态到达（成功 / 取消 / 失败共用）：停掉取消看门狗、结算取消延迟
+    void ClearCancelPending();
 
     QString source_path_;
     videoeye::AnalysisOptions options_;
@@ -137,6 +142,18 @@ private:
     bool has_result_ = false;
     bool rule_table_updating_ = false;
     std::chrono::steady_clock::time_point scan_start_time_;
+
+    // ---- 取消延迟 ----
+    //
+    // 「用户点了取消」到「界面承认取消了」是两件事，中间隔着后台线程退出：
+    //   * cancel_probe_ 记下请求时刻，终态到达时结算 cancel_settle_ms；
+    //   * cancel_watchdog_ 是**收敛兜底**：后台一旦不按预期退出，界面不能永远停在
+    //     "取消中…"却毫无进展。它只改进度条文案、绝不弹框 —— 弹框会把
+    //     "打开即分析"这类自动流程卡在模态循环里等不到人点。
+    //   * cancel_pending_ 标记"已请求但还没收到终态"。
+    CancelLatencyProbe cancel_probe_;
+    QTimer* cancel_watchdog_ = nullptr;
+    bool cancel_pending_ = false;
 
     AnalysisFacade* facade_ = nullptr;
     ScanHook before_scan_;   // 扫描前的跨页钩子（由面板注入）

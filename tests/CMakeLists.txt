@@ -1455,6 +1455,10 @@ target_link_libraries(test_diagnostics_page PRIVATE
     VideoEyeInfrastructure
     VideoEyeDomain
     Qt6::Core Qt6::Gui Qt6::Widgets)
+# 取消路径用例用 BlockingTcpEndpoint.h 起本地监听端口，Windows 上需要显式 ws2_32。
+if(WIN32)
+    target_link_libraries(test_diagnostics_page PRIVATE ws2_32)
+endif()
 add_test(NAME DiagnosticsPageTests COMMAND test_diagnostics_page)
 set_tests_properties(DiagnosticsPageTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

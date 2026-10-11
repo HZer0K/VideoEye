@@ -10,11 +10,11 @@
 #include <chrono>
 
 #include "core/reporting/QcReportExporter.h"
+#include "infrastructure/logging/PerfMetrics.h"
 #include "infrastructure/logging/ScopedTimer.h"
 
 namespace videoeye {
 namespace ui {
-
 // 曲线点数上限不再本地定义：统一走 ui/charts/ChartDecimation.h 的 kMaxChartPoints。
 // 这里以前有一份同名常量（4000），与统一常量处在同一命名空间层级，
 // 名字查找会直接歧义 —— 更要紧的是"多个页面各定一把尺子"本身就是本轮要消除的问题。
@@ -78,6 +78,13 @@ void DiagnosticsPage::SetupUi() {
         cancel_button_ = new QPushButton(tr("取消"), row);
         cancel_button_->setEnabled(false);
         connect(cancel_button_, &QPushButton::clicked, this, &DiagnosticsPage::OnCancelClicked);
+
+        // 取消收敛看门狗：只在 CancelScan() 里 start，终态一到就 stop。
+        // 挂在页面对象上、不设 singleShot —— 超时后要每秒续一次把等待时长刷出来。
+        cancel_watchdog_ = new QTimer(this);
+        cancel_watchdog_->setObjectName(QStringLiteral("cancel_watchdog"));
+        cancel_watchdog_->setSingleShot(true);
+        connect(cancel_watchdog_, &QTimer::timeout, this, &DiagnosticsPage::OnCancelWatchdog);
         rl->addWidget(cancel_button_);
 
         export_button_ = new QPushButton(tr("导出报告"), row);
@@ -202,6 +209,11 @@ void DiagnosticsPage::StartScan(const videoeye::AnalysisOptions& options, bool s
 
     scan_start_time_ = std::chrono::steady_clock::now();
     has_result_ = false;
+    // 上一次扫描若还停在"取消中"的状态（后台没收敛就开了新的），这里必须清干净：
+    // 否则看门狗还在跑，会把新扫描的进度条文案覆盖成"仍在收尾"。
+    cancel_pending_ = false;
+    cancel_probe_.Abandon();
+    if (cancel_watchdog_) cancel_watchdog_->stop();
     issue_table_->setRowCount(0);
     export_button_->setEnabled(false);
     SetScanButtonState(true);
@@ -219,12 +231,65 @@ void DiagnosticsPage::StartScan(const videoeye::AnalysisOptions& options, bool s
 }
 
 void DiagnosticsPage::CancelScan() {
+    // 延迟预算的第一段：**请求 -> 界面状态更新**。这段全在主线程上，
+    // 理论上就是一个事件循环的事（kCancelResponseBudgetMs = 100ms）。
+    // 埋点的意义在于：哪天有人往这条路径里塞了同步等待，它会立刻超预算报警，
+    // 而不是等用户抱怨"点了取消没反应"。
+    const auto requested_at = std::chrono::steady_clock::now();
+
+    // 没有在跑的扫描时"取消"是无意义的：不进"取消中"态、也不起看门狗 ——
+    // 否则看门狗会去等一个永远不会来的终态，然后每秒把进度条刷一次"仍在收尾"，
+    // 而界面上其实什么都没在做。取消按钮在空闲态本来就是禁用的，这里是防
+    // AnalysisPanel 那种把各页 CancelRequested 都转进来的批量入口误调。
+    if (!facade_->IsRunning()) {
+        facade_->Cancel();
+        return;
+    }
+
     facade_->Cancel();
+    cancel_pending_ = true;
+    cancel_probe_.Arm();
     cancel_button_->setEnabled(false);
     progress_bar_->setFormat(tr("取消中..."));
+
+    // 收敛兜底：预算时间（kCancelSettleBudgetMs）之后如果还没收到终态，
+    // 说明后台没能按预期退出。此时**不弹框、不自动放弃** —— 只是把等待时长
+    // 持续显示在进度条上，让人知道"还在收尾"而不是"卡死了"。
+    if (cancel_watchdog_) {
+        cancel_watchdog_->start(static_cast<int>(videoeye::kCancelSettleBudgetMs));
+    }
+
+    const double response_ms = std::chrono::duration<double, std::milli>(
+                                   std::chrono::steady_clock::now() - requested_at).count();
+    PerfMetrics::GetInstance().RecordTiming(videoeye::kMetricCancelResponseMs, response_ms,
+                                            videoeye::kCancelResponseBudgetMs);
+
     // 注意这里**不发终态信号**: 取消只是请求, 任务还在跑。终态由 OnFacadeFinished
     // 统一发出 —— 共用同一次扫描的几页在真正结束时才一起回到 Idle, 不会出现
     // "面板说取消了、后台其实还在跑"的中间态。
+}
+
+// 取消后超过预算仍未收敛：把已等待时长继续显示出来（每秒刷新一次）。
+//
+// 为什么不是"超时就强制恢复界面"：强制恢复等于承认"后台还在写结果对象"，
+// 而它随后到达的终态会覆盖掉用户新开的那次分析 —— 状态分家比多等几秒糟得多。
+// 所以这里只做告知，恢复仍然只认终态这一个入口。
+void DiagnosticsPage::OnCancelWatchdog() {
+    if (!cancel_pending_) return;
+    const double waited_s = cancel_probe_.ElapsedMs() / 1000.0;
+    progress_bar_->setFormat(
+        tr("取消中（后台仍在收尾 %1 秒）").arg(QString::number(waited_s, 'f', 1)));
+    if (cancel_watchdog_) cancel_watchdog_->start(1000);
+}
+
+// 终态到达：停看门狗 + 结算"取消请求 -> 后台真正收敛"的延迟。
+// 成功 / 取消 / 失败三条路都走这里，避免漏掉一条导致看门狗一直转。
+void DiagnosticsPage::ClearCancelPending() {
+    cancel_pending_ = false;
+    if (cancel_watchdog_) cancel_watchdog_->stop();
+    if (cancel_probe_.Armed()) {
+        cancel_probe_.Settle();   // 内部记 cancel_settle_ms 并按预算判定
+    }
 }
 
 void DiagnosticsPage::SetScanButtonState(bool running) {
@@ -245,6 +310,9 @@ void DiagnosticsPage::OnFacadeFinished(quint64 generation, bool completed,
                                        const model::AnalysisResult& result) {
     if (generation != generation_) return;
     Q_UNUSED(result);
+
+    // 终态到达：结算取消延迟（若这次是被取消的）
+    ClearCancelPending();
 
     // 结果已经由 AnalysisFacade 在发出 AnalysisFinished 之前写好了（编排层的职责，
     // 见 AnalysisFacade 构造函数）。本页只负责展示，不再自己 SetResult ——
@@ -276,6 +344,8 @@ void DiagnosticsPage::OnFacadeFinished(quint64 generation, bool completed,
 
 void DiagnosticsPage::OnFacadeFailed(quint64 generation, const QString& message) {
     if (generation != generation_) return;
+    // 失败同样是终态：取消看门狗必须一起停，否则它会一直每秒刷进度条
+    ClearCancelPending();
     SetScanButtonState(false);
     progress_bar_->setValue(0);
     progress_bar_->setFormat(tr("失败"));
