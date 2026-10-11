@@ -258,6 +258,34 @@ target_link_libraries(test_config_manager PRIVATE Qt6::Core)
 add_test(NAME ConfigManagerTests COMMAND test_config_manager)
 
 # ============================================================
+# 测试 2b: PerfMetrics (长期性能指标口径)
+#
+# 只链 infrastructure 的两个 .cpp，不碰 Qt 业务逻辑 —— 指标通道必须能被
+# 任何层（core / ui）直接引用，一旦拖上依赖就没人敢在热路径上埋点了。
+# ============================================================
+videoeye_add_test(test_perf_metrics
+    unit/test_perf_metrics.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/PerfMetrics.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/Logger.cpp
+)
+target_link_libraries(test_perf_metrics PRIVATE Qt6::Core)
+add_test(NAME PerfMetricsTests COMMAND test_perf_metrics)
+
+# ============================================================
+# 长期性能指标通道（PerfMetrics）+ 它依赖的 Logger
+#
+# 凡编到 ui/analysis_panel/*.cpp 的测试目标都要带上这两个源：RecordTableModel.h
+# 在裁剪记录时会记一次计数，而这一类测试目标通常只链 Qt（不链任何 core 模块，
+# 也就拿不到 VideoEyeInfrastructure 里的符号），漏了就是链接期 LNK2019。
+#
+# 已经手列过 Logger.cpp 的目标**不要**再加这个变量，否则同一份 .cpp 进两次
+# 编译单元会撞 LNK2005 重复定义。
+# ============================================================
+set(VIDEOEYE_PERF_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/PerfMetrics.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/Logger.cpp)
+
+# ============================================================
 # 测试 3: StreamStatsExporter (流统计快照导出)
 #
 # 输入是 model::StreamStats(domain 的纯值对象), 所以只链 VideoEyeReporting 就够了 ——
