@@ -4,10 +4,14 @@
 # 只做三件事: 检查依赖、打印安装建议、调用统一的构建入口 build.sh。
 # 以前这里自己 mkdird 了一个 build-linux/ 并直接跑 cmake，绕开了 preset，
 # 于是"setup.sh 构建出来的"和"build.sh 构建出来的"是两套配置 —— 现在废弃那套。
+#
+# 本脚本住在 scripts/ 下（2026-10-11 从仓库根移入，让根目录只剩 build.bat /
+# build.sh / run.sh 三个入口），所以第一步是回到项目根。
 
 set -eu
-DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$DIR"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
@@ -45,7 +49,7 @@ if [ "$SKIP_DEPS" = false ]; then
 
     # FFmpeg: Linux/macOS 默认用系统的（pkg-config），预编译包只是备选
     echo ""
-    PREBUILT_DIR="$DIR/third_party/prebuilt/${OS}-$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')/ffmpeg"
+    PREBUILT_DIR="$PROJECT_ROOT/third_party/prebuilt/${OS}-$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')/ffmpeg"
     if check_pkg libavcodec >/dev/null 2>&1; then
         echo -e "  ${GREEN}[OK]${NC} FFmpeg (pkg-config: $(pkg-config --modversion libavcodec))"
     elif [ -d "$PREBUILT_DIR/include" ] && [ -d "$PREBUILT_DIR/lib" ]; then
