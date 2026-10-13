@@ -1,0 +1,116 @@
+# ============================================================
+# 定期 fuzz —— 让 libFuzzer 入口真的跑起来
+#
+# 背景: tests/fuzz/ 有四个入口（VIDEOEYE_ENABLE_FUZZERS，默认 OFF），
+# 但"有入口"不等于"在跑"。没人定期跑的话，入口会随依赖变化悄悄烂掉 ——
+# 等真想用它查问题时才发现编不过，那就等于没有。
+#
+# 所以这里做两件事:
+#   1) 每周定时构建 + 短跑（默认每个入口 120 秒），既防腐烂又能捞到回归；
+#   2) 手动触发时可指定时长（workflow_dispatch），排查期想多跑就多跑。
+#
+# 三个 libFuzzer 参数是这个 job 的主要价值所在，别删:
+#   -timeout=10        死循环会被抓成 timeout（码流解析器历史上出过空转数十亿次）
+#   -rss_limit_mb=2048 无界分配会被抓成 OOM（历史上出过 4GB 分配）
+#   -max_len=65536     输入尺寸有上界，保证跑得完
+# 崩溃 / timeout / OOM 都会让 libFuzzer 非 0 退出并把复现输入写成 artifact。
+# ============================================================
+
+name: Fuzz
+
+on:
+  schedule:
+    # 每周一 03:17 UTC（避开整点，GitHub 定时任务在整点最挤）
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      seconds_per_target:
+        description: 每个 fuzz 入口跑多少秒
+        required: false
+        default: '120'
+  # fuzz 入口或其依赖的解析层有改动时，也跑一遍（PR 上不跑: 太慢）
+  push:
+    branches: [master, main]
+    paths:
+      - 'tests/fuzz/**'
+      - 'core/analysis/**'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - '.github/workflows/fuzz.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: libFuzzer (clang + ASan/UBSan)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          # clang: libFuzzer 运行时只随 clang 分发；lld 非必需但链接更快
+          # dpkg-dev/ffmpeg 同 build.yml: FFmpeg 走同一套查找逻辑
+          sudo apt-get install -y \
+            build-essential cmake pkg-config ninja-build clang \
+            qt6-base-dev \
+            libavcodec-dev libavformat-dev libavutil-dev \
+            libswscale-dev libswresample-dev
+
+      # 与 build.yml 同一道门禁：系统 FFmpeg 必须 >= 7.1（libavcodec >= 61.19），
+      # Ubuntu 24.04 的 6.1 不够，会自动换成 ffmpeg-version.json 里锁定的兜底包。
+      - name: Ensure FFmpeg >= 7.1
+        id: ffmpeg
+        run: |
+          set -euo pipefail
+          root="$(bash scripts/fetch-ffmpeg.sh)"
+          echo "root=${root}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure
+        run: |
+          set -euo pipefail
+          root="${{ steps.ffmpeg.outputs.root }}"
+          if [[ -n "${root}" ]]; then
+            cmake --preset linux-fuzz -DFFMPEG_ROOT="${root}"
+          else
+            cmake --preset linux-fuzz
+          fi
+
+      - name: Build
+        run: cmake --build --preset linux-fuzz
+
+      - name: Run fuzzers
+        run: |
+          set -uo pipefail
+          seconds="${{ github.event.inputs.seconds_per_target || '120' }}"
+          mkdir -p build/fuzz/artifacts
+          status=0
+          for f in build/fuzz/tests/fuzz/Fuzz*; do
+            [[ -x "$f" ]] || continue
+            name="$(basename "$f")"
+            echo "::group::$name"
+            # 每次跑给一个独立 corpus 目录：libFuzzer 会把有价值的输入写回去，
+            # 同一台 runner 上复用能慢慢攒出语料（不上传，只用于本次 job 内）
+            mkdir -p "build/fuzz/corpus/$name"
+            "$f" \
+              "-artifact_prefix=build/fuzz/artifacts/${name}-" \
+              "build/fuzz/corpus/$name" \
+              -max_total_time="$seconds" \
+              -timeout=10 \
+              -rss_limit_mb=2048 \
+              -max_len=65536 \
+              -print_final_stats=1 || status=1
+            echo "::endgroup::"
+          done
+          exit $status
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: build/fuzz/artifacts
+          if-no-files-found: ignore

@@ -30,6 +30,9 @@ if(DEFINED __VIDEOEYE_FFMPEG_INCLUDED)
 endif()
 set(__VIDEOEYE_FFMPEG_INCLUDED TRUE)
 
+# 版本识别 + 编译期 API 门禁。放在最前面: 两条查找路径都要用它。
+include("${CMAKE_CURRENT_LIST_DIR}/FfmpegApiProbe.cmake")
+
 # 部署脚本路径。
 # 两个坑:
 #   1) 不能在 function 内部用 CMAKE_CURRENT_LIST_DIR —— 函数体读到的是"调用方"的
@@ -210,12 +213,17 @@ function(_ffmpeg_try_prebuilt out_ok)
         message(FATAL_ERROR
             "FFmpeg 预编译包缺少运行时 DLL: ${_root}\n"
             "组件 ${_missing_dll} 有导入库(lib/*.lib) 但 bin/ 下找不到对应的 dll。\n"
-            "gyan.dev 的包分 shared / shared-libs / dev 几种，需要的是带 bin/*.dll 的那份；\n"
+            "预编译包缺少运行时 DLL（通常是下成了 dev/import-lib-only 的那份），需要的是带 bin/*.dll 的 shared 变体；\n"
             "重新获取: powershell -ExecutionPolicy Bypass -File scripts\\fetch-ffmpeg.ps1 -Force")
     endif()
 
+    # libavcodec 三元组: 预编译包没有 .pc 文件, 只能从头文件里读。
+    # 用途是给人看的版本摘要 + API 门禁报错文案里指明实际版本。
+    videoeye_ffmpeg_read_libavcodec_version("${_root}" _libavcodec_version)
+
     set(FFMPEG_SOURCE "prebuilt" PARENT_SCOPE)
     set(FFMPEG_VERSION "" PARENT_SCOPE)
+    set(FFMPEG_LIBAVCODEC_VERSION "${_libavcodec_version}" PARENT_SCOPE)
     set(FFMPEG_PREBUILT_DIR "${_root}" PARENT_SCOPE)
     set(FFMPEG_LOCAL_DIR "${_root}" PARENT_SCOPE)
     set(FFMPEG_INCLUDE_DIRS "${_root}/include" PARENT_SCOPE)
@@ -352,8 +360,12 @@ function(_ffmpeg_try_pkgconfig out_ok)
     list(REMOVE_DUPLICATES _incdirs)
     list(REMOVE_DUPLICATES _libdirs)
 
+    # pkg-config 给的是"市场版本号"(7.1 这种), 跨发行版比较还得靠 libavcodec 三元组
+    videoeye_ffmpeg_detect_libavcodec_version("${_incdirs}" _libavcodec_version)
+
     set(FFMPEG_SOURCE "pkg-config" PARENT_SCOPE)
     set(FFMPEG_VERSION "${_version}" PARENT_SCOPE)
+    set(FFMPEG_LIBAVCODEC_VERSION "${_libavcodec_version}" PARENT_SCOPE)
     set(FFMPEG_PREBUILT_DIR "" PARENT_SCOPE)
     set(FFMPEG_LOCAL_DIR "" PARENT_SCOPE)
     set(FFMPEG_INCLUDE_DIRS "${_incdirs}" PARENT_SCOPE)
@@ -439,7 +451,16 @@ if(FFMPEG_SOURCE STREQUAL "pkg-config")
 else()
     set(_origin_label "prebuilt (${FFMPEG_LOCAL_DIR})")
 endif()
+if(FFMPEG_LIBAVCODEC_VERSION)
+    string(APPEND _origin_label " [libavcodec ${FFMPEG_LIBAVCODEC_VERSION}]")
+endif()
 message(STATUS "FFmpeg: ${_origin_label}")
+
+# ── 编译期 API 门禁 ──
+# 系统 FFmpeg 的版本由发行版决定, 这里直接探测代码真正用到的符号在不在,
+# 而不是猜版本号。缺了就停在 configure 阶段并给出可执行的修复指引 ——
+# 否则会一路编到 AnalysisPipeline.cpp 才炸, 报一堆看不懂的宏/模板错误。
+videoeye_check_ffmpeg_api()
 
 # ============================================================
 # 7) 建 imported target

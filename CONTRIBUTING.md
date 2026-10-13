@@ -155,4 +155,22 @@ clang-format -i $(git diff --name-only -- '*.cpp' '*.h')
 
 ## CI
 
+| workflow | 触发 | 做什么 |
+|---|---|---|
+| `build.yml` | 每个 PR / push | 分层与格式门禁、Windows + Linux 构建、单测、asan/tsan |
+| `release.yml` | push tag `v*` | 产出安装包 / SHA256 / SBOM，建**草稿** Release |
+| `fuzz.yml` | 每周一定时 + 手动 + 解析层改动 | 构建 libFuzzer 入口并各跑一段（默认 120s），崩溃/超时/OOM 会把复现输入传成 artifact |
+
+`fuzz.yml` 的关键参数别删：`-timeout=10`（抓死循环）、`-rss_limit_mb=2048`（抓无界分配）、
+`-max_len=65536`（保证跑得完）。历史上码流解析器出过"空转数十亿次"和"4GB 分配"，
+只有这两个参数在，fuzz 才真的能抓到它们。手动触发时可指定每个入口跑多久。
+
 `.github/workflows/build.yml` 会在每个 PR 上运行双平台构建。提交前请确保本地构建通过，避免浪费 CI 资源。
+
+本机跑 fuzz（需要 Linux + clang）：
+
+```bash
+cmake --preset linux-fuzz
+cmake --build --preset linux-fuzz
+./build/fuzz/tests/fuzz/FuzzBitstreamExtradata -max_total_time=120 -timeout=10 -rss_limit_mb=2048
+```

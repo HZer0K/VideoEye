@@ -47,10 +47,15 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 
 | 平台 | FFmpeg 来源 |
 |------|------------|
-| Windows | `third_party/prebuilt/windows-x64/ffmpeg/`，缺则由 `scripts/fetch-ffmpeg.ps1` 下载（版本 + URL + SHA256 锁在 `cmake/ffmpeg-version.json`） |
+| Windows | `third_party/prebuilt/windows-x64/ffmpeg/`，缺则由 `scripts/fetch-ffmpeg.ps1` 下载（版本 + URL + SHA256 锁在 `cmake/ffmpeg-version.json`；锁定的是 **LGPLv3** 的 `win64-lgpl-shared`） |
 | Linux / macOS | `pkg-config` 找系统开发包（`libavcodec-dev` / `brew install ffmpeg`），找不到才回退预编译包 |
 
-> **许可证**: 随包分发的 FFmpeg 二进制（`av*.dll` / `libav*.so`）按其自身许可证履约（当前锁定的预编译包为 GPLv3）；`ffmpeg` 命令行程序默认不随包分发，由页面引导用户自行安装。VideoEye 自身源码为 MIT。
+> ⚠️ **FFmpeg 版本要求：≥ 7.1（libavcodec ≥ 61.19）。** Windows 锁定包是 8.1.3，天然满足；
+> Linux/macOS 用系统包时必须自己确认 —— Ubuntu 24.04 的 6.1、Debian 12 的 5.1 **都不够**。
+> 要求由 `cmake/deps/FfmpegApiProbe.cmake` 在 configure 阶段用符号探测强制执行，不满足会
+> 直接失败并给出修复方式。完整矩阵（含编译选项差异）见 CONTRIBUTING.md 的「FFmpeg 支持矩阵」。
+
+> **许可证**: VideoEye 自身源码为 [MIT](LICENSE)。分发物里还包含第三方二进制，按各自许可证履约：Windows 随附的是 **LGPLv3** 的 FFmpeg（不含 `libx264`/`libx265`，导出会降级到 `libopenh264`/`mpeg4`），Linux/macOS 用系统 FFmpeg（多数发行版构建带 GPL 组件）。每次 `cmake --install` 都会生成 `doc/THIRD_PARTY_NOTICES.md` 与 `doc/licenses/`（许可证全文 + 对应源码获取方式），**请不要在没有这两者的情况下发布二进制包**。`ffmpeg` 命令行程序默认不随包分发。
 
 ## 项目架构
 
@@ -283,12 +288,12 @@ TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红�
 
 | 指标 | 数量 |
 |---|---|
-| 测试可执行文件 | 75 |
-| ctest 用例组（gtest 可执行文件） | 75 |
+| 测试可执行文件 | 76 |
+| ctest 用例组（gtest 可执行文件） | 76 |
 | python 脚本用例组（架构规则门 + 语料校验，非 gtest） | 11 |
-| gtest 用例（含 `TEST` / `TEST_F` / `TEST_P`） | 720 |
+| gtest 用例（含 `TEST` / `TEST_F` / `TEST_P`） | 744 |
 
-`ctest -N` 会显示 **86 = 75 + 11**，多出来的 11 个不是 gtest 可执行文件，而是直接
+`ctest -N` 会显示 **87 = 76 + 11**，多出来的 11 个不是 gtest 可执行文件，而是直接
 `add_test` 调 python 脚本的 5 道架构规则门及其自测：`check_layering.py` 与它的自测、
 `audit_qt_analysis_border.py` 与它的自测、`audit_namespace_layout.py` 与它的自测、
 `audit_qt_domain_border.py` 与它的自测、`audit_link_visibility.py` 与它的自测（最后一

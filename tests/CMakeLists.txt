@@ -1528,3 +1528,22 @@ target_link_libraries(test_format_support PRIVATE
 add_test(NAME FormatSupportTests COMMAND test_format_support)
 set_tests_properties(FormatSupportTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 69：日志落点（ui/app/LogDirectory.cpp）
+# 说明: 日志目录从 exe 同目录迁到用户级数据目录，修的是"装到 Program Files 后
+#       启动异常却拿不到日志"这个最需要日志的场景。这条路径跑在 main() 里、
+#       QApplication 构造之后，没有 UI 测试覆盖，所以在这里钉住两件事：
+#         1) 解析结果落在用户级目录而不是程序目录（且目录被真实创建出来）；
+#         2) 超限才滚动、未超限一个字节都不动（滚动写反会每次启动都丢日志）。
+#       只编 LogDirectory.cpp 一个源文件，不需要 GUI —— 但 QTemporaryDir 与
+#       QStandardPaths 需要 Qt Core，按项目惯例用 offscreen 平台跑。
+# =================================================
+videoeye_add_test(test_log_directory
+    unit/test_log_directory.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/app/LogDirectory.cpp
+)
+target_link_libraries(test_log_directory PRIVATE Qt6::Core)
+add_test(NAME LogDirectoryTests COMMAND test_log_directory)
+set_tests_properties(LogDirectoryTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
