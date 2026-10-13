@@ -53,6 +53,92 @@ NalUnit MakePps(const std::vector<uint8_t>& payload) {
     return NalUnit{8, payload.size(), payload, false, false};
 }
 
+class TestBitWriter {
+public:
+    void WriteBit(bool value) {
+        if (bit_count_ % 8 == 0) data_.push_back(0);
+        if (value) {
+            data_.back() |= static_cast<uint8_t>(1u << (7 - (bit_count_ % 8)));
+        }
+        ++bit_count_;
+    }
+
+    void WriteBits(uint64_t value, int count) {
+        for (int bit = count - 1; bit >= 0; --bit) {
+            WriteBit(((value >> bit) & 1u) != 0);
+        }
+    }
+
+    void WriteUE(uint32_t value) {
+        const uint64_t code_num = static_cast<uint64_t>(value) + 1;
+        int leading_zero_bits = 0;
+        for (uint64_t n = code_num; n > 1; n >>= 1) ++leading_zero_bits;
+        for (int i = 0; i < leading_zero_bits; ++i) WriteBit(false);
+        WriteBits(code_num, leading_zero_bits + 1);
+    }
+
+    std::vector<uint8_t> FinishRbsp() {
+        WriteBit(true);
+        while (bit_count_ % 8 != 0) WriteBit(false);
+        return data_;
+    }
+
+private:
+    std::vector<uint8_t> data_;
+    int bit_count_ = 0;
+};
+
+std::vector<uint8_t> EscapeRbsp(const std::vector<uint8_t>& rbsp) {
+    std::vector<uint8_t> ebsp;
+    int consecutive_zeros = 0;
+    for (uint8_t byte : rbsp) {
+        if (consecutive_zeros >= 2 && byte <= 0x03) {
+            ebsp.push_back(0x03);
+            consecutive_zeros = 0;
+        }
+        ebsp.push_back(byte);
+        consecutive_zeros = (byte == 0) ? consecutive_zeros + 1 : 0;
+    }
+    return ebsp;
+}
+
+std::vector<uint8_t> BuildH264SpsWithOversizedHrdCpbCount() {
+    TestBitWriter w;
+    w.WriteBits(100, 8);  // profile_idc = High
+    w.WriteBits(0, 8);    // constraint flags + reserved_zero_2bits
+    w.WriteBits(31, 8);   // level_idc = 3.1
+    w.WriteUE(0);         // seq_parameter_set_id
+    w.WriteUE(1);         // chroma_format_idc = 4:2:0
+    w.WriteUE(0);         // bit_depth_luma_minus8
+    w.WriteUE(0);         // bit_depth_chroma_minus8
+    w.WriteBit(false);    // qpprime_y_zero_transform_bypass_flag
+    w.WriteBit(false);    // seq_scaling_matrix_present_flag
+    w.WriteUE(0);         // log2_max_frame_num_minus4
+    w.WriteUE(0);         // pic_order_cnt_type
+    w.WriteUE(0);         // log2_max_pic_order_cnt_lsb_minus4
+    w.WriteUE(1);         // max_num_ref_frames
+    w.WriteBit(false);    // gaps_in_frame_num_value_allowed_flag
+    w.WriteUE(19);        // 320 / 16 - 1
+    w.WriteUE(14);        // 240 / 16 - 1
+    w.WriteBit(true);     // frame_mbs_only_flag
+    w.WriteBit(true);     // direct_8x8_inference_flag
+    w.WriteBit(false);    // frame_cropping_flag
+    w.WriteBit(true);     // vui_parameters_present_flag
+
+    w.WriteBit(false);    // aspect_ratio_info_present_flag
+    w.WriteBit(false);    // overscan_info_present_flag
+    w.WriteBit(false);    // video_signal_type_present_flag
+    w.WriteBit(false);    // chroma_loc_info_present_flag
+    w.WriteBit(false);    // timing_info_present_flag
+    w.WriteBit(true);     // nal_hrd_parameters_present_flag
+    w.WriteUE(32);        // 非法：cpb_cnt_minus1 规范上限为 31
+    w.WriteBit(false);    // vcl_hrd_parameters_present_flag
+    w.WriteBit(false);    // low_delay_hrd_flag
+    w.WriteBit(false);    // pic_struct_present_flag
+    w.WriteBit(false);    // bitstream_restriction_flag
+    return EscapeRbsp(w.FinishRbsp());
+}
+
 // --------------------------------------------------------------------------
 // Profile / Level 名称转换
 // --------------------------------------------------------------------------
@@ -267,6 +353,12 @@ TEST(H264BitstreamParserTest, RejectInvalidNalUnits) {
 
     // PPS 解析不能吃 SPS
     EXPECT_FALSE(H264BitstreamParser::ParsePpsFromNalUnit(MakeSps(kSpsHigh720p)).present);
+}
+
+TEST(H264BitstreamParserTest, RejectsHrdCpbCountAboveSpecificationLimit) {
+    const std::vector<uint8_t> payload = BuildH264SpsWithOversizedHrdCpbCount();
+    const auto sps = H264BitstreamParser::ParseFromNalUnit(MakeSps(payload));
+    EXPECT_FALSE(sps.present);
 }
 
 TEST(H264BitstreamParserTest, NalUnitTypeIdentification) {

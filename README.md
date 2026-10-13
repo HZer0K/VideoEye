@@ -17,6 +17,7 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 - **视频帧分析**: 单独标签页展示 I/P/B 帧类型、序号、PTS、时间戳
 - **容器结构分析**: 统一调度解析 MP4/MOV、MKV/WebM、AVI、FLV、MPEG-TS、ASF/WMV、OGG
 - **媒体信息**: 基于 FFmpeg `libavformat` 展示完整元数据（容器 / 视频 / 音频 / 字幕 / 章节）
+- **码流参数集**: H.264 / HEVC / AV1 按能力矩阵解析；VVC 为实验性部分支持，字段仅供参考、不参与严格容器一致性判定
 - **硬件加速**: VAAPI/CUDA/D3D11VA/QSV 等硬件解码（解码后统一转 CPU 图像渲染）
 - **音频可视化**: 波形快照、FFT 频谱、纯音频律动
 - **场景切换检测**: 灰度直方图 Bhattacharyya 距离实时检测镜头切换

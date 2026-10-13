@@ -41,6 +41,26 @@ constexpr bool kCompareParameterSetFields = true;
 // 宽高对比容差（像素）：差值不超过它记为 info 级提示，超过才算 warning。
 constexpr int kGeometryTolerancePixels = 8;
 
+// "Supported" 只覆盖已有规范用例 + 真实编码器样本共同验证过的常用组合。
+// 解析器仍会保留其它 profile/chroma 的字段供诊断，但能力降为 Partial，且不参与
+// 容器一致性比对，避免把尚无样本矩阵覆盖的结果宣传为可靠结论。
+bool IsValidatedH264Sps(const model::H264SpsInfo& sps) {
+    const bool validated_profile = sps.profile_idc == 66 || sps.profile_idc == 77 ||
+                                   sps.profile_idc == 100 || sps.profile_idc == 110;
+    const int bit_depth = sps.BitDepthLuma();
+    return validated_profile && sps.chroma_format_idc == 1 &&
+           (bit_depth == 8 || bit_depth == 10);
+}
+
+bool IsValidatedHevcSps(const model::HevcSpsInfo& sps) {
+    const bool validated_profile = sps.general_profile_idc == 1 ||
+                                   sps.general_profile_idc == 2 ||
+                                   sps.general_profile_idc == 4;
+    const int bit_depth = sps.BitDepthLuma();
+    return validated_profile && sps.chroma_format_idc == 1 &&
+           (bit_depth == 8 || bit_depth == 10);
+}
+
 // 每种编码在 MP4 里的 extradata 配置记录类型。
 // 自动检测只能可靠地认出 AnnexB 与 avcC，hvcC / av1C 的签名太模糊，
 // 而调用方本来就知道 codec —— 直接按 codec 指定格式比猜更准。
@@ -194,7 +214,15 @@ model::BitstreamAnalysisResult BitstreamAnalyzer::Analyze(const uint8_t* extrada
         PopulateAv1Config(parsed.config);
     }
     if (parsed.format == videoeye::ExtradataFormat::VvcC) {
-        PopulateVvcConfig(parsed.config);
+        // 输入确实被识别成 vvcC：先记下这一点，让"格式对但解析失败"收敛到
+        // ParseFailed 而不是 TypeOnly（见 SawParameterSetInput 的 VVC 分支）。
+        result_.has_vvc_config = true;
+        // 但 present 只在 config 真的解析成功时才置：ParseVvcC 有十几条截断早退
+        // 路径（只设 error_message、config 全 0），无条件置 present 会让
+        // AnyParameterSet() 恒真，把截断 vvcC 误判成 FullParse。
+        if (parsed.valid) {
+            PopulateVvcConfig(parsed.config);
+        }
     }
     ApplyContainerSnapshot();
 
@@ -232,7 +260,11 @@ model::BitstreamAnalysisResult BitstreamAnalyzer::AnalyzeWithFormat(
         PopulateAv1Config(parsed.config);
     }
     if (format == videoeye::ExtradataFormat::VvcC) {
-        PopulateVvcConfig(parsed.config);
+        // 同 Analyze()：has_vvc_config 表示"输入确实是 vvcC"，present 才表示解析成功。
+        result_.has_vvc_config = true;
+        if (parsed.valid) {
+            PopulateVvcConfig(parsed.config);
+        }
     }
     ApplyContainerSnapshot();
 
@@ -303,15 +335,10 @@ void BitstreamAnalyzer::ApplyH264Summary() {
     const model::H264SpsInfo& sps = result_.h264_sps;
     if (!sps.present) return;
 
-    int width = sps.width();
-    int height = sps.height();
-    if (sps.frame_cropping_flag) {
-        // crop 偏移的单位是 CropUnitX/Y，随色度采样变化（4:2:0 = 2/2，4:2:2 = 2/1，其余 1/1）
-        const int unit_x = (sps.chroma_format_idc == 1 || sps.chroma_format_idc == 2) ? 2 : 1;
-        const int unit_y = (sps.chroma_format_idc == 1) ? 2 : 1;
-        width -= (sps.frame_crop_left_offset + sps.frame_crop_right_offset) * unit_x;
-        height -= (sps.frame_crop_top_offset + sps.frame_crop_bottom_offset) * unit_y;
-    }
+    // H264SpsInfo::width()/height() 已按 7.4.2.1.1 应用 frame_cropping。
+    // 这里直接使用显示尺寸，避免对常见的 1920x1088 -> 1920x1080 再裁一次。
+    const int width = sps.width();
+    const int height = sps.height();
     if (width > 0) result_.width = width;
     if (height > 0) result_.height = height;
     result_.bit_depth = sps.BitDepthLuma();
@@ -350,8 +377,7 @@ void BitstreamAnalyzer::ParseHevc(const uint8_t* data, size_t size) {
 void BitstreamAnalyzer::ApplyHevcSummary() {
     const model::HevcSpsInfo& sps = result_.hevc_sps;
     if (sps.present) {
-        // 注: 当前 SPS 解析没有记录 conformance window 偏移，这里给出的是
-        // CTU 粒度的编码尺寸，可能比显示尺寸大几个像素。
+        // width()/height() 已应用 HEVC conformance window，给出裁剪后的显示尺寸。
         if (sps.width() > 0) result_.width = sps.width();
         if (sps.height() > 0) result_.height = sps.height();
         result_.bit_depth = sps.BitDepthLuma();
@@ -362,9 +388,10 @@ void BitstreamAnalyzer::ApplyHevcSummary() {
         }
         return;
     }
-    // SPS 缺失时退到 VPS 的位深（hvcC 里两者通常同时出现）
+    // VPS 不承载 SPS 的 bit_depth_* 语法；结构体中的兼容字段没有可信来源。
+    // 仅有 VPS 时保持未知，避免把默认 8bit 当作解析结果参与容器比对。
     if (result_.hevc_vps.present) {
-        result_.bit_depth = result_.hevc_vps.vps_bit_depth_luma_minus8 + 8;
+        result_.bit_depth = 0;
     }
 }
 
@@ -490,16 +517,16 @@ void BitstreamAnalyzer::ApplyVvcSummary() {
         return;
     }
 
-    // SPS 缺失时退到 VPS 的 PTL
+    // VVC VPS 同样不承载可直接作为像素位深的 SPS 语法；仅有 VPS 时保持未知。
     if (result_.vvc_vps.present) {
-        result_.bit_depth = result_.vvc_vps.vps_bit_depth_luma_minus8 + 8;
+        result_.bit_depth = 0;
     }
 
     // 最后退到 vvcC：MP4 的 VVC extradata 只有 vvcC，位深/分辨率只有这里有。
     // 分辨率用 max_picture_width/height（vvcC 的语义就是"该码流的最大图像尺寸"），
     // 只在 SPS/PPS 都没给出尺寸时才用，避免盖掉更精确的裁剪后尺寸。
     if (result_.vvc_config.present) {
-        if (result_.bit_depth == 8 && result_.vvc_config.bit_depth_minus8 > 0) {
+        if (result_.bit_depth <= 0 && result_.vvc_config.bit_depth_minus8 >= 0) {
             result_.bit_depth = result_.vvc_config.BitDepth();
         }
         if (result_.width <= 0 && result_.vvc_config.max_picture_width > 0) {
@@ -572,14 +599,37 @@ void BitstreamAnalyzer::FinalizeCapability(int codec_id) {
 
     switch (static_cast<AVCodecID>(codec_id)) {
         case AV_CODEC_ID_H264:
+            if (result_.parse_outcome == BitstreamParseOutcome::FullParse &&
+                result_.h264_sps.present && IsValidatedH264Sps(result_.h264_sps)) {
+                result_.capability = AnalysisCapability::Supported;
+            } else if (result_.parse_outcome == BitstreamParseOutcome::ParseFailed) {
+                result_.capability = AnalysisCapability::Failed;
+            } else {
+                result_.capability = AnalysisCapability::Partial;
+                if (result_.h264_sps.present) {
+                    result_.capability_note =
+                        "H.264 参数集已解析，但该 Profile/色度/位深组合尚无完整真实样本矩阵；字段仅供参考";
+                }
+            }
+            break;
         case AV_CODEC_ID_HEVC:
-            // 解析器按规范实现，真实 SPS fixture / avcC / hvcC / AnnexB / 裁剪 /
-            // 位深 / 色彩 / 错误 SPS 均有单测覆盖（见 tests/unit 对应文件）。
-            result_.capability = (result_.parse_outcome == BitstreamParseOutcome::FullParse)
-                                    ? AnalysisCapability::Supported
-                                    : (result_.parse_outcome == BitstreamParseOutcome::ParseFailed
-                                           ? AnalysisCapability::Failed
-                                           : AnalysisCapability::Partial);
+            // VPS 只能提供 PTL/时序，不能证明宽高、位深、色彩等 SPS 字段已解析。
+            // 只有 SPS 且组合落入真实样本验证矩阵，才允许严格容器一致性比对。
+            if (result_.parse_outcome == BitstreamParseOutcome::FullParse &&
+                result_.hevc_sps.present && IsValidatedHevcSps(result_.hevc_sps)) {
+                result_.capability = AnalysisCapability::Supported;
+            } else if (result_.parse_outcome == BitstreamParseOutcome::ParseFailed) {
+                result_.capability = AnalysisCapability::Failed;
+            } else {
+                result_.capability = AnalysisCapability::Partial;
+                if (result_.hevc_sps.present) {
+                    result_.capability_note =
+                        "HEVC 参数集已解析，但该 Profile/色度/位深组合尚无完整真实样本矩阵；字段仅供参考";
+                } else if (result_.hevc_vps.present) {
+                    result_.capability_note =
+                        "仅解析到 HEVC VPS：Profile/Tier/Level 可用，宽高、位深与色彩未知";
+                }
+            }
             break;
         case AV_CODEC_ID_AV1:
             // av1C 兜底给了位深/采样结构，但没有分辨率与色彩描述 —— 仍是 Partial。
@@ -597,15 +647,20 @@ void BitstreamAnalyzer::FinalizeCapability(int codec_id) {
             }
             break;
         case AV_CODEC_ID_VVC:
-            // 方案 A：解析链路可用（含真实编码器回归），但畸形码流验证不充分，
-            // 即使 FullParse 也标 Partial —— QC 不把它当作"已验证通过"。
-            result_.capability =
-                (result_.parse_outcome == BitstreamParseOutcome::ParseFailed)
-                    ? AnalysisCapability::Failed
-                    : AnalysisCapability::Partial;
-            if (result_.parse_outcome == BitstreamParseOutcome::FullParse) {
-                result_.capability_note = "VVC 为部分支持：参数集可解析（含真实编码器回归），"
-                                          "但畸形码流验证尚不充分，结果仅供参考";
+            // VVC 仍是实验性支持：SPS/VPS 的关键字段可解析，但 PPS 只到
+            // subpic_id_mapping，真实样本也仅覆盖有限组合。无论 FullParse 与否都不
+            // 宣传为 Supported，也不参与容器层严格一致性比对。
+            if (result_.parse_outcome == BitstreamParseOutcome::ParseFailed) {
+                result_.capability = AnalysisCapability::Failed;
+            } else {
+                result_.capability = AnalysisCapability::Partial;
+                if (result_.vvc_sps.present) {
+                    result_.capability_note =
+                        "VVC 为实验性/部分支持：已解析 SPS/VPS 关键字段，PPS 与真实样本覆盖仍不完整，结果仅供参考";
+                } else if (result_.vvc_config.present) {
+                    result_.capability_note =
+                        "仅有 vvcC 配置记录：位深、采样结构与最大尺寸仅供参考";
+                }
             }
             break;
         default:
@@ -626,8 +681,7 @@ void BitstreamAnalyzer::CompareWithContainer(const model::BitstreamAnalysisResul
         return;   // 见 kCompareParameterSetFields 的注释：解析器还没对齐规范
     }
     if (result.capability != model::AnalysisCapability::Supported) {
-        // Partial / Failed / Unavailable 能力（如 VVC）的解析字段未经全面验证，
-        // 不参与严格一致性比对 —— QC 不把未验证字段当"通过"依据。
+        // Partial / Failed / Unavailable 的解析字段未经完整验证，不参与严格一致性比对。
         return;
     }
 
@@ -659,8 +713,9 @@ void BitstreamAnalyzer::CompareWithContainer(const model::BitstreamAnalysisResul
                         minor ? "info" : "warning");
     }
 
-    // Bit depth comparison
-    if (container_metadata_.bit_depth > 0 && result.bit_depth != container_metadata_.bit_depth) {
+    // Bit depth comparison（码流侧位深未知时 bit_depth 可能仍是默认 8，别拿它去误报）
+    if (container_metadata_.bit_depth > 0 && result.bit_depth > 0 &&
+        result.bit_depth != container_metadata_.bit_depth) {
         AddInconsistency(result, "Bit Depth",
                         std::to_string(container_metadata_.bit_depth),
                         std::to_string(result.bit_depth),

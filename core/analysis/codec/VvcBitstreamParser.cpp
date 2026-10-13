@@ -26,6 +26,10 @@ constexpr int kMaxNumRefPicLists = 64;         // 单条 ref_pic_list 里的参�
 constexpr int kMaxRefPicListEntries = 4096;     // ref_pic_list 的条目数上限
 constexpr int kMaxVirtualBoundaries = 4095;    // 虚拟边界条数（每条至少 1 bit）
 constexpr int kMaxHrdCpbCntMinus1 = 31;        // HRD 参数集里的 cpb_cnt - 1
+// subpic_id 的位长：subpic_id_len_minus1 取值 0..15（H.266 7.4.3.3 约束
+// subpic_id 长度不超过 16 bit）。无界 ue(v) 会让 subpic_id 循环每次多跳十几位，
+// 直到把 reader 拖到越界。
+constexpr int kMaxSubpicIdLenMinus1 = 15;
 constexpr uint32_t kMaxQpTablePoints = 1024;   // 单张 QP 表的点数（每点至少 2 个 ue(v)）
 constexpr int kMaxPictureSize = 65536;        // luma 尺寸上界：超界值只会来自垃圾码流
 
@@ -414,17 +418,17 @@ model::VvcVpsInfo VvcBitstreamParser::ParseVpsFromNalUnit(const videoeye::NalUni
         }
     }
 
-    // present 只在解析真的走完时才置位：旧实现在 HasError() 之前就置了 true，
-    // 下游于是拿着一堆 0 当成「参数集有效」去比对容器
-    if (reader.HasError()) return vps;
-    vps.present = true;
-
     // OLS -> PTL 索引
     for (int i = 0; i < total_num_olss; ++i) {
         if (vps.vps_num_ptls_minus1 > 0 && vps.vps_num_ptls_minus1 + 1 != total_num_olss) {
             reader.SkipBits(8);  // vps_ols_ptl_idx[i]
         }
     }
+
+    // present 只在解析真的走完时才置位：旧实现在这段索引循环之前就置了 true，
+    // 循环里一旦读越界会被无声吞掉，下游于是拿着一堆 0 当成「参数集有效」去比对容器。
+    if (reader.HasError()) return vps;
+    vps.present = true;
 
     if (!each_layer_is_an_ols) {
         // 多层 + 非 each-layer-is-an-OLS：后面的 OLS DPB / HRD 需要
@@ -528,7 +532,10 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
                 if (!independent_subpics) reader.SkipBits(2);
             }
         }
-        const int subpic_id_len_minus1 = static_cast<int>(reader.ReadUE());
+        // subpic_id 位长同样只进 SkipBits，但无界 ue(v) 会让每次跳过十几位乃至越界；
+        // 按 H.266 u(v) 长度 1..16 封到 15，与 PPS 侧对齐。
+        const int subpic_id_len_minus1 = static_cast<int>(
+            reader.ReadUEBounded(static_cast<uint32_t>(kMaxSubpicIdLenMinus1)));
         if (reader.ReadBit()) {  // sps_subpic_id_mapping_explicitly_signalled_flag
             if (reader.ReadBit()) {  // sps_subpic_id_mapping_present_flag
                 for (int i = 0; i <= sps.sps_num_subpics_minus1; ++i) {
@@ -833,9 +840,15 @@ model::VvcPpsInfo VvcBitstreamParser::ParsePpsFromNalUnit(const videoeye::NalUni
     pps.pps_subpic_id_mapping_present_flag = reader.ReadBit();
     if (pps.pps_subpic_id_mapping_present_flag) {
         if (!pps.pps_no_pic_partition_flag) {
-            pps.pps_num_subpics_minus1 = static_cast<int>(reader.ReadUE());
+            // 这个计数直接决定下面 SkipBits 循环的次数：裸 ue(v) 能让循环迭代约 2e9
+            // 次，把分析线程占满（SPS 侧同型循环早有 kMaxNumSubpics 守卫，PPS 漏了）。
+            pps.pps_num_subpics_minus1 =
+                static_cast<int>(reader.ReadUEBounded(static_cast<uint32_t>(kMaxNumSubpics)));
+            if (reader.HasError()) return pps;  // 越界，不置 present
         }
-        const int subpic_id_len_minus1 = static_cast<int>(reader.ReadUE());
+        const int subpic_id_len_minus1 = static_cast<int>(
+            reader.ReadUEBounded(static_cast<uint32_t>(kMaxSubpicIdLenMinus1)));
+        if (reader.HasError()) return pps;
         for (int i = 0; i <= pps.pps_num_subpics_minus1; ++i) {
             reader.SkipBits(subpic_id_len_minus1 + 1);
         }

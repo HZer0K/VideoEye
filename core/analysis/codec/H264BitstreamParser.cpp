@@ -118,9 +118,9 @@ void H264BitstreamParser::SkipScalingList(videoeye::BitReader& reader, int size)
 // --------------------------------------------------------------------------
 void H264BitstreamParser::SkipHrdParameters(videoeye::BitReader& reader,
                                             model::H264VuiInfo& vui) {
-    const uint32_t cpb_cnt_minus1 = reader.ReadUE();
-    if (cpb_cnt_minus1 > 31) {
-        return; // 非法，交给调用方按 HasError() 处理
+    const uint32_t cpb_cnt_minus1 = reader.ReadUEBounded(31);
+    if (reader.HasError()) {
+        return;
     }
 
     vui.cpb_cnt = static_cast<uint8_t>(cpb_cnt_minus1 + 1);

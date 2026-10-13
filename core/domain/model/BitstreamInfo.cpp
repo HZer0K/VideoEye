@@ -85,16 +85,17 @@ int H264PpsInfo::PicHeight() const {
 // --------------------------------------------------------------------------
 std::string HevcSpsInfo::ProfileName() const {
     switch (general_profile_idc) {
-        case 0:  return "Main";
-        case 1:  return "Main 10";
-        case 2:  return "Main Still Picture";
-        case 3:  return "Main Rext";
-        case 4:  return "Range Extension";
+        case 1:  return "Main";
+        case 2:  return "Main 10";
+        case 3:  return "Main Still Picture";
+        case 4:  return "Main Rext";
         case 5:  return "High Throughput";
         case 6:  return "Multiview Main";
         case 7:  return "Scalable Main";
         case 8:  return "3D Main";
         case 9:  return "Screen Content Coding";
+        case 10: return "Scalable Range Extension";
+        case 11: return "High Throughput Screen Content Coding";
         default: return "Unknown";
     }
 }

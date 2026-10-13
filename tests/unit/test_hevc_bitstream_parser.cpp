@@ -16,14 +16,14 @@ using videoeye::NalUnit;
 
 // VPS: Main 10 / Level 5.1 / 单层 / timing 1000@60000
 const std::vector<uint8_t> kVpsMain10 = {
-    0x0C, 0x01, 0xFF, 0xFF, 0x01, 0x00, 0x00, 0x03, 0x00, 0x00, 0x90, 0x00,
+    0x0C, 0x01, 0xFF, 0xFF, 0x02, 0x00, 0x00, 0x03, 0x00, 0x00, 0x90, 0x00,
     0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x99, 0x27, 0x03, 0x00, 0x00, 0x03,
     0x03, 0xE8, 0x00, 0x00, 0xEA, 0x60, 0x60,
 };
 
 // SPS A: Main 10 / 5.1 / 1920x1080 / 4:2:0 10bit / VUI(BT.2020 + PQ + timing)
 const std::vector<uint8_t> kSpsMain10_1080p = {
-    0x01, 0x01, 0x00, 0x00, 0x03, 0x00, 0x00, 0x90, 0x00, 0x00, 0x03, 0x00,
+    0x01, 0x02, 0x00, 0x00, 0x03, 0x00, 0x00, 0x90, 0x00, 0x00, 0x03, 0x00,
     0x00, 0x03, 0x00, 0x99, 0xA0, 0x03, 0xC0, 0x80, 0x10, 0xE4, 0xD9, 0x49,
     0xE4, 0x91, 0xB6, 0x4B, 0xB9, 0xA8, 0x48, 0x80, 0x4D, 0xB2, 0x80, 0x00,
     0x01, 0xF4, 0x00, 0x00, 0x75, 0x30, 0x04,
@@ -31,9 +31,9 @@ const std::vector<uint8_t> kSpsMain10_1080p = {
 
 // SPS B: Main / 4.0 / 1920x1088（conformance window bottom 4 → 1080）/ 8bit / 无 VUI
 const std::vector<uint8_t> kSpsMain_1080pCrop = {
-    0x01, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x90, 0x00, 0x00, 0x03,
-    0x00, 0x00, 0x03, 0x00, 0x78, 0xA0, 0x03, 0xC0, 0x80, 0x11, 0x07, 0xCB,
-    0x94, 0x9E, 0x49, 0x1B, 0x64, 0xBB, 0x20,
+    0x01, 0x01, 0x00, 0x00, 0x03, 0x00, 0x00, 0x90, 0x00, 0x00, 0x03, 0x00,
+    0x00, 0x03, 0x00, 0x78, 0xA0, 0x03, 0xC0, 0x80, 0x11, 0x07, 0xCB, 0x94,
+    0x9E, 0x49, 0x1B, 0x64, 0xBB, 0x20,
 };
 
 // PPS: id=0 / sps_id=0 / l0=3 / l1=2 / init_qp=26 / deblocking on
@@ -43,6 +43,167 @@ const std::vector<uint8_t> kPpsMain10 = {
 
 NalUnit MakeNal(uint8_t type, const std::vector<uint8_t>& payload) {
     return NalUnit{type, payload.size(), payload, false, (type >= 32 && type <= 35)};
+}
+
+class TestBitWriter {
+public:
+    void WriteBit(bool value) {
+        if (bit_count_ % 8 == 0) data_.push_back(0);
+        if (value) {
+            data_.back() |= static_cast<uint8_t>(1u << (7 - (bit_count_ % 8)));
+        }
+        ++bit_count_;
+    }
+
+    void WriteBits(uint64_t value, int count) {
+        for (int bit = count - 1; bit >= 0; --bit) {
+            WriteBit(((value >> bit) & 1u) != 0);
+        }
+    }
+
+    void WriteUE(uint32_t value) {
+        const uint64_t code_num = static_cast<uint64_t>(value) + 1;
+        int leading_zero_bits = 0;
+        for (uint64_t n = code_num; n > 1; n >>= 1) ++leading_zero_bits;
+        for (int i = 0; i < leading_zero_bits; ++i) WriteBit(false);
+        WriteBits(code_num, leading_zero_bits + 1);
+    }
+
+    std::vector<uint8_t> FinishRbsp() {
+        WriteBit(true);  // rbsp_stop_one_bit
+        while (bit_count_ % 8 != 0) WriteBit(false);
+        return data_;
+    }
+
+private:
+    std::vector<uint8_t> data_;
+    int bit_count_ = 0;
+};
+
+std::vector<uint8_t> EscapeRbsp(const std::vector<uint8_t>& rbsp) {
+    std::vector<uint8_t> ebsp;
+    int consecutive_zeros = 0;
+    for (uint8_t byte : rbsp) {
+        if (consecutive_zeros >= 2 && byte <= 0x03) {
+            ebsp.push_back(0x03);
+            consecutive_zeros = 0;
+        }
+        ebsp.push_back(byte);
+        consecutive_zeros = (byte == 0) ? consecutive_zeros + 1 : 0;
+    }
+    return ebsp;
+}
+
+std::vector<uint8_t> BuildHevcSpsWithHrd(bool sub_pic) {
+    TestBitWriter w;
+    w.WriteBits(0, 4);    // sps_video_parameter_set_id
+    w.WriteBits(0, 3);    // sps_max_sub_layers_minus1
+    w.WriteBit(true);     // sps_temporal_id_nesting_flag
+
+    // profile_tier_level(Main 10 / Level 4.0)，无 sub-layer。
+    w.WriteBits(0, 2);    // general_profile_space
+    w.WriteBit(false);    // general_tier_flag
+    w.WriteBits(2, 5);    // general_profile_idc = Main 10
+    w.WriteBits(0, 32);   // general_profile_compatibility_flag
+    w.WriteBit(true);     // general_progressive_source_flag
+    w.WriteBit(false);    // general_interlaced_source_flag
+    w.WriteBit(false);    // general_non_packed_constraint_flag
+    w.WriteBit(true);     // general_frame_only_constraint_flag
+    w.WriteBits(0, 43);   // general_reserved_zero_43bits
+    w.WriteBit(false);    // general_inbld_flag
+    w.WriteBits(120, 8);  // general_level_idc = 4.0
+
+    w.WriteUE(0);         // sps_seq_parameter_set_id
+    w.WriteUE(1);         // chroma_format_idc = 4:2:0
+    w.WriteUE(1920);      // pic_width_in_luma_samples
+    w.WriteUE(1080);      // pic_height_in_luma_samples
+    w.WriteBit(false);    // conformance_window_flag
+    w.WriteUE(2);         // bit_depth_luma_minus8 = 10bit
+    w.WriteUE(2);         // bit_depth_chroma_minus8
+    w.WriteUE(4);         // log2_max_pic_order_cnt_lsb_minus4
+    w.WriteBit(false);    // sps_sub_layer_ordering_info_present_flag
+    w.WriteUE(4);         // sps_max_dec_pic_buffering_minus1[0]
+    w.WriteUE(2);         // sps_max_num_reorder_pics[0]
+    w.WriteUE(0);         // sps_max_latency_increase_plus1[0]
+    w.WriteUE(0);         // log2_min_luma_coding_block_size_minus3
+    w.WriteUE(3);         // log2_diff_max_min_luma_coding_block_size
+    w.WriteUE(0);         // log2_min_luma_transform_block_size_minus2
+    w.WriteUE(3);         // log2_diff_max_min_luma_transform_block_size
+    w.WriteUE(0);         // max_transform_hierarchy_depth_inter
+    w.WriteUE(0);         // max_transform_hierarchy_depth_intra
+    w.WriteBit(false);    // scaling_list_enable_flag
+    w.WriteBit(true);     // amp_enabled_flag
+    w.WriteBit(true);     // sample_adaptive_offset_enabled_flag
+    w.WriteBit(false);    // pcm_enabled_flag
+    w.WriteUE(0);         // num_short_term_ref_pic_sets
+    w.WriteBit(false);    // long_term_ref_pics_present_flag
+    w.WriteBit(true);     // sps_temporal_mvp_enabled_flag
+    w.WriteBit(true);     // strong_intra_smoothing_enabled_flag
+    w.WriteBit(true);     // vui_parameters_present_flag
+
+    w.WriteBit(true);     // aspect_ratio_info_present_flag
+    w.WriteBits(1, 8);    // square pixels
+    w.WriteBit(false);    // overscan_info_present_flag
+    w.WriteBit(true);     // video_signal_type_present_flag
+    w.WriteBits(5, 3);    // video_format
+    w.WriteBit(false);    // video_full_range_flag
+    w.WriteBit(true);     // colour_description_present_flag
+    w.WriteBits(9, 8);    // BT.2020 primaries
+    w.WriteBits(16, 8);   // PQ transfer
+    w.WriteBits(9, 8);    // BT.2020 non-constant matrix
+    w.WriteBit(false);    // chroma_loc_info_present_flag
+    w.WriteBit(false);    // neutral_chroma_indication_flag
+    w.WriteBit(false);    // field_seq_flag
+    w.WriteBit(true);     // frame_field_info_present_flag
+    w.WriteBit(false);    // default_display_window_flag
+    w.WriteBit(true);     // vui_timing_info_present_flag
+    w.WriteBits(1000, 32);
+    w.WriteBits(60000, 32);
+    w.WriteBit(false);    // vui_poc_proportional_to_timing_flag
+    w.WriteBit(true);     // vui_hrd_parameters_present_flag
+
+    // hrd_parameters(commonInfPresentFlag=1, maxNumSubLayersMinus1=0)
+    w.WriteBit(true);     // nal_hrd_parameters_present_flag
+    w.WriteBit(false);    // vcl_hrd_parameters_present_flag
+    w.WriteBit(sub_pic);  // sub_pic_hrd_params_present_flag
+    if (sub_pic) {
+        w.WriteBits(98, 8);  // tick_divisor_minus2
+        w.WriteBits(4, 5);   // du_cpb_removal_delay_increment_length_minus1
+        w.WriteBit(true);    // sub_pic_cpb_params_in_pic_timing_sei_flag
+        w.WriteBits(4, 5);   // dpb_output_delay_du_length_minus1
+    }
+    w.WriteBits(2, 4);    // bit_rate_scale
+    w.WriteBits(3, 4);    // cpb_size_scale
+    if (sub_pic) w.WriteBits(1, 4);  // cpb_size_du_scale
+    w.WriteBits(23, 5);   // initial_cpb_removal_delay_length_minus1
+    w.WriteBits(23, 5);   // au_cpb_removal_delay_length_minus1
+    w.WriteBits(23, 5);   // dpb_output_delay_length_minus1
+
+    w.WriteBit(false);    // fixed_pic_rate_general_flag[0]
+    w.WriteBit(false);    // fixed_pic_rate_within_cvs_flag[0]
+    w.WriteBit(false);    // low_delay_hrd_flag[0]
+    w.WriteUE(1);         // cpb_cnt_minus1[0] = 1（两组 CPB）
+    for (uint32_t i = 0; i < 2; ++i) {
+        w.WriteUE(i + 1);  // bit_rate_value_minus1
+        w.WriteUE(i + 3);  // cpb_size_value_minus1
+        if (sub_pic) {
+            w.WriteUE(i + 5);  // cpb_size_du_value_minus1
+            w.WriteUE(i + 7);  // bit_rate_du_value_minus1
+        }
+        w.WriteBit(i == 0);    // cbr_flag
+    }
+
+    // HRD 后面的 restriction 字段是本回归用例的对齐哨兵。
+    w.WriteBit(true);     // bitstream_restriction_flag
+    w.WriteBit(true);     // tiles_fixed_structure_flag
+    w.WriteBit(true);     // motion_vectors_over_pic_boundaries_flag
+    w.WriteBit(false);    // restricted_ref_pic_lists_flag
+    w.WriteUE(7);         // min_spatial_segmentation_idc
+    w.WriteUE(2);         // max_bytes_per_pic_denom
+    w.WriteUE(1);         // max_bits_per_min_cu_denom
+    w.WriteUE(15);        // log2_max_mv_length_horizontal
+    w.WriteUE(14);        // log2_max_mv_length_vertical
+    return EscapeRbsp(w.FinishRbsp());
 }
 
 // --------------------------------------------------------------------------
@@ -55,10 +216,12 @@ protected:
 };
 
 TEST_F(HevcProfileTierLevelTest, GetProfileName) {
-    EXPECT_EQ(HevcBitstreamParser::GetProfileName(0), "Main");
-    EXPECT_EQ(HevcBitstreamParser::GetProfileName(1), "Main 10");
-    EXPECT_EQ(HevcBitstreamParser::GetProfileName(2), "Main Still Picture");
-    EXPECT_EQ(HevcBitstreamParser::GetProfileName(4), "High Throughput");
+    EXPECT_EQ(HevcBitstreamParser::GetProfileName(0), "Unknown");
+    EXPECT_EQ(HevcBitstreamParser::GetProfileName(1), "Main");
+    EXPECT_EQ(HevcBitstreamParser::GetProfileName(2), "Main 10");
+    EXPECT_EQ(HevcBitstreamParser::GetProfileName(3), "Main Still Picture");
+    EXPECT_EQ(HevcBitstreamParser::GetProfileName(4), "Main Rext");
+    EXPECT_EQ(HevcBitstreamParser::GetProfileName(5), "High Throughput");
     EXPECT_EQ(HevcBitstreamParser::GetProfileName(999), "Unknown");
 }
 
@@ -132,7 +295,7 @@ TEST(HevcSpfParsingTest, ParseMain10SpsWithVui) {
 
     ASSERT_TRUE(sps.present);
     EXPECT_EQ(sps.sps_seq_parameter_set_id, 0);
-    EXPECT_EQ(sps.general_profile_idc, 1);
+    EXPECT_EQ(sps.general_profile_idc, 2);
     EXPECT_EQ(sps.general_level_idc, 153u);
     EXPECT_EQ(sps.ProfileName(), "Main 10");
 
@@ -170,7 +333,7 @@ TEST(HevcSpfParsingTest, ParseMainSpsWithConformanceWindow) {
     const auto sps = HevcBitstreamParser::ParseSpfFromNalUnit(MakeNal(33, kSpsMain_1080pCrop));
 
     ASSERT_TRUE(sps.present);
-    EXPECT_EQ(sps.general_profile_idc, 0);
+    EXPECT_EQ(sps.general_profile_idc, 1);
     EXPECT_EQ(sps.general_level_idc, 120u);
     EXPECT_EQ(sps.ProfileName(), "Main");
     EXPECT_EQ(sps.bit_depth_luma_minus8, 0);
@@ -185,6 +348,36 @@ TEST(HevcSpfParsingTest, ParseMainSpsWithConformanceWindow) {
     EXPECT_EQ(sps.height(), 1080);
 
     EXPECT_FALSE(sps.vui_parameters_present_flag);
+}
+
+void ExpectHrdSpsFieldsStayAligned(bool sub_pic) {
+    const std::vector<uint8_t> payload = BuildHevcSpsWithHrd(sub_pic);
+    const auto sps = HevcBitstreamParser::ParseSpfFromNalUnit(MakeNal(33, payload));
+
+    ASSERT_TRUE(sps.present);
+    EXPECT_EQ(sps.width(), 1920);
+    EXPECT_EQ(sps.height(), 1080);
+    EXPECT_EQ(sps.BitDepthLuma(), 10);
+    ASSERT_TRUE(sps.vui_parameters_present_flag);
+    ASSERT_TRUE(sps.vui_timing_info_present_flag);
+    ASSERT_TRUE(sps.vui_hrd_parameters_present_flag);
+    EXPECT_EQ(sps.colour_primaries, 9);
+    EXPECT_EQ(sps.transfer_characteristics, 16);
+    EXPECT_EQ(sps.matrix_coefficients, 9);
+    ASSERT_TRUE(sps.bitstream_restriction_flag);
+    EXPECT_EQ(sps.min_spatial_segmentation_idc, 7);
+    EXPECT_EQ(sps.max_bytes_per_pic_denom, 2);
+    EXPECT_EQ(sps.max_bits_per_min_cu_denom, 1);
+    EXPECT_EQ(sps.log2_max_mv_length_horizontal, 15);
+    EXPECT_EQ(sps.log2_max_mv_length_vertical, 14);
+}
+
+TEST(HevcSpfParsingTest, VuiHrdWithoutSubPicKeepsFollowingFieldsAligned) {
+    ExpectHrdSpsFieldsStayAligned(false);
+}
+
+TEST(HevcSpfParsingTest, VuiHrdWithSubPicKeepsFollowingFieldsAligned) {
+    ExpectHrdSpsFieldsStayAligned(true);
 }
 
 TEST(HevcPpsParsingTest, ParseMain10Pps) {
@@ -247,7 +440,7 @@ std::vector<uint8_t> BuildHvcC(const std::vector<uint8_t>& vps,
     std::vector<uint8_t> out;
     out.reserve(23 + vps.size() + sps.size() + pps.size() + 6 * 5);
     out.push_back(0x01);                        // configurationVersion = 1
-    out.push_back(0x01);                        // profile_space(0)|tier(0)|profile_idc=1 → Main 10
+    out.push_back(0x02);                        // profile_space(0)|tier(0)|profile_idc=2 → Main 10
     out.insert(out.end(), 4, 0x60);            // profile_compatibility_flags（4B）
     out.insert(out.end(), 6, 0x00);            // constraint_indicator_flags（6B）
     out.push_back(153);                         // byte12: general_level_idc = 5.1
@@ -294,7 +487,7 @@ TEST_F(HevcConfigRecordTest, ParseRealLayoutHvcC) {
     // 配置记录头：真实布局的字段位置（level=byte12、chroma=byte16、位深=byte17）
     EXPECT_EQ(result.config.general_profile_space, 0);
     EXPECT_EQ(result.config.general_tier_flag, 0);
-    EXPECT_EQ(result.config.general_profile_idc, 1);
+    EXPECT_EQ(result.config.general_profile_idc, 2);
     EXPECT_EQ(result.config.general_level_idc, 153u);
     EXPECT_EQ(result.config.chroma_format_idc, 1);
     EXPECT_EQ(result.config.bit_depth_minus_8, 2);

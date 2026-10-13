@@ -50,7 +50,7 @@ struct BitstreamAnalysisResult {
     // 基本视频属性（从码流解析）
     int width = 0;
     int height = 0;
-    int bit_depth = 8;
+    int bit_depth = 0;  // 0 = 未解析/未知，不能用默认 8bit 制造假结论
     int color_primaries = 0;
     int transfer_characteristics = 0;
     int matrix_coefficients = 0;

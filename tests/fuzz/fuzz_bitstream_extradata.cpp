@@ -1,7 +1,7 @@
 // 码流参数集 / extradata 封装 fuzz 入口（阶段 3.3）。
 //
 // 覆盖两条链路：
-//   1) BitstreamAnalyzer::Analyze —— 按 AVCodecID 分发到 H.264 / HEVC / AV1
+//   1) BitstreamAnalyzer::Analyze —— 按 AVCodecID 分发到 H.264 / HEVC / AV1 / VVC
 //      解析器（不设置容器 metadata：这里只关心"裸参数集不许崩 / 不许无界"）；
 //   2) ExtradataParser::Parse / ExtractAnnBNalUnits / ExtractObuUnits ——
 //      封装格式探测（Annex B / avcC / hvcC / vvcC / av1C）与 NAL/OBU 抽取。
@@ -34,6 +34,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     analyzer.Analyze(data, size, AV_CODEC_ID_H264);
     analyzer.Analyze(data, size, AV_CODEC_ID_HEVC);
     analyzer.Analyze(data, size, AV_CODEC_ID_AV1);
+    analyzer.Analyze(data, size, AV_CODEC_ID_VVC);
 
     // 返回的 ExtradataResult 有意丢弃：fuzz 的目标是"边界安全"，
     // 结果正确性由 tests/corpus/ 的确定性断言钉住。

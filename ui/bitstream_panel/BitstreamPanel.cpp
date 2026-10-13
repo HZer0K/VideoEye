@@ -226,9 +226,15 @@ QString BitstreamPanel::DescribeCodec(const model::BitstreamAnalysisResult& resu
         chroma = ChromaName(result.vvc_config.chroma_format_idc);
     }
 
-    return tr("%1 · %2 · Level %3 · %4 · %5bit")
-        .arg(QString::fromStdString(result.codec_name), profile, LevelName(result), chroma)
-        .arg(result.bit_depth);
+    const QString bit_depth = result.bit_depth > 0
+                                  ? tr("%1bit").arg(result.bit_depth)
+                                  : tr("位深未知");
+    return tr("%1 · %2 · Level %3 · %4 · %5")
+        .arg(QString::fromStdString(result.codec_name))
+        .arg(profile)
+        .arg(LevelName(result))
+        .arg(chroma)
+        .arg(bit_depth);
 }
 
 void BitstreamPanel::UpdateSummary(const model::BitstreamAnalysisResult& result) {
@@ -245,7 +251,8 @@ void BitstreamPanel::UpdateSummary(const model::BitstreamAnalysisResult& result)
                                       ? QString::fromStdString(result.codec_id_str)
                                       : QString::fromStdString(result.codec_name);
             summary_label_->setText(
-                tr("编码格式 %1 暂不支持码流级解析（当前支持 H.264 / HEVC / AV1 / VVC）。")
+                tr("编码格式 %1 暂不支持码流级解析（当前支持 H.264 / HEVC / AV1；"
+                   "VVC 为实验性部分支持）。")
                     .arg(codec.isEmpty() ? tr("未知") : codec));
         }
         if (!result.capability_note.empty()) {
@@ -265,16 +272,19 @@ void BitstreamPanel::UpdateSummary(const model::BitstreamAnalysisResult& result)
     QString resolution = tr("未知");
     if (result.width > 0 && result.height > 0) {
         resolution = QString("%1x%2").arg(result.width).arg(result.height);
+        if (result.capability != model::AnalysisCapability::Supported) {
+            resolution += tr("（参考）");
+        }
     }
 
     // 能力状态徽标：Supported 不打扰；Partial / Failed 显式标出，
-    // 鼠标悬停可看 capability_note 的具体原因（如 VVC 畸形码流验证不充分）。
+    // 鼠标悬停可看 capability_note；Partial 字段只作诊断参考，不代表正式结论。
     QString capability_badge;
     switch (result.capability) {
         case model::AnalysisCapability::Supported:
             break;
         case model::AnalysisCapability::Partial:
-            capability_badge = tr("　<b>[部分支持]</b>");
+            capability_badge = tr("　<b>[部分支持/结果仅供参考]</b>");
             break;
         case model::AnalysisCapability::Failed:
             capability_badge = tr("　<b>[解析失败]</b>");
@@ -752,9 +762,11 @@ void BitstreamPanel::BuildComparisonTable(const model::BitstreamAnalysisResult& 
            QString::fromStdString(result.codec_name), false, false);
 
     const bool has_container = result.has_container;
+    const bool reliable_for_comparison =
+        result.capability == model::AnalysisCapability::Supported;
     auto Cmp = [&](const QString& field, int container_value, int bitstream_value) {
-        const bool comparable =
-            has_container && container_value > 0 && bitstream_value > 0;
+        const bool comparable = reliable_for_comparison && has_container &&
+                                container_value > 0 && bitstream_value > 0;
         AddRow(field,
                has_container ? QString::number(container_value) : tr("—"),
                bitstream_value > 0 ? QString::number(bitstream_value) : tr("未解析"),
@@ -768,8 +780,8 @@ void BitstreamPanel::BuildComparisonTable(const model::BitstreamAnalysisResult& 
     // 色彩三要素用名称展示，同时在判定列给出是否一致
     auto CmpNamed = [&](const QString& field, int container_value, int bitstream_value,
                         const QString& container_name, const QString& bitstream_name) {
-        const bool comparable =
-            has_container && container_value > 0 && bitstream_value > 0;
+        const bool comparable = reliable_for_comparison && has_container &&
+                                container_value > 0 && bitstream_value > 0;
         AddRow(field,
                has_container ? container_name : tr("—"),
                bitstream_value > 0 ? bitstream_name : tr("未标注"),

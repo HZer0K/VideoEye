@@ -542,6 +542,8 @@ videoeye_add_test(test_bitstream_analyzer
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/ExtradataParser.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/BitReader.cpp
 )
+target_compile_definitions(test_bitstream_analyzer PRIVATE
+    VIDEOEYE_CODEC_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus/codec")
 add_test(NAME BitstreamAnalyzerTests COMMAND test_bitstream_analyzer)
 
 # =================================================

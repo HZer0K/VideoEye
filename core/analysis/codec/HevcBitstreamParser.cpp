@@ -12,22 +12,24 @@ namespace videoeye {
 constexpr int kMaxNumShortTermRefPicSets = 64;  // MaxNumRefPicSet
 constexpr int kMaxNumLongTermRefPics = 64;      // num_long_term_ref_pics_sps
 constexpr int kMaxNumLayerSets = 1023;          // num_layer_sets_minus1（VPS 的层集合数）
+constexpr uint32_t kMaxHrdCpbCountMinus1 = 31;  // cpb_cnt_minus1 的规范上限
 
 // --------------------------------------------------------------------------
 // Profile / Tier / Level
 // --------------------------------------------------------------------------
 std::string HevcBitstreamParser::GetProfileName(int general_profile_idc) {
     switch (general_profile_idc) {
-        case 0:  return "Main";
-        case 1:  return "Main 10";
-        case 2:  return "Main Still Picture";
-        case 3:  return "Main Rext";
-        case 4:  return "High Throughput";
-        case 5:  return "Multiview Main";
-        case 6:  return "Scalable Main";
-        case 7:  return "3D Main";
-        case 8:  return "Screen Content Coding";
-        case 9:  return "Scalable Range Extension";
+        case 1:  return "Main";
+        case 2:  return "Main 10";
+        case 3:  return "Main Still Picture";
+        case 4:  return "Main Rext";
+        case 5:  return "High Throughput";
+        case 6:  return "Multiview Main";
+        case 7:  return "Scalable Main";
+        case 8:  return "3D Main";
+        case 9:  return "Screen Content Coding";
+        case 10: return "Scalable Range Extension";
+        case 11: return "High Throughput Screen Content Coding";
         default: return "Unknown";
     }
 }
@@ -197,42 +199,49 @@ void HevcBitstreamParser::SkipScalingListData(videoeye::BitReader& reader) {
 // --------------------------------------------------------------------------
 void HevcBitstreamParser::SkipHrdParameters(videoeye::BitReader& reader,
                                             int max_sub_layers_minus1) {
-    // 严格按 7.3.5 / 7.3.5.1 走。以前这里把 sub_pic 写死成 false、位宽又多算了一位，
-    // HRD 一旦存在，读指针就偏到 VUI 后面去了 —— 表现为 SPS 里的 aspect_ratio /
-    // colour_description 全乱、甚至后续字段被当成 next_start_code 解析。
+    // SPS VUI 调用 hrd_parameters() 时 commonInfPresentFlag 恒为 1，按附录 E.2.2
+    // 逐字段跳过。这里不落地 HRD 值，但位预算必须精确，否则后续 VUI restriction
+    // 字段会错位，甚至把合法 SPS 误判为截断。
     const bool nal_hrd = reader.ReadBit();   // nal_hrd_parameters_present_flag
     const bool vcl_hrd = reader.ReadBit();   // vcl_hrd_parameters_present_flag
     if (!nal_hrd && !vcl_hrd) return;
 
     const bool sub_pic = reader.ReadBit();   // sub_pic_hrd_params_present_flag
     if (sub_pic) {
-        reader.SkipBits(4);                  // tick_divisor_minus2（仅 sub_pic 时出现）
+        reader.SkipBits(8);                  // tick_divisor_minus2
+        reader.SkipBits(5);                  // du_cpb_removal_delay_increment_length_minus1
+        reader.SkipBits(1);                  // sub_pic_cpb_params_in_pic_timing_sei_flag
+        reader.SkipBits(5);                  // dpb_output_delay_du_length_minus1
     }
-    reader.SkipBits(5);                      // du_delay_increment_length_minus1
-    reader.SkipBits(1);                      // sub_pic_cpb_params_in_pic_timing_sei_flag
-    reader.SkipBits(5);                      // dpb_output_delay_du_length_minus1
     reader.SkipBits(4);                      // bit_rate_scale
     reader.SkipBits(4);                      // cpb_size_scale
+    if (sub_pic) {
+        reader.SkipBits(4);                  // cpb_size_du_scale
+    }
+    reader.SkipBits(5);                      // initial_cpb_removal_delay_length_minus1
+    reader.SkipBits(5);                      // au_cpb_removal_delay_length_minus1
+    reader.SkipBits(5);                      // dpb_output_delay_length_minus1
     if (reader.HasError()) return;
 
-    // sub_pic 为真时 HRD 同时维护帧级与 DU 级两份 CPB（cpb_cnt_minus1 = 1），
-    // 否则只有一份（cpb_cnt_minus1 = 0）。两份意味着每类 HRD 的 UE 组数翻倍。
-    const uint32_t cpb_cnt_minus1 = sub_pic ? 1u : 0u;
-
     for (int i = 0; i <= max_sub_layers_minus1; ++i) {
-        const bool fixed_rate = reader.ReadBit();  // fixed_pic_rate_within_cvs_flag
-        if (fixed_rate) {
-            reader.ReadUE();                       // elemental_duration_in_tc_minus1
+        const bool fixed_pic_rate_general = reader.ReadBit();
+        const bool fixed_pic_rate_within_cvs =
+            fixed_pic_rate_general ? true : reader.ReadBit();
+
+        bool low_delay_hrd = false;
+        if (fixed_pic_rate_within_cvs) {
+            reader.ReadUE();                 // elemental_duration_in_tc_minus1
         } else {
-            reader.ReadBit();                      // low_delay_hrd_flag
+            low_delay_hrd = reader.ReadBit();
         }
-        if (sub_pic) {
-            reader.SkipBits(4);                    // pic_duration_in_tc_minus_du_zero_hotBits
+
+        uint32_t cpb_cnt_minus1 = 0;
+        if (!low_delay_hrd) {
+            cpb_cnt_minus1 = reader.ReadUEBounded(kMaxHrdCpbCountMinus1);
         }
-        reader.SkipBits(1);                        // fixed_pic_rate_in_exact_ticks_flag
         if (reader.HasError()) return;
 
-        // nal / vcl 两类参数各自带一份完整（且各自独立）的 CPB 列表
+        // nal / vcl 两类参数各自带一份完整（且各自独立）的 CPB 列表。
         if (nal_hrd && !SkipOneHrdCpbList(reader, cpb_cnt_minus1, sub_pic)) return;
         if (vcl_hrd && !SkipOneHrdCpbList(reader, cpb_cnt_minus1, sub_pic)) return;
     }

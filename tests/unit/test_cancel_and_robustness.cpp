@@ -37,6 +37,7 @@
 namespace {
 
 using videoeye::VvcBitstreamParser;
+using videoeye::model::VvcPpsInfo;
 using videoeye::model::VvcSpsInfo;
 using videoeye::task::TaskManager;
 using videoeye::BitReader;
@@ -122,6 +123,99 @@ TEST(VvcBitstreamParserMalformed, HugeQpTablePointCountTerminates) {
 
     const VvcSpsInfo sps = task.get();
     (void)sps;  // 解析成什么样都行, 关键是它得停下来
+}
+
+// ---------------------------------------------------------------------------
+// 2. VVC 畸形 PPS 的 subpic 计数
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// 极简 MSB-first 位写入器：只为拼出"头部合法、subpic 计数畸形"的 PPS。
+class BitWriter {
+public:
+    void Bit(uint32_t v) {
+        cur_ = static_cast<uint8_t>((cur_ << 1) | (v & 1u));
+        if (++n_ == 8) {
+            out_.push_back(cur_);
+            cur_ = 0;
+            n_ = 0;
+        }
+    }
+    void Bits(uint32_t v, int count) {
+        for (int i = count - 1; i >= 0; --i) Bit((v >> i) & 1u);
+    }
+    void Ue(uint32_t value) {
+        const uint32_t code = value + 1;
+        int len = 0;
+        for (uint32_t t = code; t > 1; t >>= 1) ++len;
+        for (int i = 0; i < len; ++i) Bit(0);
+        Bits(code, len + 1);
+    }
+    std::vector<uint8_t> Bytes() {
+        std::vector<uint8_t> out = out_;
+        if (n_ > 0) out.push_back(static_cast<uint8_t>(cur_ << (8 - n_)));
+        return out;
+    }
+
+private:
+    std::vector<uint8_t> out_;
+    uint8_t cur_ = 0;
+    int n_ = 0;
+};
+
+// 前 10 个字段都合法（1920x1080），subpic_id_mapping 打开，
+// pps_num_subpics_minus1 取传入值。字节里不含 00 00 03，无需 emulation prevention。
+std::vector<uint8_t> MakePpsWithNumSubpics(uint32_t num_subpics_minus1) {
+    BitWriter w;
+    w.Bits(0, 6);   // pps_pic_parameter_set_id
+    w.Bits(0, 4);   // pps_seq_parameter_set_id
+    w.Bit(0);       // pps_mixed_nalu_types_in_pic_flag
+    w.Ue(1920);     // pps_pic_width_in_luma_samples
+    w.Ue(1080);     // pps_pic_height_in_luma_samples
+    w.Bit(0);       // pps_conformance_window_flag
+    w.Bit(0);       // pps_scaling_window_explicit_signalling_flag
+    w.Bit(0);       // pps_output_flag_present_flag
+    w.Bit(0);       // pps_no_pic_partition_flag
+    w.Bit(1);       // pps_subpic_id_mapping_present_flag
+    w.Ue(num_subpics_minus1);
+    w.Ue(0);        // subpic_id_len_minus1
+    return w.Bytes();
+}
+
+}  // namespace
+
+TEST(VvcBitstreamParserMalformed, HugePpsSubpicCountTerminates) {
+    // 旧实现：pps_num_subpics_minus1 用裸 ue(v)，紧接着
+    //   for (int i = 0; i <= count; ++i) reader.SkipBits(subpic_id_len_minus1 + 1);
+    // 于是一个 ue(v) 就能撑起约 2e9 次迭代，把分析线程占满（SPS 侧同型循环早有
+    // kMaxNumSubpics 守卫，PPS 漏了）。这里取 2^30-1 量级的计数。
+    const std::vector<uint8_t> pps = MakePpsWithNumSubpics(0x3FFFFFFFu);
+
+    auto task = std::async(std::launch::async, [&pps]() {
+        NalUnit unit;
+        unit.type = 16;  // PPS
+        unit.size = static_cast<uint32_t>(pps.size());
+        unit.data = pps;
+        return VvcBitstreamParser::ParsePpsFromNalUnit(unit);
+    });
+
+    ASSERT_EQ(task.wait_for(std::chrono::seconds(2)), std::future_status::ready)
+        << "畸形 PPS（subpic 计数无上界）让解析器卡住了";
+    EXPECT_FALSE(task.get().present) << "越界计数必须拒绝置 present";
+}
+
+TEST(VvcBitstreamParserMalformed, PpsSubpicCountOverLimitIsRejected) {
+    // 显式越过上界（kMaxNumSubpics = 1024，这里取 1025）：语法合法但数值超限，
+    // ReadUEBounded 必须置错 -> present=false，绝不能真的跑 1026 次 SkipBits。
+    const std::vector<uint8_t> pps = MakePpsWithNumSubpics(1025);
+
+    NalUnit unit;
+    unit.type = 16;
+    unit.size = static_cast<uint32_t>(pps.size());
+    unit.data = pps;
+    const VvcPpsInfo parsed = VvcBitstreamParser::ParsePpsFromNalUnit(unit);
+    EXPECT_FALSE(parsed.present);
 }
 
 // ---------------------------------------------------------------------------

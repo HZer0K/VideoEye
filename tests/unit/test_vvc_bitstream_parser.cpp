@@ -1,6 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdint>
+#include <future>
+#include <random>
+#include <utility>
 #include <vector>
 
 #include "core/analysis/codec/VvcBitstreamParser.h"
@@ -188,6 +192,28 @@ TEST_F(VvcVpsTest, SingleLayerMain10) {
     EXPECT_EQ(vps.ProfileName(), "Main 10");
     EXPECT_EQ(vps.LevelString(), "3.1");
     EXPECT_TRUE(vps.vps_each_layer_is_an_ols_flag);
+}
+
+TEST_F(VvcVpsTest, TruncatedVpsPrefixesAreRejected) {
+    // VPS 此前只有成功路径的测试。逐字节截断：任何「还缺 PTL 语义」的前缀都会让
+    // BitReader 越界 -> HasError -> 不置 present。
+    // 例外与 SPS 同理：kVpsMain10 的最后一个字节是 vps_extension_flag + rbsp
+    // trailing bits，无语义 —— 截到 n-1 字节时全部语义字段（含 PTL）已完整，
+    // present=true 是正确行为。因此循环上界是 size()-2，再用两条显式断言钉住边界。
+    for (size_t len = 1; len + 1 < kVpsMain10.size(); ++len) {
+        const std::vector<uint8_t> prefix(kVpsMain10.begin(), kVpsMain10.begin() + len);
+        const VvcVpsInfo vps = VvcBitstreamParser::ParseVpsFromNalUnit(MakeNal(14, prefix));
+        EXPECT_FALSE(vps.present) << "VPS 截断到 " << len << " 字节仍置了 present";
+    }
+    {
+        // n-2 字节：还缺 PTL 尾部字段，必须失败
+        const std::vector<uint8_t> prefix(kVpsMain10.begin(),
+                                         kVpsMain10.begin() + kVpsMain10.size() - 2);
+        EXPECT_FALSE(VvcBitstreamParser::ParseVpsFromNalUnit(MakeNal(14, prefix)).present);
+        // n-1 字节：只缺 vps_extension_flag，语义字段完整，允许 present
+        const std::vector<uint8_t> full_fields(kVpsMain10.begin(), kVpsMain10.end() - 1);
+        EXPECT_TRUE(VvcBitstreamParser::ParseVpsFromNalUnit(MakeNal(14, full_fields)).present);
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -379,6 +405,71 @@ TEST_F(VvcPpsTest, TruncatedPpsPrefixesAreRejected) {
     }
 }
 
+namespace {
+
+// 极简 MSB-first 位写入器：只为拼出"头部合法、subpic 计数越界"的 PPS。
+class BitWriter {
+public:
+    void Bit(uint32_t v) {
+        cur_ = static_cast<uint8_t>((cur_ << 1) | (v & 1u));
+        if (++n_ == 8) {
+            out_.push_back(cur_);
+            cur_ = 0;
+            n_ = 0;
+        }
+    }
+    void Bits(uint32_t v, int count) {
+        for (int i = count - 1; i >= 0; --i) Bit((v >> i) & 1u);
+    }
+    void Ue(uint32_t value) {
+        const uint32_t code = value + 1;
+        int len = 0;
+        for (uint32_t t = code; t > 1; t >>= 1) ++len;
+        for (int i = 0; i < len; ++i) Bit(0);
+        Bits(code, len + 1);
+    }
+    std::vector<uint8_t> Bytes() {
+        std::vector<uint8_t> out = out_;
+        if (n_ > 0) out.push_back(static_cast<uint8_t>(cur_ << (8 - n_)));
+        return out;
+    }
+
+private:
+    std::vector<uint8_t> out_;
+    uint8_t cur_ = 0;
+    int n_ = 0;
+};
+
+// PPS RBSP：前 10 个字段都合法（1920x1080），subpic_id_mapping 打开，
+// pps_num_subpics_minus1 取传入值。构造出的字节里不含 00 00 03，无需 emulation prevention。
+std::vector<uint8_t> MakePpsWithNumSubpics(uint32_t num_subpics_minus1) {
+    BitWriter w;
+    w.Bits(0, 6);   // pps_pic_parameter_set_id
+    w.Bits(0, 4);   // pps_seq_parameter_set_id
+    w.Bit(0);       // pps_mixed_nalu_types_in_pic_flag
+    w.Ue(1920);     // pps_pic_width_in_luma_samples
+    w.Ue(1080);     // pps_pic_height_in_luma_samples
+    w.Bit(0);       // pps_conformance_window_flag
+    w.Bit(0);       // pps_scaling_window_explicit_signalling_flag
+    w.Bit(0);       // pps_output_flag_present_flag
+    w.Bit(0);       // pps_no_pic_partition_flag
+    w.Bit(1);       // pps_subpic_id_mapping_present_flag
+    w.Ue(num_subpics_minus1);
+    w.Ue(0);        // subpic_id_len_minus1
+    return w.Bytes();
+}
+
+}  // namespace
+
+TEST_F(VvcPpsTest, SubpicIdMappingOverLimitIsRejected) {
+    // pps_num_subpics_minus1 = 1025 越过 kMaxNumSubpics(1024)：语法合法但数值超限，
+    // 必须走 ReadUEBounded 的报错分支 -> HasError -> present=false。
+    // 旧实现用裸 ReadUE 且循环无上界，这个计数能撑起约 20 亿次 SkipBits。
+    const std::vector<uint8_t> over = MakePpsWithNumSubpics(1025);
+    const VvcPpsInfo pps = VvcBitstreamParser::ParsePpsFromNalUnit(MakeNal(16, over));
+    EXPECT_FALSE(pps.present) << "越界 subpic 计数必须拒绝置 present";
+}
+
 // --------------------------------------------------------------------------
 // vvcC 配置记录
 // --------------------------------------------------------------------------
@@ -525,6 +616,86 @@ TEST_F(VvcRealEncoderTest, ParseRealSpsAndPps) {
     ASSERT_TRUE(pps.present);
     EXPECT_EQ(pps.pps_pic_width_in_luma_samples, 640);
     EXPECT_EQ(pps.pps_pic_height_in_luma_samples, 360);
+}
+
+// --------------------------------------------------------------------------
+// 随机位翻转：解析器必须"要么拒绝、要么自洽"，绝不卡死
+// --------------------------------------------------------------------------
+class VvcMalformedTest : public testing::Test {};
+
+TEST_F(VvcMalformedTest, RandomBitFlipsNeverHangOrClaimPresent) {
+    // 固定种子 —— 失败可复现。每轮只翻 1~3 个 bit：既覆盖"语法还能走通但字段错位"
+    // 的情形，又不会退化成纯噪声。放进 async 限时，回归成死循环会变成 2s 失败，
+    // 而不是把 CI 挂住。
+    std::mt19937 rng(0xC0FFEEu);
+    constexpr int kIterations = 128;
+    constexpr int kMaxPictureSize = 65536;
+
+    // SPS：present 时尺寸必须落在 (0, 65536]
+    for (int iter = 0; iter < kIterations; ++iter) {
+        std::vector<uint8_t> mutated = kSpsMain10_1080p;
+        const int flips = 1 + static_cast<int>(rng() % 3);
+        for (int f = 0; f < flips; ++f) {
+            const size_t byte = rng() % mutated.size();
+            mutated[byte] ^= static_cast<uint8_t>(1u << (rng() % 8));
+        }
+        auto task = std::async(std::launch::async, [&mutated]() {
+            return VvcBitstreamParser::ParseSpsFromNalUnit(MakeNal(15, mutated));
+        });
+        ASSERT_EQ(task.wait_for(std::chrono::seconds(2)), std::future_status::ready)
+            << "位翻转后的 SPS 让解析器卡住了";
+        const VvcSpsInfo sps = task.get();
+        if (sps.present) {
+            EXPECT_GT(sps.width(), 0);
+            EXPECT_GT(sps.height(), 0);
+            EXPECT_LE(sps.width(), kMaxPictureSize);
+            EXPECT_LE(sps.height(), kMaxPictureSize);
+        }
+    }
+
+    // PPS：present 时尺寸同样必须落在 (0, 65536]
+    for (int iter = 0; iter < kIterations; ++iter) {
+        std::vector<uint8_t> mutated = kPpsMain10;
+        const int flips = 1 + static_cast<int>(rng() % 3);
+        for (int f = 0; f < flips; ++f) {
+            const size_t byte = rng() % mutated.size();
+            mutated[byte] ^= static_cast<uint8_t>(1u << (rng() % 8));
+        }
+        auto task = std::async(std::launch::async, [&mutated]() {
+            return VvcBitstreamParser::ParsePpsFromNalUnit(MakeNal(16, mutated));
+        });
+        ASSERT_EQ(task.wait_for(std::chrono::seconds(2)), std::future_status::ready)
+            << "位翻转后的 PPS 让解析器卡住了";
+        const VvcPpsInfo pps = task.get();
+        if (pps.present) {
+            EXPECT_GT(pps.pps_pic_width_in_luma_samples, 0);
+            EXPECT_GT(pps.pps_pic_height_in_luma_samples, 0);
+            EXPECT_LE(pps.pps_pic_width_in_luma_samples, kMaxPictureSize);
+            EXPECT_LE(pps.pps_pic_height_in_luma_samples, kMaxPictureSize);
+        }
+    }
+
+    // vvcC 配置记录：只需要"不崩 / 不挂"，valid 时尺寸由 u16 承载必然有界
+    for (int iter = 0; iter < kIterations; ++iter) {
+        std::vector<uint8_t> mutated = kVvcCRecord;
+        const int flips = 1 + static_cast<int>(rng() % 3);
+        for (int f = 0; f < flips; ++f) {
+            const size_t byte = rng() % mutated.size();
+            mutated[byte] ^= static_cast<uint8_t>(1u << (rng() % 8));
+        }
+        auto task = std::async(std::launch::async, [&mutated]() {
+            return ExtradataParser::ParseWithFormat(ExtradataFormat::VvcC, mutated.data(),
+                                                    mutated.size());
+        });
+        ASSERT_EQ(task.wait_for(std::chrono::seconds(2)), std::future_status::ready)
+            << "位翻转后的 vvcC 让解析器卡住了";
+        const ExtradataResult parsed = task.get();
+        if (parsed.valid) {
+            EXPECT_GE(parsed.config.max_picture_width, 0);
+            EXPECT_LE(parsed.config.max_picture_width, 0xFFFF);
+            EXPECT_LE(parsed.config.max_picture_height, 0xFFFF);
+        }
+    }
 }
 
 }  // namespace

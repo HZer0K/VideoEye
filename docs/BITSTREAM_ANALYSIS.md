@@ -4,14 +4,14 @@
 
 ### 1.1 专业价值
 
-容器 metadata 有时不可信，必须解析 codec bitstream 才能确认真实编码参数。本功能通过直接解析 H.264/H.265/AV1/VVC的码流头部信息（SPS/VPS/OBU 等），提取精确的编码参数，并与容器 metadata 进行对比，发现不一致项。
+容器 metadata 有时不可信，必须结合 codec bitstream 才能确认真实编码参数。本功能解析 H.264/H.265/AV1/VVC 的码流头部信息（SPS/VPS/OBU 等），并按能力状态决定是否与容器 metadata 做严格对比；标记为 `Partial` 的字段只供诊断参考，不作为正式结论。
 
 ### 1.2 支持的编码格式
 
 - **H.264 (AVC)**: SPS/PPS、profile、level、VUI、HRD、SEI
 - **H.265 (HEVC)**: VPS/SPS/PPS、profile tier level、VUI、HDR SEI
 - **AV1**: OBU、sequence header、film grain、HDR metadata
-- **VVC (H.266)**: 基本头信息（简化版）
+- **VVC (H.266，实验性/部分支持)**: VPS/SPS/PPS、profile tier level、VUI；PPS 为浅解析，字段仅供参考
 
 ## 2. 技术原理
 
@@ -420,21 +420,40 @@ TEST(H264BitstreamParserTest, ParseHighProfileSPS) {
 分发用的是 FFmpeg 的 `AVCodecID`（`AV_CODEC_ID_H264` / `HEVC` / `AV1` / `VVC`），
 不是自定义编号 —— 传错就静默落到 default 分支的坑已经修掉。
 
-| 编码 | 参数集 | 说明 |
-|------|--------|------|
-| H.264 | SPS + PPS | 走 avcC / AnnexB，SPS 字段解析**尚未按规范对齐**（见下方限制） |
-| HEVC | VPS + SPS + PPS | 走 hvcC / AnnexB，同样受 SPS 字段顺序问题影响 |
-| AV1 | Sequence Header OBU | 走 av1C |
-| VVC | — | 只有类型识别，`VvcBitstreamParser` 尚未实现，结果里记一条 info |
+| 编码 | 参数集 | 正式能力口径 |
+|------|--------|--------------|
+| H.264 | SPS + PPS | avcC / AnnexB；Baseline/Main/High/High 10、4:2:0、8/10bit 组合已有规范回归与真实 x264 样本，判 `Supported`；其它组合判 `Partial` |
+| HEVC | VPS + SPS + PPS | hvcC / AnnexB；Main/Main 10/Main Rext、4:2:0、8/10bit 组合已有规范回归与真实 x265 样本，判 `Supported`；仅 VPS 或其它组合判 `Partial` |
+| AV1 | Sequence Header OBU | 走 av1C；只有 av1C（无序列头 OBU）时给位深/采样结构，判 `Partial` |
+| VVC | VPS + SPS + PPS | 实验性/部分支持；即使解析出 SPS 仍判 `Partial`，不参与严格容器比对 |
 
-**已知限制**：`H264BitstreamParser` / `HevcBitstreamParser` 读取 SPS 的字段顺序
-与规范不一致（规范里第一个字段是 `profile_idc`，现有实现先读了一个 `ue(v)`），
-因此 `BitstreamAnalysisResult` 里的宽高/位深/色彩暂时不可信。
-`BitstreamAnalyzer` 里用 `kCompareParameterSetFields` 显式关掉了「码流层 vs 容器层」
-的字段比对，避免刷出假告警；解析器修好、对应单测转绿后把它翻成 `true` 即可打开。
+**能力状态**：结果里的 `parse_outcome`（`NoExtradata` / `UnsupportedCodec` /
+`TypeOnly` / `ParseFailed` / `FullParse`）与 `capability`（`Supported` / `Partial` /
+`Failed` / `Unavailable`）共同描述“跑到什么程度、结果可信到什么程度”，UI 与报告
+必须同时消费它们，不能只看 `analyzed`。`kCompareParameterSetFields` 已打开：
+只有 `capability == Supported` 的编码才参与“码流层 vs 容器层”的宽高/位深/色彩比对
+（几何差 `kGeometryTolerancePixels = 8` 像素以内记为 info）。`Partial` 字段仍可在
+结构树中查看，但摘要明确标“参考”，对比表不显示“一致/不一致”结论。
+
+**已知限制**：VVC 的 PPS 只读到 `subpic_id_mapping`，不解析 tile / slice 划分；
+当前真实样本只覆盖 libvvenc 640x360 / 10bit / 4:2:0 的有限组合。VVC 的宽高、位深、
+色彩字段均只供参考，正式发布不得宣传为完整支持。H.264/HEVC 的非常用 Profile、
+4:2:2/4:4:4、场编码和多子层组合仍需继续扩充真实样本矩阵。
+
+当前已入库的真实编码器回归样本：
+
+| 样本 | 编码器与覆盖点 | FFprobe 参考结果 |
+|------|----------------|------------------|
+| `tests/corpus/codec/real_x264_192x108_hrd.h264` | FFmpeg 6.1 + libx264；Annex B、裁剪、VUI、HRD | Constrained Baseline / 192x108 / 8bit / BT.709 |
+| `tests/corpus/codec/real_x265_rext_10bit_192x108_hrd.hevc` | FFmpeg 6.1 + libx265；Annex B、Main Rext、10bit、VUI、HRD | Rext / 192x108 / 10bit / BT.709 |
+
+合成逐位用例负责锁定语法分支，以上真实样本负责防止“生成器和解析器共享同一错误理解”。
+待补矩阵包括 4:2:2/4:4:4、场编码、多子层、广播 HRD、不同编码器与异常截断样本。
 
 相关单测：`tests/unit/test_h264_bitstream_parser.cpp`、
-`tests/unit/test_hevc_bitstream_parser.cpp`（`BUILD_TESTING=ON` 时构建）。
+`tests/unit/test_hevc_bitstream_parser.cpp`、`tests/unit/test_av1_bitstream_parser.cpp`、
+`tests/unit/test_vvc_bitstream_parser.cpp`、`tests/unit/test_bitstream_analyzer.cpp`
+（`BUILD_TESTING=ON` 时构建）。
 
 ## 11. 参考资料
 
@@ -460,7 +479,7 @@ TEST(H264BitstreamParserTest, ParseHighProfileSPS) {
 
 9. `core/media/codec/ExtradataParser.cpp` - 封装格式识别实现（avcC / hvcC / av1C）
 10. `core/analysis/codec/Av1BitstreamParser.h/.cpp` - AV1 解析器
-11. `core/analysis/codec/VvcBitstreamParser.h` - VVC 解析器（仅基础头信息，简化版）
+11. `core/analysis/codec/VvcBitstreamParser.h/.cpp` - VVC 解析器（VPS/SPS/PPS；PPS 为浅解析，止于 subpic id mapping）
 12. `ui/bitstream_panel/BitstreamPanel.cpp` - UI 实现
 13. `tests/unit/test_h264_bitstream_parser.cpp`、`tests/unit/test_hevc_bitstream_parser.cpp` - 单元测试
 
