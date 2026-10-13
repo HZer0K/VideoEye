@@ -1,0 +1,434 @@
+name: Release
+
+# 正式发布链路：打 tag → 各平台出安装包 → 校验和 + SBOM + 可选签名 → 创建 GitHub Release。
+#
+# 与 build.yml 的分工：
+#   build.yml     —— 每次 push/PR 跑（构建 + 单测 + 冒烟），产物是"能跑的目录"
+#   release.yml   —— 只在 tag 上跑，产物是"能发出去的包"（安装包 / 校验和 / SBOM）
+#
+# 三条硬规矩（踩过或差点踩的坑）：
+#   1. 打包输入必须是 install 出来的树，不能是 build/ 目录 —— 后者的依赖靠 rpath /
+#      同目录 DLL 才找得到，换个机器就跑不起来。
+#   2. 每个包都要在**干净路径**上做一次"安装 + 启动"验证，不能只验证构建目录里的
+#      那个可执行文件 —— 那验证的是构建，不是分发。
+#   3. 没有 SHA256SUMS 与 THIRD_PARTY_NOTICES.md 的产物不许发布（随包分发了 LGPL 的
+#      FFmpeg，缺许可证清单就是不合规）。
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要构建的版本（如 v2.0.0）；workflow_dispatch 时不会真的打 tag'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  # 每个 job 都从 CMakeLists.txt 解析得到的真实版本号（见 version-check job）
+  ARTIFACT_DIR: release-assets
+
+jobs:
+  # ───────────────────────────────────────────────
+  # 0) 版本一致性：tag 必须等于 CMakeLists.txt 里的 PROJECT_VERSION
+  #
+  # 不做这一步会发生什么：手打 tag v2.1.0 而 CMakeLists 还停在 2.0.0，包里所有的
+  # 文件名、SBOM、关于对话框都会是 2.0.0，而 Release 页面写着 2.1.0。这类不一致
+  # 只能在发布前拦住，发布后再改就是删包重发。
+  # ───────────────────────────────────────────────
+  version-check:
+    name: Version consistency
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PROJECT_VERSION
+        id: parse
+        run: |
+          set -euo pipefail
+          ver=$(grep -m1 -oE 'project\(VideoEye VERSION [0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt \
+                | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          if [ -z "$ver" ]; then
+            echo "::error::无法从 CMakeLists.txt 解析 PROJECT_VERSION"
+            exit 1
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "PROJECT_VERSION=$ver"
+
+      - name: Compare with tag
+        if: github.event_name == 'push'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ver="${{ steps.parse.outputs.version }}"
+          tag="${TAG#v}"
+          if [ "$tag" != "$ver" ]; then
+            echo "::error::tag($tag) 与 CMakeLists.txt 的 PROJECT_VERSION($ver) 不一致"
+            exit 1
+          fi
+          echo "版本一致: $ver"
+
+  # ───────────────────────────────────────────────
+  # 1) Windows：NSIS 安装包 + 免安装 ZIP
+  # ───────────────────────────────────────────────
+  build-windows:
+    name: Windows package
+    needs: version-check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup vcpkg
+        shell: pwsh
+        run: |
+          $vcpkgRoot = if ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT } else { "C:\vcpkg" }
+          if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
+            git clone --depth 1 https://github.com/microsoft/vcpkg.git $vcpkgRoot
+          } else {
+            git -C $vcpkgRoot fetch --depth 1 origin master 2>$null
+            if ($LASTEXITCODE -eq 0) { git -C $vcpkgRoot reset --hard FETCH_HEAD }
+          }
+          & "$vcpkgRoot\bootstrap-vcpkg.bat" -disableMetrics
+          $vcpkgRoot | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "VCPKG_ROOT=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Cache vcpkg dependencies
+        uses: actions/cache@v4
+        with:
+          path: vcpkg_installed
+          key: vcpkg-rel-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'CMakePresets.json', 'scripts/triplets/**', 'scripts/overlay-ports/**') }}
+          restore-keys: vcpkg-rel-${{ runner.os }}-
+
+      - name: Install vcpkg dependencies
+        shell: pwsh
+        run: |
+          & scripts/run-vcpkg-install.ps1 -Config release
+          exit $LASTEXITCODE
+
+      - name: Configure + Build
+        shell: cmd
+        run: |
+          cmake --preset win-release
+          if errorlevel 1 exit /b 1
+          cmake --build --preset win-release
+          if errorlevel 1 exit /b 1
+
+      # 先 install 出一个目录（与 build.yml 同口径），它的产物不进包，只用来确认
+      # 安装规则本身没坏 —— 真正发出去的是下面 cpack 产出的包。
+      - name: Install (sanity)
+        shell: cmd
+        run: cmake --install build\release --prefix build\release\dist
+
+      - name: Package (ZIP + NSIS)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cd build\release
+
+          # ZIP 一定出得来（免安装版）
+          cpack -G ZIP -C Release
+          if ($LASTEXITCODE -ne 0) { Write-Error "cpack ZIP failed"; exit 1 }
+
+          # NSIS 需要 makensis：runner 上有就用，没有就退化成只发 ZIP。
+          # 不发"装不上"的东西，也不因为缺工具把发布卡死 —— 但要在日志里说清楚。
+          $makensis = Get-Command makensis -ErrorAction SilentlyContinue
+          if (-not $makensis) {
+            Write-Host "makensis 未找到，尝试 choco 安装..."
+            choco install nsis -y --no-progress 2>$null
+            $makensis = Get-Command makensis -ErrorAction SilentlyContinue
+          }
+          if ($makensis) {
+            cpack -G NSIS -C Release
+            if ($LASTEXITCODE -ne 0) { Write-Error "cpack NSIS failed"; exit 1 }
+          } else {
+            Write-Warning "::warning::未找到 makensis，本次只发布免安装 ZIP（没有 Windows 安装包）"
+          }
+          Get-ChildItem -Filter "VideoEye-*" -File | ForEach-Object { Write-Host "产出: $($_.Name)  $([math]::Round($_.Length/1MB,1)) MB" }
+
+      - name: SBOM
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ${{ env.ARTIFACT_DIR }} | Out-Null
+          python scripts/gen-sbom.py `
+            --version ${{ needs.version-check.outputs.version }} `
+            --platform windows-x86_64 `
+            --vcpkg-dir vcpkg_installed/x64-windows-release `
+            --output ${{ env.ARTIFACT_DIR }}/VideoEye-${{ needs.version-check.outputs.version }}-windows-x86_64.cdx.json
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      # 可选签名：没配 secret 就跳过（明确打印，避免"以为签了其实没签"）
+      - name: Sign (optional)
+        shell: pwsh
+        env:
+          CERT_B64: ${{ secrets.WINDOWS_CERT_BASE64 }}
+          CERT_PW: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if (-not $env:CERT_B64) {
+            Write-Warning "未配置 WINDOWS_CERT_BASE64，跳过代码签名（产物未签名）"
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP "ve-codesign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERT_B64))
+          $signtool = Get-Command signtool -ErrorAction SilentlyContinue
+          if (-not $signtool) {
+            $candidates = @(
+              "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe",
+              "C:\Program Files (x86)\Windows Kits\10\bin\x64\signtool.exe")
+            foreach ($c in $candidates) { if (Test-Path $c) { $signtool = $c; break } }
+          }
+          if (-not $signtool) { Write-Error "配置了证书但找不到 signtool"; exit 1 }
+          $targets = Get-ChildItem build\release\VideoEye-*.exe -File
+          foreach ($t in $targets) {
+            & $signtool sign /f $pfx /p $env:CERT_PW /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com $t.FullName
+            if ($LASTEXITCODE -ne 0) { Write-Error "签名失败: $($t.Name)"; exit 1 }
+          }
+          Remove-Item $pfx -Force
+          Write-Host "已签名 $($targets.Count) 个可执行文件"
+
+      # 干净路径验证：解压到一个和构建毫无关系的目录再启动 —— 验证的是"分发物"，
+      # 不是"构建产物"。构建目录里的 exe 能跑说明不了包是自洽的。
+      - name: Clean-path install + launch check
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Get-ChildItem build\release\VideoEye-*.zip -File | Select-Object -First 1
+          if (-not $zip) { Write-Error "没有产出 zip"; exit 1 }
+
+          $clean = Join-Path $env:RUNNER_TEMP "ve-clean-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+          New-Item -ItemType Directory -Force -Path $clean | Out-Null
+          Expand-Archive -Path $zip.FullName -DestinationPath $clean -Force
+
+          $exe = Get-ChildItem $clean -Recurse -Filter "VideoEye.exe" | Select-Object -First 1
+          if (-not $exe) { Write-Error "解压后找不到 VideoEye.exe（包名/目录结构变了？）"; exit 1 }
+          Write-Host "干净路径: $($exe.FullName)"
+
+          $p = Start-Process -FilePath $exe.FullName -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) {
+            Write-Error "免安装版在干净路径上启动失败 (exit $($p.ExitCode)) —— 可能是缺 DLL"
+            exit 1
+          }
+          Stop-Process -Id $p.Id -Force
+
+          # 有安装包就再验一次"真安装"：静默装到另一个目录并启动
+          $installer = Get-ChildItem build\release\VideoEye-*.exe -File | Select-Object -First 1
+          if ($installer) {
+            $instDir = Join-Path $env:RUNNER_TEMP "ve-installed"
+            & $installer.FullName /S /D=$instDir | Out-Null
+            Start-Sleep -Seconds 5
+            $installed = Join-Path $instDir "bin\VideoEye.exe"
+            if (-not (Test-Path $installed)) {
+              $installed = (Get-ChildItem $instDir -Recurse -Filter "VideoEye.exe" | Select-Object -First 1).FullName
+            }
+            if (-not $installed) { Write-Error "静默安装后找不到 VideoEye.exe"; exit 1 }
+            $p2 = Start-Process -FilePath $installed -PassThru
+            Start-Sleep -Seconds 8
+            if ($p2.HasExited) { Write-Error "安装版启动失败 (exit $($p2.ExitCode))"; exit 1 }
+            Stop-Process -Id $p2.Id -Force
+            Write-Host "安装包静默安装 + 启动验证通过: $installed"
+          }
+
+      - name: Collect assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ${{ env.ARTIFACT_DIR }} | Out-Null
+          Copy-Item build\release\VideoEye-*.zip,build\release\VideoEye-*.exe `
+                    -Destination ${{ env.ARTIFACT_DIR }} -ErrorAction SilentlyContinue
+          Get-ChildItem ${{ env.ARTIFACT_DIR }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: release-assets
+
+  # ───────────────────────────────────────────────
+  # 2) Linux：DEB 包 + tar.gz
+  # ───────────────────────────────────────────────
+  build-linux:
+    name: Linux package
+    needs: version-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          # dpkg-dev: CPack 的 shlibdeps 需要 dpkg-shlibdeps 自动算依赖
+          sudo apt-get install -y \
+            build-essential cmake pkg-config ninja-build dpkg-dev \
+            qt6-base-dev \
+            libavcodec-dev libavformat-dev libavutil-dev \
+            libswscale-dev libswresample-dev
+
+      # 与 build.yml 同一道门禁：系统 FFmpeg 必须 >= 7.1（libavcodec >= 61.19），
+      # Ubuntu 24.04 的 6.1 不够，会自动换成 ffmpeg-version.json 里锁定的兜底包。
+      - name: Ensure FFmpeg >= 7.1
+        id: ffmpeg
+        run: |
+          set -euo pipefail
+          root="$(bash scripts/fetch-ffmpeg.sh)"
+          echo "root=${root}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure + Build
+        run: |
+          set -euo pipefail
+          root="${{ steps.ffmpeg.outputs.root }}"
+          if [[ -n "${root}" ]]; then
+            cmake --preset linux-release -DFFMPEG_ROOT="${root}"
+          else
+            cmake --preset linux-release
+          fi
+          cmake --build --preset linux-release
+
+      - name: Install (sanity)
+        run: cmake --install build/release --prefix build/release/dist
+
+      - name: Package (TGZ + DEB)
+        run: |
+          set -euo pipefail
+          cd build/release
+          cpack -G TGZ -C Release
+          # DEB 的依赖由 dpkg-shlibdeps 自动推导，不写死 libavcodecxx 这种版本号
+          cpack -G DEB -C Release
+          ls -lh VideoEye-*
+
+      - name: SBOM
+        run: |
+          mkdir -p ${{ env.ARTIFACT_DIR }}
+          python3 scripts/gen-sbom.py \
+            --version ${{ needs.version-check.outputs.version }} \
+            --platform linux-x86_64 \
+            --output ${{ env.ARTIFACT_DIR }}/VideoEye-${{ needs.version-check.outputs.version }}-linux-x86_64.cdx.json
+
+      # 干净路径验证分两步：
+      #   tar.gz  —— 解到临时目录，ldd 不许有 not found，offscreen 启动 8s
+      #   .deb    —— dpkg -i 真装进系统，再从 /usr/bin 启动（最接近用户实际场景）
+      - name: Clean-path install + launch check
+        run: |
+          set -euo pipefail
+          version="${{ needs.version-check.outputs.version }}"
+          tgz=$(ls build/release/VideoEye-${version}-*.tar.gz | head -1)
+          deb=$(ls build/release/VideoEye-${version}-*.deb | head -1)
+
+          clean=$(mktemp -d)
+          tar -xzf "$tgz" -C "$clean"
+          bin=$(find "$clean" -name VideoEye -type f | head -1)
+          [ -n "$bin" ] || { echo "::error::tar.gz 里没有 VideoEye"; exit 1; }
+          echo "干净路径: $bin"
+
+          if ldd "$bin" | grep -i "not found"; then
+            echo "::error::tar.gz 解出来的可执行文件有未解析依赖"; exit 1
+          fi
+
+          set +e
+          QT_QPA_PLATFORM=offscreen timeout 8 "$bin" > /tmp/tgz-smoke.log 2>&1
+          code=$?
+          set -e
+          if [ "$code" -ne 124 ]; then
+            if grep -q "qt.qpa.plugin" /tmp/tgz-smoke.log; then
+              echo "::warning::offscreen 插件不可用，跳过 GUI 存活检查"
+            else
+              echo "::error::免安装版启动失败 (code=$code)"; cat /tmp/tgz-smoke.log; exit 1
+            fi
+          fi
+
+          # .deb: 真装一次
+          sudo dpkg -i "$deb"
+          installed=$(command -v VideoEye || true)
+          if [ -z "$installed" ]; then
+            echo "::error::dpkg -i 之后 PATH 里找不到 VideoEye"; exit 1
+          fi
+          echo "已安装到: $installed"
+          set +e
+          QT_QPA_PLATFORM=offscreen timeout 8 "$installed" > /tmp/deb-smoke.log 2>&1
+          code=$?
+          set -e
+          if [ "$code" -ne 124 ]; then
+            if grep -q "qt.qpa.plugin" /tmp/deb-smoke.log; then
+              echo "::warning::offscreen 插件不可用，跳过 GUI 存活检查"
+            else
+              echo "::error::安装版启动失败 (code=$code)"; cat /tmp/deb-smoke.log; exit 1
+            fi
+          fi
+          echo ".deb 安装 + 启动验证通过"
+
+      - name: Collect assets
+        run: |
+          mkdir -p ${{ env.ARTIFACT_DIR }}
+          cp build/release/VideoEye-*.tar.gz build/release/VideoEye-*.deb ${{ env.ARTIFACT_DIR }}/
+          ls -lh ${{ env.ARTIFACT_DIR }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: release-assets
+
+  # ───────────────────────────────────────────────
+  # 3) 汇总：校验和 + 发布
+  # ───────────────────────────────────────────────
+  release:
+    name: Publish release
+    needs: [version-check, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Assemble + SHA256SUMS
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find artifacts -type f -exec cp {} dist/ \;
+          cd dist
+          ls -lh
+
+          # 没有这两样就不许发布：一个是完整性校验，一个是 LGPL 随附义务
+          for f in *.cdx.json; do
+            [ -e "$f" ] || { echo "::error::缺少 SBOM"; exit 1; }
+          done
+          sha256sum * > SHA256SUMS.txt
+          echo "=== SHA256SUMS.txt ==="
+          cat SHA256SUMS.txt
+
+      # 可选：GPG 分离签名（配了 GPG_PRIVATE_KEY 才签，没配就把校验和明文发出去）
+      - name: Sign checksums (optional)
+        env:
+          GPG_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASS: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          cd dist
+          if [ -z "$GPG_KEY" ]; then
+            echo "::warning::未配置 GPG_PRIVATE_KEY，SHA256SUMS.txt 未签名"
+            exit 0
+          fi
+          echo "$GPG_KEY" | gpg --batch --import
+          echo "$GPG_PASS" | gpg --batch --yes --passphrase-fd 0 --pinentry-mode loopback \
+               --armor --detach-sign --output SHA256SUMS.txt.asc SHA256SUMS.txt
+          echo "已生成 SHA256SUMS.txt.asc"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'push' && github.ref_name || format('v{0}', inputs.tag) }}
+          name: VideoEye ${{ needs.version-check.outputs.version }}
+          body_path: .github/RELEASE_NOTES_TEMPLATE.md
+          draft: true     # 先出草稿，人工核对校验和 / 许可证清单后再发布
+          files: |
+            dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

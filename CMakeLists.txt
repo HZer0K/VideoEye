@@ -571,6 +571,82 @@ if(WIN32)
 endif()
 
 # ============================================================
+# 打包（CPack）
+# ============================================================
+# 一个前提：打包的输入必须是 install 出来的树，不能是 build/ 目录。
+# build/ 里的可执行文件在 Windows 上靠同目录的 DLL、在 Linux 上靠 rpath 指到
+# build/../lib 才能跑起来；只有 install 规则铺出来的那棵树才是"换台机器也能跑"的
+# （Qt 插件、依赖闭包、lib/ 都在这一步完成）。所以 release.yml 一律先 install 再 cpack。
+#
+# 具体用哪个生成器由 CI 决定（cpack -G ...），这里只给出默认值与平台无关的那些
+# 字段 —— 默认给的是"一定能成"的归档格式，安装器（NSIS / DEB）需要额外工具，
+# 由 workflow 检测工具存在后再追加。
+set(CPACK_PACKAGE_NAME "VideoEye")
+set(CPACK_PACKAGE_VENDOR "VideoEye contributors")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_VERSION_MAJOR "${PROJECT_VERSION_MAJOR}")
+set(CPACK_PACKAGE_VERSION_MINOR "${PROJECT_VERSION_MINOR}")
+set(CPACK_PACKAGE_VERSION_PATCH "${PROJECT_VERSION_PATCH}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "视频码流分析工具：参数集解析 / 容器结构 / QC 体检 / 逐帧导出")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "VideoEye")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/HZer0K/VideoEye")
+set(CPACK_VERBATIM_VARIABLES YES)
+set(CPACK_PACKAGE_CHECKSUM "SHA256")
+set(CPACK_THREADS 0)
+
+# 文件名里的平台段要规范: 不直接拿 CMAKE_SYSTEM_PROCESSOR —— 它在 MSVC 下是
+# 大写 AMD64、在 M1 上是 arm64，拼进文件名既难看又不一致。
+set(VIDEOEYE_PKG_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+string(TOLOWER "${VIDEOEYE_PKG_ARCH}" VIDEOEYE_PKG_ARCH)
+if(VIDEOEYE_PKG_ARCH MATCHES "^(amd64|x86_64)$")
+    set(VIDEOEYE_PKG_ARCH "x86_64")
+elseif(VIDEOEYE_PKG_ARCH MATCHES "^(arm64|aarch64)$")
+    set(VIDEOEYE_PKG_ARCH "arm64")
+endif()
+if(WIN32)
+    set(VIDEOEYE_PKG_OS "windows")
+elseif(APPLE)
+    set(VIDEOEYE_PKG_OS "macos")
+else()
+    set(VIDEOEYE_PKG_OS "linux")
+endif()
+set(VIDEOEYE_PKG_PLATFORM "${VIDEOEYE_PKG_OS}-${VIDEOEYE_PKG_ARCH}")
+set(CPACK_PACKAGE_FILE_NAME "VideoEye-${PROJECT_VERSION}-${VIDEOEYE_PKG_PLATFORM}")
+
+# NSIS 只接受 .txt / .rtf 的许可证文件，仓库里的 LICENSE 没有扩展名 ——
+# 拷一份带扩展名的出来，避免换生成器时才炸。
+configure_file("${CMAKE_SOURCE_DIR}/LICENSE"
+               "${CMAKE_BINARY_DIR}/VideoEye-LICENSE.txt" COPYONLY)
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_BINARY_DIR}/VideoEye-LICENSE.txt")
+set(CPACK_RESOURCE_FILE_README "${CMAKE_SOURCE_DIR}/README.md")
+
+if(WIN32)
+    # 默认只出 ZIP（免安装版），NSIS 需要 makensis，由 release.yml 检测后追加
+    set(CPACK_GENERATOR "ZIP")
+    set(CPACK_NSIS_MANIFEST_DPI_AWARE ON)
+    set(CPACK_NSIS_HELP_LINK "${CPACK_PACKAGE_HOMEPAGE_URL}")
+    set(CPACK_NSIS_URL_INFO_ABOUT "${CPACK_PACKAGE_HOMEPAGE_URL}")
+    set(CPACK_NSIS_CONTACT "${CPACK_PACKAGE_HOMEPAGE_URL}/issues")
+    set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+    set(CPACK_CREATE_DESKTOP_LINKS "VideoEye")
+    set(CPACK_PACKAGE_EXECUTABLES "VideoEye;VideoEye")
+elseif(APPLE)
+    # macOS 目前产出的是可执行程序 + lib/ 的目录树，不是 .app bundle
+    # （主程序没有设 MACOSX_BUNDLE），所以这里只出归档，不发 .dmg。
+    set(CPACK_GENERATOR "TGZ")
+else()
+    set(CPACK_GENERATOR "TGZ")
+    # 依赖交给 dpkg-shlibdeps 自动算：写死 libavcodec60 这种名字在 Ubuntu 22.04/24.04
+    # 上就是错的（那里是 58 / 60 之外的版本号），而自动推导永远跟着实际链接走。
+    set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+    set(CPACK_DEBIAN_FILE_NAME "DEB-DEFAULT")
+    set(CPACK_DEBIAN_PACKAGE_SECTION "video")
+    set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "${CPACK_PACKAGE_HOMEPAGE_URL}")
+endif()
+
+include(CPack)
+
+# ============================================================
 # 摘要
 # ============================================================
 message(STATUS "")
