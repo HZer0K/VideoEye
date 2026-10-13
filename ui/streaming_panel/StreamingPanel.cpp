@@ -181,14 +181,21 @@ void StreamingPanel::UpdateSummary(const model::StreamingPackageResult& result) 
                        .arg(warnings)
                        .arg(infos);
     if (result.remote) {
-        text += tr(" | 含远端 URI（当前版本不下载）");
+        text += tr(" | 含远端 URI（远端清单/分片不下载）");
+    }
+    // 探测覆盖度：清单里声称 N 个分片，这一轮真探过的只有 M 个（探测有上限）。
+    // 不写出来的话，"N 个分片"会被读成"N 个都验过"，抽样结果就变成了假的全量结论。
+    const auto probed = static_cast<qulonglong>(result.ProbedSegments());
+    const auto total = static_cast<qulonglong>(result.TotalSegments());
+    if (total > 0 && probed < total) {
+        text += tr(" | 分片抽查 %1/%2，其余未探测").arg(probed).arg(total);
     }
     if (result.truncated) {
         text += tr(" | 输出已按上限截断");
     }
     if (result.IsLive()) {
-        // 直播包只是一次快照，摘要里必须说清"它自己声称多久更新、窗口多长"，
-        // 否则单看分片数根本判断不了这份清单是否完整。
+        // 直播包只是一次快照：清单会随服务端滚动而变化，我们不重拉、不轮询。
+        text += tr(" | 单次快照（不持续轮询）");
         if (result.IsDash()) {
             if (result.has_minimum_update_period) {
                 text += tr(" | minimumUpdatePeriod=%1 s").arg(Seconds(result.minimum_update_period_s));
@@ -484,6 +491,17 @@ QString StreamingPanel::ExportToJson() const {
     root["kind"] = QString::fromUtf8(model::ToString(current_result_.kind));
     root["valid"] = current_result_.valid;
     root["live"] = current_result_.IsLive();
+    // 能力边界：导出 JSON 会被当成报告引用，抽查范围与"只做一次快照"必须跟着数据走，
+    // 否则下游（人工复核 / 自动化比对）会拿抽样结果当全量结论。
+    QJsonObject scope;
+    scope["snapshot_only"] = true; // 不持续轮询、不重拉清单
+    scope["remote_fetch"] = false; // 远端清单与分片不下载
+    scope["segments_total"] = static_cast<qint64>(current_result_.TotalSegments());
+    scope["segments_probed"] = static_cast<qint64>(current_result_.ProbedSegments());
+    scope["segments_probe_complete"] = current_result_.SegmentProbeComplete();
+    scope["remote_manifest"] = current_result_.remote;
+    scope["output_truncated"] = current_result_.truncated;
+    root["check_scope"] = scope;
     if (current_result_.IsDash()) {
         QJsonObject dash_live;
         dash_live["type"] = QString::fromStdString(current_result_.mpd_type);

@@ -4,11 +4,14 @@
 [![C++](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://isocpp.org/)
 [![Qt](https://img.shields.io/badge/Qt-6-green.svg)](https://www.qt.io/)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-8.1%2B-red.svg)](https://ffmpeg.org/)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)]()
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey.svg)]()
+[![macOS](https://img.shields.io/badge/macOS-build%20from%20source-yellow.svg)]()
 
 ## 项目简介
 
-VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网络流及本地文件输入，提供实时码流分析、帧级信息、容器结构解析与图形化展示。采用 C++17 + Qt6 技术栈，深色专业风格 UI，跨平台支持 Windows / Linux / macOS。
+VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网络流及本地文件输入，提供实时码流分析、帧级信息、容器结构解析与图形化展示。采用 C++17 + Qt6 技术栈，深色专业风格 UI。
+
+**平台口径（别照着"跨平台"三个字做选型）**：Windows 与 Linux 有官方二进制、且每次发布都在干净机器上做过安装 + 启动验证；macOS **没有官方二进制**，代码层面支持、但不在 CI 矩阵里，也没有做过干净机器安装验证 —— 在 macOS 上请从源码构建（见下方「平台支持矩阵」）。
 
 ## 主要特性
 
@@ -202,6 +205,33 @@ brew install cmake ninja qt@6 ffmpeg
 产物：`build/release/bin/VideoEye` / `build/debug/bin/VideoEye`
 
 构建配置的唯一来源是 `CMakePresets.json`；动态库部署由 CMake 完成（Windows 与 exe 同目录，Linux/macOS 进相邻 `lib/` 并写入 RPATH），构建后校验到位。
+
+### 平台支持矩阵
+
+"能编译"和"我们验证过"是两件事，这张表说的是后者 —— 声明超出验证范围就是误导。
+
+| 平台 | CI 构建 | CI 单测 | 官方二进制 | 干净机器安装验证 |
+|------|---------|---------|-----------|-----------------|
+| Windows x86_64 | ✅ `win-release` / `win-test-release` | ✅ | ✅ NSIS 安装包 + ZIP | ✅ 静默安装 + 免安装解压，均启动存活 |
+| Linux x86_64 | ✅ `linux-release` / `linux-test-debug` | ✅（含 ASan / TSan） | ✅ `.deb` + tar.gz | ✅ `dpkg -i` + 免安装解压 |
+| macOS | ❌ 不在矩阵 | ❌ | ❌ | ❌ |
+
+macOS 代码路径是通的（音频走 AudioQueue、`linux-*` preset 在 macOS 上同样可用），
+缺的是机器验证。愿意帮忙维护 macOS CI 的话，从 `cmake --preset linux-release` 起手最省事。
+
+### 已知能力边界
+
+下面几条是**产品边界**，不是待修缺陷。它们会同时出现在发行说明里；改代码前先确认是不是
+在改边界本身，别把"范围外"当成"坏了"。
+
+| 能力 | 实际范围 | 说明 |
+|------|---------|------|
+| HLS / DASH | **单次快照** | 读一次清单就出结果，不持续轮询、不重拉。直播包随时间的变化不在结果里 |
+| 远端清单 / 分片 | **不下载** | 出现 `http(s)://` 只登记标记，不做网络请求；远端包的分片落盘、时长、码率均为空 |
+| 分片探测 | **抽查** | 每个清单最多 8 个分片，TS 深度解析整包最多 3 个；面板摘要显示"分片抽查 N/M" |
+| 分片可用性 | **不推算** | `availabilityStartTime` 只校验"有没有声明"，不回答"此刻哪些分片可以取" |
+| VVC 码流解析 | **实验性部分支持** | SPS/VPS 关键字段可解析，PPS 与真实样本覆盖不完整；结果标"参考"，不参与容器一致性判定 |
+| H.264 / HEVC / AV1 | **按能力矩阵** | 只有已验证的 Profile / 色度 / 位深组合才判"可靠"，其余标"参考"。详见 `docs/BITSTREAM_ANALYSIS.md` |
 
 ## 使用指南
 

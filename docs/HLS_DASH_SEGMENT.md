@@ -169,7 +169,9 @@ MPD 元素上的四个 live 属性现在都会解析（`StreamingPackageResult` 
 「流媒体包」页（由 `AnalysisPanel::SetupStreamingPackageTab()` 注册，
 侧边栏条目由 `content_stack_` 的 `pageTitle` 自动生成）：
 
-- **顶部摘要**：清单类型 / 点播或直播 / 码率层数 / 分片数 / 各级问题数；直播包追加自身的时效信息
+- **顶部摘要**：清单类型 / 点播或直播 / 码率层数 / 分片数 / 各级问题数；
+  含远端 URI 时标"远端清单/分片不下载"；分片没探全时标"分片抽查 N/M，其余未探测"；
+  直播包追加"单次快照（不持续轮询）"与自身的时效信息
   （DASH 的 `minimumUpdatePeriod` / 时移窗口 / 是否缺 `availabilityStartTime`，HLS 的直播清单条数与窗口时长）
 - **左侧 manifest 结构树**：HLS 的 variant / rendition / media playlist / segment，
   DASH 的 Period / AdaptationSet / Representation / Segment；结构树的根节点展示 MPD 的
@@ -229,3 +231,24 @@ ctest --preset win-test-release
   目前由 `TsStructureAnalyzer` 验证结构完整性，未提取首帧类型。
 - **CMAF 兼容性**目前覆盖到"fMP4 分片必须有初始化段 + tfdt 起点对齐"这一层，
   未校验 `styp` brand、轨道切换（`trun` 的 `sample_depends_on`）等更细的 CMAF 约束。
+- **分片探测是抽样，且超限时静默跳过**。`SegmentQcAnalyzer::ProbeSegmentRange()` 按
+  `SegmentQcOptions::max_probe_segments`（默认 **8**）逐个清单截断，
+  `ContainerStructureAnalyzer::ProbeTsSegments()` 对整个包只深挖 **3** 个 TS 分片。
+  超出部分既不 stat 也不解析，**不会**产生任何"未探测"提示 —— 这是抽样结果，不是全量结论。
+  模型侧 `StreamingPackageResult::ProbedSegments() / TotalSegments() / SegmentProbeComplete()`
+  与 UI 摘要的"分片抽查 N/M"就是为了让这个静默边界可见。
+
+### 7.1 对外声明口径（产品页面与发行说明必须原样保留）
+
+以下四条是**能力边界**，不是缺陷清单。任何对外材料（README、Release Notes、产品页）
+在宣传 HLS/DASH 支持时都必须同时给出，否则等于把抽样结果宣传成全量体检：
+
+1. **单次快照，不持续轮询。** 工具读一次清单就出结果；`minimumUpdatePeriod` /
+   `EXT-X-TARGETDURATION` 只用于判定"客户端会不会重载太慢"，工具本身不会按它去重读。
+   直播包随时间的变化（新增分片、头部淘汰、码率切换）不在这一次结果里。
+2. **远端清单与分片不下载。** 清单里出现 `http(s)://` 时只登记 `remote` 标记，
+   不做任何网络请求；因此远端包的分片落盘情况、时长、码率全部为空，相关告警也不产出。
+3. **分片是抽查，不是全量。** 每个清单最多探 8 个分片，TS 深度解析整包最多 3 个。
+   面板摘要会显示"分片抽查 N/M，其余未探测"；JSON 导出里对应 `check_scope` 字段。
+4. **不推算实时可用性。** `availabilityStartTime` 只校验"有没有声明"，
+   不回答"此刻哪些分片可以取" —— 离线体检没有可信时钟这个输入。

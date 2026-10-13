@@ -117,6 +117,36 @@ bool WriteValidHlsVodPackage(const fs::path& root) {
     return true;
 }
 
+// 一个只有单条 media playlist、segments 数量可指定的 HLS VOD 包。
+// 用来验证"分片探测有上限"这件事在结果里是可见的 —— 上限本身是静默截断的
+// （ProbeSegmentRange 直接 break，不产生任何 issue），只有 ProbedSegments() 能暴露它。
+bool WriteHlsPackageWithSegmentCount(const fs::path& root, int count) {
+    std::string body = "#EXTM3U\n"
+                       "#EXT-X-VERSION:3\n"
+                       "#EXT-X-TARGETDURATION:4\n"
+                       "#EXT-X-MEDIA-SEQUENCE:0\n"
+                       "#EXT-X-PLAYLIST-TYPE:VOD\n";
+    for (int i = 0; i < count; ++i) {
+        body += "#EXTINF:4.000,\nseg" + std::to_string(i) + ".ts\n";
+    }
+    body += "#EXT-X-ENDLIST\n";
+
+    const std::string master = "#EXTM3U\n"
+                               "#EXT-X-VERSION:3\n"
+                               "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360,"
+                               "CODECS=\"avc1.4d401e\"\n"
+                               "v0/index.m3u8\n";
+    if (!WriteFile(root / "master.m3u8", master))
+        return false;
+    if (!WriteFile(root / "v0" / "index.m3u8", body))
+        return false;
+    for (int i = 0; i < count; ++i) {
+        if (!WriteFile(root / "v0" / ("seg" + std::to_string(i) + ".ts"), MakeBytes(512)))
+            return false;
+    }
+    return true;
+}
+
 } // namespace
 
 // ===========================================================================
@@ -160,6 +190,58 @@ TEST(StreamingPackageTest, ValidHlsVodPackageHasNoWarningOrError) {
     EXPECT_EQ(0, CountAtLeast(result, IssueSeverity::Warning)) << "合法包不该有 Warning 及以上级别的问题";
 
     fs::remove_all(root);
+}
+
+// ===========================================================================
+// 能力边界: 分片探测是抽查 —— 静默截断必须在结果里可见
+//
+// ProbeSegmentRange() 超过 max_probe_segments 就直接 break，不产生任何 issue。
+// 所以"清单里 N 个分片"不能被读成"N 个都验过"。这三个访问器是唯一的对账手段，
+// UI 摘要的「分片抽查 N/M」与 JSON 的 check_scope 都建立在它们之上。
+// ===========================================================================
+TEST(StreamingPackageTest, ProbeCoverageIsReportedInsteadOfSilentlyComplete) {
+    const fs::path root = MakeTempDir("probe_coverage");
+    ASSERT_TRUE(WriteHlsPackageWithSegmentCount(root, 12));
+
+    videoeye::HlsManifestAnalyzer hls;
+    StreamingPackageResult result;
+    ASSERT_TRUE(hls.AnalyzeFile((root / "master.m3u8").string(), result));
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Analyze(result));
+
+    const uint32_t limit = videoeye::SegmentQcOptions{}.max_probe_segments;
+    ASSERT_GT(limit, 0u);
+    ASSERT_LT(limit, 12u) << "这条用例要的就是'分片数超过上限'的场景";
+
+    EXPECT_EQ(12u, result.TotalSegments());
+    EXPECT_EQ(limit, result.ProbedSegments());
+    EXPECT_FALSE(result.SegmentProbeComplete());
+
+    fs::remove_all(root);
+}
+
+TEST(StreamingPackageTest, ProbeCoverageAccessorsFollowSegmentFlags) {
+    StreamingPackageResult result;
+
+    MediaPlaylistInfo pl;
+    pl.index = 0;
+    // 3 个完整分片 + 1 个 partial：partial 不算分片、也不该进探测统计
+    for (int i = 0; i < 4; ++i) {
+        videoeye::model::SegmentInfo seg;
+        seg.uri = "seg" + std::to_string(i) + ".ts";
+        seg.partial = (i == 3);
+        seg.probed = (i < 3);
+        pl.segments.push_back(seg);
+    }
+    result.playlists.push_back(pl);
+
+    EXPECT_EQ(3u, result.TotalSegments());
+    EXPECT_EQ(3u, result.ProbedSegments());
+    EXPECT_TRUE(result.SegmentProbeComplete()) << "全部分片都探过时应判为覆盖完整";
+
+    result.playlists[0].segments[2].probed = false;
+    EXPECT_EQ(2u, result.ProbedSegments());
+    EXPECT_FALSE(result.SegmentProbeComplete());
 }
 
 // ===========================================================================

@@ -518,6 +518,31 @@ struct StreamingPackageResult {
             n += r.segments.size();
         return n;
     }
+    // 真正做过落盘探测 / 容器头解析的分片数。
+    // 与 TotalSegments() 配对使用：前者是"这一轮真看过的"，后者是"清单里声称存在的"。
+    // 探测是有上限的（SegmentQcOptions::max_probe_segments，TS 深度解析还另有更严的
+    // 上限），所以两者不相等是常态 —— UI 与报告必须把它当抽样结果如实标出来，
+    // 不能让"N 个分片"看起来像"N 个都验过"。
+    size_t ProbedSegments() const {
+        size_t n = 0;
+        for (const auto& p : playlists) {
+            for (const auto& s : p.segments) {
+                if (!s.partial && s.probed)
+                    ++n;
+            }
+        }
+        for (const auto& r : representations) {
+            for (const auto& s : r.segments) {
+                if (!s.partial && s.probed)
+                    ++n;
+            }
+        }
+        return n;
+    }
+    // 抽查是否覆盖了清单里的全部分片。false 表示结果是抽样，不代表没有缺陷。
+    bool SegmentProbeComplete() const {
+        return ProbedSegments() >= TotalSegments();
+    }
     // 问题码前缀：HLS 包用 container.hls.，DASH 包用 container.dash.
     std::string IssuePrefix() const {
         return IsDash() ? "container.dash." : "container.hls.";
