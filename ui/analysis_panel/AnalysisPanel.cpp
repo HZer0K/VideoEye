@@ -686,6 +686,8 @@ void AnalysisPanel::SetupDiagnosticsPage() {
             this, [this](const model::QcReport& report) {
                 if (audio_qc_page_) audio_qc_page_->SetQcReport(report);
                 if (color_hdr_page_) color_hdr_page_->SetQcReport(report);
+                // 首页的问题计数 / 最重要的异常同样跟着重算
+                emit DiagnosticsStateChanged();
             });
     connect(diagnostics_page_, &DiagnosticsPage::SeekRequested, this, &AnalysisPanel::SeekRequested);
 
@@ -710,12 +712,17 @@ void AnalysisPanel::SetupReportingPanelTab() {
 
 void AnalysisPanel::OnScanStarted() {
     // 与诊断页共用同一次扫描的页面：先把它们的开始/取消状态对齐
+    scan_running_ = true;
     for (ScanClient* page : scan_clients_) page->SetScanActive(true);
+    // 首页的「分析状态」区要立刻切到"分析中"
+    emit DiagnosticsStateChanged();
 }
 
 void AnalysisPanel::OnScanEnded(DiagnosticsPage::ScanEndReason reason) {
     const bool failed = (reason == DiagnosticsPage::ScanEndReason::Failed);
     const bool completed = (reason == DiagnosticsPage::ScanEndReason::Completed);
+
+    scan_running_ = false;
 
     // 共用同一次扫描的几页在这里**一起**回到 Idle。成功 / 取消 / 失败走同一条路径 ——
     // 以前失败时一个信号都不发，这几页就永远停在扫描态（取消按钮还亮着、"开始分析"
@@ -769,6 +776,85 @@ void AnalysisPanel::OnScanEnded(DiagnosticsPage::ScanEndReason reason) {
         VE_PERF("诊断后刷新 MP4 样本表");
         if (container_page_) container_page_->ApplySampleTable(result.mp4_samples);
     }
+
+    // 终态回到首页：评分/结论/异常清单都该刷新（失败的路径上面已 return，没有新结果）
+    emit DiagnosticsStateChanged();
+}
+
+// ---------------------------------------------------------------------------
+// 诊断状态只读快照（首页「分析状态」区经 DiagnosticsStateChanged 通知后拉取）
+// ---------------------------------------------------------------------------
+
+bool AnalysisPanel::HasDiagnosticsResult() const {
+    return diagnostics_page_ && diagnostics_page_->hasResult();
+}
+
+const model::QcReport& AnalysisPanel::DiagnosticsReport() const {
+    // 诊断页的 qcReport() 返回成员引用，没有结果时是一份默认构造的空报告，
+    // 调用方先问 HasDiagnosticsResult() 再取数。
+    static const model::QcReport kEmpty;
+    return diagnostics_page_ ? diagnostics_page_->qcReport() : kEmpty;
+}
+
+QString AnalysisPanel::DiagnosticsError() const {
+    return diagnostics_page_ ? diagnostics_page_->lastError() : QString();
+}
+
+// ---------------------------------------------------------------------------
+// 侧栏导航标记
+// ---------------------------------------------------------------------------
+
+// 返回类型写成完整形式（而不是 AnalysisPanel::PageBadges）：MSVC 会把
+// "类名::嵌套类型 类名::同名函数" 误判成构造函数声明，报 C2143。
+QMap<QString, AnalysisPanel::PageBadgeInfo> AnalysisPanel::PageBadges() const {
+    QMap<QString, PageBadgeInfo> badges;
+    const bool scanning = scan_running_;
+
+    // 有结果或扫描中的页面才进表
+    auto add = [&badges, scanning](const QString& page_id, int count, int level) {
+        if (count <= 0 && !scanning) return;
+        PageBadgeInfo info;
+        info.issue_count = count;
+        info.level = count > 0 ? level : 0;
+        info.scanning = scanning;
+        badges.insert(page_id, info);
+    };
+
+    // 质量诊断: QC 报告问题总数 + 最高严重度（致命>错误>警告）
+    if (diagnostics_page_ && diagnostics_page_->hasResult()) {
+        const model::QcReport& report = diagnostics_page_->qcReport();
+        const int count = static_cast<int>(report.issues.size());
+        int level = 0;
+        if (report.CountBySeverity(model::IssueSeverity::Critical) > 0) {
+            level = 3;
+        } else if (report.CountBySeverity(model::IssueSeverity::Error) > 0) {
+            level = 2;
+        } else if (count > 0) {
+            level = 1;
+        }
+        add(QStringLiteral("quality_diagnostics"), count, level);
+    } else {
+        add(QStringLiteral("quality_diagnostics"), 0, 0);
+    }
+
+    // 共用同一次扫描的页面: 各自的异常表行数（没有异常表的页面只标扫描态）
+    if (bitrate_gop_page_) add(QStringLiteral("bitrate_gop"), bitrate_gop_page_->IssueCount(), 1);
+    if (audio_qc_page_) add(QStringLiteral("audio_qc"), audio_qc_page_->IssueCount(), 1);
+    if (color_hdr_page_) add(QStringLiteral("color_hdr"), color_hdr_page_->IssueCount(), 1);
+    if (streaming_panel_) add(QStringLiteral("streaming_packets"), streaming_panel_->IssueCount(), 1);
+    if (bitstream_params_panel_) {
+        add(QStringLiteral("codec_parameters"), bitstream_params_panel_->IssueCount(), 1);
+    }
+    if (subtitle_aux_page_) add(QStringLiteral("subtitle_aux"), 0, 0);
+
+    // 画面质量是播放期累积的缺陷记录，不随全文件扫描走，但同样值得一个计数徽标
+    if (visual_defect_page_) {
+        const int count = static_cast<int>(visual_defect_page_->DefectRecords().size());
+        if (count > 0) {
+            add(QStringLiteral("visual_quality"), count, 1);
+        }
+    }
+    return badges;
 }
 
 // 扫描进行中的进度同步（只在扫描中才有意义；终态收口统一在 OnScanEnded）

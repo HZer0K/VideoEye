@@ -94,6 +94,10 @@ public:
     const model::QcReport& qcReport() const { return report_; }
     bool hasResult() const { return has_result_; }
 
+    // 最近一次全文件扫描的失败原因（打开/探测/读取失败时由 OnFacadeFailed 写入，
+    // StartScan 时清空；无失败返回空串）。首页「分析状态」区用它解释为什么没结果。
+    const QString& lastError() const { return last_error_; }
+
 signals:
     // 扫描生命周期：面板收到后同步其它几页的按钮 / 进度条
     void ScanStarted();
@@ -141,6 +145,8 @@ private:
     quint64 generation_ = 0;
     bool has_result_ = false;
     bool rule_table_updating_ = false;
+    // 最近一次扫描的失败原因（空 = 没有失败过或已被新的扫描清掉）
+    QString last_error_;
     std::chrono::steady_clock::time_point scan_start_time_;
 
     // ---- 取消延迟 ----

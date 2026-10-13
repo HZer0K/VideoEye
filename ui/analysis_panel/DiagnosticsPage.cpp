@@ -228,6 +228,8 @@ void DiagnosticsPage::StartScan(const videoeye::AnalysisOptions& options, bool s
 
     scan_start_time_ = std::chrono::steady_clock::now();
     has_result_ = false;
+    // 新的一次扫描：上一次的失败原因不再说明当前状态（首页「分析状态」区据此清红字）
+    last_error_.clear();
     // 上一次扫描若还停在"取消中"的状态（后台没收敛就开了新的），这里必须清干净：
     // 否则看门狗还在跑，会把新扫描的进度条文案覆盖成"仍在收尾"。
     cancel_pending_ = false;
@@ -376,6 +378,7 @@ void DiagnosticsPage::OnFacadeFailed(quint64 generation, const QString& message)
     progress_bar_->setValue(0);
     progress_bar_->setFormat(tr("失败"));
     summary_label_->setText(message);
+    last_error_ = message;
 
     // 不再弹模态框: 失败原因已写入上方汇总标签, 在本页直接可见
     // (异常文件打开时也会自动触发扫描, 弹窗会打断"打开即分析"的流程)。

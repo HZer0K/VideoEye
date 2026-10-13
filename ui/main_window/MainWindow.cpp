@@ -18,6 +18,8 @@
 #include <QMessageBox>
 #include <QApplication>
 #include <QStyle>
+#include <QScreen>
+#include <QGuiApplication>
 #include <QSignalBlocker>
 #include <QDebug>
 #include <QTabBar>
@@ -55,10 +57,39 @@
 
 namespace {
 
+// 侧栏 item 的自定义数据角色（Qt::UserRole 已存 stack 下标，见 PopulateSidebarItems）:
+// 导航标记三件套，由 UpdateNavigationBadges 写入、SidebarItemDelegate 画出。
+constexpr int kBadgeCountRole = Qt::UserRole + 1;    // 异常条数（int）
+constexpr int kBadgeLevelRole = Qt::UserRole + 2;    // 级别 0/1/2/3（int）
+constexpr int kScanningRole = Qt::UserRole + 3;      // 是否共用扫描中（bool）
+
+// 严重度排序键：越大越严重（首页「最重要的异常」按它降序取前几条）
+// 注意：本匿名命名空间在全局作用域（不在 videoeye::ui 里），必须写全限定名。
+int IssueSeverityRank(videoeye::model::IssueSeverity severity) {
+    switch (severity) {
+        case videoeye::model::IssueSeverity::Critical: return 3;
+        case videoeye::model::IssueSeverity::Error: return 2;
+        case videoeye::model::IssueSeverity::Warning: return 1;
+        case videoeye::model::IssueSeverity::Info: return 0;
+    }
+    return 0;
+}
+
 // 侧栏一行分两类：可点击的页面项，与不可点击的分组标题。
 // QSS 的 ::item 只能给整列统一样式，无法按行区分；把 QLabel 当作 item widget 挂在
 // 不可选中的标题行上也画不出来（只剩一条空行）。所以用委托按行绘制：页面项交给基类
 // （保留 QSS 的悬停/选中样式），分组标题用更小、更暗、加粗的字体画成小节标签。
+
+// 导航标记的徽标配色（按级别: 1 警告 / 2 错误 / 3 致命）
+QColor BadgeColor(int level) {
+    switch (level) {
+        case 3: return QColor(0xF8, 0x51, 0x49);  // 致命红
+        case 2: return QColor(0xFF, 0x7B, 0x72);  // 错误橙红
+        case 1: return QColor(0xD2, 0x99, 0x22);  // 警告橙
+        default: return QColor(0x8B, 0x94, 0x9E); // 无级别灰
+    }
+}
+
 class SidebarItemDelegate : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
@@ -69,6 +100,7 @@ public:
         const bool is_header = !(index.flags() & Qt::ItemIsSelectable);
         if (!is_header) {
             QStyledItemDelegate::paint(painter, option, index);
+            DrawBadge(painter, option, index);
             return;
         }
 
@@ -89,6 +121,46 @@ public:
         painter->drawText(opt.rect.adjusted(16, 0, -12, 0), Qt::AlignLeft | Qt::AlignVCenter, text);
         painter->restore();
     }
+
+private:
+    // 页面项右侧的导航标记: 扫描态画强调色小圆点，异常数画彩色数字徽标。
+    // 数据来自 UpdateNavigationBadges 写进 item 的角色；两者都没有就不画。
+    static void DrawBadge(QPainter* painter, const QStyleOptionViewItem& option,
+                          const QModelIndex& index) {
+        const int count = index.data(kBadgeCountRole).toInt();
+        const bool scanning = index.data(kScanningRole).toBool();
+        if (count <= 0 && !scanning) return;
+
+        const QRect rect = option.rect;
+        const int right = rect.right() - 10;
+        painter->save();
+        QFont font = option.font;
+        font.setPointSizeF(std::max(8.0, font.pointSizeF() - 3.0));
+        font.setBold(true);
+        painter->setFont(font);
+
+        if (scanning) {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(QColor(0x58, 0xA6, 0xFF));
+            painter->drawEllipse(QRect(right - 6, rect.center().y() - 3, 6, 6));
+        }
+        if (count > 0) {
+            const QColor color = BadgeColor(index.data(kBadgeLevelRole).toInt());
+            const QString text = count > 99 ? QStringLiteral("99+") : QString::number(count);
+            const QFontMetrics fm(font);
+            const int pill_width = fm.horizontalAdvance(text) + 10;
+            const int pill_right = scanning ? right - 12 : right;
+            const QRect pill(pill_right - pill_width, rect.center().y() - 8, pill_width, 16);
+            QColor background = color;
+            background.setAlpha(38);  // ~15% 透明度底
+            painter->setPen(QPen(color, 1.0));
+            painter->setBrush(background);
+            painter->drawRoundedRect(pill, 8, 8);
+            painter->setPen(color);
+            painter->drawText(pill, Qt::AlignCenter, text);
+        }
+        painter->restore();
+    }
 };
 
 }  // namespace
@@ -104,7 +176,6 @@ MainWindow::MainWindow(QWidget* parent)
     , content_stack_(nullptr)
     , main_splitter_(nullptr)
     , content_splitter_(nullptr)
-    , mediainfo_text_(nullptr)
     , current_media_label_(nullptr)
     , stats_label_(nullptr)
     , analysis_panel_(nullptr)
@@ -134,7 +205,10 @@ MainWindow::MainWindow(QWidget* parent)
     UpdateMinimumWindowSize();
 
     setWindowTitle(tr("VideoEye 2.0 - 视频流分析软件"));
-    resize(1200, 800);
+    // 初始尺寸同样考虑小屏: 1366x768 的笔记本放不下 1200x800
+    const QScreen* primary = QGuiApplication::primaryScreen();
+    const QRect available = primary ? primary->availableGeometry() : QRect(0, 0, 1200, 800);
+    resize(qMin(1200, available.width()), qMin(800, available.height()));
 }
 
 MainWindow::~MainWindow() {
@@ -333,27 +407,17 @@ void MainWindow::SetupContentArea() {
     content_stack_ = new QStackedWidget(content_splitter_);
     content_stack_->setMinimumHeight(250);
     
-    // Page 0: 媒体信息
-    QWidget* mediainfo_page = new QWidget(content_stack_);
-    QVBoxLayout* mediainfo_layout = new QVBoxLayout(mediainfo_page);
-    mediainfo_layout->setContentsMargins(0, 0, 0, 0);
-    QScrollArea* mediainfo_scroll = new QScrollArea(mediainfo_page);
-    mediainfo_scroll->setWidgetResizable(true);
-    mediainfo_scroll->setFrameShape(QFrame::NoFrame);
-    mediainfo_text_ = new QTextEdit(mediainfo_scroll);
-    mediainfo_text_->setReadOnly(true);
-    mediainfo_text_->setFont(theme::font::monoFont(9));
-    mediainfo_text_->setLineWrapMode(QTextEdit::NoWrap);
-    mediainfo_text_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    mediainfo_scroll->setWidget(mediainfo_text_);
-    mediainfo_layout->addWidget(mediainfo_scroll);
-    mediainfo_text_->setPlainText(tr("请打开一个媒体文件以查看详细信息"));
-    mediainfo_page->setProperty("pageTitle", tr("媒体信息"));
-    mediainfo_page->setProperty("pageId", QStringLiteral("media_info"));
-    mediainfo_page->setProperty("pageGroup", QStringLiteral("overview"));
-    mediainfo_page->setProperty("pageOrder", 0);
-    mediainfo_page->setProperty("pageScope", QString());
-    content_stack_->addWidget(mediainfo_page);
+    // Page 0: 首页（总览）—— 文件摘要 + 分析状态 + 最重要异常 + 完整媒体信息。
+    // 原来的"媒体信息"页是一段不可换行的纯文本，用户打开文件后仍不知道该看哪个
+    // 分析页；现在首页把"该看什么"收在一屏里，完整媒体信息整段保留在下方。
+    // 页面不持有 AnalysisPanel / MediaPlayer，数据由本窗口喂入、跳转意图信号外抛。
+    overview_page_ = new OverviewPage(content_stack_);
+    overview_page_->setProperty("pageTitle", tr("总览"));
+    overview_page_->setProperty("pageId", QStringLiteral("overview"));
+    overview_page_->setProperty("pageGroup", QStringLiteral("overview"));
+    overview_page_->setProperty("pageOrder", 0);
+    overview_page_->setProperty("pageScope", QString());
+    content_stack_->addWidget(overview_page_);
     
     // Page 1-N: 分析面板各页
     // AnalysisPanel 会创建自己的页面并添加到 content_stack_
@@ -447,6 +511,19 @@ void MainWindow::UpdateMinimumWindowSize() {
 void MainWindow::showEvent(QShowEvent* event) {
     QMainWindow::showEvent(event);
     UpdateMinimumWindowSize();
+    // 首次显示时 splitter 才拿到真实尺寸，这时才应用布局预设。
+    // 小屏（< 860 可用高度，典型 1366x768 笔记本）默认走「分析」—— 原来的固定
+    // 480px 播放区 + 250px 内容区连菜单栏一起超过 768，窗口根本放不下。
+    if (!layout_preset_applied_) {
+        layout_preset_applied_ = true;
+        const QScreen* screen = windowHandle() ? windowHandle()->screen()
+                                               : QGuiApplication::primaryScreen();
+        const int available_height = screen ? screen->availableGeometry().height() : 0;
+        const auto preset = (available_height > 0 && available_height < 860)
+                                ? PlayerPanel::LayoutPreset::Analysis
+                                : PlayerPanel::LayoutPreset::Monitor;
+        player_panel_->RestoreLayoutPreset(preset);
+    }
 }
 
 void MainWindow::resizeEvent(QResizeEvent* event) {
@@ -500,6 +577,27 @@ void MainWindow::SetupMenuBar() {
     connect(toggle_player_action_, &QAction::toggled, this, &MainWindow::OnTogglePlayerArea);
     view_menu->addAction(toggle_player_action_);
 
+    // 播放区布局预设: 监看 = 播放区 58%; 分析 = 播放区 30% (小屏默认走分析)。
+    // 与上面的显隐开关正交 —— 预设管比例, 显隐管在不在。
+    QMenu* layout_menu = view_menu->addMenu(tr("播放区布局"));
+    QActionGroup* layout_ag = new QActionGroup(layout_menu);
+    layout_ag->setExclusive(true);
+    layout_monitor_action_ = layout_ag->addAction(tr("监看布局"));
+    layout_monitor_action_->setCheckable(true);
+    layout_monitor_action_->setStatusTip(tr("播放区占大头，适合盯画面 / 逐帧定位"));
+    layout_analysis_action_ = layout_ag->addAction(tr("分析布局"));
+    layout_analysis_action_->setCheckable(true);
+    layout_analysis_action_->setStatusTip(tr("分析区占大头，适合看表格与扫描结果"));
+    layout_monitor_action_->setChecked(true);
+    layout_menu->addAction(layout_monitor_action_);
+    layout_menu->addAction(layout_analysis_action_);
+    connect(layout_ag, &QActionGroup::triggered, this, [this](QAction* action) {
+        if (!player_panel_ || !action) return;
+        player_panel_->ApplyLayoutPreset(
+            action == layout_analysis_action_ ? PlayerPanel::LayoutPreset::Analysis
+                                              : PlayerPanel::LayoutPreset::Monitor);
+    });
+
     QMenu* seek_mode_menu = playback_menu->addMenu(tr("seek方式"));
     QActionGroup* seek_ag = new QActionGroup(playback_menu);
     seek_ag->setExclusive(true);
@@ -551,11 +649,12 @@ void MainWindow::SetupConnections() {
             this, &MainWindow::OnPlayerOpenFinished);
 
     // 媒体信息文本: 打开链路在后台探测时顺带格式化 (不再二次探测), 提交成功后贴进
-    // 文本框; 顺序上先于 OpenFinished 到达。
+    // 首页的「完整媒体信息」区; 顺序上先于 OpenFinished 到达。
     connect(player_, &player::MediaPlayer::MediaInfoTextReady,
             this, [this](const QString& text) {
-                if (!mediainfo_text_ || text.isEmpty()) return;
-                mediainfo_text_->setPlainText(text);
+                if (overview_page_ && !text.isEmpty()) {
+                    overview_page_->SetMediaInfoText(text);
+                }
             });
 
     // 播放器信号连接 - 分析功能 (实时分析)
@@ -663,7 +762,7 @@ void MainWindow::SetupConnections() {
             });
     connect(player_panel_, &PlayerPanel::RawImageInfoReady,
             this, [this](const QString& info) {
-                mediainfo_text_->setPlainText(info);
+                if (overview_page_) overview_page_->SetMediaInfoText(info);
             });
     connect(analysis_panel_, &ui::AnalysisPanel::StatusMessage,
             this, [this](const QString& text) {
@@ -690,11 +789,143 @@ void MainWindow::SetupConnections() {
                 }
                 UpdateMinimumWindowSize();
             });
-    // 媒体信息解析结果回到 UI 线程后贴到文本框 (协调器只发文本, 不碰 UI 控件)
+    // 布局预设变化时同步视图菜单勾选（预设也可能来自恢复 / 首次自适应，不止菜单）
+    connect(player_panel_, &PlayerPanel::LayoutPresetChanged,
+            this, [this](PlayerPanel::LayoutPreset preset) {
+                const bool analysis = (preset == PlayerPanel::LayoutPreset::Analysis);
+                if (layout_analysis_action_ && layout_analysis_action_->isChecked() != analysis) {
+                    layout_analysis_action_->blockSignals(true);
+                    layout_analysis_action_->setChecked(analysis);
+                    layout_analysis_action_->blockSignals(false);
+                }
+                if (layout_monitor_action_ && layout_monitor_action_->isChecked() == analysis) {
+                    layout_monitor_action_->blockSignals(true);
+                    layout_monitor_action_->setChecked(!analysis);
+                    layout_monitor_action_->blockSignals(false);
+                }
+            });
+
+    // ---- 首页（总览）接线 ----
+    // 1) 文件摘要: 打开成功时有 StreamInfo，失败时只有文件名（分析模式仍要显示是哪个文件）
+    connect(player_, &player::MediaPlayer::OpenFinished,
+            this, [this](bool ok) {
+                if (!overview_page_) return;
+                const QString source = pending_open_source_;
+                if (ok && player_) {
+                    overview_page_->SetFileSummary(player_->GetStreamInfo());
+                } else if (!source.isEmpty()) {
+                    overview_page_->SetOpenedFileWithoutSummary(source);
+                }
+            });
+    // 2) 分析状态: 面板在扫描起止/报告重算/换文件时发信号，这里拉快照刷新首页
+    connect(analysis_panel_, &ui::AnalysisPanel::DiagnosticsStateChanged,
+            this, &MainWindow::RefreshOverviewAnalysis);
+    // 2b) 同一信号也驱动侧栏导航标记（异常数徽标 / 扫描圆点）
+    connect(analysis_panel_, &ui::AnalysisPanel::DiagnosticsStateChanged,
+            this, &MainWindow::UpdateNavigationBadges);
+    // 3) 首页跳转 / 重新分析意图
+    connect(overview_page_, &OverviewPage::NavigateToPage,
+            this, &MainWindow::ShowPageById);
+    connect(overview_page_, &OverviewPage::RescanRequested, this, [this]() {
+        if (analysis_panel_) analysis_panel_->StartDiagnosticsScanForCurrentFile();
+    });
+    // 4) 媒体信息解析结果回到 UI 线程后贴到首页 (协调器只发文本, 不碰 UI 控件)
     connect(media_info_coordinator_.get(), &MediaInfoCoordinator::InfoReady,
             this, [this](const QString& text) {
-                mediainfo_text_->setPlainText(text);
+                if (overview_page_) overview_page_->SetMediaInfoText(text);
             });
+}
+
+void MainWindow::ShowPageById(const QString& page_id) {
+    if (!content_stack_) return;
+    for (int i = 0; i < content_stack_->count(); ++i) {
+        if (content_stack_->widget(i)->property("pageId").toString() != page_id) continue;
+        content_stack_->setCurrentIndex(i);
+        // 同步侧栏选中：行号因分组标题与 stack 下标错位，按 UserRole 反查
+        if (sidebar_) {
+            for (int row = 0; row < sidebar_->count(); ++row) {
+                if (sidebar_->item(row)->data(Qt::UserRole).toInt() != i) continue;
+                const QSignalBlocker blocker(sidebar_);
+                sidebar_->setCurrentRow(row);
+                break;
+            }
+        }
+        return;
+    }
+    qWarning() << "跳转目标页面不存在:" << page_id;
+}
+
+void MainWindow::RefreshOverviewAnalysis() {
+    if (!overview_page_ || !analysis_panel_) return;
+
+    OverviewPage::AnalysisSummary summary;
+    summary.has_file = overview_page_->HasFile();
+    summary.scan_running = analysis_panel_->IsScanRunning();
+    summary.error = analysis_panel_->DiagnosticsError();
+    summary.failed = !summary.scan_running && !summary.error.isEmpty();
+    summary.has_result = analysis_panel_->HasDiagnosticsResult();
+
+    if (summary.has_result) {
+        const model::QcReport& report = analysis_panel_->DiagnosticsReport();
+        summary.partial = !report.completed;
+        summary.score = report.score;
+        summary.verdict = QString::fromStdString(report.verdict);
+        summary.critical = report.CountBySeverity(model::IssueSeverity::Critical);
+        summary.error_count = report.CountBySeverity(model::IssueSeverity::Error);
+        summary.warning = report.CountBySeverity(model::IssueSeverity::Warning);
+        summary.info = report.CountBySeverity(model::IssueSeverity::Info);
+
+        // 最重要的几条异常：严重度降序（同级的保持规则引擎的输出顺序），取前 5 条。
+        // 指针只在本函数内有效，随即值拷贝进 summary。
+        std::vector<const model::DiagnosticIssue*> ranked;
+        ranked.reserve(report.issues.size());
+        for (const model::DiagnosticIssue& issue : report.issues) {
+            ranked.push_back(&issue);
+        }
+        std::stable_sort(ranked.begin(), ranked.end(),
+                         [](const model::DiagnosticIssue* a, const model::DiagnosticIssue* b) {
+                             return IssueSeverityRank(a->severity) > IssueSeverityRank(b->severity);
+                         });
+        constexpr size_t kTopIssueCount = 5;
+        for (size_t i = 0; i < ranked.size() && i < kTopIssueCount; ++i) {
+            summary.top_issues.push_back(*ranked[i]);
+        }
+    }
+
+    overview_page_->SetAnalysisSummary(summary);
+}
+
+void MainWindow::UpdateNavigationBadges() {
+    if (!sidebar_ || !content_stack_ || !analysis_panel_) return;
+
+    // 徽标按 pageId 归集（AnalysisPanel::PageBadges），侧栏 item 手上只有 stack 下标，
+    // 反查一次 content_stack_ 把下标映回 pageId。
+    const QMap<QString, AnalysisPanel::PageBadgeInfo> badges = analysis_panel_->PageBadges();
+
+    bool changed = false;
+    for (int row = 0; row < sidebar_->count(); ++row) {
+        QListWidgetItem* item = sidebar_->item(row);
+        const QVariant stack_index = item->data(Qt::UserRole);
+        if (!stack_index.isValid()) continue;  // 分组标题没有徽标
+        QWidget* page = content_stack_->widget(stack_index.toInt());
+        if (!page) continue;  // 侧栏项与 stack 不同步（换页/重建的窗口期）时别解引用
+        const QString page_id = page->property("pageId").toString();
+
+        const AnalysisPanel::PageBadgeInfo info = badges.value(page_id);
+        const int count = info.issue_count;
+        const int level = info.level;
+        const bool scanning = info.scanning;
+
+        if (item->data(kBadgeCountRole).toInt() != count ||
+            item->data(kBadgeLevelRole).toInt() != level ||
+            item->data(kScanningRole).toBool() != scanning) {
+            item->setData(kBadgeCountRole, count);
+            item->setData(kBadgeLevelRole, level);
+            item->setData(kScanningRole, scanning);
+            changed = true;
+        }
+    }
+    if (changed) sidebar_->update();
 }
 
 void MainWindow::OnOpenFile() {
@@ -767,8 +998,10 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
         if (current_media_label_) {
             current_media_label_->setText(source);
         }
-        // 媒体信息框保留 LoadRawImageFile 通过 RawImageInfoReady 写入的 Raw 详情
-        // (旧行为: 此处会用“无 MediaInfo 数据”覆盖掉, 导致 Raw 信息一闪而过)
+        // 首页登记文件名（Raw 图像没有 StreamInfo 可摘要）；媒体信息框保留
+        // LoadRawImageFile 通过 RawImageInfoReady 写入的 Raw 详情
+        // (旧行为: 此处会用"无 MediaInfo 数据"覆盖掉, 导致 Raw 信息一闪而过)
+        overview_page_->SetOpenedFileWithoutSummary(source);
         return true;
     }
 
@@ -795,12 +1028,13 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
                 tr("%1 [PCM %2, %3 Hz, %4 ch]").arg(source, demuxer_name).arg(sample_rate).arg(channels));
         }
         current_media_url_ = source;
-    analysis_panel_->SetCurrentVideoPath(source);
-    if (ffmpeg_panel_) ffmpeg_panel_->SetCurrentFile(source);
+        analysis_panel_->SetCurrentVideoPath(source);
+        if (ffmpeg_panel_) ffmpeg_panel_->SetCurrentFile(source);
+        overview_page_->SetOpenedFileWithoutSummary(source);
 
-    // 媒体信息解析 PCM (裸流无法自动探测, 需带上用户选择的格式参数)
-    mediainfo_text_->setPlainText(
-        media_info_coordinator_->DescribeRawPcm(source, demuxer_name, sample_rate, channels));
+        // 媒体信息解析 PCM (裸流无法自动探测, 需带上用户选择的格式参数) —— 贴到首页
+        overview_page_->SetMediaInfoText(
+            media_info_coordinator_->DescribeRawPcm(source, demuxer_name, sample_rate, channels));
 
         if (autoplay) {
             player_->Play();
@@ -831,10 +1065,10 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
     ApplyMacroblockAnalysisState();
 
     // 媒体信息解析: 不再独立探测 —— 打开链路在后台探测时已顺带把同一个上下文
-    // 格式化好，提交成功后经 MediaInfoTextReady 贴进文本框（见 SetupConnections）；
+    // 格式化好，提交成功后经 MediaInfoTextReady 贴进首页（见 SetupConnections）；
     // 这里只放占位文本。打开失败的"分析模式"由 OnPlayerOpenFinished 退回协调器
     // 做尽力而为的独立解析（此时没有可复用的上下文）。
-    mediainfo_text_->setPlainText(tr("(正在解析媒体信息…)"));
+    overview_page_->SetMediaInfoText(tr("(正在解析媒体信息…)"));
 
     return true;
 }

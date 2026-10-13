@@ -22,6 +22,7 @@
 #include "ui/ffmpeg_panel/FfmpegPanel.h"
 #include "ui/main_window/ExportCoordinator.h"
 #include "ui/main_window/macroblock_coordination.h"
+#include "ui/main_window/OverviewPage.h"
 #include "ui/player/PlayerPanel.h"
 
 namespace videoeye {
@@ -71,6 +72,13 @@ private:
     void SetupStatusBar();
     void SetupConnections();
     void OnSidebarChanged(int index);  // 侧边栏切换
+    // 按 pageId 跳转到内容栈页（首页「跳转到分析页」用）：切 stack 并同步侧栏选中
+    void ShowPageById(const QString& page_id);
+    // 拉取 AnalysisPanel 的诊断状态快照，刷新首页「分析状态」区
+    void RefreshOverviewAnalysis();
+    // 把各分析页的异常数 / 级别 / 扫描态写进侧栏 item 的徽标角色，
+    // 由 SidebarItemDelegate 画成右侧数字徽标与扫描圆点（见 DiagnosticsStateChanged）
+    void UpdateNavigationBadges();
     // 宏块分析的实际采集状态 = "用户主动启用" 或 "MV 叠加需要"，两者由本窗口分别记录。
     // 打开叠加时强制开启（并同步宏块页勾选框），关闭叠加后恢复到用户原先的选择。
     void ApplyMacroblockAnalysisState();
@@ -79,8 +87,7 @@ private:
 
 protected:
     void showEvent(QShowEvent* event) override;
-    void resizeEvent(QResizeEvent* event) override;
-    // 成员变量
+    void resizeEvent(QResizeEvent* event) override;    // 成员变量
     player::MediaPlayer* player_;  // MainWindow 拥有, 以裸指针注入 player_panel_
 
     // UI组件 - 整体布局
@@ -93,9 +100,11 @@ protected:
     // 播放模块 (视频区 + 控制栏 + 音频可视化; 可整体收起)
     PlayerPanel* player_panel_ = nullptr;
 
-    // 媒体信息
-    QTextEdit* mediainfo_text_;   // 媒体信息文本框 (FFmpeg 解析结果)
-    QLabel* current_media_label_; // 顶部显示当前媒体路径
+    // 首页（总览）: 文件摘要 + 分析状态 + 最重要异常 + 完整媒体信息
+    OverviewPage* overview_page_ = nullptr;
+
+    // 顶部显示当前媒体路径
+    QLabel* current_media_label_;
     QLabel* stats_label_;         // 状态栏右端常驻: 实时 FPS/码率/关键帧
     QString current_media_url_;
     // 异步打开的收尾信息: OpenAsync 发起时登记, OpenFinished 回来时消费。
@@ -124,6 +133,11 @@ protected:
     QStatusBar* status_bar_;
     QAction* export_frames_action_ = nullptr;
     QAction* toggle_player_action_ = nullptr;  // 视图菜单: 显示播放区 (F9)
+    // 视图菜单: 播放区布局预设（监看 / 分析），勾选状态跟随 PlayerPanel 的预设
+    QAction* layout_monitor_action_ = nullptr;
+    QAction* layout_analysis_action_ = nullptr;
+    // 首次 showEvent 时才应用布局预设（此前 splitter 还没有真实尺寸）
+    bool layout_preset_applied_ = false;
 
     // UI 健康度探针 (主线程阻塞检测, 仅用于定位卡顿)
     QTimer* ui_health_timer_ = nullptr;

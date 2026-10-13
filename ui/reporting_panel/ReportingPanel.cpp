@@ -3,14 +3,19 @@
 #include <algorithm>
 #include <filesystem>
 
+#include <QDesktopServices>
 #include <QDir>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFont>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QLocale>
 #include <QMetaObject>
 #include <QMessageBox>
+#include <QStyledItemDelegate>
+#include <QUrl>
 #include <QVBoxLayout>
 
 #include "core/analysis/diagnostics/QcRuleEngine.h"
@@ -19,6 +24,7 @@
 
 #include "infrastructure/logging/Logger.h"
 
+#include "ui/reporting_panel/batch_filter.h"
 #include "ui/reporting_panel/report_path.h"
 
 namespace videoeye {
@@ -59,6 +65,27 @@ std::string BaseNameOf(const std::string& path) {
     std::filesystem::path file(path);
     return file.stem().string();
 }
+
+// 数值列的显示格式委托。
+//
+// 评分/耗时以 double 存在 Qt::DisplayRole，排序时 QTableWidgetItem::operator<
+// 走 QVariant 数值比较（否则 "10" 会排在 "9" 前面）；显示再格式化成固定小数位。
+// displayText 拿不到列号，所以一列一个委托实例（评分 1 位、耗时取整）。
+class DoubleFormatDelegate : public QStyledItemDelegate {
+public:
+    DoubleFormatDelegate(int decimals, QObject* parent = nullptr)
+        : QStyledItemDelegate(parent), decimals_(decimals) {}
+
+    QString displayText(const QVariant& value, const QLocale& locale) const override {
+        if (value.typeId() == QMetaType::Double || value.typeId() == QMetaType::Float) {
+            return QString::number(value.toDouble(), 'f', decimals_);
+        }
+        return QStyledItemDelegate::displayText(value, locale);
+    }
+
+private:
+    int decimals_;
+};
 
 }  // namespace
 
@@ -225,6 +252,34 @@ void ReportingPanel::BuildUi() {
     batch_summary_label_ = new QLabel(tr("尚未扫描"), batch_box);
     batch_layout->addWidget(batch_summary_label_);
 
+    // 批量表格筛选：结果一多（几百上千行）"看完再挑"不现实，先把状态/严重度收窄。
+    // 筛选只切可见性（setRowHidden），不动数据 —— 行与 batch_results_ 的绑定
+    // （第一列 item 的 UserRole）因此不受排序/筛选影响。
+    QHBoxLayout* filter_row = new QHBoxLayout();
+    filter_row->addWidget(new QLabel(tr("筛选:"), batch_box));
+    batch_status_filter_ = new QComboBox(batch_box);
+    batch_status_filter_->addItem(tr("全部状态"), kBatchStatusFilterAll);
+    batch_status_filter_->addItem(tr("已完成"), static_cast<int>(qc::BatchItemStatus::Succeeded));
+    batch_status_filter_->addItem(tr("导出失败"),
+                                  static_cast<int>(qc::BatchItemStatus::ExportFailed));
+    batch_status_filter_->addItem(tr("失败"), static_cast<int>(qc::BatchItemStatus::Failed));
+    batch_status_filter_->addItem(tr("超时"), static_cast<int>(qc::BatchItemStatus::TimedOut));
+    batch_status_filter_->addItem(tr("已取消"), static_cast<int>(qc::BatchItemStatus::Cancelled));
+    batch_status_filter_->addItem(tr("已跳过"), static_cast<int>(qc::BatchItemStatus::Skipped));
+    batch_status_filter_->setToolTip(tr("按条目的终态筛选"));
+    filter_row->addWidget(batch_status_filter_);
+    batch_severity_filter_ = new QComboBox(batch_box);
+    batch_severity_filter_->addItem(tr("全部严重度"), kBatchSeverityFilterAll);
+    batch_severity_filter_->addItem(tr("致命及以上"), kBatchSeverityFilterCritical);
+    batch_severity_filter_->addItem(tr("错误及以上"), kBatchSeverityFilterError);
+    batch_severity_filter_->addItem(tr("警告及以上"), kBatchSeverityFilterWarning);
+    batch_severity_filter_->addItem(tr("有任何问题"), kBatchSeverityFilterInfo);
+    batch_severity_filter_->addItem(tr("无异常"), kBatchSeverityFilterClean);
+    batch_severity_filter_->setToolTip(tr("按最严重的级别筛选：选中的级别及其之上都会留下"));
+    filter_row->addWidget(batch_severity_filter_);
+    filter_row->addStretch();
+    batch_layout->addLayout(filter_row);
+
     batch_table_ = new QTableWidget(0, BatchTableHeaders().size(), batch_box);
     batch_table_->setHorizontalHeaderLabels(BatchTableHeaders());
     batch_table_->verticalHeader()->setVisible(false);
@@ -233,7 +288,38 @@ void ReportingPanel::BuildUi() {
     batch_table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     batch_table_->setColumnWidth(0, 260);
     batch_table_->setMinimumHeight(220);
+    // 排序默认关：扫描中每插入一行都会触发整表重排（几百个文件就是 O(n^2 log n)，
+    // 界面直接卡死）。跑完由 SetBusy(false) 打开，届时用户点表头即可按列排序。
+    batch_table_->setSortingEnabled(false);
+    // setSortingEnabled(true) 会按表头当前的排序指示立即排一次，而 QHeaderView 的
+    // 默认指示是降序（实测）—— 不钉的话扫描一结束行序会莫名倒过来。钉在文件名升序，
+    // 用户点过别的表头后指示随之更新，之后的扫描按用户上次的选择排。
+    batch_table_->horizontalHeader()->setSortIndicator(0, Qt::AscendingOrder);
+    // 数值列（评分/计数/耗时）按数值排序：数据以 int/double 存 DisplayRole，
+    // 显示由这两个委托格式化，兼顾排序正确性与可读性。
+    batch_table_->setItemDelegateForColumn(2, new DoubleFormatDelegate(1, batch_table_));
+    batch_table_->setItemDelegateForColumn(8, new DoubleFormatDelegate(0, batch_table_));
     batch_layout->addWidget(batch_table_);
+
+    // 选中行详情：十列表格装不下"为什么失败 / 问题清单"，选中一行在这里展开。
+    // keep_reports=false（见 RunBatch）时问题清单为空，详情退化为状态+计数+路径。
+    batch_detail_ = new QLabel(tr("选中表格中的一行查看详情"), batch_box);
+    batch_detail_->setWordWrap(true);
+    batch_detail_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    batch_detail_->setMinimumHeight(80);
+    batch_layout->addWidget(batch_detail_);
+
+    // 报告本体默认不驻留内存（keep_reports=false，见 RunBatch），详情标签只能给摘要；
+    // 要看完整的问题清单，就打开这一行落盘的报告文件。
+    QHBoxLayout* detail_actions = new QHBoxLayout();
+    detail_actions->addStretch();
+    open_report_button_ = new QPushButton(tr("打开报告文件"), batch_box);
+    open_report_button_->setEnabled(false);
+    open_report_button_->setToolTip(tr("打开该条目落盘的报告文件 —— 完整问题清单在里面"));
+    connect(open_report_button_, &QPushButton::clicked,
+            this, &ReportingPanel::OnOpenSelectedReport);
+    detail_actions->addWidget(open_report_button_);
+    batch_layout->addLayout(detail_actions);
 
     root->addWidget(batch_box);
 
@@ -246,6 +332,13 @@ void ReportingPanel::BuildUi() {
 
     connect(profile_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &ReportingPanel::OnProfileChanged);
+
+    connect(batch_status_filter_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &ReportingPanel::OnBatchFilterChanged);
+    connect(batch_severity_filter_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &ReportingPanel::OnBatchFilterChanged);
+    connect(batch_table_, &QTableWidget::itemSelectionChanged,
+            this, &ReportingPanel::OnBatchSelectionChanged);
 
     // 初始没有结果：导出按钮必须是禁用的（BuildUi 里创建的控件默认 enabled）。
     UpdateExportEnabled();
@@ -627,6 +720,7 @@ void ReportingPanel::StartBatchScan(const std::string& directory) {
     batch_table_->setRowCount(0);
     batch_progress_->setValue(0);
     batch_summary_label_->setText(tr("正在扫描目录…"));
+    if (batch_detail_) batch_detail_->setText(tr("选中表格中的一行查看详情"));
 
     // 所有控件读取都在这一帧（主线程）里完成
     BatchRequest request;
@@ -697,19 +791,47 @@ void ReportingPanel::RunBatch(std::shared_ptr<AnalysisTask> task, const BatchReq
         PostToUi(task, [this, copy]() {
             const int row = batch_table_->rowCount();
             batch_table_->insertRow(row);
-            batch_table_->setItem(row, 0, new QTableWidgetItem(QString::fromStdString(copy.path)));
+            const int result_index = static_cast<int>(batch_results_.size());
+            batch_results_.push_back(copy);
+
+            // 第一列存 batch_results_ 下标：排序（sortItems 会移动 item 对象，
+            // 数据跟着走）与筛选（只切可见性）之后仍能对回原始结果。
+            QTableWidgetItem* path_item =
+                new QTableWidgetItem(QString::fromStdString(copy.path));
+            path_item->setData(Qt::UserRole, result_index);
+            batch_table_->setItem(row, 0, path_item);
             batch_table_->setItem(row, 1, new QTableWidgetItem(StatusText(copy.status)));
-            batch_table_->setItem(row, 2, new QTableWidgetItem(QString::number(copy.score, 'f', 1)));
+            // 数值列把值存进 DisplayRole（排序按数值比较，不是字典序 "10 < 9"），
+            // 显示格式由列委托负责（评分 1 位小数 / 耗时取整）。
+            auto* score_item = new QTableWidgetItem;
+            score_item->setData(Qt::DisplayRole, QVariant::fromValue(copy.score));
+            score_item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            batch_table_->setItem(row, 2, score_item);
             batch_table_->setItem(row, 3, new QTableWidgetItem(QString::fromStdString(copy.verdict)));
-            batch_table_->setItem(row, 4, new QTableWidgetItem(QString::number(copy.critical_count)));
-            batch_table_->setItem(row, 5, new QTableWidgetItem(QString::number(copy.error_count)));
-            batch_table_->setItem(row, 6, new QTableWidgetItem(QString::number(copy.warning_count)));
-            batch_table_->setItem(row, 7, new QTableWidgetItem(QString::number(copy.info_count)));
-            batch_table_->setItem(row, 8,
-                                  new QTableWidgetItem(QString::number(copy.elapsed_ms, 'f', 0)));
+            auto* critical_item = new QTableWidgetItem;
+            critical_item->setData(Qt::DisplayRole, QVariant::fromValue(copy.critical_count));
+            critical_item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            batch_table_->setItem(row, 4, critical_item);
+            auto* error_item = new QTableWidgetItem;
+            error_item->setData(Qt::DisplayRole, QVariant::fromValue(copy.error_count));
+            error_item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            batch_table_->setItem(row, 5, error_item);
+            auto* warning_item = new QTableWidgetItem;
+            warning_item->setData(Qt::DisplayRole, QVariant::fromValue(copy.warning_count));
+            warning_item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            batch_table_->setItem(row, 6, warning_item);
+            auto* info_item = new QTableWidgetItem;
+            info_item->setData(Qt::DisplayRole, QVariant::fromValue(copy.info_count));
+            info_item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            batch_table_->setItem(row, 7, info_item);
+            auto* elapsed_item = new QTableWidgetItem;
+            elapsed_item->setData(Qt::DisplayRole, QVariant::fromValue(copy.elapsed_ms));
+            elapsed_item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            batch_table_->setItem(row, 8, elapsed_item);
             batch_table_->setItem(row, 9,
                                   new QTableWidgetItem(QString::fromStdString(copy.output_path)));
-            batch_results_.push_back(copy);
+            // 扫描中也要遵守当前筛选 —— 否则"只看出问题的"会漏进干净行
+            batch_table_->setRowHidden(row, !BatchRowVisible(copy));
         });
     };
 
@@ -822,6 +944,9 @@ void ReportingPanel::SetBusy(bool busy) {
     analyze_button_->setEnabled(!busy);
     cancel_button_->setEnabled(busy);
     profile_combo_->setEnabled(!busy);
+    // 排序随扫描状态切换：扫描中关掉（每插一行整表重排一次，几百个文件能卡死界面），
+    // 结束后打开（打开时会按当前排序指示立即排一次，用户也可再点表头改排法）。
+    if (batch_table_) batch_table_->setSortingEnabled(!busy);
     // 导出使能 = 空闲 && 结果新鲜。不能只看 busy_ —— 否则切换文件/模板后仍可点导出。
     UpdateExportEnabled();
 }
@@ -849,6 +974,129 @@ bool ReportingPanel::HasFreshResult() const {
 
 bool ReportingPanel::IsExportEnabled() const {
     return export_button_ && export_button_->isEnabled();
+}
+
+bool ReportingPanel::BatchRowVisible(const qc::BatchQcItemResult& item) const {
+    if (!batch_status_filter_ || !batch_severity_filter_) return true;
+    return BatchMatchesStatusFilter(batch_status_filter_->currentData().toInt(), item.status) &&
+           BatchMatchesSeverityFilter(batch_severity_filter_->currentData().toInt(), item);
+}
+
+void ReportingPanel::OnBatchFilterChanged() {
+    ReapplyBatchFilter();
+}
+
+void ReportingPanel::ReapplyBatchFilter() {
+    if (!batch_table_) return;
+    // 批量动辄几百上千行，逐行 setRowHidden 每行都会触发一次视口重算/重绘。
+    // 整段关掉更新，最后一次重绘即可 —— 用户感知是"筛选立刻生效"而不是逐行闪。
+    const bool was_updates_enabled = batch_table_->updatesEnabled();
+    batch_table_->setUpdatesEnabled(false);
+    for (int row = 0; row < batch_table_->rowCount(); ++row) {
+        QTableWidgetItem* first = batch_table_->item(row, 0);
+        if (!first) continue;
+        const int index = first->data(Qt::UserRole).toInt();
+        if (index < 0 || index >= static_cast<int>(batch_results_.size())) continue;
+        batch_table_->setRowHidden(row, !BatchRowVisible(batch_results_[index]));
+    }
+    batch_table_->setUpdatesEnabled(was_updates_enabled);
+    // 当前选中行可能被筛掉：selection 不会自动清，详情留着会让人以为选的还是它。
+    // setCurrentItem(nullptr) 只清当前索引、不一定清选择范围，直接走 selectionModel。
+    if (QTableWidgetItem* current = batch_table_->currentItem()) {
+        if (batch_table_->isRowHidden(current->row())) {
+            batch_table_->selectionModel()->clearSelection();
+        }
+    }
+}
+
+void ReportingPanel::OnBatchSelectionChanged() {
+    if (!batch_table_ || !batch_detail_) return;
+    // 先回到"未选中"态：下面只有真的定位到一条结果时才会把详情和按钮填回来。
+    if (open_report_button_) {
+        open_report_button_->setEnabled(false);
+        open_report_button_->setProperty("reportPath", QString());
+    }
+    const QList<QTableWidgetItem*> selected = batch_table_->selectedItems();
+    if (selected.isEmpty()) {
+        batch_detail_->setText(tr("选中表格中的一行查看详情"));
+        return;
+    }
+    QTableWidgetItem* first = batch_table_->item(selected.first()->row(), 0);
+    if (!first) {
+        batch_detail_->setText(tr("选中表格中的一行查看详情"));
+        return;
+    }
+    const int index = first->data(Qt::UserRole).toInt();
+    if (index < 0 || index >= static_cast<int>(batch_results_.size())) {
+        batch_detail_->setText(tr("选中表格中的一行查看详情"));
+        return;
+    }
+    ShowBatchDetail(index);
+}
+
+void ReportingPanel::ShowBatchDetail(int result_index) {
+    if (!batch_detail_ || result_index < 0 ||
+        result_index >= static_cast<int>(batch_results_.size())) {
+        return;
+    }
+    const qc::BatchQcItemResult& item = batch_results_[result_index];
+
+    QString text = tr("文件: %1\n").arg(QString::fromStdString(item.path));
+    text += tr("状态: %1").arg(StatusText(item.status));
+    if (item.status == qc::BatchItemStatus::ExportFailed) {
+        // 分析本身没问题，是报告落盘失败 —— 处置方式与 Failed 完全不同，必须点明
+        text += tr("（分析完成，但报告落盘失败）");
+    }
+    text += QStringLiteral("\n");
+    if (!item.error.empty()) {
+        text += tr("原因: %1\n").arg(QString::fromStdString(item.error));
+    }
+    text += tr("评分: %1 / 100 ｜ 结论: %2\n")
+                .arg(item.score, 0, 'f', 1)
+                .arg(QString::fromStdString(item.verdict));
+    text += tr("问题: 致命 %1 ｜ 错误 %2 ｜ 警告 %3 ｜ 提示 %4\n")
+                .arg(item.critical_count)
+                .arg(item.error_count)
+                .arg(item.warning_count)
+                .arg(item.info_count);
+    text += tr("耗时: %1 ms").arg(item.elapsed_ms, 0, 'f', 0);
+    if (!item.output_path.empty()) {
+        text += tr(" ｜ 输出: %1").arg(QString::fromStdString(item.output_path));
+    }
+    // 报告本体默认不驻留内存（keep_reports=false，见 RunBatch），issues 为空；
+    // 万一将来打开保留，这里直接把问题清单列出来，UI 不用再改。
+    if (!item.report.issues.empty()) {
+        text += tr("\n问题清单:");
+        for (const model::DiagnosticIssue& issue : item.report.issues) {
+            text += tr("\n  [%1] %2 — %3")
+                        .arg(QString::fromStdString(issue.SeverityText()),
+                             QString::fromStdString(issue.title),
+                             QString::fromStdString(issue.detail));
+        }
+    }
+    batch_detail_->setText(text);
+
+    // 报告文件按选中行走：路径存在按钮的 property 上，省一个只为了传参的成员。
+    if (open_report_button_) {
+        const QString output = QString::fromStdString(item.output_path);
+        open_report_button_->setProperty("reportPath", output);
+        open_report_button_->setEnabled(!output.isEmpty());
+    }
+}
+
+void ReportingPanel::OnOpenSelectedReport() {
+    const QString path =
+        open_report_button_ ? open_report_button_->property("reportPath").toString() : QString();
+    if (path.isEmpty()) return;
+    if (!QFileInfo::exists(path)) {
+        QMessageBox::warning(this, tr("报告文件不存在"),
+                             tr("该条目的报告文件已不在原处:\n%1").arg(path));
+        return;
+    }
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(path))) {
+        QMessageBox::warning(this, tr("打不开报告文件"),
+                             tr("系统没有为这类文件关联打开方式:\n%1").arg(path));
+    }
 }
 
 qc::QcProfile ReportingPanel::CurrentProfile() const { return profile_; }

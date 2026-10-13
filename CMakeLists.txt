@@ -350,9 +350,14 @@ endif()
 # 如果哪天确实需要"全部模块", 请显式列出来, 别再引入聚合层。
 # ============================================================
 
+# 主题资源（复选框勾选图标等）：QSS 画不出勾选符号，用 qrc 把 PNG 编进可执行文件。
+# 只给主程序 —— 测试不应用深色主题，链接时少一份资源无关紧要。
+qt6_add_resources(VIDEOEYE_THEME_RESOURCES ui/theme/theme.qrc)
+
 add_executable(${PROJECT_NAME}
     ${UI_SOURCES}
     ${UI_HEADERS}
+    ${VIDEOEYE_THEME_RESOURCES}
 )
 # ui/ 只给 GUI 自己用(ui 内部有按子目录写的 include)
 target_include_directories(${PROJECT_NAME} PRIVATE

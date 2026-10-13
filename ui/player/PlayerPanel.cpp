@@ -220,6 +220,76 @@ bool PlayerPanel::IsPlayerAreaVisible() const {
     return player_area_visible_;
 }
 
+// ----------------------------------------------------------------------------
+// 布局预设（监看 / 分析）
+// ----------------------------------------------------------------------------
+
+void PlayerPanel::ApplyLayoutPreset(LayoutPreset preset) {
+    const bool changed = (layout_preset_ != preset);
+    layout_preset_ = preset;
+
+    if (changed) {
+        // 与显隐一样持久化: 下次启动沿用（没有存过时由 RestoreLayoutPreset 的默认值决定）
+        QSettings settings;
+        settings.setValue(QStringLiteral("ui/playerLayoutPreset"), static_cast<int>(preset));
+    }
+
+    if (!splitter_ || splitter_->count() != 2) {
+        // 分割器还没接上（构造期）: 只记住预设，展开/接线后自然按它分配
+        emit LayoutPresetChanged(preset);
+        return;
+    }
+    if (!IsPlayerAreaVisible()) {
+        // 收起态下播放区隐藏、比例无意义: 记下待应用，展开时按新预设分配
+        pending_preset_apply_ = true;
+        emit LayoutPresetChanged(preset);
+        return;
+    }
+    ApplyPresetSizes();
+    emit LayoutPresetChanged(preset);
+}
+
+void PlayerPanel::ApplyPresetSizes() {
+    if (!splitter_ || splitter_->count() != 2) return;
+    const QList<int> sizes = splitter_->sizes();
+    const int total = sizes.value(0, 0) + sizes.value(1, 0);
+    if (total <= 0) return;
+
+    // 监看: 播放区 58%; 分析: 30%。钳制在 [播放区最小高度, total - 内容区最小高度]
+    // 之间 —— setSizes 不遵守 minimum，超了下限 Qt 会把视频区压皱。
+    int player_share = (layout_preset_ == LayoutPreset::Monitor) ? total * 58 / 100
+                                                                 : total * 30 / 100;
+    const int player_min = MinimumHeightHint();
+    const QWidget* content = splitter_->widget(1);
+    const int content_min = content ? content->minimumHeight() : 250;
+    player_share = std::max(player_share, player_min);
+    player_share = std::min(player_share, total - content_min);
+    // 内容区再挤也要留一点：窗口被压得很矮时（total 接近 player_min），
+    // 只按上面的钳制会算出负的第二个尺寸，下面那栏直接消失。
+    constexpr int kMinContentHeight = 80;
+    if (total - player_share < kMinContentHeight) player_share = total - kMinContentHeight;
+    if (player_share < player_min) return;  // 实在放不下就别动（用户手动拖的结果保留）
+    splitter_->setSizes({player_share, total - player_share});
+}
+
+void PlayerPanel::RestoreLayoutPreset(LayoutPreset default_preset) {
+    QSettings settings;
+    const QVariant stored = settings.value(QStringLiteral("ui/playerLayoutPreset"));
+    LayoutPreset preset = default_preset;
+    if (stored.isValid()) {
+        const int value = stored.toInt();
+        preset = (value == static_cast<int>(LayoutPreset::Analysis)) ? LayoutPreset::Analysis
+                                                                    : LayoutPreset::Monitor;
+    }
+    layout_preset_ = preset;
+    if (IsPlayerAreaVisible()) {
+        ApplyPresetSizes();
+    } else {
+        pending_preset_apply_ = true;
+    }
+    emit LayoutPresetChanged(preset);
+}
+
 void PlayerPanel::SetPlayerAreaVisible(bool visible, bool persist) {
     if (player_area_visible_ == visible) return;
     player_area_visible_ = visible;
@@ -234,6 +304,11 @@ void PlayerPanel::SetPlayerAreaVisible(bool visible, bool persist) {
 
     if (visible && splitter_ && saved_splitter_sizes_.size() == splitter_->count()) {
         splitter_->setSizes(saved_splitter_sizes_);
+        // 收起期间用户可能切过预设: 展开时按新预设分配，而不是复活收起前的旧比例
+        if (pending_preset_apply_) {
+            pending_preset_apply_ = false;
+            ApplyPresetSizes();
+        }
     }
 
     // 画面输出抑制: 收起后解码线程不再 present / sws_scale, 但解码、实时分析与

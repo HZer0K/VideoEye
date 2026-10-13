@@ -36,10 +36,21 @@ class RawImageSequence;   // 前向声明：Raw 图像序列 (见 ui/player/RawI
 //   - 拥有: 视频 widget、控制栏
 //   - 不拥有: MediaPlayer (分析侧共用, 生命周期归 MainWindow), 只持裸指针
 //   - 与 MainWindow 通信一律走信号 (状态栏/错误提示), 不反向持有主窗口指针
+//
+// 布局预设（监看 / 分析）：一次性的分割比例命令，与"收起播放区"（显隐开关）
+// 正交。监看 = 播放区 58%；分析 = 播放区 30%（且不低于播放区最小高度），
+// 让 1366x768 这类小屏默认给分析区让路。预设持久化在 QSettings。
 class PlayerPanel : public QWidget {
     Q_OBJECT
 
 public:
+    // 播放区布局预设
+    enum class LayoutPreset {
+        Monitor,   // 监看：播放区占大头
+        Analysis,  // 分析：分析区占大头
+    };
+    Q_ENUM(LayoutPreset)
+
     explicit PlayerPanel(QWidget* parent = nullptr);
     ~PlayerPanel() override;
 
@@ -48,6 +59,12 @@ public:
 
     // 播放区所在的分割器: 收起/展开时保存与还原上下比例
     void SetSplitter(QSplitter* splitter) { splitter_ = splitter; }
+
+    // 应用布局预设（切分割比例；收起态下只记住预设，展开时按新预设分配）
+    void ApplyLayoutPreset(LayoutPreset preset);
+    LayoutPreset layoutPreset() const { return layout_preset_; }
+    // 从 QSettings 恢复预设；没有存过时用 default_preset（小屏由调用方传 Analysis）
+    void RestoreLayoutPreset(LayoutPreset default_preset);
 
     // 播放区显隐 (VideoEye 以分析为主, 可收起给分析区让出空间)
     bool IsPlayerAreaVisible() const;
@@ -76,6 +93,8 @@ signals:
     void StatusMessage(const QString& text, int timeout);
     void ErrorMessage(const QString& text);
     void VisibilityChanged(bool visible);
+    // 布局预设变化（菜单勾选同步用）
+    void LayoutPresetChanged(LayoutPreset preset);
     void RawImageInfoReady(const QString& info);   // 写入媒体信息文本框
     // 运动矢量叠加开关变化。叠加层本身不直接开启/关闭宏块分析 —— 由协调层
     // (MainWindow) 把"用户主动启用的分析"与"叠加需要分析"两者取或后统一下发，
@@ -116,6 +135,8 @@ private slots:
 private:
     void SetupUI();
     void SetupConnections();
+    // 按当前 layout_preset_ 分配 content_splitter_ 的上下比例（含最小高度钳制）
+    void ApplyPresetSizes();
 
     // 集中构造并下发叠加层信息 (状态/分辨率/编码/FPS), 避免多处各拼一份导致字段漏传。
     void UpdateOverlay();
@@ -176,6 +197,11 @@ private:
     // 显式状态标志: 构造期 widget 的 isVisible() 恒为 false (父窗口尚未 show),
     // 直接用 isVisible() 会导致启动时恢复"收起"被误判为无变化而跳过渲染抑制。
     bool player_area_visible_ = true;
+
+    // 布局预设
+    LayoutPreset layout_preset_ = LayoutPreset::Monitor;
+    // 收起期间换了预设: 展开时按新预设分配一次（saved sizes 是收起前的旧比例）
+    bool pending_preset_apply_ = false;
 };
 
 } // namespace ui

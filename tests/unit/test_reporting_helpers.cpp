@@ -11,10 +11,12 @@
 #include "core/analysis/AnalysisOptions.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/analysis/diagnostics/QcRuleEngine.h"
+#include "core/qc/BatchQcRunner.h"
 #include "core/qc/QcProfile.h"
 #include "core/qc/QcProfileMapper.h"
 #include "core/qc/QcReportFormat.h"
 #include "ui/reporting_panel/analysis_task.h"
+#include "ui/reporting_panel/batch_filter.h"
 #include "ui/reporting_panel/report_path.h"
 #include "ui/reporting_panel/result_stamp.h"
 
@@ -27,6 +29,8 @@ namespace model = videoeye::model;
 using videoeye::AnalysisOptions;
 using videoeye::model::AnalysisResult;
 using videoeye::model::AnalysisStatus;
+using videoeye::qc::BatchItemStatus;
+using videoeye::qc::BatchQcItemResult;
 using videoeye::QcRuleEngine;
 using videoeye::qc::QcProfile;
 using videoeye::qc::QcReportFormat;
@@ -34,9 +38,18 @@ using videoeye::qc::QcRunResult;
 using videoeye::ui::AnalysisOptionsCovers;
 using videoeye::ui::AnalysisTask;
 using videoeye::ui::ApplyExportPaths;
+using videoeye::ui::BatchMatchesSeverityFilter;
+using videoeye::ui::BatchMatchesStatusFilter;
 using videoeye::ui::CanReuseAnalysis;
 using videoeye::ui::FileVersionStamp;
 using videoeye::ui::IsResultFresh;
+using videoeye::ui::kBatchSeverityFilterAll;
+using videoeye::ui::kBatchSeverityFilterClean;
+using videoeye::ui::kBatchSeverityFilterCritical;
+using videoeye::ui::kBatchSeverityFilterError;
+using videoeye::ui::kBatchSeverityFilterInfo;
+using videoeye::ui::kBatchSeverityFilterWarning;
+using videoeye::ui::kBatchStatusFilterAll;
 using videoeye::ui::QueryFileVersion;
 using videoeye::ui::RecycleTask;
 using videoeye::ui::ReportBasePath;
@@ -470,6 +483,87 @@ TEST(QueryFileVersionTest, MissingFileAndNetworkUriHaveNoVersion) {
         << "取不到指纹时不得冒充可用版本";
     EXPECT_FALSE(QueryFileVersion("http://127.0.0.1:9/live.m3u8").valid)
         << "网络源没有本地指纹，默认重新分析";
+}
+
+// ---------------------------------------------------------------------------
+// 批量表格筛选口径：状态 / 严重度两个下拉框的纯判定。
+// UI 只负责把 combo 的 itemData 传进来，这里守住各口径的边界 ——
+// 尤其"含某级别"是 ≥ 不是 =（一条同时有致命和警告的结果在"含警告"下也要可见），
+// 以及"无异常"对失败条目（计数全 0）同样匹配。
+// ---------------------------------------------------------------------------
+TEST(BatchStatusFilterTest, AllMatchesEveryStatus) {
+    using videoeye::qc::BatchItemStatus;
+    EXPECT_TRUE(BatchMatchesStatusFilter(kBatchStatusFilterAll, BatchItemStatus::Pending));
+    EXPECT_TRUE(BatchMatchesStatusFilter(kBatchStatusFilterAll, BatchItemStatus::Running));
+    EXPECT_TRUE(BatchMatchesStatusFilter(kBatchStatusFilterAll, BatchItemStatus::Succeeded));
+    EXPECT_TRUE(BatchMatchesStatusFilter(kBatchStatusFilterAll, BatchItemStatus::Failed));
+    EXPECT_TRUE(BatchMatchesStatusFilter(kBatchStatusFilterAll, BatchItemStatus::TimedOut));
+    EXPECT_TRUE(BatchMatchesStatusFilter(kBatchStatusFilterAll, BatchItemStatus::Cancelled));
+    EXPECT_TRUE(BatchMatchesStatusFilter(kBatchStatusFilterAll, BatchItemStatus::Skipped));
+    EXPECT_TRUE(BatchMatchesStatusFilter(kBatchStatusFilterAll, BatchItemStatus::ExportFailed));
+}
+
+TEST(BatchStatusFilterTest, SpecificStatusMatchesOnlyItself) {
+    using videoeye::qc::BatchItemStatus;
+    const int failed = static_cast<int>(BatchItemStatus::Failed);
+    EXPECT_TRUE(BatchMatchesStatusFilter(failed, BatchItemStatus::Failed));
+    // 导出失败是"分析成功但没落盘"，与 Failed 是两个终态，不能互相匹配
+    EXPECT_FALSE(BatchMatchesStatusFilter(failed, BatchItemStatus::ExportFailed));
+    EXPECT_FALSE(BatchMatchesStatusFilter(failed, BatchItemStatus::TimedOut));
+    EXPECT_FALSE(BatchMatchesStatusFilter(failed, BatchItemStatus::Succeeded));
+}
+
+TEST(BatchSeverityFilterTest, AtLeastNotEquals) {
+    videoeye::qc::BatchQcItemResult item;  // 一条同时带致命与警告的结果
+    item.critical_count = 1;
+    item.warning_count = 2;
+
+    EXPECT_TRUE(BatchMatchesSeverityFilter(kBatchSeverityFilterAll, item));
+    EXPECT_TRUE(BatchMatchesSeverityFilter(kBatchSeverityFilterCritical, item));
+    // 阶梯语义：带致命的条目必须在"错误及以上""警告及以上""有任何问题"下都可见。
+    // 若退化成"恰好等于该级别"，最严重的条目反而会被更宽松的筛选藏起来。
+    EXPECT_TRUE(BatchMatchesSeverityFilter(kBatchSeverityFilterError, item));
+    EXPECT_TRUE(BatchMatchesSeverityFilter(kBatchSeverityFilterWarning, item));
+    EXPECT_TRUE(BatchMatchesSeverityFilter(kBatchSeverityFilterInfo, item));
+    EXPECT_FALSE(BatchMatchesSeverityFilter(kBatchSeverityFilterClean, item));
+}
+
+TEST(BatchSeverityFilterTest, ErrorOnlyItem) {
+    videoeye::qc::BatchQcItemResult item;
+    item.error_count = 3;
+    EXPECT_TRUE(BatchMatchesSeverityFilter(kBatchSeverityFilterError, item));
+    // 错误属于阻塞级，因此在更宽松的两档下也要在
+    EXPECT_TRUE(BatchMatchesSeverityFilter(kBatchSeverityFilterWarning, item));
+    EXPECT_TRUE(BatchMatchesSeverityFilter(kBatchSeverityFilterInfo, item));
+    // 但没有致命，不该被最严的一档捞出来
+    EXPECT_FALSE(BatchMatchesSeverityFilter(kBatchSeverityFilterCritical, item));
+    EXPECT_FALSE(BatchMatchesSeverityFilter(kBatchSeverityFilterClean, item));
+}
+
+TEST(BatchSeverityFilterTest, WarningOnlyItemStaysBelowBlockingFilters) {
+    videoeye::qc::BatchQcItemResult item;
+    item.warning_count = 1;
+    EXPECT_TRUE(BatchMatchesSeverityFilter(kBatchSeverityFilterWarning, item));
+    EXPECT_TRUE(BatchMatchesSeverityFilter(kBatchSeverityFilterInfo, item));
+    // 警告不算阻塞级，两档阻塞筛选都不该命中
+    EXPECT_FALSE(BatchMatchesSeverityFilter(kBatchSeverityFilterCritical, item));
+    EXPECT_FALSE(BatchMatchesSeverityFilter(kBatchSeverityFilterError, item));
+    EXPECT_FALSE(BatchMatchesSeverityFilter(kBatchSeverityFilterClean, item));
+}
+
+TEST(BatchSeverityFilterTest, CleanMatchesOnlyCleanFilter) {
+    videoeye::qc::BatchQcItemResult item;  // 分析完成且零问题
+    item.status = videoeye::qc::BatchItemStatus::Succeeded;
+    EXPECT_TRUE(BatchMatchesSeverityFilter(kBatchSeverityFilterClean, item));
+    EXPECT_TRUE(BatchMatchesSeverityFilter(kBatchSeverityFilterAll, item));
+    EXPECT_FALSE(BatchMatchesSeverityFilter(kBatchSeverityFilterInfo, item))
+        << "零问题不等于含提示";
+
+    // 失败条目计数也是全 0：归进"无异常"是合理的（要看失败请用状态筛选），
+    // 这条用例把该语义钉住，防止以后有人给 Clean 加"必须成功"的隐藏条件。
+    videoeye::qc::BatchQcItemResult failed;
+    failed.status = videoeye::qc::BatchItemStatus::Failed;
+    EXPECT_TRUE(BatchMatchesSeverityFilter(kBatchSeverityFilterClean, failed));
 }
 
 }  // namespace

@@ -88,6 +88,12 @@ private slots:
     void OnStartBatch();
     void OnCancelBatch();
     void OnExportBatchSummary();
+    // 批量表格筛选下拉框变化: 只切行可见性，不动数据与选中绑定
+    void OnBatchFilterChanged();
+    // 批量表格选中行变化: 展开该行对应结果的详情
+    void OnBatchSelectionChanged();
+    // 打开选中行对应的报告文件（批量跑完才看得到问题清单，详情标签只放摘要）
+    void OnOpenSelectedReport();
 
 private:
     // 后台任务的明确所有权载体（线程 / 取消令牌 / 生命周期守卫）定义在
@@ -111,6 +117,13 @@ private:
     void InvalidateResult();
     // 依据 busy_ 与 HasFreshResult() 刷新导出按钮使能，SetBusy 与结果变化都走它。
     void UpdateExportEnabled();
+    // 按两个筛选下拉框的口径重设批量表格所有行的可见性（setRowHidden）。
+    // 行与 batch_results_ 的绑定存在第一列 item 的 UserRole 上，排序后依然有效。
+    void ReapplyBatchFilter();
+    // 把 batch_results_[index] 铺进详情标签（选中一行时调用）。
+    void ShowBatchDetail(int result_index);
+    // 当前筛选口径下这条结果是否可见（纯判定在 batch_filter.h，这里只做组合）。
+    bool BatchRowVisible(const qc::BatchQcItemResult& item) const;
     // 用 last_result_ + 当前模板把单文件报告导出到 directory（调用前须保证结果新鲜）。
     void ExportSingleResult(const QString& directory);
 
@@ -180,8 +193,14 @@ private:
     QPushButton* cancel_button_ = nullptr;
     QProgressBar* batch_progress_ = nullptr;
     QLabel* batch_summary_label_ = nullptr;
+    // 批量表格筛选: 状态 / 严重度两个口径（itemData 见 batch_filter.h 的常量）
+    QComboBox* batch_status_filter_ = nullptr;
+    QComboBox* batch_severity_filter_ = nullptr;
     QTableWidget* batch_table_ = nullptr;
     QPushButton* summary_button_ = nullptr;
+    // 选中行详情: 表格十列装不下失败原因/问题清单，选中后在这里展开
+    QLabel* batch_detail_ = nullptr;
+    QPushButton* open_report_button_ = nullptr;
 
     QTextEdit* log_view_ = nullptr;
 

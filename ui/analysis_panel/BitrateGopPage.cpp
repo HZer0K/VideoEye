@@ -628,6 +628,10 @@ void BitrateGopPage::FillScanOptions(videoeye::AnalysisOptions& options) {
     options.decode_frame_types = decode_frame_types_;
 }
 
+int BitrateGopPage::IssueCount() const {
+    return anomaly_table_ ? anomaly_table_->rowCount() : 0;
+}
+
 void BitrateGopPage::SetScanActive(bool active) {
     scan_active_ = active;
     if (start_button_) start_button_->setEnabled(!active);

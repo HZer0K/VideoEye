@@ -381,6 +381,10 @@ void ColorHdrPage::FillScanOptions(videoeye::AnalysisOptions& options) {
     options.analyze_color_hdr = true;
 }
 
+int ColorHdrPage::IssueCount() const {
+    return issue_table_ ? issue_table_->rowCount() : 0;
+}
+
 void ColorHdrPage::SetScanActive(bool active) {
     scan_active_ = active;
     if (start_button_) start_button_->setEnabled(!active);

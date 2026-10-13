@@ -3,11 +3,15 @@
 #include "core/player/MediaPlayer.h"
 
 #include <QHBoxLayout>
+#include <QMenu>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QSlider>
 #include <QLabel>
 #include <QStyle>
 #include <QSize>
+#include <QToolButton>
+#include <QWidgetAction>
 #include <algorithm>
 
 namespace videoeye {
@@ -32,6 +36,7 @@ void ControlBarWidget::SetupUI() {
     setFixedHeight(kControlBarHeight);
 
     QHBoxLayout* control_layout = new QHBoxLayout(this);
+    control_layout_ = control_layout;
     control_layout->setContentsMargins(16, 8, 16, 8);
     control_layout->setSpacing(12);
 
@@ -154,6 +159,91 @@ void ControlBarWidget::SetupUI() {
         "  background-color: #21262D; border-radius: 4px;"
         "}");
     control_layout->addWidget(collapse_player_button_);
+
+    // 次要控件在布局里的原始下标：窄宽收纳移出、恢复原位都靠它（不写死位置）
+    timecode_index_ = control_layout->indexOf(timecode_label_);
+    volume_index_ = control_layout->indexOf(volume_slider_);
+    mv_index_ = control_layout->indexOf(mv_overlay_button_);
+
+    BuildOverflowMenu();
+}
+
+void ControlBarWidget::BuildOverflowMenu() {
+    // "⋯" 溢出按钮：默认隐藏，窄宽收纳模式才出现
+    overflow_button_ = new QToolButton(this);
+    overflow_button_->setObjectName("OverflowButton");
+    overflow_button_->setText(QStringLiteral("\xE2\x8B\xAF"));  // ⋯
+    overflow_button_->setToolTip(tr("次要控件（窄宽度时收进这里）"));
+    overflow_button_->setPopupMode(QToolButton::InstantPopup);
+    overflow_button_->setFixedSize(32, 28);
+    overflow_button_->setVisible(false);
+    control_layout_->addWidget(overflow_button_);
+
+    overflow_menu_ = new QMenu(this);
+    // 三个 QWidgetAction 装的是控件本体（不是镜像）：菜单显示时控件 reparent 进
+    // 菜单，关闭后归还；宽回来时 releaseWidget + 按原下标插回布局。信号连接在
+    // 控件上，不随父窗口变化失效（PlayerPanel 连的是控件指针）。
+    timecode_action_ = new QWidgetAction(this);
+    timecode_action_->setToolTip(tr("时码（窄宽度时收进菜单）"));
+    overflow_menu_->addAction(timecode_action_);
+    volume_action_ = new QWidgetAction(this);
+    volume_action_->setToolTip(tr("音量（窄宽度时收进菜单）"));
+    overflow_menu_->addAction(volume_action_);
+    mv_action_ = new QWidgetAction(this);
+    mv_action_->setToolTip(tr("运动矢量叠加（窄宽度时收进菜单）"));
+    overflow_menu_->addAction(mv_action_);
+    overflow_button_->setMenu(overflow_menu_);
+}
+
+void ControlBarWidget::SetSecondaryInMenu(bool in_menu) {
+    if (in_menu == secondary_in_menu_) return;
+    if (!control_layout_ || !overflow_button_) return;
+    secondary_in_menu_ = in_menu;
+
+    // QLayout::removeWidget 只解除布局管理，不会隐藏控件 —— 不显式 hide 的话，
+    // 摘下来的控件会以最后一次的几何位置继续画在控制栏上（菜单里那个是另外一份绘制），
+    // 表现为"收进菜单了但栏上还留着残影"。
+    QWidget* secondary[] = {timecode_label_, volume_slider_, mv_overlay_button_};
+    if (in_menu) {
+        // 栏上 -> 菜单：先摘下再交给 QWidgetAction（所有权随 setDefaultWidget 转移）
+        for (QWidget* widget : secondary) {
+            control_layout_->removeWidget(widget);
+            widget->setVisible(false);
+        }
+        timecode_action_->setDefaultWidget(timecode_label_);
+        volume_action_->setDefaultWidget(volume_slider_);
+        mv_action_->setDefaultWidget(mv_overlay_button_);
+        overflow_button_->setVisible(true);
+    } else {
+        // 菜单 -> 栏上：取回所有权，按原始下标升序插回（顺序即恢复原布局）
+        timecode_action_->releaseWidget(timecode_label_);
+        volume_action_->releaseWidget(volume_slider_);
+        mv_action_->releaseWidget(mv_overlay_button_);
+        control_layout_->insertWidget(timecode_index_, timecode_label_);
+        control_layout_->insertWidget(volume_index_, volume_slider_);
+        control_layout_->insertWidget(mv_index_, mv_overlay_button_);
+        for (QWidget* widget : secondary) {
+            widget->setVisible(true);
+        }
+        overflow_button_->setVisible(false);
+    }
+}
+
+void ControlBarWidget::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
+    const int width = event->size().width();
+    if (width <= 0) return;
+
+    // 阈值只在不处于收纳态时量一次 —— 见 full_min_width_ 的注释。
+    // 若直接用"当前状态的 minimumSizeHint"当阈值，收纳会把阈值一起变小，于是下一次
+    // resizeEvent 又判定"放得下"而移回栏上，父布局随之再次变窄：两个状态互相翻转，
+    // 拖窗口时会无限抖动（甚至递归到栈溢出）。
+    if (!secondary_in_menu_) full_min_width_ = minimumSizeHint().width();
+    if (full_min_width_ <= 0) return;  // 布局还没建好，先不动
+
+    // 本机 WM 拖拽中会无视窗口最小尺寸约束，宽度可能被拖到 1100 以下，
+    // 这时次要控件必须自己收进菜单，而不是互相重叠 / 被裁掉。
+    SetSecondaryInMenu(width < full_min_width_);
 }
 
 void ControlBarWidget::SetupConnections() {

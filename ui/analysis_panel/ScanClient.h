@@ -28,6 +28,11 @@ public:
     // 默认不存 —— 只有需要按文件路径起默认名的页面才覆盖。
     virtual void SetSourcePath(const QString& path) { (void)path; }
 
+    // 本页结果里的异常条数（侧栏导航标记用：页面对应的"问题表/异常表"行数）。
+    // 默认 0 = 本页没有异常口径，侧栏不显示徽标；不要返回"表里所有行"这种
+    // 把明细当异常的数（帧表/包表有几千行，徽标会变成噪音）。
+    virtual int IssueCount() const { return 0; }
+
     // 扫描开始 / 终态一起切扫描态。三种终态（完成/取消/失败）都必须复位，
     // 否则页面卡在扫描中：取消按钮还亮着、"开始分析"永久禁用。
     virtual void SetScanActive(bool active) = 0;

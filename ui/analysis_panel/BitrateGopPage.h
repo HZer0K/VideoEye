@@ -59,6 +59,8 @@ public:
 
     // 扫描生命周期由面板驱动（与诊断页、音频 QC、色彩/HDR 保持同步）
     void SetScanActive(bool active) override;
+    // 侧栏导航标记：异常表的行数（码率/GOP 异常）
+    int IssueCount() const override;
     // 与 SetScanActive 配对的状态查询。三页共用同一次扫描，任何一页卡在 active
     // 都是 bug（取消按钮亮着、"开始分析"永久禁用），所以这个状态必须能被观察到。
     // 不在 ScanClient 接口里：它是给人/测试看的，不是面板驱动页面要用的。

@@ -41,6 +41,8 @@ public:
     // ScanClient：本页共用诊断页发起的那次全文件扫描，扫描中「开始分析」按钮
     // 跟着禁用，终态一起复位。
     void SetScanActive(bool active) override;
+    // 侧栏导航标记：容器/码流不一致表的行数
+    int IssueCount() const override;
     bool IsScanActive() const { return scan_active_; }
 
     // 序列化：复制 JSON / 导出 JSON 文件共用

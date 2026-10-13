@@ -711,6 +711,13 @@ void AudioQcPage::FillScanOptions(videoeye::AnalysisOptions& options) {
     options.analyze_audio_qc = true;
 }
 
+int AudioQcPage::IssueCount() const {
+    int count = 0;
+    if (clip_table_) count += clip_table_->rowCount();
+    if (silence_table_) count += silence_table_->rowCount();
+    return count;
+}
+
 void AudioQcPage::SetScanActive(bool active) {
     scan_active_ = active;
     if (start_button_) start_button_->setEnabled(!active);

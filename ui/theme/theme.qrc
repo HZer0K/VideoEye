@@ -1,0 +1,7 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/videoeye/theme">
+        <file>assets/checkbox_checked.png</file>
+        <file>assets/checkbox_checked_disabled.png</file>
+    </qresource>
+</RCC>

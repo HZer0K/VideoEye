@@ -131,6 +131,10 @@ void StreamingPanel::Clear() {
     issue_table_->setColumnCount(0);
 }
 
+int StreamingPanel::IssueCount() const {
+    return issue_table_ ? issue_table_->rowCount() : 0;
+}
+
 void StreamingPanel::SetScanActive(bool active) {
     scan_active_ = active;
     // 扫描中共用同一份清单解析，重复点「开始分析」只会被诊断页拦下；直接禁用按钮更清楚。

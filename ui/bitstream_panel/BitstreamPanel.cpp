@@ -127,6 +127,10 @@ void BitstreamPanel::Clear() {
     inconsistency_table_->setRowCount(0);
 }
 
+int BitstreamPanel::IssueCount() const {
+    return inconsistency_table_ ? inconsistency_table_->rowCount() : 0;
+}
+
 void BitstreamPanel::SetScanActive(bool active) {
     scan_active_ = active;
     // 参数集只读 extradata，跟着全文件扫描一起跑；扫描中禁用按钮避免重复触发。

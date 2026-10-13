@@ -6,12 +6,22 @@
 // （音量 / 静音，仅触碰本组件内的控件与 MediaPlayer::SetVolume），其余用户意图
 // （播放/停止/逐帧/seek/MV/收起）通过子控件访问器交给 PlayerPanel 连接，保持
 // PlayerPanel 作为协调层的角色不变。
+//
+// 窄宽收纳：一排放完所有控件约需 720px。窗口更窄时（本机 WM 拖拽中会无视最小
+// 尺寸约束，见 MainWindow::resizeEvent），resizeEvent 按布局的 minimumSizeHint
+// 判断放不放得下；放不下就把次要控件（时码 / 音量滑块 / MV 叠加）收进右上角
+// 溢出按钮的菜单（控件本体移入 QWidgetAction，宽回来时再移回布局原位），
+// 主控件（播放/停止/进度/时间/收起）始终留在栏上。
 
 #include <QWidget>
 
+class QHBoxLayout;
 class QPushButton;
 class QSlider;
 class QLabel;
+class QMenu;
+class QToolButton;
+class QWidgetAction;
 
 namespace videoeye {
 namespace player {
@@ -46,9 +56,16 @@ private slots:
     void OnVolumeChanged(int value);
     void OnMuteClicked();
 
+protected:
+    // 窄宽收纳：宽度放不下全部控件时，次要控件移进溢出菜单
+    void resizeEvent(QResizeEvent* event) override;
+
 private:
     void SetupUI();
     void SetupConnections();
+    void BuildOverflowMenu();
+    // 次要控件在"栏上 / 溢出菜单"之间搬移（幂等；布局原位在 SetupUI 里记录）
+    void SetSecondaryInMenu(bool in_menu);
 
     player::MediaPlayer* player_ = nullptr;
     int last_volume_ = 100;
@@ -64,6 +81,24 @@ private:
     QPushButton* collapse_player_button_ = nullptr;
     QSlider* seek_slider_ = nullptr;
     QLabel* time_label_ = nullptr;
+
+    // ---- 窄宽收纳 ----
+    QToolButton* overflow_button_ = nullptr;   // "⋯" 溢出按钮（窄模式才可见）
+    QMenu* overflow_menu_ = nullptr;
+    QWidgetAction* timecode_action_ = nullptr;  // 时码标签
+    QWidgetAction* volume_action_ = nullptr;    // 音量滑块
+    QWidgetAction* mv_action_ = nullptr;        // MV 叠加开关
+    bool secondary_in_menu_ = false;
+    // "全部控件就位"时布局的最小宽度。只在控件都在栏上时量：收进菜单后布局变小，
+    // 拿当时那个更小的值当阈值会让判定随状态翻转（收紧→变宽→放松→变窄→…）无限抖动。
+    int full_min_width_ = 0;
+    // 次要控件在 control_layout_ 里的原始下标（移回时按原序插回）
+    int timecode_index_ = -1;
+    int volume_index_ = -1;
+    int mv_index_ = -1;
+
+    // 控制栏根布局（窄宽收纳时要在它上面搬移控件）
+    QHBoxLayout* control_layout_ = nullptr;
 };
 
 } // namespace ui

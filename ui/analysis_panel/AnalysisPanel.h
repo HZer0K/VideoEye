@@ -107,6 +107,8 @@ public:
         if (diagnostics_page_) diagnostics_page_->SetSourcePath(path);
         // 场景切换记录是播放期的累计结果，换文件必须清零（与帧/包那几页一致）
         if (scene_change_page_) scene_change_page_->Reset();
+        // 换文件 = 上一文件的分析结论全部作废：通知首页重置「分析状态」区
+        emit DiagnosticsStateChanged();
     }
     
     // 重新发射所有启用状态的开关信号 (用于文件打开后同步播放器状态)
@@ -115,10 +117,35 @@ public:
     // 用面板当前的诊断选项对 current_video_path_ 发起全文件诊断扫描。
     // 播放器打开失败进入"分析模式"时由 MainWindow 调用, 让诊断页展示具体错误原因。
     void StartDiagnosticsScanForCurrentFile();
+
+    // ---- 诊断状态只读快照（供首页「分析状态」区拉取）----
+    // 扫描起止 / 报告重算 / 换文件都会发 DiagnosticsStateChanged，MainWindow 收到后
+    // 再调这几个取数刷新首页 —— 页面不互相持有指针，快照式读取与容器结构页等一致。
+    bool IsScanRunning() const { return scan_running_; }
+    bool HasDiagnosticsResult() const;
+    const model::QcReport& DiagnosticsReport() const;
+    // 最近一次全文件扫描的失败原因（无失败返回空串）
+    QString DiagnosticsError() const;
+
+    // ---- 侧栏导航标记 ----
+    // 每个分析页的"异常数 + 级别 + 是否共用扫描中"。MainWindow 在
+    // DiagnosticsStateChanged 后调用，把结果写进侧栏 item 的数据角色，
+    // 由 SidebarItemDelegate 画成右侧徽标 / 扫描圆点。
+    // 只有真有异常口径的页面才进表（issue_count>0 或 scanning），
+    // 帧表/包表这类明细表故意不进 —— 几千行的徽标只是噪音。
+    struct PageBadgeInfo {
+        int issue_count = 0;   // 异常条数（0 = 不显示数字徽标）
+        int level = 0;         // 0 无 / 1 警告 / 2 错误 / 3 致命（决定徽标配色）
+        bool scanning = false; // 该页共用的一次全文件扫描正在进行
+    };
+    QMap<QString, PageBadgeInfo> PageBadges() const;
     
 signals:
     // 分析功能开关变化信号 (供 MainWindow 连接 MediaPlayer)
     void AnalysisFeatureToggled(int feature, bool enabled);
+
+    // 诊断扫描状态变化（开始 / 终态 / 报告重算 / 换文件）: MainWindow 转给首页刷新
+    void DiagnosticsStateChanged();
 
     // 画面质量分析的采样档位 / 阈值变化 (供 MainWindow 转发给 MediaPlayer)
     void VisualDefectOptionsChanged(const model::VisualDefectOptions& options);
@@ -299,6 +326,9 @@ private:
 
     // 当前视频文件路径 (供导出报告使用)
     std::string current_video_path_;
+
+    // 全文件扫描是否进行中（OnScanStarted/OnScanEnded 维护，供首页取状态）
+    bool scan_running_ = false;
 };
 
 } // namespace ui

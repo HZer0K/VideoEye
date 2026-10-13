@@ -88,14 +88,14 @@ QLabel#VersionBadge {
     border: 1px solid rgba(88, 166, 255, 0.3);
     border-radius: 4px;
     padding: 1px 6px;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
 }
 
 QLabel#MediaPath {
     color: #8B949E;
     font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
-    font-size: 12px;
+    font-size: 13px;
 }
 
 /* ==== Buttons ==== */
@@ -210,6 +210,20 @@ QLabel#TimeLabel {
     font-size: 12px;
 }
 
+/* 控制栏溢出按钮（窄宽度时收进次要控件，见 ControlBarWidget）*/
+QToolButton#OverflowButton {
+    background-color: transparent;
+    border: none;
+    border-radius: 4px;
+    color: #8B949E;
+    font-size: 15px;
+}
+
+QToolButton#OverflowButton:hover {
+    background-color: #21262D;
+    color: #F0F6FC;
+}
+
 /* ==== Slider ==== */
 QSlider::groove:horizontal {
     border: none;
@@ -273,7 +287,9 @@ QGroupBox::title {
     subcontrol-origin: margin;
     left: 10px;
     padding: 0 4px;
-    color: #8B949E;
+    /* 分组标题是各页的"说明文字"：原 #8B949E 与正文拉不开层次也偏暗，
+       提亮到 #A5B1BD 保持"次于正文、但清晰可读"。 */
+    color: #A5B1BD;
 }
 
 /* ==== Table ==== */
@@ -299,12 +315,14 @@ QTableWidget::item:selected {
 
 QHeaderView::section {
     background-color: #161B22;
-    color: #8B949E;
+    /* 表头是可扫描性的第一入口：11px + #8B949E 在 #161B22 上对比度不足，
+       提到 12px 并换亮一档的 #C9D1D9（约 7:1）。 */
+    color: #C9D1D9;
     border: none;
     border-right: 1px solid #30363D;
     border-bottom: 1px solid #30363D;
     padding: 6px 8px;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
 }
 
@@ -350,10 +368,6 @@ QTreeWidget::branch:open:has-children:has-siblings {
     border-image: none;
 }
 
-QHeaderView::section {
-    background-color: #161B22;
-}
-
 /* ==== QTextEdit ==== */
 QTextEdit {
     background-color: #0D1117;
@@ -387,7 +401,36 @@ QCheckBox::indicator:hover {
 QCheckBox::indicator:checked {
     background-color: #58A6FF;
     border-color: #58A6FF;
-    image: none;
+    /* 勾选符号：QSS 画不出勾，只有底色时"选中"态与未选中几乎无法区分。
+       32x32 抗锯齿 PNG 由 scripts/gen-checkbox-icon.py 生成，经 ui/theme/theme.qrc
+       编译进可执行文件；深色勾配 #58A6FF 蓝底对比度约 7:1（白勾只有 2.6:1）。 */
+    image: url(:/videoeye/theme/assets/checkbox_checked.png);
+}
+
+QCheckBox::indicator:checked:disabled {
+    background-color: #21262D;
+    border-color: #484F58;
+    image: url(:/videoeye/theme/assets/checkbox_checked_disabled.png);
+}
+
+/* ==== 键盘焦点可见性 ====
+   列表/表格/树靠"当前项 = 选中项"的高亮表达焦点（各自有 ::item:selected 样式，
+   所以那几处保留 outline:none 不画外框）；其余控件（按钮/复选框/下拉/输入框/
+   滑块/标签页/文本区）在 QSS 下默认没有任何焦点反馈，键盘用户完全看不出焦点
+   在哪 —— 统一补 1px 强调色轮廓。 */
+QPushButton:focus,
+QToolButton:focus,
+QCheckBox:focus,
+QRadioButton:focus,
+QComboBox:focus,
+QLineEdit:focus,
+QSpinBox:focus,
+QDoubleSpinBox:focus,
+QSlider:focus,
+QTabBar:focus,
+QTextEdit:focus,
+QPlainTextEdit:focus {
+    outline: 1px solid rgba(88, 166, 255, 0.75);
 }
 
 /* ==== ComboBox ==== */
@@ -537,8 +580,16 @@ QLabel#StatusBadge {
     border: 1px solid rgba(63, 185, 80, 0.3);
     border-radius: 4px;
     padding: 2px 8px;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
+}
+
+/* ==== 说明文字（次级信息标签）====
+   页面里"这个数字是什么口径""为什么是空的"这类解释性文字统一用这个 objectName，
+   与正文 (#F0F6FC) 和弱化文本 (#8B949E) 拉开三档，避免一片灰。 */
+QLabel#HintLabel {
+    color: #A5B1BD;
+    font-size: 12px;
 }
 
 /* ==== QProgressBar ==== */
@@ -548,7 +599,7 @@ QProgressBar {
     border-radius: 4px;
     text-align: center;
     color: #F0F6FC;
-    font-size: 11px;
+    font-size: 12px;
     height: 18px;
 }
 

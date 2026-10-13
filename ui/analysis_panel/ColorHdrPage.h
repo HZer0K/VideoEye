@@ -38,6 +38,8 @@ public:
     void FillScanOptions(videoeye::AnalysisOptions& options) override;
 
     void SetScanActive(bool active) override;
+    // 侧栏导航标记：异常组合表的行数
+    int IssueCount() const override;
     // 同 BitrateGopPage::IsScanActive: 状态必须可观察，否则"某页卡在扫描中"只能靠肉眼发现。
     // 不在 ScanClient 接口里：它是给人/测试看的，不是面板驱动页面要用的。
     bool IsScanActive() const { return scan_active_; }
