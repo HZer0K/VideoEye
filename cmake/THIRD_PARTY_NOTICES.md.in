@@ -1,0 +1,61 @@
+# VideoEye 第三方组件许可声明
+
+本文件由构建系统生成（`cmake/deps/ThirdPartyNotices.cmake`），请勿手工编辑。
+
+- 产品：VideoEye @PROJECT_VERSION@
+- 构建类型：@VIDEOEYE_NOTICE_BUILD_TYPE@
+- 目标平台：@VIDEOEYE_NOTICE_PLATFORM@
+- 生成时间：@VIDEOEYE_NOTICE_TIMESTAMP@
+
+**VideoEye 自身源码采用 MIT 协议**（见随附的 `LICENSE`）。下面的组件随本分发物一起分发，
+按其各自的许可证履约。
+
+---
+
+## 1. FFmpeg
+
+| 项目 | 值 |
+|------|----|
+| 版本 | @FFMPEG_NOTICE_VERSION@ |
+| 来源 | @FFMPEG_NOTICE_SOURCE@ |
+| 构建标识 | @FFMPEG_NOTICE_BUILD_ID@ |
+| 许可证 | @FFMPEG_NOTICE_LICENSE@ |
+| 许可证文本 | @FFMPEG_NOTICE_LICENSE_FILE@ |
+| 对应源码获取 | @FFMPEG_NOTICE_SOURCE_URL@ |
+| 分发形态 | @FFMPEG_NOTICE_LINKAGE@ |
+
+@FFMPEG_NOTICE_EXTRA@
+
+### 使用者的权利
+
+FFmpeg 以**动态库**形式被使用与分发（Windows：`av*.dll`；Linux：`libav*.so`；macOS：`*.dylib`）。
+因此使用者可以用自行编译的同版本 FFmpeg 替换这些文件，程序无需重新编译即可加载 —— 这是
+LGPL 第 4 条要求的"可替换性"，VideoEye 不做任何技术或法律上的限制。
+
+## 2. Qt 6（Qt Widgets）
+
+| 项目 | 值 |
+|------|----|
+| 版本 | @QT_NOTICE_VERSION@ |
+| 许可证 | LGPL-3.0-only / GPL-2.0-only / GPL-3.0-only（三选一；本分发物按 LGPLv3 使用） |
+| 许可证文本 | @QT_NOTICE_LICENSE_FILE@ |
+| 对应源码获取 | <https://www.qt.io/download-open-source> |
+
+Qt 以动态库形式链接。Qt Company 同时提供商业授权，需要商业支持的团队请自行向其购买。
+
+## 3. 其他
+
+- vcpkg 依赖的第三方库（zlib、DBus 等）各自的许可证见 Qt 的 `copyright` 文件与其 SBOM
+  （`sbom/*.spdx`，若构建时生成）。
+- 自研模块（IsobmffParser / MediaInfoAnalyzer / 分析引擎 / QC 规则引擎等）均为本项目源码，MIT。
+
+---
+
+## 附：这份清单覆盖什么、不覆盖什么
+
+覆盖：本分发物里**随附的第三方二进制**及其许可证义务。
+
+不覆盖：使用者自己安装的组件（例如自行安装的 `ffmpeg` 命令行程序、系统 FFmpeg、
+系统 Qt）。那些属于使用者自身的使用行为，不由本分发物承担义务。
+
+> 本文件不构成法律意见。用于商业分发前，请以你所在法域的专业法律意见为准。

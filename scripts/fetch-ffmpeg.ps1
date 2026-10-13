@@ -1,8 +1,7 @@
-﻿# fetch-ffmpeg.ps1 - 下载并强校验 FFmpeg 预编译包 (gyan.dev full shared)
+﻿# fetch-ffmpeg.ps1 - 下载并强校验 FFmpeg 预编译包 (BtbN win64-lgpl-shared, LGPLv3)
 #
 # 用法:
 #   powershell -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1
-#   powershell -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1 -Version 8.1.2
 #   powershell -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1 -DestDir <path>
 #
 # 行为约定:
@@ -13,27 +12,24 @@
 #   * 先解压到临时目录并验证结构完整, 再替换已有目录 —— 中途失败不会把已经有
 #     的、可用的依赖弄丢。
 #
-# 为什么固定用 release-full-shared 系列: gyan.dev 唯一带 include/ 头文件与 lib/
-# 导入库的共享构建。essentials 变体只有 bin/, 没法拿来链接。
+# 为什么固定用 win64-lgpl-shared:
+#   BtbN/FFmpeg-Builds 唯一同时满足"带 include/ + lib/*.lib 可用于 MSVC 链接"、
+#   "带 bin/*.dll 可随包分发"、"LGPLv3 不带 libx264/libx265"的变体。
+#   gyan.dev 的 full_build-shared 是 GPLv3（含 GPL-only 组件），会让 Windows 分发物
+#   整体落到 GPL 之下 —— 那是本项目明确要避开的（见 docs/FFMPEG_COMMAND_WORKBENCH.md
+#   第 8 节）。
 #
-# ⚠️ 许可证（这条决定了脚本默认怎么处理 ffmpeg.exe）:
-#   gyan.dev 的 full/essentials 构建都是 **GPLv3**（启用 --enable-gpl，含 libx264 等
-#   GPL-only 组件）。VideoEye 链接它、并把 av*.dll 随包分发，这部分本身就需要按
-#   GPL 履约；但 **ffmpeg.exe 这个命令行程序是另一回事** —— 把它塞进安装包，等于
-#   再多分发一个 GPL 程序，而它只服务于「FFmpeg 命令工作台」这一个辅助页面。
-#
-#   所以默认删除 ffmpeg.exe：
-#     · 仓库与安装树里少一个 27MB 的 GPL 二进制，分发物保持 MIT 的实际自由度；
-#     · 真要用这一页，由用户自己装 ffmpeg（页面有安装指引），他们装到的多半是
-#       含 libx264/libx265 的完整版，功能比我们随包的更好；
-#   -KeepFfmpegExe 只影响**本机的 third_party 目录**，要不要进安装包另由
-#   -DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON 决定（见 cmake/deps/FfmpegTool.cmake）。
+# ⚠️ 许可证（决定脚本默认怎么处理 ffmpeg.exe、以及为什么必须留下 LICENSE.txt）:
+#   锁定包是 **LGPLv3**。LGPL 要求: 随附许可证文本 + 提供对应源码的获取方式 +
+#   不限制使用者替换这份库。所以:
+#     · 清理 doc/ presets/ 时**必须保留 LICENSE.txt** —— 它是安装树里
+#       third-party 许可证清单的素材（CMake 会把它装进 doc/licenses/）;
+#     · ffmpeg.exe 仍默认删除, 但理由不再是许可证, 而是体积（约 30MB）与
+#       "只服务于 FFmpeg 命令工作台这一个辅助页面"; 要随包就显式开
+#       -KeepFfmpegExe 并配合 -DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON。
 
 param(
     [string]$DestDir = "",
-    [string]$Version = "",
-    [switch]$Force,
-    [switch]$SkipChecksum,
     # 保留 ffmpeg.exe（默认删除，见文件头的许可证说明）。
     # 打包者确定要随包分发 ffmpeg CLI、或本机想直接调试「FFmpeg 命令工作台」时打开。
     [switch]$KeepFfmpegExe
@@ -59,26 +55,30 @@ if ([string]::IsNullOrWhiteSpace($lockedVersion)) {
 }
 if ([string]::IsNullOrWhiteSpace($Version)) { $Version = $lockedVersion }
 
-$expectedSha = ""
-if ($Version -eq $lockedVersion -and $cfg.windows.url -and $cfg.windows.sha256) {
-    # 锁定版本的完整 Shopify 路径: URL + SHA256 都在仓库里, 完全离线可验证
-    $url = $cfg.windows.url
-    $expectedSha = $cfg.windows.sha256
-    Write-Host "版本锁定: FFmpeg $Version (cmake/ffmpeg-version.json)"
-} else {
-    if (-not $cfg.windows.urlTemplate) {
-        Write-Error "$versionFile 缺少 windows.urlTemplate, 无法拼出 $Version 的下载地址"
-        exit 1
-    }
-    # gyan.dev 版本化 URL 路径多一层 /packages/, 文件名是 full_build-shared
-    $url = ($cfg.windows.urlTemplate -replace '\{version\}', $Version)
-    Write-Host "版本: FFmpeg $Version (未锁定校验值, 将从 $url.sha256 在线获取)"
-    if ($Version -ne $lockedVersion) {
-        Write-Warning "注意: 项目锁定的版本是 $lockedVersion, 你正在拉 $Version, 产物 ABI 可能与其他人不一致。"
-    }
+# BtbN 的资产名里带 git commit（ffmpeg-n8.1.3-9-g29e619e767-win64-lgpl-shared-8.1.zip），
+# 没法靠"版本号 → URL"拼出来；想换版本只能人工挑一个 autobuild tag，把 url/sha256
+# 一起改掉再提交。所以这里不再提供 -Version 走模板的捷径 —— 留着它只会让人拿到
+# 一个拼不出来、或拼出来指向别的东西的 URL。
+if ($Version -ne $lockedVersion) {
+    Write-Error "-Version 已废弃：cmake/ffmpeg-version.json 锁定的版本是 $lockedVersion。"
+    Write-Error "要换版本请直接改 cmake/ffmpeg-version.json 的 windows.url / windows.sha256"
+    Write-Error "（sha256 从同 release 的 checksums.sha256 取，别手抄），再重新运行本脚本。"
+    exit 1
 }
-$archive = Join-Path $env:TEMP "videoeye-ffmpeg-$Version.7z"
-$variant = "$Version-full_build-shared"
+
+$url = $cfg.windows.url
+$expectedSha = $cfg.windows.sha256
+if (-not $url -or -not $expectedSha) {
+    Write-Error "$versionFile 的 windows.url / windows.sha256 不完整，无法继续。"
+    exit 1
+}
+Write-Host "版本锁定: FFmpeg $Version ($($cfg.windows.variant), cmake/ffmpeg-version.json)"
+
+# 归档扩展名跟着 URL 走（BtbN 是 .zip，不排除以后换成别的容器）
+$archiveExt = [System.IO.Path]::GetExtension($url)
+if (-not $archiveExt) { $archiveExt = ".zip" }
+$archive = Join-Path $env:TEMP "videoeye-ffmpeg-$Version$archiveExt"
+$variant = "$Version-$($cfg.windows.variant)"
 
 Write-Host "=== VideoEye FFmpeg 预编译包获取 ==="
 Write-Host "版本:   $Version"
@@ -136,16 +136,13 @@ if ($SkipChecksum) {
     Write-Warning "已通过 -SkipChecksum 跳过校验 —— 请确保 you trust 该下载源。"
 } else {
     if (-not $expectedSha) {
-        # 版本没被仓库锁住时, 只能在线取 sidecar; 取不到就失败, 不能"算了继续"
-        try {
-            Invoke-WebRequest -Uri "$url.sha256" -OutFile "$archive.sha256" -UseBasicParsing -TimeoutSec 60
-            $expectedSha = (($((Get-Content "$archive.sha256" -Raw).Trim()) -split '\s+')[0]).ToLower()
-        } catch {
-            Remove-Item $archive -Force -ErrorAction SilentlyContinue
-            Write-Error "无法获取校验文件 $url.sha256 ($($_.Exception.Message))。"
-            Write-Error "构建依赖不允许在校验缺失的情况下继续。请把该版本的 sha256 写进 cmake/ffmpeg-version.json 后重试。"
-            exit 1
-        }
+        # 正常情况下走不到这里（上面已经强制要求 json 里带 sha256），留着是给
+        # "有人手工把 sha256 清空了" 的场景一个明确出口，而不是静默跳过校验。
+        Remove-Item $archive -Force -ErrorAction SilentlyContinue
+        Write-Error "cmake/ffmpeg-version.json 里没有 windows.sha256。"
+        Write-Error "构建依赖不允许在校验缺失的情况下继续。sha256 请从同一 release 的"
+        Write-Error "checksums.sha256 取：$($cfg.windows.checksumsUrl)"
+        exit 1
     }
     Write-Host "期望 SHA256: $($expectedSha.ToLower())"
     if ($actualHash -ne $expectedSha.ToLower()) {
@@ -197,7 +194,8 @@ if (-not $tarOk) {
     }
 }
 
-# gyan 包解压后顶层是一个 ffmpeg-8.1.2-full_build-www.gyan.dev 目录
+# BtbN / gyan 的包解压后顶层都是一个 ffmpeg-<build>-<variant> 目录，这里不认名字，
+# 只认结构 —— 换供应商时不用改这段。
 function Test-FfmpegLayout([string]$dir) {
     return (Test-Path (Join-Path $dir "include\libavcodec\avcodec.h")) -and
            (Test-Path (Join-Path $dir "lib\avcodec.lib")) -and
@@ -214,7 +212,7 @@ if (Test-FfmpegLayout $extractTmp) {
 }
 if (-not $payload) {
     Remove-Item $extractTmp -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Error "解压产物结构异常: 未找到完整的 {include,lib,bin}。请确认下载的是 full_build-shared 而非 essentials。"
+    Write-Error "解压产物结构异常: 未找到完整的 {include,lib,bin}。请确认下载的是带开发文件的 shared 包。"
     exit 1
 }
 Write-Host "结构校验通过: include/ + lib/ + bin/ 齐全"
@@ -262,6 +260,23 @@ if (Test-Path $ffExe) {
     if ($verOutput -match 'ffmpeg version\s+(\S+)') { $ffVersion = $matches[1] }
 }
 
+# ── 许可证文件必须在清理之前先定位 ──
+# LGPL/GPL 都要求随附许可证文本；CMake 会把这份文件装进安装树的 doc/licenses/，
+# 并写进 THIRD_PARTY_NOTICES。下面删 doc/ 时如果把它一起删了，安装树里就会缺
+# 一份必备文件，而构建本身还"一切正常" —— 这种缺口只有在合规审查时才暴露。
+$licenseFile = $null
+$licenseName = ""
+foreach ($cand in @("LICENSE.txt", "LICENSE", "COPYING.txt", "COPYING")) {
+    $p = Join-Path $DestDir $cand
+    if (Test-Path $p) { $licenseFile = $p; $licenseName = $cand; break }
+}
+if (-not $licenseFile) {
+    Write-Error "预编译包里找不到许可证文件（LICENSE.txt / LICENSE / COPYING*）。"
+    Write-Error "分发 FFmpeg 二进制必须随附其许可证文本，缺了它不能继续。请换一个带许可证文件的包。"
+    exit 1
+}
+Write-Host "许可证文件: $licenseName"
+
 $stamp = @{
     Variant       = $variant
     FFmpegVersion = $ffVersion
@@ -270,6 +285,9 @@ $stamp = @{
     Verified      = -not $SkipChecksum
     FetchedAt     = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
     Source        = $url
+    ReleaseTag    = $cfg.windows.releaseTag
+    License       = $cfg.license.spdx
+    LicenseFile   = $licenseName
 }
 $stamp | ConvertTo-Json | Set-Content (Join-Path $DestDir ".videoeye-ffmpeg.json") -Encoding UTF8
 
@@ -281,8 +299,9 @@ Write-Host "  Bin:     $DestDir\bin"
 # ── 清理运行时不需要的东西: ffmpeg.exe/ffplay.exe/ffprobe.exe/doc/presets ──
 # 放在版本探测之后, 因为版本号是从 ffmpeg.exe -version 读出来的。
 #
-# ⚠️ ffmpeg.exe **默认删除**（GPLv3，约 27MB，只服务于「FFmpeg 命令工作台」这一个
-# 辅助页面）。留着它的唯一理由是本机调试这一页，或打包者确实要随包分发 ——
+# ⚠️ ffmpeg.exe **默认删除**（约 30MB，只服务于「FFmpeg 命令工作台」这一个辅助
+# 页面；换成 LGPL 包后这不再是许可证问题，纯粹是体积与用途的取舍）。
+# 留着它的唯一理由是本机调试这一页，或打包者确实要随包分发 ——
 # 那就加 -KeepFfmpegExe，并配合 -DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON。
 # 删掉之后工作台页会显示"未找到 ffmpeg"并引导用户安装，不是构建坏了。
 $cleanupExes = @("ffplay.exe", "ffprobe.exe")
@@ -295,11 +314,18 @@ foreach ($exe in $cleanupExes) {
 if (Test-Path $ffExe) {
     Write-Host "  CLI:     ffmpeg.exe 已保留 (-KeepFfmpegExe) —— 仅供本机调试, 默认不会进安装包"
 } else {
-    Write-Host "  CLI:     ffmpeg.exe 已删除 (许可证: GPLv3; 需要本机调试请加 -KeepFfmpegExe)"
+    Write-Host "  CLI:     ffmpeg.exe 已删除 (体积/用途取舍; 需要本机调试请加 -KeepFfmpegExe)"
 }
 foreach ($dir in @("doc", "presets")) {
     $dirPath = Join-Path $DestDir $dir
     if (Test-Path $dirPath) { Remove-Item $dirPath -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+# 清理完之后再确认一次许可证文件还在（有的包把 LICENSE 放在 doc/ 里）
+if (-not (Test-Path $licenseFile)) {
+    Write-Error "许可证文件 $licenseName 在清理过程中被删除了（可能原本位于 doc/ 下）。"
+    Write-Error "分发 FFmpeg 二进制必须随附其许可证文本。请手工把它放回 $DestDir\$licenseName。"
+    exit 1
 }
 
 Write-Host ""

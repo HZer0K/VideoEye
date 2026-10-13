@@ -112,9 +112,11 @@ build/test-release/bin/   ← 带单元测试的构建
 -DVIDEOEYE_BUNDLE_FFMPEG=OFF           # 不把动态库复制进产物（用系统库路径运行）
 ```
 
-**Windows 版本锁定**：版本号、URL、SHA256 全部来自 `cmake/ffmpeg-version.json`（当前 **8.1.2**），
-所有脚本读同一个文件。想要升级版本，改这一个文件即可 —— 改完 `sha256` 必须同步更新，
-`scripts/fetch-ffmpeg.ps1` 在校验不过时会**直接失败**，不会带着一个可疑的归档继续构建。
+**Windows 版本锁定**：版本号、URL、SHA256 与许可证元数据全部来自 `cmake/ffmpeg-version.json`
+（当前 **8.1.3**，BtbN `win64-lgpl-shared`，LGPLv3），所有脚本读同一个文件。
+想要升级版本，改这一个文件即可 —— 改完 `sha256` 必须同步更新（从同 release 的
+`checksums.sha256` 取），`scripts/fetch-ffmpeg.ps1` 在校验不过时会**直接失败**，
+不会带着一个可疑的归档继续构建。`-Version` 参数已废弃：资产名里带 git commit，拼不出来。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1            # 用锁定版本

@@ -297,7 +297,23 @@ TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红�
 
 ## 开源协议
 
-VideoEye 自身源码采用 [MIT](LICENSE) 协议。随分发物附带的 FFmpeg 二进制按其自身许可证履约，`ffmpeg` 命令行程序默认不随包分发。
+VideoEye **自身源码**采用 [MIT](LICENSE) 协议。
+
+分发物里还包含第三方二进制，按各自许可证履约，**不能笼统地说"VideoEye 是 MIT 软件"**：
+
+| 组件 | 许可证 | 说明 |
+|------|--------|------|
+| VideoEye 源码 | MIT | 本仓库 `LICENSE` |
+| FFmpeg（Windows 随包） | LGPL-3.0-or-later | BtbN `win64-lgpl-shared`，不含 `libx264`/`libx265` |
+| FFmpeg（Linux / macOS） | 取决于发行版构建 | 用系统 FFmpeg，多数带 GPL 组件 |
+| Qt 6 Widgets | LGPL-3.0-only / GPL-2.0-only / GPL-3.0-only | 本分发物按 LGPLv3 使用 |
+
+每次 `cmake --install` 都会生成 `doc/THIRD_PARTY_NOTICES.md`（版本、来源、许可证、
+对应源码获取方式）与 `doc/licenses/`（上述许可证全文 + Qt copyright）。**发布二进制包
+时必须一并带上这两个产物**，否则不满足 LGPL 的随附义务。
+
+`ffmpeg` 命令行程序默认不随包分发，由页面引导用户自行安装。详见
+[`docs/FFMPEG_COMMAND_WORKBENCH.md` 第 8 节](docs/FFMPEG_COMMAND_WORKBENCH.md#8-许可证windows-锁定包已切到-lgplv3)。
 
 ## 致谢
 

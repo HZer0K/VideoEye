@@ -48,7 +48,7 @@ set(FFMPEG_TOOL "" CACHE FILEPATH
 # 默认 OFF —— 打开它会改变整个分发物的许可证，属于需要人来做决定的事，
 # 不该由"恰好在 PATH 里找到一个 ffmpeg"这种偶然情况触发。
 set(VIDEOEYE_BUNDLE_FFMPEG_TOOL OFF CACHE BOOL
-    "把 ffmpeg 可执行程序拷进安装树（默认 OFF：会让分发物整体按 GPLv3 履约）")
+    "把 ffmpeg 可执行程序拷进安装树（默认 OFF：能下载到的 CLI 多为 GPLv3 构建，随包会把分发物整体拉到 GPLv3）")
 
 # ---- 1) 探测 ----
 # 优先级: 显式 FFMPEG_TOOL > (Windows) 预编译包 bin/ > 系统 PATH
@@ -113,10 +113,12 @@ if(VIDEOEYE_BUNDLE_FFMPEG_TOOL)
 
     message(WARNING
         "[ffmpeg-tool] 将随包分发 ${_tool}\n"
-        "  许可证：能下载到的 ffmpeg 构建绝大多数是 GPLv3。把它放进安装包，\n"
-        "  整个分发物需按 GPLv3 履约（随附许可证文本 + 提供对应源码）。\n"
-        "  若这份 ffmpeg 是 LGPL 构建，请一并随附 LGPL 文本与库的源码获取方式。\n"
-        "  详见 docs/FFMPEG_COMMAND_WORKBENCH.md。")
+        "  许可证：能下载到的 ffmpeg CLI 构建绝大多数是 GPLv3（自带 libx264/libx265，\n"
+        "  包括 gyan.dev 的包、Debian/Ubuntu 与 Homebrew 的 ffmpeg）。把这样一个可执行\n"
+        "  程序放进安装包，整个分发物需按 GPLv3 履约：随附许可证文本 + 提供对应源码。\n"
+        "  若这份 ffmpeg 是 LGPL 构建，随附 LGPLv3（及其引用的 GPLv3）文本与源码获取方式即可。\n"
+        "  无论哪种，doc/THIRD_PARTY_NOTICES.md 都要如实写清版本、来源与许可证。\n"
+        "  详见 docs/FFMPEG_COMMAND_WORKBENCH.md 第 8 节。")
     if(WIN32 AND NOT _bundle_safe)
         message(WARNING
             "[ffmpeg-tool] ${_tool} 不在预编译包 bin/ 里，它可能依赖自身目录下的私有 DLL。\n"
@@ -191,14 +193,16 @@ if(NOT _tool)
         "  Debian/Ubuntu: sudo apt install -y ffmpeg，macOS: brew install ffmpeg。")
 elseif(NOT _tool_bundle)
     # 口径必须与 docs/FFMPEG_COMMAND_WORKBENCH.md 第 8 节一致:
-    # 不随包 ffmpeg.exe 只是**不额外分发一个 GPL 程序**，不等于分发物整体是 MIT ——
-    # 链接进来并随包的 av*.dll 本身就有自己的条款，由 FFmpeg 包决定。
+    # 不随包 ffmpeg.exe 只是**不额外分发一个（多半是 GPL 的）程序**，不等于分发物
+    # 只有 MIT —— 链接进来并随包的 av*.dll 本身有自己的条款，由 FFmpeg 包决定。
     message(STATUS
         "[ffmpeg-tool] 找到 ${_tool}，按默认策略**不**随包分发（安装树里不会有它）；\n"
         "  终端用户由工作台页引导自行安装。\n"
-        "  注意: 这不额外增加新的义务，但也**不等于分发物整体是 MIT** —— 最终许可证取决于\n"
-        "  链接进来并随包的那份 FFmpeg（当前 Windows 包是 GPLv3），见 docs/FFMPEG_COMMAND_WORKBENCH.md 第 8 节。\n"
-        "  确实要随包打包: -DFFMPEG_TOOL=<path> -DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON（注意 GPLv3 义务）。")
+        "  注意: 这不额外增加新的义务，但也**不等于分发物只有 MIT 组件** —— 随包的 av*.dll\n"
+        "  按其自身许可证履约（Windows 锁定包的许可证写在 cmake/ffmpeg-version.json 的\n"
+        "  license 段，Linux/macOS 用系统 FFmpeg、许可证由发行版构建决定）。\n"
+        "  安装时会生成 doc/THIRD_PARTY_NOTICES.md 与 doc/licenses/，发布前请一并带上。\n"
+        "  确实要随包打包: -DFFMPEG_TOOL=<path> -DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON（并履行对应义务）。")
 endif()
 
 set(VIDEOEYE_FFMPEG_TOOL "${_tool}" CACHE FILEPATH "原生 ffmpeg 可执行程序路径" FORCE)

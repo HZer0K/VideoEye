@@ -1,17 +1,36 @@
 {
   "_comment": "FFmpeg 预编译包的唯一版本源。所有脚本（scripts/fetch-ffmpeg.ps1、CI）都从这里读版本与校验值，避免出现不同入口构建出不同 ABI 的情况。",
-  "version": "8.1.2",
-  "_license": "GPL-3.0-or-later",
-  "_license-note": "gyan.dev 的 full / essentials 构建都启用了 --enable-gpl（含 libx264 等 GPL-only 组件），整体按 GPLv3 授权。VideoEye 链接它并随包分发 av*.dll，这部分本身就需要按 GPL 履约 —— 这也是为什么 ffmpeg.exe 默认既不保留（scripts/fetch-ffmpeg.ps1）也不随包（cmake/deps/FfmpegTool.cmake）。想让分发物真正 MIT-clean，见 docs/FFMPEG_COMMAND_WORKBENCH.md「许可证」一节：换成 LGPL 构建，URL 与 sha256 改下面这两个字段即可，脚本无需改动。",
+  "version": "8.1.3",
+  "license": {
+    "_comment": "这一块决定分发物的合规口径，改包时必须同步改这里 —— CMake 会据此把许可证文本装进安装树，并生成 THIRD_PARTY_NOTICES。",
+    "spdx": "LGPL-3.0-or-later",
+    "name": "GNU Lesser General Public License v3.0 or later",
+    "licenseFileName": "LICENSE.txt",
+    "licenseFileUrl": "https://www.gnu.org/licenses/lgpl-3.0.txt",
+    "sourceUrl": "https://ffmpeg.org/download.html",
+    "note": "Windows 锁定的是 BtbN/FFmpeg-Builds 的 win64-lgpl-shared 变体（--disable-libx264 --disable-libx265，LGPLv3）。VideoEye 以动态链接方式使用它，并把 av*.dll 随包分发，因此分发物必须随附 LGPLv3 文本（LGPLv3 是 GPLv3 的附加许可，两份文本要一起给）并提供 FFmpeg 对应源码的获取方式。代价是导出视频时没有 libx264/libx265，MediaExporter 会降级到 libopenh264 / mpeg4 —— 这是刻意接受的取舍，见 docs/FFMPEG_COMMAND_WORKBENCH.md 第 8 节。"
+  },
   "windows": {
-    "provider": "gyan.dev",
-    "_url-note": "版本化 URL 比 rolling release 多一层 /packages/，且文件名是 ffmpeg-<ver>-full_build-shared.7z（注意 full 后面的 _build）。",
-    "urlTemplate": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-{version}-full_build-shared.7z",
-    "url": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-full_build-shared.7z",
-    "sha256": "cba748035c21ce1431d0823c7a3a711f38616f89f87a265dceddf9b7f6749d2d"
+    "provider": "BtbN/FFmpeg-Builds",
+    "variant": "win64-lgpl-shared",
+    "releaseTag": "autobuild-2026-09-30-13-08",
+    "buildId": "n8.1.3-9-g29e619e767",
+    "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-n8.1.3-9-g29e619e767-win64-lgpl-shared-8.1.zip",
+    "sha256": "3e47bda1607740550141e37c0e49d1e5182b34699f15adfd137ee266d346811a",
+    "checksumsUrl": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/checksums.sha256",
+    "_url-note": "刻意钉在**按月归档**的 autobuild tag 上，而不是 rolling 的 latest：latest 下同名资产每天被覆盖，钉死 sha256 会天天校验失败。每个 autobuild release 里都有 checksums.sha256（本文件 checksumsUrl 字段），换版本时从那里取 sha256，别手抄。"
   },
   "linux": {
-    "_note": "Linux/macOS 不下载预编译包，默认使用包管理器安装的系统 FFmpeg（pkg-config 查找）。见 cmake/deps/FFmpegPrebuilt.cmake。注意发行版与 Homebrew 的 ffmpeg 通常也启用了 --enable-gpl；要彻底避开 GPL，需改用各自的 LGPL 变体（Debian/Ubuntu 无官方 LGPL 包，一般要自行构建或换源）。"
+    "_note": "Linux/macOS 默认使用包管理器安装的系统 FFmpeg（pkg-config 查找）。见 cmake/deps/FFmpegPrebuilt.cmake。发行版与 Homebrew 的 ffmpeg 多数带了 --enable-gpl；需要 LGPL-clean 的分发物时，这两条路要自行改为 LGPL 变体或静态构建。",
+    "fallback": {
+      "_comment": "系统 FFmpeg 不满足最低版本（7.1 / libavcodec 61.19）时才用的兜底包，典型场景是 Ubuntu 24.04（系统只有 6.1）上的 CI。与 windows 同一次构建（同一个 buildId），保证三平台 ABI 与行为一致。由 scripts/fetch-ffmpeg.sh 使用；本地开发一般不需要它。",
+      "provider": "BtbN/FFmpeg-Builds",
+      "variant": "linux64-lgpl-shared",
+      "releaseTag": "autobuild-2026-09-30-13-08",
+      "buildId": "n8.1.3-9-g29e619e767",
+      "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-n8.1.3-9-g29e619e767-linux64-lgpl-shared-8.1.tar.xz",
+      "sha256": "d4d7b6936f492c0b866b1cb4a29a1bbae09d6a064b4ec4eb90c95bed7969535a"
+    }
   },
   "macos": {
     "_note": "同 Linux：brew install ffmpeg 即可（Homebrew 的 ffmpeg 默认也是 GPL）。"

@@ -479,6 +479,12 @@ videoeye_install_ffmpeg()
 # 原生 ffmpeg 可执行程序: 只装 Windows 随包的那份; Linux/macOS 用系统 ffmpeg, 不塞进安装树
 videoeye_install_ffmpeg_tool()
 
+# 第三方许可证文本与声明。
+# MIT 只覆盖 VideoEye 自己的源码，不覆盖随包分发的 FFmpeg / Qt6 二进制 —— 安装树里
+# 必须有这两家的许可证全文与一份 THIRD_PARTY_NOTICES，否则发出去的包不合规。
+include(cmake/deps/ThirdPartyNotices.cmake)
+videoeye_install_third_party_notices()
+
 if(WIN32)
     # 安装树同样要跑一遍依赖闭包 —— 打包出去的东西比 build 目录更容易漏文件,
     # 而且漏了之后只有目标机器上才会暴露。

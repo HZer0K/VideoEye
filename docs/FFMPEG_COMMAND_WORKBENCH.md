@@ -186,7 +186,7 @@ Windows 上也不再有"自包含"这个前提：configure 期会对那个 `ffmp
 
 | 平台 | 做法 |
 | --- | --- |
-| Windows | `scripts/fetch-ffmpeg.ps1` **默认删除 `ffmpeg.exe`**（GPLv3，约 27MB）；本机要调试这一页就加 `-KeepFfmpegExe`。要不要进安装包另由 `-DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON` 决定，默认 OFF |
+| Windows | `scripts/fetch-ffmpeg.ps1` **默认删除 `ffmpeg.exe`**（约 30MB，且只服务于本页）；本机要调试这一页就加 `-KeepFfmpegExe`。要不要进安装包另由 `-DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON` 决定，默认 OFF |
 | Linux / macOS | 不打包系统 ffmpeg。构建期只记录路径，页面允许手动指定；改路径会重新查询该程序的编码器/滤镜清单 |
 
 CMake 侧：`-DFFMPEG_TOOL=<path>` 可强制指定（路径不存在直接报错，不静默回退）。
@@ -223,47 +223,69 @@ CI 冒烟：Windows 只在 `dist\bin\ffmpeg.exe` **存在时**才跑 `-version`�
 13. 日志—— 「运行日志」按到达顺序合并 stdout/stderr（stderr 行以 `[err]` 开头），
     「错误输出」只留 stderr；正常转码的进度行出现在合并页里
 
-## 8. 许可证：为什么默认不随包分发 ffmpeg
+## 8. 许可证：Windows 锁定包已切到 LGPLv3
 
-### 8.1 三个选项
+### 8.1 三个选项（已选 A）
 
-| 选项 | 做法 | 代价 |
+| 选项 | 做法 | 代价 | 状态 |
+| --- | --- | --- | --- |
+| A. 改用 LGPL 构建 | 把链接与分发的 FFmpeg 换成 LGPL 构建（BtbN `win64-lgpl-shared`） | 换源要重新锁版本与 SHA256、验证 ABI；LGPL 构建没有 `libx264`/`libx265`，导出视频降级到 `libopenh264` / `mpeg4` | ✅ **已采纳** |
+| B. 不随包 `ffmpeg.exe`，提示用户自己装 | 分发物里没有 CLI，页面引导用户安装 | 该页开箱即用性下降，用户要多一步 | ✅ 同时保留（体积与用途取舍） |
+| C. 接受 GPL | 项目从 MIT 改 GPLv3，随包分发完整 ffmpeg | 商业/闭源集成者直接劝退 | ❌ 排除 |
+
+### 8.2 现在的实际状态
+
+| 平台 | FFmpeg | 许可证 |
 | --- | --- | --- |
-| A. 改用 LGPL 构建 | 把链接与分发的 FFmpeg 换成 LGPL 构建（如 BtbN 的 `win64-lgpl-shared`），安装树里只留 LGPL 二进制 | 换源要重新锁版本与 SHA256、验证 ABI；LGPL 构建没有 `libx264`/`libx265`，导出视频会降级到 `libopenh264` / `mpeg4` |
-| B. 不随包，提示用户自己装 | 分发物里没有 `ffmpeg.exe`，页面引导用户安装 | 该页开箱即用性下降，用户要多一步 |
-| C. 接受 GPL | 项目从 MIT 改 GPLv3，随包分发完整 ffmpeg | 商业/闭源集成者直接劝退，MIT 带来的采纳优势全丢 |
+| Windows | BtbN `win64-lgpl-shared`，`n8.1.3-9-g29e619e767`（钉在 `autobuild-2026-09-30-13-08`） | **LGPL-3.0-or-later** |
+| Linux / macOS | 系统 FFmpeg（`pkg-config`） | 取决于发行版构建，**多数带 `--enable-gpl`** |
 
-### 8.2 我们的选择：B 打底，A 作为可切换目标，**不**选 C
+LGPL 构建的配置里明确 `--disable-libx264 --disable-libx265 --enable-libopenh264`，
+正好接上 `MediaExporter` 的候选链 `libx264 → libopenh264 → mpeg4`（webm 是
+`libvpx-vp9 → libvpx`）：导出功能照常可用，只是压缩率下降 —— 这是刻意接受的取舍。
 
-VideoEye 的核心价值是**分析能力**，FFmpeg 命令工作台是辅助页面。为一个辅助页的开箱即用，
-把整个项目的许可证自由度赔进去，性价比不成立 —— 这正是排除 C 的理由。
+`ffmpeg.exe` 仍然默认删除，但理由**不再是许可证**（LGPL 构建随包没问题），而是
+约 30MB 的体积与"只服务于这一个辅助页面"。要随包就 `-KeepFfmpegExe` +
+`-DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON`。
 
-B 是默认状态，理由有三：
+### 8.3 分发时必须履行的三条（LGPLv3 的要求）
 
-1. **MIT 是项目被采纳的原因之一。** 分析工具的使用者里有企业、广播与车机厂商，他们对许可证
-   敏感；保持 MIT 才能被放心集成。
-2. **用户自己装的 ffmpeg 反而更好。** 他们装到的通常是含 `libx264`/`libx265` 的完整版，
-   功能强于我们能随包的任何一份；而用户自用不受分发条款约束 —— 这个义务不该由我们来担。
-3. **不替用户做决定。** 打包者确信自己那份是 LGPL 构建、或愿意让分发物整体走 GPLv3 时，
-   用 `-DVIDEOEYE_BUNDLE_FFMPEG_TOOL=ON` 显式打开并自行完成合规动作（随附许可证文本 +
-   提供对应源码获取方式）。CMake 会在打开它时打 WARNING 提醒这件事。
+1. **随附许可证文本。** LGPLv3 是 GPLv3 的"附加许可"，只给 LGPLv3 等于只给了一半，
+   两份全文都要有。现在由 `cmake/deps/ThirdPartyNotices.cmake` 在每次 `install` 时
+   生成，安装树里会有：
+   `doc/THIRD_PARTY_NOTICES.md`、`doc/licenses/FFmpeg-LGPL-3.0-or-later.txt`、
+   `doc/licenses/GPL-3.0.txt`、`doc/licenses/LGPL-3.0.txt`、
+   `doc/licenses/Qt6-copyright.txt`、`doc/licenses/VideoEye-MIT.txt`。
+   **没有这些文件的二进制包不要发布。**
+2. **提供对应源码的获取方式。** `THIRD_PARTY_NOTICES.md` 里写了 `ffmpeg.org/download.html`
+   与锁定包的 release tag（内含 FFmpeg 源码 commit `g29e619e767`）。BtbN 的每个
+   release 都对应一次可复现的构建，这就是 LGPL 要求的"对应源码"。
+3. **不限制使用者替换这份库。** 已满足：VideoEye 以动态库方式使用 FFmpeg，
+   使用者可以自行编译同版本库直接替换文件，无需重新编译 VideoEye。声明里也写明了这一点。
 
-### 8.3 需要如实说明的一件事
+### 8.4 仍然存在的边界 —— 不能说"分发物整体是 MIT"
 
-**当前锁定的 Windows 预编译包（gyan.dev `full_build-shared`）本身就是 GPLv3** —— 它包含
-`libx264` 等 GPL-only 组件。VideoEye 链接它、并把 `av*.dll` 随包分发，因此严格来说
-Windows 二进制已经处在 GPL 之下。这与"随不随包 `ffmpeg.exe`"是两个层次的问题：
-不随包 CLI 消除了**额外分发一个 GPL 程序**，但没有消除库本身的授权状态。
-
-真正要解决，走 A：把 `cmake/ffmpeg-version.json` 里的 Windows 包换成 LGPL 构建
-（改 `windows.url` / `windows.sha256` 两个字段即可，脚本无需改动），并在分发物里随附
-LGPL 文本与库的源码获取方式。我们已经把路铺好了 —— `MediaExporter` 不再硬依赖 `libx264`，
-候选链是 `libx264 → libopenh264 → mpeg4`（webm 是 `libvpx-vp9 → libvpx`），
-换成 LGPL 构建后导出功能照常可用，只是压缩率下降。
+- **Linux / macOS 用系统 FFmpeg**，多数发行版与 Homebrew 的构建带 GPL 组件。
+  这两个平台的分发物**仍然受 GPL 约束**，除非改用 LGPL 变体或自行静态构建。
+  `THIRD_PARTY_NOTICES.md` 在用系统 FFmpeg 时会如实标注"许可证取决于发行版构建"。
+- **Qt6 是 LGPLv3**（另有 GPL / 商业授权可选）。
+- 所以对外表述只能是：**VideoEye 源码 MIT；Windows 分发物含 LGPLv3 组件；
+  Linux/macOS 取决于系统 FFmpeg 的构建配置。**
 
 > 构建时的同一口径：`cmake/deps/FfmpegTool.cmake` 在"找到 ffmpeg 但不随包"时打的那句
-> STATUS，说的也是上面这层关系 —— **不额外分发 GPL 程序 ≠ 分发物整体是 MIT**。
+> STATUS，说的也是上面这层关系 —— **不额外分发一个 GPL 程序 ≠ 分发物只有 MIT 组件**。
 > 修改其中任何一处措辞时请同步另一处，别再让两处说法打架。
 
-> 注意：Linux/macOS 上发行版与 Homebrew 的 ffmpeg 通常也启用了 `--enable-gpl`。
-> 要彻底避开 GPL，那两个平台同样需要改用 LGPL 变体（多数要自行构建）。
+### 8.5 换包 / 升级的操作步骤
+
+1. 在 <https://github.com/BtbN/FFmpeg-Builds/releases> 挑一个 **autobuild** tag。
+   不要钉 rolling 的 `latest` —— 它下同名资产每天被覆盖，钉死 sha256 会天天校验失败；
+   月末那批是长期保留的，优先选它们。
+2. 改 `cmake/ffmpeg-version.json`：
+   `windows.url` / `windows.sha256` / `windows.releaseTag` / `windows.buildId`，
+   以及 `version`、`license.*`。**sha256 从同 release 的 `checksums.sha256` 取，别手抄。**
+3. `powershell -ExecutionPolicy Bypass -File scripts\fetch-ffmpeg.ps1 -Force`
+   （`-Version` 已废弃：资产名带 commit hash，拼不出来）。
+4. 复核确实是 LGPL 构建：`ffmpeg.exe -version` 的配置里必须有 `--disable-libx264`。
+   顺带确认 `bin/` 里的 DLL 主版本号没变（跨大版本要重新验证 ABI）。
+5. 跑一次 `cmake --install`，确认 `doc/licenses/` 下文件齐全。
