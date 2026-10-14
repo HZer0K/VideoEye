@@ -806,17 +806,10 @@ void MainWindow::SetupConnections() {
             });
 
     // ---- 首页（总览）接线 ----
-    // 1) 文件摘要: 打开成功时有 StreamInfo，失败时只有文件名（分析模式仍要显示是哪个文件）
-    connect(player_, &player::MediaPlayer::OpenFinished,
-            this, [this](bool ok) {
-                if (!overview_page_) return;
-                const QString source = pending_open_source_;
-                if (ok && player_) {
-                    overview_page_->SetFileSummary(player_->GetStreamInfo());
-                } else if (!source.isEmpty()) {
-                    overview_page_->SetOpenedFileWithoutSummary(source);
-                }
-            });
+    // 1) 文件摘要: 在 OnPlayerOpenFinished 里做，**不再单开一个 OpenFinished 连接**。
+    //    两个槽都要读 pending_open_source_，而 Qt 按连接顺序调用：先跑的那个把
+    //    pending_open_source_ 清空之后，后跑的只能读到空串 —— 打开失败时首页就
+    //    拿不到文件名了。摘要与状态栏收尾同属"这一次打开"，放一个槽里顺序才确定。
     // 2) 分析状态: 面板在扫描起止/报告重算/换文件时发信号，这里拉快照刷新首页
     connect(analysis_panel_, &ui::AnalysisPanel::DiagnosticsStateChanged,
             this, &MainWindow::RefreshOverviewAnalysis);
@@ -1090,6 +1083,16 @@ void MainWindow::OnPlayerOpenFinished(bool ok) {
     }
     if (current_media_label_) {
         current_media_label_->setText(ok ? source : tr("%1 (无法播放)").arg(source));
+    }
+
+    // ---- 首页文件摘要（见 SetupConnections 里"首页接线"的第 1 条注释）----
+    // 打开成功时贴 StreamInfo；失败（分析模式）至少要把文件名留在首页上。
+    if (overview_page_) {
+        if (ok) {
+            overview_page_->SetFileSummary(player_->GetStreamInfo());
+        } else if (!source.isEmpty()) {
+            overview_page_->SetOpenedFileWithoutSummary(source);
+        }
     }
 
     if (ok) {

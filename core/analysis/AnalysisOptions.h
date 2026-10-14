@@ -254,6 +254,11 @@ struct AnalysisOptions {
     // 辅助数据轨（data stream 枚举 + SCTE-35 cue 解析 + metadata key-value 采集）
     bool analyze_aux_data = true;
     AuxDataOptions aux_data_options;
+
+    // 时间轴诊断里"逐包 delta 曲线"的点数上限（每个视频/音频包一个采样点）。
+    // 默认 20 万点 ≈ 3 MB；0 = 不限制（长视频 / 高码率文件会按包数线性吃内存，
+    // 只应在明确要全量曲线时开启）。上限只影响曲线精度，不影响问题检出与汇总指标。
+    int64_t timeline_max_curve_points = 200000;
 };
 
 } // namespace videoeye

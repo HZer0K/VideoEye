@@ -90,6 +90,19 @@ void F(const QtSideResult& res, QString& label) {
 """
 
 
+# 赋值关的接收者澄清: 与上面同源，只是发生在赋值语句上。
+# （真实仓库的对应物: core/ffmpeg 的 last_result_.error_message = QStringLiteral(...)，
+#   接收者 FfmpegRunResult 是 Qt 侧自有结构。以前靠"按文件加白名单"屏蔽这类用法，
+#   白名单越加越长、审计越没人信；现在按接收者类型放行。）
+QT_SIDE_ASSIGN_CPP = """struct QtSideResult {
+    QString error_message;
+};
+void F(QtSideResult& out) {
+    out.error_message = QString("bad");
+}
+"""
+
+
 def load_audit_module():
     spec = importlib.util.spec_from_file_location("audit_qt_domain_border", AUDIT_PATH)
     if spec is None or spec.loader is None:
@@ -192,6 +205,9 @@ def main():
                0, "[疑似]")
     ok &= case("QString::arg(Qt 侧结构成员，字段名撞车) -> 放行",
                dict(domain, **{"core/analysis/FakeQtSide.cpp": QT_SIDE_RECEIVER_CPP}),
+               0, "[跳过]")
+    ok &= case("赋值给 Qt 侧结构成员，字段名撞车 -> 放行",
+               dict(domain, **{"core/analysis/FakeQtSideAssign.cpp": QT_SIDE_ASSIGN_CPP}),
                0, "[跳过]")
     print("-" * 60)
     ok &= check_real_repo(load_audit_module())

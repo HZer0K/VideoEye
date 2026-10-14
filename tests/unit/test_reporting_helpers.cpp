@@ -95,6 +95,24 @@ TEST(ReportBasePathTest, NotUnderRootFallsBackToFileName) {
     EXPECT_TRUE(fs::path(p).has_parent_path());
 }
 
+// 目录逃逸：file 借 ".." 爬出 root。relative() 算出来的相对部分带 ".."，
+// 拼到 out_dir 上就写到导出目录外面去了 —— 必须退回只取文件名。
+TEST(ReportBasePathTest, ParentEscapeFallsBackToFileName) {
+    const auto p =
+        ReportBasePath("C:/out", "C:/root/sub", "C:/root/../outside/clip.mp4").string();
+    EXPECT_EQ(fs::path(p).filename().string(), "clip");
+    EXPECT_TRUE(fs::path(p).has_parent_path());
+    // 落盘路径里不允许残留任何 ".." 分量
+    EXPECT_EQ(p.find(".."), std::string::npos);
+}
+
+// root 为空时 relative() 会退回绝对路径（跨盘更是如此），同样不能照拼
+TEST(ReportBasePathTest, EmptyRootFallsBackToFileName) {
+    const auto p = ReportBasePath("C:/out", "", "C:/root/clip.mp4").string();
+    EXPECT_EQ(fs::path(p).filename().string(), "clip");
+    EXPECT_EQ(p.find(".."), std::string::npos);
+}
+
 // ---------------------------------------------------------------------------
 // P0#2：导出落盘 —— 成功时返回真实路径、文件确实生成；目标目录不可写时
 // 标记 export_failed=true（让上层区分"分析成功 / 导出失败"）。
@@ -388,11 +406,11 @@ videoeye::ui::ResultStamp MakeStamp(const std::string& path,
     return stamp;
 }
 
-videoeye::ui::FileVersionStamp VersionOf(std::uint64_t size, std::int64_t mtime_s) {
+videoeye::ui::FileVersionStamp VersionOf(std::uint64_t size, std::int64_t mtime_ns) {
     videoeye::ui::FileVersionStamp v;
     v.valid = true;
     v.size = size;
-    v.mtime_s = mtime_s;
+    v.mtime_ns = mtime_ns;
     return v;
 }
 
@@ -414,6 +432,18 @@ TEST(CanReuseAnalysisTest, FileVersionChangeForcesReanalysis) {
     EXPECT_FALSE(CanReuseAnalysis(stamp, "a.mp4", VersionOf(2048, 100), options));
     // 修改时间变了
     EXPECT_FALSE(CanReuseAnalysis(stamp, "a.mp4", VersionOf(1024, 200), options));
+}
+
+// 指纹必须精确到秒以下: 同一秒内被替换成"大小相同"的另一个文件（脚本重导出、
+// 拷回旧版本）在秒级指纹下是"没变"，于是把上一次的结果复用出去了。
+TEST(CanReuseAnalysisTest, SameSecondButDifferentSubSecondIsNotReusable) {
+    const auto options = videoeye::qc::OptionsForDepth(videoeye::qc::QcAnalysisDepth::Deep);
+    // 1.5s 与 1.9s：取整到秒都是 1s，但确实是两个不同的版本
+    const auto stamp = MakeStamp("a.mp4", VersionOf(1024, 1500000000LL), options,
+                                 videoeye::model::AnalysisStatus::Complete);
+    EXPECT_FALSE(CanReuseAnalysis(stamp, "a.mp4", VersionOf(1024, 1900000000LL), options));
+    // 同一版本照常可复用（精度提高不能把"没变"判成"变了"）
+    EXPECT_TRUE(CanReuseAnalysis(stamp, "a.mp4", VersionOf(1024, 1500000000LL), options));
 }
 
 TEST(CanReuseAnalysisTest, NetworkUriOrMissingVersionIsNeverReusable) {

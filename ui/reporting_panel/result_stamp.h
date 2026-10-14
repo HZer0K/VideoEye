@@ -27,14 +27,19 @@ namespace ui {
 // 本地文件的版本指纹（大小 + 修改时间）。
 // 网络源（http/rtmp/rtsp...）没有本地指纹，valid 一列为 false —— 于是"网络源默认
 // 重新分析"是这套判定的自然结果，不需要在调用处再写一条 if。
+//
+// 修改时间取**纳秒**精度而不是秒：同一秒内被替换成大小相同的另一个文件（转录工具
+// 重导出、脚本覆盖、拷回旧版本）在秒级指纹下是"没变"，于是复用上一份结果导出去。
+// 这里只做"两次取值是否相等"的比较，不换算成挂钟时间，所以 file_time_type 的纪元
+// 与 system_clock 是否一致都无所谓 —— 同机同 API 取值就自洽。
 struct FileVersionStamp {
-    bool valid = false;        // 是否取到本地指纹（网络源 / 文件已删除 / 读取失败 => false）
-    std::uint64_t size = 0;    // 字节数
-    std::int64_t mtime_s = 0;  // 修改时间（时间点计数，仅用于同机比较是否变化）
+    bool valid = false;         // 是否取到本地指纹（网络源 / 文件已删除 / 读取失败 => false）
+    std::uint64_t size = 0;     // 字节数
+    std::int64_t mtime_ns = 0;  // 修改时间（纳秒计数，仅用于同机比较是否变化）
 
     bool operator==(const FileVersionStamp& other) const {
         if (valid != other.valid) return false;
-        return !valid || (size == other.size && mtime_s == other.mtime_s);
+        return !valid || (size == other.size && mtime_ns == other.mtime_ns);
     }
 };
 
@@ -47,10 +52,8 @@ inline FileVersionStamp QueryFileVersion(const std::string& path) {
     const auto mtime = std::filesystem::last_write_time(path, ec);
     if (ec) return stamp;
     stamp.size = static_cast<std::uint64_t>(size);
-    // file_time_type 的纪元与 system_clock 未必相同，但这里只做"两次取值是否相等"的比较，
-    // 只要同机同 API 取值就自洽。
-    stamp.mtime_s = static_cast<std::int64_t>(
-        std::chrono::duration_cast<std::chrono::seconds>(mtime.time_since_epoch()).count());
+    stamp.mtime_ns = static_cast<std::int64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(mtime.time_since_epoch()).count());
     stamp.valid = true;
     return stamp;
 }

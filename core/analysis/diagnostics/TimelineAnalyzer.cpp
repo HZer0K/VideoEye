@@ -38,6 +38,9 @@ void TimelineAnalyzer::Reset() {
 
 void TimelineAnalyzer::SetOptions(const Options& options) {
     options_ = options;
+    // 负数等价于"每个包都触发一次减半"（见 OnPacket 的 >= 比较），比不限制更糟。
+    // 这里统一折成 0（不限制），让调用方只需要区分"限制 / 不限制"两种意图。
+    if (options_.max_curve_points < 0) options_.max_curve_points = 0;
 }
 
 void TimelineAnalyzer::AddIssue(model::TimelineIssueType type, model::IssueSeverity severity,

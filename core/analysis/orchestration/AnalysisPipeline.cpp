@@ -62,6 +62,15 @@ void AnalysisPipeline::Prepare(AVFormatContext* fmt, model::AnalysisResult& resu
         aux_.RegisterStreams(fmt);
     }
 
+    // ---- 时间轴与同步诊断（逐包，常开）----
+    // 只把 AnalysisOptions 暴露的那一项透传进来：逐包 delta 曲线的点数上限。
+    // 分析器自己的默认值已经是有限值，这里给的是"上限可配"的入口。
+    {
+        TimelineAnalyzer::Options timeline_options;
+        timeline_options.max_curve_points = options_.timeline_max_curve_points;
+        timeline_.SetOptions(timeline_options);
+    }
+
     PrepareBitstream(fmt, result);
 
     // ---- 色彩与 HDR 元数据分析（读 AVCodecParameters + coded_side_data，几乎零成本）----
@@ -78,6 +87,7 @@ void AnalysisPipeline::Prepare(AVFormatContext* fmt, model::AnalysisResult& resu
         video_stream_index_ = FirstStreamOfType(fmt, AVMEDIA_TYPE_VIDEO);
     }
     if (options_.analyze_bitrate_gop && video_stream_index_ >= 0) {
+        video_time_base_ = av_q2d(fmt->streams[video_stream_index_]->time_base);
         bitrate_gop_.Reset(options_.bitrate_gop_options);
         AVStream* vst = fmt->streams[video_stream_index_];
 
@@ -306,52 +316,94 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt,
         }
 
         // 码率与 GOP 深度分析（仅第一条视频流）
+        //
+        // 输入建模成显式事件，**每个语义单元只进一次统计**（曾因解码路径在
+        // receive 循环内外各调一次 OnFrame、parser 路径经 fed 二次调用，导致
+        // 帧数/字节数/GOP/帧类型比例全部重复计数，见 BitrateGopAnalyzer.h）:
+        //   * OnFrame       —— 一个语义帧（解码器/parser 输出），字节由本处归属
+        //   * OnPacketBytes —— 只有字节没有帧（解码器收下包但帧未产出）
+        //   * OnPacket      —— 无帧类型探测时的包级回退（一包一帧，类型未知）
         if (options_.analyze_bitrate_gop && pkt->stream_index == video_stream_index_) {
             const double sample_ts = has_pts
                                          ? ts
                                          : ((pkt->dts != AV_NOPTS_VALUE)
                                                 ? static_cast<double>(pkt->dts) * tb
                                                 : 0.0);
-            model::FrameType frame_type = model::FrameType::Unknown;
             bool is_idr = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
-            bool fed = false;
 
             if (frame_probe_.use_decoder) {
                 if (avcodec_send_packet(frame_probe_.decoder, pkt) == 0) {
+                    // 先收本包解码产出的全部帧：一包可能产出多帧，也可能一帧都
+                    // 没有（帧重排序延迟）—— 两者都不按"一包一帧"猜。
+                    struct DecodedFrame {
+                        double ts;
+                        model::FrameType type;
+                        bool is_idr;
+                    };
+                    std::vector<DecodedFrame> decoded;
                     while (avcodec_receive_frame(frame_probe_.decoder, frame_probe_.frame) >= 0) {
-                        frame_type = static_cast<model::FrameType>(frame_probe_.frame->pict_type);
                         // 注: FFmpeg 8.x 已移除 AVFrame::key_frame，统一用 AV_FRAME_FLAG_KEY
-                        is_idr = ((frame_probe_.frame->flags & AV_FRAME_FLAG_KEY) != 0);
+                        const bool frame_is_idr =
+                            (frame_probe_.frame->flags & AV_FRAME_FLAG_KEY) != 0;
                         const double frame_ts =
                             (frame_probe_.frame->pts != AV_NOPTS_VALUE)
                                 ? static_cast<double>(frame_probe_.frame->pts) * tb
                                 : sample_ts;
-                        bitrate_gop_.OnFrame(pkt->stream_index, frame_ts, pkt->size,
-                                            frame_type, is_idr);
-                        fed = true;
+                        decoded.push_back({frame_ts,
+                                           static_cast<model::FrameType>(
+                                               frame_probe_.frame->pict_type),
+                                           frame_is_idr});
                         av_frame_unref(frame_probe_.frame);
                     }
+                    if (decoded.empty()) {
+                        // 帧延迟：字节先入账，帧等后续包产出时再计 —— 绝不能在这里
+                        // 补一帧，否则会和真正的解码输出重复计数。
+                        bitrate_gop_.OnPacketBytes(pkt->stream_index, sample_ts, pkt->size);
+                    } else {
+                        // 字节归属：一包一帧时全额归属；一包多帧时均分，余数补给
+                        // 首帧，保证"本包字节总和不变"（码率曲线按字节前缀和算）。
+                        int64_t remaining = pkt->size;
+                        for (size_t i = 0; i < decoded.size(); ++i) {
+                            const bool is_last = (i + 1 == decoded.size());
+                            const int64_t share =
+                                is_last ? remaining
+                                        : pkt->size /
+                                              static_cast<int64_t>(decoded.size());
+                            remaining -= share;
+                            bitrate_gop_.OnFrame(pkt->stream_index, decoded[i].ts, share,
+                                                 decoded[i].type, decoded[i].is_idr);
+                        }
+                    }
+                } else {
+                    // 包没进解码器（send 失败）：按回退路径记一帧，字节不丢
+                    bitrate_gop_.OnPacket(pkt->stream_index, sample_ts, pkt->size, is_idr);
                 }
             } else if (frame_probe_.parser != nullptr) {
                 uint8_t* out_data = nullptr;
                 int out_size = 0;
                 av_parser_parse2(frame_probe_.parser, frame_probe_.parser_ctx, &out_data,
                                  &out_size, pkt->data, pkt->size, pkt->pts, pkt->dts, pkt->pos);
-                if (frame_probe_.parser->pict_type != AV_PICTURE_TYPE_NONE) {
-                    frame_type = static_cast<model::FrameType>(frame_probe_.parser->pict_type);
-                    if (frame_probe_.parser->key_frame >= 1) {
-                        is_idr = true;
-                    } else if (frame_probe_.parser->key_frame == 0) {
-                        is_idr = false;
+                if (out_size > 0) {
+                    // parser 吐出了一个完整帧（PARSER_FLAG_COMPLETE_FRAMES 下
+                    // 一次调用对应一帧），字节全额归属
+                    model::FrameType frame_type = model::FrameType::Unknown;
+                    if (frame_probe_.parser->pict_type != AV_PICTURE_TYPE_NONE) {
+                        frame_type =
+                            static_cast<model::FrameType>(frame_probe_.parser->pict_type);
+                        if (frame_probe_.parser->key_frame >= 1) {
+                            is_idr = true;
+                        } else if (frame_probe_.parser->key_frame == 0) {
+                            is_idr = false;
+                        }
                     }
-                    fed = true;
+                    bitrate_gop_.OnFrame(pkt->stream_index, sample_ts, pkt->size, frame_type,
+                                         is_idr);
+                } else {
+                    // 本包不含完整帧（裸流/TS 分片场景）：只记字节，不猜帧
+                    bitrate_gop_.OnPacketBytes(pkt->stream_index, sample_ts, pkt->size);
                 }
-            }
-
-            if (fed) {
-                bitrate_gop_.OnFrame(pkt->stream_index, sample_ts, pkt->size, frame_type,
-                                     is_idr);
             } else {
+                // 解码器与 parser 都不可用：包级回退（一包一帧，类型未知）
                 bitrate_gop_.OnPacket(pkt->stream_index, sample_ts, pkt->size, is_idr);
             }
         }
@@ -420,6 +472,27 @@ void AnalysisPipeline::ReleaseProbes() {
     frame_probe_.Release();
     color_probe_.Release();
     if (audio_probe_.ready) audio_probe_.Release();
+}
+
+// EOF 时帧类型解码器里可能还压着几帧（帧重排序延迟）。这些帧的归属包在扫描期
+// 已按"0 帧产出"走过 OnPacketBytes（字节已入账），这里只把帧本身补进统计
+// （字节记 0）—— 不 flush 的话"总帧数 < 视频包数"，I/P/B 比例与 GOP 统计失真。
+void AnalysisPipeline::FlushFrameProbe() {
+    if (!options_.analyze_bitrate_gop || !frame_probe_.use_decoder) return;
+    if (video_stream_index_ < 0) return;
+    if (frame_probe_.decoder == nullptr || frame_probe_.frame == nullptr) return;
+    if (avcodec_send_packet(frame_probe_.decoder, nullptr) != 0) return;
+    while (avcodec_receive_frame(frame_probe_.decoder, frame_probe_.frame) >= 0) {
+        const bool is_idr = (frame_probe_.frame->flags & AV_FRAME_FLAG_KEY) != 0;
+        const double frame_ts =
+            (frame_probe_.frame->pts != AV_NOPTS_VALUE && video_time_base_ > 0.0)
+                ? static_cast<double>(frame_probe_.frame->pts) * video_time_base_
+                : -1.0;
+        bitrate_gop_.OnFrame(video_stream_index_, frame_ts, /*size=*/0,
+                             static_cast<model::FrameType>(frame_probe_.frame->pict_type),
+                             is_idr);
+        av_frame_unref(frame_probe_.frame);
+    }
 }
 
 // ---- 内部 ----

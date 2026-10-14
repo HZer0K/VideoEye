@@ -1,5 +1,7 @@
 #include "core/qt/QtAnalysisController.h"
 
+#include <exception>
+#include <string>
 #include <utility>
 
 #include <QMetaType>
@@ -143,7 +145,20 @@ void QtAnalysisController::Launch(const std::string& file_path, const videoeye::
     // 从线程里调 EndHandle 就是悬空访问。终态一律由宿主在宿主线程里归还
     //（见 SettleTask），工作线程只负责"我回来了"这一件事。
     worker_ = std::thread([box, token]() {
-        box->engine.Run(box->path, box->options, box->callbacks, nullptr, token.flag());
+        // 异常必须就地收口: 这是裸 std::thread 的线程体，逃逸出去的异常直接
+        // std::terminate()（整个进程被拖走，UI 连"失败"都看不到）。这里把它降级成
+        // 一次 AnalysisFailed —— 任务照常走到失败终态，下面的收尾也照常执行。
+        try {
+            box->engine.Run(box->path, box->options, box->callbacks, nullptr, token.flag());
+        } catch (const std::exception& e) {
+            if (box->callbacks.on_failed) {
+                box->callbacks.on_failed(std::string("分析异常: ") + e.what());
+            }
+        } catch (...) {
+            if (box->callbacks.on_failed) {
+                box->callbacks.on_failed(std::string("分析异常: 未知错误"));
+            }
+        }
         // 先立"线程体已返回"标志，再投递通知。顺序不能反: StartAnalysis 可能在这条
         // 通知被处理**之前**就被调用，那时它靠这个标志判断句柄可以就地回收并直接开
         // 新任务，而不是傻等一条已经被消费掉的通知。

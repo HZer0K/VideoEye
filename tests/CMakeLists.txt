@@ -433,6 +433,22 @@ videoeye_add_test(test_bitrate_gop_analyzer
 add_test(NAME BitrateGopAnalyzerTests COMMAND test_bitrate_gop_analyzer)
 
 # =================================================
+# 测试 6b：码率/GOP 全链路回归（真实媒体 + 完整分析）
+# 说明: test_bitrate_gop_analyzer 喂合成样本钉分析器内部逻辑；这里用
+#       TestMediaFactory 现场生成的确定性 H.264+AAC MP4 跑完整
+#       AnalysisEngine::Run，decode_frame_types 开/关各一遍（解码路径 /
+#       parser 路径），断言帧数、字节数、GOP 数与独立 demux 循环逐一对齐 ——
+#       专防"一个语义帧被计两次"类回归（曾因解码循环内外各调一次 OnFrame）。
+#       FFmpeg 的 include 与库从 VideoEyeAnalysis 的 PUBLIC 依赖传来。
+# =================================================
+videoeye_add_test(test_bitrate_gop_pipeline
+    unit/test_bitrate_gop_pipeline.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tests/support/TestMediaFactory.cpp
+)
+target_link_libraries(test_bitrate_gop_pipeline PRIVATE VideoEyeAnalysis)
+add_test(NAME BitrateGopPipelineRegressionTests COMMAND test_bitrate_gop_pipeline)
+
+# =================================================
 # 测试 7：QualityAnalyzer(依赖 FFmpeg + swscale)
 # =================================================
 videoeye_add_test(test_quality_analyzer

@@ -18,9 +18,12 @@
 //
 // 顺序约束（搬动时不要重排）:
 //   Prepare()  ->  OnPacket() * N  ->  BeforeClose()  ->  FlushAudio()
-//              ->  ReleaseProbes()  ->  (外部关闭上下文)  ->  Assembler 收尾
+//              ->  FlushFrameProbe()  ->  ReleaseProbes()  ->  (外部关闭上下文)
+//              ->  Assembler 收尾
 //   * BeforeClose 必须在关上下文之前: HDR 元数据要读到包后才补进 codecpar；
 //   * FlushAudio 必须在 ReleaseProbes 之前: 释放后 ready 就变 false，再 flush 就是空转；
+//   * FlushFrameProbe 同样要在 ReleaseProbes 之前: 帧类型解码器到 EOF 可能还压着
+//     几帧（帧重排序延迟），不 flush 则"总帧数 < 视频包数"，I/P/B 与 GOP 统计失真；
 //   * 各分析器的 Finish() 在 Assembler 里跑，ReleaseProbes 之后才安全。
 
 #include <cstdint>
@@ -155,6 +158,9 @@ public:
     void BeforeClose(AVFormatContext* fmt);
     // flush 音频解码器与 swr 缓存里残留的样本（不碰 AVFormatContext）。
     void FlushAudio();
+    // flush 帧类型探测解码器：把 EOF 时仍压在解码器里的帧收干净（见文件头注释）。
+    // 产出的帧没有归属包，字节记 0 —— 帧数与帧类型必须完整。
+    void FlushFrameProbe();
     // 释放解码器 / parser / swr。可重复调用（各 probe 的 Release 自带幂等）。
     void ReleaseProbes();
 
@@ -204,6 +210,8 @@ private:
     int audio_stream_index_ = -1;
     int color_video_stream_index_ = -1;
     double audio_time_base_ = 0.0;
+    // 视频流时基（FlushFrameProbe 把 flush 出来的帧 pts 换算成秒用）
+    double video_time_base_ = 0.0;
 
     // GOP 统计的中间态：跨包累积，所以只能是成员
     std::vector<int64_t> frames_since_key_;

@@ -19,15 +19,39 @@
 namespace videoeye {
 namespace ui {
 
+// 相对路径是否可以安全地拼到导出目录下。
+// 判据只有两条：不能是绝对路径（跨盘、root 为空时 relative() 会原样返回它），
+// 也不能含 ".." 分量 —— 两者都会让最终结果逃出 out_dir。
+inline bool IsContainedRelativePath(const std::filesystem::path& rel) {
+    if (rel.empty() || rel.is_absolute()) return false;
+    for (const auto& part : rel) {
+        if (part == std::filesystem::path("..")) return false;
+    }
+    return true;
+}
+
 // 批量导出时每个文件的主路径：保留相对子目录 + 文件 stem，不带扩展名。
 // 导出与 UI 共用这一组路径，保证同名文件（位于不同子目录）不会互相覆盖，
 // 且表格显示的路径就是真实落盘路径。当 file_path 不在 root 之下时退回只取文件名。
+//
+// containment 是**严格**的：直接对原始字符串做 relative() 只算出一条相对路径，
+// 它照样可能带着 ".."（root 与 file_path 一个走符号链接、一个是相对路径、
+// 或 root 本身为空都会这样），拼到 out_dir 上就是目录逃逸。所以两侧先各自
+// weakly_canonical（去掉 . / .. / 符号链接，且不要求路径已存在），再算相对部分，
+// 最后仍要过一遍 IsContainedRelativePath —— 拿不到可信的相对路径就退回文件名。
 inline std::filesystem::path ReportBasePath(const std::string& out_dir,
                                             const std::string& root,
                                             const std::string& file_path) {
     std::error_code ec;
-    const auto relative = std::filesystem::relative(file_path, root, ec);
-    const auto rel = ec ? std::filesystem::path(file_path).filename() : relative;
+    const auto abs_file =
+        std::filesystem::weakly_canonical(std::filesystem::path(file_path), ec);
+    const auto abs_root = std::filesystem::weakly_canonical(std::filesystem::path(root), ec);
+    std::filesystem::path rel;
+    if (!ec && !abs_root.empty()) {
+        const auto candidate = std::filesystem::relative(abs_file, abs_root, ec);
+        if (!ec && IsContainedRelativePath(candidate)) rel = candidate;
+    }
+    if (rel.empty()) rel = std::filesystem::path(file_path).filename();
     return std::filesystem::path(out_dir) / rel.parent_path() / rel.stem();
 }
 

@@ -195,6 +195,9 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     pipeline.BeforeClose(fmt);
     // flush 音频解码器与 swr 缓存里残留的样本（不碰 fmt，因此可以先于关闭执行）。
     pipeline.FlushAudio();
+    // flush 帧类型探测解码器：EOF 时仍压在解码器里的帧（重排序延迟）在此收干净，
+    // 同样不碰 fmt。必须在 ReleaseProbes 之前。
+    pipeline.FlushFrameProbe();
     // 这两个标记必须在 ReleaseProbes 之前读：释放之后 ready 就变 false 了。
     // 放在 FlushAudio 之后而不是之前 —— flush 自己也会喂帧，那里发现的中途改采样率
     // 同样该记一笔（以前是在 flush 之前抓的，flush 期间的变更会被漏掉）。

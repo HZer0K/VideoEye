@@ -25,7 +25,7 @@ using model::SceneChangeResult;
 // 码率与 GOP 深度分析器
 //
 // 职责:
-//   1) 以包/帧为单位喂数据（时间戳 + 大小 + 帧类型 + 是否关键帧），维护 GOP 边界
+//   1) 以事件为单位喂数据（时间戳 + 大小 + 帧类型 + 是否关键帧），维护 GOP 边界
 //   2) Finish() 时一次性计算多窗口滑动码率、I/P/B 比例、GOP 分布与异常
 //   3) 可与 SceneChangeAnalyzer 的结果关联，产出"场景切换后缺少关键帧"类编码优化建议
 //
@@ -37,14 +37,31 @@ public:
     void SetOptions(const BitrateGopOptions& options);
     const BitrateGopOptions& options() const { return options_; }
 
-    // ---- 数据输入 ----
-
-    // 包级输入（离线全文件扫描，帧类型未知时传 Unknown；is_key 来自 AV_PKT_FLAG_KEY）
-    void OnPacket(int stream_index, double timestamp_seconds, int64_t size, bool is_key);
+    // ---- 数据输入（显式事件，每个语义单元只进一次统计）----
+    //
+    // 输入分三种互斥事件，调用方（AnalysisPipeline）负责把 demux/解码/parser 的
+    // 事实映射到其中之一：
+    //   * OnFrame      —— 一个**语义帧**（解码器输出或 parser 输出），一包产出
+    //                     多帧时每帧各调一次；size 是归属到该帧的字节数
+    //                     （一包一帧时传整包大小，一包多帧时由调用方均分）。
+    //   * OnPacketBytes —— 只有字节、没有帧：解码器已收下本包但帧还没产出
+    //                     （帧延迟），或 parser 未吐出完整帧。字节先入账，
+    //                     帧等真正产出时再计，避免"按包猜一帧"与后续真实帧重复。
+    //   * OnPacket     —— 无帧类型探测时的包级回退：一包记一帧，类型未知，
+    //                     is_key 来自 AV_PKT_FLAG_KEY。
+    // 曾经这里只有 OnFrame/OnPacket 两个入口，调用方在解码循环内外各调一次
+    // OnFrame（fed 标志二次调用），帧数/字节/GOP 全部重复计数 —— 事件化之后
+    // "重复"在结构上不再可能。
 
     // 帧级输入（codec parser 或解码器拿到 pict_type 后使用）
     void OnFrame(int stream_index, double timestamp_seconds, int64_t size,
                  model::FrameType type, bool is_idr);
+
+    // 纯字节事件：不计帧、不计 GOP，只入账字节并参与码率曲线
+    void OnPacketBytes(int stream_index, double timestamp_seconds, int64_t size);
+
+    // 包级输入（离线全文件扫描，帧类型未知时传 Unknown；is_key 来自 AV_PKT_FLAG_KEY）
+    void OnPacket(int stream_index, double timestamp_seconds, int64_t size, bool is_key);
 
     // 关联场景切换结果（来自 SceneChangeAnalyzer::Feed 的输出）
     void AssociateSceneChanges(const std::vector<SceneChangeResult>& changes);
@@ -74,10 +91,14 @@ private:
         int64_t size = 0;
         model::FrameType type = model::FrameType::Unknown;
         bool is_idr = false;
+        // false = 纯字节事件（OnPacketBytes）：只参与码率曲线，不计帧数/GOP/
+        // 帧大小异常。true = 语义帧（OnFrame / OnPacket）。
+        bool is_frame = true;
     };
 
+    // counts_frame=false 时只入账字节（total_bytes + 曲线样本），不碰帧数与 GOP。
     void AddSample(int stream_index, double timestamp_seconds, int64_t size,
-                   model::FrameType type, bool is_idr);
+                   model::FrameType type, bool is_idr, bool counts_frame);
     void StartGop(double timestamp_seconds, int stream_index, bool closed);
     void CloseCurrentGop(double end_seconds, bool complete);
 

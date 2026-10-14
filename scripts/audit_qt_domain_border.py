@@ -16,6 +16,11 @@
    这一关先用「接收者类型」澄清一次：arg(opt.format) 里若 opt 是 Qt 侧自有结构
    （例如 exporter 的 ExportOptions），即便字段名与 domain 字段撞车也按合法用法放行，
    归入 [跳过]；只有接收者类型解析不到、或解析到 core/domain 的 struct 才计入违规。
+4. 上面那条「接收者澄清」同样适用于赋值关（第 2 步）：core/ffmpeg 里
+   `last_result_.error_message = QStringLiteral(...)` 的接收者是 Qt 侧自有结构
+   FfmpegRunResult，不是 domain 模型。以前靠"按文件加白名单"把它屏蔽掉，
+   于是每新增一个 Qt 侧结构就要往白名单里塞一条 —— 白名单越长，审计越没人信。
+   现在两条关都按**类型**澄清，白名单留空作为兜底（见 ALLOWED_FILES 注释）。
 
 输出里的 [疑似] 是静态审计判定不了类型的（arg() 吃的是与域字段同名的纯局部变量），
 需人工确认，不是确定违规。
@@ -42,18 +47,18 @@ QT_TYPES_RE = re.compile(r"\b(QString|QByteArray|QLatin1String|QStringLiteral|"
 # 静态审计拿不到类型，所以这类只降级为「疑似」由人工确认，不当作确定命中。
 LOCAL_ONLY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-# 这些文件里的 QString 字段属于 Qt 侧自有结构（不是 domain 模型），
-# 例如 FfmpegCommandExplainer.h 的 ExplainItem::description、
-# FfmpegProcessRunner.h 的 FfmpegRunResult::error_message。
-# 它们留在 Qt 层是允许的——只有落进 domain 才违规。
-ALLOWED_FILES = {
-    "core/ffmpeg/FfmpegProcessRunner.cpp",
-    "core/ffmpeg/FfmpegCommandExplainer.cpp",
-}
-ALLOWED_HINTS = {
-    "core/ffmpeg/FfmpegProcessRunner.cpp": "FfmpegRunResult 是 Qt 侧自有结构（QString 字段）",
-    "core/ffmpeg/FfmpegCommandExplainer.cpp": "ExplainItem 是 Qt 侧自有结构（QString 字段）",
-}
+# 兜底白名单：**默认空**。
+#
+# 历史上这里列着 core/ffmpeg 的两个文件，理由是"它们的 QString 字段是 Qt 侧自有
+# 结构"。按文件放行的问题是它与"是不是 domain 污染"没有关系：只要有人在别的文件
+# 里再写一个 Qt 侧结构，审计就红一次、白名单就长一条，长此以往没人再信这个脚本的
+# 输出。现在两条关都改成按**接收者类型**澄清（见 resolve_receiver_type），
+# 那两处会自己落进 [跳过]，白名单因此清得掉。
+#
+# 真要往这里加条目，必须同时写明"为什么静态解析不出它的类型"——
+# 否则就是拿白名单掩盖解析能力的缺口。
+ALLOWED_FILES: set[str] = set()
+ALLOWED_HINTS: dict[str, str] = {}
 
 # 已被显式转换的行（行内出现 toStdString / fromStdString 转出）
 TO_STD_RE = re.compile(r"\.toStdString\(\)")
@@ -131,6 +136,43 @@ def resolve_var_type(text: str, var: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
+_HEADER_CACHE: dict[str, str] = {}
+
+
+def dir_header_corpus(path: str) -> str:
+    """同目录下所有头文件的文本拼接（按文件名排序，结果稳定）。
+
+    为什么需要: `last_result_.error_message = ...` 这类赋值的接收者是类成员，
+    声明在 .h 里 —— 只看 .cpp 永远解析不到它的类型，于是要么误报、要么只能靠
+    "按文件加白名单"整类屏蔽。把同目录头文件纳入搜索后，成员也能被澄清。
+    """
+    d = os.path.dirname(path)
+    if d in _HEADER_CACHE:
+        return _HEADER_CACHE[d]
+    chunks = []
+    try:
+        for n in sorted(os.listdir(d)):
+            if n.endswith((".h", ".hpp")):
+                with open(os.path.join(d, n), "r", encoding="utf-8") as f:
+                    chunks.append(f.read())
+    except Exception:
+        pass
+    _HEADER_CACHE[d] = "\n".join(chunks)
+    return _HEADER_CACHE[d]
+
+
+def resolve_receiver_type(path: str, rel: str, var: str, file_texts: dict[str, str]) -> str | None:
+    """先在本文件里找声明，找不到再去同目录的头文件里找（成员变量的声明在那儿）。"""
+    t = resolve_var_type(file_texts.get(norm_path(rel), ""), var)
+    if t is None:
+        t = resolve_var_type(dir_header_corpus(path), var)
+    return t
+
+
+def norm_path(rel: str) -> str:
+    return rel.replace("\\", "/")
+
+
 def iter_files():
     for d in SCAN_DIRS:
         base = os.path.join(ROOT, d)
@@ -153,10 +195,12 @@ def main() -> int:
         return rel.replace("\\", "/")
 
     hits = []
+    assign_skipped = []  # 放行：赋值左值的接收者类型解析得到，但不是 domain 结构
     arg_hits = []     # 高置信：arg() 吃的是 obj.<域字段>
     arg_probable = [] # 疑似：arg() 吃的是纯局部变量（名字与域字段同名）
     receiver_skipped = []  # 放行：接收者类型解析得到，但不是 domain 结构（字段名撞车）
     file_texts: dict[str, str] = {}
+    file_abs: dict[str, str] = {}
     stmts: list[tuple[str, int, str]] = []
     field_pat = re.compile(r"\.(" + "|".join(sorted(fields, key=len, reverse=True)) + r")\s*=")
     # 把一条逻辑语句合并成单行后再判定（ MERGE 版本）：
@@ -171,7 +215,9 @@ def main() -> int:
                 text = f.read()
         except Exception:
             return
-        file_texts[norm(os.path.relpath(path, ROOT))] = text
+        rel0 = os.path.relpath(path, ROOT)
+        file_texts[norm(rel0)] = text
+        file_abs[norm(rel0)] = path
         buf = ""
         start_line = 0
         for idx, raw in enumerate(text.splitlines(), 1):
@@ -192,14 +238,26 @@ def main() -> int:
             buf = ""
             if not stmt.endswith(";"):
                 continue
-            stmts.append((os.path.relpath(path, ROOT), start_line, stmt))
+            stmts.append((rel0, start_line, stmt))
             if not field_pat.search(stmt):
                 continue
             if TO_STD_RE.search(stmt):
                 continue
             if not QT_TYPES_RE.search(stmt):
                 continue
-            hits.append((os.path.relpath(path, ROOT), start_line, stmt[:160]))
+            # 接收者澄清：赋值左值是 obj.<域字段> 时，先看 obj 到底是什么类型。
+            # Qt 侧自有结构（如 FfmpegRunResult::error_message）即便字段名与 domain
+            # 撞车也是合法用法 —— 按类型放行，而不是按文件加白名单。
+            m_lhs = ASSIGN_RE.match(stmt)
+            lhs = (m_lhs.group(1) + m_lhs.group(2)) if m_lhs else ""
+            base = lhs.split(".")[0]
+            if base and base != lhs:
+                recv_type = resolve_receiver_type(path, rel0, base, file_texts)
+                short = recv_type.split("::")[-1] if recv_type else ""
+                if recv_type and short not in domain_structs:
+                    assign_skipped.append((rel0, lhs, recv_type, stmt[:160]))
+                    continue
+            hits.append((rel0, start_line, stmt[:160]))
 
     for p in iter_files():
         scan_path(p)
@@ -230,7 +288,8 @@ def main() -> int:
                                if m in fields]
                 if field_pairs:
                     base = field_pairs[-1][0]
-                    recv_type = resolve_var_type(file_texts.get(norm(rel), ""), base)
+                    recv_type = resolve_receiver_type(file_abs.get(norm(rel), ""), rel, base,
+                                                      file_texts)
                     short = recv_type.split("::")[-1] if recv_type else ""
                     if recv_type and short not in domain_structs:
                         receiver_skipped.append((rel, expr_stripped, recv_type, stmt[:160]))
@@ -267,18 +326,30 @@ def main() -> int:
                 print("  %s   <- %s" % (rel, ALLOWED_HINTS.get(rel, "")))
 
     def print_receiver_skipped():
-        if not receiver_skipped:
+        if not receiver_skipped and not assign_skipped:
             return
-        print("\n[跳过] %d 处 arg() 的接收者不是 domain 结构（字段名与 domain 撞车，"
-              "但接收者类型在 core/domain 之外声明），按合法用法放行："
-              % len(receiver_skipped))
-        cur = None
-        for rel, expr, recv_type, text in receiver_skipped:
-            if cur != rel:
-                cur = rel
-                print("\n--- %s ---" % rel)
-            print("  arg(%s)  <- 接收者类型 %s" % (expr, recv_type))
-            print("      << %s" % text[:120])
+        if assign_skipped:
+            print("\n[跳过] %d 处赋值的接收者不是 domain 结构（字段名与 domain 撞车，"
+                  "但接收者类型在 core/domain 之外声明），按合法用法放行："
+                  % len(assign_skipped))
+            cur = None
+            for rel, lhs, recv_type, text in assign_skipped:
+                if cur != rel:
+                    cur = rel
+                    print("\n--- %s ---" % rel)
+                print("  %s  <- 接收者类型 %s" % (lhs, recv_type))
+                print("      << %s" % text[:120])
+        if receiver_skipped:
+            print("\n[跳过] %d 处 arg() 的接收者不是 domain 结构（字段名与 domain 撞车，"
+                  "但接收者类型在 core/domain 之外声明），按合法用法放行："
+                  % len(receiver_skipped))
+            cur = None
+            for rel, expr, recv_type, text in receiver_skipped:
+                if cur != rel:
+                    cur = rel
+                    print("\n--- %s ---" % rel)
+                print("  arg(%s)  <- 接收者类型 %s" % (expr, recv_type))
+                print("      << %s" % text[:120])
 
     # 早退分支只能在「三类全空」时才走，否则会出现
     # 「打印了 [命中] 却 return 0」——CI 上方块徽章是绿的，违规照旧合并进主干。

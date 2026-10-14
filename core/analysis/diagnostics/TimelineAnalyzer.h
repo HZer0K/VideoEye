@@ -29,7 +29,12 @@ public:
         double vfr_relative_spread = 0.02;            // (p95-p5)/中位数 阈值
         int max_issues_per_type = 40;                 // 同类问题最多记录条数
         int histogram_max_ms = 200;                   // 直方图覆盖的最大间隔
-        int64_t max_curve_points = 0;                 // 0=不限制；超过则对逐包 delta 曲线做有界降采样
+        // 逐包 delta 曲线的点数上限：超过就对曲线减半（保留偶数下标）。
+        // 默认**必须给一个有限值**：这条曲线是"每包一个采样点"，长视频/高码率文件
+        // 轻松累积到数百万点（每点 16 字节 → 上百 MB），曾经默认 0（不限制）等于把
+        // 内存交给文件大小决定。0 仍保留语义"不限制"，但只能由调用方显式开启
+        // （见 AnalysisOptions::timeline_max_curve_points）。
+        int64_t max_curve_points = 200000;
     };
 
     TimelineAnalyzer() = default;

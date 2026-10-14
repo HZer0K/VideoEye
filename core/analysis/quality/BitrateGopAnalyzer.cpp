@@ -103,16 +103,23 @@ void BitrateGopAnalyzer::SetOptions(const BitrateGopOptions& options) {
 
 void BitrateGopAnalyzer::OnPacket(int stream_index, double timestamp_seconds, int64_t size,
                                   bool is_key) {
-    AddSample(stream_index, timestamp_seconds, size, model::FrameType::Unknown, is_key);
+    AddSample(stream_index, timestamp_seconds, size, model::FrameType::Unknown, is_key,
+              /*counts_frame=*/true);
 }
 
 void BitrateGopAnalyzer::OnFrame(int stream_index, double timestamp_seconds, int64_t size,
                                  model::FrameType type, bool is_idr) {
-    AddSample(stream_index, timestamp_seconds, size, type, is_idr);
+    AddSample(stream_index, timestamp_seconds, size, type, is_idr, /*counts_frame=*/true);
+}
+
+void BitrateGopAnalyzer::OnPacketBytes(int stream_index, double timestamp_seconds,
+                                       int64_t size) {
+    AddSample(stream_index, timestamp_seconds, size, model::FrameType::Unknown, false,
+              /*counts_frame=*/false);
 }
 
 void BitrateGopAnalyzer::AddSample(int stream_index, double timestamp_seconds, int64_t size,
-                                   model::FrameType type, bool is_idr) {
+                                   model::FrameType type, bool is_idr, bool counts_frame) {
     if (finished_) return;  // Finish() 之后忽略新数据，避免结果被追加污染
     if (timestamp_seconds < 0.0) timestamp_seconds = std::max(last_timestamp_, 0.0);
     if (last_timestamp_ >= 0.0 && timestamp_seconds < last_timestamp_) {
@@ -125,75 +132,81 @@ void BitrateGopAnalyzer::AddSample(int stream_index, double timestamp_seconds, i
 
     if (is_idr && type == model::FrameType::Unknown) type = model::FrameType::I;
 
-    result_.total_frames += 1;
+    // 字节恒计入（码率曲线与总字节以字节事件为准，帧延迟时字节先入账）
     result_.total_bytes += size;
-    switch (type) {
-        case model::FrameType::I:
-        case model::FrameType::SI:
-            result_.i_frame_count += 1;
-            result_.i_frame_bytes_ += size;
-            break;
-        case model::FrameType::P:
-        case model::FrameType::SP:
-            result_.p_frame_count += 1;
-            break;
-        case model::FrameType::B:
-        case model::FrameType::BI:
-            result_.b_frame_count += 1;
-            break;
-        default:
-            result_.unknown_frame_count += 1;
-            break;
-    }
 
-    // ---- GOP 边界 ----
-    if (is_idr) {
-        if (gop_open_) CloseCurrentGop(timestamp_seconds, /*complete=*/true);
-        StartGop(timestamp_seconds, stream_index, /*closed=*/true);
-    } else if (!gop_open_) {
-        // 首个样本不是关键帧（可能是 open GOP 或截断文件）
-        StartGop(timestamp_seconds, stream_index, /*closed=*/false);
-    }
-
-    model::GopInfo& gop = current_gop_;
-    gop.frame_count += 1;
-    gop.byte_count += size;
-    switch (type) {
-        case model::FrameType::I:
-        case model::FrameType::SI:
-            gop.i_count += 1;
-            if (size > gop.max_i_frame_bytes) gop.max_i_frame_bytes = size;
-            break;
-        case model::FrameType::P:
-        case model::FrameType::SP:
-            gop.p_count += 1;
-            break;
-        case model::FrameType::B:
-        case model::FrameType::BI:
-            gop.b_count += 1;
-            break;
-        default:
-            gop.unknown_count += 1;
-            break;
-    }
-    if (type != model::FrameType::Unknown) gop.frame_types_known = true;
-    if (size > gop.max_frame_bytes) {
-        gop.max_frame_bytes = size;
-        gop.max_frame_seconds = timestamp_seconds;
-    }
-
-    if (is_idr) {
-        if (result_.key_frame_seconds.size() < kMaxMarkerPoints) {
-            result_.key_frame_seconds.push_back(timestamp_seconds);
-        }
-    }
-    if (type == model::FrameType::I || type == model::FrameType::SI) {
-        if (result_.i_frame_seconds.size() < kMaxMarkerPoints) {
-            result_.i_frame_seconds.push_back(timestamp_seconds);
+    if (counts_frame) {
+        result_.total_frames += 1;
+        switch (type) {
+            case model::FrameType::I:
+            case model::FrameType::SI:
+                result_.i_frame_count += 1;
+                result_.i_frame_bytes_ += size;
+                break;
+            case model::FrameType::P:
+            case model::FrameType::SP:
+                result_.p_frame_count += 1;
+                break;
+            case model::FrameType::B:
+            case model::FrameType::BI:
+                result_.b_frame_count += 1;
+                break;
+            default:
+                result_.unknown_frame_count += 1;
+                break;
         }
     }
 
-    samples_.push_back(Sample{timestamp_seconds, size, type, is_idr});
+    // ---- GOP 边界与 GOP 内统计（纯字节事件不参与：帧未产出就谈不上 GOP 归属）----
+    if (counts_frame) {
+        if (is_idr) {
+            if (gop_open_) CloseCurrentGop(timestamp_seconds, /*complete=*/true);
+            StartGop(timestamp_seconds, stream_index, /*closed=*/true);
+        } else if (!gop_open_) {
+            // 首个样本不是关键帧（可能是 open GOP 或截断文件）
+            StartGop(timestamp_seconds, stream_index, /*closed=*/false);
+        }
+
+        model::GopInfo& gop = current_gop_;
+        gop.frame_count += 1;
+        gop.byte_count += size;
+        switch (type) {
+            case model::FrameType::I:
+            case model::FrameType::SI:
+                gop.i_count += 1;
+                if (size > gop.max_i_frame_bytes) gop.max_i_frame_bytes = size;
+                break;
+            case model::FrameType::P:
+            case model::FrameType::SP:
+                gop.p_count += 1;
+                break;
+            case model::FrameType::B:
+            case model::FrameType::BI:
+                gop.b_count += 1;
+                break;
+            default:
+                gop.unknown_count += 1;
+                break;
+        }
+        if (type != model::FrameType::Unknown) gop.frame_types_known = true;
+        if (size > gop.max_frame_bytes) {
+            gop.max_frame_bytes = size;
+            gop.max_frame_seconds = timestamp_seconds;
+        }
+
+        if (is_idr) {
+            if (result_.key_frame_seconds.size() < kMaxMarkerPoints) {
+                result_.key_frame_seconds.push_back(timestamp_seconds);
+            }
+        }
+        if (type == model::FrameType::I || type == model::FrameType::SI) {
+            if (result_.i_frame_seconds.size() < kMaxMarkerPoints) {
+                result_.i_frame_seconds.push_back(timestamp_seconds);
+            }
+        }
+    }
+
+    samples_.push_back(Sample{timestamp_seconds, size, type, is_idr, counts_frame});
 
     // 有界降采样：超过 max_samples 时对样本做减半（保留偶数下标），
     // 把内存夹在 ~max_samples，避免小时级长文件把内存撑爆。
@@ -568,6 +581,8 @@ void BitrateGopAnalyzer::DetectOversizedFrames() {
 
     const double avg_i_frame = result_.AverageIFrameBytes();
     for (const auto& sample : samples_) {
+        // 纯字节事件（解码器延迟入账）没有归属帧，不参与帧大小异常判定
+        if (!sample.is_frame) continue;
         const bool is_intra = (sample.type == model::FrameType::I ||
                                sample.type == model::FrameType::SI);
         if (is_intra && avg_i_frame > 0.0 &&

@@ -8,7 +8,20 @@
 
 namespace videoeye {
 
+// 配置文件里"schema 版本"键的名字。它是元数据而非业务配置：加载时读完即从
+// map 里摘掉，GetAllKeys() 看不到它。
+inline constexpr const char* kSchemaVersionKey = "config.schema_version";
+// 当前 schema 版本。0 = 老版本文件（没有版本键），按旧格式兼容读取。
+inline constexpr int kConfigSchemaVersion = 1;
+inline constexpr int kLegacySchemaVersion = 0;
+
 // 配置管理器 - 线程安全的单例模式
+//
+// 全局可变单例本身是个薄弱点（谁都能改、测试之间互相污染），这里保留现状但收紧
+// 几条最容易出事的边界：
+//   * 加载失败/读到更高版本时**保持现有配置**，不再用空 map 覆盖；
+//   * 保存走 .tmp + rename，不留半截文件；
+//   * 文件 IO 不持锁（先在锁内取快照）。
 class ConfigManager {
 public:
     // 获取单例实例
