@@ -6,8 +6,10 @@
 #include <exception>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 
+#include "core/domain/task/ThreadBody.h"
 #include "infrastructure/logging/Logger.h"
 #include "infrastructure/logging/ScopedTimer.h"
 
@@ -68,7 +70,16 @@ public:
         want_channels_ = channels > 0 ? channels : 2;
         running_.store(true);
         finished_.store(false);
-        thread_ = std::thread([this]() { ThreadMain(); });
+        thread_ = std::thread([this]() {
+            // 与其它所有线程入口共用同一份异常收口（core/domain/task/ThreadBody.h）：
+            // std::thread 的入口在 MSVC STL 里是 noexcept，异常逃逸 = 进程闪退
+            // （0xC0000409）。音频设备打不开最多是没声音，不能把播放器一起带走。
+            const std::optional<std::string> failure = task::GuardBody([this]() { ThreadMain(); });
+            if (failure) {
+                running_.store(false);
+                LOG_ERROR(std::string("AudioOutput(WASAPI): 输出线程异常退出: ") + *failure);
+            }
+        });
 
         // 等待后台线程完成设备初始化（含 COM 初始化，必须在同一线程内配对）
         std::unique_lock<std::mutex> lock(ready_mutex_);
@@ -375,7 +386,14 @@ public:
         }
         period_frames_ = 1024;
         running_.store(true);
-        thread_ = std::thread([this]() { PumpLoop(); });
+        thread_ = std::thread([this]() {
+            // 异常收口与其它线程入口同一份模板（见上面的 WASAPI 版注释）。
+            const std::optional<std::string> failure = task::GuardBody([this]() { PumpLoop(); });
+            if (failure) {
+                running_.store(false);
+                LOG_ERROR(std::string("AudioOutput(ALSA): 输出线程异常退出: ") + *failure);
+            }
+        });
         return true;
     }
 
@@ -560,17 +578,14 @@ void AudioOutput::OpenAsync(int sample_rate, int channels) {
     }
     stopping_.store(false);
     open_thread_ = std::thread([this, sample_rate, channels]() {
-        // std::thread 的入口在 MSVC STL 里是 noexcept 的：这里任何异常逃逸都会
-        // 直接 std::terminate()（表现为整个进程闪退，异常码 0xC0000409）。
-        // 音频设备打不开最多是没声音，不能把播放器一起带走，所以兜底捕获。
-        try {
+        // 见 ThreadMain 那处的注释: 与其它线程入口共用同一份异常收口模板。
+        // 音频设备打不开最多是没声音，不能把播放器一起带走。
+        const std::optional<std::string> failure = task::GuardBody([&]() {
             const bool ok = Open(sample_rate, channels);
             if (!ok) pending_play_.store(false);
-        } catch (const std::exception& e) {
-            LOG_ERROR(std::string("AudioOutput: 异步打开音频设备异常: ") + e.what());
-            pending_play_.store(false);
-        } catch (...) {
-            LOG_ERROR("AudioOutput: 异步打开音频设备发生未知异常");
+        });
+        if (failure) {
+            LOG_ERROR(std::string("AudioOutput: 异步打开音频设备异常: ") + *failure);
             pending_play_.store(false);
         }
     });

@@ -27,17 +27,37 @@ namespace task {
 
 using TaskId = std::uint64_t;
 
-// 任务终态。Idle/Running 是过程态, 其余三种是一旦写入就不再变化的终态。
+// 任务终态。Idle/Running 是过程态, 其余四种是一旦写入就不再变化的终态。
+//
+// TimedOut 单独存在的理由: "任务体违反契约被放弃"与"任务体自己报错"是两件不同的事,
+// 混成一个 Failed 之后, 上层既不知道要不要重试, 也不知道有没有一条落后台线程还没退干净
+// (超时的那条是**被放弃**的, 它可能仍在收尾)。批量 QC、抽帧、容器分析三处过去各有
+// 各的超时记法(bool / 独立枚举), 这里给它们一个共同的去处。
 enum class TaskState {
-    Idle,      // 该 slot 上当前没有任务
-    Running,   // 运行中
-    Succeeded, // 终态: 成功
-    Failed,    // 终态: 出错(含异常逃逸)
-    Canceled,  // 终态: 被取消 / 被同 slot 的新任务取代
+    Idle,       // 该 slot 上当前没有任务
+    Running,    // 运行中
+    Succeeded,  // 终态: 成功
+    Failed,     // 终态: 出错(含异常逃逸)
+    Canceled,   // 终态: 被取消 / 被同 slot 的新任务取代
+    TimedOut,   // 终态: 超过宿主给的回收预算仍未回来（线程按 TaskKind 被放弃或继续 join）
 };
 
 inline bool IsTerminalState(TaskState state) {
-    return state == TaskState::Succeeded || state == TaskState::Failed || state == TaskState::Canceled;
+    return state == TaskState::Succeeded || state == TaskState::Failed ||
+           state == TaskState::Canceled || state == TaskState::TimedOut;
+}
+
+// 人类可读名(日志/调试用)。别用它做业务分支 —— 分支一律直接比枚举值。
+inline const char* TaskStateName(TaskState state) {
+    switch (state) {
+        case TaskState::Idle:      return "Idle";
+        case TaskState::Running:   return "Running";
+        case TaskState::Succeeded: return "Succeeded";
+        case TaskState::Failed:    return "Failed";
+        case TaskState::Canceled:  return "Canceled";
+        case TaskState::TimedOut:  return "TimedOut";
+    }
+    return "Unknown";
 }
 
 // 关闭阶段能不能"放弃"这个任务。这个区分是关闭流程能否给出**整体**耗时上限的前提:

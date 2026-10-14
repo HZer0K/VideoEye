@@ -1563,3 +1563,17 @@ target_link_libraries(test_log_directory PRIVATE Qt6::Core)
 add_test(NAME LogDirectoryTests COMMAND test_log_directory)
 set_tests_properties(LogDirectoryTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 70：线程体统一收口（core/domain/task/ThreadBody.h）
+# 说明: 这是"所有线程入口用同一个异常捕获与收尾模板"这条约定的落点 ——
+#       GuardBody / ResolveTerminal / ScopeExit 各有一条用例，外加一条真线程集成
+#       （不套收口的话那条用例会直接把测试进程带走）。放在这里还有一个附带作用：
+#       它编译一遍"Header 能被 ui 之外的所有层 include"这件事 —— core/qc、
+#       core/qt、core/player 都按分层规则看不见 infrastructure/，所以协议与模板
+#       必须一起住在 core/domain/task。
+# 只依赖 stdlib + gtest；链 VideoEyeInfrastructure 是为了 Linux 上的 pthread。
+# =================================================
+videoeye_add_test(test_thread_body unit/test_thread_body.cpp)
+target_link_libraries(test_thread_body PRIVATE VideoEyeInfrastructure)
+add_test(NAME ThreadBodyTests COMMAND test_thread_body)

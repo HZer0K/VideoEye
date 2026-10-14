@@ -6,12 +6,14 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
 
 #include "core/analysis/orchestration/AnalysisEngine.h"
 #include "core/analysis/orchestration/AnalysisTerminalState.h"
+#include "core/domain/task/ThreadBody.h"
 #include "infrastructure/logging/Logger.h"
 
 namespace videoeye {
@@ -168,12 +170,13 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input,
         // 异常必须就地收口：这是裸 std::thread 的线程体，任何逃逸的异常都会直接
         // std::terminate()（连等待线程一起带走），任务永远等不到结算 —— 分析器 /
         // 解析器抛异常就从"进程没了"降级成"这条任务失败"。
-        try {
+        // 收口模板与其它线程入口共用同一份（core/domain/task/ThreadBody.h），
+        // 不再在这里抄一遍 try/catch —— 抄的那份迟早会漏或会跑偏。
+        const std::optional<std::string> failure = task::GuardBody([&]() {
             box->engine->Run(box->path, box->options, effective, nullptr, box->cancel_flag);
-        } catch (const std::exception& e) {
-            NotifyFailed(effective, std::string("分析异常: ") + e.what());
-        } catch (...) {
-            NotifyFailed(effective, std::string("分析异常: 未知错误"));
+        });
+        if (failure) {
+            NotifyFailed(effective, std::string("分析异常: ") + *failure);
         }
         // 资源回收见证: 正常结算时这行紧跟返回；超时 detach 场景下它是"被放弃的后台线程
         // 终于退出、FFmpeg / 内存 / 磁盘 / CPU 归还"的唯一可观测信号（盒子由线程自持,

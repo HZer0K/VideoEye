@@ -130,6 +130,12 @@ private:
     // 仅当任务仍存活时把更新投递回主线程；否则静默丢弃（面板正在销毁）
     void PostToUi(std::shared_ptr<AnalysisTask> task, const std::function<void()>& updater);
 
+    // 线程体抓到异常时的收尾（见 core/domain/task/ThreadBody.h 的 GuardBody）：
+    // 记日志 + 把 UI 从 busy_ 里解出来 + 按统一语义归还终态。与正常完成路径互斥 ——
+    // 两条路都回到 UI 线程，谁先到谁定终态（TaskState 一次性写入）。
+    void ReportThreadFailure(const std::shared_ptr<AnalysisTask>& task,
+                             const std::string& message);
+
     void StartSingleAnalysis(const std::string& path);
     void StartBatchScan(const std::string& directory);
     void RunSingle(std::shared_ptr<AnalysisTask> task, const std::string& path);

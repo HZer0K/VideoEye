@@ -5,10 +5,12 @@
 #include <cstdio>
 #include <limits>
 #include <map>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "core/domain/task/ThreadBody.h"
 #include "infrastructure/logging/Logger.h"
 
 namespace videoeye {
@@ -483,11 +485,16 @@ bool VisualDefectAnalyzer::Submit(const model::FrameSample& sample) {
 }
 
 // 收尾必须托底: 无论从哪个出口离开都要把 worker_exited_ 置位, 否则 StopWorker 会把
-// 一个已经结束的线程判成"还没回来", 白白等到预算耗尽才 join。
+// 一个已经结束的线程判成"还没回来", 白白等到预算耗尽才 join。这里改由 ScopeExit
+// 结构性地保证 —— 以前靠"try/catch 之后的那一行", 哪天在中间加个 return 就漏。
 // 顺带把异常兜住 —— 成员函数作线程入口时 std::thread 的入口是 noexcept, 异常逃逸
-// 会直接 std::terminate(), 连"分析线程为什么不见了"都无从查起。
+// 会直接 std::terminate(), 连"分析线程为什么不见了"都无从查起。收口模板与其它
+// 线程入口共用同一份(core/domain/task/ThreadBody.h)。
 void VisualDefectAnalyzer::WorkerLoop() {
-    try {
+    const auto settle = task::MakeScopeExit([this]() {
+        worker_exited_.store(true, std::memory_order_release);
+    });
+    const std::optional<std::string> failure = task::GuardBody([this]() {
         for (;;) {
             model::FrameSample sample;
             {
@@ -503,12 +510,10 @@ void VisualDefectAnalyzer::WorkerLoop() {
             std::lock_guard<std::mutex> lock(m_);
             ProcessSampleLocked(sample);
         }
-    } catch (const std::exception& e) {
-        LOG_ERROR("画面质检工作线程异常终止: " + std::string(e.what()));
-    } catch (...) {
-        LOG_ERROR("画面质检工作线程异常终止: 未知异常");
+    });
+    if (failure) {
+        LOG_ERROR("画面质检工作线程异常终止: " + *failure);
     }
-    worker_exited_.store(true, std::memory_order_release);
 }
 
 void VisualDefectAnalyzer::Feed(const model::FrameSample& sample) {

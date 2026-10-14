@@ -1,12 +1,14 @@
 #include "core/qt/QtAnalysisController.h"
 
 #include <exception>
+#include <optional>
 #include <string>
 #include <utility>
 
 #include <QMetaType>
 #include <QPointer>
 
+#include "core/domain/task/ThreadBody.h"
 #include "infrastructure/logging/Logger.h"
 
 namespace videoeye {
@@ -148,16 +150,12 @@ void QtAnalysisController::Launch(const std::string& file_path, const videoeye::
         // 异常必须就地收口: 这是裸 std::thread 的线程体，逃逸出去的异常直接
         // std::terminate()（整个进程被拖走，UI 连"失败"都看不到）。这里把它降级成
         // 一次 AnalysisFailed —— 任务照常走到失败终态，下面的收尾也照常执行。
-        try {
+        // 与其它线程入口共用同一份收口模板（core/domain/task/ThreadBody.h）。
+        const std::optional<std::string> failure = task::GuardBody([&]() {
             box->engine.Run(box->path, box->options, box->callbacks, nullptr, token.flag());
-        } catch (const std::exception& e) {
-            if (box->callbacks.on_failed) {
-                box->callbacks.on_failed(std::string("分析异常: ") + e.what());
-            }
-        } catch (...) {
-            if (box->callbacks.on_failed) {
-                box->callbacks.on_failed(std::string("分析异常: 未知错误"));
-            }
+        });
+        if (failure && box->callbacks.on_failed) {
+            box->callbacks.on_failed(std::string("分析异常: ") + *failure);
         }
         // 先立"线程体已返回"标志，再投递通知。顺序不能反: StartAnalysis 可能在这条
         // 通知被处理**之前**就被调用，那时它靠这个标志判断句柄可以就地回收并直接开

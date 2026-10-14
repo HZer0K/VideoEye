@@ -19,6 +19,7 @@
 #include <QVBoxLayout>
 
 #include "core/analysis/diagnostics/QcRuleEngine.h"
+#include "core/domain/task/ThreadBody.h"
 #include "core/qc/QcProfileMapper.h"
 #include "core/reporting/QcReportExporter.h"
 
@@ -561,6 +562,29 @@ void ReportingPanel::PostToUi(std::shared_ptr<AnalysisTask> task,
     QMetaObject::invokeMethod(this, updater, Qt::QueuedConnection);
 }
 
+// 线程体收口到这里唯一可能的另一半：GuardBody 抓到了异常。
+//
+// 由**任务线程**调用，UI 那一半经 PostToUi 排队回主线程：异常发生在 RunSingle /
+// RunBatch 里的话，正常路径那句清算 UI 的 PostToUi 根本到不了（它在函数末尾），
+// 于是 busy_ 会一直卡住、按钮全灰、转圈不停 —— 所以这里必须把同一份收尾补齐。
+// 终态按统一语义判定（取消优先于异常，见 core/domain/task/ThreadBody.h）。
+void ReportingPanel::ReportThreadFailure(const std::shared_ptr<AnalysisTask>& task,
+                                         const std::string& message) {
+    LOG_ERROR("报告页任务线程抛出异常: " + message);
+    const task::TaskState terminal =
+        task::ResolveTerminal(std::optional<std::string>(message), task->cancel);
+    PostToUi(task, [this, task, terminal, msg = QString::fromStdString(message)]() {
+        const QString text = tr("分析异常: %1").arg(msg);
+        verdict_label_->setText(text);
+        batch_summary_label_->setText(text);
+        AppendSummary(text);
+        SetBusy(false);
+        // 失败就不再把待导出目录留着 —— 免得下一次成功时悄悄导出一份不相干的东西。
+        pending_export_dir_.clear();
+        FinishTask(task, terminal);
+    });
+}
+
 void ReportingPanel::RetireTask(std::shared_ptr<AnalysisTask>& task) {
     if (!task)
         return;
@@ -641,9 +665,15 @@ void ReportingPanel::StartSingleAnalysis(const std::string& path) {
     task->body_done.store(false, std::memory_order_release);
     // body_done 在**包裹层**置位而不是塞进 RunSingle 的每条 return 路径：RunSingle
     // 里有提前返回（空目录之类），靠函数末尾那一行总会漏，回收就变成干等满预算。
+    //
+    // 异常也必须就地收口 —— 这里原先是裸跑 RunSingle，是本页唯一一处线程入口没兜
+    // 异常的地方：一抛就是 std::terminate；就算没崩，body_done 也永不置位，回收路径
+    // 会先空转满预算、再按严格 Cooperative 无上限地 join，关界面等于永久挂住。
     task->thread = std::thread([this, task, path]() {
-        RunSingle(task, path);
+        const std::optional<std::string> failure =
+            task::GuardBody([&]() { RunSingle(task, path); });
         task->body_done.store(true, std::memory_order_release);
+        if (failure) ReportThreadFailure(task, *failure);
     });
 }
 
@@ -747,10 +777,13 @@ void ReportingPanel::StartBatchScan(const std::string& directory) {
     task->cancel = handle.cancel;
     batch_task_ = task;
     task->body_done.store(false, std::memory_order_release);
-    // 同 RunSingle：body_done 在包裹层置位，别漏 RunBatch 里那些提前 return。
+    // 同 RunSingle：body_done 在包裹层置位，别漏 RunBatch 里那些提前 return；
+    // 异常同样必须就地收口（理由同 StartSingleAnalysis），这里原先也是裸跑。
     task->thread = std::thread([this, task, request]() {
-        RunBatch(task, request);
+        const std::optional<std::string> failure =
+            task::GuardBody([&]() { RunBatch(task, request); });
         task->body_done.store(true, std::memory_order_release);
+        if (failure) ReportThreadFailure(task, *failure);
     });
 }
 
