@@ -22,6 +22,7 @@
 #include "ui/ffmpeg_panel/FfmpegPanel.h"
 #include "ui/main_window/ExportCoordinator.h"
 #include "ui/main_window/macroblock_coordination.h"
+#include "ui/main_window/OpenSessionController.h"
 #include "ui/main_window/OverviewPage.h"
 #include "ui/player/PlayerPanel.h"
 
@@ -58,9 +59,6 @@ private slots:
     // 播放区显隐 (实际逻辑在 PlayerPanel)
     void OnTogglePlayerArea(bool checked);
 
-    // 事务式异步打开完成 (MediaPlayer::OpenFinished)。ok=true 表示已提交进播放会话。
-    void OnPlayerOpenFinished(bool ok);
-
 private:
     // 初始化UI
     void SetupUI();
@@ -72,6 +70,9 @@ private:
     void SetupStatusBar();
     void SetupConnections();
     void OnSidebarChanged(int index);  // 侧边栏切换
+    // 构造打开会话控制器（分派 / 换媒体复位 / 异步收尾）。须在 SetupUI 之后:
+    // 它要接 player_panel_ / overview_page_ / analysis_panel_ 三个此刻才存在的对象。
+    void SetupOpenSession();
     // 按 pageId 跳转到内容栈页（首页「跳转到分析页」用）：切 stack 并同步侧栏选中
     void ShowPageById(const QString& page_id);
     // 拉取 AnalysisPanel 的诊断状态快照，刷新首页「分析状态」区
@@ -106,11 +107,11 @@ protected:
     // 顶部显示当前媒体路径
     QLabel* current_media_label_;
     QLabel* stats_label_;         // 状态栏右端常驻: 实时 FPS/码率/关键帧
-    QString current_media_url_;
-    // 异步打开的收尾信息: OpenAsync 发起时登记, OpenFinished 回来时消费。
-    // 过期结果由 MediaPlayer 侧丢弃 (不发信号), 这里只需记住最近一次请求。
-    QString pending_open_source_;
-    bool pending_open_autoplay_ = false;
+
+    // 打开会话: 分派(裸图像/PCM/通用媒体) + 换媒体复位 + 异步收尾 + 下游登记。
+    // 待收尾登记与"当前媒体源"都由它持有 —— 这两个状态只有打开链路在用,
+    // 挂在主窗口上会让"谁在改 current_media_url_"变成一笔糊涂账。
+    OpenSessionController* open_session_ = nullptr;
 
     // 分析面板
     ui::AnalysisPanel* analysis_panel_;  // 分析面板

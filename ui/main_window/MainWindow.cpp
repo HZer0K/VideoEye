@@ -167,6 +167,7 @@ MainWindow::MainWindow(QWidget* parent)
     , content_splitter_(nullptr)
     , current_media_label_(nullptr)
     , stats_label_(nullptr)
+    , open_session_(nullptr)
     , analysis_panel_(nullptr)
     , menu_bar_(nullptr)
     , status_bar_(nullptr)
@@ -179,7 +180,9 @@ MainWindow::MainWindow(QWidget* parent)
     // 具体成员 (raw 查询里的 player_panel_ 在 SetupUI 中才创建, lambda 调用时已就绪)。
     export_coordinator_ = new ExportCoordinator(player_, this, this);
     export_coordinator_->SetSourceQueries(
-        [this]() { return current_media_url_; },
+        [this]() {
+            return open_session_ ? open_session_->current_media_url() : QString();
+        },
         [this]() { return player_panel_ && player_panel_->IsShowingRawImage(); });
 
     // 应用深色主题
@@ -621,21 +624,50 @@ void MainWindow::SetupStatusBar() {
     status_bar_->addPermanentWidget(stats_label_);
 }
 
+void MainWindow::SetupOpenSession() {
+    // 打开会话控制器: 分派 / 换媒体复位 / 异步收尾 / 下游登记。
+    // 依赖在此刻才齐 (player_panel_ / overview_page_ / analysis_panel_ 都是 SetupUI
+    // 建的), 所以放在 SetupConnections 开头而不是构造函数里。
+    OpenSessionController::Deps deps;
+    deps.player = player_;
+    deps.player_panel = player_panel_;
+    deps.analysis_panel = analysis_panel_;
+    deps.ffmpeg_panel = ffmpeg_panel_;
+    deps.overview_page = overview_page_;
+    deps.media_info = media_info_coordinator_.get();
+    // PCM 参数弹窗是 UI 交互 (QInputDialog), 留在本窗口 —— 控制器不认识对话框。
+    deps.prompt_pcm = [this](QString& demuxer, int& sample_rate, int& channels) {
+        return PromptForPcmSettings(demuxer, sample_rate, channels);
+    };
+    deps.hide_export_progress = [this]() { export_coordinator_->HideProgress(); };
+    deps.apply_macroblock_state = [this]() { ApplyMacroblockAnalysisState(); };
+    open_session_ = new OpenSessionController(deps, this);
+
+    connect(open_session_, &OpenSessionController::StatusMessage,
+            this, [this](const QString& text, int timeout) {
+                statusBar()->showMessage(text, timeout);
+            });
+    connect(open_session_, &OpenSessionController::CurrentMediaLabelChanged,
+            this, [this](const QString& text) {
+                if (current_media_label_) current_media_label_->setText(text);
+            });
+    // 事务式异步打开完成: 收尾在控制器里做 (状态栏/标签/自动播放/诊断扫描)。
+    // 过期结果 (期间又开了新文件) 由"没有待收尾登记"判掉, 见 open_session.h。
+    connect(player_, &player::MediaPlayer::OpenFinished,
+            open_session_, &OpenSessionController::OnPlayerOpenFinished);
+}
+
 void MainWindow::SetupConnections() {
     // 播放器信号 - 播放/画面/音频相关已由 PlayerPanel 自行连接 (SetMediaPlayer);
     // 导出进度已由 ExportCoordinator 自连 (其构造函数)。
     // 此处只连接 MainWindow 负责的部分: 打开收尾、分析面板、跨模块转发。
+    SetupOpenSession();
 
     // 导出提示 (协调器只发文本, 状态栏由本窗口转发)
     connect(export_coordinator_, &ExportCoordinator::StatusMessage,
             this, [this](const QString& text, int timeout) {
                 statusBar()->showMessage(text, timeout);
             });
-
-    // 事务式异步打开完成: 在 UI 线程统一收尾 (状态栏/标签/自动播放/诊断扫描)。
-    // 过期结果 (期间又开了新文件) 由 MediaPlayer 丢弃且不发此信号。
-    connect(player_, &player::MediaPlayer::OpenFinished,
-            this, &MainWindow::OnPlayerOpenFinished);
 
     // 媒体信息文本: 打开链路在后台探测时顺带格式化 (不再二次探测), 提交成功后贴进
     // 首页的「完整媒体信息」区; 顺序上先于 OpenFinished 到达。
@@ -921,165 +953,12 @@ void MainWindow::OnShowFormatSupport() {
 }
 
 bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
-    if (source.isEmpty()) {
+    // 分派 / 换媒体复位 / 异步收尾全在 OpenSessionController 里:
+    // 本窗口只保留"入口"这一个职责 (命令行参数与菜单都走这里)。
+    if (!open_session_) {
         return false;
     }
-    if (!player_) {
-        return false;
-    }
-
-    // 任何一次新打开都先作废上一次异步打开的收尾回调: 只有真正走 OpenAsync 的
-    // 路径会在下面重新登记 pending_open_source_。这样 raw/pcm 等同步分支期间
-    // 若有旧的异步结果迟到, OnPlayerOpenFinished 会因 pending 为空而直接忽略。
-    pending_open_source_.clear();
-    pending_open_autoplay_ = false;
-
-    // 打开新文件前收掉导出进度框。注意这里**只**管界面那部分 ——
-    // "终止进行中的导出"是媒体生命周期的保证, 归 MediaPlayer::CancelAllExports(),
-    // 由 OpenInternal() 统一负责（打开媒体的入口不止这一个）。以前这里只调了
-    // CancelVideoFrameExport(): 媒体转码导出既不会被取消、排队请求也没清,
-    // 旧任务还能把完成信号串回新媒体的界面。
-    export_coordinator_->HideProgress();
-    // 停止当前播放并清理播放模块状态 (Raw/音频可视化/进度条等)
-    player_panel_->StopPlayback();
-
-    const QString suffix = QFileInfo(source).suffix().toLower();
-    if (suffix == "yuv" || suffix == "nv12" || suffix == "rgb" ||
-        suffix == "bgr" || suffix == "yuy2" || suffix == "raw") {
-        // 裸图像不走 player_->Open(), 拿不到 OpenInternal 里那次统一取消 ——
-        // 这里显式补上, 否则旧媒体的抽帧/转码导出会继续在后台跑。
-        player_->CancelAllExports();
-        player_panel_->SetRawImageMode(true);
-        player_panel_->SetCurrentSource(QString());
-        current_media_url_.clear();
-        if (!player_panel_->LoadRawImageFile(source)) {
-            statusBar()->showMessage(tr("打开失败: %1").arg(source));
-            return false;
-        }
-        statusBar()->showMessage(tr("已打开图像: %1").arg(source));
-        if (current_media_label_) {
-            current_media_label_->setText(source);
-        }
-        // 首页登记文件名（Raw 图像没有 StreamInfo 可摘要）；媒体信息框保留
-        // LoadRawImageFile 通过 RawImageInfoReady 写入的 Raw 详情
-        // (旧行为: 此处会用"无 MediaInfo 数据"覆盖掉, 导致 Raw 信息一闪而过)
-        overview_page_->SetOpenedFileWithoutSummary(source);
-        return true;
-    }
-
-    if (suffix == "pcm") {
-        QString demuxer_name;
-        int sample_rate = 44100;
-        int channels = 2;
-        if (!PromptForPcmSettings(demuxer_name, sample_rate, channels)) {
-            statusBar()->showMessage(tr("已取消打开 PCM: %1").arg(source));
-            return false;
-        }
-
-        player_panel_->SetRawImageMode(false);
-        player_panel_->SetCurrentSource(source);
-        const bool open_result = player_->OpenRawPcm(source, demuxer_name, sample_rate, channels);
-        if (!open_result) {
-            statusBar()->showMessage(tr("打开 PCM 失败: %1").arg(source));
-            return false;
-        }
-
-        statusBar()->showMessage(tr("已打开 PCM: %1").arg(source));
-        if (current_media_label_) {
-            current_media_label_->setText(
-                tr("%1 [PCM %2, %3 Hz, %4 ch]").arg(source, demuxer_name).arg(sample_rate).arg(channels));
-        }
-        current_media_url_ = source;
-        analysis_panel_->SetCurrentVideoPath(source);
-        if (ffmpeg_panel_) ffmpeg_panel_->SetCurrentFile(source);
-        overview_page_->SetOpenedFileWithoutSummary(source);
-
-        // 媒体信息解析 PCM (裸流无法自动探测, 需带上用户选择的格式参数) —— 贴到首页
-        overview_page_->SetMediaInfoText(
-            media_info_coordinator_->DescribeRawPcm(source, demuxer_name, sample_rate, channels));
-
-        if (autoplay) {
-            player_->Play();
-        }
-        return true;
-    }
-
-    player_panel_->SetRawImageMode(false);
-    player_panel_->SetCurrentSource(source);
-    current_media_url_ = source;
-    analysis_panel_->SetCurrentVideoPath(source);
-    if (ffmpeg_panel_) ffmpeg_panel_->SetCurrentFile(source);
-
-    // 事务式异步打开: UI 线程只做"换媒体复位"并登记收尾信息, 耗时的
-    // avformat 打开/探测被派到后台线程; 完成后经 OpenFinished 排回 UI 线程提交。
-    // 收尾 (状态栏/标签/自动播放/诊断扫描) 见 OnPlayerOpenFinished。
-    // 打开失败也不再直接中止: 仍把文件加载到分析模块, 由媒体信息/文件结构/
-    // 诊断扫描给出错误原因。
-    pending_open_source_ = source;
-    pending_open_autoplay_ = autoplay;
-    player_->OpenAsync(source);
-
-    // 同步已启用的分析功能到播放器 (复选框默认勾选但未触发信号)。
-    // 须放在 OpenAsync 之后: 它内部先做了换媒体复位。
-    analysis_panel_->EmitInitialFeatureStates();
-    // 宏块分析不在 EmitInitialFeatureStates 里重发（见其注释），换文件后在此按
-    // "用户启用 || 叠加需求"重新下发，同时校准宏块页勾选框与播放器特征开关。
-    ApplyMacroblockAnalysisState();
-
-    // 媒体信息解析: 不再独立探测 —— 打开链路在后台探测时已顺带把同一个上下文
-    // 格式化好，提交成功后经 MediaInfoTextReady 贴进首页（见 SetupConnections）；
-    // 这里只放占位文本。打开失败的"分析模式"由 OnPlayerOpenFinished 退回协调器
-    // 做尽力而为的独立解析（此时没有可复用的上下文）。
-    overview_page_->SetMediaInfoText(tr("(正在解析媒体信息…)"));
-
-    return true;
-}
-
-void MainWindow::OnPlayerOpenFinished(bool ok) {
-    const QString source = pending_open_source_;
-    const bool autoplay = pending_open_autoplay_;
-    pending_open_source_.clear();
-    pending_open_autoplay_ = false;
-    // 过期/无关的回调 (对应请求已被后续打开取代) 直接忽略。
-    if (source.isEmpty() || !player_) {
-        return;
-    }
-
-    if (ok) {
-        statusBar()->showMessage(tr("已打开: %1").arg(source));
-    } else {
-        statusBar()->showMessage(tr("无法播放 (已进入分析模式): %1").arg(player_->GetLastError()), 0);
-    }
-    if (current_media_label_) {
-        current_media_label_->setText(ok ? source : tr("%1 (无法播放)").arg(source));
-    }
-
-    // ---- 首页文件摘要（见 SetupConnections 里"首页接线"的第 1 条注释）----
-    // 打开成功时贴 StreamInfo；失败（分析模式）至少要把文件名留在首页上。
-    if (overview_page_) {
-        if (ok) {
-            overview_page_->SetFileSummary(player_->GetStreamInfo());
-        } else if (!source.isEmpty()) {
-            overview_page_->SetOpenedFileWithoutSummary(source);
-        }
-    }
-
-    if (ok) {
-        if (autoplay) {
-            player_->Play();
-        }
-        // 打开即分析: 后台自动跑一次全文件诊断扫描 (扩展名/容器一致性、GOP、时间戳、
-        // 音频 QC 等规则在「诊断与报告」页直接给出原因与修复建议; 大文件可在该页取消)。
-        analysis_panel_->StartDiagnosticsScanForCurrentFile();
-    } else {
-        // 分析模式: 补跑文件结构分析与全文件诊断扫描,
-        // 让「文件结构」「诊断与报告」「码率与 GOP」页展示该文件的具体错误。
-        player_->RequestContainerStructureAnalysis(source);
-        analysis_panel_->StartDiagnosticsScanForCurrentFile();
-        // 打开失败时没有可复用的 AVFormatContext（提交被整体丢弃），媒体信息
-        // 退回协调器做一次尽力而为的独立解析（异常文件也可能部分解析成功）。
-        media_info_coordinator_->StartAsync(source);
-    }
+    return open_session_->Open(source, autoplay);
 }
 
 bool MainWindow::PromptForPcmSettings(QString& demuxer_name, int& sample_rate, int& channels) {

@@ -1589,3 +1589,14 @@ add_test(NAME ThreadBodyTests COMMAND test_thread_body)
 videoeye_add_test(test_overview_analysis unit/test_overview_analysis.cpp)
 target_link_libraries(test_overview_analysis PRIVATE VideoEyeDomain Qt6::Core)
 add_test(NAME OverviewAnalysisTests COMMAND test_overview_analysis)
+
+# =================================================
+# 测试: 打开会话的分派与待收尾登记口径 (ui/main_window/open_session.h)
+#
+# 从 MainWindow::OpenMedia / OnPlayerOpenFinished 抽出来的两条判定：一个 source 该走
+# 哪条打开路径、异步回调是不是过期的。错了都不崩，只会静默走错分支。
+# 只需 Qt6::Core（QString），不需要 QApplication。
+# =================================================
+videoeye_add_test(test_open_session unit/test_open_session.cpp)
+target_link_libraries(test_open_session PRIVATE Qt6::Core)
+add_test(NAME OpenSessionTests COMMAND test_open_session)
