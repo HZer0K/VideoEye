@@ -1629,3 +1629,18 @@ target_link_libraries(test_report_export PRIVATE
     VideoEyeInfrastructure
     Qt6::Core)
 add_test(NAME ReportExportTests COMMAND test_report_export)
+
+# =================================================
+# 报告页任务协调器（启停 / 回收 / 终态归还 / 异常收尾）。
+# 同样不链 VideoEyeReportingPanel（ODR），直接编 .cpp。QueuedConnection 要真投递，
+# 所以链 Qt6::Core 并在测试里建一个 QCoreApplication（不需要 offscreen 平台）。
+# =================================================
+videoeye_add_test(test_reporting_task_coordinator
+    unit/test_reporting_task_coordinator.cpp
+    ../ui/reporting_panel/ReportingTaskCoordinator.cpp
+)
+target_link_libraries(test_reporting_task_coordinator PRIVATE
+    VideoEyeInfrastructure
+    VideoEyeDomain
+    Qt6::Core)
+add_test(NAME ReportingTaskCoordinatorTests COMMAND test_reporting_task_coordinator)

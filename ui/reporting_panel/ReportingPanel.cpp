@@ -112,6 +112,22 @@ ReportingPanel::ReportingPanel(QWidget* parent) : QWidget(parent) {
     BuildUi();
     // 控制器要读 batch_dir_edit_ 等控件，必须在 BuildUi 之后建。
     SetupExportController();
+    SetupTaskCoordinator();
+}
+
+void ReportingPanel::SetupTaskCoordinator() {
+    ReportingTaskCoordinator::Deps deps;
+    deps.ui = this;
+    deps.show_failure = [this](const QString& text) {
+        verdict_label_->setText(text);
+        batch_summary_label_->setText(text);
+    };
+    deps.append = [this](const QString& text) { AppendSummary(text); };
+    deps.set_busy = [this](bool busy) { SetBusy(busy); };
+    deps.abort_pending_export = [this]() {
+        if (export_controller_) export_controller_->AbortPendingExport();
+    };
+    task_runner_ = std::make_unique<ReportingTaskCoordinator>(std::move(deps));
 }
 
 void ReportingPanel::SetupExportController() {
@@ -146,14 +162,13 @@ void ReportingPanel::SetupExportController() {
 }
 
 ReportingPanel::~ReportingPanel() {
-    // 取消 + 置 alive=false + **带预算的**回收，全部由 RetireTask 完成：worker 在预算
+    // 取消 + 置 alive=false + **带预算的**回收，全部由任务协调器完成：worker 在预算
     // 返回前结束，其回调看到 alive=false 不会再触碰 this；已入队的 UI 事件由 Qt 在对象
     // 销毁时自动移除，不会跑到销毁后的 this。
     // （P0：原先对仍 joinable 的 std::thread 直接 detach，且第二次启动会对其赋值导致 terminate。）
     //
     // 预算这件事是评审 P1-3 的要求：关界面不能再无限等下去。
-    RetireTask(single_task_);
-    RetireTask(batch_task_);
+    if (task_runner_) task_runner_->RetireAll();
 }
 
 // ===========================================================================
@@ -509,8 +524,7 @@ void ReportingPanel::OnStartBatch() {
 void ReportingPanel::OnCancelBatch() {
     // 报告页的"取消"也只剩这一颗标志：就是 slot 上那个任务的 task::CancelToken，
     // 与诊断页、QcRunner 内部是同一个类型、同一套语义。
-    if (batch_task_)
-        batch_task_->cancel.RequestCancel();
+    task_runner_->RequestCancel(ReportingTaskCoordinator::Slot::Batch);
     batch_summary_label_->setText(tr("正在停止…（已经完成的文件保留结果）"));
 }
 
@@ -522,126 +536,25 @@ void ReportingPanel::OnExportBatchSummary() {
 // 分析执行
 // ===========================================================================
 
-void ReportingPanel::PostToUi(std::shared_ptr<AnalysisTask> task,
-                               const std::function<void()>& updater) {
-    // 任务已不再存活（面板正在销毁）时丢弃，避免触碰已销毁的 UI 对象
-    if (!task || !task->alive.load(std::memory_order_acquire)) return;
-    QMetaObject::invokeMethod(this, updater, Qt::QueuedConnection);
-}
-
-// 线程体收口到这里唯一可能的另一半：GuardBody 抓到了异常。
-//
-// 由**任务线程**调用，UI 那一半经 PostToUi 排队回主线程：异常发生在 RunSingle /
-// RunBatch 里的话，正常路径那句清算 UI 的 PostToUi 根本到不了（它在函数末尾），
-// 于是 busy_ 会一直卡住、按钮全灰、转圈不停 —— 所以这里必须把同一份收尾补齐。
-// 终态按统一语义判定（取消优先于异常，见 core/domain/task/ThreadBody.h）。
-void ReportingPanel::ReportThreadFailure(const std::shared_ptr<AnalysisTask>& task,
-                                         const std::string& message) {
-    LOG_ERROR("报告页任务线程抛出异常: " + message);
-    const task::TaskState terminal =
-        task::ResolveTerminal(std::optional<std::string>(message), task->cancel);
-    PostToUi(task, [this, task, terminal, msg = QString::fromStdString(message)]() {
-        const QString text = tr("分析异常: %1").arg(msg);
-        verdict_label_->setText(text);
-        batch_summary_label_->setText(text);
-        AppendSummary(text);
-        SetBusy(false);
-        // 失败就不再把待导出目录留着 —— 免得下一次成功时悄悄导出一份不相干的东西。
-        if (export_controller_) export_controller_->AbortPendingExport();
-        FinishTask(task, terminal);
-    });
-}
-
-void ReportingPanel::RetireTask(std::shared_ptr<AnalysisTask>& task) {
-    if (!task)
-        return;
-    // 先要一份句柄副本：下面的 RecycleTask 会把 task 置空，句柄得先拿出来。
-    const task::TaskHandle handle = task->handle;
-
-    // 运行时诊断（评审 P2-4 方案 A）：报告页走严格 Cooperative，**析构没有硬时间上限**。
-    // 这条日志把"开始回收、正在等任务体响应取消"这件事留痕 —— 万一关停久等，日志能区分
-    // 是"任务体在收尾"还是"取消没生效"。
-    LOG_INFO("报告页开始回收任务 #" + std::to_string(handle.id) +
-             "（严格 Cooperative：请求取消后等待线程体收尾，无硬时间上限）");
-
-    // 请求取消并封死"还允许往面板上刷结果"这条路。顺序不能反 —— 先取消，任务体
-    // 才可能在预算内自己收尾；先置 alive=false 也行，但取消必须做，否则取消按钮
-    // 点了没反应（这条路径就是取消按钮 / 析构两条路共用的一份收尾逻辑）。
-    task->cancel.RequestCancel();
-    task->alive.store(false, std::memory_order_release);
-
-    // 终态只在这里（宿主线程）归还：任务体不能碰 tasks_（它捕获了 this，关停时
-    // tasks_ 比它先析构，从线程里 EndHandle 就是悬空访问）。于是 slot 上的终态在
-    // 下一次启动 / 析构时补记 —— 正常流程下 join 已返回，这里一定是干净的
-    // Running -> Canceled/Succeeded；超预算时记 Canceled，slot 不会永远挂在 Running。
-    if (handle.valid())
-        tasks_.EndHandle(handle, handle.cancel.IsCanceled() ? task::TaskState::Canceled
-                                                           : task::TaskState::Succeeded);
-
-    // 回收：等线程体返回（观测预算）→ join 收句柄 → 置空。报告页归到协议的 Cooperative
-    // 一边，而且是**严格** Cooperative：任务体承诺响应取消令牌（取消链一路通到引擎与
-    // FFmpeg 中断回调），所以这里的 join 没有上界 —— 预算只是"预期多快收回来"的告警线。
-    // 任务体捕获了 this 并往面板上排队 UI 更新，detach 之后那些投递会落到已销毁的
-    // QWidget 上；在"硬性时间上限"与"不悬空访问"之间，报告页明确选后者。
-    if (!RecycleTask(task)) {
-        LOG_WARN("报告页任务回收超出预期预算 " + std::to_string(kDefaultRecycleBudgetMs) +
-                 "ms，按严格 Cooperative 继续等待其响应取消（不 detach）");
-    }
-}
-
-void ReportingPanel::FinishTask(const std::shared_ptr<AnalysisTask>& task,
-                                task::TaskState terminal) {
-    if (!task) return;
-    // 终态一次性写入：EndHandle 只在 id 仍与 slot 当前任务匹配时才生效，否则静默丢弃
-    // （说明这个任务已被取代 / 句柄已失效）。写完之后 slot 不再停在 Running。
-    tasks_.EndHandle(task->handle, terminal);
-
-    // 归还句柄前必须先把线程收回（join）：任务体按值捕获了 task（shared_ptr），而
-    // AnalysisTask 又持有 std::thread —— 二者构成引用环。若这里只 reset 不 join，环
-    // 没人打破，AnalysisTask（连同尚可 join 的 std::thread）会永久泄漏。此时
-    // RunSingle / RunBatch 已经返回、body_done 已置位，join 几乎瞬间返回。
-    // 不归还句柄的话 slot 会一直停在 Running，任务切换时 single_task_ / batch_task_
-    // 长期持有过期句柄，RunningCount() 也会长时间不准确。
-    if (single_task_ == task) {
-        RecycleTask(single_task_);
-    } else if (batch_task_ == task) {
-        RecycleTask(batch_task_);
-    }
+void ReportingPanel::PostToUi(const std::shared_ptr<AnalysisTask>& task,
+                              const std::function<void()>& updater) const {
+    if (task_runner_) task_runner_->PostToUi(task, updater);
 }
 
 void ReportingPanel::StartSingleAnalysis(const std::string& path) {
-    RetireTask(single_task_);  // 回收上一次（busy_ 已拦住重复启动，这里兜底）
     SetBusy(true);
     verdict_label_->setText(tr("分析中…"));
     issue_count_label_->setText(QString());
 
-    // 任务身份与取消令牌一并向协议要：id 由 slot 分配（"第几次分析"这个号不再自己
-    // 另起一套），取消只有 handle.cancel 这一颗，任务体与 QcRunner 轮询的是同一颗。
-    const task::TaskHandle handle =
-        tasks_.BeginHandle(kTaskSlot, 0, task::TaskKind::Cooperative);
-    if (!handle.valid()) {  // 并发满。busy_ 本该拦住，这里兜一次：宁可提示，别静默不跑
+    // 起线程（回收上一次 / 分配句柄 / 异常收口）全在任务协调器里。
+    const std::shared_ptr<AnalysisTask> task = task_runner_->Start(
+        ReportingTaskCoordinator::Slot::Single,
+        [this, path](const std::shared_ptr<AnalysisTask>& t) { RunSingle(t, path); });
+    // 并发满。busy_ 本该拦住，这里兜一次：宁可提示，别静默不跑。
+    if (!task) {
         SetBusy(false);
         verdict_label_->setText(tr("任务并发已满，请稍后再试"));
-        return;
     }
-
-    auto task = std::make_shared<AnalysisTask>();
-    task->handle = handle;
-    task->cancel = handle.cancel;
-    single_task_ = task;
-    task->body_done.store(false, std::memory_order_release);
-    // body_done 在**包裹层**置位而不是塞进 RunSingle 的每条 return 路径：RunSingle
-    // 里有提前返回（空目录之类），靠函数末尾那一行总会漏，回收就变成干等满预算。
-    //
-    // 异常也必须就地收口 —— 这里原先是裸跑 RunSingle，是本页唯一一处线程入口没兜
-    // 异常的地方：一抛就是 std::terminate；就算没崩，body_done 也永不置位，回收路径
-    // 会先空转满预算、再按严格 Cooperative 无上限地 join，关界面等于永久挂住。
-    task->thread = std::thread([this, task, path]() {
-        const std::optional<std::string> failure =
-            task::GuardBody([&]() { RunSingle(task, path); });
-        task->body_done.store(true, std::memory_order_release);
-        if (failure) ReportThreadFailure(task, *failure);
-    });
 }
 
 void ReportingPanel::RunSingle(std::shared_ptr<AnalysisTask> task, const std::string& path) {
@@ -662,7 +575,7 @@ void ReportingPanel::RunSingle(std::shared_ptr<AnalysisTask> task, const std::st
     // 取消只看令牌这一颗 —— 与批量扫描、诊断页、QcRunner 内部轮询的是同一个来源。
     callbacks.should_cancel = [task]() { return task->cancel.IsCanceled(); };
 
-    // 把这次分析的等待预算压到"回收预算"量级：面板关停时 RetireTask 先置取消令牌，
+    // 把这次分析的等待预算压到"回收预算"量级：面板关停时 RetireAll 先置取消令牌，
     // QcRunner 在等待循环里把它转成引擎的 cancel_source（FFmpeg 中断回调也能看见），
     // 所以正常情况下任务体会很快自己收尾；这个预算只是兜底 —— 免得引擎卡在一次不响应
     // 中断的调用里时，关界面变成"5s 等任务体 + 30s 等引擎"两段预算相加。超预算时
@@ -698,8 +611,8 @@ void ReportingPanel::RunSingle(std::shared_ptr<AnalysisTask> task, const std::st
         ShowResult(result);
         SetBusy(false);
         // 正常完成路径必须归还终态：否则 TaskManager::State() 会一直停在 Running，
-        // single_task_ / batch_task_ 长期持有过期句柄（见 FinishTask 注释）。
-        FinishTask(task, terminal);
+        // 槽位长期持有过期句柄（见 ReportingTaskCoordinator::Finish 注释）。
+        task_runner_->Finish(task, terminal);
 
         // 无结果时点导出 -> 分析成功后在同一目录继续导出；失败则丢弃挂起的目录，
         // 避免悄悄导出空报告（票据取走即作废，见 ReportExportController）。
@@ -725,29 +638,14 @@ void ReportingPanel::StartBatchScan(const std::string& directory) {
     request.jobs = jobs_spin_->value();
     request.recursive = recursive_check_->isChecked();
 
-    RetireTask(batch_task_);  // 回收上一次（busy_ 已拦住重复启动，这里兜底）
-
-    const task::TaskHandle handle =
-        tasks_.BeginHandle(kTaskSlot, 0, task::TaskKind::Cooperative);
-    if (!handle.valid()) {  // 并发满：busy_ 本该拦住，兜一次别静默不跑
+    const std::shared_ptr<AnalysisTask> task = task_runner_->Start(
+        ReportingTaskCoordinator::Slot::Batch,
+        [this, request](const std::shared_ptr<AnalysisTask>& t) { RunBatch(t, request); });
+    // 并发满：busy_ 本该拦住，兜一次别静默不跑
+    if (!task) {
         SetBusy(false);
         batch_summary_label_->setText(tr("任务并发已满，请稍后再试"));
-        return;
     }
-
-    auto task = std::make_shared<AnalysisTask>();
-    task->handle = handle;
-    task->cancel = handle.cancel;
-    batch_task_ = task;
-    task->body_done.store(false, std::memory_order_release);
-    // 同 RunSingle：body_done 在包裹层置位，别漏 RunBatch 里那些提前 return；
-    // 异常同样必须就地收口（理由同 StartSingleAnalysis），这里原先也是裸跑。
-    task->thread = std::thread([this, task, request]() {
-        const std::optional<std::string> failure =
-            task::GuardBody([&]() { RunBatch(task, request); });
-        task->body_done.store(true, std::memory_order_release);
-        if (failure) ReportThreadFailure(task, *failure);
-    });
 }
 
 void ReportingPanel::RunBatch(std::shared_ptr<AnalysisTask> task, const BatchRequest& request) {
@@ -821,8 +719,8 @@ void ReportingPanel::RunBatch(std::shared_ptr<AnalysisTask> task, const BatchReq
         batch_progress_->setValue(batch_table_->rowCount());
         batch_summary_label_->setText(BatchSummaryText(run.summary, total));
         SetBusy(false);
-        // 同 RunSingle：整批正常结束后归还终态并清掉 batch_task_ 句柄。
-        FinishTask(task, terminal);
+        // 同 RunSingle：整批正常结束后归还终态并清掉该槽位句柄。
+        task_runner_->Finish(task, terminal);
     });
 }
 
@@ -1012,7 +910,9 @@ void ReportingPanel::OnOpenSelectedReport() {
 
 qc::QcProfile ReportingPanel::CurrentProfile() const { return profile_; }
 
-bool ReportingPanel::IsTaskRunning() const { return tasks_.IsRunning(kTaskSlot); }
+bool ReportingPanel::IsTaskRunning() const {
+    return task_runner_ && task_runner_->IsRunning();
+}
 
 std::vector<qc::QcReportFormat> ReportingPanel::SelectedFormats() const {
     std::vector<qc::QcReportFormat> formats;

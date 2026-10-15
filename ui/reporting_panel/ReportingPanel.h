@@ -14,7 +14,7 @@
 //     会落到已销毁的 QWidget 上；在"给出硬性时间上限"与"不悬空访问"之间，本页明确选后者。
 //     代价要说清楚：**析构不保证硬时间上限**，取消链（令牌 → QcRunner → 引擎 → FFmpeg
 //     中断回调）必须一路通到任务体，否则关停可能长时间等待。回收预算只是告警线。
-//     （见 ui/reporting_panel/analysis_task.h 的 RecycleTask 与 ReportingPanel::RetireTask。）
+//     （见 ui/reporting_panel/analysis_task.h 的 RecycleTask 与 ReportingTaskCoordinator。）
 
 #include <atomic>
 #include <memory>
@@ -44,6 +44,7 @@
 
 #include "ui/reporting_panel/analysis_task.h"
 #include "ui/reporting_panel/ReportExportController.h"
+#include "ui/reporting_panel/ReportingTaskCoordinator.h"
 #include "ui/reporting_panel/result_stamp.h"
 
 namespace videoeye {
@@ -58,7 +59,8 @@ public:
 
     // 报告页 slot 上是否仍有任务在跑。
     //
-    // 正常完成后必须为 false —— 终态已经归还（见 FinishTask）。若为 true 说明还留在
+    // 正常完成后必须为 false —— 终态已经归还（见 ReportingTaskCoordinator::Finish）。
+    // 若为 true 说明还留在
     // Running，或有一次后台任务从未归还终态。供测试与关闭诊断查询。
     bool IsTaskRunning() const;
 
@@ -128,35 +130,18 @@ private:
     // 构造时建好导出控制器：单文件报告、批量汇总两条导出路径连同"先选目录、分析完
     // 再导出"的挂起票据都在它里面（见 ReportExportController.h）。
     void SetupExportController();
+    // 构造时建好任务协调器：起线程 / 回收 / 归还终态 / 异常收尾都在它里面
+    // （见 ReportingTaskCoordinator.h）。本页只留 RunSingle / RunBatch 的业务本体。
+    void SetupTaskCoordinator();
 
-    // 仅当任务仍存活时把更新投递回主线程；否则静默丢弃（面板正在销毁）
-    void PostToUi(std::shared_ptr<AnalysisTask> task, const std::function<void()>& updater);
-
-    // 线程体抓到异常时的收尾（见 core/domain/task/ThreadBody.h 的 GuardBody）：
-    // 记日志 + 把 UI 从 busy_ 里解出来 + 按统一语义归还终态。与正常完成路径互斥 ——
-    // 两条路都回到 UI 线程，谁先到谁定终态（TaskState 一次性写入）。
-    void ReportThreadFailure(const std::shared_ptr<AnalysisTask>& task,
-                             const std::string& message);
+    // 仅当任务仍存活时把更新投递回主线程；否则静默丢弃（面板正在销毁）。
+    // 实际实现在任务协调器里（它持有 alive 标志与投递目标）。
+    void PostToUi(const std::shared_ptr<AnalysisTask>& task,
+                  const std::function<void()>& updater) const;
 
     void StartSingleAnalysis(const std::string& path);
     void StartBatchScan(const std::string& directory);
     void RunSingle(std::shared_ptr<AnalysisTask> task, const std::string& path);
-
-    // 报告页任务（单文件 / 批量）的槽位。取消与终态都归到这个 slot 上，与诊断页、
-    // QcRunner 共用同一套 task::TaskHandle 协议，不再各写一份。
-    //
-    // 归还终态只能发生在宿主线程：任务体捕获了 this（要往面板上刷结果）。报告页走的是
-    // 严格 Cooperative（见 RecycleTask）：超预算也继续 join、不 detach，所以 tasks_ 一定
-    // 比任务体活得久；即便如此，终态也统一在宿主线程归还，不把调度器交到任务体手里。
-    void RetireTask(std::shared_ptr<AnalysisTask>& task);
-
-    // 任务**正常完成**时由 UI 线程归还终态并清掉当前任务句柄：
-    //   * EndHandle 把 slot 从 Running 写成 Succeeded/Canceled/Failed（终态一次性）；
-    //   * 命中 single_task_ / batch_task_ 时一并置空，避免句柄过期后仍被当成"在跑"。
-    // 与 RetireTask 的区别: RetireTask 是取消 + 回收（关停/换任务），这里只做"跑完了"。
-    // 不归还的话 slot 会一直停在 Running，任务切换时 single_task_/batch_task_ 长期持有
-    // 过期句柄，RunningCount() 也会长时间不准确。
-    void FinishTask(const std::shared_ptr<AnalysisTask>& task, task::TaskState terminal);
 
     // 批量请求的所有参数。必须在主线程里采集完再交给 worker ——
     // Qt 的控件只能在创建它的线程上访问，worker 里碰 QSpinBox / QCheckBox 是未定义行为。
@@ -215,8 +200,9 @@ private:
     // ---- 状态 ----
     // 报告页后台任务调度器：任务身份（TaskId）、取消令牌（CancelToken）、终态都在这里，
     // 与诊断页 / QcRunner 是同一个 TaskManager 协议，只是 slot 不同。
-    task::TaskManager tasks_{2};
-    static constexpr const char* kTaskSlot = "reporting-panel";
+    // unique_ptr 而不是 QObject 子对象：它必须在**面板成员之前**析构，不能留
+    // "子对象比宿主晚死"的窗口。
+    std::unique_ptr<ReportingTaskCoordinator> task_runner_;
 
     qc::QcProfile profile_;                     // 当前模板（可能是从文件加载的自定义模板）
     qc::QcRunResult last_result_;               // 最近一次单文件分析结果，导出按钮用它
@@ -226,8 +212,6 @@ private:
     ResultStamp result_stamp_;
     // 导出控制器（本页拥有）：挂起票据与两条导出路径都搬进去了，本页只留按钮转发。
     ReportExportController* export_controller_ = nullptr;
-    std::shared_ptr<AnalysisTask> single_task_;
-    std::shared_ptr<AnalysisTask> batch_task_;
     std::vector<qc::BatchQcItemResult> batch_results_;
     bool busy_ = false;
 };
