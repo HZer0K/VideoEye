@@ -18,6 +18,7 @@
 
 #include "core/domain/model/FrameData.h"        // model::StreamInfo
 #include "core/domain/model/DiagnosticIssue.h"  // model::DiagnosticIssue / IssueSeverity
+#include "ui/main_window/overview_analysis.h"   // OverviewAnalysisSummary
 
 class QGroupBox;
 class QLabel;
@@ -50,22 +51,12 @@ public:
 
     // 分析状态摘要。MainWindow 在扫描起止、报告变化、换文件时拉取
     // AnalysisPanel 的只读快照后调用；has_file=false 表示没有打开文件。
-    struct AnalysisSummary {
-        bool has_file = false;       // 是否打开了文件（未打开时只显示空态提示）
-        bool scan_running = false;   // 扫描进行中
-        bool failed = false;         // 最近一次扫描失败（与 has_result 互斥展示）
-        QString error;               // 失败原因（failed 时展示）
-        bool has_result = false;     // 是否有一份可用结果
-        bool partial = false;        // 结果是否不完整（被取消）
-        double score = 0.0;          // 0..100
-        QString verdict;             // 通过 / 警告 / 不通过
-        int critical = 0;
-        int error_count = 0;
-        int warning = 0;
-        int info = 0;
-        // 最重要的几条异常（调用方按严重度降序取前 N 条，值拷贝，不持指针）
-        QVector<model::DiagnosticIssue> top_issues;
-    };
+    //
+    // 结构本体已移到 ui/main_window/overview_analysis.h（连同组装口径
+    // BuildOverviewAnalysisSummary 一起），因为「什么算失败」「异常按什么顺序取前几条」
+    // 是有边界的业务口径，住在 QWidget 里测不到。这里保留原名做别名，
+    // 页面自己的绘制代码不用跟着改名。
+    using AnalysisSummary = OverviewAnalysisSummary;
     void SetAnalysisSummary(const AnalysisSummary& summary);
 
 signals:

@@ -1,6 +1,7 @@
 #include "ui/main_window/MainWindow.h"
 #include "ui/main_window/MediaInfoCoordinator.h"
 #include "ui/main_window/navigation_model.h"
+#include "ui/main_window/overview_analysis.h"
 #include "ui/dialogs/FormatSupportDialog.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/theme/AppTheme.h"
@@ -62,18 +63,6 @@ namespace {
 constexpr int kBadgeCountRole = Qt::UserRole + 1;    // 异常条数（int）
 constexpr int kBadgeLevelRole = Qt::UserRole + 2;    // 级别 0/1/2/3（int）
 constexpr int kScanningRole = Qt::UserRole + 3;      // 是否共用扫描中（bool）
-
-// 严重度排序键：越大越严重（首页「最重要的异常」按它降序取前几条）
-// 注意：本匿名命名空间在全局作用域（不在 videoeye::ui 里），必须写全限定名。
-int IssueSeverityRank(videoeye::model::IssueSeverity severity) {
-    switch (severity) {
-        case videoeye::model::IssueSeverity::Critical: return 3;
-        case videoeye::model::IssueSeverity::Error: return 2;
-        case videoeye::model::IssueSeverity::Warning: return 1;
-        case videoeye::model::IssueSeverity::Info: return 0;
-    }
-    return 0;
-}
 
 // 侧栏一行分两类：可点击的页面项，与不可点击的分组标题。
 // QSS 的 ::item 只能给整列统一样式，无法按行区分；把 QLabel 当作 item widget 挂在
@@ -851,41 +840,21 @@ void MainWindow::ShowPageById(const QString& page_id) {
 void MainWindow::RefreshOverviewAnalysis() {
     if (!overview_page_ || !analysis_panel_) return;
 
-    OverviewPage::AnalysisSummary summary;
-    summary.has_file = overview_page_->HasFile();
-    summary.scan_running = analysis_panel_->IsScanRunning();
-    summary.error = analysis_panel_->DiagnosticsError();
-    summary.failed = !summary.scan_running && !summary.error.isEmpty();
-    summary.has_result = analysis_panel_->HasDiagnosticsResult();
+    // 本函数只做两件事：把 AnalysisPanel 的只读快照抄进 Input，把算好的摘要交给首页。
+    // 「什么算失败」「异常按什么顺序取前几条」都在 ui::BuildOverviewAnalysisSummary 里
+    // （ui/main_window/overview_analysis.h），那里有单测守着。
+    ui::OverviewAnalysisInput input;
+    input.has_file = overview_page_->HasFile();
+    input.scan_running = analysis_panel_->IsScanRunning();
+    input.error = analysis_panel_->DiagnosticsError();
+    input.has_result = analysis_panel_->HasDiagnosticsResult();
+    // 报告的引用只在本次调用里借用：DiagnosticsReport() 返回的是面板手上那份，
+    // 下一次扫描落地会被覆盖，所以组装函数内部一律拷值、不留指针。
+    const model::QcReport* report =
+        input.has_result ? &analysis_panel_->DiagnosticsReport() : nullptr;
+    input.report = report;
 
-    if (summary.has_result) {
-        const model::QcReport& report = analysis_panel_->DiagnosticsReport();
-        summary.partial = !report.completed;
-        summary.score = report.score;
-        summary.verdict = QString::fromStdString(report.verdict);
-        summary.critical = report.CountBySeverity(model::IssueSeverity::Critical);
-        summary.error_count = report.CountBySeverity(model::IssueSeverity::Error);
-        summary.warning = report.CountBySeverity(model::IssueSeverity::Warning);
-        summary.info = report.CountBySeverity(model::IssueSeverity::Info);
-
-        // 最重要的几条异常：严重度降序（同级的保持规则引擎的输出顺序），取前 5 条。
-        // 指针只在本函数内有效，随即值拷贝进 summary。
-        std::vector<const model::DiagnosticIssue*> ranked;
-        ranked.reserve(report.issues.size());
-        for (const model::DiagnosticIssue& issue : report.issues) {
-            ranked.push_back(&issue);
-        }
-        std::stable_sort(ranked.begin(), ranked.end(),
-                         [](const model::DiagnosticIssue* a, const model::DiagnosticIssue* b) {
-                             return IssueSeverityRank(a->severity) > IssueSeverityRank(b->severity);
-                         });
-        constexpr size_t kTopIssueCount = 5;
-        for (size_t i = 0; i < ranked.size() && i < kTopIssueCount; ++i) {
-            summary.top_issues.push_back(*ranked[i]);
-        }
-    }
-
-    overview_page_->SetAnalysisSummary(summary);
+    overview_page_->SetAnalysisSummary(ui::BuildOverviewAnalysisSummary(input));
 }
 
 void MainWindow::UpdateNavigationBadges() {

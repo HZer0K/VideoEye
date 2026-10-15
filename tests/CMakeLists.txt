@@ -1577,3 +1577,15 @@ set_tests_properties(LogDirectoryTests PROPERTIES
 videoeye_add_test(test_thread_body unit/test_thread_body.cpp)
 target_link_libraries(test_thread_body PRIVATE VideoEyeInfrastructure)
 add_test(NAME ThreadBodyTests COMMAND test_thread_body)
+
+# =================================================
+# 测试: 首页分析摘要的组装口径 (ui/main_window/overview_analysis.h)
+#
+# 从 MainWindow::RefreshOverviewAnalysis 抽出来的纯函数：什么算"扫描失败"、
+# 「最重要的异常」按什么顺序取前几条。以前住在 UI 回调里测不到。
+# header-only + QString/QVector，只需 VideoEyeDomain（QcReport::CountBySeverity
+# 的实现）与 Qt6::Core，不需要 QApplication。
+# =================================================
+videoeye_add_test(test_overview_analysis unit/test_overview_analysis.cpp)
+target_link_libraries(test_overview_analysis PRIVATE VideoEyeDomain Qt6::Core)
+add_test(NAME OverviewAnalysisTests COMMAND test_overview_analysis)
