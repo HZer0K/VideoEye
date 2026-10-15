@@ -1,7 +1,10 @@
 #include "ui/main_window/MainWindow.h"
 #include "ui/main_window/MediaInfoCoordinator.h"
+#include "ui/main_window/menu_bar.h"
 #include "ui/main_window/navigation_model.h"
 #include "ui/main_window/overview_analysis.h"
+#include "ui/main_window/sidebar_navigation.h"
+#include "ui/main_window/window_layout.h"
 #include "ui/dialogs/FormatSupportDialog.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/theme/AppTheme.h"
@@ -56,104 +59,6 @@
 #include <windows.h>
 #endif
 
-namespace {
-
-// 侧栏 item 的自定义数据角色（Qt::UserRole 已存 stack 下标，见 PopulateSidebarItems）:
-// 导航标记三件套，由 UpdateNavigationBadges 写入、SidebarItemDelegate 画出。
-constexpr int kBadgeCountRole = Qt::UserRole + 1;    // 异常条数（int）
-constexpr int kBadgeLevelRole = Qt::UserRole + 2;    // 级别 0/1/2/3（int）
-constexpr int kScanningRole = Qt::UserRole + 3;      // 是否共用扫描中（bool）
-
-// 侧栏一行分两类：可点击的页面项，与不可点击的分组标题。
-// QSS 的 ::item 只能给整列统一样式，无法按行区分；把 QLabel 当作 item widget 挂在
-// 不可选中的标题行上也画不出来（只剩一条空行）。所以用委托按行绘制：页面项交给基类
-// （保留 QSS 的悬停/选中样式），分组标题用更小、更暗、加粗的字体画成小节标签。
-
-// 导航标记的徽标配色（按级别: 1 警告 / 2 错误 / 3 致命）
-QColor BadgeColor(int level) {
-    switch (level) {
-        case 3: return QColor(0xF8, 0x51, 0x49);  // 致命红
-        case 2: return QColor(0xFF, 0x7B, 0x72);  // 错误橙红
-        case 1: return QColor(0xD2, 0x99, 0x22);  // 警告橙
-        default: return QColor(0x8B, 0x94, 0x9E); // 无级别灰
-    }
-}
-
-class SidebarItemDelegate : public QStyledItemDelegate {
-public:
-    using QStyledItemDelegate::QStyledItemDelegate;
-
-    void paint(QPainter* painter, const QStyleOptionViewItem& option,
-               const QModelIndex& index) const override {
-        // 分组标题登记时置了 Qt::NoItemFlags，没有 ItemIsSelectable，以此区分两类行。
-        const bool is_header = !(index.flags() & Qt::ItemIsSelectable);
-        if (!is_header) {
-            QStyledItemDelegate::paint(painter, option, index);
-            DrawBadge(painter, option, index);
-            return;
-        }
-
-        QStyleOptionViewItem opt = option;
-        initStyleOption(&opt, index);
-        const QString text = opt.text;
-        opt.text.clear();  // 文本自己画，不交给默认样式（否则又会拿到页面项的颜色）
-        const QWidget* widget = opt.widget;
-        QStyle* style = widget ? widget->style() : QApplication::style();
-        style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
-
-        painter->save();
-        QFont font = opt.font;
-        font.setPointSizeF(std::max(7.5, font.pointSizeF() - 2.0));
-        font.setBold(true);
-        painter->setFont(font);
-        painter->setPen(QColor(0x6E, 0x76, 0x81));
-        painter->drawText(opt.rect.adjusted(16, 0, -12, 0), Qt::AlignLeft | Qt::AlignVCenter, text);
-        painter->restore();
-    }
-
-private:
-    // 页面项右侧的导航标记: 扫描态画强调色小圆点，异常数画彩色数字徽标。
-    // 数据来自 UpdateNavigationBadges 写进 item 的角色；两者都没有就不画。
-    static void DrawBadge(QPainter* painter, const QStyleOptionViewItem& option,
-                          const QModelIndex& index) {
-        const int count = index.data(kBadgeCountRole).toInt();
-        const bool scanning = index.data(kScanningRole).toBool();
-        if (count <= 0 && !scanning) return;
-
-        const QRect rect = option.rect;
-        const int right = rect.right() - 10;
-        painter->save();
-        QFont font = option.font;
-        font.setPointSizeF(std::max(8.0, font.pointSizeF() - 3.0));
-        font.setBold(true);
-        painter->setFont(font);
-
-        if (scanning) {
-            painter->setPen(Qt::NoPen);
-            painter->setBrush(QColor(0x58, 0xA6, 0xFF));
-            painter->drawEllipse(QRect(right - 6, rect.center().y() - 3, 6, 6));
-        }
-        if (count > 0) {
-            const QColor color = BadgeColor(index.data(kBadgeLevelRole).toInt());
-            const QString text = count > 99 ? QStringLiteral("99+") : QString::number(count);
-            const QFontMetrics fm(font);
-            const int pill_width = fm.horizontalAdvance(text) + 10;
-            const int pill_right = scanning ? right - 12 : right;
-            const QRect pill(pill_right - pill_width, rect.center().y() - 8, pill_width, 16);
-            QColor background = color;
-            background.setAlpha(38);  // ~15% 透明度底
-            painter->setPen(QPen(color, 1.0));
-            painter->setBrush(background);
-            painter->drawRoundedRect(pill, 8, 8);
-            painter->setPen(color);
-            painter->drawText(pill, Qt::AlignCenter, text);
-        }
-        painter->restore();
-    }
-};
-
-}  // namespace
-
 namespace videoeye {
 namespace ui {
 
@@ -169,8 +74,6 @@ MainWindow::MainWindow(QWidget* parent)
     , stats_label_(nullptr)
     , open_session_(nullptr)
     , analysis_panel_(nullptr)
-    , menu_bar_(nullptr)
-    , status_bar_(nullptr)
     , media_info_coordinator_(std::make_unique<MediaInfoCoordinator>()) {
 
     // 创建播放器实例 (MainWindow 拥有; 分析侧与播放模块共用)
@@ -311,8 +214,8 @@ void MainWindow::SetupSidebar() {
     sidebar_->setIconSize(QSize(16, 16));
     sidebar_->setSpacing(0);
     sidebar_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    // 分组标题与页面项在同一个列表里，靠委托按行区分绘制（见文件顶部 SidebarItemDelegate）。
-    sidebar_->setItemDelegate(new SidebarItemDelegate(sidebar_));
+    // 分组标题与页面项在同一个列表里，靠委托按行区分绘制（见 sidebar_navigation.cpp）。
+    ui::InstallSidebarDelegate(sidebar_);
     
     // 注意：导航项不再硬编码，而是在 SetupContentArea() 末尾由
     // PopulateSidebarItems() 依据 content_stack_ 的真实页面生成，避免增减分析页
@@ -323,63 +226,15 @@ void MainWindow::SetupSidebar() {
 void MainWindow::PopulateSidebarItems() {
     if (!sidebar_ || !content_stack_) return;
 
-    // 页面元数据（pageId / 标题 / 分组 / 组内排序 / 口径）由各页面在登记时写入控件属性；
-    // 侧栏完全由这些元数据生成，不再依赖固定页序与硬编码分组下标 —— 以后增减或重排页面
-    // 时只改页面自己的登记，侧栏自动跟随（见 ui/main_window/navigation_model.h）。
-    //   1) 页面项一律带 UserRole=stack 下标，切换按下标走 —— 行号与下标彻底解耦
-    //      （过去分组标题会占行，靠行号当下标必然错位）；
-    //   2) 分组标题不可选中、没有 UserRole，OnSidebarChanged 遇到它直接返回；
-    //   3) 分组标题用委托（SidebarItemDelegate）画成更小更暗的小节标签，与可点击的
-    //      页面项在视觉上区分开（否则「概览」会和「媒体信息」长得一样却点不动）。
-    //      单页分组（如「概览」只有「媒体信息」）已由 BuildNavigationRows 去掉标题。
-    QVector<ui::PageNavigation> pages;
-    for (int i = 0; i < content_stack_->count(); ++i) {
-        QWidget* page = content_stack_->widget(i);
-        ui::PageNavigation nav;
-        nav.stack_index = i;
-        nav.page_id = page->property("pageId").toString();
-        nav.title = page->property("pageTitle").toString();
-        nav.group_id = page->property("pageGroup").toString();
-        nav.scope = page->property("pageScope").toString();
-        nav.order = page->property("pageOrder").toInt();
-        if (nav.title.isEmpty()) nav.title = tr("页面 %1").arg(i);
-        pages.append(nav);
-    }
-
-    // 分组 id 稳定（与页面登记对应），标题本地化；顺序即侧栏从上到下的分组顺序。
-    const QVector<ui::NavGroup> groups = {
-        {QStringLiteral("overview"), tr("概览")},
-        {QStringLiteral("playback"), tr("播放监看")},
-        {QStringLiteral("file_parse"), tr("文件解析")},
-        {QStringLiteral("full_quality"), tr("全片质量")},
-        {QStringLiteral("report_tools"), tr("报告与工具")},
-    };
-    const QVector<ui::NavRow> rows = ui::BuildNavigationRows(pages, groups);
-
-    sidebar_->blockSignals(true);
-    sidebar_->clear();
-    for (const ui::NavRow& row : rows) {
-        QListWidgetItem* item = new QListWidgetItem(row.text);
-        if (row.is_header) {
-            // 小节标签：不可选中，委托据此把它画成更小更暗的标题（见 SidebarItemDelegate）。
-            item->setFlags(Qt::NoItemFlags);
-            item->setSizeHint(QSize(200, 28));
-        } else {
-            item->setSizeHint(QSize(200, 34));
-            item->setData(Qt::UserRole, row.stack_index);
-        }
-        sidebar_->addItem(item);
-    }
-    sidebar_->blockSignals(false);
-
-    // 默认选中第一个页面项（分组标题没有 UserRole，落在它上面不会切换），
-    // 并显式同步一次 stack，保证界面与内容区一致。
-    for (int row = 0; row < sidebar_->count(); ++row) {
-        if (sidebar_->item(row)->data(Qt::UserRole).isValid()) {
-            sidebar_->setCurrentRow(row);
-            break;
-        }
-    }
+    // 三步都在 ui/main_window/sidebar_navigation.{h,cpp} 里：
+    //   1) 从页面控件的动态属性收集元数据（pageId / 标题 / 分组 / 组内排序 / 口径）；
+    //   2) BuildNavigationRows 把元数据排成侧栏行（纯口径，见 navigation_model.h）；
+    //   3) ApplyNavigationRows 铺进列表并默认选中第一个页面项。
+    // 于是增减或重排页面都只改页面自己的登记，侧栏自动跟随。
+    const QVector<ui::NavRow> rows =
+        ui::BuildNavigationRows(ui::CollectPageNavigation(content_stack_), ui::DefaultNavGroups());
+    ui::ApplyNavigationRows(sidebar_, rows);
+    // 侧栏与内容区必须显式同步一次：铺条目时信号是静音的。
     content_stack_->setCurrentIndex(0);
 }
 
@@ -472,31 +327,23 @@ void MainWindow::ApplyMacroblockAnalysisState() {
 }
 
 void MainWindow::UpdateMinimumWindowSize() {
-    // 播放区收起时 MinimumHeightHint 返回 0, 窗口可以缩得更小
-    const int player_min = player_panel_ ? player_panel_->MinimumHeightHint() : 0;
-    int content_min = content_stack_ ? content_stack_->minimumHeight() : 250;
+    // 「几条栏 + 两个内容区」怎么凑成最小尺寸是 ui::MinimumWindowSize 的口径
+    // （见 ui/main_window/window_layout.h，有单测守着）；这里只负责把各控件的实测
+    // 尺寸抄进去。播放区收起时 MinimumHeightHint 返回 0，窗口可以缩得更小。
+    ui::WindowLayoutMetrics metrics;
+    metrics.app_bar_height = app_bar_ ? app_bar_->height() : 0;
+    metrics.menu_bar_height = menuBar() ? menuBar()->sizeHint().height() : 0;
+    metrics.status_bar_height = statusBar() ? statusBar()->sizeHint().height() : 0;
+    metrics.content_min_height = content_stack_ ? content_stack_->minimumHeight() : 250;
+    metrics.player_min_height = player_panel_ ? player_panel_->MinimumHeightHint() : 0;
+    metrics.sidebar_width = sidebar_ ? sidebar_->width() : 0;
 
-    int bars = 0;
-    if (app_bar_) {
-        bars += app_bar_->height();
-    }
-    if (menuBar()) {
-        bars += menuBar()->sizeHint().height();
-    }
-    if (statusBar()) {
-        bars += statusBar()->sizeHint().height();
-    }
-
-    int min_height = bars + content_min + player_min;
-
-    int min_width = 900;
-    if (sidebar_) {
-        min_width += sidebar_->width();
-    }
-
-    setMinimumSize(min_width, min_height);
+    const QSize min_sz = ui::MinimumWindowSize(metrics);
+    setMinimumSize(min_sz);
+    // 本机 WM 在拖拽中完全无视 Qt 的 minimumSize，必须同时告诉原生窗口句柄，
+    // 否则拖边框时仍能把窗口缩成一条（见 resizeEvent 里的兜底）。
     if (windowHandle()) {
-        windowHandle()->setMinimumSize(QSize(min_width, min_height));
+        windowHandle()->setMinimumSize(min_sz);
     }
 }
 
@@ -511,7 +358,9 @@ void MainWindow::showEvent(QShowEvent* event) {
         const QScreen* screen = windowHandle() ? windowHandle()->screen()
                                                : QGuiApplication::primaryScreen();
         const int available_height = screen ? screen->availableGeometry().height() : 0;
-        const auto preset = (available_height > 0 && available_height < 860)
+        // 小屏（典型 1366x768 笔记本）默认走「分析」：口径在 ui::InitialLayoutPreset。
+        const auto preset = ui::InitialLayoutPreset(available_height) ==
+                                    ui::WindowLayoutPreset::Analysis
                                 ? PlayerPanel::LayoutPreset::Analysis
                                 : PlayerPanel::LayoutPreset::Monitor;
         player_panel_->RestoreLayoutPreset(preset);
@@ -524,104 +373,44 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
     UpdateMinimumWindowSize();
     const QSize min_sz = minimumSize();
     const QSize cur_sz = size();
-    if (cur_sz.width() < min_sz.width() || cur_sz.height() < min_sz.height()) {
+    if (ui::IsBelowMinimum(cur_sz, min_sz)) {
         resize(cur_sz.expandedTo(min_sz));
     }
 }
 
 void MainWindow::SetupMenuBar() {
-    menu_bar_ = menuBar();
-    
-    // 文件菜单
-    QMenu* file_menu = menu_bar_->addMenu(tr("文件"));
-    file_menu->addAction(tr("打开本地文件"), QKeySequence::Open, this, &MainWindow::OnOpenFile);
-    file_menu->addAction(tr("打开URL"), QKeySequence("Ctrl+U"), this, &MainWindow::OnOpenURL);
-    // 导出 子菜单
-    QMenu* export_menu = file_menu->addMenu(tr("导出"));
-    export_frames_action_ = export_menu->addAction(tr("导出视频帧..."), export_coordinator_, &ExportCoordinator::OnExportVideoFrames);
-    export_menu->addAction(tr("导出视频..."), export_coordinator_, &ExportCoordinator::OnExportVideo);
-    export_menu->addAction(tr("导出音频..."), export_coordinator_, &ExportCoordinator::OnExportAudio);
-    file_menu->addSeparator();
-    file_menu->addAction(tr("退出"), QKeySequence::Quit, this, &MainWindow::OnExit);
-    
-    // 帮助菜单 (先声明, 以便在其之前插入"播放设置")
-    QMenu* help_menu = menu_bar_->addMenu(tr("帮助"));
-    help_menu->addAction(tr("支持的格式与编解码器..."), this, &MainWindow::OnShowFormatSupport);
-    help_menu->addSeparator();
-    help_menu->addAction(tr("关于"), this, []() {
-        QMessageBox::about(nullptr, QObject::tr("关于"),
-                          QObject::tr("VideoEye 2.0\n现代化的视频流分析软件"));
-    });
-
-    // 播放设置菜单 (位于 "文件" 与 "帮助" 之间)
-    QMenu* playback_menu = new QMenu(tr("播放设置"), menu_bar_);
-    menu_bar_->insertMenu(help_menu->menuAction(), playback_menu);
-
-    // 视图菜单 (位于 "播放设置" 与 "帮助" 之间)
-    QMenu* view_menu = new QMenu(tr("视图"), menu_bar_);
-    menu_bar_->insertMenu(help_menu->menuAction(), view_menu);
-
-    toggle_player_action_ = new QAction(tr("显示播放区"), this);
-    toggle_player_action_->setCheckable(true);
-    toggle_player_action_->setChecked(true);
-    toggle_player_action_->setShortcut(QKeySequence(QStringLiteral("F9")));
-    toggle_player_action_->setStatusTip(tr("收起播放区可让分析区占满整个内容区 (VideoEye 以分析为主)"));
-    connect(toggle_player_action_, &QAction::toggled, this, &MainWindow::OnTogglePlayerArea);
-    view_menu->addAction(toggle_player_action_);
-
-    // 播放区布局预设: 监看 = 播放区 58%; 分析 = 播放区 30% (小屏默认走分析)。
-    // 与上面的显隐开关正交 —— 预设管比例, 显隐管在不在。
-    QMenu* layout_menu = view_menu->addMenu(tr("播放区布局"));
-    QActionGroup* layout_ag = new QActionGroup(layout_menu);
-    layout_ag->setExclusive(true);
-    layout_monitor_action_ = layout_ag->addAction(tr("监看布局"));
-    layout_monitor_action_->setCheckable(true);
-    layout_monitor_action_->setStatusTip(tr("播放区占大头，适合盯画面 / 逐帧定位"));
-    layout_analysis_action_ = layout_ag->addAction(tr("分析布局"));
-    layout_analysis_action_->setCheckable(true);
-    layout_analysis_action_->setStatusTip(tr("分析区占大头，适合看表格与扫描结果"));
-    layout_monitor_action_->setChecked(true);
-    layout_menu->addAction(layout_monitor_action_);
-    layout_menu->addAction(layout_analysis_action_);
-    connect(layout_ag, &QActionGroup::triggered, this, [this](QAction* action) {
-        if (!player_panel_ || !action) return;
-        player_panel_->ApplyLayoutPreset(
-            action == layout_analysis_action_ ? PlayerPanel::LayoutPreset::Analysis
-                                              : PlayerPanel::LayoutPreset::Monitor);
-    });
-
-    QMenu* seek_mode_menu = playback_menu->addMenu(tr("seek方式"));
-    QActionGroup* seek_ag = new QActionGroup(playback_menu);
-    seek_ag->setExclusive(true);
-
-    QAction* act_keyframe = seek_ag->addAction(tr("关键帧"));
-    act_keyframe->setCheckable(true);
-    act_keyframe->setData(static_cast<int>(model::SeekMode::NearestKeyframe));
-    act_keyframe->setChecked(true); // 默认: 关键帧 (与原行为一致)
-    seek_mode_menu->addAction(act_keyframe);
-
-    QAction* act_exact = seek_ag->addAction(tr("精确值"));
-    act_exact->setCheckable(true);
-    act_exact->setData(static_cast<int>(model::SeekMode::ExactFrame));
-    seek_mode_menu->addAction(act_exact);
-
-    connect(seek_ag, &QActionGroup::triggered, this, [this](QAction* a) {
-        if (a && player_) player_->SetSeekMode(static_cast<model::SeekMode>(a->data().toInt()));
-    });
+    // 菜单结构与快捷键全在 ui::BuildMenuBar 里，本窗口只提供每个动作背后该干什么。
+    // 需要反向同步勾选状态的那几个动作（播放区显隐 / 两个布局预设）由它返回。
+    ui::MenuBarDeps deps;
+    deps.open_file = [this]() { OnOpenFile(); };
+    deps.open_url = [this]() { OnOpenURL(); };
+    deps.exit_app = [this]() { OnExit(); };
+    deps.show_format_support = [this]() { OnShowFormatSupport(); };
+    deps.export_video_frames = [this]() { export_coordinator_->OnExportVideoFrames(); };
+    deps.export_video = [this]() { export_coordinator_->OnExportVideo(); };
+    deps.export_audio = [this]() { export_coordinator_->OnExportAudio(); };
+    deps.toggle_player_area = [this](bool checked) { OnTogglePlayerArea(checked); };
+    deps.apply_layout_preset = [this](PlayerPanel::LayoutPreset preset) {
+        if (player_panel_) player_panel_->ApplyLayoutPreset(preset);
+    };
+    deps.set_seek_mode = [this](model::SeekMode mode) {
+        if (player_) player_->SetSeekMode(mode);
+    };
+    menu_actions_ = ui::BuildMenuBar(menuBar(), deps);
 }
 
 void MainWindow::SetupStatusBar() {
-    status_bar_ = statusBar();
-    status_bar_->showMessage(tr("就绪"));
+    QStatusBar* bar = statusBar();
+    bar->showMessage(tr("就绪"));
 
     // 实时码流统计常驻区 (右端): 用 permanent widget 而非 showMessage,
     // 否则每 10 帧一次的统计会把“已打开 xx”这类临时提示冲掉。
-    stats_label_ = new QLabel(status_bar_);
+    stats_label_ = new QLabel(bar);
     stats_label_->setFont(theme::font::monoFont(9));
     stats_label_->setStyleSheet(QStringLiteral("color: #8b949e; padding-right: 8px;"));
     stats_label_->setTextInteractionFlags(Qt::NoTextInteraction);
     stats_label_->setVisible(false);  // 有统计数据时才显示
-    status_bar_->addPermanentWidget(stats_label_);
+    bar->addPermanentWidget(stats_label_);
 }
 
 void MainWindow::SetupOpenSession() {
@@ -803,10 +592,10 @@ void MainWindow::SetupConnections() {
     // 播放区显隐变化时同步菜单勾选并重算窗口最小尺寸
     connect(player_panel_, &PlayerPanel::VisibilityChanged,
             this, [this](bool visible) {
-                if (toggle_player_action_ && toggle_player_action_->isChecked() != visible) {
-                    toggle_player_action_->blockSignals(true);
-                    toggle_player_action_->setChecked(visible);
-                    toggle_player_action_->blockSignals(false);
+                if (menu_actions_.toggle_player && menu_actions_.toggle_player->isChecked() != visible) {
+                    menu_actions_.toggle_player->blockSignals(true);
+                    menu_actions_.toggle_player->setChecked(visible);
+                    menu_actions_.toggle_player->blockSignals(false);
                 }
                 UpdateMinimumWindowSize();
             });
@@ -814,15 +603,15 @@ void MainWindow::SetupConnections() {
     connect(player_panel_, &PlayerPanel::LayoutPresetChanged,
             this, [this](PlayerPanel::LayoutPreset preset) {
                 const bool analysis = (preset == PlayerPanel::LayoutPreset::Analysis);
-                if (layout_analysis_action_ && layout_analysis_action_->isChecked() != analysis) {
-                    layout_analysis_action_->blockSignals(true);
-                    layout_analysis_action_->setChecked(analysis);
-                    layout_analysis_action_->blockSignals(false);
+                if (menu_actions_.layout_analysis && menu_actions_.layout_analysis->isChecked() != analysis) {
+                    menu_actions_.layout_analysis->blockSignals(true);
+                    menu_actions_.layout_analysis->setChecked(analysis);
+                    menu_actions_.layout_analysis->blockSignals(false);
                 }
-                if (layout_monitor_action_ && layout_monitor_action_->isChecked() == analysis) {
-                    layout_monitor_action_->blockSignals(true);
-                    layout_monitor_action_->setChecked(!analysis);
-                    layout_monitor_action_->blockSignals(false);
+                if (menu_actions_.layout_monitor && menu_actions_.layout_monitor->isChecked() == analysis) {
+                    menu_actions_.layout_monitor->blockSignals(true);
+                    menu_actions_.layout_monitor->setChecked(!analysis);
+                    menu_actions_.layout_monitor->blockSignals(false);
                 }
             });
 
@@ -856,14 +645,7 @@ void MainWindow::ShowPageById(const QString& page_id) {
         if (content_stack_->widget(i)->property("pageId").toString() != page_id) continue;
         content_stack_->setCurrentIndex(i);
         // 同步侧栏选中：行号因分组标题与 stack 下标错位，按 UserRole 反查
-        if (sidebar_) {
-            for (int row = 0; row < sidebar_->count(); ++row) {
-                if (sidebar_->item(row)->data(Qt::UserRole).toInt() != i) continue;
-                const QSignalBlocker blocker(sidebar_);
-                sidebar_->setCurrentRow(row);
-                break;
-            }
-        }
+        ui::SelectSidebarRowForStackIndex(sidebar_, i);
         return;
     }
     qWarning() << "跳转目标页面不存在:" << page_id;
@@ -893,33 +675,17 @@ void MainWindow::UpdateNavigationBadges() {
     if (!sidebar_ || !content_stack_ || !analysis_panel_) return;
 
     // 徽标按 pageId 归集（AnalysisPanel::PageBadges），侧栏 item 手上只有 stack 下标，
-    // 反查一次 content_stack_ 把下标映回 pageId。
+    // 反查一次 content_stack_ 把下标映回 pageId —— 那段 Qt 侧的读写在
+    // ui::ApplySidebarBadges 里，这里只把 AnalysisPanel 的徽标结构翻译成它的入参。
     const QMap<QString, AnalysisPanel::PageBadgeInfo> badges = analysis_panel_->PageBadges();
-
-    bool changed = false;
-    for (int row = 0; row < sidebar_->count(); ++row) {
-        QListWidgetItem* item = sidebar_->item(row);
-        const QVariant stack_index = item->data(Qt::UserRole);
-        if (!stack_index.isValid()) continue;  // 分组标题没有徽标
-        QWidget* page = content_stack_->widget(stack_index.toInt());
-        if (!page) continue;  // 侧栏项与 stack 不同步（换页/重建的窗口期）时别解引用
-        const QString page_id = page->property("pageId").toString();
-
+    ui::ApplySidebarBadges(sidebar_, content_stack_, [&badges](const QString& page_id) {
         const AnalysisPanel::PageBadgeInfo info = badges.value(page_id);
-        const int count = info.issue_count;
-        const int level = info.level;
-        const bool scanning = info.scanning;
-
-        if (item->data(kBadgeCountRole).toInt() != count ||
-            item->data(kBadgeLevelRole).toInt() != level ||
-            item->data(kScanningRole).toBool() != scanning) {
-            item->setData(kBadgeCountRole, count);
-            item->setData(kBadgeLevelRole, level);
-            item->setData(kScanningRole, scanning);
-            changed = true;
-        }
-    }
-    if (changed) sidebar_->update();
+        ui::SidebarBadge badge;
+        badge.count = info.issue_count;
+        badge.level = info.level;
+        badge.scanning = info.scanning;
+        return badge;
+    });
 }
 
 void MainWindow::OnOpenFile() {

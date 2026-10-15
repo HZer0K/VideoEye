@@ -1602,6 +1602,37 @@ target_link_libraries(test_open_session PRIVATE Qt6::Core)
 add_test(NAME OpenSessionTests COMMAND test_open_session)
 
 # =================================================
+# 测试: 主窗口的两条尺寸/布局口径 (ui/main_window/window_layout.h)
+#
+# 从 UpdateMinimumWindowSize / showEvent 抽出来的纯口径：最小尺寸是「几条栏 +
+# 两个内容区」的硬加总（漏一条就允许窗口比内容矮），小屏阈值决定起手用哪个布局
+# 预设（判反的话 1366x768 上一打开就超出可用高度 —— 这条以前真出过）。
+# 不碰 QWidget，只需要 QSize。
+# =================================================
+videoeye_add_test(test_window_layout unit/test_window_layout.cpp)
+target_link_libraries(test_window_layout PRIVATE Qt6::Core)
+add_test(NAME WindowLayoutTests COMMAND test_window_layout)
+
+# =================================================
+# 测试: 侧栏导航的 Qt 侧机制 (ui/main_window/sidebar_navigation.{h,cpp})
+#
+# 这块原先住在 MainWindow.cpp 顶部的匿名命名空间里。它守的是三条「错了就是静默
+# 错位」的不变量：页面项带 UserRole=stack 下标而分组标题不带（切换与徽标唯一的
+# 寻址依据）、分组标题不可选中、铺条目全程静音。纯排布口径在 NavigationModelTests
+# 里，这里只测 Qt 侧的读写。用 offscreen 平台跑。
+# =================================================
+videoeye_add_test(test_sidebar_navigation
+    unit/test_sidebar_navigation.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/main_window/sidebar_navigation.cpp
+)
+target_link_libraries(test_sidebar_navigation PRIVATE
+    VideoEyeDomain
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME SidebarNavigationTests COMMAND test_sidebar_navigation)
+set_tests_properties(SidebarNavigationTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
 # 测试: 批量 QC 结果的展示口径 (ui/reporting_panel/batch_result_model.h)
 #
 # 从 ReportingPanel 的 RunBatch 完成段 / ShowBatchDetail 抽出来的三条口径：整批终态

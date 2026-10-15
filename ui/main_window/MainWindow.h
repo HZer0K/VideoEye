@@ -22,6 +22,7 @@
 #include "ui/ffmpeg_panel/FfmpegPanel.h"
 #include "ui/main_window/ExportCoordinator.h"
 #include "ui/main_window/macroblock_coordination.h"
+#include "ui/main_window/menu_bar.h"
 #include "ui/main_window/OpenSessionController.h"
 #include "ui/main_window/OverviewPage.h"
 #include "ui/player/PlayerPanel.h"
@@ -129,14 +130,9 @@ protected:
     // 状态, 协调器不反向持有 MainWindow 的具体成员。
     ExportCoordinator* export_coordinator_ = nullptr;
 
-    // 菜单和工具栏
-    QMenuBar* menu_bar_;
-    QStatusBar* status_bar_;
-    QAction* export_frames_action_ = nullptr;
-    QAction* toggle_player_action_ = nullptr;  // 视图菜单: 显示播放区 (F9)
-    // 视图菜单: 播放区布局预设（监看 / 分析），勾选状态跟随 PlayerPanel 的预设
-    QAction* layout_monitor_action_ = nullptr;
-    QAction* layout_analysis_action_ = nullptr;
+    // 菜单和工具栏。菜单由 ui::BuildMenuBar 建（结构/快捷键在 menu_bar.h 里），
+    // 本窗口只留需要反向同步勾选状态的那几个动作。
+    ui::MenuBarActions menu_actions_;
     // 首次 showEvent 时才应用布局预设（此前 splitter 还没有真实尺寸）
     bool layout_preset_applied_ = false;
 
