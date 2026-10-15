@@ -43,6 +43,7 @@
 #include "infrastructure/concurrency/TaskManager.h"
 
 #include "ui/reporting_panel/analysis_task.h"
+#include "ui/reporting_panel/ReportExportController.h"
 #include "ui/reporting_panel/result_stamp.h"
 
 namespace videoeye {
@@ -124,8 +125,9 @@ private:
     void ShowBatchDetail(int result_index);
     // 当前筛选口径下这条结果是否可见（纯判定在 batch_filter.h，这里只做组合）。
     bool BatchRowVisible(const qc::BatchQcItemResult& item) const;
-    // 用 last_result_ + 当前模板把单文件报告导出到 directory（调用前须保证结果新鲜）。
-    void ExportSingleResult(const QString& directory);
+    // 构造时建好导出控制器：单文件报告、批量汇总两条导出路径连同"先选目录、分析完
+    // 再导出"的挂起票据都在它里面（见 ReportExportController.h）。
+    void SetupExportController();
 
     // 仅当任务仍存活时把更新投递回主线程；否则静默丢弃（面板正在销毁）
     void PostToUi(std::shared_ptr<AnalysisTask> task, const std::function<void()>& updater);
@@ -222,8 +224,8 @@ private:
     // 结果"身份戳"：记录 last_result_ 属于哪个文件、按哪个模板算出（见 result_stamp.h）。
     // 与当前 (current_path_, profile_.id) 一致才算新鲜 —— 切换文件/模板后自然过期。
     ResultStamp result_stamp_;
-    // 无结果时点导出：先取输出目录挂在这里，分析成功后在完成回调里继续导出。
-    QString pending_export_dir_;
+    // 导出控制器（本页拥有）：挂起票据与两条导出路径都搬进去了，本页只留按钮转发。
+    ReportExportController* export_controller_ = nullptr;
     std::shared_ptr<AnalysisTask> single_task_;
     std::shared_ptr<AnalysisTask> batch_task_;
     std::vector<qc::BatchQcItemResult> batch_results_;

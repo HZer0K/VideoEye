@@ -1611,3 +1611,21 @@ add_test(NAME OpenSessionTests COMMAND test_open_session)
 videoeye_add_test(test_batch_result_model unit/test_batch_result_model.cpp)
 target_link_libraries(test_batch_result_model PRIVATE VideoEyeQc Qt6::Core)
 add_test(NAME BatchResultModelTests COMMAND test_batch_result_model)
+
+# =================================================
+# 报告导出口径 + ReportExportController。
+# 控制器带 Q_OBJECT，所以把它的 .cpp 一并编进本测试（AUTOMOC 靠同名匹配生成 moc）。
+# 不链 VideoEyeReportingPanel —— 那个库里已经有同一份 .cpp，链进来就是同一个类
+# 两份实现（ODR），症状是随机的 0xc0000374。
+# =================================================
+videoeye_add_test(test_report_export
+    unit/test_report_export.cpp
+    ../ui/reporting_panel/ReportExportController.cpp
+)
+target_link_libraries(test_report_export PRIVATE
+    VideoEyeReporting
+    VideoEyeQc
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    Qt6::Core)
+add_test(NAME ReportExportTests COMMAND test_report_export)

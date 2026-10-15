@@ -1,7 +1,6 @@
 #include "ui/reporting_panel/ReportingPanel.h"
 
 #include <algorithm>
-#include <filesystem>
 
 #include <QDesktopServices>
 #include <QDir>
@@ -85,11 +84,6 @@ void ApplyBatchRow(QTableWidget* table, int row, const BatchRowCells& cells, int
     table->setItem(row, 9, new QTableWidgetItem(cells.output_path));
 }
 
-std::string BaseNameOf(const std::string& path) {
-    std::filesystem::path file(path);
-    return file.stem().string();
-}
-
 // 数值列的显示格式委托。
 //
 // 评分/耗时以 double 存在 Qt::DisplayRole，排序时 QTableWidgetItem::operator<
@@ -116,6 +110,39 @@ private:
 ReportingPanel::ReportingPanel(QWidget* parent) : QWidget(parent) {
     profile_ = qc::BuiltinQcProfiles().front();  // 通用
     BuildUi();
+    // 控制器要读 batch_dir_edit_ 等控件，必须在 BuildUi 之后建。
+    SetupExportController();
+}
+
+void ReportingPanel::SetupExportController() {
+    // 依赖全部以 lambda 注入：控制器只拿到"能不能导 / 导什么"，看不到控件，
+    // 于是那三条决策（新鲜就直接导 / 挂起等分析 / 汇总重算）可以脱离 QWidget 单测。
+    ReportExportController::Deps deps;
+    deps.has_file = [this]() { return !current_path_.empty(); };
+    deps.busy = [this]() { return busy_; };
+    deps.has_fresh_result = [this]() { return HasFreshResult(); };
+    deps.current_path = [this]() { return current_path_; };
+    deps.single_result = [this]() { return last_result_; };
+    deps.profile = [this]() { return profile_; };
+    deps.formats = [this]() { return SelectedFormats(); };
+    deps.batch_results = [this]() { return batch_results_; };
+    deps.batch_root = [this]() {
+        return batch_dir_edit_ ? batch_dir_edit_->text().toStdString() : std::string();
+    };
+    deps.start_single_analysis = [this]() { StartSingleAnalysis(current_path_); };
+    deps.pick_output_directory = [this]() {
+        return QFileDialog::getExistingDirectory(this, tr("选择报告输出目录"));
+    };
+    deps.pick_summary_file = [this]() {
+        return QFileDialog::getSaveFileName(this, tr("导出批量汇总"), tr("qc-summary.csv"),
+                                            tr("CSV (*.csv);;JSON (*.json);;HTML (*.html)"));
+    };
+    deps.notice = [this](const QString& title, const QString& body) {
+        QMessageBox::information(this, title, body);
+    };
+    export_controller_ = new ReportExportController(std::move(deps), this);
+    connect(export_controller_, &ReportExportController::StatusMessage,
+            this, &ReportingPanel::StatusMessage);
 }
 
 ReportingPanel::~ReportingPanel() {
@@ -452,57 +479,8 @@ void ReportingPanel::OnAnalyzeCurrentFile() {
 }
 
 void ReportingPanel::OnExportSingleReport() {
-    if (current_path_.empty()) {
-        QMessageBox::information(this, tr("未选择文件"), tr("请先在主界面打开一个媒体文件。"));
-        return;
-    }
-    if (busy_) {
-        QMessageBox::information(this, tr("任务进行中"), tr("有任务正在运行，请先等待或停止。"));
-        return;
-    }
-
-    // 结果是否新鲜由 (文件, 模板) 共同决定。过期时不再"只启动分析就结束"，而是先取
-    // 好输出目录、登记待导出，待本次分析成功后在同一目录继续导出 —— 用户点一次导出
-    // 就能拿到当前文件 + 当前模板的报告，不会静默导出上一次的结果。
-    if (!HasFreshResult()) {
-        const QString directory = QFileDialog::getExistingDirectory(this, tr("选择报告输出目录"));
-        if (directory.isEmpty()) return;
-        pending_export_dir_ = directory;
-        StartSingleAnalysis(current_path_);
-        return;
-    }
-
-    const QString directory = QFileDialog::getExistingDirectory(this, tr("选择报告输出目录"));
-    if (directory.isEmpty()) return;
-    ExportSingleResult(directory);
-}
-
-void ReportingPanel::ExportSingleResult(const QString& directory) {
-    reporting::QcExportBundle bundle;
-    bundle.profile_id = profile_.id;
-    bundle.profile_name = profile_.name;
-    bundle.run = last_result_;
-
-    bool ok = true;
-    const std::string base = BaseNameOf(last_result_.report.file_path.empty()
-                                            ? current_path_
-                                            : last_result_.report.file_path);
-    for (const auto format : SelectedFormats()) {
-        const std::string target = reporting::QcReportOutputPath(directory.toStdString(), base, format);
-        if (format == qc::QcReportFormat::Pdf) {
-            const auto pdf = reporting::QcReportExporter::ExportPdf(target, bundle);
-            ok &= pdf.ok;
-            if (pdf.text_loss) {
-                QMessageBox::information(
-                    this, tr("PDF 提示"),
-                    tr("报告里有 PDF 字体无法表示的字符（如 emoji），已替换为 '?'。"));
-            }
-        } else {
-            ok &= reporting::QcReportExporter::Export(target, bundle, format);
-        }
-    }
-    emit StatusMessage(ok ? tr("报告已导出到 %1").arg(directory)
-                          : tr("报告导出失败，请检查目录权限"));
+    // 完整决策（新鲜就直接导 / 不新鲜先挂起再分析 / 弹什么提示）都在导出控制器里。
+    if (export_controller_) export_controller_->ExportSingleReport();
 }
 
 void ReportingPanel::OnPickBatchDirectory() {
@@ -537,41 +515,7 @@ void ReportingPanel::OnCancelBatch() {
 }
 
 void ReportingPanel::OnExportBatchSummary() {
-    if (batch_results_.empty()) {
-        QMessageBox::information(this, tr("没有结果"), tr("请先跑一次批量扫描。"));
-        return;
-    }
-    const QString path = QFileDialog::getSaveFileName(
-        this, tr("导出批量汇总"), tr("qc-summary.csv"),
-        tr("CSV (*.csv);;JSON (*.json);;HTML (*.html)"));
-    if (path.isEmpty()) return;
-
-    qc::BatchQcRun run;
-    run.items = batch_results_;
-    // 汇总只需要前面表格里已经算过的东西，这里按同样口径重算一遍
-    for (const auto& item : run.items) {
-        run.summary.total += 1;
-        switch (item.status) {
-            case qc::BatchItemStatus::Succeeded: run.summary.succeeded += 1; break;
-            case qc::BatchItemStatus::Failed:    run.summary.failed += 1;    break;
-            case qc::BatchItemStatus::ExportFailed: run.summary.failed += 1; break;
-            case qc::BatchItemStatus::TimedOut:  run.summary.timed_out += 1; break;
-            case qc::BatchItemStatus::Cancelled: run.summary.cancelled += 1; break;
-            case qc::BatchItemStatus::Skipped:   run.summary.skipped += 1;   break;
-            default: break;
-        }
-        run.summary.critical_count += item.critical_count;
-        run.summary.error_count += item.error_count;
-        run.summary.warning_count += item.warning_count;
-        run.summary.info_count += item.info_count;
-    }
-    run.summary.completed = (run.summary.cancelled == 0);
-
-    const auto input = reporting::QcReportExporter::MakeBatchSummary(
-        batch_dir_edit_->text().toStdString(), run, profile_);
-    emit StatusMessage(reporting::QcReportExporter::ExportBatchSummaryAuto(path.toStdString(), input)
-                           ? tr("汇总已导出到 %1").arg(path)
-                           : tr("汇总导出失败"));
+    if (export_controller_) export_controller_->ExportBatchSummary();
 }
 
 // ===========================================================================
@@ -603,7 +547,7 @@ void ReportingPanel::ReportThreadFailure(const std::shared_ptr<AnalysisTask>& ta
         AppendSummary(text);
         SetBusy(false);
         // 失败就不再把待导出目录留着 —— 免得下一次成功时悄悄导出一份不相干的东西。
-        pending_export_dir_.clear();
+        if (export_controller_) export_controller_->AbortPendingExport();
         FinishTask(task, terminal);
     });
 }
@@ -757,13 +701,9 @@ void ReportingPanel::RunSingle(std::shared_ptr<AnalysisTask> task, const std::st
         // single_task_ / batch_task_ 长期持有过期句柄（见 FinishTask 注释）。
         FinishTask(task, terminal);
 
-        // 无结果时点导出 -> 分析成功后在同一目录继续导出；失败则丢弃待导出，避免
-        // 悄悄导出空报告。
-        if (!pending_export_dir_.isEmpty()) {
-            const QString directory = pending_export_dir_;
-            pending_export_dir_.clear();
-            if (result.ok) ExportSingleResult(directory);
-        }
+        // 无结果时点导出 -> 分析成功后在同一目录继续导出；失败则丢弃挂起的目录，
+        // 避免悄悄导出空报告（票据取走即作废，见 ReportExportController）。
+        if (export_controller_) export_controller_->OnSingleAnalysisFinished(result.ok);
     });
 }
 
