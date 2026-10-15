@@ -26,6 +26,7 @@
 #include "infrastructure/logging/Logger.h"
 
 #include "ui/reporting_panel/batch_filter.h"
+#include "ui/reporting_panel/batch_result_model.h"
 #include "ui/reporting_panel/report_path.h"
 
 namespace videoeye {
@@ -57,9 +58,31 @@ std::vector<std::string> ParseExtensionList(const QString& text) {
     return extensions;
 }
 
-// BatchItemStatus 的文本是字符串常量（不是 tr 字面量），这里只做转码不做翻译
-QString StatusText(qc::BatchItemStatus status) {
-    return QString::fromStdString(qc::ToString(status));
+// 把一行十个格子铺进表格。数值列原样存进 Qt::DisplayRole（double / int），
+// 显示格式由列委托负责 —— 存成字符串会让排序变成字典序（见 batch_result_model.h）。
+// 第一列带 batch_results_ 下标：排序（sortItems 会移动 item 对象，数据跟着走）
+// 与筛选（只切可见性）之后仍能对回原始结果。
+void ApplyBatchRow(QTableWidget* table, int row, const BatchRowCells& cells, int result_index) {
+    if (!table) return;
+    QTableWidgetItem* path_item = new QTableWidgetItem(cells.path);
+    path_item->setData(Qt::UserRole, result_index);
+    table->setItem(row, 0, path_item);
+    table->setItem(row, 1, new QTableWidgetItem(cells.status));
+
+    auto numeric_item = [](auto value) {
+        auto* item = new QTableWidgetItem;
+        item->setData(Qt::DisplayRole, QVariant::fromValue(value));
+        item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        return item;
+    };
+    table->setItem(row, 2, numeric_item(cells.score));
+    table->setItem(row, 3, new QTableWidgetItem(cells.verdict));
+    table->setItem(row, 4, numeric_item(cells.critical));
+    table->setItem(row, 5, numeric_item(cells.error_count));
+    table->setItem(row, 6, numeric_item(cells.warning));
+    table->setItem(row, 7, numeric_item(cells.info));
+    table->setItem(row, 8, numeric_item(cells.elapsed_ms));
+    table->setItem(row, 9, new QTableWidgetItem(cells.output_path));
 }
 
 std::string BaseNameOf(const std::string& path) {
@@ -826,43 +849,7 @@ void ReportingPanel::RunBatch(std::shared_ptr<AnalysisTask> task, const BatchReq
             batch_table_->insertRow(row);
             const int result_index = static_cast<int>(batch_results_.size());
             batch_results_.push_back(copy);
-
-            // 第一列存 batch_results_ 下标：排序（sortItems 会移动 item 对象，
-            // 数据跟着走）与筛选（只切可见性）之后仍能对回原始结果。
-            QTableWidgetItem* path_item =
-                new QTableWidgetItem(QString::fromStdString(copy.path));
-            path_item->setData(Qt::UserRole, result_index);
-            batch_table_->setItem(row, 0, path_item);
-            batch_table_->setItem(row, 1, new QTableWidgetItem(StatusText(copy.status)));
-            // 数值列把值存进 DisplayRole（排序按数值比较，不是字典序 "10 < 9"），
-            // 显示格式由列委托负责（评分 1 位小数 / 耗时取整）。
-            auto* score_item = new QTableWidgetItem;
-            score_item->setData(Qt::DisplayRole, QVariant::fromValue(copy.score));
-            score_item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            batch_table_->setItem(row, 2, score_item);
-            batch_table_->setItem(row, 3, new QTableWidgetItem(QString::fromStdString(copy.verdict)));
-            auto* critical_item = new QTableWidgetItem;
-            critical_item->setData(Qt::DisplayRole, QVariant::fromValue(copy.critical_count));
-            critical_item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            batch_table_->setItem(row, 4, critical_item);
-            auto* error_item = new QTableWidgetItem;
-            error_item->setData(Qt::DisplayRole, QVariant::fromValue(copy.error_count));
-            error_item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            batch_table_->setItem(row, 5, error_item);
-            auto* warning_item = new QTableWidgetItem;
-            warning_item->setData(Qt::DisplayRole, QVariant::fromValue(copy.warning_count));
-            warning_item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            batch_table_->setItem(row, 6, warning_item);
-            auto* info_item = new QTableWidgetItem;
-            info_item->setData(Qt::DisplayRole, QVariant::fromValue(copy.info_count));
-            info_item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            batch_table_->setItem(row, 7, info_item);
-            auto* elapsed_item = new QTableWidgetItem;
-            elapsed_item->setData(Qt::DisplayRole, QVariant::fromValue(copy.elapsed_ms));
-            elapsed_item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            batch_table_->setItem(row, 8, elapsed_item);
-            batch_table_->setItem(row, 9,
-                                  new QTableWidgetItem(QString::fromStdString(copy.output_path)));
+            ApplyBatchRow(batch_table_, row, MakeBatchRowCells(copy), result_index);
             // 扫描中也要遵守当前筛选 —— 否则"只看出问题的"会漏进干净行
             batch_table_->setRowHidden(row, !BatchRowVisible(copy));
         });
@@ -885,30 +872,14 @@ void ReportingPanel::RunBatch(std::shared_ptr<AnalysisTask> task, const BatchReq
     qc::BatchQcRunner runner;
     const auto run = runner.Run(items, options, analyze_with_export, callbacks);
 
-    // 终态：用户取消 -> Canceled；有条目失败或超时 -> Failed；整批跑完且无失败/超时 -> Succeeded。
-    // 超时也算"没干净跑完"：它的后台线程被放弃、结果不完整，不能算成功。
+    // 终态与汇总文本的口径都在 batch_result_model.h（有单测）：
+    // 取消 > 失败/超时 > 成功；"共 N 个"用发现到的条目数（跳过/未跑到的也占一行）。
     const task::TaskState terminal =
-        task->cancel.IsCanceled()
-            ? task::TaskState::Canceled
-            : ((run.summary.failed == 0 && run.summary.timed_out == 0)
-                   ? task::TaskState::Succeeded
-                   : task::TaskState::Failed);
+        BatchTerminalState(run.summary, task->cancel.IsCanceled());
     PostToUi(task, [this, task, run, total, terminal]() {
         batch_progress_->setRange(0, std::max(1, total));
         batch_progress_->setValue(batch_table_->rowCount());
-        batch_summary_label_->setText(
-            tr("共 %1 个 ｜ 完成 %2 ｜ 失败 %3 ｜ 超时 %4 ｜ 取消 %5 ｜ 跳过 %6 ｜ 致命 %7 错误 %8 警告 %9 提示 %10 ｜ 耗时 %11 ms")
-                .arg(total)
-                .arg(run.summary.succeeded)
-                .arg(run.summary.failed)
-                .arg(run.summary.timed_out)
-                .arg(run.summary.cancelled)
-                .arg(run.summary.skipped)
-                .arg(run.summary.critical_count)
-                .arg(run.summary.error_count)
-                .arg(run.summary.warning_count)
-                .arg(run.summary.info_count)
-                .arg(static_cast<int>(run.summary.elapsed_ms)));
+        batch_summary_label_->setText(BatchSummaryText(run.summary, total));
         SetBusy(false);
         // 同 RunSingle：整批正常结束后归还终态并清掉 batch_task_ 句柄。
         FinishTask(task, terminal);
@@ -1073,41 +1044,8 @@ void ReportingPanel::ShowBatchDetail(int result_index) {
         return;
     }
     const qc::BatchQcItemResult& item = batch_results_[result_index];
-
-    QString text = tr("文件: %1\n").arg(QString::fromStdString(item.path));
-    text += tr("状态: %1").arg(StatusText(item.status));
-    if (item.status == qc::BatchItemStatus::ExportFailed) {
-        // 分析本身没问题，是报告落盘失败 —— 处置方式与 Failed 完全不同，必须点明
-        text += tr("（分析完成，但报告落盘失败）");
-    }
-    text += QStringLiteral("\n");
-    if (!item.error.empty()) {
-        text += tr("原因: %1\n").arg(QString::fromStdString(item.error));
-    }
-    text += tr("评分: %1 / 100 ｜ 结论: %2\n")
-                .arg(item.score, 0, 'f', 1)
-                .arg(QString::fromStdString(item.verdict));
-    text += tr("问题: 致命 %1 ｜ 错误 %2 ｜ 警告 %3 ｜ 提示 %4\n")
-                .arg(item.critical_count)
-                .arg(item.error_count)
-                .arg(item.warning_count)
-                .arg(item.info_count);
-    text += tr("耗时: %1 ms").arg(item.elapsed_ms, 0, 'f', 0);
-    if (!item.output_path.empty()) {
-        text += tr(" ｜ 输出: %1").arg(QString::fromStdString(item.output_path));
-    }
-    // 报告本体默认不驻留内存（keep_reports=false，见 RunBatch），issues 为空；
-    // 万一将来打开保留，这里直接把问题清单列出来，UI 不用再改。
-    if (!item.report.issues.empty()) {
-        text += tr("\n问题清单:");
-        for (const model::DiagnosticIssue& issue : item.report.issues) {
-            text += tr("\n  [%1] %2 — %3")
-                        .arg(QString::fromStdString(issue.SeverityText()),
-                             QString::fromStdString(issue.title),
-                             QString::fromStdString(issue.detail));
-        }
-    }
-    batch_detail_->setText(text);
+    // 详情文本的口径（含 ExportFailed 的专门说明、问题清单）在 batch_result_model.h。
+    batch_detail_->setText(BatchDetailText(item));
 
     // 报告文件按选中行走：路径存在按钮的 property 上，省一个只为了传参的成员。
     if (open_report_button_) {

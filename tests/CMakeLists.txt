@@ -1600,3 +1600,14 @@ add_test(NAME OverviewAnalysisTests COMMAND test_overview_analysis)
 videoeye_add_test(test_open_session unit/test_open_session.cpp)
 target_link_libraries(test_open_session PRIVATE Qt6::Core)
 add_test(NAME OpenSessionTests COMMAND test_open_session)
+
+# =================================================
+# 测试: 批量 QC 结果的展示口径 (ui/reporting_panel/batch_result_model.h)
+#
+# 从 ReportingPanel 的 RunBatch 完成段 / ShowBatchDetail 抽出来的三条口径：整批终态
+# （超时算没跑完）、汇总行十一个计数、表格行数值列必须存数值而不是字符串。
+# 只需 Qt6::Core（QString）与 VideoEyeQc（BatchQcItemResult 的实现），无 QWidget。
+# =================================================
+videoeye_add_test(test_batch_result_model unit/test_batch_result_model.cpp)
+target_link_libraries(test_batch_result_model PRIVATE VideoEyeQc Qt6::Core)
+add_test(NAME BatchResultModelTests COMMAND test_batch_result_model)
