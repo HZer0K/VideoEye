@@ -4,6 +4,7 @@
 #include "ui/player/AudioVizRenderer.h"
 #include "ui/player/RawImageSequence.h"
 #include "ui/theme/AppTheme.h"
+#include "core/player/AnalysisBus.h"
 #include "infrastructure/logging/Logger.h"
 
 #include <chrono>
@@ -157,12 +158,14 @@ void PlayerPanel::SetMediaPlayer(player::MediaPlayer* player) {
     connect(player_, &player::MediaPlayer::OpenFinished, this, &PlayerPanel::OnPlayerOpenFinished);
     connect(player_, &player::MediaPlayer::PlaybackFinished, this, &PlayerPanel::OnPlaybackFinished);
     connect(player_, &player::MediaPlayer::MediaModeChanged, this, &PlayerPanel::OnMediaModeChanged);
-    connect(player_, &player::MediaPlayer::AudioLevelReady, this, &PlayerPanel::OnAudioLevelReady);
-    connect(player_, &player::MediaPlayer::AudioVisualizationReady,
+    // 下面三条属于实时分析，走分析总线而不是门面（见 core/player/AnalysisBus.h）。
+    player::AnalysisBus& bus = player_->analysis_bus();
+    connect(&bus, &player::AnalysisBus::AudioLevelReady, this, &PlayerPanel::OnAudioLevelReady);
+    connect(&bus, &player::AnalysisBus::AudioVisualizationReady,
             this, &PlayerPanel::OnAudioVisualizationForDisplay);
     // 实时码流统计: 与 AnalysisPanel 并列消费同一个信号, 此处用于叠加层 FPS 与状态栏常驻显示。
     // 注意 MediaPlayer 仅在 analysis_enabled_ 时每 10 帧发射一次, 未开启分析时无数据。
-    connect(player_, &player::MediaPlayer::StreamStatsReady,
+    connect(&bus, &player::AnalysisBus::StreamStatsReady,
             this, &PlayerPanel::OnStreamStatsUpdate);
 }
 

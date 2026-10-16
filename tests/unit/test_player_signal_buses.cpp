@@ -28,12 +28,14 @@
 #include <QString>
 #include <QThread>
 
+#include "core/player/AnalysisBus.h"
 #include "core/player/ContainerBus.h"
 #include "core/player/ExportBus.h"
 #include "core/player/MediaPlayer.h"
 
 namespace {
 
+using videoeye::player::AnalysisBus;
 using videoeye::player::ContainerBus;
 using videoeye::player::ExportBus;
 using videoeye::player::MediaPlayer;
@@ -79,6 +81,32 @@ const char* const kExportSignatures[] = {
 const char* const kContainerSignatures[] = {
     "ContainerStructureReady(videoeye::model::ContainerStructureResult)",
     "ContainerStructureFailed(QString)",
+};
+
+const char* const kAnalysisSignatures[] = {
+    "VideoFrameListReset()",
+    "AudioFrameListReset()",
+    "PacketListReset()",
+    "AnalysisEventListReset()",
+    "SyncSampleListReset()",
+    "TimelineEventListReset()",
+    "StreamStatsReady(videoeye::StreamStats)",
+    "VideoFrameInfoReady(int,int,bool,qint64,double)",
+    "AudioFrameInfoReady(int,qint64,double,int,int,int,int)",
+    "PacketInfoReady(model::PacketInfo)",
+    "AnalysisEventReady(model::AnalysisEvent)",
+    "SyncSampleReady(model::SyncSample)",
+    "TimelinePacketReady(model::PacketTiming)",
+    "FrameTimingReady(model::FrameTimingInfo)",
+    "TimelineEventReady(model::TimelineEvent)",
+    "AudioVisualizationReady(model::AudioVisualizationFrame)",
+    "AudioLevelReady(double,double)",
+    "MacroblockInfoReady(videoeye::model::MacroblockFrameAnalysis)",
+    "SceneChangeReady(model::SceneChangeResult)",
+    "VisualDefectReset()",
+    "VisualDefectFrameReady(model::FrameQualityMetric)",
+    "VisualDefectReady(model::VisualDefect)",
+    "VisualDefectStatsReady(int,int,model::ActivePictureArea)",
 };
 
 // 泵事件直到条件成立（后台任务的结果要排回 UI 线程才落地）。
@@ -196,4 +224,29 @@ TEST(ContainerBusTests, ControllerEmitsFailureThroughBusForUnreadableFile) {
     EXPECT_FALSE(failure_message.trimmed().isEmpty()) << "失败信号必须带原因";
 
     QFile::remove(missing);
+}
+
+// ---------------------------------------------------------------------------
+// 7. 门面不再背实时分析的 23 条信号，总线上一条不少
+// ---------------------------------------------------------------------------
+TEST(AnalysisBusTests, FacadeDoesNotDeclareAnalysisSignalsAnymore) {
+    for (const char* sig : kAnalysisSignatures) {
+        EXPECT_EQ(-1, SignalIndex(MediaPlayer::staticMetaObject, sig))
+            << "MediaPlayer 还在声明分析信号 " << sig << " —— 它该在 AnalysisBus 上";
+        EXPECT_GE(SignalIndex(AnalysisBus::staticMetaObject, sig), 0)
+            << "AnalysisBus 缺少信号 " << sig;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 8. analysis_bus() 稳定 + 归属 UI 线程
+// ---------------------------------------------------------------------------
+TEST(AnalysisBusTests, BusHandleIsStableAndLivesOnUiThread) {
+    AppScope app_scope;
+
+    MediaPlayer player;
+    AnalysisBus& first = player.analysis_bus();
+    EXPECT_EQ(&first, &player.analysis_bus()) << "analysis_bus() 每次都得给出同一个对象";
+    EXPECT_TRUE(first.parent() != nullptr) << "总线必须有宿主, 不能是游离对象";
+    EXPECT_EQ(player.thread(), first.thread()) << "总线要跟播放器同线程";
 }

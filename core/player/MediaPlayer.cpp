@@ -71,54 +71,8 @@ MediaPlayer::MediaPlayer(QObject* parent)
     // 容器结构分析的两条信号也不再经门面转发: ContainerInspectionController 直接在
     // 自己的 ContainerBus 上发射，UI 连 container_bus()（见 core/player/ContainerBus.h）。
 
-    // 实时分析的 23 条信号原样转发: 计数、采样档位、"该不该发"全在控制器里，
-    // 对外（UI）连的是本对象的信号，拆分前后契约一个字节都不变。
-    connect(&realtime_analysis_, &RealtimeAnalysisController::VideoFrameListReset,
-            this, &MediaPlayer::VideoFrameListReset);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::AudioFrameListReset,
-            this, &MediaPlayer::AudioFrameListReset);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::PacketListReset,
-            this, &MediaPlayer::PacketListReset);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::AnalysisEventListReset,
-            this, &MediaPlayer::AnalysisEventListReset);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::SyncSampleListReset,
-            this, &MediaPlayer::SyncSampleListReset);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::TimelineEventListReset,
-            this, &MediaPlayer::TimelineEventListReset);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::StreamStatsReady,
-            this, &MediaPlayer::StreamStatsReady);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::VideoFrameInfoReady,
-            this, &MediaPlayer::VideoFrameInfoReady);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::AudioFrameInfoReady,
-            this, &MediaPlayer::AudioFrameInfoReady);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::PacketInfoReady,
-            this, &MediaPlayer::PacketInfoReady);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::AnalysisEventReady,
-            this, &MediaPlayer::AnalysisEventReady);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::SyncSampleReady,
-            this, &MediaPlayer::SyncSampleReady);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::TimelinePacketReady,
-            this, &MediaPlayer::TimelinePacketReady);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::FrameTimingReady,
-            this, &MediaPlayer::FrameTimingReady);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::TimelineEventReady,
-            this, &MediaPlayer::TimelineEventReady);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::AudioVisualizationReady,
-            this, &MediaPlayer::AudioVisualizationReady);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::AudioLevelReady,
-            this, &MediaPlayer::AudioLevelReady);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::MacroblockInfoReady,
-            this, &MediaPlayer::MacroblockInfoReady);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::SceneChangeReady,
-            this, &MediaPlayer::SceneChangeReady);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::VisualDefectReset,
-            this, &MediaPlayer::VisualDefectReset);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::VisualDefectFrameReady,
-            this, &MediaPlayer::VisualDefectFrameReady);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::VisualDefectReady,
-            this, &MediaPlayer::VisualDefectReady);
-    connect(&realtime_analysis_, &RealtimeAnalysisController::VisualDefectStatsReady,
-            this, &MediaPlayer::VisualDefectStatsReady);
+    // 实时分析的 23 条信号也不再经门面转发: RealtimeAnalysisController 直接在
+    // 自己的 AnalysisBus 上发射，UI 连 analysis_bus()（见 core/player/AnalysisBus.h）。
 
     // 打开链路的四条信号原样转发: 封面图 / 媒体模式 / 媒体信息文本 / 打开失败。
     connect(&open_controller_, &OpenController::FrameReady, this, &MediaPlayer::FrameReady);

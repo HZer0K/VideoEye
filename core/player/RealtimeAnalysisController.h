@@ -15,8 +15,9 @@
 //   * 媒体生命周期（打开 / 定位 / 停止 / 导出 / 容器检查）—— MediaPlayer。
 //
 // 本类是 QObject: 信号必须跨线程排到 UI 线程，而"该不该发、计数到几"这些状态只有本类
-// 知道，所以信号由本类发，MediaPlayer 在构造函数里原样转发 —— 对外契约（信号名与
-// 参数）与拆分前一个字节不差。
+// 知道。对外的 23 条信号不在本类身上，而在 AnalysisBus 上（见 core/player/AnalysisBus.h）：
+// 名字与参数与拆分前一个字节不差，但 UI 连的是 player->analysis_bus() 而不是门面，
+// MediaPlayer 因此不必再做 23 条"同名转发"连接。
 //
 // 线程模型（沿用拆分前，不要改）: 下面所有 OnXxx() 都在**解码线程**上被调用，
 // 与 PlaybackSession 的 hook 语义一致；信号由 Qt 自动排队到 UI 线程。
@@ -32,6 +33,7 @@
 #include <map>
 
 #include "core/analysis/quality/MacroblockAnalyzer.h"
+#include "core/player/AnalysisBus.h"
 #include "core/analysis/quality/SceneChangeAnalyzer.h"
 #include "core/analysis/quality/VisualDefectAnalyzer.h"
 #include "core/player/AnalysisSession.h"
@@ -89,41 +91,16 @@ public:
     // 播完 / 停止时把还开着的缺陷段闭合
     void FlushVisualDefectSegments(double end_timestamp_seconds);
 
-signals:
-    // --- 换媒体时清空 UI 列表 ---
-    void VideoFrameListReset();
-    void AudioFrameListReset();
-    void PacketListReset();
-    void AnalysisEventListReset();
-    void SyncSampleListReset();
-    void TimelineEventListReset();
-
-    // --- 实时分析结果 ---
-    void StreamStatsReady(const videoeye::StreamStats& stats);
-    void VideoFrameInfoReady(int index, int frame_type, bool is_key_frame, qint64 pts,
-                             double timestamp_seconds);
-    void AudioFrameInfoReady(int index, qint64 pts, double timestamp_seconds,
-                             int sample_count, int sample_rate, int channels, int byte_count);
-    void PacketInfoReady(const model::PacketInfo& packet_info);
-    void AnalysisEventReady(const model::AnalysisEvent& event_info);
-    void SyncSampleReady(const model::SyncSample& sample);
-    // 时间轴与同步诊断（demux 层 packet 时间 / decode 层 frame 时间）
-    void TimelinePacketReady(const model::PacketTiming& timing);
-    void FrameTimingReady(const model::FrameTimingInfo& timing);
-    void TimelineEventReady(const model::TimelineEvent& event);
-    void AudioVisualizationReady(const model::AudioVisualizationFrame& frame);
-    void AudioLevelReady(double level, double timestamp_seconds);
-    void MacroblockInfoReady(const videoeye::model::MacroblockFrameAnalysis& analysis);
-    void SceneChangeReady(const videoeye::SceneChangeResult& result);
-    // 画面质量 / 视觉缺陷（实时播放时逐采样帧产出）
-    void VisualDefectReset();
-    void VisualDefectFrameReady(const model::FrameQualityMetric& metric);
-    void VisualDefectReady(const model::VisualDefect& defect);
-    // 分析进度: 已分析帧数 / 被丢弃帧数 / 全片有效画面区域（约每秒刷新一次）
-    void VisualDefectStatsReady(int analyzed_frames, int dropped_frames,
-                                const model::ActivePictureArea& effective_area);
+    // 对外的实时分析信号总线（23 条，见 core/player/AnalysisBus.h）。
+    // UI 经 MediaPlayer::analysis_bus() 拿它连信号；本类所有"该发信号了"的地方
+    // 直接 emit bus_.Xxx()。
+    AnalysisBus& bus() { return bus_; }
 
 private:
+    // 对外信号出口。以成员（而不是指针）持有，随本对象一起生灭。
+    AnalysisBus bus_{this};
+
+
     // --- PlaybackSession 的回调入口（解码线程）---
     void InstallHooks();
     void OnPacket(const PacketContext& ctx);

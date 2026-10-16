@@ -11,6 +11,8 @@
 #include "infrastructure/logging/Logger.h"
 
 #include "core/domain/model/EbmlInfo.h"
+#include "core/player/AnalysisBus.h"
+#include "core/player/ContainerBus.h"
 #include "core/domain/model/ContainerStructureInfo.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -467,32 +469,35 @@ void MainWindow::SetupConnections() {
                 }
             });
 
-    // 播放器信号连接 - 分析功能 (实时分析)
-    connect(player_, &player::MediaPlayer::StreamStatsReady,
+    // 播放器信号连接 - 分析功能 (实时分析)。
+    // 连分析总线而不是门面本身: 这 23 条信号属于播放期分析，门面不再替它们背书，
+    // 见 core/player/AnalysisBus.h。信号名与参数不变，接线语义也不变。
+    player::AnalysisBus& bus = player_->analysis_bus();
+    connect(&bus, &player::AnalysisBus::StreamStatsReady,
             analysis_panel_, &ui::AnalysisPanel::UpdateStreamStats);
-    connect(player_, &player::MediaPlayer::VideoFrameListReset,
+    connect(&bus, &player::AnalysisBus::VideoFrameListReset,
             analysis_panel_, &ui::AnalysisPanel::ResetVideoFrameList);
-    connect(player_, &player::MediaPlayer::VideoFrameInfoReady,
+    connect(&bus, &player::AnalysisBus::VideoFrameInfoReady,
             analysis_panel_, &ui::AnalysisPanel::AppendVideoFrameInfo);
-    connect(player_, &player::MediaPlayer::AudioFrameListReset,
+    connect(&bus, &player::AnalysisBus::AudioFrameListReset,
             analysis_panel_, &ui::AnalysisPanel::ResetAudioFrameList);
-    connect(player_, &player::MediaPlayer::AudioFrameInfoReady,
+    connect(&bus, &player::AnalysisBus::AudioFrameInfoReady,
             analysis_panel_, &ui::AnalysisPanel::AppendAudioFrameInfo);
-    connect(player_, &player::MediaPlayer::PacketListReset,
+    connect(&bus, &player::AnalysisBus::PacketListReset,
             analysis_panel_, &ui::AnalysisPanel::ResetPacketList);
-    connect(player_, &player::MediaPlayer::PacketInfoReady,
+    connect(&bus, &player::AnalysisBus::PacketInfoReady,
             analysis_panel_, &ui::AnalysisPanel::AppendPacketInfo);
-    connect(player_, &player::MediaPlayer::AnalysisEventListReset,
+    connect(&bus, &player::AnalysisBus::AnalysisEventListReset,
             analysis_panel_, &ui::AnalysisPanel::ResetAnalysisEventList);
-    connect(player_, &player::MediaPlayer::AnalysisEventReady,
+    connect(&bus, &player::AnalysisBus::AnalysisEventReady,
             analysis_panel_, &ui::AnalysisPanel::AppendAnalysisEvent);
-    connect(player_, &player::MediaPlayer::SyncSampleListReset,
+    connect(&bus, &player::AnalysisBus::SyncSampleListReset,
             analysis_panel_, &ui::AnalysisPanel::ResetSyncSampleList);
-    connect(player_, &player::MediaPlayer::SyncSampleReady,
+    connect(&bus, &player::AnalysisBus::SyncSampleReady,
             analysis_panel_, &ui::AnalysisPanel::AppendSyncSample);
-    connect(player_, &player::MediaPlayer::TimelineEventListReset,
+    connect(&bus, &player::AnalysisBus::TimelineEventListReset,
             analysis_panel_, &ui::AnalysisPanel::ResetTimelineEventList);
-    connect(player_, &player::MediaPlayer::TimelineEventReady,
+    connect(&bus, &player::AnalysisBus::TimelineEventReady,
             analysis_panel_, &ui::AnalysisPanel::AppendTimelineEvent);
     // 诊断页"跳转到问题帧" -> 播放器 seek
     connect(analysis_panel_, &ui::AnalysisPanel::SeekRequested,
@@ -507,21 +512,21 @@ void MainWindow::SetupConnections() {
     // 结构分析失败（解析不出来 / 分析器抛异常）：页面显示原因，别让结构页一直空着
     connect(&container_bus, &player::ContainerBus::ContainerStructureFailed,
             analysis_panel_, &ui::AnalysisPanel::OnContainerStructureFailed);
-    connect(player_, &player::MediaPlayer::MacroblockInfoReady,
+    connect(&bus, &player::AnalysisBus::MacroblockInfoReady,
             analysis_panel_, &ui::AnalysisPanel::UpdateMacroblockInfo);
     // MV 叠加: 同时转发到播放模块的视频叠加层
-    connect(player_, &player::MediaPlayer::MacroblockInfoReady,
+    connect(&bus, &player::AnalysisBus::MacroblockInfoReady,
             player_panel_, &PlayerPanel::OnMacroblockInfoForOverlay);
-    connect(player_, &player::MediaPlayer::SceneChangeReady,
+    connect(&bus, &player::AnalysisBus::SceneChangeReady,
             analysis_panel_, &ui::AnalysisPanel::OnSceneChangeDetected);
     // 画面质量 / 视觉缺陷（播放时逐采样帧产出）
-    connect(player_, &player::MediaPlayer::VisualDefectReset,
+    connect(&bus, &player::AnalysisBus::VisualDefectReset,
             analysis_panel_, &ui::AnalysisPanel::OnVisualDefectReset);
-    connect(player_, &player::MediaPlayer::VisualDefectFrameReady,
+    connect(&bus, &player::AnalysisBus::VisualDefectFrameReady,
             analysis_panel_, &ui::AnalysisPanel::OnVisualDefectFrame);
-    connect(player_, &player::MediaPlayer::VisualDefectReady,
+    connect(&bus, &player::AnalysisBus::VisualDefectReady,
             analysis_panel_, &ui::AnalysisPanel::OnVisualDefectDetected);
-    connect(player_, &player::MediaPlayer::VisualDefectStatsReady,
+    connect(&bus, &player::AnalysisBus::VisualDefectStatsReady,
             analysis_panel_, &ui::AnalysisPanel::OnVisualDefectStats);
     // 面板改采样档位 / 阈值 -> 播放器
     connect(analysis_panel_, &ui::AnalysisPanel::VisualDefectOptionsChanged,

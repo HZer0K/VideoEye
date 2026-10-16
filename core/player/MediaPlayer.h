@@ -24,6 +24,7 @@ extern "C" {
 #include "core/player/AudioOutput.h"
 #include "core/player/VideoFrameExporter.h"
 #include "core/player/AnalysisSession.h"
+#include "core/player/AnalysisBus.h"
 #include "core/player/ContainerBus.h"
 #include "core/player/ContainerInspectionController.h"
 #include "core/player/ExportBus.h"
@@ -109,6 +110,11 @@ public:
     // 容器结构分析信号的对外出口（成功 / 失败二选一，见 core/player/ContainerBus.h）。
     // 与导出同理: 由 ContainerInspectionController 直接在总线上发射，门面不再转发。
     ContainerBus& container_bus() { return container_inspection_.bus(); }
+
+    // 播放期实时分析信号的对外出口（23 条，见 core/player/AnalysisBus.h）。
+    // 这是原先挂在门面上最大的一块（占了一半以上的信号声明与转发连接），现在由
+    // RealtimeAnalysisController 直接在总线上发射。
+    AnalysisBus& analysis_bus() { return realtime_analysis_.bus(); }
     
     // 音量控制 (0-100)
     void SetVolume(int volume);
@@ -202,41 +208,12 @@ signals:
     // 空文本不发；顺序上先于 OpenFinished（收尾逻辑能拿到文本再决定回退）。
     void MediaInfoTextReady(const QString& text);
     void PlaybackFinished();
-    
-    // 分析数据信号
-    void StreamStatsReady(const videoeye::StreamStats& stats);
-    void VideoFrameListReset();
-    void VideoFrameInfoReady(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds);
-    void AudioFrameListReset();
-    void AudioFrameInfoReady(int index, qint64 pts, double timestamp_seconds,
-                             int sample_count, int sample_rate, int channels, int byte_count);
-    void PacketListReset();
-    void PacketInfoReady(const model::PacketInfo& packet_info);
-    void AnalysisEventListReset();
-    void AnalysisEventReady(const model::AnalysisEvent& event_info);
-    void SyncSampleListReset();
-    void SyncSampleReady(const model::SyncSample& sample);
-    // 时间轴与同步诊断（demux 层 packet 时间 / decode 层 frame 时间）
-    void TimelinePacketReady(const model::PacketTiming& timing);
-    void FrameTimingReady(const model::FrameTimingInfo& timing);
-    void TimelineEventListReset();
-    void TimelineEventReady(const model::TimelineEvent& event);
-    void AudioVisualizationReady(const model::AudioVisualizationFrame& frame);
     void MediaModeChanged(bool has_video);
-    void AudioLevelReady(double level, double timestamp_seconds);
-    // 容器结构分析的两条信号不在门面上了 —— 走 container_bus()
-    // （见 core/player/ContainerBus.h），UI 连总线而不是连门面。
-    void MacroblockInfoReady(const videoeye::model::MacroblockFrameAnalysis& analysis);
-    void SceneChangeReady(const videoeye::SceneChangeResult& result);
-    // 画面质量 / 视觉缺陷（实时播放时逐采样帧产出）
-    void VisualDefectReset();
-    void VisualDefectFrameReady(const model::FrameQualityMetric& metric);
-    void VisualDefectReady(const model::VisualDefect& defect);
-    // 分析进度: 已分析帧数 / 被丢弃帧数 / 全片有效画面区域（约每秒刷新一次）
-    void VisualDefectStatsReady(int analyzed_frames, int dropped_frames,
-                                const model::ActivePictureArea& effective_area);
-    // 抽帧 / 音视频导出的十条信号不在门面上了 —— 走 export_bus()
-    // （见 core/player/ExportBus.h），UI 连总线而不是连门面。
+
+    // 实时分析的 23 条信号不在门面上了 —— 走 analysis_bus()
+    // （见 core/player/AnalysisBus.h），UI 连总线而不是连门面。
+    // 容器结构分析的两条信号同理走 container_bus()；导出的十条走 export_bus()。
+    // 门面现在只背"播放 + 打开"这两件真正属于它的契约。
 
 private:
     // --- SetAnalysisFeature() 的分派目标 ---

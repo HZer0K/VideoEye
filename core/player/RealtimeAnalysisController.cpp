@@ -114,7 +114,7 @@ void RealtimeAnalysisController::EmitAnalysisEvent(const QString& severity, cons
     event_info.timestamp_seconds = timestamp_seconds;
     event_info.summary = summary.toStdString();
     event_info.detail = detail.toStdString();
-    emit AnalysisEventReady(event_info);
+    emit bus_.AnalysisEventReady(event_info);
     EmitTimelineEvent(model::TimelineEventCategory::Event, timestamp_seconds, summary, detail);
 }
 
@@ -128,7 +128,7 @@ void RealtimeAnalysisController::EmitSyncSample(double audio_ts, double video_ts
     sample.video_timestamp_seconds = video_ts;
     sample.diff_ms = (audio_ts - video_ts) * 1000.0;
     sample.audio_anchor = audio_anchor;
-    emit SyncSampleReady(sample);
+    emit bus_.SyncSampleReady(sample);
 }
 
 void RealtimeAnalysisController::EmitTimelineEvent(model::TimelineEventCategory category,
@@ -142,7 +142,7 @@ void RealtimeAnalysisController::EmitTimelineEvent(model::TimelineEventCategory 
     event.timestamp_seconds = timestamp_seconds;
     event.label = label.toStdString();
     event.detail = detail.toStdString();
-    emit TimelineEventReady(event);
+    emit bus_.TimelineEventReady(event);
 }
 
 void RealtimeAnalysisController::EmitAudioVisualization(const AudioVisualizationResult& vis,
@@ -159,7 +159,7 @@ void RealtimeAnalysisController::EmitAudioVisualization(const AudioVisualization
     frame.peak_dbfs = vis.peak_dbfs;
     frame.loudness_momentary_lufs = vis.loudness_momentary_lufs;
     frame.true_peak_dbtp = vis.true_peak_dbtp;
-    emit AudioVisualizationReady(frame);
+    emit bus_.AudioVisualizationReady(frame);
 }
 
 // --- 媒体生命周期 ---
@@ -190,13 +190,13 @@ void RealtimeAnalysisController::ResetForNewMedia() {
     missing_packet_ts_reported_.clear();
     missing_audio_pts_reported_.clear();
 
-    emit VideoFrameListReset();
-    if (analysis_.IsAudioFrameAnalysisEnabled()) emit AudioFrameListReset();
-    if (analysis_.IsPacketAnalysisEnabled()) emit PacketListReset();
-    if (analysis_.IsEventAnalysisEnabled()) emit AnalysisEventListReset();
-    if (analysis_.IsSyncAnalysisEnabled()) emit SyncSampleListReset();
-    if (analysis_.IsTimelineAnalysisEnabled()) emit TimelineEventListReset();
-    if (analysis_.IsVisualDefectAnalysisEnabled()) emit VisualDefectReset();
+    emit bus_.VideoFrameListReset();
+    if (analysis_.IsAudioFrameAnalysisEnabled()) emit bus_.AudioFrameListReset();
+    if (analysis_.IsPacketAnalysisEnabled()) emit bus_.PacketListReset();
+    if (analysis_.IsEventAnalysisEnabled()) emit bus_.AnalysisEventListReset();
+    if (analysis_.IsSyncAnalysisEnabled()) emit bus_.SyncSampleListReset();
+    if (analysis_.IsTimelineAnalysisEnabled()) emit bus_.TimelineEventListReset();
+    if (analysis_.IsVisualDefectAnalysisEnabled()) emit bus_.VisualDefectReset();
 }
 
 void RealtimeAnalysisController::FlushOnStop() {
@@ -222,7 +222,7 @@ void RealtimeAnalysisController::SetVisualDefectAnalysisEnabled(bool enable) {
             visual_defect_analyzer_.StartWorker(8);
         }
         LOG_INFO("画面质量检测已启用");
-        emit VisualDefectReset();
+        emit bus_.VisualDefectReset();
     } else {
         FlushVisualDefectSegments(visual_defect_last_sample_ts_ > 0.0 ? visual_defect_last_sample_ts_
                                                                       : 0.0);
@@ -247,7 +247,7 @@ void RealtimeAnalysisController::SetVisualDefectOptions(
     if (options.preset != videoeye::VisualSamplingPreset::OfflineFull) {
         visual_defect_analyzer_.StartWorker(8);
     }
-    emit VisualDefectReset();
+    emit bus_.VisualDefectReset();
 }
 
 void RealtimeAnalysisController::FlushVisualDefectSegments(double end_timestamp_seconds) {
@@ -259,11 +259,11 @@ void RealtimeAnalysisController::FlushVisualDefectSegments(double end_timestamp_
 void RealtimeAnalysisController::DrainVisualDefectResults() {
     const auto metrics = visual_defect_analyzer_.TakePendingMetrics();
     for (const auto& m : metrics) {
-        emit VisualDefectFrameReady(m);
+        emit bus_.VisualDefectFrameReady(m);
     }
     const auto defects = visual_defect_analyzer_.TakePendingDefects();
     for (const auto& d : defects) {
-        emit VisualDefectReady(d);
+        emit bus_.VisualDefectReady(d);
     }
 }
 
@@ -328,7 +328,7 @@ void RealtimeAnalysisController::EmitVisualDefectStats(bool force) {
         }
     }
     visual_defect_last_stats_emit_ = now;
-    emit VisualDefectStatsReady(visual_defect_analyzer_.analyzed_samples(),
+    emit bus_.VisualDefectStatsReady(visual_defect_analyzer_.analyzed_samples(),
                                 visual_defect_analyzer_.dropped_samples(),
                                 visual_defect_analyzer_.EffectiveArea());
 }
@@ -359,7 +359,7 @@ void RealtimeAnalysisController::OnPacket(const PacketContext& ctx) {
         packet_info.flags = packet->flags;
         packet_info.pos = packet->pos;
         packet_info.timestamp_seconds = packet_ts_sec;
-        emit PacketInfoReady(packet_info);
+        emit bus_.PacketInfoReady(packet_info);
     }
 
     // 时间轴与同步诊断（demux 层 packet 时间）
@@ -387,7 +387,7 @@ void RealtimeAnalysisController::OnPacket(const PacketContext& ctx) {
             timing.size = packet->size;
             timing.flags = packet->flags;
             timing.key_frame = (packet->flags & AV_PKT_FLAG_KEY) != 0;
-            emit TimelinePacketReady(timing);
+            emit bus_.TimelinePacketReady(timing);
         }
     }
 
@@ -452,7 +452,7 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
                 if (pts != AV_NOPTS_VALUE) ts = pts * av_q2d(vs->time_base);
             }
         }
-        emit VideoFrameInfoReady(video_frame_index_++,
+        emit bus_.VideoFrameInfoReady(video_frame_index_++,
                                  static_cast<int>(ctx.decoder->GetLastPictureType()),
                                  is_key_frame, static_cast<qint64>(frame_data.pts), ts);
         // 时间轴与同步诊断（decode 层 frame 时间：best_effort / repeat_pict）
@@ -481,7 +481,7 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
                 timing.key_frame = is_key_frame;
             }
             timing.display_ms = ts * 1000.0;
-            emit FrameTimingReady(timing);
+            emit bus_.FrameTimingReady(timing);
         }
         if (is_key_frame) {
             EmitTimelineEvent(model::TimelineEventCategory::VideoKeyframe, ts,
@@ -498,7 +498,7 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
                     raw_frame, macroblock_frame_index_++, static_cast<qint64>(frame_data.pts),
                     frame_data.timestamp, static_cast<int>(ctx.decoder->GetLastPictureType()),
                     static_cast<int>(ctx.decoder->GetCodecId()));
-                emit MacroblockInfoReady(mb_analysis);
+                emit bus_.MacroblockInfoReady(mb_analysis);
             } catch (const std::exception& e) {
                 LOG_ERROR("宏块分析失败: " + std::string(e.what()));
             }
@@ -512,7 +512,7 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
             if (!gray_hist.empty()) {
                 auto sc = scene_change_analyzer_.Feed(scene_change_frame_index_++,
                                                       frame_data.timestamp, gray_hist);
-                if (sc) emit SceneChangeReady(*sc);
+                if (sc) emit bus_.SceneChangeReady(*sc);
             }
         } catch (const std::exception& e) {
             LOG_ERROR("场景切换检测失败: " + std::string(e.what()));
@@ -548,7 +548,7 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
         analysis_frame_counter_++;
         if (analysis_frame_counter_ % 10 == 0) {
             auto stats = analysis_.stream_analyzer().GetStats();
-            emit StreamStatsReady(stats);
+            emit bus_.StreamStatsReady(stats);
         }
     }
 }
@@ -565,7 +565,7 @@ void RealtimeAnalysisController::OnAudioFrame(const AudioFrameContext& ctx) {
     }
 
     if (analysis_.IsAudioFrameAnalysisEnabled() && ctx.decoder) {
-        emit AudioFrameInfoReady(audio_frame_index_++, ctx.frame_pts, ts,
+        emit bus_.AudioFrameInfoReady(audio_frame_index_++, ctx.frame_pts, ts,
                                  ctx.decoder->GetLastFrameSampleCount(),
                                  ctx.sample_rate, ctx.channels, ctx.byte_count);
     }
@@ -580,7 +580,7 @@ void RealtimeAnalysisController::OnAudioFrame(const AudioFrameContext& ctx) {
             analysis_frame_counter_++;
             if (analysis_frame_counter_ % 10 == 0) {
                 auto stats = analysis_.stream_analyzer().GetStats();
-                emit StreamStatsReady(stats);
+                emit bus_.StreamStatsReady(stats);
             }
         }
     }
@@ -589,7 +589,7 @@ void RealtimeAnalysisController::OnAudioFrame(const AudioFrameContext& ctx) {
 
     // 冻结帧判定要用: 画面静止 + 音频还在响 才是真的卡住了
     last_audio_level_ = ctx.level;
-    emit AudioLevelReady(ctx.level, ts);
+    emit bus_.AudioLevelReady(ctx.level, ts);
 
     // 音频可视化 (委托给 AudioVisualizer)
     auto vis_result = audio_visualizer_.Process(ctx.samples, ctx.sample_count, ctx.sample_rate,

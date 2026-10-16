@@ -1677,8 +1677,9 @@ target_link_libraries(test_reporting_task_coordinator PRIVATE
 add_test(NAME ReportingTaskCoordinatorTests COMMAND test_reporting_task_coordinator)
 
 # =================================================
-# 测试 62：播放器信号总线（导出 ExportBus / 容器 ContainerBus）
-# 说明: 导出的十条与容器结构的两条信号从 MediaPlayer 门面搬到各自的总线。
+# 测试 62：播放器信号总线（导出 ExportBus / 容器 ContainerBus / 分析 AnalysisBus）
+# 说明: 导出的十条、容器结构的两条、实时分析的 23 条信号从 MediaPlayer 门面
+#       搬到各自的总线。
 #       断言在元对象层面做（门面 indexOfSignal == -1、总线契约齐全），
 #       并用"无媒体抽帧必经总线报 Error""打不开的文件必经总线报 Failed"
 #       验证两个控制器的发射口都改对了 —— 发错地方不会崩，只会静默失效
