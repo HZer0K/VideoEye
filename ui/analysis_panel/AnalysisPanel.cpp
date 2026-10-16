@@ -34,13 +34,13 @@ template <typename PageT>
 void AnalysisPanel::RegisterScanPage(PageT* page) {
     AddScanClient(page);
     connect(page, &PageT::ScanRequested, this, [this, page]() {
-        if (!diagnostics_page_) return;
-        videoeye::AnalysisOptions options = diagnostics_page_->options();
+        if (!pages_.diagnostics) return;
+        videoeye::AnalysisOptions options = pages_.diagnostics->options();
         page->FillScanOptions(options);
-        diagnostics_page_->StartScan(options);
+        pages_.diagnostics->StartScan(options);
     });
     connect(page, &PageT::CancelRequested, this, [this]() {
-        if (diagnostics_page_) diagnostics_page_->CancelScan();
+        if (pages_.diagnostics) pages_.diagnostics->CancelScan();
     });
 }
 
@@ -90,7 +90,7 @@ void AnalysisPanel::SetMacroblockAnalysisEnabled(bool enabled) {
     feature_enabled_[AnalysisFeature::Macroblock] = enabled;
     // 同步宏块页勾选框（钩子读的是 feature_enabled_）。SyncToggleFromHooks 内部屏蔽
     // 信号，不会回调 set_enabled_，因此不会反过来又发一次 AnalysisFeatureToggled。
-    if (macroblock_view_) macroblock_view_->SyncToggleFromHooks();
+    if (pages_.macroblock) pages_.macroblock->SyncToggleFromHooks();
 }
 
 void AnalysisPanel::EmitInitialFeatureStates() {
@@ -148,98 +148,6 @@ void AnalysisPanel::SetCurrentPageIndex(int index) {
     }
 }
 
-// ===========================================================================
-// 「码流分析」页：流概览 + 帧/包明细
-//
-// 原先这一页（含 5 张表、3 条曲线、4 个子 Tab、记录缓存与增量刷新）全塞在面板里。
-// 现在拆成两个组件，面板只负责三件事：
-//   1. 把两块内容拼成一页（顶部固定、分隔条、底部可伸展）；
-//   2. 注入 feature 钩子（视图内只有自己的编号，映射与信号转发在面板）；
-//   3. 把 GOP 摘要从产出方（FramePacketView）桥到消费方（StreamOverviewView）。
-// ===========================================================================
-
-void AnalysisPanel::SetupBitstreamTab() {
-    stream_overview_view_ = new StreamOverviewView(this);
-    frame_packet_view_ = new FramePacketView(this);
-    frame_packet_view_->setMinimumHeight(360);
-
-    // 流统计开关（视图内编号 0）-> AnalysisFeature::StreamStats
-    stream_overview_view_->SetFeatureHooks(
-        [this](int) {
-            return feature_enabled_.value(AnalysisFeature::StreamStats, true);
-        },
-        [this](int, bool enabled) {
-            feature_enabled_[AnalysisFeature::StreamStats] = enabled;
-            emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::StreamStats), enabled);
-        });
-
-    // 视频帧 / 音频帧 / 数据包开关（视图内编号 0/1/2）-> AnalysisFeature
-    frame_packet_view_->SetFeatureHooks(
-        [this](int view_feature) {
-            switch (view_feature) {
-                case 0: return feature_enabled_.value(AnalysisFeature::VideoFrame, true);
-                case 1: return feature_enabled_.value(AnalysisFeature::AudioFrame, true);
-                case 2: return feature_enabled_.value(AnalysisFeature::Packet, true);
-                default: return true;
-            }
-        },
-        [this](int view_feature, bool enabled) {
-            AnalysisFeature feat = AnalysisFeature::VideoFrame;
-            switch (view_feature) {
-                case 0: feat = AnalysisFeature::VideoFrame; break;
-                case 1: feat = AnalysisFeature::AudioFrame; break;
-                case 2: feat = AnalysisFeature::Packet; break;
-                default: return;
-            }
-            feature_enabled_[feat] = enabled;
-            emit AnalysisFeatureToggled(static_cast<int>(feat), enabled);
-        });
-
-    // GOP 摘要由「帧/包明细」从解码帧 pict_type 推导产出，「流概览」区拿它填
-    // 「最大GOP大小」并画「GOP 帧数分布」曲线。两个视图互不认识，只在面板连一次
-    // —— 直接互相持有指针会让两者无法单独构造 / 单独测试。
-    connect(frame_packet_view_, &FramePacketView::GopSummariesChanged, this, [this]() {
-        if (stream_overview_view_ && frame_packet_view_) {
-            stream_overview_view_->SetGopSummaries(frame_packet_view_->GopSummaries());
-        }
-    });
-
-    QWidget* page = new QWidget(this);
-    QVBoxLayout* layout = new QVBoxLayout(page);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
-
-    // 顶部流概览区 (固定高度不可滚动, 让曲线一直可见)
-    layout->addWidget(stream_overview_view_);
-
-    // 分隔条
-    QFrame* sep = new QFrame(page);
-    sep->setFrameShape(QFrame::HLine);
-    sep->setFrameShadow(QFrame::Sunken);
-    layout->addWidget(sep);
-
-    // 底部 4 子 Tab 区 (可伸展, 占剩余高度)
-    layout->addWidget(frame_packet_view_, 1);
-
-    AddPageWithScroll(page, tr("播放统计与帧包"), QStringLiteral("playback_stats_packets"),
-                      QStringLiteral("playback"), 0, tr("播放期"));
-}
-
-void AnalysisPanel::SetupMacroblockTab() {
-    macroblock_view_ = new MacroblockView(this);
-    // 宏块开关（视图内编号 0）-> AnalysisFeature::Macroblock
-    macroblock_view_->SetFeatureHooks(
-        [this](int) {
-            return feature_enabled_.value(AnalysisFeature::Macroblock, false);
-        },
-        [this](int, bool enabled) {
-            feature_enabled_[AnalysisFeature::Macroblock] = enabled;
-            emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::Macroblock), enabled);
-        });
-
-    AddPageWithScroll(macroblock_view_, tr("运动矢量与块分析"), QStringLiteral("motion_vectors"),
-                      QStringLiteral("playback"), 1, tr("播放期"));
-}
 
 // ===========================================================================
 // 播放期数据回吐：面板只做「开关过滤 + 转发」，数据本身归各页面组件
@@ -248,198 +156,153 @@ void AnalysisPanel::SetupMacroblockTab() {
 void AnalysisPanel::UpdateStreamStats(const model::StreamStats& stats) {
     if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
         !feature_enabled_.value(AnalysisFeature::StreamStats, true)) return;
-    if (stream_overview_view_) stream_overview_view_->SetStreamStats(stats);
+    if (pages_.stream_overview) pages_.stream_overview->SetStreamStats(stats);
 }
 
 void AnalysisPanel::ResetVideoFrameList() {
     // 手动清空不受 feature 开关约束：以前被 Master/VideoFrame 挡着，关掉开关后
     // 用户点「清空」没反应（数据还在，看起来像坏了）。开关只管"要不要收新数据"，
     // 不兼管"用户想不想清"。
-    if (frame_packet_view_) frame_packet_view_->ResetVideoFrames();
+    if (pages_.frame_packet) pages_.frame_packet->ResetVideoFrames();
     // 换文件时曲线也要清零：原先由面板自己 reset，现在曲线归流概览区。
     // （GOP 相关的那一份数据由 FramePacketView::ResetVideoFrames 清空后
     //   经 GopSummariesChanged 通知，两边不会各清一半。）
-    if (stream_overview_view_) stream_overview_view_->ResetCharts();
+    if (pages_.stream_overview) pages_.stream_overview->ResetCharts();
 }
 
 void AnalysisPanel::AppendVideoFrameInfo(int index, int frame_type, bool is_key_frame,
                                          qint64 pts, double timestamp_seconds) {
     if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
         !feature_enabled_.value(AnalysisFeature::VideoFrame, true)) return;
-    if (frame_packet_view_) {
-        frame_packet_view_->AppendVideoFrame(index, frame_type, is_key_frame, pts, timestamp_seconds);
+    if (pages_.frame_packet) {
+        pages_.frame_packet->AppendVideoFrame(index, frame_type, is_key_frame, pts, timestamp_seconds);
     }
 }
 
 void AnalysisPanel::ResetAudioFrameList() {
     // 同 ResetVideoFrameList：清空不收 feature 开关的约束
-    if (frame_packet_view_) frame_packet_view_->ResetAudioFrames();
+    if (pages_.frame_packet) pages_.frame_packet->ResetAudioFrames();
 }
 
 void AnalysisPanel::AppendAudioFrameInfo(int index, qint64 pts, double timestamp_seconds,
                                          int sample_count, int sample_rate, int channels, int byte_count) {
     if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
         !feature_enabled_.value(AnalysisFeature::AudioFrame, true)) return;
-    if (frame_packet_view_) {
-        frame_packet_view_->AppendAudioFrame(index, pts, timestamp_seconds,
+    if (pages_.frame_packet) {
+        pages_.frame_packet->AppendAudioFrame(index, pts, timestamp_seconds,
                                              sample_count, sample_rate, channels, byte_count);
     }
 }
 
 void AnalysisPanel::ResetPacketList() {
     // 同 ResetVideoFrameList：清空不收 feature 开关的约束
-    if (frame_packet_view_) frame_packet_view_->ResetPackets();
+    if (pages_.frame_packet) pages_.frame_packet->ResetPackets();
 }
 
 void AnalysisPanel::AppendPacketInfo(const model::PacketInfo& packet_info) {
     if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
         !feature_enabled_.value(AnalysisFeature::Packet, true)) return;
-    if (frame_packet_view_) frame_packet_view_->AppendPacket(packet_info);
+    if (pages_.frame_packet) pages_.frame_packet->AppendPacket(packet_info);
 }
 
 void AnalysisPanel::UpdateMacroblockInfo(const model::MacroblockFrameAnalysis& analysis) {
-    if (macroblock_view_) macroblock_view_->SetAnalysis(analysis);
+    if (pages_.macroblock) pages_.macroblock->SetAnalysis(analysis);
 }
 
 void AnalysisPanel::ResetAnalysisEventList() {
-    if (event_timeline_view_) event_timeline_view_->ResetAnalysisEventList();
+    if (pages_.event_timeline) pages_.event_timeline->ResetAnalysisEventList();
 }
 
 
 void AnalysisPanel::ResetSyncSampleList() {
-    if (event_timeline_view_) event_timeline_view_->ResetSyncSampleList();
+    if (pages_.event_timeline) pages_.event_timeline->ResetSyncSampleList();
 }
 
 
 void AnalysisPanel::ResetTimelineEventList() {
-    if (event_timeline_view_) event_timeline_view_->ResetTimelineEventList();
+    if (pages_.event_timeline) pages_.event_timeline->ResetTimelineEventList();
 }
 
 
 void AnalysisPanel::AppendAnalysisEvent(const model::AnalysisEvent& event_info) {
-    if (event_timeline_view_) event_timeline_view_->AppendAnalysisEvent(event_info);
+    if (pages_.event_timeline) pages_.event_timeline->AppendAnalysisEvent(event_info);
 }
 
 
 void AnalysisPanel::AppendSyncSample(const model::SyncSample& sample) {
     // 同步样本只喂给时间轴视图（同步表 / 曲线）。以前还直发一份给诊断页，让它维护
     // 第二套音视频偏移曲线 —— 同一份样本绕两页、两处展示，已收敛到本视图一处。
-    if (event_timeline_view_) event_timeline_view_->AppendSyncSample(sample);
+    if (pages_.event_timeline) pages_.event_timeline->AppendSyncSample(sample);
 }
 
 
 void AnalysisPanel::AppendTimelineEvent(const model::TimelineEvent& event) {
-    if (event_timeline_view_) event_timeline_view_->AppendTimelineEvent(event);
+    if (pages_.event_timeline) pages_.event_timeline->AppendTimelineEvent(event);
 }
 
-// ===========================================================================
-// 建页：参数集 / 流媒体包 / 字幕辅助 / 诊断与报告 / 报告与批量 QC
-// ===========================================================================
-
-void AnalysisPanel::SetupStreamingPackageTab() {
-    // 页面本体就是 StreamingPanel：manifest 结构树 + 码率阶梯表 +
-    // 分片时间轴对齐表 + 问题表都封装在里面。
-    streaming_panel_ = new StreamingPanel(this);
-    streaming_panel_->setMinimumHeight(560);
-
-    connect(streaming_panel_, &StreamingPanel::RefreshRequested,
-            this, &AnalysisPanel::OnStreamingRefreshRequested);
-    // 「开始分析」由本页自己发出、面板接线；这里只把它登记进共享扫描注册表，
-    // 让扫描中按钮跟着一起禁用、换文件同步，和码率/音频/HDR 表现一致。
-    AddScanClient(streaming_panel_);
-
-    AddPageWithScroll(streaming_panel_, tr("流媒体包"), QStringLiteral("streaming_packets"),
-                      QStringLiteral("file_parse"), 2, tr("全文件"));
-}
 
 void AnalysisPanel::OnStreamingRefreshRequested() {
     // 清单解析是纯本地文件读取（第一阶段不联网），跟着全文件扫描一起跑。
     // 扫描总控在诊断页，这里只改一个开关再交给它跑
-    diagnostics_page_->options().analyze_streaming_package = true;
-    diagnostics_page_->StartScan(diagnostics_page_->options());
+    pages_.diagnostics->options().analyze_streaming_package = true;
+    pages_.diagnostics->StartScan(pages_.diagnostics->options());
 }
 
 void AnalysisPanel::UpdateStreamingUi() {
-    if (!streaming_panel_) return;
+    if (!pages_.streaming) return;
     // 优先用容器结构分析的结果（打开清单文件时由 ContainerStructureAnalyzer 直接产出）；
     // 没有的话再退到全文件扫描的 streaming_package。
-    if (container_page_ && container_page_->result().streaming_package.valid) {
-        streaming_panel_->SetResult(container_page_->result().streaming_package);
+    if (pages_.container && pages_.container->result().streaming_package.valid) {
+        pages_.streaming->SetResult(pages_.container->result().streaming_package);
         return;
     }
-    if (diagnostics_page_ && diagnostics_page_->hasResult() &&
-        diagnostics_page_->result().streaming_analyzed) {
-        streaming_panel_->SetResult(diagnostics_page_->result().streaming_package);
+    if (pages_.diagnostics && pages_.diagnostics->hasResult() &&
+        pages_.diagnostics->result().streaming_analyzed) {
+        pages_.streaming->SetResult(pages_.diagnostics->result().streaming_package);
         return;
     }
-    streaming_panel_->Clear();
+    pages_.streaming->Clear();
 }
 
-void AnalysisPanel::SetupParameterSetTab() {
-    // 页面本体就是 BitstreamPanel：结构树 + 容器/码流对比 + 不一致表都封装在里面。
-    // 外面套的是 AddPageWithScroll 的 QScrollArea，给个最小高度免得被压扁。
-    bitstream_params_panel_ = new BitstreamPanel(this);
-    bitstream_params_panel_->setMinimumHeight(560);
-
-    connect(bitstream_params_panel_, &BitstreamPanel::RefreshRequested,
-            this, &AnalysisPanel::OnBitstreamRefreshRequested);
-    // 与流媒体包页一致：登记进共享扫描注册表，扫描中按钮一起禁用。
-    AddScanClient(bitstream_params_panel_);
-
-    AddPageWithScroll(bitstream_params_panel_, tr("编码参数集"), QStringLiteral("codec_parameters"),
-                      QStringLiteral("file_parse"), 1, tr("全文件"));
-}
 
 void AnalysisPanel::OnBitstreamRefreshRequested() {
     // 码流解析只读 extradata（KB 级），成本可忽略，跟着全文件扫描一起跑。
-    diagnostics_page_->options().analyze_bitstream = true;
-    diagnostics_page_->StartScan(diagnostics_page_->options());
+    pages_.diagnostics->options().analyze_bitstream = true;
+    pages_.diagnostics->StartScan(pages_.diagnostics->options());
 }
 
 void AnalysisPanel::UpdateBitstreamUi() {
-    if (!bitstream_params_panel_) return;
-    if (!diagnostics_page_ || !diagnostics_page_->hasResult() ||
-        !diagnostics_page_->result().bitstream_analyzed) {
-        bitstream_params_panel_->Clear();
+    if (!pages_.bitstream_params) return;
+    if (!pages_.diagnostics || !pages_.diagnostics->hasResult() ||
+        !pages_.diagnostics->result().bitstream_analyzed) {
+        pages_.bitstream_params->Clear();
         return;
     }
-    bitstream_params_panel_->SetResult(diagnostics_page_->result().bitstream_analysis);
+    pages_.bitstream_params->SetResult(pages_.diagnostics->result().bitstream_analysis);
 }
 
 // 播放器打开失败进入「分析模式」时的自动扫描入口：用诊断页的默认选项跑一次。
 // 静默失败路径 —— 不弹"请先打开文件"提示框，原因写进诊断页自己的汇总标签。
 void AnalysisPanel::StartDiagnosticsScanForCurrentFile() {
-    if (!diagnostics_page_ || current_video_path_.empty()) return;
+    if (!pages_.diagnostics || current_video_path_.empty()) return;
     // 静默路径：打开失败后自动补扫一次，不能弹窗打断"打开即分析"的流程
-    diagnostics_page_->StartScan(diagnostics_page_->options(), /*silent=*/true);
+    pages_.diagnostics->StartScan(pages_.diagnostics->options(), /*silent=*/true);
 }
 
 // ===========================================================================
-// 已拆成独立页面组件的部分
+// 建页 / 接线
 //
-// 这一节只做三件事：建页 + 把页面发出的意图接到面板（面板才知道当前文件路径 /
-// 扫描编排 / 全局 feature 表），把播放器回来的数据喂给页面，以及全文件扫描结束
-// 时把结果分发给共用同一次扫描的几页。页面本身不持有 facade、不认识面板成员。
+// 建页（new 组件 + 导航元数据 + 注入 feature 钩子）在 AnalysisPageFactory 里，
+// 按 AnalysisPageCatalog 的顺序循环 —— 顺序即外部 stack 的页序号，是硬契约。
+// 本类只留接线：把页面发出的意图接到全局、把扫描生命周期同步给共用扫描的几页。
+// 页面之间不互相持有指针，跨页数据一律经本类转发。
 // ===========================================================================
 
 void AnalysisPanel::SetupUI() {
     // 不再创建内部 QTabWidget，页面由 AddPageWithScroll 收集
     // PopulateStackedWidget 时添加到外部 QStackedWidget
-
-    SetupBitstreamTab();
-    SetupEventTimelineView();
-    SetupContainerStructurePage();
-    SetupMacroblockTab();
-    SetupSceneChangePage();
-    SetupVisualDefectPage();
-    SetupBitrateGopPage();
-    SetupAudioQcPage();
-    SetupColorHdrPage();
-    SetupParameterSetTab();
-    SetupStreamingPackageTab();
-    SetupSubtitleAuxPage();
-    SetupDiagnosticsPage();
-    SetupReportingPanelTab();
+    pages_ = BuildAnalysisPages(MakePageBuildDeps());
+    WireAnalysisPages();
 
     qRegisterMetaType<model::SceneChangeResult>();
     qRegisterMetaType<model::AnalysisResult>();
@@ -448,122 +311,127 @@ void AnalysisPanel::SetupUI() {
     qRegisterMetaType<model::VisualDefectOptions>();
 }
 
-void AnalysisPanel::SetupEventTimelineView() {
-    event_timeline_view_ = new EventTimelineView(this);
-
-    // 视图内部用 0/1/2 表示 Event/Sync/Timeline，这里映射到面板的 AnalysisFeature 并回写
-    // feature_enabled_，同时转发 AnalysisFeatureToggled，保证 MainWindow 的连接行为不变。
-    event_timeline_view_->SetFeatureHooks(
-        [this](int view_feature) {
-            switch (view_feature) {
-                case 0: return feature_enabled_.value(AnalysisFeature::Event, true);
-                case 1: return feature_enabled_.value(AnalysisFeature::SyncSample, true);
-                case 2: return feature_enabled_.value(AnalysisFeature::Timeline, true);
-                default: return true;
-            }
-        },
-        [this](int view_feature, bool enabled) {
-            AnalysisFeature feat = AnalysisFeature::Event;
-            switch (view_feature) {
-                case 0: feat = AnalysisFeature::Event; break;
-                case 1: feat = AnalysisFeature::SyncSample; break;
-                case 2: feat = AnalysisFeature::Timeline; break;
-                default: return;
-            }
-            feature_enabled_[feat] = enabled;
-            emit AnalysisFeatureToggled(static_cast<int>(feat), enabled);
-        });
-
-    AddPageWithScroll(event_timeline_view_, tr("事件与时间轴"), QStringLiteral("event_timeline"),
-                      QStringLiteral("playback"), 4);
+PageBuildDeps AnalysisPanel::MakePageBuildDeps() {
+    PageBuildDeps deps;
+    deps.parent = this;
+    deps.signal_context = this;
+    // 以回调注入 tr()，保留 AnalysisPanel 这个翻译上下文（工厂是自由函数，没有 tr 可用）
+    deps.translate = [](const char* source) { return AnalysisPanel::tr(source); };
+    deps.is_feature_on = [this](model::AnalysisFeature feature) {
+        // feature_enabled_ 在构造函数里给每个开关都显式置了初值，后面的兜底值
+        // 实际永远用不上 —— 留 true 只是为了不在这里凭空造第二套默认值。
+        return feature_enabled_.value(feature, true);
+    };
+    deps.set_feature = [this](model::AnalysisFeature feature, bool enabled) {
+        feature_enabled_[feature] = enabled;
+        emit AnalysisFeatureToggled(static_cast<int>(feature), enabled);
+    };
+    deps.add_page = [this](QWidget* widget, const QString& title, const QString& page_id,
+                           const QString& group_id, int order, const QString& scope) {
+        AddPageWithScroll(widget, title, page_id, group_id, order, scope);
+    };
+    deps.current_path = [this]() { return QString::fromStdString(current_video_path_); };
+    deps.visual_defect_options = [this]() { return visual_defect_options_; };
+    return deps;
 }
 
-void AnalysisPanel::SetupContainerStructurePage() {
-    container_page_ = new ContainerStructurePage(
-        feature_enabled_.value(AnalysisFeature::ContainerStructure, true), this);
-    connect(container_page_, &ContainerStructurePage::FeatureToggled, this,
+void AnalysisPanel::WireAnalysisPages() {
+    // ---- 文件结构 ----
+    connect(pages_.container, &ContainerStructurePage::FeatureToggled, this,
             [this](bool enabled) {
                 feature_enabled_[AnalysisFeature::ContainerStructure] = enabled;
                 emit AnalysisFeatureToggled(
                     static_cast<int>(AnalysisFeature::ContainerStructure), enabled);
             });
-    AddPageWithScroll(container_page_, tr("文件结构"), QStringLiteral("file_structure"),
-                      QStringLiteral("file_parse"), 0, tr("全文件"));
-}
 
-void AnalysisPanel::SetupSceneChangePage() {
-    scene_change_page_ = new SceneChangePage(
-        feature_enabled_.value(AnalysisFeature::SceneChange, false), this);
-    connect(scene_change_page_, &SceneChangePage::FeatureToggled, this,
+    // ---- 场景切换 ----
+    connect(pages_.scene_change, &SceneChangePage::FeatureToggled, this,
             [this](bool enabled) {
                 feature_enabled_[AnalysisFeature::SceneChange] = enabled;
                 emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::SceneChange), enabled);
             });
 
-    AddPageWithScroll(scene_change_page_, tr("场景切换"), QStringLiteral("scene_change"),
-                      QStringLiteral("playback"), 2, tr("播放期"));
-}
-
-void AnalysisPanel::SetupVisualDefectPage() {
-    visual_defect_page_ = new VisualDefectPage(
-        feature_enabled_.value(AnalysisFeature::VisualDefect, false), visual_defect_options_, this);
-    connect(visual_defect_page_, &VisualDefectPage::FeatureToggled, this,
+    // ---- 画面质量 / 视觉缺陷 ----
+    connect(pages_.visual_defect, &VisualDefectPage::FeatureToggled, this,
             [this](bool enabled) {
                 feature_enabled_[AnalysisFeature::VisualDefect] = enabled;
                 emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::VisualDefect), enabled);
             });
-    connect(visual_defect_page_, &VisualDefectPage::OptionsChanged,
+    connect(pages_.visual_defect, &VisualDefectPage::OptionsChanged,
             this, &AnalysisPanel::VisualDefectOptionsChanged);
-    connect(visual_defect_page_, &VisualDefectPage::SeekRequested, this, &AnalysisPanel::SeekRequested);
-    AddPageWithScroll(visual_defect_page_, tr("画面质量"), QStringLiteral("visual_quality"),
-                      QStringLiteral("playback"), 3, tr("播放期"));
-}
+    connect(pages_.visual_defect, &VisualDefectPage::SeekRequested,
+            this, &AnalysisPanel::SeekRequested);
 
-void AnalysisPanel::SetupBitrateGopPage() {
-    bitrate_gop_page_ = new BitrateGopPage(this);
-    bitrate_gop_page_->SetSourcePath(QString::fromStdString(current_video_path_));
+    // ---- 码率与 GOP ----
     // 扫描请求统一由诊断页编排（页面才持有 facade 与进度条总控）；
     // 信号接线与其它共用页一样收进 RegisterScanPage。
-    RegisterScanPage(bitrate_gop_page_);
-    connect(bitrate_gop_page_, &BitrateGopPage::SeekRequested, this, &AnalysisPanel::SeekRequested);
-    connect(bitrate_gop_page_, &BitrateGopPage::SceneLinkRequested,
+    RegisterScanPage(pages_.bitrate_gop);
+    connect(pages_.bitrate_gop, &BitrateGopPage::SeekRequested, this, &AnalysisPanel::SeekRequested);
+    connect(pages_.bitrate_gop, &BitrateGopPage::SceneLinkRequested,
             this, &AnalysisPanel::OnSceneLinkRequested);
-    AddPageWithScroll(bitrate_gop_page_, tr("码率与 GOP"), QStringLiteral("bitrate_gop"),
-                      QStringLiteral("full_quality"), 0, tr("全文件"));
-}
 
-void AnalysisPanel::SetupAudioQcPage() {
-    audio_qc_page_ = new AudioQcPage(this);
-    audio_qc_page_->SetSourcePath(QString::fromStdString(current_video_path_));
-    RegisterScanPage(audio_qc_page_);
-    connect(audio_qc_page_, &AudioQcPage::SeekRequested, this, &AnalysisPanel::SeekRequested);
-    AddPageWithScroll(audio_qc_page_, tr("音频 QC"), QStringLiteral("audio_qc"),
-                      QStringLiteral("full_quality"), 1, tr("全文件"));
-}
+    // ---- 音频 QC ----
+    RegisterScanPage(pages_.audio_qc);
+    connect(pages_.audio_qc, &AudioQcPage::SeekRequested, this, &AnalysisPanel::SeekRequested);
 
-void AnalysisPanel::SetupColorHdrPage() {
-    color_hdr_page_ = new ColorHdrPage(this);
-    color_hdr_page_->SetSourcePath(QString::fromStdString(current_video_path_));
-    RegisterScanPage(color_hdr_page_);
-    AddPageWithScroll(color_hdr_page_, tr("色彩与 HDR"), QStringLiteral("color_hdr"),
-                      QStringLiteral("full_quality"), 2, tr("全文件"));
-}
+    // ---- 色彩与 HDR ----
+    RegisterScanPage(pages_.color_hdr);
 
-void AnalysisPanel::SetupSubtitleAuxPage() {
-    subtitle_aux_page_ = new SubtitleAuxPage(this);
-    connect(subtitle_aux_page_, &SubtitleAuxPage::ScanRequested, this, [this]() {
+    // ---- 编码参数集 ----
+    connect(pages_.bitstream_params, &BitstreamPanel::RefreshRequested,
+            this, &AnalysisPanel::OnBitstreamRefreshRequested);
+    // 与流媒体包页一致：登记进共享扫描注册表，扫描中按钮一起禁用。
+    AddScanClient(pages_.bitstream_params);
+
+    // ---- 流媒体包 ----
+    connect(pages_.streaming, &StreamingPanel::RefreshRequested,
+            this, &AnalysisPanel::OnStreamingRefreshRequested);
+    // 「开始分析」由本页自己发出、面板接线；这里只把它登记进共享扫描注册表，
+    // 让扫描中按钮跟着一起禁用、换文件同步，和码率/音频/HDR 表现一致。
+    AddScanClient(pages_.streaming);
+
+    // ---- 字幕与辅助数据 ----
+    connect(pages_.subtitle_aux, &SubtitleAuxPage::ScanRequested, this, [this]() {
         // 字幕页自己不发 demux：字幕包本来就在同一次扫描里过了一遍
-        videoeye::AnalysisOptions options = diagnostics_page_->options();
-        diagnostics_page_->StartScan(options);
+        pages_.diagnostics->StartScan(pages_.diagnostics->options());
     });
-    connect(subtitle_aux_page_, &SubtitleAuxPage::StartTimecodeReady,
+    connect(pages_.subtitle_aux, &SubtitleAuxPage::StartTimecodeReady,
             this, &AnalysisPanel::StartTimecodeReady);
-    connect(subtitle_aux_page_, &SubtitleAuxPage::SeekRequested, this, &AnalysisPanel::SeekRequested);
+    connect(pages_.subtitle_aux, &SubtitleAuxPage::SeekRequested,
+            this, &AnalysisPanel::SeekRequested);
     // 字幕页同样共用同一次扫描：登记进注册表，扫描中「开始分析」跟着禁用、换文件同步。
-    AddScanClient(subtitle_aux_page_);
-    AddPageWithScroll(subtitle_aux_page_, tr("字幕与辅助数据"), QStringLiteral("subtitle_aux"),
-                      QStringLiteral("file_parse"), 3, tr("全文件"));
+    AddScanClient(pages_.subtitle_aux);
+
+    // ---- 质量诊断（扫描总控）----
+    // 字幕的「过短 / 过长 / 阅读速度」阈值以「规则与阈值」那张可编辑的表为准。
+    // 装成扫描前的钩子，任何入口发起的扫描（本页按钮 / 其它几页 / 流媒体包 /
+    // 参数集）都会先同步一次，免得选项与规则两处阈值各说各话。
+    pages_.diagnostics->SetBeforeScanHook(
+        [this](videoeye::AnalysisOptions& options) { SyncSubtitleThresholds(options); });
+
+    // 扫描生命周期 -> 面板同步其它几页的按钮 / 进度条
+    connect(pages_.diagnostics, &DiagnosticsPage::ScanStarted, this, &AnalysisPanel::OnScanStarted);
+    connect(pages_.diagnostics, &DiagnosticsPage::ProgressChanged,
+            this, &AnalysisPanel::OnDiagnosticsProgress);
+    // 终态只有一个入口: 成功 / 取消 / 失败都从这里收尾共用同一次扫描的几页
+    connect(pages_.diagnostics, &DiagnosticsPage::ScanEnded, this, &AnalysisPanel::OnScanEnded);
+    // 报告重算（改规则 / 关联场景切换）后，音频 QC 与色彩 HDR 的判定表要跟着换
+    connect(pages_.diagnostics, &DiagnosticsPage::QcReportChanged,
+            this, [this](const model::QcReport& report) {
+                if (pages_.audio_qc) pages_.audio_qc->SetQcReport(report);
+                if (pages_.color_hdr) pages_.color_hdr->SetQcReport(report);
+                // 首页的问题计数 / 最重要的异常同样跟着重算
+                emit DiagnosticsStateChanged();
+            });
+    connect(pages_.diagnostics, &DiagnosticsPage::SeekRequested,
+            this, &AnalysisPanel::SeekRequested);
+
+    // ---- 报告与批量 QC ----
+    // 该页自带后台线程，状态冒泡给主窗口状态栏。
+    connect(pages_.reporting, &ui::ReportingPanel::StatusMessage,
+            this, &AnalysisPanel::StatusMessage);
 }
+
 
 // ---------------------------------------------------------------------------
 // 播放器回调：只转发给页面，面板不再自己攒这些状态
@@ -572,52 +440,52 @@ void AnalysisPanel::SetupSubtitleAuxPage() {
 void AnalysisPanel::OnContainerStructureReady(const model::ContainerStructureResult& result) {
     VE_PERF("OnContainerStructureReady 总计");
     if (!feature_enabled_.value(AnalysisFeature::Master, true)) return;
-    if (container_page_) container_page_->SetResult(result);
+    if (pages_.container) pages_.container->SetResult(result);
     // 流媒体清单：顺手把「流媒体包」页也喂上（同一份结果，只是换了个视图）
-    if (streaming_panel_) UpdateStreamingUi();
+    if (pages_.streaming) UpdateStreamingUi();
 }
 
 void AnalysisPanel::OnContainerStructureFailed(const QString& message) {
     // feature 关掉时页面本来就不画，这里也不该冒出错误提示
     if (!feature_enabled_.value(AnalysisFeature::Master, true)) return;
-    if (container_page_) container_page_->SetError(message);
+    if (pages_.container) pages_.container->SetError(message);
 }
 
 void AnalysisPanel::OnSceneChangeDetected(const model::SceneChangeResult& result) {
-    if (scene_change_page_) scene_change_page_->AppendResult(result);
+    if (pages_.scene_change) pages_.scene_change->AppendResult(result);
 }
 
 void AnalysisPanel::OnVisualDefectFrame(const model::FrameQualityMetric& metric) {
-    if (visual_defect_page_) visual_defect_page_->AppendFrame(metric);
+    if (pages_.visual_defect) pages_.visual_defect->AppendFrame(metric);
 }
 
 void AnalysisPanel::OnVisualDefectDetected(const model::VisualDefect& defect) {
-    if (visual_defect_page_) visual_defect_page_->AppendDefect(defect);
+    if (pages_.visual_defect) pages_.visual_defect->AppendDefect(defect);
 }
 
 void AnalysisPanel::OnVisualDefectReset() {
-    if (visual_defect_page_) visual_defect_page_->ResetAll();
+    if (pages_.visual_defect) pages_.visual_defect->ResetAll();
 }
 
 void AnalysisPanel::OnVisualDefectStats(int analyzed_frames, int dropped_frames,
                                         const model::ActivePictureArea& effective_area) {
-    if (visual_defect_page_) {
-        visual_defect_page_->ApplyStats(analyzed_frames, dropped_frames, effective_area);
+    if (pages_.visual_defect) {
+        pages_.visual_defect->ApplyStats(analyzed_frames, dropped_frames, effective_area);
     }
 }
 
 void AnalysisPanel::OnVisualDefectOptionChanged() {
-    if (visual_defect_page_) emit VisualDefectOptionsChanged(visual_defect_page_->options());
+    if (pages_.visual_defect) emit VisualDefectOptionsChanged(pages_.visual_defect->options());
 }
 
 // 「关联场景切换」：判定表归码率页，报告重算留在诊断页（那里才有 facade 与问题表），
 // 面板这一层只做转发 + 让码率页弹出自己的汇总。
 void AnalysisPanel::OnSceneLinkRequested(const std::vector<model::SceneChangeResult>& records,
                                          const videoeye::BitrateGopOptions& options) {
-    if (diagnostics_page_) {
-        diagnostics_page_->ApplySceneLink(records, options);
+    if (pages_.diagnostics) {
+        pages_.diagnostics->ApplySceneLink(records, options);
     }
-    if (bitrate_gop_page_) bitrate_gop_page_->ShowSceneLinkSummary();
+    if (pages_.bitrate_gop) pages_.bitrate_gop->ShowSceneLinkSummary();
 }
 
 // ---------------------------------------------------------------------------
@@ -633,22 +501,22 @@ void AnalysisPanel::FlushPendingUiUpdates() {
 
     // 先刷帧/包明细，再刷流概览：前者可能在本拍产出新的 GOP 摘要，后者同一拍就能
     // 用上（「最大GOP大小」指标与 GOP 分布曲线都取自它）。反过来会慢一拍。
-    if (frame_packet_view_ && frame_packet_view_->HasPending()) {
-        frame_packet_view_->FlushPending();
+    if (pages_.frame_packet && pages_.frame_packet->HasPending()) {
+        pages_.frame_packet->FlushPending();
     }
-    if (stream_overview_view_ && stream_overview_view_->HasPending()) {
-        stream_overview_view_->FlushPending();
+    if (pages_.stream_overview && pages_.stream_overview->HasPending()) {
+        pages_.stream_overview->FlushPending();
     }
-    if (macroblock_view_ && macroblock_view_->HasPending()) {
-        macroblock_view_->FlushPending();
+    if (pages_.macroblock && pages_.macroblock->HasPending()) {
+        pages_.macroblock->FlushPending();
     }
-    if (scene_change_page_ && scene_change_page_->HasPending()) {
-        scene_change_page_->FlushPending();
+    if (pages_.scene_change && pages_.scene_change->HasPending()) {
+        pages_.scene_change->FlushPending();
     }
-    if (visual_defect_page_ && visual_defect_page_->HasPending()) {
-        visual_defect_page_->FlushPending();
+    if (pages_.visual_defect && pages_.visual_defect->HasPending()) {
+        pages_.visual_defect->FlushPending();
     }
-    if (event_timeline_view_) event_timeline_view_->FlushPendingUiUpdates();
+    if (pages_.event_timeline) pages_.event_timeline->FlushPendingUiUpdates();
 
     const double flush_ms = std::chrono::duration<double, std::milli>(
                                 std::chrono::steady_clock::now() - flush_begin).count();
@@ -664,51 +532,12 @@ void AnalysisPanel::FlushPendingUiUpdates() {
 // 把进度同步给共用扫描的其它页、把扫描结果分发给它们。
 // ---------------------------------------------------------------------------
 
-void AnalysisPanel::SetupDiagnosticsPage() {
-    diagnostics_page_ = new DiagnosticsPage(this);
-    diagnostics_page_->SetSourcePath(QString::fromStdString(current_video_path_));
-    // 字幕的「过短 / 过长 / 阅读速度」阈值以「规则与阈值」那张可编辑的表为准。
-    // 装成扫描前的钩子，任何入口发起的扫描（本页按钮 / 其它几页 / 流媒体包 /
-    // 参数集）都会先同步一次，免得选项与规则两处阈值各说各话。
-    diagnostics_page_->SetBeforeScanHook(
-        [this](videoeye::AnalysisOptions& options) { SyncSubtitleThresholds(options); });
-
-    // 扫描生命周期 -> 面板同步其它几页的按钮 / 进度条
-    connect(diagnostics_page_, &DiagnosticsPage::ScanStarted,
-            this, &AnalysisPanel::OnScanStarted);
-    connect(diagnostics_page_, &DiagnosticsPage::ProgressChanged,
-            this, &AnalysisPanel::OnDiagnosticsProgress);
-    // 终态只有一个入口: 成功 / 取消 / 失败都从这里收尾共用同一次扫描的几页
-    connect(diagnostics_page_, &DiagnosticsPage::ScanEnded,
-            this, &AnalysisPanel::OnScanEnded);
-    // 报告重算（改规则 / 关联场景切换）后，音频 QC 与色彩 HDR 的判定表要跟着换
-    connect(diagnostics_page_, &DiagnosticsPage::QcReportChanged,
-            this, [this](const model::QcReport& report) {
-                if (audio_qc_page_) audio_qc_page_->SetQcReport(report);
-                if (color_hdr_page_) color_hdr_page_->SetQcReport(report);
-                // 首页的问题计数 / 最重要的异常同样跟着重算
-                emit DiagnosticsStateChanged();
-            });
-    connect(diagnostics_page_, &DiagnosticsPage::SeekRequested, this, &AnalysisPanel::SeekRequested);
-
-    AddPageWithScroll(diagnostics_page_, tr("质量诊断"), QStringLiteral("quality_diagnostics"),
-                      QStringLiteral("full_quality"), 3, tr("全文件"));
-}
 
 void AnalysisPanel::SyncSubtitleThresholds(videoeye::AnalysisOptions& options) {
-    if (!subtitle_aux_page_ || !diagnostics_page_) return;
-    subtitle_aux_page_->ApplyRuleThresholds(diagnostics_page_->rules(), options.subtitle_options);
+    if (!pages_.subtitle_aux || !pages_.diagnostics) return;
+    pages_.subtitle_aux->ApplyRuleThresholds(pages_.diagnostics->rules(), options.subtitle_options);
 }
 
-void AnalysisPanel::SetupReportingPanelTab() {
-    // 报告与批量 QC（功能 12）：模板选择 + 单文件报告 + 目录批量扫描 + 导出。
-    // 该页自带后台线程，状态冒泡给主窗口状态栏。
-    reporting_panel_ = new ui::ReportingPanel(this);
-    connect(reporting_panel_, &ui::ReportingPanel::StatusMessage,
-            this, &AnalysisPanel::StatusMessage);
-    AddPageWithScroll(reporting_panel_, tr("报告与批量 QC"), QStringLiteral("report_batch_qc"),
-                      QStringLiteral("report_tools"), 0);
-}
 
 void AnalysisPanel::OnScanStarted() {
     // 与诊断页共用同一次扫描的页面：先把它们的开始/取消状态对齐
@@ -740,21 +569,21 @@ void AnalysisPanel::OnScanEnded(DiagnosticsPage::ScanEndReason reason) {
     if (failed) return;
 
     // ---- 以下把同一次扫描的结果分发给各页（失败的路径已在上面返回）----
-    if (!diagnostics_page_) return;
+    if (!pages_.diagnostics) return;
     VE_PERF("AnalysisPanel 分发扫描结果");
 
     // 「关联场景切换」要用场景切换页的记录，先喂给码率页
-    if (bitrate_gop_page_) {
-        bitrate_gop_page_->SetSceneChanges(scene_change_page_ ? scene_change_page_->records()
+    if (pages_.bitrate_gop) {
+        pages_.bitrate_gop->SetSceneChanges(pages_.scene_change ? pages_.scene_change->records()
                                                               : std::vector<model::SceneChangeResult>());
-        bitrate_gop_page_->SetResult(diagnostics_page_->result());
+        pages_.bitrate_gop->SetResult(pages_.diagnostics->result());
     }
     // 音频 QC / 色彩 HDR 的异常表来自 QC 规则引擎，所以连报告一起给
-    if (audio_qc_page_) {
-        audio_qc_page_->SetResult(diagnostics_page_->result(), diagnostics_page_->qcReport());
+    if (pages_.audio_qc) {
+        pages_.audio_qc->SetResult(pages_.diagnostics->result(), pages_.diagnostics->qcReport());
     }
-    if (color_hdr_page_) {
-        color_hdr_page_->SetResult(diagnostics_page_->result(), diagnostics_page_->qcReport());
+    if (pages_.color_hdr) {
+        pages_.color_hdr->SetResult(pages_.diagnostics->result(), pages_.diagnostics->qcReport());
     }
 
     {
@@ -765,16 +594,16 @@ void AnalysisPanel::OnScanEnded(DiagnosticsPage::ScanEndReason reason) {
         VE_PERF("UpdateStreamingUi");
         UpdateStreamingUi();  // 流媒体包页：清单文件的 QC 结果来自同一次扫描
     }
-    if (subtitle_aux_page_) {
+    if (pages_.subtitle_aux) {
         VE_PERF("SubtitleAuxPage::SetResult");
-        subtitle_aux_page_->SetResult(diagnostics_page_->result());
+        pages_.subtitle_aux->SetResult(pages_.diagnostics->result());
     }
 
     // MP4 样本表：扫描跑过就顺带刷新容器页（与打开文件时那次解析结果一致）
-    const model::AnalysisResult& result = diagnostics_page_->result();
+    const model::AnalysisResult& result = pages_.diagnostics->result();
     if (result.mp4_samples_analyzed && result.mp4_samples.valid) {
         VE_PERF("诊断后刷新 MP4 样本表");
-        if (container_page_) container_page_->ApplySampleTable(result.mp4_samples);
+        if (pages_.container) pages_.container->ApplySampleTable(result.mp4_samples);
     }
 
     // 终态回到首页：评分/结论/异常清单都该刷新（失败的路径上面已 return，没有新结果）
@@ -786,18 +615,18 @@ void AnalysisPanel::OnScanEnded(DiagnosticsPage::ScanEndReason reason) {
 // ---------------------------------------------------------------------------
 
 bool AnalysisPanel::HasDiagnosticsResult() const {
-    return diagnostics_page_ && diagnostics_page_->hasResult();
+    return pages_.diagnostics && pages_.diagnostics->hasResult();
 }
 
 const model::QcReport& AnalysisPanel::DiagnosticsReport() const {
     // 诊断页的 qcReport() 返回成员引用，没有结果时是一份默认构造的空报告，
     // 调用方先问 HasDiagnosticsResult() 再取数。
     static const model::QcReport kEmpty;
-    return diagnostics_page_ ? diagnostics_page_->qcReport() : kEmpty;
+    return pages_.diagnostics ? pages_.diagnostics->qcReport() : kEmpty;
 }
 
 QString AnalysisPanel::DiagnosticsError() const {
-    return diagnostics_page_ ? diagnostics_page_->lastError() : QString();
+    return pages_.diagnostics ? pages_.diagnostics->lastError() : QString();
 }
 
 // ---------------------------------------------------------------------------
@@ -821,8 +650,8 @@ QMap<QString, AnalysisPanel::PageBadgeInfo> AnalysisPanel::PageBadges() const {
     };
 
     // 质量诊断: QC 报告问题总数 + 最高严重度（致命>错误>警告）
-    if (diagnostics_page_ && diagnostics_page_->hasResult()) {
-        const model::QcReport& report = diagnostics_page_->qcReport();
+    if (pages_.diagnostics && pages_.diagnostics->hasResult()) {
+        const model::QcReport& report = pages_.diagnostics->qcReport();
         const int count = static_cast<int>(report.issues.size());
         int level = 0;
         if (report.CountBySeverity(model::IssueSeverity::Critical) > 0) {
@@ -838,18 +667,18 @@ QMap<QString, AnalysisPanel::PageBadgeInfo> AnalysisPanel::PageBadges() const {
     }
 
     // 共用同一次扫描的页面: 各自的异常表行数（没有异常表的页面只标扫描态）
-    if (bitrate_gop_page_) add(QStringLiteral("bitrate_gop"), bitrate_gop_page_->IssueCount(), 1);
-    if (audio_qc_page_) add(QStringLiteral("audio_qc"), audio_qc_page_->IssueCount(), 1);
-    if (color_hdr_page_) add(QStringLiteral("color_hdr"), color_hdr_page_->IssueCount(), 1);
-    if (streaming_panel_) add(QStringLiteral("streaming_packets"), streaming_panel_->IssueCount(), 1);
-    if (bitstream_params_panel_) {
-        add(QStringLiteral("codec_parameters"), bitstream_params_panel_->IssueCount(), 1);
+    if (pages_.bitrate_gop) add(QStringLiteral("bitrate_gop"), pages_.bitrate_gop->IssueCount(), 1);
+    if (pages_.audio_qc) add(QStringLiteral("audio_qc"), pages_.audio_qc->IssueCount(), 1);
+    if (pages_.color_hdr) add(QStringLiteral("color_hdr"), pages_.color_hdr->IssueCount(), 1);
+    if (pages_.streaming) add(QStringLiteral("streaming_packets"), pages_.streaming->IssueCount(), 1);
+    if (pages_.bitstream_params) {
+        add(QStringLiteral("codec_parameters"), pages_.bitstream_params->IssueCount(), 1);
     }
-    if (subtitle_aux_page_) add(QStringLiteral("subtitle_aux"), 0, 0);
+    if (pages_.subtitle_aux) add(QStringLiteral("subtitle_aux"), 0, 0);
 
     // 画面质量是播放期累积的缺陷记录，不随全文件扫描走，但同样值得一个计数徽标
-    if (visual_defect_page_) {
-        const int count = static_cast<int>(visual_defect_page_->DefectRecords().size());
+    if (pages_.visual_defect) {
+        const int count = static_cast<int>(pages_.visual_defect->DefectRecords().size());
         if (count > 0) {
             add(QStringLiteral("visual_quality"), count, 1);
         }

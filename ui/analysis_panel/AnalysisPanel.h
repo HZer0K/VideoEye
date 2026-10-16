@@ -42,19 +42,10 @@
 #include "ui/reporting_panel/ReportingPanel.h"
 #include "ui/streaming_panel/StreamingPanel.h"
 
-#include "ui/analysis_panel/AudioQcPage.h"
-#include "ui/analysis_panel/BitrateGopPage.h"
-#include "ui/analysis_panel/ColorHdrPage.h"
-#include "ui/analysis_panel/ContainerStructurePage.h"
-#include "ui/analysis_panel/DiagnosticsPage.h"
-#include "ui/analysis_panel/EventTimelineView.h"
-#include "ui/analysis_panel/FramePacketView.h"
-#include "ui/analysis_panel/MacroblockView.h"
+// 建页工厂: 页面目录（顺序 = stack 页序号）、建页、侧栏徽标口径都在这里。
+// 面板自己只留"页面之间怎么接线"。
+#include "ui/analysis_panel/AnalysisPageFactory.h"
 #include "ui/analysis_panel/ScanClient.h"
-#include "ui/analysis_panel/SceneChangePage.h"
-#include "ui/analysis_panel/StreamOverviewView.h"
-#include "ui/analysis_panel/SubtitleAuxPage.h"
-#include "ui/analysis_panel/VisualDefectPage.h"
 
 namespace videoeye {
 namespace ui {
@@ -96,17 +87,17 @@ public:
         current_video_path_ = path.toStdString();
         // 切换文件后重置时间轴累计状态 (避免上一文件的数据混入)；
         // 时间轴与 facade 都在诊断页里，由它自己清空
-        if (diagnostics_page_) diagnostics_page_->ResetForNewFile();
+        if (pages_.diagnostics) pages_.diagnostics->ResetForNewFile();
         // 报告与批量 QC 页需要当前文件来"按模板重新分析"
-        if (reporting_panel_) reporting_panel_->SetCurrentFile(path);
+        if (pages_.reporting) pages_.reporting->SetCurrentFile(path);
         // 拆出去的页面用当前路径拼导出 CSV 的默认文件名
-        if (scene_change_page_) scene_change_page_->SetSourcePath(path);
+        if (pages_.scene_change) pages_.scene_change->SetSourcePath(path);
         // 共用同一次扫描的页面统一走注册表（码率 GOP / 音频 QC / 色彩 HDR）
         for (ScanClient* page : scan_clients_) page->SetSourcePath(path);
         // 扫描总控在诊断页，换文件要同步它手里的当前路径
-        if (diagnostics_page_) diagnostics_page_->SetSourcePath(path);
+        if (pages_.diagnostics) pages_.diagnostics->SetSourcePath(path);
         // 场景切换记录是播放期的累计结果，换文件必须清零（与帧/包那几页一致）
-        if (scene_change_page_) scene_change_page_->Reset();
+        if (pages_.scene_change) pages_.scene_change->Reset();
         // 换文件 = 上一文件的分析结论全部作废：通知首页重置「分析状态」区
         emit DiagnosticsStateChanged();
     }
@@ -133,11 +124,10 @@ public:
     // 由 SidebarItemDelegate 画成右侧徽标 / 扫描圆点。
     // 只有真有异常口径的页面才进表（issue_count>0 或 scanning），
     // 帧表/包表这类明细表故意不进 —— 几千行的徽标只是噪音。
-    struct PageBadgeInfo {
-        int issue_count = 0;   // 异常条数（0 = 不显示数字徽标）
-        int level = 0;         // 0 无 / 1 警告 / 2 错误 / 3 致命（决定徽标配色）
-        bool scanning = false; // 该页共用的一次全文件扫描正在进行
-    };
+    // 徽标的结构与口径都收在建页工厂（ui/analysis_panel/AnalysisPageFactory.h 的
+    // PageBadge / CollectPageBadges）里，这里只留一个别名 —— 既有的
+    // AnalysisPanel::PageBadgeInfo 写法（MainWindow 取标记用）一个字都不用改。
+    using PageBadgeInfo = PageBadge;
     QMap<QString, PageBadgeInfo> PageBadges() const;
     
 signals:
@@ -204,44 +194,22 @@ public slots:
     void OnScanEnded(DiagnosticsPage::ScanEndReason reason);
 
 private:
-    // 初始化UI
+    // 初始化UI: 建页交给工厂（AnalysisPageFactory，顺序见 AnalysisPageCatalog），
+    // 本类只负责把页面之间的意图接起来。
     void SetupUI();
+    // 建页所需的外部能力（feature 表 / 当前路径 / 登记页面的出口），喂给工厂。
+    // 工厂不认识面板，本类也不认识工厂内部的摆放细节 —— 两边只通过这张依赖表说话。
+    PageBuildDeps MakePageBuildDeps();
+    // 页面之间的接线：页面发出的意图（跳转 / 扫描 / 状态冒泡）与扫描生命周期。
+    // 这是协调层的本职，不随建页搬去工厂 —— 页面之间不互相持有指针这条规矩不能破。
+    void WireAnalysisPages();
     // 将页面包裹 QScrollArea 并添加到页面列表。同时把导航元数据（稳定 pageId、
     // 分组 id、组内排序键、口径）写成控件属性，供 MainWindow 生成侧栏；见
-    // ui/main_window/navigation_model.h。
+    // ui/main_window/navigation_model.h。由 MakePageBuildDeps 作为 add_page 交给工厂。
     void AddPageWithScroll(QWidget* tab_widget, const QString& title, const QString& page_id,
                            const QString& group_id, int order, const QString& scope = QString());
-    // 「码流分析」页：把流概览（StreamOverviewView）与帧/包明细（FramePacketView）
-    // 两个组件拼成一页（顶部固定 + 分隔线 + 底部可伸展），并把 GOP 摘要从产出方
-    // 桥接到消费方。
-    void SetupBitstreamTab();
-    // 宏块分析页：本体是 MacroblockView，建页后注入 feature 钩子。
-    void SetupMacroblockTab();
-    // 编码参数集（SPS/PPS/VPS/Sequence Header）解析页，与「码流分析」页是两回事：
-    // 那一页看的是包/帧/码率，这一页看的是 extradata 里的编码参数。
-    void SetupParameterSetTab();
-    // HLS / DASH 流媒体包页（manifest + segment + 多码率 ladder）
-    void SetupStreamingPackageTab();
-    // 诊断与报告页（全文件扫描 + QC 规则引擎 + 时间轴/同步诊断）：扫描总控已在页面内，
-    // 面板这一层只负责建页、把页面意图接到全局，以及把进度同步给共用同一次扫描的几页。
-    void SetupDiagnosticsPage();
-    // 报告与批量 QC 页（功能 12）：模板选择 / 单文件报告 / 目录批量扫描 / 导出
-    void SetupReportingPanelTab();
-    // 已拆成独立页面组件的页，在这里建好并接上信号（本体是 QWidget，
-    // 直接交给 AddPageWithScroll 变成外部 stack 的一页）。
-    void SetupContainerStructurePage();
-    void SetupSceneChangePage();
-    void SetupBitrateGopPage();
-    void SetupAudioQcPage();
-    void SetupColorHdrPage();
-    void SetupSubtitleAuxPage();
-    // 事件 / 同步 / 时间轴三表聚合页：本体是 EventTimelineView，建页后注入 feature 钩子。
-    // 播放期的同步样本只喂给本视图 —— 时间轴的样本 / 曲线 / 导出都收敛在这里。
-    void SetupEventTimelineView();
     void FlushPendingUiUpdates();
 
-    // 画面质量 / 视觉缺陷（已拆成独立的 VisualDefectPage）
-    void SetupVisualDefectPage();
     // 「关联场景切换」：页面不持有 facade，这一步由面板编排（重算 QC + 刷新问题表）
     void OnSceneLinkRequested(const std::vector<model::SceneChangeResult>& records,
                               const videoeye::BitrateGopOptions& options);
@@ -261,51 +229,14 @@ private:
     QStringList page_titles_;           // 各页面标题
     QStackedWidget* external_stack_ = nullptr;  // 外部 QStackedWidget (由 MainWindow 提供)
 
-    // 「码流分析」页拆成的两个组件：顶部流概览 + 底部帧/包明细。
-    // 两者在 SetupBitstreamTab 里拼进同一页；GOP 摘要在后者产出、前者消费，
-    // 由面板在 SetupBitstreamTab 末尾把信号接起来（两个组件互不认识）。
-    StreamOverviewView* stream_overview_view_ = nullptr;
-    FramePacketView* frame_packet_view_ = nullptr;
+    // 各分析页的指针登记表（由 AnalysisPageFactory 建好并整体交回来）。
+    //
+    // 以前是 15 个裸成员各自声明、各自在 SetupXxx 里赋值；现在合成一份结构体，
+    // 于是"加了页但忘了转发数据"这类漏接在代码上更难发生 —— 转发处读的是同一张表。
+    AnalysisPages pages_;
 
-    // 宏块分析页（已拆成独立的 MacroblockView）
-    MacroblockView* macroblock_view_ = nullptr;
-
-    // 场景切换检测页（已拆成独立的 SceneChangePage）
-    SceneChangePage* scene_change_page_ = nullptr;
-
-    // 画面质量 / 视觉缺陷页（已拆成独立的 VisualDefectPage）
-    VisualDefectPage* visual_defect_page_ = nullptr;
-    // 面板仍持有这一份选项，作为新页面的初值与「重新发射开关」时的基准
+    // 面板仍持有这一份画面质量选项，作为新页面的初值与「重新发射开关」时的基准
     model::VisualDefectOptions visual_defect_options_;
-
-    // 统一文件结构分析标签页（已拆成独立的 ContainerStructurePage）
-    ContainerStructurePage* container_page_ = nullptr;
-
-    // 码率与 GOP 深度分析页（已拆成独立的 BitrateGopPage）
-    BitrateGopPage* bitrate_gop_page_ = nullptr;
-    // 诊断与报告页（已拆成独立的 DiagnosticsPage：扫描总控 + 问题表 + 规则表）
-    DiagnosticsPage* diagnostics_page_ = nullptr;
-
-    // 音频 QC 标签页（已拆成独立的 AudioQcPage）
-    AudioQcPage* audio_qc_page_ = nullptr;
-
-    // 色彩与 HDR 标签页（已拆成独立的 ColorHdrPage）
-    ColorHdrPage* color_hdr_page_ = nullptr;
-
-    // 编码参数集解析页（SPS / PPS / VPS / AV1 Sequence Header）
-    BitstreamPanel* bitstream_params_panel_ = nullptr;
-
-    // 流媒体包页（HLS / DASH 清单 + 分片 + 码率阶梯）
-    StreamingPanel* streaming_panel_ = nullptr;
-
-    // 字幕 / 时码 / 辅助数据页（已拆成独立的 SubtitleAuxPage）
-    SubtitleAuxPage* subtitle_aux_page_ = nullptr;
-
-    // 事件 / 同步 / 时间轴三表聚合页（从 AnalysisPanel 拆出的 EventTimelineView）
-    EventTimelineView* event_timeline_view_ = nullptr;
-
-    // 报告与批量 QC 页（功能 12）：模板选择 / 单文件报告 / 目录批量扫描 / 导出
-    ui::ReportingPanel* reporting_panel_ = nullptr;
 
     // 共用同一次全文件扫描的页面注册表。换文件、扫描起止、进度都按它循环转发。
     std::vector<ScanClient*> scan_clients_;

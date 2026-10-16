@@ -1696,3 +1696,16 @@ if(WIN32)
     target_link_libraries(test_player_signal_buses PRIVATE ws2_32)
 endif()
 add_test(NAME PlayerSignalBusTests COMMAND test_player_signal_buses)
+
+# =================================================
+# 测试 63：分析页目录的顺序契约 (ui/analysis_panel/AnalysisPageCatalog.h)
+#
+# 页面在外部 QStackedWidget 里的下标是硬契约 —— 有回归用例按 stack 下标取控件
+# （tabs->widget(0/1/3)）。以前这个顺序只是 SetupUI 里十几个 SetupXxx() 调用次序的
+# 副产品，调序一下标全错位却没人看得见；现在它是一张数据表，这里钉住顺序、
+# id 唯一、以及 (分组, 组内序号) 不撞车。
+# 目录是 header-only 且不碰页面组件，所以不需要 offscreen，只链 Qt6::Core。
+# =================================================
+videoeye_add_test(test_analysis_page_catalog unit/test_analysis_page_catalog.cpp)
+target_link_libraries(test_analysis_page_catalog PRIVATE Qt6::Core)
+add_test(NAME AnalysisPageCatalogTests COMMAND test_analysis_page_catalog)
