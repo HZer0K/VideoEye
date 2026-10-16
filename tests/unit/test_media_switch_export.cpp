@@ -26,6 +26,7 @@
 
 #include "BlockingTcpEndpoint.h"
 #include "core/exporter/MediaExporter.h"
+#include "core/player/ContainerBus.h"
 #include "core/player/ExportBus.h"
 #include "core/player/MediaPlayer.h"
 
@@ -206,9 +207,10 @@ TEST(MediaContainerStructure, FailureProducesFailedTerminalWithoutReady) {
     int ready = 0;
     int failed = 0;
     QString failure_message;
-    QObject::connect(&player, &player::MediaPlayer::ContainerStructureReady, &player,
+    player::ContainerBus& bus = player.container_bus();
+    QObject::connect(&bus, &player::ContainerBus::ContainerStructureReady, &player,
                      [&ready](const videoeye::model::ContainerStructureResult&) { ++ready; });
-    QObject::connect(&player, &player::MediaPlayer::ContainerStructureFailed, &player,
+    QObject::connect(&bus, &player::ContainerBus::ContainerStructureFailed, &player,
                      [&failed, &failure_message](const QString& msg) {
                          ++failed;
                          failure_message = msg;
@@ -247,9 +249,10 @@ TEST(MediaContainerStructure, StaleFailureIsDroppedAfterNewTaskStarts) {
     player::MediaPlayer player;
     int failed = 0;
     int ready = 0;
-    QObject::connect(&player, &player::MediaPlayer::ContainerStructureFailed, &player,
+    player::ContainerBus& bus = player.container_bus();
+    QObject::connect(&bus, &player::ContainerBus::ContainerStructureFailed, &player,
                      [&failed](const QString&) { ++failed; });
-    QObject::connect(&player, &player::MediaPlayer::ContainerStructureReady, &player,
+    QObject::connect(&bus, &player::ContainerBus::ContainerStructureReady, &player,
                      [&ready](const videoeye::model::ContainerStructureResult&) { ++ready; });
 
     player.RequestContainerStructureAnalysis(missing_a);
@@ -350,12 +353,13 @@ TEST(MediaContainerStructure, StaleSuccessIsDroppedAfterNewTaskStarts) {
     int ready = 0;
     int failed = 0;
     std::string last_ready_path;
-    QObject::connect(&player, &player::MediaPlayer::ContainerStructureReady, &player,
+    player::ContainerBus& bus = player.container_bus();
+    QObject::connect(&bus, &player::ContainerBus::ContainerStructureReady, &player,
                      [&ready, &last_ready_path](const videoeye::model::ContainerStructureResult& r) {
                          ++ready;
                          last_ready_path = r.file_path;
                      });
-    QObject::connect(&player, &player::MediaPlayer::ContainerStructureFailed, &player,
+    QObject::connect(&bus, &player::ContainerBus::ContainerStructureFailed, &player,
                      [&failed](const QString&) { ++failed; });
 
     // --- 标定: 先单独跑一遍, 量出"请求 -> 结果落地"要多久 ---

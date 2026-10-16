@@ -1677,20 +1677,21 @@ target_link_libraries(test_reporting_task_coordinator PRIVATE
 add_test(NAME ReportingTaskCoordinatorTests COMMAND test_reporting_task_coordinator)
 
 # =================================================
-# 测试 62：导出信号总线（门面不再背导出信号 + 控制器确实往总线发）
-# 说明: 抽帧 / 音视频导出的十条信号从 MediaPlayer 门面搬到 ExportBus。
-#       断言在元对象层面做（门面 indexOfSignal == -1、总线十条齐全），
-#       并用"无媒体抽帧必经总线报 Error"验证 ExportController 的发射口改对了
-#       —— 发错地方不会崩，只会让进度框永远不弹。
+# 测试 62：播放器信号总线（导出 ExportBus / 容器 ContainerBus）
+# 说明: 导出的十条与容器结构的两条信号从 MediaPlayer 门面搬到各自的总线。
+#       断言在元对象层面做（门面 indexOfSignal == -1、总线契约齐全），
+#       并用"无媒体抽帧必经总线报 Error""打不开的文件必经总线报 Failed"
+#       验证两个控制器的发射口都改对了 —— 发错地方不会崩，只会静默失效
+#       （进度框永远不弹 / 结构页一直空着）。
 #       不用 offscreen（不涉及控件），QCoreApplication 足够。
 # =================================================
-videoeye_add_test(test_export_bus
-    unit/test_export_bus.cpp
+videoeye_add_test(test_player_signal_buses
+    unit/test_player_signal_buses.cpp
 )
-target_link_libraries(test_export_bus PRIVATE
+target_link_libraries(test_player_signal_buses PRIVATE
     VideoEyePlayback
     Qt6::Core Qt6::Gui)
 if(WIN32)
-    target_link_libraries(test_export_bus PRIVATE ws2_32)
+    target_link_libraries(test_player_signal_buses PRIVATE ws2_32)
 endif()
-add_test(NAME ExportBusTests COMMAND test_export_bus)
+add_test(NAME PlayerSignalBusTests COMMAND test_player_signal_buses)

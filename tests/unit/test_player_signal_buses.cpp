@@ -1,34 +1,40 @@
-// 导出信号总线（core/player/ExportBus.h）的接缝测试。
+// 播放器信号总线（导出 ExportBus / 容器 ContainerBus）的接缝测试。
 //
-// 为什么值得单独测: 抽帧 / 音视频导出的十条信号从 MediaPlayer 门面搬到独立总线，
-// 搬迁本身"编译过就算对了" —— 但三种错都不会崩:
-//   1. 门面上那十条忘了删 → 门面照旧背着一份与播放无关的契约（白搬）；
+// 为什么值得单独测: 这两组信号从 MediaPlayer 门面搬到独立总线，搬迁本身
+// "编译过就算对了" —— 但三种错都不会崩:
+//   1. 门面上那些信号忘了删 → 门面照旧背着一份与播放无关的契约（白搬）；
 //   2. 总线上的信号名/参数被改 → 编译期可能靠隐式转换糊过去，UI 收的是错的值；
-//   3. ExportController 继续发自己那份信号而没发到总线上 → UI 一条也收不到，
-//      进度框永远不弹（静默失效）。
+//   3. 控制器继续发自己那份信号而没发到总线上 → UI 一条也收不到，
+//      进度框永远不弹 / 结构页一直空着（静默失效）。
 //
 // 盯四件事:
-//   1. 门面不再声明这十条信号（元对象层面断言，不是看代码）；
-//   2. 总线上十条齐全（名字 + 参数签名）；
-//   3. export_bus() 稳定返回同一个对象，且归属 UI 线程；
+//   1. 门面不再声明这些信号（元对象层面断言，不是看代码）；
+//   2. 总线上契约齐全（名字 + 参数签名）；
+//   3. export_bus() / container_bus() 稳定返回同一个对象，且归属 UI 线程；
 //   4. 控制器真的往总线发: 无媒体时 StartVideoFrameExport 必须经总线报 Error，
-//      且不得发 Started（终态互斥）。
+//      且不得发 Started（终态互斥）；容器分析对不存在的文件必须经总线报 Failed。
 //
 // 用 QCoreApplication 即可（不涉及控件），不需要 offscreen。
 
 #include <gtest/gtest.h>
 
+#include <functional>
+
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
+#include <QFile>
 #include <QMetaObject>
 #include <QString>
 #include <QThread>
 
+#include "core/player/ContainerBus.h"
 #include "core/player/ExportBus.h"
 #include "core/player/MediaPlayer.h"
 
 namespace {
 
+using videoeye::player::ContainerBus;
 using videoeye::player::ExportBus;
 using videoeye::player::MediaPlayer;
 
@@ -69,6 +75,22 @@ const char* const kExportSignatures[] = {
     "MediaExportCanceled(QString)",
     "MediaExportError(QString)",
 };
+
+const char* const kContainerSignatures[] = {
+    "ContainerStructureReady(videoeye::model::ContainerStructureResult)",
+    "ContainerStructureFailed(QString)",
+};
+
+// 泵事件直到条件成立（后台任务的结果要排回 UI 线程才落地）。
+bool PumpUntil(const std::function<bool()>& done, int timeout_ms) {
+    QElapsedTimer timer;
+    timer.start();
+    while (!done() && timer.elapsed() < timeout_ms) {
+        QCoreApplication::processEvents();
+        QThread::msleep(10);
+    }
+    return done();
+}
 
 }  // namespace
 
@@ -130,4 +152,48 @@ TEST(ExportBusTests, ControllerEmitsErrorThroughBusWhenNoMediaOpened) {
     EXPECT_EQ(1, error_count) << "ExportController 必须经总线把错误送出去, UI 才知道导出没起来";
     EXPECT_EQ(0, started_count) << "没起来就不该发 Started";
     EXPECT_FALSE(last_error.trimmed().isEmpty()) << "错误信号必须带原因";
+}
+
+// ---------------------------------------------------------------------------
+// 5. 门面不再背容器结构分析的两条信号
+// ---------------------------------------------------------------------------
+TEST(ContainerBusTests, FacadeDoesNotDeclareContainerSignalsAnymore) {
+    for (const char* sig : kContainerSignatures) {
+        EXPECT_EQ(-1, SignalIndex(MediaPlayer::staticMetaObject, sig))
+            << "MediaPlayer 还在声明容器信号 " << sig << " —— 它该在 ContainerBus 上";
+        EXPECT_GE(SignalIndex(ContainerBus::staticMetaObject, sig), 0)
+            << "ContainerBus 缺少信号 " << sig;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 6. 控制器真的往总线发: 打不开的文件 → Failed，且不得发 Ready（两条互斥）
+// ---------------------------------------------------------------------------
+TEST(ContainerBusTests, ControllerEmitsFailureThroughBusForUnreadableFile) {
+    AppScope app_scope;
+
+    const QString missing = QDir::tempPath() + "/videoeye_bus_no_such_file.mkv";
+    QFile::remove(missing);
+
+    MediaPlayer player;
+    int ready = 0;
+    int failed = 0;
+    QString failure_message;
+    QObject::connect(&player.container_bus(), &ContainerBus::ContainerStructureReady, &player,
+                     [&](const videoeye::model::ContainerStructureResult&) { ++ready; });
+    QObject::connect(&player.container_bus(), &ContainerBus::ContainerStructureFailed, &player,
+                     [&](const QString& msg) {
+                         ++failed;
+                         failure_message = msg;
+                     });
+
+    player.RequestContainerStructureAnalysis(missing);
+
+    ASSERT_TRUE(PumpUntil([&] { return failed > 0 || ready > 0; }, 10000))
+        << "ContainerInspectionController 必须经总线给出终态, 否则结构页会一直空着";
+    EXPECT_EQ(1, failed) << "打不开的文件必须报 Failed";
+    EXPECT_EQ(0, ready) << "两条信号互斥: 失败时不得发 Ready";
+    EXPECT_FALSE(failure_message.trimmed().isEmpty()) << "失败信号必须带原因";
+
+    QFile::remove(missing);
 }

@@ -24,6 +24,7 @@ extern "C" {
 #include "core/player/AudioOutput.h"
 #include "core/player/VideoFrameExporter.h"
 #include "core/player/AnalysisSession.h"
+#include "core/player/ContainerBus.h"
 #include "core/player/ContainerInspectionController.h"
 #include "core/player/ExportBus.h"
 #include "core/player/ExportController.h"
@@ -104,6 +105,10 @@ public:
     // 信号名与参数一个字节没变，门面少一层无意义的转发。
     // 返回引用而非指针: 总线与播放器同生灭，不存在"取不到"的情况。
     ExportBus& export_bus() { return export_controller_.bus(); }
+
+    // 容器结构分析信号的对外出口（成功 / 失败二选一，见 core/player/ContainerBus.h）。
+    // 与导出同理: 由 ContainerInspectionController 直接在总线上发射，门面不再转发。
+    ContainerBus& container_bus() { return container_inspection_.bus(); }
     
     // 音量控制 (0-100)
     void SetVolume(int volume);
@@ -219,11 +224,8 @@ signals:
     void AudioVisualizationReady(const model::AudioVisualizationFrame& frame);
     void MediaModeChanged(bool has_video);
     void AudioLevelReady(double level, double timestamp_seconds);
-    void ContainerStructureReady(const videoeye::model::ContainerStructureResult& result);
-    // 结构分析**没出结果**时发出（解析失败 / 任务体抛异常）。
-    // 与 Ready 互斥：Ready 出去时本信号一定不会来，反之亦然 —— 页面据此决定
-    // 是画结构树还是显示一条错误。
-    void ContainerStructureFailed(const QString& message);
+    // 容器结构分析的两条信号不在门面上了 —— 走 container_bus()
+    // （见 core/player/ContainerBus.h），UI 连总线而不是连门面。
     void MacroblockInfoReady(const videoeye::model::MacroblockFrameAnalysis& analysis);
     void SceneChangeReady(const videoeye::SceneChangeResult& result);
     // 画面质量 / 视觉缺陷（实时播放时逐采样帧产出）

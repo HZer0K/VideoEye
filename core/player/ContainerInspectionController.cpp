@@ -67,7 +67,7 @@ void ContainerInspectionController::Start(const QString& url) {
                         LOG_INFO("容器结构分析的失败消息已过期, 丢弃");
                         return;
                     }
-                    emit self->ContainerStructureFailed(msg);
+                    emit self->bus_.ContainerStructureFailed(msg);
                 },
                 Qt::QueuedConnection);
         };
@@ -118,7 +118,7 @@ void ContainerInspectionController::Start(const QString& url) {
                     LOG_INFO("容器结构分析的成功结果已过期, 丢弃");
                     return;
                 }
-                emit self->ContainerStructureReady(result);
+                emit self->bus_.ContainerStructureReady(result);
             },
             Qt::QueuedConnection);
         LOG_INFO("容器结构分析完成");

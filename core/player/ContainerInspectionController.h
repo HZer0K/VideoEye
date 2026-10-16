@@ -16,8 +16,9 @@
 // 保留"要不要分析（开关）"和"转发两条信号"。
 //
 // 本类是 QObject: 结果要跨线程排回 UI 线程落地（QMetaObject::invokeMethod 需要一个
-// 接收者上下文），且对外信号契约必须与拆分前一个字节不差 —— 所以这里声明同名信号，
-// 由 MediaPlayer 原样转发。
+// 接收者上下文）。对外的两条信号不在本类身上，而在 ContainerBus 上
+// （见 core/player/ContainerBus.h）：名字与参数与拆分前一个字节不差，但 UI 连的是
+// player->container_bus() 而不是门面，MediaPlayer 因此不必再做两条转发连接。
 //
 // 与 TaskManager 的关系（沿用拆分前的约定，不要改）:
 //   * slot / 令牌 / 任务 id 一律从**调用方**的 TaskManager 取，本类只持引用；
@@ -27,6 +28,7 @@
 #include <QObject>
 
 #include "core/domain/model/ContainerStructureInfo.h"
+#include "core/player/ContainerBus.h"
 #include "infrastructure/concurrency/TaskManager.h"
 
 namespace videoeye {
@@ -53,17 +55,18 @@ public:
     // 任务体投递前会查 IsCurrent，被取消的任务不会把结果弹到新媒体的界面上。
     void Cancel();
 
-signals:
-    void ContainerStructureReady(const videoeye::model::ContainerStructureResult& result);
-    // 结构分析**没出结果**时发出（解析失败 / 任务体抛异常）。
-    // 与 Ready 互斥：Ready 出去时本信号一定不会来，反之亦然 —— 页面据此决定
-    // 是画结构树还是显示一条错误。
-    void ContainerStructureFailed(const QString& message);
+    // 对外的容器结构信号总线（成功 / 失败二选一，见 core/player/ContainerBus.h）。
+    // UI 经 MediaPlayer::container_bus() 拿它连信号；本类所有"该发信号了"的地方
+    // 直接 emit bus_.Xxx()。
+    ContainerBus& bus() { return bus_; }
 
 private:
     // 后台任务 slot 名。同一 slot 上永远只有一个任务在跑
     // (见 infrastructure/concurrency/TaskManager.h)。
     static constexpr const char* kSlotContainerStructure = "container-structure";
+
+    // 对外信号出口。以成员（而不是指针）持有，随本对象一起生灭。
+    ContainerBus bus_{this};
 
     task::TaskManager& tasks_;
 };

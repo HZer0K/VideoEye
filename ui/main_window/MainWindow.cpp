@@ -500,11 +500,12 @@ void MainWindow::SetupConnections() {
                 if (player_) player_->Seek(seconds, player_->GetSeekMode());
             });
 
-    // 统一容器结构分析信号
-    connect(player_, &player::MediaPlayer::ContainerStructureReady,
+    // 统一容器结构分析信号（连总线而不是门面：见 core/player/ContainerBus.h）
+    player::ContainerBus& container_bus = player_->container_bus();
+    connect(&container_bus, &player::ContainerBus::ContainerStructureReady,
             analysis_panel_, &ui::AnalysisPanel::OnContainerStructureReady);
     // 结构分析失败（解析不出来 / 分析器抛异常）：页面显示原因，别让结构页一直空着
-    connect(player_, &player::MediaPlayer::ContainerStructureFailed,
+    connect(&container_bus, &player::ContainerBus::ContainerStructureFailed,
             analysis_panel_, &ui::AnalysisPanel::OnContainerStructureFailed);
     connect(player_, &player::MediaPlayer::MacroblockInfoReady,
             analysis_panel_, &ui::AnalysisPanel::UpdateMacroblockInfo);

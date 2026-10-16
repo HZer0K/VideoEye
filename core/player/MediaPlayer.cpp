@@ -68,12 +68,8 @@ MediaPlayer::MediaPlayer(QObject* parent)
     // 导出的十条信号不再经门面转发: ExportController 直接在自己的 ExportBus 上发射，
     // UI 连的是 export_bus()（见 core/player/ExportBus.h），契约一个字节都没变。
 
-    // 容器结构分析的两条信号原样转发: 控制器在后台线程上判定"该不该弹、过没过期"，
-    // 对外（UI）连的是本对象的信号，拆分前后契约一个字节都不变。
-    connect(&container_inspection_, &ContainerInspectionController::ContainerStructureReady,
-            this, &MediaPlayer::ContainerStructureReady);
-    connect(&container_inspection_, &ContainerInspectionController::ContainerStructureFailed,
-            this, &MediaPlayer::ContainerStructureFailed);
+    // 容器结构分析的两条信号也不再经门面转发: ContainerInspectionController 直接在
+    // 自己的 ContainerBus 上发射，UI 连 container_bus()（见 core/player/ContainerBus.h）。
 
     // 实时分析的 23 条信号原样转发: 计数、采样档位、"该不该发"全在控制器里，
     // 对外（UI）连的是本对象的信号，拆分前后契约一个字节都不变。
