@@ -25,6 +25,7 @@ extern "C" {
 #include "core/player/VideoFrameExporter.h"
 #include "core/player/AnalysisSession.h"
 #include "core/player/ContainerInspectionController.h"
+#include "core/player/ExportBus.h"
 #include "core/player/ExportController.h"
 #include "core/player/OpenController.h"
 #include "core/player/PlaybackSession.h"
@@ -95,6 +96,14 @@ public:
     // 播放器 Open 失败后手动触发容器结构分析 (后台线程, 结果经 ContainerStructureReady 发出)。
     // 正常 Open 成功路径内部已自动触发, 无需调用此方法。
     void RequestContainerStructureAnalysis(const QString& url);
+
+    // 导出信号的对外出口（抽帧 5 条 + 音视频 5 条，见 core/player/ExportBus.h）。
+    //
+    // 这十条信号此前挂在门面身上，门面因此要替它们背十条"同名转发"连接。现在由
+    // ExportController 直接在总线上发射，UI（ExportCoordinator）连这根总线：
+    // 信号名与参数一个字节没变，门面少一层无意义的转发。
+    // 返回引用而非指针: 总线与播放器同生灭，不存在"取不到"的情况。
+    ExportBus& export_bus() { return export_controller_.bus(); }
     
     // 音量控制 (0-100)
     void SetVolume(int volume);
@@ -224,18 +233,8 @@ signals:
     // 分析进度: 已分析帧数 / 被丢弃帧数 / 全片有效画面区域（约每秒刷新一次）
     void VisualDefectStatsReady(int analyzed_frames, int dropped_frames,
                                 const model::ActivePictureArea& effective_area);
-    void VideoFrameExportStarted(int total_frames);
-    void VideoFrameExportProgress(int exported_frames);
-    void VideoFrameExportFinished(const QString& output_dir);
-    void VideoFrameExportCanceled(int exported_frames, const QString& output_dir);
-    void VideoFrameExportError(const QString& message);
-
-    // 音视频导出信号
-    void MediaExportStarted(qint64 duration_ms);
-    void MediaExportProgress(int percent);
-    void MediaExportFinished(const QString& output_path);
-    void MediaExportCanceled(const QString& output_path);
-    void MediaExportError(const QString& message);
+    // 抽帧 / 音视频导出的十条信号不在门面上了 —— 走 export_bus()
+    // （见 core/player/ExportBus.h），UI 连总线而不是连门面。
 
 private:
     // --- SetAnalysisFeature() 的分派目标 ---

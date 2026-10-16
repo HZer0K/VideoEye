@@ -65,29 +65,8 @@ MediaPlayer::MediaPlayer(QObject* parent)
     connect(&playback_session_, &PlaybackSession::PlaybackFinished,
             this, &MediaPlayer::PlaybackFinished);
 
-    // 导出的十条信号原样转发: 外部（UI）连的是本对象的信号，拆分前后契约一个字节都不变。
-    // 控制器自己也要发这些信号 —— worker 是 QObject，连接需要一个接收者，
-    // 而"排队 / 代际 / 取消"的状态全在它那边，只有它能判断该不该发。
-    connect(&export_controller_, &ExportController::VideoFrameExportStarted,
-            this, &MediaPlayer::VideoFrameExportStarted);
-    connect(&export_controller_, &ExportController::VideoFrameExportProgress,
-            this, &MediaPlayer::VideoFrameExportProgress);
-    connect(&export_controller_, &ExportController::VideoFrameExportFinished,
-            this, &MediaPlayer::VideoFrameExportFinished);
-    connect(&export_controller_, &ExportController::VideoFrameExportCanceled,
-            this, &MediaPlayer::VideoFrameExportCanceled);
-    connect(&export_controller_, &ExportController::VideoFrameExportError,
-            this, &MediaPlayer::VideoFrameExportError);
-    connect(&export_controller_, &ExportController::MediaExportStarted,
-            this, &MediaPlayer::MediaExportStarted);
-    connect(&export_controller_, &ExportController::MediaExportProgress,
-            this, &MediaPlayer::MediaExportProgress);
-    connect(&export_controller_, &ExportController::MediaExportFinished,
-            this, &MediaPlayer::MediaExportFinished);
-    connect(&export_controller_, &ExportController::MediaExportCanceled,
-            this, &MediaPlayer::MediaExportCanceled);
-    connect(&export_controller_, &ExportController::MediaExportError,
-            this, &MediaPlayer::MediaExportError);
+    // 导出的十条信号不再经门面转发: ExportController 直接在自己的 ExportBus 上发射，
+    // UI 连的是 export_bus()（见 core/player/ExportBus.h），契约一个字节都没变。
 
     // 容器结构分析的两条信号原样转发: 控制器在后台线程上判定"该不该弹、过没过期"，
     // 对外（UI）连的是本对象的信号，拆分前后契约一个字节都不变。

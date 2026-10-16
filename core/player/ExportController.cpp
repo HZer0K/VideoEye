@@ -49,11 +49,11 @@ bool ExportController::IsMediaExportWorkerAlive() const {
 void ExportController::StartVideoFrameExport(const QString& output_dir, const QString& format,
                                              int jpg_quality, int frame_interval) {
     // 先把参数校验做完再动旧任务: 参数不合法时不该顺手打断正在跑的导出。
-    if (current_url_().isEmpty()) { emit VideoFrameExportError("No media opened"); return; }
-    if (output_dir.isEmpty()) { emit VideoFrameExportError("Output directory is empty"); return; }
+    if (current_url_().isEmpty()) { emit bus_.VideoFrameExportError("No media opened"); return; }
+    if (output_dir.isEmpty()) { emit bus_.VideoFrameExportError("Output directory is empty"); return; }
     QDir dir(output_dir);
     if (!dir.exists() && !dir.mkpath(".")) {
-        emit VideoFrameExportError(QString("Failed to create output directory: %1").arg(output_dir));
+        emit bus_.VideoFrameExportError(QString("Failed to create output directory: %1").arg(output_dir));
         return;
     }
 
@@ -82,7 +82,7 @@ void ExportController::StartVideoFrameExportNow(const QString& output_dir, const
         tasks_.BeginHandle(kSlotFrameExport, 0, task::TaskKind::BlockingIo);
     const task::TaskId task_id = export_handle.id;
     if (task_id == 0) {
-        emit VideoFrameExportError("已有后台任务在运行, 请稍后再试");
+        emit bus_.VideoFrameExportError("已有后台任务在运行, 请稍后再试");
         return;
     }
 
@@ -107,24 +107,24 @@ void ExportController::StartVideoFrameExportNow(const QString& output_dir, const
     // 转发前先做代际校验, 丢弃非当前任务的(已排队但迟到的)信号。
     connect(exporter, &VideoFrameExporter::ExportStarted, this, [this, gen](int total) {
         if (frame_export_gen_ != gen) return;
-        emit VideoFrameExportStarted(total);
+        emit bus_.VideoFrameExportStarted(total);
     });
     connect(exporter, &VideoFrameExporter::ExportProgress, this, [this, gen](int n) {
         if (frame_export_gen_ != gen) return;
-        emit VideoFrameExportProgress(n);
+        emit bus_.VideoFrameExportProgress(n);
     });
     connect(exporter, &VideoFrameExporter::ExportFinished, this, [this, gen](const QString& dir) {
         if (frame_export_gen_ != gen) return;
-        emit VideoFrameExportFinished(dir);
+        emit bus_.VideoFrameExportFinished(dir);
     });
     connect(exporter, &VideoFrameExporter::ExportCanceled, this,
             [this, gen](int n, const QString& dir) {
                 if (frame_export_gen_ != gen) return;
-                emit VideoFrameExportCanceled(n, dir);
+                emit bus_.VideoFrameExportCanceled(n, dir);
             });
     connect(exporter, &VideoFrameExporter::ExportError, this, [this, gen](const QString& msg) {
         if (frame_export_gen_ != gen) return;
-        emit VideoFrameExportError(msg);
+        emit bus_.VideoFrameExportError(msg);
     });
 
     // 终态上报: 保证 WaitForIdle 看到的是终态而不是"还在跑"
@@ -190,7 +190,7 @@ void ExportController::StartVideoFrameExportNow(const QString& output_dir, const
                 tasks_.End(kSlotFrameExport, task_id, task::TaskState::Failed);
                 // 代际校验：期间换了媒体或点了取消，这次失败不该串到界面上。
                 if (frame_export_gen_ == gen)
-                    emit VideoFrameExportError(QString::fromStdString(msg));
+                    emit bus_.VideoFrameExportError(QString::fromStdString(msg));
             },
             Qt::QueuedConnection);
     };
@@ -270,10 +270,10 @@ void ExportController::StartMediaExportNow(const exporter::ExportOptions& opt) {
     const task::TaskHandle export_handle =
         tasks_.BeginHandle(kSlotMediaExport, 0, task::TaskKind::BlockingIo);
     const task::TaskId task_id = export_handle.id;
-    if (task_id == 0) { emit MediaExportError("已有后台任务在运行, 请稍后再试"); return; }
+    if (task_id == 0) { emit bus_.MediaExportError("已有后台任务在运行, 请稍后再试"); return; }
     auto fail = [this, task_id](const QString& msg) {
         tasks_.End(kSlotMediaExport, task_id, task::TaskState::Failed);
-        emit MediaExportError(msg);
+        emit bus_.MediaExportError(msg);
     };
     if (opt.input_path.isEmpty()) { fail("未打开媒体文件"); return; }
     if (opt.output_path.isEmpty()) { fail("未指定输出路径"); return; }
@@ -293,25 +293,25 @@ void ExportController::StartMediaExportNow(const exporter::ExportOptions& opt) {
     // 转发前做代际校验, 丢弃非当前任务的迟到信号。
     connect(exporter, &exporter::MediaExporter::ExportStarted, this, [this, gen](qint64 d) {
         if (media_export_gen_ != gen) return;
-        emit MediaExportStarted(d);
+        emit bus_.MediaExportStarted(d);
     });
     connect(exporter, &exporter::MediaExporter::ExportProgress, this, [this, gen](int p) {
         if (media_export_gen_ != gen) return;
-        emit MediaExportProgress(p);
+        emit bus_.MediaExportProgress(p);
     });
     connect(exporter, &exporter::MediaExporter::ExportFinished, this,
             [this, gen](const QString& p) {
                 if (media_export_gen_ != gen) return;
-                emit MediaExportFinished(p);
+                emit bus_.MediaExportFinished(p);
             });
     connect(exporter, &exporter::MediaExporter::ExportCanceled, this,
             [this, gen](const QString& p) {
                 if (media_export_gen_ != gen) return;
-                emit MediaExportCanceled(p);
+                emit bus_.MediaExportCanceled(p);
             });
     connect(exporter, &exporter::MediaExporter::ExportError, this, [this, gen](const QString& m) {
         if (media_export_gen_ != gen) return;
-        emit MediaExportError(m);
+        emit bus_.MediaExportError(m);
     });
 
     // 终态上报 (登记在 quit 之前, 保证 WaitForIdle 看到的是终态而不是"还在跑")
@@ -362,7 +362,7 @@ void ExportController::StartMediaExportNow(const exporter::ExportOptions& opt) {
             [this, task_id, gen, msg]() {
                 if (tasks_.State(kSlotMediaExport) != task::TaskState::Running) return;
                 tasks_.End(kSlotMediaExport, task_id, task::TaskState::Failed);
-                if (media_export_gen_ == gen) emit MediaExportError(QString::fromStdString(msg));
+                if (media_export_gen_ == gen) emit bus_.MediaExportError(QString::fromStdString(msg));
             },
             Qt::QueuedConnection);
     };

@@ -2,6 +2,7 @@
 
 #include "ui/dialogs/MediaExportDialog.h"
 #include "core/exporter/MediaExporter.h"
+#include "core/player/ExportBus.h"
 #include "core/player/MediaPlayer.h"
 
 #include <QFileDialog>
@@ -22,25 +23,29 @@ ExportCoordinator::ExportCoordinator(player::MediaPlayer* player, QWidget* dialo
     }
     // 播放器导出信号自连 (原 MainWindow::SetupConnections 里的导出块整体迁来;
     // OpenFinished 等其余播放器信号仍归 MainWindow)。
-    connect(player_, &player::MediaPlayer::VideoFrameExportStarted,
+    //
+    // 连的是导出总线而不是门面本身：这十条信号与播放无关，门面不再替它们背书，
+    // 见 core/player/ExportBus.h。信号名与参数不变，接线语义也不变。
+    player::ExportBus& bus = player_->export_bus();
+    connect(&bus, &player::ExportBus::VideoFrameExportStarted,
             this, &ExportCoordinator::OnVideoFrameExportStarted);
-    connect(player_, &player::MediaPlayer::VideoFrameExportProgress,
+    connect(&bus, &player::ExportBus::VideoFrameExportProgress,
             this, &ExportCoordinator::OnVideoFrameExportProgress);
-    connect(player_, &player::MediaPlayer::VideoFrameExportFinished,
+    connect(&bus, &player::ExportBus::VideoFrameExportFinished,
             this, &ExportCoordinator::OnVideoFrameExportFinished);
-    connect(player_, &player::MediaPlayer::VideoFrameExportCanceled,
+    connect(&bus, &player::ExportBus::VideoFrameExportCanceled,
             this, &ExportCoordinator::OnVideoFrameExportCanceled);
-    connect(player_, &player::MediaPlayer::VideoFrameExportError,
+    connect(&bus, &player::ExportBus::VideoFrameExportError,
             this, &ExportCoordinator::OnVideoFrameExportError);
-    connect(player_, &player::MediaPlayer::MediaExportStarted,
+    connect(&bus, &player::ExportBus::MediaExportStarted,
             this, &ExportCoordinator::OnMediaExportStarted);
-    connect(player_, &player::MediaPlayer::MediaExportProgress,
+    connect(&bus, &player::ExportBus::MediaExportProgress,
             this, &ExportCoordinator::OnMediaExportProgress);
-    connect(player_, &player::MediaPlayer::MediaExportFinished,
+    connect(&bus, &player::ExportBus::MediaExportFinished,
             this, &ExportCoordinator::OnMediaExportFinished);
-    connect(player_, &player::MediaPlayer::MediaExportCanceled,
+    connect(&bus, &player::ExportBus::MediaExportCanceled,
             this, &ExportCoordinator::OnMediaExportCanceled);
-    connect(player_, &player::MediaPlayer::MediaExportError,
+    connect(&bus, &player::ExportBus::MediaExportError,
             this, &ExportCoordinator::OnMediaExportError);
 }
 

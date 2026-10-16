@@ -26,6 +26,7 @@
 
 #include "BlockingTcpEndpoint.h"
 #include "core/exporter/MediaExporter.h"
+#include "core/player/ExportBus.h"
 #include "core/player/MediaPlayer.h"
 
 namespace {
@@ -63,12 +64,14 @@ struct ExportTerminals {
     int Total() const { return finished + error + canceled; }
 };
 
+// 导出终态现在走导出总线（见 core/player/ExportBus.h），不再挂在门面身上。
 void WireTerminals(player::MediaPlayer& player, ExportTerminals& out) {
-    QObject::connect(&player, &player::MediaPlayer::MediaExportFinished, &player,
+    player::ExportBus& bus = player.export_bus();
+    QObject::connect(&bus, &player::ExportBus::MediaExportFinished, &player,
                      [&out](const QString&) { ++out.finished; });
-    QObject::connect(&player, &player::MediaPlayer::MediaExportError, &player,
+    QObject::connect(&bus, &player::ExportBus::MediaExportError, &player,
                      [&out](const QString& msg) { ++out.error; out.last_error = msg; });
-    QObject::connect(&player, &player::MediaPlayer::MediaExportCanceled, &player,
+    QObject::connect(&bus, &player::ExportBus::MediaExportCanceled, &player,
                      [&out](const QString&) { ++out.canceled; });
 }
 

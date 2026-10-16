@@ -12,9 +12,10 @@
 // 这些知识原先散在 MediaPlayer 的 10 个成员和 7 个方法里，跟播放状态机、分析开关混在一起，
 // 谁也不敢动。收进来之后，MediaPlayer 只保留"转发入口 + 转发信号"。
 //
-// 本类是 QObject：worker 是 QObject（要发进度信号），信号连接需要一个接收者，
-// 而导出信号的对外契约（名字与参数）必须与拆分前一个字节不差 —— 所以这里声明同名信号，
-// 由 MediaPlayer 原样转发给 UI。
+// 本类是 QObject：worker 是 QObject（要发进度信号），信号连接需要一个接收者。
+// 对外的十条信号不在本类身上，而在 ExportBus 上（见 core/player/ExportBus.h）：
+// 名字与参数与拆分前一个字节不差，但 UI 连的是 player->export_bus() 而不是门面，
+// MediaPlayer 因此不必再做十条"同名转发"连接。
 //
 // 与 TaskManager 的关系（沿用拆分前的约定，不要改）:
 //   * slot / 令牌 / 任务 id 一律从**调用方**的 TaskManager 取，本类只持引用；
@@ -33,6 +34,7 @@
 
 #include "core/domain/task/TaskProtocol.h"
 #include "core/exporter/MediaExporter.h"
+#include "core/player/ExportBus.h"
 #include "core/player/VideoFrameExporter.h"
 #include "core/qt/QtWorkerOwner.h"
 #include "infrastructure/concurrency/TaskManager.h"
@@ -77,18 +79,9 @@ public:
     // "媒体导出进行中打开新文件"会留下一个仍在跑、且终态信号还能串回界面的旧任务。
     void CancelAllExports();
 
-signals:
-    void VideoFrameExportStarted(int total_frames);
-    void VideoFrameExportProgress(int exported_frames);
-    void VideoFrameExportFinished(const QString& output_dir);
-    void VideoFrameExportCanceled(int exported_frames, const QString& output_dir);
-    void VideoFrameExportError(const QString& message);
-
-    void MediaExportStarted(qint64 duration_ms);
-    void MediaExportProgress(int percent);
-    void MediaExportFinished(const QString& output_path);
-    void MediaExportCanceled(const QString& output_path);
-    void MediaExportError(const QString& message);
+    // 对外的导出信号总线。UI 经 MediaPlayer::export_bus() 拿它连信号；
+    // 本类所有"该发信号了"的地方都直接 emit bus_.Xxx()。
+    ExportBus& bus() { return bus_; }
 
 private:
     bool IsFrameExportWorkerAlive() const;
@@ -115,6 +108,10 @@ private:
         int jpg_quality = 90;
         int frame_interval = 1;
     };
+
+    // 导出信号的对外出口。以成员（而不是指针）持有：随本对象一起生灭，
+    // 父对象设成本对象，线程归属跟 UI 线程一致。
+    ExportBus bus_{this};
 
     task::TaskManager& tasks_;
     std::function<QString()> current_url_;
