@@ -66,6 +66,17 @@ public:
         const uint8_t* data, size_t size,
         int codec_id);
 
+    // 带内参数集解析：es_data 是一段**码流本身**（H.264/HEVC/VVC 的 AnnexB，
+    // 或 AV1 的裸 OBU 流），不是 extradata。
+    //
+    // 存在的理由：TS / 裸流 / fMP4 媒体分片的 extradata 恒为空，参数集只写在码流里
+    // （每个 IDR 前重复的 SPS/PPS/VPS）。以前这类封装一律落 NoExtradata，码流分析
+    // 整块不可用。调用方（AnalysisPipeline）负责"攒到参数集出现为止"，
+    // 本函数只解一次，攒包策略见 core/analysis/codec/InBandParameterSets.h。
+    model::BitstreamAnalysisResult AnalyzeInBand(const uint8_t* es_data,
+                                                 size_t size,
+                                                 int codec_id);
+
     // 设置容器 metadata 用于对比
     void SetContainerMetadata(const ContainerMetadata& metadata);
 

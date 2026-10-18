@@ -277,6 +277,85 @@ model::BitstreamAnalysisResult BitstreamAnalyzer::AnalyzeWithFormat(
     return result_;
 }
 
+// 带内参数集：输入是码流本身（AnnexB NAL / AV1 OBU），不是配置记录。
+// 与 Analyze() 的差别只有两处：
+//   1. 不经过 LooksLikeConfigRecord —— 带内数据里不可能有 avcC/hvcC 头；
+//   2. 没找到参数集时的说明换成"带内没出现"，而不是"容器没携带"。
+model::BitstreamAnalysisResult BitstreamAnalyzer::AnalyzeInBand(const uint8_t* es_data,
+                                                                size_t size,
+                                                                int codec_id) {
+    result_ = model::BitstreamAnalysisResult();
+    result_.analyzed = true;
+    result_.codec_id_str = CodecIdName(codec_id);
+    result_.parameter_set_source = "in_band";
+
+    if (es_data == nullptr || size == 0) {
+        result_.analyzed = false;
+        result_.parse_outcome = model::BitstreamParseOutcome::NoExtradata;
+        result_.capability = model::AnalysisCapability::Unavailable;
+        result_.partial = true;
+        result_.capability_note = "带内码流为空，无法抽取参数集";
+        result_.parameter_set_source.clear();
+        return result_;
+    }
+
+    videoeye::ExtradataResult parsed;
+    if (static_cast<AVCodecID>(codec_id) == AV_CODEC_ID_AV1) {
+        // AV1 没有起始码，参数集（序列头）本身就是一个 OBU。
+        parsed.obu_units = videoeye::ExtradataParser::ExtractObuUnits(es_data, size);
+        parsed.valid = !parsed.obu_units.empty();
+    } else {
+        parsed = videoeye::ExtradataParser::ParseWithFormat(
+            videoeye::ExtradataFormat::AnnexB, es_data, size, NalSyntaxForCodec(codec_id));
+    }
+    IngestUnits(parsed);
+    ApplyContainerSnapshot();
+
+    Dispatch(codec_id, es_data, size);
+    FinalizeCapability(codec_id);
+
+    // 带内数据可能有好几 MB（探测窗口 8 MiB），而 NAL/OBU 明细对 UI 只是"结构树上的
+    // 几行"。解完参数集之后按字节预算裁掉明细，避免这份结果被信号一次拷贝几 MB。
+    // 参数集本身已经落在 h264_sps / hevc_sps / av1_seq_header 里，裁剪不影响任何结论。
+    {
+        constexpr size_t kUnitDetailBudget = 256u * 1024u;
+        size_t kept = 0;
+        size_t bytes = 0;
+        while (kept < result_.nal_units.size() && kept < 64 &&
+               bytes + result_.nal_units[kept].size <= kUnitDetailBudget) {
+            bytes += result_.nal_units[kept].size;
+            ++kept;
+        }
+        result_.nal_units.resize(kept);
+
+        kept = 0;
+        bytes = 0;
+        while (kept < result_.obu_units.size() && kept < 64 &&
+               bytes + result_.obu_units[kept].size <= kUnitDetailBudget) {
+            bytes += result_.obu_units[kept].size;
+            ++kept;
+        }
+        result_.obu_units.resize(kept);
+    }
+
+    // FinalizeCapability 的 TypeOnly 文案是照"容器没带参数集"写的，带内一路要说清楚
+    // 是"这段码流里没出现参数集"（编码器可能只在流开头写一次，录播从中间开始就抓不到）。
+    if (result_.analyzed && !AnyParameterSet()) {
+        result_.parse_outcome = model::BitstreamParseOutcome::TypeOnly;
+        result_.capability = model::AnalysisCapability::Partial;
+        result_.partial = true;
+        result_.capability_note =
+            "带内码流中未找到参数集：该流可能只在开头写过一次 SPS/VPS，"
+            "或首帧不是含参数集的关键帧";
+        result_.parameter_set_source.clear();
+    }
+
+    if (has_container_metadata_ && result_.analyzed) {
+        CompareWithContainer(result_, result_);
+    }
+    return result_;
+}
+
 void BitstreamAnalyzer::Dispatch(int codec_id, const uint8_t* data, size_t size) {
     switch (static_cast<AVCodecID>(codec_id)) {
         case AV_CODEC_ID_H264:
@@ -669,6 +748,12 @@ void BitstreamAnalyzer::FinalizeCapability(int codec_id) {
     }
 
     result_.partial = (result_.capability != AnalysisCapability::Supported);
+
+    // 走到这里说明用的是容器 extradata（带内路径进来前已把 source 置成 "in_band"）。
+    // 只有在真的解出参数集时才标注：否则"来源"会给出一个并不存在的可信度暗示。
+    if (result_.parameter_set_source.empty() && AnyParameterSet()) {
+        result_.parameter_set_source = "extradata";
+    }
 }
 
 void BitstreamAnalyzer::CompareWithContainer(const model::BitstreamAnalysisResult& bitstream,

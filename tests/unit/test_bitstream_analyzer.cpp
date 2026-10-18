@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <fstream>
 #include <iterator>
@@ -7,6 +8,7 @@
 #include <vector>
 
 #include "core/analysis/codec/BitstreamAnalyzer.h"
+#include "core/analysis/codec/InBandParameterSets.h"
 #include "core/domain/model/BitstreamInfo.h"
 
 extern "C" {
@@ -17,6 +19,7 @@ namespace {
 
 using videoeye::BitstreamAnalyzer;
 using videoeye::ContainerMetadata;
+using videoeye::InBandParameterSetProbe;
 using videoeye::model::AnalysisCapability;
 using videoeye::model::BitstreamAnalysisResult;
 using videoeye::model::BitstreamParseOutcome;
@@ -591,4 +594,124 @@ TEST(BitstreamAnalyzerTest, LargeGeometryDiffIsWarning) {
 TEST(BitstreamAnalyzerTest, BitDepthMismatchIsReported) {
     const BitstreamAnalysisResult r = AnalyzeWith(MakeContainer(1280, 720, 10));
     EXPECT_TRUE(HasField(r, "Bit Depth"));
+}
+
+// ===========================================================================
+// 带内参数集（extradata 为空的封装：MPEG-TS / 裸流 / fMP4 媒体分片）
+//
+// 这一组锁定"没有 extradata 也能拿到参数集"这条链路：
+//   * BitstreamAnalyzer::AnalyzeInBand —— 解一次码流本体；
+//   * InBandParameterSetProbe         —— 攒包、决定何时解、上限与放弃原因。
+// 在此之前这类封装一律落 NoExtradata，码流分析整块不可用。
+// ===========================================================================
+
+TEST(InBandParameterSetTest, AnalyzeInBandParsesAnnexBH264) {
+    const std::vector<uint8_t> sample = ReadCodecCorpus("real_x264_192x108_hrd.h264");
+    ASSERT_FALSE(sample.empty());
+
+    BitstreamAnalyzer analyzer;
+    const BitstreamAnalysisResult r =
+        analyzer.AnalyzeInBand(sample.data(), sample.size(), AV_CODEC_ID_H264);
+
+    EXPECT_EQ(r.parse_outcome, BitstreamParseOutcome::FullParse);
+    EXPECT_EQ(r.parameter_set_source, "in_band");
+    EXPECT_TRUE(r.h264_sps.present);
+    EXPECT_EQ(r.width, 192);
+    EXPECT_EQ(r.height, 108);
+}
+
+TEST(InBandParameterSetTest, ExtradataEntryStillReportsNoExtradata) {
+    // 两个入口的语义不能混：extradata 为空是"容器没携带"，
+    // 与"带内这段没出现参数集"是两种不同结论。
+    BitstreamAnalyzer analyzer;
+    const BitstreamAnalysisResult r = analyzer.Analyze(nullptr, 0, AV_CODEC_ID_H264);
+    EXPECT_EQ(r.parse_outcome, BitstreamParseOutcome::NoExtradata);
+    EXPECT_TRUE(r.parameter_set_source.empty());
+}
+
+TEST(InBandParameterSetTest, ProbeCollectsUntilParameterSetAppears) {
+    // 前面垫一个无关 NAL（SEI），参数集在第二个包才出现 ——
+    // 这正是"录播从 GOP 中间开始"的形态：头几个包不含 SPS。
+    InBandParameterSetProbe probe;
+    probe.Reset(AV_CODEC_ID_H264);
+    ASSERT_TRUE(probe.enabled());
+
+    const std::vector<uint8_t> filler = {0x00, 0x00, 0x00, 0x01, 0x06, 0x05, 0xFF, 0x80};
+    EXPECT_FALSE(probe.Feed(filler.data(), filler.size()));
+    EXPECT_FALSE(probe.done());
+    EXPECT_FALSE(probe.given_up());
+
+    const std::vector<uint8_t> sample = ReadCodecCorpus("real_x264_192x108_hrd.h264");
+    ASSERT_FALSE(sample.empty());
+    EXPECT_TRUE(probe.Feed(sample.data(), sample.size()));
+    EXPECT_TRUE(probe.done());
+    EXPECT_EQ(probe.packets(), 2);
+    EXPECT_EQ(probe.result().parameter_set_source, "in_band");
+    EXPECT_EQ(probe.result().width, 192);
+}
+
+TEST(InBandParameterSetTest, ProbeFindsParameterSetSplitAcrossPackets) {
+    // 逐 3 字节喂：起始码与 NAL header 一定会被切开，
+    // 重叠扫描必须让它们还能被认出来（少了重叠就会整段漏掉）。
+    InBandParameterSetProbe probe;
+    probe.Reset(AV_CODEC_ID_H264);
+
+    const std::vector<uint8_t> sample = ReadCodecCorpus("real_x264_192x108_hrd.h264");
+    ASSERT_FALSE(sample.empty());
+
+    bool ok = false;
+    for (size_t off = 0; off < sample.size() && !ok; off += 3) {
+        const size_t n = std::min<size_t>(3, sample.size() - off);
+        ok = probe.Feed(sample.data() + off, n);
+    }
+    EXPECT_TRUE(ok);
+    EXPECT_TRUE(probe.done());
+    EXPECT_EQ(probe.result().width, 192);
+}
+
+TEST(InBandParameterSetTest, ProbeDisabledForCodecWithoutParser) {
+    // 没有参数集解析器的编码不值得攒包：攒到最后也解不出东西。
+    InBandParameterSetProbe probe;
+    probe.Reset(AV_CODEC_ID_MPEG2VIDEO);
+    EXPECT_FALSE(probe.enabled());
+
+    const uint8_t pkt[8] = {0x00, 0x00, 0x01, 0xB3, 0x00, 0x00, 0x00, 0x00};
+    EXPECT_FALSE(probe.Feed(pkt, sizeof(pkt)));
+    EXPECT_FALSE(probe.result().analyzed);
+}
+
+TEST(InBandParameterSetTest, ProbeGivesUpAtByteCap) {
+    InBandParameterSetProbe::Options opt;
+    opt.max_bytes = 16;
+    opt.max_packets = 0;  // 只看字节上限
+    InBandParameterSetProbe probe;
+    probe.Reset(AV_CODEC_ID_H264, opt);
+
+    // 只有 PPS、没有 SPS：起始码会命中"参数集类型"，但解析不出完整参数集，
+    // 于是走补齐重试路径 —— 字节上限先到，必须 given_up 而不是无限攒。
+    const std::vector<uint8_t> pps_only = {0x00, 0x00, 0x00, 0x01, 0x68, 0xEB, 0x4B, 0x2C};
+    bool done = false;
+    for (int i = 0; i < 8 && !done; ++i) {
+        done = probe.Feed(pps_only.data(), pps_only.size());
+    }
+    EXPECT_FALSE(done);
+    EXPECT_TRUE(probe.given_up());
+    EXPECT_FALSE(probe.GiveUpReason().empty());
+    EXPECT_TRUE(probe.result().parameter_set_source.empty());
+}
+
+TEST(InBandParameterSetTest, ProbeReportsReasonAtPacketCap) {
+    InBandParameterSetProbe::Options opt;
+    opt.max_packets = 2;
+    InBandParameterSetProbe probe;
+    probe.Reset(AV_CODEC_ID_H264, opt);
+
+    // 纯非 IDR 切片（NAL 类型 1）：扫满包数上限后放弃，且原因要能读懂
+    const std::vector<uint8_t> slice = {0x00, 0x00, 0x00, 0x01, 0x41, 0x9A, 0x02, 0x03};
+    EXPECT_FALSE(probe.Feed(slice.data(), slice.size()));
+    EXPECT_FALSE(probe.Feed(slice.data(), slice.size()));
+    EXPECT_FALSE(probe.given_up());  // 第 2 个包刚好到上限，还没触发
+    EXPECT_FALSE(probe.Feed(slice.data(), slice.size()));
+    EXPECT_TRUE(probe.given_up());
+    EXPECT_NE(probe.GiveUpReason().find("参数集"), std::string::npos);
 }

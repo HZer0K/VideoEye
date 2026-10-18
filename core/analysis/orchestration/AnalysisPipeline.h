@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "core/analysis/AnalysisOptions.h"
+#include "core/analysis/codec/InBandParameterSets.h"
 #include "core/analysis/diagnostics/AuxDataAnalyzer.h"
 #include "core/analysis/diagnostics/SubtitleAnalyzer.h"
 #include "core/analysis/diagnostics/TimecodeAnalyzer.h"
@@ -159,7 +160,8 @@ public:
     // flush 音频解码器与 swr 缓存里残留的样本（不碰 AVFormatContext）。
     void FlushAudio();
     // flush 帧类型探测解码器：把 EOF 时仍压在解码器里的帧收干净（见文件头注释）。
-    // 产出的帧没有归属包，字节记 0 —— 帧数与帧类型必须完整。
+    // 这些帧的字节从待认领池里认领（它们的包早就按字节入过账了）——
+    // 帧数与帧类型必须完整，字节也要归位，否则平均帧大小与 GOP 大小偏小。
     void FlushFrameProbe();
     // 释放解码器 / parser / swr。可重复调用（各 probe 的 Release 自带幂等）。
     void ReleaseProbes();
@@ -183,8 +185,7 @@ public:
 private:
     // 只读 extradata 的码流解析（不解码）。只取第一条有 extradata 的视频流。
     void PrepareBitstream(AVFormatContext* fmt, model::AnalysisResult& result);
-    int FirstStreamOfType(AVFormatContext* fmt, AVMediaType type);
-    // 解码后归一为 float planar 再喂给 AudioQcAnalyzer（内部按 100 ms 步进出块）
+    int FirstStreamOfType(AVFormatContext* fmt, AVMediaType type);    // 解码后归一为 float planar 再喂给 AudioQcAnalyzer（内部按 100 ms 步进出块）
     void FeedAudioFrame(AVFrame* frame);
 
     const AnalysisOptions& options_;
@@ -209,6 +210,10 @@ private:
     int video_stream_index_ = -1;
     int audio_stream_index_ = -1;
     int color_video_stream_index_ = -1;
+    // 带内参数集探测（extradata 为空的封装：TS / 裸流 / fMP4 媒体分片）。
+    // inband_stream_index_ < 0 表示没在探测、或者已经收工（成功或放弃）。
+    InBandParameterSetProbe inband_probe_;
+    int inband_stream_index_ = -1;
     double audio_time_base_ = 0.0;
     // 视频流时基（FlushFrameProbe 把 flush 出来的帧 pts 换算成秒用）
     double video_time_base_ = 0.0;

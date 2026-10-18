@@ -46,6 +46,13 @@ struct BitstreamAnalysisResult {
     // FullParse 也算），消费方不得把它当成"已通过"。
     bool partial = false;
     std::string capability_note;      // 状态的人类可读说明（UI tooltip / 报告）
+
+    // 参数集是从哪儿拿到的（空 = 没解析出参数集）：
+    //   "extradata" —— 容器携带（MP4/MKV 的 avcC/hvcC/av1C/vvcC，或 AnnexB extradata）
+    //   "in_band"   —— extradata 为空，从码流里抽出来的（TS / 裸流 / fMP4 媒体分片）
+    // 消费方必须能区分：同一组 Profile/Level，"容器写了什么"和"码流里实际是什么"
+    // 的可信度不同 —— 后者才是编码器真正写进码流的那一份。
+    std::string parameter_set_source;
     
     // 基本视频属性（从码流解析）
     int width = 0;

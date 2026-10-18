@@ -546,10 +546,13 @@ add_test(NAME HevcBitstreamParserTests COMMAND test_hevc_bitstream_parser)
 # 测试 15：BitstreamAnalyzer（容器侧快照 + 容器/码流对比分级）
 # 说明: 这是「参数集解析」页的数据来源。只需要 FFmpeg 头文件（AVCodecID 枚举），
 #       不调用任何 avcodec 函数，因此不必链接 FFmpeg 库。
+#       带内参数集（InBandParameterSets）也在这里测：它和 extradata 入口共用
+#       同一套解析器，只是"数据从哪来"不同。
 # =================================================
 videoeye_add_test(test_bitstream_analyzer
     unit/test_bitstream_analyzer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/BitstreamAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/InBandParameterSets.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/H264BitstreamParser.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/HevcBitstreamParser.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/Av1BitstreamParser.cpp

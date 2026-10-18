@@ -55,9 +55,11 @@ struct BitrateGopOptions {
     int max_anomalies_per_type = 200;
 
     // 逐帧样本上限（0 = 不限制）。长文件（小时级）的 samples_ 会无界增长，
-    // 超过上限即对样本做有界降采样（保留偶数下标），把内存夹在 ~max_samples，
-    // 展示曲线本就是近似，降采样不影响 GOP 统计（GOP 由增量状态维护，不依赖 samples_）。
-    int64_t max_samples = 0;
+    // 超过上限即对样本做有界降采样：相邻样本**合并成时间桶**（字节相加），
+    // 因此曲线精度下降但**总量不变**（窗口字节数、总字节、时长都不受影响）。
+    // 默认给一个上限而不是 0：0 意味着整条分析链路没有内存上界，一个损坏的
+    // 时长头就能让 samples_ 把内存吃光。
+    int64_t max_samples = 1000000;
 };
 
 // 音频 QC 分析配置
@@ -223,8 +225,11 @@ struct AnalysisOptions {
 
     // 编码码流解析（从 AVCodecParameters::extradata 解析 SPS/VPS/Sequence Header，
     // 与容器层宽高/位深/色彩做一致性对比，见 core/analysis/codec/BitstreamAnalyzer.h）。
-    // 不解码、只读 KB 级 extradata，成本可忽略；目前支持 H.264 / HEVC / AV1，
-    // VVC 只识别编码类型、不产出参数（见 BitstreamAnalyzer::ParseVvc）。
+    // 不解码、只读 KB 级 extradata，成本可忽略；目前支持 H.264 / HEVC / AV1 / VVC。
+    //
+    // extradata 为空的封装（MPEG-TS / 裸流 / fMP4 媒体分片）改走"带内参数集"：
+    // 扫前若干个视频包、从码流里抽 SPS/VPS/序列头（见 core/analysis/codec/
+    // InBandParameterSets.h）。上限 8 MiB / 4000 包，命中即停，未命中会记日志。
     bool analyze_bitstream = true;
 
     // MP4/fMP4 容器一致性校验（sample table / elst / moof-traf-trun / faststart）。

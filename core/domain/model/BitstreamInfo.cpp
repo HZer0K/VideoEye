@@ -227,6 +227,9 @@ std::string BitstreamAnalysisResult::Summary() const {
     if (!capability_note.empty()) {
         oss << "Note: " << capability_note << "\n";
     }
+    if (!parameter_set_source.empty()) {
+        oss << "Parameter sets: " << parameter_set_source << "\n";
+    }
     oss << "Resolution: " << width << "x" << height << "\n";
     oss << "Bit depth: " << bit_depth << "\n";
     oss << "Color: primaries=" << color_primaries
@@ -250,6 +253,7 @@ std::string BitstreamAnalysisResult::ToJson() const {
     }
     oss << "  \"stream_index\": " << stream_index << ",\n";
     oss << "  \"codec_name\": " << JsonString(codec_name) << ",\n";
+    oss << "  \"parameter_set_source\": " << JsonString(parameter_set_source) << ",\n";
     oss << "  \"width\": " << width << ",\n";
     oss << "  \"height\": " << height << ",\n";
     oss << "  \"bit_depth\": " << bit_depth << ",\n";

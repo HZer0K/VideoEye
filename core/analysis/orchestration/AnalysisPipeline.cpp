@@ -33,6 +33,29 @@ model::AudioChannelRole AudioChannelRoleOf(AVChannel channel) {
     }
 }
 
+// 容器侧 metadata 快照，供码流层做"码流 vs 容器"比对。
+// extradata 与带内两条路径共用：两边都拿同一份快照，比对口径才一致。
+ContainerMetadata ContainerMetadataFromStream(const AVStream* st,
+                                             const model::AnalysisResult& result,
+                                             unsigned stream_index) {
+    ContainerMetadata meta;
+    meta.codec_name = (stream_index < result.streams.size())
+                          ? result.streams[stream_index].codec_name
+                          : std::string();
+    meta.width = st->codecpar->width;
+    meta.height = st->codecpar->height;
+    // bits_per_raw_sample 为 0 时按 8bit：容器层没有更细的信息，
+    // 码流层解出 10bit 时报不一致才是对的。
+    meta.bit_depth = (st->codecpar->bits_per_raw_sample > 0)
+                         ? st->codecpar->bits_per_raw_sample
+                         : 8;
+    meta.color_primaries = st->codecpar->color_primaries;
+    meta.transfer_characteristics = st->codecpar->color_trc;
+    meta.matrix_coefficients = st->codecpar->color_space;
+    meta.color_range = st->codecpar->color_range;
+    return meta;
+}
+
 }  // namespace
 
 AnalysisPipeline::AnalysisPipeline(const AnalysisOptions& options) : options_(options) {}
@@ -202,7 +225,15 @@ void AnalysisPipeline::Prepare(AVFormatContext* fmt, model::AnalysisResult& resu
 
 // 编码码流解析（只读 extradata，不解码；必须在 avformat_close_input 之前）。
 // 只取第一条视频流：诊断关心的是主视频的编码参数，多视频流取第一条足够。
+//
+// extradata 为空时（TS / 裸流 / fMP4 媒体分片）转成"带内探测"：
+// 参数集只写在码流里，Prepare 阶段还没读到包，所以这里只登记流号，
+// 真正的攒包与解析在 OnPacket 里逐包推进（见 InBandParameterSets.h）。
 void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisResult& result) {
+    // 每次 Prepare 都从干净状态开始：同一个 pipeline 对象理论上可被复用，
+    // 上一份文件的带内探测状态（流号/缓冲区）不能漏到下一份里。
+    inband_stream_index_ = -1;
+    inband_probe_.Reset(0);
     if (!options_.analyze_bitstream) return;
 
     for (unsigned i = 0; i < fmt->nb_streams; ++i) {
@@ -210,20 +241,8 @@ void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisRes
         if (st->codecpar->codec_type != AVMEDIA_TYPE_VIDEO) continue;
         if (st->codecpar->extradata == nullptr || st->codecpar->extradata_size <= 0) continue;
 
-        ContainerMetadata meta;
-        meta.codec_name = (i < result.streams.size()) ? result.streams[i].codec_name : "";
-        meta.width = st->codecpar->width;
-        meta.height = st->codecpar->height;
-        meta.bit_depth = (st->codecpar->bits_per_raw_sample > 0)
-                             ? st->codecpar->bits_per_raw_sample
-                             : 8;
-        meta.color_primaries = st->codecpar->color_primaries;
-        meta.transfer_characteristics = st->codecpar->color_trc;
-        meta.matrix_coefficients = st->codecpar->color_space;
-        meta.color_range = st->codecpar->color_range;
-
         BitstreamAnalyzer bitstream;
-        bitstream.SetContainerMetadata(meta);
+        bitstream.SetContainerMetadata(ContainerMetadataFromStream(st, result, i));
         model::BitstreamAnalysisResult bs = bitstream.Analyze(
             st->codecpar->extradata,
             static_cast<size_t>(st->codecpar->extradata_size),
@@ -239,7 +258,27 @@ void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisRes
             break;
         }
     }
+
+    if (result.bitstream_analyzed) return;
+
+    // ---- 带内兜底：extradata 缺失的封装 ----
+    // 注意用 continue 而不是 return：第一条视频流可能是没有解析器的编码
+    // （如 MPEG-2），但第二条是 H.264 —— 那种文件仍然应该能分析。
+    for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+        AVStream* st = fmt->streams[i];
+        if (st->codecpar->codec_type != AVMEDIA_TYPE_VIDEO) continue;
+        if (st->codecpar->extradata != nullptr && st->codecpar->extradata_size > 0) continue;
+
+        inband_probe_.Reset(static_cast<int>(st->codecpar->codec_id));
+        if (!inband_probe_.enabled()) continue;
+        inband_probe_.SetContainerMetadata(ContainerMetadataFromStream(st, result, i));
+        inband_stream_index_ = static_cast<int>(i);
+        LOG_INFO("码流解析: 流 #" + std::to_string(i) +
+                 " 无 extradata，改为带内参数集探测");
+        return;
+    }
 }
+
 
 // ---- 每个包一次 ----
 
@@ -320,9 +359,11 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt,
         // 输入建模成显式事件，**每个语义单元只进一次统计**（曾因解码路径在
         // receive 循环内外各调一次 OnFrame、parser 路径经 fed 二次调用，导致
         // 帧数/字节数/GOP/帧类型比例全部重复计数，见 BitrateGopAnalyzer.h）:
-        //   * OnFrame       —— 一个语义帧（解码器/parser 输出），字节由本处归属
-        //   * OnPacketBytes —— 只有字节没有帧（解码器收下包但帧未产出）
-        //   * OnPacket      —— 无帧类型探测时的包级回退（一包一帧，类型未知）
+        //   * OnPacketBytes        —— 包字节按到达时间入包级账，并进待认领池
+        //   * OnFramesClaimPending —— 解码器/parser 产出的帧来认领池里的字节（帧级账）
+        //   * OnPacket             —— 无帧类型探测时的包级回退（一包一帧，类型未知）
+        // 两条账分开是硬要求：解码有延迟时"本次送入包的字节"不属于"本次收到的帧"，
+        // 拿它顶替会让 GOP 字节之和远小于总字节、I 帧大小归属到错误的包。
         if (options_.analyze_bitrate_gop && pkt->stream_index == video_stream_index_) {
             const double sample_ts = has_pts
                                          ? ts
@@ -333,14 +374,15 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt,
 
             if (frame_probe_.use_decoder) {
                 if (avcodec_send_packet(frame_probe_.decoder, pkt) == 0) {
-                    // 先收本包解码产出的全部帧：一包可能产出多帧，也可能一帧都
+                    // 字节**先**按包到达时间入账（码率曲线与总字节是包级事实），
+                    // 并进待认领池：解码器可能压着好几包才吐一帧，此刻出的帧属于
+                    // 更早的包，绝不能拿"本包字节"顶替它们的帧大小 —— 那会让
+                    // GOP 字节之和远小于总字节、I 帧大小也归属到错误的包。
+                    bitrate_gop_.OnPacketBytes(pkt->stream_index, sample_ts, pkt->size,
+                                              /*awaiting_frame=*/true);
+                    // 再收本包解码产出的全部帧：一包可能产出多帧，也可能一帧都
                     // 没有（帧重排序延迟）—— 两者都不按"一包一帧"猜。
-                    struct DecodedFrame {
-                        double ts;
-                        model::FrameType type;
-                        bool is_idr;
-                    };
-                    std::vector<DecodedFrame> decoded;
+                    std::vector<BitrateGopAnalyzer::FrameEvent> decoded;
                     while (avcodec_receive_frame(frame_probe_.decoder, frame_probe_.frame) >= 0) {
                         // 注: FFmpeg 8.x 已移除 AVFrame::key_frame，统一用 AV_FRAME_FLAG_KEY
                         const bool frame_is_idr =
@@ -355,27 +397,15 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt,
                                            frame_is_idr});
                         av_frame_unref(frame_probe_.frame);
                     }
-                    if (decoded.empty()) {
-                        // 帧延迟：字节先入账，帧等后续包产出时再计 —— 绝不能在这里
-                        // 补一帧，否则会和真正的解码输出重复计数。
-                        bitrate_gop_.OnPacketBytes(pkt->stream_index, sample_ts, pkt->size);
-                    } else {
-                        // 字节归属：一包一帧时全额归属；一包多帧时均分，余数补给
-                        // 首帧，保证"本包字节总和不变"（码率曲线按字节前缀和算）。
-                        int64_t remaining = pkt->size;
-                        for (size_t i = 0; i < decoded.size(); ++i) {
-                            const bool is_last = (i + 1 == decoded.size());
-                            const int64_t share =
-                                is_last ? remaining
-                                        : pkt->size /
-                                              static_cast<int64_t>(decoded.size());
-                            remaining -= share;
-                            bitrate_gop_.OnFrame(pkt->stream_index, decoded[i].ts, share,
-                                                 decoded[i].type, decoded[i].is_idr);
-                        }
+                    if (!decoded.empty()) {
+                        // 待认领池里的字节（含本包）按出帧数均分给这批帧 ——
+                        // 总量守恒，帧级账 + 未关联字节 == 包级账。
+                        bitrate_gop_.OnFramesClaimPending(pkt->stream_index, decoded);
                     }
+                    // decoded 为空 = 帧延迟：字节留在待认领池里，等后续包产出帧时
+                    // 一起认领。绝不能在这里补一帧，否则会和真正的解码输出重复计数。
                 } else {
-                    // 包没进解码器（send 失败）：按回退路径记一帧，字节不丢
+                    // 包没进解码器（send 失败）：不会有帧来认领，按回退路径记一帧
                     bitrate_gop_.OnPacket(pkt->stream_index, sample_ts, pkt->size, is_idr);
                 }
             } else if (frame_probe_.parser != nullptr) {
@@ -383,9 +413,14 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt,
                 int out_size = 0;
                 av_parser_parse2(frame_probe_.parser, frame_probe_.parser_ctx, &out_data,
                                  &out_size, pkt->data, pkt->size, pkt->pts, pkt->dts, pkt->pos);
+                // 与解码路径同构：字节先入账并进待认领池，parser 吐出的帧再来认领。
+                // 这样"parser 攒了几个包才凑出一帧"时，那几个包的字节也归到这一帧，
+                // 而不是留在池外变成"未关联字节"。
+                bitrate_gop_.OnPacketBytes(pkt->stream_index, sample_ts, pkt->size,
+                                          /*awaiting_frame=*/true);
                 if (out_size > 0) {
                     // parser 吐出了一个完整帧（PARSER_FLAG_COMPLETE_FRAMES 下
-                    // 一次调用对应一帧），字节全额归属
+                    // 一次调用对应一帧）
                     model::FrameType frame_type = model::FrameType::Unknown;
                     if (frame_probe_.parser->pict_type != AV_PICTURE_TYPE_NONE) {
                         frame_type =
@@ -396,15 +431,37 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt,
                             is_idr = false;
                         }
                     }
-                    bitrate_gop_.OnFrame(pkt->stream_index, sample_ts, pkt->size, frame_type,
-                                         is_idr);
-                } else {
-                    // 本包不含完整帧（裸流/TS 分片场景）：只记字节，不猜帧
-                    bitrate_gop_.OnPacketBytes(pkt->stream_index, sample_ts, pkt->size);
+                    std::vector<BitrateGopAnalyzer::FrameEvent> events{
+                        {sample_ts, frame_type, is_idr}};
+                    bitrate_gop_.OnFramesClaimPending(pkt->stream_index, events);
                 }
+                // 本包不含完整帧（裸流/TS 分片场景）：字节留在池里，不猜帧。
             } else {
                 // 解码器与 parser 都不可用：包级回退（一包一帧，类型未知）
                 bitrate_gop_.OnPacket(pkt->stream_index, sample_ts, pkt->size, is_idr);
+            }
+        }
+
+        // 带内参数集（extradata 为空的封装）：攒到参数集出现为止。
+        // 放在 GOP/码率之后是因为那两段不依赖参数集；这里一旦成功就回填结果并收工，
+        // 之后的包不再进这个分支（inband_stream_index_ 置 -1）。
+        if (inband_stream_index_ >= 0 && pkt->stream_index == inband_stream_index_ &&
+            !result.bitstream_analyzed) {
+            if (inband_probe_.Feed(pkt->data, pkt->size)) {
+                result.bitstream_analysis = inband_probe_.result();
+                result.bitstream_analysis.stream_index = pkt->stream_index;
+                result.bitstream_analyzed = true;
+                inband_stream_index_ = -1;
+                LOG_INFO("码流解析(带内): codec=" + result.bitstream_analysis.codec_name +
+                         " " + std::to_string(result.bitstream_analysis.width) + "x" +
+                         std::to_string(result.bitstream_analysis.height) +
+                         " 用包数=" + std::to_string(inband_probe_.packets()) +
+                         " 不一致=" +
+                         std::to_string(result.bitstream_analysis.inconsistencies.size()));
+            } else if (inband_probe_.given_up()) {
+                // 放弃要留日志：否则用户只看到"码流分析没结果"，查不出是没找到参数集
+                LOG_INFO("带内参数集探测放弃: " + inband_probe_.GiveUpReason());
+                inband_stream_index_ = -1;
             }
         }
     }
@@ -475,24 +532,28 @@ void AnalysisPipeline::ReleaseProbes() {
 }
 
 // EOF 时帧类型解码器里可能还压着几帧（帧重排序延迟）。这些帧的归属包在扫描期
-// 已按"0 帧产出"走过 OnPacketBytes（字节已入账），这里只把帧本身补进统计
-// （字节记 0）—— 不 flush 的话"总帧数 < 视频包数"，I/P/B 比例与 GOP 统计失真。
+// 已按"0 帧产出"走过 OnPacketBytes（字节已入账、躺在待认领池里），这里把帧补进
+// 统计并让它们认领池里剩下的字节 —— 不 flush 的话"总帧数 < 视频包数"，I/P/B
+// 比例与 GOP 统计失真；不认领的话这些帧就是 0 字节，平均帧大小与 GOP 大小偏小。
 void AnalysisPipeline::FlushFrameProbe() {
     if (!options_.analyze_bitrate_gop || !frame_probe_.use_decoder) return;
     if (video_stream_index_ < 0) return;
     if (frame_probe_.decoder == nullptr || frame_probe_.frame == nullptr) return;
     if (avcodec_send_packet(frame_probe_.decoder, nullptr) != 0) return;
+    std::vector<BitrateGopAnalyzer::FrameEvent> pending;
     while (avcodec_receive_frame(frame_probe_.decoder, frame_probe_.frame) >= 0) {
         const bool is_idr = (frame_probe_.frame->flags & AV_FRAME_FLAG_KEY) != 0;
         const double frame_ts =
             (frame_probe_.frame->pts != AV_NOPTS_VALUE && video_time_base_ > 0.0)
                 ? static_cast<double>(frame_probe_.frame->pts) * video_time_base_
                 : -1.0;
-        bitrate_gop_.OnFrame(video_stream_index_, frame_ts, /*size=*/0,
-                             static_cast<model::FrameType>(frame_probe_.frame->pict_type),
-                             is_idr);
+        pending.push_back({frame_ts,
+                           static_cast<model::FrameType>(frame_probe_.frame->pict_type),
+                           is_idr});
         av_frame_unref(frame_probe_.frame);
     }
+    // 池里剩下的字节（最后几个包）归这批帧：它们的包确实已经全部送进了解码器。
+    if (!pending.empty()) bitrate_gop_.OnFramesClaimPending(video_stream_index_, pending);
 }
 
 // ---- 内部 ----
