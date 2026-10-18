@@ -33,20 +33,35 @@ using model::SceneChangeResult;
 // 这样单测可以直接喂合成数据跑验收（见 tests/unit/test_bitrate_gop_analyzer.cpp）。
 class BitrateGopAnalyzer {
 public:
+    // 一个语义帧的事件描述（OnFramesClaimPending 批量认领字节用）。
+    // 只带"帧自己知道的事" —— 字节由待认领池分配，调用方不该、也没法猜。
+    struct FrameEvent {
+        double timestamp_seconds = 0.0;
+        model::FrameType type = model::FrameType::Unknown;
+        bool is_idr = false;
+    };
+
     void Reset(const BitrateGopOptions& options = BitrateGopOptions{});
     void SetOptions(const BitrateGopOptions& options);
     const BitrateGopOptions& options() const { return options_; }
 
     // ---- 数据输入（显式事件，每个语义单元只进一次统计）----
     //
-    // 输入分三种互斥事件，调用方（AnalysisPipeline）负责把 demux/解码/parser 的
-    // 事实映射到其中之一：
-    //   * OnFrame      —— 一个**语义帧**（解码器输出或 parser 输出），一包产出
-    //                     多帧时每帧各调一次；size 是归属到该帧的字节数
-    //                     （一包一帧时传整包大小，一包多帧时由调用方均分）。
-    //   * OnPacketBytes —— 只有字节、没有帧：解码器已收下本包但帧还没产出
-    //                     （帧延迟），或 parser 未吐出完整帧。字节先入账，
-    //                     帧等真正产出时再计，避免"按包猜一帧"与后续真实帧重复。
+    // 字节有两套账，调用方（AnalysisPipeline）必须分清自己在喂哪一种事实：
+    //   * 包级账（total_bytes / 码率曲线）—— 字节按**到达时间**入账，与帧无关。
+    //   * 帧级账（frame_bytes / GOP 大小 / 大帧判定）—— 字节按**归属帧**入账。
+    //
+    // 四个入口：
+    //   * OnFrame      —— 一个语义帧 + 该帧的字节，字节**尚未**入账（一包一帧、
+    //                     parser 输出、合成样本）。两套账各记一次，数额相同。
+    //   * OnPacketBytes —— 只有字节没有帧。awaiting_frame=true 时字节进"待认领
+    //                     池"，等后续 OnFramesClaimPending 按帧数分摊认领；
+    //                     false 表示这些字节永远不对应任何帧（裸流分片残留）。
+    //   * OnFramesClaimPending —— 解码器产出的一批帧来认领待认领池里的字节。
+    //                     这是"解码延迟"场景唯一正确的关联方式：包先入账、
+    //                     帧晚几包才出来，帧的字节只能从池子里摊，不能拿"本次
+    //                     送入包的字节"顶替（那样 GOP 字节之和会远小于总字节，
+    //                     I 帧大小也跟着错）。
     //   * OnPacket     —— 无帧类型探测时的包级回退：一包记一帧，类型未知，
     //                     is_key 来自 AV_PKT_FLAG_KEY。
     // 曾经这里只有 OnFrame/OnPacket 两个入口，调用方在解码循环内外各调一次
@@ -57,8 +72,15 @@ public:
     void OnFrame(int stream_index, double timestamp_seconds, int64_t size,
                  model::FrameType type, bool is_idr);
 
-    // 纯字节事件：不计帧、不计 GOP，只入账字节并参与码率曲线
-    void OnPacketBytes(int stream_index, double timestamp_seconds, int64_t size);
+    // 纯字节事件：不计帧、不计 GOP，只入账字节并参与码率曲线。
+    // awaiting_frame=true 时字节额外进待认领池（见 OnFramesClaimPending）。
+    void OnPacketBytes(int stream_index, double timestamp_seconds, int64_t size,
+                       bool awaiting_frame = false);
+
+    // 解码器产出的一批帧：把待认领池里的字节按帧数均分认领（余数给最后一帧）。
+    // 池为空、或多个帧分摊同一池时，帧字节是估算 —— 会置 frame_bytes_estimated，
+    // 不能可靠关联就必须明说，不能假装精确。
+    void OnFramesClaimPending(int stream_index, const std::vector<FrameEvent>& frames);
 
     // 包级输入（离线全文件扫描，帧类型未知时传 Unknown；is_key 来自 AV_PKT_FLAG_KEY）
     void OnPacket(int stream_index, double timestamp_seconds, int64_t size, bool is_key);
@@ -86,21 +108,40 @@ public:
     const model::MetricSeries* WindowCurve(double window_seconds) const;
 
 private:
+    // 曲线采样点。降采样时相邻两点会被**合并**成桶（字节相加），所以每个字段
+    // 都可能是"多个原始事件的合计"。
     struct Sample {
         double timestamp_seconds = 0.0;
+        // 进入码率曲线 / total_bytes 的字节数（包级事实）
         int64_t size = 0;
+        // 归属到帧的字节数（帧级事实；纯字节事件为 0）
+        int64_t frame_bytes = 0;
+        // 本桶代表几个语义帧（合并后可能 > 1；纯字节事件为 0）
+        int frame_weight = 0;
         model::FrameType type = model::FrameType::Unknown;
         bool is_idr = false;
         // false = 纯字节事件（OnPacketBytes）：只参与码率曲线，不计帧数/GOP/
-        // 帧大小异常。true = 语义帧（OnFrame / OnPacket）。
+        // 帧大小异常。true = 语义帧（OnFrame / OnPacket / 认领池的帧）。
         bool is_frame = true;
+        // 帧字节是估算（从待认领池摊出来的），不能当精确值用
+        bool bytes_estimated = false;
     };
 
-    // counts_frame=false 时只入账字节（total_bytes + 曲线样本），不碰帧数与 GOP。
-    void AddSample(int stream_index, double timestamp_seconds, int64_t size,
-                   model::FrameType type, bool is_idr, bool counts_frame);
+    // stream_bytes 进包级账（total_bytes + 曲线），frame_bytes 进帧级账
+    //（frame_bytes + GOP 大小 + 大帧判定）。认领池场景下 stream_bytes 传 0 ——
+    // 那些字节早就按包到达时间入过账了，再记一次就是重复计数。
+    void AddSample(int stream_index, double timestamp_seconds, int64_t stream_bytes,
+                   int64_t frame_bytes, model::FrameType type, bool is_idr,
+                   bool counts_frame, bool bytes_estimated);
     void StartGop(double timestamp_seconds, int stream_index, bool closed);
     void CloseCurrentGop(double end_seconds, bool complete);
+
+    // 超过 max_samples 时的有界降采样：相邻两点合并成桶，**字节相加**。
+    // 直接丢一半样本（老做法）会让前缀和与帧间隔都缩水 —— 20 帧输入在
+    // max_samples=4 下窗口字节数从 2000 掉到 200、估计时长从 2 秒涨到 3.6 秒。
+    void DownsampleSamples();
+    // 帧间隔单独维护（只看语义帧），不受降采样影响
+    double EstimatedFrameInterval() const;
 
     // 计算所有窗口长度的滑动窗口码率曲线
     void BuildBitrateCurves();
@@ -126,6 +167,19 @@ private:
     int video_stream_index_ = -1;
     double last_timestamp_ = -1.0;
     bool finished_ = false;
+
+    // 待认领字节池：送进解码器（或 parser）但还没有帧来认领的字节。
+    // OnPacketBytes(awaiting_frame=true) 进池，OnFramesClaimPending 出池，
+    // Finish() 时池里剩下的就是"没能关联到任何帧"的字节。
+    int64_t pending_bytes_ = 0;
+
+    // 时长与帧间隔**单独维护**：samples_ 会被降采样合并，样本数不再等于帧数，
+    // 拿"samples_.size()"反推帧间隔会把时长算错（见 DownsampleSamples 注释）。
+    double first_timestamp_ = -1.0;      // 首个事件（含纯字节）的时间
+    double last_event_timestamp_ = -1.0; // 末个事件的时间
+    double frame_first_timestamp_ = -1.0;
+    double frame_last_timestamp_ = -1.0;
+    int64_t frame_event_count_ = 0;
 };
 
 }  // namespace videoeye

@@ -244,3 +244,163 @@ TEST(BitrateGopAnalyzerTest, FinishIsIdempotent) {
     EXPECT_EQ(n1, n2);
     EXPECT_EQ(n1, 4u);
 }
+
+// ---- 解码延迟：字节与帧的归属 ----
+//
+// 缺陷(已修): 解码有延迟时，包先入账、帧晚几包才出来。老实现把"本次送入包的字节"
+// 分给"本次收到的帧"，于是：
+//   * GOP 字节之和远小于总字节（早先那些包的字节永远进不了 GOP）；
+//   * I 帧大小归属到错误的包（拿最后一个包的大小当 I 帧大小）；
+//   * EOF flush 出来的帧一律记 0 字节。
+// 修法: 包字节进"待认领池"，帧产出时从池里认领 —— 两套账分开维护、总量守恒。
+int64_t SumGopBytes(const BitrateGopAnalysis& r) {
+    int64_t total = 0;
+    for (const auto& gop : r.gops) total += gop.byte_count;
+    return total;
+}
+
+TEST(BitrateGopAnalyzerTest, DelayedDecoderFramesConserveBytes) {
+    BitrateGopAnalyzer analyzer;
+    analyzer.Reset();
+    // 解码器压着 5 个包才吐帧：每包 100 字节、间隔 0.1 秒
+    for (int i = 0; i < 5; ++i) {
+        analyzer.OnPacketBytes(0, static_cast<double>(i) * 0.1, 100,
+                               /*awaiting_frame=*/true);
+    }
+    // 5 帧一起出来（第 0 帧是 IDR），时间戳回到各自的位置
+    std::vector<BitrateGopAnalyzer::FrameEvent> frames;
+    for (int i = 0; i < 5; ++i) {
+        frames.push_back({static_cast<double>(i) * 0.1,
+                          i == 0 ? model::FrameType::I : model::FrameType::P, i == 0});
+    }
+    analyzer.OnFramesClaimPending(0, frames);
+    const BitrateGopAnalysis& r = analyzer.Finish();
+
+    EXPECT_EQ(r.total_bytes, 500);   // 包级账：一个字节都不少
+    EXPECT_EQ(r.total_frames, 5);
+    EXPECT_EQ(r.frame_bytes, 500);   // 帧级账：全部字节都归到了帧上
+    EXPECT_EQ(r.unassociated_bytes, 0);
+    // 关键断言：GOP 字节之和 == 总字节（老实现只有 100）
+    EXPECT_EQ(SumGopBytes(r), r.total_bytes);
+    // I 帧拿到的是它自己那一份（100），不是"最后送入的那个包"
+    EXPECT_EQ(r.i_frame_count, 1);
+    EXPECT_EQ(r.i_frame_bytes_, 100);
+    // 5 帧分摊同一池 = 估算，必须明确标出来
+    EXPECT_TRUE(r.frame_bytes_estimated);
+}
+
+TEST(BitrateGopAnalyzerTest, ImmediateDecoderFramesAreExact) {
+    BitrateGopAnalyzer analyzer;
+    analyzer.Reset();
+    // 一包一帧、没有延迟：每帧独占自己的包字节 —— 这是精确值，不该标估算
+    for (int i = 0; i < 5; ++i) {
+        analyzer.OnPacketBytes(0, static_cast<double>(i) * 0.1, 100,
+                               /*awaiting_frame=*/true);
+        std::vector<BitrateGopAnalyzer::FrameEvent> one{
+            {static_cast<double>(i) * 0.1,
+             i == 0 ? model::FrameType::I : model::FrameType::P, i == 0}};
+        analyzer.OnFramesClaimPending(0, one);
+    }
+    const BitrateGopAnalysis& r = analyzer.Finish();
+
+    EXPECT_EQ(r.total_bytes, 500);
+    EXPECT_EQ(r.frame_bytes, 500);
+    EXPECT_EQ(r.unassociated_bytes, 0);
+    EXPECT_EQ(SumGopBytes(r), r.total_bytes);
+    EXPECT_FALSE(r.frame_bytes_estimated);
+}
+
+// 池子已空（字节根本没入账 / 已被更早的帧认领干净）时还得记帧，
+// 但必须如实标注"没法关联"。
+TEST(BitrateGopAnalyzerTest, ClaimingFromEmptyPoolIsMarkedEstimated) {
+    BitrateGopAnalyzer analyzer;
+    analyzer.Reset();
+    std::vector<BitrateGopAnalyzer::FrameEvent> one{{0.0, model::FrameType::I, true}};
+    analyzer.OnFramesClaimPending(0, one);
+    const BitrateGopAnalysis& r = analyzer.Finish();
+
+    EXPECT_EQ(r.total_frames, 1);
+    EXPECT_EQ(r.frame_bytes, 0);
+    EXPECT_EQ(r.unassociated_bytes, 0);
+    EXPECT_TRUE(r.frame_bytes_estimated);
+}
+
+// 字节入账后始终没有帧来认领（解码器丢帧）: 记进 unassociated，不凭空造帧。
+TEST(BitrateGopAnalyzerTest, BytesWithoutFramesStayUnassociated) {
+    BitrateGopAnalyzer analyzer;
+    analyzer.Reset();
+    analyzer.OnPacketBytes(0, 0.0, 300, /*awaiting_frame=*/true);
+    const BitrateGopAnalysis& r = analyzer.Finish();
+
+    EXPECT_EQ(r.total_bytes, 300);
+    EXPECT_EQ(r.total_frames, 0);
+    EXPECT_EQ(r.unassociated_bytes, 300);
+    // 账务闭合: frame_bytes + unassociated_bytes == total_bytes
+    EXPECT_EQ(r.frame_bytes + r.unassociated_bytes, r.total_bytes);
+}
+
+// ---- 降采样不得改变统计结果 ----
+//
+// 缺陷(已修): 超过 max_samples 后直接丢弃奇数下标样本，后续仍用幸存样本求字节前缀和、
+// 用幸存样本数估算帧间隔 —— 同一组 20 帧输入，覆盖全输入的窗口字节从 2000 掉到 200、
+// 估计时长从 2 秒涨到 3.6 秒。
+// 修法: 相邻样本**合并成时间桶**（字节相加），时长与帧间隔单独维护。
+TEST(BitrateGopAnalyzerTest, DownsamplingConservesBytesAndDuration) {
+    auto feed = [](BitrateGopAnalyzer& analyzer) {
+        for (int i = 0; i < 20; ++i) {
+            analyzer.OnFrame(0, static_cast<double>(i) * 0.1, 100,
+                             i == 0 ? model::FrameType::I : model::FrameType::P, i == 0);
+        }
+    };
+
+    BitrateGopOptions unlimited;
+    unlimited.max_samples = 0;
+    BitrateGopAnalyzer full;
+    full.Reset(unlimited);
+    feed(full);
+    const BitrateGopAnalysis& unrestricted = full.Finish();
+
+    BitrateGopOptions limited_opts;
+    limited_opts.max_samples = 4;
+    BitrateGopAnalyzer limited;
+    limited.Reset(limited_opts);
+    feed(limited);
+    const BitrateGopAnalysis& downsampled = limited.Finish();
+
+    EXPECT_FALSE(unrestricted.downsampled);
+    EXPECT_TRUE(downsampled.downsampled);
+
+    // 字节总量：降采样前后必须一致（老实现会掉到 200）
+    EXPECT_EQ(unrestricted.total_bytes, 2000);
+    EXPECT_EQ(downsampled.total_bytes, 2000);
+
+    // 估计时长：降采样前后必须一致（老实现会涨到 3.6 秒）
+    EXPECT_NEAR(unrestricted.duration_seconds, 2.0, 0.05);
+    EXPECT_NEAR(downsampled.duration_seconds, 2.0, 0.05);
+
+    // 覆盖全部输入的窗口字节数：5 秒窗口能罩住 0~1.9 秒的全部 20 帧
+    const model::MetricSeries* w_full = full.WindowCurve(5.0);
+    const model::MetricSeries* w_limited = limited.WindowCurve(5.0);
+    ASSERT_TRUE(w_full != nullptr);
+    ASSERT_TRUE(w_limited != nullptr);
+    const double expected_kbps = 2000.0 * 8.0 / 1000.0 / 5.0;  // 3.2 kbps
+    EXPECT_NEAR(w_full->Max(), expected_kbps, 0.01);
+    EXPECT_NEAR(w_limited->Max(), expected_kbps, 0.01);
+}
+
+// 合并出来的桶代表多个帧，不能被当成"单个大帧"刷出一批假异常。
+TEST(BitrateGopAnalyzerTest, DownsampledBucketsAreNotReportedAsOversizedFrames) {
+    BitrateGopOptions opts;
+    opts.max_samples = 8;
+    BitrateGopAnalyzer analyzer;
+    analyzer.Reset(opts);
+    // 20 帧等大（100 字节）：没有任何一帧超过均值 8 倍，不该有异常
+    for (int i = 0; i < 20; ++i) {
+        analyzer.OnFrame(0, static_cast<double>(i) * 0.1, 100,
+                         i == 0 ? model::FrameType::I : model::FrameType::P, i == 0);
+    }
+    const BitrateGopAnalysis& r = analyzer.Finish();
+
+    EXPECT_TRUE(r.downsampled);
+    EXPECT_EQ(r.CountAnomalies(BitrateAnomalyType::OversizedFrame), 0);
+}

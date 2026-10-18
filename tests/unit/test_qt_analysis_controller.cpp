@@ -268,6 +268,84 @@ TEST(QtAnalysisControllerLifecycle, CancelOnBlockingInputReturnsWithinBudget) {
     EXPECT_EQ(sink.generations.back(), gen);
 }
 
+// 失败通知与任务终态必须是同一件事。
+//
+// 缺陷(已修): 异常/失败被收口成 AnalysisFailed 之后，OnWorkerExited() 只判断取消
+// 令牌、其余一律写 Succeeded —— UI 弹出"分析失败"，任务协议里却记着成功，
+// 上层据此做的重试判断、状态显示全是错的。
+// 修法: 终态由线程体自己判定（取消 > 失败 > 成功）写进盒子，宿主只负责交还给 slot。
+TEST(QtAnalysisControllerLifecycle, FailedInputIsSettledAsFailed) {
+    EnsureApp();
+
+    const QString corrupt = WriteCorruptInput("videoeye_qtac_terminal_fail.mp4");
+    ASSERT_FALSE(corrupt.isEmpty());
+
+    videoeye::qt::QtAnalysisController controller;
+    std::vector<quint64> failures;
+    std::vector<quint64> finishes;
+    QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFailed,
+                     &controller, [&failures](quint64 gen, const QString&) {
+                         failures.push_back(gen);
+                     });
+    QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFinished,
+                     &controller,
+                     [&finishes](quint64 gen, bool, const model::AnalysisResult&) {
+                         finishes.push_back(gen);
+                     });
+
+    const quint64 gen = controller.StartAnalysis(corrupt.toStdString());
+    ASSERT_GT(gen, 0u);
+    ASSERT_TRUE(PumpUntil([&] { return !failures.empty() || !finishes.empty(); }, 15000))
+        << "损坏输入没有产生任何终态通知";
+    ASSERT_FALSE(failures.empty())
+        << "本用例的前提是引擎走失败分支（这次走的是 finished）";
+
+    // 交还终态发生在 WorkerExited 里，所以要再泵一会儿
+    ASSERT_TRUE(PumpUntil([&] { return !controller.IsRunning(); }, 3000));
+    PumpFor(120);
+    EXPECT_EQ(controller.terminal_state(), task::TaskState::Failed)
+        << "UI 收到的是 AnalysisFailed，任务协议里却是 "
+        << task::TaskStateName(controller.terminal_state());
+
+    QFile::remove(corrupt);
+}
+
+// 成功路径不能被上面的加固误伤：终态仍必须是 Succeeded。
+TEST(QtAnalysisControllerLifecycle, SuccessfulInputIsSettledAsSucceeded) {
+    EnsureApp();
+
+    const QString manifest = WriteManifest("videoeye_qtac_terminal_ok.m3u8");
+    ASSERT_FALSE(manifest.isEmpty());
+
+    videoeye::qt::QtAnalysisController controller;
+    std::vector<quint64> failures;
+    std::vector<quint64> finishes;
+    QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFailed,
+                     &controller, [&failures](quint64 gen, const QString&) {
+                         failures.push_back(gen);
+                     });
+    QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFinished,
+                     &controller,
+                     [&finishes](quint64 gen, bool, const model::AnalysisResult&) {
+                         finishes.push_back(gen);
+                     });
+
+    const quint64 gen = controller.StartAnalysis(manifest.toStdString());
+    ASSERT_GT(gen, 0u);
+    ASSERT_TRUE(PumpUntil([&] { return !failures.empty() || !finishes.empty(); }, 15000))
+        << "清单输入没有产生任何终态通知";
+    ASSERT_TRUE(PumpUntil([&] { return !controller.IsRunning(); }, 3000));
+    PumpFor(120);
+
+    if (failures.empty()) {
+        EXPECT_EQ(controller.terminal_state(), task::TaskState::Succeeded);
+    } else {
+        EXPECT_EQ(controller.terminal_state(), task::TaskState::Failed);
+    }
+
+    QFile::remove(manifest);
+}
+
 namespace {
 
 QString WriteTextFile(const QString& name, const QByteArray& content) {

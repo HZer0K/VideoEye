@@ -25,7 +25,10 @@ double model::BitrateGopAnalysis::BFrameRatio() const {
 
 double model::BitrateGopAnalysis::AverageFrameBytes() const {
     if (total_frames <= 0) return 0.0;
-    return static_cast<double>(total_bytes) / static_cast<double>(total_frames);
+    // 优先用帧级账：解码延迟下 total_bytes 含尚未归到帧上的字节，拿它除帧数会
+    // 把平均帧大小估高。帧级账缺失（纯包级回退以外的极端情况）时再退回总字节。
+    const int64_t bytes = (frame_bytes > 0) ? frame_bytes : total_bytes;
+    return static_cast<double>(bytes) / static_cast<double>(total_frames);
 }
 
 double model::BitrateGopAnalysis::AverageIFrameBytes() const {

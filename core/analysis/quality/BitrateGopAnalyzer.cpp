@@ -95,6 +95,12 @@ void BitrateGopAnalyzer::Reset(const BitrateGopOptions& options) {
     video_stream_index_ = -1;
     last_timestamp_ = -1.0;
     finished_ = false;
+    pending_bytes_ = 0;
+    first_timestamp_ = -1.0;
+    last_event_timestamp_ = -1.0;
+    frame_first_timestamp_ = -1.0;
+    frame_last_timestamp_ = -1.0;
+    frame_event_count_ = 0;
 }
 
 void BitrateGopAnalyzer::SetOptions(const BitrateGopOptions& options) {
@@ -103,23 +109,59 @@ void BitrateGopAnalyzer::SetOptions(const BitrateGopOptions& options) {
 
 void BitrateGopAnalyzer::OnPacket(int stream_index, double timestamp_seconds, int64_t size,
                                   bool is_key) {
-    AddSample(stream_index, timestamp_seconds, size, model::FrameType::Unknown, is_key,
-              /*counts_frame=*/true);
+    AddSample(stream_index, timestamp_seconds, /*stream_bytes=*/size, /*frame_bytes=*/size,
+              model::FrameType::Unknown, is_key, /*counts_frame=*/true,
+              /*bytes_estimated=*/false);
 }
 
 void BitrateGopAnalyzer::OnFrame(int stream_index, double timestamp_seconds, int64_t size,
                                  model::FrameType type, bool is_idr) {
-    AddSample(stream_index, timestamp_seconds, size, type, is_idr, /*counts_frame=*/true);
+    AddSample(stream_index, timestamp_seconds, /*stream_bytes=*/size, /*frame_bytes=*/size,
+              type, is_idr, /*counts_frame=*/true, /*bytes_estimated=*/false);
 }
 
 void BitrateGopAnalyzer::OnPacketBytes(int stream_index, double timestamp_seconds,
-                                       int64_t size) {
-    AddSample(stream_index, timestamp_seconds, size, model::FrameType::Unknown, false,
-              /*counts_frame=*/false);
+                                       int64_t size, bool awaiting_frame) {
+    AddSample(stream_index, timestamp_seconds, /*stream_bytes=*/size, /*frame_bytes=*/0,
+              model::FrameType::Unknown, /*is_idr=*/false, /*counts_frame=*/false,
+              /*bytes_estimated=*/false);
+    // 注意: 池只在**目标流的字节**上累积（AddSample 对非目标流会提前返回，
+    // 但那时它的字节也没进账，所以在它返回后再判断流号是安全的）。
+    if (awaiting_frame && video_stream_index_ == stream_index && !finished_) {
+        pending_bytes_ += size;
+    }
 }
 
-void BitrateGopAnalyzer::AddSample(int stream_index, double timestamp_seconds, int64_t size,
-                                   model::FrameType type, bool is_idr, bool counts_frame) {
+void BitrateGopAnalyzer::OnFramesClaimPending(int stream_index,
+                                              const std::vector<FrameEvent>& frames) {
+    if (finished_ || frames.empty()) return;
+
+    // 池里的字节归这批帧所有 —— 它们是"送进解码器后一直没出帧"的那些包累积下来的。
+    // 均分是估算（真正的包↔帧映射解码器不会告诉我们），但**总量守恒**：
+    // 帧级账 + 未关联字节 == 包级账，GOP 大小与平均帧大小因此不会系统性偏小。
+    const int64_t pool = pending_bytes_;
+    const int64_t count = static_cast<int64_t>(frames.size());
+    // 一帧独占一池 == 精确（就是"一包一帧"）；多帧分摊或池子已空 == 估算。
+    const bool estimated = (pool == 0) || (count > 1);
+
+    int64_t remaining = pool;
+    for (int64_t i = 0; i < count; ++i) {
+        const bool is_last = (i + 1 == count);
+        const int64_t share = is_last ? remaining : pool / count;
+        remaining -= share;
+        AddSample(stream_index, frames[static_cast<size_t>(i)].timestamp_seconds,
+                  /*stream_bytes=*/0, /*frame_bytes=*/share,
+                  frames[static_cast<size_t>(i)].type, frames[static_cast<size_t>(i)].is_idr,
+                  /*counts_frame=*/true, estimated);
+    }
+    // 池被认领干净：这一批帧之后送进来的包重新从 0 开始累积。
+    pending_bytes_ = 0;
+}
+
+void BitrateGopAnalyzer::AddSample(int stream_index, double timestamp_seconds,
+                                   int64_t stream_bytes, int64_t frame_bytes,
+                                   model::FrameType type, bool is_idr, bool counts_frame,
+                                   bool bytes_estimated) {
     if (finished_) return;  // Finish() 之后忽略新数据，避免结果被追加污染
     if (timestamp_seconds < 0.0) timestamp_seconds = std::max(last_timestamp_, 0.0);
     if (last_timestamp_ >= 0.0 && timestamp_seconds < last_timestamp_) {
@@ -132,16 +174,21 @@ void BitrateGopAnalyzer::AddSample(int stream_index, double timestamp_seconds, i
 
     if (is_idr && type == model::FrameType::Unknown) type = model::FrameType::I;
 
-    // 字节恒计入（码率曲线与总字节以字节事件为准，帧延迟时字节先入账）
-    result_.total_bytes += size;
+    // ---- 包级账：字节按到达时间入账，与帧归属无关 ----
+    result_.total_bytes += stream_bytes;
+    if (first_timestamp_ < 0.0) first_timestamp_ = timestamp_seconds;
+    last_event_timestamp_ = timestamp_seconds;
 
+    // ---- 帧级账 ----
     if (counts_frame) {
         result_.total_frames += 1;
+        result_.frame_bytes += frame_bytes;
+        if (bytes_estimated) result_.frame_bytes_estimated = true;
         switch (type) {
             case model::FrameType::I:
             case model::FrameType::SI:
                 result_.i_frame_count += 1;
-                result_.i_frame_bytes_ += size;
+                result_.i_frame_bytes_ += frame_bytes;
                 break;
             case model::FrameType::P:
             case model::FrameType::SP:
@@ -169,12 +216,14 @@ void BitrateGopAnalyzer::AddSample(int stream_index, double timestamp_seconds, i
 
         model::GopInfo& gop = current_gop_;
         gop.frame_count += 1;
-        gop.byte_count += size;
+        // GOP 大小用**帧级**字节：解码延迟下用包字节会把 GOP 记小（那些字节
+        // 属于更早的包），这里用的是认领池摊到每个帧上的份额。
+        gop.byte_count += frame_bytes;
         switch (type) {
             case model::FrameType::I:
             case model::FrameType::SI:
                 gop.i_count += 1;
-                if (size > gop.max_i_frame_bytes) gop.max_i_frame_bytes = size;
+                if (frame_bytes > gop.max_i_frame_bytes) gop.max_i_frame_bytes = frame_bytes;
                 break;
             case model::FrameType::P:
             case model::FrameType::SP:
@@ -189,8 +238,8 @@ void BitrateGopAnalyzer::AddSample(int stream_index, double timestamp_seconds, i
                 break;
         }
         if (type != model::FrameType::Unknown) gop.frame_types_known = true;
-        if (size > gop.max_frame_bytes) {
-            gop.max_frame_bytes = size;
+        if (frame_bytes > gop.max_frame_bytes) {
+            gop.max_frame_bytes = frame_bytes;
             gop.max_frame_seconds = timestamp_seconds;
         }
 
@@ -204,20 +253,63 @@ void BitrateGopAnalyzer::AddSample(int stream_index, double timestamp_seconds, i
                 result_.i_frame_seconds.push_back(timestamp_seconds);
             }
         }
+
+        if (frame_first_timestamp_ < 0.0) frame_first_timestamp_ = timestamp_seconds;
+        frame_last_timestamp_ = timestamp_seconds;
+        frame_event_count_ += 1;
     }
 
-    samples_.push_back(Sample{timestamp_seconds, size, type, is_idr, counts_frame});
+    samples_.push_back(Sample{timestamp_seconds, stream_bytes, frame_bytes,
+                              counts_frame ? 1 : 0, type, is_idr, counts_frame,
+                              bytes_estimated});
 
-    // 有界降采样：超过 max_samples 时对样本做减半（保留偶数下标），
-    // 把内存夹在 ~max_samples，避免小时级长文件把内存撑爆。
+    // 有界降采样：内存夹在 ~max_samples，避免小时级长文件把内存撑爆。
     if (options_.max_samples > 0 &&
         static_cast<int64_t>(samples_.size()) >= options_.max_samples) {
-        std::vector<Sample> kept;
-        kept.reserve(samples_.size() / 2 + 1);
-        for (size_t i = 0; i < samples_.size(); i += 2) kept.push_back(samples_[i]);
-        samples_.swap(kept);
-        result_.downsampled = true;
+        DownsampleSamples();
     }
+}
+
+void BitrateGopAnalyzer::DownsampleSamples() {
+    // 时间桶聚合：**合并**相邻两点而不是丢掉一个。
+    //
+    // 老做法是保留偶数下标、把奇数下标的样本丢掉，然后仍用幸存样本求字节前缀和、
+    // 用幸存样本数估帧间隔 —— 20 帧输入在 max_samples=4 下，覆盖全输入的窗口字节
+    // 从 2000 掉到 200（丢了 90%），估计时长从 2 秒涨到 3.6 秒（帧间隔被翻倍）。
+    // 降采样只能是"曲线精度"的折衷，绝不能改变**总量**。
+    if (samples_.size() < 2) return;
+
+    std::vector<Sample> merged;
+    merged.reserve(samples_.size() / 2 + 1);
+    for (size_t i = 0; i < samples_.size(); i += 2) {
+        Sample bucket = samples_[i];
+        if (i + 1 < samples_.size()) {
+            const Sample& next = samples_[i + 1];
+            bucket.size += next.size;
+            bucket.frame_bytes += next.frame_bytes;
+            bucket.frame_weight += next.frame_weight;
+            // 关键帧标记是"或"：任一被合并的帧是关键帧，这个桶就带关键帧语义
+            bucket.is_idr = bucket.is_idr || next.is_idr;
+            bucket.is_frame = bucket.is_frame || next.is_frame;
+            bucket.bytes_estimated = bucket.bytes_estimated || next.bytes_estimated;
+            // 类型取"字节更大的那个"：合并后桶本身的字节是两个帧的合计，
+            // 拿它做单帧大小判定已不可靠（DetectOversizedFrames 会跳过这类桶），
+            // 这里只保证类型标记尽量贴近更主要的那一帧。
+            if (next.frame_bytes > bucket.frame_bytes) bucket.type = next.type;
+        }
+        merged.push_back(std::move(bucket));
+    }
+    samples_.swap(merged);
+    result_.downsampled = true;
+}
+
+double BitrateGopAnalyzer::EstimatedFrameInterval() const {
+    // 只看语义帧：samples_ 里还混着纯字节事件，样本数 ≠ 帧数。
+    if (frame_event_count_ > 1 && frame_last_timestamp_ > frame_first_timestamp_) {
+        return (frame_last_timestamp_ - frame_first_timestamp_) /
+               static_cast<double>(frame_event_count_ - 1);
+    }
+    return 0.0;
 }
 
 void BitrateGopAnalyzer::StartGop(double timestamp_seconds, int stream_index, bool closed) {
@@ -270,13 +362,15 @@ const BitrateGopAnalysis& BitrateGopAnalyzer::Finish() {
 
     // 收尾最后一个未闭合的 GOP：末尾补一个估测帧间隔
     if (gop_open_) {
-        double frame_interval = 0.0;
-        if (samples_.size() > 1) {
-            frame_interval = (last_timestamp_ - samples_.front().timestamp_seconds) /
-                             static_cast<double>(samples_.size() - 1);
-        }
-        CloseCurrentGop(last_timestamp_ + std::max(frame_interval, 0.0), /*complete=*/false);
+        CloseCurrentGop(last_timestamp_ + std::max(EstimatedFrameInterval(), 0.0),
+                        /*complete=*/false);
     }
+
+    // 包级账与帧级账的差额：入过账但始终没有帧来认领的字节（解码器丢帧 /
+    // parser 收尾残留 / 认领池未清空）。帧级账守恒式:
+    //   frame_bytes + unassociated_bytes == total_bytes
+    result_.unassociated_bytes = pending_bytes_;
+    pending_bytes_ = 0;
 
     const int64_t known = result_.i_frame_count + result_.p_frame_count + result_.b_frame_count;
     result_.frame_types_known =
@@ -347,17 +441,27 @@ void BitrateGopAnalyzer::BuildBitrateCurves() {
                   return a.timestamp_seconds < b.timestamp_seconds;
               });
 
+    // 字节前缀和：降采样后每个桶是若干原始事件的**字节合计**，总量不变
     std::vector<int64_t> prefix(sorted.size() + 1, 0);
+    // 帧数前缀和：窗口里的"帧数"只数语义帧（纯字节事件不是帧），且降采样合并后
+    // 一个桶可能代表多帧 —— 用权重而不是"桶的个数"。
+    std::vector<int64_t> frame_prefix(sorted.size() + 1, 0);
     for (size_t i = 0; i < sorted.size(); ++i) {
         prefix[i + 1] = prefix[i] + sorted[i].size;
+        frame_prefix[i + 1] = frame_prefix[i] + sorted[i].frame_weight;
     }
 
-    const double first = sorted.front().timestamp_seconds;
-    const double last = sorted.back().timestamp_seconds;
+    // 首末时刻用**维护出来的**值而不是 sorted 的首尾：降采样会把末几个事件合并进
+    // 前一个桶，桶的时间戳是桶内最早的那一刻，于是"sorted.back()"会比真实末时刻早
+    // 一点，时长被系统性低估。
+    const double first = (first_timestamp_ >= 0.0) ? first_timestamp_
+                                                   : sorted.front().timestamp_seconds;
+    const double last = (last_event_timestamp_ >= 0.0) ? last_event_timestamp_
+                                                       : sorted.back().timestamp_seconds;
     const double span = std::max(last - first, 0.0);
-    const double frame_interval =
-        (sorted.size() > 1) ? span / static_cast<double>(sorted.size() - 1) : 0.0;
-    result_.duration_seconds = span + frame_interval;
+    // 帧间隔单独维护（只看语义帧）：samples_ 的条数在降采样后会变，
+    // 拿它反推间隔会把时长算错（20 帧 / max_samples=4 的老实现给出 3.6 秒 vs 真值 2 秒）。
+    result_.duration_seconds = span + EstimatedFrameInterval();
 
     const double default_window =
         options_.windows_seconds.empty() ? 1.0 : options_.windows_seconds.front();
@@ -398,7 +502,7 @@ void BitrateGopAnalyzer::BuildBitrateCurves() {
                 point.timestamp_seconds = center;
                 point.window_seconds = window;
                 point.bytes = bytes;
-                point.frame_count = static_cast<int>(hi - lo);
+                point.frame_count = static_cast<int>(frame_prefix[hi] - frame_prefix[lo]);
                 point.bitrate_kbps = kbps;
                 result_.bitrate_points.push_back(point);
             }
@@ -583,16 +687,21 @@ void BitrateGopAnalyzer::DetectOversizedFrames() {
     for (const auto& sample : samples_) {
         // 纯字节事件（解码器延迟入账）没有归属帧，不参与帧大小异常判定
         if (!sample.is_frame) continue;
+        // 降采样合并出来的桶（一个桶 = 多个帧的字节合计）不能当"单个帧"看，
+        // 否则每个合并桶都会变成一条假的大帧异常。
+        if (sample.frame_weight != 1) continue;
+        // 帧大小用**帧级**字节：包级字节在解码延迟下属于更早的包，不是本帧。
+        const int64_t bytes = sample.frame_bytes;
         const bool is_intra = (sample.type == model::FrameType::I ||
                                sample.type == model::FrameType::SI);
         if (is_intra && avg_i_frame > 0.0 &&
-            static_cast<double>(sample.size) > avg_i_frame * options_.i_frame_oversize_ratio) {
-            big_i_frames.push_back({sample.timestamp_seconds, sample.size,
-                                    static_cast<double>(sample.size) / avg_i_frame});
+            static_cast<double>(bytes) > avg_i_frame * options_.i_frame_oversize_ratio) {
+            big_i_frames.push_back({sample.timestamp_seconds, bytes,
+                                    static_cast<double>(bytes) / avg_i_frame});
         }
-        if (static_cast<double>(sample.size) > avg_frame * options_.large_frame_ratio) {
-            big_frames.push_back({sample.timestamp_seconds, sample.size,
-                                  static_cast<double>(sample.size) / avg_frame});
+        if (static_cast<double>(bytes) > avg_frame * options_.large_frame_ratio) {
+            big_frames.push_back({sample.timestamp_seconds, bytes,
+                                  static_cast<double>(bytes) / avg_frame});
         }
     }
 
@@ -751,6 +860,13 @@ void BitrateGopAnalyzer::RebuildSuggestions(BitrateGopAnalysis& result,
         result.suggestions.push_back(
             "未获取到逐帧类型（I/P/B），I/P/B 比例仅按关键帧推断。勾选「精确帧类型（解码）」"
             "重新分析可获得完整帧类型分布。");
+    }
+    // 帧字节是分摊出来的估算值：必须让用户知道"单个帧的大小"不可当精确值读。
+    // 不说明的话，大帧异常与 I 帧体积会被当成实测结果去调码率参数。
+    if (result.frame_bytes_estimated && result.total_frames > 0) {
+        result.suggestions.push_back(
+            "部分帧的字节数为估算值（解码存在延迟，包与帧无法一一对应，总量仍精确）。"
+            "GOP 大小、平均帧大小可信；单帧大小与大帧异常仅反映趋势。");
     }
     if (result.suggestions.empty()) {
         result.suggestions.push_back("码率与 GOP 结构未见明显异常。");

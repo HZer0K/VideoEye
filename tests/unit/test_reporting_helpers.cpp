@@ -2,11 +2,25 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <thread>
 #include <vector>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+// windows.h 会把 min/max 定义成宏，之后 std::max/std::min 全被撕碎（本项目里
+// MetricSeries.h / LoudnessPoint.h 就在用 std::max）
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <winioctl.h>
+#endif
 
 #include "core/analysis/AnalysisOptions.h"
 #include "core/domain/model/AnalysisResult.h"
@@ -111,6 +125,130 @@ TEST(ReportBasePathTest, EmptyRootFallsBackToFileName) {
     const auto p = ReportBasePath("C:/out", "", "C:/root/clip.mp4").string();
     EXPECT_EQ(fs::path(p).filename().string(), "clip");
     EXPECT_EQ(p.find(".."), std::string::npos);
+}
+
+// 建一个目录链接（Windows 用 junction，POSIX 用符号链接）。
+//
+// 为什么不能只用 std::filesystem::create_directory_symlink: 它在未开启"开发者模式"
+// 的 Windows 上会**静默退化成一个普通目录**（返回成功但根本不是链接，链接也就
+// 测不出任何东西）。junction 则不需要任何特权，而且是问题单里点名的那一种
+// （out/sub 是指向外部的 Windows junction）。
+bool MakeDirectoryLink(const fs::path& link, const fs::path& target, std::error_code& ec) {
+    ec.clear();
+#ifdef _WIN32
+    fs::create_directory(link, ec);
+    if (ec && !fs::is_directory(link, ec)) return false;
+    ec.clear();
+    const std::wstring sub = L"\\??\\" + target.wstring();
+    const std::wstring print = target.wstring();
+    const USHORT sub_bytes = static_cast<USHORT>(sub.size() * sizeof(WCHAR));
+    const USHORT print_bytes = static_cast<USHORT>(print.size() * sizeof(WCHAR));
+    const size_t path_bytes = sub_bytes + sizeof(WCHAR) + print_bytes + sizeof(WCHAR);
+    const USHORT data_len = static_cast<USHORT>(8 + path_bytes);
+    const size_t total = 8 + data_len;
+
+    struct ReparseBuffer {
+        ULONG tag;
+        USHORT data_length;
+        USHORT reserved;
+        USHORT sub_name_offset;
+        USHORT sub_name_length;
+        USHORT print_name_offset;
+        USHORT print_name_length;
+        WCHAR path_buffer[1];
+    };
+    std::vector<char> buf(total, 0);
+    auto* rp = reinterpret_cast<ReparseBuffer*>(buf.data());
+    rp->tag = IO_REPARSE_TAG_MOUNT_POINT;
+    rp->data_length = data_len;
+    rp->sub_name_offset = 0;
+    rp->sub_name_length = sub_bytes;
+    rp->print_name_offset = static_cast<USHORT>(sub_bytes + sizeof(WCHAR));
+    rp->print_name_length = print_bytes;
+    WCHAR* cursor = rp->path_buffer;
+    std::memcpy(cursor, sub.data(), sub_bytes);
+    cursor += sub.size();
+    *cursor++ = L'\0';
+    std::memcpy(cursor, print.data(), print_bytes);
+    cursor += print.size();
+    *cursor++ = L'\0';
+
+    const HANDLE handle =
+        CreateFileW(link.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                    FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+        return false;
+    }
+    DWORD returned = 0;
+    const BOOL ok = DeviceIoControl(handle, FSCTL_SET_REPARSE_POINT, buf.data(),
+                                    static_cast<DWORD>(total), nullptr, 0, &returned, nullptr);
+    if (!ok) ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+    CloseHandle(handle);
+    return ok != 0;
+#else
+    fs::create_directory_symlink(target, link, ec);
+    return !ec;
+#endif
+}
+
+// 建出来的必须**真的是**链接：往目标里放一个文件，能通过 link 看到才算数。
+// （std::filesystem 在 Windows 上可能静默退化成普通目录，这里把它挡掉。）
+bool LinkReallyWorks(const fs::path& link, const fs::path& target) {
+    std::error_code ec;
+    const auto marker = target / "ve_link_marker.txt";
+    std::ofstream(marker.string()) << "x";
+    const bool visible = fs::exists(link / "ve_link_marker.txt", ec);
+    fs::remove(marker, ec);
+    return visible;
+}
+
+// 输出侧的目录逃逸：输入路径本身很干净（"sub/clip.mp4"），但导出目录里的
+// out/sub 已经是指向外部目录的 junction / 符号链接 —— 照拼的话报告就落到盘外去了。
+// 必须校验最终父目录的**实际**位置，链接目录一律退回铺平。
+TEST(ReportBasePathTest, LinkedOutputSubdirFallsBackToFlatName) {
+    const auto tmp = fs::temp_directory_path() / "ve_rp_link_test";
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
+    fs::create_directories(tmp / "out", ec);
+    fs::create_directories(tmp / "outside", ec);
+
+    const auto link = tmp / "out" / "sub";
+    std::error_code link_ec;
+    const bool made = MakeDirectoryLink(link, tmp / "outside", link_ec);
+    if (!made || !LinkReallyWorks(link, tmp / "outside")) {
+        fs::remove_all(tmp, ec);
+        GTEST_SKIP() << "当前环境建不出可用的目录链接，跳过: " << link_ec.message();
+    }
+
+    const auto p = ReportBasePath((tmp / "out").string(), (tmp / "root").string(),
+                                  (tmp / "root" / "sub" / "clip.mp4").string());
+    // 不能落进链接指向的 outside 目录里
+    const auto canonical_parent = fs::weakly_canonical(fs::path(p).parent_path(), ec);
+    ASSERT_FALSE(ec);
+    EXPECT_NE(fs::weakly_canonical(tmp / "outside", ec), canonical_parent)
+        << "报告路径穿过了输出目录里的链接";
+    // 退回"铺平到导出目录"：文件名还在，子目录不再保留
+    EXPECT_EQ(fs::path(p).filename().string(), "clip");
+    EXPECT_EQ(fs::path(p).parent_path(), tmp / "out");
+
+    fs::remove_all(tmp, ec);
+}
+
+// 导出目录本身干净时，正常子目录必须照旧保留（上面的退回逻辑不能误伤）
+TEST(ReportBasePathTest, NormalOutputSubdirIsStillPreserved) {
+    const auto tmp = fs::temp_directory_path() / "ve_rp_nolink_test";
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
+    fs::create_directories(tmp / "out" / "sub", ec);
+
+    const auto p = ReportBasePath((tmp / "out").string(), (tmp / "root").string(),
+                                  (tmp / "root" / "sub" / "clip.mp4").string());
+    EXPECT_EQ(fs::weakly_canonical(fs::path(p).parent_path(), ec),
+              fs::weakly_canonical(tmp / "out" / "sub", ec));
+    EXPECT_EQ(fs::path(p).filename().string(), "clip");
+
+    fs::remove_all(tmp, ec);
 }
 
 // ---------------------------------------------------------------------------

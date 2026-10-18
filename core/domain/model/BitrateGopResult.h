@@ -75,6 +75,21 @@ struct BitrateGopAnalysis {
     int64_t i_frame_bytes_ = 0;      // I 帧字节数累计（用于计算平均 I 帧大小）
     bool frame_types_known = false;  // false = 只有 I 帧（来自关键帧标记）可信
 
+    // ---- 字节的两套账（包级 vs 帧级）----
+    //
+    // total_bytes 是**包级**事实：这条视频流送进来多少字节，与帧归属无关，
+    // 码率曲线和平均码率一律以它为准。
+    // frame_bytes 是**帧级**事实：真正归属到某个语义帧的字节（GOP 大小、大帧
+    // 判定、平均帧大小都用它）。解码延迟下两者会不相等 —— 送进解码器的包不会
+    // 当场吐帧，那些字节先躺在"待认领池"里，等帧产出时才归到帧上。
+    int64_t frame_bytes = 0;
+    // 入过账但始终没能关联到任何帧的字节（解码器丢帧 / parser 收尾残留）。
+    // frame_bytes + unassociated_bytes == total_bytes。
+    int64_t unassociated_bytes = 0;
+    // frame_bytes 里含估算成分：待认领池被多个帧分摊，或池子已空（没法关联）。
+    // 为真时"单个帧的大小"不可当作精确值用（大帧异常仍可看趋势）。
+    bool frame_bytes_estimated = false;
+
     double IFrameRatio() const;
     double PFrameRatio() const;
     double BFrameRatio() const;

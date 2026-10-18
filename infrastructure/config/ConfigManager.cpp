@@ -1,14 +1,86 @@
 #include "infrastructure/config/ConfigManager.h"
 #include "infrastructure/logging/Logger.h"
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <system_error>
+#include <thread>
 #include <utility>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+// windows.h 会把 min/max 定义成宏，之后 std::max 之类全被撕碎
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace videoeye {
+
+namespace {
+
+// 保存用的临时文件名必须**唯一**（带线程号 + 单调序号）。
+// 所有并发保存共用一个 <target>.tmp 时，两个线程会同时打开、互相截断对方正在写
+// 的文件，最后换上去的内容可能是半截的 —— 而且这种损坏只在并发下出现，很难复现。
+std::filesystem::path UniqueTempPath(const std::filesystem::path& target) {
+    static std::atomic<std::uint64_t> sequence{0};
+    std::ostringstream suffix;
+    suffix << "." << std::this_thread::get_id() << "."
+           << sequence.fetch_add(1, std::memory_order_relaxed) << ".tmp";
+    return std::filesystem::path(target.string() + suffix.str());
+}
+
+// 原子替换：要么新文件完整在位，要么旧文件原封不动。
+//
+// 以前这里是"先把目标改名成 .bak、再把 .tmp rename 上去"两步走，中间存在一个
+// 目标文件**不存在**的窗口（此刻进程被杀/另一个线程来读，看到的就是"没这个文件"），
+// 而且替换失败后没人把 .bak 恢复回去。换成一次原子替换之后，两个问题同时消失。
+//
+// 平台差异必须处理:
+//   * POSIX 的 rename() 覆盖同名文件，本身就是原子的；
+//   * Windows 的 rename（std::filesystem::rename 走 MoveFile）**不能**覆盖已存在的
+//     目标，必须显式要 MOVEFILE_REPLACE_EXISTING。
+bool AtomicReplaceFile(const std::filesystem::path& from, const std::filesystem::path& to,
+                       std::error_code& ec) {
+#ifdef _WIN32
+    // Windows 上"替换"要求此刻没有别的句柄开着目标文件：另一个线程正在读配置、
+    // 或者杀毒软件刚扫到它，都会让这一次替换以 ACCESS_DENIED / SHARING_VIOLATION
+    // 收场。这类占用是短暂的，退避重试几次比直接判"保存失败"更接近事实
+    // （POSIX 的 rename 没有这个问题：它只解除目录项，开着旧文件的读者不受影响）。
+    constexpr int kMaxAttempts = 10;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        ec.clear();
+        if (MoveFileExW(from.c_str(), to.c_str(),
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+            return true;
+        }
+        const DWORD err = GetLastError();
+        const bool transient = (err == ERROR_ACCESS_DENIED) ||
+                               (err == ERROR_SHARING_VIOLATION) ||
+                               (err == ERROR_LOCK_VIOLATION) ||
+                               (err == ERROR_USER_MAPPED_FILE);
+        if (!transient || attempt + 1 == kMaxAttempts) {
+            ec = std::error_code(static_cast<int>(err), std::system_category());
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return false;
+#else
+    std::filesystem::rename(from, to, ec);
+    return !ec;
+#endif
+}
+
+}  // namespace
 
 ConfigManager& ConfigManager::GetInstance() {
     static ConfigManager instance;
@@ -56,23 +128,30 @@ bool ConfigManager::LoadFromFile(const std::string& filename) {
 }
 
 bool ConfigManager::SaveToFile(const std::string& filename) {
-    // 先在锁内序列化出快照 —— 文件 IO 挪到锁外，避免一次磁盘写把所有读路径堵住。
+    // 先在快照锁内序列化出快照 —— 文件 IO 不持这把锁，避免一次磁盘写把所有读路径堵住。
     std::string payload;
     {
         std::lock_guard<std::mutex> lock(config_mutex_);
         payload = Serialize();
     }
 
-    // 原子落盘：先写 .tmp，再把 .tmp 换成目标文件。
+    // 磁盘这一半由保存锁串行化：并发保存共用 .tmp / 互相 rename 是写坏配置的直接原因。
+    std::lock_guard<std::mutex> save_lock(save_mutex_);
+
+    // 原子落盘：先写临时文件，再一次替换到位。
     // 直接往目标文件写的话，写一半崩了/断电留下的就是半截配置（解析不出任何键，
-    // 启动后整套默认值静默生效）。换文件的最后一步是 rename，要么新配置完整在位、
-    // 要么旧配置原封不动。
+    // 启动后整套默认值静默生效）。
     const std::filesystem::path target(filename);
-    const std::filesystem::path tmp = target.string() + ".tmp";
     std::error_code ec;
     if (target.has_parent_path()) {
         std::filesystem::create_directories(target.parent_path(), ec);
+        if (ec) {
+            LOG_ERROR("无法创建配置目录: " + target.parent_path().string() + " - " + ec.message());
+            return false;
+        }
     }
+
+    const std::filesystem::path tmp = UniqueTempPath(target);
     {
         std::ofstream file(tmp, std::ios::binary | std::ios::trunc);
         if (!file.is_open()) {
@@ -83,16 +162,29 @@ bool ConfigManager::SaveToFile(const std::string& filename) {
         file.flush();
         if (!file) {
             LOG_ERROR("写入配置临时文件失败: " + tmp.string());
+            file.close();
+            std::filesystem::remove(tmp, ec);
             return false;
         }
     }
-    // Windows 的 rename 不能覆盖已存在的文件：把旧文件先改名成 .bak（留一条退路），
-    // 再让 .tmp 就位。这两步之间若进程被杀，最多是配置回到默认值，不会是半个文件。
-    std::filesystem::remove(target.string() + ".bak", ec);
-    std::filesystem::rename(target, target.string() + ".bak", ec);
-    std::filesystem::rename(tmp, target, ec);
-    if (ec) {
-        LOG_ERROR("配置落盘失败（原文件已保留为 .bak）: " + filename + " - " + ec.message());
+
+    // 替换前留一份备份（**复制**而不是改名 —— 改名会制造"目标文件不存在"的窗口）。
+    // 备份失败不影响本次保存，只记一条警告。
+    std::error_code backup_ec;
+    if (std::filesystem::exists(target, backup_ec)) {
+        std::filesystem::copy_file(target, target.string() + ".bak",
+                                   std::filesystem::copy_options::overwrite_existing,
+                                   backup_ec);
+        if (backup_ec) {
+            LOG_WARN("配置备份失败（不影响本次保存）: " + target.string() + ".bak - " +
+                     backup_ec.message());
+        }
+    }
+
+    if (!AtomicReplaceFile(tmp, target, ec)) {
+        // 替换失败 = 目标文件根本没被动过，不需要"恢复备份"这一步；
+        // 唯一要收拾的是自己那个临时文件。
+        LOG_ERROR("配置落盘失败（原文件未改动）: " + filename + " - " + ec.message());
         std::filesystem::remove(tmp, ec);
         return false;
     }

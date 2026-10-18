@@ -64,6 +64,11 @@ public:
 
     bool IsRunning() const;
 
+    // slot 上那个任务当前的状态。测试与 UI 用它在"信号已发出"之后核对任务协议
+    // 那一侧是否同步 —— 两条路径记的不一致（信号说失败、协议说成功）正是这里要
+    // 消灭的那类偏差。
+    task::TaskState terminal_state() const { return tasks_.State(kSlot); }
+
     // 当前代际 = slot 上那个任务的 id。
     //
     // 故意不做成"自己自增出来的计数器"：facade 拿它给回包判代际（AnalysisFacade 里
@@ -132,6 +137,19 @@ private:
         // 既是数据竞争，也让线程体必须碰到 this。挪进盒子之后，工作线程只读盒子，
         // "线程体有没有回来"这件事由盒子自己回答。
         std::atomic<bool> body_done{false};
+        // 是否已经发过失败通知（AnalysisFailed）。
+        //
+        // 失败有两个来源：线程体捕获到异常，以及**引擎自己在 Run 内部**走失败分支
+        // 调 on_failed（打不开文件、探测失败等，Run 本身是正常返回的）。只判异常
+        // 会漏掉第二种，于是 UI 显示了失败、任务协议却记成成功。
+        std::atomic<bool> reported_failure{false};
+        // 线程体**自己**判定的终态（取消 > 失败 > 成功），由它写完再置 body_done，
+        // 宿主读 body_done（acquire）之后就能安全读到它。
+        //
+        // 以前宿主只看取消令牌、其余一律写 Succeeded：失败路径明明已经 emit 了
+        // AnalysisFailed，任务协议里却记成成功 —— 同一件事两套答案。
+        // 终态只有一个产生者（线程体），宿主只负责把它交还给 slot。
+        task::TaskState terminal = task::TaskState::Succeeded;
         // 线程体收尾时通知宿主（在宿主线程里执行）。用 weak_ptr 取盒子而不是直接
         // 按值捕获，免得盒子还有人用时形成自引用环。
         std::function<void(task::TaskId)> on_body_done;

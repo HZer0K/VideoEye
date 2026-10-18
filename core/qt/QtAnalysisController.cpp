@@ -125,7 +125,14 @@ void QtAnalysisController::Launch(const std::string& file_path, const videoeye::
         if (!self || !alive->load(std::memory_order_acquire)) return;
         emit self->ProgressReported(id, percent, QString::fromStdString(stage));
     };
-    callbacks.on_failed = [self, alive = alive_, id = handle.id](const std::string& message) {
+    // 失败通知必须先记账再转发：引擎内部的失败分支（打不开文件、探测失败）是
+    // **正常返回**的，线程体捕获不到任何异常，只有这里知道"这次是失败了"。
+    // 捕获 weak_box 而不是 box：回调住在盒子里，按值捕获 box 会让盒子自引用成环。
+    callbacks.on_failed = [self, alive = alive_, id = handle.id,
+                           weak_box](const std::string& message) {
+        if (const auto box = weak_box.lock()) {
+            box->reported_failure.store(true, std::memory_order_release);
+        }
         if (!self || !alive->load(std::memory_order_acquire)) return;
         emit self->AnalysisFailed(id, QString::fromStdString(message));
     };
@@ -157,9 +164,22 @@ void QtAnalysisController::Launch(const std::string& file_path, const videoeye::
         if (failure && box->callbacks.on_failed) {
             box->callbacks.on_failed(std::string("分析异常: ") + *failure);
         }
+        // 终态在**这里**定下来（取消 > 异常 > 成功），宿主不再自己猜。
+        // 之后 OnWorkerExited 直接把它交还给 slot —— 于是"UI 收到 AnalysisFailed"
+        // 与"任务协议记为 Failed"永远是同一件事。
+        task::TaskState terminal = task::ResolveTerminal(failure, token);
+        // 引擎自己报的失败（Run 正常返回 + on_failed）也要落到终态上，
+        // 否则"UI 显示失败 / 协议记为成功"这个矛盾依然存在。
+        if (terminal == task::TaskState::Succeeded &&
+            box->reported_failure.load(std::memory_order_acquire)) {
+            terminal = task::TaskState::Failed;
+        }
+        box->terminal = terminal;
         // 先立"线程体已返回"标志，再投递通知。顺序不能反: StartAnalysis 可能在这条
         // 通知被处理**之前**就被调用，那时它靠这个标志判断句柄可以就地回收并直接开
         // 新任务，而不是傻等一条已经被消费掉的通知。
+        // （也正因为这个 release / acquire 配对，宿主读到 body_done 之后就能安全读
+        //  上面那行写进去的 terminal。）
         box->body_done.store(true, std::memory_order_release);
         // 线程体结束：通知 UI 线程收拾本代际的句柄并接手排队请求。
         // 信号是排队投递的，所以 AnalysisFinished 一定先被处理，顺序不会乱。
@@ -221,10 +241,10 @@ void QtAnalysisController::OnWorkerExited(task::TaskId exited_id) {
     const task::TaskHandle handle = worker_box_->handle;
     const bool body_returned = WorkerBodyReturned();
     if (body_returned) {
-        // 判取消用的是这个任务自己的令牌，不是 slot 上"当前"那颗 ——
-        // 期间若又 Begin 过，slot 上那颗已经是新任务的了，拿它判会把新任务误记成取消。
-        const bool cancelled = handle.cancel.IsCanceled();
-        SettleTask(handle, cancelled ? task::TaskState::Canceled : task::TaskState::Succeeded);
+        // 交还**线程体自己判定的**终态（Failed / Canceled / Succeeded），
+        // 而不是在这里"没取消就算成功"。异常路径下 AnalysisFailed 已经发给了 UI，
+        // 任务协议这一侧必须同样是 Failed。
+        SettleTask(handle, worker_box_->terminal);
         ReapWorker();
     }
 
@@ -275,9 +295,12 @@ void QtAnalysisController::Shutdown() {
         worker_.detach();   // 线程只握着盒子，盒子自己保活到跑完
         worker_id_ = 0;
         // 放弃之后它自己不会再回来写终态了，这里补一个 —— 否则 slot 永远停在 Running。
+        // 记 TimedOut 而不是 Canceled：取消令牌确实置了位，但**没能**让它回来，
+        // 这正是协议里 TimedOut（"超过宿主给的回收预算仍未回来"）的含义 ——
+        // 上层据此才知道有一条线程可能还在收尾，而不是"已经干净地取消掉了"。
         // （交由 SettleTask：终态一次性，真跑回来写过的那次会保留。）
         if (handle.valid())
-            SettleTask(handle, task::TaskState::Canceled);
+            SettleTask(handle, task::TaskState::TimedOut);
         return;
     }
 

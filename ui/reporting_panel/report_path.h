@@ -30,15 +30,39 @@ inline bool IsContainedRelativePath(const std::filesystem::path& rel) {
     return true;
 }
 
+// 目录 dir 是否**实际**位于 parent 之下（解析符号链接 / Windows junction 之后）。
+//
+// 只查输入路径里的 ".." 是不够的：导出目录里**已经存在**的链接同样能把写操作带出去
+// —— out/sub 是指向外部目录的 junction 时，out/sub/clip.json 会如实落到外部。
+// 所以最终落盘目录要在解析完链接之后再判一次从属关系。
+inline bool IsContainedUnder(const std::filesystem::path& dir,
+                             const std::filesystem::path& parent) {
+    std::error_code ec;
+    // weakly_canonical 会解析已存在的那一段（含 junction / 符号链接），
+    // 不存在的那一段只做词法归一化 —— 不要求路径已经存在。
+    const auto child = std::filesystem::weakly_canonical(dir, ec);
+    if (ec) return false;
+    const auto base = std::filesystem::weakly_canonical(parent, ec);
+    if (ec) return false;
+    const auto rel = std::filesystem::relative(child, base, ec);
+    if (ec) return false;
+    return IsContainedRelativePath(rel);
+}
+
 // 批量导出时每个文件的主路径：保留相对子目录 + 文件 stem，不带扩展名。
 // 导出与 UI 共用这一组路径，保证同名文件（位于不同子目录）不会互相覆盖，
-// 且表格显示的路径就是真实落盘路径。当 file_path 不在 root 之下时退回只取文件名。
+// 且表格显示的路径就是真实落盘路径。当 file_path 不在 root 之下、或最终落盘
+// 目录逃出 out_dir 时退回只取文件名。
 //
-// containment 是**严格**的：直接对原始字符串做 relative() 只算出一条相对路径，
-// 它照样可能带着 ".."（root 与 file_path 一个走符号链接、一个是相对路径、
-// 或 root 本身为空都会这样），拼到 out_dir 上就是目录逃逸。所以两侧先各自
-// weakly_canonical（去掉 . / .. / 符号链接，且不要求路径已存在），再算相对部分，
-// 最后仍要过一遍 IsContainedRelativePath —— 拿不到可信的相对路径就退回文件名。
+// containment 是**严格**的，两侧都要查：
+//   1. 输入侧：直接对原始字符串做 relative() 只算出一条相对路径，它照样可能带着
+//      ".."（root 与 file_path 一个走符号链接、一个是相对路径、或 root 本身为空
+//      都会这样），拼到 out_dir 上就是目录逃逸。所以两侧先各自 weakly_canonical
+//      （去掉 . / .. / 符号链接，且不要求路径已存在），再算相对部分，最后仍要过
+//      一遍 IsContainedRelativePath —— 拿不到可信的相对路径就退回文件名。
+//   2. 输出侧：out_dir 里的子目录**可能已经是链接**（Windows junction / 符号链接）。
+//      输入侧查不出这种情况（"sub/clip.json" 本身很干净），但拼出来的
+//      out_dir/sub 解析后可能指向盘外。所以最终父目录还要再判一次从属关系。
 inline std::filesystem::path ReportBasePath(const std::string& out_dir,
                                             const std::string& root,
                                             const std::string& file_path) {
@@ -52,7 +76,13 @@ inline std::filesystem::path ReportBasePath(const std::string& out_dir,
         if (!ec && IsContainedRelativePath(candidate)) rel = candidate;
     }
     if (rel.empty()) rel = std::filesystem::path(file_path).filename();
-    return std::filesystem::path(out_dir) / rel.parent_path() / rel.stem();
+
+    const std::filesystem::path out(out_dir);
+    const std::filesystem::path parent = out / rel.parent_path();
+    // 链接目录一律拒绝，退回"铺平到 out_dir"：宁可少保留一层子目录，
+    // 也不能把报告写到导出目录之外。
+    if (!IsContainedUnder(parent, out)) return out / rel.stem();
+    return parent / rel.stem();
 }
 
 // 分析成功后按选定格式落盘；与 UI 共用同一组"保留相对子目录"的路径。
