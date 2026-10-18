@@ -8,10 +8,36 @@
 
 ### 1.2 支持的编码格式
 
-- **H.264 (AVC)**: SPS/PPS、profile、level、VUI、HRD、SEI
-- **H.265 (HEVC)**: VPS/SPS/PPS、profile tier level、VUI、HDR SEI
-- **AV1**: OBU、sequence header、film grain、HDR metadata
+口径说明：**只写解析器真正落地成字段的东西**。HDR 静态元数据（ST 2086 / MaxCLL-MaxFALL）
+与 Dolby Vision 配置走的是 FFmpeg 的 side data（见 `COLOR_HDR_ANALYSIS.md`），
+不是本模块从 SEI 里解出来的 —— 早期文档把这两条写在一起，会让排期误判工作量。
+
+- **H.264 (AVC)**: SPS（profile / level / 色度 / 位深 / cropping / VUI 色彩与时基）、PPS；
+  **HRD 只做按位跳过**（保证 VUI 后续字段不错位，不落地数值），**不解析 SEI**
+- **H.265 (HEVC)**: VPS / SPS / PPS、profile tier level、VUI、conformance window；
+  `HevcBitstreamParser::ParseSeiMessages()` 已实现但**当前没有接入扫描链路**（无调用方）
+- **AV1**: OBU、sequence header、color_config、`film_grain_params_present` 标志
+  （film grain 的具体参数结构与 HDR metadata 未落地）
 - **VVC (H.266，实验性/部分支持)**: VPS/SPS/PPS、profile tier level、VUI；PPS 为浅解析，字段仅供参考
+
+### 1.3 参数集从哪来：extradata 与带内
+
+参数集有两个来源，结果里的 `parameter_set_source` 会写明，消费方不该混着看：
+
+| 来源 | 适用封装 | 做法 | 成本 |
+|------|---------|------|------|
+| `extradata` | MP4/MOV、MKV/WebM（avcC / hvcC / av1C / vvcC 或 AnnexB extradata） | 直接读 `AVCodecParameters::extradata` | KB 级，可忽略 |
+| `in_band` | **MPEG-TS / 裸流 / fMP4 媒体分片**（extradata 恒为空） | 在扫描前 8 MiB / 4000 个视频包里找 SPS/PPS/VPS/序列头，命中即解析并停手 | 一次 O(n) 起始码扫描，命中前不解语法 |
+
+带内路径的判据与上限都在 `core/analysis/codec/InBandParameterSets.h`：
+
+- AnnexB（H.264/HEVC/VVC）增量扫起始码 + 按 codec 读 NAL 类型判断"参数集出现了"，
+  只在出现时才调一次 `BitstreamAnalyzer::AnalyzeInBand()`；扫描位置带 5 字节重叠，
+  起始码/NAL header 被包边界切开也能认出来。
+- AV1 没有起始码，按 1/2/4/8… 的对数间隔试解（序列头几乎总在最前面几个包）。
+- 放弃时会给出可读原因（"已扫满 N 个包仍未见参数集"），并写进日志；
+  典型场景是"录播从 GOP 中间开始、且编码器只在流开头写了一次参数集"。
+- 这条路径**只在没有 extradata 时才启用**：extradata 有值就是权威来源，不做二次探测。
 
 ## 2. 技术原理
 
@@ -412,10 +438,21 @@ TEST(H264BitstreamParserTest, ParseHighProfileSPS) {
 
 ## 10. 当前接入状态与已知限制
 
-全文件诊断由 `AnalysisOptions::analyze_bitstream`（默认开）控制，
-在 `AnalysisEngine::Run()` 里对第一条视频流的 `AVCodecParameters::extradata`
-调用 `BitstreamAnalyzer::Analyze()`，结果放进 `AnalysisResult::bitstream_analysis`
-（`bitstream_analyzed=true` 表示跑过）。这一步不解码，只读 KB 级 extradata。
+全文件诊断由 `AnalysisOptions::analyze_bitstream`（默认开）控制，在
+`AnalysisPipeline::PrepareBitstream()` 里对第一条视频流的
+`AVCodecParameters::extradata` 调用 `BitstreamAnalyzer::Analyze()`，结果放进
+`AnalysisResult::bitstream_analysis`（`bitstream_analyzed=true` 表示跑过）。
+这一步不解码，只读 KB 级 extradata。
+
+**extradata 为空时转带内路径**（2026-10 补齐，见 §1.3）：`PrepareBitstream()` 只登记
+流号，真正的攒包与解析在 `AnalysisPipeline::OnPacket()` 里逐包推进
+（`InBandParameterSetProbe::Feed()`）。成功时结果与 extradata 路径同构，只是
+`parameter_set_source == "in_band"`；失败（扫满包数/字节上限）会写日志并保持
+`bitstream_analyzed=false`，UI 不显示码流页，行为与以前一致。
+
+这条路径解决的问题：MPEG-TS、裸流（AnnexB ES）、fMP4 媒体分片的 extradata **恒为空**，
+在本次改动前它们一律落 `NoExtradata`，码流分析整块不可用 —— 而这三种封装恰好是
+直播与 HLS 点播分片的主战场。
 
 分发用的是 FFmpeg 的 `AVCodecID`（`AV_CODEC_ID_H264` / `HEVC` / `AV1` / `VVC`），
 不是自定义编号 —— 传错就静默落到 default 分支的坑已经修掉。

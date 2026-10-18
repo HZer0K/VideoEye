@@ -18,9 +18,9 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 - **多源输入**: HTTP / RTMP / RTSP 网络流及本地文件
 - **流分析**: 实时统计 FPS、码率、关键帧并可视化曲线
 - **视频帧分析**: 单独标签页展示 I/P/B 帧类型、序号、PTS、时间戳
-- **容器结构分析**: 统一调度解析 MP4/MOV、MKV/WebM、AVI、FLV、MPEG-TS、ASF/WMV、OGG
+- **容器结构分析**: 统一调度解析 MP4/MOV、MKV/WebM、AVI、FLV、MPEG-TS、ASF/WMV、OGG；MP4 树到字段级（`ftyp`/`mvhd`/`tkhd`/`stsd` 入口 + `avcC`/`hvcC`/`av1C`/`esds`/`colr`/`pasp`/`btrt`/`sidx`/`moof`），MPEG-TS 支持 188/192/204 包长自适应、失步重同步、PAT/PMT 跨包组装、描述符与 SDT 服务名、PCR 与连续计数统计
 - **媒体信息**: 基于 FFmpeg `libavformat` 展示完整元数据（容器 / 视频 / 音频 / 字幕 / 章节）
-- **码流参数集**: H.264 / HEVC / AV1 按能力矩阵解析；VVC 为实验性部分支持，字段仅供参考、不参与严格容器一致性判定
+- **码流参数集**: H.264 / HEVC / AV1 按能力矩阵解析；VVC 为实验性部分支持，字段仅供参考、不参与严格容器一致性判定。extradata 为空的封装（TS / 裸流 / fMP4 分片）走**带内参数集**：扫前 8 MiB 视频包抽 SPS/VPS/序列头
 - **硬件加速**: VAAPI/CUDA/D3D11VA/QSV 等硬件解码（解码后统一转 CPU 图像渲染）
 - **音频可视化**: 波形快照、FFT 频谱、纯音频律动
 - **场景切换检测**: 灰度直方图 Bhattacharyya 距离实时检测镜头切换
@@ -237,6 +237,9 @@ macOS 代码路径是通的（音频走 AudioQueue、`linux-*` preset 在 macOS 
 | 分片可用性 | **不推算** | `availabilityStartTime` 只校验"有没有声明"，不回答"此刻哪些分片可以取" |
 | VVC 码流解析 | **实验性部分支持** | SPS/VPS 关键字段可解析，PPS 与真实样本覆盖不完整；结果标"参考"，不参与容器一致性判定 |
 | H.264 / HEVC / AV1 | **按能力矩阵** | 只有已验证的 Profile / 色度 / 位深组合才判"可靠"，其余标"参考"。详见 `docs/BITSTREAM_ANALYSIS.md` |
+| MPEG-TS 扫描量 | **默认前 50 万包（≈94 MB）** | 可用 `TsStructureOptions::max_scan_packets` 调到全文件；`metadata["扫描是否完整"]` 明示有没有扫完，结论不会假装覆盖整个文件 |
+| 带内参数集 | **有上限的探测** | 最多 8 MiB / 4000 个视频包。编码器只在流开头写一次参数集、而录播从中间开始的文件，可能找不到 → 记日志并保持"未分析"，不会瞎猜 |
+| SEI / 动态 HDR 元数据 | **不自研解析** | HDR10+ / Dolby Vision / ST 2086 走 FFmpeg 的 side data（解码首帧兜底），不从 SEI 里解 |
 
 ## 使用指南
 
@@ -288,12 +291,12 @@ TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红�
 
 | 指标 | 数量 |
 |---|---|
-| 测试可执行文件 | 76 |
-| ctest 用例组（gtest 可执行文件） | 76 |
+| 测试可执行文件 | 87 |
+| ctest 用例组（gtest 可执行文件） | 87 |
 | python 脚本用例组（架构规则门 + 语料校验，非 gtest） | 11 |
-| gtest 用例（含 `TEST` / `TEST_F` / `TEST_P`） | 744 |
+| gtest 用例（含 `TEST` / `TEST_F` / `TEST_P`） | 897 |
 
-`ctest -N` 会显示 **87 = 76 + 11**，多出来的 11 个不是 gtest 可执行文件，而是直接
+`ctest -N` 会显示 **98 = 87 + 11**，多出来的 11 个不是 gtest 可执行文件，而是直接
 `add_test` 调 python 脚本的 5 道架构规则门及其自测：`check_layering.py` 与它的自测、
 `audit_qt_analysis_border.py` 与它的自测、`audit_namespace_layout.py` 与它的自测、
 `audit_qt_domain_border.py` 与它的自测、`audit_link_visibility.py` 与它的自测（最后一
@@ -302,8 +305,10 @@ TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红�
 没有 gtest 用例，所以脚本不计入 gtest 那两个数。
 
 这个数字以前是「18 个可执行文件 + 17 组 ctest」，长期没跟着测试用例涨 —— 所以改成脚本
-现算。CI 的 layering job 会跑 `python scripts/summarize_tests.py --expect 75`：加了测试
+现算。CI 的 layering job 会跑 `python scripts/summarize_tests.py --expect 87`：加了测试
 就一并更新这里和 CI 里的数字，否则那道门直接红，别让表格再飘。
+（2026-10-18 复核：表格里原来的 76 / 744 已经落后于仓库实际值 87 / 897，这次按脚本
+输出改正；`--expect` 跟着从 76 提到 87。）
 
 跑之前注意：架构规则那 10 条脚本用例用「`VIDEOEYE_ROOT` 或当前目录」当仓库根，所以 CMake 里给它们
 钉了 `WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}`。不加的话 ctest 的工作目录是

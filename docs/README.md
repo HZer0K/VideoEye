@@ -23,7 +23,8 @@
 
 | 文档 | 对应模块 |
 |------|----------|
-| [`BITSTREAM_ANALYSIS.md`](BITSTREAM_ANALYSIS.md) | 编码码流解析：H.264 / HEVC / AV1 的 SPS-PPS-VPS、extradata 与 OBU |
+| [`CONTAINER_STRUCTURE.md`](CONTAINER_STRUCTURE.md) | 容器结构解析：检测与分发、各格式深度、MPEG-TS 的包长/重同步/描述符与扫描上限 |
+| [`BITSTREAM_ANALYSIS.md`](BITSTREAM_ANALYSIS.md) | 编码码流解析：H.264 / HEVC / AV1 的 SPS-PPS-VPS、extradata 与 OBU、带内参数集 |
 | [`MP4_SAMPLE_TABLE.md`](MP4_SAMPLE_TABLE.md) | MP4 / fMP4 容器一致性校验（sample table） |
 | [`BITRATE_GOP_ANALYSIS.md`](BITRATE_GOP_ANALYSIS.md) | 码率曲线与 GOP 深度 |
 | [`COLOR_HDR_ANALYSIS.md`](COLOR_HDR_ANALYSIS.md) | 色彩与 HDR 元数据（含 FFmpeg 枚举对齐的 `static_assert`） |
