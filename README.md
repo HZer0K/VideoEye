@@ -27,7 +27,7 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 - **画面质量（视觉缺陷）**: 黑场 / 冻结 / 花屏马赛克 / 模糊 / 闪烁 / 过曝欠曝 / 色偏 / 隔行梳齿 / 黑边，带证据缩略图与缺陷列表
 - **字幕 / 时码 / 辅助数据**: 字幕 cue（SRT / ASS-SSA / WebVTT / tx3g / CEA-608）重叠与空字幕检查、SMPTE 时码与章节、data 流与 SCTE-35 广告插入点
 - **质量评估**: 离线逐帧计算 PSNR / SSIM 及走势图
-- **报告与批量 QC**: 5 套规则模板 → 单文件/目录批量分析 → 评分与结论 → JSON/CSV/HTML/PDF/TXT 导出
+- **报告与批量 QC**: 5 套规则模板 → 单文件/目录批量分析 → 评分与结论 → JSON/CSV/HTML/PDF/TXT 导出；容器侧规则覆盖 MP4 样本表、HLS/DASH 清单，以及 **MPEG-TS 传输层**（缺 PAT/PMT、失步、连续计数错误率、PCR 间隔、加扰、扫描范围）
 - **FFmpeg 命令工作台**: 直接调用原生 `ffmpeg` 程序 —— 写命令、看实时日志、查参数含义（内置指令字典与逐项解释）
 - **帧导出**: 导出任意帧为 JPG / RGB / YUV，支持打开 .yuv / .rgb 原始图像
 - **支持清单**: `帮助` → `支持的格式与编解码器` 现场枚举本进程链接的 FFmpeg 能读写的封装格式 / 编解码器 / 协议 / 硬件加速类型（换了 FFmpeg 构建，清单跟着变）
@@ -291,12 +291,12 @@ TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红�
 
 | 指标 | 数量 |
 |---|---|
-| 测试可执行文件 | 87 |
-| ctest 用例组（gtest 可执行文件） | 87 |
+| 测试可执行文件 | 88 |
+| ctest 用例组（gtest 可执行文件） | 88 |
 | python 脚本用例组（架构规则门 + 语料校验，非 gtest） | 11 |
-| gtest 用例（含 `TEST` / `TEST_F` / `TEST_P`） | 897 |
+| gtest 用例（含 `TEST` / `TEST_F` / `TEST_P`） | 910 |
 
-`ctest -N` 会显示 **98 = 87 + 11**，多出来的 11 个不是 gtest 可执行文件，而是直接
+`ctest -N` 会显示 **99 = 88 + 11**，多出来的 11 个不是 gtest 可执行文件，而是直接
 `add_test` 调 python 脚本的 5 道架构规则门及其自测：`check_layering.py` 与它的自测、
 `audit_qt_analysis_border.py` 与它的自测、`audit_namespace_layout.py` 与它的自测、
 `audit_qt_domain_border.py` 与它的自测、`audit_link_visibility.py` 与它的自测（最后一
@@ -305,10 +305,11 @@ TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红�
 没有 gtest 用例，所以脚本不计入 gtest 那两个数。
 
 这个数字以前是「18 个可执行文件 + 17 组 ctest」，长期没跟着测试用例涨 —— 所以改成脚本
-现算。CI 的 layering job 会跑 `python scripts/summarize_tests.py --expect 87`：加了测试
+现算。CI 的 layering job 会跑 `python scripts/summarize_tests.py --expect 88`：加了测试
 就一并更新这里和 CI 里的数字，否则那道门直接红，别让表格再飘。
 （2026-10-18 复核：表格里原来的 76 / 744 已经落后于仓库实际值 87 / 897，这次按脚本
-输出改正；`--expect` 跟着从 76 提到 87。）
+输出改正；`--expect` 跟着从 76 提到 87。同一天加 `container.ts.*` 规则族
+（新测试目标 `test_container_ts_qc_rules`）后再提到 88。）
 
 跑之前注意：架构规则那 10 条脚本用例用「`VIDEOEYE_ROOT` 或当前目录」当仓库根，所以 CMake 里给它们
 钉了 `WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}`。不加的话 ctest 的工作目录是

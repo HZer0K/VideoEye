@@ -48,7 +48,13 @@ flowchart LR
 - 序列：`total_bitrate_kbps` / `video_bitrate_kbps` / `video_fps`（默认 1 s 粒度）
 - 健康度：PTS 单调性、DTS 缺失率、最大时间戳跳变、GOP 间隔序列、包大小极值
 
-## 4. 规则集（默认 16 条）
+## 4. 规则集
+
+> **权威来源是 `core/domain/model/QcModels.cpp` 的 `DefaultQcRules()`**，不是这张表。
+> 下面只列早期手写的核心规则；后来按分析器拆出的规则族（`container.mp4.*`、
+> `container.hls.*` / `container.dash.*`、`container.ts.*`、`subtitle.*`、
+> `timecode.*`、`video.color.*`、`scte35.*` …）数量已经远超这张表，
+> 完整清单在「规则与阈值」页与导出的 JSON 规则快照里。
 
 | 规则 id | 默认阈值 | 严重度 | 判定 |
 |---------|----------|--------|------|
@@ -67,6 +73,29 @@ flowchart LR
 | `timing.gap` | > 2.0 s | Warning | 时间戳跳变 |
 | `audio.sample_rate_low` | < 32000 Hz | Info | 采样率偏低 |
 | `audio.channel_missing` | — | Info | 未标注声道数 |
+
+### 4.1 MPEG-TS 传输层（`container.ts.*`）
+
+输入不是逐包扫描产物，而是 `AnalysisResult::ts_transport`（`TransportStreamInfo`）：
+失步 / 连续计数 / PCR / 加扰都是 **TS 包头里的事实**，avformat 的 demux 看不到包头，
+所以 `AnalysisEngine` 会在扫描前按字节再扫一遍文件头（`AnalysisOptions::
+analyze_ts_transport` / `ts_transport_max_packets`，默认 20 万包）。
+解析器与容器结构页共用 `TsStructureAnalyzer`，是同一组数字。
+
+| 规则 id | 默认阈值 | 严重度 | 判定 |
+|---------|----------|--------|------|
+| `container.ts.missing_pat` | — | Critical | 没有 PAT，节目表无从得知 |
+| `container.ts.missing_pmt` | — | Error | 有 PAT 但没 PMT（PAT 缺失时不重复报） |
+| `container.ts.sync_loss` | > 0 次 | Error | 同步字节丢失后重新对齐 |
+| `container.ts.continuity_error` | > 0.01 % | Warning | 连续计数错误**比例**（不是绝对条数） |
+| `container.ts.pcr_gap` | > 100 ms | Warning | 最大 PCR 间隔（没采到 PCR 时不报） |
+| `container.ts.scrambled` | — | Info | 加扰流：能解复用，但载荷不可读 |
+| `container.ts.scan_incomplete` | — | Info | 只扫了窗口，提醒结论范围 |
+
+两条口径约束：
+
+- `ts_transport.analyzed=false` 时整族规则静默 —— "没跑过"不是"没问题"；
+- 故障类规则的 detail 必须带出「扫了多少 / 共多少」，否则窗口结论会被读成全文件结论。
 
 ### 新增一条规则
 

@@ -108,7 +108,25 @@ TS 是直播与 HLS 分片的主格式，也是这一层里唯一"参数一改�
 `204` 是步长（后面 16 字节 RS 校验），而 **TS 包本体恒为 188 字节**。
 读取用步长、字段边界用 188，混用会把 TP 头/校验尾当载荷。
 
-## 4. 加一个容器格式要动哪些文件
+## 4. 结论怎么进 QC：`ts_transport`
+
+解析出结构不等于能评分。TS 的传输层数字（失步 / 连续计数 / PCR / 加扰）以前只出现在
+容器结构页的 metadata 与树里，批量 QC 拿不到 —— 规则只读 `AnalysisResult`。
+
+现在 `TsStructureAnalyzer` 在解析完顺手产出 `model::TransportStreamInfo`
+（扁平值对象，见 `core/domain/model/TransportStreamInfo.h`），
+`AnalysisEngine` 在扫描前对 TS 输入按字节再扫一遍（预算独立：
+`AnalysisOptions::ts_transport_max_packets`，默认 20 万包），填进
+`AnalysisResult::ts_transport`，由 `container.ts.*` 七条规则消费。
+
+三条必须守住的口径：
+
+- **只对本地 TS 生效**：网络源不重扫（URL 读两遍会拿到不同的直播窗口）；
+- **`analyzed=false` 时整族规则静默**：没跑过既不是"没问题"也不是"有问题"；
+- **窗口结论要说清范围**：故障类规则的 detail 带出"扫了多少 / 共多少"，
+  另有一条 `container.ts.scan_incomplete` 专门提示。
+
+## 5. 加一个容器格式要动哪些文件
 
 1. `core/domain/model/ContainerStructureInfo.h`：`ContainerFormat` 加枚举值
 2. `core/analysis/orchestration/FormatDetector.*`：魔数 + 扩展名 + `FormatName` / `FormatTitle`
@@ -126,11 +144,13 @@ TS 是直播与 HLS 分片的主格式，也是这一层里唯一"参数一改�
   不能"这一层 return 了、外层照样 valid=true"。
 - **有上限**：包数/条目数/深度都要有上界，并让上界出现在结果里（metadata 或 summary）。
 
-## 5. 测试
+## 6. 测试
 
 - `tests/unit/test_container_structure_analyzers.cpp`：五种格式 × 三类输入的参数化矩阵，
   外加 TS 深度用例（192 包长 / 失步重同步 / 描述符+SDT / CC 统计 / 扫描截断）。
 - `tests/unit/test_isobmff_parser.cpp`：box 树与字段级解析（含 `stsd` 入口子树）。
+- `tests/unit/test_container_ts_qc_rules.cpp`：`container.ts.*` 规则族
+  （级别、比例 vs 绝对条数、无 PCR 时不造结论、`analyzed=false` 整族静默、阈值可调）。
 - `tests/unit/test_corpus_robustness.cpp`：`tests/corpus/container/` 下的畸形样本
   （largesize 溢出、截断 moov、坏 FLV 头…）必须**有界终止**，不能死循环也不能崩。
 - `tests/fuzz/fuzz_container_structure.cpp`：容器结构解析的 libFuzzer 入口（Linux + clang）。
