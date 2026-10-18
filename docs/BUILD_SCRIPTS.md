@@ -95,6 +95,45 @@
 - `build.bat` — Windows，自带 MSVC 环境引导（cmd / CI / 无 user preset 的机器）
 - `build.sh` — 有 user preset 或 Linux/macOS（bash 环境，含 Windows 的 Git Bash）
 
+### 2.6 头文件依赖追踪曾在中文 UI 配过的树上静默失效（2026-10-18 修复）
+
+**症状**：改一个被几十个 TU 包含的头（`AnalysisResult.h` / `AnalysisResult` 里的结构体），
+增量构建只重编 2 个文件；随后跑测试出现 `0xC0000374` / `0xC0000409`，重跑一次有时又好了。
+不知道根因的话，很容易去怀疑刚改的代码，而真正坏的是**构建树**。
+
+**根因**：Ninja 的 `deps = msvc` 靠字符串匹配 cl 打印的
+`Note: including file: <路径>` 来记录依赖，那串前缀存在 `CMakeFiles/rules.ninja` 的
+`msvc_deps_prefix` 里，取自 configure 期一次 `/showIncludes` 探测。探测结果会被缓存进
+`CMakeFiles/<版本>/CMakeCXXCompiler.cmake`，每次 configure 原样重新 set 回来。
+
+一旦 **configure 与 build 的 cl 消息语言不同**，前缀就永远匹配不上 —— 依赖一条都记不到：
+
+| 场景 | cl 打印 | 结果 |
+|------|---------|------|
+| 在 VS 中文 UI 里 configure（VS 给 CMake 进程设 `VSLANG=2052`） | `注意: 包含文件:` | 前缀被记成中文 |
+| 之后用 `build.bat` / 裸 pwsh 构建（`VSLANG` 未设、无中文语言包） | `Note: including file:` | **永远匹配不上** |
+
+特征是 `.ninja_deps` 异常小（正常应是 MB 级，坏掉时只有几十 KB）。
+
+**修法**（`CMakeLists.txt` 顶部 + MSVC 分支）：
+
+1. `project()` 之前 `set(ENV{VSLANG} 1033)` —— 让探测本身看到英文；
+2. 编译命令前面加 `cmake -E env VSLANG=1033`（`CMAKE_<LANG>_COMPILER_LAUNCHER`）——
+   让**任何**构建方（VS / build.bat / CI / 裸 pwsh）的 cl 都说英文；
+3. 加一道 fail-fast 守卫：探测到的前缀不是英文就直接 `FATAL_ERROR`，并打印一次性修复命令
+   （删掉 `CMakeFiles/<版本>/CMakeCXXCompiler.cmake` 与 `CMakeCCompiler.cmake` 后重配）。
+
+**为什么守卫是必要的**：生成器在 `project()` 里就把前缀取走了，之后在 CMakeLists 里改
+cache 变量**对 `rules.ninja` 无效**（实测：`set(CMAKE_CL_SHOWINCLUDES_PREFIX)` 与
+`CMAKE_CXX_CL_SHOWINCLUDES_PREFIX` 都试过）。所以只能"让探测说英文"，老树则必须重探测一次。
+
+**回归验证**（改完 CMakeLists 后请自己跑一遍）：
+
+```bash
+touch core/domain/model/AnalysisResult.h
+ninja -C build/<preset> -n | head -1     # 应看到几十上百条编译边，而不是个位数
+```
+
 ## 3. 目标分层
 
 ```

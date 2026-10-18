@@ -1,4 +1,24 @@
 cmake_minimum_required(VERSION 3.23)
+
+# ============================================================
+# 让 /showIncludes 的探测与解析说同一种语言（必须在 project() 之前）
+#
+# project() 里 CMake 会跑一次 cl /showIncludes 来**探测**前缀，并把它写进
+# rules.ninja 的 `msvc_deps_prefix`；Ninja 之后就用这串去匹配每次编译的输出、
+# 记录头文件依赖。探测用的子进程继承本进程环境，所以这里先把 VSLANG 钉成英文：
+# 从 VS 中文 UI 启动时它会给 CMake 进程设 VSLANG=2052，cl 打印"注意: 包含文件:"，
+# 而 build.bat / 裸 pwsh 构建时 cl 打英文 —— 两边对不上就一条依赖都记不到。
+#
+# 编译期那一半（`cmake -E env VSLANG=1033` 的 launcher）在下方 MSVC 分支里，
+# 两处必须一致，完整成因与症状见那里的长注释。
+#
+# 用 WIN32 + Ninja 判断而不是 MSVC：project() 之前拿不到编译器 id。这不影响正确性
+# —— 本工程在 Windows 上非 MSVC 会直接 FATAL_ERROR（见 project() 之后那段）。
+# ============================================================
+if(WIN32 AND "${CMAKE_GENERATOR}" MATCHES "Ninja")
+    set(ENV{VSLANG} "1033")
+endif()
+
 project(VideoEye VERSION 2.0.0 LANGUAGES C CXX)
 
 # Windows 下只能走 MSVC（vcpkg triplet 是 x64-windows）。
@@ -23,6 +43,69 @@ endif()
 
 if(MSVC)
     add_compile_options(/permissive- /Zc:__cplusplus /utf-8)
+endif()
+
+# ============================================================
+# 头文件依赖追踪（Ninja + MSVC 的 /showIncludes 前缀）
+#
+# 症状：改了一个被几十个 TU 包含的头文件，增量构建却只重编几个文件；
+# 跑测试出现 0xC0000374 / 0xC0000409（堆损坏 / 栈缓冲区），重跑一次有时又好了。
+#
+# 根因：Ninja 的 `deps = msvc` 靠**字符串匹配** cl 打印的
+# "Note: including file: <路径>" 来记录依赖，那一串前缀写在 rules.ninja 的
+# `msvc_deps_prefix` 里，而它是 configure 时从 cl 的实际输出里探测出来的。
+# 一旦 configure 与 build 的 cl **消息语言**不一致（典型场景：在 VS 中文 UI 里
+# configure，VS 会给 CMake 进程设 VSLANG=2052，cl 打印"注意: 包含文件:"；
+# 之后用 build.bat 或裸 pwsh 构建，cl 又退回英文），前缀就永远匹配不上 ——
+# 于是**一条头文件依赖都记不到**，改了头等于没改，链接出来的是新旧结构体混编的
+# 二进制。这类问题不会报编译错误，只会表现为随机崩溃。
+#
+# 修法：两边都钉死成英文，且不依赖调用者的环境。
+#   1. 探测侧：文件顶部在 project() 之前 `set(ENV{VSLANG} 1033)`，让 CMake 探测到的
+#      前缀就是英文（那一行必须早于 project()，探测在 project() 里跑）；
+#   2. 编译侧：编译命令前面加 `cmake -E env VSLANG=1033`，强制 cl 说英文
+#      （即使从 VS 中文 UI 构建，父进程的 VSLANG=2052 也会被覆盖）。
+#
+# 只在 MSVC + Ninja 下生效；Linux/macOS（GCC/Clang + depfile）本来就是精确的。
+# 回归验证：`touch core/domain/model/AnalysisResult.h && ninja -n` 应看到几十上百条
+# 编译边，而不是个位数。
+# ============================================================
+if(MSVC AND CMAKE_GENERATOR MATCHES "Ninja")
+    # 不覆盖用户自己配的 launcher（ccache / sccache 等）：只有空着才填。
+    if(NOT CMAKE_C_COMPILER_LAUNCHER)
+        set(CMAKE_C_COMPILER_LAUNCHER "${CMAKE_COMMAND};-E;env;VSLANG=1033"
+            CACHE STRING "强制 cl 输出英文消息，见 CMakeLists 顶部依赖追踪说明" FORCE)
+    endif()
+    if(NOT CMAKE_CXX_COMPILER_LAUNCHER)
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${CMAKE_COMMAND};-E;env;VSLANG=1033"
+            CACHE STRING "强制 cl 输出英文消息，见 CMakeLists 顶部依赖追踪说明" FORCE)
+    endif()
+
+    # ---- 守卫：前缀必须是英文，且与上面 launcher 强制出来的语言一致 ----
+    #
+    # 为什么需要它：探测结果被缓存进 CMakeFiles/<ver>/CMakeCXXCompiler.cmake，
+    # 每次 configure 都会把当初探测到的值重新 set 回来。顶部那句 set(ENV{VSLANG})
+    # 只对"下一次重新探测"有效，管不到已经在中文 UI 里配过的老树；而生成器在
+    # project() 里就把值取走了，之后在 CMakeLists 里改也来不及（实测无效）。
+    #
+    # 与其让它在半年后表现为"改了头却像没改、测试随机 0xC0000374"，不如当场拦下来：
+    # 删掉那份缓存的探测结果，重配一次就恢复。
+    string(STRIP "${CMAKE_CXX_CL_SHOWINCLUDES_PREFIX}" _ve_showincludes_prefix)
+    if(NOT _ve_showincludes_prefix STREQUAL "Note: including file:")
+        message(FATAL_ERROR
+            "头文件依赖追踪已失效：Ninja 记录的前缀是 \"${CMAKE_CXX_CL_SHOWINCLUDES_PREFIX}\"，"
+            "而构建时 cl 会打印英文（由 launcher 里的 VSLANG=1033 强制）。\n"
+            "两者对不上时一条头文件依赖都记不到 —— 改头文件不会触发重编，"
+            "链接出来是不同结构体布局混编的二进制，表现为随机的 0xC0000374 / 0xC0000409。\n"
+            "\n"
+            "成因：本机曾在 MSVC 中文消息的进程里 configure 过一次（VS 中文 UI 会给 CMake\n"
+            "设 VSLANG=2052），探测到的前缀被缓存进了 CMakeFiles/<版本>/CMakeCXXCompiler.cmake。\n"
+            "\n"
+            "修复（一次性）：删除缓存的编译器探测结果后重新 configure —— \n"
+            "  ${CMAKE_BINARY_DIR}/CMakeFiles/${CMAKE_VERSION}/CMakeCXXCompiler.cmake\n"
+            "  ${CMAKE_BINARY_DIR}/CMakeFiles/${CMAKE_VERSION}/CMakeCCompiler.cmake\n"
+            "或直接删掉整个构建目录重配（CMakeLists 顶部已把 VSLANG 钉成 1033，重配即可自愈）。")
+    endif()
 endif()
 
 # ============================================================
