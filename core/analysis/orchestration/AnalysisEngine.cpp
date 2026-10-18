@@ -84,11 +84,16 @@ void FillTsTransport(const std::string& file_path, const AVFormatContext* fmt,
     TsStructureAnalyzer analyzer;
     if (!analyzer.Analyze(file_path, container, cancel, ts_options)) {
         result.ts_transport = model::TransportStreamInfo();
+        // 走到这里说明输入确实是 mpegts（上面的 iformat 判断已放行），只是没扫出结论。
+        // applicable 必须留真：否则报告层会把它和"这是 MP4，不该扫"混为一谈，
+        // 于是"TS 没拿到传输层结论"这件最该说清楚的事反而消失了。
+        result.ts_transport.applicable = true;
         result.ts_transport.error_message = container.error_message;
         LOG_INFO("TS 传输层体检未完成: " + container.error_message);
         return;
     }
     result.ts_transport = container.transport;
+    result.ts_transport.applicable = true;
     LOG_INFO("TS 传输层体检: " + std::to_string(result.ts_transport.scanned_packets) + "/" +
              std::to_string(result.ts_transport.estimated_packets) + " 包, 失步=" +
              std::to_string(result.ts_transport.sync_loss) + ", CC 错=" +

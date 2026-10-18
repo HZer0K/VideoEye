@@ -8,6 +8,7 @@ namespace videoeye {
 namespace reporting {
 
 using detail::Fixed;
+using detail::Int64Text;
 using detail::WriteUtf8File;
 
 // ===========================================================================
@@ -57,6 +58,35 @@ std::string QcReportExporter::BuildText(const QcExportBundle& bundle) {
         out << "  积分响度: " << Fixed(run.analysis.audio_qc.integrated_lufs, 2) << " LUFS\n";
         out << "  真峰值: " << Fixed(run.analysis.audio_qc.true_peak_dbtp, 2) << " dBTP\n";
         out << "  LRA: " << Fixed(run.analysis.audio_qc.loudness_range_lu, 2) << " LU\n";
+    }
+
+    // MPEG-TS 传输层体检。落这些数字的用意见 QcReportExporterJson.cpp 里同一节的注释：
+    // 规则只在命中时才有 detail，未命中什么都不留，所以"扫了多少包、是否扫完"
+    // 必须由报告自己说清楚，否则 container.ts.* 的未命中无法区分"没问题"与"没证据"。
+    if (run.analysis.ts_transport.applicable) {
+        const model::TransportStreamInfo& ts = run.analysis.ts_transport;
+        out << "\n--- MPEG-TS 传输层 ---\n";
+        if (!ts.analyzed) {
+            out << "  未拿到传输层结论，以下 container.ts.* 规则的未命中只代表没有证据，"
+                   "不代表没有问题。\n";
+            if (!ts.error_message.empty()) out << "  原因: " << ts.error_message << "\n";
+        } else {
+            out << "  包长: " << ts.packet_size << " 字节\n";
+            out << "  扫描范围: " << Int64Text(ts.scanned_packets) << " / "
+                << Int64Text(ts.estimated_packets) << " 包"
+                << (ts.scan_complete ? "（已扫全文件）" : "（只扫了前若干包，结论不代表整个文件）")
+                << "\n";
+            out << "  节目 / 流 / 服务: " << ts.programs << " / " << ts.streams << " / "
+                << ts.services << "\n";
+            out << "  PAT / PMT / SDT: " << (ts.has_pat ? "有" : "无") << " / "
+                << (ts.has_pmt ? "有" : "无") << " / " << (ts.has_sdt ? "有" : "无") << "\n";
+            out << "  失步次数: " << Int64Text(ts.sync_loss) << "\n";
+            out << "  连续计数错误: " << Int64Text(ts.continuity_errors) << "（占已扫包 "
+                << Fixed(ts.ContinuityErrorPercent(), 3) << "%）\n";
+            out << "  加扰包: " << Int64Text(ts.scrambled_packets) << "\n";
+            out << "  最大 PCR 间隔: " << Fixed(ts.pcr_max_gap_ms, 1) << " ms"
+                << (ts.pcr_max_gap_ms > 0.0 ? "" : "（未采到 PCR）") << "\n";
+        }
     }
 
     if (bundle.has_comparison) {

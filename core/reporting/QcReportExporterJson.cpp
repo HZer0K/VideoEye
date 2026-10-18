@@ -176,6 +176,40 @@ JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
         metrics.Set("streaming", streaming);
     }
 
+    // MPEG-TS 传输层体检的原始数字。
+    //
+    // 为什么必须整体落进报告（而不是只让规则带几个数）：规则只在**命中**时才有
+    // detail，没命中就什么都不留。于是"这条 TS 的连续计数错误到底是 0 还是压根没扫"
+    // 在报告里长得一模一样 —— 争议时无法回答"扫了没有"。这里无条件记下扫描范围
+    // （扫了多少包 / 共约多少包 / 是否扫完）和各计数，读者自己就能判断
+    // container.ts.* 的"未命中"是"没问题"还是"没证据"。
+    //
+    // 只在 applicable（本地文件 + iformat 是 mpegts）时落，非 TS 不该有这一节。
+    // applicable=true 但 analyzed=false 表示"是 TS 但没扫出结论"，同样要落，
+    // 并且带 error_message —— 这是最需要被看见的一种情况。
+    if (result.ts_transport.applicable) {
+        const model::TransportStreamInfo& ts = result.ts_transport;
+        JsonValue node = JsonValue::MakeObject();
+        node.Set("analyzed", JsonValue(ts.analyzed));
+        node.Set("packet_size", JNumber(static_cast<double>(ts.packet_size)));
+        node.Set("scanned_packets", JNumber(static_cast<double>(ts.scanned_packets)));
+        node.Set("estimated_packets", JNumber(static_cast<double>(ts.estimated_packets)));
+        node.Set("scan_complete", JsonValue(ts.scan_complete));
+        node.Set("programs", JNumber(static_cast<double>(ts.programs)));
+        node.Set("streams", JNumber(static_cast<double>(ts.streams)));
+        node.Set("services", JNumber(static_cast<double>(ts.services)));
+        node.Set("has_pat", JsonValue(ts.has_pat));
+        node.Set("has_pmt", JsonValue(ts.has_pmt));
+        node.Set("has_sdt", JsonValue(ts.has_sdt));
+        node.Set("sync_loss", JNumber(static_cast<double>(ts.sync_loss)));
+        node.Set("continuity_errors", JNumber(static_cast<double>(ts.continuity_errors)));
+        node.Set("continuity_error_percent", JNumber(ts.ContinuityErrorPercent()));
+        node.Set("scrambled_packets", JNumber(static_cast<double>(ts.scrambled_packets)));
+        node.Set("pcr_max_gap_ms", JNumber(ts.pcr_max_gap_ms));
+        if (!ts.error_message.empty()) node.Set("error_message", JText(ts.error_message));
+        metrics.Set("ts_transport", node);
+    }
+
     return metrics;
 }
 

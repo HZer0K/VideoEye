@@ -152,6 +152,42 @@ std::string QcReportExporter::BuildHtml(const QcExportBundle& bundle) {
         out << "  </table>\n";
     }
 
+    // MPEG-TS 传输层体检。为什么必须整体落进报告见 QcReportExporterJson.cpp 同节注释：
+    // 规则只在命中时才有 detail，未命中什么都不留，所以"扫了多少包、是否扫完"要由
+    // 报告自己说，否则 container.ts.* 的未命中无法区分"没问题"与"没证据"。
+    if (run.analysis.ts_transport.applicable) {
+        const model::TransportStreamInfo& ts = run.analysis.ts_transport;
+        out << "  <h2>MPEG-TS 传输层</h2>\n";
+        if (!ts.analyzed) {
+            out << "  <p class=\"meta\">未拿到传输层结论，以下 container.ts.* 规则的未命中"
+                   "只代表没有证据，不代表没有问题。";
+            if (!ts.error_message.empty()) {
+                out << " 原因: " << Html(ts.error_message);
+            }
+            out << "</p>\n";
+        } else {
+            out << "  <table>\n    <tr><th>指标</th><th>值</th></tr>\n";
+            out << "    <tr><td>包长</td><td>" << ts.packet_size << " 字节</td></tr>\n";
+            out << "    <tr><td>扫描范围</td><td>" << Int64Text(ts.scanned_packets) << " / "
+                << Int64Text(ts.estimated_packets) << " 包 "
+                << (ts.scan_complete ? "（已扫全文件）" : "（只扫了前若干包，结论不代表整个文件）")
+                << "</td></tr>\n";
+            out << "    <tr><td>节目 / 流 / 服务</td><td>" << ts.programs << " / " << ts.streams
+                << " / " << ts.services << "</td></tr>\n";
+            out << "    <tr><td>PAT / PMT / SDT</td><td>" << (ts.has_pat ? "有" : "无") << " / "
+                << (ts.has_pmt ? "有" : "无") << " / " << (ts.has_sdt ? "有" : "无")
+                << "</td></tr>\n";
+            out << "    <tr><td>失步次数</td><td>" << Int64Text(ts.sync_loss) << "</td></tr>\n";
+            out << "    <tr><td>连续计数错误</td><td>" << Int64Text(ts.continuity_errors)
+                << "（占已扫包 " << Fixed(ts.ContinuityErrorPercent(), 3) << "%）</td></tr>\n";
+            out << "    <tr><td>加扰包</td><td>" << Int64Text(ts.scrambled_packets)
+                << "</td></tr>\n";
+            out << "    <tr><td>最大 PCR 间隔</td><td>" << Fixed(ts.pcr_max_gap_ms, 1) << " ms"
+                << (ts.pcr_max_gap_ms > 0.0 ? "" : "（未采到 PCR）") << "</td></tr>\n";
+            out << "  </table>\n";
+        }
+    }
+
     if (bundle.has_comparison) {
         out << "  <h2>文件对比</h2>\n";
         out << "  <p class=\"meta\">原文件: " << Html(bundle.comparison.left_path)

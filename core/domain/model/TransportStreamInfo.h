@@ -21,6 +21,15 @@ namespace model {
 struct TransportStreamInfo {
     bool analyzed = false;  // 有没有真的跑过 TS 传输层扫描
 
+    // 输入是不是"适用传输层体检"的：本地文件 + iformat 是 mpegts + 选项没关。
+    //
+    // 为什么要把 analyzed 和 applicable 分开：报告层只靠 analyzed 分不出
+    // "这是 MP4，压根不该扫" 和 "这是 TS，但扫描失败了" —— 两者 analyzed 都是 false。
+    // 而后者恰恰是最需要说清楚的：一条 TS 流没拿到传输层结论，上面所有
+    // container.ts.* 规则的"未命中"都不代表"没问题"，只代表"没有证据"。
+    // 报告里 applicable=true && analyzed=false 必须显式告警，不能静默略过。
+    bool applicable = false;
+
     // ---- 扫描范围 ----
     int packet_size = 0;             // 步长：188 / 192(M2TS) / 204(RS)
     int64_t scanned_packets = 0;

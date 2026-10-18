@@ -119,12 +119,22 @@ TS 是直播与 HLS 分片的主格式，也是这一层里唯一"参数一改�
 `AnalysisOptions::ts_transport_max_packets`，默认 20 万包），填进
 `AnalysisResult::ts_transport`，由 `container.ts.*` 七条规则消费。
 
-三条必须守住的口径：
+四条必须守住的口径：
 
 - **只对本地 TS 生效**：网络源不重扫（URL 读两遍会拿到不同的直播窗口）；
 - **`analyzed=false` 时整族规则静默**：没跑过既不是"没问题"也不是"有问题"；
 - **窗口结论要说清范围**：故障类规则的 detail 带出"扫了多少 / 共多少"，
-  另有一条 `container.ts.scan_incomplete` 专门提示。
+  另有一条 `container.ts.scan_incomplete` 专门提示；
+- **`analyzed` 之外还要看 `applicable`**：`analyzed=false` 分不出"这是 MP4，压根不该扫"
+  和"这是 TS，但扫描失败了"。后者是最需要说清楚的一种 —— 上面整族规则的"未命中"
+  都退化成"没有证据"。所以 `TransportStreamInfo` 另设 `applicable`（本地文件 +
+  iformat 是 mpegts + 选项没关），报告层据此在 `applicable && !analyzed` 时显式告警，
+  而不是静默略过这一节。
+
+报告里也落了原始数字（JSON 的 `metrics.ts_transport`、TXT/HTML 的"MPEG-TS 传输层"
+一节）。理由：规则只在**命中**时才有 detail，未命中什么都不留，于是"连续计数错误 = 0"
+和"压根没扫"在报告里长得一模一样。落了扫描范围与各计数，读者自己就能判断
+`container.ts.*` 的未命中是"没问题"还是"没证据"。
 
 ## 5. 加一个容器格式要动哪些文件
 
@@ -153,4 +163,26 @@ TS 是直播与 HLS 分片的主格式，也是这一层里唯一"参数一改�
   （级别、比例 vs 绝对条数、无 PCR 时不造结论、`analyzed=false` 整族静默、阈值可调）。
 - `tests/unit/test_corpus_robustness.cpp`：`tests/corpus/container/` 下的畸形样本
   （largesize 溢出、截断 moov、坏 FLV 头…）必须**有界终止**，不能死循环也不能崩。
+
+### 6.1 真实封装样本
+
+畸形样本只能证明"解析器不会崩"，证明不了"真实文件上算出来的数是对的"。
+`tests/corpus/container/real_*` 补的是这一半，由 `generate_real_corpus.py`
+用 ffmpeg 生成并入库：
+
+| 样本 | 用途 |
+|------|------|
+| `real_h264_aac.ts` | 真实 PAT/PMT/PCR/连续计数（188 步长） |
+| `real_h264_aac.m2ts` | 192 步长（由上面那份 .ts 插 TP_extra 派生，内容同源） |
+| `real_mpeg4_mp3.avi` | 真实 hdrl/strl/movi/idx1 |
+| `real_vorbis.ogg` | 真实 OggS 页链 |
+
+`--check` 做的是**语义校验**（同步字节步长、容器魔数、长度整除性），不比字节 ——
+ffmpeg 的输出不是字节可复现的，但"换版本产出变成别的容器"和"样本被截断"
+这两类真会咬人的漂移照样抓得住。ctest 用例：`RealCorpusCheck`。
+
+这条语料已经抓到过一个真 bug：M2TS 的**最后一个包被丢弃**。扫描循环以前一律要求
+读满一个步长，而最后一包后面没有下一包的 TP_extra 头、只剩 188 字节，短读即失败 ——
+181 个包只数出 180 个，`scan_complete` 却照报"已扫全文件"。手工样本撞不到这条，
+因为它们都能被步长整除。
 - `tests/fuzz/fuzz_container_structure.cpp`：容器结构解析的 libFuzzer 入口（Linux + clang）。
