@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <functional>
 #include <string>
 
@@ -228,6 +229,257 @@ TEST(OggAnalyzerLeniency, AcceptsArbitraryBytesByDesign) {
     EXPECT_TRUE(videoeye::OggStructureAnalyzer().Analyze(path, result));
     EXPECT_TRUE(result.valid);
     EXPECT_EQ(result.format, model::ContainerFormat::OGG);
+}
+
+// ===========================================================================
+// MPEG-TS 深度解析：包长自适应 / 失步重同步 / 描述符 / SDT / 连续计数
+//
+// 样本全部在内存里按 ISO/IEC 13818-1 的字段宽度手工拼装，不依赖真实媒体文件，
+// 但每一段的位宽都严格对照规范 —— 所以它能钉住"解析器读到第几个字节"这类错误，
+// 而不是像"喂一段真实文件看它不崩"那样只能测出崩溃。
+// ===========================================================================
+
+// 一个 188 字节 TS 包（afc=1 仅载荷）。载荷之后填 0xFF：
+// PSI 解析按 section_length 走，尾部填充不该被当成新段 —— 这条假设本身也在这里钉住。
+QByteArray TsPacket(uint16_t pid, bool pusi, int cc, const QByteArray& payload) {
+    QByteArray pkt(188, '\0');
+    pkt[0] = char(0x47);
+    pkt[1] = char((pusi ? 0x40 : 0x00) | ((pid >> 8) & 0x1F));
+    pkt[2] = char(pid & 0xFF);
+    pkt[3] = char(0x10 | (cc & 0x0F));
+    const int n = std::min<int>(static_cast<int>(payload.size()), 184);
+    for (int i = 0; i < n; ++i) pkt[4 + i] = payload[i];
+    for (int i = 4 + n; i < 188; ++i) pkt[i] = char(0xFF);
+    return pkt;
+}
+
+// PSI 载荷：pointer_field(1) + section
+QByteArray PsiPayload(const QByteArray& section) {
+    QByteArray p;
+    p.append(char(0x00));
+    p.append(section);
+    return p;
+}
+
+// PAT：一个节目。section_length = 固定头 5 + 条目 4 + CRC 4
+QByteArray PatSection(uint16_t program, uint16_t pmt_pid) {
+    const int len = 5 + 4 + 4;
+    QByteArray s;
+    s.append(char(0x00));                       // table_id
+    s.append(char(0xB0 | ((len >> 8) & 0x0F)));
+    s.append(char(len & 0xFF));
+    s.append(QByteArray::fromHex("0001"));      // transport_stream_id
+    s.append(char(0xC1));                       // version=0 / current_next=1
+    s.append(char(0x00));                       // section_number
+    s.append(char(0x00));                       // last_section_number
+    s.append(char((program >> 8) & 0xFF));
+    s.append(char(program & 0xFF));
+    s.append(char(0xE0 | ((pmt_pid >> 8) & 0x1F)));
+    s.append(char(pmt_pid & 0xFF));
+    s.append(QByteArray(4, '\0'));              // CRC（本解析器不校验）
+    return s;
+}
+
+// PMT：两条 ES —— H.264(0x1B) 与"0x06 + registration AC-3 + lang eng"
+QByteArray PmtSection(uint16_t program, uint16_t pcr_pid) {
+    QByteArray es;
+    // ES #1: H.264, pid=0x1000, 无描述符
+    es.append(char(0x1B));
+    es.append(char(0xE0 | ((0x1000 >> 8) & 0x1F)));
+    es.append(char(0x00));
+    es.append(char(0x00));   // es_info_length 高 4 位
+    es.append(char(0x00));   // es_info_length 低 8 位
+    // ES #2: 私有数据 0x06 + 描述符
+    QByteArray desc;
+    desc.append(char(0x0A));                    // ISO_639_language_descriptor
+    desc.append(char(0x04));
+    desc.append("eng", 3);
+    desc.append(char(0x00));                    // audio_type
+    desc.append(char(0x05));                    // registration_descriptor
+    desc.append(char(0x04));
+    desc.append("AC-3", 4);
+    desc.append(char(0x6A));                    // AC-3_descriptor
+    desc.append(char(0x01));
+    desc.append(char(0x00));
+    es.append(char(0x06));
+    es.append(char(0xE0 | ((0x1001 >> 8) & 0x1F)));
+    es.append(char(0x1001 & 0xFF));
+    es.append(char((desc.size() >> 8) & 0x0F));
+    es.append(char(desc.size() & 0xFF));
+    es.append(desc);
+
+    const int len = 9 + static_cast<int>(es.size()) + 4;
+    QByteArray s;
+    s.append(char(0x02));                       // table_id
+    s.append(char(0xB0 | ((len >> 8) & 0x0F)));
+    s.append(char(len & 0xFF));
+    s.append(char((program >> 8) & 0xFF));
+    s.append(char(program & 0xFF));
+    s.append(char(0xC1));
+    s.append(char(0x00));
+    s.append(char(0x00));
+    s.append(char(0xE0 | ((pcr_pid >> 8) & 0x1F)));
+    s.append(char(pcr_pid & 0xFF));
+    s.append(char(0xF0));                       // program_info_length 高 4 位
+    s.append(char(0x00));
+    s.append(es);
+    s.append(QByteArray(4, '\0'));
+    return s;
+}
+
+// SDT（table_id 0x42）：一个 service + service_descriptor
+QByteArray SdtSection(uint16_t service_id, const char* name, const char* provider) {
+    const QByteArray name_b(name);
+    const QByteArray provider_b(provider);
+
+    QByteArray desc;
+    desc.append(char(0x48));                    // service_descriptor
+    desc.append(char(1 + 1 + provider_b.size() + 1 + name_b.size()));
+    desc.append(char(0x01));                    // service_type = 数字电视
+    desc.append(char(provider_b.size()));
+    desc.append(provider_b);
+    desc.append(char(name_b.size()));
+    desc.append(name_b);
+
+    const int len = 8 + 5 + static_cast<int>(desc.size()) + 4;
+    QByteArray s;
+    s.append(char(0x42));
+    s.append(char(0xB0 | ((len >> 8) & 0x0F)));
+    s.append(char(len & 0xFF));
+    s.append(QByteArray::fromHex("0001"));      // transport_stream_id
+    s.append(char(0xC1));
+    s.append(char(0x00));
+    s.append(char(0x00));
+    s.append(QByteArray::fromHex("0001"));      // original_network_id
+    s.append(char(0xFF));                       // reserved
+    s.append(char((service_id >> 8) & 0xFF));
+    s.append(char(service_id & 0xFF));
+    // reserved(6) + EIT_schedule_flag(1) + EIT_present_following_flag(1)
+    s.append(char(0xFC));
+    // running_status=4（running）(3) + free_CA_mode(1) + descriptors_loop_length 高 4 位
+    s.append(char(0x80 | ((desc.size() >> 8) & 0x0F)));
+    s.append(char(desc.size() & 0xFF));
+    s.append(desc);
+    s.append(QByteArray(4, '\0'));
+    return s;
+}
+
+// M2TS/AVCHD：192 字节包 = 4 字节 TP_extra_header + 188 字节 TS 包
+QByteArray WrapAs192(const QByteArray& ts188) {
+    QByteArray out;
+    out.append(QByteArray(4, '\0'));
+    out.append(ts188);
+    return out;
+}
+
+TEST(TsStructureDepthTest, Detects192BytePacketLayout) {
+    QByteArray ts;
+    for (int i = 0; i < 4; ++i) {
+        ts.append(WrapAs192(TsPacket(0x0000, true, i, PsiPayload(PatSection(1, 0x0100)))));
+    }
+
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = WriteTemp(dir, "sample.m2ts", ts);
+
+    model::ContainerStructureResult result;
+    ASSERT_TRUE(TsStructureAnalyzer().Analyze(path, result)) << result.error_message;
+    // 以前一律按 188 硬编码：这里会直接报"未找到 TS 同步字节"
+    EXPECT_EQ(result.metadata["包长"], "192 字节");
+    EXPECT_EQ(result.metadata["同步偏移"], "4");
+    EXPECT_EQ(result.metadata["节目数"], "1");
+}
+
+TEST(TsStructureDepthTest, ParsesPatPmtDescriptorsAndSdt) {
+    QByteArray ts;
+    ts.append(TsPacket(0x0000, true, 0, PsiPayload(PatSection(1, 0x0100))));
+    ts.append(TsPacket(0x0100, true, 0, PsiPayload(PmtSection(1, 0x1000))));
+    ts.append(TsPacket(0x0011, true, 0, PsiPayload(SdtSection(1, "CCTV-1 HD", "CCTV"))));
+    // 一条视频 PES 头（00 00 01 E0 ...），只为确认 PES 采样通路没被打断
+    ts.append(TsPacket(0x1000, true, 0, QByteArray::fromHex("000001e000000f0")));
+
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = WriteTemp(dir, "sample.ts", ts);
+
+    model::ContainerStructureResult result;
+    ASSERT_TRUE(TsStructureAnalyzer().Analyze(path, result)) << result.error_message;
+
+    EXPECT_EQ(result.metadata["节目数"], "1");
+    EXPECT_EQ(result.metadata["SDT 服务数"], "1");
+    ASSERT_EQ(result.streams.size(), 2u);
+    EXPECT_EQ(result.streams[0].type, "video");
+    EXPECT_NE(result.streams[0].codec.find("H.264"), std::string::npos);
+    // stream_type 0x06 本身只表示"私有数据"，必须是 registration_descriptor 让它变成 AC-3
+    EXPECT_EQ(result.streams[1].type, "audio");
+    EXPECT_NE(result.streams[1].codec.find("AC-3"), std::string::npos);
+    EXPECT_NE(result.streams[1].details.find("lang=eng"), std::string::npos);
+    EXPECT_NE(result.streams[1].details.find("reg=AC-3"), std::string::npos);
+
+    // 节目名要挂到 Program 节点上（SDT → PAT 的 program_number 关联）
+    bool node_has_service_name = false;
+    const auto& root = result.element_tree[0];
+    for (const auto& child : root.children) {
+        if (child.name.find("CCTV-1 HD") != std::string::npos) node_has_service_name = true;
+    }
+    EXPECT_TRUE(node_has_service_name);
+}
+
+TEST(TsStructureDepthTest, ResyncsAfterSyncLoss) {
+    QByteArray ts;
+    ts.append(TsPacket(0x0000, true, 0, PsiPayload(PatSection(1, 0x0100))));
+    ts.append(TsPacket(0x0100, true, 0, PsiPayload(PmtSection(1, 0x1000))));
+    // 传输错误 / 拼接缝：一段不对齐的垃圾字节
+    ts.append(QByteArray(32, char(0xAB)));
+    ts.append(TsPacket(0x1000, true, 0, QByteArray(20, '\0')));
+    ts.append(TsPacket(0x1001, true, 0, QByteArray(20, '\0')));
+
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = WriteTemp(dir, "broken.ts", ts);
+
+    model::ContainerStructureResult result;
+    ASSERT_TRUE(TsStructureAnalyzer().Analyze(path, result)) << result.error_message;
+    // 以前遇到第一个非 0x47 字节就 break：这里只会扫到 2 个包
+    EXPECT_EQ(result.metadata["失步重同步次数"], "1");
+    EXPECT_EQ(result.metadata["已扫描包数"], "4");
+    EXPECT_EQ(result.metadata["节目数"], "1");
+}
+
+TEST(TsStructureDepthTest, CountsContinuityCounterErrors) {
+    QByteArray ts;
+    ts.append(TsPacket(0x0000, true, 0, PsiPayload(PatSection(1, 0x0100))));
+    ts.append(TsPacket(0x0000, true, 1, PsiPayload(PatSection(1, 0x0100))));
+    // cc 从 1 直接跳到 3：丢了一个包，记一次 CC 错误
+    ts.append(TsPacket(0x0000, true, 3, PsiPayload(PatSection(1, 0x0100))));
+
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = WriteTemp(dir, "cc.ts", ts);
+
+    model::ContainerStructureResult result;
+    ASSERT_TRUE(TsStructureAnalyzer().Analyze(path, result)) << result.error_message;
+    EXPECT_EQ(result.metadata["连续计数错误"], "1");
+}
+
+TEST(TsStructureDepthTest, ReportsScanTruncation) {
+    QByteArray ts;
+    for (int i = 0; i < 8; ++i) {
+        ts.append(TsPacket(0x0000, true, i, PsiPayload(PatSection(1, 0x0100))));
+    }
+
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = WriteTemp(dir, "long.ts", ts);
+
+    // 只给 3 个包的预算：结论必须明说"没扫完"，不能静悄悄当成全文件结论
+    TsStructureOptions options;
+    options.max_scan_packets = 3;
+    model::ContainerStructureResult result;
+    ASSERT_TRUE(TsStructureAnalyzer().Analyze(path, result, nullptr, options))
+        << result.error_message;
+    EXPECT_EQ(result.metadata["已扫描包数"], "3");
+    EXPECT_NE(result.metadata["扫描是否完整"].find("否"), std::string::npos);
 }
 
 }  // namespace

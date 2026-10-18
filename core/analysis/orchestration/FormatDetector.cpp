@@ -1,6 +1,7 @@
 #include "core/analysis/orchestration/FormatDetector.h"
 #include "core/analysis/detail/AnalysisTextUtil.h"
 #include "core/analysis/detail/SeqFileReader.h"
+#include <algorithm>
 #include <string>
 
 namespace videoeye {
@@ -63,16 +64,38 @@ model::ContainerFormat FormatDetector::DetectByMagic(const std::string& file_pat
         return model::ContainerFormat::FLV;
     }
 
-    // MPEG-TS: sync byte 0x47 repeats every 188 bytes. Some TS files start
-    // after a small leading offset, so scan the first first packet range.
-    auto is_sync_at = [&header](int offset) {
-        return offset >= 0 && offset < header.size() &&
-               static_cast<unsigned char>(header[offset]) == 0x47;
-    };
-    for (int offset = 0; offset < 188 && offset + 188 < header.size(); ++offset) {
-        if (is_sync_at(offset) && is_sync_at(offset + 188) &&
-            (offset + 376 >= header.size() || is_sync_at(offset + 376)))
-        return model::ContainerFormat::MPEG_TS;
+    // MPEG-TS: sync byte 0x47 repeats at a fixed stride.
+    //
+    // 三种包长都要认，不能只试 188：
+    //   188 = 标准 TS
+    //   192 = M2TS / AVCHD，前面多 4 字节 TP_extra_header（同步字节落在偏移 4）
+    //   204 = RS(204,188) 纠错包（同步字节仍在 0）
+    // 以前只试 188，于是 .m2ts 的魔数判定必然失败、只能靠扩展名兜底；而扩展名兜底
+    // 又会把它分给按 188 步长解析的 TS 分析器，最后报"未找到同步字节"。
+    {
+        static const int kPacketSizes[] = {188, 192, 204};
+        for (const int ps : kPacketSizes) {
+            const int max_offset = std::min<int>(ps, static_cast<int>(header.size()));
+            for (int offset = 0; offset < max_offset; ++offset) {
+                int matches = 0;
+                bool ran_out_of_header = false;
+                for (int k = 0; k < 3; ++k) {
+                    const int at = offset + k * ps;
+                    if (at >= static_cast<int>(header.size())) {
+                        ran_out_of_header = true;
+                        break;
+                    }
+                    if (static_cast<unsigned char>(header[static_cast<size_t>(at)]) != 0x47) break;
+                    ++matches;
+                }
+                // 三个同步点是正常文件的判据。只有"文件短到装不下第三个包"时
+                // 才用两个点收尾 —— 否则 (1/256)^2 的巧合率乘以 1700 个候选位置
+                // 会让百分之几的普通文件被误判成 TS。
+                if (matches >= 3 || (matches == 2 && ran_out_of_header)) {
+                    return model::ContainerFormat::MPEG_TS;
+                }
+            }
+        }
     }
 
     // ASF: Header Object GUID = 30 26 B2 75 8E 66 CF 11
