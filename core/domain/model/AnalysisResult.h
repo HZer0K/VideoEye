@@ -30,6 +30,7 @@
 #include "core/domain/model/SubtitleCueInfo.h"
 #include "core/domain/model/TimecodeInfo.h"
 #include "core/domain/model/TimelineDiagnostic.h"
+#include "core/domain/model/TransportStreamInfo.h"
 
 namespace videoeye {
 namespace model {
@@ -111,6 +112,12 @@ struct AnalysisResult {
     // 辅助数据轨（见 core/analysis/diagnostics/AuxDataAnalyzer.h：data 流 + SCTE-35 + metadata）
     AuxiliaryDataResult aux_data;
     bool aux_data_analyzed = false;
+
+    // MPEG-TS 传输层摘要（失步 / 连续计数 / PCR / 加扰），供 container.ts.* 规则使用。
+    // 只在输入确实是 MPEG-TS 且是本地文件时填充：这些是"传输层事实"，而 avformat 的
+    // demux 把 TS 包结构藏起来了，只能按字节再扫一遍文件头（预算见
+    // AnalysisOptions::ts_transport_max_packets）。
+    TransportStreamInfo ts_transport;
 
     // 执行状态
     AnalysisStatus scan_status = AnalysisStatus::Complete;

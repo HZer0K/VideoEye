@@ -78,6 +78,9 @@ std::vector<model::DiagnosticIssue> CheckMp4ContainerRules(const model::QcRule& 
 std::vector<model::DiagnosticIssue> CheckStreamingContainerRules(const model::QcRule& rule,
                                                                  const model::AnalysisResult& result,
                                                                  const IssueFactory& make_issue);
+std::vector<model::DiagnosticIssue> CheckTsTransportRules(const model::QcRule& rule,
+                                                          const model::AnalysisResult& result,
+                                                          const IssueFactory& make_issue);
 std::vector<model::DiagnosticIssue> CheckVideoRules(const model::QcRule& rule,
                                                     const model::AnalysisResult& result,
                                                     const IssueFactory& make_issue);

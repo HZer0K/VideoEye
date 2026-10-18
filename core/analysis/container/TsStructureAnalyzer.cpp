@@ -491,6 +491,10 @@ bool TsStructureAnalyzer::Analyze(const std::string& file_path,
     uint64_t cc_errors = 0;
     uint64_t scrambled = 0;
     int64_t scanned_bytes = 0;
+    // PSI 表是否真的出现过。用"解析到一张表"而不是"programs 非空"来判：
+    // 一张 program_number 全为 0（只有 NIT）的 PAT 也是 PAT，报"缺 PAT"就错了。
+    bool saw_pat = false;
+    bool saw_pmt = false;
 
     const uint64_t packet_limit =
         (options.max_scan_packets > 0) ? static_cast<uint64_t>(options.max_scan_packets) : 0;
@@ -612,6 +616,7 @@ bool TsStructureAnalyzer::Analyze(const std::string& file_path,
                 if (sec.size() < 3) continue;
                 const uint8_t table_id = sec[0];
                 if (pid == kPatPid && table_id == 0x00) {
+                    saw_pat = true;
                     // transport_stream_id(2) version(1) sec_no(1) last(1) 之后是 4 字节条目
                     if (sec.size() < 12) continue;
                     const int end = static_cast<int>(sec.size()) - 4;  // 去掉 CRC32
@@ -627,6 +632,7 @@ bool TsStructureAnalyzer::Analyze(const std::string& file_path,
                         pmt_pid_to_program[pmt_pid] = program_number;
                     }
                 } else if (pmt_pid_to_program.count(pid) > 0 && table_id == 0x02) {
+                    saw_pmt = true;
                     if (sec.size() < 16) continue;
                     const uint16_t program_number =
                         static_cast<uint16_t>((sec[3] << 8) | sec[4]);
@@ -988,6 +994,38 @@ bool TsStructureAnalyzer::Analyze(const std::string& file_path,
                             total_pes, " PES", cc_errors > 0 ? Cat(" | CC 错 ", cc_errors)
                                                              : std::string(),
                             sync_loss > 0 ? Cat(" | 失步 ", sync_loss) : std::string());
+
+    // ---- 传输层摘要（QC 规则消费）----
+    //
+    // 与上面那棵树共用同一组数字，只是换成一个扁平的值对象：规则层不该为了几个
+    // 计数去理解 PSI 树的形状（见 TransportStreamInfo.h 的口径说明）。
+    {
+        model::TransportStreamInfo& ts = result.transport;
+        ts.analyzed = true;
+        ts.packet_size = packet_size;
+        ts.scanned_packets = static_cast<int64_t>(total_packets);
+        ts.estimated_packets = (packet_size > 0) ? (file_size / packet_size) : 0;
+        ts.scan_complete = !(packet_limit > 0 && total_packets >= packet_limit);
+        ts.programs = static_cast<int>(programs.size());
+        int total_streams = 0;
+        for (const auto& kv : programs) {
+            total_streams += static_cast<int>(kv.second.streams.size());
+        }
+        ts.streams = total_streams;
+        ts.services = static_cast<int>(services.size());
+        ts.has_pat = saw_pat;
+        ts.has_pmt = saw_pmt;
+        ts.has_sdt = !services.empty();
+        ts.sync_loss = static_cast<int64_t>(sync_loss);
+        ts.continuity_errors = static_cast<int64_t>(cc_errors);
+        ts.scrambled_packets = static_cast<int64_t>(scrambled);
+        double pcr_gap_ms = 0.0;
+        for (const auto& kv : pid_stats) {
+            const double gap_ms = static_cast<double>(kv.second.max_pcr_gap_27m) / 27000.0;
+            if (gap_ms > pcr_gap_ms) pcr_gap_ms = gap_ms;
+        }
+        ts.pcr_max_gap_ms = pcr_gap_ms;
+    }
 
     file.Close();
     return true;

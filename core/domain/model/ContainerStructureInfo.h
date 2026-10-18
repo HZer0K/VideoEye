@@ -9,6 +9,7 @@
 #include "core/domain/model/Mp4SampleInfo.h"
 #include "core/domain/model/EbmlInfo.h"
 #include "core/domain/model/StreamPackageInfo.h"
+#include "core/domain/model/TransportStreamInfo.h"
 
 namespace videoeye {
 namespace model {
@@ -76,6 +77,11 @@ struct ContainerStructureResult {
     // HLS / DASH 流媒体包（manifest + segment + 多码率 ladder）。
     // 只有 format == HLS / DASH 时才填充，见 core/analysis/streaming/HlsManifestAnalyzer.h。
     StreamingPackageResult streaming_package;
+
+    // MPEG-TS 传输层摘要（失步 / 连续计数 / PCR / 加扰）。
+    // 只有 format == MPEG_TS 且解析成功时才填充；全文件扫描（AnalysisEngine）会把
+    // 同一份摘要搬进 AnalysisResult::ts_transport，供 container.ts.* 规则使用。
+    TransportStreamInfo transport;
 };
 
 } // namespace model

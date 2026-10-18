@@ -93,6 +93,51 @@ std::vector<QcRule> DefaultQcRules() {
         "方案二：转封装为扩展名对应的容器，流不重编码："
         "ffmpeg -i 输入.ts -c copy 输出.mp4。");
 
+    // ---- MPEG-TS 传输层 ----
+    //
+    // 这一组读的是 AnalysisResult::ts_transport，由 AnalysisEngine 按字节再扫一遍
+    // TS 包头得出（avformat 的 demux 看不到包头）。所有计数只覆盖扫描窗口，
+    // 每条规则的说明里都会带出"扫了多少 / 共多少"。
+    add("container.ts.missing_pat", "缺少 PAT", IssueCategory::Container,
+        IssueSeverity::Critical, QcRuleOp::NonZero, 0.0, "",
+        "传输流里没有 PAT（节目关联表），无法得知节目与 PMT PID。"
+        "多数机顶盒/播放器会直接判定为无效流。",
+        "确认切片/录制时保留了 PSI；从裸流重封装时用 -mpegts_flags +resend_headers。");
+
+    add("container.ts.missing_pmt", "PMT 缺失", IssueCategory::Container,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "",
+        "PAT 声明了节目但没解析到 PMT（节目映射表），流表不完整 —— "
+        "播放器知道有节目，却不知道里面有什么。",
+        "检查 PMT PID 是否被过滤、PMT 周期是否过长；重封装时确保 PAT 与 PMT 同周期重复。");
+
+    add("container.ts.sync_loss", "传输流失步", IssueCategory::Container,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "",
+        "同步字节 0x47 丢失后重新对齐过。常见于录制中断、切片拼接、传输损伤。",
+        "确认源是否被截断/拼接；线性收录场景下检查接收端信号质量。");
+
+    add("container.ts.continuity_error", "连续计数错误", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::MaxExceeded, 0.01, "%",
+        "同一 PID 的 continuity_counter 不连续（丢包 / 乱序 / 拼接点）。"
+        "比例过高说明传输链路或封装有问题。",
+        "先看错误集中在哪些 PID 与时间点；偶发几条通常只影响该处画面，持续高位需排查链路。");
+
+    add("container.ts.pcr_gap", "PCR 间隔过大", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::MaxExceeded, 100.0, "ms",
+        "PCR 稀疏会让解码端的缓冲与时钟恢复失控（DVB 要求远小于该值）。",
+        "检查复用器是否按规范写 PCR（通常每个视频 PID 每 40 ms 一次）；"
+        "转码/重封装时不要丢弃 PCR。");
+
+    add("container.ts.scrambled", "加扰流", IssueCategory::Container,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "",
+        "传输流被加扰。解复用本身不受影响，但 ES 载荷不可读，"
+        "编码参数与码流类结论不可信。",
+        "对加密内容先解密再分析；QC 结论里应注明这是加密流，参数类结论仅供参考。");
+
+    add("container.ts.scan_incomplete", "TS 只扫描了窗口", IssueCategory::Container,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "",
+        "传输层体检只扫描了文件前一部分。失步 / 连续计数 / PCR 结论只代表扫描窗口。",
+        "需要整条流结论时把 AnalysisOptions::ts_transport_max_packets 设为 0（扫完整个文件）。");
+
     // ---- MP4/fMP4 容器一致性（core/analysis/container/Mp4SampleTableAnalyzer.h，走自研 IsobmffParser）----
     // 这些规则只决定"是否上报 / 以什么级别上报"，问题本身（含具体样本号、偏移、分片号）
     // 由分析器给出；级别取「规则级别」与「分析器级别」中更严重的一侧，

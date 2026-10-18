@@ -260,6 +260,20 @@ struct AnalysisOptions {
     bool analyze_aux_data = true;
     AuxDataOptions aux_data_options;
 
+    // MPEG-TS 传输层体检（失步 / 连续计数错误 / PCR 间隔 / 加扰 / 节目表完整性）。
+    //
+    // 为什么需要单独一趟：这些是**传输层事实**（TS 包头与 PSI 里），而 avformat 的
+    // demux 把包结构藏起来了 —— 逐包扫描只能拿到 PES/AVPacket，看不到 TS 包头。
+    // 所以对 TS 输入会按字节再扫一遍文件头，结果进 AnalysisResult::ts_transport，
+    // 由 container.ts.* 规则消费。
+    //
+    // 只对本地文件生效：网络源不重扫（URL 读两遍既不必要也不可靠）。
+    bool analyze_ts_transport = true;
+    // 这一趟的包数上限。与容器结构页的 TsStructureOptions 分开配置：QC 场景是批量跑，
+    // 20 万包（≈37 MB）足够暴露失步/CC/PCR 问题，又不至于让扫 20 GB 文件变成分钟级。
+    // <=0 表示扫完整个文件。
+    int ts_transport_max_packets = 200000;
+
     // 时间轴诊断里"逐包 delta 曲线"的点数上限（每个视频/音频包一个采样点）。
     // 默认 20 万点 ≈ 3 MB；0 = 不限制（长视频 / 高码率文件会按包数线性吃内存，
     // 只应在明确要全量曲线时开启）。上限只影响曲线精度，不影响问题检出与汇总指标。

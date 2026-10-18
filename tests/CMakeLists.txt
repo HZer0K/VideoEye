@@ -626,6 +626,18 @@ target_link_libraries(test_streaming_qc_rules PRIVATE VideoEyeAnalysis)
 add_test(NAME StreamingQcRulesTests COMMAND test_streaming_qc_rules)
 
 # =================================================
+# 测试 19b：MPEG-TS 传输层 QC 规则（container.ts.* 前缀分支）
+# 说明: 规则只读 AnalysisResult::ts_transport，样本全部手工构造 —— 不需要真实
+#       TS 文件。「解析器算得对不对」在 test_container_structure_analyzers 里测，
+#       这里只测「规则有没有把数字转成报告、级别与阈值对不对」。
+# =================================================
+videoeye_add_test(test_container_ts_qc_rules
+    unit/test_container_ts_qc_rules.cpp
+)
+target_link_libraries(test_container_ts_qc_rules PRIVATE VideoEyeAnalysis)
+add_test(NAME ContainerTsQcRulesTests COMMAND test_container_ts_qc_rules)
+
+# =================================================
 # 测试 21：视觉缺陷检测（黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 曝光 / 色偏 / 梳齿 / 黑边）
 # 说明: VisualDefectAnalyzer 只吃 model::FrameSample 里的降采样像素，不依赖 FFmpeg（
 #       AVFrame -> FrameSample 的缩放在 QualityAnalyzer::BuildSample），所以这里全部用

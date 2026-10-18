@@ -12,6 +12,9 @@
 // StreamingManifestScan。两者都不碰 FFmpeg 上下文，只消费中间态。
 #include "core/analysis/orchestration/AnalysisResultAssembler.h"
 #include "core/analysis/orchestration/StreamingManifestScan.h"
+// MPEG-TS 传输层体检：QC 规则要的失步/CC/PCR/加扰只能按字节扫 TS 包头拿到，
+// 与容器结构页共用同一个解析器（单一事实源），只是扫描量按 QC 场景收窄。
+#include "core/analysis/container/TsStructureAnalyzer.h"
 
 #include <algorithm>
 #include <atomic>
@@ -21,6 +24,7 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <string>
 #include <vector>
 
 #include "infrastructure/logging/Logger.h"
@@ -48,6 +52,48 @@ namespace {
 // （魔数检测对 "#EXTM3U" / "<MPD" 无能为力）。
 bool IsStreamingManifestExtension(const std::string& ext) {
     return ext == "m3u8" || ext == "m3u" || ext == "mpd";
+}
+
+// MPEG-TS 传输层体检，结果写进 result.ts_transport 供 container.ts.* 规则消费。
+//
+// 为什么必须单独一趟按字节扫：失步 / 连续计数错误 / PCR 间隔 / 加扰都是**TS 包头**
+// 里的事实，而 avformat 的 demux 只把 PES 解成 AVPacket —— 逐包扫描看不到包头。
+// 解析器与容器结构页共用 TsStructureAnalyzer（单一事实源），只是扫描量按 QC 收窄。
+//
+// 不做的事：
+//   * 网络源不扫（URL 读两遍既不必要也不可靠，读第二遍还可能拿到不同的直播窗口）；
+//   * 不是 mpegts 就不扫（其它容器没有 TS 包头可言）；
+//   * 失败只记 error_message，不影响主扫描 —— 它是补充证据，不是前置条件。
+void FillTsTransport(const std::string& file_path, const AVFormatContext* fmt,
+                     const AnalysisOptions& options, const std::atomic<bool>* cancel,
+                     model::AnalysisResult& result) {
+    if (!options.analyze_ts_transport) return;
+    if (file_path.find("://") != std::string::npos) return;
+    const char* iformat_name =
+        (fmt != nullptr && fmt->iformat != nullptr) ? fmt->iformat->name : nullptr;
+    if (iformat_name == nullptr || std::string(iformat_name).find("mpegts") == std::string::npos) {
+        return;
+    }
+
+    TsStructureOptions ts_options;
+    // 0 = 扫完整个文件；与容器结构页的默认值（50 万包）分开，批量 QC 用更小的预算。
+    ts_options.max_scan_packets =
+        (options.ts_transport_max_packets > 0) ? options.ts_transport_max_packets : 0;
+
+    model::ContainerStructureResult container;
+    TsStructureAnalyzer analyzer;
+    if (!analyzer.Analyze(file_path, container, cancel, ts_options)) {
+        result.ts_transport = model::TransportStreamInfo();
+        result.ts_transport.error_message = container.error_message;
+        LOG_INFO("TS 传输层体检未完成: " + container.error_message);
+        return;
+    }
+    result.ts_transport = container.transport;
+    LOG_INFO("TS 传输层体检: " + std::to_string(result.ts_transport.scanned_packets) + "/" +
+             std::to_string(result.ts_transport.estimated_packets) + " 包, 失步=" +
+             std::to_string(result.ts_transport.sync_loss) + ", CC 错=" +
+             std::to_string(result.ts_transport.continuity_errors) + ", PCR 最大间隔=" +
+             std::to_string(static_cast<int>(result.ts_transport.pcr_max_gap_ms)) + "ms");
 }
 
 // 各分析维度的**创建 / 逐包分发 / 收尾钩子**（含它们各自要开的解码器、parser、swr）
@@ -152,6 +198,11 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     AVFormatContext* fmt = input.context();
     // 来自容器头的总时长；流摘要与下面几处"没有流级时长时回退"的场合都要用
     const double file_duration = result.duration_seconds;
+
+    // ---- MPEG-TS 传输层体检 ----
+    // 放在 Prepare 之前：它只读文件头、自开 ifstream，不碰 fmt 的读取状态；
+    // 越早跑完越不会和后面的逐包扫描抢 IO。取消令牌与扫描共用同一颗。
+    FillTsTransport(file_path, fmt, options, CancelSource(), result);
 
     // ---- 分析维度集合（建分析器 / 注册流 / 开解码器）----
     //
