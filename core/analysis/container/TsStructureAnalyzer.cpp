@@ -517,11 +517,19 @@ bool TsStructureAnalyzer::Analyze(const std::string& file_path,
             result.error_message = "已取消";
             return false;
         }
-        if (!file.ReadRaw(buf.data(), packet_size)) break;
+        // 末尾那一包常常不足一个完整步长：M2TS 的最后一包后面没有"下一包的
+        // TP_extra 头"、204 的最后一包也可能没有 RS 尾，所以只剩 188 字节时它
+        // 仍然是一个合法 TS 包。以前一律要求读满 packet_size（ReadRaw 短读即
+        // 失败），最后一包就被静默丢掉 —— 更糟的是 scan_complete 照样报"已扫全
+        // 文件"，看上去什么都对，只是少了一个包的 PSI / PCR。
+        const int64_t remaining = file_size - file.Pos();
+        if (remaining < kTsPacketBytes) break;   // 连一个 TS 包都不够了
+        const int want = static_cast<int>(std::min<int64_t>(packet_size, remaining));
+        if (!file.ReadRaw(buf.data(), want)) break;
 
         // 失步：不回退整段扫描，重新找同步点继续（广播流里失步是常态）
         if (static_cast<uint8_t>(buf[0]) != 0x47) {
-            const int64_t search_from = file.Pos() - packet_size + 1;
+            const int64_t search_from = file.Pos() - want + 1;
             int64_t new_pos = -1;
             if (!FindSyncOffset(file, search_from, packet_size, options.max_resync_bytes,
                                 new_pos)) {
@@ -534,7 +542,7 @@ bool TsStructureAnalyzer::Analyze(const std::string& file_path,
         }
 
         ++total_packets;
-        scanned_bytes += packet_size;
+        scanned_bytes += want;
 
         const uint8_t* p = reinterpret_cast<const uint8_t*>(buf.data());
         const bool pusi = (p[1] & 0x40) != 0;
@@ -1002,6 +1010,7 @@ bool TsStructureAnalyzer::Analyze(const std::string& file_path,
     {
         model::TransportStreamInfo& ts = result.transport;
         ts.analyzed = true;
+        ts.applicable = true;  // 能走到这里，输入必然是 TS
         ts.packet_size = packet_size;
         ts.scanned_packets = static_cast<int64_t>(total_packets);
         ts.estimated_packets = (packet_size > 0) ? (file_size / packet_size) : 0;
