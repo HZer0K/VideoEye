@@ -5,8 +5,8 @@
 // 2026-10-07 按 codec 做了一次纯物理拆分：原先 H.264 / HEVC / AV1 / VVC 的所有
 // 结构体都挤在本头里（约 991 行），现按编解码器拆到同目录的四个子头：
 //   * H264BitstreamInfo.h —— H264VuiInfo / H264SpsInfo / H264PpsInfo
-//   * HevcBitstreamInfo.h —— HevcSeiMessage / HevcVpsInfo / HevcSpsInfo / HevcPpsInfo
-//   * Av1BitstreamInfo.h  —— Av1FilmGrainInfo / Av1ColorConfigInfo /
+//   * HevcBitstreamInfo.h —— HevcVpsInfo / HevcSpsInfo / HevcPpsInfo
+//   * Av1BitstreamInfo.h  —— Av1ColorConfigInfo /
 //                            Av1SequenceHeaderInfo / Av1CodecConfigInfo
 //   * VvcBitstreamInfo.h  —— VvcNalUnitInfo / VvcVuiInfo / VvcVpsInfo /
 //                            VvcSpsInfo / VvcPpsInfo / VvcCodecConfigInfo

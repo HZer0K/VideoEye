@@ -15,9 +15,10 @@
 - **H.264 (AVC)**: SPS（profile / level / 色度 / 位深 / cropping / VUI 色彩与时基）、PPS；
   **HRD 只做按位跳过**（保证 VUI 后续字段不错位，不落地数值），**不解析 SEI**
 - **H.265 (HEVC)**: VPS / SPS / PPS、profile tier level、VUI、conformance window；
-  `HevcBitstreamParser::ParseSeiMessages()` 已实现但**当前没有接入扫描链路**（无调用方）
+  **不解析 SEI**（详见 1.5）
 - **AV1**: OBU、sequence header、color_config、`film_grain_params_present` 标志
-  （film grain 的具体参数结构与 HDR metadata 未落地）
+  （只取这个布尔标志：film grain 是否启用；**不解析** film grain 的具体参数，
+  详见 1.5）
 - **VVC (H.266，实验性/部分支持)**: VPS/SPS/PPS、profile tier level、VUI；PPS 为浅解析，字段仅供参考
 
 ### 1.3 参数集从哪来：extradata 与带内
@@ -38,6 +39,22 @@
 - 放弃时会给出可读原因（"已扫满 N 个包仍未见参数集"），并写进日志；
   典型场景是"录播从 GOP 中间开始、且编码器只在流开头写了一次参数集"。
 - 这条路径**只在没有 extradata 时才启用**：extradata 有值就是权威来源，不做二次探测。
+
+### 1.4 明确不做：SEI 消息与 AV1 film grain 参数
+
+这两块曾经"定义了结构体但没有任何产出"，2026-10-18 已删除。留着它们的代价不是
+代码行数，而是**假象**：看代码的人会以为能力已经具备，实际结论恒为空。
+
+| 已删除 | 原位置 | 为什么不留 |
+|--------|--------|-----------|
+| `HevcBitstreamParser::ParseSeiMessages()` + `HevcSeiMessage` + `HevcVpsInfo::sei_messages` | `core/analysis/codec/HevcBitstreamParser.{h,cpp}`、`core/domain/model/HevcBitstreamInfo.h` | 全项目**零调用**，`sei_messages` 恒空。HDR 静态/动态元数据（ST 2086、MaxCLL/MaxFALL、HDR10+、Dolby Vision）按 `README.md` 的"不自研"清单走 **FFmpeg 的 side data**（解码首帧兜底），不从 SEI 里解。删它与架构声明一致，不是丢能力 |
+| `Av1FilmGrainInfo`（21 个字段） + `Av1SequenceHeaderInfo::film_grain` | `core/domain/model/Av1BitstreamInfo.h` | 结构体随 seq header 一起被实例化，但**21 个字段从未被任何代码写入**，永远全零，且没有任何报告/UI 出口 |
+
+保留的是 `Av1SequenceHeaderInfo::film_grain_params_present`（布尔）：它在
+`Av1BitstreamParser.cpp` 里真的从 sequence header 读出，也在码流面板里展示 ——
+回答的是"这条流有没有开 film grain"，够用且可验证。若将来要展示具体参数
+（AR 系数、grain seed 等），应连同**解析代码 + 报告/UI 出口 + 用例**一起加，
+不要只把结构体放回来。
 
 ## 2. 技术原理
 
@@ -147,8 +164,6 @@ struct HevcSpsInfo {
     int pic_height_in_ctu_minus1;
     int bit_depth_luma_minus8;    // actual = value + 8
     int bit_depth_chroma_minus8;  // actual = value + 8
-    
-    std::vector<HevcSeiMessage> sei_messages; // SEI 消息列表
 };
 ```
 
@@ -162,8 +177,8 @@ struct Av1SequenceHeaderInfo {
     int frame_height_minus_1;     // height = value + 1
     int bit_depth_minus_8;        // actual bit depth = value + 8
     
-    Av1ColorConfigInfo color_config;  // 色彩配置
-    Av1FilmGrainInfo film_grain;      // Film Grain 信息
+    Av1ColorConfigInfo color_config;      // 色彩配置
+    bool film_grain_params_present;       // 是否启用 film grain（只取标志，不解析参数）
 };
 ```
 

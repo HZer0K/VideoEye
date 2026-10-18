@@ -13,8 +13,12 @@ namespace videoeye {
 // 职责：
 //   1. 从 extradata 中解析 HEVC VPS/SPS/PPS
 //   2. 提取 profile tier level、bit depth、chroma、CTU size 等关键参数
-//   3. 解析 SEI 消息（Mastering Display、Content Light Level）
-//   4. 支持 Annex B 和 length-prefix 两种封装格式
+//   3. 支持 Annex B 和 length-prefix 两种封装格式
+//
+// 不做的：SEI 消息解析。HDR 静态/动态元数据（ST 2086、MaxCLL、HDR10+、DV）
+// 一律走 FFmpeg 的 side data，不自研 SEI 解析（见 README 的"不自研"清单）。
+// 历史上这里有个 ParseSeiMessages()，全项目零调用、产出的 sei_messages 恒空，
+// 看起来"支持 SEI"实则不产出任何结论，已删除。
 // ==========================================================================
 class HevcBitstreamParser {
 public:
@@ -34,9 +38,6 @@ public:
     static bool IsVpsNalUnit(const videoeye::NalUnit& nal_unit);
     static bool IsSpsNalUnit(const videoeye::NalUnit& nal_unit);
     static bool IsPpsNalUnit(const videoeye::NalUnit& nal_unit);
-    
-    // 解析 SEI 消息
-    static std::vector<model::HevcSeiMessage> ParseSeiMessages(const uint8_t* data, size_t size);
     
     // Profile/Tier 名称转换（单元测试亦直接调用）
     static std::string GetProfileName(int general_profile_idc);

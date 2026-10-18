@@ -1,6 +1,6 @@
 #pragma once
 
-// H.265 (HEVC) 码流解析结果：SEI / VPS / SPS / PPS 四组纯值类型。
+// H.265 (HEVC) 码流解析结果：VPS / SPS / PPS 三组纯值类型。
 //
 // 从 BitstreamInfo.h 按 codec 拆出，使每个编解码器的结构自成一文件；
 // BitstreamInfo.h 作为 umbrella 重新 include 本头，调用方无需改动。
@@ -16,100 +16,6 @@ namespace model {
 // --------------------------------------------------------------------------
 // H.265 码流信息
 // --------------------------------------------------------------------------
-struct HevcSeiMessage {
-    enum Type {
-        MasteringDisplay = 1,
-        ContentLight = 4,
-        Hdr10Plus = 5,
-        HdrVivid = 6,
-        BufferingPeriod = 2,
-        PictureTiming = 3,
-        ScalabilityInfo = 9,
-        AlternativeTransferCharacteristic = 10,
-        RegionRefreshInfo = 11,
-        DynamicHdrParam = 13,
-        AlternativeColourSpace = 16,
-        ColourTransform = 17,
-        SceneInfo = 18,
-        DisplayOrientation = 21,
-        ToneMappingInfo = 22,
-        ActiveOcclusion = 24,
-        AdaptationRegions = 25,
-        DecodingUnitInfo = 27,
-        TemporalRefChange = 28,
-        MotionConstrainedTileSets = 29,
-        FramerateInfo = 30,
-        IsoMedia = 31,
-        QualityControlData = 32,
-        SampleDependency = 33,
-        IsoMediaFileType = 34,
-        TimeCode = 35,
-        CodedDomainColourSpace = 36,
-        SpatialRelationship = 37,
-        AdaptiveDpb = 38,
-        DpbOutputTime = 39,
-        DecodedPictureHash = 128,
-        RecoveryPoint = 129,
-        FramePackingArrangement = 132,
-        Stereo3dVideo = 133,
-        AltViewpointInfo = 134,
-        AltViewpointRepeat = 135,
-        MultiviewViewPosition = 136,
-        MultiviewAcquisitionInfo = 137,
-        SubSeqLayerInformation = 142,
-        SubSeqInformation = 143,
-        StereoMetadata = 144,
-        DepthInformation = 145,
-        SubPicInfo = 146,
-        RegionWiseParititionInfo = 147,
-        RegionWiseParititionReplication = 148,
-        RegionWiseParititionMotionInfo = 149,
-        RegionWiseParititionDepthInfo = 150,
-        RegionWiseParititionNormalInfo = 151,
-        RegionWiseParititionTextureInfo = 152,
-        RegionWiseParititionDepthToTexture = 153,
-        RegionWiseParititionDepthToNormal = 154,
-        RegionWiseParititionDepthToTextureRange = 155,
-        RegionWiseParititionDepthToNormalRange = 156,
-        RegionWiseParititionDepthToTextureDirection = 157,
-        RegionWiseParititionDepthToNormalDirection = 158,
-        RegionWiseParititionTextureToDepth = 159,
-        RegionWiseParititionNormalToDepth = 160,
-        RegionWiseParititionTextureToNormal = 161,
-        RegionWiseParititionNormalToTexture = 162,
-        RegionWiseParititionDepthToTextureDirectionRange = 163,
-        RegionWiseParititionDepthToNormalDirectionRange = 164,
-        RegionWiseParititionTextureToDepthDirection = 165,
-        RegionWiseParititionNormalToDepthDirection = 166,
-        RegionWiseParititionTextureToNormalDirection = 167,
-        RegionWiseParititionNormalToTextureDirection = 168,
-        RegionWiseParititionDepthToTextureDirectionRangeEnd = 169,
-        RegionWiseParititionDepthToNormalDirectionRangeEnd = 170,
-        RegionWiseParititionTextureToDepthDirectionEnd = 171,
-        RegionWiseParititionNormalToDepthDirectionEnd = 172,
-        RegionWiseParititionTextureToNormalDirectionEnd = 173,
-        RegionWiseParititionNormalToTextureDirectionEnd = 174,
-    };
-    
-    bool present = false;
-    Type type = Type::MasteringDisplay;
-    std::vector<uint8_t> data;
-    
-    // Mastering Display (ST 2086)
-    bool has_primaries = false;
-    double red_x = 0.0, red_y = 0.0;
-    double green_x = 0.0, green_y = 0.0;
-    double blue_x = 0.0, blue_y = 0.0;
-    double white_x = 0.0, white_y = 0.0;
-    double max_luminance = 0.0;   // cd/m^2
-    double min_luminance = 0.0;   // cd/m^2
-    
-    // Content Light Level (CTA-861.3)
-    bool has_cll = false;
-    unsigned max_cll = 0;         // MaxCLL cd/m^2
-    unsigned max_fall = 0;        // MaxFALL cd/m^2
-};
-
 struct HevcVpsInfo {
     bool present = false;
     
@@ -149,9 +55,6 @@ struct HevcVpsInfo {
     
     // NAL layer
     int vps_num_ptl_symbols = 0;
-    
-    // SEI messages
-    std::vector<HevcSeiMessage> sei_messages;
 };
 
 struct HevcSpsInfo {

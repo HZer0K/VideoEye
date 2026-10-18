@@ -16,28 +16,6 @@ namespace model {
 // --------------------------------------------------------------------------
 // AV1 码流信息
 // --------------------------------------------------------------------------
-struct Av1FilmGrainInfo {
-    bool present = false;
-    
-    bool film_grain_params_present_flag = false;
-    bool film_grain_remove_flag = false;
-    int film_grain_model_id = 0;
-    int scaling_shift_minus8 = 0;
-    int ar_coeff_lag = 0;
-    int ar_coeff_quant = 0;
-    int grain_scaling_shift = 0;
-    int semi_random_seed_dist_change_mode = 0;
-    uint32_t film_grain_seed = 0;
-    
-    // AR coefficients
-    std::vector<int> ar_coeffs_luma;
-    std::vector<int> ar_coeffs_chroma;
-    
-    // Multipliers and offsets
-    std::vector<int> multipliers;
-    std::vector<int> clipper_lookups;
-};
-
 struct Av1ColorConfigInfo {
     bool present = false;
     
@@ -159,9 +137,6 @@ struct Av1SequenceHeaderInfo {
     
     // Color config
     Av1ColorConfigInfo color_config;
-    
-    // Film grain
-    Av1FilmGrainInfo film_grain;
     
     // HDR metadata
     bool has_mastering_display = false;

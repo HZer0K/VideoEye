@@ -736,48 +736,4 @@ model::HevcPpsInfo HevcBitstreamParser::ParsePps(const uint8_t* extradata, size_
     return model::HevcPpsInfo();
 }
 
-// --------------------------------------------------------------------------
-// SEI
-// --------------------------------------------------------------------------
-std::vector<model::HevcSeiMessage> HevcBitstreamParser::ParseSeiMessages(
-    const uint8_t* data, size_t size) {
-    std::vector<model::HevcSeiMessage> sei_messages;
-
-    if (!data || size < 2) {
-        return sei_messages;
-    }
-
-    // SEI payload 是字节对齐的，直接按 7.3.4 的 ff-byte 规则扫描
-    size_t pos = 0;
-    while (pos < size) {
-        uint32_t payload_type = 0;
-        while (pos < size && data[pos] == 0xFF) {
-            payload_type += 255;
-            ++pos;
-        }
-        if (pos >= size) break;
-        payload_type += data[pos++];
-
-        uint32_t payload_size = 0;
-        while (pos < size && data[pos] == 0xFF) {
-            payload_size += 255;
-            ++pos;
-        }
-        if (pos >= size) break;
-        payload_size += data[pos++];
-
-        if (payload_size == 0 || pos + payload_size > size) break;
-
-        model::HevcSeiMessage sei;
-        sei.present = true;
-        sei.type = static_cast<model::HevcSeiMessage::Type>(payload_type);
-        sei.data.assign(data + pos, data + pos + payload_size);
-        sei_messages.push_back(sei);
-
-        pos += payload_size;
-    }
-
-    return sei_messages;
-}
-
 } // namespace videoeye
