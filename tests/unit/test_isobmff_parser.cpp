@@ -286,4 +286,235 @@ TEST(IsobmffParserTest, ParsesContainerAndTrackBasics) {
     EXPECT_EQ(f.top_level_order[0], "ftyp");
 }
 
+// ===========================================================================
+// box 字段级解析：ftyp / mvhd / tkhd / mdhd / hdlr / avc1 入口 + 编码配置子树
+//
+// 以前只有样本表那 8 类 box 有字段，ftyp/tkhd/avcC/colr 在树里都是空节点；
+// stsd 的 sample entry（avc1）压根不算容器，于是 avcC/colr/pasp/btrt 整棵子树
+// 从来没进过结构树。这一组把"打开 MP4 第一眼该看到什么"钉住。
+// ===========================================================================
+
+void Put16(std::vector<uint8_t>& v, uint16_t x) {
+    v.push_back(static_cast<uint8_t>((x >> 8) & 0xFF));
+    v.push_back(static_cast<uint8_t>(x & 0xFF));
+}
+
+void PutFourCC(std::vector<uint8_t>& v, const char* s) {
+    for (int i = 0; i < 4; ++i) Put8(v, static_cast<uint8_t>(s[i]));
+}
+
+// avc1 入口：78 字节 SampleEntry 头 + 编码配置子树
+std::vector<uint8_t> MakeAvc1Entry() {
+    std::vector<uint8_t> payload;
+    for (int i = 0; i < 6; ++i) Put8(payload, 0);   // reserved
+    Put16(payload, 1);                              // data_reference_index
+    for (int i = 0; i < 16; ++i) Put8(payload, 0);  // pre_defined/reserved
+    Put16(payload, 1920);                           // width
+    Put16(payload, 1080);                           // height
+    Put32(payload, 0x00480000);                     // horizresolution 72dpi
+    Put32(payload, 0x00480000);                     // vertresolution
+    Put32(payload, 0);                              // reserved
+    Put16(payload, 1);                              // frame_count
+    for (int i = 0; i < 32; ++i) Put8(payload, 0);  // compressorname
+    Put16(payload, 24);                             // depth
+    Put16(payload, 0xFFFF);                         // pre_defined
+    // ↑ 到这里 78 字节，下面是子 box
+
+    // avcC: High(100) / Level 4.0(40) / lengthSize=4 / 1 个 SPS + 1 个 PPS
+    std::vector<uint8_t> avcc_body;
+    Put8(avcc_body, 1);       // configurationVersion
+    Put8(avcc_body, 100);     // AVCProfileIndication
+    Put8(avcc_body, 0);       // profile_compatibility
+    Put8(avcc_body, 40);      // AVCLevelIndication
+    Put8(avcc_body, 0xFF);    // 保留 + lengthSizeMinusOne=3
+    Put8(avcc_body, 0xE1);    // 保留 + numOfSPS=1
+    Put16(avcc_body, 4);      // SPS 长度
+    for (uint8_t b : std::vector<uint8_t>{0x67, 0x64, 0x00, 0x28}) Put8(avcc_body, b);
+    Put8(avcc_body, 1);       // numOfPPS
+    Put16(avcc_body, 4);
+    for (uint8_t b : std::vector<uint8_t>{0x68, 0xEE, 0x3C, 0x80}) Put8(avcc_body, b);
+
+    // colr: nclx / BT.2020 primaries(9) / PQ transfer(16) / BT.2020 matrix(9) / 有限范围
+    std::vector<uint8_t> colr_body;
+    PutFourCC(colr_body, "nclx");
+    Put16(colr_body, 9);
+    Put16(colr_body, 16);
+    Put16(colr_body, 9);
+    Put8(colr_body, 0x00);
+
+    std::vector<uint8_t> pasp_body;
+    Put32(pasp_body, 1);
+    Put32(pasp_body, 1);
+
+    std::vector<uint8_t> btrt_body;
+    Put32(btrt_body, 1000);      // bufferSizeDB
+    Put32(btrt_body, 8000000);   // maxBitrate
+    Put32(btrt_body, 5000000);   // avgBitrate
+
+    const std::vector<uint8_t> children =
+        CatAll({Box("avcC", avcc_body), Box("colr", colr_body),
+                Box("pasp", pasp_body), Box("btrt", btrt_body)});
+    return Box("avc1", Cat(payload, children));
+}
+
+// 一个字段完整的文件：ftyp / mvhd / tkhd / mdia(mdhd+hdlr) / stbl(stsd)
+std::vector<uint8_t> MakeRichFile() {
+    std::vector<uint8_t> ftyp_body;
+    PutFourCC(ftyp_body, "isom");
+    Put32(ftyp_body, 0x200);   // minor_version
+    for (const char* brand : {"isom", "iso2", "avc1", "mp41"}) PutFourCC(ftyp_body, brand);
+    const std::vector<uint8_t> ftyp = Box("ftyp", ftyp_body);
+
+    std::vector<uint8_t> mvhd_body;
+    Put32(mvhd_body, 0);           // creation_time
+    Put32(mvhd_body, 0);           // modification_time
+    Put32(mvhd_body, 1000);        // timescale
+    Put32(mvhd_body, 2000);        // duration
+    Put32(mvhd_body, 0x00010000);  // rate
+    Put16(mvhd_body, 0x0100);      // volume
+    for (int i = 0; i < 10; ++i) Put8(mvhd_body, 0);   // reserved
+    for (int i = 0; i < 36; ++i) Put8(mvhd_body, 0);   // matrix
+    for (int i = 0; i < 24; ++i) Put8(mvhd_body, 0);   // pre_defined
+    Put32(mvhd_body, 7);           // next_track_id
+    const std::vector<uint8_t> mvhd = FullBox("mvhd", 0, mvhd_body);
+
+    std::vector<uint8_t> tkhd_body;
+    Put32(tkhd_body, 0);           // creation_time
+    Put32(tkhd_body, 0);           // modification_time
+    Put32(tkhd_body, 1);           // track_id
+    Put32(tkhd_body, 0);           // reserved
+    Put32(tkhd_body, 2000);        // duration
+    for (int i = 0; i < 8; ++i) Put8(tkhd_body, 0);    // reserved
+    Put16(tkhd_body, 0);           // layer
+    Put16(tkhd_body, 0);           // alternate_group
+    Put16(tkhd_body, 0x0100);      // volume
+    Put16(tkhd_body, 0);           // reserved
+    for (int i = 0; i < 36; ++i) Put8(tkhd_body, 0);   // matrix
+    Put32(tkhd_body, 1920u << 16); // width (16.16)
+    Put32(tkhd_body, 1080u << 16); // height
+    const std::vector<uint8_t> tkhd = FullBox("tkhd", 0, tkhd_body);
+
+    std::vector<uint8_t> mdhd_body;
+    Put32(mdhd_body, 0);           // creation_time
+    Put32(mdhd_body, 0);           // modification_time
+    Put32(mdhd_body, 30000);       // timescale
+    Put32(mdhd_body, 60000);       // duration
+    Put16(mdhd_body, 0x15C7);      // language = "eng"
+    Put16(mdhd_body, 0);           // pre_defined
+    const std::vector<uint8_t> mdhd = FullBox("mdhd", 0, mdhd_body);
+
+    std::vector<uint8_t> hdlr_body;
+    Put32(hdlr_body, 0);           // pre_defined
+    PutFourCC(hdlr_body, "vide");  // handler_type
+    for (int i = 0; i < 12; ++i) Put8(hdlr_body, 0);   // reserved
+    for (char c : std::string("VideoHandler")) Put8(hdlr_body, static_cast<uint8_t>(c));
+    Put8(hdlr_body, 0);
+    const std::vector<uint8_t> hdlr = FullBox("hdlr", 0, hdlr_body);
+
+    std::vector<uint8_t> stsd_body;
+    Put32(stsd_body, 1);           // entry_count
+    const std::vector<uint8_t> stsd = FullBox("stsd", 0, Cat(stsd_body, MakeAvc1Entry()));
+
+    const std::vector<uint8_t> stbl = Box("stbl", stsd);
+    const std::vector<uint8_t> minf = Box("minf", stbl);
+    const std::vector<uint8_t> mdia = Box("mdia", CatAll({mdhd, hdlr, minf}));
+    const std::vector<uint8_t> trak = Box("trak", Cat(tkhd, mdia));
+    const std::vector<uint8_t> moov = Box("moov", Cat(mvhd, trak));
+    return CatAll({ftyp, moov, Box("mdat", std::vector<uint8_t>(32, 0xAB))});
+}
+
+const videoeye::IsobmffBox* FindBox(const std::vector<videoeye::IsobmffBox>& boxes,
+                                    const std::string& type) {
+    for (const auto& b : boxes) {
+        if (b.type == type) return &b;
+        if (const videoeye::IsobmffBox* inner = FindBox(b.children, type)) return inner;
+    }
+    return nullptr;
+}
+
+std::string FieldOf(const videoeye::IsobmffBox& box, const std::string& name) {
+    for (const auto& f : box.fields) {
+        if (f.first == name) return f.second;
+    }
+    return std::string();
+}
+
+TEST(IsobmffParserTest, FillsBrandTimescaleAndTrackGeometry) {
+    const std::string path = "isobmff_parser_rich_tmp.mp4";
+    ASSERT_TRUE(WriteTemp(path, MakeRichFile()));
+    videoeye::IsobmffFile out;
+    ASSERT_TRUE(videoeye::IsobmffParser::Parse(path, out));
+    std::remove(path.c_str());
+
+    const videoeye::IsobmffBox* ftyp = FindBox(out.top_level, "ftyp");
+    ASSERT_TRUE(ftyp != nullptr);
+    EXPECT_EQ(FieldOf(*ftyp, "major_brand"), "isom");
+    EXPECT_EQ(FieldOf(*ftyp, "minor_version"), "512");
+    EXPECT_NE(FieldOf(*ftyp, "compatible_brands").find("avc1"), std::string::npos);
+
+    const videoeye::IsobmffBox* mvhd = FindBox(out.top_level, "mvhd");
+    ASSERT_TRUE(mvhd != nullptr);
+    EXPECT_EQ(FieldOf(*mvhd, "timescale"), "1000");
+    EXPECT_EQ(FieldOf(*mvhd, "duration"), "2000");
+    EXPECT_EQ(FieldOf(*mvhd, "duration_seconds"), "2.000");
+    EXPECT_EQ(FieldOf(*mvhd, "next_track_id"), "7");
+
+    const videoeye::IsobmffBox* tkhd = FindBox(out.top_level, "tkhd");
+    ASSERT_TRUE(tkhd != nullptr);
+    EXPECT_EQ(FieldOf(*tkhd, "track_id"), "1");
+    EXPECT_EQ(FieldOf(*tkhd, "width"), "1920");
+    EXPECT_EQ(FieldOf(*tkhd, "height"), "1080");
+
+    const videoeye::IsobmffBox* mdhd = FindBox(out.top_level, "mdhd");
+    ASSERT_TRUE(mdhd != nullptr);
+    EXPECT_EQ(FieldOf(*mdhd, "timescale"), "30000");
+    EXPECT_EQ(FieldOf(*mdhd, "language"), "eng");
+
+    const videoeye::IsobmffBox* hdlr = FindBox(out.top_level, "hdlr");
+    ASSERT_TRUE(hdlr != nullptr);
+    EXPECT_EQ(FieldOf(*hdlr, "handler_type"), "vide");
+    EXPECT_EQ(FieldOf(*hdlr, "name"), "VideoHandler");
+}
+
+TEST(IsobmffParserTest, DescendsIntoStsdSampleEntryCodecBoxes) {
+    const std::string path = "isobmff_parser_rich2_tmp.mp4";
+    ASSERT_TRUE(WriteTemp(path, MakeRichFile()));
+    videoeye::IsobmffFile out;
+    ASSERT_TRUE(videoeye::IsobmffParser::Parse(path, out));
+    std::remove(path.c_str());
+
+    // avc1 入口本身要有宽高/参考索引
+    const videoeye::IsobmffBox* avc1 = FindBox(out.top_level, "avc1");
+    ASSERT_TRUE(avc1 != nullptr) << "stsd 的 sample entry 必须出现在 box 树里";
+    EXPECT_EQ(FieldOf(*avc1, "width"), "1920");
+    EXPECT_EQ(FieldOf(*avc1, "height"), "1080");
+    EXPECT_EQ(FieldOf(*avc1, "data_reference_index"), "1");
+
+    // 子树：avcC / colr / pasp / btrt 以前完全不进树
+    const videoeye::IsobmffBox* avcc = FindBox(out.top_level, "avcC");
+    ASSERT_TRUE(avcc != nullptr);
+    EXPECT_EQ(FieldOf(*avcc, "profile_idc"), "100");
+    EXPECT_EQ(FieldOf(*avcc, "level_idc"), "40");
+    EXPECT_EQ(FieldOf(*avcc, "length_size_minus_one"), "3");
+    EXPECT_EQ(FieldOf(*avcc, "num_of_sps"), "1");
+    EXPECT_EQ(FieldOf(*avcc, "num_of_pps"), "1");
+
+    const videoeye::IsobmffBox* colr = FindBox(out.top_level, "colr");
+    ASSERT_TRUE(colr != nullptr);
+    EXPECT_EQ(FieldOf(*colr, "colour_type"), "nclx");
+    EXPECT_EQ(FieldOf(*colr, "colour_primaries"), "9");
+    EXPECT_EQ(FieldOf(*colr, "transfer_characteristics"), "16");
+    EXPECT_EQ(FieldOf(*colr, "matrix_coefficients"), "9");
+
+    const videoeye::IsobmffBox* pasp = FindBox(out.top_level, "pasp");
+    ASSERT_TRUE(pasp != nullptr);
+    EXPECT_EQ(FieldOf(*pasp, "hSpacing"), "1");
+    EXPECT_EQ(FieldOf(*pasp, "vSpacing"), "1");
+
+    const videoeye::IsobmffBox* btrt = FindBox(out.top_level, "btrt");
+    ASSERT_TRUE(btrt != nullptr);
+    EXPECT_EQ(FieldOf(*btrt, "maxBitrate"), "8000000");
+    EXPECT_EQ(FieldOf(*btrt, "avgBitrate"), "5000000");
+}
+
 }  // namespace

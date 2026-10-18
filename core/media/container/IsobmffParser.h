@@ -12,6 +12,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace videoeye {
@@ -24,6 +25,18 @@ struct IsobmffBox {
     uint32_t header_size = 0;  // 8 / 16 / 24（含 largesize / uuid）
     int depth = 0;
     std::vector<IsobmffBox> children;
+
+    // 语义字段（规范字段名 → 可读值），按 box 类型逐个填。
+    //
+    // 为什么放在解析层而不是展示层：以前只有样本表那 8 类 box 有字段
+    // （见 analysis/container/Mp4BoxAnalyzer 的 FillTableFields），
+    // 于是 ftyp 的 brand、mvhd 的 timescale、avcC/hvcC 的 profile、colr 的
+    // 色彩参数在树里全是空节点 —— 而这些恰好是"打开一个 MP4 第一眼想看"的东西。
+    // 现在字段跟着 box 解析走，展示层只负责显示，不再需要自己判 type。
+    //
+    // 只填"规范里有名字、且能从 box 载荷直接读出来"的字段；样本表这类
+    // 可能上万条的数据仍然走 IsbmffTrack 的结构化表，不进这里。
+    std::vector<std::pair<std::string, std::string>> fields;
 };
 
 // ---- sample table 条目 ----

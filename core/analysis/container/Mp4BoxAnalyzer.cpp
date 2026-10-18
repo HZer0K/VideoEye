@@ -84,14 +84,10 @@ void FillTableFields(model::Mp4BoxNode& node, const videoeye::IsobmffTrack& trac
         }
     } else if (type == "stsd") {
         PushField(node, "format", track.codec);
-    } else if (type == "tkhd") {
-        PushFieldInt(node, "track_id", track.track_id);
-    } else if (type == "hdlr") {
-        PushField(node, "handler_type", track.handler);
-    } else if (type == "mdhd") {
-        PushFieldInt(node, "timescale", track.media_timescale);
-        PushFieldInt(node, "duration", track.media_duration);
     }
+    // tkhd / hdlr / mdhd 的字段现在由 IsobmffParser 在解析期填（track_id、
+    // handler_type/name、timescale/duration/language），这里不再重复推一遍 ——
+    // 两处都填会在树里出现同名同值的两条字段，看着像解析出了两个值。
 }
 
 // 解析器 box -> UI 模型 box（递归）
@@ -102,6 +98,14 @@ model::Mp4BoxNode ConvertBox(const videoeye::IsobmffBox& src,
     node.size = src.size;
     node.offset = src.offset;
     node.depth = src.depth;
+
+    // 解析层已按 box 类型填好规范字段（ftyp 的 brand、mvhd 的 timescale、
+    // tkhd 的 track_id/宽高、avcC/hvcC/av1C 的 profile、colr 的色彩参数、
+    // sidx/moof-traf 的时序…），原样搬到展示模型；样本表那 8 类 box 的字段
+    // 由 FillTableFields 在其后追加。
+    for (const auto& field : src.fields) {
+        PushField(node, field.first, field.second);
+    }
 
     if (src.type == "mvhd") {
         // 电影时基由解析结果整体提供
