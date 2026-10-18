@@ -11,7 +11,8 @@
       "naming-local": "CMakeUserPresets.json 里的本机 preset 统一用**短名**（release / debug / test-release / test-debug），不带 win- 前缀、也不带 -local 后缀。scripts/setup-windows-env.ps1 按这个约定生成；build.bat / build.sh 先试短名、再回退本文件里的 win-* / linux-* 通用名。历史上有过 win-<x>-local 这种第三种拼写，逼得脚本要在三种候选里猜，已废弃。",
       "ide-note": "windows-base 上的 architecture/toolset（strategy=external）是给 IDE 用的：Visual Studio 与 Qt Creator 打开本目录时不会先跑 vcvars，直接调 CMake 会因 PATH 里没有 ninja/cl 而报 'CMAKE_MAKE_PROGRAM is not set' / 'CMAKE_C_COMPILER not set'。带上这两个字段后 VS 会自己注入 MSVC 开发环境（Microsoft 文档里 Ninja preset 的标准写法）。命令行/CI 不受影响。若 IDE 仍以 win-* 通用 preset 报错，请在 IDE 里改选本机 preset（CMakeUserPresets.json 里的 release / debug / test-release / test-debug）。",
       "example-local-overrides": "CMakeUserPresets.json 里 inherits \"win-release\"，再覆盖 environment 与 CMAKE_MAKE_PROGRAM / CMAKE_C_COMPILER / CMAKE_CXX_COMPILER 即可。",
-      "naming": "win-* 是 Windows(MSVC+vcpkg)，linux-* 是 Linux/macOS(系统 Qt 与系统 FFmpeg)。*-test-* 额外打开 BUILD_TESTING，并在 Windows 上启用 vcpkg 的 tests feature(gtest)。"
+      "naming": "win-* 是 Windows(MSVC+vcpkg)，linux-* 是 Linux/macOS(系统 Qt 与系统 FFmpeg)。*-test-* 额外打开 BUILD_TESTING，并在 Windows 上启用 vcpkg 的 tests feature(gtest)。",
+      "vslang-note": "windows-base 里的 CMAKE_{C,CXX}_COMPILER_LAUNCHER=cmake;-E;env;VSLANG=1033 不要删。cl.exe 的 /showIncludes 输出语言跟着 VS 语言资源走（默认中文'注意: 包含文件: '，VSLANG=1033 时英文'Note: including file: '），CMake 在 try_compile 阶段把这句前缀探测进 CMakeFiles/<ver>/CMake{C,CXX}Compiler.cmake，ninja 再拿它剥 /showIncludes 还原头文件依赖。启动器把语言钉成英文，探测值与构建值才不会漂；一旦两者不一致，ninja 剥壳静默失败 -> 改了头文件不重编 -> 链接陈旧对象（Windows 上表现为 0xc0000409 / 0xc0000374 这类看似代码写坏的崩溃）。附带好处是编译日志变纯 ASCII，不再需要 grep -a 读 GB18030。守卫见 scripts/check_msvc_showincludes_prefix.py（ctest: MsvcShowIncludesPrefixTests）。"
     }
   },
   "configurePresets": [
@@ -29,7 +30,9 @@
         "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/scripts/triplets",
         "VCPKG_OVERLAY_PORTS": "${sourceDir}/scripts/overlay-ports",
         "FFMPEG_ROOT": "${sourceDir}/third_party/prebuilt/windows-x64/ffmpeg",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_C_COMPILER_LAUNCHER": "cmake;-E;env;VSLANG=1033",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "cmake;-E;env;VSLANG=1033"
       }
     },
     {
