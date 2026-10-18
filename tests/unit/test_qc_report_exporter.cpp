@@ -553,4 +553,135 @@ TEST(QcReportExporterTest, UnwritableDirectoryFailsForEveryFormat) {
     EXPECT_FALSE(QcReportExporter::ExportPdf(missing + ".pdf", bundle).ok);
 }
 
+// ==========================================================================
+// MPEG-TS 传输层证据（可追溯性）
+//
+// 锁的是这条：规则只在**命中**时才有 detail，未命中什么都不留。于是报告里
+// "连续计数错误 = 0" 和 "压根没扫传输层" 会长得一模一样，争议时无法回答
+// "扫了没有"。下面三个用例分别锁住：扫到了要落数字、是 TS 但没扫出结论要显式
+// 告警、不是 TS 不该有这一节。
+// ==========================================================================
+
+namespace {
+
+// 取成员并在缺失时把键名报出来（否则后面一串 EXPECT 只会看到莫名的默认值）。
+const JsonValue* Member(const JsonValue* obj, const std::string& key) {
+    const JsonValue* found = (obj != nullptr) ? obj->Find(key) : nullptr;
+    EXPECT_TRUE(found != nullptr) << "缺字段: " << key;
+    return found;
+}
+double Num(const JsonValue* obj, const std::string& key) {
+    const JsonValue* v = Member(obj, key);
+    return (v != nullptr) ? v->NumberValueOr(-1.0) : -1.0;
+}
+bool Flag(const JsonValue* obj, const std::string& key) {
+    const JsonValue* v = Member(obj, key);
+    return (v != nullptr) && v->BoolValueOr(false);
+}
+
+// 造一份填好传输层数字的结果。applicable/analyzed 分开控制，好把三种情形钉死。
+QcExportBundle MakeTsBundle(bool applicable, bool analyzed) {
+    QcExportBundle bundle = MakeBundle(0);
+    bundle.run.report.file_name = "clip.ts";
+    bundle.run.report.file_path = "/tmp/clip.ts";
+    bundle.run.report.container_format = "mpegts";
+    auto& ts = bundle.run.analysis.ts_transport;
+    ts.applicable = applicable;
+    ts.analyzed = analyzed;
+    if (analyzed) {
+        ts.packet_size = 188;
+        ts.scanned_packets = 50000;
+        ts.estimated_packets = 50000;
+        ts.scan_complete = true;
+        ts.programs = 1;
+        ts.streams = 2;
+        ts.services = 1;
+        ts.has_pat = true;
+        ts.has_pmt = true;
+        ts.has_sdt = true;
+        ts.sync_loss = 0;
+        ts.continuity_errors = 10;
+        ts.scrambled_packets = 0;
+        ts.pcr_max_gap_ms = 40.0;
+    } else {
+        ts.error_message = "文件打不开";
+    }
+    return bundle;
+}
+
+}  // namespace
+
+TEST(QcReportExporterTest, TsTransportFactsLandInJsonEvenWithoutAnyIssue) {
+    const QcExportBundle bundle = MakeTsBundle(true, true);
+
+    JsonValue root;
+    std::string err;
+    ASSERT_TRUE(JsonParse(QcReportExporter::BuildJson(bundle), root, &err)) << err;
+    const JsonValue* metrics = root.Find("metrics");
+    ASSERT_TRUE(metrics != nullptr);
+    const JsonValue* ts = metrics->Find("ts_transport");
+    ASSERT_TRUE(ts != nullptr) << "扫过的 TS 必须在报告里留下传输层数字";
+
+    EXPECT_TRUE(Flag(ts, "analyzed"));
+    EXPECT_EQ(Num(ts, "packet_size"), 188.0);
+    EXPECT_EQ(Num(ts, "scanned_packets"), 50000.0);
+    EXPECT_EQ(Num(ts, "estimated_packets"), 50000.0);
+    EXPECT_TRUE(Flag(ts, "scan_complete"));
+    EXPECT_EQ(Num(ts, "continuity_errors"), 10.0);
+    // 错误率 10/50000 = 0.02%
+    EXPECT_NEAR(Num(ts, "continuity_error_percent"), 0.02, 1e-9);
+    EXPECT_EQ(Num(ts, "pcr_max_gap_ms"), 40.0);
+    EXPECT_TRUE(Flag(ts, "has_pat"));
+
+    // 关键：这份报告里一个问题都没有（MakeBundle(0)），但数字照样在。
+    EXPECT_TRUE(bundle.run.report.issues.empty());
+}
+
+TEST(QcReportExporterTest, TsWithoutTransportResultIsCalledOutNotSilentlySkipped) {
+    const QcExportBundle bundle = MakeTsBundle(true, false);
+
+    JsonValue root;
+    std::string err;
+    ASSERT_TRUE(JsonParse(QcReportExporter::BuildJson(bundle), root, &err)) << err;
+    const JsonValue* ts = root.Find("metrics")->Find("ts_transport");
+    ASSERT_TRUE(ts != nullptr) << "是 TS 但没扫出结论，必须显式出现，不能和'不是 TS'混为一谈";
+    EXPECT_FALSE(Flag(ts, "analyzed"));
+    ASSERT_TRUE(ts->Find("error_message") != nullptr);
+    EXPECT_EQ(ts->Find("error_message")->StringValueOr(), "文件打不开");
+
+    const std::string text = QcReportExporter::BuildText(bundle);
+    EXPECT_NE(text.find("MPEG-TS 传输层"), std::string::npos);
+    EXPECT_NE(text.find("没有证据"), std::string::npos) << "必须说清未命中≠没问题";
+
+    const std::string html = QcReportExporter::BuildHtml(bundle);
+    EXPECT_NE(html.find("MPEG-TS 传输层"), std::string::npos);
+}
+
+TEST(QcReportExporterTest, NonTsReportHasNoTsTransportSection) {
+    // applicable=false（默认）：MP4 之类压根不该有传输层一节，否则每份报告都多一段噪音。
+    const QcExportBundle bundle = MakeBundle(1);
+    EXPECT_FALSE(bundle.run.analysis.ts_transport.applicable);
+
+    JsonValue root;
+    std::string err;
+    ASSERT_TRUE(JsonParse(QcReportExporter::BuildJson(bundle), root, &err)) << err;
+    const JsonValue* metrics = root.Find("metrics");
+    ASSERT_TRUE(metrics != nullptr);
+    EXPECT_TRUE(metrics->Find("ts_transport") == nullptr);
+    EXPECT_EQ(QcReportExporter::BuildText(bundle).find("MPEG-TS 传输层"), std::string::npos);
+    EXPECT_EQ(QcReportExporter::BuildHtml(bundle).find("MPEG-TS 传输层"), std::string::npos);
+}
+
+TEST(QcReportExporterTest, TsTransportSectionAppearsInTextAndHtml) {
+    const QcExportBundle bundle = MakeTsBundle(true, true);
+    const std::string text = QcReportExporter::BuildText(bundle);
+    EXPECT_NE(text.find("MPEG-TS 传输层"), std::string::npos);
+    EXPECT_NE(text.find("扫描范围"), std::string::npos);
+    EXPECT_NE(text.find("已扫全文件"), std::string::npos);
+
+    const std::string html = QcReportExporter::BuildHtml(bundle);
+    EXPECT_NE(html.find("MPEG-TS 传输层"), std::string::npos);
+    EXPECT_NE(html.find("连续计数错误"), std::string::npos);
+}
+
 }  // namespace

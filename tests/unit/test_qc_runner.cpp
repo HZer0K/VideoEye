@@ -249,3 +249,56 @@ TEST(QcRunnerTest, NetworkUriIsNotRejectedAsMissingFile) {
     EXPECT_EQ(result.error.find("文件不存在"), std::string::npos)
         << "网络源被本地存在性闸门拦下了（分类没接通）: " << result.error;
 }
+// ==========================================================================
+// 端到端：AnalysisEngine -> FillTsTransport -> AnalysisResult
+//
+// 容器解析器自己的正确性（真实 TS 上 PAT/PMT/PCR 算得对不对）由
+// ContainerStructureAnalyzerTests 里的真实样用例覆盖。这里锁的是**另一条链路**：
+// FillTsTransport 会不会为这条 TS 真的跑一趟，以及跑完有没有搬进 AnalysisResult。
+//
+// 以前这条链路一个用例都没有：只有契约级的规则测试（手工造 TransportStreamInfo
+// 喂给规则），于是"iformat 判定错了 / 结果忘了搬"这类问题在报告上表现为
+// container.ts.* 全部未命中 —— 和"这条流很干净"长得一模一样。
+// ==========================================================================
+TEST(QcRunnerTest, TsTransportFactsReachTheQcResult) {
+    const fs::path ts = fs::path(VIDEOEYE_CONTAINER_CORPUS_DIR) / "real_h264_aac.ts";
+    if (!fs::exists(ts)) {
+        GTEST_SKIP() << "缺真实样本 real_h264_aac.ts，"
+                        "先跑 tests/corpus/generate_real_corpus.py";
+    }
+
+    QcRunner runner;
+    const QcRunResult result = runner.AnalyzeFile(ts.string(), FastProfile());
+    ASSERT_TRUE(result.ok) << result.error;
+
+    // applicable 与 analyzed 都为真，才代表"这条 TS 真的做过传输层体检"。
+    // 任一为假时，container.ts.* 的未命中只是"没有证据"，不等于"没问题" ——
+    // 报告层正是靠 applicable 把这两种情况分开的（见 A3 的 ts_transport 区块）。
+    const auto& t = result.analysis.ts_transport;
+    EXPECT_TRUE(t.applicable);
+    EXPECT_TRUE(t.analyzed);
+    EXPECT_EQ(t.packet_size, 188);
+    EXPECT_GT(t.scanned_packets, 0);
+    EXPECT_EQ(t.scanned_packets, t.estimated_packets);
+    EXPECT_TRUE(t.scan_complete);
+    EXPECT_TRUE(t.has_pat);
+    EXPECT_TRUE(t.has_pmt);
+    EXPECT_EQ(t.programs, 1);
+    EXPECT_EQ(t.streams, 2);
+    EXPECT_EQ(t.sync_loss, 0);
+}
+
+// 非 TS 输入：applicable 必须为假，报告里不该冒出"MPEG-TS 传输层"一节。
+TEST(QcRunnerTest, TsTransportStaysInapplicableForNonTsInput) {
+    const fs::path avi = fs::path(VIDEOEYE_CONTAINER_CORPUS_DIR) / "real_mpeg4_mp3.avi";
+    if (!fs::exists(avi)) {
+        GTEST_SKIP() << "缺真实样本 real_mpeg4_mp3.avi，"
+                        "先跑 tests/corpus/generate_real_corpus.py";
+    }
+
+    QcRunner runner;
+    const QcRunResult result = runner.AnalyzeFile(avi.string(), FastProfile());
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_FALSE(result.analysis.ts_transport.applicable);
+    EXPECT_FALSE(result.analysis.ts_transport.analyzed);
+}

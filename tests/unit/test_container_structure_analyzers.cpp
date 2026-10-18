@@ -21,6 +21,7 @@
 #include <QByteArray>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QTemporaryDir>
 
 #include "core/analysis/container/AsfStructureAnalyzer.h"
@@ -480,6 +481,131 @@ TEST(TsStructureDepthTest, ReportsScanTruncation) {
         << result.error_message;
     EXPECT_EQ(result.metadata["已扫描包数"], "3");
     EXPECT_NE(result.metadata["扫描是否完整"].find("否"), std::string::npos);
+}
+
+// ==========================================================================
+// 真实封装样本（A1 / A5）
+//
+// 上面所有用例的样本都是逐字节拼出来的。它们能锁住"畸形输入不崩"和"手工构造的
+// PSI 表算得对"，但锁不住一件事：**真实文件上算出来的数是不是对的**。
+// 手工 PSI 只有我们放进去的那几个包，而真实 TS 里还有 PCR、stuffing、PES 分片、
+// 跨包的 section —— 连续计数、PCR 间隔、节目/流计数这些只有在真文件上才有意义。
+//
+// 样本由 tests/corpus/generate_real_corpus.py 用 ffmpeg 生成并入库；
+// generate_real_corpus.py --check（ctest: RealCorpusCheck）负责盯住它们不漂移。
+// ==========================================================================
+
+namespace {
+
+const char* kContainerCorpusDir = VIDEOEYE_CONTAINER_CORPUS_DIR;
+
+// 样本缺失时返回空串（GTEST_SKIP 不能在非 void 函数里用），由调用点决定跳过。
+// 它是 ffmpeg 生成的产物，没生成过的机器上不该 FAIL；生成过的机器上样本随仓库
+// 一起走，这里就是必跑的。
+std::string RealSample(const QString& name) {
+    const QString path = QDir(kContainerCorpusDir).filePath(name);
+    if (!QFileInfo::exists(path)) return std::string();
+    return path.toStdString();
+}
+
+void SkipIfMissing(const std::string& path, const char* name) {
+    if (path.empty()) {
+        GTEST_SKIP() << "缺真实样本 " << name
+                     << "，先跑 tests/corpus/generate_real_corpus.py";
+    }
+}
+
+}  // namespace
+
+TEST(RealContainerSampleTest, TsPacketSizeAndScanRangeMatchTheFile) {
+    const std::string path = RealSample("real_h264_aac.ts");
+    SkipIfMissing(path, "real_h264_aac.ts");
+
+    model::ContainerStructureResult result;
+    ASSERT_TRUE(TsStructureAnalyzer().Analyze(path, result)) << result.error_message;
+    EXPECT_EQ(result.format, model::ContainerFormat::MPEG_TS);
+    EXPECT_TRUE(result.valid);
+
+    // 34028 / 188 = 181 —— 步长与扫描范围必须和文件本身对得上，
+    // "扫了多少包"是后面所有传输层结论的分母，错了会连锁骗人。
+    const model::TransportStreamInfo& ts = result.transport;
+    EXPECT_TRUE(ts.analyzed);
+    EXPECT_EQ(ts.packet_size, 188);
+    EXPECT_EQ(ts.scanned_packets, 181);
+    EXPECT_EQ(ts.estimated_packets, 181);
+    EXPECT_TRUE(ts.scan_complete);
+}
+
+TEST(RealContainerSampleTest, TsProgramAndStreamTablesAreParsed) {
+    const std::string path = RealSample("real_h264_aac.ts");
+    SkipIfMissing(path, "real_h264_aac.ts");
+
+    model::ContainerStructureResult result;
+    ASSERT_TRUE(TsStructureAnalyzer().Analyze(path, result)) << result.error_message;
+
+    // ffmpeg 出的是单节目 + 一路视频 + 一路音频：PAT/PMT 都得有，ES 数是 2。
+    // 手工样本永远测不到"真实 PMT 里混着描述符"的情况。
+    const model::TransportStreamInfo& ts = result.transport;
+    EXPECT_TRUE(ts.has_pat);
+    EXPECT_TRUE(ts.has_pmt);
+    EXPECT_EQ(ts.programs, 1);
+    EXPECT_EQ(ts.streams, 2);
+
+    // 干净文件：不该有失步，也不该有连续计数错误。
+    EXPECT_EQ(ts.sync_loss, 0);
+    EXPECT_EQ(ts.continuity_errors, 0);
+    EXPECT_EQ(ts.scrambled_packets, 0);
+    // PCR 必须采得到，否则"PCR 间隔"类规则永远拿不到数。
+    EXPECT_GT(ts.pcr_max_gap_ms, 0.0);
+}
+
+TEST(RealContainerSampleTest, M2tsUses192ByteStride) {
+    const std::string path = RealSample("real_h264_aac.m2ts");
+    SkipIfMissing(path, "real_h264_aac.m2ts");
+
+    model::ContainerStructureResult result;
+    ASSERT_TRUE(TsStructureAnalyzer().Analyze(path, result)) << result.error_message;
+
+    // M2TS 每个包前面多 4 字节 TP_extra_header。这份样本是从同一份 .ts 派生的
+    // （generate_real_corpus.py 里插的 4 字节），所以内容一致、只有步长不同 ——
+    // 任何差异都只可能来自 192 步长处理本身。34752 / 192 = 181。
+    //
+    // 这条同时是"末尾包被丢"的回归落点：扫描循环以前一律要求读满一个步长
+    // （ReadRaw 短读即失败），而最后一包后面已经没有下一包的 TP_extra 头，
+    // 只剩 188 字节 —— 于是 181 个包只数出 180 个，且 scan_complete 照样报真。
+    // 手工样本永远撞不到这条：它们都能被步长整除。
+    const model::TransportStreamInfo& ts = result.transport;
+    EXPECT_TRUE(ts.analyzed);
+    EXPECT_EQ(ts.packet_size, 192);
+    EXPECT_EQ(ts.scanned_packets, 181);
+    EXPECT_TRUE(ts.has_pat);
+    EXPECT_EQ(ts.sync_loss, 0);
+}
+
+TEST(RealContainerSampleTest, RealAviHasIndexAndStreams) {
+    const std::string path = RealSample("real_mpeg4_mp3.avi");
+    SkipIfMissing(path, "real_mpeg4_mp3.avi");
+
+    model::ContainerStructureResult result;
+    ASSERT_TRUE(AviStructureAnalyzer().Analyze(path, result)) << result.error_message;
+    EXPECT_EQ(result.format, model::ContainerFormat::AVI);
+    EXPECT_TRUE(result.valid);
+    // 真实 AVI 一定有 hdrl / movi / idx1，最小合法样本（"RIFF"+0+"AVI "）没有。
+    EXPECT_FALSE(result.element_tree.empty());
+    EXPECT_FALSE(result.streams.empty());
+    EXPECT_FALSE(result.summary.empty());
+}
+
+TEST(RealContainerSampleTest, RealOggHasPageChain) {
+    const std::string path = RealSample("real_vorbis.ogg");
+    SkipIfMissing(path, "real_vorbis.ogg");
+
+    model::ContainerStructureResult result;
+    ASSERT_TRUE(OggStructureAnalyzer().Analyze(path, result)) << result.error_message;
+    EXPECT_EQ(result.format, model::ContainerFormat::OGG);
+    EXPECT_TRUE(result.valid);
+    EXPECT_FALSE(result.element_tree.empty());
+    EXPECT_FALSE(result.summary.empty());
 }
 
 }  // namespace

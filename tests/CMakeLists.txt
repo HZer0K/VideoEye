@@ -180,6 +180,21 @@ if(VIDEOEYE_PYTHON_EXE)
     # 脚本用自身路径定位 corpus 目录，不依赖 WORKING_DIRECTORY / VIDEOEYE_ROOT。
     add_test(NAME CorpusGeneratorCheck
              COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/corpus/generate_corpus.py --check)
+    # MSVC /showIncludes 前缀守卫：构建目录里 CMake 探测到的前缀，必须与 cl.exe
+    # 此刻实际吐的前缀一致，否则 ninja 剥 /showIncludes 静默失败 —— 改了头文件
+    # 不重编，链接出陈旧对象（Windows 上表现为 0xc0000409 / 0xc0000374 这种
+    # "看起来像代码写坏了"的崩溃，实际是构建产物串味）。钉语言的启动器见
+    # CMakePresets.json 的 windows-base。非 MSVC 环境脚本自己 SKIP，不会误红。
+    add_test(NAME MsvcShowIncludesPrefixTests
+             COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/check_msvc_showincludes_prefix.py)
+    add_test(NAME MsvcShowIncludesPrefixSelfTestTests
+             COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test_check_msvc_showincludes_prefix.py)
+    # 真实封装样本（.ts/.m2ts/.avi/.ogg）的结构校验。与 CorpusGeneratorCheck 的分工：
+    # 那边是逐字节比对的畸形样本，这边是 ffmpeg 产出的真实文件，只能做语义校验
+    # （同步字节步长 / 容器魔数），因为 ffmpeg 输出不是字节可复现的。
+    # 本机没生成过这些样本时脚本自己 SKIP，不阻塞没有 ffmpeg 的机器。
+    add_test(NAME RealCorpusCheck
+             COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/corpus/generate_real_corpus.py --check)
     # ⚠️ 这几个脚本测试都靠「VIDEOEYE_ROOT 或当前目录」当仓库根（见各脚本顶部
     # ROOT = os.environ.get("VIDEOEYE_ROOT") or os.getcwd()）。WORKING_DIRECTORY 已经
     # 钉在源码根，但开发者 shell 里万一 export 了一个**过时**的 VIDEOEYE_ROOT（旧 checkout），
@@ -194,7 +209,9 @@ if(VIDEOEYE_PYTHON_EXE)
                                             LinkVisibilityTests
                                             LinkVisibilitySelfTestTests
                                             QtDomainBorderTests
-                                            QtDomainBorderSelfTestTests PROPERTIES
+                                            QtDomainBorderSelfTestTests
+                                            MsvcShowIncludesPrefixTests
+                                            MsvcShowIncludesPrefixSelfTestTests PROPERTIES
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         ENVIRONMENT "VIDEOEYE_ROOT=${CMAKE_SOURCE_DIR}")
 else()
@@ -732,6 +749,10 @@ videoeye_add_test(test_qc_runner
     unit/test_qc_runner.cpp
 )
 target_link_libraries(test_qc_runner PRIVATE VideoEyeQc)
+# 真实封装样本目录：端到端用例要用它验证 AnalysisEngine -> FillTsTransport
+# 这条链路（容器解析器自己的正确性是另一回事，见 ContainerStructureAnalyzerTests）。
+target_compile_definitions(test_qc_runner PRIVATE
+    VIDEOEYE_CONTAINER_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus/container")
 add_test(NAME QcRunnerTests COMMAND test_qc_runner)
 
 # =================================================
@@ -1060,6 +1081,10 @@ videoeye_add_test(test_container_structure_analyzers
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/TsStructureAnalyzer.cpp
 )
 target_link_libraries(test_container_structure_analyzers PRIVATE Qt6::Core VideoEyeDomain)
+# 真实封装样本（tests/corpus/container/real_*.{ts,m2ts,avi,ogg}）的目录。
+# 上面那批畸形样本只能证明"解析器不崩"，证明不了"真实文件上算出来的数是对的"。
+target_compile_definitions(test_container_structure_analyzers PRIVATE
+    VIDEOEYE_CONTAINER_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus/container")
 add_test(NAME ContainerStructureAnalyzerTests COMMAND test_container_structure_analyzers)
 # =================================================
 # 测试 34：ContainerStructureAnalyzer 四条分发路径的取消传播（复查 P2）
