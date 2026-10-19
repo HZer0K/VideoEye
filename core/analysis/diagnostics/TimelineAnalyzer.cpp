@@ -29,6 +29,7 @@ void TimelineAnalyzer::Reset() {
     result_.packet_delta_ms.name = "packet_delta";
     result_.packet_delta_ms.unit = "ms";
     streams_.clear();
+    last_display_pts_ms_.clear();
     issue_index_.clear();
     issue_total_count_.clear();
     packet_index_ = 0;
@@ -115,13 +116,29 @@ void TimelineAnalyzer::OnPacket(const model::PacketTiming& packet) {
         if (model::IsValidTimestamp(state.last_pts_ms)) {
             const double delta = packet.pts_ms - state.last_pts_ms;
             if (delta < -0.001) {
-                AddIssue(model::TimelineIssueType::PtsNonMonotonic, model::IssueSeverity::Error,
-                         packet.stream_index, packet.pts_ms, -delta, 0.0,
-                         "PTS 回退 " + FormatMs(-delta) + " ms（上一包 " +
-                             FormatMs(state.last_pts_ms) + " ms，本包 " +
-                             FormatMs(packet.pts_ms) + " ms）。",
-                         "重新封装或转码；拼接场景请重算时间戳（-fflags +genpts）。");
-            } else if (delta <= options_.duplicate_tolerance_ms) {
+                // 视频包按**解码顺序**到达，B 帧的 PTS 本来就会回退（0,120,40,80...），
+                // 所以不能直接判成 PTS 非单调 —— 那是每个含 B 帧的文件都会中的假告警。
+                // 但两种回退仍然是真的坏了：
+                //   * DTS 不再递增 —— 解码顺序本身已经乱了；
+                //   * 关键帧回退 —— 关键帧之前的帧都已显示完，它不可能回到过去
+                //     （拼接/断点重置时间戳就是这个形态）。
+                // 显示顺序层面的检查在 OnFrame()，那里用的是解码后的显示时间。
+                const bool reorder_explained_by_dts =
+                    state.media_type == 0 && !packet.key_frame && has_dts &&
+                    model::IsValidTimestamp(state.last_dts_ms) &&
+                    packet.dts_ms > state.last_dts_ms;
+                if (!reorder_explained_by_dts) {
+                    AddIssue(model::TimelineIssueType::PtsNonMonotonic,
+                             model::IssueSeverity::Error, packet.stream_index, packet.pts_ms,
+                             -delta, 0.0,
+                             "PTS 回退 " + FormatMs(-delta) + " ms（上一包 " +
+                                 FormatMs(state.last_pts_ms) + " ms，本包 " +
+                                 FormatMs(packet.pts_ms) + " ms）。",
+                             "重新封装或转码；拼接场景请重算时间戳（-fflags +genpts）。");
+                }
+            } else if (delta >= 0.0 && delta <= options_.duplicate_tolerance_ms) {
+                // 只认"不倒退且几乎不动"的间隔：倒退已由上面那条解释，
+                // 拿它当重复时间戳会把 B 帧重排也报成重复帧。
                 AddIssue(model::TimelineIssueType::DuplicatedTimestamp, model::IssueSeverity::Info,
                          packet.stream_index, packet.pts_ms, delta,
                          options_.duplicate_tolerance_ms,
@@ -197,12 +214,30 @@ void TimelineAnalyzer::OnFrame(const model::FrameTimingInfo& frame) {
     if (!model::IsValidTimestamp(display_ms)) display_ms = frame.pts_ms;
     if (!model::IsValidTimestamp(display_ms)) return;
 
-    if (frame.stream_index >= 0 && result_.video_stream_index < 0) {
+    // 主轨优先：谁先出帧谁当主轨会让调用方给的 preferred 选项失效
+    if (result_.video_stream_index < 0) {
+        result_.video_stream_index = options_.preferred_video_stream_index;
+    }
+    if (result_.video_stream_index < 0 && frame.stream_index >= 0) {
         result_.video_stream_index = frame.stream_index;
     }
     if (frame.key_frame) ++result_.key_frame_count;
     ++result_.frame_count;
     result_.has_data = true;
+
+    // 解码帧已处于**显示顺序**，这里的回退才是真的时间轴异常。
+    // 逐流保存上一帧：多轨交错、或音视频帧共用一个实例时不会互相误判。
+    // 重复间隔交由 FinalizeFrameStats 统一判（两处都记会让同一个间隔被计两次）。
+    const auto previous = last_display_pts_ms_.find(frame.stream_index);
+    if (previous != last_display_pts_ms_.end() && display_ms - previous->second < -0.001) {
+        const double rollback = previous->second - display_ms;
+        AddIssue(model::TimelineIssueType::PtsNonMonotonic, model::IssueSeverity::Error,
+                 frame.stream_index, display_ms, rollback, 0.0,
+                 "显示帧时间戳回退 " + FormatMs(rollback) + " ms（上一帧 " +
+                     FormatMs(previous->second) + " ms）。",
+                 "检查拼接处的显示时间戳，或解码器输出的 best_effort_timestamp。");
+    }
+    last_display_pts_ms_[frame.stream_index] = display_ms;
 
     // 仅记录显示时间；间隔与统计在 Finish() 中统一计算（保证均值/中位数口径一致）
     result_.frame_interval_ms.Add(display_ms, 0.0);
@@ -307,6 +342,15 @@ void TimelineAnalyzer::FinalizeStreamSummary() {
     for (const auto& [index, state] : streams_) {
         if (state.media_type == 0 && video_stream < 0) video_stream = index;
         if (state.media_type == 1 && audio_stream < 0) audio_stream = index;
+    }
+    // 调用方指定的主轨优先（容器 DEFAULT 标记），没有才退回"第一条同类型流"
+    const auto preferred_video = streams_.find(options_.preferred_video_stream_index);
+    if (preferred_video != streams_.end() && preferred_video->second.media_type == 0) {
+        video_stream = preferred_video->first;
+    }
+    const auto preferred_audio = streams_.find(options_.preferred_audio_stream_index);
+    if (preferred_audio != streams_.end() && preferred_audio->second.media_type == 1) {
+        audio_stream = preferred_audio->first;
     }
     if (result_.video_stream_index < 0) result_.video_stream_index = video_stream;
     result_.audio_stream_index = audio_stream;

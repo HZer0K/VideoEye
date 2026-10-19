@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "core/analysis/detail/SeqFileReader.h"
+#include "core/analysis/diagnostics/TimelineAnalyzer.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/media/container/IsobmffParser.h"
 #include "core/media/probe/FileProbe.h"
@@ -25,6 +26,17 @@
 
 namespace {
 using namespace videoeye;
+
+model::PacketTiming Packet(int type, double pts, double dts, bool key_frame = true) {
+    model::PacketTiming packet;
+    packet.stream_index = 0;
+    packet.media_type = type;
+    packet.pts_ms = pts;
+    packet.dts_ms = dts;
+    packet.duration_ms = 40.0;
+    packet.key_frame = key_frame;
+    return packet;
+}
 
 // 中文目录 + 中文文件名：这是用户最常见的"打不开"场景（开发机的英文代码页下
 // 一切正常，只有换到 GBK/其它代码页时才复现）。
@@ -54,6 +66,97 @@ protected:
     std::filesystem::path directory_;
 };
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// 时间轴：B 帧重排不是"PTS 非单调"
+//
+// 逐包看到的是**解码顺序**：0,120,40,80,240,160,200。真正的显示顺序是单调的，
+// 原来这套序列会让每个含 B 帧的文件都报 PtsNonMonotonic + DuplicatedTimestamp。
+// ---------------------------------------------------------------------------
+TEST(ParserReviewTimeline, BFrameDecodeOrderDoesNotReportPtsRollback) {
+    TimelineAnalyzer analyzer;
+    const double pts[] = {0, 120, 40, 80, 240, 160, 200};
+    for (int i = 0; i < 7; ++i) {
+        // DTS 单调递增 = 解码顺序正常，回退可由重排解释
+        analyzer.OnPacket(Packet(0, pts[i], (i - 2) * 40.0, false));
+    }
+    analyzer.Finish();
+    EXPECT_FALSE(analyzer.result().HasIssue(model::TimelineIssueType::PtsNonMonotonic));
+    EXPECT_FALSE(analyzer.result().HasIssue(model::TimelineIssueType::DuplicatedTimestamp));
+    EXPECT_FALSE(analyzer.result().HasIssue(model::TimelineIssueType::DtsNonMonotonic));
+}
+
+// 解码顺序本身坏了：DTS 回退，PTS 回退也照报
+TEST(ParserReviewTimeline, DtsRollbackStillReportsError) {
+    TimelineAnalyzer analyzer;
+    analyzer.OnPacket(Packet(0, 120, 80, false));
+    analyzer.OnPacket(Packet(0, 80, 40, false));
+    analyzer.Finish();
+    EXPECT_TRUE(analyzer.result().HasIssue(model::TimelineIssueType::DtsNonMonotonic));
+    EXPECT_TRUE(analyzer.result().HasIssue(model::TimelineIssueType::PtsNonMonotonic));
+}
+
+// 关键帧回退无法用重排解释（拼接/断点重置时间戳）：这就是拼接诊断的入口
+TEST(ParserReviewTimeline, KeyframePtsRollbackIsStillReported) {
+    TimelineAnalyzer analyzer;
+    analyzer.OnPacket(Packet(0, 1000, 1000, true));
+    analyzer.OnPacket(Packet(0, 0, 1040, true));
+    analyzer.Finish();
+    EXPECT_TRUE(analyzer.result().HasIssue(model::TimelineIssueType::PtsNonMonotonic));
+}
+
+// 没有 DTS 就没有"解码顺序"的证据，不能假定包序等于显示序
+TEST(ParserReviewTimeline, VideoWithoutDtsStillReportsRollback) {
+    TimelineAnalyzer analyzer;
+    analyzer.OnPacket(Packet(0, 120, model::kNoTimestamp, false));
+    analyzer.OnPacket(Packet(0, 40, model::kNoTimestamp, false));
+    analyzer.Finish();
+    EXPECT_TRUE(analyzer.result().HasIssue(model::TimelineIssueType::PtsNonMonotonic));
+}
+
+TEST(ParserReviewTimeline, AudioPtsRollbackStillReportsError) {
+    TimelineAnalyzer analyzer;
+    analyzer.OnPacket(Packet(1, 80, 0));
+    analyzer.OnPacket(Packet(1, 40, 40));
+    analyzer.Finish();
+    EXPECT_TRUE(analyzer.result().HasIssue(model::TimelineIssueType::PtsNonMonotonic));
+}
+
+// 解码帧按显示顺序：这里的回退才是真异常，且必须按流分别比较
+TEST(ParserReviewTimeline, DisplayOrderRollbackIsDetectedPerStream) {
+    TimelineAnalyzer analyzer;
+    model::FrameTimingInfo frame;
+
+    frame.stream_index = 0;
+    frame.display_ms = 100;
+    analyzer.OnFrame(frame);
+    frame.stream_index = 1;
+    frame.display_ms = 0;
+    analyzer.OnFrame(frame);
+    EXPECT_FALSE(analyzer.result().HasIssue(model::TimelineIssueType::PtsNonMonotonic));
+
+    frame.stream_index = 0;
+    frame.display_ms = 60;
+    analyzer.OnFrame(frame);
+    EXPECT_EQ(analyzer.result().CountOf(model::TimelineIssueType::PtsNonMonotonic), 1);
+}
+
+// 包级摘要要用调用方指定的主轨，而不是"流号最小的那条"
+TEST(ParserReviewTimeline, SelectedVideoIsUsedForSummary) {
+    TimelineAnalyzer analyzer;
+    TimelineAnalyzer::Options options;
+    options.preferred_video_stream_index = 1;
+    analyzer.SetOptions(options);
+
+    analyzer.OnPacket(Packet(0, 900, 900));
+    auto primary = Packet(0, 100, 100);
+    primary.stream_index = 1;
+    analyzer.OnPacket(primary);
+    analyzer.Finish();
+
+    EXPECT_EQ(analyzer.result().video_stream_index, 1);
+    EXPECT_DOUBLE_EQ(analyzer.result().video_start_ms, 100.0);
+}
 
 TEST_F(UnicodeFiles, SequentialReaderOpensUtf8Paths) {
     const auto path = Write(u8"\u89c6\u9891.bin", "test-data");

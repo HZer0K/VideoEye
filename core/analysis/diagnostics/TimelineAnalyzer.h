@@ -35,6 +35,12 @@ public:
         // 内存交给文件大小决定。0 仍保留语义"不限制"，但只能由调用方显式开启
         // （见 AnalysisOptions::timeline_max_curve_points）。
         int64_t max_curve_points = 200000;
+        // 主轨（-1 = 让分析器自己挑第一条同类型流）。由调用方按容器的
+        // DEFAULT 标记算好传进来：容器里第一条视频流常常是内嵌封面。
+        // 新字段一律加在末尾：这个 struct 是公开的，插在中间会挪动已有字段的
+        // 位置（位置化初始化与 ABI 都会跟着变）。
+        int preferred_video_stream_index = -1;
+        int preferred_audio_stream_index = -1;
     };
 
     TimelineAnalyzer() = default;
@@ -78,6 +84,8 @@ private:
     Options options_;
     model::TimelineAnalysisResult result_;
     std::map<int, StreamState> streams_;
+    // 解码帧的显示顺序检查：按流各存上一帧（多轨交错时不能共用一份）
+    std::map<int, double> last_display_pts_ms_;
     std::map<int, std::map<int, size_t>> issue_index_;   // type -> (stream -> index in issues)
     std::map<int, int> issue_total_count_;               // type -> 累计条数（含被限流丢弃的）
     int packet_index_ = 0;

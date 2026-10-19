@@ -92,6 +92,8 @@ void AnalysisPipeline::Prepare(AVFormatContext* fmt, model::AnalysisResult& resu
     // 分析器自己的默认值已经是有限值，这里给的是"上限可配"的入口。
     {
         TimelineAnalyzer::Options timeline_options;
+        timeline_options.preferred_video_stream_index = video_stream_index_;
+        timeline_options.preferred_audio_stream_index = audio_stream_index_;
         timeline_options.max_curve_points = options_.timeline_max_curve_points;
         timeline_.SetOptions(timeline_options);
     }
