@@ -49,13 +49,16 @@ struct AnalysisResult {
 
     // 流级
     std::vector<StreamDigest> streams;
+    // 主轨（由容器 DEFAULT 标记 + 类型选出，封面图不参与）。-1 = 没有该类流。
+    int primary_video_stream_index = -1;
+    int primary_audio_stream_index = -1;
 
     // 时间序列指标
     MetricSeries total_bitrate_kbps;
     MetricSeries video_bitrate_kbps;
     MetricSeries video_fps;
 
-    // GOP / 关键帧（demux 层的轻量统计，供 QC 规则与报告使用）
+    // GOP / 关键帧（主视频轨的 demux 层轻量统计，供 QC 规则与报告使用）
     std::vector<double> gop_intervals_seconds;
     std::vector<int> gop_frame_sizes;
     double max_gop_interval_seconds = 0.0;

@@ -20,8 +20,8 @@
 //   的成本与收益不成正比，所以保留整块文本 —— 但同样受上限与取消约束。
 //
 // 依赖边界（与同目录的 ManifestText.h 一致）:
-//   只用 C++17 标准库。不碰 Qt / FFmpeg；也不用 std::filesystem ——
-//   在老一些的 GCC 上要多链一个 -lstdc++fs，为取个文件大小不值得。
+//   只用 C++17 标准库 + core/domain 的路径转换，不碰 Qt / FFmpeg。
+//   文件路径按 UTF-8 接收，经 ToNativePath 转成原生路径。
 
 #include <atomic>
 #include <cstddef>
@@ -30,6 +30,7 @@
 #include <string>
 #include <vector>
 
+#include "core/domain/io/Utf8Path.h"
 #include "core/media/streaming/ManifestText.h"
 
 namespace videoeye {
@@ -121,7 +122,7 @@ ManifestReadStatus ReadManifestLinesImpl(const std::string& path, const Manifest
     if (FileSizeOf(path, size) && size > 0 && static_cast<uint64_t>(size) > options.max_bytes)
         return ManifestReadStatus::TooLarge;
 
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(ToNativePath(path), std::ios::binary);
     if (!file)
         return ManifestReadStatus::OpenFailed;
 
@@ -245,7 +246,7 @@ inline ManifestReadStatus ReadManifestText(const std::string& path, const Manife
     if (FileSizeOf(path, size) && size > 0 && static_cast<uint64_t>(size) > options.max_bytes)
         return ManifestReadStatus::TooLarge;
 
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(ToNativePath(path), std::ios::binary);
     if (!file)
         return ManifestReadStatus::OpenFailed;
 

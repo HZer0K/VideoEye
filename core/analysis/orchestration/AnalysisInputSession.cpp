@@ -15,7 +15,9 @@ extern "C" {
 // 具体分析器只出现在这里: 它们是本 cpp 的执行者，不进会话的公开头 ——
 // 改一个分析器不该让所有 include 了 AnalysisInputSession.h 的地方重编。
 #include "core/analysis/container/Mp4SampleTableAnalyzer.h"
+#include "core/analysis/detail/AnalysisStreamSelection.h"
 #include "core/analysis/orchestration/AnalysisTerminalState.h"
+#include "core/domain/io/Utf8Path.h"
 #include "core/media/probe/FileProbe.h"
 #include "infrastructure/logging/Logger.h"
 #include "infrastructure/logging/ScopedTimer.h"
@@ -43,7 +45,7 @@ bool IsMp4Family(const std::string& format_name) {
 
 // 扫描顶层 box 顺序，判断 moov 是否在 mdat 之后（未 faststart）
 bool ScanMoovAfterMdat(const std::string& path) {
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(ToNativePath(path), std::ios::binary);
     if (!file) return false;
 
     int64_t offset = 0;
@@ -203,6 +205,9 @@ void AnalysisInputSession::FillContainerFacts(model::AnalysisResult& result) {
 
 void AnalysisInputSession::BuildStreamDigests(model::AnalysisResult& result) {
     // ---- 流摘要 ----
+    // 主轨在这里就定下来：Probe 结束、还没逐包扫描时，报告/UI 就已经要按主轨取摘要。
+    result.primary_video_stream_index = SelectAnalysisStream(fmt_, AVMEDIA_TYPE_VIDEO);
+    result.primary_audio_stream_index = SelectAnalysisStream(fmt_, AVMEDIA_TYPE_AUDIO);
     const double file_duration = result.duration_seconds;
     result.streams.reserve(fmt_->nb_streams);
     for (unsigned i = 0; i < fmt_->nb_streams; ++i) {
@@ -210,6 +215,7 @@ void AnalysisInputSession::BuildStreamDigests(model::AnalysisResult& result) {
         model::StreamDigest digest;
         digest.index = static_cast<int>(i);
         digest.media_type = static_cast<int>(st->codecpar->codec_type);
+        digest.attached_picture = (st->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0;
         const AVCodecID codec_id = st->codecpar->codec_id;
         const char* codec_name = avcodec_get_name(codec_id);
         digest.codec_name = codec_name ? codec_name : "";

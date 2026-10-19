@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "core/analysis/detail/AnalysisStreamSelection.h"
 #include "infrastructure/logging/ScopedTimer.h"
 
 extern "C" {
@@ -82,7 +83,7 @@ ScanOutcome PacketScanLoop::Run(AnalysisPipeline& pipeline, ScanBuckets& buckets
 
         AVStream* st = fmt_->streams[pkt_->stream_index];
         const double tb = av_q2d(st->time_base);
-        const bool is_video = (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO);
+        const bool is_video = IsAnalysisVideoStream(st);
         const bool has_pts = (pkt_->pts != AV_NOPTS_VALUE);
         const double ts = has_pts ? static_cast<double>(pkt_->pts) * tb : -1.0;
 

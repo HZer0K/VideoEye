@@ -36,6 +36,7 @@ const char* ToString(AnalysisStatus status);
 struct StreamDigest {
     int index = -1;
     int media_type = -1;          // AVMediaType
+    bool attached_picture = false;  // 封面图片：不计入可播放视频轨，也不进视频 QC
     std::string codec_name;
     std::string profile_name;
     int width = 0;

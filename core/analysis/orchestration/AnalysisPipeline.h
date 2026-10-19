@@ -52,7 +52,8 @@ extern "C" {
 namespace videoeye {
 
 // 音频 QC 的解码通路：解码器 + 到 float planar 的转换（swr）。
-// 解码器输出本身就是 FLTP 时直接用 AVFrame::data，省掉一次无谓的拷贝。
+// 解码器输出本身就是 FLTP 时直接用 AVFrame::extended_data，省掉一次无谓的拷贝
+// （data[] 只有 8 个指针，超过 8 声道时后面全是 nullptr）。
 struct AudioQcProbe {
     bool ready = false;
     bool rate_changed = false;
@@ -183,9 +184,9 @@ public:
     bool audio_rate_changed() const { return audio_probe_.rate_changed; }
 
 private:
-    // 只读 extradata 的码流解析（不解码）。只取第一条有 extradata 的视频流。
+    // 只读 extradata 的码流解析（不解码）。优先主视频，跳过封面图片。
     void PrepareBitstream(AVFormatContext* fmt, model::AnalysisResult& result);
-    int FirstStreamOfType(AVFormatContext* fmt, AVMediaType type);    // 解码后归一为 float planar 再喂给 AudioQcAnalyzer（内部按 100 ms 步进出块）
+    // 解码后归一为 float planar 再喂给 AudioQcAnalyzer（内部按 100 ms 步进出块）
     void FeedAudioFrame(AVFrame* frame);
 
     const AnalysisOptions& options_;
@@ -218,10 +219,9 @@ private:
     // 视频流时基（FlushFrameProbe 把 flush 出来的帧 pts 换算成秒用）
     double video_time_base_ = 0.0;
 
-    // GOP 统计的中间态：跨包累积，所以只能是成员
+    // GOP 统计的中间态：跨包累积、按流分别记账，所以只能是成员
     std::vector<int64_t> frames_since_key_;
-    double last_key_ts_ = -1.0;
-    bool has_key_ = false;
+    std::vector<double> last_key_ts_;
 };
 
 }  // namespace videoeye

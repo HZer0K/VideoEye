@@ -26,6 +26,8 @@
 #include <fstream>
 #include <string>
 
+#include "core/domain/io/Utf8Path.h"
+
 namespace videoeye {
 
 class SeqFileReader {
@@ -38,9 +40,10 @@ public:
     SeqFileReader& operator=(const SeqFileReader&) = delete;
 
     /// std::ifstream + open(std::ios::ReadOnly)：返回是否打开成功。
+    /// path 按 UTF-8 接收，经 ToNativePath 转成原生路径（见 core/domain/io/Utf8Path.h）。
     bool Open(const std::string& path) {
         Clear();
-        stream_.open(path, std::ios::in | std::ios::binary);
+        stream_.open(ToNativePath(path), std::ios::in | std::ios::binary);
         return stream_.is_open();
     }
     void Close() {

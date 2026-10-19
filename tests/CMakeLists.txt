@@ -1749,3 +1749,26 @@ add_test(NAME PlayerSignalBusTests COMMAND test_player_signal_buses)
 videoeye_add_test(test_analysis_page_catalog unit/test_analysis_page_catalog.cpp)
 target_link_libraries(test_analysis_page_catalog PRIVATE Qt6::Core)
 add_test(NAME AnalysisPageCatalogTests COMMAND test_analysis_page_catalog)
+
+# =================================================
+# 测试 64：解析层回归（UTF-8 路径 / 主轨选择 / 时间轴降噪 / 封面图）
+#
+# TimelineAnalyzer.cpp 直接编进本目标，不链 VideoEyeAnalysis ——
+# 它只依赖 core/domain，拉整层会让这批"纯解析"用例跟着 FFmpeg 一起编。
+# =================================================
+videoeye_add_test(test_parser_review_regressions
+    unit/test_parser_review_regressions.cpp
+    ../core/analysis/diagnostics/TimelineAnalyzer.cpp
+)
+target_link_libraries(test_parser_review_regressions PRIVATE VideoEyeMedia VideoEyeDomain)
+add_test(NAME ParserReviewRegressionTests COMMAND test_parser_review_regressions)
+
+# =================================================
+# 测试 65：分析流水线边界（封面图 / 按流 GOP / 容器位深未知 / >8 声道）
+#
+# 这条用例要跑真实的 demux + 解码 + 重采样，所以链整个 VideoEyeAnalysis
+# （FFmpeg 的 include 与库从它的 PUBLIC 依赖传来）。
+# =================================================
+videoeye_add_test(test_analysis_pipeline_edges unit/test_analysis_pipeline_edges.cpp)
+target_link_libraries(test_analysis_pipeline_edges PRIVATE VideoEyeAnalysis)
+add_test(NAME AnalysisPipelineEdgeTests COMMAND test_analysis_pipeline_edges)

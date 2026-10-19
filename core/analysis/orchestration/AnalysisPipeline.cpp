@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "core/analysis/codec/BitstreamAnalyzer.h"
+#include "core/analysis/detail/AnalysisStreamSelection.h"
 #include "infrastructure/logging/Logger.h"
 
 extern "C" {
@@ -44,11 +45,12 @@ ContainerMetadata ContainerMetadataFromStream(const AVStream* st,
                           : std::string();
     meta.width = st->codecpar->width;
     meta.height = st->codecpar->height;
-    // bits_per_raw_sample 为 0 时按 8bit：容器层没有更细的信息，
-    // 码流层解出 10bit 时报不一致才是对的。
+    // bits_per_raw_sample 为 0 表示"容器没说"，不能当成 8bit：
+    // 10bit H.264/HEVC 的 codecpar 也常常是 0，硬填 8 会给每个 10bit 文件
+    // 制造一条假的不一致告警。0 由码流层按"未知"跳过比对。
     meta.bit_depth = (st->codecpar->bits_per_raw_sample > 0)
                          ? st->codecpar->bits_per_raw_sample
-                         : 8;
+                         : 0;
     meta.color_primaries = st->codecpar->color_primaries;
     meta.transfer_characteristics = st->codecpar->color_trc;
     meta.matrix_coefficients = st->codecpar->color_space;
@@ -60,17 +62,17 @@ ContainerMetadata ContainerMetadataFromStream(const AVStream* st,
 
 AnalysisPipeline::AnalysisPipeline(const AnalysisOptions& options) : options_(options) {}
 
-int AnalysisPipeline::FirstStreamOfType(AVFormatContext* fmt, AVMediaType type) {
-    for (unsigned i = 0; i < fmt->nb_streams; ++i) {
-        if (fmt->streams[i]->codecpar->codec_type == type) return static_cast<int>(i);
-    }
-    return -1;
-}
-
 // ---- 扫描之前 ----
 
 void AnalysisPipeline::Prepare(AVFormatContext* fmt, model::AnalysisResult& result,
                               double file_duration) {
+    // 主轨一次定下来，各维度共用：封面图（ATTACHED_PIC）不算视频轨，
+    // 有多条视频轨时以容器的 DEFAULT 标记为准（av_find_best_stream 的口径）。
+    video_stream_index_ = SelectAnalysisStream(fmt, AVMEDIA_TYPE_VIDEO);
+    audio_stream_index_ = SelectAnalysisStream(fmt, AVMEDIA_TYPE_AUDIO);
+    result.primary_video_stream_index = video_stream_index_;
+    result.primary_audio_stream_index = audio_stream_index_;
+
     // 字幕 / 时码 / 辅助数据轨：只在存在对应流时才有实际工作量（内部按类型过滤）
     if (options_.analyze_subtitle) {
         subtitle_.Reset(options_.subtitle_options);
@@ -97,18 +99,13 @@ void AnalysisPipeline::Prepare(AVFormatContext* fmt, model::AnalysisResult& resu
     PrepareBitstream(fmt, result);
 
     // ---- 色彩与 HDR 元数据分析（读 AVCodecParameters + coded_side_data，几乎零成本）----
-    if (options_.analyze_color_hdr) {
-        color_video_stream_index_ = FirstStreamOfType(fmt, AVMEDIA_TYPE_VIDEO);
-    }
+    color_video_stream_index_ = options_.analyze_color_hdr ? video_stream_index_ : -1;
     if (options_.analyze_color_hdr && color_video_stream_index_ >= 0) {
         color_hdr_.Reset(options_.color_hdr_options);
         color_hdr_.UpdateFromStream(fmt->streams[color_video_stream_index_]);
     }
 
     // ---- 码率与 GOP 深度分析准备 ----
-    if (options_.analyze_bitrate_gop) {
-        video_stream_index_ = FirstStreamOfType(fmt, AVMEDIA_TYPE_VIDEO);
-    }
     if (options_.analyze_bitrate_gop && video_stream_index_ >= 0) {
         video_time_base_ = av_q2d(fmt->streams[video_stream_index_]->time_base);
         bitrate_gop_.Reset(options_.bitrate_gop_options);
@@ -148,9 +145,6 @@ void AnalysisPipeline::Prepare(AVFormatContext* fmt, model::AnalysisResult& resu
     }
 
     // ---- 音频 QC 准备（解码 + 归一到 float planar）----
-    if (options_.analyze_audio_qc) {
-        audio_stream_index_ = FirstStreamOfType(fmt, AVMEDIA_TYPE_AUDIO);
-    }
     audio_time_base_ =
         (audio_stream_index_ >= 0) ? av_q2d(fmt->streams[audio_stream_index_]->time_base) : 0.0;
 
@@ -221,10 +215,12 @@ void AnalysisPipeline::Prepare(AVFormatContext* fmt, model::AnalysisResult& resu
 
     // GOP 统计按流号计数，大小随流数；逐包分发时不再重复分配
     frames_since_key_.assign(static_cast<size_t>(fmt->nb_streams), 0);
+    last_key_ts_.assign(static_cast<size_t>(fmt->nb_streams), -1.0);
 }
 
 // 编码码流解析（只读 extradata，不解码；必须在 avformat_close_input 之前）。
-// 只取第一条视频流：诊断关心的是主视频的编码参数，多视频流取第一条足够。
+// 优先分析主视频轨；主轨的编码没有解析器时，允许退到其它视频轨（并保留
+// stream_index，让报告能说明到底解析的是哪一条）。封面图不参与。
 //
 // extradata 为空时（TS / 裸流 / fMP4 媒体分片）转成"带内探测"：
 // 参数集只写在码流里，Prepare 阶段还没读到包，所以这里只登记流号，
@@ -236,9 +232,19 @@ void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisRes
     inband_probe_.Reset(0);
     if (!options_.analyze_bitstream) return;
 
+    // 主视频排最前，其余视频轨按流号跟在后面
+    std::vector<unsigned> video_order;
+    if (video_stream_index_ >= 0) {
+        video_order.push_back(static_cast<unsigned>(video_stream_index_));
+    }
     for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+        if (static_cast<int>(i) != video_stream_index_ && IsAnalysisVideoStream(fmt->streams[i])) {
+            video_order.push_back(i);
+        }
+    }
+
+    for (unsigned i : video_order) {
         AVStream* st = fmt->streams[i];
-        if (st->codecpar->codec_type != AVMEDIA_TYPE_VIDEO) continue;
         if (st->codecpar->extradata == nullptr || st->codecpar->extradata_size <= 0) continue;
 
         BitstreamAnalyzer bitstream;
@@ -264,9 +270,8 @@ void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisRes
     // ---- 带内兜底：extradata 缺失的封装 ----
     // 注意用 continue 而不是 return：第一条视频流可能是没有解析器的编码
     // （如 MPEG-2），但第二条是 H.264 —— 那种文件仍然应该能分析。
-    for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+    for (unsigned i : video_order) {
         AVStream* st = fmt->streams[i];
-        if (st->codecpar->codec_type != AVMEDIA_TYPE_VIDEO) continue;
         if (st->codecpar->extradata != nullptr && st->codecpar->extradata_size > 0) continue;
 
         inband_probe_.Reset(static_cast<int>(st->codecpar->codec_id));
@@ -286,7 +291,9 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt,
                                 model::AnalysisResult& result, int64_t packet_index) {
     AVStream* st = fmt->streams[pkt->stream_index];
     const double tb = av_q2d(st->time_base);
-    const bool is_video = (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO);
+    // 封面图走的是"一帧 MJPEG 视频流"，不该进任何视频统计（GOP/码率/色彩/时间轴）
+    if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && !IsAnalysisVideoStream(st)) return;
+    const bool is_video = IsAnalysisVideoStream(st);
     const bool has_pts = (pkt->pts != AV_NOPTS_VALUE);
     const double ts = has_pts ? static_cast<double>(pkt->pts) * tb : -1.0;
 
@@ -333,8 +340,12 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt,
         if (pkt->flags & AV_PKT_FLAG_KEY) {
             result.key_frame_count += 1;
             result.streams[pkt->stream_index].key_frame_count += 1;
-            if (has_key_ && ts >= 0.0 && last_key_ts_ >= 0.0) {
-                const double gap = ts - last_key_ts_;
+            // GOP 间隔按流各自记账：多视频轨交错到达时，共用一份"上一关键帧时间"
+            // 会把两条轨的间隔算成互相之间的半截 GOP。
+            double& last_key_ts = last_key_ts_[pkt->stream_index];
+            const bool is_primary = pkt->stream_index == video_stream_index_;
+            if (is_primary && ts >= 0.0 && last_key_ts >= 0.0) {
+                const double gap = ts - last_key_ts;
                 if (gap > 0.0) {
                     result.gop_intervals_seconds.push_back(gap);
                     result.gop_frame_sizes.push_back(
@@ -344,13 +355,13 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt,
                     }
                 }
             }
-            if (frames_since_key_[pkt->stream_index] > result.max_gop_frames) {
+            // max_gop_frames 与 gop_intervals_seconds 同口径：只统计主视频轨
+            if (is_primary && frames_since_key_[pkt->stream_index] > result.max_gop_frames) {
                 result.max_gop_frames = static_cast<int>(frames_since_key_[pkt->stream_index]);
             }
             frames_since_key_[pkt->stream_index] = 0;
             if (ts >= 0.0) {
-                last_key_ts_ = ts;
-                has_key_ = true;
+                last_key_ts = ts;
             }
         }
 
@@ -562,7 +573,9 @@ void AnalysisPipeline::FlushFrameProbe() {
 void AnalysisPipeline::FeedAudioFrame(AVFrame* frame) {
     if (!audio_probe_.ready || frame == nullptr || frame->nb_samples <= 0) return;
     const int channels = frame->ch_layout.nb_channels;
-    if (channels <= 0) return;
+    // extended_data 在声道数 > AV_NUM_DATA_POINTERS(8) 时才是完整的那一份：
+    // data[] 只有前 8 个平面，9~N 声道全是 nullptr（12 声道 S16P 实测如此）。
+    if (channels <= 0 || frame->extended_data == nullptr) return;
     if (frame->sample_rate != audio_probe_.sample_rate || channels != audio_probe_.channels) {
         audio_probe_.rate_changed = true;   // 参数中途变化（罕见），该帧丢弃
         return;
@@ -574,7 +587,8 @@ void AnalysisPipeline::FeedAudioFrame(AVFrame* frame) {
     std::vector<const float*> planes(static_cast<size_t>(channels));
     if (frame->format == AV_SAMPLE_FMT_FLTP) {
         for (int c = 0; c < channels; ++c) {
-            planes[static_cast<size_t>(c)] = reinterpret_cast<const float*>(frame->data[c]);
+            planes[static_cast<size_t>(c)] =
+                reinterpret_cast<const float*>(frame->extended_data[c]);
         }
         audio_qc_.OnSamples(planes.data(), frame->nb_samples, ts);
         return;
@@ -582,7 +596,7 @@ void AnalysisPipeline::FeedAudioFrame(AVFrame* frame) {
     if (audio_probe_.swr == nullptr || audio_probe_.out_data == nullptr) return;
 
     int got = swr_convert(audio_probe_.swr, audio_probe_.out_data, audio_probe_.out_frames,
-                          const_cast<const uint8_t**>(frame->data), frame->nb_samples);
+                          const_cast<const uint8_t**>(frame->extended_data), frame->nb_samples);
     while (got > 0) {
         for (int c = 0; c < channels; ++c) {
             planes[static_cast<size_t>(c)] =

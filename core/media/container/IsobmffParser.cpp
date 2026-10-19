@@ -6,6 +6,8 @@
 #include <cstring>
 #include <fstream>
 
+#include "core/domain/io/Utf8Path.h"
+
 #include "infrastructure/concurrency/Cancellation.h"
 
 #include "core/media/detail/ParserLimits.h"
@@ -159,7 +161,7 @@ std::string HandlerName(const uint8_t* p, uint64_t n) {
 // 简单的顺序读文件封装：解析全程只有前向 + 少量回退，直接用 ifstream 足够
 class FileReader {
 public:
-    explicit FileReader(const std::string& path) : in_(path, std::ios::binary) {
+    explicit FileReader(const std::string& path) : in_(ToNativePath(path), std::ios::binary) {
     }
     bool good() const {
         return in_.good();

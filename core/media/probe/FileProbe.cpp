@@ -2,12 +2,14 @@
 
 #include <fstream>
 
+#include "core/domain/io/Utf8Path.h"
+
 namespace videoeye {
 
 namespace {
 
 bool ReadHeaderBytes(const std::string& path, size_t count, std::string& out) {
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream f(ToNativePath(path), std::ios::binary);
     if (!f) return false;
     out.resize(count);
     f.read(out.data(), static_cast<std::streamsize>(count));

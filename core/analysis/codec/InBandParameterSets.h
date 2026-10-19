@@ -42,7 +42,11 @@ public:
         int max_retries = 32;
     };
 
-    void Reset(int codec_id, const Options& options = Options{});
+    // 默认值写成函数体而不是默认实参：GCC 在类还没定义完时无法求值 Options{}
+    // （嵌套类的默认成员初始化器尚未就绪），会直接报
+    // "default member initializer for 'max_bytes' required before the end of its enclosing class"。
+    void Reset(int codec_id) { Reset(codec_id, Options{}); }
+    void Reset(int codec_id, const Options& options);
 
     // 容器层快照，供"码流 vs 容器"一致性比对。必须在第一次 Feed() 之前设置。
     void SetContainerMetadata(const ContainerMetadata& metadata);

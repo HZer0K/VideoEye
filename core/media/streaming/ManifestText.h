@@ -7,7 +7,7 @@
 //   语法不同但都要"按 KEY 取值、支持引号、把字符串转数字"。两边各写一遍必然走样，
 //   统一放这里，header-only（inline），不额外产生编译单元。
 //
-// 依赖边界：只用 C++17 标准库，不碰 Qt / FFmpeg，纯逻辑可单测。
+// 依赖边界：只用 C++17 标准库 + core/domain 的路径转换，不碰 Qt / FFmpeg，纯逻辑可单测。
 
 #include <cctype>
 #include <cstdint>
@@ -15,6 +15,8 @@
 #include <map>
 #include <string>
 #include <vector>
+
+#include "core/domain/io/Utf8Path.h"
 
 namespace videoeye {
 namespace manifest {
@@ -146,13 +148,14 @@ inline std::string ExtensionOf(const std::string& path) {
     return ToLower(path.substr(dot + 1, (end > dot + 1) ? (end - dot - 1) : std::string::npos));
 }
 
-// 取文件大小，同时兼作"是否存在"判定。用 ifstream 而非 std::filesystem，
-// 免得在老一些的 GCC 上额外链 -lstdc++fs。
+// 取文件大小，同时兼作"是否存在"判定。路径按 UTF-8 接收，
+// 由 ToNativePath 转成原生路径（Windows 上直接传 std::string 会按 ANSI 代码页解释，
+// 中文目录下的清单文件会打不开）。
 inline bool FileSizeOf(const std::string& path, int64_t& size_out) {
     size_out = 0;
     if (path.empty())
         return false;
-    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    std::ifstream f(ToNativePath(path), std::ios::binary | std::ios::ate);
     if (!f)
         return false;
     const std::streamoff sz = f.tellg();
