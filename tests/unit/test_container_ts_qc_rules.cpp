@@ -257,3 +257,62 @@ TEST(TsQcRulesTest, DefaultRulesContainTsFamily) {
         EXPECT_TRUE(model::FindQcRule(rules, id) != nullptr) << "规则表里漏了 " << id;
     }
 }
+
+// ---------------- container.missing_video 的适用范围 ----------------
+//
+// 视频轨统计已经把封面图（ATTACHED_PIC）排除掉了，于是"没有可播放视频轨"的
+// 纯音频文件会命中这条 Warning（-5 分）。批量 QC 里混进 mp3/m4a 很常见，
+// 这类误扣会把评分与结论一起带偏，所以规则要按容器类型收敛。
+
+TEST(TsQcRulesTest, AudioOnlyFileDoesNotGetPenalizedForMissingVideo) {
+    QcRuleEngine engine;
+    for (const char* ext : {"mp3", "m4a", "flac", "wav"}) {
+        model::AnalysisResult result;
+        result.file_path = std::string("audio.") + ext;
+        result.file_extension = ext;
+        result.container_format = (std::string(ext) == "mp3") ? "mp3" : "mov,mp4,m4a,3gp";
+        result.duration_seconds = 30.0;
+        model::StreamDigest audio;
+        audio.index = 0;
+        audio.media_type = 1;
+        result.streams.push_back(audio);
+        EXPECT_FALSE(HasIssue(engine.Evaluate(result), "container.missing_video"))
+            << ext << " 是纯音频容器，不该报缺少视频流";
+    }
+}
+
+TEST(TsQcRulesTest, VideoFileThatLostItsVideoStreamStillFires) {
+    QcRuleEngine engine;
+    model::AnalysisResult result;
+    result.file_path = "broken.mp4";
+    result.file_extension = "mp4";
+    result.container_format = "mov,mp4,m4a,3gp,3g2,mj2";
+    result.duration_seconds = 30.0;
+    model::StreamDigest audio;
+    audio.index = 0;
+    audio.media_type = 1;
+    result.streams.push_back(audio);
+    model::DiagnosticIssue issue;
+    ASSERT_TRUE(HasIssue(engine.Evaluate(result), "container.missing_video", &issue));
+    EXPECT_EQ(issue.severity, model::IssueSeverity::Warning);
+}
+
+TEST(TsQcRulesTest, CoverOnlyM4aIsTreatedAsAudioOnly) {
+    QcRuleEngine engine;
+    model::AnalysisResult result;
+    result.file_path = "song.m4a";
+    result.file_extension = "m4a";
+    result.container_format = "mov,mp4,m4a,3gp,3g2,mj2";
+    result.duration_seconds = 180.0;
+    model::StreamDigest cover;
+    cover.index = 0;
+    cover.media_type = 0;
+    cover.attached_picture = true;
+    result.streams.push_back(cover);
+    model::StreamDigest audio;
+    audio.index = 1;
+    audio.media_type = 1;
+    result.streams.push_back(audio);
+    EXPECT_EQ(result.VideoStreamCount(), 0) << "封面不该算视频轨";
+    EXPECT_FALSE(HasIssue(engine.Evaluate(result), "container.missing_video"));
+}

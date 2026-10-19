@@ -122,7 +122,11 @@ std::string QcReportExporter::BuildHtml(const QcExportBundle& bundle) {
     out << "  <table>\n    <tr><th>#</th><th>类型</th><th>编码</th><th>Profile</th>"
            "<th>分辨率 / 采样率</th><th>码率</th><th>帧数 / 包数</th></tr>\n";
     for (const auto& stream : run.analysis.streams) {
-        const char* type = stream.IsVideo() ? "视频" : (stream.IsAudio() ? "音频" : "其他");
+        // 封面图在流列表里是"视频"类型的一帧 MJPEG，但用户看到的不是画面
+        const char* type = stream.attached_picture
+                                ? "封面"
+                                : (stream.IsVideo() ? "视频"
+                                                    : (stream.IsAudio() ? "音频" : "其他"));
         const std::string resolution = stream.IsVideo()
             ? (std::to_string(stream.width) + "x" + std::to_string(stream.height))
             : (std::to_string(stream.sample_rate) + " Hz / " +

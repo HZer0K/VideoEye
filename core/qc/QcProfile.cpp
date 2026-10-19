@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <fstream>
 
+#include "core/domain/io/Utf8Path.h"
 #include "infrastructure/serialization/Json.h"
 
 namespace videoeye {
@@ -325,14 +326,14 @@ bool ParseQcProfileJson(const std::string& json, QcProfile& out, std::string& er
 }
 
 bool SaveQcProfileToFile(const std::string& path, const QcProfile& profile) {
-    std::ofstream file(path, std::ios::binary);
+    std::ofstream file(ToNativePath(path), std::ios::binary);
     if (!file.is_open()) return false;
     file << SerializeQcProfile(profile, true);
     return file.good();
 }
 
 bool LoadQcProfileFromFile(const std::string& path, QcProfile& out, std::string& error) {
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(ToNativePath(path), std::ios::binary);
     if (!file.is_open()) {
         error = "无法打开模板文件: " + path;
         return false;

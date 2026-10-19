@@ -40,7 +40,10 @@ JsonValue BuildIssueObject(const model::DiagnosticIssue& issue) {
 
 JsonValue BuildStreamObject(const model::StreamDigest& stream) {
     JsonValue object = JsonValue::MakeObject();
-    const char* type = stream.IsVideo() ? "video" : (stream.IsAudio() ? "audio" : "other");
+    const char* type = stream.attached_picture
+                           ? "cover"
+                           : (stream.IsVideo() ? "video"
+                                               : (stream.IsAudio() ? "audio" : "other"));
     object.Set("index", JNumber(static_cast<double>(stream.index)));
     object.Set("type", JText(type));
     object.Set("codec_name", JText(stream.codec_name));

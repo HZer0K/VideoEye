@@ -772,7 +772,10 @@ void BitstreamPanel::BuildComparisonTable(const model::BitstreamAnalysisResult& 
         const bool comparable = reliable_for_comparison && has_container &&
                                 container_value > 0 && bitstream_value > 0;
         AddRow(field,
-               has_container ? QString::number(container_value) : tr("—"),
+               // 0 = 容器没说（如 bits_per_raw_sample 缺失），显示"—"而不是 0：
+               // 否则 10bit 文件会显示"容器 0bit / 码流 10bit"这种看不懂的行
+               (has_container && container_value > 0) ? QString::number(container_value)
+                                                      : tr("—"),
                bitstream_value > 0 ? QString::number(bitstream_value) : tr("未解析"),
                comparable, container_value == bitstream_value);
     };

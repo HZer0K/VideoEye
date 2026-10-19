@@ -1,5 +1,6 @@
 #include "core/reporting/StreamStatsExporter.h"
 
+#include "core/domain/io/Utf8Path.h"
 #include "infrastructure/logging/Logger.h"
 
 #include <algorithm>
@@ -17,7 +18,7 @@ bool StreamStatsExporter::ExportTextReport(
     const model::StreamStats& stats,
     const std::string& video_file) {
 
-    std::ofstream file(filename);
+    std::ofstream file(ToNativePath(filename));
     if (!file.is_open()) {
         LOG_ERROR("无法创建报告文件: " + filename);
         return false;
@@ -81,7 +82,7 @@ bool StreamStatsExporter::ExportCSV(
     const std::string& filename,
     const std::vector<model::StreamStats>& stats_history) {
 
-    std::ofstream file(filename);
+    std::ofstream file(ToNativePath(filename));
     if (!file.is_open()) {
         LOG_ERROR("无法创建CSV文件: " + filename);
         return false;
@@ -119,7 +120,7 @@ bool StreamStatsExporter::ExportJSON(
     const model::StreamStats& stats,
     const std::string& video_file) {
 
-    std::ofstream file(filename);
+    std::ofstream file(ToNativePath(filename));
     if (!file.is_open()) {
         LOG_ERROR("无法创建JSON文件: " + filename);
         return false;
@@ -159,7 +160,7 @@ bool StreamStatsExporter::ExportHTMLReport(
     const std::vector<int>& bitrate_history,
     const std::string& video_file) {
 
-    std::ofstream file(filename);
+    std::ofstream file(ToNativePath(filename));
     if (!file.is_open()) {
         LOG_ERROR("无法创建HTML文件: " + filename);
         return false;

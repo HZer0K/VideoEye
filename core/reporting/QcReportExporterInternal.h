@@ -13,6 +13,7 @@
 #include <fstream>
 #include <string>
 
+#include "core/domain/io/Utf8Path.h"
 #include "infrastructure/logging/Logger.h"
 
 namespace videoeye {
@@ -42,7 +43,7 @@ inline std::string SingleLine(const std::string& text) {
 }
 
 inline bool WriteUtf8File(const std::string& path, const std::string& content) {
-    std::ofstream file(path, std::ios::binary);
+    std::ofstream file(ToNativePath(path), std::ios::binary);
     if (!file.is_open()) {
         LOG_ERROR("无法写入报告文件: " + path);
         return false;
