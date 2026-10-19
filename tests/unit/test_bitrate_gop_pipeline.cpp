@@ -219,7 +219,14 @@ void ExpectNoDoubleCounting(const AnalysisResult& result, const DemuxFacts& fact
 
     // 码率汇总自洽（曲线非空、峰值不低于均值(5% 容差)、未触发降采样）
     EXPECT_GT(gop.avg_bitrate_kbps, 0.0);
-    EXPECT_GE(gop.peak_bitrate_kbps, gop.avg_bitrate_kbps - 1e-6);
+    // 峰值不低于均值是**统计意义上**的不变量，这里不能写成严格 >=：
+    // peak 是滑动窗口口径（窗口内字节 / 窗口长度），avg 是 total_bytes / duration。
+    // 本样本只有 40 帧、2 个 I 帧，而 x264 的 keyint(25 帧) 恰好等于默认窗口长度
+    // (1.0s)，于是每个窗口恒定只含 1 个 I 帧，avg 按全时长分摊却相当于 1.25 个 ——
+    // 短样本下 peak 会略低于 avg（FFmpeg 7.1 + x264 实测 101.3 vs 103.9，约 -2.5%）。
+    // 字节分布还随本地 x264/FFmpeg 版本浮动（Win 17418B vs Linux 20786B），所以给
+    // 5% 容差：仍然能兜住真正的异常（重复计数 / 窗口口径写错会让偏差远大于此）。
+    EXPECT_GE(gop.peak_bitrate_kbps, gop.avg_bitrate_kbps * 0.95);
     EXPECT_FALSE(gop.bitrate_points.empty());
     EXPECT_FALSE(gop.downsampled);
     // avg ≈ total_bytes * 8 / 1000 / duration（duration 由首末帧时间戳推得，10% 容差）
