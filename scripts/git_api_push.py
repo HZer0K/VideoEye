@@ -79,24 +79,39 @@ def build_opener(token: str):
     return opener
 
 
-def request(opener, method: str, path: str, payload=None):
+def warmup(opener) -> None:
+    """Probe the API first: the proxy drops the first requests of a session."""
+    for _ in range(5):
+        try:
+            request(opener, "GET", "/rate_limit", retries=1)
+            return
+        except ApiError:
+            time.sleep(3)
+
+
+def request(opener, method: str, path: str, payload=None, retries: int = 10):
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    req = urllib.request.Request(API + path, data=data, method=method)
-    if data is not None:
-        req.add_header("Content-Type", "application/json")
     last = None
-    for attempt in range(3):
+    for attempt in range(retries):
+        req = urllib.request.Request(API + path, data=data, method=method)
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
         try:
             with opener.open(req, timeout=180) as resp:
                 raw = resp.read()
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", "replace")
+            if e.code in (400, 429, 500, 502, 503, 504) and attempt < retries - 1:
+                # the proxy mangles the first requests of a session; retry
+                last = f"{e.code}: {body[:200]}"
+                time.sleep(3)
+                continue
             raise ApiError(f"{method} {path} -> {e.code}: {body[:800]}") from None
         except (urllib.error.URLError, OSError) as e:
             last = e
-            time.sleep(3 * (attempt + 1))
-    raise ApiError(f"{method} {path} -> transport error: {last}") from None
+            time.sleep(3)
+    raise ApiError(f"{method} {path} -> {last}") from None
 
 
 def iso8601(ts: int, tz: str) -> str:
@@ -194,6 +209,7 @@ def main() -> int:
 
     token = get_credential_token(args.token_file)
     opener = build_opener(token)
+    warmup(opener)
 
     # parent of the first commit is the current remote tip
     remote_parent = git("rev-parse", revs[0] + "^").strip()
