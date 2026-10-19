@@ -74,7 +74,11 @@ fs::path MakeScratchDir(const std::string& name) {
 fs::path WriteGarbageMediaFile(const fs::path& dir, const std::string& file_name) {
     const fs::path file = dir / file_name;
     std::ofstream out(file, std::ios::binary);
-    const std::string chunk = "VIDEOEYE-QC-RUNNER-NOT-A-MEDIA-FILE-0123456789\n";  // 无任何容器 magic
+    // 用全 0 而不是可读文本：重复的 ASCII 文本会被 amrwb demuxer **成功识别**成音频
+    // （FFmpeg 7.1 上实测 format=amrwb，一路解出 89243 个包 / 1906 秒），于是引擎
+    // 走的是成功路径，"引擎失败"这条用例就测不到了。样本必须让所有平台的所有
+    // demuxer 都探测失败，全 0 在 FFmpeg 7.1 与 8.1 上都是 Invalid data。
+    const std::string chunk(4096, '\0');
     const int chunk_count = (4 * 1024 * 1024) / static_cast<int>(chunk.size());
     for (int i = 0; i < chunk_count; ++i) {
         out.write(chunk.data(), static_cast<std::streamsize>(chunk.size()));

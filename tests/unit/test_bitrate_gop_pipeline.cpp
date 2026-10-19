@@ -217,7 +217,7 @@ void ExpectNoDoubleCounting(const AnalysisResult& result, const DemuxFacts& fact
     for (const auto& g : gop.gops) gop_frames += g.frame_count;
     EXPECT_EQ(gop_frames, gop.total_frames);
 
-    // 码率汇总自洽（曲线非空、峰值不低于均值、未触发降采样）
+    // 码率汇总自洽（曲线非空、峰值不低于均值(5% 容差)、未触发降采样）
     EXPECT_GT(gop.avg_bitrate_kbps, 0.0);
     EXPECT_GE(gop.peak_bitrate_kbps, gop.avg_bitrate_kbps - 1e-6);
     EXPECT_FALSE(gop.bitrate_points.empty());
