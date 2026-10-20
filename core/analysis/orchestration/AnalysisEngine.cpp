@@ -248,7 +248,7 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     // 都不收尾。同样是按了取消，两条路给出的结果不一样。
 
     // 关闭上下文之前的最后一眼：部分封装的 HDR 元数据要读到包后才补进 codecpar。
-    pipeline.BeforeClose(fmt);
+    pipeline.BeforeClose(fmt, result);
     // flush 音频解码器与 swr 缓存里残留的样本（不碰 fmt，因此可以先于关闭执行）。
     pipeline.FlushAudio();
     // flush 帧类型探测解码器：EOF 时仍压在解码器里的帧（重排序延迟）在此收干净，

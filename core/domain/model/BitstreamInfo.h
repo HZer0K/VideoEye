@@ -10,6 +10,8 @@
 //                            Av1SequenceHeaderInfo / Av1CodecConfigInfo
 //   * VvcBitstreamInfo.h  —— VvcNalUnitInfo / VvcVuiInfo / VvcVpsInfo /
 //                            VvcSpsInfo / VvcPpsInfo / VvcCodecConfigInfo
+//   * Vp9BitstreamInfo.h  —— Vp9SequenceHeaderInfo / Vp9CodecConfigInfo
+//                            （VP9 无参数集，序列头 = 关键帧 uncompressed header）
 // 本头保留下来，继续提供跨 codec 的统一汇总类型 BitstreamAnalysisResult，并
 // 重新 include 上述子头。类型名 / 字段名 / 语义一律不变，只挪了物理位置，因此
 // 现有所有 #include "core/domain/model/BitstreamInfo.h" 的 TU 无需改动。
@@ -20,10 +22,12 @@
 
 #include "core/domain/model/AnalysisCapability.h"
 #include "core/domain/model/BitstreamUnits.h"
+#include "core/domain/model/SliceSeiInfo.h"
 #include "core/domain/model/H264BitstreamInfo.h"
 #include "core/domain/model/HevcBitstreamInfo.h"
 #include "core/domain/model/Av1BitstreamInfo.h"
 #include "core/domain/model/VvcBitstreamInfo.h"
+#include "core/domain/model/Vp9BitstreamInfo.h"
 
 namespace videoeye {
 namespace model {
@@ -61,6 +65,7 @@ struct BitstreamAnalysisResult {
     int color_primaries = 0;
     int transfer_characteristics = 0;
     int matrix_coefficients = 0;
+    int color_range = 0;              // 0=未知/未设置（VP9 vpcC 会写它）
 
     // 容器层（AVCodecParameters）的同名字段快照，供 UI 对比表两侧并列展示。
     // 由 BitstreamAnalyzer::SetContainerMetadata() 在 Analyze() 时写入；
@@ -79,6 +84,7 @@ struct BitstreamAnalysisResult {
     bool has_hevc = false;
     bool has_av1 = false;
     bool has_vvc = false;
+    bool has_vp9 = false;
     
     // H.264 信息
     H264SpsInfo h264_sps;
@@ -100,10 +106,28 @@ struct BitstreamAnalysisResult {
     VvcPpsInfo vvc_pps;
     VvcCodecConfigInfo vvc_config;  // vvcC 里解析出的（SPS/VPS 都缺 PTL 时的兜底）
     bool has_vvc_config = false;
+
+    // VP9 信息
+    //
+    // VP9 没有参数集：av1_seq_header 那样的独立单元不存在，序列配置写在
+    // 每个关键帧的 uncompressed header 里（见 Vp9BitstreamParser.h 的注释）。
+    //   * 带关键帧的码流（WebM / IVF / 带内）→ 从帧头解，落在 vp9_seq_header
+    //   * MP4 的 vpcC（extradata）→ 落在 vp9_config，只有 profile/level/位深/色度
+    Vp9SequenceHeaderInfo vp9_seq_header;
+    Vp9CodecConfigInfo vp9_config;      // vpcC 里解析出的（无关键帧时的兜底）
+    bool has_vp9_config = false;
     
     // 提取的 NAL/OBU 列表
     std::vector<NalUnit> nal_units;
     std::vector<ObuUnit> obu_units;
+
+    // slice header / SEI 的自研解析（C4，见 core/analysis/codec/VideoEsInspector.h）。
+    //
+    // ❗ 这一块**不是** Analyze() 产出的：参数集在 extradata 里、slice 与 SEI 只在
+    // 码流包里，两者来源不同。它由 AnalysisPipeline 逐包喂给 VideoEsInspector
+    // 之后再回填到这里 —— 所以打开分析结果时它可能还是 analyzed=false。
+    // 消费方必须先看 analyzed，别把它和 bitstream 参数集的可信度混为一谈。
+    SliceSeiSummary slice_sei;
     
     // 不一致警告（与容器 metadata 对比）
     struct Inconsistency {

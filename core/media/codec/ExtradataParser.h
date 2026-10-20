@@ -63,7 +63,8 @@ private:
     static ExtradataResult ParseHvcC(const uint8_t* data, size_t size);
     static ExtradataResult ParseVvcC(const uint8_t* data, size_t size);
     static ExtradataResult ParseAv1C(const uint8_t* data, size_t size);
-
+    // vpcC（VP9 的 MP4 配置记录）。WebM 的 VP9 没有 extradata，走带内关键帧解析。
+    static ExtradataResult ParseVpcC(const uint8_t* data, size_t size);
     // H.264 NAL 单元解析
     static NalUnit ParseH264NalUnit(const uint8_t* data, size_t size);
 

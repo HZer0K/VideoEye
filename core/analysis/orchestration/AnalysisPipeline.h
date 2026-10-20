@@ -31,6 +31,7 @@
 
 #include "core/analysis/AnalysisOptions.h"
 #include "core/analysis/codec/InBandParameterSets.h"
+#include "core/analysis/codec/VideoEsInspector.h"
 #include "core/analysis/diagnostics/AuxDataAnalyzer.h"
 #include "core/analysis/diagnostics/SubtitleAnalyzer.h"
 #include "core/analysis/diagnostics/TimecodeAnalyzer.h"
@@ -157,7 +158,9 @@ public:
 
     // ---- 扫描结束后的三个钩子（顺序见文件头注释）----
     // 关闭输入上下文之前的最后一眼：部分封装的 HDR 元数据要读到包后才补进 codecpar。
-    void BeforeClose(AVFormatContext* fmt);
+    // 关上下文之前跑：部分封装的 HDR 元数据要读到包后才补进 codecpar。
+    // result 用于回填 slice/SEI 巡检的汇总结果（见 FinishVideoEsInspection）。
+    void BeforeClose(AVFormatContext* fmt, model::AnalysisResult& result);
     // flush 音频解码器与 swr 缓存里残留的样本（不碰 AVFormatContext）。
     void FlushAudio();
     // flush 帧类型探测解码器：把 EOF 时仍压在解码器里的帧收干净（见文件头注释）。
@@ -189,6 +192,12 @@ private:
     // 解码后归一为 float planar 再喂给 AudioQcAnalyzer（内部按 100 ms 步进出块）
     void FeedAudioFrame(AVFrame* frame);
 
+    // ---- slice/SEI 巡检（C4）----
+    // 把已解析的参数集注入巡检器：H.264 的 slice QP 需要 PPS 的 init_qp 作基准。
+    // 带内路径在 OnPacket 里解出参数集后要**再调一次**。
+    void ApplyParameterSetsToEsInspector(const model::BitstreamAnalysisResult& bs);
+    void FinishVideoEsInspection(model::AnalysisResult& result);
+
     const AnalysisOptions& options_;
 
     // 诊断维度
@@ -211,10 +220,23 @@ private:
     int video_stream_index_ = -1;
     int audio_stream_index_ = -1;
     int color_video_stream_index_ = -1;
-    // 带内参数集探测（extradata 为空的封装：TS / 裸流 / fMP4 媒体分片）。
-    // inband_stream_index_ < 0 表示没在探测、或者已经收工（成功或放弃）。
-    InBandParameterSetProbe inband_probe_;
-    int inband_stream_index_ = -1;
+    // 带内参数集探测（extradata 为空的封装：TS / 裸流 / fMP4 媒体分片 / WebM-VP9）。
+    //
+    // ❗ **每条视频轨一个 probe**（C3）：多节目 TS 的每条节目是独立 PID、独立参数集，
+    // 一条 probe 只能跟一条流 —— 以前只有一个成员，第二条节目永远没人分析。
+    // 各自独立收工：成功或放弃后立刻从列表里摘掉，不让后面的包白跑一遍循环。
+    struct InBandProbeSlot {
+        int stream_index = -1;
+        InBandParameterSetProbe probe;
+    };
+    std::vector<InBandProbeSlot> inband_probes_;
+    // 还有 probe 在跑时为 true：逐包分发的短路判据（比每次 empty() 便宜，
+    // 也避免"列表空了还进循环"这个容易复发的手误）
+    bool bitstream_inband_active_ = false;
+    // slice header / SEI 巡检（C4）：逐包喂主视频轨的字节，收尾汇总成 QP 分布与
+    // SEI 元数据。与上面的参数集解析是两条独立链路（输入来源不同），别合并。
+    VideoEsInspector es_inspector_;
+    bool es_inspector_configured_ = false;
     double audio_time_base_ = 0.0;
     // 视频流时基（FlushFrameProbe 把 flush 出来的帧 pts 换算成秒用）
     double video_time_base_ = 0.0;

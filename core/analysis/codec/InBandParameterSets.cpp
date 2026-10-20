@@ -48,6 +48,10 @@ void InBandParameterSetProbe::Reset(int codec_id, const Options& options) {
         case AV_CODEC_ID_HEVC:
         case AV_CODEC_ID_VVC:
         case AV_CODEC_ID_AV1:
+        // VP9：**不攒包**。一个包就是一个访问单元（一张图），而帧头要么在第 1 个
+        // 包里、要么只在这包所在的关键帧里。把 P 帧字节攒到一块只会让 LooksLikeKeyFrame
+        // 更晚找回同步。所以 VP9 走"逐包单独试"的分支（见 Feed()）。
+        case AV_CODEC_ID_VP9:
             enabled_ = true;
             break;
         default:
@@ -115,6 +119,34 @@ bool InBandParameterSetProbe::ScanAnnexBForParameterSet(const uint8_t* data, siz
     return found;
 }
 
+// VP9 走另一套策略：**一个包就是一张图，攒 buffer 毫无意义**，所以直接把当前包
+// 交给 analyzer（而不是把 buffer_ 喂进去）。P 帧的字节攒到一块既拼不出关键帧，
+// 还会让 LooksLikeKeyFrame() 在错位的数据里徒劳地找同步码。
+//
+// 给包数单独设一个比 max_packets（默认 4000）小得多的上限：WebM/IVF 的第一个
+// video block 必然是关键帧，正常情况第 1 个包就命中；连扫 256 个包还没命中，
+// 基本可以断定"这段流找不到关键帧"（或者它根本不是 VP9）。
+bool InBandParameterSetProbe::TryParseVp9(const uint8_t* data, size_t size) {
+    constexpr int kMaxVp9ProbePackets = 256;
+
+    BitstreamAnalyzer analyzer;
+    if (has_container_metadata_) {
+        analyzer.SetContainerMetadata(container_metadata_);
+    }
+    result_ = analyzer.AnalyzeInBand(data, size, codec_id_);
+    if (!result_.parameter_set_source.empty()) {
+        done_ = true;
+        return true;
+    }
+    // 攒了这么多包还没碰上关键帧，继续扫下去只是白烧 CPU
+    if (packets_ >= kMaxVp9ProbePackets) {
+        given_up_ = true;
+        give_up_reason_ = "已扫描 " + std::to_string(kMaxVp9ProbePackets) +
+                          " 个 VP9 包仍未见到关键帧（序列配置只写在关键帧头部）";
+    }
+    return false;
+}
+
 bool InBandParameterSetProbe::Feed(const uint8_t* data, size_t size) {
     if (done_) return true;
     if (!enabled_ || given_up_) return false;
@@ -127,6 +159,12 @@ bool InBandParameterSetProbe::Feed(const uint8_t* data, size_t size) {
         return false;
     }
     ++packets_;
+
+    // VP9 与 AnnexB/AV1 两条路径不共享"攒到足够多字节再试一次"的假设，
+    // 必须在接触 buffer_ 之前就把它分出去。
+    if (static_cast<AVCodecID>(codec_id_) == AV_CODEC_ID_VP9) {
+        return TryParseVp9(data, size);
+    }
 
     const size_t room =
         (options_.max_bytes > buffer_.size()) ? options_.max_bytes - buffer_.size() : 0;

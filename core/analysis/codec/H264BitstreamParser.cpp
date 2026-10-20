@@ -312,7 +312,11 @@ model::H264SpsInfo H264BitstreamParser::ParseFromNalUnit(const videoeye::NalUnit
             return sps; // 规范范围 0..12
         }
     } else if (sps.pic_order_cnt_type == 1) {
-        reader.SkipBits(1); // delta_pic_order_always_zero_flag
+        // 以前只 SkipBits(1) 把 delta_pic_order_always_zero_flag 丢掉；
+        // 它是 slice_header() 里决定"有没有 delta_pic_order_cnt[]"的判据之一
+        // （另一半在 PPS 的 bottom_field_pic_order_in_frame_present_flag）——
+        // 不解 slice 时用不到，解 slice QP 时缺它就整体错位，所以存下来。
+        sps.delta_pic_order_always_zero_flag = reader.ReadBit();
         reader.ReadSE();    // offset_for_non_ref_pic
         reader.ReadSE();    // offset_for_top_to_bottom_field
         const uint32_t cycle = reader.ReadUE();
@@ -407,7 +411,10 @@ model::H264PpsInfo H264BitstreamParser::ParsePpsFromNalUnit(const videoeye::NalU
     pps.seq_parameter_set_id = static_cast<int>(reader.ReadUE());
 
     reader.SkipBits(1); // entropy_coding_mode_flag
-    reader.SkipBits(1); // bottom_field_pic_order_in_frame_present_flag
+    // bottom_field_pic_order_in_frame_present_flag：slice_header() 里要不要
+    // 读 delta_pic_order_cnt_bottom / delta_pic_order_cnt[1] 的一半判据。
+    // 以前直接 SkipBits 丢掉 —— 不解 slice 时无所谓，解 slice QP 时缺它必错位。
+    pps.bottom_field_pic_order_in_frame_present_flag = reader.ReadBit();
 
     const uint32_t num_slice_groups_minus1 = reader.ReadUE();
     // slice group 数量是后面循环的上界（map_type==6 时还要按它算 slice_group_id 的位宽），

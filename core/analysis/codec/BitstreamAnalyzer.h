@@ -41,13 +41,16 @@ struct ContainerMetadata {
 // 不要传 0/1/2/3 之类的自定义编号：历史上这里用过自定义枚举，结果调用方
 // 一旦写错就静默落到 default 分支，什么都不解析。
 //
-// 当前覆盖范围（能力口径见 core/domain/model/AnalysisCapability.h）：
-//   - H.264 : SPS + PPS（含 VUI 色彩/时基）—— Supported
-//   - HEVC  : VPS + SPS + PPS —— Supported
-//   - AV1   : Sequence Header OBU（含 color_config）；MP4 里通常只有 av1C，
-//             此时仅位深/采样结构可信（TypeOnly）
-//   - VVC   : VPS/SPS/PPS/vvcC 均可解析（含真实编码器回归），但畸形码流验证
-//             不充分 —— 按方案 A 标 Partial，partial=true，不参与严格一致性比对
+    // 当前覆盖范围（能力口径见 core/domain/model/AnalysisCapability.h）：
+    //   - H.264 : SPS + PPS（含 VUI 色彩/时基）—— Supported
+    //   - HEVC  : VPS + SPS + PPS —— Supported
+    //   - AV1   : Sequence Header OBU（含 color_config）；MP4 里通常只有 av1C，
+    //             此时仅位深/采样结构可信（TypeOnly）
+    //   - VP9   : **没有参数集**。关键信息写在每个关键帧的 uncompressed header
+    //             里（Vp9BitstreamParser）：WebM/IVF/带内走这条路；MP4 的 vpcC
+    //             只有 profile/level/位深/色度，给不出分辨率（TypeOnly）
+    //   - VVC   : VPS/SPS/PPS/vvcC 均可解析（含真实编码器回归），但畸形码流验证
+    //             不充分 —— 按方案 A 标 Partial，partial=true，不参与严格一致性比对
 // ==========================================================================
 class BitstreamAnalyzer {
 public:
@@ -93,12 +96,14 @@ private:
     void ParseH264(const uint8_t* data, size_t size);
     void ParseHevc(const uint8_t* data, size_t size);
     void ParseAv1(const uint8_t* data, size_t size);
+    void ParseVp9(const uint8_t* data, size_t size);
     void ParseVvc(const uint8_t* data, size_t size);
 
     // 把参数集里的宽高/位深/色彩映射到统一字段（供与容器层对比）
     void ApplyH264Summary();
     void ApplyHevcSummary();
     void ApplyAv1Summary();
+    void ApplyVp9Summary();
     void ApplyVvcSummary();
 
     // 收纳 media 层解析出的 NAL / OBU：内部留 utils 版喂 codec parser，
@@ -111,6 +116,10 @@ private:
     // 从 vvcC 配置记录填充 vvc_config（MP4 的 VVC extradata 只有 vvcC，
     // 没有 VPS，profile/level/位深只能从这里拿）
     void PopulateVvcConfig(const videoeye::ExtradataResult::CodecConfig& cfg);
+
+    // 从 vpcC 配置记录填充 vp9_config（MP4 的 VP9 extradata 只有 vpcC；
+    // WebM 的 VP9 干脆没有 extradata —— 那种文件走 AnalyzeInBand() 解关键帧）
+    void PopulateVp9Config(const videoeye::ExtradataResult::CodecConfig& cfg);
 
     // 把容器侧数值写进 result_（UI 对比表的左侧列）。必须在 result_ 重置之后调用。
     void ApplyContainerSnapshot();
@@ -146,6 +155,9 @@ private:
     std::vector<videoeye::ObuUnit> obu_units_;
     ContainerMetadata container_metadata_;
     bool has_container_metadata_ = false;
+    // VP9 专用：本批输入里是否出现过关键帧（见 SawParameterSetInput 的 VP9 分支）。
+    // 在 IngestUnits() 里随每次 Analyze* 重置。
+    bool saw_vp9_keyframe_input_ = false;
 };
 
 } // namespace videoeye

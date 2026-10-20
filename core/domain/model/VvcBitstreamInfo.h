@@ -172,7 +172,16 @@ struct VvcSpsInfo {
     std::string LevelString() const;
 };
 
-// VVC PPS：只解析头部到 subpic id 映射为止（后面的 tile/slice 划分面板用不到）
+// VVC PPS（VVC 规范 7.3.2.4 pic_parameter_set_rbsp）
+//
+// 2026-10-20 之前只解析到 subpic_id_mapping（连后面那批 QP / 权重预测 / 去块
+// 开关都没碰）。现在解到 rbsp_trailing_bits 之前的全部主干字段。
+//
+// ⚠️ 后置字段的可信度Tile 取决于 tile/slice 划分段是否被正确跳过 —— 那段
+// （pps_log2_ctu_size ... pps_loop_filter_across_slices_flag）分支最多，
+// 解析完会用 pps_parse_depth 标明实际到了哪一档，
+// 并用 each field 的取值范围做越界校验；不可信时字段归零而不是整个 PPS 作废
+// （前半段的宽高 / conformance window 与后半段是否被跳过无关）。
 struct VvcPpsInfo {
     bool present = false;
 
@@ -186,17 +195,77 @@ struct VvcPpsInfo {
     int pps_conf_win_right_offset = 0;
     int pps_conf_win_top_offset = 0;
     int pps_conf_win_bottom_offset = 0;
+    bool pps_scaling_window_explicit_signalling_flag = false;
+    int pps_scaling_win_left_offset = 0;
+    int pps_scaling_win_right_offset = 0;
+    int pps_scaling_win_top_offset = 0;
+    int pps_scaling_win_bottom_offset = 0;
     bool pps_output_flag_present_flag = false;
     bool pps_no_pic_partition_flag = false;
     bool pps_subpic_id_mapping_present_flag = false;
     int pps_num_subpics_minus1 = 0;
 
+    // ---- Tile / slice 划分（7.3.2.4 后半段）----
+    int pps_log2_ctu_size_minus5 = 0;
+    int pps_exp_ctu_width_minus1 = 0;
+    int pps_exp_ctu_height_minus1 = 0;
+    int pps_num_exp_tile_columns_minus1 = 0;
+    int pps_num_exp_tile_rows_minus1 = 0;
+    bool pps_loop_filter_across_tiles_flag = false;
+    bool pps_rect_slice_flag = false;
+    bool pps_single_slice_per_subpic_flag = false;
+    int pps_num_slices_in_pic_minus1 = 0;
+    bool pps_loop_filter_across_slices_flag = false;
+
+    // ---- QP / 预测权重 / 去块开关（面板真正会展示的那几个）----
+    bool pps_cabac_init_present_flag = false;
+    bool pps_rpl1_idx_present_flag = false;
+    int pps_num_ref_idx_default_active_minus1[2] = {0, 0};
+    bool pps_weighted_pred_flag = false;
+    bool pps_weighted_bipred_flag = false;
+    bool pps_ref_wraparound_enabled_flag = false;
+    int pps_pic_init_qp_minus26 = 0;   // 实际 init QP = 26 + 该值
+    bool pps_cu_qp_delta_enabled_flag = false;
+    bool pps_chroma_tool_offsets_present_flag = false;
+    int pps_cb_qp_offset = 0;
+    int pps_cr_qp_offset = 0;
+    bool pps_joint_cbcr_qp_offset_present_flag = false;
+    int pps_joint_cbcr_qp_offset_value = 0;
+    bool pps_slice_chroma_qp_offsets_present_flag = false;
+    bool pps_cu_chroma_qp_offset_list_enabled_flag = false;
+    int pps_chroma_qp_offset_list_len_minus1 = 0;
+
+    bool pps_deblocking_filter_control_present_flag = false;
+    bool pps_deblocking_filter_override_enabled_flag = false;
+    bool pps_deblocking_filter_disabled_flag = false;
+    int pps_beta_offset_div2 = 0;
+    int pps_tc_offset_div2 = 0;
+
+    bool pps_picture_header_extension_present_flag = false;
+    bool pps_slice_header_extension_present_flag = false;
+    bool pps_extension_flag = false;
+
+    // 本次实际解到的位置 —— UI 用它决定"QP 那几个字段要不要显示"。
+    //   kSubpicIdMapping : 只到 subpic id 映射（老口径，后置字段全部未知）
+    //   kFull            : 解到 rbsp_trailing_bits 之前的所有主干字段
+    enum class ParseDepth { SubpicIdMapping = 0, Full = 1 };
+    ParseDepth parse_depth = ParseDepth::SubpicIdMapping;
+
+    // QP 是否可信：需要 depth==Full 且取值落在合法范围内（见 .cpp 的校验）。
+    // 不可信时 pps_pic_init_qp_minus26 等字段已被清零，UI 必须先看这个标记。
+    bool qp_fields_valid = false;
+
     // 从 SPS 拷过来，供 width()/height() 换算裁剪单位
     int chroma_format_idc = 1;
+
     int SubWidthC() const;
     int SubHeightC() const;
     int width() const;
     int height() const;
+
+    // 派生值
+    int CtbSizeY() const { return 1 << (pps_log2_ctu_size_minus5 + 5); }
+    int InitQp() const { return pps_pic_init_qp_minus26 + 26; }
 };
 
 // vvcC（VvcDecoderConfigurationRecord）里解析出的信息。

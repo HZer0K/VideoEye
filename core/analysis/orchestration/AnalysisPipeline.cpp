@@ -230,8 +230,9 @@ void AnalysisPipeline::Prepare(AVFormatContext* fmt, model::AnalysisResult& resu
 void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisResult& result) {
     // 每次 Prepare 都从干净状态开始：同一个 pipeline 对象理论上可被复用，
     // 上一份文件的带内探测状态（流号/缓冲区）不能漏到下一份里。
-    inband_stream_index_ = -1;
-    inband_probe_.Reset(0);
+    inband_probes_.clear();
+    bitstream_inband_active_ = false;
+    result.bitstream_streams.clear();
     if (!options_.analyze_bitstream) return;
 
     // 主视频排最前，其余视频轨按流号跟在后面
@@ -245,6 +246,15 @@ void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisRes
         }
     }
 
+    // ---- libavcodec extradata 路径：逐条视频轨都解析一次 ----
+    //
+    // 以前这里 `break` 在第一个成功的轨道上 —— TS 多节目 / 多机位 MP4 里第二条
+    // 视频轨（往往才是真正出问题的那条）永远不会被看一眼。现在所有轨道各产一份
+    // 独立结果：主轨（第一个成功的）照样写 bitstream_analysis，全量写
+    // bitstream_streams。
+    //
+    // ❗ 复杂的"谁当主轨"优先级不要在这里重复判断：video_order 已经把主轨排在第一，
+    // 遇到的第一个 analyzed 结果天然就是主轨的结论。
     for (unsigned i : video_order) {
         AVStream* st = fmt->streams[i];
         if (st->codecpar->extradata == nullptr || st->codecpar->extradata_size <= 0) continue;
@@ -256,33 +266,77 @@ void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisRes
             static_cast<size_t>(st->codecpar->extradata_size),
             static_cast<int>(st->codecpar->codec_id));
         bs.stream_index = static_cast<int>(i);
-        if (bs.analyzed) {
-            result.bitstream_analysis = std::move(bs);
+        if (!bs.analyzed) continue;
+
+        if (!result.bitstream_analyzed) {
+            result.bitstream_analysis = bs;   // 主轨（第一个成功的）
             result.bitstream_analyzed = true;
-            LOG_INFO("码流解析: codec=" + result.bitstream_analysis.codec_name +
-                     " " + std::to_string(result.bitstream_analysis.width) + "x" +
-                     std::to_string(result.bitstream_analysis.height) +
-                     " 不一致=" + std::to_string(result.bitstream_analysis.inconsistencies.size()));
-            break;
+            LOG_INFO("码流解析: codec=" + bs.codec_name + " 流#" + std::to_string(i) +
+                     " " + std::to_string(bs.width) + "x" + std::to_string(bs.height) +
+                     " 不一致=" + std::to_string(bs.inconsistencies.size()));
+        } else {
+            LOG_INFO("码流解析(附加视频轨 #" + std::to_string(i) + "): codec=" + bs.codec_name +
+                     " " + std::to_string(bs.width) + "x" + std::to_string(bs.height));
         }
+        result.bitstream_streams.push_back(std::move(bs));
     }
 
     if (result.bitstream_analyzed) return;
 
-    // ---- 带内兜底：extradata 缺失的封装 ----
-    // 注意用 continue 而不是 return：第一条视频流可能是没有解析器的编码
+    // ---- 带内兜底：extradata 缺失的封装（TS / 裸流 / fMP4 分片 / WebM-VP9）----
+    //
+    // ❗ 注意用 continue 而不是 return：第一条视频流可能是没有解析器的编码
     // （如 MPEG-2），但第二条是 H.264 —— 那种文件仍然应该能分析。
+    //
+    // ❗ 而且每条轨都要挂一个 probe：多节目 TS 的每条节目是独立的 PID、独立的
+    // 参数集，一条 probe 只能覆盖一条流 —— 以前只有 inband_probe_ 一个成员，
+    // 第二条节目彻底没人看（这正是 C3 里"多节目/多角度漏"的一半成因）。
     for (unsigned i : video_order) {
         AVStream* st = fmt->streams[i];
         if (st->codecpar->extradata != nullptr && st->codecpar->extradata_size > 0) continue;
 
-        inband_probe_.Reset(static_cast<int>(st->codecpar->codec_id));
-        if (!inband_probe_.enabled()) continue;
-        inband_probe_.SetContainerMetadata(ContainerMetadataFromStream(st, result, i));
-        inband_stream_index_ = static_cast<int>(i);
-        LOG_INFO("码流解析: 流 #" + std::to_string(i) +
-                 " 无 extradata，改为带内参数集探测");
-        return;
+        InBandParameterSetProbe probe;
+        probe.Reset(static_cast<int>(st->codecpar->codec_id));
+        if (!probe.enabled()) continue;
+        probe.SetContainerMetadata(ContainerMetadataFromStream(st, result, i));
+        inband_probes_.push_back({static_cast<int>(i), std::move(probe)});
+        LOG_INFO("码流解析: 流 #" + std::to_string(i) + " 无 extradata，改为带内参数集探测");
+    }
+    if (inband_probes_.empty()) return;
+    // 只有真的有人在探测时才让逐包分发进那段循环
+    bitstream_inband_active_ = true;
+
+    // ---- slice header / SEI 巡检（C4）----
+    // 参数集已经被上面解出来了，这里顺便把它们的**已解析结果**配给巡检器：
+    // H.264 的 slice QP = 26 + pps.pic_init_qp_minus26 + slice_qp_delta，
+    // slice header 的位偏移也依赖 SPS 的 POC 开关 —— 没有它们 QP 只能判无效。
+    // HEVC / AV1 不需要这些（它们的 slice 目前不产出 QP，见 VideoEsInspector）。
+    if (video_stream_index_ >= 0) {
+        es_inspector_.Reset(static_cast<int>(fmt->streams[video_stream_index_]->codecpar->codec_id));
+    } else {
+        es_inspector_.Reset(0);
+    }
+    if (result.bitstream_analyzed) {
+        ApplyParameterSetsToEsInspector(result.bitstream_analysis);
+    }
+}
+
+// 把已解析的参数集注入 slice/SEI 巡检器。带内路径（TS 等）在 OnPacket 里
+// 解出参数集之后会**再调一次** —— 那时才能真正算出 QP。
+void AnalysisPipeline::ApplyParameterSetsToEsInspector(
+    const model::BitstreamAnalysisResult& bs) {
+    if (bs.has_h264) {
+        es_inspector_.SetH264ParameterSets(bs.h264_sps, bs.h264_pps);
+    } else if (bs.has_hevc) {
+        es_inspector_.SetHevcParameterSets(bs.hevc_sps, bs.hevc_pps);
+    }
+}
+
+void AnalysisPipeline::FinishVideoEsInspection(model::AnalysisResult& result) {
+    if (!es_inspector_.enabled()) return;
+    es_inspector_.Finish();
+    if (result.bitstream_analyzed) {
+        result.bitstream_analysis.slice_sei = es_inspector_.result();
     }
 }
 
@@ -338,6 +392,13 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt,
     if (is_video) {
         // 关键帧间隔与 GOP 帧数（逐包扫描就能拿到，不需要解码）
         frames_since_key_[pkt->stream_index] += 1;
+
+        // ---- slice header / SEI 巡检（C4）----
+        // 只盯主视频轨，且只看前若干个包：QP 分布与 SEI 密度进一两个完整 GOP
+        // 就收敛了，往后只是重复。Inspector 内部有 max_packets 上限，到点自己收工。
+        if (es_inspector_.enabled() && pkt->stream_index == video_stream_index_) {
+            es_inspector_.Feed(pkt->data, pkt->size);
+        }
 
         if (pkt->flags & AV_PKT_FLAG_KEY) {
             result.key_frame_count += 1;
@@ -456,26 +517,53 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt,
         }
 
         // 带内参数集（extradata 为空的封装）：攒到参数集出现为止。
-        // 放在 GOP/码率之后是因为那两段不依赖参数集；这里一旦成功就回填结果并收工，
-        // 之后的包不再进这个分支（inband_stream_index_ 置 -1）。
-        if (inband_stream_index_ >= 0 && pkt->stream_index == inband_stream_index_ &&
-            !result.bitstream_analyzed) {
-            if (inband_probe_.Feed(pkt->data, pkt->size)) {
-                result.bitstream_analysis = inband_probe_.result();
-                result.bitstream_analysis.stream_index = pkt->stream_index;
-                result.bitstream_analyzed = true;
-                inband_stream_index_ = -1;
-                LOG_INFO("码流解析(带内): codec=" + result.bitstream_analysis.codec_name +
-                         " " + std::to_string(result.bitstream_analysis.width) + "x" +
-                         std::to_string(result.bitstream_analysis.height) +
-                         " 用包数=" + std::to_string(inband_probe_.packets()) +
-                         " 不一致=" +
-                         std::to_string(result.bitstream_analysis.inconsistencies.size()));
-            } else if (inband_probe_.given_up()) {
-                // 放弃要留日志：否则用户只看到"码流分析没结果"，查不出是没找到参数集
-                LOG_INFO("带内参数集探测放弃: " + inband_probe_.GiveUpReason());
-                inband_stream_index_ = -1;
+        //
+        // 放在 GOP/码率之后是因为那两段不依赖参数集。每条视频轨一个 probe：
+        // 多节目 TS / 多机位流里每条节目有自己的 SPS/VPS，主轨收工不代表别的轨
+        // 就该放弃 —— 所以这里是"各自独立收工"，而不是"第一个成功就全部停下"。
+        //
+        // 第一个成功的结果（= video_order 里最早的那条）回填 bitstream_analysis
+        // 当主结论，其余继续 append 到 bitstream_streams。
+        if (!inband_probes_.empty() && bitstream_inband_active_) {
+            for (auto it = inband_probes_.begin(); it != inband_probes_.end();) {
+                auto& slot = *it;
+                if (slot.probe.done() || slot.probe.given_up() ||
+                    slot.stream_index != pkt->stream_index) {
+                    ++it;
+                    continue;
+                }
+                if (slot.probe.Feed(pkt->data, pkt->size)) {
+                    model::BitstreamAnalysisResult bs = slot.probe.result();
+                    bs.stream_index = slot.stream_index;
+                    if (!result.bitstream_analyzed) {
+                        result.bitstream_analysis = bs;
+                        result.bitstream_analyzed = true;
+                        LOG_INFO("码流解析(带内): codec=" + bs.codec_name +
+                                 " " + std::to_string(bs.width) + "x" +
+                                 std::to_string(bs.height) +
+                                 " 流#" + std::to_string(slot.stream_index) +
+                                 " 用包数=" + std::to_string(slot.probe.packets()) +
+                                 " 不一致=" + std::to_string(bs.inconsistencies.size()));
+                    } else {
+                        LOG_INFO("码流解析(带内, 附加视频轨 #" +
+                                 std::to_string(slot.stream_index) + "): codec=" + bs.codec_name);
+                    }
+                    // 带内路径刚拿到参数集 —— 趁热补给巡检器，让后面的包能算出 QP。
+                    ApplyParameterSetsToEsInspector(bs);
+                    result.bitstream_streams.push_back(std::move(bs));
+                    it = inband_probes_.erase(it);
+                    continue;
+                }
+                if (slot.probe.given_up()) {
+                    // 放弃要留日志：否则用户只看到"码流分析没结果"，查不出是没找到参数集
+                    LOG_INFO("带内参数集探测放弃(流#" + std::to_string(slot.stream_index) +
+                             "): " + slot.probe.GiveUpReason());
+                    it = inband_probes_.erase(it);
+                    continue;
+                }
+                ++it;
             }
+            if (inband_probes_.empty()) bitstream_inband_active_ = false;
         }
     }
 
@@ -506,11 +594,16 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt,
 
 // ---- 扫描结束后的钩子 ----
 
-void AnalysisPipeline::BeforeClose(AVFormatContext* fmt) {
+void AnalysisPipeline::BeforeClose(AVFormatContext* fmt, model::AnalysisResult& result) {
     // 部分封装的 HDR 元数据要读到数据包后才补充进 codecpar，关闭输入前再刷一次
     if (options_.analyze_color_hdr && color_video_stream_index_ >= 0) {
         color_hdr_.UpdateFromStream(fmt->streams[color_video_stream_index_]);
     }
+
+    // slice / SEI 巡检收尾：汇总 QP 分布与 SEI 元数据，回填主轨的码流结果。
+    // 挂在 BeforeClose 是因为它不依赖任何解码上下文 —— 只要在关YYYY前跑掉即可，
+    // 而 BeforeClose 是"关之前最后还能读到 exporter 状态"的那个点。
+    FinishVideoEsInspection(result);
 }
 
 void AnalysisPipeline::FlushAudio() {

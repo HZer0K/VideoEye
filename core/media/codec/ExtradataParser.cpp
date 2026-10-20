@@ -807,6 +807,77 @@ ExtradataResult ExtradataParser::ParseAv1C(const uint8_t* data, size_t size) {
     return result;
 }
 
+// ==========================================================================
+// vpcC —— VP9 的 MP4 配置记录（ISO/IEC 14496-30）
+//
+// 与 av1C / vvcC 同定位：只有 profile/level/位深/色度/range/色彩，**没有宽高**，
+// 也没有帧率（所以 ComputeLevel 只能由调用方拿容器宽高+帧率去反查）。
+// WebM/Matroska 的 VP9 连这个都没有（codec private 为空），必须走带内关键帧。
+// ==========================================================================
+ExtradataResult ExtradataParser::ParseVpcC(const uint8_t* data, size_t size) {
+    ExtradataResult result;
+    result.format = ExtradataFormat::VpcC;
+    result.valid = true;
+
+    const size_t offset = VpccPayloadOffset(data, size);
+    if (offset >= size || size - offset < 8) {
+        result.valid = false;
+        result.error_message = "vpcC too small";
+        return result;
+    }
+    const uint8_t* body = data + offset;
+    const size_t body_size = size - offset;
+
+    //   body0: profile                      (8)
+    //   body1: level                        (8)
+    //   body2: bit_depth(4) | chroma_subsampling(3) | video_full_range_flag(1)
+    //   body3: colour_primaries             (8)
+    //   body4: transfer_characteristics     (8)
+    //   body5: matrix_coefficients          (8)
+    //   body6-7: codec_initialization_data_size (16)
+    //
+    // ⚠️ body2 的 bit_depth 是**实际位深**（8/10/12），不是 minus8。
+    // 减 8 是 CodecConfig.bit_depth_minus_8 的口径，两个字段别在这里混淆。
+    result.config.profile = body[0];
+    result.config.level_idc = body[1];
+    const int bit_depth = (body[2] >> 4) & 0x0F;
+    result.config.vp9_chroma_subsampling = (body[2] >> 1) & 0x07;
+    result.config.vp9_video_full_range_flag = body[2] & 0x01;
+
+    // CICP 三元组：vpcC version 0 里规范的这三项本应是保留 0，但 FFmpeg 的
+    // mov_write_vpcc_tag() 实际真的写了容器的取值 —— 且它们与上面 body2 的
+    // bit_depth/chroma 是**同一件事的两种写法**，比对时只能挑一路用。
+    const int pri = body_size > 3 ? body[3] : 0;
+    const int trc = body_size > 4 ? body[4] : 0;
+    const int matrix = body_size > 5 ? body[5] : 0;
+    if (pri != 0 || trc != 0 || matrix != 0) {
+        result.config.vp9_color_description_present = true;
+        result.config.color_primaries = pri;
+        result.config.transfer_characteristics = trc;
+        result.config.matrix_coefficients = matrix;
+    }
+
+    if (bit_depth >= 8 && bit_depth <= 14) {
+        result.config.bit_depth_minus_8 = bit_depth - 8;
+    } else {
+        // 位深字段非法：不要顺手补 8 —— 拿假位深去和容器比对会造出假告警，
+        // 这里直接判失败让上层落到 vpcC 解析失败的分支。
+        result.valid = false;
+        result.error_message = "vpcC invalid bit_depth=" + std::to_string(bit_depth);
+        return result;
+    }
+    if (result.config.profile > 3) {
+        result.valid = false;
+        result.error_message = "vpcC invalid profile=" + std::to_string(result.config.profile);
+        return result;
+    }
+
+    // width / height 不在 vpcC 里，保持 0（调用方应改用关键帧的数值）
+    result.width = 0;
+    result.height = 0;
+    return result;
+}
+
 ExtradataResult ExtradataParser::ParseWithFormatRaw(ExtradataFormat format, const uint8_t* data, size_t size,
                                                     NalSyntax syntax) {
     switch (format) {
@@ -824,6 +895,9 @@ ExtradataResult ExtradataParser::ParseWithFormatRaw(ExtradataFormat format, cons
 
     case ExtradataFormat::Av1C:
         return ParseAv1C(data, size);
+
+    case ExtradataFormat::VpcC:
+        return ParseVpcC(data, size);
 
     case ExtradataFormat::LengthPrefix1:
     case ExtradataFormat::LengthPrefix2:

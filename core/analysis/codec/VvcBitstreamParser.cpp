@@ -43,6 +43,177 @@ int CeilLog2(uint32_t v) {
 // ceil(v / 2^s)
 int CeilShift(int v, int s) { return (v + (1 << s) - 1) >> s; }
 
+// ---- tile / slice 划分段：7.3.2.4 里分支最多的一段 ----
+//
+// ⚠️ 这段绕不过去：pps_pic_init_qp_minus26 就在它之后，不跳过 tile/slice 划分
+// 就永远拿不到 QP。岔子在于 NumTilesInPic 由多个 ue(v) 相乘得出，判错一处，
+// 之后所有字段整体错位 —— 而后果只是"QP 是假的"，比整份 PPS 作废更难查。
+//
+// 所以这里的原则是：
+//   1. 所有循环上界走 ReadUEBounded（越界 => HasError，循环就此打住）；
+//   2. **失败时不作废整份 PPS** —— 前半段（宽高 / conformance window）与这段无关，
+//      保住它们比丢掉更划算；
+//   3. 失败时把后置字段清零，并让调用方通过 parse_depth != Full 与
+//      qp_fields_valid == false 知道"这部分不可信"。
+// 返回 false = 没走完这段，调用方据此把 depth 停在 SubpicIdMapping。
+bool SkipTileAndSlicePartition(BitReader& reader, model::VvcPpsInfo& pps) {
+    // 真实码流的 tile 行列数不会超过几十，给 4096 是纯兜底：
+    // 一条 ue(v) 顶到 40 亿时，这里的循环会先把 reader 拖到越界并置 HasError。
+    constexpr int kMaxTiles = 4096;
+
+    pps.pps_log2_ctu_size_minus5 = static_cast<int>(reader.ReadBits(2));
+    pps.pps_exp_ctu_width_minus1 = static_cast<int>(reader.ReadUEBounded(kMaxTiles));
+    pps.pps_exp_ctu_height_minus1 = static_cast<int>(reader.ReadUEBounded(kMaxTiles));
+    pps.pps_num_exp_tile_columns_minus1 = static_cast<int>(reader.ReadUEBounded(kMaxTiles));
+    pps.pps_num_exp_tile_rows_minus1 = static_cast<int>(reader.ReadUEBounded(kMaxTiles));
+    if (reader.HasError()) return false;
+
+    const int num_tile_cols = pps.pps_num_exp_tile_columns_minus1 + 1;
+    const int num_tile_rows = pps.pps_num_exp_tile_rows_minus1 + 1;
+
+    // exp_tile_col_width_minus1[] / exp_tile_row_height_minus1[]（各 defects 1 个 ue(v)）
+    for (int i = 0; i < pps.pps_num_exp_tile_columns_minus1 && !reader.HasError(); ++i) {
+        reader.ReadUEBounded(kMaxTiles);
+    }
+    for (int i = 0; i < pps.pps_num_exp_tile_rows_minus1 && !reader.HasError(); ++i) {
+        reader.ReadUEBounded(kMaxTiles);
+    }
+    if (reader.HasError()) return false;
+
+    const int64_t num_tiles = static_cast<int64_t>(num_tile_cols) * num_tile_rows;
+    if (num_tiles > 1) {
+        pps.pps_loop_filter_across_tiles_flag = reader.ReadBit();
+        pps.pps_rect_slice_flag = reader.ReadBit();
+        if (pps.pps_rect_slice_flag) {
+            pps.pps_single_slice_per_subpic_flag = reader.ReadBit();
+        }
+        if (pps.pps_rect_slice_flag && !pps.pps_single_slice_per_subpic_flag) {
+            pps.pps_num_slices_in_pic_minus1 = static_cast<int>(reader.ReadUEBounded(kMaxTiles));
+            if (reader.HasError()) return false;
+            if (pps.pps_num_slices_in_pic_minus1 > 0) {
+                reader.ReadBit();  // pps_tile_idx_delta_present_flag（本层不消费）
+                if (reader.HasError()) return false;
+                // slice 尺寸叉分：按 tile 排布决定走"宽"还是"高"那一列
+                for (int i = 0; i < pps.pps_num_slices_in_pic_minus1 && !reader.HasError(); ++i) {
+                    reader.ReadUEBounded(kMaxTiles);
+                }
+                if (reader.HasError()) return false;
+            }
+        }
+        pps.pps_loop_filter_across_slices_flag = reader.ReadBit();
+    }
+    return !reader.HasError();
+}
+
+// QP / 权重预测 / 去块段。返回 false = 未完成（调用方据此判定 qp_fields_valid）。
+bool ParseQpAndFilterSection(BitReader& reader, model::VvcPpsInfo& pps) {
+    constexpr int kMaxChromaQpOffsetList = 64;
+
+    pps.pps_cabac_init_present_flag = reader.ReadBit();
+    // ❗ rpl1_idx_present_flag 必须**先**读：它决定后面到底有几个
+    // pps_num_ref_idx_default_active_minus1[] 条目 —— 顺序读反，QP 会整体错位一位。
+    pps.pps_rpl1_idx_present_flag = reader.ReadBit();
+    pps.pps_num_ref_idx_default_active_minus1[0] =
+        static_cast<int>(reader.ReadUEBounded(kMaxNumRefPicLists));
+    if (pps.pps_rpl1_idx_present_flag) {
+        pps.pps_num_ref_idx_default_active_minus1[1] =
+            static_cast<int>(reader.ReadUEBounded(kMaxNumRefPicLists));
+    }
+    pps.pps_weighted_pred_flag = reader.ReadBit();
+    pps.pps_weighted_bipred_flag = reader.ReadBit();
+    pps.pps_ref_wraparound_enabled_flag = reader.ReadBit();
+    if (reader.HasError()) return false;
+    pps.pps_pic_init_qp_minus26 = reader.ReadSE();
+    pps.pps_cu_qp_delta_enabled_flag = reader.ReadBit();
+    pps.pps_chroma_tool_offsets_present_flag = reader.ReadBit();
+    if (reader.HasError()) return false;
+
+    if (pps.pps_chroma_tool_offsets_present_flag) {
+        pps.pps_cb_qp_offset = reader.ReadSE();
+        pps.pps_cr_qp_offset = reader.ReadSE();
+        pps.pps_joint_cbcr_qp_offset_present_flag = reader.ReadBit();
+        if (pps.pps_joint_cbcr_qp_offset_present_flag) {
+            pps.pps_joint_cbcr_qp_offset_value = reader.ReadSE();
+        }
+        pps.pps_slice_chroma_qp_offsets_present_flag = reader.ReadBit();
+        pps.pps_cu_chroma_qp_offset_list_enabled_flag = reader.ReadBit();
+        if (reader.HasError()) return false;
+        if (pps.pps_cu_chroma_qp_offset_list_enabled_flag) {
+            pps.pps_chroma_qp_offset_list_len_minus1 =
+                static_cast<int>(reader.ReadUEBounded(kMaxChromaQpOffsetList));
+            if (reader.HasError()) return false;
+            for (int i = 0; i <= pps.pps_chroma_qp_offset_list_len_minus1; ++i) {
+                reader.ReadSE();  // cb_qp_offset_list
+                reader.ReadSE();  // cr_qp_offset_list
+                if (pps.pps_joint_cbcr_qp_offset_present_flag) {
+                    reader.ReadSE();  // joint_cbcr_qp_offset_list
+                }
+            }
+            if (reader.HasError()) return false;
+        }
+    }
+
+    pps.pps_deblocking_filter_control_present_flag = reader.ReadBit();
+    if (pps.pps_deblocking_filter_control_present_flag) {
+        pps.pps_deblocking_filter_override_enabled_flag = reader.ReadBit();
+        pps.pps_deblocking_filter_disabled_flag = reader.ReadBit();
+        if (!pps.pps_deblocking_filter_disabled_flag) {
+            pps.pps_beta_offset_div2 = reader.ReadSE();
+            pps.pps_tc_offset_div2 = reader.ReadSE();
+        }
+    }
+    pps.pps_picture_header_extension_present_flag = reader.ReadBit();
+    pps.pps_slice_header_extension_present_flag = reader.ReadBit();
+    pps.pps_extension_flag = reader.ReadBit();
+    // pps_extension_data_flag[] 一直到 rbsp_trailing_bits：这里不消费。
+    return !reader.HasError();
+}
+
+// QP 取值合理性校验（H.266 7.4.3.3）：
+//   SliceQpY ∈ [-QpBdOffset, 51] → init QP 也不能越出 [0, 51]；
+//   cb / cr 的 QP offset 合法区间是 [-12, +12]。
+//
+// 这一步不能省：**语法错位不报错**，只会产出一组"看起来自洽"的数字。没有这道
+// 校验，上面 tile 段哪怕猜错一位，UI 也会理直气壮地显示"init QP = 68"这种值。
+bool IsSaneQpFields(const model::VvcPpsInfo& pps) {
+    const int init_qp = pps.pps_pic_init_qp_minus26 + 26;
+    if (init_qp < 0 || init_qp > 51) return false;
+    if (pps.pps_cb_qp_offset < -12 || pps.pps_cb_qp_offset > 12) return false;
+    if (pps.pps_cr_qp_offset < -12 || pps.pps_cr_qp_offset > 12) return false;
+    return true;
+}
+
+// 把 QP 段字段恢复到"未解析"状态，让调用方识别出"这份 PPS 的后置字段不可信"。
+// ❗ 不要顺手把 present 置 false —— 前面解出来的宽高是真的，丢掉是净损失。
+void ResetQpFields(model::VvcPpsInfo& pps) {
+    // tile / slice 划分字段同样回滚：它们跟 QP 在同一段流程里解出，
+    // 半解状态（例如 columns 读了、rows 没读）比全 0 更容易误导。
+    pps.pps_log2_ctu_size_minus5 = 0;
+    pps.pps_exp_ctu_width_minus1 = 0;
+    pps.pps_exp_ctu_height_minus1 = 0;
+    pps.pps_num_exp_tile_columns_minus1 = 0;
+    pps.pps_num_exp_tile_rows_minus1 = 0;
+    pps.pps_loop_filter_across_tiles_flag = false;
+    pps.pps_rect_slice_flag = false;
+    pps.pps_single_slice_per_subpic_flag = false;
+    pps.pps_num_slices_in_pic_minus1 = 0;
+    pps.pps_loop_filter_across_slices_flag = false;
+
+    pps.pps_num_ref_idx_default_active_minus1[0] = 0;
+    pps.pps_num_ref_idx_default_active_minus1[1] = 0;
+    pps.pps_weighted_pred_flag = false;
+    pps.pps_weighted_bipred_flag = false;
+    pps.pps_ref_wraparound_enabled_flag = false;
+    pps.pps_pic_init_qp_minus26 = 0;
+    pps.pps_cu_qp_delta_enabled_flag = false;
+    pps.pps_chroma_tool_offsets_present_flag = false;
+    pps.pps_cb_qp_offset = 0;
+    pps.pps_cr_qp_offset = 0;
+    pps.pps_deblocking_filter_control_present_flag = false;
+    pps.parse_depth = model::VvcPpsInfo::ParseDepth::SubpicIdMapping;
+    pps.qp_fields_valid = false;
+}
+
 }  // namespace
 
 // --------------------------------------------------------------------------
@@ -854,10 +1025,25 @@ model::VvcPpsInfo VvcBitstreamParser::ParsePpsFromNalUnit(const videoeye::NalUni
         }
     }
 
-    // 后面是 tile / slice 划分（面板不展示），到此为止。
-    // 浅解析同样要拦越界：截断输入让最后几个 flag 读越界时必须拒绝置 present，
-    // 否则比 822 行门槛晚读的位会被静默当 0。
+    // ---- 到这里为止是"老口径"（宽高 + subpic id 映射）----
+    // 老行为保持不动：走到这里若已越界，就放弃整份 PPS —— 比这里晚读的位会被
+    // 静默当成 0，继续下去等于把错位的结论当真。
     if (reader.HasError()) return pps;
+
+    // ---- 后半段：tile / slice 划分 + QP / 去块 ----
+    // 这部分的成败**不影响**上面那些已经解出来的字段，所以是"继续尝试、
+    // 不成就把后置字段回滚"，而不是像上面那样整份作废。
+    bool deep_ok = pps.pps_no_pic_partition_flag || SkipTileAndSlicePartition(reader, pps);
+    if (deep_ok) {
+        deep_ok = ParseQpAndFilterSection(reader, pps);
+    }
+    if (deep_ok && IsSaneQpFields(pps)) {
+        pps.parse_depth = model::VvcPpsInfo::ParseDepth::Full;
+        pps.qp_fields_valid = true;
+    } else {
+        ResetQpFields(pps);
+    }
+
     pps.present = true;
     return pps;
 }

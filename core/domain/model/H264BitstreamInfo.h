@@ -111,6 +111,10 @@ struct H264SpsInfo {
     int log2_max_frame_num_minus4 = 0;
     int pic_order_cnt_type = 0;
     int log2_max_pic_order_cnt_lsb_minus4 = 0;
+    // pic_order_cnt_type == 1 时才有意义。slice_header() 靠它决定要不要读
+    // delta_pic_order_cnt[]（另一半判据在 PPS 的
+    // bottom_field_pic_order_in_frame_present_flag）—— 缺它 slice QP 会整体错位。
+    bool delta_pic_order_always_zero_flag = false;
     int max_num_ref_frames = 0;       // 最大参考帧数
     int gaps_in_frame_val_allowed_flag = 0;  // gaps_in_frame_num_value_allowed_flag
     
@@ -175,6 +179,9 @@ struct H264PpsInfo {
     
     int pic_parameter_set_id = 0;
     int seq_parameter_set_id = 0;
+    // slice_header() 用它与 SPS 的 delta_pic_order_always_zero_flag 一起决定
+    // delta_pic_order_cnt 相关字段读不读（解逐帧 QP 必须知道）。
+    bool bottom_field_pic_order_in_frame_present_flag = false;
     int num_ref_idx_l0_default_active_minus1 = 0;
     int num_ref_idx_l1_default_active_minus1 = 0;
     bool weighted_pred_flag = false;

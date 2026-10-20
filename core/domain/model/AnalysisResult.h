@@ -99,6 +99,17 @@ struct AnalysisResult {
     BitstreamAnalysisResult bitstream_analysis;
     bool bitstream_analyzed = false;
 
+    // 每条视频轨各自的码流解析结果（C3：多节目 / 多角度。以前只解析第一条）。
+    //
+    // bitstream_analysis 仍是"主的那一条"（按 PrepareBitstream 的优先级顺序取第一个
+    // 解析成功的），保持向后兼容 —— 面板、报告、导出都还在读它。这里多存一份全量，
+    // 是为了让"第二条视频轨也有一份独立结论"这件事真的可查：TS 多节目、多机位 MP4
+    // 里，主轨之外的那条往往才是真正出问题的那条。
+    //
+    // 每条的 stream_index 标着归属（与 streams[] 的下标一致）。为空 = 没有任何一条
+    // 视频轨解析出结果。
+    std::vector<BitstreamAnalysisResult> bitstream_streams;
+
     // HLS / DASH 流媒体包（见 core/analysis/streaming/HlsManifestAnalyzer.h / DashManifestAnalyzer.h）
     // 只有输入是清单文件时才跑；streaming_analyzed=true 才表示跑过。
     StreamingPackageResult streaming_package;

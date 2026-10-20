@@ -79,6 +79,8 @@ private:
     bool ShouldTryAv1() const;
     // 真正解一次；成功则填 result_ / done_
     bool TryParse();
+    // VP9：逐包单独试（不攒 buffer）。见 .cpp 里的注释。
+    bool TryParseVp9(const uint8_t* data, size_t size);
 
     int codec_id_ = 0;
     Options options_;

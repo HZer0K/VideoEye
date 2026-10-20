@@ -573,8 +573,11 @@ videoeye_add_test(test_bitstream_analyzer
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/H264BitstreamParser.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/HevcBitstreamParser.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/Av1BitstreamParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/Vp9BitstreamParser.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/VvcBitstreamParser.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/BitstreamInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/Vp9BitstreamInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/SliceSeiInfo.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/ExtradataParser.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/BitReader.cpp
 )
@@ -720,6 +723,46 @@ videoeye_add_test(test_vvc_bitstream_parser
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/BitstreamInfo.cpp
 )
 add_test(NAME VvcBitstreamParserTests COMMAND test_vvc_bitstream_parser)
+
+# =================================================
+# 测试 23-B：VP9 码流解析（关键帧 uncompressed header）
+# 说明: VP9 没有参数集，序列配置写在关键帧头部；测试数据由测试文件内的
+#       逐位 BitWriter 按规范 6.2 生成，不参考 parser 实现。
+# =================================================
+videoeye_add_test(test_vp9_bitstream_parser
+    unit/test_vp9_bitstream_parser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/Vp9BitstreamParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/BitReader.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/BitstreamInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/Vp9BitstreamInfo.cpp
+)
+add_test(NAME Vp9BitstreamParserTests COMMAND test_vp9_bitstream_parser)
+
+# =================================================
+# 测试 23-C：码流能力门禁判据（Profile / 色度 / 位深）
+# 说明: 判据抽成 header-only 就是为了能直接单测。C2 放宽 4:2:2 / 4:4:4
+#       之后，贡献流（RExt 4:2:2 10bit）不再被一律判成 Partial。
+# =================================================
+videoeye_add_test(test_bitstream_capability_rules
+    unit/test_bitstream_capability_rules.cpp
+)
+add_test(NAME BitstreamCapabilityRulesTests COMMAND test_bitstream_capability_rules)
+
+# =================================================
+# 测试 23-D：slice header / SEI 自研解析（C4：逐帧 QP + HDR10+/DV/MDCV/CLL/胶片颗粒）
+# 说明: 以前这些全靠 FFmpeg 的 packet side data；本套用例从码流字节自己解一遍。
+# =================================================
+videoeye_add_test(test_video_es_inspector
+    unit/test_video_es_inspector.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/VideoEsInspector.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/ExtradataParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/BitReader.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/BitstreamInfo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/SliceSeiInfo.cpp
+)
+# VideoEsInspector 内部按 AVCodecID 分支，需要 FFmpeg 的枚举与链接符号
+target_link_libraries(test_video_es_inspector PRIVATE FFmpeg::avcodec FFmpeg::avutil)
+add_test(NAME VideoEsInspectorTests COMMAND test_video_es_inspector)
 
 # =================================================
 # 测试 24：JSON 工具（极简读写，不依赖 Qt / FFmpeg）

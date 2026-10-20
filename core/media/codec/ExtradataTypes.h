@@ -106,6 +106,9 @@ enum class ExtradataFormat {
     HvcC,            // MP4 hvcC 配置记录（H.265）
     Av1C,            // MP4 av1C 配置记录（AV1）
     VvcC,            // MP4 vvcC 配置记录（VVC）
+    VpcC,            // MP4 vpcC 配置记录（VP9，ISO/IEC 14496-30）
+                     //   注意：WebM/Matroska 的 VP9 **没有 codec private**，
+                     //   那种文件只能从关键帧带内解析（Vp9BitstreamParser）
 };
 
 // NAL header 的解读方式。
@@ -163,6 +166,37 @@ struct ObuUnit {
           has_extension_header(ext_header), is_sequence_header(seq_header) {}
 };
 
+// ==========================================================================
+// vpcC（VP Codec Configuration Box，ISO/IEC 14496-30）布局判定
+//
+// vpcC 主体恒为 8 字节：
+//   profile(1) | level(1) | bit_depth(4)+chroma_subsampling(3)+full_range(1)
+//   | colour_primaries(1) | transfer_characteristics(1) | matrix_coefficients(1)
+//   | codec_initialization_data_size(2)
+//
+// 但 **extradata 从哪里开始** 有两种写法：拿到完整 'vpcC' box（含 size+fourcc），
+// 或只拿到剥掉 size+fourcc 后的 payload（含 version/flags）。这里统一判定主体偏移，
+// 返回值 == size 表示两种布局都不像。
+//
+// 判定顺序不能换：形式 A 的 [4..7] 是固定的 fourcc，而形式 B 的 [4] 是 profile
+// （碰巧也可能等于 'v'）—— 先查 fourcc 才不会张冠李戴。
+// ==========================================================================
+inline size_t VpccPayloadOffset(const uint8_t* data, size_t size) {
+    // 形式 A：完整 box —— [0..3] 是 box size（不会全 0），[4..7] 是 'vpcC'
+    if (size >= 20 && data[4] == 'v' && data[5] == 'p' && data[6] == 'c' && data[7] == 'C') {
+        return 12;  // size(4) + fourcc(4) + version/flags(4)
+    }
+    // 形式 B：demuxer 已剥掉 box 头 —— [0..3] 是 version/flags（vpcC 恒为 0）
+    if (size >= 12 && data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 0) {
+        return 4;
+    }
+    // 形式 C：只有 8 字节主体（version/flags 也被剥了）
+    if (size >= 8) {
+        return 0;
+    }
+    return size;
+}
+
 // 提取器结果
 struct ExtradataResult {
     ExtradataFormat format = ExtradataFormat::Unknown;
@@ -210,6 +244,13 @@ struct ExtradataResult {
         int num_sublayers = 0;
         int max_picture_width = 0;
         int max_picture_height = 0;
+
+        // VP9（来自 vpcC 配置记录）
+        // profile 复用上面的 `profile` 字段；level_idc 复用上面的 `level_idc`
+        // —— vpcC 的 level 本身就用的是同一套整数编码（10=Level 1、11=1.1 ...）。
+        int vp9_chroma_subsampling = 2;  // 0=4:4:4 1=4:2:2 2=4:2:0 3=4:4:0
+        int vp9_video_full_range_flag = 0;
+        bool vp9_color_description_present = false;  // CICP 三元组非全 0 才算写了
     } config;
     
     // 视频尺寸（如果可从 extradata 推断）
