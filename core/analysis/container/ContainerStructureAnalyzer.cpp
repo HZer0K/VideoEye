@@ -11,6 +11,8 @@
 #include "core/analysis/container/TsStructureAnalyzer.h"
 #include "core/analysis/container/AsfStructureAnalyzer.h"
 #include "core/analysis/container/OggStructureAnalyzer.h"
+#include "core/analysis/container/MpegPsStructureAnalyzer.h"
+#include "core/analysis/container/MxfStructureAnalyzer.h"
 #include "core/analysis/streaming/HlsManifestAnalyzer.h"
 #include "core/analysis/streaming/DashManifestAnalyzer.h"
 #include "core/analysis/streaming/SegmentQcAnalyzer.h"
@@ -296,6 +298,23 @@ bool ContainerStructureAnalyzer::Analyze(const std::string& file_path,
         LOG_WARN("OGG 专用解析器失败, 回退到 FFmpeg");
         return AnalyzeWithFFmpeg(file_path, result, cancel);
     }
+    case model::ContainerFormat::MPEG_PS: {
+        MpegPsStructureAnalyzer ps;
+        if (ps.Analyze(file_path, result, cancel.get())) return true;
+        if (infrastructure::Checkpoint(cancel.get())) return MarkCancelled(result);
+        LOG_WARN("MPEG-PS 专用解析器失败, 回退到 FFmpeg");
+        return AnalyzeWithFFmpeg(file_path, result, cancel);
+    }
+    case model::ContainerFormat::MXF: {
+        MxfStructureAnalyzer mxf;
+        if (mxf.Analyze(file_path, result, cancel.get())) return true;
+        if (infrastructure::Checkpoint(cancel.get())) return MarkCancelled(result);
+        LOG_WARN("MXF 专用解析器失败, 回退到 FFmpeg");
+        return AnalyzeWithFFmpeg(file_path, result, cancel);
+    }
+    case model::ContainerFormat::RAW_ES:
+        // 裸流没有容器层可解析：直接走 FFmpeg 通用分析（它认 SPS/PPS 与 OBU）。
+        return AnalyzeWithFFmpeg(file_path, result, cancel);
 
     default:
         // FFmpeg 通用回退
@@ -358,8 +377,14 @@ bool ContainerStructureAnalyzer::ExtractMp4StreamInfo(const std::vector<model::M
                                     find_stsd = [&](const std::vector<model::Mp4BoxNode>& stbl_nodes) {
                                         for (const auto& stbl_n : stbl_nodes) {
                                             if (stbl_n.type == "stsd") {
-                                                // stsd 的子节点就是编解码器描述
+                                                // stsd 的子节点就是编解码器描述。
+                                                // 一个 stsd 可以有多条 entry（Dolby Vision 双层等）：
+                                                // si.codecs 收全量，si.codec/details 按第一条（主描述）取值。
+                                                bool first_entry = true;
                                                 for (const auto& codec_node : stbl_n.children) {
+                                                    si.codecs.push_back(codec_node.type);
+                                                    if (!first_entry) continue;
+                                                    first_entry = false;
                                                     si.codec = codec_node.type;  // avc1, hvc1, mp4a, av01, vp09 等
                                                     // AV1/VP9 等补充可读编码名: "AV1 (av01)"
                                                     std::string readable = Mp4FourccToName(codec_node.type);

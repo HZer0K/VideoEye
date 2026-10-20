@@ -517,4 +517,34 @@ TEST(IsobmffParserTest, DescendsIntoStsdSampleEntryCodecBoxes) {
     EXPECT_EQ(FieldOf(*btrt, "avgBitrate"), "5000000");
 }
 
+// ---------------------------------------------------------------------------
+// stsd 多 sample entry：codec 仍取第一个，但全部描述都要按顺序留下
+//
+// Dolby Vision 双层、多码流打包等场景下 stsd 会声明多个 entry，样本通过
+// stsc 的 sample_description_index 选择描述。只记第一个会导致其余样本被
+// 误判编码，因此解析层必须把整张表暴露出来（容器规则再决定是否告警）。
+// ---------------------------------------------------------------------------
+TEST(IsobmffParserTest, StsdCollectsAllSampleEntries) {
+    std::vector<uint8_t> body;
+    Put32(body, 2);              // entry_count
+    Put32(body, 16);             // 第 1 个 entry 的 size
+    PutFourCC(body, "avc1");
+    Put32(body, 0);              // 补齐到声明的 16 字节
+    Put32(body, 0);
+    Put32(body, 16);             // 第 2 个 entry 的 size
+    PutFourCC(body, "dvhe");
+    Put32(body, 0);
+    Put32(body, 0);
+
+    const videoeye::IsobmffFile f =
+        ParseFirstTrackFile(Cat(FullBox("stsd", 0, body), MakeStsz(100, 1)));
+
+    ASSERT_EQ(f.tracks.size(), 1u);
+    const videoeye::IsobmffTrack& t = f.tracks[0];
+    ASSERT_EQ(t.sample_descriptions.size(), 2u);
+    EXPECT_EQ(t.sample_descriptions[0], "avc1");
+    EXPECT_EQ(t.sample_descriptions[1], "dvhe");
+    EXPECT_EQ(t.codec, "avc1") << "codec 仍然是第一个 entry，保持既有行为";
+}
+
 }  // namespace

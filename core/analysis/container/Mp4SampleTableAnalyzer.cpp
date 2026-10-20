@@ -85,6 +85,25 @@ void ValidateTrack(model::Mp4SampleTableResult& out,
 
     const uint32_t n = t.stsz_sample_count;
 
+    // ---- stsd 多 sample entry ----
+    // 一个 track 可以有多个 sample entry（Dolby Vision 的 avc1 + dvhe、部分
+    // 自适应码流），样本通过 stsc.sample_description_index 引用其中之一。
+    // 本项目只保留第一个 codec，因此这里只提示"还有别的描述"，不判定好坏。
+    if (t.sample_descriptions.size() > 1) {
+        std::string list;
+        for (const std::string& fourcc : t.sample_descriptions) {
+            if (!list.empty()) list += ", ";
+            list += fourcc;
+        }
+        PushIssue(out, C::kMultipleSampleEntries, "轨道含多个样本描述",
+                  "Track " + std::to_string(t.track_id) + " 的 stsd 声明了 " +
+                      std::to_string(t.sample_descriptions.size()) + " 个 sample entry（" + list +
+                      "）。样本可引用不同描述；只按第一个解释时，其余描述的样本可能被误判。",
+                  "确认是否为刻意的多描述（如 Dolby Vision 双层）；否则重新封装只保留一个 entry。",
+                  IssueSeverity::Info, static_cast<int>(t.track_id),
+                  static_cast<int>(t.sample_descriptions.size()));
+    }
+
     // ---- 各表样本数一致性 ----
     std::string counts = "stsz=" + std::to_string(n);
     bool mismatch = false;
@@ -581,6 +600,7 @@ void CollectTrack(const IsobmffTrack& src, model::Mp4TrackSampleTable& t,
     t.track_id = src.track_id;
     t.type = src.TypeName();
     t.codec = src.codec;
+    t.sample_descriptions = src.sample_descriptions;
     t.media_timescale = src.media_timescale;
     t.media_duration = src.media_duration;
 

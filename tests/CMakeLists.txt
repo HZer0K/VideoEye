@@ -655,6 +655,17 @@ target_link_libraries(test_container_ts_qc_rules PRIVATE VideoEyeAnalysis)
 add_test(NAME ContainerTsQcRulesTests COMMAND test_container_ts_qc_rules)
 
 # =================================================
+# 测试 19c：AVI / FLV / ASF / OGG 容器级 QC 规则
+# 说明: 规则只读 AnalysisResult::container_diagnostics，样本全部手工构造 ——
+#       不需要真实媒体文件。「解析器算得对不对」在 test_container_structure_analyzers 里测。
+# =================================================
+videoeye_add_test(test_container_legacy_qc_rules
+    unit/test_container_legacy_qc_rules.cpp
+)
+target_link_libraries(test_container_legacy_qc_rules PRIVATE VideoEyeAnalysis)
+add_test(NAME ContainerLegacyQcRulesTests COMMAND test_container_legacy_qc_rules)
+
+# =================================================
 # 测试 21：视觉缺陷检测（黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 曝光 / 色偏 / 梳齿 / 黑边）
 # 说明: VisualDefectAnalyzer 只吃 model::FrameSample 里的降采样像素，不依赖 FFmpeg（
 #       AVFrame -> FrameSample 的缩放在 QualityAnalyzer::BuildSample），所以这里全部用
@@ -1063,12 +1074,12 @@ set_tests_properties(ReportingPanelLifecycleTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # =================================================
-# 测试 32：五个容器结构分析器的参数化健壮性（评审第 10 项）
-# 说明: Asf / Avi / Flv / Ogg / Ts 的 Analyze() 签名完全一致，却长期零覆盖。
-#       这里用 TEST_P 跑"五分析器 × 三种输入"：文件不存在 / 魔数对不上 /
+# 测试 32：七个容器结构分析器的参数化健壮性（评审第 10 项）
+# 说明: Asf / Avi / Flv / Ogg / Ts / MpegPs / Mxf 的 Analyze() 签名完全一致，却长期零覆盖。
+#       这里用 TEST_P 跑"七分析器 × 三种输入"：文件不存在 / 魔数对不上 /
 #       最小合法文件。样本字节全部内存合成，不依赖任何真实媒体文件。
 #
-#       只链这五个 .cpp 而不是整个 VideoEyeAnalysis: 它们只依赖 Qt 的文件 IO
+#       只链这七个 .cpp 而不是整个 VideoEyeAnalysis: 它们只依赖 Qt 的文件 IO
 #       加 domain 的值类型，链整层会把 FFmpeg 和一众分析器拖进来，编译慢一个量级。
 #       Ogg 不校验魔数（刻意的容错），单独一个用例把这个差异固化下来。
 # =================================================
@@ -1079,6 +1090,8 @@ videoeye_add_test(test_container_structure_analyzers
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/FlvStructureAnalyzer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/OggStructureAnalyzer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/TsStructureAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/MpegPsStructureAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/MxfStructureAnalyzer.cpp
 )
 target_link_libraries(test_container_structure_analyzers PRIVATE Qt6::Core VideoEyeDomain)
 # 真实封装样本（tests/corpus/container/real_*.{ts,m2ts,avi,ogg}）的目录。

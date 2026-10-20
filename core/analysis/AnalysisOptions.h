@@ -274,6 +274,15 @@ struct AnalysisOptions {
     // <=0 表示扫完整个文件。
     int ts_transport_max_packets = 200000;
 
+    // 老式容器（AVI / FLV / ASF / OGG）的结构体检：索引（idx1 / indx / dmlh）、
+    // FLV 时间戳与序列头、ASF 对象完整性、Ogg 页序号与 BOS/EOS。
+    //
+    // 和 TS 那趟一样，这些是 avformat demux 看不到的**容器层事实**，
+    // 由 core/analysis/container 下的专用解析器再扫一遍本地文件得出，
+    // 结果进 AnalysisResult::container_diagnostics，由 container.avi/flv/asf/ogg.* 规则消费。
+    // QC 模式只取事实、不建结构树，也不逐块遍历 movi 媒体数据（否则大文件会慢一个量级）。
+    bool analyze_legacy_container = true;
+
     // 时间轴诊断里"逐包 delta 曲线"的点数上限（每个视频/音频包一个采样点）。
     // 默认 20 万点 ≈ 3 MB；0 = 不限制（长视频 / 高码率文件会按包数线性吃内存，
     // 只应在明确要全量曲线时开启）。上限只影响曲线精度，不影响问题检出与汇总指标。

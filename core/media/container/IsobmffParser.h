@@ -75,6 +75,10 @@ struct IsobmffTrack {
     uint32_t track_id = 0;
     std::string handler;          // 原始 4CC: "vide" / "soun" / "hint" / "text" ...
     std::string codec;            // stsd 首个 entry 的 4CC: "avc1" / "mp4a" ...
+    // stsd 里声明的全部 sample entry（按声明顺序）。绝大多数文件只有 1 条，
+    // 但 Dolby Vision 双层、多码率自适应等会把多条描述放进同一个 stsd；
+    // track.codec 仍然只表示第一条（兼容旧调用点），完整列表看这里。
+    std::vector<std::string> sample_descriptions;
     uint32_t media_timescale = 0; // mdhd
     uint64_t media_duration = 0;  // mdhd（媒体时基）
 

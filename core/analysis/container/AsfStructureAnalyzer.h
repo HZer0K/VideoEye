@@ -9,9 +9,14 @@ namespace videoeye {
 /// ASF/WMV/WMA 容器结构轻量级解析器
 class AsfStructureAnalyzer {
 public:
+    struct Options {
+        bool build_tree = true;
+    };
+
     // cancel: 可选的取消标志（nullptr = 不关心取消）。
     bool Analyze(const std::string& file_path, model::ContainerStructureResult& result,
-                 const std::atomic<bool>* cancel = nullptr);
+                 const std::atomic<bool>* cancel = nullptr,
+                 const Options& options = Options());
 };
 
 } // namespace videoeye

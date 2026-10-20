@@ -33,6 +33,7 @@ constexpr const char* kZeroDuration          = "container.mp4.zero_duration_samp
 constexpr const char* kOffsetDiscontinuity   = "container.mp4.sample_offset_gap";
 constexpr const char* kFirstSampleNotSync    = "container.mp4.first_sample_not_sync";
 constexpr const char* kStssCountMismatch     = "container.mp4.stss_count_mismatch";
+constexpr const char* kMultipleSampleEntries = "container.mp4.multiple_sample_entries";
 // edit list
 constexpr const char* kElstFirstFrameShift   = "container.mp4.elst_first_frame_shift";
 constexpr const char* kElstEmptyEdit         = "container.mp4.elst_empty_edit";

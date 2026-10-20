@@ -49,7 +49,8 @@ void parseVorbisComments(const std::string& d, int start,
 } // namespace
 
 bool OggStructureAnalyzer::Analyze(const std::string& file_path, model::ContainerStructureResult& result,
-                                   const std::atomic<bool>* cancel) {
+                                   const std::atomic<bool>* cancel,
+                                   const Options& options) {
     SeqFileReader file(file_path);
     if (!file.IsOpen()) {
         result.error_message = "无法打开文件";
@@ -59,6 +60,9 @@ bool OggStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
     result.format = model::ContainerFormat::OGG;
     result.format_name = "OGG";
     result.file_path = file_path;
+    result.diagnostics.ogg = model::OggDiagnostics();
+    result.diagnostics.ogg.analyzed = true;
+    auto& diag = result.diagnostics.ogg;
 
     model::ContainerElement root;
     root.name = "OGG Stream";
@@ -72,28 +76,46 @@ bool OggStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
         int page_count = 0;
         std::string codec_name;
         bool bos_seen = false;
+        bool eos_seen = false;
+        bool first_page = true;
+        int64_t last_seq = -1;
         uint32_t sample_rate = 0;
         int channels = 0;
         bool comments_parsed = false;
     };
     std::map<uint32_t, StreamInfo> streams;
 
-    int total_pages = 0;
-    const int max_pages = 2000;
+    uint64_t total_pages = 0;
+    const uint32_t max_pages = options.max_pages;
 
-    while (file.Pos() < file.Size() - 27 && total_pages < max_pages) {
+    while (file.Pos() < file.Size() - 27 && (max_pages == 0 || total_pages < max_pages)) {
         if (infrastructure::Checkpoint(cancel)) { result.error_message = "已取消"; return false; }
+
+        const int64_t page_start = file.Pos();
+
         // Ogg Page Header: "OggS" (4) + version(1) + type(1) + granule(8) + serial(4) + page_seq(4) + checksum(4) + segments(1)
         std::string header = file.Read(27);
         if (header.size() < 27) break;
 
         if (header.substr(0, 4) != "OggS") {
-            // 尝试重新同步
-            std::string sync = file.Read(1);
-            while (!file.AtEnd() && sync != "O") {
-                sync = file.Read(1);
+            // 重新同步：从当前页起始位置 +1 开始滑动 4 字节窗口找 "OggS"。
+            // 注意不能像旧实现那样"读到 'O' 就 continue" —— 那会让下一轮从 'O'+1
+            // 开始读 27 字节头，永远对不齐真正的页边界。
+            ++diag.resyncs;
+            file.Seek(page_start + 1);
+            std::string window = header.substr(1, 3);
+            bool found = false;
+            while (!file.AtEnd()) {
+                const std::string one = file.Read(1);
+                if (one.empty()) break;
+                window = window.substr(1) + one[0];
+                if (window == "OggS") {
+                    file.Seek(file.Pos() - 4);
+                    found = true;
+                    break;
+                }
             }
-            if (file.AtEnd()) break;
+            if (!found) break;
             continue;
         }
 
@@ -115,11 +137,20 @@ bool OggStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
 
         // 读取 segment table
         std::string seg_table = file.Read(num_segments);
-        if (seg_table.size() < num_segments) break;
+        if (seg_table.size() < num_segments) {
+            ++diag.truncated_pages;
+            break;
+        }
 
         uint32_t page_data_size = 0;
         for (int i = 0; i < num_segments; ++i) {
             page_data_size += static_cast<uint8_t>(seg_table[i]);
+        }
+
+        // 页数据越过文件末尾 = 最后一页被截断（下载中断）
+        if (file.Pos() + static_cast<int64_t>(page_data_size) > file.Size()) {
+            ++diag.truncated_pages;
+            break;
         }
 
         // 读取页面数据 (前 4096 字节，足以覆盖标识头与注释头，用于 codec 识别与元数据)
@@ -132,6 +163,21 @@ bool OggStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
         // 更新流信息
         auto& si = streams[serial];
         si.page_count++;
+        ++diag.pages;
+
+        // BOS/EOS 与页序号连续性：这是 Ogg 唯一的"结构性约束"，
+        // 缺一页的表现就是播放到某处卡住或音画不同步。
+        if (si.first_page) {
+            if (!is_bos) ++diag.missing_bos;
+            si.first_page = false;
+        }
+        if (is_bos) si.bos_seen = true;
+        if (is_eos) si.eos_seen = true;
+        if (si.last_seq >= 0 &&
+            static_cast<int64_t>(page_seq) != si.last_seq + 1) {
+            ++diag.sequence_gaps;
+        }
+        si.last_seq = static_cast<int64_t>(page_seq);
 
         // BOS 页面识别 codec + 标识头解析 (采样率/声道)
         if (is_bos && page_data.size() >= 7) {
@@ -174,8 +220,8 @@ bool OggStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
             }
         }
 
-        // 创建页面元素 (仅前 200 个页面加入树)
-        if (total_pages < 200) {
+        // 创建页面元素 (仅前 N 个页面加入树)
+        if (options.build_tree && total_pages < options.max_tree_pages) {
             model::ContainerElement page;
             page.name = StrCat("Page #%1", page_seq);
             page.type = "Ogg Page";
@@ -191,7 +237,17 @@ bool OggStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
             root.children.push_back(page);
         }
 
-        total_pages++;
+        ++total_pages;
+    }
+
+    diag.logical_streams = streams.size();
+    // 扫完了仍未见到 EOS：文件被截断，或复用流的写入器没有正确收尾
+    for (auto it = streams.begin(); it != streams.end(); ++it) {
+        if (it->second.bos_seen && !it->second.eos_seen) ++diag.missing_eos;
+    }
+    if (max_pages != 0 && total_pages >= max_pages && file.Pos() < file.Size() - 27) {
+        // 只扫了窗口：棒尾问题不在结论范围内
+        diag.scan_complete = false;
     }
 
     // 添加流信息
@@ -208,7 +264,7 @@ bool OggStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
         stream_elem.value = (StrCat("codec=%1 pages=%2%3", info.codec_name, info.page_count, detail.empty() ? "" : " | " + detail));
 
         model::ContainerStreamInfo csi;
-        csi.index = result.streams.size();
+        csi.index = static_cast<int>(result.streams.size());
         csi.codec = info.codec_name;
         csi.details = detail;
         // 根据 codec 推断类型
@@ -222,10 +278,10 @@ bool OggStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
         }
         result.streams.push_back(csi);
 
-        root.children.push_back(stream_elem);
+        if (options.build_tree) root.children.push_back(stream_elem);
     }
 
-    result.element_tree.push_back(root);
+    if (options.build_tree) result.element_tree.push_back(root);
     result.valid = true;
     result.summary = StrCat("OGG | %1 页/已解析 | %2 逻辑流", total_pages, streams.size());
 

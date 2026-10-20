@@ -116,6 +116,50 @@ model::ContainerFormat FormatDetector::DetectByMagic(const std::string& file_pat
         return model::ContainerFormat::OGG;
     }
 
+    // MPEG-PS: 以 pack header 起始码 00 00 01 BA 开头（.mpg/.vob/.m2p）。
+    // 必须在"裸流"判断之前：PS 里同样全是 00 00 01 起始码。
+    if (header.size() >= 4 &&
+        (unsigned char)header[0] == 0x00 &&
+        (unsigned char)header[1] == 0x00 &&
+        (unsigned char)header[2] == 0x01 &&
+        (unsigned char)header[3] == 0xBA) {
+        return model::ContainerFormat::MPEG_PS;
+    }
+
+    // MXF: SMPTE 通用键前缀 06 0E 2B 34（UL 的前 4 字节）。
+    if (header.size() >= 4 &&
+        (unsigned char)header[0] == 0x06 &&
+        (unsigned char)header[1] == 0x0E &&
+        (unsigned char)header[2] == 0x2B &&
+        (unsigned char)header[3] == 0x34) {
+        return model::ContainerFormat::MXF;
+    }
+
+    // 裸流（Annex-B）：00 00 00 01 / 00 00 01 起始码 + 合理的 H.264/HEVC NAL 头。
+    // 只认"头 4 字节 + 后面还能再看到一个起始码"的组合，避免被随机 0 字节骗到。
+    if (header.size() >= 8) {
+        size_t sc = std::string::npos;
+        size_t nal = std::string::npos;
+        if (header.compare(0, 4, std::string("\x00\x00\x00\x01", 4)) == 0) {
+            sc = 0;
+            nal = 4;
+        } else if (header.compare(0, 3, std::string("\x00\x00\x01", 3)) == 0) {
+            sc = 0;
+            nal = 3;
+        }
+        if (sc != std::string::npos && nal < header.size()) {
+            const unsigned char b = static_cast<unsigned char>(header[nal]);
+            const bool forbidden_zero = (b & 0x80) == 0;
+            const bool h264_type = ((b & 0x1F) >= 1 && (b & 0x1F) <= 23);
+            const bool hevc_type = (((b >> 1) & 0x3F) <= 40);
+            // NAL 头之后还应能找到下一个起始码，否则更像一段随机零字节
+            const size_t next = header.find(std::string("\x00\x00\x01", 3), nal + 1);
+            if (forbidden_zero && (h264_type || hevc_type) && next != std::string::npos) {
+                return model::ContainerFormat::RAW_ES;
+            }
+        }
+    }
+
     return model::ContainerFormat::Unknown;
 }
 
@@ -149,6 +193,22 @@ model::ContainerFormat FormatDetector::DetectByExtension(const std::string& file
     if (ext == "ogg" || ext == "oga" || ext == "ogv" || ext == "opus") {
         return model::ContainerFormat::OGG;
     }
+    // MPEG-PS：.mpg/.mpeg/.vob/.m2p/.ps。规则层的别名表早就把它们归到 "mpeg"，
+    // 但解析层以前不认识，这些文件只能落到 FFmpeg 通用分析。
+    if (ext == "mpg" || ext == "mpe" || ext == "mpeg" || ext == "m2p" ||
+        ext == "vob" || ext == "ps" || ext == "m2v") {
+        return model::ContainerFormat::MPEG_PS;
+    }
+    if (ext == "mxf") {
+        return model::ContainerFormat::MXF;
+    }
+    // 裸流：没有容器层，结构页走 FFmpeg 通用分析，但格式名要认出来。
+    if (ext == "h264" || ext == "264" || ext == "avc" ||
+        ext == "h265" || ext == "265" || ext == "hevc" || ext == "hvc" ||
+        ext == "vvc" || ext == "266" || ext == "h266" ||
+        ext == "av1" || ext == "obu") {
+        return model::ContainerFormat::RAW_ES;
+    }
     // 流媒体清单是纯文本（#EXTM3U / <MPD），魔数无从判断，只能看扩展名。
     if (ext == "m3u8" || ext == "m3u") {
         return model::ContainerFormat::HLS;
@@ -181,6 +241,9 @@ std::string FormatDetector::FormatName(model::ContainerFormat fmt) {
     case model::ContainerFormat::MPEG_TS:        return "MPEG-TS";
     case model::ContainerFormat::ASF:            return "ASF";
     case model::ContainerFormat::OGG:            return "OGG";
+    case model::ContainerFormat::MPEG_PS:        return "MPEG-PS";
+    case model::ContainerFormat::MXF:            return "MXF";
+    case model::ContainerFormat::RAW_ES:         return "Raw ES";
     case model::ContainerFormat::HLS:            return "HLS";
     case model::ContainerFormat::DASH:           return "DASH";
     case model::ContainerFormat::FFmpeg_Generic: return "Generic";
@@ -199,6 +262,9 @@ std::string FormatDetector::FormatTitle(model::ContainerFormat fmt) {
     case model::ContainerFormat::MPEG_TS:        return "MPEG-TS 结构";
     case model::ContainerFormat::ASF:            return "ASF/WMV 结构";
     case model::ContainerFormat::OGG:            return "OGG 结构";
+    case model::ContainerFormat::MPEG_PS:        return "MPEG-PS (Pack/PES) 结构";
+    case model::ContainerFormat::MXF:            return "MXF (KLV) 结构";
+    case model::ContainerFormat::RAW_ES:         return "裸流 (Annex-B) 结构";
     case model::ContainerFormat::HLS:            return "HLS 清单结构";
     case model::ContainerFormat::DASH:           return "DASH MPD 结构";
     case model::ContainerFormat::FFmpeg_Generic: return "FFmpeg 通用结构";

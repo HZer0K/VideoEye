@@ -72,7 +72,9 @@ struct Mp4EditListEntry {
 struct Mp4TrackSampleTable {
     uint32_t track_id = 0;
     std::string type;              // "video" / "audio" / "hint" / "text" ...
-    std::string codec;             // stsd 里的编码四字符码（如 "avc1"）
+    std::string codec;             // stsd 里的编码四字符码（如 "avc1"），取第一个描述
+    // stsd 声明的全部 sample entry（如 Dolby Vision 的 avc1 + dvhe 双描述）。
+    std::vector<std::string> sample_descriptions;
     uint32_t media_timescale = 0;  // mdhd.timescale
     uint64_t media_duration = 0;   // mdhd.duration（媒体时基）
 

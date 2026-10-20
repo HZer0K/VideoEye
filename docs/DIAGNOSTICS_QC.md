@@ -97,6 +97,48 @@ analyze_ts_transport` / `ts_transport_max_packets`，默认 20 万包）。
 - `ts_transport.analyzed=false` 时整族规则静默 —— "没跑过"不是"没问题"；
 - 故障类规则的 detail 必须带出「扫了多少 / 共多少」，否则窗口结论会被读成全文件结论。
 
+### 4.2 AVI / FLV / ASF / OGG（`container.avi.*` / `flv.*` / `asf.*` / `ogg.*`）
+
+输入是 `AnalysisResult::container_diagnostics`（`ContainerDiagnosticsInfo`），由
+`AnalysisInputSession::FillLegacyContainerFacts()` 按容器格式调用对应的
+`*StructureAnalyzer` 采集，与「容器结构」页共用同一套解析代码。口径：
+
+- 结构页需要建树，QC 扫描不需要（`build_tree=false`）；AVI 跳过 `movi`、
+  OGG/FLV 只扫页头/tag 头，避免大文件把分析时间拖垮；
+- 各分析器的 `analyzed` 为假时整族静默 —— 没扫过的容器不下结论；
+- 这些数字是**容器自己的结构事实**，不是 FFmpeg demux 的结论。
+
+| 规则 id | 默认阈值 | 严重度 | 判定 |
+|---------|----------|--------|------|
+| `container.avi.riff_size_exceeds_file` | — | Error | 顶级 RIFF 长度超过文件大小 |
+| `container.avi.missing_index` | — | Warning | 有音视频流却既无 `idx1` 也无 `indx` |
+| `container.avi.index_bad_offsets` | > 0 项 | Error | `idx1` 条目偏移 + 长度越过文件末尾 |
+| `container.avi.indx_truncated` | — | Error | `indx` 声明条目数超过块实际长度 |
+| `container.avi.no_opendml` | — | Warning | 有 `AVIX` 却没有 `dmlh` |
+| `container.avi.truncated_chunks` | > 0 块 | Error | RIFF 块声明长度越过文件末尾 |
+| `container.avi.zero_length_streams` | > 0 条 | Warning | `strh.dwLength = 0`，时长/帧数不可信 |
+| `container.flv.missing_metadata` | — | Info | 没有 `onMetaData` |
+| `container.flv.missing_avc_sequence_header` | — | Error | 声明 AVC/HEVC/AV1 却没见到序列头 |
+| `container.flv.timestamp_backwards` | > 0 次 | Warning | tag 时间戳相对上一条回退 |
+| `container.flv.truncated_tags` | > 0 个 | Error | tag 数据越过文件末尾 |
+| `container.flv.tag_size_mismatch` | > 0 处 | Warning | `PreviousTagSize` 与实际 tag 长度不符 |
+| `container.asf.missing_data_object` | — | Error | 没有 Data Object，文件里没有媒体负载 |
+| `container.asf.header_object_size_invalid` | > 0 个 | Error | 子对象 size 非法（< 24 / 越界） |
+| `container.asf.header_size_exceeds_file` | — | Critical | Header Object 长度超过文件大小 |
+| `container.asf.duration_invalid` | — | Warning | 头里的播放时长缺失或为 0 |
+| `container.ogg.page_sequence_gap` | > 0 次 | Warning | 同一逻辑流的页序号不连续 |
+| `container.ogg.missing_bos` | > 0 条 | Error | 逻辑流没有 BOS 页 |
+| `container.ogg.missing_eos` | > 0 条 | Info | 逻辑流没有 EOS 页（可能仍在写入） |
+| `container.ogg.truncated_pages` | > 0 页 | Error | 页声明长度越过文件末尾 |
+| `container.ogg.resyncs` | > 0 次 | Warning | 扫描中需要重新找 `OggS` 同步 |
+
+### 4.3 MP4 多 sample entry（`container.mp4.*`）
+
+`Mp4SampleTableAnalyzer` 发现 `stsd` 声明了多于一条 sample entry 时产出
+`container.mp4.multiple_sample_entries`（Info）。它不表示文件损坏，而是提醒：
+`track.codec` 只代表第一条描述，其余描述对应的样本（可能通过 `stsc` 的
+`sample_description_index` 选择）编码可能不同；Dolby Vision 双层属于刻意用法。
+
 ### 新增一条规则
 
 1. 在 `core/domain/model/QcModels.cpp` 的 `DefaultQcRules()` 里追加一条（id / 名称 / 类别 / 严重度 / 判定 / 阈值 / 建议）；

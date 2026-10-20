@@ -138,6 +138,126 @@ std::vector<QcRule> DefaultQcRules() {
         "传输层体检只扫描了文件前一部分。失步 / 连续计数 / PCR 结论只代表扫描窗口。",
         "需要整条流结论时把 AnalysisOptions::ts_transport_max_packets 设为 0（扫完整个文件）。");
 
+    // ---- 老式容器 AVI / FLV / ASF / OGG ----
+    //
+    // 这四种格式以前只有结构树、没有 QC 规则（"能看不能判"）。这一组的共同前提是
+    // AnalysisResult::container_diagnostics 里对应 analyzed=true —— 只有输入确实是
+    // 该容器、且是本地文件时才会填充（网络源不重扫），否则一律不报。
+    //
+    // 判定依据是解析器在遍历 RIFF 块 / FLV tag / ASF 对象 / Ogg 页时顺手记下的
+    // 结构事实，与 FFmpeg demux 相互独立：FFmpeg 能打开不代表"索引/时序/收尾"是好的。
+
+    // AVI：索引（idx1 / indx / dmlh）与截断。>1 GB 的文件问题主要出在这里。
+    add("container.avi.riff_size_exceeds_file", "RIFF 声明长度超过文件大小", IssueCategory::Container,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "",
+        "顶级 RIFF 声明的长度超过文件实际大小，文件被截断（录制中断 / 下载不全）。",
+        "确认源文件完整性；只修末尾时重新封装即可。");
+
+    add("container.avi.missing_index", "AVI 缺少索引", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "既没有传统 idx1 索引，也没有 OpenDML indx 索引。只能顺序读取，"
+        "拖动进度条需要从头扫描；超过 4 GB 的文件 seek 会明显不准。",
+        "完整文件应带索引；用 ffmpeg -c copy 重新封装会重建索引。");
+
+    add("container.avi.index_bad_offsets", "AVI 索引偏移越界", IssueCategory::Container,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "个",
+        "idx1 中存在偏移 + 长度越过文件末尾的条目，seek 到这些帧会读到越界数据。",
+        "文件被截断或索引写坏；重新封装重建索引。");
+
+    add("container.avi.indx_truncated", "OpenDML 索引被截断", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "indx 头声明的条目数超出该块实际长度，按索引长跳转会落到错误偏移。",
+        "确认文件完整；重新封装让 muxer 重写 OpenDML 索引。");
+
+    add("container.avi.no_opendml", "OpenDML 头缺失", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "存在 OpenDML 扩展 RIFF（'AVIX'）但没有 dmlh 头，"
+        "跨 4 GB 边界的 seek 会失真。",
+        "确认文件完整；重新封装补上 dmlh。");
+
+    add("container.avi.truncated_chunks", "AVI 块被截断", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "个",
+        "有 RIFF 块声明的长度越过文件末尾，数据不完整（通常影响末尾）。",
+        "确认文件来源完整；有问题就重新封装。");
+
+    add("container.avi.zero_length_streams", "AVI 存在零长度流", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "个",
+        "音视频流的 strh.dwLength 为 0，时长/帧数只能靠扫描推算，进度条与 seek 会失效。",
+        "常见于录制中断；重新封装让 muxer 回填正确长度。");
+
+    // FLV：时序、序列头、完整性。
+    add("container.flv.missing_metadata", "FLV 缺失 onMetaData", IssueCategory::Container,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "",
+        "没有 onMetaData 脚本标记，播放器拿不到时长/分辨率，需要扫完整文件才能出进度条。",
+        "用 ffmpeg -c copy 重新封装写入元数据。");
+
+    add("container.flv.missing_avc_sequence_header", "FLV 缺少序列头", IssueCategory::Container,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "",
+        "H.264/HEVC/AV1 视频全程没有 Sequence Start 包头，缺少 SPS/PPS，解码器无法初始化。",
+        "拼接文件时保证每个分段都带序列头，或转码重新生成完整文件。");
+
+    add("container.flv.timestamp_backwards", "FLV 时间戳回退", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "次",
+        "同一类型 tag 内时间戳出现回退，时序错乱会导致卡顿、音画不同步。",
+        "拼接错误的 FLV 常见；转码修复时间轴。");
+
+    add("container.flv.truncated_tags", "FLV tag 被截断", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "个",
+        "tag 的完整数据越过文件末尾，文件被截断，末尾数据缺失。",
+        "确认下载/录制完整；重新转封装修复。");
+
+    add("container.flv.tag_size_mismatch", "FLV PreviousTagSize 不匹配", IssueCategory::Container,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "处",
+        "PreviousTagSize 声明值与实际 tag 长度不符，严格校验的播放器会拒绝后续 tag。",
+        "通常由拼接脚本引入；重新封装。");
+
+    // ASF/WMV/WMA：头完整性、数据对象、时长。
+    add("container.asf.missing_data_object", "ASF 缺少数据对象", IssueCategory::Container,
+        IssueSeverity::Critical, QcRuleOp::NonZero, 0.0, "",
+        "遍历整个文件没有找到 ASF Data Object，只有头/元数据，没有可播放的媒体数据。",
+        "确认源文件完整；补上媒体数据后重新封装。");
+
+    add("container.asf.header_object_size_invalid", "ASF 对象大小无效", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "个",
+        "对象 size 小于对象头（24 字节）或越过文件末尾，该对象及其后的解析不可信。",
+        "ASF 头至少 24 字节；文件被截断时重新获取源文件。");
+
+    add("container.asf.header_size_exceeds_file", "ASF 头被截断", IssueCategory::Container,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "",
+        "Header Object 声明长度超过文件实际大小，文件头被截断，元数据与流属性可能不完整。",
+        "重新下载/复制源文件。");
+
+    add("container.asf.duration_invalid", "ASF 时长无效", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "File Properties 解析出的时长为 0 或负值，进度条 seek 不可用。",
+        "常见于未正常收尾的录制文件；重新封装回填时长。");
+
+    // OGG：页序号、BOS/EOS、截断、重同步。
+    add("container.ogg.page_sequence_gap", "OGG 页序号不连续", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "处",
+        "逻辑流的 page_seq 出现缺口（丢页）或回退（拼接错位），对应位置数据缺失。",
+        "检查录制/拼接链路；转码修复时间轴。");
+
+    add("container.ogg.missing_bos", "OGG 缺少起始页", IssueCategory::Container,
+        IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "个",
+        "逻辑流的第一个页面不是 BOS，文件开头被截断，缺少 codec 标识头。",
+        "文件开头丢失，无法初始化解码器；重新获取完整文件。");
+
+    add("container.ogg.missing_eos", "OGG 缺少结束页", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "个",
+        "逻辑流扫描到文件末尾仍未出现 EOS，文件没有正常收尾（截断 / 录制中断）。",
+        "确认文件完整性；需要可分发时重新封装。");
+
+    add("container.ogg.truncated_pages", "OGG 页被截断", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "页",
+        "页的 header/segment table/数据越过文件末尾，页数据不完整。",
+        "通常只影响最后一页；确认文件来源完整。");
+
+    add("container.ogg.resyncs", "OGG 重新同步", IssueCategory::Container,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "次",
+        "解析时找不到 \"OggS\" 同步码并重新对齐，说明前面字节不对齐或中间损坏。",
+        "偶发一次通常是文件中间被改写；持续出现说明容器损坏，需要重新获取。");
+
     // ---- MP4/fMP4 容器一致性（core/analysis/container/Mp4SampleTableAnalyzer.h，走自研 IsobmffParser）----
     // 这些规则只决定"是否上报 / 以什么级别上报"，问题本身（含具体样本号、偏移、分片号）
     // 由分析器给出；级别取「规则级别」与「分析器级别」中更严重的一侧，
@@ -197,6 +317,12 @@ std::vector<QcRule> DefaultQcRules() {
         "tfhd.base_data_offset / default-base-is-moof / trun.data_offset 三者全无，"
         "播放器无法算出样本数据的文件偏移。",
         "重新封装；CMAF 要求前两者至少有一个。");
+
+    add("container.mp4.multiple_sample_entries", "轨道含多个样本描述", IssueCategory::Container,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "个",
+        "stsd 声明了多个 sample entry；本项目 track.codec 只取第一个，"
+        "其余描述对应的样本可能被误判编码。",
+        "确认是否为刻意的多描述（如 Dolby Vision 双层）；否则重新封装只保留一个 entry。");
 
     // ---- HLS 流媒体包（core/analysis/streaming/HlsManifestAnalyzer.h）----
     // 与 MP4 那一组同样的套路：问题由分析器产出，规则决定要不要报、以什么级别报。

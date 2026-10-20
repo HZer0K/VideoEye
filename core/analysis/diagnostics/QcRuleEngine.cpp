@@ -80,6 +80,11 @@ std::vector<model::DiagnosticIssue> QcRuleEngine::CheckRule(const model::QcRule&
     const diagnostics::detail::IssueFactory make_issue{rule};
     const std::string& id = rule.id;
     if (id.rfind("container.mp4.", 0) == 0) return diagnostics::detail::CheckMp4ContainerRules(rule, result, make_issue);
+    // 老式容器（AVI/FLV/ASF/OGG）走各自的事实摘要，同样必须排在 container. 兜底之前。
+    if (id.rfind("container.avi.", 0) == 0) return diagnostics::detail::CheckAviContainerRules(rule, result, make_issue);
+    if (id.rfind("container.flv.", 0) == 0) return diagnostics::detail::CheckFlvContainerRules(rule, result, make_issue);
+    if (id.rfind("container.asf.", 0) == 0) return diagnostics::detail::CheckAsfContainerRules(rule, result, make_issue);
+    if (id.rfind("container.ogg.", 0) == 0) return diagnostics::detail::CheckOggContainerRules(rule, result, make_issue);
     // 注意顺序：container.ts. 必须排在下面那条 container. 兜底之前，
     // 否则会被 CheckContainerRules 抢走（它对不认识的 id 直接返回空，规则静默失效）。
     if (id.rfind("container.ts.", 0) == 0) return diagnostics::detail::CheckTsTransportRules(rule, result, make_issue);

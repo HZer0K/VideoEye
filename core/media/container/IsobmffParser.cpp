@@ -446,10 +446,24 @@ void ParseMdhd(IsobmffTrack& t, const uint8_t* p, uint64_t n) {
 }
 
 void ParseStsdCodec(IsobmffTrack& t, const uint8_t* p, uint64_t n) {
-    // version/flags(4) + entry_count(4) + 首个 entry: size(4) + format(4)
-    if (n < 16)
+    // version/flags(4) + entry_count(4) + entry* (size(4) + format(4) + ...)
+    if (n < 8)
         return;
-    t.codec = FourCC(p + 12);
+    const uint32_t entry_count = Rd32(p + 4);
+    uint64_t pos = 8;
+    for (uint32_t i = 0; i < entry_count; ++i) {
+        if (pos + 8 > n)
+            break;
+        const uint32_t entry_size = Rd32(p + pos);
+        t.sample_descriptions.push_back(FourCC(p + pos + 4));
+        if (entry_size < 8 || pos + entry_size > n) {
+            // size 不可信：已经拿到 fourcc，停止即可（继续按 size 跳会越界）
+            break;
+        }
+        pos += entry_size;
+    }
+    if (!t.sample_descriptions.empty())
+        t.codec = t.sample_descriptions.front();
 }
 
 void ParseMvhd(IsobmffFile& out, const uint8_t* p, uint64_t n) {

@@ -23,6 +23,7 @@
 #include "core/domain/model/BitrateGopResult.h"
 #include "core/domain/model/BitstreamInfo.h"
 #include "core/domain/model/ColorHdrResult.h"
+#include "core/domain/model/ContainerDiagnosticsInfo.h"
 #include "core/domain/model/MetricSeries.h"
 #include "core/domain/model/Mp4SampleInfo.h"
 #include "core/domain/model/SceneChangeResult.h"
@@ -121,6 +122,11 @@ struct AnalysisResult {
     // demux 把 TS 包结构藏起来了，只能按字节再扫一遍文件头（预算见
     // AnalysisOptions::ts_transport_max_packets）。
     TransportStreamInfo ts_transport;
+
+    // AVI / FLV / ASF / OGG 的容器级体检事实（索引、时间戳、页/EOS、对象大小等），
+    // 供 container.avi.* / container.flv.* / container.asf.* / container.ogg.* 规则使用。
+    // 只有输入确实是这四种容器且是本地文件时才填充（网络源不重扫）。
+    ContainerDiagnosticsInfo container_diagnostics;
 
     // 执行状态
     AnalysisStatus scan_status = AnalysisStatus::Complete;

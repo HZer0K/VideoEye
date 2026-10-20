@@ -106,7 +106,8 @@ static std::string GuidToName(const std::string& guid) {
 }
 
 bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::ContainerStructureResult& result,
-                                   const std::atomic<bool>* cancel) {
+                                   const std::atomic<bool>* cancel,
+                                   const Options& options) {
     SeqFileReader file(file_path);
     if (!file.IsOpen()) {
         result.error_message = "无法打开文件";
@@ -116,6 +117,9 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
     result.format = model::ContainerFormat::ASF;
     result.format_name = "ASF";
     result.file_path = file_path;
+    result.diagnostics.asf = model::AsfDiagnostics();
+    result.diagnostics.asf.analyzed = true;
+    auto& diag = result.diagnostics.asf;
 
     // Read top-level Header Object
     std::string guid = file.Read(16);
@@ -133,6 +137,7 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
     // Number of header objects (4 bytes LE)
     std::string count_buf = file.Read(4);
     uint32_t num_objects = count_buf.size() >= 4 ? asfLE32(count_buf, 0) : 0;
+    diag.declared_header_objects = num_objects;
 
     // Skip 2 reserved bytes
     file.Read(2);
@@ -147,8 +152,11 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
 
     // Parse child objects
     int64_t header_end = static_cast<int64_t>(header_size);
-    if (header_end > file.Size())
+    if (header_end > file.Size()) {
         header_end = file.Size();
+        // Header Object 声明的长度越过文件末尾 = 文件截断
+        diag.header_size_exceeds_file = true;
+    }
 
     for (uint32_t i = 0; i < num_objects && file.Pos() < header_end - 24; ++i) {
         std::string obj_guid = file.Read(16);
@@ -158,6 +166,10 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
 
         uint64_t obj_size = asfLE64(obj_size_buf, 0);
         int64_t obj_start = file.Pos() - 24;
+        ++diag.parsed_header_objects;
+        if (obj_size < 24 || obj_start + static_cast<int64_t>(obj_size) > file.Size()) {
+            ++diag.invalid_object_sizes;
+        }
         std::string obj_name = GuidToName(obj_guid);
 
         model::ContainerElement elem;
@@ -179,13 +191,17 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
                     duration_sec = play_100ns / 10000000.0;
                 elem.value = StrCat("duration=%1s", Fixed(duration_sec, 2));
                 result.metadata["duration"] = (Fixed(duration_sec, 2) + "s");
+                diag.duration_seconds = duration_sec;
+                // 0 时长在 ASF 里通常意味着"实时流没有回填"或文件头被截断，
+                // 进度条会整段失效。
+                if (!(duration_sec > 0.0)) diag.duration_invalid = true;
             }
         } else if (obj_guid == kStreamPropertiesGuid) {
             std::string data = file.Read(AsfPayloadLen(obj_size, 256));
             if (data.size() >= 54) {
                 std::string stream_type_guid = data.substr(0, 16);
                 model::ContainerStreamInfo si;
-                si.index = result.streams.size();
+                si.index = static_cast<int>(result.streams.size());
                 if (stream_type_guid == kVideoStreamGuid) {
                     si.type = "video";
                     // 视频 type-specific 从 offset 54: width(4),height(4),flags(1),fmtsize(2),BITMAPINFOHEADER
@@ -253,11 +269,11 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
             file.Seek(next_pos);
         } else {
             file.Seek(file.Size());
-            root.children.push_back(elem);
+            if (options.build_tree) root.children.push_back(elem);
             break;
         }
 
-        root.children.push_back(elem);
+        if (options.build_tree) root.children.push_back(elem);
     }
 
     // Scan for Data Object and Index Object after header
@@ -273,22 +289,28 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
             break;
 
         uint64_t obj_size = asfLE64(obj_size_buf, 0);
+        const int64_t obj_start = file.Pos() - 24;
+        if (obj_guid == kDataObjectGuid) diag.has_data_object = true;
+        if (obj_guid == kIndexObjectGuid) diag.has_index_object = true;
+        if (obj_size < 24 || obj_start + static_cast<int64_t>(obj_size) > file.Size()) {
+            ++diag.invalid_object_sizes;
+        }
 
         model::ContainerElement elem;
         elem.name = GuidToName(obj_guid);
         elem.type = "ASF Object";
         elem.size = obj_size;
-        elem.offset = file.Pos() - 24;
+        elem.offset = obj_start;
         elem.depth = 1;
         elem.value = StrCat("size=%1", obj_size);
-        root.children.push_back(elem);
+        if (options.build_tree) root.children.push_back(elem);
 
         if (obj_size < 24)
             break;
-        file.Seek(file.Pos() - 24 + static_cast<int64_t>(obj_size));
+        file.Seek(obj_start + static_cast<int64_t>(obj_size));
     }
 
-    result.element_tree.push_back(root);
+    if (options.build_tree) result.element_tree.push_back(root);
     result.valid = true;
     result.summary = StrCat("ASF | 文件大小: %1 字节 | 流: %2 个", file.Size(), result.streams.size());
 

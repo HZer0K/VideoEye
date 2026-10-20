@@ -3,6 +3,7 @@
 #include "core/analysis/detail/BytesOrder.h"
 #include "core/analysis/detail/SeqFileReader.h"
 #include "infrastructure/concurrency/Cancellation.h"
+#include <algorithm>
 #include <cstring>
 #include <map>
 #include <string>
@@ -219,7 +220,8 @@ void parseAmf0Value(const std::string& b, int& pos, const std::string& key, std:
 } // namespace
 
 bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::ContainerStructureResult& result,
-                                   const std::atomic<bool>* cancel) {
+                                   const std::atomic<bool>* cancel,
+                                   const Options& options) {
     SeqFileReader file(file_path);
     if (!file.IsOpen()) {
         result.error_message = "无法打开文件";
@@ -229,6 +231,8 @@ bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
     result.format = model::ContainerFormat::FLV;
     result.format_name = "FLV";
     result.file_path = file_path;
+    result.diagnostics.flv = model::FlvDiagnostics();
+    result.diagnostics.flv.analyzed = true;
 
     // FLV Header: "FLV" + version(1) + flags(1) + header_size(4)
     std::string header = file.Read(9);
@@ -244,6 +248,10 @@ bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
     bool has_video = (flags & 0x01) != 0;
     bool has_audio = (flags & 0x04) != 0;
 
+    auto& diag = result.diagnostics.flv;
+    diag.header_has_video = has_video;
+    diag.header_has_audio = has_audio;
+
     // 创建根元素
     model::ContainerElement root;
     root.name = "FLV Header";
@@ -257,7 +265,7 @@ bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
     int audio_stream_idx = -1;
     if (has_video) {
         model::ContainerStreamInfo vs;
-        vs.index = result.streams.size();
+        vs.index = static_cast<int>(result.streams.size());
         vs.type = "video";
         vs.codec = "FLV Video";
         video_stream_idx = vs.index;
@@ -265,7 +273,7 @@ bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
     }
     if (has_audio) {
         model::ContainerStreamInfo as;
-        as.index = result.streams.size();
+        as.index = static_cast<int>(result.streams.size());
         as.type = "audio";
         as.codec = "FLV Audio";
         audio_stream_idx = as.index;
@@ -275,13 +283,16 @@ bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
     // 跳过 PreviousTagSize0
     file.Seek(header_size);
 
-    // 遍历 Tag 序列 (最多收集前 500 个作为结构概览)
-    int tag_count = 0;
-    int video_tags = 0, audio_tags = 0, script_tags = 0;
+    // 遍历 Tag 序列
+    uint64_t tag_count = 0;
+    uint64_t video_tags = 0, audio_tags = 0, script_tags = 0;
     bool video_codec_found = false, audio_codec_found = false, metadata_found = false;
-    const int max_tags = 500;
+    const uint32_t max_tags = options.max_tags;
 
-    while (file.Pos() < file.Size() - 11 && tag_count < max_tags) {
+    // 时间戳回退检测按 tag 类型分开统计（音频/视频各自单调）。
+    int64_t last_timestamp[3] = {-1, -1, -1};
+
+    while (file.Pos() < file.Size() - 11 && (max_tags == 0 || tag_count < max_tags)) {
         if (infrastructure::Checkpoint(cancel)) {
             result.error_message = "已取消";
             return false;
@@ -301,6 +312,38 @@ bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
         timestamp |= (static_cast<uint32_t>(ts_ext) << 24);
 
         int64_t data_start = file.Pos();
+        const int64_t tag_end = data_start + static_cast<int64_t>(data_size) + 4;
+
+        // 声明的 tag 长度越过文件末尾 = 文件截断（下载/录制中断）。
+        if (tag_end > file.Size()) {
+            ++diag.truncated_tags;
+            break;
+        }
+
+        // PreviousTagSize 出现在 tag data 之后，应当等于 11 + data_size。
+        // 不符通常意味着写入器两边不一致（或前置 13 字节头被误当成 tag）。
+        {
+            file.Seek(data_start + static_cast<int64_t>(data_size));
+            const std::string prev = file.Read(4);
+            if (prev.size() == 4) {
+                const uint32_t declared =
+                    LoadBE32(reinterpret_cast<const unsigned char*>(prev.data()));
+                if (declared != data_size + 11u) ++diag.tag_size_mismatch;
+            }
+            file.Seek(data_start);
+        }
+
+        if (timestamp > diag.max_timestamp_ms) diag.max_timestamp_ms = timestamp;
+        {
+            const int slot = (tag_type == 8) ? 0 : (tag_type == 9 ? 1 : (tag_type == 18 ? 2 : -1));
+            if (slot >= 0) {
+                if (last_timestamp[slot] >= 0 &&
+                    static_cast<int64_t>(timestamp) < last_timestamp[slot]) {
+                    ++diag.timestamp_backwards;
+                }
+                last_timestamp[slot] = static_cast<int64_t>(timestamp);
+            }
+        }
 
         model::ContainerElement tag;
         tag.offset = data_start - 11;
@@ -312,7 +355,7 @@ bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
             tag.name = "Audio Tag";
             tag.type = "Audio";
             tag.value = StrCat("ts=%1 size=%2", timestamp, data_size);
-            audio_tags++;
+            ++audio_tags;
             if (!audio_codec_found && data_size >= 1) {
                 uint8_t sound = 0;
                 if (!ReadOneByte(file, sound))
@@ -338,29 +381,55 @@ bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
             tag.name = "Video Tag";
             tag.type = "Video";
             tag.value = StrCat("ts=%1 size=%2", timestamp, data_size);
-            video_tags++;
-            if (!video_codec_found && data_size >= 1) {
-                uint8_t vh = 0;
-                if (!ReadOneByte(file, vh))
-                    break;
-                std::string codec;
-                if (vh & 0x80) {
-                    // Enhanced-FLV: 首字节 bit7=1 (isExVideoHeader), 后跟 3 字节 fourcc
-                    // (av01/vp09/hvc1...)。此处不能回退到低 4 位 CodecID——
-                    // 增强头里低 4 位是 PacketType, 会被误判成完全无关的编码器。
-                    if (data_size >= 4) {
-                        codec = flvEnhancedVideoFourcc(file.Read(3));
+            ++video_tags;
+
+            // 每个视频 tag 都要看包头：序列头（Sequence Start）可能夹在任何位置，
+            // 只读第一个 tag 会漏判 —— 而这正是"能播但首帧花屏"的关键事实。
+            if (data_size >= 1) {
+                const std::string head =
+                    file.Read(static_cast<size_t>(std::min<uint32_t>(data_size, 5)));
+                if (!head.empty()) {
+                    const uint8_t vh = static_cast<uint8_t>(head[0]);
+                    std::string codec;
+                    bool is_avc = false, is_hevc = false, is_av1 = false;
+                    bool sequence_start = false;
+
+                    if (vh & 0x80) {
+                        // Enhanced-FLV: 首字节 bit7=1 (isExVideoHeader), 后跟 3 字节 fourcc
+                        // (av01/vp09/hvc1...)。此处不能回退到低 4 位 CodecID——
+                        // 增强头里低 4 位是 PacketType, 会被误判成完全无关的编码器。
+                        if (head.size() >= 4) {
+                            const std::string fcc = head.substr(1, 3);
+                            codec = flvEnhancedVideoFourcc(fcc);
+                            is_avc = (fcc == "avc1");
+                            is_hevc = (fcc == "hvc1" || fcc == "hev1");
+                            is_av1 = (fcc == "av01");
+                        } else {
+                            codec = "Enhanced FLV (fourcc 缺失)";
+                        }
+                        sequence_start = ((vh & 0x0F) == 0);
                     } else {
-                        codec = "Enhanced FLV (fourcc 缺失)";
+                        const int codec_id = vh & 0x0F;
+                        codec = flvVideoCodec(codec_id);
+                        is_avc = (codec_id == 7);
+                        is_hevc = (codec_id == 12);
+                        // AVC/HEVC 的 AVCPacketType: 0 = sequence header
+                        if ((codec_id == 7 || codec_id == 12) && head.size() >= 2) {
+                            sequence_start = (static_cast<uint8_t>(head[1]) == 0);
+                        }
                     }
-                } else {
-                    int codec_id = vh & 0x0F;
-                    codec = flvVideoCodec(codec_id);
+
+                    if (is_avc) diag.video_codec_avc = true;
+                    if (is_hevc) diag.video_codec_hevc = true;
+                    if (is_av1) diag.video_codec_av1 = true;
+                    if (sequence_start) diag.video_sequence_header_seen = true;
+
+                    tag.value += StrCat(" | %1", codec);
+                    if (!video_codec_found) {
+                        if (video_stream_idx >= 0) result.streams[video_stream_idx].codec = codec;
+                        video_codec_found = true;
+                    }
                 }
-                tag.value += StrCat(" | %1", codec);
-                if (video_stream_idx >= 0)
-                    result.streams[video_stream_idx].codec = codec;
-                video_codec_found = true;
             }
             break;
         }
@@ -368,7 +437,7 @@ bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
             tag.name = "Script Tag";
             tag.type = "Script";
             tag.value = StrCat("ts=%1 size=%2", timestamp, data_size);
-            script_tags++;
+            ++script_tags;
             if (!metadata_found && data_size > 0 && data_size < 1024 * 1024) {
                 std::string sdata = file.Read(data_size);
                 int pos = 0;
@@ -400,14 +469,24 @@ bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
             break;
         }
 
-        root.children.push_back(tag);
+        if (options.build_tree) root.children.push_back(tag);
 
         // 跳过 tag data + PreviousTagSize (4 bytes)，始终基于 data_start 定位以避免上面读了部分数据
-        file.Seek(data_start + data_size + 4);
-        tag_count++;
+        file.Seek(tag_end);
+        ++tag_count;
     }
 
-    result.element_tree.push_back(root);
+    diag.scanned_tags = tag_count;
+    diag.video_tags = video_tags;
+    diag.audio_tags = audio_tags;
+    diag.script_tags = script_tags;
+    diag.has_metadata = metadata_found;
+    // max_tags 截断时只扫了开头窗口：没发现的问题不能当成"没问题"。
+    if (max_tags != 0 && tag_count >= max_tags && file.Pos() < file.Size() - 11) {
+        diag.scan_complete = false;
+    }
+
+    if (options.build_tree) result.element_tree.push_back(root);
     result.valid = true;
     std::string summary = "FLV | Video Tags: " + std::to_string(video_tags) +
                           " | Audio Tags: " + std::to_string(audio_tags) +

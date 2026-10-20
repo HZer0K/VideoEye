@@ -1,9 +1,9 @@
-// 五个容器结构分析器的参数化健壮性测试
+// 七个容器结构分析器的参数化健壮性测试
 //
-// Asf / Avi / Flv / Ogg / Ts 五个 StructureAnalyzer 的接口完全一致：
+// Asf / Avi / Flv / Ogg / Ts / MpegPs / Mxf 七个 StructureAnalyzer 的接口完全一致：
 //     bool Analyze(const std::string& file_path, model::ContainerStructureResult& result);
 // 但此前一个单测都没有（见 docs/ARCHITECTURE_REVIEW_2026-10-04 第 10 项）。
-// 这里用 TEST_P 把"五个分析器 × 三种输入"压成一个矩阵，覆盖的是最容易出错、
+// 这里用 TEST_P 把"七个分析器 × 三种输入"压成一个矩阵，覆盖的是最容易出错、
 // 又最不依赖真实媒体文件的三类边界：
 //   1. 文件不存在   —— 必须返回 false 并给出统一的"无法打开文件"
 //   2. 魔数对不上   —— 必须返回 false 并给出非空错误说明（OGG 例外，见文末）
@@ -29,6 +29,8 @@
 #include "core/analysis/container/FlvStructureAnalyzer.h"
 #include "core/analysis/container/OggStructureAnalyzer.h"
 #include "core/analysis/container/TsStructureAnalyzer.h"
+#include "core/analysis/container/MpegPsStructureAnalyzer.h"
+#include "core/analysis/container/MxfStructureAnalyzer.h"
 #include "core/domain/model/ContainerStructureInfo.h"
 
 using namespace videoeye;
@@ -103,6 +105,16 @@ QByteArray OggMinimal() {
     return b;
 }
 
+// MPEG-PS: 一个 MPEG-2 Pack Header（14 字节，stuffing=0）
+QByteArray MpegPsMinimal() {
+    return QByteArray::fromHex("000001BA44000400040189C3F800");
+}
+
+// MXF: 一个 Header Partition Pack（16 字节键 + BER 长度 0）
+QByteArray MxfMinimal() {
+    return QByteArray::fromHex("060E2B34020501010D01020101020100") + QByteArray(1, '\0');
+}
+
 std::vector<AnalyzerCase> AllCases() {
     return {
         {"Asf",  [](const std::string& p, model::ContainerStructureResult& r) {
@@ -120,6 +132,12 @@ std::vector<AnalyzerCase> AllCases() {
         {"Ts",   [](const std::string& p, model::ContainerStructureResult& r) {
              return videoeye::TsStructureAnalyzer().Analyze(p, r);
          }, model::ContainerFormat::MPEG_TS, "MPEG-TS", TsMinimal(), true},
+        {"MpegPs", [](const std::string& p, model::ContainerStructureResult& r) {
+             return videoeye::MpegPsStructureAnalyzer().Analyze(p, r);
+         }, model::ContainerFormat::MPEG_PS, "MPEG-PS", MpegPsMinimal(), true},
+        {"Mxf", [](const std::string& p, model::ContainerStructureResult& r) {
+             return videoeye::MxfStructureAnalyzer().Analyze(p, r);
+         }, model::ContainerFormat::MXF, "MXF", MxfMinimal(), true},
     };
 }
 
@@ -230,6 +248,60 @@ TEST(OggAnalyzerLeniency, AcceptsArbitraryBytesByDesign) {
     EXPECT_TRUE(videoeye::OggStructureAnalyzer().Analyze(path, result));
     EXPECT_TRUE(result.valid);
     EXPECT_EQ(result.format, model::ContainerFormat::OGG);
+}
+
+// ===========================================================================
+// MPEG-PS / MXF：B3 新增的两个解析器
+// ===========================================================================
+
+// PSM 把 0xE0 映射成 H.264，随后一个视频 PES 带 PTS —— 解析器必须把
+// "stream_type → codec" 这条映射走通，而不是只数起始码。
+TEST(MpegPsAnalyzer, ParsesPsmMappingAndPes) {
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+
+    QByteArray b = QByteArray::fromHex("000001BA44000400040189C3F800");  // Pack Header
+    b.append(QByteArray::fromHex("000001BC000B"));                      // PSM 起始码 + 长度 11
+    b.append(QByteArray::fromHex("80FFFF000000041BE00000"));            // 0xE0 -> stream_type 0x1B
+    b.append(QByteArray::fromHex("000001E00009"));                      // 视频 PES，长度 9
+    b.append(QByteArray::fromHex("8080052100010001"));                  // PES 头 + PTS
+    b.append(char(0xAA));                                               // 1 字节载荷
+
+    const std::string path = WriteTemp(dir, "clip.mpg", b);
+    ASSERT_FALSE(path.empty());
+
+    model::ContainerStructureResult result;
+    ASSERT_TRUE(MpegPsStructureAnalyzer().Analyze(path, result));
+    ASSERT_TRUE(result.valid);
+    ASSERT_EQ(result.streams.size(), 1u);
+    EXPECT_EQ(result.streams[0].type, "video");
+    EXPECT_EQ(result.streams[0].codec, "H.264 (AVC)");
+    EXPECT_EQ(result.metadata["PSM"], "1");
+    EXPECT_EQ(result.metadata["PES 包"], "1");
+}
+
+// MXF: 一个 Header Partition + 一视频一音频 Essence KLV，轨道号与类型都来自键。
+TEST(MxfAnalyzer, CollectsEssenceTracks) {
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+
+    QByteArray b = QByteArray::fromHex("060E2B34020501010D01020101020100");
+    b.append(char(0x00));                                              // BER 长度 0
+    b.append(QByteArray::fromHex("060E2B34010201010D01030101010000"));  // track 1 / video
+    b.append(char(0x00));
+    b.append(QByteArray::fromHex("060E2B34010201010D01030102020000"));  // track 2 / audio
+    b.append(char(0x00));
+
+    const std::string path = WriteTemp(dir, "clip.mxf", b);
+    ASSERT_FALSE(path.empty());
+
+    model::ContainerStructureResult result;
+    ASSERT_TRUE(MxfStructureAnalyzer().Analyze(path, result));
+    ASSERT_TRUE(result.valid);
+    ASSERT_EQ(result.streams.size(), 2u);
+    EXPECT_EQ(result.streams[0].type, "video");
+    EXPECT_EQ(result.streams[1].type, "audio");
+    EXPECT_EQ(result.metadata["Partition"], "1 (H1/B0/F0)");
 }
 
 // ===========================================================================

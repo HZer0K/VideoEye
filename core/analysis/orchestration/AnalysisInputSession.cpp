@@ -14,7 +14,11 @@ extern "C" {
 
 // 具体分析器只出现在这里: 它们是本 cpp 的执行者，不进会话的公开头 ——
 // 改一个分析器不该让所有 include 了 AnalysisInputSession.h 的地方重编。
+#include "core/analysis/container/AsfStructureAnalyzer.h"
+#include "core/analysis/container/AviStructureAnalyzer.h"
+#include "core/analysis/container/FlvStructureAnalyzer.h"
 #include "core/analysis/container/Mp4SampleTableAnalyzer.h"
+#include "core/analysis/container/OggStructureAnalyzer.h"
 #include "core/analysis/detail/AnalysisStreamSelection.h"
 #include "core/analysis/orchestration/AnalysisTerminalState.h"
 #include "core/domain/io/Utf8Path.h"
@@ -200,6 +204,55 @@ void AnalysisInputSession::FillContainerFacts(model::AnalysisResult& result) {
             // 解析失败不致命，记一条日志即可（诊断仍走 FFmpeg 那条通路）
             LOG_WARN("MP4 样本表分析失败: " + result.mp4_samples.error_message);
         }
+    }
+
+    FillLegacyContainerFacts(result);
+}
+
+void AnalysisInputSession::FillLegacyContainerFacts(model::AnalysisResult& result) {
+    if (!options_.analyze_legacy_container) return;
+    // 网络源不重扫：URL 读两遍既不必要也不可靠（与 TS 传输层体检同一口径）。
+    if (file_path_.find("://") != std::string::npos) return;
+
+    // iformat->name 是 FFmpeg 的 demuxer token，不是扩展名：
+    // .wmv/.wma → "asf"，.oga/.opus → "ogg"，这样命名不一致的文件也能进入体检。
+    const std::string& fmt = result.container_format;
+    model::ContainerStructureResult structure;
+    bool ok = false;
+
+    if (fmt == "avi") {
+        AviStructureAnalyzer::Options opt;
+        // QC 只要事实：不建树，也不逐块遍历 movi（那会把大文件扫描拖成分钟级）。
+        opt.build_tree = false;
+        opt.scan_media_data = false;
+        AviStructureAnalyzer analyzer;
+        ok = analyzer.Analyze(file_path_, structure, cancel_source_, opt);
+    } else if (fmt == "flv") {
+        FlvStructureAnalyzer::Options opt;
+        opt.build_tree = false;
+        opt.max_tags = 0;  // 扫完整个文件，否则时间戳回退/截断只能看到开头
+        FlvStructureAnalyzer analyzer;
+        ok = analyzer.Analyze(file_path_, structure, cancel_source_, opt);
+    } else if (fmt == "asf") {
+        AsfStructureAnalyzer::Options opt;
+        opt.build_tree = false;
+        AsfStructureAnalyzer analyzer;
+        ok = analyzer.Analyze(file_path_, structure, cancel_source_, opt);
+    } else if (fmt == "ogg") {
+        OggStructureAnalyzer::Options opt;
+        opt.build_tree = false;
+        opt.max_pages = 0;  // 缺 EOS 只有扫到文件尾才能下结论
+        OggStructureAnalyzer analyzer;
+        ok = analyzer.Analyze(file_path_, structure, cancel_source_, opt);
+    } else {
+        return;
+    }
+
+    if (ok) {
+        result.container_diagnostics = structure.diagnostics;
+    } else if (!structure.error_message.empty()) {
+        // 体检失败不致命：FFmpeg 那条通路照常，规则层看到 analyzed=false 会静默跳过。
+        LOG_WARN("老式容器结构体检失败: " + structure.error_message);
     }
 }
 

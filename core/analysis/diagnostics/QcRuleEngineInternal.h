@@ -81,6 +81,19 @@ std::vector<model::DiagnosticIssue> CheckStreamingContainerRules(const model::Qc
 std::vector<model::DiagnosticIssue> CheckTsTransportRules(const model::QcRule& rule,
                                                           const model::AnalysisResult& result,
                                                           const IssueFactory& make_issue);
+// 老式容器：AVI / FLV / ASF / OGG（读 AnalysisResult::container_diagnostics）
+std::vector<model::DiagnosticIssue> CheckAviContainerRules(const model::QcRule& rule,
+                                                           const model::AnalysisResult& result,
+                                                           const IssueFactory& make_issue);
+std::vector<model::DiagnosticIssue> CheckFlvContainerRules(const model::QcRule& rule,
+                                                           const model::AnalysisResult& result,
+                                                           const IssueFactory& make_issue);
+std::vector<model::DiagnosticIssue> CheckAsfContainerRules(const model::QcRule& rule,
+                                                           const model::AnalysisResult& result,
+                                                           const IssueFactory& make_issue);
+std::vector<model::DiagnosticIssue> CheckOggContainerRules(const model::QcRule& rule,
+                                                           const model::AnalysisResult& result,
+                                                           const IssueFactory& make_issue);
 std::vector<model::DiagnosticIssue> CheckVideoRules(const model::QcRule& rule,
                                                     const model::AnalysisResult& result,
                                                     const IssueFactory& make_issue);

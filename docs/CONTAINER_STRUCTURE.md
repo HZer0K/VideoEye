@@ -23,13 +23,19 @@
 | MPEG-TS | `0x47` 等步长重复（**188 / 192 / 204 三种步长都试**） | `TsStructureAnalyzer` |
 | ASF / WMV | `30 26 B2 75 8E 66 CF 11` | `AsfStructureAnalyzer` |
 | OGG | `OggS` | `OggStructureAnalyzer` |
+| MPEG-PS | `00 00 01 BA`（Pack Header） | `MpegPsStructureAnalyzer` |
+| MXF | `06 0E 2B 34`（Partition Pack UL） | `MxfStructureAnalyzer` |
+| 裸流 | `00 00 00 01` / `00 00 01` + 合理的 NAL 头 + 第二个起始码 | 走 FFmpeg（无结构树） |
 | HLS / DASH | **只能靠扩展名**（`.m3u8` / `.mpd` 是纯文本） | `HlsManifestAnalyzer` / `DashManifestAnalyzer` |
 
-2026-10 补的两条检测细节：
+2026-10 补的三条检测细节：
 
 - TS 的 192 字节包（M2TS/AVCHD，同步字节在偏移 4）与 204 字节包（RS 纠错）
   以前认不出来，`.m2ts` 只能靠扩展名兜底，然后被按 188 步长解析、报"未找到同步字节"。
 - 扩展名映射里 `f4v` 曾同时出现在 MP4 与 FLV 两个分支，后者是死代码。
+- 扩展名表以前没有 `mpg` / `vob` / `mxf`，PS 与 MXF 文件只能落到"未知格式"再被
+  FFmpeg 兜底；裸流（`.h264` / `.h265` / `.av1` …）同理。现在三种都能在检测层
+  给出格式名，PS / MXF 还会走自己的结构解析器。
 
 ## 2. 每种格式的深度
 
@@ -40,10 +46,12 @@
 | MP4 / MOV / fMP4 | 深：box 树到字段级 + 样本表交叉校验（stbl / elst / moof-traf-trun / faststart） | 递归深度上限 8；单表条目上限 `max_entries_per_table` |
 | MKV / WebM | 深：SeekHead / Info / Tracks(Video/Audio/Colour/Mastering) / Cluster / Cues / Chapters / Tags / Attachments | `BlockAdditions` 只列节点不展开 |
 | MPEG-TS | 中深：包长自适应、失步重同步、PAT/PMT 跨包组装、PSI 描述符、SDT、PCR、CC 统计 | 默认只扫前 50 万包（可配）；不做 PES 载荷解析 |
-| FLV | 中深：AMF0 `onMetaData`、Enhanced-FLV fourcc（HEVC/AV1/VP9） | Script Tag 只取标量键值 |
-| AVI | 中：RIFF chunk 树 + `strh`/`strf` | 无 `idx1`/`indx` 索引校验，OpenDML 大文件不受控 |
-| ASF / WMV | 中：7 类对象 GUID 有名字与字段 | Header Extension / Metadata / DRM 归 `Unknown Object` |
-| OGG | 中：Vorbis / Opus / FLAC / Theora / Speex 标识头 + 注释块 | 只读每页前 4 KiB 数据 |
+| FLV | 中深：AMF0 `onMetaData`、Enhanced-FLV fourcc（HEVC/AV1/VP9）、tag 级时间戳/截断扫描 | Script Tag 只取标量键值 |
+| AVI | 中深：RIFF chunk 树 + `strh`/`strf` + `idx1`/`indx`/`dmlh`/`AVIX` 索引校验 | `movi` 载荷不展开；QC 扫描跳过媒体数据 |
+| ASF / WMV | 中深：7 类对象 GUID 有名字与字段、对象大小/Data Object/时长校验 | Header Extension / Metadata / DRM 归 `Unknown Object` |
+| OGG | 中深：Vorbis / Opus / FLAC / Theora / Speex 标识头 + 注释块 + 页序号/BOS/EOS/截断扫描 | 只读每页前 4 KiB 数据（QC 只扫页头） |
+| MPEG-PS | 中：Pack / System Header / PSM 映射 / PES 边界 + PTS 首末值 | 默认只扫前 32 MB；不解析 PES 载荷 |
+| MXF | 中：KLV 对象流（Partition / Primer / Index / Essence）+ BER 长度校验 | 默认只扫前 64 MB；不解码 essence |
 
 ### MP4 的字段级覆盖
 
@@ -76,6 +84,12 @@ btrt        bufferSizeDB, maxBitrate, avgBitrate
 它们以前不算容器，所以 `avcC`/`colr`/`pasp`/`btrt` 整棵子树从来没进过 box 树。
 子 box 的起点按 entry 种类不同（视频 78 字节、音频按版本 28/44/64 字节），
 见 `SampleEntryChildOffset()`。
+
+`stsd` 允许声明多个 sample entry（Dolby Vision 双层、多码流打包等），样本通过
+`stsc` 的 `sample_description_index` 选择用哪一条。`IsobmffTrack::sample_descriptions`
+按声明顺序保留全部 fourcc，`codec` 仍取第一条（兼容既有展示与规则）；结构树本来就
+能看到全部入口。轨道含多条描述时，容器规则会以 `container.mp4.multiple_sample_entries`
+（Info）提示"codec 只代表第一条"。
 
 ## 3. MPEG-TS 的深度与代价
 
