@@ -205,6 +205,13 @@ if(VIDEOEYE_PYTHON_EXE)
     # 脚本就会去扫那份旧树、报旧违规，于是 LayeringRulesTests 莫名其妙 FAIL，而自测
     # （test_check_layering.py 里显式 pop 掉 VIDEOEYE_ROOT）却一路绿——极难排查。
     # 这里把 VIDEOEYE_ROOT 强制钉到真实源码根，让测试与机器环境解耦，谁 export 歪了都不影响。
+    #
+    # ❗ PYTHONIOENCODING 必须钉成 utf-8: 这几个脚本的输出全是中文，而 Windows runner
+    # 的控制台代码页是 cp1252(en-US)。python 往 ctest 的管道里写时会直接抛
+    # UnicodeEncodeError 崩掉，ctest 只看到 "Required regular expression not found"
+    # （真正的 traceback 在紧接着的下一行，很容易被当成"脚本没输出"而查错方向），
+    # 于是整组脚本测试在 CI 的 Windows 侧一路红，而本机（GBK / UTF-8 控制台）永远绿。
+    # 钉死 stdout/stderr 编码之后就与控制台代码页无关了。
     set_tests_properties(LayeringRulesTests LayeringSelfTestTests
                                             QtAnalysisBorderTests
                                             QtAnalysisBorderSelfTestTests
@@ -217,7 +224,12 @@ if(VIDEOEYE_PYTHON_EXE)
                                             MsvcShowIncludesPrefixTests
                                             MsvcShowIncludesPrefixSelfTestTests PROPERTIES
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        ENVIRONMENT "VIDEOEYE_ROOT=${CMAKE_SOURCE_DIR}")
+        ENVIRONMENT "VIDEOEYE_ROOT=${CMAKE_SOURCE_DIR};PYTHONIOENCODING=utf-8;PYTHONUTF8=1")
+    # 这几个同样会打印中文，但工作目录各管各的（CorpusGenerator 靠脚本自身路径定位
+    # corpus），所以只补编码、不动 WORKING_DIRECTORY。
+    set_tests_properties(CorpusGeneratorCheck RealCorpusCheck
+                         TestSummaryReadmeCheck TestSummarySelfTests PROPERTIES
+        ENVIRONMENT "PYTHONIOENCODING=utf-8;PYTHONUTF8=1")
 else()
     message(STATUS "未找到 python，跳过分层规则测试（CI 与 pre-commit 仍会跑）")
 endif()
