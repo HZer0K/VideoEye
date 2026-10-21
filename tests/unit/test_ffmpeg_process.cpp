@@ -25,9 +25,9 @@
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QList>
+#include <QProcess>
 #include <QString>
 #include <QStringList>
-#include <QProcess>
 #include <QTemporaryDir>
 
 #include <gtest/gtest.h>
@@ -40,7 +40,7 @@ namespace ffmpeg = videoeye::ffmpeg;
 namespace {
 
 // 纯 ASCII 转义，避免源码编码影响这条断言（要验的正是"UTF-8 字节被正确解码"）
-const char kUtf8Chinese[] = "\xE4\xB8\xAD\xE6\x96\x87";  // 中文
+const char kUtf8Chinese[] = "\xE4\xB8\xAD\xE6\x96\x87"; // 中文
 
 QString g_child_program;
 
@@ -95,25 +95,23 @@ struct RunCapture {
     int started_count = 0;
     int finished_count = 0;
     ffmpeg::FfmpegRunResult result;
-    QStringList out;                              // 来自 stdout
-    QStringList err;                              // 来自 stderr
-    QList<ffmpeg::FfmpegStopStage> stages;    // StopStageChanged 的顺序
+    QStringList out;                       // 来自 stdout
+    QStringList err;                       // 来自 stderr
+    QList<ffmpeg::FfmpegStopStage> stages; // StopStageChanged 的顺序
 };
 
 /// 把进程跑完（或超时）。on_started 在 Started 信号之后被调用，用来在进程中途 Stop。
 RunCapture RunToCompletion(const QString& program, const QStringList& arguments,
-                           const QString& working_directory = QString(),
-                           int timeout_ms = 8000,
+                           const QString& working_directory = QString(), int timeout_ms = 8000,
                            const std::function<void(ffmpeg::FfmpegProcessRunner*)>& on_started =
                                std::function<void(ffmpeg::FfmpegProcessRunner*)>()) {
     RunCapture capture;
     ffmpeg::FfmpegProcessRunner runner;
     QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::Started,
                      [&capture](const QString&) { ++capture.started_count; });
-    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::OutputLine,
-                     [&capture](const QString& text, bool is_error) {
-                         (is_error ? capture.err : capture.out).push_back(text);
-                     });
+    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::OutputLine, [&capture](const QString& text, bool is_error) {
+        (is_error ? capture.err : capture.out).push_back(text);
+    });
     QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::StopStageChanged,
                      [&capture](ffmpeg::FfmpegStopStage stage) { capture.stages.push_back(stage); });
     QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::Finished,
@@ -174,18 +172,23 @@ bool ChildProcessAvailable(QString* reason = nullptr) {
     static bool checked = false;
     if (!checked) {
         checked = true;
+#if defined(__SANITIZE_THREAD__)
+        // TSan 自己不支持"多线程进程里 fork/exec"：QProcess 一起子进程，TSan 就在
+        // ForkAfter 里 CHECK 失败并直接把测试进程带走（tsan_rtl.cpp:253
+        // "((!thr->slot)) != (0)"），那是 sanitizer 的限制，不是被测代码的问题。
+        // 所以 TSan 构建下整组跳过，由 asan / 普通 Debug 构建覆盖这条路径。
+        failure = QStringLiteral("ThreadSanitizer 不支持在多线程进程里 fork/exec, 本组用例在 TSan 构建下跳过");
+#else
         QProcess probe;
         probe.setProgram(g_child_program);
-        probe.setArguments({QStringLiteral("--videoeye-child"), QStringLiteral("exit"),
-                            QStringLiteral("0")});
+        probe.setArguments({QStringLiteral("--videoeye-child"), QStringLiteral("exit"), QStringLiteral("0")});
         probe.start(QIODevice::ReadOnly);
         probe.waitForFinished(3000);
-        if (probe.state() != QProcess::NotRunning || probe.exitCode() != 0 ||
-            probe.error() != QProcess::UnknownError) {
+        if (probe.state() != QProcess::NotRunning || probe.exitCode() != 0 || probe.error() != QProcess::UnknownError) {
             failure = QStringLiteral("本环境无法用 QProcess 启动子进程（error=%1, %2）")
-                          .arg(QString::number(static_cast<int>(probe.error())),
-                               probe.errorString());
+                          .arg(QString::number(static_cast<int>(probe.error())), probe.errorString());
         }
+#endif
     }
     if (reason != nullptr) {
         *reason = failure;
@@ -193,12 +196,12 @@ bool ChildProcessAvailable(QString* reason = nullptr) {
     return failure.isEmpty();
 }
 
-#define SKIP_IF_NO_CHILD_PROCESS()                                  \
-    do {                                                            \
-        QString skip_reason;                                        \
-        if (!ChildProcessAvailable(&skip_reason)) {                 \
-            GTEST_SKIP() << skip_reason.toStdString();              \
-        }                                                           \
+#define SKIP_IF_NO_CHILD_PROCESS()                                                                                     \
+    do {                                                                                                               \
+        QString skip_reason;                                                                                           \
+        if (!ChildProcessAvailable(&skip_reason)) {                                                                    \
+            GTEST_SKIP() << skip_reason.toStdString();                                                                 \
+        }                                                                                                              \
     } while (0)
 
 // ===================== 启动 =====================
@@ -216,8 +219,7 @@ TEST(FfmpegProcessRunner, StartErrorIsReportedOnce) {
                          capture.result = result;
                      });
 
-    const bool started = runner.Start(QStringLiteral("/definitely/not/here/ffmpeg"),
-                                      {QStringLiteral("-version")});
+    const bool started = runner.Start(QStringLiteral("/definitely/not/here/ffmpeg"), {QStringLiteral("-version")});
     EXPECT_FALSE(started);
     EXPECT_FALSE(runner.IsRunning());
     EXPECT_EQ(capture.started_count, 0);
@@ -228,9 +230,9 @@ TEST(FfmpegProcessRunner, StartErrorIsReportedOnce) {
 
 TEST(FfmpegProcessRunner, StartErrorWhenWorkingDirectoryMissing) {
     SKIP_IF_NO_CHILD_PROCESS();
-    const auto capture = RunToCompletion(g_child_program, {QStringLiteral("--videoeye-child"),
-                                                           QStringLiteral("exit"), QStringLiteral("0")},
-                                         QStringLiteral("/definitely/not/here/either"));
+    const auto capture = RunToCompletion(
+        g_child_program, {QStringLiteral("--videoeye-child"), QStringLiteral("exit"), QStringLiteral("0")},
+        QStringLiteral("/definitely/not/here/either"));
     EXPECT_EQ(capture.finished_count, 1);
     EXPECT_EQ(capture.result.status, ffmpeg::FfmpegRunStatus::StartError);
 }
@@ -239,8 +241,8 @@ TEST(FfmpegProcessRunner, StartErrorWhenWorkingDirectoryMissing) {
 
 TEST(FfmpegProcessRunner, SeparateStdoutAndStderr) {
     SKIP_IF_NO_CHILD_PROCESS();
-    const auto capture = RunToCompletion(g_child_program, {QStringLiteral("--videoeye-child"),
-                                                           QStringLiteral("exit"), QStringLiteral("3")});
+    const auto capture = RunToCompletion(
+        g_child_program, {QStringLiteral("--videoeye-child"), QStringLiteral("exit"), QStringLiteral("3")});
     ASSERT_EQ(capture.finished_count, 1);
     EXPECT_EQ(capture.result.status, ffmpeg::FfmpegRunStatus::Failed);
     EXPECT_EQ(capture.result.exit_code, 3);
@@ -253,8 +255,8 @@ TEST(FfmpegProcessRunner, SeparateStdoutAndStderr) {
 
 TEST(FfmpegProcessRunner, ZeroExitCodeIsFinished) {
     SKIP_IF_NO_CHILD_PROCESS();
-    const auto capture = RunToCompletion(g_child_program, {QStringLiteral("--videoeye-child"),
-                                                           QStringLiteral("exit"), QStringLiteral("0")});
+    const auto capture = RunToCompletion(
+        g_child_program, {QStringLiteral("--videoeye-child"), QStringLiteral("exit"), QStringLiteral("0")});
     ASSERT_EQ(capture.finished_count, 1);
     EXPECT_EQ(capture.result.status, ffmpeg::FfmpegRunStatus::Finished);
     EXPECT_EQ(capture.result.exit_code, 0);
@@ -263,8 +265,7 @@ TEST(FfmpegProcessRunner, ZeroExitCodeIsFinished) {
 TEST(FfmpegProcessRunner, DecodesUtf8Output) {
     SKIP_IF_NO_CHILD_PROCESS();
     // Windows 中文环境下 ffmpeg 常吐本地编码；UTF-8 路径必须先被正确解出来
-    const auto capture = RunToCompletion(g_child_program, {QStringLiteral("--videoeye-child"),
-                                                           QStringLiteral("utf8")});
+    const auto capture = RunToCompletion(g_child_program, {QStringLiteral("--videoeye-child"), QStringLiteral("utf8")});
     ASSERT_EQ(capture.finished_count, 1);
     ASSERT_FALSE(capture.out.isEmpty());
     EXPECT_EQ(capture.out.first(), QString::fromUtf8(kUtf8Chinese));
@@ -279,10 +280,9 @@ TEST(FfmpegProcessRunner, StopWritesQuitToStdin) {
     // 因为强杀出来的 mp4 没有 moov box，等于白跑。
     RunCapture capture;
     ffmpeg::FfmpegProcessRunner runner;
-    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::OutputLine,
-                     [&capture](const QString& text, bool is_error) {
-                         (is_error ? capture.err : capture.out).push_back(text);
-                     });
+    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::OutputLine, [&capture](const QString& text, bool is_error) {
+        (is_error ? capture.err : capture.out).push_back(text);
+    });
     QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::StopStageChanged,
                      [&capture](ffmpeg::FfmpegStopStage stage) { capture.stages.push_back(stage); });
     QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::Finished,
@@ -291,8 +291,7 @@ TEST(FfmpegProcessRunner, StopWritesQuitToStdin) {
                          capture.result = result;
                      });
 
-    ASSERT_TRUE(runner.Start(g_child_program, {QStringLiteral("--videoeye-child"),
-                                               QStringLiteral("echo")}));
+    ASSERT_TRUE(runner.Start(g_child_program, {QStringLiteral("--videoeye-child"), QStringLiteral("echo")}));
     ASSERT_TRUE(WaitForLine(capture, QStringLiteral("child:ready"), 5000));
 
     runner.Stop();
@@ -319,8 +318,7 @@ TEST(FfmpegProcessRunner, StopWritesQuitToStdin) {
 TEST(FfmpegProcessRunner, StopEscalatesWhenQuitIsIgnored) {
     SKIP_IF_NO_CHILD_PROCESS();
     const auto capture = RunToCompletion(
-        g_child_program, {QStringLiteral("--videoeye-child"), QStringLiteral("sleep"),
-                          QStringLiteral("5000")},
+        g_child_program, {QStringLiteral("--videoeye-child"), QStringLiteral("sleep"), QStringLiteral("5000")},
         QString(), 8000, [](ffmpeg::FfmpegProcessRunner* runner) { runner->Stop(150, 150); });
 
     ASSERT_EQ(capture.finished_count, 1);
@@ -337,14 +335,13 @@ TEST(FfmpegProcessRunner, StoppingOneRunDoesNotKillTheNext) {
     RunCapture first;
     QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::OutputLine,
                      [&first](const QString& text, bool) { first.out.push_back(text); });
-    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::Finished,
-                     [&first](const ffmpeg::FfmpegRunResult& result) {
-                         ++first.finished_count;
-                         first.result = result;
-                     });
+    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::Finished, [&first](const ffmpeg::FfmpegRunResult& result) {
+        ++first.finished_count;
+        first.result = result;
+    });
 
-    ASSERT_TRUE(runner.Start(g_child_program, {QStringLiteral("--videoeye-child"),
-                                               QStringLiteral("sleep"), QStringLiteral("150")}));
+    ASSERT_TRUE(runner.Start(g_child_program,
+                             {QStringLiteral("--videoeye-child"), QStringLiteral("sleep"), QStringLiteral("150")}));
     // 宽限给到 900ms: run1 会在 150ms 时自己退出，定时器因此是"在飞"的状态
     runner.Stop(900, 900);
     QElapsedTimer timer;
@@ -357,13 +354,12 @@ TEST(FfmpegProcessRunner, StoppingOneRunDoesNotKillTheNext) {
 
     // 立刻跑第二条: 900ms 时上一代遗留的定时器会到点，绝不能动手
     RunCapture second;
-    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::Finished,
-                     [&second](const ffmpeg::FfmpegRunResult& result) {
-                         ++second.finished_count;
-                         second.result = result;
-                     });
-    ASSERT_TRUE(runner.Start(g_child_program, {QStringLiteral("--videoeye-child"),
-                                               QStringLiteral("sleep"), QStringLiteral("1200")}));
+    QObject::connect(&runner, &ffmpeg::FfmpegProcessRunner::Finished, [&second](const ffmpeg::FfmpegRunResult& result) {
+        ++second.finished_count;
+        second.result = result;
+    });
+    ASSERT_TRUE(runner.Start(g_child_program,
+                             {QStringLiteral("--videoeye-child"), QStringLiteral("sleep"), QStringLiteral("1200")}));
     timer.restart();
     while (second.finished_count == 0 && timer.elapsed() < 5000) {
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
@@ -379,8 +375,7 @@ TEST(FfmpegProcessRunner, NostdinCannotBeStoppedGracefully) {
     EXPECT_TRUE(ffmpeg::FfmpegProcessRunner::CanQuitViaStdin(
         {QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("out.mp4")}));
     EXPECT_FALSE(ffmpeg::FfmpegProcessRunner::CanQuitViaStdin(
-        {QStringLiteral("-nostdin"), QStringLiteral("-i"), QStringLiteral("in.mp4"),
-         QStringLiteral("out.mp4")}));
+        {QStringLiteral("-nostdin"), QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("out.mp4")}));
 }
 
 // ===================== 工作目录 =====================
@@ -390,23 +385,22 @@ TEST(FfmpegProcessRunner, WorkingDirectoryDoesNotLeakToNextRun) {
     QTemporaryDir temp;
     ASSERT_TRUE(temp.isValid());
 
-    const auto in_temp = RunToCompletion(g_child_program,
-                                         {QStringLiteral("--videoeye-child"), QStringLiteral("pwd")},
-                                         temp.path());
+    const auto in_temp =
+        RunToCompletion(g_child_program, {QStringLiteral("--videoeye-child"), QStringLiteral("pwd")}, temp.path());
     ASSERT_EQ(in_temp.finished_count, 1);
     ASSERT_FALSE(in_temp.out.isEmpty());
     EXPECT_EQ(Canonical(in_temp.out.first()), Canonical(temp.path()));
 
     // 第二次不指定工作目录: 必须回到调用进程的目录，不能沿用上次的 temp
-    const auto in_default = RunToCompletion(g_child_program,
-                                            {QStringLiteral("--videoeye-child"), QStringLiteral("pwd")});
+    const auto in_default =
+        RunToCompletion(g_child_program, {QStringLiteral("--videoeye-child"), QStringLiteral("pwd")});
     ASSERT_EQ(in_default.finished_count, 1);
     ASSERT_FALSE(in_default.out.isEmpty());
     EXPECT_EQ(Canonical(in_default.out.first()), Canonical(QDir::currentPath()));
     EXPECT_NE(Canonical(in_default.out.first()), Canonical(temp.path()));
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);

@@ -507,15 +507,28 @@ TEST(VisualDefectAnalyzer, AsyncQueueDropsInsteadOfBlocking) {
     a.Reset(opt);
     a.StartWorker(2); // 队列只有 2 格
 
-    // 一口气塞 200 帧: 工作线程来不及消费，其余必须被丢弃而不是堆积
+    // 先把 200 帧造好，再一口气投出去：投递循环里只剩"加锁 + push + notify"，
+    // 一帧约 1us；而工作线程光从条件变量上醒来就要几 us，跑完一帧分析更久。
+    // 两边差一个量级，丢帧在投递过程中是**必然**发生的。
+    //
+    // 早先这里是边造边投（Sharp() 逐像素算一遍），投递和分析的耗时落在同一量级，
+    // 于是"到底丢没丢"变成看机器脸色：Windows 上丢，Linux CI 上一次都不丢
+    // （dropped_samples() 恒为 0）。丢帧只可能发生在 Submit() 内部，所以循环
+    // 结束之后再 sleep 等待也等不来，那段等待一并去掉。
+    std::vector<FrameSample> burst;
+    burst.reserve(200);
     for (int i = 0; i < 200; ++i) {
-        a.Submit(MakeSample(i, i * 0.04, Sharp(i % 8)));
+        burst.push_back(MakeSample(i, i * 0.04, Sharp(i % 8)));
     }
-    // 等队列排空（给工作线程一点时间，最多 2 秒）
-    for (int i = 0; i < 200 && a.dropped_samples() == 0; ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    int accepted = 0;
+    for (const FrameSample& s : burst) {
+        if (a.Submit(s))
+            ++accepted;
     }
     EXPECT_GT(a.dropped_samples(), 0);
+    // 丢的是"多出来的"，收下的那些仍然会被分析（StopWorker 会清掉剩余的队列，
+    // 所以这里只能给上界）。
+    EXPECT_LE(a.analyzed_samples(), accepted);
 
     a.Flush(8.0);
     a.StopWorker();
