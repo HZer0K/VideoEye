@@ -482,12 +482,10 @@ jobs:
       # 不 --stop-on-failure: sanitizer 场景下想一次看到所有问题（ASan 报完进程就死，
       # 逐个跑能省很多轮）。Linux 上 ctest 默认并行跑，这里关掉以免互相抢 CPU 拖时间。
       #
-      # TSAN_OPTIONS:
-      #   suppressions —— 只压 Qt6 自身的竞争（scripts/tsan-suppressions.txt 里逐条写了
-      #     判定口径）。我们自己代码里的竞争一律在代码里修，不往压制文件里塞。
-      #   history_size —— 默认只留 2^15 个影子单元的历史，慢一点的用例会被"忘记"掉
-      #     早期访问，报出来的栈不完整；调到 7 覆盖 sanitizer 场景的长用例。
+      # 为什么没有 TSAN_OPTIONS=suppressions=...: 试过，压不住。TSan 的 race: 按函数名
+      # 精确匹配，Qt 的 C++ 符号（QWaitCondition::~QWaitCondition 这类）对不上；而能压住
+      # QArrayData / operator delete / memmove 的范围又太宽，会连我们自己的竞争一起压掉。
+      # 真属于 Qt 自身的那两处改成在用例里显式跳过（tests/unit/SanitizerSkip.h），
+      # 哪几条、为什么，写在代码里比写在压制文件里可读。
       - name: Run ctest
         run: ctest --preset ${{ matrix.preset }} -j 1 --output-on-failure
-        env:
-          TSAN_OPTIONS: suppressions=${{ github.workspace }}/scripts/tsan-suppressions.txt:history_size=7

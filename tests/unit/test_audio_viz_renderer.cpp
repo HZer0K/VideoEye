@@ -21,6 +21,7 @@
 
 #include <vector>
 
+#include "SanitizerSkip.h"
 #include "core/domain/model/AudioVisualizationFrame.h"
 #include "ui/main_window/VideoWidget.h"
 #include "ui/player/AudioVizRenderer.h"
@@ -50,16 +51,17 @@ QImage RenderToImage(QWidget& widget) {
     return image;
 }
 
-}  // namespace
+} // namespace
 
 // ---------------------------------------------------------------------------
 // 1. 未注入渲染目标：收发数据与 Reset 都不能崩（防护分支）
 // ---------------------------------------------------------------------------
 
 TEST(AudioVizRendererTests, WithoutRenderTargetIsSafe) {
+    SKIP_UNDER_TSAN("Qt6 的渐变光栅化在 QThreadPool 里并发跑, Qt 自身的容器/分配器不是 TSan-clean");
     EnsureApp();
 
-    AudioVizRenderer renderer;  // 不调用 SetVideoWidget
+    AudioVizRenderer renderer; // 不调用 SetVideoWidget
     renderer.OnAudioLevelReady(0.8, 0.0);
 
     AudioVisualizationFrame frame;
@@ -71,7 +73,7 @@ TEST(AudioVizRendererTests, WithoutRenderTargetIsSafe) {
     renderer.Reset();
     renderer.OnAudioLevelReady(0.5, 1.0);
 
-    SUCCEED();  // 走到这里即代表空指针路径没有解引用
+    SUCCEED(); // 走到这里即代表空指针路径没有解引用
 }
 
 // ---------------------------------------------------------------------------
@@ -79,12 +81,13 @@ TEST(AudioVizRendererTests, WithoutRenderTargetIsSafe) {
 // ---------------------------------------------------------------------------
 
 TEST(AudioVizRendererTests, FirstLevelReadyRendersFrameIntoVideoWidget) {
+    SKIP_UNDER_TSAN("Qt6 的渐变光栅化在 QThreadPool 里并发跑, Qt 自身的容器/分配器不是 TSan-clean");
     EnsureApp();
 
     VideoWidget widget;
     widget.resize(320, 480);
 
-    const QImage before = RenderToImage(widget);  // 未注入时的占位画面
+    const QImage before = RenderToImage(widget); // 未注入时的占位画面
 
     AudioVizRenderer renderer;
     renderer.SetVideoWidget(&widget);
@@ -102,6 +105,7 @@ TEST(AudioVizRendererTests, FirstLevelReadyRendersFrameIntoVideoWidget) {
 // ---------------------------------------------------------------------------
 
 TEST(AudioVizRendererTests, SpectrumAndWaveformDataReachRenderTarget) {
+    SKIP_UNDER_TSAN("Qt6 的渐变光栅化在 QThreadPool 里并发跑, Qt 自身的容器/分配器不是 TSan-clean");
     EnsureApp();
 
     // 基线：同尺寸、同电平、同时间戳，但不喂频谱/波形
