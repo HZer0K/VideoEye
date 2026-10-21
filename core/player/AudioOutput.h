@@ -31,9 +31,9 @@ public:
         virtual ~Backend() = default;
         // 打开设备；sample_rate/channels 为入参，可能被后端调整为设备实际支持值
         virtual bool Open(int& sample_rate, int& channels) = 0;
-        virtual void Start() = 0;   // 开始播放（拉取数据）
-        virtual void Stop() = 0;    // 暂停（保留设备）
-        virtual void Close() = 0;   // 停止线程并释放设备
+        virtual void Start() = 0; // 开始播放（拉取数据）
+        virtual void Stop() = 0;  // 暂停（保留设备）
+        virtual void Close() = 0; // 停止线程并释放设备
     };
 
     AudioOutput();
@@ -53,10 +53,10 @@ public:
     /// 推送一帧 PCM 数据。缓冲接近满时阻塞（背压），避免无限增长。
     void Enqueue(const uint8_t* data, int len);
 
-    void Play();     // 开始播放（取消暂停）
-    void Pause();    // 暂停播放
-    void Stop();     // 停止并关闭设备
-    void Clear();    // 清空环形缓冲（seek 时调用）
+    void Play();  // 开始播放（取消暂停）
+    void Pause(); // 暂停播放
+    void Stop();  // 停止并关闭设备
+    void Clear(); // 清空环形缓冲（seek 时调用）
 
     /// 设置音量 0.0 - 1.0
     void SetVolume(double volume);
@@ -64,21 +64,27 @@ public:
     /// 当前已缓冲的毫秒数（诊断用）
     int GetBufferedMs(int sample_rate, int channels) const;
 
-    bool IsOpen() const { return opened_.load(); }
+    bool IsOpen() const {
+        return opened_.load();
+    }
 
 private:
     // 由平台音频线程调用：从环形缓冲取数据，不足时补静音
     size_t Pull(uint8_t* dst, size_t max_bytes);
 
-    // 当前线程是不是 open_thread_ 本身。
+    // 当前线程是不是本对象的异步打开线程（open_thread_）本身。
     // Open() 会在 open_thread_ 上被调用（OpenAsync 路径），此时 Stop() 若去
     // join open_thread_ 就是「线程 join 自己」，MSVC 会抛
     // std::system_error(resource_deadlock_would_occur) —— 而 std::thread 的
     // 入口函数是 noexcept 的，异常逃逸会直接 std::terminate()（进程闪退）。
+    //
+    // ❗ 判定不能用 open_thread_ 自己（"joinable() && get_id() == 本线程"）：
+    // 那样新线程一开跑就会去读一个正在被主线程赋值的 std::thread，是实打实的
+    // 数据竞争。实现改成线程局部标记，详见 .cpp 里的说明。
     bool OnOpenThread() const;
 
     std::unique_ptr<Backend> backend_;
-    std::mutex device_mutex_;      // 保护 backend_ 的创建/销毁/控制
+    std::mutex device_mutex_; // 保护 backend_ 的创建/销毁/控制
 
     std::atomic<bool> opened_{false};
     int sample_rate_ = 0;
@@ -91,13 +97,13 @@ private:
     size_t read_pos_ = 0;
     size_t filled_ = 0;
     mutable std::mutex ring_mutex_;
-    std::condition_variable ring_cv_;   // 生产者等待有空位
+    std::condition_variable ring_cv_; // 生产者等待有空位
 
     std::atomic<double> volume_{1.0};
 
     std::thread open_thread_;
-    std::atomic<bool> pending_play_{false};   // 设备就绪前调用过 Play()
-    std::atomic<bool> stopping_{false};       // Stop() 已调用
+    std::atomic<bool> pending_play_{false}; // 设备就绪前调用过 Play()
+    std::atomic<bool> stopping_{false};     // Stop() 已调用
 };
 
 } // namespace player

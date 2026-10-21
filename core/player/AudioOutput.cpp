@@ -19,11 +19,11 @@
 #if defined(Q_OS_WIN) || defined(_WIN32)
 // ---------------- Windows: WASAPI (共享模式, 事件驱动) ----------------
 #define VIDEOEYE_AUDIO_WIN 1
-#include <windows.h>
-#include <objbase.h>
-#include <mmdeviceapi.h>
 #include <audioclient.h>
+#include <mmdeviceapi.h>
 #include <mmreg.h>
+#include <objbase.h>
+#include <windows.h>
 #elif defined(__APPLE__)
 // ---------------- macOS: AudioQueue ----------------
 #define VIDEOEYE_AUDIO_MAC 1
@@ -44,17 +44,17 @@ using PullFn = std::function<size_t(uint8_t*, size_t)>;
 
 // KSDATAFORMAT_SUBTYPE_PCM / KSDATAFORMAT_SUBTYPE_IEEE_FLOAT。
 // 直接把 GUID 写死，省得为两个常量引入 ksmedia.h（WDK 头）。
-static const GUID kSubtypePcm =
-    {0x00000001, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}};
+static const GUID kSubtypePcm = {0x00000001, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}};
 // 设备的 mix format 是不是 16bit PCM。
 // 只有这一种情况可以直接拿 mix format 去 Initialize —— 它的字节布局和
 // Pull() 产出的 S16 交错 PCM 完全一致，不需要任何转换。
 bool IsS16Pcm(const WAVEFORMATEX* wfx) {
-    if (wfx == nullptr || wfx->wBitsPerSample != 16) return false;
-    if (wfx->wFormatTag == WAVE_FORMAT_PCM) return true;
+    if (wfx == nullptr || wfx->wBitsPerSample != 16)
+        return false;
+    if (wfx->wFormatTag == WAVE_FORMAT_PCM)
+        return true;
     if (wfx->wFormatTag == WAVE_FORMAT_EXTENSIBLE && wfx->cbSize >= 22) {
-        const WAVEFORMATEXTENSIBLE* ext =
-            reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(wfx);
+        const WAVEFORMATEXTENSIBLE* ext = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(wfx);
         return IsEqualGUID(ext->SubFormat, kSubtypePcm) != FALSE;
     }
     return false;
@@ -62,8 +62,11 @@ bool IsS16Pcm(const WAVEFORMATEX* wfx) {
 
 class WasapiBackend final : public AudioOutput::Backend {
 public:
-    explicit WasapiBackend(PullFn pull) : pull_(std::move(pull)) {}
-    ~WasapiBackend() override { Close(); }
+    explicit WasapiBackend(PullFn pull) : pull_(std::move(pull)) {
+    }
+    ~WasapiBackend() override {
+        Close();
+    }
 
     bool Open(int& sample_rate, int& channels) override {
         want_rate_ = sample_rate > 0 ? sample_rate : 44100;
@@ -87,13 +90,15 @@ public:
         if (!ready_.load()) {
             running_.store(false);
             SetEvent(event_);
-            if (thread_.joinable()) thread_.join();
+            if (thread_.joinable())
+                thread_.join();
             return false;
         }
         if (!ok_.load()) {
             running_.store(false);
             SetEvent(event_);
-            if (thread_.joinable()) thread_.join();
+            if (thread_.joinable())
+                thread_.join();
             return false;
         }
         sample_rate = actual_rate_;
@@ -102,17 +107,21 @@ public:
     }
 
     void Start() override {
-        if (client_) client_->Start();
+        if (client_)
+            client_->Start();
     }
 
     void Stop() override {
-        if (client_) client_->Stop();
+        if (client_)
+            client_->Stop();
     }
 
     void Close() override {
-        if (!thread_.joinable()) return;
+        if (!thread_.joinable())
+            return;
         running_.store(false);
-        if (event_) SetEvent(event_);
+        if (event_)
+            SetEvent(event_);
         thread_.join();
     }
 
@@ -123,7 +132,8 @@ private:
 
         bool ok = false;
         std::string err;
-        if (com_ok) ok = InitDevice(err);
+        if (com_ok)
+            ok = InitDevice(err);
 
         // 通知 Open() 结果；失败也要通知，否则调用方会卡满 5 s
         actual_rate_ = want_rate_;
@@ -133,7 +143,8 @@ private:
         ready_cv_.notify_all();
 
         if (!ok) {
-            if (com_ok) CoUninitialize();
+            if (com_ok)
+                CoUninitialize();
             finished_.store(true);
             LOG_WARN("AudioOutput(WASAPI): 打开音频设备失败" + (err.empty() ? std::string() : (": " + err)));
             return;
@@ -141,27 +152,36 @@ private:
 
         PumpLoop();
         CleanupDevice();
-        if (com_ok) CoUninitialize();
+        if (com_ok)
+            CoUninitialize();
         finished_.store(true);
     }
 
     bool InitDevice(std::string& err) {
-        constexpr REFERENCE_TIME kBufferDuration = 2000000;  // 200 ms (100ns 单位)
+        constexpr REFERENCE_TIME kBufferDuration = 2000000; // 200 ms (100ns 单位)
 
         IMMDeviceEnumerator* enumerator = nullptr;
-        HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-                                      __uuidof(IMMDeviceEnumerator), reinterpret_cast<void**>(&enumerator));
-        if (FAILED(hr)) { err = "CoCreateInstance(MMDeviceEnumerator) 失败"; return false; }
+        HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator),
+                                      reinterpret_cast<void**>(&enumerator));
+        if (FAILED(hr)) {
+            err = "CoCreateInstance(MMDeviceEnumerator) 失败";
+            return false;
+        }
 
         IMMDevice* device = nullptr;
         hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
         enumerator->Release();
-        if (FAILED(hr)) { err = "GetDefaultAudioEndpoint 失败 (无声卡?)"; return false; }
+        if (FAILED(hr)) {
+            err = "GetDefaultAudioEndpoint 失败 (无声卡?)";
+            return false;
+        }
 
-        hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
-                              reinterpret_cast<void**>(&client_));
+        hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&client_));
         device->Release();
-        if (FAILED(hr)) { err = "Activate(IAudioClient) 失败"; return false; }
+        if (FAILED(hr)) {
+            err = "Activate(IAudioClient) 失败";
+            return false;
+        }
 
         WAVEFORMATEX wfx{};
         wfx.wFormatTag = WAVE_FORMAT_PCM;
@@ -173,8 +193,8 @@ private:
         wfx.cbSize = 0;
         block_align_ = wfx.nBlockAlign;
 
-        hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                                 kBufferDuration, 0, &wfx, nullptr);
+        hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, kBufferDuration, 0, &wfx,
+                                 nullptr);
         if (hr == AUDCLNT_E_UNSUPPORTED_FORMAT) {
             // 设备不接受「16bit PCM + 源的采样率」。常见原因是声卡跑在 48 kHz 而我们按
             // 源的 44.1 kHz 请求。
@@ -192,15 +212,14 @@ private:
                 retry.nBlockAlign = static_cast<WORD>(mix->nChannels * 2);
                 retry.nAvgBytesPerSec = retry.nSamplesPerSec * retry.nBlockAlign;
                 retry.cbSize = 0;
-                hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                                         kBufferDuration, 0, &retry, nullptr);
+                hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, kBufferDuration,
+                                         0, &retry, nullptr);
                 if (SUCCEEDED(hr)) {
                     actual_rate_ = static_cast<int>(retry.nSamplesPerSec);
                     actual_channels_ = retry.nChannels;
                     block_align_ = retry.nBlockAlign;
-                    LOG_INFO("AudioOutput(WASAPI): 16bit PCM 未受支持, 已按设备采样率 " +
-                             std::to_string(actual_rate_) + " Hz / " +
-                             std::to_string(actual_channels_) + " ch 重新打开");
+                    LOG_INFO("AudioOutput(WASAPI): 16bit PCM 未受支持, 已按设备采样率 " + std::to_string(actual_rate_) +
+                             " Hz / " + std::to_string(actual_channels_) + " ch 重新打开");
                 } else if (IsS16Pcm(mix)) {
                     // 兜底: mix format 本身就是 16bit PCM，字节布局与 Pull() 一致，可以直用
                     hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
@@ -227,39 +246,66 @@ private:
         }
 
         hr = client_->GetService(__uuidof(IAudioRenderClient), reinterpret_cast<void**>(&render_));
-        if (FAILED(hr)) { err = "GetService(IAudioRenderClient) 失败"; return false; }
+        if (FAILED(hr)) {
+            err = "GetService(IAudioRenderClient) 失败";
+            return false;
+        }
 
-        if (FAILED(client_->GetBufferSize(&buffer_frames_))) { err = "GetBufferSize 失败"; return false; }
+        if (FAILED(client_->GetBufferSize(&buffer_frames_))) {
+            err = "GetBufferSize 失败";
+            return false;
+        }
 
         event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-        if (!event_) { err = "CreateEventW 失败"; return false; }
-        if (FAILED(client_->SetEventHandle(event_))) { err = "SetEventHandle 失败"; return false; }
+        if (!event_) {
+            err = "CreateEventW 失败";
+            return false;
+        }
+        if (FAILED(client_->SetEventHandle(event_))) {
+            err = "SetEventHandle 失败";
+            return false;
+        }
         return true;
     }
 
     void PumpLoop() {
         while (running_.load()) {
             const DWORD wait = WaitForSingleObject(event_, 100);
-            if (!running_.load()) break;
-            if (wait == WAIT_TIMEOUT) continue;
+            if (!running_.load())
+                break;
+            if (wait == WAIT_TIMEOUT)
+                continue;
 
             UINT32 padding = 0;
-            if (FAILED(client_->GetCurrentPadding(&padding))) continue;
+            if (FAILED(client_->GetCurrentPadding(&padding)))
+                continue;
             const UINT32 available = buffer_frames_ - padding;
-            if (available == 0) continue;
+            if (available == 0)
+                continue;
 
             BYTE* data = nullptr;
-            if (FAILED(render_->GetBuffer(available, &data))) continue;
+            if (FAILED(render_->GetBuffer(available, &data)))
+                continue;
             pull_(reinterpret_cast<uint8_t*>(data), static_cast<size_t>(available) * block_align_);
             render_->ReleaseBuffer(available, 0);
         }
     }
 
     void CleanupDevice() {
-        if (client_) client_->Stop();
-        if (render_) { render_->Release(); render_ = nullptr; }
-        if (client_) { client_->Release(); client_ = nullptr; }
-        if (event_) { CloseHandle(event_); event_ = nullptr; }
+        if (client_)
+            client_->Stop();
+        if (render_) {
+            render_->Release();
+            render_ = nullptr;
+        }
+        if (client_) {
+            client_->Release();
+            client_ = nullptr;
+        }
+        if (event_) {
+            CloseHandle(event_);
+            event_ = nullptr;
+        }
     }
 
     PullFn pull_;
@@ -286,8 +332,11 @@ private:
 
 class AudioQueueBackend final : public AudioOutput::Backend {
 public:
-    explicit AudioQueueBackend(PullFn pull) : pull_(std::move(pull)) {}
-    ~AudioQueueBackend() override { Close(); }
+    explicit AudioQueueBackend(PullFn pull) : pull_(std::move(pull)) {
+    }
+    ~AudioQueueBackend() override {
+        Close();
+    }
 
     bool Open(int& sample_rate, int& channels) override {
         rate_ = sample_rate > 0 ? sample_rate : 44100;
@@ -320,15 +369,18 @@ public:
     }
 
     void Start() override {
-        if (queue_) AudioQueueStart(queue_, nullptr);
+        if (queue_)
+            AudioQueueStart(queue_, nullptr);
     }
 
     void Stop() override {
-        if (queue_) AudioQueuePause(queue_);
+        if (queue_)
+            AudioQueuePause(queue_);
     }
 
     void Close() override {
-        if (!queue_) return;
+        if (!queue_)
+            return;
         AudioQueueStop(queue_, true);
         AudioQueueDispose(queue_, true);
         queue_ = nullptr;
@@ -337,14 +389,17 @@ public:
 private:
     static void Fill(void* userdata, AudioQueueRef, AudioQueueBufferRef buffer) {
         auto* self = static_cast<AudioQueueBackend*>(userdata);
-        if (self) self->FillBuffer(buffer);
+        if (self)
+            self->FillBuffer(buffer);
     }
 
     void FillBuffer(AudioQueueBufferRef buffer) {
-        if (!buffer) return;
+        if (!buffer)
+            return;
         const size_t n = pull_(reinterpret_cast<uint8_t*>(buffer->mAudioData), buffer->mAudioDataBytesCapacity);
         buffer->mAudioDataByteSize = static_cast<UInt32>(n);
-        if (queue_) AudioQueueEnqueueBuffer(queue_, buffer, 0, nullptr);
+        if (queue_)
+            AudioQueueEnqueueBuffer(queue_, buffer, 0, nullptr);
     }
 
     static constexpr int kBufferCount = 3;
@@ -360,8 +415,11 @@ private:
 // ALSA 通过 dlopen 载入: 没有 libasound 时只是没有声音, 不影响程序其它功能
 class AlsaBackend final : public AudioOutput::Backend {
 public:
-    explicit AlsaBackend(PullFn pull) : pull_(std::move(pull)) {}
-    ~AlsaBackend() override { Close(); }
+    explicit AlsaBackend(PullFn pull) : pull_(std::move(pull)) {
+    }
+    ~AlsaBackend() override {
+        Close();
+    }
 
     bool Open(int& sample_rate, int& channels) override {
         if (!LoadAlsa()) {
@@ -377,8 +435,7 @@ public:
             return false;
         }
         if (snd_pcm_set_params(pcm_, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
-                               static_cast<unsigned>(channels_), static_cast<unsigned>(rate_),
-                               1, 100000) != 0) {
+                               static_cast<unsigned>(channels_), static_cast<unsigned>(rate_), 1, 100000) != 0) {
             LOG_WARN("AudioOutput(ALSA): snd_pcm_set_params 失败");
             snd_pcm_close(pcm_);
             pcm_ = nullptr;
@@ -397,21 +454,30 @@ public:
         return true;
     }
 
-    void Start() override { started_.store(true); }
+    void Start() override {
+        started_.store(true);
+    }
 
     void Stop() override {
         started_.store(false);
-        if (pcm_ && snd_pcm_drop) snd_pcm_drop(pcm_);
+        if (pcm_ && snd_pcm_drop)
+            snd_pcm_drop(pcm_);
     }
 
     void Close() override {
         if (!thread_.joinable()) {
-            if (pcm_) { snd_pcm_close(pcm_); pcm_ = nullptr; }
+            if (pcm_) {
+                snd_pcm_close(pcm_);
+                pcm_ = nullptr;
+            }
             return;
         }
         running_.store(false);
         thread_.join();
-        if (pcm_) { snd_pcm_close(pcm_); pcm_ = nullptr; }
+        if (pcm_) {
+            snd_pcm_close(pcm_);
+            pcm_ = nullptr;
+        }
     }
 
 private:
@@ -420,9 +486,9 @@ private:
 
     bool LoadAlsa() {
         handle_ = dlopen("libasound.so.2", RTLD_LAZY);
-        if (!handle_) return false;
-        snd_pcm_open = reinterpret_cast<int (*)(snd_pcm_t_**, const char*, int, int)>(
-            dlsym(handle_, "snd_pcm_open"));
+        if (!handle_)
+            return false;
+        snd_pcm_open = reinterpret_cast<int (*)(snd_pcm_t_**, const char*, int, int)>(dlsym(handle_, "snd_pcm_open"));
         snd_pcm_close = reinterpret_cast<int (*)(snd_pcm_t_*)>(dlsym(handle_, "snd_pcm_close"));
         snd_pcm_set_params = reinterpret_cast<int (*)(snd_pcm_t_*, int, int, unsigned, unsigned, int, unsigned)>(
             dlsym(handle_, "snd_pcm_set_params"));
@@ -444,7 +510,8 @@ private:
             pull_(buf.data(), want);
             long written = snd_pcm_writei(pcm_, buf.data(), period_frames_);
             if (written < 0) {
-                if (snd_pcm_prepare) snd_pcm_prepare(pcm_);   // underrun / EPIPE 恢复
+                if (snd_pcm_prepare)
+                    snd_pcm_prepare(pcm_); // underrun / EPIPE 恢复
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
         }
@@ -485,13 +552,29 @@ AudioOutput::~AudioOutput() {
     Stop();
 }
 
+// 本线程当前正在执行哪个 AudioOutput 的异步打开（没有则为 nullptr）。
+//
+// 为什么不能用 open_thread_ 自己来判断: OpenAsync 里的
+//     open_thread_ = std::thread(body);
+// 是**先起线程、后完成 move 赋值**。body 一开跑就可能走到 Open() -> Stop() ->
+// OnOpenThread()，那时主线程的赋值还没落地，于是"新线程读 open_thread_"和
+// "主线程写 open_thread_"撞成数据竞争（TSan 在 Linux CI 上就抓到了这一处：
+// std::thread::get_id() vs std::thread::operator=(std::thread&&)）。
+// 而且 joinable() 此时还可能读到 false，"我是打开线程"这件事反而判错。
+//
+// 改成线程局部标记后，body 完全不碰 open_thread_；析构/Stop() 在主线程那一侧
+// 照旧通过 open_thread_ 判断要不要 join，两条路互不干扰。
+namespace {
+thread_local const AudioOutput* t_open_thread_owner = nullptr;
+} // namespace
+
 bool AudioOutput::OnOpenThread() const {
-    return open_thread_.joinable() &&
-           open_thread_.get_id() == std::this_thread::get_id();
+    return t_open_thread_owner == this;
 }
 
 size_t AudioOutput::Pull(uint8_t* dst, size_t max_bytes) {
-    if (!dst || max_bytes == 0) return 0;
+    if (!dst || max_bytes == 0)
+        return 0;
 
     size_t copied = 0;
     {
@@ -509,7 +592,7 @@ size_t AudioOutput::Pull(uint8_t* dst, size_t max_bytes) {
         }
     }
     if (copied < max_bytes) {
-        std::memset(dst + copied, 0, max_bytes - copied);   // 缓冲空: 补静音
+        std::memset(dst + copied, 0, max_bytes - copied); // 缓冲空: 补静音
     }
 
     // 音量缩放（S16 交错）
@@ -519,8 +602,10 @@ size_t AudioOutput::Pull(uint8_t* dst, size_t max_bytes) {
         const size_t n = max_bytes / 2;
         for (size_t i = 0; i < n; ++i) {
             int v = static_cast<int>(static_cast<double>(samples[i]) * vol);
-            if (v > 32767) v = 32767;
-            else if (v < -32768) v = -32768;
+            if (v > 32767)
+                v = 32767;
+            else if (v < -32768)
+                v = -32768;
             samples[i] = static_cast<int16_t>(v);
         }
     }
@@ -564,8 +649,8 @@ bool AudioOutput::Open(int sample_rate, int channels) {
     write_pos_ = read_pos_ = filled_ = 0;
 
     opened_.store(true);
-    LOG_INFO("AudioOutput: 音频设备已打开 " + std::to_string(actual_rate) + " Hz / " +
-             std::to_string(actual_channels) + " ch");
+    LOG_INFO("AudioOutput: 音频设备已打开 " + std::to_string(actual_rate) + " Hz / " + std::to_string(actual_channels) +
+             " ch");
     if (pending_play_.exchange(false)) {
         backend_->Start();
     }
@@ -573,16 +658,21 @@ bool AudioOutput::Open(int sample_rate, int channels) {
 }
 
 void AudioOutput::OpenAsync(int sample_rate, int channels) {
-    if (open_thread_.joinable() && !OnOpenThread()) {
-        open_thread_.join();   // 上一轮还没开完就先收尾
+    // 先判"我是不是打开线程"再碰 open_thread_: 反过来写会在上面那个窗口里
+    // 读到正在被赋值的 open_thread_（见 OnOpenThread 处的说明）。
+    if (!OnOpenThread() && open_thread_.joinable()) {
+        open_thread_.join(); // 上一轮还没开完就先收尾
     }
     stopping_.store(false);
     open_thread_ = std::thread([this, sample_rate, channels]() {
+        t_open_thread_owner = this;
+        const auto clear_owner = task::MakeScopeExit([]() { t_open_thread_owner = nullptr; });
         // 见 ThreadMain 那处的注释: 与其它线程入口共用同一份异常收口模板。
         // 音频设备打不开最多是没声音，不能把播放器一起带走。
         const std::optional<std::string> failure = task::GuardBody([&]() {
             const bool ok = Open(sample_rate, channels);
-            if (!ok) pending_play_.store(false);
+            if (!ok)
+                pending_play_.store(false);
         });
         if (failure) {
             LOG_ERROR(std::string("AudioOutput: 异步打开音频设备异常: ") + *failure);
@@ -592,7 +682,8 @@ void AudioOutput::OpenAsync(int sample_rate, int channels) {
 }
 
 void AudioOutput::Enqueue(const uint8_t* data, int len) {
-    if (!opened_.load() || !data || len <= 0) return;   // 异步打开未完成: 丢弃
+    if (!opened_.load() || !data || len <= 0)
+        return; // 异步打开未完成: 丢弃
 
     // 分片写入。旧实现先等「整个 len 都能放下」再写，一旦单次 PCM 块大于
     // ring_capacity_（高采样率 / 多声道 / 大 AAC 帧解码出来很容易超），
@@ -602,10 +693,9 @@ void AudioOutput::Enqueue(const uint8_t* data, int len) {
     const uint8_t* src = data;
     while (remaining > 0) {
         std::unique_lock<std::mutex> lock(ring_mutex_);
-        ring_cv_.wait(lock, [this]() {
-            return !opened_.load() || filled_ < ring_capacity_;
-        });
-        if (!opened_.load()) return;   // 已被 Stop
+        ring_cv_.wait(lock, [this]() { return !opened_.load() || filled_ < ring_capacity_; });
+        if (!opened_.load())
+            return; // 已被 Stop
 
         const size_t space = ring_capacity_ - filled_;
         const size_t chunk = std::min<size_t>(remaining, space);
@@ -623,17 +713,19 @@ void AudioOutput::Enqueue(const uint8_t* data, int len) {
 
 void AudioOutput::Play() {
     if (!opened_.load()) {
-        pending_play_.store(true);   // 设备就绪后由打开流程补一次
+        pending_play_.store(true); // 设备就绪后由打开流程补一次
         return;
     }
     std::lock_guard<std::mutex> lock(device_mutex_);
-    if (backend_) backend_->Start();
+    if (backend_)
+        backend_->Start();
 }
 
 void AudioOutput::Pause() {
     pending_play_.store(false);
     std::lock_guard<std::mutex> lock(device_mutex_);
-    if (backend_) backend_->Stop();
+    if (backend_)
+        backend_->Stop();
 }
 
 void AudioOutput::Clear() {
@@ -643,14 +735,17 @@ void AudioOutput::Clear() {
 }
 
 void AudioOutput::SetVolume(double volume) {
-    if (volume < 0.0) volume = 0.0;
-    if (volume > 1.0) volume = 1.0;
+    if (volume < 0.0)
+        volume = 0.0;
+    if (volume > 1.0)
+        volume = 1.0;
     volume_.store(volume);
 }
 
 int AudioOutput::GetBufferedMs(int sample_rate, int channels) const {
     std::lock_guard<std::mutex> lock(ring_mutex_);
-    if (sample_rate <= 0 || channels <= 0) return 0;
+    if (sample_rate <= 0 || channels <= 0)
+        return 0;
     return static_cast<int>(filled_ * 1000 / (sample_rate * channels * 2));
 }
 
@@ -660,7 +755,8 @@ void AudioOutput::Stop() {
 
     // 不能 join 自己：Open() 是在 open_thread_ 上执行的（OpenAsync 路径），
     // self-join 会抛 std::system_error 并让整个进程 terminate。
-    if (open_thread_.joinable() && !OnOpenThread()) {
+    // 判定顺序同样必须是"先排除自己"再读 open_thread_（见 OnOpenThread 处的说明）。
+    if (!OnOpenThread() && open_thread_.joinable()) {
         open_thread_.join();
     }
 
@@ -679,7 +775,7 @@ void AudioOutput::Stop() {
         ring_.clear();
         ring_capacity_ = 0;
     }
-    ring_cv_.notify_all();   // 唤醒可能在 Enqueue 中阻塞的解码线程
+    ring_cv_.notify_all(); // 唤醒可能在 Enqueue 中阻塞的解码线程
 }
 
 } // namespace player

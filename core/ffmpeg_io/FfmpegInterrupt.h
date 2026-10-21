@@ -34,15 +34,24 @@
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
-#include <libavutil/time.h>  // av_gettime
+#include <libavutil/time.h> // av_gettime
 }
 
 namespace videoeye {
 namespace ffmpeg_io {
 
 struct AvInterruptState {
-    std::atomic<bool>* cancel = nullptr;  // 指向取消标志; 非空时取消即中断
-    int64_t deadline_us = 0;              // >0 表示有绝对截止时间
+    std::atomic<bool>* cancel = nullptr; // 指向取消标志; 非空时取消即中断
+
+    // 绝对截止时间（>0 表示有）。
+    //
+    // ❗ 必须是原子: 写它的人分处两个线程 —— AttachInterrupt()/探测阶段放宽是 IO
+    // 线程在写（回调也在 IO 线程读它），而 MediaPlayer::RequestCancel() 是从 UI
+    // 线程写 0（换媒体时让卡住的 read 立刻返回）。TSan 在 Linux CI 上抓到的就是
+    // 这一对写写竞争（MediaPlayer.cpp:128 vs FfmpegInterrupt.cpp:15）。
+    // 单次读写要"看到完整值"而不是撕裂的字面值，所以整块用 relaxed 的原子就够
+    // （它不参与任何其它数据的同步，只要求自己不撕裂、不被优化掉）。
+    std::atomic<int64_t> deadline_us{0};
 };
 
 // 返回 1 表示应中断当前 IO。opaque 为 AvInterruptState*。
@@ -54,8 +63,8 @@ int AvIoInterruptCallback(void* opaque);
 void AttachInterrupt(AVFormatContext* fmt, AvInterruptState& state, int64_t timeout_us);
 
 // 打开 / 探测阶段的绝对超时（单位微秒）。扫描阶段不依赖它们，仅响应取消。
-constexpr int64_t kOpenTimeoutUs = 15'000'000;   // 打开输入的最大等待
-constexpr int64_t kProbeTimeoutUs = 30'000'000;  // 探测流信息的最大等待
+constexpr int64_t kOpenTimeoutUs = 15'000'000;  // 打开输入的最大等待
+constexpr int64_t kProbeTimeoutUs = 30'000'000; // 探测流信息的最大等待
 
-}  // namespace ffmpeg_io
-}  // namespace videoeye
+} // namespace ffmpeg_io
+} // namespace videoeye
