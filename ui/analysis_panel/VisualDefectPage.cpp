@@ -345,7 +345,7 @@ void VisualDefectPage::UpdateSummary() {
     if (vmaf_absent) {
         summary_label_->setToolTip(
             tr("VMAF 需要可选依赖 libvmaf（库 + 模型文件），当前构建未接入。\n"
-               "PSNR / SSIM 等其余指标不受影响。"));
+               "PSNR / SSIM 当前仅提供参考帧算法接口，本页面不执行双视频质量对比。"));
     } else {
         summary_label_->setToolTip(QString());
     }

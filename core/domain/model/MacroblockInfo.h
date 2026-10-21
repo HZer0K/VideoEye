@@ -22,6 +22,8 @@ struct MotionVectorInfo {
 
 // 一帧的宏块统计概览
 struct MacroblockStats {
+    bool block_counts_estimated = false;
+    bool intra_count_available = false;
     int total_blocks = 0;              // 总宏块/块数
     int forward_count = 0;             // 前向参考数 (source < 0)
     int backward_count = 0;            // 后向参考数 (source > 0)

@@ -54,6 +54,8 @@
 namespace videoeye {
 namespace player {
 
+class RealtimeAnalysisControllerTestAccess;
+
 class RealtimeAnalysisController : public QObject {
     Q_OBJECT
 
@@ -97,6 +99,8 @@ public:
     AnalysisBus& bus() { return bus_; }
 
 private:
+    friend class RealtimeAnalysisControllerTestAccess;
+
     // 对外信号出口。以成员（而不是指针）持有，随本对象一起生灭。
     AnalysisBus bus_{this};
 
@@ -123,6 +127,7 @@ private:
 
     // --- 画面质量 / 视觉缺陷: 按采样档位抽取解码帧 -> 降采样 -> 投递分析器 ---
     void FeedVisualDefectFrame(const AVFrame* frame, double timestamp_seconds, bool audio_silent);
+    void ResetVisualDefectTimeline();
     // 把分析器已产出的指标 / 缺陷转发成信号（在解码线程调用）
     void DrainVisualDefectResults();
     // 分析进度信号（内部做 1 秒节流，force=true 时立即发）

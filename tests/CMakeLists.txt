@@ -195,6 +195,10 @@ if(VIDEOEYE_PYTHON_EXE)
     # 本机没生成过这些样本时脚本自己 SKIP，不阻塞没有 ffmpeg 的机器。
     add_test(NAME RealCorpusCheck
              COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/corpus/generate_real_corpus.py --check)
+    add_test(NAME TestSummaryReadmeCheck
+             COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/summarize_tests.py --check-readme)
+    add_test(NAME TestSummarySelfTests
+             COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test_summarize_tests.py)
     # ⚠️ 这几个脚本测试都靠「VIDEOEYE_ROOT 或当前目录」当仓库根（见各脚本顶部
     # ROOT = os.environ.get("VIDEOEYE_ROOT") or os.getcwd()）。WORKING_DIRECTORY 已经
     # 钉在源码根，但开发者 shell 里万一 export 了一个**过时**的 VIDEOEYE_ROOT（旧 checkout），
@@ -1828,3 +1832,14 @@ add_test(NAME ParserReviewRegressionTests COMMAND test_parser_review_regressions
 videoeye_add_test(test_analysis_pipeline_edges unit/test_analysis_pipeline_edges.cpp)
 target_link_libraries(test_analysis_pipeline_edges PRIVATE VideoEyeAnalysis)
 add_test(NAME AnalysisPipelineEdgeTests COMMAND test_analysis_pipeline_edges)
+
+videoeye_add_test(test_realtime_analysis_controller unit/test_realtime_analysis_controller.cpp)
+target_link_libraries(test_realtime_analysis_controller PRIVATE VideoEyePlayback Qt6::Core Qt6::Gui)
+if(WIN32)
+    target_link_libraries(test_realtime_analysis_controller PRIVATE ws2_32)
+endif()
+add_test(NAME RealtimeAnalysisControllerTests COMMAND test_realtime_analysis_controller)
+
+videoeye_add_test(test_macroblock_analyzer unit/test_macroblock_analyzer.cpp)
+target_link_libraries(test_macroblock_analyzer PRIVATE VideoEyeAnalysis)
+add_test(NAME MacroblockAnalyzerTests COMMAND test_macroblock_analyzer)

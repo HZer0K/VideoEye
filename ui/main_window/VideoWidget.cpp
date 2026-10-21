@@ -342,8 +342,8 @@ void VideoOverlayWidget::DrawMvLegend(QPainter& painter, const QRectF& display_r
 
     // 幅度图例
     y += 18;
-    QString mv_info = tr("MV: %1 块 | 均: %2 | 峰: %3")
-        .arg(mv_analysis_.stats.total_blocks)
+    QString mv_info = tr("MV: %1 条 | 均: %2 | 峰: %3")
+        .arg(static_cast<qulonglong>(mv_analysis_.motion_vectors.size()))
         .arg(mv_analysis_.stats.avg_motion_magnitude, 0, 'f', 1)
         .arg(mv_analysis_.stats.max_motion_magnitude, 0, 'f', 1);
     painter.setPen(QColor(180, 180, 180));

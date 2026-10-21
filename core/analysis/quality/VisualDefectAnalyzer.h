@@ -62,6 +62,7 @@ public:
     // 收尾: 素材结束 / seek / 关闭文件时调用，把所有还开着的缺陷段落闭合。
     // end_timestamp_seconds 作为最后一段的结束时间。
     void Flush(double end_timestamp_seconds);
+    void ResetTimeline(double end_timestamp_seconds);
 
     // ---- 结果 ----
     // 只在"分析已停止"时直接读（内部不再加锁）；跨线程请用 Snapshot()。
@@ -158,6 +159,7 @@ private:
 
     std::vector<model::FrameQualityMetric> metrics_;
     std::vector<model::VisualDefect> defects_;
+    size_t timeline_defect_begin_ = 0;
     std::vector<model::FrameQualityMetric> pending_metrics_;
     std::vector<model::VisualDefect> pending_defects_;
     std::vector<model::ActivePictureArea> active_areas_;

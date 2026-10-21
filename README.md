@@ -26,7 +26,7 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 - **场景切换检测**: 灰度直方图 Bhattacharyya 距离实时检测镜头切换
 - **画面质量（视觉缺陷）**: 黑场 / 冻结 / 花屏马赛克 / 模糊 / 闪烁 / 过曝欠曝 / 色偏 / 隔行梳齿 / 黑边，带证据缩略图与缺陷列表
 - **字幕 / 时码 / 辅助数据**: 字幕 cue（SRT / ASS-SSA / WebVTT / tx3g / CEA-608）重叠与空字幕检查、SMPTE 时码与章节、data 流与 SCTE-35 广告插入点
-- **质量评估**: 离线逐帧计算 PSNR / SSIM 及走势图
+- **参考帧指标算法**: 提供 PSNR / SSIM 帧对比接口与单元测试；当前未提供双视频离线评估界面、时间对齐流程或指标走势图
 - **报告与批量 QC**: 5 套规则模板 → 单文件/目录批量分析 → 评分与结论 → JSON/CSV/HTML/PDF/TXT 导出；容器侧规则覆盖 MP4 样本表、HLS/DASH 清单，以及 **MPEG-TS 传输层**（缺 PAT/PMT、失步、连续计数错误率、PCR 间隔、加扰、扫描范围）
 - **FFmpeg 命令工作台**: 直接调用原生 `ffmpeg` 程序 —— 写命令、看实时日志、查参数含义（内置指令字典与逐项解释）
 - **帧导出**: 导出任意帧为 JPG / RGB / YUV，支持打开 .yuv / .rgb 原始图像
@@ -245,7 +245,7 @@ macOS 代码路径是通的（音频走 AudioQueue、`linux-*` preset 在 macOS 
 
 1. **打开**: `Ctrl+O` 打开文件 / `Ctrl+U` 打开 URL
 2. **播放控制**: 底部控制栏播放/暂停/停止 (`Space` / `Esc`)
-3. **分析**: 左侧边栏切换分析模块（媒体信息、流分析、视频帧、音频帧、数据包、异常事件、同步分析、时间轴、音频响度、直方图、容器结构、场景切换、画面质量、质量评估、报告与批量 QC），各模块顶部配有独立「启用分析」开关
+3. **分析**: 左侧边栏切换分析模块（媒体信息、流分析、视频帧、音频帧、数据包、异常事件、同步分析、时间轴、音频响度、直方图、容器结构、场景切换、画面质量、报告与批量 QC），各模块顶部配有独立「启用分析」开关
 4. **FFmpeg 命令工作台**: 侧边栏「FFmpeg 命令」—— 写一条 ffmpeg 命令并运行，右侧字典可以查参数含义
 5. **导出帧**: `文件` → `导出视频帧...`（jpg / rgb / yuv）
 6. **原始图像**: 打开 `.yuv`（YUV420P）/ `.rgb`（RGB24）时输入宽高
@@ -289,27 +289,22 @@ TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红�
 
 规模（用 `python scripts/summarize_tests.py` 现算，别手改）：
 
+<!-- BEGIN GENERATED TEST SUMMARY -->
 | 指标 | 数量 |
 |---|---|
-| 测试可执行文件 | 88 |
-| ctest 用例组（gtest 可执行文件） | 88 |
-| python 脚本用例组（架构规则门 + 语料校验，非 gtest） | 11 |
-| gtest 用例（含 `TEST` / `TEST_F` / `TEST_P`） | 910 |
+| 测试可执行文件 | 96 |
+| ctest 用例组（gtest 可执行文件） | 96 |
+| python 脚本用例组（非 gtest） | 16 |
+| gtest 用例声明（含 `TEST` / `TEST_F` / `TEST_P`） | 1012 |
 
-`ctest -N` 会显示 **99 = 88 + 11**，多出来的 11 个不是 gtest 可执行文件，而是直接
-`add_test` 调 python 脚本的 5 道架构规则门及其自测：`check_layering.py` 与它的自测、
-`audit_qt_analysis_border.py` 与它的自测、`audit_namespace_layout.py` 与它的自测、
-`audit_qt_domain_border.py` 与它的自测、`audit_link_visibility.py` 与它的自测（最后一
-道 2026-10-07 从「只有 CI 跑」补进 ctest），加上 `generate_corpus.py --check`（阶段 3.1
-的异常语料与生成脚本一致性校验）。它们的「测试」是退出码 + 输出断言，
-没有 gtest 用例，所以脚本不计入 gtest 那两个数。
+启用测试且找到 Python 时，静态注册的 ctest 用例组共 **112 = 96 + 16**。
+这里统计源码中的测试声明，不代表本次已运行通过的数量；参数化测试运行时可能展开成多个用例。
+<!-- END GENERATED TEST SUMMARY -->
 
-这个数字以前是「18 个可执行文件 + 17 组 ctest」，长期没跟着测试用例涨 —— 所以改成脚本
-现算。CI 的 layering job 会跑 `python scripts/summarize_tests.py --expect 88`：加了测试
-就一并更新这里和 CI 里的数字，否则那道门直接红，别让表格再飘。
-（2026-10-18 复核：表格里原来的 76 / 744 已经落后于仓库实际值 87 / 897，这次按脚本
-输出改正；`--expect` 跟着从 76 提到 87。同一天加 `container.ts.*` 规则族
-（新测试目标 `test_container_ts_qc_rules`）后再提到 88。）
+修改测试后运行 `python scripts/summarize_tests.py --update-readme` 更新上表。
+CI 和 ctest 使用 `python scripts/summarize_tests.py --check-readme` 验证快照，
+无需在工作流中维护另一份测试数量。统计包含 `tests/` 根目录及其子目录中的 C++ 用例声明，
+并单独统计直接调用 Python 的 ctest 组；脚本自测同时验证新增用例会使旧快照失效。
 
 跑之前注意：架构规则那 10 条脚本用例用「`VIDEOEYE_ROOT` 或当前目录」当仓库根，所以 CMake 里给它们
 钉了 `WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}`。不加的话 ctest 的工作目录是

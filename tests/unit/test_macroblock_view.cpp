@@ -130,7 +130,7 @@ TEST(MacroblockViewTests, FlushRendersMotionVectorRowsWithPixelScale) {
     EXPECT_TRUE(text.contains(QStringLiteral("宏块总数: 3")));
     EXPECT_TRUE(text.contains(QStringLiteral("前向: 1")));
     EXPECT_TRUE(text.contains(QStringLiteral("后向: 1")));
-    EXPECT_TRUE(text.contains(QStringLiteral("帧内: 1")));
+    EXPECT_TRUE(text.contains(QStringLiteral("帧内: 不可用")));
 
     // H.264 块大小表：8 行、首行 16x16
     QTableWidget* bs_table = FindTableByFirstHeader(&view, QStringLiteral("块大小"));
@@ -158,6 +158,8 @@ TEST(MacroblockViewTests, HevcUsesCtuTermAndLargeBlockSizes) {
     analysis.has_motion_vectors = false;
     analysis.stats.total_blocks = 10;
     analysis.stats.intra_count = 10;
+    analysis.stats.block_counts_estimated = true;
+    analysis.stats.intra_count_available = true;
     analysis.stats.count_64x64 = 4;
     analysis.stats.count_16x16 = 6;
 
@@ -166,7 +168,7 @@ TEST(MacroblockViewTests, HevcUsesCtuTermAndLargeBlockSizes) {
 
     QLabel* summary = FindLabelContaining(&view, QStringLiteral("总数"));
     ASSERT_TRUE(summary != nullptr);
-    EXPECT_TRUE(summary->text().contains(QStringLiteral("CTU总数: 10")));
+    EXPECT_TRUE(summary->text().contains(QStringLiteral("CTU总数: 10（估算）")));
 
     QTableWidget* bs_table = FindTableByFirstHeader(&view, QStringLiteral("块大小"));
     ASSERT_TRUE(bs_table != nullptr);
@@ -181,7 +183,30 @@ TEST(MacroblockViewTests, HevcUsesCtuTermAndLargeBlockSizes) {
     // I 帧预览：无运动矢量文案 + 帧内块数
     QLabel* viz = FindLabelContaining(&view, QStringLiteral("I 帧"));
     ASSERT_TRUE(viz != nullptr);
-    EXPECT_TRUE(viz->text().contains(QStringLiteral("帧内块数: 10")));
+    EXPECT_TRUE(viz->text().contains(QStringLiteral("帧内块数: 10（估算）")));
+}
+
+TEST(MacroblockViewTests, PredictedFrameWithoutMotionVectorsIsNotLabeledIntra) {
+    EnsureApp();
+    MacroblockView view;
+    MacroblockFrameAnalysis analysis;
+    analysis.frame_type = 2;
+    analysis.frame_width = 1920;
+    analysis.frame_height = 1080;
+    view.SetAnalysis(analysis);
+    view.FlushPending();
+    QLabel* preview = FindLabelContaining(&view, QStringLiteral("未提供运动矢量数据"));
+    ASSERT_NE(preview, nullptr);
+    EXPECT_TRUE(preview->text().startsWith(QStringLiteral("P 帧")));
+    EXPECT_FALSE(preview->text().contains(QStringLiteral("I 帧")));
+    EXPECT_TRUE(preview->text().contains(QStringLiteral("帧内块数: 不可用")));
+
+    // 没有运动矢量时 ComputeStats 直接早退、网格从没铺过，total_blocks 还停在 0 ——
+    // 这时候把 0 当"0 个块"显示就是撒谎，必须跟帧内块数一样报不可用。
+    QLabel* summary = FindLabelContaining(&view, QStringLiteral("总数"));
+    ASSERT_NE(summary, nullptr);
+    EXPECT_TRUE(summary->text().contains(QStringLiteral("宏块总数: 不可用")));
+    EXPECT_TRUE(summary->text().contains(QStringLiteral("帧内: 不可用")));
 }
 
 // 「启用分析」勾选框与协调层的同步语义：

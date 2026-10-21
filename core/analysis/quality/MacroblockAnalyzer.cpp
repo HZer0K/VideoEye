@@ -53,14 +53,16 @@ model::MacroblockFrameAnalysis MacroblockAnalyzer::AnalyzeFrame(
     // 计算统计
     result.stats = ComputeStats(result.motion_vectors, frame->width, frame->height, codec_id);
 
-    // I 帧 (无运动矢量) 估算帧内块数 — 按 codec 自适应块尺寸
-    if (result.motion_vectors.empty() && frame->width > 0 && frame->height > 0) {
+    if (frame_type == AV_PICTURE_TYPE_I && frame->width > 0 && frame->height > 0 &&
+        (codec_id == AV_CODEC_ID_H264 || codec_id == AV_CODEC_ID_HEVC)) {
         bool is_hevc = (codec_id == AV_CODEC_ID_HEVC);
         int block = is_hevc ? 64 : 16;  // HEVC CTU 64x64, H.264 宏块 16x16
         int mb_w = (frame->width + block - 1) / block;
         int mb_h = (frame->height + block - 1) / block;
         result.stats.intra_count = mb_w * mb_h;
         result.stats.total_blocks = result.stats.intra_count;
+        result.stats.block_counts_estimated = true;
+        result.stats.intra_count_available = true;
     }
 
     return result;
@@ -124,7 +126,6 @@ model::MacroblockStats MacroblockAnalyzer::ComputeStats(
 
     stats.avg_motion_magnitude = sum_magnitude / static_cast<double>(mvs.size());
 
-    // 估算帧内块数 (基于帧尺寸和运动矢量覆盖区域)
     // 块尺寸按 codec 自适应: HEVC CTU 64x64, 其余按 16x16 宏块
     if (frame_width > 0 && frame_height > 0) {
         bool is_hevc = (codec_id == AV_CODEC_ID_HEVC);
@@ -132,9 +133,8 @@ model::MacroblockStats MacroblockAnalyzer::ComputeStats(
         int mb_w = (frame_width + block - 1) / block;
         int mb_h = (frame_height + block - 1) / block;
         int total_mb = mb_w * mb_h;
-        // 帧内块 = 总块数 - 有运动矢量的块数 (粗略估算)
-        stats.intra_count = std::max(0, total_mb - stats.total_blocks);
         stats.total_blocks = total_mb;
+        stats.block_counts_estimated = true;
     }
 
     return stats;

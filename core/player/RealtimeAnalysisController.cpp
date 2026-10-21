@@ -23,6 +23,15 @@ namespace player {
 
 namespace {
 
+// 视觉缺陷时间轴的跳变判据（见 FeedVisualDefectFrame）。
+// 前进方向: 跨度大到不可能是正常播放（比最慢采样档位 1 fps 的 1 秒间隔还宽）。
+constexpr double kForwardJumpSeconds = 2.0;
+// 倒退方向的下限容差: 采样档位为"每帧"时没有采样间隔可借，只能用一个远大于正常
+// 时间戳抖动、又远小于任何有意义 seek 的量。
+constexpr double kMinBackwardJumpSeconds = 1e-3;
+// 采样点的比较容差: 只吸收浮点误差，不放宽采样节奏。
+constexpr double kSampleTimeEpsilon = 1e-6;
+
 // 计算单帧 256-bin 灰度直方图 (供场景切换检测使用)。
 // 通过 sws_scale 将任意像素格式转为 GRAY8, 再逐字节计数; 不依赖 OpenCV。
 // 返回空 vector 表示转换失败 (调用方应跳过该帧)。
@@ -256,6 +265,13 @@ void RealtimeAnalysisController::FlushVisualDefectSegments(double end_timestamp_
     EmitVisualDefectStats(true);
 }
 
+void RealtimeAnalysisController::ResetVisualDefectTimeline() {
+    visual_defect_analyzer_.ResetTimeline(std::max(0.0, visual_defect_last_sample_ts_));
+    DrainVisualDefectResults();
+    visual_defect_last_sample_ts_ = -1.0;
+    EmitVisualDefectStats(true);
+}
+
 void RealtimeAnalysisController::DrainVisualDefectResults() {
     const auto metrics = visual_defect_analyzer_.TakePendingMetrics();
     for (const auto& m : metrics) {
@@ -270,25 +286,33 @@ void RealtimeAnalysisController::DrainVisualDefectResults() {
 void RealtimeAnalysisController::FeedVisualDefectFrame(const AVFrame* frame,
                                                        double timestamp_seconds,
                                                        bool audio_silent) {
-    if (!frame) return;
+    if (!frame || !std::isfinite(timestamp_seconds)) return;
 
     // 解码线程逐帧读取视觉缺陷选项: 取一次加锁副本, 避免反复加锁且与 UI 线程写入互斥。
     const videoeye::VisualDefectOptions vd_opts = GetVisualDefectOptions();
 
     const double fps = vd_opts.EffectiveSampleFps();
-    if (fps > 0.0 && visual_defect_last_sample_ts_ >= 0.0 &&
-        (timestamp_seconds - visual_defect_last_sample_ts_) + 1e-6 < 1.0 / fps) {
-        return;   // 还没到下一次采样点
+    const double interval = fps > 0.0 ? 1.0 / fps : 0.0;
+
+    // 时间跳变（seek 后退 / 大跨度前进）: 先闭合上一段并清掉帧历史。
+    // 否则 seek 前后两段不连续的画面会被连成一条超长缺陷（比如"从 3s 跳到 60s"里的冻结），
+    // 首帧还会拿 seek 前的帧去算 frame_diff。
+    //
+    // 倒退用「一个采样间隔」当容差，而不是 0 容差: 小于间隔的倒退本来就会被下面的
+    // 节流丢掉（不采样 → 也不可能与旧帧比较），但 ResetVisualDefectTimeline() 要停掉
+    // 再重建工作线程、清空亮度历史 —— 时间戳只要有一点抖动就会逐帧重建线程，
+    // 闪烁/冻结这类靠历史累积的判定会直接失效。真正的 seek 由 OnSeekDone 显式重置，
+    // 不依赖这里兜底。
+    const double backward_tolerance = std::max(kMinBackwardJumpSeconds, interval);
+    if (visual_defect_last_sample_ts_ >= 0.0 &&
+        (timestamp_seconds < visual_defect_last_sample_ts_ - backward_tolerance ||
+         timestamp_seconds - visual_defect_last_sample_ts_ > kForwardJumpSeconds)) {
+        ResetVisualDefectTimeline();
     }
 
-    // 时间跳变（seek 后退 / 大跨度前进）: 先闭合上一段。
-    // 否则 seek 前后两段不连续的画面会被连成一条超长缺陷（比如"从 3s 跳到 60s"里的冻结）。
-    // 2 秒这个量取得比最慢采样档位（1 fps = 1 秒间隔）还宽，正常播放不会误触发。
-    if (visual_defect_last_sample_ts_ >= 0.0 &&
-        (timestamp_seconds + 0.5 < visual_defect_last_sample_ts_ ||
-         timestamp_seconds - visual_defect_last_sample_ts_ > 2.0)) {
-        visual_defect_analyzer_.Flush(visual_defect_last_sample_ts_);
-        DrainVisualDefectResults();
+    if (fps > 0.0 && visual_defect_last_sample_ts_ >= 0.0 &&
+        (timestamp_seconds - visual_defect_last_sample_ts_) + kSampleTimeEpsilon < interval) {
+        return;   // 还没到下一次采样点
     }
 
     model::FrameSample sample;
@@ -604,6 +628,9 @@ void RealtimeAnalysisController::OnSeekDone(double target_ms, model::SeekMode mo
     // 否则向后定位会重复累计帧/字节, GOP / 关键帧计数也会失真。
     if (analysis_.IsAnalysisEnabled()) {
         analysis_.stream_analyzer().Reset();
+    }
+    if (analysis_.IsVisualDefectAnalysisEnabled()) {
+        ResetVisualDefectTimeline();
     }
 }
 

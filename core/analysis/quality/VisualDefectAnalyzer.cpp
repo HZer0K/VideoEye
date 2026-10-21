@@ -404,6 +404,7 @@ void VisualDefectAnalyzer::Reset(const VisualDefectOptions& options) {
     options_ = options;
     metrics_.clear();
     defects_.clear();
+    timeline_defect_begin_ = 0;
     pending_metrics_.clear();
     pending_defects_.clear();
     active_areas_.clear();
@@ -524,6 +525,24 @@ void VisualDefectAnalyzer::Feed(const model::FrameSample& sample) {
 void VisualDefectAnalyzer::Flush(double end_timestamp_seconds) {
     std::lock_guard<std::mutex> lock(m_);
     CloseAllSegmentsLocked(end_timestamp_seconds, -1);
+}
+
+void VisualDefectAnalyzer::ResetTimeline(double end_timestamp_seconds) {
+    const bool restart_worker = worker_running_.load();
+    StopWorker();
+    {
+        std::lock_guard<std::mutex> lock(m_);
+        CloseAllSegmentsLocked(end_timestamp_seconds, -1);
+        timeline_defect_begin_ = defects_.size();
+        has_prev_ = false;
+        prev_sample_ = model::FrameSample();
+        prev_luma_mean_ = NoValue();
+        luma_history_.clear();
+        luma_history_ts_.clear();
+    }
+    if (restart_worker) {
+        StartWorker(queue_capacity_);
+    }
 }
 
 std::vector<model::FrameQualityMetric> VisualDefectAnalyzer::TakePendingMetrics() {
@@ -830,9 +849,9 @@ void VisualDefectAnalyzer::CloseSegmentLocked(model::VisualDefectType type, doub
     if (duration + kEpsilon < MinSecondsFor(type, options_)) return;
 
     // 与上一条同类缺陷挨得太近就合并，避免同一段问题被切成好几条
-    if (!defects_.empty()) {
+    if (defects_.size() > timeline_defect_begin_) {
         model::VisualDefect& last = defects_.back();
-        if (last.type == type &&
+        if (last.type == type && st.start_ts >= last.end_seconds &&
             (st.start_ts - last.end_seconds) <= options_.MergeGapSeconds()) {
             last.end_seconds = st.last_ts;
             last.end_frame = st.last_frame;

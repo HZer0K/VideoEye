@@ -68,10 +68,12 @@ AnalysisPanel「画面质量」页    曲线 + 缺陷列表 + 证据缩略图 + 
 ## 4. 有参考指标：PSNR / SSIM / VMAF
 
 - **PSNR / SSIM**：`QualityAnalyzer::CompareFrames()`（AVFrame 输入）与
-  `CompareSamples()`（已降采样快照输入，批量比对时省掉重复缩放）。
+  `CompareSamples()`（已降采样快照输入），目前仅提供算法接口与单元测试。
+  当前 GUI 与批量 QC 均未接入参考视频、时间对齐、逐帧比较及 PSNR / SSIM 走势图；
+  「画面质量」页面运行的是无参考视觉缺陷检测。
   SSIM 按 Wang 2004 简化式返回真实值 `[-1,1]`（负值表示负相关，不做截断）。
 - **VMAF**：需要外部 libvmaf（库 + 模型文件），属于可选依赖，第一阶段不接入。
-  接口与字段已预留 —— `QualityMetrics::vmaf` 恒为 NaN，`QualityAnalyzer::ComputeVmaf()`
+  接口与字段已预留 —— `QualityMetrics::vmaf` 为 `std::nullopt`，`QualityAnalyzer::ComputeVmaf()`
   是替换点，将来接进来时调用方与报告字段都不用改。
 
 ## 5. 性能策略

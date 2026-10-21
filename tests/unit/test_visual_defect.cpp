@@ -541,3 +541,41 @@ TEST(VisualDefectAnalyzer, ResetClearsEverything) {
     EXPECT_EQ(a.analyzed_samples(), 0);
     EXPECT_FALSE(a.EffectiveArea().valid);
 }
+
+TEST(VisualDefectAnalyzer, TimelineResetPreservesResultsAndClearsFrameHistory) {
+    VisualDefectAnalyzer analyzer;
+    analyzer.Reset(VisualDefectOptions{});
+    analyzer.Feed(MakeSample(0, 60.0, Solid(128)));
+    analyzer.Feed(MakeSample(1, 60.5, Solid(128)));
+    analyzer.ResetTimeline(60.5);
+    analyzer.Feed(MakeSample(2, 10.0, Solid(128)));
+    const auto report = analyzer.Snapshot();
+    ASSERT_EQ(report.samples.size(), 3u);
+    EXPECT_EQ(report.analyzed_frames, 3);
+    EXPECT_TRUE(std::isnan(report.samples.back().frame_diff));
+    EXPECT_TRUE(std::isnan(report.samples.back().luma_delta));
+}
+
+TEST(VisualDefectAnalyzer, TimelineResetDrainsWorkerAndPreventsCrossSeekMerging) {
+    VisualDefectOptions options;
+    options.detect_exposure = false;
+    options.detect_borders = false;
+    VisualDefectAnalyzer analyzer;
+    analyzer.Reset(options);
+    analyzer.StartWorker(8);
+    ASSERT_TRUE(analyzer.Submit(MakeSample(0, 60.0, Solid(0))));
+    ASSERT_TRUE(analyzer.Submit(MakeSample(1, 60.5, Solid(0))));
+    analyzer.ResetTimeline(60.5);
+    ASSERT_EQ(analyzer.analyzed_samples(), 2);
+    EXPECT_TRUE(analyzer.worker_running());
+    ASSERT_TRUE(analyzer.Submit(MakeSample(2, 10.0, Solid(0))));
+    ASSERT_TRUE(analyzer.Submit(MakeSample(3, 10.5, Solid(0))));
+    analyzer.StopWorker();
+    analyzer.Flush(10.5);
+    const auto report = analyzer.Snapshot();
+    ASSERT_EQ(report.defects.size(), 2u);
+    EXPECT_DOUBLE_EQ(report.defects[0].start_seconds, 60.0);
+    EXPECT_DOUBLE_EQ(report.defects[0].end_seconds, 60.5);
+    EXPECT_DOUBLE_EQ(report.defects[1].start_seconds, 10.0);
+    EXPECT_DOUBLE_EQ(report.defects[1].end_seconds, 10.5);
+}

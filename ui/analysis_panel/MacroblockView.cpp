@@ -178,16 +178,26 @@ void MacroblockView::RefreshUi() {
         case 3: frame_type_str = "B"; break;
         default: frame_type_str = "?"; break;
     }
+    const QString estimate_note = s.block_counts_estimated ? tr("（估算）") : QString();
+    // 总块数只有两条路径会填: 带运动矢量时 ComputeStats 铺一次网格, 或 I 帧走估算分支。
+    // 两者都没走时它仍是 0 —— 那不是"0 个块", 是"没算", 所以必须报不可用。
+    const QString total_blocks = ma.has_motion_vectors || s.intra_count_available
+                                     ? QString::number(s.total_blocks) + estimate_note
+                                     : tr("不可用");
+    const QString intra_blocks = s.intra_count_available
+                                     ? QString::number(s.intra_count) + estimate_note
+                                     : tr("不可用");
+    summary_label_->setToolTip(tr("块数按固定网格估算；运动矢量条数不能推导真实帧内块数。"));
     summary_label_->setText(
         tr("帧 #%1 [%2] | 时间: %3s | %4总数: %5 | 前向: %6 | 后向: %7 | 帧内: %8 | 平均MV: %9 | 最大MV: %10")
             .arg(ma.frame_index)
             .arg(frame_type_str)
             .arg(ma.timestamp, 0, 'f', 3)
             .arg(block_term)
-            .arg(s.total_blocks)
+            .arg(total_blocks)
             .arg(s.forward_count)
             .arg(s.backward_count)
-            .arg(s.intra_count)
+            .arg(intra_blocks)
             .arg(s.avg_motion_magnitude, 0, 'f', 2)
             .arg(s.max_motion_magnitude, 0, 'f', 2));
 
@@ -324,9 +334,8 @@ void MacroblockView::RefreshUi() {
         painter.end();
         viz_label_->setPixmap(QPixmap::fromImage(viz_img));
     } else if (ma.has_motion_vectors == false && ma.frame_width > 0) {
-        // I 帧: 无运动矢量
         viz_label_->setText(
-            tr("I 帧 (无运动矢量)\n帧内块数: %1").arg(s.intra_count));
+            tr("%1 帧\n未提供运动矢量数据\n帧内块数: %2").arg(frame_type_str).arg(intra_blocks));
     }
 }
 

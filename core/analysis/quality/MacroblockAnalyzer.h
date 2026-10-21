@@ -20,9 +20,17 @@ namespace videoeye {
 //
 // 适用编码: H.264 (AVC, 宏块 16x16) / H.265 (HEVC, CTU 最大 64x64) /
 //           AV1 / VP9 等支持运动补偿的编解码器。
-// I 帧无运动矢量, 分析器会返回 has_motion_vectors=false 并填充 intra_count。
-// 块大小分桶统一覆盖 H.264 与 HEVC 全部 PU 尺寸, 无需按编码区分统计逻辑;
-// 帧内块估算按 codec 自适应 (H.264→16x16 宏块, HEVC→64x64 CTU)。
+// 块大小分桶统一覆盖 H.264 与 HEVC 全部 PU 尺寸, 无需按编码区分统计逻辑。
+//
+// 帧内块估算只对 H.264 / HEVC 的 I 帧做 (按 16x16 宏块 / 64x64 CTU 的固定网格),
+// 结果同时置 intra_count_available 与 block_counts_estimated。其余编码 (AV1 / VP9 /
+// MPEG-2 ...) 的运动矢量语义不同, 照 16x16 网格硬套会给出错误数字, 所以明确报
+// "不可用"(intra_count_available=false) 而不是估一个值。
+// 总块数 (total_blocks) 只有两条路径会填: 带运动矢量时 ComputeStats 按网格铺一次,
+// 或上面那条 I 帧分支。两条路径都会置 block_counts_estimated; 其余情况 total_blocks 停在
+// 0 —— 那是"没算", 不是"0 个块", 所以 UI 报"不可用"而不是显示 0。
+// 注意运动矢量"条数" ≠ 编码块数 —— 一个块可能有多条 MV, 缺失 MV 也不代表该块是帧内块,
+// 所以不要用 total_blocks - mvs.size() 反推 intra_count。
 class MacroblockAnalyzer {
 public:
     MacroblockAnalyzer();
@@ -46,7 +54,9 @@ public:
     std::vector<model::MotionVectorInfo> ExtractMotionVectors(const AVFrame* frame);
 
     // 根据运动矢量列表计算统计信息
-    // codec_id 用于帧内块估算自适应 (HEVC 按 64x64 CTU, 其余按 16x16 宏块)
+    // codec_id 只决定块网格尺寸 (HEVC 按 64x64 CTU, 其余按 16x16 宏块)。
+    // 总块数在这里按网格给出并置 block_counts_estimated; 帧内块数不在这里推导
+    // (见类注释: 运动矢量条数推不出帧内块数)。
     model::MacroblockStats ComputeStats(const std::vector<model::MotionVectorInfo>& mvs,
                                         int frame_width, int frame_height,
                                         int codec_id = 0);
