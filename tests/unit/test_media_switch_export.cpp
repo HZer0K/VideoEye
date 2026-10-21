@@ -303,6 +303,10 @@ TEST(MediaContainerStructure, StaleFailureIsDroppedAfterNewTaskStarts) {
 // 连接还在不在, 不会被代际校验干扰 —— 正是要测的那件事。
 // ===========================================================================
 TEST(MediaExportCancel, BlockingExportStillReportsCanceledAfterWorkerExits) {
+    // 同 MediaContextSwitch.OpenCancelsRunningMediaExport: 只要真的起一条 QThread
+    // 去跑导出，收尾时 Qt 内部的 QWaitCondition 就会在 TSan 下报一次竞争。
+    SKIP_UNDER_TSAN("Qt6 的 QThread 收尾(QWaitCondition)自身不是 TSan-clean");
+
     AppScope app_scope;
 
     videoeye_test::BlockingTcpEndpoint endpoint;
