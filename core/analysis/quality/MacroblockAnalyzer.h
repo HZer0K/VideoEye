@@ -43,12 +43,8 @@ public:
     // timestamp     - 帧时间戳 (秒)
     // frame_type    - AVPictureType (1=I, 2=P, 3=B)
     // codec_id      - AV_CODEC_ID_* (用于帧内块估算自适应与 UI 术语)
-    model::MacroblockFrameAnalysis AnalyzeFrame(const AVFrame* frame,
-                                                int frame_index,
-                                                int64_t pts,
-                                                double timestamp,
-                                                int frame_type,
-                                                int codec_id = 0);
+    model::MacroblockFrameAnalysis AnalyzeFrame(const AVFrame* frame, int frame_index, int64_t pts, double timestamp,
+                                                int frame_type, int codec_id = 0);
 
     // 仅提取运动矢量列表 (不做统计)
     std::vector<model::MotionVectorInfo> ExtractMotionVectors(const AVFrame* frame);
@@ -57,9 +53,8 @@ public:
     // codec_id 只决定块网格尺寸 (HEVC 按 64x64 CTU, 其余按 16x16 宏块)。
     // 总块数在这里按网格给出并置 block_counts_estimated; 帧内块数不在这里推导
     // (见类注释: 运动矢量条数推不出帧内块数)。
-    model::MacroblockStats ComputeStats(const std::vector<model::MotionVectorInfo>& mvs,
-                                        int frame_width, int frame_height,
-                                        int codec_id = 0);
+    model::MacroblockStats ComputeStats(const std::vector<model::MotionVectorInfo>& mvs, int frame_width,
+                                        int frame_height, int codec_id = 0);
 
 private:
     // 将 AVMotionVector 转换为 MotionVectorInfo

@@ -20,125 +20,120 @@ namespace {
 constexpr double kEpsilon = 1e-9;
 
 double Clamp01(double v) {
-    if (!(v == v)) return 0.0;   // NaN
-    if (v < 0.0) return 0.0;
-    if (v > 1.0) return 1.0;
+    if (!(v == v))
+        return 0.0; // NaN
+    if (v < 0.0)
+        return 0.0;
+    if (v > 1.0)
+        return 1.0;
     return v;
 }
 
-double NoValue() { return std::numeric_limits<double>::quiet_NaN(); }
+double NoValue() {
+    return std::numeric_limits<double>::quiet_NaN();
+}
 
-bool Valid(double v) { return std::isfinite(v); }
+bool Valid(double v) {
+    return std::isfinite(v);
+}
 
 // 分数方向: true = 越小越严重（模糊、帧差），false = 越大越严重
 bool IsReverseScore(model::VisualDefectType type) {
-    return type == model::VisualDefectType::Blur ||
-           type == model::VisualDefectType::FreezeFrame;
+    return type == model::VisualDefectType::Blur || type == model::VisualDefectType::FreezeFrame;
 }
 
 double MinSecondsFor(model::VisualDefectType type, const VisualDefectOptions& o) {
     switch (type) {
-        case model::VisualDefectType::BlackFrame:       return o.black_min_seconds;
-        case model::VisualDefectType::FreezeFrame:      return o.freeze_min_seconds;
-        case model::VisualDefectType::Blur:             return o.blur_min_seconds;
-        case model::VisualDefectType::Flicker:          return o.flicker_min_seconds;
-        case model::VisualDefectType::Blockiness:       return o.blockiness_min_seconds;
-        case model::VisualDefectType::OverExposure:
-        case model::VisualDefectType::UnderExposure:    return o.exposure_min_seconds;
-        case model::VisualDefectType::ColorCast:        return o.color_cast_min_seconds;
-        case model::VisualDefectType::InterlaceCombing: return o.combing_min_seconds;
-        case model::VisualDefectType::Letterbox:
-        case model::VisualDefectType::Pillarbox:        return o.border_min_seconds;
+    case model::VisualDefectType::BlackFrame:
+        return o.black_min_seconds;
+    case model::VisualDefectType::FreezeFrame:
+        return o.freeze_min_seconds;
+    case model::VisualDefectType::Blur:
+        return o.blur_min_seconds;
+    case model::VisualDefectType::Flicker:
+        return o.flicker_min_seconds;
+    case model::VisualDefectType::Blockiness:
+        return o.blockiness_min_seconds;
+    case model::VisualDefectType::OverExposure:
+    case model::VisualDefectType::UnderExposure:
+        return o.exposure_min_seconds;
+    case model::VisualDefectType::ColorCast:
+        return o.color_cast_min_seconds;
+    case model::VisualDefectType::InterlaceCombing:
+        return o.combing_min_seconds;
+    case model::VisualDefectType::Letterbox:
+    case model::VisualDefectType::Pillarbox:
+        return o.border_min_seconds;
     }
     return 0.3;
 }
 
 // 缺陷描述（含触发数值，方便事后复核"为什么算缺陷"）
-std::string DescribeDefect(model::VisualDefectType type, double duration,
-                           double score, double aux, double threshold) {
+std::string DescribeDefect(model::VisualDefectType type, double duration, double score, double aux, double threshold) {
     char buf[320];
     switch (type) {
-        case model::VisualDefectType::BlackFrame:
-            std::snprintf(buf, sizeof(buf),
-                          "黑场 %.2fs：黑像素占比 %.1f%%（阈值 %.0f%%），亮度均值 %.1f",
-                          duration, score * 100.0, threshold * 100.0, aux);
-            break;
-        case model::VisualDefectType::FreezeFrame:
-            std::snprintf(buf, sizeof(buf),
-                          "冻结 %.2fs：帧间差异 %.4f（阈值 %.4f），期间音频非静音",
-                          duration, score, threshold);
-            break;
-        case model::VisualDefectType::Blur:
-            std::snprintf(buf, sizeof(buf),
-                          "模糊 %.2fs：锐度指数 %.3f（阈值 %.3f，越小越糊）",
-                          duration, score, threshold);
-            break;
-        case model::VisualDefectType::Flicker:
-            std::snprintf(buf, sizeof(buf),
-                          "闪烁 %.2fs：亮度均值平均跳变 %.1f（阈值 %.1f）",
-                          duration, score, threshold);
-            break;
-        case model::VisualDefectType::Blockiness:
-            std::snprintf(buf, sizeof(buf),
-                          "花屏/马赛克 %.2fs：块效应强度 %.2f（阈值 %.2f）",
-                          duration, score, threshold);
-            break;
-        case model::VisualDefectType::OverExposure:
-            std::snprintf(buf, sizeof(buf),
-                          "过曝 %.2fs：高光占比 %.1f%%，削波占比 %.1f%%",
-                          duration, score * 100.0, aux * 100.0);
-            break;
-        case model::VisualDefectType::UnderExposure:
-            std::snprintf(buf, sizeof(buf),
-                          "欠曝 %.2fs：暗部占比 %.1f%%，亮度均值 %.1f",
-                          duration, score * 100.0, aux);
-            break;
-        case model::VisualDefectType::ColorCast:
-            std::snprintf(buf, sizeof(buf),
-                          "色偏 %.2fs：偏移强度 %.3f（阈值 %.3f），R-B = %+.1f",
-                          duration, score, threshold, aux);
-            break;
-        case model::VisualDefectType::InterlaceCombing:
-            std::snprintf(buf, sizeof(buf),
-                          "隔行梳齿 %.2fs：梳齿强度 %.2f（阈值 %.2f）",
-                          duration, score, threshold);
-            break;
-        case model::VisualDefectType::Letterbox:
-        case model::VisualDefectType::Pillarbox: {
-            // score = 两侧黑边占比之和，aux = 起始侧（上/左）占比
-            const double first = Valid(aux) ? aux : score;
-            const double second = std::max(0.0, score - first);
-            if (type == model::VisualDefectType::Letterbox) {
-                std::snprintf(buf, sizeof(buf),
-                              "上下黑边：合计 %.1f%%（上 %.1f%% / 下 %.1f%%），有效画面只剩 %.1f%%",
-                              score * 100.0, first * 100.0, second * 100.0,
-                              (1.0 - score) * 100.0);
-            } else {
-                std::snprintf(buf, sizeof(buf),
-                              "左右黑边：合计 %.1f%%（左 %.1f%% / 右 %.1f%%），有效画面只剩 %.1f%%",
-                              score * 100.0, first * 100.0, second * 100.0,
-                              (1.0 - score) * 100.0);
-            }
-            break;
+    case model::VisualDefectType::BlackFrame:
+        std::snprintf(buf, sizeof(buf), "黑场 %.2fs：黑像素占比 %.1f%%（阈值 %.0f%%），亮度均值 %.1f", duration,
+                      score * 100.0, threshold * 100.0, aux);
+        break;
+    case model::VisualDefectType::FreezeFrame:
+        std::snprintf(buf, sizeof(buf), "冻结 %.2fs：帧间差异 %.4f（阈值 %.4f），期间音频非静音", duration, score,
+                      threshold);
+        break;
+    case model::VisualDefectType::Blur:
+        std::snprintf(buf, sizeof(buf), "模糊 %.2fs：锐度指数 %.3f（阈值 %.3f，越小越糊）", duration, score, threshold);
+        break;
+    case model::VisualDefectType::Flicker:
+        std::snprintf(buf, sizeof(buf), "闪烁 %.2fs：亮度均值平均跳变 %.1f（阈值 %.1f）", duration, score, threshold);
+        break;
+    case model::VisualDefectType::Blockiness:
+        std::snprintf(buf, sizeof(buf), "花屏/马赛克 %.2fs：块效应强度 %.2f（阈值 %.2f）", duration, score, threshold);
+        break;
+    case model::VisualDefectType::OverExposure:
+        std::snprintf(buf, sizeof(buf), "过曝 %.2fs：高光占比 %.1f%%，削波占比 %.1f%%", duration, score * 100.0,
+                      aux * 100.0);
+        break;
+    case model::VisualDefectType::UnderExposure:
+        std::snprintf(buf, sizeof(buf), "欠曝 %.2fs：暗部占比 %.1f%%，亮度均值 %.1f", duration, score * 100.0, aux);
+        break;
+    case model::VisualDefectType::ColorCast:
+        std::snprintf(buf, sizeof(buf), "色偏 %.2fs：偏移强度 %.3f（阈值 %.3f），R-B = %+.1f", duration, score,
+                      threshold, aux);
+        break;
+    case model::VisualDefectType::InterlaceCombing:
+        std::snprintf(buf, sizeof(buf), "隔行梳齿 %.2fs：梳齿强度 %.2f（阈值 %.2f）", duration, score, threshold);
+        break;
+    case model::VisualDefectType::Letterbox:
+    case model::VisualDefectType::Pillarbox: {
+        // score = 两侧黑边占比之和，aux = 起始侧（上/左）占比
+        const double first = Valid(aux) ? aux : score;
+        const double second = std::max(0.0, score - first);
+        if (type == model::VisualDefectType::Letterbox) {
+            std::snprintf(buf, sizeof(buf), "上下黑边：合计 %.1f%%（上 %.1f%% / 下 %.1f%%），有效画面只剩 %.1f%%",
+                          score * 100.0, first * 100.0, second * 100.0, (1.0 - score) * 100.0);
+        } else {
+            std::snprintf(buf, sizeof(buf), "左右黑边：合计 %.1f%%（左 %.1f%% / 右 %.1f%%），有效画面只剩 %.1f%%",
+                          score * 100.0, first * 100.0, second * 100.0, (1.0 - score) * 100.0);
         }
-        default:
-            std::snprintf(buf, sizeof(buf), "缺陷 %.2fs", duration);
-            break;
+        break;
+    }
+    default:
+        std::snprintf(buf, sizeof(buf), "缺陷 %.2fs", duration);
+        break;
     }
     return std::string(buf);
 }
 
-}  // namespace
+} // namespace
 
 // ===========================================================================
 // 单帧指标（纯算法，不碰任何内部状态）
 // ===========================================================================
 
-model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(
-        const model::FrameSample& sample,
-        const model::FrameSample* previous,
-        double previous_luma_mean,
-        const VisualDefectOptions& options) {
+model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(const model::FrameSample& sample,
+                                                                    const model::FrameSample* previous,
+                                                                    double previous_luma_mean,
+                                                                    const VisualDefectOptions& options) {
 
     model::FrameQualityMetric m;
     m.frame_index = sample.frame_index;
@@ -168,16 +163,22 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(
         const long double v = static_cast<long double>(g[i]);
         sum += v;
         sum_sq += v * v;
-        if (v <= options.black_luma) ++cnt_black;
-        if (v <= options.shadow_luma) ++cnt_dark;
-        if (v >= options.highlight_luma) ++cnt_high;
-        if (v >= options.clip_high_luma) ++cnt_clip_high;
-        if (v <= options.clip_low_luma) ++cnt_clip_low;
+        if (v <= options.black_luma)
+            ++cnt_black;
+        if (v <= options.shadow_luma)
+            ++cnt_dark;
+        if (v >= options.highlight_luma)
+            ++cnt_high;
+        if (v >= options.clip_high_luma)
+            ++cnt_clip_high;
+        if (v <= options.clip_low_luma)
+            ++cnt_clip_low;
     }
 
     const long double mean = sum / static_cast<long double>(n);
     long double variance = sum_sq / static_cast<long double>(n) - mean * mean;
-    if (variance < 0.0) variance = 0.0;
+    if (variance < 0.0)
+        variance = 0.0;
 
     const double inv_n = 1.0 / static_cast<double>(n);
     m.luma_mean = static_cast<double>(mean);
@@ -201,8 +202,7 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(
             const uint8_t* down = row + w;
             for (int x = 1; x < w - 1; ++x) {
                 const int lap = 4 * static_cast<int>(row[x]) - static_cast<int>(row[x - 1]) -
-                                static_cast<int>(row[x + 1]) - static_cast<int>(up[x]) -
-                                static_cast<int>(down[x]);
+                                static_cast<int>(row[x + 1]) - static_cast<int>(up[x]) - static_cast<int>(down[x]);
                 lap_sum += lap;
                 lap_sq += static_cast<long double>(lap) * lap;
                 ++cnt;
@@ -211,7 +211,8 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(
         if (cnt > 0) {
             const long double mu = lap_sum / cnt;
             long double var = lap_sq / cnt - mu * mu;
-            if (var < 0.0) var = 0.0;
+            if (var < 0.0)
+                var = 0.0;
             m.blur_score = static_cast<double>(var) / 1000.0;
         }
     }
@@ -251,10 +252,10 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(
         // 块结构已经被降采样抹平，剩下那些"看起来像块边界"的落差全是缩放痕迹 ——
         // 照旧按周期找边界只会误报，这种情况置 NoValue，不参与判定。
         // 源宽未知（手造样本）时按 1:1 处理。
-        const int bs = (sample.source_width > w)
-                           ? static_cast<int>(nominal_bs * static_cast<double>(w) /
-                                              static_cast<double>(sample.source_width))
-                           : nominal_bs;
+        const int bs =
+            (sample.source_width > w)
+                ? static_cast<int>(nominal_bs * static_cast<double>(w) / static_cast<double>(sample.source_width))
+                : nominal_bs;
         long double boundary = 0.0;
         long double interior = 0.0;
         long long bc = 0;
@@ -306,29 +307,41 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(
         for (int y = 0; y < h; ++y) {
             long double s = 0.0;
             const uint8_t* row = g + static_cast<size_t>(y) * w;
-            for (int x = 0; x < w; ++x) s += row[x];
+            for (int x = 0; x < w; ++x)
+                s += row[x];
             row_mean[static_cast<size_t>(y)] = static_cast<double>(s / w);
         }
         for (int x = 0; x < w; ++x) {
             long double s = 0.0;
-            for (int y = 0; y < h; ++y) s += g[static_cast<size_t>(y) * w + x];
+            for (int y = 0; y < h; ++y)
+                s += g[static_cast<size_t>(y) * w + x];
             col_mean[static_cast<size_t>(x)] = static_cast<double>(s / h);
         }
 
         int top = 0;
-        while (top < h && row_mean[static_cast<size_t>(top)] <= options.border_luma) ++top;
+        while (top < h && row_mean[static_cast<size_t>(top)] <= options.border_luma)
+            ++top;
         int bottom = 0;
-        while (bottom < h && row_mean[static_cast<size_t>(h - 1 - bottom)] <= options.border_luma) ++bottom;
+        while (bottom < h && row_mean[static_cast<size_t>(h - 1 - bottom)] <= options.border_luma)
+            ++bottom;
         int left = 0;
-        while (left < w && col_mean[static_cast<size_t>(left)] <= options.border_luma) ++left;
+        while (left < w && col_mean[static_cast<size_t>(left)] <= options.border_luma)
+            ++left;
         int right = 0;
-        while (right < w && col_mean[static_cast<size_t>(w - 1 - right)] <= options.border_luma) ++right;
+        while (right < w && col_mean[static_cast<size_t>(w - 1 - right)] <= options.border_luma)
+            ++right;
 
         // 整帧都黑（黑场帧）谈不上黑边；暗场画面被误吃一半以上时也放弃判定
         const bool whole_frame_dark = (top >= h) || (left >= w);
         if (!whole_frame_dark) {
-            if (top + bottom >= h / 2) { top = 0; bottom = 0; }
-            if (left + right >= w / 2) { left = 0; right = 0; }
+            if (top + bottom >= h / 2) {
+                top = 0;
+                bottom = 0;
+            }
+            if (left + right >= w / 2) {
+                left = 0;
+                right = 0;
+            }
             model::ActivePictureArea area;
             area.x = left;
             area.y = top;
@@ -340,12 +353,11 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(
                 area.bottom_bar_ratio = static_cast<double>(bottom) / h;
                 area.left_bar_ratio = static_cast<double>(left) / w;
                 area.right_bar_ratio = static_cast<double>(right) / w;
-                area.letterbox = (top > 0 && bottom > 0 &&
-                                  (area.top_bar_ratio + area.bottom_bar_ratio) >= options.border_bar_ratio);
-                area.pillarbox = (left > 0 && right > 0 &&
-                                  (area.left_bar_ratio + area.right_bar_ratio) >= options.border_bar_ratio);
-                area.active_ratio = static_cast<double>(area.width) * area.height /
-                                    (static_cast<double>(w) * h);
+                area.letterbox =
+                    (top > 0 && bottom > 0 && (area.top_bar_ratio + area.bottom_bar_ratio) >= options.border_bar_ratio);
+                area.pillarbox =
+                    (left > 0 && right > 0 && (area.left_bar_ratio + area.right_bar_ratio) >= options.border_bar_ratio);
+                area.active_ratio = static_cast<double>(area.width) * area.height / (static_cast<double>(w) * h);
                 m.active_area = area;
             }
         }
@@ -396,7 +408,9 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(
 
 VisualDefectAnalyzer::VisualDefectAnalyzer() = default;
 
-VisualDefectAnalyzer::~VisualDefectAnalyzer() { StopWorker(); }
+VisualDefectAnalyzer::~VisualDefectAnalyzer() {
+    StopWorker();
+}
 
 void VisualDefectAnalyzer::Reset(const VisualDefectOptions& options) {
     StopWorker();
@@ -472,7 +486,8 @@ bool VisualDefectAnalyzer::AwaitWorkerExit(int budget_ms) {
 }
 
 bool VisualDefectAnalyzer::Submit(const model::FrameSample& sample) {
-    if (!worker_running_.load()) return false;
+    if (!worker_running_.load())
+        return false;
     std::unique_lock<std::mutex> lock(m_);
     if (queue_.size() >= queue_capacity_) {
         // 播放压力大时宁可丢分析帧，也不能反压解码线程
@@ -492,9 +507,7 @@ bool VisualDefectAnalyzer::Submit(const model::FrameSample& sample) {
 // 会直接 std::terminate(), 连"分析线程为什么不见了"都无从查起。收口模板与其它
 // 线程入口共用同一份(core/domain/task/ThreadBody.h)。
 void VisualDefectAnalyzer::WorkerLoop() {
-    const auto settle = task::MakeScopeExit([this]() {
-        worker_exited_.store(true, std::memory_order_release);
-    });
+    const auto settle = task::MakeScopeExit([this]() { worker_exited_.store(true, std::memory_order_release); });
     const std::optional<std::string> failure = task::GuardBody([this]() {
         for (;;) {
             model::FrameSample sample;
@@ -502,7 +515,8 @@ void VisualDefectAnalyzer::WorkerLoop() {
                 std::unique_lock<std::mutex> lock(m_);
                 cv_.wait(lock, [this] { return !queue_.empty() || !worker_running_.load(); });
                 if (queue_.empty()) {
-                    if (!worker_running_.load()) break;
+                    if (!worker_running_.load())
+                        break;
                     continue;
                 }
                 sample = std::move(queue_.front());
@@ -573,7 +587,8 @@ model::ActivePictureArea VisualDefectAnalyzer::EffectiveArea() const {
         hs.reserve(active_areas_.size());
         ratios.reserve(active_areas_.size());
         for (const auto& a : active_areas_) {
-            if (!a.valid) continue;
+            if (!a.valid)
+                continue;
             xs.push_back(a.x);
             ys.push_back(a.y);
             ws.push_back(a.width);
@@ -582,7 +597,8 @@ model::ActivePictureArea VisualDefectAnalyzer::EffectiveArea() const {
         }
     }
     model::ActivePictureArea area;
-    if (xs.empty()) return area;
+    if (xs.empty())
+        return area;
 
     auto median_int = [](std::vector<int>& v) {
         std::sort(v.begin(), v.end());
@@ -619,19 +635,21 @@ model::VisualDefectReport VisualDefectAnalyzer::Snapshot() const {
 // ===========================================================================
 
 void VisualDefectAnalyzer::ProcessSampleLocked(const model::FrameSample& sample) {
-    if (!sample.valid()) return;
+    if (!sample.valid())
+        return;
 
-    model::FrameQualityMetric m = ComputeFrameMetrics(
-        sample, has_prev_ ? &prev_sample_ : nullptr, prev_luma_mean_, options_);
-    if (!m.valid) return;
+    model::FrameQualityMetric m =
+        ComputeFrameMetrics(sample, has_prev_ ? &prev_sample_ : nullptr, prev_luma_mean_, options_);
+    if (!m.valid)
+        return;
 
     metrics_.push_back(m);
     pending_metrics_.push_back(m);
     if (metrics_.size() > options_.max_samples) {
-        metrics_.erase(metrics_.begin(),
-                       metrics_.begin() + static_cast<long>(metrics_.size() - options_.max_samples));
+        metrics_.erase(metrics_.begin(), metrics_.begin() + static_cast<long>(metrics_.size() - options_.max_samples));
     }
-    if (m.active_area.valid) active_areas_.push_back(m.active_area);
+    if (m.active_area.valid)
+        active_areas_.push_back(m.active_area);
     analyzed_samples_.fetch_add(1);
 
     const double ts = m.timestamp_seconds;
@@ -645,47 +663,34 @@ void VisualDefectAnalyzer::ProcessSampleLocked(const model::FrameSample& sample)
         luma_history_ts_.pop_front();
     }
 
-    const bool black_hit =
-        options_.detect_black && Valid(m.black_ratio) &&
-        m.black_ratio >= options_.black_ratio &&
-        m.luma_mean <= options_.black_luma_mean;
+    const bool black_hit = options_.detect_black && Valid(m.black_ratio) && m.black_ratio >= options_.black_ratio &&
+                           m.luma_mean <= options_.black_luma_mean;
 
-    const bool freeze_hit =
-        options_.detect_freeze && has_prev_ && Valid(m.frame_diff) &&
-        m.frame_diff <= options_.freeze_diff &&
-        !sample.audio_silent && !black_hit;
+    const bool freeze_hit = options_.detect_freeze && has_prev_ && Valid(m.frame_diff) &&
+                            m.frame_diff <= options_.freeze_diff && !sample.audio_silent && !black_hit;
 
     // 模糊判定要排除"画面本来就没有内容"的帧: 纯色/黑场的拉普拉斯方差天然接近 0，
     // 那是"没细节"不是"糊了"，交给黑场/欠曝去报。
-    const bool blur_hit =
-        options_.detect_blur && Valid(m.blur_score) &&
-        m.blur_score <= options_.blur_threshold &&
-        m.black_ratio < 0.5 &&
-        m.luma_std >= options_.blur_min_luma_std;
+    const bool blur_hit = options_.detect_blur && Valid(m.blur_score) && m.blur_score <= options_.blur_threshold &&
+                          m.black_ratio < 0.5 && m.luma_std >= options_.blur_min_luma_std;
 
     double flicker_amplitude = 0.0;
-    const bool flicker_hit = options_.detect_flicker &&
-                             FlickerHitLocked(ts, &flicker_amplitude) && !black_hit;
+    const bool flicker_hit = options_.detect_flicker && FlickerHitLocked(ts, &flicker_amplitude) && !black_hit;
 
-    const bool over_hit =
-        options_.detect_exposure && Valid(m.highlight_ratio) &&
-        (m.clip_high_ratio >= options_.over_exposure_clip_ratio ||
-         (m.highlight_ratio >= options_.over_exposure_highlight_ratio &&
-          m.clip_high_ratio >= 0.02));
+    const bool over_hit = options_.detect_exposure && Valid(m.highlight_ratio) &&
+                          (m.clip_high_ratio >= options_.over_exposure_clip_ratio ||
+                           (m.highlight_ratio >= options_.over_exposure_highlight_ratio && m.clip_high_ratio >= 0.02));
 
     const bool under_hit =
         options_.detect_exposure && !black_hit && Valid(m.dark_ratio) &&
-        (m.dark_ratio >= options_.under_exposure_dark_ratio ||
-         m.luma_mean <= options_.under_exposure_luma_mean);
+        (m.dark_ratio >= options_.under_exposure_dark_ratio || m.luma_mean <= options_.under_exposure_luma_mean);
 
     const bool cast_hit =
-        options_.detect_color_cast && Valid(m.color_cast_score) &&
-        m.color_cast_score >= options_.color_cast_score;
+        options_.detect_color_cast && Valid(m.color_cast_score) && m.color_cast_score >= options_.color_cast_score;
 
-    const bool combing_hit =
-        options_.detect_combing && Valid(m.combing_score) &&
-        m.combing_score >= options_.combing_score &&
-        (!Valid(m.frame_diff) || m.frame_diff >= options_.combing_motion_gate);
+    const bool combing_hit = options_.detect_combing && Valid(m.combing_score) &&
+                             m.combing_score >= options_.combing_score &&
+                             (!Valid(m.frame_diff) || m.frame_diff >= options_.combing_motion_gate);
 
     SegmentUpdate u;
     u.ts = ts;
@@ -797,8 +802,7 @@ void VisualDefectAnalyzer::ProcessSampleLocked(const model::FrameSample& sample)
     has_prev_ = true;
 }
 
-void VisualDefectAnalyzer::UpdateSegmentLocked(const SegmentUpdate& u,
-                                               const model::FrameSample& sample) {
+void VisualDefectAnalyzer::UpdateSegmentLocked(const SegmentUpdate& u, const model::FrameSample& sample) {
     SegmentState& st = segments_[u.type];
     if (u.hit) {
         if (!st.active) {
@@ -837,16 +841,17 @@ void VisualDefectAnalyzer::UpdateSegmentLocked(const SegmentUpdate& u,
     }
 }
 
-void VisualDefectAnalyzer::CloseSegmentLocked(model::VisualDefectType type, double end_ts,
-                                              int end_frame) {
+void VisualDefectAnalyzer::CloseSegmentLocked(model::VisualDefectType type, double end_ts, int end_frame) {
     auto it = segments_.find(type);
-    if (it == segments_.end() || !it->second.active) return;
+    if (it == segments_.end() || !it->second.active)
+        return;
 
     const SegmentState st = it->second;
     it->second = SegmentState();
 
     const double duration = std::max(0.0, st.last_ts - st.start_ts);
-    if (duration + kEpsilon < MinSecondsFor(type, options_)) return;
+    if (duration + kEpsilon < MinSecondsFor(type, options_))
+        return;
 
     // 与上一条同类缺陷挨得太近就合并，避免同一段问题被切成好几条
     if (defects_.size() > timeline_defect_begin_) {
@@ -859,7 +864,8 @@ void VisualDefectAnalyzer::CloseSegmentLocked(model::VisualDefectType type, doub
             last.score = reverse ? std::min(last.score, st.worst) : std::max(last.score, st.worst);
             const double total = std::max(0.0, last.end_seconds - last.start_seconds);
             const auto merged = SeverityFor(type, total, last.score, options_);
-            if (static_cast<int>(merged) > static_cast<int>(last.severity)) last.severity = merged;
+            if (static_cast<int>(merged) > static_cast<int>(last.severity))
+                last.severity = merged;
             last.description = DescribeDefect(type, total, last.score, st.aux, st.threshold);
             return;
         }
@@ -876,7 +882,8 @@ void VisualDefectAnalyzer::CloseSegmentLocked(model::VisualDefectType type, doub
     defect.score = st.worst;
     defect.threshold = st.threshold;
     defect.description = DescribeDefect(type, duration, st.worst, st.aux, st.threshold);
-    if (st.has_evidence) defect.evidence = st.evidence;
+    if (st.has_evidence)
+        defect.evidence = st.evidence;
     PushDefectLocked(std::move(defect));
 }
 
@@ -885,7 +892,8 @@ void VisualDefectAnalyzer::CloseAllSegmentsLocked(double end_ts, int end_frame) 
     std::vector<model::VisualDefectType> types;
     types.reserve(segments_.size());
     for (const auto& kv : segments_) {
-        if (kv.second.active) types.push_back(kv.first);
+        if (kv.second.active)
+            types.push_back(kv.first);
     }
     for (const auto& type : types) {
         CloseSegmentLocked(type, end_ts, end_frame);
@@ -893,14 +901,16 @@ void VisualDefectAnalyzer::CloseAllSegmentsLocked(double end_ts, int end_frame) 
 }
 
 void VisualDefectAnalyzer::PushDefectLocked(model::VisualDefect defect) {
-    if (defects_.size() >= options_.max_defects) return;
+    if (defects_.size() >= options_.max_defects)
+        return;
     pending_defects_.push_back(defect);
     defects_.push_back(std::move(defect));
 }
 
 bool VisualDefectAnalyzer::FlickerHitLocked(double ts, double* amplitude) const {
     (void)ts;
-    if (luma_history_.size() < 4) return false;
+    if (luma_history_.size() < 4)
+        return false;
 
     double sum_abs = 0.0;
     int pairs = 0;
@@ -912,59 +922,65 @@ bool VisualDefectAnalyzer::FlickerHitLocked(double ts, double* amplitude) const 
         if (i >= 2) {
             const double prev_d = luma_history_[i - 1] - luma_history_[i - 2];
             // 亮->暗->亮 才算闪烁；单向缓慢变化（淡入淡出）不算
-            if (d * prev_d < 0.0 &&
-                std::abs(d) >= options_.flicker_delta &&
+            if (d * prev_d < 0.0 && std::abs(d) >= options_.flicker_delta &&
                 std::abs(prev_d) >= options_.flicker_delta) {
                 ++alternations;
             }
         }
     }
     const double mean_abs = (pairs > 0) ? (sum_abs / pairs) : 0.0;
-    if (amplitude) *amplitude = mean_abs;
-    return alternations >= options_.flicker_min_alternations &&
-           mean_abs >= options_.flicker_delta;
+    if (amplitude)
+        *amplitude = mean_abs;
+    return alternations >= options_.flicker_min_alternations && mean_abs >= options_.flicker_delta;
 }
 
-model::VisualDefectSeverity VisualDefectAnalyzer::SeverityFor(model::VisualDefectType type,
-                                                              double duration_seconds,
-                                                              double score,
-                                                              const VisualDefectOptions& options) {
+model::VisualDefectSeverity VisualDefectAnalyzer::SeverityFor(model::VisualDefectType type, double duration_seconds,
+                                                              double score, const VisualDefectOptions& options) {
     using model::VisualDefectSeverity;
     using model::VisualDefectType;
     switch (type) {
-        case VisualDefectType::BlackFrame:
-            if (duration_seconds >= 3.0) return VisualDefectSeverity::Error;
-            if (duration_seconds >= 1.0) return VisualDefectSeverity::Warning;
-            return VisualDefectSeverity::Info;
-        case VisualDefectType::FreezeFrame:
-            if (duration_seconds >= 3.0) return VisualDefectSeverity::Error;
+    case VisualDefectType::BlackFrame:
+        if (duration_seconds >= 3.0)
+            return VisualDefectSeverity::Error;
+        if (duration_seconds >= 1.0)
             return VisualDefectSeverity::Warning;
-        case VisualDefectType::Blur:
-            // 越低于阈值越离谱
-            if (score <= options.blur_threshold * 0.25) return VisualDefectSeverity::Warning;
-            return VisualDefectSeverity::Info;
-        case VisualDefectType::Flicker:
-            if (score >= options.flicker_delta * 3.0) return VisualDefectSeverity::Error;
+        return VisualDefectSeverity::Info;
+    case VisualDefectType::FreezeFrame:
+        if (duration_seconds >= 3.0)
+            return VisualDefectSeverity::Error;
+        return VisualDefectSeverity::Warning;
+    case VisualDefectType::Blur:
+        // 越低于阈值越离谱
+        if (score <= options.blur_threshold * 0.25)
             return VisualDefectSeverity::Warning;
-        case VisualDefectType::Blockiness:
-            if (score >= 0.6) return VisualDefectSeverity::Error;
+        return VisualDefectSeverity::Info;
+    case VisualDefectType::Flicker:
+        if (score >= options.flicker_delta * 3.0)
+            return VisualDefectSeverity::Error;
+        return VisualDefectSeverity::Warning;
+    case VisualDefectType::Blockiness:
+        if (score >= 0.6)
+            return VisualDefectSeverity::Error;
+        return VisualDefectSeverity::Warning;
+    case VisualDefectType::OverExposure:
+    case VisualDefectType::UnderExposure:
+        if (score >= 0.9)
+            return VisualDefectSeverity::Error;
+        return VisualDefectSeverity::Warning;
+    case VisualDefectType::ColorCast:
+        if (score >= options.color_cast_score * 2.0)
             return VisualDefectSeverity::Warning;
-        case VisualDefectType::OverExposure:
-        case VisualDefectType::UnderExposure:
-            if (score >= 0.9) return VisualDefectSeverity::Error;
-            return VisualDefectSeverity::Warning;
-        case VisualDefectType::ColorCast:
-            if (score >= options.color_cast_score * 2.0) return VisualDefectSeverity::Warning;
-            return VisualDefectSeverity::Info;
-        case VisualDefectType::InterlaceCombing:
-            if (score >= 0.6) return VisualDefectSeverity::Error;
-            return VisualDefectSeverity::Warning;
-        case VisualDefectType::Letterbox:
-        case VisualDefectType::Pillarbox:
-            // 有黑边本身不是错，只是要让人知道有效画面区域在哪
-            return VisualDefectSeverity::Info;
+        return VisualDefectSeverity::Info;
+    case VisualDefectType::InterlaceCombing:
+        if (score >= 0.6)
+            return VisualDefectSeverity::Error;
+        return VisualDefectSeverity::Warning;
+    case VisualDefectType::Letterbox:
+    case VisualDefectType::Pillarbox:
+        // 有黑边本身不是错，只是要让人知道有效画面区域在哪
+        return VisualDefectSeverity::Info;
     }
     return VisualDefectSeverity::Info;
 }
 
-}  // namespace videoeye
+} // namespace videoeye

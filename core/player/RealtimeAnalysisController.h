@@ -33,9 +33,9 @@
 #include <map>
 
 #include "core/analysis/quality/MacroblockAnalyzer.h"
-#include "core/player/AnalysisBus.h"
 #include "core/analysis/quality/SceneChangeAnalyzer.h"
 #include "core/analysis/quality/VisualDefectAnalyzer.h"
+#include "core/player/AnalysisBus.h"
 #include "core/player/AnalysisSession.h"
 #include "core/player/AudioVisualizer.h"
 #include "core/player/PlaybackSession.h"
@@ -43,10 +43,10 @@
 // 的一堆 include 顺带带进来的，拆出来之后不能继续蹭。
 #include "core/domain/model/AnalysisEvent.h"
 #include "core/domain/model/AudioVisualizationFrame.h"
-#include "core/domain/model/FrameTimingInfo.h"   // PacketTiming / FrameTimingInfo / kNoTimestamp
+#include "core/domain/model/FrameTimingInfo.h" // PacketTiming / FrameTimingInfo / kNoTimestamp
 #include "core/domain/model/MacroblockInfo.h"
 #include "core/domain/model/PacketInfo.h"
-#include "core/domain/model/QualityMetric.h"     // FrameQualityMetric / VisualDefect / ActivePictureArea / FrameSample
+#include "core/domain/model/QualityMetric.h" // FrameQualityMetric / VisualDefect / ActivePictureArea / FrameSample
 #include "core/domain/model/SceneChangeResult.h"
 #include "core/domain/model/SyncSample.h"
 #include "core/domain/model/TimelineEvent.h"
@@ -63,8 +63,7 @@ public:
     // analysis: 12 个分析开关 + StreamAnalyzer（引用，必须活过本对象）。
     // playback: 播放会话（引用）。本类只在构造时装 hook、运行时读音/视频流序号与当前位置，
     //   不参与播放状态机的任何决策。
-    RealtimeAnalysisController(AnalysisSession& analysis, PlaybackSession& playback,
-                               QObject* parent = nullptr);
+    RealtimeAnalysisController(AnalysisSession& analysis, PlaybackSession& playback, QObject* parent = nullptr);
 
     RealtimeAnalysisController(const RealtimeAnalysisController&) = delete;
     RealtimeAnalysisController& operator=(const RealtimeAnalysisController&) = delete;
@@ -96,14 +95,15 @@ public:
     // 对外的实时分析信号总线（23 条，见 core/player/AnalysisBus.h）。
     // UI 经 MediaPlayer::analysis_bus() 拿它连信号；本类所有"该发信号了"的地方
     // 直接 emit bus_.Xxx()。
-    AnalysisBus& bus() { return bus_; }
+    AnalysisBus& bus() {
+        return bus_;
+    }
 
 private:
     friend class RealtimeAnalysisControllerTestAccess;
 
     // 对外信号出口。以成员（而不是指针）持有，随本对象一起生灭。
     AnalysisBus bus_{this};
-
 
     // --- PlaybackSession 的回调入口（解码线程）---
     void InstallHooks();
@@ -114,16 +114,13 @@ private:
     void OnEndOfStream();
 
     // --- 四类"计数 + 填结构 + 发信号"的统一出口 ---
-    void EmitAnalysisEvent(const QString& severity, const QString& type, int stream_index,
-                           qint64 pts, double timestamp_seconds,
-                           const QString& summary, const QString& detail = QString());
-    void EmitSyncSample(double audio_timestamp_seconds, double video_timestamp_seconds,
-                        bool audio_anchor);
-    void EmitTimelineEvent(model::TimelineEventCategory category, double timestamp_seconds,
-                           const QString& label, const QString& detail = QString());
-    void EmitAudioVisualization(const AudioVisualizationResult& vis_result,
-                                int sample_rate, int channels, double timestamp_seconds,
-                                double level);
+    void EmitAnalysisEvent(const QString& severity, const QString& type, int stream_index, qint64 pts,
+                           double timestamp_seconds, const QString& summary, const QString& detail = QString());
+    void EmitSyncSample(double audio_timestamp_seconds, double video_timestamp_seconds, bool audio_anchor);
+    void EmitTimelineEvent(model::TimelineEventCategory category, double timestamp_seconds, const QString& label,
+                           const QString& detail = QString());
+    void EmitAudioVisualization(const AudioVisualizationResult& vis_result, int sample_rate, int channels,
+                                double timestamp_seconds, double level);
 
     // --- 画面质量 / 视觉缺陷: 按采样档位抽取解码帧 -> 降采样 -> 投递分析器 ---
     void FeedVisualDefectFrame(const AVFrame* frame, double timestamp_seconds, bool audio_silent);
@@ -155,7 +152,7 @@ private:
     double visual_defect_last_sample_ts_ = -1.0;
     // 统计信号节流: 有效画面区域要取中位数，每秒算一次就够
     std::chrono::steady_clock::time_point visual_defect_last_stats_emit_{};
-    double last_audio_level_ = 0.0;   // 最近一帧音频的 RMS（冻结帧判定要排除静音段）
+    double last_audio_level_ = 0.0; // 最近一帧音频的 RMS（冻结帧判定要排除静音段）
     int audio_frame_index_ = 0;
     int packet_index_ = 0;
     int timeline_packet_index_ = 0;
@@ -172,5 +169,5 @@ private:
     std::map<int, bool> missing_audio_pts_reported_;
 };
 
-}  // namespace player
-}  // namespace videoeye
+} // namespace player
+} // namespace videoeye

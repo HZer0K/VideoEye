@@ -8,16 +8,16 @@ namespace model {
 
 // 单个运动矢量 / 宏块信息
 struct MotionVectorInfo {
-    int block_x = 0;                   // 宏块目标位置 X (像素)
-    int block_y = 0;                   // 宏块目标位置 Y (像素)
-    uint8_t block_w = 0;               // 块宽度 (像素)
-    uint8_t block_h = 0;               // 块高度 (像素)
-    int32_t motion_x = 0;              // 运动矢量 X 分量 (1/motion_scale 像素精度)
-    int32_t motion_y = 0;              // 运动矢量 Y 分量 (1/motion_scale 像素精度)
-    uint16_t motion_scale = 0;         // 运动矢量精度分母 (通常 4 = 1/4 像素)
-    int32_t source = 0;                // 参考帧方向 (< 0 = 前向/过去, > 0 = 后向/未来)
-    double motion_magnitude = 0.0;     // 运动矢量幅度 (像素)
-    double motion_angle = 0.0;         // 运动矢量角度 (度, 0-360)
+    int block_x = 0;               // 宏块目标位置 X (像素)
+    int block_y = 0;               // 宏块目标位置 Y (像素)
+    uint8_t block_w = 0;           // 块宽度 (像素)
+    uint8_t block_h = 0;           // 块高度 (像素)
+    int32_t motion_x = 0;          // 运动矢量 X 分量 (1/motion_scale 像素精度)
+    int32_t motion_y = 0;          // 运动矢量 Y 分量 (1/motion_scale 像素精度)
+    uint16_t motion_scale = 0;     // 运动矢量精度分母 (通常 4 = 1/4 像素)
+    int32_t source = 0;            // 参考帧方向 (< 0 = 前向/过去, > 0 = 后向/未来)
+    double motion_magnitude = 0.0; // 运动矢量幅度 (像素)
+    double motion_angle = 0.0;     // 运动矢量角度 (度, 0-360)
 };
 
 // 一帧的宏块统计概览
@@ -63,11 +63,11 @@ struct MacroblockFrameAnalysis {
     double timestamp = 0.0;
     int frame_width = 0;
     int frame_height = 0;
-    int frame_type = 0;               // AVPictureType (1=I, 2=P, 3=B)
-    int codec_id = 0;                 // AV_CODEC_ID_* (H264/HEVC/AV1/VP9...), 决定术语: 宏块 vs CTU
-    bool has_motion_vectors = false;   // 是否包含运动矢量数据
+    int frame_type = 0;              // AVPictureType (1=I, 2=P, 3=B)
+    int codec_id = 0;                // AV_CODEC_ID_* (H264/HEVC/AV1/VP9...), 决定术语: 宏块 vs CTU
+    bool has_motion_vectors = false; // 是否包含运动矢量数据
     MacroblockStats stats;
-    std::vector<MotionVectorInfo> motion_vectors;  // 运动矢量列表
+    std::vector<MotionVectorInfo> motion_vectors; // 运动矢量列表
 };
 
 } // namespace model
@@ -76,7 +76,9 @@ struct MacroblockFrameAnalysis {
 // AV_CODEC_ID_HEVC 在 FFmpeg 中为稳定值 173 (自 2.0 起未变)
 namespace CodecType {
 constexpr int kHevc = 173;
-inline bool IsHevc(int codec_id) { return codec_id == kHevc; }
+inline bool IsHevc(int codec_id) {
+    return codec_id == kHevc;
+}
 } // namespace CodecType
 
 } // namespace videoeye

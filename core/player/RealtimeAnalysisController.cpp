@@ -37,26 +37,22 @@ constexpr double kSampleTimeEpsilon = 1e-6;
 // 返回空 vector 表示转换失败 (调用方应跳过该帧)。
 std::vector<float> ComputeGrayHistogram(const model::FrameData& frame) {
     std::vector<float> hist;
-    if (frame.width <= 0 || frame.height <= 0 || frame.format < 0 ||
-        !frame.data[0] || frame.linesize[0] <= 0) {
+    if (frame.width <= 0 || frame.height <= 0 || frame.format < 0 || !frame.data[0] || frame.linesize[0] <= 0) {
         return hist;
     }
 
     const auto pix_fmt = static_cast<AVPixelFormat>(frame.format);
-    SwsContext* sws = sws_getContext(
-        frame.width, frame.height, pix_fmt,
-        frame.width, frame.height, AV_PIX_FMT_GRAY8,
-        SWS_BILINEAR, nullptr, nullptr, nullptr);
+    SwsContext* sws = sws_getContext(frame.width, frame.height, pix_fmt, frame.width, frame.height, AV_PIX_FMT_GRAY8,
+                                     SWS_BILINEAR, nullptr, nullptr, nullptr);
     if (!sws) {
         LOG_WARN("无法创建 sws_scale 上下文 (灰度直方图)");
         return hist;
     }
 
     std::vector<uint8_t> gray(static_cast<size_t>(frame.width) * frame.height);
-    uint8_t* dst_data[1] = { gray.data() };
-    const int dst_linesize[1] = { frame.width };
-    const int ret = sws_scale(sws, frame.data, frame.linesize, 0, frame.height,
-                              dst_data, dst_linesize);
+    uint8_t* dst_data[1] = {gray.data()};
+    const int dst_linesize[1] = {frame.width};
+    const int ret = sws_scale(sws, frame.data, frame.linesize, 0, frame.height, dst_data, dst_linesize);
     sws_freeContext(sws);
     if (ret <= 0) {
         LOG_WARN("sws_scale 灰度转换失败");
@@ -70,13 +66,12 @@ std::vector<float> ComputeGrayHistogram(const model::FrameData& frame) {
             ++hist[line[x]];
         }
     }
-    return hist;  // SceneChangeAnalyzer::Feed 内部会归一化, 这里返回原始计数即可
+    return hist; // SceneChangeAnalyzer::Feed 内部会归一化, 这里返回原始计数即可
 }
 
-}  // namespace
+} // namespace
 
-RealtimeAnalysisController::RealtimeAnalysisController(AnalysisSession& analysis,
-                                                       PlaybackSession& playback,
+RealtimeAnalysisController::RealtimeAnalysisController(AnalysisSession& analysis, PlaybackSession& playback,
                                                        QObject* parent)
     : QObject(parent), analysis_(analysis), playback_(playback) {
     InstallHooks();
@@ -93,9 +88,7 @@ void RealtimeAnalysisController::InstallHooks() {
     hooks.on_packet = [this](const PacketContext& ctx) { OnPacket(ctx); };
     hooks.on_video_frame = [this](const VideoFrameContext& ctx) { OnVideoFrame(ctx); };
     hooks.on_audio_frame = [this](const AudioFrameContext& ctx) { OnAudioFrame(ctx); };
-    hooks.on_seek_done = [this](double target_ms, model::SeekMode mode) {
-        OnSeekDone(target_ms, mode);
-    };
+    hooks.on_seek_done = [this](double target_ms, model::SeekMode mode) { OnSeekDone(target_ms, mode); };
     hooks.on_end_of_stream = [this]() { OnEndOfStream(); };
     hooks.on_sync_sample = [this](double audio_ts, double video_ts, bool audio_anchor) {
         EmitSyncSample(audio_ts, video_ts, audio_anchor);
@@ -108,12 +101,11 @@ void RealtimeAnalysisController::InstallHooks() {
 // 四个出口统一做两件事: 开关没开就不发（省掉填结构的开销），
 // 以及推进各自的序号（界面上列表的行号必须连续且从 0 起）。
 
-void RealtimeAnalysisController::EmitAnalysisEvent(const QString& severity, const QString& type,
-                                                   int stream_index, qint64 pts,
-                                                   double timestamp_seconds,
-                                                   const QString& summary,
+void RealtimeAnalysisController::EmitAnalysisEvent(const QString& severity, const QString& type, int stream_index,
+                                                   qint64 pts, double timestamp_seconds, const QString& summary,
                                                    const QString& detail) {
-    if (!analysis_.IsEventAnalysisEnabled()) return;
+    if (!analysis_.IsEventAnalysisEnabled())
+        return;
     model::AnalysisEvent event_info;
     event_info.index = analysis_event_index_++;
     event_info.severity = severity.toStdString();
@@ -127,10 +119,11 @@ void RealtimeAnalysisController::EmitAnalysisEvent(const QString& severity, cons
     EmitTimelineEvent(model::TimelineEventCategory::Event, timestamp_seconds, summary, detail);
 }
 
-void RealtimeAnalysisController::EmitSyncSample(double audio_ts, double video_ts,
-                                                bool audio_anchor) {
-    if (!analysis_.IsSyncAnalysisEnabled()) return;
-    if (!std::isfinite(audio_ts) || !std::isfinite(video_ts)) return;
+void RealtimeAnalysisController::EmitSyncSample(double audio_ts, double video_ts, bool audio_anchor) {
+    if (!analysis_.IsSyncAnalysisEnabled())
+        return;
+    if (!std::isfinite(audio_ts) || !std::isfinite(video_ts))
+        return;
     model::SyncSample sample;
     sample.index = sync_sample_index_++;
     sample.audio_timestamp_seconds = audio_ts;
@@ -140,11 +133,12 @@ void RealtimeAnalysisController::EmitSyncSample(double audio_ts, double video_ts
     emit bus_.SyncSampleReady(sample);
 }
 
-void RealtimeAnalysisController::EmitTimelineEvent(model::TimelineEventCategory category,
-                                                   double timestamp_seconds,
+void RealtimeAnalysisController::EmitTimelineEvent(model::TimelineEventCategory category, double timestamp_seconds,
                                                    const QString& label, const QString& detail) {
-    if (!analysis_.IsTimelineAnalysisEnabled()) return;
-    if (!std::isfinite(timestamp_seconds)) return;
+    if (!analysis_.IsTimelineAnalysisEnabled())
+        return;
+    if (!std::isfinite(timestamp_seconds))
+        return;
     model::TimelineEvent event;
     event.index = timeline_event_index_++;
     event.category = category;
@@ -154,9 +148,8 @@ void RealtimeAnalysisController::EmitTimelineEvent(model::TimelineEventCategory 
     emit bus_.TimelineEventReady(event);
 }
 
-void RealtimeAnalysisController::EmitAudioVisualization(const AudioVisualizationResult& vis,
-                                                        int sample_rate, int channels,
-                                                        double timestamp_seconds, double level) {
+void RealtimeAnalysisController::EmitAudioVisualization(const AudioVisualizationResult& vis, int sample_rate,
+                                                        int channels, double timestamp_seconds, double level) {
     model::AudioVisualizationFrame frame;
     frame.index = audio_visualization_index_++;
     frame.timestamp_seconds = timestamp_seconds;
@@ -200,25 +193,31 @@ void RealtimeAnalysisController::ResetForNewMedia() {
     missing_audio_pts_reported_.clear();
 
     emit bus_.VideoFrameListReset();
-    if (analysis_.IsAudioFrameAnalysisEnabled()) emit bus_.AudioFrameListReset();
-    if (analysis_.IsPacketAnalysisEnabled()) emit bus_.PacketListReset();
-    if (analysis_.IsEventAnalysisEnabled()) emit bus_.AnalysisEventListReset();
-    if (analysis_.IsSyncAnalysisEnabled()) emit bus_.SyncSampleListReset();
-    if (analysis_.IsTimelineAnalysisEnabled()) emit bus_.TimelineEventListReset();
-    if (analysis_.IsVisualDefectAnalysisEnabled()) emit bus_.VisualDefectReset();
+    if (analysis_.IsAudioFrameAnalysisEnabled())
+        emit bus_.AudioFrameListReset();
+    if (analysis_.IsPacketAnalysisEnabled())
+        emit bus_.PacketListReset();
+    if (analysis_.IsEventAnalysisEnabled())
+        emit bus_.AnalysisEventListReset();
+    if (analysis_.IsSyncAnalysisEnabled())
+        emit bus_.SyncSampleListReset();
+    if (analysis_.IsTimelineAnalysisEnabled())
+        emit bus_.TimelineEventListReset();
+    if (analysis_.IsVisualDefectAnalysisEnabled())
+        emit bus_.VisualDefectReset();
 }
 
 void RealtimeAnalysisController::FlushOnStop() {
-    if (!analysis_.IsVisualDefectAnalysisEnabled()) return;
-    FlushVisualDefectSegments(visual_defect_last_sample_ts_ > 0.0
-                                  ? visual_defect_last_sample_ts_
-                                  : 0.0);
+    if (!analysis_.IsVisualDefectAnalysisEnabled())
+        return;
+    FlushVisualDefectSegments(visual_defect_last_sample_ts_ > 0.0 ? visual_defect_last_sample_ts_ : 0.0);
 }
 
 // --- 画面质量 / 视觉缺陷 ---
 
 void RealtimeAnalysisController::SetVisualDefectAnalysisEnabled(bool enable) {
-    if (analysis_.IsVisualDefectAnalysisEnabled() == enable) return;
+    if (analysis_.IsVisualDefectAnalysisEnabled() == enable)
+        return;
     analysis_.SetVisualDefectAnalysisEnabled(enable);
     if (enable) {
         const videoeye::VisualDefectOptions vd_opts = GetVisualDefectOptions();
@@ -233,8 +232,7 @@ void RealtimeAnalysisController::SetVisualDefectAnalysisEnabled(bool enable) {
         LOG_INFO("画面质量检测已启用");
         emit bus_.VisualDefectReset();
     } else {
-        FlushVisualDefectSegments(visual_defect_last_sample_ts_ > 0.0 ? visual_defect_last_sample_ts_
-                                                                      : 0.0);
+        FlushVisualDefectSegments(visual_defect_last_sample_ts_ > 0.0 ? visual_defect_last_sample_ts_ : 0.0);
         visual_defect_analyzer_.StopWorker();
         LOG_INFO("画面质量检测已禁用");
     }
@@ -244,11 +242,11 @@ videoeye::VisualDefectOptions RealtimeAnalysisController::GetVisualDefectOptions
     return analysis_.GetVisualDefectOptions();
 }
 
-void RealtimeAnalysisController::SetVisualDefectOptions(
-    const videoeye::VisualDefectOptions& options) {
+void RealtimeAnalysisController::SetVisualDefectOptions(const videoeye::VisualDefectOptions& options) {
     const bool was_enabled = analysis_.IsVisualDefectAnalysisEnabled();
     analysis_.SetVisualDefectOptions(options);
-    if (!was_enabled) return;
+    if (!was_enabled)
+        return;
     // 档位变了（尤其"离线全帧"开关）要重建线程与状态
     visual_defect_analyzer_.Reset(options);
     visual_defect_frame_index_ = 0;
@@ -283,10 +281,10 @@ void RealtimeAnalysisController::DrainVisualDefectResults() {
     }
 }
 
-void RealtimeAnalysisController::FeedVisualDefectFrame(const AVFrame* frame,
-                                                       double timestamp_seconds,
+void RealtimeAnalysisController::FeedVisualDefectFrame(const AVFrame* frame, double timestamp_seconds,
                                                        bool audio_silent) {
-    if (!frame || !std::isfinite(timestamp_seconds)) return;
+    if (!frame || !std::isfinite(timestamp_seconds))
+        return;
 
     // 解码线程逐帧读取视觉缺陷选项: 取一次加锁副本, 避免反复加锁且与 UI 线程写入互斥。
     const videoeye::VisualDefectOptions vd_opts = GetVisualDefectOptions();
@@ -312,16 +310,13 @@ void RealtimeAnalysisController::FeedVisualDefectFrame(const AVFrame* frame,
 
     if (fps > 0.0 && visual_defect_last_sample_ts_ >= 0.0 &&
         (timestamp_seconds - visual_defect_last_sample_ts_) + kSampleTimeEpsilon < interval) {
-        return;   // 还没到下一次采样点
+        return; // 还没到下一次采样点
     }
 
     model::FrameSample sample;
     std::string error;
-    if (!videoeye::QualityAnalyzer::BuildSample(frame,
-                                                vd_opts.EffectiveAnalysisWidth(),
-                                                vd_opts.EffectiveEvidenceWidth(),
-                                                vd_opts.capture_rgb,
-                                                sample, error)) {
+    if (!videoeye::QualityAnalyzer::BuildSample(frame, vd_opts.EffectiveAnalysisWidth(),
+                                                vd_opts.EffectiveEvidenceWidth(), vd_opts.capture_rgb, sample, error)) {
         LOG_WARN("画面质量分析: 降采样失败 - " + error);
         return;
     }
@@ -336,7 +331,7 @@ void RealtimeAnalysisController::FeedVisualDefectFrame(const AVFrame* frame,
     } else if (!visual_defect_analyzer_.Submit(sample)) {
         DrainVisualDefectResults();
         EmitVisualDefectStats(false);
-        return;   // 队列满，本帧丢弃（计数在分析器里，UI 会显示）
+        return; // 队列满，本帧丢弃（计数在分析器里，UI 会显示）
     }
     DrainVisualDefectResults();
     EmitVisualDefectStats(false);
@@ -345,23 +340,24 @@ void RealtimeAnalysisController::FeedVisualDefectFrame(const AVFrame* frame,
 void RealtimeAnalysisController::EmitVisualDefectStats(bool force) {
     const auto now = std::chrono::steady_clock::now();
     if (!force) {
-        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                 now - visual_defect_last_stats_emit_).count();
+        const auto elapsed =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - visual_defect_last_stats_emit_).count();
         if (visual_defect_last_stats_emit_.time_since_epoch().count() != 0 && elapsed < 1000) {
             return;
         }
     }
     visual_defect_last_stats_emit_ = now;
     emit bus_.VisualDefectStatsReady(visual_defect_analyzer_.analyzed_samples(),
-                                visual_defect_analyzer_.dropped_samples(),
-                                visual_defect_analyzer_.EffectiveArea());
+                                     visual_defect_analyzer_.dropped_samples(),
+                                     visual_defect_analyzer_.EffectiveArea());
 }
 
 // --- 播放回调 (由 PlaybackSession 的解码线程调用) ---
 
 void RealtimeAnalysisController::OnPacket(const PacketContext& ctx) {
     const AVPacket* packet = ctx.packet;
-    if (!packet) return;
+    if (!packet)
+        return;
     AVFormatContext* format_ctx = ctx.format_ctx;
     const double packet_ts_sec = ctx.timestamp_seconds;
 
@@ -372,8 +368,7 @@ void RealtimeAnalysisController::OnPacket(const PacketContext& ctx) {
         packet_info.stream_index = packet->stream_index;
         if (format_ctx && packet->stream_index >= 0 &&
             packet->stream_index < static_cast<int>(format_ctx->nb_streams) &&
-            format_ctx->streams[packet->stream_index] &&
-            format_ctx->streams[packet->stream_index]->codecpar) {
+            format_ctx->streams[packet->stream_index] && format_ctx->streams[packet->stream_index]->codecpar) {
             packet_info.stream_type = format_ctx->streams[packet->stream_index]->codecpar->codec_type;
         }
         packet_info.pts = packet->pts;
@@ -388,25 +383,22 @@ void RealtimeAnalysisController::OnPacket(const PacketContext& ctx) {
 
     // 时间轴与同步诊断（demux 层 packet 时间）
     if (analysis_.IsTimelineAnalysisEnabled()) {
-        AVStream* ts_stream = (format_ctx && packet->stream_index >= 0 &&
-                               packet->stream_index < static_cast<int>(format_ctx->nb_streams))
-                                  ? format_ctx->streams[packet->stream_index]
-                                  : nullptr;
+        AVStream* ts_stream =
+            (format_ctx && packet->stream_index >= 0 && packet->stream_index < static_cast<int>(format_ctx->nb_streams))
+                ? format_ctx->streams[packet->stream_index]
+                : nullptr;
         if (ts_stream) {
             const double tb_ms = av_q2d(ts_stream->time_base) * 1000.0;
             model::PacketTiming timing;
             timing.index = timeline_packet_index_++;
             timing.stream_index = packet->stream_index;
             timing.media_type = static_cast<int>(ts_stream->codecpar->codec_type);
-            timing.pts_ms = (packet->pts != AV_NOPTS_VALUE)
-                                ? static_cast<double>(packet->pts) * tb_ms
-                                : model::kNoTimestamp;
-            timing.dts_ms = (packet->dts != AV_NOPTS_VALUE)
-                                ? static_cast<double>(packet->dts) * tb_ms
-                                : model::kNoTimestamp;
-            timing.duration_ms = (packet->duration > 0)
-                                     ? static_cast<double>(packet->duration) * tb_ms
-                                     : model::kNoTimestamp;
+            timing.pts_ms =
+                (packet->pts != AV_NOPTS_VALUE) ? static_cast<double>(packet->pts) * tb_ms : model::kNoTimestamp;
+            timing.dts_ms =
+                (packet->dts != AV_NOPTS_VALUE) ? static_cast<double>(packet->dts) * tb_ms : model::kNoTimestamp;
+            timing.duration_ms =
+                (packet->duration > 0) ? static_cast<double>(packet->duration) * tb_ms : model::kNoTimestamp;
             timing.pos = packet->pos;
             timing.size = packet->size;
             timing.flags = packet->flags;
@@ -420,8 +412,7 @@ void RealtimeAnalysisController::OnPacket(const PacketContext& ctx) {
         if (!missing_packet_ts_reported_[packet->stream_index]) {
             missing_packet_ts_reported_[packet->stream_index] = true;
             EmitAnalysisEvent(tr("警告"), tr("缺失时间戳"), packet->stream_index,
-                              static_cast<qint64>(ctx.raw_timestamp), packet_ts_sec,
-                              tr("数据包缺少有效时间戳"),
+                              static_cast<qint64>(ctx.raw_timestamp), packet_ts_sec, tr("数据包缺少有效时间戳"),
                               tr("该流存在 PTS/DTS 缺失的数据包，后续同步与定位可能不准确。"));
         }
     } else {
@@ -435,8 +426,7 @@ void RealtimeAnalysisController::OnPacket(const PacketContext& ctx) {
                                   tr("当前时间戳早于上一包，可能存在封装异常、乱序或损坏。"));
             } else if (delta_sec > 2.0) {
                 EmitAnalysisEvent(tr("警告"), tr("时间戳跳变"), packet->stream_index,
-                                  static_cast<qint64>(ctx.raw_timestamp), packet_ts_sec,
-                                  tr("检测到较大的包时间戳跳变"),
+                                  static_cast<qint64>(ctx.raw_timestamp), packet_ts_sec, tr("检测到较大的包时间戳跳变"),
                                   tr("相邻包时间差超过 2 秒，可能出现断流、裁切或时间基异常。"));
             }
         }
@@ -449,7 +439,8 @@ void RealtimeAnalysisController::OnPacket(const PacketContext& ctx) {
 }
 
 void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
-    if (!ctx.frame || !ctx.decoder) return;
+    if (!ctx.frame || !ctx.decoder)
+        return;
     model::FrameData& frame_data = *ctx.frame;
     const AVPacket* packet = ctx.packet;
     AVFormatContext* format_ctx = ctx.format_ctx;
@@ -457,9 +448,8 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
 
     if (frame_data.width <= 0 || frame_data.height <= 0 || !frame_data.data[0]) {
         LOG_WARN("跳过无效帧数据");
-        EmitAnalysisEvent(tr("错误"), tr("无效视频帧"), ctx.video_stream_index,
-                          static_cast<qint64>(frame_data.pts), frame_data.timestamp,
-                          tr("检测到无效视频帧"), tr("视频帧的宽高或数据指针无效，已被跳过。"));
+        EmitAnalysisEvent(tr("错误"), tr("无效视频帧"), ctx.video_stream_index, static_cast<qint64>(frame_data.pts),
+                          frame_data.timestamp, tr("检测到无效视频帧"), tr("视频帧的宽高或数据指针无效，已被跳过。"));
         return;
     }
 
@@ -472,13 +462,14 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
             AVStream* vs = format_ctx->streams[ctx.video_stream_index];
             if (vs && vs->time_base.den != 0) {
                 int64_t pts = frame_data.pts;
-                if (pts == AV_NOPTS_VALUE && packet && packet->pts != AV_NOPTS_VALUE) pts = packet->pts;
-                if (pts != AV_NOPTS_VALUE) ts = pts * av_q2d(vs->time_base);
+                if (pts == AV_NOPTS_VALUE && packet && packet->pts != AV_NOPTS_VALUE)
+                    pts = packet->pts;
+                if (pts != AV_NOPTS_VALUE)
+                    ts = pts * av_q2d(vs->time_base);
             }
         }
-        emit bus_.VideoFrameInfoReady(video_frame_index_++,
-                                 static_cast<int>(ctx.decoder->GetLastPictureType()),
-                                 is_key_frame, static_cast<qint64>(frame_data.pts), ts);
+        emit bus_.VideoFrameInfoReady(video_frame_index_++, static_cast<int>(ctx.decoder->GetLastPictureType()),
+                                      is_key_frame, static_cast<qint64>(frame_data.pts), ts);
         // 时间轴与同步诊断（decode 层 frame 时间：best_effort / repeat_pict）
         if (analysis_.IsTimelineAnalysisEnabled() && format_ctx && ctx.video_stream_index >= 0) {
             AVStream* vs = format_ctx->streams[ctx.video_stream_index];
@@ -487,17 +478,14 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
             model::FrameTimingInfo timing;
             timing.index = static_cast<int>(video_frame_index_ - 1);
             timing.stream_index = ctx.video_stream_index;
-            timing.pts_ms = (frame_data.pts != AV_NOPTS_VALUE)
-                                ? static_cast<double>(frame_data.pts) * tb_ms
-                                : model::kNoTimestamp;
+            timing.pts_ms =
+                (frame_data.pts != AV_NOPTS_VALUE) ? static_cast<double>(frame_data.pts) * tb_ms : model::kNoTimestamp;
             if (raw) {
-                timing.best_effort_ms =
-                    (raw->best_effort_timestamp != AV_NOPTS_VALUE)
-                        ? static_cast<double>(raw->best_effort_timestamp) * tb_ms
-                        : model::kNoTimestamp;
-                timing.duration_ms = (raw->duration > 0)
-                                         ? static_cast<double>(raw->duration) * tb_ms
-                                         : model::kNoTimestamp;
+                timing.best_effort_ms = (raw->best_effort_timestamp != AV_NOPTS_VALUE)
+                                            ? static_cast<double>(raw->best_effort_timestamp) * tb_ms
+                                            : model::kNoTimestamp;
+                timing.duration_ms =
+                    (raw->duration > 0) ? static_cast<double>(raw->duration) * tb_ms : model::kNoTimestamp;
                 timing.pict_type = static_cast<int>(raw->pict_type);
                 timing.repeat_pict = raw->repeat_pict;
                 timing.key_frame = (raw->flags & AV_FRAME_FLAG_KEY) != 0;
@@ -519,9 +507,8 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
         if (raw_frame) {
             try {
                 auto mb_analysis = macroblock_analyzer_.AnalyzeFrame(
-                    raw_frame, macroblock_frame_index_++, static_cast<qint64>(frame_data.pts),
-                    frame_data.timestamp, static_cast<int>(ctx.decoder->GetLastPictureType()),
-                    static_cast<int>(ctx.decoder->GetCodecId()));
+                    raw_frame, macroblock_frame_index_++, static_cast<qint64>(frame_data.pts), frame_data.timestamp,
+                    static_cast<int>(ctx.decoder->GetLastPictureType()), static_cast<int>(ctx.decoder->GetCodecId()));
                 emit bus_.MacroblockInfoReady(mb_analysis);
             } catch (const std::exception& e) {
                 LOG_ERROR("宏块分析失败: " + std::string(e.what()));
@@ -534,9 +521,9 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
         try {
             auto gray_hist = ComputeGrayHistogram(frame_data);
             if (!gray_hist.empty()) {
-                auto sc = scene_change_analyzer_.Feed(scene_change_frame_index_++,
-                                                      frame_data.timestamp, gray_hist);
-                if (sc) emit bus_.SceneChangeReady(*sc);
+                auto sc = scene_change_analyzer_.Feed(scene_change_frame_index_++, frame_data.timestamp, gray_hist);
+                if (sc)
+                    emit bus_.SceneChangeReady(*sc);
             }
         } catch (const std::exception& e) {
             LOG_ERROR("场景切换检测失败: " + std::string(e.what()));
@@ -547,20 +534,19 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
     if (!ctx.catching_up && analysis_.IsVisualDefectAnalysisEnabled()) {
         try {
             double vd_ts = frame_data.timestamp;
-            if ((vd_ts == 0.0 || std::isnan(vd_ts) || std::isinf(vd_ts)) &&
-                format_ctx && ctx.video_stream_index >= 0) {
+            if ((vd_ts == 0.0 || std::isnan(vd_ts) || std::isinf(vd_ts)) && format_ctx && ctx.video_stream_index >= 0) {
                 AVStream* vs = format_ctx->streams[ctx.video_stream_index];
                 if (vs && vs->time_base.den != 0) {
                     int64_t pts = frame_data.pts;
                     if (pts == AV_NOPTS_VALUE && packet && packet->pts != AV_NOPTS_VALUE) {
                         pts = packet->pts;
                     }
-                    if (pts != AV_NOPTS_VALUE) vd_ts = pts * av_q2d(vs->time_base);
+                    if (pts != AV_NOPTS_VALUE)
+                        vd_ts = pts * av_q2d(vs->time_base);
                 }
             }
             // 没有音频流的素材无从判断静音，按"不静音"处理（静止画面照报冻结）
-            const bool vd_silent = (playback_.audio_stream_index() >= 0) &&
-                                   (last_audio_level_ < 0.005);
+            const bool vd_silent = (playback_.audio_stream_index() >= 0) && (last_audio_level_ < 0.005);
             FeedVisualDefectFrame(ctx.raw_frame, vd_ts, vd_silent);
         } catch (const std::exception& e) {
             LOG_ERROR("画面质量分析失败: " + std::string(e.what()));
@@ -580,8 +566,7 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
 void RealtimeAnalysisController::OnAudioFrame(const AudioFrameContext& ctx) {
     const double ts = ctx.timestamp_seconds;
 
-    if (ctx.frame_pts == AV_NOPTS_VALUE &&
-        !missing_audio_pts_reported_[ctx.audio_stream_index]) {
+    if (ctx.frame_pts == AV_NOPTS_VALUE && !missing_audio_pts_reported_[ctx.audio_stream_index]) {
         missing_audio_pts_reported_[ctx.audio_stream_index] = true;
         EmitAnalysisEvent(tr("警告"), tr("音频帧缺失PTS"), ctx.audio_stream_index, ctx.frame_pts, ts,
                           tr("检测到缺少 PTS 的音频帧"),
@@ -589,9 +574,8 @@ void RealtimeAnalysisController::OnAudioFrame(const AudioFrameContext& ctx) {
     }
 
     if (analysis_.IsAudioFrameAnalysisEnabled() && ctx.decoder) {
-        emit bus_.AudioFrameInfoReady(audio_frame_index_++, ctx.frame_pts, ts,
-                                 ctx.decoder->GetLastFrameSampleCount(),
-                                 ctx.sample_rate, ctx.channels, ctx.byte_count);
+        emit bus_.AudioFrameInfoReady(audio_frame_index_++, ctx.frame_pts, ts, ctx.decoder->GetLastFrameSampleCount(),
+                                      ctx.sample_rate, ctx.channels, ctx.byte_count);
     }
     ++audio_timeline_sample_counter_;
     if (audio_timeline_sample_counter_ % 100 == 0) {
@@ -609,15 +593,16 @@ void RealtimeAnalysisController::OnAudioFrame(const AudioFrameContext& ctx) {
         }
     }
 
-    if (!ctx.enqueued) return;   // 字节数太小, 既没推送也没算电平
+    if (!ctx.enqueued)
+        return; // 字节数太小, 既没推送也没算电平
 
     // 冻结帧判定要用: 画面静止 + 音频还在响 才是真的卡住了
     last_audio_level_ = ctx.level;
     emit bus_.AudioLevelReady(ctx.level, ts);
 
     // 音频可视化 (委托给 AudioVisualizer)
-    auto vis_result = audio_visualizer_.Process(ctx.samples, ctx.sample_count, ctx.sample_rate,
-                                                std::max(1, ctx.channels));
+    auto vis_result =
+        audio_visualizer_.Process(ctx.samples, ctx.sample_count, ctx.sample_rate, std::max(1, ctx.channels));
     EmitAudioVisualization(vis_result, ctx.sample_rate, std::max(1, ctx.channels), ts, ctx.level);
 }
 
@@ -637,11 +622,10 @@ void RealtimeAnalysisController::OnSeekDone(double target_ms, model::SeekMode mo
 void RealtimeAnalysisController::OnEndOfStream() {
     // 播到结尾: 把还开着的缺陷段闭合，否则最后一条缺陷要等下次播放才出现
     if (analysis_.IsVisualDefectAnalysisEnabled()) {
-        FlushVisualDefectSegments(visual_defect_last_sample_ts_ > 0.0
-                                      ? visual_defect_last_sample_ts_
-                                      : playback_.current_position_ms() / 1000.0);
+        FlushVisualDefectSegments(visual_defect_last_sample_ts_ > 0.0 ? visual_defect_last_sample_ts_
+                                                                      : playback_.current_position_ms() / 1000.0);
     }
 }
 
-}  // namespace player
-}  // namespace videoeye
+} // namespace player
+} // namespace videoeye

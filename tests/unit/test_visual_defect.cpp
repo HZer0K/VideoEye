@@ -21,8 +21,8 @@ using videoeye::VisualDefectOptions;
 using videoeye::VisualSamplingPreset;
 using videoeye::model::FrameQualityMetric;
 using videoeye::model::FrameSample;
-using videoeye::model::VisualDefectType;
 using videoeye::model::VisualDefectSeverity;
+using videoeye::model::VisualDefectType;
 
 constexpr int kW = 64;
 constexpr int kH = 36;
@@ -58,8 +58,10 @@ std::vector<uint8_t> Sharp(int phase = 0) {
             const int checker = ((x / 2 + y / 2 + phase) % 2) ? 210 : 40;
             const int noise = ((x * 7 + y * 13 + phase * 3) % 17) * 3;
             int v = checker + noise - 24;
-            if (v < 0) v = 0;
-            if (v > 255) v = 255;
+            if (v < 0)
+                v = 0;
+            if (v > 255)
+                v = 255;
             g[static_cast<size_t>(y) * kW + x] = static_cast<uint8_t>(v);
         }
     }
@@ -78,7 +80,8 @@ std::vector<uint8_t> Blur(const std::vector<uint8_t>& src, int radius, int itera
                     for (int dx = -radius; dx <= radius; ++dx) {
                         const int yy = y + dy;
                         const int xx = x + dx;
-                        if (yy < 0 || yy >= kH || xx < 0 || xx >= kW) continue;
+                        if (yy < 0 || yy >= kH || xx < 0 || xx >= kW)
+                            continue;
                         sum += cur[static_cast<size_t>(yy) * kW + xx];
                         ++count;
                     }
@@ -144,8 +147,7 @@ std::vector<uint8_t> Rgb(uint8_t r, uint8_t g, uint8_t b) {
 
 // 按固定帧率喂一串帧
 void FeedSequence(VisualDefectAnalyzer& analyzer, double fps,
-                  const std::vector<std::pair<double, std::vector<uint8_t>>>& frames,
-                  bool audio_silent = false) {
+                  const std::vector<std::pair<double, std::vector<uint8_t>>>& frames, bool audio_silent = false) {
     int index = 0;
     for (const auto& f : frames) {
         analyzer.Feed(MakeSample(index++, f.first, f.second, nullptr, audio_silent));
@@ -156,18 +158,19 @@ void FeedSequence(VisualDefectAnalyzer& analyzer, double fps,
 int CountType(const std::vector<videoeye::model::VisualDefect>& defects, VisualDefectType type) {
     int count = 0;
     for (const auto& d : defects) {
-        if (d.type == type) ++count;
+        if (d.type == type)
+            ++count;
     }
     return count;
 }
 
-}  // namespace
+} // namespace
 
 // ---------- 单帧指标 ----------
 
 TEST(VisualDefectMetrics, InvalidSampleProducesInvalidMetric) {
     VisualDefectOptions opt;
-    FrameSample empty;   // 宽高为 0
+    FrameSample empty; // 宽高为 0
     const auto m = VisualDefectAnalyzer::ComputeFrameMetrics(empty, nullptr, 0.0, opt);
     EXPECT_FALSE(m.valid);
     EXPECT_FALSE(m.error_message.empty());
@@ -175,10 +178,8 @@ TEST(VisualDefectMetrics, InvalidSampleProducesInvalidMetric) {
 
 TEST(VisualDefectMetrics, LumaAndBlackRatio) {
     VisualDefectOptions opt;
-    const auto black = VisualDefectAnalyzer::ComputeFrameMetrics(
-        MakeSample(0, 0.0, Solid(0)), nullptr, 0.0, opt);
-    const auto white = VisualDefectAnalyzer::ComputeFrameMetrics(
-        MakeSample(1, 0.5, Solid(250)), nullptr, 0.0, opt);
+    const auto black = VisualDefectAnalyzer::ComputeFrameMetrics(MakeSample(0, 0.0, Solid(0)), nullptr, 0.0, opt);
+    const auto white = VisualDefectAnalyzer::ComputeFrameMetrics(MakeSample(1, 0.5, Solid(250)), nullptr, 0.0, opt);
     EXPECT_TRUE(black.valid);
     EXPECT_NEAR(black.luma_mean, 0.0, 1e-9);
     EXPECT_NEAR(black.black_ratio, 1.0, 1e-9);
@@ -190,10 +191,8 @@ TEST(VisualDefectMetrics, BlurredFrameHasLowerSharpnessThanSharpFrame) {
     VisualDefectOptions opt;
     const auto sharp = Sharp(3);
     const auto blurred = Blur(sharp, 2, 3);
-    const auto m_sharp = VisualDefectAnalyzer::ComputeFrameMetrics(
-        MakeSample(0, 0.0, sharp), nullptr, 0.0, opt);
-    const auto m_blur = VisualDefectAnalyzer::ComputeFrameMetrics(
-        MakeSample(1, 0.5, blurred), nullptr, 0.0, opt);
+    const auto m_sharp = VisualDefectAnalyzer::ComputeFrameMetrics(MakeSample(0, 0.0, sharp), nullptr, 0.0, opt);
+    const auto m_blur = VisualDefectAnalyzer::ComputeFrameMetrics(MakeSample(1, 0.5, blurred), nullptr, 0.0, opt);
     EXPECT_LT(m_blur.blur_score, m_sharp.blur_score);
     // 验收口径: 模糊样本必须低于默认阈值，清晰样本必须高于它
     EXPECT_LT(m_blur.blur_score, opt.blur_threshold);
@@ -206,10 +205,8 @@ TEST(VisualDefectMetrics, FrameDiffDetectsIdenticalFrames) {
     const auto b = Sharp(2);
     const auto prev = MakeSample(0, 0.0, a);
     const auto first = VisualDefectAnalyzer::ComputeFrameMetrics(prev, nullptr, 0.0, opt);
-    const auto same = VisualDefectAnalyzer::ComputeFrameMetrics(
-        MakeSample(1, 0.5, a), &prev, first.luma_mean, opt);
-    const auto diff = VisualDefectAnalyzer::ComputeFrameMetrics(
-        MakeSample(2, 1.0, b), &prev, first.luma_mean, opt);
+    const auto same = VisualDefectAnalyzer::ComputeFrameMetrics(MakeSample(1, 0.5, a), &prev, first.luma_mean, opt);
+    const auto diff = VisualDefectAnalyzer::ComputeFrameMetrics(MakeSample(2, 1.0, b), &prev, first.luma_mean, opt);
     // 首帧没有上一帧可比，frame_diff 应为 NaN 而不是 0
     EXPECT_TRUE(std::isnan(first.frame_diff));
     EXPECT_NEAR(same.frame_diff, 0.0, 1e-12);
@@ -218,20 +215,18 @@ TEST(VisualDefectMetrics, FrameDiffDetectsIdenticalFrames) {
 
 TEST(VisualDefectMetrics, CombingScoreSeparatesInterlacedAndProgressive) {
     VisualDefectOptions opt;
-    const auto combed = VisualDefectAnalyzer::ComputeFrameMetrics(
-        MakeSample(0, 0.0, Combing(true)), nullptr, 0.0, opt);
-    const auto progressive = VisualDefectAnalyzer::ComputeFrameMetrics(
-        MakeSample(1, 0.5, Combing(false)), nullptr, 0.0, opt);
+    const auto combed = VisualDefectAnalyzer::ComputeFrameMetrics(MakeSample(0, 0.0, Combing(true)), nullptr, 0.0, opt);
+    const auto progressive =
+        VisualDefectAnalyzer::ComputeFrameMetrics(MakeSample(1, 0.5, Combing(false)), nullptr, 0.0, opt);
     EXPECT_GT(combed.combing_score, opt.combing_score);
     EXPECT_LT(progressive.combing_score, opt.combing_score);
 }
 
 TEST(VisualDefectMetrics, BlockinessScoreSeparatesMosaicAndNatural) {
     VisualDefectOptions opt;
-    const auto mosaic = VisualDefectAnalyzer::ComputeFrameMetrics(
-        MakeSample(0, 0.0, Blocks(true)), nullptr, 0.0, opt);
-    const auto natural = VisualDefectAnalyzer::ComputeFrameMetrics(
-        MakeSample(1, 0.5, Blocks(false)), nullptr, 0.0, opt);
+    const auto mosaic = VisualDefectAnalyzer::ComputeFrameMetrics(MakeSample(0, 0.0, Blocks(true)), nullptr, 0.0, opt);
+    const auto natural =
+        VisualDefectAnalyzer::ComputeFrameMetrics(MakeSample(1, 0.5, Blocks(false)), nullptr, 0.0, opt);
     EXPECT_GT(mosaic.blockiness_score, opt.blockiness_score);
     EXPECT_LT(natural.blockiness_score, opt.blockiness_score);
 }
@@ -241,16 +236,13 @@ TEST(VisualDefectMetrics, ColorCastNeedsRgbSample) {
     const auto gray = Solid(128);
     const auto neutral = Rgb(128, 128, 128);
     const auto reddish = Rgb(210, 100, 100);
-    const auto no_rgb = VisualDefectAnalyzer::ComputeFrameMetrics(
-        MakeSample(0, 0.0, gray), nullptr, 0.0, opt);
-    const auto ok = VisualDefectAnalyzer::ComputeFrameMetrics(
-        MakeSample(1, 0.5, gray, &neutral), nullptr, 0.0, opt);
-    const auto cast = VisualDefectAnalyzer::ComputeFrameMetrics(
-        MakeSample(2, 1.0, gray, &reddish), nullptr, 0.0, opt);
-    EXPECT_TRUE(std::isnan(no_rgb.color_cast_score));   // 没采集 RGB 就不该瞎猜
+    const auto no_rgb = VisualDefectAnalyzer::ComputeFrameMetrics(MakeSample(0, 0.0, gray), nullptr, 0.0, opt);
+    const auto ok = VisualDefectAnalyzer::ComputeFrameMetrics(MakeSample(1, 0.5, gray, &neutral), nullptr, 0.0, opt);
+    const auto cast = VisualDefectAnalyzer::ComputeFrameMetrics(MakeSample(2, 1.0, gray, &reddish), nullptr, 0.0, opt);
+    EXPECT_TRUE(std::isnan(no_rgb.color_cast_score)); // 没采集 RGB 就不该瞎猜
     EXPECT_LT(ok.color_cast_score, opt.color_cast_score);
     EXPECT_GT(cast.color_cast_score, opt.color_cast_score);
-    EXPECT_GT(cast.color_cast_rb, 0.0);   // 偏红
+    EXPECT_GT(cast.color_cast_rb, 0.0); // 偏红
 }
 
 // ---------- 缺陷段落（验收用例）----------
@@ -264,9 +256,12 @@ TEST(VisualDefectAnalyzer, AllBlackClipMustBeDetected) {
     const auto black = Solid(0);
     const auto content = Sharp(0);
     std::vector<std::pair<double, std::vector<uint8_t>>> frames;
-    for (double t = 0.0; t < 1.0; t += 0.25) frames.emplace_back(t, content);
-    for (double t = 1.0; t < 4.0; t += 0.25) frames.emplace_back(t, black);
-    for (double t = 4.0; t < 5.0; t += 0.25) frames.emplace_back(t, content);
+    for (double t = 0.0; t < 1.0; t += 0.25)
+        frames.emplace_back(t, content);
+    for (double t = 1.0; t < 4.0; t += 0.25)
+        frames.emplace_back(t, black);
+    for (double t = 4.0; t < 5.0; t += 0.25)
+        frames.emplace_back(t, content);
     FeedSequence(a, 4.0, frames);
     a.Flush(5.0);
 
@@ -275,7 +270,7 @@ TEST(VisualDefectAnalyzer, AllBlackClipMustBeDetected) {
     EXPECT_GE(d.start_seconds, 0.75);
     EXPECT_LE(d.start_seconds, 1.25);
     EXPECT_GE(d.DurationSeconds(), 2.5);
-    EXPECT_NEAR(d.score, 1.0, 1e-6);   // 黑像素占比
+    EXPECT_NEAR(d.score, 1.0, 1e-6); // 黑像素占比
 }
 
 TEST(VisualDefectAnalyzer, FiveSecondFreezeMustBeDetected) {
@@ -286,16 +281,19 @@ TEST(VisualDefectAnalyzer, FiveSecondFreezeMustBeDetected) {
 
     const auto frozen = Sharp(99);
     std::vector<std::pair<double, std::vector<uint8_t>>> frames;
-    for (double t = 0.0; t < 1.0; t += 0.25) frames.emplace_back(t, Sharp(static_cast<int>(t * 4)));
-    for (double t = 1.0; t < 6.0; t += 0.25) frames.emplace_back(t, frozen);
-    for (double t = 6.0; t < 7.0; t += 0.25) frames.emplace_back(t, Sharp(static_cast<int>(t * 4)));
-    FeedSequence(a, 4.0, frames);   // 音频非静音
+    for (double t = 0.0; t < 1.0; t += 0.25)
+        frames.emplace_back(t, Sharp(static_cast<int>(t * 4)));
+    for (double t = 1.0; t < 6.0; t += 0.25)
+        frames.emplace_back(t, frozen);
+    for (double t = 6.0; t < 7.0; t += 0.25)
+        frames.emplace_back(t, Sharp(static_cast<int>(t * 4)));
+    FeedSequence(a, 4.0, frames); // 音频非静音
     a.Flush(7.0);
 
     ASSERT_EQ(CountType(a.defects(), VisualDefectType::FreezeFrame), 1);
     const auto& d = a.defects().front();
     EXPECT_GE(d.DurationSeconds(), 4.0);
-    EXPECT_EQ(d.severity, VisualDefectSeverity::Error);   // 冻结 3s 以上升级为错误
+    EXPECT_EQ(d.severity, VisualDefectSeverity::Error); // 冻结 3s 以上升级为错误
 }
 
 TEST(VisualDefectAnalyzer, StillFrameWithSilentAudioIsNotFreeze) {
@@ -306,8 +304,10 @@ TEST(VisualDefectAnalyzer, StillFrameWithSilentAudioIsNotFreeze) {
 
     const auto frozen = Sharp(99);
     std::vector<std::pair<double, std::vector<uint8_t>>> frames;
-    for (double t = 0.0; t < 1.0; t += 0.25) frames.emplace_back(t, Sharp(0));
-    for (double t = 1.0; t < 6.0; t += 0.25) frames.emplace_back(t, frozen);
+    for (double t = 0.0; t < 1.0; t += 0.25)
+        frames.emplace_back(t, Sharp(0));
+    for (double t = 1.0; t < 6.0; t += 0.25)
+        frames.emplace_back(t, frozen);
     FeedSequence(a, 4.0, frames, /*audio_silent=*/true);
     a.Flush(6.0);
 
@@ -324,7 +324,8 @@ TEST(VisualDefectAnalyzer, BlurSegmentIsReportedForBlurredClip) {
     // （完全抹平的极端模糊会被"画面有没有内容"这道闸拦掉，那是黑场/纯色该报的）
     const auto blurred = Blur(Sharp(5), 1, 3);
     std::vector<std::pair<double, std::vector<uint8_t>>> frames;
-    for (double t = 0.0; t < 3.0; t += 0.25) frames.emplace_back(t, blurred);
+    for (double t = 0.0; t < 3.0; t += 0.25)
+        frames.emplace_back(t, blurred);
     FeedSequence(a, 4.0, frames);
     a.Flush(3.0);
 
@@ -339,7 +340,8 @@ TEST(VisualDefectAnalyzer, FlatFrameIsNotReportedAsBlur) {
     a.Reset(opt);
 
     std::vector<std::pair<double, std::vector<uint8_t>>> frames;
-    for (double t = 0.0; t < 2.0; t += 0.25) frames.emplace_back(t, Solid(253));
+    for (double t = 0.0; t < 2.0; t += 0.25)
+        frames.emplace_back(t, Solid(253));
     FeedSequence(a, 4.0, frames);
     a.Flush(2.0);
 
@@ -355,7 +357,8 @@ TEST(VisualDefectAnalyzer, NearBlackFrameIsBlackNotUnderExposure) {
     a.Reset(opt);
 
     std::vector<std::pair<double, std::vector<uint8_t>>> frames;
-    for (double t = 0.0; t < 2.0; t += 0.25) frames.emplace_back(t, Solid(15));
+    for (double t = 0.0; t < 2.0; t += 0.25)
+        frames.emplace_back(t, Solid(15));
     FeedSequence(a, 4.0, frames);
     a.Flush(2.0);
 
@@ -372,7 +375,8 @@ TEST(VisualDefectAnalyzer, FlickerIsDetectedOnAlternatingLuma) {
     const auto bright = Solid(230);
     const auto dark = Solid(30);
     std::vector<std::pair<double, std::vector<uint8_t>>> frames;
-    for (int i = 0; i < 20; ++i) frames.emplace_back(i * 0.1, (i % 2 == 0) ? bright : dark);
+    for (int i = 0; i < 20; ++i)
+        frames.emplace_back(i * 0.1, (i % 2 == 0) ? bright : dark);
     FeedSequence(a, 10.0, frames);
     a.Flush(2.0);
 
@@ -388,7 +392,8 @@ TEST(VisualDefectAnalyzer, LetterboxReportsActivePictureArea) {
     // 36 行里上下各 8 行黑边（合计 44%），中间 20 行是画面
     const auto lb = Letterbox(8);
     std::vector<std::pair<double, std::vector<uint8_t>>> frames;
-    for (double t = 0.0; t < 3.0; t += 0.25) frames.emplace_back(t, lb);
+    for (double t = 0.0; t < 3.0; t += 0.25)
+        frames.emplace_back(t, lb);
     FeedSequence(a, 4.0, frames);
     a.Flush(3.0);
 
@@ -404,10 +409,11 @@ TEST(VisualDefectAnalyzer, LetterboxReportsActivePictureArea) {
 
     ASSERT_EQ(CountType(a.defects(), VisualDefectType::Letterbox), 1);
     for (const auto& d : a.defects()) {
-        if (d.type != VisualDefectType::Letterbox) continue;
-        EXPECT_EQ(d.severity, VisualDefectSeverity::Info);   // 有黑边不是错，只是要告诉用户有效区在哪
+        if (d.type != VisualDefectType::Letterbox)
+            continue;
+        EXPECT_EQ(d.severity, VisualDefectSeverity::Info); // 有黑边不是错，只是要告诉用户有效区在哪
         EXPECT_GT(d.score, opt.border_bar_ratio);
-        EXPECT_FALSE(d.evidence.valid());   // 没采集 RGB 就没有证据图
+        EXPECT_FALSE(d.evidence.valid()); // 没采集 RGB 就没有证据图
     }
 }
 
@@ -418,7 +424,8 @@ TEST(VisualDefectAnalyzer, NoBarsOnFullFrameContent) {
     a.Reset(opt);
 
     std::vector<std::pair<double, std::vector<uint8_t>>> frames;
-    for (double t = 0.0; t < 2.0; t += 0.25) frames.emplace_back(t, Sharp(static_cast<int>(t * 4)));
+    for (double t = 0.0; t < 2.0; t += 0.25)
+        frames.emplace_back(t, Sharp(static_cast<int>(t * 4)));
     FeedSequence(a, 4.0, frames);
     a.Flush(2.0);
 
@@ -438,7 +445,8 @@ TEST(VisualDefectAnalyzer, UnderAndOverExposure) {
     dark_a.Reset(opt);
     std::vector<std::pair<double, std::vector<uint8_t>>> dark_frames;
     // 30/255: 够暗（暗部占比 100%）但还没到黑场（黑像素阈值 24）
-    for (double t = 0.0; t < 2.0; t += 0.25) dark_frames.emplace_back(t, Solid(30));
+    for (double t = 0.0; t < 2.0; t += 0.25)
+        dark_frames.emplace_back(t, Solid(30));
     FeedSequence(dark_a, 4.0, dark_frames);
     dark_a.Flush(2.0);
     EXPECT_GE(CountType(dark_a.defects(), VisualDefectType::UnderExposure), 1);
@@ -446,7 +454,8 @@ TEST(VisualDefectAnalyzer, UnderAndOverExposure) {
     VisualDefectAnalyzer bright_a;
     bright_a.Reset(opt);
     std::vector<std::pair<double, std::vector<uint8_t>>> bright_frames;
-    for (double t = 0.0; t < 2.0; t += 0.25) bright_frames.emplace_back(t, Solid(253));
+    for (double t = 0.0; t < 2.0; t += 0.25)
+        bright_frames.emplace_back(t, Solid(253));
     FeedSequence(bright_a, 4.0, bright_frames);
     bright_a.Flush(2.0);
     EXPECT_GE(CountType(bright_a.defects(), VisualDefectType::OverExposure), 1);
@@ -455,13 +464,15 @@ TEST(VisualDefectAnalyzer, UnderAndOverExposure) {
 TEST(VisualDefectAnalyzer, ShortSegmentsBelowMinDurationAreDropped) {
     VisualDefectOptions opt;
     opt.sample_fps = 4.0;
-    opt.black_min_seconds = 2.0;   // 故意抬高门槛
+    opt.black_min_seconds = 2.0; // 故意抬高门槛
     VisualDefectAnalyzer a;
     a.Reset(opt);
 
     std::vector<std::pair<double, std::vector<uint8_t>>> frames;
-    for (double t = 0.0; t < 0.5; t += 0.25) frames.emplace_back(t, Solid(0));
-    for (double t = 0.5; t < 2.0; t += 0.25) frames.emplace_back(t, Sharp(1));
+    for (double t = 0.0; t < 0.5; t += 0.25)
+        frames.emplace_back(t, Solid(0));
+    for (double t = 0.5; t < 2.0; t += 0.25)
+        frames.emplace_back(t, Sharp(1));
     FeedSequence(a, 4.0, frames);
     a.Flush(2.0);
 
@@ -483,7 +494,7 @@ TEST(VisualDefectOptions, PresetMapsToSampleRateAndWidth) {
     EXPECT_NEAR(fast.EffectiveSampleFps(), 1.0, 1e-9);
     EXPECT_NEAR(standard.EffectiveSampleFps(), 2.0, 1e-9);
     EXPECT_NEAR(fine.EffectiveSampleFps(), 5.0, 1e-9);
-    EXPECT_NEAR(offline.EffectiveSampleFps(), 0.0, 1e-9);   // 0 = 每帧
+    EXPECT_NEAR(offline.EffectiveSampleFps(), 0.0, 1e-9); // 0 = 每帧
 
     EXPECT_LT(fast.EffectiveAnalysisWidth(), fine.EffectiveAnalysisWidth());
     EXPECT_GT(fast.EffectiveEvidenceWidth(), 0);
@@ -494,7 +505,7 @@ TEST(VisualDefectAnalyzer, AsyncQueueDropsInsteadOfBlocking) {
     opt.sample_fps = 0.0;
     VisualDefectAnalyzer a;
     a.Reset(opt);
-    a.StartWorker(2);   // 队列只有 2 格
+    a.StartWorker(2); // 队列只有 2 格
 
     // 一口气塞 200 帧: 工作线程来不及消费，其余必须被丢弃而不是堆积
     for (int i = 0; i < 200; ++i) {
@@ -520,7 +531,7 @@ TEST(VisualDefectAnalyzer, FeedIsSynchronousAndAnalyzesEveryFrame) {
         a.Feed(MakeSample(i, i * 0.04, Sharp(i % 8)));
     }
     EXPECT_EQ(a.analyzed_samples(), 50);
-    EXPECT_EQ(a.dropped_samples(), 0);   // 离线路径一帧不丢
+    EXPECT_EQ(a.dropped_samples(), 0); // 离线路径一帧不丢
     const auto report = a.Snapshot();
     EXPECT_TRUE(report.analyzed);
     EXPECT_EQ(report.analyzed_frames, 50);
@@ -531,7 +542,8 @@ TEST(VisualDefectAnalyzer, ResetClearsEverything) {
     VisualDefectOptions opt;
     VisualDefectAnalyzer a;
     a.Reset(opt);
-    for (int i = 0; i < 20; ++i) a.Feed(MakeSample(i, i * 0.5, Solid(0)));
+    for (int i = 0; i < 20; ++i)
+        a.Feed(MakeSample(i, i * 0.5, Solid(0)));
     a.Flush(10.0);
     ASSERT_FALSE(a.defects().empty());
 

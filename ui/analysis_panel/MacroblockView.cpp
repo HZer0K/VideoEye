@@ -27,13 +27,12 @@ namespace videoeye {
 namespace ui {
 
 namespace {
-constexpr int kMaxMotionVectorRows = 500;   // 保证主线程不被大表填充拖慢
+constexpr int kMaxMotionVectorRows = 500; // 保证主线程不被大表填充拖慢
 constexpr int kMaxVizWidth = 480;
 constexpr int kMaxVizHeight = 320;
-}  // namespace
+} // namespace
 
-MacroblockView::MacroblockView(QWidget* parent)
-    : QWidget(parent) {
+MacroblockView::MacroblockView(QWidget* parent) : QWidget(parent) {
     SetupUi();
 }
 
@@ -44,9 +43,8 @@ void MacroblockView::SetupUi() {
 
     // 工具栏
     QHBoxLayout* toolbar = new QHBoxLayout();
-    summary_label_ = new QLabel(
-        tr("帧: -- | 块总数: 0 | 前向: 0 | 后向: 0 | 帧内: 0 | 平均MV: 0.0 | 最大MV: 0.0"),
-        this);
+    summary_label_ =
+        new QLabel(tr("帧: -- | 块总数: 0 | 前向: 0 | 后向: 0 | 帧内: 0 | 平均MV: 0.0 | 最大MV: 0.0"), this);
     toolbar->addWidget(summary_label_, 1);
 
     export_csv_button_ = new QPushButton(tr("导出 CSV"), this);
@@ -129,24 +127,26 @@ void MacroblockView::SetupUi() {
     connect(export_csv_button_, &QPushButton::clicked, this, &MacroblockView::OnExportCsv);
 }
 
-void MacroblockView::SetFeatureHooks(std::function<bool(int)> is_enabled,
-                                     std::function<void(int, bool)> set_enabled) {
+void MacroblockView::SetFeatureHooks(std::function<bool(int)> is_enabled, std::function<void(int, bool)> set_enabled) {
     is_enabled_ = std::move(is_enabled);
     set_enabled_ = std::move(set_enabled);
 
     SyncToggleFromHooks();
     if (toggle_) {
         connect(toggle_, &QCheckBox::toggled, this, [this](bool checked) {
-            if (set_enabled_) set_enabled_(0, checked);
+            if (set_enabled_)
+                set_enabled_(0, checked);
         });
     }
 }
 
 void MacroblockView::SyncToggleFromHooks() {
-    if (!toggle_) return;
+    if (!toggle_)
+        return;
     // 没有钩子时按控件当前值保留（组件可脱离面板单独构造）
     const bool enabled = is_enabled_ ? is_enabled_(0) : toggle_->isChecked();
-    if (enabled == toggle_->isChecked()) return;
+    if (enabled == toggle_->isChecked())
+        return;
     const QSignalBlocker blocker(toggle_);
     toggle_->setChecked(enabled);
 }
@@ -157,7 +157,8 @@ void MacroblockView::SetAnalysis(const model::MacroblockFrameAnalysis& analysis)
 }
 
 void MacroblockView::FlushPending() {
-    if (!dirty_) return;
+    if (!dirty_)
+        return;
     dirty_ = false;
     RefreshUi();
 }
@@ -173,10 +174,18 @@ void MacroblockView::RefreshUi() {
     // 更新统计标签
     QString frame_type_str;
     switch (ma.frame_type) {
-        case 1: frame_type_str = "I"; break;
-        case 2: frame_type_str = "P"; break;
-        case 3: frame_type_str = "B"; break;
-        default: frame_type_str = "?"; break;
+    case 1:
+        frame_type_str = "I";
+        break;
+    case 2:
+        frame_type_str = "P";
+        break;
+    case 3:
+        frame_type_str = "B";
+        break;
+    default:
+        frame_type_str = "?";
+        break;
     }
     const QString estimate_note = s.block_counts_estimated ? tr("（估算）") : QString();
     // 总块数只有两条路径会填: 带运动矢量时 ComputeStats 铺一次网格, 或 I 帧走估算分支。
@@ -184,9 +193,8 @@ void MacroblockView::RefreshUi() {
     const QString total_blocks = ma.has_motion_vectors || s.intra_count_available
                                      ? QString::number(s.total_blocks) + estimate_note
                                      : tr("不可用");
-    const QString intra_blocks = s.intra_count_available
-                                     ? QString::number(s.intra_count) + estimate_note
-                                     : tr("不可用");
+    const QString intra_blocks =
+        s.intra_count_available ? QString::number(s.intra_count) + estimate_note : tr("不可用");
     summary_label_->setToolTip(tr("块数按固定网格估算；运动矢量条数不能推导真实帧内块数。"));
     summary_label_->setText(
         tr("帧 #%1 [%2] | 时间: %3s | %4总数: %5 | 前向: %6 | 后向: %7 | 帧内: %8 | 平均MV: %9 | 最大MV: %10")
@@ -228,8 +236,7 @@ void MacroblockView::RefreshUi() {
     mv_table_->setUpdatesEnabled(true);
 
     // 填充块大小分布表
-    auto fill_dist_table = [](QTableWidget* table, const QStringList& labels,
-                              const QList<int>& counts, int total) {
+    auto fill_dist_table = [](QTableWidget* table, const QStringList& labels, const QList<int>& counts, int total) {
         table->setUpdatesEnabled(false);
         table->setRowCount(labels.size());
         for (int i = 0; i < labels.size(); ++i) {
@@ -246,27 +253,25 @@ void MacroblockView::RefreshUi() {
     QList<int> bs_counts;
     if (is_hevc) {
         // HEVC CTU/CU 大尺寸分区 + 共有小尺寸
-        bs_labels = {"64x64", "32x32", "32x16", "16x32", "32x8", "8x32",
-                     "16x16", "16x8", "8x16", "8x8", "8x4", "4x8", "4x4", tr("其他")};
-        bs_counts = {s.count_64x64, s.count_32x32, s.count_32x16, s.count_16x32,
-                     s.count_32x8, s.count_8x32, s.count_16x16, s.count_16x8,
-                     s.count_8x16, s.count_8x8, s.count_8x4, s.count_4x8,
-                     s.count_4x4, s.count_other};
+        bs_labels = {"64x64", "32x32", "32x16", "16x32", "32x8", "8x32", "16x16",
+                     "16x8",  "8x16",  "8x8",   "8x4",   "4x8",  "4x4",  tr("其他")};
+        bs_counts = {s.count_64x64, s.count_32x32, s.count_32x16, s.count_16x32, s.count_32x8,
+                     s.count_8x32,  s.count_16x16, s.count_16x8,  s.count_8x16,  s.count_8x8,
+                     s.count_8x4,   s.count_4x8,   s.count_4x4,   s.count_other};
     } else {
         // H.264 等传统编码: 宏块尺寸
         bs_labels = {"16x16", "16x8", "8x16", "8x8", "8x4", "4x8", "4x4", tr("其他")};
         bs_counts = {s.count_16x16, s.count_16x8, s.count_8x16, s.count_8x8,
-                     s.count_8x4, s.count_4x8, s.count_4x4, s.count_other};
+                     s.count_8x4,   s.count_4x8,  s.count_4x4,  s.count_other};
     }
     int bs_total = 0;
-    for (int c : bs_counts) bs_total += c;
+    for (int c : bs_counts)
+        bs_total += c;
     fill_dist_table(blocksize_table_, bs_labels, bs_counts, bs_total);
 
     int mg_total = s.mag_0_2 + s.mag_2_4 + s.mag_4_8 + s.mag_8_16 + s.mag_16_plus;
-    fill_dist_table(mag_table_,
-                    {"0-2", "2-4", "4-8", "8-16", "16+"},
-                    {s.mag_0_2, s.mag_2_4, s.mag_4_8, s.mag_8_16, s.mag_16_plus},
-                    mg_total);
+    fill_dist_table(mag_table_, {"0-2", "2-4", "4-8", "8-16", "16+"},
+                    {s.mag_0_2, s.mag_2_4, s.mag_4_8, s.mag_8_16, s.mag_16_plus}, mg_total);
 
     // 绘制运动矢量可视化图
     if (ma.frame_width > 0 && ma.frame_height > 0 && !ma.motion_vectors.empty()) {
@@ -281,7 +286,7 @@ void MacroblockView::RefreshUi() {
         double scale_y = static_cast<double>(viz_h) / ma.frame_height;
 
         QImage viz_img(viz_w, viz_h, QImage::Format_RGB32);
-        viz_img.fill(QColor(13, 17, 23));  // 深色背景
+        viz_img.fill(QColor(13, 17, 23)); // 深色背景
 
         QPainter painter(&viz_img);
         painter.setRenderHint(QPainter::Antialiasing, true);
@@ -298,8 +303,7 @@ void MacroblockView::RefreshUi() {
             double ey = cy + px_my * scale_y;
 
             // 颜色: 前向=红, 后向=蓝
-            QColor color = (mv.source < 0) ? QColor(255, 107, 107)
-                                           : QColor(88, 166, 255);
+            QColor color = (mv.source < 0) ? QColor(255, 107, 107) : QColor(88, 166, 255);
             // 幅度越大越亮
             double brightness = qMin(1.0, mv.motion_magnitude / 16.0);
             color.setAlphaF(0.3 + 0.7 * brightness);
@@ -312,10 +316,8 @@ void MacroblockView::RefreshUi() {
             if (mv.motion_magnitude > 0.5) {
                 double angle = std::atan2(ey - cy, ex - cx);
                 double arrow_len = 3.0;
-                QPointF p1(ex - arrow_len * std::cos(angle - 0.5),
-                           ey - arrow_len * std::sin(angle - 0.5));
-                QPointF p2(ex - arrow_len * std::cos(angle + 0.5),
-                           ey - arrow_len * std::sin(angle + 0.5));
+                QPointF p1(ex - arrow_len * std::cos(angle - 0.5), ey - arrow_len * std::sin(angle - 0.5));
+                QPointF p2(ex - arrow_len * std::cos(angle + 0.5), ey - arrow_len * std::sin(angle + 0.5));
                 painter.drawLine(QPointF(ex, ey), p1);
                 painter.drawLine(QPointF(ex, ey), p2);
             }
@@ -334,8 +336,7 @@ void MacroblockView::RefreshUi() {
         painter.end();
         viz_label_->setPixmap(QPixmap::fromImage(viz_img));
     } else if (ma.has_motion_vectors == false && ma.frame_width > 0) {
-        viz_label_->setText(
-            tr("%1 帧\n未提供运动矢量数据\n帧内块数: %2").arg(frame_type_str).arg(intra_blocks));
+        viz_label_->setText(tr("%1 帧\n未提供运动矢量数据\n帧内块数: %2").arg(frame_type_str).arg(intra_blocks));
     }
 }
 
@@ -346,8 +347,8 @@ void MacroblockView::OnExportCsv() {
         return;
     }
 
-    ExportCsvStream(this, tr("导出宏块分析 CSV"),
-        QStringLiteral("macroblock_frame_%1.csv").arg(ma.frame_index),
+    ExportCsvStream(
+        this, tr("导出宏块分析 CSV"), QStringLiteral("macroblock_frame_%1.csv").arg(ma.frame_index),
         [this, &ma](QTextStream& stream) {
             stream << "序号,块X,块Y,块宽,块高,MVx(raw),MVy(raw),精度分母,MVx(px),MVy(px),幅度(px),角度(度),参考方向\n";
 
@@ -358,23 +359,15 @@ void MacroblockView::OnExportCsv() {
                 double px_my = mv.motion_y / scale;
                 QString ref = (mv.source < 0) ? "forward" : (mv.source > 0) ? "backward" : "none";
 
-                stream << i << ","
-                       << mv.block_x << ","
-                       << mv.block_y << ","
-                       << static_cast<int>(mv.block_w) << ","
-                       << static_cast<int>(mv.block_h) << ","
-                       << mv.motion_x << ","
-                       << mv.motion_y << ","
-                       << mv.motion_scale << ","
-                       << QString::number(px_mx, 'f', 4) << ","
-                       << QString::number(px_my, 'f', 4) << ","
-                       << QString::number(mv.motion_magnitude, 'f', 4) << ","
-                       << QString::number(mv.motion_angle, 'f', 2) << ","
-                       << ref << "\n";
+                stream << i << "," << mv.block_x << "," << mv.block_y << "," << static_cast<int>(mv.block_w) << ","
+                       << static_cast<int>(mv.block_h) << "," << mv.motion_x << "," << mv.motion_y << ","
+                       << mv.motion_scale << "," << QString::number(px_mx, 'f', 4) << ","
+                       << QString::number(px_my, 'f', 4) << "," << QString::number(mv.motion_magnitude, 'f', 4) << ","
+                       << QString::number(mv.motion_angle, 'f', 2) << "," << ref << "\n";
             }
         },
         static_cast<int>(ma.motion_vectors.size()));
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

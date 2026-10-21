@@ -84,4 +84,4 @@ TEST_F(MacroblockAnalyzerTest, MotionVectorCountDoesNotInferIntraBlocks) {
     EXPECT_EQ(result.stats.intra_count, 0);
 }
 
-}
+} // namespace

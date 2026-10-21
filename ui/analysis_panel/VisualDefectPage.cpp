@@ -36,10 +36,9 @@ constexpr std::size_t kMaxDefectRecords = 5000;
 // 一张缩略图按 options 的小图尺寸算，典型几十 KB。全片留着就是几十 MB 起步，
 // 而列表里能翻到的也就最近那一段 —— 这是本轮"长视频内存"里最容易失控的一项。
 constexpr std::size_t kMaxEvidenceFrames = 200;
-}  // namespace
+} // namespace
 
-VisualDefectPage::VisualDefectPage(bool feature_checked, const model::VisualDefectOptions& options,
-                                   QWidget* parent)
+VisualDefectPage::VisualDefectPage(bool feature_checked, const model::VisualDefectOptions& options, QWidget* parent)
     : QWidget(parent), feature_checked_(feature_checked), options_(options) {
     SetupUi();
 }
@@ -55,8 +54,8 @@ void VisualDefectPage::SetupUi() {
         QWidget* row = new QWidget(this);
         QHBoxLayout* rl = new QHBoxLayout(row);
         rl->setContentsMargins(0, 0, 0, 0);
-        QLabel* title = new QLabel(
-            tr("画面质量（黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 过曝欠曝 / 色偏 / 隔行梳齿 / 黑边）"), row);
+        QLabel* title =
+            new QLabel(tr("画面质量（黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 过曝欠曝 / 色偏 / 隔行梳齿 / 黑边）"), row);
         title->setWordWrap(true);
         rl->addWidget(title);
         rl->addStretch();
@@ -82,25 +81,21 @@ void VisualDefectPage::SetupUi() {
         // objectName: UI 单测靠 findChild() 精确定位（页面里 QComboBox / QDoubleSpinBox
         // 都不止一个），不给名字就只能靠创建顺序猜，猜中了也是假绿。
         preset_combo_->setObjectName(QStringLiteral("VisualDefectPreset"));
-        preset_combo_->addItem(
-            tr("快速 (1 帧/秒)"), static_cast<int>(model::VisualSamplingPreset::Fast));
-        preset_combo_->addItem(
-            tr("标准 (2 帧/秒)"), static_cast<int>(model::VisualSamplingPreset::Standard));
-        preset_combo_->addItem(
-            tr("精细 (5 帧/秒)"), static_cast<int>(model::VisualSamplingPreset::Fine));
-        preset_combo_->addItem(
-            tr("离线全帧 (逐帧，不丢帧)"), static_cast<int>(model::VisualSamplingPreset::OfflineFull));
+        preset_combo_->addItem(tr("快速 (1 帧/秒)"), static_cast<int>(model::VisualSamplingPreset::Fast));
+        preset_combo_->addItem(tr("标准 (2 帧/秒)"), static_cast<int>(model::VisualSamplingPreset::Standard));
+        preset_combo_->addItem(tr("精细 (5 帧/秒)"), static_cast<int>(model::VisualSamplingPreset::Fine));
+        preset_combo_->addItem(tr("离线全帧 (逐帧，不丢帧)"),
+                               static_cast<int>(model::VisualSamplingPreset::OfflineFull));
         // 跟随传入的 options.preset。旧代码写死 setCurrentIndex(1)，把调用方显式
         // 传进来的档位悄悄留在「标准」——界面显示与实际送进分析器的档位分家
         // （docs/ARCHITECTURE.md §5.4）。用 findData 按 userData 定位而不是硬编码
         // 索引，将来枚举与下拉项顺序调整也不会错位；未知档位退回默认项「标准」。
         const int preset_index = preset_combo_->findData(static_cast<int>(options_.preset));
         preset_combo_->setCurrentIndex(preset_index >= 0 ? preset_index : 1);
-        preset_combo_->setToolTip(
-            tr("播放时默认抽样分析；分析队列有上限，压力大会丢分析帧但绝不拖慢播放。\n"
-               "「离线全帧」逐帧同步分析，适合不追求播放流畅度的全检场景。"));
-        connect(preset_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-                this, &VisualDefectPage::OnOptionChanged);
+        preset_combo_->setToolTip(tr("播放时默认抽样分析；分析队列有上限，压力大会丢分析帧但绝不拖慢播放。\n"
+                                     "「离线全帧」逐帧同步分析，适合不追求播放流畅度的全检场景。"));
+        connect(preset_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+                &VisualDefectPage::OnOptionChanged);
         ol->addWidget(preset_combo_);
 
         ol->addWidget(new QLabel(tr("模糊阈值:"), this));
@@ -111,8 +106,8 @@ void VisualDefectPage::SetupUi() {
         blur_spin_->setSingleStep(0.25);
         blur_spin_->setValue(options_.blur_threshold);
         blur_spin_->setToolTip(tr("锐度指数（拉普拉斯方差/1000）低于该值判模糊。调大更灵敏。"));
-        connect(blur_spin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                this, &VisualDefectPage::OnOptionChanged);
+        connect(blur_spin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+                &VisualDefectPage::OnOptionChanged);
         ol->addWidget(blur_spin_);
 
         ol->addWidget(new QLabel(tr("冻结阈值:"), this));
@@ -123,8 +118,8 @@ void VisualDefectPage::SetupUi() {
         freeze_spin_->setSingleStep(0.001);
         freeze_spin_->setValue(options_.freeze_diff);
         freeze_spin_->setToolTip(tr("相邻采样帧的平均像素差低于该值判冻结（0.01 约等于 2.5 个灰阶）。"));
-        connect(freeze_spin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                this, &VisualDefectPage::OnOptionChanged);
+        connect(freeze_spin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+                &VisualDefectPage::OnOptionChanged);
         ol->addWidget(freeze_spin_);
 
         rgb_check_ = new QCheckBox(tr("采集缩略图（色偏 / 证据）"), this);
@@ -138,9 +133,10 @@ void VisualDefectPage::SetupUi() {
         layout->addLayout(ol);
     }
 
-    summary_label_ = new QLabel(
-        tr("开启分析后播放视频，将在此列出人眼可见的画面问题（黑场、冻结、马赛克、模糊、闪烁、曝光、色偏、梳齿、黑边）。"
-           "点击列表行可跳转播放器。"), this);
+    summary_label_ = new QLabel(tr("开启分析后播放视频，将在此列出人眼可见的画面问题（黑场、冻结、马赛克、模糊、闪烁、"
+                                   "曝光、色偏、梳齿、黑边）。"
+                                   "点击列表行可跳转播放器。"),
+                                this);
     summary_label_->setWordWrap(true);
     layout->addWidget(summary_label_);
 
@@ -237,7 +233,8 @@ void VisualDefectPage::ApplyStats(int analyzed_frames, int dropped_frames,
 }
 
 void VisualDefectPage::OnOptionChanged() {
-    if (updating_options_) return;
+    if (updating_options_)
+        return;
     ApplyOptionsFromUi();
     emit OptionsChanged(options_);
 }
@@ -249,8 +246,7 @@ void VisualDefectPage::AppendFrame(const model::FrameQualityMetric& metric) {
     if (samples_.size() > kMaxQualitySamples) {
         const std::size_t drop = kMaxQualitySamples / 5;
         samples_.erase(samples_.begin(), samples_.begin() + static_cast<long>(drop));
-        PerfMetrics::GetInstance().RecordCount("quality_samples_trimmed",
-                                               static_cast<long long>(drop));
+        PerfMetrics::GetInstance().RecordCount("quality_samples_trimmed", static_cast<long long>(drop));
     }
     dirty_ = true;
 }
@@ -276,17 +272,17 @@ void VisualDefectPage::TrimEvidenceFrames() {
     std::size_t released = 0;
     for (std::size_t i = records_.size(); i-- > 0;) {
         auto& record = records_[i];
-        if (record.evidence.rgb.empty()) continue;
+        if (record.evidence.rgb.empty())
+            continue;
         if (++kept > kMaxEvidenceFrames) {
             record.evidence.rgb.clear();
-            record.evidence.rgb.shrink_to_fit();   // 光 clear 不还内存，必须 shrink
+            record.evidence.rgb.shrink_to_fit(); // 光 clear 不还内存，必须 shrink
             ++released;
         }
     }
     if (released > 0) {
         evidence_trimmed_ = true;
-        PerfMetrics::GetInstance().RecordCount("evidence_frames_released",
-                                               static_cast<long long>(released));
+        PerfMetrics::GetInstance().RecordCount("evidence_frames_released", static_cast<long long>(released));
     }
 }
 
@@ -297,14 +293,18 @@ void VisualDefectPage::ResetAll() {
     dropped_frames_ = 0;
     analyzed_frames_ = 0;
     dirty_ = false;
-    if (luma_chart_) luma_chart_->ClearSeriesData();
-    if (sharp_chart_) sharp_chart_->ClearSeriesData();
-    if (table_) table_->setRowCount(0);
+    if (luma_chart_)
+        luma_chart_->ClearSeriesData();
+    if (sharp_chart_)
+        sharp_chart_->ClearSeriesData();
+    if (table_)
+        table_->setRowCount(0);
     UpdateSummary();
 }
 
 void VisualDefectPage::FlushPending() {
-    if (!dirty_) return;
+    if (!dirty_)
+        return;
     dirty_ = false;
     UpdateSummary();
     UpdateCharts();
@@ -312,17 +312,18 @@ void VisualDefectPage::FlushPending() {
 }
 
 void VisualDefectPage::UpdateSummary() {
-    if (!summary_label_) return;
+    if (!summary_label_)
+        return;
 
     if (samples_.empty() && records_.empty()) {
-        summary_label_->setText(
-            tr("暂无画面质量数据。开启分析后播放视频即可开始采集。"));
+        summary_label_->setText(tr("暂无画面质量数据。开启分析后播放视频即可开始采集。"));
         return;
     }
 
     int warning_or_above = 0;
     for (const auto& d : records_) {
-        if (d.severity != model::VisualDefectSeverity::Info) ++warning_or_above;
+        if (d.severity != model::VisualDefectSeverity::Info)
+            ++warning_or_above;
     }
 
     QString area_text = tr("未检出");
@@ -337,15 +338,11 @@ void VisualDefectPage::UpdateSummary() {
     // VMAF 是可选依赖（libvmaf），默认构建未接入。有采样数据但 vmaf 全空时
     // 明示"未启用"，而不是让用户以为指标算丢了（NaN 假完成已按 optional 消除）。
     const bool vmaf_absent = std::all_of(samples_.begin(), samples_.end(),
-                                         [](const model::FrameQualityMetric& s) {
-                                             return !s.vmaf.has_value();
-                                         });
-    const QString vmaf_note =
-        vmaf_absent ? tr("；VMAF 未启用") : QString();
+                                         [](const model::FrameQualityMetric& s) { return !s.vmaf.has_value(); });
+    const QString vmaf_note = vmaf_absent ? tr("；VMAF 未启用") : QString();
     if (vmaf_absent) {
-        summary_label_->setToolTip(
-            tr("VMAF 需要可选依赖 libvmaf（库 + 模型文件），当前构建未接入。\n"
-               "PSNR / SSIM 当前仅提供参考帧算法接口，本页面不执行双视频质量对比。"));
+        summary_label_->setToolTip(tr("VMAF 需要可选依赖 libvmaf（库 + 模型文件），当前构建未接入。\n"
+                                      "PSNR / SSIM 当前仅提供参考帧算法接口，本页面不执行双视频质量对比。"));
     } else {
         summary_label_->setToolTip(QString());
     }
@@ -356,44 +353,41 @@ void VisualDefectPage::UpdateSummary() {
             .arg(records_.size())
             .arg(warning_or_above)
             .arg(area_text)
-            .arg(dropped_frames_ > 0
-                     ? tr("；播放压力大，已丢弃 %1 个分析帧").arg(dropped_frames_)
-                     : QString())
+            .arg(dropped_frames_ > 0 ? tr("；播放压力大，已丢弃 %1 个分析帧").arg(dropped_frames_) : QString())
             .arg(vmaf_note));
 }
 
 void VisualDefectPage::UpdateCharts() {
-    if (!luma_chart_ || !sharp_chart_) return;
+    if (!luma_chart_ || !sharp_chart_)
+        return;
 
     // 抽稀统一走 ChartDecimation。以前这里是手写 stride（上限 600），与其余各页
     // 4000 / 300 的口径并存；更要命的是等间隔取点会把"单帧黑场一闪"这类尖峰
     // 整个跳过去 —— 而那恰恰是要抓的缺陷。现在每桶保留 min/max 两点，峰谷都留。
     const auto ts = [](const model::FrameQualityMetric& s) { return s.timestamp_seconds; };
 
-    SubmitDecimated(luma_series_,
-                    DecimateFrom(samples_, ts,
-                                 [](const model::FrameQualityMetric& s) { return s.luma_mean; },
-                                 kMaxChartPoints));
-    SubmitDecimated(black_series_,
-                    DecimateFrom(samples_, ts,
-                                 [](const model::FrameQualityMetric& s) { return s.black_ratio; },
-                                 kMaxChartPoints));
-    SubmitDecimated(blur_series_,
-                    DecimateFrom(samples_, ts,
-                                 [](const model::FrameQualityMetric& s) {
-                                     // 锐度可能远大于 1（清晰画面），放进同一张图会
-                                     // 压平帧差曲线，这里做对数压缩
-                                     return std::log10(1.0 + std::max(0.0, s.blur_score));
-                                 },
-                                 kMaxChartPoints));
-    SubmitDecimated(diff_series_,
-                    DecimateFrom(samples_, ts,
-                                 [](const model::FrameQualityMetric& s) { return s.frame_diff; },
-                                 kMaxChartPoints));
+    SubmitDecimated(
+        luma_series_,
+        DecimateFrom(samples_, ts, [](const model::FrameQualityMetric& s) { return s.luma_mean; }, kMaxChartPoints));
+    SubmitDecimated(
+        black_series_,
+        DecimateFrom(samples_, ts, [](const model::FrameQualityMetric& s) { return s.black_ratio; }, kMaxChartPoints));
+    SubmitDecimated(blur_series_, DecimateFrom(
+                                      samples_, ts,
+                                      [](const model::FrameQualityMetric& s) {
+                                          // 锐度可能远大于 1（清晰画面），放进同一张图会
+                                          // 压平帧差曲线，这里做对数压缩
+                                          return std::log10(1.0 + std::max(0.0, s.blur_score));
+                                      },
+                                      kMaxChartPoints));
+    SubmitDecimated(
+        diff_series_,
+        DecimateFrom(samples_, ts, [](const model::FrameQualityMetric& s) { return s.frame_diff; }, kMaxChartPoints));
 }
 
 void VisualDefectPage::RebuildTable() {
-    if (!table_) return;
+    if (!table_)
+        return;
 
     const int rows = static_cast<int>(records_.size());
     TableBatch batch(table_);
@@ -411,14 +405,16 @@ void VisualDefectPage::RebuildTable() {
 }
 
 QImage VisualDefectPage::EvidenceImage(const model::VisualDefect& defect) {
-    if (!defect.evidence.valid()) return QImage();
-    QImage img(defect.evidence.rgb.data(), defect.evidence.width, defect.evidence.height,
-               defect.evidence.width * 3, QImage::Format_RGB888);
-    return img.copy();   // 深拷贝: 源数据属于缺陷记录，随时可能被清掉
+    if (!defect.evidence.valid())
+        return QImage();
+    QImage img(defect.evidence.rgb.data(), defect.evidence.width, defect.evidence.height, defect.evidence.width * 3,
+               QImage::Format_RGB888);
+    return img.copy(); // 深拷贝: 源数据属于缺陷记录，随时可能被清掉
 }
 
 void VisualDefectPage::UpdateEvidencePreview(int defect_index) {
-    if (!evidence_label_) return;
+    if (!evidence_label_)
+        return;
     if (defect_index < 0 || defect_index >= static_cast<int>(records_.size())) {
         evidence_label_->setPixmap(QPixmap());
         evidence_label_->setText(tr("选中缺陷后显示"));
@@ -432,24 +428,24 @@ void VisualDefectPage::UpdateEvidencePreview(int defect_index) {
         // 另一种是采集过但被限额释放了。给同一句提示会让人以为功能坏了。
         evidence_label_->setText(
             evidence_trimmed_
-                ? tr("该缺陷的证据图已释放\n（只保留最近 %1 张，见「证据缩略图」限额）")
-                      .arg(kMaxEvidenceFrames)
+                ? tr("该缺陷的证据图已释放\n（只保留最近 %1 张，见「证据缩略图」限额）").arg(kMaxEvidenceFrames)
                 : tr("该缺陷无证据图\n（未采集缩略图）"));
         return;
     }
     evidence_label_->setText(QString());
     evidence_label_->setPixmap(
-        QPixmap::fromImage(img.scaled(evidence_label_->size(),
-                                      Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+        QPixmap::fromImage(img.scaled(evidence_label_->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation)));
 }
 
 void VisualDefectPage::OnCellClicked(int row, int) {
-    if (row < 0 || row >= static_cast<int>(records_.size())) return;
+    if (row < 0 || row >= static_cast<int>(records_.size()))
+        return;
     emit SeekRequested(records_[static_cast<size_t>(row)].start_seconds);
 }
 
 void VisualDefectPage::OnSelectionChanged() {
-    if (!table_) return;
+    if (!table_)
+        return;
     const auto selected = table_->selectionModel()->selectedRows();
     UpdateEvidencePreview(selected.isEmpty() ? -1 : selected.first().row());
 }
@@ -459,20 +455,18 @@ void VisualDefectPage::OnExportCsv() {
         QMessageBox::information(this, tr("提示"), tr("当前没有画面质量缺陷数据可导出"));
         return;
     }
-    ExportCsvStream(this, tr("导出画面质量缺陷 CSV"), QStringLiteral("visual_defects.csv"),
+    ExportCsvStream(
+        this, tr("导出画面质量缺陷 CSV"), QStringLiteral("visual_defects.csv"),
         [this](QTextStream& stream) {
             stream << "序号,类型,类型代码,严重度,开始(秒),结束(秒),时长(秒),触发值,阈值,说明\n";
             for (const auto& d : records_) {
-                stream << d.id << ","
-                       << QString::fromUtf8(model::ToString(d.type)) << ","
+                stream << d.id << "," << QString::fromUtf8(model::ToString(d.type)) << ","
                        << QString::fromUtf8(model::DefectTypeCode(d.type)) << ","
                        << QString::fromUtf8(model::ToString(d.severity)) << ","
-                       << QString::number(d.start_seconds, 'f', 3) << ","
-                       << QString::number(d.end_seconds, 'f', 3) << ","
-                       << QString::number(d.DurationSeconds(), 'f', 3) << ","
-                       << QString::number(d.score, 'f', 6) << ","
-                       << QString::number(d.threshold, 'f', 6) << ","
-                       << QString::fromUtf8(d.description.c_str()) << "\n";
+                       << QString::number(d.start_seconds, 'f', 3) << "," << QString::number(d.end_seconds, 'f', 3)
+                       << "," << QString::number(d.DurationSeconds(), 'f', 3) << "," << QString::number(d.score, 'f', 6)
+                       << "," << QString::number(d.threshold, 'f', 6) << "," << QString::fromUtf8(d.description.c_str())
+                       << "\n";
             }
         },
         static_cast<int>(records_.size()));
@@ -481,30 +475,33 @@ void VisualDefectPage::OnExportCsv() {
 void VisualDefectPage::OnExportEvidence() {
     int available = 0;
     for (const auto& d : records_) {
-        if (d.evidence.valid()) ++available;
+        if (d.evidence.valid())
+            ++available;
     }
     if (available == 0) {
         QMessageBox::information(this, tr("提示"),
-            tr("没有可导出的证据图。请勾选「采集缩略图（色偏 / 证据）」后重新分析。"));
+                                 tr("没有可导出的证据图。请勾选「采集缩略图（色偏 / 证据）」后重新分析。"));
         return;
     }
-    const QString dir = QFileDialog::getExistingDirectory(
-        this, tr("选择证据图导出目录"), QString(),
-        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
-    if (dir.isEmpty()) return;
+    const QString dir = QFileDialog::getExistingDirectory(this, tr("选择证据图导出目录"), QString(),
+                                                          QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+    if (dir.isEmpty())
+        return;
 
     int written = 0;
     for (const auto& d : records_) {
         const QImage img = EvidenceImage(d);
-        if (img.isNull()) continue;
+        if (img.isNull())
+            continue;
         const QString name = QStringLiteral("%1_%2_%3s.png")
                                  .arg(d.id, 3, 10, QLatin1Char('0'))
                                  .arg(QString::fromUtf8(model::DefectTypeCode(d.type)))
                                  .arg(QString::number(d.start_seconds, 'f', 2));
-        if (img.save(dir + QStringLiteral("/") + name, "PNG")) ++written;
+        if (img.save(dir + QStringLiteral("/") + name, "PNG"))
+            ++written;
     }
     QMessageBox::information(this, tr("成功"),
-        tr("已导出 %1 / %2 张证据图到:\n%3").arg(written).arg(available).arg(dir));
+                             tr("已导出 %1 / %2 张证据图到:\n%3").arg(written).arg(available).arg(dir));
 }
 
 } // namespace ui

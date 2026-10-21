@@ -44,7 +44,9 @@ public:
 
     // 重新配置并清空已有结果。会先停掉工作线程（如果开着）。
     void Reset(const VisualDefectOptions& options);
-    const VisualDefectOptions& options() const { return options_; }
+    const VisualDefectOptions& options() const {
+        return options_;
+    }
 
     // ---- 离线 / 单测: 同步分析一帧，返回后指标与已结束的缺陷都已落库 ----
     void Feed(const model::FrameSample& sample);
@@ -53,7 +55,9 @@ public:
     bool Submit(const model::FrameSample& sample);
     void StartWorker(size_t queue_capacity = 8);
     void StopWorker();
-    bool worker_running() const { return worker_running_.load(); }
+    bool worker_running() const {
+        return worker_running_.load();
+    }
 
     // 取走工作线程产出但还没交给 UI 的结果（在调用线程执行）
     std::vector<model::FrameQualityMetric> TakePendingMetrics();
@@ -66,19 +70,26 @@ public:
 
     // ---- 结果 ----
     // 只在"分析已停止"时直接读（内部不再加锁）；跨线程请用 Snapshot()。
-    const std::vector<model::FrameQualityMetric>& metrics() const { return metrics_; }
-    const std::vector<model::VisualDefect>& defects() const { return defects_; }
+    const std::vector<model::FrameQualityMetric>& metrics() const {
+        return metrics_;
+    }
+    const std::vector<model::VisualDefect>& defects() const {
+        return defects_;
+    }
     model::ActivePictureArea EffectiveArea() const;
     model::VisualDefectReport Snapshot() const;
 
-    int dropped_samples() const { return dropped_samples_.load(); }
-    int analyzed_samples() const { return analyzed_samples_.load(); }
+    int dropped_samples() const {
+        return dropped_samples_.load();
+    }
+    int analyzed_samples() const {
+        return analyzed_samples_.load();
+    }
 
     // ---- 纯算法（单测直接调用）----
     // previous 为上一采样帧（首帧为 nullptr），previous_luma_mean 为上一采样帧的亮度均值（首帧 NaN）。
     static model::FrameQualityMetric ComputeFrameMetrics(const model::FrameSample& sample,
-                                                         const model::FrameSample* previous,
-                                                         double previous_luma_mean,
+                                                         const model::FrameSample* previous, double previous_luma_mean,
                                                          const VisualDefectOptions& options);
 
 private:
@@ -88,7 +99,7 @@ private:
         double last_ts = 0.0;
         int start_frame = -1;
         int last_frame = -1;
-        double worst = 0.0;      // 触发指标的极值（越大越差 / 越小越差由 reverse 决定）
+        double worst = 0.0; // 触发指标的极值（越大越差 / 越小越差由 reverse 决定）
         double sum = 0.0;
         int count = 0;
         double aux = model::kQualityNoValue;       // 描述里要用的辅助数值（亮度均值/削波占比/...）
@@ -106,8 +117,8 @@ private:
         double score = model::kQualityNoValue;
         double aux = model::kQualityNoValue;
         double threshold = model::kQualityNoValue;
-        bool reverse = false;              // true = 分数越小越严重（模糊、帧差）
-        double start_ts = model::kQualityNoValue;  // 覆盖段首时间（闪烁用窗口起点）
+        bool reverse = false;                     // true = 分数越小越严重（模糊、帧差）
+        double start_ts = model::kQualityNoValue; // 覆盖段首时间（闪烁用窗口起点）
     };
 
     // 在 m_ 已加锁的前提下处理一帧
@@ -116,9 +127,7 @@ private:
     void CloseSegmentLocked(model::VisualDefectType type, double end_ts, int end_frame);
     void CloseAllSegmentsLocked(double end_ts, int end_frame);
     bool FlickerHitLocked(double ts, double* amplitude) const;
-    static model::VisualDefectSeverity SeverityFor(model::VisualDefectType type,
-                                                   double duration_seconds,
-                                                   double score,
+    static model::VisualDefectSeverity SeverityFor(model::VisualDefectType type, double duration_seconds, double score,
                                                    const VisualDefectOptions& options);
     void WorkerLoop();
     void PushDefectLocked(model::VisualDefect defect);
@@ -153,7 +162,7 @@ private:
     bool has_prev_ = false;
     model::FrameSample prev_sample_;
     double prev_luma_mean_ = model::kQualityNoValue;
-    std::deque<double> luma_history_;       // 最近的亮度均值，闪烁检测用
+    std::deque<double> luma_history_; // 最近的亮度均值，闪烁检测用
     std::deque<double> luma_history_ts_;
     std::map<model::VisualDefectType, SegmentState> segments_;
 
@@ -166,4 +175,4 @@ private:
     int next_defect_id_ = 1;
 };
 
-}  // namespace videoeye
+} // namespace videoeye

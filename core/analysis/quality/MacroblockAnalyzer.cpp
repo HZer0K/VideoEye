@@ -6,13 +6,13 @@
 #endif
 
 extern "C" {
-#include <libavutil/motion_vector.h>
-#include <libavutil/frame.h>
 #include <libavcodec/codec_id.h>
+#include <libavutil/frame.h>
+#include <libavutil/motion_vector.h>
 }
 
-#include <cmath>
 #include <algorithm>
+#include <cmath>
 
 namespace videoeye {
 
@@ -22,13 +22,8 @@ MacroblockAnalyzer::MacroblockAnalyzer() {
 
 MacroblockAnalyzer::~MacroblockAnalyzer() = default;
 
-model::MacroblockFrameAnalysis MacroblockAnalyzer::AnalyzeFrame(
-    const AVFrame* frame,
-    int frame_index,
-    int64_t pts,
-    double timestamp,
-    int frame_type,
-    int codec_id) {
+model::MacroblockFrameAnalysis MacroblockAnalyzer::AnalyzeFrame(const AVFrame* frame, int frame_index, int64_t pts,
+                                                                double timestamp, int frame_type, int codec_id) {
 
     model::MacroblockFrameAnalysis result;
     result.frame_index = frame_index;
@@ -56,7 +51,7 @@ model::MacroblockFrameAnalysis MacroblockAnalyzer::AnalyzeFrame(
     if (frame_type == AV_PICTURE_TYPE_I && frame->width > 0 && frame->height > 0 &&
         (codec_id == AV_CODEC_ID_H264 || codec_id == AV_CODEC_ID_HEVC)) {
         bool is_hevc = (codec_id == AV_CODEC_ID_HEVC);
-        int block = is_hevc ? 64 : 16;  // HEVC CTU 64x64, H.264 宏块 16x16
+        int block = is_hevc ? 64 : 16; // HEVC CTU 64x64, H.264 宏块 16x16
         int mb_w = (frame->width + block - 1) / block;
         int mb_h = (frame->height + block - 1) / block;
         result.stats.intra_count = mb_w * mb_h;
@@ -71,7 +66,8 @@ model::MacroblockFrameAnalysis MacroblockAnalyzer::AnalyzeFrame(
 std::vector<model::MotionVectorInfo> MacroblockAnalyzer::ExtractMotionVectors(const AVFrame* frame) {
     std::vector<model::MotionVectorInfo> result;
 
-    if (!frame) return result;
+    if (!frame)
+        return result;
 
     // 从 side data 中获取运动矢量
     AVFrameSideData* sd = av_frame_get_side_data(frame, AV_FRAME_DATA_MOTION_VECTORS);
@@ -80,7 +76,8 @@ std::vector<model::MotionVectorInfo> MacroblockAnalyzer::ExtractMotionVectors(co
     }
 
     const int mv_count = sd->size / static_cast<int>(sizeof(AVMotionVector));
-    if (mv_count <= 0) return result;
+    if (mv_count <= 0)
+        return result;
 
     result.reserve(mv_count);
     const AVMotionVector* mvs = reinterpret_cast<const AVMotionVector*>(sd->data);
@@ -92,15 +89,14 @@ std::vector<model::MotionVectorInfo> MacroblockAnalyzer::ExtractMotionVectors(co
     return result;
 }
 
-model::MacroblockStats MacroblockAnalyzer::ComputeStats(
-    const std::vector<model::MotionVectorInfo>& mvs,
-    int frame_width, int frame_height,
-    int codec_id) {
+model::MacroblockStats MacroblockAnalyzer::ComputeStats(const std::vector<model::MotionVectorInfo>& mvs,
+                                                        int frame_width, int frame_height, int codec_id) {
 
     model::MacroblockStats stats;
     stats.total_blocks = static_cast<int>(mvs.size());
 
-    if (mvs.empty()) return stats;
+    if (mvs.empty())
+        return stats;
 
     double sum_magnitude = 0.0;
 

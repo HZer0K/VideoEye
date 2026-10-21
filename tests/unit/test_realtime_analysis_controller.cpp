@@ -137,7 +137,7 @@ TEST_F(RealtimeAnalysisControllerTest, SamplingIntervalStillAppliesAfterSeek) {
 TEST_F(RealtimeAnalysisControllerTest, SmallBackwardJitterKeepsFrameHistory) {
     Feed(60.0);
     ASSERT_TRUE(WaitForSamples(1));
-    Feed(59.99);   // 倒退 10ms，远小于 2fps 的 0.5s 采样间隔
+    Feed(59.99); // 倒退 10ms，远小于 2fps 的 0.5s 采样间隔
     Settle();
     EXPECT_EQ(RealtimeAnalysisControllerTestAccess::SampleCount(controller_), 1);
     Feed(60.5);
@@ -153,7 +153,7 @@ TEST_F(RealtimeAnalysisControllerTest, SmallBackwardJitterKeepsFrameHistory) {
 TEST_F(RealtimeAnalysisControllerTest, ForwardJumpResetsTimeline) {
     Feed(60.0);
     ASSERT_TRUE(WaitForSamples(1));
-    Feed(65.0);   // 跨度 5s > 2s 的跳变阈值
+    Feed(65.0); // 跨度 5s > 2s 的跳变阈值
     ASSERT_TRUE(WaitForSamples(2));
     const auto report = RealtimeAnalysisControllerTestAccess::Snapshot(controller_);
     ASSERT_EQ(report.samples.size(), 2u);
@@ -161,4 +161,4 @@ TEST_F(RealtimeAnalysisControllerTest, ForwardJumpResetsTimeline) {
     EXPECT_TRUE(std::isnan(report.samples.back().frame_diff));
 }
 
-}
+} // namespace

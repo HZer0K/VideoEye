@@ -1,12 +1,12 @@
 #include "ui/main_window/VideoWidget.h"
 #include "infrastructure/logging/Logger.h"
-#include <QPainter>
-#include <QPaintEvent>
-#include <QResizeEvent>
-#include <QTimer>
-#include <QPainterPath>
 #include <QFont>
 #include <QFontMetrics>
+#include <QPaintEvent>
+#include <QPainter>
+#include <QPainterPath>
+#include <QResizeEvent>
+#include <QTimer>
 #include <cmath>
 
 namespace videoeye {
@@ -15,8 +15,7 @@ namespace ui {
 // ============================================================================
 // VideoOverlayWidget
 // ============================================================================
-VideoOverlayWidget::VideoOverlayWidget(QWidget* parent)
-    : QWidget(parent) {
+VideoOverlayWidget::VideoOverlayWidget(QWidget* parent) : QWidget(parent) {
     setAttribute(Qt::WA_TransparentForMouseEvents, true);
     setAttribute(Qt::WA_NoSystemBackground, true);
     setAttribute(Qt::WA_TranslucentBackground, true);
@@ -47,7 +46,8 @@ void VideoOverlayWidget::SetMvOverlayMode(MvOverlayMode mode) {
 QRectF VideoOverlayWidget::ComputeVideoDisplayRect() const {
     const int fw = mv_analysis_.frame_width;
     const int fh = mv_analysis_.frame_height;
-    if (fw <= 0 || fh <= 0) return QRectF(0, 0, width(), height());
+    if (fw <= 0 || fh <= 0)
+        return QRectF(0, 0, width(), height());
 
     // 保持宽高比居中
     QSize video_size(fw, fh);
@@ -77,17 +77,14 @@ void VideoOverlayWidget::paintEvent(QPaintEvent* /*event*/) {
         int badge_w = text_w + 20;
 
         // 半透明黑底
-        QColor bg = isStatus && info_.is_playing
-            ? QColor(63, 185, 80, 60)    // 绿色底
-            : QColor(0, 0, 0, 100);      // 黑色底
+        QColor bg = isStatus && info_.is_playing ? QColor(63, 185, 80, 60) // 绿色底
+                                                 : QColor(0, 0, 0, 100);   // 黑色底
         painter.setPen(Qt::NoPen);
         painter.setBrush(bg);
         painter.drawRoundedRect(QRect(x, margin, badge_w, badge_h), badge_radius, badge_radius);
 
         // 文字
-        QColor text_color = isStatus && info_.is_playing
-            ? QColor(63, 185, 80)
-            : QColor(240, 246, 252);
+        QColor text_color = isStatus && info_.is_playing ? QColor(63, 185, 80) : QColor(240, 246, 252);
         painter.setPen(text_color);
         painter.drawText(QRect(x, margin, badge_w, badge_h), Qt::AlignCenter, text);
 
@@ -157,8 +154,7 @@ void VideoOverlayWidget::paintEvent(QPaintEvent* /*event*/) {
     }
 
     // === 运动矢量叠加 ===
-    if (mv_mode_ != MvOverlayMode::Off &&
-        mv_analysis_.frame_width > 0 && mv_analysis_.frame_height > 0 &&
+    if (mv_mode_ != MvOverlayMode::Off && mv_analysis_.frame_width > 0 && mv_analysis_.frame_height > 0 &&
         mv_analysis_.has_motion_vectors && !mv_analysis_.motion_vectors.empty()) {
         QRectF display_rect = ComputeVideoDisplayRect();
         if (mv_mode_ == MvOverlayMode::Blocks || mv_mode_ == MvOverlayMode::ArrowsAndBlocks) {
@@ -195,7 +191,8 @@ void VideoOverlayWidget::DrawMvArrows(QPainter& painter, const QRectF& display_r
     const auto& mvs = mv_analysis_.motion_vectors;
     const int fw = mv_analysis_.frame_width;
     const int fh = mv_analysis_.frame_height;
-    if (fw <= 0 || fh <= 0) return;
+    if (fw <= 0 || fh <= 0)
+        return;
 
     const qreal sx = display_rect.width() / fw;
     const qreal sy = display_rect.height() / fh;
@@ -215,7 +212,8 @@ void VideoOverlayWidget::DrawMvArrows(QPainter& painter, const QRectF& display_r
         double magnitude = std::sqrt(px_mx * px_mx + px_my * px_my);
 
         // 跳过零运动矢量 (帧内预测块)
-        if (magnitude < 0.1) continue;
+        if (magnitude < 0.1)
+            continue;
 
         qreal cx = display_rect.left() + (mv.block_x + mv.block_w / 2.0) * sx;
         qreal cy = display_rect.top() + (mv.block_y + mv.block_h / 2.0) * sy;
@@ -233,8 +231,7 @@ void VideoOverlayWidget::DrawMvArrows(QPainter& painter, const QRectF& display_r
         }
         if (arrow_len < min_arrow) {
             // 幅度极小: 画一个小圆点
-            QColor dot_color = (mv.source < 0) ? QColor(255, 107, 107, 120)
-                                                : QColor(88, 166, 255, 120);
+            QColor dot_color = (mv.source < 0) ? QColor(255, 107, 107, 120) : QColor(88, 166, 255, 120);
             painter.setPen(Qt::NoPen);
             painter.setBrush(dot_color);
             painter.drawEllipse(QPointF(cx, cy), 1.5, 1.5);
@@ -244,11 +241,11 @@ void VideoOverlayWidget::DrawMvArrows(QPainter& painter, const QRectF& display_r
         // 颜色: 前向=红, 后向=蓝, 双向=紫
         QColor color;
         if (mv.source < 0) {
-            color = QColor(255, 107, 107);   // 前向 — 红
+            color = QColor(255, 107, 107); // 前向 — 红
         } else if (mv.source > 0) {
-            color = QColor(88, 166, 255);    // 后向 — 蓝
+            color = QColor(88, 166, 255); // 后向 — 蓝
         } else {
-            color = QColor(196, 132, 252);   // 双向/其他 — 紫
+            color = QColor(196, 132, 252); // 双向/其他 — 紫
         }
         // 幅度越大越亮
         double brightness = std::min(1.0, magnitude / 16.0);
@@ -263,10 +260,8 @@ void VideoOverlayWidget::DrawMvArrows(QPainter& painter, const QRectF& display_r
         // 箭头头部
         double angle = std::atan2(ey - cy, ex - cx);
         double head_len = std::min(5.0, arrow_len * 0.3);
-        QPointF p1(ex - head_len * std::cos(angle - 0.5),
-                   ey - head_len * std::sin(angle - 0.5));
-        QPointF p2(ex - head_len * std::cos(angle + 0.5),
-                   ey - head_len * std::sin(angle + 0.5));
+        QPointF p1(ex - head_len * std::cos(angle - 0.5), ey - head_len * std::sin(angle - 0.5));
+        QPointF p2(ex - head_len * std::cos(angle + 0.5), ey - head_len * std::sin(angle + 0.5));
         painter.drawLine(QPointF(ex, ey), p1);
         painter.drawLine(QPointF(ex, ey), p2);
     }
@@ -278,7 +273,8 @@ void VideoOverlayWidget::DrawMvBlocks(QPainter& painter, const QRectF& display_r
     const auto& mvs = mv_analysis_.motion_vectors;
     const int fw = mv_analysis_.frame_width;
     const int fh = mv_analysis_.frame_height;
-    if (fw <= 0 || fh <= 0) return;
+    if (fw <= 0 || fh <= 0)
+        return;
 
     const qreal sx = display_rect.width() / fw;
     const qreal sy = display_rect.height() / fh;
@@ -293,7 +289,8 @@ void VideoOverlayWidget::DrawMvBlocks(QPainter& painter, const QRectF& display_r
         double magnitude = std::sqrt(px_mx * px_mx + px_my * px_my);
 
         // 跳过零运动矢量
-        if (magnitude < 0.1) continue;
+        if (magnitude < 0.1)
+            continue;
 
         qreal bx = display_rect.left() + mv.block_x * sx;
         qreal by = display_rect.top() + mv.block_y * sy;
@@ -343,9 +340,9 @@ void VideoOverlayWidget::DrawMvLegend(QPainter& painter, const QRectF& display_r
     // 幅度图例
     y += 18;
     QString mv_info = tr("MV: %1 条 | 均: %2 | 峰: %3")
-        .arg(static_cast<qulonglong>(mv_analysis_.motion_vectors.size()))
-        .arg(mv_analysis_.stats.avg_motion_magnitude, 0, 'f', 1)
-        .arg(mv_analysis_.stats.max_motion_magnitude, 0, 'f', 1);
+                          .arg(static_cast<qulonglong>(mv_analysis_.motion_vectors.size()))
+                          .arg(mv_analysis_.stats.avg_motion_magnitude, 0, 'f', 1)
+                          .arg(mv_analysis_.stats.max_motion_magnitude, 0, 'f', 1);
     painter.setPen(QColor(180, 180, 180));
     painter.drawText(x, y + 10, mv_info);
 
@@ -366,8 +363,7 @@ void VideoOverlayWidget::DrawMvLegend(QPainter& painter, const QRectF& display_r
 // ============================================================================
 // VideoWidget
 // ============================================================================
-VideoWidget::VideoWidget(QWidget* parent)
-    : QWidget(parent) {
+VideoWidget::VideoWidget(QWidget* parent) : QWidget(parent) {
     setAttribute(Qt::WA_OpaquePaintEvent, true);
     setMinimumSize(320, 160);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -394,19 +390,23 @@ void VideoWidget::Clear() {
 }
 
 void VideoWidget::SetOverlayInfo(const VideoOverlayInfo& info) {
-    if (overlay_) overlay_->SetOverlayInfo(info);
+    if (overlay_)
+        overlay_->SetOverlayInfo(info);
 }
 
 void VideoWidget::SetCenterPlayButtonVisible(bool visible) {
-    if (overlay_) overlay_->SetCenterPlayButtonVisible(visible);
+    if (overlay_)
+        overlay_->SetCenterPlayButtonVisible(visible);
 }
 
 void VideoWidget::SetMotionVectors(const model::MacroblockFrameAnalysis& analysis) {
-    if (overlay_) overlay_->SetMotionVectors(analysis);
+    if (overlay_)
+        overlay_->SetMotionVectors(analysis);
 }
 
 void VideoWidget::SetMvOverlayMode(MvOverlayMode mode) {
-    if (overlay_) overlay_->SetMvOverlayMode(mode);
+    if (overlay_)
+        overlay_->SetMvOverlayMode(mode);
 }
 
 void VideoWidget::paintEvent(QPaintEvent* event) {
@@ -435,7 +435,8 @@ void VideoWidget::paintEvent(QPaintEvent* event) {
 
 void VideoWidget::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
-    if (overlay_) overlay_->setGeometry(0, 0, width(), height());
+    if (overlay_)
+        overlay_->setGeometry(0, 0, width(), height());
 }
 
 void VideoWidget::showEvent(QShowEvent* event) {
