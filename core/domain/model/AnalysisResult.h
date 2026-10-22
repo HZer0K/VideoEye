@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "core/domain/model/AnalysisTypes.h"   // StreamDigest + AnalysisStatus
+#include "core/domain/model/AudioBitstreamInfo.h"
 #include "core/domain/model/AudioQcResult.h"
 #include "core/domain/model/AuxiliaryDataInfo.h"
 #include "core/domain/model/BitrateGopResult.h"
@@ -82,6 +83,12 @@ struct AnalysisResult {
 
     // 音频 QC（解码 + 重采样/格式归一后统计，见 core/analysis/quality/AudioQcAnalyzer.h）
     AudioQcResult audio_qc;
+
+    // 音频位流参数（D1：逐包解析 ADTS/LATM/AC-3/E-AC-3/Opus 帧头，不解码）。
+    // audio_bitstream_analyzed=true 才表示跑过（没有音频流时不跑）。
+    // 与 audio_qc 是两条独立通路：这条只看头，因此即使解码器打不开也有结果。
+    AudioBitstreamResult audio_bitstream;
+    bool audio_bitstream_analyzed = false;
 
     // 色彩与 HDR 元数据（demux 层 + 可选的首帧解码，见 core/analysis/quality/ColorHdrAnalyzer.h）
     ColorHdrAnalysis color_hdr;

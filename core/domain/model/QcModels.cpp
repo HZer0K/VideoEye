@@ -675,6 +675,18 @@ std::vector<QcRule> DefaultQcRules() {
         "MP4/MOV 的字幕轨没有 hdlr handler name，部分工具识别不出这是字幕轨。",
         "用支持写 hdlr 的 muxer 重新封装（FFmpeg 的 mov/mp4 muxer 默认会写）。");
 
+    // ---- 隐藏字幕服务层（CEA-608 通道 / CEA-708 服务，见 CeaCaptionDecoder.h）----
+    add("subtitle.cc.no_text", "隐藏字幕流没有解出文本", IssueCategory::Metadata,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "条",
+        "有隐藏字幕轨，但按 608/708 状态机解不出任何上屏文本：可能是 cc_data 与视频"
+        "解复用错位、DTVCC 包被截断，或整条轨只有 XDS/填充数据。",
+        "核对 cc_data 是否与视频帧对齐（重封装/重抓取），确认母版确实带 CC 数据。");
+
+    add("subtitle.cc.dtvcc_loss", "DTVCC 包序号跳变（字幕丢包）",
+        IssueCategory::Metadata, IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "处",
+        "CEA-708 的 DTVCC 包序号不连续，说明传输/切片环节丢了包，成片里会缺句。",
+        "检查抓取或切片环节是否截断；用 -c copy 重新封装通常无法补回，需从母版重新提取。");
+
     add("timecode.missing", "缺少时码", IssueCategory::Metadata,
         IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "",
         "既没有 tmcd 时码轨，也没有 metadata 里的 timecode tag，交付规范可能不满足。",
@@ -786,6 +798,39 @@ std::vector<QcRule> DefaultQcRules() {
         IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
         "音频流时长与容器/视频时长相差明显，可能导致结尾音画不同步。",
         "检查是否丢帧/尾帧被截断，重新封装或补齐音频尾部。");
+
+    // ---- 音频位流参数（core/analysis/quality/AudioBitstreamAnalyzer.h，只读帧头）----
+    // 这一组与上面的 audio.* 不共用数据源：上面要解码 PCM，这里只读 ADTS/LATM/
+    // AC-3/E-AC-3/Opus 的头。所以解码器打不开时这组仍然有结论。
+    add("audio.bitstream.container_mismatch", "位流参数与容器声明不一致",
+        IssueCategory::Audio, IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "项",
+        "音频帧头里声明的采样率/声道数与容器声明不同。播放器按容器参数初始化解码器，"
+        "实际码流却不同——轻则重采样错、声道映射错，重则解码失败或只出前几秒声音。",
+        "以位流头为准重新封装（ffmpeg -c copy 会沿用码流参数），或核对转码参数是否写错。");
+
+    add("audio.bitstream.header_invalid", "音频帧头解析失败比例过高",
+        IssueCategory::Audio, IssueSeverity::Warning, QcRuleOp::MaxExceeded, 5.0, "%",
+        "大量音频包连帧头都解析不出来，说明同步字丢失/包被截断/码流被加密，"
+        "这类文件在播放器里常表现为断续、爆音或整段无声。",
+        "检查抓包/切片环节是否截断了音频帧；确认是否 DRM 加密。");
+
+    add("audio.bitstream.param_change", "位流参数中途改变",
+        IssueCategory::Audio, IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "条",
+        "同一条音频流在扫描中采样率/声道数/码率发生变化，通常是两段素材直接拼接"
+        "或中途转码。播放器在这里容易出现跳音、音画不同步甚至卡死。",
+        "在拼接点统一重采样/重编码为同一参数，而不是直接 concat。");
+
+    add("audio.dialnorm.missing", "AC-3/E-AC-3 缺少 dialnorm",
+        IssueCategory::Metadata, IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "条",
+        "dialnorm（对白归一化电平）缺失或为 0，接收端无法按声明做音量归一，"
+        "与其它节目并排播出时音量会明显不一致。",
+        "编码时写入实测对白电平作为 dialnorm（如 -27 dBFS），或用 loudnorm 重编码。");
+
+    add("audio.dialnorm.mismatch", "dialnorm 与实测响度偏差过大",
+        IssueCategory::Audio, IssueSeverity::Warning, QcRuleOp::MaxExceeded, 3.0, "LU",
+        "码流声明的 dialnorm 与解码后实测的积分响度相差较大，说明声明是转码前留下的旧值。"
+        "播放端按 dialnorm 做音量归一，结果会比预期响或轻 3 LU 以上。",
+        "重编码时按实测响度重新写 dialnorm，或改用 loudnorm 一次性修正。");
 
     return rules;
 }

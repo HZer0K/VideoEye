@@ -27,6 +27,7 @@
 #include "core/analysis/diagnostics/TimecodeAnalyzer.h"
 #include "core/analysis/diagnostics/TimelineAnalyzer.h"
 #include "core/analysis/orchestration/AnalysisTerminalState.h"
+#include "core/analysis/quality/AudioBitstreamAnalyzer.h"
 #include "core/analysis/quality/AudioQcAnalyzer.h"
 #include "core/analysis/quality/BitrateGopAnalyzer.h"
 #include "core/analysis/quality/ColorHdrAnalyzer.h"
@@ -63,6 +64,9 @@ public:
     void FinalizeBitrateGop(BitrateGopAnalyzer& bitrate_gop, int video_stream_index);
     void FinalizeAudioQc(AudioQcAnalyzer& audio_qc, int audio_stream_index,
                          bool audio_decoder_ready, bool audio_rate_changed);
+    // 音频位流参数（D1）：与 FinalizeAudioQc 无先后依赖，两者读的是不同数据源
+    // （头 vs PCM）。放在音频 QC 之后只是为了日志顺序可读。
+    void FinalizeAudioBitstream(AudioBitstreamAnalyzer& audio_bitstream, int audio_stream_index);
     // 必须在 color_probe 释放之后调用（部分 HDR 元数据只在解码帧上出现）
     void FinalizeColorHdr(ColorHdrAnalyzer& color_hdr, int color_video_stream_index);
     // 必须在 avformat_close_input 之后调用

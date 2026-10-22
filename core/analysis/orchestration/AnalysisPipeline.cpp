@@ -215,6 +215,14 @@ void AnalysisPipeline::Prepare(AVFormatContext* fmt, model::AnalysisResult& resu
         }
     }
 
+    // ---- 音频位流参数（D1）----
+    // 与音频 QC 解耦：这条链路只读帧头，不碰解码器。因此**即使解码器打不开**
+    // （缺解码库、专有编码）也照样能拿到 ADTS/AC-3/Opus 的声明参数。
+    if (options_.analyze_audio_bitstream) {
+        audio_bitstream_.Reset(options_.audio_bitstream_options);
+        audio_bitstream_.RegisterStreams(fmt);
+    }
+
     // GOP 统计按流号计数，大小随流数；逐包分发时不再重复分配
     frames_since_key_.assign(static_cast<size_t>(fmt->nb_streams), 0);
     last_key_ts_.assign(static_cast<size_t>(fmt->nb_streams), -1.0);
@@ -377,6 +385,9 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt,
     if (options_.analyze_subtitle) subtitle_.OnPacket(pkt, st);
     if (options_.analyze_timecode) timecode_.OnPacket(pkt, st);
     if (options_.analyze_aux_data) aux_.OnPacket(pkt, st);
+
+    // 音频位流头（D1）：与下面的解码通路是两条独立链路，这里只读包字节。
+    if (options_.analyze_audio_bitstream) audio_bitstream_.OnPacket(pkt, st);
 
     // 音频 QC：解码后归一为 float planar 再喂给分析器
     if (options_.analyze_audio_qc && pkt->stream_index == audio_stream_index_ &&

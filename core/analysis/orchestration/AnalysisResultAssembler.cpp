@@ -1,6 +1,7 @@
 #include "core/analysis/orchestration/AnalysisResultAssembler.h"
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 
 #include "infrastructure/logging/Logger.h"
@@ -91,6 +92,49 @@ void AnalysisResultAssembler::FinalizeAudioQc(AudioQcAnalyzer& audio_qc, int aud
         result_.audio_qc.notes.push_back("音频采样率/声道数中途改变，部分样本未参与统计");
     }
     LOG_INFO("音频 QC: " + result_.audio_qc.ToString());
+}
+
+void AnalysisResultAssembler::FinalizeAudioBitstream(AudioBitstreamAnalyzer& audio_bitstream,
+                                                     int audio_stream_index) {
+    if (!options_.analyze_audio_bitstream) return;
+    result_.audio_bitstream = audio_bitstream.Finish();
+    // 没有音频流时 analyzed 已经是 false，这里只在"有流且真的跑过"时才置位 ——
+    // QC 规则靠这个标志区分"没跑"和"跑了但没解析出东西"。
+    result_.audio_bitstream_analyzed =
+        result_.audio_bitstream.analyzed && !result_.audio_bitstream.streams.empty();
+    if (!result_.audio_bitstream_analyzed) return;
+
+    // dialnorm 与实测响度的差值必须在这里算：只有收尾时两者都在手上。
+    for (model::AudioBitstreamStream& stream : result_.audio_bitstream.streams) {
+        if (stream.stream_index != audio_stream_index) continue;
+        if (!stream.has_dialnorm || !result_.audio_qc.analyzed) {
+            stream.dialnorm_delta_lu = 0.0;
+            stream.dialnorm_delta_available = false;
+            continue;
+        }
+        if (result_.audio_qc.integrated_lufs <= model::kSilenceLufs + 1.0) {
+            stream.dialnorm_delta_available = false;
+            continue;
+        }
+        // dialnorm 是"节目平均对白电平相对满刻度的偏移"，与积分响度直接相减即为
+        // 交付里真正要看的偏差（dialnorm 声明 -27 而实测 -20 → +7，说明声明过期）。
+        stream.dialnorm_delta_lu = result_.audio_qc.integrated_lufs -
+                                   static_cast<double>(stream.dialnorm_dbfs);
+        stream.dialnorm_delta_available = true;
+        if (std::abs(stream.dialnorm_delta_lu) >= 3.0) {
+            const std::string text =
+                "dialnorm 声明 " + std::to_string(stream.dialnorm_dbfs) + " dBFS，实测积分响度 " +
+                std::to_string(static_cast<int>(std::lround(result_.audio_qc.integrated_lufs))) +
+                " LUFS，差 " + std::to_string(static_cast<int>(std::lround(
+                                    stream.dialnorm_delta_lu))) + " LU";
+            bool exists = false;
+            for (const std::string& existing : stream.inconsistencies) {
+                if (existing == text) exists = true;
+            }
+            if (!exists) stream.inconsistencies.push_back(text);
+        }
+    }
+    LOG_INFO(result_.audio_bitstream.ToString());
 }
 
 void AnalysisResultAssembler::FinalizeColorHdr(ColorHdrAnalyzer& color_hdr,

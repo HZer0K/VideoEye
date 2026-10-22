@@ -516,6 +516,39 @@ target_link_libraries(test_audio_qc_rules PRIVATE VideoEyeAnalysis)
 add_test(NAME AudioQcRulesTests COMMAND test_audio_qc_rules)
 
 # =================================================
+# 测试 9-B：音频位流头解析（ADTS / LOAS / AC-3 / E-AC-3 / Opus / AAC ASC）
+# 说明: parser 是纯 C++17（不碰 FFmpeg / Qt），测试数据按规范字段顺序逐位拼出来。
+# =================================================
+videoeye_add_test(test_audio_bitstream_parser
+    unit/test_audio_bitstream_parser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/AudioBitstreamParser.cpp
+)
+add_test(NAME AudioBitstreamParserTests COMMAND test_audio_bitstream_parser)
+
+# =================================================
+# 测试 9-C：音频位流规则（audio.bitstream.* / audio.dialnorm.*）
+# 说明: 直接构造 AudioBitstreamResult，验证"没跑过不报 / 结构化计数 / dialnorm 守卫"。
+# =================================================
+videoeye_add_test(test_audio_bitstream_qc
+    unit/test_audio_bitstream_qc.cpp
+)
+target_link_libraries(test_audio_bitstream_qc PRIVATE VideoEyeAnalysis)
+add_test(NAME AudioBitstreamRulesTests COMMAND test_audio_bitstream_qc)
+
+# =================================================
+# 测试 9-D：隐藏字幕解码（CEA-608 状态机 + CEA-708 DTVCC）
+# 说明: 两个解码器都是纯 C++17（不碰 FFmpeg / Qt）。测试自己拼 cc_data 字节流，
+#       重点验"上屏时机 / 通道与服务分离 / 丢包计数"，而不是字符串抽取。
+# =================================================
+videoeye_add_test(test_cea_caption_decoder
+    unit/test_cea_caption_decoder.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/diagnostics/Cea608Decoder.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/diagnostics/Cea708Decoder.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/CeaCaptionInfo.cpp
+)
+add_test(NAME CeaCaptionDecoderTests COMMAND test_cea_caption_decoder)
+
+# =================================================
 # 测试 10：色彩与 HDR 元数据 (ColorHdrAnalyzer 的行构造 + QcRuleEngine)
 # 说明: BuildColorRows / BuildHdrRows 定义在 ColorHdrAnalyzer.cpp（依赖 FFmpeg 头文件），
 #       所以本目标需要链接 FFmpeg；规则判定本身仍是纯模型层，无需解码任何文件。

@@ -135,6 +135,10 @@ std::vector<QcProfile> BuiltinQcProfiles() {
             MakeSeverity("container.missing_audio", model::IssueSeverity::Error),
             MakeOverride("video.gop.max_seconds", 2.0),
             MakeOverride("timing.dts_missing", 1.0),
+            // 广播交付里"码流参数与容器声明不一致"没有商量余地：接收机按容器参数初始化，
+            // 对不上就是播出事故（无声/爆音），所以帧头这一组一并按错误处理。
+            MakeSeverity("audio.bitstream.container_mismatch", model::IssueSeverity::Error),
+            MakeSeverity("audio.bitstream.param_change", model::IssueSeverity::Error),
         };
         profiles.push_back(std::move(profile));
     }
@@ -211,6 +215,8 @@ std::vector<QcProfile> BuiltinQcProfiles() {
             MakeSeverity("container.moov_after_mdat", model::IssueSeverity::Warning),
             MakeOverride("video.gop.max_seconds", 5.0),
             MakeOverride("audio.loudness.range", 18.0),
+            // 母版要长期保存，dialnorm 与实测响度对不上属于"元数据写错"，按错误收口。
+            MakeSeverity("audio.dialnorm.mismatch", model::IssueSeverity::Error),
             // 默片/纯配乐母版本来就没有音轨，这里不把"缺少音频"当缺陷
             MakeDisabled("container.missing_audio"),
         };

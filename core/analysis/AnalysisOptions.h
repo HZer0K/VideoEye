@@ -98,6 +98,19 @@ struct AudioQcOptions {
     int max_silence_ranges = 500;
 };
 
+// 音频位流参数分析（D1）
+//
+// 与 AudioQcOptions 分开：这一层**不解码**，只逐包读音频帧头（ADTS/LATM/
+// AC-3/E-AC-3/Opus）。它负责回答"码流自己声明的参数是什么、与容器声明是否
+// 一致、是不是 Atmos/JOC"，响度仍然由 AudioQcAnalyzer 解码后测量。
+struct AudioBitstreamOptions {
+    // 每条流最多解析多少个包；0 = 全部。帧头解析很便宜，默认全扫，
+    // 这样中途变采样率/声道/码率也能被抓到。
+    uint32_t max_packets_per_stream = 0;
+    // 是否在 E-AC-3 BSI 里识别 Dolby Atmos/JOC 标记
+    bool detect_atmos = true;
+};
+
 // 色彩与 HDR 元数据分析选项
 struct ColorHdrOptions {
     // 容器/码流层面拿不到 HDR 元数据时，是否解码首帧读取 AVFrame side data。
@@ -215,6 +228,11 @@ struct AnalysisOptions {
     // 需要把第一条音频流完整解码一遍（音频解码开销远小于视频），与码率/GOP 扫描同一次 demux。
     bool analyze_audio_qc = true;
     AudioQcOptions audio_qc_options;
+
+    // 音频位流参数（D1）：逐包解析 ADTS/LATM/AC-3/E-AC-3/Opus 帧头，与容器
+    // 声明比对，并识别 E-AC-3 的 Atmos/JOC。只读头，不解码，开销可忽略。
+    bool analyze_audio_bitstream = true;
+    AudioBitstreamOptions audio_bitstream_options;
 
     // 色彩与 HDR 元数据分析（primaries / transfer / matrix / range / bit depth /
     // chroma subsampling / mastering display / MaxCLL-MaxFALL / Dolby Vision）。

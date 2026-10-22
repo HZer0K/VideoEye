@@ -33,6 +33,129 @@ std::vector<model::DiagnosticIssue> CheckAudioRules(const model::QcRule& rule,
         }
         return issues;
     }
+    // ---------- 音频位流参数（core/analysis/quality/AudioBitstreamAnalyzer.h）----------
+    // 与下面的音频 QC 是**两条独立链路**：这组只读帧头，不需要解码成功。
+    if (rule.id == "audio.bitstream.container_mismatch" ||
+        rule.id == "audio.bitstream.header_invalid" ||
+        rule.id == "audio.bitstream.param_change" || rule.id == "audio.dialnorm.missing" ||
+        rule.id == "audio.dialnorm.mismatch") {
+        if (!result.audio_bitstream_analyzed) return issues;
+        const auto& bitstream = result.audio_bitstream;
+
+        auto stream_label = [](const model::AudioBitstreamStream& stream) {
+            return "流 #" + std::to_string(stream.stream_index) + "（" +
+                   model::ToString(stream.codec) + "）";
+        };
+
+        if (rule.id == "audio.bitstream.container_mismatch") {
+            double fields = 0.0;
+            std::string detail;
+            int stream_index = -1;
+            for (const auto& stream : bitstream.streams) {
+                if (!stream.container_mismatch) continue;
+                fields += static_cast<double>(stream.container_mismatch_fields);
+                if (detail.empty()) {
+                    stream_index = stream.stream_index;
+                    detail = stream_label(stream) + "：" +
+                             (stream.inconsistencies.empty() ? std::string("声明不一致")
+                                                             : stream.inconsistencies.front());
+                }
+            }
+            if (Triggered(rule, fields)) {
+                issues.push_back(make_issue(fields,
+                    detail + "（共 " + FormatValue(fields, 0) + " 项参数对不上）。",
+                    model::TimeRange::Global(), stream_index,
+                    static_cast<int>(fields)));
+            }
+            return issues;
+        }
+
+        if (rule.id == "audio.bitstream.header_invalid") {
+            int64_t parsed = 0;
+            int64_t invalid = 0;
+            for (const auto& stream : bitstream.streams) {
+                parsed += stream.parsed_packets;
+                invalid += stream.invalid_packets;
+            }
+            const int64_t total = parsed + invalid;
+            if (total <= 0) return issues;
+            const double percent = static_cast<double>(invalid) * 100.0 /
+                                   static_cast<double>(total);
+            if (Triggered(rule, percent)) {
+                std::string detail = std::to_string(invalid) + " / " + std::to_string(total) +
+                                     " 个音频包帧头解析失败（" + FormatValue(percent, 1) +
+                                     "%），阈值 " + ThresholdText(rule) + "。";
+                issues.push_back(make_issue(percent, detail, model::TimeRange::Global(), -1));
+            }
+            return issues;
+        }
+
+        if (rule.id == "audio.bitstream.param_change") {
+            double changed = 0.0;
+            std::string detail;
+            int stream_index = -1;
+            for (const auto& stream : bitstream.streams) {
+                if (!stream.params_changed_midstream) continue;
+                changed += 1.0;
+                if (detail.empty()) {
+                    stream_index = stream.stream_index;
+                    detail = stream_label(stream) + " 的参数在扫描中发生变化。";
+                }
+            }
+            if (Triggered(rule, changed)) {
+                issues.push_back(make_issue(changed,
+                    detail + "共 " + FormatValue(changed, 0) + " 条音频流受影响。",
+                    model::TimeRange::Global(), stream_index, static_cast<int>(changed)));
+            }
+            return issues;
+        }
+
+        if (rule.id == "audio.dialnorm.missing") {
+            // 只对 AC-3 / E-AC-3 判定：AAC/Opus 本身没有 dialnorm 字段，
+            // 把它们算成"缺失"是纯噪声。
+            double missing = 0.0;
+            std::string detail;
+            int stream_index = -1;
+            for (const auto& stream : bitstream.streams) {
+                const bool ac3_family = (stream.codec == model::AudioBitstreamCodec::Ac3 ||
+                                         stream.codec == model::AudioBitstreamCodec::Eac3);
+                if (!ac3_family || stream.has_dialnorm) continue;
+                if (stream.parsed_packets == 0) continue;
+                missing += 1.0;
+                if (detail.empty()) {
+                    stream_index = stream.stream_index;
+                    detail = stream_label(stream) + " 的头里没有 dialnorm。";
+                }
+            }
+            if (Triggered(rule, missing)) {
+                issues.push_back(make_issue(missing, detail, model::TimeRange::Global(),
+                                            stream_index, static_cast<int>(missing)));
+            }
+            return issues;
+        }
+
+        // audio.dialnorm.mismatch：需要"声明 + 实测"两方数据，没有实测响度就不判定。
+        if (!result.audio_qc.analyzed) return issues;
+        double worst = 0.0;
+        std::string detail;
+        int stream_index = -1;
+        for (const auto& stream : bitstream.streams) {
+            if (!stream.dialnorm_delta_available) continue;
+            const double magnitude = std::abs(stream.dialnorm_delta_lu);
+            if (magnitude <= worst) continue;
+            worst = magnitude;
+            stream_index = stream.stream_index;
+            detail = stream_label(stream) + " 声明 dialnorm " +
+                     std::to_string(stream.dialnorm_dbfs) + " dBFS，实测积分响度 " +
+                     FormatValue(result.audio_qc.integrated_lufs, 1) + " LUFS（差 " +
+                     FormatValue(stream.dialnorm_delta_lu, 1) + " LU）。";
+        }
+        if (Triggered(rule, worst)) {
+            issues.push_back(make_issue(worst, detail, model::TimeRange::Global(), stream_index));
+        }
+        return issues;
+    }
+
     // ---------- 音频 QC（core/analysis/quality/AudioQcAnalyzer.h，需解码音频）----------
     // 未跑过音频 QC（analyzed=false）时一律不判定，避免因为"没有数据"而误报。
     if (rule.id == "audio.loudness.target_high" || rule.id == "audio.loudness.target_low" ||

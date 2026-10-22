@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "core/domain/model/CeaCaptionInfo.h"
 #include "core/domain/model/DiagnosticIssue.h"
 
 namespace videoeye {
@@ -87,6 +88,12 @@ struct SubtitleCue {
     SubtitleFormat format = SubtitleFormat::Unknown;
     size_t char_count = 0;           // 可见字符数（用于阅读速度）
 
+    // 隐藏字幕专用：这条 cue 来自哪个 608 通道（1..4）或 708 服务（1..63）。
+    // 其它格式恒为 0。bilingual 判定、UI 分组、报告里的"服务层"都靠这两个字段，
+    // 不要塞进 text 里（那样 QC 规则又得解析字符串）。
+    int caption_channel = 0;
+    bool caption_708 = false;
+
     bool empty = false;              // 剥离标签后没有任何可见字符
     bool has_issue = false;
 
@@ -119,6 +126,14 @@ struct SubtitleStreamInfo {
     // 文本字幕是否已真正解析出 cue（图形字幕为 false，只给 metadata）
     bool parsed = false;
     std::string note;             // 降级/来源说明（如"图形字幕仅输出 metadata"）
+
+    // 隐藏字幕（CEA-608/708）的服务层统计。只有 ClosedCaption 流会填：
+    //   cc608 —— 出现过哪些 CC1..CC4 通道、各模式次数、XDS 条数；
+    //   cc708 —— 出现过哪些服务号（S1 主字幕 / S2 二语 ...）、DTVCC 丢包次数。
+    // 这两块是"有没有第二语言字幕轨""字幕是不是从中间开始丢包"的唯一证据来源，
+    // 靠 cue 文本本身看不出来。
+    Cea608Stats cc608;
+    Cea708Stats cc708;
 
     bool IsText() const { return kind == SubtitleKind::Text; }
 };

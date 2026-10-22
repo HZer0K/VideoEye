@@ -274,6 +274,7 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     assembler.FinalizeBitrateGop(pipeline.bitrate_gop(), pipeline.video_stream_index());
     assembler.FinalizeAudioQc(pipeline.audio_qc(), pipeline.audio_stream_index(),
                               audio_decoder_ready, audio_rate_changed);
+    assembler.FinalizeAudioBitstream(pipeline.audio_bitstream(), pipeline.audio_stream_index());
     assembler.FinalizeColorHdr(pipeline.color_hdr(), pipeline.color_video_stream_index());
     assembler.FinalizeSubtitle(pipeline.subtitle(), measured_duration);
     assembler.FinalizeTimecode(pipeline.timecode());

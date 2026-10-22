@@ -151,6 +151,44 @@ JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
         metrics.Set("loudness", loudness);
     }
 
+    // 音频位流参数（D1）：与 loudness 并列 —— 一个来自解码后的 PCM，一个来自帧头。
+    // 审核要对照的正是"声明 vs 实测"，分开放反而更好比对。
+    if (result.audio_bitstream_analyzed) {
+        JsonValue streams = JsonValue::MakeArray();
+        for (const auto& stream : result.audio_bitstream.streams) {
+            JsonValue node = JsonValue::MakeObject();
+            node.Set("stream_index", JNumber(static_cast<double>(stream.stream_index)));
+            node.Set("codec", JText(model::AudioBitstreamCodecCode(stream.codec)));
+            node.Set("profile", JText(stream.profile));
+            node.Set("sample_rate", JNumber(static_cast<double>(stream.sample_rate)));
+            node.Set("channels", JNumber(static_cast<double>(stream.channels)));
+            node.Set("container_sample_rate",
+                     JNumber(static_cast<double>(stream.container_sample_rate)));
+            node.Set("container_channels", JNumber(static_cast<double>(stream.container_channels)));
+            node.Set("bit_rate_kbps", JNumber(static_cast<double>(stream.bit_rate_kbps)));
+            node.Set("frame_count", JNumber(static_cast<double>(stream.frame_count)));
+            node.Set("invalid_packets", JNumber(static_cast<double>(stream.invalid_packets)));
+            node.Set("has_dialnorm", JsonValue(stream.has_dialnorm));
+            node.Set("dialnorm_dbfs", JNumber(static_cast<double>(stream.dialnorm_dbfs)));
+            if (stream.dialnorm_delta_available) {
+                node.Set("dialnorm_delta_lu", JNumber(stream.dialnorm_delta_lu));
+            }
+            node.Set("atmos_joc", JsonValue(stream.atmos_joc));
+            if (stream.atmos_joc) node.Set("atmos_source", JText(stream.atmos_source));
+            node.Set("vbr", JsonValue(stream.vbr));
+            node.Set("params_changed_midstream", JsonValue(stream.params_changed_midstream));
+            node.Set("container_mismatch", JsonValue(stream.container_mismatch));
+            if (!stream.note.empty()) node.Set("note", JText(stream.note));
+            JsonValue inconsistencies = JsonValue::MakeArray();
+            for (const std::string& text : stream.inconsistencies) {
+                inconsistencies.PushBack(JsonValue(text));
+            }
+            node.Set("inconsistencies", inconsistencies);
+            streams.PushBack(node);
+        }
+        metrics.Set("audio_bitstream", streams);
+    }
+
     if (result.color_hdr.analyzed) {
         JsonValue color = JsonValue::MakeObject();
         const auto& info = result.color_hdr.color;

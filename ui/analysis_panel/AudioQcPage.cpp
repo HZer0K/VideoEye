@@ -665,6 +665,102 @@ void AudioQcPage::RebuildMetadataTable() {
     add_row(tr("一致性问题"), meta.inconsistencies.empty()
                                  ? tr("无")
                                  : QString::fromStdString(meta.inconsistencies.front()));
+
+    // ---- 音频位流参数（D1）----
+    // 这些行来自**帧头**而不是 PCM，所以即使响度那一段因解码失败没有数据，
+    // 这里仍然有结论 —— 审核时"容器说 48k、码流其实是 44.1k"正是靠这几行看出来。
+    if (!result_.audio_bitstream_analyzed) return;
+    for (const auto& stream : result_.audio_bitstream.streams) {
+        const QString prefix = result_.audio_bitstream.streams.size() > 1
+                                   ? tr("位流 #%1 ").arg(stream.stream_index)
+                                   : tr("位流 ");
+        QString codec = QString::fromStdString(model::ToString(stream.codec));
+        if (!stream.profile.empty()) {
+            codec += QStringLiteral(" / ") + QString::fromStdString(stream.profile);
+        }
+        add_row(prefix + tr("编码"), codec);
+
+        if (stream.sample_rate > 0) {
+            QString rate = QString::number(stream.sample_rate) + tr(" Hz");
+            if (stream.container_sample_rate > 0 &&
+                stream.container_sample_rate != stream.sample_rate) {
+                rate += tr("（容器声明 %1 Hz）").arg(stream.container_sample_rate);
+            }
+            add_row(prefix + tr("采样率"), rate);
+        }
+        if (stream.channels > 0) {
+            QString channels = QString::number(stream.channels);
+            if (stream.acmod >= 0) {
+                channels += QStringLiteral(" — ") +
+                            QString::fromStdString(model::DescribeAcmod(stream.acmod,
+                                                                        stream.lfeon));
+            } else if (!stream.container_channel_layout.empty()) {
+                channels += QStringLiteral(" — ") +
+                            QString::fromStdString(stream.container_channel_layout);
+            }
+            if (stream.container_channels > 0 && stream.container_channels != stream.channels) {
+                channels += tr("（容器声明 %1）").arg(stream.container_channels);
+            }
+            add_row(prefix + tr("声道"), channels);
+        }
+        if (stream.bit_rate_kbps > 0) {
+            add_row(prefix + tr("码率"),
+                    QString::number(stream.bit_rate_kbps) + tr(" kbps") +
+                        (stream.vbr ? tr("（帧长变化，疑似 VBR）") : QString()));
+        }
+        if (stream.has_dialnorm) {
+            QString dialnorm = QString::number(stream.dialnorm_dbfs) + tr(" dBFS");
+            if (stream.dialnorm_delta_available) {
+                dialnorm += tr("（与实测响度差 %1 LU）")
+                                .arg(stream.dialnorm_delta_lu, 0, 'f', 1);
+            }
+            add_row(prefix + tr("dialnorm"), dialnorm);
+        } else if (stream.codec == model::AudioBitstreamCodec::Ac3 ||
+                   stream.codec == model::AudioBitstreamCodec::Eac3) {
+            add_row(prefix + tr("dialnorm"), tr("未声明"));
+        }
+        if (stream.eac3) {
+            QString substreams = stream.dependent_substream_count > 0
+                                     ? tr("%1 个从属子流（+%2 声道）")
+                                           .arg(stream.dependent_substream_count)
+                                           .arg(stream.dependent_channels)
+                                     : tr("无");
+            add_row(prefix + tr("E-AC-3 子流"), substreams);
+        }
+        if (stream.atmos_joc) {
+            QString atmos = tr("检出");
+            if (!stream.atmos_source.empty()) {
+                atmos += QStringLiteral("（") + QString::fromStdString(stream.atmos_source) +
+                         QStringLiteral("）");
+            }
+            add_row(prefix + tr("Atmos / JOC"), atmos);
+        }
+        if (stream.codec == model::AudioBitstreamCodec::Opus && stream.opus_head) {
+            QString opus = tr("pre-skip %1 样本 / 增益 %2 dB / 原始采样率 %3 Hz")
+                               .arg(stream.pre_skip)
+                               .arg(stream.OutputGainDb(), 0, 'f', 2)
+                               .arg(stream.input_sample_rate);
+            if (stream.opus_mode >= 0) {
+                opus += tr(" / %1 %2")
+                            .arg(QString::fromStdString(model::OpusModeName(stream.opus_mode)))
+                            .arg(QString::fromStdString(
+                                model::OpusBandwidthName(stream.opus_bandwidth)));
+            }
+            add_row(prefix + tr("Opus"), opus);
+        }
+        add_row(prefix + tr("帧头解析"),
+                tr("%1 个包 / %2 帧，失败 %3 个")
+                    .arg(static_cast<qlonglong>(stream.parsed_packets))
+                    .arg(static_cast<qlonglong>(stream.frame_count))
+                    .arg(static_cast<qlonglong>(stream.invalid_packets)));
+        if (!stream.inconsistencies.empty()) {
+            add_row(prefix + tr("不一致"),
+                    QString::fromStdString(stream.inconsistencies.front()));
+        }
+        if (!stream.note.empty()) {
+            add_row(prefix + tr("说明"), QString::fromStdString(stream.note));
+        }
+    }
 }
 
 void AudioQcPage::OnExportCsv() {
@@ -709,6 +805,8 @@ void AudioQcPage::FillScanOptions(videoeye::AnalysisOptions& options) {
     ApplyOptionsFromUi();
     options.audio_qc_options = options_;
     options.analyze_audio_qc = true;
+    // 位流参数与解码无关，用户在这页点"开始分析"时一并发起，避免两套入口。
+    options.analyze_audio_bitstream = true;
 }
 
 int AudioQcPage::IssueCount() const {

@@ -46,9 +46,9 @@ AnalysisPanel「字幕 / 辅助数据」页 + PlayerPanel 时间轴旁的 SMPTE 
 | ASS / SSA | ✅ 解析 cue | `Dialogue:` 行，剥离 `{覆盖指令}` 与 `\N` |
 | WebVTT | ✅ 解析 cue | 跳过 `WEBVTT` 头与 `NOTE/STYLE/REGION` 块，剥离 `<v>` `<i>` 标签 |
 | MOV/MP4 tx3g | ✅ 解析 cue | 样本前 2 字节是文本长度，末尾样式 box 忽略 |
-| CEA-608 | ✅ 基础可见文本 | 控制码对跳过，北美基础字符集映射；完整服务层状态机待第二阶段 |
-| CEA-708 | ⚠️ metadata + 包时间线 | DTVCC 数据包化需要服务层状态机 |
-| DVB / DVD / PGS / XSUB | ⚠️ metadata + 包时间线 | 图形字幕，bitmap preview 待第二阶段 |
+| CEA-608 | ✅ 服务层状态机 | CC1-CC4 四通道；pop-on（RCL/EOC）、paint-on（RDC）、roll-up（RU2/3/4 + CR）；PAC 行定位、mid-row、特殊/扩展字符、EDM/ENM/DER/BS；XDS 单独计数不进文本 |
+| CEA-708 | ✅ DTVCC 解码 | cc_data 三层解包（三元组 → DTVCC 包 → service block）；C0/C1 命令（DF0-7/DLC/DLM/SPL/SWA/SPA/SPC/DLY/RST/HIDE/FF/CR/BS）、G0/G1/EXT1 字符；按服务号产出 cue，统计丢包 |
+| DVB / DVD / PGS / XSUB | ⚠️ metadata + 包时间线 | 图形字幕，只做流级 metadata 与时间线；**不做 OCR / 像素合成**（边界见 §2.5） |
 
 ### 2.2 检查项与严重度
 
@@ -67,6 +67,68 @@ AnalysisPanel「字幕 / 辅助数据」页 + PlayerPanel 时间轴旁的 SMPTE 
 
 阈值来源：`SubtitleOptions` 是分析侧默认值，**扫描前会从「规则与阈值」页同步一次**
 （`AnalysisPanel::SyncSubtitleThresholdsFromRules`），避免两处阈值各说各话。
+
+### 2.3 隐藏字幕状态机（D2）
+
+实现在 `core/analysis/diagnostics/CeaCaptionDecoder.h`（纯 C++17，三个类）：
+
+| 类 | 职责 |
+| --- | --- |
+| `Cea608Decoder` | 一个字节对进、cue 出。按场（field 1/2）分 CC1-CC4 **四个独立通道**，每通道各有"显示 / 预装载"两块显存与三种模式 |
+| `Cea708Decoder` | 一个 cc_data 字节对流进。拼 DTVCC 包（sequence 2 bit + size 6 bit）→ 拆 service block（含扩展服务号）→ 跑 C0/C1 命令与 G0/G1 字符 |
+| `CeaCaptionDecoder` | 门面。吃 MP4 的 2 字节对或 MPEG-2 的 cc_data 三元组，按 cc_type 分流，合并两个解码器的 cue 并按时间排序 |
+
+为什么必须是有状态的解码器，而不是"抽可见字符"：
+
+| 现象 | 旧实现（拼可见字符） | 状态机 |
+| --- | --- | --- |
+| pop-on 字幕 | 预装载时就当成已显示，**时间提前 0.5–1 s** | 只有 EOC 才上屏 |
+| roll-up 滚动 | 旧行不擦除，文本越积越长 | CR 时按 2/3/4 行窗口滚动 |
+| CC1 + CC2 双语 | 串成一句乱码 | 按通道位（控制码 bit3）分开，各自成 cue |
+| EDM / ENM | 忽略 → 上一句刚走、下一句已在显示 | 各自只清对应显存 |
+| 708 | 完全不解 | 按服务号（S1 主字幕 / S2 二语）分别产出 |
+
+**cue 的切分口径**（两块显存 + 待提交状态）：
+
+- 写入只更新缓冲，记下"画面开始变化"的时刻（`pending_ts`）；
+- 只在**结构事件**（CR / EDM / EOC / ENM / 模式切换 / 收尾）提交，提交时先按
+  `pending_ts` 结束上一条、再按同一时刻开新一条；
+- 不在每次按键提交 —— 否则 paint-on 逐字符输入会产出 `O` / `ON` / `ONE` 三条 cue。
+
+### 2.4 隐藏字幕的服务层结论
+
+`SubtitleStreamInfo` 多了两块统计（只对 ClosedCaption 流填充），并汇总进流表的"说明"列：
+
+- `cc608`：`channel_mask`（CC1..CC4 位图）、pop-on / paint-on / roll-up 次数、PAC / mid-row /
+  特殊字符 / 扩展字符计数、XDS 条数、最大行号；
+- `cc708`：出现过的服务号列表、DTVCC 包数 / 服务块数、**包序号跳变次数**（丢包）、窗口数。
+
+配套两条规则：
+
+| 问题 | 规则 id | 级别 | 触发条件 |
+| --- | --- | --- | --- |
+| 隐藏字幕流没有解出文本 | `subtitle.cc.no_text` | Warning | 有 CC 流但 `cue_count == 0` |
+| DTVCC 包序号跳变 | `subtitle.cc.dtvcc_loss` | Warning | 708 的 `sequence_gap_count > 0` |
+
+> 双语节目里 CC1 与 CC2、708 的 S1 与 S2 是**各自独立的时间线**，所以 cue 校验按
+> `(流, caption_channel)` 分组 —— 按流整体校验会把合法的双语重叠误判成 `subtitle.cue_overlap`。
+
+### 2.5 图形字幕的边界（D3 结论）
+
+**结论：不做 OCR，也不做像素级合成分析。** 现状与理由是：
+
+1. 依赖边界：`vcpkg.json` 只有 `qtbase`（+ 测试期 `gtest`），没有任何 OCR 引擎。
+   引入 Tesseract 意味着几十 MB 模型、几十毫秒/帧的推理、以及一套新的准确率口径 ——
+   对"交付审核"这个场景，收益远小于把误报解释清楚的成本。
+2. 判定不会更可靠：图形字幕的实质缺陷（缺行、错位、超安全区）用 OCR 也判不准；
+   而能做准的那几件事（是否为空 presentation、时长是否为零、窗口是否越界）
+   **根本不需要解码像素**，只要读 PGS/DVB 的段头即可。
+3. 现有产出已经够定位：流级 metadata（编码 / 语言 / forced / 包数 / 字节数）+ 包时间线，
+   足够回答"这条轨在不在、覆盖多长、是不是 forced"。
+
+如果将来要在这条边界内加值，**唯一推荐的增量**是按段解析 PGS/DVB 头（`PCS` / `WDS` /
+`PDS`），产出"窗口数 / 对象数 / 画面尺寸 / 空 presentation / 零时长"这几项 ——
+纯字节解析、零解码、零新依赖。当前**未实现**，不要把它当成已有能力。
 
 ## 3. 时码与章节
 
@@ -156,6 +218,7 @@ codec tag、handler name、language tag、包数与字节数。
 | 测试 | 覆盖 |
 | --- | --- |
 | `tests/unit/test_subtitle_timecode_aux.cpp` | SRT/WebVTT/ASS 解析、tx3g 包载荷、CEA-608、重叠/空/倒序/时长窗口/越界校验、时码换算与 tmcd 首帧时码、drop-frame 合法性、SCTE-35 splice_insert + segmentation + CRC |
+| `tests/unit/test_cea_caption_decoder.cpp` | 608：pop-on 上屏时机（不提前）/ roll-up 每画面一条 cue / CC1-CC2 分离 / XDS 不进文本 / 特殊与扩展字符（含 UTF-8 列换算）/ ENM 与收尾；708：service 1 文本与清窗口、多服务分离、扩展服务号、包序号跳变、`cc_valid=0` 丢弃、608+708 混流按时间排序 |
 | `tests/unit/test_aux_qc_rules.cpp` | 规则 id 是否齐全、重叠/空字幕级别是否为 Warning、倒序是否为 Error、未分析时不误报、时码缺失与 drop-frame 不符、章节重叠、SCTE-35 缺 duration |
 
 验收对应关系：

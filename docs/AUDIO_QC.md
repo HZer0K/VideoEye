@@ -135,3 +135,46 @@ ctest --preset test-release -R "AudioQc" --output-on-failure
 - 音频参数（采样率/声道数）中途变化时丢弃变化后的帧，并在 `notes` 里提示。
 - 短期响度与 LRA 需要至少 3 s 素材，短片会在 `notes` 里注明。
 - 真峰值采用与 libebur128 相同的插值核，属于"标准推荐实现"，与硬件表的差异通常在 0.1 dB 内。
+
+## 8. 音频位流参数（D1，不解码）
+
+响度/真峰值都是**解码后**从 PCM 算的，但交付里另一半问题出在**码流头**上：
+容器说 48 kHz、ADTS 头其实是 44.1 kHz；dialnorm 声明 -27 而实测 -20；
+E-AC-3 里到底有没有 Atmos/JOC。这些不需要解码就能判定。
+
+| 层 | 文件 | 依赖 |
+| --- | --- | --- |
+| 结果模型 | `core/domain/model/AudioBitstreamInfo.h` | 纯 stdlib |
+| 帧头解析 | `core/analysis/codec/AudioBitstreamParser.h` | 纯 stdlib |
+| FFmpeg 侧逐包登记 | `core/analysis/quality/AudioBitstreamAnalyzer.h` | avformat / avcodec（只读码流参数，不解码） |
+
+解析范围：ADTS（MPEG 版本 / profile / 采样率 / 声道配置 / 帧长 / 每帧 raw_data_block 数）、
+LATM/LOAS（StreamMuxConfig）、AC-3（fscod/frmsizecod/bsid/bsmod/acmod/lfeon/dialnorm/码率）、
+E-AC-3（strmtyp/substreamid/acmod/dialnorm/chanmap/从属子流/Atmos 标记）、
+Opus（OpusHead 的 pre-skip / output gain / mapping family + 逐包 TOC 的 mode/带宽/帧长）、
+AAC AudioSpecificConfig（含 HE-AAC 的扩展采样率，避免比容器小一半）。
+
+规则：
+
+| 问题 | 规则 id | 级别 | 判据 |
+| --- | --- | --- | --- |
+| 位流参数与容器声明不一致 | `audio.bitstream.container_mismatch` | Error | 采样率/声道任一项对不上（AAC channel_config=0 的 PCE、E-AC-3 未解析到的从属子流除外） |
+| 帧头解析失败比例过高 | `audio.bitstream.header_invalid` | Warning | `invalid / (invalid + parsed) > 5%` |
+| 位流参数中途改变 | `audio.bitstream.param_change` | Warning | 扫描中采样率/声道/码率发生变化 |
+| 缺少 dialnorm | `audio.dialnorm.missing` | Info | 仅 AC-3/E-AC-3；AAC/Opus 本来没有该字段，不算缺失 |
+| dialnorm 与实测响度偏差过大 | `audio.dialnorm.mismatch` | Warning | `\|dialnorm - 实测积分响度\| > 3 LU`（需音频 QC 同时跑过） |
+
+设计要点：
+
+- **与音频 QC 解耦**：这条链路不碰解码器，所以缺解码库/专有编码时仍然有结论；
+- 结构化计数优先：规则读 `container_mismatch_fields` / `params_changed_midstream` /
+  `dialnorm_delta_available` 这些字段，不靠匹配中文说明串；
+- Atmos/JOC 只在命中 `joc` 标记时报告，并在 `atmos_source` 写明来源，**不声称**规范级解析。
+
+测试：`AudioBitstreamParserTests`（19 例，逐位构造码流头）、`AudioBitstreamRulesTests`（8 例）。
+
+## 9. 已知边界（D1）
+
+- 多音频轨时，"dialnorm vs 实测响度"只对 `audio_stream_index`（主音轨）计算；其余轨只有声明值。
+- 音频统计（响度/PCM）本身仍只覆盖第一条音轨，这是 §7 的老边界，未因 D1 改变。
+- 不校验 CRC、不解析 payload，因此"帧头正常但载荷损坏"不在这一层的能力范围内。

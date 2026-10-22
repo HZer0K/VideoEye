@@ -620,6 +620,18 @@ void SubtitleAnalyzer::ValidateCues(std::vector<model::SubtitleCue>& cues,
 void SubtitleAnalyzer::Reset(const SubtitleOptions& options) {
     options_ = options;
     result_ = model::SubtitleAnalysisResult{};
+    caption_slots_.clear();
+}
+
+SubtitleAnalyzer::CaptionSlot* SubtitleAnalyzer::FindOrCreateCaptionSlot(int stream_index) {
+    for (CaptionSlot& slot : caption_slots_) {
+        if (slot.stream_index == stream_index) return &slot;
+    }
+    CaptionSlot slot;
+    slot.stream_index = stream_index;
+    slot.decoder.Reset();
+    caption_slots_.push_back(std::move(slot));
+    return &caption_slots_.back();
 }
 
 void SubtitleAnalyzer::RegisterStreams(const AVFormatContext* fmt) {
@@ -679,12 +691,12 @@ void SubtitleAnalyzer::RegisterStreams(const AVFormatContext* fmt) {
         }
 
         if (info.kind == model::SubtitleKind::Bitmap) {
-            info.note = "图形字幕：第一阶段只输出流 metadata 与包时间线（预览待第二阶段）";
+            info.note = "图形字幕：只输出流 metadata 与包时间线（不做 OCR / 像素级合成分析，见 D3 边界）";
             ++result_.bitmap_stream_count;
         } else if (info.kind == model::SubtitleKind::ClosedCaption) {
             info.note = (info.format == model::SubtitleFormat::Cea708)
-                            ? "CEA-708：只输出流 metadata 与包时间线（DTVCC 解码待第二阶段）"
-                            : "CEA-608：抽取可见文本；完整服务层状态机待第二阶段";
+                            ? "CEA-708：DTVCC 按服务解码（文本与起止时间来自上屏/擦除事件）"
+                            : "CEA-608：按 CC1-CC4 通道解码（pop-on/paint-on/roll-up 状态机）";
             ++result_.text_stream_count;
         } else {
             ++result_.text_stream_count;
@@ -722,11 +734,28 @@ void SubtitleAnalyzer::OnPacket(const AVPacket* pkt, const AVStream* stream) {
         if (end > info->duration_seconds) info->duration_seconds = end;
     }
 
-    const bool is_text = (info->kind == model::SubtitleKind::Text) ||
-                         (info->kind == model::SubtitleKind::ClosedCaption &&
-                          info->format == model::SubtitleFormat::Cea608);
-    if (!options_.parse_text_cues || !is_text) return;
+    const bool is_cc = (info->kind == model::SubtitleKind::ClosedCaption);
+    if (!options_.parse_text_cues) return;
     if (info->cue_count >= static_cast<int>(options_.max_cues_per_stream)) return;
+
+    // 隐藏字幕不能按包解析：608 是"显存状态机"（预装载/上屏/滚动），708 是
+    // "DTVCC 包 + service block"。这里只把 cc_data 喂给解码器，cue 在 Finish 时定稿 ——
+    // 因为只有扫完整段才知道最后一句什么时候结束。
+    if (is_cc) {
+        CaptionSlot* slot = FindOrCreateCaptionSlot(info->stream_index);
+        const size_t size = static_cast<size_t>(pkt->size);
+        if (pkt->data == nullptr || size == 0) return;
+        // 三元组（MPEG-2 cc_data / MP4 c708）与 2 字节对（MOV c608 样本）靠长度区分：
+        // 3 的倍数按三元组解，其余按场 1 的字节对解。FFmpeg 的 eia_608 解码器同口径。
+        if (size >= 3 && size % 3 == 0) {
+            slot->decoder.PushTriplets(pkt->data, size, ts >= 0.0 ? ts : 0.0);
+        } else {
+            slot->decoder.PushPairSample(pkt->data, size, ts >= 0.0 ? ts : 0.0);
+        }
+        info->parsed = true;
+        return;
+    }
+    if (info->kind != model::SubtitleKind::Text) return;
 
     ParsedSubtitleCue parsed;
     if (!ParsePacketPayload(static_cast<int>(stream->codecpar->codec_id), pkt->data,
@@ -755,22 +784,119 @@ void SubtitleAnalyzer::OnPacket(const AVPacket* pkt, const AVStream* stream) {
     result_.cues.push_back(std::move(cue));
 }
 
+void SubtitleAnalyzer::AppendCaptionCues(CaptionSlot& slot, double end_seconds) {
+    slot.decoder.Finish(end_seconds);
+    const model::CeaCaptionResult& captions = slot.decoder.result();
+
+    model::SubtitleStreamInfo* info = nullptr;
+    for (model::SubtitleStreamInfo& stream : result_.streams) {
+        if (stream.stream_index == slot.stream_index) {
+            info = &stream;
+            break;
+        }
+    }
+    if (info == nullptr) return;
+
+    info->cc608 = captions.cc608;
+    info->cc708 = captions.cc708;
+
+    // 服务层摘要放在 note 最前面：流表只有"说明"一列能承载它，而"这条流里到底有
+    // 哪几个通道/服务、708 有没有丢包"恰恰是审核最先要看的结论。
+    std::string summary;
+    if (captions.cc608.Any()) {
+        summary = "CEA-608 " + captions.cc608.ChannelText() + "（POP-ON " +
+                  std::to_string(captions.cc608.pop_on_count) + " / PAINT-ON " +
+                  std::to_string(captions.cc608.paint_on_count) + " / ROLL-UP " +
+                  std::to_string(captions.cc608.roll_up_count) + "，XDS " +
+                  std::to_string(captions.cc608.xds_count) + " 条）";
+    }
+    if (captions.cc708.Any()) {
+        if (!summary.empty()) summary += "；";
+        summary += "CEA-708 " + captions.cc708.ServiceText() + "（DTVCC 包 " +
+                   std::to_string(captions.cc708.packet_count) + "，服务块 " +
+                   std::to_string(captions.cc708.service_block_count) + "，丢包 " +
+                   std::to_string(captions.cc708.sequence_gap_count) + "，窗口 " +
+                   std::to_string(captions.cc708.window_count) + "）";
+    }
+    if (!summary.empty()) {
+        info->note = info->note.empty() ? summary : (summary + "｜" + info->note);
+    }
+    // 解码器的说明追加到流 note 上：既有"图形字幕仅 metadata"那类降级说明，
+    // 也有"DTVCC 包序号跳变"这种会影响审核结论的告警，两者都要能看到。
+    auto append_note = [info](const std::string& note) {
+        if (note.empty()) return;
+        info->note = info->note.empty() ? note : (info->note + "；" + note);
+    };
+    append_note(captions.cc608.note);
+    append_note(captions.cc708.note);
+
+    const int limit = static_cast<int>(options_.max_cues_per_stream);
+    for (const model::CaptionCue& caption : captions.cues) {
+        if (info->cue_count >= limit) break;
+        model::SubtitleCue cue;
+        cue.index = info->cue_count;
+        cue.stream_index = info->stream_index;
+        cue.cue_number = -1;
+        cue.start_seconds = caption.start_seconds;
+        cue.end_seconds = caption.end_seconds;
+        cue.duration_seconds =
+            (caption.end_seconds > caption.start_seconds)
+                ? (caption.end_seconds - caption.start_seconds)
+                : 0.0;
+        cue.text = caption.text;
+        cue.raw_text = caption.text;
+        cue.language = info->language;
+        cue.format = caption.kind_708 ? model::SubtitleFormat::Cea708
+                                      : model::SubtitleFormat::Cea608;
+        cue.caption_channel = caption.channel;
+        cue.caption_708 = caption.kind_708;
+        cue.char_count = CountVisibleChars(cue.text);
+        cue.empty = (cue.char_count == 0);
+        ++info->cue_count;
+        result_.cues.push_back(std::move(cue));
+    }
+    info->parsed = (info->cue_count > 0);
+}
+
 void SubtitleAnalyzer::Finish(double media_duration_seconds) {
+    // 隐藏字幕先定稿：708 的 cue 起止只能靠"上屏/擦除"事件推，收尾时才知道最后一句
+    // 何时结束（用媒体时长兜底；没有时长就沿用最后一条 cue 的 end）。
+    double caption_end = media_duration_seconds;
+    if (caption_end <= 0.0 && !result_.cues.empty()) {
+        caption_end = result_.cues.back().end_seconds;
+    }
+    for (CaptionSlot& slot : caption_slots_) {
+        AppendCaptionCues(slot, caption_end);
+    }
+
     // 按流分组校验（包是交错来的，同一流的 cue 在数组里并不连续）
+    //
+    // 隐藏字幕还要再按通道/服务细分：CC1 与 CC2、708 的 S1 与 S2 是**各自独立的时间线**
+    // （双语节目本来就同时上屏），混在一起校验会把合法的双语重叠判成 Overlap、
+    // 把两条轨的停留时长算成一条的超长。caption_channel 为 0 的普通文本轨不受影响。
     for (const model::SubtitleStreamInfo& stream : result_.streams) {
-        std::vector<model::SubtitleCue> group;
-        std::vector<size_t> positions;
-        for (size_t i = 0; i < result_.cues.size(); ++i) {
-            if (result_.cues[i].stream_index == stream.stream_index) {
+        std::vector<int> channels;
+        for (const model::SubtitleCue& cue : result_.cues) {
+            if (cue.stream_index != stream.stream_index) continue;
+            if (std::find(channels.begin(), channels.end(), cue.caption_channel) == channels.end()) {
+                channels.push_back(cue.caption_channel);
+            }
+        }
+        for (int channel : channels) {
+            std::vector<model::SubtitleCue> group;
+            std::vector<size_t> positions;
+            for (size_t i = 0; i < result_.cues.size(); ++i) {
+                if (result_.cues[i].stream_index != stream.stream_index) continue;
+                if (result_.cues[i].caption_channel != channel) continue;
                 group.push_back(result_.cues[i]);
                 positions.push_back(i);
             }
-        }
-        if (group.empty()) continue;
+            if (group.empty()) continue;
 
-        ValidateCues(group, result_.issues, options_, media_duration_seconds);
-        for (size_t i = 0; i < group.size(); ++i) {
-            result_.cues[positions[i]] = group[i];
+            ValidateCues(group, result_.issues, options_, media_duration_seconds);
+            for (size_t i = 0; i < group.size(); ++i) {
+                result_.cues[positions[i]] = group[i];
+            }
         }
     }
 

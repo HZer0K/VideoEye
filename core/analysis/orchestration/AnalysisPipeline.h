@@ -36,6 +36,7 @@
 #include "core/analysis/diagnostics/SubtitleAnalyzer.h"
 #include "core/analysis/diagnostics/TimecodeAnalyzer.h"
 #include "core/analysis/diagnostics/TimelineAnalyzer.h"
+#include "core/analysis/quality/AudioBitstreamAnalyzer.h"
 #include "core/analysis/quality/AudioQcAnalyzer.h"
 #include "core/analysis/quality/BitrateGopAnalyzer.h"
 #include "core/analysis/quality/ColorHdrAnalyzer.h"
@@ -178,6 +179,7 @@ public:
     ColorHdrAnalyzer& color_hdr() { return color_hdr_; }
     BitrateGopAnalyzer& bitrate_gop() { return bitrate_gop_; }
     AudioQcAnalyzer& audio_qc() { return audio_qc_; }
+    AudioBitstreamAnalyzer& audio_bitstream() { return audio_bitstream_; }
 
     int video_stream_index() const { return video_stream_index_; }
     int audio_stream_index() const { return audio_stream_index_; }
@@ -210,6 +212,8 @@ private:
     ColorHdrAnalyzer color_hdr_;
     BitrateGopAnalyzer bitrate_gop_;
     AudioQcAnalyzer audio_qc_;
+    // 音频位流参数（D1）：只读帧头不解码，所以不需要 probe，也没有 ready 概念。
+    AudioBitstreamAnalyzer audio_bitstream_;
 
     // 上面三个维度各自要开的解码通路（RAII，见各自 Release）
     ColorFrameProbe color_probe_;

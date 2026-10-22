@@ -5,10 +5,10 @@
 // 支持范围（按交付审核的实际需求排的优先级）:
 //   * 文本字幕 SRT / ASS-SSA / WebVTT / MOV tx3g：解析 cue 的起止时间，
 //     检查重叠、空字幕、过短/过长、时间倒序、阅读速度；
-//   * CEA-608/708：第一阶段抽可见文本 + 输出包时间线（708 的 DTVCC 数据包化
-//     需要完整的服务层状态机，留到第二阶段）；
-//   * 图形字幕（DVB / DVD / PGS）：第一阶段只输出流 metadata 与包时间线，
-//     第二阶段再做 bitmap preview。
+//   * CEA-608/708：走 CeaCaptionDecoder 的**服务层状态机**（D2）——608 分 CC1-CC4
+//     四个通道、pop-on/paint-on/roll-up 三种模式，708 按 DTVCC 包解到每个服务，
+//     产出带真实起止时间的 cue，按通道/服务分别归属；
+//   * 图形字幕（DVB / DVD / PGS）：只输出流 metadata 与包时间线（不做 OCR，见 D3 边界）。
 //
 // 依赖边界:
 //   - 头文件只前向声明 FFmpeg 类型，纯文本解析全是静态函数（单测直接调用）；
@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "core/analysis/diagnostics/CeaCaptionDecoder.h"
 #include "core/domain/model/SubtitleCueInfo.h"
 #include "core/analysis/AnalysisOptions.h"
 
@@ -78,6 +79,8 @@ public:
 
     // CEA-608：把字节对里的可见字符抽出来（控制码对跳过）。
     // 只做基础北美字符集映射，802/708 的扩展字符集不处理。
+    // ⚠️ 这是 D2 之前的旧口径，保留给"整包即文本"的兜底路径与既有单测；
+    //    正式的隐藏字幕分析走 CeaCaptionDecoder（有状态机，能分通道/服务）。
     static std::string DecodeCea608Field(const uint8_t* data, size_t size);
 
     // 校验一组同流 cue（按出现顺序）。problem 追加到 issues，并回填 cue.has_issue。
@@ -90,8 +93,19 @@ public:
     static size_t CountVisibleChars(const std::string& text);
 
 private:
+    // 每条隐藏字幕流一个解码器：多语言节目里 c608 与 c708 可能是两条独立轨，
+    // 共用一份状态机必然把两条流的文本搅在一起。
+    struct CaptionSlot {
+        int stream_index = -1;
+        CeaCaptionDecoder decoder;
+    };
+    CaptionSlot* FindOrCreateCaptionSlot(int stream_index);
+    // 把 decoder 产出的 cue 转成通用 SubtitleCue，挂到流上（含通道/服务归属）
+    void AppendCaptionCues(CaptionSlot& slot, double end_seconds);
+
     SubtitleOptions options_;
     model::SubtitleAnalysisResult result_;
+    std::vector<CaptionSlot> caption_slots_;
 };
 
 }  // namespace videoeye
