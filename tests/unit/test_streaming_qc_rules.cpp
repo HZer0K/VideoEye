@@ -214,4 +214,57 @@ TEST(StreamingQcRulesTest, DefaultRulesContainStreamingFamily) {
     EXPECT_NE(nullptr, model::FindQcRule(rules, model::StreamingIssueCode::kDashLiveSegmentCountUnknown));
     EXPECT_NE(nullptr, model::FindQcRule(rules, model::StreamingIssueCode::kHlsLiveMissingMediaSequence));
     EXPECT_NE(nullptr, model::FindQcRule(rules, model::StreamingIssueCode::kSegmentEvictedLiveWindow));
+    // 业务时间轴（广告/DVR/快进档）与 DASH 描述符（DRM/对时/事件/角色/强制扩展）：
+    // 分析器都产出了，规则表漏注册就等于白算
+    for (const char* code : {model::StreamingIssueCode::kHlsDateRangeOpenEnded,
+                             model::StreamingIssueCode::kHlsDateRangeInvalidDate,
+                             model::StreamingIssueCode::kHlsProgramDateTimeInvalid,
+                             model::StreamingIssueCode::kHlsProgramDateTimeDrift,
+                             model::StreamingIssueCode::kHlsIframeVariantIncomplete,
+                             model::StreamingIssueCode::kHlsStartOffsetOutOfRange,
+                             model::StreamingIssueCode::kHlsDeltaUpdateWithoutSequence,
+                             model::StreamingIssueCode::kDashDrmContentProtection,
+                             model::StreamingIssueCode::kDashContentProtectionMissingKeyId,
+                             model::StreamingIssueCode::kDashContentProtectionUnknownScheme,
+                             model::StreamingIssueCode::kDashLiveMissingUtcTiming,
+                             model::StreamingIssueCode::kDashUtcTimingInvalid,
+                             model::StreamingIssueCode::kDashEventStream,
+                             model::StreamingIssueCode::kDashEventStreamInvalid,
+                             model::StreamingIssueCode::kDashMissingRole,
+                             model::StreamingIssueCode::kDashEssentialProperty,
+                             model::StreamingIssueCode::kDashEssentialPropertyUnknown}) {
+        EXPECT_TRUE(model::FindQcRule(rules, code) != nullptr) << "规则表里漏了 " << code;
+    }
+}
+
+// ---------------- 广告标记开口：SCTE-35 决定级别 ----------------
+
+TEST(StreamingQcRulesTest, OpenEndedScte35MarkerEscalatesToWarning) {
+    const char* playlist = "#EXTM3U\n"
+                           "#EXT-X-TARGETDURATION:4\n"
+                           "#EXTINF:4.000,\n"
+                           "seg0.ts\n"
+                           "#EXT-X-DATERANGE:ID=\"ad1\",START-DATE=\"2026-01-01T00:00:00Z\",SCTE35-OUT=0xFC30\n"
+                           "#EXTINF:4.000,\n"
+                           "seg1.ts\n"
+                           "#EXT-X-ENDLIST\n";
+
+    model::AnalysisResult result;
+    result.file_path = "ads.m3u8";
+    result.file_extension = "m3u8";
+    result.container_format = "hls";
+    result.streaming_analyzed = true;
+
+    videoeye::HlsManifestAnalyzer hls;
+    model::StreamingPackageResult& pkg = result.streaming_package;
+    pkg.manifest_path = "ads.m3u8";
+    ASSERT_TRUE(hls.ParseText(playlist, ".", pkg));
+    hls.Validate(pkg);
+
+    videoeye::QcRuleEngine engine;
+    model::DiagnosticIssue issue;
+    const model::QcReport report = engine.Evaluate(result);
+    ASSERT_TRUE(HasIssue(report, model::StreamingIssueCode::kHlsDateRangeOpenEnded, &issue));
+    EXPECT_EQ(model::IssueSeverity::Warning, issue.severity)
+        << "带 SCTE-35 的开口广告位比普通章节严重";
 }

@@ -671,6 +671,20 @@ videoeye_add_test(test_streaming_package
 add_test(NAME StreamingPackageTests COMMAND test_streaming_package)
 
 # =================================================
+# 测试 18c：HLS / DASH 的业务语义标签（广告 / 墙钟 / 快进档 / DRM / 事件流）
+# 说明: 与 test_streaming_package 分工 —— 那份守"分片与码率阶梯"，这份守
+#       "时间轴与业务标记"（EXT-X-DATERANGE / PROGRAM-DATE-TIME / I-FRAME-STREAM-INF /
+#       START / SKIP，以及 DASH 的 ContentProtection / UTCTiming / EventStream /
+#       Role / EssentialProperty）。纯文本解析，不需要任何媒体文件。
+# =================================================
+videoeye_add_test(test_streaming_descriptors
+    unit/test_streaming_descriptors.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/streaming/HlsManifestAnalyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/streaming/DashManifestAnalyzer.cpp
+)
+add_test(NAME StreamingDescriptorTests COMMAND test_streaming_descriptors)
+
+# =================================================
 # 测试 18b：AnalysisEngine 的失败终态一致性（复查 P2）
 # 说明: 断言失败分支把 scan_status 改成 Failed —— 它的默认值是 Complete，
 #       只发 on_failed 不动状态会让"回调说失败、结果对象说完成"同时成立。
@@ -705,6 +719,17 @@ videoeye_add_test(test_container_ts_qc_rules
 )
 target_link_libraries(test_container_ts_qc_rules PRIVATE VideoEyeAnalysis)
 add_test(NAME ContainerTsQcRulesTests COMMAND test_container_ts_qc_rules)
+
+# =================================================
+# 测试 19d：MPEG-TS PES 载荷级（最长无 IDR / PID 断流）
+# 说明: 只读 PES 头看不出"一路没有 IDR"和"某个 PID 中途断了"。样本是手工构造的
+#       TS（PAT + PMT + 视频/音频 PES 序列），不需要真实媒体文件。
+# =================================================
+videoeye_add_test(test_ts_pes_payload
+    unit/test_ts_pes_payload.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/TsStructureAnalyzer.cpp
+)
+add_test(NAME TsPesPayloadTests COMMAND test_ts_pes_payload)
 
 # =================================================
 # 测试 19c：AVI / FLV / ASF / OGG 容器级 QC 规则

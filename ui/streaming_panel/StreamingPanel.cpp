@@ -197,6 +197,23 @@ void StreamingPanel::UpdateSummary(const model::StreamingPackageResult& result) 
     if (result.truncated) {
         text += tr(" | 输出已按上限截断");
     }
+    // 加密 / 广告标记 / 快进档：这三样决定了"这份清单能做哪些业务"，
+    // 摘要里不写的话，用户只能从结构树里一条条点开看。
+    if (result.IsEncrypted()) {
+        text += tr(" | 已加密（分片载荷不可读，码流类结论仅供参考）");
+    }
+    const auto dr_count = static_cast<qulonglong>(result.DateRangeCount());
+    if (dr_count > 0) {
+        text += tr(" | %1 个广告/章节标记").arg(dr_count);
+    }
+    const auto iframe_count = static_cast<qulonglong>(result.IframeVariantCount());
+    if (iframe_count > 0) {
+        text += tr(" | %1 档快进(I-FRAME)").arg(iframe_count);
+    }
+    const auto event_count = static_cast<qulonglong>(result.EventCount());
+    if (event_count > 0) {
+        text += tr(" | %1 个事件").arg(event_count);
+    }
     if (result.IsLive()) {
         // 直播包只是一次快照：清单会随服务端滚动而变化，我们不重拉、不轮询。
         text += tr(" | 单次快照（不持续轮询）");
@@ -268,12 +285,55 @@ void StreamingPanel::BuildStructureTree(const model::StreamingPackageResult& res
         if (result.has_suggested_presentation_delay) {
             add(root, tr("suggestedPresentationDelay"), Seconds(result.suggested_presentation_delay_s) + " s");
         }
+        // ---- UTCTiming：直播"现在几点"只能从服务端拿 ----
+        if (!result.utc_timings.empty()) {
+            auto* utc = add(root, tr("UTCTiming"), tr("%1 条").arg(result.utc_timings.size()));
+            for (const model::DashUtcTimingInfo& t : result.utc_timings) {
+                add(utc, QString::fromStdString(t.scheme_id_uri), QString::fromStdString(t.value));
+            }
+        }
+        // ---- EventStream：广告/章节标记（SCTE-35 over DASH 走这条）----
+        if (!result.event_streams.empty()) {
+            auto* es_node = add(root, tr("EventStream"),
+                                tr("%1 条 / %2 个事件")
+                                    .arg(result.event_streams.size())
+                                    .arg(static_cast<qulonglong>(result.EventCount())));
+            for (const model::DashEventStreamInfo& es : result.event_streams) {
+                auto* s = add(es_node, QString::fromStdString(es.scheme_id_uri),
+                              tr("timescale=%1 事件=%2").arg(es.timescale).arg(es.events.size()));
+                for (const model::DashEventInfo& ev : es.events) {
+                    add(s, QString::fromStdString(ev.id.empty() ? std::string("Event") : ev.id),
+                        tr("t=%1 s%2")
+                            .arg(Seconds(ev.presentation_time_s))
+                            .arg(ev.has_duration ? tr(" d=%1 s").arg(Seconds(ev.duration_s)) : QString()));
+                }
+            }
+        }
         for (const model::DashPeriodInfo& period : result.periods) {
             auto* p = add(root, QString("Period %1").arg(period.index),
                           QString("duration=%1 s").arg(Seconds(period.duration_seconds)));
             for (const model::DashAdaptationSetInfo& as : period.adaptation_sets) {
                 auto* a = add(p, QString("AdaptationSet %1").arg(as.index),
                               QString::fromStdString(as.content_type + " " + as.mime_type));
+                for (const model::DashDescriptor& role : as.roles) {
+                    add(a, tr("Role"), QString::fromStdString(role.value));
+                }
+                if (as.has_content_protection) {
+                    auto* cp_node = add(a, tr("ContentProtection"),
+                                        tr("%1 个系统").arg(as.content_protections.size()));
+                    for (const model::DashContentProtectionInfo& cp : as.content_protections) {
+                        QString value = QString::fromStdString(
+                            cp.IsCencDeclaration() ? ("CENC/" + cp.value) : cp.scheme_id_uri);
+                        if (!cp.default_kid.empty())
+                            value += tr(" KID=%1").arg(QString::fromStdString(cp.default_kid));
+                        if (cp.has_pssh)
+                            value += tr(" [pssh]");
+                        add(cp_node, tr("DRM"), value);
+                    }
+                }
+                for (const model::DashDescriptor& ep : as.essential_properties) {
+                    add(a, tr("EssentialProperty"), QString::fromStdString(ep.scheme_id_uri));
+                }
                 for (int ri : as.representation_indices) {
                     if (ri < 0 || static_cast<size_t>(ri) >= result.representations.size())
                         continue;
@@ -300,7 +360,9 @@ void StreamingPanel::BuildStructureTree(const model::StreamingPackageResult& res
         }
     } else {
         for (const model::HlsVariantInfo& v : result.variants) {
-            add(root, QString("variant #%1").arg(v.index),
+            const QString name = v.iframe_only ? QString("I-FRAME #%1").arg(v.index)
+                                               : QString("variant #%1").arg(v.index);
+            add(root, name,
                 QString("%1 %2 kbps").arg(DescribeResolution(v.width, v.height)).arg(Kbps(v.bandwidth_bps)));
         }
         for (const model::HlsRenditionInfo& r : result.renditions) {
@@ -326,6 +388,39 @@ void StreamingPanel::BuildStructureTree(const model::StreamingPackageResult& res
                 add(p, tr("初始化段"), QString::fromStdString(pl.init_uri));
             if (pl.low_latency) {
                 add(p, tr("LL-HLS"), tr("%1 个部分分片").arg(pl.partial_count));
+            }
+            // 业务时间轴：墙钟与推荐起点。广告插播、DVR 回看都建立在这两项上。
+            if (pl.has_program_date_time) {
+                add(p, tr("墙钟起点 (PROGRAM-DATE-TIME)"),
+                    QString::fromStdString(pl.program_date_time) +
+                        (pl.program_date_time_valid ? QString() : tr("（无法解析）")));
+            }
+            if (pl.has_start) {
+                add(p, tr("推荐起点 (EXT-X-START)"),
+                    tr("%1 s%2").arg(Seconds(pl.start_time_offset_s)).arg(pl.start_precise ? tr("，精确") : QString()));
+            }
+            if (pl.has_skip) {
+                add(p, tr("delta update (EXT-X-SKIP)"), tr("跳过 %1 个分片").arg(pl.skipped_segments));
+            }
+            if (!pl.date_ranges.empty()) {
+                auto* dr_node = add(p, tr("广告/章节标记 (EXT-X-DATERANGE)"),
+                                    tr("%1 条").arg(pl.date_ranges.size()));
+                for (const model::HlsDateRangeInfo& dr : pl.date_ranges) {
+                    const QString label = dr.id.empty() ? (dr.class_id.empty() ? tr("(无 ID)") : QString::fromStdString(dr.class_id))
+                                                        : QString::fromStdString(dr.id);
+                    QString value = dr.at_seconds >= 0.0 ? tr("t=%1 s").arg(Seconds(dr.at_seconds)) : tr("t=?");
+                    if (dr.has_duration)
+                        value += tr(" d=%1 s").arg(Seconds(dr.duration_seconds));
+                    else if (!dr.end_date.empty())
+                        value += tr(" 至 %1").arg(QString::fromStdString(dr.end_date));
+                    else if (dr.end_on_next)
+                        value += tr(" 至下一段");
+                    else
+                        value += tr(" 结束点未知");
+                    if (dr.HasScte35())
+                        value += tr(" [SCTE-35]");
+                    add(dr_node, label, value);
+                }
             }
             for (int i = 0; i < static_cast<int>(pl.segments.size()) && i < kMaxSegmentNodes; ++i) {
                 const model::SegmentInfo& seg = pl.segments[i];
@@ -515,6 +610,43 @@ QString StreamingPanel::ExportToJson() const {
         dash_live["time_shift_buffer_depth"] = current_result_.time_shift_buffer_depth_s;
         dash_live["suggested_presentation_delay"] = current_result_.suggested_presentation_delay_s;
         root["dash_live"] = dash_live;
+
+        // DRM：加密流的码流类结论不可信，导出时必须带上"用了哪些系统、KID 是什么"，
+        // 否则下游只看到一堆"正常"的分片统计。
+        QJsonObject drm;
+        drm["encrypted"] = current_result_.IsEncrypted();
+        QJsonArray cp_list;
+        for (const model::DashRepresentationInfo& rep : current_result_.representations) {
+            for (const model::DashContentProtectionInfo& cp : rep.content_protections) {
+                QJsonObject o;
+                o["representation"] = QString::fromStdString(rep.id);
+                o["scheme_id_uri"] = QString::fromStdString(cp.scheme_id_uri);
+                o["value"] = QString::fromStdString(cp.value);
+                o["default_kid"] = QString::fromStdString(cp.default_kid);
+                o["has_pssh"] = cp.has_pssh;
+                cp_list.append(o);
+            }
+        }
+        drm["content_protection"] = cp_list;
+        QJsonArray utc;
+        for (const model::DashUtcTimingInfo& t : current_result_.utc_timings) {
+            QJsonObject o;
+            o["scheme_id_uri"] = QString::fromStdString(t.scheme_id_uri);
+            o["value"] = QString::fromStdString(t.value);
+            utc.append(o);
+        }
+        drm["utc_timing"] = utc;
+        root["dash_descriptors"] = drm;
+
+        QJsonArray events;
+        for (const model::DashEventStreamInfo& es : current_result_.event_streams) {
+            QJsonObject o;
+            o["scheme_id_uri"] = QString::fromStdString(es.scheme_id_uri);
+            o["timescale"] = static_cast<qint64>(es.timescale);
+            o["event_count"] = static_cast<qint64>(es.events.size());
+            events.append(o);
+        }
+        root["event_streams"] = events;
     } else {
         QJsonArray playlists;
         for (const model::MediaPlaylistInfo& pl : current_result_.playlists) {
@@ -529,9 +661,45 @@ QString StreamingPanel::ExportToJson() const {
             o["has_media_sequence"] = pl.has_media_sequence;
             o["window_seconds"] = pl.WindowSeconds();
             o["segment_count"] = static_cast<qint64>(pl.SegmentCount());
+            // 业务时间轴：墙钟 / 推荐起点 / delta update / 广告标记
+            o["has_program_date_time"] = pl.has_program_date_time;
+            o["program_date_time"] = QString::fromStdString(pl.program_date_time);
+            o["program_date_time_valid"] = pl.program_date_time_valid;
+            o["start_time_offset_s"] = pl.has_start ? pl.start_time_offset_s : 0.0;
+            o["has_start"] = pl.has_start;
+            o["skipped_segments"] = static_cast<qint64>(pl.skipped_segments);
+            if (!pl.date_ranges.empty()) {
+                QJsonArray ranges;
+                for (const model::HlsDateRangeInfo& dr : pl.date_ranges) {
+                    QJsonObject r;
+                    r["id"] = QString::fromStdString(dr.id);
+                    r["class"] = QString::fromStdString(dr.class_id);
+                    r["start_date"] = QString::fromStdString(dr.start_date);
+                    r["end_date"] = QString::fromStdString(dr.end_date);
+                    r["duration_s"] = dr.has_duration ? dr.duration_seconds : 0.0;
+                    r["end_on_next"] = dr.end_on_next;
+                    r["has_scte35"] = dr.HasScte35();
+                    r["at_seconds"] = dr.at_seconds;
+                    ranges.append(r);
+                }
+                o["date_ranges"] = ranges;
+            }
             playlists.append(o);
         }
         root["playlists"] = playlists;
+
+        QJsonArray iframe;
+        for (const model::HlsVariantInfo& v : current_result_.variants) {
+            if (!v.iframe_only)
+                continue;
+            QJsonObject o;
+            o["index"] = v.index;
+            o["uri"] = QString::fromStdString(v.uri);
+            o["bandwidth_bps"] = static_cast<qint64>(v.bandwidth_bps);
+            iframe.append(o);
+        }
+        if (!iframe.isEmpty())
+            root["iframe_variants"] = iframe;
     }
 
     QJsonArray ladder;

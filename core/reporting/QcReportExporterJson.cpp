@@ -247,6 +247,17 @@ JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
         node.Set("continuity_error_percent", JNumber(ts.ContinuityErrorPercent()));
         node.Set("scrambled_packets", JNumber(static_cast<double>(ts.scrambled_packets)));
         node.Set("pcr_max_gap_ms", JNumber(ts.pcr_max_gap_ms));
+        // 载荷级（PES 内）的数字也要落：container.ts.no_idr / pid_stall 未命中时
+        // 报告里只剩这两个数能说明"是真的没断流"还是"根本没扫载荷"。
+        node.Set("pes_payload_scanned", JsonValue(ts.pes_payload_scanned));
+        node.Set("pes_streams_checked", JNumber(static_cast<double>(ts.pes_streams_checked)));
+        node.Set("idr_count", JNumber(static_cast<double>(ts.idr_count)));
+        node.Set("max_no_idr_interval_ms", JNumber(ts.max_no_idr_interval_ms));
+        node.Set("max_pid_gap_ms", JNumber(ts.max_pid_gap_ms));
+        node.Set("video_pids_without_idr", JNumber(static_cast<double>(ts.video_pids_without_idr)));
+        node.Set("stalled_pids", JNumber(static_cast<double>(ts.stalled_pids)));
+        if (!ts.max_no_idr_pid.empty()) node.Set("max_no_idr_pid", JText(ts.max_no_idr_pid));
+        if (!ts.max_pid_gap_pid.empty()) node.Set("max_pid_gap_pid", JText(ts.max_pid_gap_pid));
         if (!ts.error_message.empty()) node.Set("error_message", JText(ts.error_message));
         metrics.Set("ts_transport", node);
     }

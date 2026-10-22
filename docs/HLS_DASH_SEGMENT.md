@@ -65,6 +65,19 @@ UI 与 ladder 级校验只认这个结构，不必区分协议。
 | `EXT-X-KEY` | 加密标签（METHOD / URI / KEYFORMAT），只登记不解密 |
 | `EXT-X-PART` / `EXT-X-PART-INF` / `EXT-X-PRELOAD-HINT` | LL-HLS 部分分片 |
 | `EXT-X-BYTERANGE` / `EXT-X-GAP` / `EXT-X-ENDLIST` / `EXT-X-PLAYLIST-TYPE` | 记录到对应字段 |
+| `EXT-X-DATERANGE` | 广告/章节标记：ID / CLASS / START-DATE / END-DATE / DURATION / END-ON-NEXT / SCTE35-CMD/OUT/IN，并换算出清单内的相对秒与所在分片 |
+| `EXT-X-PROGRAM-DATE-TIME` | 墙钟起点：原文保留 + 换算成 UTC 秒（支持 `Z` 与 `±hh:mm`），全部采样留下用于漂移校验 |
+| `EXT-X-I-FRAME-STREAM-INF` | 快进/拖动用的纯 I 帧档：URI 写在属性里（不吃下一行），标 `iframe_only` |
+| `EXT-X-START` | 推荐起点 TIME-OFFSET / PRECISE，并与清单总时长比对 |
+| `EXT-X-SKIP` | delta update：SKIPPED-SEGMENTS，缺 MEDIA-SEQUENCE 就无法定位被跳过的分片 |
+
+这五个标签之所以单列，是因为它们撑起的是**业务时间轴**而不是分片：广告插播（DATERANGE +
+SCTE-35）、DVR 与多路对齐（PROGRAM-DATE-TIME）、拖动条体验（I-FRAME-STREAM-INF）、
+起播点（START）、直播列表的增量更新（SKIP）。缺任何一项都不会让清单"解析失败"，
+只会让对应功能静默失效 —— 所以它们必须进问题表。
+
+`EXT-X-I-FRAME-STREAM-INF` 也登记成一条 media playlist（`role = "iframe"`），
+但不进码率阶梯：它的分片时长与正片天然不同，混进 ladder 会让"关键帧不对齐"成片误报。
 
 master playlist 会递归加载子播放列表（本地文件），受 `max_variants` / `max_playlists` /
 `max_segments_per_playlist` 保护。
@@ -104,6 +117,24 @@ initialization / media）→ `SegmentTimeline`（`<S t= d= r=/>`），
 `<S>` 会展开成 `SegmentInfo`；`media` 模板支持 `$Number$` / `$Number%05d$` /
 `$Bandwidth$` / `$RepresentationID$` / `$Time$`。
 `Representation` 未自带 `SegmentTemplate` 时继承 `AdaptationSet` 级的那一份。
+
+#### 描述符（DRM / 对时 / 事件 / 角色 / 强制扩展）
+
+这五类元素过去在 `DashManifestAnalyzer` 里**零匹配** —— 加密流因此只能看到一个空壳
+（Representation 与分片都在，"这是不是加密流、用哪个 DRM、默认 KID 是多少"全丢）。
+
+| 元素 | 挂在哪 | 解析出的字段 | 缺失/不自洽时的结论 |
+| --- | --- | --- | --- |
+| `ContentProtection` | AdaptationSet / Representation（前者被后者继承） | `scheme_id_uri` / `value` / `cenc:default_KID` / `cenc:pssh` 是否存在 | mp4protection（CENC）无 default_KID → Warning；scheme 认不出来 → Warning；只是"有加密" → Info |
+| `UTCTiming` | MPD | `schemeIdUri` / `value`（可多条，按顺序尝试） | dynamic MPD 一条都没有 → Warning；scheme 或 value 为空 → Warning |
+| `EventStream` / `Event` | Period | `schemeIdUri` / `timescale` / `value`；Event 的 `presentationTime` / `duration` / `id` / `messageData` 是否有 | 有事件 → Info（SCTE-35 over DASH 走这条）；timescale=0 或缺 presentationTime → Warning |
+| `Role` | AdaptationSet / Representation | `schemeIdUri` / `value`（main / alternate / dub / subtitle …） | 一个 Period 内多条同类型流且有没标 Role 的 → Info |
+| `EssentialProperty` | AdaptationSet / Representation | `schemeIdUri` / `value` | 有 → Info（客户端必须理解）；schemeIdUri 为空 → Warning |
+
+`cenc:default_KID` / `<cenc:pssh>` 都带命名空间前缀，而标签扫描器只剥标签名的前缀、
+不动属性名，所以属性查询按"忽略前缀"再兜一次（`AttrIgnoreNs`）。
+已知 DRM 系统：`urn:mpeg:dash:mp4protection:2011`、Widevine、PlayReady、ClearKey、
+FairPlay、W3C Common PSSH、Adobe Primetime。
 
 #### 直播属性（`type="dynamic"`）
 
@@ -145,6 +176,23 @@ MPD 元素上的四个 live 属性现在都会解析（`StreamingPackageResult` 
 | 多码率关键帧（分片起点）不对齐 | `container.{hls,dash}.variant_keyframe_misalign` | Warning |
 | 实测峰值段码率高于声明带宽 | `container.{hls,dash}.{variant,representation}_bandwidth_mismatch` | Warning |
 | 音视频分片数量/时长对不上 | `container.{hls,dash}.av_segment_count_mismatch` | Warning |
+| 广告/章节标记定位不了结束点 | `container.hls.date_range_open_ended` | Info（带 SCTE-35 时由分析器抬到 Warning） |
+| `EXT-X-DATERANGE` 的 START-DATE 不合法 | `container.hls.date_range_invalid_date` | Warning |
+| `EXT-X-PROGRAM-DATE-TIME` 无法解析 | `container.hls.program_date_time_invalid` | Warning |
+| 墙钟与 EXTINF 累加不一致 | `container.hls.program_date_time_drift` | Warning（容差 1 s，discontinuity 处豁免） |
+| `EXT-X-I-FRAME-STREAM-INF` 缺 URI / BANDWIDTH | `container.hls.iframe_variant_incomplete` | Warning |
+| `EXT-X-START` 起点超出总时长 | `container.hls.start_offset_out_of_range` | Warning |
+| delta update 缺 MEDIA-SEQUENCE | `container.hls.delta_update_without_sequence` | Warning |
+| DASH 已加密（登记） | `container.dash.content_protection` | Info |
+| CENC 声明缺 default_KID | `container.dash.content_protection_missing_key_id` | Warning |
+| 无法识别的 DRM scheme | `container.dash.content_protection_unknown_scheme` | Warning |
+| 直播 MPD 无 UTCTiming | `container.dash.live_missing_utc_timing` | Warning |
+| UTCTiming 声明不完整 | `container.dash.utc_timing_invalid` | Warning |
+| 含事件流（登记） | `container.dash.event_stream` | Info |
+| EventStream / Event 不自洽 | `container.dash.event_stream_invalid` | Warning |
+| 多条同类型流缺 Role | `container.dash.missing_role` | Info |
+| 声明了强制扩展属性 | `container.dash.essential_property` | Info |
+| EssentialProperty 缺 schemeIdUri | `container.dash.essential_property_unknown` | Warning |
 | 分片文件不存在 | `container.streaming.segment_missing_file` | Warning |
 | 分片容器解析失败 | `container.streaming.segment_container_invalid` | Error |
 | 窗口头部旧分片已被直播淘汰（非缺陷） | `container.streaming.segment_evicted_live_window` | Info |
@@ -172,18 +220,27 @@ MPD 元素上的四个 live 属性现在都会解析（`StreamingPackageResult` 
 - **顶部摘要**：清单类型 / 点播或直播 / 码率层数 / 分片数 / 各级问题数；
   含远端 URI 时标"远端清单/分片不下载"；分片没探全时标"分片抽查 N/M，其余未探测"；
   直播包追加"单次快照（不持续轮询）"与自身的时效信息
-  （DASH 的 `minimumUpdatePeriod` / 时移窗口 / 是否缺 `availabilityStartTime`，HLS 的直播清单条数与窗口时长）
+  （DASH 的 `minimumUpdatePeriod` / 时移窗口 / 是否缺 `availabilityStartTime`，HLS 的直播清单条数与窗口时长）；
+  有加密声明时追加"已加密"，HLS 有 DATERANGE 时标"N 个广告/章节标记"、
+  有 I-FRAME 档时标"N 档快进(I-FRAME)"，DASH 有 EventStream 时标"N 个事件"
 - **左侧 manifest 结构树**：HLS 的 variant / rendition / media playlist / segment，
   DASH 的 Period / AdaptationSet / Representation / Segment；结构树的根节点展示 MPD 的
   `availabilityStartTime` / `publishTime` / `minimumUpdatePeriod` / `timeShiftBufferDepth` /
-  `suggestedPresentationDelay`，HLS 的每个播放列表节点展示「清单类型（VOD / 直播 EVENT /
-  直播滑窗）+ 序号基准 + 窗口时长」
+  `suggestedPresentationDelay`，并挂 `UTCTiming`（对时方案）与 `EventStream`（事件流）节点；
+  AdaptationSet 下挂 `Role` / `ContentProtection`（DRM，含 KID 与是否带 `pssh`）/ `EssentialProperty`；
+  HLS 的每个播放列表节点展示「清单类型（VOD / 直播 EVENT / 直播滑窗）+ 序号基准 + 窗口时长」，
+  再追加「墙钟起点（PROGRAM-DATE-TIME）」「推荐起点（START）」`delta update`（SKIP）
+  与逐条 DATERANGE 子节点（SCTE-35 标记会带出 `out`/`in` 的类型）；I-FRAME 档在树上单独标注
 - **右上码率阶梯表**：分辨率 / 码率 / 编码 / 容器 / 分片数 / 平均与最长分片时长 / 初始化段 / 关键帧数
 - **右下分片时间轴对齐表**：行是分片序号，列是各码率层，单元格是该层的分片起点；
   与参考层偏差超过 50 ms 的单元格标红
 - **问题表**：按严重度排序并着色（与 QC 页同一套配色）
 
-工具栏支持「开始分析」「复制 JSON」「导出 JSON」。
+工具栏支持「开始分析」「复制 JSON」「导出 JSON」。导出的 JSON 里，DASH 侧多一节
+`dash_descriptors`（`encrypted` / `content_protection[]` / `utc_timing[]`）与
+`event_streams[]`；HLS 侧每个 playlist 多 `program_date_time` / `start` / `skip` / `date_ranges[]`，
+另加顶层 `iframe_variants[]`。**这些字段只描述清单里写了什么**，
+不代替分片实探（远端分片依旧不下载）。
 
 ## 5. 接入点一览
 
@@ -194,7 +251,7 @@ MPD 元素上的四个 live 属性现在都会解析（`StreamingPackageResult` 
 | `core/analysis/container/ContainerStructureAnalyzer.cpp` | 新增 `AnalyzeStreamingManifest` / `BuildStreamingTree` / `ProbeTsSegments` |
 | `core/analysis/AnalysisOptions.h` + `core/domain/model/AnalysisResult.h` | `analyze_streaming_package` 开关 + `streaming_package` 结果字段 |
 | `core/analysis/orchestration/AnalysisEngine.cpp` | `Run()` 前置分流 + `RunStreamingManifest()` |
-| `core/domain/model/QcModels.cpp` | 新增 29 条规则（HLS 13 / DASH 13 / streaming 3），id 与问题码同名 |
+| `core/domain/model/QcModels.cpp` | 新增 46 条规则（HLS 20 / DASH 23 / streaming 3），id 与问题码同名 |
 | `core/analysis/diagnostics/QcRuleEngine.cpp` | 新增 `container.hls.` / `container.dash.` / `container.streaming.` 三个前缀分支 |
 | `ui/main_window/MainWindow.cpp` | 打开对话框补「流媒体清单 (*.m3u8 *.mpd)」 |
 
@@ -208,6 +265,12 @@ MPD 元素上的四个 live 属性现在都会解析（`StreamingPackageResult` 
   头部淘汰与真缺块分账、直播相对关键帧对齐）
 - `tests/unit/test_streaming_qc_rules.cpp`：规则引擎把 finding 转成 `DiagnosticIssue`
   （级别、标题、阈值、可关闭、未分析时不产出）+ 新增的 live 规则确实注册在规则表里
+- `tests/unit/test_streaming_descriptors.cpp`：清单里的**描述符与业务时间轴**——
+  HLS 侧 `PROGRAM-DATE-TIME`（合法/非法/跨漂移/ discontinuity 豁免）、`START`（越界）、
+  `SKIP`（缺 MEDIA-SEQUENCE）、`DATERANGE`（开区间/非法日期/SCTE-35 升级）、
+  `I-FRAME-STREAM-INF`（缺 URI 等不完整属性）；DASH 侧 `ContentProtection`
+  （cenc 声明 / 缺 `default_KID` / 未知 scheme）、`UTCTiming`、`EventStream`、
+  `Role`、`EssentialProperty`。每个断言都同时验"正常不误报"与"异常报对码"
 
 ```bash
 cmake --preset win-test-release
@@ -227,8 +290,11 @@ ctest --preset win-test-release
   不下载。后续计划用 Qt Network 增加超时 / 重试 / Range 请求，并只采样头尾与前 N 个分片。
 - **TS 分片只抽查前 3 个**（`ContainerStructureAnalyzer::ProbeTsSegments`）。
   同一批分片由同一次切片产出，抽查足以暴露结构性问题。
-- **关键帧对齐对 TS 是"声明值对齐"**。要判断 TS 段首是否真的是 IDR，需要逐包解析，
-  目前由 `TsStructureAnalyzer` 验证结构完整性，未提取首帧类型。
+- **关键帧对齐对 TS 是"声明值对齐"**。要判断 TS 段首是否真的是 IDR，需要逐包解析；
+  `TsStructureAnalyzer` 现在能做 PES 载荷级的 IDR 检测（H.264 / HEVC），
+  但 `ProbeTsSegments` 只把"能不能解析"落进 `SegmentInfo`，**没有**把首帧类型
+  回填给 ladder 对齐判定 —— 所以阶梯表的"关键帧不对齐"仍然是对 `EXTINF` /
+  `SegmentTimeline` 声明值的交叉校验，不是"段首真的是不是 IDR"。
 - **CMAF 兼容性**目前覆盖到"fMP4 分片必须有初始化段 + tfdt 起点对齐"这一层，
   未校验 `styp` brand、轨道切换（`trun` 的 `sample_depends_on`）等更细的 CMAF 约束。
 - **分片探测是抽样，且超限时静默跳过**。`SegmentQcAnalyzer::ProbeSegmentRange()` 按

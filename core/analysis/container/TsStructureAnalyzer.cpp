@@ -385,6 +385,105 @@ struct PidStat {
     uint64_t max_pcr_gap_27m = 0;
 };
 
+// ---------------------------------------------------------------------------
+// PES 载荷级跟踪（IDR 间隔 / PID 断流）
+//
+// 为什么要在 TS 包循环里做，而不是拆出 PES 再解码：
+//   * 只读 PES 头看不到"有没有 IDR"，而这里要的正是"多久没有随机接入点"；
+//   * 拆 PES 需要为每个 PID 攒载荷（几十 MB 内存），而在包循环里顺带扫一遍
+//     起始码，复杂度只是 O(扫描字节数)，不额外读盘。
+// 识别边界：只认 H.264（0x1B）与 HEVC（0x24/0x25）。AV1/MPEG-2 等随机接入点
+// 的语法完全不同，硬套会误判 —— 宁可不报，也不给错结论。
+// ---------------------------------------------------------------------------
+
+// PTS/DTS 是 33 位循环计数（90 kHz 下约 26.5 小时回绕）
+constexpr uint64_t kPtsModulus = 1ULL << 33;
+// 超过这个差值就认为不是"同一段连续播放"（跨拼接点 / 时钟重置），不参与统计
+constexpr uint64_t kMaxPlausiblePtsDelta = 3600ULL * 90000ULL;
+
+// b - a 的正向差值（处理 33 位回绕）。返回 false 表示差值不可信。
+bool PtsDelta(uint64_t a, uint64_t b, uint64_t& delta) {
+    delta = (b >= a) ? (b - a) : (kPtsModulus - a + b);
+    return delta <= kMaxPlausiblePtsDelta;
+}
+
+// PMT 里这条 ES 属于哪一类载荷。返回值同时决定"扫不扫 NAL"：
+//   0 = 不跟踪，1 = H.264 视频，2 = HEVC 视频，3 = 其它视频（只跟踪断流），4 = 音频
+int PayloadKindOf(const EsInfo& es) {
+    const std::string kind = es.Kind();
+    if (kind == "video") {
+        if (es.stream_type == 0x1B) return 1;
+        if (es.stream_type == 0x24 || es.stream_type == 0x25) return 2;
+        if (es.registration == "HEVC") return 2;
+        return 3;
+    }
+    if (kind == "audio") return 4;
+    return 0;
+}
+
+struct EsPayloadStat {
+    // ---- 断流（相邻 PES 的时间间隔）----
+    int64_t pes_count = 0;
+    bool has_pts = false;
+    uint64_t first_pts = 0;
+    uint64_t last_pts = 0;
+    uint64_t max_gap_90k = 0;
+
+    // ---- IDR / CRA ----
+    int codec = 0; // 0 = 不扫 NAL，1 = H.264，2 = HEVC
+    // 4 字节滑动窗口：用来识别跨 TS 包边界的 NAL 起始码 00 00 01 <header>
+    uint8_t win[4] = {0, 0, 0, 0};
+    int win_len = 0;
+    int64_t idr_count = 0;
+    bool has_idr = false;
+    uint64_t first_idr_pts = 0;
+    uint64_t last_idr_pts = 0;
+    uint64_t max_idr_gap_90k = 0;
+};
+
+// 把一段 ES 载荷喂进滑动窗口，返回识别到的随机接入点个数。
+//
+// H.264：nal_unit_type == 5（IDR）；HEVC：19/20（IDR_W_RADL / IDR_N_LP）与
+// 21（CRA）。CRA 也算 —— 开放 GOP 的码流里每一段都以 CRA 起头，不认它会把
+// 正常的 HEVC 流全判成"没有随机接入点"。
+int FeedEsPayload(EsPayloadStat& st, const uint8_t* data, int len) {
+    if (data == nullptr || len <= 0 || st.codec == 0) return 0;
+    int found = 0;
+    for (int i = 0; i < len; ++i) {
+        st.win[0] = st.win[1];
+        st.win[1] = st.win[2];
+        st.win[2] = st.win[3];
+        st.win[3] = data[i];
+        if (st.win_len < 4) {
+            ++st.win_len;
+            continue;
+        }
+        if (st.win[0] != 0x00 || st.win[1] != 0x00 || st.win[2] != 0x01) continue;
+        const uint8_t header = st.win[3];
+        if (st.codec == 1) {
+            // forbidden_zero_bit 必须为 0；type 5 = IDR
+            if ((header & 0x80) == 0 && (header & 0x1F) == 5) ++found;
+        } else if (st.codec == 2) {
+            const int nal_type = (header >> 1) & 0x3F;
+            if (nal_type == 19 || nal_type == 20 || nal_type == 21) ++found;
+        }
+    }
+    return found;
+}
+
+// PES 头的字节长度（从 PES 起始码算起）。流表之外的 PES（padding / ECM 等）
+// 没有可选头，长度就是 6；其余是 9 + PES_header_data_length。
+int PesHeaderLength(const uint8_t* payload, int payload_len) {
+    if (payload_len < 9) return payload_len;
+    const uint8_t stream_id = payload[3];
+    const bool has_ext = !(stream_id == 0xBC || stream_id == 0xBE || stream_id == 0xBF || stream_id == 0xF0 ||
+                           stream_id == 0xF1 || stream_id == 0xF2 || stream_id == 0xF8 || stream_id == 0xFF);
+    if (!has_ext) return 6;
+    const int len = 9 + static_cast<int>(payload[8]);
+    return len > 0 && len <= payload_len ? len : payload_len;
+}
+
+
 // 按包长与同步偏移量定布局。返回 false 表示这不是一个可识别的 TS。
 //
 // 192 字节（M2TS/AVCHD）在前面多 4 字节 TP_extra_header，同步字节落在偏移 4；
@@ -483,6 +582,10 @@ bool TsStructureAnalyzer::Analyze(const std::string& file_path,
     std::map<uint16_t, std::vector<PesSample>> pes_samples;
     std::map<uint16_t, SectionAssembler> section_asm;   // PSI PID -> 组装器
     std::map<uint16_t, uint16_t> pmt_pid_to_program;    // PMT PID -> program_number
+    // PES 载荷级：ES PID -> 类别（由 PMT 决定，PMT 之前的包不扫 —— 那时还无法判断
+    // 这个 PID "该不该有 IDR"，扫了只会得到噪音）
+    std::map<uint16_t, int> es_payload_kind;
+    std::map<uint16_t, EsPayloadStat> es_payload;
 
     uint64_t total_packets = 0;
     uint64_t null_packets = 0;
@@ -664,6 +767,11 @@ bool TsStructureAnalyzer::Analyze(const std::string& file_path,
                         const int body = pos + 5;
                         if (body + es_info_len > end) break;
                         ParseEsDescriptors(sec.data() + body, es_info_len, es);
+                        if (options.scan_pes_payload) {
+                            const int pkind = PayloadKindOf(es);
+                            if (pkind != 0)
+                                es_payload_kind[es.pid] = pkind;
+                        }
                         prog.streams.push_back(es);
                         pos = body + es_info_len;
                     }
@@ -754,6 +862,67 @@ bool TsStructureAnalyzer::Analyze(const std::string& file_path,
                 list.push_back(sample);
             }
             ++total_pes;
+        }
+
+        // ---- ES 载荷级：断流（PES 间隔）与 IDR 间隔 ----
+        // 加扰包的载荷是密文，扫出来全是噪音，直接跳过（否则会凭空造出"没有 IDR"）。
+        if (options.scan_pes_payload && scrambling == 0) {
+            const auto kind_it = es_payload_kind.find(pid);
+            if (kind_it != es_payload_kind.end()) {
+                EsPayloadStat& es = es_payload[pid];
+                const int pkind = kind_it->second;
+                if ((pkind == 1 || pkind == 2) && es.codec == 0)
+                    es.codec = pkind;
+
+                const bool pes_start = pusi && payload_len >= 9 && payload[0] == 0x00 &&
+                                       payload[1] == 0x00 && payload[2] == 0x01;
+                int scan_from = 0;
+                if (pes_start) {
+                    scan_from = PesHeaderLength(payload, payload_len);
+                    // 滑动窗口不跨 PES：PES 头里本身就含 00 00 01，跨过去必然误判
+                    es.win_len = 0;
+
+                    // PTS（可选头里的第一段）。读法与上面 PesSample 那支完全一致。
+                    const uint8_t stream_id2 = payload[3];
+                    const bool has_ext2 = !(stream_id2 == 0xBC || stream_id2 == 0xBE || stream_id2 == 0xBF ||
+                                            stream_id2 == 0xF0 || stream_id2 == 0xF1 || stream_id2 == 0xF2 ||
+                                            stream_id2 == 0xF8 || stream_id2 == 0xFF);
+                    if (has_ext2 && payload_len >= 14) {
+                        const uint8_t pts_dts_flags = static_cast<uint8_t>((payload[7] >> 6) & 0x03);
+                        if ((pts_dts_flags & 0x02) != 0) {
+                            const uint64_t pts = ReadTimestamp5(payload + 9);
+                            if (es.pes_count == 0) {
+                                es.first_pts = pts;
+                            } else {
+                                uint64_t delta = 0;
+                                if (PtsDelta(es.last_pts, pts, delta) && delta > es.max_gap_90k)
+                                    es.max_gap_90k = delta;
+                            }
+                            es.last_pts = pts;
+                            es.has_pts = true;
+                            ++es.pes_count;
+                        }
+                    }
+                }
+
+                if (es.codec != 0 && payload_len > scan_from) {
+                    const int idr = FeedEsPayload(es, payload + scan_from, payload_len - scan_from);
+                    if (idr > 0) {
+                        es.idr_count += idr;
+                        if (es.has_pts) {
+                            if (!es.has_idr) {
+                                es.first_idr_pts = es.last_pts;
+                                es.has_idr = true;
+                            } else {
+                                uint64_t delta = 0;
+                                if (PtsDelta(es.last_idr_pts, es.last_pts, delta) && delta > es.max_idr_gap_90k)
+                                    es.max_idr_gap_90k = delta;
+                            }
+                            es.last_idr_pts = es.last_pts;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -978,6 +1147,32 @@ bool TsStructureAnalyzer::Analyze(const std::string& file_path,
         root.children.push_back(err);
     }
 
+    // PES 载荷级（IDR 间隔 / 断流）
+    if (!es_payload.empty()) {
+        model::ContainerElement payload_elem;
+        payload_elem.name = "PES 载荷级";
+        payload_elem.type = "Payload";
+        payload_elem.depth = 1;
+        payload_elem.value = Cat("跟踪 ", es_payload.size(), " 个 ES PID（H.264/HEVC 才识别 IDR）");
+        for (const auto& kv : es_payload) {
+            const EsPayloadStat& es = kv.second;
+            if (es.pes_count <= 0 && es.idr_count <= 0) continue;
+            model::ContainerElement row;
+            row.name = Cat("PID 0x", HexFillLow(kv.first, 4));
+            row.type = "PID";
+            row.depth = 2;
+            std::string v = Cat("PES=", es.pes_count);
+            if (es.codec != 0) v += Cat(" | 随机接入点=", es.idr_count);
+            if (es.max_idr_gap_90k > 0)
+                v += Cat(" | 最大 IDR 间隔=", Fixed(static_cast<double>(es.max_idr_gap_90k) / 90.0, 1), "ms");
+            if (es.max_gap_90k > 0)
+                v += Cat(" | 最大 PES 间隔=", Fixed(static_cast<double>(es.max_gap_90k) / 90.0, 1), "ms");
+            row.value = v;
+            payload_elem.children.push_back(row);
+        }
+        root.children.push_back(payload_elem);
+    }
+
     result.element_tree.push_back(root);
     result.valid = true;
 
@@ -1034,6 +1229,115 @@ bool TsStructureAnalyzer::Analyze(const std::string& file_path,
             if (gap_ms > pcr_gap_ms) pcr_gap_ms = gap_ms;
         }
         ts.pcr_max_gap_ms = pcr_gap_ms;
+    }
+
+    // ---- PES 载荷级汇总 ----
+    //
+    // 两件事分开算，别混成一个"流不好"的数字：
+    //   1) 断流：同一 PID 相邻 PES 的间隔。除了窗口内相邻的间隔，还要看"这个 PID
+    //      比同节目的其它流早停了多久" —— 一路彻底断掉时窗口里根本没有"下一个 PES"，
+    //      只算相邻间隔会让最严重的断流反而查不出来。
+    //   2) 无 IDR：视频流最长的一段没有随机接入点。IDR 少于 2 个时就退化成整段跨度。
+    {
+        // 每个节目的 ES PID 集合，以及该节目内所有 ES 的最晚时间戳
+        std::map<uint16_t, uint16_t> pid_program;
+        std::map<uint16_t, uint64_t> program_last_pts;
+        for (const auto& kv : programs) {
+            for (const EsInfo& es : kv.second.streams) {
+                const auto it = es_payload.find(es.pid);
+                if (it == es_payload.end()) continue;
+                pid_program[es.pid] = kv.first;
+                if (it->second.has_pts) {
+                    uint64_t& mx = program_last_pts[kv.first];
+                    if (it->second.last_pts > mx) mx = it->second.last_pts;
+                }
+            }
+        }
+
+        const uint64_t gap_threshold_90k =
+            options.max_pid_gap_s > 0.0 ? static_cast<uint64_t>(options.max_pid_gap_s * 90000.0 + 0.5) : 0;
+        // "整段没有 IDR"必须带时间尺度：半秒的分片本来就不该有 IDR，
+        // 不加阈值等于对短视频恒报。0 表示不设阈值（只看有没有跨度）。
+        const uint64_t no_idr_threshold_90k =
+            options.max_no_idr_interval_s > 0.0
+                ? static_cast<uint64_t>(options.max_no_idr_interval_s * 90000.0 + 0.5)
+                : 0;
+
+        int checked = 0;
+        int stalled = 0;
+        int video_without_idr = 0;
+        int64_t idr_total = 0;
+        uint64_t worst_gap_90k = 0;
+        uint64_t worst_no_idr_90k = 0;
+        uint16_t worst_gap_pid = 0;
+        uint16_t worst_no_idr_pid = 0;
+        bool has_gap = false;
+        bool has_no_idr = false;
+
+        for (const auto& kv : es_payload) {
+            const uint16_t pid = kv.first;
+            const EsPayloadStat& es = kv.second;
+            if (es.pes_count <= 0) continue;
+            ++checked;
+
+            uint64_t gap = es.max_gap_90k;
+            const auto pit = pid_program.find(pid);
+            if (pit != pid_program.end() && es.pes_count >= 2) {
+                const auto lp = program_last_pts.find(pit->second);
+                if (lp != program_last_pts.end() && lp->second != es.last_pts) {
+                    uint64_t tail = 0;
+                    if (PtsDelta(es.last_pts, lp->second, tail) && tail > gap) gap = tail;
+                }
+            }
+            if (gap > 0 && (!has_gap || gap > worst_gap_90k)) {
+                worst_gap_90k = gap;
+                worst_gap_pid = pid;
+                has_gap = true;
+            }
+            if (gap_threshold_90k > 0 && gap > gap_threshold_90k) ++stalled;
+
+            if (es.codec != 0) {
+                idr_total += es.idr_count;
+                if (es.idr_count == 0) {
+                    // 只有"看得见的时间跨度"超过阈值才算这条视频流没有 IDR。
+                    // 没有 PTS 的流算不出跨度 —— 那就只报"最长无 IDR"的 0，
+                    // 不在这里给它挂一个没有依据的计数。
+                    uint64_t span = 0;
+                    const bool has_span =
+                        es.pes_count >= 2 && es.has_pts && PtsDelta(es.first_pts, es.last_pts, span);
+                    if (has_span && (no_idr_threshold_90k == 0 || span > no_idr_threshold_90k))
+                        ++video_without_idr;
+                }
+                uint64_t no_idr = 0;
+                if (es.idr_count >= 2) {
+                    no_idr = es.max_idr_gap_90k;
+                } else if (es.pes_count >= 2 && es.has_pts) {
+                    // 0 或 1 个 IDR：整段跨度就是"没有随机接入点"的时长
+                    uint64_t span = 0;
+                    if (PtsDelta(es.first_pts, es.last_pts, span)) no_idr = span;
+                }
+                if (no_idr > 0 && (!has_no_idr || no_idr > worst_no_idr_90k)) {
+                    worst_no_idr_90k = no_idr;
+                    worst_no_idr_pid = pid;
+                    has_no_idr = true;
+                }
+            }
+        }
+
+        model::TransportStreamInfo& ts = result.transport;
+        ts.pes_payload_scanned = options.scan_pes_payload;
+        ts.pes_streams_checked = checked;
+        ts.max_pid_gap_ms = has_gap ? static_cast<double>(worst_gap_90k) / 90.0 : 0.0;
+        ts.max_pid_gap_pid = has_gap ? Cat("0x", HexFillLow(worst_gap_pid, 4)) : std::string();
+        ts.stalled_pids = stalled;
+        ts.max_no_idr_interval_ms = has_no_idr ? static_cast<double>(worst_no_idr_90k) / 90.0 : 0.0;
+        ts.max_no_idr_pid = has_no_idr ? Cat("0x", HexFillLow(worst_no_idr_pid, 4)) : std::string();
+        ts.idr_count = idr_total;
+        ts.video_pids_without_idr = video_without_idr;
+
+        if (has_no_idr) result.metadata["最长无 IDR(ms)"] = Fixed(ts.max_no_idr_interval_ms, 1);
+        if (has_gap) result.metadata["最大 PES 间隔(ms)"] = Fixed(ts.max_pid_gap_ms, 1);
+        if (idr_total > 0) result.metadata["IDR 数"] = std::to_string(idr_total);
     }
 
     file.Close();

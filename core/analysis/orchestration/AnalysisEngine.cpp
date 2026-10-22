@@ -99,6 +99,15 @@ void FillTsTransport(const std::string& file_path, const AVFormatContext* fmt,
              std::to_string(result.ts_transport.sync_loss) + ", CC 错=" +
              std::to_string(result.ts_transport.continuity_errors) + ", PCR 最大间隔=" +
              std::to_string(static_cast<int>(result.ts_transport.pcr_max_gap_ms)) + "ms");
+    // 载荷级另记一行：规则未命中时这是唯一能回答"到底扫了没有"的线索。
+    LOG_INFO(std::string("TS 载荷级: ") +
+             (result.ts_transport.pes_payload_scanned
+                  ? ("ES " + std::to_string(result.ts_transport.pes_streams_checked) + " 条, IDR " +
+                     std::to_string(result.ts_transport.idr_count) + " 个, 最长无 IDR " +
+                     std::to_string(static_cast<int>(result.ts_transport.max_no_idr_interval_ms)) +
+                     "ms, 最大 PES 断档 " +
+                     std::to_string(static_cast<int>(result.ts_transport.max_pid_gap_ms)) + "ms")
+                  : std::string("未执行")));
 }
 
 // 各分析维度的**创建 / 逐包分发 / 收尾钩子**（含它们各自要开的解码器、parser、swr）

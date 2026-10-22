@@ -322,6 +322,10 @@ void SegmentQcAnalyzer::BuildLadder(model::StreamingPackageResult& result) {
     }
 
     for (const model::HlsVariantInfo& variant : result.variants) {
+        // EXT-X-I-FRAME-STREAM-INF（纯 I 帧快进档）不是 ABR 的一级：
+        // 它的分片时长天然与正片不同，混进 ladder 会让"关键帧不对齐"成片误报。
+        if (variant.iframe_only)
+            continue;
         model::StreamingLadderEntry entry;
         entry.label = "variant #" + std::to_string(variant.index);
         entry.source_index = variant.index;

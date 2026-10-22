@@ -30,6 +30,21 @@ struct TsStructureOptions {
 
     // 每个 PID 的连续计数错误最多记多少条明细（计数本身不限）
     int max_cc_error_details = 16;
+
+    // ---- PES 载荷级检查（scan_pes_payload）----
+    // 只到 PES 头的话，"这条视频一路没有 IDR"和"某个 PID 中途断了"这两类问题
+    // 是看不见的：包头一切正常，画面却从头花到尾 / 后半段直接冻住。
+    // 做法是在 TS 包里顺带扫 ES 载荷（H.264 / HEVC 的 NAL 起始码），代价接近一次
+    // memcpy 级别的线性扫描，不额外读盘。
+    bool scan_pes_payload = true;
+
+    // 视频 PID 最长允许多久没有 IDR/CRA（秒）。<= 0 关闭该检查。
+    // 只用来判"这一段视频找不到任何随机接入点"——seek 会退化成从头解码。
+    double max_no_idr_interval_s = 10.0;
+
+    // 同一 PID 相邻 PES 的最大时间间隔（秒）。<= 0 关闭该检查。
+    // 超过即视为断流（PCR/PTS 上表现为该 PID 长时间没有新数据）。
+    double max_pid_gap_s = 5.0;
 };
 
 /// MPEG-TS 容器结构解析器

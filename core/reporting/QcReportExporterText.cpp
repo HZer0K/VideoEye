@@ -86,6 +86,25 @@ std::string QcReportExporter::BuildText(const QcExportBundle& bundle) {
             out << "  加扰包: " << Int64Text(ts.scrambled_packets) << "\n";
             out << "  最大 PCR 间隔: " << Fixed(ts.pcr_max_gap_ms, 1) << " ms"
                 << (ts.pcr_max_gap_ms > 0.0 ? "" : "（未采到 PCR）") << "\n";
+            // 载荷级的两个数字：没扫过就说"没扫过"，别让 0 被读成"很健康"。
+            if (!ts.pes_payload_scanned) {
+                out << "  PES 载荷级检查: 未执行（非 H.264/HEVC，或 scan_pes_payload 已关闭）\n";
+            } else if (ts.pes_streams_checked <= 0) {
+                out << "  PES 载荷级检查: 没有可跟踪的 ES（缺 PMT / 全加扰）\n";
+            } else {
+                out << "  PES 载荷级检查: 跟踪 " << ts.pes_streams_checked << " 条 ES，识别到 "
+                    << Int64Text(ts.idr_count) << " 个随机接入点\n";
+                out << "  最长无 IDR: " << Fixed(ts.max_no_idr_interval_ms, 1) << " ms"
+                    << (ts.max_no_idr_pid.empty() ? "" : ("（PID " + ts.max_no_idr_pid + "）"))
+                    << (ts.video_pids_without_idr > 0
+                            ? "，有 " + std::to_string(ts.video_pids_without_idr) + " 条视频 PID 整段没有 IDR"
+                            : "")
+                    << "\n";
+                out << "  最大 PES 断档: " << Fixed(ts.max_pid_gap_ms, 1) << " ms"
+                    << (ts.max_pid_gap_pid.empty() ? "" : ("（PID " + ts.max_pid_gap_pid + "）"))
+                    << (ts.stalled_pids > 1 ? "，共 " + std::to_string(ts.stalled_pids) + " 个 PID 超阈值" : "")
+                    << "\n";
+            }
         }
     }
 

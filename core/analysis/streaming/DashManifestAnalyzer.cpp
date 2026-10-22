@@ -109,6 +109,44 @@ uint64_t SubU64Clamped(uint64_t a, uint64_t b) {
     return a >= b ? a - b : 0;
 }
 
+// ---------------------------------------------------------------------------
+// DRM / 描述符小工具
+// ---------------------------------------------------------------------------
+
+// 属性名带命名空间前缀是常态（cenc:default_KID、cenc:pssh），而我们的标签扫描器
+// 只剥掉标签名的前缀、不动属性名。所以按"忽略前缀"的方式查一次。
+std::string AttrIgnoreNs(const std::map<std::string, std::string>& attrs, const std::string& key) {
+    const auto it = attrs.find(key);
+    if (it != attrs.end())
+        return it->second;
+    for (const auto& kv : attrs) {
+        const size_t colon = kv.first.find(':');
+        if (colon != std::string::npos && kv.first.substr(colon + 1) == key)
+            return kv.second;
+    }
+    return std::string();
+}
+
+// schemeIdUri -> 可读的 DRM 系统名。认不出来就返回空串（调用方按"未知方案"报）。
+std::string DrmSystemName(const std::string& scheme) {
+    const std::string s = mt::ToLower(mt::Trim(scheme));
+    if (s == "urn:mpeg:dash:mp4protection:2011")
+        return "CENC (mp4protection)";
+    if (s == "urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed")
+        return "Widevine";
+    if (s == "urn:uuid:9a04f079-9840-4286-ab92-e65be0885f95")
+        return "PlayReady";
+    if (s == "urn:uuid:e2719d58-a985-b3c9-781a-b030af78d30e")
+        return "ClearKey";
+    if (s == "urn:uuid:94ce86fb-07ff-4f43-adb8-93d2fa968ca2")
+        return "FairPlay";
+    if (s == "urn:uuid:1077efec-c0b2-4d02-ace3-3c1e52e2fb4b")
+        return "W3C Common PSSH";
+    if (s == "urn:uuid:279fe473-512c-48fe-ade8-d176fee6b40f")
+        return "Adobe Primetime";
+    return std::string();
+}
+
 model::SegmentContainer ContainerFromMime(const std::string& mime, const std::string& uri) {
     const std::string m = mt::ToLower(mime);
     if (mt::Contains(m, "webm"))
@@ -424,6 +462,7 @@ bool DashManifestAnalyzer::ParseText(const std::string& text, const std::string&
     int cur_period = -1;
     int cur_as = -1;
     int cur_rep = -1;
+    int cur_event_stream = -1;
     std::vector<std::string> stack;
 
     // 泛型 lambda：把 SegmentTemplate 的属性同时写进 Representation 或 AdaptationSet
@@ -435,6 +474,10 @@ bool DashManifestAnalyzer::ParseText(const std::string& text, const std::string&
             fn(out.periods[cur_period].adaptation_sets[cur_as]);
         }
     };
+
+    // ContentProtection / Role / EssentialProperty 的宿主与上面完全一致
+    // （Representation 优先，否则 AdaptationSet），复用同一套下标判定。
+    auto with_descriptor_owner = [&](auto&& fn) { with_template_owner(fn); };
 
     size_t pos = 0;
     size_t tag_count = 0;
@@ -470,6 +513,19 @@ bool DashManifestAnalyzer::ParseText(const std::string& text, const std::string&
             }
         }
 
+        // <Event> 的正文（<EventStream><Event><messageData>...</messageData>）
+        // 只用来判定"这条事件有没有带载荷"，内容本身不解析（base64 的 SCTE-35 命令
+        // 属于业务侧，硬解出来对 QC 结论没有增量）。
+        if (!stack.empty() && stack.back() == "messageData" && cur_event_stream >= 0 &&
+            static_cast<size_t>(cur_event_stream) < out.event_streams.size()) {
+            const std::string value = mt::Trim(text.substr(pos, lt - pos));
+            if (!value.empty()) {
+                model::DashEventStreamInfo& es = out.event_streams[static_cast<size_t>(cur_event_stream)];
+                if (!es.events.empty())
+                    es.events.back().has_message_data = true;
+            }
+        }
+
         if (text.compare(lt, 4, "<!--") == 0) {
             const size_t e = text.find("-->", lt);
             pos = (e == std::string::npos) ? text.size() : e + 3;
@@ -496,6 +552,8 @@ bool DashManifestAnalyzer::ParseText(const std::string& text, const std::string&
                 cur_as = -1;
             if (tag.name == "Period")
                 cur_period = -1;
+            if (tag.name == "EventStream")
+                cur_event_stream = -1;
             continue;
         }
 
@@ -642,6 +700,99 @@ bool DashManifestAnalyzer::ParseText(const std::string& text, const std::string&
         } else if (tag.name == "SegmentBase") {
             if (cur_rep >= 0)
                 out.representations[cur_rep].has_segment_base = true;
+        } else if (tag.name == "ContentProtection") {
+            // DRM：以前这个元素零匹配，加密流在报告里就是一个"看起来正常"的空壳。
+            model::DashContentProtectionInfo cp;
+            cp.scheme_id_uri = AttrIgnoreNs(tag.attrs, "schemeIdUri");
+            cp.value = AttrIgnoreNs(tag.attrs, "value");
+            cp.default_kid = AttrIgnoreNs(tag.attrs, "default_KID");
+            cp.robustness = AttrIgnoreNs(tag.attrs, "robustness");
+            with_descriptor_owner([&](auto& owner) {
+                if (owner.content_protections.size() >= options.max_descriptors) {
+                    out.truncated = true;
+                    return;
+                }
+                owner.content_protections.push_back(cp);
+                owner.has_content_protection = true;
+            });
+        } else if (tag.name == "pssh") {
+            // <cenc:pssh> 是 ContentProtection 的子元素，标记它挂在最后一条上
+            with_descriptor_owner([](auto& owner) {
+                if (!owner.content_protections.empty())
+                    owner.content_protections.back().has_pssh = true;
+            });
+        } else if (tag.name == "Role") {
+            model::DashDescriptor d;
+            d.scheme_id_uri = AttrIgnoreNs(tag.attrs, "schemeIdUri");
+            d.value = AttrIgnoreNs(tag.attrs, "value");
+            d.id = AttrIgnoreNs(tag.attrs, "id");
+            with_descriptor_owner([&](auto& owner) {
+                if (owner.roles.size() >= options.max_descriptors) {
+                    out.truncated = true;
+                    return;
+                }
+                owner.roles.push_back(d);
+            });
+        } else if (tag.name == "EssentialProperty") {
+            model::DashDescriptor d;
+            d.scheme_id_uri = AttrIgnoreNs(tag.attrs, "schemeIdUri");
+            d.value = AttrIgnoreNs(tag.attrs, "value");
+            d.id = AttrIgnoreNs(tag.attrs, "id");
+            with_descriptor_owner([&](auto& owner) {
+                if (owner.essential_properties.size() >= options.max_descriptors) {
+                    out.truncated = true;
+                    return;
+                }
+                owner.essential_properties.push_back(d);
+            });
+        } else if (tag.name == "UTCTiming") {
+            if (out.utc_timings.size() < options.max_descriptors) {
+                model::DashUtcTimingInfo t;
+                t.scheme_id_uri = AttrIgnoreNs(tag.attrs, "schemeIdUri");
+                t.value = AttrIgnoreNs(tag.attrs, "value");
+                out.utc_timings.push_back(std::move(t));
+            } else {
+                out.truncated = true;
+            }
+        } else if (tag.name == "EventStream") {
+            if (cur_period < 0 || out.event_streams.size() >= options.max_event_streams) {
+                out.event_streams_truncated = true;
+                out.truncated = true;
+                cur_event_stream = -1;
+            } else {
+                model::DashEventStreamInfo es;
+                es.period_index = cur_period;
+                es.scheme_id_uri = AttrIgnoreNs(tag.attrs, "schemeIdUri");
+                es.value = AttrIgnoreNs(tag.attrs, "value");
+                const int64_t ts = mt::AttrInt64Or(tag.attrs, "timescale", 1);
+                es.timescale = ts > 0 ? static_cast<uint32_t>(ts) : 0;
+                out.event_streams.push_back(std::move(es));
+                cur_event_stream = static_cast<int>(out.event_streams.size()) - 1;
+            }
+        } else if (tag.name == "Event") {
+            if (cur_event_stream >= 0 && static_cast<size_t>(cur_event_stream) < out.event_streams.size()) {
+                model::DashEventStreamInfo& es = out.event_streams[static_cast<size_t>(cur_event_stream)];
+                if (es.events.size() < options.max_events_per_stream) {
+                    model::DashEventInfo ev;
+                    int64_t pt = 0;
+                    if (mt::AttrInt64(tag.attrs, "presentationTime", pt)) {
+                        ev.has_presentation_time = true;
+                        ev.presentation_time_s =
+                            es.timescale > 0 ? static_cast<double>(pt) / static_cast<double>(es.timescale) : 0.0;
+                    }
+                    int64_t dur = 0;
+                    if (mt::AttrInt64(tag.attrs, "duration", dur)) {
+                        ev.has_duration = true;
+                        ev.duration_s =
+                            es.timescale > 0 ? static_cast<double>(dur) / static_cast<double>(es.timescale) : 0.0;
+                    }
+                    ev.id = AttrIgnoreNs(tag.attrs, "id");
+                    es.events.push_back(std::move(ev));
+                } else {
+                    es.truncated = true;
+                    out.truncated = true;
+                }
+            }
         } else if (tag.name == "SegmentList") {
             if (cur_rep >= 0)
                 out.representations[cur_rep].has_segment_list = true;
@@ -674,11 +825,24 @@ bool DashManifestAnalyzer::ParseText(const std::string& text, const std::string&
 
     // Representation 继承 AdaptationSet 级别的 SegmentTemplate
     for (model::DashRepresentationInfo& rep : out.representations) {
-        if (rep.has_template)
-            continue;
         if (rep.period_index < 0 || rep.adaptation_index < 0)
             continue;
         const model::DashAdaptationSetInfo& as = out.periods[rep.period_index].adaptation_sets[rep.adaptation_index];
+
+        // 描述符继承（ContentProtection / Role / EssentialProperty）。
+        // 规范允许三者都写在 AdaptationSet 上让下属 Representation 共享；只解析
+        // Representation 上的那几份，加密流就会因为"加密声明写在外层"而被漏判。
+        if (rep.content_protections.empty() && !as.content_protections.empty()) {
+            rep.content_protections = as.content_protections;
+            rep.has_content_protection = as.has_content_protection;
+        }
+        if (rep.roles.empty() && !as.roles.empty())
+            rep.roles = as.roles;
+        if (rep.essential_properties.empty() && !as.essential_properties.empty())
+            rep.essential_properties = as.essential_properties;
+
+        if (rep.has_template)
+            continue;
         if (!as.has_template)
             continue;
         rep.has_template = true;
@@ -719,6 +883,16 @@ void DashManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Da
         model::StreamingIssueCode::kDashLiveUpdatePeriodTooLong,
         model::StreamingIssueCode::kDashLiveMissingTimeShiftBuffer,
         model::StreamingIssueCode::kDashLiveSegmentCountUnknown,
+        model::StreamingIssueCode::kDashDrmContentProtection,
+        model::StreamingIssueCode::kDashContentProtectionMissingKeyId,
+        model::StreamingIssueCode::kDashContentProtectionUnknownScheme,
+        model::StreamingIssueCode::kDashLiveMissingUtcTiming,
+        model::StreamingIssueCode::kDashUtcTimingInvalid,
+        model::StreamingIssueCode::kDashEventStream,
+        model::StreamingIssueCode::kDashEventStreamInvalid,
+        model::StreamingIssueCode::kDashMissingRole,
+        model::StreamingIssueCode::kDashEssentialProperty,
+        model::StreamingIssueCode::kDashEssentialPropertyUnknown,
     };
     model::RemoveIssuesByCode(out.issues, kOwnCodes);
 
@@ -865,6 +1039,254 @@ void DashManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Da
                       "这是离线单张快照的固有边界，不是清单缺陷："
                       "补齐 timeShiftBufferDepth 后即可按窗口枚举；也可改用 SegmentTimeline 显式列出每个分片的起点。",
                       model::IssueSeverity::Info, static_cast<double>(unknown_reps), 0.0, unknown_reps, -1.0, -1);
+        }
+    }
+
+    // ---- 5) 加密（ContentProtection）----
+    // 三种结论分开报：有 DRM 本身只是登记（Info），"声明了 CENC 却给不出 default_KID"
+    // 与"scheme 完全认不出来"才是缺陷 —— 后者客户端拿不到密钥，整条流放不了。
+    {
+        int encrypted_reps = 0;
+        int missing_kid = 0;
+        std::string missing_kid_label;
+        std::vector<std::string> systems;
+        std::vector<std::string> unknown_schemes;
+        for (size_t ri = 0; ri < out.representations.size(); ++ri) {
+            if (IsStreamingCancelled(cancel))
+                return;
+            const model::DashRepresentationInfo& rep = out.representations[ri];
+            if (!rep.has_content_protection)
+                continue;
+            ++encrypted_reps;
+            bool has_cenc_declaration = false;
+            bool has_kid = false;
+            for (const model::DashContentProtectionInfo& cp : rep.content_protections) {
+                if (cp.IsCencDeclaration())
+                    has_cenc_declaration = true;
+                if (!cp.default_kid.empty())
+                    has_kid = true;
+                const std::string name = DrmSystemName(cp.scheme_id_uri);
+                if (name.empty()) {
+                    if (std::find(unknown_schemes.begin(), unknown_schemes.end(), cp.scheme_id_uri) ==
+                        unknown_schemes.end()) {
+                        unknown_schemes.push_back(cp.scheme_id_uri);
+                    }
+                } else if (std::find(systems.begin(), systems.end(), name) == systems.end()) {
+                    systems.push_back(name);
+                }
+            }
+            // mp4protection 是"这是 CENC 加密"的通用声明，它必须带 default_KID；
+            // 只写 Widevine/PlayReady 的 PSSH 反而不强制（KID 常在 pssh 里带）。
+            if (has_cenc_declaration && !has_kid) {
+                ++missing_kid;
+                if (missing_kid_label.empty())
+                    missing_kid_label = "Representation " + (rep.id.empty() ? std::to_string(ri) : rep.id);
+            }
+        }
+
+        if (encrypted_reps > 0) {
+            std::string list;
+            for (size_t i = 0; i < systems.size(); ++i) {
+                if (i)
+                    list += "、";
+                list += systems[i];
+            }
+            if (list.empty())
+                list = "无法识别的方案";
+            PushIssue(out, model::StreamingIssueCode::kDashDrmContentProtection, "DASH 流已加密",
+                      std::to_string(encrypted_reps) + "/" + std::to_string(out.representations.size()) +
+                          " 个 Representation 声明了 ContentProtection（" + list +
+                          "）。加密本身不是缺陷，分片载荷不可读，码流类结论仅供参考。",
+                      "确认密钥服务（License 服务器）在目标网络可达，"
+                      "并核对 default_KID 与内容实际使用的密钥一致。",
+                      model::IssueSeverity::Info, static_cast<double>(encrypted_reps), 0.0, encrypted_reps, -1.0, -1);
+        }
+        if (missing_kid > 0) {
+            PushIssue(out, model::StreamingIssueCode::kDashContentProtectionMissingKeyId,
+                      "加密声明缺少 default_KID",
+                      missing_kid_label + " 声明了 mp4protection（CENC），但没有 cenc:default_KID；"
+                      "共 " + std::to_string(missing_kid) + " 个表示受影响。"
+                      "客户端无法在多个密钥里挑出该用哪一把。",
+                      "在 <ContentProtection schemeIdUri=\"urn:mpeg:dash:mp4protection:2011\"> 上补 "
+                      "cenc:default_KID=\"<16 字节 UUID>\"，与封装时 cenc 使用的 KID 保持一致。",
+                      model::IssueSeverity::Warning, static_cast<double>(missing_kid), 0.0, missing_kid, -1.0, -1);
+        }
+        if (!unknown_schemes.empty()) {
+            std::string list;
+            for (size_t i = 0; i < unknown_schemes.size(); ++i) {
+                if (i)
+                    list += "、";
+                list += "\"" + unknown_schemes[i] + "\"";
+            }
+            PushIssue(out, model::StreamingIssueCode::kDashContentProtectionUnknownScheme,
+                      "无法识别的加密方案",
+                      "ContentProtection 的 schemeIdUri 不在已知 DRM 系统里：" + list + "。",
+                      "确认 schemeIdUri 是否拼错（Widevine / PlayReady / ClearKey / FairPlay 都是 urn:uuid:...）；"
+                      "自研 DRM 需要在播放器里注册对应的解密模块。",
+                      model::IssueSeverity::Warning, static_cast<double>(unknown_schemes.size()), 0.0,
+                      static_cast<int>(unknown_schemes.size()), -1.0, -1);
+        }
+    }
+
+    // ---- 6) UTCTiming（直播对时）----
+    // 直播分片的可用性由 availabilityStartTime + 分片起点推算，而"现在几点"只能靠
+    // UTCTiming 从服务端拿。客户端信本地时钟的话，机顶盒时间不准就会整段缓冲。
+    {
+        int invalid = 0;
+        std::string first_invalid;
+        for (const model::DashUtcTimingInfo& t : out.utc_timings) {
+            if (mt::Trim(t.scheme_id_uri).empty() || mt::Trim(t.value).empty()) {
+                ++invalid;
+                if (first_invalid.empty())
+                    first_invalid = "schemeIdUri=\"" + t.scheme_id_uri + "\" value=\"" + t.value + "\"";
+            }
+        }
+        if (live && out.utc_timings.empty()) {
+            PushIssue(out, model::StreamingIssueCode::kDashLiveMissingUtcTiming,
+                      "直播 MPD 没有 UTCTiming",
+                      "MPD 是 type=\"dynamic\"，但没有声明 UTCTiming；客户端只能相信本地时钟，"
+                      "机顶盒/DVR 时间偏差会直接表现成起播慢、卡在旧画面或跳到未来分片。",
+                      "在 <MPD> 下加 <UTCTiming schemeIdUri=\"urn:mpeg:dash:utc:http-head:2014\" "
+                      "value=\"https://example.com/time\"/>（或 direct / ntp 方案）。",
+                      model::IssueSeverity::Warning, 0.0, 0.0, 1, -1.0, -1);
+        }
+        if (invalid > 0) {
+            PushIssue(out, model::StreamingIssueCode::kDashUtcTimingInvalid, "UTCTiming 声明不完整",
+                      std::to_string(invalid) + " 条 UTCTiming 缺少 schemeIdUri 或 value（首条 " + first_invalid +
+                          "），客户端无从取时。",
+                      "schemeIdUri 与 value 都是 UTCTiming 的必填属性：scheme 说明取时方式，"
+                      "value 是时间串或取时 URL。",
+                      model::IssueSeverity::Warning, static_cast<double>(invalid), 0.0, invalid, -1.0, -1);
+        }
+    }
+
+    // ---- 7) EventStream（广告/章节，SCTE-35 over DASH 走这条）----
+    if (!out.event_streams.empty()) {
+        size_t event_total = 0;
+        int invalid = 0;
+        std::string first_invalid;
+        std::vector<std::string> schemes;
+        for (const model::DashEventStreamInfo& es : out.event_streams) {
+            if (IsStreamingCancelled(cancel))
+                return;
+            event_total += es.events.size();
+            if (!es.scheme_id_uri.empty() &&
+                std::find(schemes.begin(), schemes.end(), es.scheme_id_uri) == schemes.end()) {
+                schemes.push_back(es.scheme_id_uri);
+            }
+            if (es.timescale == 0) {
+                ++invalid;
+                if (first_invalid.empty())
+                    first_invalid = "有一条 EventStream 的 timescale=0，事件时间无法换算成秒";
+                continue;
+            }
+            for (const model::DashEventInfo& ev : es.events) {
+                // presentationTime 在 <Event> 上是必填项，缺了就无法定位事件
+                if (!ev.has_presentation_time) {
+                    ++invalid;
+                    if (first_invalid.empty())
+                        first_invalid = "事件 id=\"" + ev.id + "\" 没有 presentationTime";
+                    break;
+                }
+            }
+        }
+        std::string scheme_list;
+        for (size_t i = 0; i < schemes.size(); ++i) {
+            if (i)
+                scheme_list += "、";
+            scheme_list += schemes[i];
+        }
+        if (scheme_list.empty())
+            scheme_list = "未声明 schemeIdUri";
+        PushIssue(out, model::StreamingIssueCode::kDashEventStream, "含事件流（广告/章节标记）",
+                  std::to_string(out.event_streams.size()) + " 条 EventStream、共 " + std::to_string(event_total) +
+                      " 个事件（" + scheme_list + "）。",
+                  "事件流是业务侧插播/章节的载体；确认播放器认识对应的 schemeIdUri，"
+                  "否则这些标记会被静默忽略（画面上看不出问题）。",
+                  model::IssueSeverity::Info, static_cast<double>(event_total), 0.0,
+                  static_cast<int>(out.event_streams.size()), -1.0, -1);
+        if (invalid > 0) {
+            PushIssue(out, model::StreamingIssueCode::kDashEventStreamInvalid, "EventStream 声明不完整",
+                      std::to_string(invalid) + " 处事件流/事件不自洽：" + first_invalid + "。",
+                      "EventStream@timescale 必须是正整数，<Event> 必须带 presentationTime（单位同 timescale）。",
+                      model::IssueSeverity::Warning, static_cast<double>(invalid), 0.0, invalid, -1.0, -1);
+        }
+    }
+
+    // ---- 8) Role：多条同类型流里靠它区分主轨/备轨 ----
+    // 一个 Period 里有两条 audio AdaptationSet 而都不写 Role 时，客户端只能按顺序取第一条；
+    // 不同播放器取法不同，多语种/解说轨场景下会"打开就是错的音轨"。
+    for (const model::DashPeriodInfo& period : out.periods) {
+        if (IsStreamingCancelled(cancel))
+            return;
+        std::map<std::string, std::vector<const model::DashAdaptationSetInfo*>> by_type;
+        for (const model::DashAdaptationSetInfo& as : period.adaptation_sets) {
+            std::string type = mt::ToLower(as.content_type);
+            if (type.empty() && !as.representation_indices.empty()) {
+                const int ri = as.representation_indices.front();
+                if (ri >= 0 && static_cast<size_t>(ri) < out.representations.size())
+                    type = out.representations[static_cast<size_t>(ri)].content_type;
+            }
+            if (type.empty())
+                continue;
+            by_type[type].push_back(&as);
+        }
+        for (const auto& kv : by_type) {
+            if (kv.second.size() < 2)
+                continue;
+            int without = 0;
+            for (const model::DashAdaptationSetInfo* as : kv.second) {
+                if (as->roles.empty())
+                    ++without;
+            }
+            if (without == 0)
+                continue;
+            PushIssue(out, model::StreamingIssueCode::kDashMissingRole, "多条同类型流缺少 Role 标注",
+                      "Period " + (period.id.empty() ? std::to_string(period.index) : period.id) + " 有 " +
+                          std::to_string(kv.second.size()) + " 条 " + kv.first + " 流，其中 " +
+                          std::to_string(without) + " 条没有 <Role>。客户端无法判定哪条是主轨（main）。",
+                      "给主轨加 <Role schemeIdUri=\"urn:mpeg:dash:role:2011\" value=\"main\"/>，"
+                      "备轨用 alternate / dub / description；字幕轨用 subtitle / caption。",
+                      model::IssueSeverity::Info, static_cast<double>(without), 0.0, without, -1.0, -1);
+        }
+    }
+
+    // ---- 9) EssentialProperty：客户端"必须理解"的扩展 ----
+    {
+        std::vector<std::string> schemes;
+        int empty_scheme = 0;
+        for (const model::DashRepresentationInfo& rep : out.representations) {
+            for (const model::DashDescriptor& d : rep.essential_properties) {
+                if (mt::Trim(d.scheme_id_uri).empty()) {
+                    ++empty_scheme;
+                    continue;
+                }
+                if (std::find(schemes.begin(), schemes.end(), d.scheme_id_uri) == schemes.end())
+                    schemes.push_back(d.scheme_id_uri);
+            }
+        }
+        if (empty_scheme > 0) {
+            PushIssue(out, model::StreamingIssueCode::kDashEssentialPropertyUnknown,
+                      "EssentialProperty 缺少 schemeIdUri",
+                      std::to_string(empty_scheme) + " 条 EssentialProperty 没有 schemeIdUri。"
+                      "按规范这是“必须理解”的扩展，没有标识就无法判断客户端能不能处理。",
+                      "补上 schemeIdUri；若该扩展其实可忽略，改用 SupplementalProperty。",
+                      model::IssueSeverity::Warning, static_cast<double>(empty_scheme), 0.0, empty_scheme, -1.0, -1);
+        }
+        if (!schemes.empty()) {
+            std::string list;
+            for (size_t i = 0; i < schemes.size(); ++i) {
+                if (i)
+                    list += "、";
+                list += schemes[i];
+            }
+            PushIssue(out, model::StreamingIssueCode::kDashEssentialProperty, "声明了强制扩展属性",
+                      "清单里有 " + std::to_string(schemes.size()) + " 种 EssentialProperty：" + list +
+                          "。播放器若不认识这些 scheme，按规范应当拒绝播放该表示。",
+                      "确认目标播放器支持这些扩展（如 CEA-608 闭包、SSR、tile 排布等）；"
+                      "不支持时降级方案要考虑把该表示从 MPD 里去掉。",
+                      model::IssueSeverity::Info, static_cast<double>(schemes.size()), 0.0,
+                      static_cast<int>(schemes.size()), -1.0, -1);
         }
     }
 }

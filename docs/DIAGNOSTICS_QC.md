@@ -74,13 +74,19 @@ flowchart LR
 | `audio.sample_rate_low` | < 32000 Hz | Info | 采样率偏低 |
 | `audio.channel_missing` | — | Info | 未标注声道数 |
 
-### 4.1 MPEG-TS 传输层（`container.ts.*`）
+### 4.1 MPEG-TS 传输层与载荷级（`container.ts.*`）
 
 输入不是逐包扫描产物，而是 `AnalysisResult::ts_transport`（`TransportStreamInfo`）：
 失步 / 连续计数 / PCR / 加扰都是 **TS 包头里的事实**，avformat 的 demux 看不到包头，
 所以 `AnalysisEngine` 会在扫描前按字节再扫一遍文件头（`AnalysisOptions::
 analyze_ts_transport` / `ts_transport_max_packets`，默认 20 万包）。
 解析器与容器结构页共用 `TsStructureAnalyzer`，是同一组数字。
+
+同一个结构体里还有两组**载荷级**数字：`max_no_idr_interval_ms` / `idr_count` /
+`video_pids_without_idr` 与 `max_pid_gap_ms` / `max_pid_gap_pid` / `stalled_pids`。
+它们由 `scan_pes_payload`（默认开）驱动，拆完 PES 头继续看 ES：H.264 认 NAL type 5、
+HEVC 认 19/20/21 当 IDR；其余编码不认（认错 NAL 头会把随机字节读成 type 5，
+报出来的间隔纯属虚构）。
 
 | 规则 id | 默认阈值 | 严重度 | 判定 |
 |---------|----------|--------|------|
@@ -91,10 +97,15 @@ analyze_ts_transport` / `ts_transport_max_packets`，默认 20 万包）。
 | `container.ts.pcr_gap` | > 100 ms | Warning | 最大 PCR 间隔（没采到 PCR 时不报） |
 | `container.ts.scrambled` | — | Info | 加扰流：能解复用，但载荷不可读 |
 | `container.ts.scan_incomplete` | — | Info | 只扫了窗口，提醒结论范围 |
+| `container.ts.no_idr` | > 10000 ms | Warning | 视频 PID 相邻 IDR 的最大间隔（含首帧到第一个 IDR） |
+| `container.ts.pid_stall` | > 5000 ms | Warning | 某个 PID 的 PTS 断档（含"尾部缺口"：最后一条离节目最新 PTS 的距离） |
 
-两条口径约束：
+三条口径约束：
 
 - `ts_transport.analyzed=false` 时整族规则静默 —— "没跑过"不是"没问题"；
+- 载荷级另有 `pes_payload_scanned`：传输层扫了但载荷没扫（非 H.264/HEVC、
+  或 `scan_pes_payload=false`）时 `no_idr` / `pid_stall` 也静默 ——
+  此时 `max_no_idr_interval_ms == 0` 的含义是"没测"，不是"很健康"；
 - 故障类规则的 detail 必须带出「扫了多少 / 共多少」，否则窗口结论会被读成全文件结论。
 
 ### 4.2 AVI / FLV / ASF / OGG（`container.avi.*` / `flv.*` / `asf.*` / `ogg.*`）

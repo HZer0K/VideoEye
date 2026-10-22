@@ -107,6 +107,44 @@ std::vector<model::DiagnosticIssue> CheckTsTransportRules(const model::QcRule& r
         return issues;
     }
 
+    // ---- PES 载荷级 ----
+    //
+    // 这两条的证据来自"扫 ES 载荷"这一趟（TsStructureOptions::scan_pes_payload）。
+    // 没扫过时 pes_payload_scanned 为假，一律不报：没证据不等于没问题。
+    if (rule.id == "container.ts.no_idr") {
+        if (!ts.pes_payload_scanned) return issues;
+        // 没有任何视频 PID 被识别（纯音频流 / 全加扰 / 非 H.264|HEVC）时无从判定
+        if (ts.max_no_idr_interval_ms <= 0.0) return issues;
+        if (!Triggered(rule, ts.max_no_idr_interval_ms)) return issues;
+        std::string detail = "视频流最长的一段有 " + FormatValue(ts.max_no_idr_interval_ms, 1) +
+                             " ms 没有任何 IDR/CRA";
+        if (!ts.max_no_idr_pid.empty())
+            detail += "（PID " + ts.max_no_idr_pid + "）";
+        detail += "，全窗口共识别到 " + std::to_string(ts.idr_count) + " 个随机接入点";
+        if (ts.video_pids_without_idr > 0)
+            detail += "，其中 " + std::to_string(ts.video_pids_without_idr) + " 条视频 PID 整段没有 IDR";
+        detail += scope + "。这一段既不能起播也不能 seek。";
+        issues.push_back(make_issue(ts.max_no_idr_interval_ms, detail));
+        return issues;
+    }
+
+    if (rule.id == "container.ts.pid_stall") {
+        if (!ts.pes_payload_scanned) return issues;
+        if (ts.max_pid_gap_ms <= 0.0) return issues;
+        if (!Triggered(rule, ts.max_pid_gap_ms)) return issues;
+        std::string detail = "有一条 PID 的时间戳断档达到 " + FormatValue(ts.max_pid_gap_ms, 1) + " ms";
+        if (!ts.max_pid_gap_pid.empty())
+            detail += "（PID " + ts.max_pid_gap_pid + "）";
+        if (ts.stalled_pids > 1)
+            detail += "，共 " + std::to_string(ts.stalled_pids) + " 个 PID 超过阈值";
+        // 断档有两种形态：相邻两个 PES 之间，以及"这条流比其它流早停"（尾部缺口）。
+        // 后者查不出来就等于放过最严重的断流，因此 detail 里必须两种都覆盖。
+        detail += scope + "。断档可能是相邻 PES 之间，也可能是这条流比其它流提前结束。"
+                           "表现为画面冻住、声音中断，或某条流后半段消失。";
+        issues.push_back(make_issue(ts.max_pid_gap_ms, detail));
+        return issues;
+    }
+
     return issues;
 }
 

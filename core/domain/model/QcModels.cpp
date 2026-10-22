@@ -138,6 +138,24 @@ std::vector<QcRule> DefaultQcRules() {
         "传输层体检只扫描了文件前一部分。失步 / 连续计数 / PCR 结论只代表扫描窗口。",
         "需要整条流结论时把 AnalysisOptions::ts_transport_max_packets 设为 0（扫完整个文件）。");
 
+    // ---- MPEG-TS PES 载荷级 ----
+    //
+    // 只看包头看不出这两件事：视频一路没有随机接入点（画面正常，但 seek 与
+    // 起播都要从头解码）、某个 PID 中途断了（后半段直接冻住/静音）。
+    // 度量单位都是毫秒，与 pcr_gap 同口径。
+    add("container.ts.no_idr", "长时间没有 IDR", IssueCategory::Gop,
+        IssueSeverity::Warning, QcRuleOp::MaxExceeded, 10000.0, "ms",
+        "视频流最长的一段没有 IDR/CRA（随机接入点）：播放器无法在此处起播或 seek，"
+        "只能退回到上一个关键帧从头解码。",
+        "缩短关键帧间隔（如 -g 50 配合 -keyint_min 50 -sc_threshold 0），"
+        "并确认转码/拼接环节没有把 IDR 全部吃掉。");
+
+    add("container.ts.pid_stall", "PID 断流", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::MaxExceeded, 5000.0, "ms",
+        "同一 PID 相邻 PES 的时间间隔过大（含某个 PID 比同节目其它流提前停止），"
+        "表现为画面冻住、声音中断，或整段内容后半部分缺失。",
+        "检查复用器是否掉流、录制是否中断；单条 ES 提前结束时确认是内容本身如此还是封装丢了数据。");
+
     // ---- 老式容器 AVI / FLV / ASF / OGG ----
     //
     // 这四种格式以前只有结构树、没有 QC 规则（"能看不能判"）。这一组的共同前提是
@@ -386,6 +404,47 @@ std::vector<QcRule> DefaultQcRules() {
         "视频轨与音轨的分片数量不同，且总时长差超过一个分片。",
         "让音视频使用相同的分片时长并对齐起点。");
 
+    // ---- HLS 业务时间轴（EXT-X-DATERANGE / PROGRAM-DATE-TIME / START / SKIP / I-FRAME）----
+    // 这一组不是"分片坏了"，而是"时间轴与业务标记对不上"：广告插播、DVR 回看、
+    // 快进档都建立在这些标签上，缺一项就有一类功能静默失效。
+    add("container.hls.date_range_open_ended", "广告/章节标记定位不了结束点", IssueCategory::Container,
+        // 分析器会在"带 SCTE-35 的开口"上把级别抬到 Warning（finding 与 rule 取更重的一侧），
+        // 所以规则表这里按普通章节标记的 Info 登记 —— 否则每条无 SCTE 的章节标记都会变成告警。
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "条",
+        "EXT-X-DATERANGE 既没有 END-DATE/DURATION，也不是 END-ON-NEXT + CLASS，"
+        "广告时段或章节的结束点无从判定（带 SCTE-35 的标记尤其严重）。",
+        "补 END-DATE 或 DURATION；结束点由下一段决定时写 END-ON-NEXT=YES 并同时给出 CLASS。");
+
+    add("container.hls.date_range_invalid_date", "EXT-X-DATERANGE 的 START-DATE 不合法", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "条",
+        "START-DATE 缺失或不是合法的 ISO 8601 时间，广告位无法换算到时间轴上的位置。",
+        "START-DATE 是必填属性，格式同 EXT-X-PROGRAM-DATE-TIME（带 Z 或 ±hh:mm 时区）。");
+
+    add("container.hls.program_date_time_invalid", "EXT-X-PROGRAM-DATE-TIME 无法解析", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "墙钟时间不是合法的 ISO 8601 串。播放器不会校验它，只会在错的时间点插广告或按错的时间 seek。",
+        "按 ISO 8601 重写：2026-01-01T00:00:00.000Z 或 2026-01-01T08:00:00+08:00。");
+
+    add("container.hls.program_date_time_drift", "墙钟与媒体时间轴不一致", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::MaxExceeded, 1.0, "s",
+        "相邻两处 EXT-X-PROGRAM-DATE-TIME 的差值，与它们之间 EXTINF 之和不等（discontinuity 处不计）。",
+        "同一段内容只在一处写 PDT，其余由 EXTINF 推算；拼接后要在 discontinuity 处重设墙钟。");
+
+    add("container.hls.iframe_variant_incomplete", "EXT-X-I-FRAME-STREAM-INF 信息不完整", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "条",
+        "快进档缺少 URI 或 BANDWIDTH，客户端无法构造请求，拖动退化成整段 GOP 解码。",
+        "EXT-X-I-FRAME-STREAM-INF 必须同时给出 URI 与 BANDWIDTH，URI 指向只含 I 帧分片的播放列表。");
+
+    add("container.hls.start_offset_out_of_range", "EXT-X-START 的起点超出台长", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "s",
+        "TIME-OFFSET 的绝对值大于清单覆盖的总时长，播放器会忽略这个推荐起点。",
+        "把 TIME-OFFSET 调进 [-总时长, +总时长]；直播常用几秒的负偏移从边缘后退起播。");
+
+    add("container.hls.delta_update_without_sequence", "delta update 缺少序号基准", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "个",
+        "用了 EXT-X-SKIP 却没有 EXT-X-MEDIA-SEQUENCE，被跳过的分片无法定位到绝对序号。",
+        "delta update 必须同时给 EXT-X-MEDIA-SEQUENCE（当前首片的绝对序号）。");
+
     // ---- DASH 流媒体包（core/analysis/streaming/DashManifestAnalyzer.h）----
     add("container.dash.segment_timeline_gap", "SegmentTimeline 存在时间缺口", IssueCategory::Container,
         IssueSeverity::Error, QcRuleOp::NonZero, 0.0, "处",
@@ -426,6 +485,59 @@ std::vector<QcRule> DefaultQcRules() {
         IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
         "同一 Period 内视频轨与音轨的总时长差超过一个分片。",
         "让音视频使用相同的分片时长并对齐起点。");
+
+    // ---- DASH 描述符（DRM / 事件流 / 角色 / 强制扩展 / 对时）----
+    // 这几样过去在 DashManifestAnalyzer 里零匹配，加密流只能看到一个"看起来正常"的空壳。
+    add("container.dash.content_protection", "DASH 流已加密", IssueCategory::Container,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "个",
+        "Representation 声明了 ContentProtection（Widevine / PlayReady / CENC ...）。"
+        "加密本身不是缺陷，但分片载荷不可读，码流类结论仅供参考。",
+        "确认 License 服务器在目标网络可达，并核对 default_KID 与内容实际使用的密钥一致。");
+
+    add("container.dash.content_protection_missing_key_id", "加密声明缺少 default_KID",
+        IssueCategory::Container, IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "个",
+        "声明了 mp4protection（CENC）却没有 cenc:default_KID，客户端不知道用哪一把钥匙。",
+        "在 mp4protection 的 ContentProtection 上补 cenc:default_KID=\"<UUID>\"，与封装时的 KID 一致。");
+
+    add("container.dash.content_protection_unknown_scheme", "无法识别的加密方案", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "种",
+        "ContentProtection 的 schemeIdUri 不在已知 DRM 系统里（Widevine / PlayReady / ClearKey / FairPlay ...）。",
+        "确认 schemeIdUri 是否拼错；自研 DRM 需要在播放器里注册对应的解密模块。");
+
+    add("container.dash.live_missing_utc_timing", "直播 MPD 没有 UTCTiming", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "dynamic MPD 未声明取时方式，客户端只能信本地时钟，机顶盒时间偏差会直接导致起播慢或卡在旧画面。",
+        "在 <MPD> 下加 <UTCTiming schemeIdUri=\"urn:mpeg:dash:utc:http-head:2014\" value=\"<取时 URL>\"/>。");
+
+    add("container.dash.utc_timing_invalid", "UTCTiming 声明不完整", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "条",
+        "UTCTiming 缺少 schemeIdUri 或 value，等同于没声明。",
+        "schemeIdUri 说明取时方式（direct / http-head / ntp），value 是时间串或取时 URL，两者都必填。");
+
+    add("container.dash.event_stream", "含事件流（广告/章节标记）", IssueCategory::Container,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "个",
+        "MPD 里有 EventStream（SCTE-35 over DASH、章节、业务事件都走这条）。",
+        "确认播放器认识对应的 schemeIdUri，否则这些标记会被静默忽略。");
+
+    add("container.dash.event_stream_invalid", "EventStream 声明不完整", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "处",
+        "EventStream@timescale 为 0，或有 <Event> 缺少 presentationTime，事件时间无法定位。",
+        "timescale 用正整数，每个 <Event> 给 presentationTime（单位同 timescale）。");
+
+    add("container.dash.missing_role", "多条同类型流缺少 Role 标注", IssueCategory::Container,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "条",
+        "一个 Period 里有多条同类型 AdaptationSet，其中部分没有 <Role>，客户端无法判定主轨。",
+        "主轨加 <Role schemeIdUri=\"urn:mpeg:dash:role:2011\" value=\"main\"/>，备轨用 alternate / dub。");
+
+    add("container.dash.essential_property", "声明了强制扩展属性", IssueCategory::Container,
+        IssueSeverity::Info, QcRuleOp::NonZero, 0.0, "种",
+        "清单里的 EssentialProperty 是客户端必须理解的扩展，不认识就应当拒绝播放该表示。",
+        "确认目标播放器支持这些 scheme；不支持时考虑把该表示从 MPD 里去掉。");
+
+    add("container.dash.essential_property_unknown", "EssentialProperty 缺少 schemeIdUri",
+        IssueCategory::Container, IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "条",
+        "EssentialProperty 没有 schemeIdUri，无法判断客户端能不能处理；若其实可忽略应改用 SupplementalProperty。",
+        "补上 schemeIdUri，或改用 SupplementalProperty。");
 
     // ---- HLS / DASH 通用（core/analysis/streaming/SegmentQcAnalyzer.h）----
     add("container.streaming.segment_missing_file", "分片文件不存在", IssueCategory::Container,

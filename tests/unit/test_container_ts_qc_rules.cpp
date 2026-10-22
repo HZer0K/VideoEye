@@ -53,6 +53,14 @@ model::TransportStreamInfo HealthyTs() {
     ts.has_pmt = true;
     ts.has_sdt = true;
     ts.pcr_max_gap_ms = 40.0;
+    // PES 载荷级：IDR 每 2 s 一个、相邻 PES 间隔 500 ms
+    ts.pes_payload_scanned = true;
+    ts.pes_streams_checked = 2;
+    ts.idr_count = 30;
+    ts.max_no_idr_interval_ms = 2000.0;
+    ts.max_no_idr_pid = "0x0100";
+    ts.max_pid_gap_ms = 500.0;
+    ts.max_pid_gap_pid = "0x0100";
     return ts;
 }
 
@@ -246,6 +254,58 @@ TEST(TsQcRulesTest, UserRaisedThresholdIsRespected) {
         << "250 ms 在 500 ms 门槛下不该报";
 }
 
+// ---------------- PES 载荷级（IDR / 断流） ----------------
+//
+// 这两条的证据来自扫 ES 载荷（TsStructureOptions::scan_pes_payload），
+// 只读包头是得不出来的。判定口径与 pcr_gap 一致：毫秒，超过阈值才报。
+
+TEST(TsQcRulesTest, LongStretchWithoutIdrFires) {
+    QcRuleEngine engine;
+
+    model::TransportStreamInfo good = HealthyTs();  // 2 s 一个 IDR
+    EXPECT_FALSE(HasIssue(engine.Evaluate(MakeResult(good)), "container.ts.no_idr"));
+
+    model::TransportStreamInfo bad = HealthyTs();
+    bad.max_no_idr_interval_ms = 16500.0;  // 一段 16.5 s 没有随机接入点
+    model::DiagnosticIssue issue;
+    const model::QcReport report = engine.Evaluate(MakeResult(bad));
+    ASSERT_TRUE(HasIssue(report, "container.ts.no_idr", &issue));
+    EXPECT_DOUBLE_EQ(issue.metric_value, 16500.0);
+    EXPECT_NE(issue.detail.find("0x0100"), std::string::npos) << "要指明是哪个 PID";
+}
+
+TEST(TsQcRulesTest, StalledPidFiresWithoutHijackingHealthyGaps) {
+    QcRuleEngine engine;
+
+    model::TransportStreamInfo good = HealthyTs();
+    EXPECT_FALSE(HasIssue(engine.Evaluate(MakeResult(good)), "container.ts.pid_stall"));
+
+    model::TransportStreamInfo bad = HealthyTs();
+    bad.max_pid_gap_ms = 18000.0;
+    bad.max_pid_gap_pid = "0x0101";
+    bad.stalled_pids = 1;
+    model::DiagnosticIssue issue;
+    const model::QcReport report = engine.Evaluate(MakeResult(bad));
+    ASSERT_TRUE(HasIssue(report, "container.ts.pid_stall", &issue));
+    EXPECT_EQ(issue.severity, model::IssueSeverity::Warning);
+    EXPECT_NE(issue.detail.find("0x0101"), std::string::npos);
+}
+
+TEST(TsQcRulesTest, PayloadRulesStaySilentWhenNotScanned) {
+    // 没扫载荷（选项关掉 / 不是 H.264|HEVC / 全加扰）时，字段是 0，
+    // 但即便如此也要靠 pes_payload_scanned 明确挡住 —— 否则换个含义的 0
+    // 会被读成"没有断流"。
+    model::TransportStreamInfo ts = HealthyTs();
+    ts.pes_payload_scanned = false;
+    ts.max_no_idr_interval_ms = 99000.0;
+    ts.max_pid_gap_ms = 99000.0;
+
+    QcRuleEngine engine;
+    const model::QcReport report = engine.Evaluate(MakeResult(ts));
+    EXPECT_FALSE(HasIssue(report, "container.ts.no_idr"));
+    EXPECT_FALSE(HasIssue(report, "container.ts.pid_stall"));
+}
+
 // ---------------- 规则表注册 ----------------
 
 TEST(TsQcRulesTest, DefaultRulesContainTsFamily) {
@@ -253,7 +313,8 @@ TEST(TsQcRulesTest, DefaultRulesContainTsFamily) {
     for (const char* id : {"container.ts.missing_pat", "container.ts.missing_pmt",
                            "container.ts.sync_loss", "container.ts.continuity_error",
                            "container.ts.pcr_gap", "container.ts.scrambled",
-                           "container.ts.scan_incomplete"}) {
+                           "container.ts.scan_incomplete", "container.ts.no_idr",
+                           "container.ts.pid_stall"}) {
         EXPECT_TRUE(model::FindQcRule(rules, id) != nullptr) << "规则表里漏了 " << id;
     }
 }

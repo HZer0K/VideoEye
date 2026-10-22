@@ -100,6 +100,118 @@ bool ParseResolution(const std::string& text, int& w, int& h) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// 墙钟时间（EXT-X-PROGRAM-DATE-TIME / EXT-X-DATERANGE 的 START-DATE）
+//
+// 格式：YYYY-MM-DDThh:mm:ss[.fff][Z|±hh:mm]，只接受这一种（RFC 3339 的常用子集）。
+// 转 UTC 秒而不是保留原文，是因为要拿它和"EXTINF 累计出来的相对秒"做加法/比较；
+// 原文由调用方另外保存，报告上展示的仍是原样字符串。
+// ---------------------------------------------------------------------------
+
+// 公历日期 -> 1970-01-01 起的天数（Howard Hinnant 的 days_from_civil）
+int64_t DaysFromCivil(int64_t y, int64_t m, int64_t d) {
+    y -= (m <= 2) ? 1 : 0;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const int64_t yoe = y - era * 400;                                     // [0, 399]
+    const int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;    // [0, 365]
+    const int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;             // [0, 146096]
+    return era * 146097 + doe - 719468;
+}
+
+bool ReadFixedInt(const std::string& s, size_t pos, size_t len, int& out) {
+    if (pos + len > s.size())
+        return false;
+    int v = 0;
+    for (size_t i = 0; i < len; ++i) {
+        const char c = s[pos + i];
+        if (c < '0' || c > '9')
+            return false;
+        v = v * 10 + (c - '0');
+    }
+    out = v;
+    return true;
+}
+
+bool ParseIso8601DateTime(const std::string& text, double& epoch_out) {
+    const std::string s = mt::Trim(text);
+    // 最短形态 "YYYY-MM-DDThh:mm:ss" 是 19 字符
+    if (s.size() < 19)
+        return false;
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
+    if (!ReadFixedInt(s, 0, 4, year) || s[4] != '-')
+        return false;
+    if (!ReadFixedInt(s, 5, 2, month) || s[7] != '-')
+        return false;
+    if (!ReadFixedInt(s, 8, 2, day))
+        return false;
+    if (s[10] != 'T' && s[10] != 't' && s[10] != ' ')
+        return false;
+    if (!ReadFixedInt(s, 11, 2, hour) || s[13] != ':')
+        return false;
+    if (!ReadFixedInt(s, 14, 2, minute) || s[16] != ':')
+        return false;
+    if (!ReadFixedInt(s, 17, 2, second))
+        return false;
+    if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 60)
+        return false;
+
+    size_t i = 19;
+    double frac = 0.0;
+    if (i < s.size() && (s[i] == '.' || s[i] == ',')) {
+        ++i;
+        double scale = 0.1;
+        while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
+            frac += (s[i] - '0') * scale;
+            scale *= 0.1;
+            ++i;
+        }
+    }
+
+    int64_t offset_seconds = 0;
+    if (i < s.size()) {
+        const char c = s[i];
+        if (c == 'Z' || c == 'z') {
+            ++i;
+        } else if (c == '+' || c == '-') {
+            int oh = 0;
+            int om = 0;
+            if (!ReadFixedInt(s, i + 1, 2, oh))
+                return false;
+            size_t j = i + 3;
+            if (j < s.size() && s[j] == ':') {
+                if (!ReadFixedInt(s, j + 1, 2, om))
+                    return false;
+                j += 3;
+            } else if (j + 2 <= s.size()) {
+                if (!ReadFixedInt(s, j, 2, om))
+                    return false;
+                j += 2;
+            }
+            offset_seconds = static_cast<int64_t>(oh) * 3600 + static_cast<int64_t>(om) * 60;
+            if (c == '-')
+                offset_seconds = -offset_seconds;
+            i = j;
+        } else {
+            return false;
+        }
+        // 后面还有别的字符说明这不是我们认识的格式（不猜）
+        if (mt::Trim(s.substr(i)).size() != 0)
+            return false;
+    }
+
+    const int64_t days = DaysFromCivil(year, month, day);
+    const double seconds = static_cast<double>(days) * 86400.0 + static_cast<double>(hour) * 3600.0 +
+                           static_cast<double>(minute) * 60.0 + static_cast<double>(second) + frac;
+    epoch_out = seconds - static_cast<double>(offset_seconds);
+    return true;
+}
+
+
 // 按 URI 后缀猜分片容器。猜不出来就 Other —— 宁可漏判也不要误判。
 model::SegmentContainer ContainerFromUri(const std::string& uri) {
     const std::string ext = mt::ExtensionOf(uri);
@@ -130,6 +242,9 @@ void ParseMediaPlaylistBody(const std::vector<std::string>& lines, const std::st
     bool pending_has_duration = false;
     int64_t pending_range_len = -1;
     int64_t pending_range_off = -1;
+    // EXT-X-PROGRAM-DATE-TIME 紧跟在它要标注的那个分片之前，所以先挂起，
+    // 等 URI 行到了再连同"这个分片的起点"一起记下来。
+    std::string pending_pdt;
     uint64_t full_index = 0;
     uint64_t partial_index = 0;
     double cursor = 0.0;
@@ -141,6 +256,7 @@ void ParseMediaPlaylistBody(const std::vector<std::string>& lines, const std::st
         pending_has_duration = false;
         pending_range_len = -1;
         pending_range_off = -1;
+        pending_pdt.clear();
     };
 
     for (size_t li = 0; li < lines.size(); ++li) {
@@ -179,6 +295,28 @@ void ParseMediaPlaylistBody(const std::vector<std::string>& lines, const std::st
             // TS 段按 ABR 惯例视为以 IDR 开头（实际是否 IDR 要逐包解析才知道）；
             // fMP4 段要等 ProbeSegments 拿到 tfdt 才置真。
             seg.starts_with_keyframe = (seg.container == model::SegmentContainer::MPEG_TS);
+            // 墙钟：这一处 PDT 标注的就是本分片的起点
+            if (!pending_pdt.empty()) {
+                model::HlsProgramDateTimeSample sample;
+                sample.segment_index = static_cast<int>(full_index);
+                sample.relative_seconds = seg.start_seconds;
+                double epoch = 0.0;
+                if (ParseIso8601DateTime(pending_pdt, epoch)) {
+                    sample.epoch_seconds = epoch;
+                    pl.program_date_time_samples.push_back(sample);
+                    if (!pl.has_program_date_time) {
+                        pl.has_program_date_time = true;
+                        pl.program_date_time = pending_pdt;
+                        pl.program_date_time_valid = true;
+                        pl.program_date_time_epoch_s = epoch;
+                    }
+                } else if (!pl.has_program_date_time) {
+                    // 原文仍然保留：报告要能说"写了但这串解析不了"，而不是"没写"
+                    pl.has_program_date_time = true;
+                    pl.program_date_time = pending_pdt;
+                    pl.program_date_time_valid = false;
+                }
+            }
             if (pending_discontinuity)
                 ++pl.discontinuity_count;
             if (pending_has_duration)
@@ -282,12 +420,81 @@ void ParseMediaPlaylistBody(const std::vector<std::string>& lines, const std::st
             const auto attrs = mt::ParseHlsAttributes(body);
             mt::AttrDouble(attrs, "PART-TARGET", pl.part_target_seconds);
             pl.low_latency = true;
+        } else if (name == "#EXT-X-PROGRAM-DATE-TIME") {
+            // 不立刻落库：它标注的是"紧跟着的那个分片"，要等 URI 行才知道是哪一片。
+            pending_pdt = body;
+        } else if (name == "#EXT-X-START") {
+            const auto attrs = mt::ParseHlsAttributes(body);
+            if (mt::AttrDouble(attrs, "TIME-OFFSET", pl.start_time_offset_s)) {
+                pl.has_start = true;
+                pl.start_precise = mt::AttrBool(attrs, "PRECISE");
+            }
+        } else if (name == "#EXT-X-SKIP") {
+            // delta update：这份列表省略了被跳过的分片，客户端要靠 MEDIA-SEQUENCE 补位。
+            const auto attrs = mt::ParseHlsAttributes(body);
+            pl.has_skip = true;
+            pl.skipped_segments = mt::AttrInt64Or(attrs, "SKIPPED-SEGMENTS", 0);
+        } else if (name == "#EXT-X-DATERANGE") {
+            if (static_cast<uint32_t>(pl.date_ranges.size()) >= options.max_date_ranges) {
+                pl.truncated = true;
+                continue;
+            }
+            const auto attrs = mt::ParseHlsAttributes(body);
+            model::HlsDateRangeInfo dr;
+            dr.index = static_cast<int>(pl.date_ranges.size());
+            dr.id = mt::AttrString(attrs, "ID");
+            dr.class_id = mt::AttrString(attrs, "CLASS");
+            dr.start_date = mt::AttrString(attrs, "START-DATE");
+            dr.end_date = mt::AttrString(attrs, "END-DATE");
+            dr.has_duration = mt::AttrDouble(attrs, "DURATION", dr.duration_seconds);
+            dr.has_planned_duration =
+                mt::AttrDouble(attrs, "PLANNED-DURATION", dr.planned_duration_seconds);
+            dr.end_on_next = mt::AttrBool(attrs, "END-ON-NEXT");
+            dr.scte35_cmd = mt::AttrString(attrs, "SCTE35-CMD");
+            dr.scte35_out = mt::AttrString(attrs, "SCTE35-OUT");
+            dr.scte35_in = mt::AttrString(attrs, "SCTE35-IN");
+            dr.has_scte35_cmd = !dr.scte35_cmd.empty();
+            dr.has_scte35_out = !dr.scte35_out.empty();
+            dr.has_scte35_in = !dr.scte35_in.empty();
+            for (const auto& kv : attrs) {
+                if (kv.first.rfind("X-", 0) == 0)
+                    dr.client_attributes.emplace_back(kv.first, kv.second);
+            }
+            dr.playlist_index = pl.index;
+            dr.segment_index = static_cast<int>(full_index);
+            // 相对秒要到解析完再算：一是需要 PDT 基准，二是需要全部分片的起点表。
+            pl.date_ranges.push_back(std::move(dr));
         }
     }
 
     pl.total_duration_seconds = cursor;
     if (pending_discontinuity)
         pl.discontinuity_dangling = true;
+
+    // DATERANGE 的相对秒：墙钟差值要减掉清单起点那一处 PDT 才能变成"清单内第几秒"。
+    // 没有 PDT 基准时（很常见：纯 VOD 不写 PDT）就留 -1，报告里只说"标记存在、
+    // 但缺少基准无法落到时间轴"，而不是编一个 0 出来。
+    if (!pl.date_ranges.empty() && pl.has_program_date_time && pl.program_date_time_valid) {
+        for (model::HlsDateRangeInfo& dr : pl.date_ranges) {
+            double start_epoch = 0.0;
+            if (!ParseIso8601DateTime(dr.start_date, start_epoch))
+                continue;
+            const double rel = start_epoch - pl.program_date_time_epoch_s;
+            if (rel < -0.5)
+                continue; // 早于清单第一个分片：落在窗口外
+            dr.at_seconds = rel;
+            for (size_t i = 0; i < pl.segments.size(); ++i) {
+                const model::SegmentInfo& seg = pl.segments[i];
+                if (seg.partial)
+                    continue;
+                const double end = seg.start_seconds + (seg.has_duration ? seg.duration_seconds : 0.0);
+                if (rel >= seg.start_seconds - 0.001 && rel < end) {
+                    dr.segment_index = static_cast<int>(i);
+                    break;
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -349,6 +556,32 @@ void ParseMasterBody(const std::vector<std::string>& lines, const std::string& b
                 pending_variant_index = static_cast<int>(out.variants.size());
                 out.variants.push_back(v);
                 pending_variant = true;
+                continue;
+            }
+            if (name == "#EXT-X-I-FRAME-STREAM-INF") {
+                // 快进/拖动用的纯 I 帧档。它的 URI 写在属性里（没有紧随其后的一行），
+                // 所以不参与 pending_variant 机制。
+                if (out.variants.size() >= options.max_variants) {
+                    out.truncated = true;
+                    continue;
+                }
+                const auto attrs = mt::ParseHlsAttributes(body);
+                model::HlsVariantInfo v;
+                v.index = static_cast<int>(out.variants.size());
+                v.iframe_only = true;
+                v.uri = mt::AttrString(attrs, "URI");
+                v.bandwidth_bps = mt::AttrInt64Or(attrs, "BANDWIDTH", 0);
+                v.average_bandwidth_bps = mt::AttrInt64Or(attrs, "AVERAGE-BANDWIDTH", 0);
+                v.codecs = mt::AttrString(attrs, "CODECS");
+                v.resolution = mt::AttrString(attrs, "RESOLUTION");
+                v.video_group = mt::AttrString(attrs, "VIDEO");
+                mt::AttrDouble(attrs, "FRAME-RATE", v.frame_rate);
+                ParseResolution(v.resolution, v.width, v.height);
+                mt::SplitCodecs(v.codecs, v.video_codec, v.audio_codec);
+                if (!v.uri.empty() && out.playlists.size() < options.max_playlists) {
+                    v.playlist_index = add_playlist(v.uri, "iframe", v.index, std::string());
+                }
+                out.variants.push_back(v);
                 continue;
             }
             if (name == "#EXT-X-MEDIA") {
@@ -504,6 +737,17 @@ std::vector<double> DiscontinuityTimes(const model::MediaPlaylistInfo& pl) {
     return times;
 }
 
+// (a, b] 这个下标区间里有没有 EXT-X-DISCONTINUITY。
+// 墙钟跳变只在"没有 discontinuity 的地方"才算异常 —— 拼接点之后 PDT 重设是规范
+// 允许的，拿它去报漂移就成了误报。
+bool HasDiscontinuityBetween(const model::MediaPlaylistInfo& pl, int a, int b) {
+    for (int i = a + 1; i <= b && i < static_cast<int>(pl.segments.size()); ++i) {
+        if (i >= 0 && pl.segments[static_cast<size_t>(i)].discontinuity_before)
+            return true;
+    }
+    return false;
+}
+
 bool SameTimes(const std::vector<double>& a, const std::vector<double>& b, double tolerance) {
     if (a.size() != b.size())
         return false;
@@ -628,6 +872,13 @@ void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Hls
         model::StreamingIssueCode::kHlsMissingInitSection,            model::StreamingIssueCode::kHlsEncryptionKey,
         model::StreamingIssueCode::kHlsPartialSegment,
         model::StreamingIssueCode::kHlsLiveMissingMediaSequence,
+        model::StreamingIssueCode::kHlsDateRangeOpenEnded,
+        model::StreamingIssueCode::kHlsDateRangeInvalidDate,
+        model::StreamingIssueCode::kHlsProgramDateTimeInvalid,
+        model::StreamingIssueCode::kHlsProgramDateTimeDrift,
+        model::StreamingIssueCode::kHlsIframeVariantIncomplete,
+        model::StreamingIssueCode::kHlsStartOffsetOutOfRange,
+        model::StreamingIssueCode::kHlsDeltaUpdateWithoutSequence,
     };
     model::RemoveIssuesByCode(out.issues, kOwnCodes);
 
@@ -786,6 +1037,149 @@ void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Hls
                       model::IssueSeverity::Info, static_cast<double>(pl.partial_count), 0.0, 1, -1.0, playlist_index,
                       pl.variant_index);
         }
+
+        // ---- 7a) EXT-X-PROGRAM-DATE-TIME：解析失败 / 与媒体时间轴走偏 ----
+        // 墙钟是广告插入、DVR 回看、多路对齐的唯一锚点。写错比不写更危险：
+        // 播放器不会校验，只会在错误的时间点插广告，或按错的时间 seek。
+        if (pl.has_program_date_time && !pl.program_date_time_valid) {
+            PushIssue(out, model::StreamingIssueCode::kHlsProgramDateTimeInvalid,
+                      "EXT-X-PROGRAM-DATE-TIME 无法解析",
+                      label + " 的 EXT-X-PROGRAM-DATE-TIME=\"" + pl.program_date_time +
+                          "\" 不是合法的 ISO 8601 时间（期望形如 2026-01-01T00:00:00.000Z 或带 ±hh:mm 时区）。",
+                      "按 ISO 8601 重写该标签；带时区偏移（Z 或 ±hh:mm），不要只写本地时间。",
+                      model::IssueSeverity::Warning, 0.0, 0.0, 1, -1.0, playlist_index, pl.variant_index);
+        }
+        if (pl.program_date_time_samples.size() >= 2) {
+            int drift_count = 0;
+            double worst_drift = 0.0;
+            double first_at = -1.0;
+            for (size_t s = 1; s < pl.program_date_time_samples.size(); ++s) {
+                if (IsStreamingCancelled(cancel))
+                    return;
+                const model::HlsProgramDateTimeSample& prev = pl.program_date_time_samples[s - 1];
+                const model::HlsProgramDateTimeSample& cur = pl.program_date_time_samples[s];
+                if (HasDiscontinuityBetween(pl, prev.segment_index, cur.segment_index))
+                    continue; // 拼接点之后重设墙钟是允许的
+                const double media = cur.relative_seconds - prev.relative_seconds;
+                const double wall = cur.epoch_seconds - prev.epoch_seconds;
+                const double diff = std::fabs(wall - media);
+                if (diff > options.program_date_time_drift_tolerance_s) {
+                    ++drift_count;
+                    if (diff > worst_drift)
+                        worst_drift = diff;
+                    if (first_at < 0.0)
+                        first_at = cur.relative_seconds;
+                }
+            }
+            if (drift_count > 0) {
+                PushIssue(out, model::StreamingIssueCode::kHlsProgramDateTimeDrift, "墙钟与媒体时间轴不一致",
+                          label + " 有 " + std::to_string(drift_count) +
+                              " 处 EXT-X-PROGRAM-DATE-TIME 与 EXTINF 累计时长对不上，最大偏差 " +
+                              FormatSeconds(worst_drift) + " 秒（容差 " +
+                              FormatSeconds(options.program_date_time_drift_tolerance_s) + " 秒）。",
+                          "两处 PDT 之差必须等于它们之间所有 EXTINF 之和（discontinuity 处除外）。"
+                          "广告插播与 DVR 定位都按墙钟算，偏差会导致广告落在错误的时间点。",
+                          model::IssueSeverity::Warning, worst_drift,
+                          options.program_date_time_drift_tolerance_s, drift_count, first_at, playlist_index,
+                          pl.variant_index);
+            }
+        }
+
+        // ---- 7b) EXT-X-START：推荐起点是否落在这份清单的时长范围内 ----
+        // TIME-OFFSET 是相对清单起点的偏移（负值相对末尾）。绝对值超过总时长时，
+        // 播放器要么忽略它、要么从 0 起播 —— 服务端以为配了"从第 30 秒开始"，实际没有。
+        if (pl.has_start && pl.total_duration_seconds > 0.0 &&
+            std::fabs(pl.start_time_offset_s) > pl.total_duration_seconds + 0.001) {
+            PushIssue(out, model::StreamingIssueCode::kHlsStartOffsetOutOfRange,
+                      "EXT-X-START 的起点超出台长",
+                      label + " 声明 EXT-X-START:TIME-OFFSET=" + FormatSeconds(pl.start_time_offset_s) +
+                          "，但清单只覆盖 " + FormatSeconds(pl.total_duration_seconds) +
+                          " 秒；播放器会忽略这个起点。",
+                      "把 TIME-OFFSET 调进 [-总时长, +总时长] 区间；直播场景下它通常是几秒的负偏移"
+                      "（从直播边缘后退一点起播）。",
+                      model::IssueSeverity::Warning, pl.start_time_offset_s, pl.total_duration_seconds, 1, -1.0,
+                      playlist_index, pl.variant_index);
+        }
+
+        // ---- 7c) EXT-X-SKIP：delta update 少了序号基准就补不回时间轴 ----
+        // SKIPPED-SEGMENTS 把"这份列表比上一份少了哪些分片"说清楚了，但没说这些分片
+        // 的绝对序号 —— 那是 EXT-X-MEDIA-SEQUENCE 的活。缺了它，客户端只能从 0 数起，
+        // 于是 seek / 断点续传 / 广告去重全部错位。
+        if (pl.has_skip && !pl.has_media_sequence) {
+            PushIssue(out, model::StreamingIssueCode::kHlsDeltaUpdateWithoutSequence,
+                      "delta update 缺少序号基准",
+                      label + " 用了 EXT-X-SKIP（SKIPPED-SEGMENTS=" + std::to_string(pl.skipped_segments) +
+                          "），但没有 EXT-X-MEDIA-SEQUENCE，被跳过的分片无法定位到绝对序号。",
+                      "delta update 必须同时给 EXT-X-MEDIA-SEQUENCE（当前首片的绝对序号），"
+                      "否则客户端重建不出完整时间轴。",
+                      model::IssueSeverity::Warning, static_cast<double>(pl.skipped_segments), 0.0, 1, -1.0,
+                      playlist_index, pl.variant_index);
+        }
+
+        // ---- 7d) EXT-X-DATERANGE：广告/章节标记的完整性 ----
+        if (!pl.date_ranges.empty()) {
+            int invalid_dates = 0;
+            int open_ended = 0;
+            int scte_open_ended = 0;
+            std::string first_bad_date;
+            std::string first_open_id;
+            double first_open_at = -1.0;
+            for (const model::HlsDateRangeInfo& dr : pl.date_ranges) {
+                double epoch = 0.0;
+                if (dr.start_date.empty() || !ParseIso8601DateTime(dr.start_date, epoch)) {
+                    ++invalid_dates;
+                    if (first_bad_date.empty())
+                        first_bad_date = dr.start_date;
+                }
+                // END-ON-NEXT=YES 要靠 CLASS 找"下一段"，没有 CLASS 就无从判定结束点
+                const bool definite = dr.HasDefiniteEnd() && !(dr.end_on_next && dr.class_id.empty());
+                if (!definite) {
+                    ++open_ended;
+                    if (dr.HasScte35())
+                        ++scte_open_ended;
+                    if (first_open_id.empty()) {
+                        first_open_id = dr.id.empty() ? dr.class_id : dr.id;
+                        first_open_at = dr.at_seconds;
+                    }
+                }
+            }
+            if (invalid_dates > 0) {
+                PushIssue(out, model::StreamingIssueCode::kHlsDateRangeInvalidDate,
+                          "EXT-X-DATERANGE 的 START-DATE 不合法",
+                          label + " 有 " + std::to_string(invalid_dates) + " 条 EXT-X-DATERANGE 的 START-DATE"
+                                  " 缺失或不是合法 ISO 8601 时间" +
+                              (first_bad_date.empty() ? std::string("（首条为空）")
+                                                      : "（首条为 \"" + first_bad_date + "\"）") +
+                              "，广告位无法换算成时间轴上的位置。",
+                          "START-DATE 是 EXT-X-DATERANGE 的必填属性，格式与 EXT-X-PROGRAM-DATE-TIME 一致；"
+                          "补上后播放器才能按墙钟触发插播。",
+                          model::IssueSeverity::Warning, static_cast<double>(invalid_dates), 0.0, invalid_dates,
+                          -1.0, playlist_index, pl.variant_index);
+            }
+            if (open_ended > 0) {
+                // SCTE-35 开口（有 OUT 没 IN）比普通章节开口严重：广告时段算不出时长，
+                // 播放器可能一直停在"广告中"。
+                const model::IssueSeverity severity = (scte_open_ended > 0) ? model::IssueSeverity::Warning
+                                                                            : model::IssueSeverity::Info;
+                std::string detail = label + " 有 " + std::to_string(open_ended) +
+                                     " 条 EXT-X-DATERANGE 定位不了结束点（既无 END-DATE/DURATION，"
+                                     "也不是 END-ON-NEXT + CLASS）";
+                if (first_open_id.empty())
+                    detail += "，首条无 ID/CLASS";
+                else
+                    detail += "，首条为 \"" + first_open_id + "\"";
+                if (scte_open_ended > 0)
+                    detail += "；其中 " + std::to_string(scte_open_ended) + " 条带 SCTE-35 标记";
+                detail += "。";
+                PushIssue(out, model::StreamingIssueCode::kHlsDateRangeOpenEnded, "广告/章节标记定位不了结束点",
+                          detail,
+                          "给每条 EXT-X-DATERANGE 补 END-DATE 或 DURATION；"
+                          "若结束点由下一段决定，写 END-ON-NEXT=YES 并同时给出 CLASS。"
+                          "SCTE35-OUT 必须配一条 SCTE35-IN 或明确的时长。",
+                          severity, static_cast<double>(open_ended), 0.0, open_ended, first_open_at, playlist_index,
+                          pl.variant_index);
+            }
+        }
     }
 
     // ---- 8) 直播播放列表的序号基准 ----
@@ -812,6 +1206,39 @@ void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Hls
                   "若这份内容是录制下来的活动直播，加 #EXT-X-PLAYLIST-TYPE:EVENT 同样能消除该告警。",
                   model::IssueSeverity::Warning, static_cast<double>(pl.SegmentCount()), 0.0, 1, -1.0, playlist_index,
                   pl.variant_index);
+    }
+
+    // ---- 8b) EXT-X-I-FRAME-STREAM-INF：快进档本身能不能用 ----
+    // 快进/拖动档是"只含 I 帧的分片序列"。URI 或 BANDWIDTH 缺一个，客户端就无法
+    // 构造请求，拖动条会退化成整段 GOP 解码（又慢又卡），而清单看上去仍然"合法"。
+    {
+        int bad = 0;
+        std::string first_detail;
+        for (const model::HlsVariantInfo& v : out.variants) {
+            if (!v.iframe_only)
+                continue;
+            std::string why;
+            if (v.uri.empty())
+                why = "缺少 URI 属性";
+            else if (v.bandwidth_bps <= 0)
+                why = "缺少 BANDWIDTH 属性";
+            if (why.empty())
+                continue;
+            ++bad;
+            if (first_detail.empty()) {
+                first_detail = "variant #" + std::to_string(v.index) + " " + why;
+                if (!v.resolution.empty())
+                    first_detail += "（RESOLUTION=" + v.resolution + "）";
+            }
+        }
+        if (bad > 0) {
+            PushIssue(out, model::StreamingIssueCode::kHlsIframeVariantIncomplete,
+                      "EXT-X-I-FRAME-STREAM-INF 信息不完整",
+                      first_detail + "；共 " + std::to_string(bad) + " 条快进档不可用。",
+                      "EXT-X-I-FRAME-STREAM-INF 必须同时给出 URI 和 BANDWIDTH，"
+                      "且 URI 指向只含 I 帧分片的播放列表。",
+                      model::IssueSeverity::Warning, static_cast<double>(bad), 0.0, bad, -1.0, -1, -1);
+        }
     }
 
     // ---- 9) 跨播放列表的 discontinuity 对齐（同一个 variant 的视频轨与其音轨）----

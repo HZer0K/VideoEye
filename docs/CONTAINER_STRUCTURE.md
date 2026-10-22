@@ -45,7 +45,7 @@
 |------|------|---------|
 | MP4 / MOV / fMP4 | 深：box 树到字段级 + 样本表交叉校验（stbl / elst / moof-traf-trun / faststart） | 递归深度上限 8；单表条目上限 `max_entries_per_table` |
 | MKV / WebM | 深：SeekHead / Info / Tracks(Video/Audio/Colour/Mastering) / Cluster / Cues / Chapters / Tags / Attachments | `BlockAdditions` 只列节点不展开 |
-| MPEG-TS | 中深：包长自适应、失步重同步、PAT/PMT 跨包组装、PSI 描述符、SDT、PCR、CC 统计 | 默认只扫前 50 万包（可配）；不做 PES 载荷解析 |
+| MPEG-TS | 深：包长自适应、失步重同步、PAT/PMT 跨包组装、PSI 描述符、SDT、PCR、CC 统计、**PES 载荷级的 IDR / 断流检查**（仅 H.264 / HEVC） | 默认只扫前 50 万包（可配）；载荷扫描可用 `scan_pes_payload=false` 关掉 |
 | FLV | 中深：AMF0 `onMetaData`、Enhanced-FLV fourcc（HEVC/AV1/VP9）、tag 级时间戳/截断扫描 | Script Tag 只取标量键值 |
 | AVI | 中深：RIFF chunk 树 + `strh`/`strf` + `idx1`/`indx`/`dmlh`/`AVIX` 索引校验 | `movi` 载荷不展开；QC 扫描跳过媒体数据 |
 | ASF / WMV | 中深：7 类对象 GUID 有名字与字段、对象大小/Data Object/时长校验 | Header Extension / Metadata / DRM 归 `Unknown Object` |
@@ -94,13 +94,16 @@ btrt        bufferSizeDB, maxBitrate, avgBitrate
 ## 3. MPEG-TS 的深度与代价
 
 TS 是直播与 HLS 分片的主格式，也是这一层里唯一"参数一改结论就变"的解析器。
-`TsStructureOptions` 暴露三个旋钮：
+`TsStructureOptions` 暴露六个旋钮：
 
 | 选项 | 默认 | 为什么要有 |
 |------|------|-----------|
 | `max_scan_packets` | 500000（≈94 MB） | 旧实现写死 5000 包：10 Mbps 的 2 小时节目只看到前 0.8 秒，结论却标成功 |
 | `max_resync_bytes` | 1 MiB | 旧实现遇到第一个非 `0x47` 字节就 `break`，一次传输错误丢掉后面整个文件 |
 | `max_pes_per_pid` | 8 | 树里每条流展示的 PES 采样条数 |
+| `scan_pes_payload` | `true` | 载荷级检查的**总开关**。关掉后 `pes_payload_scanned=false`，QC 里那两条规则整族静默 —— 显式关掉比"扫了但没报"诚实 |
+| `max_no_idr_interval_s` | 10.0 | "多久没有 IDR 才算异常"。10 s 对应常见 2 s GOP × 5，再长基本可断定是编码/封装问题；同时决定 `video_pids_without_idr` 的门槛（跨度不到阈值的短流不计入，否则对短分片恒报） |
+| `max_pid_gap_s` | 5.0 | "一个 PID 停多久算断流"。低于 2 s 会和正常的 B 帧重排/音视频交错抖动混淆 |
 
 结论里必须能看出来的东西：`metadata["已扫描包数"]`、`metadata["估算总包数"]`、
 `metadata["扫描是否完整"]`、`metadata["失步重同步次数"]`、`metadata["连续计数错误"]`。
@@ -117,10 +120,27 @@ TS 是直播与 HLS 分片的主格式，也是这一层里唯一"参数一改�
 - **PCR**：首末 PCR 与最大间隔（27 MHz → ms），用来判断"这个流的时钟稳不稳"。
 - **连续计数**：按 PID 记 CC 错误；`discontinuity_indicator` 置位时不记错（那是拼接点）。
 - **加扰**：`transport_scrambling_control != 0` 的包按 PID 计数。
+- **PES 载荷级**（`scan_pes_payload`）：拆掉 PES 头之后继续往 ES 里看，两件事——
+  ① **IDR 间隔**：H.264（`stream_type 0x1B`）认 NAL type 5，HEVC（`0x24/0x25`）认 19/20/21
+  （IDR_W_RADL / IDR_N_LP / CRA），用 4 字节滑窗找 `00 00 01 XX` 起点；首末 IDR 与最大间隔
+  按 33 位 90 kHz PTS 回绕算。② **PID 断流**：同一个 PID 相邻两个 PES 的 PTS 间隔，
+  外加"尾部缺口"——某 PID 最后一个 PES 离节目最新 PTS 差多少。后者必须做，
+  否则**彻底死掉的 PID 没有"下一个 PES"可减**，永远算不出断流。
+
+载荷扫描只覆盖 H.264 / HEVC。VP9、AV1、MPEG-2 在这里**明确不认 NAL**：
+认错 NAL 头会把随机字节读成 type 5，报出来的"IDR 间隔"纯属虚构 —— 宁可不报，也不给错结论。
+加扰包整条跳过（载荷是密文）。
+
+结论里必须能看出来的东西：`metadata["已扫描包数"]`、`metadata["估算总包数"]`、
+`metadata["扫描是否完整"]`、`metadata["失步重同步次数"]`、`metadata["连续计数错误"]`
+以及载荷级的 `metadata["IDR 数"]`、`metadata["最长无 IDR(ms)"]`、`metadata["最大 PES 间隔(ms)"]`。
 
 包长与"包本体长度"是两件事，别混：`192` 是步长（前面 4 字节 TP_extra_header），
 `204` 是步长（后面 16 字节 RS 校验），而 **TS 包本体恒为 188 字节**。
 读取用步长、字段边界用 188，混用会把 TP 头/校验尾当载荷。
+载荷扫描同理：PES 头长度按 `PES_header_data_length` 算（`PESHeaderLength()`），
+不是"跳过固定的 9 字节"—— 带 PTS/DTS 的 14 字节、不带时只有 6 字节，
+写死偏移会把 5 个时间戳字节当 NAL 扫。
 
 ## 4. 结论怎么进 QC：`ts_transport`
 
@@ -131,9 +151,9 @@ TS 是直播与 HLS 分片的主格式，也是这一层里唯一"参数一改�
 （扁平值对象，见 `core/domain/model/TransportStreamInfo.h`），
 `AnalysisEngine` 在扫描前对 TS 输入按字节再扫一遍（预算独立：
 `AnalysisOptions::ts_transport_max_packets`，默认 20 万包），填进
-`AnalysisResult::ts_transport`，由 `container.ts.*` 七条规则消费。
+`AnalysisResult::ts_transport`，由 `container.ts.*` 九条规则消费（传输层七条 + 载荷级两条）。
 
-四条必须守住的口径：
+五条必须守住的口径：
 
 - **只对本地 TS 生效**：网络源不重扫（URL 读两遍会拿到不同的直播窗口）；
 - **`analyzed=false` 时整族规则静默**：没跑过既不是"没问题"也不是"有问题"；
@@ -144,6 +164,10 @@ TS 是直播与 HLS 分片的主格式，也是这一层里唯一"参数一改�
   都退化成"没有证据"。所以 `TransportStreamInfo` 另设 `applicable`（本地文件 +
   iformat 是 mpegts + 选项没关），报告层据此在 `applicable && !analyzed` 时显式告警，
   而不是静默略过这一节。
+- **载荷级另有独立开关**：`pes_payload_scanned` 是传输层之外的第二个"跑没跑"。
+  传输层扫了但载荷没扫（非 H.264/HEVC、或 `scan_pes_payload=false`）时，
+  `container.ts.no_idr` / `container.ts.pid_stall` 必须静默 ——
+  这时 `max_no_idr_interval_ms == 0` 的含义是"没测"，不是"很健康"。
 
 报告里也落了原始数字（JSON 的 `metrics.ts_transport`、TXT/HTML 的"MPEG-TS 传输层"
 一节）。理由：规则只在**命中**时才有 detail，未命中什么都不留，于是"连续计数错误 = 0"

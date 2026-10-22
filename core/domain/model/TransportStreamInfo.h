@@ -50,6 +50,25 @@ struct TransportStreamInfo {
     int64_t scrambled_packets = 0;   // 加扰包数
     double pcr_max_gap_ms = 0.0;     // 各 PCR PID 的最大 PCR 间隔（0 = 没采到 PCR）
 
+    // ---- PES 载荷级（TsStructureOptions::scan_pes_payload）----
+    //
+    // 只读包头看不出下面两件事：视频一路没有随机接入点、某个 PID 中途断了。
+    // 这两个字段都是"扫描窗口内的事实"，与 pcr_max_gap_ms 同口径。
+    bool pes_payload_scanned = false;
+    int pes_streams_checked = 0;      // 参与载荷级跟踪的 ES PID 数（视频 + 音频）
+
+    // 最长的一段"没有任何 IDR/CRA"的视频时长。0 = 无从判定（没有视频 PID / 都只采到 1 个 PES）。
+    // 只在 H.264 / HEVC 上计算 —— 其它编码的随机接入点标记不同，宁缺勿错。
+    double max_no_idr_interval_ms = 0.0;
+    std::string max_no_idr_pid;       // 上述间隔出在哪个 PID（已格式化成 0x....）
+    int64_t idr_count = 0;            // 全窗口识别到的 IDR/CRA 总数
+    int video_pids_without_idr = 0;   // 整段窗口一个 IDR 都没看到的视频 PID 数
+
+    // 同一 PID 相邻 PES 的最大时间间隔（含"该 PID 提前断流到窗口末尾"的情形）。
+    double max_pid_gap_ms = 0.0;
+    std::string max_pid_gap_pid;
+    int stalled_pids = 0;             // 间隔超过阈值的 PID 数（阈值在规则里）
+
     // analyzed=false 时的原因（文件打不开 / 不是 TS / 取消）
     std::string error_message;
 

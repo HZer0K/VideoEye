@@ -35,9 +35,13 @@ struct HlsManifestOptions {
     uint32_t max_playlists = 64;                // 最多加载多少个子播放列表
     uint32_t max_segments_per_playlist = 5000;  // 单个 media playlist 最多收多少完整分片
     uint32_t max_partials_per_playlist = 512;   // EXT-X-PART 最多收多少
+    uint32_t max_date_ranges = 2048;            // EXT-X-DATERANGE 最多收多少（广告位可以很多）
     bool load_sub_playlists = true;             // master 是否递归加载子播放列表
     double target_duration_tolerance_s = 0.001; // EXTINF 与目标时长的比较容差（秒）
     double duration_jitter_ratio = 0.25;        // (max-min)/mean 超过即判为时长抖动
+    // EXT-X-PROGRAM-DATE-TIME 与 EXTINF 累计时长的允许偏差（秒）。
+    // 相邻两处采样之间，"墙钟走了多久"与"媒体时间走了多久"的差值超过它即判漂移。
+    double program_date_time_drift_tolerance_s = 1.0;
     // 单个清单文件的字节上限（master 与每个子播放列表各自计数）。
     // 读到上限就放弃而不是"读到哪算哪" —— 半份清单的校验结论没有意义，
     // 宁可明确报"文件过大"。见 videoeye::manifest::ManifestReadOptions::max_bytes。
