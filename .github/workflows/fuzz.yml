@@ -88,8 +88,20 @@ jobs:
           seconds="${{ github.event.inputs.seconds_per_target || '120' }}"
           mkdir -p build/fuzz/artifacts
           status=0
-          for f in build/fuzz/tests/fuzz/Fuzz*; do
-            [[ -x "$f" ]] || continue
+          ran=0
+          # 产物在 build/fuzz/bin/：顶层 CMakeLists.txt 有
+          #   set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+          #   （链接日志为 `Linking CXX executable bin/FuzzXxx`）。
+          # ❗ 别指向 build/fuzz/tests/fuzz/ —— 那里只有 AUTOGEN 生成的
+          #   FuzzXxx_autogen 目录（CMAKE_AUTOMOC 是全局开的），一个可执行文件都没有。
+          #   旧写法 `for f in build/fuzz/tests/fuzz/Fuzz*` + `[[ -x "$f" ]]`
+          #   因此匹配到的是 4 个目录：目录的 x 位为真 → 去执行目录 →
+          #   "Is a directory" → status=1 → job 红。从 e7c1028 起一直如此，
+          #   而**四个 fuzzer 一个都没跑过**，这个 job 的红是假红、绿也是假绿。
+          shopt -s nullglob
+          for f in build/fuzz/bin/Fuzz*; do
+            # 只认普通文件：目录/符号链接一律跳过（-x 对目录也成立，这里是坑点）
+            [[ -f "$f" && -x "$f" ]] || continue
             name="$(basename "$f")"
             echo "::group::$name"
             # 每次跑给一个独立 corpus 目录：libFuzzer 会把有价值的输入写回去，
@@ -104,7 +116,15 @@ jobs:
               -max_len=65536 \
               -print_final_stats=1 || status=1
             echo "::endgroup::"
+            ran=$((ran + 1))
           done
+          # 一个入口都没跑起来时必须红，不能静默通过 —— 否则"入口烂掉了"这件事
+          # 又会退回成"job 是绿的"，跟这个 job 存在的理由正好相反。
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::没有找到任何 fuzz 入口（build/fuzz/bin/Fuzz*），构建可能静默失败"
+            exit 1
+          fi
+          echo "本次跑过的 fuzz 入口数: $ran"
           exit $status
 
       - name: Upload crash artifacts
