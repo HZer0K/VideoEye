@@ -93,9 +93,13 @@ int CountBits16(uint16_t value) {
     return count;
 }
 
-// 在 E-AC-3 BSI 前若干字节里找 Dolby JOC 的 ASCII 标记。
-// 这不是规范级解析（JOC 的 addbsi 载荷格式不在公开的 E-AC-3 基础规范里），
-// 因此只在命中时标记、并记录来源；找不到就不声称支持 Atmos。
+// 在 E-AC-3 载荷前若干字节里找 Dolby JOC 的 ASCII 标记。
+//
+// ❗ 这是**启发式线索，不是规范级解析**：JOC 的 addbsi 载荷格式不在公开的
+// E-AC-3 基础规范里，这里只是在固定窗口内做子串搜索 —— 普通音频数据里恰好
+// 出现 0x6A 0x6F 0x63 这三个字节就会命中（实测把 "joc" 塞进任意载荷位置即可
+// 让非 Atmos 素材变成 Atmos）。因此命中只能标成"疑似"，由调用方按线索呈现，
+// 绝不能当成确定结论。
 bool FindJocMarker(const uint8_t* data, size_t size, int& complexity_index) {
     if (data == nullptr) return false;
     const size_t limit = std::min<size_t>(size, 96);
@@ -447,7 +451,9 @@ bool AudioBitstreamParser::ParseAc3(const uint8_t* data, size_t size, bool force
 
     int complexity_index = -1;
     if (FindJocMarker(data, size, complexity_index)) {
+        // 标记为启发式：调用方不得把它当确定结论输出
         out.atmos_joc = true;
+        out.atmos_heuristic = true;
         out.joc_complexity_index = complexity_index;
     }
     out.valid = out.frame_size_bytes > 0 && out.sample_rate > 0 && out.acmod >= 0 &&

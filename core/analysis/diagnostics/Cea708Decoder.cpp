@@ -91,15 +91,21 @@ void Cea708Decoder::Reset() {
 void Cea708Decoder::PushCcData(uint8_t d0, uint8_t d1, bool packet_start, double ts_seconds) {
     if (packet_start) {
         const int sequence = (d0 >> 6) & 0x03;
-        const int size = d0 & 0x3F;
+        const int size_code = d0 & 0x3F;
+        // ❗ 低 6 bit 是 packet_size_code，**不是**载荷字节数（CEA-708 §8.10.1）：
+        //      packet_size = 2 * packet_size_code - 1
+        //    code == 0 表示 127 字节（特例，不能按 2*0-1 = -1 算）。
+        //   当成字节数会让包边界整体错位，ParsePacket 拿到的是垃圾，
+        //   标准封包的素材会一条字幕都解不出来。
+        const std::size_t size =
+            (size_code == 0) ? 127u : static_cast<std::size_t>(size_code * 2 - 1);
         if (last_sequence_ >= 0 && sequence != ((last_sequence_ + 1) & 0x03)) {
             ++stats_.sequence_gap_count;
         }
         last_sequence_ = sequence;
-        packet_.clear();
-        expected_size_ = static_cast<size_t>(size);
-        if (expected_size_ == 0) return;
-        packet_.push_back(d1);
+        packet_.clear();   // 上一个包没凑满就被新包头打断：残包按丢包处理
+        expected_size_ = size;
+        packet_.push_back(d1);   // 包头后的第一个载荷字节就在这个三元组里
         if (packet_.size() >= expected_size_) {
             ParsePacket(ts_seconds);
             packet_.clear();
@@ -166,11 +172,19 @@ void Cea708Decoder::ParseServiceBlock(int service_number, const uint8_t* data, s
 void Cea708Decoder::HandleDefineWindow(Service& service, int window_id, const uint8_t* args) {
     if (window_id < 0 || window_id > 7) return;
     Window& window = service.windows[window_id];
-    // DefineWindow 的参数里，这里只取"可见"与"行列数"：锚点/样式/优先级不影响
-    // 文本内容，也不参与本项目的画面合成（我们没有 708 渲染器）。
+    // DefineWindow 的 6 字节参数（CEA-708 §8.10.4）：
+    //   [0] 0b00 visible row_lock column_lock priority(3)
+    //   [1] 0b0 relative_positioning anchor_vertical(6)
+    //   [2] anchor_horizontal(8)
+    //   [3] 0b0000 row_count(4)
+    //   [4] 0b00 column_count(6)
+    //   [5] 0b00 window_style(3) pen_style(3)
+    // 这里只取"可见"与"行列数"：锚点/样式/优先级不影响文本内容，也不参与本项目的
+    // 画面合成（我们没有 708 渲染器）。
     const bool visible = (args[0] & 0x20) != 0;
-    const int row_count = std::max(1, static_cast<int>(args[1] & 0x0F));
-    const int col_count = std::max(1, static_cast<int>(args[2] & 0x3F));
+    // ❗ row_count / column_count 在 args[3] / args[4]，不是 args[1] / args[2]。
+    const int row_count = std::max(1, static_cast<int>(args[3] & 0x0F));
+    const int col_count = std::max(1, static_cast<int>(args[4] & 0x3F));
     window.defined = true;
     window.visible = visible;
     if (window.row_count != row_count || window.col_count != col_count) {
@@ -221,23 +235,45 @@ void Cea708Decoder::WriteChar(Service& service, std::uint32_t codepoint) {
     WriteRaw(service, Utf8Encode(codepoint));
 }
 
-void Cea708Decoder::HandleExt1(Service& service, int code) {
-    if (code >= 0x10 && code <= 0x17) {   // G2
+void Cea708Decoder::HandleExt1(Service& service, const uint8_t* data, std::size_t size,
+                               std::size_t& index) {
+    if (index >= size) {
+        index = size;
+        return;
+    }
+    const int code = data[index++];
+    // EXT1 之后的字节决定进哪个扩展集（CEA-708 §8.10.2）：
+    //   0x00-0x1F = C2（1 字节参数）  0x20-0x7F = G2（单字节字符）
+    //   0x80-0x9F = C3（4 字节参数）  0xA0-0xFF = G3（单字节字符）
+    // ❗ 以前把 0x10-0x17 当 G2、0x18-0x1F 当 G3，于是真正的 G2 字符永远出不来，
+    // 而 C2 保留命令倒被当成字符写了出去。
+    if (code >= 0x20 && code <= 0x7F) {          // G2
         const char* text = G2Char(static_cast<uint8_t>(code));
         if (text != nullptr) WriteRaw(service, text);
         return;
     }
-    if (code >= 0x18 && code <= 0x1F) {   // G3：基本是阿拉伯/西里尔，暂不映射
-        if (code == 0x18) WriteChar(service, ' ');
+    if (code >= 0xA0) {                           // G3：基本是阿拉伯/西里尔，暂不映射
+        if (code == 0xA0) WriteChar(service, ' ');
+        return;
     }
-    // C2/C3 都是"跳过若干字节"，由调用方按长度吃掉了
+    ++stats_.command_count;
+    if (code <= 0x1F) {                           // C2
+        index += std::min<std::size_t>(1, size - index);
+        return;
+    }
+    index += std::min<std::size_t>(4, size - index);   // C3
 }
 
 void Cea708Decoder::HandleC1(Service& service, const uint8_t* data, std::size_t size,
                              std::size_t& index, int command) {
     auto need = [&](std::size_t n) { return index + n <= size; };
 
-    if (command >= 0x80 && command <= 0x87) {   // DefineWindow
+    // CEA-708 表 7（C1 指令集）：
+    //   0x80-0x87 保留（5 字节）        0x88 DLY(1)   0x89 DLC(1)   0x8A DLM(1)
+    //   0x8B DSR(1)  0x8C RST(1)        0x8D SPA(3)   0x8E SPC(3)   0x8F SPL(2)
+    //   0x90 SWA(5)  0x91-0x97 保留(5)  0x98-0x9F DF0-DF7 DefineWindow(6)
+    // ❗ DefineWindow 在 0x98-0x9F，不在 0x80-0x87（那里是保留区）。
+    if (command >= 0x98) {   // DF0-DF7 DefineWindow
         if (!need(6)) {
             index = size;
             return;
@@ -322,10 +358,9 @@ void Cea708Decoder::HandleC1(Service& service, const uint8_t* data, std::size_t 
         default:
             break;
     }
-    // 0x91-0x97 保留（5 字节）、0x98-0x9F 保留（4 字节）
+    // 0x80-0x87、0x91-0x97 是 C1 保留命令，各带 5 字节参数
     ++stats_.command_count;
-    const std::size_t skip = (command >= 0x98) ? 4 : 5;
-    index += need(skip) ? skip : (size - index);
+    index += need(5) ? 5 : (size - index);
 }
 
 void Cea708Decoder::ExecuteCommands(Service& service, const uint8_t* data, std::size_t size,
@@ -386,8 +421,7 @@ void Cea708Decoder::ExecuteCommands(Service& service, const uint8_t* data, std::
                     break;
                 }
                 case 0x10: {  // EXT1
-                    if (index >= size) return;
-                    HandleExt1(service, data[index++]);
+                    HandleExt1(service, data, size, index);
                     break;
                 }
                 case 0x18:   // P16：16 位字符，跳过
@@ -494,6 +528,10 @@ void CeaCaptionDecoder::PushTriplet(uint8_t cc_valid, uint8_t cc_type, uint8_t d
                                     double ts_seconds) {
     // cc_valid=0 表示"该字节对无意义"（填充），按规范整对丢弃
     if (cc_valid == 0) return;
+    // cc_type（ATSC A/53 cc_data 三元组）：0 = 608 场 1，1 = 608 场 2，
+    //   2 = DTVCC **packet data**，3 = DTVCC **packet start**。
+    // ❗ 这两个值以前写反了：按 2=起始、3=续包 解，标准封包的 DTVCC 流
+    // 会把包头当载荷、载荷当包头，结果一条字幕都出不来。
     switch (cc_type) {
         case 0:
             cc608_.PushPair(d0, d1, 1, ts_seconds);
@@ -502,10 +540,10 @@ void CeaCaptionDecoder::PushTriplet(uint8_t cc_valid, uint8_t cc_type, uint8_t d
             cc608_.PushPair(d0, d1, 2, ts_seconds);
             break;
         case 2:
-            cc708_.PushCcData(d0, d1, true, ts_seconds);
+            cc708_.PushCcData(d0, d1, false, ts_seconds);
             break;
         case 3:
-            cc708_.PushCcData(d0, d1, false, ts_seconds);
+            cc708_.PushCcData(d0, d1, true, ts_seconds);
             break;
         default:
             break;

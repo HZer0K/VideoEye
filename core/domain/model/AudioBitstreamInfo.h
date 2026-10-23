@@ -50,8 +50,17 @@ struct AudioBitstreamStream {
 
     int64_t packet_count = 0;       // 交给分析器的包数
     int64_t parsed_packets = 0;     // 至少解析出一个帧头的包数
-    int64_t invalid_packets = 0;    // 帧头解析失败的包数
+    int64_t invalid_packets = 0;    // **已支持解析**但帧头校验失败的包数
+    // 该编码尚未实现逐帧位流头解析（MP3/FLAC/PCM ...），这些包既不算成功也不算失败。
+    // 必须与 invalid_packets 分开：混在一起会把"还没做"报成"素材坏了"，
+    // 例如 PCM 会被算成 100% 帧头解析失败并触发 QC 告警。
+    int64_t unsupported_packets = 0;
     int64_t frame_count = 0;        // 解析出的帧数（AAC/AC-3 可能一包多帧）
+
+    // 真正参与过帧头判定的包数（分母只应该是它）
+    int64_t judged_packets() const { return parsed_packets + invalid_packets; }
+    // 该编码是否实现了逐帧解析
+    bool FrameHeaderParsed() const { return unsupported_packets == 0; }
 
     // 位流头里声明的参数
     int sample_rate = 0;
@@ -78,7 +87,11 @@ struct AudioBitstreamStream {
     int dependent_channels = 0;     // 从属子流 chanmap 的声道数
 
     // Dolby Atmos / JOC（Joint Object Coding）
+    // ❗ 当前判定是**启发式**的：在 E-AC-3 载荷前 96 字节里搜 ASCII "joc"，
+    // 没有按扩展语法（addbsi）定位字段。命中的可信度不足以作为确定结论，
+    // 所以 atmos_heuristic 置位，UI/报告必须写成"疑似"。
     bool atmos_joc = false;
+    bool atmos_heuristic = false;
     int joc_complexity_index = -1;
     std::string atmos_source;       // "E-AC-3 addbsi" / "dec3" / "..."
 

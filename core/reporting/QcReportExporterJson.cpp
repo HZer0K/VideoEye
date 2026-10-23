@@ -167,14 +167,21 @@ JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
             node.Set("container_channels", JNumber(static_cast<double>(stream.container_channels)));
             node.Set("bit_rate_kbps", JNumber(static_cast<double>(stream.bit_rate_kbps)));
             node.Set("frame_count", JNumber(static_cast<double>(stream.frame_count)));
+            node.Set("parsed_packets", JNumber(static_cast<double>(stream.parsed_packets)));
             node.Set("invalid_packets", JNumber(static_cast<double>(stream.invalid_packets)));
+            // 未实现逐帧解析的编码（MP3/FLAC/PCM…）：单独一栏，别和 invalid 混在一起
+            node.Set("unsupported_packets", JNumber(static_cast<double>(stream.unsupported_packets)));
             node.Set("has_dialnorm", JsonValue(stream.has_dialnorm));
             node.Set("dialnorm_dbfs", JNumber(static_cast<double>(stream.dialnorm_dbfs)));
             if (stream.dialnorm_delta_available) {
                 node.Set("dialnorm_delta_lu", JNumber(stream.dialnorm_delta_lu));
             }
             node.Set("atmos_joc", JsonValue(stream.atmos_joc));
-            if (stream.atmos_joc) node.Set("atmos_source", JText(stream.atmos_source));
+            if (stream.atmos_joc) {
+                node.Set("atmos_source", JText(stream.atmos_source));
+                // "heuristic" = 只是线索，调用方不得当确定结论用
+                node.Set("atmos_confidence", JText(stream.atmos_heuristic ? "heuristic" : "parsed"));
+            }
             node.Set("vbr", JsonValue(stream.vbr));
             node.Set("params_changed_midstream", JsonValue(stream.params_changed_midstream));
             node.Set("container_mismatch", JsonValue(stream.container_mismatch));

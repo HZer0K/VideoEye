@@ -75,8 +75,17 @@ AnalysisPanel「字幕 / 辅助数据」页 + PlayerPanel 时间轴旁的 SMPTE 
 | 类 | 职责 |
 | --- | --- |
 | `Cea608Decoder` | 一个字节对进、cue 出。按场（field 1/2）分 CC1-CC4 **四个独立通道**，每通道各有"显示 / 预装载"两块显存与三种模式 |
-| `Cea708Decoder` | 一个 cc_data 字节对流进。拼 DTVCC 包（sequence 2 bit + size 6 bit）→ 拆 service block（含扩展服务号）→ 跑 C0/C1 命令与 G0/G1 字符 |
-| `CeaCaptionDecoder` | 门面。吃 MP4 的 2 字节对或 MPEG-2 的 cc_data 三元组，按 cc_type 分流，合并两个解码器的 cue 并按时间排序 |
+| `Cea708Decoder` | 一个 cc_data 字节对流进。拼 DTVCC 包（sequence 2 bit + packet_size_code 6 bit，**真实长度 = 2 × code − 1**，code = 0 表示 127）→ 拆 service block（含扩展服务号）→ 跑 C0/C1 命令与 G0/G1/G2/G3 字符 |
+| `CeaCaptionDecoder` | 门面。吃 MP4 的 2 字节对或 MPEG-2 的 cc_data 三元组，按 cc_type 分流（**3 = packet start，2 = packet data**），合并两个解码器的 cue 并按时间排序 |
+
+两份协议口径（踩过坑，别再改回去）：
+
+- **cc_type**：0 = 608 场 1，1 = 608 场 2，**2 = DTVCC packet data，3 = DTVCC packet start**。
+  两个值写反会让标准封包的 DTVCC 流一条字幕都解不出来；
+- **C1 指令表**：`0x98–0x9F` 才是 DF0–DF7（DefineWindow，6 字节参数，`row_count` 在
+  `args[3]`、`column_count` 在 `args[4]`）；`0x80–0x87` 是保留区；
+- **608 重复控制码**：规范要求控制码连发两遍抗误码，第二遍必须忽略。不抑制时连续两个
+  EOC 会交换两次显存，刚上屏的字幕立刻被换掉（本应 1.0–3.0 s 的 cue 只剩到 1.033 s）。
 
 为什么必须是有状态的解码器，而不是"抽可见字符"：
 
@@ -100,7 +109,7 @@ AnalysisPanel「字幕 / 辅助数据」页 + PlayerPanel 时间轴旁的 SMPTE 
 `SubtitleStreamInfo` 多了两块统计（只对 ClosedCaption 流填充），并汇总进流表的"说明"列：
 
 - `cc608`：`channel_mask`（CC1..CC4 位图）、pop-on / paint-on / roll-up 次数、PAC / mid-row /
-  特殊字符 / 扩展字符计数、XDS 条数、最大行号；
+  特殊字符 / 扩展字符计数、XDS 条数、最大行号、**被抑制的重复控制码数**（`duplicate_control_count`）；
 - `cc708`：出现过的服务号列表、DTVCC 包数 / 服务块数、**包序号跳变次数**（丢包）、窗口数。
 
 配套两条规则：

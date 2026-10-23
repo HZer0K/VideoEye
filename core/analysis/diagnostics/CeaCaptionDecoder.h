@@ -84,6 +84,11 @@ private:
 
     Channel channels_[4];
     bool field_channel_[2] = {false, false};   // 每个场当前选中的是不是第二个通道
+    // 重复控制码抑制：608 的控制码按规范要连发两次（抗误码），第二次必须忽略。
+    // 按通道（已编码场 + 通道）保存上一次处理过的控制字节对，-1 = 没有。
+    // 不抑制的后果很具体：连续两个 EOC 会把两块显存交换两次，刚上屏的
+    // 字幕立刻被换掉，本该显示 2 s 的 cue 只剩 33 ms。
+    int last_control_[4] = {-1, -1, -1, -1};
     std::vector<model::CaptionCue> cues_;
     model::Cea608Stats stats_;
     bool touched_ = false;
@@ -97,7 +102,8 @@ public:
     void Reset();
 
     // 一个 cc_data 字节对。packet_start = true 时 d0 是 DTVCC 包头（sequence 2 bit +
-    // packet_size 6 bit），d1 是该包的第一个载荷字节；false 时 d0/d1 都是载荷。
+    // packet_size_code 6 bit），d1 是该包的第一个载荷字节；false 时 d0/d1 都是载荷。
+    // 只有 cc_type == 3 才是 packet_start，cc_type == 2 是 packet data。
     void PushCcData(uint8_t d0, uint8_t d1, bool packet_start, double ts_seconds);
 
     void Finish(double end_ts_seconds);
@@ -135,7 +141,8 @@ private:
     void HandleDefineWindow(Service& service, int window_id, const std::uint8_t* args);
     void HandleC1(Service& service, const std::uint8_t* data, std::size_t size, std::size_t& index,
                   int command);
-    void HandleExt1(Service& service, int code);
+    void HandleExt1(Service& service, const std::uint8_t* data, std::size_t size,
+                    std::size_t& index);
     Window* ActiveWindow(Service& service);
     void WriteChar(Service& service, std::uint32_t codepoint);
     // 已经是 UTF-8 的文本（G2/G3 表项），不能再走码点编码，否则会被二次编码

@@ -159,7 +159,7 @@ AAC AudioSpecificConfig（含 HE-AAC 的扩展采样率，避免比容器小一�
 | 问题 | 规则 id | 级别 | 判据 |
 | --- | --- | --- | --- |
 | 位流参数与容器声明不一致 | `audio.bitstream.container_mismatch` | Error | 采样率/声道任一项对不上（AAC channel_config=0 的 PCE、E-AC-3 未解析到的从属子流除外） |
-| 帧头解析失败比例过高 | `audio.bitstream.header_invalid` | Warning | `invalid / (invalid + parsed) > 5%` |
+| 帧头解析失败比例过高 | `audio.bitstream.header_invalid` | Warning | `invalid / (invalid + parsed) > 5%`。分母只含**参与过帧头判定**的包；未实现解析的编码（MP3/FLAC/PCM…）单独计 `unsupported_packets`，既不算成功也不算失败 |
 | 位流参数中途改变 | `audio.bitstream.param_change` | Warning | 扫描中采样率/声道/码率发生变化 |
 | 缺少 dialnorm | `audio.dialnorm.missing` | Info | 仅 AC-3/E-AC-3；AAC/Opus 本来没有该字段，不算缺失 |
 | dialnorm 与实测响度偏差过大 | `audio.dialnorm.mismatch` | Warning | `\|dialnorm - 实测积分响度\| > 3 LU`（需音频 QC 同时跑过） |
@@ -169,9 +169,15 @@ AAC AudioSpecificConfig（含 HE-AAC 的扩展采样率，避免比容器小一�
 - **与音频 QC 解耦**：这条链路不碰解码器，所以缺解码库/专有编码时仍然有结论；
 - 结构化计数优先：规则读 `container_mismatch_fields` / `params_changed_midstream` /
   `dialnorm_delta_available` 这些字段，不靠匹配中文说明串；
-- Atmos/JOC 只在命中 `joc` 标记时报告，并在 `atmos_source` 写明来源，**不声称**规范级解析。
+- **"未支持解析"与"已支持但输入损坏"必须分开**：`parsed_packets` 表示解析成功、
+  `invalid_packets` 表示已支持编码但帧头校验失败，`unsupported_packets` 表示该编码
+  还没实现逐帧解析（MP3/FLAC/PCM…）。三者混在一起会把 PCM 报成 100% 帧头失败率。
+- Atmos/JOC 目前是**启发式线索**：实现方式是在 E-AC-3 载荷前 96 字节里搜 ASCII `joc`，
+  没有按扩展语法（addbsi）定位字段，普通载荷里恰好出现这三个字节就会命中。
+  因此结果带 `atmos_heuristic = true`，JSON 里 `atmos_confidence = "heuristic"`，
+  UI 写"疑似检出"，**不得当确定结论使用**。可靠判定需要后续实现扩展字段解析。
 
-测试：`AudioBitstreamParserTests`（19 例，逐位构造码流头）、`AudioBitstreamRulesTests`（8 例）。
+测试：`AudioBitstreamParserTests`（20 例，逐位构造码流头）、`AudioBitstreamRulesTests`（9 例）。
 
 ## 9. 已知边界（D1）
 

@@ -73,6 +73,9 @@ struct Ac3Header {
     uint16_t chanmap = 0;
     int chanmap_channels = 0;
     bool atmos_joc = false;
+    // 这个判定**不是**规范级解析：只是在载荷前 96 字节里找 ASCII "joc"。
+    // 置 true 表示"疑似 Atmos（启发式线索）"，调用方必须按线索而非结论呈现。
+    bool atmos_heuristic = false;
     int joc_complexity_index = -1;
 };
 

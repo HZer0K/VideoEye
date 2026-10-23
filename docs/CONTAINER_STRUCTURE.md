@@ -121,9 +121,14 @@ TS 是直播与 HLS 分片的主格式，也是这一层里唯一"参数一改�
 - **连续计数**：按 PID 记 CC 错误；`discontinuity_indicator` 置位时不记错（那是拼接点）。
 - **加扰**：`transport_scrambling_control != 0` 的包按 PID 计数。
 - **PES 载荷级**（`scan_pes_payload`）：拆掉 PES 头之后继续往 ES 里看，两件事——
-  ① **IDR 间隔**：H.264（`stream_type 0x1B`）认 NAL type 5，HEVC（`0x24/0x25`）认 19/20/21
+  ① **无 IDR 间隔**：H.264（`stream_type 0x1B`）认 NAL type 5，HEVC（`0x24/0x25`）认 19/20/21
   （IDR_W_RADL / IDR_N_LP / CRA），用 4 字节滑窗找 `00 00 01 XX` 起点；首末 IDR 与最大间隔
-  按 33 位 90 kHz PTS 回绕算。② **PID 断流**：同一个 PID 相邻两个 PES 的 PTS 间隔，
+  按 33 位 90 kHz PTS 回绕算。**"最长无 IDR"取三段的最大值**：IDR 之间、窗口起点到第一个
+  IDR、最后一个 IDR 到窗口末尾 —— 只算中间那段时，"0 s/1 s 各一个 IDR 然后一路到 20.5 s"
+  的流会被报成 1 s（实际末尾有 19.5 s）。
+  滑窗在**第 3 个字节到达（窗口首次填满）**时就必须检查：PES 载荷以 `00 00 01 65` 打头时，
+  晚一个字节检查就永远检不到，整条流会被判成"没有 IDR"。
+  ② **PID 断流**：同一个 PID 相邻两个 PES 的 PTS 间隔，
   外加"尾部缺口"——某 PID 最后一个 PES 离节目最新 PTS 差多少。后者必须做，
   否则**彻底死掉的 PID 没有"下一个 PES"可减**，永远算不出断流。
 

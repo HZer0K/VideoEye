@@ -135,6 +135,7 @@ void Cea608Decoder::Reset() {
     }
     field_channel_[0] = false;
     field_channel_[1] = false;
+    for (int& code : last_control_) code = -1;
     cues_.clear();
     stats_ = model::Cea608Stats{};
     touched_ = false;
@@ -174,6 +175,14 @@ void Cea608Decoder::PushPair(uint8_t b1, uint8_t b2, int field, double ts_second
         const int channel_index = base + channel_offset;
         field_channel_[field_index] = (channel_offset != 0);
         stats_.channel_mask |= (1 << channel_index);
+        // 重复控制码抑制：同一通道连续收到**完全相同**的控制字节对时只执行一次
+        // （608 规范要求控制码连发两遍抗误码）。不抑制的话 EOC/EDM 会被执行两遍。
+        const int packed = (static_cast<int>(first) << 8) | static_cast<int>(second);
+        if (last_control_[channel_index] == packed) {
+            ++stats_.duplicate_control_count;
+            return;
+        }
+        last_control_[channel_index] = packed;
         HandleControl(ChannelFor(channel_index), channel_index, first, second, ts_seconds);
         return;
     }
@@ -181,6 +190,8 @@ void Cea608Decoder::PushPair(uint8_t b1, uint8_t b2, int field, double ts_second
     // ---- 可打印字符：写到当前通道的光标位置 ----
     const int channel_index = base + (field_channel_[field_index] ? 1 : 0);
     stats_.channel_mask |= (1 << channel_index);
+    // 控制码的"连发"语义只对紧邻的重复控制码成立：中间来了可见字符就断开。
+    last_control_[channel_index] = -1;
     Channel& channel = ChannelFor(channel_index);
     const std::string text = BasicChar(first);
     if (!text.empty()) WriteChar(channel, text, ts_seconds);

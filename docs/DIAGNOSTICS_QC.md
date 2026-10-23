@@ -97,7 +97,7 @@ HEVC 认 19/20/21 当 IDR；其余编码不认（认错 NAL 头会把随机字�
 | `container.ts.pcr_gap` | > 100 ms | Warning | 最大 PCR 间隔（没采到 PCR 时不报） |
 | `container.ts.scrambled` | — | Info | 加扰流：能解复用，但载荷不可读 |
 | `container.ts.scan_incomplete` | — | Info | 只扫了窗口，提醒结论范围 |
-| `container.ts.no_idr` | > 10000 ms | Warning | 视频 PID 相邻 IDR 的最大间隔（含首帧到第一个 IDR） |
+| `container.ts.no_idr` | > 10000 ms | Warning | 视频 PID 最长的一段没有随机接入点：IDR 之间、**首帧到第一个 IDR**、**最后一个 IDR 到窗口末尾**三段的较大者 |
 | `container.ts.pid_stall` | > 5000 ms | Warning | 某个 PID 的 PTS 断档（含"尾部缺口"：最后一条离节目最新 PTS 的距离） |
 
 三条口径约束：

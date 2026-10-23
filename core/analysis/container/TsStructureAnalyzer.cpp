@@ -454,9 +454,12 @@ int FeedEsPayload(EsPayloadStat& st, const uint8_t* data, int len) {
         st.win[1] = st.win[2];
         st.win[2] = st.win[3];
         st.win[3] = data[i];
+        // ❗ 窗口"刚填满"的这一次必须参与检查：以前这里无条件 continue，
+        // 于是每个 PES 开头那组 00 00 01 <header> 永远检不到（检查晚了一个字节，
+        // 到那时窗口已经滑走了），PES 一律以起始码开头的流会被判成"没有 IDR"。
         if (st.win_len < 4) {
             ++st.win_len;
-            continue;
+            if (st.win_len < 4) continue;
         }
         if (st.win[0] != 0x00 || st.win[1] != 0x00 || st.win[2] != 0x01) continue;
         const uint8_t header = st.win[3];
@@ -1310,7 +1313,20 @@ bool TsStructureAnalyzer::Analyze(const std::string& file_path,
                 }
                 uint64_t no_idr = 0;
                 if (es.idr_count >= 2) {
+                    // ❗ 只看"IDR 与 IDR 之间"会漏掉两头：窗口起点到第一个 IDR、
+                    // 最后一个 IDR 到窗口末尾同样是无随机接入点的区间。
+                    // 构造 0 s / 1 s 各一个 IDR、之后持续到 20.5 s 的流，
+                    // 只算中间会报 1 s，实际末尾那 19.5 s 才是最长的一段。
                     no_idr = es.max_idr_gap_90k;
+                    uint64_t head = 0;
+                    if (es.has_pts && PtsDelta(es.first_pts, es.first_idr_pts, head) &&
+                        head > no_idr) {
+                        no_idr = head;
+                    }
+                    uint64_t tail = 0;
+                    if (es.has_pts && PtsDelta(es.last_idr_pts, es.last_pts, tail) && tail > no_idr) {
+                        no_idr = tail;
+                    }
                 } else if (es.pes_count >= 2 && es.has_pts) {
                     // 0 或 1 个 IDR：整段跨度就是"没有随机接入点"的时长
                     uint64_t span = 0;

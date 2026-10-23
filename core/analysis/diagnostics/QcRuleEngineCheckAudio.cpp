@@ -73,10 +73,14 @@ std::vector<model::DiagnosticIssue> CheckAudioRules(const model::QcRule& rule,
         if (rule.id == "audio.bitstream.header_invalid") {
             int64_t parsed = 0;
             int64_t invalid = 0;
+            int64_t unsupported = 0;
             for (const auto& stream : bitstream.streams) {
                 parsed += stream.parsed_packets;
                 invalid += stream.invalid_packets;
+                unsupported += stream.unsupported_packets;
             }
+            // 分母只能是"真正参与过帧头判定"的包。未实现解析的编码（MP3/FLAC/PCM…）
+            // 既不算成功也不算失败，否则它们会被算成 100% 失败率。
             const int64_t total = parsed + invalid;
             if (total <= 0) return issues;
             const double percent = static_cast<double>(invalid) * 100.0 /
@@ -85,6 +89,10 @@ std::vector<model::DiagnosticIssue> CheckAudioRules(const model::QcRule& rule,
                 std::string detail = std::to_string(invalid) + " / " + std::to_string(total) +
                                      " 个音频包帧头解析失败（" + FormatValue(percent, 1) +
                                      "%），阈值 " + ThresholdText(rule) + "。";
+                if (unsupported > 0) {
+                    detail += "另有 " + std::to_string(unsupported) +
+                              " 个包属于尚未实现逐帧解析的编码，未计入失败率。";
+                }
                 issues.push_back(make_issue(percent, detail, model::TimeRange::Global(), -1));
             }
             return issues;

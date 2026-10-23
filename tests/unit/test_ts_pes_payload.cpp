@@ -152,12 +152,21 @@ std::vector<uint8_t> MakePes(uint8_t stream_id, uint64_t pts, const std::vector<
     return p;
 }
 
-// AUD + IDR / 非 IDR 切片各一个
-std::vector<uint8_t> MakeVideoEs(bool idr) {
-    std::vector<uint8_t> es = {0x00, 0x00, 0x00, 0x01, 0x09, 0xF0};
+// AUD + IDR / 非 IDR 切片各一个。
+// with_aud = false 时 ES 直接以三字节起始码 00 00 01 <header> 开头 —— 这是
+// "起始码正好落在 PES 载荷第一个字节"的形态（有的封装器省 AUD），滑窗必须在
+// 窗口首次填满时就认出它，否则整条流会被判成"没有 IDR"。
+std::vector<uint8_t> MakeVideoEs(bool idr, bool with_aud = true) {
     const uint8_t nal_header = idr ? 0x65 : 0x41;
-    const std::vector<uint8_t> slice = {0x00, 0x00, 0x00, 0x01, nal_header, 0x88, 0x84, 0x21, 0xA0};
-    es.insert(es.end(), slice.begin(), slice.end());
+    std::vector<uint8_t> es;
+    if (with_aud) es = {0x00, 0x00, 0x00, 0x01, 0x09, 0xF0};
+    const std::vector<uint8_t> start_code =
+        with_aud ? std::vector<uint8_t>{0x00, 0x00, 0x00, 0x01}
+                 : std::vector<uint8_t>{0x00, 0x00, 0x01};
+    es.insert(es.end(), start_code.begin(), start_code.end());
+    es.push_back(nal_header);
+    const std::vector<uint8_t> tail = {0x88, 0x84, 0x21, 0xA0};
+    es.insert(es.end(), tail.begin(), tail.end());
     return es;
 }
 
@@ -172,6 +181,7 @@ struct StreamSpec {
     int only_idr_at = -1;        // >=0 时：除第一个之外只在该下标处插 IDR
     int audio_pes = 48;          // 音频 PES 个数（0 = 没有音频流载荷）
     bool no_idr = false;         // true = 整段一个 IDR 都不放
+    bool aud = true;             // false = 视频 ES 省掉 AUD，直接以三字节起始码开头
     bool pmt = true;
 };
 
@@ -212,7 +222,7 @@ void BuildStream(const fs::path& path, const StreamSpec& spec) {
                 }
             }
             const uint64_t pts = static_cast<uint64_t>(video_i) * 45000;  // 0.5 s
-            b.Payload(kVideoPid, MakePes(0xE0, pts, MakeVideoEs(idr)));
+            b.Payload(kVideoPid, MakePes(0xE0, pts, MakeVideoEs(idr, spec.aud)));
             ++video_i;
         }
     }
@@ -339,6 +349,48 @@ TEST(TsPesPayloadTest, VideoWithoutIdrIsCountedOnlyBeyondThreshold) {
     std::error_code ec;
     fs::remove(short_path, ec);
     fs::remove(long_path, ec);
+}
+
+// ---------------------------------------------------------------------------
+// 末尾长时间没有 IDR：两个 IDR 只隔 1 s，但最后一个 IDR 之后还有 19.5 s
+// ---------------------------------------------------------------------------
+TEST(TsPesPayloadTest, TrailingRunWithoutIdrIsMeasured) {
+    const fs::path path = MakeTempPath("tail_no_idr.ts");
+    StreamSpec spec;
+    spec.video_pes = 42;      // 0 .. 20.5 s
+    spec.only_idr_at = 2;     // 第一个 + 第 2 个 PES -> IDR 在 0 s 与 1 s
+    spec.audio_pes = 84;
+    BuildStream(path, spec);
+
+    const TransportStreamInfo ts = Analyze(path);
+    EXPECT_EQ(2, ts.idr_count);
+    // 只算"IDR 与 IDR 之间"会报 1 s；真正最长的一段是末尾 19.5 s
+    EXPECT_NEAR(ts.max_no_idr_interval_ms, 19500.0, 5.0)
+        << "最后一个 IDR 到窗口末尾的区间必须计入";
+    EXPECT_STREQ("0x0100", ts.max_no_idr_pid.c_str());
+
+    std::error_code ec;
+    fs::remove(path, ec);
+}
+
+// ---------------------------------------------------------------------------
+// 起始码正好落在 PES 载荷第一个字节：滑窗必须在首次填满时检查
+// ---------------------------------------------------------------------------
+TEST(TsPesPayloadTest, StartCodeAtPayloadStartIsDetected) {
+    const fs::path path = MakeTempPath("startcode_at_start.ts");
+    StreamSpec spec;
+    spec.video_pes = 6;
+    spec.video_idr_every = 1;   // 每个 PES 都是 IDR
+    spec.aud = false;           // ES 直接以 00 00 01 65 开头
+    spec.audio_pes = 12;
+    BuildStream(path, spec);
+
+    const TransportStreamInfo ts = Analyze(path);
+    EXPECT_EQ(6, ts.idr_count) << "三字节起始码在载荷第 1 个字节时不能被漏掉";
+    EXPECT_EQ(0, ts.video_pids_without_idr);
+
+    std::error_code ec;
+    fs::remove(path, ec);
 }
 
 // ---------------------------------------------------------------------------

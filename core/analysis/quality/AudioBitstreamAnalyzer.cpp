@@ -266,9 +266,13 @@ void AudioBitstreamAnalyzer::ApplyAc3Header(StreamState& state, const Ac3Header&
     if (header.channels > 0) info.channels = header.channels;
     if (header.atmos_joc) {
         if (!info.atmos_joc && options_.detect_atmos) {
-            info.atmos_source = "E-AC-3 BSI (joc marker)";
+            // 措辞必须体现"启发式"：这是线索，不是扩展字段解析出来的结论。
+            info.atmos_source = header.atmos_heuristic
+                                    ? "E-AC-3 载荷内 ASCII \"joc\" 标记（启发式线索，非 addbsi 字段解析）"
+                                    : "E-AC-3 BSI (joc marker)";
         }
         info.atmos_joc = info.atmos_joc || options_.detect_atmos;
+        info.atmos_heuristic = info.atmos_heuristic || header.atmos_heuristic;
         info.joc_complexity_index = header.joc_complexity_index;
     }
 }
@@ -447,7 +451,7 @@ void AudioBitstreamAnalyzer::OnPacket(const AVPacket* pkt, const AVStream* strea
 
     ++state->info.packet_count;
     if (state->parsed_limit > 0 &&
-        state->info.parsed_packets + state->info.invalid_packets >= state->parsed_limit) {
+        state->info.judged_packets() + state->info.unsupported_packets >= state->parsed_limit) {
         return;
     }
 
@@ -468,7 +472,9 @@ void AudioBitstreamAnalyzer::OnPacket(const AVPacket* pkt, const AVStream* strea
             ParseOpusPacket(*state, pkt);
             break;
         default:
-            ++state->info.invalid_packets;
+            // 未实现逐帧解析的编码（MP3/FLAC/PCM ...）：只登记"未支持"，
+            // 绝不能记进 invalid_packets —— 那是"素材损坏"的口径。
+            ++state->info.unsupported_packets;
             break;
     }
 }
@@ -496,12 +502,23 @@ const model::AudioBitstreamResult& AudioBitstreamAnalyzer::Finish() {
 
         if (info.packet_count == 0) {
             info.note = "扫描期间没有收到该音频流的包";
+        } else if (info.judged_packets() == 0) {
+            // 未实现逐帧解析：这是"工具还没做"，不是"素材坏了"，文案必须说清楚。
+            info.note = (info.note.empty() ? "" : info.note + "；") + "该编码尚未实现逐帧位流头解析，" +
+                        std::to_string(info.unsupported_packets) + " 个包未参与帧头判定";
         } else if (info.parsed_packets == 0) {
             info.note = (info.note.empty() ? "" : info.note + "；") +
                         "没有解析出可用的音频帧头";
         } else if (info.invalid_packets > 0) {
             info.note = (info.note.empty() ? "" : info.note + "；") +
                         std::to_string(info.invalid_packets) + " 个包帧头解析失败";
+        }
+
+        // Atmos 的判定方式是启发式的：必须在结论旁自带免责说明，
+        // 否则下游（报告/UI）会把它当确定事实。
+        if (info.atmos_joc && info.atmos_heuristic) {
+            info.note = (info.note.empty() ? "" : info.note + "；") +
+                        "Atmos/JOC 仅为启发式线索（未按扩展语法解析 addbsi 字段），不能作为确定结论";
         }
 
         // ---- 位流声明 vs 容器声明 ----
@@ -547,7 +564,18 @@ const model::AudioBitstreamResult& AudioBitstreamAnalyzer::Finish() {
     }
 
     if (!states_.empty() && result_.parsed_stream_count == 0) {
-        result_.notes.push_back("音频流存在，但没有任何一条解析出位流头");
+        bool any_judged = false;
+        bool any_unsupported = false;
+        for (const StreamState& state : states_) {
+            if (state.info.judged_packets() > 0) any_judged = true;
+            if (state.info.unsupported_packets > 0) any_unsupported = true;
+        }
+        if (any_judged) {
+            result_.notes.push_back("音频流存在，但没有任何一条解析出位流头");
+        } else if (any_unsupported) {
+            // 全是未实现解析的编码：只登记容器参数，不能报成"解析失败"。
+            result_.notes.push_back("音频流存在，但均为尚未实现逐帧位流头解析的编码（只做容器参数登记）");
+        }
     }
     return result_;
 }

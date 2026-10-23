@@ -122,6 +122,42 @@ TEST(AudioBitstreamRulesTest, HeaderInvalidRatioUsesPercentThreshold) {
     EXPECT_FALSE(HasIssue(quiet, "audio.bitstream.header_invalid"));
 }
 
+TEST(AudioBitstreamRulesTest, UnsupportedCodecIsNotCountedAsHeaderFailure) {
+    // PCM / MP3 / FLAC 这类编码只登记容器参数，逐包解析没实现。
+    // 这些包既不算成功也不算失败 —— 记进 invalid 会让它们变成 100% 失败率并触发告警。
+    auto result = MakeResult();
+    model::AudioBitstreamStream pcm;
+    pcm.stream_index = 1;
+    pcm.codec = model::AudioBitstreamCodec::Other;
+    pcm.codec_name = "pcm_s16le";
+    pcm.sample_rate = 48000;
+    pcm.channels = 2;
+    pcm.packet_count = 400;
+    pcm.unsupported_packets = 400;   // 全部未参与判定
+    pcm.note = "该编码尚未实现逐帧位流头解析，400 个包未参与帧头判定";
+    result.audio_bitstream.streams.push_back(pcm);
+
+    QcRuleEngine engine;
+    const model::QcReport report = engine.Evaluate(result);
+    EXPECT_FALSE(HasIssue(report, "audio.bitstream.header_invalid"))
+        << "未支持解析不能报成帧头失败";
+
+    // 同一份结果里再放一条真的坏了的 AAC：失败率只按它自己算（10/100），
+    // 而且明细里要说明还有多少包没参与判定。
+    auto aac = MakeStream(model::AudioBitstreamCodec::AacAdts);
+    aac.parsed_packets = 90;
+    aac.invalid_packets = 10;
+    aac.packet_count = 100;
+    result.audio_bitstream.streams.push_back(aac);
+
+    const model::QcReport mixed = engine.Evaluate(result);
+    model::DiagnosticIssue issue;
+    ASSERT_TRUE(HasIssue(mixed, "audio.bitstream.header_invalid", &issue));
+    EXPECT_NEAR(issue.metric_value, 10.0, 1e-6) << "分母只算参与过判定的 100 个包";
+    EXPECT_NE(issue.detail.find("400"), std::string::npos)
+        << "未参与判定的包数要在明细里单独说明";
+}
+
 TEST(AudioBitstreamRulesTest, ParamChangeMidstreamTriggers) {
     auto result = MakeResult();
     auto stream = MakeStream(model::AudioBitstreamCodec::Ac3);

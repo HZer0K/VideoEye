@@ -728,7 +728,8 @@ void AudioQcPage::RebuildMetadataTable() {
             add_row(prefix + tr("E-AC-3 子流"), substreams);
         }
         if (stream.atmos_joc) {
-            QString atmos = tr("检出");
+            // 启发式命中必须写成"疑似"，不能给用户一个确定结论
+            QString atmos = stream.atmos_heuristic ? tr("疑似检出（启发式线索）") : tr("检出");
             if (!stream.atmos_source.empty()) {
                 atmos += QStringLiteral("（") + QString::fromStdString(stream.atmos_source) +
                          QStringLiteral("）");
@@ -748,11 +749,17 @@ void AudioQcPage::RebuildMetadataTable() {
             }
             add_row(prefix + tr("Opus"), opus);
         }
-        add_row(prefix + tr("帧头解析"),
-                tr("%1 个包 / %2 帧，失败 %3 个")
-                    .arg(static_cast<qlonglong>(stream.parsed_packets))
-                    .arg(static_cast<qlonglong>(stream.frame_count))
-                    .arg(static_cast<qlonglong>(stream.invalid_packets)));
+        if (stream.unsupported_packets > 0) {
+            add_row(prefix + tr("帧头解析"),
+                    tr("该编码尚未实现逐帧解析，%1 个包未参与判定")
+                        .arg(static_cast<qlonglong>(stream.unsupported_packets)));
+        } else {
+            add_row(prefix + tr("帧头解析"),
+                    tr("%1 个包 / %2 帧，失败 %3 个")
+                        .arg(static_cast<qlonglong>(stream.parsed_packets))
+                        .arg(static_cast<qlonglong>(stream.frame_count))
+                        .arg(static_cast<qlonglong>(stream.invalid_packets)));
+        }
         if (!stream.inconsistencies.empty()) {
             add_row(prefix + tr("不一致"),
                     QString::fromStdString(stream.inconsistencies.front()));

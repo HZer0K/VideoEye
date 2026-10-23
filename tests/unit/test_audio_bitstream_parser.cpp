@@ -238,6 +238,42 @@ TEST(AudioBitstreamParserTest, Eac3DependentSubstreamChanmap) {
     EXPECT_EQ(header.chanmap, 0x000C);
 }
 
+TEST(AudioBitstreamParserTest, JocMarkerIsOnlyAHeuristic) {
+    // 判定方式是在载荷前 96 字节里搜 ASCII "joc"，不是按扩展语法定位 addbsi 字段。
+    // 所以：普通载荷里插进这三个字节，结果就会从"非 Atmos"变成"Atmos"。
+    // 这条测试钉住的正是这个局限 —— 命中必须带 atmos_heuristic，不能当确定结论。
+    BitWriter plain_writer;
+    plain_writer.Put(0x0B77, 16);
+    plain_writer.Put(0, 2);      // strmtyp = 0
+    plain_writer.Put(0, 3);
+    plain_writer.Put(159, 11);   // frmsiz -> 320 字节
+    plain_writer.Put(0, 2);      // fscod = 0 -> 48 kHz
+    plain_writer.Put(3, 2);      // numblkscod
+    plain_writer.Put(7, 3);      // acmod
+    plain_writer.Put(1, 1);      // lfeon
+    plain_writer.Put(16, 5);     // bsid = 16
+    plain_writer.Put(27, 5);     // dialnorm
+    plain_writer.Put(0, 1);      // compre
+    plain_writer.Align();
+
+    Ac3Header plain;
+    ASSERT_TRUE(AudioBitstreamParser::ParseAc3(plain_writer.bytes().data(),
+                                               plain_writer.bytes().size(), true, plain));
+    EXPECT_FALSE(plain.atmos_joc);
+    EXPECT_FALSE(plain.atmos_heuristic);
+
+    // 在普通载荷位置塞进 "joc"：命中，但只能算线索
+    std::vector<uint8_t> marked = plain_writer.bytes();
+    marked.push_back(static_cast<uint8_t>('j'));
+    marked.push_back(static_cast<uint8_t>('o'));
+    marked.push_back(static_cast<uint8_t>('c'));
+    marked.push_back(4);
+    Ac3Header heuristic;
+    ASSERT_TRUE(AudioBitstreamParser::ParseAc3(marked.data(), marked.size(), true, heuristic));
+    EXPECT_TRUE(heuristic.atmos_joc);
+    EXPECT_TRUE(heuristic.atmos_heuristic) << "子串命中的判定必须标成启发式";
+}
+
 TEST(AudioBitstreamParserTest, Ac3RejectsBadSync) {
     const uint8_t data[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
     Ac3Header header;

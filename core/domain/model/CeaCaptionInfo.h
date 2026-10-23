@@ -53,6 +53,7 @@ struct Cea608Stats {
     int extended_char_count = 0;
     int xds_count = 0;         // 场 2 的 XDS 包（不是字幕，别混进文本）
     int invalid_pairs = 0;     // 两个字节都是 0 之类
+    int duplicate_control_count = 0;   // 被抑制掉的重复控制码（608 规范连发两遍）
     int max_row = 0;           // 出现过的最大行号（1-based，0 = 没定位过）
     bool field2_used = false;
     std::string note;

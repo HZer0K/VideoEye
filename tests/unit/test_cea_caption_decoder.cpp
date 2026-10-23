@@ -63,6 +63,28 @@ TEST(Cea608DecoderTest, PopOnTextAppearsAtEocNotAtPreload) {
     EXPECT_EQ(cue.mode, "POP-ON");
 }
 
+TEST(Cea608DecoderTest, RepeatedControlCodesAreAppliedOnce) {
+    Cea608Decoder decoder;
+    decoder.Reset();
+
+    // 608 的控制码按规范连发两遍抗误码；第二遍必须被抑制。
+    // 不抑制的话连续两个 EOC 会交换两次显存：第一遍刚上屏的字幕立刻被换掉，
+    // 本应显示第 1..3 s 的 cue 只剩到 1.033 s。
+    decoder.PushPair(0x14, kRcl, 1, 0.0);
+    decoder.PushPair(0x14, kRcl, 1, 0.0);
+    PushAscii(decoder, "HI", 0.2);
+    decoder.PushPair(0x14, kEoc, 1, 1.0);
+    decoder.PushPair(0x14, kEoc, 1, 1.033);   // 重复传输：不能再交换一次
+    decoder.PushPair(0x14, kEdm, 1, 3.0);
+    decoder.PushPair(0x14, kEdm, 1, 3.033);
+
+    ASSERT_EQ(decoder.cues().size(), 1u);
+    EXPECT_EQ(decoder.cues().front().text, "HI");
+    EXPECT_DOUBLE_EQ(decoder.cues().front().start_seconds, 1.0);
+    EXPECT_DOUBLE_EQ(decoder.cues().front().end_seconds, 3.0);
+    EXPECT_EQ(decoder.stats().duplicate_control_count, 3) << "RCL / EOC / EDM 各有一份重复";
+}
+
 TEST(Cea608DecoderTest, RollUpProducesOneCuePerVisibleState) {
     Cea608Decoder decoder;
     decoder.Reset();
@@ -168,29 +190,40 @@ TEST(Cea608DecoderTest, EnmClearsPreloadButNotScreen) {
 
 // 把一段 service block 数据打成 DTVCC 包，再拆成 cc_data 三元组喂进去。
 // block_data 里已经含 service block header 之后的命令字节。
+//
+// 封包口径（ATSC A/53 + CEA-708 §8.10.1）：
+//   * cc_type = 3 是 packet start，2 是 packet data（以前测试跟着实现一起写反了，
+//     所以"错误封包能出字幕、标准封包一条都没有"这件事一直没被发现）；
+//   * 包头低 6 bit 是 packet_size_code，真实长度 = 2*code-1（code==0 → 127），
+//     因此载荷长度必须是奇数；偶数时补一个 null service block（0x00）对齐。
 void PushServiceBlock(CeaCaptionDecoder& decoder, int service_number,
                       const std::vector<uint8_t>& block_data, int sequence, double ts) {
     std::vector<uint8_t> payload;
     const int block_size = static_cast<int>(block_data.size());
     payload.push_back(static_cast<uint8_t>((service_number << 5) | (block_size & 0x1F)));
     payload.insert(payload.end(), block_data.begin(), block_data.end());
+    // packet_size 只能是奇数：补一个 null service block（被解析器跳过）
+    if (payload.size() % 2 == 0) payload.push_back(0x00);
 
-    // 包头：sequence(2) + packet_size(6)
-    const uint8_t header = static_cast<uint8_t>(((sequence & 0x03) << 6) |
-                                                (payload.size() & 0x3F));
-    // 第一个三元组：type 2，携带包头 + 第一个载荷字节
+    const size_t packet_size = payload.size();
+    const int size_code = static_cast<int>((packet_size + 1) / 2);   // 2*code-1 == packet_size
+    const uint8_t header =
+        static_cast<uint8_t>(((sequence & 0x03) << 6) | (size_code & 0x3F));
     size_t index = 0;
-    decoder.PushTriplet(1, 2, header, payload[index++], ts);
+    decoder.PushTriplet(1, 3, header, payload[index++], ts);   // 3 = packet start
     while (index < payload.size()) {
         const uint8_t d0 = payload[index++];
         const uint8_t d1 = (index < payload.size()) ? payload[index++] : 0;
-        decoder.PushTriplet(1, 3, d0, d1, ts);
+        decoder.PushTriplet(1, 2, d0, d1, ts);                 // 2 = packet data
     }
 }
 
+// DefineWindowVisible：C1 的 0x98-0x9F（DF0-DF7），带 6 字节参数。
+// 参数布局：visible 在 args[0] bit5，row_count 在 args[3] 低 4 位，
+// column_count 在 args[4] 低 6 位。
 std::vector<uint8_t> DefineWindowVisible(int rows, int cols) {
-    return {0x80, 0x20, static_cast<uint8_t>(rows & 0x0F),
-            static_cast<uint8_t>(cols & 0x3F), 0x00, 0x00, 0x00};
+    return {0x98, 0x20, 0x00, 0x00, static_cast<uint8_t>(rows & 0x0F),
+            static_cast<uint8_t>(cols & 0x3F), 0x00};
 }
 
 TEST(Cea708DecoderTest, ServiceOneTextAndClear) {
@@ -216,6 +249,53 @@ TEST(Cea708DecoderTest, ServiceOneTextAndClear) {
     EXPECT_EQ(result.cc708.packet_count, 2);
     ASSERT_EQ(result.cc708.services.size(), 1u);
     EXPECT_EQ(result.cc708.services.front(), 1);
+}
+
+TEST(Cea708DecoderTest, PacketSizeCodeIsConvertedToByteCount) {
+    // 包头低 6 bit 是 packet_size_code，真实长度 = 2*code-1。
+    // 把字节数直接当 code 写（旧实现的读法）会让包边界错位 -> 解不出东西；
+    // 下面两份数据的内容完全相同，只有 size_code 的口径不同。
+    std::vector<uint8_t> block = DefineWindowVisible(2, 32);
+    const std::string text = "OK";
+    block.insert(block.end(), text.begin(), text.end());
+    std::vector<uint8_t> payload;
+    payload.push_back(static_cast<uint8_t>((1 << 5) | (block.size() & 0x1F)));
+    payload.insert(payload.end(), block.begin(), block.end());
+    if (payload.size() % 2 == 0) payload.push_back(0x00);
+
+    // ---- 标准封包（code = (n+1)/2）----
+    {
+        CeaCaptionDecoder decoder;
+        decoder.Reset();
+        const int size_code = static_cast<int>((payload.size() + 1) / 2);
+        size_t index = 0;
+        decoder.PushTriplet(1, 3, static_cast<uint8_t>((size_code & 0x3F)), payload[index++], 0.0);
+        while (index < payload.size()) {
+            const uint8_t d0 = payload[index++];
+            const uint8_t d1 = (index < payload.size()) ? payload[index++] : 0;
+            decoder.PushTriplet(1, 2, d0, d1, 0.0);
+        }
+        decoder.Finish(2.0);
+        EXPECT_EQ(decoder.result().cc708.packet_count, 1);
+        ASSERT_EQ(decoder.result().cues.size(), 1u);
+        EXPECT_EQ(decoder.result().cues.front().text, "OK");
+    }
+
+    // ---- 把字节数直接当 code（旧口径）：长度算多/算少，包拼不出来 ----
+    {
+        CeaCaptionDecoder decoder;
+        decoder.Reset();
+        size_t index = 0;
+        decoder.PushTriplet(1, 3, static_cast<uint8_t>(payload.size() & 0x3F), payload[index++], 0.0);
+        while (index < payload.size()) {
+            const uint8_t d0 = payload[index++];
+            const uint8_t d1 = (index < payload.size()) ? payload[index++] : 0;
+            decoder.PushTriplet(1, 2, d0, d1, 0.0);
+        }
+        decoder.Finish(2.0);
+        EXPECT_EQ(decoder.result().cc708.packet_count, 0) << "长度口径错时不能凑出一个包";
+        EXPECT_EQ(decoder.result().cues.size(), 0u);
+    }
 }
 
 TEST(Cea708DecoderTest, SecondServiceIsReportedSeparately) {
@@ -255,14 +335,16 @@ TEST(Cea708DecoderTest, ExtendedServiceNumberIsDecoded) {
     payload.push_back(static_cast<uint8_t>((7 << 5) | (block_size & 0x1F)));
     payload.push_back(0x02);   // 扩展服务号
     payload.insert(payload.end(), block.begin(), block.end());
+    if (payload.size() % 2 == 0) payload.push_back(0x00);   // 补齐到奇数长度
 
-    const uint8_t header = static_cast<uint8_t>(payload.size() & 0x3F);
+    const int size_code = static_cast<int>((payload.size() + 1) / 2);
+    const uint8_t header = static_cast<uint8_t>(size_code & 0x3F);
     size_t index = 0;
-    decoder.PushTriplet(1, 2, header, payload[index++], 0.0);
+    decoder.PushTriplet(1, 3, header, payload[index++], 0.0);
     while (index < payload.size()) {
         const uint8_t d0 = payload[index++];
         const uint8_t d1 = (index < payload.size()) ? payload[index++] : 0;
-        decoder.PushTriplet(1, 3, d0, d1, 0.5);
+        decoder.PushTriplet(1, 2, d0, d1, 0.5);
     }
     decoder.Finish(4.0);
 
@@ -286,7 +368,7 @@ TEST(Cea708DecoderTest, SequenceGapIsCounted) {
 TEST(Cea708DecoderTest, InvalidTripletIsDropped) {
     CeaCaptionDecoder decoder;
     decoder.Reset();
-    decoder.PushTriplet(0, 2, 0x0F, 0x2E, 0.0);   // cc_valid = 0
+    decoder.PushTriplet(0, 3, 0x0F, 0x2E, 0.0);   // cc_valid = 0
     decoder.Finish(1.0);
     EXPECT_EQ(decoder.result().cc708.packet_count, 0);
     EXPECT_EQ(decoder.result().cues.size(), 0u);
