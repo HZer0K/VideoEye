@@ -196,6 +196,15 @@ TS 是直播与 HLS 分片的主格式，也是这一层里唯一"参数一改�
 - **取消可冒泡**：`infrastructure::Checkpoint(cancel)` 命中时要一路返回到返回值，
   不能"这一层 return 了、外层照样 valid=true"。
 - **有上限**：包数/条目数/深度都要有上界，并让上界出现在结果里（metadata 或 summary）。
+- **每轮必须前进**：`while (Pos() < Size() - k)` 这类循环，循环体里的 Seek 目标必须
+  **严格大于**当前位置、且落在文件内。`SeqFileReader::Seek` 对负值/越界一律夹到
+  `[0, Size]`，而对象长度是 8 字节 LE（ASF）或 64 位 box size（MP4），
+  `obj_start + obj_size` 溢出成负数时会被夹回 0 —— 下一轮读到的是文件头，
+  同样的偏移、同样的长度，**循环原地打转**。这类死循环是 libFuzzer 在 31 字节的
+  ASF 输入上抓到的（见 §6）。
+  配套的一条：`SeqFileReader::Pos()` 在"恰好停在文件末尾"时返回 `Size()` 而不是 0
+  （`tellg()` 在 EOF 返回 -1，映射成 0 会让"已到末尾"看起来像"还在开头"，
+  判据 `Pos() < Size() - k` 于是永远成立）。
 
 ## 6. 测试
 
@@ -206,6 +215,11 @@ TS 是直播与 HLS 分片的主格式，也是这一层里唯一"参数一改�
   （级别、比例 vs 绝对条数、无 PCR 时不造结论、`analyzed=false` 整族静默、阈值可调）。
 - `tests/unit/test_corpus_robustness.cpp`：`tests/corpus/container/` 下的畸形样本
   （largesize 溢出、截断 moov、坏 FLV 头…）必须**有界终止**，不能死循环也不能崩。
+
+其中 `container/asf_header_size_overflow.wmv` 是 CI 的 `Fuzz` 工作流亲手抓到的：
+Header Object 声明长度 `0xD100560000002E46` 让 `obj_start + obj_size` 溢出成负数，
+`Seek` 被夹到 0 之后循环原地打转，libFuzzer 10 秒超时。样本与 fuzz 产出的
+`FuzzContainerStructure-timeout-6e4a9c38…` 逐字节一致。
 
 ### 6.1 真实封装样本
 

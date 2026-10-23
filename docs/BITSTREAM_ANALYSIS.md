@@ -136,6 +136,19 @@ uint32_t ue_value = reader.ReadUWord();
 reader.AlignToByte();
 ```
 
+### 2.4 ue(v) 不能直接当循环上界
+
+ue(v) 的合法编码能解出 2^32 量级的数，而解析器读到的这类字段经常正好是**循环次数**
+（`num_tile_columns_minus1`、`num_negative_pics`、`cpb_cnt_minus1`…）。
+拿裸 `ReadUE()` 的结果当上界，畸形码流就能把一次解析变成数十亿次迭代：
+CI 的 libFuzzer 入口（`tests/fuzz/`）在 17 字节的 HEVC PPS 上就是这么 10 秒超时的。
+
+规矩：**凡是 ue(v) 决定的循环次数，一律走 `ReadUEBounded(规范上限)`**
+（超界置错误、整份参数集判无效）或 `ReadUEClamped`（诊断场景，只夹断不判错），
+上限写成 `kMax*` 常量放文件顶部。H.264 / VVC 一直是这么写的；HEVC 的
+PPS tile 数与短期参考帧集的 `num_negative/positive_pics` 是漏网的两处，
+2026-10-23 补上（回归用例 `CorpusRobustnessTest.HevcPpsAbsurdTileCountIsRejected`）。
+
 ## 3. 核心数据结构
 
 ### 3.1 H.264 SPS 关键参数

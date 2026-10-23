@@ -210,6 +210,47 @@ def build_codec_huge_uev_h264():
     return b"\x00\x00\x00\x01" + w.flush()
 
 
+def build_codec_hevc_pps_absurd_tile_count():
+    """HEVC PPS 的 num_tile_columns_minus1 是荒谬大的 ue(v)（20 亿，规范上限 19）。
+
+    PPS 里这个值和 num_tile_rows_minus1 直接决定两个循环的次数：裸 ReadUE()
+    读到 1000000 就会 push_back 一百万次，读到 2^31 量级则直接"数十亿次空转"。
+    实际抓到它的是 libFuzzer（FuzzBitstreamExtradata 在 17 字节输入上 10 秒超时），
+    这里改成语义正确的 PPS：NAL type 34 + tiles_enabled_flag=1 + 荒谬 tile 数。
+    """
+    w = BitWriter()
+    w.u(1, 0)          # forbidden_zero_bit
+    w.u(6, 34)         # nal_unit_type = 34 (PPS)
+    w.u(6, 0)          # nuh_layer_id
+    w.u(3, 1)          # nuh_temporal_id_plus1
+    w.ue(0)            # pps_pic_parameter_set_id
+    w.ue(0)            # pps_seq_parameter_set_id
+    w.u(1, 0)          # dependent_slice_segments_enabled_flag
+    w.u(1, 0)          # output_flag_present_flag
+    w.u(3, 0)          # num_extra_slice_header_bits
+    w.u(1, 0)          # sign_data_hiding_enabled_flag
+    w.u(1, 0)          # cabac_init_present_flag
+    w.ue(0)            # num_ref_idx_l0_default_active_minus1
+    w.ue(0)            # num_ref_idx_l1_default_active_minus1
+    w.ue(0)            # init_qp_minus26 (se, 取 0)
+    w.u(1, 0)          # constrained_intra_pred_flag
+    w.u(1, 0)          # transform_skip_enabled_flag
+    w.u(1, 0)          # cu_qp_delta_enabled_flag
+    w.ue(0)            # pps_cb_qp_offset (se, 取 0)
+    w.ue(0)            # pps_cr_qp_offset (se, 取 0)
+    w.u(1, 0)          # pps_slice_chroma_qp_offsets_present_flag
+    w.u(1, 0)          # weighted_pred_flag
+    w.u(1, 0)          # weighted_bipred_flag
+    w.u(1, 0)          # transquant_bypass_enabled_flag
+    w.u(1, 1)          # tiles_enabled_flag
+    w.u(1, 0)          # entropy_coding_sync_enabled_flag
+    # num_tile_columns_minus1: 荒谬大（规范上限 19）。刻意取 20 亿而不是 1 亿：
+    # 这个值仍能塞进 int，老代码会老老实实循环 20 亿次（超时/OOM）；再大就溢成负数，
+    # 循环反而一次都不跑，测试就失去意义了。
+    w.ue(2000000000)
+    return b"\x00\x00\x00\x01" + w.flush()
+
+
 def build_codec_truncated_avcc():
     """错误长度字段 (avcC): SPS 声明 16 字节, 实际只剩 4 字节。
 
@@ -289,6 +330,23 @@ def build_container_asf_object_short():
     out += file_props_guid
     out += u64le(10)            # 声称 10 字节, 比 24 字节公共头还短
     out += b"\x00" * (header_size - len(out))
+    return bytes(out)
+
+
+def build_container_asf_header_size_overflow():
+    """ASF Header Object 声明的长度溢出 int64（0xD100560000002E46）。
+
+    obj_start + obj_size 会变成负数，Seek(负数) 被夹到 0，下一轮又读到文件头 ——
+    同一个 obj_size、同一个偏移，循环原地打转。FuzzContainerStructure 在 31 字节的
+    输入上就是这么超时的（FuzzContainerStructure-timeout-6e4a9c38…）。
+    另外 num_objects 声明 65535 个对象，实际一个都放不下。
+    """
+    header_guid = bytes.fromhex("3026B2758E66CF11A6D900AA0062CE6C")
+    out = bytearray()
+    out += header_guid
+    out += u64le(0xD100560000002E46)  # Header Object 总长: 天文数字, 加偏移后溢出成负数
+    out += u32le(0x0000FFFF)          # Number of Header Objects = 65535
+    out += b"\x00\x07\xA0"            # reserved1 / reserved2 + 1 字节尾巴
     return bytes(out)
 
 
@@ -458,6 +516,7 @@ SAMPLES = {
     # codec/
     "codec/huge_uev.h264": build_codec_huge_uev_h264,
     "codec/truncated_avcc.bin": build_codec_truncated_avcc,
+    "codec/hevc_pps_absurd_tile_count.bin": build_codec_hevc_pps_absurd_tile_count,
 
     # container/
     "container/empty.bin": lambda: b"",
@@ -468,6 +527,7 @@ SAMPLES = {
     "container/flv_bad_header.flv": build_container_flv_bad_header,
     "container/flv_wrong_size.flv": build_container_flv_wrong_size,
     "container/asf_object_short.wmv": build_container_asf_object_short,
+    "container/asf_header_size_overflow.wmv": build_container_asf_header_size_overflow,
     "container/ebml_unknown_size.mkv": build_container_ebml_unknown_size,
     "container/ebml_deep_nesting.mkv": build_container_ebml_deep_nesting,
     "container/truncated.mkv": build_container_truncated_mkv,

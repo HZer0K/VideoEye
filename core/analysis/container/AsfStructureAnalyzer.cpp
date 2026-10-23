@@ -106,8 +106,7 @@ static std::string GuidToName(const std::string& guid) {
 }
 
 bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::ContainerStructureResult& result,
-                                   const std::atomic<bool>* cancel,
-                                   const Options& options) {
+                                   const std::atomic<bool>* cancel, const Options& options) {
     SeqFileReader file(file_path);
     if (!file.IsOpen()) {
         result.error_message = "无法打开文件";
@@ -194,7 +193,8 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
                 diag.duration_seconds = duration_sec;
                 // 0 时长在 ASF 里通常意味着"实时流没有回填"或文件头被截断，
                 // 进度条会整段失效。
-                if (!(duration_sec > 0.0)) diag.duration_invalid = true;
+                if (!(duration_sec > 0.0))
+                    diag.duration_invalid = true;
             }
         } else if (obj_guid == kStreamPropertiesGuid) {
             std::string data = file.Read(AsfPayloadLen(obj_size, 256));
@@ -265,15 +265,20 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
 
         // Ensure we're at the right position for the next object
         int64_t next_pos = obj_start + static_cast<int64_t>(obj_size);
-        if (obj_size >= 24 && next_pos <= file.Size()) {
+        // 必须同时保证"落在文件内"**和**"确实往前走了"：obj_size 是 8 字节 LE，
+        // 可以有 2^63 量级，obj_start + obj_size 溢出成负数时 Seek 会被夹到 0，
+        // 下一轮读到的是文件头 —— 同样的 obj_size、同样的偏移，循环原地打转。
+        if (obj_size >= 24 && next_pos > obj_start && next_pos <= file.Size()) {
             file.Seek(next_pos);
         } else {
             file.Seek(file.Size());
-            if (options.build_tree) root.children.push_back(elem);
+            if (options.build_tree)
+                root.children.push_back(elem);
             break;
         }
 
-        if (options.build_tree) root.children.push_back(elem);
+        if (options.build_tree)
+            root.children.push_back(elem);
     }
 
     // Scan for Data Object and Index Object after header
@@ -290,8 +295,10 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
 
         uint64_t obj_size = asfLE64(obj_size_buf, 0);
         const int64_t obj_start = file.Pos() - 24;
-        if (obj_guid == kDataObjectGuid) diag.has_data_object = true;
-        if (obj_guid == kIndexObjectGuid) diag.has_index_object = true;
+        if (obj_guid == kDataObjectGuid)
+            diag.has_data_object = true;
+        if (obj_guid == kIndexObjectGuid)
+            diag.has_index_object = true;
         if (obj_size < 24 || obj_start + static_cast<int64_t>(obj_size) > file.Size()) {
             ++diag.invalid_object_sizes;
         }
@@ -303,14 +310,21 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
         elem.offset = obj_start;
         elem.depth = 1;
         elem.value = StrCat("size=%1", obj_size);
-        if (options.build_tree) root.children.push_back(elem);
+        if (options.build_tree)
+            root.children.push_back(elem);
 
         if (obj_size < 24)
             break;
-        file.Seek(obj_start + static_cast<int64_t>(obj_size));
+        // 与上面那段同一个道理：目标位置必须**严格前进**，否则 Seek 被夹回 0 之后
+        // 每轮都读同一段字节，而外层是 `while (Pos() < Size() - 24)`，永远出不去。
+        const int64_t next_pos = obj_start + static_cast<int64_t>(obj_size);
+        if (next_pos <= obj_start || next_pos > file.Size())
+            break;
+        file.Seek(next_pos);
     }
 
-    if (options.build_tree) result.element_tree.push_back(root);
+    if (options.build_tree)
+        result.element_tree.push_back(root);
     result.valid = true;
     result.summary = StrCat("ASF | 文件大小: %1 字节 | 流: %2 个", file.Size(), result.streams.size());
 

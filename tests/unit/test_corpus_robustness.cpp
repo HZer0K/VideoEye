@@ -212,6 +212,22 @@ TEST(CorpusRobustnessTest, HugeUevSpsIsRejected) {
     EXPECT_EQ(r.height, 0);
 }
 
+// HEVC PPS 的 num_tile_columns_minus1 是荒谬大的 ue(v)（20 亿，规范上限 19）：
+// 拿它当循环上界就是 20 亿次 push_back（CI 的 FuzzBitstreamExtradata 就是这么
+// 在 17 字节输入上 10 秒超时的）。必须判整份 PPS 无效，而不是按它分配/循环。
+TEST(CorpusRobustnessTest, HevcPpsAbsurdTileCountIsRejected) {
+    const std::vector<uint8_t> bytes = ReadBytes("codec/hevc_pps_absurd_tile_count.bin");
+    ASSERT_FALSE(bytes.empty());
+
+    videoeye::BitstreamAnalyzer analyzer;
+    const Clock::time_point t0 = Clock::now();
+    const videoeye::model::BitstreamAnalysisResult r = analyzer.Analyze(bytes.data(), bytes.size(), AV_CODEC_ID_HEVC);
+
+    EXPECT_LT(ElapsedMs(t0), kPerSampleBudgetMs);
+    EXPECT_FALSE(r.hevc_pps.present);
+    EXPECT_EQ(r.hevc_pps.num_tile_columns_minus1, 0);
+}
+
 // --------------------------------------------------------------------------
 // container/: 空文件与极短文件
 // --------------------------------------------------------------------------
@@ -235,6 +251,25 @@ TEST(CorpusRobustnessTest, EmptyAndTinyFilesRejectedByAllContainerParsers) {
         videoeye::AsfStructureAnalyzer asf_analyzer;
         EXPECT_FALSE(asf_analyzer.Analyze(path, asf, nullptr)) << rel;
     }
+}
+
+// ASF Header Object 声明的长度溢出 int64：obj_start + obj_size 变负数，Seek(负数)
+// 被夹到 0，下一轮又读到文件头 —— 循环里"每轮必须严格前进"这条不成立就原地打转
+// （FuzzContainerStructure 在 31 字节输入上 10 秒超时，就是这条）。
+// 这里的样本与 fuzz 抓到的输入逐字节一致。
+TEST(CorpusRobustnessTest, AsfHeaderSizeOverflowTerminatesWithoutInventingObjects) {
+    const std::string path = CorpusPath("container/asf_header_size_overflow.wmv");
+
+    videoeye::model::ContainerStructureResult asf;
+    videoeye::AsfStructureAnalyzer analyzer;
+    const Clock::time_point t0 = Clock::now();
+    analyzer.Analyze(path, asf, nullptr);
+
+    EXPECT_LT(ElapsedMs(t0), kPerSampleBudgetMs);
+    // 文件头之后只有 7 个字节，连一个 24 字节的对象头都放不下：
+    // 不允许凭空"解析出"对象，也不允许把声明长度当真的走一遍。
+    EXPECT_EQ(asf.diagnostics.asf.parsed_header_objects, 0u);
+    EXPECT_FALSE(asf.streams.size() > 0);
 }
 
 // 错误 MP4 largesize：size==1 时 largesize=8 连 box 头都装不下，必须当场停

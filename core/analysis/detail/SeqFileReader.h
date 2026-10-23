@@ -33,7 +33,9 @@ namespace videoeye {
 class SeqFileReader {
 public:
     SeqFileReader() = default;
-    explicit SeqFileReader(const std::string& path) { Open(path); }
+    explicit SeqFileReader(const std::string& path) {
+        Open(path);
+    }
     ~SeqFileReader() = default;
 
     SeqFileReader(const SeqFileReader&) = delete;
@@ -47,24 +49,29 @@ public:
         return stream_.is_open();
     }
     void Close() {
-        if (stream_.is_open()) stream_.close();
+        if (stream_.is_open())
+            stream_.close();
     }
-    bool IsOpen() const { return stream_.is_open(); }
+    bool IsOpen() const {
+        return stream_.is_open();
+    }
 
     /// std::ifstream::read(n)：返回实际读到的字节（短读时短于 n，EOF 时为空串）。
     std::string Read(int64_t n) {
-        if (n <= 0) return {};
+        if (n <= 0)
+            return {};
         Clear();
         std::string out(static_cast<size_t>(n), '\0');
         stream_.read(out.data(), static_cast<std::streamsize>(n));
         out.resize(static_cast<size_t>(stream_.gcount()));
-        Clear();  // 见顶部第 3 条：别把 eofbit/failbit 留给下一个操作
+        Clear(); // 见顶部第 3 条：别把 eofbit/failbit 留给下一个操作
         return out;
     }
 
     /// 读进一块已存在的内存（std::istream::read(char*, n) 那条路径）。
     bool ReadRaw(void* dst, int64_t n) {
-        if (n <= 0) return true;
+        if (n <= 0)
+            return true;
         Clear();
         stream_.read(static_cast<char*>(dst), static_cast<std::streamsize>(n));
         const bool ok = stream_.gcount() == static_cast<std::streamsize>(n);
@@ -85,12 +92,25 @@ public:
     }
 
     /// std::ifstream::pos()：当前读位置。
+    ///
+    /// ❗ tellg() 在**恰好停在文件末尾**时返回 -1（不是 size）。旧实现把 -1 映射成 0，
+    /// 于是"已经在末尾"变成了"还在开头"：所有 `while (Pos() < Size() - k)` 的循环判据
+    /// 都会认为还有得读，回头把文件头再读一遍。若循环体里的 Seek 目标又被夹回 0
+    /// （越界 / 负偏移都夹到 0，见 Seek），就变成死循环 —— FuzzContainerStructure
+    /// 抓到 ASF 死循环就是这么来的：31 字节的输入，header_size 声明得比文件大，
+    /// `Seek(Size())` 之后 Pos() 报 0，第二段循环原地打转。
+    ///
+    /// 所以这里把 -1 解释成"已到末尾"，与 AtEnd() 的判定口径一致。
     int64_t Pos() const {
         SeqFileReader* self = const_cast<SeqFileReader*>(this);
         self->Clear();
         const std::streampos p = stream_.tellg();
         self->Clear();
-        return p == std::streampos(std::streamoff(-1)) ? 0 : static_cast<int64_t>(p);
+        if (p == std::streampos(std::streamoff(-1))) {
+            // 见上：EOF 处的 -1 是"末尾"，不是"开头"
+            return Size();
+        }
+        return static_cast<int64_t>(p);
     }
 
     /// std::ifstream::seek(x)：把位置挪到文件内偏移。超界会被夹到文件末尾，与 std::ifstream 一致
@@ -99,8 +119,10 @@ public:
         Clear();
         const int64_t size = Size();
         int64_t target = off;
-        if (target < 0) target = 0;
-        if (target > size) target = size;
+        if (target < 0)
+            target = 0;
+        if (target > size)
+            target = size;
         stream_.seekg(static_cast<std::streamoff>(target), std::ios::beg);
         Clear();
         return stream_.good();
@@ -116,7 +138,8 @@ public:
         Clear();
         const int64_t size = Size();
         std::string out;
-        if (size <= 0) return out;
+        if (size <= 0)
+            return out;
         out.resize(static_cast<size_t>(size));
         stream_.seekg(0, std::ios::beg);
         stream_.read(out.data(), static_cast<std::streamsize>(size));
@@ -128,10 +151,11 @@ public:
 private:
     /// 只在"已经处于失败态"时清标志；good() 时 clear() 是空操作。
     void Clear() {
-        if (!stream_.good()) stream_.clear();
+        if (!stream_.good())
+            stream_.clear();
     }
 
     mutable std::ifstream stream_;
 };
 
-}  // namespace videoeye
+} // namespace videoeye

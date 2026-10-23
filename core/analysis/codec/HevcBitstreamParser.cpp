@@ -9,28 +9,43 @@ namespace videoeye {
 
 // SPS / VPS 里几个「循环次数直接来自 ue(v)」的字段，畸形码流能把循环顶到上亿次。
 // 取值取规范允许的上界：超界一律判非法并停止继续读。
-constexpr int kMaxNumShortTermRefPicSets = 64;  // MaxNumRefPicSet
-constexpr int kMaxNumLongTermRefPics = 64;      // num_long_term_ref_pics_sps
-constexpr int kMaxNumLayerSets = 1023;          // num_layer_sets_minus1（VPS 的层集合数）
-constexpr uint32_t kMaxHrdCpbCountMinus1 = 31;  // cpb_cnt_minus1 的规范上限
+constexpr int kMaxNumShortTermRefPicSets = 64; // MaxNumRefPicSet
+constexpr int kMaxNumLongTermRefPics = 64;     // num_long_term_ref_pics_sps
+constexpr int kMaxNumLayerSets = 1023;         // num_layer_sets_minus1（VPS 的层集合数）
+constexpr uint32_t kMaxHrdCpbCountMinus1 = 31; // cpb_cnt_minus1 的规范上限
+constexpr uint32_t kMaxTileColumnsMinus1 = 19; // PPS num_tile_columns_minus1（规范：最多 20 列）
+constexpr uint32_t kMaxTileRowsMinus1 = 21;    // PPS num_tile_rows_minus1（规范：最多 22 行）
+constexpr uint32_t kMaxRefPicsPerSet = 16;     // RPS 的 num_negative_pics / num_positive_pics 上界
 
 // --------------------------------------------------------------------------
 // Profile / Tier / Level
 // --------------------------------------------------------------------------
 std::string HevcBitstreamParser::GetProfileName(int general_profile_idc) {
     switch (general_profile_idc) {
-        case 1:  return "Main";
-        case 2:  return "Main 10";
-        case 3:  return "Main Still Picture";
-        case 4:  return "Main Rext";
-        case 5:  return "High Throughput";
-        case 6:  return "Multiview Main";
-        case 7:  return "Scalable Main";
-        case 8:  return "3D Main";
-        case 9:  return "Screen Content Coding";
-        case 10: return "Scalable Range Extension";
-        case 11: return "High Throughput Screen Content Coding";
-        default: return "Unknown";
+    case 1:
+        return "Main";
+    case 2:
+        return "Main 10";
+    case 3:
+        return "Main Still Picture";
+    case 4:
+        return "Main Rext";
+    case 5:
+        return "High Throughput";
+    case 6:
+        return "Multiview Main";
+    case 7:
+        return "Scalable Main";
+    case 8:
+        return "3D Main";
+    case 9:
+        return "Screen Content Coding";
+    case 10:
+        return "Scalable Range Extension";
+    case 11:
+        return "High Throughput Screen Content Coding";
+    default:
+        return "Unknown";
     }
 }
 
@@ -40,10 +55,12 @@ std::string HevcBitstreamParser::GetTierName(int general_tier_flag) {
 
 std::string HevcBitstreamParser::GetLevelVersion(uint32_t general_level_idc) {
     // general_level_idc = 30 × 主版本 + 3 × 次版本：153 -> 5.1，123 -> 4.1
-    if (general_level_idc == 0) return "Undefined";
+    if (general_level_idc == 0)
+        return "Undefined";
     const uint32_t level = general_level_idc / 30;
     const uint32_t sub_level = (general_level_idc % 30) / 3;
-    if (level == 0 || level > 13) return "Unknown";
+    if (level == 0 || level > 13)
+        return "Unknown";
     return std::to_string(level) + "." + std::to_string(sub_level);
 }
 
@@ -69,13 +86,9 @@ std::vector<uint8_t> HevcBitstreamParser::GetRbsp(const videoeye::NalUnit& nal_u
 // --------------------------------------------------------------------------
 // profile_tier_level() —— 7.3.3
 // --------------------------------------------------------------------------
-void HevcBitstreamParser::ParseProfileTierLevel(videoeye::BitReader& reader,
-                                                int max_sub_layers_minus1,
-                                                int& profile_space,
-                                                int& tier_flag,
-                                                int& profile_idc,
-                                                uint32_t& level_idc,
-                                                std::vector<bool>& sub_layer_profile_present,
+void HevcBitstreamParser::ParseProfileTierLevel(videoeye::BitReader& reader, int max_sub_layers_minus1,
+                                                int& profile_space, int& tier_flag, int& profile_idc,
+                                                uint32_t& level_idc, std::vector<bool>& sub_layer_profile_present,
                                                 std::vector<bool>& sub_layer_level_present) {
     bool compat[32] = {};
 
@@ -93,14 +106,9 @@ void HevcBitstreamParser::ParseProfileTierLevel(videoeye::BitReader& reader,
     reader.SkipBits(1); // general_non_packed_constraint_flag
     reader.SkipBits(1); // general_frame_only_constraint_flag
 
-    const bool is_rext_family =
-        profile_idc == 4 || compat[4] ||
-        profile_idc == 5 || compat[5] ||
-        profile_idc == 6 || compat[6] ||
-        profile_idc == 7 || compat[7] ||
-        profile_idc == 8 || compat[8] ||
-        profile_idc == 9 || compat[9] ||
-        profile_idc == 10 || compat[10];
+    const bool is_rext_family = profile_idc == 4 || compat[4] || profile_idc == 5 || compat[5] || profile_idc == 6 ||
+                                compat[6] || profile_idc == 7 || compat[7] || profile_idc == 8 || compat[8] ||
+                                profile_idc == 9 || compat[9] || profile_idc == 10 || compat[10];
 
     if (is_rext_family) {
         reader.SkipBits(1); // general_max_12bit_constraint_flag
@@ -114,9 +122,7 @@ void HevcBitstreamParser::ParseProfileTierLevel(videoeye::BitReader& reader,
         reader.SkipBits(1); // general_lower_bit_rate_constraint_flag
 
         const bool has_14bit =
-            profile_idc == 5 || compat[5] ||
-            profile_idc == 9 || compat[9] ||
-            profile_idc == 10 || compat[10];
+            profile_idc == 5 || compat[5] || profile_idc == 9 || compat[9] || profile_idc == 10 || compat[10];
         if (has_14bit) {
             reader.SkipBits(1);  // general_max_14bit_constraint_flag
             reader.SkipBits(33); // general_reserved_zero_33bits
@@ -127,11 +133,8 @@ void HevcBitstreamParser::ParseProfileTierLevel(videoeye::BitReader& reader,
         reader.SkipBits(43); // general_reserved_zero_43bits
     }
 
-    const bool inbld_family =
-        profile_idc == 1 || compat[1] ||
-        profile_idc == 2 || compat[2] ||
-        profile_idc == 3 || compat[3] ||
-        profile_idc == 4 || compat[4];
+    const bool inbld_family = profile_idc == 1 || compat[1] || profile_idc == 2 || compat[2] || profile_idc == 3 ||
+                              compat[3] || profile_idc == 4 || compat[4];
     if (inbld_family) {
         reader.SkipBits(1); // general_inbld_flag
     } else {
@@ -180,9 +183,7 @@ void HevcBitstreamParser::SkipScalingListData(videoeye::BitReader& reader) {
             if (!pred_mode) {
                 reader.ReadUE(); // scaling_list_pred_matrix_id_delta
             } else {
-                const int coef_num = (1 << (4 + (size_id << 1))) > 64
-                                         ? 64
-                                         : (1 << (4 + (size_id << 1)));
+                const int coef_num = (1 << (4 + (size_id << 1))) > 64 ? 64 : (1 << (4 + (size_id << 1)));
                 if (size_id > 1) {
                     reader.ReadSE(); // scaling_list_dc_coef_minus8
                 }
@@ -197,40 +198,40 @@ void HevcBitstreamParser::SkipScalingListData(videoeye::BitReader& reader) {
 // --------------------------------------------------------------------------
 // hrd_parameters() —— 7.3.5（附录 E.2.2）
 // --------------------------------------------------------------------------
-void HevcBitstreamParser::SkipHrdParameters(videoeye::BitReader& reader,
-                                            int max_sub_layers_minus1) {
+void HevcBitstreamParser::SkipHrdParameters(videoeye::BitReader& reader, int max_sub_layers_minus1) {
     // SPS VUI 调用 hrd_parameters() 时 commonInfPresentFlag 恒为 1，按附录 E.2.2
     // 逐字段跳过。这里不落地 HRD 值，但位预算必须精确，否则后续 VUI restriction
     // 字段会错位，甚至把合法 SPS 误判为截断。
-    const bool nal_hrd = reader.ReadBit();   // nal_hrd_parameters_present_flag
-    const bool vcl_hrd = reader.ReadBit();   // vcl_hrd_parameters_present_flag
-    if (!nal_hrd && !vcl_hrd) return;
+    const bool nal_hrd = reader.ReadBit(); // nal_hrd_parameters_present_flag
+    const bool vcl_hrd = reader.ReadBit(); // vcl_hrd_parameters_present_flag
+    if (!nal_hrd && !vcl_hrd)
+        return;
 
-    const bool sub_pic = reader.ReadBit();   // sub_pic_hrd_params_present_flag
+    const bool sub_pic = reader.ReadBit(); // sub_pic_hrd_params_present_flag
     if (sub_pic) {
-        reader.SkipBits(8);                  // tick_divisor_minus2
-        reader.SkipBits(5);                  // du_cpb_removal_delay_increment_length_minus1
-        reader.SkipBits(1);                  // sub_pic_cpb_params_in_pic_timing_sei_flag
-        reader.SkipBits(5);                  // dpb_output_delay_du_length_minus1
+        reader.SkipBits(8); // tick_divisor_minus2
+        reader.SkipBits(5); // du_cpb_removal_delay_increment_length_minus1
+        reader.SkipBits(1); // sub_pic_cpb_params_in_pic_timing_sei_flag
+        reader.SkipBits(5); // dpb_output_delay_du_length_minus1
     }
-    reader.SkipBits(4);                      // bit_rate_scale
-    reader.SkipBits(4);                      // cpb_size_scale
+    reader.SkipBits(4); // bit_rate_scale
+    reader.SkipBits(4); // cpb_size_scale
     if (sub_pic) {
-        reader.SkipBits(4);                  // cpb_size_du_scale
+        reader.SkipBits(4); // cpb_size_du_scale
     }
-    reader.SkipBits(5);                      // initial_cpb_removal_delay_length_minus1
-    reader.SkipBits(5);                      // au_cpb_removal_delay_length_minus1
-    reader.SkipBits(5);                      // dpb_output_delay_length_minus1
-    if (reader.HasError()) return;
+    reader.SkipBits(5); // initial_cpb_removal_delay_length_minus1
+    reader.SkipBits(5); // au_cpb_removal_delay_length_minus1
+    reader.SkipBits(5); // dpb_output_delay_length_minus1
+    if (reader.HasError())
+        return;
 
     for (int i = 0; i <= max_sub_layers_minus1; ++i) {
         const bool fixed_pic_rate_general = reader.ReadBit();
-        const bool fixed_pic_rate_within_cvs =
-            fixed_pic_rate_general ? true : reader.ReadBit();
+        const bool fixed_pic_rate_within_cvs = fixed_pic_rate_general ? true : reader.ReadBit();
 
         bool low_delay_hrd = false;
         if (fixed_pic_rate_within_cvs) {
-            reader.ReadUE();                 // elemental_duration_in_tc_minus1
+            reader.ReadUE(); // elemental_duration_in_tc_minus1
         } else {
             low_delay_hrd = reader.ReadBit();
         }
@@ -239,25 +240,28 @@ void HevcBitstreamParser::SkipHrdParameters(videoeye::BitReader& reader,
         if (!low_delay_hrd) {
             cpb_cnt_minus1 = reader.ReadUEBounded(kMaxHrdCpbCountMinus1);
         }
-        if (reader.HasError()) return;
+        if (reader.HasError())
+            return;
 
         // nal / vcl 两类参数各自带一份完整（且各自独立）的 CPB 列表。
-        if (nal_hrd && !SkipOneHrdCpbList(reader, cpb_cnt_minus1, sub_pic)) return;
-        if (vcl_hrd && !SkipOneHrdCpbList(reader, cpb_cnt_minus1, sub_pic)) return;
+        if (nal_hrd && !SkipOneHrdCpbList(reader, cpb_cnt_minus1, sub_pic))
+            return;
+        if (vcl_hrd && !SkipOneHrdCpbList(reader, cpb_cnt_minus1, sub_pic))
+            return;
     }
 }
 
-bool HevcBitstreamParser::SkipOneHrdCpbList(videoeye::BitReader& reader, uint32_t cpb_cnt_minus1,
-                                            bool sub_pic) {
+bool HevcBitstreamParser::SkipOneHrdCpbList(videoeye::BitReader& reader, uint32_t cpb_cnt_minus1, bool sub_pic) {
     for (uint32_t j = 0; j <= cpb_cnt_minus1; ++j) {
-        reader.ReadUE();                    // bit_rate_value_minus1
-        reader.ReadUE();                    // cpb_size_value_minus1
+        reader.ReadUE(); // bit_rate_value_minus1
+        reader.ReadUE(); // cpb_size_value_minus1
         if (sub_pic) {
-            reader.ReadUE();                // cpb_size_du_value_minus1
-            reader.ReadUE();                // bit_rate_du_value_minus1
+            reader.ReadUE(); // cpb_size_du_value_minus1
+            reader.ReadUE(); // bit_rate_du_value_minus1
         }
-        reader.SkipBits(1);                 // cbr_flag
-        if (reader.HasError()) return false;
+        reader.SkipBits(1); // cbr_flag
+        if (reader.HasError())
+            return false;
     }
     return true;
 }
@@ -280,26 +284,27 @@ void HevcBitstreamParser::SkipShortTermRefPicSets(videoeye::BitReader& reader, i
             reader.ReadUE();    // abs_delta_rps_minus1
             const int ref_num = num_delta_pocs[static_cast<size_t>(i - 1)];
             for (int j = 0; j <= ref_num; ++j) {
-                const bool used = reader.ReadBit();      // used_by_curr_pic_flag[j]
+                const bool used = reader.ReadBit(); // used_by_curr_pic_flag[j]
                 if (!used) {
-                    reader.SkipBits(1);                  // use_delta_flag[j]
+                    reader.SkipBits(1); // use_delta_flag[j]
                 }
             }
             // 近似：NumDeltaPocs[i] = NumDeltaPocs[ref]（全部 used_by_curr_pic_flag=1 时精确）
             num_delta_pocs[static_cast<size_t>(i)] = ref_num;
         } else {
-            const uint32_t num_negative = reader.ReadUE();
-            const uint32_t num_positive = reader.ReadUE();
+            // 同理：这两个计数是下面两个循环的上界，裸 ReadUE() 会被畸形码流顶到
+            // 2^31 量级。超界即置错误，由 SPS 末尾的 HasError() 判整份无效。
+            const uint32_t num_negative = reader.ReadUEBounded(kMaxRefPicsPerSet);
+            const uint32_t num_positive = reader.ReadUEBounded(kMaxRefPicsPerSet);
             for (uint32_t j = 0; j < num_negative; ++j) {
-                reader.ReadUE(); // delta_poc_s0_minus1[j]
+                reader.ReadUE();    // delta_poc_s0_minus1[j]
                 reader.SkipBits(1); // used_by_curr_pic_s0_flag[j]
             }
             for (uint32_t j = 0; j < num_positive; ++j) {
-                reader.ReadUE(); // delta_poc_s1_minus1[j]
+                reader.ReadUE();    // delta_poc_s1_minus1[j]
                 reader.SkipBits(1); // used_by_curr_pic_s1_flag[j]
             }
-            num_delta_pocs[static_cast<size_t>(i)] =
-                static_cast<int>(num_negative + num_positive);
+            num_delta_pocs[static_cast<size_t>(i)] = static_cast<int>(num_negative + num_positive);
         }
     }
 }
@@ -307,8 +312,7 @@ void HevcBitstreamParser::SkipShortTermRefPicSets(videoeye::BitReader& reader, i
 // --------------------------------------------------------------------------
 // vui_parameters() —— 附录 E.2.1
 // --------------------------------------------------------------------------
-void HevcBitstreamParser::ParseVuiParameters(videoeye::BitReader& reader,
-                                             model::HevcSpsInfo& sps,
+void HevcBitstreamParser::ParseVuiParameters(videoeye::BitReader& reader, model::HevcSpsInfo& sps,
                                              int max_sub_layers_minus1) {
     sps.aspect_ratio_info_present_flag = static_cast<int>(reader.ReadBit());
     if (sps.aspect_ratio_info_present_flag) {
@@ -409,16 +413,12 @@ model::HevcVpsInfo HevcBitstreamParser::ParseVpsFromNalUnit(const videoeye::NalU
     vps.vps_temporal_nal_layer_only_flag = vps.vps_temporal_id_nesting_flag;
     reader.SkipBits(16); // vps_reserved_0xffff_16bits
 
-    ParseProfileTierLevel(reader, static_cast<int>(max_sub_layers_minus1),
-                          vps.general_profile_space, vps.general_tier_flag,
-                          vps.general_profile_idc, vps.general_level_idc,
-                          vps.sub_layer_profile_present_flags,
-                          vps.sub_layer_level_present_flags);
+    ParseProfileTierLevel(reader, static_cast<int>(max_sub_layers_minus1), vps.general_profile_space,
+                          vps.general_tier_flag, vps.general_profile_idc, vps.general_level_idc,
+                          vps.sub_layer_profile_present_flags, vps.sub_layer_level_present_flags);
 
     vps.vps_sub_layer_ordering_info_present_flag = reader.ReadBit();
-    const int start = vps.vps_sub_layer_ordering_info_present_flag
-                          ? 0
-                          : static_cast<int>(max_sub_layers_minus1);
+    const int start = vps.vps_sub_layer_ordering_info_present_flag ? 0 : static_cast<int>(max_sub_layers_minus1);
     for (int i = start; i <= static_cast<int>(max_sub_layers_minus1); ++i) {
         reader.ReadUE(); // vps_max_dec_pic_buffering_minus1[i]
         reader.ReadUE(); // vps_max_num_reorder_pics[i]
@@ -482,10 +482,8 @@ model::HevcSpsInfo HevcBitstreamParser::ParseSpfFromNalUnit(const videoeye::NalU
     sps.sps_max_sub_layers_minus1 = static_cast<int>(reader.ReadBits(3));
     sps.sps_temporal_id_nesting_flag = static_cast<int>(reader.ReadBit());
 
-    ParseProfileTierLevel(reader, sps.sps_max_sub_layers_minus1,
-                          sps.general_profile_space, sps.general_tier_flag,
-                          sps.general_profile_idc, sps.general_level_idc,
-                          sps.sub_layer_profile_present_flags,
+    ParseProfileTierLevel(reader, sps.sps_max_sub_layers_minus1, sps.general_profile_space, sps.general_tier_flag,
+                          sps.general_profile_idc, sps.general_level_idc, sps.sub_layer_profile_present_flags,
                           sps.sub_layer_level_present_flags);
 
     sps.sps_seq_parameter_set_id = static_cast<int>(reader.ReadUE());
@@ -527,9 +525,7 @@ model::HevcSpsInfo HevcBitstreamParser::ParseSpfFromNalUnit(const videoeye::NalU
     sps.log2_max_pic_order_cnt_lsb_minus4 = static_cast<int>(reader.ReadUE());
 
     sps.sps_sub_layer_ordering_info_present_flag = reader.ReadBit();
-    const int start = sps.sps_sub_layer_ordering_info_present_flag
-                          ? 0
-                          : sps.sps_max_sub_layers_minus1;
+    const int start = sps.sps_sub_layer_ordering_info_present_flag ? 0 : sps.sps_max_sub_layers_minus1;
     for (int i = start; i <= sps.sps_max_sub_layers_minus1; ++i) {
         reader.ReadUE(); // sps_max_dec_pic_buffering_minus1[i]
         reader.ReadUE(); // sps_max_num_reorder_pics[i]
@@ -597,8 +593,8 @@ model::HevcSpsInfo HevcBitstreamParser::ParseSpfFromNalUnit(const videoeye::NalU
     }
 
     // 顺带按 CTU 反推一份，供仍引用旧字段的地方使用
-    const int ctu = 1 << (sps.log2_min_luma_coding_block_size_minus3 + 3 +
-                          sps.log2_diff_max_min_luma_coding_block_size);
+    const int ctu =
+        1 << (sps.log2_min_luma_coding_block_size_minus3 + 3 + sps.log2_diff_max_min_luma_coding_block_size);
     if (ctu > 0) {
         sps.pic_width_in_ctu_minus1 = (sps.pic_width_in_luma_samples + ctu - 1) / ctu - 1;
         sps.pic_height_in_ctu_minus1 = (sps.pic_height_in_luma_samples + ctu - 1) / ctu - 1;
@@ -655,8 +651,13 @@ model::HevcPpsInfo HevcBitstreamParser::ParsePpsFromNalUnit(const videoeye::NalU
     pps.tiles_enabled_flag = static_cast<int>(reader.ReadBit());
     pps.entropy_coding_sync_enabled_flag = static_cast<int>(reader.ReadBit());
     if (pps.tiles_enabled_flag) {
-        pps.num_tile_columns_minus1 = static_cast<int>(reader.ReadUE());
-        pps.num_tile_rows_minus1 = static_cast<int>(reader.ReadUE());
+        // ❗ 这两个值直接决定下面两个循环的次数，必须走有界读法。
+        // 曾经用裸 ReadUE()：畸形码流能读出 2^31 量级的 ue(v)，循环就变成"数十亿次
+        // push_back"，libFuzzer 在 17 字节的输入上 10 秒超时（FuzzBitstreamExtradata）。
+        // ReadUEBounded 超界时置错误 → 末尾的 HasError() 把整份 PPS 判无效，
+        // 与 VVC 解析器"所有循环上界走 ReadUEBounded"的口径一致。
+        pps.num_tile_columns_minus1 = static_cast<int>(reader.ReadUEBounded(kMaxTileColumnsMinus1));
+        pps.num_tile_rows_minus1 = static_cast<int>(reader.ReadUEBounded(kMaxTileRowsMinus1));
         pps.tile_uniform_spacing_flag = static_cast<int>(reader.ReadBit());
         if (!pps.tile_uniform_spacing_flag) {
             for (int i = 0; i < pps.num_tile_columns_minus1; ++i) {
@@ -685,8 +686,8 @@ model::HevcPpsInfo HevcBitstreamParser::ParsePpsFromNalUnit(const videoeye::NalU
         SkipScalingListData(reader);
     }
 
-    reader.SkipBits(1);              // lists_modification_present_flag
-    reader.ReadUE();                 // log2_parallel_merge_level_minus2
+    reader.SkipBits(1); // lists_modification_present_flag
+    reader.ReadUE();    // log2_parallel_merge_level_minus2
     pps.slice_segment_header_extension_present_flag = static_cast<int>(reader.ReadBit());
 
     if (reader.HasError()) {
@@ -701,7 +702,8 @@ model::HevcPpsInfo HevcBitstreamParser::ParsePpsFromNalUnit(const videoeye::NalU
 // extradata 入口
 // --------------------------------------------------------------------------
 model::HevcVpsInfo HevcBitstreamParser::ParseVps(const uint8_t* extradata, size_t size) {
-    if (!extradata || size == 0) return model::HevcVpsInfo();
+    if (!extradata || size == 0)
+        return model::HevcVpsInfo();
 
     auto result = videoeye::ExtradataParser::Parse(extradata, size);
     for (const auto& nal : result.nal_units) {
@@ -713,7 +715,8 @@ model::HevcVpsInfo HevcBitstreamParser::ParseVps(const uint8_t* extradata, size_
 }
 
 model::HevcSpsInfo HevcBitstreamParser::ParseSpf(const uint8_t* extradata, size_t size) {
-    if (!extradata || size == 0) return model::HevcSpsInfo();
+    if (!extradata || size == 0)
+        return model::HevcSpsInfo();
 
     auto result = videoeye::ExtradataParser::Parse(extradata, size);
     for (const auto& nal : result.nal_units) {
@@ -725,7 +728,8 @@ model::HevcSpsInfo HevcBitstreamParser::ParseSpf(const uint8_t* extradata, size_
 }
 
 model::HevcPpsInfo HevcBitstreamParser::ParsePps(const uint8_t* extradata, size_t size) {
-    if (!extradata || size == 0) return model::HevcPpsInfo();
+    if (!extradata || size == 0)
+        return model::HevcPpsInfo();
 
     auto result = videoeye::ExtradataParser::Parse(extradata, size);
     for (const auto& nal : result.nal_units) {
