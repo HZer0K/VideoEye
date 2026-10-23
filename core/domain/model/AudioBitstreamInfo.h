@@ -24,50 +24,54 @@ namespace model {
 // 解析到的音频位流类型
 enum class AudioBitstreamCodec {
     Unknown = 0,
-    AacAdts,   // ADTS（裸 AAC / TS / 部分 MP4）
-    AacLatm,   // LATM / LOAS
-    AacRaw,    // MP4 的 AudioSpecificConfig + 裸 AAC 帧
-    Ac3,       // AC-3
-    Eac3,      // E-AC-3（含 Atmos/JOC）
-    Opus,      // Ogg / Matroska / WebM Opus
-    Other,     // 未实现逐帧解析的编码（MP3 / FLAC / PCM ...）
+    AacAdts, // ADTS（裸 AAC / TS / 部分 MP4）
+    AacLatm, // LATM / LOAS
+    AacRaw,  // MP4 的 AudioSpecificConfig + 裸 AAC 帧
+    Ac3,     // AC-3
+    Eac3,    // E-AC-3（含 Atmos/JOC）
+    Opus,    // Ogg / Matroska / WebM Opus
+    Other,   // 未实现逐帧解析的编码（MP3 / FLAC / PCM ...）
 };
 
 // E-AC-3 的独立/从属子流类型
 enum class Eac3StreamType {
-    Independent = 0,   // strmtyp == 0
-    Dependent = 1,     // strmtyp == 1
-    Converted = 2,     // strmtyp == 2
-    Reserved = 3,      // strmtyp == 3
+    Independent = 0, // strmtyp == 0
+    Dependent = 1,   // strmtyp == 1
+    Converted = 2,   // strmtyp == 2
+    Reserved = 3,    // strmtyp == 3
 };
 
 // 一条音频流在码流层看到的事实
 struct AudioBitstreamStream {
     int stream_index = -1;
-    std::string codec_name;   // avcodec_get_name()
-    std::string codec_tag;    // MP4 四字符 tag（可能为空）
+    std::string codec_name; // avcodec_get_name()
+    std::string codec_tag;  // MP4 四字符 tag（可能为空）
     AudioBitstreamCodec codec = AudioBitstreamCodec::Unknown;
 
-    int64_t packet_count = 0;       // 交给分析器的包数
-    int64_t parsed_packets = 0;     // 至少解析出一个帧头的包数
-    int64_t invalid_packets = 0;    // **已支持解析**但帧头校验失败的包数
+    int64_t packet_count = 0;    // 交给分析器的包数
+    int64_t parsed_packets = 0;  // 至少解析出一个帧头的包数
+    int64_t invalid_packets = 0; // **已支持解析**但帧头校验失败的包数
     // 该编码尚未实现逐帧位流头解析（MP3/FLAC/PCM ...），这些包既不算成功也不算失败。
     // 必须与 invalid_packets 分开：混在一起会把"还没做"报成"素材坏了"，
     // 例如 PCM 会被算成 100% 帧头解析失败并触发 QC 告警。
     int64_t unsupported_packets = 0;
-    int64_t frame_count = 0;        // 解析出的帧数（AAC/AC-3 可能一包多帧）
+    int64_t frame_count = 0; // 解析出的帧数（AAC/AC-3 可能一包多帧）
 
     // 真正参与过帧头判定的包数（分母只应该是它）
-    int64_t judged_packets() const { return parsed_packets + invalid_packets; }
+    int64_t judged_packets() const {
+        return parsed_packets + invalid_packets;
+    }
     // 该编码是否实现了逐帧解析
-    bool FrameHeaderParsed() const { return unsupported_packets == 0; }
+    bool FrameHeaderParsed() const {
+        return unsupported_packets == 0;
+    }
 
     // 位流头里声明的参数
     int sample_rate = 0;
     int channels = 0;
-    int channel_config = -1;        // AAC channel_configuration / AC-3 acmod
-    int audio_object_type = -1;     // AAC Audio Object Type（2 = LC，5 = HE-AAC）
-    std::string profile;            // 人类可读的 profile，如 "AAC LC" / "AC-3"
+    int channel_config = -1;    // AAC channel_configuration / AC-3 acmod
+    int audio_object_type = -1; // AAC Audio Object Type（2 = LC，5 = HE-AAC）
+    std::string profile;        // 人类可读的 profile，如 "AAC LC" / "AC-3"
 
     // AC-3 / E-AC-3
     bool eac3 = false;
@@ -76,15 +80,15 @@ struct AudioBitstreamStream {
     int acmod = -1;
     bool lfeon = false;
     bool has_dialnorm = false;
-    int dialnorm_dbfs = 0;          // 已换算成 dBFS（通常是 -31..-1）
+    int dialnorm_dbfs = 0; // 已换算成 dBFS（通常是 -31..-1）
     // dialnorm 与实测积分响度的差值（LU）。只有"同一条流 + 音频 QC 跑过"时才有意义，
     // 所以用 available 显式区分"差值为 0"和"没算"。正值 = 实际比声明更响。
     bool dialnorm_delta_available = false;
     double dialnorm_delta_lu = 0.0;
     int bit_rate_kbps = 0;
-    bool vbr = false;               // 同一流内码率/帧长明显变化
+    bool vbr = false; // 同一流内码率/帧长明显变化
     int dependent_substream_count = 0;
-    int dependent_channels = 0;     // 从属子流 chanmap 的声道数
+    int dependent_channels = 0; // 从属子流 chanmap 的声道数
 
     // Dolby Atmos / JOC（Joint Object Coding）
     // ❗ 当前判定是**启发式**的：在 E-AC-3 载荷前 96 字节里搜 ASCII "joc"，
@@ -93,18 +97,18 @@ struct AudioBitstreamStream {
     bool atmos_joc = false;
     bool atmos_heuristic = false;
     int joc_complexity_index = -1;
-    std::string atmos_source;       // "E-AC-3 addbsi" / "dec3" / "..."
+    std::string atmos_source; // "E-AC-3 addbsi" / "dec3" / "..."
 
     // Opus
     bool opus_head = false;
     int pre_skip = 0;
     int input_sample_rate = 0;
-    int output_gain_q8 = 0;         // Q7.8 dB
+    int output_gain_q8 = 0; // Q7.8 dB
     int mapping_family = 0;
     int stream_count = 0;
     int coupled_count = 0;
-    int opus_mode = -1;             // 0 = SILK / 1 = Hybrid / 2 = CELT
-    int opus_bandwidth = -1;        // 0 = NB / 1 = MB / 2 = WB / 3 = SWB / 4 = FB
+    int opus_mode = -1;      // 0 = SILK / 1 = Hybrid / 2 = CELT
+    int opus_bandwidth = -1; // 0 = NB / 1 = MB / 2 = WB / 3 = SWB / 4 = FB
     double opus_frame_ms = 0.0;
 
     // 容器侧参数（用于"码流 vs 容器"比对）
@@ -124,8 +128,12 @@ struct AudioBitstreamStream {
     std::string note;
 
     // 已换算成 dB 的 Opus output gain
-    double OutputGainDb() const { return static_cast<double>(output_gain_q8) / 256.0; }
-    bool HasBitstreamParams() const { return sample_rate > 0 || channels > 0; }
+    double OutputGainDb() const {
+        return static_cast<double>(output_gain_q8) / 256.0;
+    }
+    bool HasBitstreamParams() const {
+        return sample_rate > 0 || channels > 0;
+    }
 };
 
 // 一次音频位流分析的汇总
@@ -154,5 +162,5 @@ int AcmodChannelCount(int acmod);
 // acmod + lfeon -> 可读布局，如 "3/2 + LFE (5.1)"
 std::string DescribeAcmod(int acmod, bool lfeon);
 
-}  // namespace model
-}  // namespace videoeye
+} // namespace model
+} // namespace videoeye

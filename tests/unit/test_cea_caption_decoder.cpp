@@ -44,15 +44,15 @@ TEST(Cea608DecoderTest, PopOnTextAppearsAtEocNotAtPreload) {
     Cea608Decoder decoder;
     decoder.Reset();
 
-    decoder.PushPair(0x14, kRcl, 1, 0.0);      // 进入 pop-on 装载
-    PushAscii(decoder, "HELLO ", 0.2);         // 预装载：此时屏幕上什么都还没有
+    decoder.PushPair(0x14, kRcl, 1, 0.0); // 进入 pop-on 装载
+    PushAscii(decoder, "HELLO ", 0.2);    // 预装载：此时屏幕上什么都还没有
     // 预装载阶段不应该产生任何 cue —— 这正是旧实现的错误（时间提前）
     EXPECT_TRUE(decoder.cues().empty());
 
-    decoder.PushPair(0x14, kEoc, 1, 1.0);      // 上屏
-    EXPECT_TRUE(decoder.cues().empty());       // 还在显示，没有结束时间
+    decoder.PushPair(0x14, kEoc, 1, 1.0); // 上屏
+    EXPECT_TRUE(decoder.cues().empty());  // 还在显示，没有结束时间
 
-    decoder.PushPair(0x14, kEdm, 1, 3.0);      // 擦除
+    decoder.PushPair(0x14, kEdm, 1, 3.0); // 擦除
     ASSERT_EQ(decoder.cues().size(), 1u);
     const CaptionCue& cue = decoder.cues().front();
     EXPECT_EQ(cue.text, "HELLO");
@@ -74,7 +74,7 @@ TEST(Cea608DecoderTest, RepeatedControlCodesAreAppliedOnce) {
     decoder.PushPair(0x14, kRcl, 1, 0.0);
     PushAscii(decoder, "HI", 0.2);
     decoder.PushPair(0x14, kEoc, 1, 1.0);
-    decoder.PushPair(0x14, kEoc, 1, 1.033);   // 重复传输：不能再交换一次
+    decoder.PushPair(0x14, kEoc, 1, 1.033); // 重复传输：不能再交换一次
     decoder.PushPair(0x14, kEdm, 1, 3.0);
     decoder.PushPair(0x14, kEdm, 1, 3.033);
 
@@ -89,10 +89,10 @@ TEST(Cea608DecoderTest, RollUpProducesOneCuePerVisibleState) {
     Cea608Decoder decoder;
     decoder.Reset();
 
-    decoder.PushPair(0x14, kRu2, 1, 0.0);      // RU2：两行滚动
-    PushAscii(decoder, "ONE ", 0.5);           // 出现在最底行
-    decoder.PushPair(0x14, kCr, 1, 1.0);       // 回车：整体上移一行
-    PushAscii(decoder, "TWO ", 1.5);           // 新一行
+    decoder.PushPair(0x14, kRu2, 1, 0.0); // RU2：两行滚动
+    PushAscii(decoder, "ONE ", 0.5);      // 出现在最底行
+    decoder.PushPair(0x14, kCr, 1, 1.0);  // 回车：整体上移一行
+    PushAscii(decoder, "TWO ", 1.5);      // 新一行
     decoder.PushPair(0x14, kEdm, 1, 3.0);
 
     ASSERT_EQ(decoder.cues().size(), 2u);
@@ -109,9 +109,9 @@ TEST(Cea608DecoderTest, TwoChannelsKeepSeparateTimelines) {
     decoder.Reset();
 
     // CC1：英文；CC2：另一语言。两条时间线完全重叠，必须各自成 cue。
-    decoder.PushPair(0x14, kRcl, 1, 0.0);      // CC1 进入 pop-on
+    decoder.PushPair(0x14, kRcl, 1, 0.0); // CC1 进入 pop-on
     PushAscii(decoder, "EN ", 0.1);
-    decoder.PushPair(0x1C, kRcl, 1, 0.0);      // 0x1C = CC2 的 RCL
+    decoder.PushPair(0x1C, kRcl, 1, 0.0); // 0x1C = CC2 的 RCL
     PushAscii(decoder, "CN ", 0.1);
 
     decoder.PushPair(0x14, kEoc, 1, 1.0);
@@ -123,8 +123,10 @@ TEST(Cea608DecoderTest, TwoChannelsKeepSeparateTimelines) {
     bool saw_cc1 = false;
     bool saw_cc2 = false;
     for (const CaptionCue& cue : decoder.cues()) {
-        if (cue.channel == 1 && cue.text == "EN") saw_cc1 = true;
-        if (cue.channel == 2 && cue.text == "CN") saw_cc2 = true;
+        if (cue.channel == 1 && cue.text == "EN")
+            saw_cc1 = true;
+        if (cue.channel == 2 && cue.text == "CN")
+            saw_cc2 = true;
     }
     EXPECT_TRUE(saw_cc1);
     EXPECT_TRUE(saw_cc2);
@@ -148,9 +150,9 @@ TEST(Cea608DecoderTest, SpecialAndExtendedCharacters) {
     Cea608Decoder decoder;
     decoder.Reset();
     decoder.PushPair(0x14, kRcl, 1, 0.0);
-    decoder.PushPair(0x41, 0x00, 1, 0.1);   // 只有 'A'（第二字节 NUL 不是可见字符）
-    decoder.PushPair(0x12, 0x20, 1, 0.2);   // 扩展字符：退格 + Á
-    decoder.PushPair(0x11, 0x37, 1, 0.3);   // 特殊字符：♪
+    decoder.PushPair(0x41, 0x00, 1, 0.1); // 只有 'A'（第二字节 NUL 不是可见字符）
+    decoder.PushPair(0x12, 0x20, 1, 0.2); // 扩展字符：退格 + Á
+    decoder.PushPair(0x11, 0x37, 1, 0.3); // 特殊字符：♪
     decoder.PushPair(0x14, kEoc, 1, 1.0);
     decoder.Finish(2.0);
 
@@ -178,8 +180,8 @@ TEST(Cea608DecoderTest, EnmClearsPreloadButNotScreen) {
     decoder.Reset();
     decoder.PushPair(0x14, kRcl, 1, 0.0);
     PushAscii(decoder, "GONE ", 0.1);
-    decoder.PushPair(0x14, kEnm, 1, 0.2);   // 清预装载
-    decoder.PushPair(0x14, kEoc, 1, 1.0);   // 上屏的是空屏
+    decoder.PushPair(0x14, kEnm, 1, 0.2); // 清预装载
+    decoder.PushPair(0x14, kEoc, 1, 1.0); // 上屏的是空屏
     decoder.Finish(2.0);
     EXPECT_TRUE(decoder.cues().empty());
 }
@@ -196,25 +198,25 @@ TEST(Cea608DecoderTest, EnmClearsPreloadButNotScreen) {
 //     所以"错误封包能出字幕、标准封包一条都没有"这件事一直没被发现）；
 //   * 包头低 6 bit 是 packet_size_code，真实长度 = 2*code-1（code==0 → 127），
 //     因此载荷长度必须是奇数；偶数时补一个 null service block（0x00）对齐。
-void PushServiceBlock(CeaCaptionDecoder& decoder, int service_number,
-                      const std::vector<uint8_t>& block_data, int sequence, double ts) {
+void PushServiceBlock(CeaCaptionDecoder& decoder, int service_number, const std::vector<uint8_t>& block_data,
+                      int sequence, double ts) {
     std::vector<uint8_t> payload;
     const int block_size = static_cast<int>(block_data.size());
     payload.push_back(static_cast<uint8_t>((service_number << 5) | (block_size & 0x1F)));
     payload.insert(payload.end(), block_data.begin(), block_data.end());
     // packet_size 只能是奇数：补一个 null service block（被解析器跳过）
-    if (payload.size() % 2 == 0) payload.push_back(0x00);
+    if (payload.size() % 2 == 0)
+        payload.push_back(0x00);
 
     const size_t packet_size = payload.size();
-    const int size_code = static_cast<int>((packet_size + 1) / 2);   // 2*code-1 == packet_size
-    const uint8_t header =
-        static_cast<uint8_t>(((sequence & 0x03) << 6) | (size_code & 0x3F));
+    const int size_code = static_cast<int>((packet_size + 1) / 2); // 2*code-1 == packet_size
+    const uint8_t header = static_cast<uint8_t>(((sequence & 0x03) << 6) | (size_code & 0x3F));
     size_t index = 0;
-    decoder.PushTriplet(1, 3, header, payload[index++], ts);   // 3 = packet start
+    decoder.PushTriplet(1, 3, header, payload[index++], ts); // 3 = packet start
     while (index < payload.size()) {
         const uint8_t d0 = payload[index++];
         const uint8_t d1 = (index < payload.size()) ? payload[index++] : 0;
-        decoder.PushTriplet(1, 2, d0, d1, ts);                 // 2 = packet data
+        decoder.PushTriplet(1, 2, d0, d1, ts); // 2 = packet data
     }
 }
 
@@ -222,8 +224,7 @@ void PushServiceBlock(CeaCaptionDecoder& decoder, int service_number,
 // 参数布局：visible 在 args[0] bit5，row_count 在 args[3] 低 4 位，
 // column_count 在 args[4] 低 6 位。
 std::vector<uint8_t> DefineWindowVisible(int rows, int cols) {
-    return {0x98, 0x20, 0x00, 0x00, static_cast<uint8_t>(rows & 0x0F),
-            static_cast<uint8_t>(cols & 0x3F), 0x00};
+    return {0x98, 0x20, 0x00, 0x00, static_cast<uint8_t>(rows & 0x0F), static_cast<uint8_t>(cols & 0x3F), 0x00};
 }
 
 TEST(Cea708DecoderTest, ServiceOneTextAndClear) {
@@ -261,7 +262,8 @@ TEST(Cea708DecoderTest, PacketSizeCodeIsConvertedToByteCount) {
     std::vector<uint8_t> payload;
     payload.push_back(static_cast<uint8_t>((1 << 5) | (block.size() & 0x1F)));
     payload.insert(payload.end(), block.begin(), block.end());
-    if (payload.size() % 2 == 0) payload.push_back(0x00);
+    if (payload.size() % 2 == 0)
+        payload.push_back(0x00);
 
     // ---- 标准封包（code = (n+1)/2）----
     {
@@ -333,9 +335,10 @@ TEST(Cea708DecoderTest, ExtendedServiceNumberIsDecoded) {
     const int block_size = static_cast<int>(block.size()) + 1;
     std::vector<uint8_t> payload;
     payload.push_back(static_cast<uint8_t>((7 << 5) | (block_size & 0x1F)));
-    payload.push_back(0x02);   // 扩展服务号
+    payload.push_back(0x02); // 扩展服务号
     payload.insert(payload.end(), block.begin(), block.end());
-    if (payload.size() % 2 == 0) payload.push_back(0x00);   // 补齐到奇数长度
+    if (payload.size() % 2 == 0)
+        payload.push_back(0x00); // 补齐到奇数长度
 
     const int size_code = static_cast<int>((payload.size() + 1) / 2);
     const uint8_t header = static_cast<uint8_t>(size_code & 0x3F);
@@ -360,7 +363,7 @@ TEST(Cea708DecoderTest, SequenceGapIsCounted) {
     CeaCaptionDecoder decoder;
     decoder.Reset();
     PushServiceBlock(decoder, 1, {0x00}, 0, 0.0);
-    PushServiceBlock(decoder, 1, {0x00}, 2, 0.1);   // 跳过 seq 1 -> 丢包
+    PushServiceBlock(decoder, 1, {0x00}, 2, 0.1); // 跳过 seq 1 -> 丢包
     decoder.Finish(1.0);
     EXPECT_EQ(decoder.result().cc708.sequence_gap_count, 1);
 }
@@ -368,7 +371,7 @@ TEST(Cea708DecoderTest, SequenceGapIsCounted) {
 TEST(Cea708DecoderTest, InvalidTripletIsDropped) {
     CeaCaptionDecoder decoder;
     decoder.Reset();
-    decoder.PushTriplet(0, 3, 0x0F, 0x2E, 0.0);   // cc_valid = 0
+    decoder.PushTriplet(0, 3, 0x0F, 0x2E, 0.0); // cc_valid = 0
     decoder.Finish(1.0);
     EXPECT_EQ(decoder.result().cc708.packet_count, 0);
     EXPECT_EQ(decoder.result().cues.size(), 0u);
@@ -385,8 +388,7 @@ TEST(CeaCaptionDecoderTest, Mixed608And708CuesAreTimeSorted) {
     // 608（cc_type 0）：pop-on，2.0 上屏、4.0 擦除
     decoder.PushTriplet(1, 0, 0x14, kRcl, 0.0);
     for (size_t i = 0; i + 1 < std::string("OLD ").size(); i += 2) {
-        decoder.PushTriplet(1, 0, static_cast<uint8_t>("OLD "[i]),
-                            static_cast<uint8_t>("OLD "[i + 1]), 0.5);
+        decoder.PushTriplet(1, 0, static_cast<uint8_t>("OLD "[i]), static_cast<uint8_t>("OLD "[i + 1]), 0.5);
     }
     decoder.PushTriplet(1, 0, 0x14, kEoc, 2.0);
     decoder.PushTriplet(1, 0, 0x14, kEdm, 4.0);
@@ -401,7 +403,7 @@ TEST(CeaCaptionDecoderTest, Mixed608And708CuesAreTimeSorted) {
 
     const auto& result = decoder.result();
     ASSERT_EQ(result.cues.size(), 2u);
-    EXPECT_EQ(result.cues[0].text, "NEW");   // 0.5 在前
+    EXPECT_EQ(result.cues[0].text, "NEW"); // 0.5 在前
     EXPECT_TRUE(result.cues[0].kind_708);
     EXPECT_EQ(result.cues[1].text, "OLD");
     EXPECT_FALSE(result.cues[1].kind_708);
@@ -410,4 +412,4 @@ TEST(CeaCaptionDecoderTest, Mixed608And708CuesAreTimeSorted) {
     EXPECT_TRUE(result.decoded);
 }
 
-}  // namespace
+} // namespace

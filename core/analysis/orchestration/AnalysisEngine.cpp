@@ -64,21 +64,20 @@ bool IsStreamingManifestExtension(const std::string& ext) {
 //   * 网络源不扫（URL 读两遍既不必要也不可靠，读第二遍还可能拿到不同的直播窗口）；
 //   * 不是 mpegts 就不扫（其它容器没有 TS 包头可言）；
 //   * 失败只记 error_message，不影响主扫描 —— 它是补充证据，不是前置条件。
-void FillTsTransport(const std::string& file_path, const AVFormatContext* fmt,
-                     const AnalysisOptions& options, const std::atomic<bool>* cancel,
-                     model::AnalysisResult& result) {
-    if (!options.analyze_ts_transport) return;
-    if (file_path.find("://") != std::string::npos) return;
-    const char* iformat_name =
-        (fmt != nullptr && fmt->iformat != nullptr) ? fmt->iformat->name : nullptr;
+void FillTsTransport(const std::string& file_path, const AVFormatContext* fmt, const AnalysisOptions& options,
+                     const std::atomic<bool>* cancel, model::AnalysisResult& result) {
+    if (!options.analyze_ts_transport)
+        return;
+    if (file_path.find("://") != std::string::npos)
+        return;
+    const char* iformat_name = (fmt != nullptr && fmt->iformat != nullptr) ? fmt->iformat->name : nullptr;
     if (iformat_name == nullptr || std::string(iformat_name).find("mpegts") == std::string::npos) {
         return;
     }
 
     TsStructureOptions ts_options;
     // 0 = 扫完整个文件；与容器结构页的默认值（50 万包）分开，批量 QC 用更小的预算。
-    ts_options.max_scan_packets =
-        (options.ts_transport_max_packets > 0) ? options.ts_transport_max_packets : 0;
+    ts_options.max_scan_packets = (options.ts_transport_max_packets > 0) ? options.ts_transport_max_packets : 0;
 
     model::ContainerStructureResult container;
     TsStructureAnalyzer analyzer;
@@ -95,18 +94,17 @@ void FillTsTransport(const std::string& file_path, const AVFormatContext* fmt,
     result.ts_transport = container.transport;
     result.ts_transport.applicable = true;
     LOG_INFO("TS 传输层体检: " + std::to_string(result.ts_transport.scanned_packets) + "/" +
-             std::to_string(result.ts_transport.estimated_packets) + " 包, 失步=" +
-             std::to_string(result.ts_transport.sync_loss) + ", CC 错=" +
-             std::to_string(result.ts_transport.continuity_errors) + ", PCR 最大间隔=" +
-             std::to_string(static_cast<int>(result.ts_transport.pcr_max_gap_ms)) + "ms");
+             std::to_string(result.ts_transport.estimated_packets) +
+             " 包, 失步=" + std::to_string(result.ts_transport.sync_loss) +
+             ", CC 错=" + std::to_string(result.ts_transport.continuity_errors) +
+             ", PCR 最大间隔=" + std::to_string(static_cast<int>(result.ts_transport.pcr_max_gap_ms)) + "ms");
     // 载荷级另记一行：规则未命中时这是唯一能回答"到底扫了没有"的线索。
     LOG_INFO(std::string("TS 载荷级: ") +
              (result.ts_transport.pes_payload_scanned
                   ? ("ES " + std::to_string(result.ts_transport.pes_streams_checked) + " 条, IDR " +
                      std::to_string(result.ts_transport.idr_count) + " 个, 最长无 IDR " +
                      std::to_string(static_cast<int>(result.ts_transport.max_no_idr_interval_ms)) +
-                     "ms, 最大 PES 断档 " +
-                     std::to_string(static_cast<int>(result.ts_transport.max_pid_gap_ms)) + "ms")
+                     "ms, 最大 PES 断档 " + std::to_string(static_cast<int>(result.ts_transport.max_pid_gap_ms)) + "ms")
                   : std::string("未执行")));
 }
 
@@ -118,7 +116,7 @@ void FillTsTransport(const std::string& file_path, const AVFormatContext* fmt,
 // kNoFfmpegErrorCode）已搬到 core/analysis/orchestration/AnalysisTerminalState.{h,cpp} ——
 // 引擎拆开之后每一片都要用，留在某一个 cpp 的匿名命名空间里就只能被抄走一份。
 
-}  // namespace
+} // namespace
 
 bool AnalysisEngine::IsCancelledExit(int ret) const {
     // 看 CancelSource()（外部源优先，没有就用引擎自己那颗）而不是只看引擎自己的
@@ -172,11 +170,9 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     {
         const size_t slash = file_path.find_last_of("/\\");
         const size_t dot = file_path.find_last_of('.');
-        if (dot != std::string::npos &&
-            (slash == std::string::npos || dot > slash)) {
+        if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) {
             result.file_extension = file_path.substr(dot + 1);
-            std::transform(result.file_extension.begin(), result.file_extension.end(),
-                           result.file_extension.begin(),
+            std::transform(result.file_extension.begin(), result.file_extension.end(), result.file_extension.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         }
     }
@@ -230,16 +226,16 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     // 循环本身（读包 / 三种出口的定性 / 扫描事实统计 / 限频进度）在 PacketScanLoop 里。
     // 它**不做清理**: AVPacket 由它的析构释放，AVFormatContext 与解码通路仍归本函数 ——
     // 错误出口下"关上下文之前还要不要刷一次 HDR"只有这里知道。
-    const double interval =
-        (options.sample_interval_seconds > 0.0) ? options.sample_interval_seconds : 1.0;
+    const double interval = (options.sample_interval_seconds > 0.0) ? options.sample_interval_seconds : 1.0;
     ScanBuckets buckets;
     ScanOutcome scan_outcome = ScanOutcome::Complete;
     {
         PacketScanLoop loop(fmt, options, result, callbacks);
         // 取消判定的两个谓词按引擎的策略注入："看哪一颗标志"（外部源优先于引擎自有）
         // 是引擎的事，循环只是借来问一句。
-        scan_outcome = loop.Run(pipeline, buckets, interval, [&] { return CancelRequested(); },
-                                [&](int ret) { return IsCancelledExit(ret); });
+        scan_outcome = loop.Run(
+            pipeline, buckets, interval, [&] { return CancelRequested(); },
+            [&](int ret) { return IsCancelledExit(ret); });
     }
     if (scan_outcome == ScanOutcome::Failed) {
         // 失败终态（含 error_message / scan_error_code）已由循环写进 result，这里只发回调。
@@ -281,8 +277,8 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     assembler.FinalizeTimeline(pipeline.timeline());
     assembler.FinalizeGopFrames();
     assembler.FinalizeBitrateGop(pipeline.bitrate_gop(), pipeline.video_stream_index());
-    assembler.FinalizeAudioQc(pipeline.audio_qc(), pipeline.audio_stream_index(),
-                              audio_decoder_ready, audio_rate_changed);
+    assembler.FinalizeAudioQc(pipeline.audio_qc(), pipeline.audio_stream_index(), audio_decoder_ready,
+                              audio_rate_changed);
     assembler.FinalizeAudioBitstream(pipeline.audio_bitstream(), pipeline.audio_stream_index());
     assembler.FinalizeColorHdr(pipeline.color_hdr(), pipeline.color_video_stream_index());
     assembler.FinalizeSubtitle(pipeline.subtitle(), measured_duration);

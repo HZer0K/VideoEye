@@ -22,15 +22,15 @@ namespace videoeye {
 // ADTS 头（7 字节；protection_absent == 0 时多 2 字节 CRC，共 9 字节）
 struct AdtsHeader {
     bool valid = false;
-    int mpeg_version = 4;             // 4 = MPEG-4，2 = MPEG-2
-    int audio_object_type = 0;        // profile + 1（2 = AAC LC）
+    int mpeg_version = 4;      // 4 = MPEG-4，2 = MPEG-2
+    int audio_object_type = 0; // profile + 1（2 = AAC LC）
     int sampling_frequency_index = 0;
     int sample_rate = 0;
     int channel_configuration = 0;
     int channels = 0;
-    int frame_length = 0;             // 含头
+    int frame_length = 0; // 含头
     int header_bytes = 7;
-    int num_raw_data_blocks = 0;      // 每帧 AAC 帧数 = num_raw_data_blocks + 1
+    int num_raw_data_blocks = 0; // 每帧 AAC 帧数 = num_raw_data_blocks + 1
     bool protection_absent = true;
 };
 
@@ -60,15 +60,15 @@ struct Ac3Header {
     int sample_rate = 0;
     int bit_rate_kbps = 0;
     int frame_size_bytes = 0;
-    int frame_samples = 0;            // AC-3 固定 1536；E-AC-3 = numblkscod 对应块数 * 256
+    int frame_samples = 0; // AC-3 固定 1536；E-AC-3 = numblkscod 对应块数 * 256
     int num_blocks = 0;
     int acmod = -1;
     bool lfeon = false;
-    int channels = 0;                 // acmod + lfe（E-AC-3 不含从属子流）
+    int channels = 0; // acmod + lfe（E-AC-3 不含从属子流）
     bool has_dialnorm = false;
     int dialnorm_dbfs = 0;
-    int strmtyp = -1;                 // E-AC-3 only
-    int substreamid = -1;             // E-AC-3 only
+    int strmtyp = -1;     // E-AC-3 only
+    int substreamid = -1; // E-AC-3 only
     bool has_chanmap = false;
     uint16_t chanmap = 0;
     int chanmap_channels = 0;
@@ -99,8 +99,8 @@ struct OpusToc {
     bool stereo = false;
     int frame_count_code = 0;
     int frame_count = 1;
-    int mode = -1;                    // 0 = SILK / 1 = Hybrid / 2 = CELT
-    int bandwidth = -1;               // 0..4
+    int mode = -1;      // 0 = SILK / 1 = Hybrid / 2 = CELT
+    int bandwidth = -1; // 0..4
     double frame_duration_ms = 0.0;
     int channels = 0;
     int frame_bytes = 0;
@@ -114,8 +114,8 @@ struct AacAudioSpecificConfig {
     int sample_rate = 0;
     int channel_configuration = 0;
     int channels = 0;
-    bool sbr = false;                 // HE-AAC
-    bool ps = false;                  // HE-AACv2
+    bool sbr = false; // HE-AAC
+    bool ps = false;  // HE-AACv2
     int extension_sample_rate = 0;
     std::string note;
 };
@@ -137,8 +137,7 @@ public:
     static bool ParseOpusHead(const uint8_t* data, size_t size, OpusHead& out);
     static bool ParseOpusToc(const uint8_t* data, size_t size, OpusToc& out);
 
-    static bool ParseAacAudioSpecificConfig(const uint8_t* data, size_t size,
-                                            AacAudioSpecificConfig& out);
+    static bool ParseAacAudioSpecificConfig(const uint8_t* data, size_t size, AacAudioSpecificConfig& out);
 
     // 采样率表 / 声道配置表，单测与 UI 共用
     static int AacSampleRateFromIndex(int index);
@@ -146,4 +145,4 @@ public:
     static int Ac3FrameSizeBytes(int fscod, int frmsizecod);
 };
 
-}  // namespace videoeye
+} // namespace videoeye

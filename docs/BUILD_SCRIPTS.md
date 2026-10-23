@@ -83,6 +83,24 @@
 `VCPKG_MANIFEST_INSTALL=OFF` 写进 `CMakeUserPresets.json` 的本机 preset，正式的
 `test-release` 就能用，`_recheck_test` 这个手搓目录就该退场。
 
+**2026-10-23 实测（结论修正）**：上面这个推断只对了前半截。在
+`CMakeUserPresets.json` 里加了 `test-probe`（`win-test-release` + `VCPKG_MANIFEST_INSTALL=OFF`
++ `CMAKE_SUPPRESS_REGENERATION=ON`）后，`cmake --preset test-probe` **47 秒配置通过**，
+Qt 6.8.3 / prebuilt FFmpeg / gtest 全部就位 —— 故障点确实只有那一个变量。
+
+但"能配置"不等于"该迁移"：
+
+- 迁到正式 preset 要**另建一整棵树**（`build/test-release` 全量重编，600M+、几十分钟），
+  而 `_recheck_test` 已经热着，换个目录只换来"名字好看"；
+- §7 记录的 `win-test-release` 在 gtest 1.16.0 下的 12 个崩溃 **仍未清**，
+  正式 preset 一跑测试就红，届时分不清是代码坏了还是 gtest 坏了 —— `_recheck_test`
+  现在能全绿，靠的正是它停在 gtest 1.15.2 上；
+- 真正的收益（"别再手搓命令"）不需要迁移就能拿到：`test-probe` 这个 preset 存在本身
+  就把手搓参数固化成了可复现的 `cmake --preset`。
+
+所以本轮**只备好 preset、不迁移**。等 gtest 那 12 个崩溃查清楚、或下次必须全量重建时，
+再把 `test-probe` 的 `binaryDir` 改成 `build/test-release` 收编。
+
 ### 2.5 ⚠️ 约束：`build.bat` 的 vswhere/vcvars 分支不能砍
 
 `.github/workflows/build.yml` 用 `shell: cmd` 跑 `build.bat release`。CI checkout 出来的仓库

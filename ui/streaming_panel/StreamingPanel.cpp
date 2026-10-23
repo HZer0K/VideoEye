@@ -138,7 +138,8 @@ int StreamingPanel::IssueCount() const {
 void StreamingPanel::SetScanActive(bool active) {
     scan_active_ = active;
     // 扫描中共用同一份清单解析，重复点「开始分析」只会被诊断页拦下；直接禁用按钮更清楚。
-    if (refresh_button_) refresh_button_->setEnabled(!active);
+    if (refresh_button_)
+        refresh_button_->setEnabled(!active);
 }
 
 QString StreamingPanel::SeverityText(model::IssueSeverity severity) {
@@ -319,11 +320,10 @@ void StreamingPanel::BuildStructureTree(const model::StreamingPackageResult& res
                     add(a, tr("Role"), QString::fromStdString(role.value));
                 }
                 if (as.has_content_protection) {
-                    auto* cp_node = add(a, tr("ContentProtection"),
-                                        tr("%1 个系统").arg(as.content_protections.size()));
+                    auto* cp_node = add(a, tr("ContentProtection"), tr("%1 个系统").arg(as.content_protections.size()));
                     for (const model::DashContentProtectionInfo& cp : as.content_protections) {
-                        QString value = QString::fromStdString(
-                            cp.IsCencDeclaration() ? ("CENC/" + cp.value) : cp.scheme_id_uri);
+                        QString value =
+                            QString::fromStdString(cp.IsCencDeclaration() ? ("CENC/" + cp.value) : cp.scheme_id_uri);
                         if (!cp.default_kid.empty())
                             value += tr(" KID=%1").arg(QString::fromStdString(cp.default_kid));
                         if (cp.has_pssh)
@@ -360,8 +360,8 @@ void StreamingPanel::BuildStructureTree(const model::StreamingPackageResult& res
         }
     } else {
         for (const model::HlsVariantInfo& v : result.variants) {
-            const QString name = v.iframe_only ? QString("I-FRAME #%1").arg(v.index)
-                                               : QString("variant #%1").arg(v.index);
+            const QString name =
+                v.iframe_only ? QString("I-FRAME #%1").arg(v.index) : QString("variant #%1").arg(v.index);
             add(root, name,
                 QString("%1 %2 kbps").arg(DescribeResolution(v.width, v.height)).arg(Kbps(v.bandwidth_bps)));
         }
@@ -403,11 +403,11 @@ void StreamingPanel::BuildStructureTree(const model::StreamingPackageResult& res
                 add(p, tr("delta update (EXT-X-SKIP)"), tr("跳过 %1 个分片").arg(pl.skipped_segments));
             }
             if (!pl.date_ranges.empty()) {
-                auto* dr_node = add(p, tr("广告/章节标记 (EXT-X-DATERANGE)"),
-                                    tr("%1 条").arg(pl.date_ranges.size()));
+                auto* dr_node = add(p, tr("广告/章节标记 (EXT-X-DATERANGE)"), tr("%1 条").arg(pl.date_ranges.size()));
                 for (const model::HlsDateRangeInfo& dr : pl.date_ranges) {
-                    const QString label = dr.id.empty() ? (dr.class_id.empty() ? tr("(无 ID)") : QString::fromStdString(dr.class_id))
-                                                        : QString::fromStdString(dr.id);
+                    const QString label =
+                        dr.id.empty() ? (dr.class_id.empty() ? tr("(无 ID)") : QString::fromStdString(dr.class_id))
+                                      : QString::fromStdString(dr.id);
                     QString value = dr.at_seconds >= 0.0 ? tr("t=%1 s").arg(Seconds(dr.at_seconds)) : tr("t=?");
                     if (dr.has_duration)
                         value += tr(" d=%1 s").arg(Seconds(dr.duration_seconds));

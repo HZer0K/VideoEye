@@ -136,8 +136,24 @@ clang-format -i $(git diff --name-only -- '*.cpp' '*.h')
 > `format` job 对改动的 C++ 文件跑 `clang-format --dry-run --Werror`，不过直接红；
 > Linux 测试 job 对改动的 `.cpp` 跑一遍 `clang-tidy`，当前**只报告不拦截**，
 > 等存量告警清理完、检查项调好噪声后再收紧成硬门。
-> 本机没装 clang-format 时钩子只警告跳过 —— 请自行安装（Ubuntu: `apt install clang-format`，
-> Windows: `winget install LLVM.LLVM`），否则格式问题会留到 CI 才暴露。
+
+### clang-format 装哪个版本（重要）
+
+**必须 18.1.x，且本机与 CI 用同一份二进制。** 理由不是洁癖：clang-format 的换行位置、
+注释对齐、include 排序跨大版本都会变，19 认为合规的文件 18 会判不合规。装 20（`winget
+install LLVM.LLVM` 拿到的就是最新版）的结果是"本机一直绿、推上去 CI 一直红"，或者反过来
+把 19 的格式推上去、CI 用 18 再改回来 —— 两种都是白跑。
+
+```bash
+# 本机 / CI 统一用它（PyPI 的 wheel，Windows / Linux 同一个版本号）
+python -m pip install "clang-format==18.1.8"
+# wheel 里的真二进制在 site-packages/clang_format/data/bin/，把它放进 PATH；
+# 不想动 PATH 就设 CLANG_FORMAT=<该二进制的绝对路径>
+clang-format --version    # 期望 18.1.x
+```
+
+pre-commit 的第 5 道门会核对版本号，不一致时打印警告但不拦截（拦下来只会逼人
+`--no-verify`）；没装时同样只警告 —— 所以**"钩子绿"不等于"格式过关"，装好才算数**。
 
 ## 提交流程
 

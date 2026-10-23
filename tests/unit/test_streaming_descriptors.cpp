@@ -51,8 +51,7 @@ StreamingPackageResult ParseDash(const std::string& text) {
 
 // DASH 的 ContentProtection 用例骨架：一个视频表示 + 可选的音频表示
 std::string DashWithDrm(const std::string& content_protection, const std::string& extra_adaptation = "",
-                        const std::string& mpd_attrs =
-                            "type=\"static\" mediaPresentationDuration=\"PT10S\"") {
+                        const std::string& mpd_attrs = "type=\"static\" mediaPresentationDuration=\"PT10S\"") {
     return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
            "<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" " +
            mpd_attrs +
@@ -65,11 +64,12 @@ std::string DashWithDrm(const std::string& content_protection, const std::string
            "      <Representation id=\"v0\" bandwidth=\"2000000\" width=\"1920\" height=\"1080\" "
            "codecs=\"avc1.640028\"/>\n"
            "    </AdaptationSet>\n" +
-           extra_adaptation + "  </Period>\n"
-                              "</MPD>\n";
+           extra_adaptation +
+           "  </Period>\n"
+           "</MPD>\n";
 }
 
-}  // namespace
+} // namespace
 
 // ===========================================================================
 // HLS: EXT-X-DATERANGE（广告/章节标记）
@@ -314,12 +314,12 @@ TEST(StreamingDescriptorTest, HlsDeltaUpdateRequiresMediaSequence) {
 // DASH: ContentProtection（DRM）
 // ===========================================================================
 TEST(StreamingDescriptorTest, DashContentProtectionIsParsedAndRegistered) {
-    const std::string mpd = DashWithDrm(
-        "      <ContentProtection schemeIdUri=\"urn:mpeg:dash:mp4protection:2011\" value=\"cenc\" "
-        "cenc:default_KID=\"11111111-2222-3333-4444-555555555555\"/>\n"
-        "      <ContentProtection schemeIdUri=\"urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed\">\n"
-        "        <cenc:pssh>AAAAPXBzc2gAAAAA</cenc:pssh>\n"
-        "      </ContentProtection>\n");
+    const std::string mpd =
+        DashWithDrm("      <ContentProtection schemeIdUri=\"urn:mpeg:dash:mp4protection:2011\" value=\"cenc\" "
+                    "cenc:default_KID=\"11111111-2222-3333-4444-555555555555\"/>\n"
+                    "      <ContentProtection schemeIdUri=\"urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed\">\n"
+                    "        <cenc:pssh>AAAAPXBzc2gAAAAA</cenc:pssh>\n"
+                    "      </ContentProtection>\n");
 
     const StreamingPackageResult out = ParseDash(mpd);
     ASSERT_FALSE(out.representations.empty());
@@ -342,15 +342,15 @@ TEST(StreamingDescriptorTest, DashContentProtectionIsParsedAndRegistered) {
 }
 
 TEST(StreamingDescriptorTest, DashCencWithoutDefaultKidIsReported) {
-    const std::string mpd = DashWithDrm(
-        "      <ContentProtection schemeIdUri=\"urn:mpeg:dash:mp4protection:2011\" value=\"cenc\"/>\n");
+    const std::string mpd =
+        DashWithDrm("      <ContentProtection schemeIdUri=\"urn:mpeg:dash:mp4protection:2011\" value=\"cenc\"/>\n");
     const StreamingPackageResult out = ParseDash(mpd);
     ASSERT_TRUE(FindIssue(out, StreamingIssueCode::kDashContentProtectionMissingKeyId) != nullptr);
 }
 
 TEST(StreamingDescriptorTest, DashUnknownDrmSchemeIsReported) {
-    const std::string mpd = DashWithDrm(
-        "      <ContentProtection schemeIdUri=\"urn:uuid:00000000-dead-beef-0000-000000000000\"/>\n");
+    const std::string mpd =
+        DashWithDrm("      <ContentProtection schemeIdUri=\"urn:uuid:00000000-dead-beef-0000-000000000000\"/>\n");
     const StreamingPackageResult out = ParseDash(mpd);
     ASSERT_TRUE(FindIssue(out, StreamingIssueCode::kDashContentProtectionUnknownScheme) != nullptr);
 }
@@ -359,11 +359,9 @@ TEST(StreamingDescriptorTest, DashUnknownDrmSchemeIsReported) {
 // DASH: UTCTiming（直播对时）
 // ===========================================================================
 TEST(StreamingDescriptorTest, DashLiveWithoutUtcTimingIsReported) {
-    const std::string mpd = DashWithDrm(
-        "",
-        "",
-        "type=\"dynamic\" availabilityStartTime=\"2026-01-01T00:00:00Z\" "
-        "minimumUpdatePeriod=\"PT2S\" timeShiftBufferDepth=\"PT30S\"");
+    const std::string mpd = DashWithDrm("", "",
+                                        "type=\"dynamic\" availabilityStartTime=\"2026-01-01T00:00:00Z\" "
+                                        "minimumUpdatePeriod=\"PT2S\" timeShiftBufferDepth=\"PT30S\"");
     const StreamingPackageResult out = ParseDash(mpd);
     EXPECT_TRUE(out.IsLive());
     const StreamingIssue* issue = FindIssue(out, StreamingIssueCode::kDashLiveMissingUtcTiming);
@@ -375,10 +373,9 @@ TEST(StreamingDescriptorTest, DashUtcTimingIsParsedAndIncompleteOneIsReported) {
     // 一条合法的 http-head + 一条缺 value 的
     std::string mpd = DashWithDrm("", "", "type=\"static\" mediaPresentationDuration=\"PT10S\"");
     const size_t pos = mpd.find("<Period");
-    mpd.insert(pos,
-               "  <UTCTiming schemeIdUri=\"urn:mpeg:dash:utc:http-head:2014\" "
-               "value=\"https://example.com/time\"/>\n"
-               "  <UTCTiming schemeIdUri=\"urn:mpeg:dash:utc:direct:2014\"/>\n");
+    mpd.insert(pos, "  <UTCTiming schemeIdUri=\"urn:mpeg:dash:utc:http-head:2014\" "
+                    "value=\"https://example.com/time\"/>\n"
+                    "  <UTCTiming schemeIdUri=\"urn:mpeg:dash:utc:direct:2014\"/>\n");
 
     const StreamingPackageResult out = ParseDash(mpd);
     ASSERT_EQ(2u, out.utc_timings.size());
@@ -457,9 +454,9 @@ TEST(StreamingDescriptorTest, DashMissingRoleAmongSameTypeSetsIsReported) {
 // DASH: EssentialProperty（客户端必须理解的扩展）
 // ===========================================================================
 TEST(StreamingDescriptorTest, DashEssentialPropertyIsParsed) {
-    const std::string mpd = DashWithDrm(
-        "      <EssentialProperty schemeIdUri=\"urn:mpeg:dash:ssr:2023\" value=\"1\"/>\n"
-        "      <EssentialProperty value=\"missing-scheme\"/>\n");
+    const std::string mpd =
+        DashWithDrm("      <EssentialProperty schemeIdUri=\"urn:mpeg:dash:ssr:2023\" value=\"1\"/>\n"
+                    "      <EssentialProperty value=\"missing-scheme\"/>\n");
     const StreamingPackageResult out = ParseDash(mpd);
     ASSERT_FALSE(out.representations.empty());
     ASSERT_EQ(2u, out.representations[0].essential_properties.size())

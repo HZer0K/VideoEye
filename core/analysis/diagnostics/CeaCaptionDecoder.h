@@ -43,21 +43,25 @@ public:
     // 收尾：把仍然显示中的字幕以 end_ts_seconds 结束掉（否则最后一句永远没有结束时间）
     void Finish(double end_ts_seconds);
 
-    const std::vector<model::CaptionCue>& cues() const { return cues_; }
-    const model::Cea608Stats& stats() const { return stats_; }
+    const std::vector<model::CaptionCue>& cues() const {
+        return cues_;
+    }
+    const model::Cea608Stats& stats() const {
+        return stats_;
+    }
 
 private:
     enum class Mode { PopOn, PaintOn, RollUp };
 
     struct Channel {
-        std::vector<std::string> displayed;      // 15 行，正在显示的
-        std::vector<std::string> nondisplayed;   // 15 行，pop-on 的预装载缓冲
+        std::vector<std::string> displayed;    // 15 行，正在显示的
+        std::vector<std::string> nondisplayed; // 15 行，pop-on 的预装载缓冲
         Mode mode = Mode::PopOn;
         int rollup_rows = 2;
-        int row = 14;      // 0-based 光标行
-        int col = 0;       // 0-based 光标列
+        int row = 14; // 0-based 光标行
+        int col = 0;  // 0-based 光标列
         // 上屏状态跟踪（cue 的起止就是靠它变化的时刻）
-        std::string active_text;     // 已提交（已产出 cue）的画面文本
+        std::string active_text; // 已提交（已产出 cue）的画面文本
         double active_start = 0.0;
         Mode active_mode = Mode::PopOn;
         // 待提交的画面：写入只更新它，真正的 cue 切分留到结构事件（CR/EDM/EOC/
@@ -67,8 +71,7 @@ private:
     };
 
     Channel& ChannelFor(int index);
-    void HandleControl(Channel& channel, int channel_index, uint8_t b1, uint8_t b2,
-                       double ts_seconds);
+    void HandleControl(Channel& channel, int channel_index, uint8_t b1, uint8_t b2, double ts_seconds);
     void HandlePac(Channel& channel, uint8_t b1, uint8_t b2);
     void WriteChar(Channel& channel, const std::string& utf8, double ts_seconds);
     void CarriageReturn(Channel& channel);
@@ -83,7 +86,7 @@ private:
     void CloseActive(Channel& channel, int channel_index, double ts_seconds);
 
     Channel channels_[4];
-    bool field_channel_[2] = {false, false};   // 每个场当前选中的是不是第二个通道
+    bool field_channel_[2] = {false, false}; // 每个场当前选中的是不是第二个通道
     // 重复控制码抑制：608 的控制码按规范要连发两次（抗误码），第二次必须忽略。
     // 按通道（已编码场 + 通道）保存上一次处理过的控制字节对，-1 = 没有。
     // 不抑制的后果很具体：连续两个 EOC 会把两块显存交换两次，刚上屏的
@@ -108,8 +111,12 @@ public:
 
     void Finish(double end_ts_seconds);
 
-    const std::vector<model::CaptionCue>& cues() const { return cues_; }
-    const model::Cea708Stats& stats() const { return stats_; }
+    const std::vector<model::CaptionCue>& cues() const {
+        return cues_;
+    }
+    const model::Cea708Stats& stats() const {
+        return stats_;
+    }
 
 private:
     struct Window {
@@ -126,7 +133,7 @@ private:
 
     struct Service {
         Window windows[8];
-        int current_window = 0;   // 当前笔所在窗口（DefineWindow / SPL / DLC 会改它）
+        int current_window = 0; // 当前笔所在窗口（DefineWindow / SPL / DLC 会改它）
         std::string active_text;
         double active_start = 0.0;
         int active_window = -1;
@@ -134,15 +141,11 @@ private:
     };
 
     void ParsePacket(double ts_seconds);
-    void ParseServiceBlock(int service_number, const std::uint8_t* data, std::size_t size,
-                           double ts_seconds);
-    void ExecuteCommands(Service& service, const std::uint8_t* data, std::size_t size,
-                         double ts_seconds);
+    void ParseServiceBlock(int service_number, const std::uint8_t* data, std::size_t size, double ts_seconds);
+    void ExecuteCommands(Service& service, const std::uint8_t* data, std::size_t size, double ts_seconds);
     void HandleDefineWindow(Service& service, int window_id, const std::uint8_t* args);
-    void HandleC1(Service& service, const std::uint8_t* data, std::size_t size, std::size_t& index,
-                  int command);
-    void HandleExt1(Service& service, const std::uint8_t* data, std::size_t size,
-                    std::size_t& index);
+    void HandleC1(Service& service, const std::uint8_t* data, std::size_t size, std::size_t& index, int command);
+    void HandleExt1(Service& service, const std::uint8_t* data, std::size_t size, std::size_t& index);
     Window* ActiveWindow(Service& service);
     void WriteChar(Service& service, std::uint32_t codepoint);
     // 已经是 UTF-8 的文本（G2/G3 表项），不能再走码点编码，否则会被二次编码
@@ -173,14 +176,17 @@ public:
     void PushTriplets(const std::uint8_t* data, std::size_t size, double ts_seconds);
 
     // 单个三元组（逐包路径 / 单测用）
-    void PushTriplet(std::uint8_t cc_valid, std::uint8_t cc_type, std::uint8_t d0, std::uint8_t d1,
-                     double ts_seconds);
+    void PushTriplet(std::uint8_t cc_valid, std::uint8_t cc_type, std::uint8_t d0, std::uint8_t d1, double ts_seconds);
 
     // 收尾并合并两个解码器的结果
     void Finish(double end_ts_seconds);
 
-    const model::CeaCaptionResult& result() const { return result_; }
-    const std::vector<model::CaptionCue>& cues() const { return result_.cues; }
+    const model::CeaCaptionResult& result() const {
+        return result_;
+    }
+    const std::vector<model::CaptionCue>& cues() const {
+        return result_.cues;
+    }
 
 private:
     void MergeResults(double end_ts_seconds);
@@ -191,4 +197,4 @@ private:
     bool finished_ = false;
 };
 
-}  // namespace videoeye
+} // namespace videoeye

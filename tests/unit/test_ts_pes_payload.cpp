@@ -100,49 +100,66 @@ private:
 
 std::vector<uint8_t> MakePat() {
     std::vector<uint8_t> s;
-    s.push_back(0x00);              // table_id
-    s.push_back(0xB0);              // section_syntax_indicator + 长度高 4 位
-    s.push_back(0x0D);              // section_length = 13
-    s.push_back(0x00); s.push_back(0x01);  // transport_stream_id
-    s.push_back(0xC1);              // version 0 + current_next
-    s.push_back(0x00); s.push_back(0x00);
-    s.push_back(0x00); s.push_back(0x01);  // program_number = 1
+    s.push_back(0x00); // table_id
+    s.push_back(0xB0); // section_syntax_indicator + 长度高 4 位
+    s.push_back(0x0D); // section_length = 13
+    s.push_back(0x00);
+    s.push_back(0x01); // transport_stream_id
+    s.push_back(0xC1); // version 0 + current_next
+    s.push_back(0x00);
+    s.push_back(0x00);
+    s.push_back(0x00);
+    s.push_back(0x01); // program_number = 1
     s.push_back(static_cast<uint8_t>(0xE0 | ((kPmtPid >> 8) & 0x1F)));
     s.push_back(static_cast<uint8_t>(kPmtPid & 0xFF));
-    s.push_back(0x00); s.push_back(0x00); s.push_back(0x00); s.push_back(0x00);  // CRC（不校验）
+    s.push_back(0x00);
+    s.push_back(0x00);
+    s.push_back(0x00);
+    s.push_back(0x00); // CRC（不校验）
     return s;
 }
 
 std::vector<uint8_t> MakePmt() {
     std::vector<uint8_t> s;
-    s.push_back(0x02);              // table_id
+    s.push_back(0x02); // table_id
     s.push_back(0xB0);
-    s.push_back(23);                // section_length = 9 + 2*5 + 4
-    s.push_back(0x00); s.push_back(0x01);  // program_number
+    s.push_back(23); // section_length = 9 + 2*5 + 4
+    s.push_back(0x00);
+    s.push_back(0x01); // program_number
     s.push_back(0xC1);
-    s.push_back(0x00); s.push_back(0x00);
-    s.push_back(0x1F); s.push_back(0xFF);  // PCR_PID = 0x1FFF（不采 PCR）
-    s.push_back(0xF0); s.push_back(0x00);  // program_info_length = 0
+    s.push_back(0x00);
+    s.push_back(0x00);
+    s.push_back(0x1F);
+    s.push_back(0xFF); // PCR_PID = 0x1FFF（不采 PCR）
+    s.push_back(0xF0);
+    s.push_back(0x00); // program_info_length = 0
     auto es = [&s](uint8_t stream_type, uint16_t pid) {
         s.push_back(stream_type);
         s.push_back(static_cast<uint8_t>(0xE0 | ((pid >> 8) & 0x1F)));
         s.push_back(static_cast<uint8_t>(pid & 0xFF));
-        s.push_back(0xF0); s.push_back(0x00);
+        s.push_back(0xF0);
+        s.push_back(0x00);
     };
-    es(0x1B, kVideoPid);  // H.264
-    es(0x0F, kAudioPid);  // AAC (ADTS)
-    s.push_back(0x00); s.push_back(0x00); s.push_back(0x00); s.push_back(0x00);  // CRC
+    es(0x1B, kVideoPid); // H.264
+    es(0x0F, kAudioPid); // AAC (ADTS)
+    s.push_back(0x00);
+    s.push_back(0x00);
+    s.push_back(0x00);
+    s.push_back(0x00); // CRC
     return s;
 }
 
 std::vector<uint8_t> MakePes(uint8_t stream_id, uint64_t pts, const std::vector<uint8_t>& es) {
     std::vector<uint8_t> p;
-    p.push_back(0x00); p.push_back(0x00); p.push_back(0x01);
+    p.push_back(0x00);
+    p.push_back(0x00);
+    p.push_back(0x01);
     p.push_back(stream_id);
-    p.push_back(0x00); p.push_back(0x00);  // PES_packet_length（本用例不依赖）
-    p.push_back(0x80);                     // '10' + 无加扰
-    p.push_back(0x80);                     // 只有 PTS
-    p.push_back(0x05);                     // PES_header_data_length
+    p.push_back(0x00);
+    p.push_back(0x00); // PES_packet_length（本用例不依赖）
+    p.push_back(0x80); // '10' + 无加扰
+    p.push_back(0x80); // 只有 PTS
+    p.push_back(0x05); // PES_header_data_length
     p.push_back(static_cast<uint8_t>(0x21 | (((pts >> 30) & 0x07) << 1)));
     p.push_back(static_cast<uint8_t>((pts >> 22) & 0xFF));
     p.push_back(static_cast<uint8_t>(0x01 | (((pts >> 15) & 0x7F) << 1)));
@@ -159,10 +176,10 @@ std::vector<uint8_t> MakePes(uint8_t stream_id, uint64_t pts, const std::vector<
 std::vector<uint8_t> MakeVideoEs(bool idr, bool with_aud = true) {
     const uint8_t nal_header = idr ? 0x65 : 0x41;
     std::vector<uint8_t> es;
-    if (with_aud) es = {0x00, 0x00, 0x00, 0x01, 0x09, 0xF0};
+    if (with_aud)
+        es = {0x00, 0x00, 0x00, 0x01, 0x09, 0xF0};
     const std::vector<uint8_t> start_code =
-        with_aud ? std::vector<uint8_t>{0x00, 0x00, 0x00, 0x01}
-                 : std::vector<uint8_t>{0x00, 0x00, 0x01};
+        with_aud ? std::vector<uint8_t>{0x00, 0x00, 0x00, 0x01} : std::vector<uint8_t>{0x00, 0x00, 0x01};
     es.insert(es.end(), start_code.begin(), start_code.end());
     es.push_back(nal_header);
     const std::vector<uint8_t> tail = {0x88, 0x84, 0x21, 0xA0};
@@ -176,12 +193,12 @@ std::vector<uint8_t> MakeAudioEs() {
 
 // 一个可配置的节目：视频 PES 每 0.5 s 一个，音频 PES 每 0.25 s 一个。
 struct StreamSpec {
-    int video_pes = 24;          // 视频 PES 个数
-    int video_idr_every = 4;     // 每几个 PES 插一个 IDR（0 = 只在第一个）
-    int only_idr_at = -1;        // >=0 时：除第一个之外只在该下标处插 IDR
-    int audio_pes = 48;          // 音频 PES 个数（0 = 没有音频流载荷）
-    bool no_idr = false;         // true = 整段一个 IDR 都不放
-    bool aud = true;             // false = 视频 ES 省掉 AUD，直接以三字节起始码开头
+    int video_pes = 24;      // 视频 PES 个数
+    int video_idr_every = 4; // 每几个 PES 插一个 IDR（0 = 只在第一个）
+    int only_idr_at = -1;    // >=0 时：除第一个之外只在该下标处插 IDR
+    int audio_pes = 48;      // 音频 PES 个数（0 = 没有音频流载荷）
+    bool no_idr = false;     // true = 整段一个 IDR 都不放
+    bool aud = true;         // false = 视频 ES 省掉 AUD，直接以三字节起始码开头
     bool pmt = true;
 };
 
@@ -190,7 +207,7 @@ void BuildStream(const fs::path& path, const StreamSpec& spec) {
     if (spec.pmt) {
         const std::vector<uint8_t> pat = MakePat();
         std::vector<uint8_t> pat_sec;
-        pat_sec.push_back(0x00);  // pointer_field
+        pat_sec.push_back(0x00); // pointer_field
         pat_sec.insert(pat_sec.end(), pat.begin(), pat.end());
         b.Payload(0x0000, pat_sec);
 
@@ -207,7 +224,7 @@ void BuildStream(const fs::path& path, const StreamSpec& spec) {
     int audio_i = 0;
     for (int slot = 0; slot < slots; ++slot) {
         if (audio_i < spec.audio_pes) {
-            const uint64_t pts = static_cast<uint64_t>(audio_i) * 22500;  // 0.25 s
+            const uint64_t pts = static_cast<uint64_t>(audio_i) * 22500; // 0.25 s
             b.Payload(kAudioPid, MakePes(0xC0, pts, MakeAudioEs()));
             ++audio_i;
         }
@@ -221,7 +238,7 @@ void BuildStream(const fs::path& path, const StreamSpec& spec) {
                     idr = idr || (video_i % spec.video_idr_every == 0);
                 }
             }
-            const uint64_t pts = static_cast<uint64_t>(video_i) * 45000;  // 0.5 s
+            const uint64_t pts = static_cast<uint64_t>(video_i) * 45000; // 0.5 s
             b.Payload(kVideoPid, MakePes(0xE0, pts, MakeVideoEs(idr, spec.aud)));
             ++video_i;
         }
@@ -243,7 +260,7 @@ TransportStreamInfo Analyze(const fs::path& path) {
     return result.transport;
 }
 
-}  // namespace
+} // namespace
 
 // ---------------------------------------------------------------------------
 // 健康流：IDR 规律、没有断流
@@ -251,8 +268,8 @@ TransportStreamInfo Analyze(const fs::path& path) {
 TEST(TsPesPayloadTest, HealthyStreamCountsIdrAndNoStall) {
     const fs::path path = MakeTempPath("healthy.ts");
     StreamSpec spec;
-    spec.video_pes = 24;       // 12 s
-    spec.video_idr_every = 4;  // 每 2 s 一个 IDR
+    spec.video_pes = 24;      // 12 s
+    spec.video_idr_every = 4; // 每 2 s 一个 IDR
     spec.audio_pes = 48;
     BuildStream(path, spec);
 
@@ -278,8 +295,8 @@ TEST(TsPesPayloadTest, HealthyStreamCountsIdrAndNoStall) {
 TEST(TsPesPayloadTest, LongGapWithoutIdrIsMeasured) {
     const fs::path path = MakeTempPath("no_idr.ts");
     StreamSpec spec;
-    spec.video_pes = 40;       // 20 s
-    spec.only_idr_at = 33;     // 第一个 + 第 33 个（16.5 s）
+    spec.video_pes = 40;   // 20 s
+    spec.only_idr_at = 33; // 第一个 + 第 33 个（16.5 s）
     spec.audio_pes = 80;
     BuildStream(path, spec);
 
@@ -298,8 +315,8 @@ TEST(TsPesPayloadTest, LongGapWithoutIdrIsMeasured) {
 TEST(TsPesPayloadTest, SingleIdrUsesWholeSpan) {
     const fs::path path = MakeTempPath("single_idr.ts");
     StreamSpec spec;
-    spec.video_pes = 20;       // 10 s
-    spec.video_idr_every = 0;  // 只有第一个 PES 带 IDR
+    spec.video_pes = 20;      // 10 s
+    spec.video_idr_every = 0; // 只有第一个 PES 带 IDR
     spec.audio_pes = 40;
     BuildStream(path, spec);
 
@@ -326,8 +343,7 @@ TEST(TsPesPayloadTest, VideoWithoutIdrIsCountedOnlyBeyondThreshold) {
     {
         const TransportStreamInfo ts = Analyze(short_path);
         EXPECT_EQ(0, ts.idr_count) << "整段都应识别成非 IDR";
-        EXPECT_EQ(0, ts.video_pids_without_idr)
-            << "跨度 4.5 s 没超过 10 s 阈值，短分片本来就不该有 IDR";
+        EXPECT_EQ(0, ts.video_pids_without_idr) << "跨度 4.5 s 没超过 10 s 阈值，短分片本来就不该有 IDR";
         // 但没有 IDR 这件事本身仍然要能看出来：跨度就是"最长无 IDR"
         EXPECT_NEAR(ts.max_no_idr_interval_ms, 4500.0, 1.0);
     }
@@ -357,16 +373,15 @@ TEST(TsPesPayloadTest, VideoWithoutIdrIsCountedOnlyBeyondThreshold) {
 TEST(TsPesPayloadTest, TrailingRunWithoutIdrIsMeasured) {
     const fs::path path = MakeTempPath("tail_no_idr.ts");
     StreamSpec spec;
-    spec.video_pes = 42;      // 0 .. 20.5 s
-    spec.only_idr_at = 2;     // 第一个 + 第 2 个 PES -> IDR 在 0 s 与 1 s
+    spec.video_pes = 42;  // 0 .. 20.5 s
+    spec.only_idr_at = 2; // 第一个 + 第 2 个 PES -> IDR 在 0 s 与 1 s
     spec.audio_pes = 84;
     BuildStream(path, spec);
 
     const TransportStreamInfo ts = Analyze(path);
     EXPECT_EQ(2, ts.idr_count);
     // 只算"IDR 与 IDR 之间"会报 1 s；真正最长的一段是末尾 19.5 s
-    EXPECT_NEAR(ts.max_no_idr_interval_ms, 19500.0, 5.0)
-        << "最后一个 IDR 到窗口末尾的区间必须计入";
+    EXPECT_NEAR(ts.max_no_idr_interval_ms, 19500.0, 5.0) << "最后一个 IDR 到窗口末尾的区间必须计入";
     EXPECT_STREQ("0x0100", ts.max_no_idr_pid.c_str());
 
     std::error_code ec;
@@ -380,8 +395,8 @@ TEST(TsPesPayloadTest, StartCodeAtPayloadStartIsDetected) {
     const fs::path path = MakeTempPath("startcode_at_start.ts");
     StreamSpec spec;
     spec.video_pes = 6;
-    spec.video_idr_every = 1;   // 每个 PES 都是 IDR
-    spec.aud = false;           // ES 直接以 00 00 01 65 开头
+    spec.video_idr_every = 1; // 每个 PES 都是 IDR
+    spec.aud = false;         // ES 直接以 00 00 01 65 开头
     spec.audio_pes = 12;
     BuildStream(path, spec);
 
@@ -399,9 +414,9 @@ TEST(TsPesPayloadTest, StartCodeAtPayloadStartIsDetected) {
 TEST(TsPesPayloadTest, StalledPidIsDetectedByTrailingGap) {
     const fs::path path = MakeTempPath("stall.ts");
     StreamSpec spec;
-    spec.video_pes = 40;       // 20 s
+    spec.video_pes = 40; // 20 s
     spec.video_idr_every = 4;
-    spec.audio_pes = 8;        // 只有 2 s 音频
+    spec.audio_pes = 8; // 只有 2 s 音频
     BuildStream(path, spec);
 
     const TransportStreamInfo ts = Analyze(path);
@@ -448,8 +463,7 @@ TEST(TsPesPayloadTest, ScanSwitchOffReportsNotScanned) {
     ContainerStructureResult result;
     TsStructureOptions options;
     options.scan_pes_payload = false;
-    ASSERT_TRUE(TsStructureAnalyzer().Analyze(path.string(), result, nullptr, options))
-        << result.error_message;
+    ASSERT_TRUE(TsStructureAnalyzer().Analyze(path.string(), result, nullptr, options)) << result.error_message;
 
     EXPECT_FALSE(result.transport.pes_payload_scanned);
     EXPECT_EQ(0, result.transport.pes_streams_checked);

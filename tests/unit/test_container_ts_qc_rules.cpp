@@ -20,11 +20,12 @@ namespace {
 
 using namespace videoeye;
 
-bool HasIssue(const model::QcReport& report, const std::string& rule_id,
-              model::DiagnosticIssue* out = nullptr) {
+bool HasIssue(const model::QcReport& report, const std::string& rule_id, model::DiagnosticIssue* out = nullptr) {
     for (const auto& issue : report.issues) {
-        if (issue.rule_id != rule_id) continue;
-        if (out != nullptr) *out = issue;
+        if (issue.rule_id != rule_id)
+            continue;
+        if (out != nullptr)
+            *out = issue;
         return true;
     }
     return false;
@@ -33,7 +34,8 @@ bool HasIssue(const model::QcReport& report, const std::string& rule_id,
 // container.ts.* 这一族有没有冒出任何问题
 bool HasAnyTsIssue(const model::QcReport& report) {
     for (const auto& issue : report.issues) {
-        if (issue.rule_id.rfind("container.ts.", 0) == 0) return true;
+        if (issue.rule_id.rfind("container.ts.", 0) == 0)
+            return true;
     }
     return false;
 }
@@ -74,7 +76,7 @@ model::AnalysisResult MakeResult(const model::TransportStreamInfo& ts) {
     return result;
 }
 
-}  // namespace
+} // namespace
 
 // ---------------- 健康流：一条都不该报 ----------------
 
@@ -155,7 +157,7 @@ TEST(TsQcRulesTest, ContinuityErrorUsesRatioNotAbsoluteCount) {
 TEST(TsQcRulesTest, PcrGapAboveThresholdFires) {
     QcRuleEngine engine;
 
-    model::TransportStreamInfo good = HealthyTs();  // 40 ms
+    model::TransportStreamInfo good = HealthyTs(); // 40 ms
     EXPECT_FALSE(HasIssue(engine.Evaluate(MakeResult(good)), "container.ts.pcr_gap"));
 
     model::TransportStreamInfo bad = HealthyTs();
@@ -178,7 +180,7 @@ TEST(TsQcRulesTest, NoPcrDataDoesNotFabricateIssue) {
 
 TEST(TsQcRulesTest, ScrambledIsInfoNotError) {
     model::TransportStreamInfo ts = HealthyTs();
-    ts.scrambled_packets = 195000;  // 几乎整条流都加扰
+    ts.scrambled_packets = 195000; // 几乎整条流都加扰
 
     QcRuleEngine engine;
     model::DiagnosticIssue issue;
@@ -193,7 +195,7 @@ TEST(TsQcRulesTest, ScrambledIsInfoNotError) {
 TEST(TsQcRulesTest, IncompleteScanIsReportedAsInfo) {
     model::TransportStreamInfo ts = HealthyTs();
     ts.scanned_packets = 200000;
-    ts.estimated_packets = 2700000;  // 5 GB 左右的 TS，只扫了前 200k 包
+    ts.estimated_packets = 2700000; // 5 GB 左右的 TS，只扫了前 200k 包
     ts.scan_complete = false;
 
     QcRuleEngine engine;
@@ -247,11 +249,10 @@ TEST(TsQcRulesTest, UserRaisedThresholdIsRespected) {
     std::vector<model::QcRule> rules = engine.rules();
     model::QcRule* rule = model::FindQcRule(rules, "container.ts.pcr_gap");
     ASSERT_TRUE(rule != nullptr);
-    rule->threshold = 500.0;  // 用户把门槛放宽到 500 ms
+    rule->threshold = 500.0; // 用户把门槛放宽到 500 ms
     engine.SetRules(rules);
 
-    EXPECT_FALSE(HasIssue(engine.Evaluate(MakeResult(ts)), "container.ts.pcr_gap"))
-        << "250 ms 在 500 ms 门槛下不该报";
+    EXPECT_FALSE(HasIssue(engine.Evaluate(MakeResult(ts)), "container.ts.pcr_gap")) << "250 ms 在 500 ms 门槛下不该报";
 }
 
 // ---------------- PES 载荷级（IDR / 断流） ----------------
@@ -262,11 +263,11 @@ TEST(TsQcRulesTest, UserRaisedThresholdIsRespected) {
 TEST(TsQcRulesTest, LongStretchWithoutIdrFires) {
     QcRuleEngine engine;
 
-    model::TransportStreamInfo good = HealthyTs();  // 2 s 一个 IDR
+    model::TransportStreamInfo good = HealthyTs(); // 2 s 一个 IDR
     EXPECT_FALSE(HasIssue(engine.Evaluate(MakeResult(good)), "container.ts.no_idr"));
 
     model::TransportStreamInfo bad = HealthyTs();
-    bad.max_no_idr_interval_ms = 16500.0;  // 一段 16.5 s 没有随机接入点
+    bad.max_no_idr_interval_ms = 16500.0; // 一段 16.5 s 没有随机接入点
     model::DiagnosticIssue issue;
     const model::QcReport report = engine.Evaluate(MakeResult(bad));
     ASSERT_TRUE(HasIssue(report, "container.ts.no_idr", &issue));
@@ -310,11 +311,9 @@ TEST(TsQcRulesTest, PayloadRulesStaySilentWhenNotScanned) {
 
 TEST(TsQcRulesTest, DefaultRulesContainTsFamily) {
     std::vector<model::QcRule> rules = model::DefaultQcRules();
-    for (const char* id : {"container.ts.missing_pat", "container.ts.missing_pmt",
-                           "container.ts.sync_loss", "container.ts.continuity_error",
-                           "container.ts.pcr_gap", "container.ts.scrambled",
-                           "container.ts.scan_incomplete", "container.ts.no_idr",
-                           "container.ts.pid_stall"}) {
+    for (const char* id : {"container.ts.missing_pat", "container.ts.missing_pmt", "container.ts.sync_loss",
+                           "container.ts.continuity_error", "container.ts.pcr_gap", "container.ts.scrambled",
+                           "container.ts.scan_incomplete", "container.ts.no_idr", "container.ts.pid_stall"}) {
         EXPECT_TRUE(model::FindQcRule(rules, id) != nullptr) << "规则表里漏了 " << id;
     }
 }

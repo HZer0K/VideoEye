@@ -8,8 +8,8 @@
 #include <string>
 #include <vector>
 
-#include "core/media/streaming/ManifestText.h"
 #include "core/analysis/streaming/StreamingCancel.h"
+#include "core/media/streaming/ManifestText.h"
 
 namespace videoeye {
 namespace {
@@ -118,10 +118,9 @@ uint32_t ProbeInitTimescale(const std::string& init_path, const std::atomic<bool
 }
 
 // 探测一个 fMP4 媒体分片：拿首个 moof 的 tfdt 作为关键帧时间
-bool ProbeFmp4Segment(model::SegmentInfo& seg, uint32_t fallback_timescale,
-                      const std::atomic<bool>* cancel) {
+bool ProbeFmp4Segment(model::SegmentInfo& seg, uint32_t fallback_timescale, const std::atomic<bool>* cancel) {
     if (IsStreamingCancelled(cancel))
-        return false;  // 别开工：开了也只是白跑一趟然后被外层丢掉
+        return false; // 别开工：开了也只是白跑一趟然后被外层丢掉
     Mp4SampleTableOptions opt;
     opt.expand_samples = false; // 只要 moof/traf/tfdt，展开样本表是纯浪费
     opt.max_samples_per_track = 1;
@@ -177,7 +176,8 @@ void ProbeSegmentRange(std::vector<model::SegmentInfo>& segments, uint32_t init_
     uint32_t probed = 0;
     for (model::SegmentInfo& seg : segments) {
         // 这层是逐分片的磁盘 stat + fMP4 头解析，大型包最耗时的就是它
-        if (ShouldCheckStreamingCancel(probed) && IsStreamingCancelled(cancel)) return;
+        if (ShouldCheckStreamingCancel(probed) && IsStreamingCancelled(cancel))
+            return;
         if (seg.partial)
             continue;
         if (probed >= options.max_probe_segments)
@@ -235,7 +235,8 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::ProbeSegments(model::Streaming
     const uint32_t kMaxUnits = 64; // package 级上限：再多的码率层也没必要全探测
 
     for (model::MediaPlaylistInfo& pl : result.playlists) {
-        if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
+        if (IsStreamingCancelled(cancel))
+            return StageStatus::kCancelled;
         if (probed_units >= kMaxUnits)
             break;
         ++probed_units;
@@ -247,7 +248,8 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::ProbeSegments(model::Streaming
     }
 
     for (model::DashRepresentationInfo& rep : result.representations) {
-        if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
+        if (IsStreamingCancelled(cancel))
+            return StageStatus::kCancelled;
         if (probed_units >= kMaxUnits)
             break;
         ++probed_units;
@@ -258,7 +260,8 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::ProbeSegments(model::Streaming
         ProbeSegmentRange(rep.segments, timescale, options, cancel);
     }
 
-    if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
+    if (IsStreamingCancelled(cancel))
+        return StageStatus::kCancelled;
     return StageStatus::kDone;
 }
 
@@ -351,8 +354,8 @@ void SegmentQcAnalyzer::BuildLadder(model::StreamingPackageResult& result) {
 }
 
 SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPackageResult& result,
-                                                            const SegmentQcOptions& options,
-                                                            const std::atomic<bool>* cancel) {
+                                                           const SegmentQcOptions& options,
+                                                           const std::atomic<bool>* cancel) {
     static const std::vector<const char*> kOwnCodes = {
         model::StreamingIssueCode::kHlsVariantResolutionMismatch,
         model::StreamingIssueCode::kHlsVariantCodecMismatch,
@@ -384,7 +387,8 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPacka
         unsigned long long scanned = 0;
         std::string first_missing;
         for (const model::MediaPlaylistInfo& pl : result.playlists) {
-            if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
+            if (IsStreamingCancelled(cancel))
+                return StageStatus::kCancelled;
             // 只有滑窗直播才会淘汰头部旧分片；EVENT / VOD 缺片一律按真缺失算。
             ScanMissing(pl.segments, pl.IsSlidingWindowLive(), missing, evicted, first_missing);
             for (const model::SegmentInfo& seg : pl.segments) {
@@ -397,7 +401,8 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPacka
             }
         }
         for (const model::DashRepresentationInfo& rep : result.representations) {
-            if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
+            if (IsStreamingCancelled(cancel))
+                return StageStatus::kCancelled;
             ScanMissing(rep.segments, result.IsLive(), missing, evicted, first_missing);
             for (const model::SegmentInfo& seg : rep.segments) {
                 if (ShouldCheckStreamingCancel(scanned++) && IsStreamingCancelled(cancel))
@@ -554,7 +559,8 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPacka
             for (const model::StreamingLadderEntry& e : result.ladder) {
                 if (&e == reference || e.keyframe_times.empty())
                     continue;
-                if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
+                if (IsStreamingCancelled(cancel))
+                    return StageStatus::kCancelled;
                 const std::vector<double> current_times = comparable_times(e.keyframe_times);
                 const size_t n = std::min(reference_times.size(), current_times.size());
                 double local_worst = 0.0;
@@ -611,7 +617,8 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPacka
         for (const model::StreamingLadderEntry& e : result.ladder) {
             if (e.bandwidth_bps <= 0)
                 continue;
-            if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
+            if (IsStreamingCancelled(cancel))
+                return StageStatus::kCancelled;
             int64_t peak = 0;
             if (result.IsDash()) {
                 if (e.source_index < 0 || static_cast<size_t>(e.source_index) >= result.representations.size()) {
@@ -696,7 +703,8 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPacka
             // 每个 Period 内取第一条视频 Representation 与第一条音频 Representation 比对
             for (const model::DashPeriodInfo& period : result.periods) {
                 // 内层是 O(period × representation), 多 Period 长清单下迭代量不小
-                if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
+                if (IsStreamingCancelled(cancel))
+                    return StageStatus::kCancelled;
                 const model::DashRepresentationInfo* video = nullptr;
                 const model::DashRepresentationInfo* audio = nullptr;
                 for (const model::DashRepresentationInfo& rep : result.representations) {
@@ -719,7 +727,8 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPacka
                     continue;
                 if (static_cast<size_t>(variant.playlist_index) >= result.playlists.size())
                     continue;
-                if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
+                if (IsStreamingCancelled(cancel))
+                    return StageStatus::kCancelled;
                 const model::MediaPlaylistInfo& video_pl = result.playlists[variant.playlist_index];
                 for (const model::HlsRenditionInfo& r : result.renditions) {
                     if (r.type != "audio" || r.group_id != variant.audio_group)
@@ -745,17 +754,21 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Analyze(model::StreamingPackag
         return StageStatus::kFailed;
     if (options.probe_segments) {
         const StageStatus probe = ProbeSegments(result, options, cancel);
-        if (probe != StageStatus::kDone) return probe;
+        if (probe != StageStatus::kDone)
+            return probe;
     }
     // 已被取消就别再建 ladder / 跑校验了：结果注定会被调用方丢弃，
     // 继续跑只是让"取消"更晚生效。
-    if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
+    if (IsStreamingCancelled(cancel))
+        return StageStatus::kCancelled;
     BuildLadder(result);
     // Validate 现在自己会报告"中途被取消", 必须接着它的结论走: 它提前返回时 issues
     // 只补了一半(result 是半截状态), 继续当 kDone 处理会让调用方拿这份半截结果去收尾。
     const StageStatus validated = Validate(result, options, cancel);
-    if (validated != StageStatus::kDone) return validated;
-    if (IsStreamingCancelled(cancel)) return StageStatus::kCancelled;
+    if (validated != StageStatus::kDone)
+        return validated;
+    if (IsStreamingCancelled(cancel))
+        return StageStatus::kCancelled;
     return StageStatus::kDone;
 }
 

@@ -6,7 +6,7 @@
 #   4. 其余架构审计 + 各自退出码自测（Qt/analysis 边界 / 命名空间 / 链接可见性）
 #      —— 与 CI 的 layering job 清单对齐；这三组在 2026-10-07 之前只在 CI 跑，
 #      本地 pre-commit 一路绿、推送后 CI 红
-#   5. 暂存的 C++ 文件跑 clang-format
+#   5. 暂存的 C++ 文件跑 clang-format（版本需与 CI 钉的 18.1.x 一致）
 # 安装: bash scripts/setup-hooks.sh
 #
 # 为什么第 1 道门必须在本地也跑一遍，不能只靠 CI：
@@ -110,16 +110,46 @@ if [ -z "$staged" ]; then
     exit 0
 fi
 
-if ! command -v clang-format >/dev/null 2>&1; then
-    echo "warning: clang-format 未安装，跳过格式检查" >&2
+# 第 5 道门找 clang-format 的顺序: $CLANG_FORMAT（显式覆盖） → PATH。
+# 不用 `command -v` 一把梭，是因为这台机器上装回来的路径在 PATH 里未必可见
+# （见下方安装提示），留一个显式覆盖的口子比让人去改 PATH 便宜。
+CF=""
+if [ -n "${CLANG_FORMAT:-}" ] && [ -x "${CLANG_FORMAT}" ]; then
+    CF="$CLANG_FORMAT"
+elif command -v clang-format >/dev/null 2>&1; then
+    CF="clang-format"
+fi
+
+if [ -z "$CF" ]; then
+    echo "warning: 未找到 clang-format，跳过格式检查（CI 的 format job 仍会卡）" >&2
+    echo "  本机安装（版本必须与 CI 一致，见 .github/workflows/build.yml 的 format job）:" >&2
+    echo "    python -m pip install \"clang-format==18.1.8\"" >&2
+    echo "  然后把 site-packages/clang_format/data/bin/ 下的 clang-format(.exe) 放进 PATH，" >&2
+    echo "  或设 CLANG_FORMAT=<绝对路径> 指过去。" >&2
     exit 0
 fi
 
+# 版本漂移比"没装"更坏: 没装只 warning，装错版本会让本机判绿、CI 判红（或反过来）。
+# clang-format 的换行位置/注释对齐/include 排序跨大版本都变，18 与 19 对同一份
+# 代码会给出一致性完全不同的结论。漂了只提示不拦截 —— 拦下来只会逼人加 --no-verify。
+CF_PINNED="18.1"
+cf_ver=$("$CF" --version 2>/dev/null | sed -n 's/.*version \([0-9][0-9.]*\).*/\1/p')
+case "$cf_ver" in
+    "$CF_PINNED"*) ;;
+    "")
+        echo "warning: 读不出 clang-format 版本（$CF），跳过版本核对" >&2
+        ;;
+    *)
+        echo "warning: clang-format 版本 $cf_ver ≠ CI 钉的 $CF_PINNED，格式判定可能与 CI 相反" >&2
+        echo "  对齐: python -m pip install \"clang-format==18.1.8\"" >&2
+        ;;
+esac
+
 fail=0
 for f in $staged; do
-    if ! clang-format --dry-run --Werror "$f" >/dev/null 2>&1; then
+    if ! "$CF" --dry-run --Werror "$f" >/dev/null 2>&1; then
         echo "格式不符合 .clang-format: $f" >&2
-        echo "  修复: clang-format -i \"$f\" && git add \"$f\"" >&2
+        echo "  修复: \"$CF\" -i \"$f\" && git add \"$f\"" >&2
         fail=1
     fi
 done
@@ -127,7 +157,7 @@ done
 if [ "$fail" -ne 0 ]; then
     echo "" >&2
     echo "提交已阻止：上述文件未通过 clang-format 检查。" >&2
-    echo "批量修复: clang-format -i $(echo $staged)" >&2
+    echo "批量修复: \"$CF\" -i $(echo $staged)" >&2
 fi
 
 exit $fail

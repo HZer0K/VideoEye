@@ -60,8 +60,7 @@ struct TsStructureOptions {
 class TsStructureAnalyzer {
 public:
     bool Analyze(const std::string& file_path, model::ContainerStructureResult& result,
-                 const std::atomic<bool>* cancel = nullptr,
-                 const TsStructureOptions& options = TsStructureOptions{});
+                 const std::atomic<bool>* cancel = nullptr, const TsStructureOptions& options = TsStructureOptions{});
 };
 
 } // namespace videoeye

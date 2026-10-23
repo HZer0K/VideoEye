@@ -9,10 +9,10 @@
 
 #include <gtest/gtest.h>
 
-#include "core/domain/model/AnalysisResult.h"
+#include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/analysis/streaming/DashManifestAnalyzer.h"
 #include "core/analysis/streaming/HlsManifestAnalyzer.h"
-#include "core/analysis/diagnostics/QcRuleEngine.h"
+#include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/QcReport.h"
 
 namespace {
@@ -216,23 +216,18 @@ TEST(StreamingQcRulesTest, DefaultRulesContainStreamingFamily) {
     EXPECT_NE(nullptr, model::FindQcRule(rules, model::StreamingIssueCode::kSegmentEvictedLiveWindow));
     // 业务时间轴（广告/DVR/快进档）与 DASH 描述符（DRM/对时/事件/角色/强制扩展）：
     // 分析器都产出了，规则表漏注册就等于白算
-    for (const char* code : {model::StreamingIssueCode::kHlsDateRangeOpenEnded,
-                             model::StreamingIssueCode::kHlsDateRangeInvalidDate,
-                             model::StreamingIssueCode::kHlsProgramDateTimeInvalid,
-                             model::StreamingIssueCode::kHlsProgramDateTimeDrift,
-                             model::StreamingIssueCode::kHlsIframeVariantIncomplete,
-                             model::StreamingIssueCode::kHlsStartOffsetOutOfRange,
-                             model::StreamingIssueCode::kHlsDeltaUpdateWithoutSequence,
-                             model::StreamingIssueCode::kDashDrmContentProtection,
-                             model::StreamingIssueCode::kDashContentProtectionMissingKeyId,
-                             model::StreamingIssueCode::kDashContentProtectionUnknownScheme,
-                             model::StreamingIssueCode::kDashLiveMissingUtcTiming,
-                             model::StreamingIssueCode::kDashUtcTimingInvalid,
-                             model::StreamingIssueCode::kDashEventStream,
-                             model::StreamingIssueCode::kDashEventStreamInvalid,
-                             model::StreamingIssueCode::kDashMissingRole,
-                             model::StreamingIssueCode::kDashEssentialProperty,
-                             model::StreamingIssueCode::kDashEssentialPropertyUnknown}) {
+    for (const char* code :
+         {model::StreamingIssueCode::kHlsDateRangeOpenEnded, model::StreamingIssueCode::kHlsDateRangeInvalidDate,
+          model::StreamingIssueCode::kHlsProgramDateTimeInvalid, model::StreamingIssueCode::kHlsProgramDateTimeDrift,
+          model::StreamingIssueCode::kHlsIframeVariantIncomplete, model::StreamingIssueCode::kHlsStartOffsetOutOfRange,
+          model::StreamingIssueCode::kHlsDeltaUpdateWithoutSequence,
+          model::StreamingIssueCode::kDashDrmContentProtection,
+          model::StreamingIssueCode::kDashContentProtectionMissingKeyId,
+          model::StreamingIssueCode::kDashContentProtectionUnknownScheme,
+          model::StreamingIssueCode::kDashLiveMissingUtcTiming, model::StreamingIssueCode::kDashUtcTimingInvalid,
+          model::StreamingIssueCode::kDashEventStream, model::StreamingIssueCode::kDashEventStreamInvalid,
+          model::StreamingIssueCode::kDashMissingRole, model::StreamingIssueCode::kDashEssentialProperty,
+          model::StreamingIssueCode::kDashEssentialPropertyUnknown}) {
         EXPECT_TRUE(model::FindQcRule(rules, code) != nullptr) << "规则表里漏了 " << code;
     }
 }
@@ -265,6 +260,5 @@ TEST(StreamingQcRulesTest, OpenEndedScte35MarkerEscalatesToWarning) {
     model::DiagnosticIssue issue;
     const model::QcReport report = engine.Evaluate(result);
     ASSERT_TRUE(HasIssue(report, model::StreamingIssueCode::kHlsDateRangeOpenEnded, &issue));
-    EXPECT_EQ(model::IssueSeverity::Warning, issue.severity)
-        << "带 SCTE-35 的开口广告位比普通章节严重";
+    EXPECT_EQ(model::IssueSeverity::Warning, issue.severity) << "带 SCTE-35 的开口广告位比普通章节严重";
 }

@@ -16,9 +16,13 @@ using detail::WriteUtf8File;
 
 namespace {
 
-JsonValue JNumber(double value) { return JsonValue(value); }
+JsonValue JNumber(double value) {
+    return JsonValue(value);
+}
 
-JsonValue JText(const std::string& text) { return JsonValue(text); }
+JsonValue JText(const std::string& text) {
+    return JsonValue(text);
+}
 
 JsonValue BuildIssueObject(const model::DiagnosticIssue& issue) {
     JsonValue object = JsonValue::MakeObject();
@@ -40,10 +44,8 @@ JsonValue BuildIssueObject(const model::DiagnosticIssue& issue) {
 
 JsonValue BuildStreamObject(const model::StreamDigest& stream) {
     JsonValue object = JsonValue::MakeObject();
-    const char* type = stream.attached_picture
-                           ? "cover"
-                           : (stream.IsVideo() ? "video"
-                                               : (stream.IsAudio() ? "audio" : "other"));
+    const char* type =
+        stream.attached_picture ? "cover" : (stream.IsVideo() ? "video" : (stream.IsAudio() ? "audio" : "other"));
     object.Set("index", JNumber(static_cast<double>(stream.index)));
     object.Set("type", JText(type));
     object.Set("codec_name", JText(stream.codec_name));
@@ -68,13 +70,16 @@ JsonValue BuildRuleObject(const model::QcRule& rule) {
     object.Set("category", JText(CategoryCode(rule.category)));
     object.Set("severity", JText(SeverityCode(rule.severity)));
     object.Set("op", JText(std::string([&rule]() {
-        switch (rule.op) {
-            case model::QcRuleOp::MaxExceeded: return "max_exceeded";
-            case model::QcRuleOp::MinBelow:    return "min_below";
-            case model::QcRuleOp::NonZero:     return "non_zero";
-        }
-        return "unknown";
-    }())));
+                   switch (rule.op) {
+                   case model::QcRuleOp::MaxExceeded:
+                       return "max_exceeded";
+                   case model::QcRuleOp::MinBelow:
+                       return "min_below";
+                   case model::QcRuleOp::NonZero:
+                       return "non_zero";
+                   }
+                   return "unknown";
+               }())));
     object.Set("threshold", JNumber(rule.threshold));
     object.Set("unit", JText(rule.unit));
     object.Set("enabled", JsonValue(rule.enabled));
@@ -145,8 +150,7 @@ JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
         loudness.Set("rms_dbfs", JNumber(result.audio_qc.rms_dbfs));
         loudness.Set("silence_ratio", JNumber(result.audio_qc.silence_ratio));
         loudness.Set("longest_silence_seconds", JNumber(result.audio_qc.longest_silence_seconds));
-        loudness.Set("clipping_sample_count",
-                     JNumber(static_cast<double>(result.audio_qc.clipping_sample_count)));
+        loudness.Set("clipping_sample_count", JNumber(static_cast<double>(result.audio_qc.clipping_sample_count)));
         loudness.Set("channel_layout", JText(result.audio_qc.metadata.channel_layout));
         metrics.Set("loudness", loudness);
     }
@@ -162,8 +166,7 @@ JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
             node.Set("profile", JText(stream.profile));
             node.Set("sample_rate", JNumber(static_cast<double>(stream.sample_rate)));
             node.Set("channels", JNumber(static_cast<double>(stream.channels)));
-            node.Set("container_sample_rate",
-                     JNumber(static_cast<double>(stream.container_sample_rate)));
+            node.Set("container_sample_rate", JNumber(static_cast<double>(stream.container_sample_rate)));
             node.Set("container_channels", JNumber(static_cast<double>(stream.container_channels)));
             node.Set("bit_rate_kbps", JNumber(static_cast<double>(stream.bit_rate_kbps)));
             node.Set("frame_count", JNumber(static_cast<double>(stream.frame_count)));
@@ -185,7 +188,8 @@ JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
             node.Set("vbr", JsonValue(stream.vbr));
             node.Set("params_changed_midstream", JsonValue(stream.params_changed_midstream));
             node.Set("container_mismatch", JsonValue(stream.container_mismatch));
-            if (!stream.note.empty()) node.Set("note", JText(stream.note));
+            if (!stream.note.empty())
+                node.Set("note", JText(stream.note));
             JsonValue inconsistencies = JsonValue::MakeArray();
             for (const std::string& text : stream.inconsistencies) {
                 inconsistencies.PushBack(JsonValue(text));
@@ -209,18 +213,15 @@ JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
         color.Set("level", JNumber(static_cast<double>(info.level)));
         color.Set("hdr_format", JText(result.color_hdr.hdr.format_name));
         color.Set("max_cll", JNumber(static_cast<double>(result.color_hdr.hdr.content_light.max_cll)));
-        color.Set("max_fall",
-                  JNumber(static_cast<double>(result.color_hdr.hdr.content_light.max_fall)));
-        color.Set("dolby_vision_profile",
-                  JNumber(static_cast<double>(result.color_hdr.hdr.dolby_vision.profile)));
+        color.Set("max_fall", JNumber(static_cast<double>(result.color_hdr.hdr.content_light.max_fall)));
+        color.Set("dolby_vision_profile", JNumber(static_cast<double>(result.color_hdr.hdr.dolby_vision.profile)));
         metrics.Set("color_hdr", color);
     }
 
     if (result.streaming_analyzed) {
         JsonValue streaming = JsonValue::MakeObject();
         streaming.Set("manifest_kind", JText(result.streaming_package.manifest_path.empty() ? "" : "local"));
-        streaming.Set("variant_count",
-                      JNumber(static_cast<double>(result.streaming_package.variants.size())));
+        streaming.Set("variant_count", JNumber(static_cast<double>(result.streaming_package.variants.size())));
         metrics.Set("streaming", streaming);
     }
 
@@ -263,16 +264,19 @@ JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
         node.Set("max_pid_gap_ms", JNumber(ts.max_pid_gap_ms));
         node.Set("video_pids_without_idr", JNumber(static_cast<double>(ts.video_pids_without_idr)));
         node.Set("stalled_pids", JNumber(static_cast<double>(ts.stalled_pids)));
-        if (!ts.max_no_idr_pid.empty()) node.Set("max_no_idr_pid", JText(ts.max_no_idr_pid));
-        if (!ts.max_pid_gap_pid.empty()) node.Set("max_pid_gap_pid", JText(ts.max_pid_gap_pid));
-        if (!ts.error_message.empty()) node.Set("error_message", JText(ts.error_message));
+        if (!ts.max_no_idr_pid.empty())
+            node.Set("max_no_idr_pid", JText(ts.max_no_idr_pid));
+        if (!ts.max_pid_gap_pid.empty())
+            node.Set("max_pid_gap_pid", JText(ts.max_pid_gap_pid));
+        if (!ts.error_message.empty())
+            node.Set("error_message", JText(ts.error_message));
         metrics.Set("ts_transport", node);
     }
 
     return metrics;
 }
 
-}  // namespace
+} // namespace
 
 // ===========================================================================
 // JSON
@@ -316,31 +320,31 @@ std::string QcReportExporter::BuildJson(const QcExportBundle& bundle) {
     // 落库前先看这个标志（此前导出会静默丢掉它，审计 P1）。
     summary.Set("partial", JsonValue(report.partial));
     summary.Set("analysis_elapsed_ms", JNumber(run.elapsed_ms));
-    if (!run.error.empty()) summary.Set("error", JText(run.error));
+    if (!run.error.empty())
+        summary.Set("error", JText(run.error));
     JsonValue counts = JsonValue::MakeObject();
-    counts.Set("critical", JNumber(static_cast<double>(
-                               report.CountBySeverity(model::IssueSeverity::Critical))));
-    counts.Set("error", JNumber(static_cast<double>(
-                            report.CountBySeverity(model::IssueSeverity::Error))));
-    counts.Set("warning", JNumber(static_cast<double>(
-                              report.CountBySeverity(model::IssueSeverity::Warning))));
-    counts.Set("info", JNumber(static_cast<double>(
-                           report.CountBySeverity(model::IssueSeverity::Info))));
+    counts.Set("critical", JNumber(static_cast<double>(report.CountBySeverity(model::IssueSeverity::Critical))));
+    counts.Set("error", JNumber(static_cast<double>(report.CountBySeverity(model::IssueSeverity::Error))));
+    counts.Set("warning", JNumber(static_cast<double>(report.CountBySeverity(model::IssueSeverity::Warning))));
+    counts.Set("info", JNumber(static_cast<double>(report.CountBySeverity(model::IssueSeverity::Info))));
     summary.Set("issue_counts", counts);
     root.Set("summary", summary);
 
     JsonValue issues = JsonValue::MakeArray();
-    for (const auto& issue : report.issues) issues.PushBack(BuildIssueObject(issue));
+    for (const auto& issue : report.issues)
+        issues.PushBack(BuildIssueObject(issue));
     root.Set("issues", issues);
 
     root.Set("metrics", BuildMetricsObject(run.analysis));
 
     JsonValue streams = JsonValue::MakeArray();
-    for (const auto& stream : run.analysis.streams) streams.PushBack(BuildStreamObject(stream));
+    for (const auto& stream : run.analysis.streams)
+        streams.PushBack(BuildStreamObject(stream));
     root.Set("streams", streams);
 
     JsonValue rules = JsonValue::MakeArray();
-    for (const auto& rule : report.rules) rules.PushBack(BuildRuleObject(rule));
+    for (const auto& rule : report.rules)
+        rules.PushBack(BuildRuleObject(rule));
     root.Set("rules", rules);
 
     if (bundle.has_comparison) {
@@ -357,15 +361,20 @@ std::string QcReportExporter::BuildJson(const QcExportBundle& bundle) {
             item.Set("left", JText(row.left));
             item.Set("right", JText(row.right));
             item.Set("diff", JText(std::string([&row]() {
-                switch (row.diff) {
-                    case qc::QcFieldDiff::Same:        return "same";
-                    case qc::QcFieldDiff::Different:   return "different";
-                    case qc::QcFieldDiff::OnlyLeft:    return "only_left";
-                    case qc::QcFieldDiff::OnlyRight:   return "only_right";
-                    case qc::QcFieldDiff::Unavailable: return "unavailable";
-                }
-                return "unavailable";
-            }())));
+                         switch (row.diff) {
+                         case qc::QcFieldDiff::Same:
+                             return "same";
+                         case qc::QcFieldDiff::Different:
+                             return "different";
+                         case qc::QcFieldDiff::OnlyLeft:
+                             return "only_left";
+                         case qc::QcFieldDiff::OnlyRight:
+                             return "only_right";
+                         case qc::QcFieldDiff::Unavailable:
+                             return "unavailable";
+                         }
+                         return "unavailable";
+                     }())));
             if (row.numeric) {
                 item.Set("left_value", JNumber(row.left_value));
                 item.Set("right_value", JNumber(row.right_value));
@@ -385,8 +394,7 @@ bool QcReportExporter::ExportJson(const std::string& path, const QcExportBundle&
     return WriteUtf8File(path, BuildJson(bundle));
 }
 
-bool QcReportExporter::ExportComparisonJson(const std::string& path,
-                                           const qc::QcComparison& comparison) {
+bool QcReportExporter::ExportComparisonJson(const std::string& path, const qc::QcComparison& comparison) {
     JsonValue root = JsonValue::MakeObject();
     root.Set("schema", JText("videoeye.qc-comparison"));
     root.Set("schema_version", JNumber(static_cast<double>(kReportSchemaVersion)));
@@ -409,15 +417,20 @@ bool QcReportExporter::ExportComparisonJson(const std::string& path,
         item.Set("right", JText(row.right));
         item.Set("unit", JText(row.unit));
         item.Set("diff", JText(std::string([&row]() {
-            switch (row.diff) {
-                case qc::QcFieldDiff::Same:        return "same";
-                case qc::QcFieldDiff::Different:   return "different";
-                case qc::QcFieldDiff::OnlyLeft:    return "only_left";
-                case qc::QcFieldDiff::OnlyRight:   return "only_right";
-                case qc::QcFieldDiff::Unavailable: return "unavailable";
-            }
-            return "unavailable";
-        }())));
+                     switch (row.diff) {
+                     case qc::QcFieldDiff::Same:
+                         return "same";
+                     case qc::QcFieldDiff::Different:
+                         return "different";
+                     case qc::QcFieldDiff::OnlyLeft:
+                         return "only_left";
+                     case qc::QcFieldDiff::OnlyRight:
+                         return "only_right";
+                     case qc::QcFieldDiff::Unavailable:
+                         return "unavailable";
+                     }
+                     return "unavailable";
+                 }())));
         if (row.numeric) {
             item.Set("left_value", JNumber(row.left_value));
             item.Set("right_value", JNumber(row.right_value));
@@ -430,8 +443,7 @@ bool QcReportExporter::ExportComparisonJson(const std::string& path,
     return WriteUtf8File(path, root.ToPrettyString(2) + "\n");
 }
 
-bool QcReportExporter::ExportBatchSummaryJson(const std::string& path,
-                                             const QcBatchSummaryInput& input) {
+bool QcReportExporter::ExportBatchSummaryJson(const std::string& path, const QcBatchSummaryInput& input) {
     JsonValue root = JsonValue::MakeObject();
     root.Set("schema", JText("videoeye.qc-batch-summary"));
     root.Set("schema_version", JNumber(static_cast<double>(kReportSchemaVersion)));
@@ -470,8 +482,10 @@ bool QcReportExporter::ExportBatchSummaryJson(const std::string& path,
         item.Set("warning_count", JNumber(static_cast<double>(row.warning_count)));
         item.Set("info_count", JNumber(static_cast<double>(row.info_count)));
         item.Set("elapsed_ms", JNumber(row.elapsed_ms));
-        if (!row.output_path.empty()) item.Set("output_path", JText(row.output_path));
-        if (!row.error.empty()) item.Set("error", JText(row.error));
+        if (!row.output_path.empty())
+            item.Set("output_path", JText(row.output_path));
+        if (!row.error.empty())
+            item.Set("error", JText(row.error));
         rows.PushBack(item);
     }
     root.Set("files", rows);
@@ -479,5 +493,5 @@ bool QcReportExporter::ExportBatchSummaryJson(const std::string& path,
     return WriteUtf8File(path, root.ToPrettyString(2) + "\n");
 }
 
-}  // namespace reporting
-}  // namespace videoeye
+} // namespace reporting
+} // namespace videoeye

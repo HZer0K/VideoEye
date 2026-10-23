@@ -112,9 +112,9 @@ bool ParseResolution(const std::string& text, int& w, int& h) {
 int64_t DaysFromCivil(int64_t y, int64_t m, int64_t d) {
     y -= (m <= 2) ? 1 : 0;
     const int64_t era = (y >= 0 ? y : y - 399) / 400;
-    const int64_t yoe = y - era * 400;                                     // [0, 399]
-    const int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;    // [0, 365]
-    const int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;             // [0, 146096]
+    const int64_t yoe = y - era * 400;                                  // [0, 399]
+    const int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1; // [0, 365]
+    const int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;          // [0, 146096]
     return era * 146097 + doe - 719468;
 }
 
@@ -210,7 +210,6 @@ bool ParseIso8601DateTime(const std::string& text, double& epoch_out) {
     epoch_out = seconds - static_cast<double>(offset_seconds);
     return true;
 }
-
 
 // 按 URI 后缀猜分片容器。猜不出来就 Other —— 宁可漏判也不要误判。
 model::SegmentContainer ContainerFromUri(const std::string& uri) {
@@ -447,8 +446,7 @@ void ParseMediaPlaylistBody(const std::vector<std::string>& lines, const std::st
             dr.start_date = mt::AttrString(attrs, "START-DATE");
             dr.end_date = mt::AttrString(attrs, "END-DATE");
             dr.has_duration = mt::AttrDouble(attrs, "DURATION", dr.duration_seconds);
-            dr.has_planned_duration =
-                mt::AttrDouble(attrs, "PLANNED-DURATION", dr.planned_duration_seconds);
+            dr.has_planned_duration = mt::AttrDouble(attrs, "PLANNED-DURATION", dr.planned_duration_seconds);
             dr.end_on_next = mt::AttrBool(attrs, "END-ON-NEXT");
             dr.scte35_cmd = mt::AttrString(attrs, "SCTE35-CMD");
             dr.scte35_out = mt::AttrString(attrs, "SCTE35-OUT");
@@ -867,9 +865,12 @@ bool HlsManifestAnalyzer::ParseText(const std::string& text, const std::string& 
 void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const HlsManifestOptions& options,
                                    const std::atomic<bool>* cancel) {
     static const std::vector<const char*> kOwnCodes = {
-        model::StreamingIssueCode::kHlsMissingTargetDuration, model::StreamingIssueCode::kHlsSegmentOverTarget,
-        model::StreamingIssueCode::kHlsSegmentJitter,         model::StreamingIssueCode::kHlsDiscontinuityUnpaired,
-        model::StreamingIssueCode::kHlsMissingInitSection,            model::StreamingIssueCode::kHlsEncryptionKey,
+        model::StreamingIssueCode::kHlsMissingTargetDuration,
+        model::StreamingIssueCode::kHlsSegmentOverTarget,
+        model::StreamingIssueCode::kHlsSegmentJitter,
+        model::StreamingIssueCode::kHlsDiscontinuityUnpaired,
+        model::StreamingIssueCode::kHlsMissingInitSection,
+        model::StreamingIssueCode::kHlsEncryptionKey,
         model::StreamingIssueCode::kHlsPartialSegment,
         model::StreamingIssueCode::kHlsLiveMissingMediaSequence,
         model::StreamingIssueCode::kHlsDateRangeOpenEnded,
@@ -1042,8 +1043,7 @@ void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Hls
         // 墙钟是广告插入、DVR 回看、多路对齐的唯一锚点。写错比不写更危险：
         // 播放器不会校验，只会在错误的时间点插广告，或按错的时间 seek。
         if (pl.has_program_date_time && !pl.program_date_time_valid) {
-            PushIssue(out, model::StreamingIssueCode::kHlsProgramDateTimeInvalid,
-                      "EXT-X-PROGRAM-DATE-TIME 无法解析",
+            PushIssue(out, model::StreamingIssueCode::kHlsProgramDateTimeInvalid, "EXT-X-PROGRAM-DATE-TIME 无法解析",
                       label + " 的 EXT-X-PROGRAM-DATE-TIME=\"" + pl.program_date_time +
                           "\" 不是合法的 ISO 8601 时间（期望形如 2026-01-01T00:00:00.000Z 或带 ±hh:mm 时区）。",
                       "按 ISO 8601 重写该标签；带时区偏移（Z 或 ±hh:mm），不要只写本地时间。",
@@ -1079,9 +1079,8 @@ void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Hls
                               FormatSeconds(options.program_date_time_drift_tolerance_s) + " 秒）。",
                           "两处 PDT 之差必须等于它们之间所有 EXTINF 之和（discontinuity 处除外）。"
                           "广告插播与 DVR 定位都按墙钟算，偏差会导致广告落在错误的时间点。",
-                          model::IssueSeverity::Warning, worst_drift,
-                          options.program_date_time_drift_tolerance_s, drift_count, first_at, playlist_index,
-                          pl.variant_index);
+                          model::IssueSeverity::Warning, worst_drift, options.program_date_time_drift_tolerance_s,
+                          drift_count, first_at, playlist_index, pl.variant_index);
             }
         }
 
@@ -1090,11 +1089,9 @@ void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Hls
         // 播放器要么忽略它、要么从 0 起播 —— 服务端以为配了"从第 30 秒开始"，实际没有。
         if (pl.has_start && pl.total_duration_seconds > 0.0 &&
             std::fabs(pl.start_time_offset_s) > pl.total_duration_seconds + 0.001) {
-            PushIssue(out, model::StreamingIssueCode::kHlsStartOffsetOutOfRange,
-                      "EXT-X-START 的起点超出台长",
+            PushIssue(out, model::StreamingIssueCode::kHlsStartOffsetOutOfRange, "EXT-X-START 的起点超出台长",
                       label + " 声明 EXT-X-START:TIME-OFFSET=" + FormatSeconds(pl.start_time_offset_s) +
-                          "，但清单只覆盖 " + FormatSeconds(pl.total_duration_seconds) +
-                          " 秒；播放器会忽略这个起点。",
+                          "，但清单只覆盖 " + FormatSeconds(pl.total_duration_seconds) + " 秒；播放器会忽略这个起点。",
                       "把 TIME-OFFSET 调进 [-总时长, +总时长] 区间；直播场景下它通常是几秒的负偏移"
                       "（从直播边缘后退一点起播）。",
                       model::IssueSeverity::Warning, pl.start_time_offset_s, pl.total_duration_seconds, 1, -1.0,
@@ -1106,8 +1103,7 @@ void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Hls
         // 的绝对序号 —— 那是 EXT-X-MEDIA-SEQUENCE 的活。缺了它，客户端只能从 0 数起，
         // 于是 seek / 断点续传 / 广告去重全部错位。
         if (pl.has_skip && !pl.has_media_sequence) {
-            PushIssue(out, model::StreamingIssueCode::kHlsDeltaUpdateWithoutSequence,
-                      "delta update 缺少序号基准",
+            PushIssue(out, model::StreamingIssueCode::kHlsDeltaUpdateWithoutSequence, "delta update 缺少序号基准",
                       label + " 用了 EXT-X-SKIP（SKIPPED-SEGMENTS=" + std::to_string(pl.skipped_segments) +
                           "），但没有 EXT-X-MEDIA-SEQUENCE，被跳过的分片无法定位到绝对序号。",
                       "delta update 必须同时给 EXT-X-MEDIA-SEQUENCE（当前首片的绝对序号），"
@@ -1146,21 +1142,22 @@ void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Hls
             if (invalid_dates > 0) {
                 PushIssue(out, model::StreamingIssueCode::kHlsDateRangeInvalidDate,
                           "EXT-X-DATERANGE 的 START-DATE 不合法",
-                          label + " 有 " + std::to_string(invalid_dates) + " 条 EXT-X-DATERANGE 的 START-DATE"
-                                  " 缺失或不是合法 ISO 8601 时间" +
+                          label + " 有 " + std::to_string(invalid_dates) +
+                              " 条 EXT-X-DATERANGE 的 START-DATE"
+                              " 缺失或不是合法 ISO 8601 时间" +
                               (first_bad_date.empty() ? std::string("（首条为空）")
                                                       : "（首条为 \"" + first_bad_date + "\"）") +
                               "，广告位无法换算成时间轴上的位置。",
                           "START-DATE 是 EXT-X-DATERANGE 的必填属性，格式与 EXT-X-PROGRAM-DATE-TIME 一致；"
                           "补上后播放器才能按墙钟触发插播。",
-                          model::IssueSeverity::Warning, static_cast<double>(invalid_dates), 0.0, invalid_dates,
-                          -1.0, playlist_index, pl.variant_index);
+                          model::IssueSeverity::Warning, static_cast<double>(invalid_dates), 0.0, invalid_dates, -1.0,
+                          playlist_index, pl.variant_index);
             }
             if (open_ended > 0) {
                 // SCTE-35 开口（有 OUT 没 IN）比普通章节开口严重：广告时段算不出时长，
                 // 播放器可能一直停在"广告中"。
-                const model::IssueSeverity severity = (scte_open_ended > 0) ? model::IssueSeverity::Warning
-                                                                            : model::IssueSeverity::Info;
+                const model::IssueSeverity severity =
+                    (scte_open_ended > 0) ? model::IssueSeverity::Warning : model::IssueSeverity::Info;
                 std::string detail = label + " 有 " + std::to_string(open_ended) +
                                      " 条 EXT-X-DATERANGE 定位不了结束点（既无 END-DATE/DURATION，"
                                      "也不是 END-ON-NEXT + CLASS）";
@@ -1171,8 +1168,7 @@ void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Hls
                 if (scte_open_ended > 0)
                     detail += "；其中 " + std::to_string(scte_open_ended) + " 条带 SCTE-35 标记";
                 detail += "。";
-                PushIssue(out, model::StreamingIssueCode::kHlsDateRangeOpenEnded, "广告/章节标记定位不了结束点",
-                          detail,
+                PushIssue(out, model::StreamingIssueCode::kHlsDateRangeOpenEnded, "广告/章节标记定位不了结束点", detail,
                           "给每条 EXT-X-DATERANGE 补 END-DATE 或 DURATION；"
                           "若结束点由下一段决定，写 END-ON-NEXT=YES 并同时给出 CLASS。"
                           "SCTE35-OUT 必须配一条 SCTE35-IN 或明确的时长。",
@@ -1200,8 +1196,8 @@ void HlsManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Hls
         const int playlist_index = static_cast<int>(pi);
         PushIssue(out, model::StreamingIssueCode::kHlsLiveMissingMediaSequence, "直播播放列表缺少序号基准",
                   PlaylistLabel(pl, playlist_index) + " 没有 EXT-X-ENDLIST，也不是 EVENT/VOD，"
-                                                     "每次重载都会淘汰头部旧分片，但没有 EXT-X-MEDIA-SEQUENCE "
-                                                     "说明剩下的分片从第几号开始。",
+                                                      "每次重载都会淘汰头部旧分片，但没有 EXT-X-MEDIA-SEQUENCE "
+                                                      "说明剩下的分片从第几号开始。",
                   "在播放列表开头补 #EXT-X-MEDIA-SEQUENCE:<当前首片的绝对序号>；"
                   "若这份内容是录制下来的活动直播，加 #EXT-X-PLAYLIST-TYPE:EVENT 同样能消除该告警。",
                   model::IssueSeverity::Warning, static_cast<double>(pl.SegmentCount()), 0.0, 1, -1.0, playlist_index,

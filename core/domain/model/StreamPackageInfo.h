@@ -194,7 +194,7 @@ inline void RemoveIssuesByCode(std::vector<StreamingIssue>& issues, const std::v
 // 只展示第一处就够了（后面的都由 EXTINF 推算），但要判"墙钟与媒体时间轴有没有
 // 走偏"就必须把所有采样都比一遍 —— 所以单独留这个结构。
 struct HlsProgramDateTimeSample {
-    int segment_index = -1;      // 紧跟其后的分片下标（-1 = 末尾悬挂）
+    int segment_index = -1;        // 紧跟其后的分片下标（-1 = 末尾悬挂）
     double relative_seconds = 0.0; // 该分片在清单里的起点（秒）
     double epoch_seconds = 0.0;    // 原文换算出的 UTC 秒
 };
@@ -206,15 +206,15 @@ struct HlsProgramDateTimeSample {
 // "这份清单有没有广告位、广告位能不能定位到结束点"在报告里是空洞。
 struct HlsDateRangeInfo {
     int index = -1;
-    std::string id;       // ID（同一 CLASS 内唯一）
-    std::string class_id; // CLASS
+    std::string id;         // ID（同一 CLASS 内唯一）
+    std::string class_id;   // CLASS
     std::string start_date; // START-DATE 原文（ISO 8601，必填）
     std::string end_date;   // END-DATE 原文（可选）
     double duration_seconds = 0.0;
     bool has_duration = false;
     double planned_duration_seconds = 0.0;
     bool has_planned_duration = false;
-    bool end_on_next = false;   // END-ON-NEXT=YES：下一段 START-DATE 即本段结束
+    bool end_on_next = false; // END-ON-NEXT=YES：下一段 START-DATE 即本段结束
     bool has_scte35_out = false;
     bool has_scte35_in = false;
     bool has_scte35_cmd = false;
@@ -240,7 +240,7 @@ struct HlsDateRangeInfo {
 // EXT-X-STREAM-INF 一行（一条码率流）
 struct HlsVariantInfo {
     int index = -1;
-    std::string uri;                   // 子播放列表 URI
+    std::string uri; // 子播放列表 URI
     // EXT-X-I-FRAME-STREAM-INF（快进/拖动用的纯 I 帧档）也落在同一个 vector 里，
     // 靠 iframe_only 区分：URI 写在标签属性上（没有紧随其后的一行）。
     bool iframe_only = false;

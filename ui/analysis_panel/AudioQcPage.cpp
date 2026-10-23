@@ -28,7 +28,6 @@ AudioQcPage::AudioQcPage(QWidget* parent) : QWidget(parent) {
     SetupUi();
 }
 
-
 // ===========================================================================
 // 音频 QC 标签页（响度 / 真峰值 / 削波 / 静音 / 声道相位 / metadata 一致性）
 // ===========================================================================
@@ -36,36 +35,49 @@ namespace {
 
 // 参与「音频 QC → 规则结果」展示的规则 id（与 QcModels.cpp 的 audio.* 保持一致）
 const char* const kAudioQcRuleIds[] = {
-    "audio.loudness.target_high", "audio.loudness.target_low", "audio.loudness.range",
-    "audio.true_peak",            "audio.clipping",            "audio.silence.longest",
-    "audio.silence.ratio",        "audio.dc_offset",           "audio.phase_correlation",
-    "audio.metadata.layout",      "audio.metadata.duration_mismatch",
+    "audio.loudness.target_high",
+    "audio.loudness.target_low",
+    "audio.loudness.range",
+    "audio.true_peak",
+    "audio.clipping",
+    "audio.silence.longest",
+    "audio.silence.ratio",
+    "audio.dc_offset",
+    "audio.phase_correlation",
+    "audio.metadata.layout",
+    "audio.metadata.duration_mismatch",
 };
 
-QString AudioVerdictText(const model::QcReport& report, const QString& rule_id,
-                         QString* detail_out = nullptr) {
+QString AudioVerdictText(const model::QcReport& report, const QString& rule_id, QString* detail_out = nullptr) {
     for (const auto& issue : report.issues) {
-        if (issue.rule_id != rule_id.toStdString()) continue;
-        if (detail_out) *detail_out = QString::fromStdString(issue.detail);
+        if (issue.rule_id != rule_id.toStdString())
+            continue;
+        if (detail_out)
+            *detail_out = QString::fromStdString(issue.detail);
         switch (issue.severity) {
-            case model::IssueSeverity::Critical:
-            case model::IssueSeverity::Error:    return QStringLiteral("失败");
-            case model::IssueSeverity::Warning:  return QStringLiteral("警告");
-            default:                             return QStringLiteral("提示");
+        case model::IssueSeverity::Critical:
+        case model::IssueSeverity::Error:
+            return QStringLiteral("失败");
+        case model::IssueSeverity::Warning:
+            return QStringLiteral("警告");
+        default:
+            return QStringLiteral("提示");
         }
     }
     return QStringLiteral("通过");
 }
 
 QString AudioFormatDb(double value, double silence_floor) {
-    if (value <= silence_floor + 1.0) return QStringLiteral("-∞");
+    if (value <= silence_floor + 1.0)
+        return QStringLiteral("-∞");
     return QString::number(value, 'f', 2);
 }
 
 // 抽稀（保留每组极值，避免丢掉峰值）
-void AppendAudioPoints(ChartSeries* series, const std::vector<model::LoudnessPoint>& points,
-                       int limit, double (model::LoudnessPoint::*member), double floor_value) {
-    if (points.empty()) return;
+void AppendAudioPoints(ChartSeries* series, const std::vector<model::LoudnessPoint>& points, int limit,
+                       double(model::LoudnessPoint::*member), double floor_value) {
+    if (points.empty())
+        return;
     const double fallback = floor_value;
     auto get = [member, fallback](const model::LoudnessPoint& p) {
         const double v = p.*member;
@@ -74,13 +86,11 @@ void AppendAudioPoints(ChartSeries* series, const std::vector<model::LoudnessPoi
     // 抽稀走 ui/charts/ChartDecimation.h 的统一实现（MinMax，峰谷都留）：
     // 这里是响度曲线，"掉到底"的静音段和"冲上去"的削波同样是要看的特征，
     // 等间隔取点会把它们一并抽掉。
-    SubmitDecimated(series,
-                    DecimateFrom(points,
-                                 [](const model::LoudnessPoint& p) { return p.timestamp_seconds; },
-                                 get, limit));
+    SubmitDecimated(
+        series, DecimateFrom(points, [](const model::LoudnessPoint& p) { return p.timestamp_seconds; }, get, limit));
 }
 
-}  // namespace
+} // namespace
 
 void AudioQcPage::SetupUi() {
     QVBoxLayout* layout = new QVBoxLayout(this);
@@ -104,14 +114,12 @@ void AudioQcPage::SetupUi() {
         start_button_->setToolTip(
             tr("对当前文件解码音频流做一次完整体检：BS.1770 响度、4× 过采样真峰值、削波、"
                "静音段、声道相位与 metadata 一致性。与「码率与 GOP」「诊断与报告」共用同一次扫描。"));
-        connect(start_button_, &QPushButton::clicked,
-                this, &AudioQcPage::OnStartAnalysis);
+        connect(start_button_, &QPushButton::clicked, this, &AudioQcPage::OnStartAnalysis);
         rl->addWidget(start_button_);
 
         cancel_button_ = new QPushButton(tr("取消"), row);
         cancel_button_->setEnabled(false);
-        connect(cancel_button_, &QPushButton::clicked,
-                this, &AudioQcPage::OnCancelAnalysis);
+        connect(cancel_button_, &QPushButton::clicked, this, &AudioQcPage::OnCancelAnalysis);
         rl->addWidget(cancel_button_);
 
         QPushButton* export_btn = new QPushButton(tr("导出响度 CSV"), row);
@@ -140,8 +148,7 @@ void AudioQcPage::SetupUi() {
         target_lufs_spin_->setValue(-23.0);
         target_lufs_spin_->setSuffix(tr(" LUFS"));
         target_lufs_spin_->setToolTip(tr("仅用于曲线上的参考线；合格判定阈值在「规则与阈值」页"));
-        connect(target_lufs_spin_, &QDoubleSpinBox::valueChanged,
-                this, &AudioQcPage::OnOptionChanged);
+        connect(target_lufs_spin_, &QDoubleSpinBox::valueChanged, this, &AudioQcPage::OnOptionChanged);
         rl->addWidget(target_lufs_spin_);
 
         rl->addWidget(new QLabel(tr("静音阈值"), row));
@@ -151,8 +158,7 @@ void AudioQcPage::SetupUi() {
         silence_spin_->setSingleStep(5.0);
         silence_spin_->setValue(options_.silence_threshold_dbfs);
         silence_spin_->setSuffix(tr(" dBFS"));
-        connect(silence_spin_, &QDoubleSpinBox::valueChanged,
-                this, &AudioQcPage::OnOptionChanged);
+        connect(silence_spin_, &QDoubleSpinBox::valueChanged, this, &AudioQcPage::OnOptionChanged);
         rl->addWidget(silence_spin_);
 
         rl->addWidget(new QLabel(tr("最短静音"), row));
@@ -162,8 +168,7 @@ void AudioQcPage::SetupUi() {
         min_silence_spin_->setSingleStep(0.1);
         min_silence_spin_->setValue(options_.min_silence_seconds);
         min_silence_spin_->setSuffix(tr(" s"));
-        connect(min_silence_spin_, &QDoubleSpinBox::valueChanged,
-                this, &AudioQcPage::OnOptionChanged);
+        connect(min_silence_spin_, &QDoubleSpinBox::valueChanged, this, &AudioQcPage::OnOptionChanged);
         rl->addWidget(min_silence_spin_);
 
         rl->addWidget(new QLabel(tr("削波阈值"), row));
@@ -172,36 +177,33 @@ void AudioQcPage::SetupUi() {
         clip_spin_->setDecimals(4);
         clip_spin_->setSingleStep(0.0005);
         clip_spin_->setValue(options_.clip_threshold);
-        connect(clip_spin_, &QDoubleSpinBox::valueChanged,
-                this, &AudioQcPage::OnOptionChanged);
+        connect(clip_spin_, &QDoubleSpinBox::valueChanged, this, &AudioQcPage::OnOptionChanged);
         rl->addWidget(clip_spin_);
 
         loudness_check_ = new QCheckBox(tr("响度(BS.1770)"), row);
         loudness_check_->setChecked(options_.enable_loudness);
-        connect(loudness_check_, &QCheckBox::toggled,
-                this, &AudioQcPage::OnOptionChanged);
+        connect(loudness_check_, &QCheckBox::toggled, this, &AudioQcPage::OnOptionChanged);
         rl->addWidget(loudness_check_);
 
         true_peak_check_ = new QCheckBox(tr("真峰值(4×)"), row);
         true_peak_check_->setChecked(options_.enable_true_peak);
         true_peak_check_->setToolTip(tr("4× 过采样检测，最耗时的一项；关闭后 dBTP 回落为采样峰值"));
-        connect(true_peak_check_, &QCheckBox::toggled,
-                this, &AudioQcPage::OnOptionChanged);
+        connect(true_peak_check_, &QCheckBox::toggled, this, &AudioQcPage::OnOptionChanged);
         rl->addWidget(true_peak_check_);
 
         correlation_check_ = new QCheckBox(tr("声道相关性"), row);
         correlation_check_->setChecked(options_.enable_correlation);
-        connect(correlation_check_, &QCheckBox::toggled,
-                this, &AudioQcPage::OnOptionChanged);
+        connect(correlation_check_, &QCheckBox::toggled, this, &AudioQcPage::OnOptionChanged);
         rl->addWidget(correlation_check_);
 
         rl->addStretch();
         layout->addWidget(row);
     }
 
-    summary_label_ = new QLabel(
-        tr("点击「开始分析」对音频流做一次完整解码体检：Integrated / Short-term / Momentary LUFS、"
-           "LRA、真峰值、削波、静音段、声道相位与 metadata 一致性。"), this);
+    summary_label_ =
+        new QLabel(tr("点击「开始分析」对音频流做一次完整解码体检：Integrated / Short-term / Momentary LUFS、"
+                      "LRA、真峰值、削波、静音段、声道相位与 metadata 一致性。"),
+                   this);
     summary_label_->setWordWrap(true);
     layout->addWidget(summary_label_);
 
@@ -266,27 +268,23 @@ void AudioQcPage::SetupUi() {
         QLabel* clip_hint = new QLabel(tr("点击任意一行跳转到该位置。"), page);
         pl->addWidget(clip_hint);
         clip_table_ = new QTableWidget(0, 5, page);
-        clip_table_->setHorizontalHeaderLabels(
-            {tr("起始"), tr("结束"), tr("声道"), tr("削波样本"), tr("峰值 dBFS")});
+        clip_table_->setHorizontalHeaderLabels({tr("起始"), tr("结束"), tr("声道"), tr("削波样本"), tr("峰值 dBFS")});
         clip_table_->verticalHeader()->setVisible(false);
         clip_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
         clip_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
         clip_table_->horizontalHeader()->setStretchLastSection(true);
         clip_table_->setMinimumHeight(120);
-        connect(clip_table_, &QTableWidget::cellClicked,
-                this, &AudioQcPage::OnClipCellClicked);
+        connect(clip_table_, &QTableWidget::cellClicked, this, &AudioQcPage::OnClipCellClicked);
         pl->addWidget(clip_table_);
 
         silence_table_ = new QTableWidget(0, 4, page);
-        silence_table_->setHorizontalHeaderLabels(
-            {tr("起始"), tr("结束"), tr("时长(s)"), tr("平均 RMS dBFS")});
+        silence_table_->setHorizontalHeaderLabels({tr("起始"), tr("结束"), tr("时长(s)"), tr("平均 RMS dBFS")});
         silence_table_->verticalHeader()->setVisible(false);
         silence_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
         silence_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
         silence_table_->horizontalHeader()->setStretchLastSection(true);
         silence_table_->setMinimumHeight(120);
-        connect(silence_table_, &QTableWidget::cellClicked,
-                this, &AudioQcPage::OnSilenceCellClicked);
+        connect(silence_table_, &QTableWidget::cellClicked, this, &AudioQcPage::OnSilenceCellClicked);
         pl->addWidget(silence_table_);
 
         sub_tabs_->addTab(page, tr("静音与削波"));
@@ -335,15 +333,14 @@ void AudioQcPage::SetupUi() {
         QVBoxLayout* pl = new QVBoxLayout(page);
         pl->setContentsMargins(2, 2, 2, 2);
 
-        QLabel* hint = new QLabel(
-            tr("判定阈值取自「诊断与报告 → 规则与阈值」，改完会立即重算；"
-               "这些音频问题也会一并进入诊断报告的评分。"), page);
+        QLabel* hint = new QLabel(tr("判定阈值取自「诊断与报告 → 规则与阈值」，改完会立即重算；"
+                                     "这些音频问题也会一并进入诊断报告的评分。"),
+                                  page);
         hint->setWordWrap(true);
         pl->addWidget(hint);
 
         verdict_table_ = new QTableWidget(0, 4, page);
-        verdict_table_->setHorizontalHeaderLabels(
-            {tr("规则"), tr("判定"), tr("实测值"), tr("说明")});
+        verdict_table_->setHorizontalHeaderLabels({tr("规则"), tr("判定"), tr("实测值"), tr("说明")});
         verdict_table_->verticalHeader()->setVisible(false);
         verdict_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
         verdict_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -371,25 +368,33 @@ void AudioQcPage::OnStartAnalysis() {
     emit ScanRequested();
 }
 
-void AudioQcPage::OnCancelAnalysis() { emit CancelRequested(); }
+void AudioQcPage::OnCancelAnalysis() {
+    emit CancelRequested();
+}
 
 void AudioQcPage::OnOptionChanged() {
-    if (!silence_spin_) return;
+    if (!silence_spin_)
+        return;
     ApplyOptionsFromUi();
-    if (target_lufs_spin_ && has_result_) UpdateCharts();
+    if (target_lufs_spin_ && has_result_)
+        UpdateCharts();
 }
 
 void AudioQcPage::OnClipCellClicked(int row, int) {
-    if (!has_result_ || row < 0) return;
+    if (!has_result_ || row < 0)
+        return;
     const auto& events = result_.audio_qc.clipping_events;
-    if (row >= static_cast<int>(events.size())) return;
+    if (row >= static_cast<int>(events.size()))
+        return;
     emit SeekRequested(events[static_cast<size_t>(row)].start_seconds);
 }
 
 void AudioQcPage::OnSilenceCellClicked(int row, int) {
-    if (!has_result_ || row < 0) return;
+    if (!has_result_ || row < 0)
+        return;
     const auto& ranges = result_.audio_qc.silence_ranges;
-    if (row >= static_cast<int>(ranges.size())) return;
+    if (row >= static_cast<int>(ranges.size()))
+        return;
     emit SeekRequested(ranges[static_cast<size_t>(row)].start_seconds);
 }
 
@@ -403,11 +408,11 @@ void AudioQcPage::Refresh() {
 }
 
 void AudioQcPage::UpdateSummary() {
-    if (!summary_label_) return;
+    if (!summary_label_)
+        return;
     const auto& qc = result_.audio_qc;
     if (!has_result_ || !qc.analyzed) {
-        summary_label_->setText(
-            tr("暂无音频 QC 结果。点击「开始分析」扫描当前文件（需要有音频流且能解码）。"));
+        summary_label_->setText(tr("暂无音频 QC 结果。点击「开始分析」扫描当前文件（需要有音频流且能解码）。"));
         return;
     }
 
@@ -449,13 +454,11 @@ void AudioQcPage::UpdateSummary() {
                 .arg(qc.silence_ratio * 100.0, 0, 'f', 1)
                 .arg(qc.longest_silence_seconds, 0, 'f', 2);
     if (qc.correlation_available) {
-        text += tr(" ｜ 相关性 min %1 / mean %2")
-                    .arg(qc.correlation_min, 0, 'f', 3)
-                    .arg(qc.correlation_mean, 0, 'f', 3);
+        text +=
+            tr(" ｜ 相关性 min %1 / mean %2").arg(qc.correlation_min, 0, 'f', 3).arg(qc.correlation_mean, 0, 'f', 3);
     }
     for (const auto& note : qc.notes) {
-        text += QStringLiteral("<br><font color='#888888'>%1</font>")
-                    .arg(QString::fromStdString(note).toHtmlEscaped());
+        text += QStringLiteral("<br><font color='#888888'>%1</font>").arg(QString::fromStdString(note).toHtmlEscaped());
     }
     if (!qc.metadata.inconsistencies.empty()) {
         text += QStringLiteral("<br><font color='#e53935'>%1: %2</font>")
@@ -466,7 +469,8 @@ void AudioQcPage::UpdateSummary() {
 }
 
 void AudioQcPage::UpdateCharts() {
-    if (!lufs_chart_) return;
+    if (!lufs_chart_)
+        return;
     momentary_series_->Clear();
     short_term_series_->Clear();
     integrated_series_->Clear();
@@ -479,23 +483,22 @@ void AudioQcPage::UpdateCharts() {
     corr_series_->Clear();
 
     const auto& qc = result_.audio_qc;
-    if (!has_result_ || !qc.analyzed) return;
+    if (!has_result_ || !qc.analyzed)
+        return;
 
     const auto& points = qc.loudness_points;
-    AppendAudioPoints(momentary_series_, points, kMaxChartPoints,
-                      &model::LoudnessPoint::momentary_lufs, model::kSilenceLufs);
-    AppendAudioPoints(short_term_series_, points, kMaxChartPoints,
-                      &model::LoudnessPoint::short_term_lufs, model::kSilenceLufs);
-    AppendAudioPoints(integrated_series_, points, kMaxChartPoints,
-                      &model::LoudnessPoint::integrated_lufs, model::kSilenceLufs);
-    AppendAudioPoints(rms_series_, points, kMaxChartPoints,
-                      &model::LoudnessPoint::rms_dbfs, model::kSilenceLevelDb);
-    AppendAudioPoints(peak_series_, points, kMaxChartPoints,
-                      &model::LoudnessPoint::sample_peak_dbfs, model::kSilenceLevelDb);
-    AppendAudioPoints(true_peak_series_, points, kMaxChartPoints,
-                      &model::LoudnessPoint::true_peak_dbtp, model::kSilenceLevelDb);
-    AppendAudioPoints(corr_series_, points, kMaxChartPoints,
-                      &model::LoudnessPoint::correlation, -2.0);
+    AppendAudioPoints(momentary_series_, points, kMaxChartPoints, &model::LoudnessPoint::momentary_lufs,
+                      model::kSilenceLufs);
+    AppendAudioPoints(short_term_series_, points, kMaxChartPoints, &model::LoudnessPoint::short_term_lufs,
+                      model::kSilenceLufs);
+    AppendAudioPoints(integrated_series_, points, kMaxChartPoints, &model::LoudnessPoint::integrated_lufs,
+                      model::kSilenceLufs);
+    AppendAudioPoints(rms_series_, points, kMaxChartPoints, &model::LoudnessPoint::rms_dbfs, model::kSilenceLevelDb);
+    AppendAudioPoints(peak_series_, points, kMaxChartPoints, &model::LoudnessPoint::sample_peak_dbfs,
+                      model::kSilenceLevelDb);
+    AppendAudioPoints(true_peak_series_, points, kMaxChartPoints, &model::LoudnessPoint::true_peak_dbtp,
+                      model::kSilenceLevelDb);
+    AppendAudioPoints(corr_series_, points, kMaxChartPoints, &model::LoudnessPoint::correlation, -2.0);
 
     // 目标响度参考线
     const double target = target_lufs_spin_ ? target_lufs_spin_->value() : -23.0;
@@ -543,8 +546,7 @@ void AudioQcPage::UpdateCharts() {
         channel.Reserve(static_cast<int>(qc.channels.size()));
         channel_peak.Reserve(static_cast<int>(qc.channels.size()));
         for (const auto& ch : qc.channels) {
-            const QString name = ch.name.empty() ? QString("Ch%1").arg(ch.index + 1)
-                                                 : QString::fromStdString(ch.name);
+            const QString name = ch.name.empty() ? QString("Ch%1").arg(ch.index + 1) : QString::fromStdString(ch.name);
             categories << name;
             const double rms = (ch.rms_dbfs <= model::kSilenceLevelDb + 1.0) ? -120.0 : ch.rms_dbfs;
             const double peak = (ch.peak_dbfs <= model::kSilenceLevelDb + 1.0) ? -120.0 : ch.peak_dbfs;
@@ -558,9 +560,11 @@ void AudioQcPage::UpdateCharts() {
 }
 
 void AudioQcPage::RebuildClipTable() {
-    if (!clip_table_) return;
+    if (!clip_table_)
+        return;
     clip_table_->setRowCount(0);
-    if (!has_result_) return;
+    if (!has_result_)
+        return;
     const auto& qc = result_.audio_qc;
     const int rows = std::min<int>(static_cast<int>(qc.clipping_events.size()), 2000);
     clip_table_->setRowCount(rows);
@@ -568,22 +572,24 @@ void AudioQcPage::RebuildClipTable() {
         const auto& e = qc.clipping_events[static_cast<size_t>(i)];
         SetTableItemText(clip_table_, i, 0, QString::number(e.start_seconds, 'f', 3));
         SetTableItemText(clip_table_, i, 1, QString::number(e.end_seconds, 'f', 3));
-        QString channel = (e.channel < 0) ? tr("全部")
-                                          : QString::fromStdString(
-                                                e.channel < static_cast<int>(qc.channels.size())
-                                                    ? qc.channels[static_cast<size_t>(e.channel)].name
-                                                    : std::string());
+        QString channel = (e.channel < 0)
+                              ? tr("全部")
+                              : QString::fromStdString(e.channel < static_cast<int>(qc.channels.size())
+                                                           ? qc.channels[static_cast<size_t>(e.channel)].name
+                                                           : std::string());
         SetTableItemText(clip_table_, i, 2, channel);
         SetTableItemText(clip_table_, i, 3, QString::number(e.sample_count));
-        SetTableItemText(clip_table_, i, 4, QString::number(
-            e.peak > 0.0 ? 20.0 * std::log10(e.peak) : model::kSilenceLevelDb, 'f', 2));
+        SetTableItemText(clip_table_, i, 4,
+                         QString::number(e.peak > 0.0 ? 20.0 * std::log10(e.peak) : model::kSilenceLevelDb, 'f', 2));
     }
 }
 
 void AudioQcPage::RebuildSilenceTable() {
-    if (!silence_table_) return;
+    if (!silence_table_)
+        return;
     silence_table_->setRowCount(0);
-    if (!has_result_) return;
+    if (!has_result_)
+        return;
     const auto& qc = result_.audio_qc;
     const int rows = std::min<int>(static_cast<int>(qc.silence_ranges.size()), 2000);
     silence_table_->setRowCount(rows);
@@ -597,9 +603,11 @@ void AudioQcPage::RebuildSilenceTable() {
 }
 
 void AudioQcPage::RebuildVerdictTable() {
-    if (!verdict_table_) return;
+    if (!verdict_table_)
+        return;
     verdict_table_->setRowCount(0);
-    if (!has_result_) return;
+    if (!has_result_)
+        return;
 
     const size_t count = sizeof(kAudioQcRuleIds) / sizeof(kAudioQcRuleIds[0]);
     verdict_table_->setRowCount(static_cast<int>(count));
@@ -611,9 +619,9 @@ void AudioQcPage::RebuildVerdictTable() {
             if (rule.id == id.toStdString()) {
                 name = QString::fromStdString(rule.name);
                 threshold_text = QString::fromStdString(
-                    rule.unit.empty() ? QString::number(rule.threshold, 'f', 2).toStdString()
-                                      : (QString::number(rule.threshold, 'f', 2) +
-                                         QString::fromStdString(rule.unit)).toStdString());
+                    rule.unit.empty()
+                        ? QString::number(rule.threshold, 'f', 2).toStdString()
+                        : (QString::number(rule.threshold, 'f', 2) + QString::fromStdString(rule.unit)).toStdString());
                 break;
             }
         }
@@ -634,9 +642,11 @@ void AudioQcPage::RebuildVerdictTable() {
 }
 
 void AudioQcPage::RebuildMetadataTable() {
-    if (!metadata_table_) return;
+    if (!metadata_table_)
+        return;
     metadata_table_->setRowCount(0);
-    if (!has_result_) return;
+    if (!has_result_)
+        return;
     const auto& meta = result_.audio_qc.metadata;
 
     auto add_row = [this](const QString& key, const QString& value) {
@@ -649,31 +659,27 @@ void AudioQcPage::RebuildMetadataTable() {
     add_row(tr("声道布局"), QString::fromStdString(meta.channel_layout));
     add_row(tr("声道数"), QString::number(meta.channels));
     add_row(tr("采样率"), QString::number(meta.sample_rate) + tr(" Hz"));
-    add_row(tr("采样格式"), meta.sample_format.empty() ? tr("未知")
-                                                       : QString::fromStdString(meta.sample_format));
-    add_row(tr("位深"), meta.bits_per_sample > 0 ? QString::number(meta.bits_per_sample) + tr(" bit")
-                                                 : tr("未知"));
+    add_row(tr("采样格式"), meta.sample_format.empty() ? tr("未知") : QString::fromStdString(meta.sample_format));
+    add_row(tr("位深"), meta.bits_per_sample > 0 ? QString::number(meta.bits_per_sample) + tr(" bit") : tr("未知"));
     add_row(tr("音频时长"), QString::number(meta.stream_duration_seconds, 'f', 3) + tr(" s"));
     add_row(tr("容器时长"), QString::number(meta.container_duration_seconds, 'f', 3) + tr(" s"));
-    add_row(tr("视频时长"), meta.has_video
-                                ? QString::number(meta.video_duration_seconds, 'f', 3) + tr(" s")
-                                : tr("无视频流"));
+    add_row(tr("视频时长"),
+            meta.has_video ? QString::number(meta.video_duration_seconds, 'f', 3) + tr(" s") : tr("无视频流"));
     add_row(tr("与容器时差"), QString::number(meta.container_delta_seconds, 'f', 3) + tr(" s"));
     if (meta.has_video) {
         add_row(tr("与视频时差"), QString::number(meta.video_delta_seconds, 'f', 3) + tr(" s"));
     }
-    add_row(tr("一致性问题"), meta.inconsistencies.empty()
-                                 ? tr("无")
-                                 : QString::fromStdString(meta.inconsistencies.front()));
+    add_row(tr("一致性问题"),
+            meta.inconsistencies.empty() ? tr("无") : QString::fromStdString(meta.inconsistencies.front()));
 
     // ---- 音频位流参数（D1）----
     // 这些行来自**帧头**而不是 PCM，所以即使响度那一段因解码失败没有数据，
     // 这里仍然有结论 —— 审核时"容器说 48k、码流其实是 44.1k"正是靠这几行看出来。
-    if (!result_.audio_bitstream_analyzed) return;
+    if (!result_.audio_bitstream_analyzed)
+        return;
     for (const auto& stream : result_.audio_bitstream.streams) {
-        const QString prefix = result_.audio_bitstream.streams.size() > 1
-                                   ? tr("位流 #%1 ").arg(stream.stream_index)
-                                   : tr("位流 ");
+        const QString prefix =
+            result_.audio_bitstream.streams.size() > 1 ? tr("位流 #%1 ").arg(stream.stream_index) : tr("位流 ");
         QString codec = QString::fromStdString(model::ToString(stream.codec));
         if (!stream.profile.empty()) {
             codec += QStringLiteral(" / ") + QString::fromStdString(stream.profile);
@@ -682,8 +688,7 @@ void AudioQcPage::RebuildMetadataTable() {
 
         if (stream.sample_rate > 0) {
             QString rate = QString::number(stream.sample_rate) + tr(" Hz");
-            if (stream.container_sample_rate > 0 &&
-                stream.container_sample_rate != stream.sample_rate) {
+            if (stream.container_sample_rate > 0 && stream.container_sample_rate != stream.sample_rate) {
                 rate += tr("（容器声明 %1 Hz）").arg(stream.container_sample_rate);
             }
             add_row(prefix + tr("采样率"), rate);
@@ -691,12 +696,10 @@ void AudioQcPage::RebuildMetadataTable() {
         if (stream.channels > 0) {
             QString channels = QString::number(stream.channels);
             if (stream.acmod >= 0) {
-                channels += QStringLiteral(" — ") +
-                            QString::fromStdString(model::DescribeAcmod(stream.acmod,
-                                                                        stream.lfeon));
+                channels +=
+                    QStringLiteral(" — ") + QString::fromStdString(model::DescribeAcmod(stream.acmod, stream.lfeon));
             } else if (!stream.container_channel_layout.empty()) {
-                channels += QStringLiteral(" — ") +
-                            QString::fromStdString(stream.container_channel_layout);
+                channels += QStringLiteral(" — ") + QString::fromStdString(stream.container_channel_layout);
             }
             if (stream.container_channels > 0 && stream.container_channels != stream.channels) {
                 channels += tr("（容器声明 %1）").arg(stream.container_channels);
@@ -704,15 +707,13 @@ void AudioQcPage::RebuildMetadataTable() {
             add_row(prefix + tr("声道"), channels);
         }
         if (stream.bit_rate_kbps > 0) {
-            add_row(prefix + tr("码率"),
-                    QString::number(stream.bit_rate_kbps) + tr(" kbps") +
-                        (stream.vbr ? tr("（帧长变化，疑似 VBR）") : QString()));
+            add_row(prefix + tr("码率"), QString::number(stream.bit_rate_kbps) + tr(" kbps") +
+                                             (stream.vbr ? tr("（帧长变化，疑似 VBR）") : QString()));
         }
         if (stream.has_dialnorm) {
             QString dialnorm = QString::number(stream.dialnorm_dbfs) + tr(" dBFS");
             if (stream.dialnorm_delta_available) {
-                dialnorm += tr("（与实测响度差 %1 LU）")
-                                .arg(stream.dialnorm_delta_lu, 0, 'f', 1);
+                dialnorm += tr("（与实测响度差 %1 LU）").arg(stream.dialnorm_delta_lu, 0, 'f', 1);
             }
             add_row(prefix + tr("dialnorm"), dialnorm);
         } else if (stream.codec == model::AudioBitstreamCodec::Ac3 ||
@@ -720,19 +721,17 @@ void AudioQcPage::RebuildMetadataTable() {
             add_row(prefix + tr("dialnorm"), tr("未声明"));
         }
         if (stream.eac3) {
-            QString substreams = stream.dependent_substream_count > 0
-                                     ? tr("%1 个从属子流（+%2 声道）")
-                                           .arg(stream.dependent_substream_count)
-                                           .arg(stream.dependent_channels)
-                                     : tr("无");
+            QString substreams = stream.dependent_substream_count > 0 ? tr("%1 个从属子流（+%2 声道）")
+                                                                            .arg(stream.dependent_substream_count)
+                                                                            .arg(stream.dependent_channels)
+                                                                      : tr("无");
             add_row(prefix + tr("E-AC-3 子流"), substreams);
         }
         if (stream.atmos_joc) {
             // 启发式命中必须写成"疑似"，不能给用户一个确定结论
             QString atmos = stream.atmos_heuristic ? tr("疑似检出（启发式线索）") : tr("检出");
             if (!stream.atmos_source.empty()) {
-                atmos += QStringLiteral("（") + QString::fromStdString(stream.atmos_source) +
-                         QStringLiteral("）");
+                atmos += QStringLiteral("（") + QString::fromStdString(stream.atmos_source) + QStringLiteral("）");
             }
             add_row(prefix + tr("Atmos / JOC"), atmos);
         }
@@ -744,25 +743,21 @@ void AudioQcPage::RebuildMetadataTable() {
             if (stream.opus_mode >= 0) {
                 opus += tr(" / %1 %2")
                             .arg(QString::fromStdString(model::OpusModeName(stream.opus_mode)))
-                            .arg(QString::fromStdString(
-                                model::OpusBandwidthName(stream.opus_bandwidth)));
+                            .arg(QString::fromStdString(model::OpusBandwidthName(stream.opus_bandwidth)));
             }
             add_row(prefix + tr("Opus"), opus);
         }
         if (stream.unsupported_packets > 0) {
-            add_row(prefix + tr("帧头解析"),
-                    tr("该编码尚未实现逐帧解析，%1 个包未参与判定")
-                        .arg(static_cast<qlonglong>(stream.unsupported_packets)));
+            add_row(prefix + tr("帧头解析"), tr("该编码尚未实现逐帧解析，%1 个包未参与判定")
+                                                 .arg(static_cast<qlonglong>(stream.unsupported_packets)));
         } else {
-            add_row(prefix + tr("帧头解析"),
-                    tr("%1 个包 / %2 帧，失败 %3 个")
-                        .arg(static_cast<qlonglong>(stream.parsed_packets))
-                        .arg(static_cast<qlonglong>(stream.frame_count))
-                        .arg(static_cast<qlonglong>(stream.invalid_packets)));
+            add_row(prefix + tr("帧头解析"), tr("%1 个包 / %2 帧，失败 %3 个")
+                                                 .arg(static_cast<qlonglong>(stream.parsed_packets))
+                                                 .arg(static_cast<qlonglong>(stream.frame_count))
+                                                 .arg(static_cast<qlonglong>(stream.invalid_packets)));
         }
         if (!stream.inconsistencies.empty()) {
-            add_row(prefix + tr("不一致"),
-                    QString::fromStdString(stream.inconsistencies.front()));
+            add_row(prefix + tr("不一致"), QString::fromStdString(stream.inconsistencies.front()));
         }
         if (!stream.note.empty()) {
             add_row(prefix + tr("说明"), QString::fromStdString(stream.note));
@@ -775,28 +770,23 @@ void AudioQcPage::OnExportCsv() {
         QMessageBox::information(this, tr("提示"), tr("请先完成一次音频 QC 分析。"));
         return;
     }
-    ExportCsvStream(this, tr("导出响度曲线 CSV"),
-        source_path_ + QStringLiteral("_audioqc.csv"),
+    ExportCsvStream(
+        this, tr("导出响度曲线 CSV"), source_path_ + QStringLiteral("_audioqc.csv"),
         [this](QTextStream& out) {
             out << "time_s,momentary_lufs,short_term_lufs,integrated_lufs,rms_dbfs,"
                    "sample_peak_dbfs,true_peak_dbtp,correlation,silent\n";
             for (const auto& p : result_.audio_qc.loudness_points) {
-                out << QString::number(p.timestamp_seconds, 'f', 3) << ','
-                    << QString::number(p.momentary_lufs, 'f', 2) << ','
-                    << QString::number(p.short_term_lufs, 'f', 2) << ','
-                    << QString::number(p.integrated_lufs, 'f', 2) << ','
-                    << QString::number(p.rms_dbfs, 'f', 2) << ','
-                    << QString::number(p.sample_peak_dbfs, 'f', 2) << ','
-                    << QString::number(p.true_peak_dbtp, 'f', 2) << ','
-                    << QString::number(p.correlation, 'f', 4) << ','
-                    << (p.silent ? 1 : 0) << '\n';
+                out << QString::number(p.timestamp_seconds, 'f', 3) << ',' << QString::number(p.momentary_lufs, 'f', 2)
+                    << ',' << QString::number(p.short_term_lufs, 'f', 2) << ','
+                    << QString::number(p.integrated_lufs, 'f', 2) << ',' << QString::number(p.rms_dbfs, 'f', 2) << ','
+                    << QString::number(p.sample_peak_dbfs, 'f', 2) << ',' << QString::number(p.true_peak_dbtp, 'f', 2)
+                    << ',' << QString::number(p.correlation, 'f', 4) << ',' << (p.silent ? 1 : 0) << '\n';
             }
         },
         static_cast<int>(result_.audio_qc.loudness_points.size()));
 }
 
-void AudioQcPage::SetResult(const model::AnalysisResult& result,
-                            const model::QcReport& qc_report) {
+void AudioQcPage::SetResult(const model::AnalysisResult& result, const model::QcReport& qc_report) {
     result_ = result;
     qc_report_ = qc_report;
     has_result_ = true;
@@ -818,23 +808,29 @@ void AudioQcPage::FillScanOptions(videoeye::AnalysisOptions& options) {
 
 int AudioQcPage::IssueCount() const {
     int count = 0;
-    if (clip_table_) count += clip_table_->rowCount();
-    if (silence_table_) count += silence_table_->rowCount();
+    if (clip_table_)
+        count += clip_table_->rowCount();
+    if (silence_table_)
+        count += silence_table_->rowCount();
     return count;
 }
 
 void AudioQcPage::SetScanActive(bool active) {
     scan_active_ = active;
-    if (start_button_) start_button_->setEnabled(!active);
-    if (cancel_button_) cancel_button_->setEnabled(active);
+    if (start_button_)
+        start_button_->setEnabled(!active);
+    if (cancel_button_)
+        cancel_button_->setEnabled(active);
 }
 
 void AudioQcPage::SetProgress(int percent) {
-    if (progress_bar_) progress_bar_->setValue(percent);
+    if (progress_bar_)
+        progress_bar_->setValue(percent);
 }
 
 void AudioQcPage::SetProgressFormat(const QString& format) {
-    if (progress_bar_) progress_bar_->setFormat(format);
+    if (progress_bar_)
+        progress_bar_->setFormat(format);
 }
 
 } // namespace ui

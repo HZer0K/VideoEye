@@ -84,11 +84,18 @@ jobs:
         with:
           fetch-depth: 0   # 增量检查要算改动范围, 浅克隆拿不到基线
 
+      # 版本必须钉死，不能 `apt install clang-format`。
+      #   apt 的 clang-format 跟着 runner 镜像走（ubuntu-24.04 = 18.1.3，镜像一升到
+      #   26.04 就变 20.x）。换行位置、注释对齐、include 排序跨大版本都会变，于是
+      #   「上周全绿的文件、这周同一份代码集体变红」，改的是 CI 而不是代码。
+      #   这里用 PyPI 的 wheel 钉到 18.1.8 —— 和 CONTRIBUTING.md 里给本机的
+      #   `pip install clang-format==18.1.8` 是**同一个二进制**，本地判绿 CI 也绿。
       - name: Install clang-format
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-format
-          clang-format --version
+          python3 -m pip install --user "clang-format==18.1.8" ||
+            python3 -m pip install --user --break-system-packages "clang-format==18.1.8"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/clang-format" --version
 
       - name: Check changed C++ files
         run: |

@@ -30,9 +30,9 @@ struct DashManifestOptions {
     uint32_t max_representations = 64;
     uint32_t max_segments_per_representation = 5000;
     uint32_t max_timeline_entries = 20000;
-    uint32_t max_event_streams = 64;          // 每个 Period 最多收多少条 EventStream
-    uint32_t max_events_per_stream = 512;     // 单条 EventStream 最多收多少个 Event
-    uint32_t max_descriptors = 32;            // 单个节点的 ContentProtection/Role/... 上限
+    uint32_t max_event_streams = 64;      // 每个 Period 最多收多少条 EventStream
+    uint32_t max_events_per_stream = 512; // 单条 EventStream 最多收多少个 Event
+    uint32_t max_descriptors = 32;        // 单个节点的 ContentProtection/Role/... 上限
     // SegmentTimeline 相邻条目允许的时间误差（timescale 单位）。
     // 给 1 是为了容忍 t 的整数舍入，不给会让正常的静态 MPD 大量误报。
     uint64_t timeline_tolerance = 1;
@@ -58,8 +58,7 @@ public:
                           const std::atomic<bool>* cancel = nullptr);
 
     // 纯逻辑校验：在 out 上补齐 DASH 侧 issues。幂等（只删自己产出的 code 再重加）。
-    static void Validate(model::StreamingPackageResult& out,
-                         const DashManifestOptions& options = DashManifestOptions{},
+    static void Validate(model::StreamingPackageResult& out, const DashManifestOptions& options = DashManifestOptions{},
                          const std::atomic<bool>* cancel = nullptr);
 
     void Reset();

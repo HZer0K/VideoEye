@@ -970,7 +970,6 @@ void DashManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Da
                           model::IssueSeverity::Error, worst_overlap, 0.0, overlaps, overlap_at, rep_index);
             }
         }
-
     }
 
     // ---- 4) 直播（dynamic MPD）语义：一条清单级别的检查 ----
@@ -1002,12 +1001,13 @@ void DashManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Da
                 seg_seconds = std::max(seg_seconds, rep.SegmentDurationSeconds());
             }
             if (seg_seconds > 0.0 && out.minimum_update_period_s > seg_seconds + 0.001) {
-                PushIssue(out, model::StreamingIssueCode::kDashLiveUpdatePeriodTooLong, "清单重载间隔过长",
-                          "minimumUpdatePeriod=" + FormatSeconds(out.minimum_update_period_s) +
-                              " 秒，比一个分片的时长（" + FormatSeconds(seg_seconds) +
-                              " 秒）还长；客户端两次重载之间可能整段新分片都不可见，表现为直播起播慢或卡在旧画面。",
-                          "把 minimumUpdatePeriod 调整到不大于分片时长；LL-DASH 场景通常与 SegmentTemplate@duration 等值。",
-                          model::IssueSeverity::Warning, out.minimum_update_period_s, seg_seconds, 1, -1.0, -1);
+                PushIssue(
+                    out, model::StreamingIssueCode::kDashLiveUpdatePeriodTooLong, "清单重载间隔过长",
+                    "minimumUpdatePeriod=" + FormatSeconds(out.minimum_update_period_s) + " 秒，比一个分片的时长（" +
+                        FormatSeconds(seg_seconds) +
+                        " 秒）还长；客户端两次重载之间可能整段新分片都不可见，表现为直播起播慢或卡在旧画面。",
+                    "把 minimumUpdatePeriod 调整到不大于分片时长；LL-DASH 场景通常与 SegmentTemplate@duration 等值。",
+                    model::IssueSeverity::Warning, out.minimum_update_period_s, seg_seconds, 1, -1.0, -1);
             }
         }
 
@@ -1030,8 +1030,7 @@ void DashManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Da
                 ++unknown_reps;
         }
         if (unknown_reps > 0) {
-            PushIssue(out, model::StreamingIssueCode::kDashLiveSegmentCountUnknown,
-                      "直播包的分片数无法从快照推算",
+            PushIssue(out, model::StreamingIssueCode::kDashLiveSegmentCountUnknown, "直播包的分片数无法从快照推算",
                       std::to_string(unknown_reps) + "/" + std::to_string(out.representations.size()) +
                           " 个 Representation 使用 SegmentTemplate@duration 寻址，"
                           "而这份清单既没有 Period@duration / mediaPresentationDuration，也没有 timeShiftBufferDepth，"
@@ -1102,11 +1101,13 @@ void DashManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Da
                       model::IssueSeverity::Info, static_cast<double>(encrypted_reps), 0.0, encrypted_reps, -1.0, -1);
         }
         if (missing_kid > 0) {
-            PushIssue(out, model::StreamingIssueCode::kDashContentProtectionMissingKeyId,
-                      "加密声明缺少 default_KID",
-                      missing_kid_label + " 声明了 mp4protection（CENC），但没有 cenc:default_KID；"
-                      "共 " + std::to_string(missing_kid) + " 个表示受影响。"
-                      "客户端无法在多个密钥里挑出该用哪一把。",
+            PushIssue(out, model::StreamingIssueCode::kDashContentProtectionMissingKeyId, "加密声明缺少 default_KID",
+                      missing_kid_label +
+                          " 声明了 mp4protection（CENC），但没有 cenc:default_KID；"
+                          "共 " +
+                          std::to_string(missing_kid) +
+                          " 个表示受影响。"
+                          "客户端无法在多个密钥里挑出该用哪一把。",
                       "在 <ContentProtection schemeIdUri=\"urn:mpeg:dash:mp4protection:2011\"> 上补 "
                       "cenc:default_KID=\"<16 字节 UUID>\"，与封装时 cenc 使用的 KID 保持一致。",
                       model::IssueSeverity::Warning, static_cast<double>(missing_kid), 0.0, missing_kid, -1.0, -1);
@@ -1118,8 +1119,7 @@ void DashManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Da
                     list += "、";
                 list += "\"" + unknown_schemes[i] + "\"";
             }
-            PushIssue(out, model::StreamingIssueCode::kDashContentProtectionUnknownScheme,
-                      "无法识别的加密方案",
+            PushIssue(out, model::StreamingIssueCode::kDashContentProtectionUnknownScheme, "无法识别的加密方案",
                       "ContentProtection 的 schemeIdUri 不在已知 DRM 系统里：" + list + "。",
                       "确认 schemeIdUri 是否拼错（Widevine / PlayReady / ClearKey / FairPlay 都是 urn:uuid:...）；"
                       "自研 DRM 需要在播放器里注册对应的解密模块。",
@@ -1142,8 +1142,7 @@ void DashManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Da
             }
         }
         if (live && out.utc_timings.empty()) {
-            PushIssue(out, model::StreamingIssueCode::kDashLiveMissingUtcTiming,
-                      "直播 MPD 没有 UTCTiming",
+            PushIssue(out, model::StreamingIssueCode::kDashLiveMissingUtcTiming, "直播 MPD 没有 UTCTiming",
                       "MPD 是 type=\"dynamic\"，但没有声明 UTCTiming；客户端只能相信本地时钟，"
                       "机顶盒/DVR 时间偏差会直接表现成起播慢、卡在旧画面或跳到未来分片。",
                       "在 <MPD> 下加 <UTCTiming schemeIdUri=\"urn:mpeg:dash:utc:http-head:2014\" "
@@ -1269,7 +1268,7 @@ void DashManifestAnalyzer::Validate(model::StreamingPackageResult& out, const Da
             PushIssue(out, model::StreamingIssueCode::kDashEssentialPropertyUnknown,
                       "EssentialProperty 缺少 schemeIdUri",
                       std::to_string(empty_scheme) + " 条 EssentialProperty 没有 schemeIdUri。"
-                      "按规范这是“必须理解”的扩展，没有标识就无法判断客户端能不能处理。",
+                                                     "按规范这是“必须理解”的扩展，没有标识就无法判断客户端能不能处理。",
                       "补上 schemeIdUri；若该扩展其实可忽略，改用 SupplementalProperty。",
                       model::IssueSeverity::Warning, static_cast<double>(empty_scheme), 0.0, empty_scheme, -1.0, -1);
         }

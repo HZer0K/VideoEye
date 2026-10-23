@@ -20,11 +20,12 @@ namespace {
 
 using namespace videoeye;
 
-bool HasIssue(const model::QcReport& report, const std::string& rule_id,
-              model::DiagnosticIssue* out = nullptr) {
+bool HasIssue(const model::QcReport& report, const std::string& rule_id, model::DiagnosticIssue* out = nullptr) {
     for (const auto& issue : report.issues) {
-        if (issue.rule_id != rule_id) continue;
-        if (out != nullptr) *out = issue;
+        if (issue.rule_id != rule_id)
+            continue;
+        if (out != nullptr)
+            *out = issue;
         return true;
     }
     return false;
@@ -51,13 +52,15 @@ model::AnalysisResult MakeResult() {
     return result;
 }
 
-}  // namespace
+} // namespace
 
 TEST(AudioBitstreamRulesTest, RulesExistInDefaultCatalog) {
     const auto rules = model::DefaultQcRules();
     const char* ids[] = {
-        "audio.bitstream.container_mismatch", "audio.bitstream.header_invalid",
-        "audio.bitstream.param_change",       "audio.dialnorm.missing",
+        "audio.bitstream.container_mismatch",
+        "audio.bitstream.header_invalid",
+        "audio.bitstream.param_change",
+        "audio.dialnorm.missing",
         "audio.dialnorm.mismatch",
     };
     for (const char* id : ids) {
@@ -106,7 +109,7 @@ TEST(AudioBitstreamRulesTest, HeaderInvalidRatioUsesPercentThreshold) {
     auto result = MakeResult();
     auto stream = MakeStream(model::AudioBitstreamCodec::AacAdts);
     stream.parsed_packets = 90;
-    stream.invalid_packets = 10;   // 10% > 5%
+    stream.invalid_packets = 10; // 10% > 5%
     result.audio_bitstream.streams.push_back(stream);
 
     QcRuleEngine engine;
@@ -133,14 +136,13 @@ TEST(AudioBitstreamRulesTest, UnsupportedCodecIsNotCountedAsHeaderFailure) {
     pcm.sample_rate = 48000;
     pcm.channels = 2;
     pcm.packet_count = 400;
-    pcm.unsupported_packets = 400;   // 全部未参与判定
+    pcm.unsupported_packets = 400; // 全部未参与判定
     pcm.note = "该编码尚未实现逐帧位流头解析，400 个包未参与帧头判定";
     result.audio_bitstream.streams.push_back(pcm);
 
     QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
-    EXPECT_FALSE(HasIssue(report, "audio.bitstream.header_invalid"))
-        << "未支持解析不能报成帧头失败";
+    EXPECT_FALSE(HasIssue(report, "audio.bitstream.header_invalid")) << "未支持解析不能报成帧头失败";
 
     // 同一份结果里再放一条真的坏了的 AAC：失败率只按它自己算（10/100），
     // 而且明细里要说明还有多少包没参与判定。
@@ -154,8 +156,7 @@ TEST(AudioBitstreamRulesTest, UnsupportedCodecIsNotCountedAsHeaderFailure) {
     model::DiagnosticIssue issue;
     ASSERT_TRUE(HasIssue(mixed, "audio.bitstream.header_invalid", &issue));
     EXPECT_NEAR(issue.metric_value, 10.0, 1e-6) << "分母只算参与过判定的 100 个包";
-    EXPECT_NE(issue.detail.find("400"), std::string::npos)
-        << "未参与判定的包数要在明细里单独说明";
+    EXPECT_NE(issue.detail.find("400"), std::string::npos) << "未参与判定的包数要在明细里单独说明";
 }
 
 TEST(AudioBitstreamRulesTest, ParamChangeMidstreamTriggers) {

@@ -16,7 +16,8 @@ namespace videoeye {
 namespace {
 
 std::string CodecTagText(uint32_t tag) {
-    if (tag == 0) return std::string();
+    if (tag == 0)
+        return std::string();
     char text[5] = {0};
     text[0] = static_cast<char>((tag >> 24) & 0xFF);
     text[1] = static_cast<char>((tag >> 16) & 0xFF);
@@ -24,22 +25,23 @@ std::string CodecTagText(uint32_t tag) {
     text[3] = static_cast<char>(tag & 0xFF);
     for (int i = 0; i < 4; ++i) {
         const unsigned char c = static_cast<unsigned char>(text[i]);
-        if (c < 0x20 || c > 0x7E) return std::string();
+        if (c < 0x20 || c > 0x7E)
+            return std::string();
     }
     return std::string(text, 4);
 }
 
 std::string DescribeChannelLayout(const AVCodecParameters* par) {
-    if (par == nullptr) return std::string();
+    if (par == nullptr)
+        return std::string();
     char buffer[128] = {0};
-    if (par->ch_layout.nb_channels > 0 &&
-        av_channel_layout_describe(&par->ch_layout, buffer, sizeof(buffer)) >= 0) {
+    if (par->ch_layout.nb_channels > 0 && av_channel_layout_describe(&par->ch_layout, buffer, sizeof(buffer)) >= 0) {
         return std::string(buffer);
     }
     return std::string();
 }
 
-}  // namespace
+} // namespace
 
 void AudioBitstreamAnalyzer::Reset(const AudioBitstreamOptions& options) {
     options_ = options;
@@ -50,12 +52,15 @@ void AudioBitstreamAnalyzer::Reset(const AudioBitstreamOptions& options) {
 }
 
 void AudioBitstreamAnalyzer::RegisterStreams(const AVFormatContext* fmt) {
-    if (fmt == nullptr) return;
+    if (fmt == nullptr)
+        return;
     states_.clear();
     for (unsigned i = 0; i < fmt->nb_streams; ++i) {
         AVStream* stream = fmt->streams[i];
-        if (stream == nullptr || stream->codecpar == nullptr) continue;
-        if (stream->codecpar->codec_type != AVMEDIA_TYPE_AUDIO) continue;
+        if (stream == nullptr || stream->codecpar == nullptr)
+            continue;
+        if (stream->codecpar->codec_type != AVMEDIA_TYPE_AUDIO)
+            continue;
 
         StreamState state;
         state.parsed_limit = options_.max_packets_per_stream;
@@ -69,50 +74,46 @@ void AudioBitstreamAnalyzer::RegisterStreams(const AVFormatContext* fmt) {
         info.container_channel_layout = DescribeChannelLayout(stream->codecpar);
 
         switch (stream->codecpar->codec_id) {
-            case AV_CODEC_ID_AAC: {
-                AacAudioSpecificConfig asc;
-                if (stream->codecpar->extradata != nullptr &&
-                    stream->codecpar->extradata_size > 0 &&
-                    AudioBitstreamParser::ParseAacAudioSpecificConfig(
-                        stream->codecpar->extradata,
-                        static_cast<size_t>(stream->codecpar->extradata_size), asc)) {
-                    info.codec = model::AudioBitstreamCodec::AacRaw;
-                    state.asc = asc;
-                    state.asc_ready = true;
-                    ApplyAacConfig(state, asc, model::AudioBitstreamCodec::AacRaw);
-                } else {
-                    info.codec = model::AudioBitstreamCodec::AacAdts;
-                }
-                break;
+        case AV_CODEC_ID_AAC: {
+            AacAudioSpecificConfig asc;
+            if (stream->codecpar->extradata != nullptr && stream->codecpar->extradata_size > 0 &&
+                AudioBitstreamParser::ParseAacAudioSpecificConfig(
+                    stream->codecpar->extradata, static_cast<size_t>(stream->codecpar->extradata_size), asc)) {
+                info.codec = model::AudioBitstreamCodec::AacRaw;
+                state.asc = asc;
+                state.asc_ready = true;
+                ApplyAacConfig(state, asc, model::AudioBitstreamCodec::AacRaw);
+            } else {
+                info.codec = model::AudioBitstreamCodec::AacAdts;
             }
-            case AV_CODEC_ID_AAC_LATM:
-                info.codec = model::AudioBitstreamCodec::AacLatm;
-                break;
-            case AV_CODEC_ID_AC3:
-                info.codec = model::AudioBitstreamCodec::Ac3;
-                info.profile = "AC-3";
-                break;
-            case AV_CODEC_ID_EAC3:
-                info.codec = model::AudioBitstreamCodec::Eac3;
-                info.profile = "E-AC-3";
-                break;
-            case AV_CODEC_ID_OPUS: {
-                info.codec = model::AudioBitstreamCodec::Opus;
-                info.profile = "Opus";
-                OpusHead head;
-                if (stream->codecpar->extradata != nullptr &&
-                    stream->codecpar->extradata_size > 0 &&
-                    AudioBitstreamParser::ParseOpusHead(
-                        stream->codecpar->extradata,
-                        static_cast<size_t>(stream->codecpar->extradata_size), head)) {
-                    ApplyOpusHead(state, head);
-                }
-                break;
+            break;
+        }
+        case AV_CODEC_ID_AAC_LATM:
+            info.codec = model::AudioBitstreamCodec::AacLatm;
+            break;
+        case AV_CODEC_ID_AC3:
+            info.codec = model::AudioBitstreamCodec::Ac3;
+            info.profile = "AC-3";
+            break;
+        case AV_CODEC_ID_EAC3:
+            info.codec = model::AudioBitstreamCodec::Eac3;
+            info.profile = "E-AC-3";
+            break;
+        case AV_CODEC_ID_OPUS: {
+            info.codec = model::AudioBitstreamCodec::Opus;
+            info.profile = "Opus";
+            OpusHead head;
+            if (stream->codecpar->extradata != nullptr && stream->codecpar->extradata_size > 0 &&
+                AudioBitstreamParser::ParseOpusHead(stream->codecpar->extradata,
+                                                    static_cast<size_t>(stream->codecpar->extradata_size), head)) {
+                ApplyOpusHead(state, head);
             }
-            default:
-                info.codec = model::AudioBitstreamCodec::Other;
-                info.note = "该编码未实现逐帧位流头解析（只做容器参数登记）";
-                break;
+            break;
+        }
+        default:
+            info.codec = model::AudioBitstreamCodec::Other;
+            info.note = "该编码未实现逐帧位流头解析（只做容器参数登记）";
+            break;
         }
 
         states_.push_back(std::move(state));
@@ -126,23 +127,26 @@ void AudioBitstreamAnalyzer::RegisterStreams(const AVFormatContext* fmt) {
 
 AudioBitstreamAnalyzer::StreamState* AudioBitstreamAnalyzer::FindState(int stream_index) {
     for (StreamState& state : states_) {
-        if (state.info.stream_index == stream_index) return &state;
+        if (state.info.stream_index == stream_index)
+            return &state;
     }
     return nullptr;
 }
 
 void AudioBitstreamAnalyzer::AddInconsistency(StreamState& state, const std::string& text) {
-    if (text.empty()) return;
+    if (text.empty())
+        return;
     for (const std::string& existing : state.info.inconsistencies) {
-        if (existing == text) return;
+        if (existing == text)
+            return;
     }
     state.info.inconsistencies.push_back(text);
 }
 
-void AudioBitstreamAnalyzer::StreamState::ObserveFrame(int sample_rate, int channels,
-                                                       int frame_bytes, int audio_object_type,
-                                                       int acmod, int bit_rate_kbps) {
-    if (sample_rate <= 0 && channels <= 0 && frame_bytes <= 0) return;
+void AudioBitstreamAnalyzer::StreamState::ObserveFrame(int sample_rate, int channels, int frame_bytes,
+                                                       int audio_object_type, int acmod, int bit_rate_kbps) {
+    if (sample_rate <= 0 && channels <= 0 && frame_bytes <= 0)
+        return;
     if (!has_header) {
         has_header = true;
         last_sample_rate = sample_rate;
@@ -158,67 +162,74 @@ void AudioBitstreamAnalyzer::StreamState::ObserveFrame(int sample_rate, int chan
         info.params_changed_midstream = true;
         if (!reported_sample_rate_change) {
             reported_sample_rate_change = true;
-            info.inconsistencies.push_back(
-                "位流采样率在扫描中从 " + std::to_string(last_sample_rate) + " Hz 变为 " +
-                std::to_string(sample_rate) + " Hz（可能是拼接/中途转码）");
+            info.inconsistencies.push_back("位流采样率在扫描中从 " + std::to_string(last_sample_rate) + " Hz 变为 " +
+                                           std::to_string(sample_rate) + " Hz（可能是拼接/中途转码）");
         }
     }
     if (channels > 0 && last_channels > 0 && channels != last_channels) {
         info.params_changed_midstream = true;
         if (!reported_channel_change) {
             reported_channel_change = true;
-            info.inconsistencies.push_back(
-                "位流声道数在扫描中从 " + std::to_string(last_channels) + " 变为 " +
-                std::to_string(channels) + "（可能是拼接/中途转码）");
+            info.inconsistencies.push_back("位流声道数在扫描中从 " + std::to_string(last_channels) + " 变为 " +
+                                           std::to_string(channels) + "（可能是拼接/中途转码）");
         }
     }
     if (frame_bytes > 0 && last_frame_bytes > 0) {
-        const double ratio = static_cast<double>(frame_bytes) /
-                             static_cast<double>(last_frame_bytes);
+        const double ratio = static_cast<double>(frame_bytes) / static_cast<double>(last_frame_bytes);
         if (ratio > 1.05 || ratio < 0.95) {
             ++frame_size_changes;
-            if (frame_size_changes > 4) info.vbr = true;
+            if (frame_size_changes > 4)
+                info.vbr = true;
         }
     }
-    if (bit_rate_kbps > 0 && last_bit_rate_kbps > 0 &&
-        std::abs(bit_rate_kbps - last_bit_rate_kbps) > 8) {
+    if (bit_rate_kbps > 0 && last_bit_rate_kbps > 0 && std::abs(bit_rate_kbps - last_bit_rate_kbps) > 8) {
         info.params_changed_midstream = true;
         if (!reported_bitrate_change) {
             reported_bitrate_change = true;
-            info.inconsistencies.push_back(
-                "位流码率在扫描中从 " + std::to_string(last_bit_rate_kbps) + " kbps 变为 " +
-                std::to_string(bit_rate_kbps) + " kbps");
+            info.inconsistencies.push_back("位流码率在扫描中从 " + std::to_string(last_bit_rate_kbps) + " kbps 变为 " +
+                                           std::to_string(bit_rate_kbps) + " kbps");
         }
     }
 
-    if (sample_rate > 0) last_sample_rate = sample_rate;
-    if (channels > 0) last_channels = channels;
-    if (frame_bytes > 0) last_frame_bytes = frame_bytes;
-    if (audio_object_type >= 0) last_audio_object_type = audio_object_type;
-    if (acmod >= 0) last_acmod = acmod;
-    if (bit_rate_kbps > 0) last_bit_rate_kbps = bit_rate_kbps;
+    if (sample_rate > 0)
+        last_sample_rate = sample_rate;
+    if (channels > 0)
+        last_channels = channels;
+    if (frame_bytes > 0)
+        last_frame_bytes = frame_bytes;
+    if (audio_object_type >= 0)
+        last_audio_object_type = audio_object_type;
+    if (acmod >= 0)
+        last_acmod = acmod;
+    if (bit_rate_kbps > 0)
+        last_bit_rate_kbps = bit_rate_kbps;
 }
 
-void AudioBitstreamAnalyzer::ApplyAacConfig(StreamState& state,
-                                            const AacAudioSpecificConfig& asc,
+void AudioBitstreamAnalyzer::ApplyAacConfig(StreamState& state, const AacAudioSpecificConfig& asc,
                                             model::AudioBitstreamCodec codec) {
     state.info.codec = codec;
-    if (asc.sample_rate > 0) state.info.sample_rate = asc.sample_rate;
-    if (asc.channels > 0) state.info.channels = asc.channels;
+    if (asc.sample_rate > 0)
+        state.info.sample_rate = asc.sample_rate;
+    if (asc.channels > 0)
+        state.info.channels = asc.channels;
     state.info.channel_config = asc.channel_configuration;
     state.info.audio_object_type = asc.audio_object_type;
     state.info.profile = model::AudioObjectTypeName(asc.audio_object_type);
-    if (!asc.note.empty()) state.info.note = asc.note;
+    if (!asc.note.empty())
+        state.info.note = asc.note;
 }
 
 void AudioBitstreamAnalyzer::ApplyLatmConfig(StreamState& state, const LatmHeader& header) {
     state.info.codec = model::AudioBitstreamCodec::AacLatm;
-    if (header.sample_rate > 0) state.info.sample_rate = header.sample_rate;
-    if (header.channels > 0) state.info.channels = header.channels;
+    if (header.sample_rate > 0)
+        state.info.sample_rate = header.sample_rate;
+    if (header.channels > 0)
+        state.info.channels = header.channels;
     state.info.channel_config = header.channel_configuration;
     state.info.audio_object_type = header.audio_object_type;
     state.info.profile = model::AudioObjectTypeName(header.audio_object_type);
-    if (!header.note.empty()) state.info.note = header.note;
+    if (!header.note.empty())
+        state.info.note = header.note;
 }
 
 void AudioBitstreamAnalyzer::ApplyAc3Header(StreamState& state, const Ac3Header& header) {
@@ -233,7 +244,8 @@ void AudioBitstreamAnalyzer::ApplyAc3Header(StreamState& state, const Ac3Header&
     info.eac3 = header.eac3;
     info.bsid = header.bsid;
     info.bsmod = header.bsmod;
-    if (header.sample_rate > 0) info.sample_rate = header.sample_rate;
+    if (header.sample_rate > 0)
+        info.sample_rate = header.sample_rate;
     info.bit_rate_kbps = header.bit_rate_kbps;
     if (header.has_dialnorm) {
         info.has_dialnorm = true;
@@ -263,7 +275,8 @@ void AudioBitstreamAnalyzer::ApplyAc3Header(StreamState& state, const Ac3Header&
         info.acmod = header.acmod;
         info.lfeon = header.lfeon;
     }
-    if (header.channels > 0) info.channels = header.channels;
+    if (header.channels > 0)
+        info.channels = header.channels;
     if (header.atmos_joc) {
         if (!info.atmos_joc && options_.detect_atmos) {
             // 措辞必须体现"启发式"：这是线索，不是扩展字段解析出来的结论。
@@ -296,8 +309,10 @@ void AudioBitstreamAnalyzer::ApplyOpusHead(StreamState& state, const OpusHead& h
 void AudioBitstreamAnalyzer::ApplyOpusToc(StreamState& state, const OpusToc& toc) {
     model::AudioBitstreamStream& info = state.info;
     info.codec = model::AudioBitstreamCodec::Opus;
-    if (info.sample_rate <= 0) info.sample_rate = 48000;
-    if (toc.channels > 0 && info.channels <= 0) info.channels = toc.channels;
+    if (info.sample_rate <= 0)
+        info.sample_rate = 48000;
+    if (toc.channels > 0 && info.channels <= 0)
+        info.channels = toc.channels;
     info.opus_mode = toc.mode;
     info.opus_bandwidth = toc.bandwidth;
     info.opus_frame_ms = toc.frame_duration_ms;
@@ -306,7 +321,8 @@ void AudioBitstreamAnalyzer::ApplyOpusToc(StreamState& state, const OpusToc& toc
 void AudioBitstreamAnalyzer::ParseAacPacket(StreamState& state, const AVPacket* pkt) {
     const uint8_t* data = pkt->data;
     const size_t size = static_cast<size_t>(pkt->size);
-    if (data == nullptr || size == 0) return;
+    if (data == nullptr || size == 0)
+        return;
 
     AdtsHeader adts;
     if (AudioBitstreamParser::ParseAdts(data, size, adts)) {
@@ -315,7 +331,8 @@ void AudioBitstreamAnalyzer::ParseAacPacket(StreamState& state, const AVPacket* 
         int frames = 0;
         while (offset + 7 <= size && frames < 64) {
             AdtsHeader header;
-            if (!AudioBitstreamParser::ParseAdts(data + offset, size - offset, header)) break;
+            if (!AudioBitstreamParser::ParseAdts(data + offset, size - offset, header))
+                break;
             if (!state.has_header) {
                 state.info.sample_rate = header.sample_rate;
                 state.info.channels = header.channels;
@@ -323,11 +340,12 @@ void AudioBitstreamAnalyzer::ParseAacPacket(StreamState& state, const AVPacket* 
                 state.info.audio_object_type = header.audio_object_type;
                 state.info.profile = model::AudioObjectTypeName(header.audio_object_type);
             }
-            state.ObserveFrame(header.sample_rate, header.channels, header.frame_length,
-                               header.audio_object_type, -1, 0);
+            state.ObserveFrame(header.sample_rate, header.channels, header.frame_length, header.audio_object_type, -1,
+                               0);
             state.info.frame_count += header.num_raw_data_blocks + 1;
             ++frames;
-            if (header.frame_length <= 0) break;
+            if (header.frame_length <= 0)
+                break;
             offset += static_cast<size_t>(header.frame_length);
         }
         if (frames > 0) {
@@ -349,13 +367,12 @@ void AudioBitstreamAnalyzer::ParseAacPacket(StreamState& state, const AVPacket* 
                 state.latm_config = header;
                 state.latm_config_ready = true;
                 ApplyLatmConfig(state, header);
-                state.ObserveFrame(header.sample_rate, header.channels, mux_length,
-                                   header.audio_object_type, -1, 0);
+                state.ObserveFrame(header.sample_rate, header.channels, mux_length, header.audio_object_type, -1, 0);
                 parsed = true;
             }
         } else if (same_mux && state.latm_config_ready) {
-            state.ObserveFrame(state.latm_config.sample_rate, state.latm_config.channels,
-                               mux_length, state.latm_config.audio_object_type, -1, 0);
+            state.ObserveFrame(state.latm_config.sample_rate, state.latm_config.channels, mux_length,
+                               state.latm_config.audio_object_type, -1, 0);
             parsed = true;
         }
         if (parsed) {
@@ -370,8 +387,7 @@ void AudioBitstreamAnalyzer::ParseAacPacket(StreamState& state, const AVPacket* 
     // MP4 / MOV 的裸 AAC：没有逐帧同步字，参数来自 extradata 的 AudioSpecificConfig。
     state.info.codec = model::AudioBitstreamCodec::AacRaw;
     if (state.asc_ready) {
-        state.ObserveFrame(state.asc.sample_rate, state.asc.channels, pkt->size,
-                           state.asc.audio_object_type, -1, 0);
+        state.ObserveFrame(state.asc.sample_rate, state.asc.channels, pkt->size, state.asc.audio_object_type, -1, 0);
         ++state.info.parsed_packets;
         ++state.info.frame_count;
     } else {
@@ -386,8 +402,7 @@ void AudioBitstreamAnalyzer::ParseLatmPacket(StreamState& state, const AVPacket*
     ParseAacPacket(state, pkt);
 }
 
-void AudioBitstreamAnalyzer::ParseAc3Packet(StreamState& state, const AVPacket* pkt,
-                                            bool force_eac3) {
+void AudioBitstreamAnalyzer::ParseAc3Packet(StreamState& state, const AVPacket* pkt, bool force_eac3) {
     const uint8_t* data = pkt->data;
     const size_t size = static_cast<size_t>(pkt->size);
     if (data == nullptr || size < 6) {
@@ -403,11 +418,12 @@ void AudioBitstreamAnalyzer::ParseAc3Packet(StreamState& state, const AVPacket* 
             break;
         }
         ApplyAc3Header(state, header);
-        state.ObserveFrame(header.sample_rate, header.channels, header.frame_size_bytes,
-                           -1, header.acmod, header.bit_rate_kbps);
+        state.ObserveFrame(header.sample_rate, header.channels, header.frame_size_bytes, -1, header.acmod,
+                           header.bit_rate_kbps);
         state.info.frame_count += 1;
         ++frames;
-        if (header.frame_size_bytes <= 0) break;
+        if (header.frame_size_bytes <= 0)
+            break;
         offset += static_cast<size_t>(header.frame_size_bytes);
     }
     if (frames > 0) {
@@ -445,9 +461,11 @@ void AudioBitstreamAnalyzer::ParseOpusPacket(StreamState& state, const AVPacket*
 }
 
 void AudioBitstreamAnalyzer::OnPacket(const AVPacket* pkt, const AVStream* stream) {
-    if (pkt == nullptr || stream == nullptr || stream->codecpar == nullptr) return;
+    if (pkt == nullptr || stream == nullptr || stream->codecpar == nullptr)
+        return;
     StreamState* state = FindState(pkt->stream_index);
-    if (state == nullptr) return;
+    if (state == nullptr)
+        return;
 
     ++state->info.packet_count;
     if (state->parsed_limit > 0 &&
@@ -456,31 +474,32 @@ void AudioBitstreamAnalyzer::OnPacket(const AVPacket* pkt, const AVStream* strea
     }
 
     switch (stream->codecpar->codec_id) {
-        case AV_CODEC_ID_AAC:
-            ParseAacPacket(*state, pkt);
-            break;
-        case AV_CODEC_ID_AAC_LATM:
-            ParseLatmPacket(*state, pkt);
-            break;
-        case AV_CODEC_ID_AC3:
-            ParseAc3Packet(*state, pkt, false);
-            break;
-        case AV_CODEC_ID_EAC3:
-            ParseAc3Packet(*state, pkt, true);
-            break;
-        case AV_CODEC_ID_OPUS:
-            ParseOpusPacket(*state, pkt);
-            break;
-        default:
-            // 未实现逐帧解析的编码（MP3/FLAC/PCM ...）：只登记"未支持"，
-            // 绝不能记进 invalid_packets —— 那是"素材损坏"的口径。
-            ++state->info.unsupported_packets;
-            break;
+    case AV_CODEC_ID_AAC:
+        ParseAacPacket(*state, pkt);
+        break;
+    case AV_CODEC_ID_AAC_LATM:
+        ParseLatmPacket(*state, pkt);
+        break;
+    case AV_CODEC_ID_AC3:
+        ParseAc3Packet(*state, pkt, false);
+        break;
+    case AV_CODEC_ID_EAC3:
+        ParseAc3Packet(*state, pkt, true);
+        break;
+    case AV_CODEC_ID_OPUS:
+        ParseOpusPacket(*state, pkt);
+        break;
+    default:
+        // 未实现逐帧解析的编码（MP3/FLAC/PCM ...）：只登记"未支持"，
+        // 绝不能记进 invalid_packets —— 那是"素材损坏"的口径。
+        ++state->info.unsupported_packets;
+        break;
     }
 }
 
 const model::AudioBitstreamResult& AudioBitstreamAnalyzer::Finish() {
-    if (finished_) return result_;
+    if (finished_)
+        return result_;
     finished_ = true;
 
     result_.streams.clear();
@@ -494,9 +513,9 @@ const model::AudioBitstreamResult& AudioBitstreamAnalyzer::Finish() {
             if (info.dependent_channels > 0) {
                 info.channels = state.last_channels > 0 ? state.last_channels : info.channels;
                 info.channels += info.dependent_channels;
-                info.note = (info.note.empty() ? "" : info.note + "；") +
-                            "E-AC-3 从属子流 +" + std::to_string(info.dependent_channels) +
-                            " 声道，总声道数 " + std::to_string(info.channels);
+                info.note = (info.note.empty() ? "" : info.note + "；") + "E-AC-3 从属子流 +" +
+                            std::to_string(info.dependent_channels) + " 声道，总声道数 " +
+                            std::to_string(info.channels);
             }
         }
 
@@ -507,11 +526,10 @@ const model::AudioBitstreamResult& AudioBitstreamAnalyzer::Finish() {
             info.note = (info.note.empty() ? "" : info.note + "；") + "该编码尚未实现逐帧位流头解析，" +
                         std::to_string(info.unsupported_packets) + " 个包未参与帧头判定";
         } else if (info.parsed_packets == 0) {
-            info.note = (info.note.empty() ? "" : info.note + "；") +
-                        "没有解析出可用的音频帧头";
+            info.note = (info.note.empty() ? "" : info.note + "；") + "没有解析出可用的音频帧头";
         } else if (info.invalid_packets > 0) {
-            info.note = (info.note.empty() ? "" : info.note + "；") +
-                        std::to_string(info.invalid_packets) + " 个包帧头解析失败";
+            info.note = (info.note.empty() ? "" : info.note + "；") + std::to_string(info.invalid_packets) +
+                        " 个包帧头解析失败";
         }
 
         // Atmos 的判定方式是启发式的：必须在结论旁自带免责说明，
@@ -522,44 +540,37 @@ const model::AudioBitstreamResult& AudioBitstreamAnalyzer::Finish() {
         }
 
         // ---- 位流声明 vs 容器声明 ----
-        if (info.container_sample_rate > 0 && info.sample_rate > 0 &&
-            info.container_sample_rate != info.sample_rate) {
+        if (info.container_sample_rate > 0 && info.sample_rate > 0 && info.container_sample_rate != info.sample_rate) {
             info.container_mismatch = true;
             ++info.container_mismatch_fields;
-            AddInconsistency(state,
-                             "容器声明采样率 " + std::to_string(info.container_sample_rate) +
-                                 " Hz，位流头是 " + std::to_string(info.sample_rate) + " Hz");
+            AddInconsistency(state, "容器声明采样率 " + std::to_string(info.container_sample_rate) + " Hz，位流头是 " +
+                                        std::to_string(info.sample_rate) + " Hz");
         }
-        if (info.container_channels > 0 && info.channels > 0 &&
-            info.container_channels != info.channels) {
-            const bool aac_pce =
-                (info.codec == model::AudioBitstreamCodec::AacAdts && info.channel_config == 0);
+        if (info.container_channels > 0 && info.channels > 0 && info.container_channels != info.channels) {
+            const bool aac_pce = (info.codec == model::AudioBitstreamCodec::AacAdts && info.channel_config == 0);
             const bool eac3_unresolved_dependent =
-                (info.codec == model::AudioBitstreamCodec::Eac3 &&
-                 info.dependent_substream_count == 0 &&
+                (info.codec == model::AudioBitstreamCodec::Eac3 && info.dependent_substream_count == 0 &&
                  info.container_channels > info.channels);
             if (!aac_pce && !eac3_unresolved_dependent) {
                 info.container_mismatch = true;
                 ++info.container_mismatch_fields;
-                AddInconsistency(state,
-                                 "容器声明 " + std::to_string(info.container_channels) +
-                                     " 声道，位流头是 " + std::to_string(info.channels) +
-                                     " 声道");
+                AddInconsistency(state, "容器声明 " + std::to_string(info.container_channels) + " 声道，位流头是 " +
+                                            std::to_string(info.channels) + " 声道");
             } else if (eac3_unresolved_dependent) {
                 info.note = (info.note.empty() ? "" : info.note + "；") +
                             "E-AC-3 容器声道数高于核心子流，可能有未解析到的从属子流";
             }
         }
-        if (info.codec == model::AudioBitstreamCodec::Ac3 ||
-            info.codec == model::AudioBitstreamCodec::Eac3) {
+        if (info.codec == model::AudioBitstreamCodec::Ac3 || info.codec == model::AudioBitstreamCodec::Eac3) {
             if (!info.has_dialnorm) {
-                info.note = (info.note.empty() ? "" : info.note + "；") +
-                            "AC-3/E-AC-3 头里没有 dialnorm";
+                info.note = (info.note.empty() ? "" : info.note + "；") + "AC-3/E-AC-3 头里没有 dialnorm";
             }
         }
 
-        if (info.parsed_packets > 0) ++result_.parsed_stream_count;
-        if (info.atmos_joc) ++result_.atmos_stream_count;
+        if (info.parsed_packets > 0)
+            ++result_.parsed_stream_count;
+        if (info.atmos_joc)
+            ++result_.atmos_stream_count;
         result_.streams.push_back(std::move(info));
     }
 
@@ -567,8 +578,10 @@ const model::AudioBitstreamResult& AudioBitstreamAnalyzer::Finish() {
         bool any_judged = false;
         bool any_unsupported = false;
         for (const StreamState& state : states_) {
-            if (state.info.judged_packets() > 0) any_judged = true;
-            if (state.info.unsupported_packets > 0) any_unsupported = true;
+            if (state.info.judged_packets() > 0)
+                any_judged = true;
+            if (state.info.unsupported_packets > 0)
+                any_unsupported = true;
         }
         if (any_judged) {
             result_.notes.push_back("音频流存在，但没有任何一条解析出位流头");
@@ -580,4 +593,4 @@ const model::AudioBitstreamResult& AudioBitstreamAnalyzer::Finish() {
     return result_;
 }
 
-}  // namespace videoeye
+} // namespace videoeye

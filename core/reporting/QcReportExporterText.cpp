@@ -27,17 +27,20 @@ std::string QcReportExporter::BuildText(const QcExportBundle& bundle) {
     out << "生成时间: " << report.generated_at << "\n";
     out << "分析耗时: " << Fixed(run.elapsed_ms, 0) << " ms\n";
     out << "评分: " << Fixed(report.score, 1) << " / 100 (" << report.verdict << ")\n";
-    if (report.partial) out << "注意: 本次为抽样扫描（命中包数上限），结果仅覆盖部分数据，结论仅供参考\n";
-    else if (!report.completed) out << "注意: 分析未跑完，结果不完整\n";
-    if (!run.error.empty()) out << "错误: " << run.error << "\n";
+    if (report.partial)
+        out << "注意: 本次为抽样扫描（命中包数上限），结果仅覆盖部分数据，结论仅供参考\n";
+    else if (!report.completed)
+        out << "注意: 分析未跑完，结果不完整\n";
+    if (!run.error.empty())
+        out << "错误: " << run.error << "\n";
 
     out << "\n--- 汇总 ---\n";
     out << "致命 " << report.CountBySeverity(model::IssueSeverity::Critical) << " / 错误 "
         << report.CountBySeverity(model::IssueSeverity::Error) << " / 警告 "
         << report.CountBySeverity(model::IssueSeverity::Warning) << " / 提示 "
         << report.CountBySeverity(model::IssueSeverity::Info) << "\n";
-    out << "时长 " << Fixed(report.duration_seconds, 3) << " s ｜ 大小 " << report.file_size_bytes
-        << " 字节 ｜ 码率 " << Fixed(report.overall_bitrate_bps / 1000.0, 1) << " kbps\n";
+    out << "时长 " << Fixed(report.duration_seconds, 3) << " s ｜ 大小 " << report.file_size_bytes << " 字节 ｜ 码率 "
+        << Fixed(report.overall_bitrate_bps / 1000.0, 1) << " kbps\n";
 
     out << "\n--- 问题清单 ---\n";
     if (report.issues.empty()) {
@@ -45,11 +48,12 @@ std::string QcReportExporter::BuildText(const QcExportBundle& bundle) {
     } else {
         for (std::size_t i = 0; i < report.issues.size(); ++i) {
             const auto& issue = report.issues[i];
-            out << "[" << (i + 1) << "] " << issue.SeverityText() << " / " << issue.CategoryText()
-                << " / " << issue.title << " (" << issue.rule_id << ")\n";
+            out << "[" << (i + 1) << "] " << issue.SeverityText() << " / " << issue.CategoryText() << " / "
+                << issue.title << " (" << issue.rule_id << ")\n";
             out << "    位置: " << issue.range.ToString() << "\n";
             out << "    " << issue.detail << "\n";
-            if (!issue.suggestion.empty()) out << "    建议: " << issue.suggestion << "\n";
+            if (!issue.suggestion.empty())
+                out << "    建议: " << issue.suggestion << "\n";
         }
     }
 
@@ -69,17 +73,15 @@ std::string QcReportExporter::BuildText(const QcExportBundle& bundle) {
         if (!ts.analyzed) {
             out << "  未拿到传输层结论，以下 container.ts.* 规则的未命中只代表没有证据，"
                    "不代表没有问题。\n";
-            if (!ts.error_message.empty()) out << "  原因: " << ts.error_message << "\n";
+            if (!ts.error_message.empty())
+                out << "  原因: " << ts.error_message << "\n";
         } else {
             out << "  包长: " << ts.packet_size << " 字节\n";
-            out << "  扫描范围: " << Int64Text(ts.scanned_packets) << " / "
-                << Int64Text(ts.estimated_packets) << " 包"
-                << (ts.scan_complete ? "（已扫全文件）" : "（只扫了前若干包，结论不代表整个文件）")
-                << "\n";
-            out << "  节目 / 流 / 服务: " << ts.programs << " / " << ts.streams << " / "
-                << ts.services << "\n";
-            out << "  PAT / PMT / SDT: " << (ts.has_pat ? "有" : "无") << " / "
-                << (ts.has_pmt ? "有" : "无") << " / " << (ts.has_sdt ? "有" : "无") << "\n";
+            out << "  扫描范围: " << Int64Text(ts.scanned_packets) << " / " << Int64Text(ts.estimated_packets) << " 包"
+                << (ts.scan_complete ? "（已扫全文件）" : "（只扫了前若干包，结论不代表整个文件）") << "\n";
+            out << "  节目 / 流 / 服务: " << ts.programs << " / " << ts.streams << " / " << ts.services << "\n";
+            out << "  PAT / PMT / SDT: " << (ts.has_pat ? "有" : "无") << " / " << (ts.has_pmt ? "有" : "无") << " / "
+                << (ts.has_sdt ? "有" : "无") << "\n";
             out << "  失步次数: " << Int64Text(ts.sync_loss) << "\n";
             out << "  连续计数错误: " << Int64Text(ts.continuity_errors) << "（占已扫包 "
                 << Fixed(ts.ContinuityErrorPercent(), 3) << "%）\n";
@@ -127,19 +129,20 @@ std::string QcReportExporter::BuildComparisonText(const qc::QcComparison& compar
     std::ostringstream out;
     out << "原文件  : " << comparison.left_path << "\n";
     out << "对比文件: " << comparison.right_path << "\n";
-    out << "评分    : " << Fixed(comparison.left_score, 1) << " -> "
-        << Fixed(comparison.right_score, 1) << "\n";
-    out << "差异项  : " << comparison.DifferentCount() << " / " << comparison.AvailableRowCount()
-        << "\n";
+    out << "评分    : " << Fixed(comparison.left_score, 1) << " -> " << Fixed(comparison.right_score, 1) << "\n";
+    out << "差异项  : " << comparison.DifferentCount() << " / " << comparison.AvailableRowCount() << "\n";
 
     for (const auto& group : comparison.GroupNames()) {
         out << "\n[" << group << "]\n";
         for (const auto& row : comparison.rows) {
-            if (row.group != group) continue;
+            if (row.group != group)
+                continue;
             out << "  " << row.field << ": " << row.left;
-            if (!row.unit.empty()) out << " " << row.unit;
+            if (!row.unit.empty())
+                out << " " << row.unit;
             out << "  ->  " << row.right;
-            if (!row.unit.empty()) out << " " << row.unit;
+            if (!row.unit.empty())
+                out << " " << row.unit;
             if (row.diff == qc::QcFieldDiff::Different) {
                 out << "   (差 " << Fixed(row.delta, 3) << (row.unit.empty() ? "" : " " + row.unit) << ")";
             } else if (row.diff != qc::QcFieldDiff::Same) {
@@ -151,10 +154,9 @@ std::string QcReportExporter::BuildComparisonText(const qc::QcComparison& compar
     return out.str();
 }
 
-bool QcReportExporter::ExportComparisonText(const std::string& path,
-                                           const qc::QcComparison& comparison) {
+bool QcReportExporter::ExportComparisonText(const std::string& path, const qc::QcComparison& comparison) {
     return WriteUtf8File(path, BuildComparisonText(comparison));
 }
 
-}  // namespace reporting
-}  // namespace videoeye
+} // namespace reporting
+} // namespace videoeye
