@@ -14,6 +14,12 @@
 #   -rss_limit_mb=2048 无界分配会被抓成 OOM（历史上出过 4GB 分配）
 #   -max_len=65536     输入尺寸有上界，保证跑得完
 # 崩溃 / timeout / OOM 都会让 libFuzzer 非 0 退出并把复现输入写成 artifact。
+#
+# ❗ UBSan 默认是 recover 模式（报一行 "runtime error" 继续跑、进程照常退出 0）。
+#   只靠本文件里的参数，UB 就只是日志噪声、job 依旧全绿 —— 2026-10-23 之前正是
+#   如此：一轮跑出 10 处 signed-integer-overflow / 越界移位，而 job 是 success。
+#   真正的开关在顶层 CMakeLists.txt 的 `-fno-sanitize-recover=undefined`：
+#   UB 直接 abort → libFuzzer 当崩溃 → 非 0 退出 + 落复现输入。别把它删了。
 # ============================================================
 
 name: Fuzz

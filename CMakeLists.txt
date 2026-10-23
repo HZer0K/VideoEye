@@ -131,7 +131,16 @@ if(VIDEOEYE_ENABLE_FUZZERS)
             "当前编译器: ${CMAKE_CXX_COMPILER_ID}")
     endif()
     message(STATUS "Fuzz 入口已启用: 全项目 ASan/UBSan 插桩（fuzzer-no-link）")
-    add_compile_options(-fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer -g)
+    # -fno-sanitize-recover=undefined 不是可选项，是这套门禁成立的前提：
+    # UBSan 默认是 recover 模式 —— 报一行 "runtime error: signed integer overflow"
+    # 然后**继续跑**，进程照常退出 0。于是 job 全绿、日志里躺着十几条 UB：
+    # 既没人会去翻 artifact（压根没生成），也就没人知道解析器在溢出。
+    # 加上它之后 UB 直接 abort → libFuzzer 当崩溃处理 → 非 0 退出 + 落复现输入。
+    # （ASan 本身就是不可恢复的，不需要单独开关。）
+    add_compile_options(
+        -fsanitize=fuzzer-no-link,address,undefined
+        -fno-sanitize-recover=undefined
+        -fno-omit-frame-pointer -g)
     add_link_options(-fsanitize=address,undefined)
 endif()
 

@@ -444,6 +444,13 @@ jobs:
   #
   # 已知噪声：TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红了先看
   # 报头是不是我们自己那几个 .cpp；必要时在 TSAN_OPTIONS 里加 suppression 文件。
+  #
+  # ❗ 为什么这里**不**加 `-fno-sanitize-recover=undefined`（而 fuzz 树加了）：
+  #   UBSan 只插桩"我们自己编译的 TU"，但 Qt 的头文件是被 include 进这些 TU 里的
+  #   —— 于是 Qt 头里的内联代码也带插桩。这个 job 一链 Qt，任何一处 Qt 头内的
+  #   有符号溢出都会让 ctest 直接 abort，而我们既改不了 Qt 也没法只按"某个头"
+  #   关掉 UBSan。fuzz 树刻意不链 Qt，所以那边开 halt 是安全的（UB 全部落在
+  #   本仓库自己的解析层），门禁开在那边、噪声留在这边。
   sanitizer:
     name: Sanitizer (${{ matrix.sanitizer }})
     strategy:
