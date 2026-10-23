@@ -204,20 +204,31 @@ struct HevcSpsInfo {
         return (cat == 1) ? 2 : 1;
     }
 
+    // conf_win_* 是 ue(v)，本身无上界（解析时未做上界校验的话可以到 2^31），
+    // (left+right)*SubWidthC 在 int 上会溢出 —— 溢出是 UB，而结果还要跟 >0 比。
+    // 与 H264SpsInfo 同口径：一律 int64 算，负值/超界返回 0（= 未知）。
+    static int ClampDimension(int64_t v) {
+        if (v <= 0 || v > 0x7FFFFFFF)
+            return 0;
+        return static_cast<int>(v);
+    }
+
     int width() const {
-        int w = pic_width_in_luma_samples;
+        int64_t w = pic_width_in_luma_samples;
         if (conformance_window_flag) {
-            w -= (conf_win_left_offset + conf_win_right_offset) * SubWidthC();
+            const int64_t crop = static_cast<int64_t>(conf_win_left_offset) + conf_win_right_offset;
+            w -= crop * SubWidthC();
         }
-        return w;
+        return ClampDimension(w);
     }
 
     int height() const {
-        int h = pic_height_in_luma_samples;
+        int64_t h = pic_height_in_luma_samples;
         if (conformance_window_flag) {
-            h -= (conf_win_top_offset + conf_win_bottom_offset) * SubHeightC();
+            const int64_t crop = static_cast<int64_t>(conf_win_top_offset) + conf_win_bottom_offset;
+            h -= crop * SubHeightC();
         }
-        return h;
+        return ClampDimension(h);
     }
 
     int BitDepthLuma() const {

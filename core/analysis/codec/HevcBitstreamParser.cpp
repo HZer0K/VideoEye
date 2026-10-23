@@ -532,10 +532,15 @@ model::HevcSpsInfo HevcBitstreamParser::ParseSpfFromNalUnit(const videoeye::NalU
         reader.ReadUE(); // sps_max_latency_increase_plus1[i]
     }
 
-    sps.log2_min_luma_coding_block_size_minus3 = static_cast<int>(reader.ReadUE());
-    sps.log2_diff_max_min_luma_coding_block_size = static_cast<int>(reader.ReadUE());
-    sps.log2_min_luma_transform_block_size_minus2 = static_cast<int>(reader.ReadUE());
-    sps.log2_diff_max_min_luma_transform_block_size = static_cast<int>(reader.ReadUE());
+    // 这四个 log2 尺寸字段的规范范围都是 [0,3]（7.4.3.2.1）：
+    // CtbLog2SizeY ≤ 6、MinCbLog2SizeY ≥ 3 → diff ≤ 3，变换块同理。
+    // 必须有界读：它们后面要参与 `1 << x` 算 CTU 尺寸，而无界 ue(v) 能给出
+    // 千万级的移位量（fuzz + UBSan 抓到 "shift exponent 13563075 is too large
+    // for 32-bit type 'int'"）。超界即置 error → 591 行统一判 SPS 无效。
+    sps.log2_min_luma_coding_block_size_minus3 = static_cast<int>(reader.ReadUEBounded(3));
+    sps.log2_diff_max_min_luma_coding_block_size = static_cast<int>(reader.ReadUEBounded(3));
+    sps.log2_min_luma_transform_block_size_minus2 = static_cast<int>(reader.ReadUEBounded(3));
+    sps.log2_diff_max_min_luma_transform_block_size = static_cast<int>(reader.ReadUEBounded(3));
     sps.max_transform_hierarchy_depth_inter = static_cast<int>(reader.ReadUE());
     sps.max_transform_hierarchy_depth_intra = static_cast<int>(reader.ReadUE());
 
@@ -592,10 +597,13 @@ model::HevcSpsInfo HevcBitstreamParser::ParseSpfFromNalUnit(const videoeye::NalU
         return model::HevcSpsInfo();
     }
 
-    // 顺带按 CTU 反推一份，供仍引用旧字段的地方使用
-    const int ctu =
-        1 << (sps.log2_min_luma_coding_block_size_minus3 + 3 + sps.log2_diff_max_min_luma_coding_block_size);
-    if (ctu > 0) {
+    // 顺带按 CTU 反推一份，供仍引用旧字段的地方使用。
+    // 移位量在这里**再验一遍**：HevcSpsInfo 不是只有 ParseSpsFromNalUnit 一个
+    // 构造者（hvcC 路径、将来的调用方都可能填这几个字段），不能指望所有入口
+    // 都做过上界校验。ctu_log2 上界给 30（1<<30 仍在 int 内且远大于任何真实 CTU）。
+    const int ctu_log2 = sps.log2_min_luma_coding_block_size_minus3 + 3 + sps.log2_diff_max_min_luma_coding_block_size;
+    if (ctu_log2 >= 3 && ctu_log2 <= 30) {
+        const int ctu = 1 << ctu_log2;
         sps.pic_width_in_ctu_minus1 = (sps.pic_width_in_luma_samples + ctu - 1) / ctu - 1;
         sps.pic_height_in_ctu_minus1 = (sps.pic_height_in_luma_samples + ctu - 1) / ctu - 1;
     }

@@ -158,15 +158,28 @@ struct VvcSpsInfo {
 
     VvcVuiInfo vui;
 
-    // 派生值
+    // 派生值。三个 `1 << x` 都要先验移位量：字段是公开的 int，构造者不一定
+    // 做过上界校验（解析器现在有界读，但模型是公用类型，别指望所有入口都记得）。
+    // 移位量越界是 UB —— 不是"算出一个大数"，也不能靠事后判断结果来兜。
+    //
+    // ❗ 校验必须发生在 `minus + offset` 之前：字段本身可以是 INT_MAX，
+    //    先加再判，判的语句自己就溢出了（H.264 那边就是这么中招的）。
+    static int Pow2Checked(int field_minus, int offset, int lo, int hi) {
+        if (field_minus < 0 || field_minus > hi)
+            return 0;
+        const int exponent = field_minus + offset;
+        if (exponent < lo || exponent > hi)
+            return 0;
+        return 1 << exponent;
+    }
     int CtuSize() const {
-        return 1 << (sps_log2_ctu_size_minus5 + 5);
+        return Pow2Checked(sps_log2_ctu_size_minus5, 5, 5, 12);
     }
     int MinCbSizeY() const {
-        return 1 << (sps_log2_min_luma_coding_block_size_minus2 + 2);
+        return Pow2Checked(sps_log2_min_luma_coding_block_size_minus2, 2, 2, 8);
     }
     int MaxPicOrderCntLsb() const {
-        return 1 << (sps_log2_max_pic_order_cnt_lsb_minus4 + 4);
+        return Pow2Checked(sps_log2_max_pic_order_cnt_lsb_minus4, 4, 4, 24);
     }
     int SubWidthC() const;
     int SubHeightC() const;

@@ -766,12 +766,21 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
         SkipDpbParameters(reader, sps.sps_max_sublayers_minus1, sublayer_dpb_params);
     }
 
-    sps.sps_log2_min_luma_coding_block_size_minus2 = static_cast<int>(reader.ReadUE());
+    // sps_log2_min_luma_coding_block_size_minus2 的规范范围是 [0,4]
+    // （MinCbLog2SizeY ∈ [2,6]，且不大于 CtbLog2SizeY）。必须有界读：
+    //   * 它后面参与 `sps_log2_min_luma_coding_block_size_minus2 + 2`，
+    //     以及和下面几个 min_qt 的 ue(v) 相加 —— 都是 int 溢出点
+    //     （fuzz + UBSan 抓到 "2147483647 + 2" 与 "2147483646 + 48055"）；
+    //   * VvcSpsInfo::MinCbSizeY() 还要拿它做 `1 << x`。
+    // 超界即置 error = 非法 SPS。
+    sps.sps_log2_min_luma_coding_block_size_minus2 = static_cast<int>(reader.ReadUEBounded(4));
     const int min_cb_log2_size_y = sps.sps_log2_min_luma_coding_block_size_minus2 + 2;
     sps.sps_partition_constraints_override_enabled_flag = reader.ReadBit();
 
     // ---- 块划分约束 ----
-    const int min_qt_log2_intra = static_cast<int>(reader.ReadUE()) + min_cb_log2_size_y;
+    // 下面三个 *_log2_diff_min_qt_min_cb_* 同理：真实值 ≤ 4，无界 ue(v) 会和
+    // min_cb_log2_size_y 相加溢出。给 8 是留了余量的严格上界（超界仍是非法码流）。
+    const int min_qt_log2_intra = static_cast<int>(reader.ReadUEBounded(8)) + min_cb_log2_size_y;
     const int max_mtt_depth_intra = static_cast<int>(reader.ReadUE());
     if (max_mtt_depth_intra != 0) {
         reader.ReadUE();
@@ -783,7 +792,7 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
     }
     int max_mtt_depth_chroma = 0;
     if (qtbtt_dual_tree_intra) {
-        const int min_qt_log2_chroma = static_cast<int>(reader.ReadUE()) + min_cb_log2_size_y;
+        const int min_qt_log2_chroma = static_cast<int>(reader.ReadUEBounded(8)) + min_cb_log2_size_y;
         max_mtt_depth_chroma = static_cast<int>(reader.ReadUE());
         if (max_mtt_depth_chroma != 0) {
             reader.ReadUE();
@@ -791,7 +800,7 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
         }
         (void)min_qt_log2_chroma;
     }
-    const int min_qt_log2_inter = static_cast<int>(reader.ReadUE()) + min_cb_log2_size_y;
+    const int min_qt_log2_inter = static_cast<int>(reader.ReadUEBounded(8)) + min_cb_log2_size_y;
     const int max_mtt_depth_inter = static_cast<int>(reader.ReadUE());
     if (max_mtt_depth_inter != 0) {
         reader.ReadUE();

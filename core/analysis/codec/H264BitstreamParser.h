@@ -58,7 +58,8 @@ private:
     // 判断 profile 是否带 chroma_format_idc / bit_depth 等扩展字段
     static bool HasChromaFormatExtension(int profile_idc);
 
-    static void SkipScalingList(videoeye::BitReader& reader, int size);
+    // 返回 false = delta_scale 超出规范范围 [-128,127]，整份参数集应判为无效。
+    static bool SkipScalingList(videoeye::BitReader& reader, int size);
     static void SkipHrdParameters(videoeye::BitReader& reader, model::H264VuiInfo& vui);
     static void ParseVuiParameters(videoeye::BitReader& reader, model::H264VuiInfo& vui);
 };

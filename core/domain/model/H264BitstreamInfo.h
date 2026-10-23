@@ -150,19 +150,36 @@ struct H264SpsInfo {
         return ((chroma_array_type == 1) ? 2 : 1) * (2 - frame_mbs);
     }
 
+    // 像素换算一律走 int64，最后夹回 int —— 这四个字段的来源都是 ue(v)，
+    // 本身没有上界：pic_width_in_mbs_minus1 可以是 2^31-1（×16 溢出），
+    // frame_crop_* 可以是 2^31（(left+right)*CropUnit 溢出，fuzz 抓到
+    // 2147479088 * 2）。有符号溢出是 UB，不是"回绕成一个大数"那么简单 ——
+    // 优化器可以基于"不会溢出"做任何事，而这里的结果还要拿去和 >0 比。
+    //
+    // 夹断口径：负值或超界一律返回 0。调用方本来就只在 >0 时采信
+    // （见 BitstreamAnalyzer 的 `if (sps.width() > 0)`），0 = 未知。
+    static int ClampDimension(int64_t v) {
+        if (v <= 0 || v > 0x7FFFFFFF)
+            return 0;
+        return static_cast<int>(v);
+    }
+
     int width() const {
-        int w = (pic_width_in_mbs_minus1 + 1) * 16;
+        int64_t w = (static_cast<int64_t>(pic_width_in_mbs_minus1) + 1) * 16;
         if (frame_cropping_flag) {
-            w -= (frame_crop_left_offset + frame_crop_right_offset) * CropUnitX();
+            const int64_t crop = static_cast<int64_t>(frame_crop_left_offset) + frame_crop_right_offset;
+            w -= crop * CropUnitX();
         }
-        return w;
+        return ClampDimension(w);
     }
     int height() const {
-        int h = (2 - (frame_mbs_only_flag ? 1 : 0)) * (pic_height_in_mbs_minus1 + 1) * 16;
+        int64_t h = static_cast<int64_t>(2 - (frame_mbs_only_flag ? 1 : 0)) *
+                    (static_cast<int64_t>(pic_height_in_mbs_minus1) + 1) * 16;
         if (frame_cropping_flag) {
-            h -= (frame_crop_top_offset + frame_crop_bottom_offset) * CropUnitY();
+            const int64_t crop = static_cast<int64_t>(frame_crop_top_offset) + frame_crop_bottom_offset;
+            h -= crop * CropUnitY();
         }
-        return h;
+        return ClampDimension(h);
     }
 
     // Profile 名称

@@ -18,6 +18,11 @@ static const std::string kVideoStreamGuid = HexToBytes("C0EF19BC4D5BCF11A8FD0080
 static const std::string kAudioStreamGuid = HexToBytes("409E69F84D5BCF11A8FD00805F5C442B");
 
 namespace {
+// uint64 → int64 的"安全上界"：超过它就转不过去（转换本身是实现定义行为，
+// 0x8000000000000000 会变成 INT64_MIN，之后的 `INT64_MIN - 24` 才是真 UB）。
+// ASF 里所有长度字段都是 uint64；凡是拿它去算偏移的地方都必须先和它比一下。
+constexpr uint64_t kInt64Max = static_cast<uint64_t>(0x7FFFFFFFFFFFFFFFLL);
+
 uint16_t asfLE16(const std::string& d, int off) {
     if (off + 2 > d.size())
         return 0;
@@ -150,8 +155,14 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
     root.value = StrCat("objects=%1", num_objects);
 
     // Parse child objects
-    int64_t header_end = static_cast<int64_t>(header_size);
-    if (header_end > file.Size()) {
+    //
+    // ❗ header_size 是 uint64，转 int64_t 前必须先判范围：0x8000000000000000
+    //    转过来是 INT64_MIN（fuzz + UBSan 抓到 "INT64_MIN - 24 溢出"），
+    //    而 `header_end > file.Size()` 对 INT64_MIN 为假 —— 越界检查根本兜不住它，
+    //    后面 `header_end - 24` 直接 UB。同理 obj_size 也不能裸转。
+    const bool header_size_overflow = header_size > kInt64Max;
+    int64_t header_end = header_size_overflow ? file.Size() : static_cast<int64_t>(header_size);
+    if (header_size_overflow || header_end > file.Size()) {
         header_end = file.Size();
         // Header Object 声明的长度越过文件末尾 = 文件截断
         diag.header_size_exceeds_file = true;
@@ -166,7 +177,10 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
         uint64_t obj_size = asfLE64(obj_size_buf, 0);
         int64_t obj_start = file.Pos() - 24;
         ++diag.parsed_header_objects;
-        if (obj_size < 24 || obj_start + static_cast<int64_t>(obj_size) > file.Size()) {
+        // 用"剩余字节数"做比较，而不是 `obj_start + obj_size > Size()`：
+        // obj_start 恒 ≤ Size()（Pos() 有界），差值非负；obj_size 保持 uint64
+        // 参与比较，就不会有一次 uint64→int64 的隐式转换。
+        if (obj_size < 24 || obj_size > static_cast<uint64_t>(file.Size() - obj_start)) {
             ++diag.invalid_object_sizes;
         }
         std::string obj_name = GuidToName(obj_guid);
@@ -264,11 +278,17 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
         }
 
         // Ensure we're at the right position for the next object
-        int64_t next_pos = obj_start + static_cast<int64_t>(obj_size);
+        //
         // 必须同时保证"落在文件内"**和**"确实往前走了"：obj_size 是 8 字节 LE，
-        // 可以有 2^63 量级，obj_start + obj_size 溢出成负数时 Seek 会被夹到 0，
-        // 下一轮读到的是文件头 —— 同样的 obj_size、同样的偏移，循环原地打转。
-        if (obj_size >= 24 && next_pos > obj_start && next_pos <= file.Size()) {
+        // 可以有 2^63 量级 —— 既会让 `obj_start + obj_size` 溢出成负数（Seek 被
+        // 夹到 0，下一轮读到文件头，同样的 obj_size 同样的偏移，循环原地打转），
+        // 也会让 `static_cast<int64_t>(obj_size)` 先变成一个负数（实现定义），
+        // 加法本身就成了 UB。所以先判 obj_size 是否还装得进 int64。
+        int64_t next_pos = obj_start;
+        if (obj_size >= 24 && obj_size <= kInt64Max) {
+            next_pos = obj_start + static_cast<int64_t>(obj_size);
+        }
+        if (next_pos > obj_start && next_pos <= file.Size()) {
             file.Seek(next_pos);
         } else {
             file.Seek(file.Size());
@@ -299,7 +319,7 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
             diag.has_data_object = true;
         if (obj_guid == kIndexObjectGuid)
             diag.has_index_object = true;
-        if (obj_size < 24 || obj_start + static_cast<int64_t>(obj_size) > file.Size()) {
+        if (obj_size < 24 || obj_size > static_cast<uint64_t>(file.Size() - obj_start)) {
             ++diag.invalid_object_sizes;
         }
 
@@ -317,7 +337,9 @@ bool AsfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
             break;
         // 与上面那段同一个道理：目标位置必须**严格前进**，否则 Seek 被夹回 0 之后
         // 每轮都读同一段字节，而外层是 `while (Pos() < Size() - 24)`，永远出不去。
-        const int64_t next_pos = obj_start + static_cast<int64_t>(obj_size);
+        // 另外 obj_size > INT64_MAX 时不能直接转 int64（会变成负数，加法即 UB）：
+        // 此时把 next_pos 留在原地，下面的守卫自然 break。
+        const int64_t next_pos = (obj_size <= kInt64Max) ? obj_start + static_cast<int64_t>(obj_size) : obj_start;
         if (next_pos <= obj_start || next_pos > file.Size())
             break;
         file.Seek(next_pos);

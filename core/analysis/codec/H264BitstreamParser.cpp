@@ -119,17 +119,32 @@ std::vector<uint8_t> H264BitstreamParser::GetRbsp(const videoeye::NalUnit& nal_u
 // --------------------------------------------------------------------------
 // scaling_list( sizeOfScalingList ) —— 7.3.2.1.1.1
 // 我们只需要跳过它，但仍要正确跟踪 nextScale，否则 delta_scale 的取舍会错位。
+//
+// 返回值 = "这份 scaling_list 合法吗"。delta_scale 的规范范围是 [-128, 127]
+// （7.4.2.1.1.1），而 se(v) 本身能给到 ±2^31 —— 直接算
+// `last_scale + delta_scale + 256` 就是有符号溢出（fuzz + UBSan 抓到
+// "251 + 2147483520"）。溢出在这里不只是"值不对"：next_scale 会被算成一个
+// 负数，`next_scale != 0` 于是恒真，后面每一位都被当成 delta_scale 读，
+// 位置的偏移量从此与码流真实结构无关。
+// 超界即判非法参数集（返回 false → 调用方直接放弃整份 SPS），不夹断：
+// 夹断会留下一份"delta 被压小、其余字段全错位"的 SPS，比请求失败难查得多。
 // --------------------------------------------------------------------------
-void H264BitstreamParser::SkipScalingList(videoeye::BitReader& reader, int size) {
+bool H264BitstreamParser::SkipScalingList(videoeye::BitReader& reader, int size) {
     int last_scale = 8;
     int next_scale = 8;
     for (int j = 0; j < size; ++j) {
         if (next_scale != 0) {
             const int32_t delta_scale = reader.ReadSE();
+            if (reader.HasError() || delta_scale < -128 || delta_scale > 127) {
+                return false;
+            }
+            // delta_scale ∈ [-128,127]、last_scale ∈ [0,255] → 和 ∈ [-128, 638]，
+            // 不可能溢出 int。
             next_scale = (last_scale + delta_scale + 256) % 256;
         }
         last_scale = (next_scale == 0) ? last_scale : next_scale;
     }
+    return true;
 }
 
 // --------------------------------------------------------------------------
@@ -303,7 +318,9 @@ model::H264SpsInfo H264BitstreamParser::ParseFromNalUnit(const videoeye::NalUnit
             const int list_count = (sps.chroma_format_idc != 3) ? 8 : 12;
             for (int i = 0; i < list_count; ++i) {
                 if (reader.ReadBit()) { // seq_scaling_list_present_flag[i]
-                    SkipScalingList(reader, (i < 6) ? 16 : 64);
+                    if (!SkipScalingList(reader, (i < 6) ? 16 : 64)) {
+                        return sps; // delta_scale 超界：非法 SPS，不置 present
+                    }
                 }
             }
         }
@@ -363,8 +380,12 @@ model::H264SpsInfo H264BitstreamParser::ParseFromNalUnit(const videoeye::NalUnit
     sps.pic_height_in_mbs_minus1 = static_cast<int>(reader.ReadUE());
     // 合理性校验：ue(v) 读出的巨值在 int 截断后可为负；像素换算（×16）超
     // 65536 只可能来自垃圾码流 —— 拒绝，避免下游 width() 溢出。
-    if (sps.pic_width_in_mbs_minus1 < 0 || sps.pic_height_in_mbs_minus1 < 0 ||
-        (sps.pic_width_in_mbs_minus1 + 1) > 65536 / 16 || (sps.pic_height_in_mbs_minus1 + 1) > 65536 / 16) {
+    // ❗ 比较之前必须先转 int64：`pic_width_in_mbs_minus1 + 1` 在 int 上本身就会
+    //    溢出（值可以是 2^31-1，fuzz + UBSan 抓到 "2147483647 + 1"），校验语句
+    //    自己先 UB 了，这道门就等于没有。
+    const int64_t mb_w = static_cast<int64_t>(sps.pic_width_in_mbs_minus1) + 1;
+    const int64_t mb_h = static_cast<int64_t>(sps.pic_height_in_mbs_minus1) + 1;
+    if (sps.pic_width_in_mbs_minus1 < 0 || sps.pic_height_in_mbs_minus1 < 0 || mb_w > 65536 / 16 || mb_h > 65536 / 16) {
         return sps;
     }
 
@@ -378,12 +399,18 @@ model::H264SpsInfo H264BitstreamParser::ParseFromNalUnit(const videoeye::NalUnit
     sps.direct_8x8_inference_flag = reader.ReadBit();
 
     // frame_cropping_flag u(1) + 4 × ue(v)
+    //
+    // 7.4.2.1.1 要求 crop offset 提供的"可裁剪量"小于图像本身的尺寸，所以任何
+    // 真实码流的 crop offset 都远小于 65536（本项目能接受的图像尺寸上限）。
+    // 这里必须有界读：无界 ue(v) 能给出 2^31 量级的值，一路带到 width()/height()
+    // 里就是 `2147479088 * CropUnitY()` 这种 int 溢出（fuzz + UBSan 抓到）。
+    // 超界即置 error，下面 380 行的统一 HasError 检查会把整份 SPS 判成无效。
     sps.frame_cropping_flag = static_cast<int>(reader.ReadBit());
     if (sps.frame_cropping_flag) {
-        sps.frame_crop_left_offset = static_cast<int>(reader.ReadUE());
-        sps.frame_crop_right_offset = static_cast<int>(reader.ReadUE());
-        sps.frame_crop_top_offset = static_cast<int>(reader.ReadUE());
-        sps.frame_crop_bottom_offset = static_cast<int>(reader.ReadUE());
+        sps.frame_crop_left_offset = static_cast<int>(reader.ReadUEBounded(65535));
+        sps.frame_crop_right_offset = static_cast<int>(reader.ReadUEBounded(65535));
+        sps.frame_crop_top_offset = static_cast<int>(reader.ReadUEBounded(65535));
+        sps.frame_crop_bottom_offset = static_cast<int>(reader.ReadUEBounded(65535));
     }
 
     // vui_parameters_present_flag u(1)

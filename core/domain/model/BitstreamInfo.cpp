@@ -215,20 +215,34 @@ int VvcSpsInfo::SubHeightC() const {
     return (sps_chroma_format_idc == 1) ? 2 : 1;
 }
 
+// 裁剪窗口换算统一说明（VVC SPS/PPS 共四条）：
+// conf_win_* 是 ue(v)，无上界；`(left + right) * SubWidthC` 在 int 上会溢出，
+// 有符号溢出是 UB（不是"回绕成负数"那么客气），而这里的返回值还要跟 >0 比。
+// 一律用 int64 算，再夹到 [0, INT_MAX]。
+namespace {
+int ClampVvcDimension(int64_t v) {
+    if (v <= 0 || v > 0x7FFFFFFF)
+        return 0;
+    return static_cast<int>(v);
+}
+} // namespace
+
 int VvcSpsInfo::width() const {
-    int w = sps_pic_width_max_in_luma_samples;
+    int64_t w = sps_pic_width_max_in_luma_samples;
     if (sps_conformance_window_flag) {
-        w -= (sps_conf_win_left_offset + sps_conf_win_right_offset) * SubWidthC();
+        const int64_t crop = static_cast<int64_t>(sps_conf_win_left_offset) + sps_conf_win_right_offset;
+        w -= crop * SubWidthC();
     }
-    return w > 0 ? w : 0;
+    return ClampVvcDimension(w);
 }
 
 int VvcSpsInfo::height() const {
-    int h = sps_pic_height_max_in_luma_samples;
+    int64_t h = sps_pic_height_max_in_luma_samples;
     if (sps_conformance_window_flag) {
-        h -= (sps_conf_win_top_offset + sps_conf_win_bottom_offset) * SubHeightC();
+        const int64_t crop = static_cast<int64_t>(sps_conf_win_top_offset) + sps_conf_win_bottom_offset;
+        h -= crop * SubHeightC();
     }
-    return h > 0 ? h : 0;
+    return ClampVvcDimension(h);
 }
 
 int VvcPpsInfo::SubWidthC() const {
@@ -240,19 +254,21 @@ int VvcPpsInfo::SubHeightC() const {
 }
 
 int VvcPpsInfo::width() const {
-    int w = pps_pic_width_in_luma_samples;
+    int64_t w = pps_pic_width_in_luma_samples;
     if (pps_conformance_window_flag) {
-        w -= (pps_conf_win_left_offset + pps_conf_win_right_offset) * SubWidthC();
+        const int64_t crop = static_cast<int64_t>(pps_conf_win_left_offset) + pps_conf_win_right_offset;
+        w -= crop * SubWidthC();
     }
-    return w > 0 ? w : 0;
+    return ClampVvcDimension(w);
 }
 
 int VvcPpsInfo::height() const {
-    int h = pps_pic_height_in_luma_samples;
+    int64_t h = pps_pic_height_in_luma_samples;
     if (pps_conformance_window_flag) {
-        h -= (pps_conf_win_top_offset + pps_conf_win_bottom_offset) * SubHeightC();
+        const int64_t crop = static_cast<int64_t>(pps_conf_win_top_offset) + pps_conf_win_bottom_offset;
+        h -= crop * SubHeightC();
     }
-    return h > 0 ? h : 0;
+    return ClampVvcDimension(h);
 }
 
 // --------------------------------------------------------------------------

@@ -205,6 +205,14 @@ TS 是直播与 HLS 分片的主格式，也是这一层里唯一"参数一改�
   配套的一条：`SeqFileReader::Pos()` 在"恰好停在文件末尾"时返回 `Size()` 而不是 0
   （`tellg()` 在 EOF 返回 -1，映射成 0 会让"已到末尾"看起来像"还在开头"，
   判据 `Pos() < Size() - k` 于是永远成立）。
+- **uint64 长度不许裸转 int64**：ASF 的对象长度是 uint64，`static_cast<int64_t>`
+  在超过 `INT64_MAX` 时是**实现定义**行为（`0x8000000000000000` → `INT64_MIN`），
+  之后的 `INT64_MIN - 24` 就是真 UB。更麻烦的是这类值能穿过越界检查：
+  `header_end > file.Size()` 对 `INT64_MIN` 为假，长度越界根本判不出来。
+  规矩有两条 —— ①转换前先和 `kInt64Max` 比；②判断"对象是否越界"时用
+  `obj_size > static_cast<uint64_t>(Size() - obj_start)`（`obj_start` 恒 ≤ `Size()`，
+  差值非负），而不是 `obj_start + obj_size > Size()`，这样全程不需要那次转换。
+  这是 libFuzzer 在同一次运行里抓到的第二类 UB（`AsfStructureAnalyzer.cpp:160`）。
 
 ## 6. 测试
 

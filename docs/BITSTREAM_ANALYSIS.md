@@ -149,10 +149,42 @@ CI 的 libFuzzer 入口（`tests/fuzz/`）在 17 字节的 HEVC PPS 上就是这
 PPS tile 数与短期参考帧集的 `num_negative/positive_pics` 是漏网的两处，
 2026-10-23 补上（回归用例 `CorpusRobustnessTest.HevcPpsAbsurdTileCountIsRejected`）。
 
+### 2.5 ue(v) 也不能直接进算术
+
+§2.4 说的是"别拿它当循环上界"，其实还有第二种更隐蔽的用法：**拿它做加减乘和移位**。
+`ReadUE()` 的上界是 `kMaxVlcBits = 32` 位能编码出的值（可到 2^32-2），`ReadSE()` 到
+±2^31 —— 这些值一旦参与 `int` 运算就是有符号溢出，**是 UB，不是"回绕成一个大数"**：
+优化器可以基于"不会溢出"做任何重排，事后判断结果正负完全兜不住。
+
+2026-10 的 fuzz 一轮（`-fno-sanitize-recover` 打开之前它是静默的）在四条路径上抓到：
+
+| 位置 | 表达式 | 触发值 |
+|---|---|---|
+| `H264SpsInfo::height()` | `(crop_top + crop_bottom) * CropUnitY()` | `2147479088 * 2` |
+| `H264BitstreamParser` SPS 校验 | `pic_width_in_mbs_minus1 + 1` | `2147483647 + 1` |
+| `H264BitstreamParser::SkipScalingList` | `last_scale + delta_scale + 256` | `251 + 2147483520` |
+| `HevcBitstreamParser` CTU 反推 | `1 << (... + 3 + log2_diff)` | 移位量 `13563075` |
+
+**规矩（三条，缺一条就会重新长回来）：**
+
+1. **换算用 int64，出口夹断。** 像素换算（`×16`、`× CropUnit`）一律 `int64_t` 中间量，
+   最后 `ClampDimension()` 夹到 `[0, INT_MAX]`，负值/超界统一返回 **0 = 未知**
+   （调用方本来就只在 `>0` 时采信）。
+2. **校验语句自己不能溢出。** `if (x + 1 > 200)` 这种写法在 `x = INT_MAX` 时，判的
+   那一刻就已经 UB 了 —— 必须先把 `x` 转 `int64_t` 再比（见上面的 SPS 尺寸校验）。
+3. **`1 << x` 必须先验 `x`。** 移位量越界同样是 UB，且 `x` 越界时结果可以"看起来"
+   合理。`VvcSpsInfo::Pow2Checked()` 就是为此存在的：先挡负数与上界，再移位。
+
+对应的字段级上界（规范给的，别自己发明）：
+H.264 `delta_scale ∈ [-128,127]`、crop offset 小于图像尺寸；
+HEVC `log2_min_luma_coding_block_size_minus3` 与 `log2_diff_max_min_luma_coding_block_size ∈ [0,3]`；
+VVC `sps_log2_min_luma_coding_block_size_minus2 ∈ [0,4]`。
+超界一律用 `ReadUEBounded` 置错误 → 整份参数集判无效，**不要夹断**（夹断会留下一份
+字段全面错位却 `present=true` 的参数集，比请求失败难查得多）。
+
 ## 3. 核心数据结构
 
 ### 3.1 H.264 SPS 关键参数
-
 ```cpp
 struct H264SpsInfo {
     int profile_idc;              // 7=High, 8=High 10, 9=High 4:2:2, 10=High 4:4:4
