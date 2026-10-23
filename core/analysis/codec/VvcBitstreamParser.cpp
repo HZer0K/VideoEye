@@ -16,32 +16,37 @@ int SubWidthC(int chroma_format_idc) {
     return (chroma_format_idc == 1 || chroma_format_idc == 2) ? 2 : 1;
 }
 
-int SubHeightC(int chroma_format_idc) { return (chroma_format_idc == 1) ? 2 : 1; }
+int SubHeightC(int chroma_format_idc) {
+    return (chroma_format_idc == 1) ? 2 : 1;
+}
 
 // SPS / PPS / VPS 里所有「循环次数来自 ue(v) / u(n)」的字段，畸形码流都能顶到天文数字。
 // 一律按「每条目至少 1 bit」给出界，超界即判非法并停止继续读 —— 解析中途失败不能
 // 顺手把 present 置成 true，否则下游会拿着一堆垃圾值当成有效参数集。
-constexpr int kMaxNumSubpics = 1024;           // sps / pps 的 subpic 数量
-constexpr int kMaxNumRefPicLists = 64;         // 单条 ref_pic_list 里的参考项数
-constexpr int kMaxRefPicListEntries = 4096;     // ref_pic_list 的条目数上限
-constexpr int kMaxVirtualBoundaries = 4095;    // 虚拟边界条数（每条至少 1 bit）
-constexpr int kMaxHrdCpbCntMinus1 = 31;        // HRD 参数集里的 cpb_cnt - 1
+constexpr int kMaxNumSubpics = 1024;        // sps / pps 的 subpic 数量
+constexpr int kMaxNumRefPicLists = 64;      // 单条 ref_pic_list 里的参考项数
+constexpr int kMaxRefPicListEntries = 4096; // ref_pic_list 的条目数上限
+constexpr int kMaxVirtualBoundaries = 4095; // 虚拟边界条数（每条至少 1 bit）
+constexpr int kMaxHrdCpbCntMinus1 = 31;     // HRD 参数集里的 cpb_cnt - 1
 // subpic_id 的位长：subpic_id_len_minus1 取值 0..15（H.266 7.4.3.3 约束
 // subpic_id 长度不超过 16 bit）。无界 ue(v) 会让 subpic_id 循环每次多跳十几位，
 // 直到把 reader 拖到越界。
 constexpr int kMaxSubpicIdLenMinus1 = 15;
-constexpr uint32_t kMaxQpTablePoints = 1024;   // 单张 QP 表的点数（每点至少 2 个 ue(v)）
-constexpr int kMaxPictureSize = 65536;        // luma 尺寸上界：超界值只会来自垃圾码流
+constexpr uint32_t kMaxQpTablePoints = 1024; // 单张 QP 表的点数（每点至少 2 个 ue(v)）
+constexpr int kMaxPictureSize = 65536;       // luma 尺寸上界：超界值只会来自垃圾码流
 
 // ceil(log2(v))，v >= 1
 int CeilLog2(uint32_t v) {
     int bits = 0;
-    while ((1u << bits) < v) ++bits;
+    while ((1u << bits) < v)
+        ++bits;
     return bits;
 }
 
 // ceil(v / 2^s)
-int CeilShift(int v, int s) { return (v + (1 << s) - 1) >> s; }
+int CeilShift(int v, int s) {
+    return (v + (1 << s) - 1) >> s;
+}
 
 // ---- tile / slice 划分段：7.3.2.4 里分支最多的一段 ----
 //
@@ -66,7 +71,8 @@ bool SkipTileAndSlicePartition(BitReader& reader, model::VvcPpsInfo& pps) {
     pps.pps_exp_ctu_height_minus1 = static_cast<int>(reader.ReadUEBounded(kMaxTiles));
     pps.pps_num_exp_tile_columns_minus1 = static_cast<int>(reader.ReadUEBounded(kMaxTiles));
     pps.pps_num_exp_tile_rows_minus1 = static_cast<int>(reader.ReadUEBounded(kMaxTiles));
-    if (reader.HasError()) return false;
+    if (reader.HasError())
+        return false;
 
     const int num_tile_cols = pps.pps_num_exp_tile_columns_minus1 + 1;
     const int num_tile_rows = pps.pps_num_exp_tile_rows_minus1 + 1;
@@ -78,7 +84,8 @@ bool SkipTileAndSlicePartition(BitReader& reader, model::VvcPpsInfo& pps) {
     for (int i = 0; i < pps.pps_num_exp_tile_rows_minus1 && !reader.HasError(); ++i) {
         reader.ReadUEBounded(kMaxTiles);
     }
-    if (reader.HasError()) return false;
+    if (reader.HasError())
+        return false;
 
     const int64_t num_tiles = static_cast<int64_t>(num_tile_cols) * num_tile_rows;
     if (num_tiles > 1) {
@@ -89,15 +96,18 @@ bool SkipTileAndSlicePartition(BitReader& reader, model::VvcPpsInfo& pps) {
         }
         if (pps.pps_rect_slice_flag && !pps.pps_single_slice_per_subpic_flag) {
             pps.pps_num_slices_in_pic_minus1 = static_cast<int>(reader.ReadUEBounded(kMaxTiles));
-            if (reader.HasError()) return false;
+            if (reader.HasError())
+                return false;
             if (pps.pps_num_slices_in_pic_minus1 > 0) {
-                reader.ReadBit();  // pps_tile_idx_delta_present_flag（本层不消费）
-                if (reader.HasError()) return false;
+                reader.ReadBit(); // pps_tile_idx_delta_present_flag（本层不消费）
+                if (reader.HasError())
+                    return false;
                 // slice 尺寸叉分：按 tile 排布决定走"宽"还是"高"那一列
                 for (int i = 0; i < pps.pps_num_slices_in_pic_minus1 && !reader.HasError(); ++i) {
                     reader.ReadUEBounded(kMaxTiles);
                 }
-                if (reader.HasError()) return false;
+                if (reader.HasError())
+                    return false;
             }
         }
         pps.pps_loop_filter_across_slices_flag = reader.ReadBit();
@@ -113,20 +123,20 @@ bool ParseQpAndFilterSection(BitReader& reader, model::VvcPpsInfo& pps) {
     // ❗ rpl1_idx_present_flag 必须**先**读：它决定后面到底有几个
     // pps_num_ref_idx_default_active_minus1[] 条目 —— 顺序读反，QP 会整体错位一位。
     pps.pps_rpl1_idx_present_flag = reader.ReadBit();
-    pps.pps_num_ref_idx_default_active_minus1[0] =
-        static_cast<int>(reader.ReadUEBounded(kMaxNumRefPicLists));
+    pps.pps_num_ref_idx_default_active_minus1[0] = static_cast<int>(reader.ReadUEBounded(kMaxNumRefPicLists));
     if (pps.pps_rpl1_idx_present_flag) {
-        pps.pps_num_ref_idx_default_active_minus1[1] =
-            static_cast<int>(reader.ReadUEBounded(kMaxNumRefPicLists));
+        pps.pps_num_ref_idx_default_active_minus1[1] = static_cast<int>(reader.ReadUEBounded(kMaxNumRefPicLists));
     }
     pps.pps_weighted_pred_flag = reader.ReadBit();
     pps.pps_weighted_bipred_flag = reader.ReadBit();
     pps.pps_ref_wraparound_enabled_flag = reader.ReadBit();
-    if (reader.HasError()) return false;
+    if (reader.HasError())
+        return false;
     pps.pps_pic_init_qp_minus26 = reader.ReadSE();
     pps.pps_cu_qp_delta_enabled_flag = reader.ReadBit();
     pps.pps_chroma_tool_offsets_present_flag = reader.ReadBit();
-    if (reader.HasError()) return false;
+    if (reader.HasError())
+        return false;
 
     if (pps.pps_chroma_tool_offsets_present_flag) {
         pps.pps_cb_qp_offset = reader.ReadSE();
@@ -137,19 +147,21 @@ bool ParseQpAndFilterSection(BitReader& reader, model::VvcPpsInfo& pps) {
         }
         pps.pps_slice_chroma_qp_offsets_present_flag = reader.ReadBit();
         pps.pps_cu_chroma_qp_offset_list_enabled_flag = reader.ReadBit();
-        if (reader.HasError()) return false;
+        if (reader.HasError())
+            return false;
         if (pps.pps_cu_chroma_qp_offset_list_enabled_flag) {
-            pps.pps_chroma_qp_offset_list_len_minus1 =
-                static_cast<int>(reader.ReadUEBounded(kMaxChromaQpOffsetList));
-            if (reader.HasError()) return false;
+            pps.pps_chroma_qp_offset_list_len_minus1 = static_cast<int>(reader.ReadUEBounded(kMaxChromaQpOffsetList));
+            if (reader.HasError())
+                return false;
             for (int i = 0; i <= pps.pps_chroma_qp_offset_list_len_minus1; ++i) {
-                reader.ReadSE();  // cb_qp_offset_list
-                reader.ReadSE();  // cr_qp_offset_list
+                reader.ReadSE(); // cb_qp_offset_list
+                reader.ReadSE(); // cr_qp_offset_list
                 if (pps.pps_joint_cbcr_qp_offset_present_flag) {
-                    reader.ReadSE();  // joint_cbcr_qp_offset_list
+                    reader.ReadSE(); // joint_cbcr_qp_offset_list
                 }
             }
-            if (reader.HasError()) return false;
+            if (reader.HasError())
+                return false;
         }
     }
 
@@ -177,9 +189,12 @@ bool ParseQpAndFilterSection(BitReader& reader, model::VvcPpsInfo& pps) {
 // 校验，上面 tile 段哪怕猜错一位，UI 也会理直气壮地显示"init QP = 68"这种值。
 bool IsSaneQpFields(const model::VvcPpsInfo& pps) {
     const int init_qp = pps.pps_pic_init_qp_minus26 + 26;
-    if (init_qp < 0 || init_qp > 51) return false;
-    if (pps.pps_cb_qp_offset < -12 || pps.pps_cb_qp_offset > 12) return false;
-    if (pps.pps_cr_qp_offset < -12 || pps.pps_cr_qp_offset > 12) return false;
+    if (init_qp < 0 || init_qp > 51)
+        return false;
+    if (pps.pps_cb_qp_offset < -12 || pps.pps_cb_qp_offset > 12)
+        return false;
+    if (pps.pps_cr_qp_offset < -12 || pps.pps_cr_qp_offset > 12)
+        return false;
     return true;
 }
 
@@ -214,7 +229,7 @@ void ResetQpFields(model::VvcPpsInfo& pps) {
     pps.qp_fields_valid = false;
 }
 
-}  // namespace
+} // namespace
 
 // --------------------------------------------------------------------------
 // NAL 单元判定 / RBSP
@@ -232,7 +247,8 @@ bool VvcBitstreamParser::IsPpsNalUnit(const videoeye::NalUnit& nal_unit) {
 }
 
 std::vector<uint8_t> VvcBitstreamParser::GetRbsp(const videoeye::NalUnit& nal_unit) {
-    if (nal_unit.data.empty()) return {};
+    if (nal_unit.data.empty())
+        return {};
     return videoeye::UnescapeRbsp(nal_unit.data.data(), nal_unit.data.size());
 }
 
@@ -261,14 +277,14 @@ void VvcBitstreamParser::SkipGeneralConstraintsInfo(videoeye::BitReader& reader)
     reader.SkipBits(3);  // intra_only / all_layers_independent / one_au_only
     reader.SkipBits(4);  // sixteen_minus_max_bitdepth_constraint_idc
     reader.SkipBits(2);  // three_minus_max_chroma_format_constraint_idc
-    reader.SkipBits(10);  // NAL unit type related
-    reader.SkipBits(6);   // tile / slice / subpicture partitioning
-    reader.SkipBits(2);   // three_minus_max_log2_ctu_size_constraint_idc
-    reader.SkipBits(3);   // CTU and block partitioning
-    reader.SkipBits(6);   // intra
-    reader.SkipBits(16);  // inter
-    reader.SkipBits(13);  // transform / quantization / residual
-    reader.SkipBits(6);   // loop filter
+    reader.SkipBits(10); // NAL unit type related
+    reader.SkipBits(6);  // tile / slice / subpicture partitioning
+    reader.SkipBits(2);  // three_minus_max_log2_ctu_size_constraint_idc
+    reader.SkipBits(3);  // CTU and block partitioning
+    reader.SkipBits(6);  // intra
+    reader.SkipBits(16); // inter
+    reader.SkipBits(13); // transform / quantization / residual
+    reader.SkipBits(6);  // loop filter
 
     const int num_additional_bits = static_cast<int>(reader.ReadBits(8));
     int used = 0;
@@ -283,20 +299,22 @@ void VvcBitstreamParser::SkipGeneralConstraintsInfo(videoeye::BitReader& reader)
 }
 
 void VvcBitstreamParser::ParseProfileTierLevel(videoeye::BitReader& reader, bool profile_tier_present,
-                                               int max_num_sub_layers_minus1, int* profile_idc,
-                                               int* tier_flag, uint32_t* level_idc,
-                                               int* num_sub_profiles) {
+                                               int max_num_sub_layers_minus1, int* profile_idc, int* tier_flag,
+                                               uint32_t* level_idc, int* num_sub_profiles) {
     if (profile_tier_present) {
         const int profile = static_cast<int>(reader.ReadBits(7));
         const int tier = static_cast<int>(reader.ReadBit());
-        if (profile_idc) *profile_idc = profile;
-        if (tier_flag) *tier_flag = tier;
+        if (profile_idc)
+            *profile_idc = profile;
+        if (tier_flag)
+            *tier_flag = tier;
     }
 
     const uint32_t level = reader.ReadBits(8);
-    if (level_idc) *level_idc = level;
+    if (level_idc)
+        *level_idc = level;
 
-    reader.SkipBits(2);  // ptl_frame_only_constraint_flag / ptl_multilayer_enabled_flag
+    reader.SkipBits(2); // ptl_frame_only_constraint_flag / ptl_multilayer_enabled_flag
     if (profile_tier_present) {
         SkipGeneralConstraintsInfo(reader);
     }
@@ -308,63 +326,64 @@ void VvcBitstreamParser::ParseProfileTierLevel(videoeye::BitReader& reader, bool
     }
     reader.AlignToByte();
     for (int i = max_num_sub_layers_minus1 - 1; i >= 0; --i) {
-        if (sublayer_level_present[i]) reader.SkipBits(8);  // sublayer_level_idc[i]
+        if (sublayer_level_present[i])
+            reader.SkipBits(8); // sublayer_level_idc[i]
     }
 
     if (profile_tier_present) {
         const int num_sub_profiles_value = static_cast<int>(reader.ReadBits(8));
-        if (num_sub_profiles) *num_sub_profiles = num_sub_profiles_value;
+        if (num_sub_profiles)
+            *num_sub_profiles = num_sub_profiles_value;
         for (int i = 0; i < num_sub_profiles_value; ++i) {
-            reader.SkipBits(32);  // general_sub_profile_idc[i]
+            reader.SkipBits(32); // general_sub_profile_idc[i]
         }
     }
 }
 
 void VvcBitstreamParser::SkipProfileTierLevel(videoeye::BitReader& reader, bool profile_tier_present,
                                               int max_num_sub_layers_minus1) {
-    ParseProfileTierLevel(reader, profile_tier_present, max_num_sub_layers_minus1, nullptr,
-                          nullptr, nullptr, nullptr);
+    ParseProfileTierLevel(reader, profile_tier_present, max_num_sub_layers_minus1, nullptr, nullptr, nullptr, nullptr);
 }
 
 void VvcBitstreamParser::SkipDpbParameters(videoeye::BitReader& reader, int max_sublayers_minus1,
                                            bool sublayer_info_flag) {
     const int first = sublayer_info_flag ? 0 : max_sublayers_minus1;
     for (int i = first; i <= max_sublayers_minus1; ++i) {
-        reader.ReadUE();  // dpb_max_dec_pic_buffering_minus1[i]
-        reader.ReadUE();  // dpb_max_num_reorder_pics[i]
-        reader.ReadUE();  // dpb_max_latency_increase_plus1[i]
+        reader.ReadUE(); // dpb_max_dec_pic_buffering_minus1[i]
+        reader.ReadUE(); // dpb_max_num_reorder_pics[i]
+        reader.ReadUE(); // dpb_max_latency_increase_plus1[i]
     }
 }
 
-void VvcBitstreamParser::SkipSubLayerHrdParameters(videoeye::BitReader& reader,
-                                                   const TimingHrdContext& ctx) {
+void VvcBitstreamParser::SkipSubLayerHrdParameters(videoeye::BitReader& reader, const TimingHrdContext& ctx) {
     for (uint32_t i = 0; i <= ctx.hrd_cpb_cnt_minus1; ++i) {
-        reader.ReadUE();  // bit_rate_value_minus1
-        reader.ReadUE();  // cpb_size_value_minus1
+        reader.ReadUE(); // bit_rate_value_minus1
+        reader.ReadUE(); // cpb_size_value_minus1
         if (ctx.du_hrd_present) {
-            reader.ReadUE();  // cpb_size_du_value_minus1
-            reader.ReadUE();  // bit_rate_du_value_minus1
+            reader.ReadUE(); // cpb_size_du_value_minus1
+            reader.ReadUE(); // bit_rate_du_value_minus1
         }
-        reader.ReadBit();  // cbr_flag
+        reader.ReadBit(); // cbr_flag
     }
 }
 
-void VvcBitstreamParser::SkipGeneralTimingHrdParameters(videoeye::BitReader& reader,
-                                                        TimingHrdContext* ctx) {
-    reader.SkipBits(32);  // num_units_in_tick
-    reader.SkipBits(32);  // time_scale
+void VvcBitstreamParser::SkipGeneralTimingHrdParameters(videoeye::BitReader& reader, TimingHrdContext* ctx) {
+    reader.SkipBits(32); // num_units_in_tick
+    reader.SkipBits(32); // time_scale
     const bool nal_hrd = reader.ReadBit();
     const bool vcl_hrd = reader.ReadBit();
     bool du_hrd = false;
     uint32_t cpb_cnt_minus1 = 0;
 
     if (nal_hrd || vcl_hrd) {
-        reader.SkipBits(1);  // general_same_pic_timing_in_all_ols_flag
+        reader.SkipBits(1); // general_same_pic_timing_in_all_ols_flag
         du_hrd = reader.ReadBit();
-        if (du_hrd) reader.SkipBits(8);  // tick_divisor_minus2
-        reader.SkipBits(4);              // bit_rate_scale
-        reader.SkipBits(4);              // cpb_size_scale
-        if (du_hrd) reader.SkipBits(4);  // cpb_size_du_scale
+        if (du_hrd)
+            reader.SkipBits(8); // tick_divisor_minus2
+        reader.SkipBits(4);     // bit_rate_scale
+        reader.SkipBits(4);     // cpb_size_scale
+        if (du_hrd)
+            reader.SkipBits(4); // cpb_size_du_scale
         // HRD 每个 cpb 要读 3~5 个 ue(v)，cpb_cnt 直接是外层 SkipSubLayerHrdParameters 的
         // 循环上界；不封顶时一层子层就能跑出上亿倍。
         // 这里用**夹断**而非报错：cpb 个数多一个少一个不影响后续字段的位置判断
@@ -381,8 +400,7 @@ void VvcBitstreamParser::SkipGeneralTimingHrdParameters(videoeye::BitReader& rea
 }
 
 void VvcBitstreamParser::SkipOlsTimingHrdParameters(videoeye::BitReader& reader, int first_sublayer,
-                                                    int max_sublayers_minus1,
-                                                    const TimingHrdContext& ctx) {
+                                                    int max_sublayers_minus1, const TimingHrdContext& ctx) {
     for (int i = first_sublayer; i <= max_sublayers_minus1; ++i) {
         const bool fixed_general = reader.ReadBit();
         bool fixed_within_cvs = true;
@@ -390,17 +408,18 @@ void VvcBitstreamParser::SkipOlsTimingHrdParameters(videoeye::BitReader& reader,
             fixed_within_cvs = reader.ReadBit();
         }
         if (fixed_within_cvs) {
-            reader.ReadUE();  // elemental_duration_in_tc_minus1[i]
+            reader.ReadUE(); // elemental_duration_in_tc_minus1[i]
         } else if ((ctx.nal_hrd_present || ctx.vcl_hrd_present) && ctx.hrd_cpb_cnt_minus1 == 0) {
-            reader.ReadBit();  // low_delay_hrd_flag[i]
+            reader.ReadBit(); // low_delay_hrd_flag[i]
         }
-        if (ctx.nal_hrd_present) SkipSubLayerHrdParameters(reader, ctx);
-        if (ctx.vcl_hrd_present) SkipSubLayerHrdParameters(reader, ctx);
+        if (ctx.nal_hrd_present)
+            SkipSubLayerHrdParameters(reader, ctx);
+        if (ctx.vcl_hrd_present)
+            SkipSubLayerHrdParameters(reader, ctx);
     }
 }
 
-void VvcBitstreamParser::SkipRefPicListStruct(videoeye::BitReader& reader, int poc_lsb_bits,
-                                              bool long_term_ref_pics,
+void VvcBitstreamParser::SkipRefPicListStruct(videoeye::BitReader& reader, int poc_lsb_bits, bool long_term_ref_pics,
                                               bool inter_layer_prediction) {
     // 每条参考项至少读 1 bit（inter_layer_ref_pic_flag 或 st_ref_pic_flag），
     // 不封顶就是一个 ue(v) 撑起几十亿次循环。
@@ -432,12 +451,13 @@ void VvcBitstreamParser::SkipRefPicListStruct(videoeye::BitReader& reader, int p
                 const uint32_t abs_delta_poc = reader.ReadUE();
                 // 短时参考项是否带符号位（加权预测时首项不带 +1 修正）
                 const uint32_t abs_delta_poc_st = abs_delta_poc + 1;
-                if (abs_delta_poc_st > 0) reader.ReadBit();  // strp_entry_sign_flag
+                if (abs_delta_poc_st > 0)
+                    reader.ReadBit(); // strp_entry_sign_flag
             } else if (!ltrp_in_header) {
-                reader.SkipBits(poc_lsb_bits);  // rpls_poc_lsb_lt
+                reader.SkipBits(poc_lsb_bits); // rpls_poc_lsb_lt
             }
         } else {
-            reader.ReadUE();  // ilrp_idx[i]（多层才可能出现）
+            reader.ReadUE(); // ilrp_idx[i]（多层才可能出现）
         }
     }
 }
@@ -481,8 +501,8 @@ void VvcBitstreamParser::ParseVuiParameters(videoeye::BitReader& reader, model::
         if (vui.progressive_source_flag && !vui.interlaced_source_flag) {
             vui.chroma_sample_loc_type_frame = static_cast<int>(reader.ReadUE());
         } else {
-            reader.ReadUE();  // top field
-            reader.ReadUE();  // bottom field
+            reader.ReadUE(); // top field
+            reader.ReadUE(); // bottom field
         }
     }
 }
@@ -493,7 +513,8 @@ void VvcBitstreamParser::ParseVuiParameters(videoeye::BitReader& reader, model::
 model::VvcVpsInfo VvcBitstreamParser::ParseVpsFromNalUnit(const videoeye::NalUnit& nal_unit) {
     model::VvcVpsInfo vps;
     const std::vector<uint8_t> rbsp = GetRbsp(nal_unit);
-    if (rbsp.empty()) return vps;
+    if (rbsp.empty())
+        return vps;
 
     videoeye::BitReader reader;
     reader.Reset(rbsp.data(), rbsp.size());
@@ -516,7 +537,7 @@ model::VvcVpsInfo VvcBitstreamParser::ParseVpsFromNalUnit(const videoeye::NalUni
 
     // 层信息：单层时只有 vps_layer_id[0]
     for (int i = 0; i <= vps.vps_max_layers_minus1; ++i) {
-        reader.SkipBits(6);  // vps_layer_id[i]
+        reader.SkipBits(6); // vps_layer_id[i]
         if (i > 0 && !all_independent_layers) {
             const bool independent = reader.ReadBit();
             if (!independent) {
@@ -524,7 +545,7 @@ model::VvcVpsInfo VvcBitstreamParser::ParseVpsFromNalUnit(const videoeye::NalUni
                 for (int j = 0; j < i; ++j) {
                     const bool direct_ref = reader.ReadBit();
                     if (max_tid_ref_present && direct_ref) {
-                        reader.SkipBits(3);  // vps_max_tid_il_ref_pics_plus1[i][j]
+                        reader.SkipBits(3); // vps_max_tid_il_ref_pics_plus1[i][j]
                     }
                 }
             }
@@ -548,7 +569,7 @@ model::VvcVpsInfo VvcBitstreamParser::ParseVpsFromNalUnit(const videoeye::NalUni
                 const int num_output_layer_sets_minus2 = static_cast<int>(reader.ReadBits(8));
                 for (int i = 1; i <= num_output_layer_sets_minus2 + 1; ++i) {
                     for (int j = 0; j <= vps.vps_max_layers_minus1; ++j) {
-                        reader.SkipBits(1);  // vps_ols_output_layer_flag[i][j]
+                        reader.SkipBits(1); // vps_ols_output_layer_flag[i][j]
                     }
                 }
                 total_num_olss = num_output_layer_sets_minus2 + 2;
@@ -581,9 +602,8 @@ model::VvcVpsInfo VvcBitstreamParser::ParseVpsFromNalUnit(const videoeye::NalUni
 
     for (int i = 0; i <= vps.vps_num_ptls_minus1; ++i) {
         if (i == 0) {
-            ParseProfileTierLevel(reader, pt_present[i] != 0, ptl_max_tid[i],
-                                  &vps.general_profile_idc, &vps.general_tier_flag,
-                                  &vps.general_level_idc, &vps.ptl_num_sub_profiles);
+            ParseProfileTierLevel(reader, pt_present[i] != 0, ptl_max_tid[i], &vps.general_profile_idc,
+                                  &vps.general_tier_flag, &vps.general_level_idc, &vps.ptl_num_sub_profiles);
         } else {
             SkipProfileTierLevel(reader, pt_present[i] != 0, ptl_max_tid[i]);
         }
@@ -592,13 +612,14 @@ model::VvcVpsInfo VvcBitstreamParser::ParseVpsFromNalUnit(const videoeye::NalUni
     // OLS -> PTL 索引
     for (int i = 0; i < total_num_olss; ++i) {
         if (vps.vps_num_ptls_minus1 > 0 && vps.vps_num_ptls_minus1 + 1 != total_num_olss) {
-            reader.SkipBits(8);  // vps_ols_ptl_idx[i]
+            reader.SkipBits(8); // vps_ols_ptl_idx[i]
         }
     }
 
     // present 只在解析真的走完时才置位：旧实现在这段索引循环之前就置了 true，
     // 循环里一旦读越界会被无声吞掉，下游于是拿着一堆 0 当成「参数集有效」去比对容器。
-    if (reader.HasError()) return vps;
+    if (reader.HasError())
+        return vps;
     vps.present = true;
 
     if (!each_layer_is_an_ols) {
@@ -608,7 +629,7 @@ model::VvcVpsInfo VvcBitstreamParser::ParseVpsFromNalUnit(const videoeye::NalUni
         return vps;
     }
 
-    reader.ReadBit();  // vps_extension_flag
+    reader.ReadBit(); // vps_extension_flag
     return vps;
 }
 
@@ -618,7 +639,8 @@ model::VvcVpsInfo VvcBitstreamParser::ParseVpsFromNalUnit(const videoeye::NalUni
 model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUnit& nal_unit) {
     model::VvcSpsInfo sps;
     const std::vector<uint8_t> rbsp = GetRbsp(nal_unit);
-    if (rbsp.empty()) return sps;
+    if (rbsp.empty())
+        return sps;
 
     videoeye::BitReader reader;
     reader.Reset(rbsp.data(), rbsp.size());
@@ -634,9 +656,8 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
 
     sps.sps_ptl_dpb_hrd_params_present_flag = reader.ReadBit();
     if (sps.sps_ptl_dpb_hrd_params_present_flag) {
-        ParseProfileTierLevel(reader, true, sps.sps_max_sublayers_minus1,
-                              &sps.general_profile_idc, &sps.general_tier_flag,
-                              &sps.general_level_idc, &sps.ptl_num_sub_profiles);
+        ParseProfileTierLevel(reader, true, sps.sps_max_sublayers_minus1, &sps.general_profile_idc,
+                              &sps.general_tier_flag, &sps.general_level_idc, &sps.ptl_num_sub_profiles);
     }
 
     sps.sps_gdr_enabled_flag = reader.ReadBit();
@@ -649,8 +670,7 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
     sps.sps_pic_height_max_in_luma_samples = static_cast<int>(reader.ReadUE());
     // 合理性校验：垃圾码流（如全 0xFF）的 ue(v) 能把语法"走完"却读出 0/越界
     // 尺寸 —— 后续 CeilShift 还会发生有符号溢出。这里直接判非法不置 present。
-    if (sps.sps_pic_width_max_in_luma_samples <= 0 ||
-        sps.sps_pic_height_max_in_luma_samples <= 0 ||
+    if (sps.sps_pic_width_max_in_luma_samples <= 0 || sps.sps_pic_height_max_in_luma_samples <= 0 ||
         sps.sps_pic_width_max_in_luma_samples > kMaxPictureSize ||
         sps.sps_pic_height_max_in_luma_samples > kMaxPictureSize) {
         return sps;
@@ -668,7 +688,7 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
     const int tmp_height_val = CeilShift(sps.sps_pic_height_max_in_luma_samples, ctb_log2_size_y);
 
     // ---- subpicture ----
-    if (reader.ReadBit()) {  // sps_subpic_info_present_flag
+    if (reader.ReadBit()) { // sps_subpic_info_present_flag
         sps.sps_num_subpics_minus1 = static_cast<int>(reader.ReadUE());
         // 每个 subpic 要读若干 SkipBits，最后那个 subpic_id 循环更是 × subpic 数；
         // 不封顶的话一个 ue(v) 就能把解析时间顶到无穷
@@ -684,31 +704,35 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
         if (sps.sps_num_subpics_minus1 > 0) {
             const int wlen = CeilLog2(static_cast<uint32_t>(tmp_width_val));
             const int hlen = CeilLog2(static_cast<uint32_t>(tmp_height_val));
-            if (sps.sps_pic_width_max_in_luma_samples > ctb_size_y) reader.SkipBits(wlen);
-            if (sps.sps_pic_height_max_in_luma_samples > ctb_size_y) reader.SkipBits(hlen);
-            if (!independent_subpics) reader.SkipBits(2);
+            if (sps.sps_pic_width_max_in_luma_samples > ctb_size_y)
+                reader.SkipBits(wlen);
+            if (sps.sps_pic_height_max_in_luma_samples > ctb_size_y)
+                reader.SkipBits(hlen);
+            if (!independent_subpics)
+                reader.SkipBits(2);
             for (int i = 1; i <= sps.sps_num_subpics_minus1; ++i) {
                 if (!same_size) {
-                    if (sps.sps_pic_width_max_in_luma_samples > ctb_size_y) reader.SkipBits(wlen);
-                    if (sps.sps_pic_height_max_in_luma_samples > ctb_size_y) reader.SkipBits(hlen);
-                    if (i < sps.sps_num_subpics_minus1 &&
-                        sps.sps_pic_width_max_in_luma_samples > ctb_size_y) {
+                    if (sps.sps_pic_width_max_in_luma_samples > ctb_size_y)
+                        reader.SkipBits(wlen);
+                    if (sps.sps_pic_height_max_in_luma_samples > ctb_size_y)
+                        reader.SkipBits(hlen);
+                    if (i < sps.sps_num_subpics_minus1 && sps.sps_pic_width_max_in_luma_samples > ctb_size_y) {
                         reader.SkipBits(wlen);
                     }
-                    if (i < sps.sps_num_subpics_minus1 &&
-                        sps.sps_pic_height_max_in_luma_samples > ctb_size_y) {
+                    if (i < sps.sps_num_subpics_minus1 && sps.sps_pic_height_max_in_luma_samples > ctb_size_y) {
                         reader.SkipBits(hlen);
                     }
                 }
-                if (!independent_subpics) reader.SkipBits(2);
+                if (!independent_subpics)
+                    reader.SkipBits(2);
             }
         }
         // subpic_id 位长同样只进 SkipBits，但无界 ue(v) 会让每次跳过十几位乃至越界；
         // 按 H.266 u(v) 长度 1..16 封到 15，与 PPS 侧对齐。
-        const int subpic_id_len_minus1 = static_cast<int>(
-            reader.ReadUEBounded(static_cast<uint32_t>(kMaxSubpicIdLenMinus1)));
-        if (reader.ReadBit()) {  // sps_subpic_id_mapping_explicitly_signalled_flag
-            if (reader.ReadBit()) {  // sps_subpic_id_mapping_present_flag
+        const int subpic_id_len_minus1 =
+            static_cast<int>(reader.ReadUEBounded(static_cast<uint32_t>(kMaxSubpicIdLenMinus1)));
+        if (reader.ReadBit()) {     // sps_subpic_id_mapping_explicitly_signalled_flag
+            if (reader.ReadBit()) { // sps_subpic_id_mapping_present_flag
                 for (int i = 0; i <= sps.sps_num_subpics_minus1; ++i) {
                     reader.SkipBits(subpic_id_len_minus1 + 1);
                 }
@@ -726,7 +750,7 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
     sps.sps_log2_max_pic_order_cnt_lsb_minus4 = static_cast<int>(reader.ReadBits(4));
     sps.sps_poc_msb_cycle_flag = reader.ReadBit();
     if (sps.sps_poc_msb_cycle_flag) {
-        reader.ReadUE();  // sps_poc_msb_cycle_len_minus1
+        reader.ReadUE(); // sps_poc_msb_cycle_len_minus1
     }
 
     const int num_extra_ph_bytes = static_cast<int>(reader.ReadBits(2));
@@ -747,8 +771,7 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
     sps.sps_partition_constraints_override_enabled_flag = reader.ReadBit();
 
     // ---- 块划分约束 ----
-    const int min_qt_log2_intra =
-        static_cast<int>(reader.ReadUE()) + min_cb_log2_size_y;
+    const int min_qt_log2_intra = static_cast<int>(reader.ReadUE()) + min_cb_log2_size_y;
     const int max_mtt_depth_intra = static_cast<int>(reader.ReadUE());
     if (max_mtt_depth_intra != 0) {
         reader.ReadUE();
@@ -785,7 +808,7 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
     sps.sps_transform_skip_enabled_flag = reader.ReadBit();
     if (sps.sps_transform_skip_enabled_flag) {
         reader.ReadUE();  // sps_log2_transform_skip_max_size_minus2
-        reader.ReadBit();  // sps_bdpcm_enabled_flag
+        reader.ReadBit(); // sps_bdpcm_enabled_flag
     }
     sps.sps_mts_enabled_flag = reader.ReadBit();
     if (sps.sps_mts_enabled_flag) {
@@ -798,7 +821,7 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
         const bool same_qp_table = reader.ReadBit();
         const int num_qp_tables = same_qp_table ? 1 : (sps.sps_joint_cbcr_enabled_flag ? 3 : 2);
         for (int i = 0; i < num_qp_tables; ++i) {
-            reader.ReadSE();  // sps_qp_table_start_minus26[i]
+            reader.ReadSE(); // sps_qp_table_start_minus26[i]
             // 这里是 sps_num_delta_of_qp_points_minus1[i]：点的**个数减一**，
             // 所以循环下标要跑到它（含）—— 与 HEVC 的 sps_qp_table_num_points_minus1
             // 同一套语义。曾经为了"消除无符号回绕"把它改成 j < num_points，
@@ -813,8 +836,8 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
             // 字段全面错位却 valid=true 的 SPS —— 比直接判无效难查得多。
             const uint32_t num_points_minus1 = reader.ReadUEBounded(kMaxQpTablePoints);
             for (uint32_t j = 0; j <= num_points_minus1; ++j) {
-                reader.ReadUE();  // delta_qp_in_val_minus1
-                reader.ReadUE();  // delta_qp_diff_val
+                reader.ReadUE(); // delta_qp_in_val_minus1
+                reader.ReadUE(); // delta_qp_diff_val
             }
         }
     }
@@ -831,7 +854,7 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
     if (sps.sps_video_parameter_set_id > 0) {
         sps.sps_inter_layer_prediction_enabled_flag = reader.ReadBit();
     }
-    reader.SkipBits(1);  // sps_idr_rpl_present_flag
+    reader.SkipBits(1); // sps_idr_rpl_present_flag
     const bool rpl1_same_as_rpl0 = reader.ReadBit();
 
     for (int i = 0; i < (rpl1_same_as_rpl0 ? 1 : 2); ++i) {
@@ -842,8 +865,7 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
             return sps; // 非法，不置 present
         }
         for (int j = 0; j < sps.sps_num_ref_pic_lists[i]; ++j) {
-            SkipRefPicListStruct(reader, sps.sps_log2_max_pic_order_cnt_lsb_minus4 + 4,
-                                 sps.sps_long_term_ref_pics_flag,
+            SkipRefPicListStruct(reader, sps.sps_log2_max_pic_order_cnt_lsb_minus4 + 4, sps.sps_long_term_ref_pics_flag,
                                  sps.sps_inter_layer_prediction_enabled_flag);
         }
     }
@@ -851,43 +873,48 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
         sps.sps_num_ref_pic_lists[1] = sps.sps_num_ref_pic_lists[0];
     }
 
-    reader.SkipBits(1);  // sps_ref_wraparound_enabled_flag
+    reader.SkipBits(1); // sps_ref_wraparound_enabled_flag
     sps.sps_temporal_mvp_enabled_flag = reader.ReadBit();
     if (sps.sps_temporal_mvp_enabled_flag) {
-        reader.SkipBits(1);  // sps_sbtmvp_enabled_flag
+        reader.SkipBits(1); // sps_sbtmvp_enabled_flag
     }
     const bool amvr = reader.ReadBit();
     const bool bdof = reader.ReadBit();
-    if (bdof) reader.SkipBits(1);
-    reader.SkipBits(1);  // sps_smvd_enabled_flag
+    if (bdof)
+        reader.SkipBits(1);
+    reader.SkipBits(1); // sps_smvd_enabled_flag
     const bool dmvr = reader.ReadBit();
-    if (dmvr) reader.SkipBits(1);
+    if (dmvr)
+        reader.SkipBits(1);
     const bool mmvd = reader.ReadBit();
-    if (mmvd) reader.SkipBits(1);
+    if (mmvd)
+        reader.SkipBits(1);
     const int max_num_merge_cand = 6 - static_cast<int>(reader.ReadUE());
-    reader.SkipBits(1);  // sps_sbt_enabled_flag
+    reader.SkipBits(1); // sps_sbt_enabled_flag
     sps.sps_affine_enabled_flag = reader.ReadBit();
     if (sps.sps_affine_enabled_flag) {
-        reader.ReadUE();  // sps_five_minus_max_num_subblock_merge_cand
-        reader.SkipBits(1);  // 6param affine
-        if (amvr) reader.SkipBits(1);
+        reader.ReadUE();    // sps_five_minus_max_num_subblock_merge_cand
+        reader.SkipBits(1); // 6param affine
+        if (amvr)
+            reader.SkipBits(1);
         const bool prof = reader.ReadBit();
-        if (prof) reader.SkipBits(1);
+        if (prof)
+            reader.SkipBits(1);
     }
-    reader.SkipBits(2);  // sps_bcw_enabled_flag / sps_ciip_enabled_flag
+    reader.SkipBits(2); // sps_bcw_enabled_flag / sps_ciip_enabled_flag
     if (max_num_merge_cand >= 2) {
         const bool gpm = reader.ReadBit();
         if (gpm && max_num_merge_cand >= 3) {
-            reader.ReadUE();  // sps_max_num_merge_cand_minus_max_num_gpm_cand
+            reader.ReadUE(); // sps_max_num_merge_cand_minus_max_num_gpm_cand
         }
     }
-    reader.ReadUE();  // sps_log2_parallel_merge_level_minus2
-    reader.SkipBits(3);  // isp / mrl / mip
+    reader.ReadUE();    // sps_log2_parallel_merge_level_minus2
+    reader.SkipBits(3); // isp / mrl / mip
     if (sps.sps_chroma_format_idc != 0) {
-        reader.SkipBits(1);  // sps_cclm_enabled_flag
+        reader.SkipBits(1); // sps_cclm_enabled_flag
     }
     if (sps.sps_chroma_format_idc == 1) {
-        reader.SkipBits(2);  // chroma horizontal / vertical collocated
+        reader.SkipBits(2); // chroma horizontal / vertical collocated
     }
     sps.sps_palette_enabled_flag = reader.ReadBit();
     bool act = false;
@@ -895,15 +922,15 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
         act = reader.ReadBit();
     }
     if (sps.sps_transform_skip_enabled_flag || sps.sps_palette_enabled_flag) {
-        reader.ReadUE();  // sps_min_qp_prime_ts
+        reader.ReadUE(); // sps_min_qp_prime_ts
     }
     sps.sps_ibc_enabled_flag = reader.ReadBit();
     if (sps.sps_ibc_enabled_flag) {
-        reader.ReadUE();  // sps_six_minus_max_num_ibc_merge_cand
+        reader.ReadUE(); // sps_six_minus_max_num_ibc_merge_cand
     }
-    if (reader.ReadBit()) {  // sps_ladf_enabled_flag
+    if (reader.ReadBit()) { // sps_ladf_enabled_flag
         const int num_intervals = static_cast<int>(reader.ReadBits(2)) + 1;
-        reader.ReadSE();  // sps_ladf_lowest_interval_qp_offset
+        reader.ReadSE(); // sps_ladf_lowest_interval_qp_offset
         for (int i = 0; i < num_intervals; ++i) {
             reader.ReadSE();
             reader.ReadUE();
@@ -923,31 +950,32 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
     sps.sps_dep_quant_enabled_flag = reader.ReadBit();
     sps.sps_sign_data_hiding_enabled_flag = reader.ReadBit();
 
-    if (reader.ReadBit()) {  // sps_virtual_boundaries_enabled_flag
-        if (reader.ReadBit()) {  // sps_virtual_boundaries_present_flag
+    if (reader.ReadBit()) {     // sps_virtual_boundaries_enabled_flag
+        if (reader.ReadBit()) { // sps_virtual_boundaries_present_flag
             const uint32_t num_ver = reader.ReadUE();
             if (num_ver > static_cast<uint32_t>(kMaxVirtualBoundaries)) {
                 return sps; // 非法，不置 present
             }
-            for (uint32_t i = 0; i < num_ver; ++i) reader.ReadUE();
+            for (uint32_t i = 0; i < num_ver; ++i)
+                reader.ReadUE();
             const uint32_t num_hor = reader.ReadUE();
             if (num_hor > static_cast<uint32_t>(kMaxVirtualBoundaries)) {
                 return sps; // 非法，不置 present
             }
-            for (uint32_t i = 0; i < num_hor; ++i) reader.ReadUE();
+            for (uint32_t i = 0; i < num_hor; ++i)
+                reader.ReadUE();
         }
     }
 
     if (sps.sps_ptl_dpb_hrd_params_present_flag) {
-        if (reader.ReadBit()) {  // sps_timing_hrd_params_present_flag
+        if (reader.ReadBit()) { // sps_timing_hrd_params_present_flag
             TimingHrdContext ctx;
             SkipGeneralTimingHrdParameters(reader, &ctx);
             bool sublayer_cpb_params_present = false;
             if (sps.sps_max_sublayers_minus1 > 0) {
                 sublayer_cpb_params_present = reader.ReadBit();
             }
-            const int first_sublayer =
-                sublayer_cpb_params_present ? 0 : sps.sps_max_sublayers_minus1;
+            const int first_sublayer = sublayer_cpb_params_present ? 0 : sps.sps_max_sublayers_minus1;
             SkipOlsTimingHrdParameters(reader, first_sublayer, sps.sps_max_sublayers_minus1, ctx);
         }
     }
@@ -961,7 +989,8 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
     }
 
     // 与 VPS 同理：解析中途出错了就不能把 present 置 true
-    if (reader.HasError()) return sps;
+    if (reader.HasError())
+        return sps;
     sps.present = true;
     return sps;
 }
@@ -972,7 +1001,8 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
 model::VvcPpsInfo VvcBitstreamParser::ParsePpsFromNalUnit(const videoeye::NalUnit& nal_unit) {
     model::VvcPpsInfo pps;
     const std::vector<uint8_t> rbsp = GetRbsp(nal_unit);
-    if (rbsp.empty()) return pps;
+    if (rbsp.empty())
+        return pps;
 
     videoeye::BitReader reader;
     reader.Reset(rbsp.data(), rbsp.size());
@@ -984,8 +1014,7 @@ model::VvcPpsInfo VvcBitstreamParser::ParsePpsFromNalUnit(const videoeye::NalUni
     pps.pps_pic_height_in_luma_samples = static_cast<int>(reader.ReadUE());
     // 与 SPS 相同的合理性校验：非正/超界尺寸只可能来自垃圾码流
     if (pps.pps_pic_width_in_luma_samples <= 0 || pps.pps_pic_height_in_luma_samples <= 0 ||
-        pps.pps_pic_width_in_luma_samples > kMaxPictureSize ||
-        pps.pps_pic_height_in_luma_samples > kMaxPictureSize) {
+        pps.pps_pic_width_in_luma_samples > kMaxPictureSize || pps.pps_pic_height_in_luma_samples > kMaxPictureSize) {
         return pps;
     }
 
@@ -997,9 +1026,10 @@ model::VvcPpsInfo VvcBitstreamParser::ParsePpsFromNalUnit(const videoeye::NalUni
         pps.pps_conf_win_bottom_offset = static_cast<int>(reader.ReadUE());
     }
 
-    if (reader.HasError()) return pps;
+    if (reader.HasError())
+        return pps;
 
-    if (reader.ReadBit()) {  // pps_scaling_window_explicit_signalling_flag
+    if (reader.ReadBit()) { // pps_scaling_window_explicit_signalling_flag
         reader.ReadSE();
         reader.ReadSE();
         reader.ReadSE();
@@ -1013,13 +1043,14 @@ model::VvcPpsInfo VvcBitstreamParser::ParsePpsFromNalUnit(const videoeye::NalUni
         if (!pps.pps_no_pic_partition_flag) {
             // 这个计数直接决定下面 SkipBits 循环的次数：裸 ue(v) 能让循环迭代约 2e9
             // 次，把分析线程占满（SPS 侧同型循环早有 kMaxNumSubpics 守卫，PPS 漏了）。
-            pps.pps_num_subpics_minus1 =
-                static_cast<int>(reader.ReadUEBounded(static_cast<uint32_t>(kMaxNumSubpics)));
-            if (reader.HasError()) return pps;  // 越界，不置 present
+            pps.pps_num_subpics_minus1 = static_cast<int>(reader.ReadUEBounded(static_cast<uint32_t>(kMaxNumSubpics)));
+            if (reader.HasError())
+                return pps; // 越界，不置 present
         }
-        const int subpic_id_len_minus1 = static_cast<int>(
-            reader.ReadUEBounded(static_cast<uint32_t>(kMaxSubpicIdLenMinus1)));
-        if (reader.HasError()) return pps;
+        const int subpic_id_len_minus1 =
+            static_cast<int>(reader.ReadUEBounded(static_cast<uint32_t>(kMaxSubpicIdLenMinus1)));
+        if (reader.HasError())
+            return pps;
         for (int i = 0; i <= pps.pps_num_subpics_minus1; ++i) {
             reader.SkipBits(subpic_id_len_minus1 + 1);
         }
@@ -1028,7 +1059,8 @@ model::VvcPpsInfo VvcBitstreamParser::ParsePpsFromNalUnit(const videoeye::NalUni
     // ---- 到这里为止是"老口径"（宽高 + subpic id 映射）----
     // 老行为保持不动：走到这里若已越界，就放弃整份 PPS —— 比这里晚读的位会被
     // 静默当成 0，继续下去等于把错位的结论当真。
-    if (reader.HasError()) return pps;
+    if (reader.HasError())
+        return pps;
 
     // ---- 后半段：tile / slice 划分 + QP / 去块 ----
     // 这部分的成败**不影响**上面那些已经解出来的字段，所以是"继续尝试、
@@ -1048,4 +1080,4 @@ model::VvcPpsInfo VvcBitstreamParser::ParsePpsFromNalUnit(const videoeye::NalUni
     return pps;
 }
 
-}  // namespace videoeye
+} // namespace videoeye

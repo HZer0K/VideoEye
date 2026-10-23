@@ -27,36 +27,46 @@ constexpr uint32_t kMaxSliceGroups = 8;
 // --------------------------------------------------------------------------
 std::string H264BitstreamParser::GetProfileName(int profile_idc) {
     switch (profile_idc) {
-        case 66:  return "Baseline";
-        case 77:  return "Main";
-        case 88:  return "Extended";
-        case 100: return "High";
-        case 110: return "High 10";
-        case 122: return "High 4:2:2";
-        case 144: return "High 4:4:4";
-        case 244: return "High 4:4:4 Predictive";
-        case 118: return "Multiview High";
-        case 128: return "Stereo High";
-        default:  return "Unknown";
+    case 66:
+        return "Baseline";
+    case 77:
+        return "Main";
+    case 88:
+        return "Extended";
+    case 100:
+        return "High";
+    case 110:
+        return "High 10";
+    case 122:
+        return "High 4:2:2";
+    case 144:
+        return "High 4:4:4";
+    case 244:
+        return "High 4:4:4 Predictive";
+    case 118:
+        return "Multiview High";
+    case 128:
+        return "Stereo High";
+    default:
+        return "Unknown";
     }
 }
 
 std::string H264BitstreamParser::GetLevelVersion(int level_idc) {
     // level_idc 是「等级 × 10」：31 -> 3.1。9 是规范里唯一的非十进制特例（1b）。
-    if (level_idc == 0) return "Undefined";
-    if (level_idc == 9) return "1b";
+    if (level_idc == 0)
+        return "Undefined";
+    if (level_idc == 9)
+        return "1b";
     const int major = level_idc / 10;
     const int minor = level_idc % 10;
-    if (major < 1 || major > 6) return "Unknown";
+    if (major < 1 || major > 6)
+        return "Unknown";
     return std::to_string(major) + "." + std::to_string(minor);
 }
 
-void H264BitstreamParser::ParseProfileLevelInfo(uint32_t profile_idc,
-                                                uint32_t level_idc,
-                                                int& profile,
-                                                std::string& profile_name,
-                                                int& level,
-                                                std::string& level_version) {
+void H264BitstreamParser::ParseProfileLevelInfo(uint32_t profile_idc, uint32_t level_idc, int& profile,
+                                                std::string& profile_name, int& level, std::string& level_version) {
     profile = static_cast<int>(profile_idc);
     level = static_cast<int>(level_idc);
     profile_name = GetProfileName(profile);
@@ -78,13 +88,22 @@ bool H264BitstreamParser::HasChromaFormatExtension(int profile_idc) {
     // H.264 7.3.2.1.1：只有这些 profile 的 SPS 才带 chroma_format_idc /
     // bit_depth_* / qpprime_y_zero_transform_bypass_flag 等扩展字段。
     switch (profile_idc) {
-        case 100: case 110: case 122: case 244:
-        case 44:  case 83:  case 86:  case 118:
-        case 128: case 138: case 139: case 134:
-        case 135:
-            return true;
-        default:
-            return false;
+    case 100:
+    case 110:
+    case 122:
+    case 244:
+    case 44:
+    case 83:
+    case 86:
+    case 118:
+    case 128:
+    case 138:
+    case 139:
+    case 134:
+    case 135:
+        return true;
+    default:
+        return false;
     }
 }
 
@@ -116,8 +135,7 @@ void H264BitstreamParser::SkipScalingList(videoeye::BitReader& reader, int size)
 // --------------------------------------------------------------------------
 // hrd_parameters() —— 7.3.2.1.2 / 附录 E.1.2
 // --------------------------------------------------------------------------
-void H264BitstreamParser::SkipHrdParameters(videoeye::BitReader& reader,
-                                            model::H264VuiInfo& vui) {
+void H264BitstreamParser::SkipHrdParameters(videoeye::BitReader& reader, model::H264VuiInfo& vui) {
     const uint32_t cpb_cnt_minus1 = reader.ReadUEBounded(31);
     if (reader.HasError()) {
         return;
@@ -138,17 +156,16 @@ void H264BitstreamParser::SkipHrdParameters(videoeye::BitReader& reader,
         }
     }
 
-    reader.SkipBits(5); // initial_cpb_removal_delay_length_minus1
-    reader.SkipBits(5); // cpb_removal_delay_length_minus1
+    reader.SkipBits(5);                           // initial_cpb_removal_delay_length_minus1
+    reader.SkipBits(5);                           // cpb_removal_delay_length_minus1
     vui.dpb_delay_value = reader.ReadBits(5) + 1; // dpb_output_delay_length_minus1
-    reader.SkipBits(5); // time_offset_length
+    reader.SkipBits(5);                           // time_offset_length
 }
 
 // --------------------------------------------------------------------------
 // vui_parameters() —— 附录 E.1.1
 // --------------------------------------------------------------------------
-void H264BitstreamParser::ParseVuiParameters(videoeye::BitReader& reader,
-                                             model::H264VuiInfo& vui) {
+void H264BitstreamParser::ParseVuiParameters(videoeye::BitReader& reader, model::H264VuiInfo& vui) {
     vui.present = true;
 
     // --- aspect_ratio_info ---
@@ -307,8 +324,7 @@ model::H264SpsInfo H264BitstreamParser::ParseFromNalUnit(const videoeye::NalUnit
     sps.pic_order_cnt_type = static_cast<int>(reader.ReadUE());
     if (sps.pic_order_cnt_type == 0) {
         sps.log2_max_pic_order_cnt_lsb_minus4 = static_cast<int>(reader.ReadUE());
-        if (sps.log2_max_pic_order_cnt_lsb_minus4 < 0 ||
-            sps.log2_max_pic_order_cnt_lsb_minus4 > 12) {
+        if (sps.log2_max_pic_order_cnt_lsb_minus4 < 0 || sps.log2_max_pic_order_cnt_lsb_minus4 > 12) {
             return sps; // 规范范围 0..12
         }
     } else if (sps.pic_order_cnt_type == 1) {
@@ -317,8 +333,8 @@ model::H264SpsInfo H264BitstreamParser::ParseFromNalUnit(const videoeye::NalUnit
         // （另一半在 PPS 的 bottom_field_pic_order_in_frame_present_flag）——
         // 不解 slice 时用不到，解 slice QP 时缺它就整体错位，所以存下来。
         sps.delta_pic_order_always_zero_flag = reader.ReadBit();
-        reader.ReadSE();    // offset_for_non_ref_pic
-        reader.ReadSE();    // offset_for_top_to_bottom_field
+        reader.ReadSE(); // offset_for_non_ref_pic
+        reader.ReadSE(); // offset_for_top_to_bottom_field
         const uint32_t cycle = reader.ReadUE();
         // num_ref_frames_in_pic_order_cnt_cycle（本函数里叫 cycle）：畸形 SPS 能报出
         // 上亿个 offset_for_ref_frame，后面那个 ReadSE 循环会直接卡死
@@ -348,8 +364,7 @@ model::H264SpsInfo H264BitstreamParser::ParseFromNalUnit(const videoeye::NalUnit
     // 合理性校验：ue(v) 读出的巨值在 int 截断后可为负；像素换算（×16）超
     // 65536 只可能来自垃圾码流 —— 拒绝，避免下游 width() 溢出。
     if (sps.pic_width_in_mbs_minus1 < 0 || sps.pic_height_in_mbs_minus1 < 0 ||
-        (sps.pic_width_in_mbs_minus1 + 1) > 65536 / 16 ||
-        (sps.pic_height_in_mbs_minus1 + 1) > 65536 / 16) {
+        (sps.pic_width_in_mbs_minus1 + 1) > 65536 / 16 || (sps.pic_height_in_mbs_minus1 + 1) > 65536 / 16) {
         return sps;
     }
 

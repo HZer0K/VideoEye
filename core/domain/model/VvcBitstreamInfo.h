@@ -42,7 +42,7 @@ struct VvcVuiInfo {
 
     bool aspect_ratio_info_present_flag = false;
     bool aspect_ratio_constant_flag = false;
-    int aspect_ratio_idc = 0;           // 0xFF = Extended_SAR
+    int aspect_ratio_idc = 0; // 0xFF = Extended_SAR
     int sar_width = 0;
     int sar_height = 0;
 
@@ -50,7 +50,7 @@ struct VvcVuiInfo {
     bool overscan_appropriate_flag = false;
 
     bool colour_description_present_flag = false;
-    int colour_primaries = 2;           // 未出现时规范推断为 2（未指定）
+    int colour_primaries = 2; // 未出现时规范推断为 2（未指定）
     int transfer_characteristics = 2;
     int matrix_coeffs = 2;
     bool full_range_flag = false;
@@ -81,8 +81,12 @@ struct VvcVpsInfo {
     int vps_bit_depth_luma_minus8 = 0;
     int vps_bit_depth_chroma_minus8 = 0;
 
-    int MaxLayers() const { return vps_max_layers_minus1 + 1; }
-    int MaxSubLayers() const { return vps_max_sublayers_minus1 + 1; }
+    int MaxLayers() const {
+        return vps_max_layers_minus1 + 1;
+    }
+    int MaxSubLayers() const {
+        return vps_max_sublayers_minus1 + 1;
+    }
 
     std::string ProfileName() const;
     std::string LevelString() const;
@@ -155,9 +159,15 @@ struct VvcSpsInfo {
     VvcVuiInfo vui;
 
     // 派生值
-    int CtuSize() const { return 1 << (sps_log2_ctu_size_minus5 + 5); }
-    int MinCbSizeY() const { return 1 << (sps_log2_min_luma_coding_block_size_minus2 + 2); }
-    int MaxPicOrderCntLsb() const { return 1 << (sps_log2_max_pic_order_cnt_lsb_minus4 + 4); }
+    int CtuSize() const {
+        return 1 << (sps_log2_ctu_size_minus5 + 5);
+    }
+    int MinCbSizeY() const {
+        return 1 << (sps_log2_min_luma_coding_block_size_minus2 + 2);
+    }
+    int MaxPicOrderCntLsb() const {
+        return 1 << (sps_log2_max_pic_order_cnt_lsb_minus4 + 4);
+    }
     int SubWidthC() const;
     int SubHeightC() const;
 
@@ -165,8 +175,12 @@ struct VvcSpsInfo {
     int width() const;
     int height() const;
 
-    int BitDepthLuma() const { return sps_bitdepth_minus8 + 8; }
-    int BitDepthChroma() const { return sps_bitdepth_minus8 + 8; }
+    int BitDepthLuma() const {
+        return sps_bitdepth_minus8 + 8;
+    }
+    int BitDepthChroma() const {
+        return sps_bitdepth_minus8 + 8;
+    }
 
     std::string ProfileName() const;
     std::string LevelString() const;
@@ -224,7 +238,7 @@ struct VvcPpsInfo {
     bool pps_weighted_pred_flag = false;
     bool pps_weighted_bipred_flag = false;
     bool pps_ref_wraparound_enabled_flag = false;
-    int pps_pic_init_qp_minus26 = 0;   // 实际 init QP = 26 + 该值
+    int pps_pic_init_qp_minus26 = 0; // 实际 init QP = 26 + 该值
     bool pps_cu_qp_delta_enabled_flag = false;
     bool pps_chroma_tool_offsets_present_flag = false;
     int pps_cb_qp_offset = 0;
@@ -264,8 +278,12 @@ struct VvcPpsInfo {
     int height() const;
 
     // 派生值
-    int CtbSizeY() const { return 1 << (pps_log2_ctu_size_minus5 + 5); }
-    int InitQp() const { return pps_pic_init_qp_minus26 + 26; }
+    int CtbSizeY() const {
+        return 1 << (pps_log2_ctu_size_minus5 + 5);
+    }
+    int InitQp() const {
+        return pps_pic_init_qp_minus26 + 26;
+    }
 };
 
 // vvcC（VvcDecoderConfigurationRecord）里解析出的信息。
@@ -280,14 +298,18 @@ struct VvcCodecConfigInfo {
     int general_profile_idc = 0;
     int general_tier_flag = 0;
     uint32_t general_level_idc = 0;
-    int chroma_format_idc = 1;      // 0=4:0:0 1=4:2:0 2=4:2:2 3=4:4:4
+    int chroma_format_idc = 1; // 0=4:0:0 1=4:2:0 2=4:2:2 3=4:4:4
     int bit_depth_minus8 = 0;
-    int num_sublayers = 0;          // vvcC 里的 3 位字段，实际子层数 = 值+1
+    int num_sublayers = 0; // vvcC 里的 3 位字段，实际子层数 = 值+1
     int max_picture_width = 0;
     int max_picture_height = 0;
 
-    int BitDepth() const { return bit_depth_minus8 + 8; }
-    int MaxSubLayers() const { return num_sublayers + 1; }
+    int BitDepth() const {
+        return bit_depth_minus8 + 8;
+    }
+    int MaxSubLayers() const {
+        return num_sublayers + 1;
+    }
 
     std::string ProfileName() const;
     std::string LevelString() const;

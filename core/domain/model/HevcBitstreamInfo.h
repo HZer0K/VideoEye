@@ -18,54 +18,54 @@ namespace model {
 // --------------------------------------------------------------------------
 struct HevcVpsInfo {
     bool present = false;
-    
+
     int vps_video_parameter_set_id = 0;
-    int vps_max_layers = 0;          // = vps_max_layers_minus1 + 1
-    int vps_max_sub_layers = 0;      // = vps_max_sub_layers_minus1 + 1
+    int vps_max_layers = 0;     // = vps_max_layers_minus1 + 1
+    int vps_max_sub_layers = 0; // = vps_max_sub_layers_minus1 + 1
     int vps_temporal_id_nesting_flag = 0;
     bool vps_sub_layer_ordering_info_present_flag = false;
     int vps_max_layer_id = 0;
     // vps_temporal_nal_layer_only_flag 在规范里叫 vps_temporal_id_nesting_flag，保留旧名兼容
     int vps_temporal_nal_layer_only_flag = 0;
-    
+
     // PTL (Profile Tier Level)
     int general_profile_space = 0;
-    int general_tier_flag = 0;      // 0=Main, 1=Main 10
+    int general_tier_flag = 0; // 0=Main, 1=Main 10
     int general_profile_idc = 0;
     uint32_t general_level_idc = 0;
-    
+
     // Sub-layer profile/level
     std::vector<bool> sub_layer_profile_present_flags;
     std::vector<bool> sub_layer_level_present_flags;
-    
+
     // Video format
-    int vps_video_format = 0;       // 0=component, 1=pal, 2=ntsc, 3=secam, 4=mac
-    
+    int vps_video_format = 0; // 0=component, 1=pal, 2=ntsc, 3=secam, 4=mac
+
     // Color config
-    int vps_chroma_format_idc = 0;  // 0=4:0:0, 1=4:2:0, 2=4:2:2, 3=4:4:4
+    int vps_chroma_format_idc = 0; // 0=4:0:0, 1=4:2:0, 2=4:2:2, 3=4:4:4
     int vps_bit_depth_luma_minus8 = 0;
     int vps_bit_depth_chroma_minus8 = 0;
-    
+
     // Timing
     bool vps_timing_info_present_flag = false;
     uint32_t vps_num_units_in_tick = 0;
     uint32_t vps_time_scale = 0;
     bool vps_poc_proportional_to_timestamp_flag = false;
     int vps_no_long_term_images_flag = 0;
-    
+
     // NAL layer
     int vps_num_ptl_symbols = 0;
 };
 
 struct HevcSpsInfo {
     bool present = false;
-    
+
     int sps_seq_parameter_set_id = 0;
     int sps_video_parameter_set_id = 0;
     int sps_max_sub_layers_minus1 = 0;
     int sps_temporal_id_nesting_flag = 0;
     bool sps_sub_layer_ordering_info_present_flag = false;
-    
+
     // PTL (Profile Tier Level)
     int general_profile_space = 0;
     int general_profile_idc = 0;
@@ -73,26 +73,26 @@ struct HevcSpsInfo {
     uint32_t general_level_idc = 0;
     std::vector<bool> sub_layer_profile_present_flags;
     std::vector<bool> sub_layer_level_present_flags;
-    int chroma_format_idc = 0;      // 0=4:0:0, 1=4:2:0, 2=4:2:2, 3=4:4:4
+    int chroma_format_idc = 0; // 0=4:0:0, 1=4:2:0, 2=4:2:2, 3=4:4:4
     int separate_colour_plane_flag = 0;
-    
+
     // 规范里直接给的是亮度采样数，不是 CTU 数
     int pic_width_in_luma_samples = 0;
     int pic_height_in_luma_samples = 0;
-    int pic_width_in_ctu_minus1 = 0;  // 仅作参考，解析时按 CTU 反推
+    int pic_width_in_ctu_minus1 = 0; // 仅作参考，解析时按 CTU 反推
     int pic_height_in_ctu_minus1 = 0;
-    
+
     // conformance window（等价于 H.264 的 frame_cropping）
     int conformance_window_flag = 0;
     int conf_win_left_offset = 0;
     int conf_win_right_offset = 0;
     int conf_win_top_offset = 0;
     int conf_win_bottom_offset = 0;
-    
+
     // Bit depth
     int bit_depth_luma_minus8 = 0;
     int bit_depth_chroma_minus8 = 0;
-    
+
     // Chroma config
     int log2_max_pic_order_cnt_lsb_minus4 = 0;
     int sub_layer_ordering_info_present_flag = 0;
@@ -102,7 +102,7 @@ struct HevcSpsInfo {
     int log2_diff_max_min_luma_transform_block_size = 0;
     int max_transform_hierarchy_depth_inter = 0;
     int max_transform_hierarchy_depth_intra = 0;
-    
+
     // Scaling
     int scaling_list_enable_flag = 0;
     int amp_enabled_flag = 0;
@@ -115,7 +115,7 @@ struct HevcSpsInfo {
     int num_short_term_ref_pic_sets = 0;
     int long_term_ref_pics_present_flag = 0;
     int num_long_term_ref_pics_sps = 0;
-    
+
     // SPS extensions
     int spatial_scalable_idc = 0;
     int num_scalable_layers = 0;
@@ -133,40 +133,40 @@ struct HevcSpsInfo {
     int intra_slice_header_data_payload_alignment_byte = 0;
     int intra_slice_header_data_payload_alignment_bits = 0;
     int intra_slice_header_data_payload_alignment_bit = 0;
-    
+
     // Transform skip
     int transform_skip_enabled_flag = 0;
     int log2_transform_skip_max_size_minus2 = 0;
-    
+
     // CABAC
     int cabac_init_present_flag = 0;
-    
+
     // CU partition
     int split_cu_delta_flag = 0;
     int log2_diff_cu_min_qp_idx_minus1 = 0;
-    
+
     // STSA
     int stref_pic_all_flag = 0;
-    
+
     // Temporal motion vectors
     int temporal_mvp_enabled_flag = 0;
-    
+
     // Stronger smoothing
     int strongly_smoothed_img_between_grids_flag = 0;
-    
+
     // Sign data hiding
     int sign_data_hiding_enabled_flag = 0;
-    
+
     // CABAC bypass
     int cabac_bypass_alignment_enabled_flag = 0;
-    
+
     // FP
     int four_twenty_two_log2_conversion_enable_flag = 0;
-    
+
     // VUI
     int vui_parameters_present_flag = 0;
     int aspect_ratio_info_present_flag = 0;
-    int aspect_ratio_idc = 0;           // 255 = Extended_SAR
+    int aspect_ratio_idc = 0; // 255 = Extended_SAR
     int sar_width = 0;
     int sar_height = 0;
     int video_full_range_flag = 0;
@@ -193,7 +193,7 @@ struct HevcSpsInfo {
     int max_bits_per_min_cu_denom = 0;
     int log2_max_mv_length_horizontal = 0;
     int log2_max_mv_length_vertical = 0;
-    
+
     // 显示宽高 = 亮度采样数 - conformance window（按 SubWidthC/SubHeightC 换算）
     int SubWidthC() const {
         const int cat = separate_colour_plane_flag ? 0 : chroma_format_idc;
@@ -219,16 +219,20 @@ struct HevcSpsInfo {
         }
         return h;
     }
-    
-    int BitDepthLuma() const { return bit_depth_luma_minus8 + 8; }
-    int BitDepthChroma() const { return bit_depth_chroma_minus8 + 8; }
-    
+
+    int BitDepthLuma() const {
+        return bit_depth_luma_minus8 + 8;
+    }
+    int BitDepthChroma() const {
+        return bit_depth_chroma_minus8 + 8;
+    }
+
     std::string ProfileName() const;
 };
 
 struct HevcPpsInfo {
     bool present = false;
-    
+
     int pic_parameter_set_id = 0;
     int seq_parameter_set_id = 0;
     int dependent_slice_segments_enabled_flag = 0;
@@ -254,9 +258,9 @@ struct HevcPpsInfo {
     int output_flag_present_flag = 0;
     int num_extra_slice_header_bits_template = 0;
     int weighted_pred_flag = 0;
-    int weighted_ppred_flag = 0;     // 旧名，等价 weighted_bipred_flag
-    int weighted_bi_pred_flag = 0;   // 旧名，等价 weighted_bipred_flag
-    int weighted_bipred_flag = 0;    // 规范名
+    int weighted_ppred_flag = 0;   // 旧名，等价 weighted_bipred_flag
+    int weighted_bi_pred_flag = 0; // 旧名，等价 weighted_bipred_flag
+    int weighted_bipred_flag = 0;  // 规范名
     int deblocking_filter_control_present_flag = 0;
     int transquant_bypass_enabled_flag = 0;
     int tiles_enabled_flag = 0;
@@ -271,16 +275,20 @@ struct HevcPpsInfo {
     int slice_appended_flag = 0;
     int slice_segment_appended_flag = 0;
     int picture_appended_flag = 0;
-    
+
     // Additional fields used by parser
     int redundant_pic_cnt_present_flag = 0;
     int transform_skip_enabled_flag = 0;
     int cu_qp_offset_enabled_flag = 0;
     int pps_cb_offset = 0;
     int pps_cr_offset = 0;
-    
-    int PicWidth() const { return 0; }
-    int PicHeight() const { return 0; }
+
+    int PicWidth() const {
+        return 0;
+    }
+    int PicHeight() const {
+        return 0;
+    }
 };
 
 } // namespace model

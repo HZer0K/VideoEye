@@ -13,23 +13,37 @@ std::string JsonEscape(const std::string& in) {
     out.reserve(in.size());
     for (char c : in) {
         switch (c) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\b': out += "\\b";  break;
-            case '\f': out += "\\f";  break;
-            case '\n': out += "\\n";  break;
-            case '\r': out += "\\r";  break;
-            case '\t': out += "\\t";  break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    static const char* kHex = "0123456789abcdef";
-                    out += "\\u00";
-                    out += kHex[(c >> 4) & 0xF];
-                    out += kHex[c & 0xF];
-                } else {
-                    out += c;
-                }
-                break;
+        case '"':
+            out += "\\\"";
+            break;
+        case '\\':
+            out += "\\\\";
+            break;
+        case '\b':
+            out += "\\b";
+            break;
+        case '\f':
+            out += "\\f";
+            break;
+        case '\n':
+            out += "\\n";
+            break;
+        case '\r':
+            out += "\\r";
+            break;
+        case '\t':
+            out += "\\t";
+            break;
+        default:
+            if (static_cast<unsigned char>(c) < 0x20) {
+                static const char* kHex = "0123456789abcdef";
+                out += "\\u00";
+                out += kHex[(c >> 4) & 0xF];
+                out += kHex[c & 0xF];
+            } else {
+                out += c;
+            }
+            break;
         }
     }
     return out;
@@ -46,17 +60,28 @@ std::string JsonString(const std::string& in) {
 // --------------------------------------------------------------------------
 std::string H264SpsInfo::ProfileName() const {
     switch (profile_idc) {
-        case 66:  return "Baseline";
-        case 77:  return "Main";
-        case 88:  return "Extended";
-        case 100: return "High";
-        case 110: return "High 10";
-        case 122: return "High 4:2:2";
-        case 144: return "High 4:4:4";
-        case 244: return "High 4:4:4 Predictive";
-        case 118: return "Multiview High";
-        case 128: return "Stereo High";
-        default:  return "Unknown";
+    case 66:
+        return "Baseline";
+    case 77:
+        return "Main";
+    case 88:
+        return "Extended";
+    case 100:
+        return "High";
+    case 110:
+        return "High 10";
+    case 122:
+        return "High 4:2:2";
+    case 144:
+        return "High 4:4:4";
+    case 244:
+        return "High 4:4:4 Predictive";
+    case 118:
+        return "Multiview High";
+    case 128:
+        return "Stereo High";
+    default:
+        return "Unknown";
     }
 }
 
@@ -85,18 +110,30 @@ int H264PpsInfo::PicHeight() const {
 // --------------------------------------------------------------------------
 std::string HevcSpsInfo::ProfileName() const {
     switch (general_profile_idc) {
-        case 1:  return "Main";
-        case 2:  return "Main 10";
-        case 3:  return "Main Still Picture";
-        case 4:  return "Main Rext";
-        case 5:  return "High Throughput";
-        case 6:  return "Multiview Main";
-        case 7:  return "Scalable Main";
-        case 8:  return "3D Main";
-        case 9:  return "Screen Content Coding";
-        case 10: return "Scalable Range Extension";
-        case 11: return "High Throughput Screen Content Coding";
-        default: return "Unknown";
+    case 1:
+        return "Main";
+    case 2:
+        return "Main 10";
+    case 3:
+        return "Main Still Picture";
+    case 4:
+        return "Main Rext";
+    case 5:
+        return "High Throughput";
+    case 6:
+        return "Multiview Main";
+    case 7:
+        return "Scalable Main";
+    case 8:
+        return "3D Main";
+    case 9:
+        return "Screen Content Coding";
+    case 10:
+        return "Scalable Range Extension";
+    case 11:
+        return "High Throughput Screen Content Coding";
+    default:
+        return "Unknown";
     }
 }
 
@@ -120,30 +157,45 @@ std::string VvcLevelString(uint32_t level_idc) {
 // 具体取值见 RFC 9328 7.3.2.1：1 / 33 / 65 / 97
 std::string VvcProfileName(int profile_idc) {
     switch (profile_idc) {
-        case 1:  return "Main 10";
-        case 33: return "Main 10 4:4:4";
-        case 65: return "Main 10 Still Picture";
-        case 97: return "Main 10 4:4:4 Still Picture";
-        default: break;
+    case 1:
+        return "Main 10";
+    case 33:
+        return "Main 10 4:4:4";
+    case 65:
+        return "Main 10 Still Picture";
+    case 97:
+        return "Main 10 4:4:4 Still Picture";
+    default:
+        break;
     }
     // 多层档次用 bit4(16) 标记，按位拼一个可读名，避免返回纯 "Unknown"
     std::string name;
-    if (profile_idc & 0x10) name += "Multilayer ";
+    if (profile_idc & 0x10)
+        name += "Multilayer ";
     name += (profile_idc & 0x20) ? "Main 10 4:4:4" : "Main 10";
-    if (profile_idc & 0x40) name += " Still Picture";
+    if (profile_idc & 0x40)
+        name += " Still Picture";
     name += " (idc=" + std::to_string(profile_idc) + ")";
     return name;
 }
 
-}  // namespace
+} // namespace
 
-std::string VvcVpsInfo::ProfileName() const { return VvcProfileName(general_profile_idc); }
+std::string VvcVpsInfo::ProfileName() const {
+    return VvcProfileName(general_profile_idc);
+}
 
-std::string VvcVpsInfo::LevelString() const { return VvcLevelString(general_level_idc); }
+std::string VvcVpsInfo::LevelString() const {
+    return VvcLevelString(general_level_idc);
+}
 
-std::string VvcSpsInfo::ProfileName() const { return VvcProfileName(general_profile_idc); }
+std::string VvcSpsInfo::ProfileName() const {
+    return VvcProfileName(general_profile_idc);
+}
 
-std::string VvcSpsInfo::LevelString() const { return VvcLevelString(general_level_idc); }
+std::string VvcSpsInfo::LevelString() const {
+    return VvcLevelString(general_level_idc);
+}
 
 std::string VvcCodecConfigInfo::ProfileName() const {
     return VvcProfileName(general_profile_idc);
@@ -159,7 +211,9 @@ int VvcSpsInfo::SubWidthC() const {
     return (sps_chroma_format_idc == 1 || sps_chroma_format_idc == 2) ? 2 : 1;
 }
 
-int VvcSpsInfo::SubHeightC() const { return (sps_chroma_format_idc == 1) ? 2 : 1; }
+int VvcSpsInfo::SubHeightC() const {
+    return (sps_chroma_format_idc == 1) ? 2 : 1;
+}
 
 int VvcSpsInfo::width() const {
     int w = sps_pic_width_max_in_luma_samples;
@@ -181,7 +235,9 @@ int VvcPpsInfo::SubWidthC() const {
     return (chroma_format_idc == 1 || chroma_format_idc == 2) ? 2 : 1;
 }
 
-int VvcPpsInfo::SubHeightC() const { return (chroma_format_idc == 1) ? 2 : 1; }
+int VvcPpsInfo::SubHeightC() const {
+    return (chroma_format_idc == 1) ? 2 : 1;
+}
 
 int VvcPpsInfo::width() const {
     int w = pps_pic_width_in_luma_samples;
@@ -202,11 +258,9 @@ int VvcPpsInfo::height() const {
 // --------------------------------------------------------------------------
 // BitstreamAnalysisResult
 // --------------------------------------------------------------------------
-void BitstreamAnalysisResult::AddInconsistency(const std::string& field,
-                                              const std::string& container_value,
-                                              const std::string& bitstream_value,
-                                              const std::string& description,
-                                              const std::string& suggestion) {
+void BitstreamAnalysisResult::AddInconsistency(const std::string& field, const std::string& container_value,
+                                               const std::string& bitstream_value, const std::string& description,
+                                               const std::string& suggestion) {
     Inconsistency item;
     item.field = field;
     item.container_value = container_value;
@@ -221,8 +275,7 @@ std::string BitstreamAnalysisResult::Summary() const {
     std::ostringstream oss;
     oss << "Codec: " << (codec_name.empty() ? std::string("unknown") : codec_name) << "\n";
     oss << "Stream index: " << stream_index << "\n";
-    oss << "Capability: " << CapabilityToString(capability)
-        << " (outcome: " << ParseOutcomeToString(parse_outcome)
+    oss << "Capability: " << CapabilityToString(capability) << " (outcome: " << ParseOutcomeToString(parse_outcome)
         << ", partial: " << (partial ? "true" : "false") << ")\n";
     if (!capability_note.empty()) {
         oss << "Note: " << capability_note << "\n";
@@ -232,11 +285,9 @@ std::string BitstreamAnalysisResult::Summary() const {
     }
     oss << "Resolution: " << width << "x" << height << "\n";
     oss << "Bit depth: " << bit_depth << "\n";
-    oss << "Color: primaries=" << color_primaries
-        << " transfer=" << transfer_characteristics
+    oss << "Color: primaries=" << color_primaries << " transfer=" << transfer_characteristics
         << " matrix=" << matrix_coefficients << "\n";
-    oss << "NAL units: " << nal_units.size()
-        << "  OBU units: " << obu_units.size() << "\n";
+    oss << "NAL units: " << nal_units.size() << "  OBU units: " << obu_units.size() << "\n";
     oss << "Inconsistencies: " << inconsistencies.size() << "\n";
     return oss.str();
 }
