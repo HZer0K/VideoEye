@@ -88,6 +88,33 @@ jobs:
       - name: Build
         run: cmake --build --preset linux-fuzz
 
+      # 门禁的自检：确认插桩参数真的进了编译命令。
+      #
+      # 为什么需要这一步：add_compile_options 写错、被后面的 target 覆盖、或者
+      # 有人"清理一下 CMakeLists"时删掉某个参数，都**不会**产生任何编译错误 ——
+      # 症状只会退化成"UBSan 又变回 recover 模式"，也就是日志里躺着 UB 而 job 全绿。
+      # 那正是这个 job 存在的理由，所以这里在跑之前显式验一次。
+      #
+      # 判据取 ninja 的规则文件，不取构建日志：ninja 在 CI 日志里只打
+      # `[4/232] Building CXX object ...`，**完全不回显命令行**（连必然存在的
+      # -fsanitize=fuzzer-no-link 都搜不到），拿日志 grep 只会得到一个假的"没命中"。
+      - name: Assert sanitizer flags are armed
+        run: |
+          set -euo pipefail
+          fail=0
+          for flag in "-fsanitize=fuzzer-no-link" "-fno-sanitize-recover=undefined"; do
+            hits=$(grep -rho --include='*.ninja' -- "$flag" build/fuzz | wc -l)
+            echo "$flag -> $hits 处编译规则"
+            if [ "$hits" -eq 0 ]; then
+              echo "::error::编译命令里没有 $flag"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "插桩没生效时这个 job 会变成假绿（UB 只报不拦），先修 CMakeLists.txt"
+            exit 1
+          fi
+
       - name: Run fuzzers
         run: |
           set -uo pipefail
