@@ -17,15 +17,17 @@ targe —— 目录只是命名习惯，编译器不认识；能被机器检查�
 | `core/domain/model/` | `VideoEyeDomain` | 纯结果类型与值对象 | standard library、Qt Core（历史包袱，见 §5） |
 | `infrastructure/config`<br>`infrastructure/serialization`<br>`infrastructure/logging`<br>`infrastructure/concurrency` | `VideoEyeInfrastructure` | 配置、JSON、日志、后台任务调度 | standard library |
 | `core/ffmpeg_io/` | `VideoEyeFfmpegIo` | FFmpeg 阻塞 IO 的中断与超时（**叶子模块**，分析/播放/导出共用） | FFmpeg |
-| `core/media/codec`<br>`core/media/container`<br>`core/media/probe`<br>`core/media/streaming` | `VideoEyeMedia` | 容器字节级解析、码流参数集解析、文件探测 | domain、infrastructure |
-| `core/analysis/stream`<br>`core/analysis/orchestration`<br>`core/analysis/codec`<br>`core/analysis/container`<br>`core/analysis/quality`<br>`core/analysis/diagnostics` | `VideoEyeAnalysis` | 各分析器、执行引擎与编排 | domain、media、infrastructure、ffmpeg_io、FFmpeg |
+| `core/media/codec`<br>`core/media/container`<br>`core/media/probe`<br>`core/media/streaming` | `VideoEyeMedia` | 容器字节级解析、extradata / 比特读取、文件探测 | domain、infrastructure |
+| `core/analysis/codec` | `VideoEyeCodec` | 码流参数集 / slice / SEI 解析（analysis 的叶子层：只用 `AVCodecID` 枚举做分派，不调用 FFmpeg 函数） | domain、media、infrastructure、FFmpeg 头文件 |
+| `core/analysis/container`<br>`core/analysis/streaming` | `VideoEyeAnalysisPackage` | 容器与流媒体包解析（analysis 的叶子层：只读文件字节，不碰 FFmpeg / Qt；`ContainerStructureAnalyzer` 分发器仍归 analysis） | domain、media、infrastructure |
+| `core/analysis/stream`<br>`core/analysis/orchestration`<br>`core/analysis/quality`<br>`core/analysis/diagnostics` | `VideoEyeAnalysis` | 各分析器、执行引擎与编排 | domain、media、codec、package、infrastructure、ffmpeg_io、FFmpeg |
 | `core/exporter/` | `VideoEyeExporter` | 转码 / remux 导出 | domain、infrastructure、ffmpeg_io、FFmpeg |
 | `core/player/` | `VideoEyePlayback` | 播放会话、解码、抽帧 | domain、analysis、exporter、infrastructure、ffmpeg_io、qt、FFmpeg |
 | `core/qc/` | `VideoEyeQc` | 规则表、模板映射、批处理、对比 | domain、analysis、infrastructure |
 | `core/reporting/` | `VideoEyeReporting` | 报告导出（JSON / CSV / HTML / PDF / TXT） | domain、qc、infrastructure |
 | `core/ffmpeg/` | `VideoEyeFfmpegTools` | 原生 ffmpeg 命令行工作台 | infrastructure、Qt Core |
 | `core/qt/` | `VideoEyeQtAdapters` | 把不带 Qt 的执行引擎接进信号 / 线程；`QtWorkerOwner` 是所有自带 `QThread` 的后台 worker 的统一所有者 | domain、analysis、Qt Core |
-| `ui/` | `VideoEyeUi`（入口可执行文件 `VideoEye`） | 界面 | 以上全部 + Qt Widgets；`ui/reporting_panel` 另立 `VideoEyeReportingPanel`，`ui/charts` 另立 `VideoEyeUiCharts`（曲线控件，分析页与测试共用同一份 moc） |
+| `ui/` | `VideoEyeUi`（入口可执行文件 `VideoEye`） | 界面 | 以上全部 + Qt Widgets；`ui/reporting_panel` 另立 `VideoEyeReportingPanel`，`ui/charts` 另立 `VideoEyeUiCharts`（曲线控件，分析页与测试共用同一份 moc），`ui/theme` 另立 `VideoEyeUiTheme`（调色板 / 字体 / QSS，组件测试与界面共用同一份编译结果） |
 
 迁移期那个把十层全部 PUBLIC 出去的 `VideoEyeCore` INTERFACE 聚合层**已经删除** ——
 它让每个调用方都能编译，代价是依赖关系重新变得不可见（正是因为它，`Playback → Exporter`
@@ -50,8 +52,14 @@ graph TD
     FFIO[core/ffmpeg_io<br/>阻塞 IO 中断/超时] --> STD
     MEDIA[core/media<br/>容器与码流解析] --> DOMAIN
     MEDIA --> INFRA
+    CODEC[core/analysis/codec<br/>码流语法解析] --> DOMAIN
+    CODEC --> MEDIA
+    PACKAGE[core/analysis/container<br/>core/analysis/streaming<br/>容器/流媒体解析] --> DOMAIN
+    PACKAGE --> MEDIA
     ANALYSIS[core/analysis<br/>分析器与执行引擎] --> DOMAIN
     ANALYSIS --> MEDIA
+    ANALYSIS --> CODEC
+    ANALYSIS --> PACKAGE
     ANALYSIS --> INFRA
     EXPORTER[core/exporter] --> INFRA
     PLAYBACK[core/player] --> ANALYSIS
@@ -372,7 +380,11 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   会在链接期 LNK2019）。链 `VideoEyeUi` 的目标（如 `test_scan_terminal_state`）由该库的
   GLOB 自动纳入，无需再同步源清单。曲线控件 `MetricChartWidget` 自成一个
   `VideoEyeUiCharts`：以前 15 个测试各自编它一遍（16 份实现 + 16 份 moc），现在
-  界面与测试都只链这一份。
+  界面与测试都只链这一份。主题工具 `ui/theme/AppTheme.cpp` 同理走 `VideoEyeUiTheme`
+  （4 → 1），组件测试只链它、不再手列 600 行 QSS 源码。
+  ⚠️ 同理，容器 / 流媒体解析器与 `core/ffmpeg` 的解释链不要再手列源码：
+  前者在 `VideoEyeAnalysisPackage`（叶子库，不碰 FFmpeg / Qt），后者在
+  `VideoEyeFfmpegTools`。手列同一份 `.cpp` + 链所属模块库会撞 LNK2005。
   ⚠️ 头文件里**不要内联解引用仅前向声明的组件类型**（`GopSummaries()` 想返回
   `video_page_->GopSummaries()` 就得把定义挪到 .cpp）：类的完整上下文只对本类成员有效，
   对别的 incomplete type 无效，会报 C2027。

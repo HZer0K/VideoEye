@@ -178,6 +178,10 @@ file(GLOB UI_HEADERS CONFIGURE_DEPENDS "ui/*.h")
 # MetricChartWidget 是十几个分析页共用的曲线底座，也是这些页的测试唯一需要
 # 额外编进来的 Q_OBJECT 类。独立成库后，测试链库即可，不必每个目标各编一份。
 file(GLOB_RECURSE CHART_SOURCES CONFIGURE_DEPENDS "ui/charts/*.cpp" "ui/charts/*.h")
+# ui/theme 单独成一个 target（见下面 VideoEyeUiTheme）：
+# AppTheme.cpp 有 600 行 QSS，三个组件测试各自把它编进 exe（连同 VideoEyeUi 一共 4 份）。
+# 独立成库后只编一份，需要主题工具的测试链库即可。
+file(GLOB_RECURSE THEME_SOURCES CONFIGURE_DEPENDS "ui/theme/*.cpp" "ui/theme/*.h")
 # ui/reporting_panel 单独成一个 target（见下面 VideoEyeReportingPanel）。
 #
 # 它是 ui/ 里带后台线程的页面，单独成库后，只需要这一页的测试可以只链它，
@@ -187,6 +191,8 @@ file(GLOB_RECURSE REPORTING_PANEL_SOURCES CONFIGURE_DEPENDS
 list(FILTER UI_SOURCES EXCLUDE REGEX "ui/reporting_panel/")
 # 曲线控件走 VideoEyeUiCharts，避免同一个 Q_OBJECT 类在两个 target 里各跑一次 AUTOMOC。
 list(FILTER UI_SOURCES EXCLUDE REGEX "ui/charts/")
+# 主题工具走 VideoEyeUiTheme（Reason: 同一份 AppTheme.cpp 不该在 4 个 target 里各编一次）
+list(FILTER UI_SOURCES EXCLUDE REGEX "ui/theme/")
 # 入口不属于 UI 库：主程序只编译 ui/app/main.cpp，其余 ui/*.cpp 进 VideoEyeUi。
 list(FILTER UI_SOURCES EXCLUDE REGEX "ui/app/main\\.cpp$")
 
@@ -194,6 +200,28 @@ file(GLOB_RECURSE DOMAIN_SOURCES CONFIGURE_DEPENDS "core/domain/*.cpp" "core/dom
 file(GLOB_RECURSE INFRA_SOURCES CONFIGURE_DEPENDS "infrastructure/*.cpp" "infrastructure/*.h")
 file(GLOB_RECURSE MEDIA_SOURCES CONFIGURE_DEPENDS "core/media/*.cpp" "core/media/*.h")
 file(GLOB_RECURSE ANALYSIS_SOURCES CONFIGURE_DEPENDS "core/analysis/*.cpp" "core/analysis/*.h")
+# 码流参数集 / slice / SEI 的解析器单独成一个 target（见下面 VideoEyeCodec）：
+# 它们是 analysis 里唯一"只吃 domain + media、不碰 FFmpeg 函数"的一块，而解析器
+# 单测（H.264/HEVC/AV1/VVC/VP9/音频位流）目前要各自重编一遍同一份 .cpp。
+# 独立成库后测试链库即可，既不必重复编译，也不必把整层 analysis 与 FFmpeg 拖进来。
+file(GLOB_RECURSE CODEC_SOURCES CONFIGURE_DEPENDS
+    "core/analysis/codec/*.cpp" "core/analysis/codec/*.h")
+list(FILTER ANALYSIS_SOURCES EXCLUDE REGEX "core/analysis/codec/")
+# 容器 / 流媒体解析器单独成一个 target（见下面 VideoEyeAnalysisPackage）：
+# 它们只吃 domain / media / infrastructure，不 include 任何 FFmpeg 或 Qt 头，而对应的
+# 单测刻意不链整层 analysis（以免把 FFmpeg 拖进来）—— 以前只能各自手列 .cpp 重编。
+# ContainerStructureAnalyzer（分发器，自己 include libavformat）与 FormatDetector
+# 仍留在 VideoEyeAnalysis：前者需要 FFmpeg，后者只有一份、不值得为它拆目录。
+file(GLOB_RECURSE ANALYSIS_PACKAGE_SOURCES CONFIGURE_DEPENDS
+    "core/analysis/container/*.cpp" "core/analysis/container/*.h"
+    "core/analysis/streaming/*.cpp" "core/analysis/streaming/*.h")
+list(FILTER ANALYSIS_PACKAGE_SOURCES EXCLUDE REGEX "ContainerStructureAnalyzer\\.")
+list(FILTER ANALYSIS_SOURCES EXCLUDE REGEX "core/analysis/(container|streaming)/")
+# 分发器仍在 analysis 层：从上面那次目录级排除里单独取回来。
+file(GLOB_RECURSE ANALYSIS_DISPATCH_SOURCES CONFIGURE_DEPENDS
+    "core/analysis/container/ContainerStructureAnalyzer.cpp"
+    "core/analysis/container/ContainerStructureAnalyzer.h")
+list(APPEND ANALYSIS_SOURCES ${ANALYSIS_DISPATCH_SOURCES})
 file(GLOB_RECURSE PLAYBACK_SOURCES CONFIGURE_DEPENDS "core/player/*.cpp" "core/player/*.h")
 file(GLOB_RECURSE EXPORTER_SOURCES CONFIGURE_DEPENDS "core/exporter/*.cpp" "core/exporter/*.h")
 file(GLOB_RECURSE QC_SOURCES CONFIGURE_DEPENDS "core/qc/*.cpp" "core/qc/*.h")
@@ -280,6 +308,31 @@ target_link_libraries(VideoEyeMedia
     PRIVATE VideoEyeInfrastructure
 )
 
+# --- codec: 码流参数集 / slice / SEI 解析（analysis 的叶子层）---
+# 与 media 的关系: media 解容器字节，codec 解容器里/裸流里的编码层语法。
+# 这一层只用 FFmpeg 的 AVCodecID 枚举做分派（头文件级依赖），不调用任何 avcodec
+# 函数 —— 所以 FFmpeg 只挂 PRIVATE，链它的测试不会被迫链接 FFmpeg 运行库。
+videoeye_add_module(VideoEyeCodec ${CODEC_SOURCES})
+target_link_libraries(VideoEyeCodec
+    PUBLIC VideoEyeDomain
+           VideoEyeMedia
+    PRIVATE VideoEyeInfrastructure
+            FFmpeg::avcodec
+)
+
+# --- analysis-package: 容器 / 流媒体解析器（analysis 的叶子层）---
+# 这一层不 include 任何 FFmpeg 或 Qt 头：解析器只读文件字节、产出 domain 结果类型。
+# 单独成库的直接收益是"只测解析器"的目标可以链它，而不必为了一次单测把整层 analysis
+# 与 FFmpeg 拖进来，也避免同一份 TsStructureAnalyzer.cpp / HlsManifestAnalyzer.cpp
+# 在每个测试目标里各编一遍。
+videoeye_add_module(VideoEyeAnalysisPackage ${ANALYSIS_PACKAGE_SOURCES})
+target_link_libraries(VideoEyeAnalysisPackage
+    PUBLIC VideoEyeDomain
+           # EbmlAnalyzer.h 的公共接口带着 core/media/detail/ParserLimits.h。
+           VideoEyeMedia
+    PRIVATE VideoEyeInfrastructure
+)
+
 # --- analysis: 各分析器与 orchestration ---
 videoeye_add_module(VideoEyeAnalysis ${ANALYSIS_SOURCES})
 # FFmpeg 与 Qt 挂 PUBLIC 而不是 PRIVATE: 这一层有多个公共头文件直接 include libav*
@@ -293,6 +346,10 @@ videoeye_add_module(VideoEyeAnalysis ${ANALYSIS_SOURCES})
 target_link_libraries(VideoEyeAnalysis
     PUBLIC VideoEyeDomain
            VideoEyeMedia
+           # 分析编排的公共头直接持有 codec 层的解析器（AnalysisPipeline.h 里的
+           # ParameterSetTracker / VideoEsInspector / InBandParameterSets），
+           # 所以这条边必须是 PUBLIC。
+           VideoEyeCodec
            FFmpeg::avcodec
            FFmpeg::avformat
            FFmpeg::avutil
@@ -307,6 +364,9 @@ target_link_libraries(VideoEyeAnalysis
         # 白拿。这一条现在是 scripts/audit_qt_analysis_border.py 守着的：
         # core/analysis 里再出现任何 Qt 名字就算违规，审计与编译双重拦下。
     PRIVATE VideoEyeInfrastructure
+            # 容器 / 流媒体解析器与 FormatDetector 已下沉到叶子库；analysis 的编排
+            # 只在 .cpp 里调用它们（公共头不 include），所以这条边保持 PRIVATE。
+            VideoEyeAnalysisPackage
             # 分析器的打开/探测阶段装 FFmpeg 中断回调（core/ffmpeg_io）
             VideoEyeFfmpegIo
 )
@@ -448,6 +508,19 @@ if(CHART_SOURCES)
     target_link_libraries(VideoEyeUiCharts PUBLIC Qt6::Widgets)
 endif()
 
+# --- ui/theme: 主题工具（调色板 / 字体 / QSS / formatTime）---
+# AppTheme.cpp 是 600 行 QSS，三个组件测试此前各自把它编进 exe。独立成库后只编一份，
+# 测试链库即可；它本身不依赖任何 core 层。
+# Qt6::Gui 挂 PUBLIC: AppTheme.h 的公共接口就是 QColor / QFont / QString；
+# Qt6::Widgets 只需 PRIVATE（applyDarkTheme() 里用 QApplication）。
+if(THEME_SOURCES)
+    videoeye_add_module(VideoEyeUiTheme ${THEME_SOURCES})
+    target_link_libraries(VideoEyeUiTheme
+        PUBLIC Qt6::Gui
+        PRIVATE Qt6::Widgets
+    )
+endif()
+
 # --- ui: 主程序界面层 ---
 # 所有 ui/*.cpp（入口除外）编成一个静态库，主程序只保留 ui/app/main.cpp。
 # 好处: UI 组件测试链同一份实现，不必再把整层源码编进测试 exe；同一个 Q_OBJECT
@@ -476,6 +549,7 @@ if(UI_SOURCES)
                 VideoEyeReporting
                 VideoEyeQc
                 VideoEyeUiCharts
+                VideoEyeUiTheme
                 VideoEyeReportingPanel
                 VideoEyeFfmpegTools
                 VideoEyeAnalysis

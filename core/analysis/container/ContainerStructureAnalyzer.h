@@ -9,10 +9,6 @@
 
 #include "core/domain/model/ContainerStructureInfo.h"
 
-extern "C" {
-#include <libavformat/avformat.h>
-}
-
 namespace videoeye {
 
 /// 统一容器结构分析调度器
@@ -27,9 +23,9 @@ public:
     /// （定位误差比窗口还大），所以单列出来给测试当确定性接缝 ——
     /// 覆盖边界与理由见 tests/unit/test_container_cancel_paths.cpp。
     enum class Stage {
-        kBuildTree,          // 结构树转换（ConvertMp4Tree / ConvertEbmlTree）
-        kExtractStreamInfo,  // 流摘要提取（ExtractMp4StreamInfo / ExtractEbmlStreamInfo）
-        kElementCount,       // 元素计数递归
+        kBuildTree,         // 结构树转换（ConvertMp4Tree / ConvertEbmlTree）
+        kExtractStreamInfo, // 流摘要提取（ExtractMp4StreamInfo / ExtractEbmlStreamInfo）
+        kElementCount,      // 元素计数递归
     };
 
     /// 尾部阶段入口回调（**测试接缝**）：每个阶段入口触发一次，测试可在回调里置取消
@@ -44,8 +40,7 @@ public:
     ///               MP4 / MKV / AVI / FLV / TS / ASF / OGG 路径都吃这一套。
     /// @param on_stage 可选尾部阶段回调（仅测试使用，见 StageCallback 说明）
     bool Analyze(const std::string& file_path, model::ContainerStructureResult& result,
-                 std::shared_ptr<std::atomic<bool>> cancel = {},
-                 const StageCallback& on_stage = {});
+                 std::shared_ptr<std::atomic<bool>> cancel = {}, const StageCallback& on_stage = {});
 
     /// 重置
     void Reset();
@@ -65,25 +60,21 @@ private:
     // 让 Analyze() 能把结果归成"已取消"，而不是把半棵树当成有效的结构树交出去。
     /// 将 Mp4BoxNode 树映射为 ContainerElement 树
     bool ConvertMp4Tree(const std::vector<model::Mp4BoxNode>& nodes, int depth,
-                        std::vector<model::ContainerElement>& out,
-                        const std::atomic<bool>* cancel);
+                        std::vector<model::ContainerElement>& out, const std::atomic<bool>* cancel);
 
     /// 将 EbmlElementNode 树映射为 ContainerElement 树
     bool ConvertEbmlTree(const std::vector<model::EbmlElementNode>& nodes, int depth,
-                         std::vector<model::ContainerElement>& out,
-                         const std::atomic<bool>* cancel);
+                         std::vector<model::ContainerElement>& out, const std::atomic<bool>* cancel);
 
     /// 从 MP4 Box 树中提取丰富的流信息
-    bool ExtractMp4StreamInfo(const std::vector<model::Mp4BoxNode>& box_tree,
-                              model::ContainerStructureResult& result,
+    bool ExtractMp4StreamInfo(const std::vector<model::Mp4BoxNode>& box_tree, model::ContainerStructureResult& result,
                               const std::atomic<bool>* cancel);
 
     /// 从 EBML 树中提取丰富的流信息
     /// 返回 false 表示中途被取消（与 ConvertEbmlTree / ExtractMp4StreamInfo 同契约）：
     /// 轨道数是 MKV 里唯一能长到"值得中断"的列表，取消必须冒泡到返回值，
     /// 否则外层会把一份只填了一半的 result 当成有效结果发出去。
-    bool ExtractEbmlStreamInfo(const model::EbmlAnalysisResult& ebml_detail,
-                               model::ContainerStructureResult& result,
+    bool ExtractEbmlStreamInfo(const model::EbmlAnalysisResult& ebml_detail, model::ContainerStructureResult& result,
                                const std::atomic<bool>* cancel);
 
     /// FFmpeg 通用元数据回退分析
@@ -98,19 +89,16 @@ private:
     ///
     /// 返回三态：kCancelled 时 result 里的清单数据只到"被取消那一刻"为止，
     /// 调用方必须整条放弃（置 valid=false + error_message="已取消"，不得回退 FFmpeg）。
-    StageStatus AnalyzeStreamingManifest(const std::string& file_path,
-                                         model::ContainerStructureResult& result,
+    StageStatus AnalyzeStreamingManifest(const std::string& file_path, model::ContainerStructureResult& result,
                                          const std::atomic<bool>* cancel);
 
     /// 清单结构 -> 通用结构树 / 流信息 / 元数据（供"文件结构"页复用同一套渲染）
     /// 返回 false 表示中途被取消：树没建完，外层不得把半成品树发出去。
-    bool BuildStreamingTree(model::ContainerStructureResult& result,
-                            const std::atomic<bool>* cancel);
+    bool BuildStreamingTree(model::ContainerStructureResult& result, const std::atomic<bool>* cancel);
 
     /// 用 TsStructureAnalyzer 抽查若干 TS 分片（复用已有 TS 容器分析）
     /// 返回 false 表示中途被取消（已置位 container_parse_failed 的那一两个分片不算）。
-    bool ProbeTsSegments(model::ContainerStructureResult& result,
-                         const std::atomic<bool>* cancel);
+    bool ProbeTsSegments(model::ContainerStructureResult& result, const std::atomic<bool>* cancel);
 };
 
 } // namespace videoeye

@@ -270,6 +270,20 @@ function(videoeye_add_test name)
 endfunction()
 
 # ============================================================
+# 合成媒体工厂：多个测试共用，单独编一份
+#
+# 以前 4 个目标各自把 TestMediaFactory.cpp 编进 exe —— 它带 avcodec / avformat
+# 的编码头，每份都要从头编一次。做成测试专用静态库后只编一遍，链接器按需取成员。
+# ============================================================
+add_library(videoeye_test_media_factory STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/support/TestMediaFactory.cpp)
+target_include_directories(videoeye_test_media_factory PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${FFMPEG_INCLUDE_DIRS})
+target_link_libraries(videoeye_test_media_factory PUBLIC
+    FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swscale FFmpeg::swresample)
+
+# ============================================================
 # 测试 1: FormatDetector (仅依赖 Qt)
 # ============================================================
 videoeye_add_test(test_format_detector
@@ -284,39 +298,29 @@ add_test(NAME FormatDetectorTests COMMAND test_format_detector)
 # ============================================================
 videoeye_add_test(test_config_manager
     unit/test_config_manager.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/config/ConfigManager.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/Logger.cpp
 )
-target_link_libraries(test_config_manager PRIVATE Qt6::Core)
+target_link_libraries(test_config_manager PRIVATE VideoEyeInfrastructure Qt6::Core)
 add_test(NAME ConfigManagerTests COMMAND test_config_manager)
 
 # ============================================================
 # 测试 2b: PerfMetrics (长期性能指标口径)
 #
-# 只链 infrastructure 的两个 .cpp，不碰 Qt 业务逻辑 —— 指标通道必须能被
-# 任何层（core / ui）直接引用，一旦拖上依赖就没人敢在热路径上埋点了。
+# 只链 infrastructure（纯 stdlib，不碰 Qt 业务逻辑），不整层拉 core ——
+# 指标通道必须能被任何层（core / ui）直接引用，一旦拖上依赖就没人敢在热路径上埋点。
 # ============================================================
 videoeye_add_test(test_perf_metrics
     unit/test_perf_metrics.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/PerfMetrics.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/Logger.cpp
 )
-target_link_libraries(test_perf_metrics PRIVATE Qt6::Core)
+target_link_libraries(test_perf_metrics PRIVATE VideoEyeInfrastructure Qt6::Core)
 add_test(NAME PerfMetricsTests COMMAND test_perf_metrics)
 
 # ============================================================
-# 长期性能指标通道（PerfMetrics）+ 它依赖的 Logger
+# 需要 PerfMetrics / Logger 的测试一律链接 VideoEyeInfrastructure
 #
-# 凡编到 ui/analysis_panel/*.cpp 的测试目标都要带上这两个源：RecordTableModel.h
-# 在裁剪记录时会记一次计数，而这一类测试目标通常只链 Qt（不链任何 core 模块，
-# 也就拿不到 VideoEyeInfrastructure 里的符号），漏了就是链接期 LNK2019。
-#
-# 已经手列过 Logger.cpp 的目标**不要**再加这个变量，否则同一份 .cpp 进两次
-# 编译单元会撞 LNK2005 重复定义。
+# 以前这些目标各自手列 PerfMetrics.cpp + Logger.cpp（Logger 一度被 15 个 target
+# 重复编译）。基础设施已经是静态库，链它即可 —— 链接器只取用到的成员，编译只发生一次。
+# 别再把手列源码和链库混用：同一份 .cpp 进两个编译单元会撞 LNK2005 重复定义。
 # ============================================================
-set(VIDEOEYE_PERF_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/PerfMetrics.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/Logger.cpp)
 
 # ============================================================
 # 测试 2c: ChartDecimation (曲线抽稀统一口径)
@@ -326,9 +330,10 @@ set(VIDEOEYE_PERF_SOURCES
 # ============================================================
 videoeye_add_test(test_chart_decimation
     unit/test_chart_decimation.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/Logger.cpp
 )
-target_link_libraries(test_chart_decimation PRIVATE VideoEyeUiCharts Qt6::Widgets Qt6::Gui Qt6::Core)
+target_link_libraries(test_chart_decimation PRIVATE
+    VideoEyeInfrastructure
+    VideoEyeUiCharts Qt6::Widgets Qt6::Gui Qt6::Core)
 add_test(NAME ChartDecimationTests COMMAND test_chart_decimation)
 
 # ============================================================
@@ -338,10 +343,10 @@ add_test(NAME ChartDecimationTests COMMAND test_chart_decimation)
 # ============================================================
 videoeye_add_test(test_record_table_model
     unit/test_record_table_model.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/PerfMetrics.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/Logger.cpp
 )
-target_link_libraries(test_record_table_model PRIVATE Qt6::Gui Qt6::Core)
+target_link_libraries(test_record_table_model PRIVATE
+    VideoEyeInfrastructure
+    Qt6::Gui Qt6::Core)
 add_test(NAME RecordTableModelTests COMMAND test_record_table_model)
 
 # ============================================================
@@ -367,11 +372,11 @@ add_test(NAME StreamStatsExporterTests COMMAND test_stream_stats_exporter)
 # ============================================================
 videoeye_add_test(test_stream_analyzer
     unit/test_stream_analyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/StreamStats.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/stream/StreamAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/Logger.cpp
 )
 target_link_libraries(test_stream_analyzer PRIVATE
+    VideoEyeDomain
+    VideoEyeInfrastructure
     FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swscale FFmpeg::swresample
 )
 add_test(NAME StreamAnalyzerTests COMMAND test_stream_analyzer)
@@ -429,11 +434,11 @@ add_test(NAME OpenControllerCoverArtTests COMMAND test_open_controller_cover_art
 # ============================================================
 videoeye_add_test(test_analysis_session
     unit/test_analysis_session.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/StreamStats.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/stream/StreamAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/Logger.cpp
 )
 target_link_libraries(test_analysis_session PRIVATE
+    VideoEyeDomain
+    VideoEyeInfrastructure
     FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swscale FFmpeg::swresample
 )
 add_test(NAME AnalysisSessionTests COMMAND test_analysis_session)
@@ -443,11 +448,11 @@ add_test(NAME AnalysisSessionTests COMMAND test_analysis_session)
 # ============================================================
 videoeye_add_test(test_frame_data
     unit/test_frame_data.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/FrameData.cpp
     # 深拷贝要按 av_pix_fmt_desc_get 算色度平面行数，属 player 层（domain 禁 FFmpeg）
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/player/FrameDataCopy.cpp
 )
 target_link_libraries(test_frame_data PRIVATE
+    VideoEyeDomain
     FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swscale FFmpeg::swresample
 )
 add_test(NAME FrameDataTests COMMAND test_frame_data)
@@ -457,11 +462,9 @@ add_test(NAME FrameDataTests COMMAND test_frame_data)
 # =================================================
 videoeye_add_test(test_bitrate_gop_analyzer
     unit/test_bitrate_gop_analyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/BitrateGopResult.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/quality/BitrateGopAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/BitratePoint.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/GopInfo.cpp
 )
+target_link_libraries(test_bitrate_gop_analyzer PRIVATE VideoEyeDomain)
 add_test(NAME BitrateGopAnalyzerTests COMMAND test_bitrate_gop_analyzer)
 
 # =================================================
@@ -475,9 +478,10 @@ add_test(NAME BitrateGopAnalyzerTests COMMAND test_bitrate_gop_analyzer)
 # =================================================
 videoeye_add_test(test_bitrate_gop_pipeline
     unit/test_bitrate_gop_pipeline.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../tests/support/TestMediaFactory.cpp
 )
-target_link_libraries(test_bitrate_gop_pipeline PRIVATE VideoEyeAnalysis)
+target_link_libraries(test_bitrate_gop_pipeline PRIVATE
+    VideoEyeAnalysis
+    videoeye_test_media_factory)
 add_test(NAME BitrateGopPipelineRegressionTests COMMAND test_bitrate_gop_pipeline)
 
 # =================================================
@@ -499,8 +503,8 @@ add_test(NAME QualityAnalyzerTests COMMAND test_quality_analyzer)
 videoeye_add_test(test_audio_qc_analyzer
     unit/test_audio_qc_analyzer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/quality/AudioQcAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/AudioQcResult.cpp
 )
+target_link_libraries(test_audio_qc_analyzer PRIVATE VideoEyeDomain)
 add_test(NAME AudioQcAnalyzerTests COMMAND test_audio_qc_analyzer)
 
 # =================================================
@@ -520,8 +524,8 @@ add_test(NAME AudioQcRulesTests COMMAND test_audio_qc_rules)
 # =================================================
 videoeye_add_test(test_audio_bitstream_parser
     unit/test_audio_bitstream_parser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/AudioBitstreamParser.cpp
 )
+target_link_libraries(test_audio_bitstream_parser PRIVATE VideoEyeCodec)
 add_test(NAME AudioBitstreamParserTests COMMAND test_audio_bitstream_parser)
 
 # =================================================
@@ -531,8 +535,8 @@ add_test(NAME AudioBitstreamParserTests COMMAND test_audio_bitstream_parser)
 # =================================================
 videoeye_add_test(test_audio_frame_parsers
     unit/test_audio_frame_parsers.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/AudioBitstreamParser.cpp
 )
+target_link_libraries(test_audio_frame_parsers PRIVATE VideoEyeCodec)
 add_test(NAME AudioFrameParsersTests COMMAND test_audio_frame_parsers)
 
 # =================================================
@@ -568,9 +572,10 @@ add_test(NAME ParameterTimelineTests COMMAND test_parameter_timeline)
 # =================================================
 videoeye_add_test(test_h264_poc_tracker
     unit/test_h264_poc_tracker.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../tests/support/TestMediaFactory.cpp
 )
-target_link_libraries(test_h264_poc_tracker PRIVATE VideoEyeAnalysis)
+target_link_libraries(test_h264_poc_tracker PRIVATE
+    VideoEyeAnalysis
+    videoeye_test_media_factory)
 # 真实码流语料（tests/corpus/codec/real_x264_bframes_gop.mp4）。
 # 带 B 帧的真实样本是"POC = 显示顺序"这条结论唯一有区分度的参考 ——
 # 没有 B 帧时解码顺序与显示顺序天然相同，怎么算都对。
@@ -588,8 +593,8 @@ add_test(NAME H264PocTrackerTests COMMAND test_h264_poc_tracker)
 # =================================================
 videoeye_add_test(test_dimension_status
     unit/test_dimension_status.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/DimensionStatus.cpp
 )
+target_link_libraries(test_dimension_status PRIVATE VideoEyeDomain)
 add_test(NAME DimensionStatusTests COMMAND test_dimension_status)
 
 # =================================================
@@ -611,8 +616,8 @@ videoeye_add_test(test_cea_caption_decoder
     unit/test_cea_caption_decoder.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/diagnostics/Cea608Decoder.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/diagnostics/Cea708Decoder.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/CeaCaptionInfo.cpp
 )
+target_link_libraries(test_cea_caption_decoder PRIVATE VideoEyeDomain)
 add_test(NAME CeaCaptionDecoderTests COMMAND test_cea_caption_decoder)
 
 # =================================================
@@ -633,10 +638,11 @@ add_test(NAME ColorHdrRulesTests COMMAND test_color_hdr_rules)
 # =================================================
 videoeye_add_test(test_mp4_sample_table
     unit/test_mp4_sample_table.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/Mp4SampleTableAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/container/IsobmffParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/Logger.cpp
 )
+target_link_libraries(test_mp4_sample_table PRIVATE
+    VideoEyeAnalysisPackage
+    VideoEyeMedia
+    VideoEyeInfrastructure)
 add_test(NAME Mp4SampleTableTests COMMAND test_mp4_sample_table)
 
 # =================================================
@@ -646,8 +652,8 @@ add_test(NAME Mp4SampleTableTests COMMAND test_mp4_sample_table)
 # =================================================
 videoeye_add_test(test_isobmff_parser
     unit/test_isobmff_parser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/container/IsobmffParser.cpp
 )
+target_link_libraries(test_isobmff_parser PRIVATE VideoEyeMedia)
 add_test(NAME IsobmffParserTests COMMAND test_isobmff_parser)
 
 # =================================================
@@ -656,11 +662,8 @@ add_test(NAME IsobmffParserTests COMMAND test_isobmff_parser)
 # =================================================
 videoeye_add_test(test_h264_bitstream_parser
     unit/test_h264_bitstream_parser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/H264BitstreamParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/ExtradataParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/BitReader.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/BitstreamInfo.cpp
 )
+target_link_libraries(test_h264_bitstream_parser PRIVATE VideoEyeCodec)
 add_test(NAME H264BitstreamParserTests COMMAND test_h264_bitstream_parser)
 
 # =================================================
@@ -668,11 +671,8 @@ add_test(NAME H264BitstreamParserTests COMMAND test_h264_bitstream_parser)
 # =================================================
 videoeye_add_test(test_hevc_bitstream_parser
     unit/test_hevc_bitstream_parser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/HevcBitstreamParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/ExtradataParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/BitReader.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/BitstreamInfo.cpp
 )
+target_link_libraries(test_hevc_bitstream_parser PRIVATE VideoEyeCodec)
 add_test(NAME HevcBitstreamParserTests COMMAND test_hevc_bitstream_parser)
 
 # =================================================
@@ -684,19 +684,8 @@ add_test(NAME HevcBitstreamParserTests COMMAND test_hevc_bitstream_parser)
 # =================================================
 videoeye_add_test(test_bitstream_analyzer
     unit/test_bitstream_analyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/BitstreamAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/InBandParameterSets.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/H264BitstreamParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/HevcBitstreamParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/Av1BitstreamParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/Vp9BitstreamParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/VvcBitstreamParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/BitstreamInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/Vp9BitstreamInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/SliceSeiInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/ExtradataParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/BitReader.cpp
 )
+target_link_libraries(test_bitstream_analyzer PRIVATE VideoEyeCodec)
 target_compile_definitions(test_bitstream_analyzer PRIVATE
     VIDEOEYE_CODEC_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus/codec")
 add_test(NAME BitstreamAnalyzerTests COMMAND test_bitstream_analyzer)
@@ -707,11 +696,8 @@ add_test(NAME BitstreamAnalyzerTests COMMAND test_bitstream_analyzer)
 # =================================================
 videoeye_add_test(test_av1_bitstream_parser
     unit/test_av1_bitstream_parser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/Av1BitstreamParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/ExtradataParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/BitReader.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/BitstreamInfo.cpp
 )
+target_link_libraries(test_av1_bitstream_parser PRIVATE VideoEyeCodec)
 add_test(NAME Av1BitstreamParserTests COMMAND test_av1_bitstream_parser)
 
 # =================================================
@@ -728,13 +714,11 @@ add_test(NAME Av1BitstreamParserTests COMMAND test_av1_bitstream_parser)
 # =================================================
 videoeye_add_test(test_streaming_package
     unit/test_streaming_package.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/streaming/HlsManifestAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/streaming/DashManifestAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/streaming/SegmentQcAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/Mp4SampleTableAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/container/IsobmffParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/Logger.cpp
 )
+target_link_libraries(test_streaming_package PRIVATE
+    VideoEyeAnalysisPackage
+    VideoEyeMedia
+    VideoEyeInfrastructure)
 add_test(NAME StreamingPackageTests COMMAND test_streaming_package)
 
 # =================================================
@@ -746,9 +730,8 @@ add_test(NAME StreamingPackageTests COMMAND test_streaming_package)
 # =================================================
 videoeye_add_test(test_streaming_descriptors
     unit/test_streaming_descriptors.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/streaming/HlsManifestAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/streaming/DashManifestAnalyzer.cpp
 )
+target_link_libraries(test_streaming_descriptors PRIVATE VideoEyeAnalysisPackage)
 add_test(NAME StreamingDescriptorTests COMMAND test_streaming_descriptors)
 
 # =================================================
@@ -794,8 +777,8 @@ add_test(NAME ContainerTsQcRulesTests COMMAND test_container_ts_qc_rules)
 # =================================================
 videoeye_add_test(test_ts_pes_payload
     unit/test_ts_pes_payload.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/TsStructureAnalyzer.cpp
 )
+target_link_libraries(test_ts_pes_payload PRIVATE VideoEyeAnalysisPackage)
 add_test(NAME TsPesPayloadTests COMMAND test_ts_pes_payload)
 
 # =================================================
@@ -818,12 +801,11 @@ add_test(NAME ContainerLegacyQcRulesTests COMMAND test_container_legacy_qc_rules
 videoeye_add_test(test_visual_defect
     unit/test_visual_defect.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/quality/VisualDefectAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/VisualDefect.cpp
 )
+target_link_libraries(test_visual_defect PRIVATE VideoEyeDomain VideoEyeInfrastructure)
 # StopWorker() 在"工作线程没按时响应停止"时会打一条 ERROR —— 那是这类问题唯一的可观测
-# 出口: 它跑在析构路径上, 不适合抛异常, 调用方也普遍不查返回值。只要被测实现还在用
-# Logger, 这条边就必须在这里显式声明 —— 本目标刻意只链了算法那两个源文件, 拿不到基础设施。
-target_link_libraries(test_visual_defect PRIVATE VideoEyeInfrastructure)
+# 出口: 它跑在析构路径上, 不适合抛异常, 调用方也普遍不查返回值。这条依赖由上面的
+# VideoEyeInfrastructure 提供。
 add_test(NAME VisualDefectTests COMMAND test_visual_defect)
 
 # =================================================
@@ -858,11 +840,8 @@ add_test(NAME AuxQcRulesTests COMMAND test_aux_qc_rules)
 # =================================================
 videoeye_add_test(test_vvc_bitstream_parser
     unit/test_vvc_bitstream_parser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/VvcBitstreamParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/ExtradataParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/BitReader.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/BitstreamInfo.cpp
 )
+target_link_libraries(test_vvc_bitstream_parser PRIVATE VideoEyeCodec)
 add_test(NAME VvcBitstreamParserTests COMMAND test_vvc_bitstream_parser)
 
 # =================================================
@@ -872,11 +851,8 @@ add_test(NAME VvcBitstreamParserTests COMMAND test_vvc_bitstream_parser)
 # =================================================
 videoeye_add_test(test_vp9_bitstream_parser
     unit/test_vp9_bitstream_parser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/Vp9BitstreamParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/BitReader.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/BitstreamInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/Vp9BitstreamInfo.cpp
 )
+target_link_libraries(test_vp9_bitstream_parser PRIVATE VideoEyeCodec)
 add_test(NAME Vp9BitstreamParserTests COMMAND test_vp9_bitstream_parser)
 
 # =================================================
@@ -895,12 +871,8 @@ add_test(NAME BitstreamCapabilityRulesTests COMMAND test_bitstream_capability_ru
 # =================================================
 videoeye_add_test(test_video_es_inspector
     unit/test_video_es_inspector.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/VideoEsInspector.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/ExtradataParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/BitReader.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/BitstreamInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/SliceSeiInfo.cpp
 )
+target_link_libraries(test_video_es_inspector PRIVATE VideoEyeCodec)
 # VideoEsInspector 内部按 AVCodecID 分支，需要 FFmpeg 的枚举与链接符号
 target_link_libraries(test_video_es_inspector PRIVATE FFmpeg::avcodec FFmpeg::avutil)
 add_test(NAME VideoEsInspectorTests COMMAND test_video_es_inspector)
@@ -1005,10 +977,10 @@ add_test(NAME DiagnosticsResultFlowTests COMMAND test_diagnostics_result_flow)
 # =================================================
 videoeye_add_test(test_media_exporter
     unit/test_media_exporter.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../tests/support/TestMediaFactory.cpp
 )
 target_link_libraries(test_media_exporter PRIVATE
     VideoEyeExporter
+    videoeye_test_media_factory
     Qt6::Core)
 add_test(NAME MediaExporterTests COMMAND test_media_exporter)
 
@@ -1076,12 +1048,11 @@ endif()
 # =================================================
 videoeye_add_test(test_player_open_async
     unit/test_player_open_async.cpp
-    # 「成功打开」用例要一份真能被 FFmpeg 打开的样本（TestMediaFactory 现场生成）
-    ${CMAKE_CURRENT_SOURCE_DIR}/../tests/support/TestMediaFactory.cpp
 )
 target_link_libraries(test_player_open_async PRIVATE
     VideoEyePlayback
     VideoEyeInfrastructure
+    videoeye_test_media_factory
     Qt6::Core Qt6::Gui)
 # BlockingTcpEndpoint.h 走 winsock，Windows 上需要显式 ws2_32。
 if(WIN32)
@@ -1164,12 +1135,12 @@ videoeye_add_test(test_stream_views
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioFrameTableWidget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/StreamOverviewView.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/MacroblockView.cpp
-    ${VIDEOEYE_PERF_SOURCES}
 )
 # FramePacketView.cpp 直接用 AV_PICTURE_TYPE_* / AV_PKT_FLAG_* / AVMEDIA_TYPE_*
 # （FFmpeg 公共常量），所以这里要拿到 avcodec 的 include 目录。
 target_link_libraries(test_stream_views PRIVATE
     VideoEyeDomain
+    VideoEyeInfrastructure
     VideoEyeReporting
     VideoEyeUiCharts
     FFmpeg::avcodec
@@ -1204,10 +1175,13 @@ add_test(NAME FfmpegCommandTests COMMAND test_ffmpeg_command)
 # =================================================
 add_executable(test_ffmpeg_process
     unit/test_ffmpeg_process.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/ffmpeg/FfmpegProcessRunner.cpp
 )
 target_include_directories(test_ffmpeg_process PRIVATE ${TEST_INCLUDE_DIRS})
-target_link_libraries(test_ffmpeg_process PRIVATE GTest::gtest Qt6::Core)
+target_link_libraries(test_ffmpeg_process PRIVATE
+    GTest::gtest
+    # FfmpegProcessRunner 就在 VideoEyeFfmpegTools 里，别再手列一份源码。
+    VideoEyeFfmpegTools
+    Qt6::Core)
 set_target_properties(test_ffmpeg_process PROPERTIES AUTOMOC ON)
 videoeye_set_ffmpeg_rpath(test_ffmpeg_process)
 videoeye_register_runtime_target(test_ffmpeg_process ${VIDEOEYE_GTEST_DLLS})
@@ -1254,21 +1228,16 @@ set_tests_properties(ReportingPanelLifecycleTests PROPERTIES
 #       这里用 TEST_P 跑"七分析器 × 三种输入"：文件不存在 / 魔数对不上 /
 #       最小合法文件。样本字节全部内存合成，不依赖任何真实媒体文件。
 #
-#       只链这七个 .cpp 而不是整个 VideoEyeAnalysis: 它们只依赖 Qt 的文件 IO
-#       加 domain 的值类型，链整层会把 FFmpeg 和一众分析器拖进来，编译慢一个量级。
+#       只链 VideoEyeAnalysisPackage（叶子库）而不是整个 VideoEyeAnalysis:
+#       解析器只依赖 domain 的值类型与 infrastructure 的取消/日志，链整层会把 FFmpeg
+#       和一众分析器拖进来；叶子库已把这份解析器源码只编一份，这里不必再手列 .cpp。
 #       Ogg 不校验魔数（刻意的容错），单独一个用例把这个差异固化下来。
 # =================================================
 videoeye_add_test(test_container_structure_analyzers
     unit/test_container_structure_analyzers.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/AsfStructureAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/AviStructureAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/FlvStructureAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/OggStructureAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/TsStructureAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/MpegPsStructureAnalyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/container/MxfStructureAnalyzer.cpp
 )
-target_link_libraries(test_container_structure_analyzers PRIVATE Qt6::Core VideoEyeDomain)
+target_link_libraries(test_container_structure_analyzers PRIVATE
+    VideoEyeAnalysisPackage Qt6::Core VideoEyeDomain)
 # 真实封装样本（tests/corpus/container/real_*.{ts,m2ts,avi,ogg}）的目录。
 # 上面那批畸形样本只能证明"解析器不崩"，证明不了"真实文件上算出来的数是对的"。
 target_compile_definitions(test_container_structure_analyzers PRIVATE
@@ -1299,13 +1268,13 @@ add_test(NAME ContainerCancelPathTests COMMAND test_container_cancel_paths)
 # =================================================
 videoeye_add_test(test_cancel_and_robustness
     unit/test_cancel_and_robustness.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/VvcBitstreamParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/codec/BitReader.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/media/container/IsobmffParser.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/qt/QtWorkerOwner.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/concurrency/TaskManager.cpp
 )
-target_link_libraries(test_cancel_and_robustness PRIVATE Qt6::Core VideoEyeDomain VideoEyeInfrastructure)
+target_link_libraries(test_cancel_and_robustness PRIVATE
+    VideoEyeCodec
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    Qt6::Core)
 add_test(NAME CancelAndRobustnessTests COMMAND test_cancel_and_robustness)
 
 # =================================================
@@ -1338,10 +1307,10 @@ add_test(NAME AnalysisTextUtilTests COMMAND test_analysis_text_util)
 videoeye_add_test(test_visual_defect_page
     unit/test_visual_defect_page.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/VisualDefectPage.cpp
-    ${VIDEOEYE_PERF_SOURCES}
 )
 target_link_libraries(test_visual_defect_page PRIVATE
     VideoEyeDomain
+    VideoEyeInfrastructure
     VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME VisualDefectPageTests COMMAND test_visual_defect_page)
@@ -1444,9 +1413,9 @@ set_tests_properties(RawImageSequenceTests PROPERTIES
 videoeye_add_test(test_audio_frame_table_widget
     unit/test_audio_frame_table_widget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioFrameTableWidget.cpp
-    ${VIDEOEYE_PERF_SOURCES}
 )
 target_link_libraries(test_audio_frame_table_widget PRIVATE
+    VideoEyeInfrastructure
     VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME AudioFrameTableWidgetTests COMMAND test_audio_frame_table_widget)
@@ -1462,9 +1431,9 @@ set_tests_properties(AudioFrameTableWidgetTests PROPERTIES
 videoeye_add_test(test_video_frame_table_widget
     unit/test_video_frame_table_widget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/VideoFrameTableWidget.cpp
-    ${VIDEOEYE_PERF_SOURCES}
 )
 target_link_libraries(test_video_frame_table_widget PRIVATE
+    VideoEyeInfrastructure
     VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME VideoFrameTableWidgetTests COMMAND test_video_frame_table_widget)
@@ -1474,15 +1443,16 @@ set_tests_properties(VideoFrameTableWidgetTests PROPERTIES
 # =================================================
 # 测试 55：FFmpeg 指令字典（分类/搜索过滤 + 滤镜插入补 -vf/-af + 无匹配禁用）
 # 说明: 词条来自静态表 FfmpegCommandCatalog（core/ffmpeg，纯 Qt），组件自己搜；插入
-#       语义（滤镜补 -vf/-af、末尾空格）是唯一会静默写错命令的规则。只编组件源 +
-#       词典目录源，不启动任何子进程、不链 FFmpeg。用 offscreen 平台跑。
+#       语义（滤镜补 -vf/-af、末尾空格）是唯一会静默写错命令的规则。只编组件源，
+#       词典走 VideoEyeFfmpegTools 库，不启动任何子进程、不链 FFmpeg。用 offscreen 平台跑。
 # =================================================
 videoeye_add_test(test_ffmpeg_dictionary_widget
     unit/test_ffmpeg_dictionary_widget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/ffmpeg_panel/FfmpegDictionaryWidget.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/ffmpeg/FfmpegCommandCatalog.cpp
 )
+# 词条表 FfmpegCommandCatalog 在 VideoEyeFfmpegTools（纯 Qt，不含 FFmpeg），链库即可。
 target_link_libraries(test_ffmpeg_dictionary_widget PRIVATE
+    VideoEyeFfmpegTools
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME FfmpegDictionaryWidgetTests COMMAND test_ffmpeg_dictionary_widget)
 set_tests_properties(FfmpegDictionaryWidgetTests PROPERTIES
@@ -1498,9 +1468,9 @@ set_tests_properties(FfmpegDictionaryWidgetTests PROPERTIES
 videoeye_add_test(test_packet_table_widget
     unit/test_packet_table_widget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/PacketTableWidget.cpp
-    ${VIDEOEYE_PERF_SOURCES}
 )
 target_link_libraries(test_packet_table_widget PRIVATE
+    VideoEyeInfrastructure
     VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME PacketTableWidgetTests COMMAND test_packet_table_widget)
@@ -1511,19 +1481,19 @@ set_tests_properties(PacketTableWidgetTests PROPERTIES
 # 测试 57：FFmpeg 输出与解释区（状态行 + 命令解释页 + 双通道日志 + 终态文案）
 # 说明: 这一区从 FfmpegPanel 抽出，把「命令一改就重算解释」「stderr 行加 [err] 前缀」
 #       「失败切错误页」「优雅停止与被强杀分开报」四条规则压在组件内部，写错都不崩、
-#       只静默显示旧值或错值。只编组件源 + 解释链的三个目录源（Parser / Explainer /
-#       Catalog）+ AppTheme（组件用 monoFont），不启动任何子进程、不链 FFmpeg。
+#       只静默显示旧值或错值。只编组件源；解释链（Parser / Explainer / Catalog）
+#       与 AppTheme（组件用 monoFont）分别走 VideoEyeFfmpegTools / VideoEyeUiTheme 库，
+#       不启动任何子进程、不链 FFmpeg。
 #       用 offscreen 平台跑。
 # =================================================
 videoeye_add_test(test_ffmpeg_output_widget
     unit/test_ffmpeg_output_widget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/ffmpeg_panel/FfmpegOutputWidget.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/theme/AppTheme.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/ffmpeg/FfmpegCommandParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/ffmpeg/FfmpegCommandExplainer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/ffmpeg/FfmpegCommandCatalog.cpp
 )
+# 解释链（Parser / Explainer / Catalog）在 VideoEyeFfmpegTools 里，链库即可。
 target_link_libraries(test_ffmpeg_output_widget PRIVATE
+    VideoEyeUiTheme
+    VideoEyeFfmpegTools
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME FfmpegOutputWidgetTests COMMAND test_ffmpeg_output_widget)
 set_tests_properties(FfmpegOutputWidgetTests PROPERTIES
@@ -1561,17 +1531,17 @@ set_tests_properties(ExportCoordinatorTests PROPERTIES
 #       table_synced_count_ 算错（重复补行 / 漏行）或 Reset 忘归零都不会崩，
 #       只会静默少行多行、换文件后第一批切换点永远不显示。断言表格增量行与
 #       3 位小数汇总文案。编页面源并链 VideoEyeUiCharts（AnalysisPageSupport.h
-#       经它引入 Q_OBJECT 头）+ AppTheme（formatTime 时间戳文案），
+#       经它引入 Q_OBJECT 头）+ VideoEyeUiTheme（formatTime 时间戳文案），
 #       链 VideoEyeDomain。用 offscreen 平台跑。
 # =================================================
 videoeye_add_test(test_scene_change_page
     unit/test_scene_change_page.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/SceneChangePage.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/theme/AppTheme.cpp
 )
 target_link_libraries(test_scene_change_page PRIVATE
     VideoEyeDomain
     VideoEyeUiCharts
+    VideoEyeUiTheme
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME SceneChangePageTests COMMAND test_scene_change_page)
 set_tests_properties(SceneChangePageTests PROPERTIES
@@ -1587,10 +1557,10 @@ set_tests_properties(SceneChangePageTests PROPERTIES
 videoeye_add_test(test_macroblock_view
     unit/test_macroblock_view.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/MacroblockView.cpp
-    ${VIDEOEYE_PERF_SOURCES}
 )
 target_link_libraries(test_macroblock_view PRIVATE
     VideoEyeDomain
+    VideoEyeInfrastructure
     VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME MacroblockViewTests COMMAND test_macroblock_view)
@@ -1644,17 +1614,17 @@ set_tests_properties(AudioQcPageTests PROPERTIES
 #       文案、目标峰值手动/自动（自动=均值×2）分支、窗口下拉联动汇总文案，
 #       写错都不崩只静默出错。页面内两个无后缀 spin 用 decimals 区分（0=目标
 #       峰值 / 1=GOP 秒上限）。编页面源并链 VideoEyeUiCharts（同测试 62 的
-#       曲线控件依赖）+ AppTheme（formatTime 时间戳文案），链 VideoEyeDomain。
+#       曲线控件依赖）+ VideoEyeUiTheme（formatTime 时间戳文案），链 VideoEyeDomain。
 #       用 offscreen 平台跑。
 # =================================================
 videoeye_add_test(test_bitrate_gop_page
     unit/test_bitrate_gop_page.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/BitrateGopPage.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/theme/AppTheme.cpp
 )
 target_link_libraries(test_bitrate_gop_page PRIVATE
     VideoEyeDomain
     VideoEyeUiCharts
+    VideoEyeUiTheme
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME BitrateGopPageTests COMMAND test_bitrate_gop_page)
 set_tests_properties(BitrateGopPageTests PROPERTIES
