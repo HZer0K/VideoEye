@@ -1,30 +1,30 @@
 #pragma once
 
-#include <QMainWindow>
-#include <QPushButton>
-#include <QProgressBar>
-#include <QTextEdit>
-#include <QString>
-#include <QMenuBar>
-#include <QMenu>
-#include <QStatusBar>
 #include <QAction>
-#include <QSplitter>
-#include <QListWidget>
-#include <QStackedWidget>
 #include <QLabel>
+#include <QListWidget>
+#include <QMainWindow>
+#include <QMenu>
+#include <QMenuBar>
+#include <QProgressBar>
+#include <QPushButton>
+#include <QSplitter>
+#include <QStackedWidget>
+#include <QStatusBar>
+#include <QString>
+#include <QTextEdit>
 #include <QTimer>
 #include <chrono>
 #include <memory>
 
-#include "core/player/MediaPlayer.h"
+#include "core/player/MediaPlayerFwd.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/ffmpeg_panel/FfmpegPanel.h"
 #include "ui/main_window/ExportCoordinator.h"
-#include "ui/main_window/macroblock_coordination.h"
-#include "ui/main_window/menu_bar.h"
 #include "ui/main_window/OpenSessionController.h"
 #include "ui/main_window/OverviewPage.h"
+#include "ui/main_window/macroblock_coordination.h"
+#include "ui/main_window/menu_bar.h"
 #include "ui/player/PlayerPanel.h"
 
 namespace videoeye {
@@ -63,14 +63,14 @@ private slots:
 private:
     // 初始化UI
     void SetupUI();
-    void SetupAppBar();         // 顶部应用栏
-    void SetupSidebar();        // 左侧导航栏
-    void PopulateSidebarItems();  // 依据 content_stack_ 实际页面生成导航项（须在页面注册完后调用）
-    void SetupContentArea();    // 右侧主内容区 (播放模块 + 分析)
+    void SetupAppBar();          // 顶部应用栏
+    void SetupSidebar();         // 左侧导航栏
+    void PopulateSidebarItems(); // 依据 content_stack_ 实际页面生成导航项（须在页面注册完后调用）
+    void SetupContentArea();     // 右侧主内容区 (播放模块 + 分析)
     void SetupMenuBar();
     void SetupStatusBar();
     void SetupConnections();
-    void OnSidebarChanged(int index);  // 侧边栏切换
+    void OnSidebarChanged(int index); // 侧边栏切换
     // 构造打开会话控制器（分派 / 换媒体复位 / 异步收尾）。须在 SetupUI 之后:
     // 它要接 player_panel_ / overview_page_ / analysis_panel_ 三个此刻才存在的对象。
     void SetupOpenSession();
@@ -89,15 +89,15 @@ private:
 
 protected:
     void showEvent(QShowEvent* event) override;
-    void resizeEvent(QResizeEvent* event) override;    // 成员变量
-    player::MediaPlayer* player_;  // MainWindow 拥有, 以裸指针注入 player_panel_
+    void resizeEvent(QResizeEvent* event) override; // 成员变量
+    player::MediaPlayer* player_;                   // MainWindow 拥有, 以裸指针注入 player_panel_
 
     // UI组件 - 整体布局
-    QWidget* app_bar_;            // 顶部应用栏
-    QListWidget* sidebar_;        // 左侧导航栏
-    QStackedWidget* content_stack_;  // 内容区堆栈 (媒体信息 + 分析面板各页)
-    QSplitter* main_splitter_;    // 水平分割器 (侧栏 | 主内容)
-    QSplitter* content_splitter_; // 垂直分割器 (播放模块 | 分析)
+    QWidget* app_bar_;              // 顶部应用栏
+    QListWidget* sidebar_;          // 左侧导航栏
+    QStackedWidget* content_stack_; // 内容区堆栈 (媒体信息 + 分析面板各页)
+    QSplitter* main_splitter_;      // 水平分割器 (侧栏 | 主内容)
+    QSplitter* content_splitter_;   // 垂直分割器 (播放模块 | 分析)
 
     // 播放模块 (视频区 + 控制栏 + 音频可视化; 可整体收起)
     PlayerPanel* player_panel_ = nullptr;
@@ -107,7 +107,7 @@ protected:
 
     // 顶部显示当前媒体路径
     QLabel* current_media_label_;
-    QLabel* stats_label_;         // 状态栏右端常驻: 实时 FPS/码率/关键帧
+    QLabel* stats_label_; // 状态栏右端常驻: 实时 FPS/码率/关键帧
 
     // 打开会话: 分派(裸图像/PCM/通用媒体) + 换媒体复位 + 异步收尾 + 下游登记。
     // 待收尾登记与"当前媒体源"都由它持有 —— 这两个状态只有打开链路在用,
@@ -115,7 +115,7 @@ protected:
     OpenSessionController* open_session_ = nullptr;
 
     // 分析面板
-    ui::AnalysisPanel* analysis_panel_;  // 分析面板
+    ui::AnalysisPanel* analysis_panel_; // 分析面板
 
     // 宏块分析状态由本窗口协调（见 ApplyMacroblockAnalysisState）：
     // 用户主动开启的分析与 MV 叠加需求分开记录，实际采集状态取两者的或。

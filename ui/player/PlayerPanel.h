@@ -1,21 +1,24 @@
 #pragma once
 
-#include <QWidget>
-#include <QPushButton>
-#include <QSlider>
-#include <QLabel>
-#include <QSplitter>
 #include <QElapsedTimer>
 #include <QImage>
-#include <QVector>
+#include <QLabel>
+#include <QPushButton>
+#include <QSlider>
+#include <QSplitter>
 #include <QString>
+#include <QVector>
+#include <QWidget>
 #include <deque>
 #include <memory>
 
-#include "core/player/MediaPlayer.h"
+#include "core/player/MediaPlayerFwd.h"
 // StreamAnalyzer.h 会把 FFmpeg 的 avcodec/avformat 头文件一起拖进来,
 // 而这个头只需要 StreamStats 这一个值类型 —— 直接用 domain 头就够了。
 #include "core/domain/model/StreamStats.h"
+// 槽位签名里用到的 domain 值类型：以前靠 MediaPlayer.h 传递，现在显式列出。
+#include "core/domain/model/AudioVisualizationFrame.h"
+#include "core/domain/model/FrameData.h"
 #include "core/domain/model/MacroblockInfo.h"
 #include "core/domain/model/TimecodeInfo.h"
 #include "ui/main_window/VideoWidget.h"
@@ -23,9 +26,9 @@
 namespace videoeye {
 namespace ui {
 
-class ControlBarWidget;  // 前向声明：控制栏独立组件 (见 ui/player/ControlBarWidget.{h,cpp})
-class AudioVizRenderer;   // 前向声明：音频可视化渲染器 (见 ui/player/AudioVizRenderer.{h,cpp})
-class RawImageSequence;   // 前向声明：Raw 图像序列 (见 ui/player/RawImageSequence.{h,cpp})
+class ControlBarWidget; // 前向声明：控制栏独立组件 (见 ui/player/ControlBarWidget.{h,cpp})
+class AudioVizRenderer; // 前向声明：音频可视化渲染器 (见 ui/player/AudioVizRenderer.{h,cpp})
+class RawImageSequence; // 前向声明：Raw 图像序列 (见 ui/player/RawImageSequence.{h,cpp})
 
 // 播放区模块 (视频显示 + 控制栏 + 音频可视化 + Raw 序列)。
 //
@@ -46,8 +49,8 @@ class PlayerPanel : public QWidget {
 public:
     // 播放区布局预设
     enum class LayoutPreset {
-        Monitor,   // 监看：播放区占大头
-        Analysis,  // 分析：分析区占大头
+        Monitor,  // 监看：播放区占大头
+        Analysis, // 分析：分析区占大头
     };
     Q_ENUM(LayoutPreset)
 
@@ -58,11 +61,15 @@ public:
     void SetMediaPlayer(player::MediaPlayer* player);
 
     // 播放区所在的分割器: 收起/展开时保存与还原上下比例
-    void SetSplitter(QSplitter* splitter) { splitter_ = splitter; }
+    void SetSplitter(QSplitter* splitter) {
+        splitter_ = splitter;
+    }
 
     // 应用布局预设（切分割比例；收起态下只记住预设，展开时按新预设分配）
     void ApplyLayoutPreset(LayoutPreset preset);
-    LayoutPreset layoutPreset() const { return layout_preset_; }
+    LayoutPreset layoutPreset() const {
+        return layout_preset_;
+    }
     // 从 QSettings 恢复预设；没有存过时用 default_preset（小屏由调用方传 Analysis）
     void RestoreLayoutPreset(LayoutPreset default_preset);
 
@@ -75,12 +82,12 @@ public:
     int MinimumHeightHint() const;
 
     // === 供 MainWindow 调用的业务接口 ===
-    void StopPlayback();                       // 清理 UI 状态 + player_->Stop()
+    void StopPlayback(); // 清理 UI 状态 + player_->Stop()
     void ResetVideoUI();
     bool LoadRawImageFile(const QString& filename);
-    void SetRawImageMode(bool on);             // 打开 raw/pcm/媒体时同步模式
-    bool IsShowingRawImage() const;            // 委托 RawImageSequence
-    void SetMvOverlayEnabled(bool enabled);    // 宏块分析关闭时联动取消勾选
+    void SetRawImageMode(bool on);          // 打开 raw/pcm/媒体时同步模式
+    bool IsShowingRawImage() const;         // 委托 RawImageSequence
+    void SetMvOverlayEnabled(bool enabled); // 宏块分析关闭时联动取消勾选
     // 当前媒体源: 停止后再次点播放需要重新 Open, 由 MainWindow 在 OpenMedia 时同步。
     // 同时负责换源时清掉上一份文件的叠加层缓存与状态栏统计。
     void SetCurrentSource(const QString& source);
@@ -95,7 +102,7 @@ signals:
     void VisibilityChanged(bool visible);
     // 布局预设变化（菜单勾选同步用）
     void LayoutPresetChanged(LayoutPreset preset);
-    void RawImageInfoReady(const QString& info);   // 写入媒体信息文本框
+    void RawImageInfoReady(const QString& info); // 写入媒体信息文本框
     // 运动矢量叠加开关变化。叠加层本身不直接开启/关闭宏块分析 —— 由协调层
     // (MainWindow) 把"用户主动启用的分析"与"叠加需要分析"两者取或后统一下发，
     // 于是关闭叠加能恢复到用户原先的分析状态（见 MainWindow::ApplyMacroblockAnalysisState）。
@@ -153,7 +160,7 @@ private:
 
     // === 非拥有依赖 ===
     player::MediaPlayer* player_ = nullptr;
-    QSplitter* splitter_ = nullptr;   // 非拥有: 由 MainWindow 创建的 content_splitter_
+    QSplitter* splitter_ = nullptr; // 非拥有: 由 MainWindow 创建的 content_splitter_
 
     // === UI ===
     VideoWidget* video_widget_ = nullptr;
@@ -184,7 +191,7 @@ private:
     QString last_overlay_fps_;
     QString last_overlay_resolution_;
     QString last_overlay_codec_;
-    QString last_status_text_;   // OnStateChanged 生成, UpdateOverlay 复用
+    QString last_status_text_; // OnStateChanged 生成, UpdateOverlay 复用
     model::PlayerState last_known_state_ = model::PlayerState::Stopped;
 
     // 音频可视化：状态与渲染逻辑已抽到 AudioVizRenderer（委托 + 模式门控在此）。

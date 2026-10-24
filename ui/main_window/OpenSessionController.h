@@ -18,10 +18,9 @@
 
 #include <functional>
 
-// MediaPlayer 直接 include（与 ExportCoordinator.h 同做法）：头里要用
-// player::MediaPlayer*，而 audit_namespace_layout 的 R3 不允许在 ui/ 下开具名
-// 的 videoeye::player 子命名空间（命名空间必须跟目录走）。
-#include "core/player/MediaPlayer.h"
+// MediaPlayer 只出现裸指针：用前向声明头，避免把 libav* / 分析会话拖进 UI 公共头。
+// （本文件不在 ui/player 下，不能按 R3 直接写 namespace videoeye::player。）
+#include "core/player/MediaPlayerFwd.h"
 #include "ui/main_window/open_session.h"
 
 namespace videoeye {
@@ -42,12 +41,11 @@ public:
         player::MediaPlayer* player = nullptr;
         PlayerPanel* player_panel = nullptr;
         AnalysisPanel* analysis_panel = nullptr;
-        FfmpegPanel* ffmpeg_panel = nullptr;      // 可为 null（面板未创建）
+        FfmpegPanel* ffmpeg_panel = nullptr; // 可为 null（面板未创建）
         OverviewPage* overview_page = nullptr;
         MediaInfoCoordinator* media_info = nullptr;
         // 打开 PCM 前的参数弹窗（demuxer / 采样率 / 声道）。未注入时视为用户取消。
-        std::function<bool(QString& /*demuxer*/, int& /*sample_rate*/, int& /*channels*/)>
-            prompt_pcm;
+        std::function<bool(QString& /*demuxer*/, int& /*sample_rate*/, int& /*channels*/)> prompt_pcm;
         // 打开新文件前收掉导出进度框（导出协调器的界面部分）。
         // "终止进行中的导出"归 MediaPlayer::CancelAllExports()，不在这里。
         std::function<void()> hide_export_progress;
@@ -64,7 +62,9 @@ public:
 
     // 当前登记的媒体源（导出入口的「当前文件」查询读它）。
     // 裸图像模式下为空：那一类没有可导出的媒体流。
-    const QString& current_media_url() const { return current_media_url_; }
+    const QString& current_media_url() const {
+        return current_media_url_;
+    }
 
 signals:
     // 状态栏文本（MainWindow 转发给 statusBar()->showMessage）。
@@ -87,5 +87,5 @@ private:
     OpenTicket ticket_;
 };
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

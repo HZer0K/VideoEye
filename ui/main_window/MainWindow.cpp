@@ -1,51 +1,52 @@
 #include "ui/main_window/MainWindow.h"
+#include "infrastructure/logging/Logger.h"
+#include "ui/analysis_panel/AnalysisPanel.h"
+#include "ui/dialogs/FormatSupportDialog.h"
 #include "ui/main_window/MediaInfoCoordinator.h"
 #include "ui/main_window/menu_bar.h"
 #include "ui/main_window/navigation_model.h"
 #include "ui/main_window/overview_analysis.h"
 #include "ui/main_window/sidebar_navigation.h"
 #include "ui/main_window/window_layout.h"
-#include "ui/dialogs/FormatSupportDialog.h"
-#include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/theme/AppTheme.h"
-#include "infrastructure/logging/Logger.h"
 
+#include "core/domain/model/ContainerStructureInfo.h"
 #include "core/domain/model/EbmlInfo.h"
 #include "core/player/AnalysisBus.h"
 #include "core/player/ContainerBus.h"
-#include "core/domain/model/ContainerStructureInfo.h"
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QGroupBox>
-#include <QSplitter>
-#include <QScrollArea>
-#include <QFileDialog>
-#include <QInputDialog>
-#include <QMessageBox>
+#include "core/player/MediaPlayer.h"
+#include <QActionGroup>
 #include <QApplication>
-#include <QStyle>
-#include <QScreen>
-#include <QGuiApplication>
-#include <QSignalBlocker>
 #include <QDebug>
+#include <QFileDialog>
+#include <QFontDatabase>
+#include <QGroupBox>
+#include <QGuiApplication>
+#include <QHBoxLayout>
+#include <QInputDialog>
+#include <QLabel>
+#include <QListWidget>
+#include <QMessageBox>
+#include <QPainter>
+#include <QPainterPath>
+#include <QScreen>
+#include <QScrollArea>
+#include <QSignalBlocker>
+#include <QSplitter>
+#include <QStackedWidget>
+#include <QStyle>
+#include <QStyledItemDelegate>
 #include <QTabBar>
 #include <QTimer>
-#include <QFontDatabase>
-#include <QPainter>
+#include <QVBoxLayout>
 #include <QWindow>
-#include <QPainterPath>
-#include <QListWidget>
-#include <QLabel>
-#include <QStackedWidget>
-#include <QStyledItemDelegate>
-#include <QActionGroup>
 #include <algorithm>
 
-#include <QFileInfo>
-#include <QFile>
 #include <QByteArray>
-#include <QRegularExpression>
 #include <QDateTime>
+#include <QFile>
+#include <QFileInfo>
+#include <QRegularExpression>
 #include <QtGlobal>
 #include <cmath>
 #ifdef Q_OS_WIN
@@ -65,18 +66,10 @@ namespace videoeye {
 namespace ui {
 
 MainWindow::MainWindow(QWidget* parent)
-    : QMainWindow(parent)
-    , player_(nullptr)
-    , app_bar_(nullptr)
-    , sidebar_(nullptr)
-    , content_stack_(nullptr)
-    , main_splitter_(nullptr)
-    , content_splitter_(nullptr)
-    , current_media_label_(nullptr)
-    , stats_label_(nullptr)
-    , open_session_(nullptr)
-    , analysis_panel_(nullptr)
-    , media_info_coordinator_(std::make_unique<MediaInfoCoordinator>()) {
+    : QMainWindow(parent), player_(nullptr), app_bar_(nullptr), sidebar_(nullptr), content_stack_(nullptr),
+      main_splitter_(nullptr), content_splitter_(nullptr), current_media_label_(nullptr), stats_label_(nullptr),
+      open_session_(nullptr), analysis_panel_(nullptr),
+      media_info_coordinator_(std::make_unique<MediaInfoCoordinator>()) {
 
     // 创建播放器实例 (MainWindow 拥有; 分析侧与播放模块共用)
     player_ = new player::MediaPlayer(this);
@@ -85,14 +78,12 @@ MainWindow::MainWindow(QWidget* parent)
     // 具体成员 (raw 查询里的 player_panel_ 在 SetupUI 中才创建, lambda 调用时已就绪)。
     export_coordinator_ = new ExportCoordinator(player_, this, this);
     export_coordinator_->SetSourceQueries(
-        [this]() {
-            return open_session_ ? open_session_->current_media_url() : QString();
-        },
+        [this]() { return open_session_ ? open_session_->current_media_url() : QString(); },
         [this]() { return player_panel_ && player_panel_->IsShowingRawImage(); });
 
     // 应用深色主题
     theme::applyDarkTheme();
-    
+
     SetupUI();
     SetupMenuBar();
     SetupStatusBar();
@@ -118,28 +109,28 @@ void MainWindow::SetupUI() {
     // 中央部件
     QWidget* central_widget = new QWidget(this);
     setCentralWidget(central_widget);
-    
+
     QVBoxLayout* root_layout = new QVBoxLayout(central_widget);
     root_layout->setContentsMargins(0, 0, 0, 0);
     root_layout->setSpacing(0);
-    
+
     // === 1. 顶部应用栏 ===
     SetupAppBar();
     root_layout->addWidget(app_bar_);
-    
+
     // === 2. 水平分割器: 侧栏 | 主内容 ===
     main_splitter_ = new QSplitter(Qt::Horizontal, central_widget);
     main_splitter_->setChildrenCollapsible(false);
     root_layout->addWidget(main_splitter_);
-    
+
     // === 3. 左侧导航栏 ===
     SetupSidebar();
     main_splitter_->addWidget(sidebar_);
-    
+
     // === 4. 右侧主内容区 ===
     SetupContentArea();
     main_splitter_->addWidget(content_splitter_);
-    
+
     // 设置分割比例: 侧栏 200px, 主内容区弹性
     main_splitter_->setStretchFactor(0, 0);
     main_splitter_->setStretchFactor(1, 1);
@@ -152,8 +143,7 @@ void MainWindow::SetupUI() {
     connect(ui_health_timer_, &QTimer::timeout, this, [this]() {
         const auto now = std::chrono::steady_clock::now();
         if (ui_health_last_.time_since_epoch().count() != 0) {
-            const double gap_ms =
-                std::chrono::duration<double, std::milli>(now - ui_health_last_).count();
+            const double gap_ms = std::chrono::duration<double, std::milli>(now - ui_health_last_).count();
             if (gap_ms >= 300.0) {
                 LOG_WARN("[perf] 主线程阻塞 " + std::to_string(static_cast<long long>(gap_ms)) +
                          " ms (定时器周期 100ms)");
@@ -168,42 +158,42 @@ void MainWindow::SetupAppBar() {
     app_bar_ = new QWidget(this);
     app_bar_->setObjectName("AppBar");
     app_bar_->setFixedHeight(48);
-    
+
     QHBoxLayout* layout = new QHBoxLayout(app_bar_);
     layout->setContentsMargins(16, 0, 16, 0);
     layout->setSpacing(12);
-    
+
     // Logo + 应用名
-    QLabel* logo_label = new QLabel(QStringLiteral("\xF0\x9F\x91\x81"), app_bar_);  // eye emoji
+    QLabel* logo_label = new QLabel(QStringLiteral("\xF0\x9F\x91\x81"), app_bar_); // eye emoji
     logo_label->setFixedSize(24, 24);
     logo_label->setAlignment(Qt::AlignCenter);
     QFont logoFont;
     logoFont.setPixelSize(16);
     logo_label->setFont(logoFont);
     layout->addWidget(logo_label);
-    
+
     QLabel* title_label = new QLabel("VideoEye", app_bar_);
     title_label->setObjectName("AppTitle");
     layout->addWidget(title_label);
-    
+
     QLabel* version_badge = new QLabel("2.0", app_bar_);
     version_badge->setObjectName("VersionBadge");
     layout->addWidget(version_badge);
-    
+
     layout->addSpacing(24);
-    
+
     // 媒体路径显示
     current_media_label_ = new QLabel(tr("未选择媒体"), app_bar_);
     current_media_label_->setObjectName("MediaPath");
     current_media_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(current_media_label_, 1);
-    
+
     // 操作按钮
     QPushButton* open_file_btn = new QPushButton(tr("打开文件"), app_bar_);
     open_file_btn->setObjectName("PrimaryButton");
     connect(open_file_btn, &QPushButton::clicked, this, &MainWindow::OnOpenFile);
     layout->addWidget(open_file_btn);
-    
+
     QPushButton* open_url_btn = new QPushButton(tr("打开URL"), app_bar_);
     connect(open_url_btn, &QPushButton::clicked, this, &MainWindow::OnOpenURL);
     layout->addWidget(open_url_btn);
@@ -218,7 +208,7 @@ void MainWindow::SetupSidebar() {
     sidebar_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     // 分组标题与页面项在同一个列表里，靠委托按行区分绘制（见 sidebar_navigation.cpp）。
     ui::InstallSidebarDelegate(sidebar_);
-    
+
     // 注意：导航项不再硬编码，而是在 SetupContentArea() 末尾由
     // PopulateSidebarItems() 依据 content_stack_ 的真实页面生成，避免增减分析页
     // 后 sidebar 行号与 stack 下标静默错位（曾导致「码率与 GOP」显示成「诊断与报告」）。
@@ -226,7 +216,8 @@ void MainWindow::SetupSidebar() {
 }
 
 void MainWindow::PopulateSidebarItems() {
-    if (!sidebar_ || !content_stack_) return;
+    if (!sidebar_ || !content_stack_)
+        return;
 
     // 三步都在 ui/main_window/sidebar_navigation.{h,cpp} 里：
     //   1) 从页面控件的动态属性收集元数据（pageId / 标题 / 分组 / 组内排序 / 口径）；
@@ -244,18 +235,18 @@ void MainWindow::SetupContentArea() {
     // 右侧主内容区: 垂直分割器 (播放模块 | 分析内容区)
     content_splitter_ = new QSplitter(Qt::Vertical, this);
     content_splitter_->setChildrenCollapsible(false);
-    
+
     // === 上半区: 播放模块 (视频区 + 控制栏, 可整体收起) ===
     // 播放相关的一切都在 PlayerPanel 内: 视频 widget、控制栏、音频可视化、
     // Raw 序列。MainWindow 只负责把它放进分割器并注入 MediaPlayer。
     player_panel_ = new PlayerPanel(content_splitter_);
     player_panel_->SetMediaPlayer(player_);
     player_panel_->SetSplitter(content_splitter_);
-    
+
     // === 下半区: 内容堆栈 ===
     content_stack_ = new QStackedWidget(content_splitter_);
     content_stack_->setMinimumHeight(250);
-    
+
     // Page 0: 首页（总览）—— 文件摘要 + 分析状态 + 最重要异常 + 完整媒体信息。
     // 原来的"媒体信息"页是一段不可换行的纯文本，用户打开文件后仍不知道该看哪个
     // 分析页；现在首页把"该看什么"收在一屏里，完整媒体信息整段保留在下方。
@@ -267,7 +258,7 @@ void MainWindow::SetupContentArea() {
     overview_page_->setProperty("pageOrder", 0);
     overview_page_->setProperty("pageScope", QString());
     content_stack_->addWidget(overview_page_);
-    
+
     // Page 1-N: 分析面板各页
     // AnalysisPanel 会创建自己的页面并添加到 content_stack_
     analysis_panel_ = new ui::AnalysisPanel(content_stack_);
@@ -287,25 +278,27 @@ void MainWindow::SetupContentArea() {
 
     // 页面全部注册完毕后才生成侧边栏条目，保证行号 == stack 下标
     PopulateSidebarItems();
-    
+
     content_splitter_->addWidget(player_panel_);
     content_splitter_->addWidget(content_stack_);
 
     content_splitter_->setStretchFactor(0, 3);
     content_splitter_->setStretchFactor(1, 2);
     content_splitter_->setSizes({480, 320});
-    
+
     // 防止下区缩太小
     content_splitter_->setCollapsible(0, false);
     content_splitter_->setCollapsible(1, false);
 }
 
 void MainWindow::OnSidebarChanged(int row) {
-    if (!content_stack_ || !sidebar_ || row < 0 || row >= sidebar_->count()) return;
+    if (!content_stack_ || !sidebar_ || row < 0 || row >= sidebar_->count())
+        return;
     // 页面项带 UserRole=stack 下标（行号因分组标题会错位，不能当下标用）；
     // 分组标题没有 UserRole，选中它时直接返回。
     const QVariant page_index = sidebar_->item(row)->data(Qt::UserRole);
-    if (!page_index.isValid()) return;
+    if (!page_index.isValid())
+        return;
     const int index = page_index.toInt();
     if (index < 0 || index >= content_stack_->count()) {
         qWarning() << "侧边栏页面项下标" << index << "超出页面数" << content_stack_->count()
@@ -323,9 +316,11 @@ void MainWindow::ApplyMacroblockAnalysisState() {
     // 实际采集状态 = 用户主动启用 || MV 叠加需求。两个来源分别记录，关闭叠加时
     // 只回退到用户原先的选择，不会顺手把用户开启的分析也关掉。
     const bool enabled = macroblock_.ActualEnabled();
-    if (player_) player_->SetAnalysisFeature(model::AnalysisFeature::Macroblock, enabled);
+    if (player_)
+        player_->SetAnalysisFeature(model::AnalysisFeature::Macroblock, enabled);
     // 同步宏块页勾选框，避免"分析其实开着，页面却显示未启用"（反之亦然）。
-    if (analysis_panel_) analysis_panel_->SetMacroblockAnalysisEnabled(enabled);
+    if (analysis_panel_)
+        analysis_panel_->SetMacroblockAnalysisEnabled(enabled);
 }
 
 void MainWindow::UpdateMinimumWindowSize() {
@@ -357,12 +352,10 @@ void MainWindow::showEvent(QShowEvent* event) {
     // 480px 播放区 + 250px 内容区连菜单栏一起超过 768，窗口根本放不下。
     if (!layout_preset_applied_) {
         layout_preset_applied_ = true;
-        const QScreen* screen = windowHandle() ? windowHandle()->screen()
-                                               : QGuiApplication::primaryScreen();
+        const QScreen* screen = windowHandle() ? windowHandle()->screen() : QGuiApplication::primaryScreen();
         const int available_height = screen ? screen->availableGeometry().height() : 0;
         // 小屏（典型 1366x768 笔记本）默认走「分析」：口径在 ui::InitialLayoutPreset。
-        const auto preset = ui::InitialLayoutPreset(available_height) ==
-                                    ui::WindowLayoutPreset::Analysis
+        const auto preset = ui::InitialLayoutPreset(available_height) == ui::WindowLayoutPreset::Analysis
                                 ? PlayerPanel::LayoutPreset::Analysis
                                 : PlayerPanel::LayoutPreset::Monitor;
         player_panel_->RestoreLayoutPreset(preset);
@@ -393,10 +386,12 @@ void MainWindow::SetupMenuBar() {
     deps.export_audio = [this]() { export_coordinator_->OnExportAudio(); };
     deps.toggle_player_area = [this](bool checked) { OnTogglePlayerArea(checked); };
     deps.apply_layout_preset = [this](PlayerPanel::LayoutPreset preset) {
-        if (player_panel_) player_panel_->ApplyLayoutPreset(preset);
+        if (player_panel_)
+            player_panel_->ApplyLayoutPreset(preset);
     };
     deps.set_seek_mode = [this](model::SeekMode mode) {
-        if (player_) player_->SetSeekMode(mode);
+        if (player_)
+            player_->SetSeekMode(mode);
     };
     menu_actions_ = ui::BuildMenuBar(menuBar(), deps);
 }
@@ -411,7 +406,7 @@ void MainWindow::SetupStatusBar() {
     stats_label_->setFont(theme::font::monoFont(9));
     stats_label_->setStyleSheet(QStringLiteral("color: #8b949e; padding-right: 8px;"));
     stats_label_->setTextInteractionFlags(Qt::NoTextInteraction);
-    stats_label_->setVisible(false);  // 有统计数据时才显示
+    stats_label_->setVisible(false); // 有统计数据时才显示
     bar->addPermanentWidget(stats_label_);
 }
 
@@ -434,18 +429,15 @@ void MainWindow::SetupOpenSession() {
     deps.apply_macroblock_state = [this]() { ApplyMacroblockAnalysisState(); };
     open_session_ = new OpenSessionController(deps, this);
 
-    connect(open_session_, &OpenSessionController::StatusMessage,
-            this, [this](const QString& text, int timeout) {
-                statusBar()->showMessage(text, timeout);
-            });
-    connect(open_session_, &OpenSessionController::CurrentMediaLabelChanged,
-            this, [this](const QString& text) {
-                if (current_media_label_) current_media_label_->setText(text);
-            });
+    connect(open_session_, &OpenSessionController::StatusMessage, this,
+            [this](const QString& text, int timeout) { statusBar()->showMessage(text, timeout); });
+    connect(open_session_, &OpenSessionController::CurrentMediaLabelChanged, this, [this](const QString& text) {
+        if (current_media_label_)
+            current_media_label_->setText(text);
+    });
     // 事务式异步打开完成: 收尾在控制器里做 (状态栏/标签/自动播放/诊断扫描)。
     // 过期结果 (期间又开了新文件) 由"没有待收尾登记"判掉, 见 open_session.h。
-    connect(player_, &player::MediaPlayer::OpenFinished,
-            open_session_, &OpenSessionController::OnPlayerOpenFinished);
+    connect(player_, &player::MediaPlayer::OpenFinished, open_session_, &OpenSessionController::OnPlayerOpenFinished);
 }
 
 void MainWindow::SetupConnections() {
@@ -455,171 +447,144 @@ void MainWindow::SetupConnections() {
     SetupOpenSession();
 
     // 导出提示 (协调器只发文本, 状态栏由本窗口转发)
-    connect(export_coordinator_, &ExportCoordinator::StatusMessage,
-            this, [this](const QString& text, int timeout) {
-                statusBar()->showMessage(text, timeout);
-            });
+    connect(export_coordinator_, &ExportCoordinator::StatusMessage, this,
+            [this](const QString& text, int timeout) { statusBar()->showMessage(text, timeout); });
 
     // 媒体信息文本: 打开链路在后台探测时顺带格式化 (不再二次探测), 提交成功后贴进
     // 首页的「完整媒体信息」区; 顺序上先于 OpenFinished 到达。
-    connect(player_, &player::MediaPlayer::MediaInfoTextReady,
-            this, [this](const QString& text) {
-                if (overview_page_ && !text.isEmpty()) {
-                    overview_page_->SetMediaInfoText(text);
-                }
-            });
+    connect(player_, &player::MediaPlayer::MediaInfoTextReady, this, [this](const QString& text) {
+        if (overview_page_ && !text.isEmpty()) {
+            overview_page_->SetMediaInfoText(text);
+        }
+    });
 
     // 播放器信号连接 - 分析功能 (实时分析)。
     // 连分析总线而不是门面本身: 这 23 条信号属于播放期分析，门面不再替它们背书，
     // 见 core/player/AnalysisBus.h。信号名与参数不变，接线语义也不变。
     player::AnalysisBus& bus = player_->analysis_bus();
-    connect(&bus, &player::AnalysisBus::StreamStatsReady,
-            analysis_panel_, &ui::AnalysisPanel::UpdateStreamStats);
-    connect(&bus, &player::AnalysisBus::VideoFrameListReset,
-            analysis_panel_, &ui::AnalysisPanel::ResetVideoFrameList);
-    connect(&bus, &player::AnalysisBus::VideoFrameInfoReady,
-            analysis_panel_, &ui::AnalysisPanel::AppendVideoFrameInfo);
-    connect(&bus, &player::AnalysisBus::AudioFrameListReset,
-            analysis_panel_, &ui::AnalysisPanel::ResetAudioFrameList);
-    connect(&bus, &player::AnalysisBus::AudioFrameInfoReady,
-            analysis_panel_, &ui::AnalysisPanel::AppendAudioFrameInfo);
-    connect(&bus, &player::AnalysisBus::PacketListReset,
-            analysis_panel_, &ui::AnalysisPanel::ResetPacketList);
-    connect(&bus, &player::AnalysisBus::PacketInfoReady,
-            analysis_panel_, &ui::AnalysisPanel::AppendPacketInfo);
-    connect(&bus, &player::AnalysisBus::AnalysisEventListReset,
-            analysis_panel_, &ui::AnalysisPanel::ResetAnalysisEventList);
-    connect(&bus, &player::AnalysisBus::AnalysisEventReady,
-            analysis_panel_, &ui::AnalysisPanel::AppendAnalysisEvent);
-    connect(&bus, &player::AnalysisBus::SyncSampleListReset,
-            analysis_panel_, &ui::AnalysisPanel::ResetSyncSampleList);
-    connect(&bus, &player::AnalysisBus::SyncSampleReady,
-            analysis_panel_, &ui::AnalysisPanel::AppendSyncSample);
-    connect(&bus, &player::AnalysisBus::TimelineEventListReset,
-            analysis_panel_, &ui::AnalysisPanel::ResetTimelineEventList);
-    connect(&bus, &player::AnalysisBus::TimelineEventReady,
-            analysis_panel_, &ui::AnalysisPanel::AppendTimelineEvent);
+    connect(&bus, &player::AnalysisBus::StreamStatsReady, analysis_panel_, &ui::AnalysisPanel::UpdateStreamStats);
+    connect(&bus, &player::AnalysisBus::VideoFrameListReset, analysis_panel_, &ui::AnalysisPanel::ResetVideoFrameList);
+    connect(&bus, &player::AnalysisBus::VideoFrameInfoReady, analysis_panel_, &ui::AnalysisPanel::AppendVideoFrameInfo);
+    connect(&bus, &player::AnalysisBus::AudioFrameListReset, analysis_panel_, &ui::AnalysisPanel::ResetAudioFrameList);
+    connect(&bus, &player::AnalysisBus::AudioFrameInfoReady, analysis_panel_, &ui::AnalysisPanel::AppendAudioFrameInfo);
+    connect(&bus, &player::AnalysisBus::PacketListReset, analysis_panel_, &ui::AnalysisPanel::ResetPacketList);
+    connect(&bus, &player::AnalysisBus::PacketInfoReady, analysis_panel_, &ui::AnalysisPanel::AppendPacketInfo);
+    connect(&bus, &player::AnalysisBus::AnalysisEventListReset, analysis_panel_,
+            &ui::AnalysisPanel::ResetAnalysisEventList);
+    connect(&bus, &player::AnalysisBus::AnalysisEventReady, analysis_panel_, &ui::AnalysisPanel::AppendAnalysisEvent);
+    connect(&bus, &player::AnalysisBus::SyncSampleListReset, analysis_panel_, &ui::AnalysisPanel::ResetSyncSampleList);
+    connect(&bus, &player::AnalysisBus::SyncSampleReady, analysis_panel_, &ui::AnalysisPanel::AppendSyncSample);
+    connect(&bus, &player::AnalysisBus::TimelineEventListReset, analysis_panel_,
+            &ui::AnalysisPanel::ResetTimelineEventList);
+    connect(&bus, &player::AnalysisBus::TimelineEventReady, analysis_panel_, &ui::AnalysisPanel::AppendTimelineEvent);
     // 诊断页"跳转到问题帧" -> 播放器 seek
-    connect(analysis_panel_, &ui::AnalysisPanel::SeekRequested,
-            this, [this](double seconds) {
-                if (player_) player_->Seek(seconds, player_->GetSeekMode());
-            });
+    connect(analysis_panel_, &ui::AnalysisPanel::SeekRequested, this, [this](double seconds) {
+        if (player_)
+            player_->Seek(seconds, player_->GetSeekMode());
+    });
 
     // 统一容器结构分析信号（连总线而不是门面：见 core/player/ContainerBus.h）
     player::ContainerBus& container_bus = player_->container_bus();
-    connect(&container_bus, &player::ContainerBus::ContainerStructureReady,
-            analysis_panel_, &ui::AnalysisPanel::OnContainerStructureReady);
+    connect(&container_bus, &player::ContainerBus::ContainerStructureReady, analysis_panel_,
+            &ui::AnalysisPanel::OnContainerStructureReady);
     // 结构分析失败（解析不出来 / 分析器抛异常）：页面显示原因，别让结构页一直空着
-    connect(&container_bus, &player::ContainerBus::ContainerStructureFailed,
-            analysis_panel_, &ui::AnalysisPanel::OnContainerStructureFailed);
-    connect(&bus, &player::AnalysisBus::MacroblockInfoReady,
-            analysis_panel_, &ui::AnalysisPanel::UpdateMacroblockInfo);
+    connect(&container_bus, &player::ContainerBus::ContainerStructureFailed, analysis_panel_,
+            &ui::AnalysisPanel::OnContainerStructureFailed);
+    connect(&bus, &player::AnalysisBus::MacroblockInfoReady, analysis_panel_, &ui::AnalysisPanel::UpdateMacroblockInfo);
     // MV 叠加: 同时转发到播放模块的视频叠加层
-    connect(&bus, &player::AnalysisBus::MacroblockInfoReady,
-            player_panel_, &PlayerPanel::OnMacroblockInfoForOverlay);
-    connect(&bus, &player::AnalysisBus::SceneChangeReady,
-            analysis_panel_, &ui::AnalysisPanel::OnSceneChangeDetected);
+    connect(&bus, &player::AnalysisBus::MacroblockInfoReady, player_panel_, &PlayerPanel::OnMacroblockInfoForOverlay);
+    connect(&bus, &player::AnalysisBus::SceneChangeReady, analysis_panel_, &ui::AnalysisPanel::OnSceneChangeDetected);
     // 画面质量 / 视觉缺陷（播放时逐采样帧产出）
-    connect(&bus, &player::AnalysisBus::VisualDefectReset,
-            analysis_panel_, &ui::AnalysisPanel::OnVisualDefectReset);
-    connect(&bus, &player::AnalysisBus::VisualDefectFrameReady,
-            analysis_panel_, &ui::AnalysisPanel::OnVisualDefectFrame);
-    connect(&bus, &player::AnalysisBus::VisualDefectReady,
-            analysis_panel_, &ui::AnalysisPanel::OnVisualDefectDetected);
-    connect(&bus, &player::AnalysisBus::VisualDefectStatsReady,
-            analysis_panel_, &ui::AnalysisPanel::OnVisualDefectStats);
+    connect(&bus, &player::AnalysisBus::VisualDefectReset, analysis_panel_, &ui::AnalysisPanel::OnVisualDefectReset);
+    connect(&bus, &player::AnalysisBus::VisualDefectFrameReady, analysis_panel_,
+            &ui::AnalysisPanel::OnVisualDefectFrame);
+    connect(&bus, &player::AnalysisBus::VisualDefectReady, analysis_panel_, &ui::AnalysisPanel::OnVisualDefectDetected);
+    connect(&bus, &player::AnalysisBus::VisualDefectStatsReady, analysis_panel_,
+            &ui::AnalysisPanel::OnVisualDefectStats);
     // 面板改采样档位 / 阈值 -> 播放器
-    connect(analysis_panel_, &ui::AnalysisPanel::VisualDefectOptionsChanged,
-            player_, &player::MediaPlayer::SetVisualDefectOptions);
+    connect(analysis_panel_, &ui::AnalysisPanel::VisualDefectOptionsChanged, player_,
+            &player::MediaPlayer::SetVisualDefectOptions);
     // 全文件扫描拿到素材自带起始时码 -> 播放器时间轴旁的 SMPTE 时码显示
-    connect(analysis_panel_, &ui::AnalysisPanel::StartTimecodeReady,
-            player_panel_, &PlayerPanel::SetStartTimecode);
-    
+    connect(analysis_panel_, &ui::AnalysisPanel::StartTimecodeReady, player_panel_, &PlayerPanel::SetStartTimecode);
+
     // 面板开关信号 -> MediaPlayer 控制
-    connect(analysis_panel_, &ui::AnalysisPanel::AnalysisFeatureToggled,
-            this, [this](int feature, bool enabled) {
-                using AF = ui::AnalysisPanel::AnalysisFeature;
-                AF feat = static_cast<AF>(feature);
-                if (!player_) return;
+    connect(analysis_panel_, &ui::AnalysisPanel::AnalysisFeatureToggled, this, [this](int feature, bool enabled) {
+        using AF = ui::AnalysisPanel::AnalysisFeature;
+        AF feat = static_cast<AF>(feature);
+        if (!player_)
+            return;
 
-                // 宏块分析要为 MV 叠加让路：它是"用户主动启用"与"叠加需求"的或。
-                // 页面开关只代表用户意图 —— 用户关掉它时，叠加也依赖不成立，一起关。
-                if (feat == AF::Macroblock) {
-                    macroblock_.OnUserToggle(enabled);
-                    if (!enabled && player_panel_) {
-                        // 同步叠加按钮（内部会回调 MvOverlayToggled(false)，幂等）。
-                        player_panel_->SetMvOverlayEnabled(false);
-                    }
-                    ApplyMacroblockAnalysisState();
-                    return;
-                }
+        // 宏块分析要为 MV 叠加让路：它是"用户主动启用"与"叠加需求"的或。
+        // 页面开关只代表用户意图 —— 用户关掉它时，叠加也依赖不成立，一起关。
+        if (feat == AF::Macroblock) {
+            macroblock_.OnUserToggle(enabled);
+            if (!enabled && player_panel_) {
+                // 同步叠加按钮（内部会回调 MvOverlayToggled(false)，幂等）。
+                player_panel_->SetMvOverlayEnabled(false);
+            }
+            ApplyMacroblockAnalysisState();
+            return;
+        }
 
-                // MediaPlayer 直接认 model::AnalysisFeature（面板的 AF 就是它的别名），
-                // 所以这里不再需要一个逐个翻译的 switch —— 只剩转发。
-                player_->SetAnalysisFeature(feat, enabled);
-            });
+        // MediaPlayer 直接认 model::AnalysisFeature（面板的 AF 就是它的别名），
+        // 所以这里不再需要一个逐个翻译的 switch —— 只剩转发。
+        player_->SetAnalysisFeature(feat, enabled);
+    });
 
     // MV 叠加开关 -> 宏块分析（叠加需要分析，但"需要"与"用户启用"分开记，
     // 关闭叠加只回退到用户原先的选择，而不是无条件关掉分析）。
-    connect(player_panel_, &PlayerPanel::MvOverlayToggled,
-            this, [this](bool enabled) {
-                macroblock_.OnOverlayToggle(enabled);
-                ApplyMacroblockAnalysisState();
-            });
-    
+    connect(player_panel_, &PlayerPanel::MvOverlayToggled, this, [this](bool enabled) {
+        macroblock_.OnOverlayToggle(enabled);
+        ApplyMacroblockAnalysisState();
+    });
+
     // 播放模块的信号桥接 (播放区内部的控件连接见 PlayerPanel::SetupConnections)
-    connect(player_panel_, &PlayerPanel::StatusMessage,
-            this, [this](const QString& text, int timeout) {
-                statusBar()->showMessage(text, timeout);
-            });
-    connect(player_panel_, &PlayerPanel::ErrorMessage,
-            this, [this](const QString& text) {
-                statusBar()->showMessage(text);
-            });
-    connect(player_panel_, &PlayerPanel::RawImageInfoReady,
-            this, [this](const QString& info) {
-                if (overview_page_) overview_page_->SetMediaInfoText(info);
-            });
-    connect(analysis_panel_, &ui::AnalysisPanel::StatusMessage,
-            this, [this](const QString& text) {
-                if (statusBar()) statusBar()->showMessage(text);
-            });
-    connect(ffmpeg_panel_, &ui::FfmpegPanel::StatusMessage,
-            this, [this](const QString& text) {
-                if (statusBar()) statusBar()->showMessage(text);
-            });
+    connect(player_panel_, &PlayerPanel::StatusMessage, this,
+            [this](const QString& text, int timeout) { statusBar()->showMessage(text, timeout); });
+    connect(player_panel_, &PlayerPanel::ErrorMessage, this,
+            [this](const QString& text) { statusBar()->showMessage(text); });
+    connect(player_panel_, &PlayerPanel::RawImageInfoReady, this, [this](const QString& info) {
+        if (overview_page_)
+            overview_page_->SetMediaInfoText(info);
+    });
+    connect(analysis_panel_, &ui::AnalysisPanel::StatusMessage, this, [this](const QString& text) {
+        if (statusBar())
+            statusBar()->showMessage(text);
+    });
+    connect(ffmpeg_panel_, &ui::FfmpegPanel::StatusMessage, this, [this](const QString& text) {
+        if (statusBar())
+            statusBar()->showMessage(text);
+    });
     // 实时码流统计: 空串表示停止/换源, 隐藏常驻区
-    connect(player_panel_, &PlayerPanel::StreamStatsDisplayReady,
-            this, [this](const QString& text) {
-                if (!stats_label_) return;
-                stats_label_->setText(text);
-                stats_label_->setVisible(!text.isEmpty());
-            });
+    connect(player_panel_, &PlayerPanel::StreamStatsDisplayReady, this, [this](const QString& text) {
+        if (!stats_label_)
+            return;
+        stats_label_->setText(text);
+        stats_label_->setVisible(!text.isEmpty());
+    });
     // 播放区显隐变化时同步菜单勾选并重算窗口最小尺寸
-    connect(player_panel_, &PlayerPanel::VisibilityChanged,
-            this, [this](bool visible) {
-                if (menu_actions_.toggle_player && menu_actions_.toggle_player->isChecked() != visible) {
-                    menu_actions_.toggle_player->blockSignals(true);
-                    menu_actions_.toggle_player->setChecked(visible);
-                    menu_actions_.toggle_player->blockSignals(false);
-                }
-                UpdateMinimumWindowSize();
-            });
+    connect(player_panel_, &PlayerPanel::VisibilityChanged, this, [this](bool visible) {
+        if (menu_actions_.toggle_player && menu_actions_.toggle_player->isChecked() != visible) {
+            menu_actions_.toggle_player->blockSignals(true);
+            menu_actions_.toggle_player->setChecked(visible);
+            menu_actions_.toggle_player->blockSignals(false);
+        }
+        UpdateMinimumWindowSize();
+    });
     // 布局预设变化时同步视图菜单勾选（预设也可能来自恢复 / 首次自适应，不止菜单）
-    connect(player_panel_, &PlayerPanel::LayoutPresetChanged,
-            this, [this](PlayerPanel::LayoutPreset preset) {
-                const bool analysis = (preset == PlayerPanel::LayoutPreset::Analysis);
-                if (menu_actions_.layout_analysis && menu_actions_.layout_analysis->isChecked() != analysis) {
-                    menu_actions_.layout_analysis->blockSignals(true);
-                    menu_actions_.layout_analysis->setChecked(analysis);
-                    menu_actions_.layout_analysis->blockSignals(false);
-                }
-                if (menu_actions_.layout_monitor && menu_actions_.layout_monitor->isChecked() == analysis) {
-                    menu_actions_.layout_monitor->blockSignals(true);
-                    menu_actions_.layout_monitor->setChecked(!analysis);
-                    menu_actions_.layout_monitor->blockSignals(false);
-                }
-            });
+    connect(player_panel_, &PlayerPanel::LayoutPresetChanged, this, [this](PlayerPanel::LayoutPreset preset) {
+        const bool analysis = (preset == PlayerPanel::LayoutPreset::Analysis);
+        if (menu_actions_.layout_analysis && menu_actions_.layout_analysis->isChecked() != analysis) {
+            menu_actions_.layout_analysis->blockSignals(true);
+            menu_actions_.layout_analysis->setChecked(analysis);
+            menu_actions_.layout_analysis->blockSignals(false);
+        }
+        if (menu_actions_.layout_monitor && menu_actions_.layout_monitor->isChecked() == analysis) {
+            menu_actions_.layout_monitor->blockSignals(true);
+            menu_actions_.layout_monitor->setChecked(!analysis);
+            menu_actions_.layout_monitor->blockSignals(false);
+        }
+    });
 
     // ---- 首页（总览）接线 ----
     // 1) 文件摘要: 在 OnPlayerOpenFinished 里做，**不再单开一个 OpenFinished 连接**。
@@ -627,28 +592,28 @@ void MainWindow::SetupConnections() {
     //    pending_open_source_ 清空之后，后跑的只能读到空串 —— 打开失败时首页就
     //    拿不到文件名了。摘要与状态栏收尾同属"这一次打开"，放一个槽里顺序才确定。
     // 2) 分析状态: 面板在扫描起止/报告重算/换文件时发信号，这里拉快照刷新首页
-    connect(analysis_panel_, &ui::AnalysisPanel::DiagnosticsStateChanged,
-            this, &MainWindow::RefreshOverviewAnalysis);
+    connect(analysis_panel_, &ui::AnalysisPanel::DiagnosticsStateChanged, this, &MainWindow::RefreshOverviewAnalysis);
     // 2b) 同一信号也驱动侧栏导航标记（异常数徽标 / 扫描圆点）
-    connect(analysis_panel_, &ui::AnalysisPanel::DiagnosticsStateChanged,
-            this, &MainWindow::UpdateNavigationBadges);
+    connect(analysis_panel_, &ui::AnalysisPanel::DiagnosticsStateChanged, this, &MainWindow::UpdateNavigationBadges);
     // 3) 首页跳转 / 重新分析意图
-    connect(overview_page_, &OverviewPage::NavigateToPage,
-            this, &MainWindow::ShowPageById);
+    connect(overview_page_, &OverviewPage::NavigateToPage, this, &MainWindow::ShowPageById);
     connect(overview_page_, &OverviewPage::RescanRequested, this, [this]() {
-        if (analysis_panel_) analysis_panel_->StartDiagnosticsScanForCurrentFile();
+        if (analysis_panel_)
+            analysis_panel_->StartDiagnosticsScanForCurrentFile();
     });
     // 4) 媒体信息解析结果回到 UI 线程后贴到首页 (协调器只发文本, 不碰 UI 控件)
-    connect(media_info_coordinator_.get(), &MediaInfoCoordinator::InfoReady,
-            this, [this](const QString& text) {
-                if (overview_page_) overview_page_->SetMediaInfoText(text);
-            });
+    connect(media_info_coordinator_.get(), &MediaInfoCoordinator::InfoReady, this, [this](const QString& text) {
+        if (overview_page_)
+            overview_page_->SetMediaInfoText(text);
+    });
 }
 
 void MainWindow::ShowPageById(const QString& page_id) {
-    if (!content_stack_) return;
+    if (!content_stack_)
+        return;
     for (int i = 0; i < content_stack_->count(); ++i) {
-        if (content_stack_->widget(i)->property("pageId").toString() != page_id) continue;
+        if (content_stack_->widget(i)->property("pageId").toString() != page_id)
+            continue;
         content_stack_->setCurrentIndex(i);
         // 同步侧栏选中：行号因分组标题与 stack 下标错位，按 UserRole 反查
         ui::SelectSidebarRowForStackIndex(sidebar_, i);
@@ -658,7 +623,8 @@ void MainWindow::ShowPageById(const QString& page_id) {
 }
 
 void MainWindow::RefreshOverviewAnalysis() {
-    if (!overview_page_ || !analysis_panel_) return;
+    if (!overview_page_ || !analysis_panel_)
+        return;
 
     // 本函数只做两件事：把 AnalysisPanel 的只读快照抄进 Input，把算好的摘要交给首页。
     // 「什么算失败」「异常按什么顺序取前几条」都在 ui::BuildOverviewAnalysisSummary 里
@@ -670,15 +636,15 @@ void MainWindow::RefreshOverviewAnalysis() {
     input.has_result = analysis_panel_->HasDiagnosticsResult();
     // 报告的引用只在本次调用里借用：DiagnosticsReport() 返回的是面板手上那份，
     // 下一次扫描落地会被覆盖，所以组装函数内部一律拷值、不留指针。
-    const model::QcReport* report =
-        input.has_result ? &analysis_panel_->DiagnosticsReport() : nullptr;
+    const model::QcReport* report = input.has_result ? &analysis_panel_->DiagnosticsReport() : nullptr;
     input.report = report;
 
     overview_page_->SetAnalysisSummary(ui::BuildOverviewAnalysisSummary(input));
 }
 
 void MainWindow::UpdateNavigationBadges() {
-    if (!sidebar_ || !content_stack_ || !analysis_panel_) return;
+    if (!sidebar_ || !content_stack_ || !analysis_panel_)
+        return;
 
     // 徽标按 pageId 归集（AnalysisPanel::PageBadges），侧栏 item 手上只有 stack 下标，
     // 反查一次 content_stack_ 把下标映回 pageId —— 那段 Qt 侧的读写在
@@ -695,8 +661,8 @@ void MainWindow::UpdateNavigationBadges() {
 }
 
 void MainWindow::OnOpenFile() {
-    QString filename = QFileDialog::getOpenFileName(this,
-        tr("打开媒体文件"), "",
+    QString filename = QFileDialog::getOpenFileName(
+        this, tr("打开媒体文件"), "",
         tr("媒体文件 (*.mp4 *.avi *.mkv *.flv *.ts *.mp3 *.aac *.wav *.pcm *.yuv *.nv12 *.rgb *.bgr *.yuy2 *.raw);;"
            "流媒体清单 (*.m3u8 *.mpd);;所有文件 (*)"));
     if (filename.isEmpty()) {
@@ -707,11 +673,8 @@ void MainWindow::OnOpenFile() {
 
 void MainWindow::OnOpenURL() {
     bool ok;
-    QString url = QInputDialog::getText(this, tr("打开URL"),
-                                        tr("输入流媒体URL:"),
-                                        QLineEdit::Normal,
-                                        "rtmp://", &ok);
-    
+    QString url = QInputDialog::getText(this, tr("打开URL"), tr("输入流媒体URL:"), QLineEdit::Normal, "rtmp://", &ok);
+
     if (ok && !url.isEmpty()) {
         OpenMedia(url, true);
     }
@@ -739,16 +702,14 @@ bool MainWindow::PromptForPcmSettings(QString& demuxer_name, int& sample_rate, i
         const char* demuxer;
     };
 
-    const std::vector<PcmFormatOption> formats = {
-        {"s16le (16-bit little-endian)", "pcm_s16le"},
-        {"s16be (16-bit big-endian)", "pcm_s16be"},
-        {"u8 (8-bit unsigned)", "pcm_u8"},
-        {"s24le (24-bit little-endian)", "pcm_s24le"},
-        {"s24be (24-bit big-endian)", "pcm_s24be"},
-        {"s32le (32-bit little-endian)", "pcm_s32le"},
-        {"f32le (32-bit float little-endian)", "pcm_f32le"},
-        {"f32be (32-bit float big-endian)", "pcm_f32be"}
-    };
+    const std::vector<PcmFormatOption> formats = {{"s16le (16-bit little-endian)", "pcm_s16le"},
+                                                  {"s16be (16-bit big-endian)", "pcm_s16be"},
+                                                  {"u8 (8-bit unsigned)", "pcm_u8"},
+                                                  {"s24le (24-bit little-endian)", "pcm_s24le"},
+                                                  {"s24be (24-bit big-endian)", "pcm_s24be"},
+                                                  {"s32le (32-bit little-endian)", "pcm_s32le"},
+                                                  {"f32le (32-bit float little-endian)", "pcm_f32le"},
+                                                  {"f32be (32-bit float big-endian)", "pcm_f32be"}};
 
     QStringList labels;
     for (const auto& format : formats) {
@@ -756,8 +717,7 @@ bool MainWindow::PromptForPcmSettings(QString& demuxer_name, int& sample_rate, i
     }
 
     bool ok = false;
-    const QString selected = QInputDialog::getItem(
-        this, tr("PCM 参数"), tr("采样格式:"), labels, 0, false, &ok);
+    const QString selected = QInputDialog::getItem(this, tr("PCM 参数"), tr("采样格式:"), labels, 0, false, &ok);
     if (!ok || selected.isEmpty()) {
         return false;
     }
@@ -772,14 +732,12 @@ bool MainWindow::PromptForPcmSettings(QString& demuxer_name, int& sample_rate, i
         return false;
     }
 
-    sample_rate = QInputDialog::getInt(
-        this, tr("PCM 参数"), tr("采样率 (Hz):"), sample_rate, 8000, 384000, 1000, &ok);
+    sample_rate = QInputDialog::getInt(this, tr("PCM 参数"), tr("采样率 (Hz):"), sample_rate, 8000, 384000, 1000, &ok);
     if (!ok) {
         return false;
     }
 
-    channels = QInputDialog::getInt(
-        this, tr("PCM 参数"), tr("声道数:"), channels, 1, 8, 1, &ok);
+    channels = QInputDialog::getInt(this, tr("PCM 参数"), tr("声道数:"), channels, 1, 8, 1, &ok);
     if (!ok) {
         return false;
     }

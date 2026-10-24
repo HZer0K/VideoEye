@@ -5,7 +5,7 @@
 
 #include <functional>
 
-#include "core/player/MediaPlayer.h"
+#include "core/player/MediaPlayerFwd.h"
 
 class QProgressDialog;
 class QWidget;
@@ -25,8 +25,7 @@ class ExportCoordinator : public QObject {
     Q_OBJECT
 
 public:
-    ExportCoordinator(player::MediaPlayer* player, QWidget* dialog_parent,
-                      QObject* parent = nullptr);
+    ExportCoordinator(player::MediaPlayer* player, QWidget* dialog_parent, QObject* parent = nullptr);
 
     // 两个状态查询在导出入口被调用时读取, 不缓存 (返回值随 MainWindow 状态变)。
     using SourceQuery = std::function<QString()>;
@@ -60,13 +59,13 @@ private slots:
     void OnMediaExportCanceled(const QString& output_path);
     void OnMediaExportError(const QString& message);
 
-    void OnProgressCanceled();  // 进度框取消按钮
+    void OnProgressCanceled(); // 进度框取消按钮
 
 private:
     void ShowProgress(const QString& title, int maximum, const QString& label);
 
-    player::MediaPlayer* player_ = nullptr;  // 不拥有
-    QWidget* dialog_parent_ = nullptr;       // 对话框 parent (MainWindow); 不拥有
+    player::MediaPlayer* player_ = nullptr; // 不拥有
+    QWidget* dialog_parent_ = nullptr;      // 对话框 parent (MainWindow); 不拥有
 
     // 导出进度框与其状态 (原 MainWindow 成员整体迁入)
     QProgressDialog* export_progress_dialog_ = nullptr;

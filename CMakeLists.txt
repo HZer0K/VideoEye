@@ -444,19 +444,18 @@ if(UI_SOURCES)
         ${CMAKE_CURRENT_SOURCE_DIR}/ui
     )
     # Qt6::Widgets 挂 PUBLIC: 公共头就是 QWidget 系。
-    # FFmpeg 也挂 PUBLIC: MainWindow.h / AnalysisPanel.h 的公共头闭包里有
-    # MediaPlayer.h、StreamAnalyzer.h 这类直接 include libav* 的头，PRIVATE 会让
-    # 只链 VideoEyeUi 的下游拿不到 FFmpeg 的 include 目录（audit_link_visibility 守）。
+    # FFmpeg 挂 PRIVATE: UI 公共头只出现 player::MediaPlayer*（MediaPlayerFwd.h），
+    # 不再 include MediaPlayer.h；需要 FFmpeg 的只是 .cpp 的编译，PRIVATE 已足够。
     # core 模块挂 PRIVATE: UI 库不对外提供它们的 API；主程序与测试各自显式链
     # 需要的模块，避免把 VideoEyeUi 变成第二个"全部 PUBLIC"的聚合层。
     target_link_libraries(VideoEyeUi
         PUBLIC Qt6::Widgets
-               FFmpeg::avcodec
-               FFmpeg::avformat
-               FFmpeg::avutil
-               FFmpeg::swscale
-               FFmpeg::swresample
-        PRIVATE VideoEyePlayback
+        PRIVATE FFmpeg::avcodec
+                FFmpeg::avformat
+                FFmpeg::avutil
+                FFmpeg::swscale
+                FFmpeg::swresample
+                VideoEyePlayback
                 VideoEyeExporter
                 VideoEyeReporting
                 VideoEyeQc
