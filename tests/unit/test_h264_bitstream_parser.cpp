@@ -19,9 +19,8 @@ using videoeye::NalUnit;
 
 // A: High / Level 3.1 / 1280x720 / 4:2:0 8bit / VUI(timing + colour + restriction)
 const std::vector<uint8_t> kSpsHigh720p = {
-    0x64, 0x00, 0x1F, 0xAC, 0x72, 0x14, 0x05, 0x00, 0x5B, 0xA6, 0xA0, 0x20,
-    0x20, 0x28, 0x00, 0x00, 0x1F, 0x40, 0x00, 0x07, 0x53, 0x04, 0x78, 0xB1,
-    0x6C, 0xB0,
+    0x64, 0x00, 0x1F, 0xAC, 0x72, 0x14, 0x05, 0x00, 0x5B, 0xA6, 0xA0, 0x20, 0x20,
+    0x28, 0x00, 0x00, 0x1F, 0x40, 0x00, 0x07, 0x53, 0x04, 0x78, 0xB1, 0x6C, 0xB0,
 };
 
 // B: High 10 / Level 5.1 / 1920x1088（crop bottom 4 → 1080）/ 4:2:0 10bit / 无 VUI
@@ -36,13 +35,16 @@ const std::vector<uint8_t> kSpsMain320x240 = {
 
 // D: High / Level 4.0 / 176x144 / VUI timing 全 0（刻意制造 0x000003 反转义场景）
 const std::vector<uint8_t> kSpsQcifEscaped = {
-    0x64, 0x00, 0x28, 0xAC, 0xDA, 0x0B, 0x13, 0xA1, 0x00, 0x00, 0x03, 0x00,
-    0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x04,
+    0x64, 0x00, 0x28, 0xAC, 0xDA, 0x0B, 0x13, 0xA1, 0x00, 0x00,
+    0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x04,
 };
 
 // E: PPS —— id=0 / sps_id=0 / CABAC / l0=3 帧 / l1=2 帧 / bipred=2 / deblocking on
 const std::vector<uint8_t> kPpsBasic = {
-    0xEB, 0x4B, 0x2C, 0x80,
+    0xEB,
+    0x4B,
+    0x2C,
+    0x80,
 };
 
 NalUnit MakeSps(const std::vector<uint8_t>& payload) {
@@ -56,7 +58,8 @@ NalUnit MakePps(const std::vector<uint8_t>& payload) {
 class TestBitWriter {
 public:
     void WriteBit(bool value) {
-        if (bit_count_ % 8 == 0) data_.push_back(0);
+        if (bit_count_ % 8 == 0)
+            data_.push_back(0);
         if (value) {
             data_.back() |= static_cast<uint8_t>(1u << (7 - (bit_count_ % 8)));
         }
@@ -72,14 +75,17 @@ public:
     void WriteUE(uint32_t value) {
         const uint64_t code_num = static_cast<uint64_t>(value) + 1;
         int leading_zero_bits = 0;
-        for (uint64_t n = code_num; n > 1; n >>= 1) ++leading_zero_bits;
-        for (int i = 0; i < leading_zero_bits; ++i) WriteBit(false);
+        for (uint64_t n = code_num; n > 1; n >>= 1)
+            ++leading_zero_bits;
+        for (int i = 0; i < leading_zero_bits; ++i)
+            WriteBit(false);
         WriteBits(code_num, leading_zero_bits + 1);
     }
 
     std::vector<uint8_t> FinishRbsp() {
         WriteBit(true);
-        while (bit_count_ % 8 != 0) WriteBit(false);
+        while (bit_count_ % 8 != 0)
+            WriteBit(false);
         return data_;
     }
 
@@ -104,38 +110,38 @@ std::vector<uint8_t> EscapeRbsp(const std::vector<uint8_t>& rbsp) {
 
 std::vector<uint8_t> BuildH264SpsWithOversizedHrdCpbCount() {
     TestBitWriter w;
-    w.WriteBits(100, 8);  // profile_idc = High
-    w.WriteBits(0, 8);    // constraint flags + reserved_zero_2bits
-    w.WriteBits(31, 8);   // level_idc = 3.1
-    w.WriteUE(0);         // seq_parameter_set_id
-    w.WriteUE(1);         // chroma_format_idc = 4:2:0
-    w.WriteUE(0);         // bit_depth_luma_minus8
-    w.WriteUE(0);         // bit_depth_chroma_minus8
-    w.WriteBit(false);    // qpprime_y_zero_transform_bypass_flag
-    w.WriteBit(false);    // seq_scaling_matrix_present_flag
-    w.WriteUE(0);         // log2_max_frame_num_minus4
-    w.WriteUE(0);         // pic_order_cnt_type
-    w.WriteUE(0);         // log2_max_pic_order_cnt_lsb_minus4
-    w.WriteUE(1);         // max_num_ref_frames
-    w.WriteBit(false);    // gaps_in_frame_num_value_allowed_flag
-    w.WriteUE(19);        // 320 / 16 - 1
-    w.WriteUE(14);        // 240 / 16 - 1
-    w.WriteBit(true);     // frame_mbs_only_flag
-    w.WriteBit(true);     // direct_8x8_inference_flag
-    w.WriteBit(false);    // frame_cropping_flag
-    w.WriteBit(true);     // vui_parameters_present_flag
+    w.WriteBits(100, 8); // profile_idc = High
+    w.WriteBits(0, 8);   // constraint flags + reserved_zero_2bits
+    w.WriteBits(31, 8);  // level_idc = 3.1
+    w.WriteUE(0);        // seq_parameter_set_id
+    w.WriteUE(1);        // chroma_format_idc = 4:2:0
+    w.WriteUE(0);        // bit_depth_luma_minus8
+    w.WriteUE(0);        // bit_depth_chroma_minus8
+    w.WriteBit(false);   // qpprime_y_zero_transform_bypass_flag
+    w.WriteBit(false);   // seq_scaling_matrix_present_flag
+    w.WriteUE(0);        // log2_max_frame_num_minus4
+    w.WriteUE(0);        // pic_order_cnt_type
+    w.WriteUE(0);        // log2_max_pic_order_cnt_lsb_minus4
+    w.WriteUE(1);        // max_num_ref_frames
+    w.WriteBit(false);   // gaps_in_frame_num_value_allowed_flag
+    w.WriteUE(19);       // 320 / 16 - 1
+    w.WriteUE(14);       // 240 / 16 - 1
+    w.WriteBit(true);    // frame_mbs_only_flag
+    w.WriteBit(true);    // direct_8x8_inference_flag
+    w.WriteBit(false);   // frame_cropping_flag
+    w.WriteBit(true);    // vui_parameters_present_flag
 
-    w.WriteBit(false);    // aspect_ratio_info_present_flag
-    w.WriteBit(false);    // overscan_info_present_flag
-    w.WriteBit(false);    // video_signal_type_present_flag
-    w.WriteBit(false);    // chroma_loc_info_present_flag
-    w.WriteBit(false);    // timing_info_present_flag
-    w.WriteBit(true);     // nal_hrd_parameters_present_flag
-    w.WriteUE(32);        // 非法：cpb_cnt_minus1 规范上限为 31
-    w.WriteBit(false);    // vcl_hrd_parameters_present_flag
-    w.WriteBit(false);    // low_delay_hrd_flag
-    w.WriteBit(false);    // pic_struct_present_flag
-    w.WriteBit(false);    // bitstream_restriction_flag
+    w.WriteBit(false); // aspect_ratio_info_present_flag
+    w.WriteBit(false); // overscan_info_present_flag
+    w.WriteBit(false); // video_signal_type_present_flag
+    w.WriteBit(false); // chroma_loc_info_present_flag
+    w.WriteBit(false); // timing_info_present_flag
+    w.WriteBit(true);  // nal_hrd_parameters_present_flag
+    w.WriteUE(32);     // 非法：cpb_cnt_minus1 规范上限为 31
+    w.WriteBit(false); // vcl_hrd_parameters_present_flag
+    w.WriteBit(false); // low_delay_hrd_flag
+    w.WriteBit(false); // pic_struct_present_flag
+    w.WriteBit(false); // bitstream_restriction_flag
     return EscapeRbsp(w.FinishRbsp());
 }
 
@@ -167,8 +173,7 @@ TEST(H264BitstreamParserTest, LevelVersionConversion) {
 TEST(ExtradataParserFormatDetectionTest, DetectAnnexBFormat) {
     const std::vector<uint8_t> annex_b_data = {0, 0, 0, 1, 7};
 
-    auto result = videoeye::ExtradataParser::Parse(
-        annex_b_data.data(), annex_b_data.size());
+    auto result = videoeye::ExtradataParser::Parse(annex_b_data.data(), annex_b_data.size());
 
     EXPECT_TRUE(result.valid);
     EXPECT_EQ(result.format, videoeye::ExtradataFormat::AnnexB);
@@ -178,17 +183,16 @@ TEST(ExtradataParserFormatDetectionTest, DetectAnnexBFormat) {
 TEST(ExtradataParserFormatDetectionTest, DetectAvcCFormat) {
     // 真实 avcC（FFmpeg 交出的 extradata 不含 box header）
     const std::vector<uint8_t> avcc_data = {
-        0x01,                                // configurationVersion
-        0x64, 0x00, 0x29,                    // profile=100(High) compat level=4.1
-        0xFF,                                // reserved(6b)=1 + lengthSizeMinusOne=3
-        0xE1,                                // reserved(3b) + numSPS=1
-        0x00, 0x04, 0x67, 0x64, 0x00, 0x29,  // 4 字节 SPS（含 NAL header）
-        0x01,                                // numPPS=1
-        0x00, 0x02, 0x68, 0xEB,              // 2 字节 PPS（含 NAL header）
+        0x01,                               // configurationVersion
+        0x64, 0x00, 0x29,                   // profile=100(High) compat level=4.1
+        0xFF,                               // reserved(6b)=1 + lengthSizeMinusOne=3
+        0xE1,                               // reserved(3b) + numSPS=1
+        0x00, 0x04, 0x67, 0x64, 0x00, 0x29, // 4 字节 SPS（含 NAL header）
+        0x01,                               // numPPS=1
+        0x00, 0x02, 0x68, 0xEB,             // 2 字节 PPS（含 NAL header）
     };
 
-    auto result = videoeye::ExtradataParser::Parse(
-        avcc_data.data(), avcc_data.size());
+    auto result = videoeye::ExtradataParser::Parse(avcc_data.data(), avcc_data.size());
 
     EXPECT_TRUE(result.valid);
     EXPECT_EQ(result.format, videoeye::ExtradataFormat::AvcC);
@@ -196,8 +200,8 @@ TEST(ExtradataParserFormatDetectionTest, DetectAvcCFormat) {
     EXPECT_EQ(result.config.level_idc, 41u);
     EXPECT_EQ(result.config.length_size_minus_one, 3u);
     ASSERT_EQ(result.nal_units.size(), 2u);
-    EXPECT_EQ(result.nal_units[0].type, 7);  // SPS
-    EXPECT_EQ(result.nal_units[1].type, 8);  // PPS
+    EXPECT_EQ(result.nal_units[0].type, 7); // SPS
+    EXPECT_EQ(result.nal_units[1].type, 8); // PPS
     // NAL header 已被剥离：4 字节 SPS → 3 字节 payload，2 字节 PPS → 1 字节
     EXPECT_EQ(result.nal_units[0].size, 3u);
     EXPECT_EQ(result.nal_units[1].size, 1u);
@@ -301,8 +305,7 @@ TEST(H264SpfParsingTest, ParseMainProfileWithoutChromaExtension) {
 
 TEST(H264SpfParsingTest, UnescapeEmulationPreventionBytes) {
     // 原始 RBSP 里 timing 字段全是 0，编码时必然插入 0x03
-    ASSERT_NE(kSpsQcifEscaped.end(),
-              std::find(kSpsQcifEscaped.begin(), kSpsQcifEscaped.end(), 0x03));
+    ASSERT_NE(kSpsQcifEscaped.end(), std::find(kSpsQcifEscaped.begin(), kSpsQcifEscaped.end(), 0x03));
 
     const auto sps = H264BitstreamParser::ParseFromNalUnit(MakeSps(kSpsQcifEscaped));
 

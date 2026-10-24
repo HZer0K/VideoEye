@@ -13,8 +13,8 @@ namespace {
 constexpr double kPi = 3.14159265358979323846;
 
 // BS.1770-4 时间常数
-constexpr double kBlockSeconds = 0.4;    // 400 ms 块
-constexpr double kHopSeconds = 0.1;      // 75% 重叠 -> 每 100 ms 一个块
+constexpr double kBlockSeconds = 0.4; // 400 ms 块
+constexpr double kHopSeconds = 0.1;   // 75% 重叠 -> 每 100 ms 一个块
 constexpr double kShortTermSeconds = 3.0;
 
 // 真峰值过采样系数（BS.1770-4 要求至少 4×）
@@ -68,8 +68,9 @@ BiquadFilter MakeKWeightingRlb(int sample_rate) {
 // 4× 过采样插值核: Hann 窗 sinc，截止频率 = 原始奈奎斯特（与 libebur128 同一设计）
 std::vector<double> MakeInterpolationKernel(int sample_rate) {
     const int factor = kOversampleFactor;
-    int taps = 48;   // 48 kHz -> 48 抽头（每相位 12）；采样率每翻倍抽头翻倍
-    while (taps < 192 && sample_rate > (taps / 48) * 48000) taps *= 2;
+    int taps = 48; // 48 kHz -> 48 抽头（每相位 12）；采样率每翻倍抽头翻倍
+    while (taps < 192 && sample_rate > (taps / 48) * 48000)
+        taps *= 2;
 
     std::vector<double> h(taps, 0.0);
     for (int j = 0; j < taps; ++j) {
@@ -78,14 +79,13 @@ std::vector<double> MakeInterpolationKernel(int sample_rate) {
         if (std::abs(m) > 1e-12) {
             c = std::sin(m * kPi / factor) / (m * kPi / factor);
         }
-        c *= 0.5 * (1.0 - std::cos(2.0 * kPi * static_cast<double>(j) /
-                                   static_cast<double>(taps - 1)));
+        c *= 0.5 * (1.0 - std::cos(2.0 * kPi * static_cast<double>(j) / static_cast<double>(taps - 1)));
         h[j] = c;
     }
     return h;
 }
 
-}  // namespace
+} // namespace
 
 // ---------------------------------------------------------------- 生命周期
 
@@ -117,7 +117,7 @@ void AudioQcAnalyzer::Reset(const AudioQcOptions& options) {
     point_stride_ = 1;
     momentary_max_ = model::kSilenceLufs;
     short_term_max_ = model::kSilenceLufs;
-    short_term_min_ = 100.0;   // 未取到值时的哨兵（LUFS 不可能为正 100）
+    short_term_min_ = 100.0; // 未取到值时的哨兵（LUFS 不可能为正 100）
     abs_gated_sum_ = 0.0;
     abs_gated_count_ = 0;
     rel_gated_sum_ = 0.0;
@@ -131,12 +131,14 @@ void AudioQcAnalyzer::Reset(const AudioQcOptions& options) {
     finished_ = false;
 }
 
-void AudioQcAnalyzer::SetOptions(const AudioQcOptions& options) { options_ = options; }
+void AudioQcAnalyzer::SetOptions(const AudioQcOptions& options) {
+    options_ = options;
+}
 
 // ---------------------------------------------------------------- 元数据
 
-void AudioQcAnalyzer::SetStreamInfo(int sample_rate, int channels,
-                                    const std::string& sample_format, int bits_per_sample) {
+void AudioQcAnalyzer::SetStreamInfo(int sample_rate, int channels, const std::string& sample_format,
+                                    int bits_per_sample) {
     sample_rate_ = sample_rate;
     channel_count_ = channels;
     result_.metadata.sample_rate = sample_rate;
@@ -145,7 +147,8 @@ void AudioQcAnalyzer::SetStreamInfo(int sample_rate, int channels,
     result_.metadata.bits_per_sample = bits_per_sample;
     result_.has_audio = (channels > 0 && sample_rate > 0);
 
-    if (sample_rate <= 0 || channels <= 0) return;
+    if (sample_rate <= 0 || channels <= 0)
+        return;
 
     block_samples_ = std::max(1, static_cast<int>(std::llround(kBlockSeconds * sample_rate)));
     hop_samples_ = std::max(1, static_cast<int>(std::llround(kHopSeconds * sample_rate)));
@@ -153,9 +156,11 @@ void AudioQcAnalyzer::SetStreamInfo(int sample_rate, int channels,
     // 插值核 -> 多相分解（4 个相位）+ 历史余量
     interp_coeffs_ = MakeInterpolationKernel(sample_rate);
     double abs_sum = 0.0;
-    for (double c : interp_coeffs_) abs_sum += std::abs(c);
+    for (double c : interp_coeffs_)
+        abs_sum += std::abs(c);
     interp_abs_sum_ = std::max(abs_sum, 1e-9);
-    for (int p = 0; p < kOversampleFactor; ++p) interp_phase_[p].clear();
+    for (int p = 0; p < kOversampleFactor; ++p)
+        interp_phase_[p].clear();
     for (size_t j = 0; j < interp_coeffs_.size(); ++j) {
         interp_phase_[j % kOversampleFactor].push_back(interp_coeffs_[j]);
     }
@@ -177,7 +182,8 @@ void AudioQcAnalyzer::SetStreamInfo(int sample_rate, int channels,
 
 void AudioQcAnalyzer::SetChannelInfo(const std::vector<model::AudioChannelInfo>& channels) {
     channel_info_ = channels;
-    if (channels.empty()) return;
+    if (channels.empty())
+        return;
 
     result_.channels.clear();
     result_.channels.reserve(channels.size());
@@ -193,15 +199,13 @@ void AudioQcAnalyzer::SetChannelInfo(const std::vector<model::AudioChannelInfo>&
         roles.push_back(channels[i].role);
     }
     result_.metadata.channels = static_cast<int>(channels.size());
-    result_.metadata.layout_confirmed =
-        std::none_of(roles.begin(), roles.end(), [](model::AudioChannelRole r) {
-            return r == model::AudioChannelRole::Unknown;
-        });
+    result_.metadata.layout_confirmed = std::none_of(
+        roles.begin(), roles.end(), [](model::AudioChannelRole r) { return r == model::AudioChannelRole::Unknown; });
     result_.metadata.channel_layout = DescribeLayout(static_cast<int>(channels.size()), roles);
 }
 
-void AudioQcAnalyzer::SetDurations(double stream_seconds, double container_seconds,
-                                   double video_seconds, bool has_video) {
+void AudioQcAnalyzer::SetDurations(double stream_seconds, double container_seconds, double video_seconds,
+                                   bool has_video) {
     result_.metadata.stream_duration_seconds = stream_seconds;
     result_.metadata.container_duration_seconds = container_seconds;
     result_.metadata.video_duration_seconds = video_seconds;
@@ -212,43 +216,61 @@ void AudioQcAnalyzer::SetDurations(double stream_seconds, double container_secon
 
 double AudioQcAnalyzer::ChannelWeight(model::AudioChannelRole role) {
     switch (role) {
-        case model::AudioChannelRole::Surround:     return 1.41;
-        case model::AudioChannelRole::LowFrequency: return 0.0;
-        default:                                    return 1.0;
+    case model::AudioChannelRole::Surround:
+        return 1.41;
+    case model::AudioChannelRole::LowFrequency:
+        return 0.0;
+    default:
+        return 1.0;
     }
 }
 
-std::string AudioQcAnalyzer::DescribeLayout(int channels,
-                                            const std::vector<model::AudioChannelRole>& roles) {
-    if (channels <= 0) return "未知";
+std::string AudioQcAnalyzer::DescribeLayout(int channels, const std::vector<model::AudioChannelRole>& roles) {
+    if (channels <= 0)
+        return "未知";
     if (roles.size() != static_cast<size_t>(channels)) {
         switch (channels) {
-            case 1: return "单声道 (1.0)";
-            case 2: return "立体声 (2.0)";
-            default: return std::to_string(channels) + " 声道";
+        case 1:
+            return "单声道 (1.0)";
+        case 2:
+            return "立体声 (2.0)";
+        default:
+            return std::to_string(channels) + " 声道";
         }
     }
     int front = 0, surround = 0, lfe = 0;
     for (auto r : roles) {
-        if (r == model::AudioChannelRole::LowFrequency) ++lfe;
-        else if (r == model::AudioChannelRole::Surround) ++surround;
-        else ++front;
+        if (r == model::AudioChannelRole::LowFrequency)
+            ++lfe;
+        else if (r == model::AudioChannelRole::Surround)
+            ++surround;
+        else
+            ++front;
     }
-    if (channels == 1) return "单声道 (1.0)";
-    if (channels == 2) return "立体声 (2.0)";
-    if (front == 3 && surround == 2 && lfe == 1) return "5.1 (6ch)";
-    if (front == 3 && surround == 2 && lfe == 0) return "5.0 (5ch)";
-    if (front == 3 && surround == 4 && lfe == 1) return "7.1 (8ch)";
-    if (front == 3 && surround == 0 && lfe == 1) return "3.1 (4ch)";
-    if (front == 3 && surround == 0 && lfe == 0) return "3.0 (3ch)";
-    if (front == 2 && surround == 2 && lfe == 0) return "四声道 (4.0)";
+    if (channels == 1)
+        return "单声道 (1.0)";
+    if (channels == 2)
+        return "立体声 (2.0)";
+    if (front == 3 && surround == 2 && lfe == 1)
+        return "5.1 (6ch)";
+    if (front == 3 && surround == 2 && lfe == 0)
+        return "5.0 (5ch)";
+    if (front == 3 && surround == 4 && lfe == 1)
+        return "7.1 (8ch)";
+    if (front == 3 && surround == 0 && lfe == 1)
+        return "3.1 (4ch)";
+    if (front == 3 && surround == 0 && lfe == 0)
+        return "3.0 (3ch)";
+    if (front == 2 && surround == 2 && lfe == 0)
+        return "四声道 (4.0)";
     return std::to_string(channels) + " 声道";
 }
 
 // ---------------------------------------------------------------- 输入
 
 void AudioQcAnalyzer::PrepareFilters() {
-    if (sample_rate_ <= 0) return;
+    if (sample_rate_ <= 0)
+        return;
     for (auto& ch : channels_) {
         ch.shelf = MakeKWeightingShelf(sample_rate_);
         ch.rlb = MakeKWeightingRlb(sample_rate_);
@@ -257,15 +279,19 @@ void AudioQcAnalyzer::PrepareFilters() {
 }
 
 void AudioQcAnalyzer::EnsureReady() {
-    if (!filters_ready_ && sample_rate_ > 0) PrepareFilters();
+    if (!filters_ready_ && sample_rate_ > 0)
+        PrepareFilters();
 }
 
 void AudioQcAnalyzer::OnSamples(const float* const* planar, int frames, double timestamp_seconds) {
-    if (!stream_info_set_ || frames <= 0 || finished_ || planar == nullptr) return;
+    if (!stream_info_set_ || frames <= 0 || finished_ || planar == nullptr)
+        return;
     EnsureReady();
-    if (channels_.empty()) return;
+    if (channels_.empty())
+        return;
 
-    if (timestamp_seconds >= 0.0) clock_seconds_ = timestamp_seconds;
+    if (timestamp_seconds >= 0.0)
+        clock_seconds_ = timestamp_seconds;
     const double dt = 1.0 / static_cast<double>(sample_rate_);
 
     for (int i = 0; i < frames; ++i) {
@@ -280,17 +306,16 @@ void AudioQcAnalyzer::OnSamples(const float* const* planar, int frames, double t
         ++sample_index_;
         clock_seconds_ += dt;
 
-        if (sample_index_ >= block_samples_ &&
-            (sample_index_ - block_samples_) % hop_samples_ == 0) {
+        if (sample_index_ >= block_samples_ && (sample_index_ - block_samples_) % hop_samples_ == 0) {
             ProcessBlock(clock_seconds_);
         }
     }
     result_.analyzed = true;
 }
 
-void AudioQcAnalyzer::OnSamplesInterleaved(const float* data, int frames,
-                                           double timestamp_seconds) {
-    if (!stream_info_set_ || data == nullptr || frames <= 0) return;
+void AudioQcAnalyzer::OnSamplesInterleaved(const float* data, int frames, double timestamp_seconds) {
+    if (!stream_info_set_ || data == nullptr || frames <= 0)
+        return;
     std::vector<std::vector<float>> planes(static_cast<size_t>(channel_count_));
     std::vector<const float*> ptrs(static_cast<size_t>(channel_count_));
     for (int ch = 0; ch < channel_count_; ++ch) {
@@ -312,16 +337,19 @@ void AudioQcAnalyzer::PushSample(int ch, float sample, double seconds) {
     const double a = std::abs(d);
     state.sum += d;
     state.sum_sq += d * d;
-    if (a > state.peak) state.peak = a;
+    if (a > state.peak)
+        state.peak = a;
     ++state.samples;
-    if (a > running_sample_peak_) running_sample_peak_ = a;
+    if (a > running_sample_peak_)
+        running_sample_peak_ = a;
 
-    if (a < options_.clip_threshold) return;
+    if (a < options_.clip_threshold)
+        return;
 
     ++state.clip_samples;
     ++result_.clipping_sample_count;
     if (state.clip_open && seconds - state.clip_last > options_.clip_merge_gap_seconds) {
-        CloseClipEvent(ch, state.clip_last);   // 间隔过大 -> 先收尾上一段
+        CloseClipEvent(ch, state.clip_last); // 间隔过大 -> 先收尾上一段
     }
     if (!state.clip_open) {
         state.clip_open = true;
@@ -331,7 +359,8 @@ void AudioQcAnalyzer::PushSample(int ch, float sample, double seconds) {
     }
     state.clip_last = seconds;
     ++state.clip_count;
-    if (a > state.clip_peak) state.clip_peak = a;
+    if (a > state.clip_peak)
+        state.clip_peak = a;
 }
 
 void AudioQcAnalyzer::CloseClipEvent(int ch, double seconds) {
@@ -359,7 +388,7 @@ void AudioQcAnalyzer::CloseClipEvent(int ch, double seconds) {
 void AudioQcAnalyzer::ProcessBlock(double end_seconds) {
     const int n = block_samples_;
     const int margin = interp_margin_;
-    const int64_t base = sample_index_ - n;   // 窗口首样本的绝对序号
+    const int64_t base = sample_index_ - n; // 窗口首样本的绝对序号
     const int ring = ring_size_;
 
     // ---- 1) 响度: K 加权后按声道加权求均方 ----
@@ -369,11 +398,13 @@ void AudioQcAnalyzer::ProcessBlock(double end_seconds) {
             const auto& buf = channels_[static_cast<size_t>(ch)].kw_ring;
             double sum_sq = 0.0;
             int idx = static_cast<int>(base % ring);
-            if (idx < 0) idx += ring;
+            if (idx < 0)
+                idx += ring;
             for (int k = 0; k < n; ++k) {
                 const double v = buf[static_cast<size_t>(idx)];
                 sum_sq += v * v;
-                if (++idx == ring) idx = 0;
+                if (++idx == ring)
+                    idx = 0;
             }
             const double w = (ch < static_cast<int>(result_.channels.size()))
                                  ? result_.channels[static_cast<size_t>(ch)].weight
@@ -389,13 +420,17 @@ void AudioQcAnalyzer::ProcessBlock(double end_seconds) {
         const auto& buf = channels_[static_cast<size_t>(ch)].raw_ring;
         double sum_sq = 0.0;
         int idx = static_cast<int>((base - margin) % ring);
-        if (idx < 0) idx += ring;
+        if (idx < 0)
+            idx += ring;
         for (int k = 0; k < n + margin; ++k) {
             const double v = buf[static_cast<size_t>(idx)];
             const double a = std::abs(v);
-            if (a > block_peak) block_peak = a;
-            if (k >= margin) sum_sq += v * v;
-            if (++idx == ring) idx = 0;
+            if (a > block_peak)
+                block_peak = a;
+            if (k >= margin)
+                sum_sq += v * v;
+            if (++idx == ring)
+                idx = 0;
         }
         total_sum_sq += sum_sq;
     }
@@ -407,14 +442,15 @@ void AudioQcAnalyzer::ProcessBlock(double end_seconds) {
         double candidate = 0.0;
         for (int ch = 0; ch < channel_count_; ++ch) {
             const double tp = ComputeTruePeak(ch);
-            if (tp > candidate) candidate = tp;
-            if (ch < static_cast<int>(result_.channels.size()) &&
-                tp > 0.0 &&
+            if (tp > candidate)
+                candidate = tp;
+            if (ch < static_cast<int>(result_.channels.size()) && tp > 0.0 &&
                 model::AmplitudeToDb(tp) > result_.channels[static_cast<size_t>(ch)].true_peak_dbtp) {
                 result_.channels[static_cast<size_t>(ch)].true_peak_dbtp = model::AmplitudeToDb(tp);
             }
         }
-        if (candidate > running_true_peak_) running_true_peak_ = candidate;
+        if (candidate > running_true_peak_)
+            running_true_peak_ = candidate;
         block_true_peak = candidate;
     }
 
@@ -433,7 +469,8 @@ void AudioQcAnalyzer::ProcessBlock(double end_seconds) {
         for (int ch = 0; ch < channel_count_; ++ch) {
             const auto& buf = channels_[static_cast<size_t>(ch)].raw_ring;
             int idx = static_cast<int>(base % ring);
-            if (idx < 0) idx += ring;
+            if (idx < 0)
+                idx += ring;
             double acc1 = 0.0;
             double acc2 = 0.0;
             for (int k = 0; k < n; k += stride) {
@@ -441,7 +478,8 @@ void AudioQcAnalyzer::ProcessBlock(double end_seconds) {
                 acc1 += v;
                 acc2 += v * v;
                 for (int s = 0; s < stride && (k + s) < n; ++s) {
-                    if (++idx == ring) idx = 0;
+                    if (++idx == ring)
+                        idx = 0;
                 }
             }
             s1[static_cast<size_t>(ch)] = acc1;
@@ -450,31 +488,34 @@ void AudioQcAnalyzer::ProcessBlock(double end_seconds) {
 
         bool first = true;
         for (int a = 0; a < channel_count_; ++a) {
-            const double var_a = s2[static_cast<size_t>(a)] * inv_n -
-                                 std::pow(s1[static_cast<size_t>(a)] * inv_n, 2.0);
-            if (var_a <= 1e-12) continue;   // 空声道不参与
+            const double var_a = s2[static_cast<size_t>(a)] * inv_n - std::pow(s1[static_cast<size_t>(a)] * inv_n, 2.0);
+            if (var_a <= 1e-12)
+                continue; // 空声道不参与
             for (int b = a + 1; b < channel_count_; ++b) {
-                const double var_b = s2[static_cast<size_t>(b)] * inv_n -
-                                     std::pow(s1[static_cast<size_t>(b)] * inv_n, 2.0);
-                if (var_b <= 1e-12) continue;
+                const double var_b =
+                    s2[static_cast<size_t>(b)] * inv_n - std::pow(s1[static_cast<size_t>(b)] * inv_n, 2.0);
+                if (var_b <= 1e-12)
+                    continue;
 
                 const auto& buf_a = channels_[static_cast<size_t>(a)].raw_ring;
                 const auto& buf_b = channels_[static_cast<size_t>(b)].raw_ring;
                 int idx_a = static_cast<int>(base % ring);
-                if (idx_a < 0) idx_a += ring;
+                if (idx_a < 0)
+                    idx_a += ring;
                 int idx_b = idx_a;
                 double sxy = 0.0;
                 for (int k = 0; k < n; k += stride) {
                     sxy += static_cast<double>(buf_a[static_cast<size_t>(idx_a)]) *
                            static_cast<double>(buf_b[static_cast<size_t>(idx_b)]);
                     for (int s = 0; s < stride && (k + s) < n; ++s) {
-                        if (++idx_a == ring) idx_a = 0;
-                        if (++idx_b == ring) idx_b = 0;
+                        if (++idx_a == ring)
+                            idx_a = 0;
+                        if (++idx_b == ring)
+                            idx_b = 0;
                     }
                 }
-                const double cov = sxy * inv_n -
-                                   (s1[static_cast<size_t>(a)] * inv_n) *
-                                       (s1[static_cast<size_t>(b)] * inv_n);
+                const double cov =
+                    sxy * inv_n - (s1[static_cast<size_t>(a)] * inv_n) * (s1[static_cast<size_t>(b)] * inv_n);
                 const double r = std::clamp(cov / std::sqrt(var_a * var_b), -1.0, 1.0);
                 if (first || r < corr) {
                     corr = r;
@@ -487,9 +528,11 @@ void AudioQcAnalyzer::ProcessBlock(double end_seconds) {
         if (corr_a >= 0) {
             result_.correlation_available = true;
             correlation_sum_ += corr;
-            if (corr < correlation_min_) correlation_min_ = corr;
+            if (corr < correlation_min_)
+                correlation_min_ = corr;
             ++correlation_blocks_;
-            if (corr < options_.out_of_phase_threshold) ++out_of_phase_blocks_;
+            if (corr < options_.out_of_phase_threshold)
+                ++out_of_phase_blocks_;
         }
     }
 
@@ -507,11 +550,12 @@ void AudioQcAnalyzer::ProcessBlock(double end_seconds) {
     if (options_.enable_loudness) {
         point.momentary_lufs = model::PowerToLufs(weighted_power);
         block_powers_.push_back(weighted_power);
-        if (point.momentary_lufs > momentary_max_) momentary_max_ = point.momentary_lufs;
+        if (point.momentary_lufs > momentary_max_)
+            momentary_max_ = point.momentary_lufs;
 
         // 短期响度: 3 s 窗口 = 最近 30 个块（100 ms 步进）
-        const size_t window_blocks = std::max<size_t>(
-            1, static_cast<size_t>(std::llround(kShortTermSeconds / kHopSeconds)));
+        const size_t window_blocks =
+            std::max<size_t>(1, static_cast<size_t>(std::llround(kShortTermSeconds / kHopSeconds)));
         if (short_term_window_.size() != window_blocks) {
             short_term_window_.assign(window_blocks, 0.0);
             short_term_pos_ = 0;
@@ -526,8 +570,10 @@ void AudioQcAnalyzer::ProcessBlock(double end_seconds) {
             const double st_power = short_term_sum_ / static_cast<double>(window_blocks);
             point.short_term_lufs = model::PowerToLufs(st_power);
             short_term_values_.push_back(point.short_term_lufs);
-            if (point.short_term_lufs > short_term_max_) short_term_max_ = point.short_term_lufs;
-            if (point.short_term_lufs < short_term_min_) short_term_min_ = point.short_term_lufs;
+            if (point.short_term_lufs > short_term_max_)
+                short_term_max_ = point.short_term_lufs;
+            if (point.short_term_lufs < short_term_min_)
+                short_term_min_ = point.short_term_lufs;
         }
 
         // 累计积分响度: 增量近似（门限随累计均值前移，已入选的块不回退）
@@ -537,16 +583,14 @@ void AudioQcAnalyzer::ProcessBlock(double end_seconds) {
             abs_gated_sum_ += weighted_power;
             ++abs_gated_count_;
             const double ref =
-                model::PowerToLufs(abs_gated_sum_ / static_cast<double>(abs_gated_count_)) +
-                options_.relative_gate_lu;
+                model::PowerToLufs(abs_gated_sum_ / static_cast<double>(abs_gated_count_)) + options_.relative_gate_lu;
             if (lufs >= ref) {
                 rel_gated_sum_ += weighted_power;
                 ++rel_gated_count_;
             }
         }
         if (rel_gated_count_ > 0) {
-            point.integrated_lufs =
-                model::PowerToLufs(rel_gated_sum_ / static_cast<double>(rel_gated_count_));
+            point.integrated_lufs = model::PowerToLufs(rel_gated_sum_ / static_cast<double>(rel_gated_count_));
         }
     }
 
@@ -562,7 +606,8 @@ void AudioQcAnalyzer::ProcessBlock(double end_seconds) {
 }
 
 void AudioQcAnalyzer::DecimatePointsIfNeeded() {
-    if (static_cast<int>(result_.loudness_points.size()) < options_.max_loudness_points) return;
+    if (static_cast<int>(result_.loudness_points.size()) < options_.max_loudness_points)
+        return;
     // 达到上限时对折抽稀：保留偶数下标，之后每 2 个块才记一个点（时间轴仍均匀）
     std::vector<model::LoudnessPoint> compacted;
     compacted.reserve(result_.loudness_points.size() / 2 + 1);
@@ -581,9 +626,7 @@ void AudioQcAnalyzer::UpdateSilence(const model::LoudnessPoint& point) {
             // 块是 400 ms 窗口，窗口"完全静音"要等到静音开始 400 ms 后才会被判定，
             // 因此回退 (block - hop) = 300 ms 作为起点估计；第一个块则直接取 0。
             silence_start_ =
-                (blocks_emitted_ == 0)
-                    ? 0.0
-                    : std::max(0.0, point.timestamp_seconds - (kBlockSeconds - kHopSeconds));
+                (blocks_emitted_ == 0) ? 0.0 : std::max(0.0, point.timestamp_seconds - (kBlockSeconds - kHopSeconds));
             silence_acc_dbfs_ = 0.0;
             silence_acc_blocks_ = 0;
         }
@@ -591,7 +634,8 @@ void AudioQcAnalyzer::UpdateSilence(const model::LoudnessPoint& point) {
         ++silence_acc_blocks_;
         return;
     }
-    if (!silence_open_) return;
+    if (!silence_open_)
+        return;
 
     const double end = point.timestamp_seconds;
     if (end - silence_start_ >= options_.min_silence_seconds &&
@@ -600,8 +644,7 @@ void AudioQcAnalyzer::UpdateSilence(const model::LoudnessPoint& point) {
         range.start_seconds = silence_start_;
         range.end_seconds = end;
         range.duration_seconds = end - silence_start_;
-        range.rms_dbfs = silence_acc_blocks_ > 0 ? silence_acc_dbfs_ / silence_acc_blocks_
-                                                  : model::kSilenceLevelDb;
+        range.rms_dbfs = silence_acc_blocks_ > 0 ? silence_acc_dbfs_ / silence_acc_blocks_ : model::kSilenceLevelDb;
         result_.silence_ranges.push_back(range);
     }
     silence_open_ = false;
@@ -616,12 +659,15 @@ double AudioQcAnalyzer::ComputeTruePeak(int ch) const {
 
     // 复制到线性暂存区，避免内层循环做取模
     std::vector<float>& scratch = const_cast<std::vector<float>&>(scratch_);
-    if (scratch.size() < size) scratch.assign(size, 0.0f);
+    if (scratch.size() < size)
+        scratch.assign(size, 0.0f);
     int idx = static_cast<int>((sample_index_ - n - margin) % ring);
-    if (idx < 0) idx += ring;
+    if (idx < 0)
+        idx += ring;
     for (size_t k = 0; k < size; ++k) {
         scratch[k] = buf[static_cast<size_t>(idx)];
-        if (++idx == ring) idx = 0;
+        if (++idx == ring)
+            idx = 0;
     }
 
     double max_value = 0.0;
@@ -634,7 +680,8 @@ double AudioQcAnalyzer::ComputeTruePeak(int ch) const {
                 acc += coeffs[m] * static_cast<double>(x[-static_cast<ptrdiff_t>(m)]);
             }
             const double a = std::abs(acc);
-            if (a > max_value) max_value = a;
+            if (a > max_value)
+                max_value = a;
         }
     }
     return max_value;
@@ -643,7 +690,8 @@ double AudioQcAnalyzer::ComputeTruePeak(int ch) const {
 // ---------------------------------------------------------------- 收尾
 
 const model::AudioQcResult& AudioQcAnalyzer::Finish() {
-    if (finished_) return result_;
+    if (finished_)
+        return result_;
     finished_ = true;
 
     if (!stream_info_set_ || channel_count_ <= 0) {
@@ -663,8 +711,7 @@ const model::AudioQcResult& AudioQcAnalyzer::Finish() {
             range.start_seconds = silence_start_;
             range.end_seconds = end;
             range.duration_seconds = end - silence_start_;
-            range.rms_dbfs = silence_acc_blocks_ > 0 ? silence_acc_dbfs_ / silence_acc_blocks_
-                                                     : model::kSilenceLevelDb;
+            range.rms_dbfs = silence_acc_blocks_ > 0 ? silence_acc_dbfs_ / silence_acc_blocks_ : model::kSilenceLevelDb;
             result_.silence_ranges.push_back(range);
         }
         silence_open_ = false;
@@ -693,23 +740,24 @@ const model::AudioQcResult& AudioQcAnalyzer::Finish() {
             stat.dc_offset = state.sum / static_cast<double>(state.samples);
             stat.dc_offset_dbfs = model::AmplitudeToDb(std::abs(stat.dc_offset));
             sum_mean_sq += mean_sq;
-            if (state.peak > 0.0) any_signal = true;
+            if (state.peak > 0.0)
+                any_signal = true;
         }
         stat.silent = stat.rms_dbfs < options_.silence_threshold_dbfs;
-        if (!options_.enable_true_peak) stat.true_peak_dbtp = stat.peak_dbfs;
-        if (std::abs(stat.dc_offset) > max_dc) max_dc = std::abs(stat.dc_offset);
+        if (!options_.enable_true_peak)
+            stat.true_peak_dbtp = stat.peak_dbfs;
+        if (std::abs(stat.dc_offset) > max_dc)
+            max_dc = std::abs(stat.dc_offset);
     }
 
     result_.total_samples = sample_index_;
-    result_.duration_seconds =
-        static_cast<double>(sample_index_) / static_cast<double>(sample_rate_);
+    result_.duration_seconds = static_cast<double>(sample_index_) / static_cast<double>(sample_rate_);
     result_.sample_peak = running_sample_peak_;
     result_.sample_peak_dbfs = model::AmplitudeToDb(running_sample_peak_);
-    result_.true_peak_dbtp = options_.enable_true_peak ? model::AmplitudeToDb(running_true_peak_)
-                                                       : result_.sample_peak_dbfs;
-    result_.rms_dbfs = channels_.empty()
-                           ? model::kSilenceLevelDb
-                           : model::PowerToDb(sum_mean_sq / static_cast<double>(channels_.size()));
+    result_.true_peak_dbtp =
+        options_.enable_true_peak ? model::AmplitudeToDb(running_true_peak_) : result_.sample_peak_dbfs;
+    result_.rms_dbfs = channels_.empty() ? model::kSilenceLevelDb
+                                         : model::PowerToDb(sum_mean_sq / static_cast<double>(channels_.size()));
     result_.max_dc_offset = max_dc;
     result_.max_dc_offset_dbfs = model::AmplitudeToDb(max_dc);
     result_.momentary_max_lufs = momentary_max_;
@@ -756,8 +804,7 @@ const model::AudioQcResult& AudioQcAnalyzer::Finish() {
     if (!options_.enable_true_peak) {
         AddNote("未启用真峰值检测，dBTP 回落为采样峰值 dBFS。");
     }
-    if (result_.block_count > 0 &&
-        result_.duration_seconds < kShortTermSeconds) {
+    if (result_.block_count > 0 && result_.duration_seconds < kShortTermSeconds) {
         AddNote("音频时长不足 3 秒，短期响度(S)与 LRA 不可用。");
     }
     return result_;
@@ -765,14 +812,16 @@ const model::AudioQcResult& AudioQcAnalyzer::Finish() {
 
 void AudioQcAnalyzer::FinalizeIntegrated() {
     result_.integrated_lufs = model::kSilenceLufs;
-    if (block_powers_.empty()) return;
+    if (block_powers_.empty())
+        return;
 
     // 第一遍: 绝对门限
     double abs_sum = 0.0;
     int abs_count = 0;
     bool all_zero = true;
     for (double p : block_powers_) {
-        if (p > 0.0) all_zero = false;
+        if (p > 0.0)
+            all_zero = false;
         if (model::PowerToLufs(p) >= options_.absolute_gate_lufs) {
             abs_sum += p;
             ++abs_count;
@@ -796,34 +845,39 @@ void AudioQcAnalyzer::FinalizeIntegrated() {
         }
     }
     result_.gated_block_count = rel_count;
-    result_.integrated_lufs = (rel_count > 0)
-                                  ? model::PowerToLufs(rel_sum / static_cast<double>(rel_count))
-                                  : model::PowerToLufs(abs_mean);
+    result_.integrated_lufs =
+        (rel_count > 0) ? model::PowerToLufs(rel_sum / static_cast<double>(rel_count)) : model::PowerToLufs(abs_mean);
 }
 
 void AudioQcAnalyzer::FinalizeLoudnessRange() {
     result_.loudness_range_lu = 0.0;
-    if (short_term_values_.empty()) return;
+    if (short_term_values_.empty())
+        return;
 
     // EBU Tech 3341: 绝对门限 -70 LUFS -> 相对门限（低于均值 20 LU 剔除）-> P95 - P10
     std::vector<double> values;
     values.reserve(short_term_values_.size());
     for (double v : short_term_values_) {
-        if (v >= options_.absolute_gate_lufs) values.push_back(v);
+        if (v >= options_.absolute_gate_lufs)
+            values.push_back(v);
     }
-    if (values.empty()) return;
+    if (values.empty())
+        return;
 
     double power_sum = 0.0;
-    for (double v : values) power_sum += model::DbToPower(v);
+    for (double v : values)
+        power_sum += model::DbToPower(v);
     const double mean_lufs = model::PowerToLufs(power_sum / static_cast<double>(values.size()));
     const double rel_gate = mean_lufs + options_.lra_relative_gate_lu;
 
     std::vector<double> gated;
     gated.reserve(values.size());
     for (double v : values) {
-        if (v >= rel_gate) gated.push_back(v);
+        if (v >= rel_gate)
+            gated.push_back(v);
     }
-    if (gated.size() < 2) return;
+    if (gated.size() < 2)
+        return;
     std::sort(gated.begin(), gated.end());
 
     const auto percentile = [](const std::vector<double>& sorted, double p) {
@@ -849,27 +903,26 @@ void AudioQcAnalyzer::FinalizeMetadata() {
     if (meta.channels <= 0) {
         meta.inconsistencies.push_back("声道数缺失");
     } else if (meta.channels > 2 && !meta.layout_confirmed) {
-        meta.inconsistencies.push_back("多声道（" + std::to_string(meta.channels) +
-                                      " 声道）但容器未明确标注声道位置");
+        meta.inconsistencies.push_back("多声道（" + std::to_string(meta.channels) + " 声道）但容器未明确标注声道位置");
     }
     if (meta.sample_format.empty() && meta.bits_per_sample <= 0) {
         meta.inconsistencies.push_back("采样格式/位深未标注");
     }
     if (meta.container_duration_seconds > 0.0 && meta.stream_duration_seconds > 0.0 &&
         std::abs(meta.container_delta_seconds) > 0.5) {
-        meta.inconsistencies.push_back("音频流时长与容器时长相差 " +
-                                      Fixed(meta.container_delta_seconds, 2) + " 秒");
+        meta.inconsistencies.push_back("音频流时长与容器时长相差 " + Fixed(meta.container_delta_seconds, 2) + " 秒");
     }
-    if (meta.has_video && meta.video_duration_seconds > 0.0 &&
-        meta.stream_duration_seconds > 0.0 && std::abs(meta.video_delta_seconds) > 0.5) {
-        meta.inconsistencies.push_back("音频流与视频流时长相差 " +
-                                      Fixed(meta.video_delta_seconds, 2) + " 秒");
+    if (meta.has_video && meta.video_duration_seconds > 0.0 && meta.stream_duration_seconds > 0.0 &&
+        std::abs(meta.video_delta_seconds) > 0.5) {
+        meta.inconsistencies.push_back("音频流与视频流时长相差 " + Fixed(meta.video_delta_seconds, 2) + " 秒");
     }
     if (meta.channel_layout.empty()) {
         meta.channel_layout = DescribeLayout(meta.channels, {});
     }
 }
 
-void AudioQcAnalyzer::AddNote(const std::string& note) { result_.notes.push_back(note); }
+void AudioQcAnalyzer::AddNote(const std::string& note) {
+    result_.notes.push_back(note);
+}
 
-}  // namespace videoeye
+} // namespace videoeye

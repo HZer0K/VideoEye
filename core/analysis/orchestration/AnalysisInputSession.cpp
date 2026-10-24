@@ -29,20 +29,19 @@ extern "C" {
 namespace videoeye {
 namespace {
 
-constexpr int64_t kMaxLayoutScanBytes = 8 * 1024 * 1024;  // moov/mdat 顺序扫描上限
+constexpr int64_t kMaxLayoutScanBytes = 8 * 1024 * 1024; // moov/mdat 顺序扫描上限
 
 // 大端读取（MP4 box header）
 uint32_t ReadBe32(const unsigned char* p) {
-    return (static_cast<uint32_t>(p[0]) << 24) |
-           (static_cast<uint32_t>(p[1]) << 16) |
-           (static_cast<uint32_t>(p[2]) << 8) |
-           static_cast<uint32_t>(p[3]);
+    return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+           (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
 }
 
 bool IsMp4Family(const std::string& format_name) {
     static const char* kNames[] = {"mov", "mp4", "m4v", "3gp", "3g2", "isom", "quicktime", "f4v"};
     for (const char* name : kNames) {
-        if (format_name == name) return true;
+        if (format_name == name)
+            return true;
     }
     return false;
 }
@@ -50,7 +49,8 @@ bool IsMp4Family(const std::string& format_name) {
 // 扫描顶层 box 顺序，判断 moov 是否在 mdat 之后（未 faststart）
 bool ScanMoovAfterMdat(const std::string& path) {
     std::ifstream file(ToNativePath(path), std::ios::binary);
-    if (!file) return false;
+    if (!file)
+        return false;
 
     int64_t offset = 0;
     while (offset < kMaxLayoutScanBytes) {
@@ -58,39 +58,46 @@ bool ScanMoovAfterMdat(const std::string& path) {
         file.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
         file.read(reinterpret_cast<char*>(header), sizeof(header));
         const std::streamsize got = file.gcount();
-        if (got < 8) return false;
+        if (got < 8)
+            return false;
 
         const uint32_t size32 = ReadBe32(header);
         const std::string box_type(reinterpret_cast<char*>(header + 4), 4);
 
         int64_t box_size = static_cast<int64_t>(size32);
         int64_t header_size = 8;
-        if (size32 == 1) {  // 64 位 largesize
-            if (got < 16) return false;
-            const uint64_t large = (static_cast<uint64_t>(ReadBe32(header + 8)) << 32) |
-                                   static_cast<uint64_t>(ReadBe32(header + 12));
-            if (large < 16) return false;
+        if (size32 == 1) { // 64 位 largesize
+            if (got < 16)
+                return false;
+            const uint64_t large =
+                (static_cast<uint64_t>(ReadBe32(header + 8)) << 32) | static_cast<uint64_t>(ReadBe32(header + 12));
+            if (large < 16)
+                return false;
             box_size = static_cast<int64_t>(large);
             header_size = 16;
         } else if (size32 == 0) {
-            return false;  // 延伸到文件尾，无法继续遍历
+            return false; // 延伸到文件尾，无法继续遍历
         }
 
-        if (box_size < header_size) return false;
+        if (box_size < header_size)
+            return false;
 
-        if (box_type == "moov") return false;
-        if (box_type == "mdat") return true;
+        if (box_type == "moov")
+            return false;
+        if (box_type == "mdat")
+            return true;
 
         offset += box_size;
     }
     return false;
 }
 
-}  // namespace
+} // namespace
 
 AnalysisInputSession::AnalysisInputSession(const std::string& file_path, const AnalysisOptions& options,
                                            std::atomic<bool>* cancel_source)
-    : file_path_(file_path), options_(options), cancel_source_(cancel_source) {}
+    : file_path_(file_path), options_(options), cancel_source_(cancel_source) {
+}
 
 AnalysisInputSession::~AnalysisInputSession() {
     // 兜底: 走到这里的路径（例如扫描中途异常返回）都必须已经关过。
@@ -99,9 +106,7 @@ AnalysisInputSession::~AnalysisInputSession() {
 }
 
 bool AnalysisInputSession::IsCancelledExit(int ret) const {
-    return cancel_source_ != nullptr &&
-           cancel_source_->load(std::memory_order_acquire) &&
-           ret == AVERROR_EXIT;
+    return cancel_source_ != nullptr && cancel_source_->load(std::memory_order_acquire) && ret == AVERROR_EXIT;
 }
 
 void AnalysisInputSession::Close() {
@@ -139,11 +144,13 @@ AnalysisInputSession::Outcome AnalysisInputSession::Open(model::AnalysisResult& 
         std::string msg = "无法打开文件: " + file_path_ + " (" + errbuf + ")";
         // 定向诊断: FFmpeg 通用报错往往不含可操作的修复建议 (如 fMP4 分片缺 init 段)
         const std::string extra = videoeye::DiagnoseUnopenableFile(file_path_);
-        if (!extra.empty()) msg += "。" + extra;
+        if (!extra.empty())
+            msg += "。" + extra;
         // 打开阶段被中断回调打断 = 用户取消（含"文件根本不存在也超时"的网络源场景），
         // 不能反过来告诉用户"无法打开文件"
-        if (IsCancelledExit(open_ret)) return Outcome::Cancelled;
-        result.scan_error_code = open_ret;  // 真 AVERROR 优先，MarkFailed 不会覆盖它
+        if (IsCancelledExit(open_ret))
+            return Outcome::Cancelled;
+        result.scan_error_code = open_ret; // 真 AVERROR 优先，MarkFailed 不会覆盖它
         MarkFailed(result, msg);
         return Outcome::Failed;
     }
@@ -159,10 +166,10 @@ AnalysisInputSession::Outcome AnalysisInputSession::Open(model::AnalysisResult& 
         char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
         av_strerror(find_ret, errbuf, sizeof(errbuf));
         Close();
-        if (IsCancelledExit(find_ret)) return Outcome::Cancelled;
-        result.scan_error_code = find_ret;  // 同上：真 AVERROR 优先
-        MarkFailed(result, "无法解析流信息: " + file_path_ + " (" + std::string(errbuf) +
-                               ", 文件可能损坏或截断)");
+        if (IsCancelledExit(find_ret))
+            return Outcome::Cancelled;
+        result.scan_error_code = find_ret; // 同上：真 AVERROR 优先
+        MarkFailed(result, "无法解析流信息: " + file_path_ + " (" + std::string(errbuf) + ", 文件可能损坏或截断)");
         return Outcome::Failed;
     }
 
@@ -177,9 +184,8 @@ AnalysisInputSession::Outcome AnalysisInputSession::Open(model::AnalysisResult& 
 
 void AnalysisInputSession::FillContainerFacts(model::AnalysisResult& result) {
     result.container_format = fmt_->iformat && fmt_->iformat->name ? fmt_->iformat->name : "";
-    result.duration_seconds = (fmt_->duration > 0)
-                                  ? static_cast<double>(fmt_->duration) / static_cast<double>(AV_TIME_BASE)
-                                  : 0.0;
+    result.duration_seconds =
+        (fmt_->duration > 0) ? static_cast<double>(fmt_->duration) / static_cast<double>(AV_TIME_BASE) : 0.0;
     result.file_size_bytes = fmt_->pb ? avio_size(fmt_->pb) : 0;
     result.overall_bitrate_bps = (fmt_->bit_rate > 0) ? fmt_->bit_rate : 0;
     result.seekable = (fmt_->pb == nullptr) ? false : ((fmt_->pb->seekable & AVIO_SEEKABLE_NORMAL) != 0);
@@ -195,8 +201,7 @@ void AnalysisInputSession::FillContainerFacts(model::AnalysisResult& result) {
         bool mp4_ok = false;
         {
             VE_PERF("Mp4SampleTableAnalyzer::AnalyzeFile(诊断扫描)");
-            mp4_ok = mp4_analyzer.AnalyzeFile(file_path_, result.mp4_samples,
-                                              options_.mp4_sample_table_options);
+            mp4_ok = mp4_analyzer.AnalyzeFile(file_path_, result.mp4_samples, options_.mp4_sample_table_options);
         }
         if (mp4_ok) {
             result.mp4_samples_analyzed = true;
@@ -210,9 +215,11 @@ void AnalysisInputSession::FillContainerFacts(model::AnalysisResult& result) {
 }
 
 void AnalysisInputSession::FillLegacyContainerFacts(model::AnalysisResult& result) {
-    if (!options_.analyze_legacy_container) return;
+    if (!options_.analyze_legacy_container)
+        return;
     // 网络源不重扫：URL 读两遍既不必要也不可靠（与 TS 传输层体检同一口径）。
-    if (file_path_.find("://") != std::string::npos) return;
+    if (file_path_.find("://") != std::string::npos)
+        return;
 
     // iformat->name 是 FFmpeg 的 demuxer token，不是扩展名：
     // .wmv/.wma → "asf"，.oga/.opus → "ogg"，这样命名不一致的文件也能进入体检。
@@ -230,7 +237,7 @@ void AnalysisInputSession::FillLegacyContainerFacts(model::AnalysisResult& resul
     } else if (fmt == "flv") {
         FlvStructureAnalyzer::Options opt;
         opt.build_tree = false;
-        opt.max_tags = 0;  // 扫完整个文件，否则时间戳回退/截断只能看到开头
+        opt.max_tags = 0; // 扫完整个文件，否则时间戳回退/截断只能看到开头
         FlvStructureAnalyzer analyzer;
         ok = analyzer.Analyze(file_path_, structure, cancel_source_, opt);
     } else if (fmt == "asf") {
@@ -241,7 +248,7 @@ void AnalysisInputSession::FillLegacyContainerFacts(model::AnalysisResult& resul
     } else if (fmt == "ogg") {
         OggStructureAnalyzer::Options opt;
         opt.build_tree = false;
-        opt.max_pages = 0;  // 缺 EOS 只有扫到文件尾才能下结论
+        opt.max_pages = 0; // 缺 EOS 只有扫到文件尾才能下结论
         OggStructureAnalyzer analyzer;
         ok = analyzer.Analyze(file_path_, structure, cancel_source_, opt);
     } else {
@@ -295,4 +302,4 @@ void AnalysisInputSession::BuildStreamDigests(model::AnalysisResult& result) {
     }
 }
 
-}  // namespace videoeye
+} // namespace videoeye

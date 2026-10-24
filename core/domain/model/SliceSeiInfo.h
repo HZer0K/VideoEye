@@ -44,16 +44,16 @@ struct SeiSummary {
     //   AV1 的 HDR MDCV metadata OBU 是 chromaticity * 0.00016、luminance 直接就是值。
     // 两边换算到同一套单位后，UI 与报告才不用来回除以不同的系数。
     bool has_mastering_display = false;
-    double display_primaries_x[3] = {0.0, 0.0, 0.0};  // 归一化到 [0,1]，G/B/R 顺序
+    double display_primaries_x[3] = {0.0, 0.0, 0.0}; // 归一化到 [0,1]，G/B/R 顺序
     double display_primaries_y[3] = {0.0, 0.0, 0.0};
     double white_point_x = 0.0;
     double white_point_y = 0.0;
-    double max_display_mastering_luminance = 0.0;  // cd/m2
-    double min_display_mastering_luminance = 0.0;  // cd/m2
+    double max_display_mastering_luminance = 0.0; // cd/m2
+    double min_display_mastering_luminance = 0.0; // cd/m2
 
     bool has_content_light_level = false;
-    uint32_t max_content_light_level = 0;      // MaxCLL，cd/m2
-    uint32_t max_pic_average_light_level = 0;  // MaxFALL，cd/m2
+    uint32_t max_content_light_level = 0;     // MaxCLL，cd/m2
+    uint32_t max_pic_average_light_level = 0; // MaxFALL，cd/m2
 
     // ---- HDR 动态元数据 ----
     // HDR10+ 走 SEI type 4（ITT T.35）+ ST 2094-40 的应用标识
@@ -90,11 +90,11 @@ struct SeiSummary {
 // --------------------------------------------------------------------------
 struct SliceSummary {
     bool analyzed = false;
-    bool supported = false;   // false = 该编码目前没有在本模块实现 slice 解析
+    bool supported = false; // false = 该编码目前没有在本模块实现 slice 解析
     std::string unsupported_reason;
 
-    int slice_count = 0;       // 解出的独立 slice 段数（不含 dependent slice）
-    int frames = 0;            // 非 dependent 的 VCL 单元数（近似一帧一个 slice）
+    int slice_count = 0; // 解出的独立 slice 段数（不含 dependent slice）
+    int frames = 0;      // 非 dependent 的 VCL 单元数（近似一帧一个 slice）
     int type_i = 0;
     int type_p = 0;
     int type_b = 0;
@@ -125,10 +125,10 @@ struct SliceSeiSummary {
 
     // 扫描窗口（给"为什么曲线只有 60 个点"一个解释）
     int packets_scanned = 0;
-    bool truncated = false;  // 达到上限提前收工
+    bool truncated = false; // 达到上限提前收工
 
     std::string Summary() const;
 };
 
-}  // namespace model
-}  // namespace videoeye
+} // namespace model
+} // namespace videoeye

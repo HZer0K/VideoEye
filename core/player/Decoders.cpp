@@ -1,12 +1,12 @@
 #include "core/player/Decoders.h"
-#include <iostream>
 #include <cstring>
+#include <iostream>
 
 extern "C" {
-#include <libavutil/pixdesc.h>
+#include <libavcodec/codec.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/log.h>
-#include <libavcodec/codec.h>
+#include <libavutil/pixdesc.h>
 }
 
 namespace videoeye {
@@ -30,28 +30,28 @@ bool VideoDecoder::Initialize(AVCodecParameters* codec_params) {
         std::cerr << "Invalid codec parameters" << std::endl;
         return false;
     }
-    
+
     // 查找解码器
     const AVCodec* codec = avcodec_find_decoder(codec_params->codec_id);
     if (!codec) {
         std::cerr << "Unsupported codec" << std::endl;
         return false;
     }
-    
+
     // 分配解码器上下文
     codec_ctx_ = avcodec_alloc_context3(codec);
     if (!codec_ctx_) {
         std::cerr << "Failed to allocate codec context" << std::endl;
         return false;
     }
-    
+
     // 复制参数
     int ret = avcodec_parameters_to_context(codec_ctx_, codec_params);
     if (ret < 0) {
         std::cerr << "Failed to copy codec parameters" << std::endl;
         return false;
     }
-    
+
     // 导出运动矢量 side data (供宏块分析使用)
     codec_ctx_->export_side_data |= AV_CODEC_EXPORT_DATA_MVS;
 
@@ -61,22 +61,22 @@ bool VideoDecoder::Initialize(AVCodecParameters* codec_params) {
         std::cerr << "Failed to open codec" << std::endl;
         return false;
     }
-    
+
     width_ = codec_ctx_->width;
     height_ = codec_ctx_->height;
-    
+
     return true;
 }
 
 bool VideoDecoder::InitializeFromContext(AVCodecContext* codec_ctx) {
     // 接管已打开的codec context的所有权
     codec_ctx_ = codec_ctx;
-    
+
     if (!codec_ctx_) {
         std::cerr << "Invalid codec context" << std::endl;
         return false;
     }
-    
+
     // 分配帧缓冲区（构造函数已分配；这里避免覆盖导致泄漏）
     if (!frame_) {
         frame_ = av_frame_alloc();
@@ -85,10 +85,10 @@ bool VideoDecoder::InitializeFromContext(AVCodecContext* codec_ctx) {
             return false;
         }
     }
-    
+
     width_ = codec_ctx_->width;
     height_ = codec_ctx_->height;
-    
+
     return true;
 }
 
@@ -123,20 +123,23 @@ std::vector<AVHWDeviceType> VideoDecoder::GetAvailableHwDeviceTypes() {
 }
 
 bool VideoDecoder::InitializeWithHw(AVCodecParameters* codec_params, AVHWDeviceType hw_type) {
-    if (!codec_params) return false;
+    if (!codec_params)
+        return false;
 
     // 查找支持硬件加速的解码器
     const AVCodec* codec = nullptr;
     void* iter = nullptr;
     while ((codec = av_codec_iterate(&iter)) != nullptr) {
-        if (!av_codec_is_decoder(codec)) continue;  // 只查解码器
-        if (codec->id != codec_params->codec_id) continue;
+        if (!av_codec_is_decoder(codec))
+            continue; // 只查解码器
+        if (codec->id != codec_params->codec_id)
+            continue;
         // 检查该解码器是否支持指定的 HW 设备类型
         for (int i = 0;; ++i) {
             const AVCodecHWConfig* config = avcodec_get_hw_config(codec, i);
-            if (!config) break;
-            if (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX &&
-                config->device_type == hw_type) {
+            if (!config)
+                break;
+            if (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX && config->device_type == hw_type) {
                 goto found_codec;
             }
         }
@@ -144,8 +147,8 @@ bool VideoDecoder::InitializeWithHw(AVCodecParameters* codec_params, AVHWDeviceT
     }
 found_codec:
     if (!codec) {
-        std::cerr << "No HW decoder for codec " << avcodec_get_name(codec_params->codec_id)
-                  << " with device type " << av_hwdevice_get_type_name(hw_type) << std::endl;
+        std::cerr << "No HW decoder for codec " << avcodec_get_name(codec_params->codec_id) << " with device type "
+                  << av_hwdevice_get_type_name(hw_type) << std::endl;
         return false;
     }
 
@@ -173,7 +176,8 @@ found_codec:
     hw_pix_fmt_ = AV_PIX_FMT_NONE;
     for (int i = 0;; ++i) {
         const AVCodecHWConfig* config = avcodec_get_hw_config(codec, i);
-        if (!config) break;
+        if (!config)
+            break;
         if (config->device_type == hw_type) {
             hw_pix_fmt_ = config->pix_fmt;
             break;
@@ -187,29 +191,27 @@ found_codec:
     // 设置硬件设备上下文和 get_format 回调
     codec_ctx_->hw_device_ctx = av_buffer_ref(hw_device_ctx_);
     codec_ctx_->get_format = [](AVCodecContext*, const enum AVPixelFormat* pix_fmts) -> enum AVPixelFormat {
-        for (const enum AVPixelFormat* p = pix_fmts; *p != AV_PIX_FMT_NONE; ++p) {
-            const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(*p);
-            if (desc && (desc->flags & AV_PIX_FMT_FLAG_HWACCEL)) {
-                return *p;
-            }
-        }
-        return pix_fmts[0];
-    };
-
-    // 导出运动矢量 side data (供宏块分析使用)
-    codec_ctx_->export_side_data |= AV_CODEC_EXPORT_DATA_MVS;
-
-    ret = avcodec_open2(codec_ctx_, codec, nullptr);
-    if (ret < 0) {
-        Close();
-        return false;
-    }
-
-    hw_device_type_ = hw_type;
-    width_ = codec_ctx_->width;
-    height_ = codec_ctx_->height;
-    return true;
+        for (const enum AVPixelFormat* p = pix_fmts; *p != AV_PIX_FMT_NONE;
+             ++p){const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(*p);
+                  if (desc && (desc->flags & AV_PIX_FMT_FLAG_HWACCEL)){return *p;}
 }
+return pix_fmts[0];
+}; // namespace player
+
+// 导出运动矢量 side data (供宏块分析使用)
+codec_ctx_->export_side_data |= AV_CODEC_EXPORT_DATA_MVS;
+
+ret = avcodec_open2(codec_ctx_, codec, nullptr);
+if (ret < 0) {
+    Close();
+    return false;
+}
+
+hw_device_type_ = hw_type;
+width_ = codec_ctx_->width;
+height_ = codec_ctx_->height;
+return true;
+} // namespace videoeye
 
 bool VideoDecoder::DownloadHwFrame(AVFrame* sw_frame, AVFrame* hw_frame) {
     if (!sw_frame || !hw_frame) {
@@ -217,7 +219,8 @@ bool VideoDecoder::DownloadHwFrame(AVFrame* sw_frame, AVFrame* hw_frame) {
     }
 
     AVFrame* tmp = av_frame_alloc();
-    if (!tmp) return false;
+    if (!tmp)
+        return false;
 
     int ret = av_hwframe_transfer_data(tmp, hw_frame, 0);
     if (ret < 0) {
@@ -235,9 +238,9 @@ AVFrame* VideoDecoder::PrepareSwFrame(AVFrame* decoded) {
         return nullptr;
     }
 
-    const AVPixFmtDescriptor* desc =
-        (decoded->format == AV_PIX_FMT_NONE) ? nullptr
-                                             : av_pix_fmt_desc_get(static_cast<AVPixelFormat>(decoded->format));
+    const AVPixFmtDescriptor* desc = (decoded->format == AV_PIX_FMT_NONE)
+                                         ? nullptr
+                                         : av_pix_fmt_desc_get(static_cast<AVPixelFormat>(decoded->format));
 
     if (desc && (desc->flags & AV_PIX_FMT_FLAG_HWACCEL)) {
         // 硬件帧: data[0] 是设备指针, 必须先下载到系统内存才能交给下游
@@ -267,7 +270,7 @@ void VideoDecoder::StashBufferedFrames() {
     while (true) {
         int ret = avcodec_receive_frame(codec_ctx_, frame_);
         if (ret < 0) {
-            return;  // EAGAIN / EOF: 已经收干
+            return; // EAGAIN / EOF: 已经收干
         }
         // 收下的帧要存住: 它存在 frame_ 里会被下一次 receive 覆盖,
         // 之后由 ReceiveFrame 按先入先出交出去。
@@ -359,8 +362,7 @@ bool VideoDecoder::ReceiveFrame(model::FrameData& output_frame) {
         output_frame.timestamp = 0.0;
     }
 
-    const AVPixFmtDescriptor* desc =
-        av_pix_fmt_desc_get(static_cast<AVPixelFormat>(src_frame->format));
+    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(src_frame->format));
 
     for (int i = 0; i < 8; ++i) {
         if (!src_frame->data[i] || src_frame->linesize[i] <= 0) {
@@ -461,35 +463,35 @@ bool AudioDecoder::Initialize(AVCodecParameters* codec_params) {
         std::cerr << "Invalid codec parameters" << std::endl;
         return false;
     }
-    
+
     // 查找解码器
     const AVCodec* codec = avcodec_find_decoder(codec_params->codec_id);
     if (!codec) {
         std::cerr << "Unsupported audio codec" << std::endl;
         return false;
     }
-    
+
     // 分配解码器上下文
     codec_ctx_ = avcodec_alloc_context3(codec);
     if (!codec_ctx_) {
         std::cerr << "Failed to allocate audio codec context" << std::endl;
         return false;
     }
-    
+
     // 复制参数
     int ret = avcodec_parameters_to_context(codec_ctx_, codec_params);
     if (ret < 0) {
         std::cerr << "Failed to copy audio codec parameters" << std::endl;
         return false;
     }
-    
+
     // 打开解码器
     ret = avcodec_open2(codec_ctx_, codec, nullptr);
     if (ret < 0) {
         std::cerr << "Failed to open audio codec" << std::endl;
         return false;
     }
-    
+
     sample_rate_ = codec_ctx_->sample_rate;
     channels_ = codec_ctx_->ch_layout.nb_channels;
     if (channels_ <= 0) {
@@ -498,14 +500,14 @@ bool AudioDecoder::Initialize(AVCodecParameters* codec_params) {
     if (channels_ <= 0) {
         channels_ = 2;
     }
-    
+
     // 初始化重采样上下文
     swr_ctx_ = swr_alloc();
     if (!swr_ctx_) {
         std::cerr << "Failed to allocate resample context" << std::endl;
         return false;
     }
-    
+
     AVChannelLayout in_layout{};
     if (codec_ctx_->ch_layout.nb_channels > 0) {
         if (av_channel_layout_copy(&in_layout, &codec_ctx_->ch_layout) < 0) {
@@ -518,11 +520,9 @@ bool AudioDecoder::Initialize(AVCodecParameters* codec_params) {
     AVChannelLayout out_layout{};
     av_channel_layout_default(&out_layout, channels_);
 
-    swr_alloc_set_opts2(&swr_ctx_,
-                        &out_layout, AV_SAMPLE_FMT_S16, sample_rate_ > 0 ? sample_rate_ : 44100,
-                        &in_layout, codec_ctx_->sample_fmt, sample_rate_ > 0 ? sample_rate_ : 44100,
-                        0, nullptr);
-    
+    swr_alloc_set_opts2(&swr_ctx_, &out_layout, AV_SAMPLE_FMT_S16, sample_rate_ > 0 ? sample_rate_ : 44100, &in_layout,
+                        codec_ctx_->sample_fmt, sample_rate_ > 0 ? sample_rate_ : 44100, 0, nullptr);
+
     ret = swr_init(swr_ctx_);
     av_channel_layout_uninit(&in_layout);
     av_channel_layout_uninit(&out_layout);
@@ -530,7 +530,7 @@ bool AudioDecoder::Initialize(AVCodecParameters* codec_params) {
         std::cerr << "Failed to initialize resample context" << std::endl;
         return false;
     }
-    
+
     return true;
 }
 
@@ -574,22 +574,21 @@ bool AudioDecoder::ReceiveFrame(uint8_t* output_buffer, int buffer_size, int& ou
     last_frame_channels_ = frame_->ch_layout.nb_channels > 0 ? frame_->ch_layout.nb_channels : channels_;
 
     // 重采样
-    uint8_t* output_ptrs[8] = {output_buffer, nullptr, nullptr, nullptr, 
-                                nullptr, nullptr, nullptr, nullptr};
+    uint8_t* output_ptrs[8] = {output_buffer, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
     if (channels_ <= 0) {
         return false;
     }
-    output_size = swr_convert(swr_ctx_, output_ptrs, buffer_size / (channels_ * 2),
-                              (const uint8_t**)frame_->data, frame_->nb_samples);
-    
+    output_size = swr_convert(swr_ctx_, output_ptrs, buffer_size / (channels_ * 2), (const uint8_t**)frame_->data,
+                              frame_->nb_samples);
+
     if (output_size < 0) {
         std::cerr << "Error during audio resampling" << std::endl;
         return false;
     }
-    
+
     output_size *= channels_ * 2; // 转换为字节数
     last_output_size_ = output_size;
-    
+
     return true;
 }
 

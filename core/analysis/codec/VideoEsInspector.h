@@ -51,8 +51,12 @@ public:
     void SetHevcParameterSets(const model::HevcSpsInfo& sps, const model::HevcPpsInfo& pps);
 
     // 这个编码有没有可做的巡检（slice 或 SEI 至少占一样）
-    bool enabled() const { return enabled_; }
-    bool done() const { return done_; }
+    bool enabled() const {
+        return enabled_;
+    }
+    bool done() const {
+        return done_;
+    }
 
     // 喂一个视频包。返回 false 表示已经不作为（未启用 / 收工 / 见过够了）。
     bool Feed(const uint8_t* data, size_t size);
@@ -60,8 +64,12 @@ public:
     // 收尾：算出 QP 的均值/最值与抽稀曲线
     void Finish();
 
-    const model::SliceSeiSummary& result() const { return result_; }
-    model::SliceSeiSummary& mutable_result() { return result_; }
+    const model::SliceSeiSummary& result() const {
+        return result_;
+    }
+    model::SliceSeiSummary& mutable_result() {
+        return result_;
+    }
 
 private:
     void InspectH264(const uint8_t* data, size_t size);
@@ -73,8 +81,7 @@ private:
     void HandleSeiPayload(int payload_type, const uint8_t* p, size_t n);
 
     // H.264 slice_header()：走到 slice_qp_delta 为止
-    bool ParseH264SliceHeader(const uint8_t* data, size_t size, bool is_idr,
-                              int& slice_type, int& slice_qp);
+    bool ParseH264SliceHeader(const uint8_t* data, size_t size, bool is_idr, int& slice_type, int& slice_qp);
 
     int codec_id_ = 0;
     Options options_;
@@ -89,10 +96,10 @@ private:
     bool has_h264_params_ = false;
 
     // 累积态（Finish() 时汇总进 result_）
-    std::vector<int> slice_types_;   // 0=P 1=B 2=I ...（H.264 的 slice_type 值）
+    std::vector<int> slice_types_; // 0=P 1=B 2=I ...（H.264 的 slice_type 值）
     std::vector<int> slice_qps_;
 
     model::SliceSeiSummary result_;
 };
 
-}  // namespace videoeye
+} // namespace videoeye

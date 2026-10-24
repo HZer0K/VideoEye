@@ -8,8 +8,8 @@
 // 与码率 GOP / 色彩 HDR 共有的生命周期动作（换文件路径 / 扫描态 / 进度 / 选项
 // 并入）实现在 ScanClient 接口里，由面板按注册表统一驱动。
 
-#include <QWidget>
 #include <QString>
+#include <QWidget>
 
 #include <QCheckBox>
 #include <QDoubleSpinBox>
@@ -33,7 +33,9 @@ public:
     explicit AudioQcPage(QWidget* parent = nullptr);
 
     // 导出 CSV 的默认文件名用当前文件路径拼，面板换文件时同步一次
-    void SetSourcePath(const QString& path) override { source_path_ = path; }
+    void SetSourcePath(const QString& path) override {
+        source_path_ = path;
+    }
 
     // 扫描结束后由面板喂结果（qc_report 用于「规则判定」列）
     void SetResult(const model::AnalysisResult& result, const model::QcReport& qc_report);
@@ -50,7 +52,9 @@ public:
     int IssueCount() const override;
     // 同 BitrateGopPage::IsScanActive: 状态必须可观察，否则"某页卡在扫描中"只能靠肉眼发现。
     // 不在 ScanClient 接口里：它是给人/测试看的，不是面板驱动页面要用的。
-    bool IsScanActive() const { return scan_active_; }
+    bool IsScanActive() const {
+        return scan_active_;
+    }
     void SetProgress(int percent) override;
     void SetProgressFormat(const QString& format) override;
 
@@ -124,8 +128,8 @@ private:
     ChartAxis* event_axis_y_ = nullptr;
     // 声道能量柱状图
     MetricChartWidget* channel_chart_ = nullptr;
-    ChartSeries* channel_series_ = nullptr;        // RMS dBFS
-    ChartSeries* channel_peak_series_ = nullptr;   // 峰值 dBFS
+    ChartSeries* channel_series_ = nullptr;      // RMS dBFS
+    ChartSeries* channel_peak_series_ = nullptr; // 峰值 dBFS
     ChartAxis* channel_axis_x_ = nullptr;
     ChartAxis* channel_axis_y_ = nullptr;
     // 声道相关性曲线

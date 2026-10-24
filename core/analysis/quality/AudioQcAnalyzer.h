@@ -4,9 +4,9 @@
 #include <string>
 #include <vector>
 
+#include "core/analysis/AnalysisOptions.h"
 #include "core/domain/model/AudioQcResult.h"
 #include "core/domain/model/LoudnessPoint.h"
-#include "core/analysis/AnalysisOptions.h"
 
 namespace videoeye {
 
@@ -17,7 +17,10 @@ struct BiquadFilter {
     double a1 = 0.0, a2 = 0.0;
     double z1 = 0.0, z2 = 0.0;
 
-    void Reset() { z1 = 0.0; z2 = 0.0; }
+    void Reset() {
+        z1 = 0.0;
+        z2 = 0.0;
+    }
     float Process(float x) {
         const double y = b0 * static_cast<double>(x) + z1;
         z1 = b1 * static_cast<double>(x) - a1 * y + z2;
@@ -43,16 +46,16 @@ class AudioQcAnalyzer {
 public:
     void Reset(const AudioQcOptions& options = AudioQcOptions{});
     void SetOptions(const AudioQcOptions& options);
-    const AudioQcOptions& options() const { return options_; }
+    const AudioQcOptions& options() const {
+        return options_;
+    }
 
     // ---- 元数据 ----
     // 必须在首次 OnSamples 之前调用（块长依赖采样率）
-    void SetStreamInfo(int sample_rate, int channels,
-                       const std::string& sample_format = std::string(),
+    void SetStreamInfo(int sample_rate, int channels, const std::string& sample_format = std::string(),
                        int bits_per_sample = 0);
     void SetChannelInfo(const std::vector<model::AudioChannelInfo>& channels);
-    void SetDurations(double stream_seconds, double container_seconds, double video_seconds,
-                      bool has_video);
+    void SetDurations(double stream_seconds, double container_seconds, double video_seconds, bool has_video);
 
     // ---- 数据输入 ----
     // planar float，每个声道一段连续内存；frames = 每声道样本数。
@@ -63,26 +66,29 @@ public:
 
     // ---- 结果 ----
     const model::AudioQcResult& Finish();
-    const model::AudioQcResult& result() const { return result_; }
-    bool finished() const { return finished_; }
+    const model::AudioQcResult& result() const {
+        return result_;
+    }
+    bool finished() const {
+        return finished_;
+    }
 
     // ---- 静态工具 ----
     // 由声道数与角色推断布局名（"单声道 (1.0)" / "立体声 (2.0)" / "5.1" ...）
-    static std::string DescribeLayout(int channels,
-                                      const std::vector<model::AudioChannelRole>& roles);
+    static std::string DescribeLayout(int channels, const std::vector<model::AudioChannelRole>& roles);
     // BS.1770 声道加权: 前置 1.0 / 环绕 1.41 / LFE 0
     static double ChannelWeight(model::AudioChannelRole role);
 
 private:
     struct ChannelState {
-        BiquadFilter shelf;   // K 加权 stage 1: 高频搁架
-        BiquadFilter rlb;     // K 加权 stage 2: RLB 高通
+        BiquadFilter shelf; // K 加权 stage 1: 高频搁架
+        BiquadFilter rlb;   // K 加权 stage 2: RLB 高通
         // 环形缓冲: raw 用于真峰值/相关性/RMS, kweighted 用于响度
         std::vector<float> raw_ring;
         std::vector<float> kw_ring;
         // 整轨累计
-        double sum = 0.0;         // DC 累计
-        double sum_sq = 0.0;      // RMS 累计
+        double sum = 0.0;    // DC 累计
+        double sum_sq = 0.0; // RMS 累计
         double peak = 0.0;
         int64_t samples = 0;
         int64_t clip_samples = 0;
@@ -116,9 +122,9 @@ private:
 
     // 4× 过采样 FIR（零值内插 + Hann 窗 sinc，与 libebur128 同一设计）
     std::vector<double> interp_coeffs_;
-    std::vector<double> interp_phase_[4];   // 多相分解: phase p 的抽头 h[4m+p]
-    double interp_abs_sum_ = 4.0;           // Σ|h|，用于跳过"不可能刷新真峰值"的块
-    int interp_margin_ = 0;                 // 每个相位需要的历史样本数
+    std::vector<double> interp_phase_[4]; // 多相分解: phase p 的抽头 h[4m+p]
+    double interp_abs_sum_ = 4.0;         // Σ|h|，用于跳过"不可能刷新真峰值"的块
+    int interp_margin_ = 0;               // 每个相位需要的历史样本数
 
     int sample_rate_ = 0;
     int channel_count_ = 0;
@@ -170,4 +176,4 @@ private:
     bool finished_ = false;
 };
 
-}  // namespace videoeye
+} // namespace videoeye

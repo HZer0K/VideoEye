@@ -559,7 +559,7 @@ ExtradataResult ExtradataParser::ParseHvcC(const uint8_t* data, size_t size) {
 
     for (int a = 0; a < num_arrays; ++a) {
         if (end - pos < 3)
-            break;   // 数组头（1B 描述 + 2B numNalus）都不够
+            break; // 数组头（1B 描述 + 2B numNalus）都不够
         const uint8_t array_header = pos[0];
         pos += 1;
         const uint16_t num_nalus = BytesToUint16BE(pos);
@@ -571,7 +571,7 @@ ExtradataResult ExtradataParser::ParseHvcC(const uint8_t* data, size_t size) {
             const uint16_t nal_length = BytesToUint16BE(pos);
             pos += 2;
             if (nal_length < 3 || pos + nal_length > end)
-                break;   // HEVC NAL 至少含 2 字节 header + 1 字节 payload
+                break; // HEVC NAL 至少含 2 字节 header + 1 字节 payload
 
             // NalUnit::data 只放 RBSP payload（与 avcC / AnnexB 路径一致），
             // 剥掉 2 字节 NAL header；type 从 NAL 首字节还原，而不是信 array 头
@@ -580,12 +580,12 @@ ExtradataResult ExtradataParser::ParseHvcC(const uint8_t* data, size_t size) {
             nal.type = (pos[0] >> 1) & 0x3F;
             nal.size = nal_length - 2;
             nal.data.assign(pos + 2, pos + nal_length);
-            nal.is_keyframe = (nal.type == 19 || nal.type == 20);   // IDR_W_RADL / IDR_N_LP
+            nal.is_keyframe = (nal.type == 19 || nal.type == 20); // IDR_W_RADL / IDR_N_LP
             result.nal_units.push_back(std::move(nal));
 
             pos += nal_length;
         }
-        (void)array_header;   // completeness 位当前不消费，保留位
+        (void)array_header; // completeness 位当前不消费，保留位
     }
 
     return result;

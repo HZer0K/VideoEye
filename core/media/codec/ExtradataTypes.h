@@ -98,17 +98,17 @@ enum class Av1ObuType {
 // 封装格式枚举
 enum class ExtradataFormat {
     Unknown = 0,
-    AnnexB,           // H.264/H.265 Annex B (00 00 00 01 或 00 00 01 起始码)
-    LengthPrefix1,    // 1 字节长度前缀
-    LengthPrefix2,    // 2 字节长度前缀
-    LengthPrefix4,    // 4 字节长度前缀
-    AvcC,            // MP4 avcC 配置记录（H.264）
-    HvcC,            // MP4 hvcC 配置记录（H.265）
-    Av1C,            // MP4 av1C 配置记录（AV1）
-    VvcC,            // MP4 vvcC 配置记录（VVC）
-    VpcC,            // MP4 vpcC 配置记录（VP9，ISO/IEC 14496-30）
-                     //   注意：WebM/Matroska 的 VP9 **没有 codec private**，
-                     //   那种文件只能从关键帧带内解析（Vp9BitstreamParser）
+    AnnexB,        // H.264/H.265 Annex B (00 00 00 01 或 00 00 01 起始码)
+    LengthPrefix1, // 1 字节长度前缀
+    LengthPrefix2, // 2 字节长度前缀
+    LengthPrefix4, // 4 字节长度前缀
+    AvcC,          // MP4 avcC 配置记录（H.264）
+    HvcC,          // MP4 hvcC 配置记录（H.265）
+    Av1C,          // MP4 av1C 配置记录（AV1）
+    VvcC,          // MP4 vvcC 配置记录（VVC）
+    VpcC,          // MP4 vpcC 配置记录（VP9，ISO/IEC 14496-30）
+                   //   注意：WebM/Matroska 的 VP9 **没有 codec private**，
+                   //   那种文件只能从关键帧带内解析（Vp9BitstreamParser）
 };
 
 // NAL header 的解读方式。
@@ -117,10 +117,10 @@ enum class ExtradataFormat {
 // H.264 与 VVC（VVC 首字节是 nuh_layer_id，type 在第 2 字节），所以调用方
 // 知道 codec 时必须显式指定，别让启发式去猜。
 enum class NalSyntax {
-    Auto = 0,   // 按首字节启发式猜（H.264 / HEVC 二选一，见 ExtractAnnBNalUnits）
-    H264,       // 1 字节 header，type = byte0 & 0x1F
-    Hevc,       // 2 字节 header，type = (byte0 >> 1) & 0x3F
-    Vvc,        // 2 字节 header，type = (byte1 >> 3) & 0x1F
+    Auto = 0, // 按首字节启发式猜（H.264 / HEVC 二选一，见 ExtractAnnBNalUnits）
+    H264,     // 1 字节 header，type = byte0 & 0x1F
+    Hevc,     // 2 字节 header，type = (byte0 >> 1) & 0x3F
+    Vvc,      // 2 字节 header，type = (byte1 >> 3) & 0x1F
 };
 
 // NAL/OBU 单元结构
@@ -132,15 +132,16 @@ struct NalUnit {
     uint8_t type;              // NAL 单元类型
     uint32_t size;             // payload 大小（= data.size()）
     std::vector<uint8_t> data; // RBSP payload（不含起始码、不含 NAL header）
-    bool is_idr;              // H.264: IDR 帧标记
-    bool is_keyframe;         // 通用关键帧标记
-    
-    NalUnit() : type(0), size(0), is_idr(false), is_keyframe(false) {}
+    bool is_idr;               // H.264: IDR 帧标记
+    bool is_keyframe;          // 通用关键帧标记
+
+    NalUnit() : type(0), size(0), is_idr(false), is_keyframe(false) {
+    }
 
     // 便于测试与手工构造：(type, size, data, is_idr, is_keyframe)
     NalUnit(uint8_t t, size_t s, std::vector<uint8_t> d, bool idr, bool keyframe)
-        : type(t), size(static_cast<uint32_t>(s)), data(std::move(d)),
-          is_idr(idr), is_keyframe(keyframe) {}
+        : type(t), size(static_cast<uint32_t>(s)), data(std::move(d)), is_idr(idr), is_keyframe(keyframe) {
+    }
 };
 
 // OBU 结构（AV1）
@@ -156,14 +157,15 @@ struct ObuUnit {
     bool is_sequence_header;   // 是否为序列头
     uint8_t temporal_id = 0;   // 扩展头里的 temporal_id（无扩展头时为 0）
     uint8_t spatial_id = 0;    // 扩展头里的 spatial_id
-    
-    ObuUnit() : type(0), size(0), has_extension_header(false), 
-                is_sequence_header(false) {}
+
+    ObuUnit() : type(0), size(0), has_extension_header(false), is_sequence_header(false) {
+    }
 
     // 便于测试与手工构造：(type, size, data, has_extension_header, is_sequence_header)
     ObuUnit(uint8_t t, size_t s, std::vector<uint8_t> d, bool ext_header, bool seq_header)
-        : type(t), size(static_cast<uint32_t>(s)), data(std::move(d)),
-          has_extension_header(ext_header), is_sequence_header(seq_header) {}
+        : type(t), size(static_cast<uint32_t>(s)), data(std::move(d)), has_extension_header(ext_header),
+          is_sequence_header(seq_header) {
+    }
 };
 
 // ==========================================================================
@@ -184,7 +186,7 @@ struct ObuUnit {
 inline size_t VpccPayloadOffset(const uint8_t* data, size_t size) {
     // 形式 A：完整 box —— [0..3] 是 box size（不会全 0），[4..7] 是 'vpcC'
     if (size >= 20 && data[4] == 'v' && data[5] == 'p' && data[6] == 'c' && data[7] == 'C') {
-        return 12;  // size(4) + fourcc(4) + version/flags(4)
+        return 12; // size(4) + fourcc(4) + version/flags(4)
     }
     // 形式 B：demuxer 已剥掉 box 头 —— [0..3] 是 version/flags（vpcC 恒为 0）
     if (size >= 12 && data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 0) {
@@ -202,18 +204,18 @@ struct ExtradataResult {
     ExtradataFormat format = ExtradataFormat::Unknown;
     bool valid = false;
     std::string error_message;
-    
+
     // 解析出的 NAL/OBU 列表
     std::vector<NalUnit> nal_units;
     std::vector<ObuUnit> obu_units;
-    
+
     // 配置记录信息（avcC/hvcC/av1C）
     struct CodecConfig {
-        int profile_idc = 0;          // H.264 profile
-        int profile_compatibility = 0; // H.264 profile compatibility flag
-        uint32_t level_idc = 0;       // H.264 level
+        int profile_idc = 0;                 // H.264 profile
+        int profile_compatibility = 0;       // H.264 profile compatibility flag
+        uint32_t level_idc = 0;              // H.264 level
         uint32_t length_size_minus_one = 31; // NAL 长度字段位数（3 字节=31，4 字节=31）
-        
+
         // H.265
         int general_profile_space = 0;
         int general_tier_flag = 0;
@@ -221,26 +223,26 @@ struct ExtradataResult {
         uint32_t general_level_idc = 0;
         int vps_bit_depth_luma_minus8 = 0;
         int vps_bit_depth_chroma_minus8 = 0;
-        
+
         // AV1（来自 av1C 配置记录）
         // 注：level_idc 复用上面 H.264 那个字段；AV1 里存的是 seq_level_idx_0(0..23)，
         // general_tier_flag 复用为 seq_tier_0。
-        int profile = 0;                // seq_profile 0..2
+        int profile = 0; // seq_profile 0..2
         int high_bitdepth = 0;
         int twelve_bit = 0;
         int monochrome = 0;
-        int bit_depth_minus_8 = 0;      // 实际位深 = 值 + 8
+        int bit_depth_minus_8 = 0; // 实际位深 = 值 + 8
         int chroma_subsampling_x = 1;
         int chroma_subsampling_y = 1;
         int chroma_sample_position = 0; // 0=UNKNOWN 1=VERTICAL 2=COLOCATED 3=RESERVED
         int color_range = 1;
-        int color_primaries = 9;  // BT.2020
+        int color_primaries = 9;           // BT.2020
         int transfer_characteristics = 14; // PQ
-        int matrix_coefficients = 9; // BT.2020 NCL
+        int matrix_coefficients = 9;       // BT.2020 NCL
         int initial_presentation_delay_bits = 0;
 
         // VVC（来自 vvcC 配置记录；num_sublayers 是 vvcC 里的 3 位字段）
-        int chroma_format_idc = 0;      // 0=4:0:0 1=4:2:0 2=4:2:2 3=4:4:4
+        int chroma_format_idc = 0; // 0=4:0:0 1=4:2:0 2=4:2:2 3=4:4:4
         int num_sublayers = 0;
         int max_picture_width = 0;
         int max_picture_height = 0;
@@ -248,11 +250,11 @@ struct ExtradataResult {
         // VP9（来自 vpcC 配置记录）
         // profile 复用上面的 `profile` 字段；level_idc 复用上面的 `level_idc`
         // —— vpcC 的 level 本身就用的是同一套整数编码（10=Level 1、11=1.1 ...）。
-        int vp9_chroma_subsampling = 2;  // 0=4:4:4 1=4:2:2 2=4:2:0 3=4:4:0
+        int vp9_chroma_subsampling = 2; // 0=4:4:4 1=4:2:2 2=4:2:0 3=4:4:0
         int vp9_video_full_range_flag = 0;
-        bool vp9_color_description_present = false;  // CICP 三元组非全 0 才算写了
+        bool vp9_color_description_present = false; // CICP 三元组非全 0 才算写了
     } config;
-    
+
     // 视频尺寸（如果可从 extradata 推断）
     int width = 0;
     int height = 0;

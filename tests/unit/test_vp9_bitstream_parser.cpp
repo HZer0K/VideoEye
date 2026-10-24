@@ -23,13 +23,18 @@ public:
         for (int i = bits - 1; i >= 0; --i) {
             const uint32_t bit = (value >> i) & 1u;
             const int pos = static_cast<int>(bits_.size());
-            if (pos % 8 == 0) bytes_.push_back(0);
+            if (pos % 8 == 0)
+                bytes_.push_back(0);
             bytes_.back() |= static_cast<uint8_t>(bit << (7 - (pos % 8)));
             bits_.push_back(bit != 0);
         }
     }
-    void PutBool(bool v) { Put(v ? 1u : 0u, 1); }
-    const std::vector<uint8_t>& bytes() const { return bytes_; }
+    void PutBool(bool v) {
+        Put(v ? 1u : 0u, 1);
+    }
+    const std::vector<uint8_t>& bytes() const {
+        return bytes_;
+    }
 
 private:
     std::vector<uint8_t> bytes_;
@@ -43,8 +48,8 @@ struct Vp9HeaderSpec {
     bool show_frame = true;
     bool error_resilient = false;
 
-    int ten_or_twelve_bit = 0;   // 0=10bit 1=12bit（仅 profile 2/3）
-    int color_space = 2;         // BT.709
+    int ten_or_twelve_bit = 0; // 0=10bit 1=12bit（仅 profile 2/3）
+    int color_space = 2;       // BT.709
     bool color_range_full = false;
     int subsampling_x = 1;
     int subsampling_y = 1;
@@ -58,21 +63,23 @@ struct Vp9HeaderSpec {
 
 std::vector<uint8_t> BuildVp9Header(const Vp9HeaderSpec& s) {
     BitWriter w;
-    w.Put(0x02, 2);                                  // frame_marker（恒为 2）
-    w.Put(static_cast<uint32_t>(s.profile & 1), 1);  // profile_low_bit
-    w.Put(static_cast<uint32_t>((s.profile >> 1) & 1), 1);  // profile_high_bit
-    if (s.profile == 3) w.Put(0, 1);                 // reserved_zero
+    w.Put(0x02, 2);                                        // frame_marker（恒为 2）
+    w.Put(static_cast<uint32_t>(s.profile & 1), 1);        // profile_low_bit
+    w.Put(static_cast<uint32_t>((s.profile >> 1) & 1), 1); // profile_high_bit
+    if (s.profile == 3)
+        w.Put(0, 1); // reserved_zero
     w.PutBool(s.show_existing_frame);
     if (s.show_existing_frame) {
-        w.Put(0, 3);  // frame_to_show_map_idx
+        w.Put(0, 3); // frame_to_show_map_idx
         return w.bytes();
     }
-    w.PutBool(!s.key_frame);  // frame_type: 0 = KEY_FRAME
+    w.PutBool(!s.key_frame); // frame_type: 0 = KEY_FRAME
     w.PutBool(s.show_frame);
     w.PutBool(s.error_resilient);
-    if (!s.key_frame) return w.bytes();
+    if (!s.key_frame)
+        return w.bytes();
 
-    w.Put(0x498342u, 24);  // frame_sync_code
+    w.Put(0x498342u, 24); // frame_sync_code
 
     if (s.profile == 2 || s.profile == 3) {
         w.PutBool(s.ten_or_twelve_bit != 0);
@@ -80,15 +87,18 @@ std::vector<uint8_t> BuildVp9Header(const Vp9HeaderSpec& s) {
     w.Put(static_cast<uint32_t>(s.color_space), 3);
     const bool has_range = (s.profile == 1 || s.profile == 3);
     if (s.color_space != static_cast<int>(Vp9ColorSpace::Srgb)) {
-        if (has_range) w.PutBool(s.color_range_full);
+        if (has_range)
+            w.PutBool(s.color_range_full);
         if (has_range) {
             w.PutBool(s.subsampling_x != 0);
             w.PutBool(s.subsampling_y != 0);
-            w.Put(0, 1);  // reserved_zero
+            w.Put(0, 1); // reserved_zero
         }
     } else {
-        if (has_range) w.PutBool(s.color_range_full);
-        if (has_range) w.Put(0, 1);
+        if (has_range)
+            w.PutBool(s.color_range_full);
+        if (has_range)
+            w.Put(0, 1);
     }
     w.Put(static_cast<uint32_t>(s.frame_width - 1), 16);
     w.Put(static_cast<uint32_t>(s.frame_height - 1), 16);
@@ -100,7 +110,7 @@ std::vector<uint8_t> BuildVp9Header(const Vp9HeaderSpec& s) {
     return w.bytes();
 }
 
-}  // namespace
+} // namespace
 
 TEST(Vp9BitstreamParserTests, Profile0KeyFrame1080p) {
     const std::vector<uint8_t> frame = BuildVp9Header(Vp9HeaderSpec{});

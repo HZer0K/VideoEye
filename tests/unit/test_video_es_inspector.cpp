@@ -24,16 +24,20 @@ public:
     void Put(uint32_t value, int bits) {
         for (int i = bits - 1; i >= 0; --i) {
             const uint32_t bit = (value >> i) & 1u;
-            if (bits_.size() % 8 == 0) bytes_.push_back(0);
+            if (bits_.size() % 8 == 0)
+                bytes_.push_back(0);
             bytes_.back() |= static_cast<uint8_t>(bit << (7 - (bits_.size() % 8)));
             bits_.push_back(bit != 0);
         }
     }
-    void PutBool(bool v) { Put(v ? 1u : 0u, 1); }
+    void PutBool(bool v) {
+        Put(v ? 1u : 0u, 1);
+    }
     void PutUE(uint32_t n) {
         const uint32_t x = n + 1;
         int bits = 0;
-        for (uint32_t t = x; t > 0; t >>= 1) ++bits;
+        for (uint32_t t = x; t > 0; t >>= 1)
+            ++bits;
         Put(0, bits - 1);
         Put(x, bits);
     }
@@ -45,9 +49,12 @@ public:
         }
     }
     void AlignByte() {
-        while (bits_.size() % 8 != 0) Put(0, 1);
+        while (bits_.size() % 8 != 0)
+            Put(0, 1);
     }
-    std::vector<uint8_t> bytes() const { return bytes_; }
+    std::vector<uint8_t> bytes() const {
+        return bytes_;
+    }
 
 private:
     std::vector<uint8_t> bytes_;
@@ -79,8 +86,7 @@ std::vector<uint8_t> MakeAnnexB(uint8_t nal_header, const std::vector<uint8_t>& 
 }
 
 // SEI message：payloadType / payloadSize 都是 0xFF 累加段
-void AppendSeiMessage(std::vector<uint8_t>& rbsp, int payload_type,
-                      const std::vector<uint8_t>& payload) {
+void AppendSeiMessage(std::vector<uint8_t>& rbsp, int payload_type, const std::vector<uint8_t>& payload) {
     rbsp.push_back(static_cast<uint8_t>(payload_type));
     rbsp.push_back(static_cast<uint8_t>(payload.size()));
     rbsp.insert(rbsp.end(), payload.begin(), payload.end());
@@ -89,14 +95,15 @@ void AppendSeiMessage(std::vector<uint8_t>& rbsp, int payload_type,
 // 一个"什么都不带的"最小 slice header（按下面 MakeSps/MakePps 的参数集布局）
 std::vector<uint8_t> MakeSliceHeader(int slice_type, int slice_qp_delta, bool idr) {
     BitWriter w;
-    w.PutUE(0);                  // first_mb_in_slice
+    w.PutUE(0); // first_mb_in_slice
     w.PutUE(static_cast<uint32_t>(slice_type));
-    w.PutUE(0);                  // pic_parameter_set_id
-    w.Put(0, 4);                 // frame_num（log2_max_frame_num_minus4 = 0）
-    if (idr) w.PutUE(0);         // idr_pic_id
-    w.Put(0, 4);                 // pic_order_cnt_lsb（log2_max_poc_lsb_minus4 = 0）
+    w.PutUE(0);  // pic_parameter_set_id
+    w.Put(0, 4); // frame_num（log2_max_frame_num_minus4 = 0）
+    if (idr)
+        w.PutUE(0); // idr_pic_id
+    w.Put(0, 4);    // pic_order_cnt_lsb（log2_max_poc_lsb_minus4 = 0）
     w.PutSE(slice_qp_delta);
-    w.Put(1, 1);                 // rbsp_trailing_bits 的 stop bit
+    w.Put(1, 1); // rbsp_trailing_bits 的 stop bit
     w.AlignByte();
     return w.bytes();
 }
@@ -139,16 +146,20 @@ std::vector<uint8_t> MakeMdcvPayload() {
         p.push_back(static_cast<uint8_t>(v & 0xFF));
     };
     // G(0.68, 0.32) B(0.265, 0.69) R(0.15, 0.06)，单位 0.00002
-    u16(34000); u16(16000);
-    u16(13250); u16(34500);
-    u16(7500);  u16(3000);
-    u16(15635); u16(16450);   // white point D65
-    u32(10000000);            // max = 1000 nits（单位 0.0001）
-    u32(50);                  // min = 0.005 nits
+    u16(34000);
+    u16(16000);
+    u16(13250);
+    u16(34500);
+    u16(7500);
+    u16(3000);
+    u16(15635);
+    u16(16450);    // white point D65
+    u32(10000000); // max = 1000 nits（单位 0.0001）
+    u32(50);       // min = 0.005 nits
     return p;
 }
 
-}  // namespace
+} // namespace
 
 // ==========================================================================
 // H.264：SEI（MDCV / CLL / film grain）+ slice QP
@@ -158,7 +169,7 @@ TEST(VideoEsInspectorTests, H264SeiMasteringDisplayAndContentLight) {
     // NAL type 6 = SEI, nal_ref_idc = 0
     std::vector<uint8_t> sei_rbsp;
     AppendSeiMessage(sei_rbsp, 137, MakeMdcvPayload());
-    AppendSeiMessage(sei_rbsp, 144, {0x03, 0xE8, 0x01, 0x90});  // MaxCLL=1000 MaxFALL=400
+    AppendSeiMessage(sei_rbsp, 144, {0x03, 0xE8, 0x01, 0x90}); // MaxCLL=1000 MaxFALL=400
     const std::vector<uint8_t> sei_nal = MakeAnnexB(0x06, sei_rbsp);
 
     VideoEsInspector inspector;
@@ -173,7 +184,7 @@ TEST(VideoEsInspectorTests, H264SeiMasteringDisplayAndContentLight) {
     // 10000000 * 0.0001 = 1000 nits
     EXPECT_NEAR(r.sei.max_display_mastering_luminance, 1000.0, 0.01);
     EXPECT_NEAR(r.sei.min_display_mastering_luminance, 0.005, 0.0001);
-    EXPECT_NEAR(r.sei.display_primaries_x[0], 0.68, 0.0001);   // G
+    EXPECT_NEAR(r.sei.display_primaries_x[0], 0.68, 0.0001); // G
     EXPECT_NEAR(r.sei.white_point_x, 0.3127, 0.0001);
 
     ASSERT_TRUE(r.sei.has_content_light_level);
@@ -295,10 +306,16 @@ TEST(VideoEsInspectorTests, HevcDolbyVisionRpuNal62) {
     // ❗ HEVC 的 NAL header 是 **2 字节**，且 nal_unit_type 取 byte0 的 bit6..1
     // （(byte0 >> 1) & 0x3F）—— 不是 H.264 那种「低 5 位就是 type」。
     // 把 type 写进第二个字节（或写成 62 << 3）在这里都解不出 62。
-    std::vector<uint8_t> hevc_nal{0x00, 0x00, 0x00, 0x01,
-                                  static_cast<uint8_t>(62 << 1),  // nal_unit_type = 62
-                                  0x01,                           // nuh_temporal_id_plus1 = 1
-                                  0x19, 0x01, 0x02, 0x03};
+    std::vector<uint8_t> hevc_nal{0x00,
+                                  0x00,
+                                  0x00,
+                                  0x01,
+                                  static_cast<uint8_t>(62 << 1), // nal_unit_type = 62
+                                  0x01,                          // nuh_temporal_id_plus1 = 1
+                                  0x19,
+                                  0x01,
+                                  0x02,
+                                  0x03};
 
     VideoEsInspector inspector;
     inspector.Reset(AV_CODEC_ID_HEVC);
