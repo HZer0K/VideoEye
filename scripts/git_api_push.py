@@ -35,8 +35,13 @@ class ApiError(RuntimeError):
     pass
 
 
-def git(*args, binary=False):
-    p = subprocess.run(["git", *args], capture_output=True, check=True)
+def git(*args, binary=False, stdin_data=b""):
+    # stdin 必须显式给掉。subprocess.run 默认继承父进程的 stdin，而
+    # `git credential fill` 是先读 stdin 上一段 protocol/host 描述才应答的
+    # —— 从终端跑时父进程 stdin 就是键盘，读不到 EOF 就一直等，
+    # 表现为「脚本刚启动就卡住，没有任何输出」（实测挂了 28 分钟）。
+    # 这里一律传 input=，其余子命令拿到空 stdin 行为不变。
+    p = subprocess.run(["git", *args], input=stdin_data, capture_output=True, check=True)
     return p.stdout if binary else p.stdout.decode("utf-8", "replace")
 
 
@@ -46,7 +51,7 @@ def get_credential_token(token_file: str | None) -> str:
             token = fh.read().strip()
         if token:
             return token
-    out = git("credential", "fill")
+    out = git("credential", "fill", stdin_data=b"protocol=https\nhost=github.com\n\n")
     token = None
     for line in out.splitlines():
         if line.startswith("password="):
