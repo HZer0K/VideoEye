@@ -14,7 +14,7 @@ Checks: >
   -readability-function-cognitive-complexity,
   -readability-else-after-return,
 WarningsAsErrors: ''
-HeaderFilterRegex: '^(core|ui|utils)/'
+HeaderFilterRegex: '^(core|ui|infrastructure)/'
 FormatStyle: file
 CheckOptions:
   - key:   readability-braces-around-statements.ShortStatementOnSameLine

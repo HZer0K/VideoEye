@@ -44,13 +44,15 @@
 
 ## 审计快照（`audit/`，只读）
 
-这两篇是**某一时刻的记录，不随代码演进**。里面的 ✅ 只代表当时修完了，不代表现在还是好的；
+下面几篇是**某一时刻的记录，不随代码演进**。里面的 ✅ 只代表当时修完了，不代表现在还是好的；
 行号也可能已经漂移。留着它们是作为决策依据 —— 后来改代码时能看到"当初为什么这么做"。
 
 | 文档 | 内容 |
 |------|------|
 | [`audit/CODE_AUDIT_2026-10-02.md`](audit/CODE_AUDIT_2026-10-02.md) | 全模块代码审查：20 条 P0 缺陷与修复记录 |
 | [`audit/ARCHITECTURE_REVIEW_2026-10-04.md`](audit/ARCHITECTURE_REVIEW_2026-10-04.md) | 架构评审：10 项改进建议，含第 8 项「为什么撤回」的理由 |
+| [`audit/CODEC_AUDIT_2026-10-24.md`](audit/CODEC_AUDIT_2026-10-24.md) | 码流 / 音频解析审计复核：逐项裁定、补漏与修复顺序 |
+| [`REFACTOR_P2_REVIEW.md`](REFACTOR_P2_REVIEW.md) | P2 重构评审：AnalysisEngine / MediaPlayer / AnalysisFacade 的拆分结论 |
 
 ## 维护约定
 

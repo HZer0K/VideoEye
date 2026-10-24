@@ -25,7 +25,7 @@ targe —— 目录只是命名习惯，编译器不认识；能被机器检查�
 | `core/reporting/` | `VideoEyeReporting` | 报告导出（JSON / CSV / HTML / PDF / TXT） | domain、qc、infrastructure |
 | `core/ffmpeg/` | `VideoEyeFfmpegTools` | 原生 ffmpeg 命令行工作台 | infrastructure、Qt Core |
 | `core/qt/` | `VideoEyeQtAdapters` | 把不带 Qt 的执行引擎接进信号 / 线程；`QtWorkerOwner` 是所有自带 `QThread` 的后台 worker 的统一所有者 | domain、analysis、Qt Core |
-| `ui/` | （主程序） | 界面 | 以上全部 + Qt Widgets |
+| `ui/` | `VideoEyeUi`（入口可执行文件 `VideoEye`） | 界面 | 以上全部 + Qt Widgets；`ui/reporting_panel` 另立 `VideoEyeReportingPanel` |
 
 迁移期那个把十层全部 PUBLIC 出去的 `VideoEyeCore` INTERFACE 聚合层**已经删除** ——
 它让每个调用方都能编译，代价是依赖关系重新变得不可见（正是因为它，`Playback → Exporter`
@@ -321,10 +321,10 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   以及三段属于码率 GOP / 音频 QC 页的重复格式化辅助函数。
 - **大文件拆解进展（2026-10-07 复核，行数按非空行计）**。`MediaPlayer.cpp` 已从 1404 行降到 **457 行**
   （拆成 `export_controller_` / `container_inspection_` / `realtime_analysis_` / `open_controller_`
-  四个会话/控制器，播放机械对分析一无所知）；`AnalysisEngine.cpp` 从 1134 行降到 **201 行**
+  四个会话/控制器，播放机械对分析一无所知）；`AnalysisEngine.cpp` 从 1134 行降到 **280 行**
   （拆成 `AnalysisPipeline` / `PacketScanLoop` / `AnalysisInputSession` /
   `AnalysisResultAssembler` / `StreamingManifestScan`，本文件只管"何时建、何时分发、何时收尾"，
-  不再直接 include 任何具体分析器，§7.1 提到的 25 处 `if (options.analyze_xxx)` 随之消解，
+  不再直接 include 任何具体分析器，§7.1 的接线点随之迁移到 `AnalysisPipeline` 等文件，
   注册表方案彻底作废）。  五个历史性大文件里，`ContainerStructurePage.cpp` 已抽出 `Mp4SampleTableWidget`
   （MP4 样本表子页：轨道下拉 + 样本/问题/分片三表 + CSV 导出 + 结构树联动），退化为只做
   "建页 → 注入数据 → 转发联动"的协调层，行数随之下降；`PlayerPanel.cpp` 也已迈出第一步，
@@ -368,7 +368,8 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   `StatusMessage` 信号交回页面发。至此 949 → 597 行，剩程序探测 / 命令区 / 按钮状态与设置持久化。
   ⚠️ 新增 `ui/*.cpp` 时，**手工列源的测试目标要同步加**（`test_stream_views` 手列
   `FramePacketView.cpp`，漏加 `AudioFrameTableWidget.cpp` / `VideoFrameTableWidget.cpp`
-  会在链接期 LNK2019；走 `${UI_SOURCES}` 的目标如 `test_scan_terminal_state` 由 GLOB 自动纳入，无需改）。
+  会在链接期 LNK2019）。链 `VideoEyeUi` 的目标（如 `test_scan_terminal_state`）由该库的
+  GLOB 自动纳入，无需再同步源清单。
   ⚠️ 头文件里**不要内联解引用仅前向声明的组件类型**（`GopSummaries()` 想返回
   `video_page_->GopSummaries()` 就得把定义挪到 .cpp）：类的完整上下文只对本类成员有效，
   对别的 incomplete type 无效，会报 C2027。
@@ -510,7 +511,7 @@ python scripts/check_layering.py
 | 2 | `core/analysis/<类别>/XxxAnalyzer.{h,cpp}` | 分析器本体 |
 | 3 | `core/analysis/AnalysisOptions.h` | 开关字段 + 对应的 options 结构 |
 | 4 | `core/domain/model/AnalysisResult.h` | 结果字段 + 配套的 `xxx_analyzed` 标志位 |
-| 5 | `core/analysis/orchestration/AnalysisEngine.cpp` | **至少 4 处**：建分析器、`OnPacket` 分支、收尾 `Finish()`、`Finish()` 里再判一次标志位（取消/截断时不能算跑过） |
+| 5 | `core/analysis/orchestration/AnalysisPipeline.cpp`（建分析器 + `OnPacket` 分发）、`AnalysisInputSession.cpp`（喂数据 / 取消）、`AnalysisResultAssembler.cpp`（收尾与 `xxx_analyzed` 标志位） | **至少 4 处**接线点 |
 | 6 | `core/analysis/diagnostics/QcRuleEngine.cpp` | 可选：要加 QC 规则时改 `DefaultQcRules()` + `CheckRule()` |
 | 7 | `ui/analysis_panel/*.cpp` | 展示。可以新建页面，也可以并入现有页（`timecode` 就并进了 `SubtitleAuxPage`） |
 
@@ -529,10 +530,10 @@ python scripts/check_layering.py
 | 9 | `ui/main_window/VideoWidget.{h,cpp}` | 可选：要在画面上叠加绘制时 |
 | 10 | `ui/player/PlayerPanel.{h,cpp}` | 可选：播放面板也要开关时 |
 
-**为什么是显式 `if` 而不是注册表**：`AnalysisEngine.cpp` 现在用约 25 处
-`if (options.analyze_xxx)` 显式串联，没有插件点。这是**刻意的选择**——15 个维度、单人
+**为什么是显式 `if` 而不是注册表**：`AnalysisPipeline.cpp` 现在用约 23 处
+`if (options_.analyze_xxx)` 显式串联，没有插件点。这是**刻意的选择**——15 个维度、单人
 维护，显式 if 能让你一眼看出扫描管线做了什么，调试时不用追虚表；换成注册表只是把复杂度
-从"改 5 个文件"变成"先理解一套注册机制"。
+从"按清单改文件"变成"先理解一套注册机制"。
 
 代价就是上面这两张表。**别偷偷引入注册表来消除它**：真要减成本，先做第 4 项
 （`MediaPlayer` 的 10 个 `SetXxxAnalysisEnabled` 收敛成一个入口）—— **这一项已于

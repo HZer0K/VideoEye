@@ -176,13 +176,13 @@ file(GLOB_RECURSE UI_SOURCES CONFIGURE_DEPENDS "ui/*.cpp")
 file(GLOB UI_HEADERS CONFIGURE_DEPENDS "ui/*.h")
 # ui/reporting_panel 单独成一个 target（见下面 VideoEyeReportingPanel）。
 #
-# 为什么从这里剔掉: 它是 ui/ 里**唯一带后台线程**的页面，而 ui/*.cpp 整包编进主
-# 可执行文件 —— 一个测试想 include 它，就得把同一个 Q_OBJECT 类再编一份进测试 exe，
-# 于是同一个类有两份 vtable/metacall 实现（ODR 违规），症状是随机的
-# 0xc0000374 / 诡异的槽位调不到。把它拆成库，主程序和测试链的是各自那一份，两边都干净。
+# 它是 ui/ 里带后台线程的页面，单独成库后，只需要这一页的测试可以只链它，
+# 不必把整个 UI 库拉进来。
 file(GLOB_RECURSE REPORTING_PANEL_SOURCES CONFIGURE_DEPENDS
     "ui/reporting_panel/*.cpp" "ui/reporting_panel/*.h")
 list(FILTER UI_SOURCES EXCLUDE REGEX "ui/reporting_panel/")
+# 入口不属于 UI 库：主程序只编译 ui/app/main.cpp，其余 ui/*.cpp 进 VideoEyeUi。
+list(FILTER UI_SOURCES EXCLUDE REGEX "ui/app/main\\.cpp$")
 
 file(GLOB_RECURSE DOMAIN_SOURCES CONFIGURE_DEPENDS "core/domain/*.cpp" "core/domain/*.h")
 file(GLOB_RECURSE INFRA_SOURCES CONFIGURE_DEPENDS "infrastructure/*.cpp" "infrastructure/*.h")
@@ -196,8 +196,8 @@ file(GLOB_RECURSE FFMPEGTOOL_SOURCES CONFIGURE_DEPENDS "core/ffmpeg/*.cpp" "core
 file(GLOB_RECURSE QTADAPTER_SOURCES CONFIGURE_DEPENDS "core/qt/*.cpp" "core/qt/*.h")
 file(GLOB_RECURSE FFMPEG_IO_SOURCES CONFIGURE_DEPENDS "core/ffmpeg_io/*.cpp" "core/ffmpeg_io/*.h")
 
-# ui/*.h 里有 Q_OBJECT，如果同时挂给静态库和主程序，AUTOMOC 会各生成一份
-# moc_*.cpp，链接期撞 LNK2005 重复定义 —— 所以 ui 头文件只给主程序自己用。
+# ui/*.h 里有 Q_OBJECT：头文件和源文件都只挂给 VideoEyeUi，同一个类只会生成
+# 一份 moc_*.cpp；主程序不再单独编译 UI 源/头，避免 LNK2005 与 ODR 违规。
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -415,9 +415,9 @@ if(QTADAPTER_SOURCES)
     )
 endif()
 
-# --- reporting panel: 「报告与批量 QC」页，ui/ 里唯一带后台线程的一页 ---
-# 单独成库不是为了分层好看，是为了**能被单测**：它编在主程序里时，测试没法 include
-# （同一份 Q_OBJECT 类编两遍 = ODR 违规）。拆出来之后主程序和测试各链一份自己的静态库。
+# --- reporting panel: 「报告与批量 QC」页 ---
+# ui/ 其余部分现在统一进 VideoEyeUi；这一页仍保持独立 target，让只测它的目标
+# 可以少链一整层 UI。它本身带后台线程，独立成库也便于单独验证线程语义。
 if(REPORTING_PANEL_SOURCES)
     videoeye_add_module(VideoEyeReportingPanel ${REPORTING_PANEL_SOURCES})
     # Qt6::Widgets 挂 PUBLIC: 这个库就是为了"被主程序与测试各自 include
@@ -430,6 +430,46 @@ if(REPORTING_PANEL_SOURCES)
                 VideoEyeReporting
                 VideoEyeInfrastructure
     )
+endif()
+
+# --- ui: 主程序界面层 ---
+# 所有 ui/*.cpp（入口除外）编成一个静态库，主程序只保留 ui/app/main.cpp。
+# 好处: UI 组件测试链同一份实现，不必再把整层源码编进测试 exe；同一个 Q_OBJECT
+# 类只在一个 target 里跑 AUTOMOC，ODR / LNK2005 从结构上消失。
+if(UI_SOURCES)
+    videoeye_add_module(VideoEyeUi ${UI_SOURCES} ${UI_HEADERS})
+    # ui 内部有按子目录写的 include（"main_window/MainWindow.h" 等），测试也要
+    # include 这些头，所以 ui/ 挂 PUBLIC。
+    target_include_directories(VideoEyeUi PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/ui
+    )
+    # Qt6::Widgets 挂 PUBLIC: 公共头就是 QWidget 系。
+    # FFmpeg 也挂 PUBLIC: MainWindow.h / AnalysisPanel.h 的公共头闭包里有
+    # MediaPlayer.h、StreamAnalyzer.h 这类直接 include libav* 的头，PRIVATE 会让
+    # 只链 VideoEyeUi 的下游拿不到 FFmpeg 的 include 目录（audit_link_visibility 守）。
+    # core 模块挂 PRIVATE: UI 库不对外提供它们的 API；主程序与测试各自显式链
+    # 需要的模块，避免把 VideoEyeUi 变成第二个"全部 PUBLIC"的聚合层。
+    target_link_libraries(VideoEyeUi
+        PUBLIC Qt6::Widgets
+               FFmpeg::avcodec
+               FFmpeg::avformat
+               FFmpeg::avutil
+               FFmpeg::swscale
+               FFmpeg::swresample
+        PRIVATE VideoEyePlayback
+                VideoEyeExporter
+                VideoEyeReporting
+                VideoEyeQc
+                VideoEyeReportingPanel
+                VideoEyeFfmpegTools
+                VideoEyeAnalysis
+                VideoEyeMedia
+                VideoEyeDomain
+                VideoEyeInfrastructure
+    )
+    if(QTADAPTER_SOURCES)
+        target_link_libraries(VideoEyeUi PRIVATE VideoEyeQtAdapters)
+    endif()
 endif()
 
 # ============================================================
@@ -447,22 +487,17 @@ endif()
 qt6_add_resources(VIDEOEYE_THEME_RESOURCES ui/theme/theme.qrc)
 
 add_executable(${PROJECT_NAME}
-    ${UI_SOURCES}
-    ${UI_HEADERS}
+    ui/app/main.cpp
     ${VIDEOEYE_THEME_RESOURCES}
 )
-# ui/ 只给 GUI 自己用(ui 内部有按子目录写的 include)
-target_include_directories(${PROJECT_NAME} PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/ui
-)
-# UI 是唯一需要全部模块的目标，把每一层显式列出来 —— 以前这里只写 VideoEyeCore,
-# 于是"界面到底依赖了什么"这条信息是藏在兼容层里的。
+# 入口只负责 QApplication + MainWindow，界面实现全部来自 VideoEyeUi。
+# 模块依赖仍显式列出（VideoEyeUi 内部走 PRIVATE 边），让"界面到底依赖什么"保持可见。
 target_link_libraries(${PROJECT_NAME} PRIVATE
+    VideoEyeUi
     VideoEyePlayback
     VideoEyeExporter
     VideoEyeReporting
     VideoEyeQc
-    # ui/reporting_panel 已经从 ui/*.cpp 剔出去了（见上面的 GLOB），主程序靠这个库拿它
     VideoEyeReportingPanel
     VideoEyeFfmpegTools
     VideoEyeAnalysis

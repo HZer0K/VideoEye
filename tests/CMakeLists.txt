@@ -1099,26 +1099,17 @@ add_test(NAME PlayerOpenAsyncTests COMMAND test_player_open_async)
 #       和诊断页显示的"失败"互相矛盾。这里跑一次真实的失败扫描（损坏输入），
 #       断言三个页面都回到 Idle，并且一次扫描只产生一个终态事件。
 #
-# 为什么把整个 ui/ 都编进来: 被测对象是 AnalysisPanel 本体，而 UI 目前只编译进
-#   主程序，没有独立的静态库可链。所以这里取 UI_SOURCES 去掉自带 main() 的
-#   ui/app/main.cpp。每个 Q_OBJECT 头都有同名 .cpp，AUTOMOC 靠同名匹配就能生成
-#   moc，无需再列头文件（列了反而会和主程序各生成一份）。
-#   用 offscreen 平台跑，不需要显示器。
+# 为什么链 VideoEyeUi: 被测对象是 AnalysisPanel 本体。UI 已独立成静态库，
+#   这里只编测试用例源文件并链库，不再把整层 ui/ 重复编进测试 exe —— 同一个
+#   Q_OBJECT 类也只有 VideoEyeUi 里那一份 moc。用 offscreen 平台跑，不需要显示器。
 # =================================================
-set(VIDEOEYE_UI_TEST_SOURCES ${UI_SOURCES})
-list(FILTER VIDEOEYE_UI_TEST_SOURCES EXCLUDE REGEX "ui/app/main\\.cpp$")
 videoeye_add_test(test_scan_terminal_state
     unit/test_scan_terminal_state.cpp
-    ${VIDEOEYE_UI_TEST_SOURCES}
 )
-# 与主程序一致: ui/ 内部有按子目录写的 include，需要把 ui/ 自己加进来。
-target_include_directories(test_scan_terminal_state PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui)
 target_link_libraries(test_scan_terminal_state PRIVATE
+    VideoEyeUi
     VideoEyeQtAdapters
-    #ReportingPanel 已经从 UI_SOURCES 里剔出去了（ui/reporting_panel 独立成库，
-    # 否则同一份 Q_OBJECT 会被主程序和这个测试各编一份），所以这里补链它 ——
-    # AnalysisPanel / MainWindow 都直接引用 ReportingPanel。
+    #ReportingPanel 独立成库；AnalysisPanel / MainWindow 都直接引用它，这里补链。
     VideoEyeReportingPanel
     VideoEyePlayback
     VideoEyeExporter
