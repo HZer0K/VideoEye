@@ -145,15 +145,89 @@ def build_m2ts(ts_bytes):
     return bytes(out)
 
 
+def build_h264_bframes(ffmpeg):
+    r"""MP4 / H.264: libx264 + **B 帧** + 两个 GOP。
+
+    存在的理由：帧级 POC 追踪要证明"按 POC 排出来的显示顺序 == 真实显示顺序"，
+    而这条结论**只有**在码流里真的有 B 帧时才测得到 —— 没有 B 帧时解码顺序
+    与显示顺序天然相同，怎么算都对，测试会变成恒真的空跑。
+
+    ❗ 不能用 TestMediaFactory（tests/support）现场生成：那份样本依赖
+    FFmpeg 的预编译库，而仓库锁定的预编译版**没有 libx264**（GPL 组件），
+    会降级到 libopenh264 —— 那个编码器不出 B 帧，于是"要 B 帧"的用例
+    只能产出一个没有 B 帧的样本。所以这份语料必须由带 libx264 的 ffmpeg
+    命令行生成并入库，测试只负责消费。
+
+    封装选 MP4 而不是裸流：裸流的包没有时间戳，而这条对账的参考输出恰恰是
+    容器里的 PTS（显示时间戳）—— 有容器才有可对账的参考。
+    -g 15 / 30 帧 → 恰好两个 IDR，顺带能验 GOP 分段。
+    """
+    return run_ffmpeg(ffmpeg, [
+        "-f", "lavfi", "-i", "testsrc2=size=320x176:rate=25:duration=1.2",
+        "-c:v", "libx264", "-preset", "veryfast", "-g", "15", "-bf", "3",
+        "-pix_fmt", "yuv420p",
+        "-f", "mp4",
+    ], ".mp4")
+
+
 register("container/real_h264_aac.ts", "ts", build=build_ts)
 register("container/real_h264_aac.m2ts", "m2ts", derived="container/real_h264_aac.ts")
 register("container/real_mpeg4_mp3.avi", "avi", build=build_avi)
 register("container/real_vorbis.ogg", "ogg", build=build_ogg)
+register("codec/real_x264_bframes_gop.mp4", "mp4", build=build_h264_bframes)
 
 
 # ---------------------------------------------------------------------------
 # 校验：语义级
 # ---------------------------------------------------------------------------
+
+def nal_type_counts(data):
+    """统计裸 H.264（Annex B）里各 NAL 类型的个数。
+
+    只按 3 字节起始码扫（00 00 01）：4 字节起始码是它的超集，跳过前面那个 0
+    之后同样能被匹配到。够用于结构校验 —— 这里要的是"该有的类型在不在"，
+    不是精确的 NAL 边界。
+    """
+    counts = {}
+    pos = 0
+    while True:
+        found = data.find(b"\x00\x00\x01", pos)
+        if found < 0:
+            return counts
+        header = found + 3
+        if header >= len(data):
+            return counts
+        nal_type = data[header] & 0x1F
+        counts[nal_type] = counts.get(nal_type, 0) + 1
+        pos = header + 1
+
+
+def mp4_top_level_boxes(data):
+    """返回顶层 box 列表 [(type, payload_start, payload_end)]。
+
+    只处理标准头（32 位 size）与 64 位 largesize（size == 1）；
+    size == 0（box 延伸到文件尾）也支持。这是 ISO BMFF 的最小子集，
+    够用来确认"文件结构完整"，不追求覆盖所有边角。
+    """
+    boxes = []
+    pos = 0
+    while pos + 8 <= len(data):
+        size = struct.unpack(">I", data[pos:pos + 4])[0]
+        name = data[pos + 4:pos + 8]
+        header = 8
+        if size == 1:
+            if pos + 16 > len(data):
+                break
+            size = struct.unpack(">Q", data[pos + 8:pos + 16])[0]
+            header = 16
+        elif size == 0:
+            size = len(data) - pos
+        if size < header or pos + size > len(data):
+            break
+        boxes.append((name, pos + header, pos + size))
+        pos += size
+    return boxes
+
 
 def check(data, rel):
     """返回问题列表（空 = 合格）。"""
@@ -190,6 +264,41 @@ def check(data, rel):
         if data.count(b"OggS") < 2:
             problems.append("%s: 只有 %d 个 OggS 页，测不出页链"
                             % (rel, data.count(b"OggS")))
+        return problems
+
+    if kind == "h264_annexb":
+        # 裸流没有容器层可校验，只能校验"码流里该有的东西都在"：
+        # 起始码开头 + SPS/PPS 各至少一份 + 至少两个 IDR（两个 GOP）+ 足够多的 slice。
+        # 少了任何一类，"帧顺序"的用例都会退化成恒真的空跑。
+        if data[0:4] not in (b"\x00\x00\x00\x01", b"\x00\x00\x01"):
+            problems.append("%s: 不是 Annex B（开头 %r）" % (rel, data[0:4]))
+            return problems
+        types = nal_type_counts(data)
+        for nal_type, name, minimum in ((7, "SPS", 1), (8, "PPS", 1),
+                                        (5, "IDR slice", 2), (1, "非 IDR slice", 10)):
+            if types.get(nal_type, 0) < minimum:
+                problems.append("%s: %s 只有 %d 个（至少需要 %d 个）"
+                                % (rel, name, types.get(nal_type, 0), minimum))
+        return problems
+
+    if kind == "mp4":
+        # 只走顶层 box（递归进 moov 没必要：这里要证明的是"这是个能解的视频文件"，
+        # 帧层面的东西由 C++ 用例去断言）。
+        boxes = mp4_top_level_boxes(data)
+        names = [name for name, _start, _end in boxes]
+        if not boxes:
+            problems.append("%s: 一个顶层 box 都没解出来（不是 MP4？开头 %r）"
+                            % (rel, data[0:8]))
+            return problems
+        if names[0] != b"ftyp":
+            problems.append("%s: 第一个顶层 box 是 %r，不是 ftyp" % (rel, names[0]))
+        for required in (b"moov", b"mdat"):
+            if required not in names:
+                problems.append("%s: 缺 %s box（顶层只有 %s）"
+                                % (rel, required.decode("ascii"),
+                                   ", ".join(n.decode("ascii") for n in names)))
+        # 带 B 帧的样本必须能被解出 B 帧，否则帧顺序用例是恒真空跑。
+        # 这里用 avcC 之外的信息判不了，交给 C++ 用例的 ASSERT_GT(b_count, 0) 兜底。
         return problems
 
     problems.append("%s: 未知样本类型 %s" % (rel, kind))

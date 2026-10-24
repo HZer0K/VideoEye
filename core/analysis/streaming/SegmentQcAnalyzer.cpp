@@ -117,7 +117,13 @@ uint32_t ProbeInitTimescale(const std::string& init_path, const std::atomic<bool
     return timescale;
 }
 
-// 探测一个 fMP4 媒体分片：拿首个 moof 的 tfdt 作为关键帧时间
+// 探测一个 fMP4 媒体分片：tfdt 给起点时间，sample_flags 给"能不能独立解码"
+//
+// ❗ 这两件事必须分开取证。旧实现拿到 tfdt 就置 starts_with_keyframe=true，
+// 依据是"CMAF 分片必须以 IDR 开头"这条**约定**；一旦上游切档/拼接没遵守约定，
+// 结论依然是"有随机访问点"，问题就被永久掩盖。现在改成：
+//   有 sample_flags  → 按 sample_is_non_sync_sample 实证（SyncFlag / NotSync）
+//   没有 sample_flags → 只能标 Declared（仍置 true 但证据等级不同）
 bool ProbeFmp4Segment(model::SegmentInfo& seg, uint32_t fallback_timescale, const std::atomic<bool>* cancel) {
     if (IsStreamingCancelled(cancel))
         return false; // 别开工：开了也只是白跑一趟然后被外层丢掉
@@ -147,26 +153,52 @@ bool ProbeFmp4Segment(model::SegmentInfo& seg, uint32_t fallback_timescale, cons
             }
         }
     }
-    // 取最早的 tfdt（多 traf 时第一个 moof 里的最小起点）
+    // 取最早的 tfdt（多 traf 时第一个 moof 里的最小起点）。
+    // 同时记住这一条 fragment —— 首样本标志只能从**它**读，不能从别的 traf 上读。
+    const model::Mp4FragmentInfo* first = nullptr;
     uint64_t best = 0;
-    bool found = false;
     for (const model::Mp4FragmentInfo& f : res.fragments) {
         if (!f.has_tfdt)
             continue;
-        if (!found || f.base_media_decode_time < best) {
+        if (first == nullptr || f.base_media_decode_time < best) {
             best = f.base_media_decode_time;
-            found = true;
+            first = &f;
         }
     }
-    if (!found || timescale == 0)
+    if (first == nullptr || timescale == 0)
         return false;
 
     seg.timescale = timescale;
     seg.decode_time = best;
     seg.has_decode_time = true;
     seg.start_seconds = static_cast<double>(best) / static_cast<double>(timescale);
-    // CMAF 分片必须以 IDR 开头，拿到 tfdt 就等于确认了起点是关键帧
-    seg.starts_with_keyframe = true;
+
+    // 段内实际媒体时长：与清单声明的 duration 分账，供跨段连续性实证用。
+    if (first->duration > 0) {
+        seg.media_duration_seconds = static_cast<double>(first->duration) / static_cast<double>(timescale);
+        seg.has_media_duration = true;
+    }
+
+    if (first->has_first_sample_flags) {
+        seg.has_first_sample_flags = true;
+        seg.first_sample_flags = first->first_sample_flags;
+        seg.first_sample_is_sync = first->first_sample_is_sync;
+        seg.first_sample_depends_on = first->first_sample_depends_on;
+        seg.starts_with_keyframe = first->first_sample_is_sync;
+        seg.keyframe_evidence =
+            first->first_sample_is_sync ? model::KeyframeEvidence::SyncFlag : model::KeyframeEvidence::NotSync;
+        if (first->first_sample_is_sync)
+            seg.first_frame_type = (first->first_sample_depends_on == 2) ? "I" : "sync";
+        else
+            seg.first_frame_type = (first->first_sample_depends_on == 1) ? "P/B" : "non-sync";
+    } else {
+        // 没有 flags 来源：CMAF 的缺省值在 init 段的 trex 里，单文件视角看不到。
+        // 保持旧行为（按约定视为真），但把证据等级降到 Declared，
+        // 让上层能把"已验证"和"按约定假定"分开统计。
+        seg.starts_with_keyframe = true;
+        seg.keyframe_evidence = model::KeyframeEvidence::Declared;
+        seg.first_frame_type.clear();
+    }
     return true;
 }
 
@@ -370,6 +402,15 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPacka
         model::StreamingIssueCode::kSegmentMissingFile,
         model::StreamingIssueCode::kSegmentContainerInvalid,
         model::StreamingIssueCode::kSegmentEvictedLiveWindow,
+        // 首帧实证 + 声明层对照（1b）
+        model::StreamingIssueCode::kSegmentStartsNonSync,
+        model::StreamingIssueCode::kSegmentKeyframeUnverified,
+        model::StreamingIssueCode::kSegmentDeclarationContradicts,
+        model::StreamingIssueCode::kSegmentIndependenceUndeclared,
+        // 跨分片时间轴实证（1c）
+        model::StreamingIssueCode::kSegmentTimelineGapActual,
+        model::StreamingIssueCode::kSegmentTimelineOverlapActual,
+        model::StreamingIssueCode::kSegmentTimelineRegress,
     };
     model::RemoveIssuesByCode(result.issues, kOwnCodes);
 
@@ -436,6 +477,312 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPacka
                           " 个分片存在，但用已有的容器分析器（fMP4 走 IsobmffParser）解析失败。",
                       "用 VideoEye 单独打开该分片看具体报错；常见原因是分片被截断或缺少初始化段。",
                       model::IssueSeverity::Error, static_cast<double>(invalid), 0.0, invalid, -1.0, -1);
+        }
+    }
+
+    // ---- 1b) 分片首帧随机访问实证 ----
+    //
+    // 放在"多码率"早退之前：单码率包同样需要这个结论（点播从第 N 片起播花屏，
+    // 往往只是那一片首帧不是 IDR）。三件事分开报：
+    //   * 实证到 non-sync   —— 硬问题：该段不能独立解码
+    //   * 只有 Declared     —— 覆盖不足：结论没证据，不能当"已验证"
+    //   * 有 flags 的段数   —— 让用户知道这一批里有多少是真验过的
+    if (options.check_keyframe_alignment) {
+        int probed_fmp4 = 0;
+        int verified = 0;
+        int unverified = 0;
+        int non_sync = 0;
+        std::string first_non_sync;
+        double first_non_sync_at = -1.0;
+
+        // ---- 声明层统计：清单承诺了什么 ----
+        //
+        // 这一层以前完全没被消费：HLS 的 EXT-X-INDEPENDENT-SEGMENTS 解析进
+        // MediaPlaylistInfo 之后没有任何读者，DASH 的 startWithSAP 连解析都没有。
+        // 少了它只能说"内容不能独立解码"，说不出"清单承诺过、内容却没做到"
+        // —— 后者才是拼接/换源/清单被复用的直接线索。
+        int declared_streams = 0;      // 声明了独立分片的 playlist / representation 数
+        int contradicted_streams = 0;  // 其中实测有 non-sync 分片的
+        int contradicted_segments = 0; // 这些流里 non-sync 分片总数
+        std::string first_contradicted;
+        int undeclared_streams = 0; // 实测全 sync、但清单未声明的流数
+        int undeclared_segments = 0;
+        std::string first_undeclared;
+
+        unsigned long long scanned = 0;
+        // declared_independent 由调用方按清单算好传入：
+        //   HLS   —— media playlist 自己声明，或 master playlist 声明（后者对所有 variant 生效）
+        //   DASH  —— startWithSAP ∈ {1,2}：1 = 分片以 IDR 开头，2 = 以 I 帧开头，
+        //            两种都承诺"分片首帧可随机访问"；3/4 是更低等级的 SAP，不构成这个承诺
+        auto scan = [&](const std::vector<model::SegmentInfo>& segments, bool declared_independent) {
+            int local_probed = 0;
+            int local_verified = 0;
+            int local_non_sync = 0;
+            std::string local_first_non_sync;
+            std::string local_first_verified;
+            for (const model::SegmentInfo& seg : segments) {
+                if (seg.partial || seg.container != model::SegmentContainer::FMP4)
+                    continue;
+                if (!seg.probed || seg.container_parse_failed)
+                    continue;
+                ++probed_fmp4;
+                ++local_probed;
+                switch (seg.keyframe_evidence) {
+                case model::KeyframeEvidence::SyncFlag:
+                    ++verified;
+                    ++local_verified;
+                    if (local_first_verified.empty())
+                        local_first_verified = seg.uri;
+                    break;
+                case model::KeyframeEvidence::Declared:
+                    ++unverified;
+                    break;
+                case model::KeyframeEvidence::NotSync:
+                    ++non_sync;
+                    ++local_non_sync;
+                    if (first_non_sync.empty()) {
+                        first_non_sync = seg.uri;
+                        first_non_sync_at = seg.start_seconds;
+                    }
+                    if (local_first_non_sync.empty())
+                        local_first_non_sync = seg.uri;
+                    break;
+                default:
+                    break;
+                }
+            }
+            // 一条流里一个分片都没探到，就没有可对照的对象（不能当成"声明未兑现"）
+            if (local_probed == 0)
+                return;
+            if (declared_independent) {
+                ++declared_streams;
+                if (local_non_sync > 0) {
+                    ++contradicted_streams;
+                    contradicted_segments += local_non_sync;
+                    if (first_contradicted.empty())
+                        first_contradicted = local_first_non_sync;
+                }
+            } else if (local_non_sync == 0 && local_verified > 0) {
+                // 反向情况：实测全达标，清单没承诺。不是缺陷，但值得说一句。
+                ++undeclared_streams;
+                undeclared_segments += local_verified;
+                if (first_undeclared.empty())
+                    first_undeclared = local_first_verified;
+            }
+        };
+        for (const model::MediaPlaylistInfo& pl : result.playlists) {
+            if (ShouldCheckStreamingCancel(scanned++) && IsStreamingCancelled(cancel))
+                return StageStatus::kCancelled;
+            scan(pl.segments, pl.independent_segments || result.master_independent_segments);
+        }
+        for (const model::DashRepresentationInfo& rep : result.representations) {
+            if (ShouldCheckStreamingCancel(scanned++) && IsStreamingCancelled(cancel))
+                return StageStatus::kCancelled;
+            scan(rep.segments, rep.start_with_sap >= 1 && rep.start_with_sap <= 2);
+        }
+        if (non_sync > 0) {
+            PushIssue(result,
+                      Code(result, model::StreamingIssueCode::kSegmentStartsNonSync,
+                           model::StreamingIssueCode::kSegmentStartsNonSync),
+                      "分片首帧不是随机访问点",
+                      "已实证 " + std::to_string(non_sync) +
+                          " 个 fMP4 分片的首样本 "
+                          "sample_is_non_sync_sample=1（首个: " +
+                          first_non_sync +
+                          "）。"
+                          "这些分片无法独立起播：从该片开始播放会花屏/黑屏，直到下一个 IDR。",
+                      "让编码器在每个分片起点强制 IDR（-force_key_frames 对齐分片边界，"
+                      "或 -g 与分片时长严格对齐），并确认封装时没有把非关键帧切到段首。",
+                      model::IssueSeverity::Error, static_cast<double>(non_sync), 0.0, non_sync, first_non_sync_at, -1);
+        }
+        if (unverified > 0) {
+            PushIssue(result,
+                      Code(result, model::StreamingIssueCode::kSegmentKeyframeUnverified,
+                           model::StreamingIssueCode::kSegmentKeyframeUnverified),
+                      "分片首帧随机访问点未获实证",
+                      "有 " + std::to_string(unverified) + "/" + std::to_string(probed_fmp4) +
+                          " 个 fMP4 分片查不到首样本 sample_flags（trun 与 tfhd 都没给），"
+                          "只能按「CMAF 分片必须 IDR 开头」的约定视为可独立解码。"
+                          "这不等于验证通过。",
+                      "这类分片通常靠初始化段的 trex 给默认 sample_flags；"
+                      "把它与该分片的初始化段一起提供即可完成实证。",
+                      model::IssueSeverity::Info, static_cast<double>(unverified), 0.0, unverified, -1.0, -1);
+        }
+        // 声明与内容矛盾：清单承诺了独立分片，内容却有非同步首帧。
+        // 严重度给 Warning 而不是 Error —— 内容的硬问题已经由上面那条计入 Error，
+        // 这一条要说明的是"清单层面也不一致"（清单可能是从别处抄的、
+        // 或者内容在打包后被替换过），修复动作与上面不同，所以单独列。
+        if (contradicted_streams > 0) {
+            PushIssue(result,
+                      Code(result, model::StreamingIssueCode::kSegmentDeclarationContradicts,
+                           model::StreamingIssueCode::kSegmentDeclarationContradicts),
+                      "清单声明独立分片，但内容做不到",
+                      "有 " + std::to_string(contradicted_streams) + "/" + std::to_string(declared_streams) +
+                          " 条声明了独立分片的流里出现 " + std::to_string(contradicted_segments) +
+                          " 个首样本非同步的分片（首个: " + first_contradicted +
+                          "）。"
+                          "声明来源：" +
+                          (result.IsDash() ? "DASH AdaptationSet/Representation@startWithSAP"
+                                           : "HLS EXT-X-INDEPENDENT-SEGMENTS") +
+                          "。播放器会据此在任意分片边界切换码率或拼接，"
+                          "一旦内容没做到就会在切换点花屏。",
+                      "两条都要查：① 分片边界是否对齐了 IDR；② 清单的这条声明是不是"
+                      "从别的包沿用过来、或内容被重新封装后没有同步改正。"
+                      "不能只改清单把声明删掉 —— 那只是让播放器不再依赖它，"
+                      "内容依然无法从分片起点起播。",
+                      model::IssueSeverity::Warning, static_cast<double>(contradicted_segments), 0.0,
+                      contradicted_segments, -1.0, -1);
+        }
+        // 反向：实测全达标但清单没声明。不是缺陷，是漏掉了本可以给的承诺。
+        if (undeclared_streams > 0) {
+            PushIssue(result,
+                      Code(result, model::StreamingIssueCode::kSegmentIndependenceUndeclared,
+                           model::StreamingIssueCode::kSegmentIndependenceUndeclared),
+                      "分片实测可独立解码，但清单未声明",
+                      "有 " + std::to_string(undeclared_streams) + " 条流共 " + std::to_string(undeclared_segments) +
+                          " 个分片的第一个样本都是同步样本（首个: " + first_undeclared +
+                          "），内容本身满足独立分片的要求；但这些流既没有 " +
+                          (result.IsDash() ? "startWithSAP=\"1|2\"" : "EXT-X-INDEPENDENT-SEGMENTS") +
+                          "，播放器按规范不能假定分片可独立拼接，"
+                          "也就不会做无边界的码率切换与秒开优化。",
+                      std::string("内容不用改。若确实每个分片都从关键帧开始，") +
+                          (result.IsDash() ? "在 AdaptationSet 上加 startWithSAP=\"1\"。"
+                                           : "在 media playlist 加 #EXT-X-INDEPENDENT-SEGMENTS。"),
+                      model::IssueSeverity::Info, static_cast<double>(undeclared_segments), 0.0, undeclared_segments,
+                      -1.0, -1);
+        }
+    }
+
+    // ---- 1c) 跨分片时间轴连续性（实证层）----
+    //
+    // 数据源是文件里的 tfdt 与段内实测时长，不是清单的 EXTINF / <S t= d=>。
+    // 因此它和 DASH 侧的 segment_timeline_gap 不重复：那个查清单自洽性，
+    // 这个查"封装器写进文件的时基"是否首尾相接。清单完全正确、但 tfdt 写错
+    // 的包（拼接工具、转封装工具常见）只有这一层能抓到。
+    //
+    // 严重度分级依据：
+    //   * 起点倒退 —— tfdt 直接比较，硬证据，Error
+    //   * 缺口/重叠 —— 依赖"段内实测时长"，而该时长取的是首个 traf 的样本时长和，
+    //                  多轨分片下会偏短，所以只给 Warning，并在文案里注明依据
+    if (options.check_segment_continuity) {
+        const double tol = options.segment_continuity_tolerance_s;
+        int gap_count = 0;
+        int overlap_count = 0;
+        int regress_count = 0;
+        double worst_gap = 0.0;
+        double worst_overlap = 0.0;
+        double gap_at = -1.0;
+        double overlap_at = -1.0;
+        double regress_at = -1.0;
+        std::string gap_pair;
+        std::string overlap_pair;
+        std::string regress_pair;
+        unsigned long long scanned = 0;
+
+        auto check = [&](const std::vector<model::SegmentInfo>& segments) {
+            const model::SegmentInfo* prev = nullptr;
+            for (const model::SegmentInfo& seg : segments) {
+                // 只对"探测过且拿到了 tfdt 的 fMP4 分片"下结论。
+                // 中间夹一个没探到的段不重置 prev：连续性说的是相邻两个**有时间**的段，
+                // 断在这里会漏掉跨过该段的真缺口。
+                if (seg.partial || seg.container != model::SegmentContainer::FMP4 || !seg.probed ||
+                    seg.container_parse_failed || !seg.has_decode_time) {
+                    continue;
+                }
+                if (seg.discontinuity_before) {
+                    // EXT-X-DISCONTINUITY 是规范允许的时基重置，不能按"倒退"报。
+                    prev = &seg;
+                    continue;
+                }
+                if (prev != nullptr) {
+                    // 上一段的终点：优先用段内实测时长，回落到清单声明时长。
+                    // 两者都没有时只能判倒退，不能判缺口/重叠（否则会把"时长未知"当成 0）。
+                    const bool prev_has_span = prev->has_media_duration || prev->has_duration;
+                    const double prev_span =
+                        prev->has_media_duration ? prev->media_duration_seconds : prev->duration_seconds;
+                    const double prev_end = prev->start_seconds + prev_span;
+
+                    if (seg.start_seconds < prev->start_seconds - tol) {
+                        ++regress_count;
+                        if (regress_pair.empty())
+                            regress_pair = prev->uri + " -> " + seg.uri;
+                        if (regress_at < 0.0)
+                            regress_at = seg.start_seconds;
+                    } else if (prev_has_span) {
+                        if (seg.start_seconds > prev_end + tol) {
+                            const double hole = seg.start_seconds - prev_end;
+                            ++gap_count;
+                            if (hole > worst_gap) {
+                                worst_gap = hole;
+                                gap_pair = prev->uri + " -> " + seg.uri;
+                                gap_at = prev_end;
+                            }
+                        } else if (seg.start_seconds < prev_end - tol) {
+                            const double dup = prev_end - seg.start_seconds;
+                            ++overlap_count;
+                            if (dup > worst_overlap) {
+                                worst_overlap = dup;
+                                overlap_pair = prev->uri + " -> " + seg.uri;
+                                overlap_at = seg.start_seconds;
+                            }
+                        }
+                    }
+                }
+                prev = &seg;
+            }
+        };
+        for (const model::MediaPlaylistInfo& pl : result.playlists) {
+            if (ShouldCheckStreamingCancel(scanned++) && IsStreamingCancelled(cancel))
+                return StageStatus::kCancelled;
+            check(pl.segments);
+        }
+        for (const model::DashRepresentationInfo& rep : result.representations) {
+            if (ShouldCheckStreamingCancel(scanned++) && IsStreamingCancelled(cancel))
+                return StageStatus::kCancelled;
+            check(rep.segments);
+        }
+        if (regress_count > 0) {
+            PushIssue(
+                result,
+                Code(result, model::StreamingIssueCode::kSegmentTimelineRegress,
+                     model::StreamingIssueCode::kSegmentTimelineRegress),
+                "分片时间轴倒退",
+                "有 " + std::to_string(regress_count) + " 处相邻分片的 tfdt 起点比上一段更早（首个: " + regress_pair +
+                    "），"
+                    "且两段之间没有 EXT-X-DISCONTINUITY。"
+                    "播放器会把这些分片排到已播过的位置上，表现为跳播、回退或直接丢弃。",
+                "检查封装/拼接工具是否把不同来源的分片写进了同一条时间轴；"
+                "如果这确实是一次合法的时间轴重置（比如插播后重置），"
+                "应在清单里用 EXT-X-DISCONTINUITY 显式标注。",
+                model::IssueSeverity::Error, static_cast<double>(regress_count), 0.0, regress_count, regress_at, -1);
+        }
+        if (gap_count > 0) {
+            PushIssue(result,
+                      Code(result, model::StreamingIssueCode::kSegmentTimelineGapActual,
+                           model::StreamingIssueCode::kSegmentTimelineGapActual),
+                      "分片之间存在时间空洞",
+                      "有 " + std::to_string(gap_count) + " 处相邻分片首尾不相接，最大缺口 " +
+                          FormatSeconds(worst_gap) + " 秒（" + gap_pair +
+                          "）。"
+                          "判定依据是文件里的 tfdt 与段内实测时长（不是清单声明的 EXTINF）。"
+                          "这种空洞意味着这段时间的媒体样本不在任何分片里。",
+                      "找出被漏掉的分片并补回清单；若是切档/广告替换造成的，"
+                      "确认拼接点两侧的 tfdt 是否被正确重写。",
+                      model::IssueSeverity::Warning, worst_gap, tol, gap_count, gap_at, -1);
+        }
+        if (overlap_count > 0) {
+            PushIssue(result,
+                      Code(result, model::StreamingIssueCode::kSegmentTimelineOverlapActual,
+                           model::StreamingIssueCode::kSegmentTimelineOverlapActual),
+                      "分片之间存在时间重叠",
+                      "有 " + std::to_string(overlap_count) + " 处相邻分片覆盖了同一段时间，最大重叠 " +
+                          FormatSeconds(worst_overlap) + " 秒（" + overlap_pair +
+                          "）。"
+                          "判定依据是文件里的 tfdt 与段内实测时长。"
+                          "重叠部分会被播放两次，表现为卡顿一下或音画重复。",
+                      "检查分片切分点是否按样本边界对齐；转封装时常见原因是把上一段的"
+                      "尾样本重复写进了下一段。",
+                      model::IssueSeverity::Warning, worst_overlap, tol, overlap_count, overlap_at, -1);
         }
     }
 

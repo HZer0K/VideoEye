@@ -65,13 +65,13 @@ namespace {
 // 而弹框是运行时才 new 出来的，挂不上。
 class ModalProbeApp : public QApplication {
 public:
-    ModalProbeApp(int& argc, char** argv) : QApplication(argc, argv) {}
+    ModalProbeApp(int& argc, char** argv) : QApplication(argc, argv) {
+    }
 
     int dialogs_shown = 0;
 
     bool notify(QObject* receiver, QEvent* event) override {
-        if (event != nullptr && event->type() == QEvent::Show &&
-            qobject_cast<QDialog*>(receiver) != nullptr) {
+        if (event != nullptr && event->type() == QEvent::Show && qobject_cast<QDialog*>(receiver) != nullptr) {
             ++dialogs_shown;
         }
         return QApplication::notify(receiver, event);
@@ -89,7 +89,9 @@ ModalProbeApp* EnsureApp() {
     return app;
 }
 
-int ModalDialogsShown() { return EnsureApp()->dialogs_shown; }
+int ModalDialogsShown() {
+    return EnsureApp()->dialogs_shown;
+}
 
 // 泵事件直到条件满足；返回最终是否满足（扫描在工作线程里跑，靠排队信号回主线程）
 bool PumpEventsUntil(const std::function<bool()>& done, int timeout_ms = 30000) {
@@ -194,23 +196,42 @@ struct ScanTrace {
 
 } // namespace
 
-// 构造后未扫描 -> 引导文案 + 两个子页 + 规则表已填默认规则 + 按钮初态
+// 构造后未扫描 -> 引导文案 + 四个子页 + 规则表已填默认规则 + 按钮初态
 TEST(DiagnosticsPageTests, UnscannedPageShowsInitialStateAndRuleTable) {
     EnsureApp();
     DiagnosticsPage page;
 
     auto* tabs = page.findChild<QTabWidget*>();
     ASSERT_NE(tabs, nullptr);
-    ASSERT_EQ(tabs->count(), 2);
+    ASSERT_EQ(tabs->count(), 5);
     EXPECT_EQ(tabs->tabText(0), QStringLiteral("问题清单"));
     EXPECT_EQ(tabs->tabText(1), QStringLiteral("规则与阈值"));
+    // 阶段 5 新增：证据与覆盖（每个分析维度一行）。这张表的作用是让
+    // "未发现问题"能被回溯成"跑了、覆盖够了"，所以未扫描时也必须存在且为空。
+    EXPECT_EQ(tabs->tabText(2), QStringLiteral("证据与覆盖"));
+    // 阶段 1 新增：参数变化时间线（每条视频轨的配置切换）
+    EXPECT_EQ(tabs->tabText(3), QStringLiteral("参数变化"));
+    // 帧级 POC 新增：帧顺序（每条 H.264 视频轨的逐帧 POC，按解码顺序）
+    EXPECT_EQ(tabs->tabText(4), QStringLiteral("帧顺序"));
+
+    // 未扫描时帧顺序表必须存在且为空 —— 与"证据与覆盖"同理，
+    // "没有数据"和"没建这张表"在界面上不能长得一样。
+    QTableWidget* frame_order_table = TableInTab(&page, 4, QStringLiteral("流"));
+    ASSERT_NE(frame_order_table, nullptr);
+    EXPECT_EQ(frame_order_table->rowCount(), 0);
 
     QTableWidget* issue_table = TableInTab(&page, 0, QStringLiteral("严重度"));
     QTableWidget* rule_table = TableInTab(&page, 1, QStringLiteral("启用"));
+    QTableWidget* dimension_table = TableInTab(&page, 2, QStringLiteral("维度"));
+    QTableWidget* parameter_table = TableInTab(&page, 3, QStringLiteral("流"));
     ASSERT_NE(issue_table, nullptr);
     ASSERT_NE(rule_table, nullptr);
+    ASSERT_NE(dimension_table, nullptr);
+    ASSERT_NE(parameter_table, nullptr);
     EXPECT_EQ(issue_table->columnCount(), 6);
     EXPECT_EQ(issue_table->rowCount(), 0);
+    EXPECT_EQ(dimension_table->rowCount(), 0);
+    EXPECT_EQ(parameter_table->rowCount(), 0);
 
     // 规则表在构造函数里就按 facade 的规则集填好（曾经是空指针解引用/闪退的源头）
     const std::vector<QcRule> defaults = DefaultQcRules();
@@ -457,8 +478,7 @@ TEST(DiagnosticsPageTests, CancelScanUpdatesStateImmediatelyWithinResponseBudget
     EXPECT_TRUE(trace.ends.empty()) << "取消只发请求，终态由 OnFacadeFinished/OnFacadeFailed 发";
 
     // 收尾：等后台真的退出来，别把还在跑的扫描留给析构函数
-    ASSERT_TRUE(PumpEventsUntil([&trace] { return !trace.ends.empty(); }, 8000))
-        << "取消后后台没有收敛";
+    ASSERT_TRUE(PumpEventsUntil([&trace] { return !trace.ends.empty(); }, 8000)) << "取消后后台没有收敛";
 }
 
 // 3)：收敛前看门狗只报等待时长（不弹框、不伪造终态），终态一到立刻停手
@@ -494,18 +514,15 @@ TEST(DiagnosticsPageTests, CancelWatchdogReportsWaitingUntilTerminalStopsIt) {
     EXPECT_EQ(ModalDialogsShown(), modals_before) << "取消未收敛时不许弹模态框";
 
     // 后台最终必须收敛（预算写进日志，这里只守"一定会收敛 + 恰好一个终态"）
-    ASSERT_TRUE(PumpEventsUntil([&trace] { return !trace.ends.empty(); }, 8000))
-        << "取消后后台没有收敛";
+    ASSERT_TRUE(PumpEventsUntil([&trace] { return !trace.ends.empty(); }, 8000)) << "取消后后台没有收敛";
     EXPECT_EQ(trace.ends.size(), 1u) << "一次扫描只应产生一个终态事件";
 
     const auto settle_after = metrics.Snapshot(videoeye::kMetricCancelSettleMs);
-    EXPECT_EQ(settle_after.count - settle_before.count, 1)
-        << "取消收敛延迟必须被记下来（请求 -> 后台真正退出）";
+    EXPECT_EQ(settle_after.count - settle_before.count, 1) << "取消收敛延迟必须被记下来（请求 -> 后台真正退出）";
     EXPECT_GE(settle_after.last, 0.0);
 
     EXPECT_FALSE(watchdog->isActive()) << "终态到了看门狗必须停，否则它会一直每秒刷进度条";
-    EXPECT_FALSE(ProgressFormat(&page).contains(QStringLiteral("取消中")))
-        << "收敛后必须离开『取消中』态";
+    EXPECT_FALSE(ProgressFormat(&page).contains(QStringLiteral("取消中"))) << "收敛后必须离开『取消中』态";
     EXPECT_EQ(ModalDialogsShown(), modals_before) << "取消路径全程不许弹模态框";
 }
 

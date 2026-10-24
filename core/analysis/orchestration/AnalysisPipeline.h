@@ -30,7 +30,9 @@
 #include <vector>
 
 #include "core/analysis/AnalysisOptions.h"
+#include "core/analysis/codec/H264PocTracker.h"
 #include "core/analysis/codec/InBandParameterSets.h"
+#include "core/analysis/codec/ParameterSetTracker.h"
 #include "core/analysis/codec/VideoEsInspector.h"
 #include "core/analysis/diagnostics/AuxDataAnalyzer.h"
 #include "core/analysis/diagnostics/SubtitleAnalyzer.h"
@@ -41,6 +43,7 @@
 #include "core/analysis/quality/BitrateGopAnalyzer.h"
 #include "core/analysis/quality/ColorHdrAnalyzer.h"
 #include "core/domain/model/AnalysisResult.h"
+#include "core/domain/model/ParameterTimeline.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -53,8 +56,13 @@ extern "C" {
 
 namespace videoeye {
 
-// 音频 QC 的解码通路：解码器 + 到 float planar 的转换（swr）。
-// 解码器输出本身就是 FLTP 时直接用 AVFrame::extended_data，省掉一次无谓的拷贝
+// 音频 QC 的**每条轨**通路：解码器 + 到 float planar 的转换（swr）+ 分析器。
+//
+// 为什么是每轨一套而不是共用一个解码器：不同音轨的编码/采样率/声道布局本来就可以
+// 不同（国配 AAC 立体声 + 原声 AC-3 5.1 是常见组合），共用一个 AVCodecContext
+// 会在切轨时把参数改掉，产出的响度/相位数据互相污染。
+//
+// ❗ 解码器输出本身就是 FLTP 时直接用 AVFrame::extended_data，省掉一次无谓的拷贝
 // （data[] 只有 8 个指针，超过 8 声道时后面全是 nullptr）。
 struct AudioQcProbe {
     bool ready = false;
@@ -73,27 +81,43 @@ struct AudioQcProbe {
             av_freep(&out_data[0]);
             av_freep(&out_data);
         }
-        if (swr) swr_free(&swr);
-        if (frame) av_frame_free(&frame);
-        if (decoder) avcodec_free_context(&decoder);
+        if (swr)
+            swr_free(&swr);
+        if (frame)
+            av_frame_free(&frame);
+        if (decoder)
+            avcodec_free_context(&decoder);
         ready = false;
     }
+};
+
+// 一条参与 PCM QC 的音轨（流号 + 解码通路 + 独立分析器）
+struct AudioQcTrack {
+    int stream_index = -1;
+    // 该流的时基（秒/单位）。逐轨存而不是共用一个成员：不同轨可以是不同 time_base。
+    double time_base = 0.0;
+    AudioQcProbe probe;
+    AudioQcAnalyzer analyzer;
 };
 
 // 帧类型探测：优先用解码器（准确但慢），否则用 codec parser（几乎零成本）。
 // 两者都拿不到时，调用方退回 OnPacket()，只按 AV_PKT_FLAG_KEY 识别 I 帧。
 struct FrameTypeProbe {
-    AVCodecContext* parser_ctx = nullptr;    // 仅供 av_parser_parse2 使用的参数上下文
+    AVCodecContext* parser_ctx = nullptr; // 仅供 av_parser_parse2 使用的参数上下文
     AVCodecParserContext* parser = nullptr;
     AVCodecContext* decoder = nullptr;
     AVFrame* frame = nullptr;
     bool use_decoder = false;
 
     void Release() {
-        if (parser) av_parser_close(parser);
-        if (parser_ctx) avcodec_free_context(&parser_ctx);
-        if (frame) av_frame_free(&frame);
-        if (decoder) avcodec_free_context(&decoder);
+        if (parser)
+            av_parser_close(parser);
+        if (parser_ctx)
+            avcodec_free_context(&parser_ctx);
+        if (frame)
+            av_frame_free(&frame);
+        if (decoder)
+            avcodec_free_context(&decoder);
         parser = nullptr;
         parser_ctx = nullptr;
         frame = nullptr;
@@ -111,18 +135,21 @@ struct ColorFrameProbe {
     bool failed = false;
     int frames_read = 0;
 
-    bool Ready() const { return decoder != nullptr && frame != nullptr && !failed; }
+    bool Ready() const {
+        return decoder != nullptr && frame != nullptr && !failed;
+    }
 
     // 惰性打开解码器；打开失败会被记住，不会重复尝试
     bool EnsureOpen(AVStream* stream) {
-        if (failed) return false;
-        if (opened) return Ready();
+        if (failed)
+            return false;
+        if (opened)
+            return Ready();
         opened = true;
         const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
         if (codec != nullptr) {
             decoder = avcodec_alloc_context3(codec);
-            if (decoder != nullptr &&
-                avcodec_parameters_to_context(decoder, stream->codecpar) >= 0) {
+            if (decoder != nullptr && avcodec_parameters_to_context(decoder, stream->codecpar) >= 0) {
                 decoder->pkt_timebase = stream->time_base;
                 frame = av_frame_alloc();
                 if (frame != nullptr && avcodec_open2(decoder, codec, nullptr) == 0) {
@@ -136,8 +163,10 @@ struct ColorFrameProbe {
     }
 
     void Release() {
-        if (frame) av_frame_free(&frame);
-        if (decoder) avcodec_free_context(&decoder);
+        if (frame)
+            av_frame_free(&frame);
+        if (decoder)
+            avcodec_free_context(&decoder);
     }
 };
 
@@ -154,8 +183,7 @@ public:
     // 要求 pkt->stream_index 已校验合法。分发顺序：时间轴 -> 字幕/时码/辅助 ->
     // 音频解码 -> 关键帧与 GOP -> 色彩与 HDR。顺序本身不影响正确性，但保持固定顺序
     // 便于对照日志。
-    void OnPacket(AVFormatContext* fmt, AVPacket* pkt, model::AnalysisResult& result,
-                  int64_t packet_index);
+    void OnPacket(AVFormatContext* fmt, AVPacket* pkt, model::AnalysisResult& result, int64_t packet_index);
 
     // ---- 扫描结束后的三个钩子（顺序见文件头注释）----
     // 关闭输入上下文之前的最后一眼：部分封装的 HDR 元数据要读到包后才补进 codecpar。
@@ -172,27 +200,80 @@ public:
     void ReleaseProbes();
 
     // ---- 收尾阶段（AnalysisResultAssembler）要读的中间态 ----
-    TimelineAnalyzer& timeline() { return timeline_; }
-    SubtitleAnalyzer& subtitle() { return subtitle_; }
-    TimecodeAnalyzer& timecode() { return timecode_; }
-    AuxDataAnalyzer& aux_data() { return aux_; }
-    ColorHdrAnalyzer& color_hdr() { return color_hdr_; }
-    BitrateGopAnalyzer& bitrate_gop() { return bitrate_gop_; }
-    AudioQcAnalyzer& audio_qc() { return audio_qc_; }
-    AudioBitstreamAnalyzer& audio_bitstream() { return audio_bitstream_; }
+    TimelineAnalyzer& timeline() {
+        return timeline_;
+    }
+    SubtitleAnalyzer& subtitle() {
+        return subtitle_;
+    }
+    TimecodeAnalyzer& timecode() {
+        return timecode_;
+    }
+    AuxDataAnalyzer& aux_data() {
+        return aux_;
+    }
+    ColorHdrAnalyzer& color_hdr() {
+        return color_hdr_;
+    }
+    BitrateGopAnalyzer& bitrate_gop() {
+        return bitrate_gop_;
+    }
+    // 主音轨的 QC 分析器。没有音频流时返回一个空分析器（Finish 后 analyzed=false），
+    // 这样收尾代码不必到处判空 —— 但调用方仍应先用 audio_stream_index() 判断有没有音轨。
+    AudioQcAnalyzer& audio_qc();
+    // 逐轨收尾用：本次实际参与 QC 的每条音轨（顺序 = 主轨在前，其余按流号）
+    // 非 const 重载：收尾阶段 Assembler 要对每轨的 analyzer 调 Finish()（会改状态）
+    const std::vector<AudioQcTrack>& audio_tracks() const {
+        return audio_tracks_;
+    }
+    std::vector<AudioQcTrack>& audio_tracks() {
+        return audio_tracks_;
+    }
+    AudioBitstreamAnalyzer& audio_bitstream() {
+        return audio_bitstream_;
+    }
+    // 参数变化时间线（每条视频轨一份，按流号顺序）
+    const std::vector<model::ParameterTimeline>& parameter_timelines() const {
+        return parameter_timelines_;
+    }
+    // 帧级 POC 时间线（仅 H.264 会产出；其余编码为空，对应维度标不可用）
+    const std::vector<model::FrameOrderTimeline>& frame_order_timelines() const {
+        return frame_order_timelines_;
+    }
 
-    int video_stream_index() const { return video_stream_index_; }
-    int audio_stream_index() const { return audio_stream_index_; }
-    int color_video_stream_index() const { return color_video_stream_index_; }
+    int video_stream_index() const {
+        return video_stream_index_;
+    }
+    int audio_stream_index() const {
+        return audio_stream_index_;
+    }
+    int color_video_stream_index() const {
+        return color_video_stream_index_;
+    }
     // 音频 QC 是否真的解出过码（决定"未执行音频 QC"该给哪条说明）
-    bool audio_decoder_ready() const { return audio_probe_.ready; }
-    bool audio_rate_changed() const { return audio_probe_.rate_changed; }
+    bool audio_decoder_ready() const;
+    bool audio_rate_changed() const;
+    // 文件里的音轨总数（含因上限/不支持而被跳过的），给覆盖率的"分母"用。
+    // 注意与 audio_tracks().size() 区分：后者是**实际参与 QC** 的条数（"分子"）。
+    int audio_tracks_total() const {
+        return audio_tracks_total_;
+    }
 
 private:
     // 只读 extradata 的码流解析（不解码）。优先主视频，跳过封面图片。
+    // 里头还挂着参数集追踪与 POC 追踪的创建 —— 那两条有自己的开关，
+    // 不归 analyze_bitstream 管（见 cpp 里的说明）。
     void PrepareBitstream(AVFormatContext* fmt, model::AnalysisResult& result);
-    // 解码后归一为 float planar 再喂给 AudioQcAnalyzer（内部按 100 ms 步进出块）
-    void FeedAudioFrame(AVFrame* frame);
+    // PrepareBitstream 里"只属于码流解析维度"的那两段（extradata 参数集解析 +
+    // slice/SEI 巡检器初始化）。video_order：主视频排最前、其余视频轨跟在后面。
+    void PrepareBitstreamAnalysis(AVFormatContext* fmt, model::AnalysisResult& result,
+                                  const std::vector<unsigned>& video_order);
+    // 为一条音频流建解码通路 + 分析器。成功返回该轨在 audio_tracks_ 里的下标。
+    int SetupAudioTrack(AVFormatContext* fmt, int stream_index);
+    // 解码后归一为 float planar 再喂给该轨的分析器（内部按 100 ms 步进出块）
+    void FeedAudioFrame(AudioQcTrack& track, AVFrame* frame);
+    // 把一个包的音频样本喂给指定音轨（发送 + 收帧）
+    void PumpAudioPacket(AudioQcTrack& track, const AVPacket* pkt);
 
     // ---- slice/SEI 巡检（C4）----
     // 把已解析的参数集注入巡检器：H.264 的 slice QP 需要 PPS 的 init_qp 作基准。
@@ -211,14 +292,40 @@ private:
     // 质量维度
     ColorHdrAnalyzer color_hdr_;
     BitrateGopAnalyzer bitrate_gop_;
-    AudioQcAnalyzer audio_qc_;
+    // 多音轨 PCM QC：每条参与分析的音轨一个元素（主轨恒在首位）。
+    // 以前是单个 audio_qc_ + 单个 audio_probe_，只能分析主音轨 ——
+    // 国配轨爆音、评论轨反相这类问题在主轨上根本看不出来。
+    std::vector<AudioQcTrack> audio_tracks_;
+    // 没有音频流时 audio_qc() 要返回一个可写引用；这个空分析器 Finish 后 analyzed=false
+    AudioQcAnalyzer empty_audio_qc_;
     // 音频位流参数（D1）：只读帧头不解码，所以不需要 probe，也没有 ready 概念。
     AudioBitstreamAnalyzer audio_bitstream_;
 
     // 上面三个维度各自要开的解码通路（RAII，见各自 Release）
     ColorFrameProbe color_probe_;
     FrameTypeProbe frame_probe_;
-    AudioQcProbe audio_probe_;
+
+    // 参数集全程追踪：每条视频轨一个（多节目 TS 每条节目独立 PID、独立参数集）
+    struct ParameterTrackerSlot {
+        int stream_index = -1;
+        double time_base = 0.0;
+        ParameterSetTracker tracker;
+    };
+    std::vector<ParameterTrackerSlot> parameter_trackers_;
+    // 收尾后写进 result 的时间线（BeforeClose 里填充）
+    std::vector<model::ParameterTimeline> parameter_timelines_;
+
+    // 帧级 POC 追踪（仅 H.264；每条视频轨一个）
+    struct PocTrackerSlot {
+        int stream_index = -1;
+        double time_base = 0.0;
+        H264PocTracker tracker;
+    };
+    std::vector<PocTrackerSlot> poc_trackers_;
+    std::vector<model::FrameOrderTimeline> frame_order_timelines_;
+    // 本次音轨总数 / 实际参与 QC 的条数（给 DimensionStatus 的覆盖说明用）
+    int audio_tracks_total_ = 0;
+    int audio_tracks_limit_note_ = 0;
 
     // 各维度盯的流号（Prepare 里解析一次，逐包分发时不再遍历流列表）
     int video_stream_index_ = -1;
@@ -250,4 +357,4 @@ private:
     std::vector<double> last_key_ts_;
 };
 
-}  // namespace videoeye
+} // namespace videoeye

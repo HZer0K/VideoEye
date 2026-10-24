@@ -50,7 +50,8 @@ void FillVideoFrame(AVFrame* frame, int index) {
 void FillAudioFrame(AVFrame* frame, int channels, int sample_rate, int64_t first_sample) {
     for (int ch = 0; ch < channels && ch < frame->ch_layout.nb_channels; ++ch) {
         float* dst = reinterpret_cast<float*>(frame->data[ch]);
-        if (!dst) continue;
+        if (!dst)
+            continue;
         const double freq = 440.0 + 110.0 * ch;
         for (int i = 0; i < frame->nb_samples; ++i) {
             const double t = static_cast<double>(first_sample + i) / static_cast<double>(sample_rate);
@@ -61,7 +62,8 @@ void FillAudioFrame(AVFrame* frame, int channels, int sample_rate, int64_t first
 
 AVFrame* AllocVideoFrame(int width, int height) {
     AVFrame* frame = av_frame_alloc();
-    if (!frame) return nullptr;
+    if (!frame)
+        return nullptr;
     frame->format = AV_PIX_FMT_YUV420P;
     frame->width = width;
     frame->height = height;
@@ -74,7 +76,8 @@ AVFrame* AllocVideoFrame(int width, int height) {
 
 AVFrame* AllocAudioFrame(const AVCodecContext* enc, int nb_samples) {
     AVFrame* frame = av_frame_alloc();
-    if (!frame) return nullptr;
+    if (!frame)
+        return nullptr;
     frame->format = enc->sample_fmt;
     frame->sample_rate = enc->sample_rate;
     if (av_channel_layout_copy(&frame->ch_layout, &enc->ch_layout) < 0) {
@@ -89,10 +92,9 @@ AVFrame* AllocAudioFrame(const AVCodecContext* enc, int nb_samples) {
     return frame;
 }
 
-}  // namespace
+} // namespace
 
-TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
-                          const TestMediaSpec& spec) {
+TestMedia CreateTestMedia(const std::string& directory, const std::string& name, const TestMediaSpec& spec) {
     TestMedia media;
     media.path = JoinPath(directory, name + ".mp4");
     std::error_code ec;
@@ -111,12 +113,15 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
 
     auto finish = [&](bool ok, const std::string& error) {
         if (fmt) {
-            if (fmt->pb) avio_closep(&fmt->pb);
+            if (fmt->pb)
+                avio_closep(&fmt->pb);
             avformat_free_context(fmt);
             fmt = nullptr;
         }
-        if (aenc) avcodec_free_context(&aenc);
-        if (venc) avcodec_free_context(&venc);
+        if (aenc)
+            avcodec_free_context(&aenc);
+        if (venc)
+            avcodec_free_context(&venc);
         media.ok = ok;
         media.error = error;
         if (ok) {
@@ -137,33 +142,45 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
     const AVCodec* vcodec = nullptr;
     for (const char* candidate : video_candidates) {
         vcodec = avcodec_find_encoder_by_name(candidate);
-        if (vcodec) break;
+        if (vcodec)
+            break;
     }
-    if (!vcodec) vcodec = avcodec_find_encoder(AV_CODEC_ID_H264);
-    if (!vcodec) vcodec = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
-    if (!vcodec) return finish(false, "该 FFmpeg 构建没有任何可用的视频编码器");
+    if (!vcodec)
+        vcodec = avcodec_find_encoder(AV_CODEC_ID_H264);
+    if (!vcodec)
+        vcodec = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
+    if (!vcodec)
+        return finish(false, "该 FFmpeg 构建没有任何可用的视频编码器");
 
     venc = avcodec_alloc_context3(vcodec);
-    if (!venc) return finish(false, "无法分配视频编码器上下文");
+    if (!venc)
+        return finish(false, "无法分配视频编码器上下文");
     venc->width = spec.width;
     venc->height = spec.height;
     venc->pix_fmt = AV_PIX_FMT_YUV420P;
     venc->time_base = AVRational{1, spec.fps};
     venc->framerate = AVRational{spec.fps, 1};
-    venc->gop_size = spec.fps;      // 1 秒一个关键帧
-    venc->max_b_frames = 0;         // 关掉 B 帧: 输出 PTS 与输入一致, 帧数断言才可预测
+    venc->gop_size = spec.fps;              // 1 秒一个关键帧
+    venc->max_b_frames = spec.max_b_frames; // 0 = 关掉 B 帧: 输出 PTS 与输入一致, 帧数断言才可预测
     venc->bit_rate = 400000;
-    if (fmt->oformat->flags & AVFMT_GLOBALHEADER) venc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    if (fmt->oformat->flags & AVFMT_GLOBALHEADER)
+        venc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     // 快速档 + zerolatency: 去掉 lookahead 与帧重排，生成过程既快又不受线程数影响。
-    // (preset 是 libx264 私有选项, 换到其它编码器时 av_opt_set 返回错误, 忽略即可。)
+    //
+    // ❗ zerolatency 会把 bframes 强制成 0（它就是为了不重排），所以只要调用方要 B 帧
+    // 就必须跳过它 —— 否则 "spec.max_b_frames=3" 会静默失效，产出的样本一个 B 帧都没有，
+    // 依赖"真实重排"的测试（POC 重建的正例）会得到一个假绿的反例样本。
     if (venc->priv_data) {
         av_opt_set(venc->priv_data, "preset", "veryfast", 0);
-        av_opt_set(venc->priv_data, "tune", "zerolatency", 0);
+        if (spec.max_b_frames <= 0)
+            av_opt_set(venc->priv_data, "tune", "zerolatency", 0);
     }
-    if (avcodec_open2(venc, vcodec, nullptr) < 0) return finish(false, "打开视频编码器失败");
+    if (avcodec_open2(venc, vcodec, nullptr) < 0)
+        return finish(false, "打开视频编码器失败");
 
     vst = avformat_new_stream(fmt, nullptr);
-    if (!vst) return finish(false, "无法创建视频流");
+    if (!vst)
+        return finish(false, "无法创建视频流");
     if (avcodec_parameters_from_context(vst->codecpar, venc) < 0)
         return finish(false, "写入视频流参数失败");
     vst->time_base = venc->time_base;
@@ -172,19 +189,25 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
     // ---- 音频编码器 ----
     if (spec.with_audio) {
         const AVCodec* acodec = avcodec_find_encoder_by_name("aac");
-        if (!acodec) acodec = avcodec_find_encoder(AV_CODEC_ID_AAC);
-        if (!acodec) return finish(false, "该 FFmpeg 构建没有可用的 AAC 编码器");
+        if (!acodec)
+            acodec = avcodec_find_encoder(AV_CODEC_ID_AAC);
+        if (!acodec)
+            return finish(false, "该 FFmpeg 构建没有可用的 AAC 编码器");
         aenc = avcodec_alloc_context3(acodec);
-        if (!aenc) return finish(false, "无法分配音频编码器上下文");
+        if (!aenc)
+            return finish(false, "无法分配音频编码器上下文");
         aenc->sample_rate = spec.sample_rate;
-        aenc->sample_fmt = AV_SAMPLE_FMT_FLTP;  // 内置 AAC 只吃 FLTP
+        aenc->sample_fmt = AV_SAMPLE_FMT_FLTP; // 内置 AAC 只吃 FLTP
         av_channel_layout_default(&aenc->ch_layout, spec.channels);
         aenc->bit_rate = 64000;
-        if (fmt->oformat->flags & AVFMT_GLOBALHEADER) aenc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-        if (avcodec_open2(aenc, acodec, nullptr) < 0) return finish(false, "打开音频编码器失败");
+        if (fmt->oformat->flags & AVFMT_GLOBALHEADER)
+            aenc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+        if (avcodec_open2(aenc, acodec, nullptr) < 0)
+            return finish(false, "打开音频编码器失败");
 
         ast = avformat_new_stream(fmt, nullptr);
-        if (!ast) return finish(false, "无法创建音频流");
+        if (!ast)
+            return finish(false, "无法创建音频流");
         if (avcodec_parameters_from_context(ast->codecpar, aenc) < 0)
             return finish(false, "写入音频流参数失败");
         ast->time_base = AVRational{1, spec.sample_rate};
@@ -195,15 +218,18 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
         if (avio_open(&fmt->pb, media.path.c_str(), AVIO_FLAG_WRITE) < 0)
             return finish(false, "无法创建输出文件");
     }
-    if (avformat_write_header(fmt, nullptr) < 0) return finish(false, "写入文件头失败");
+    if (avformat_write_header(fmt, nullptr) < 0)
+        return finish(false, "写入文件头失败");
 
     // 取出编码器产生的包并交给 muxer（av_interleaved_write_frame 自己负责排序）
     auto drain = [&](AVCodecContext* enc, AVStream* stream) {
         AVPacket* pkt = av_packet_alloc();
-        if (!pkt) return;
+        if (!pkt)
+            return;
         for (;;) {
             const int ret = avcodec_receive_packet(enc, pkt);
-            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF || ret < 0) break;
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF || ret < 0)
+                break;
             pkt->stream_index = stream->index;
             av_packet_rescale_ts(pkt, enc->time_base, stream->time_base);
             av_interleaved_write_frame(fmt, pkt);
@@ -225,7 +251,8 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
     auto push_audio_until = [&](int64_t want_samples) {
         while (aenc && audio_done < want_samples && audio_done < total_audio_samples) {
             AVFrame* frame = AllocAudioFrame(aenc, audio_frame_size);
-            if (!frame) return false;
+            if (!frame)
+                return false;
             FillAudioFrame(frame, spec.channels, spec.sample_rate, audio_done);
             frame->pts = audio_done;
             avcodec_send_frame(aenc, frame);
@@ -238,7 +265,10 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
 
     for (int i = 0; i < spec.frame_count; ++i) {
         AVFrame* frame = AllocVideoFrame(spec.width, spec.height);
-        if (!frame) { finish(false, "无法分配视频帧"); return media; }
+        if (!frame) {
+            finish(false, "无法分配视频帧");
+            return media;
+        }
         FillVideoFrame(frame, i);
         frame->pts = i;
         avcodec_send_frame(venc, frame);
@@ -248,9 +278,15 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
         // 音频补到"不落后于当前画面时间", 让 muxer 拿到基本有序的输入
         const double video_time = static_cast<double>(i) / spec.fps;
         const int64_t want = static_cast<int64_t>(video_time * spec.sample_rate);
-        if (!push_audio_until(want)) { finish(false, "无法分配音频帧"); return media; }
+        if (!push_audio_until(want)) {
+            finish(false, "无法分配音频帧");
+            return media;
+        }
     }
-    if (!push_audio_until(total_audio_samples)) { finish(false, "无法分配音频帧"); return media; }
+    if (!push_audio_until(total_audio_samples)) {
+        finish(false, "无法分配音频帧");
+        return media;
+    }
 
     // 排空两个编码器
     avcodec_send_frame(venc, nullptr);
@@ -259,7 +295,8 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
         avcodec_send_frame(aenc, nullptr);
         drain(aenc, ast);
     }
-    if (av_write_trailer(fmt) < 0) return finish(false, "写入文件尾失败");
+    if (av_write_trailer(fmt) < 0)
+        return finish(false, "写入文件尾失败");
 
     return finish(true, std::string());
 }
@@ -283,7 +320,8 @@ MediaProbe ProbeMediaFile(const std::string& path) {
     int video_index = -1;
     for (unsigned i = 0; i < fmt->nb_streams; ++i) {
         AVStream* stream = fmt->streams[i];
-        if (!stream || !stream->codecpar) continue;
+        if (!stream || !stream->codecpar)
+            continue;
         const AVMediaType type = stream->codecpar->codec_type;
         const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
         if (type == AVMEDIA_TYPE_VIDEO) {
@@ -294,16 +332,15 @@ MediaProbe ProbeMediaFile(const std::string& path) {
                 probe.height = stream->codecpar->height;
                 probe.video_codec = codec ? codec->name : std::string();
                 if (stream->duration != AV_NOPTS_VALUE && stream->time_base.den)
-                    probe.video_duration_seconds =
-                        static_cast<double>(stream->duration) * av_q2d(stream->time_base);
+                    probe.video_duration_seconds = static_cast<double>(stream->duration) * av_q2d(stream->time_base);
                 if (stream->start_time != AV_NOPTS_VALUE && stream->time_base.den)
-                    probe.video_start_seconds =
-                        static_cast<double>(stream->start_time) * av_q2d(stream->time_base);
+                    probe.video_start_seconds = static_cast<double>(stream->start_time) * av_q2d(stream->time_base);
                 probe.video_nb_frames = stream->nb_frames;
             }
         } else if (type == AVMEDIA_TYPE_AUDIO) {
             ++probe.audio_streams;
-            if (probe.audio_codec.empty()) probe.audio_codec = codec ? codec->name : std::string();
+            if (probe.audio_codec.empty())
+                probe.audio_codec = codec ? codec->name : std::string();
         }
     }
 
@@ -318,13 +355,18 @@ MediaProbe ProbeMediaFile(const std::string& path) {
             AVFrame* frame = av_frame_alloc();
             for (;;) {
                 const int ret = av_read_frame(fmt, pkt);
-                if (ret < 0) break;
-                if (pkt->stream_index != video_index) { av_packet_unref(pkt); continue; }
+                if (ret < 0)
+                    break;
+                if (pkt->stream_index != video_index) {
+                    av_packet_unref(pkt);
+                    continue;
+                }
                 ++probe.video_packet_count;
                 if (avcodec_send_packet(dec, pkt) == 0) {
                     for (;;) {
                         const int rr = avcodec_receive_frame(dec, frame);
-                        if (rr == AVERROR(EAGAIN) || rr == AVERROR_EOF || rr < 0) break;
+                        if (rr == AVERROR(EAGAIN) || rr == AVERROR_EOF || rr < 0)
+                            break;
                         ++probe.frame_count;
                         av_frame_unref(frame);
                     }
@@ -335,14 +377,18 @@ MediaProbe ProbeMediaFile(const std::string& path) {
             avcodec_send_packet(dec, nullptr);
             for (;;) {
                 const int rr = avcodec_receive_frame(dec, frame);
-                if (rr == AVERROR(EAGAIN) || rr == AVERROR_EOF || rr < 0) break;
+                if (rr == AVERROR(EAGAIN) || rr == AVERROR_EOF || rr < 0)
+                    break;
                 ++probe.frame_count;
                 av_frame_unref(frame);
             }
-            if (frame) av_frame_free(&frame);
-            if (pkt) av_packet_free(&pkt);
+            if (frame)
+                av_frame_free(&frame);
+            if (pkt)
+                av_packet_free(&pkt);
         }
-        if (dec) avcodec_free_context(&dec);
+        if (dec)
+            avcodec_free_context(&dec);
     }
 
     avformat_close_input(&fmt);
@@ -355,8 +401,9 @@ std::string CreateCorruptMediaFile(const std::string& directory, const std::stri
     for (std::size_t i = 0; i < junk.size(); ++i)
         junk[i] = static_cast<char>((i * 73 + 11) & 0xFF);
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (out.is_open()) out.write(junk.data(), static_cast<std::streamsize>(junk.size()));
+    if (out.is_open())
+        out.write(junk.data(), static_cast<std::streamsize>(junk.size()));
     return path;
 }
 
-}  // namespace videoeye_test
+} // namespace videoeye_test

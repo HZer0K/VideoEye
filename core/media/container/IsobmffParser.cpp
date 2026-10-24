@@ -76,30 +76,31 @@ bool IsTableBox(const std::string& type) {
 //             v1 再多 16 字节（每声道 4 字节的 samples_per_packet 等），v2 再多 36。
 int SampleEntryChildOffset(const std::string& type, const uint8_t* payload, uint64_t n) {
     static const char* kVideoEntries[] = {
-        "avc1", "avc2", "avc3", "avc4", "hvc1", "hev1", "av01", "vp08", "vp09",
-        "mp4v", "encv", "dvh1", "dvhe", "dva1", "dvav", "jpeg", "mjpa",
-        "ap4h", "ap4x", "apch", "apcn", "apcs", "apco", "s263",
+        "avc1", "avc2", "avc3", "avc4", "hvc1", "hev1", "av01", "vp08", "vp09", "mp4v", "encv", "dvh1",
+        "dvhe", "dva1", "dvav", "jpeg", "mjpa", "ap4h", "ap4x", "apch", "apcn", "apcs", "apco", "s263",
     };
     static const char* kAudioEntries[] = {
-        "mp4a", "ac-3", "ec-3", "ac-4", "opus", "Opus", "fLaC", "alac",
-        "dtsc", "dtsh", "dtse", "enca", "mha1", "mhm1", "sowt", "twos",
-        "lpcm", "ipcm", "spex",
+        "mp4a", "ac-3", "ec-3", "ac-4", "opus", "Opus", "fLaC", "alac", "dtsc", "dtsh",
+        "dtse", "enca", "mha1", "mhm1", "sowt", "twos", "lpcm", "ipcm", "spex",
     };
     for (const char* c : kVideoEntries) {
-        if (type == c) return 78;
+        if (type == c)
+            return 78;
     }
     for (const char* c : kAudioEntries) {
         if (type == c) {
             // 音频入口的 version 在 payload 偏移 8（6 保留 + 2 data_reference_index 之后）
             if (payload != nullptr && n >= 10) {
                 const uint16_t version = Rd16(payload + 8);
-                if (version == 1) return 44;
-                if (version == 2) return 64;
+                if (version == 1)
+                    return 44;
+                if (version == 2)
+                    return 64;
             }
             return 28;
         }
     }
-    return -1;  // 文本/字幕等入口的子结构不统一，不往下钻
+    return -1; // 文本/字幕等入口的子结构不统一，不往下钻
 }
 
 // ---- 字段填充小工具 ----
@@ -119,7 +120,8 @@ void AddFieldHex(IsobmffBox& box, const std::string& name, uint64_t value) {
 std::string Fixed1616(uint32_t raw) {
     const uint32_t whole = raw >> 16;
     const uint32_t frac = raw & 0xFFFF;
-    if (frac == 0) return std::to_string(whole);
+    if (frac == 0)
+        return std::to_string(whole);
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%u.%05u", whole,
                   static_cast<unsigned>((static_cast<uint64_t>(frac) * 100000) >> 16));
@@ -132,28 +134,33 @@ std::string LanguageCode(uint16_t packed) {
     out[1] = static_cast<char>(((packed >> 5) & 0x1F) + 0x60);
     out[2] = static_cast<char>((packed & 0x1F) + 0x60);
     for (int i = 0; i < 3; ++i) {
-        if (out[i] < 'a' || out[i] > 'z') out[i] = '?';
+        if (out[i] < 'a' || out[i] > 'z')
+            out[i] = '?';
     }
     return std::string(out, 3);
 }
 // hdlr 的 name 在 payload 偏移 24，既可能是 C 串也可能是 Pascal 串
 std::string HandlerName(const uint8_t* p, uint64_t n) {
-    if (n <= 24) return std::string();
+    if (n <= 24)
+        return std::string();
     std::string out;
     uint64_t pos = 24;
     // Pascal 串：首字节是长度，且后续字节数相符
     if (p[pos] > 0 && 25 + p[pos] <= n) {
         const uint8_t len = p[pos];
         ++pos;
-        for (uint8_t i = 0; i < len; ++i) out.push_back(static_cast<char>(p[pos + i]));
+        for (uint8_t i = 0; i < len; ++i)
+            out.push_back(static_cast<char>(p[pos + i]));
     } else {
-        for (; pos < n && p[pos] != 0; ++pos) out.push_back(static_cast<char>(p[pos]));
+        for (; pos < n && p[pos] != 0; ++pos)
+            out.push_back(static_cast<char>(p[pos]));
     }
     // 去掉非可打印字符（有些 writer 会写入 BOM/控制字符）
     std::string clean;
     for (char c : out) {
         const unsigned char u = static_cast<unsigned char>(c);
-        if (u >= 0x20 && u != 0x7F) clean.push_back(c);
+        if (u >= 0x20 && u != 0x7F)
+            clean.push_back(c);
     }
     return clean;
 }
@@ -221,6 +228,10 @@ struct ParseContext {
     uint64_t moof_size = 0;
     uint32_t tfhd_default_duration = 0;
     uint32_t tfhd_default_size = 0;
+    // tfhd 的 default_sample_flags（flags & 0x000020）。trun 既没给 first_sample_flags
+    // 也没给逐样本 flags 时，首样本的 sync 判定只能靠它。
+    uint32_t tfhd_default_flags = 0;
+    bool tfhd_default_flags_present = false;
 };
 
 // 读取 box 的载荷（限量），返回实际读到的字节数
@@ -491,6 +502,11 @@ void ParseTfhd(ParseContext& ctx, const uint8_t* p, uint64_t n) {
     f.default_base_is_moof = (flags & 0x020000) != 0;
     f.duration_is_empty = (flags & 0x010000) != 0;
 
+    // ⚠️ 字段顺序就是规范顺序，**不能跳**：以前漏了 0x000020（default_sample_flags），
+    // 带这个标志的 tfhd 会让 pos 停在 default_sample_size 之后，后面的 box 解析
+    // 全部错位。CMAF 里 default_sample_flags 很常见（给整段统一标 non-sync）。
+    const bool default_flags_present = (flags & 0x000020) != 0;
+
     uint64_t pos = 8; // 跳过 version/flags(4) + track_ID(4)
     f.track_id = (n >= 8) ? Rd32(p + 4) : 0;
     if (f.base_data_offset_present && pos + 8 <= n) {
@@ -505,6 +521,13 @@ void ParseTfhd(ParseContext& ctx, const uint8_t* p, uint64_t n) {
     }
     if (f.default_sample_size_present && pos + 4 <= n) {
         ctx.tfhd_default_size = Rd32(p + pos);
+        pos += 4;
+    }
+    if (default_flags_present && pos + 4 <= n) {
+        ctx.tfhd_default_flags = Rd32(p + pos);
+        ctx.tfhd_default_flags_present = true;
+        f.tfhd_default_sample_flags_present = true;
+        f.tfhd_default_sample_flags = ctx.tfhd_default_flags;
         pos += 4;
     }
 }
@@ -548,9 +571,19 @@ void ParseTrun(ParseContext& ctx, const uint8_t* p, uint64_t n, uint32_t max_ent
             f.trun_data_offset = off;
         pos += 4;
     }
-    if (first_sample_flags_present && pos + 4 <= n)
+    // first_sample_flags 只作用于**本 trun 的首样本**，且只可能来自第一个 trun
+    // （分片的首样本就是第一个 trun 的首样本）。以前这 4 字节读完即丢，
+    // 于是"分片首样本是否 random access point"这个事实在解析层就没了。
+    bool trun_first_flags_ok = false;
+    uint32_t trun_first_flags = 0;
+    if (first_sample_flags_present && pos + 4 <= n) {
+        trun_first_flags = Rd32(p + pos);
+        trun_first_flags_ok = (f.trun_count == 1);
         pos += 4;
+    }
 
+    bool sample0_flags_ok = false;
+    uint32_t sample0_flags = 0;
     for (uint32_t i = 0; i < sample_count && f.sample_count < max_entries; ++i) {
         uint32_t duration = ctx.tfhd_default_duration;
         uint32_t size = ctx.tfhd_default_size;
@@ -562,8 +595,16 @@ void ParseTrun(ParseContext& ctx, const uint8_t* p, uint64_t n, uint32_t max_ent
             size = Rd32(p + pos);
             pos += 4;
         }
-        if (sample_flags_present && pos + 4 <= n)
+        if (sample_flags_present && pos + 4 <= n) {
+            const uint32_t sf = Rd32(p + pos);
+            // 分片首样本自己的 flags：优先级低于 trun.first_sample_flags，
+            // 高于 tfhd.default_sample_flags。
+            if (f.sample_count == 0) {
+                sample0_flags = sf;
+                sample0_flags_ok = true;
+            }
             pos += 4;
+        }
         if (sample_cts_present && pos + 4 <= n) {
             if (version == 1) {
                 pos += 4;
@@ -577,6 +618,32 @@ void ParseTrun(ParseContext& ctx, const uint8_t* p, uint64_t n, uint32_t max_ent
         if (pos > n)
             break;
     }
+
+    if (f.has_first_sample_flags)
+        return;
+    // 优先级：trun.first_sample_flags > 首样本自己的 sample_flags > tfhd.default_sample_flags
+    if (trun_first_flags_ok) {
+        f.first_sample_flags = trun_first_flags;
+        f.has_first_sample_flags = true;
+    } else if (sample0_flags_ok) {
+        f.first_sample_flags = sample0_flags;
+        f.has_first_sample_flags = true;
+    } else if (ctx.tfhd_default_flags_present) {
+        f.first_sample_flags = ctx.tfhd_default_flags;
+        f.has_first_sample_flags = true;
+    } else {
+        // 三个来源都没有：CMAF 的缺省值在 init 段的 trex 里，本解析器（单文件视角）
+        // 拿不到。这里显式记账，让上层报"无法证实"而不是假定为真。
+        f.first_sample_flags_incomplete = true;
+        return;
+    }
+    // ISO/IEC 14496-12 §8.8.8.1 sample_flags 布局：
+    //   bit 16     sample_is_non_sync_sample
+    //   bit 24-25  sample_depends_on（0=unknown 1=depends on others 2=independent）
+    f.first_sample_is_sync = (f.first_sample_flags & 0x00010000u) == 0;
+    f.first_sample_depends_on = static_cast<int>((f.first_sample_flags >> 24) & 0x3);
+    if (f.first_sample_depends_on == 0)
+        f.first_sample_depends_on = -1; // 0 = unknown，不要当成"不独立"
 }
 
 // 读 MPEG-4 描述符的可变长 length（每字节 7 位，最高位 = 还有后续）
@@ -585,7 +652,8 @@ bool ReadDescLength(const uint8_t* p, uint64_t n, uint64_t& pos, uint32_t& len) 
     for (int i = 0; i < 4 && pos < n; ++i) {
         const uint8_t b = p[pos++];
         len = (len << 7) | static_cast<uint32_t>(b & 0x7F);
-        if ((b & 0x80) == 0) return true;
+        if ((b & 0x80) == 0)
+            return true;
     }
     return false;
 }
@@ -594,30 +662,33 @@ bool ReadDescLength(const uint8_t* p, uint64_t n, uint64_t& pos, uint32_t& len) 
 // 这些值在 avcC/colr 之前，属于 entry 头本身，不填的话树里那一层也是空的。
 void FillSampleEntryFields(IsobmffBox& box, const uint8_t* p, uint64_t n) {
     static const char* kVideoEntries[] = {
-        "avc1", "avc2", "avc3", "avc4", "hvc1", "hev1", "av01", "vp08", "vp09",
-        "mp4v", "encv", "dvh1", "dvhe", "dva1", "dvav", "jpeg", "mjpa",
-        "ap4h", "ap4x", "apch", "apcn", "apcs", "apco", "s263",
+        "avc1", "avc2", "avc3", "avc4", "hvc1", "hev1", "av01", "vp08", "vp09", "mp4v", "encv", "dvh1",
+        "dvhe", "dva1", "dvav", "jpeg", "mjpa", "ap4h", "ap4x", "apch", "apcn", "apcs", "apco", "s263",
     };
     static const char* kAudioEntries[] = {
-        "mp4a", "ac-3", "ec-3", "ac-4", "opus", "Opus", "fLaC", "alac",
-        "dtsc", "dtsh", "dtse", "enca", "mha1", "mhm1", "sowt", "twos",
-        "lpcm", "ipcm", "spex",
+        "mp4a", "ac-3", "ec-3", "ac-4", "opus", "Opus", "fLaC", "alac", "dtsc", "dtsh",
+        "dtse", "enca", "mha1", "mhm1", "sowt", "twos", "lpcm", "ipcm", "spex",
     };
-    if (n < 8) return;
+    if (n < 8)
+        return;
     AddFieldInt(box, "data_reference_index", Rd16(p + 6));
 
     for (const char* c : kVideoEntries) {
-        if (box.type != c) continue;
+        if (box.type != c)
+            continue;
         if (n >= 28) {
             AddFieldInt(box, "width", Rd16(p + 24));
             AddFieldInt(box, "height", Rd16(p + 26));
         }
-        if (n >= 42) AddFieldInt(box, "frame_count", Rd16(p + 40));
-        if (n >= 76) AddFieldInt(box, "depth", Rd16(p + 74));
+        if (n >= 42)
+            AddFieldInt(box, "frame_count", Rd16(p + 40));
+        if (n >= 76)
+            AddFieldInt(box, "depth", Rd16(p + 74));
         return;
     }
     for (const char* c : kAudioEntries) {
-        if (box.type != c) continue;
+        if (box.type != c)
+            continue;
         // sampling_rate 是 32 位（16.16），从偏移 24 读到 27，所以门槛是 28 不是 26
         if (n >= 28) {
             AddFieldInt(box, "channel_count", Rd16(p + 16));
@@ -635,9 +706,8 @@ void FillSampleEntryFields(IsobmffBox& box, const uint8_t* p, uint64_t n) {
 void FillBoxFields(ParseContext& ctx, IsobmffBox& box) {
     const std::string& type = box.type;
     static const char* kFieldBoxes[] = {
-        "ftyp", "styp", "mvhd", "tkhd", "mdhd", "hdlr", "sidx", "mfhd",
-        "tfhd", "tfdt", "trun", "avcC", "hvcC", "av1C", "esds", "colr",
-        "pasp", "btrt",
+        "ftyp", "styp", "mvhd", "tkhd", "mdhd", "hdlr", "sidx", "mfhd", "tfhd",
+        "tfdt", "trun", "avcC", "hvcC", "av1C", "esds", "colr", "pasp", "btrt",
     };
     bool known = false;
     for (const char* c : kFieldBoxes) {
@@ -646,29 +716,35 @@ void FillBoxFields(ParseContext& ctx, IsobmffBox& box) {
             break;
         }
     }
-    if (!known) return;
+    if (!known)
+        return;
 
     const uint64_t cap = (type == "esds") ? 1024 : 256;
     std::vector<uint8_t> buf;
-    if (ReadPayload(ctx, box, buf, cap) == 0) return;
+    if (ReadPayload(ctx, box, buf, cap) == 0)
+        return;
     const uint8_t* p = buf.data();
     const uint64_t n = buf.size();
 
     if (type == "ftyp" || type == "styp") {
-        if (n < 8) return;
+        if (n < 8)
+            return;
         AddField(box, "major_brand", FourCC(p));
         AddFieldInt(box, "minor_version", Rd32(p + 4));
         std::string brands;
         for (uint64_t pos = 8; pos + 4 <= n && pos < 8 + 4 * 8; pos += 4) {
-            if (!brands.empty()) brands += ",";
+            if (!brands.empty())
+                brands += ",";
             brands += FourCC(p + pos);
         }
-        if (!brands.empty()) AddField(box, "compatible_brands", brands);
+        if (!brands.empty())
+            AddField(box, "compatible_brands", brands);
         return;
     }
 
     if (type == "mvhd") {
-        if (n < 8) return;
+        if (n < 8)
+            return;
         const uint8_t version = p[0];
         AddFieldInt(box, "version", version);
         const uint64_t ts_off = (version == 1) ? 20 : 12;
@@ -685,36 +761,40 @@ void FillBoxFields(ParseContext& ctx, IsobmffBox& box) {
             AddFieldInt(box, "duration", duration);
             if (timescale > 0) {
                 char sec[32];
-                std::snprintf(sec, sizeof(sec), "%.3f",
-                              static_cast<double>(duration) / static_cast<double>(timescale));
+                std::snprintf(sec, sizeof(sec), "%.3f", static_cast<double>(duration) / static_cast<double>(timescale));
                 AddField(box, "duration_seconds", sec);
             }
         }
-        if (next_off + 4 <= n) AddFieldInt(box, "next_track_id", Rd32(p + next_off));
+        if (next_off + 4 <= n)
+            AddFieldInt(box, "next_track_id", Rd32(p + next_off));
         return;
     }
 
     if (type == "tkhd") {
-        if (n < 8) return;
+        if (n < 8)
+            return;
         const uint8_t version = p[0];
         const uint32_t flags = Rd32(p) & 0x00FFFFFF;
         AddFieldInt(box, "version", version);
         static const char* kFlagNames[] = {"enabled", "in_movie", "in_preview", "in_poster"};
         std::string flag_text;
         for (int bit = 0; bit < 4; ++bit) {
-            if ((flags & (1u << bit)) == 0) continue;
-            if (!flag_text.empty()) flag_text += ",";
+            if ((flags & (1u << bit)) == 0)
+                continue;
+            if (!flag_text.empty())
+                flag_text += ",";
             flag_text += kFlagNames[bit];
         }
-        if (!flag_text.empty()) AddField(box, "flags", flag_text);
+        if (!flag_text.empty())
+            AddField(box, "flags", flag_text);
         const uint64_t id_off = (version == 1) ? 20 : 12;
         const uint64_t dur_off = (version == 1) ? 28 : 20;
         const uint64_t wh_off = (version == 1) ? 88 : 76;
-        if (id_off + 4 <= n) AddFieldInt(box, "track_id", Rd32(p + id_off));
+        if (id_off + 4 <= n)
+            AddFieldInt(box, "track_id", Rd32(p + id_off));
         const bool dur_ok = (version == 1) ? (dur_off + 8 <= n) : (dur_off + 4 <= n);
         if (dur_ok) {
-            AddFieldInt(box, "duration(movie_timescale)",
-                        (version == 1) ? Rd64(p + dur_off) : Rd32(p + dur_off));
+            AddFieldInt(box, "duration(movie_timescale)", (version == 1) ? Rd64(p + dur_off) : Rd32(p + dur_off));
         }
         if (wh_off + 8 <= n) {
             AddField(box, "width", Fixed1616(Rd32(p + wh_off)));
@@ -724,69 +804,85 @@ void FillBoxFields(ParseContext& ctx, IsobmffBox& box) {
     }
 
     if (type == "mdhd") {
-        if (n < 8) return;
+        if (n < 8)
+            return;
         const uint8_t version = p[0];
         AddFieldInt(box, "version", version);
         const uint64_t ts_off = (version == 1) ? 20 : 12;
         const uint64_t dur_off = (version == 1) ? 24 : 16;
         const uint64_t lang_off = (version == 1) ? 32 : 20;
-        if (ts_off + 4 <= n) AddFieldInt(box, "timescale", Rd32(p + ts_off));
+        if (ts_off + 4 <= n)
+            AddFieldInt(box, "timescale", Rd32(p + ts_off));
         const bool dur_ok = (version == 1) ? (dur_off + 8 <= n) : (dur_off + 4 <= n);
         if (dur_ok) {
             AddFieldInt(box, "duration", (version == 1) ? Rd64(p + dur_off) : Rd32(p + dur_off));
         }
-        if (lang_off + 2 <= n) AddField(box, "language", LanguageCode(Rd16(p + lang_off)));
+        if (lang_off + 2 <= n)
+            AddField(box, "language", LanguageCode(Rd16(p + lang_off)));
         return;
     }
 
     if (type == "hdlr") {
-        if (n >= 12) AddField(box, "handler_type", FourCC(p + 8));
+        if (n >= 12)
+            AddField(box, "handler_type", FourCC(p + 8));
         const std::string name = HandlerName(p, n);
-        if (!name.empty()) AddField(box, "name", name);
+        if (!name.empty())
+            AddField(box, "name", name);
         return;
     }
 
     if (type == "sidx") {
-        if (n < 8) return;
+        if (n < 8)
+            return;
         const uint8_t version = p[0];
         AddFieldInt(box, "version", version);
         AddFieldInt(box, "reference_id", Rd32(p + 4));
-        if (8 + 4 <= n) AddFieldInt(box, "timescale", Rd32(p + 8));
+        if (8 + 4 <= n)
+            AddFieldInt(box, "timescale", Rd32(p + 8));
         if (version == 1) {
-            if (20 <= n) AddFieldInt(box, "earliest_presentation_time", Rd64(p + 12));
-            if (28 <= n) AddFieldInt(box, "first_offset", Rd64(p + 20));
-            if (30 <= n) AddFieldInt(box, "reference_count", Rd16(p + 28));
+            if (20 <= n)
+                AddFieldInt(box, "earliest_presentation_time", Rd64(p + 12));
+            if (28 <= n)
+                AddFieldInt(box, "first_offset", Rd64(p + 20));
+            if (30 <= n)
+                AddFieldInt(box, "reference_count", Rd16(p + 28));
         } else {
-            if (16 <= n) AddFieldInt(box, "earliest_presentation_time", Rd32(p + 12));
-            if (20 <= n) AddFieldInt(box, "first_offset", Rd32(p + 16));
-            if (22 <= n) AddFieldInt(box, "reference_count", Rd16(p + 20));
+            if (16 <= n)
+                AddFieldInt(box, "earliest_presentation_time", Rd32(p + 12));
+            if (20 <= n)
+                AddFieldInt(box, "first_offset", Rd32(p + 16));
+            if (22 <= n)
+                AddFieldInt(box, "reference_count", Rd16(p + 20));
         }
         return;
     }
 
     if (type == "mfhd") {
-        if (n >= 8) AddFieldInt(box, "sequence_number", Rd32(p + 4));
+        if (n >= 8)
+            AddFieldInt(box, "sequence_number", Rd32(p + 4));
         return;
     }
 
     if (type == "tfhd") {
-        if (n < 8) return;
+        if (n < 8)
+            return;
         AddFieldHex(box, "flags", Rd32(p) & 0x00FFFFFF);
         AddFieldInt(box, "track_id", Rd32(p + 4));
         return;
     }
 
     if (type == "tfdt") {
-        if (n < 8) return;
+        if (n < 8)
+            return;
         const uint8_t version = p[0];
         AddFieldInt(box, "version", version);
-        AddFieldInt(box, "base_media_decode_time",
-                    (version == 1 && n >= 12) ? Rd64(p + 4) : Rd32(p + 4));
+        AddFieldInt(box, "base_media_decode_time", (version == 1 && n >= 12) ? Rd64(p + 4) : Rd32(p + 4));
         return;
     }
 
     if (type == "trun") {
-        if (n < 8) return;
+        if (n < 8)
+            return;
         AddFieldHex(box, "flags", Rd32(p) & 0x00FFFFFF);
         AddFieldInt(box, "sample_count", Rd32(p + 4));
         if ((Rd32(p) & 0x000001) != 0 && n >= 12) {
@@ -796,7 +892,8 @@ void FillBoxFields(ParseContext& ctx, IsobmffBox& box) {
     }
 
     if (type == "avcC") {
-        if (n < 6) return;
+        if (n < 6)
+            return;
         AddFieldInt(box, "configuration_version", p[0]);
         AddFieldInt(box, "profile_idc", p[1]);
         AddFieldInt(box, "profile_compatibility", p[2]);
@@ -810,32 +907,33 @@ void FillBoxFields(ParseContext& ctx, IsobmffBox& box) {
             const uint16_t len = Rd16(p + pos);
             pos += 2 + len;
         }
-        if (pos + 1 <= n) AddFieldInt(box, "num_of_pps", static_cast<uint64_t>(p[pos]));
+        if (pos + 1 <= n)
+            AddFieldInt(box, "num_of_pps", static_cast<uint64_t>(p[pos]));
         return;
     }
 
     if (type == "hvcC") {
-        if (n < 23) return;
+        if (n < 23)
+            return;
         AddFieldInt(box, "configuration_version", p[0]);
         AddFieldInt(box, "general_profile_space", static_cast<uint64_t>(p[1] >> 6));
         AddFieldInt(box, "general_tier_flag", static_cast<uint64_t>((p[1] >> 5) & 0x01));
         AddFieldInt(box, "general_profile_idc", static_cast<uint64_t>(p[1] & 0x1F));
         AddFieldInt(box, "general_level_idc", p[12]);
-        AddFieldInt(box, "min_spatial_segmentation_idc",
-                    static_cast<uint64_t>(Rd16(p + 13) & 0x0FFF));
+        AddFieldInt(box, "min_spatial_segmentation_idc", static_cast<uint64_t>(Rd16(p + 13) & 0x0FFF));
         AddFieldInt(box, "parallelism_type", static_cast<uint64_t>(p[15] & 0x03));
         AddFieldInt(box, "chroma_format_idc", static_cast<uint64_t>(p[16] & 0x03));
         AddFieldInt(box, "bit_depth_luma_minus8", static_cast<uint64_t>(p[17] & 0x07));
         AddFieldInt(box, "bit_depth_chroma_minus8", static_cast<uint64_t>(p[18] & 0x07));
-        AddFieldInt(box, "num_temporal_layers",
-                    static_cast<uint64_t>((p[21] >> 3) & 0x07) + 1);
+        AddFieldInt(box, "num_temporal_layers", static_cast<uint64_t>((p[21] >> 3) & 0x07) + 1);
         AddFieldInt(box, "length_size_minus_one", static_cast<uint64_t>(p[21] & 0x03));
         AddFieldInt(box, "num_of_arrays", p[22]);
         return;
     }
 
     if (type == "av1C") {
-        if (n < 4) return;
+        if (n < 4)
+            return;
         // p[0]: marker(1) + version(7)；marker 位写在地 1 位，别整字节当版本
         AddFieldInt(box, "seq_profile", static_cast<uint64_t>((p[1] >> 5) & 0x07));
         AddFieldInt(box, "seq_level_idx_0", static_cast<uint64_t>(p[1] & 0x1F));
@@ -850,34 +948,41 @@ void FillBoxFields(ParseContext& ctx, IsobmffBox& box) {
     }
 
     if (type == "esds") {
-        if (n < 6) return;
-        uint64_t pos = 4;  // FullBox(4)
+        if (n < 6)
+            return;
+        uint64_t pos = 4; // FullBox(4)
         for (int guard = 0; guard < 8 && pos + 2 <= n; ++guard) {
             const uint8_t tag = p[pos++];
             uint32_t len = 0;
-            if (!ReadDescLength(p, n, pos, len)) return;
+            if (!ReadDescLength(p, n, pos, len))
+                return;
             const uint64_t body = pos;
-            if (body + len > n) return;
-            if (tag == 0x03) {  // ES_Descriptor：跳过头部，进入子描述符
-                if (len < 3) return;
+            if (body + len > n)
+                return;
+            if (tag == 0x03) { // ES_Descriptor：跳过头部，进入子描述符
+                if (len < 3)
+                    return;
                 const uint8_t flags = p[body + 2];
                 uint64_t next = body + 3;
-                if ((flags & 0x80) != 0) next += 2;                        // dependsOn_ES_ID
-                if ((flags & 0x40) != 0 && next < body + len) {             // URL
+                if ((flags & 0x80) != 0)
+                    next += 2;                                  // dependsOn_ES_ID
+                if ((flags & 0x40) != 0 && next < body + len) { // URL
                     next += 1 + p[next];
                 }
-                if ((flags & 0x20) != 0) next += 2;                        // OCR_ES_Id
-                if (next > body + len) return;
+                if ((flags & 0x20) != 0)
+                    next += 2; // OCR_ES_Id
+                if (next > body + len)
+                    return;
                 pos = next;
                 continue;
             }
-            if (tag == 0x04) {  // DecoderConfigDescriptor
+            if (tag == 0x04) { // DecoderConfigDescriptor
                 if (len >= 13) {
                     AddFieldInt(box, "object_type_indication", p[body]);
                     AddFieldInt(box, "stream_type", static_cast<uint64_t>(p[body + 1] >> 2));
                     AddFieldHex(box, "buffer_size_db",
-                                (static_cast<uint32_t>(p[body + 2]) << 16) |
-                                    (static_cast<uint32_t>(p[body + 3]) << 8) | p[body + 4]);
+                                (static_cast<uint32_t>(p[body + 2]) << 16) | (static_cast<uint32_t>(p[body + 3]) << 8) |
+                                    p[body + 4]);
                     AddFieldInt(box, "max_bitrate", Rd32(p + body + 5));
                     AddFieldInt(box, "avg_bitrate", Rd32(p + body + 9));
                 }
@@ -889,7 +994,8 @@ void FillBoxFields(ParseContext& ctx, IsobmffBox& box) {
     }
 
     if (type == "colr") {
-        if (n < 4) return;
+        if (n < 4)
+            return;
         const std::string colour_type = FourCC(p);
         AddField(box, "colour_type", colour_type);
         // nclx / nclc 都是 primaries(2) transfer(2) matrix(2)；nclx 末尾还有 1 位 range
@@ -905,14 +1011,16 @@ void FillBoxFields(ParseContext& ctx, IsobmffBox& box) {
     }
 
     if (type == "pasp") {
-        if (n < 8) return;
+        if (n < 8)
+            return;
         AddFieldInt(box, "hSpacing", Rd32(p));
         AddFieldInt(box, "vSpacing", Rd32(p + 4));
         return;
     }
 
     if (type == "btrt") {
-        if (n < 12) return;
+        if (n < 12)
+            return;
         AddFieldInt(box, "bufferSizeDB", Rd32(p));
         AddFieldInt(box, "maxBitrate", Rd32(p + 4));
         AddFieldInt(box, "avgBitrate", Rd32(p + 8));
@@ -925,8 +1033,8 @@ void FillBoxFields(ParseContext& ctx, IsobmffBox& box) {
 // parent_type：父 box 的 4CC。stsd 的子 box 是 sample entry（avc1/hvc1/mp4a…），
 // 它们自己也是容器，但子 box 的起点由 entry 种类决定（见 SampleEntryChildOffset），
 // 不能走 IsContainer 那条通用路径。
-void ParseBoxes(ParseContext& ctx, uint64_t start, uint64_t end, int depth,
-                std::vector<IsobmffBox>* parent, const std::string* parent_type = nullptr) {
+void ParseBoxes(ParseContext& ctx, uint64_t start, uint64_t end, int depth, std::vector<IsobmffBox>* parent,
+                const std::string* parent_type = nullptr) {
     if (depth > ctx.opt->max_depth || start >= end)
         return;
 
@@ -1078,6 +1186,11 @@ void ParseBoxes(ParseContext& ctx, uint64_t start, uint64_t end, int depth,
             ctx.frag_index = static_cast<int>(ctx.out->fragments.size()) - 1;
             ctx.tfhd_default_duration = 0;
             ctx.tfhd_default_size = 0;
+            // tfhd 的默认值随 traf 生效、随 traf 结束：漏清会让下一个 traf
+            // 在"自己没写 default flags"时继承上一个 traf 的标志，从而把
+            // 一个非独立帧误判成随机访问点。
+            ctx.tfhd_default_flags = 0;
+            ctx.tfhd_default_flags_present = false;
             ParseBoxes(ctx, pos + header_size, pos + size, depth + 1, &box.children, &type);
             ctx.frag_index = -1;
         } else if (parent_type != nullptr && *parent_type == "stsd") {
@@ -1085,14 +1198,13 @@ void ParseBoxes(ParseContext& ctx, uint64_t start, uint64_t end, int depth,
             // colr / pasp / btrt。子 box 起点由 entry 种类决定（视频 78、音频 28/44/64）。
             std::vector<uint8_t> buf;
             ReadPayload(ctx, box, buf, 128);
-            const uint64_t payload =
-                (box.size > box.header_size) ? (box.size - box.header_size) : 0;
-            const int child_off =
-                SampleEntryChildOffset(type, buf.empty() ? nullptr : buf.data(), buf.size());
-            if (!buf.empty()) FillSampleEntryFields(box, buf.data(), buf.size());
+            const uint64_t payload = (box.size > box.header_size) ? (box.size - box.header_size) : 0;
+            const int child_off = SampleEntryChildOffset(type, buf.empty() ? nullptr : buf.data(), buf.size());
+            if (!buf.empty())
+                FillSampleEntryFields(box, buf.data(), buf.size());
             if (child_off >= 0 && static_cast<uint64_t>(child_off) < payload) {
-                ParseBoxes(ctx, pos + header_size + static_cast<uint64_t>(child_off),
-                           pos + size, depth + 1, &box.children, &type);
+                ParseBoxes(ctx, pos + header_size + static_cast<uint64_t>(child_off), pos + size, depth + 1,
+                           &box.children, &type);
             }
         } else if (IsContainer(type)) {
             // stsd / meta 都是 FullBox，子 box 要从 FullBox 头之后开始：

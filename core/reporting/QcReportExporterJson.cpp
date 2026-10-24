@@ -88,6 +88,237 @@ JsonValue BuildRuleObject(const model::QcRule& rule) {
     return object;
 }
 
+// 证据与覆盖状态表（阶段 5）。每个维度一行，报告读者据此判断
+// "结论覆盖了多少内容 / 没跑是为啥"。
+//
+// 为什么必须整表落盘而不是只落"没通过的"：这表的用途是**证明没漏**。
+// 只落异常项的话，"这张表里没有 XX 维度"与"XX 维度跑了且没问题"无法区分。
+JsonValue BuildDimensionsArray(const model::AnalysisResult& result) {
+    JsonValue array = JsonValue::MakeArray();
+    for (const model::DimensionStatus& status : result.dimensions) {
+        JsonValue node = JsonValue::MakeObject();
+        node.Set("dimension", JText(model::DimensionCode(status.dimension)));
+        node.Set("name", JText(model::DimensionName(status.dimension)));
+        node.Set("executed", JsonValue(status.executed));
+        node.Set("capability", JText(model::CapabilityToString(status.capability)));
+        // conclusive 是"本结论可当通过用"的唯一权威口径，下游不该自己用
+        // capability 组合推断。
+        node.Set("conclusive", JsonValue(status.conclusive));
+        if (!status.scope_unit.empty())
+            node.Set("scope_unit", JText(status.scope_unit));
+        node.Set("units_scanned", JNumber(static_cast<double>(status.units_scanned)));
+        node.Set("units_total", JNumber(static_cast<double>(status.units_total)));
+        // has_coverage=false 时 coverage 字段必须缺省：落 0 会被读成"覆盖率为 0"，
+        // 而实际语义是"总量未知"。
+        if (status.has_coverage)
+            node.Set("coverage_ratio", JNumber(status.coverage_ratio));
+        node.Set("failures", JNumber(static_cast<double>(status.failures)));
+        if (!status.failure_reason.empty())
+            node.Set("failure_reason", JText(status.failure_reason));
+        JsonValue streams = JsonValue::MakeArray();
+        for (int index : status.stream_indices)
+            streams.PushBack(JNumber(static_cast<double>(index)));
+        node.Set("stream_indices", streams);
+        JsonValue notes = JsonValue::MakeArray();
+        for (const std::string& note : status.notes)
+            notes.PushBack(JText(note));
+        node.Set("notes", notes);
+        node.Set("summary", JText(status.Summary()));
+        array.PushBack(node);
+    }
+    return array;
+}
+
+// 参数集时间线（阶段 1）：把"首次配置"升级成"全程配置"。
+JsonValue BuildParameterTimelinesArray(const model::AnalysisResult& result) {
+    JsonValue array = JsonValue::MakeArray();
+    for (const model::ParameterTimeline& timeline : result.parameter_timelines) {
+        JsonValue node = JsonValue::MakeObject();
+        node.Set("stream_index", JNumber(static_cast<double>(timeline.stream_index)));
+        node.Set("codec", JText(timeline.codec_name));
+        node.Set("analyzed", JsonValue(timeline.analyzed));
+        node.Set("packets_scanned", JNumber(static_cast<double>(timeline.packets_scanned)));
+        node.Set("parameter_set_units", JNumber(static_cast<double>(timeline.parameter_set_units)));
+        // 引用从未传输过的参数集 = 解码必然失败的硬证据，单独一栏顶到最前
+        node.Set("missing_reference_count", JNumber(static_cast<double>(timeline.missing_reference_count)));
+        node.Set("truncated", JsonValue(timeline.truncated));
+        node.Set("summary", JText(timeline.Summary()));
+        node.Set("active_config", JText(timeline.ActiveSummary()));
+
+        JsonValue sets = JsonValue::MakeArray();
+        for (const model::ParameterSetEntry& entry : timeline.parameter_sets) {
+            JsonValue item = JsonValue::MakeObject();
+            item.Set("kind", JText(model::ParameterSetKindCode(entry.kind)));
+            item.Set("id", JNumber(static_cast<double>(entry.id)));
+            item.Set("digest", JText(entry.digest));
+            if (!entry.summary.empty())
+                item.Set("config", JText(entry.summary));
+            item.Set("occurrences", JNumber(static_cast<double>(entry.occurrences)));
+            // replacements > 0 = 同 id 被换过内容，这是最危险的一类变化
+            item.Set("replacements", JNumber(static_cast<double>(entry.replacements)));
+            item.Set("first_packet_index", JNumber(static_cast<double>(entry.first_packet_index)));
+            item.Set("first_file_offset", JNumber(static_cast<double>(entry.first_file_offset)));
+            if (entry.has_time)
+                item.Set("first_time_seconds", JNumber(entry.first_time_seconds));
+            sets.PushBack(item);
+        }
+        node.Set("parameter_sets", sets);
+
+        JsonValue changes = JsonValue::MakeArray();
+        for (const model::ParameterChangeEvent& event : timeline.changes) {
+            JsonValue item = JsonValue::MakeObject();
+            item.Set("kind", JText(model::ParameterSetKindCode(event.kind)));
+            item.Set("parameter_set_id", JNumber(static_cast<double>(event.parameter_set_id)));
+            item.Set("source", JText(event.source));
+            item.Set("replaced_same_id", JsonValue(event.replaced_same_id));
+            if (event.has_time)
+                item.Set("time_seconds", JNumber(event.time_seconds));
+            item.Set("packet_index", JNumber(static_cast<double>(event.packet_index)));
+            // 文件偏移让读者能直接跳到现场（-1 = 容器给不出）
+            item.Set("file_offset", JNumber(static_cast<double>(event.file_offset)));
+            if (!event.old_config.empty())
+                item.Set("old_config", JText(event.old_config));
+            if (!event.new_config.empty())
+                item.Set("new_config", JText(event.new_config));
+            if (!event.changes.empty())
+                item.Set("changes", JText(event.changes));
+            item.Set("text", JText(event.ToString()));
+            changes.PushBack(item);
+        }
+        node.Set("changes", changes);
+
+        JsonValue refs = JsonValue::MakeArray();
+        for (const model::ParameterReferenceStat& stat : timeline.references) {
+            JsonValue item = JsonValue::MakeObject();
+            item.Set("kind", JText(model::ParameterSetKindCode(stat.kind)));
+            item.Set("id", JNumber(static_cast<double>(stat.id)));
+            item.Set("frame_count", JNumber(static_cast<double>(stat.frame_count)));
+            item.Set("slice_count", JNumber(static_cast<double>(stat.slice_count)));
+            item.Set("transmitted", JsonValue(stat.transmitted));
+            item.Set("referenced_before_transmit", JsonValue(stat.referenced_before_transmit));
+            item.Set("first_reference_packet", JNumber(static_cast<double>(stat.first_reference_packet)));
+            if (stat.has_time)
+                item.Set("first_reference_seconds", JNumber(stat.first_reference_time));
+            refs.PushBack(item);
+        }
+        node.Set("references", refs);
+
+        JsonValue notes = JsonValue::MakeArray();
+        for (const std::string& note : timeline.notes)
+            notes.PushBack(JText(note));
+        node.Set("notes", notes);
+        array.PushBack(node);
+    }
+    return array;
+}
+
+// 帧级显示顺序（POC 重建，仅 H.264）。
+//
+// 与 parameter_timelines 的分工：那条记"配置怎么变"，这条记"帧怎么排"。
+// 字段全部来自逐 slice 解析出的 POC；解析不出来的组合（pic_order_cnt_type=1、
+// 非 H.264）走 available=false + reason，不给推断不出的字段留 0 占位。
+JsonValue BuildFrameOrdersArray(const model::AnalysisResult& result) {
+    JsonValue array = JsonValue::MakeArray();
+    for (const model::FrameOrderTimeline& timeline : result.frame_order_timelines) {
+        JsonValue node = JsonValue::MakeObject();
+        node.Set("stream_index", JNumber(static_cast<double>(timeline.stream_index)));
+        node.Set("available", JsonValue(timeline.available));
+        if (!timeline.available) {
+            node.Set("reason", JText(timeline.unavailable_reason));
+            array.PushBack(node);
+            continue;
+        }
+        node.Set("poc_type", JNumber(static_cast<double>(timeline.poc_type)));
+        node.Set("field_coded", JsonValue(timeline.field_coded));
+        node.Set("truncated", JsonValue(timeline.truncated));
+        node.Set("frames_observed", JNumber(static_cast<double>(timeline.frames_observed)));
+        node.Set("i_count", JNumber(static_cast<double>(timeline.i_count)));
+        node.Set("p_count", JNumber(static_cast<double>(timeline.p_count)));
+        node.Set("b_count", JNumber(static_cast<double>(timeline.b_count)));
+        node.Set("idr_count", JNumber(static_cast<double>(timeline.idr_count)));
+        // 显示顺序重排：解码顺序里 POC 回退的次数与最大幅度（POC 步长通常为 2，
+        // 所以"回退 4"≈ 重排 2 帧）。这是 B 帧存在的直接证据，不是靠 slice_type 猜。
+        node.Set("reorder_events", JNumber(static_cast<double>(timeline.reorder_events)));
+        node.Set("reorder_depth", JNumber(static_cast<double>(timeline.reorder_depth)));
+        node.Set("duplicate_poc_count", JNumber(static_cast<double>(timeline.duplicate_poc_count)));
+        node.Set("poc_gap_slots", JNumber(static_cast<double>(timeline.poc_gap_slots)));
+        node.Set("gop_count", JNumber(static_cast<double>(timeline.gop_count)));
+        node.Set("min_gop_frames", JNumber(static_cast<double>(timeline.min_gop_frames)));
+        node.Set("max_gop_frames", JNumber(static_cast<double>(timeline.max_gop_frames)));
+        node.Set("avg_gop_frames", JNumber(timeline.avg_gop_frames));
+        node.Set("summary", JText(timeline.Summary()));
+
+        // 支持范围：把"哪些结论能下、哪些不能"写进报告，避免读者把缺失当通过。
+        JsonValue scope = JsonValue::MakeObject();
+        scope.Set("codecs", JText("仅 H.264；HEVC/AV1/VP9/VVC 的 POC 未实现（对应维度标记为不可用）"));
+        scope.Set("poc_type", JText("pic_order_cnt_type 0 与 2 支持；1 不支持（需要 offset_for_ref_frame 表）"));
+        scope.Set("reference_lists", JText("不重建 DPB / 参考帧列表（无 MMCO、无 RPL），只给 POC 序列"));
+        scope.Set("gap_inference", JText("缺帧数按观测到的最小 POC 步长推断，只给总量不给具体帧号；"
+                                         "隔行（field coding）时不推断"));
+        node.Set("scope", scope);
+
+        JsonValue frames = JsonValue::MakeArray();
+        for (const model::FrameOrderEntry& entry : timeline.frames) {
+            JsonValue item = JsonValue::MakeObject();
+            // 解码顺序下标：等于它在 frames 数组里的位置，但显式写出来，
+            // 免得读者拿"第几个"去对 POC 时对不上（数组下标与显示顺序无关）。
+            item.Set("decode_index", JNumber(static_cast<double>(frames.Size())));
+            item.Set("type", JText(std::string(1, entry.TypeChar())));
+            item.Set("idr", JsonValue(entry.idr));
+            item.Set("frame_num", JNumber(static_cast<double>(entry.frame_num)));
+            item.Set("poc", JNumber(static_cast<double>(entry.poc)));
+            item.Set("packet_index", JNumber(static_cast<double>(entry.packet_index)));
+            if (entry.has_time)
+                item.Set("time_seconds", JNumber(entry.time_seconds));
+            frames.PushBack(item);
+        }
+        node.Set("frames", frames);
+        array.PushBack(node);
+    }
+    return array;
+}
+
+// 逐轨音频 QC（阶段 4）。原来只有主轨一份 loudness，多语言/评论轨完全不可见。
+JsonValue BuildAudioQcStreamsArray(const model::AnalysisResult& result) {
+    JsonValue array = JsonValue::MakeArray();
+    for (size_t i = 0; i < result.audio_qc_streams.size(); ++i) {
+        const model::AudioQcResult& qc = result.audio_qc_streams[i];
+        JsonValue node = JsonValue::MakeObject();
+        // 流号要从并行的索引表取：AudioQcResult 自己不记 stream_index
+        const int stream_index = (i < result.audio_qc_stream_indices.size()) ? result.audio_qc_stream_indices[i] : -1;
+        node.Set("stream_index", JNumber(static_cast<double>(stream_index)));
+        node.Set("analyzed", JsonValue(qc.analyzed));
+        node.Set("integrated_lufs", JNumber(qc.integrated_lufs));
+        node.Set("true_peak_dbtp", JNumber(qc.true_peak_dbtp));
+        node.Set("loudness_range_lu", JNumber(qc.loudness_range_lu));
+        node.Set("sample_peak_dbfs", JNumber(qc.sample_peak_dbfs));
+        node.Set("rms_dbfs", JNumber(qc.rms_dbfs));
+        node.Set("silence_ratio", JNumber(qc.silence_ratio));
+        node.Set("longest_silence_seconds", JNumber(qc.longest_silence_seconds));
+        node.Set("channel_layout", JText(qc.metadata.channel_layout));
+        node.Set("channels", JNumber(static_cast<double>(qc.metadata.channels)));
+        node.Set("sample_rate", JNumber(static_cast<double>(qc.metadata.sample_rate)));
+        // 逐轨覆盖率是这块的核心价值：总轨数对上了不代表每条轨都跑满了
+        node.Set("coverage_ratio", JNumber(qc.coverage_ratio));
+        node.Set("covered_seconds", JNumber(qc.covered_seconds));
+        node.Set("correlation_available", JsonValue(qc.correlation_available));
+        if (qc.correlation_available) {
+            node.Set("correlation_mean", JNumber(qc.correlation_mean));
+            node.Set("correlation_min", JNumber(qc.correlation_min));
+            node.Set("out_of_phase_ratio", JNumber(qc.out_of_phase_ratio));
+        }
+        node.Set("decode_error_packets", JNumber(static_cast<double>(qc.decode_error_packets)));
+        node.Set("decode_error_frames", JNumber(static_cast<double>(qc.decode_error_frames)));
+        node.Set("dropped_frames", JNumber(static_cast<double>(qc.dropped_frames)));
+        JsonValue notes = JsonValue::MakeArray();
+        for (const std::string& note : qc.notes)
+            notes.PushBack(JText(note));
+        node.Set("notes", notes);
+        array.PushBack(node);
+    }
+    return array;
+}
+
 JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
     JsonValue metrics = JsonValue::MakeObject();
 
@@ -213,6 +444,78 @@ JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
             node.Set("vbr", JsonValue(stream.vbr));
             node.Set("params_changed_midstream", JsonValue(stream.params_changed_midstream));
             node.Set("container_mismatch", JsonValue(stream.container_mismatch));
+            // ---- 帧头结构深化（阶段 D2）：MP3 / FLAC / AAC PCE ----
+            //
+            // 这些字段只在对应编码下有意义，无条件落会造成"MP3 的 flac_streaminfo=false"
+            // 这种把"不适用"读成"缺失"的假象，所以按 codec 分块。
+            if (stream.codec == model::AudioBitstreamCodec::Mp3) {
+                JsonValue mp3 = JsonValue::MakeObject();
+                mp3.Set("mpeg_version", JNumber(static_cast<double>(stream.mpeg_version)));
+                mp3.Set("layer", JNumber(static_cast<double>(stream.mp3_layer)));
+                mp3.Set("channel_mode", JNumber(static_cast<double>(stream.channel_mode)));
+                // 帧头保护位只报"存在"，CRC-16 覆盖范围有歧义故不校验（见 parser 注释）
+                mp3.Set("crc_present", JsonValue(stream.crc_present));
+                // free_format 时帧长不可定界，后续所有逐帧统计都不可信 —— 必须显式告知
+                mp3.Set("free_format", JsonValue(stream.free_format));
+                if (!stream.vbr_tag.empty()) {
+                    mp3.Set("vbr_tag", JText(stream.vbr_tag));
+                    // 声明值 vs 实测值分开落，对不上才是证据
+                    mp3.Set("declared_frame_count", JNumber(static_cast<double>(stream.declared_frame_count)));
+                    mp3.Set("measured_frame_count", JNumber(static_cast<double>(stream.frame_count)));
+                    mp3.Set("declared_stream_bytes", JNumber(static_cast<double>(stream.declared_stream_bytes)));
+                }
+                if (stream.has_encoder_delay) {
+                    mp3.Set("encoder_delay_samples", JNumber(static_cast<double>(stream.encoder_delay_samples)));
+                    mp3.Set("encoder_padding_samples", JNumber(static_cast<double>(stream.encoder_padding_samples)));
+                }
+                if (!stream.encoder.empty())
+                    mp3.Set("encoder", JText(stream.encoder));
+                node.Set("mp3", mp3);
+            }
+            if (stream.codec == model::AudioBitstreamCodec::Flac) {
+                JsonValue flac = JsonValue::MakeObject();
+                flac.Set("streaminfo_present", JsonValue(stream.flac_streaminfo));
+                flac.Set("min_block_size", JNumber(static_cast<double>(stream.streaminfo_min_block)));
+                flac.Set("max_block_size", JNumber(static_cast<double>(stream.streaminfo_max_block)));
+                flac.Set("declared_total_samples", JNumber(static_cast<double>(stream.declared_total_samples)));
+                // STREAMINFO 声明了总样本数才有比对基准；0 = 未知，不是"0 个样本"
+                flac.Set("total_samples_known", JsonValue(stream.declared_total_samples > 0));
+                flac.Set("frame_crc_checked", JsonValue(stream.flac_frame_crc_checked));
+                flac.Set("frame_crc_failures", JNumber(static_cast<double>(stream.flac_frame_crc_failures)));
+                flac.Set("high_variance_block_sizes", JsonValue(stream.flac_high_variance_blocks));
+                node.Set("flac", flac);
+            }
+            // AAC 的 PCE：有没有解出 PCE 决定"声道数"这一栏是一手证据还是容器抄来的。
+            // SBR/PS：sbr_source 为空表示**没有显式信令**，不等于"确认没有 SBR"
+            // —— implicit signaling 的 SBR 在 raw_data_block 的 ID_FIL 里，本工具不解析。
+            // 报告必须能把这两种情况分开，否则读报告的人会把"未知"当成"没有"。
+            if (stream.codec == model::AudioBitstreamCodec::AacAdts ||
+                stream.codec == model::AudioBitstreamCodec::AacLatm ||
+                stream.codec == model::AudioBitstreamCodec::AacRaw) {
+                JsonValue aac = JsonValue::MakeObject();
+                aac.Set("channel_source", JText(stream.aac_pce ? "pce" : "asc_or_container"));
+                aac.Set("sbr", JsonValue(stream.aac_sbr));
+                aac.Set("ps", JsonValue(stream.aac_ps));
+                aac.Set("sbr_source",
+                        JText(stream.aac_sbr_source.empty() ? std::string("not_signaled") : stream.aac_sbr_source));
+                if (stream.aac_core_sample_rate > 0)
+                    aac.Set("core_sample_rate", JNumber(static_cast<double>(stream.aac_core_sample_rate)));
+                if (stream.aac_output_sample_rate > 0)
+                    aac.Set("output_sample_rate", JNumber(static_cast<double>(stream.aac_output_sample_rate)));
+                if (stream.latm_num_sub_frames >= 0)
+                    aac.Set("latm_num_sub_frames", JNumber(static_cast<double>(stream.latm_num_sub_frames)));
+                if (stream.aac_pce) {
+                    aac.Set("object_type", JNumber(static_cast<double>(stream.pce_object_type)));
+                    aac.Set("sample_rate", JNumber(static_cast<double>(stream.pce_sample_rate)));
+                    aac.Set("channels", JNumber(static_cast<double>(stream.pce_channels)));
+                    aac.Set("front", JNumber(static_cast<double>(stream.pce_front)));
+                    aac.Set("side", JNumber(static_cast<double>(stream.pce_side)));
+                    aac.Set("back", JNumber(static_cast<double>(stream.pce_back)));
+                    aac.Set("lfe", JNumber(static_cast<double>(stream.pce_lfe)));
+                    aac.Set("layout", JText(stream.pce_layout));
+                }
+                node.Set("aac", aac);
+            }
             if (!stream.note.empty())
                 node.Set("note", JText(stream.note));
             JsonValue inconsistencies = JsonValue::MakeArray();
@@ -362,6 +665,10 @@ std::string QcReportExporter::BuildJson(const QcExportBundle& bundle) {
 
     root.Set("metrics", BuildMetricsObject(run.analysis));
 
+    // 证据与覆盖状态（阶段 5）：顶层而不是塞进 metrics —— 它描述的是
+    // metrics 里那些数字**有多可信**，与具体测量值不是一个层级。
+    root.Set("dimensions", BuildDimensionsArray(run.analysis));
+
     JsonValue streams = JsonValue::MakeArray();
     for (const auto& stream : run.analysis.streams)
         streams.PushBack(BuildStreamObject(stream));
@@ -371,6 +678,17 @@ std::string QcReportExporter::BuildJson(const QcExportBundle& bundle) {
     for (const auto& rule : report.rules)
         rules.PushBack(BuildRuleObject(rule));
     root.Set("rules", rules);
+
+    // 参数变化时间线（阶段 1）：与 streaming 同层级，属于"过程证据"而非测量值。
+    // 无条件落（空数组也落）：报告读者要能区分"没有变化"与"没追踪"，
+    // 后者由 dimensions 里 parameter_timeline 一行的 executed 说明。
+    root.Set("parameter_timelines", BuildParameterTimelinesArray(run.analysis));
+    // 帧级显示顺序（POC）。同样无条件落：空数组意味着"没有 H.264 轨"，
+    // 与"有轨但没分析出来"由 dimensions 里 frame_order 一行说明。
+    root.Set("frame_orders", BuildFrameOrdersArray(run.analysis));
+    // 逐轨音频 QC（阶段 4）：主轨的 loudness 已在 metrics.loudness 里，
+    // 这里给出全部轨的横向对照（多语言/评论轨）。
+    root.Set("audio_qc_streams", BuildAudioQcStreamsArray(run.analysis));
 
     if (bundle.has_comparison) {
         const qc::QcComparison& comparison = bundle.comparison;

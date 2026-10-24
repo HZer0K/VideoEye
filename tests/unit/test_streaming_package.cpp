@@ -30,11 +30,11 @@ using videoeye::model::IssueSeverity;
 // 问题码是 namespace 而非类型，用别名而不是 using-declaration
 // （C++ 的 using-declaration 不允许指名命名空间，MSVC 会直接报错）
 namespace StreamingIssueCode = videoeye::model::StreamingIssueCode;
+using videoeye::model::DashRepresentationInfo;
 using videoeye::model::MediaPlaylistInfo;
+using videoeye::model::StreamingIssue;
 using videoeye::model::StreamingLadderEntry;
 using videoeye::model::StreamingPackageResult;
-using videoeye::model::DashRepresentationInfo;
-using videoeye::model::StreamingIssue;
 
 namespace {
 
@@ -159,8 +159,7 @@ TEST(StreamingPackageTest, ValidHlsVodPackageHasNoWarningOrError) {
     videoeye::HlsManifestAnalyzer hls;
     StreamingPackageResult result;
     ASSERT_TRUE(hls.AnalyzeFile((root / "master.m3u8").string(), result));
-    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
-              videoeye::SegmentQcAnalyzer::Analyze(result));
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone, videoeye::SegmentQcAnalyzer::Analyze(result));
 
     EXPECT_TRUE(result.valid);
     EXPECT_EQ(videoeye::model::StreamingKind::HlsMaster, result.kind);
@@ -206,8 +205,7 @@ TEST(StreamingPackageTest, ProbeCoverageIsReportedInsteadOfSilentlyComplete) {
     videoeye::HlsManifestAnalyzer hls;
     StreamingPackageResult result;
     ASSERT_TRUE(hls.AnalyzeFile((root / "master.m3u8").string(), result));
-    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
-              videoeye::SegmentQcAnalyzer::Analyze(result));
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone, videoeye::SegmentQcAnalyzer::Analyze(result));
 
     const uint32_t limit = videoeye::SegmentQcOptions{}.max_probe_segments;
     ASSERT_GT(limit, 0u);
@@ -630,13 +628,13 @@ TEST(StreamingPackageTest, ManifestLineReaderStopsWhenCancelledMidway) {
     size_t seen = 0;
     // 第一行就把取消位置上。断言"停得下来"而不是"停在第几行"—— 后者取决于分块大小，
     // 把这个数字写死只会让将来调 chunk_size 的改动白白挂掉。
-    const manifest_read::ManifestReadStatus status = manifest_read::ForEachManifestLine(
-        (root / "index.m3u8").string(), manifest_read::ManifestReadOptions{}, &cancel,
-        [&cancel, &seen](const std::string&) {
-            ++seen;
-            cancel.store(true, std::memory_order_release);
-            return true;
-        });
+    const manifest_read::ManifestReadStatus status =
+        manifest_read::ForEachManifestLine((root / "index.m3u8").string(), manifest_read::ManifestReadOptions{},
+                                           &cancel, [&cancel, &seen](const std::string&) {
+                                               ++seen;
+                                               cancel.store(true, std::memory_order_release);
+                                               return true;
+                                           });
     EXPECT_EQ(manifest_read::ManifestReadStatus::Cancelled, status);
     EXPECT_LT(seen, static_cast<size_t>(kLines * 2));
 
@@ -661,8 +659,7 @@ TEST(StreamingPackageTest, ReadFileAndInMemoryTextSplitTheSameWay) {
     ASSERT_EQ(1u, crlf_result.playlists.size());
     ASSERT_EQ(1u, lf_result.playlists.size());
     EXPECT_EQ(lf_result.playlists[0].SegmentCount(), crlf_result.playlists[0].SegmentCount());
-    EXPECT_DOUBLE_EQ(lf_result.playlists[0].total_duration_seconds,
-                     crlf_result.playlists[0].total_duration_seconds);
+    EXPECT_DOUBLE_EQ(lf_result.playlists[0].total_duration_seconds, crlf_result.playlists[0].total_duration_seconds);
     EXPECT_EQ(lf_result.playlists[0].segments[0].uri, crlf_result.playlists[0].segments[0].uri);
 
     fs::remove_all(root);
@@ -689,7 +686,8 @@ TEST(StreamingPackageTest, DashManifestSizeLimitAndCancelAreEnforced) {
                             "    </AdaptationSet>\n"
                             "  </Period>\n"
                             // 注释是合法 XML 噪声，扫描器会跳过；用它把文件撑到超限
-                            "  <!-- " + MakeBytes(8192) + " -->\n</MPD>\n";
+                            "  <!-- " +
+                            MakeBytes(8192) + " -->\n</MPD>\n";
     ASSERT_TRUE(WriteFile(root / "index.mpd", mpd));
 
     videoeye::DashManifestAnalyzer dash;
@@ -703,8 +701,7 @@ TEST(StreamingPackageTest, DashManifestSizeLimitAndCancelAreEnforced) {
 
     std::atomic<bool> cancelled{true};
     StreamingPackageResult cancelled_result;
-    EXPECT_FALSE(dash.AnalyzeFile((root / "index.mpd").string(), cancelled_result,
-                                  DashManifestOptions{}, &cancelled));
+    EXPECT_FALSE(dash.AnalyzeFile((root / "index.mpd").string(), cancelled_result, DashManifestOptions{}, &cancelled));
     EXPECT_TRUE(cancelled_result.truncated);
 
     // 限制放宽后同一个文件必须照常解析 —— 证明失败确实由上限/取消引起，而非解析器不认这个 MPD
@@ -783,7 +780,8 @@ namespace {
 // 手工铺一个大包（分片实体落盘，探测阶段会真的去 stat 它们）
 bool MakeBigPackage(const fs::path& root, int seg_count, StreamingPackageResult& out) {
     for (int i = 0; i < seg_count; ++i) {
-        if (!WriteFile(root / ("seg" + std::to_string(i) + ".ts"), "")) return false;
+        if (!WriteFile(root / ("seg" + std::to_string(i) + ".ts"), ""))
+            return false;
     }
     StreamingPackageResult result;
     result.valid = true;
@@ -804,7 +802,7 @@ bool MakeBigPackage(const fs::path& root, int seg_count, StreamingPackageResult&
     return true;
 }
 
-}  // namespace
+} // namespace
 
 TEST(StreamingPackageCancelTest, HugeManifestIsNotReadToTheEndWhenCancelled) {
     const fs::path root = MakeTempDir("cancel_manifest");
@@ -817,8 +815,7 @@ TEST(StreamingPackageCancelTest, HugeManifestIsNotReadToTheEndWhenCancelled) {
     hls.AnalyzeFile((root / "media.m3u8").string(), result, {}, &cancel);
 
     const size_t parsed = result.playlists.empty() ? 0 : result.playlists[0].segments.size();
-    EXPECT_LT(parsed, 4000u)
-        << "取消令牌没传到清单解析: 4000 行的清单在已取消的情况下被读满了";
+    EXPECT_LT(parsed, 4000u) << "取消令牌没传到清单解析: 4000 行的清单在已取消的情况下被读满了";
 }
 
 TEST(StreamingPackageCancelTest, CancelledSegmentQcSkipsLadderAndValidation) {
@@ -830,7 +827,7 @@ TEST(StreamingPackageCancelTest, CancelledSegmentQcSkipsLadderAndValidation) {
     // 必须在 analyzer 域里取: 与 SegmentQcAnalyzer 同命名空间, 测试文件里没有这个 using
     videoeye::SegmentQcOptions options;
     options.probe_segments = true;
-    options.max_probe_segments = 64;  // 放宽上限, 保证"分片落盘探测"这个最耗时的阶段真会跑到
+    options.max_probe_segments = 64; // 放宽上限, 保证"分片落盘探测"这个最耗时的阶段真会跑到
 
     // 对照组：不取消就必须跑完并产出 ladder —— 防止实现退化成"一律 kCancelled"
     std::atomic<bool> run_cancel{false};
@@ -891,28 +888,26 @@ TEST(StreamingPackageCancelTest, ValidateChecksCancelInsideDashLoops) {
             seg.duration_seconds = 4.0;
             seg.has_duration = true;
             seg.resolved_path = "/definitely/not/on/disk/seg" + std::to_string(i) + ".m4s";
-            seg.exists = false;  // 磁盘上没有 -> 第 1 段跑完必然报 kSegmentMissingFile
+            seg.exists = false; // 磁盘上没有 -> 第 1 段跑完必然报 kSegmentMissingFile
             rep.segments.push_back(std::move(seg));
         }
         pkg.representations.push_back(std::move(rep));
     }
 
     videoeye::SegmentQcOptions options;
-    options.probe_segments = false;  // 探测阶段自带取消检查, 会掩盖 Validate 这一段
+    options.probe_segments = false; // 探测阶段自带取消检查, 会掩盖 Validate 这一段
 
     // 对照组: 不取消必须跑完并真的报出缺失分片, 否则"取消态没有 issue"可能只是
     // "压根没进循环"的假通过。
     std::atomic<bool> run_cancel{false};
     StreamingPackageResult control = pkg;
-    const auto control_status =
-        videoeye::SegmentQcAnalyzer::Validate(control, options, &run_cancel);
+    const auto control_status = videoeye::SegmentQcAnalyzer::Validate(control, options, &run_cancel);
     ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone, control_status);
     ASSERT_FALSE(control.issues.empty()) << "对照组必须报出缺失分片, 否则本用例失去意义";
 
     std::atomic<bool> cancel{true};
     StreamingPackageResult canceled = pkg;
-    const auto cancel_status =
-        videoeye::SegmentQcAnalyzer::Validate(canceled, options, &cancel);
+    const auto cancel_status = videoeye::SegmentQcAnalyzer::Validate(canceled, options, &cancel);
     EXPECT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kCancelled, cancel_status)
         << "Validate 必须自己报告取消, 不能让调用方靠 Analyze 末尾的兜底检查来擦屁股";
     EXPECT_TRUE(canceled.issues.empty())
@@ -977,7 +972,6 @@ const StreamingIssue* IssueOf(const StreamingPackageResult& result, const std::s
 }
 
 } // namespace
-
 
 // ---- dynamic MPD 必须从 timeShiftBufferDepth 推出窗口内的分片 ----
 TEST(StreamingPackageLiveTest, DashLiveExpandsSegmentsFromTimeShiftBufferDepth) {
@@ -1067,8 +1061,7 @@ TEST(StreamingPackageLiveTest, DashLiveWithoutWindowClueReportsInsteadOfSilence)
     EXPECT_TRUE(result.representations[0].segments.empty());
 
     // "推不出来"这件事本身要出现在报告里，否则用户只会以为软件坏了
-    const StreamingIssue* unknown =
-        IssueOf(result, StreamingIssueCode::kDashLiveSegmentCountUnknown);
+    const StreamingIssue* unknown = IssueOf(result, StreamingIssueCode::kDashLiveSegmentCountUnknown);
     ASSERT_TRUE(unknown != nullptr);
     EXPECT_EQ(IssueSeverity::Info, unknown->severity) << "这是离线快照的边界，不是清单缺陷";
     EXPECT_TRUE(result.HasIssue(StreamingIssueCode::kDashLiveMissingTimeShiftBuffer));
@@ -1116,8 +1109,8 @@ TEST(StreamingPackageLiveTest, DashStaticMpdHasNoLiveIssues) {
 namespace {
 
 // 一张单 media playlist 的包：segments 里列出的那些落盘，没列的就当"磁盘上没有"
-bool WriteHlsPlaylistPackage(const fs::path& root, int segment_count, const std::vector<int>& existing,
-                             bool endlist, const std::string& playlist_type, bool with_media_sequence) {
+bool WriteHlsPlaylistPackage(const fs::path& root, int segment_count, const std::vector<int>& existing, bool endlist,
+                             const std::string& playlist_type, bool with_media_sequence) {
     std::string text = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n";
     if (with_media_sequence)
         text += "#EXT-X-MEDIA-SEQUENCE:120\n";
@@ -1297,4 +1290,436 @@ TEST(StreamingPackageLiveTest, KeyframeAlignmentIgnoresWholeLayerShiftOnLivePack
               videoeye::SegmentQcAnalyzer::Validate(vod, options, &cancel));
     EXPECT_TRUE(vod.HasIssue(StreamingIssueCode::kDashVariantKeyframeMisalign))
         << "点播侧必须照旧报出来，否则这条用例只是在证明分支没跑到";
+}
+
+// ===========================================================================
+// 分片首帧随机访问的「实证层」（阶段 8）
+// ===========================================================================
+//
+// 背景缺陷（2026-10 审计）：ProbeFmp4Segment 以前读到 tfdt 就把
+// starts_with_keyframe 置真。tfdt 只是解码起始时间，"分片以 IDR 开头"是 CMAF
+// 的**约定**而不是这件事的**证据**。因此这里分三种证据等级分别断言：
+//   SyncFlag  —— sample_flags 明确说是同步样本：可以当证据用，不报
+//   NotSync   —— sample_flags 明确说不是同步样本：必须报 Error
+//   Declared  —— 查不到 flags，只能按约定视为可解码：必须报 Info，不能静默
+//
+// 这里直接构造 StreamingPackageResult 走 Validate()（纯内存、不落盘），
+// 因为这三条判定全在 Validate 里，与磁盘探测解耦。
+
+namespace {
+
+// 造一个只含 fMP4 分片的 HLS 包，每条分片按给定证据等级逐条设置
+StreamingPackageResult MakeKeyframeEvidencePackage(int count, videoeye::model::KeyframeEvidence evidence,
+                                                   bool probed = true) {
+    StreamingPackageResult result;
+    result.valid = true;
+    MediaPlaylistInfo pl;
+    pl.index = 0;
+    pl.uri = "media.m3u8";
+    for (int i = 0; i < count; ++i) {
+        videoeye::model::SegmentInfo seg;
+        seg.sequence = i;
+        seg.uri = "seg" + std::to_string(i) + ".m4s";
+        seg.duration_seconds = 4.0;
+        seg.has_duration = true;
+        seg.start_seconds = i * 4.0;
+        seg.container = videoeye::model::SegmentContainer::FMP4;
+        seg.probed = probed;
+        seg.keyframe_evidence = evidence;
+        seg.starts_with_keyframe = (evidence != videoeye::model::KeyframeEvidence::NotSync);
+        pl.segments.push_back(std::move(seg));
+    }
+    result.playlists.push_back(std::move(pl));
+    return result;
+}
+
+} // namespace
+
+// 反例：首样本明确不是同步样本 —— 这是"起播花屏/黑屏"的直接原因，必须是 Error
+TEST(SegmentKeyframeEvidenceTest, NonSyncFirstSampleIsReportedAsError) {
+    StreamingPackageResult result = MakeKeyframeEvidencePackage(3, videoeye::model::KeyframeEvidence::NotSync);
+    const videoeye::SegmentQcOptions options;
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(result, options, nullptr));
+
+    ASSERT_TRUE(result.HasIssue(StreamingIssueCode::kSegmentStartsNonSync));
+    // 逐条找出来确认严重度与计数：只判"有没有"会放过"报成 Warning"这种降级
+    bool found = false;
+    for (const StreamingIssue& issue : result.issues) {
+        if (issue.code != StreamingIssueCode::kSegmentStartsNonSync)
+            continue;
+        found = true;
+        EXPECT_EQ(issue.severity, IssueSeverity::Error);
+        EXPECT_EQ(issue.occurrence_count, 3);
+        EXPECT_NE(issue.detail.find("seg0.m4s"), std::string::npos) << "必须指出第一个坏分片是哪个";
+    }
+    EXPECT_TRUE(found);
+    // 有实证的坏分片不该同时落"未获实证"那条 Info，否则两条结论互相打脸
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentKeyframeUnverified));
+}
+
+// 正例：flags 明确是同步样本 —— 有实证，不该报任何问题
+TEST(SegmentKeyframeEvidenceTest, SyncFlagFirstSampleProducesNoIssue) {
+    StreamingPackageResult result = MakeKeyframeEvidencePackage(3, videoeye::model::KeyframeEvidence::SyncFlag);
+    const videoeye::SegmentQcOptions options;
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(result, options, nullptr));
+
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentStartsNonSync));
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentKeyframeUnverified))
+        << "已经拿到 sample_flags 的段不该再被告知「未获实证」";
+}
+
+// 反例：查不到 flags（tfhd / trun 都没给，缺省值在 init 段的 trex）
+// 必须报 Info 说明"这只是按约定认为可以"，绝不能静默当通过。
+TEST(SegmentKeyframeEvidenceTest, DeclaredOnlyIsReportedAsUnverified) {
+    StreamingPackageResult result = MakeKeyframeEvidencePackage(2, videoeye::model::KeyframeEvidence::Declared);
+    const videoeye::SegmentQcOptions options;
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(result, options, nullptr));
+
+    ASSERT_TRUE(result.HasIssue(StreamingIssueCode::kSegmentKeyframeUnverified));
+    for (const StreamingIssue& issue : result.issues) {
+        if (issue.code != StreamingIssueCode::kSegmentKeyframeUnverified)
+            continue;
+        EXPECT_EQ(issue.severity, IssueSeverity::Info) << "缺证据是提示，不是错误";
+        EXPECT_EQ(issue.occurrence_count, 2);
+        EXPECT_NE(issue.detail.find("不等于验证通过"), std::string::npos);
+    }
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentStartsNonSync));
+}
+
+// 反例：分片没探测过（probed=false）时三种证据都不该成立 —— 没探测就谈证据是假的
+TEST(SegmentKeyframeEvidenceTest, UnprobedSegmentsAreNotJudged) {
+    StreamingPackageResult result =
+        MakeKeyframeEvidencePackage(2, videoeye::model::KeyframeEvidence::NotSync, /*probed=*/false);
+    const videoeye::SegmentQcOptions options;
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(result, options, nullptr));
+
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentStartsNonSync))
+        << "没探测过的分片不能给出「首帧不是随机访问点」这种实证结论";
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentKeyframeUnverified));
+}
+
+// 关闭关键帧对齐检查后两条诊断都不该出现（选项是唯一切换点）
+TEST(SegmentKeyframeEvidenceTest, CheckDisabledSuppressesBothIssues) {
+    videoeye::SegmentQcOptions options;
+    options.check_keyframe_alignment = false;
+    StreamingPackageResult non_sync = MakeKeyframeEvidencePackage(2, videoeye::model::KeyframeEvidence::NotSync);
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(non_sync, options, nullptr));
+    EXPECT_FALSE(non_sync.HasIssue(StreamingIssueCode::kSegmentStartsNonSync));
+
+    StreamingPackageResult declared = MakeKeyframeEvidencePackage(2, videoeye::model::KeyframeEvidence::Declared);
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(declared, options, nullptr));
+    EXPECT_FALSE(declared.HasIssue(StreamingIssueCode::kSegmentKeyframeUnverified));
+}
+
+// ===========================================================================
+// 声明层 × 实证层：清单承诺 vs 内容实际
+// ===========================================================================
+//
+// 背景（2026-10 审计）：HLS 的 EXT-X-INDEPENDENT-SEGMENTS 很早就在解析器里
+// 写进了 MediaPlaylistInfo::independent_segments，但**没有任何读者**；
+// DASH 的 startWithSAP 连解析都没有。于是工具只能回答"内容能不能独立解码"，
+// 回答不了"清单有没有承诺过、承诺兑现了没有"。
+//
+// 这两条结论的修复动作完全不同：
+//   * 内容不能独立解码  -> 改编码器（分片边界对齐 IDR）
+//   * 清单承诺了却没做到 -> 还要查清单是不是从别处沿用/内容被替换过
+// 所以必须分开报，不能合并。
+
+namespace {
+
+// 造一条 HLS media playlist。starts 给每段的起点（秒），span 给段内实测时长。
+StreamingPackageResult MakeHlsSegments(const std::vector<double>& starts, double span,
+                                       videoeye::model::KeyframeEvidence evidence, bool probed = true) {
+    StreamingPackageResult result;
+    result.valid = true;
+    result.kind = videoeye::model::StreamingKind::HlsMedia;
+    MediaPlaylistInfo pl;
+    pl.index = 0;
+    pl.uri = "media.m3u8";
+    for (size_t i = 0; i < starts.size(); ++i) {
+        videoeye::model::SegmentInfo seg;
+        seg.sequence = i;
+        seg.uri = "seg" + std::to_string(i) + ".m4s";
+        seg.duration_seconds = span;
+        seg.has_duration = true;
+        seg.start_seconds = starts[i];
+        seg.container = videoeye::model::SegmentContainer::FMP4;
+        seg.probed = probed;
+        seg.has_decode_time = probed;
+        seg.media_duration_seconds = span;
+        seg.has_media_duration = span > 0.0;
+        seg.keyframe_evidence = evidence;
+        seg.starts_with_keyframe = (evidence != videoeye::model::KeyframeEvidence::NotSync);
+        pl.segments.push_back(std::move(seg));
+    }
+    result.playlists.push_back(std::move(pl));
+    return result;
+}
+
+const StreamingIssue* FindIssue(const StreamingPackageResult& result, const char* code) {
+    for (const StreamingIssue& issue : result.issues) {
+        if (issue.code == code)
+            return &issue;
+    }
+    return nullptr;
+}
+
+} // namespace
+
+// 反例：清单声明独立分片，内容首帧却非同步 —— 声明与内容矛盾。
+// 这一条必须和"内容不能独立解码"同时存在：两者说的不是同一件事。
+TEST(SegmentDeclarationTest, DeclaredIndependentButNonSyncReportsContradiction) {
+    StreamingPackageResult result = MakeHlsSegments({0.0, 4.0, 8.0}, 4.0, videoeye::model::KeyframeEvidence::NotSync);
+    result.playlists[0].independent_segments = true;
+
+    const videoeye::SegmentQcOptions options;
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(result, options, nullptr));
+
+    const StreamingIssue* contradiction = FindIssue(result, StreamingIssueCode::kSegmentDeclarationContradicts);
+    ASSERT_NE(contradiction, nullptr) << "声明了独立分片却有非同步首帧，必须报矛盾";
+    EXPECT_NE(contradiction->detail.find("EXT-X-INDEPENDENT-SEGMENTS"), std::string::npos)
+        << "要指出声明来源，用户才知道去改哪里";
+    // 内容是 Warning（硬问题由下面的 Error 承担），避免一个缺陷算两个 Error
+    EXPECT_EQ(contradiction->severity, IssueSeverity::Warning);
+    // 内容层那条 Error 必须仍然独立存在
+    const StreamingIssue* content = FindIssue(result, StreamingIssueCode::kSegmentStartsNonSync);
+    ASSERT_NE(content, nullptr);
+    EXPECT_EQ(content->severity, IssueSeverity::Error);
+}
+
+// 正例：声明了、内容也做到了 —— 两条都不该报
+TEST(SegmentDeclarationTest, DeclaredAndVerifiedReportsNothing) {
+    StreamingPackageResult result = MakeHlsSegments({0.0, 4.0, 8.0}, 4.0, videoeye::model::KeyframeEvidence::SyncFlag);
+    result.playlists[0].independent_segments = true;
+
+    const videoeye::SegmentQcOptions options;
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(result, options, nullptr));
+
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentDeclarationContradicts));
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentIndependenceUndeclared))
+        << "已经声明过就不该再提示「未声明」";
+}
+
+// master playlist 级的 EXT-X-INDEPENDENT-SEGMENTS 对所有 variant 生效。
+// 这条容易漏：声明写在 master 上，而分片是 media playlist 解析出来的，
+// 只看 pl.independent_segments 会把 master 的声明丢掉。
+TEST(SegmentDeclarationTest, MasterLevelDeclarationAppliesToMediaPlaylists) {
+    StreamingPackageResult result = MakeHlsSegments({0.0, 4.0}, 4.0, videoeye::model::KeyframeEvidence::NotSync);
+    result.master_independent_segments = true;
+    // 注意：media playlist 本身没有声明
+    ASSERT_FALSE(result.playlists[0].independent_segments);
+
+    const videoeye::SegmentQcOptions options;
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(result, options, nullptr));
+
+    EXPECT_TRUE(result.HasIssue(StreamingIssueCode::kSegmentDeclarationContradicts))
+        << "master 上声明的独立分片同样构成承诺";
+}
+
+// 反例（弱）：内容全部实证达标，但清单没声明。不是缺陷，是可优化点。
+TEST(SegmentDeclarationTest, VerifiedButUndeclaredIsFlaggedAsInfo) {
+    StreamingPackageResult result = MakeHlsSegments({0.0, 4.0, 8.0}, 4.0, videoeye::model::KeyframeEvidence::SyncFlag);
+
+    const videoeye::SegmentQcOptions options;
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(result, options, nullptr));
+
+    const StreamingIssue* issue = FindIssue(result, StreamingIssueCode::kSegmentIndependenceUndeclared);
+    ASSERT_NE(issue, nullptr);
+    EXPECT_EQ(issue->severity, IssueSeverity::Info) << "内容没问题，只是清单漏了一个承诺";
+    EXPECT_EQ(issue->occurrence_count, 3);
+    EXPECT_NE(issue->suggestion.find("EXT-X-INDEPENDENT-SEGMENTS"), std::string::npos);
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentDeclarationContradicts));
+}
+
+// 反例：没探测过的分片不能参与声明对照 —— 没有实测就没有"矛盾"这回事
+TEST(SegmentDeclarationTest, UnprobedSegmentsProduceNoDeclarationVerdict) {
+    StreamingPackageResult result =
+        MakeHlsSegments({0.0, 4.0}, 4.0, videoeye::model::KeyframeEvidence::NotSync, /*probed=*/false);
+    result.playlists[0].independent_segments = true;
+
+    const videoeye::SegmentQcOptions options;
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(result, options, nullptr));
+
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentDeclarationContradicts));
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentIndependenceUndeclared));
+}
+
+// DASH：startWithSAP="1" 是「分片以 IDR 开头」的承诺，等价于 HLS 的独立分片声明
+TEST(SegmentDeclarationTest, DashStartWithSapOneIsACommitment) {
+    StreamingPackageResult result;
+    result.valid = true;
+    result.kind = videoeye::model::StreamingKind::Dash;
+    videoeye::model::DashRepresentationInfo rep;
+    rep.index = 0;
+    rep.start_with_sap = 1;
+    for (int i = 0; i < 2; ++i) {
+        videoeye::model::SegmentInfo seg;
+        seg.sequence = static_cast<uint64_t>(i);
+        seg.uri = "seg" + std::to_string(i) + ".m4s";
+        seg.duration_seconds = 4.0;
+        seg.has_duration = true;
+        seg.start_seconds = i * 4.0;
+        seg.container = videoeye::model::SegmentContainer::FMP4;
+        seg.probed = true;
+        seg.has_decode_time = true;
+        seg.media_duration_seconds = 4.0;
+        seg.has_media_duration = true;
+        seg.keyframe_evidence = videoeye::model::KeyframeEvidence::NotSync;
+        seg.starts_with_keyframe = false;
+        rep.segments.push_back(std::move(seg));
+    }
+    result.representations.push_back(std::move(rep));
+
+    const videoeye::SegmentQcOptions options;
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(result, options, nullptr));
+
+    const StreamingIssue* issue = FindIssue(result, StreamingIssueCode::kSegmentDeclarationContradicts);
+    ASSERT_NE(issue, nullptr);
+    EXPECT_NE(issue->detail.find("startWithSAP"), std::string::npos);
+}
+
+// 反例：startWithSAP="3" 是低等级 SAP，不构成「首帧可随机访问」的承诺。
+// 把它当成承诺会误报"声明与内容矛盾"。
+TEST(SegmentDeclarationTest, DashStartWithSapThreeIsNotACommitment) {
+    StreamingPackageResult result;
+    result.valid = true;
+    result.kind = videoeye::model::StreamingKind::Dash;
+    videoeye::model::DashRepresentationInfo rep;
+    rep.index = 0;
+    rep.start_with_sap = 3;
+    videoeye::model::SegmentInfo seg;
+    seg.sequence = 0;
+    seg.uri = "seg0.m4s";
+    seg.duration_seconds = 4.0;
+    seg.has_duration = true;
+    seg.container = videoeye::model::SegmentContainer::FMP4;
+    seg.probed = true;
+    seg.has_decode_time = true;
+    seg.keyframe_evidence = videoeye::model::KeyframeEvidence::NotSync;
+    rep.segments.push_back(std::move(seg));
+    result.representations.push_back(std::move(rep));
+
+    const videoeye::SegmentQcOptions options;
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(result, options, nullptr));
+
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentDeclarationContradicts))
+        << "SAP 3 不承诺分片首帧可随机访问";
+}
+
+// ===========================================================================
+// 跨分片时间轴连续性（实证层，数据源 = 文件里的 tfdt）
+// ===========================================================================
+
+// 反例：两段之间漏了 0.5 秒媒体时间 —— 有分片没进清单，或 tfdt 写错
+TEST(SegmentContinuityTest, GapBetweenSegmentsIsReported) {
+    StreamingPackageResult result = MakeHlsSegments({0.0, 4.5, 8.5}, 4.0, videoeye::model::KeyframeEvidence::SyncFlag);
+
+    const videoeye::SegmentQcOptions options;
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(result, options, nullptr));
+
+    const StreamingIssue* issue = FindIssue(result, StreamingIssueCode::kSegmentTimelineGapActual);
+    ASSERT_NE(issue, nullptr) << "0->4 结束后下一段从 4.5 开始，中间 0.5 秒没有样本";
+    EXPECT_NEAR(issue->metric_value, 0.5, 0.001);
+    EXPECT_EQ(issue->severity, IssueSeverity::Warning) << "段内时长取首个 traf，属估算，不给 Error";
+}
+
+// 正例：首尾严格相接 —— 不该报任何连续性问题
+TEST(SegmentContinuityTest, ContiguousSegmentsProduceNoIssue) {
+    StreamingPackageResult result =
+        MakeHlsSegments({0.0, 4.0, 8.0, 12.0}, 4.0, videoeye::model::KeyframeEvidence::SyncFlag);
+
+    const videoeye::SegmentQcOptions options;
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(result, options, nullptr));
+
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentTimelineGapActual));
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentTimelineOverlapActual));
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentTimelineRegress));
+}
+
+// 反例：两段覆盖同一段时间 —— 重叠部分会被播两次（音画重复/卡顿一下）
+TEST(SegmentContinuityTest, OverlapBetweenSegmentsIsReported) {
+    StreamingPackageResult result = MakeHlsSegments({0.0, 1.0}, 4.0, videoeye::model::KeyframeEvidence::SyncFlag);
+
+    const videoeye::SegmentQcOptions options;
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(result, options, nullptr));
+
+    const StreamingIssue* issue = FindIssue(result, StreamingIssueCode::kSegmentTimelineOverlapActual);
+    ASSERT_NE(issue, nullptr);
+    EXPECT_NEAR(issue->metric_value, 3.0, 0.001);
+    EXPECT_EQ(issue->severity, IssueSeverity::Warning);
+}
+
+// 反例：tfdt 倒退（前一段从 4 开始，后一段从 3 开始）—— 硬证据，给 Error。
+// 构造上让前一对首尾严格相接（0 -> 4），所以只有倒退这一种问题。
+TEST(SegmentContinuityTest, RegressedStartIsReportedAsError) {
+    StreamingPackageResult result = MakeHlsSegments({0.0, 4.0, 3.0}, 4.0, videoeye::model::KeyframeEvidence::SyncFlag);
+
+    const videoeye::SegmentQcOptions options;
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(result, options, nullptr));
+
+    const StreamingIssue* issue = FindIssue(result, StreamingIssueCode::kSegmentTimelineRegress);
+    ASSERT_NE(issue, nullptr);
+    EXPECT_EQ(issue->severity, IssueSeverity::Error) << "tfdt 直接比较，是硬证据";
+}
+
+// 正例：带 EXT-X-DISCONTINUITY 的段允许时基重置，不能按"倒退"报。
+// 这条是关键的反误报：合法的不连续不该被当成缺陷。
+TEST(SegmentContinuityTest, DiscontinuityResetsTheTimeline) {
+    StreamingPackageResult result = MakeHlsSegments({0.0, 1.0}, 4.0, videoeye::model::KeyframeEvidence::SyncFlag);
+    result.playlists[0].segments[1].discontinuity_before = true;
+
+    const videoeye::SegmentQcOptions options;
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(result, options, nullptr));
+
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentTimelineOverlapActual))
+        << "DISCONTINUITY 之后的时间轴重置是合法的";
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentTimelineRegress));
+}
+
+// 反例：段内时长未知时只能判倒退，不能凭空判缺口 ——
+// 否则"时长未探测到"会被当成 0 长度，每两段之间都会误报一个缺口。
+TEST(SegmentContinuityTest, UnknownSegmentSpanOnlyAllowsRegressVerdict) {
+    StreamingPackageResult result = MakeHlsSegments({0.0, 4.0}, 4.0, videoeye::model::KeyframeEvidence::SyncFlag);
+    result.playlists[0].segments[0].has_media_duration = false;
+    result.playlists[0].segments[0].has_duration = false;
+
+    const videoeye::SegmentQcOptions options;
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(result, options, nullptr));
+
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentTimelineGapActual))
+        << "上一段时长未知时不能判定后面有缺口";
+}
+
+// 关闭连续性检查后三条诊断都不出现（选项是唯一切换点）
+TEST(SegmentContinuityTest, CheckDisabledSuppressesAllThree) {
+    videoeye::SegmentQcOptions options;
+    options.check_segment_continuity = false;
+    StreamingPackageResult result = MakeHlsSegments({0.0, 1.0}, 4.0, videoeye::model::KeyframeEvidence::SyncFlag);
+    result.playlists[0].segments.push_back(result.playlists[0].segments[0]);
+    result.playlists[0].segments.back().start_seconds = 0.5;
+
+    ASSERT_EQ(videoeye::SegmentQcAnalyzer::StageStatus::kDone,
+              videoeye::SegmentQcAnalyzer::Validate(result, options, nullptr));
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentTimelineOverlapActual));
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentTimelineGapActual));
+    EXPECT_FALSE(result.HasIssue(StreamingIssueCode::kSegmentTimelineRegress));
 }

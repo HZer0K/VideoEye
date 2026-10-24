@@ -11,25 +11,24 @@
 #include <string>
 #include <vector>
 
-#include "core/qc/QcAnalyzeRequest.h"
 #include "core/domain/model/QcReport.h"
-#include "infrastructure/serialization/Json.h"
+#include "core/qc/QcAnalyzeRequest.h"
 #include "core/reporting/QcReportExporter.h"
+#include "infrastructure/serialization/Json.h"
 #include "tests/support/PdfVerifier.h"
 
-using videoeye::qc::QcRunResult;
+using videoeye::JsonParse;
+using videoeye::JsonValue;
 using videoeye::model::DiagnosticIssue;
 using videoeye::model::IssueCategory;
 using videoeye::model::IssueSeverity;
+using videoeye::qc::QcRunResult;
 using videoeye::reporting::QcExportBundle;
 using videoeye::reporting::QcReportExporter;
 using videoeye::reporting::QcReportOutputPath;
-using videoeye::JsonParse;
-using videoeye::JsonValue;
 
 namespace {
-DiagnosticIssue MakeIssue(const std::string& rule_id, IssueSeverity sev,
-                                 IssueCategory cat, const std::string& title) {
+DiagnosticIssue MakeIssue(const std::string& rule_id, IssueSeverity sev, IssueCategory cat, const std::string& title) {
     DiagnosticIssue issue;
     issue.rule_id = rule_id;
     issue.severity = sev;
@@ -50,20 +49,19 @@ QcExportBundle MakeBundle(int issue_count) {
     run.report.duration_seconds = 12.5;
     run.report.score = 42.0;
     run.report.verdict = "不通过";
-    if (issue_count > 0) run.report.issues.push_back(
-        MakeIssue("video.gop.max_seconds", IssueSeverity::Critical,
-                  IssueCategory::Gop, "GOP 过长"));
-    if (issue_count > 1) run.report.issues.push_back(
-        MakeIssue("audio.loudness.range", IssueSeverity::Error,
-                  IssueCategory::Audio, "响度超标"));
-    if (issue_count > 2) run.report.issues.push_back(
-        MakeIssue("container.missing_subtitle", IssueSeverity::Warning,
-                  IssueCategory::Container, "缺字幕"));
+    if (issue_count > 0)
+        run.report.issues.push_back(
+            MakeIssue("video.gop.max_seconds", IssueSeverity::Critical, IssueCategory::Gop, "GOP 过长"));
+    if (issue_count > 1)
+        run.report.issues.push_back(
+            MakeIssue("audio.loudness.range", IssueSeverity::Error, IssueCategory::Audio, "响度超标"));
+    if (issue_count > 2)
+        run.report.issues.push_back(
+            MakeIssue("container.missing_subtitle", IssueSeverity::Warning, IssueCategory::Container, "缺字幕"));
     // 3 个以上: 多页 PDF / 大批量用例才需要, 编号进标题便于定位
     for (int i = 3; i < issue_count; ++i) {
-        run.report.issues.push_back(
-            MakeIssue("video.extra.rule_" + std::to_string(i), IssueSeverity::Info,
-                      IssueCategory::Video, "附加问题 " + std::to_string(i)));
+        run.report.issues.push_back(MakeIssue("video.extra.rule_" + std::to_string(i), IssueSeverity::Info,
+                                              IssueCategory::Video, "附加问题 " + std::to_string(i)));
     }
 
     QcExportBundle bundle;
@@ -80,12 +78,17 @@ struct ScopedDir {
     std::filesystem::path path;
     explicit ScopedDir(const std::string& tag)
         : path(std::filesystem::temp_directory_path() /
-               ("videoeye_report_" + tag + "_" + std::to_string(
-                   std::chrono::steady_clock::now().time_since_epoch().count()))) {
+               ("videoeye_report_" + tag + "_" +
+                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))) {
         std::filesystem::create_directories(path);
     }
-    ~ScopedDir() { std::error_code ec; std::filesystem::remove_all(path, ec); }
-    std::string File(const std::string& name) const { return (path / name).string(); }
+    ~ScopedDir() {
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+    }
+    std::string File(const std::string& name) const {
+        return (path / name).string();
+    }
 };
 
 std::string ReadWholeFile(const std::string& path) {
@@ -106,15 +109,19 @@ std::vector<std::vector<std::string>> ParseCsvRecords(const std::string& content
     std::string field;
     bool in_quotes = false;
     std::size_t i = 0;
-    if (content.compare(0, 3, "\xEF\xBB\xBF") == 0) i = 3;   // UTF-8 BOM
+    if (content.compare(0, 3, "\xEF\xBB\xBF") == 0)
+        i = 3; // UTF-8 BOM
     for (; i < content.size(); ++i) {
         const char c = content[i];
         if (in_quotes) {
             if (c == '"') {
-                if (i + 1 < content.size() && content[i + 1] == '"') { field += '"'; ++i; }
-                else in_quotes = false;
+                if (i + 1 < content.size() && content[i + 1] == '"') {
+                    field += '"';
+                    ++i;
+                } else
+                    in_quotes = false;
             } else {
-                field += c;   // 引号内的换行/逗号原样保留
+                field += c; // 引号内的换行/逗号原样保留
             }
             continue;
         }
@@ -172,7 +179,7 @@ QcExportBundle MakeTrickyBundle() {
     injected.rule_id = "container.injected_title";
     injected.severity = IssueSeverity::Error;
     injected.category = IssueCategory::Container;
-    injected.title = "=cmd|'/c calc'!A0";   // 公式注入载荷
+    injected.title = "=cmd|'/c calc'!A0"; // 公式注入载荷
     injected.detail = "含 \"引号\" 与,逗号";
     injected.suggestion = "+1+1";
     injected.metric_value = std::nan("");
@@ -212,8 +219,7 @@ QcExportBundle MakeTrickyBundle() {
 }
 
 TEST(QcReportExporterTest, CsvHasOneRowPerIssue) {
-    const std::string path = std::filesystem::temp_directory_path().string() +
-                             "/videoeye_qc_export_csv_test.csv";
+    const std::string path = std::filesystem::temp_directory_path().string() + "/videoeye_qc_export_csv_test.csv";
     ASSERT_TRUE(QcReportExporter::ExportCsv(path, MakeBundle(3)));
 
     std::ifstream in(path);
@@ -235,8 +241,7 @@ TEST(QcReportExporterTest, CsvHasOneRowPerIssue) {
 }
 
 TEST(QcReportExporterTest, JsonSchemaIsStable) {
-    const std::string path = std::filesystem::temp_directory_path().string() +
-                             "/videoeye_qc_export_json_test.json";
+    const std::string path = std::filesystem::temp_directory_path().string() + "/videoeye_qc_export_json_test.json";
     ASSERT_TRUE(QcReportExporter::ExportJson(path, MakeBundle(3)));
 
     std::ifstream in(path);
@@ -268,23 +273,21 @@ TEST(QcReportExporterTest, JsonSchemaIsStable) {
 }
 
 TEST(QcReportExporterTest, EmptyIssuesStillExportsHeader) {
-    const std::string path = std::filesystem::temp_directory_path().string() +
-                             "/videoeye_qc_export_empty_test.csv";
+    const std::string path = std::filesystem::temp_directory_path().string() + "/videoeye_qc_export_empty_test.csv";
     ASSERT_TRUE(QcReportExporter::ExportCsv(path, MakeBundle(0)));
     std::ifstream in(path);
     int lines = 0;
     std::string line;
-    while (std::getline(in, line)) ++lines;
-    EXPECT_EQ(lines, 1);  // 只有表头
+    while (std::getline(in, line))
+        ++lines;
+    EXPECT_EQ(lines, 1); // 只有表头
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }
 
 TEST(QcReportExporterTest, OutputPathUsesExtension) {
     const std::string dir = std::filesystem::temp_directory_path().string();
-    auto expected = [&](const std::string& ext) {
-        return (std::filesystem::path(dir) / ("clip" + ext)).string();
-    };
+    auto expected = [&](const std::string& ext) { return (std::filesystem::path(dir) / ("clip" + ext)).string(); };
     EXPECT_EQ(QcReportOutputPath(dir, "clip", videoeye::qc::QcReportFormat::Json), expected(".json"));
     EXPECT_EQ(QcReportOutputPath(dir, "clip", videoeye::qc::QcReportFormat::Csv), expected(".csv"));
     EXPECT_EQ(QcReportOutputPath(dir, "clip", videoeye::qc::QcReportFormat::Html), expected(".html"));
@@ -306,15 +309,15 @@ TEST(QcReportExporterTest, BatchSummaryCsvOneRowPerFile) {
     }
     input.succeeded = 4;
 
-    const std::string path = std::filesystem::temp_directory_path().string() +
-                             "/videoeye_qc_summary_test.csv";
+    const std::string path = std::filesystem::temp_directory_path().string() + "/videoeye_qc_summary_test.csv";
     ASSERT_TRUE(QcReportExporter::ExportBatchSummaryCsv(path, input));
 
     std::ifstream in(path);
     int lines = 0;
     std::string line;
-    while (std::getline(in, line)) ++lines;
-    EXPECT_EQ(lines, 5);  // 表头 + 4 行
+    while (std::getline(in, line))
+        ++lines;
+    EXPECT_EQ(lines, 5); // 表头 + 4 行
 
     std::error_code ec;
     std::filesystem::remove(path, ec);
@@ -343,7 +346,7 @@ TEST(QcReportExporterTest, PdfSinglePageIsStructurallyValid) {
     EXPECT_EQ(pdf.page_count, 1);
     ASSERT_EQ(pdf.page_objects.size(), 1u);
     ASSERT_EQ(pdf.content_objects.size(), 1u);
-    EXPECT_GE(pdf.font_objects.size(), 3u);   // F1 / F2 / F3 都得在
+    EXPECT_GE(pdf.font_objects.size(), 3u); // F1 / F2 / F3 都得在
     EXPECT_EQ(pdf.stream_length_mismatch, 0);
     EXPECT_GT(pdf.text_runs, 0);
     // 每行画完必须有换行操作符：少了它整页会首尾相接画在同一条基线上，
@@ -412,22 +415,32 @@ enum class ArtifactFormat { Json, Csv, Html, Pdf, Txt };
 
 const char* ArtifactName(ArtifactFormat format) {
     switch (format) {
-        case ArtifactFormat::Json: return "json";
-        case ArtifactFormat::Csv:  return "csv";
-        case ArtifactFormat::Html: return "html";
-        case ArtifactFormat::Pdf:  return "pdf";
-        case ArtifactFormat::Txt:  return "txt";
+    case ArtifactFormat::Json:
+        return "json";
+    case ArtifactFormat::Csv:
+        return "csv";
+    case ArtifactFormat::Html:
+        return "html";
+    case ArtifactFormat::Pdf:
+        return "pdf";
+    case ArtifactFormat::Txt:
+        return "txt";
     }
     return "unknown";
 }
 
 const char* ArtifactExtension(ArtifactFormat format) {
     switch (format) {
-        case ArtifactFormat::Json: return "json";
-        case ArtifactFormat::Csv:  return "csv";
-        case ArtifactFormat::Html: return "html";
-        case ArtifactFormat::Pdf:  return "pdf";
-        case ArtifactFormat::Txt:  return "txt";
+    case ArtifactFormat::Json:
+        return "json";
+    case ArtifactFormat::Csv:
+        return "csv";
+    case ArtifactFormat::Html:
+        return "html";
+    case ArtifactFormat::Pdf:
+        return "pdf";
+    case ArtifactFormat::Txt:
+        return "txt";
     }
     return "bin";
 }
@@ -437,19 +450,28 @@ class ReportArtifactMatrix : public testing::TestWithParam<ArtifactFormat> {};
 TEST_P(ReportArtifactMatrix, ExportedArtifactCanBeReadBack) {
     const ArtifactFormat format = GetParam();
     ScopedDir dir(std::string("matrix_") + ArtifactName(format));
-    const std::string path =
-        dir.File(std::string("report.") + ArtifactExtension(format));
+    const std::string path = dir.File(std::string("report.") + ArtifactExtension(format));
     const QcExportBundle bundle = MakeTrickyBundle();
     const int issue_count = static_cast<int>(bundle.run.report.issues.size());
     ASSERT_EQ(issue_count, 4);
 
     bool ok = false;
     switch (format) {
-        case ArtifactFormat::Json: ok = QcReportExporter::ExportJson(path, bundle); break;
-        case ArtifactFormat::Csv:  ok = QcReportExporter::ExportCsv(path, bundle);  break;
-        case ArtifactFormat::Html: ok = QcReportExporter::ExportHtml(path, bundle); break;
-        case ArtifactFormat::Pdf:  ok = QcReportExporter::ExportPdf(path, bundle).ok; break;
-        case ArtifactFormat::Txt:  ok = QcReportExporter::ExportText(path, bundle); break;
+    case ArtifactFormat::Json:
+        ok = QcReportExporter::ExportJson(path, bundle);
+        break;
+    case ArtifactFormat::Csv:
+        ok = QcReportExporter::ExportCsv(path, bundle);
+        break;
+    case ArtifactFormat::Html:
+        ok = QcReportExporter::ExportHtml(path, bundle);
+        break;
+    case ArtifactFormat::Pdf:
+        ok = QcReportExporter::ExportPdf(path, bundle).ok;
+        break;
+    case ArtifactFormat::Txt:
+        ok = QcReportExporter::ExportText(path, bundle);
+        break;
     }
     ASSERT_TRUE(ok) << "导出失败: " << path;
 
@@ -459,86 +481,82 @@ TEST_P(ReportArtifactMatrix, ExportedArtifactCanBeReadBack) {
     ASSERT_FALSE(content.empty()) << "产物是空文件: " << path;
 
     switch (format) {
-        case ArtifactFormat::Json: {
-            JsonValue root;
-            std::string err;
-            ASSERT_TRUE(JsonParse(content, root, &err)) << "JSON 无法重新解析: " << err;
-            ASSERT_TRUE(root.IsObject());
-            for (const char* key : {"schema", "schema_version", "profile", "file", "summary",
-                                    "issues", "metrics", "streams", "rules"}) {
-                EXPECT_TRUE(root.Has(key)) << "JSON 缺少顶层字段: " << key;
-            }
-            const JsonValue* issues = root.Find("issues");
-            ASSERT_TRUE(issues != nullptr);
-            ASSERT_TRUE(issues->IsArray());
-            EXPECT_EQ(issues->Size(), static_cast<std::size_t>(issue_count));
-            // NaN / Infinity 不是合法 JSON 字面量（有的库会写成 NaN，解析直接崩）
-            EXPECT_EQ(content.find("NaN"), std::string::npos);
-            EXPECT_EQ(content.find("Infinity"), std::string::npos);
-            break;
+    case ArtifactFormat::Json: {
+        JsonValue root;
+        std::string err;
+        ASSERT_TRUE(JsonParse(content, root, &err)) << "JSON 无法重新解析: " << err;
+        ASSERT_TRUE(root.IsObject());
+        for (const char* key :
+             {"schema", "schema_version", "profile", "file", "summary", "issues", "metrics", "streams", "rules"}) {
+            EXPECT_TRUE(root.Has(key)) << "JSON 缺少顶层字段: " << key;
         }
-        case ArtifactFormat::Csv: {
-            const auto rows = ParseCsvRecords(content);
-            // 表头 + 每个 issue 一行。detail 里本来就带换行，导出端把它压成空格，
-            // 于是"物理行数"必须正好等于"记录数" —— 一旦哪天忘了压，行数会虚增，
-            // 下游按行读取的脚本就全错位了。
-            EXPECT_EQ(std::count(content.begin(), content.end(), '\n'), issue_count + 1);
-            ASSERT_EQ(rows.size(), static_cast<std::size_t>(issue_count) + 1);
-            for (const auto& row : rows) ASSERT_EQ(row.size(), 12u);
-            EXPECT_EQ(rows[1][10].find('\n'), std::string::npos)
-                << "CSV 字段里不该残留换行: " << rows[1][10];
-            EXPECT_EQ(rows[1][10], "实测 5.20 秒，超过 2.00 秒阈值 建议检查编码器的关键帧间隔");
-            // 带引号与逗号的字段必须能被 RFC 4180 解析器原样还原
-            EXPECT_EQ(rows[2][10], "含 \"引号\" 与,逗号");
-            // 公式注入: 以 = 开头的字段必须被前置单引号中和
-            EXPECT_EQ(rows[2][4].compare(0, 2, "'="), 0)
-                << "公式注入未被处理: " << rows[2][4];
-            // 中文没被破坏
-            EXPECT_EQ(rows[1][4], "GOP 过长");
-            break;
+        const JsonValue* issues = root.Find("issues");
+        ASSERT_TRUE(issues != nullptr);
+        ASSERT_TRUE(issues->IsArray());
+        EXPECT_EQ(issues->Size(), static_cast<std::size_t>(issue_count));
+        // NaN / Infinity 不是合法 JSON 字面量（有的库会写成 NaN，解析直接崩）
+        EXPECT_EQ(content.find("NaN"), std::string::npos);
+        EXPECT_EQ(content.find("Infinity"), std::string::npos);
+        break;
+    }
+    case ArtifactFormat::Csv: {
+        const auto rows = ParseCsvRecords(content);
+        // 表头 + 每个 issue 一行。detail 里本来就带换行，导出端把它压成空格，
+        // 于是"物理行数"必须正好等于"记录数" —— 一旦哪天忘了压，行数会虚增，
+        // 下游按行读取的脚本就全错位了。
+        EXPECT_EQ(std::count(content.begin(), content.end(), '\n'), issue_count + 1);
+        ASSERT_EQ(rows.size(), static_cast<std::size_t>(issue_count) + 1);
+        for (const auto& row : rows)
+            ASSERT_EQ(row.size(), 12u);
+        EXPECT_EQ(rows[1][10].find('\n'), std::string::npos) << "CSV 字段里不该残留换行: " << rows[1][10];
+        EXPECT_EQ(rows[1][10], "实测 5.20 秒，超过 2.00 秒阈值 建议检查编码器的关键帧间隔");
+        // 带引号与逗号的字段必须能被 RFC 4180 解析器原样还原
+        EXPECT_EQ(rows[2][10], "含 \"引号\" 与,逗号");
+        // 公式注入: 以 = 开头的字段必须被前置单引号中和
+        EXPECT_EQ(rows[2][4].compare(0, 2, "'="), 0) << "公式注入未被处理: " << rows[2][4];
+        // 中文没被破坏
+        EXPECT_EQ(rows[1][4], "GOP 过长");
+        break;
+    }
+    case ArtifactFormat::Html: {
+        EXPECT_EQ(content.compare(0, 15, "<!DOCTYPE html>"), 0);
+        EXPECT_NE(content.find("UTF-8"), std::string::npos);
+        EXPECT_NE(content.find("video.gop.max_seconds"), std::string::npos);
+        EXPECT_NE(content.find("有条件通过"), std::string::npos);
+        EXPECT_NE(content.find("GOP 过长"), std::string::npos);
+        break;
+    }
+    case ArtifactFormat::Pdf: {
+        const auto pdf = videoeye_test::VerifyPdfFile(path);
+        ASSERT_TRUE(pdf.ok) << pdf.error;
+        EXPECT_GE(pdf.page_count, 1);
+        EXPECT_EQ(pdf.content_objects.size(), static_cast<std::size_t>(pdf.page_count));
+        EXPECT_EQ(pdf.stream_length_mismatch, 0);
+        EXPECT_GE(pdf.text_lines, 10);
+        EXPECT_NE(pdf.text.find("GOP 过长"), std::string::npos);
+        break;
+    }
+    case ArtifactFormat::Txt: {
+        EXPECT_NE(content.find("VideoEye QC 报告"), std::string::npos);
+        // 摘要里的四个级别计数各 1
+        EXPECT_NE(content.find("致命 1"), std::string::npos);
+        EXPECT_NE(content.find("错误 1"), std::string::npos);
+        EXPECT_NE(content.find("警告 1"), std::string::npos);
+        EXPECT_NE(content.find("提示 1"), std::string::npos);
+        // issue 逐条编号
+        for (int i = 1; i <= issue_count; ++i) {
+            EXPECT_NE(content.find("[" + std::to_string(i) + "]"), std::string::npos);
         }
-        case ArtifactFormat::Html: {
-            EXPECT_EQ(content.compare(0, 15, "<!DOCTYPE html>"), 0);
-            EXPECT_NE(content.find("UTF-8"), std::string::npos);
-            EXPECT_NE(content.find("video.gop.max_seconds"), std::string::npos);
-            EXPECT_NE(content.find("有条件通过"), std::string::npos);
-            EXPECT_NE(content.find("GOP 过长"), std::string::npos);
-            break;
-        }
-        case ArtifactFormat::Pdf: {
-            const auto pdf = videoeye_test::VerifyPdfFile(path);
-            ASSERT_TRUE(pdf.ok) << pdf.error;
-            EXPECT_GE(pdf.page_count, 1);
-            EXPECT_EQ(pdf.content_objects.size(), static_cast<std::size_t>(pdf.page_count));
-            EXPECT_EQ(pdf.stream_length_mismatch, 0);
-            EXPECT_GE(pdf.text_lines, 10);
-            EXPECT_NE(pdf.text.find("GOP 过长"), std::string::npos);
-            break;
-        }
-        case ArtifactFormat::Txt: {
-            EXPECT_NE(content.find("VideoEye QC 报告"), std::string::npos);
-            // 摘要里的四个级别计数各 1
-            EXPECT_NE(content.find("致命 1"), std::string::npos);
-            EXPECT_NE(content.find("错误 1"), std::string::npos);
-            EXPECT_NE(content.find("警告 1"), std::string::npos);
-            EXPECT_NE(content.find("提示 1"), std::string::npos);
-            // issue 逐条编号
-            for (int i = 1; i <= issue_count; ++i) {
-                EXPECT_NE(content.find("[" + std::to_string(i) + "]"), std::string::npos);
-            }
-            EXPECT_NE(content.find("有条件通过"), std::string::npos);
-            break;
-        }
+        EXPECT_NE(content.find("有条件通过"), std::string::npos);
+        break;
+    }
     }
 }
 
 INSTANTIATE_TEST_SUITE_P(AllFormats, ReportArtifactMatrix,
-                         testing::Values(ArtifactFormat::Json, ArtifactFormat::Csv,
-                                         ArtifactFormat::Html, ArtifactFormat::Pdf,
-                                         ArtifactFormat::Txt),
-                         [](const testing::TestParamInfo<ArtifactFormat>& info) {
-                             return ArtifactName(info.param);
-                         });
+                         testing::Values(ArtifactFormat::Json, ArtifactFormat::Csv, ArtifactFormat::Html,
+                                         ArtifactFormat::Pdf, ArtifactFormat::Txt),
+                         [](const testing::TestParamInfo<ArtifactFormat>& info) { return ArtifactName(info.param); });
 
 // 失败路径也是矩阵的一部分: 目录不可写时五种格式都不许报成功。
 TEST(QcReportExporterTest, UnwritableDirectoryFailsForEveryFormat) {
@@ -609,7 +627,7 @@ QcExportBundle MakeTsBundle(bool applicable, bool analyzed) {
     return bundle;
 }
 
-}  // namespace
+} // namespace
 
 TEST(QcReportExporterTest, TsTransportFactsLandInJsonEvenWithoutAnyIssue) {
     const QcExportBundle bundle = MakeTsBundle(true, true);
@@ -684,4 +702,228 @@ TEST(QcReportExporterTest, TsTransportSectionAppearsInTextAndHtml) {
     EXPECT_NE(html.find("连续计数错误"), std::string::npos);
 }
 
-}  // namespace
+// ==========================================================================
+// 阶段 1/4/5 新增数据在报告里的落地：证据与覆盖、参数变化时间线、逐轨音频 QC
+//
+// 锁的是"这些新结论真的出现在三种格式里"，以及两条容易写错的边界：
+//   * 无覆盖信息时必须**缺省** coverage_ratio，落 0 会被读成"覆盖率 0%"
+//   * 空数组也要落，否则"没有变化"与"没追踪"在报告里长得一样
+// ==========================================================================
+
+namespace {
+
+namespace model = videoeye::model;
+
+std::string Str(const JsonValue* obj, const std::string& key) {
+    const JsonValue* v = obj != nullptr ? obj->Find(key) : nullptr;
+    return v != nullptr ? v->StringValueOr() : std::string();
+}
+
+// 一份带"证据 / 参数变化 / 多音轨"三块数据的结果
+QcExportBundle MakeEnrichedBundle() {
+    QcExportBundle bundle = MakeBundle(1);
+    model::AnalysisResult& analysis = bundle.run.analysis;
+
+    // 维度 1：跳过（未执行）
+    analysis.SetDimension(model::MakeSkippedDimension(model::AnalysisDimension::TsTransport, "不是 MPEG-TS 容器"));
+
+    // 维度 2：部分完成 + 有覆盖率
+    model::DimensionStatus partial;
+    partial.dimension = model::AnalysisDimension::FrameStructure;
+    partial.executed = true;
+    partial.capability = model::AnalysisCapability::Partial;
+    partial.scope_unit = "包";
+    partial.units_scanned = 5000;
+    partial.units_total = 10000;
+    partial.has_coverage = true;
+    partial.coverage_ratio = 0.5;
+    partial.failure_reason = "已到扫描窗口上限";
+    analysis.SetDimension(partial);
+
+    // 维度 3：总量未知 —— coverage_ratio 必须缺省
+    model::DimensionStatus unknown_total;
+    unknown_total.dimension = model::AnalysisDimension::VideoBitstream;
+    unknown_total.executed = true;
+    unknown_total.capability = model::AnalysisCapability::Supported;
+    unknown_total.scope_unit = "轨";
+    unknown_total.units_scanned = 1;
+    unknown_total.has_coverage = false;
+    analysis.SetDimension(unknown_total);
+
+    // 参数变化：一次同 id 替换
+    model::ParameterTimeline timeline;
+    timeline.analyzed = true;
+    timeline.stream_index = 0;
+    timeline.codec_name = "h264";
+    timeline.packets_scanned = 15320;
+    model::ParameterChangeEvent change;
+    change.stream_index = 0;
+    change.kind = model::ParameterSetKind::Sps;
+    change.parameter_set_id = 0;
+    change.has_time = true;
+    change.time_seconds = 755.24;
+    change.packet_index = 15320;
+    change.file_offset = 0x1A2B3C;
+    change.source = "SPS(id=0)";
+    change.old_config = "1280x720 / 8 bit / 4:2:0";
+    change.new_config = "1920x1080 / 8 bit / 4:2:0";
+    change.changes = "1280x720 -> 1920x1080";
+    change.replaced_same_id = true;
+    timeline.changes.push_back(change);
+    analysis.parameter_timelines.push_back(timeline);
+
+    // 逐轨音频：两条轨，一条满覆盖一条半覆盖
+    model::AudioQcResult track0;
+    track0.analyzed = true;
+    track0.integrated_lufs = -23.0;
+    track0.true_peak_dbtp = -1.0;
+    track0.metadata.sample_rate = 48000;
+    track0.metadata.channels = 2;
+    track0.metadata.channel_layout = "立体声 (2.0)";
+    track0.coverage_ratio = 1.0;
+    model::AudioQcResult track1 = track0;
+    track1.integrated_lufs = -18.5;
+    track1.coverage_ratio = 0.4;
+    analysis.audio_qc_streams.push_back(track0);
+    analysis.audio_qc_streams.push_back(track1);
+    analysis.audio_qc_stream_indices.push_back(1);
+    analysis.audio_qc_stream_indices.push_back(2);
+    analysis.audio_qc_tracks_analyzed = 2;
+    analysis.audio_qc_tracks_total = 3;
+    return bundle;
+}
+
+} // namespace
+
+TEST(QcReportExporterTest, DimensionStatusTableLandsInJson) {
+    const QcExportBundle bundle = MakeEnrichedBundle();
+
+    JsonValue root;
+    std::string err;
+    ASSERT_TRUE(JsonParse(QcReportExporter::BuildJson(bundle), root, &err)) << err;
+    const JsonValue* dimensions = root.Find("dimensions");
+    ASSERT_TRUE(dimensions != nullptr) << "阶段 5 的「证据与覆盖」必须是顶层章节";
+    ASSERT_EQ(dimensions->Size(), 3u);
+
+    // 跳过的那一行：executed=false 且带原因 —— 这是"没证据"而非"没问题"
+    const JsonValue& skipped = dimensions->Items()[0];
+    EXPECT_EQ(Str(&skipped, "dimension"), "ts_transport");
+    EXPECT_FALSE(Flag(&skipped, "executed"));
+    EXPECT_EQ(Str(&skipped, "capability"), "unavailable");
+    EXPECT_FALSE(Flag(&skipped, "conclusive"));
+    EXPECT_EQ(Str(&skipped, "failure_reason"), "不是 MPEG-TS 容器");
+
+    // 部分完成：覆盖率 50%，conclusive 必须 false
+    const JsonValue& partial = dimensions->Items()[1];
+    EXPECT_EQ(Str(&partial, "dimension"), "frame_structure");
+    EXPECT_TRUE(Flag(&partial, "executed"));
+    EXPECT_EQ(Str(&partial, "capability"), "partial");
+    EXPECT_FALSE(Flag(&partial, "conclusive")) << "Partial 不能给出可用的通过结论";
+    EXPECT_NEAR(Num(&partial, "coverage_ratio"), 0.5, 1e-9);
+    EXPECT_EQ(Num(&partial, "units_scanned"), 5000.0);
+    EXPECT_EQ(Num(&partial, "units_total"), 10000.0);
+}
+
+// 边界：has_coverage=false 时绝不能落 coverage_ratio —— 0 会被读成"覆盖率为 0"
+TEST(QcReportExporterTest, MissingCoverageOmitsCoverageField) {
+    const QcExportBundle bundle = MakeEnrichedBundle();
+
+    JsonValue root;
+    std::string err;
+    ASSERT_TRUE(JsonParse(QcReportExporter::BuildJson(bundle), root, &err)) << err;
+    const JsonValue* dimensions = root.Find("dimensions");
+    ASSERT_TRUE(dimensions != nullptr);
+    const JsonValue& unknown_total = dimensions->Items()[2];
+    EXPECT_EQ(Str(&unknown_total, "dimension"), "video_bitstream");
+    EXPECT_TRUE(unknown_total.Find("coverage_ratio") == nullptr) << "总量未知时不能落覆盖率，否则会被读成 0%";
+    EXPECT_EQ(Num(&unknown_total, "units_scanned"), 1.0);
+}
+
+TEST(QcReportExporterTest, ParameterTimelineLandsInJsonWithLocator) {
+    const QcExportBundle bundle = MakeEnrichedBundle();
+
+    JsonValue root;
+    std::string err;
+    ASSERT_TRUE(JsonParse(QcReportExporter::BuildJson(bundle), root, &err)) << err;
+    const JsonValue* timelines = root.Find("parameter_timelines");
+    ASSERT_TRUE(timelines != nullptr);
+    ASSERT_EQ(timelines->Size(), 1u);
+
+    const JsonValue& first = timelines->Items()[0];
+    EXPECT_EQ(Num(&first, "stream_index"), 0.0);
+    EXPECT_EQ(Str(&first, "codec"), "h264");
+    EXPECT_EQ(Num(&first, "packets_scanned"), 15320.0);
+
+    const JsonValue* changes = first.Find("changes");
+    ASSERT_TRUE(changes != nullptr);
+    ASSERT_EQ(changes->Size(), 1u);
+    const JsonValue& change = changes->Items()[0];
+    EXPECT_EQ(Str(&change, "kind"), "sps");
+    EXPECT_TRUE(Flag(&change, "replaced_same_id")) << "同 id 换内容是最危险的一类，必须可识别";
+    EXPECT_EQ(Str(&change, "old_config"), "1280x720 / 8 bit / 4:2:0");
+    EXPECT_EQ(Str(&change, "new_config"), "1920x1080 / 8 bit / 4:2:0");
+    // 可定位三件套：时间 / 包号 / 文件偏移
+    EXPECT_NEAR(Num(&change, "time_seconds"), 755.24, 1e-9);
+    EXPECT_EQ(Num(&change, "packet_index"), 15320.0);
+    EXPECT_EQ(Num(&change, "file_offset"), static_cast<double>(0x1A2B3C));
+    // 文本形态也落一份，报告读者不必自己拼
+    EXPECT_NE(Str(&change, "text").find("0x1A2B3C"), std::string::npos);
+}
+
+// 空数组也要落：报告要能区分"没有配置变化"与"没做参数追踪"，
+// 后者由 dimensions 里 parameter_timeline 那一行的 executed 说明。
+TEST(QcReportExporterTest, EmptyParameterTimelinesStillExportedAsArray) {
+    const QcExportBundle bundle = MakeBundle(0);
+
+    JsonValue root;
+    std::string err;
+    ASSERT_TRUE(JsonParse(QcReportExporter::BuildJson(bundle), root, &err)) << err;
+    const JsonValue* timelines = root.Find("parameter_timelines");
+    ASSERT_TRUE(timelines != nullptr) << "没有数据也要落空数组";
+    EXPECT_EQ(timelines->Size(), 0u);
+    const JsonValue* audio = root.Find("audio_qc_streams");
+    ASSERT_TRUE(audio != nullptr);
+    EXPECT_EQ(audio->Size(), 0u);
+}
+
+TEST(QcReportExporterTest, PerTrackAudioQcLandsInJson) {
+    const QcExportBundle bundle = MakeEnrichedBundle();
+
+    JsonValue root;
+    std::string err;
+    ASSERT_TRUE(JsonParse(QcReportExporter::BuildJson(bundle), root, &err)) << err;
+    const JsonValue* tracks = root.Find("audio_qc_streams");
+    ASSERT_TRUE(tracks != nullptr);
+    ASSERT_EQ(tracks->Size(), 2u);
+
+    const JsonValue& t0 = tracks->Items()[0];
+    EXPECT_EQ(Num(&t0, "stream_index"), 1.0) << "流号来自并行索引表，不能错位";
+    EXPECT_NEAR(Num(&t0, "integrated_lufs"), -23.0, 1e-9);
+    EXPECT_NEAR(Num(&t0, "coverage_ratio"), 1.0, 1e-9);
+
+    const JsonValue& t1 = tracks->Items()[1];
+    EXPECT_EQ(Num(&t1, "stream_index"), 2.0);
+    EXPECT_NEAR(Num(&t1, "integrated_lufs"), -18.5, 1e-9);
+    // 逐轨覆盖率是这块的核心：轨数对上了不代表每条轨都跑满
+    EXPECT_NEAR(Num(&t1, "coverage_ratio"), 0.4, 1e-9);
+}
+
+// 三种格式都要有：JSON 有字段、TEXT/HTML 有人能读的段落
+TEST(QcReportExporterTest, NewSectionsAppearInTextAndHtml) {
+    const QcExportBundle bundle = MakeEnrichedBundle();
+
+    const std::string text = QcReportExporter::BuildText(bundle);
+    EXPECT_NE(text.find("证据与覆盖"), std::string::npos);
+    EXPECT_NE(text.find("参数变化时间线"), std::string::npos);
+    EXPECT_NE(text.find("同一参数集 id 的内容被替换"), std::string::npos)
+        << "危险变化必须在文本报告里显式提示，不能只留一个 true";
+    EXPECT_NE(text.find("音频 QC（逐轨）"), std::string::npos);
+    EXPECT_NE(text.find("2 / 3 条音轨参与分析"), std::string::npos);
+
+    const std::string html = QcReportExporter::BuildHtml(bundle);
+    EXPECT_NE(html.find("证据与覆盖"), std::string::npos);
+    EXPECT_NE(html.find("参数变化时间线"), std::string::npos);
+    EXPECT_NE(html.find("音频 QC（逐轨）"), std::string::npos);
+}
+
+} // namespace

@@ -30,7 +30,9 @@ enum class AudioBitstreamCodec {
     Ac3,     // AC-3
     Eac3,    // E-AC-3（含 Atmos/JOC）
     Opus,    // Ogg / Matroska / WebM Opus
-    Other,   // 未实现逐帧解析的编码（MP3 / FLAC / PCM ...）
+    Mp3,     // MPEG-1/2/2.5 Audio Layer I/II/III（含 Xing/Info/VBRI）
+    Flac,    // FLAC（STREAMINFO + 帧头）
+    Other,   // 未实现逐帧解析的编码（ALAC / DTS / TrueHD / PCM ...）
 };
 
 // E-AC-3 的独立/从属子流类型
@@ -110,6 +112,68 @@ struct AudioBitstreamStream {
     int opus_mode = -1;      // 0 = SILK / 1 = Hybrid / 2 = CELT
     int opus_bandwidth = -1; // 0 = NB / 1 = MB / 2 = WB / 3 = SWB / 4 = FB
     double opus_frame_ms = 0.0;
+
+    // ---- AAC 程序配置（PCE）----
+    //
+    // channel_configuration == 0 时 ADTS/ASC 根本给不出声道布局（只能靠 PCE），
+    // 这时容器声明的 channels 就没有对照物。PCE 是唯一的一手证据，必须结构化落下来：
+    // "6 声道"到底是 5.1(3/2/1) 还是 4.2(2/2/2)，只有分位置计数能回答。
+    bool aac_pce = false;
+    int pce_object_type = -1;
+    int pce_sample_rate = 0;
+    int pce_channels = 0;
+    int pce_front = 0;
+    int pce_side = 0;
+    int pce_back = 0;
+    int pce_lfe = 0;
+    std::string pce_layout; // "3/2/1 + LFE"
+
+    // ---- AAC SBR / PS ----
+    //
+    // 为什么必须单独记：HE-AAC 的 ASC 里 samplingFrequencyIndex 写的是 **core**
+    // 采样率（如 24 kHz），实际输出是它的 2 倍（48 kHz）；PS 则在传输上只有 1 个
+    // 声道，听起来是 2 个。只报 core 值会把"48 kHz 立体声"报成"24 kHz 单声道"。
+    //
+    // sbr_source 表示这条结论的证据强度：
+    //   "aot"            —— AudioSpecificConfig 的 AOT 直接是 5/29，最硬
+    //   "sync_extension" —— ASC 末尾 0x2B7 同步扩展里 sbrPresentFlag=1
+    //   空               —— 没有显式信令（不等于没有 SBR，见 note）
+    bool aac_sbr = false;
+    bool aac_ps = false;
+    int aac_core_sample_rate = 0;
+    int aac_output_sample_rate = 0;
+    std::string aac_sbr_source;
+    // LATM 的 numSubFrames（ECMA-391 StreamMuxConfig）：一个 AudioMuxElement
+    // 里含 numSubFrames+1 个 subFrame，每个 subFrame 是一个 AAC 原始数据块。
+    // -1 = 不是 LATM / 未解析到。
+    // ❗ 已知限制：一个 subFrame 跨 LOAS 包（分包重组）未实现，本字段只用于
+    // 修正"一包 = 一帧"的帧数少算问题。
+    int latm_num_sub_frames = -1;
+
+    // ---- MP3 ----
+    int mpeg_version = 0;     // 1 / 2 / 25（2.5）
+    int mp3_layer = 0;        // 1 / 2 / 3
+    int channel_mode = -1;    // 0=stereo 1=joint 2=dual 3=mono
+    bool crc_present = false; // 帧头保护位（只报"存在"，不做校验，见 parser 注释）
+    bool free_format = false; // 码率未写，帧长不可定界
+    // Xing / Info / VBRI：总帧数、总字节数是**声明值**，与实测帧数分账，
+    // 对不上就是"容器/头部声明与实际码流不一致"的直接证据。
+    std::string vbr_tag; // "Xing" / "Info" / "VBRI"（空 = 没有）
+    int declared_frame_count = 0;
+    int64_t declared_stream_bytes = 0;
+    bool has_encoder_delay = false;
+    int encoder_delay_samples = 0;
+    int encoder_padding_samples = 0;
+    std::string encoder; // "LAME3.100" 等
+
+    // ---- FLAC ----
+    bool flac_streaminfo = false;
+    int streaminfo_min_block = 0;
+    int streaminfo_max_block = 0;
+    uint64_t declared_total_samples = 0; // STREAMINFO 声明的总样本数（0 = 未知）
+    bool flac_frame_crc_checked = false;
+    int64_t flac_frame_crc_failures = 0;
+    bool flac_high_variance_blocks = false; // min/max block size 差得离谱 = 非常规编码
 
     // 容器侧参数（用于"码流 vs 容器"比对）
     int container_sample_rate = 0;

@@ -168,67 +168,48 @@ void AnalysisPipeline::Prepare(AVFormatContext* fmt, model::AnalysisResult& resu
     }
 
     // ---- 音频 QC 准备（解码 + 归一到 float planar）----
+    //
+    // 多音轨：每条参与 QC 的音频流各建一套解码通路 + 分析器（见 AudioQcTrack）。
+    // 主轨恒排第一 —— result.audio_qc 仍然取主轨那一份，既有消费方不用改。
+    audio_tracks_.clear();
+    audio_tracks_total_ = 0;
+    audio_tracks_limit_note_ = 0;
     audio_time_base_ = (audio_stream_index_ >= 0) ? av_q2d(fmt->streams[audio_stream_index_]->time_base) : 0.0;
 
-    if (options_.analyze_audio_qc && audio_stream_index_ >= 0) {
-        audio_qc_.Reset(options_.audio_qc_options);
-        AVStream* ast = fmt->streams[audio_stream_index_];
-        const AVCodec* codec = avcodec_find_decoder(ast->codecpar->codec_id);
-        if (codec != nullptr) {
-            audio_probe_.decoder = avcodec_alloc_context3(codec);
-            if (audio_probe_.decoder != nullptr &&
-                avcodec_parameters_to_context(audio_probe_.decoder, ast->codecpar) >= 0) {
-                audio_probe_.decoder->pkt_timebase = ast->time_base;
-                if (avcodec_open2(audio_probe_.decoder, codec, nullptr) == 0) {
-                    audio_probe_.frame = av_frame_alloc();
-                    audio_probe_.ready = (audio_probe_.frame != nullptr);
-                }
-            }
-            if (!audio_probe_.ready) {
-                if (audio_probe_.frame)
-                    av_frame_free(&audio_probe_.frame);
-                if (audio_probe_.decoder)
-                    avcodec_free_context(&audio_probe_.decoder);
-            }
+    if (options_.analyze_audio_qc) {
+        // 先数一遍音频流总数（用于 DimensionStatus 的覆盖说明：覆盖 M/N 条）
+        for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+            const AVStream* st = fmt->streams[i];
+            if (st != nullptr && st->codecpar != nullptr && st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
+                ++audio_tracks_total_;
         }
 
-        if (audio_probe_.ready) {
-            AVChannelLayout layout{};
-            av_channel_layout_copy(&layout, &audio_probe_.decoder->ch_layout);
-            audio_probe_.channels = layout.nb_channels;
-            audio_probe_.sample_rate = audio_probe_.decoder->sample_rate;
-
-            for (int c = 0; c < audio_probe_.channels; ++c) {
-                const AVChannel ch = av_channel_layout_channel_from_index(&layout, c);
-                char name_buf[32] = {0};
-                av_channel_name(name_buf, sizeof(name_buf), ch);
-                const std::string name = (name_buf[0] != '\0') ? std::string(name_buf) : ("Ch" + std::to_string(c + 1));
-                audio_probe_.channel_info.emplace_back(name, AudioChannelRoleOf(ch));
-            }
-
-            const AVSampleFormat in_fmt = audio_probe_.decoder->sample_fmt;
-            const char* fmt_name = av_get_sample_fmt_name(in_fmt);
-            audio_qc_.SetStreamInfo(audio_probe_.sample_rate, audio_probe_.channels, fmt_name ? fmt_name : "",
-                                    av_get_bytes_per_sample(in_fmt) * 8);
-            audio_qc_.SetChannelInfo(audio_probe_.channel_info);
-
-            // 非 float planar 输出需要 swr 转换（s16 / flt / s32 ...）
-            if (in_fmt != AV_SAMPLE_FMT_FLTP && audio_probe_.channels > 0 && audio_probe_.sample_rate > 0) {
-                AVChannelLayout out_layout{};
-                av_channel_layout_copy(&out_layout, &layout);
-                int linesize = 0;
-                if (swr_alloc_set_opts2(&audio_probe_.swr, &out_layout, AV_SAMPLE_FMT_FLTP, audio_probe_.sample_rate,
-                                        &layout, in_fmt, audio_probe_.sample_rate, 0, nullptr) >= 0 &&
-                    swr_init(audio_probe_.swr) >= 0 &&
-                    av_samples_alloc_array_and_samples(&audio_probe_.out_data, &linesize, audio_probe_.channels, 8192,
-                                                       AV_SAMPLE_FMT_FLTP, 0) >= 0) {
-                    audio_probe_.out_frames = 8192;
-                } else if (audio_probe_.swr != nullptr) {
-                    swr_free(&audio_probe_.swr);
+        const int max_tracks = (options_.audio_qc_max_tracks > 0) ? options_.audio_qc_max_tracks : 1;
+        int planned = 0;
+        if (audio_stream_index_ >= 0) {
+            SetupAudioTrack(fmt, audio_stream_index_);
+            ++planned;
+        }
+        if (options_.audio_qc_all_tracks) {
+            for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+                const int index = static_cast<int>(i);
+                if (index == audio_stream_index_)
+                    continue;
+                const AVStream* st = fmt->streams[i];
+                if (st == nullptr || st->codecpar == nullptr || st->codecpar->codec_type != AVMEDIA_TYPE_AUDIO)
+                    continue;
+                if (planned >= max_tracks) {
+                    // 超出上限必须留痕：静默少测几条轨正是"抽样扫描"最容易演变成假通过的地方
+                    ++audio_tracks_limit_note_;
+                    continue;
                 }
-                av_channel_layout_uninit(&out_layout);
+                SetupAudioTrack(fmt, index);
+                ++planned;
             }
-            av_channel_layout_uninit(&layout);
+        }
+        if (audio_tracks_limit_note_ > 0) {
+            LOG_INFO("音频 QC: 有 " + std::to_string(audio_tracks_limit_note_) + " 条音轨超过上限(" +
+                     std::to_string(max_tracks) + ")，未参与 QC");
         }
     }
 
@@ -243,6 +224,106 @@ void AnalysisPipeline::Prepare(AVFormatContext* fmt, model::AnalysisResult& resu
     // GOP 统计按流号计数，大小随流数；逐包分发时不再重复分配
     frames_since_key_.assign(static_cast<size_t>(fmt->nb_streams), 0);
     last_key_ts_.assign(static_cast<size_t>(fmt->nb_streams), -1.0);
+}
+
+// 为一条音频流建解码通路 + 分析器，并挂进 audio_tracks_。
+//
+// 返回该轨在 audio_tracks_ 里的下标；建不起来（找不到解码器 / 打不开 / 参数非法）
+// 返回 -1。返回 -1 不等于"这条轨没问题"：调用方把它计入 total 而不计入 analyzed，
+// 覆盖说明里就会显示"覆盖 M/N 条"。
+int AnalysisPipeline::SetupAudioTrack(AVFormatContext* fmt, int stream_index) {
+    if (fmt == nullptr || stream_index < 0 || stream_index >= static_cast<int>(fmt->nb_streams))
+        return -1;
+    AVStream* ast = fmt->streams[stream_index];
+    if (ast == nullptr || ast->codecpar == nullptr || ast->codecpar->codec_type != AVMEDIA_TYPE_AUDIO)
+        return -1;
+
+    audio_tracks_.push_back(AudioQcTrack{});
+    AudioQcTrack& track = audio_tracks_.back();
+    track.stream_index = stream_index;
+    track.time_base = av_q2d(ast->time_base);
+    track.analyzer.Reset(options_.audio_qc_options);
+
+    const AVCodec* codec = avcodec_find_decoder(ast->codecpar->codec_id);
+    if (codec == nullptr) {
+        LOG_INFO("音频 QC: 流#" + std::to_string(stream_index) + " 没有可用解码器，跳过该轨");
+        return static_cast<int>(audio_tracks_.size()) - 1;
+    }
+
+    AudioQcProbe& probe = track.probe;
+    probe.decoder = avcodec_alloc_context3(codec);
+    if (probe.decoder != nullptr && avcodec_parameters_to_context(probe.decoder, ast->codecpar) >= 0) {
+        probe.decoder->pkt_timebase = ast->time_base;
+        if (avcodec_open2(probe.decoder, codec, nullptr) == 0) {
+            probe.frame = av_frame_alloc();
+            probe.ready = (probe.frame != nullptr);
+        }
+    }
+    if (!probe.ready) {
+        if (probe.frame)
+            av_frame_free(&probe.frame);
+        if (probe.decoder)
+            avcodec_free_context(&probe.decoder);
+        LOG_INFO("音频 QC: 流#" + std::to_string(stream_index) + " 解码器打开失败，跳过该轨");
+        return static_cast<int>(audio_tracks_.size()) - 1;
+    }
+
+    AVChannelLayout layout{};
+    av_channel_layout_copy(&layout, &probe.decoder->ch_layout);
+    probe.channels = layout.nb_channels;
+    probe.sample_rate = probe.decoder->sample_rate;
+
+    for (int c = 0; c < probe.channels; ++c) {
+        const AVChannel ch = av_channel_layout_channel_from_index(&layout, c);
+        char name_buf[32] = {0};
+        av_channel_name(name_buf, sizeof(name_buf), ch);
+        const std::string name = (name_buf[0] != '\0') ? std::string(name_buf) : ("Ch" + std::to_string(c + 1));
+        probe.channel_info.emplace_back(name, AudioChannelRoleOf(ch));
+    }
+
+    const AVSampleFormat in_fmt = probe.decoder->sample_fmt;
+    const char* fmt_name = av_get_sample_fmt_name(in_fmt);
+    track.analyzer.SetStreamInfo(probe.sample_rate, probe.channels, fmt_name ? fmt_name : "",
+                                 av_get_bytes_per_sample(in_fmt) * 8);
+    track.analyzer.SetChannelInfo(probe.channel_info);
+
+    // 非 float planar 输出需要 swr 转换（s16 / flt / s32 ...）
+    if (in_fmt != AV_SAMPLE_FMT_FLTP && probe.channels > 0 && probe.sample_rate > 0) {
+        AVChannelLayout out_layout{};
+        av_channel_layout_copy(&out_layout, &layout);
+        int linesize = 0;
+        if (swr_alloc_set_opts2(&probe.swr, &out_layout, AV_SAMPLE_FMT_FLTP, probe.sample_rate, &layout, in_fmt,
+                                probe.sample_rate, 0, nullptr) >= 0 &&
+            swr_init(probe.swr) >= 0 &&
+            av_samples_alloc_array_and_samples(&probe.out_data, &linesize, probe.channels, 8192, AV_SAMPLE_FMT_FLTP,
+                                               0) >= 0) {
+            probe.out_frames = 8192;
+        } else if (probe.swr != nullptr) {
+            swr_free(&probe.swr);
+        }
+        av_channel_layout_uninit(&out_layout);
+    }
+    av_channel_layout_uninit(&layout);
+    return static_cast<int>(audio_tracks_.size()) - 1;
+}
+
+AudioQcAnalyzer& AnalysisPipeline::audio_qc() {
+    // 主轨恒在首位（Prepare 里先建它）
+    if (!audio_tracks_.empty())
+        return audio_tracks_.front().analyzer;
+    return empty_audio_qc_;
+}
+
+bool AnalysisPipeline::audio_decoder_ready() const {
+    return !audio_tracks_.empty() && audio_tracks_.front().probe.ready;
+}
+
+bool AnalysisPipeline::audio_rate_changed() const {
+    for (const AudioQcTrack& track : audio_tracks_) {
+        if (track.probe.rate_changed)
+            return true;
+    }
+    return false;
 }
 
 // 编码码流解析（只读 extradata，不解码；必须在 avformat_close_input 之前）。
@@ -264,8 +345,6 @@ void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisRes
     // 就是为这件事准备的，一直没用 —— 现在用起来了。）
     es_inspector_.Reset(0);
     es_inspector_configured_ = false;
-    if (!options_.analyze_bitstream)
-        return;
 
     // 主视频排最前，其余视频轨按流号跟在后面
     std::vector<unsigned> video_order;
@@ -278,6 +357,122 @@ void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisRes
         }
     }
 
+    // ---- 本函数自己的两个维度 ----
+    //
+    // 下面的"参数集全程追踪"与"帧级 POC 追踪"**不属于**码流解析维度：它们只是
+    // 借这条路径拿一份参数集（extradata 或带内），各有各的开关。以前整个函数
+    // 开头就 `if (!options_.analyze_bitstream) return;`，于是关掉码流解析会同时
+    // 关掉这两条 —— 一个开关管了三件事，且界面上无从察觉（时间线一律是空的）。
+    if (options_.analyze_bitstream)
+        PrepareBitstreamAnalysis(fmt, result, video_order);
+
+    // ---- 参数集全程追踪（每条视频轨一个 tracker）----
+    //
+    // 必须放在 `if (result.bitstream_analyzed) return;` **之前**：恰恰是 extradata
+    // 解析成功的那条主力路径（MP4/MKV）才最需要看"中途有没有换配置"，
+    // 放在 return 之后就又变成"只有裸流才追踪"。
+    //
+    // 与带内 probe 的关系：probe 负责"第一次解析成功"，tracker 负责"之后每一次变化"。
+    // 两者互不依赖 —— tracker 不做完整参数集解析，只算摘要 + 读 SPS 宽高。
+    parameter_trackers_.clear();
+    parameter_timelines_.clear();
+    if (options_.analyze_parameter_timeline) {
+        for (unsigned i : video_order) {
+            const AVStream* st = fmt->streams[i];
+            if (st == nullptr || st->codecpar == nullptr)
+                continue;
+            ParameterTrackerSlot slot;
+            slot.stream_index = static_cast<int>(i);
+            slot.time_base = av_q2d(st->time_base);
+            slot.tracker.Reset(static_cast<int>(st->codecpar->codec_id), static_cast<int>(i));
+            if (!slot.tracker.enabled())
+                continue;
+            slot.tracker.SetFraming(ParameterSetTracker::Framing::Auto, NalLengthSizeFromExtradata(st->codecpar));
+            // 与 POC 追踪同理：先登记 extradata 里的参数集当基线。少了这一步，
+            // MP4/MKV 上"参数集登记表"是空的，而它空着的时候和"全程没有变化"
+            // 长得一模一样 —— 这是最难发现的一类静默失效。
+            if (st->codecpar->extradata != nullptr && st->codecpar->extradata_size > 0) {
+                slot.tracker.FeedExtradata(st->codecpar->extradata, static_cast<size_t>(st->codecpar->extradata_size));
+            }
+            parameter_trackers_.push_back(std::move(slot));
+        }
+        if (parameter_trackers_.empty()) {
+            LOG_INFO("参数变化追踪: 没有可追踪的视频轨（编码需为 H.264 / HEVC / AV1）");
+        }
+    }
+
+    // ---- 帧级 POC 追踪（仅 H.264）----
+    //
+    // 与参数集追踪同样是"extradata 路径也要跑"，所以放在 return 之前。
+    // 只对 H.264 建：HEVC/AV1 的显示顺序需要各自的 slice/frame header 语义
+    // （HEVC 的 POC 还要看 IRAP 类型与 NoRaslOutputFlag），没实现就不建，
+    // 上层据 frame_order_timelines 为空把维度标成"不可用"。
+    poc_trackers_.clear();
+    frame_order_timelines_.clear();
+    if (options_.analyze_frame_order) {
+        for (unsigned i : video_order) {
+            const AVStream* st = fmt->streams[i];
+            if (st == nullptr || st->codecpar == nullptr)
+                continue;
+            if (st->codecpar->codec_id != AV_CODEC_ID_H264)
+                continue;
+            PocTrackerSlot slot;
+            slot.stream_index = static_cast<int>(i);
+            slot.time_base = av_q2d(st->time_base);
+            slot.tracker.Reset(static_cast<int>(i));
+            slot.tracker.SetFraming(H264PocTracker::Framing::Auto);
+            slot.tracker.SetLengthPrefixBytes(NalLengthSizeFromExtradata(st->codecpar));
+            // ❗ 先喂 extradata：MP4/MKV 的参数集只写在 avcC 里，码流里一个 SPS 都没有
+            // （libx264 在 AV_CODEC_FLAG_GLOBAL_HEADER 下会关掉 b_repeat_headers）。
+            // 少了这一步，"帧顺序"在主力封装上恒为"不可用"，而原因会被记成
+            // "扫到 slice 之前没有 SPS"，指向完全错误的方向。
+            if (st->codecpar->extradata != nullptr && st->codecpar->extradata_size > 0) {
+                slot.tracker.FeedExtradata(st->codecpar->extradata, static_cast<size_t>(st->codecpar->extradata_size));
+            }
+            poc_trackers_.push_back(std::move(slot));
+        }
+        if (poc_trackers_.empty()) {
+            LOG_INFO("帧级顺序追踪: 没有 H.264 视频轨（HEVC/AV1/VP9 的 POC 尚未实现）");
+        }
+    }
+
+    if (!options_.analyze_bitstream || result.bitstream_analyzed)
+        return;
+
+    // ---- 带内兜底：extradata 缺失的封装（TS / 裸流 / fMP4 分片 / WebM-VP9）----
+    //
+    // ❗ 注意用 continue 而不是 return：第一条视频流可能是没有解析器的编码
+    // （如 MPEG-2），但第二条是 H.264 —— 那种文件仍然应该能分析。
+    //
+    // ❗ 而且每条轨都要挂一个 probe：多节目 TS 的每条节目是独立的 PID、独立的
+    // 参数集，一条 probe 只能覆盖一条流 —— 以前只有 inband_probe_ 一个成员，
+    // 第二条节目彻底没人看（这正是 C3 里"多节目/多角度漏"的一半成因）。
+    for (unsigned i : video_order) {
+        AVStream* st = fmt->streams[i];
+        if (st->codecpar->extradata != nullptr && st->codecpar->extradata_size > 0)
+            continue;
+
+        InBandParameterSetProbe probe;
+        probe.Reset(static_cast<int>(st->codecpar->codec_id));
+        if (!probe.enabled())
+            continue;
+        probe.SetContainerMetadata(ContainerMetadataFromStream(st, result, i));
+        inband_probes_.push_back({static_cast<int>(i), std::move(probe)});
+        LOG_INFO("码流解析: 流 #" + std::to_string(i) + " 无 extradata，改为带内参数集探测");
+    }
+    if (inband_probes_.empty())
+        return;
+    // 只有真的有人在探测时才让逐包分发进那段循环
+    bitstream_inband_active_ = true;
+}
+
+// 码流解析维度自己的准备动作：extradata 参数集解析 + slice/SEI 巡检器初始化。
+//
+// 与 PrepareBitstream 分开是因为这两段**只**属于 analyze_bitstream 维度，
+// 而 PrepareBitstream 里还挂着参数集追踪与 POC 追踪 —— 那两条有自己的开关，
+// 不能因为"关掉了码流解析"就一起停掉（见 PrepareBitstream 里的同名注释）。
+void AnalysisPipeline::PrepareBitstreamAnalysis(AVFormatContext* fmt, model::AnalysisResult& result,
+                                                const std::vector<unsigned>& video_order) {
     // ---- libavcodec extradata 路径：逐条视频轨都解析一次 ----
     //
     // 以前这里 `break` 在第一个成功的轨道上 —— TS 多节目 / 多机位 MP4 里第二条
@@ -335,35 +530,6 @@ void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisRes
             es_inspector_configured_ = true;
         }
     }
-
-    if (result.bitstream_analyzed)
-        return;
-
-    // ---- 带内兜底：extradata 缺失的封装（TS / 裸流 / fMP4 分片 / WebM-VP9）----
-    //
-    // ❗ 注意用 continue 而不是 return：第一条视频流可能是没有解析器的编码
-    // （如 MPEG-2），但第二条是 H.264 —— 那种文件仍然应该能分析。
-    //
-    // ❗ 而且每条轨都要挂一个 probe：多节目 TS 的每条节目是独立的 PID、独立的
-    // 参数集，一条 probe 只能覆盖一条流 —— 以前只有 inband_probe_ 一个成员，
-    // 第二条节目彻底没人看（这正是 C3 里"多节目/多角度漏"的一半成因）。
-    for (unsigned i : video_order) {
-        AVStream* st = fmt->streams[i];
-        if (st->codecpar->extradata != nullptr && st->codecpar->extradata_size > 0)
-            continue;
-
-        InBandParameterSetProbe probe;
-        probe.Reset(static_cast<int>(st->codecpar->codec_id));
-        if (!probe.enabled())
-            continue;
-        probe.SetContainerMetadata(ContainerMetadataFromStream(st, result, i));
-        inband_probes_.push_back({static_cast<int>(i), std::move(probe)});
-        LOG_INFO("码流解析: 流 #" + std::to_string(i) + " 无 extradata，改为带内参数集探测");
-    }
-    if (inband_probes_.empty())
-        return;
-    // 只有真的有人在探测时才让逐包分发进那段循环
-    bitstream_inband_active_ = true;
 }
 
 // 把已解析的参数集注入 slice/SEI 巡检器。带内路径（TS 等）在 OnPacket 里
@@ -433,26 +599,15 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt, model::Anal
     if (options_.analyze_audio_bitstream)
         audio_bitstream_.OnPacket(pkt, st);
 
-    // 音频 QC：解码后归一为 float planar 再喂给分析器
-    if (options_.analyze_audio_qc && pkt->stream_index == audio_stream_index_ && audio_probe_.ready) {
-        const int send_ret = avcodec_send_packet(audio_probe_.decoder, pkt);
-        // EAGAIN 表示解码器还压着包，不是错误；其余负值才是"这个包解不了"。
-        if (send_ret < 0 && send_ret != AVERROR(EAGAIN)) {
-            audio_qc_.NoteDecodeErrorPacket();
-        } else {
-            // ❗ 这里的三种收尾必须分开记账：以前只写 `>= 0` 就继续，
-            // 解码失败被当成"这包没有帧"，结果里只留下"已分析"，看不出覆盖不足。
-            while (true) {
-                const int recv_ret = avcodec_receive_frame(audio_probe_.decoder, audio_probe_.frame);
-                if (recv_ret == AVERROR(EAGAIN) || recv_ret == AVERROR_EOF)
-                    break;
-                if (recv_ret < 0) {
-                    audio_qc_.NoteDecodeErrorFrame();
-                    break;
-                }
-                FeedAudioFrame(audio_probe_.frame);
-                av_frame_unref(audio_probe_.frame);
-            }
+    // 音频 QC：解码后归一为 float planar 再喂给分析器。
+    //
+    // 多音轨时这里要按包所属流号分派 —— 以前只有 `pkt->stream_index == audio_stream_index_`
+    // 一个条件，第二条音轨的包被直接丢掉，于是"只测主轨"这件事连日志都没有。
+    if (options_.analyze_audio_qc && !audio_tracks_.empty()) {
+        for (AudioQcTrack& track : audio_tracks_) {
+            if (track.stream_index != pkt->stream_index || !track.probe.ready)
+                continue;
+            PumpAudioPacket(track, pkt);
         }
     }
 
@@ -573,6 +728,28 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt, model::Anal
             }
         }
 
+        // 参数集全程追踪：与上面的带内 probe 是两条独立链路。
+        // probe 攒到第一次成功就收工；这里逐包看参数集有没有变（含 extradata 路径）。
+        // 成本只有"每包一次 NAL 扫描"，所以放在最外层无条件跑。
+        for (ParameterTrackerSlot& slot : parameter_trackers_) {
+            if (slot.stream_index != pkt->stream_index)
+                continue;
+            double pts_seconds = -1.0;
+            if (pkt->pts != AV_NOPTS_VALUE && slot.time_base > 0.0)
+                pts_seconds = static_cast<double>(pkt->pts) * slot.time_base;
+            slot.tracker.Feed(pkt->data, static_cast<size_t>(pkt->size), pts_seconds, packet_index, pkt->pos);
+        }
+
+        // 帧级 POC：只对 H.264 轨跑，同样在 extradata 路径上也要扫。
+        // 时间戳用 PTS（显示顺序的时间），不是 DTS —— 这一层就是来比对显示顺序的。
+        for (PocTrackerSlot& slot : poc_trackers_) {
+            if (slot.stream_index != pkt->stream_index)
+                continue;
+            const bool has_time = (pkt->pts != AV_NOPTS_VALUE && slot.time_base > 0.0);
+            const double pts_seconds = has_time ? static_cast<double>(pkt->pts) * slot.time_base : 0.0;
+            slot.tracker.Feed(pkt->data, static_cast<size_t>(pkt->size), has_time, pts_seconds, packet_index);
+        }
+
         // 带内参数集（extradata 为空的封装）：攒到参数集出现为止。
         //
         // 放在 GOP/码率之后是因为那两段不依赖参数集。每条视频轨一个 probe：
@@ -662,26 +839,55 @@ void AnalysisPipeline::BeforeClose(AVFormatContext* fmt, model::AnalysisResult& 
     // 挂在 BeforeClose 是因为它不依赖任何解码上下文 —— 只要在关YYYY前跑掉即可，
     // 而 BeforeClose 是"关之前最后还能读到 exporter 状态"的那个点。
     FinishVideoEsInspection(result);
+
+    // 参数变化时间线收尾：这里要算"引用了从未传输的参数集"——只有扫完全部包
+    // 才能确定某份 PPS 到底出现过没有，所以只能在收尾时结账。
+    parameter_timelines_.clear();
+    for (ParameterTrackerSlot& slot : parameter_trackers_) {
+        slot.tracker.Finish();
+        const model::ParameterTimeline& timeline = slot.tracker.result();
+        parameter_timelines_.push_back(timeline);
+        if (!timeline.changes.empty() || timeline.missing_reference_count > 0) {
+            LOG_INFO("参数变化追踪(流#" + std::to_string(slot.stream_index) + "): " + timeline.Summary());
+        }
+    }
+
+    // 帧级 POC 收尾：reorder / GOP / 重复 / 缺口都在这里结账
+    frame_order_timelines_.clear();
+    for (PocTrackerSlot& slot : poc_trackers_) {
+        // 拷一份再落：FrameOrderTimeline 不带流号（domain 不认 AVStream），
+        // 而报告要按流分节展示，流号只能在这里补。
+        model::FrameOrderTimeline timeline = slot.tracker.Finish();
+        timeline.stream_index = slot.stream_index;
+        frame_order_timelines_.push_back(timeline);
+        LOG_INFO("帧级顺序(流#" + std::to_string(slot.stream_index) + "): " + timeline.Summary());
+    }
 }
 
 void AnalysisPipeline::FlushAudio() {
-    if (!options_.analyze_audio_qc || !audio_probe_.ready)
+    if (!options_.analyze_audio_qc)
         return;
 
-    avcodec_send_packet(audio_probe_.decoder, nullptr);
-    while (avcodec_receive_frame(audio_probe_.decoder, audio_probe_.frame) >= 0) {
-        FeedAudioFrame(audio_probe_.frame);
-        av_frame_unref(audio_probe_.frame);
-    }
-    if (audio_probe_.swr != nullptr && audio_probe_.out_data != nullptr && audio_probe_.channels > 0) {
-        std::vector<const float*> planes(static_cast<size_t>(audio_probe_.channels));
-        int got = swr_convert(audio_probe_.swr, audio_probe_.out_data, audio_probe_.out_frames, nullptr, 0);
-        while (got > 0) {
-            for (int c = 0; c < audio_probe_.channels; ++c) {
-                planes[static_cast<size_t>(c)] = reinterpret_cast<const float*>(audio_probe_.out_data[c]);
+    for (AudioQcTrack& track : audio_tracks_) {
+        AudioQcProbe& probe = track.probe;
+        if (!probe.ready)
+            continue;
+
+        avcodec_send_packet(probe.decoder, nullptr);
+        while (avcodec_receive_frame(probe.decoder, probe.frame) >= 0) {
+            FeedAudioFrame(track, probe.frame);
+            av_frame_unref(probe.frame);
+        }
+        if (probe.swr != nullptr && probe.out_data != nullptr && probe.channels > 0) {
+            std::vector<const float*> planes(static_cast<size_t>(probe.channels));
+            int got = swr_convert(probe.swr, probe.out_data, probe.out_frames, nullptr, 0);
+            while (got > 0) {
+                for (int c = 0; c < probe.channels; ++c) {
+                    planes[static_cast<size_t>(c)] = reinterpret_cast<const float*>(probe.out_data[c]);
+                }
+                track.analyzer.OnSamples(planes.data(), got, -1.0);
+                got = swr_convert(probe.swr, probe.out_data, probe.out_frames, nullptr, 0);
             }
-            audio_qc_.OnSamples(planes.data(), got, -1.0);
-            got = swr_convert(audio_probe_.swr, audio_probe_.out_data, audio_probe_.out_frames, nullptr, 0);
         }
     }
 }
@@ -689,8 +895,10 @@ void AnalysisPipeline::FlushAudio() {
 void AnalysisPipeline::ReleaseProbes() {
     frame_probe_.Release();
     color_probe_.Release();
-    if (audio_probe_.ready)
-        audio_probe_.Release();
+    for (AudioQcTrack& track : audio_tracks_) {
+        if (track.probe.ready)
+            track.probe.Release();
+    }
 }
 
 // EOF 时帧类型解码器里可能还压着几帧（帧重排序延迟）。这些帧的归属包在扫描期
@@ -722,24 +930,53 @@ void AnalysisPipeline::FlushFrameProbe() {
 
 // ---- 内部 ----
 
+// 把一个音频包送进指定音轨的解码器，并把解出的帧全部喂给该轨的分析器。
+void AnalysisPipeline::PumpAudioPacket(AudioQcTrack& track, const AVPacket* pkt) {
+    AudioQcProbe& probe = track.probe;
+    if (!probe.ready)
+        return;
+    const int send_ret = avcodec_send_packet(probe.decoder, pkt);
+    // EAGAIN 表示解码器还压着包，不是错误；其余负值才是"这个包解不了"。
+    if (send_ret < 0 && send_ret != AVERROR(EAGAIN)) {
+        track.analyzer.NoteDecodeErrorPacket();
+        return;
+    }
+    // ❗ 三种收尾必须分开记账：以前只写 `>= 0` 就继续，解码失败被当成
+    // "这包没有帧"，结果里只留下"已分析"，看不出覆盖不足。
+    while (true) {
+        const int recv_ret = avcodec_receive_frame(probe.decoder, probe.frame);
+        if (recv_ret == AVERROR(EAGAIN) || recv_ret == AVERROR_EOF)
+            break;
+        if (recv_ret < 0) {
+            track.analyzer.NoteDecodeErrorFrame();
+            break;
+        }
+        FeedAudioFrame(track, probe.frame);
+        av_frame_unref(probe.frame);
+    }
+}
+
 // 喂一帧解码后的音频给 QC 分析器（内部按 100 ms 步进出块）
-void AnalysisPipeline::FeedAudioFrame(AVFrame* frame) {
-    if (!audio_probe_.ready || frame == nullptr || frame->nb_samples <= 0)
+void AnalysisPipeline::FeedAudioFrame(AudioQcTrack& track, AVFrame* frame) {
+    AudioQcProbe& probe = track.probe;
+    if (!probe.ready || frame == nullptr || frame->nb_samples <= 0)
         return;
     const int channels = frame->ch_layout.nb_channels;
     // extended_data 在声道数 > AV_NUM_DATA_POINTERS(8) 时才是完整的那一份：
     // data[] 只有前 8 个平面，9~N 声道全是 nullptr（12 声道 S16P 实测如此）。
     if (channels <= 0 || frame->extended_data == nullptr) {
-        audio_qc_.NoteDroppedFrame(frame->nb_samples);
+        track.analyzer.NoteDroppedFrame(frame->nb_samples);
         return;
     }
-    if (frame->sample_rate != audio_probe_.sample_rate || channels != audio_probe_.channels) {
-        audio_probe_.rate_changed = true; // 参数中途变化（罕见），该帧丢弃
-        audio_qc_.NoteDroppedFrame(frame->nb_samples);
+    if (frame->sample_rate != probe.sample_rate || channels != probe.channels) {
+        probe.rate_changed = true; // 参数中途变化（罕见），该帧丢弃
+        track.analyzer.NoteDroppedFrame(frame->nb_samples);
         return;
     }
-    double ts = (frame->pts != AV_NOPTS_VALUE && audio_time_base_ > 0.0)
-                    ? static_cast<double>(frame->pts) * audio_time_base_
+    // 时间轴换算必须用**本轨**的时基：不同音轨的 time_base 可以不同，
+    // 共用一个成员会把第二轨的 PTS 换算成完全错的秒数（响度曲线的时间轴会歪）。
+    double ts = (frame->pts != AV_NOPTS_VALUE && track.time_base > 0.0)
+                    ? static_cast<double>(frame->pts) * track.time_base
                     : -1.0;
 
     std::vector<const float*> planes(static_cast<size_t>(channels));
@@ -747,24 +984,24 @@ void AnalysisPipeline::FeedAudioFrame(AVFrame* frame) {
         for (int c = 0; c < channels; ++c) {
             planes[static_cast<size_t>(c)] = reinterpret_cast<const float*>(frame->extended_data[c]);
         }
-        audio_qc_.OnSamples(planes.data(), frame->nb_samples, ts);
+        track.analyzer.OnSamples(planes.data(), frame->nb_samples, ts);
         return;
     }
-    if (audio_probe_.swr == nullptr || audio_probe_.out_data == nullptr) {
+    if (probe.swr == nullptr || probe.out_data == nullptr) {
         // 重采样器建不起来：非 FLTP 的帧一个都进不了统计，必须记账
-        audio_qc_.NoteDroppedFrame(frame->nb_samples);
+        track.analyzer.NoteDroppedFrame(frame->nb_samples);
         return;
     }
 
-    int got = swr_convert(audio_probe_.swr, audio_probe_.out_data, audio_probe_.out_frames,
+    int got = swr_convert(probe.swr, probe.out_data, probe.out_frames,
                           const_cast<const uint8_t**>(frame->extended_data), frame->nb_samples);
     while (got > 0) {
         for (int c = 0; c < channels; ++c) {
-            planes[static_cast<size_t>(c)] = reinterpret_cast<const float*>(audio_probe_.out_data[c]);
+            planes[static_cast<size_t>(c)] = reinterpret_cast<const float*>(probe.out_data[c]);
         }
-        audio_qc_.OnSamples(planes.data(), got, ts);
+        track.analyzer.OnSamples(planes.data(), got, ts);
         ts = -1.0; // 后续块沿用内部时钟
-        got = swr_convert(audio_probe_.swr, audio_probe_.out_data, audio_probe_.out_frames, nullptr, 0);
+        got = swr_convert(probe.swr, probe.out_data, probe.out_frames, nullptr, 0);
     }
 }
 

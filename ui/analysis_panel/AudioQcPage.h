@@ -89,6 +89,8 @@ private:
     void RebuildSilenceTable();
     void RebuildVerdictTable();
     void RebuildMetadataTable();
+    // 逐轨对照表：全部参与分析的音轨（不是只有主轨）
+    void RebuildTrackTable();
     void OnExportCsv();
 
     QString source_path_;
@@ -147,6 +149,9 @@ private:
     QTableWidget* silence_table_ = nullptr;
     QTableWidget* verdict_table_ = nullptr;
     QTableWidget* metadata_table_ = nullptr;
+    // 逐轨对照（子页 4）：全部音轨，不只是主轨
+    QTableWidget* track_table_ = nullptr;
+    QLabel* track_hint_ = nullptr;
 };
 
 } // namespace ui

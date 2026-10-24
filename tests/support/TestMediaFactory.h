@@ -26,15 +26,20 @@ struct TestMediaSpec {
     int width = 128;
     int height = 72;
     int fps = 25;
-    int frame_count = 40;      // 40 / 25 = 1.6 s
+    int frame_count = 40; // 40 / 25 = 1.6 s
     int sample_rate = 44100;
     int channels = 2;
     bool with_audio = true;
+    // > 0 时打开 B 帧（默认 0 = 关，见 cpp 里对 max_b_frames 的说明）。
+    // 需要"真实存在显示顺序重排"的样本（例如 POC 重建的正例）时设为 2~3；
+    // 打开后 zerolatency 会被关掉 —— 那个 tune 会强制把 B 帧数清零，
+    // 留着它会导致"设了 3 却一个 B 帧都没有"，且错误毫无征兆。
+    int max_b_frames = 0;
 };
 
 struct TestMedia {
     std::string path;
-    std::string video_codec;   // 实际用到的编码器名（libx264 / mpeg4 ...）
+    std::string video_codec; // 实际用到的编码器名（libx264 / mpeg4 ...）
     std::string audio_codec;
     int width = 0;
     int height = 0;
@@ -44,7 +49,7 @@ struct TestMedia {
     int channels = 0;
     double duration_seconds = 0.0;
     bool ok = false;
-    std::string error;         // 生成失败时的原因（供 ASSERT 打印）
+    std::string error; // 生成失败时的原因（供 ASSERT 打印）
 };
 
 // 在 directory 下生成 <name>.mp4；失败时 ok=false 且 error 有内容。
@@ -53,18 +58,18 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
 
 // ---- 产物校验 ----
 struct MediaProbe {
-    bool opened = false;                // FFmpeg 能否重新打开
+    bool opened = false; // FFmpeg 能否重新打开
     int video_streams = 0;
     int audio_streams = 0;
     std::string video_codec;
     std::string audio_codec;
     int width = 0;
     int height = 0;
-    double duration_seconds = 0.0;      // 容器层时长
-    double video_duration_seconds = 0.0;// 视频流层时长（容器层可能是估算值）
-    double video_start_seconds = 0.0;   // 视频流的起始时间（>0 说明容器用编辑列表裁掉了开头）
-    long long video_nb_frames = 0;      // 容器声明的帧数（元数据，可能与真解码结果不同）
-    int frame_count = 0;                // **真实解码**出来的帧数
+    double duration_seconds = 0.0;       // 容器层时长
+    double video_duration_seconds = 0.0; // 视频流层时长（容器层可能是估算值）
+    double video_start_seconds = 0.0;    // 视频流的起始时间（>0 说明容器用编辑列表裁掉了开头）
+    long long video_nb_frames = 0;       // 容器声明的帧数（元数据，可能与真解码结果不同）
+    int frame_count = 0;                 // **真实解码**出来的帧数
     int video_packet_count = 0;
     std::string error;
 };
@@ -76,4 +81,4 @@ MediaProbe ProbeMediaFile(const std::string& path);
 // 用来触发"打开失败 / 探测失败"的分支。
 std::string CreateCorruptMediaFile(const std::string& directory, const std::string& name);
 
-}  // namespace videoeye_test
+} // namespace videoeye_test

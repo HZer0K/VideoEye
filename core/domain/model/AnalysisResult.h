@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-#include "core/domain/model/AnalysisTypes.h"   // StreamDigest + AnalysisStatus
+#include "core/domain/model/AnalysisTypes.h" // StreamDigest + AnalysisStatus
 #include "core/domain/model/AudioBitstreamInfo.h"
 #include "core/domain/model/AudioQcResult.h"
 #include "core/domain/model/AuxiliaryDataInfo.h"
@@ -25,8 +25,11 @@
 #include "core/domain/model/BitstreamInfo.h"
 #include "core/domain/model/ColorHdrResult.h"
 #include "core/domain/model/ContainerDiagnosticsInfo.h"
+#include "core/domain/model/DimensionStatus.h"
+#include "core/domain/model/FrameOrderInfo.h"
 #include "core/domain/model/MetricSeries.h"
 #include "core/domain/model/Mp4SampleInfo.h"
+#include "core/domain/model/ParameterTimeline.h"
 #include "core/domain/model/SceneChangeResult.h"
 #include "core/domain/model/StreamPackageInfo.h"
 #include "core/domain/model/SubtitleCueInfo.h"
@@ -41,13 +44,13 @@ namespace model {
 struct AnalysisResult {
     // 文件级
     std::string file_path;
-    std::string file_extension;     // 小写扩展名（无扩展名/URL 为空），供扩展名与容器一致性检查
+    std::string file_extension; // 小写扩展名（无扩展名/URL 为空），供扩展名与容器一致性检查
     std::string container_format;
     double duration_seconds = 0.0;
     int64_t file_size_bytes = 0;
     int64_t overall_bitrate_bps = 0;
     bool seekable = true;
-    bool moov_after_mdat = false;   // 仅 MP4 家族有效
+    bool moov_after_mdat = false; // 仅 MP4 家族有效
 
     // 流级
     std::vector<StreamDigest> streams;
@@ -82,7 +85,20 @@ struct AnalysisResult {
     double avg_packet_bytes = 0.0;
 
     // 音频 QC（解码 + 重采样/格式归一后统计，见 core/analysis/quality/AudioQcAnalyzer.h）
+    //
+    // ❗ audio_qc 恒等于"主音频轨"的那一份（primary_audio_stream_index），
+    // 为兼容既有消费方（面板/报告/规则）而保留。多音轨结果在 audio_qc_streams。
     AudioQcResult audio_qc;
+    // 逐轨 PCM QC 结果（每条参与 QC 的音频流一份）。
+    //
+    // 为什么不做成 map<stream_index, AudioQcResult>：消费方基本都是"遍历+展示"，
+    // 而 AudioQcResult 里没有 stream_index 字段（它描述一条流的内部指标），
+    // 用 vector + 平行下标最省事。顺序与 AudioQcTrackOrder() 一致。
+    std::vector<AudioQcResult> audio_qc_streams;
+    std::vector<int> audio_qc_stream_indices;
+    // 本次 QC 实际覆盖了几条音轨 / 一共有几条（用于"只看主轨"时说明覆盖不足）
+    int audio_qc_tracks_analyzed = 0;
+    int audio_qc_tracks_total = 0;
 
     // 音频位流参数（D1：逐包解析 ADTS/LATM/AC-3/E-AC-3/Opus 帧头，不解码）。
     // audio_bitstream_analyzed=true 才表示跑过（没有音频流时不跑）。
@@ -146,10 +162,39 @@ struct AnalysisResult {
     // 只有输入确实是这四种容器且是本地文件时才填充（网络源不重扫）。
     ContainerDiagnosticsInfo container_diagnostics;
 
+    // 参数集全程变化时间线（每条视频轨一份，见 core/analysis/codec/ParameterSetTracker.h）。
+    //
+    // 与 bitstream_analysis 是**两个不同的问题**：后者回答"现在的配置是什么"（单份快照），
+    // 这里回答"配置在文件里怎么变过来的"（序列 + 引用统计）。拼接、编码器重启、
+    // 中途换分辨率/位深，只有看这条时间线才发现得了。
+    std::vector<ParameterTimeline> parameter_timelines;
+
+    // 帧级显示/解码顺序（每条 H.264 视频轨一份，见 H264PocTracker）。
+    //
+    // 与 bitrate_gop 的分工：后者按包统计"关键帧间隔"，只有长度；这里给的是
+    // 逐帧 POC，能回答"显示顺序重排了多深""GOP 边界在哪一帧""POC 有没有重复/缺失"。
+    // 目前只支持 H.264 —— HEVC/AV1 的 POC 需要各自的 slice header 与
+    // 参考结构，尚未实现，对应维度会明确标为不可用而不是给空结果。
+    std::vector<FrameOrderTimeline> frame_order_timelines;
+
+    // 每个分析维度的证据与覆盖状态（见 core/domain/model/DimensionStatus.h）。
+    //
+    // 由 AnalysisResultAssembler 统一填充，一项一行。消费方（报告/UI/规则）
+    // 必须用它来回答"这条结论覆盖了多少内容、能不能当通过"，不要再去猜
+    // 各个 *_analyzed 布尔的组合含义。
+    std::vector<DimensionStatus> dimensions;
+
+    // ---- 维度状态表的读写助手 ----
+    // 同维度重复设置时覆盖（Assembler 按固定顺序填，天然不会重复；覆盖语义是为了幂等）
+    void SetDimension(const DimensionStatus& status);
+    const DimensionStatus* FindDimension(AnalysisDimension dimension) const;
+    // 该维度是否"已执行且结论可用"
+    bool DimensionConclusive(AnalysisDimension dimension) const;
+
     // 执行状态
     AnalysisStatus scan_status = AnalysisStatus::Complete;
-    int scan_error_code = 0;        // 0 = 无；否则为 FFmpeg 错误码或 -1
-    int64_t scanned_packets = 0;    // 已扫描包数（取消/截断时也是部分结果）
+    int scan_error_code = 0;     // 0 = 无；否则为 FFmpeg 错误码或 -1
+    int64_t scanned_packets = 0; // 已扫描包数（取消/截断时也是部分结果）
     std::string error_message;
 
     int VideoStreamCount() const;

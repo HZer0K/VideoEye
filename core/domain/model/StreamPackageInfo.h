@@ -135,6 +135,31 @@ constexpr const char* kSegmentContainerInvalid = "container.streaming.segment_co
 // 直播窗口滚动时被淘汰的旧分片（ NOT a defect）—— 与上面的"真的找不到"分开计，
 // 否则每次分析直播包都会被一条无法修复的告警刷屏。
 constexpr const char* kSegmentEvictedLiveWindow = "container.streaming.segment_evicted_live_window";
+// 分片首样本实证为 non-sync：该段不能独立起播（切档/随机访问会花屏）。
+// 与"未实证"必须分开：前者是缺陷、后者是覆盖不足。
+constexpr const char* kSegmentStartsNonSync = "container.streaming.segment_starts_non_sync";
+constexpr const char* kSegmentKeyframeUnverified = "container.streaming.segment_keyframe_unverified";
+// 清单**声明**了独立分片（HLS EXT-X-INDEPENDENT-SEGMENTS / DASH startWithSAP<=1），
+// 但实测有分片首样本是 non-sync —— 声明与内容互相矛盾。
+//
+// 为什么不与 kSegmentStartsNonSync 合并：两者的修复动作不同。前者要改编码器
+// （分片边界对齐 IDR），后者还要改清单（或者说明内容被替换过、清单是从别处抄来的）。
+// 严重度用 Warning 而非 Error：内容的硬问题已经被 kSegmentStartsNonSync 计入 Error，
+// 这里只是补充"清单层面也不一致"，重复计 Error 会把一个缺陷算成两个。
+constexpr const char* kSegmentDeclarationContradicts = "container.streaming.segment_declaration_contradicts";
+// 实测全部达标（每片首样本都是 sync），但清单没声明独立分片。
+// 不是缺陷：内容质量没问题，只是清单没给出客户端可以依赖的承诺，
+// 播放器就不能据此做无边界的码率切换/拼接优化。
+constexpr const char* kSegmentIndependenceUndeclared = "container.streaming.segment_independence_undeclared";
+// 跨分片时间轴实证（用 tfdt 与段内实测时长，不是清单声明的 EXTINF）：
+//   * gap     —— 本段起点晚于上段终点：中间有媒体时间没有被任何分片覆盖（丢样本）
+//   * overlap —— 本段起点早于上段终点：两段覆盖了同一段时间（重复样本）
+//   * regress —— 本段起点早于上段起点且无 DISCONTINUITY：时基倒退
+// 与 DASH 的 segment_timeline_gap 是不同数据源：那个比对 <S t/d/r> 声明，
+// 这个比对文件里的 tfdt。清单正确而封装器写错 tfdt 的情况只有这条能抓到。
+constexpr const char* kSegmentTimelineGapActual = "container.streaming.segment_timeline_gap_actual";
+constexpr const char* kSegmentTimelineOverlapActual = "container.streaming.segment_timeline_overlap_actual";
+constexpr const char* kSegmentTimelineRegress = "container.streaming.segment_timeline_regress";
 } // namespace StreamingIssueCode
 
 // 一条流媒体包问题
@@ -290,6 +315,11 @@ struct MediaPlaylistInfo {
     bool playlist_type_vod = false; // EXT-X-PLAYLIST-TYPE:VOD
     std::string playlist_type;      // EXT-X-PLAYLIST-TYPE 原文（小写 vod / event），空 = 未声明
     bool has_endlist = false;       // EXT-X-ENDLIST（有即为点播，否则当作直播）
+    // EXT-X-INDEPENDENT-SEGMENTS：每个媒体分片都可以不依赖其它分片独立解码。
+    //
+    // 这是**声明**，不是证据。规范（RFC 8216 §4.3.5.1）只要求播放器据此可以
+    // 在任意分片边界拼接/切换，内容是否真的做到要另看 sample_flags。
+    // 2026-10 之前这个字段解析了就没人读 —— 等于把「清单承诺」这半边证据丢掉了。
     bool independent_segments = false;
 
     // 加密标签（EXT-X-KEY）
@@ -483,6 +513,9 @@ struct DashRepresentationInfo {
     std::string content_type; // video / audio / text
     double frame_rate = 0.0;
     std::string base_url;
+    // startWithSAP：与 DashAdaptationSetInfo 同名字段同义，Representation 未声明时
+    // 从 AdaptationSet 继承（见 DashManifestAnalyzer 的继承段）。-1 = 未声明。
+    int start_with_sap = -1;
 
     // SegmentTemplate（字段名与 DashAdaptationSetInfo 保持一致，
     // 这样解析时可以用一个泛型 lambda 同时写两处，不用复制一遍逻辑）
@@ -537,6 +570,12 @@ struct DashAdaptationSetInfo {
     std::string mime_type;
     std::string lang;
     std::string par; // 宽高比
+    // startWithSAP（ISO/IEC 23009-1 §5.3.7.3）：声明每个媒体分片的第一个媒体段
+    // 达到 SAP 类型 startWithSAP 或更低。startWithSAP="1" 即「分片以瞬时解码器刷新
+    // 点（IDR 级）开头」，是 DASH 侧对应 EXT-X-INDEPENDENT-SEGMENTS 的声明。
+    // -1 = 未声明。规范允许省略，但省略时客户端**不能**假定分片可独立切换，
+    // 所以「未声明」和「声明为 0」是两种不同情况，必须分开存。
+    int start_with_sap = -1;
     // AdaptationSet 级别的 SegmentTemplate（被下属 Representation 继承）
     bool has_template = false;
     uint32_t timescale = 0;
@@ -606,6 +645,11 @@ struct StreamingPackageResult {
     std::vector<HlsVariantInfo> variants;
     std::vector<HlsRenditionInfo> renditions;
     std::vector<MediaPlaylistInfo> playlists;
+    // master playlist 里的 EXT-X-INDEPENDENT-SEGMENTS（RFC 8216 §4.3.5.1）。
+    // 单独存而不下发给每个 MediaPlaylistInfo：media playlist 自己也声明时，
+    // 那份解析结果会覆盖 pl.independent_segments，「声明来源」就丢了。
+    // 判定独立分片要取 (pl.independent_segments || 本字段)，报告里两者分开说。
+    bool master_independent_segments = false;
 
     // ---- DASH ----
     std::string mpd_type; // "static" / "dynamic"

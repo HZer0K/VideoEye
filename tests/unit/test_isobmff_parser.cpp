@@ -25,10 +25,13 @@ using namespace videoeye;
 namespace {
 
 // ---- 字节序辅助（ISOBMFF 是大端）----
-void Put8(std::vector<uint8_t>& v, uint8_t x) { v.push_back(x); }
+void Put8(std::vector<uint8_t>& v, uint8_t x) {
+    v.push_back(x);
+}
 
 void Put32(std::vector<uint8_t>& v, uint32_t x) {
-    for (int i = 3; i >= 0; --i) v.push_back(static_cast<uint8_t>((x >> (i * 8)) & 0xFF));
+    for (int i = 3; i >= 0; --i)
+        v.push_back(static_cast<uint8_t>((x >> (i * 8)) & 0xFF));
 }
 
 // std::vector 没有 operator+，这里自己拼（读起来比一堆 insert 清楚）
@@ -49,20 +52,20 @@ std::vector<uint8_t> CatAll(std::initializer_list<std::vector<uint8_t>> parts) {
 std::vector<uint8_t> Box(const std::string& type, const std::vector<uint8_t>& payload) {
     std::vector<uint8_t> out;
     Put32(out, static_cast<uint32_t>(8 + payload.size()));
-    for (char c : type) Put8(out, static_cast<uint8_t>(c));
+    for (char c : type)
+        Put8(out, static_cast<uint8_t>(c));
     out.insert(out.end(), payload.begin(), payload.end());
     return out;
 }
 
 // version/flags(4) + body
-std::vector<uint8_t> FullBox(const std::string& type, uint8_t version,
-                             const std::vector<uint8_t>& body) {
+std::vector<uint8_t> FullBox(const std::string& type, uint8_t version, const std::vector<uint8_t>& body) {
     std::vector<uint8_t> payload{version, 0, 0, 0};
     payload.insert(payload.end(), body.begin(), body.end());
     return Box(type, payload);
 }
 
-using CountDelta = std::pair<uint32_t, uint32_t>;   // (sample_count, delta 或 offset)
+using CountDelta = std::pair<uint32_t, uint32_t>; // (sample_count, delta 或 offset)
 
 std::vector<uint8_t> MakeStts(const std::vector<CountDelta>& entries) {
     std::vector<uint8_t> body;
@@ -85,8 +88,7 @@ std::vector<uint8_t> MakeCtts(uint8_t version, const std::vector<CountDelta>& en
 }
 
 // stz2: version/flags(4) reserved(3)+field_size(1) sample_count(4) + 打包好的样本
-std::vector<uint8_t> MakeStz2(uint8_t field_size, uint32_t sample_count,
-                             const std::vector<uint8_t>& packed) {
+std::vector<uint8_t> MakeStz2(uint8_t field_size, uint32_t sample_count, const std::vector<uint8_t>& packed) {
     std::vector<uint8_t> body{0, 0, 0, field_size};
     Put32(body, sample_count);
     body.insert(body.end(), packed.begin(), packed.end());
@@ -102,33 +104,35 @@ std::vector<uint8_t> MakeStsz(uint32_t default_size, uint32_t sample_count) {
 
 std::vector<uint8_t> MakeStsd() {
     std::vector<uint8_t> body;
-    Put32(body, 1);                        // entry_count
-    Put32(body, 16);                       // 首个 entry 的 size
-    for (char c : std::string("avc1")) Put8(body, static_cast<uint8_t>(c));
-    Put32(body, 0);                        // 补齐 entry 的其余字段
+    Put32(body, 1);  // entry_count
+    Put32(body, 16); // 首个 entry 的 size
+    for (char c : std::string("avc1"))
+        Put8(body, static_cast<uint8_t>(c));
+    Put32(body, 0); // 补齐 entry 的其余字段
     return FullBox("stsd", 0, body);
 }
 
 // 一个结构完整、可被 IsobmffParser 接受的 trak（vide + timescale + 各类表）
 std::vector<uint8_t> MakeTrak(const std::vector<uint8_t>& stbl_body) {
     std::vector<uint8_t> tkhd_body;
-    Put32(tkhd_body, 0);        // creation_time
-    Put32(tkhd_body, 0);        // modification_time
-    Put32(tkhd_body, 1);        // track_id
-    Put32(tkhd_body, 0);        // reserved
-    Put32(tkhd_body, 1000);     // duration
+    Put32(tkhd_body, 0);    // creation_time
+    Put32(tkhd_body, 0);    // modification_time
+    Put32(tkhd_body, 1);    // track_id
+    Put32(tkhd_body, 0);    // reserved
+    Put32(tkhd_body, 1000); // duration
     const std::vector<uint8_t> tkhd = FullBox("tkhd", 0, tkhd_body);
 
     std::vector<uint8_t> mdhd_body;
-    Put32(mdhd_body, 0);            // creation_time
-    Put32(mdhd_body, 0);            // modification_time
-    Put32(mdhd_body, 30000);        // timescale
-    Put32(mdhd_body, 60000);        // duration
+    Put32(mdhd_body, 0);     // creation_time
+    Put32(mdhd_body, 0);     // modification_time
+    Put32(mdhd_body, 30000); // timescale
+    Put32(mdhd_body, 60000); // duration
     const std::vector<uint8_t> mdhd = FullBox("mdhd", 0, mdhd_body);
 
     std::vector<uint8_t> hdlr_body;
-    Put32(hdlr_body, 0);                                    // pre_defined
-    for (char c : std::string("vide")) Put8(hdlr_body, static_cast<uint8_t>(c));
+    Put32(hdlr_body, 0); // pre_defined
+    for (char c : std::string("vide"))
+        Put8(hdlr_body, static_cast<uint8_t>(c));
     const std::vector<uint8_t> hdlr = FullBox("hdlr", 0, hdlr_body);
 
     const std::vector<uint8_t> stbl = Box("stbl", stbl_body);
@@ -139,16 +143,18 @@ std::vector<uint8_t> MakeTrak(const std::vector<uint8_t>& stbl_body) {
 
 std::vector<uint8_t> MakeFile(const std::vector<uint8_t>& stbl_body) {
     std::vector<uint8_t> ftyp_body;
-    for (char c : std::string("isom")) Put8(ftyp_body, static_cast<uint8_t>(c));
+    for (char c : std::string("isom"))
+        Put8(ftyp_body, static_cast<uint8_t>(c));
     Put32(ftyp_body, 0);
-    for (char c : std::string("isom")) Put8(ftyp_body, static_cast<uint8_t>(c));
+    for (char c : std::string("isom"))
+        Put8(ftyp_body, static_cast<uint8_t>(c));
     const std::vector<uint8_t> ftyp = Box("ftyp", ftyp_body);
 
     std::vector<uint8_t> mvhd_body;
     Put32(mvhd_body, 0);
     Put32(mvhd_body, 0);
-    Put32(mvhd_body, 1000);     // timescale
-    Put32(mvhd_body, 2000);     // duration
+    Put32(mvhd_body, 1000); // timescale
+    Put32(mvhd_body, 2000); // duration
     const std::vector<uint8_t> mvhd = FullBox("mvhd", 0, mvhd_body);
 
     const std::vector<uint8_t> moov = Box("moov", Cat(mvhd, MakeTrak(stbl_body)));
@@ -158,15 +164,15 @@ std::vector<uint8_t> MakeFile(const std::vector<uint8_t>& stbl_body) {
 
 bool WriteTemp(const std::string& path, const std::vector<uint8_t>& data) {
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
-    if (!f) return false;
-    f.write(reinterpret_cast<const char*>(data.data()),
-            static_cast<std::streamsize>(data.size()));
+    if (!f)
+        return false;
+    f.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
     return f.good();
 }
 
 // 拼文件 → 解析 → 返回第一条轨道（解析失败返回 nullptr 由调用方判空）
 videoeye::IsobmffFile ParseFirstTrackFile(const std::vector<uint8_t>& stbl_body,
-                                       videoeye::IsobmffParser::Options opt = {}) {
+                                          videoeye::IsobmffParser::Options opt = {}) {
     const std::string path = "isobmff_parser_test_tmp.mp4";
     EXPECT_TRUE(WriteTemp(path, MakeFile(stbl_body)));
     videoeye::IsobmffFile out;
@@ -181,8 +187,7 @@ videoeye::IsobmffFile ParseFirstTrackFile(const std::vector<uint8_t>& stbl_body,
 TEST(IsobmffParserTest, SttsParsesAllEntriesNotJustTheFirst) {
     // 两条 entry 一共 150 个样本。旧实现用 added += sample_count 与 entry_count 比，
     // 第一条的 sample_count=100 立刻超过 entry_count=2，导致只解析出 1 条。
-    const videoeye::IsobmffFile f = ParseFirstTrackFile(
-        Cat(MakeStts({{100, 3000}, {50, 3000}}), MakeStsz(100, 150)));
+    const videoeye::IsobmffFile f = ParseFirstTrackFile(Cat(MakeStts({{100, 3000}, {50, 3000}}), MakeStsz(100, 150)));
 
     ASSERT_EQ(f.tracks.size(), 1u);
     const videoeye::IsobmffTrack& t = f.tracks[0];
@@ -199,8 +204,7 @@ TEST(IsobmffParserTest, SttsParsesAllEntriesNotJustTheFirst) {
 // ---------------------------------------------------------------------------
 TEST(IsobmffParserTest, CttsVersion1KeepsSignedOffsets) {
     const uint32_t neg3000 = static_cast<uint32_t>(-3000);
-    const videoeye::IsobmffFile f = ParseFirstTrackFile(
-        Cat(MakeCtts(1, {{1, neg3000}, {1, 3000}}), MakeStsz(100, 2)));
+    const videoeye::IsobmffFile f = ParseFirstTrackFile(Cat(MakeCtts(1, {{1, neg3000}, {1, 3000}}), MakeStsz(100, 2)));
 
     ASSERT_EQ(f.tracks.size(), 1u);
     const videoeye::IsobmffTrack& t = f.tracks[0];
@@ -214,8 +218,7 @@ TEST(IsobmffParserTest, CttsVersion1KeepsSignedOffsets) {
 // ctts v0: 偏移是无符号的，超大值夹到 INT32_MAX 而不是变成负数
 // ---------------------------------------------------------------------------
 TEST(IsobmffParserTest, CttsVersion0TreatsOffsetAsUnsigned) {
-    const videoeye::IsobmffFile f = ParseFirstTrackFile(
-        Cat(MakeCtts(0, {{1, 0xFFFFFFF0u}}), MakeStsz(100, 1)));
+    const videoeye::IsobmffFile f = ParseFirstTrackFile(Cat(MakeCtts(0, {{1, 0xFFFFFFF0u}}), MakeStsz(100, 1)));
 
     ASSERT_EQ(f.tracks.size(), 1u);
     const videoeye::IsobmffTrack& t = f.tracks[0];
@@ -228,8 +231,7 @@ TEST(IsobmffParserTest, CttsVersion0TreatsOffsetAsUnsigned) {
 // ---------------------------------------------------------------------------
 TEST(IsobmffParserTest, Stz2FourBitOddSampleCountDropsPaddingNibble) {
     // 0x12 -> 1, 2；0x30 -> 3, (0x0 是填充)
-    const videoeye::IsobmffFile f =
-        ParseFirstTrackFile(MakeStz2(4, 3, {0x12, 0x30}));
+    const videoeye::IsobmffFile f = ParseFirstTrackFile(MakeStz2(4, 3, {0x12, 0x30}));
 
     ASSERT_EQ(f.tracks.size(), 1u);
     const videoeye::IsobmffTrack& t = f.tracks[0];
@@ -242,8 +244,7 @@ TEST(IsobmffParserTest, Stz2FourBitOddSampleCountDropsPaddingNibble) {
 }
 
 TEST(IsobmffParserTest, Stz2FourBitEvenSampleCountUsesBothNibbles) {
-    const videoeye::IsobmffFile f =
-        ParseFirstTrackFile(MakeStz2(4, 4, {0x12, 0x34}));
+    const videoeye::IsobmffFile f = ParseFirstTrackFile(MakeStz2(4, 4, {0x12, 0x34}));
 
     ASSERT_EQ(f.tracks.size(), 1u);
     const videoeye::IsobmffTrack& t = f.tracks[0];
@@ -257,8 +258,8 @@ TEST(IsobmffParserTest, Stz2FourBitEvenSampleCountUsesBothNibbles) {
 TEST(IsobmffParserTest, MaxEntriesTruncatesAndFlags) {
     videoeye::IsobmffParser::Options opt;
     opt.max_entries_per_table = 1;
-    const videoeye::IsobmffFile f = ParseFirstTrackFile(
-        Cat(MakeStts({{100, 3000}, {50, 3000}}), MakeStsz(100, 150)), opt);
+    const videoeye::IsobmffFile f =
+        ParseFirstTrackFile(Cat(MakeStts({{100, 3000}, {50, 3000}}), MakeStsz(100, 150)), opt);
 
     ASSERT_EQ(f.tracks.size(), 1u);
     EXPECT_EQ(f.tracks[0].stts.size(), 1u);
@@ -269,8 +270,8 @@ TEST(IsobmffParserTest, MaxEntriesTruncatesAndFlags) {
 // 基本容器结构（保证上面的断言不是建立在一条空轨道上）
 // ---------------------------------------------------------------------------
 TEST(IsobmffParserTest, ParsesContainerAndTrackBasics) {
-    const videoeye::IsobmffFile f = ParseFirstTrackFile(
-        CatAll({MakeStsd(), MakeStts({{10, 3000}}), MakeStsz(100, 10)}));
+    const videoeye::IsobmffFile f =
+        ParseFirstTrackFile(CatAll({MakeStsd(), MakeStts({{10, 3000}}), MakeStsz(100, 10)}));
 
     EXPECT_TRUE(f.ok);
     EXPECT_TRUE(f.found_moov);
@@ -300,39 +301,45 @@ void Put16(std::vector<uint8_t>& v, uint16_t x) {
 }
 
 void PutFourCC(std::vector<uint8_t>& v, const char* s) {
-    for (int i = 0; i < 4; ++i) Put8(v, static_cast<uint8_t>(s[i]));
+    for (int i = 0; i < 4; ++i)
+        Put8(v, static_cast<uint8_t>(s[i]));
 }
 
 // avc1 入口：78 字节 SampleEntry 头 + 编码配置子树
 std::vector<uint8_t> MakeAvc1Entry() {
     std::vector<uint8_t> payload;
-    for (int i = 0; i < 6; ++i) Put8(payload, 0);   // reserved
-    Put16(payload, 1);                              // data_reference_index
-    for (int i = 0; i < 16; ++i) Put8(payload, 0);  // pre_defined/reserved
-    Put16(payload, 1920);                           // width
-    Put16(payload, 1080);                           // height
-    Put32(payload, 0x00480000);                     // horizresolution 72dpi
-    Put32(payload, 0x00480000);                     // vertresolution
-    Put32(payload, 0);                              // reserved
-    Put16(payload, 1);                              // frame_count
-    for (int i = 0; i < 32; ++i) Put8(payload, 0);  // compressorname
-    Put16(payload, 24);                             // depth
-    Put16(payload, 0xFFFF);                         // pre_defined
+    for (int i = 0; i < 6; ++i)
+        Put8(payload, 0); // reserved
+    Put16(payload, 1);    // data_reference_index
+    for (int i = 0; i < 16; ++i)
+        Put8(payload, 0);       // pre_defined/reserved
+    Put16(payload, 1920);       // width
+    Put16(payload, 1080);       // height
+    Put32(payload, 0x00480000); // horizresolution 72dpi
+    Put32(payload, 0x00480000); // vertresolution
+    Put32(payload, 0);          // reserved
+    Put16(payload, 1);          // frame_count
+    for (int i = 0; i < 32; ++i)
+        Put8(payload, 0);   // compressorname
+    Put16(payload, 24);     // depth
+    Put16(payload, 0xFFFF); // pre_defined
     // ↑ 到这里 78 字节，下面是子 box
 
     // avcC: High(100) / Level 4.0(40) / lengthSize=4 / 1 个 SPS + 1 个 PPS
     std::vector<uint8_t> avcc_body;
-    Put8(avcc_body, 1);       // configurationVersion
-    Put8(avcc_body, 100);     // AVCProfileIndication
-    Put8(avcc_body, 0);       // profile_compatibility
-    Put8(avcc_body, 40);      // AVCLevelIndication
-    Put8(avcc_body, 0xFF);    // 保留 + lengthSizeMinusOne=3
-    Put8(avcc_body, 0xE1);    // 保留 + numOfSPS=1
-    Put16(avcc_body, 4);      // SPS 长度
-    for (uint8_t b : std::vector<uint8_t>{0x67, 0x64, 0x00, 0x28}) Put8(avcc_body, b);
-    Put8(avcc_body, 1);       // numOfPPS
+    Put8(avcc_body, 1);    // configurationVersion
+    Put8(avcc_body, 100);  // AVCProfileIndication
+    Put8(avcc_body, 0);    // profile_compatibility
+    Put8(avcc_body, 40);   // AVCLevelIndication
+    Put8(avcc_body, 0xFF); // 保留 + lengthSizeMinusOne=3
+    Put8(avcc_body, 0xE1); // 保留 + numOfSPS=1
+    Put16(avcc_body, 4);   // SPS 长度
+    for (uint8_t b : std::vector<uint8_t>{0x67, 0x64, 0x00, 0x28})
+        Put8(avcc_body, b);
+    Put8(avcc_body, 1); // numOfPPS
     Put16(avcc_body, 4);
-    for (uint8_t b : std::vector<uint8_t>{0x68, 0xEE, 0x3C, 0x80}) Put8(avcc_body, b);
+    for (uint8_t b : std::vector<uint8_t>{0x68, 0xEE, 0x3C, 0x80})
+        Put8(avcc_body, b);
 
     // colr: nclx / BT.2020 primaries(9) / PQ transfer(16) / BT.2020 matrix(9) / 有限范围
     std::vector<uint8_t> colr_body;
@@ -347,13 +354,12 @@ std::vector<uint8_t> MakeAvc1Entry() {
     Put32(pasp_body, 1);
 
     std::vector<uint8_t> btrt_body;
-    Put32(btrt_body, 1000);      // bufferSizeDB
-    Put32(btrt_body, 8000000);   // maxBitrate
-    Put32(btrt_body, 5000000);   // avgBitrate
+    Put32(btrt_body, 1000);    // bufferSizeDB
+    Put32(btrt_body, 8000000); // maxBitrate
+    Put32(btrt_body, 5000000); // avgBitrate
 
     const std::vector<uint8_t> children =
-        CatAll({Box("avcC", avcc_body), Box("colr", colr_body),
-                Box("pasp", pasp_body), Box("btrt", btrt_body)});
+        CatAll({Box("avcC", avcc_body), Box("colr", colr_body), Box("pasp", pasp_body), Box("btrt", btrt_body)});
     return Box("avc1", Cat(payload, children));
 }
 
@@ -361,58 +367,66 @@ std::vector<uint8_t> MakeAvc1Entry() {
 std::vector<uint8_t> MakeRichFile() {
     std::vector<uint8_t> ftyp_body;
     PutFourCC(ftyp_body, "isom");
-    Put32(ftyp_body, 0x200);   // minor_version
-    for (const char* brand : {"isom", "iso2", "avc1", "mp41"}) PutFourCC(ftyp_body, brand);
+    Put32(ftyp_body, 0x200); // minor_version
+    for (const char* brand : {"isom", "iso2", "avc1", "mp41"})
+        PutFourCC(ftyp_body, brand);
     const std::vector<uint8_t> ftyp = Box("ftyp", ftyp_body);
 
     std::vector<uint8_t> mvhd_body;
-    Put32(mvhd_body, 0);           // creation_time
-    Put32(mvhd_body, 0);           // modification_time
-    Put32(mvhd_body, 1000);        // timescale
-    Put32(mvhd_body, 2000);        // duration
-    Put32(mvhd_body, 0x00010000);  // rate
-    Put16(mvhd_body, 0x0100);      // volume
-    for (int i = 0; i < 10; ++i) Put8(mvhd_body, 0);   // reserved
-    for (int i = 0; i < 36; ++i) Put8(mvhd_body, 0);   // matrix
-    for (int i = 0; i < 24; ++i) Put8(mvhd_body, 0);   // pre_defined
-    Put32(mvhd_body, 7);           // next_track_id
+    Put32(mvhd_body, 0);          // creation_time
+    Put32(mvhd_body, 0);          // modification_time
+    Put32(mvhd_body, 1000);       // timescale
+    Put32(mvhd_body, 2000);       // duration
+    Put32(mvhd_body, 0x00010000); // rate
+    Put16(mvhd_body, 0x0100);     // volume
+    for (int i = 0; i < 10; ++i)
+        Put8(mvhd_body, 0); // reserved
+    for (int i = 0; i < 36; ++i)
+        Put8(mvhd_body, 0); // matrix
+    for (int i = 0; i < 24; ++i)
+        Put8(mvhd_body, 0); // pre_defined
+    Put32(mvhd_body, 7);    // next_track_id
     const std::vector<uint8_t> mvhd = FullBox("mvhd", 0, mvhd_body);
 
     std::vector<uint8_t> tkhd_body;
-    Put32(tkhd_body, 0);           // creation_time
-    Put32(tkhd_body, 0);           // modification_time
-    Put32(tkhd_body, 1);           // track_id
-    Put32(tkhd_body, 0);           // reserved
-    Put32(tkhd_body, 2000);        // duration
-    for (int i = 0; i < 8; ++i) Put8(tkhd_body, 0);    // reserved
-    Put16(tkhd_body, 0);           // layer
-    Put16(tkhd_body, 0);           // alternate_group
-    Put16(tkhd_body, 0x0100);      // volume
-    Put16(tkhd_body, 0);           // reserved
-    for (int i = 0; i < 36; ++i) Put8(tkhd_body, 0);   // matrix
+    Put32(tkhd_body, 0);    // creation_time
+    Put32(tkhd_body, 0);    // modification_time
+    Put32(tkhd_body, 1);    // track_id
+    Put32(tkhd_body, 0);    // reserved
+    Put32(tkhd_body, 2000); // duration
+    for (int i = 0; i < 8; ++i)
+        Put8(tkhd_body, 0);   // reserved
+    Put16(tkhd_body, 0);      // layer
+    Put16(tkhd_body, 0);      // alternate_group
+    Put16(tkhd_body, 0x0100); // volume
+    Put16(tkhd_body, 0);      // reserved
+    for (int i = 0; i < 36; ++i)
+        Put8(tkhd_body, 0);        // matrix
     Put32(tkhd_body, 1920u << 16); // width (16.16)
     Put32(tkhd_body, 1080u << 16); // height
     const std::vector<uint8_t> tkhd = FullBox("tkhd", 0, tkhd_body);
 
     std::vector<uint8_t> mdhd_body;
-    Put32(mdhd_body, 0);           // creation_time
-    Put32(mdhd_body, 0);           // modification_time
-    Put32(mdhd_body, 30000);       // timescale
-    Put32(mdhd_body, 60000);       // duration
-    Put16(mdhd_body, 0x15C7);      // language = "eng"
-    Put16(mdhd_body, 0);           // pre_defined
+    Put32(mdhd_body, 0);      // creation_time
+    Put32(mdhd_body, 0);      // modification_time
+    Put32(mdhd_body, 30000);  // timescale
+    Put32(mdhd_body, 60000);  // duration
+    Put16(mdhd_body, 0x15C7); // language = "eng"
+    Put16(mdhd_body, 0);      // pre_defined
     const std::vector<uint8_t> mdhd = FullBox("mdhd", 0, mdhd_body);
 
     std::vector<uint8_t> hdlr_body;
-    Put32(hdlr_body, 0);           // pre_defined
-    PutFourCC(hdlr_body, "vide");  // handler_type
-    for (int i = 0; i < 12; ++i) Put8(hdlr_body, 0);   // reserved
-    for (char c : std::string("VideoHandler")) Put8(hdlr_body, static_cast<uint8_t>(c));
+    Put32(hdlr_body, 0);          // pre_defined
+    PutFourCC(hdlr_body, "vide"); // handler_type
+    for (int i = 0; i < 12; ++i)
+        Put8(hdlr_body, 0); // reserved
+    for (char c : std::string("VideoHandler"))
+        Put8(hdlr_body, static_cast<uint8_t>(c));
     Put8(hdlr_body, 0);
     const std::vector<uint8_t> hdlr = FullBox("hdlr", 0, hdlr_body);
 
     std::vector<uint8_t> stsd_body;
-    Put32(stsd_body, 1);           // entry_count
+    Put32(stsd_body, 1); // entry_count
     const std::vector<uint8_t> stsd = FullBox("stsd", 0, Cat(stsd_body, MakeAvc1Entry()));
 
     const std::vector<uint8_t> stbl = Box("stbl", stsd);
@@ -423,18 +437,20 @@ std::vector<uint8_t> MakeRichFile() {
     return CatAll({ftyp, moov, Box("mdat", std::vector<uint8_t>(32, 0xAB))});
 }
 
-const videoeye::IsobmffBox* FindBox(const std::vector<videoeye::IsobmffBox>& boxes,
-                                    const std::string& type) {
+const videoeye::IsobmffBox* FindBox(const std::vector<videoeye::IsobmffBox>& boxes, const std::string& type) {
     for (const auto& b : boxes) {
-        if (b.type == type) return &b;
-        if (const videoeye::IsobmffBox* inner = FindBox(b.children, type)) return inner;
+        if (b.type == type)
+            return &b;
+        if (const videoeye::IsobmffBox* inner = FindBox(b.children, type))
+            return inner;
     }
     return nullptr;
 }
 
 std::string FieldOf(const videoeye::IsobmffBox& box, const std::string& name) {
     for (const auto& f : box.fields) {
-        if (f.first == name) return f.second;
+        if (f.first == name)
+            return f.second;
     }
     return std::string();
 }
@@ -526,18 +542,17 @@ TEST(IsobmffParserTest, DescendsIntoStsdSampleEntryCodecBoxes) {
 // ---------------------------------------------------------------------------
 TEST(IsobmffParserTest, StsdCollectsAllSampleEntries) {
     std::vector<uint8_t> body;
-    Put32(body, 2);              // entry_count
-    Put32(body, 16);             // 第 1 个 entry 的 size
+    Put32(body, 2);  // entry_count
+    Put32(body, 16); // 第 1 个 entry 的 size
     PutFourCC(body, "avc1");
-    Put32(body, 0);              // 补齐到声明的 16 字节
+    Put32(body, 0); // 补齐到声明的 16 字节
     Put32(body, 0);
-    Put32(body, 16);             // 第 2 个 entry 的 size
+    Put32(body, 16); // 第 2 个 entry 的 size
     PutFourCC(body, "dvhe");
     Put32(body, 0);
     Put32(body, 0);
 
-    const videoeye::IsobmffFile f =
-        ParseFirstTrackFile(Cat(FullBox("stsd", 0, body), MakeStsz(100, 1)));
+    const videoeye::IsobmffFile f = ParseFirstTrackFile(Cat(FullBox("stsd", 0, body), MakeStsz(100, 1)));
 
     ASSERT_EQ(f.tracks.size(), 1u);
     const videoeye::IsobmffTrack& t = f.tracks[0];
@@ -547,4 +562,219 @@ TEST(IsobmffParserTest, StsdCollectsAllSampleEntries) {
     EXPECT_EQ(t.codec, "avc1") << "codec 仍然是第一个 entry，保持既有行为";
 }
 
-}  // namespace
+// ===========================================================================
+// fMP4 分片：首样本随机访问标志（阶段 8 的"实证层"）
+// ===========================================================================
+//
+// 背景缺陷（2026-10 审计）：SegmentQcAnalyzer 以前读到 tfdt 就把
+// starts_with_keyframe 置真。但 tfdt 只是**解码起始时间**，与"首样本是不是
+// 随机访问点"是两件事 —— CMAF 约定分片以 IDR 开头，约定不是证据。
+//
+// 真正的依据在 sample_flags 里（ISO/IEC 14496-12 §8.8.8）：
+//   bit 16    = sample_is_non_sync_sample
+//   bit 24-25 = sample_depends_on（2 = 不依赖他人 = I 帧）
+// 三个来源按"越具体越优先"取值：
+//   trun.first_sample_flags > 首样本的 sample_flags > tfhd.default_sample_flags
+//
+// 这组用例同时盯住另一个回归点：tfhd 的 0x000020(default_sample_flags) 曾经
+// 被漏掉，导致 pos 少推 4 字节，其后的 tfdt/trun 全部错位。
+
+namespace {
+
+void Put64(std::vector<uint8_t>& v, uint64_t x) {
+    for (int i = 7; i >= 0; --i)
+        v.push_back(static_cast<uint8_t>((x >> (i * 8)) & 0xFF));
+}
+
+// FullBox，但 flags 由调用方指定（tfhd/trun 的语义全在 flags 里）
+std::vector<uint8_t> FullBoxWithFlags(const std::string& type, uint8_t version, uint32_t flags,
+                                      const std::vector<uint8_t>& body) {
+    std::vector<uint8_t> payload{version};
+    payload.push_back(static_cast<uint8_t>((flags >> 16) & 0xFF));
+    payload.push_back(static_cast<uint8_t>((flags >> 8) & 0xFF));
+    payload.push_back(static_cast<uint8_t>(flags & 0xFF));
+    payload.insert(payload.end(), body.begin(), body.end());
+    return Box(type, payload);
+}
+
+struct TfhdSpec {
+    bool default_sample_flags = false;
+    uint32_t default_sample_flags_value = 0;
+    bool default_base_is_moof = true;
+};
+
+struct TrunSpec {
+    bool first_sample_flags = false;
+    uint32_t first_sample_flags_value = 0;
+    bool per_sample_flags = false;
+    uint32_t per_sample_flags_value = 0;
+    uint32_t sample_count = 2;
+};
+
+// moof(mfhd + traf(tfhd + tfdt + trun))
+std::vector<uint8_t> MakeMoof(uint32_t seq, const TfhdSpec& tfhd_spec, const TrunSpec& trun_spec) {
+    std::vector<uint8_t> mfhd_body;
+    Put32(mfhd_body, seq);
+    const std::vector<uint8_t> mfhd = FullBox("mfhd", 0, mfhd_body);
+
+    uint32_t tfhd_flags = 0;
+    std::vector<uint8_t> tfhd_body;
+    Put32(tfhd_body, 1); // track_ID
+    if (tfhd_spec.default_base_is_moof)
+        tfhd_flags |= 0x020000;
+    tfhd_flags |= 0x000008; // default_sample_duration
+    Put32(tfhd_body, 1000);
+    tfhd_flags |= 0x000010; // default_sample_size
+    Put32(tfhd_body, 500);
+    if (tfhd_spec.default_sample_flags) {
+        tfhd_flags |= 0x000020;
+        Put32(tfhd_body, tfhd_spec.default_sample_flags_value);
+    }
+    const std::vector<uint8_t> tfhd = FullBoxWithFlags("tfhd", 0, tfhd_flags, tfhd_body);
+
+    std::vector<uint8_t> tfdt_body;
+    Put32(tfdt_body, 90000); // baseMediaDecodeTime
+    const std::vector<uint8_t> tfdt = FullBox("tfdt", 0, tfdt_body);
+
+    uint32_t trun_flags = 0;
+    std::vector<uint8_t> trun_body;
+    Put32(trun_body, trun_spec.sample_count);
+    if (trun_spec.first_sample_flags) {
+        trun_flags |= 0x000004;
+        Put32(trun_body, trun_spec.first_sample_flags_value);
+    }
+    if (trun_spec.per_sample_flags)
+        trun_flags |= 0x000400;
+    for (uint32_t i = 0; i < trun_spec.sample_count; ++i) {
+        if (trun_spec.per_sample_flags)
+            Put32(trun_body, trun_spec.per_sample_flags_value);
+    }
+    const std::vector<uint8_t> trun = FullBoxWithFlags("trun", 0, trun_flags, trun_body);
+
+    const std::vector<uint8_t> traf = Box("traf", CatAll({tfhd, tfdt, trun}));
+    return Box("moof", Cat(mfhd, traf));
+}
+
+// ftyp + moov + moof + mdat（分片文件）
+std::vector<uint8_t> MakeFragmentedFile(const TfhdSpec& tfhd_spec, const TrunSpec& trun_spec) {
+    std::vector<uint8_t> ftyp_body;
+    PutFourCC(ftyp_body, "isom");
+    Put32(ftyp_body, 0);
+    PutFourCC(ftyp_body, "isom");
+    const std::vector<uint8_t> ftyp = Box("ftyp", ftyp_body);
+
+    std::vector<uint8_t> mvhd_body;
+    Put32(mvhd_body, 0);
+    Put32(mvhd_body, 0);
+    Put32(mvhd_body, 1000);
+    Put32(mvhd_body, 2000);
+    const std::vector<uint8_t> moov =
+        Box("moov", Cat(FullBox("mvhd", 0, mvhd_body), MakeTrak(Cat(MakeStts({{2, 1000}}), MakeStsz(500, 2)))));
+
+    const std::vector<uint8_t> moof = MakeMoof(1, tfhd_spec, trun_spec);
+    const std::vector<uint8_t> mdat = Box("mdat", std::vector<uint8_t>(1000, 0xAB));
+    return CatAll({ftyp, moov, moof, mdat});
+}
+
+videoeye::IsobmffFile ParseFragmented(const TfhdSpec& tfhd_spec, const TrunSpec& trun_spec) {
+    const std::string path = "isobmff_fmp4_test_tmp.mp4";
+    EXPECT_TRUE(WriteTemp(path, MakeFragmentedFile(tfhd_spec, trun_spec)));
+    videoeye::IsobmffFile out;
+    EXPECT_TRUE(videoeye::IsobmffParser::Parse(path, out, {}));
+    std::remove(path.c_str());
+    return out;
+}
+
+constexpr uint32_t kSyncIndependent = 0x02000000; // depends_on=2, 非 non-sync
+constexpr uint32_t kNonSyncDepends = 0x01010000;  // non-sync + depends_on=1
+
+} // namespace
+
+// 正例：trun.first_sample_flags 最具体，应当优先于 tfhd.default_sample_flags。
+// 这条同时是 tfhd 0x000020 分支的回归：漏读该字段会让 pos 错位，tfdt 便读不到。
+TEST(IsobmffParserTest, Fmp4FirstSampleFlagsPrefersTrunOverTfhd) {
+    TfhdSpec tfhd;
+    tfhd.default_sample_flags = true;
+    tfhd.default_sample_flags_value = kNonSyncDepends; // 整段默认 non-sync
+    TrunSpec trun;
+    trun.first_sample_flags = true;
+    trun.first_sample_flags_value = kSyncIndependent; // 但首样本是 I 帧
+
+    const videoeye::IsobmffFile f = ParseFragmented(tfhd, trun);
+    ASSERT_EQ(f.fragments.size(), 1u);
+    const videoeye::IsobmffFragment& frag = f.fragments[0];
+    EXPECT_TRUE(frag.has_tfdt) << "tfhd 带 default_sample_flags 时 tfdt 也必须能读出来";
+    EXPECT_EQ(frag.base_media_decode_time, 90000u);
+    EXPECT_TRUE(frag.has_first_sample_flags);
+    EXPECT_EQ(frag.first_sample_flags, kSyncIndependent);
+    EXPECT_TRUE(frag.first_sample_is_sync);
+    EXPECT_EQ(frag.first_sample_depends_on, 2);
+    EXPECT_FALSE(frag.first_sample_flags_incomplete);
+}
+
+// 反例：首样本确实是 non-sync。以前无条件 starts_with_keyframe=true 会把它报成
+// "可独立解码"，这里必须能看出不是随机访问点。
+TEST(IsobmffParserTest, Fmp4DetectsNonSyncFirstSample) {
+    TfhdSpec tfhd; // 不给 default flags
+    TrunSpec trun;
+    trun.first_sample_flags = true;
+    trun.first_sample_flags_value = kNonSyncDepends;
+
+    const videoeye::IsobmffFile f = ParseFragmented(tfhd, trun);
+    ASSERT_EQ(f.fragments.size(), 1u);
+    const videoeye::IsobmffFragment& frag = f.fragments[0];
+    EXPECT_TRUE(frag.has_first_sample_flags);
+    EXPECT_FALSE(frag.first_sample_is_sync) << "bit16(sample_is_non_sync_sample) 置位就是非同步样本";
+    EXPECT_EQ(frag.first_sample_depends_on, 1);
+}
+
+// 首样本自己的 sample_flags（trun 里逐样本 flags）优先于 tfhd 缺省值
+TEST(IsobmffParserTest, Fmp4UsesPerSampleFlagsWhenNoFirstSampleFlags) {
+    TfhdSpec tfhd;
+    tfhd.default_sample_flags = true;
+    tfhd.default_sample_flags_value = kNonSyncDepends;
+    TrunSpec trun;
+    trun.per_sample_flags = true;
+    trun.per_sample_flags_value = kSyncIndependent;
+
+    const videoeye::IsobmffFile f = ParseFragmented(tfhd, trun);
+    ASSERT_EQ(f.fragments.size(), 1u);
+    const videoeye::IsobmffFragment& frag = f.fragments[0];
+    EXPECT_TRUE(frag.has_first_sample_flags);
+    EXPECT_EQ(frag.first_sample_flags, kSyncIndependent);
+    EXPECT_TRUE(frag.first_sample_is_sync);
+}
+
+// trun 完全没有 flags 时退回 tfhd.default_sample_flags
+TEST(IsobmffParserTest, Fmp4FallsBackToTfhdDefaultFlags) {
+    TfhdSpec tfhd;
+    tfhd.default_sample_flags = true;
+    tfhd.default_sample_flags_value = kSyncIndependent;
+    TrunSpec trun; // 无任何 flags
+
+    const videoeye::IsobmffFile f = ParseFragmented(tfhd, trun);
+    ASSERT_EQ(f.fragments.size(), 1u);
+    const videoeye::IsobmffFragment& frag = f.fragments[0];
+    EXPECT_TRUE(frag.has_first_sample_flags);
+    EXPECT_TRUE(frag.tfhd_default_sample_flags_present);
+    EXPECT_TRUE(frag.first_sample_is_sync);
+}
+
+// 反例：三个来源都没有 → 必须显式"无法证实"，绝不能默认成"是关键帧"。
+// 这是本阶段最核心的一条：缺证据不等于没问题。
+TEST(IsobmffParserTest, Fmp4MissingFlagsIsReportedAsIncomplete) {
+    TfhdSpec tfhd; // 无 default flags
+    TrunSpec trun; // 无任何 flags
+
+    const videoeye::IsobmffFile f = ParseFragmented(tfhd, trun);
+    ASSERT_EQ(f.fragments.size(), 1u);
+    const videoeye::IsobmffFragment& frag = f.fragments[0];
+    EXPECT_TRUE(frag.has_tfdt) << "tfdt 本身仍然要读到";
+    EXPECT_FALSE(frag.has_first_sample_flags);
+    EXPECT_FALSE(frag.first_sample_is_sync);
+    EXPECT_EQ(frag.first_sample_depends_on, -1);
+    EXPECT_TRUE(frag.first_sample_flags_incomplete)
+        << "缺省值可能来自 init 段的 trex，本解析器不跨文件读，必须显式告知";
+}
+
+} // namespace

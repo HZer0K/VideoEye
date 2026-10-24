@@ -16,18 +16,18 @@
 // 面板侧要拿结果时用 result() / qcReport() / hasResult() 取只读快照，
 // 不要反过来碰本页成员（与 ContainerStructurePage / AudioQcPage 一致的约定）。
 
-#include <QWidget>
-#include <QString>
 #include <QList>
+#include <QString>
+#include <QWidget>
 
 #include <chrono>
 #include <functional>
 
+#include <QLabel>
 #include <QProgressBar>
 #include <QPushButton>
-#include <QLabel>
-#include <QTableWidget>
 #include <QTabWidget>
+#include <QTableWidget>
 #include <QTimer>
 
 #include "infrastructure/logging/PerfMetrics.h"
@@ -53,21 +53,27 @@ public:
     // Idle。以前只在"成功"和"取消"时通知，失败时其它几页就一直停在扫描态
     // （取消按钮还亮着、"开始分析"永久禁用），和诊断页的"失败"状态互相矛盾。
     enum class ScanEndReason {
-        Completed,  // 正常跑完（含用户中途取消后回包 completed=false 的情形见 Cancelled）
-        Cancelled,  // 被取消（结果不完整，但可用）
-        Failed,     // 打开 / 探测 / 读取失败，没有可用结果
+        Completed, // 正常跑完（含用户中途取消后回包 completed=false 的情形见 Cancelled）
+        Cancelled, // 被取消（结果不完整，但可用）
+        Failed,    // 打开 / 探测 / 读取失败，没有可用结果
     };
     Q_ENUM(ScanEndReason)
 
     explicit DiagnosticsPage(QWidget* parent = nullptr);
 
     // 面板换文件时同步：本页自己持有默认扫描选项与当前文件路径（StartScan 用）
-    void SetSourcePath(const QString& path) { source_path_ = path; }
+    void SetSourcePath(const QString& path) {
+        source_path_ = path;
+    }
 
     // 默认扫描选项：其它页 FillScanOptions(options) 的基线，也允许就地改单项开关
     // （「流媒体包」「参数集解析」页的「开始分析」就是改一个 analyze_* 开关）
-    videoeye::AnalysisOptions& options() { return options_; }
-    const videoeye::AnalysisOptions& options() const { return options_; }
+    videoeye::AnalysisOptions& options() {
+        return options_;
+    }
+    const videoeye::AnalysisOptions& options() const {
+        return options_;
+    }
 
     // 全文件扫描（一次 demux 供多页共用：诊断页 / 码率 GOP / 音频 QC /
     // 色彩 HDR / 字幕辅助 / 流媒体包 / 参数集）
@@ -79,7 +85,9 @@ public:
     // 每次扫描前的钩子：面板挂上「字幕阈值从规则表同步」这类跨页逻辑，
     // 页面自己不认识 SubtitleAuxPage（避免页面之间互相 include）
     using ScanHook = std::function<void(videoeye::AnalysisOptions&)>;
-    void SetBeforeScanHook(ScanHook hook) { before_scan_ = std::move(hook); }
+    void SetBeforeScanHook(ScanHook hook) {
+        before_scan_ = std::move(hook);
+    }
 
     // 「关联场景切换」：报告重算留在诊断页，码率页只负责展示自己的结果
     void ApplySceneLink(const std::vector<model::SceneChangeResult>& records,
@@ -91,12 +99,18 @@ public:
     // 只读快照：面板分发给共用同一次扫描的其它页
     const std::vector<model::QcRule>& rules() const;
     const model::AnalysisResult& result() const;
-    const model::QcReport& qcReport() const { return report_; }
-    bool hasResult() const { return has_result_; }
+    const model::QcReport& qcReport() const {
+        return report_;
+    }
+    bool hasResult() const {
+        return has_result_;
+    }
 
     // 最近一次全文件扫描的失败原因（打开/探测/读取失败时由 OnFacadeFailed 写入，
     // StartScan 时清空；无失败返回空串）。首页「分析状态」区用它解释为什么没结果。
-    const QString& lastError() const { return last_error_; }
+    const QString& lastError() const {
+        return last_error_;
+    }
 
 signals:
     // 扫描生命周期：面板收到后同步其它几页的按钮 / 进度条
@@ -121,17 +135,22 @@ private slots:
     void OnRuleItemChanged(QTableWidgetItem* item);
     void OnResetRulesClicked();
     void OnFacadeProgress(quint64 generation, double percent, const QString& stage);
-    void OnFacadeFinished(quint64 generation, bool completed,
-                          const model::AnalysisResult& result);
+    void OnFacadeFinished(quint64 generation, bool completed, const model::AnalysisResult& result);
     void OnFacadeFailed(quint64 generation, const QString& message);
     void OnJumpToIssue();
 
 private:
     void SetupUi();
     void SetupRuleTab();
+    // 子页「证据与覆盖」+「参数变化」：两者都是"从扫描结果直接摊开的表"，
+    // 不参与规则判定，所以与问题清单/规则表分开建，也分开刷。
+    void SetupEvidenceTabs();
     // 用 facade 结果 + QC 规则引擎重算报告并刷新本页（同时外发 QcReportChanged）
     void Evaluate();
     void RebuildIssueTable();
+    // 刷「证据与覆盖」（每个分析维度一行）、「参数变化」（配置变化事件）
+    // 与「帧顺序」（逐帧 POC，解码顺序）三张表
+    void RebuildEvidenceTables();
     void UpdateQcSummary();
     void UpdateQcChart();
     void RebuildRuleTable();
@@ -162,7 +181,7 @@ private:
     bool cancel_pending_ = false;
 
     AnalysisFacade* facade_ = nullptr;
-    ScanHook before_scan_;   // 扫描前的跨页钩子（由面板注入）
+    ScanHook before_scan_; // 扫描前的跨页钩子（由面板注入）
 
     QLabel* summary_label_ = nullptr;
     QProgressBar* progress_bar_ = nullptr;
@@ -182,6 +201,16 @@ private:
 
     // 子页 1：规则与阈值
     QTableWidget* rule_table_ = nullptr;
+
+    // 子页 2：证据与覆盖（每个分析维度一行）
+    QTableWidget* dimension_table_ = nullptr;
+    QLabel* dimension_hint_ = nullptr;
+    // 子页 3：参数变化（每条视频轨的配置变化事件）
+    QTableWidget* parameter_table_ = nullptr;
+    QLabel* parameter_hint_ = nullptr;
+    // 子页 4：帧顺序（每条 H.264 视频轨的逐帧 POC，按解码顺序排列）
+    QTableWidget* frame_order_table_ = nullptr;
+    QLabel* frame_order_hint_ = nullptr;
 };
 
 } // namespace ui

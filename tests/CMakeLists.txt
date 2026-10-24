@@ -526,6 +526,74 @@ videoeye_add_test(test_audio_bitstream_parser
 add_test(NAME AudioBitstreamParserTests COMMAND test_audio_bitstream_parser)
 
 # =================================================
+# 测试 9-B2：MP3 / FLAC / AAC-PCE 帧头解析（阶段 D2）
+# 说明: 期望值全部来自规范（ISO/IEC 11172-3、RFC 9639、ISO/IEC 14496-3 表 4.5），
+#       不由实现生成 —— 只与实现共享假设的合成数据测不出语义错误。
+# =================================================
+videoeye_add_test(test_audio_frame_parsers
+    unit/test_audio_frame_parsers.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/codec/AudioBitstreamParser.cpp
+)
+add_test(NAME AudioFrameParsersTests COMMAND test_audio_frame_parsers)
+
+# =================================================
+# 测试 9-B4：AAC SBR/PS 同步扩展 + LATM numSubFrames 帧计数（阶段 D3）
+# 说明: SBR/PS 走 ASC 末尾的 0x2B7/0x548 同步扩展（AOT 之外的显式信令路径）；
+#       LATM 部分验证"一个 AudioMuxElement 含 numSubFrames+1 帧"的计数口径。
+#       包字节均按 ECMA-391 / ISO-IEC 14496-3 §1.6.2.1 逐位拼出。
+# =================================================
+videoeye_add_test(test_latm_packet_accounting
+    unit/test_latm_packet_accounting.cpp
+)
+target_link_libraries(test_latm_packet_accounting PRIVATE VideoEyeAnalysis)
+add_test(NAME LatmPacketAccountingTests COMMAND test_latm_packet_accounting)
+
+# =================================================
+# 测试 9-B3：参数集全程追踪（阶段 1：配置时间线）
+# 说明: 覆盖"同 id 替换 / 换 id 新增 / 重复发送不算变化 / 引用未传输 / 长度前缀封装 /
+#       上限截断 / 幂等 Finish"七类，正反例成对出现。
+# =================================================
+videoeye_add_test(test_parameter_timeline
+    unit/test_parameter_timeline.cpp
+)
+target_link_libraries(test_parameter_timeline PRIVATE VideoEyeAnalysis)
+add_test(NAME ParameterTimelineTests COMMAND test_parameter_timeline)
+
+# =================================================
+# 测试 9-B5：帧级 POC 追踪（阶段：帧级码流结构）
+# 说明: A 组用按 H.264 7.3.2.1.1 / 7.3.3 / 8.2.1 逐位拼出的样本覆盖正反例
+#       （IBBP 重排 / IDR 重置不算重排 / 多 slice / type 2 与 frame_num 回绕 /
+#        缺帧 / POC 重复 / 无 SPS / type 1 明确不支持 / extradata 路径 / 明文上限）；
+#       B 组用 libx264 现场编码的真实 MP4，拿编码器自己写的 PTS 当参考输出，
+#       验证"按 POC 排出来的显示顺序 == 真实显示顺序"。
+# =================================================
+videoeye_add_test(test_h264_poc_tracker
+    unit/test_h264_poc_tracker.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tests/support/TestMediaFactory.cpp
+)
+target_link_libraries(test_h264_poc_tracker PRIVATE VideoEyeAnalysis)
+# 真实码流语料（tests/corpus/codec/real_x264_bframes_gop.mp4）。
+# 带 B 帧的真实样本是"POC = 显示顺序"这条结论唯一有区分度的参考 ——
+# 没有 B 帧时解码顺序与显示顺序天然相同，怎么算都对。
+# ❗ 必须是 ffmpeg 命令行 + libx264 预生成的入库语料：预编译 FFmpeg 没有
+# libx264，TestMediaFactory 会降级到 libopenh264（不出 B 帧），现场生成
+# 等于把这条用例悄悄变成空跑。
+target_compile_definitions(test_h264_poc_tracker PRIVATE
+    VIDEOEYE_CODEC_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus/codec")
+add_test(NAME H264PocTrackerTests COMMAND test_h264_poc_tracker)
+
+# =================================================
+# 测试 9-B4：证据与覆盖状态（阶段 5）
+# 说明: 重点测 MarkConclusive 的口径边界 —— 这是全仓唯一能产生"假通过"的地方。
+#       99% 覆盖率阈值、总量未知、失败计数三条边界都有正反例。
+# =================================================
+videoeye_add_test(test_dimension_status
+    unit/test_dimension_status.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/domain/model/DimensionStatus.cpp
+)
+add_test(NAME DimensionStatusTests COMMAND test_dimension_status)
+
+# =================================================
 # 测试 9-C：音频位流规则（audio.bitstream.* / audio.dialnorm.*）
 # 说明: 直接构造 AudioBitstreamResult，验证"没跑过不报 / 结构化计数 / dialnorm 守卫"。
 # =================================================

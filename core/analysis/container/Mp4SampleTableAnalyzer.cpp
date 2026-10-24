@@ -676,6 +676,13 @@ model::Mp4FragmentInfo ConvertFragment(const videoeye::IsobmffFragment& f) {
     out.trun_count = f.trun_count;
     out.trun_data_offset_present = f.trun_data_offset_present;
     out.trun_data_offset = f.trun_data_offset;
+    out.has_first_sample_flags = f.has_first_sample_flags;
+    out.first_sample_flags = f.first_sample_flags;
+    out.first_sample_is_sync = f.first_sample_is_sync;
+    out.first_sample_depends_on = f.first_sample_depends_on;
+    out.tfhd_default_sample_flags_present = f.tfhd_default_sample_flags_present;
+    out.tfhd_default_sample_flags = f.tfhd_default_sample_flags;
+    out.first_sample_flags_incomplete = f.first_sample_flags_incomplete;
     return out;
 }
 

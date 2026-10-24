@@ -68,9 +68,9 @@ struct BitrateGopOptions {
 // 后者属于 QC 规则（core/domain/model/QcModels.cpp 的 audio.* 规则），用户可在「规则与阈值」页改。
 struct AudioQcOptions {
     // ---- 阶段开关 ----
-    bool enable_loudness = true;     // BS.1770 响度（Integrated / Short-term / Momentary / LRA）
-    bool enable_true_peak = true;    // 4× 过采样真峰值（最耗时的一项）
-    bool enable_correlation = true;  // 声道相关性 / 反相检测
+    bool enable_loudness = true;    // BS.1770 响度（Integrated / Short-term / Momentary / LRA）
+    bool enable_true_peak = true;   // 4× 过采样真峰值（最耗时的一项）
+    bool enable_correlation = true; // 声道相关性 / 反相检测
 
     // ---- 电平 ----
     // |x| >= clip_threshold 记一次削波。取 0.999（约 -0.009 dBFS）而不是 1.0，
@@ -149,6 +149,13 @@ struct SegmentQcOptions {
     bool check_keyframe_alignment = true;
     bool check_variant_consistency = true;
     bool check_av_segment_count = true;
+    // 跨分片时间轴连续性：用文件里的 tfdt + 段内实测时长比对相邻分片。
+    // 与 DASH 的 SegmentTimeline 检查是两套数据源：那边看清单声明，
+    // 这边看文件实际内容 —— 清单对但封装器写错 tfdt 的情况只有这里能抓到。
+    bool check_segment_continuity = true;
+    // 判定"首尾相接"的容差（秒）。分片边界处几十毫秒的差属于编码器
+    // 帧对齐的正常抖动；超过它才算真的丢样本/重复样本。
+    double segment_continuity_tolerance_s = 0.1;
 };
 
 struct Scte35Options {
@@ -208,12 +215,11 @@ struct AuxDataOptions {
     Scte35Options scte35_options;
 };
 
-
 // 全文件分析的可选项
 struct AnalysisOptions {
-    double sample_interval_seconds = 1.0;  // 码率/帧率序列的采样粒度
-    int64_t max_packets = 0;               // 0 表示不限制（超长文件可设上限做抽样）
-    bool detect_container_layout = true;   // MP4 家族是否检测 moov/mdat 顺序
+    double sample_interval_seconds = 1.0; // 码率/帧率序列的采样粒度
+    int64_t max_packets = 0;              // 0 表示不限制（超长文件可设上限做抽样）
+    bool detect_container_layout = true;  // MP4 家族是否检测 moov/mdat 顺序
 
     // 码率与 GOP 深度分析（滑动窗口码率 / I-P-B / GOP 列表 / 异常识别）
     bool analyze_bitrate_gop = true;
@@ -228,6 +234,15 @@ struct AnalysisOptions {
     // 需要把第一条音频流完整解码一遍（音频解码开销远小于视频），与码率/GOP 扫描同一次 demux。
     bool analyze_audio_qc = true;
     AudioQcOptions audio_qc_options;
+
+    // 多音轨 QC：对**每条**音频流各跑一次 PCM QC（多语言、评论轨、不同混音版本）。
+    //
+    // 默认打开：交付审核里"只测了主轨"是很常见的漏检来源（国配轨爆音、评论轨反相
+    // 都不会在主轨上体现）。代价是每条轨多一次完整解码 —— 音频解码开销远小于视频，
+    // 但要给上限兜底：轨道数超过 audio_qc_max_tracks 时只分析前若干条，
+    // 并在 DimensionStatus 里明确写出"覆盖 N/M 条"，绝不静默少测。
+    bool audio_qc_all_tracks = true;
+    int audio_qc_max_tracks = 4;
 
     // 音频位流参数（D1）：逐包解析 ADTS/LATM/AC-3/E-AC-3/Opus 帧头，与容器
     // 声明比对，并识别 E-AC-3 的 Atmos/JOC。只读头，不解码，开销可忽略。
@@ -250,9 +265,19 @@ struct AnalysisOptions {
     // InBandParameterSets.h）。上限 8 MiB / 4000 包，命中即停，未命中会记日志。
     bool analyze_bitstream = true;
 
+    // 参数集全程变化追踪（见 core/analysis/codec/ParameterSetTracker.h）。
+    //
+    // 与 analyze_bitstream 的关系：那个只解**第一次**出现的参数集（快照），
+    // 这个逐包看参数集有没有变（时间线）。本项成本是"每包一次 NAL 扫描"，
+    // 只有真正含 SPS/PPS 的包才会多做一次解析，可以全程开着。
+    bool analyze_parameter_timeline = true;
+    // 帧级显示/解码顺序（POC）。当前只支持 H.264：其他编码的显示顺序需要各自的
+    // header 语义，未实现时不产出结果（维度会标为不可用），不产出空壳。
+    bool analyze_frame_order = true;
+
     // MP4/fMP4 容器一致性校验（sample table / elst / moof-traf-trun / faststart）。
-    // 走自研 core/media/container/IsobmffParser.h 的 IsobmffParser 直接读 stbl 与 moof，与 FFmpeg demux 是两套独立解析：
-    // 只在容器属于 MP4 家族时才真正执行，其它格式直接跳过。
+    // 走自研 core/media/container/IsobmffParser.h 的 IsobmffParser 直接读 stbl 与 moof，与 FFmpeg demux
+    // 是两套独立解析： 只在容器属于 MP4 家族时才真正执行，其它格式直接跳过。
     bool analyze_mp4_sample_table = true;
     Mp4SampleTableOptions mp4_sample_table_options;
 

@@ -8,9 +8,13 @@
 //   * AC-3：fscod / frmsizecod / bsid / bsmod / acmod / lfeon / dialnorm / 码率；
 //   * E-AC-3：strmtyp / substreamid / frmsiz / acmod / dialnorm / chanmap；
 //   * Opus：OpusHead 与 TOC（config / 立体声标志 / 帧数 / 帧长 / 模式 / 带宽）；
-//   * AAC AudioSpecificConfig（MP4 extradata 的 5 字节头）。
+//   * AAC AudioSpecificConfig（MP4 extradata 的 5 字节头）、PCE、ADTS CRC-16；
+//   * MP3：帧头（版本/层/码率/采样率/声道模式）+ Xing/Info/VBRI/LAME 延迟；
+//   * FLAC：STREAMINFO + 帧头（块大小/采样率/位深/CRC-8）。
 //
-// 不做的事情：不校验 CRC、不解析音频 payload、不判断响度（响度必须解码后算）。
+// 不做的事情：不解析音频 payload、不判断响度（响度必须解码后算）。
+// CRC 只对**能明确定义覆盖范围**的做校验（ADTS / FLAC 帧头）；MP3 的 CRC-16
+// 覆盖范围随保护位与 side info 变化，当前只报"存在"不报"通过"。
 // 这些头字段足够支撑"码流声明 vs 容器声明 vs 实测"三方差值。
 
 #include <cstddef>
@@ -130,6 +134,108 @@ struct AacAudioSpecificConfig {
     bool ps = false;  // HE-AACv2
     int extension_sample_rate = 0;
     std::string note;
+
+    // ---- SBR / PS 的证据来源 ----
+    //
+    // 早先只看 AOT 是不是 5/29。但 HE-AAC 在 MP4/MOV 里更常见的写法是
+    // "core 仍写 LC(AOT=2)，末尾追加 11 bit syncExtensionType=0x2B7
+    //  + sbrPresentFlag，再跟 0x548 + psPresentFlag"（ISO/IEC 14496-3 §1.6.2.1）。
+    // 只认 AOT 会把这类文件全判成 LC：采样率报 core 的 24 kHz（实际输出 48 kHz）、
+    // 声道报 1（PS 上混成立体声后是 2）。所以必须把 sync extension 也读懂，
+    // 并且**记住证据从哪来** —— "AOT 直接声明"和"同步扩展补充"可信度不同，
+    // 而"读到了扩展但 sbrPresentFlag=0"是第三种、也是最容易被忽略的结论：
+    // 明确声明没有 SBR。
+    int core_sample_rate = 0;  // ASC 里 samplingFrequencyIndex 对应的值（SBR 之前）
+    bool sbr_signaled = false; // 是否有任何显式信令（AOT 或 sync extension）表态
+    bool sbr_from_sync_extension = false;
+    bool ps_from_sync_extension = false;
+    std::string sbr_source; // "aot" / "sync_extension" / 空（未表态）
+};
+
+// 一个 MPEG-1/2 Audio（MP3）帧头。
+//
+// 为什么要单独做：MP3 是交付素材里最常见的"没有 extradata"的音频编码，
+// 采样率/声道数/码率全在逐帧头里。以前它落进 Other 分支只登记容器参数，
+// 于是"码流声明 44.1 kHz、容器写 48 kHz"这类问题永远看不到。
+struct Mp3FrameHeader {
+    bool valid = false;
+    int mpeg_version = 1; // 1 = MPEG-1，2 = MPEG-2，25 = MPEG-2.5
+    int layer = 3;        // 1 / 2 / 3
+    int bitrate_kbps = 0;
+    int sample_rate = 0;
+    int channels = 0;
+    int channel_mode = -1; // 0=stereo 1=joint stereo 2=dual channel 3=mono
+    int samples_per_frame = 0;
+    int frame_bytes = 0;      // 含 4 字节头
+    bool crc_present = false; // protection_bit == 0
+    bool padding = false;
+    bool free_format = false; // bitrate_index == 0
+    // 同步字与头字段读完了，但声明帧长超过本包剩余字节
+    bool truncated = false;
+};
+
+// 首帧里的 VBR/编码器信息（Xing / Info / VBRI）
+struct Mp3VbrInfo {
+    bool valid = false;
+    std::string tag;          // "Xing" / "Info" / "VBRI"
+    int frame_count = 0;      // 声明的总帧数（0 = 未给）
+    int64_t stream_bytes = 0; // 声明的总字节数（0 = 未给）
+    bool has_toc = false;
+    int quality = -1;
+    // LAME / Lavc 扩展里的编码器延迟与尾部填充（单位：样本）
+    bool has_encoder_delay = false;
+    int encoder_delay = 0;
+    int encoder_padding = 0;
+    std::string encoder; // "LAME3.100" / "Lavc..." 等
+};
+
+// FLAC STREAMINFO（34 字节，可带 "fLaC" magic）
+struct FlacStreamInfo {
+    bool valid = false;
+    int min_block_size = 0;
+    int max_block_size = 0;
+    int sample_rate = 0;
+    int channels = 0;
+    int bits_per_sample = 0;
+    uint64_t total_samples = 0; // 0 = 未知（流式编码）
+    bool has_magic = false;     // 输入是否带 "fLaC" 头（MP4/Matroska 里通常不带）
+    bool md5_present = false;
+};
+
+// FLAC 帧头（14 bit 同步 + 块大小/采样率/声道/位深编码）
+struct FlacFrameHeader {
+    bool valid = false;
+    int block_size = 0;
+    int sample_rate = 0; // 0 = 沿用 STREAMINFO（编码值为 0）
+    int channels = 0;
+    int bits_per_sample = 0; // 0 = 沿用 STREAMINFO
+    int channel_assignment = 0;
+    bool variable_block_size = false;
+    // 帧头 CRC-8 是否存在并通过；crc_checked=false 表示载荷不足，未校验
+    bool crc_checked = false;
+    bool crc_ok = false;
+    bool truncated = false;
+};
+
+// AAC 的 Program Config Element（channel_configuration == 0 时才出现）。
+//
+// 为什么只做"尽力而为"：PCE 是 raw_data_block 里的一个语法元素，前面可能先出现
+// SCE/CPE/FIL，要定位它必须把整个 raw_data_block 走完。这里只处理
+// "raw_data_block 的第一个元素就是 PCE"这一种（编码器常规做法），
+// 其它情况明确返回 false 并给出原因，绝不猜一个声道布局。
+struct AacProgramConfig {
+    bool valid = false;
+    int element_instance_tag = 0;
+    int object_type = 0;
+    int sampling_frequency_index = 0;
+    int sample_rate = 0;
+    int front_channels = 0;
+    int side_channels = 0;
+    int back_channels = 0;
+    int lfe_channels = 0;
+    int channels = 0;
+    std::string layout; // 例如 "3/2/1 + LFE"
+    std::string note;
 };
 
 class AudioBitstreamParser {
@@ -155,6 +261,28 @@ public:
     static bool ParseOpusToc(const uint8_t* data, size_t size, OpusToc& out);
 
     static bool ParseAacAudioSpecificConfig(const uint8_t* data, size_t size, AacAudioSpecificConfig& out);
+
+    // ---- MP3（MPEG-1/2/2.5 Audio Layer I/II/III）----
+    // data 必须从 4 字节帧头的第一个字节（0xFF）开始
+    static bool ParseMp3FrameHeader(const uint8_t* data, size_t size, Mp3FrameHeader& out);
+    // Xing/Info/VBRI 只出现在第一个帧里；hdr 必须是同一帧已解析成功的头
+    static bool ParseMp3VbrInfo(const uint8_t* data, size_t size, const Mp3FrameHeader& hdr, Mp3VbrInfo& out);
+    // MP3 帧头里的"每帧样本数"，供调用方换算时长
+    static int Mp3SamplesPerFrame(int mpeg_version, int layer);
+
+    // ---- FLAC ----
+    // 接受两种输入：带 "fLaC" + METADATA_BLOCK_HEADER 的完整头，
+    // 或 MP4/Matroska extradata 里的裸 34 字节 STREAMINFO
+    static bool ParseFlacStreamInfo(const uint8_t* data, size_t size, FlacStreamInfo& out);
+    static bool ParseFlacFrameHeader(const uint8_t* data, size_t size, FlacFrameHeader& out);
+
+    // ---- AAC PCE ----
+    // 只在 channel_configuration == 0 时有意义；data 指向 raw_data_block 起点
+    static bool ParseAacProgramConfig(const uint8_t* data, size_t size, AacProgramConfig& out);
+
+    // ❗ ADTS 的 CRC-16 覆盖范围在不同实现里不一致（是否含 adts_variable_header
+    // 的尾部、是否含 crc_check 字段本身），拿不到参考实现前不做校验 ——
+    // 一个口径错的 CRC 结论比没有结论更糟。ADTS 侧只报 protection_absent（见 AdtsHeader）。
 
     // 采样率表 / 声道配置表，单测与 UI 共用
     static int AacSampleRateFromIndex(int index);

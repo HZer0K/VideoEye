@@ -280,6 +280,8 @@ void BuildSegments(model::StreamingPackageResult& out, model::DashRepresentation
         seg.init_uri = rep.initialization_template;
         seg.container = ContainerFromMime(rep.mime_type, seg.uri);
         seg.starts_with_keyframe = (seg.container == model::SegmentContainer::MPEG_TS);
+        seg.keyframe_evidence =
+            seg.starts_with_keyframe ? model::KeyframeEvidence::Declared : model::KeyframeEvidence::Unknown;
         rep.segments.push_back(std::move(seg));
     };
 
@@ -626,6 +628,7 @@ bool DashManifestAnalyzer::ParseText(const std::string& text, const std::string&
                 as.mime_type = mt::AttrString(tag.attrs, "mimeType");
                 as.lang = mt::AttrString(tag.attrs, "lang");
                 as.par = mt::AttrString(tag.attrs, "par");
+                as.start_with_sap = static_cast<int>(mt::AttrInt64Or(tag.attrs, "startWithSAP", -1));
                 out.periods[cur_period].adaptation_sets.push_back(as);
                 cur_as = as.index;
                 cur_rep = -1;
@@ -646,6 +649,8 @@ bool DashManifestAnalyzer::ParseText(const std::string& text, const std::string&
                 rep.codecs = mt::AttrString(tag.attrs, "codecs");
                 rep.mime_type = mt::AttrString(tag.attrs, "mimeType");
                 mt::AttrDouble(tag.attrs, "frameRate", rep.frame_rate);
+                // Representation 上也可以覆盖 startWithSAP（比 AdaptationSet 更具体）
+                rep.start_with_sap = static_cast<int>(mt::AttrInt64Or(tag.attrs, "startWithSAP", -1));
                 mt::SplitCodecs(rep.codecs, rep.video_codec, rep.audio_codec);
                 // 这里读的是 Period / AdaptationSet 的内部内容，两个下标都要连上界一起查，
                 // 和上面 <Period> / <AdaptationSet> 两处 push 时的判据保持一致。
@@ -840,6 +845,11 @@ bool DashManifestAnalyzer::ParseText(const std::string& text, const std::string&
             rep.roles = as.roles;
         if (rep.essential_properties.empty() && !as.essential_properties.empty())
             rep.essential_properties = as.essential_properties;
+        // startWithSAP 的继承：Representation 没写就沿用 AdaptationSet 的值，
+        // 沿用后仍是 -1 才叫"未声明"。这一位决定「清单有没有承诺分片可独立切换」，
+        // 漏继承会让写在 AdaptationSet 上的声明被当成没写。
+        if (rep.start_with_sap < 0)
+            rep.start_with_sap = as.start_with_sap;
 
         if (rep.has_template)
             continue;

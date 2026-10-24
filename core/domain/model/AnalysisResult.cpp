@@ -8,7 +8,8 @@ namespace model {
 int AnalysisResult::VideoStreamCount() const {
     int count = 0;
     for (const auto& s : streams) {
-        if (s.IsVideo() && !s.attached_picture) ++count;
+        if (s.IsVideo() && !s.attached_picture)
+            ++count;
     }
     return count;
 }
@@ -16,7 +17,8 @@ int AnalysisResult::VideoStreamCount() const {
 int AnalysisResult::AudioStreamCount() const {
     int count = 0;
     for (const auto& s : streams) {
-        if (s.IsAudio()) ++count;
+        if (s.IsAudio())
+            ++count;
     }
     return count;
 }
@@ -30,19 +32,45 @@ const StreamDigest* AnalysisResult::FirstVideoStream() const {
         }
     }
     for (const auto& s : streams) {
-        if (s.IsVideo() && !s.attached_picture) return &s;
+        if (s.IsVideo() && !s.attached_picture)
+            return &s;
     }
     return nullptr;
 }
 
 const StreamDigest* AnalysisResult::FirstAudioStream() const {
     for (const auto& s : streams) {
-        if (s.index == primary_audio_stream_index && s.IsAudio()) return &s;
+        if (s.index == primary_audio_stream_index && s.IsAudio())
+            return &s;
     }
     for (const auto& s : streams) {
-        if (s.IsAudio()) return &s;
+        if (s.IsAudio())
+            return &s;
     }
     return nullptr;
+}
+
+void AnalysisResult::SetDimension(const DimensionStatus& status) {
+    for (DimensionStatus& existing : dimensions) {
+        if (existing.dimension == status.dimension) {
+            existing = status;
+            return;
+        }
+    }
+    dimensions.push_back(status);
+}
+
+const DimensionStatus* AnalysisResult::FindDimension(AnalysisDimension dimension) const {
+    for (const DimensionStatus& status : dimensions) {
+        if (status.dimension == dimension)
+            return &status;
+    }
+    return nullptr;
+}
+
+bool AnalysisResult::DimensionConclusive(AnalysisDimension dimension) const {
+    const DimensionStatus* status = FindDimension(dimension);
+    return status != nullptr && status->conclusive;
 }
 
 } // namespace model

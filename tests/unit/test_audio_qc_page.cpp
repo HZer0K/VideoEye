@@ -214,7 +214,7 @@ DiagnosticIssue MakeIssue(const char* rule_id, IssueSeverity severity, const cha
 
 } // namespace
 
-// 构造后未分析 -> 引导文案 + 四个空表；喂入「扫过但没有音频」的结果 -> 空态文案
+// 构造后未分析 -> 引导文案 + 五个空表；喂入「扫过但没有音频」的结果 -> 空态文案
 TEST(AudioQcPageTests, UnanalyzedShowsHintAndEmptyTables) {
     EnsureApp();
     AudioQcPage page;
@@ -222,20 +222,26 @@ TEST(AudioQcPageTests, UnanalyzedShowsHintAndEmptyTables) {
     EXPECT_NE(FindLabelContaining(&page, QStringLiteral("点击「开始分析」")), nullptr);
     auto* tabs = page.findChild<QTabWidget*>();
     ASSERT_NE(tabs, nullptr);
-    ASSERT_EQ(tabs->count(), 4);
+    ASSERT_EQ(tabs->count(), 5);
     EXPECT_EQ(tabs->tabText(0), QStringLiteral("响度与电平"));
     EXPECT_EQ(tabs->tabText(1), QStringLiteral("静音与削波"));
     EXPECT_EQ(tabs->tabText(2), QStringLiteral("声道与相位"));
     EXPECT_EQ(tabs->tabText(3), QStringLiteral("规则结果"));
+    // 子页 4 是逐轨对照（阶段 4）：前四个子页都是"主音轨"口径，
+    // 多语言/评论轨只有这一页能看到，所以它必须存在且默认空表。
+    EXPECT_EQ(tabs->tabText(4), QStringLiteral("音轨对照"));
 
     QTableWidget* clip = TableInTab(&page, 1, QStringLiteral("起始"), 5);
     QTableWidget* silence = TableInTab(&page, 1, QStringLiteral("起始"), 4);
     QTableWidget* metadata = TableInTab(&page, 2, QStringLiteral("项目"));
     QTableWidget* verdict = TableInTab(&page, 3, QStringLiteral("规则"));
+    QTableWidget* tracks = TableInTab(&page, 4, QStringLiteral("流"), 10);
     ASSERT_NE(clip, nullptr);
     ASSERT_NE(silence, nullptr);
     ASSERT_NE(metadata, nullptr);
     ASSERT_NE(verdict, nullptr);
+    ASSERT_NE(tracks, nullptr);
+    EXPECT_EQ(tracks->rowCount(), 0) << "未分析时逐轨表必须为空，不能填默认值冒充实测";
     EXPECT_EQ(clip->rowCount(), 0);
     EXPECT_EQ(silence->rowCount(), 0);
     EXPECT_EQ(metadata->rowCount(), 0);

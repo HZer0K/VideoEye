@@ -292,8 +292,11 @@ void ParseMediaPlaylistBody(const std::vector<std::string>& lines, const std::st
             seg.start_seconds = cursor;
             seg.container = ContainerFromUri(raw);
             // TS 段按 ABR 惯例视为以 IDR 开头（实际是否 IDR 要逐包解析才知道）；
-            // fMP4 段要等 ProbeSegments 拿到 tfdt 才置真。
+            // fMP4 段要等 ProbeSegments 读到 sample_flags 才置真。
+            // 证据等级必须跟着走：这里是 Declared（约定），不是实证。
             seg.starts_with_keyframe = (seg.container == model::SegmentContainer::MPEG_TS);
+            seg.keyframe_evidence =
+                seg.starts_with_keyframe ? model::KeyframeEvidence::Declared : model::KeyframeEvidence::Unknown;
             // 墙钟：这一处 PDT 标注的就是本分片的起点
             if (!pending_pdt.empty()) {
                 model::HlsProgramDateTimeSample sample;
@@ -532,7 +535,12 @@ void ParseMasterBody(const std::vector<std::string>& lines, const std::string& b
             const std::string name = TagName(raw);
             const std::string body = TagBody(raw);
 
-            if (name == "#EXT-X-STREAM-INF") {
+            if (name == "#EXT-X-INDEPENDENT-SEGMENTS") {
+                // master 级声明（RFC 8216 §4.3.5.1 允许它出现在两种 playlist 里）。
+                // 记在 result 上而不是逐个下发给 playlist：media playlist 解析时会
+                // 用自己的解析结果覆盖 pl.independent_segments，下发会丢来源。
+                out.master_independent_segments = true;
+            } else if (name == "#EXT-X-STREAM-INF") {
                 if (out.variants.size() >= options.max_variants) {
                     out.truncated = true;
                     pending_variant = false;

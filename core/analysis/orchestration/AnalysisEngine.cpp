@@ -277,13 +277,31 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     assembler.FinalizeTimeline(pipeline.timeline());
     assembler.FinalizeGopFrames();
     assembler.FinalizeBitrateGop(pipeline.bitrate_gop(), pipeline.video_stream_index());
-    assembler.FinalizeAudioQc(pipeline.audio_qc(), pipeline.audio_stream_index(), audio_decoder_ready,
-                              audio_rate_changed);
+    // 逐轨音频 QC：把 Pipeline 里每条音轨的"分析器 + 通路状态"打包成只读视图交给 Assembler。
+    // 主轨在 audio_tracks()[0]（Pipeline 保证顺序），Assembler 靠 primary_audio_stream_index 认它。
+    std::vector<AudioQcTrackInput> audio_inputs;
+    audio_inputs.reserve(pipeline.audio_tracks().size());
+    for (AudioQcTrack& track : pipeline.audio_tracks()) {
+        AudioQcTrackInput input;
+        input.stream_index = track.stream_index;
+        // analyzer 是 Pipeline 的值成员，生命周期长于 assembler；这里只借用，不转移所有权。
+        input.analyzer = &track.analyzer;
+        input.decoder_ready = audio_decoder_ready;
+        input.rate_changed = audio_rate_changed;
+        audio_inputs.push_back(input);
+    }
+    assembler.FinalizeAudioQc(audio_inputs, pipeline.audio_stream_index(), pipeline.audio_tracks_total());
     assembler.FinalizeAudioBitstream(pipeline.audio_bitstream(), pipeline.audio_stream_index());
+    // 参数变化时间线：直接搬（Assembler 不加工），必须在 BeforeClose 之后 —— 那时 tracker 已 Finish
+    assembler.FinalizeParameterTimelines(pipeline.parameter_timelines());
+    assembler.FinalizeFrameOrder(pipeline.frame_order_timelines());
     assembler.FinalizeColorHdr(pipeline.color_hdr(), pipeline.color_video_stream_index());
     assembler.FinalizeSubtitle(pipeline.subtitle(), measured_duration);
     assembler.FinalizeTimecode(pipeline.timecode());
     assembler.FinalizeAuxData(pipeline.aux_data());
+    // 证据与覆盖状态必须最后算：它要读上面所有 Finalize 写好的 result 字段
+    // （audio_qc / audio_bitstream / color_hdr / ts_transport ...），顺序前置会全部读到默认值。
+    assembler.FinalizeDimensionStatus(static_cast<int>(audio_inputs.size()), pipeline.audio_tracks_total());
     assembler.Finish(callbacks);
 }
 

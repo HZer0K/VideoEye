@@ -29,6 +29,18 @@ enum class SegmentContainer {
     Other
 };
 
+// "分片首样本是随机访问点"这条结论的证据强度。
+//
+// 为什么必须分开：tfdt 只说明**解码起点时间**，不能推出"首样本可独立解码"。
+// 2026-10 之前 SegmentQcAnalyzer 读到 tfdt 就直接置 starts_with_keyframe=true，
+// 于是"某码率层切档后首帧花屏"这类问题永远查不出来 —— 结论本身没有证据支撑。
+enum class KeyframeEvidence {
+    Unknown,  // 没有探测 / 探测失败 / 没有可用的 flags 来源
+    Declared, // 只有清单或约定（HLS EXT-X-INDEPENDENT-SEGMENTS、ABR 惯例、tfdt 存在）
+    SyncFlag, // 已从 trun/tfhd 的 sample_flags 实证首样本 sync=true
+    NotSync,  // 已实证首样本是 non-sync（问题！该段不能独立解码）
+};
+
 // 清单里的一个分片
 struct SegmentInfo {
     // ---- 清单侧（解析器必填）----
@@ -63,10 +75,29 @@ struct SegmentInfo {
     bool has_decode_time = false;
     // 段在媒体时间轴上的起点（秒）。fMP4 用 tfdt/timescale，其它用清单累计时长兜底。
     double start_seconds = 0.0;
-    // 该段起点是否是关键帧。fMP4 能拿到 tfdt 即为真（CMAF 段必须以 IDR 开头）；
-    // TS 按 ABR 惯例视为真（实际是否 IDR 需要 TsStructureAnalyzer 逐包确认）。
-    // 只有为真的段才参与「多码率 variant 关键帧对齐」比对。
+    // 该段起点是否是关键帧（= 能不能从这一段的第一个字节开始解码）。
+    //
+    // ❗ 这个字段是**结论**，必须有证据才能置 true；证据强度记在 keyframe_evidence。
+    //   * SyncFlag  —— fMP4 里从 trun.first_sample_flags / 首样本 sample_flags /
+    //                  tfhd.default_sample_flags 实证到 sample_is_non_sync_sample==0
+    //   * Declared  —— 只有清单/约定（TS 的 ABR 惯例、HLS EXT-X-INDEPENDENT-SEGMENTS）
+    //   * NotSync   —— 实证到 non-sync，此时 starts_with_keyframe=false 且要报问题
+    // 只有 keyframe_evidence != Unknown 的段才参与"多码率 variant 关键帧对齐"比对，
+    // 比对时按 Declared 降级给出的对齐结论也要标注。
     bool starts_with_keyframe = false;
+    KeyframeEvidence keyframe_evidence = KeyframeEvidence::Unknown;
+    // 首样本 sample_flags 原值（诊断用；0 且 has_first_sample_flags=false 表示没拿到）
+    bool has_first_sample_flags = false;
+    uint32_t first_sample_flags = 0;
+    bool first_sample_is_sync = false;
+    int first_sample_depends_on = -1; // 1=依赖前帧 2=独立帧 -1=未声明
+    // 段内所有样本覆盖的时长（fMP4 = trun 样本时长和 / timescale）。
+    // 用来做"上一段起点 + 时长 ≈ 本段起点"的跨分片连续性实证，
+    // 与清单声明的 duration_seconds 是两回事（后者可能被篡改/漂移）。
+    double media_duration_seconds = 0.0;
+    bool has_media_duration = false;
+    // 实证到的首个视频帧类型（"IDR"/"CRA"/"I"/"P" …，空 = 未实证）
+    std::string first_frame_type;
 
     std::string ContainerName() const {
         switch (container) {

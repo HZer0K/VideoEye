@@ -19,10 +19,10 @@ namespace videoeye {
 
 // ---- box 树 ----
 struct IsobmffBox {
-    std::string type;          // 4CC，如 "moov" / "trak" / "stts"
-    uint64_t size = 0;         // box 总大小（含 header）
-    uint64_t offset = 0;       // 文件内偏移
-    uint32_t header_size = 0;  // 8 / 16 / 24（含 largesize / uuid）
+    std::string type;         // 4CC，如 "moov" / "trak" / "stts"
+    uint64_t size = 0;        // box 总大小（含 header）
+    uint64_t offset = 0;      // 文件内偏移
+    uint32_t header_size = 0; // 8 / 16 / 24（含 largesize / uuid）
     int depth = 0;
     std::vector<IsobmffBox> children;
 
@@ -47,7 +47,7 @@ struct SttsEntry {
 
 struct CttsEntry {
     uint32_t sample_count = 0;
-    int32_t sample_offset = 0;   // v1 可为负
+    int32_t sample_offset = 0; // v1 可为负
 };
 
 struct StscEntry {
@@ -57,14 +57,14 @@ struct StscEntry {
 };
 
 struct ElstEntry {
-    uint64_t segment_duration = 0;   // 电影时基
-    int64_t media_time = 0;          // 媒体时基；-1 = 空编辑
-    int32_t media_rate_integer = 1;  // 16.16 定点的整数部分
+    uint64_t segment_duration = 0;  // 电影时基
+    int64_t media_time = 0;         // 媒体时基；-1 = 空编辑
+    int32_t media_rate_integer = 1; // 16.16 定点的整数部分
 };
 
 // stsz / stz2 统一表示
 struct StszTable {
-    uint32_t default_size = 0;   // sample_size != 0 时的统一样本大小
+    uint32_t default_size = 0; // sample_size != 0 时的统一样本大小
     uint32_t sample_count = 0;
     uint32_t field_size = 0;     // stz2: 4/8/16
     std::vector<uint32_t> sizes; // default_size == 0 时逐样本大小
@@ -73,8 +73,8 @@ struct StszTable {
 // ---- 一个 trak 的全部信息 ----
 struct IsobmffTrack {
     uint32_t track_id = 0;
-    std::string handler;          // 原始 4CC: "vide" / "soun" / "hint" / "text" ...
-    std::string codec;            // stsd 首个 entry 的 4CC: "avc1" / "mp4a" ...
+    std::string handler; // 原始 4CC: "vide" / "soun" / "hint" / "text" ...
+    std::string codec;   // stsd 首个 entry 的 4CC: "avc1" / "mp4a" ...
     // stsd 里声明的全部 sample entry（按声明顺序）。绝大多数文件只有 1 条，
     // 但 Dolby Vision 双层、多码率自适应等会把多条描述放进同一个 stsd；
     // track.codec 仍然只表示第一条（兼容旧调用点），完整列表看这里。
@@ -94,7 +94,7 @@ struct IsobmffTrack {
 
     std::vector<SttsEntry> stts;
     std::vector<CttsEntry> ctts;
-    std::vector<uint32_t> stss;          // 1-based 样本序号
+    std::vector<uint32_t> stss; // 1-based 样本序号
     StszTable stsz;
     std::vector<StscEntry> stsc;
     std::vector<uint64_t> chunk_offsets; // stco 与 co64 统一成 uint64
@@ -104,7 +104,7 @@ struct IsobmffTrack {
     bool tables_truncated = false;
 
     // 便捷换算
-    std::string TypeName() const;        // "vide" -> "video"
+    std::string TypeName() const; // "vide" -> "video"
     uint32_t SttsSampleCount() const;
     uint32_t CttsSampleCount() const;
 };
@@ -113,15 +113,15 @@ struct IsobmffTrack {
 struct IsobmffFragment {
     uint32_t moof_index = 0;
     uint32_t index = 0;
-    uint32_t sequence_number = 0;   // mfhd
+    uint32_t sequence_number = 0; // mfhd
     uint32_t track_id = 0;
-    uint64_t offset = 0;            // moof 在文件内的偏移
-    uint64_t size = 0;              // moof 大小
+    uint64_t offset = 0; // moof 在文件内的偏移
+    uint64_t size = 0;   // moof 大小
     bool has_tfdt = false;
     uint64_t base_media_decode_time = 0;
 
     uint32_t sample_count = 0;
-    uint64_t duration = 0;          // 媒体时基
+    uint64_t duration = 0; // 媒体时基
     uint64_t total_size = 0;
 
     bool base_data_offset_present = false;
@@ -135,6 +135,27 @@ struct IsobmffFragment {
     uint32_t trun_count = 0;
     bool trun_data_offset_present = false;
     int64_t trun_data_offset = 0;
+
+    // ---- 首样本随机访问标志（实证层）----
+    //
+    // 为什么要单独记：以前判断"这个分片能不能独立解码"只看有没有 tfdt，
+    // 但 tfdt 只是**解码起点时间**，和"首样本是不是随机访问点"是两件事。
+    // 真正的依据在 trun/tfhd 的 sample_flags 里（ISO/IEC 14496-12 §8.8.8）：
+    //   bit 16 (0x00010000) = sample_is_non_sync_sample
+    //   bit 24-25          = sample_depends_on（2 = I 帧）
+    // 三个来源的优先级与缺省关系（trun 里最具体的优先）：
+    //   trun.first_sample_flags  >  首样本自己的 sample_flags  >  tfhd.default_sample_flags
+    // 三者都没有时 has_first_sample_flags 保持 false —— 上层必须据此报"无法证实"，
+    // 绝不能退回"假定是关键帧"。
+    bool has_first_sample_flags = false;
+    uint32_t first_sample_flags = 0;
+    bool first_sample_is_sync = false; // (flags & 0x00010000) == 0
+    int first_sample_depends_on = -1;  // 0=unknown 1=depends 2=independent(-1 未给出)
+    bool tfhd_default_sample_flags_present = false;
+    uint32_t tfhd_default_sample_flags = 0;
+    // tfhd 里没有 default flags 时，CMAF 的默认值来自 init 段的 trex。
+    // 本解析器不读 trex（跨文件），所以只能置位让上层知道"缺省值可能来自 trex"。
+    bool first_sample_flags_incomplete = false;
 };
 
 // ---- 解析结果 ----
@@ -146,7 +167,7 @@ struct IsobmffFile {
     std::vector<IsobmffBox> top_level;
     std::vector<std::string> top_level_order;
 
-    uint32_t movie_timescale = 0;   // mvhd
+    uint32_t movie_timescale = 0; // mvhd
     std::vector<IsobmffTrack> tracks;
     std::vector<IsobmffFragment> fragments;
 
@@ -186,8 +207,7 @@ public:
     // 兼容既有的 IsobmffParser::Options 写法
     using Options = IsobmffOptions;
 
-    static bool Parse(const std::string& file_path, IsobmffFile& out,
-                      const Options& options = Options{});
+    static bool Parse(const std::string& file_path, IsobmffFile& out, const Options& options = Options{});
 };
 
-}  // namespace videoeye
+} // namespace videoeye

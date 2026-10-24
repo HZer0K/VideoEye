@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <map>
+#include <vector>
 
 #include "core/analysis/AnalysisOptions.h"
 // 具体分析器的头只出现在这里: 本类的工作就是把它们的中间态读出来写进结果，
@@ -46,6 +47,18 @@ struct ScanBucket {
 
 using ScanBuckets = std::map<int64_t, ScanBucket>;
 
+// 一条参与 PCM QC 的音轨的收尾输入。
+//
+// 为什么不直接传 AudioQcTrack：那个类型住在 AnalysisPipeline.h（它持有解码器、
+// swr 等 FFmpeg 资源），而本类的职责边界是"只碰结果对象 + 分析器"。
+// 用这个轻量视图隔开，Assembler 就不必知道解码通路的任何细节。
+struct AudioQcTrackInput {
+    int stream_index = -1;
+    AudioQcAnalyzer* analyzer = nullptr;
+    bool decoder_ready = false;
+    bool rate_changed = false;
+};
+
 class AnalysisResultAssembler {
 public:
     AnalysisResultAssembler(model::AnalysisResult& result, const AnalysisOptions& options);
@@ -62,17 +75,29 @@ public:
     void FinalizeGopFrames();
 
     void FinalizeBitrateGop(BitrateGopAnalyzer& bitrate_gop, int video_stream_index);
-    void FinalizeAudioQc(AudioQcAnalyzer& audio_qc, int audio_stream_index,
-                         bool audio_decoder_ready, bool audio_rate_changed);
+    // 逐轨收尾：tracks 的首元素应是主音轨（Prepare 的建法保证了这一点）。
+    // result.audio_qc 取主轨那一份（向后兼容），全量写 audio_qc_streams。
+    void FinalizeAudioQc(const std::vector<AudioQcTrackInput>& tracks, int primary_audio_stream_index,
+                         int audio_tracks_total);
     // 音频位流参数（D1）：与 FinalizeAudioQc 无先后依赖，两者读的是不同数据源
     // （头 vs PCM）。放在音频 QC 之后只是为了日志顺序可读。
     void FinalizeAudioBitstream(AudioBitstreamAnalyzer& audio_bitstream, int audio_stream_index);
+    // 参数变化时间线：直接搬进结果（Assembler 不做二次加工）
+    void FinalizeParameterTimelines(const std::vector<model::ParameterTimeline>& timelines);
+    // 帧级显示/解码顺序（POC）。空 = 没有可分析的 H.264 轨（维度会标不可用）。
+    void FinalizeFrameOrder(const std::vector<model::FrameOrderTimeline>& timelines);
     // 必须在 color_probe 释放之后调用（部分 HDR 元数据只在解码帧上出现）
     void FinalizeColorHdr(ColorHdrAnalyzer& color_hdr, int color_video_stream_index);
     // 必须在 avformat_close_input 之后调用
     void FinalizeSubtitle(SubtitleAnalyzer& subtitle_analyzer, double measured_duration);
     void FinalizeTimecode(TimecodeAnalyzer& timecode_analyzer);
     void FinalizeAuxData(AuxDataAnalyzer& aux_analyzer);
+
+    // 汇总各维度的"证据与覆盖"到 result.dimensions。
+    //
+    // 必须在所有 Finalize* 之后调用：它读的是已经落进 result 的各维度结论，
+    // 提前调用会得到"未执行"的错误判断。
+    void FinalizeDimensionStatus(int audio_tracks_analyzed, int audio_tracks_total);
 
     // 收尾: 记录已扫包数 -> 进度 100% -> on_finished。
     // completed 由 scan_status 决定: 取消路径也会走到这里（它 break 出循环后仍要跑完
@@ -82,6 +107,8 @@ public:
 private:
     model::AnalysisResult& result_;
     const AnalysisOptions& options_;
+    // 桶算出来的实测时长（FinalizeDimensionStatus 用它做覆盖分母）
+    double measured_duration_ = 0.0;
 };
 
-}  // namespace videoeye
+} // namespace videoeye

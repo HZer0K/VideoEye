@@ -110,6 +110,25 @@ void AudioBitstreamAnalyzer::RegisterStreams(const AVFormatContext* fmt) {
             }
             break;
         }
+        case AV_CODEC_ID_MP3:
+            info.codec = model::AudioBitstreamCodec::Mp3;
+            // profile 留到首个帧头解析出来再填（Layer I/II/III 只有帧头才知道）
+            break;
+        case AV_CODEC_ID_FLAC: {
+            info.codec = model::AudioBitstreamCodec::Flac;
+            info.profile = "FLAC";
+            // MP4 的 dfLa / Matroska 的私有数据里带 STREAMINFO；
+            // 裸 .flac 的 extradata 通常为空，改由首包开头的 "fLaC" 补
+            FlacStreamInfo flac;
+            if (stream->codecpar->extradata != nullptr && stream->codecpar->extradata_size > 0 &&
+                AudioBitstreamParser::ParseFlacStreamInfo(
+                    stream->codecpar->extradata, static_cast<size_t>(stream->codecpar->extradata_size), flac)) {
+                state.flac_info = flac;
+                state.flac_info_ready = true;
+                ApplyFlacStreamInfo(state, flac);
+            }
+            break;
+        }
         default:
             info.codec = model::AudioBitstreamCodec::Other;
             info.note = "该编码未实现逐帧位流头解析（只做容器参数登记）";
@@ -215,8 +234,34 @@ void AudioBitstreamAnalyzer::ApplyAacConfig(StreamState& state, const AacAudioSp
     state.info.channel_config = asc.channel_configuration;
     state.info.audio_object_type = asc.audio_object_type;
     state.info.profile = model::AudioObjectTypeName(asc.audio_object_type);
+    // SBR/PS：sample_rate 存的是**输出**采样率（ApplyAacConfig 里 asc.sample_rate
+    // 已经换算过），core 值单独留一份，报告里能把"core 24 kHz -> 输出 48 kHz"讲清楚。
+    state.info.aac_sbr = asc.sbr;
+    state.info.aac_ps = asc.ps;
+    state.info.aac_core_sample_rate = asc.core_sample_rate;
+    state.info.aac_output_sample_rate = asc.sample_rate;
+    state.info.aac_sbr_source = asc.sbr_source;
+    if (asc.sbr || asc.ps) {
+        std::string ext = asc.sbr ? "SBR" : std::string();
+        if (asc.ps)
+            ext += (ext.empty() ? "" : "+") + std::string("PS");
+        std::string detail = "AAC 扩展已识别：" + ext;
+        if (asc.core_sample_rate > 0 && asc.sample_rate > asc.core_sample_rate)
+            detail += "（core " + std::to_string(asc.core_sample_rate) + " Hz -> 输出 " +
+                      std::to_string(asc.sample_rate) + " Hz）";
+        if (asc.ps)
+            detail += "；PS 把单声道上混成立体声，声道数按 2 计";
+        detail += asc.sbr_from_sync_extension ? "；来源：AudioSpecificConfig 同步扩展(0x2B7)"
+                                              : "；来源：AudioSpecificConfig 的 AOT";
+        state.info.note = (state.info.note.empty() ? std::string() : state.info.note + "；") + detail;
+    } else if (!asc.sbr_signaled) {
+        // 没有显式信令 ≠ 没有 SBR：HE-AAC 允许 implicit signaling，
+        // 真正的 SBR 标志在 raw_data_block 的 ID_FIL 扩展元素里，本工具未解析。
+        state.info.note = (state.info.note.empty() ? std::string() : state.info.note + "；") +
+                          "未找到 SBR/PS 显式信令（implicit signaling 需解析码流内 ID_FIL 扩展，本工具未做）";
+    }
     if (!asc.note.empty())
-        state.info.note = asc.note;
+        state.info.note = (state.info.note.empty() ? asc.note : state.info.note + "；" + asc.note);
 }
 
 void AudioBitstreamAnalyzer::ApplyLatmConfig(StreamState& state, const LatmHeader& header) {
@@ -356,6 +401,22 @@ void AudioBitstreamAnalyzer::ParseAacPacket(StreamState& state, const AVPacket* 
                 state.info.audio_object_type = header.audio_object_type;
                 state.info.profile = model::AudioObjectTypeName(header.audio_object_type);
             }
+            // channel_configuration == 0 表示"声道布局写在 PCE 里"。以前这一支
+            // channels 恒为 0，容器声道数因此失去了对照物，且 Finish() 里要专门
+            // 抑制"容器 vs 位流声道不一致"告警 —— 等于这条流不校验声道。
+            // PCE 只在首个 raw_data_block 里，试一次即可。
+            if (header.channel_configuration == 0 && !state.aac_pce_attempted) {
+                state.aac_pce_attempted = true;
+                const size_t rdb_off = offset + static_cast<size_t>(header.header_bytes);
+                if (rdb_off < size) {
+                    AacProgramConfig pce;
+                    if (AudioBitstreamParser::ParseAacProgramConfig(data + rdb_off, size - rdb_off, pce)) {
+                        ApplyAacPce(state, pce);
+                    } else if (!pce.note.empty() && state.info.note.empty()) {
+                        state.info.note = "ADTS 声明 PCE 声道配置，但未能解析：" + pce.note;
+                    }
+                }
+            }
             state.ObserveFrame(header.sample_rate, header.channels, header.frame_length, header.audio_object_type, -1,
                                0);
             state.info.frame_count += header.num_raw_data_blocks + 1;
@@ -396,7 +457,13 @@ void AudioBitstreamAnalyzer::ParseAacPacket(StreamState& state, const AVPacket* 
         }
         if (parsed) {
             ++state.info.parsed_packets;
-            ++state.info.frame_count;
+            // 一个 AudioMuxElement 里含 numSubFrames+1 个 subFrame，每个 subFrame
+            // 是一个 AAC 原始数据块（= 一帧）。以前不看这个字段、每包记 1 帧，
+            // 多 subFrame 的流帧数按倍数少算，连带把时长与平均码率都算错。
+            const int sub = state.latm_config.num_sub_frames;
+            state.info.frame_count += (sub > 0 ? sub + 1 : 1);
+            if (sub > 0)
+                state.info.latm_num_sub_frames = sub;
         } else {
             ++state.info.invalid_packets;
         }
@@ -489,6 +556,212 @@ void AudioBitstreamAnalyzer::ParseOpusPacket(StreamState& state, const AVPacket*
     ++state.info.parsed_packets;
 }
 
+void AudioBitstreamAnalyzer::ApplyMp3Header(StreamState& state, const Mp3FrameHeader& hdr) {
+    model::AudioBitstreamStream& info = state.info;
+    info.codec = model::AudioBitstreamCodec::Mp3;
+    info.mpeg_version = hdr.mpeg_version;
+    info.mp3_layer = hdr.layer;
+    info.channel_mode = hdr.channel_mode;
+    info.crc_present = hdr.crc_present;
+    if (info.sample_rate <= 0)
+        info.sample_rate = hdr.sample_rate;
+    if (info.channels <= 0)
+        info.channels = hdr.channels;
+    if (info.bit_rate_kbps <= 0)
+        info.bit_rate_kbps = hdr.bitrate_kbps;
+    if (info.profile.empty()) {
+        std::string profile = "MPEG-";
+        profile += (hdr.mpeg_version == 1) ? "1" : (hdr.mpeg_version == 2 ? "2" : "2.5");
+        profile += " Layer ";
+        profile += static_cast<char>('0' + hdr.layer);
+        info.profile = profile;
+    }
+}
+
+void AudioBitstreamAnalyzer::ParseMp3Packet(StreamState& state, const AVPacket* pkt) {
+    const uint8_t* data = pkt->data;
+    const size_t size = static_cast<size_t>(pkt->size);
+    if (data == nullptr || size < 4) {
+        ++state.info.invalid_packets;
+        return;
+    }
+
+    // 一包可能含多帧（AVI/TS 里常见），也可能只含一帧的一部分（截断的末包）。
+    size_t offset = 0;
+    int frames = 0;
+    bool truncated_tail = false;
+    bool free_format_seen = false;
+    while (offset + 4 <= size && frames < 64) {
+        Mp3FrameHeader hdr;
+        if (!AudioBitstreamParser::ParseMp3FrameHeader(data + offset, size - offset, hdr)) {
+            if (hdr.truncated)
+                truncated_tail = true;
+            if (hdr.free_format) {
+                free_format_seen = true;
+                if (state.info.note.empty()) {
+                    state.info.note = "MP3 使用 free format（帧头未写码率），本实现无法逐帧定界，"
+                                      "只统计到首个可解析帧；这些包计为「未支持」而非「坏帧」";
+                }
+            }
+            break;
+        }
+        if (!state.has_header) {
+            ApplyMp3Header(state, hdr);
+            // Xing/Info/VBRI 只在首帧，且只解析一次
+            if (!state.mp3_vbr_parsed) {
+                state.mp3_vbr_parsed = true;
+                Mp3VbrInfo vbr;
+                if (AudioBitstreamParser::ParseMp3VbrInfo(data + offset, size - offset, hdr, vbr)) {
+                    state.info.vbr_tag = vbr.tag;
+                    state.info.declared_frame_count = vbr.frame_count;
+                    state.info.declared_stream_bytes = vbr.stream_bytes;
+                    state.info.has_encoder_delay = vbr.has_encoder_delay;
+                    state.info.encoder_delay_samples = vbr.encoder_delay;
+                    state.info.encoder_padding_samples = vbr.encoder_padding;
+                    state.info.encoder = vbr.encoder;
+                }
+            }
+        }
+        state.ObserveFrame(hdr.sample_rate, hdr.channels, hdr.frame_bytes, -1, -1, hdr.bitrate_kbps);
+        ++state.info.frame_count;
+        ++frames;
+        if (hdr.frame_bytes <= 0)
+            break;
+        offset += static_cast<size_t>(hdr.frame_bytes);
+    }
+
+    if (frames > 0) {
+        ++state.info.parsed_packets;
+        if (truncated_tail && state.info.note.empty()) {
+            state.info.note = "包尾有一帧被截断（已统计到截断点之前的帧）";
+        }
+    } else if (free_format_seen) {
+        // ❗ 不能计 invalid：free format 是合法编码，只是帧长算不出来。
+        // 混进 invalid_packets 会让"全部帧头校验失败"的假告警出现在正常文件上，
+        // 也会让位流维度被误判为 Partial（真实原因是不支持，不是素材坏了）。
+        ++state.info.unsupported_packets;
+    } else {
+        ++state.info.invalid_packets;
+        if (state.info.note.empty())
+            state.info.note = "MP3 帧头同步字校验失败（不是 MPEG Audio 帧或包起点不在帧边界）";
+    }
+}
+
+void AudioBitstreamAnalyzer::ApplyFlacStreamInfo(StreamState& state, const FlacStreamInfo& info) {
+    model::AudioBitstreamStream& s = state.info;
+    s.codec = model::AudioBitstreamCodec::Flac;
+    s.profile = "FLAC";
+    s.flac_streaminfo = true;
+    s.streaminfo_min_block = info.min_block_size;
+    s.streaminfo_max_block = info.max_block_size;
+    s.declared_total_samples = info.total_samples;
+    if (info.sample_rate > 0)
+        s.sample_rate = info.sample_rate;
+    if (info.channels > 0)
+        s.channels = info.channels;
+    // FLAC 的"位深"不是采样格式，而是 STREAMINFO 里的有效位深；容器侧没有对应字段，
+    // 所以不走 container_mismatch，只在 UI/报告里单独展示。
+    // min/max block size 相差过大（超过 4 倍）通常意味着分段编码或流式拼接。
+    if (info.min_block_size > 0 && info.max_block_size > info.min_block_size * 4)
+        s.flac_high_variance_blocks = true;
+}
+
+void AudioBitstreamAnalyzer::ParseFlacPacket(StreamState& state, const AVPacket* pkt) {
+    const uint8_t* data = pkt->data;
+    const size_t size = static_cast<size_t>(pkt->size);
+    if (data == nullptr || size < 2) {
+        ++state.info.invalid_packets;
+        return;
+    }
+
+    // 裸 .flac 的第一包可能还带着 "fLaC" + metadata blocks：先补 STREAMINFO，
+    // 这种包不含音频帧，不能算"帧头解析失败"。
+    if (!state.flac_info_ready && size >= 8 && std::memcmp(data, "fLaC", 4) == 0) {
+        FlacStreamInfo info;
+        if (AudioBitstreamParser::ParseFlacStreamInfo(data, size, info)) {
+            state.flac_info = info;
+            state.flac_info_ready = true;
+            ApplyFlacStreamInfo(state, info);
+            state.info.note = "STREAMINFO 取自码流开头的 fLaC 头（该包是元数据，不含音频帧）";
+        }
+        return;
+    }
+
+    size_t offset = 0;
+    int frames = 0;
+    bool crc_bad = false;
+    while (offset + 6 <= size && frames < 64) {
+        FlacFrameHeader hdr;
+        if (!AudioBitstreamParser::ParseFlacFrameHeader(data + offset, size - offset, hdr)) {
+            if (hdr.truncated && state.info.note.empty())
+                state.info.note = "FLAC 帧头被截断（包尾不足）";
+            break;
+        }
+        if (!state.flac_frame_seen) {
+            state.flac_frame_seen = true;
+            if (!state.flac_info_ready) {
+                // 没有 STREAMINFO：只把帧头里明确写了的字段当事实，
+                // 编码值为 0（"沿用它处"）时留空，绝不填默认值。
+                if (hdr.sample_rate > 0)
+                    state.info.sample_rate = hdr.sample_rate;
+                if (hdr.channels > 0)
+                    state.info.channels = hdr.channels;
+            }
+        }
+        if (hdr.crc_checked) {
+            state.info.flac_frame_crc_checked = true;
+            if (!hdr.crc_ok) {
+                crc_bad = true;
+                ++state.info.flac_frame_crc_failures;
+            }
+        }
+        // FLAC 帧时长 = block_size / sample_rate；ObserveFrame 只需要帧字节做 VBR 启发，
+        // 采样率/声道取帧头（为 0 时回落到已知值）。帧字节这里给 0：FLAC 是纯 VBR，
+        // 用"帧长摆动"判 VBR 没有意义（恒为真）。
+        const int sr = hdr.sample_rate > 0 ? hdr.sample_rate : state.info.sample_rate;
+        state.ObserveFrame(sr, hdr.channels, 0, -1, -1, 0);
+        ++state.info.frame_count;
+        ++frames;
+        // FLAC 帧的结束位置只能靠逐帧解析算出来；本层不做完整帧同步扫描，
+        // 所以一包多帧时只看首帧，避免把后继字节当成新帧头误判。
+        break;
+    }
+
+    if (frames > 0) {
+        ++state.info.parsed_packets;
+        if (crc_bad && state.info.note.empty())
+            state.info.note = "FLAC 帧头 CRC-8 校验失败（帧头损坏）";
+    } else {
+        ++state.info.invalid_packets;
+        if (state.info.note.empty())
+            state.info.note = "FLAC 帧同步字校验失败（不是 FLAC 帧或包起点不在帧边界）";
+    }
+}
+
+void AudioBitstreamAnalyzer::ApplyAacPce(StreamState& state, const AacProgramConfig& pce) {
+    if (!pce.valid)
+        return;
+    // PCE 只在 channel_configuration == 0 时出现，此时 ADTS/ASC 给不出声道布局，
+    // 容器声明的声道数也就失去了对照物。PCE 是目前唯一的一手证据。
+    state.info.channels = pce.channels;
+    state.info.channel_config = 0;
+    if (state.info.sample_rate <= 0)
+        state.info.sample_rate = pce.sample_rate;
+    // 结构化落一份：报告里"声道布局取自 PCE"不能只是 note 里的一句话，
+    // 否则下游无法判断 channels 是码流事实还是容器抄来的。
+    state.info.aac_pce = true;
+    state.info.pce_object_type = pce.object_type;
+    state.info.pce_sample_rate = pce.sample_rate;
+    state.info.pce_channels = pce.channels;
+    state.info.pce_front = pce.front_channels;
+    state.info.pce_side = pce.side_channels;
+    state.info.pce_back = pce.back_channels;
+    state.info.pce_lfe = pce.lfe_channels;
+    state.info.pce_layout = pce.layout;
+    state.info.note = (state.info.note.empty() ? "" : state.info.note + "；") + "声道布局取自 PCE: " + pce.layout +
+                      "（" + std::to_string(pce.channels) + " 声道）";
+}
+
 void AudioBitstreamAnalyzer::OnPacket(const AVPacket* pkt, const AVStream* stream) {
     if (pkt == nullptr || stream == nullptr || stream->codecpar == nullptr)
         return;
@@ -518,8 +791,14 @@ void AudioBitstreamAnalyzer::OnPacket(const AVPacket* pkt, const AVStream* strea
     case AV_CODEC_ID_OPUS:
         ParseOpusPacket(*state, pkt);
         break;
+    case AV_CODEC_ID_MP3:
+        ParseMp3Packet(*state, pkt);
+        break;
+    case AV_CODEC_ID_FLAC:
+        ParseFlacPacket(*state, pkt);
+        break;
     default:
-        // 未实现逐帧解析的编码（MP3/FLAC/PCM ...）：只登记"未支持"，
+        // 未实现逐帧解析的编码（ALAC / DTS / TrueHD / PCM ...）：只登记"未支持"，
         // 绝不能记进 invalid_packets —— 那是"素材损坏"的口径。
         ++state->info.unsupported_packets;
         break;
@@ -576,18 +855,50 @@ const model::AudioBitstreamResult& AudioBitstreamAnalyzer::Finish() {
                                         std::to_string(info.sample_rate) + " Hz");
         }
         if (info.container_channels > 0 && info.channels > 0 && info.container_channels != info.channels) {
-            const bool aac_pce = (info.codec == model::AudioBitstreamCodec::AacAdts && info.channel_config == 0);
+            // PCE 没解出来时 channels 才是 0 —— 那种情况下面这个条件根本不会进来。
+            // 所以这里不再需要为 "aac_pce" 开口子：一旦 PCE 解析成功，
+            // 位流声道数就是一手证据，容器对不上就必须报。
             const bool eac3_unresolved_dependent =
                 (info.codec == model::AudioBitstreamCodec::Eac3 && info.dependent_substream_count == 0 &&
                  info.container_channels > info.channels);
-            if (!aac_pce && !eac3_unresolved_dependent) {
+            if (!eac3_unresolved_dependent) {
                 info.container_mismatch = true;
                 ++info.container_mismatch_fields;
                 AddInconsistency(state, "容器声明 " + std::to_string(info.container_channels) + " 声道，位流头是 " +
                                             std::to_string(info.channels) + " 声道");
-            } else if (eac3_unresolved_dependent) {
+            } else {
                 info.note = (info.note.empty() ? "" : info.note + "；") +
                             "E-AC-3 容器声道数高于核心子流，可能有未解析到的从属子流";
+            }
+        }
+        // ---- MP3：头部声明的帧数/字节数 vs 实测 ----
+        // Xing/Info/VBRI 的总帧数是**声明值**。扫描完整文件时两者必须吻合；
+        // 差得多说明文件被拼接/截断，或者头部是别的编码器留下的。
+        if (info.codec == model::AudioBitstreamCodec::Mp3 && info.declared_frame_count > 0 && info.frame_count > 0) {
+            const int64_t delta = info.frame_count - info.declared_frame_count;
+            const int64_t magnitude = delta < 0 ? -delta : delta;
+            // 容差 1 帧：编码器写 Xing 时通常不含首帧自身或含一个空帧
+            if (magnitude > 1) {
+                info.container_mismatch = true;
+                ++info.container_mismatch_fields;
+                AddInconsistency(state, "MP3 头部（" + info.vbr_tag + "）声明 " +
+                                            std::to_string(info.declared_frame_count) + " 帧，实测 " +
+                                            std::to_string(info.frame_count) + " 帧（差 " + std::to_string(delta) +
+                                            "）");
+            }
+        }
+        if (info.codec == model::AudioBitstreamCodec::Flac) {
+            if (!info.flac_streaminfo) {
+                info.note = (info.note.empty() ? "" : info.note + "；") +
+                            "没有拿到 STREAMINFO（容器未携带且码流头未解析），"
+                            "采样率/位深/总样本数只能依赖帧头声明";
+            } else if (info.declared_total_samples == 0) {
+                info.note = (info.note.empty() ? "" : info.note + "；") +
+                            "STREAMINFO 未声明总样本数（流式编码），无法用声明值校验时长";
+            }
+            if (info.flac_high_variance_blocks) {
+                info.note = (info.note.empty() ? "" : info.note + "；") +
+                            "STREAMINFO 的 min/max block size 相差超过 4 倍，可能是分段编码或拼接";
             }
         }
         if (info.codec == model::AudioBitstreamCodec::Ac3 || info.codec == model::AudioBitstreamCodec::Eac3) {
