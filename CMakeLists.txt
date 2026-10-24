@@ -174,6 +174,10 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # 按模块目录分开 glob —— 一个 glob 对应一个 CMake target，目录归属就是依赖边界。
 file(GLOB_RECURSE UI_SOURCES CONFIGURE_DEPENDS "ui/*.cpp")
 file(GLOB UI_HEADERS CONFIGURE_DEPENDS "ui/*.h")
+# ui/charts 单独成一个 target（见下面 VideoEyeUiCharts）：
+# MetricChartWidget 是十几个分析页共用的曲线底座，也是这些页的测试唯一需要
+# 额外编进来的 Q_OBJECT 类。独立成库后，测试链库即可，不必每个目标各编一份。
+file(GLOB_RECURSE CHART_SOURCES CONFIGURE_DEPENDS "ui/charts/*.cpp" "ui/charts/*.h")
 # ui/reporting_panel 单独成一个 target（见下面 VideoEyeReportingPanel）。
 #
 # 它是 ui/ 里带后台线程的页面，单独成库后，只需要这一页的测试可以只链它，
@@ -181,6 +185,8 @@ file(GLOB UI_HEADERS CONFIGURE_DEPENDS "ui/*.h")
 file(GLOB_RECURSE REPORTING_PANEL_SOURCES CONFIGURE_DEPENDS
     "ui/reporting_panel/*.cpp" "ui/reporting_panel/*.h")
 list(FILTER UI_SOURCES EXCLUDE REGEX "ui/reporting_panel/")
+# 曲线控件走 VideoEyeUiCharts，避免同一个 Q_OBJECT 类在两个 target 里各跑一次 AUTOMOC。
+list(FILTER UI_SOURCES EXCLUDE REGEX "ui/charts/")
 # 入口不属于 UI 库：主程序只编译 ui/app/main.cpp，其余 ui/*.cpp 进 VideoEyeUi。
 list(FILTER UI_SOURCES EXCLUDE REGEX "ui/app/main\\.cpp$")
 
@@ -432,6 +438,16 @@ if(REPORTING_PANEL_SOURCES)
     )
 endif()
 
+# --- ui/charts: 曲线控件（分析页与测试共用）---
+# 十几个测试目标此前各自把 MetricChartWidget.cpp 编进 exe —— 同一个 Q_OBJECT 类
+# 在 16 个 target 里各跑一次 AUTOMOC（实现与 moc 都被重复编译）。独立成静态库后
+# 只编一份，测试链库即可，链接期也只取用得到的那一份 moc。
+# Qt6::Widgets 挂 PUBLIC: 公共头就是 QWidget 系。
+if(CHART_SOURCES)
+    videoeye_add_module(VideoEyeUiCharts ${CHART_SOURCES})
+    target_link_libraries(VideoEyeUiCharts PUBLIC Qt6::Widgets)
+endif()
+
 # --- ui: 主程序界面层 ---
 # 所有 ui/*.cpp（入口除外）编成一个静态库，主程序只保留 ui/app/main.cpp。
 # 好处: UI 组件测试链同一份实现，不必再把整层源码编进测试 exe；同一个 Q_OBJECT
@@ -459,6 +475,7 @@ if(UI_SOURCES)
                 VideoEyeExporter
                 VideoEyeReporting
                 VideoEyeQc
+                VideoEyeUiCharts
                 VideoEyeReportingPanel
                 VideoEyeFfmpegTools
                 VideoEyeAnalysis

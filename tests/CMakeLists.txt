@@ -322,14 +322,13 @@ set(VIDEOEYE_PERF_SOURCES
 # 测试 2c: ChartDecimation (曲线抽稀统一口径)
 #
 # ChartSeries 用 owner=nullptr 构造（NotifyUpdate 判空），所以本测试不需要
-# QApplication；但 MetricChartWidget.cpp 有 Q_OBJECT，仍要走 AUTOMOC。
+# QApplication；曲线控件的实现与 moc 在 VideoEyeUiCharts 里，本目标链它即可。
 # ============================================================
 videoeye_add_test(test_chart_decimation
     unit/test_chart_decimation.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../infrastructure/logging/Logger.cpp
 )
-target_link_libraries(test_chart_decimation PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core)
+target_link_libraries(test_chart_decimation PRIVATE VideoEyeUiCharts Qt6::Widgets Qt6::Gui Qt6::Core)
 add_test(NAME ChartDecimationTests COMMAND test_chart_decimation)
 
 # ============================================================
@@ -1138,10 +1137,10 @@ set_tests_properties(ScanTerminalStateTests PROPERTIES
 videoeye_add_test(test_event_timeline_view
     unit/test_event_timeline_view.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/EventTimelineView.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
 )
 target_link_libraries(test_event_timeline_view PRIVATE
     VideoEyeDomain
+    VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME EventTimelineViewToggleTests COMMAND test_event_timeline_view)
 set_tests_properties(EventTimelineViewToggleTests PROPERTIES
@@ -1165,7 +1164,6 @@ videoeye_add_test(test_stream_views
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioFrameTableWidget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/StreamOverviewView.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/MacroblockView.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
     ${VIDEOEYE_PERF_SOURCES}
 )
 # FramePacketView.cpp 直接用 AV_PICTURE_TYPE_* / AV_PKT_FLAG_* / AVMEDIA_TYPE_*
@@ -1173,6 +1171,7 @@ videoeye_add_test(test_stream_views
 target_link_libraries(test_stream_views PRIVATE
     VideoEyeDomain
     VideoEyeReporting
+    VideoEyeUiCharts
     FFmpeg::avcodec
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME StreamViewsToggleTests COMMAND test_stream_views)
@@ -1330,7 +1329,7 @@ add_test(NAME AnalysisTextUtilTests COMMAND test_analysis_text_util)
 # 说明: VisualDefectPage 是全面板唯一同时具备 ①UI<->options 双向往返 ②档位枚举->下拉
 #       userData 一对一映射 ③只在 pending 上置脏、定时器到点才重绘 三条链的组件。
 #       这三条断了都不崩，只会静默用错参数或界面停在旧值。
-#       只编 VisualDefectPage 与它唯一的外部依赖 MetricChartWidget（header-only 的
+#       只编 VisualDefectPage 并链 VideoEyeUiCharts（header-only 的
 #       AnalysisPageSupport 不用编），不整层拉 analysis —— 单测不该为一次界面检查
 #       拖进 FFmpeg。控件加了 objectName（VisualDefectPreset / VisualDefectBlurThreshold /
 #       VisualDefectFreezeThreshold / VisualDefectCaptureRgb / VisualDefectEnable），
@@ -1339,11 +1338,11 @@ add_test(NAME AnalysisTextUtilTests COMMAND test_analysis_text_util)
 videoeye_add_test(test_visual_defect_page
     unit/test_visual_defect_page.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/VisualDefectPage.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
     ${VIDEOEYE_PERF_SOURCES}
 )
 target_link_libraries(test_visual_defect_page PRIVATE
     VideoEyeDomain
+    VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME VisualDefectPageTests COMMAND test_visual_defect_page)
 set_tests_properties(VisualDefectPageTests PROPERTIES
@@ -1353,8 +1352,8 @@ set_tests_properties(VisualDefectPageTests PROPERTIES
 # 测试 49：文件结构页（容器结构 / MP4 样本表 / EBML 详情的页路由）
 # 说明: 这个页同时接通用结构树、MP4 box 表、MP4 样本表、EBML 详情表四种数据源，
 #       并按 format 在 QStackedWidget 上切到正确详情页。几条路由写错一个分支界面就
-#       停在旧页/空表且不崩，属于最难手动点测发现的回归。直接编页面源 +
-#       MetricChartWidget（AnalysisPageSupport.h 的 TableBatch 在那里），不整层拉
+#       停在旧页/空表且不崩，属于最难手动点测发现的回归。直接编页面源并链
+#       VideoEyeUiCharts（AnalysisPageSupport.h 的 TableBatch 在那里），不整层拉
 #       analysis / FFmpeg。VE_PERF 走 infrastructure 的 Logger，所以补链
 #       VideoEyeInfrastructure。用 offscreen 平台跑，不需要显示器。
 # =================================================
@@ -1362,12 +1361,12 @@ videoeye_add_test(test_container_structure_page
     unit/test_container_structure_page.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/ContainerStructurePage.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/Mp4SampleTableWidget.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
 )
 target_link_libraries(test_container_structure_page PRIVATE
     VideoEyeDomain
     VideoEyeInfrastructure
     VideoEyeReporting
+    VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME ContainerStructurePageTests COMMAND test_container_structure_page)
 set_tests_properties(ContainerStructurePageTests PROPERTIES
@@ -1439,16 +1438,16 @@ set_tests_properties(RawImageSequenceTests PROPERTIES
 # 测试 53：音频帧表子页（脏标志 + 增量刷新 + 单元格 + 汇总聚合）
 # 说明: 组件自身的记录缓存/脏标志/同步游标三者对不上时，只会静默少行或汇总错。
 #       AnalysisPageSupport.h（header-only）里带 MetricChartWidget.h 的 Q_OBJECT，
-#       AUTOMOC 会为它生成 moc，所以把 MetricChartWidget.cpp 一并编进来（与测试 48/49/37
-#       同处理），不整层拉 analysis / FFmpeg。用 offscreen 平台跑。
+#       moc 与实现都在 VideoEyeUiCharts 里，链库即可，不整层拉 analysis / FFmpeg。
+#       用 offscreen 平台跑。
 # =================================================
 videoeye_add_test(test_audio_frame_table_widget
     unit/test_audio_frame_table_widget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioFrameTableWidget.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
     ${VIDEOEYE_PERF_SOURCES}
 )
 target_link_libraries(test_audio_frame_table_widget PRIVATE
+    VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME AudioFrameTableWidgetTests COMMAND test_audio_frame_table_widget)
 set_tests_properties(AudioFrameTableWidgetTests PROPERTIES
@@ -1458,15 +1457,15 @@ set_tests_properties(AudioFrameTableWidgetTests PROPERTIES
 # 测试 54：视频帧表子页（GOP 派生 + 双表刷新 + 帧类型筛选 + Reset 通知）
 # 说明: GOP 分段是从帧记录 pict_type 推导的派生结果，段边界/计数错了界面不崩只停旧值。
 #       组件源直接 include <libavcodec/avcodec.h> 取 AV_PICTURE_TYPE_* 常量（编译期，无需
-#       链 FFmpeg 库）；同测试 53，补编 MetricChartWidget.cpp 满足 AUTOMOC。
+#       链 FFmpeg 库）；同测试 53，曲线控件的实现与 moc 走 VideoEyeUiCharts。
 # =================================================
 videoeye_add_test(test_video_frame_table_widget
     unit/test_video_frame_table_widget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/VideoFrameTableWidget.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
     ${VIDEOEYE_PERF_SOURCES}
 )
 target_link_libraries(test_video_frame_table_widget PRIVATE
+    VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME VideoFrameTableWidgetTests COMMAND test_video_frame_table_widget)
 set_tests_properties(VideoFrameTableWidgetTests PROPERTIES
@@ -1494,15 +1493,15 @@ set_tests_properties(FfmpegDictionaryWidgetTests PROPERTIES
 # 说明: 包表是帧表↔包表 PTS 互跳的记录侧，切筛选的「全量重建」与常规「增量补差」
 #       必须共用同一份筛选语义和同步游标，错位只会静默少行/错行。组件源直接拿
 #       AV_PKT_FLAG_* / AVMEDIA_TYPE_* 常量（编译期常量，无需链 FFmpeg 库）；
-#       同测试 53，补编 MetricChartWidget.cpp 满足 AUTOMOC。用 offscreen 平台跑。
+#       同测试 53，曲线控件的实现与 moc 走 VideoEyeUiCharts。用 offscreen 平台跑。
 # =================================================
 videoeye_add_test(test_packet_table_widget
     unit/test_packet_table_widget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/PacketTableWidget.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
     ${VIDEOEYE_PERF_SOURCES}
 )
 target_link_libraries(test_packet_table_widget PRIVATE
+    VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME PacketTableWidgetTests COMMAND test_packet_table_widget)
 set_tests_properties(PacketTableWidgetTests PROPERTIES
@@ -1561,18 +1560,18 @@ set_tests_properties(ExportCoordinatorTests PROPERTIES
 # 说明: AppendResult 与 FlushPending 之间隔着面板的批量节拍，同步游标
 #       table_synced_count_ 算错（重复补行 / 漏行）或 Reset 忘归零都不会崩，
 #       只会静默少行多行、换文件后第一批切换点永远不显示。断言表格增量行与
-#       3 位小数汇总文案。编页面源 + MetricChartWidget（AnalysisPageSupport.h
-#       经它引入 Q_OBJECT 头，AUTOMOC 需要）+ AppTheme（formatTime 时间戳文案），
+#       3 位小数汇总文案。编页面源并链 VideoEyeUiCharts（AnalysisPageSupport.h
+#       经它引入 Q_OBJECT 头）+ AppTheme（formatTime 时间戳文案），
 #       链 VideoEyeDomain。用 offscreen 平台跑。
 # =================================================
 videoeye_add_test(test_scene_change_page
     unit/test_scene_change_page.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/SceneChangePage.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/theme/AppTheme.cpp
 )
 target_link_libraries(test_scene_change_page PRIVATE
     VideoEyeDomain
+    VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME SceneChangePageTests COMMAND test_scene_change_page)
 set_tests_properties(SceneChangePageTests PROPERTIES
@@ -1582,17 +1581,17 @@ set_tests_properties(SceneChangePageTests PROPERTIES
 # 测试 60：宏块分析页（MV 像素精度换算 + HEVC/CTU 术语 + 500 行上限）
 # 说明: 运动矢量按 motion_scale 换算像素、scale=0 按 1 兜底、术语随编码切换
 #       （HEVC→CTU、块大小表 14 行分区）、I 帧预览文案、行数上限 500 —— 写错都不崩，
-#       只会静默显示假像素值 / 错误术语。编页面源 + MetricChartWidget（同测试 59 的
-#       AUTOMOC 依赖），链 VideoEyeDomain。用 offscreen 平台跑。
+#       只会静默显示假像素值 / 错误术语。编页面源并链 VideoEyeUiCharts（同测试 59
+#       的曲线控件依赖），链 VideoEyeDomain。用 offscreen 平台跑。
 # =================================================
 videoeye_add_test(test_macroblock_view
     unit/test_macroblock_view.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/MacroblockView.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
     ${VIDEOEYE_PERF_SOURCES}
 )
 target_link_libraries(test_macroblock_view PRIVATE
     VideoEyeDomain
+    VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME MacroblockViewTests COMMAND test_macroblock_view)
 set_tests_properties(MacroblockViewTests PROPERTIES
@@ -1603,16 +1602,16 @@ set_tests_properties(MacroblockViewTests PROPERTIES
 # 说明: 「缺失 / 未标注」橙色加粗掉了只会变普通黑字；异常表收进非 ColorHdr 类别
 #       会把视频 / 音频问题塞进色彩页；扫描态不同步会让页面卡在「扫描中」。三条
 #       都是静默回归。三张表里的色彩 / HDR 表表头相同，测试经页内唯一 QTabWidget
-#       按 tab 索引定位。编页面源 + MetricChartWidget（同测试 59 的 AUTOMOC 依赖），
+#       按 tab 索引定位。编页面源并链 VideoEyeUiCharts（同测试 59 的曲线控件依赖），
 #       链 VideoEyeDomain（BuildColorRows / BuildHdrRows 在 domain）。用 offscreen 跑。
 # =================================================
 videoeye_add_test(test_color_hdr_page
     unit/test_color_hdr_page.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/ColorHdrPage.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
 )
 target_link_libraries(test_color_hdr_page PRIVATE
     VideoEyeDomain
+    VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME ColorHdrPageTests COMMAND test_color_hdr_page)
 set_tests_properties(ColorHdrPageTests PROPERTIES
@@ -1623,17 +1622,17 @@ set_tests_properties(ColorHdrPageTests PROPERTIES
 # 说明: 削波峰值 <=0 要回落 -120 dBFS、静音表 3/3/3/1 位小数、响度偏离按
 #       1/3 LU 两档边界切换达标/偏离/超标、规则表的严重度→文案→颜色映射，
 #       改错都是静默显示假值。页面内两张表表头「起始」相同，测试经页内唯一
-#       QTabWidget 按 tab 索引 + 列数定位。编页面源 + MetricChartWidget
-#       （AnalysisPageSupport.h 经它引入 Q_OBJECT 头，AUTOMOC 需要），
+#       QTabWidget 按 tab 索引 + 列数定位。编页面源并链 VideoEyeUiCharts
+#       （AnalysisPageSupport.h 经它引入 Q_OBJECT 头），
 #       链 VideoEyeDomain。用 offscreen 平台跑。
 # =================================================
 videoeye_add_test(test_audio_qc_page
     unit/test_audio_qc_page.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioQcPage.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
 )
 target_link_libraries(test_audio_qc_page PRIVATE
     VideoEyeDomain
+    VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME AudioQcPageTests COMMAND test_audio_qc_page)
 set_tests_properties(AudioQcPageTests PROPERTIES
@@ -1644,18 +1643,18 @@ set_tests_properties(AudioQcPageTests PROPERTIES
 # 说明: 超长 GOP 的时长列橙色高亮、异常表上限 2000、帧类型未解析时汇总换
 #       文案、目标峰值手动/自动（自动=均值×2）分支、窗口下拉联动汇总文案，
 #       写错都不崩只静默出错。页面内两个无后缀 spin 用 decimals 区分（0=目标
-#       峰值 / 1=GOP 秒上限）。编页面源 + MetricChartWidget（同测试 62 的
-#       AUTOMOC 依赖）+ AppTheme（formatTime 时间戳文案），链 VideoEyeDomain。
+#       峰值 / 1=GOP 秒上限）。编页面源并链 VideoEyeUiCharts（同测试 62 的
+#       曲线控件依赖）+ AppTheme（formatTime 时间戳文案），链 VideoEyeDomain。
 #       用 offscreen 平台跑。
 # =================================================
 videoeye_add_test(test_bitrate_gop_page
     unit/test_bitrate_gop_page.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/BitrateGopPage.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/theme/AppTheme.cpp
 )
 target_link_libraries(test_bitrate_gop_page PRIVATE
     VideoEyeDomain
+    VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME BitrateGopPageTests COMMAND test_bitrate_gop_page)
 set_tests_properties(BitrateGopPageTests PROPERTIES
@@ -1666,16 +1665,16 @@ set_tests_properties(BitrateGopPageTests PROPERTIES
 # 说明: 字幕流过滤叠加（流 + 仅问题 cue）、时码就绪信号只在 has_primary 时
 #       发射（drop-frame 文案差异）、SCTE-35 event_id 十六进制补零与 CRC 三态、
 #       规则阈值只认正存储位（<=0 不覆盖默认），四处静默回归。页内四张表用
-#       tab 索引区分同列表头。编页面源 + MetricChartWidget（同测试 62 的
-#       AUTOMOC 依赖），链 VideoEyeDomain。用 offscreen 平台跑。
+#       tab 索引区分同列表头。编页面源并链 VideoEyeUiCharts（同测试 62 的
+#       曲线控件依赖），链 VideoEyeDomain。用 offscreen 平台跑。
 # =================================================
 videoeye_add_test(test_subtitle_aux_page
     unit/test_subtitle_aux_page.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/SubtitleAuxPage.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
 )
 target_link_libraries(test_subtitle_aux_page PRIVATE
     VideoEyeDomain
+    VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME SubtitleAuxPageTests COMMAND test_subtitle_aux_page)
 set_tests_properties(SubtitleAuxPageTests PROPERTIES
@@ -1695,7 +1694,6 @@ set_tests_properties(SubtitleAuxPageTests PROPERTIES
 videoeye_add_test(test_diagnostics_page
     unit/test_diagnostics_page.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/DiagnosticsPage.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/charts/MetricChartWidget.cpp
 )
 target_sources(test_diagnostics_page PRIVATE ../ui/AnalysisFacade.cpp)
 target_link_libraries(test_diagnostics_page PRIVATE
@@ -1703,6 +1701,7 @@ target_link_libraries(test_diagnostics_page PRIVATE
     VideoEyeAnalysis
     VideoEyeReporting
     VideoEyeInfrastructure
+    VideoEyeUiCharts
     VideoEyeDomain
     Qt6::Core Qt6::Gui Qt6::Widgets)
 # 取消路径用例用 BlockingTcpEndpoint.h 起本地监听端口，Windows 上需要显式 ws2_32。

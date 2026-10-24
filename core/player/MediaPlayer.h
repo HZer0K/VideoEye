@@ -1,70 +1,48 @@
 #pragma once
 
+#include <QImage>
 #include <QObject>
 #include <QString>
-#include <QImage>
 #include <memory>
-#include <atomic>
-#include <chrono>
-#include <cstdint>
-#include <limits>
-#include <map>
-#include <mutex>
-#include <optional>
-#include <thread>
-#include <vector>
+#include <string>
 
+#include "core/domain/model/AnalysisFeature.h"
+#include "core/domain/model/FrameData.h" // model::PlayerState / model::StreamInfo
+#include "core/domain/model/SeekMode.h"
+#include "core/domain/model/StreamStats.h"         // GetCurrentStats() 的返回值
+#include "core/domain/model/VisualDefectOptions.h" // Set/GetVisualDefectOptions() 的值类型
+
+// 以下类型只以指针/引用出现在签名里，定义由用到它们的 .cpp 自己 include：
+// 公共头不再把 libav*、播放会话、分析会话、导出控制器拖给所有下游。
 extern "C" {
-#include <libavformat/avformat.h>
+struct AVInputFormat;
+struct AVDictionary;
 }
 
-#include "core/ffmpeg_io/FfmpegInterrupt.h"
-#include "core/player/Decoders.h"
-#include "core/player/PlaybackClock.h"
-#include "core/player/AudioOutput.h"
-#include "core/player/VideoFrameExporter.h"
-#include "core/player/AnalysisSession.h"
-#include "core/player/AnalysisBus.h"
-#include "core/player/ContainerBus.h"
-#include "core/player/ContainerInspectionController.h"
-#include "core/player/ExportBus.h"
-#include "core/player/ExportController.h"
-#include "core/player/OpenController.h"
-#include "core/player/PlaybackSession.h"
-#include "core/player/RealtimeAnalysisController.h"
-#include "infrastructure/concurrency/TaskManager.h"
-#include "core/qt/QtWorkerOwner.h"
-#include "core/exporter/MediaExporter.h"
-#include "core/domain/model/AnalysisEvent.h"
-#include "core/domain/model/AnalysisFeature.h"
-#include "core/domain/model/AudioVisualizationFrame.h"
-#include "core/domain/model/FrameData.h"
-#include "core/domain/model/SeekMode.h"
-#include "core/domain/model/PacketInfo.h"
-#include "core/domain/model/SyncSample.h"
-#include "core/domain/model/TimelineEvent.h"
-#include "core/domain/model/FrameTimingInfo.h"
-// 下面两个只为信号/入口里出现的 videoeye:: 值类型（SceneChangeResult / VisualDefectOptions）
-// 提供定义；逐帧分析器实体已随实时分析搬进 RealtimeAnalysisController。
-#include "core/analysis/stream/StreamAnalyzer.h"
-#include "core/analysis/quality/SceneChangeAnalyzer.h"
-#include "core/analysis/quality/VisualDefectAnalyzer.h"
-#include "core/domain/model/ContainerStructureInfo.h"
-#include "core/domain/model/MacroblockInfo.h"
-
-class QThread;
-
 namespace videoeye {
+
+class StreamAnalyzer;
+
+namespace exporter {
+struct ExportOptions;
+}
+
 namespace player {
+
+class AnalysisBus;
+class ContainerBus;
+class ExportBus;
+struct OpenPrepareParams;
+struct OpenResult;
 
 // 媒体播放器类 - 使用Qt信号槽机制
 class MediaPlayer : public QObject {
     Q_OBJECT
-    
+
 public:
     explicit MediaPlayer(QObject* parent = nullptr);
     ~MediaPlayer();
-    
+
     // 播放控制
     //
     // Open(): 同步打开。在**调用线程**上完成"建上下文 + 探测 + 解码器"（事务的
@@ -81,20 +59,20 @@ public:
     void Seek(int position_ms, model::SeekMode mode = model::SeekMode::NearestKeyframe);
 
     // 定位方式 (进度条拖动策略)
-    void SetSeekMode(model::SeekMode mode) { seek_mode_.store(mode); }
-    model::SeekMode GetSeekMode() const { return seek_mode_.load(); }
+    void SetSeekMode(model::SeekMode mode);
+    model::SeekMode GetSeekMode() const;
     // 拖动进度条期间调用: 抑制音频输出, 避免关键帧预览时从多个位置传出杂音
-    void SetSeekDragging(bool dragging) { playback_session_.SetSeekDragging(dragging); }
+    void SetSeekDragging(bool dragging);
 
     // 状态查询
-    model::PlayerState GetState() const { return playback_session_.state(); }
-    model::StreamInfo GetStreamInfo() const { return stream_info_; }
-    int GetDuration() const { return playback_session_.duration_ms(); }
-    int GetCurrentPosition() const { return playback_session_.current_position_ms(); }
+    model::PlayerState GetState() const;
+    model::StreamInfo GetStreamInfo() const;
+    int GetDuration() const;
+    int GetCurrentPosition() const;
 
     // 最近一次打开失败的详细原因 (成功打开后清空)。用于"打开异常文件仍进入分析模式"的
     // 场景: MainWindow 据此在状态栏/分析模块展示失败原因, 而不是弹模态框阻断。
-    QString GetLastError() const { return last_open_error_; }
+    QString GetLastError() const;
     // 播放器 Open 失败后手动触发容器结构分析 (后台线程, 结果经 ContainerStructureReady 发出)。
     // 正常 Open 成功路径内部已自动触发, 无需调用此方法。
     void RequestContainerStructureAnalysis(const QString& url);
@@ -105,24 +83,24 @@ public:
     // ExportController 直接在总线上发射，UI（ExportCoordinator）连这根总线：
     // 信号名与参数一个字节没变，门面少一层无意义的转发。
     // 返回引用而非指针: 总线与播放器同生灭，不存在"取不到"的情况。
-    ExportBus& export_bus() { return export_controller_.bus(); }
+    ExportBus& export_bus();
 
     // 容器结构分析信号的对外出口（成功 / 失败二选一，见 core/player/ContainerBus.h）。
     // 与导出同理: 由 ContainerInspectionController 直接在总线上发射，门面不再转发。
-    ContainerBus& container_bus() { return container_inspection_.bus(); }
+    ContainerBus& container_bus();
 
     // 播放期实时分析信号的对外出口（23 条，见 core/player/AnalysisBus.h）。
     // 这是原先挂在门面上最大的一块（占了一半以上的信号声明与转发连接），现在由
     // RealtimeAnalysisController 直接在总线上发射。
-    AnalysisBus& analysis_bus() { return realtime_analysis_.bus(); }
-    
+    AnalysisBus& analysis_bus();
+
     // 音量控制 (0-100)
     void SetVolume(int volume);
-    int GetVolume() const { return volume_; }
-    
+    int GetVolume() const;
+
     // 分析控制
     void EnableAnalysis(bool enable);
-    bool IsAnalysisEnabled() const { return analysis_session_.IsAnalysisEnabled(); }
+    bool IsAnalysisEnabled() const;
     // 播放期分析功能的统一开关。UI 侧只走这一个入口。
     //
     // 以前每个维度一个 SetXxxAnalysisEnabled()，新增一个播放期分析维度要同时改三处：
@@ -139,16 +117,16 @@ public:
     // 画面质量 / 视觉缺陷（黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 曝光 / 色偏 / 梳齿 / 黑边）。
     // 开关会顺带启停分析用的工作线程；换采样档位用 SetVisualDefectOptions()。
     // 开关请经 SetAnalysisFeature(AnalysisFeature::VisualDefect, ...) 调用。
-    bool IsVisualDefectAnalysisEnabled() const { return analysis_session_.IsVisualDefectAnalysisEnabled(); }
-    void SetVisualDefectOptions(const videoeye::VisualDefectOptions& options);
+    bool IsVisualDefectAnalysisEnabled() const;
+    void SetVisualDefectOptions(const model::VisualDefectOptions& options);
     // 线程安全地取视觉缺陷采样选项副本: 解码线程逐帧读取, UI 线程写入,
     // 普通值类型直接跨线程访问存在数据竞争, 故加锁后返回副本。
-    videoeye::VisualDefectOptions GetVisualDefectOptions() const;
+    model::VisualDefectOptions GetVisualDefectOptions() const;
     // 播完 / 停止时把还开着的缺陷段闭合（否则最后一段要等下一次播放才显示）
     void FlushVisualDefectSegments(double end_timestamp_seconds);
 
     // 硬件解码
-    void SetHardwareDecodingEnabled(bool enable) { analysis_session_.SetHardwareDecodingEnabled(enable); }
+    void SetHardwareDecodingEnabled(bool enable);
     bool IsHardwareDecoding() const;
     std::string GetHwDeviceName() const;
 
@@ -157,7 +135,8 @@ public:
     // 若上一次抽帧的线程还没退出来，本次请求**排队**而不是立即启动：两次任务写的是
     // 同一个输出目录、文件名又只由帧序号决定，并行跑会互相覆盖产物。排队请求会在旧
     // 线程真正结束的 finished 回调里自动续跑（用户不必再点一次）。
-    void StartVideoFrameExport(const QString& output_dir, const QString& format, int jpg_quality = 90, int frame_interval = 1);
+    void StartVideoFrameExport(const QString& output_dir, const QString& format, int jpg_quality = 90,
+                               int frame_interval = 1);
     // 只置取消标志并请求线程退出，**不等待**：调用方在 UI 线程，绝不能被卡住。
     void CancelVideoFrameExport();
 
@@ -178,21 +157,17 @@ public:
 
     // 渲染抑制: 播放区被隐藏时跳过画面输出 (sws_scale + FrameReady),
     // 解码线程、实时分析与音频照常运行; 重新展开播放区即恢复画面。
-    void SetRenderingSuppressed(bool suppressed) {
-        playback_session_.SetRenderingSuppressed(suppressed);
-    }
-    bool IsRenderingSuppressed() const {
-        return playback_session_.IsRenderingSuppressed();
-    }
-    
+    void SetRenderingSuppressed(bool suppressed);
+    bool IsRenderingSuppressed() const;
+
     // 获取分析器
     //
     // 不再对外暴露可变的 StreamAnalyzer&: 它的内部状态由解码线程更新,
     // 外部拿可变引用等于开了一条绕锁的读写通道(历史曲线接口尤其明显)。
     // 需要统计就用 GetCurrentStats()/下面这些快照。
-    const videoeye::StreamAnalyzer& stream_analyzer() const { return analysis_session_.stream_analyzer(); }
-    videoeye::StreamStats GetCurrentStats() const;
-    
+    const videoeye::StreamAnalyzer& stream_analyzer() const;
+    model::StreamStats GetCurrentStats() const;
+
 signals:
     void StateChanged(model::PlayerState state);
     void FrameReady(const QImage& frame);
@@ -253,58 +228,16 @@ private:
     // 导出的实际启动 / 排队 / 代际 / 取消全部在 ExportController 里
     // （见 core/player/ExportController.h），本类不保留任何导出状态。
 
-    // 播放会话: demux / 解码 / 音频输出 / 解码线程 / 播放时钟 / 播放状态机
-    // 全部住在 PlaybackSession 里; 状态、位置、时长都从它读。
-    PlaybackSession playback_session_;
-
-    // 播放信息
-    model::StreamInfo stream_info_;
-    int volume_ = 100;
-    QString current_url_;
-    QString last_open_error_;   // 最近一次 Open/OpenRawPcm 失败的详细原因
-
-    // 当前打开尝试的中断/取消状态。
+    // 实现体：播放信息 + 播放会话 + 分析会话 + 实时分析 + 任务调度 + 三类控制器。
     //
-    // 为什么是 shared_ptr 而不是普通成员: 后台线程（OpenAsync）持有它做 FFmpeg 打开/
-    // 探测，提交后播放会话的解复用阶段仍在用（中断回调被 AVIOContext 复制了一份）——
-    // Stop() 靠设置它的取消标志把阻塞的 av_read_frame 打断。每次换媒体新建一份，
-    // 使旧后台线程与新尝试各有各的取消标志，互不干扰。生命周期由 shared_ptr 保证，
-    // 后台线程即使在播放器析构后才退出也不会踩到已释放的对象。
-    std::shared_ptr<OpenAttempt> current_attempt_;
-
-    // 用户选择的定位方式 (菜单设置)。实际执行在 PlaybackSession::Seek()。
-    std::atomic<model::SeekMode> seek_mode_{model::SeekMode::NearestKeyframe};
-    
-    // 分析器
-    // 分析会话: 12 个分析开关 + StreamAnalyzer + 视觉缺陷采样选项 (见 AnalysisSession.h)。
-    // MediaPlayer 经它转发开关/统计, 自身不再持有这些散落成员。
-    AnalysisSession analysis_session_;
-
-    // 播放期实时分析的全部编排（六个 hook / 19 个逐帧计数器 / 逐帧分析器 / 视觉缺陷
-    // 采样与工作线程）住在 RealtimeAnalysisController 里，本类只转发入口与信号。
-    // 必须声明在 analysis_session_ 与 playback_session_ **之后**: 控制器借用这两个会话
-    // （只持引用），而成员按声明顺序初始化。
-    RealtimeAnalysisController realtime_analysis_;
-
-    // 后台任务统一调度: 任务 ID / 取消标志 / 终态 / 过期结果丢弃。
-    // 容器结构分析走它的受管线程; 抽帧与媒体导出的 worker 是 QObject(要发进度信号),
-    // 仍留在 QThread 上, 但生命周期(Begin/End/Cancel)也登记在这里。
-    task::TaskManager task_manager_;
-
-    // 抽帧 / 音视频导出的全部编排（发起、排队、代际、取消、worker 线程生命周期）
-    // 住在 ExportController 里，本类只转发入口与信号。
-    // 必须声明在 task_manager_ **之后**: 构造时把它的引用交给控制器, 而成员按声明顺序初始化。
-    ExportController export_controller_;
-
-    // 容器结构分析的后台编排（派发 / 作废 / 过期结果丢弃）住在
-    // ContainerInspectionController 里，本类只负责"该不该分析"和转发两条信号。
-    // 同上: 必须声明在 task_manager_ 之后。
-    ContainerInspectionController container_inspection_;
-
-    // 打开媒体的全部编排（事务式: Prepare 建独立上下文 / Commit 一次性提交）住在
-    // OpenController 里，本类只做"换媒体前的复位"、"后台派发"与"提交后派发容器分析"。
-    // 取消/中断状态由本类持有（current_attempt_），经 OpenPrepareParams 传给 Prepare。
-    OpenController open_controller_;
+    // 为什么指针化：这些成员的类型头会把 libav*、分析器与导出编排全部拉进
+    // MediaPlayer.h 的 include 闭包 —— 任何 include 本头的 UI 文件都被迫重编一遍
+    // FFmpeg 与整个分析层。Impl 的完整定义在 MediaPlayer.cpp 里，公共头只剩一个
+    // 不完整类型；析构必须留在 .cpp（unique_ptr 的惯例）。
+    //
+    // 依赖顺序（构造顺序）约束写在 Impl 的定义处：会话在前、借用它们的控制器在后。
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 } // namespace player

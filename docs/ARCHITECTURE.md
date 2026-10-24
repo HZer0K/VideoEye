@@ -25,7 +25,7 @@ targe —— 目录只是命名习惯，编译器不认识；能被机器检查�
 | `core/reporting/` | `VideoEyeReporting` | 报告导出（JSON / CSV / HTML / PDF / TXT） | domain、qc、infrastructure |
 | `core/ffmpeg/` | `VideoEyeFfmpegTools` | 原生 ffmpeg 命令行工作台 | infrastructure、Qt Core |
 | `core/qt/` | `VideoEyeQtAdapters` | 把不带 Qt 的执行引擎接进信号 / 线程；`QtWorkerOwner` 是所有自带 `QThread` 的后台 worker 的统一所有者 | domain、analysis、Qt Core |
-| `ui/` | `VideoEyeUi`（入口可执行文件 `VideoEye`） | 界面 | 以上全部 + Qt Widgets；`ui/reporting_panel` 另立 `VideoEyeReportingPanel` |
+| `ui/` | `VideoEyeUi`（入口可执行文件 `VideoEye`） | 界面 | 以上全部 + Qt Widgets；`ui/reporting_panel` 另立 `VideoEyeReportingPanel`，`ui/charts` 另立 `VideoEyeUiCharts`（曲线控件，分析页与测试共用同一份 moc） |
 
 迁移期那个把十层全部 PUBLIC 出去的 `VideoEyeCore` INTERFACE 聚合层**已经删除** ——
 它让每个调用方都能编译，代价是依赖关系重新变得不可见（正是因为它，`Playback → Exporter`
@@ -319,9 +319,10 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   `OnExportMp4Box()` 与匿名命名空间的 `PopulateMp4BoxTablesInContainer()`（真正的实现
   已在 `ContainerStructurePage.cpp` 里）、只写不读的 `bitstream_page_index_`、
   以及三段属于码率 GOP / 音频 QC 页的重复格式化辅助函数。
-- **大文件拆解进展（2026-10-07 复核，行数按非空行计）**。`MediaPlayer.cpp` 已从 1404 行降到 **457 行**
+- **大文件拆解进展（2026-10-24 复核，行数按非空行计）**。`MediaPlayer.cpp` 523 行
   （拆成 `export_controller_` / `container_inspection_` / `realtime_analysis_` / `open_controller_`
-  四个会话/控制器，播放机械对分析一无所知）；`AnalysisEngine.cpp` 从 1134 行降到 **280 行**
+  四个会话/控制器，播放机械对分析一无所知；这批成员现已全部收进 `MediaPlayer::Impl`，
+  公共头 `MediaPlayer.h` 只剩 209 行 + 若干前向声明，不再把 libav*/会话/控制器拖给下游）；`AnalysisEngine.cpp` 从 1134 行降到 **280 行**
   （拆成 `AnalysisPipeline` / `PacketScanLoop` / `AnalysisInputSession` /
   `AnalysisResultAssembler` / `StreamingManifestScan`，本文件只管"何时建、何时分发、何时收尾"，
   不再直接 include 任何具体分析器，§7.1 的接线点随之迁移到 `AnalysisPipeline` 等文件，
@@ -369,7 +370,9 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   ⚠️ 新增 `ui/*.cpp` 时，**手工列源的测试目标要同步加**（`test_stream_views` 手列
   `FramePacketView.cpp`，漏加 `AudioFrameTableWidget.cpp` / `VideoFrameTableWidget.cpp`
   会在链接期 LNK2019）。链 `VideoEyeUi` 的目标（如 `test_scan_terminal_state`）由该库的
-  GLOB 自动纳入，无需再同步源清单。
+  GLOB 自动纳入，无需再同步源清单。曲线控件 `MetricChartWidget` 自成一个
+  `VideoEyeUiCharts`：以前 15 个测试各自编它一遍（16 份实现 + 16 份 moc），现在
+  界面与测试都只链这一份。
   ⚠️ 头文件里**不要内联解引用仅前向声明的组件类型**（`GopSummaries()` 想返回
   `video_page_->GopSummaries()` 就得把定义挪到 .cpp）：类的完整上下文只对本类成员有效，
   对别的 incomplete type 无效，会报 C2027。
@@ -541,9 +544,11 @@ python scripts/check_layering.py
 （`MediaPlayer.h`），旧 `SetXxx` 已私有化，`MainWindow` 只做枚举到调用的转发 ——
 B 路线 3、4、7、8 四处接线已经收敛，且没有引入任何抽象层。
 
-**`MediaPlayer` 公共面按门面维护（2026-10-07 复核：37 个公共方法 / 43 条信号，不含
-构造与析构；`MediaPlayer.cpp` 457 行）**：播放机械已拆进 `ExportController` /
+**`MediaPlayer` 公共面按门面维护（2026-10-24 复核：37 个公共方法 / 43 条信号，不含
+构造与析构；`MediaPlayer.cpp` 523 行）**：播放机械已拆进 `ExportController` /
 `ContainerInspectionController` / `RealtimeAnalysisController` / `OpenController`
-四个控制器（§5.3），它只做"对外转发 + 会话编排"。新增能力**优先加在对应控制器上**，
+四个控制器（§5.3），它只做"对外转发 + 会话编排"。成员本身收进 `MediaPlayer::Impl`
+（定义只在 `MediaPlayer.cpp`），公共头只依赖 domain 值类型 + 前向声明，`#include
+MediaPlayer.h` 不再传播 libav*、播放/分析会话与控制器。新增能力**优先加在对应控制器上**，
 确需动 `MediaPlayer` 时先评估是不是既有控制器的职责 —— 公共面每多一个方法，
 调用方就多一条绕过控制器状态的路径，门面迟早重新长回上帝对象。
