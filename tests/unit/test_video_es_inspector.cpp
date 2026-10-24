@@ -93,15 +93,44 @@ void AppendSeiMessage(std::vector<uint8_t>& rbsp, int payload_type, const std::v
 }
 
 // 一个"什么都不带的"最小 slice header（按下面 MakeSps/MakePps 的参数集布局）
-std::vector<uint8_t> MakeSliceHeader(int slice_type, int slice_qp_delta, bool idr) {
+//
+// ❗ 这里必须**完整**写出 slice_header()（H.264 7.3.3）在 slice_qp_delta 之前的
+// 每个语法元素，包括 dec_ref_pic_marking()。旧版本省掉了那两位 —— 恰好就是
+// 实现漏读的那两位，于是测试永远绿、真实码流的 QP 永远错。
+//
+// 参数集固定为：frame_mbs_only_flag=1、pic_order_cnt_type=0、
+// weighted_pred_flag=0、weighted_bipred_idc=0、entropy_coding_mode_flag=0。
+std::vector<uint8_t> MakeSliceHeader(int slice_type, int slice_qp_delta, bool idr, int nal_ref_idc = 3,
+                                     int first_mb_in_slice = 0) {
+    const int t = slice_type % 5; // 0=P 1=B 2=I 3=SP 4=SI（5..9 是同一套的变体）
     BitWriter w;
-    w.PutUE(0); // first_mb_in_slice
-    w.PutUE(static_cast<uint32_t>(slice_type));
-    w.PutUE(0);  // pic_parameter_set_id
-    w.Put(0, 4); // frame_num（log2_max_frame_num_minus4 = 0）
+    w.PutUE(static_cast<uint32_t>(first_mb_in_slice)); // first_mb_in_slice
+    w.PutUE(static_cast<uint32_t>(slice_type));        // slice_type
+    w.PutUE(0);                                        // pic_parameter_set_id
+    w.Put(0, 4);                                       // frame_num（log2_max_frame_num_minus4 = 0）
     if (idr)
         w.PutUE(0); // idr_pic_id
-    w.Put(0, 4);    // pic_order_cnt_lsb（log2_max_poc_lsb_minus4 = 0）
+    w.Put(0, 4);    // pic_order_cnt_lsb（minus4 = 0）
+    if (t == 1)
+        w.PutBool(false); // direct_spatial_mv_pred_flag
+    if (t == 0 || t == 1 || t == 3) {
+        w.PutBool(false); // num_ref_idx_active_override_flag（用 PPS 默认值）
+    }
+    if (t != 2 && t != 4) {
+        w.PutBool(false); // ref_pic_list_modification_flag_l0
+    }
+    if (t == 1)
+        w.PutBool(false); // ref_pic_list_modification_flag_l1
+    // pred_weight_table()：weighted_pred_flag=0 且 weighted_bipred_idc=0 → 不存在
+    if (nal_ref_idc != 0) { // dec_ref_pic_marking()
+        if (idr) {
+            w.PutBool(false); // no_output_of_prior_pics_flag
+            w.PutBool(false); // long_term_reference_flag
+        } else {
+            w.PutBool(false); // adaptive_ref_pic_marking_mode_flag
+        }
+    }
+    // cabac_init_idc：entropy_coding_mode_flag=0 → 不存在
     w.PutSE(slice_qp_delta);
     w.Put(1, 1); // rbsp_trailing_bits 的 stop bit
     w.AlignByte();
@@ -294,6 +323,149 @@ TEST(VideoEsInspectorTests, H264OutOfRangeQpIsRejected) {
     inspector.Finish();
 
     EXPECT_FALSE(inspector.result().slices.analyzed);
+}
+
+TEST(VideoEsInspectorTests, H264IdrSliceQpMatchesSpec) {
+    // 规范写法（含 dec_ref_pic_marking 两位）+ delta=+1 → QP = 26 + 0 + 1 = 27。
+    // 旧实现漏读那两位，读出来的 QP 是 31 且 qp_valid=true —— 一个"看着合理"的错值。
+    const std::vector<uint8_t> nal = MakeAnnexB(0x65, MakeSliceHeader(2, 1, /*idr=*/true));
+
+    VideoEsInspector inspector;
+    inspector.Reset(AV_CODEC_ID_H264);
+    inspector.SetH264ParameterSets(MakeSps(), MakePps(0));
+    inspector.Feed(nal.data(), nal.size());
+    inspector.Finish();
+
+    const auto& s = inspector.result().slices;
+    ASSERT_TRUE(s.qp_valid);
+    EXPECT_EQ(s.qp_min, 27);
+    EXPECT_EQ(s.qp_max, 27);
+}
+
+TEST(VideoEsInspectorTests, H264SliceTypeVariantIsNormalized) {
+    // x264 的全 I 帧写 slice_type=7（5..9 是 0..4 的"整帧同类型"变体）。
+    // 不归一化的话既判不出 I slice，后面的语法分支也全走错 → 整条 slice 被丢弃。
+    const std::vector<uint8_t> data = MakeAnnexB(0x65, MakeSliceHeader(7, 0, /*idr=*/true));
+
+    VideoEsInspector inspector;
+    inspector.Reset(AV_CODEC_ID_H264);
+    inspector.SetH264ParameterSets(MakeSps(), MakePps(0));
+    inspector.Feed(data.data(), data.size());
+    inspector.Finish();
+
+    const auto& s = inspector.result().slices;
+    ASSERT_TRUE(s.analyzed);
+    EXPECT_EQ(s.slice_count, 1);
+    EXPECT_EQ(s.type_i, 1);
+    EXPECT_EQ(s.type_other, 0);
+    ASSERT_TRUE(s.qp_valid);
+    EXPECT_EQ(s.qp_min, 26);
+}
+
+TEST(VideoEsInspectorTests, H264PSliceHasItsOwnSyntax) {
+    // P slice 比 I 多 num_ref_idx_active_override_flag 与 ref_pic_list_modification，
+    // 少 idr_pic_id。漏掉任何一项都会从那里开始错位。
+    const std::vector<uint8_t> nal = MakeAnnexB(0x41, MakeSliceHeader(0, 2, /*idr=*/false));
+
+    VideoEsInspector inspector;
+    inspector.Reset(AV_CODEC_ID_H264);
+    inspector.SetH264ParameterSets(MakeSps(), MakePps(0));
+    inspector.Feed(nal.data(), nal.size());
+    inspector.Finish();
+
+    const auto& s = inspector.result().slices;
+    ASSERT_TRUE(s.analyzed);
+    EXPECT_EQ(s.type_p, 1);
+    EXPECT_EQ(s.type_i, 0);
+    ASSERT_TRUE(s.qp_valid);
+    EXPECT_EQ(s.qp_min, 28);
+}
+
+TEST(VideoEsInspectorTests, H264NonReferenceSliceSkipsDecRefPicMarking) {
+    // nal_ref_idc == 0 → dec_ref_pic_marking() 整段不存在。
+    // 无条件按"有"去读，非参考帧就会少读 1 位（IDR 分支则是多读 2 位）。
+    const std::vector<uint8_t> nal = MakeAnnexB(0x01, MakeSliceHeader(0, 3, /*idr=*/false,
+                                                                      /*nal_ref_idc=*/0));
+
+    VideoEsInspector inspector;
+    inspector.Reset(AV_CODEC_ID_H264);
+    inspector.SetH264ParameterSets(MakeSps(), MakePps(0));
+    inspector.Feed(nal.data(), nal.size());
+    inspector.Finish();
+
+    const auto& s = inspector.result().slices;
+    ASSERT_TRUE(s.analyzed);
+    ASSERT_TRUE(s.qp_valid);
+    EXPECT_EQ(s.qp_min, 29);
+}
+
+TEST(VideoEsInspectorTests, H264FramesCountsPicturesNotSlices) {
+    // 同一帧的两个 slice（first_mb_in_slice = 0 与 5）：slice_count=2，frames=1。
+    // 旧实现 frames = slice_count，一帧多 slice 的流帧数会翻倍。
+    std::vector<uint8_t> data;
+    for (int first_mb : {0, 5}) {
+        const std::vector<uint8_t> nal = MakeAnnexB(0x65, MakeSliceHeader(2, 0, /*idr=*/true, 3, first_mb));
+        data.insert(data.end(), nal.begin(), nal.end());
+    }
+
+    VideoEsInspector inspector;
+    inspector.Reset(AV_CODEC_ID_H264);
+    inspector.SetH264ParameterSets(MakeSps(), MakePps(0));
+    inspector.Feed(data.data(), data.size());
+    inspector.Finish();
+
+    const auto& s = inspector.result().slices;
+    EXPECT_EQ(s.slice_count, 2);
+    EXPECT_EQ(s.frames, 1);
+    EXPECT_EQ(s.qp_parsed_slices, 2);
+}
+
+TEST(VideoEsInspectorTests, H264LengthPrefixedPacketIsParsed) {
+    // MP4/MOV 的媒体包是 `[4 字节长度][NAL]`，一个起始码都没有。
+    // 只按 Annex B 抽的话结果是零个 NAL —— 外观上和"没有 slice"一模一样。
+    const std::vector<uint8_t> rbsp = MakeSliceHeader(2, 0, /*idr=*/true);
+    std::vector<uint8_t> nal{0x65};
+    nal.insert(nal.end(), rbsp.begin(), rbsp.end());
+
+    std::vector<uint8_t> packet;
+    const uint32_t len = static_cast<uint32_t>(nal.size());
+    packet.push_back(static_cast<uint8_t>((len >> 24) & 0xFF));
+    packet.push_back(static_cast<uint8_t>((len >> 16) & 0xFF));
+    packet.push_back(static_cast<uint8_t>((len >> 8) & 0xFF));
+    packet.push_back(static_cast<uint8_t>(len & 0xFF));
+    packet.insert(packet.end(), nal.begin(), nal.end());
+
+    VideoEsInspector inspector;
+    inspector.Reset(AV_CODEC_ID_H264);
+    inspector.SetNalFraming(VideoEsInspector::NalFraming::LengthPrefixed, 4);
+    inspector.SetH264ParameterSets(MakeSps(), MakePps(0));
+    inspector.Feed(packet.data(), packet.size());
+    inspector.Finish();
+
+    const auto& s = inspector.result().slices;
+    ASSERT_TRUE(s.analyzed);
+    EXPECT_EQ(s.slice_count, 1);
+    ASSERT_TRUE(s.qp_valid);
+    EXPECT_EQ(s.qp_min, 26);
+}
+
+TEST(VideoEsInspectorTests, H264AutoFramingDetectsLengthPrefix) {
+    // 没显式告诉封装方式时（Auto）也必须能认出长度前缀包
+    const std::vector<uint8_t> rbsp = MakeSliceHeader(2, 1, /*idr=*/true);
+    std::vector<uint8_t> nal{0x65};
+    nal.insert(nal.end(), rbsp.begin(), rbsp.end());
+
+    std::vector<uint8_t> packet{0x00, 0x00, 0x00, static_cast<uint8_t>(nal.size())};
+    packet.insert(packet.end(), nal.begin(), nal.end());
+
+    VideoEsInspector inspector;
+    inspector.Reset(AV_CODEC_ID_H264);
+    inspector.SetH264ParameterSets(MakeSps(), MakePps(0));
+    inspector.Feed(packet.data(), packet.size());
+    inspector.Finish();
+
+    ASSERT_TRUE(inspector.result().slices.analyzed);
+    EXPECT_EQ(inspector.result().slices.qp_min, 27);
 }
 
 // ==========================================================================

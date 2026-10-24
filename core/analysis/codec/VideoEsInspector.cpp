@@ -73,8 +73,94 @@ constexpr double kLuminanceScale264 = 0.0001;
 // AV1 HDR MDCV metadata OBU 的单位：chromaticity 是 0.00016
 constexpr double kChromaScaleAv1 = 0.00016;
 
-bool IsPlausibleQp(int qp) {
-    return qp >= 0 && qp <= 51;
+// H.264 7.4.3 的 slice_type 语义（归一化到 0..4 之后的值）
+constexpr int kSliceP = 0;
+constexpr int kSliceB = 1;
+constexpr int kSliceI = 2;
+constexpr int kSliceSP = 3;
+constexpr int kSliceSI = 4;
+
+// bit depth 带来的 QP 偏移：8bit 是 0，10bit 是 12，12bit 是 24（规范 7.4.2.1.1）
+int QpRangeOffset(int bit_depth_luma_minus8) {
+    if (bit_depth_luma_minus8 < 0)
+        return 0;
+    if (bit_depth_luma_minus8 > 6)
+        return 36;
+    return 6 * bit_depth_luma_minus8;
+}
+
+// 跳过 H.264 slice header 里那些"与 QP 无关但必须消费掉"的变长语法。
+// 这些段全部由码流里的 ue(v) 驱动循环，必须带硬上界 —— 畸形码流能一个 ue(v)
+// 撑出几十亿次迭代（同 BitReader.h 里写的教训）。
+
+// ref_pic_list_modification()（7.3.3.1）
+bool SkipRefPicListModification(BitReader& reader) {
+    // do { modification_of_pic_nums_idc ue(v) } while (idc != 3)
+    // 上界 66：num_ref_idx_lX_active_minus1 最大 31（32 条），加结束符 1 条。
+    for (int guard = 0; guard < 66; ++guard) {
+        const uint32_t idc = reader.ReadUEBounded(3);
+        if (reader.HasError())
+            return false;
+        if (idc == 3)
+            return true;
+    }
+    return false; // 没有 3 收尾，说明已经错位/畸形
+}
+
+// pred_weight_table()（7.3.3.2）
+bool SkipPredWeightTable(BitReader& reader, int slice_type, int num_ref_l0_minus1, int num_ref_l1_minus1,
+                         int chroma_array_type) {
+    reader.ReadUEBounded(7); // luma_log2_weight_denom
+    if (chroma_array_type != 0) {
+        reader.ReadUEBounded(7); // chroma_log2_weight_denom
+    }
+    const int lists = (slice_type == kSliceB) ? 2 : 1;
+    const int counts[2] = {num_ref_l0_minus1, num_ref_l1_minus1};
+    for (int l = 0; l < lists; ++l) {
+        const int n = counts[l];
+        if (n < 0 || n > 31)
+            return false;
+        for (int i = 0; i <= n; ++i) {
+            if (reader.ReadBit()) { // luma_weight_flag
+                reader.ReadSE();    // luma_weight
+                reader.ReadSE();    // luma_offset
+            }
+            if (chroma_array_type != 0 && reader.ReadBit()) { // chroma_weight_flag
+                for (int j = 0; j < 2; ++j) {
+                    reader.ReadSE(); // chroma_weight
+                    reader.ReadSE(); // chroma_offset
+                }
+            }
+        }
+    }
+    return !reader.HasError();
+}
+
+// dec_ref_pic_marking()（7.3.3.3）：只走分支，不保存内容
+bool SkipDecRefPicMarking(BitReader& reader, bool is_idr) {
+    if (is_idr) {
+        reader.SkipBits(1); // no_output_of_prior_pics_flag
+        reader.SkipBits(1); // long_term_reference_flag
+        return !reader.HasError();
+    }
+    if (!reader.ReadBit())
+        return true; // adaptive_ref_pic_marking_mode_flag == 0
+    for (int guard = 0; guard < 66; ++guard) {
+        const uint32_t mmco = reader.ReadUEBounded(6);
+        if (reader.HasError())
+            return false;
+        if (mmco == 0)
+            return true; // 结束
+        if (mmco == 1 || mmco == 3)
+            reader.ReadUE(); // difference_of_pic_nums_minus1
+        if (mmco == 2)
+            reader.ReadUE(); // long_term_pic_num
+        if (mmco == 3 || mmco == 6)
+            reader.ReadUE(); // long_term_frame_idx
+        if (mmco == 4)
+            reader.ReadUE(); // max_long_term_frame_idx_plus1
+    }
+    return false;
 }
 
 // ceil(log2(v))，给 slice_segment_address 的位宽用
@@ -113,6 +199,10 @@ void VideoEsInspector::Reset(int codec_id, const Options& options) {
     options_ = options;
     packets_ = 0;
     done_ = false;
+    // 封装方式回到"自动判定"：Reset 之后调用方若需要固定封装，要重新 SetNalFraming。
+    // （不在这里保留上一份文件的值 —— 那正是 N6 那类"状态漏到下一份"的来源。）
+    framing_ = NalFraming::Auto;
+    prefix_bytes_ = 0;
     has_h264_params_ = false;
     h264_sps_ = model::H264SpsInfo();
     h264_pps_ = model::H264PpsInfo();
@@ -120,6 +210,7 @@ void VideoEsInspector::Reset(int codec_id, const Options& options) {
     hevc_pps_ = model::HevcPpsInfo();
     slice_types_.clear();
     slice_qps_.clear();
+    first_slice_count_ = 0;
     result_ = model::SliceSeiSummary();
 
     switch (static_cast<AVCodecID>(codec_id)) {
@@ -148,6 +239,12 @@ void VideoEsInspector::Reset(int codec_id, const Options& options) {
         enabled_ = false;
         break;
     }
+}
+
+void VideoEsInspector::SetNalFraming(NalFraming framing, int prefix_bytes) {
+    framing_ = framing;
+    // 只接受 1/2/4；其它值当"未知"处理，交给 Auto 去逐宽度试
+    prefix_bytes_ = (prefix_bytes == 1 || prefix_bytes == 2 || prefix_bytes == 4) ? prefix_bytes : 0;
 }
 
 void VideoEsInspector::SetH264ParameterSets(const model::H264SpsInfo& sps, const model::H264PpsInfo& pps) {
@@ -188,15 +285,58 @@ bool VideoEsInspector::Feed(const uint8_t* data, size_t size) {
     return true;
 }
 
+std::vector<NalUnit> VideoEsInspector::SplitNalUnits(const uint8_t* data, size_t size, NalSyntax syntax) {
+    std::vector<NalUnit> nals;
+    if (data == nullptr || size == 0)
+        return nals;
+
+    // Annex B 起始码优先：fMP4 的包头里常常先把 SPS/PPS 以 Annex B 塞在前面，
+    // 再跟长度前缀的 slice —— 这种混合包按起始码切才两头都不丢。
+    const bool has_start_code = size >= 4 && ((data[0] == 0 && data[1] == 0 && data[2] == 1) ||
+                                              (data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1));
+
+    if (framing_ == NalFraming::AnnexB || (framing_ == NalFraming::Auto && has_start_code)) {
+        return ExtradataParser::ExtractAnnBNalUnits(data, size, syntax);
+    }
+
+    // 长度前缀：给了宽度就只信它；没给就按 4 → 2 → 1 依次验证（4 字节是绝对主流）
+    if (prefix_bytes_ > 0) {
+        bool truncated = false;
+        nals = ExtradataParser::ExtractLengthPrefixedNalUnits(data, size, syntax, prefix_bytes_, &truncated);
+        if (truncated)
+            result_.truncated = true;
+        return nals;
+    }
+    const int candidates[3] = {4, 2, 1};
+    for (int w : candidates) {
+        if (!ExtradataParser::LooksLikeLengthPrefixed(data, size, w))
+            continue;
+        bool truncated = false;
+        nals = ExtradataParser::ExtractLengthPrefixedNalUnits(data, size, syntax, w, &truncated);
+        if (truncated)
+            result_.truncated = true;
+        if (!nals.empty())
+            return nals;
+    }
+
+    // 两条路都不像：退回 Annex B。宁可少产出，也不要空转（旧行为）。
+    return ExtradataParser::ExtractAnnBNalUnits(data, size, syntax);
+}
+
 void VideoEsInspector::InspectH264(const uint8_t* data, size_t size) {
-    const std::vector<NalUnit> nals = ExtradataParser::ExtractAnnBNalUnits(data, size, NalSyntax::H264);
+    const std::vector<NalUnit> nals = SplitNalUnits(data, size, NalSyntax::H264);
     for (const NalUnit& nal : nals) {
         if (IsH264SliceNal(nal.type)) {
             int slice_type = 0;
             int slice_qp = 0;
-            if (ParseH264SliceHeader(nal.data.data(), nal.data.size(), nal.is_idr, slice_type, slice_qp)) {
+            bool first_of_picture = false;
+            if (ParseH264SliceHeader(nal.data.data(), nal.data.size(), nal.is_idr,
+                                     nal.nal_ref_idc < 0 ? 0 : nal.nal_ref_idc, slice_type, slice_qp,
+                                     first_of_picture)) {
                 slice_types_.push_back(slice_type);
                 slice_qps_.push_back(slice_qp);
+                if (first_of_picture)
+                    ++first_slice_count_;
             }
         } else if (IsH264SeiNal(nal.type)) {
             ParseSeiRbsp(nal.data.data(), nal.data.size(), /*is_hevc=*/false);
@@ -205,7 +345,7 @@ void VideoEsInspector::InspectH264(const uint8_t* data, size_t size) {
 }
 
 void VideoEsInspector::InspectHevc(const uint8_t* data, size_t size) {
-    const std::vector<NalUnit> nals = ExtradataParser::ExtractAnnBNalUnits(data, size, NalSyntax::Hevc);
+    const std::vector<NalUnit> nals = SplitNalUnits(data, size, NalSyntax::Hevc);
     for (const NalUnit& nal : nals) {
         if (IsHevcSeiNal(nal.type)) {
             ParseSeiRbsp(nal.data.data(), nal.data.size(), /*is_hevc=*/true);
@@ -386,8 +526,8 @@ void VideoEsInspector::HandleSeiPayload(int payload_type, const uint8_t* p, size
     }
 }
 
-bool VideoEsInspector::ParseH264SliceHeader(const uint8_t* data, size_t size, bool is_idr, int& slice_type,
-                                            int& slice_qp) {
+bool VideoEsInspector::ParseH264SliceHeader(const uint8_t* data, size_t size, bool is_idr, int nal_ref_idc,
+                                            int& slice_type, int& slice_qp, bool& first_slice_of_picture) {
     if (data == nullptr || size == 0)
         return false;
     // 没有 SPS/PPS 就解不出有意义的字段位宽（frame_num、pic_order_cnt_lsb 都依赖它们）
@@ -397,15 +537,31 @@ bool VideoEsInspector::ParseH264SliceHeader(const uint8_t* data, size_t size, bo
     BitReader reader;
     reader.Reset(data, size);
 
-    reader.ReadUE(); // first_mb_in_slice
-    slice_type = static_cast<int>(reader.ReadUE());
-    if (slice_type > 9)
-        return false; // 规范只到 9（0..9）
-    reader.ReadUE();  // pic_parameter_set_id
+    // 位宽字段来自 ue(v)，被截断时可能取到负数/巨值 —— SkipBits 拿到负数是不安全的，
+    // 统一夹进 [0,64]（规范里这些位宽最大 16+4）。
+    const auto skip_bits_clamped = [&reader](int bits) {
+        if (bits <= 0)
+            return;
+        reader.SkipBits(bits > 64 ? 64 : bits);
+    };
+
+    const uint32_t first_mb = reader.ReadUE(); // first_mb_in_slice
+    first_slice_of_picture = (first_mb == 0);
+
+    const uint32_t raw_slice_type = reader.ReadUE();
+    // 规范只到 9：0..4 是"图内全是这种 slice"，5..9 是同一套类型的变体
+    // （x264 的全 I 帧写 7）。不归一化就既判不出 I slice、又会让下面所有
+    // "slice_type == B/P/SP" 的分支全部走错 —— 那不是少一个类型计数，
+    // 是整条 slice header 从此错位。
+    if (raw_slice_type > 9)
+        return false;
+    slice_type = static_cast<int>(raw_slice_type % 5);
+
+    reader.ReadUE(); // pic_parameter_set_id
     if (h264_sps_.separate_colour_plane_flag) {
         reader.SkipBits(2); // colour_plane_id
     }
-    reader.SkipBits(h264_sps_.log2_max_frame_num_minus4 + 4); // frame_num
+    skip_bits_clamped(h264_sps_.log2_max_frame_num_minus4 + 4); // frame_num
     bool field_pic = false;
     if (!h264_sps_.frame_mbs_only_flag) {
         field_pic = reader.ReadBit();
@@ -417,7 +573,7 @@ bool VideoEsInspector::ParseH264SliceHeader(const uint8_t* data, size_t size, bo
         reader.ReadUE(); // idr_pic_id
     }
     if (h264_sps_.pic_order_cnt_type == 0) {
-        reader.SkipBits(h264_sps_.log2_max_pic_order_cnt_lsb_minus4 + 4);
+        skip_bits_clamped(h264_sps_.log2_max_pic_order_cnt_lsb_minus4 + 4);
         if (h264_pps_.bottom_field_pic_order_in_frame_present_flag && !field_pic) {
             reader.ReadSE(); // delta_pic_order_cnt_bottom
         }
@@ -430,17 +586,57 @@ bool VideoEsInspector::ParseH264SliceHeader(const uint8_t* data, size_t size, bo
     if (h264_pps_.redundant_pic_cnt_present_flag) {
         reader.ReadUE(); // redundant_pic_cnt
     }
-    if (slice_type == 1) {  // B slice
+    if (slice_type == kSliceB) {
         reader.SkipBits(1); // direct_spatial_mv_pred_flag
     }
-    if (slice_type == 0 || slice_type == 1 || slice_type == 3) { // P / B / SP
-        if (reader.ReadBit()) {                                  // num_ref_idx_active_override_flag
-            reader.ReadUE();                                     // num_ref_idx_l0_active_minus1
-            if (slice_type == 1) {
-                reader.ReadUE(); // num_ref_idx_l1_active_minus1
+
+    // num_ref_idx_lX_active_minus1：slice 覆盖优先，否则用 PPS 的默认值。
+    // pred_weight_table() 的循环次数就由它决定，所以必须留住这两个数。
+    int num_ref_l0_minus1 = h264_pps_.num_ref_idx_l0_default_active_minus1;
+    int num_ref_l1_minus1 = h264_pps_.num_ref_idx_l1_default_active_minus1;
+    if (slice_type == kSliceP || slice_type == kSliceB || slice_type == kSliceSP) {
+        if (reader.ReadBit()) { // num_ref_idx_active_override_flag
+            num_ref_l0_minus1 = static_cast<int>(reader.ReadUEBounded(31));
+            if (slice_type == kSliceB) {
+                num_ref_l1_minus1 = static_cast<int>(reader.ReadUEBounded(31));
             }
         }
     }
+
+    // ref_pic_list_modification()：I/SI 没有，其余必读
+    if (slice_type != kSliceI && slice_type != kSliceSI) {
+        if (reader.ReadBit()) { // ref_pic_list_modification_flag_l0
+            if (!SkipRefPicListModification(reader))
+                return false;
+        }
+    }
+    if (slice_type == kSliceB) {
+        if (reader.ReadBit()) { // ref_pic_list_modification_flag_l1
+            if (!SkipRefPicListModification(reader))
+                return false;
+        }
+    }
+
+    // pred_weight_table()：条件两个来源（加权预测 + B 帧的 implicit 模式）
+    if ((h264_pps_.weighted_pred_flag && (slice_type == kSliceP || slice_type == kSliceSP)) ||
+        (h264_pps_.weighted_bipred_idc == 1 && slice_type == kSliceB)) {
+        const int chroma_array_type = h264_sps_.separate_colour_plane_flag ? 0 : h264_sps_.chroma_format_idc;
+        if (!SkipPredWeightTable(reader, slice_type, num_ref_l0_minus1, num_ref_l1_minus1, chroma_array_type)) {
+            return false;
+        }
+    }
+
+    // dec_ref_pic_marking()：只看 nal_ref_idc（非参考帧整段不存在）
+    if (nal_ref_idc != 0) {
+        if (!SkipDecRefPicMarking(reader, is_idr))
+            return false;
+    }
+
+    // cabac_init_idc：存在与否取决于 PPS 的 entropy_coding_mode_flag
+    if (h264_pps_.entropy_coding_mode_flag && slice_type != kSliceI && slice_type != kSliceSI) {
+        reader.ReadUEBounded(2); // 0..2
+    }
+
     if (reader.HasError())
         return false;
 
@@ -449,7 +645,9 @@ bool VideoEsInspector::ParseH264SliceHeader(const uint8_t* data, size_t size, bo
         return false;
     slice_qp = 26 + h264_pps_.pic_init_qp_minus26 + delta_qp;
     // 错位不会报错，只会给出一个"看似合理"的数 —— 用取值范围做最后一道筛。
-    if (!IsPlausibleQp(slice_qp))
+    // 高位深时 QP 下界是负的（-6*(bit_depth-8)），上界恒为 51（规范 7.4.2.1.1）。
+    const int qp_offset = QpRangeOffset(h264_sps_.bit_depth_luma_minus8);
+    if (slice_qp < -qp_offset || slice_qp > 51)
         return false;
     return true;
 }
@@ -460,27 +658,34 @@ void VideoEsInspector::Finish() {
     if (!slice_types_.empty()) {
         out.analyzed = true;
         out.slice_count = static_cast<int>(slice_types_.size());
-        out.frames = static_cast<int>(slice_types_.size());
+        // ❗ 帧数不能等于 slice 数：一帧拆多个 slice 时会把帧数翻倍。
+        // first_mb_in_slice == 0 才是"这一帧的第一个 slice"。
+        out.frames = first_slice_count_;
         for (int t : slice_types_) {
             switch (t) {
-            case 0:
+            case kSliceP:
                 ++out.type_p;
                 break;
-            case 1:
+            case kSliceB:
                 ++out.type_b;
                 break;
-            case 2:
+            case kSliceI:
                 ++out.type_i;
                 break;
             default:
                 ++out.type_other;
-                break;
+                break; // SP / SI
             }
         }
     }
     if (!slice_qps_.empty()) {
         out.analyzed = true;
-        out.qp_valid = has_h264_params_;
+        // ❗ 以前写的是 `qp_valid = has_h264_params_`：把"参数集解得出来"当成
+        // "QP 可信"。真正该回答的是"有没有成功解析出带范围的 QP" —— 没有成功
+        // 的 slice 就不该有 qp_valid；有并且都在范围内，才算有效（越界的在
+        // ParseH264SliceHeader 里已被丢弃，所以这里只需要判非空）。
+        out.qp_valid = true;
+        out.qp_parsed_slices = static_cast<int>(slice_qps_.size());
         out.qp_min = *std::min_element(slice_qps_.begin(), slice_qps_.end());
         out.qp_max = *std::max_element(slice_qps_.begin(), slice_qps_.end());
         out.qp_avg =

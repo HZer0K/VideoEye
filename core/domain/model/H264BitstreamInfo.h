@@ -209,6 +209,11 @@ struct H264PpsInfo {
     int num_ref_idx_l1_default_active_minus1 = 0;
     bool weighted_pred_flag = false;
     int weighted_bipred_idc = 0;
+    // cabac_init_idc 存在与否的唯一判据（H.264 7.3.3 里它的条件是
+    // `entropy_coding_mode_flag && slice_type != I && != SI`）。以前解析 PPS 时
+    // 直接 SkipBits(1) 丢掉 —— 不读 slice 时无所谓，读 slice QP 时就判不出
+    // 这一位要不要存在，P/B 帧整体错位一位。
+    bool entropy_coding_mode_flag = false;
     int pic_init_qp_minus26 = 0;
     int pic_init_slq_minus26 = 0;
     bool deblocking_filter_control_present_flag = false;

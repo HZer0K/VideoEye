@@ -46,6 +46,8 @@ const char* const kAudioQcRuleIds[] = {
     "audio.phase_correlation",
     "audio.metadata.layout",
     "audio.metadata.duration_mismatch",
+    // 覆盖完整性：不解码成功的部分不进统计，必须让用户看见"这条结论只覆盖多少时长"
+    "audio.qc.incomplete",
 };
 
 QString AudioVerdictText(const model::QcReport& report, const QString& rule_id, QString* detail_out = nullptr) {
@@ -796,6 +798,10 @@ void AudioQcPage::SetResult(const model::AnalysisResult& result, const model::Qc
 void AudioQcPage::SetQcReport(const model::QcReport& qc_report) {
     qc_report_ = qc_report;
     Refresh();
+}
+
+int AudioQcPage::VerdictRuleCount() {
+    return static_cast<int>(sizeof(kAudioQcRuleIds) / sizeof(kAudioQcRuleIds[0]));
 }
 
 void AudioQcPage::FillScanOptions(videoeye::AnalysisOptions& options) {

@@ -94,6 +94,10 @@ void AudioQcAnalyzer::Reset(const AudioQcOptions& options) {
     result_ = model::AudioQcResult{};
     channels_.clear();
     channel_info_.clear();
+    decode_error_packets_ = 0;
+    decode_error_frames_ = 0;
+    dropped_frames_ = 0;
+    dropped_samples_ = 0;
     block_powers_.clear();
     short_term_window_.clear();
     short_term_values_.clear();
@@ -202,6 +206,12 @@ void AudioQcAnalyzer::SetChannelInfo(const std::vector<model::AudioChannelInfo>&
     result_.metadata.layout_confirmed = std::none_of(
         roles.begin(), roles.end(), [](model::AudioChannelRole r) { return r == model::AudioChannelRole::Unknown; });
     result_.metadata.channel_layout = DescribeLayout(static_cast<int>(channels.size()), roles);
+}
+
+void AudioQcAnalyzer::NoteDroppedFrame(int64_t samples_per_channel) {
+    ++dropped_frames_;
+    if (samples_per_channel > 0)
+        dropped_samples_ += samples_per_channel;
 }
 
 void AudioQcAnalyzer::SetDurations(double stream_seconds, double container_seconds, double video_seconds,
@@ -696,6 +706,12 @@ const model::AudioQcResult& AudioQcAnalyzer::Finish() {
 
     if (!stream_info_set_ || channel_count_ <= 0) {
         result_.analyzed = false;
+        // 声明了时长却连流信息都没建立起来 → 失败，不是"没跑"。
+        // 这一步的判定要留在收尾里，否则消费方只能看到"未执行"，
+        // 与"没有音频流"混为一谈。
+        result_.completeness = (result_.metadata.stream_duration_seconds > 0.0)
+                                   ? model::AudioQcResult::Completeness::Failed
+                                   : model::AudioQcResult::Completeness::NotRun;
         return result_;
     }
 
@@ -806,6 +822,42 @@ const model::AudioQcResult& AudioQcAnalyzer::Finish() {
     }
     if (result_.block_count > 0 && result_.duration_seconds < kShortTermSeconds) {
         AddNote("音频时长不足 3 秒，短期响度(S)与 LRA 不可用。");
+    }
+
+    // ---- 完整性判定 ----
+    //
+    // 这一块回答的是"上面那些数字代表了多少音频"。旧模型只有一个 analyzed
+    // 布尔，于是"解出前 30 秒 PCM、之后解码全失败"和"完整跑完"在结果里长得
+    // 一模一样，报表按前者下的结论其实是错的。
+    result_.decode_error_packets = decode_error_packets_;
+    result_.decode_error_frames = decode_error_frames_;
+    result_.dropped_frames = dropped_frames_;
+    result_.dropped_samples = dropped_samples_;
+    result_.covered_seconds = result_.duration_seconds;
+    const double stream_seconds = result_.metadata.stream_duration_seconds;
+    result_.coverage_ratio = (stream_seconds > 0.0) ? std::min(1.0, result_.covered_seconds / stream_seconds) : 0.0;
+
+    const bool had_errors = decode_error_packets_ > 0 || decode_error_frames_ > 0 || dropped_frames_ > 0;
+    if (result_.total_samples == 0) {
+        // 有声明时长却一个样本都没拿到 = 失败（不是"没跑"）
+        result_.completeness = (stream_seconds > 0.0) ? model::AudioQcResult::Completeness::Failed
+                                                      : model::AudioQcResult::Completeness::NotRun;
+        if (result_.completeness == model::AudioQcResult::Completeness::Failed) {
+            AddNote("音频流声明时长 " + std::to_string(static_cast<long long>(stream_seconds)) +
+                    " 秒，但解码未产出任何样本：结果不可用。");
+        }
+    } else if (had_errors || (stream_seconds > 0.0 && result_.coverage_ratio < 0.99)) {
+        result_.completeness = model::AudioQcResult::Completeness::Partial;
+        std::string note = "音频 QC 仅覆盖 ";
+        note += (result_.coverage_ratio > 0.0)
+                    ? std::to_string(static_cast<int>(std::lround(result_.coverage_ratio * 100.0))) + "%"
+                    : std::string("未知比例");
+        note += " 的音频时长（解码失败 " + std::to_string(decode_error_packets_) + " 包 / " +
+                std::to_string(decode_error_frames_) + " 帧，丢弃 " + std::to_string(dropped_frames_) +
+                " 帧）：峰值/响度只代表已覆盖部分。";
+        AddNote(note);
+    } else {
+        result_.completeness = model::AudioQcResult::Completeness::Complete;
     }
     return result_;
 }

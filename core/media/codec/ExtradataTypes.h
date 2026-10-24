@@ -134,6 +134,11 @@ struct NalUnit {
     std::vector<uint8_t> data; // RBSP payload（不含起始码、不含 NAL header）
     bool is_idr;               // H.264: IDR 帧标记
     bool is_keyframe;          // 通用关键帧标记
+    // H.264 的 nal_ref_idc（header 的 bit6..5）。slice_header() 里
+    // dec_ref_pic_marking() 只在 nal_ref_idc != 0 时存在 —— 少了它，非参考帧
+    // 会少读 1 位（IDS 分支还要多 1 位），后面所有字段整体错位。
+    // -1 = 未知（非 H.264 NAL，或构造方没给）。
+    int nal_ref_idc = -1;
 
     NalUnit() : type(0), size(0), is_idr(false), is_keyframe(false) {
     }
@@ -211,10 +216,13 @@ struct ExtradataResult {
 
     // 配置记录信息（avcC/hvcC/av1C）
     struct CodecConfig {
-        int profile_idc = 0;                 // H.264 profile
-        int profile_compatibility = 0;       // H.264 profile compatibility flag
-        uint32_t level_idc = 0;              // H.264 level
-        uint32_t length_size_minus_one = 31; // NAL 长度字段位数（3 字节=31，4 字节=31）
+        int profile_idc = 0;           // H.264 profile
+        int profile_compatibility = 0; // H.264 profile compatibility flag
+        uint32_t level_idc = 0;        // H.264 level
+        // NAL 长度前缀宽度 - 1（ISO/IEC 14496-15 avcC/hvcC 的 lengthSizeMinusOne）。
+        // 合法值 0..3，即前缀宽度 1..4 字节；**默认 4 字节 → 3**。
+        // 旧默认值写的 31（把"位数"和"minus_one"混了），谁按它算宽度都会越界。
+        uint32_t length_size_minus_one = 3;
 
         // H.265
         int general_profile_space = 0;

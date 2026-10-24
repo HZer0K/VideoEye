@@ -3,7 +3,8 @@
 // 这一页的静默回归点：
 //   1) 削波事件峰值换算：线性 peak -> dBFS（20*log10），peak=0 回落到 -120 哨兵；
 //      声道号 -1 -> 「全部」，其余按声道名展示；
-//   2) 判定表：11 条固定规则 id 的命中等级（失败 / 警告 / 提示 / 通过）与配色，
+//   2) 判定表：固定规则 id 的命中等级（失败 / 警告 / 提示 / 通过）与配色，
+//      条数以 AudioQcPage::VerdictRuleCount() 为准（新增规则不必改测试）；
 //      阈值文案取自「规则与阈值」快照；改规则后 SetQcReport 必须立即重算；
 //   3) 汇总的响度三档判定（|偏差| <= 1 达标 / <= 3 偏离 / 其余超标）与 -∞ 兜底；
 //   4) 参数往返（FillScanOptions）+ 扫描态互斥（开始 / 取消按钮 + IsScanActive）。
@@ -249,8 +250,9 @@ TEST(AudioQcPageTests, UnanalyzedShowsHintAndEmptyTables) {
     ASSERT_EQ(metadata->rowCount(), 10);
     EXPECT_EQ(Cell(metadata, 0, 0), QStringLiteral("声道布局"));
     EXPECT_EQ(Cell(metadata, 7, 1), QStringLiteral("无视频流"));
-    // 判定表固定 11 条规则；无 issue 全部「通过」并配绿色
-    ASSERT_EQ(verdict->rowCount(), 11);
+    // 判定表固定展示 kAudioQcRuleIds 里的全部规则（含覆盖完整性 audio.qc.incomplete）；
+    // 无 issue 全部「通过」并配绿色
+    ASSERT_EQ(verdict->rowCount(), videoeye::ui::AudioQcPage::VerdictRuleCount());
     EXPECT_EQ(Cell(verdict, 0, 0), QStringLiteral("audio.loudness.target_high"));
     EXPECT_EQ(Cell(verdict, 0, 1), QStringLiteral("通过"));
     EXPECT_EQ(verdict->item(0, 1)->foreground().color(), QColor("#43a047"));
@@ -411,7 +413,7 @@ TEST(AudioQcPageTests, VerdictTableMapsSeverityColorAndRuleThreshold) {
 
     QTableWidget* verdict = TableInTab(&page, 3, QStringLiteral("规则"));
     ASSERT_NE(verdict, nullptr);
-    ASSERT_EQ(verdict->rowCount(), 11);
+    ASSERT_EQ(verdict->rowCount(), videoeye::ui::AudioQcPage::VerdictRuleCount());
 
     // 行序固定：0 target_high / 3 true_peak / 4 clipping / 5 silence.longest
     // 7 dc_offset / 8 phase_correlation

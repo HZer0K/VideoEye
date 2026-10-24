@@ -501,13 +501,8 @@ bool AudioDecoder::Initialize(AVCodecParameters* codec_params) {
         channels_ = 2;
     }
 
-    // 初始化重采样上下文
-    swr_ctx_ = swr_alloc();
-    if (!swr_ctx_) {
-        std::cerr << "Failed to allocate resample context" << std::endl;
-        return false;
-    }
-
+    // 初始化重采样上下文（走 RebuildSwr：它同时记下输入布局快照，
+    // 之后 ReceiveFrame 才能判断"流中途改布局"要不要重建）
     AVChannelLayout in_layout{};
     if (codec_ctx_->ch_layout.nb_channels > 0) {
         if (av_channel_layout_copy(&in_layout, &codec_ctx_->ch_layout) < 0) {
@@ -517,16 +512,9 @@ bool AudioDecoder::Initialize(AVCodecParameters* codec_params) {
         av_channel_layout_default(&in_layout, channels_);
     }
 
-    AVChannelLayout out_layout{};
-    av_channel_layout_default(&out_layout, channels_);
-
-    swr_alloc_set_opts2(&swr_ctx_, &out_layout, AV_SAMPLE_FMT_S16, sample_rate_ > 0 ? sample_rate_ : 44100, &in_layout,
-                        codec_ctx_->sample_fmt, sample_rate_ > 0 ? sample_rate_ : 44100, 0, nullptr);
-
-    ret = swr_init(swr_ctx_);
+    const bool swr_ok = RebuildSwr(in_layout, codec_ctx_->sample_fmt, sample_rate_ > 0 ? sample_rate_ : 44100);
     av_channel_layout_uninit(&in_layout);
-    av_channel_layout_uninit(&out_layout);
-    if (ret < 0) {
+    if (!swr_ok) {
         std::cerr << "Failed to initialize resample context" << std::endl;
         return false;
     }
@@ -548,6 +536,54 @@ bool AudioDecoder::SendPacket(AVPacket* packet) {
         return false;
     }
 
+    return true;
+}
+
+bool AudioDecoder::SwrMatches(const AVChannelLayout& in_layout, AVSampleFormat in_fmt, int in_rate) const {
+    if (swr_ctx_ == nullptr || !swr_in_layout_valid_)
+        return false;
+    if (static_cast<int>(in_fmt) != swr_in_fmt_)
+        return false;
+    if (in_rate != swr_in_sample_rate_)
+        return false;
+    if (av_channel_layout_compare(&swr_in_layout_, &in_layout) != 0)
+        return false;
+    return swr_in_channels_ == in_layout.nb_channels;
+}
+
+bool AudioDecoder::RebuildSwr(const AVChannelLayout& in_layout, AVSampleFormat in_fmt, int in_rate) {
+    if (swr_ctx_ != nullptr) {
+        swr_free(&swr_ctx_);
+    }
+    swr_in_layout_valid_ = false;
+
+    swr_ctx_ = swr_alloc();
+    if (!swr_ctx_) {
+        std::cerr << "Failed to allocate resample context" << std::endl;
+        return false;
+    }
+
+    AVChannelLayout out_layout{};
+    av_channel_layout_default(&out_layout, channels_);
+    const int out_rate = sample_rate_ > 0 ? sample_rate_ : (in_rate > 0 ? in_rate : 44100);
+    const int ret = swr_alloc_set_opts2(&swr_ctx_, &out_layout, AV_SAMPLE_FMT_S16, out_rate, &in_layout, in_fmt,
+                                        in_rate > 0 ? in_rate : out_rate, 0, nullptr);
+    av_channel_layout_uninit(&out_layout);
+    if (ret < 0 || swr_init(swr_ctx_) < 0) {
+        std::cerr << "Failed to initialize resample context" << std::endl;
+        swr_free(&swr_ctx_);
+        return false;
+    }
+
+    if (av_channel_layout_copy(&swr_in_layout_, &in_layout) < 0) {
+        av_channel_layout_uninit(&swr_in_layout_);
+        swr_in_layout_valid_ = false;
+        return false;
+    }
+    swr_in_layout_valid_ = true;
+    swr_in_channels_ = in_layout.nb_channels;
+    swr_in_sample_rate_ = in_rate;
+    swr_in_fmt_ = static_cast<int>(in_fmt);
     return true;
 }
 
@@ -573,21 +609,53 @@ bool AudioDecoder::ReceiveFrame(uint8_t* output_buffer, int buffer_size, int& ou
     last_frame_sample_rate_ = frame_->sample_rate > 0 ? frame_->sample_rate : sample_rate_;
     last_frame_channels_ = frame_->ch_layout.nb_channels > 0 ? frame_->ch_layout.nb_channels : channels_;
 
-    // 重采样
-    uint8_t* output_ptrs[8] = {output_buffer, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
     if (channels_ <= 0) {
+        av_frame_unref(frame_);
         return false;
     }
-    output_size = swr_convert(swr_ctx_, output_ptrs, buffer_size / (channels_ * 2), (const uint8_t**)frame_->data,
-                              frame_->nb_samples);
+
+    // 流中途改布局：用帧自己的 ch_layout/format/sample_rate 重建 swr。
+    // 不重建的话 swr 会按 Init 时的旧布局解释新帧。
+    AVChannelLayout in_layout{};
+    if (frame_->ch_layout.nb_channels > 0) {
+        if (av_channel_layout_copy(&in_layout, &frame_->ch_layout) < 0) {
+            av_channel_layout_default(&in_layout, channels_);
+        }
+    } else {
+        av_channel_layout_default(&in_layout, channels_);
+    }
+    const AVSampleFormat in_fmt = static_cast<AVSampleFormat>(frame_->format);
+    const int in_rate = frame_->sample_rate > 0 ? frame_->sample_rate : sample_rate_;
+    if (!SwrMatches(in_layout, in_fmt, in_rate)) {
+        const bool rebuilt = RebuildSwr(in_layout, in_fmt, in_rate);
+        av_channel_layout_uninit(&in_layout);
+        if (!rebuilt) {
+            av_frame_unref(frame_);
+            return false;
+        }
+    } else {
+        av_channel_layout_uninit(&in_layout);
+    }
+
+    // 重采样
+    uint8_t* output_ptrs[8] = {output_buffer, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    // ❗ 输入一侧必须走 extended_data：frame_->data 只有 8 个指针（AV_NUM_DATA_POINTERS），
+    // 超过 8 声道的 planar 帧其余声道在 extended_data 里。传 data 会让 swr 按
+    // nb_channels 去读 data[8..N-1] —— 那几格其实是 linesize 的内容，会被当指针解引用。
+    // 离线分析路径（AnalysisPipeline::FeedAudioFrame）早就改成 extended_data 了，
+    // 只有播放这条漏了。
+    output_size = swr_convert(swr_ctx_, output_ptrs, buffer_size / (channels_ * 2),
+                              (const uint8_t* const*)frame_->extended_data, frame_->nb_samples);
 
     if (output_size < 0) {
         std::cerr << "Error during audio resampling" << std::endl;
+        av_frame_unref(frame_);
         return false;
     }
 
     output_size *= channels_ * 2; // 转换为字节数
     last_output_size_ = output_size;
+    av_frame_unref(frame_);
 
     return true;
 }
@@ -616,6 +684,10 @@ void AudioDecoder::Close() {
     if (swr_ctx_) {
         swr_free(&swr_ctx_);
         swr_ctx_ = nullptr;
+    }
+    if (swr_in_layout_valid_) {
+        av_channel_layout_uninit(&swr_in_layout_);
+        swr_in_layout_valid_ = false;
     }
     if (codec_ctx_) {
         avcodec_free_context(&codec_ctx_);

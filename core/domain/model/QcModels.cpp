@@ -793,6 +793,13 @@ std::vector<QcRule> DefaultQcRules() {
         10.0, "s", "存在过长的静音段，可能是音轨缺失、封装错误或编码中断。",
         "确认该段确实无内容；否则检查音轨是否被静音/丢帧。");
 
+    add("audio.qc.incomplete", "音频 QC 覆盖不完整", IssueCategory::Audio, IssueSeverity::Warning, QcRuleOp::NonZero,
+        0.0, "项",
+        "解码失败或采样率/声道中途变化导致部分音频样本没进统计（重采样器不可用也会这样）。"
+        "此时峰值/响度/LRA 只代表已覆盖的那一段，不能当成整条音轨的结论。",
+        "确认解码器是否支持该编码（专有编码/缺少解码库最常见），并检查是否为拼接流"
+        "（采样率/声道中途改变）；必要时按时间段拆开单独测。");
+
     add("audio.silence.ratio", "静音占比过高", IssueCategory::Audio, IssueSeverity::Info, QcRuleOp::MaxExceeded, 50.0,
         "%", "全片静音占比偏高，需确认是否为预期（如纯音乐视频的间隔）。",
         "确认音轨完整；必要时裁剪静音段或改用正确音轨。");

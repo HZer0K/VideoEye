@@ -35,6 +35,21 @@ public:
     static std::vector<NalUnit> ExtractAnnBNalUnits(const uint8_t* data, size_t size,
                                                     NalSyntax syntax = NalSyntax::Auto);
 
+    // 长度前缀流（MP4/MOV/fMP4 的媒体包：`[N 字节长度][NAL]`）的 NAL 抽取。
+    //
+    // ❗ 不要用 ConvertLengthPrefixToAnnexB 中转：那要多拷贝一遍整包，而且它的
+    // 截断是静默 break，调用方分不清"没有 NAL"和"包被截断"。这里直接产出 NalUnit，
+    // 截断通过 `truncated` 回传（可传 nullptr）。
+    //
+    // prefix_bytes 只接受 1 / 2 / 4，其它值直接返回空（合法宽度来自
+    // avcC/hvcC 的 lengthSizeMinusOne + 1，不可能是别的值）。
+    static std::vector<NalUnit> ExtractLengthPrefixedNalUnits(const uint8_t* data, size_t size, NalSyntax syntax,
+                                                              int prefix_bytes, bool* truncated = nullptr);
+
+    // 判断一段字节是否"整段都由长度前缀 NAL 组成"：用于在没有容器信息时
+    // 区分 Annex B 包与长度前缀包。要求每个长度都 > 0、不越界，且正好消耗完。
+    static bool LooksLikeLengthPrefixed(const uint8_t* data, size_t size, int prefix_bytes);
+
     // VVC NAL 单元解析（2 字节 header，type = (byte1 >> 3) & 0x1F）
     static NalUnit ParseVvcNalUnit(const uint8_t* data, size_t size);
 

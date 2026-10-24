@@ -325,14 +325,30 @@ void AudioBitstreamAnalyzer::ParseAacPacket(StreamState& state, const AVPacket* 
         return;
 
     AdtsHeader adts;
-    if (AudioBitstreamParser::ParseAdts(data, size, adts)) {
+    const bool adts_ok = AudioBitstreamParser::ParseAdts(data, size, adts);
+    if (adts_ok || adts.truncated) {
         state.info.codec = model::AudioBitstreamCodec::AacAdts;
+        // 同步字对上了、头字段也读完了，但声明帧长超过本包剩余字节 = 包被截断。
+        // 这**不是**解析成功：以前落到下面的"裸 AAC"分支，或直接被算进
+        // parsed_packets，把损坏样本记成了好样本。
+        if (!adts_ok) {
+            ++state.info.invalid_packets;
+            if (state.info.note.empty()) {
+                state.info.note = "ADTS 声明帧长超过包剩余字节（截断包），不计入解析成功";
+            }
+            return;
+        }
         size_t offset = 0;
         int frames = 0;
+        bool truncated_tail = false;
         while (offset + 7 <= size && frames < 64) {
             AdtsHeader header;
-            if (!AudioBitstreamParser::ParseAdts(data + offset, size - offset, header))
+            if (!AudioBitstreamParser::ParseAdts(data + offset, size - offset, header)) {
+                // 后续帧截断：前面的帧已经统计过，这里只记一笔，不能把整包算坏
+                if (header.truncated)
+                    truncated_tail = true;
                 break;
+            }
             if (!state.has_header) {
                 state.info.sample_rate = header.sample_rate;
                 state.info.channels = header.channels;
@@ -350,6 +366,9 @@ void AudioBitstreamAnalyzer::ParseAacPacket(StreamState& state, const AVPacket* 
         }
         if (frames > 0) {
             ++state.info.parsed_packets;
+            if (truncated_tail && state.info.note.empty()) {
+                state.info.note = "包尾有一帧被截断（已统计到截断点之前的帧）";
+            }
         } else {
             ++state.info.invalid_packets;
         }
@@ -412,9 +431,18 @@ void AudioBitstreamAnalyzer::ParseAc3Packet(StreamState& state, const AVPacket* 
 
     size_t offset = 0;
     int frames = 0;
+    bool truncated_tail = false;
     while (offset + 6 <= size && frames < 64) {
         Ac3Header header;
         if (!AudioBitstreamParser::ParseAc3(data + offset, size - offset, force_eac3, header)) {
+            break;
+        }
+        if (header.frame_size_bytes <= 0)
+            break;
+        // 与 ADTS 同一类问题：帧头声明了帧长，但包里的剩余字节不够。
+        // 以前直接 ObserveFrame + parsed_packets++，截断包被记成解析成功。
+        if (static_cast<size_t>(header.frame_size_bytes) > size - offset) {
+            truncated_tail = true;
             break;
         }
         ApplyAc3Header(state, header);
@@ -422,12 +450,13 @@ void AudioBitstreamAnalyzer::ParseAc3Packet(StreamState& state, const AVPacket* 
                            header.bit_rate_kbps);
         state.info.frame_count += 1;
         ++frames;
-        if (header.frame_size_bytes <= 0)
-            break;
         offset += static_cast<size_t>(header.frame_size_bytes);
     }
     if (frames > 0) {
         ++state.info.parsed_packets;
+        if (truncated_tail && state.info.note.empty()) {
+            state.info.note = "AC-3 包尾帧声明长度超过剩余字节（截断）";
+        }
     } else {
         ++state.info.invalid_packets;
     }

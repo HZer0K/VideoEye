@@ -171,10 +171,31 @@ std::vector<model::DiagnosticIssue> CheckAudioRules(const model::QcRule& rule, c
         rule.id == "audio.loudness.range" || rule.id == "audio.true_peak" || rule.id == "audio.clipping" ||
         rule.id == "audio.silence.longest" || rule.id == "audio.silence.ratio" || rule.id == "audio.dc_offset" ||
         rule.id == "audio.phase_correlation" || rule.id == "audio.metadata.layout" ||
-        rule.id == "audio.metadata.duration_mismatch") {
+        rule.id == "audio.metadata.duration_mismatch" || rule.id == "audio.qc.incomplete") {
         const auto& qc = result.audio_qc;
         if (!qc.analyzed)
             return issues;
+
+        // 覆盖不足必须出成**问题**而不是只写一条 note：note 会被界面与报告忽略，
+        // 而"响度只算了前 30 秒"直接改变结论的可信度。
+        if (rule.id == "audio.qc.incomplete") {
+            const bool partial = qc.completeness == model::AudioQcResult::Completeness::Partial ||
+                                 qc.completeness == model::AudioQcResult::Completeness::Failed;
+            if (!partial)
+                return issues;
+            double weight = static_cast<double>(qc.decode_error_packets + qc.decode_error_frames + qc.dropped_frames);
+            if (weight <= 0.0)
+                weight = 1.0; // 只有覆盖率不足时也要能触发 NonZero
+            if (Triggered(rule, weight)) {
+                std::string detail = "音频 QC 只覆盖 " + FormatValue(qc.coverage_ratio * 100.0, 1) + "% 的音频时长（" +
+                                     FormatValue(qc.covered_seconds, 1) + "s）；解码失败 " +
+                                     std::to_string(qc.decode_error_packets) + " 包 / " +
+                                     std::to_string(qc.decode_error_frames) + " 帧，丢弃 " +
+                                     std::to_string(qc.dropped_frames) + " 帧。峰值/响度只代表已覆盖部分。";
+                issues.push_back(make_issue(weight, detail, model::TimeRange::Global(), -1));
+            }
+            return issues;
+        }
 
         const model::StreamDigest* audio = result.FirstAudioStream();
         const int audio_stream = (audio != nullptr) ? audio->index : -1;

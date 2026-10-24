@@ -53,6 +53,29 @@ ContainerMetadata ContainerMetadataFromStream(const AVStream* st, const model::A
     return meta;
 }
 
+// 媒体包里 NAL 长度前缀的宽度（1..4）。返回 0 = 未知，交给巡检器逐包判定。
+//
+// 来源是配置记录本身（ISO/IEC 14496-15）：
+//   * avcC：第 5 个字节（index 4）的低 2 位 = lengthSizeMinusOne
+//   * hvcC：第 22 个字节（index 21）的低 2 位 = lengthSizeMinusOne
+// Annex B 的 extradata（TS / 裸流的 SPS+PPS）没有长度前缀这个概念，返回 0。
+int NalLengthSizeFromExtradata(const AVCodecParameters* par) {
+    if (par == nullptr || par->extradata == nullptr || par->extradata_size <= 0)
+        return 0;
+    const uint8_t* d = par->extradata;
+    const int n = par->extradata_size;
+    // 起始码开头 = Annex B extradata，不是长度前缀流
+    if (n >= 4 && d[0] == 0 && d[1] == 0 && (d[2] == 1 || (d[2] == 0 && d[3] == 1)))
+        return 0;
+    if (par->codec_id == AV_CODEC_ID_H264 && n >= 5 && d[0] == 1 && (d[4] & 0xFC) == 0xFC) {
+        return (d[4] & 0x03) + 1;
+    }
+    if (par->codec_id == AV_CODEC_ID_HEVC && n >= 22) {
+        return (d[21] & 0x03) + 1;
+    }
+    return 0;
+}
+
 } // namespace
 
 AnalysisPipeline::AnalysisPipeline(const AnalysisOptions& options) : options_(options) {
@@ -235,6 +258,12 @@ void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisRes
     inband_probes_.clear();
     bitstream_inband_active_ = false;
     result.bitstream_streams.clear();
+    // slice/SEI 巡检器同样要清零，而且**必须在这里无条件清**：以前只在带内分支
+    // Reset，于是"上一份文件的 slice 统计"会被 FinishVideoEsInspection 写进这一份，
+    // 旧 inspector 还会继续吃新文件的包。（es_inspector_configured_ 这个成员本来
+    // 就是为这件事准备的，一直没用 —— 现在用起来了。）
+    es_inspector_.Reset(0);
+    es_inspector_configured_ = false;
     if (!options_.analyze_bitstream)
         return;
 
@@ -284,6 +313,29 @@ void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisRes
         result.bitstream_streams.push_back(std::move(bs));
     }
 
+    // ---- slice header / SEI 巡检（C4）----
+    //
+    // ❗ 这一段必须放在 `if (result.bitstream_analyzed) return;` **之前**。
+    // 以前它在之后，于是凡是 extradata 解析成功的文件（MP4/MOV/大多数封装）
+    // 巡检器压根没启用过 —— slice/SEI 这条功能在主力路径上是零产出，而不是
+    // "数据不全"。顺序也决定了参数集从哪儿来：
+    //   * extradata 路径：参数集已经解出来了，直接注入，QP 立刻可算；
+    //   * 带内路径：Prepare 阶段还没有参数集，等 OnPacket 里探到再补
+    //     （见 ApplyParameterSetsToEsInspector 的调用点）。
+    if (video_stream_index_ >= 0) {
+        const AVCodecParameters* par = fmt->streams[video_stream_index_]->codecpar;
+        es_inspector_.Reset(static_cast<int>(par->codec_id));
+        // 媒体包的 NAL 封装方式。MP4/MOV/fMP4 是 `[N 字节长度][NAL]`，
+        // 一条起始码都没有 —— 只按 Annex B 抽会得到"零个 NAL"，而零个 NAL
+        // 在外观上和"这段流没有 slice/SEI"完全一样，属于静默失效。
+        // 宽度未知时交给 Auto 逐包判定（先看起始码，再验证长度前缀链）。
+        es_inspector_.SetNalFraming(VideoEsInspector::NalFraming::Auto, NalLengthSizeFromExtradata(par));
+        if (result.bitstream_analyzed && result.bitstream_analysis.stream_index == video_stream_index_) {
+            ApplyParameterSetsToEsInspector(result.bitstream_analysis);
+            es_inspector_configured_ = true;
+        }
+    }
+
     if (result.bitstream_analyzed)
         return;
 
@@ -312,20 +364,6 @@ void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisRes
         return;
     // 只有真的有人在探测时才让逐包分发进那段循环
     bitstream_inband_active_ = true;
-
-    // ---- slice header / SEI 巡检（C4）----
-    // 参数集已经被上面解出来了，这里顺便把它们的**已解析结果**配给巡检器：
-    // H.264 的 slice QP = 26 + pps.pic_init_qp_minus26 + slice_qp_delta，
-    // slice header 的位偏移也依赖 SPS 的 POC 开关 —— 没有它们 QP 只能判无效。
-    // HEVC / AV1 不需要这些（它们的 slice 目前不产出 QP，见 VideoEsInspector）。
-    if (video_stream_index_ >= 0) {
-        es_inspector_.Reset(static_cast<int>(fmt->streams[video_stream_index_]->codecpar->codec_id));
-    } else {
-        es_inspector_.Reset(0);
-    }
-    if (result.bitstream_analyzed) {
-        ApplyParameterSetsToEsInspector(result.bitstream_analysis);
-    }
 }
 
 // 把已解析的参数集注入 slice/SEI 巡检器。带内路径（TS 等）在 OnPacket 里
@@ -342,6 +380,11 @@ void AnalysisPipeline::FinishVideoEsInspection(model::AnalysisResult& result) {
     if (!es_inspector_.enabled())
         return;
     es_inspector_.Finish();
+    // 参数集没拿到时 H.264 的 QP 一定算不出来（slice header 的位宽全依赖 SPS/PPS）。
+    // 留一条日志，免得排查时看到"slice 计数有、QP 却是空"只能靠猜。
+    if (!es_inspector_configured_ && es_inspector_.result().slices.supported) {
+        LOG_INFO("slice/SEI 巡检: 未拿到参数集（无 extradata 且带内未探到），slice QP 不可用");
+    }
     if (result.bitstream_analyzed) {
         result.bitstream_analysis.slice_sei = es_inspector_.result();
     }
@@ -392,8 +435,21 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt, model::Anal
 
     // 音频 QC：解码后归一为 float planar 再喂给分析器
     if (options_.analyze_audio_qc && pkt->stream_index == audio_stream_index_ && audio_probe_.ready) {
-        if (avcodec_send_packet(audio_probe_.decoder, pkt) == 0) {
-            while (avcodec_receive_frame(audio_probe_.decoder, audio_probe_.frame) >= 0) {
+        const int send_ret = avcodec_send_packet(audio_probe_.decoder, pkt);
+        // EAGAIN 表示解码器还压着包，不是错误；其余负值才是"这个包解不了"。
+        if (send_ret < 0 && send_ret != AVERROR(EAGAIN)) {
+            audio_qc_.NoteDecodeErrorPacket();
+        } else {
+            // ❗ 这里的三种收尾必须分开记账：以前只写 `>= 0` 就继续，
+            // 解码失败被当成"这包没有帧"，结果里只留下"已分析"，看不出覆盖不足。
+            while (true) {
+                const int recv_ret = avcodec_receive_frame(audio_probe_.decoder, audio_probe_.frame);
+                if (recv_ret == AVERROR(EAGAIN) || recv_ret == AVERROR_EOF)
+                    break;
+                if (recv_ret < 0) {
+                    audio_qc_.NoteDecodeErrorFrame();
+                    break;
+                }
                 FeedAudioFrame(audio_probe_.frame);
                 av_frame_unref(audio_probe_.frame);
             }
@@ -547,7 +603,12 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt, model::Anal
                                  "): codec=" + bs.codec_name);
                     }
                     // 带内路径刚拿到参数集 —— 趁热补给巡检器，让后面的包能算出 QP。
-                    ApplyParameterSetsToEsInspector(bs);
+                    // ❗ 只补给主视频轨：巡检器只盯主轨，把附加轨的参数集塞进去
+                    // 会让 slice header 按另一条流的位宽去解，算出来的 QP 是垃圾。
+                    if (slot.stream_index == video_stream_index_) {
+                        ApplyParameterSetsToEsInspector(bs);
+                        es_inspector_configured_ = true;
+                    }
                     result.bitstream_streams.push_back(std::move(bs));
                     it = inband_probes_.erase(it);
                     continue;
@@ -668,10 +729,13 @@ void AnalysisPipeline::FeedAudioFrame(AVFrame* frame) {
     const int channels = frame->ch_layout.nb_channels;
     // extended_data 在声道数 > AV_NUM_DATA_POINTERS(8) 时才是完整的那一份：
     // data[] 只有前 8 个平面，9~N 声道全是 nullptr（12 声道 S16P 实测如此）。
-    if (channels <= 0 || frame->extended_data == nullptr)
+    if (channels <= 0 || frame->extended_data == nullptr) {
+        audio_qc_.NoteDroppedFrame(frame->nb_samples);
         return;
+    }
     if (frame->sample_rate != audio_probe_.sample_rate || channels != audio_probe_.channels) {
         audio_probe_.rate_changed = true; // 参数中途变化（罕见），该帧丢弃
+        audio_qc_.NoteDroppedFrame(frame->nb_samples);
         return;
     }
     double ts = (frame->pts != AV_NOPTS_VALUE && audio_time_base_ > 0.0)
@@ -686,8 +750,11 @@ void AnalysisPipeline::FeedAudioFrame(AVFrame* frame) {
         audio_qc_.OnSamples(planes.data(), frame->nb_samples, ts);
         return;
     }
-    if (audio_probe_.swr == nullptr || audio_probe_.out_data == nullptr)
+    if (audio_probe_.swr == nullptr || audio_probe_.out_data == nullptr) {
+        // 重采样器建不起来：非 FLTP 的帧一个都进不了统计，必须记账
+        audio_qc_.NoteDroppedFrame(frame->nb_samples);
         return;
+    }
 
     int got = swr_convert(audio_probe_.swr, audio_probe_.out_data, audio_probe_.out_frames,
                           const_cast<const uint8_t**>(frame->extended_data), frame->nb_samples);

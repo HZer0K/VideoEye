@@ -96,10 +96,32 @@ struct AudioQcMetadata {
 //
 // 该结构不依赖 FFmpeg / Qt，可直接由合成样本单测（tests/unit/test_audio_qc_analyzer.cpp）。
 struct AudioQcResult {
+    // 音频 QC 到底跑到什么程度。
+    //
+    // ❗ 只有 analyzed=true 是不够的：以前"前面产出过 PCM、后面解码失败/改采样率
+    // 丢掉半条流"在结果里完全看不出来，报表仍显示"已分析"，但响度/峰值只代表
+    // 那一小段。这里把"完整 / 部分完成 / 不支持 / 失败"显式化。
+    enum class Completeness {
+        NotRun = 0,  // 没跑（没有音频流 / 未启用）
+        Complete,    // 覆盖率达到阈值
+        Partial,     // 跑过，但解码失败/丢帧导致覆盖不足
+        Unsupported, // 编码不支持（解码器打不开）
+        Failed       // 跑了但一个样本都没拿到
+    };
+    Completeness completeness = Completeness::NotRun;
+
     bool analyzed = false;  // true = 本次扫描确实分析过音频
     bool has_audio = false; // 文件中是否存在音频流
 
     AudioQcMetadata metadata;
+
+    // ---- 完整性记账 ----
+    int64_t decode_error_packets = 0; // avcodec_send_packet < 0
+    int64_t decode_error_frames = 0;  // avcodec_receive_frame 非 EAGAIN/EOF 的错误
+    int64_t dropped_frames = 0;       // 中途改采样率/声道、swr 不可用而丢弃的解码帧
+    int64_t dropped_samples = 0;      // 上面那些帧折算成的每声道样本数
+    double covered_seconds = 0.0;     // 实际参与统计的时长
+    double coverage_ratio = 0.0;      // covered / metadata.stream_duration（0 = 未知）
 
     // ---- 电平 ----
     double sample_peak = 0.0;

@@ -25,6 +25,27 @@ std::string AudioQcResult::ToString() const {
     s += "布局=" + metadata.channel_layout;
     s += " 采样率=" + std::to_string(metadata.sample_rate) + "Hz";
     s += " 时长=" + Fixed(duration_seconds, 2) + "s";
+    // 完整性：只要不是 Complete，这条日志就是排查的第一条线索
+    switch (completeness) {
+    case Completeness::Complete:
+        s += " 覆盖=完整";
+        break;
+    case Completeness::Partial:
+        s += " 覆盖=部分(" + Fixed(coverage_ratio * 100.0, 1) + "%)";
+        break;
+    case Completeness::Unsupported:
+        s += " 覆盖=不支持";
+        break;
+    case Completeness::Failed:
+        s += " 覆盖=失败";
+        break;
+    case Completeness::NotRun:
+        break;
+    }
+    if (decode_error_packets > 0 || decode_error_frames > 0 || dropped_frames > 0) {
+        s += " 解码失败=" + std::to_string(decode_error_packets) + "包/" + std::to_string(decode_error_frames) +
+             "帧 丢弃=" + std::to_string(dropped_frames) + "帧";
+    }
     s += " | 峰值=" + Fixed(sample_peak_dbfs, 2) + "dBFS";
     s += " 真峰值=" + Fixed(true_peak_dbtp, 2) + "dBTP";
     s += " RMS=" + Fixed(rms_dbfs, 2) + "dBFS";

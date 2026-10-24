@@ -119,30 +119,38 @@ model::Vp9SequenceHeaderInfo Vp9BitstreamParser::ParseFromFrame(const uint8_t* d
         sh.bit_depth = 8;
     }
 
+    // ❗ 这段的坑：ColorRange 对**所有 profile** 都无条件存在，而 profile 1/3
+    // 在它前面/后面各多一位 reserved_zero。旧实现把"有没有 ColorRange"和
+    // "profile 是不是 1/3"绑成同一个 has_range_flag，于是两个方向各错 1 位：
+    //   * 非 RGB + profile 0/2：少读 ColorRange  → frame_size 提前 1 位，
+    //     高度读成 32822（> 32768）→ 整份作废，present=false；
+    //   * RGB + profile 1/3：多读一个不存在的 reserved_zero → 192x108 读成
+    //     383x215（191<<1|1、107<<1|1）。
+    // 两个分支必须一起改，只补 ColorRange 会把 RGB 分支继续留在错的状态。
     sh.color_space = static_cast<model::Vp9ColorSpace>(static_cast<int>(reader.ReadBits(3)));
-    const bool compos_srgb = (sh.color_space == model::Vp9ColorSpace::Srgb);
-    const bool has_range_flag = (sh.profile == 1 || sh.profile == 3);
-    if (!compos_srgb) {
-        if (has_range_flag) {
-            sh.color_range_full = reader.ReadBit() != 0;
+    const bool is_444_profile = (sh.profile == 1 || sh.profile == 3);
+    if (sh.color_space != model::Vp9ColorSpace::Srgb) {
+        if (is_444_profile) {
+            // reserved_zero —— profile 1/3 的非 RGB 分支独有，必须为 0
+            if (reader.ReadBit() != 0)
+                return sh;
         }
-        if (sh.profile == 1 || sh.profile == 3) {
+        sh.color_range_full = reader.ReadBit() != 0; // 所有 profile 都有
+        if (is_444_profile) {
             sh.subsampling_x = static_cast<int>(reader.ReadBit());
             sh.subsampling_y = static_cast<int>(reader.ReadBit());
-            reader.SkipBits(1); // reserved_zero
+            // reserved_zero —— 同上，非零即违反规范
+            if (reader.ReadBit() != 0)
+                return sh;
         } else {
             sh.subsampling_x = 1;
             sh.subsampling_y = 1;
         }
     } else {
-        if (has_range_flag) {
-            sh.color_range_full = reader.ReadBit() != 0;
-        }
+        // RGB 分支：只有 ColorRange，没有 subsampling、也没有 reserved_zero
+        sh.color_range_full = reader.ReadBit() != 0;
         sh.subsampling_x = 0;
         sh.subsampling_y = 0;
-        if (has_range_flag) {
-            reader.SkipBits(1); // reserved_zero
-        }
     }
     if (reader.HasError())
         return sh;

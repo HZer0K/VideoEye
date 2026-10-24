@@ -201,7 +201,11 @@ void AnalysisInputSession::FillContainerFacts(model::AnalysisResult& result) {
         bool mp4_ok = false;
         {
             VE_PERF("Mp4SampleTableAnalyzer::AnalyzeFile(诊断扫描)");
-            mp4_ok = mp4_analyzer.AnalyzeFile(file_path_, result.mp4_samples, options_.mp4_sample_table_options);
+            // 第 4 个参数是取消令牌。以前只传 3 个 → 走默认 nullptr，
+            // 样本表展开（长片动辄上亿个样本）这一大段完全不响应取消，
+            // 用户点了取消还要等到它跑完。容器页那条路径一直是传的。
+            mp4_ok = mp4_analyzer.AnalyzeFile(file_path_, result.mp4_samples, options_.mp4_sample_table_options,
+                                              cancel_source_);
         }
         if (mp4_ok) {
             result.mp4_samples_analyzed = true;

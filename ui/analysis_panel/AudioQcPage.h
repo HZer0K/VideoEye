@@ -43,6 +43,11 @@ public:
     // 只换报告（用户在「规则与阈值」页改了规则后重新评估）再刷一次
     void SetQcReport(const model::QcReport& qc_report);
 
+    // 判定表的固定规则条数（= .cpp 里 kAudioQcRuleIds 的长度）。
+    // 行序是页面契约，测试与侧栏都靠它对齐：新增一条 audio.* 规则只需改实现一处，
+    // 不必再去测试里改魔法数字。
+    static int VerdictRuleCount();
+
     // 面板发起扫描前调用：把 UI 上的阈值同步进 AnalysisOptions
     void FillScanOptions(videoeye::AnalysisOptions& options) override;
 

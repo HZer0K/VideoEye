@@ -56,11 +56,22 @@ private:
 // ADTS
 // ---------------------------------------------------------------------------
 
+// 造一个"头 + 补齐到声明帧长"的完整帧。
+// ❗ ParseAdts 现在会校验"声明帧长 ≤ 本包剩余字节"：只给 7 字节头会被判成
+// 截断（那正是旧实现漏掉的检查）。所以测头字段时必须把帧补齐。
+std::vector<uint8_t> MakeAdtsFrame(const std::vector<uint8_t>& header, int frame_length) {
+    std::vector<uint8_t> data = header;
+    if (static_cast<int>(data.size()) < frame_length) {
+        data.resize(static_cast<size_t>(frame_length), 0x00);
+    }
+    return data;
+}
+
 TEST(AudioBitstreamParserTest, AdtsBasicFields) {
     // MPEG-4 / AAC LC / 44100 / 双声道 / 帧长 100 / 每帧 1 个 raw_data_block
-    const uint8_t data[7] = {0xFF, 0xF1, 0x50, 0x80, 0x0C, 0x80, 0x00};
+    const std::vector<uint8_t> data = MakeAdtsFrame({0xFF, 0xF1, 0x50, 0x80, 0x0C, 0x80, 0x00}, 100);
     AdtsHeader header;
-    ASSERT_TRUE(AudioBitstreamParser::ParseAdts(data, sizeof(data), header));
+    ASSERT_TRUE(AudioBitstreamParser::ParseAdts(data.data(), data.size(), header));
     EXPECT_EQ(header.mpeg_version, 4);
     EXPECT_EQ(header.audio_object_type, 2); // profile 1 + 1
     EXPECT_EQ(header.sampling_frequency_index, 4);
@@ -71,13 +82,14 @@ TEST(AudioBitstreamParserTest, AdtsBasicFields) {
     EXPECT_EQ(header.num_raw_data_blocks, 0);
     EXPECT_TRUE(header.protection_absent);
     EXPECT_EQ(header.header_bytes, 7);
+    EXPECT_FALSE(header.truncated);
 }
 
 TEST(AudioBitstreamParserTest, AdtsMpeg2AndCrc) {
     // data[1] = 0xF8：1111 + ID=1(MPEG-2) + layer=00 + protection_absent=0（要 9 字节头）
-    const uint8_t data[9] = {0xFF, 0xF8, 0x50, 0x80, 0x0C, 0x80, 0x00, 0xAA, 0xBB};
+    const std::vector<uint8_t> data = MakeAdtsFrame({0xFF, 0xF8, 0x50, 0x80, 0x0C, 0x80, 0x00, 0xAA, 0xBB}, 100);
     AdtsHeader header;
-    ASSERT_TRUE(AudioBitstreamParser::ParseAdts(data, sizeof(data), header));
+    ASSERT_TRUE(AudioBitstreamParser::ParseAdts(data.data(), data.size(), header));
     EXPECT_EQ(header.mpeg_version, 2);
     EXPECT_FALSE(header.protection_absent);
     EXPECT_EQ(header.header_bytes, 9);
@@ -94,11 +106,49 @@ TEST(AudioBitstreamParserTest, AdtsRejectsBadSyncAndShortFrame) {
     EXPECT_FALSE(AudioBitstreamParser::ParseAdts(nullptr, 0, header));
 }
 
+TEST(AudioBitstreamParserTest, AdtsTruncatedFrameIsNotValid) {
+    // 声明帧长 100、实际只有 7 字节：头字段全都读对了，但这个包不是有效帧。
+    // 旧实现 valid=true → 调用方 ++parsed_packets，损坏数据被算成解析成功。
+    const uint8_t data[7] = {0xFF, 0xF1, 0x50, 0x80, 0x0C, 0x80, 0x00};
+    AdtsHeader header;
+    EXPECT_FALSE(AudioBitstreamParser::ParseAdts(data, sizeof(data), header));
+    EXPECT_TRUE(header.truncated) << "必须能区分\"包被截断\"和\"根本不是 ADTS\"";
+    EXPECT_FALSE(header.valid);
+    // 头字段仍然读出来了，方便排查
+    EXPECT_EQ(header.sample_rate, 44100);
+    EXPECT_EQ(header.frame_length, 100);
+}
+
+TEST(AudioBitstreamParserTest, AdtsRejectsReservedSampleRateIndex) {
+    // sampling_frequency_index = 13（保留值）/ 15（escape）：ADTS 头里没有真采样率，
+    // 旧实现 sample_rate=0 却仍判 valid。
+    for (int index : {13, 14, 15}) {
+        BitWriter w;
+        w.Put(0xFFF, 12); // syncword
+        w.Put(0, 1);      // ID = MPEG-4
+        w.Put(0, 2);      // layer
+        w.Put(1, 1);      // protection_absent
+        w.Put(1, 2);      // profile
+        w.Put(static_cast<uint32_t>(index), 4);
+        w.Put(0, 1);
+        w.Put(2, 3);    // channel_configuration
+        w.Put(0, 4);    // 帧长高位（后面补齐）
+        w.Put(100, 13); // frame_length = 100
+        w.Put(0, 11);   // buffer fullness
+        w.Put(0, 2);    // num_raw_data_blocks
+        w.Align();
+        const std::vector<uint8_t> frame = MakeAdtsFrame(w.bytes(), 100);
+        AdtsHeader header;
+        EXPECT_FALSE(AudioBitstreamParser::ParseAdts(frame.data(), frame.size(), header))
+            << "sampling_frequency_index=" << index << " 是保留值，不该判有效";
+    }
+}
+
 TEST(AudioBitstreamParserTest, AdtsMultipleFramesPerPacket) {
     // num_raw_data_blocks = 2 -> 每帧 3 个 AAC 帧
-    const uint8_t data[7] = {0xFF, 0xF1, 0x50, 0x80, 0x0C, 0x80, 0x02};
+    const std::vector<uint8_t> data = MakeAdtsFrame({0xFF, 0xF1, 0x50, 0x80, 0x0C, 0x80, 0x02}, 100);
     AdtsHeader header;
-    ASSERT_TRUE(AudioBitstreamParser::ParseAdts(data, sizeof(data), header));
+    ASSERT_TRUE(AudioBitstreamParser::ParseAdts(data.data(), data.size(), header));
     EXPECT_EQ(header.num_raw_data_blocks, 2);
 }
 
@@ -312,15 +362,50 @@ TEST(AudioBitstreamParserTest, OpusHeadWithMagic) {
     EXPECT_EQ(head.mapping_family, 0);
 }
 
-TEST(AudioBitstreamParserTest, OpusHeadWithoutMagicIsDops) {
-    // MP4 的 dOps 没有 magic，直接从 version 开始
-    std::vector<uint8_t> data = {0, 6, 0x38, 0x01, 0x80, 0xBB, 0x00, 0x00, 0x00, 0x00, 0x01, 2, 1, 0, 1, 2, 3, 4, 5};
+TEST(AudioBitstreamParserTest, OpusDopsIsBigEndian) {
+    // MP4 的 dOps（ISO/IEC 14496-3）是**大端**，且没有 "OpusHead" magic。
+    // 旧实现只切了 offset、字节序仍按小端读 → pre_skip=14337（应 312）、
+    // input_sample_rate 读成负数。偏移和字节序必须在同一个分支里一起决定。
+    const std::vector<uint8_t> data = {
+        0,                            // Version
+        6,                            // OutputChannelCount
+        0x01, 0x38,                   // PreSkip = 312（大端）
+        0x00, 0x00, 0xBB, 0x80,       // InputSampleRate = 48000（大端）
+        0xFF, 0x00,                   // OutputGain = -256 (Q7.8)
+        1,                            // ChannelMappingFamily = 1
+        2,    1,                      // StreamCount / CoupledCount
+        0,    1,    2,    3,    4, 5, // ChannelMapping
+    };
     OpusHead head;
-    ASSERT_TRUE(AudioBitstreamParser::ParseOpusHead(data.data(), data.size(), head));
+    ASSERT_TRUE(AudioBitstreamParser::ParseDOps(data.data(), data.size(), head));
+    EXPECT_TRUE(head.big_endian);
     EXPECT_EQ(head.channels, 6);
+    EXPECT_EQ(head.pre_skip, 312);
+    EXPECT_EQ(head.input_sample_rate, 48000);
+    EXPECT_EQ(head.output_gain_q8, -256);
     EXPECT_EQ(head.mapping_family, 1);
     EXPECT_EQ(head.stream_count, 2);
     EXPECT_EQ(head.coupled_count, 1);
+
+    // 自动判定入口（按有没有 magic 决定 offset 与字节序）也要给出同样的值
+    OpusHead auto_head;
+    ASSERT_TRUE(AudioBitstreamParser::ParseOpusHead(data.data(), data.size(), auto_head));
+    EXPECT_EQ(auto_head.pre_skip, 312);
+    EXPECT_EQ(auto_head.input_sample_rate, 48000);
+}
+
+TEST(AudioBitstreamParserTest, MinimalDops11BytesIsAccepted) {
+    // 合法最小 dOps 正好 11 字节（mapping_family = 0 时没有映射表）。
+    // 旧实现按 size < 19 直接拒绝，把合法的 MP4 Opus 配置整个丢掉。
+    const std::vector<uint8_t> data = {0, 2, 0x01, 0x38, 0x00, 0x00, 0xBB, 0x80, 0x00, 0x00, 0x00};
+    OpusHead head;
+    ASSERT_TRUE(AudioBitstreamParser::ParseDOps(data.data(), data.size(), head));
+    EXPECT_EQ(head.channels, 2);
+    EXPECT_EQ(head.pre_skip, 312);
+    EXPECT_EQ(head.input_sample_rate, 48000);
+
+    // 10 字节就不够了
+    EXPECT_FALSE(AudioBitstreamParser::ParseDOps(data.data(), data.size() - 1, head));
 }
 
 TEST(AudioBitstreamParserTest, OpusTocHybridFullband20ms) {
@@ -347,6 +432,35 @@ TEST(AudioBitstreamParserTest, OpusTocCeltFramesAndStereo) {
     EXPECT_TRUE(toc.stereo);
     EXPECT_EQ(toc.channels, 2);
     EXPECT_EQ(toc.frame_count, 3);
+}
+
+TEST(AudioBitstreamParserTest, OpusTocRejectsOverlongAndMissingLengthBytes) {
+    // 1) 60 ms × 3 帧 = 180 ms > 上限 120 ms（RFC 6716 §3.2.5）→ 必须拒绝。
+    //    config 3 = SILK/WB/60ms，code 3 + 第二字节 M=3。
+    const uint8_t overlong[2] = {static_cast<uint8_t>((3 << 3) | 0x03), 0x03};
+    OpusToc toc;
+    EXPECT_FALSE(AudioBitstreamParser::ParseOpusToc(overlong, sizeof(overlong), toc));
+
+    // 2) code 1（两帧 CBR）但只有 1 字节：缺 vbr 标志所在的第 2 字节 → 拒绝。
+    // 旧实现把 "TOC 读得出来" 当成 "包有效"，frame_count 直接给 2。
+    const uint8_t short_cbr[1] = {static_cast<uint8_t>((3 << 3) | 0x01)};
+    EXPECT_FALSE(AudioBitstreamParser::ParseOpusToc(short_cbr, sizeof(short_cbr), toc));
+
+    // 3) 同样的 code 1 补上第 2 字节（vbr=0）就合法：60ms × 2 = 120ms 正好在上限
+    const uint8_t cbr[2] = {static_cast<uint8_t>((3 << 3) | 0x01), 0x00};
+    ASSERT_TRUE(AudioBitstreamParser::ParseOpusToc(cbr, sizeof(cbr), toc));
+    EXPECT_EQ(toc.frame_count, 2);
+    EXPECT_FALSE(toc.vbr);
+}
+
+TEST(AudioBitstreamParserTest, OpusTocReadsVbrAndPaddingFlags) {
+    // code 3 + vbr=1 + padding=1 + M=1 → 1 帧、两个标志都置位
+    const uint8_t data[3] = {static_cast<uint8_t>((31 << 3) | 0x03), 0xC1, 0x00};
+    OpusToc toc;
+    ASSERT_TRUE(AudioBitstreamParser::ParseOpusToc(data, sizeof(data), toc));
+    EXPECT_TRUE(toc.vbr);
+    EXPECT_TRUE(toc.padding);
+    EXPECT_EQ(toc.frame_count, 1);
 }
 
 // ---------------------------------------------------------------------------

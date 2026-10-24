@@ -501,10 +501,15 @@ uint64_t TotalSampleBytes(const videoeye::StszTable& stsz, uint32_t sample_count
 
 // 按 stts/ctts/stsc/stco 展开逐样本信息。
 // 大文件受 options.max_samples_per_track 限制（只展开前 N 个，表级校验照做）。
-void ExpandSamples(const IsobmffTrack& src, model::Mp4TrackSampleTable& t, uint32_t max_samples) {
+// 返回 false = 被取消（样本表展开到一半）。
+//
+// ❗ 取消只在"每条轨之间"检查是不够的：一条 2 小时的轨就有一两百万个样本，
+// 展开这一段是全流程里最长的单块工作。这里按块做 checkpoint。
+bool ExpandSamples(const IsobmffTrack& src, model::Mp4TrackSampleTable& t, uint32_t max_samples,
+                   const std::atomic<bool>* cancel) {
     const uint32_t n = t.stsz_sample_count;
     if (n == 0)
-        return;
+        return true;
 
     const uint32_t limit = (max_samples > 0) ? std::min(n, max_samples) : n;
     t.samples_truncated = (limit < n);
@@ -526,6 +531,7 @@ void ExpandSamples(const IsobmffTrack& src, model::Mp4TrackSampleTable& t, uint3
     size_t ctts_idx = 0, ctts_used = 0;
     int64_t dts = 0;
     uint32_t produced = 0;
+    uint32_t next_cancel_check = 4096;
 
     for (uint32_t c = 1; c <= chunk_count && produced < limit; ++c) {
         // 找到覆盖当前 chunk 的 stsc 条目（first_chunk 升序，1-based）
@@ -579,6 +585,12 @@ void ExpandSamples(const IsobmffTrack& src, model::Mp4TrackSampleTable& t, uint3
             offset += size;
             dts += static_cast<int64_t>(duration);
         }
+        // 每展开 4096 个样本看一次取消（以 chunk 为粒度检查，够密且几乎不花钱）
+        if (produced >= next_cancel_check) {
+            if (infrastructure::Checkpoint(cancel))
+                return false;
+            next_cancel_check = produced + 4096;
+        }
     }
 
     // 展开数量不足又不是被上限截断的，说明表本身不自洽（stsc/stsz/stco 对不上）
@@ -589,9 +601,11 @@ void ExpandSamples(const IsobmffTrack& src, model::Mp4TrackSampleTable& t, uint3
     if (!t.samples.empty()) {
         t.first_sample_cts = t.samples.front().cts;
     }
+    return true;
 }
 
-void CollectTrack(const IsobmffTrack& src, model::Mp4TrackSampleTable& t, const Mp4SampleTableOptions& options) {
+bool CollectTrack(const IsobmffTrack& src, model::Mp4TrackSampleTable& t, const Mp4SampleTableOptions& options,
+                  const std::atomic<bool>* cancel) {
     t.track_id = src.track_id;
     t.type = src.TypeName();
     t.codec = src.codec;
@@ -631,10 +645,12 @@ void CollectTrack(const IsobmffTrack& src, model::Mp4TrackSampleTable& t, const 
     }
 
     if (options.expand_samples) {
-        ExpandSamples(src, t, options.max_samples_per_track);
+        if (!ExpandSamples(src, t, options.max_samples_per_track, cancel))
+            return false;
     } else {
         t.samples_truncated = (t.stsz_sample_count > 0);
     }
+    return true;
 }
 
 model::Mp4FragmentInfo ConvertFragment(const videoeye::IsobmffFragment& f) {
@@ -712,7 +728,11 @@ bool Mp4SampleTableAnalyzer::AnalyzeFile(const std::string& file_path, model::Mp
             return false;
         }
         model::Mp4TrackSampleTable t;
-        CollectTrack(src, t, options);
+        if (!CollectTrack(src, t, options, cancel)) {
+            out.valid = false;
+            out.error_message = "已取消";
+            return false;
+        }
         out.tracks.push_back(std::move(t));
     }
 

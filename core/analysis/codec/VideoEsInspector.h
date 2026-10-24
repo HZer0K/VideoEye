@@ -45,6 +45,21 @@ public:
     void Reset(int codec_id);
     void Reset(int codec_id, const Options& options);
 
+    // NAL 的封装方式。
+    //
+    // ❗ 这个必须显式告诉巡检器：MP4/MOV/fMP4 的媒体包是 `[4 字节长度][NAL]`，
+    // 一条起始码都没有。只按 Annex B 抽的话结果是**零个 NAL** —— 而零个 NAL
+    // 在外部看来和"这段码流没有 slice/SEI"完全一样，是一整条功能的静默失效。
+    enum class NalFraming {
+        Auto = 0,       // 逐包判定：先看起始码，再看长度前缀链是否自洽
+        AnnexB,         // 强制按起始码切
+        LengthPrefixed, // 强制按 prefix_bytes 宽度的长度前缀切
+    };
+
+    // prefix_bytes: 0 = 未知（Auto 时按 4 → 2 → 1 依次试）。
+    // 宽度来自 avcC/hvcC 的 lengthSizeMinusOne + 1，调用方已解析过就直接给。
+    void SetNalFraming(NalFraming framing, int prefix_bytes = 0);
+
     // 参数集已解出的情况下配置它们：slice QP 需要 PPS 的 init_qp 作基准，
     // slice header 的位偏移需要 SPS 的几个开关。拿不到也能跑，只是 QP 判为无效。
     void SetH264ParameterSets(const model::H264SpsInfo& sps, const model::H264PpsInfo& pps);
@@ -76,18 +91,24 @@ private:
     void InspectHevc(const uint8_t* data, size_t size);
     void InspectAv1(const uint8_t* data, size_t size);
 
+    // 按当前 framing 把一段包字节切成 NAL 列表（Annex B / 长度前缀两条路）
+    std::vector<NalUnit> SplitNalUnits(const uint8_t* data, size_t size, NalSyntax syntax);
+
     // H.264 / HEVC 的 SEI payload 结构完全相同：都会进这里
     void ParseSeiRbsp(const uint8_t* data, size_t size, bool is_hevc);
     void HandleSeiPayload(int payload_type, const uint8_t* p, size_t n);
 
     // H.264 slice_header()：走到 slice_qp_delta 为止
-    bool ParseH264SliceHeader(const uint8_t* data, size_t size, bool is_idr, int& slice_type, int& slice_qp);
+    bool ParseH264SliceHeader(const uint8_t* data, size_t size, bool is_idr, int nal_ref_idc, int& slice_type,
+                              int& slice_qp, bool& first_slice_of_picture);
 
     int codec_id_ = 0;
     Options options_;
     bool enabled_ = false;
     bool done_ = false;
     int packets_ = 0;
+    NalFraming framing_ = NalFraming::Auto;
+    int prefix_bytes_ = 0;
 
     model::H264SpsInfo h264_sps_;
     model::H264PpsInfo h264_pps_;
@@ -96,8 +117,9 @@ private:
     bool has_h264_params_ = false;
 
     // 累积态（Finish() 时汇总进 result_）
-    std::vector<int> slice_types_; // 0=P 1=B 2=I ...（H.264 的 slice_type 值）
+    std::vector<int> slice_types_; // 已归一化到 0..4（H.264 的 slice_type % 5）
     std::vector<int> slice_qps_;
+    int first_slice_count_ = 0; // first_mb_in_slice == 0 的 slice 数（≈ 帧数）
 
     model::SliceSeiSummary result_;
 };

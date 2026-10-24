@@ -452,7 +452,7 @@ model::H264PpsInfo H264BitstreamParser::ParsePpsFromNalUnit(const videoeye::NalU
     pps.pic_parameter_set_id = static_cast<int>(reader.ReadUE());
     pps.seq_parameter_set_id = static_cast<int>(reader.ReadUE());
 
-    reader.SkipBits(1); // entropy_coding_mode_flag
+    pps.entropy_coding_mode_flag = reader.ReadBit();
     // bottom_field_pic_order_in_frame_present_flag：slice_header() 里要不要
     // 读 delta_pic_order_cnt_bottom / delta_pic_order_cnt[1] 的一半判据。
     // 以前直接 SkipBits 丢掉 —— 不解 slice 时无所谓，解 slice QP 时缺它必错位。

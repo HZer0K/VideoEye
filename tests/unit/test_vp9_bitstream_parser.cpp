@@ -85,20 +85,23 @@ std::vector<uint8_t> BuildVp9Header(const Vp9HeaderSpec& s) {
         w.PutBool(s.ten_or_twelve_bit != 0);
     }
     w.Put(static_cast<uint32_t>(s.color_space), 3);
-    const bool has_range = (s.profile == 1 || s.profile == 3);
+    // 规范 6.2.2 color_config() 的逐元素顺序，**不要**照抄实现里的分支条件：
+    //   非 RGB：profile 1/3 先有前置 reserved_zero → ColorRange（所有 profile 都有）
+    //           → profile 1/3 才有 subsampling_x/y + 后置 reserved_zero
+    //   RGB   ：只有 ColorRange，没有 subsampling、没有 reserved_zero
+    // 旧版本这里把 ColorRange 也绑在 profile 1/3 上（与实现的同一个错误），
+    // 于是"测试和解析器一起错" —— 383x215 那种错值永远暴露不出来。
     if (s.color_space != static_cast<int>(Vp9ColorSpace::Srgb)) {
-        if (has_range)
-            w.PutBool(s.color_range_full);
-        if (has_range) {
+        if (s.profile == 1 || s.profile == 3)
+            w.Put(0, 1);               // 前置 reserved_zero
+        w.PutBool(s.color_range_full); // ColorRange
+        if (s.profile == 1 || s.profile == 3) {
             w.PutBool(s.subsampling_x != 0);
             w.PutBool(s.subsampling_y != 0);
-            w.Put(0, 1); // reserved_zero
+            w.Put(0, 1); // 后置 reserved_zero
         }
     } else {
-        if (has_range)
-            w.PutBool(s.color_range_full);
-        if (has_range)
-            w.Put(0, 1);
+        w.PutBool(s.color_range_full); // RGB 分支：只有这一位
     }
     w.Put(static_cast<uint32_t>(s.frame_width - 1), 16);
     w.Put(static_cast<uint32_t>(s.frame_height - 1), 16);
@@ -225,6 +228,75 @@ TEST(Vp9BitstreamParserTests, RejectsGarbage) {
     const std::vector<uint8_t> tiny{0x82, 0x49};
     EXPECT_FALSE(Vp9BitstreamParser::LooksLikeKeyFrame(tiny.data(), tiny.size()));
     EXPECT_FALSE(Vp9BitstreamParser::ParseFromFrame(nullptr, 0).present);
+}
+
+TEST(Vp9BitstreamParserTests, Profile0FullRangeBitIsNotDropped) {
+    // profile 0 也有 ColorRange —— 旧实现把它绑在 profile 1/3 上，这一位根本没读，
+    // 于是 frame_size 整体提前 1 位：高度读到 32822 > 32768 → 整份作废（present=false）。
+    Vp9HeaderSpec spec;
+    spec.profile = 0;
+    spec.color_range_full = true;
+    spec.frame_width = 1280;
+    spec.frame_height = 720;
+    const std::vector<uint8_t> frame = BuildVp9Header(spec);
+
+    const auto sh = Vp9BitstreamParser::ParseFromFrame(frame.data(), frame.size());
+    ASSERT_TRUE(sh.present);
+    EXPECT_TRUE(sh.color_range_full);
+    EXPECT_EQ(sh.frame_width, 1280);
+    EXPECT_EQ(sh.frame_height, 720);
+}
+
+TEST(Vp9BitstreamParserTests, Profile1RgbKeepsExactFrameSize) {
+    // 曾经读成 383x215（191<<1|1、107<<1|1）：RGB 分支多读了一位不存在的
+    // reserved_zero，把整段 frame_size 往后推了 1 位。
+    Vp9HeaderSpec spec;
+    spec.profile = 1;
+    spec.color_space = static_cast<int>(Vp9ColorSpace::Srgb);
+    spec.color_range_full = true;
+    spec.subsampling_x = 0;
+    spec.subsampling_y = 0;
+    spec.frame_width = 192;
+    spec.frame_height = 108;
+    const std::vector<uint8_t> frame = BuildVp9Header(spec);
+
+    const auto sh = Vp9BitstreamParser::ParseFromFrame(frame.data(), frame.size());
+    ASSERT_TRUE(sh.present);
+    EXPECT_EQ(sh.frame_width, 192);
+    EXPECT_EQ(sh.frame_height, 108);
+    EXPECT_EQ(sh.ColorSpaceName(), "sRGB");
+    EXPECT_EQ(sh.ChromaSubsamplingName(), "4:4:4");
+}
+
+TEST(Vp9BitstreamParserTests, DeletingColorRangeBitBreaksFrameSize) {
+    // 删位试验：把 color_config 里的 ColorRange 那一位删掉（= 旧实现的读法），
+    // 解析结果必须**不再**是原始尺寸。这条专门抓"少读一位还能凑出一个看似
+    // 合法的数"这类畸形 —— 只断言 present 的测试对它毫无办法。
+    Vp9HeaderSpec spec;
+    spec.profile = 0;
+    spec.frame_width = 192;
+    spec.frame_height = 108;
+
+    // 手写一份"漏掉 ColorRange"的头：其余部分与 BuildVp9Header 完全一致
+    BitWriter w;
+    w.Put(0x02, 2);
+    w.Put(0, 1);      // profile_low
+    w.Put(0, 1);      // profile_high
+    w.PutBool(false); // show_existing_frame
+    w.PutBool(false); // frame_type = KEY_FRAME
+    w.PutBool(true);  // show_frame
+    w.PutBool(false); // error_resilient_mode
+    w.Put(0x498342u, 24);
+    w.Put(2, 3); // color_space = BT.709
+    // ← 这里本应是 ColorRange 的 1 位，故意不写
+    w.Put(static_cast<uint32_t>(spec.frame_width - 1), 16);
+    w.Put(static_cast<uint32_t>(spec.frame_height - 1), 16);
+    w.PutBool(false); // render_size_different
+
+    const std::vector<uint8_t> frame = w.bytes();
+    const auto sh = Vp9BitstreamParser::ParseFromFrame(frame.data(), frame.size());
+    EXPECT_FALSE(sh.present && sh.frame_width == spec.frame_width && sh.frame_height == spec.frame_height)
+        << "少读一位后仍然解析出原尺寸，说明 ColorRange 这一位没有真正参与解析";
 }
 
 TEST(Vp9BitstreamParserTests, ColorSpaceToCicpMatchesFfmpeg) {

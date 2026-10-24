@@ -94,17 +94,22 @@ struct SliceSummary {
     std::string unsupported_reason;
 
     int slice_count = 0; // 解出的独立 slice 段数（不含 dependent slice）
-    int frames = 0;      // 非 dependent 的 VCL 单元数（近似一帧一个 slice）
+    int frames = 0;      // first_mb_in_slice == 0 的 slice 数（≈ 帧数）
     int type_i = 0;
     int type_p = 0;
     int type_b = 0;
-    int type_other = 0;
+    int type_other = 0; // SP / SI
 
     int qp_min = 0;
     int qp_max = 0;
     double qp_avg = 0.0;
-    // QP 是不是真的算了：需要 PPS 给出 pic_init_qp_minus26 作为基准。
-    // 拿不到 PPS 时只能把 slice_qp_delta 相加，那不是真的 QP —— 一律不算。
+    // 成功解出 QP 的 slice 数（qp_min/max/avg 的分母）。
+    // ❗ slice_count 可能大于它：slice header 解到一半失败时，类型分布算不出来、
+    // QP 更算不出来。把两者混为一个数会让"QP 均值"看着像覆盖了全部 slice。
+    int qp_parsed_slices = 0;
+    // QP 是不是真的算了：需要 PPS 给出 pic_init_qp_minus26 作为基准，且至少有一个
+    // slice 的 QP 通过取值范围校验。拿不到 PPS 时只能把 slice_qp_delta 相加，
+    // 那不是真的 QP —— 一律不算。
     bool qp_valid = false;
 
     // QP 曲线（已抽稀到 kMaxCurvePoints 个点以内，供 UI 画折线）

@@ -290,6 +290,64 @@ TEST(AudioQcAnalyzerTest, DurationMismatchIsReported) {
     EXPECT_EQ(result.metadata.bits_per_sample, 32);
 }
 
+TEST(AudioQcAnalyzerTest, CompletenessIsCompleteWhenCoverageMatches) {
+    PlanarAudio audio(2, kSampleRate * 4);
+    FillSine(audio, 1000.0, 0.1, kSampleRate);
+
+    AudioQcAnalyzer analyzer;
+    analyzer.Reset();
+    analyzer.SetStreamInfo(kSampleRate, 2, "fltp", 32);
+    analyzer.SetDurations(4.0, 4.0, 4.0, true);
+    analyzer.OnSamples(audio.ptrs.data(), audio.Frames(), 0.0);
+    const AudioQcResult result = analyzer.Finish();
+
+    EXPECT_EQ(result.completeness, AudioQcResult::Completeness::Complete);
+    EXPECT_NEAR(result.coverage_ratio, 1.0, 0.01);
+    EXPECT_NEAR(result.covered_seconds, 4.0, 0.05);
+    EXPECT_EQ(result.decode_error_packets, 0);
+    EXPECT_EQ(result.dropped_frames, 0);
+}
+
+TEST(AudioQcAnalyzerTest, DroppedFramesMakeResultPartial) {
+    // 只解出 4 s、流声明 10 s 且中间丢过帧 —— 旧模型里这仍然只是一句 analyzed=true，
+    // 报表照旧把"4 秒的响度"当成整条音轨的结论。
+    PlanarAudio audio(2, kSampleRate * 4);
+    FillSine(audio, 1000.0, 0.1, kSampleRate);
+
+    AudioQcAnalyzer analyzer;
+    analyzer.Reset();
+    analyzer.SetStreamInfo(kSampleRate, 2, "fltp", 32);
+    analyzer.SetDurations(10.0, 10.0, 10.0, true);
+    analyzer.OnSamples(audio.ptrs.data(), audio.Frames(), 0.0);
+    analyzer.NoteDroppedFrame(kSampleRate * 6); // 6 秒被丢弃
+    analyzer.NoteDecodeErrorFrame();
+    const AudioQcResult result = analyzer.Finish();
+
+    EXPECT_EQ(result.completeness, AudioQcResult::Completeness::Partial);
+    EXPECT_NEAR(result.coverage_ratio, 0.4, 0.01);
+    EXPECT_EQ(result.dropped_frames, 1);
+    EXPECT_EQ(result.dropped_samples, kSampleRate * 6);
+    EXPECT_EQ(result.decode_error_frames, 1);
+    // 结论必须能解释"为什么只覆盖 40%"
+    bool explained = false;
+    for (const auto& note : result.notes) {
+        if (note.find("仅覆盖") != std::string::npos)
+            explained = true;
+    }
+    EXPECT_TRUE(explained);
+}
+
+TEST(AudioQcAnalyzerTest, NoSamplesWithDeclaredDurationIsFailed) {
+    AudioQcAnalyzer analyzer;
+    analyzer.Reset();
+    analyzer.SetStreamInfo(kSampleRate, 2, "fltp", 32);
+    analyzer.SetDurations(10.0, 10.0, 10.0, true);
+    const AudioQcResult result = analyzer.Finish();
+
+    // 有声明时长却一个样本都没拿到 = 失败，不是"没跑"
+    EXPECT_EQ(result.completeness, AudioQcResult::Completeness::Failed);
+}
+
 TEST(AudioQcAnalyzerTest, LoudnessCurveIsPopulated) {
     PlanarAudio audio(2, kSampleRate * 4);
     FillSine(audio, 1000.0, 0.1, kSampleRate);

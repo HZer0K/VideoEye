@@ -64,6 +64,17 @@ public:
     // interleaved float 便捷入口（内部转为 planar 处理）
     void OnSamplesInterleaved(const float* data, int frames, double timestamp_seconds = -1.0);
 
+    // ---- 完整性记账 ----
+    // 调用方在"解码/重采样失败而丢数据"时必须记账，否则结果只能看到
+    // "analyzed=true"，看不出这条流的统计其实只覆盖了一小段。
+    void NoteDecodeErrorPacket() {
+        ++decode_error_packets_;
+    }
+    void NoteDecodeErrorFrame() {
+        ++decode_error_frames_;
+    }
+    void NoteDroppedFrame(int64_t samples_per_channel);
+
     // ---- 结果 ----
     const model::AudioQcResult& Finish();
     const model::AudioQcResult& result() const {
@@ -119,6 +130,12 @@ private:
     model::AudioQcResult result_;
     std::vector<ChannelState> channels_;
     std::vector<model::AudioChannelInfo> channel_info_;
+
+    // 完整性计数：Finish() 时写进 result_
+    int64_t decode_error_packets_ = 0;
+    int64_t decode_error_frames_ = 0;
+    int64_t dropped_frames_ = 0;
+    int64_t dropped_samples_ = 0;
 
     // 4× 过采样 FIR（零值内插 + Hann 窗 sinc，与 libebur128 同一设计）
     std::vector<double> interp_coeffs_;

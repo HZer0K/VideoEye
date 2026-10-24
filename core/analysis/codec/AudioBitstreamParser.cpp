@@ -217,7 +217,14 @@ bool AudioBitstreamParser::ParseAdts(const uint8_t* data, size_t size, AdtsHeade
     const int profile = (data[2] >> 6) & 0x03;
     out.audio_object_type = profile + 1;
     out.sampling_frequency_index = (data[2] >> 2) & 0x0F;
+    // 索引 13/14 是保留值、15 是 escape（真实采样率写在 AudioSpecificConfig 里，
+    // ADTS 头本身没有）。以前一律 AacSampleRateFromIndex → 0，却仍判 valid=true，
+    // 于是一条"采样率 0"的畸形容器还能得到"解析成功"。
+    if (out.sampling_frequency_index >= 13)
+        return false;
     out.sample_rate = AacSampleRateFromIndex(out.sampling_frequency_index);
+    if (out.sample_rate <= 0)
+        return false;
     out.channel_configuration = ((data[2] & 0x01) << 2) | ((static_cast<int>(data[3]) >> 6) & 0x03);
     out.channels = AacChannelsFromConfig(out.channel_configuration);
     out.frame_length = ((static_cast<int>(data[3]) & 0x03) << 11) | (static_cast<int>(data[4]) << 3) |
@@ -226,6 +233,12 @@ bool AudioBitstreamParser::ParseAdts(const uint8_t* data, size_t size, AdtsHeade
     out.header_bytes = out.protection_absent ? 7 : 9;
     if (out.frame_length < out.header_bytes)
         return false;
+    // 声明帧长超过本包剩余字节 = 包被截断。头字段全读对了，但这个包**不是**有效帧：
+    // 用 truncated 单独报告，调用方不能把它记成 parsed_packets。
+    if (static_cast<size_t>(out.frame_length) > size) {
+        out.truncated = true;
+        return false;
+    }
     out.valid = true;
     return true;
 }
@@ -522,27 +535,45 @@ bool AudioBitstreamParser::ParseAc3(const uint8_t* data, size_t size, bool force
 
 bool AudioBitstreamParser::ParseOpusHead(const uint8_t* data, size_t size, OpusHead& out) {
     out = OpusHead{};
-    if (data == nullptr || size < 19)
+    if (data == nullptr)
         return false;
 
+    // 偏移与字节序在同一个分支里一起定（RFC 7845 的 OpusHead 是小端；
+    // ISO/IEC 14496-3 的 dOps 是大端）。旧实现只切了 offset、却一律按小端读，
+    // 于是 MP4 的 pre_skip 读成 14337（应为 312）、input_rate 读成负数。
+    bool little_endian = false;
     size_t offset = 0;
-    const bool has_magic = size >= 8 && std::memcmp(data, "OpusHead", 8) == 0;
-    if (has_magic) {
+    if (size >= 8 && std::memcmp(data, "OpusHead", 8) == 0) {
+        little_endian = true;
         offset = 8;
         if (size < offset + 11)
-            return false;
+            return false; // 固定部分 11 字节
     } else {
-        // MP4 dOps：没有 "OpusHead" magic，直接是 version/channels/...
-        offset = 0;
+        little_endian = false; // dOps：没有 magic，从 version 开始
+        if (size < 11)
+            return false;
     }
 
+    const auto rd16 = [&](size_t i) {
+        const uint32_t b0 = data[offset + i];
+        const uint32_t b1 = data[offset + i + 1];
+        return static_cast<int>(little_endian ? (b1 << 8) | b0 : (b0 << 8) | b1);
+    };
+    const auto rd32 = [&](size_t i) {
+        const uint32_t b0 = data[offset + i];
+        const uint32_t b1 = data[offset + i + 1];
+        const uint32_t b2 = data[offset + i + 2];
+        const uint32_t b3 = data[offset + i + 3];
+        return static_cast<int>(little_endian ? (b3 << 24) | (b2 << 16) | (b1 << 8) | b0
+                                              : (b0 << 24) | (b1 << 16) | (b2 << 8) | b3);
+    };
+
+    out.big_endian = !little_endian;
     out.version = data[offset];
     out.channels = data[offset + 1];
-    out.pre_skip = static_cast<int>(data[offset + 2]) | (static_cast<int>(data[offset + 3]) << 8);
-    out.input_sample_rate = static_cast<int>(data[offset + 4]) | (static_cast<int>(data[offset + 5]) << 8) |
-                            (static_cast<int>(data[offset + 6]) << 16) | (static_cast<int>(data[offset + 7]) << 24);
-    const uint16_t gain = static_cast<uint16_t>(data[offset + 8]) | (static_cast<uint16_t>(data[offset + 9]) << 8);
-    out.output_gain_q8 = static_cast<int16_t>(gain);
+    out.pre_skip = rd16(2);
+    out.input_sample_rate = rd32(4);
+    out.output_gain_q8 = static_cast<int16_t>(rd16(8));
     out.mapping_family = data[offset + 10];
 
     if (out.mapping_family != 0) {
@@ -550,11 +581,21 @@ bool AudioBitstreamParser::ParseOpusHead(const uint8_t* data, size_t size, OpusH
             return false;
         out.stream_count = data[offset + 11];
         out.coupled_count = data[offset + 12];
-        if (out.channels > 0 && size < offset + 13 + out.channels)
+        if (out.channels > 0 && size < offset + 13 + static_cast<size_t>(out.channels))
             return false;
     }
     out.valid = out.version <= 15 && out.channels > 0;
     return out.valid;
+}
+
+bool AudioBitstreamParser::ParseDOps(const uint8_t* data, size_t size, OpusHead& out) {
+    out = OpusHead{};
+    if (data == nullptr || size < 11)
+        return false;
+    // dOps 一定没有 magic；有 magic 说明调用方给错了输入（那是 Ogg 的 OpusHead）
+    if (size >= 8 && std::memcmp(data, "OpusHead", 8) == 0)
+        return false;
+    return ParseOpusHead(data, size, out);
 }
 
 bool AudioBitstreamParser::ParseOpusToc(const uint8_t* data, size_t size, OpusToc& out) {
@@ -582,24 +623,36 @@ bool AudioBitstreamParser::ParseOpusToc(const uint8_t* data, size_t size, OpusTo
     out.bandwidth = kBandwidth[out.config];
     out.frame_duration_ms = kFrameMs[out.config];
 
+    // RFC 6716 §3.2.1：code 1 与 code 3 的第 2 个字节里都有 vbr 标志（code 3 还有
+    // padding 标志）—— 只有 toc 首字节时无法确认包结构，必须要求 size >= 2。
     switch (out.frame_count_code) {
     case 0:
         out.frame_count = 1;
         break;
     case 1:
-    case 2:
+        if (size < 2)
+            return false; // 缺 vbr 字节
+        out.vbr = (data[1] & 0x80) != 0;
         out.frame_count = 2;
+        break;
+    case 2:
+        out.frame_count = 2; // 2 帧 CBR，没有额外字节
         break;
     case 3:
         if (size < 2)
-            return false;
+            return false; // 缺 vbr/padding/M 字节
+        out.vbr = (data[1] & 0x80) != 0;
+        out.padding = (data[1] & 0x40) != 0;
         out.frame_count = data[1] & 0x3F;
         break;
     default:
         break;
     }
     out.channels = out.stereo ? 2 : 1;
-    out.valid = out.frame_count > 0 && out.frame_count <= 48;
+    // RFC 6716 §3.2.5：一包的总时长不得超过 120 ms。60ms×3 = 180ms 的 TOC
+    // 是畸形数据，以前因为只看 frame_count<=48 而被判 valid。
+    const double total_ms = out.frame_duration_ms * out.frame_count;
+    out.valid = out.frame_count > 0 && out.frame_count <= 48 && total_ms <= 120.0 + 1e-9;
     return out.valid;
 }
 

@@ -128,23 +128,27 @@ std::vector<uint8_t> ExtradataParser::ConvertLengthPrefixToAnnexB(const std::vec
                                                                   int prefix_bytes) {
 
     std::vector<uint8_t> result;
+    // ❗ prefix_bytes 只可能是 1 / 2 / 4（来自 avcC/hvcC 的 lengthSizeMinusOne + 1）。
+    // 以前三个分支都不命中时 nal_size 保持 0、pos 不前进 → 无限 push 起始码，
+    // 直接把调用方挂死。这是 public API，fuzz 可达，必须先挡掉非法宽度。
+    if (prefix_bytes != 1 && prefix_bytes != 2 && prefix_bytes != 4) {
+        return result;
+    }
     const uint8_t* pos = length_prefix.data();
     const uint8_t* end = pos + length_prefix.size();
 
     while (pos < end) {
-        // 读取长度前缀
+        // 读长度前缀
         uint32_t nal_size = 0;
 
         if (prefix_bytes == 1) {
-            if (pos >= end)
-                break;
             nal_size = *pos++;
         } else if (prefix_bytes == 2) {
             if (pos + 2 > end)
                 break;
             nal_size = (static_cast<uint32_t>(pos[0]) << 8) | pos[1];
             pos += 2;
-        } else if (prefix_bytes == 4) {
+        } else { // prefix_bytes == 4
             if (pos + 4 > end)
                 break;
             nal_size = (static_cast<uint32_t>(pos[0]) << 24) | (static_cast<uint32_t>(pos[1]) << 16) |
@@ -152,7 +156,8 @@ std::vector<uint8_t> ExtradataParser::ConvertLengthPrefixToAnnexB(const std::vec
             pos += 4;
         }
 
-        if (pos + nal_size > end)
+        // 严格前进：长度 0 或越界都必须收手，否则下面的 push 会把同一段重复输出
+        if (nal_size == 0 || static_cast<size_t>(end - pos) < nal_size)
             break;
 
         // 添加 Annex B 起始码
@@ -170,15 +175,105 @@ std::vector<uint8_t> ExtradataParser::ConvertLengthPrefixToAnnexB(const std::vec
     return result;
 }
 
+std::vector<NalUnit> ExtradataParser::ExtractLengthPrefixedNalUnits(const uint8_t* data, size_t size, NalSyntax syntax,
+                                                                    int prefix_bytes, bool* truncated) {
+    std::vector<NalUnit> result;
+    if (truncated != nullptr)
+        *truncated = false;
+    if (data == nullptr || size == 0)
+        return result;
+    if (prefix_bytes != 1 && prefix_bytes != 2 && prefix_bytes != 4)
+        return result;
+
+    const size_t header_len = (syntax == NalSyntax::Hevc || syntax == NalSyntax::Vvc) ? 2u : 1u;
+    size_t pos = 0;
+    while (pos + static_cast<size_t>(prefix_bytes) <= size) {
+        uint32_t nal_size = 0;
+        const uint8_t* p = data + pos;
+        if (prefix_bytes == 1) {
+            nal_size = p[0];
+        } else if (prefix_bytes == 2) {
+            nal_size = (static_cast<uint32_t>(p[0]) << 8) | p[1];
+        } else {
+            nal_size = (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+                       (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
+        }
+        pos += static_cast<size_t>(prefix_bytes);
+        if (nal_size == 0)
+            break; // 长度 0 不是合法 NAL，按畸形处理（不再往下猜）
+        if (static_cast<size_t>(size - pos) < nal_size) {
+            if (truncated != nullptr)
+                *truncated = true; // 包被截断，调用方要能区分
+            break;
+        }
+        if (nal_size < header_len)
+            break; // 连 NAL header 都不完整
+
+        const uint8_t* nal_ptr = data + pos;
+        NalUnit nal;
+        switch (syntax) {
+        case NalSyntax::Hevc:
+            nal = ParseHevcNalUnit(nal_ptr, nal_size);
+            break;
+        case NalSyntax::Vvc:
+            nal = ParseVvcNalUnit(nal_ptr, nal_size);
+            break;
+        case NalSyntax::H264:
+        case NalSyntax::Auto:
+        default:
+            nal = ParseH264NalUnit(nal_ptr, nal_size);
+            break;
+        }
+        // 转换器自身不改语义：payload 仍不含 NAL header，与 AnnexB 路径一致
+        nal.size = nal.data.size() > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(nal.data.size());
+        result.push_back(std::move(nal));
+        pos += nal_size;
+    }
+    return result;
+}
+
+bool ExtradataParser::LooksLikeLengthPrefixed(const uint8_t* data, size_t size, int prefix_bytes) {
+    if (data == nullptr || size == 0)
+        return false;
+    if (prefix_bytes != 1 && prefix_bytes != 2 && prefix_bytes != 4)
+        return false;
+
+    size_t pos = 0;
+    int nal_count = 0;
+    while (pos < size) {
+        if (pos + static_cast<size_t>(prefix_bytes) > size)
+            return false;
+        const uint8_t* p = data + pos;
+        uint32_t nal_size = 0;
+        if (prefix_bytes == 1) {
+            nal_size = p[0];
+        } else if (prefix_bytes == 2) {
+            nal_size = (static_cast<uint32_t>(p[0]) << 8) | p[1];
+        } else {
+            nal_size = (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+                       (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
+        }
+        pos += static_cast<size_t>(prefix_bytes);
+        // 长度必须能整除剩余字节：Annex B 的起始码字节流几乎不可能凑出这种链
+        if (nal_size == 0 || static_cast<size_t>(size - pos) < nal_size)
+            return false;
+        pos += nal_size;
+        ++nal_count;
+    }
+    // 至少要有一条，且整段被完整消耗（循环条件保证）
+    return nal_count > 0 && pos == size;
+}
+
 NalUnit ExtradataParser::ParseH264NalUnit(const uint8_t* data, size_t size) {
     NalUnit nal;
 
     if (size < 1)
         return nal;
 
-    // H.264 NAL header: [forbidden_zero_bit: 1][nal_unit_type: 5][nuh_layer_id: 6][nuh_temporal_id_plus1: 3]
+    // H.264 NAL header: [forbidden_zero_bit: 1][nal_ref_idc: 2][nal_unit_type: 5]
     uint8_t header = data[0];
-    nal.type = header & 0x1F; // 低 5 位
+    nal.type = header & 0x1F;               // 低 5 位
+    nal.nal_ref_idc = (header >> 5) & 0x03; // slice_header 的 dec_ref_pic_marking 判据
 
     // 检查是否为 IDR 帧
     if (nal.type == 5) { // CodedSliceDciIdr

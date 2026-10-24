@@ -152,6 +152,31 @@ JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
         loudness.Set("longest_silence_seconds", JNumber(result.audio_qc.longest_silence_seconds));
         loudness.Set("clipping_sample_count", JNumber(static_cast<double>(result.audio_qc.clipping_sample_count)));
         loudness.Set("channel_layout", JText(result.audio_qc.metadata.channel_layout));
+        // 完整性：只报 analyzed 的话，"只覆盖前 30 秒"和"完整跑完"在 JSON 里长得一样。
+        const char* completeness = "not_run";
+        switch (result.audio_qc.completeness) {
+        case model::AudioQcResult::Completeness::Complete:
+            completeness = "complete";
+            break;
+        case model::AudioQcResult::Completeness::Partial:
+            completeness = "partial";
+            break;
+        case model::AudioQcResult::Completeness::Unsupported:
+            completeness = "unsupported";
+            break;
+        case model::AudioQcResult::Completeness::Failed:
+            completeness = "failed";
+            break;
+        case model::AudioQcResult::Completeness::NotRun:
+            completeness = "not_run";
+            break;
+        }
+        loudness.Set("completeness", JText(completeness));
+        loudness.Set("coverage_ratio", JNumber(result.audio_qc.coverage_ratio));
+        loudness.Set("covered_seconds", JNumber(result.audio_qc.covered_seconds));
+        loudness.Set("decode_error_packets", JNumber(static_cast<double>(result.audio_qc.decode_error_packets)));
+        loudness.Set("decode_error_frames", JNumber(static_cast<double>(result.audio_qc.decode_error_frames)));
+        loudness.Set("dropped_frames", JNumber(static_cast<double>(result.audio_qc.dropped_frames)));
         metrics.Set("loudness", loudness);
     }
 

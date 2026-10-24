@@ -32,6 +32,10 @@ struct AdtsHeader {
     int header_bytes = 7;
     int num_raw_data_blocks = 0; // 每帧 AAC 帧数 = num_raw_data_blocks + 1
     bool protection_absent = true;
+    // 同步字与头字段都读对了，但声明的 frame_length 超过本包剩余字节。
+    // ❗ 这种包**不是**"解析成功"：以前 valid=true 让调用方 ++parsed_packets，
+    // 截断数据被算成解析成功，损坏率因此偏低。调用方必须单独看这个标志。
+    bool truncated = false;
 };
 
 // LATM/LOAS 的 StreamMuxConfig 关键字段
@@ -79,7 +83,10 @@ struct Ac3Header {
     int joc_complexity_index = -1;
 };
 
-// OpusHead（Ogg / Matroska / MP4 的 dOps 前 19 字节）
+// Opus 的配置头。两种封装**字节序不同**，字段却完全一样：
+//   * Ogg / Matroska：`OpusHead` magic + 小端（RFC 7845）
+//   * MP4 / MOV：`dOps` box 的主体，没有 magic + **大端**（ISO/IEC 14496-3）
+// 以前两条路共用一段小端解码，走 MP4 那条时 pre_skip / input_rate 全是垃圾数。
 struct OpusHead {
     bool valid = false;
     int version = 0;
@@ -90,15 +97,20 @@ struct OpusHead {
     int mapping_family = 0;
     int stream_count = 0;
     int coupled_count = 0;
+    bool big_endian = false; // 记录实际走的是哪条（dOps = true）
 };
 
-// Opus 包 TOC
+// Opus 包 TOC（RFC 6716 §3.1）
 struct OpusToc {
     bool valid = false;
     int config = 0;
     bool stereo = false;
     int frame_count_code = 0;
     int frame_count = 1;
+    // code 1/3 的第 2 个字节里带 vbr 标志；code 3 还有 padding 标志。
+    // "TOC 读得出来"和"包结构合法"是两件事，后者要靠这两个标志判断。
+    bool vbr = false;
+    bool padding = false;
     int mode = -1;      // 0 = SILK / 1 = Hybrid / 2 = CELT
     int bandwidth = -1; // 0..4
     double frame_duration_ms = 0.0;
@@ -134,7 +146,12 @@ public:
     // AC-3 / E-AC-3。force_eac3 由调用方按 codec id 给出；为 false 时按 AC-3 解析。
     static bool ParseAc3(const uint8_t* data, size_t size, bool force_eac3, Ac3Header& out);
 
+    // 自动判定封装：有 "OpusHead" magic 按 Ogg（小端、≥19 字节），
+    // 否则按 MP4 dOps（大端、≥11 字节）。偏移与字节序在**同一个分支里**一起定，
+    // 不拆成两个独立判据 —— 拆开就一定会出现"offset 对了、字节序错了"的组合。
     static bool ParseOpusHead(const uint8_t* data, size_t size, OpusHead& out);
+    // 明确来自 MP4 dOps（强制大端、无 magic）
+    static bool ParseDOps(const uint8_t* data, size_t size, OpusHead& out);
     static bool ParseOpusToc(const uint8_t* data, size_t size, OpusToc& out);
 
     static bool ParseAacAudioSpecificConfig(const uint8_t* data, size_t size, AacAudioSpecificConfig& out);

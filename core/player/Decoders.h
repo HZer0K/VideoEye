@@ -157,11 +157,23 @@ public:
     void Close();
 
 private:
+    // 按当前输入布局（重）建 swr。流中途改声道数/采样率时必须重建 ——
+    // swr 的输入布局是 Init 时按 codec_ctx_ 建的，之后不会自己跟着变，
+    // 拿旧布局去解释新帧会静默重采样错（5.1 → 7.1 那种完全不报错）。
+    bool RebuildSwr(const AVChannelLayout& in_layout, AVSampleFormat in_fmt, int in_rate);
+    bool SwrMatches(const AVChannelLayout& in_layout, AVSampleFormat in_fmt, int in_rate) const;
+
     AVCodecContext* codec_ctx_ = nullptr;
     AVFrame* frame_ = nullptr;
     SwrContext* swr_ctx_ = nullptr;
     int sample_rate_ = 0;
     int channels_ = 0;
+    // 已建 swr 时用的输入参数快照（用于逐帧比对）
+    AVChannelLayout swr_in_layout_{};
+    bool swr_in_layout_valid_ = false;
+    int swr_in_channels_ = 0;
+    int swr_in_sample_rate_ = 0;
+    int swr_in_fmt_ = -1;
     int64_t last_frame_pts_ = AV_NOPTS_VALUE;
     int last_frame_sample_count_ = 0;
     int last_frame_sample_rate_ = 0;

@@ -377,4 +377,141 @@ TEST(H264BitstreamParserTest, NalUnitTypeIdentification) {
     EXPECT_FALSE(H264BitstreamParser::IsPpsNalUnit(idr));
 }
 
+// ---------------------------------------------------------------------------
+// PPS 的 entropy_coding_mode_flag
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// MSB-first 位拼装器（PPS 字段都是 MSB-first）
+class PpsBitWriter {
+public:
+    void Put(uint32_t value, int bits) {
+        for (int i = bits - 1; i >= 0; --i) {
+            const int pos = static_cast<int>(bits_.size());
+            if (pos % 8 == 0)
+                bytes_.push_back(0);
+            const uint32_t bit = (value >> i) & 1u;
+            bytes_.back() |= static_cast<uint8_t>(bit << (7 - (pos % 8)));
+            bits_.push_back(bit != 0);
+        }
+    }
+    void PutUE(uint32_t n) {
+        const uint32_t x = n + 1;
+        int bits = 0;
+        for (uint32_t t = x; t > 0; t >>= 1)
+            ++bits;
+        Put(0, bits - 1);
+        Put(x, bits);
+    }
+    void PutSE(int v) {
+        PutUE(v <= 0 ? static_cast<uint32_t>(-2 * v) : static_cast<uint32_t>(2 * v - 1));
+    }
+    std::vector<uint8_t> bytes() const {
+        return bytes_;
+    }
+
+private:
+    std::vector<uint8_t> bytes_;
+    std::vector<bool> bits_;
+};
+
+// 按 7.3.2.2 顺序写一个最小 PPS（num_slice_groups = 1，无更多字段）
+std::vector<uint8_t> BuildPpsRbsp(bool entropy_coding_mode_flag) {
+    PpsBitWriter w;
+    w.PutUE(0);                                   // pic_parameter_set_id
+    w.PutUE(0);                                   // seq_parameter_set_id
+    w.Put(entropy_coding_mode_flag ? 1u : 0u, 1); // entropy_coding_mode_flag
+    w.Put(0, 1);                                  // bottom_field_pic_order_in_frame_present_flag
+    w.PutUE(0);                                   // num_slice_groups_minus1
+    w.PutUE(0);                                   // num_ref_idx_l0_default_active_minus1
+    w.PutUE(0);                                   // num_ref_idx_l1_default_active_minus1
+    w.Put(0, 1);                                  // weighted_pred_flag
+    w.Put(0, 2);                                  // weighted_bipred_idc
+    w.PutSE(0);                                   // pic_init_qp_minus26
+    w.PutSE(0);                                   // pic_init_qs_minus26
+    w.PutSE(0);                                   // chroma_qp_index_offset
+    w.Put(0, 1);                                  // deblocking_filter_control_present_flag
+    w.Put(0, 1);                                  // constrained_intra_pred_flag
+    w.Put(0, 1);                                  // redundant_pic_cnt_present_flag
+    std::vector<uint8_t> rbsp = w.bytes();
+    rbsp.push_back(0x80); // rbsp_trailing_bits
+    return rbsp;
+}
+
+} // namespace
+
+TEST(H264BitstreamParserTest, PpsKeepsEntropyCodingModeFlag) {
+    // 这一位决定 slice_header 里 cabac_init_idc 存不存在。
+    // 旧实现直接 SkipBits(1) 丢掉 —— P/B 帧的 slice header 于是整体错位一位。
+    const auto cavlc = H264BitstreamParser::ParsePpsFromNalUnit(MakePps(BuildPpsRbsp(false)));
+    ASSERT_TRUE(cavlc.present);
+    EXPECT_FALSE(cavlc.entropy_coding_mode_flag);
+
+    const auto cabac = H264BitstreamParser::ParsePpsFromNalUnit(MakePps(BuildPpsRbsp(true)));
+    ASSERT_TRUE(cabac.present);
+    EXPECT_TRUE(cabac.entropy_coding_mode_flag);
+}
+
+// ---------------------------------------------------------------------------
+// 长度前缀 → Annex B 转换：非法宽度必须立刻返回，不能死循环
+// ---------------------------------------------------------------------------
+
+TEST(ExtradataParserTest, ConvertLengthPrefixRejectsInvalidWidth) {
+    const std::vector<uint8_t> data = {0x00, 0x00, 0x00, 0x02, 0x65, 0x88};
+    // prefix_bytes 只可能是 1/2/4。其它值以前三个分支全不命中 → nal_size 恒 0、
+    // pos 不前进 → 一直 push 起始码，直接把调用方挂死。这里必须立刻返回空。
+    for (int width : {0, -1, 3, 5, 8, 16}) {
+        EXPECT_TRUE(videoeye::ExtradataParser::ConvertLengthPrefixToAnnexB(data, width).empty())
+            << "prefix_bytes=" << width << " 应当返回空而不是死循环";
+    }
+
+    // 长度为 0 也必须收手（同样是"永不前进"的一种）
+    const std::vector<uint8_t> zero_len = {0x00, 0x00, 0x00, 0x00, 0x65};
+    EXPECT_TRUE(videoeye::ExtradataParser::ConvertLengthPrefixToAnnexB(zero_len, 4).empty());
+}
+
+TEST(ExtradataParserTest, ExtractLengthPrefixedNalUnits) {
+    using videoeye::ExtradataParser;
+    using videoeye::NalSyntax;
+
+    // 两个 NAL：IDR slice（0x65 + 2 字节）与 SEI（0x06 + 1 字节），4 字节大端长度前缀
+    const std::vector<uint8_t> packet = {
+        0x00, 0x00, 0x00, 0x03, 0x65, 0x88, 0x84, 0x00, 0x00, 0x00, 0x02, 0x06, 0x05,
+    };
+    bool truncated = true;
+    const auto nals =
+        ExtradataParser::ExtractLengthPrefixedNalUnits(packet.data(), packet.size(), NalSyntax::H264, 4, &truncated);
+    ASSERT_EQ(nals.size(), 2u);
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ(nals[0].type, 5); // IDR slice
+    EXPECT_EQ(nals[0].nal_ref_idc, 3);
+    EXPECT_EQ(nals[0].data.size(), 2u);
+    EXPECT_EQ(nals[1].type, 6); // SEI
+    EXPECT_EQ(nals[1].nal_ref_idc, 0);
+
+    // 截断：声明的长度超过剩余字节 → 一个都不产出，但必须报 truncated
+    const std::vector<uint8_t> cut = {0x00, 0x00, 0x00, 0x09, 0x65, 0x88};
+    truncated = false;
+    const auto cut_nals =
+        ExtradataParser::ExtractLengthPrefixedNalUnits(cut.data(), cut.size(), NalSyntax::H264, 4, &truncated);
+    EXPECT_TRUE(cut_nals.empty());
+    EXPECT_TRUE(truncated);
+
+    // 非法宽度 → 空，且绝不能读到越界
+    EXPECT_TRUE(
+        ExtradataParser::ExtractLengthPrefixedNalUnits(packet.data(), packet.size(), NalSyntax::H264, 3).empty());
+}
+
+TEST(ExtradataParserTest, LooksLikeLengthPrefixedDistinguishesAnnexB) {
+    using videoeye::ExtradataParser;
+
+    const std::vector<uint8_t> lp = {0x00, 0x00, 0x00, 0x02, 0x65, 0x88};
+    EXPECT_TRUE(ExtradataParser::LooksLikeLengthPrefixed(lp.data(), lp.size(), 4));
+
+    const std::vector<uint8_t> annexb = {0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x00, 0x00, 0x01, 0x06, 0x05};
+    EXPECT_FALSE(ExtradataParser::LooksLikeLengthPrefixed(annexb.data(), annexb.size(), 4));
+    EXPECT_FALSE(ExtradataParser::LooksLikeLengthPrefixed(annexb.data(), annexb.size(), 1));
+}
+
 } // namespace
