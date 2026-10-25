@@ -7,7 +7,8 @@
 #
 # 四个入口的分工：
 #   FuzzBitstreamExtradata  码流参数集 + extradata 封装（BitstreamAnalyzer / ExtradataParser）
-#   FuzzContainerStructure  容器字节级解析（MP4 / EBML / FLV / ASF，路径型解析器经临时文件）
+#   FuzzContainerStructure  容器字节级解析（ISOBMFF / EBML / AVI / FLV / ASF / OGG /
+#                           MPEG-PS / MXF / MPEG-TS + MP4 样本表，路径型解析器经临时文件）
 #   FuzzManifest            HLS / DASH 清单文本
 #   FuzzSubtitleAux         字幕文本 + SCTE-35 二进制段
 #
