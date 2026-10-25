@@ -249,7 +249,7 @@ MPD 元素上的四个 live 属性现在都会解析（`StreamingPackageResult` 
 | `core/domain/model/ContainerStructureInfo.h` | `ContainerFormat` 增加 `HLS` / `DASH`；结果增加 `streaming_package` |
 | `core/analysis/orchestration/FormatDetector.cpp` | `DetectByExtension` 识别 `.m3u8` / `.mpd`，补 `FormatName` / `FormatTitle` |
 | `core/analysis/container/ContainerStructureAnalyzer.cpp` | 新增 `AnalyzeStreamingManifest` / `BuildStreamingTree` / `ProbeTsSegments` |
-| `core/analysis/AnalysisOptions.h` + `core/domain/model/AnalysisResult.h` | `analyze_streaming_package` 开关 + `streaming_package` 结果字段 |
+| `core/domain/model/AnalysisOptions.h` + `core/domain/model/AnalysisResult.h` | `analyze_streaming_package` 开关 + `streaming_package` 结果字段 |
 | `core/analysis/orchestration/AnalysisEngine.cpp` | `Run()` 前置分流 + `RunStreamingManifest()` |
 | `core/qc/QcRuleDefaults.cpp` | 新增 46 条规则（HLS 20 / DASH 23 / streaming 3），id 与问题码同名 |
 | `core/qc/QcRuleEngine*.cpp` | 新增 `container.hls.` / `container.dash.` / `container.streaming.` 三个前缀分支 |

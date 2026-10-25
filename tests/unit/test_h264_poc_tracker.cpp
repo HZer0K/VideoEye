@@ -36,9 +36,9 @@
 #include <utility>
 #include <vector>
 
-#include "core/analysis/AnalysisOptions.h"
 #include "core/analysis/codec/H264PocTracker.h"
 #include "core/analysis/orchestration/AnalysisEngine.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/AnalysisResult.h"
 
 #include "tests/support/TestMediaFactory.h"

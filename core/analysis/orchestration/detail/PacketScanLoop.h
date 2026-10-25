@@ -21,10 +21,10 @@
 #include <cstdint>
 #include <functional>
 
-#include "core/analysis/AnalysisOptions.h"
 #include "core/analysis/orchestration/AnalysisTerminalState.h"
 #include "core/analysis/orchestration/detail/AnalysisPipeline.h"
 #include "core/analysis/orchestration/detail/AnalysisResultAssembler.h" // ScanBuckets
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/AnalysisResult.h"
 
 extern "C" {

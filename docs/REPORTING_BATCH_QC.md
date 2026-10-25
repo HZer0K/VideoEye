@@ -19,6 +19,7 @@
 core/qc/QcProfile.h|.cpp        模板定义、5 套内置模板、序列化、覆盖项应用
 core/qc/QcRunner.h|.cpp         统一分析入口（包装 AnalysisEngine + QcRuleEngine，不碰 Qt）
 core/qc/BatchQcRunner.h|.cpp    目录发现 / 过滤 / 有限并发 / 取消 / 汇总
+core/qc/BatchQcResults.h|.cpp   批量结果类型（BatchQcRun / 汇总计数），归 QcRules；报告导出只依赖它
 core/qc/QcComparator.h|.cpp     双文件对比行构造
 core/qc/QcAnalyzeRequest.h      单文件分析的请求/结果契约（批量层零 Qt 依赖）
 core/qc/QcReportFormat.h|.cpp   导出格式枚举与扩展名
@@ -27,8 +28,9 @@ ui/reporting_panel/             「报告与批量 QC」侧边栏页面
 ui/reporting_panel/result_stamp.h        结果新鲜度与复用判定（不依赖 Qt，UI 与单测共用）
 ```
 
-`core/qc` 与 `utils` 被抽进 `VideoEyeCore` 静态库，GUI 与单元测试共用同一套逻辑
-（tests 直接 `target_link_libraries(... VideoEyeCore)`）。
+`core/qc` 拆成 `VideoEyeQcRules`（规则 / 模板 / 报告格式 / 批量结果类型）与 `VideoEyeQc`
+（单文件 / 批量执行器）两个静态库，GUI 与单元测试共用同一套逻辑。
+报告导出只链 `VideoEyeQcRules`，链接闭包里没有分析层与 FFmpeg。
 QC 的入口是 GUI 的「报告与批量 QC」页 —— 项目不再提供独立的命令行程序。
 批量扫描层（`BatchQcRunner`）
 只依赖 `QcAnalyzeRequest` 这个轻量契约，因此单测可以喂一个「睡 20ms 就返回」的假分析函数，

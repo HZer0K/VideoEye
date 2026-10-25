@@ -22,7 +22,7 @@
 #include <winioctl.h>
 #endif
 
-#include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/qc/BatchQcRunner.h"
 #include "core/qc/QcProfile.h"

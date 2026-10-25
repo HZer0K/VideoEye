@@ -193,6 +193,19 @@ list(FILTER UI_SOURCES EXCLUDE REGEX "ui/reporting_panel/")
 list(FILTER UI_SOURCES EXCLUDE REGEX "ui/charts/")
 # 主题工具走 VideoEyeUiTheme（Reason: 同一份 AppTheme.cpp 不该在 4 个 target 里各编一次）
 list(FILTER UI_SOURCES EXCLUDE REGEX "ui/theme/")
+# 分析页的四张记录表 / 宏块控件走 VideoEyeUiAnalysisWidgets（见下面同名 target）：
+# 它们只吃 Qt + domain + infrastructure，却被 VideoEyeUi 与 5 个组件测试各自编译，
+# 同一份 .cpp（连同 moc）编了 6 遍。独立成库后只编一份，测试链库即可。
+#
+# 刻意只收这 4 个：FramePacketView / StreamOverviewView 分别依赖 FFmpeg 常量与
+# VideoEyeReporting，收进来会让"只想测表格"的目标一并拖上分析/报告层。
+file(GLOB_RECURSE ANALYSIS_WIDGET_SOURCES CONFIGURE_DEPENDS
+    "ui/analysis_panel/AudioFrameTableWidget.cpp" "ui/analysis_panel/AudioFrameTableWidget.h"
+    "ui/analysis_panel/MacroblockView.cpp" "ui/analysis_panel/MacroblockView.h"
+    "ui/analysis_panel/PacketTableWidget.cpp" "ui/analysis_panel/PacketTableWidget.h"
+    "ui/analysis_panel/VideoFrameTableWidget.cpp" "ui/analysis_panel/VideoFrameTableWidget.h")
+list(FILTER UI_SOURCES EXCLUDE
+    REGEX "ui/analysis_panel/(AudioFrameTableWidget|MacroblockView|PacketTableWidget|VideoFrameTableWidget)\\.")
 # 入口不属于 UI 库：主程序只编译 ui/app/main.cpp，其余 ui/*.cpp 进 VideoEyeUi。
 list(FILTER UI_SOURCES EXCLUDE REGEX "ui/app/main\\.cpp$")
 
@@ -408,6 +421,9 @@ target_link_libraries(VideoEyePlayback
     PRIVATE VideoEyeAnalysis
             VideoEyeExporter
             VideoEyeInfrastructure
+            # OpenController.cpp 的 DiagnoseUnopenableFile 直接用 core/media/probe/FileProbe.h。
+            # 以前靠 VideoEyeAnalysis 的 PUBLIC 边间接拿到，属于"能编过但没声明"的隐式依赖。
+            VideoEyeMedia
 )
 if(WIN32)
     # WASAPI: CoCreateInstance 在 ole32
@@ -467,7 +483,9 @@ target_link_libraries(VideoEyeQc
 videoeye_add_module(VideoEyeReporting ${REPORTING_SOURCES})
 target_link_libraries(VideoEyeReporting
     PUBLIC VideoEyeDomain
-    PRIVATE VideoEyeQc
+    # 只链规则层：导出器需要 BatchQcRun / 汇总计数，它们在 QcRules 里；
+    # 执行器（VideoEyeQc）会经 VideoEyeAnalysis 把 FFmpeg 带进链接闭包。
+    PRIVATE VideoEyeQcRules
             VideoEyeInfrastructure
 )
 
@@ -539,6 +557,24 @@ if(THEME_SOURCES)
     )
 endif()
 
+# --- ui/analysis_panel 记录表 / 宏块控件（VideoEyeUi 与组件测试共用）---
+# 这 4 个控件此前由 VideoEyeUi 与 5 个测试目标各自编一份 .cpp + moc。独立成库后
+# 只编一份：VideoEyeUi 与测试都链它，AUTOMOC 也只在它这里跑。
+# Qt6::Widgets 挂 PUBLIC: 公共头就是 QWidget 系；domain / infrastructure 也是
+# 公共头依赖（PacketTableWidget.h -> PacketInfo.h，RecordTableModel.h -> PerfMetrics.h）。
+videoeye_add_module(VideoEyeUiAnalysisWidgets ${ANALYSIS_WIDGET_SOURCES})
+target_link_libraries(VideoEyeUiAnalysisWidgets
+    PUBLIC VideoEyeDomain
+           VideoEyeInfrastructure
+           Qt6::Widgets
+    # 两个表格的 .cpp 只取 AV_PICTURE_TYPE_* / AV_PKT_FLAG_* / AVMEDIA_TYPE_* 这类
+    # 编译期常量、不调用 avcodec 函数，所以挂 PRIVATE 就够了；链它的测试不必
+    # 自己再声明 FFmpeg 依赖（以前正是为此在测试里手写 include 目录注释）。
+    # AnalysisPageSupport.h（图表批量提交）只在 .cpp 里用 —— 同样 PRIVATE。
+    PRIVATE VideoEyeUiCharts
+            FFmpeg::avcodec
+)
+
 # --- ui: 主程序界面层 ---
 # 所有 ui/*.cpp（入口除外）编成一个静态库，主程序只保留 ui/app/main.cpp。
 # 好处: UI 组件测试链同一份实现，不必再把整层源码编进测试 exe；同一个 Q_OBJECT
@@ -568,6 +604,7 @@ if(UI_SOURCES)
                 VideoEyeQc
                 VideoEyeUiCharts
                 VideoEyeUiTheme
+                VideoEyeUiAnalysisWidgets
                 VideoEyeReportingPanel
                 VideoEyeFfmpegTools
                 VideoEyeAnalysis

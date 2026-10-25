@@ -7,7 +7,7 @@
 // 拆开后 QcProfile.h 不再 include AnalysisOptions.h —— 只想读写模板的模块
 // （序列化的单元测试、模板编辑器）不必把整套分析参数拖进编译图。
 
-#include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/qc/QcProfile.h"
 
 namespace videoeye {

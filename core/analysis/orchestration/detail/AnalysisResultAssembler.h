@@ -20,7 +20,7 @@
 #include <map>
 #include <vector>
 
-#include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/AnalysisOptions.h"
 // 具体分析器的头只出现在这里: 本类的工作就是把它们的中间态读出来写进结果，
 // 它们是本类的**职责**而不是实现细节。
 #include "core/analysis/diagnostics/AuxDataAnalyzer.h"

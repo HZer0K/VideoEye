@@ -36,7 +36,7 @@ flowchart LR
 | `tests/unit/test_audio_qc_analyzer.cpp` | 分析器单测（合成 PCM） |
 | `tests/unit/test_audio_qc_rules.cpp` | 规则判定单测（响度偏离 → warning / error） |
 
-改动点：`core/analysis/AnalysisOptions.h`（`analyze_audio_qc`）、
+改动点：`core/domain/model/AnalysisOptions.h`（`analyze_audio_qc`）、
 `core/domain/model/AnalysisResult.h`（`audio_qc`）、
 `QtAnalysisController.cpp`（音频解码通路）、`core/qc/QcRuleDefaults.cpp`（11 条新规则）、
 `QcRuleEngine.cpp`（`audio.*` 规则分支）。

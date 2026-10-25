@@ -134,8 +134,16 @@ clang-format -i $(git diff --name-only -- '*.cpp' '*.h')
 
 > CI 会复查这两项（范围都只限**本次改动/新增**的文件，历史文件不追溯）：
 > `format` job 对改动的 C++ 文件跑 `clang-format --dry-run --Werror`，不过直接红；
-> Linux 测试 job 对改动的 `.cpp` 跑一遍 `clang-tidy`，当前**只报告不拦截**，
-> 等存量告警清理完、检查项调好噪声后再收紧成硬门。
+> Linux 测试 job 对改动的 `.cpp` 跑两步 `clang-tidy`：
+> 1. 完整 `.clang-tidy` 配置**只报告**（存量风格告警太多，不拦 job）；
+> 2. 一组高信噪比 bugprone 检查（use-after-move / dangling-handle /
+>    infinite-loop / sizeof-expression / unused-raii 等）以 `--warnings-as-errors`
+>    **拦截**。命中即视为缺陷，修复或用带理由的 `// NOLINT(check-name)` 标注。
+>
+> 本地复现硬门：
+> ```bash
+> clang-tidy -p build/test-debug --checks='-*,bugprone-use-after-move,bugprone-dangling-handle,bugprone-infinite-loop,bugprone-sizeof-expression,bugprone-unused-raii,bugprone-move-forwarding-reference,bugprone-suspicious-memset-usage,bugprone-undefined-memory-manipulation,bugprone-string-integer-assignment,bugprone-suspicious-semicolon,bugprone-unhandled-exception-at-new' --warnings-as-errors='*' <改动的.cpp>
+> ```
 
 ### clang-format 装哪个版本（重要）
 

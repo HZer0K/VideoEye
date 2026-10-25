@@ -14,7 +14,7 @@
 #include <memory>
 #include <string>
 
-#include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/AnalysisOptions.h"
 // 回报通道（AnalysisCallbacks）与终态写法（MarkFailed / Notify* / ResultSink）住在
 // AnalysisTerminalState.h：引擎拆成输入会话 / 扫描循环 / 分析管线 / 结果汇编器之后，
 // 每一片都要发进度、写失败终态，这些工具必须全项目只有一份。

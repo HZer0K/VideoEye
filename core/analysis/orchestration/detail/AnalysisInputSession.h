@@ -29,7 +29,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 }
 
-#include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/ffmpeg_io/FfmpegInterrupt.h"
 

@@ -19,8 +19,8 @@
 #include <string>
 #include <vector>
 
-#include "core/analysis/AnalysisOptions.h"
 #include "core/analysis/diagnostics/CeaCaptionDecoder.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/SubtitleCueInfo.h"
 
 struct AVFormatContext;

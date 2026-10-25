@@ -22,7 +22,7 @@
 #include <QObject>
 #include <QString>
 
-#include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/QcReport.h"
 #include "core/domain/model/QcRule.h"

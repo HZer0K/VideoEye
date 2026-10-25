@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/AudioQcResult.h"
 #include "core/domain/model/LoudnessPoint.h"
 

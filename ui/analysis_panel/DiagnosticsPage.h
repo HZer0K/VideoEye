@@ -37,7 +37,7 @@
 #include "ui/AnalysisFacade.h"
 #include "ui/analysis_panel/AnalysisPageSupport.h"
 
-#include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/QcReport.h"
 #include "core/domain/model/SceneChangeResult.h"
 

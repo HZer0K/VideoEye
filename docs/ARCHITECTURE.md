@@ -15,19 +15,19 @@ targe —— 目录只是命名习惯，编译器不认识；能被机器检查�
 | 目录 | CMake target | 职责 | 允许依赖 |
 |------|--------------|------|----------|
 | `core/domain/model/` | `VideoEyeDomain` | 纯结果类型与值对象 | standard library |
-| `infrastructure/serialization`<br>`infrastructure/logging`<br>`infrastructure/concurrency` | `VideoEyeInfrastructure` | JSON、日志、后台任务调度 | standard library |
+| `infrastructure/serialization`<br>`infrastructure/logging`<br>`infrastructure/concurrency` | `VideoEyeInfrastructure` | JSON、日志、后台任务调度 | standard library、domain（`TaskManager` 的任务协议：`TaskId` / `TaskState` / `TaskKind` / `CancelToken` / `TaskHandle` 定义在 `core/domain/task/`） |
 | `core/ffmpeg_io/` | `VideoEyeFfmpegIo` | FFmpeg 阻塞 IO 的中断与超时（**叶子模块**，分析/播放/导出共用） | FFmpeg |
 | `core/media/codec`<br>`core/media/container`<br>`core/media/probe`<br>`core/media/streaming` | `VideoEyeMedia` | 容器字节级解析、extradata / 比特读取、文件探测 | domain、infrastructure |
 | `core/analysis/codec` | `VideoEyeCodec` | 码流参数集 / slice / SEI 解析（analysis 的叶子层：只用 `AVCodecID` 枚举做分派，不调用 FFmpeg 函数） | domain、media、infrastructure、FFmpeg 头文件 |
 | `core/analysis/container`<br>`core/analysis/streaming` | `VideoEyeAnalysisPackage` | 容器与流媒体包解析（analysis 的叶子层：只读文件字节，不碰 FFmpeg / Qt；`ContainerStructureAnalyzer` 分发器仍归 analysis） | domain、media、infrastructure |
 | `core/analysis/stream`<br>`core/analysis/orchestration`<br>`core/analysis/quality`<br>`core/analysis/diagnostics` | `VideoEyeAnalysis` | 各分析器、执行引擎与编排 | domain、media、codec、package、infrastructure、ffmpeg_io、FFmpeg |
 | `core/exporter/` | `VideoEyeExporter` | 转码 / remux 导出 | domain、infrastructure、ffmpeg_io、FFmpeg |
-| `core/player/` | `VideoEyePlayback` | 播放会话、解码、抽帧 | domain、analysis、exporter、infrastructure、ffmpeg_io、qt、FFmpeg |
-| `core/qc/` | `VideoEyeQcRules`（规则表 / 模板映射 / 对比 / 报告格式）<br>`VideoEyeQc`（单文件 / 批量执行器） | 规则判定口径；执行器负责打开文件并把结果交给规则 | rules：domain、infrastructure<br>executor：domain、analysis、infrastructure |
-| `core/reporting/` | `VideoEyeReporting` | 报告导出（JSON / CSV / HTML / PDF / TXT） | domain、qc、infrastructure |
+| `core/player/` | `VideoEyePlayback` | 播放会话、解码、抽帧 | domain、media、analysis、exporter、infrastructure、ffmpeg_io、qt、FFmpeg |
+| `core/qc/` | `VideoEyeQcRules`（规则表 / 模板映射 / 对比 / 报告格式 / 批量结果类型）<br>`VideoEyeQc`（单文件 / 批量执行器） | 规则判定口径；执行器负责打开文件并把结果交给规则 | rules：domain、infrastructure<br>executor：domain、analysis、infrastructure |
+| `core/reporting/` | `VideoEyeReporting` | 报告导出（JSON / CSV / HTML / PDF / TXT） | domain、qc-rules、infrastructure（不链执行器，链接闭包里没有 FFmpeg） |
 | `core/ffmpeg/` | `VideoEyeFfmpegTools` | 原生 ffmpeg 命令行工作台 | infrastructure、Qt Core |
 | `core/qt/` | `VideoEyeQtAdapters` | 把不带 Qt 的执行引擎接进信号 / 线程；`QtWorkerOwner` 是所有自带 `QThread` 的后台 worker 的统一所有者 | domain、analysis、Qt Core |
-| `ui/` | `VideoEyeUi`（入口可执行文件 `VideoEye`） | 界面 | 以上全部 + Qt Widgets；`ui/reporting_panel` 另立 `VideoEyeReportingPanel`，`ui/charts` 另立 `VideoEyeUiCharts`（曲线控件，分析页与测试共用同一份 moc），`ui/theme` 另立 `VideoEyeUiTheme`（调色板 / 字体 / QSS，组件测试与界面共用同一份编译结果） |
+| `ui/` | `VideoEyeUi`（入口可执行文件 `VideoEye`） | 界面 | 以上全部 + Qt Widgets；`ui/reporting_panel` 另立 `VideoEyeReportingPanel`，`ui/charts` 另立 `VideoEyeUiCharts`（曲线控件，分析页与测试共用同一份 moc），`ui/theme` 另立 `VideoEyeUiTheme`（调色板 / 字体 / QSS，组件测试与界面共用同一份编译结果），`ui/analysis_panel` 的四张记录表 / 宏块控件另立 `VideoEyeUiAnalysisWidgets`（`AudioFrameTableWidget` / `VideoFrameTableWidget` / `PacketTableWidget` / `MacroblockView`，被界面与 5 个组件测试共用） |
 
 迁移期那个把十层全部 PUBLIC 出去的 `VideoEyeCore` INTERFACE 聚合层**已经删除** ——
 它让每个调用方都能编译，代价是依赖关系重新变得不可见（正是因为它，`Playback → Exporter`
@@ -134,12 +134,17 @@ core/domain/model/StreamStats.h       StreamStats
 core/domain/model/BitstreamUnits.h    NalUnit / ObuUnit（对外结果；media 层 utils:: 同名结构是解析器内部载体）
 core/domain/model/AnalysisTypes.h     StreamDigest / AnalysisStatus
 core/domain/model/AnalysisResult.h    AnalysisResult（由上面这一排 *Result 拼成的聚合）
-core/analysis/AnalysisOptions.h       所有 *Options 与 AnalysisOptions
+core/domain/model/AnalysisOptions.h   所有 *Options 与 AnalysisOptions
 ```
 
 `AnalysisOptions` 单独成一个文件的意义：以前各分析器把 options 定义在自己的头文件里，
 于是任何"只想传个参数"的模块都要 include 一整排分析器。现在反过来 —— 分析器 include
 `AnalysisOptions.h` 取自己的选项，参数层一棵 import 树都往下也不传导到 FFmpeg。
+
+2026-10-25 又把它从 `core/analysis/` 下放到 domain：它本身就是纯输入参数（只依赖
+`AnalysisTypes.h` 与 stdlib），住在 analysis 会让 QcRules、UI、报告导出为了传参而依赖
+分析层。命名空间保持 `videoeye::XxxOptions`（不并入 `model`）——它们是输入而不是结果，
+也避免把一次纯搬移变成全仓类型改名。
 
 `AnalysisResult` 与 `AnalysisTypes.h` 住到 domain 是 2026-10-04 才完成的：两者都是纯值
 类型（整个 `AnalysisResult` 由 domain 的 `*Result` 拼成，不含任何分析逻辑），原先放在
@@ -318,7 +323,7 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   结果头；`PlayerPanel.h` 的 `StreamAnalyzer.h`、`MainWindow.h` 的 `MediaInfoAnalyzer.h` /
   `EbmlAnalyzer.h` 也已移除。仅剩：`AnalysisFacade.cpp`（门面，按设计本就该见分析器）与
   `ui/main_window/MediaInfoCoordinator.cpp` 仍 include `MediaInfoAnalyzer.h` 一处。
-- **`AnalysisPanel.cpp` 已从 2787 行降到 654 行**，拆出 12 个页面组件（见 4.1）。
+- **`AnalysisPanel.cpp` 已从 2787 行降到 623 行**，拆出 12 个页面组件（见 4.1）。
   面板现在只剩协调职责：建页 → 注入 feature 钩子 → 播放期按开关过滤后转发数据 →
   扫描结束后分发结果。历史上它同时兼着"页面 + 数据仓库 + 表格控制器"三个角色，
   这一轮把最后两块也搬走了：「播放统计与帧包」（原 `bitstream_tab_` 合并的流/帧/包三页 →
@@ -403,16 +408,19 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   转发状态栏），1027 → 694 行 —— 至此 `MainWindow.cpp` 两刀拆完（媒体信息协调 / 导出协调），
   自身只剩菜单、侧边栏与内容栈装配。
   其余待拆文件：`FfmpegPanel.cpp`（两刀拆完，597 行，暂不继续强拆）。
-  12 个页面组件已有 5 个有测试（`VisualDefectPage` / `EventTimelineView` /
-  `StreamOverviewView` / `FramePacketView` / `ContainerStructurePage`；`test_container_structure_page`
+  12 个页面组件现在**都有测试**：`VisualDefectPage` / `EventTimelineView` /
+  `StreamOverviewView` / `FramePacketView` / `ContainerStructurePage` / `AudioQcPage` /
+  `BitrateGopPage` / `ColorHdrPage` / `SubtitleAuxPage` / `SceneChangePage` /
+  `DiagnosticsPage` / `MacroblockView`（`test_container_structure_page`
   覆盖 MP4→详情页1、MKV→详情页2、无效→通用页的页路由 + 结构树/样本轨下拉填充 + 开关 `FeatureToggled`，
   且因只经 `findChild` 探测对象树，拆出 `Mp4SampleTableWidget` 后测试仍有效）。
   2026-10-07 又给拆出来的独立组件补了单测（`tests/CMakeLists.txt` 测试 50-58，共 46 个
   gtest 用例）：`ControlBarWidget` / `AudioVizRenderer` / `RawImageSequence`（player）、
   `AudioFrameTableWidget` / `VideoFrameTableWidget` / `PacketTableWidget`（帧表子页）、
   `FfmpegDictionaryWidget` / `FfmpegOutputWidget`（命令工作台）、`ExportCoordinator`（main_window）。
-  每个测试只编组件源 + 直接依赖，
-  不整层拉 FFmpeg / analysis；模态对话框分支（如裸流参数对话框）不进单测。
+  2026-10-25 起四张记录表 / 宏块控件收进 `VideoEyeUiAnalysisWidgets`：测试链库，
+  不再各自把同一份 `.cpp` 编进 exe；其余组件测试仍是"编组件源 + 直接依赖"，
+  不整层拉 FFmpeg / analysis。模态对话框分支（如裸流参数对话框）不进单测。
 
 ### 5.4 CMake 管得住什么、管不住什么
 
@@ -425,8 +433,9 @@ undefined reference。
 target_include_directories(${name} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 ```
 
-也就是**仓库根** —— 全仓 777 处 `#include` 里有 604 处写成 `core/xxx.h`、96 处 `ui/xxx.h`、
-73 处 `infrastructure/xxx.h`，全部从根算起。于是任何模块都能 `#include "core/anything.h"`
+也就是**仓库根** —— 生产代码（`core/` + `ui/` + `infrastructure/`，不含 `tests/`）里 1052 处
+引号形式 `#include` 中，728 处写成 `core/xxx.h`、238 处 `ui/xxx.h`、85 处
+`infrastructure/xxx.h`，全部从根算起（2026-10-25 复核）。于是任何模块都能 `#include "core/anything.h"`
 且编译必过。**真正守住分层方向的是 `scripts/check_layering.py`，不是 CMake**。
 2026-10-04 的评审报告把这句话从 CMakeLists.txt 的注释里改了过来，别再改回去。
 
@@ -439,7 +448,9 @@ target_include_directories(${name} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 #### 测试目标怎么声明依赖（三种套路，都是对的）
 
-`tests/unit/` 里 68 个测试目标（2026-10-05 逐项核对这批依赖时是 46 个），用 `target_link_libraries` 追加自己的额外依赖
+`tests/unit/` 里 106 个测试目标（2026-10-05 逐项核对这批依赖时是 46 个；2026-10-25
+复核为 106 个可执行目标 / 1227 个 gtest 用例 / 16 个 Python 用例组，以
+`scripts/summarize_tests.py` 的输出为准），用 `target_link_libraries` 追加自己的额外依赖
 （`videoeye_add_test()` 本身只链 `GTest::gtest_main`）。逐个比对了「源文件 include 了哪个
 模块」与「显式链了哪个 target」之后，2026-10-05 实测 32 个目标"include 了某模块却没显式链
 它"，**没有一处是真漏**，全是下面两种合法套路：
@@ -511,7 +522,7 @@ python scripts/check_layering.py
 | 你要加的东西 | 位置 |
 |--------------|------|
 | 一种新的分析维度 | `core/analysis/<类别>/`（容器 / 码流 / 质量 / 流媒体 / 诊断） |
-| 新分析维度的开关 | `core/analysis/AnalysisOptions.h` 里的对应 options 结构 |
+| 新分析维度的开关 | `core/domain/model/AnalysisOptions.h` 里的对应 options 结构 |
 | 分析结果里的新字段 | 先在 `core/domain/model/` 起结果类型，再让 `core/domain/model/AnalysisResult.h` 引用它 |
 | 一种新的 QC 规则 | `core/qc/QcRuleDefaults.cpp` 的 `DefaultQcRules()` + `QcRuleEngine::CheckRule()` 分支 |
 | 新的报告格式 | `core/reporting/` |
@@ -528,7 +539,7 @@ python scripts/check_layering.py
 |---|------|--------|
 | 1 | `core/domain/model/XxxInfo.h`（+ `.cpp`） | 结果类型（必须先于分析器存在） |
 | 2 | `core/analysis/<类别>/XxxAnalyzer.{h,cpp}` | 分析器本体 |
-| 3 | `core/analysis/AnalysisOptions.h` | 开关字段 + 对应的 options 结构 |
+| 3 | `core/domain/model/AnalysisOptions.h` | 开关字段 + 对应的 options 结构 |
 | 4 | `core/domain/model/AnalysisResult.h` | 结果字段 + 配套的 `xxx_analyzed` 标志位 |
 | 5 | `core/analysis/orchestration/detail/AnalysisPipeline.cpp`（建分析器 + `OnPacket` 分发）、`AnalysisInputSession.cpp`（喂数据 / 取消）、`AnalysisResultAssembler.cpp`（收尾与 `xxx_analyzed` 标志位） | **至少 4 处**接线点 |
 | 6 | `core/qc/QcRuleDefaults.cpp` + `core/qc/QcRuleEngine*.cpp` | 可选：要加 QC 规则时改 `DefaultQcRules()` + `CheckRule()` |

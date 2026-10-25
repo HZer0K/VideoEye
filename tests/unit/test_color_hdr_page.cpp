@@ -23,7 +23,7 @@
 #include <memory>
 #include <string>
 
-#include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/ColorHdrResult.h"
 #include "core/domain/model/DiagnosticIssue.h"

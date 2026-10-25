@@ -18,7 +18,7 @@
 #include <cstdint>
 #include <string>
 
-#include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/Mp4SampleInfo.h"
 
 namespace videoeye {

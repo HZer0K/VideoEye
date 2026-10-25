@@ -3,7 +3,7 @@
 // 全文件扫描的结果容器（诊断的唯一数据源）。
 //
 // 这里是"分析产出了什么"，线路执行相关的东西不在此文件：
-//   * 参数 -> core/analysis/AnalysisOptions.h
+//   * 参数 -> core/domain/model/AnalysisOptions.h
 //   * 编排 -> core/qt/QtAnalysisController.h（Qt 信号）/ core/analysis/orchestration/AnalysisEngine.h（执行）
 //
 // 住在这里（而不是 core/analysis/）的原因和 AnalysisTypes.h 一样：整个结构体

@@ -21,8 +21,8 @@
 #include <string>
 #include <vector>
 
-#include "core/analysis/AnalysisOptions.h"
 #include "core/analysis/container/Mp4SampleTableAnalyzer.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/StreamPackageInfo.h"
 
 namespace videoeye {

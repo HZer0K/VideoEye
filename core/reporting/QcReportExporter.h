@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 
-#include "core/qc/BatchQcRunner.h"
+#include "core/qc/BatchQcResults.h"
 #include "core/qc/QcAnalyzeRequest.h"
 #include "core/qc/QcComparator.h"
 #include "core/qc/QcProfile.h"

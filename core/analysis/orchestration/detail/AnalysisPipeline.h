@@ -29,7 +29,6 @@
 #include <cstdint>
 #include <vector>
 
-#include "core/analysis/AnalysisOptions.h"
 #include "core/analysis/codec/H264PocTracker.h"
 #include "core/analysis/codec/InBandParameterSets.h"
 #include "core/analysis/codec/ParameterSetTracker.h"
@@ -42,6 +41,7 @@
 #include "core/analysis/quality/AudioQcAnalyzer.h"
 #include "core/analysis/quality/BitrateGopAnalyzer.h"
 #include "core/analysis/quality/ColorHdrAnalyzer.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/ParameterTimeline.h"
 

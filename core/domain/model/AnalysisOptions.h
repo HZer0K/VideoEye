@@ -7,8 +7,13 @@
 // 依赖面被撑到最大, 改一个分析器的注释都要重编译半个工程。
 //
 // 现在 Analyzer 反过来 include 本文件取自己的选项, 依赖方向变成:
-//   analysis -> AnalysisOptions.h -> (AnalysisTypes.h + 仅 stdlib)
+//   analysis -> domain/AnalysisOptions.h -> (AnalysisTypes.h + 仅 stdlib)
 // 本文件不 include 任何 Analyzer、不 include FFmpeg。
+//
+// 住在 domain 而不是 analysis（2026-10-25 下放）：这是纯输入参数值类型，
+// QcRules / UI / 报告导出只想传参，不该为了拿一个 options 结构依赖分析层。
+// 命名空间保持 videoeye（不并入 model）：它们是输入参数而非分析结果，
+// 保持原名也让这次搬移不必改动全仓的 `videoeye::XxxOptions` 调用点。
 
 #include <cstdint>
 #include <string>

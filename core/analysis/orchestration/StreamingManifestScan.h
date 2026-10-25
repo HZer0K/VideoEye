@@ -17,8 +17,8 @@
 #include <atomic>
 #include <string>
 
-#include "core/analysis/AnalysisOptions.h"
 #include "core/analysis/orchestration/AnalysisTerminalState.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/AnalysisResult.h"
 
 namespace videoeye {

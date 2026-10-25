@@ -41,7 +41,7 @@
 #include <string>
 #include <vector>
 
-#include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/QcReport.h"
 #include "core/domain/model/QcRule.h"
 #include "core/qc/QcRuleDefaults.h"

@@ -27,7 +27,7 @@
 #include <string>
 #include <vector>
 
-#include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/AuxiliaryDataInfo.h"
 #include "core/domain/model/QcRule.h"

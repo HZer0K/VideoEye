@@ -33,8 +33,8 @@
 #include <QObject>
 #include <QString>
 
-#include "core/analysis/AnalysisOptions.h"
 #include "core/analysis/orchestration/AnalysisEngine.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/domain/task/TaskProtocol.h"
 #include "infrastructure/concurrency/TaskManager.h"

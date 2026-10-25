@@ -571,7 +571,7 @@ TEST(H264BitstreamParserTest, ParseHighProfileSPS) {
 4. `core/analysis/codec/H264BitstreamParser.h/.cpp` - H.264 解析器
 5. `core/analysis/codec/HevcBitstreamParser.h/.cpp` - H.265 解析器
 6. `core/analysis/codec/BitstreamAnalyzer.h/.cpp` - 统一接口
-7. `core/analysis/AnalysisOptions.h` + `core/domain/model/AnalysisResult.h` - 扩展（已添加 bitstream_analysis 字段）
+7. `core/domain/model/AnalysisOptions.h` + `core/domain/model/AnalysisResult.h` - 扩展（已添加 bitstream_analysis 字段）
 8. `ui/bitstream_panel/BitstreamPanel.h` - UI 组件框架
 
 9. `core/media/codec/ExtradataParser.cpp` - 封装格式识别实现（avcC / hvcC / av1C）

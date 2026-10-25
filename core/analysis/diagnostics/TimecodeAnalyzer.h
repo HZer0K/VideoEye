@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 
-#include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/TimecodeInfo.h"
 
 struct AVFormatContext;

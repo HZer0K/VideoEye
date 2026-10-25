@@ -18,7 +18,7 @@
 #include <string>
 #include <system_error>
 
-#include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/AnalysisTypes.h"
 
 namespace videoeye {

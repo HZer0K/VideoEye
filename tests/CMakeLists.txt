@@ -1113,18 +1113,15 @@ set_tests_properties(EventTimelineViewToggleTests PROPERTIES
 #       feature 钩子发生在那之后，注入时必须把真实状态回写控件。另外守住
 #       FramePacketView → StreamOverviewView 的 GOP 摘要桥接：这条链断了不会崩，
 #       只会让「最大GOP大小」与 GOP 分布曲线永远停在上一次的值，最难在界面上发现。
-#       用 offscreen 平台跑，不需要显示器；直接编这三个组件的源。
+#       用 offscreen 平台跑，不需要显示器；这里只编 FramePacketView /
+#       StreamOverviewView，四个子页走 VideoEyeUiAnalysisWidgets 库。
 # =================================================
 videoeye_add_test(test_stream_views
     unit/test_stream_views.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/FramePacketView.cpp
-    # FramePacketView 的四个子页（视频帧/GOP、包、音频帧）都已各自抽成独立组件，
-    # 本目标手工列源（不走 UI_SOURCES），漏了会在链接期报符号未解析。
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/VideoFrameTableWidget.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/PacketTableWidget.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioFrameTableWidget.cpp
+    # 视频帧 / 包 / 音频帧 / 宏块四个子页已抽成 VideoEyeUiAnalysisWidgets，
+    # 这里链库即可，不再手列它们的源。
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/StreamOverviewView.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/MacroblockView.cpp
 )
 # FramePacketView.cpp 直接用 AV_PICTURE_TYPE_* / AV_PKT_FLAG_* / AVMEDIA_TYPE_*
 # （FFmpeg 公共常量），所以这里要拿到 avcodec 的 include 目录。
@@ -1133,6 +1130,7 @@ target_link_libraries(test_stream_views PRIVATE
     VideoEyeInfrastructure
     VideoEyeReporting
     VideoEyeUiCharts
+    VideoEyeUiAnalysisWidgets
     FFmpeg::avcodec
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME StreamViewsToggleTests COMMAND test_stream_views)
@@ -1403,10 +1401,9 @@ set_tests_properties(RawImageSequenceTests PROPERTIES
 # =================================================
 videoeye_add_test(test_audio_frame_table_widget
     unit/test_audio_frame_table_widget.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioFrameTableWidget.cpp
 )
 target_link_libraries(test_audio_frame_table_widget PRIVATE
-    VideoEyeInfrastructure
+    VideoEyeUiAnalysisWidgets
     VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME AudioFrameTableWidgetTests COMMAND test_audio_frame_table_widget)
@@ -1416,15 +1413,15 @@ set_tests_properties(AudioFrameTableWidgetTests PROPERTIES
 # =================================================
 # 测试 54：视频帧表子页（GOP 派生 + 双表刷新 + 帧类型筛选 + Reset 通知）
 # 说明: GOP 分段是从帧记录 pict_type 推导的派生结果，段边界/计数错了界面不崩只停旧值。
-#       组件源直接 include <libavcodec/avcodec.h> 取 AV_PICTURE_TYPE_* 常量（编译期，无需
-#       链 FFmpeg 库）；同测试 53，曲线控件的实现与 moc 走 VideoEyeUiCharts。
+#       组件在 VideoEyeUiAnalysisWidgets 里（它自己 include <libavcodec/avcodec.h>
+#       取 AV_PICTURE_TYPE_* 常量，编译期，不链 FFmpeg 库）；曲线控件的实现与 moc
+#       走 VideoEyeUiCharts。
 # =================================================
 videoeye_add_test(test_video_frame_table_widget
     unit/test_video_frame_table_widget.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/VideoFrameTableWidget.cpp
 )
 target_link_libraries(test_video_frame_table_widget PRIVATE
-    VideoEyeInfrastructure
+    VideoEyeUiAnalysisWidgets
     VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME VideoFrameTableWidgetTests COMMAND test_video_frame_table_widget)
@@ -1452,16 +1449,15 @@ set_tests_properties(FfmpegDictionaryWidgetTests PROPERTIES
 # =================================================
 # 测试 56：包表子页（增量刷新 + 筛选重建/增量同语义 + 单元格/汇总 + Reset）
 # 说明: 包表是帧表↔包表 PTS 互跳的记录侧，切筛选的「全量重建」与常规「增量补差」
-#       必须共用同一份筛选语义和同步游标，错位只会静默少行/错行。组件源直接拿
-#       AV_PKT_FLAG_* / AVMEDIA_TYPE_* 常量（编译期常量，无需链 FFmpeg 库）；
-#       同测试 53，曲线控件的实现与 moc 走 VideoEyeUiCharts。用 offscreen 平台跑。
+#       必须共用同一份筛选语义和同步游标，错位只会静默少行/错行。组件在
+#       VideoEyeUiAnalysisWidgets 里（AV_PKT_FLAG_* / AVMEDIA_TYPE_* 是编译期常量）；
+#       曲线控件的实现与 moc 走 VideoEyeUiCharts。用 offscreen 平台跑。
 # =================================================
 videoeye_add_test(test_packet_table_widget
     unit/test_packet_table_widget.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/PacketTableWidget.cpp
 )
 target_link_libraries(test_packet_table_widget PRIVATE
-    VideoEyeInfrastructure
+    VideoEyeUiAnalysisWidgets
     VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME PacketTableWidgetTests COMMAND test_packet_table_widget)
@@ -1542,16 +1538,14 @@ set_tests_properties(SceneChangePageTests PROPERTIES
 # 测试 60：宏块分析页（MV 像素精度换算 + HEVC/CTU 术语 + 500 行上限）
 # 说明: 运动矢量按 motion_scale 换算像素、scale=0 按 1 兜底、术语随编码切换
 #       （HEVC→CTU、块大小表 14 行分区）、I 帧预览文案、行数上限 500 —— 写错都不崩，
-#       只会静默显示假像素值 / 错误术语。编页面源并链 VideoEyeUiCharts（同测试 59
-#       的曲线控件依赖），链 VideoEyeDomain。用 offscreen 平台跑。
+#       只会静默显示假像素值 / 错误术语。组件在 VideoEyeUiAnalysisWidgets 里，
+#       链它即可（图表控件走 VideoEyeUiCharts）。用 offscreen 平台跑。
 # =================================================
 videoeye_add_test(test_macroblock_view
     unit/test_macroblock_view.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/MacroblockView.cpp
 )
 target_link_libraries(test_macroblock_view PRIVATE
-    VideoEyeDomain
-    VideoEyeInfrastructure
+    VideoEyeUiAnalysisWidgets
     VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME MacroblockViewTests COMMAND test_macroblock_view)

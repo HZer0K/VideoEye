@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-#include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/ColorHdrResult.h"
 
 // 只做前向声明，头文件保持与 FFmpeg 无关：

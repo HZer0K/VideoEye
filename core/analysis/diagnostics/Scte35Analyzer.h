@@ -18,7 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/AuxiliaryDataInfo.h"
 
 namespace videoeye {

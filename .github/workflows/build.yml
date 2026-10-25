@@ -358,7 +358,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          # clang-tidy 供下面的静态检查摸底步骤使用 (只报告, 不拦截)
+          # clang-tidy 供下面的静态检查两步使用: 全配置摸底(只报告)与窄检查硬门(拦截)
           sudo apt-get install -y \
             build-essential cmake pkg-config ninja-build \
             qt6-base-dev libgtest-dev clang-tidy \
@@ -410,9 +410,9 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }}
 
       # clang-tidy 摸底: .clang-tidy 配置存在但从未被机器执行过(钩子只查格式)。
-      # 全量跑必然是一屏存量告警, 所以第一版只对本次改动的 .cpp 跑, 且只报告不
-      # 拦截 —— 不传 --warnings-as-errors, 解析失败也只打日志。等存量告警清完、
-      # 噪声大的检查调好之后, 下一版再收紧成硬门。
+      # 全量跑必然是一屏存量告警(modernize-use-auto / concat-nested-namespaces /
+      # braces-around-statements 之类), 所以这一步只用完整配置对本次改动的 .cpp
+      # 做**只报告**的摸底, 不拦 job; 真正的硬门是紧接着的窄检查步骤。
       # 依赖 compile_commands.json: linux-base preset 已开 CMAKE_EXPORT_COMPILE_COMMANDS。
       - name: clang-tidy changed files (report-only)
         if: runner.os == 'Linux'
@@ -429,6 +429,54 @@ jobs:
             echo "::endgroup::"
           done
           echo "clang-tidy 摸底完成 (只报告, 不拦截)"
+
+      # clang-tidy 硬门: 从完整配置里挑出"命中即真缺陷、且全仓零存量"的一组
+      # bugprone 检查, 对本次改动的 .cpp 以 warnings-as-errors 拦截。
+      #
+      # 为什么不是直接 --warnings-as-errors 跑 .clang-tidy: 那套配置在存量代码上
+      # 一屏告警(实测单个 600 行 .cpp 就有 30+ 条风格类), 开启即红, 只能当摸底。
+      # 这组的入选标准是**语义缺陷**而不是风格:
+      #   use-after-move / dangling-handle / move-forwarding-reference —— 悬垂引用,
+      #   正是本项目历史上 TaskHandle 配对、QcRunner 线程捕获那类问题的形态;
+      #   infinite-loop / suspicious-semicolon —— 循环边界写错、分号吞掉循环体;
+      #   sizeof-expression / suspicious-memset-usage / undefined-memory-manipulation;
+      #   unused-raii —— 构造了锁/守卫却没用;
+      #   string-integer-assignment / unhandled-exception-at-new。
+      # 基线: 2026-10-25 在 11 个跨层 .cpp(parser / player / ui / infra / qc / ui)
+      # 上实测 0 告警, 所以这扇门不会一开就红。
+      #
+      # 修法优先级: 先改代码; 确实需要保留时用带理由的 `// NOLINT(check-name)`。
+      - name: clang-tidy hard gate (changed files)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          files=$(bash scripts/ci-changed-files.sh | grep -E '\.cpp$' || true)
+          if [ -z "$files" ]; then
+            echo "本次改动没有 .cpp 文件, 跳过"
+            exit 0
+          fi
+          checks='-*,bugprone-use-after-move,bugprone-dangling-handle,'
+          checks+='bugprone-infinite-loop,bugprone-sizeof-expression,'
+          checks+='bugprone-unused-raii,bugprone-move-forwarding-reference,'
+          checks+='bugprone-suspicious-memset-usage,'
+          checks+='bugprone-undefined-memory-manipulation,'
+          checks+='bugprone-string-integer-assignment,'
+          checks+='bugprone-suspicious-semicolon,'
+          checks+='bugprone-unhandled-exception-at-new'
+          fail=0
+          for f in $files; do
+            echo "::group::clang-tidy (hard gate) $f"
+            if ! clang-tidy -p build/test-debug --checks="$checks" \
+                 --warnings-as-errors='*' "$f"; then
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::clang-tidy 硬门命中(见上面的 warning/error)。请在本地用同一条命令复现后修复。"
+            exit 1
+          fi
+          echo "clang-tidy 硬门通过"
 
       - name: Run ctest
         if: runner.os == 'Linux'
