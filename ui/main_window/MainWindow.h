@@ -1,36 +1,33 @@
 #pragma once
 
-#include <QAction>
-#include <QLabel>
-#include <QListWidget>
 #include <QMainWindow>
-#include <QMenu>
-#include <QMenuBar>
-#include <QProgressBar>
-#include <QPushButton>
-#include <QSplitter>
-#include <QStackedWidget>
-#include <QStatusBar>
 #include <QString>
-#include <QTextEdit>
-#include <QTimer>
 #include <chrono>
 #include <memory>
 
 #include "core/player/MediaPlayerFwd.h"
-#include "ui/analysis_panel/AnalysisPanel.h"
-#include "ui/ffmpeg_panel/FfmpegPanel.h"
-#include "ui/main_window/ExportCoordinator.h"
-#include "ui/main_window/OpenSessionController.h"
-#include "ui/main_window/OverviewPage.h"
 #include "ui/main_window/macroblock_coordination.h"
 #include "ui/main_window/menu_bar.h"
-#include "ui/player/PlayerPanel.h"
+
+class QLabel;
+class QListWidget;
+class QSplitter;
+class QStackedWidget;
+class QTimer;
 
 namespace videoeye {
 namespace ui {
 
+// 这些组件在本头里只是裸指针成员，定义在 MainWindow.cpp 里补 ——
+// 以前每个碰主窗口的 TU 都会顺带编进分析面板整棵页面头树、播放面板与
+// FFmpeg 工作台，编译图白白变大。
+class AnalysisPanel;
+class ExportCoordinator;
+class FfmpegPanel;
 class MediaInfoCoordinator;
+class OpenSessionController;
+class OverviewPage;
+class PlayerPanel;
 
 // 主窗口: 菜单 / 侧边栏 / 分析内容栈。
 //

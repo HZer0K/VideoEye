@@ -2,12 +2,17 @@
 #include "infrastructure/logging/Logger.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/dialogs/FormatSupportDialog.h"
+#include "ui/ffmpeg_panel/FfmpegPanel.h"
+#include "ui/main_window/ExportCoordinator.h"
 #include "ui/main_window/MediaInfoCoordinator.h"
+#include "ui/main_window/OpenSessionController.h"
+#include "ui/main_window/OverviewPage.h"
 #include "ui/main_window/menu_bar.h"
 #include "ui/main_window/navigation_model.h"
 #include "ui/main_window/overview_analysis.h"
 #include "ui/main_window/sidebar_navigation.h"
 #include "ui/main_window/window_layout.h"
+#include "ui/player/PlayerPanel.h"
 #include "ui/theme/AppTheme.h"
 
 #include "core/domain/model/ContainerStructureInfo.h"
@@ -29,11 +34,13 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPushButton>
 #include <QScreen>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QStatusBar>
 #include <QStyle>
 #include <QStyledItemDelegate>
 #include <QTabBar>

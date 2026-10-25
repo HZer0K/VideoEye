@@ -20,14 +20,15 @@ targe —— 目录只是命名习惯，编译器不认识；能被机器检查�
 | `core/media/codec`<br>`core/media/container`<br>`core/media/probe`<br>`core/media/streaming` | `VideoEyeMedia` | 容器字节级解析、extradata / 比特读取、文件探测 | domain、infrastructure |
 | `core/analysis/codec` | `VideoEyeCodec` | 码流参数集 / slice / SEI 解析（analysis 的叶子层：只用 `AVCodecID` 枚举做分派，不调用 FFmpeg 函数） | domain、media、infrastructure、FFmpeg 头文件 |
 | `core/analysis/container`<br>`core/analysis/streaming` | `VideoEyeAnalysisPackage` | 容器与流媒体包解析（analysis 的叶子层：只读文件字节，不碰 FFmpeg / Qt；`ContainerStructureAnalyzer` 分发器仍归 analysis） | domain、media、infrastructure |
-| `core/analysis/stream`<br>`core/analysis/orchestration`<br>`core/analysis/quality`<br>`core/analysis/diagnostics` | `VideoEyeAnalysis` | 各分析器、执行引擎与编排 | domain、media、codec、package、infrastructure、ffmpeg_io、FFmpeg |
+| `core/analysis/quality`（`AudioQcAnalyzer`<br>`BitrateGopAnalyzer`<br>`VisualDefectAnalyzer`） | `VideoEyeAnalysisQuality` | 三类只吃样本与 domain 结果的质量分析（**FFmpeg-free** 叶子库） | domain、infrastructure |
+| `core/analysis/stream`<br>`core/analysis/orchestration`<br>`core/analysis/quality`（其余）<br>`core/analysis/diagnostics` | `VideoEyeAnalysis` | 各分析器、执行引擎与编排 | domain、media、codec、package、analysis-quality、infrastructure、ffmpeg_io、FFmpeg |
 | `core/exporter/` | `VideoEyeExporter` | 转码 / remux 导出 | domain、infrastructure、ffmpeg_io、FFmpeg |
 | `core/player/` | `VideoEyePlayback` | 播放会话、解码、抽帧 | domain、media、analysis、exporter、infrastructure、ffmpeg_io、qt、FFmpeg |
 | `core/qc/` | `VideoEyeQcRules`（规则表 / 模板映射 / 对比 / 报告格式 / 批量结果类型）<br>`VideoEyeQc`（单文件 / 批量执行器） | 规则判定口径；执行器负责打开文件并把结果交给规则 | rules：domain、infrastructure<br>executor：domain、analysis、infrastructure |
 | `core/reporting/` | `VideoEyeReporting` | 报告导出（JSON / CSV / HTML / PDF / TXT） | domain、qc-rules、infrastructure（不链执行器，链接闭包里没有 FFmpeg） |
 | `core/ffmpeg/` | `VideoEyeFfmpegTools` | 原生 ffmpeg 命令行工作台 | infrastructure、Qt Core |
 | `core/qt/` | `VideoEyeQtAdapters` | 把不带 Qt 的执行引擎接进信号 / 线程；`QtWorkerOwner` 是所有自带 `QThread` 的后台 worker 的统一所有者 | domain、analysis、Qt Core |
-| `ui/` | `VideoEyeUi`（入口可执行文件 `VideoEye`） | 界面 | 以上全部 + Qt Widgets；`ui/reporting_panel` 另立 `VideoEyeReportingPanel`，`ui/charts` 另立 `VideoEyeUiCharts`（曲线控件，分析页与测试共用同一份 moc），`ui/theme` 另立 `VideoEyeUiTheme`（调色板 / 字体 / QSS，组件测试与界面共用同一份编译结果），`ui/analysis_panel` 的四张记录表 / 宏块控件另立 `VideoEyeUiAnalysisWidgets`（`AudioFrameTableWidget` / `VideoFrameTableWidget` / `PacketTableWidget` / `MacroblockView`，被界面与 5 个组件测试共用） |
+| `ui/` | `VideoEyeUi`（入口可执行文件 `VideoEye`） | 界面 | 以上全部 + Qt Widgets；`ui/reporting_panel` 另立 `VideoEyeReportingPanel`，`ui/charts` 另立 `VideoEyeUiCharts`（曲线控件，分析页与测试共用同一份 moc），`ui/theme` 另立 `VideoEyeUiTheme`（调色板 / 字体 / QSS，组件测试与界面共用同一份编译结果），`ui/analysis_panel` 的四张记录表 / 宏块控件另立 `VideoEyeUiAnalysisWidgets`（`AudioFrameTableWidget` / `VideoFrameTableWidget` / `PacketTableWidget` / `MacroblockView`，被界面与 5 个组件测试共用），`ui/analysis_panel` 的页面与子视图连同 `ui/bitstream_panel` / `ui/streaming_panel` / `AnalysisFacade` 另立 `VideoEyeUiAnalysisPages`（组件测试链库即可，不再手列页面源） |
 
 迁移期那个把十层全部 PUBLIC 出去的 `VideoEyeCore` INTERFACE 聚合层**已经删除** ——
 它让每个调用方都能编译，代价是依赖关系重新变得不可见（正是因为它，`Playback → Exporter`
@@ -56,10 +57,13 @@ graph TD
     CODEC --> MEDIA
     PACKAGE[core/analysis/container<br/>core/analysis/streaming<br/>容器/流媒体解析] --> DOMAIN
     PACKAGE --> MEDIA
+    QUALITY[core/analysis/quality<br/>FFmpeg-free 质量分析] --> DOMAIN
+    QUALITY --> INFRA
     ANALYSIS[core/analysis<br/>分析器与执行引擎] --> DOMAIN
     ANALYSIS --> MEDIA
     ANALYSIS --> CODEC
     ANALYSIS --> PACKAGE
+    ANALYSIS --> QUALITY
     ANALYSIS --> INFRA
     EXPORTER[core/exporter] --> INFRA
     PLAYBACK[core/player] --> ANALYSIS
@@ -246,6 +250,22 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   时间轴视图与 `DiagnosticsPage::OnSyncSample`，替代了早先的 `SetDiagnosticsPage()` 指针注入
   与经视图转发的中继信号）。
 
+`AnalysisPanel.h` 的公共头也顺势收口（2026-10-25）：`AnalysisPageFactory.h` 对 15 个页面
+类型只做**前向声明**，`SetCurrentVideoPath()` 的定义挪进 `.cpp`，`ScanEndReason` 从
+`DiagnosticsPage` 类内提到 `ui/analysis_panel/ScanEndReason.h`（`Q_NAMESPACE` +
+`Q_ENUM_NS` 保留枚举反射，类内 `using` 别名维持既有写法）。于是 `MainWindow` 编译时
+不再被整棵页面头树与 `AnalysisFacade` 拖进来；面板也不再为了一个三值枚举去 include
+`DiagnosticsPage.h`。
+
+`MainWindow.h` 同样收口（2026-10-25）：`AnalysisPanel` / `PlayerPanel` / `FfmpegPanel` /
+`OverviewPage` / `ExportCoordinator` / `OpenSessionController` / `MediaInfoCoordinator`
+在头里只是裸指针成员，全部改成前向声明，完整定义在 `MainWindow.cpp` 里补；同时删掉
+了 `QAction` / `QMenu` / `QMenuBar` / `QProgressBar` / `QPushButton` / `QStatusBar` /
+`QTextEdit` 这 7 个零引用 Qt 头。于是任何包含主窗口头的 TU 不再顺带编进分析面板整棵
+页面头树、播放面板与 FFmpeg 工作台。注意 `PlayerPanel.h` 仍会经 `menu_bar.h`
+（`MenuBarDeps::apply_layout_preset` 用到 `PlayerPanel::LayoutPreset`）进入闭包 ——
+`Q_ENUM` 的嵌套枚举必须看到类定义，要彻底切断得把 `LayoutPreset` 提到独立头。
+
 ## 5. 已知的历史包袱
 
 ### 5.1 已还清的包袱
@@ -316,14 +336,15 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   所以：**别为了"UI 不该碰 FFmpeg"这条洁癖去动它。** 真正要盯的是另一条 ——
   UI 里不许出现 FFmpeg 的**调用**（`av_read_frame` / `sws_scale` / `avformat_*`
   这类），常量映射不算。
-- **UI 侧直接吃分析器的地方已基本清掉**。`AnalysisPanel` 只通过 `ui/AnalysisFacade` 拿
-  编排 / QC / 时间轴；`ColorHdrPage.cpp` 与 `BitrateGopPage.cpp` 原先直连的
+- **UI 侧直接吃分析器的地方已基本清掉**。`AnalysisPanel` 自己不再 include `AnalysisFacade.h`
+  —— 门面由 `DiagnosticsPage` 持有（扫描总控在那一页），面板只经各页面的公开接口
+  取只读快照；`ColorHdrPage.cpp` 与 `BitrateGopPage.cpp` 原先直连的
   `ColorHdrAnalyzer.h` / `BitrateGopAnalyzer.h` 已下放——`BuildColorRows`、`BitrateAnomalyType`
   与 `model::ToString(BitrateAnomalyType)` 都进了 `core/domain/model/`，两页现在只 include
   结果头；`PlayerPanel.h` 的 `StreamAnalyzer.h`、`MainWindow.h` 的 `MediaInfoAnalyzer.h` /
   `EbmlAnalyzer.h` 也已移除。仅剩：`AnalysisFacade.cpp`（门面，按设计本就该见分析器）与
   `ui/main_window/MediaInfoCoordinator.cpp` 仍 include `MediaInfoAnalyzer.h` 一处。
-- **`AnalysisPanel.cpp` 已从 2787 行降到 623 行**，拆出 12 个页面组件（见 4.1）。
+- **`AnalysisPanel.cpp` 已从 2787 行降到 663 行**（非空行，2026-10-25），拆出 12 个页面组件（见 4.1）。
   面板现在只剩协调职责：建页 → 注入 feature 钩子 → 播放期按开关过滤后转发数据 →
   扫描结束后分发结果。历史上它同时兼着"页面 + 数据仓库 + 表格控制器"三个角色，
   这一轮把最后两块也搬走了：「播放统计与帧包」（原 `bitstream_tab_` 合并的流/帧/包三页 →
@@ -384,19 +405,24 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   （`PrepareForRun` / `AppendLog` / `ShowRunResult`）和一个 `RefreshExplanation(command_text)`
   转发（命令文本属于页面，组件不持有命令输入框）；组件不直接写状态栏，终态文案经
   `StatusMessage` 信号交回页面发。至此 949 → 597 行，剩程序探测 / 命令区 / 按钮状态与设置持久化。
-  ⚠️ 新增 `ui/*.cpp` 时，**手工列源的测试目标要同步加**（`test_stream_views` 手列
-  `FramePacketView.cpp`，漏加 `AudioFrameTableWidget.cpp` / `VideoFrameTableWidget.cpp`
-  会在链接期 LNK2019）。链 `VideoEyeUi` 的目标（如 `test_scan_terminal_state`）由该库的
-  GLOB 自动纳入，无需再同步源清单。曲线控件 `MetricChartWidget` 自成一个
-  `VideoEyeUiCharts`：以前 15 个测试各自编它一遍（16 份实现 + 16 份 moc），现在
-  界面与测试都只链这一份。主题工具 `ui/theme/AppTheme.cpp` 同理走 `VideoEyeUiTheme`
-  （4 → 1），组件测试只链它、不再手列 600 行 QSS 源码。
-  ⚠️ 同理，容器 / 流媒体解析器与 `core/ffmpeg` 的解释链不要再手列源码：
-  前者在 `VideoEyeAnalysisPackage`（叶子库，不碰 FFmpeg / Qt），后者在
-  `VideoEyeFfmpegTools`。手列同一份 `.cpp` + 链所属模块库会撞 LNK2005。
+  ✅ 2026-10-25 起 `ui/analysis_panel` 的页面 / 子视图连同 `ui/bitstream_panel`、
+  `ui/streaming_panel`、`AnalysisFacade` 收进 `VideoEyeUiAnalysisPages`：页面测试
+  **统一链这个库，不再手列 `.cpp`**。新增子视图由该库的 GLOB 自动纳入，不必再改
+  `tests/CMakeLists.txt`（以前 `test_stream_views` 手列 `FramePacketView.cpp`、
+  漏加 `AudioFrameTableWidget.cpp` / `VideoFrameTableWidget.cpp` 会在链接期 LNK2019）。
+  曲线控件 `MetricChartWidget` 自成一个 `VideoEyeUiCharts`：以前 15 个测试各自编它一遍
+  （16 份实现 + 16 份 moc），现在界面与测试都只链这一份。主题工具
+  `ui/theme/AppTheme.cpp` 同理走 `VideoEyeUiTheme`（4 → 1），组件测试只链它、
+  不再手列 600 行 QSS 源码。
+  ⚠️ 同理，容器 / 流媒体解析器、`core/analysis` 里那三个 FFmpeg-free 质量分析器与
+  `core/ffmpeg` 的解释链不要再手列源码：它们分别在 `VideoEyeAnalysisPackage`、
+  `VideoEyeAnalysisQuality`、`VideoEyeFfmpegTools`。手列同一份 `.cpp` + 链所属模块库
+  会撞 LNK2005。
   ⚠️ 头文件里**不要内联解引用仅前向声明的组件类型**（`GopSummaries()` 想返回
   `video_page_->GopSummaries()` 就得把定义挪到 .cpp）：类的完整上下文只对本类成员有效，
-  对别的 incomplete type 无效，会报 C2027。
+  对别的 incomplete type 无效，会报 C2027。同理 `AnalysisPageFactory.h` 对 15 个页面
+  类型只做前向声明（免得 `AnalysisPanel.h` → `MainWindow.h` 的一串 TU 都拖进整棵页面
+  头树），页面的成员方法只能在 `AnalysisPageFactory.cpp` / `AnalysisPanel.cpp` 里调用。
   2026-10-07 最后把「包」子页也抽成 `PacketTableWidget`
   （`ui/analysis_panel/PacketTableWidget.{h,cpp}`：记录缓存 / 筛选 / 脏标志 / 增量游标 /
   CSV 导出随组件走，外露 `packetTable()` / `PacketRecords()` 交回父页做帧表↔包表 PTS 互跳）。
@@ -418,9 +444,10 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   gtest 用例）：`ControlBarWidget` / `AudioVizRenderer` / `RawImageSequence`（player）、
   `AudioFrameTableWidget` / `VideoFrameTableWidget` / `PacketTableWidget`（帧表子页）、
   `FfmpegDictionaryWidget` / `FfmpegOutputWidget`（命令工作台）、`ExportCoordinator`（main_window）。
-  2026-10-25 起四张记录表 / 宏块控件收进 `VideoEyeUiAnalysisWidgets`：测试链库，
-  不再各自把同一份 `.cpp` 编进 exe；其余组件测试仍是"编组件源 + 直接依赖"，
-  不整层拉 FFmpeg / analysis。模态对话框分支（如裸流参数对话框）不进单测。
+  2026-10-25 起四张记录表 / 宏块控件收进 `VideoEyeUiAnalysisWidgets`，
+  `ui/analysis_panel` 的页面与子视图收进 `VideoEyeUiAnalysisPages`：组件测试一律链库，
+  不再各自把同一份 `.cpp` 编进 exe（也不整层拉 FFmpeg / analysis）。模态对话框分支
+  （如裸流参数对话框）不进单测。
 
 ### 5.4 CMake 管得住什么、管不住什么
 
@@ -459,11 +486,11 @@ target_include_directories(${name} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
    却只链 `VideoEyeAnalysis` —— `VideoEyeAnalysis` 的 PUBLIC 边会把 `VideoEyeDomain` 一起带
    进来，include 目录又是根，所以编得过。断言用的是 domain 类型，边却挂在 analysis 上：
    **将来谁把这条边拿掉，这条用例会第一个红**，这正是想保留的状态。
-2. **定向编译**。`test_visual_defect` 只链 `VideoEyeInfrastructure`，但它 include 了
-   `VisualDefectAnalyzer.h` —— 因为 CMake 里把
-   `${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/quality/VisualDefectAnalyzer.cpp` 直接
-   列进了这个可执行目标，实现就在自己的 .o 里，根本不需要那条边。它刻意这么做，
-   只为同时编进 `VisualDefect.cpp`（domain）而不牵 analysis 那一片。
+2. **链 FFmpeg-free 叶子库**。`test_visual_defect` / `test_audio_qc_analyzer` /
+   `test_bitrate_gop_analyzer` 只链 `VideoEyeAnalysisQuality` —— 这三个分析器只依赖
+   domain 与 infrastructure，单测因此不必把 `VideoEyeAnalysis`（进而 FFmpeg）拖进来。
+   2026-10-25 之前它们是手列 `VisualDefectAnalyzer.cpp` / `AudioQcAnalyzer.cpp` 直接编进
+   可执行目标，现在统一改为链库，实现只编一份。
 
 顺带一提，`check_layering.py` 的 `RULES` 里没有 `ui` 与 `tests` 两条：ui 按设计就能 include
 一切，测试按设计就能反向 include 被测对象，加了只会产生噪声。别去"补上"。
