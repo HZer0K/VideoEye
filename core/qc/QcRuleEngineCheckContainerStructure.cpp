@@ -16,7 +16,7 @@ CheckMp4ContainerRules(const model::QcRule& rule, const model::AnalysisResult& r
     // ---------- MP4/fMP4 容器一致性 ----------
     // 问题由 Mp4SampleTableAnalyzer 产出（含具体样本号 / 偏移 / 分片号），
     // 规则只做三件事: 决定要不要报、按什么级别报、阈值类再核一次阈值。
-    if (!result.mp4_samples_analyzed || !result.mp4_samples.valid)
+    if (!result.DimensionExecuted(model::AnalysisDimension::Mp4SampleTable) || !result.mp4_samples.valid)
         return issues;
 
     for (const auto& finding : result.mp4_samples.issues) {
@@ -72,7 +72,7 @@ std::vector<model::DiagnosticIssue> CheckStreamingContainerRules(const model::Qc
     // 与 container.mp4.* 完全同构：问题（含 variant 号 / 分片序号 / 时间点）由
     // HlsManifestAnalyzer / DashManifestAnalyzer / SegmentQcAnalyzer 产出，
     // 规则只决定"要不要报、以什么级别报、阈值类再核一次"。
-    if (!result.streaming_analyzed || !result.streaming_package.valid)
+    if (!result.DimensionExecuted(model::AnalysisDimension::Streaming) || !result.streaming_package.valid)
         return issues;
 
     for (const auto& finding : result.streaming_package.issues) {

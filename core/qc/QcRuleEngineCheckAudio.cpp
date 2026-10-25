@@ -38,7 +38,7 @@ std::vector<model::DiagnosticIssue> CheckAudioRules(const model::QcRule& rule, c
     if (rule.id == "audio.bitstream.container_mismatch" || rule.id == "audio.bitstream.header_invalid" ||
         rule.id == "audio.bitstream.param_change" || rule.id == "audio.dialnorm.missing" ||
         rule.id == "audio.dialnorm.mismatch") {
-        if (!result.audio_bitstream_analyzed)
+        if (!result.DimensionExecuted(model::AnalysisDimension::AudioBitstream))
             return issues;
         const auto& bitstream = result.audio_bitstream;
 

@@ -134,7 +134,7 @@ void AudioChannelView::RebuildMetadataTable() {
     // ---- 音频位流参数（D1）----
     // 这些行来自**帧头**而不是 PCM，所以即使响度那一段因解码失败没有数据，
     // 这里仍然有结论 —— 审核时"容器说 48k、码流其实是 44.1k"正是靠这几行看出来。
-    if (!result.audio_bitstream_analyzed)
+    if (!result.DimensionExecuted(model::AnalysisDimension::AudioBitstream))
         return;
     for (const auto& stream : result.audio_bitstream.streams) {
         const QString prefix =

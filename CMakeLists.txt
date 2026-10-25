@@ -224,7 +224,15 @@ file(GLOB_RECURSE ANALYSIS_DISPATCH_SOURCES CONFIGURE_DEPENDS
 list(APPEND ANALYSIS_SOURCES ${ANALYSIS_DISPATCH_SOURCES})
 file(GLOB_RECURSE PLAYBACK_SOURCES CONFIGURE_DEPENDS "core/player/*.cpp" "core/player/*.h")
 file(GLOB_RECURSE EXPORTER_SOURCES CONFIGURE_DEPENDS "core/exporter/*.cpp" "core/exporter/*.h")
+# core/qc 拆成两个 target（见下面 VideoEyeQcRules / VideoEyeQc）：
+# 规则表 / 模板 / 报告格式是纯 std:: + domain 的"判定口径"，一行 Qt、FFmpeg 都没有；
+# 只有执行器（QcRunner / BatchQcRunner）才需要 AnalysisEngine。拆开之后，
+# "只想按规则表评一份 AnalysisResult"的调用方（诊断页、规则单测、报告格式枚举）
+# 不必再为了链接执行器把整层 analysis 与 FFmpeg 拖进编译/链接图。
 file(GLOB_RECURSE QC_SOURCES CONFIGURE_DEPENDS "core/qc/*.cpp" "core/qc/*.h")
+file(GLOB_RECURSE QC_EXECUTOR_SOURCES CONFIGURE_DEPENDS "core/qc/*.cpp" "core/qc/*.h")
+list(FILTER QC_SOURCES EXCLUDE REGEX "core/qc/(QcRunner|BatchQcRunner)\\.")
+list(FILTER QC_EXECUTOR_SOURCES INCLUDE REGEX "core/qc/(QcRunner|BatchQcRunner)\\.")
 file(GLOB_RECURSE REPORTING_SOURCES CONFIGURE_DEPENDS "core/reporting/*.cpp" "core/reporting/*.h")
 file(GLOB_RECURSE FFMPEGTOOL_SOURCES CONFIGURE_DEPENDS "core/ffmpeg/*.cpp" "core/ffmpeg/*.h")
 file(GLOB_RECURSE QTADAPTER_SOURCES CONFIGURE_DEPENDS "core/qt/*.cpp" "core/qt/*.h")
@@ -346,7 +354,7 @@ videoeye_add_module(VideoEyeAnalysis ${ANALYSIS_SOURCES})
 target_link_libraries(VideoEyeAnalysis
     PUBLIC VideoEyeDomain
            VideoEyeMedia
-           # 分析编排的公共头直接持有 codec 层的解析器（AnalysisPipeline.h 里的
+           # 分析编排的内部头（orchestration/detail/AnalysisPipeline.h）直接持有 codec 层的解析器
            # ParameterSetTracker / VideoEsInspector / InBandParameterSets），
            # 所以这条边必须是 PUBLIC。
            VideoEyeCodec
@@ -429,15 +437,25 @@ target_link_libraries(VideoEyeExporter
             VideoEyeFfmpegIo
 )
 
-# --- qc: 规则引擎 / 批处理 / 对比 ---
+# --- qc-rules: 规则引擎 / 默认规则 / 模板映射 / 报告格式 ---
+# 这一层只吃 domain 与 infrastructure（模板 JSON），不链分析层：QcRuleEngine 的输入是
+# 已经算好的 model::AnalysisResult，它自己不打开任何文件、不碰 FFmpeg。
+videoeye_add_module(VideoEyeQcRules ${QC_SOURCES})
+target_link_libraries(VideoEyeQcRules
+    PUBLIC VideoEyeDomain
+    PRIVATE VideoEyeInfrastructure
+)
+
+# --- qc: 单文件 / 批量执行器 ---
 # core/qc 一层 Qt 符号都没有：QcRunner 直接跑 AnalysisEngine 回调（不依赖事件循环），
 # 报告与规则全是 std:: 类型。所以这里不再链 Qt6::Core —— 命令行 / headless / 单测
 # 链它就真的不带 Qt 编译环境；需要 Qt 的调用方（UI）自己显式链。
-# 回归证据 = 三个只链 VideoEyeQc 的测试目标：test_qc_profile / test_batch_qc_runner /
-# test_qc_comparator（加上 QcRunner 的 test_qc_runner），它们能编过就证明这条边可以不要。
-videoeye_add_module(VideoEyeQc ${QC_SOURCES})
+# 回归证据 = 三个只链 VideoEyeQc 的测试目标：test_qc_runner / test_batch_qc_runner /
+# test_batch_result_model（后两个还会经 PUBLIC 边拿到 QcRules），它们能编过就证明这条边可以不要。
+videoeye_add_module(VideoEyeQc ${QC_EXECUTOR_SOURCES})
 target_link_libraries(VideoEyeQc
-    PUBLIC VideoEyeDomain
+    PUBLIC VideoEyeQcRules
+           VideoEyeDomain
     PRIVATE VideoEyeAnalysis
             VideoEyeInfrastructure
 )

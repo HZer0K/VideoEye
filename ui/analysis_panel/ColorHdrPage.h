@@ -16,6 +16,8 @@
 #include <QTabWidget>
 #include <QTableWidget>
 
+#include <memory>
+
 #include "ui/AnalysisFacade.h"
 #include "ui/analysis_panel/ScanClient.h"
 
@@ -31,8 +33,9 @@ public:
     void SetSourcePath(const QString& path) override {
         source_path_ = path;
     }
-    // 异常表来自 QC 规则引擎（category=色彩/HDR），所以要连报告一起给
-    void SetResult(const model::AnalysisResult& result, const model::QcReport& qc_report);
+    // 异常表来自 QC 规则引擎（category=色彩/HDR），所以要连报告一起给。
+    // 传共享只读快照：与 facade / 其它页共用同一份，页面不再整份拷贝 AnalysisResult。
+    void SetResult(std::shared_ptr<const model::AnalysisResult> result, const model::QcReport& qc_report);
 
     // 只换报告（用户在「规则与阈值」页改了规则后重新评估）再刷一次
     void SetQcReport(const model::QcReport& qc_report);
@@ -73,7 +76,8 @@ private:
 
     QString source_path_;
     bool has_result_ = false;
-    model::AnalysisResult result_;
+    // 非空默认值（一份空结果）：成员在 SetResult 之前也会被解引用，避免判空铺满全页。
+    std::shared_ptr<const model::AnalysisResult> result_ = std::make_shared<const model::AnalysisResult>();
     model::QcReport qc_report_;
     videoeye::ColorHdrOptions options_;
 

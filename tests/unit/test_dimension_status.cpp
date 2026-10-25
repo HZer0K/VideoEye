@@ -8,12 +8,14 @@
 
 #include <string>
 
+#include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/DimensionStatus.h"
 
 namespace {
 
 using videoeye::model::AnalysisCapability;
 using videoeye::model::AnalysisDimension;
+using videoeye::model::AnalysisResult;
 using videoeye::model::DimensionStatus;
 using videoeye::model::MakeFailedDimension;
 using videoeye::model::MakeSkippedDimension;
@@ -143,6 +145,29 @@ TEST(DimensionStatusTest, MakeFailedCarriesCountsAndIsNotConclusive) {
     EXPECT_EQ(status.capability, AnalysisCapability::Failed);
     EXPECT_EQ(status.failures, 3);
     EXPECT_FALSE(status.conclusive);
+}
+
+// ---------------------------------------------------------------------------
+// AnalysisResult::DimensionExecuted：消费方唯一的"跑没跑"口径
+// ---------------------------------------------------------------------------
+TEST(DimensionStatusTest, DimensionExecutedReadsOnlyTheTable) {
+    AnalysisResult result;
+    EXPECT_FALSE(result.DimensionExecuted(AnalysisDimension::Subtitle)) << "没有该维度记录 = 没跑过";
+
+    DimensionStatus status;
+    status.dimension = AnalysisDimension::Subtitle;
+    status.executed = true;
+    result.SetDimension(status);
+    EXPECT_TRUE(result.DimensionExecuted(AnalysisDimension::Subtitle));
+    EXPECT_FALSE(result.DimensionExecuted(AnalysisDimension::Timecode)) << "不能串到别的维度";
+}
+
+// 生产阶段的 *_analyzed 布尔不是消费口径：只有 Assembler 收尾把它们回填之后才对得上。
+// 这条用例把"分离"钉住，防止以后又有人手写 result.xxx_analyzed 去做判断。
+TEST(DimensionStatusTest, DimensionExecutedIgnoresProducerFlagsBeforeAssembly) {
+    AnalysisResult result;
+    result.subtitle_analyzed = true;
+    EXPECT_FALSE(result.DimensionExecuted(AnalysisDimension::Subtitle));
 }
 
 // ---------------------------------------------------------------------------

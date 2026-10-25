@@ -14,7 +14,7 @@ targe —— 目录只是命名习惯，编译器不认识；能被机器检查�
 
 | 目录 | CMake target | 职责 | 允许依赖 |
 |------|--------------|------|----------|
-| `core/domain/model/` | `VideoEyeDomain` | 纯结果类型与值对象 | standard library、Qt Core（历史包袱，见 §5） |
+| `core/domain/model/` | `VideoEyeDomain` | 纯结果类型与值对象 | standard library |
 | `infrastructure/serialization`<br>`infrastructure/logging`<br>`infrastructure/concurrency` | `VideoEyeInfrastructure` | JSON、日志、后台任务调度 | standard library |
 | `core/ffmpeg_io/` | `VideoEyeFfmpegIo` | FFmpeg 阻塞 IO 的中断与超时（**叶子模块**，分析/播放/导出共用） | FFmpeg |
 | `core/media/codec`<br>`core/media/container`<br>`core/media/probe`<br>`core/media/streaming` | `VideoEyeMedia` | 容器字节级解析、extradata / 比特读取、文件探测 | domain、infrastructure |
@@ -23,7 +23,7 @@ targe —— 目录只是命名习惯，编译器不认识；能被机器检查�
 | `core/analysis/stream`<br>`core/analysis/orchestration`<br>`core/analysis/quality`<br>`core/analysis/diagnostics` | `VideoEyeAnalysis` | 各分析器、执行引擎与编排 | domain、media、codec、package、infrastructure、ffmpeg_io、FFmpeg |
 | `core/exporter/` | `VideoEyeExporter` | 转码 / remux 导出 | domain、infrastructure、ffmpeg_io、FFmpeg |
 | `core/player/` | `VideoEyePlayback` | 播放会话、解码、抽帧 | domain、analysis、exporter、infrastructure、ffmpeg_io、qt、FFmpeg |
-| `core/qc/` | `VideoEyeQc` | 规则表、模板映射、批处理、对比 | domain、analysis、infrastructure |
+| `core/qc/` | `VideoEyeQcRules`（规则表 / 模板映射 / 对比 / 报告格式）<br>`VideoEyeQc`（单文件 / 批量执行器） | 规则判定口径；执行器负责打开文件并把结果交给规则 | rules：domain、infrastructure<br>executor：domain、analysis、infrastructure |
 | `core/reporting/` | `VideoEyeReporting` | 报告导出（JSON / CSV / HTML / PDF / TXT） | domain、qc、infrastructure |
 | `core/ffmpeg/` | `VideoEyeFfmpegTools` | 原生 ffmpeg 命令行工作台 | infrastructure、Qt Core |
 | `core/qt/` | `VideoEyeQtAdapters` | 把不带 Qt 的执行引擎接进信号 / 线程；`QtWorkerOwner` 是所有自带 `QThread` 的后台 worker 的统一所有者 | domain、analysis、Qt Core |
@@ -47,7 +47,7 @@ Qt6::Widgets（2026-10-07 从 PRIVATE 提到 PUBLIC）。这条规则不再靠�
 
 ```mermaid
 graph TD
-    DOMAIN[core/domain<br/>结果类型] --> STD[(stdlib / Qt Core)]
+    DOMAIN[core/domain<br/>结果类型] --> STD[(stdlib)]
     INFRA[infrastructure<br/>配置/日志/序列化/任务] --> STD
     FFIO[core/ffmpeg_io<br/>阻塞 IO 中断/超时] --> STD
     MEDIA[core/media<br/>容器与码流解析] --> DOMAIN
@@ -530,7 +530,7 @@ python scripts/check_layering.py
 | 2 | `core/analysis/<类别>/XxxAnalyzer.{h,cpp}` | 分析器本体 |
 | 3 | `core/analysis/AnalysisOptions.h` | 开关字段 + 对应的 options 结构 |
 | 4 | `core/domain/model/AnalysisResult.h` | 结果字段 + 配套的 `xxx_analyzed` 标志位 |
-| 5 | `core/analysis/orchestration/AnalysisPipeline.cpp`（建分析器 + `OnPacket` 分发）、`AnalysisInputSession.cpp`（喂数据 / 取消）、`AnalysisResultAssembler.cpp`（收尾与 `xxx_analyzed` 标志位） | **至少 4 处**接线点 |
+| 5 | `core/analysis/orchestration/detail/AnalysisPipeline.cpp`（建分析器 + `OnPacket` 分发）、`AnalysisInputSession.cpp`（喂数据 / 取消）、`AnalysisResultAssembler.cpp`（收尾与 `xxx_analyzed` 标志位） | **至少 4 处**接线点 |
 | 6 | `core/qc/QcRuleDefaults.cpp` + `core/qc/QcRuleEngine*.cpp` | 可选：要加 QC 规则时改 `DefaultQcRules()` + `CheckRule()` |
 | 7 | `ui/analysis_panel/*.cpp` | 展示。可以新建页面，也可以并入现有页（`timecode` 就并进了 `SubtitleAuxPage`） |
 

@@ -285,7 +285,8 @@ void DiagnosticsPage::OnFacadeProgress(quint64 generation, double percent, const
     emit ProgressChanged(percent, stage);
 }
 
-void DiagnosticsPage::OnFacadeFinished(quint64 generation, bool completed, const model::AnalysisResult& result) {
+void DiagnosticsPage::OnFacadeFinished(quint64 generation, bool completed,
+                                       std::shared_ptr<const model::AnalysisResult> result) {
     if (generation != generation_)
         return;
     Q_UNUSED(result);
@@ -355,12 +356,13 @@ void DiagnosticsPage::OnFacadeFailed(quint64 generation, const QString& message)
 void DiagnosticsPage::Evaluate() {
     if (!has_result_)
         return;
-    report_ = facade_->Evaluate(facade_->result());
-    const model::AnalysisResult& result = facade_->result();
-    issue_view_->SetReport(result, report_);
-    coverage_view_->SetResult(&result);
-    parameter_view_->SetResult(&result);
-    frame_order_view_->SetResult(&result);
+    // 同一份快照既用来算报告，也分发给各子视图 —— 不再各自拷一份。
+    const std::shared_ptr<const model::AnalysisResult> result = facade_->result();
+    report_ = facade_->Evaluate(*result);
+    issue_view_->SetReport(*result, report_);
+    coverage_view_->SetResult(result.get());
+    parameter_view_->SetResult(result.get());
+    frame_order_view_->SetResult(result.get());
     UpdateQcSummary();
     emit QcReportChanged(report_);
 }
@@ -392,7 +394,7 @@ void DiagnosticsPage::UpdateQcSummary() {
     const int error = report_.CountBySeverity(model::IssueSeverity::Error);
     const int warning = report_.CountBySeverity(model::IssueSeverity::Warning);
     const int info = report_.CountBySeverity(model::IssueSeverity::Info);
-    const auto& result = facade_->result();
+    const model::AnalysisResult& result = *facade_->result();
 
     summary_label_->setText(
         tr("评分 <b>%1</b>/100（%2）｜ 致命 %3 · 错误 %4 · 警告 %5 · 提示 %6<br>"
@@ -465,7 +467,7 @@ const std::vector<model::QcRule>& DiagnosticsPage::rules() const {
     return facade_->rules();
 }
 
-const model::AnalysisResult& DiagnosticsPage::result() const {
+std::shared_ptr<const model::AnalysisResult> DiagnosticsPage::result() const {
     return facade_->result();
 }
 

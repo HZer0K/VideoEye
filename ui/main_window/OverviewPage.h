@@ -70,7 +70,6 @@ signals:
 private:
     void BuildUi();
     void RefreshUi();
-    static QString SeverityText(model::IssueSeverity severity);
     static QString SeverityColor(model::IssueSeverity severity);
     static QString FormatPosition(const model::DiagnosticIssue& issue);
 

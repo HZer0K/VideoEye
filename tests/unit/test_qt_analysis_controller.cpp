@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <vector>
 
 #include <QCoreApplication>
@@ -72,8 +73,9 @@ struct TerminalSink {
 };
 
 void WireSink(videoeye::qt::QtAnalysisController& controller, TerminalSink& sink) {
-    QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFinished, &controller,
-                     [&sink](quint64 gen, bool, const model::AnalysisResult&) { sink.Record(gen); });
+    QObject::connect(
+        &controller, &videoeye::qt::QtAnalysisController::AnalysisFinished, &controller,
+        [&sink](quint64 gen, bool, const std::shared_ptr<const model::AnalysisResult>&) { sink.Record(gen); });
     QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFailed, &controller,
                      [&sink](quint64 gen, const QString&) { sink.Record(gen); });
 }
@@ -288,7 +290,9 @@ TEST(QtAnalysisControllerLifecycle, FailedInputIsSettledAsFailed) {
     QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFailed, &controller,
                      [&failures](quint64 gen, const QString&) { failures.push_back(gen); });
     QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFinished, &controller,
-                     [&finishes](quint64 gen, bool, const model::AnalysisResult&) { finishes.push_back(gen); });
+                     [&finishes](quint64 gen, bool, const std::shared_ptr<const model::AnalysisResult>&) {
+                         finishes.push_back(gen);
+                     });
 
     const quint64 gen = controller.StartAnalysis(corrupt.toStdString());
     ASSERT_GT(gen, 0u);
@@ -318,7 +322,9 @@ TEST(QtAnalysisControllerLifecycle, SuccessfulInputIsSettledAsSucceeded) {
     QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFailed, &controller,
                      [&failures](quint64 gen, const QString&) { failures.push_back(gen); });
     QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFinished, &controller,
-                     [&finishes](quint64 gen, bool, const model::AnalysisResult&) { finishes.push_back(gen); });
+                     [&finishes](quint64 gen, bool, const std::shared_ptr<const model::AnalysisResult>&) {
+                         finishes.push_back(gen);
+                     });
 
     const quint64 gen = controller.StartAnalysis(manifest.toStdString());
     ASSERT_GT(gen, 0u);

@@ -83,7 +83,10 @@ public:
 signals:
     // percent: 0..100
     void ProgressReported(quint64 generation, double percent, const QString& stage);
-    void AnalysisFinished(quint64 generation, bool completed, const model::AnalysisResult& result);
+    // 结果以共享只读快照传出：这条连接跨线程走队列，参数必须可复制，而 AnalysisResult
+    // 带着码率曲线 / 样本表 / 字幕 cue 等大块数据 —— 整份深拷贝一次就是一次无谓搬运。
+    // 转成 shared_ptr 之后排队只复制一个引用计数，facade 与各页面共用同一份快照。
+    void AnalysisFinished(quint64 generation, bool completed, std::shared_ptr<const model::AnalysisResult> result);
     void AnalysisFailed(quint64 generation, const QString& message);
 
     // 内部信号：工作线程体返回时发出（由工作线程 emit，自动排队回本对象所在线程）。
@@ -176,3 +179,7 @@ private:
 
 } // namespace qt
 } // namespace videoeye
+
+// 排队连接要求参数类型在元类型系统里注册：工作线程 emit、UI 线程执行槽。
+// 放在全局作用域而不是 domain 头 —— domain 不允许依赖 Qt。
+Q_DECLARE_METATYPE(std::shared_ptr<const videoeye::model::AnalysisResult>)

@@ -23,6 +23,7 @@
 #include <QTabWidget>
 #include <QTableWidget>
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -109,6 +110,15 @@ void ClickCell(QTableWidget* table, int row, int column) {
     QMetaObject::invokeMethod(table, "cellClicked", Qt::DirectConnection, Q_ARG(int, row), Q_ARG(int, column));
 }
 
+// 页面只认 dimensions 表里的 executed（AnalysisResult::DimensionExecuted），
+// 单测直接构造结果，这里补一条"已执行"维度记录。
+void MarkExecuted(AnalysisResult& result, videoeye::model::AnalysisDimension dimension) {
+    videoeye::model::DimensionStatus status;
+    status.dimension = dimension;
+    status.executed = true;
+    result.SetDimension(status);
+}
+
 // 字幕夹具：2 条流（文本 + 图形）、3 条 cue、2 个问题（1 个 cue 级 + 1 个流级）
 void FillSubtitle(AnalysisResult& result) {
     auto& sub = result.subtitle;
@@ -176,7 +186,7 @@ void FillSubtitle(AnalysisResult& result) {
     sub.bitmap_stream_count = 1;
     sub.total_cue_count = 3;
     sub.analyzed = true;
-    result.subtitle_analyzed = true;
+    MarkExecuted(result, videoeye::model::AnalysisDimension::Subtitle);
 }
 
 // 时码夹具：10:00:00:00 @ 25 fps + 一条 tmcd 轨 + 2 个章节（第 2 个重叠）
@@ -217,7 +227,7 @@ void FillTimecode(AnalysisResult& result) {
     issue.detail = "章节 2 与上一章节重叠 5.000 s";
     tc.chapter_issues = {issue};
     tc.analyzed = true;
-    result.timecode_analyzed = true;
+    MarkExecuted(result, videoeye::model::AnalysisDimension::Timecode);
 }
 
 // 辅助数据夹具：1 条 SCTE-35 data 流、2 条 cue（OUT/IN）、2 条 metadata
@@ -279,7 +289,7 @@ void FillAux(AnalysisResult& result) {
     tag1.value = "zh";
     aux.metadata = {tag0, tag1};
     aux.analyzed = true;
-    result.aux_data_analyzed = true;
+    MarkExecuted(result, videoeye::model::AnalysisDimension::AuxiliaryData);
 }
 
 } // namespace
@@ -328,7 +338,7 @@ TEST(SubtitleAuxPageTests, SubtitleTablesAndFilters) {
     int timecode_emits = 0;
     QObject::connect(&page, &SubtitleAuxPage::StartTimecodeReady,
                      [&timecode_emits](const QString&, double) { ++timecode_emits; });
-    page.SetResult(result);
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
 
     EXPECT_TRUE(summary->text().contains(QStringLiteral("字幕流 2 条（文本 1 / 图形 1），cue 3 条，问题 2 处")));
     // 只有字幕数据时不应冒泡播放器时码
@@ -419,7 +429,7 @@ TEST(SubtitleAuxPageTests, TimecodeChapterTablesAndStartTimecodeSignal) {
         tc_text = timecode;
         tc_fps = fps;
     });
-    page.SetResult(result);
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
     ASSERT_EQ(timecode_emits, 1);
     EXPECT_EQ(tc_text, QStringLiteral("10:00:00:00"));
     EXPECT_DOUBLE_EQ(tc_fps, 25.0);
@@ -457,14 +467,14 @@ TEST(SubtitleAuxPageTests, TimecodeChapterTablesAndStartTimecodeSignal) {
     //   primary_drop_frame 只驱动汇总文案与时码表的「drop-frame」行）
     result.timecode.primary.drop_frame = true;
     result.timecode.primary_drop_frame = true;
-    page.SetResult(result);
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
     EXPECT_EQ(timecode_emits, 2);
     EXPECT_EQ(tc_text, QStringLiteral("10:00:00;00"));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("（drop-frame）")));
 
     // 没有主时码：不再冒泡，表里显示「无」
     result.timecode.has_primary = false;
-    page.SetResult(result);
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
     EXPECT_EQ(timecode_emits, 2);
     EXPECT_TRUE(summary->text().contains(QStringLiteral("未找到时码")));
     EXPECT_EQ(Cell(timecode, 0, 1), QStringLiteral("无"));
@@ -479,7 +489,7 @@ TEST(SubtitleAuxPageTests, AuxStreamScte35AndMetadataTables) {
 
     AnalysisResult result;
     FillAux(result);
-    page.SetResult(result);
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
 
     EXPECT_TRUE(summary->text().contains(QStringLiteral("SCTE-35 cue 2 条（OUT 1 / IN 1）")));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("metadata 2 条")));
@@ -568,7 +578,7 @@ TEST(SubtitleAuxPageTests, SeekRequestedOnCueRowClick) {
 
     AnalysisResult result;
     FillSubtitle(result);
-    page.SetResult(result);
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
 
     QTableWidget* cue = TableInTab(&page, 0, QStringLiteral("#"));
     ASSERT_NE(cue, nullptr);

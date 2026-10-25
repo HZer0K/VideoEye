@@ -1,4 +1,4 @@
-#include "core/analysis/orchestration/PacketScanLoop.h"
+#include "core/analysis/orchestration/detail/PacketScanLoop.h"
 
 #include <algorithm>
 #include <cmath>

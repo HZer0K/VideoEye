@@ -1,4 +1,4 @@
-#include "core/analysis/orchestration/AnalysisPipeline.h"
+#include "core/analysis/orchestration/detail/AnalysisPipeline.h"
 
 #include <cmath>
 #include <cstring>

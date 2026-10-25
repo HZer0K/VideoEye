@@ -46,10 +46,19 @@ model::AudioBitstreamStream MakeStream(model::AudioBitstreamCodec codec) {
     return stream;
 }
 
+// 规则层只认 dimensions 表里的 executed（AnalysisResult::DimensionExecuted），
+// 单测直接构造结果，这里补一条"已执行"维度记录。
+void MarkExecuted(model::AnalysisResult& result, model::AnalysisDimension dimension) {
+    model::DimensionStatus status;
+    status.dimension = dimension;
+    status.executed = true;
+    result.SetDimension(status);
+}
+
 model::AnalysisResult MakeResult() {
     model::AnalysisResult result;
     result.file_path = "bitstream.mkv";
-    result.audio_bitstream_analyzed = true;
+    MarkExecuted(result, model::AnalysisDimension::AudioBitstream);
     result.audio_bitstream.analyzed = true;
     return result;
 }
@@ -222,8 +231,7 @@ TEST(AudioBitstreamRulesTest, DialnormMismatchNeedsMeasuredLoudness) {
 TEST(AudioBitstreamRulesTest, NoBitstreamAnalysisMeansNoIssues) {
     model::AnalysisResult result;
     result.file_path = "no_bitstream.mkv";
-    result.audio_bitstream_analyzed = false;
-    // 即使 streams 里塞了"有问题"的数据，没跑过就不该报
+    // 不写 AudioBitstream 维度 = 没跑过；即使 streams 里塞了"有问题"的数据也不该报
     auto stream = MakeStream(model::AudioBitstreamCodec::Ac3);
     stream.container_mismatch = true;
     stream.container_mismatch_fields = 2;

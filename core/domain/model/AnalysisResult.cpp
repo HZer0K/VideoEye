@@ -68,6 +68,11 @@ const DimensionStatus* AnalysisResult::FindDimension(AnalysisDimension dimension
     return nullptr;
 }
 
+bool AnalysisResult::DimensionExecuted(AnalysisDimension dimension) const {
+    const DimensionStatus* status = FindDimension(dimension);
+    return status != nullptr && status->executed;
+}
+
 bool AnalysisResult::DimensionConclusive(AnalysisDimension dimension) const {
     const DimensionStatus* status = FindDimension(dimension);
     return status != nullptr && status->conclusive;

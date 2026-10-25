@@ -261,9 +261,12 @@ void AnalysisPanel::UpdateStreamingUi() {
         pages_.streaming->SetResult(pages_.container->result().streaming_package);
         return;
     }
-    if (pages_.diagnostics && pages_.diagnostics->hasResult() && pages_.diagnostics->result().streaming_analyzed) {
-        pages_.streaming->SetResult(pages_.diagnostics->result().streaming_package);
-        return;
+    if (pages_.diagnostics && pages_.diagnostics->hasResult()) {
+        const std::shared_ptr<const model::AnalysisResult> result = pages_.diagnostics->result();
+        if (result->DimensionExecuted(model::AnalysisDimension::Streaming)) {
+            pages_.streaming->SetResult(result->streaming_package);
+            return;
+        }
     }
     pages_.streaming->Clear();
 }
@@ -277,11 +280,16 @@ void AnalysisPanel::OnBitstreamRefreshRequested() {
 void AnalysisPanel::UpdateBitstreamUi() {
     if (!pages_.bitstream_params)
         return;
-    if (!pages_.diagnostics || !pages_.diagnostics->hasResult() || !pages_.diagnostics->result().bitstream_analyzed) {
+    if (!pages_.diagnostics || !pages_.diagnostics->hasResult()) {
         pages_.bitstream_params->Clear();
         return;
     }
-    pages_.bitstream_params->SetResult(pages_.diagnostics->result().bitstream_analysis);
+    const std::shared_ptr<const model::AnalysisResult> result = pages_.diagnostics->result();
+    if (!result->DimensionExecuted(model::AnalysisDimension::VideoBitstream)) {
+        pages_.bitstream_params->Clear();
+        return;
+    }
+    pages_.bitstream_params->SetResult(result->bitstream_analysis);
 }
 
 // 播放器打开失败进入「分析模式」时的自动扫描入口：用诊断页的默认选项跑一次。
@@ -575,18 +583,21 @@ void AnalysisPanel::OnScanEnded(DiagnosticsPage::ScanEndReason reason) {
         return;
     VE_PERF("AnalysisPanel 分发扫描结果");
 
+    // 一次扫描只产生一份共享只读快照，下面所有页拿到的都是同一个对象。
+    const std::shared_ptr<const model::AnalysisResult> result = pages_.diagnostics->result();
+
     // 「关联场景切换」要用场景切换页的记录，先喂给码率页
     if (pages_.bitrate_gop) {
         pages_.bitrate_gop->SetSceneChanges(pages_.scene_change ? pages_.scene_change->records()
                                                                 : std::vector<model::SceneChangeResult>());
-        pages_.bitrate_gop->SetResult(pages_.diagnostics->result());
+        pages_.bitrate_gop->SetResult(result);
     }
     // 音频 QC / 色彩 HDR 的异常表来自 QC 规则引擎，所以连报告一起给
     if (pages_.audio_qc) {
-        pages_.audio_qc->SetResult(pages_.diagnostics->result(), pages_.diagnostics->qcReport());
+        pages_.audio_qc->SetResult(result, pages_.diagnostics->qcReport());
     }
     if (pages_.color_hdr) {
-        pages_.color_hdr->SetResult(pages_.diagnostics->result(), pages_.diagnostics->qcReport());
+        pages_.color_hdr->SetResult(result, pages_.diagnostics->qcReport());
     }
 
     {
@@ -599,15 +610,14 @@ void AnalysisPanel::OnScanEnded(DiagnosticsPage::ScanEndReason reason) {
     }
     if (pages_.subtitle_aux) {
         VE_PERF("SubtitleAuxPage::SetResult");
-        pages_.subtitle_aux->SetResult(pages_.diagnostics->result());
+        pages_.subtitle_aux->SetResult(result);
     }
 
     // MP4 样本表：扫描跑过就顺带刷新容器页（与打开文件时那次解析结果一致）
-    const model::AnalysisResult& result = pages_.diagnostics->result();
-    if (result.mp4_samples_analyzed && result.mp4_samples.valid) {
+    if (result->DimensionExecuted(model::AnalysisDimension::Mp4SampleTable) && result->mp4_samples.valid) {
         VE_PERF("诊断后刷新 MP4 样本表");
         if (pages_.container)
-            pages_.container->ApplySampleTable(result.mp4_samples);
+            pages_.container->ApplySampleTable(result->mp4_samples);
     }
 
     // 终态回到首页：评分/结论/异常清单都该刷新（失败的路径上面已 return，没有新结果）

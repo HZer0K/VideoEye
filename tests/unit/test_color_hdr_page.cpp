@@ -20,6 +20,7 @@
 #include <QTabWidget>
 #include <QTableWidget>
 
+#include <memory>
 #include <string>
 
 #include "core/analysis/AnalysisOptions.h"
@@ -137,7 +138,7 @@ TEST(ColorHdrPageTests, SetResultFillsTablesAndMarksMissingValues) {
     EnsureApp();
     ColorHdrPage page;
     const ColorHdrAnalysis analysis = MakeHdr10Analysis();
-    page.SetResult(MakeResultWith(analysis), QcReport{});
+    page.SetResult(std::make_shared<const AnalysisResult>(MakeResultWith(analysis)), QcReport{});
 
     // 两张信息表的行数必须与 domain 的行构造器一致（页面只负责摆行）
     QTableWidget* color_table = TableInTab(&page, 0);
@@ -197,7 +198,7 @@ TEST(ColorHdrPageTests, IssueTableOnlyKeepsColorHdrCategory) {
     report.issues = {color_issue, video_issue};
 
     const ColorHdrAnalysis analysis = MakeHdr10Analysis();
-    page.SetResult(MakeResultWith(analysis), report);
+    page.SetResult(std::make_shared<const AnalysisResult>(MakeResultWith(analysis)), report);
 
     QTableWidget* issue_table = TableInTab(&page, 2);
     ASSERT_TRUE(issue_table != nullptr);

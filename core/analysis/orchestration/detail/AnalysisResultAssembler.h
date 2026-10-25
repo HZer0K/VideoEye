@@ -105,6 +105,14 @@ public:
     void Finish(const AnalysisCallbacks& callbacks);
 
 private:
+    // 用 dimensions 表回填 7 个历史 *_analyzed 布尔，让"跑没跑"只有一份答案。
+    //
+    // 生产阶段（逐包扫描 / 各分析器收尾）必须继续写这些布尔 —— 扫描循环要边跑边判断；
+    // 但到 FinalizeDimensionStatus 这里，维度的 executed 才是权威口径：一旦某维度被判定为
+    // "选项关闭 / 输入不适用 / 没拿到数据"，对应布尔也必须跟着为 false，不能让它继续为 true
+    // 把"未执行"骗成"已执行"。消费方不要直接读这些布尔，用 AnalysisResult::DimensionExecuted()。
+    void SyncLegacyDimensionFlags();
+
     model::AnalysisResult& result_;
     const AnalysisOptions& options_;
     // 桶算出来的实测时长（FinalizeDimensionStatus 用它做覆盖分母）

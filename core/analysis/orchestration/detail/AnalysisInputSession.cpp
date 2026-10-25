@@ -1,4 +1,4 @@
-#include "core/analysis/orchestration/AnalysisInputSession.h"
+#include "core/analysis/orchestration/detail/AnalysisInputSession.h"
 
 #include <cstdint>
 #include <fstream>

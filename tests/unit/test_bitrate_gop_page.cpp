@@ -28,6 +28,7 @@
 #include <QTabWidget>
 #include <QTableWidget>
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -227,7 +228,7 @@ TEST(BitrateGopPageTests, ResultFillsGopTableAndHighlightsLongGop) {
 
     AnalysisResult result;
     result.bitrate_gop = MakeBg();
-    page.SetResult(result);
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
 
     QTableWidget* gop = TableInTab(&page, 0, QStringLiteral("序号"));
     QTableWidget* anomaly = TableInTab(&page, 1, QStringLiteral("类型"));
@@ -297,7 +298,7 @@ TEST(BitrateGopPageTests, SummarySwitchesOnFrameTypesAndTargetPeak) {
     result.bitrate_gop.p_frame_count = 0;
     result.bitrate_gop.b_frame_count = 0;
     result.bitrate_gop.unknown_frame_count = 97;
-    page.SetResult(result);
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("I 3 帧（其余未解析，勾选「精确帧类型」重新分析）")));
 
     // 「手动 / 自动」由页面参数决定（spin -> options_），走真实链路设置
@@ -305,11 +306,11 @@ TEST(BitrateGopPageTests, SummarySwitchesOnFrameTypesAndTargetPeak) {
     ASSERT_NE(peak_spin, nullptr);
     peak_spin->setValue(3000.0);
     result.bitrate_gop.target_peak_kbps = 3000.0;
-    page.SetResult(result);
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("目标峰值 3000 kbps（手动）")));
 
     result.bitrate_gop.total_frames = 0;
-    page.SetResult(result);
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
     EXPECT_EQ(summary->text(), QStringLiteral("未检测到视频帧，无法进行码率与 GOP 分析。"));
 }
 
@@ -330,7 +331,7 @@ TEST(BitrateGopPageTests, AnomalyTableCapsAt2000Rows) {
         anomaly.unit = "s";
         result.bitrate_gop.anomalies.push_back(anomaly);
     }
-    page.SetResult(result);
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
 
     QTableWidget* anomaly = TableInTab(&page, 1, QStringLiteral("类型"));
     ASSERT_NE(anomaly, nullptr);
@@ -352,7 +353,7 @@ TEST(BitrateGopPageTests, WindowComboUpdatesSummary) {
 
     AnalysisResult result;
     result.bitrate_gop = MakeBg();
-    page.SetResult(result);
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("窗口 <b>1.00</b> 秒")));
 
     combo->setCurrentIndex(3); // 5.00 秒
@@ -368,7 +369,7 @@ TEST(BitrateGopPageTests, SeekRequestedOnGopAndAnomalyRowClick) {
 
     AnalysisResult result;
     result.bitrate_gop = MakeBg();
-    page.SetResult(result);
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
 
     QTableWidget* gop = TableInTab(&page, 0, QStringLiteral("序号"));
     QTableWidget* anomaly = TableInTab(&page, 1, QStringLiteral("类型"));
@@ -459,7 +460,7 @@ TEST(BitrateGopPageTests, LinkSceneChangesEmitsRecordsAndOptions) {
     BitrateGopPage page;
     AnalysisResult result;
     result.bitrate_gop = MakeBg();
-    page.SetResult(result);
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
 
     SceneChangeResult r1;
     r1.frame_index = 10;

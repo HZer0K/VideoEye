@@ -104,9 +104,10 @@ public:
     // 换文件：清掉上一文件的扫描结果
     void ResetForNewFile();
 
-    // 只读快照：面板分发给共用同一次扫描的其它页
+    // 只读快照：面板分发给共用同一次扫描的其它页。
+    // 返回共享指针：各页面共用同一份结果，不再各自整份拷贝 AnalysisResult。
     const std::vector<model::QcRule>& rules() const;
-    const model::AnalysisResult& result() const;
+    std::shared_ptr<const model::AnalysisResult> result() const;
     const model::QcReport& qcReport() const {
         return report_;
     }
@@ -141,7 +142,7 @@ private slots:
     void OnCancelWatchdog();
     void OnExportClicked();
     void OnFacadeProgress(quint64 generation, double percent, const QString& stage);
-    void OnFacadeFinished(quint64 generation, bool completed, const model::AnalysisResult& result);
+    void OnFacadeFinished(quint64 generation, bool completed, std::shared_ptr<const model::AnalysisResult> result);
     void OnFacadeFailed(quint64 generation, const QString& message);
 
 private:

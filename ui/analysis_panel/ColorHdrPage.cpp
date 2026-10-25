@@ -22,6 +22,8 @@
 
 #include <QColor>
 
+#include <utility>
+
 namespace videoeye {
 namespace ui {
 
@@ -183,7 +185,7 @@ void ColorHdrPage::Refresh() {
 void ColorHdrPage::UpdateSummary() {
     if (!summary_label_)
         return;
-    const auto& analysis = result_.color_hdr;
+    const auto& analysis = result_->color_hdr;
     if (!has_result_ || !analysis.analyzed) {
         summary_label_->setText(tr("暂无色彩/HDR 结果。点击「开始分析」扫描当前文件（需要有视频流）。"));
         return;
@@ -269,7 +271,7 @@ void ColorHdrPage::RebuildTables() {
         table->resizeColumnsToContents();
     };
 
-    const auto& analysis = result_.color_hdr;
+    const auto& analysis = result_->color_hdr;
     if (!has_result_ || !analysis.analyzed) {
         color_info_table_->setRowCount(0);
         hdr_info_table_->setRowCount(0);
@@ -329,11 +331,11 @@ void ColorHdrPage::RebuildIssueTable() {
 }
 
 void ColorHdrPage::OnExportCsv() {
-    if (!has_result_ || !result_.color_hdr.analyzed) {
+    if (!has_result_ || !result_->color_hdr.analyzed) {
         QMessageBox::information(this, tr("提示"), tr("请先完成一次色彩/HDR 分析。"));
         return;
     }
-    const auto& analysis = result_.color_hdr;
+    const auto& analysis = result_->color_hdr;
     ExportCsvStream(
         this, tr("导出色彩与 HDR 信息 CSV"), source_path_ + QStringLiteral("_colorhdr.csv"),
         [this, &analysis](QTextStream& out) {
@@ -358,8 +360,8 @@ void ColorHdrPage::OnExportCsv() {
         static_cast<int>(model::BuildColorRows(analysis).size() + model::BuildHdrRows(analysis).size()));
 }
 
-void ColorHdrPage::SetResult(const model::AnalysisResult& result, const model::QcReport& qc_report) {
-    result_ = result;
+void ColorHdrPage::SetResult(std::shared_ptr<const model::AnalysisResult> result, const model::QcReport& qc_report) {
+    result_ = std::move(result);
     qc_report_ = qc_report;
     has_result_ = true;
     Refresh();

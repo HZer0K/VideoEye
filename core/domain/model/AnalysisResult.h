@@ -103,6 +103,9 @@ struct AnalysisResult {
     // 音频位流参数（D1：逐包解析 ADTS/LATM/AC-3/E-AC-3/Opus 帧头，不解码）。
     // audio_bitstream_analyzed=true 才表示跑过（没有音频流时不跑）。
     // 与 audio_qc 是两条独立通路：这条只看头，因此即使解码器打不开也有结果。
+    //
+    // ⚠️ 这是**生产阶段的中间标志**：消费方一律用 DimensionExecuted() 判断"跑没跑"，
+    // 收尾时 AnalysisResultAssembler 会用 dimensions 表回填这里的值。
     AudioBitstreamResult audio_bitstream;
     bool audio_bitstream_analyzed = false;
 
@@ -113,12 +116,14 @@ struct AnalysisResult {
     TimelineAnalysisResult timeline;
 
     // MP4/fMP4 容器一致性（自研 IsobmffParser 解析，见 core/analysis/container/Mp4SampleTableAnalyzer.h）
-    // mp4_samples_analyzed=true 才表示跑过（非 MP4 家族或解析失败时不跑）
+    // mp4_samples_analyzed=true 才表示跑过（非 MP4 家族或解析失败时不跑）。同 audio_bitstream_analyzed：
+    // 这是生产中间标志，消费方用 DimensionExecuted(Mp4SampleTable)。
     Mp4SampleTableResult mp4_samples;
     bool mp4_samples_analyzed = false;
 
     // 编码码流解析（从 extradata 解析 SPS/VPS/OBU 等，见 core/analysis/codec/BitstreamAnalyzer.h）
-    // bitstream_analysis 不为空表示已执行码流分析
+    // bitstream_analysis 不为空表示已执行码流分析。bitstream_analyzed 同样是生产中间标志，
+    // 消费方用 DimensionExecuted(VideoBitstream)。
     BitstreamAnalysisResult bitstream_analysis;
     bool bitstream_analyzed = false;
 
@@ -134,20 +139,23 @@ struct AnalysisResult {
     std::vector<BitstreamAnalysisResult> bitstream_streams;
 
     // HLS / DASH 流媒体包（见 core/analysis/streaming/HlsManifestAnalyzer.h / DashManifestAnalyzer.h）
-    // 只有输入是清单文件时才跑；streaming_analyzed=true 才表示跑过。
+    // 只有输入是清单文件时才跑；是否跑过读 DimensionExecuted(Streaming)，
+    // streaming_analyzed 只是生产中间标志。
     StreamingPackageResult streaming_package;
     bool streaming_analyzed = false;
 
     // 字幕轨（见 core/analysis/diagnostics/SubtitleAnalyzer.h）
-    // subtitle_analyzed=true 才表示跑过（没有字幕流时不跑）
+    // 没有字幕流时不跑；是否跑过读 DimensionExecuted(Subtitle)，subtitle_analyzed 只是生产中间标志。
     SubtitleAnalysisResult subtitle;
     bool subtitle_analyzed = false;
 
     // 时码与章节（见 core/analysis/diagnostics/TimecodeAnalyzer.h）
+    // 是否跑过读 DimensionExecuted(Timecode)，timecode_analyzed 只是生产中间标志。
     TimecodeAnalysisResult timecode;
     bool timecode_analyzed = false;
 
     // 辅助数据轨（见 core/analysis/diagnostics/AuxDataAnalyzer.h：data 流 + SCTE-35 + metadata）
+    // 是否跑过读 DimensionExecuted(AuxiliaryData)，aux_data_analyzed 只是生产中间标志。
     AuxiliaryDataResult aux_data;
     bool aux_data_analyzed = false;
 
@@ -188,6 +196,16 @@ struct AnalysisResult {
     // 同维度重复设置时覆盖（Assembler 按固定顺序填，天然不会重复；覆盖语义是为了幂等）
     void SetDimension(const DimensionStatus& status);
     const DimensionStatus* FindDimension(AnalysisDimension dimension) const;
+    // 该维度是否真的执行过 —— **唯一口径**。
+    //
+    // 历史遗留的 7 个 *_analyzed 布尔只是生产阶段的中间标志（逐包扫描要边跑边判断），
+    // 靠它们回答"这个维度跑没跑"要逐个猜组合含义，且"选项关闭 / 输入不适用 / 依赖缺失"
+    // 三种没跑的情况在结构上无法区分。现在一律读 dimensions 表：
+    //   * 生产方仍写 flags（扫描循环要用）；
+    //   * AnalysisResultAssembler 收尾时用本表回填 flags，保证两者一致；
+    //   * 消费方（QC 规则 / 报告 / UI）只调本方法，不再直接读 flags。
+    bool DimensionExecuted(AnalysisDimension dimension) const;
+
     // 该维度是否"已执行且结论可用"
     bool DimensionConclusive(AnalysisDimension dimension) const;
 

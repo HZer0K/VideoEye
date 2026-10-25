@@ -16,10 +16,11 @@ namespace qt {
 
 QtAnalysisController::QtAnalysisController(QObject* parent)
     : QObject(parent), alive_(std::make_shared<std::atomic<bool>>(true)) {
-    // AnalysisResult 要跨线程走队列连接，必须先在元类型系统里注册，
+    // AnalysisFinished 要跨线程走队列连接，参数类型必须先在元类型系统里注册，
     // 否则排队时会报 "QObject::connect: Cannot queue arguments" 而槽永远不被调用。
-    qRegisterMetaType<model::AnalysisResult>("videoeye::model::AnalysisResult");
-    qRegisterMetaType<model::AnalysisResult>("AnalysisResult");
+    // 注册的是共享只读快照（shared_ptr），排队时只复制引用计数，不深拷贝结果。
+    qRegisterMetaType<std::shared_ptr<const model::AnalysisResult>>(
+        "std::shared_ptr<const videoeye::model::AnalysisResult>");
 
     // 工作线程体返回后通知回本对象所在线程，用来接手排队请求。
     // 显式声明 QueuedConnection: 发送方是纯 std::thread，接收方在 UI 线程，
@@ -141,7 +142,9 @@ void QtAnalysisController::Launch(const std::string& file_path, const videoeye::
                                                                    const model::AnalysisResult& result) {
         if (!self || !alive->load(std::memory_order_acquire))
             return;
-        emit self->AnalysisFinished(id, completed, result);
+        // 唯一的深拷贝点：引擎交回结果之后不再持有它，而信号要跨线程排队。
+        // 在这里转成共享只读快照，下游（facade / 各页面）只传 shared_ptr。
+        emit self->AnalysisFinished(id, completed, std::make_shared<const model::AnalysisResult>(result));
     };
 
     // 引擎的取消源就是这颗令牌 —— 整个控制器现在只有这一处取消来源，

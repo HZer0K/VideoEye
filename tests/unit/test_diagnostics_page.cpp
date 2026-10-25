@@ -372,8 +372,8 @@ TEST(DiagnosticsPageTests, SuccessfulManifestScanFillsIssueTableAndEnablesExport
     EXPECT_GE(trace.report_changed, 1); // Evaluate 后外发报告刷新
 
     EXPECT_TRUE(page.hasResult());
-    EXPECT_EQ(page.result().container_format, "hls");
-    EXPECT_DOUBLE_EQ(page.result().duration_seconds, 8.0);
+    EXPECT_EQ(page.result()->container_format, "hls");
+    EXPECT_DOUBLE_EQ(page.result()->duration_seconds, 8.0);
 
     auto* progress = page.findChild<QProgressBar*>();
     ASSERT_NE(progress, nullptr);

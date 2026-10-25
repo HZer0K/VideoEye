@@ -16,6 +16,8 @@
 #include <QTabWidget>
 #include <QTableWidget>
 
+#include <memory>
+
 #include "ui/AnalysisFacade.h"
 #include "ui/analysis_panel/ScanClient.h"
 #include "ui/charts/MetricChartWidget.h"
@@ -29,8 +31,9 @@ class SubtitleAuxPage : public QWidget, public ScanClient {
 public:
     explicit SubtitleAuxPage(QWidget* parent = nullptr);
 
-    // 扫描结束后由面板喂结果并整体刷新（顺带把起始时码冒泡给播放器）
-    void SetResult(const model::AnalysisResult& result);
+    // 扫描结束后由面板喂结果并整体刷新（顺带把起始时码冒泡给播放器）。
+    // 传共享只读快照：与 facade / 其它页共用同一份，页面不再整份拷贝 AnalysisResult。
+    void SetResult(std::shared_ptr<const model::AnalysisResult> result);
 
     // ScanClient：本页与码率/音频/HDR 共用诊断页发起的那次全文件扫描，
     // 扫描中「开始分析」按钮跟着禁用，终态一起复位。
@@ -74,7 +77,8 @@ private:
     // 当前 cue 表要展示的流（-1 = 全部字幕流）
     int CurrentSubtitleStreamIndex() const;
 
-    model::AnalysisResult result_;
+    // 非空默认值（一份空结果）：刷新路径在 SetResult 之前也会解引用它。
+    std::shared_ptr<const model::AnalysisResult> result_ = std::make_shared<const model::AnalysisResult>();
     bool scan_active_ = false;
 
     QLabel* summary_label_ = nullptr;

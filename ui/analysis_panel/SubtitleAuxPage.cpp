@@ -24,6 +24,8 @@
 #include <QColor>
 #include <QSignalBlocker>
 
+#include <utility>
+
 namespace videoeye {
 namespace ui {
 
@@ -270,18 +272,20 @@ void SubtitleAuxPage::RefreshUi() {
     UpdateScte35MarkerChart();
 
     // 拿到素材自带起始时码就同步给播放器（时间轴旁的 SMPTE 时码以它为基准）
-    if (result_.timecode_analyzed && result_.timecode.has_primary) {
-        emit StartTimecodeReady(QString::fromStdString(result_.timecode.primary.ToString()),
-                                result_.timecode.primary_frame_rate);
+    if (result_->DimensionExecuted(model::AnalysisDimension::Timecode) && result_->timecode.has_primary) {
+        emit StartTimecodeReady(QString::fromStdString(result_->timecode.primary.ToString()),
+                                result_->timecode.primary_frame_rate);
     }
 }
 
 void SubtitleAuxPage::UpdateSummary() {
     if (summary_label_ == nullptr)
         return;
-    const model::AnalysisResult& r = result_;
+    const model::AnalysisResult& r = *result_;
 
-    if (!r.subtitle_analyzed && !r.timecode_analyzed && !r.aux_data_analyzed) {
+    if (!r.DimensionExecuted(model::AnalysisDimension::Subtitle) &&
+        !r.DimensionExecuted(model::AnalysisDimension::Timecode) &&
+        !r.DimensionExecuted(model::AnalysisDimension::AuxiliaryData)) {
         summary_label_->setText(tr("未分析：点「开始分析」对当前文件做一次全文件扫描。"));
         return;
     }
@@ -293,7 +297,7 @@ void SubtitleAuxPage::UpdateSummary() {
                  .arg(r.subtitle.bitmap_stream_count)
                  .arg(r.subtitle.cues.size())
                  .arg(r.subtitle.issues.size());
-    if (r.timecode_analyzed) {
+    if (r.DimensionExecuted(model::AnalysisDimension::Timecode)) {
         parts << (r.timecode.has_primary ? tr("首帧时码 %1 @ %2 fps%3")
                                                .arg(QString::fromStdString(r.timecode.primary.ToString()))
                                                .arg(r.timecode.primary_frame_rate, 0, 'f', 3)
@@ -313,7 +317,7 @@ void SubtitleAuxPage::UpdateSummary() {
 void SubtitleAuxPage::RebuildSubtitleStreamTable() {
     if (stream_table_ == nullptr)
         return;
-    const model::AnalysisResult& r = result_;
+    const model::AnalysisResult& r = *result_;
 
     // 流下拉: 重建时保留"全部"选项
     const int previous = CurrentSubtitleStreamIndex();
@@ -355,7 +359,7 @@ void SubtitleAuxPage::RebuildSubtitleStreamTable() {
 void SubtitleAuxPage::RebuildSubtitleCueTable() {
     if (cue_table_ == nullptr)
         return;
-    const model::AnalysisResult& r = result_;
+    const model::AnalysisResult& r = *result_;
     const int stream_filter = CurrentSubtitleStreamIndex();
     const bool issues_only = (issues_only_check_ != nullptr) && issues_only_check_->isChecked();
 
@@ -409,7 +413,7 @@ void SubtitleAuxPage::RebuildSubtitleCueTable() {
 void SubtitleAuxPage::RebuildTimecodeTable() {
     if (timecode_table_ == nullptr)
         return;
-    const model::TimecodeAnalysisResult& tc = result_.timecode;
+    const model::TimecodeAnalysisResult& tc = result_->timecode;
 
     struct Row {
         QString key;
@@ -452,7 +456,7 @@ void SubtitleAuxPage::RebuildTimecodeTable() {
 void SubtitleAuxPage::RebuildChapterTable() {
     if (chapter_table_ == nullptr)
         return;
-    const model::TimecodeAnalysisResult& tc = result_.timecode;
+    const model::TimecodeAnalysisResult& tc = result_->timecode;
 
     chapter_table_->setRowCount(static_cast<int>(tc.chapters.size()));
     for (int row = 0; row < static_cast<int>(tc.chapters.size()); ++row) {
@@ -488,7 +492,7 @@ void SubtitleAuxPage::RebuildChapterTable() {
 void SubtitleAuxPage::RebuildAuxStreamTable() {
     if (aux_stream_table_ == nullptr)
         return;
-    const model::AuxiliaryDataResult& aux = result_.aux_data;
+    const model::AuxiliaryDataResult& aux = result_->aux_data;
 
     aux_stream_table_->setRowCount(static_cast<int>(aux.streams.size()));
     for (int row = 0; row < static_cast<int>(aux.streams.size()); ++row) {
@@ -510,7 +514,7 @@ void SubtitleAuxPage::RebuildAuxStreamTable() {
 void SubtitleAuxPage::RebuildScte35Table() {
     if (scte35_table_ == nullptr)
         return;
-    const model::AuxiliaryDataResult& aux = result_.aux_data;
+    const model::AuxiliaryDataResult& aux = result_->aux_data;
 
     scte35_table_->setRowCount(static_cast<int>(aux.cues.size()));
     for (int row = 0; row < static_cast<int>(aux.cues.size()); ++row) {
@@ -556,7 +560,7 @@ void SubtitleAuxPage::RebuildScte35Table() {
 void SubtitleAuxPage::RebuildMetadataTable() {
     if (metadata_table_ == nullptr)
         return;
-    const model::AuxiliaryDataResult& aux = result_.aux_data;
+    const model::AuxiliaryDataResult& aux = result_->aux_data;
 
     metadata_table_->setRowCount(static_cast<int>(aux.metadata.size()));
     for (int row = 0; row < static_cast<int>(aux.metadata.size()); ++row) {
@@ -573,7 +577,7 @@ void SubtitleAuxPage::UpdateScte35MarkerChart() {
         return;
     scte35_marker_series_->Clear();
 
-    const model::AuxiliaryDataResult& aux = result_.aux_data;
+    const model::AuxiliaryDataResult& aux = result_->aux_data;
     {
         // 攒完一次性提交：标记点逐点 Append 会每个 cue 投一次重绘，
         // 长视频里 SCTE-35  cue 可以到几千条（每小时广告插入点）。
@@ -593,7 +597,7 @@ void SubtitleAuxPage::UpdateScte35MarkerChart() {
         }
     }
 
-    double max_time = result_.duration_seconds;
+    double max_time = result_->duration_seconds;
     for (const model::Scte35Cue& cue : aux.cues) {
         const double t = cue.has_splice_time ? cue.splice_time_seconds : cue.packet_pts_seconds;
         if (t > max_time)
@@ -622,7 +626,7 @@ void SubtitleAuxPage::OnCueCellClicked(int row, int /*column*/) {
 }
 
 void SubtitleAuxPage::OnExportSubtitleCsv() {
-    const model::AnalysisResult& r = result_;
+    const model::AnalysisResult& r = *result_;
     if (r.subtitle.cues.empty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有字幕 cue 数据可导出"));
         return;
@@ -650,7 +654,7 @@ void SubtitleAuxPage::OnExportSubtitleCsv() {
 }
 
 void SubtitleAuxPage::OnExportTimecodeCsv() {
-    const model::TimecodeAnalysisResult& tc = result_.timecode;
+    const model::TimecodeAnalysisResult& tc = result_->timecode;
     if (!tc.has_primary && tc.chapters.empty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有时码 / 章节数据可导出"));
         return;
@@ -677,7 +681,7 @@ void SubtitleAuxPage::OnExportTimecodeCsv() {
 }
 
 void SubtitleAuxPage::OnExportScte35Csv() {
-    const model::AuxiliaryDataResult& aux = result_.aux_data;
+    const model::AuxiliaryDataResult& aux = result_->aux_data;
     if (aux.cues.empty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有 SCTE-35 cue 数据可导出"));
         return;
@@ -714,7 +718,7 @@ void SubtitleAuxPage::OnExportScte35Csv() {
 }
 
 void SubtitleAuxPage::OnExportMetadataCsv() {
-    const model::AuxiliaryDataResult& aux = result_.aux_data;
+    const model::AuxiliaryDataResult& aux = result_->aux_data;
     if (aux.metadata.empty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有 metadata 数据可导出"));
         return;
@@ -732,8 +736,8 @@ void SubtitleAuxPage::OnExportMetadataCsv() {
         static_cast<int>(aux.metadata.size()));
 }
 
-void SubtitleAuxPage::SetResult(const model::AnalysisResult& result) {
-    result_ = result;
+void SubtitleAuxPage::SetResult(std::shared_ptr<const model::AnalysisResult> result) {
+    result_ = std::move(result);
     RefreshUi();
 }
 

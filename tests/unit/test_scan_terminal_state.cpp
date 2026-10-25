@@ -400,8 +400,8 @@ TEST(PlaybackLinkage, PlaybackFeedDoesNotBleedIntoFullFileResult) {
     ASSERT_TRUE(PumpUntil([&] { return terminal_count > 0; }, 20000)) << "扫描未回终态";
     ASSERT_TRUE(pages.diagnostics->hasResult());
 
-    const QString full_container = QString::fromStdString(pages.diagnostics->result().container_format);
-    const double full_duration = pages.diagnostics->result().duration_seconds;
+    const QString full_container = QString::fromStdString(pages.diagnostics->result()->container_format);
+    const double full_duration = pages.diagnostics->result()->duration_seconds;
 
     // 播放期回吐：一份"大得离谱"的播放期统计 + 一帧解码帧。
     model::StreamStats stats;
@@ -411,8 +411,8 @@ TEST(PlaybackLinkage, PlaybackFeedDoesNotBleedIntoFullFileResult) {
     panel.AppendVideoFrameInfo(0, 1, true, 0, 0.0);
 
     // 全文件扫描结果必须纹丝不动 —— 播放期数据走的是另一条展示通道。
-    EXPECT_EQ(QString::fromStdString(pages.diagnostics->result().container_format), full_container);
-    EXPECT_DOUBLE_EQ(pages.diagnostics->result().duration_seconds, full_duration);
+    EXPECT_EQ(QString::fromStdString(pages.diagnostics->result()->container_format), full_container);
+    EXPECT_DOUBLE_EQ(pages.diagnostics->result()->duration_seconds, full_duration);
 
     QFile::remove(manifest);
 }
@@ -440,8 +440,8 @@ TEST(PlaybackLinkage, SwitchingPagesKeepsScanResultConsistent) {
     pages.diagnostics->StartScan(pages.diagnostics->options());
     ASSERT_TRUE(PumpUntil([&] { return terminal_count > 0; }, 20000)) << "扫描未回终态";
 
-    const QString container = QString::fromStdString(pages.diagnostics->result().container_format);
-    const double duration = pages.diagnostics->result().duration_seconds;
+    const QString container = QString::fromStdString(pages.diagnostics->result()->container_format);
+    const double duration = pages.diagnostics->result()->duration_seconds;
 
     // 模拟用户点侧栏在分析页间来回切换。
     for (int i = 0; i < stack.count(); ++i)
@@ -449,8 +449,8 @@ TEST(PlaybackLinkage, SwitchingPagesKeepsScanResultConsistent) {
     stack.setCurrentIndex(0);
 
     EXPECT_TRUE(pages.diagnostics->hasResult()) << "切换页面把扫描结果弄丢了";
-    EXPECT_EQ(QString::fromStdString(pages.diagnostics->result().container_format), container);
-    EXPECT_DOUBLE_EQ(pages.diagnostics->result().duration_seconds, duration);
+    EXPECT_EQ(QString::fromStdString(pages.diagnostics->result()->container_format), container);
+    EXPECT_DOUBLE_EQ(pages.diagnostics->result()->duration_seconds, duration);
 
     QFile::remove(manifest);
 }

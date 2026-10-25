@@ -301,7 +301,7 @@ void OverviewPage::RefreshUi() {
         for (const model::DiagnosticIssue& issue : summary_.top_issues) {
             const int row = issues_table_->rowCount();
             issues_table_->insertRow(row);
-            auto* severity_item = new QTableWidgetItem(SeverityText(issue.severity));
+            auto* severity_item = new QTableWidgetItem(QString::fromStdString(issue.SeverityText()));
             severity_item->setForeground(QBrush(QColor(SeverityColor(issue.severity))));
             severity_item->setData(Qt::UserRole, QStringLiteral("quality_diagnostics"));
             issues_table_->setItem(row, 0, severity_item);
@@ -414,20 +414,6 @@ void OverviewPage::SetAnalysisSummary(const AnalysisSummary& summary) {
 // ---------------------------------------------------------------------------
 // 小工具
 // ---------------------------------------------------------------------------
-
-QString OverviewPage::SeverityText(model::IssueSeverity severity) {
-    switch (severity) {
-    case model::IssueSeverity::Critical:
-        return tr("致命");
-    case model::IssueSeverity::Error:
-        return tr("错误");
-    case model::IssueSeverity::Warning:
-        return tr("警告");
-    case model::IssueSeverity::Info:
-        return tr("提示");
-    }
-    return QString();
-}
 
 QString OverviewPage::SeverityColor(model::IssueSeverity severity) {
     switch (severity) {

@@ -2,8 +2,6 @@
 
 #include <QLabel>
 #include <QPushButton>
-#include <QTableWidget>
-#include <QTreeWidget>
 #include <QWidget>
 
 #include "core/domain/model/StreamPackageInfo.h"
@@ -11,6 +9,11 @@
 
 namespace videoeye {
 namespace ui {
+
+class StreamingStructureView;
+class StreamingLadderView;
+class StreamingTimelineView;
+class StreamingIssueView;
 
 // ==========================================================================
 // StreamingPanel - 流媒体包（HLS / DASH）面板
@@ -23,6 +26,10 @@ namespace ui {
 //   顶部  一行摘要（清单类型 / 码率层数 / 分片数 / 问题数）
 //   中部  左侧 manifest 结构树，右侧「码率阶梯表 + 分片时间轴对齐表」
 //   底部  问题列表（级别着色）
+//
+// 本类只保留摘要、工具栏、扫描态与数据分发；四块展示内容各自拆成子视图
+// （结构树 / 码率阶梯 / 分片时间轴 / 问题表），子视图都不持有 ScanClient，
+// 也不认识扫描生命周期 —— 数据由本页按快照转发。
 // ==========================================================================
 class StreamingPanel : public QWidget, public ScanClient {
     Q_OBJECT
@@ -65,20 +72,12 @@ private slots:
 
 private:
     void UpdateSummary(const model::StreamingPackageResult& result);
-    void BuildStructureTree(const model::StreamingPackageResult& result);
-    void BuildLadderTable(const model::StreamingPackageResult& result);
-    void BuildTimelineTable(const model::StreamingPackageResult& result);
-    void BuildIssueTable(const model::StreamingPackageResult& result);
-
-    static QString SeverityText(model::IssueSeverity severity);
-    static QColor SeverityColor(model::IssueSeverity severity);
-    static QString DescribeResolution(int width, int height);
 
     QLabel* summary_label_ = nullptr;
-    QTreeWidget* structure_tree_ = nullptr;
-    QTableWidget* ladder_table_ = nullptr;
-    QTableWidget* timeline_table_ = nullptr;
-    QTableWidget* issue_table_ = nullptr;
+    StreamingStructureView* structure_view_ = nullptr;
+    StreamingLadderView* ladder_view_ = nullptr;
+    StreamingTimelineView* timeline_view_ = nullptr;
+    StreamingIssueView* issue_view_ = nullptr;
     QPushButton* refresh_button_ = nullptr;
     QPushButton* copy_json_button_ = nullptr;
     QPushButton* export_json_button_ = nullptr;

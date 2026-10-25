@@ -2,16 +2,16 @@
 // 各分析维度（时间轴 / 字幕 / 时码 / 辅助 / 音频 QC / 码率 GOP / 色彩 HDR）以及它们
 // 各自要开的解码器、parser、swr 全在 AnalysisPipeline 里；本文件只负责"什么时候
 // 创建、什么时候分发、什么时候收尾"，不直接 include 任何具体分析器。
-#include "core/analysis/orchestration/AnalysisPipeline.h"
+#include "core/analysis/orchestration/detail/AnalysisPipeline.h"
 // 逐包扫描循环（读包 / 三种出口定性 / 扫描事实 / 进度）在 PacketScanLoop 里。
-#include "core/analysis/orchestration/PacketScanLoop.h"
+#include "core/analysis/orchestration/detail/PacketScanLoop.h"
 // 打开 / 探测 / 中断 / 取消 / 容器级事实 / 流摘要 都在 AnalysisInputSession 里；
 // FFmpeg 中断回调本身住在 core/ffmpeg_io/FfmpegInterrupt.h（叶子模块），由会话去 include。
-#include "core/analysis/orchestration/AnalysisInputSession.h"
+#include "core/analysis/orchestration/detail/AnalysisInputSession.h"
 // 扫描跑完之后的结果归并在 AnalysisResultAssembler；流媒体清单那条独立路径在
 // StreamingManifestScan。两者都不碰 FFmpeg 上下文，只消费中间态。
-#include "core/analysis/orchestration/AnalysisResultAssembler.h"
 #include "core/analysis/orchestration/StreamingManifestScan.h"
+#include "core/analysis/orchestration/detail/AnalysisResultAssembler.h"
 // MPEG-TS 传输层体检：QC 规则要的失步/CC/PCR/加扰只能按字节扫 TS 包头拿到，
 // 与容器结构页共用同一个解析器（单一事实源），只是扫描量按 QC 场景收窄。
 #include "core/analysis/container/TsStructureAnalyzer.h"
@@ -46,7 +46,7 @@ namespace {
 // AvInterruptState / AvIoInterruptCallback / kOpenTimeoutUs / kProbeTimeoutUs
 // 已抽到 core/ffmpeg_io/FfmpegInterrupt.h 供所有分析器共享（见上方 include）。
 // 打开/探测阶段对它们的具体用法（含 moov 顺序扫描、MP4 sample table、流摘要）
-// 已随 AnalysisInputSession 一起搬走，见 core/analysis/orchestration/AnalysisInputSession.cpp。
+// 已随 AnalysisInputSession 一起搬走，见 core/analysis/orchestration/detail/AnalysisInputSession.cpp。
 
 // 流媒体清单的扩展名。清单是纯文本，扩展名是唯一的识别手段
 // （魔数检测对 "#EXTM3U" / "<MPD" 无能为力）。
@@ -109,7 +109,7 @@ void FillTsTransport(const std::string& file_path, const AVFormatContext* fmt, c
 }
 
 // 各分析维度的**创建 / 逐包分发 / 收尾钩子**（含它们各自要开的解码器、parser、swr）
-// 已搬到 core/analysis/orchestration/AnalysisPipeline.{h,cpp} ——
+// 已搬到 core/analysis/orchestration/detail/AnalysisPipeline.{h,cpp} ——
 // 匿名命名空间里的那三个探测结构也一并跟过去了（它们现在是管道的成员类型）。
 
 // 回报通道（AnalysisCallbacks）与终态写法（MarkFailed / Notify* / ResultSink /

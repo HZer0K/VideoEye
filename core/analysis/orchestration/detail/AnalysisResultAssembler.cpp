@@ -1,4 +1,4 @@
-#include "core/analysis/orchestration/AnalysisResultAssembler.h"
+#include "core/analysis/orchestration/detail/AnalysisResultAssembler.h"
 
 #include <algorithm>
 #include <cmath>
@@ -716,6 +716,20 @@ void AnalysisResultAssembler::FinalizeDimensionStatus(int audio_tracks_analyzed,
             add(status);
         }
     }
+
+    // 所有维度都写完之后再回填：executed 是权威口径，历史布尔跟着它走。
+    SyncLegacyDimensionFlags();
+}
+
+void AnalysisResultAssembler::SyncLegacyDimensionFlags() {
+    using model::AnalysisDimension;
+    result_.bitstream_analyzed = result_.DimensionExecuted(AnalysisDimension::VideoBitstream);
+    result_.audio_bitstream_analyzed = result_.DimensionExecuted(AnalysisDimension::AudioBitstream);
+    result_.subtitle_analyzed = result_.DimensionExecuted(AnalysisDimension::Subtitle);
+    result_.timecode_analyzed = result_.DimensionExecuted(AnalysisDimension::Timecode);
+    result_.aux_data_analyzed = result_.DimensionExecuted(AnalysisDimension::AuxiliaryData);
+    result_.mp4_samples_analyzed = result_.DimensionExecuted(AnalysisDimension::Mp4SampleTable);
+    result_.streaming_analyzed = result_.DimensionExecuted(AnalysisDimension::Streaming);
 }
 
 void AnalysisResultAssembler::Finish(const AnalysisCallbacks& callbacks) {

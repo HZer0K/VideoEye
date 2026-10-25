@@ -31,6 +31,15 @@ bool HasIssue(const model::QcReport& report, const std::string& rule_id, model::
     return false;
 }
 
+// 规则层只认 dimensions 表里的 executed（AnalysisResult::DimensionExecuted），
+// 单测直接构造结果，这里补一条"已执行"维度记录。
+void MarkExecuted(model::AnalysisResult& result, model::AnalysisDimension dimension) {
+    model::DimensionStatus status;
+    status.dimension = dimension;
+    status.executed = true;
+    result.SetDimension(status);
+}
+
 // 超过 EXT-X-TARGETDURATION 的 media playlist
 const char* kOverTargetPlaylist = "#EXTM3U\n"
                                   "#EXT-X-TARGETDURATION:4\n"
@@ -90,7 +99,7 @@ TEST(StreamingQcRulesTest, HlsSegmentOverTargetBecomesWarningIssue) {
     pkg.manifest_path = "over.m3u8";
     ASSERT_TRUE(hls.ParseText(kOverTargetPlaylist, ".", pkg));
     hls.Validate(pkg);
-    result.streaming_analyzed = true;
+    MarkExecuted(result, model::AnalysisDimension::Streaming);
 
     videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
@@ -116,7 +125,7 @@ TEST(StreamingQcRulesTest, DashSegmentTimelineGapBecomesErrorIssue) {
     model::StreamingPackageResult& pkg = result.streaming_package;
     ASSERT_TRUE(dash.ParseText(kGapMpd, ".", pkg));
     dash.Validate(pkg);
-    result.streaming_analyzed = true;
+    MarkExecuted(result, model::AnalysisDimension::Streaming);
 
     videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
@@ -140,7 +149,7 @@ TEST(StreamingQcRulesTest, DashLiveMissingAvailabilityStartTimeBecomesErrorIssue
     model::StreamingPackageResult& pkg = result.streaming_package;
     ASSERT_TRUE(dash.ParseText(kLiveMpdNoAst, ".", pkg));
     dash.Validate(pkg);
-    result.streaming_analyzed = true;
+    MarkExecuted(result, model::AnalysisDimension::Streaming);
 
     videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
@@ -164,8 +173,7 @@ TEST(StreamingQcRulesTest, NoStreamingIssuesWhenNotAnalyzed) {
     pkg.manifest_path = "over.m3u8";
     ASSERT_TRUE(hls.ParseText(kOverTargetPlaylist, ".", pkg));
     hls.Validate(pkg);
-    // 故意不置 streaming_analyzed：规则引擎必须整体跳过这一族规则
-    result.streaming_analyzed = false;
+    // 故意不写 Streaming 维度：规则引擎必须整体跳过这一族规则
 
     videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
@@ -185,7 +193,7 @@ TEST(StreamingQcRulesTest, DisabledRuleSuppressesStreamingIssue) {
     pkg.manifest_path = "over.m3u8";
     ASSERT_TRUE(hls.ParseText(kOverTargetPlaylist, ".", pkg));
     hls.Validate(pkg);
-    result.streaming_analyzed = true;
+    MarkExecuted(result, model::AnalysisDimension::Streaming);
 
     videoeye::qc::QcRuleEngine engine;
     std::vector<model::QcRule> rules = engine.rules();
@@ -249,7 +257,7 @@ TEST(StreamingQcRulesTest, OpenEndedScte35MarkerEscalatesToWarning) {
     result.file_path = "ads.m3u8";
     result.file_extension = "m3u8";
     result.container_format = "hls";
-    result.streaming_analyzed = true;
+    MarkExecuted(result, model::AnalysisDimension::Streaming);
 
     videoeye::HlsManifestAnalyzer hls;
     model::StreamingPackageResult& pkg = result.streaming_package;

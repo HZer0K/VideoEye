@@ -17,7 +17,7 @@ std::vector<model::DiagnosticIssue> CheckSubtitleRules(const model::QcRule& rule
     // 这两条与下面的 cue 级规则不同：它们看的是"整条 CC 轨有没有解出东西"，
     // 属于流级结论，所以不走 SubtitleIssue 的计数模型。
     if (rule.id == "subtitle.cc.no_text" || rule.id == "subtitle.cc.dtvcc_loss") {
-        if (!result.subtitle_analyzed)
+        if (!result.DimensionExecuted(model::AnalysisDimension::Subtitle))
             return issues;
 
         if (rule.id == "subtitle.cc.no_text") {
@@ -87,7 +87,7 @@ std::vector<model::DiagnosticIssue> CheckSubtitleRules(const model::QcRule& rule
             break;
         }
     }
-    if (!matched || !result.subtitle_analyzed)
+    if (!matched || !result.DimensionExecuted(model::AnalysisDimension::Subtitle))
         return issues;
 
     const int count = result.subtitle.CountIssues(target);

@@ -11,7 +11,8 @@
 #include <vector>
 
 #include "core/analysis/detail/AnalysisStreamSelection.h"
-#include "core/analysis/orchestration/AnalysisPipeline.h"
+#include "core/analysis/orchestration/detail/AnalysisPipeline.h"
+#include "core/analysis/orchestration/detail/AnalysisResultAssembler.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -233,4 +234,50 @@ TEST(ParserReviewPipeline, TwelveChannelPlanarPcmUsesExtendedDataForResampling) 
 
 TEST(ParserReviewPipeline, TwelveChannelPackedPcmStillWorks) {
     CheckTwelveChannelPcm(AV_CODEC_ID_PCM_S16LE, false);
+}
+
+// ---------------------------------------------------------------------------
+// 维度口径一致性：FinalizeDimensionStatus 之后，历史 *_analyzed 布尔必须跟着
+// dimensions 表的 executed 走。消费方（QC/报告/UI）只读其中一个，两者不一致
+// 就会出现"UI 显示跑了、报告说没跑"的分裂。
+// ---------------------------------------------------------------------------
+TEST(ParserReviewPipeline, DimensionStatusIsAuthoritativeOverLegacyFlags) {
+    using videoeye::model::AnalysisDimension;
+
+    // 选项全关：即使生产阶段把布尔置成 true，收尾也必须改回 false ——
+    // "没执行"不能因为残留标志被消费方当成"执行过"。
+    videoeye::AnalysisOptions off = QuietOptions();
+    off.analyze_audio_bitstream = false;
+    off.analyze_mp4_sample_table = false;
+    off.analyze_streaming_package = false;
+    videoeye::model::AnalysisResult skipped;
+    skipped.bitstream_analyzed = true;
+    skipped.audio_bitstream_analyzed = true;
+    skipped.subtitle_analyzed = true;
+    skipped.timecode_analyzed = true;
+    skipped.aux_data_analyzed = true;
+    skipped.mp4_samples_analyzed = true;
+    skipped.streaming_analyzed = true;
+    videoeye::AnalysisResultAssembler skipped_assembler(skipped, off);
+    skipped_assembler.FinalizeDimensionStatus(0, 0);
+    EXPECT_FALSE(skipped.DimensionExecuted(AnalysisDimension::VideoBitstream));
+    EXPECT_FALSE(skipped.bitstream_analyzed);
+    EXPECT_FALSE(skipped.audio_bitstream_analyzed);
+    EXPECT_FALSE(skipped.subtitle_analyzed);
+    EXPECT_FALSE(skipped.timecode_analyzed);
+    EXPECT_FALSE(skipped.aux_data_analyzed);
+    EXPECT_FALSE(skipped.mp4_samples_analyzed);
+    EXPECT_FALSE(skipped.streaming_analyzed);
+
+    // 反向：真跑过（选项开 + 有数据）时，布尔保持 true，两边口径一致。
+    videoeye::AnalysisOptions on = QuietOptions();
+    on.analyze_audio_bitstream = true;
+    videoeye::model::AnalysisResult analyzed;
+    analyzed.audio_bitstream_analyzed = true;
+    analyzed.audio_bitstream.analyzed = true;
+    analyzed.audio_bitstream.streams.emplace_back();
+    videoeye::AnalysisResultAssembler analyzed_assembler(analyzed, on);
+    analyzed_assembler.FinalizeDimensionStatus(0, 0);
+    EXPECT_TRUE(analyzed.DimensionExecuted(AnalysisDimension::AudioBitstream));
+    EXPECT_TRUE(analyzed.audio_bitstream_analyzed);
 }

@@ -501,12 +501,11 @@ add_test(NAME AudioQcAnalyzerTests COMMAND test_audio_qc_analyzer)
 # =================================================
 # 测试 9：音频 QC 规则 (AudioQcAnalyzer + QcRuleEngine，不依赖 FFmpeg)
 # =================================================
-# 说明: QcRuleEngine 会牵出几乎所有 model + analyzer, 清单长且易漏 —— 直接链
-#       VideoEyeAnalysis。
+# 说明: AudioQcAnalyzer 本身在 analysis 层；规则判定只需要链接 VideoEyeQcRules。
 videoeye_add_test(test_audio_qc_rules
     unit/test_audio_qc_rules.cpp
 )
-target_link_libraries(test_audio_qc_rules PRIVATE VideoEyeAnalysis VideoEyeQc)
+target_link_libraries(test_audio_qc_rules PRIVATE VideoEyeAnalysis VideoEyeQcRules)
 add_test(NAME AudioQcRulesTests COMMAND test_audio_qc_rules)
 
 # =================================================
@@ -595,7 +594,7 @@ add_test(NAME DimensionStatusTests COMMAND test_dimension_status)
 videoeye_add_test(test_audio_bitstream_qc
     unit/test_audio_bitstream_qc.cpp
 )
-target_link_libraries(test_audio_bitstream_qc PRIVATE VideoEyeAnalysis VideoEyeQc)
+target_link_libraries(test_audio_bitstream_qc PRIVATE VideoEyeQcRules)
 add_test(NAME AudioBitstreamRulesTests COMMAND test_audio_bitstream_qc)
 
 # =================================================
@@ -612,14 +611,14 @@ target_link_libraries(test_cea_caption_decoder PRIVATE VideoEyeDomain)
 add_test(NAME CeaCaptionDecoderTests COMMAND test_cea_caption_decoder)
 
 # =================================================
-# 测试 10：色彩与 HDR 元数据 (ColorHdrAnalyzer 的行构造 + QcRuleEngine)
-# 说明: BuildColorRows / BuildHdrRows 定义在 ColorHdrAnalyzer.cpp（依赖 FFmpeg 头文件），
-#       所以本目标需要链接 FFmpeg；规则判定本身仍是纯模型层，无需解码任何文件。
+# 测试 10：色彩与 HDR 元数据（QcRuleEngine）
+# 说明: BuildColorRows / BuildHdrRows 已下放 domain（ColorHdrResult.cpp），
+#       规则判定本身就是纯模型层 —— 本目标只链规则库，不再需要分析层与 FFmpeg。
 # =================================================
 videoeye_add_test(test_color_hdr_rules
     unit/test_color_hdr_rules.cpp
 )
-target_link_libraries(test_color_hdr_rules PRIVATE VideoEyeAnalysis VideoEyeQc)
+target_link_libraries(test_color_hdr_rules PRIVATE VideoEyeQcRules)
 add_test(NAME ColorHdrRulesTests COMMAND test_color_hdr_rules)
 
 # =================================================
@@ -746,7 +745,7 @@ add_test(NAME StreamingManifestScanStatusTests COMMAND test_streaming_scan_statu
 videoeye_add_test(test_streaming_qc_rules
     unit/test_streaming_qc_rules.cpp
 )
-target_link_libraries(test_streaming_qc_rules PRIVATE VideoEyeAnalysis VideoEyeQc)
+target_link_libraries(test_streaming_qc_rules PRIVATE VideoEyeAnalysisPackage VideoEyeQcRules)
 add_test(NAME StreamingQcRulesTests COMMAND test_streaming_qc_rules)
 
 # =================================================
@@ -758,7 +757,7 @@ add_test(NAME StreamingQcRulesTests COMMAND test_streaming_qc_rules)
 videoeye_add_test(test_container_ts_qc_rules
     unit/test_container_ts_qc_rules.cpp
 )
-target_link_libraries(test_container_ts_qc_rules PRIVATE VideoEyeAnalysis VideoEyeQc)
+target_link_libraries(test_container_ts_qc_rules PRIVATE VideoEyeQcRules)
 add_test(NAME ContainerTsQcRulesTests COMMAND test_container_ts_qc_rules)
 
 # =================================================
@@ -780,7 +779,7 @@ add_test(NAME TsPesPayloadTests COMMAND test_ts_pes_payload)
 videoeye_add_test(test_container_legacy_qc_rules
     unit/test_container_legacy_qc_rules.cpp
 )
-target_link_libraries(test_container_legacy_qc_rules PRIVATE VideoEyeAnalysis VideoEyeQc)
+target_link_libraries(test_container_legacy_qc_rules PRIVATE VideoEyeQcRules)
 add_test(NAME ContainerLegacyQcRulesTests COMMAND test_container_legacy_qc_rules)
 
 # =================================================
@@ -821,7 +820,7 @@ add_test(NAME SubtitleTimecodeAuxTests COMMAND test_subtitle_timecode_aux)
 videoeye_add_test(test_aux_qc_rules
     unit/test_aux_qc_rules.cpp
 )
-target_link_libraries(test_aux_qc_rules PRIVATE VideoEyeAnalysis VideoEyeQc)
+target_link_libraries(test_aux_qc_rules PRIVATE VideoEyeQcRules)
 add_test(NAME AuxQcRulesTests COMMAND test_aux_qc_rules)
 
 # =================================================
@@ -884,7 +883,7 @@ add_test(NAME JsonTests COMMAND test_json)
 videoeye_add_test(test_qc_profile
     unit/test_qc_profile.cpp
 )
-target_link_libraries(test_qc_profile PRIVATE VideoEyeQc)
+target_link_libraries(test_qc_profile PRIVATE VideoEyeQcRules)
 add_test(NAME QcProfileTests COMMAND test_qc_profile)
 
 # =================================================
@@ -920,7 +919,7 @@ add_test(NAME QcRunnerTests COMMAND test_qc_runner)
 videoeye_add_test(test_qc_comparator
     unit/test_qc_comparator.cpp
 )
-target_link_libraries(test_qc_comparator PRIVATE VideoEyeQc)
+target_link_libraries(test_qc_comparator PRIVATE VideoEyeQcRules)
 add_test(NAME QcComparatorTests COMMAND test_qc_comparator)
 
 # =================================================
@@ -1950,3 +1949,35 @@ add_test(NAME RealtimeAnalysisControllerTests COMMAND test_realtime_analysis_con
 videoeye_add_test(test_macroblock_analyzer unit/test_macroblock_analyzer.cpp)
 target_link_libraries(test_macroblock_analyzer PRIVATE VideoEyeAnalysis)
 add_test(NAME MacroblockAnalyzerTests COMMAND test_macroblock_analyzer)
+
+# =================================================
+# 测试 66：流媒体包面板（P2 拆分后的子视图契约）
+#
+# 说明: StreamingPanel 这一页原先 700 余行、且没有任何测试。拆分后四块展示内容
+#       各自成为独立子视图（结构树 / 码率阶梯 / 分片时间轴 / 问题表），JSON
+#       序列化也抽成自由函数。本测试钉住四块内容的填充口径：
+#         - DASH 的 Period - AdaptationSet - Representation - Segment 层级、
+#           HLS 的 variant / I-FRAME / rendition / 直播清单细节与 DATERANGE；
+#         - 阶梯表的分辨率回退 "-"、kbps 取整、初始化段有无；
+#         - 时间轴参考层粗体 + 偏差 > 0.05 s 的高亮与 tooltip；
+#         - 问题表严重度倒序与整行着色、IssueCount == 行数；
+#         - 导出 JSON 的 check_scope（抽样口径）与关键字段。
+#       另测 Clear / 解析失败 / 扫描态三处复位。子视图源手工列出（不走
+#       UI_SOURCES），链 VideoEyeDomain（ToString 与模型）与 Qt Widgets，
+#       用 offscreen 平台跑。
+# =================================================
+videoeye_add_test(test_streaming_panel
+    unit/test_streaming_panel.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/streaming_panel/StreamingPanel.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/streaming_panel/StreamingStructureView.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/streaming_panel/StreamingLadderView.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/streaming_panel/StreamingTimelineView.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/streaming_panel/StreamingIssueView.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/streaming_panel/StreamingPackageJson.cpp
+)
+target_link_libraries(test_streaming_panel PRIVATE
+    VideoEyeDomain
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME StreamingPanelTests COMMAND test_streaming_panel)
+set_tests_properties(StreamingPanelTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

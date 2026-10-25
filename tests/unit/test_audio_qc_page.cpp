@@ -24,6 +24,7 @@
 #include <QTabWidget>
 #include <QTableWidget>
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -248,7 +249,7 @@ TEST(AudioQcPageTests, UnanalyzedShowsHintAndEmptyTables) {
     EXPECT_EQ(verdict->rowCount(), 0);
 
     AnalysisResult result;
-    page.SetResult(result, QcReport{});
+    page.SetResult(std::make_shared<const AnalysisResult>(result), QcReport{});
     EXPECT_NE(FindLabelContaining(&page, QStringLiteral("暂无音频 QC 结果")), nullptr);
     EXPECT_EQ(clip->rowCount(), 0);
     EXPECT_EQ(silence->rowCount(), 0);
@@ -270,7 +271,7 @@ TEST(AudioQcPageTests, ResultFillsClipSilenceAndMetadataTables) {
     AudioQcPage page;
     AnalysisResult result;
     result.audio_qc = MakeAudioQc();
-    page.SetResult(result, QcReport{});
+    page.SetResult(std::make_shared<const AnalysisResult>(result), QcReport{});
 
     QTableWidget* clip = TableInTab(&page, 1, QStringLiteral("起始"), 5);
     QTableWidget* silence = TableInTab(&page, 1, QStringLiteral("起始"), 4);
@@ -324,7 +325,7 @@ TEST(AudioQcPageTests, ClipTableCapsAt2000Rows) {
         event.peak = 1.0;
         result.audio_qc.clipping_events.push_back(event);
     }
-    page.SetResult(result, QcReport{});
+    page.SetResult(std::make_shared<const AnalysisResult>(result), QcReport{});
 
     QTableWidget* clip = TableInTab(&page, 1, QStringLiteral("起始"), 5);
     ASSERT_NE(clip, nullptr);
@@ -345,7 +346,7 @@ TEST(AudioQcPageTests, SummaryGradesLoudnessDeviationWithBoundaries) {
     QcReport report;
 
     result.audio_qc.integrated_lufs = -23.5; // 偏差 -0.50 -> 达标
-    page.SetResult(result, report);
+    page.SetResult(std::make_shared<const AnalysisResult>(result), report);
     EXPECT_TRUE(summary->text().contains(QStringLiteral("响度达标")));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("#43a047")));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("Integrated -23.50 LUFS")));
@@ -354,17 +355,17 @@ TEST(AudioQcPageTests, SummaryGradesLoudnessDeviationWithBoundaries) {
     EXPECT_TRUE(summary->text().contains(QStringLiteral("48000 Hz")));
 
     result.audio_qc.integrated_lufs = -25.0; // 偏差 -2.00 -> 偏离
-    page.SetResult(result, report);
+    page.SetResult(std::make_shared<const AnalysisResult>(result), report);
     EXPECT_TRUE(summary->text().contains(QStringLiteral("响度偏离")));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("#fb8c00")));
 
     result.audio_qc.integrated_lufs = -30.0; // 偏差 -7.00 -> 超标
-    page.SetResult(result, report);
+    page.SetResult(std::make_shared<const AnalysisResult>(result), report);
     EXPECT_TRUE(summary->text().contains(QStringLiteral("响度超标")));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("#e53935")));
 
     result.audio_qc.integrated_lufs = -120.0; // 静音 -> -∞ + 超标
-    page.SetResult(result, report);
+    page.SetResult(std::make_shared<const AnalysisResult>(result), report);
     EXPECT_TRUE(summary->text().contains(QStringLiteral("-∞")));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("响度超标")));
 
@@ -373,19 +374,19 @@ TEST(AudioQcPageTests, SummaryGradesLoudnessDeviationWithBoundaries) {
     ASSERT_NE(target, nullptr);
     result.audio_qc.integrated_lufs = -24.0;
     target->setValue(-25.0);
-    page.SetResult(result, report); // 重新灌入让 summary 以新的目标值重算
+    page.SetResult(std::make_shared<const AnalysisResult>(result), report); // 重新灌入让 summary 以新的目标值重算
     EXPECT_TRUE(summary->text().contains(QStringLiteral("响度达标")));
     target->setValue(-27.0);
-    page.SetResult(result, report);
+    page.SetResult(std::make_shared<const AnalysisResult>(result), report);
     EXPECT_TRUE(summary->text().contains(QStringLiteral("响度偏离")));
     target->setValue(-33.0);
-    page.SetResult(result, report);
+    page.SetResult(std::make_shared<const AnalysisResult>(result), report);
     EXPECT_TRUE(summary->text().contains(QStringLiteral("响度超标")));
 
     // notes 与 metadata 不一致也要进入汇总
     result.audio_qc.notes.push_back("真峰值检测已关闭，dBTP 回落为采样峰值");
     result.audio_qc.metadata.inconsistencies.push_back("音频流 60.000 s 与容器 65.000 s 偏差过大");
-    page.SetResult(result, report);
+    page.SetResult(std::make_shared<const AnalysisResult>(result), report);
     EXPECT_TRUE(summary->text().contains(QStringLiteral("真峰值检测已关闭")));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("metadata 不一致")));
 }
@@ -415,7 +416,7 @@ TEST(AudioQcPageTests, VerdictTableMapsSeverityColorAndRuleThreshold) {
         MakeIssue("audio.dc_offset", IssueSeverity::Error, "DC 偏移 0.010"),
         MakeIssue("audio.silence.longest", IssueSeverity::Info, "最长静音 2.5 s"),
     };
-    page.SetResult(result, report);
+    page.SetResult(std::make_shared<const AnalysisResult>(result), report);
 
     QTableWidget* verdict = TableInTab(&page, 3, QStringLiteral("规则"));
     ASSERT_NE(verdict, nullptr);
@@ -542,7 +543,7 @@ TEST(AudioQcPageTests, SeekRequestedOnClipAndSilenceRowClick) {
 
     AnalysisResult result;
     result.audio_qc = MakeAudioQc();
-    page.SetResult(result, QcReport{});
+    page.SetResult(std::make_shared<const AnalysisResult>(result), QcReport{});
 
     QTableWidget* clip = TableInTab(&page, 1, QStringLiteral("起始"), 5);
     QTableWidget* silence = TableInTab(&page, 1, QStringLiteral("起始"), 4);

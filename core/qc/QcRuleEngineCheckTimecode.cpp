@@ -17,7 +17,7 @@ std::vector<model::DiagnosticIssue> CheckTimecodeChapterRules(const model::QcRul
 
     // ---------- 时码与章节（core/analysis/diagnostics/TimecodeAnalyzer.h）----------
     if (rule.id == "timecode.missing") {
-        if (!result.timecode_analyzed)
+        if (!result.DimensionExecuted(model::AnalysisDimension::Timecode))
             return issues;
         if (Triggered(rule, result.timecode.has_primary ? 0.0 : 1.0)) {
             issues.push_back(
@@ -26,7 +26,7 @@ std::vector<model::DiagnosticIssue> CheckTimecodeChapterRules(const model::QcRul
         return issues;
     }
     if (rule.id == "timecode.drop_frame_mismatch") {
-        if (!result.timecode_analyzed || !result.timecode.has_primary)
+        if (!result.DimensionExecuted(model::AnalysisDimension::Timecode) || !result.timecode.has_primary)
             return issues;
         const double fps = result.timecode.primary_frame_rate;
         if (fps <= 0.0)
@@ -44,7 +44,7 @@ std::vector<model::DiagnosticIssue> CheckTimecodeChapterRules(const model::QcRul
         return issues;
     }
     if (rule.id == "timecode.invalid_frame") {
-        if (!result.timecode_analyzed || !result.timecode.has_primary)
+        if (!result.DimensionExecuted(model::AnalysisDimension::Timecode) || !result.timecode.has_primary)
             return issues;
         const double fps = result.timecode.primary_frame_rate;
         if (fps <= 0.0)
@@ -75,7 +75,7 @@ std::vector<model::DiagnosticIssue> CheckTimecodeChapterRules(const model::QcRul
             break;
         }
     }
-    if (!matched || !result.timecode_analyzed)
+    if (!matched || !result.DimensionExecuted(model::AnalysisDimension::Timecode))
         return issues;
 
     const int count = result.timecode.CountChapterIssues(target);

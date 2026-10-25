@@ -14,7 +14,7 @@ std::vector<model::DiagnosticIssue> CheckScte35Rules(const model::QcRule& rule, 
 
     // ---------- SCTE-35（core/analysis/diagnostics/Scte35Analyzer.h）----------
     if (rule.id == "scte35.parse_error") {
-        if (!result.aux_data_analyzed)
+        if (!result.DimensionExecuted(model::AnalysisDimension::AuxiliaryData))
             return issues;
         const int count = result.aux_data.parse_error_count;
         if (Triggered(rule, static_cast<double>(count))) {
@@ -25,7 +25,7 @@ std::vector<model::DiagnosticIssue> CheckScte35Rules(const model::QcRule& rule, 
         return issues;
     }
     if (rule.id == "scte35.crc_invalid") {
-        if (!result.aux_data_analyzed)
+        if (!result.DimensionExecuted(model::AnalysisDimension::AuxiliaryData))
             return issues;
         const int count = result.aux_data.crc_invalid_count;
         if (Triggered(rule, static_cast<double>(count))) {
@@ -36,7 +36,7 @@ std::vector<model::DiagnosticIssue> CheckScte35Rules(const model::QcRule& rule, 
         return issues;
     }
     if (rule.id == "scte35.duration_missing") {
-        if (!result.aux_data_analyzed)
+        if (!result.DimensionExecuted(model::AnalysisDimension::AuxiliaryData))
             return issues;
         int count = 0;
         for (const model::Scte35Cue& cue : result.aux_data.cues) {

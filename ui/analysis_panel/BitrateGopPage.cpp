@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <utility>
 
 namespace videoeye {
 namespace ui {
@@ -297,7 +298,7 @@ void BitrateGopPage::OnLinkSceneChanges() {
 void BitrateGopPage::OnGopCellClicked(int row, int) {
     if (!gop_table_ || row < 0)
         return;
-    const auto& gops = result_.bitrate_gop.gops;
+    const auto& gops = result_->bitrate_gop.gops;
     if (row >= static_cast<int>(gops.size()))
         return;
     emit SeekRequested(gops[row].start_seconds);
@@ -306,7 +307,7 @@ void BitrateGopPage::OnGopCellClicked(int row, int) {
 void BitrateGopPage::OnAnomalyCellClicked(int row, int) {
     if (!anomaly_table_ || row < 0)
         return;
-    const auto& anomalies = result_.bitrate_gop.anomalies;
+    const auto& anomalies = result_->bitrate_gop.anomalies;
     if (row >= static_cast<int>(anomalies.size()))
         return;
     emit SeekRequested(anomalies[row].start_seconds);
@@ -326,7 +327,7 @@ void BitrateGopPage::UpdateSummary() {
     if (!has_result_)
         return;
 
-    const auto& bg = result_.bitrate_gop;
+    const auto& bg = result_->bitrate_gop;
     if (bg.total_frames == 0) {
         summary_label_->setText(tr("未检测到视频帧，无法进行码率与 GOP 分析。"));
         return;
@@ -382,7 +383,7 @@ void BitrateGopPage::UpdateChart() {
     if (!has_result_)
         return;
 
-    const auto& bg = result_.bitrate_gop;
+    const auto& bg = result_->bitrate_gop;
     if (bg.bitrate_points.empty() && bg.window_curves.empty())
         return;
 
@@ -469,7 +470,7 @@ void BitrateGopPage::RebuildGopTable() {
     if (!has_result_)
         return;
 
-    const auto& gops = result_.bitrate_gop.gops;
+    const auto& gops = result_->bitrate_gop.gops;
     const int rows = std::min(static_cast<int>(gops.size()), kMaxGopTableRows);
     gop_table_->setRowCount(rows);
     for (int i = 0; i < rows; ++i) {
@@ -502,7 +503,7 @@ void BitrateGopPage::RebuildAnomalyTable() {
     if (!has_result_)
         return;
 
-    const auto& anomalies = result_.bitrate_gop.anomalies;
+    const auto& anomalies = result_->bitrate_gop.anomalies;
     const int rows = std::min(static_cast<int>(anomalies.size()), kMaxAnomalyTableRows);
     anomaly_table_->setRowCount(rows);
     for (int i = 0; i < rows; ++i) {
@@ -524,13 +525,13 @@ void BitrateGopPage::UpdateSuggestions() {
     suggestion_list_->clear();
     if (!has_result_)
         return;
-    for (const auto& s : result_.bitrate_gop.suggestions) {
+    for (const auto& s : result_->bitrate_gop.suggestions) {
         suggestion_list_->addItem(QString::fromStdString(s));
     }
 }
 
 void BitrateGopPage::OnExportGopCsv() {
-    if (!has_result_ || result_.bitrate_gop.gops.empty()) {
+    if (!has_result_ || result_->bitrate_gop.gops.empty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有可导出的 GOP 数据。"));
         return;
     }
@@ -540,7 +541,7 @@ void BitrateGopPage::OnExportGopCsv() {
             stream << "index,start_seconds,end_seconds,duration_seconds,frame_count,byte_count,"
                       "avg_bitrate_kbps,i_count,p_count,b_count,unknown_count,max_frame_bytes,"
                       "closed_gop,complete\n";
-            for (const auto& g : result_.bitrate_gop.gops) {
+            for (const auto& g : result_->bitrate_gop.gops) {
                 stream << g.index << "," << QString::number(g.start_seconds, 'f', 3) << ","
                        << QString::number(g.end_seconds, 'f', 3) << "," << QString::number(g.DurationSeconds(), 'f', 3)
                        << "," << g.frame_count << "," << g.byte_count << ","
@@ -549,7 +550,7 @@ void BitrateGopPage::OnExportGopCsv() {
                        << (g.closed_gop ? 1 : 0) << "," << (g.complete ? 1 : 0) << "\n";
             }
         },
-        static_cast<int>(result_.bitrate_gop.gops.size()));
+        static_cast<int>(result_->bitrate_gop.gops.size()));
 }
 
 void BitrateGopPage::OnExportCurveCsv() {
@@ -557,7 +558,7 @@ void BitrateGopPage::OnExportCurveCsv() {
         QMessageBox::information(this, tr("提示"), tr("请先完成一次扫描。"));
         return;
     }
-    const auto& bg = result_.bitrate_gop;
+    const auto& bg = result_->bitrate_gop;
     if (bg.window_curves.empty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有可导出的码率曲线数据。"));
         return;
@@ -584,7 +585,7 @@ void BitrateGopPage::OnExportCurveCsv() {
 }
 
 void BitrateGopPage::OnExportAnomalyCsv() {
-    if (!has_result_ || result_.bitrate_gop.anomalies.empty()) {
+    if (!has_result_ || result_->bitrate_gop.anomalies.empty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有可导出的异常数据。"));
         return;
     }
@@ -592,7 +593,7 @@ void BitrateGopPage::OnExportAnomalyCsv() {
         this, tr("导出异常 CSV"), source_path_.section('/', -1) + "_bitrate_anomaly.csv",
         [this](QTextStream& stream) {
             stream << "type,start_seconds,end_seconds,value,threshold,unit,detail,suggestion\n";
-            for (const auto& a : result_.bitrate_gop.anomalies) {
+            for (const auto& a : result_->bitrate_gop.anomalies) {
                 stream << QString::fromStdString(model::ToString(a.type)) << ","
                        << QString::number(a.start_seconds, 'f', 3) << "," << QString::number(a.end_seconds, 'f', 3)
                        << "," << QString::number(a.value, 'f', 3) << "," << QString::number(a.threshold, 'f', 3) << ","
@@ -600,11 +601,11 @@ void BitrateGopPage::OnExportAnomalyCsv() {
                        << "\",\"" << QString::fromStdString(a.suggestion).replace('"', "'") << "\"\n";
             }
         },
-        static_cast<int>(result_.bitrate_gop.anomalies.size()));
+        static_cast<int>(result_->bitrate_gop.anomalies.size()));
 }
 
-void BitrateGopPage::SetResult(const model::AnalysisResult& result) {
-    result_ = result;
+void BitrateGopPage::SetResult(std::shared_ptr<const model::AnalysisResult> result) {
+    result_ = std::move(result);
     has_result_ = true;
     Refresh();
 }
@@ -645,9 +646,9 @@ void BitrateGopPage::SetProgressFormat(const QString& format) {
 
 void BitrateGopPage::ShowSceneLinkSummary() {
     Refresh();
-    const size_t matched = result_.bitrate_gop.scene_matches.size();
+    const size_t matched = result_->bitrate_gop.scene_matches.size();
     size_t missing = 0;
-    for (const auto& m : result_.bitrate_gop.scene_matches) {
+    for (const auto& m : result_->bitrate_gop.scene_matches) {
         if (!m.has_nearby_keyframe)
             ++missing;
     }

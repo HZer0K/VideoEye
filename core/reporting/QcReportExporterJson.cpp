@@ -413,7 +413,7 @@ JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
 
     // 音频位流参数（D1）：与 loudness 并列 —— 一个来自解码后的 PCM，一个来自帧头。
     // 审核要对照的正是"声明 vs 实测"，分开放反而更好比对。
-    if (result.audio_bitstream_analyzed) {
+    if (result.DimensionExecuted(model::AnalysisDimension::AudioBitstream)) {
         JsonValue streams = JsonValue::MakeArray();
         for (const auto& stream : result.audio_bitstream.streams) {
             JsonValue node = JsonValue::MakeObject();
@@ -546,7 +546,7 @@ JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
         metrics.Set("color_hdr", color);
     }
 
-    if (result.streaming_analyzed) {
+    if (result.DimensionExecuted(model::AnalysisDimension::Streaming)) {
         JsonValue streaming = JsonValue::MakeObject();
         streaming.Set("manifest_kind", JText(result.streaming_package.manifest_path.empty() ? "" : "local"));
         streaming.Set("variant_count", JNumber(static_cast<double>(result.streaming_package.variants.size())));

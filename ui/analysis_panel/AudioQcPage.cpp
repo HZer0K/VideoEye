@@ -10,6 +10,8 @@
 #include <QTextStream>
 #include <QVBoxLayout>
 
+#include <utility>
+
 #include "ui/analysis_panel/AnalysisPageSupport.h"
 #include "ui/analysis_panel/AudioChannelView.h"
 #include "ui/analysis_panel/AudioEventView.h"
@@ -201,23 +203,24 @@ void AudioQcPage::OnOptionChanged() {
         return;
     ApplyOptionsFromUi();
     if (target_lufs_spin_ && has_result_)
-        loudness_view_->SetResult(&result_, target_lufs_spin_->value());
+        loudness_view_->SetResult(result_.get(), target_lufs_spin_->value());
 }
 
 void AudioQcPage::Refresh() {
     UpdateSummary();
-    loudness_view_->SetResult(has_result_ ? &result_ : nullptr, target_lufs_spin_ ? target_lufs_spin_->value() : -23.0);
-    event_view_->SetResult(has_result_ ? &result_ : nullptr);
-    channel_view_->SetResult(has_result_ ? &result_ : nullptr);
+    loudness_view_->SetResult(has_result_ ? result_.get() : nullptr,
+                              target_lufs_spin_ ? target_lufs_spin_->value() : -23.0);
+    event_view_->SetResult(has_result_ ? result_.get() : nullptr);
+    channel_view_->SetResult(has_result_ ? result_.get() : nullptr);
     if (has_result_)
         verdict_view_->SetQcReport(qc_report_);
-    track_view_->SetResult(has_result_ ? &result_ : nullptr);
+    track_view_->SetResult(has_result_ ? result_.get() : nullptr);
 }
 
 void AudioQcPage::UpdateSummary() {
     if (!summary_label_)
         return;
-    const auto& qc = result_.audio_qc;
+    const auto& qc = result_->audio_qc;
     if (!has_result_ || !qc.analyzed) {
         summary_label_->setText(tr("暂无音频 QC 结果。点击「开始分析」扫描当前文件（需要有音频流且能解码）。"));
         return;
@@ -276,7 +279,7 @@ void AudioQcPage::UpdateSummary() {
 }
 
 void AudioQcPage::OnExportCsv() {
-    if (!has_result_ || !result_.audio_qc.analyzed) {
+    if (!has_result_ || !result_->audio_qc.analyzed) {
         QMessageBox::information(this, tr("提示"), tr("请先完成一次音频 QC 分析。"));
         return;
     }
@@ -285,7 +288,7 @@ void AudioQcPage::OnExportCsv() {
         [this](QTextStream& out) {
             out << "time_s,momentary_lufs,short_term_lufs,integrated_lufs,rms_dbfs,"
                    "sample_peak_dbfs,true_peak_dbtp,correlation,silent\n";
-            for (const auto& p : result_.audio_qc.loudness_points) {
+            for (const auto& p : result_->audio_qc.loudness_points) {
                 out << QString::number(p.timestamp_seconds, 'f', 3) << ',' << QString::number(p.momentary_lufs, 'f', 2)
                     << ',' << QString::number(p.short_term_lufs, 'f', 2) << ','
                     << QString::number(p.integrated_lufs, 'f', 2) << ',' << QString::number(p.rms_dbfs, 'f', 2) << ','
@@ -293,11 +296,11 @@ void AudioQcPage::OnExportCsv() {
                     << ',' << QString::number(p.correlation, 'f', 4) << ',' << (p.silent ? 1 : 0) << '\n';
             }
         },
-        static_cast<int>(result_.audio_qc.loudness_points.size()));
+        static_cast<int>(result_->audio_qc.loudness_points.size()));
 }
 
-void AudioQcPage::SetResult(const model::AnalysisResult& result, const model::QcReport& qc_report) {
-    result_ = result;
+void AudioQcPage::SetResult(std::shared_ptr<const model::AnalysisResult> result, const model::QcReport& qc_report) {
+    result_ = std::move(result);
     qc_report_ = qc_report;
     has_result_ = true;
     Refresh();

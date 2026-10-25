@@ -14,7 +14,9 @@ namespace ui {
 struct AnalysisFacade::Impl {
     qt::QtAnalysisController coordinator;
     videoeye::qc::QcRuleEngine qc_rule_engine;
-    model::AnalysisResult result;
+    // 共享只读快照。构造时就给一份空结果，result() 永远不返回空指针 ——
+    // 页面拿到的要么是空快照，要么是某次扫描的结果，不必到处判空。
+    std::shared_ptr<const model::AnalysisResult> result = std::make_shared<const model::AnalysisResult>();
 };
 
 AnalysisFacade::AnalysisFacade(QObject* parent) : QObject(parent), impl_(std::make_unique<Impl>()) {
@@ -33,9 +35,10 @@ AnalysisFacade::AnalysisFacade(QObject* parent) : QObject(parent), impl_(std::ma
     // 界面显示"分析完成"但 result() 是新任务的（或反过来弹一条上一个文件的错误）。
     // 统一在源头拦，所有监听者就都只剩"收到的一定是新鲜事件"这一条假设。
     connect(&impl_->coordinator, &qt::QtAnalysisController::AnalysisFinished, this,
-            [this](quint64 generation, bool completed, const model::AnalysisResult& result) {
+            [this](quint64 generation, bool completed, const std::shared_ptr<const model::AnalysisResult>& result) {
                 if (generation != impl_->coordinator.generation())
                     return;
+                // 落库与转发共用同一份快照：页面 / 报告读到的就是信号里那一个对象。
                 impl_->result = result;
                 emit AnalysisFinished(generation, completed, result);
             });
@@ -67,7 +70,7 @@ quint64 AnalysisFacade::generation() const {
     return impl_->coordinator.generation();
 }
 
-const model::AnalysisResult& AnalysisFacade::result() const {
+std::shared_ptr<const model::AnalysisResult> AnalysisFacade::result() const {
     return impl_->result;
 }
 
@@ -89,7 +92,12 @@ model::QcReport AnalysisFacade::Evaluate(const model::AnalysisResult& r) const {
 
 void AnalysisFacade::ApplySceneChanges(const std::vector<model::SceneChangeResult>& changes,
                                        const videoeye::BitrateGopOptions& options) {
-    videoeye::BitrateGopAnalyzer::ApplySceneChanges(impl_->result.bitrate_gop, changes, options);
+    // 拷贝时写：已分发给页面的快照是共享只读的，原地改会让它们的视图与 facade
+    // 的结果悄悄分叉。这里复制一份、只改 bitrate_gop、再整体替换指针 ——
+    // 只有用户手动「关联场景切换」时才会发生这一次拷贝。
+    auto next = std::make_shared<model::AnalysisResult>(*impl_->result);
+    videoeye::BitrateGopAnalyzer::ApplySceneChanges(next->bitrate_gop, changes, options);
+    impl_->result = std::move(next);
 }
 
 } // namespace ui

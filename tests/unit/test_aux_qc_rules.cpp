@@ -31,10 +31,19 @@ bool HasIssue(const model::QcReport& report, const std::string& rule_id, model::
     return false;
 }
 
+// 规则层只认 dimensions 表里的 executed（AnalysisResult::DimensionExecuted），
+// 单测直接构造结果，这里补一条"已执行"维度记录。
+void MarkExecuted(model::AnalysisResult& result, model::AnalysisDimension dimension) {
+    model::DimensionStatus status;
+    status.dimension = dimension;
+    status.executed = true;
+    result.SetDimension(status);
+}
+
 // 造一个"字幕分析过、带指定问题"的最小 AnalysisResult
 model::AnalysisResult MakeSubtitleResult(model::SubtitleIssueType type, model::IssueSeverity severity, int count = 1) {
     model::AnalysisResult result;
-    result.subtitle_analyzed = true;
+    MarkExecuted(result, model::AnalysisDimension::Subtitle);
 
     model::SubtitleStreamInfo stream;
     stream.stream_index = 2;
@@ -121,7 +130,7 @@ TEST(AuxQcRulesTest, SubtitleRulesStaySilentWhenNotAnalyzed) {
     const model::AnalysisResult result =
         MakeSubtitleResult(model::SubtitleIssueType::Overlap, model::IssueSeverity::Warning);
     model::AnalysisResult skipped = result;
-    skipped.subtitle_analyzed = false; // 没跑过字幕分析（如没有字幕流）
+    skipped.dimensions.clear(); // 没跑过字幕分析（如没有字幕流）
 
     const videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(skipped);
@@ -130,7 +139,7 @@ TEST(AuxQcRulesTest, SubtitleRulesStaySilentWhenNotAnalyzed) {
 
 TEST(AuxQcRulesTest, MissingTimecodeIsReported) {
     model::AnalysisResult result;
-    result.timecode_analyzed = true; // 跑过但没找到时码
+    MarkExecuted(result, model::AnalysisDimension::Timecode); // 跑过但没找到时码
     result.timecode.has_primary = false;
 
     const videoeye::qc::QcRuleEngine engine;
@@ -147,7 +156,7 @@ TEST(AuxQcRulesTest, MissingTimecodeIsReported) {
 
 TEST(AuxQcRulesTest, DropFrameMismatchOnNtscFootage) {
     model::AnalysisResult result;
-    result.timecode_analyzed = true;
+    MarkExecuted(result, model::AnalysisDimension::Timecode);
     result.timecode.has_primary = true;
     result.timecode.primary = model::TimecodeFromString("00:00:00:00"); // non-drop 写法
     result.timecode.primary_drop_frame = false;
@@ -165,7 +174,7 @@ TEST(AuxQcRulesTest, DropFrameMismatchOnNtscFootage) {
 
 TEST(AuxQcRulesTest, ChapterOverlapIsReported) {
     model::AnalysisResult result;
-    result.timecode_analyzed = true;
+    MarkExecuted(result, model::AnalysisDimension::Timecode);
     result.timecode.media_duration_seconds = 60.0;
 
     model::ChapterIssue issue;
@@ -188,7 +197,7 @@ TEST(AuxQcRulesTest, ChapterOverlapIsReported) {
 
 TEST(AuxQcRulesTest, Scte35MissingDurationIsReported) {
     model::AnalysisResult result;
-    result.aux_data_analyzed = true;
+    MarkExecuted(result, model::AnalysisDimension::AuxiliaryData);
 
     model::Scte35Cue cue;
     cue.valid = true;

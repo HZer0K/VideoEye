@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <functional>
+#include <memory>
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -135,7 +136,7 @@ void WireFlow(videoeye::ui::AnalysisFacade& facade, FlowSink& sink) {
                          sink.last_progress_percent = percent;
                      });
     QObject::connect(&facade, &videoeye::ui::AnalysisFacade::AnalysisFinished, &facade,
-                     [&sink](quint64 gen, bool completed, const model::AnalysisResult&) {
+                     [&sink](quint64 gen, bool completed, const std::shared_ptr<const model::AnalysisResult>&) {
                          sink.finished = true;
                          sink.finished_gen = gen;
                          sink.finished_completed = completed;
@@ -155,16 +156,16 @@ void WireFlow(videoeye::ui::AnalysisFacade& facade, FlowSink& sink) {
 TEST(DiagnosticsResultFlow, ResultIsEmptySnapshotBeforeAnyAnalysis) {
     ui::AnalysisFacade facade;
 
-    EXPECT_EQ(facade.result().total_packets, 0);
-    EXPECT_DOUBLE_EQ(facade.result().duration_seconds, 0.0);
-    EXPECT_EQ(facade.result().key_frame_count, 0);
+    EXPECT_EQ(facade.result()->total_packets, 0);
+    EXPECT_DOUBLE_EQ(facade.result()->duration_seconds, 0.0);
+    EXPECT_EQ(facade.result()->key_frame_count, 0);
 
-    model::QcReport report = facade.Evaluate(facade.result());
+    model::QcReport report = facade.Evaluate(*facade.result());
     EXPECT_GE(report.score, 0.0);
     EXPECT_LE(report.score, 100.0);
 
     // Evaluate 是纯函数（只读入参），不改动存储里的快照
-    EXPECT_EQ(facade.result().total_packets, 0);
+    EXPECT_EQ(facade.result()->total_packets, 0);
 }
 
 // 端到端信号链路：观察者在 AnalysisFinished 里读 facade.result()，必须已经是本次结果。
@@ -189,8 +190,8 @@ TEST(DiagnosticsResultFlow, FacadeSavesResultBeforeEmittingFinished) {
     model::AnalysisResult seen_from_facade;
 
     QObject::connect(&facade, &ui::AnalysisFacade::AnalysisFinished, &facade,
-                     [&](quint64 generation, bool done, const model::AnalysisResult&) {
-                         seen_from_facade = facade.result();
+                     [&](quint64 generation, bool done, const std::shared_ptr<const model::AnalysisResult>&) {
+                         seen_from_facade = *facade.result();
                          observed_gen = generation;
                          completed = done;
                          finished = true;
@@ -211,14 +212,14 @@ TEST(DiagnosticsResultFlow, FacadeSavesResultBeforeEmittingFinished) {
     // 唯一允许的就地改动: ApplySceneChanges 只该动 bitrate_gop 这一支。
     // 扫描事实（容器格式 / 时长 / 文件大小）一旦落库就是历史 —— 页面改它不是"刷新"
     // 而是篡改诊断结论。这里顺手用一份真实结果（本测试正好刚跑完一次扫描）锁住它。
-    const auto before_container = facade.result().container_format;
-    const double before_duration = facade.result().duration_seconds;
-    const int64_t before_size = facade.result().file_size_bytes;
+    const auto before_container = facade.result()->container_format;
+    const double before_duration = facade.result()->duration_seconds;
+    const int64_t before_size = facade.result()->file_size_bytes;
     facade.ApplySceneChanges({model::SceneChangeResult{0, 1.0, 0.9}, model::SceneChangeResult{120, 5.0, 0.8}},
                              videoeye::BitrateGopOptions{});
-    EXPECT_EQ(facade.result().container_format, before_container);
-    EXPECT_DOUBLE_EQ(facade.result().duration_seconds, before_duration);
-    EXPECT_EQ(facade.result().file_size_bytes, before_size);
+    EXPECT_EQ(facade.result()->container_format, before_container);
+    EXPECT_DOUBLE_EQ(facade.result()->duration_seconds, before_duration);
+    EXPECT_EQ(facade.result()->file_size_bytes, before_size);
 
     QFile::remove(manifest);
 }
@@ -252,7 +253,7 @@ TEST(DiagnosticsResultFlow, ProgressFinishThenEvaluateAndExportProducesReportFil
     EXPECT_EQ(sink.last_progress_gen, gen);
 
     // 结果进入 facade —— 诊断页展示 / 评分 / 导出都以它为唯一数据源。
-    const model::AnalysisResult& result = facade.result();
+    const model::AnalysisResult& result = *facade.result();
     EXPECT_EQ(result.container_format, "hls");
     EXPECT_TRUE(result.streaming_analyzed);
 

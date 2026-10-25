@@ -29,6 +29,7 @@
 #include <QTableWidget>
 
 #include <cstddef>
+#include <memory>
 #include <vector>
 
 #include "core/domain/model/SceneChangeResult.h"
@@ -50,8 +51,9 @@ public:
         source_path_ = path;
     }
 
-    // 扫描结束（或规则重算后）由面板喂结果
-    void SetResult(const model::AnalysisResult& result);
+    // 扫描结束（或规则重算后）由面板喂结果。
+    // 传共享只读快照：与 facade / 其它页共用同一份，页面不再整份拷贝 AnalysisResult。
+    void SetResult(std::shared_ptr<const model::AnalysisResult> result);
 
     // 「场景切换」页的检测记录：曲线上画标记，「关联场景切换」按钮要用
     void SetSceneChanges(const std::vector<model::SceneChangeResult>& records);
@@ -111,7 +113,8 @@ private:
 
     QString source_path_;
     bool has_result_ = false;
-    model::AnalysisResult result_;
+    // 非空默认值（一份空结果）：成员在 SetResult 之前也会被解引用，避免判空铺满全页。
+    std::shared_ptr<const model::AnalysisResult> result_ = std::make_shared<const model::AnalysisResult>();
     videoeye::BitrateGopOptions options_;
     bool decode_frame_types_ = false;
     std::vector<model::SceneChangeResult> scene_changes_;
