@@ -250,6 +250,72 @@ std::vector<QcRule> DefaultQcRules() {
         QcRuleOp::NonZero, 0.0, "", "元素级体检撞到元素预算上限提前结束，Cues / 时间戳回退等结论只代表已扫描的部分。",
         "文件极大或高度畸形时才出现；需要完整结论时用正常封装的文件复核。");
 
+    // MXF（SMPTE 377M / KLV）：分区结构、索引、收尾完整性与 KLV 损伤。
+    // 事实来自 MxfStructureAnalyzer 的顺序 KLV 扫描 + 文件尾反向 RIP 探测。
+    add("container.mxf.missing_footer_partition", "MXF 缺少 Footer 分区", IssueCategory::Container,
+        IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "",
+        "文件有 Header/Body 分区却没有 Footer 分区，说明写入被中途打断（掉电、进程被杀、存储写满），"
+        "文件没有正常收尾。部分摄录设备与后期系统会拒绝导入，或只能按破损素材做只读抢救。",
+        "重新录制或重新导出；已损坏的文件可用 ffmpeg -i 输入.mxf -c copy 输出.mxf 重新封装成完整文件。");
+
+    add("container.mxf.missing_rip", "MXF 缺少片尾 RIP 索引", IssueCategory::Container, IssueSeverity::Info,
+        QcRuleOp::NonZero, 0.0, "",
+        "文件尾没有 Random Index Pack（RIP）。RIP 记录每个分区在文件中的位置，缺了它播放器与后期系统"
+        "必须从文件头线性扫描才能定位分区，打开与随机访问都会明显变慢。",
+        "用支持 RIP 的复用器重新封装（例如 ffmpeg -i 输入.mxf -c copy 输出.mxf）；不要手工截断原始录制文件。");
+
+    add("container.mxf.missing_index", "MXF 缺少 Index Table", IssueCategory::Container, IssueSeverity::Warning,
+        QcRuleOp::NonZero, 0.0, "",
+        "扫完整个文件都没有发现 Index Table Segment。MXF 的精确定位依赖索引表，缺了它只能按近似帧率估算位置，"
+        "拖动进度条容易落到非关键帧，逐帧预览明显变慢。",
+        "重新封装让复用器写入索引；录制类设备确认已开启索引写入。");
+
+    add("container.mxf.missing_primer", "MXF 缺少 Primer Pack", IssueCategory::Container, IssueSeverity::Error,
+        QcRuleOp::NonZero, 0.0, "",
+        "Header 分区里没有 Primer Pack。Primer 是「动态 UL → 标签」的映射表，缺了它描述符里的动态标签无法解析，"
+        "部分后期系统读不到编码、分辨率、帧率等基本信息。",
+        "用标准复用器重新导出；不要使用手工拼装的 MXF。");
+
+    add("container.mxf.truncated_klv", "MXF KLV 越过文件末尾", IssueCategory::Container, IssueSeverity::Warning,
+        QcRuleOp::MaxExceeded, 0.0, "处", "有 KLV 声明的长度越过文件末尾，末尾数据缺失（拷贝、传输或录制中断）。",
+        "校验文件完整性并重新获取；截断的文件不要用作母版。");
+
+    add("container.mxf.resync", "MXF 结构重新同步", IssueCategory::Container, IssueSeverity::Warning,
+        QcRuleOp::MaxExceeded, 0.0, "次",
+        "解析时多次出现键前缀失配（本该是 06 0E 2B 34 的 SMPTE 键位置不是），说明字节流里混入垃圾或结构被破坏。",
+        "重新导出或重新获取；仍可播放时用 ffmpeg -c copy 重新封装以重建结构。");
+
+    add("container.mxf.scan_incomplete", "MXF 体检未扫完", IssueCategory::Container, IssueSeverity::Info,
+        QcRuleOp::NonZero, 0.0, "",
+        "体检在扫到文件尾之前就结束了（扫描窗口或 KLV 对象预算用尽），Footer / Index Table 等结论只覆盖已扫描的部分。",
+        "文件极大或高度畸形时才出现；需要完整结论时用正常封装的素材复核。");
+
+    // MPEG-PS（.mpg/.vob/.m2p）：截断、时间戳单调性与 PSM 对账。
+    add("container.ps.truncated_start_code", "PS 起始码越过文件末尾", IssueCategory::Container, IssueSeverity::Warning,
+        QcRuleOp::MaxExceeded, 0.0, "处", "有起始码声明的包长度越过文件末尾，文件被截断。", "校验完整性后重新获取。");
+
+    add("container.ps.timestamp_backwards", "PS 解码时间回退", IssueCategory::Container, IssueSeverity::Error,
+        QcRuleOp::MaxExceeded, 0.0, "次",
+        "同一流内 DTS 出现回退。PS 按解码序排列，DTS 必须单调非降；回退意味着时间轴错乱，"
+        "播放会卡顿、音画不同步，多段拼接的文件尤其常见。",
+        "重新封装重排时间戳：ffmpeg -fflags +genpts -i 输入.mpg -c copy 输出.mpg，或直接重新转码。");
+
+    add("container.ps.stream_without_timestamp", "PS 流缺少时间戳", IssueCategory::Container, IssueSeverity::Warning,
+        QcRuleOp::MaxExceeded, 0.0, "条",
+        "有视频/音频流一个时间戳都没有。没有 PTS/DTS，播放器只能按帧率推算位置，"
+        "起播偏移与音画同步都会逐渐漂移。",
+        "用 -fflags +genpts 重新封装生成时间戳，或从正常录制的源重新导出。");
+
+    add("container.ps.stream_map_mismatch", "PS 流映射与实际不符", IssueCategory::Container, IssueSeverity::Info,
+        QcRuleOp::MaxExceeded, 0.0, "条",
+        "PSM（Program Stream Map）声明的基本流与实际 PES 对不上：有流没被声明，或有声明却没有任何数据。"
+        "播放器只能按 stream_id 猜编码，猜错时会解不出画面或声音。",
+        "重新封装让复用器重写 PSM；不要手工裁剪或拼接 PS 流。");
+
+    add("container.ps.scan_incomplete", "PS 体检未扫完", IssueCategory::Container, IssueSeverity::Info,
+        QcRuleOp::NonZero, 0.0, "", "只扫描了文件的前一部分，End Code / 时间戳回退等结论只代表已扫描的部分。",
+        "文件极大时才出现；需要完整结论时用正常封装的素材复核。");
+
     // ---- MP4/fMP4 容器一致性（core/analysis/container/Mp4SampleTableAnalyzer.h，走自研 IsobmffParser）----
     // 这些规则只决定"是否上报 / 以什么级别上报"，问题本身（含具体样本号、偏移、分片号）
     // 由分析器给出；级别取「规则级别」与「分析器级别」中更严重的一侧，

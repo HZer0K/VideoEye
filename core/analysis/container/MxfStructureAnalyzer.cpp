@@ -75,6 +75,15 @@ bool IsEssenceKey(const std::string& key) {
            static_cast<uint8_t>(key[11]) == 0x01;
 }
 
+// Random Index Pack：06.0E.2B.34.02.05.01.01.0D.01.02.01.01.11.01.00
+// 唯一固定出现在文件尾的 KLV —— 只靠从前往后的扫描窗口永远扫不到。
+bool IsRipKey(const std::string& key) {
+    return StartsWithMxfKey(key) && static_cast<uint8_t>(key[4]) == 0x02 && static_cast<uint8_t>(key[5]) == 0x05 &&
+           static_cast<uint8_t>(key[8]) == 0x0D && static_cast<uint8_t>(key[9]) == 0x01 &&
+           static_cast<uint8_t>(key[10]) == 0x02 && static_cast<uint8_t>(key[11]) == 0x01 &&
+           static_cast<uint8_t>(key[12]) == 0x01 && static_cast<uint8_t>(key[13]) == 0x11;
+}
+
 const char* PartitionKindName(uint8_t kind) {
     switch (kind) {
     case 0x02:
@@ -128,6 +137,69 @@ struct EssenceTrack {
     uint64_t bytes = 0;
 };
 
+// 文件尾的 Random Index Pack 探测结果。
+struct TrailRip {
+    bool found = false;
+    bool malformed = false; // 键找到了，但载荷装不下声明的分区对
+};
+
+// 反向读一段文件尾找 RIP。
+//
+// 为什么必须反读：RIP 是文件里最后一个 KLV，正向扫描窗口（默认前 64 MiB）根本
+// 到不了；而它恰恰是"这个文件有没有被正常收尾"的最强信号 —— 录制中断的 MXF
+// 既没有 Footer Partition 也没有 RIP。
+TrailRip ScanTrailingRip(SeqFileReader& file, int64_t file_size) {
+    TrailRip out;
+    constexpr int64_t kWindow = 1LL << 20; // 1 MiB：几千个分区的 RIP 也装得下
+    if (file_size < static_cast<int64_t>(kKeySize) + 1)
+        return out;
+
+    const int64_t start = file_size > kWindow ? file_size - kWindow : 0;
+    file.Seek(start);
+    const std::string tail = file.Read(file_size - start);
+    const std::string marker("\x06\x0E\x2B\x34", 4);
+
+    size_t from = 0;
+    while (from + kKeySize <= tail.size()) {
+        const size_t idx = tail.find(marker, from);
+        if (idx == std::string::npos || idx + kKeySize > tail.size())
+            break;
+        if (IsRipKey(tail.substr(idx, kKeySize))) {
+            out.found = true;
+            // 值 = 分区对数量(4) + N*(分区体偏移(8) + 分区体长度(4)) [+ CRC32]
+            size_t value_pos = idx + kKeySize;
+            const uint8_t ber = static_cast<uint8_t>(tail[value_pos]);
+            uint64_t value_len = 0;
+            size_t len_bytes = 1;
+            if (ber < 0x80) {
+                value_len = ber;
+            } else {
+                const int n = ber & 0x7F;
+                if (n == 0 || n > 8 || value_pos + 1 + static_cast<size_t>(n) > tail.size()) {
+                    out.malformed = true;
+                    return out;
+                }
+                len_bytes = 1 + static_cast<size_t>(n);
+                for (int k = 0; k < n; ++k)
+                    value_len = (value_len << 8) | static_cast<uint8_t>(tail[value_pos + 1 + static_cast<size_t>(k)]);
+            }
+            value_pos += len_bytes;
+            if (value_pos + 4 > tail.size()) {
+                out.malformed = true;
+                return out;
+            }
+            // 只做结构性判断：声明的分区对数装不进声明的长度，或整个值越过文件末尾。
+            // 不能拿 pairs == 0 当坏包 —— ffmpeg 6.1 写出的单分区 MXF 就是 count=0。
+            const uint64_t pairs = MxfBE32(tail, value_pos);
+            if (4 + pairs * 12 > value_len || value_pos + value_len > tail.size())
+                out.malformed = true;
+            return out;
+        }
+        from = idx + 4;
+    }
+    return out;
+}
+
 } // namespace
 
 bool MxfStructureAnalyzer::Analyze(const std::string& file_path, model::ContainerStructureResult& result,
@@ -142,6 +214,10 @@ bool MxfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
     result.format = model::ContainerFormat::MXF;
     result.format_name = "MXF";
     result.file_path = file_path;
+
+    model::MxfDiagnostics& diag = result.diagnostics.mxf;
+    diag = model::MxfDiagnostics();
+    diag.file_size = static_cast<uint64_t>(file_size);
 
     const int64_t scan_end = options.max_scan_bytes > 0 ? std::min(file_size, options.max_scan_bytes) : file_size;
 
@@ -169,13 +245,16 @@ bool MxfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
     uint64_t truncated_values = 0;
 
     int64_t pos = 0;
+    bool hit_object_budget = false;
     while (pos + static_cast<int64_t>(kKeySize) + 1 <= scan_end) {
         if (infrastructure::Checkpoint(cancel)) {
             result.error_message = "已取消";
             return false;
         }
-        if (options.max_objects != 0 && objects >= options.max_objects)
+        if (options.max_objects != 0 && objects >= options.max_objects) {
+            hit_object_budget = true;
             break;
+        }
 
         file.Seek(pos);
         // 16 字节键 + 最多 8 字节 BER 长度
@@ -215,6 +294,9 @@ bool MxfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
         const int64_t value_pos = pos + static_cast<int64_t>(kKeySize) + len_bytes;
         if (value_pos > scan_end || value_len > static_cast<uint64_t>(scan_end - value_pos)) {
             ++truncated_values;
+            // 越过窗口 vs 越过文件末尾是两件事：只有后者才算文件被截断。
+            if (value_pos >= file_size || value_len > static_cast<uint64_t>(file_size - value_pos))
+                diag.truncated = true;
             break;
         }
 
@@ -222,6 +304,8 @@ bool MxfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
 
         if (IsPartitionKey(key)) {
             const uint8_t kind = static_cast<uint8_t>(key[13]);
+            if (diag.first_partition_kind == 0)
+                diag.first_partition_kind = kind;
             if (kind == 0x02)
                 ++header_partitions;
             else if (kind == 0x03)
@@ -274,6 +358,7 @@ bool MxfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
 
         if (IsEssenceKey(key)) {
             ++essence_objects;
+            diag.essence_bytes += value_len;
             const uint8_t track_no = static_cast<uint8_t>(key[12]);
             const uint8_t element_type = static_cast<uint8_t>(key[13]);
             EssenceTrack& t = tracks[track_no];
@@ -288,6 +373,23 @@ bool MxfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
         ++metadata_objects;
         pos = value_pos + static_cast<int64_t>(value_len);
     }
+
+    // ---- 体检事实：与结构页共用同一组数字（规则层只读这份摘要）----
+    diag.header_partitions = header_partitions;
+    diag.body_partitions = body_partitions;
+    diag.footer_partitions = footer_partitions;
+    diag.primer_packs = primer_packs;
+    diag.has_primer = primer_packs > 0;
+    diag.index_segments = index_segments;
+    diag.essence_objects = essence_objects;
+    diag.metadata_objects = metadata_objects;
+    diag.tracks = tracks.size();
+    diag.resyncs = resyncs;
+    diag.truncated_values = truncated_values;
+    diag.scan_complete = scan_end >= file_size && !hit_object_budget;
+    const TrailRip rip = ScanTrailingRip(file, file_size);
+    diag.has_rip = rip.found;
+    diag.rip_malformed = rip.malformed;
 
     // 一个分区都没有 = 不是 MXF（魔数可能只是碰巧命中）。交给 FFmpeg 通用分析。
     if (header_partitions + body_partitions + footer_partitions == 0) {
@@ -351,6 +453,7 @@ bool MxfStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
     result.metadata["扫描范围"] = StrCat("%1 / %2 字节", scan_end, file_size);
 
     result.valid = true;
+    diag.analyzed = true;
     result.summary = StrCat("MXF | Partition H%1/B%2/F%3 | KLV=%4 | 轨道=%5%6", header_partitions, body_partitions,
                             footer_partitions, objects, tracks.size(), scan_end < file_size ? "（部分扫描）" : "");
     file.Close();

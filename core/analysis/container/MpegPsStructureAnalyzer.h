@@ -32,6 +32,10 @@ struct MpegPsStructureOptions {
 ///   * Program Stream Map（0xBC）：stream_type → 编码名、基本流映射
 ///   * PES（0xBD private_stream_1 / 0xC0-0xDF audio / 0xE0-0xEF video）与首末 PTS
 ///   * padding（0xBE）与 Program End Code（0xB9）
+///
+/// 解析时顺手把 model::MpegPsDiagnostics（Pack/PSM/PES 计数、End Code、
+/// 时间戳单调性与 PSM 对账结果）填进 result.diagnostics.mpeg_ps，
+/// QC 的 container.ps.* 只读这份摘要。
 class MpegPsStructureAnalyzer {
 public:
     bool Analyze(const std::string& file_path, model::ContainerStructureResult& result,

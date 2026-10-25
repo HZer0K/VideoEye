@@ -165,6 +165,46 @@ def build_m2ts(ts_bytes):
     return bytes(out)
 
 
+def build_mxf(ffmpeg):
+    r"""MXF（SMPTE 377M / KLV）：MPEG-2 422P@ML 50Mbps + 48kHz PCM。
+
+    为什么参数这么死板：ffmpeg 的 mxf 复用器只接受它认的合法组合，否则直接
+    "Could not write header (incorrect codec parameters ?)"：
+      * 视频必须是 MPEG-2 4:2:2 且 -b:v 50M（422P@ML 的定码率档）；
+      * 音频采样率必须 48000（44.1k 会被拒）；
+      * 分辨率太小（176x144）配 50M 也会编码失败，所以用 PAL 720x576。
+    时长压到 0.4s：定码率下时长直接决定文件大小，1s 就要几 MB，没必要。
+
+    这份样本要证明的是 container.mxf.* 的正面结论（有 Primer / 有 Index Table /
+    有片尾 RIP / 未被截断）在**真实 muxer 产物**上成立 —— 手工拼的 KLV 与解析实现
+    同源，两边一起错时测不出来。
+    """
+    return run_ffmpeg(ffmpeg, [
+        "-f", "lavfi", "-i", "testsrc=size=720x576:rate=25:duration=0.4",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=0.4",
+        "-c:v", "mpeg2video", "-pix_fmt", "yuv422p", "-b:v", "50M",
+        "-c:a", "pcm_s16le",
+        "-f", "mxf",
+    ], ".mxf")
+
+
+def build_ps(ffmpeg):
+    r"""MPEG-PS / VOB：MPEG-2 视频 + MP2 音频。
+
+    注意 ffmpeg 的 vob 复用器**不写** Program End Code（00 00 01 B9），收尾靠 padding
+    包补齐 —— 这正是 container.ps.* 里不设"缺少 End Code"规则的原因，语料把这个事实
+    钉住：一旦哪天改了复用器行为，check() 里的断言会先红。
+    音频同样必须 48kHz（VOB 规范）。
+    """
+    return run_ffmpeg(ffmpeg, [
+        "-f", "lavfi", "-i", "testsrc=size=320x176:rate=25:duration=1",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1",
+        "-c:v", "mpeg2video", "-b:v", "800k",
+        "-c:a", "mp2", "-b:a", "96k", "-ar", "48000",
+        "-f", "vob",
+    ], ".mpg")
+
+
 def build_h264_bframes(ffmpeg):
     r"""MP4 / H.264: libx264 + **B 帧** + 两个 GOP。
 
@@ -195,6 +235,8 @@ register("container/real_h264_aac.m2ts", "m2ts", derived="container/real_h264_aa
 register("container/real_mpeg4_mp3.avi", "avi", build=build_avi)
 register("container/real_vorbis.ogg", "ogg", build=build_ogg)
 register("container/real_h264_aac.mkv", "mkv", build=build_mkv)
+register("container/real_mpeg2_pcm.mxf", "mxf", build=build_mxf)
+register("container/real_mpeg2_mp2.mpg", "ps", build=build_ps)
 register("codec/real_x264_bframes_gop.mp4", "mp4", build=build_h264_bframes)
 
 
@@ -302,6 +344,45 @@ def check(data, rel):
             if data.find(elem_id) < 0:
                 problems.append("%s: 找不到 %s 元素（%r）"
                                 % (rel, name, elem_id))
+        return problems
+
+    if kind == "mxf":
+        # 只校验"这是一份结构完整的 MXF"：分区头/尾 + Primer + Index Table + 片尾 RIP。
+        # 只比 UID 的 4..13 字节：末 3 字节是 <kind><status><reserved>，status 有
+        # 开放/封闭 × 完整/不完整四种取值（ffmpeg 写的是 0x04 = 封闭且完整），
+        # 把 status 写死进断言会在换 muxer 时误报。
+        if data[0:4] != b"\x06\x0e\x2b\x34":
+            problems.append("%s: 不是 SMPTE UL 键开头（%r）" % (rel, data[0:4]))
+            return problems
+        for tail, name in (
+                (b"\x0d\x01\x02\x01\x01\x02", "Header Partition"),
+                (b"\x0d\x01\x02\x01\x01\x04", "Footer Partition"),
+                (b"\x0d\x01\x02\x01\x01\x05", "Primer Pack"),
+                (b"\x02\x53\x01\x01\x0d\x01\x02\x01\x01", "Index Table Segment"),
+        ):
+            if data.find(tail) < 0:
+                problems.append("%s: 找不到 %s" % (rel, name))
+        # RIP 必须在文件尾（它是最后一个 KLV），否则 container.mxf.missing_rip
+        # 的"反读文件尾"逻辑在这份样本上就无从验证。
+        rip_tail = b"\x0d\x01\x02\x01\x01\x11"
+        if data.rfind(rip_tail) < 0:
+            problems.append("%s: 找不到片尾 Random Index Pack" % rel)
+        elif len(data) - data.rfind(rip_tail) > 1024:
+            problems.append("%s: RIP 离文件尾 %d 字节，不在尾部（反读窗口会漏）"
+                            % (rel, len(data) - data.rfind(rip_tail)))
+        return problems
+
+    if kind == "ps":
+        # PS 没有索引，只能校验骨架：Pack Header + System Header + 视频/音频 PES。
+        # "没有 Program End Code"是 ffmpeg vob 复用器的正常行为，这里不判。
+        if data[0:4] != b"\x00\x00\x01\xba":
+            problems.append("%s: 不是 Pack Header 开头（%r）" % (rel, data[0:4]))
+            return problems
+        for code, name in ((b"\x00\x00\x01\xbb", "System Header"),
+                           (b"\x00\x00\x01\xe0", "视频 PES"),
+                           (b"\x00\x00\x01\xc0", "音频 PES")):
+            if data.find(code) < 0:
+                problems.append("%s: 找不到 %s（%r）" % (rel, name, code))
         return problems
 
     if kind == "h264_annexb":

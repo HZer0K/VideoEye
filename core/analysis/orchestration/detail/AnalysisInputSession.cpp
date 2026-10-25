@@ -19,6 +19,8 @@ extern "C" {
 #include "core/analysis/container/FlvStructureAnalyzer.h"
 #include "core/analysis/container/MkvContainerScanner.h"
 #include "core/analysis/container/Mp4SampleTableAnalyzer.h"
+#include "core/analysis/container/MpegPsStructureAnalyzer.h"
+#include "core/analysis/container/MxfStructureAnalyzer.h"
 #include "core/analysis/container/OggStructureAnalyzer.h"
 #include "core/analysis/detail/AnalysisStreamSelection.h"
 #include "core/analysis/orchestration/AnalysisTerminalState.h"
@@ -264,6 +266,23 @@ void AnalysisInputSession::FillLegacyContainerFacts(model::AnalysisResult& resul
         // Cluster 时间戳回退、缺 CodecPrivate）。两者口径完全不同，不能互换。
         MkvContainerScanner scanner;
         ok = scanner.Analyze(file_path_, structure.diagnostics.mkv, cancel_source_);
+    } else if (fmt == "mxf") {
+        // QC 要"整份文件都扫过"：Footer Partition 与 Index Table 可能在片尾，
+        // 结构页那 64 MiB 窗口会直接漏掉。KLV 载荷一律 Seek 跳过，
+        // 所以扫全文件也只读每个对象 16 字节键 + 长度。
+        MxfStructureOptions opt;
+        opt.build_tree = false;
+        opt.max_scan_bytes = 0;
+        opt.max_objects = 2000000; // 两小时 OP1a 的 Essence KLV 就有几十万个
+        MxfStructureAnalyzer analyzer;
+        ok = analyzer.Analyze(file_path_, structure, cancel_source_, opt);
+    } else if (fmt == "mpeg") {
+        // 同上：Program End Code 只出现在文件尾，不扫到片尾就没有结论。
+        MpegPsStructureOptions opt;
+        opt.build_tree = false;
+        opt.max_scan_bytes = 0;
+        MpegPsStructureAnalyzer analyzer;
+        ok = analyzer.Analyze(file_path_, structure, cancel_source_, opt);
     } else {
         return;
     }

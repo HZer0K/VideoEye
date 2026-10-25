@@ -83,7 +83,7 @@ std::vector<model::DiagnosticIssue> QcRuleEngine::CheckRule(const model::QcRule&
     const std::string& id = rule.id;
     if (id.rfind("container.mp4.", 0) == 0)
         return detail::CheckMp4ContainerRules(rule, result, make_issue);
-    // 容器体检（AVI/FLV/ASF/OGG/MKV）走各自的事实摘要，同样必须排在 container. 兜底之前。
+    // 容器体检（AVI/FLV/ASF/OGG/MKV/MXF/MPEG-PS）走各自的事实摘要，同样必须排在 container. 兜底之前。
     if (id.rfind("container.avi.", 0) == 0)
         return detail::CheckAviContainerRules(rule, result, make_issue);
     if (id.rfind("container.flv.", 0) == 0)
@@ -94,6 +94,10 @@ std::vector<model::DiagnosticIssue> QcRuleEngine::CheckRule(const model::QcRule&
         return detail::CheckOggContainerRules(rule, result, make_issue);
     if (id.rfind("container.mkv.", 0) == 0)
         return detail::CheckMkvContainerRules(rule, result, make_issue);
+    if (id.rfind("container.mxf.", 0) == 0)
+        return detail::CheckMxfContainerRules(rule, result, make_issue);
+    if (id.rfind("container.ps.", 0) == 0)
+        return detail::CheckPsContainerRules(rule, result, make_issue);
     // 注意顺序：container.ts. 必须排在下面那条 container. 兜底之前，
     // 否则会被 CheckContainerRules 抢走（它对不认识的 id 直接返回空，规则静默失效）。
     if (id.rfind("container.ts.", 0) == 0)

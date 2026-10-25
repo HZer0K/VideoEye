@@ -36,6 +36,10 @@ struct MxfStructureOptions {
 ///   * Primer Pack（key[5] = 0x05）与 Index Table Segment（key[5] = 0x53）
 ///   * Essence Element（key[4] = 0x01，bytes 8-11 = 0D 01 03 01）按 track 归类
 ///   * KLV 长度越界 / 键前缀失配时的重新同步计数
+///
+/// 解析时顺手把 model::MxfDiagnostics（分区数、Primer、Index Table、片尾 RIP、
+/// 截断与重同步）填进 result.diagnostics.mxf，QC 的 container.mxf.* 只读这份摘要。
+/// RIP 靠**反向读文件尾**得到，不受 max_scan_bytes 窗口限制。
 class MxfStructureAnalyzer {
 public:
     bool Analyze(const std::string& file_path, model::ContainerStructureResult& result,

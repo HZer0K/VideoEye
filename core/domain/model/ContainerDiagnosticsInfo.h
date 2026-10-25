@@ -1,6 +1,6 @@
 #pragma once
 
-// AVI / FLV / ASF / OGG / MKV 的容器级体检事实。
+// AVI / FLV / ASF / OGG / MKV / MXF / MPEG-PS 的容器级体检事实。
 //
 // 为什么单独成一个值对象（与 TransportStreamInfo 同样的理由）：
 //   * 容器结构页要的是整棵树，QC 只要十来个计数；
@@ -133,12 +133,101 @@ struct MkvDiagnostics {
     std::string missing_codec_private_codecs; // 逗号分隔的 CodecID 列表
 };
 
+// MXF（SMPTE 377M，KLV 容器）的容器级体检事实。
+//
+// 事实来自 MxfStructureAnalyzer 的顺序 KLV 扫描：只读 16 字节键与 BER 长度，
+// 载荷一律 Seek 跳过，内存 O(1)。所以这些计数覆盖整个扫描窗口，与结构页那棵
+// 受 max_tree_elements 约束的元素树不是一回事。
+//
+// 与 MKV 的差别：MXF 的关键结构（Footer Partition、Random Index Pack）在**文件尾**，
+// 只靠从前往后的窗口扫不到。所以分析器另外反向读一段文件尾找 RIP ——
+// 这条事实不受窗口影响，`has_rip` 在任何文件大小下都是可信的。
+//
+// 口径提醒：scan_complete=false 表示扫到窗口/对象预算就停了，
+// 此时"没有 Footer / 没有 Index Table"只代表已扫描的部分。
+struct MxfDiagnostics {
+    bool analyzed = false;
+    bool scan_complete = true;
+    uint64_t file_size = 0;
+
+    // ---- 分区结构（SMPTE 377M Partition Pack）----
+    uint64_t header_partitions = 0;
+    uint64_t body_partitions = 0;
+    uint64_t footer_partitions = 0;
+    // 第一个分区必须是 Header；0 = 一个分区都没认出来。
+    uint8_t first_partition_kind = 0; // 0x02 头 / 0x03 体 / 0x04 尾
+
+    // ---- 元数据 ----
+    bool has_primer = false; // Header 分区里的 Primer Pack：解引用动态 UL 的前提
+    uint64_t primer_packs = 0;
+    uint64_t index_segments = 0; // Index Table Segment：精确定位的前提
+
+    // 片尾 Random Index Pack（06.0E.2B.34.02.05.01.01.0D.01.02.01.01.11.01.00）。
+    // 有它才能不线性扫描而直接跳到任一分区。
+    bool has_rip = false;
+    bool rip_malformed = false; // 找到 RIP 键但载荷不足以读完分区对
+
+    // ---- 载荷 ----
+    uint64_t essence_objects = 0;
+    uint64_t essence_bytes = 0;
+    uint64_t metadata_objects = 0;
+    uint64_t tracks = 0;
+
+    // ---- 损伤 ----
+    uint64_t resyncs = 0;          // 键前缀失配后向前找下一个 SMPTE 键的次数
+    uint64_t truncated_values = 0; // KLV 声明长度越过扫描边界
+    bool truncated = false;        // 明确越过文件末尾（区别于只是越过窗口）
+};
+
+// MPEG-PS（Program Stream，.mpg/.vob/.m2p）的容器级体检事实。
+//
+// 事实来自 MpegPsStructureAnalyzer 的起始码顺序扫描。PS 没有 PAT/PMT 也没有固定包长，
+// 所以"流表对不对"只能靠 PSM 声明与实际 PES 对账。
+//
+// 口径提醒：时间戳一律优先取 DTS —— 视频 PES 按解码序排列，有 B 帧时相邻 PTS
+// 本来就会回退一个 GOP，拿 PTS 判单调必然误报。没有 DTS 的流不计入单调性判定。
+struct MpegPsDiagnostics {
+    bool analyzed = false;
+    bool scan_complete = true;
+    uint64_t file_size = 0;
+
+    // ---- 结构计数 ----
+    uint64_t pack_headers = 0;
+    uint64_t mpeg1_pack_headers = 0;
+    uint64_t mpeg2_pack_headers = 0;
+    uint64_t system_headers = 0;
+    uint64_t psm_count = 0;
+    uint64_t pes_packets = 0;
+    uint64_t padding_packets = 0;
+
+    // Program End Code（00 00 01 B9）。注意它**不是**缺陷判据：ffmpeg 的 mpeg/vob 复用器
+    // 从不写它，DVD 的 VOB 按规范也不写。这里只作为事实记录（结构页 metadata 同源）。
+    bool has_end_code = false;
+    uint64_t truncated_start_codes = 0; // 起始码声明的长度越过文件末尾
+
+    // ---- 流 ----
+    uint64_t streams = 0;
+    uint64_t video_streams = 0;
+    uint64_t audio_streams = 0;
+    // 有 PES 但一个时间戳都没解析出来的流。只有在"同文件里别的流解析出了时间戳"
+    // 时才有意义 —— 见规则层门控，否则分不清是流缺时间戳还是解析器没认出来。
+    uint64_t streams_with_timestamp = 0;
+    uint64_t streams_without_timestamp = 0;
+    // 同一流内 DTS 回退次数（DTS 按定义单调非降）。
+    uint64_t timestamp_backwards = 0;
+    // PSM 声明与实际 PES 对不上：未被 PSM 声明的流 / PSM 声明了却没有 PES 的流。
+    uint64_t unmapped_streams = 0;
+    uint64_t declared_but_missing_streams = 0;
+};
+
 struct ContainerDiagnosticsInfo {
     AviDiagnostics avi;
     FlvDiagnostics flv;
     AsfDiagnostics asf;
     OggDiagnostics ogg;
     MkvDiagnostics mkv;
+    MxfDiagnostics mxf;
+    MpegPsDiagnostics mpeg_ps;
 };
 
 } // namespace model

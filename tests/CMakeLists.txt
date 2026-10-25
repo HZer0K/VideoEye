@@ -812,6 +812,23 @@ target_compile_definitions(test_container_mkv_qc_rules PRIVATE
 add_test(NAME ContainerMkvQcRulesTests COMMAND test_container_mkv_qc_rules)
 
 # =================================================
+# 测试 20b：MXF / MPEG-PS 容器级 QC（container.mxf.* / container.ps.*）
+# 说明: MxfStructureAnalyzer 合成 KLV 字节流（分区 / Primer / Index / 片尾 RIP /
+#       截断 / 重同步）；MpegPsStructureAnalyzer 合成 Pack Header + PSM + PES + End Code，
+#       其中"B 帧 PTS 回退不算时间戳回退"是这组规则最容易写错的地方。
+#       只链 VideoEyeQcRules + VideoEyeAnalysisPackage —— 两者都不带 Qt / FFmpeg。
+# =================================================
+videoeye_add_test(test_container_mxf_ps_qc_rules
+    unit/test_container_mxf_ps_qc_rules.cpp
+)
+target_link_libraries(test_container_mxf_ps_qc_rules PRIVATE VideoEyeQcRules VideoEyeAnalysisPackage)
+# 真实 muxer 产出的 MXF / VOB：合成字节与解析实现同源，只有真实样本能证明
+# "有 Footer / 有 RIP / 时间戳单调"这些正面结论真的成立。
+target_compile_definitions(test_container_mxf_ps_qc_rules PRIVATE
+    VIDEOEYE_CONTAINER_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus/container")
+add_test(NAME ContainerMxfPsQcRulesTests COMMAND test_container_mxf_ps_qc_rules)
+
+# =================================================
 # 测试 21：视觉缺陷检测（黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 曝光 / 色偏 / 梳齿 / 黑边）
 # 说明: VisualDefectAnalyzer 只吃 model::FrameSample 里的降采样像素，不依赖 FFmpeg（
 #       AVFrame -> FrameSample 的缩放在 QualityAnalyzer::BuildSample），所以这里全部用

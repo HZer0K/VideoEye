@@ -50,8 +50,8 @@
 | AVI | 中深：RIFF chunk 树 + `strh`/`strf` + `idx1`/`indx`/`dmlh`/`AVIX` 索引校验 | `movi` 载荷不展开；QC 扫描跳过媒体数据 |
 | ASF / WMV | 中深：7 类对象 GUID 有名字与字段、对象大小/Data Object/时长校验 | Header Extension / Metadata / DRM 归 `Unknown Object` |
 | OGG | 中深：Vorbis / Opus / FLAC / Theora / Speex 标识头 + 注释块 + 页序号/BOS/EOS/截断扫描 | 只读每页前 4 KiB 数据（QC 只扫页头） |
-| MPEG-PS | 中：Pack / System Header / PSM 映射 / PES 边界 + PTS 首末值 | 默认只扫前 32 MB；不解析 PES 载荷 |
-| MXF | 中：KLV 对象流（Partition / Primer / Index / Essence）+ BER 长度校验 | 默认只扫前 64 MB；不解码 essence |
+| MPEG-PS | 中：Pack / System Header / PSM 映射 / PES 边界 + PTS·DTS 首末值与单调性 + PSM 对账 | 默认只扫前 32 MB（QC 扫全文件）；不解析 PES 载荷 |
+| MXF | 中：KLV 对象流（Partition / Primer / Index / Essence）+ BER 长度校验 + 片尾 RIP 反读 | 默认只扫前 64 MB（QC 扫全文件）；不解码 essence |
 
 ### MP4 的字段级覆盖
 

@@ -109,6 +109,73 @@ std::string PsPrivateSubstreamCodec(uint8_t sub) {
     return std::string();
 }
 
+// PES 头里的时间戳。
+struct PesStamps {
+    bool has_pts = false;
+    uint64_t pts = 0;
+    bool has_dts = false;
+    uint64_t dts = 0;
+};
+
+// 解析 PES 头里的 PTS/DTS。[begin, end) 是 PES_packet_length 覆盖的载荷区。
+//
+// MPEG-2 与 MPEG-1 的 PES 头布局完全不同，认错一种就会把"没解析出来"误报成
+// "流里没有时间戳"：
+//   MPEG-2：'10' 标志字节 + 标志字节（PTS_DTS_flags 在高 2 位）+ header_data_length + PTS[+DTS]
+//   MPEG-1：最多 16 字节 0xFF 填充，再按 '0010'(PTS) / '0011'(PTS+DTS) / '01'(STD buffer) 分支
+PesStamps ParsePesStamps(const std::string& d, size_t begin, size_t end) {
+    PesStamps out;
+    end = std::min(end, d.size());
+    if (begin + 3 > end)
+        return out;
+
+    const uint8_t first = static_cast<uint8_t>(d[begin]);
+    if ((first & 0xC0) == 0x80) { // ---- MPEG-2 ----
+        const uint8_t flags = static_cast<uint8_t>(d[begin + 1]);
+        const int pts_dts = (flags >> 6) & 0x03;
+        if (pts_dts < 2)
+            return out;
+        const size_t hdr_len = static_cast<uint8_t>(d[begin + 2]);
+        const size_t q_end = std::min(begin + 3 + hdr_len, end);
+        size_t q = begin + 3;
+        if (q + 5 <= q_end) {
+            out.pts = PsPts(d, q);
+            out.has_pts = true;
+            q += 5;
+            if (pts_dts == 3 && q + 5 <= q_end) {
+                out.dts = PsPts(d, q);
+                out.has_dts = true;
+            }
+        }
+        return out;
+    }
+
+    // ---- MPEG-1 ----
+    size_t q = begin;
+    size_t stuffing = 0;
+    while (q < end && static_cast<uint8_t>(d[q]) == 0xFF && stuffing < 16) {
+        ++q;
+        ++stuffing;
+    }
+    if (q >= end)
+        return out;
+    const uint8_t b = static_cast<uint8_t>(d[q]);
+    if ((b & 0xF0) == 0x20) { // '0010'：只有 PTS
+        if (q + 5 <= end) {
+            out.pts = PsPts(d, q);
+            out.has_pts = true;
+        }
+    } else if ((b & 0xF0) == 0x30) { // '0011'：PTS + DTS
+        if (q + 10 <= end) {
+            out.pts = PsPts(d, q);
+            out.has_pts = true;
+            out.dts = PsPts(d, q + 5);
+            out.has_dts = true;
+        }
+    }
+    return out;
+}
+
 struct PsStream {
     uint8_t stream_id = 0;
     std::string type;
@@ -118,6 +185,14 @@ struct PsStream {
     bool pts_seen = false;
     uint64_t first_pts = 0;
     uint64_t last_pts = 0;
+    bool declared_in_psm = false;
+
+    // 时间戳单调性：只在拿到 DTS（或者纯音频流的 PTS）时判定。
+    // 视频 PES 按解码序排列，有 B 帧时相邻 PTS 本来就回退一个 GOP —— 拿 PTS 判
+    // 单调会把所有带 B 帧的素材全部误报。
+    bool stamp_seen = false;
+    uint64_t last_stamp = 0;
+    uint64_t backwards = 0;
 };
 
 } // namespace
@@ -135,6 +210,10 @@ bool MpegPsStructureAnalyzer::Analyze(const std::string& file_path, model::Conta
     result.format_name = "MPEG-PS";
     result.file_path = file_path;
 
+    model::MpegPsDiagnostics& diag = result.diagnostics.mpeg_ps;
+    diag = model::MpegPsDiagnostics();
+    diag.file_size = static_cast<uint64_t>(file_size);
+
     const int64_t scan_end = options.max_scan_bytes > 0 ? std::min(file_size, options.max_scan_bytes) : file_size;
 
     model::ContainerElement root;
@@ -150,6 +229,8 @@ bool MpegPsStructureAnalyzer::Analyze(const std::string& file_path, model::Conta
     std::vector<std::string> psm_lines;
 
     uint64_t pack_headers = 0;
+    uint64_t mpeg1_pack_headers = 0;
+    uint64_t mpeg2_pack_headers = 0;
     uint64_t pes_packets = 0;
     uint64_t system_headers = 0;
     uint64_t psm_count = 0;
@@ -193,6 +274,10 @@ bool MpegPsStructureAnalyzer::Analyze(const std::string& file_path, model::Conta
                     consumed = 12; // MPEG-1
                 }
                 ++pack_headers;
+                if (mpeg2)
+                    ++mpeg2_pack_headers;
+                else
+                    ++mpeg1_pack_headers;
                 if (options.build_tree && pack_nodes.size() < std::min<uint32_t>(options.max_tree_elements, 50)) {
                     model::ContainerElement node;
                     node.name = StrCat("Pack Header #%1", pack_headers);
@@ -265,6 +350,7 @@ bool MpegPsStructureAnalyzer::Analyze(const std::string& file_path, model::Conta
                         const uint16_t es_info_len = PsBE16(w, p + 2);
                         PsStream& s = streams[elementary_id];
                         s.stream_id = elementary_id;
+                        s.declared_in_psm = true;
                         const std::string codec = PsStreamTypeCodec(stream_type);
                         s.codec = codec.empty() ? StrCat("stream_type=0x%1", HexFill(stream_type, 2)) : codec;
                         s.type = PsIsVideoType(stream_type) ? "video" : (PsIsAudioType(stream_type) ? "audio" : "data");
@@ -274,6 +360,14 @@ bool MpegPsStructureAnalyzer::Analyze(const std::string& file_path, model::Conta
                         p += 4 + es_info_len;
                     }
                 }
+                i += static_cast<size_t>(consumed);
+                continue;
+            }
+
+            if (code == 0xBE) { // Padding
+                // 必须排在 PES 判断之前：0xBD..0xEF 的范围覆盖了 0xBE，
+                // 顺序写反会把 padding 当成一条数据流，padding 计数永远是 0。
+                ++padding_packets;
                 i += static_cast<size_t>(consumed);
                 continue;
             }
@@ -305,17 +399,33 @@ bool MpegPsStructureAnalyzer::Analyze(const std::string& file_path, model::Conta
                     }
                 }
 
-                // 首末 PTS（MPEG-2 PES：'10' 标志 + 可选 PTS 标志）
-                if (payload_len >= 8 && i + 14 <= w.size()) {
-                    const size_t pes = i + 6;
-                    if ((static_cast<uint8_t>(w[pes]) & 0xC0) == 0x80 && (static_cast<uint8_t>(w[pes + 1]) & 0x80) &&
-                        static_cast<uint8_t>(w[pes + 2]) >= 5) {
-                        const uint64_t pts = PsPts(w, pes + 3);
+                // 首末 PTS / DTS（MPEG-1 与 MPEG-2 的 PES 头布局不同，交给 ParsePesStamps）
+                {
+                    const size_t pes_begin = i + 6;
+                    const size_t pes_end = std::min(pes_begin + payload_len, w.size());
+                    const PesStamps stamps = ParsePesStamps(w, pes_begin, pes_end);
+                    if (stamps.has_pts) {
                         if (!s.pts_seen) {
-                            s.first_pts = pts;
+                            s.first_pts = stamps.pts;
                             s.pts_seen = true;
                         }
-                        s.last_pts = pts;
+                        s.last_pts = stamps.pts;
+                    }
+                    // 单调性只认 DTS；没有 DTS 的纯音频流退回用 PTS（音频没有重排）。
+                    bool have_stamp = false;
+                    uint64_t stamp = 0;
+                    if (stamps.has_dts) {
+                        have_stamp = true;
+                        stamp = stamps.dts;
+                    } else if (stamps.has_pts && s.type == "audio") {
+                        have_stamp = true;
+                        stamp = stamps.pts;
+                    }
+                    if (have_stamp) {
+                        if (s.stamp_seen && stamp < s.last_stamp)
+                            ++s.backwards;
+                        s.stamp_seen = true;
+                        s.last_stamp = stamp;
                     }
                 }
                 if (payload_len == 0) {
@@ -327,18 +437,47 @@ bool MpegPsStructureAnalyzer::Analyze(const std::string& file_path, model::Conta
                 continue;
             }
 
-            if (code == 0xBE) { // Padding
-                ++padding_packets;
-                i += static_cast<size_t>(consumed);
-                continue;
-            }
-
             // 序列头 / GOP / 图像头等基本流起始码：没有容器长度可跳，前进 4 字节继续找
             i += 4;
         }
 
         // i 是"已处理到的块内偏移"；跨块元素会在上面 break，此时从起始码重新读。
         pos += (i == 0 ? int64_t{4} : static_cast<int64_t>(i));
+    }
+
+    // ---- 体检事实：结构页与 QC 共用同一组数字 ----
+    diag.pack_headers = pack_headers;
+    diag.mpeg1_pack_headers = mpeg1_pack_headers;
+    diag.mpeg2_pack_headers = mpeg2_pack_headers;
+    diag.system_headers = system_headers;
+    diag.psm_count = psm_count;
+    diag.pes_packets = pes_packets;
+    diag.padding_packets = padding_packets;
+    diag.has_end_code = saw_end_code;
+    diag.truncated_start_codes = truncated;
+    diag.scan_complete = scan_end >= file_size;
+    diag.streams = streams.size();
+    for (const auto& kv : streams) {
+        const PsStream& s = kv.second;
+        const bool av = (s.type == "video" || s.type == "audio");
+        if (s.type == "video")
+            ++diag.video_streams;
+        else if (s.type == "audio")
+            ++diag.audio_streams;
+        if (s.packets == 0) {
+            if (s.declared_in_psm)
+                ++diag.declared_but_missing_streams;
+            continue;
+        }
+        if (!av)
+            continue; // private_stream_2 之类本来就不带时间戳，别混进统计
+        if (s.pts_seen || s.stamp_seen)
+            ++diag.streams_with_timestamp;
+        else
+            ++diag.streams_without_timestamp;
+        if (psm_count > 0 && !s.declared_in_psm)
+            ++diag.unmapped_streams;
+        diag.timestamp_backwards += s.backwards;
     }
 
     // 一个 Pack Header 都没找到 = 不是 PS（扩展名叫 .mpg 但内容是裸 MPEG-1 视频流
@@ -429,6 +568,7 @@ bool MpegPsStructureAnalyzer::Analyze(const std::string& file_path, model::Conta
     result.metadata["扫描范围"] = StrCat("%1 / %2 字节", scan_end, file_size);
 
     result.valid = true;
+    diag.analyzed = true;
     result.summary = StrCat("MPEG-PS | Pack=%1 | PES=%2 | 流=%3%4", pack_headers, pes_packets, streams.size(),
                             scan_end < file_size ? "（部分扫描）" : "");
     file.Close();

@@ -94,6 +94,12 @@ CheckOggContainerRules(const model::QcRule& rule, const model::AnalysisResult& r
 // MKV / WebM：索引、Cluster 时间轴、CodecPrivate、截断（MkvContainerScanner 的元素级事实）
 std::vector<model::DiagnosticIssue>
 CheckMkvContainerRules(const model::QcRule& rule, const model::AnalysisResult& result, const IssueFactory& make_issue);
+// MXF：分区结构、Primer / Index Table、片尾 RIP、KLV 截断与重同步
+std::vector<model::DiagnosticIssue>
+CheckMxfContainerRules(const model::QcRule& rule, const model::AnalysisResult& result, const IssueFactory& make_issue);
+// MPEG-PS：End Code、时间戳单调性、流映射对账
+std::vector<model::DiagnosticIssue>
+CheckPsContainerRules(const model::QcRule& rule, const model::AnalysisResult& result, const IssueFactory& make_issue);
 std::vector<model::DiagnosticIssue> CheckVideoRules(const model::QcRule& rule, const model::AnalysisResult& result,
                                                     const IssueFactory& make_issue);
 std::vector<model::DiagnosticIssue> CheckAudioRules(const model::QcRule& rule, const model::AnalysisResult& result,

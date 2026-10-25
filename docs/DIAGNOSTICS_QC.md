@@ -181,8 +181,62 @@ Info / Tracks）推断。推断错了轻则后面的 Cues 被吞掉，重则原�
 `truncated=true`（截断文件天然没索引，那是 truncated 规则的账）、
 `duration_seconds<=0`（直播录制边写边发，本来就不写 Cues）。
 
-### 4.3 MP4 多 sample entry（`container.mp4.*`）
+#### MXF（`container.mxf.*`）
 
+事实来自 `MxfStructureAnalyzer` 的顺序 KLV 扫描（只读 16 字节 SMPTE 键 + BER 长度，
+载荷一律 `Seek` 跳过，内存 O(1)），另加一处**反向读文件尾**：MXF 最关键的两个结构
+（Footer Partition、Random Index Pack）都在片尾，正向窗口扫不到。
+
+QC 调用时 `max_scan_bytes=0`（扫全文件，Footer / Index Table 才不会漏），
+结构页仍用默认 64 MiB 窗口 —— 两者共用同一份 `model::MxfDiagnostics`。
+
+| 规则 id | 默认阈值 | 严重度 | 判定 |
+|---------|----------|--------|------|
+| `container.mxf.missing_footer_partition` | — | Warning | 有 Header/Body 分区但没有 Footer 分区（写入被中断，未正常收尾） |
+| `container.mxf.missing_rip` | — | Info | 文件尾没有 Random Index Pack（无法直接跳分区，打开变慢） |
+| `container.mxf.missing_index` | — | Warning | 扫完全文件仍无 Index Table Segment（精确定位退化） |
+| `container.mxf.missing_primer` | — | Error | Header 分区里没有 Primer Pack（动态 UL 无法解析） |
+| `container.mxf.truncated_klv` | > 0 处 | Warning | KLV 声明长度越过文件末尾 |
+| `container.mxf.resync` | > 0 次 | Warning | 键前缀失配后重新找 SMPTE 键 |
+| `container.mxf.scan_incomplete` | — | Info | 扫描窗口 / KLV 对象预算用尽，结论只覆盖已扫描部分 |
+
+三个门控值得注意：
+
+- `missing_footer_partition` 要求 `scan_complete`，且 `truncated=true` 时不报
+  （截断文件本来就丢片尾，那是 `truncated_klv` 的账）；`missing_rip` 同理。
+- `missing_rip` **不看** `scan_complete` —— RIP 是反读文件尾得到的，与窗口无关。
+  但 `pairs == 0` 不算坏包：ffmpeg 6.1 写出的单分区 MXF 就是 count=0，
+  只有"声明的分区对装不进自己声明的长度"才置 `rip_malformed`。
+- `missing_primer` 只在 `first_partition_kind == 0x02`（文件从 Header 分区开始）时判 ——
+  从 Body 分区截出来的一段素材本来就没有头。
+
+#### MPEG-PS（`container.ps.*`）
+
+事实来自 `MpegPsStructureAnalyzer` 的起始码顺序扫描。PS 没有 PAT/PMT、没有固定包长，
+所以"流表对不对"只能拿 PSM 的声明与实际的 PES 对账。
+
+| 规则 id | 默认阈值 | 严重度 | 判定 |
+|---------|----------|--------|------|
+| `container.ps.truncated_start_code` | > 0 处 | Warning | 起始码声明的包长度越过文件末尾 |
+| `container.ps.timestamp_backwards` | > 0 次 | Error | 同一流内 DTS 回退（时间轴错乱） |
+| `container.ps.stream_without_timestamp` | > 0 条 | Warning | 有视频/音频流一个时间戳都没有 |
+| `container.ps.stream_map_mismatch` | > 0 条 | Info | PSM 声明与实际 PES 对不上 |
+| `container.ps.scan_incomplete` | — | Info | 只扫描了文件前一部分 |
+
+三条口径，每一条都对应一个真实的误报来源：
+
+1. **不设"缺少 Program End Code"规则**。ffmpeg 的 `mpeg`/`vob` 复用器从不写
+   `00 00 01 B9`（实测 6.1 产出的 .vob 结尾是 padding），DVD 的 VOB 按规范也不写
+   （它们是更长节目链的一段）。这条规则会对几乎所有真实 PS 文件误报。切片中断由
+   `truncated_start_code` 兜住：元素首尾相接，切口必然落在某个元素内部。
+2. **单调性只认 DTS**。PES 按解码序排列，有 B 帧时相邻 PTS 本来就会回退一个 GOP
+   （I 0 / P 3 / B 1 / B 2）。分析器只在拿到 DTS（或纯音频流的 PTS）时判单调，
+   规则层直接用它 —— 改成 PTS 会把所有带 B 帧的素材全部误报。
+3. **缺时间戳必须与"解析器没认出来"区分**。门控是 `streams_with_timestamp > 0`
+   （同文件里别的流解析出了时间戳），否则说明不了问题，宁可不报。
+   MPEG-1 的 PES 头（`0xFF` 填充 + `0010`/`0011` 前缀）与 MPEG-2 完全不同，两条路都要走。
+
+### 4.3 MP4 多 sample entry（`container.mp4.*`）
 `Mp4SampleTableAnalyzer` 发现 `stsd` 声明了多于一条 sample entry 时产出
 `container.mp4.multiple_sample_entries`（Info）。它不表示文件损坏，而是提醒：
 `track.codec` 只代表第一条描述，其余描述对应的样本（可能通过 `stsc` 的
