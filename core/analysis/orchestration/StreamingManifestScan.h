@@ -30,12 +30,11 @@ public:
     //   一个几十万行 EXTINF 的 m3u8 会让"取消"和"重新扫描"都点不动。
     //   引擎的 CancelRequested() 与 CancelSource() 指向的就是同一颗，所以判"被取消"
     //   直接读它即可，不必再回问引擎。
-    static void Run(const std::string& file_path, const AnalysisOptions& options,
-                    model::AnalysisResult& result, const AnalysisCallbacks& callbacks,
-                    const std::atomic<bool>* cancel_source);
+    static void Run(const std::string& file_path, const AnalysisOptions& options, model::AnalysisResult& result,
+                    const AnalysisCallbacks& callbacks, const std::atomic<bool>* cancel_source);
 
 private:
     static bool CancelRequested(const std::atomic<bool>* cancel_source);
 };
 
-}  // namespace videoeye
+} // namespace videoeye

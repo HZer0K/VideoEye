@@ -26,10 +26,10 @@ std::string FilenameOf(const std::string& path) {
 class RowBuilder {
 public:
     RowBuilder(std::vector<QcCompareRow>& rows, const QcCompareTolerance& tolerance)
-        : rows_(rows), tolerance_(tolerance) {}
+        : rows_(rows), tolerance_(tolerance) {
+    }
 
-    void Text(const char* group, const char* field, const std::string& left,
-              const std::string& right) {
+    void Text(const char* group, const char* field, const std::string& left, const std::string& right) {
         QcCompareRow row;
         row.group = group;
         row.field = field;
@@ -48,8 +48,8 @@ public:
     }
 
     // available=false 表示这一项两侧都没采集到（例如素材本来就没有音频），不计入差异
-    void Number(const char* group, const char* field, int precision, const char* unit,
-                bool available, double left, double right, double tolerance) {
+    void Number(const char* group, const char* field, int precision, const char* unit, bool available, double left,
+                double right, double tolerance) {
         QcCompareRow row;
         row.group = group;
         row.field = field;
@@ -67,20 +67,17 @@ public:
         row.right = FixedText(right, precision);
         // 容差取三者最大: 字段自带的量级容差 + 调用方给的绝对值 + 调用方给的相对值
         const double scale = std::max(1.0, std::fabs(left));
-        const double limit = std::max(tolerance,
-                                      std::max(tolerance_.absolute, tolerance_.relative * scale));
+        const double limit = std::max(tolerance, std::max(tolerance_.absolute, tolerance_.relative * scale));
         row.diff = std::fabs(row.delta) <= limit ? QcFieldDiff::Same : QcFieldDiff::Different;
         rows_.push_back(std::move(row));
     }
 
-    void Count(const char* group, const char* field, const char* unit, bool available,
-               long long left, long long right) {
-        Number(group, field, 0, unit, available, static_cast<double>(left),
-               static_cast<double>(right), 0.0);
+    void Count(const char* group, const char* field, const char* unit, bool available, long long left,
+               long long right) {
+        Number(group, field, 0, unit, available, static_cast<double>(left), static_cast<double>(right), 0.0);
     }
 
-    void Percent(const char* group, const char* field, bool available, double left, double right,
-                 double tolerance) {
+    void Percent(const char* group, const char* field, bool available, double left, double right, double tolerance) {
         Number(group, field, 2, "%", available, left, right, tolerance);
     }
 
@@ -89,15 +86,20 @@ private:
     const QcCompareTolerance& tolerance_;
 };
 
-}  // namespace
+} // namespace
 
 const char* ToString(QcFieldDiff diff) {
     switch (diff) {
-        case QcFieldDiff::Same:        return "一致";
-        case QcFieldDiff::Different:   return "不一致";
-        case QcFieldDiff::OnlyLeft:    return "仅原文件有";
-        case QcFieldDiff::OnlyRight:   return "仅对比文件有";
-        case QcFieldDiff::Unavailable: return "无数据";
+    case QcFieldDiff::Same:
+        return "一致";
+    case QcFieldDiff::Different:
+        return "不一致";
+    case QcFieldDiff::OnlyLeft:
+        return "仅原文件有";
+    case QcFieldDiff::OnlyRight:
+        return "仅对比文件有";
+    case QcFieldDiff::Unavailable:
+        return "无数据";
     }
     return "未知";
 }
@@ -105,7 +107,8 @@ const char* ToString(QcFieldDiff diff) {
 int QcComparison::DifferentCount() const {
     int count = 0;
     for (const auto& row : rows) {
-        if (row.diff == QcFieldDiff::Different) ++count;
+        if (row.diff == QcFieldDiff::Different)
+            ++count;
     }
     return count;
 }
@@ -113,7 +116,8 @@ int QcComparison::DifferentCount() const {
 int QcComparison::AvailableRowCount() const {
     int count = 0;
     for (const auto& row : rows) {
-        if (row.diff != QcFieldDiff::Unavailable) ++count;
+        if (row.diff != QcFieldDiff::Unavailable)
+            ++count;
     }
     return count;
 }
@@ -128,13 +132,10 @@ std::vector<std::string> QcComparison::GroupNames() const {
     return groups;
 }
 
-QcComparison CompareRuns(const QcRunResult& left, const QcRunResult& right,
-                         const QcCompareTolerance& tolerance) {
+QcComparison CompareRuns(const QcRunResult& left, const QcRunResult& right, const QcCompareTolerance& tolerance) {
     QcComparison comparison;
-    comparison.left_path = left.analysis.file_path.empty() ? left.report.file_path
-                                                           : left.analysis.file_path;
-    comparison.right_path = right.analysis.file_path.empty() ? right.report.file_path
-                                                             : right.analysis.file_path;
+    comparison.left_path = left.analysis.file_path.empty() ? left.report.file_path : left.analysis.file_path;
+    comparison.right_path = right.analysis.file_path.empty() ? right.report.file_path : right.analysis.file_path;
     comparison.left_container = left.analysis.container_format;
     comparison.right_container = right.analysis.container_format;
     comparison.left_score = left.report.score;
@@ -150,30 +151,24 @@ QcComparison CompareRuns(const QcRunResult& left, const QcRunResult& right,
     // 放在最前面，保证即便两侧 analysis 都为空，对比表也至少能体现文件名/评分差异。
     rows.Text("文件", "文件名", left.report.file_name, right.report.file_name);
     rows.Text("结论", "判定", left.report.verdict, right.report.verdict);
-    rows.Number("结论", "评分", 1, "", true, left.report.score, right.report.score,
-                std::max(0.5, tolerance.absolute));
-    rows.Number("文件", "时长", 3, "s", true, left.report.duration_seconds,
-                right.report.duration_seconds, std::max(0.005, tolerance.absolute));
+    rows.Number("结论", "评分", 1, "", true, left.report.score, right.report.score, std::max(0.5, tolerance.absolute));
+    rows.Number("文件", "时长", 3, "s", true, left.report.duration_seconds, right.report.duration_seconds,
+                std::max(0.005, tolerance.absolute));
 
     // ---- 容器 ----
     rows.Text("容器", "容器格式", a.container_format, b.container_format);
     rows.Number("容器", "时长", 3, "s", true, a.duration_seconds, b.duration_seconds,
                 std::max(0.005, tolerance.absolute));
-    rows.Number("容器", "文件大小", 1, "MB", true,
-                static_cast<double>(a.file_size_bytes) / 1048576.0,
-                static_cast<double>(b.file_size_bytes) / 1048576.0,
-                std::max(0.05, tolerance.absolute));
-    rows.Number("容器", "整体码率", 1, "kbps", true,
-                static_cast<double>(a.overall_bitrate_bps) / 1000.0,
-                static_cast<double>(b.overall_bitrate_bps) / 1000.0,
-                std::max(1.0, tolerance.absolute));
+    rows.Number("容器", "文件大小", 1, "MB", true, static_cast<double>(a.file_size_bytes) / 1048576.0,
+                static_cast<double>(b.file_size_bytes) / 1048576.0, std::max(0.05, tolerance.absolute));
+    rows.Number("容器", "整体码率", 1, "kbps", true, static_cast<double>(a.overall_bitrate_bps) / 1000.0,
+                static_cast<double>(b.overall_bitrate_bps) / 1000.0, std::max(1.0, tolerance.absolute));
     rows.Count("容器", "视频流数", "条", true, a.VideoStreamCount(), b.VideoStreamCount());
     rows.Count("容器", "音频流数", "条", true, a.AudioStreamCount(), b.AudioStreamCount());
     rows.Count("容器", "包总数", "个", true, a.total_packets, b.total_packets);
     {
         // MP4 家族的 moov 位置：影响点播能不能边下边播
-        const bool mp4_like = !a.container_format.empty() &&
-                              (a.container_format == b.container_format);
+        const bool mp4_like = !a.container_format.empty() && (a.container_format == b.container_format);
         const std::string left_text = a.moov_after_mdat ? "moov 在 mdat 之后" : "moov 在前";
         const std::string right_text = b.moov_after_mdat ? "moov 在 mdat 之后" : "moov 在前";
         QcCompareRow row;
@@ -182,8 +177,7 @@ QcComparison CompareRuns(const QcRunResult& left, const QcRunResult& right,
         if (mp4_like) {
             row.left = left_text;
             row.right = right_text;
-            row.diff = (a.moov_after_mdat == b.moov_after_mdat) ? QcFieldDiff::Same
-                                                                : QcFieldDiff::Different;
+            row.diff = (a.moov_after_mdat == b.moov_after_mdat) ? QcFieldDiff::Same : QcFieldDiff::Different;
         } else {
             row.diff = QcFieldDiff::Unavailable;
         }
@@ -196,19 +190,14 @@ QcComparison CompareRuns(const QcRunResult& left, const QcRunResult& right,
     if (va != nullptr || vb != nullptr) {
         rows.Text("视频", "编码", va ? va->codec_name : "", vb ? vb->codec_name : "");
         rows.Text("视频", "Profile", va ? va->profile_name : "", vb ? vb->profile_name : "");
-        rows.Text("视频", "分辨率",
-                  va ? (std::to_string(va->width) + "x" + std::to_string(va->height)) : "",
+        rows.Text("视频", "分辨率", va ? (std::to_string(va->width) + "x" + std::to_string(va->height)) : "",
                   vb ? (std::to_string(vb->width) + "x" + std::to_string(vb->height)) : "");
-        rows.Number("视频", "平均帧率", 3, "fps", va && vb, va ? va->avg_fps : 0.0,
-                    vb ? vb->avg_fps : 0.0, std::max(0.01, tolerance.absolute));
-        rows.Number("视频", "视频码率", 1, "kbps", va && vb,
-                    va ? static_cast<double>(va->bitrate_bps) / 1000.0 : 0.0,
-                    vb ? static_cast<double>(vb->bitrate_bps) / 1000.0 : 0.0,
-                    std::max(1.0, tolerance.absolute));
-        rows.Count("视频", "帧数", "帧", va && vb, va ? va->frame_count : 0,
-                   vb ? vb->frame_count : 0);
-        rows.Count("视频", "关键帧数", "个", va && vb, va ? va->key_frame_count : 0,
-                   vb ? vb->key_frame_count : 0);
+        rows.Number("视频", "平均帧率", 3, "fps", va && vb, va ? va->avg_fps : 0.0, vb ? vb->avg_fps : 0.0,
+                    std::max(0.01, tolerance.absolute));
+        rows.Number("视频", "视频码率", 1, "kbps", va && vb, va ? static_cast<double>(va->bitrate_bps) / 1000.0 : 0.0,
+                    vb ? static_cast<double>(vb->bitrate_bps) / 1000.0 : 0.0, std::max(1.0, tolerance.absolute));
+        rows.Count("视频", "帧数", "帧", va && vb, va ? va->frame_count : 0, vb ? vb->frame_count : 0);
+        rows.Count("视频", "关键帧数", "个", va && vb, va ? va->key_frame_count : 0, vb ? vb->key_frame_count : 0);
     }
 
     // ---- 码率与 GOP ----
@@ -238,11 +227,9 @@ QcComparison CompareRuns(const QcRunResult& left, const QcRunResult& right,
                     b.bitrate_gop.gop_duration_max, 0.005);
         rows.Number("码率与 GOP", "关键帧间隔均值", 3, "s", true, a.bitrate_gop.key_interval_mean,
                     b.bitrate_gop.key_interval_mean, 0.005);
-        rows.Number("码率与 GOP", "关键帧间隔不规则度", 3, "", true,
-                    a.bitrate_gop.key_interval_irregularity,
+        rows.Number("码率与 GOP", "关键帧间隔不规则度", 3, "", true, a.bitrate_gop.key_interval_irregularity,
                     b.bitrate_gop.key_interval_irregularity, 0.01);
-        rows.Count("码率与 GOP", "GOP 数量", "个", true,
-                   static_cast<long long>(a.bitrate_gop.gops.size()),
+        rows.Count("码率与 GOP", "GOP 数量", "个", true, static_cast<long long>(a.bitrate_gop.gops.size()),
                    static_cast<long long>(b.bitrate_gop.gops.size()));
     }
 
@@ -251,30 +238,24 @@ QcComparison CompareRuns(const QcRunResult& left, const QcRunResult& right,
     const model::StreamDigest* ab = b.FirstAudioStream();
     if (aa != nullptr || ab != nullptr) {
         rows.Text("音频", "编码", aa ? aa->codec_name : "", ab ? ab->codec_name : "");
-        rows.Count("音频", "采样率", "Hz", aa && ab, aa ? aa->sample_rate : 0,
-                   ab ? ab->sample_rate : 0);
-        rows.Count("音频", "声道数", "个", aa && ab, aa ? aa->channels : 0,
-                   ab ? ab->channels : 0);
-        rows.Number("音频", "音频码率", 1, "kbps", aa && ab,
-                    aa ? static_cast<double>(aa->bitrate_bps) / 1000.0 : 0.0,
+        rows.Count("音频", "采样率", "Hz", aa && ab, aa ? aa->sample_rate : 0, ab ? ab->sample_rate : 0);
+        rows.Count("音频", "声道数", "个", aa && ab, aa ? aa->channels : 0, ab ? ab->channels : 0);
+        rows.Number("音频", "音频码率", 1, "kbps", aa && ab, aa ? static_cast<double>(aa->bitrate_bps) / 1000.0 : 0.0,
                     ab ? static_cast<double>(ab->bitrate_bps) / 1000.0 : 0.0, 0.5);
     }
     {
-        const bool both = a.audio_qc.analyzed && a.audio_qc.has_audio && b.audio_qc.analyzed &&
-                          b.audio_qc.has_audio;
-        rows.Number("音频", "积分响度", 2, "LUFS", both, a.audio_qc.integrated_lufs,
-                    b.audio_qc.integrated_lufs, std::max(0.1, tolerance.absolute));
-        rows.Number("音频", "真峰值", 2, "dBTP", both, a.audio_qc.true_peak_dbtp,
-                    b.audio_qc.true_peak_dbtp, 0.1);
-        rows.Number("音频", "响度范围 LRA", 2, "LU", both, a.audio_qc.loudness_range_lu,
-                    b.audio_qc.loudness_range_lu, 0.2);
+        const bool both = a.audio_qc.analyzed && a.audio_qc.has_audio && b.audio_qc.analyzed && b.audio_qc.has_audio;
+        rows.Number("音频", "积分响度", 2, "LUFS", both, a.audio_qc.integrated_lufs, b.audio_qc.integrated_lufs,
+                    std::max(0.1, tolerance.absolute));
+        rows.Number("音频", "真峰值", 2, "dBTP", both, a.audio_qc.true_peak_dbtp, b.audio_qc.true_peak_dbtp, 0.1);
+        rows.Number("音频", "响度范围 LRA", 2, "LU", both, a.audio_qc.loudness_range_lu, b.audio_qc.loudness_range_lu,
+                    0.2);
         rows.Number("音频", "短时响度峰值", 2, "LUFS", both, a.audio_qc.short_term_max_lufs,
                     b.audio_qc.short_term_max_lufs, 0.2);
         rows.Number("音频", "RMS", 2, "dBFS", both, a.audio_qc.rms_dbfs, b.audio_qc.rms_dbfs, 0.1);
-        rows.Number("音频", "采样峰值", 2, "dBFS", both, a.audio_qc.sample_peak_dbfs,
-                    b.audio_qc.sample_peak_dbfs, 0.1);
-        rows.Percent("音频", "静音占比", both, a.audio_qc.silence_ratio * 100.0,
-                     b.audio_qc.silence_ratio * 100.0, 0.05);
+        rows.Number("音频", "采样峰值", 2, "dBFS", both, a.audio_qc.sample_peak_dbfs, b.audio_qc.sample_peak_dbfs, 0.1);
+        rows.Percent("音频", "静音占比", both, a.audio_qc.silence_ratio * 100.0, b.audio_qc.silence_ratio * 100.0,
+                     0.05);
         rows.Count("音频", "削波样本数", "个", both, a.audio_qc.clipping_sample_count,
                    b.audio_qc.clipping_sample_count);
     }
@@ -282,50 +263,47 @@ QcComparison CompareRuns(const QcRunResult& left, const QcRunResult& right,
     // ---- 色彩与 HDR ----
     {
         const bool both = a.color_hdr.analyzed && b.color_hdr.analyzed;
-        rows.Text("色彩/HDR", "原色", a.color_hdr.color.primaries_name,
-                  b.color_hdr.color.primaries_name);
-        rows.Text("色彩/HDR", "传递函数", a.color_hdr.color.transfer_name,
-                  b.color_hdr.color.transfer_name);
-        rows.Text("色彩/HDR", "矩阵系数", a.color_hdr.color.matrix_name,
-                  b.color_hdr.color.matrix_name);
-        rows.Text("色彩/HDR", "量化范围", a.color_hdr.color.range_name,
-                  b.color_hdr.color.range_name);
-        rows.Text("色彩/HDR", "像素格式", a.color_hdr.color.pixel_format.name,
-                  b.color_hdr.color.pixel_format.name);
+        rows.Text("色彩/HDR", "原色", a.color_hdr.color.primaries_name, b.color_hdr.color.primaries_name);
+        rows.Text("色彩/HDR", "传递函数", a.color_hdr.color.transfer_name, b.color_hdr.color.transfer_name);
+        rows.Text("色彩/HDR", "矩阵系数", a.color_hdr.color.matrix_name, b.color_hdr.color.matrix_name);
+        rows.Text("色彩/HDR", "量化范围", a.color_hdr.color.range_name, b.color_hdr.color.range_name);
+        rows.Text("色彩/HDR", "像素格式", a.color_hdr.color.pixel_format.name, b.color_hdr.color.pixel_format.name);
         rows.Text("色彩/HDR", "色度采样", a.color_hdr.color.pixel_format.chroma_subsampling,
                   b.color_hdr.color.pixel_format.chroma_subsampling);
         rows.Count("色彩/HDR", "位深", "bit", both, a.color_hdr.color.pixel_format.bit_depth,
                    b.color_hdr.color.pixel_format.bit_depth);
-        rows.Count("色彩/HDR", "编码 level", "", both, a.color_hdr.color.level,
-                   b.color_hdr.color.level);
+        rows.Count("色彩/HDR", "编码 level", "", both, a.color_hdr.color.level, b.color_hdr.color.level);
 
-        rows.Text("色彩/HDR", "HDR 格式", a.color_hdr.hdr.format_name,
-                  b.color_hdr.hdr.format_name);
-        const std::string left_cll =
-            a.color_hdr.hdr.content_light.HasAny()
-                ? (std::to_string(a.color_hdr.hdr.content_light.max_cll) + " / " +
-                   std::to_string(a.color_hdr.hdr.content_light.max_fall))
-                : "";
-        const std::string right_cll =
-            b.color_hdr.hdr.content_light.HasAny()
-                ? (std::to_string(b.color_hdr.hdr.content_light.max_cll) + " / " +
-                   std::to_string(b.color_hdr.hdr.content_light.max_fall))
-                : "";
+        rows.Text("色彩/HDR", "HDR 格式", a.color_hdr.hdr.format_name, b.color_hdr.hdr.format_name);
+        const std::string left_cll = a.color_hdr.hdr.content_light.HasAny()
+                                         ? (std::to_string(a.color_hdr.hdr.content_light.max_cll) + " / " +
+                                            std::to_string(a.color_hdr.hdr.content_light.max_fall))
+                                         : "";
+        const std::string right_cll = b.color_hdr.hdr.content_light.HasAny()
+                                          ? (std::to_string(b.color_hdr.hdr.content_light.max_cll) + " / " +
+                                             std::to_string(b.color_hdr.hdr.content_light.max_fall))
+                                          : "";
         rows.Text("色彩/HDR", "MaxCLL / MaxFALL", left_cll, right_cll);
 
         std::string left_dynamic;
-        if (a.color_hdr.hdr.dolby_vision.present) left_dynamic += "Dolby Vision ";
-        if (a.color_hdr.hdr.has_hdr10_plus) left_dynamic += "HDR10+ ";
-        if (a.color_hdr.hdr.has_hdr_vivid) left_dynamic += "HDR Vivid ";
+        if (a.color_hdr.hdr.dolby_vision.present)
+            left_dynamic += "Dolby Vision ";
+        if (a.color_hdr.hdr.has_hdr10_plus)
+            left_dynamic += "HDR10+ ";
+        if (a.color_hdr.hdr.has_hdr_vivid)
+            left_dynamic += "HDR Vivid ";
         std::string right_dynamic;
-        if (b.color_hdr.hdr.dolby_vision.present) right_dynamic += "Dolby Vision ";
-        if (b.color_hdr.hdr.has_hdr10_plus) right_dynamic += "HDR10+ ";
-        if (b.color_hdr.hdr.has_hdr_vivid) right_dynamic += "HDR Vivid ";
+        if (b.color_hdr.hdr.dolby_vision.present)
+            right_dynamic += "Dolby Vision ";
+        if (b.color_hdr.hdr.has_hdr10_plus)
+            right_dynamic += "HDR10+ ";
+        if (b.color_hdr.hdr.has_hdr_vivid)
+            right_dynamic += "HDR Vivid ";
         rows.Text("色彩/HDR", "动态元数据", left_dynamic, right_dynamic);
     }
 
     return comparison;
 }
 
-}  // namespace qc
-}  // namespace videoeye
+} // namespace qc
+} // namespace videoeye

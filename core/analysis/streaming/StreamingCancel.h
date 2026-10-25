@@ -22,7 +22,7 @@ inline bool IsStreamingCancelled(const std::atomic<bool>* cancel) {
 
 // 循环里按固定间隔检查取消，避免在每行都做一次原子读把热路径拖慢。
 // 传进来的计数是"已处理条数"，返回 true 时调用方应立即中断并标记结果不完整。
-constexpr unsigned kStreamingCancelCheckMask = 0x3FFu;  // 每 1024 次检查一遍
+constexpr unsigned kStreamingCancelCheckMask = 0x3FFu; // 每 1024 次检查一遍
 
 inline bool ShouldCheckStreamingCancel(unsigned long long processed) {
     return (processed & kStreamingCancelCheckMask) == 0;

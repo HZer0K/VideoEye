@@ -12,15 +12,15 @@
 
 namespace {
 
-using videoeye::VvcBitstreamParser;
-using videoeye::model::VvcPpsInfo;
-using videoeye::model::VvcSpsInfo;
-using videoeye::model::VvcVpsInfo;
 using videoeye::ExtradataFormat;
 using videoeye::ExtradataParser;
 using videoeye::ExtradataResult;
 using videoeye::NalSyntax;
 using videoeye::NalUnit;
+using videoeye::VvcBitstreamParser;
+using videoeye::model::VvcPpsInfo;
+using videoeye::model::VvcSpsInfo;
+using videoeye::model::VvcVpsInfo;
 
 // 测试数据由 _smoke/gen_vvc_ps.py 按 H.266 7.3.2.x 逐位生成。
 // 语法顺序以 FFmpeg libavcodec/cbs_h266_syntax_template.c 为准。
@@ -33,23 +33,20 @@ const std::vector<uint8_t> kVpsMain10 = {
 
 // SPS A: 1920x1080 4:2:0 10bit Main10 L3.1 VUI(BT.2020 + PQ + 16:9)
 const std::vector<uint8_t> kSpsMain10_1080p = {
-    0x01, 0x0B, 0x02, 0x33, 0x80, 0x00, 0x00, 0x0F, 0x02, 0x00, 0x43, 0x91,
-    0x88, 0x04, 0xBA, 0xD5, 0x7B, 0xFF, 0xFC, 0x6F, 0x6B, 0xFB, 0xFF, 0xB9,
-    0x89, 0x80, 0x88, 0x05, 0x09, 0x10, 0x09, 0x00, 0x40,
+    0x01, 0x0B, 0x02, 0x33, 0x80, 0x00, 0x00, 0x0F, 0x02, 0x00, 0x43, 0x91, 0x88, 0x04, 0xBA, 0xD5, 0x7B,
+    0xFF, 0xFC, 0x6F, 0x6B, 0xFB, 0xFF, 0xB9, 0x89, 0x80, 0x88, 0x05, 0x09, 0x10, 0x09, 0x00, 0x40,
 };
 
 // SPS B: 1920x1088，conformance window bottom=4 → 显示高度 1080；8bit；无 VUI
 const std::vector<uint8_t> kSpsMain10_1080pCrop = {
-    0x01, 0x0B, 0x02, 0x33, 0x80, 0x00, 0x00, 0x0F, 0x02, 0x00, 0x44, 0x1F,
-    0x2A, 0x20, 0x12, 0xEB, 0x55, 0xEF, 0xFF, 0xF1, 0xBD, 0xAF, 0xEF, 0xFE,
-    0xE6, 0x08,
+    0x01, 0x0B, 0x02, 0x33, 0x80, 0x00, 0x00, 0x0F, 0x02, 0x00, 0x44, 0x1F, 0x2A,
+    0x20, 0x12, 0xEB, 0x55, 0xEF, 0xFF, 0xF1, 0xBD, 0xAF, 0xEF, 0xFE, 0xE6, 0x08,
 };
 
 // SPS C: 3840x2160 4:2:2 12bit，profile_idc=33 (Main 10 4:4:4)，Level 6.2(idc=102)
 const std::vector<uint8_t> kSpsMain444_4K = {
-    0x01, 0x13, 0x42, 0x66, 0x80, 0x00, 0x00, 0x07, 0x80, 0x80, 0x08, 0x71,
-    0x0A, 0x20, 0x12, 0xEB, 0x55, 0xEF, 0xFF, 0xF1, 0xBD, 0xAF, 0xEF, 0xFB,
-    0x98, 0x94, 0x82, 0x12, 0x20, 0x12, 0x00, 0x40,
+    0x01, 0x13, 0x42, 0x66, 0x80, 0x00, 0x00, 0x07, 0x80, 0x80, 0x08, 0x71, 0x0A, 0x20, 0x12, 0xEB,
+    0x55, 0xEF, 0xFF, 0xF1, 0xBD, 0xAF, 0xEF, 0xFB, 0x98, 0x94, 0x82, 0x12, 0x20, 0x12, 0x00, 0x40,
 };
 
 // PPS: id=0 / sps_id=0 / 1920x1080（与 SPS A 一致）
@@ -59,18 +56,18 @@ const std::vector<uint8_t> kPpsMain10 = {
 
 // vvcC 配置记录：Main 10 / L3.1 / 4:2:0 10bit / 1920x1080 / 无 NAL 数组
 const std::vector<uint8_t> kVvcCRecord = {
-    0xFF,                    // reserved(5)=11111 | lengthSizeMinusOne(2)=3 | ptl_present(1)
-    0x00, 0x01,              // ols_idx(9)=0 | num_sublayers(3)=0 | cfr(2)=0 | chroma(2)=1
-    0x40,                    // bit_depth_minus8(3)=2 | reserved(5)
-    0x01,                    // reserved(2) | num_bytes_constraint_info(6)=1
-    0x02,                    // general_profile_idc(7)=1 | general_tier_flag(1)=0
-    0x33,                    // general_level_idc = 51 (3.1)
-    0x80,                    // frame_only(1) | multilayer(1) | constraint info(6)
-    0x00,                    // num_sub_profiles = 0
-    0x07, 0x80,              // max_picture_width  = 1920
-    0x04, 0x38,              // max_picture_height = 1080
-    0x00, 0x00,              // avg_frame_rate
-    0x00,                    // num_of_arrays = 0
+    0xFF,       // reserved(5)=11111 | lengthSizeMinusOne(2)=3 | ptl_present(1)
+    0x00, 0x01, // ols_idx(9)=0 | num_sublayers(3)=0 | cfr(2)=0 | chroma(2)=1
+    0x40,       // bit_depth_minus8(3)=2 | reserved(5)
+    0x01,       // reserved(2) | num_bytes_constraint_info(6)=1
+    0x02,       // general_profile_idc(7)=1 | general_tier_flag(1)=0
+    0x33,       // general_level_idc = 51 (3.1)
+    0x80,       // frame_only(1) | multilayer(1) | constraint info(6)
+    0x00,       // num_sub_profiles = 0
+    0x07, 0x80, // max_picture_width  = 1920
+    0x04, 0x38, // max_picture_height = 1080
+    0x00, 0x00, // avg_frame_rate
+    0x00,       // num_of_arrays = 0
 };
 
 NalUnit MakeNal(uint8_t type, const std::vector<uint8_t>& payload) {
@@ -80,10 +77,9 @@ NalUnit MakeNal(uint8_t type, const std::vector<uint8_t>& payload) {
 }
 
 // 手工拼一个带 NAL header 的 VVC NAL（type 在第 2 字节高 5 位）
-std::vector<uint8_t> WithVvcHeader(uint8_t type, uint8_t temporal_id_plus1,
-                                   const std::vector<uint8_t>& payload) {
+std::vector<uint8_t> WithVvcHeader(uint8_t type, uint8_t temporal_id_plus1, const std::vector<uint8_t>& payload) {
     std::vector<uint8_t> out;
-    out.push_back(0x00);                                  // forbidden=0 reserved=0 layer_id=0
+    out.push_back(0x00); // forbidden=0 reserved=0 layer_id=0
     out.push_back(static_cast<uint8_t>((type << 3) | (temporal_id_plus1 & 0x07)));
     out.insert(out.end(), payload.begin(), payload.end());
     return out;
@@ -207,8 +203,7 @@ TEST_F(VvcVpsTest, TruncatedVpsPrefixesAreRejected) {
     }
     {
         // n-2 字节：还缺 PTL 尾部字段，必须失败
-        const std::vector<uint8_t> prefix(kVpsMain10.begin(),
-                                         kVpsMain10.begin() + kVpsMain10.size() - 2);
+        const std::vector<uint8_t> prefix(kVpsMain10.begin(), kVpsMain10.begin() + kVpsMain10.size() - 2);
         EXPECT_FALSE(VvcBitstreamParser::ParseVpsFromNalUnit(MakeNal(14, prefix)).present);
         // n-1 字节：只缺 vps_extension_flag，语义字段完整，允许 present
         const std::vector<uint8_t> full_fields(kVpsMain10.begin(), kVpsMain10.end() - 1);
@@ -280,8 +275,7 @@ TEST_F(VvcSpsTest, Main10_1080p) {
 }
 
 TEST_F(VvcSpsTest, ConformanceWindowCropsDisplaySize) {
-    const VvcSpsInfo sps =
-        VvcBitstreamParser::ParseSpsFromNalUnit(MakeNal(15, kSpsMain10_1080pCrop));
+    const VvcSpsInfo sps = VvcBitstreamParser::ParseSpsFromNalUnit(MakeNal(15, kSpsMain10_1080pCrop));
     ASSERT_TRUE(sps.present);
     EXPECT_EQ(sps.sps_pic_width_max_in_luma_samples, 1920);
     EXPECT_EQ(sps.sps_pic_height_max_in_luma_samples, 1088);
@@ -344,25 +338,22 @@ TEST_F(VvcSpsTest, TruncatedSpsPrefixesAreRejected) {
     // 截到 n-1 字节时全部语义字段已完整，present=true 是正确行为，不算假完成。
     // 因此循环上界是 size()-1，再用两条显式断言钉住这个边界。
     for (size_t len = 1; len + 1 < kSpsMain10_1080p.size(); ++len) {
-        const std::vector<uint8_t> prefix(kSpsMain10_1080p.begin(),
-                                         kSpsMain10_1080p.begin() + len);
+        const std::vector<uint8_t> prefix(kSpsMain10_1080p.begin(), kSpsMain10_1080p.begin() + len);
         const VvcSpsInfo sps = VvcBitstreamParser::ParseSpsFromNalUnit(MakeNal(15, prefix));
         EXPECT_FALSE(sps.present) << "SPS A 截断到 " << len << " 字节仍置了 present";
     }
     {
         // n-2 字节：还缺 VUI 尾部字段，必须失败
         const std::vector<uint8_t> prefix(kSpsMain10_1080p.begin(),
-                                         kSpsMain10_1080p.begin() + kSpsMain10_1080p.size() - 2);
+                                          kSpsMain10_1080p.begin() + kSpsMain10_1080p.size() - 2);
         EXPECT_FALSE(VvcBitstreamParser::ParseSpsFromNalUnit(MakeNal(15, prefix)).present);
         // n-1 字节：只缺 trailing bits，语义字段完整，允许 present
-        const std::vector<uint8_t> full_fields(kSpsMain10_1080p.begin(),
-                                               kSpsMain10_1080p.end() - 1);
+        const std::vector<uint8_t> full_fields(kSpsMain10_1080p.begin(), kSpsMain10_1080p.end() - 1);
         EXPECT_TRUE(VvcBitstreamParser::ParseSpsFromNalUnit(MakeNal(15, full_fields)).present);
     }
     // 带 conformance window / 无 VUI 的变体同样不许漏
     for (size_t len = 1; len < kSpsMain10_1080pCrop.size(); ++len) {
-        const std::vector<uint8_t> prefix(kSpsMain10_1080pCrop.begin(),
-                                         kSpsMain10_1080pCrop.begin() + len);
+        const std::vector<uint8_t> prefix(kSpsMain10_1080pCrop.begin(), kSpsMain10_1080pCrop.begin() + len);
         const VvcSpsInfo sps = VvcBitstreamParser::ParseSpsFromNalUnit(MakeNal(15, prefix));
         EXPECT_FALSE(sps.present) << "SPS B 截断到 " << len << " 字节仍置了 present";
     }
@@ -383,7 +374,7 @@ TEST_F(VvcPpsTest, Main10_1080p) {
     EXPECT_EQ(pps.pps_pic_width_in_luma_samples, 1920);
     EXPECT_EQ(pps.pps_pic_height_in_luma_samples, 1080);
 
-    pps.chroma_format_idc = 1;   // 实际由 BitstreamAnalyzer 从 SPS 拷入
+    pps.chroma_format_idc = 1; // 实际由 BitstreamAnalyzer 从 SPS 拷入
     EXPECT_EQ(pps.SubWidthC(), 2);
     EXPECT_EQ(pps.SubHeightC(), 2);
     EXPECT_EQ(pps.width(), 1920);
@@ -419,18 +410,22 @@ public:
         }
     }
     void Bits(uint32_t v, int count) {
-        for (int i = count - 1; i >= 0; --i) Bit((v >> i) & 1u);
+        for (int i = count - 1; i >= 0; --i)
+            Bit((v >> i) & 1u);
     }
     void Ue(uint32_t value) {
         const uint32_t code = value + 1;
         int len = 0;
-        for (uint32_t t = code; t > 1; t >>= 1) ++len;
-        for (int i = 0; i < len; ++i) Bit(0);
+        for (uint32_t t = code; t > 1; t >>= 1)
+            ++len;
+        for (int i = 0; i < len; ++i)
+            Bit(0);
         Bits(code, len + 1);
     }
     std::vector<uint8_t> Bytes() {
         std::vector<uint8_t> out = out_;
-        if (n_ > 0) out.push_back(static_cast<uint8_t>(cur_ << (8 - n_)));
+        if (n_ > 0)
+            out.push_back(static_cast<uint8_t>(cur_ << (8 - n_)));
         return out;
     }
 
@@ -444,22 +439,22 @@ private:
 // pps_num_subpics_minus1 取传入值。构造出的字节里不含 00 00 03，无需 emulation prevention。
 std::vector<uint8_t> MakePpsWithNumSubpics(uint32_t num_subpics_minus1) {
     BitWriter w;
-    w.Bits(0, 6);   // pps_pic_parameter_set_id
-    w.Bits(0, 4);   // pps_seq_parameter_set_id
-    w.Bit(0);       // pps_mixed_nalu_types_in_pic_flag
-    w.Ue(1920);     // pps_pic_width_in_luma_samples
-    w.Ue(1080);     // pps_pic_height_in_luma_samples
-    w.Bit(0);       // pps_conformance_window_flag
-    w.Bit(0);       // pps_scaling_window_explicit_signalling_flag
-    w.Bit(0);       // pps_output_flag_present_flag
-    w.Bit(0);       // pps_no_pic_partition_flag
-    w.Bit(1);       // pps_subpic_id_mapping_present_flag
+    w.Bits(0, 6); // pps_pic_parameter_set_id
+    w.Bits(0, 4); // pps_seq_parameter_set_id
+    w.Bit(0);     // pps_mixed_nalu_types_in_pic_flag
+    w.Ue(1920);   // pps_pic_width_in_luma_samples
+    w.Ue(1080);   // pps_pic_height_in_luma_samples
+    w.Bit(0);     // pps_conformance_window_flag
+    w.Bit(0);     // pps_scaling_window_explicit_signalling_flag
+    w.Bit(0);     // pps_output_flag_present_flag
+    w.Bit(0);     // pps_no_pic_partition_flag
+    w.Bit(1);     // pps_subpic_id_mapping_present_flag
     w.Ue(num_subpics_minus1);
-    w.Ue(0);        // subpic_id_len_minus1
+    w.Ue(0); // subpic_id_len_minus1
     return w.Bytes();
 }
 
-}  // namespace
+} // namespace
 
 TEST_F(VvcPpsTest, SubpicIdMappingOverLimitIsRejected) {
     // pps_num_subpics_minus1 = 1025 越过 kMaxNumSubpics(1024)：语法合法但数值超限，
@@ -477,8 +472,7 @@ class VvcConfigRecordTest : public testing::Test {};
 
 TEST_F(VvcConfigRecordTest, ParseVvcC) {
     const ExtradataResult result =
-        ExtradataParser::ParseWithFormat(ExtradataFormat::VvcC,
-                                         kVvcCRecord.data(), kVvcCRecord.size());
+        ExtradataParser::ParseWithFormat(ExtradataFormat::VvcC, kVvcCRecord.data(), kVvcCRecord.size());
     ASSERT_TRUE(result.valid);
     EXPECT_EQ(result.format, ExtradataFormat::VvcC);
 
@@ -491,7 +485,7 @@ TEST_F(VvcConfigRecordTest, ParseVvcC) {
     EXPECT_EQ(result.config.max_picture_height, 1080);
     EXPECT_EQ(result.width, 1920);
     EXPECT_EQ(result.height, 1080);
-    EXPECT_TRUE(result.nal_units.empty());   // num_of_arrays = 0
+    EXPECT_TRUE(result.nal_units.empty()); // num_of_arrays = 0
 }
 
 // --------------------------------------------------------------------------
@@ -543,39 +537,28 @@ TEST_F(VvcAnnexBTest, ExtractVvcParameterSets) {
 //      demuxer 交给 extradata 时已剥掉，这里存的就是剥完之后的样子。
 // --------------------------------------------------------------------------
 const std::vector<uint8_t> kVvcCRealLibvvenc = {
-    0xFF, 0x00, 0x65, 0x5F, 0x01, 0x02, 0x23, 0x80, 0x00, 0x00, 0x02, 0x80,
-    0x01, 0x68, 0x00, 0x00, 0x02, 0x8F, 0x00, 0x01, 0x00, 0xF3, 0x00, 0x79,
-    0x00, 0xAB, 0x02, 0x23, 0x80, 0x00, 0x00, 0x80, 0x14, 0x08, 0x05, 0xA4,
-    0x6A, 0x00, 0x73, 0x7A, 0x21, 0x34, 0x52, 0x7B, 0xCE, 0x13, 0x65, 0x63,
-    0x04, 0x08, 0x27, 0x00, 0x13, 0x10, 0x10, 0x41, 0x04, 0x20, 0x61, 0x08,
-    0x42, 0xC4, 0x42, 0x16, 0x48, 0x42, 0xD4, 0x21, 0x7A, 0x3D, 0x5A, 0x92,
-    0xF2, 0x49, 0xA9, 0x2C, 0x91, 0x16, 0xA2, 0x2F, 0x11, 0x26, 0xA2, 0x24,
-    0x52, 0x44, 0x49, 0x92, 0x22, 0x4D, 0x46, 0x58, 0x88, 0x42, 0xC9, 0x08,
-    0x5A, 0x84, 0x2F, 0x08, 0x49, 0xA8, 0x42, 0x45, 0x24, 0x21, 0x26, 0x48,
-    0x42, 0x5D, 0x49, 0x08, 0x48, 0x48, 0x88, 0x42, 0x45, 0x11, 0x08, 0x49,
-    0x88, 0x84, 0x25, 0xD4, 0x44, 0x21, 0x22, 0x8C, 0x84, 0x24, 0xC6, 0x42,
-    0x12, 0xEA, 0x32, 0x10, 0xA0, 0x41, 0x61, 0x08, 0x20, 0x31, 0x10, 0x81,
-    0x92, 0x20, 0xD4, 0x80, 0x4C, 0xC1, 0x04, 0x10, 0x58, 0x40, 0x08, 0x2C,
-    0x40, 0x20, 0x21, 0x02, 0x01, 0x01, 0x50, 0x81, 0x00, 0x80, 0xD2, 0x10,
-    0x20, 0x10, 0x16, 0x20, 0x40, 0x20, 0x22, 0x08, 0x04, 0x05, 0x90, 0x40,
-    0x20, 0x24, 0x20, 0x10, 0x32, 0x02, 0x02, 0x21, 0x01, 0x01, 0x64, 0x20,
-    0x20, 0x24, 0x40, 0x40, 0xD0, 0x20, 0x24, 0x81, 0x03, 0x82, 0x06, 0x20,
-    0x10, 0xB2, 0x04, 0x08, 0x84, 0x08, 0x16, 0x42, 0x04, 0x09, 0x10, 0x20,
-    0xD0, 0x40, 0x92, 0x08, 0x38, 0x41, 0x90, 0x22, 0xD0, 0x82, 0x48, 0x43,
-    0x88, 0x68, 0x4B, 0x91, 0xCA, 0x81, 0x05, 0x84, 0x00, 0x82, 0xC4, 0x02,
-    0x02, 0x10, 0x20, 0x10, 0x15, 0x08, 0x10, 0x08, 0x1F, 0x7A, 0x5D, 0x8A,
-    0xCE, 0x48, 0x00, 0x00, 0x03, 0x00, 0x08, 0x00, 0x00, 0x03, 0x00, 0xF0,
-    0xC4, 0x90, 0x00, 0x01, 0x00, 0x0C, 0x00, 0x81, 0x00, 0x00, 0x0A, 0x04,
-    0x02, 0xD2, 0x22, 0x41, 0xFB, 0x82,
+    0xFF, 0x00, 0x65, 0x5F, 0x01, 0x02, 0x23, 0x80, 0x00, 0x00, 0x02, 0x80, 0x01, 0x68, 0x00, 0x00, 0x02, 0x8F, 0x00,
+    0x01, 0x00, 0xF3, 0x00, 0x79, 0x00, 0xAB, 0x02, 0x23, 0x80, 0x00, 0x00, 0x80, 0x14, 0x08, 0x05, 0xA4, 0x6A, 0x00,
+    0x73, 0x7A, 0x21, 0x34, 0x52, 0x7B, 0xCE, 0x13, 0x65, 0x63, 0x04, 0x08, 0x27, 0x00, 0x13, 0x10, 0x10, 0x41, 0x04,
+    0x20, 0x61, 0x08, 0x42, 0xC4, 0x42, 0x16, 0x48, 0x42, 0xD4, 0x21, 0x7A, 0x3D, 0x5A, 0x92, 0xF2, 0x49, 0xA9, 0x2C,
+    0x91, 0x16, 0xA2, 0x2F, 0x11, 0x26, 0xA2, 0x24, 0x52, 0x44, 0x49, 0x92, 0x22, 0x4D, 0x46, 0x58, 0x88, 0x42, 0xC9,
+    0x08, 0x5A, 0x84, 0x2F, 0x08, 0x49, 0xA8, 0x42, 0x45, 0x24, 0x21, 0x26, 0x48, 0x42, 0x5D, 0x49, 0x08, 0x48, 0x48,
+    0x88, 0x42, 0x45, 0x11, 0x08, 0x49, 0x88, 0x84, 0x25, 0xD4, 0x44, 0x21, 0x22, 0x8C, 0x84, 0x24, 0xC6, 0x42, 0x12,
+    0xEA, 0x32, 0x10, 0xA0, 0x41, 0x61, 0x08, 0x20, 0x31, 0x10, 0x81, 0x92, 0x20, 0xD4, 0x80, 0x4C, 0xC1, 0x04, 0x10,
+    0x58, 0x40, 0x08, 0x2C, 0x40, 0x20, 0x21, 0x02, 0x01, 0x01, 0x50, 0x81, 0x00, 0x80, 0xD2, 0x10, 0x20, 0x10, 0x16,
+    0x20, 0x40, 0x20, 0x22, 0x08, 0x04, 0x05, 0x90, 0x40, 0x20, 0x24, 0x20, 0x10, 0x32, 0x02, 0x02, 0x21, 0x01, 0x01,
+    0x64, 0x20, 0x20, 0x24, 0x40, 0x40, 0xD0, 0x20, 0x24, 0x81, 0x03, 0x82, 0x06, 0x20, 0x10, 0xB2, 0x04, 0x08, 0x84,
+    0x08, 0x16, 0x42, 0x04, 0x09, 0x10, 0x20, 0xD0, 0x40, 0x92, 0x08, 0x38, 0x41, 0x90, 0x22, 0xD0, 0x82, 0x48, 0x43,
+    0x88, 0x68, 0x4B, 0x91, 0xCA, 0x81, 0x05, 0x84, 0x00, 0x82, 0xC4, 0x02, 0x02, 0x10, 0x20, 0x10, 0x15, 0x08, 0x10,
+    0x08, 0x1F, 0x7A, 0x5D, 0x8A, 0xCE, 0x48, 0x00, 0x00, 0x03, 0x00, 0x08, 0x00, 0x00, 0x03, 0x00, 0xF0, 0xC4, 0x90,
+    0x00, 0x01, 0x00, 0x0C, 0x00, 0x81, 0x00, 0x00, 0x0A, 0x04, 0x02, 0xD2, 0x22, 0x41, 0xFB, 0x82,
 };
 
 class VvcRealEncoderTest : public testing::Test {};
 
 TEST_F(VvcRealEncoderTest, ParseRealVvcC) {
     const ExtradataResult result =
-        ExtradataParser::ParseWithFormat(ExtradataFormat::VvcC,
-                                         kVvcCRealLibvvenc.data(),
-                                         kVvcCRealLibvvenc.size());
+        ExtradataParser::ParseWithFormat(ExtradataFormat::VvcC, kVvcCRealLibvvenc.data(), kVvcCRealLibvvenc.size());
     ASSERT_TRUE(result.valid);
 
     // vvcC 自带的 PTL：Main 10 / Level 2.1(idc=35) / 4:2:0 / 10bit / 640x360
@@ -588,15 +571,13 @@ TEST_F(VvcRealEncoderTest, ParseRealVvcC) {
 
     // vvcC 里带了 SPS + PPS 两组（真实编码器都会带）
     ASSERT_EQ(result.nal_units.size(), 2u);
-    EXPECT_EQ(result.nal_units[0].type, 15);   // SPS
-    EXPECT_EQ(result.nal_units[1].type, 16);   // PPS
+    EXPECT_EQ(result.nal_units[0].type, 15); // SPS
+    EXPECT_EQ(result.nal_units[1].type, 16); // PPS
 }
 
 TEST_F(VvcRealEncoderTest, ParseRealSpsAndPps) {
     const ExtradataResult result =
-        ExtradataParser::ParseWithFormat(ExtradataFormat::VvcC,
-                                         kVvcCRealLibvvenc.data(),
-                                         kVvcCRealLibvvenc.size());
+        ExtradataParser::ParseWithFormat(ExtradataFormat::VvcC, kVvcCRealLibvvenc.data(), kVvcCRealLibvvenc.size());
     ASSERT_TRUE(result.valid);
     ASSERT_EQ(result.nal_units.size(), 2u);
 
@@ -639,11 +620,9 @@ TEST_F(VvcMalformedTest, RandomBitFlipsNeverHangOrClaimPresent) {
             const size_t byte = rng() % mutated.size();
             mutated[byte] ^= static_cast<uint8_t>(1u << (rng() % 8));
         }
-        auto task = std::async(std::launch::async, [&mutated]() {
-            return VvcBitstreamParser::ParseSpsFromNalUnit(MakeNal(15, mutated));
-        });
-        ASSERT_EQ(task.wait_for(std::chrono::seconds(2)), std::future_status::ready)
-            << "位翻转后的 SPS 让解析器卡住了";
+        auto task = std::async(std::launch::async,
+                               [&mutated]() { return VvcBitstreamParser::ParseSpsFromNalUnit(MakeNal(15, mutated)); });
+        ASSERT_EQ(task.wait_for(std::chrono::seconds(2)), std::future_status::ready) << "位翻转后的 SPS 让解析器卡住了";
         const VvcSpsInfo sps = task.get();
         if (sps.present) {
             EXPECT_GT(sps.width(), 0);
@@ -661,11 +640,9 @@ TEST_F(VvcMalformedTest, RandomBitFlipsNeverHangOrClaimPresent) {
             const size_t byte = rng() % mutated.size();
             mutated[byte] ^= static_cast<uint8_t>(1u << (rng() % 8));
         }
-        auto task = std::async(std::launch::async, [&mutated]() {
-            return VvcBitstreamParser::ParsePpsFromNalUnit(MakeNal(16, mutated));
-        });
-        ASSERT_EQ(task.wait_for(std::chrono::seconds(2)), std::future_status::ready)
-            << "位翻转后的 PPS 让解析器卡住了";
+        auto task = std::async(std::launch::async,
+                               [&mutated]() { return VvcBitstreamParser::ParsePpsFromNalUnit(MakeNal(16, mutated)); });
+        ASSERT_EQ(task.wait_for(std::chrono::seconds(2)), std::future_status::ready) << "位翻转后的 PPS 让解析器卡住了";
         const VvcPpsInfo pps = task.get();
         if (pps.present) {
             EXPECT_GT(pps.pps_pic_width_in_luma_samples, 0);
@@ -684,8 +661,7 @@ TEST_F(VvcMalformedTest, RandomBitFlipsNeverHangOrClaimPresent) {
             mutated[byte] ^= static_cast<uint8_t>(1u << (rng() % 8));
         }
         auto task = std::async(std::launch::async, [&mutated]() {
-            return ExtradataParser::ParseWithFormat(ExtradataFormat::VvcC, mutated.data(),
-                                                    mutated.size());
+            return ExtradataParser::ParseWithFormat(ExtradataFormat::VvcC, mutated.data(), mutated.size());
         });
         ASSERT_EQ(task.wait_for(std::chrono::seconds(2)), std::future_status::ready)
             << "位翻转后的 vvcC 让解析器卡住了";
@@ -698,4 +674,4 @@ TEST_F(VvcMalformedTest, RandomBitFlipsNeverHangOrClaimPresent) {
     }
 }
 
-}  // namespace
+} // namespace

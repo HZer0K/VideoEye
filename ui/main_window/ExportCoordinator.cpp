@@ -1,9 +1,9 @@
 #include "ui/main_window/ExportCoordinator.h"
 
-#include "ui/dialogs/MediaExportDialog.h"
 #include "core/exporter/MediaExporter.h"
 #include "core/player/ExportBus.h"
 #include "core/player/MediaPlayer.h"
+#include "ui/dialogs/MediaExportDialog.h"
 
 #include <QFileDialog>
 #include <QInputDialog>
@@ -15,8 +15,7 @@
 namespace videoeye {
 namespace ui {
 
-ExportCoordinator::ExportCoordinator(player::MediaPlayer* player, QWidget* dialog_parent,
-                                     QObject* parent)
+ExportCoordinator::ExportCoordinator(player::MediaPlayer* player, QWidget* dialog_parent, QObject* parent)
     : QObject(parent), player_(player), dialog_parent_(dialog_parent) {
     if (!player_) {
         return;
@@ -27,26 +26,16 @@ ExportCoordinator::ExportCoordinator(player::MediaPlayer* player, QWidget* dialo
     // 连的是导出总线而不是门面本身：这十条信号与播放无关，门面不再替它们背书，
     // 见 core/player/ExportBus.h。信号名与参数不变，接线语义也不变。
     player::ExportBus& bus = player_->export_bus();
-    connect(&bus, &player::ExportBus::VideoFrameExportStarted,
-            this, &ExportCoordinator::OnVideoFrameExportStarted);
-    connect(&bus, &player::ExportBus::VideoFrameExportProgress,
-            this, &ExportCoordinator::OnVideoFrameExportProgress);
-    connect(&bus, &player::ExportBus::VideoFrameExportFinished,
-            this, &ExportCoordinator::OnVideoFrameExportFinished);
-    connect(&bus, &player::ExportBus::VideoFrameExportCanceled,
-            this, &ExportCoordinator::OnVideoFrameExportCanceled);
-    connect(&bus, &player::ExportBus::VideoFrameExportError,
-            this, &ExportCoordinator::OnVideoFrameExportError);
-    connect(&bus, &player::ExportBus::MediaExportStarted,
-            this, &ExportCoordinator::OnMediaExportStarted);
-    connect(&bus, &player::ExportBus::MediaExportProgress,
-            this, &ExportCoordinator::OnMediaExportProgress);
-    connect(&bus, &player::ExportBus::MediaExportFinished,
-            this, &ExportCoordinator::OnMediaExportFinished);
-    connect(&bus, &player::ExportBus::MediaExportCanceled,
-            this, &ExportCoordinator::OnMediaExportCanceled);
-    connect(&bus, &player::ExportBus::MediaExportError,
-            this, &ExportCoordinator::OnMediaExportError);
+    connect(&bus, &player::ExportBus::VideoFrameExportStarted, this, &ExportCoordinator::OnVideoFrameExportStarted);
+    connect(&bus, &player::ExportBus::VideoFrameExportProgress, this, &ExportCoordinator::OnVideoFrameExportProgress);
+    connect(&bus, &player::ExportBus::VideoFrameExportFinished, this, &ExportCoordinator::OnVideoFrameExportFinished);
+    connect(&bus, &player::ExportBus::VideoFrameExportCanceled, this, &ExportCoordinator::OnVideoFrameExportCanceled);
+    connect(&bus, &player::ExportBus::VideoFrameExportError, this, &ExportCoordinator::OnVideoFrameExportError);
+    connect(&bus, &player::ExportBus::MediaExportStarted, this, &ExportCoordinator::OnMediaExportStarted);
+    connect(&bus, &player::ExportBus::MediaExportProgress, this, &ExportCoordinator::OnMediaExportProgress);
+    connect(&bus, &player::ExportBus::MediaExportFinished, this, &ExportCoordinator::OnMediaExportFinished);
+    connect(&bus, &player::ExportBus::MediaExportCanceled, this, &ExportCoordinator::OnMediaExportCanceled);
+    connect(&bus, &player::ExportBus::MediaExportError, this, &ExportCoordinator::OnMediaExportError);
 }
 
 void ExportCoordinator::SetSourceQueries(SourceQuery source_query, RawImageQuery raw_image_query) {
@@ -69,8 +58,7 @@ void ExportCoordinator::ShowProgress(const QString& title, int maximum, const QS
         export_progress_dialog_->setWindowModality(Qt::ApplicationModal);
         export_progress_dialog_->setAutoClose(false);
         export_progress_dialog_->setAutoReset(false);
-        connect(export_progress_dialog_, &QProgressDialog::canceled,
-                this, &ExportCoordinator::OnProgressCanceled);
+        connect(export_progress_dialog_, &QProgressDialog::canceled, this, &ExportCoordinator::OnProgressCanceled);
     } else {
         export_progress_dialog_->setMaximum(maximum);
     }
@@ -80,10 +68,13 @@ void ExportCoordinator::ShowProgress(const QString& title, int maximum, const QS
 }
 
 void ExportCoordinator::OnProgressCanceled() {
-    if (!player_) return;
+    if (!player_)
+        return;
     emit StatusMessage(tr("正在终止导出..."));
-    if (active_export_ == ActiveExport::Media) player_->CancelMediaExport();
-    else player_->CancelVideoFrameExport();
+    if (active_export_ == ActiveExport::Media)
+        player_->CancelMediaExport();
+    else
+        player_->CancelVideoFrameExport();
 }
 
 // ===========================================================================
@@ -111,31 +102,23 @@ void ExportCoordinator::OnExportVideoFrames() {
     }
 
     bool ok = false;
-    const QStringList items = {
-        "jpg",
-        "yuv",
-        "rgb"
-    };
-    const QString format = QInputDialog::getItem(dialog_parent_, tr("导出格式"),
-                                                 tr("选择导出格式:"),
-                                                 items, 0, false, &ok);
+    const QStringList items = {"jpg", "yuv", "rgb"};
+    const QString format =
+        QInputDialog::getItem(dialog_parent_, tr("导出格式"), tr("选择导出格式:"), items, 0, false, &ok);
     if (!ok || format.isEmpty()) {
         return;
     }
 
     int quality = 90;
     if (format == "jpg") {
-        quality = QInputDialog::getInt(dialog_parent_, tr("JPG质量"),
-                                       tr("JPG质量(1-100):"),
-                                       90, 1, 100, 1, &ok);
+        quality = QInputDialog::getInt(dialog_parent_, tr("JPG质量"), tr("JPG质量(1-100):"), 90, 1, 100, 1, &ok);
         if (!ok) {
             return;
         }
     }
 
-    const int interval = QInputDialog::getInt(dialog_parent_, tr("抽帧间隔"),
-                                              tr("每 N 帧导出 1 帧 (N>=1):"),
-                                              1, 1, 1000000, 1, &ok);
+    const int interval =
+        QInputDialog::getInt(dialog_parent_, tr("抽帧间隔"), tr("每 N 帧导出 1 帧 (N>=1):"), 1, 1, 1000000, 1, &ok);
     if (!ok) {
         return;
     }
@@ -160,7 +143,8 @@ void ExportCoordinator::OnExportVideo() {
     }
     active_export_ = ActiveExport::Media;
     ui::MediaExportDialog dlg(dialog_parent_, exporter::ExportKind::Video, source, player_->GetDuration());
-    if (dlg.exec() != QDialog::Accepted) return;
+    if (dlg.exec() != QDialog::Accepted)
+        return;
     emit StatusMessage(tr("开始导出视频..."));
     player_->StartMediaExport(dlg.GetOptions());
 }
@@ -181,7 +165,8 @@ void ExportCoordinator::OnExportAudio() {
     }
     active_export_ = ActiveExport::Media;
     ui::MediaExportDialog dlg(dialog_parent_, exporter::ExportKind::Audio, source, player_->GetDuration());
-    if (dlg.exec() != QDialog::Accepted) return;
+    if (dlg.exec() != QDialog::Accepted)
+        return;
     emit StatusMessage(tr("开始导出音频..."));
     player_->StartMediaExport(dlg.GetOptions());
 }
@@ -193,8 +178,7 @@ void ExportCoordinator::OnExportAudio() {
 void ExportCoordinator::OnVideoFrameExportStarted(int total_frames) {
     export_total_frames_ = total_frames;
     // 总数未知 (<=0) 时量程取 0, 进度框进入 busy 档。
-    ShowProgress(tr("正在导出视频帧..."), total_frames > 0 ? total_frames : 0,
-                 tr("正在导出视频帧..."));
+    ShowProgress(tr("正在导出视频帧..."), total_frames > 0 ? total_frames : 0, tr("正在导出视频帧..."));
 }
 
 void ExportCoordinator::OnVideoFrameExportProgress(int exported_frames) {

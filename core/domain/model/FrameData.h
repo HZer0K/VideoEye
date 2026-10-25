@@ -1,23 +1,16 @@
 #pragma once
 
-#include <string>
-#include <memory>
 #include <array>
-#include <vector>
 #include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace videoeye {
 namespace model {
 
 // 播放器状态枚举
-enum class PlayerState {
-    Idle,
-    Loading,
-    Playing,
-    Paused,
-    Stopped,
-    Error
-};
+enum class PlayerState { Idle, Loading, Playing, Paused, Stopped, Error };
 
 // 流信息结构体
 struct StreamInfo {
@@ -54,7 +47,7 @@ struct StreamInfo {
         std::string is_default;
         std::string alternate_group;
     } audio;
-    
+
     struct VideoCodecFormat {
         std::string id;
         std::string format;
@@ -105,7 +98,7 @@ struct FrameData {
     double timestamp = 0.0;
 
     std::array<std::vector<uint8_t>, 8> owned;
-    
+
     ~FrameData();
     void Clear();
 

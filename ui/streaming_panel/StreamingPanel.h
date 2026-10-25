@@ -46,7 +46,9 @@ public:
     void SetScanActive(bool active) override;
     // 侧栏导航标记：问题表的行数
     int IssueCount() const override;
-    bool IsScanActive() const { return scan_active_; }
+    bool IsScanActive() const {
+        return scan_active_;
+    }
 
     // 序列化：复制 JSON / 导出 JSON 文件共用
     QString ExportToJson() const;

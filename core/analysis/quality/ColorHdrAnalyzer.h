@@ -3,8 +3,8 @@
 #include <string>
 #include <vector>
 
-#include "core/domain/model/ColorHdrResult.h"
 #include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/ColorHdrResult.h"
 
 // 只做前向声明，头文件保持与 FFmpeg 无关：
 // AnalysisOptions.h / QcReport.h / QcRuleEngine.cpp / 单元测试都能直接包含本文件。
@@ -41,15 +41,21 @@ using model::ColorKeyValueRow;
 class ColorHdrAnalyzer {
 public:
     void Reset(const ColorHdrOptions& options = ColorHdrOptions{});
-    const ColorHdrOptions& options() const { return options_; }
+    const ColorHdrOptions& options() const {
+        return options_;
+    }
 
     void UpdateFromStream(const AVStream* stream);
     void UpdateFromPacket(const AVPacket* packet, int stream_index);
     void UpdateFromFrame(const AVFrame* frame);
 
     const ColorHdrAnalysis& Finish();
-    const ColorHdrAnalysis& result() const { return result_; }
-    bool finished() const { return finished_; }
+    const ColorHdrAnalysis& result() const {
+        return result_;
+    }
+    bool finished() const {
+        return finished_;
+    }
 
     // 是否还有必要为补元数据去解一帧（供 QtAnalysisController 判断是否开解码器）
     bool NeedsFrameProbe() const;
@@ -69,4 +75,4 @@ private:
     bool finished_ = false;
 };
 
-}  // namespace videoeye
+} // namespace videoeye

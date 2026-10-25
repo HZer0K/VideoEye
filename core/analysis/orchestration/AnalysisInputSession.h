@@ -41,8 +41,8 @@ public:
     // （scan_status + error_message + scan_error_code），调用方只负责发对应的回调。
     enum class Outcome {
         Ok,
-        Failed,     // result 已被 MarkFailed 写过；回调文案取 result.error_message
-        Cancelled,  // 打开/探测阶段被取消；调用方发 NotifyCancelled
+        Failed,    // result 已被 MarkFailed 写过；回调文案取 result.error_message
+        Cancelled, // 打开/探测阶段被取消；调用方发 NotifyCancelled
     };
 
     // file_path / options 必须活过本对象（同一次 Run 内的形参即可）。
@@ -62,7 +62,9 @@ public:
     // 关闭上下文并把指针置空。重复调用安全。
     void Close();
 
-    AVFormatContext* context() const { return fmt_; }
+    AVFormatContext* context() const {
+        return fmt_;
+    }
 
 private:
     // 打开/探测阶段被打断 = 用户取消。判据与引擎原先的 IsCancelledExit 完全一致：
@@ -87,4 +89,4 @@ private:
     ffmpeg_io::AvInterruptState interrupt_;
 };
 
-}  // namespace videoeye
+} // namespace videoeye

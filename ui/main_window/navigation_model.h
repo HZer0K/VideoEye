@@ -26,11 +26,11 @@ struct NavGroup {
 
 // 单个页面的导航元数据。
 struct PageNavigation {
-    QString page_id;    // 稳定标识（可空表示未登记，仅用于排错）
-    QString title;      // 显示标题（已本地化）
-    QString group_id;   // 分组 id；空表示不归入任何分组，排到最后
-    QString scope;      // 口径标注："播放期" / "全文件"；空表示不标
-    int order = 0;      // 组内排序键（小的在前）
+    QString page_id;  // 稳定标识（可空表示未登记，仅用于排错）
+    QString title;    // 显示标题（已本地化）
+    QString group_id; // 分组 id；空表示不归入任何分组，排到最后
+    QString scope;    // 口径标注："播放期" / "全文件"；空表示不标
+    int order = 0;    // 组内排序键（小的在前）
     int stack_index = -1;
 };
 
@@ -51,14 +51,13 @@ struct NavRow {
 //     分组标题（如「播放监看（播放期）」「全片质量（全文件）」），既区分了两种 GOP 统计
 //     （播放期摘要 vs 全文件「码率与 GOP」），又不必在每个页面标题里重复；
 //   * 未登记分组的页面排到最后，保持 stack 顺序，不加标题头。
-inline QVector<NavRow> BuildNavigationRows(const QVector<PageNavigation>& pages,
-                                           const QVector<NavGroup>& groups) {
+inline QVector<NavRow> BuildNavigationRows(const QVector<PageNavigation>& pages, const QVector<NavGroup>& groups) {
     QVector<PageNavigation> sorted = pages;
-    std::stable_sort(sorted.begin(), sorted.end(),
-                     [](const PageNavigation& a, const PageNavigation& b) {
-                         if (a.order != b.order) return a.order < b.order;
-                         return a.stack_index < b.stack_index;
-                     });
+    std::stable_sort(sorted.begin(), sorted.end(), [](const PageNavigation& a, const PageNavigation& b) {
+        if (a.order != b.order)
+            return a.order < b.order;
+        return a.stack_index < b.stack_index;
+    });
 
     // 页面项只显示标题本身，口径统一上提到分组标题，不再逐页重复后缀。
     auto append_items = [](QVector<NavRow>* rows, const QVector<PageNavigation>& items) {
@@ -75,7 +74,8 @@ inline QVector<NavRow> BuildNavigationRows(const QVector<PageNavigation>& pages,
     auto group_scope = [](const QVector<PageNavigation>& items) -> QString {
         QString scope;
         for (const PageNavigation& p : items) {
-            if (p.scope.isEmpty()) continue;
+            if (p.scope.isEmpty())
+                continue;
             if (scope.isEmpty()) {
                 scope = p.scope;
             } else if (scope != p.scope) {
@@ -95,15 +95,14 @@ inline QVector<NavRow> BuildNavigationRows(const QVector<PageNavigation>& pages,
                 used[i] = true;
             }
         }
-        if (in_group.isEmpty()) continue;
+        if (in_group.isEmpty())
+            continue;
 
         // 单页分组不显示标题：标题不可点击，紧跟唯一页面时会被误认成重复页面项。
         if (in_group.size() > 1) {
             const QString scope = group_scope(in_group);
             NavRow header;
-            header.text = scope.isEmpty()
-                              ? group.title
-                              : QStringLiteral("%1（%2）").arg(group.title, scope);
+            header.text = scope.isEmpty() ? group.title : QStringLiteral("%1（%2）").arg(group.title, scope);
             header.is_header = true;
             rows.append(header);
         }
@@ -112,15 +111,14 @@ inline QVector<NavRow> BuildNavigationRows(const QVector<PageNavigation>& pages,
 
     QVector<PageNavigation> leftovers;
     for (int i = 0; i < sorted.size(); ++i) {
-        if (!used[i]) leftovers.append(sorted[i]);
+        if (!used[i])
+            leftovers.append(sorted[i]);
     }
     std::stable_sort(leftovers.begin(), leftovers.end(),
-                     [](const PageNavigation& a, const PageNavigation& b) {
-                         return a.stack_index < b.stack_index;
-                     });
+                     [](const PageNavigation& a, const PageNavigation& b) { return a.stack_index < b.stack_index; });
     append_items(&rows, leftovers);
     return rows;
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

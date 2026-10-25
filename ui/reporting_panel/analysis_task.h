@@ -61,16 +61,14 @@ inline constexpr int kDefaultRecycleBudgetMs = 5000;
 // 想知道它到底卡在哪就只能靠日志 —— 这里先把"有没有回来"变成可观测的布尔量。
 //
 // 入参可为空（默认构造未启动的任务），此时直接返回 true（无事可做）。
-inline bool WaitTaskBody(const std::shared_ptr<AnalysisTask>& task,
-                         int budget_ms = kDefaultRecycleBudgetMs) {
+inline bool WaitTaskBody(const std::shared_ptr<AnalysisTask>& task, int budget_ms = kDefaultRecycleBudgetMs) {
     if (!task)
         return true;
     // 从未启动过的线程没有可等的东西 —— 不判这一条的话，一个"构造好还没起线程"的
     // 任务会被这里白等满整个预算（默认 5s），析构路径上就是实打实的 5 秒卡顿。
     if (!task->thread.joinable())
         return true;
-    const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::milliseconds(budget_ms);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget_ms);
     while (!task->body_done.load(std::memory_order_acquire)) {
         if (std::chrono::steady_clock::now() >= deadline)
             return false;
@@ -95,8 +93,7 @@ inline bool WaitTaskBody(const std::shared_ptr<AnalysisTask>& task,
 //
 // 调用方负责**在此之前**把任务取消掉并置好终态归还 —— 那三件事（取消来源、终态写入者、
 // alive 标志）属于宿主，不属于这里。
-inline bool RecycleTask(std::shared_ptr<AnalysisTask>& task,
-                        int budget_ms = kDefaultRecycleBudgetMs) {
+inline bool RecycleTask(std::shared_ptr<AnalysisTask>& task, int budget_ms = kDefaultRecycleBudgetMs) {
     if (!task)
         return true;
     const bool body_back = WaitTaskBody(task, budget_ms);
@@ -108,5 +105,5 @@ inline bool RecycleTask(std::shared_ptr<AnalysisTask>& task,
     return body_back;
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

@@ -19,25 +19,25 @@ namespace {
 template <typename Fn>
 auto Guard(Fn&& fn) {
     return [fn = std::forward<Fn>(fn)]() {
-        if (fn) fn();
+        if (fn)
+            fn();
     };
 }
 
-}  // namespace
+} // namespace
 
 MenuBarActions BuildMenuBar(QMenuBar* bar, const MenuBarDeps& deps) {
     MenuBarActions actions;
-    if (!bar) return actions;
+    if (!bar)
+        return actions;
 
     // 文件菜单
     QMenu* file_menu = bar->addMenu(QObject::tr("文件"));
     file_menu->addAction(QObject::tr("打开本地文件"), QKeySequence::Open, Guard(deps.open_file));
-    file_menu->addAction(QObject::tr("打开URL"), QKeySequence(QStringLiteral("Ctrl+U")),
-                         Guard(deps.open_url));
+    file_menu->addAction(QObject::tr("打开URL"), QKeySequence(QStringLiteral("Ctrl+U")), Guard(deps.open_url));
     // 导出 子菜单
     QMenu* export_menu = file_menu->addMenu(QObject::tr("导出"));
-    actions.export_frames = export_menu->addAction(QObject::tr("导出视频帧..."),
-                                                   Guard(deps.export_video_frames));
+    actions.export_frames = export_menu->addAction(QObject::tr("导出视频帧..."), Guard(deps.export_video_frames));
     export_menu->addAction(QObject::tr("导出视频..."), Guard(deps.export_video));
     export_menu->addAction(QObject::tr("导出音频..."), Guard(deps.export_audio));
     file_menu->addSeparator();
@@ -48,8 +48,7 @@ MenuBarActions BuildMenuBar(QMenuBar* bar, const MenuBarDeps& deps) {
     help_menu->addAction(QObject::tr("支持的格式与编解码器..."), Guard(deps.show_format_support));
     help_menu->addSeparator();
     help_menu->addAction(QObject::tr("关于"), []() {
-        QMessageBox::about(nullptr, QObject::tr("关于"),
-                           QObject::tr("VideoEye 2.0\n现代化的视频流分析软件"));
+        QMessageBox::about(nullptr, QObject::tr("关于"), QObject::tr("VideoEye 2.0\n现代化的视频流分析软件"));
     });
 
     // 播放设置菜单 (位于 "文件" 与 "帮助" 之间)
@@ -64,8 +63,7 @@ MenuBarActions BuildMenuBar(QMenuBar* bar, const MenuBarDeps& deps) {
     actions.toggle_player->setCheckable(true);
     actions.toggle_player->setChecked(true);
     actions.toggle_player->setShortcut(QKeySequence(QStringLiteral("F9")));
-    actions.toggle_player->setStatusTip(
-        QObject::tr("收起播放区可让分析区占满整个内容区 (VideoEye 以分析为主)"));
+    actions.toggle_player->setStatusTip(QObject::tr("收起播放区可让分析区占满整个内容区 (VideoEye 以分析为主)"));
     if (deps.toggle_player_area) {
         QObject::connect(actions.toggle_player, &QAction::toggled,
                          [fn = deps.toggle_player_area](bool checked) { fn(checked); });
@@ -89,12 +87,12 @@ MenuBarActions BuildMenuBar(QMenuBar* bar, const MenuBarDeps& deps) {
     // 「分析」那一项要在 lambda 里认回来，而 actions 是本函数的返回值、此刻还在填，
     // 所以先把指针拷出来再捕获（拷的是 QAction*，不是整个返回值）。
     QAction* const analysis_action = actions.layout_analysis;
-    QObject::connect(layout_ag, &QActionGroup::triggered,
-                     [analysis_action, apply = deps.apply_layout_preset](QAction* action) {
-                         if (!action || !apply) return;
-                         apply(action == analysis_action ? PlayerPanel::LayoutPreset::Analysis
-                                                         : PlayerPanel::LayoutPreset::Monitor);
-                     });
+    QObject::connect(
+        layout_ag, &QActionGroup::triggered, [analysis_action, apply = deps.apply_layout_preset](QAction* action) {
+            if (!action || !apply)
+                return;
+            apply(action == analysis_action ? PlayerPanel::LayoutPreset::Analysis : PlayerPanel::LayoutPreset::Monitor);
+        });
 
     QMenu* seek_mode_menu = playback_menu->addMenu(QObject::tr("seek方式"));
     QActionGroup* seek_ag = new QActionGroup(playback_menu);
@@ -103,7 +101,7 @@ MenuBarActions BuildMenuBar(QMenuBar* bar, const MenuBarDeps& deps) {
     QAction* act_keyframe = seek_ag->addAction(QObject::tr("关键帧"));
     act_keyframe->setCheckable(true);
     act_keyframe->setData(static_cast<int>(model::SeekMode::NearestKeyframe));
-    act_keyframe->setChecked(true);  // 默认: 关键帧 (与原行为一致)
+    act_keyframe->setChecked(true); // 默认: 关键帧 (与原行为一致)
     seek_mode_menu->addAction(act_keyframe);
 
     QAction* act_exact = seek_ag->addAction(QObject::tr("精确值"));
@@ -112,12 +110,13 @@ MenuBarActions BuildMenuBar(QMenuBar* bar, const MenuBarDeps& deps) {
     seek_mode_menu->addAction(act_exact);
 
     QObject::connect(seek_ag, &QActionGroup::triggered, [deps](QAction* action) {
-        if (!action || !deps.set_seek_mode) return;
+        if (!action || !deps.set_seek_mode)
+            return;
         deps.set_seek_mode(static_cast<model::SeekMode>(action->data().toInt()));
     });
 
     return actions;
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

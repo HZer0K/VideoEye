@@ -85,13 +85,13 @@ void ContainerStructurePage::SetupUi() {
     tree_->setAlternatingRowColors(true);
     tree_->setAnimated(true);
     tree_->setIndentation(16);
-    tree_->setStyleSheet(
-        "QTreeWidget { background-color: #0D1117; border: 1px solid #30363D; border-radius: 4px; color: #F0F6FC; font-size: 11px; }"
-        "QTreeWidget::item { padding: 2px 4px; color: #F0F6FC; }"
-        "QTreeWidget::item:hover { background-color: #161B22; }"
-        "QTreeWidget::item:selected { background-color: rgba(88, 166, 255, 0.15); color: #F0F6FC; }"
-        "QHeaderView::section { background-color: #161B22; color: #8B949E; padding: 3px; border: none; border-bottom: 1px solid #30363D; font-weight: bold; }"
-    );
+    tree_->setStyleSheet("QTreeWidget { background-color: #0D1117; border: 1px solid #30363D; border-radius: 4px; "
+                         "color: #F0F6FC; font-size: 11px; }"
+                         "QTreeWidget::item { padding: 2px 4px; color: #F0F6FC; }"
+                         "QTreeWidget::item:hover { background-color: #161B22; }"
+                         "QTreeWidget::item:selected { background-color: rgba(88, 166, 255, 0.15); color: #F0F6FC; }"
+                         "QHeaderView::section { background-color: #161B22; color: #8B949E; padding: 3px; border: "
+                         "none; border-bottom: 1px solid #30363D; font-weight: bold; }");
     leftLayout->addWidget(tree_);
     splitter->addWidget(leftPanel);
 
@@ -196,11 +196,8 @@ void ContainerStructurePage::SetupUi() {
 
     ebml_track_table_ = new QTableWidget(ebml_detail_tabs_);
     ebml_track_table_->setColumnCount(10);
-    ebml_track_table_->setHorizontalHeaderLabels({
-        tr("#"), tr("类型"), tr("编码"), tr("CodecID"),
-        tr("分辨率/采样率"), tr("声道"), tr("语言"),
-        tr("帧率"), tr("默认"), tr("强制")
-    });
+    ebml_track_table_->setHorizontalHeaderLabels({tr("#"), tr("类型"), tr("编码"), tr("CodecID"), tr("分辨率/采样率"),
+                                                  tr("声道"), tr("语言"), tr("帧率"), tr("默认"), tr("强制")});
     ebml_track_table_->horizontalHeader()->setStretchLastSection(true);
     ebml_track_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     ebml_track_table_->setAlternatingRowColors(true);
@@ -238,19 +235,16 @@ void ContainerStructurePage::SetupUi() {
     export_button_->setToolTip(tr("将容器结构树和表格数据导出为文本文件"));
     layout->addWidget(export_button_, 0, Qt::AlignRight);
 
-
     connect(export_button_, &QPushButton::clicked, this, &ContainerStructurePage::OnExportContainerStructure);
     // 结构树点击 stts/ctts/stss/stco/stsz/elst/moof 等样本表相关 box 时联动到 Sample Table
-    connect(tree_, &QTreeWidget::itemSelectionChanged,
-            this, &ContainerStructurePage::OnContainerTreeSelectionChanged);
+    connect(tree_, &QTreeWidget::itemSelectionChanged, this, &ContainerStructurePage::OnContainerTreeSelectionChanged);
 }
 
-
-static void PopulateMp4BoxTablesInContainer(const model::Mp4BoxAnalysisResult& result,
-                                       QTableWidget* stts_table, QTableWidget* stco_table,
-                                       QTableWidget* stsc_table, QTableWidget* stsz_table,
-                                       QTableWidget* co64_table, QTableWidget* stss_table) {
-    constexpr int kMaxBoxTableRows = 2000;   // 每张表每个 track 最多显示的行数
+static void PopulateMp4BoxTablesInContainer(const model::Mp4BoxAnalysisResult& result, QTableWidget* stts_table,
+                                            QTableWidget* stco_table, QTableWidget* stsc_table,
+                                            QTableWidget* stsz_table, QTableWidget* co64_table,
+                                            QTableWidget* stss_table) {
+    constexpr int kMaxBoxTableRows = 2000; // 每张表每个 track 最多显示的行数
 
     for (auto* table : {stts_table, stco_table, stsc_table, stsz_table, co64_table, stss_table}) {
         table->setUpdatesEnabled(false);
@@ -262,7 +256,8 @@ static void PopulateMp4BoxTablesInContainer(const model::Mp4BoxAnalysisResult& r
     // C++17 的"constexpr 变量免捕获"豁免不适用（MSVC 不检查，GCC/Clang 会报错）。
     auto append_section = [kMaxBoxTableRows](QTableWidget* table, const QString& header, int total,
                                              const std::function<void(int row, int index)>& fill_row) {
-        if (total <= 0) return;
+        if (total <= 0)
+            return;
         const int shown = std::min(total, kMaxBoxTableRows);
         const bool truncated = total > shown;
         const int first = table->rowCount();
@@ -292,7 +287,8 @@ static void PopulateMp4BoxTablesInContainer(const model::Mp4BoxAnalysisResult& r
     };
 
     for (const auto& track : result.track_tables) {
-        const QString header = QString("Track %1 (%2)").arg(track.track_id).arg(QString::fromStdString(track.track_type));
+        const QString header =
+            QString("Track %1 (%2)").arg(track.track_id).arg(QString::fromStdString(track.track_type));
 
         append_section(stts_table, header, track.stts_entries.size(), [&](int row, int i) {
             cell(stts_table, row, 0, QString::number(i));
@@ -357,15 +353,14 @@ void ContainerStructurePage::SetResult(const model::ContainerStructureResult& re
     result_ = result;
 
     // 更新动态标题
-    title_label_->setText(result.valid ? QString::fromStdString(result.format_name) + " " + tr("结构分析") : tr("文件结构"));
-    title_label_->setStyleSheet(
-        result.valid ? "font-size: 13px; font-weight: bold; color: #1a73e8; padding: 2px 4px;"
-                     : "font-size: 13px; font-weight: bold; color: #8B949E; padding: 2px 4px;");
+    title_label_->setText(result.valid ? QString::fromStdString(result.format_name) + " " + tr("结构分析")
+                                       : tr("文件结构"));
+    title_label_->setStyleSheet(result.valid ? "font-size: 13px; font-weight: bold; color: #1a73e8; padding: 2px 4px;"
+                                             : "font-size: 13px; font-weight: bold; color: #8B949E; padding: 2px 4px;");
 
     if (!result.valid) {
-        summary_label_->setText(result.error_message.empty()
-                                    ? tr("无法分析该格式")
-                                    : QString::fromStdString(result.error_message));
+        summary_label_->setText(result.error_message.empty() ? tr("无法分析该格式")
+                                                             : QString::fromStdString(result.error_message));
         summary_label_->setStyleSheet("font-size: 12px; color: #8B949E; padding: 2px 4px;");
         tree_->clear();
         detail_stack_->setCurrentIndex(0);
@@ -381,13 +376,13 @@ void ContainerStructurePage::SetResult(const model::ContainerStructureResult& re
     // 填充通用结构树
     tree_->clear();
     static const QColor kDepthColors[] = {
-        QColor("#161B22"),  // level 0 — card background
-        QColor("#0D1117"),  // level 1 — base background
-        QColor("#131A21"),  // level 2
-        QColor("#111920"),  // level 3
-        QColor("#141C24"),  // level 4
-        QColor("#10171D"),  // level 5
-        QColor("#151D25"),  // level 6
+        QColor("#161B22"), // level 0 — card background
+        QColor("#0D1117"), // level 1 — base background
+        QColor("#131A21"), // level 2
+        QColor("#111920"), // level 3
+        QColor("#141C24"), // level 4
+        QColor("#10171D"), // level 5
+        QColor("#151D25"), // level 6
     };
 
     std::function<void(QTreeWidgetItem*, const std::vector<model::ContainerElement>&)> addNodes;
@@ -405,28 +400,31 @@ void ContainerStructurePage::SetResult(const model::ContainerStructureResult& re
             }
             int d = n.depth;
             QColor bg = kDepthColors[d % 7];
-            for (int c = 0; c < 5; ++c) item->setBackground(c, bg);
-            if (parent) parent->addChild(item);
-            else tree_->addTopLevelItem(item);
+            for (int c = 0; c < 5; ++c)
+                item->setBackground(c, bg);
+            if (parent)
+                parent->addChild(item);
+            else
+                tree_->addTopLevelItem(item);
             addNodes(item, n.children);
         }
     };
     {
-    VE_PERF("容器结构树填充");
-    for (const auto& n : result.element_tree) {
-        auto* top = new QTreeWidgetItem();
-        top->setText(0, QString::fromStdString(n.name));
-        top->setText(1, QString::fromStdString(n.type));
-        top->setText(2, QString::number(n.size));
-        top->setText(3, QString("0x%1").arg(n.offset, 0, 16));
-        top->setText(4, QString::fromStdString(n.value));
-        if (!n.extra.empty()) {
-            top->setToolTip(0, QString::fromStdString(n.extra));
-            top->setToolTip(4, QString::fromStdString(n.extra));
+        VE_PERF("容器结构树填充");
+        for (const auto& n : result.element_tree) {
+            auto* top = new QTreeWidgetItem();
+            top->setText(0, QString::fromStdString(n.name));
+            top->setText(1, QString::fromStdString(n.type));
+            top->setText(2, QString::number(n.size));
+            top->setText(3, QString("0x%1").arg(n.offset, 0, 16));
+            top->setText(4, QString::fromStdString(n.value));
+            if (!n.extra.empty()) {
+                top->setToolTip(0, QString::fromStdString(n.extra));
+                top->setToolTip(4, QString::fromStdString(n.extra));
+            }
+            tree_->addTopLevelItem(top);
+            addNodes(top, n.children);
         }
-        tree_->addTopLevelItem(top);
-        addNodes(top, n.children);
-    }
     }
     {
         VE_PERF("容器结构树 expandAll");
@@ -456,11 +454,11 @@ void ContainerStructurePage::SetResult(const model::ContainerStructureResult& re
     switch (result.format) {
     case CF::MP4:
     case CF::MOV:
-        detail_stack_->setCurrentIndex(1);  // MP4 详情页
+        detail_stack_->setCurrentIndex(1); // MP4 详情页
         // 填充 MP4 详细表
         if (result.mp4_detail.valid) {
-            PopulateMp4BoxTablesInContainer(result.mp4_detail, stts_table_, stco_table_,
-                                            stsc_table_, stsz_table_, co64_table_, stss_table_);
+            PopulateMp4BoxTablesInContainer(result.mp4_detail, stts_table_, stco_table_, stsc_table_, stsz_table_,
+                                            co64_table_, stss_table_);
         }
         // 填充 Sample Table 子页（样本级展开 + 一致性问题 + 分片）
         {
@@ -470,7 +468,7 @@ void ContainerStructurePage::SetResult(const model::ContainerStructureResult& re
         break;
     case CF::MKV:
     case CF::WebM:
-        detail_stack_->setCurrentIndex(2);  // EBML 详情页
+        detail_stack_->setCurrentIndex(2); // EBML 详情页
         // 填充 EBML 详细表
         if (result.ebml_detail.valid) {
             const auto& er = result.ebml_detail;
@@ -487,11 +485,17 @@ void ContainerStructurePage::SetResult(const model::ContainerStructureResult& re
                 set(3, QString::fromStdString(t.codec_id));
                 if (t.track_type == 1) {
                     set(4, QString("%1x%2").arg(t.pixel_width).arg(t.pixel_height));
-                    set(5, "-"); set(7, t.frame_rate > 0 ? QString("%1 fps").arg(t.frame_rate, 0, 'f', 2) : "-");
+                    set(5, "-");
+                    set(7, t.frame_rate > 0 ? QString("%1 fps").arg(t.frame_rate, 0, 'f', 2) : "-");
                 } else if (t.track_type == 2) {
                     set(4, t.sampling_frequency > 0 ? QString("%1 Hz").arg(t.sampling_frequency, 0, 'f', 0) : "-");
-                    set(5, t.channels > 0 ? QString::number(t.channels) : "-"); set(7, "-");
-                } else { set(4, "-"); set(5, "-"); set(7, "-"); }
+                    set(5, t.channels > 0 ? QString::number(t.channels) : "-");
+                    set(7, "-");
+                } else {
+                    set(4, "-");
+                    set(5, "-");
+                    set(7, "-");
+                }
                 set(6, QString::fromStdString(t.language));
                 set(8, t.default_track ? QString::fromUtf8("\u2713") : "");
                 set(9, t.forced ? QString::fromUtf8("\u2713") : "");
@@ -522,37 +526,38 @@ void ContainerStructurePage::SetResult(const model::ContainerStructureResult& re
         }
         break;
     default:
-        detail_stack_->setCurrentIndex(0);  // 通用信息页
+        detail_stack_->setCurrentIndex(0); // 通用信息页
         break;
     }
 }
 
-
-
-
-
-
 void ContainerStructurePage::OnContainerTreeSelectionChanged() {
     QTreeWidgetItem* item = tree_->currentItem();
-    if (!item) return;
+    if (!item)
+        return;
     const QString box = item->text(0).trimmed();
-    static const QStringList kSampleBoxes = {
-        "stts", "ctts", "stss", "stsz", "stz2", "stsc", "stco", "co64",
-        "elst", "moof", "traf", "tfhd", "tfdt", "trun", "mfhd"};
-    if (!kSampleBoxes.contains(box)) return;
+    static const QStringList kSampleBoxes = {"stts", "ctts", "stss", "stsz", "stz2", "stsc", "stco", "co64",
+                                             "elst", "moof", "traf", "tfhd", "tfdt", "trun", "mfhd"};
+    if (!kSampleBoxes.contains(box))
+        return;
 
-    const bool is_fragment_box = (box == "moof" || box == "traf" || box == "tfhd" ||
-                                  box == "tfdt" || box == "trun" || box == "mfhd");
+    const bool is_fragment_box =
+        (box == "moof" || box == "traf" || box == "tfhd" || box == "tfdt" || box == "trun" || box == "mfhd");
 
     // 顺着父链找 trak，用它在同级 trak 中的序号选对应轨道
     QTreeWidgetItem* node = item;
-    while (node && node->text(0).trimmed() != "trak") node = node->parent();
+    while (node && node->text(0).trimmed() != "trak")
+        node = node->parent();
     if (node && node->parent()) {
         int trak_index = -1, found = 0;
         QTreeWidgetItem* parent = node->parent();
         for (int i = 0; i < parent->childCount(); ++i) {
-            if (parent->child(i)->text(0).trimmed() != "trak") continue;
-            if (parent->child(i) == node) { trak_index = found; break; }
+            if (parent->child(i)->text(0).trimmed() != "trak")
+                continue;
+            if (parent->child(i) == node) {
+                trak_index = found;
+                break;
+            }
             ++found;
         }
         if (trak_index >= 0 && trak_index < mp4_sample_widget_->TrackCount()) {
@@ -560,14 +565,13 @@ void ContainerStructurePage::OnContainerTreeSelectionChanged() {
         }
     }
 
-    detail_stack_->setCurrentIndex(1);        // MP4 详情页
-    mp4_detail_tabs_->setCurrentWidget(mp4_sample_widget_);  // Sample Table 子页
+    detail_stack_->setCurrentIndex(1);                      // MP4 详情页
+    mp4_detail_tabs_->setCurrentWidget(mp4_sample_widget_); // Sample Table 子页
     mp4_sample_widget_->SetFocusBox(box);
     if (is_fragment_box) {
         mp4_sample_widget_->ShowFragmentTab();
     }
 }
-
 
 void ContainerStructurePage::OnExportContainerStructure() {
     if (!result_.valid) {
@@ -576,12 +580,13 @@ void ContainerStructurePage::OnExportContainerStructure() {
     }
     const QString filename = QFileDialog::getSaveFileName(
         this, tr("导出文件结构"),
-        QString("videoeye_structure_%1.txt")
-            .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
+        QString("videoeye_structure_%1.txt").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
         tr("文本文件 (*.txt);;所有文件 (*)"));
-    if (filename.isEmpty()) return;
+    if (filename.isEmpty())
+        return;
     QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) return;
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+        return;
     QTextStream out(&file);
     out.setEncoding(QStringConverter::Utf8);
     out << "Format: " << QString::fromStdString(result_.format_name) << "\n";
@@ -592,9 +597,10 @@ void ContainerStructurePage::OnExportContainerStructure() {
     printTree = [&](const std::vector<model::ContainerElement>& nodes, int d) {
         for (const auto& n : nodes) {
             QString indent(d * 2, ' ');
-            out << indent << QString::fromStdString(n.name) << " [" << QString::fromStdString(n.type) << "]  size=" << n.size
-                << "  offset=0x" << Qt::hex << n.offset << Qt::dec;
-            if (!n.value.empty()) out << "  value=" << QString::fromStdString(n.value);
+            out << indent << QString::fromStdString(n.name) << " [" << QString::fromStdString(n.type)
+                << "]  size=" << n.size << "  offset=0x" << Qt::hex << n.offset << Qt::dec;
+            if (!n.value.empty())
+                out << "  value=" << QString::fromStdString(n.value);
             out << "\n";
             printTree(n.children, d + 1);
         }
@@ -603,10 +609,8 @@ void ContainerStructurePage::OnExportContainerStructure() {
 
     if (!result_.metadata.empty()) {
         out << "\n--- Metadata ---\n";
-        for (auto it = result_.metadata.begin();
-             it != result_.metadata.end(); ++it) {
-            out << QString::fromStdString(it->first) << " = "
-                << QString::fromStdString(it->second) << "\n";
+        for (auto it = result_.metadata.begin(); it != result_.metadata.end(); ++it) {
+            out << QString::fromStdString(it->first) << " = " << QString::fromStdString(it->second) << "\n";
         }
     }
 
@@ -614,8 +618,10 @@ void ContainerStructurePage::OnExportContainerStructure() {
     if (!result_.streams.empty()) {
         out << "\n--- Streams ---\n";
         for (const auto& s : result_.streams) {
-            out << "  #" << s.index << "  " << QString::fromStdString(s.type) << "  " << QString::fromStdString(s.codec);
-            if (!s.details.empty()) out << "  (" << QString::fromStdString(s.details) << ")";
+            out << "  #" << s.index << "  " << QString::fromStdString(s.type) << "  "
+                << QString::fromStdString(s.codec);
+            if (!s.details.empty())
+                out << "  (" << QString::fromStdString(s.details) << ")";
             out << "\n";
         }
     }
@@ -641,8 +647,8 @@ void ContainerStructurePage::OnExportContainerStructure() {
                     out << "    idx\tfirst_chunk\tsamples_per_chunk\tsample_desc_idx\n";
                     int i = 0;
                     for (const auto& e : t.stsc_entries)
-                        out << "    " << i++ << "\t" << e.first_chunk << "\t\t" << e.samples_per_chunk
-                            << "\t\t\t" << e.sample_description_index << "\n";
+                        out << "    " << i++ << "\t" << e.first_chunk << "\t\t" << e.samples_per_chunk << "\t\t\t"
+                            << e.sample_description_index << "\n";
                 }
                 if (!t.stco_entries.empty()) {
                     out << "  [stco] Chunk Offset (" << t.stco_entries.size() << " entries)\n";
@@ -659,8 +665,8 @@ void ContainerStructurePage::OnExportContainerStructure() {
                         out << "    " << i++ << "\t0x" << Qt::hex << e.chunk_offset << Qt::dec << "\n";
                 }
                 if (!t.stsz_entries.empty() || t.stsz_default_size > 0) {
-                    out << "  [stsz] Sample Size (count=" << t.stsz_sample_count
-                        << ", default=" << t.stsz_default_size << ")\n";
+                    out << "  [stsz] Sample Size (count=" << t.stsz_sample_count << ", default=" << t.stsz_default_size
+                        << ")\n";
                     if (!t.stsz_entries.empty()) {
                         out << "    idx\tsample_size\n";
                         int i = 0;
@@ -687,8 +693,7 @@ void ContainerStructurePage::OnExportContainerStructure() {
             out << "DocType: " << QString::fromStdString(ebml.doc_type) << " v" << ebml.doc_type_version << "\n";
             out << "TimestampScale: " << ebml.timestamp_scale << " ns\n";
             out << "Duration: " << ebml.duration_seconds << " s\n";
-            out << "Clusters: " << ebml.total_clusters
-                << "  BlockGroups: " << ebml.total_blockgroups
+            out << "Clusters: " << ebml.total_clusters << "  BlockGroups: " << ebml.total_blockgroups
                 << "  SimpleBlocks: " << ebml.total_simpleblocks << "\n";
 
             if (!ebml.tracks.empty()) {
@@ -696,8 +701,10 @@ void ContainerStructurePage::OnExportContainerStructure() {
                 for (const auto& tr : ebml.tracks) {
                     out << "  Track #" << tr.track_number << "  " << QString::fromStdString(tr.track_type_name)
                         << "  codec=" << QString::fromStdString(tr.codec_id);
-                    if (!tr.codec_name.empty()) out << " (" << QString::fromStdString(tr.codec_name) << ")";
-                    if (!tr.language.empty()) out << "  lang=" << QString::fromStdString(tr.language);
+                    if (!tr.codec_name.empty())
+                        out << " (" << QString::fromStdString(tr.codec_name) << ")";
+                    if (!tr.language.empty())
+                        out << "  lang=" << QString::fromStdString(tr.language);
                     if (tr.pixel_width > 0)
                         out << "  " << tr.pixel_width << "x" << tr.pixel_height;
                     if (tr.sampling_frequency > 0)
@@ -709,19 +716,16 @@ void ContainerStructurePage::OnExportContainerStructure() {
                 out << "\n--- Cues (" << ebml.cues.size() << " entries) ---\n";
                 out << "    time\ttrack\tcluster_pos\tblock_no\n";
                 for (const auto& c : ebml.cues)
-                    out << "    " << c.time << "\t" << c.track_number
-                        << "\t0x" << Qt::hex << c.cluster_position << Qt::dec
-                        << "\t" << c.block_number << "\n";
+                    out << "    " << c.time << "\t" << c.track_number << "\t0x" << Qt::hex << c.cluster_position
+                        << Qt::dec << "\t" << c.block_number << "\n";
             }
             if (!ebml.blocks.empty()) {
                 out << "\n--- Blocks (" << ebml.blocks.size() << " entries, may be truncated) ---\n";
                 out << "    track\ttimecode\tkeyframe\tsize\tcluster_off\tblock_off\n";
                 for (const auto& b : ebml.blocks)
-                    out << "    " << b.track_number << "\t" << b.timecode
-                        << "\t\t" << (b.keyframe ? "K" : "-")
-                        << "\t" << b.data_size
-                        << "\t0x" << Qt::hex << b.cluster_offset
-                        << "\t0x" << b.block_offset << Qt::dec << "\n";
+                    out << "    " << b.track_number << "\t" << b.timecode << "\t\t" << (b.keyframe ? "K" : "-") << "\t"
+                        << b.data_size << "\t0x" << Qt::hex << b.cluster_offset << "\t0x" << b.block_offset << Qt::dec
+                        << "\n";
             }
         }
     }

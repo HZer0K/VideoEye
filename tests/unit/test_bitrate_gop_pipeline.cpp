@@ -60,14 +60,14 @@ struct DemuxFacts {
 DemuxFacts DemuxVideo(const std::string& path) {
     DemuxFacts facts;
     AVFormatContext* fmt = nullptr;
-    if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) < 0 || !fmt) return facts;
+    if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) < 0 || !fmt)
+        return facts;
     if (avformat_find_stream_info(fmt, nullptr) < 0) {
         avformat_close_input(&fmt);
         return facts;
     }
     for (unsigned i = 0; i < fmt->nb_streams; ++i) {
-        if (fmt->streams[i]->codecpar &&
-            fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+        if (fmt->streams[i]->codecpar && fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             facts.video_stream = static_cast<int>(i);
             break;
         }
@@ -81,7 +81,8 @@ DemuxFacts DemuxVideo(const std::string& path) {
         if (pkt->stream_index == facts.video_stream) {
             ++facts.video_packets;
             facts.video_bytes += pkt->size;
-            if (pkt->flags & AV_PKT_FLAG_KEY) ++facts.key_packets;
+            if (pkt->flags & AV_PKT_FLAG_KEY)
+                ++facts.key_packets;
         }
         av_packet_unref(pkt);
     }
@@ -102,15 +103,15 @@ struct DecodedFacts {
 DecodedFacts DecodeVideo(const std::string& path) {
     DecodedFacts facts;
     AVFormatContext* fmt = nullptr;
-    if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) < 0 || !fmt) return facts;
+    if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) < 0 || !fmt)
+        return facts;
     if (avformat_find_stream_info(fmt, nullptr) < 0) {
         avformat_close_input(&fmt);
         return facts;
     }
     int video_stream = -1;
     for (unsigned i = 0; i < fmt->nb_streams; ++i) {
-        if (fmt->streams[i]->codecpar &&
-            fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+        if (fmt->streams[i]->codecpar && fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             video_stream = static_cast<int>(i);
             break;
         }
@@ -123,7 +124,8 @@ DecodedFacts DecodeVideo(const std::string& path) {
     AVCodecContext* dec = codec ? avcodec_alloc_context3(codec) : nullptr;
     if (!dec || avcodec_parameters_to_context(dec, fmt->streams[video_stream]->codecpar) < 0 ||
         avcodec_open2(dec, codec, nullptr) < 0) {
-        if (dec) avcodec_free_context(&dec);
+        if (dec)
+            avcodec_free_context(&dec);
         avformat_close_input(&fmt);
         return facts;
     }
@@ -132,16 +134,19 @@ DecodedFacts DecodeVideo(const std::string& path) {
     auto drain = [&]() {
         while (avcodec_receive_frame(dec, frame) >= 0) {
             ++facts.frames;
-            if ((frame->flags & AV_FRAME_FLAG_KEY) != 0) ++facts.key_frames;
+            if ((frame->flags & AV_FRAME_FLAG_KEY) != 0)
+                ++facts.key_frames;
             av_frame_unref(frame);
         }
     };
     while (av_read_frame(fmt, pkt) >= 0) {
-        if (pkt->stream_index == video_stream && avcodec_send_packet(dec, pkt) == 0) drain();
+        if (pkt->stream_index == video_stream && avcodec_send_packet(dec, pkt) == 0)
+            drain();
         av_packet_unref(pkt);
     }
     // EOF flush: 解码器里压着的重排序帧在这里收干净
-    if (avcodec_send_packet(dec, nullptr) == 0) drain();
+    if (avcodec_send_packet(dec, nullptr) == 0)
+        drain();
 
     av_packet_free(&pkt);
     av_frame_free(&frame);
@@ -179,8 +184,7 @@ AnalysisResult RunBitrateGopAnalysis(const std::string& path, bool decode_frame_
 
 // 生成一份确定性样本（工厂每次remove后重写，内容一致）
 std::string MakeMedia() {
-    const std::string dir =
-        (std::filesystem::temp_directory_path() / "videoeye_bitrate_gop_regression").string();
+    const std::string dir = (std::filesystem::temp_directory_path() / "videoeye_bitrate_gop_regression").string();
     std::filesystem::create_directories(dir);
     const videoeye_test::TestMedia media = videoeye_test::CreateTestMedia(dir, "clip");
     EXPECT_TRUE(media.ok) << media.error;
@@ -190,8 +194,8 @@ std::string MakeMedia() {
 // 公共断言: 帧数 / 字节 / GOP 三类核心统计与独立事实逐一对齐
 // expected_frames / expected_gops 由调用方按路径语义给出（解码路径用解码事实，
 // parser 路径用包级事实），"不重复计数"的硬约束在这里统一收口。
-void ExpectNoDoubleCounting(const AnalysisResult& result, const DemuxFacts& facts,
-                            int64_t expected_frames, int64_t expected_gops) {
+void ExpectNoDoubleCounting(const AnalysisResult& result, const DemuxFacts& facts, int64_t expected_frames,
+                            int64_t expected_gops) {
     const videoeye::model::BitrateGopAnalysis& gop = result.bitrate_gop;
 
     // 总帧数 == 该路径的独立帧数真值。重复计数缺陷下这里是 2 倍。
@@ -207,14 +211,13 @@ void ExpectNoDoubleCounting(const AnalysisResult& result, const DemuxFacts& fact
     EXPECT_EQ(gop.i_frame_count, expected_gops);
 
     // 帧类型三分账必须闭合
-    EXPECT_EQ(gop.i_frame_count + gop.p_frame_count + gop.b_frame_count +
-                  gop.unknown_frame_count,
-              gop.total_frames);
+    EXPECT_EQ(gop.i_frame_count + gop.p_frame_count + gop.b_frame_count + gop.unknown_frame_count, gop.total_frames);
     EXPECT_TRUE(gop.frame_types_known);
 
     // 每个 GOP 的帧数之和 == 总帧数（GOP 边界没被重复切）
     int64_t gop_frames = 0;
-    for (const auto& g : gop.gops) gop_frames += g.frame_count;
+    for (const auto& g : gop.gops)
+        gop_frames += g.frame_count;
     EXPECT_EQ(gop_frames, gop.total_frames);
 
     // 码率汇总自洽（曲线非空、峰值不低于均值(5% 容差)、未触发降采样）
@@ -231,13 +234,12 @@ void ExpectNoDoubleCounting(const AnalysisResult& result, const DemuxFacts& fact
     EXPECT_FALSE(gop.downsampled);
     // avg ≈ total_bytes * 8 / 1000 / duration（duration 由首末帧时间戳推得，10% 容差）
     if (gop.duration_seconds > 0.0) {
-        const double expect_avg =
-            static_cast<double>(gop.total_bytes) * 8.0 / 1000.0 / gop.duration_seconds;
+        const double expect_avg = static_cast<double>(gop.total_bytes) * 8.0 / 1000.0 / gop.duration_seconds;
         EXPECT_NEAR(gop.avg_bitrate_kbps, expect_avg, expect_avg * 0.10);
     }
 }
 
-}  // namespace
+} // namespace
 
 // ---- 解码路径（decode_frame_types=true）----
 TEST(BitrateGopPipelineRegression, DecoderPathCountsEachFrameExactlyOnce) {

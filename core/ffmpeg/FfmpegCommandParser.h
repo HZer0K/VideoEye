@@ -19,19 +19,19 @@ namespace videoeye {
 namespace ffmpeg {
 
 enum class CommandParseStatus {
-    Ok,                 // 解析成功
-    Empty,              // 空命令
-    UnterminatedQuote,  // 引号没闭合
-    ShellOperator,      // 出现了 | && || ; > < 等 shell 操作符
-    UnsupportedProgram  // 第一个 token 不是 ffmpeg
+    Ok,                // 解析成功
+    Empty,             // 空命令
+    UnterminatedQuote, // 引号没闭合
+    ShellOperator,     // 出现了 | && || ; > < 等 shell 操作符
+    UnsupportedProgram // 第一个 token 不是 ffmpeg
 };
 
 struct ParsedCommand {
     CommandParseStatus status = CommandParseStatus::Empty;
-    QString message;       // 失败时给用户的说明（成功时为空）
-    QString program_token; // 命令里写的可执行程序 token（可能是 "ffmpeg" 或完整路径）
-    bool program_is_path = false;  // program_token 是一个路径（而不是裸的 "ffmpeg"）
-    QStringList arguments; // 传给 ffmpeg 的参数，不含程序本身
+    QString message;              // 失败时给用户的说明（成功时为空）
+    QString program_token;        // 命令里写的可执行程序 token（可能是 "ffmpeg" 或完整路径）
+    bool program_is_path = false; // program_token 是一个路径（而不是裸的 "ffmpeg"）
+    QStringList arguments;        // 传给 ffmpeg 的参数，不含程序本身
 };
 
 /// 解析一行命令文本。
@@ -64,32 +64,32 @@ QString InformationOptionDescription(const QString& option);
 // 命令解释共用同一份判断 —— 两处各算一遍迟早会算得不一样。
 
 enum class FfmpegArgRole {
-    Option,       // 选项本身（-crf / -y / -i ...）
-    OptionValue,  // 上面那个选项的值
-    InputUrl,     // -i 的值
-    OutputUrl,    // 输出目标（文件、管道、rtmp:// ...）
-    Uncertain,    // 归属不明（多半是字典没收录的选项后面的那个 token）
+    Option,      // 选项本身（-crf / -y / -i ...）
+    OptionValue, // 上面那个选项的值
+    InputUrl,    // -i 的值
+    OutputUrl,   // 输出目标（文件、管道、rtmp:// ...）
+    Uncertain,   // 归属不明（多半是字典没收录的选项后面的那个 token）
 };
 
 struct FfmpegArgPlacement {
     int index = -1;
     FfmpegArgRole role = FfmpegArgRole::Uncertain;
-    int value_index = -1;        // role == Option 时: 值的下标（-1 = 这个选项不带值）
-    bool output_side = false;    // 位于至少一个输入组之后（而不是"-i 之前"）
+    int value_index = -1;     // role == Option 时: 值的下标（-1 = 这个选项不带值）
+    bool output_side = false; // 位于至少一个输入组之后（而不是"-i 之前"）
     /// 仅 -f 有意义: 它管的是**紧接着的那个输入**还是**紧接着的那个输出**。
     /// 判据是"它后面先遇到 -i 还是先遇到输出目标"，与之前出过几个输出无关 ——
     /// 输出之后继续加输入组是合法写法。
     bool applies_to_input = false;
-    int output_index = -1;       // role == OutputUrl: 第几个输出（0-based）
-    QString output_format;       // role == OutputUrl: 落到这个输出上的 -f 值（可能为空）
+    int output_index = -1; // role == OutputUrl: 第几个输出（0-based）
+    QString output_format; // role == OutputUrl: 落到这个输出上的 -f 值（可能为空）
 };
 
 struct FfmpegCommandStructure {
-    std::vector<FfmpegArgPlacement> args;  // 与 arguments 一一对应
+    std::vector<FfmpegArgPlacement> args; // 与 arguments 一一对应
     int input_count = 0;
     int output_count = 0;
     bool has_input = false;
-    bool complete = true;   // false = 有 token 归属不明，别对结构下断言
+    bool complete = true; // false = 有 token 归属不明，别对结构下断言
 };
 
 /// 给每个参数定角色。认不出来的地方如实标 Uncertain，不做猜测。
@@ -106,5 +106,5 @@ FfmpegCommandStructure AnalyzeCommandStructure(const QStringList& arguments);
 ///   * `-f md5` / `-f ffmetadata` 这类只产出文本的 muxer 可以放过。
 QString DetectStdoutMediaOutput(const QStringList& arguments);
 
-}  // namespace ffmpeg
-}  // namespace videoeye
+} // namespace ffmpeg
+} // namespace videoeye

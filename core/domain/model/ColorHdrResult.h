@@ -27,7 +27,7 @@ struct ColorHdrAnalysis {
     ColorInfo color;
     HdrMetadataInfo hdr;
 
-    std::vector<std::string> notes;  // 降级/来源说明
+    std::vector<std::string> notes; // 降级/来源说明
 
     // 静态元数据已齐备 -> 不必再为补元数据去解码帧
     bool StaticMetadataComplete() const;

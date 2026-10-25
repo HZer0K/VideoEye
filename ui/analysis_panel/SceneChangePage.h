@@ -9,8 +9,8 @@
 //   - FeatureToggled() 页内「启用分析」开关，由面板转成统一的 feature 信号
 // 页面本体就是 QWidget（外部 QStackedWidget 的一页），不需要再包一层 tab widget。
 
-#include <QWidget>
 #include <QString>
+#include <QWidget>
 
 #include <QCheckBox>
 #include <QLabel>
@@ -33,20 +33,28 @@ public:
     explicit SceneChangePage(bool feature_checked, QWidget* parent = nullptr);
 
     // 导出 CSV 的默认文件名用当前文件路径拼，面板换文件时同步一次
-    void SetSourcePath(const QString& path) { source_path_ = path; }
+    void SetSourcePath(const QString& path) {
+        source_path_ = path;
+    }
 
     // 播放线程检测到切换点：只入队 + 置脏，真正的补表/重绘等面板的批量定时器，
     // 否则每秒几十个切换点会把主线程拖垮。
     void AppendResult(const model::SceneChangeResult& result);
 
-    bool HasPending() const { return table_dirty_; }
+    bool HasPending() const {
+        return table_dirty_;
+    }
     void FlushPending();
 
     // 换文件时清空（与视频帧 / 音频帧 / 包列表那几页保持一致）
     void Reset();
 
-    const std::vector<model::SceneChangeResult>& records() const { return records_; }
-    bool feature_checked() const { return feature_checked_; }
+    const std::vector<model::SceneChangeResult>& records() const {
+        return records_;
+    }
+    bool feature_checked() const {
+        return feature_checked_;
+    }
 
 signals:
     // 页内开关变化：面板负责写回 feature 表并对外发射 AnalysisFeatureToggled

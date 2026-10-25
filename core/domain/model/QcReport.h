@@ -25,22 +25,22 @@ struct QcReport {
 
     // 诊断结果
     std::vector<DiagnosticIssue> issues;
-    std::vector<QcRule> rules;   // 生成报告时使用的规则快照（含阈值）
+    std::vector<QcRule> rules; // 生成报告时使用的规则快照（含阈值）
 
     // 色彩与 HDR 元数据快照（报告的 "Color/HDR" 章节，见 core/analysis/quality/ColorHdrAnalyzer.h）
     model::ColorHdrAnalysis color_hdr;
 
     // 汇总
-    double score = 100.0;            // 0..100，按问题严重度扣分
-    std::string verdict;             // 通过 / 警告 / 不通过
-    std::string generated_at;        // 本地时间字符串
+    double score = 100.0;     // 0..100，按问题严重度扣分
+    std::string verdict;      // 通过 / 警告 / 不通过
+    std::string generated_at; // 本地时间字符串
     double analysis_elapsed_ms = 0.0;
-    bool completed = true;           // false 表示分析被取消/失败，结果不完整
-    bool partial = false;            // true 表示命中包数上限的抽样扫描，仅部分结果
+    bool completed = true; // false 表示分析被取消/失败，结果不完整
+    bool partial = false;  // true 表示命中包数上限的抽样扫描，仅部分结果
 
     int CountBySeverity(IssueSeverity severity) const;
     int CountByCategory(IssueCategory category) const;
-    bool HasBlockingIssue() const;   // 存在 Error/Critical
+    bool HasBlockingIssue() const; // 存在 Error/Critical
 };
 
 // 按严重度扣分计算 0..100 的评分（Critical -30 / Error -12 / Warning -5 / Info -1）

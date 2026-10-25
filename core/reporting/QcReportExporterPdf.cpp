@@ -35,14 +35,16 @@ public:
     static constexpr int kFontWinAnsi1 = 3;
     static constexpr int kFontWinAnsi2 = 4;
 
-    static constexpr double kPageWidth = 595.0;    // A4 纵向（pt）
+    static constexpr double kPageWidth = 595.0; // A4 纵向（pt）
     static constexpr double kPageHeight = 842.0;
     static constexpr double kMarginX = 48.0;
     static constexpr double kMarginTop = 760.0;
     static constexpr double kLeading = 14.0;
     static constexpr int kMaxLinesPerPage = 50;
 
-    void AddLine(const std::string& text) { lines_.push_back(text); }
+    void AddLine(const std::string& text) {
+        lines_.push_back(text);
+    }
 
     bool Build(std::string& out) {
         std::vector<std::vector<std::string>> pages;
@@ -54,34 +56,34 @@ public:
                 current.clear();
             }
         }
-        if (!current.empty() || pages.empty()) pages.push_back(current);
+        if (!current.empty() || pages.empty())
+            pages.push_back(current);
 
         // ⚠️ 对象编号必须在 kids 落位**之前**算完：以前是等全部对象都填好才
         // `objects.insert(begin()+1, kids)`，插入把后面所有的下标整体顶掉一位，
         // 而 /Contents 与 /Kids 里已经按老编号写死了 —— 两边差一号，PDF 全废。
         // 这里让 kids 一开始就占住下标 1（对象 2），此后"下标 i 恒等于对象 i+1"，
         // 编号随 push 顺序自然算出，不再有插入错位。
-        std::vector<std::string> objects;  // objects[0] 对应 PDF 对象 1
-        objects.push_back("<< /Type /Catalog /Pages 2 0 R >>");  // 1: Catalog
-        objects.push_back(std::string());                        // 2: Pages（Kids，最后填）
+        std::vector<std::string> objects;                       // objects[0] 对应 PDF 对象 1
+        objects.push_back("<< /Type /Catalog /Pages 2 0 R >>"); // 1: Catalog
+        objects.push_back(std::string());                       // 2: Pages（Kids，最后填）
         objects.push_back("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
-                          "/Encoding /WinAnsiEncoding >>");            // 3: F1
+                          "/Encoding /WinAnsiEncoding >>"); // 3: F1
         objects.push_back("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold "
-                          "/Encoding /WinAnsiEncoding >>");            // 4: F2
+                          "/Encoding /WinAnsiEncoding >>"); // 4: F2
 
         // 5: F3（中文, Identity-H）与 6: ToUnicode CMap。两个都要等页面内容扫完才填得出来
         // （CMap 得知道这整份报告里都出现过哪些非 Latin 字符），所以先占位、编号先定。
         const int font_object = static_cast<int>(objects.size()) + 1;
         const int cmap_object = font_object + 1;
-        objects.push_back(std::string());  // 5: F3
-        objects.push_back(std::string());  // 6: ToUnicode
+        objects.push_back(std::string()); // 5: F3
+        objects.push_back(std::string()); // 6: ToUnicode
 
         const int first_content = static_cast<int>(objects.size()) + 1;
         for (const auto& page : pages) {
             const double top = kMarginTop;
             std::ostringstream stream;
-            stream << "BT /F1 10 Tf " << kLeading << " TL " << kMarginX << " " << top
-                   << " Td\n";
+            stream << "BT /F1 10 Tf " << kLeading << " TL " << kMarginX << " " << top << " Td\n";
             for (const auto& line : page) {
                 // 一行切成若干 run：Latin 段用 F1 画，中文段用 F3 画。
                 // 不能整行二选一 —— 报告里"中文问题标题 + 英文 rule_id"这种行很常见。
@@ -98,26 +100,25 @@ public:
             }
             stream << "ET";
             const std::string content = stream.str();
-            objects.push_back("<< /Length " + std::to_string(content.size()) + " >>\nstream\n" +
-                              content + "\nendstream");
+            objects.push_back("<< /Length " + std::to_string(content.size()) + " >>\nstream\n" + content +
+                              "\nendstream");
         }
 
         const int first_page = first_content + static_cast<int>(pages.size());
         for (std::size_t i = 0; i < pages.size(); ++i) {
             const int resource_object = first_content + static_cast<int>(i);
-            objects.push_back("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " +
-                              Fixed(kPageWidth, 0) + " " + Fixed(kPageHeight, 0) + "] " +
-                              "/Resources << /Font << /F1 " + std::to_string(kFontWinAnsi1) +
-                              " 0 R /F2 " + std::to_string(kFontWinAnsi2) + " 0 R /F3 " +
-                              std::to_string(font_object) + " 0 R >> >> " +
-                              "/Contents " + std::to_string(resource_object) + " 0 R >>");
+            objects.push_back("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + Fixed(kPageWidth, 0) + " " +
+                              Fixed(kPageHeight, 0) + "] " + "/Resources << /Font << /F1 " +
+                              std::to_string(kFontWinAnsi1) + " 0 R /F2 " + std::to_string(kFontWinAnsi2) +
+                              " 0 R /F3 " + std::to_string(font_object) + " 0 R >> >> " + "/Contents " +
+                              std::to_string(resource_object) + " 0 R >>");
         }
 
-        objects[font_object - 1] =
-            "<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /Identity-H "
-            "/DescendantFonts [ << /Type /Font /Subtype /CIDFontType2 /BaseFont /STSong-Light "
-            "/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> /DW 1000 "
-            "/CIDToGIDMap /Identity >> ] /ToUnicode " + std::to_string(cmap_object) + " 0 R >>";
+        objects[font_object - 1] = "<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /Identity-H "
+                                   "/DescendantFonts [ << /Type /Font /Subtype /CIDFontType2 /BaseFont /STSong-Light "
+                                   "/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> /DW 1000 "
+                                   "/CIDToGIDMap /Identity >> ] /ToUnicode " +
+                                   std::to_string(cmap_object) + " 0 R >>";
         objects[cmap_object - 1] = BuildToUnicodeCMap();
 
         // 2: Pages（Kids 填回占位槽，下标 1 -> 对象 2，编号不受影响）
@@ -145,8 +146,8 @@ public:
         }
         char trailer[64];
         std::snprintf(trailer, sizeof(trailer), "%zu", xref_offset);
-        body += "trailer\n<< /Size " + std::to_string(objects.size() + 1) +
-                " /Root 1 0 R >>\nstartxref\n" + std::string(trailer) + "\n%%EOF\n";
+        body += "trailer\n<< /Size " + std::to_string(objects.size() + 1) + " /Root 1 0 R >>\nstartxref\n" +
+                std::string(trailer) + "\n%%EOF\n";
 
         out = body;
         return true;
@@ -157,7 +158,9 @@ public:
     // ⚠️ 语义：只有"这个字体真的表示不了"才算丢字（目前是 BMP 外的字符，如 emoji）。
     // 以前这里是"凡出现非 ASCII 字节就算丢"，于是中文报告一律被判成 text_loss=true，
     // 界面弹出"中文已被替换为 ?" —— 与实际情况正好相反。
-    bool HasLoss() const { return lossy_; }
+    bool HasLoss() const {
+        return lossy_;
+    }
 
 private:
     // 一行文本切成的一段连续字节：
@@ -166,7 +169,9 @@ private:
     struct Run {
         std::string text;
         std::string hex;
-        bool IsHex() const { return !hex.empty(); }
+        bool IsHex() const {
+            return !hex.empty();
+        }
     };
 
     // 逐段（run）生成器：ASCII / Latin-1 走 WinAnsi，其它（中文、日文……）走 UTF-16BE。
@@ -180,7 +185,8 @@ private:
         std::vector<Run> runs;
         Run run;
         auto flush = [&]() {
-            if (!run.text.empty() || !run.hex.empty()) runs.push_back(run);
+            if (!run.text.empty() || !run.hex.empty())
+                runs.push_back(run);
             run = Run();
         };
         for (std::size_t i = 0; i < text.size();) {
@@ -188,14 +194,12 @@ private:
             unsigned int codepoint = c;
             std::size_t advance = 1;
             if (c >= 0xF0 && i + 3 < text.size()) {
-                codepoint = ((c & 0x07u) << 18) |
-                            ((static_cast<unsigned int>(text[i + 1]) & 0x3Fu) << 12) |
+                codepoint = ((c & 0x07u) << 18) | ((static_cast<unsigned int>(text[i + 1]) & 0x3Fu) << 12) |
                             ((static_cast<unsigned int>(text[i + 2]) & 0x3Fu) << 6) |
                             (static_cast<unsigned int>(text[i + 3]) & 0x3Fu);
                 advance = 4;
             } else if (c >= 0xE0 && i + 2 < text.size()) {
-                codepoint = ((c & 0x0Fu) << 12) |
-                            ((static_cast<unsigned int>(text[i + 1]) & 0x3Fu) << 6) |
+                codepoint = ((c & 0x0Fu) << 12) | ((static_cast<unsigned int>(text[i + 1]) & 0x3Fu) << 6) |
                             ((static_cast<unsigned int>(text[i + 2]) & 0x3Fu));
                 advance = 3;
             } else if (c >= 0xC0 && i + 1 < text.size()) {
@@ -203,14 +207,23 @@ private:
                 advance = 2;
             }
 
-            const bool latin = (codepoint < 0x100);  // WinAnsi 覆盖得住
+            const bool latin = (codepoint < 0x100); // WinAnsi 覆盖得住
             if (latin) {
-                if (run.IsHex()) flush();
+                if (run.IsHex())
+                    flush();
                 switch (codepoint) {
-                    case '(': run.text += "\\("; break;
-                    case ')': run.text += "\\)"; break;
-                    case '\\': run.text += "\\\\"; break;
-                    default:  run.text += static_cast<char>(codepoint); break;
+                case '(':
+                    run.text += "\\(";
+                    break;
+                case ')':
+                    run.text += "\\)";
+                    break;
+                case '\\':
+                    run.text += "\\\\";
+                    break;
+                default:
+                    run.text += static_cast<char>(codepoint);
+                    break;
                 }
             } else {
                 if (!run.IsHex()) {
@@ -254,28 +267,25 @@ private:
         cmap << codepoints_.size() << " beginbfchar\n";
         char buf[24];
         for (const unsigned int codepoint : codepoints_) {
-            std::snprintf(buf, sizeof(buf), "<%04X> <%04X>\n", codepoint & 0xFFFFu,
-                          codepoint & 0xFFFFu);
+            std::snprintf(buf, sizeof(buf), "<%04X> <%04X>\n", codepoint & 0xFFFFu, codepoint & 0xFFFFu);
             cmap << buf;
         }
         cmap << "endbfchar\nendcmap\nCMapName currentdict /CMap defineresource pop\nend\nend";
-        return "<< /Length " + std::to_string(cmap.str().size()) + " >>\nstream\n" +
-               cmap.str() + "\nendstream";
+        return "<< /Length " + std::to_string(cmap.str().size()) + " >>\nstream\n" + cmap.str() + "\nendstream";
     }
 
     std::vector<std::string> lines_;
-    std::set<unsigned int> codepoints_;  // 整份报告里出现过的非 Latin 码点
-    bool lossy_ = false;                 // 有字符被降级成 '?'（BMP 外字符）
+    std::set<unsigned int> codepoints_; // 整份报告里出现过的非 Latin 码点
+    bool lossy_ = false;                // 有字符被降级成 '?'（BMP 外字符）
 };
 
-}  // namespace
+} // namespace
 
 // ===========================================================================
 // PDF
 // ===========================================================================
 
-QcPdfExportResult QcReportExporter::ExportPdf(const std::string& path,
-                                             const QcExportBundle& bundle) {
+QcPdfExportResult QcReportExporter::ExportPdf(const std::string& path, const QcExportBundle& bundle) {
     QcPdfExportResult result;
     const qc::QcRunResult& run = bundle.run;
     const model::QcReport& report = run.report;
@@ -291,18 +301,16 @@ QcPdfExportResult QcReportExporter::ExportPdf(const std::string& path,
     writer.AddLine("Elapsed : " + Fixed(run.elapsed_ms, 0) + " ms");
     writer.AddLine(kRowGroupSeparator);
 
-    writer.AddLine("Issues: critical " +
-                   std::to_string(report.CountBySeverity(model::IssueSeverity::Critical)) +
-                   " / error " + std::to_string(report.CountBySeverity(model::IssueSeverity::Error)) +
-                   " / warning " +
-                   std::to_string(report.CountBySeverity(model::IssueSeverity::Warning)) +
-                   " / info " + std::to_string(report.CountBySeverity(model::IssueSeverity::Info)));
+    writer.AddLine("Issues: critical " + std::to_string(report.CountBySeverity(model::IssueSeverity::Critical)) +
+                   " / error " + std::to_string(report.CountBySeverity(model::IssueSeverity::Error)) + " / warning " +
+                   std::to_string(report.CountBySeverity(model::IssueSeverity::Warning)) + " / info " +
+                   std::to_string(report.CountBySeverity(model::IssueSeverity::Info)));
     writer.AddLine("Container  : " + report.container_format);
     writer.AddLine("Duration   : " + Fixed(report.duration_seconds, 3) + " s");
     writer.AddLine("Size       : " + Int64Text(report.file_size_bytes) + " bytes");
     writer.AddLine("Bitrate    : " + Fixed(report.overall_bitrate_bps / 1000.0, 1) + " kbps");
-    writer.AddLine("Streams    : video " + std::to_string(report.video_stream_count) +
-                   " / audio " + std::to_string(report.audio_stream_count));
+    writer.AddLine("Streams    : video " + std::to_string(report.video_stream_count) + " / audio " +
+                   std::to_string(report.audio_stream_count));
     writer.AddLine(kRowGroupSeparator);
 
     if (report.issues.empty()) {
@@ -311,11 +319,12 @@ QcPdfExportResult QcReportExporter::ExportPdf(const std::string& path,
         writer.AddLine("Issue list:");
         for (std::size_t i = 0; i < report.issues.size(); ++i) {
             const auto& issue = report.issues[i];
-            writer.AddLine("[" + std::to_string(i + 1) + "] " + std::string(SeverityCode(issue.severity)) +
-                           " / " + issue.rule_id + " / " + issue.title);
+            writer.AddLine("[" + std::to_string(i + 1) + "] " + std::string(SeverityCode(issue.severity)) + " / " +
+                           issue.rule_id + " / " + issue.title);
             writer.AddLine("    " + issue.range.ToString());
             writer.AddLine("    " + SingleLine(issue.detail));
-            if (!issue.suggestion.empty()) writer.AddLine("    fix: " + SingleLine(issue.suggestion));
+            if (!issue.suggestion.empty())
+                writer.AddLine("    fix: " + SingleLine(issue.suggestion));
         }
     }
 
@@ -327,8 +336,10 @@ QcPdfExportResult QcReportExporter::ExportPdf(const std::string& path,
     }
 
     std::string bytes;
-    if (!writer.Build(bytes)) return result;
-    if (!WriteUtf8File(path, bytes)) return result;
+    if (!writer.Build(bytes))
+        return result;
+    if (!WriteUtf8File(path, bytes))
+        return result;
 
     result.ok = true;
     // 由写入器自己报告：它逐字符走过全部文本，知道哪些字真的没画出来。
@@ -336,5 +347,5 @@ QcPdfExportResult QcReportExporter::ExportPdf(const std::string& path,
     return result;
 }
 
-}  // namespace reporting
-}  // namespace videoeye
+} // namespace reporting
+} // namespace videoeye

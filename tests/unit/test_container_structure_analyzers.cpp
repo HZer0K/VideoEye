@@ -27,10 +27,10 @@
 #include "core/analysis/container/AsfStructureAnalyzer.h"
 #include "core/analysis/container/AviStructureAnalyzer.h"
 #include "core/analysis/container/FlvStructureAnalyzer.h"
-#include "core/analysis/container/OggStructureAnalyzer.h"
-#include "core/analysis/container/TsStructureAnalyzer.h"
 #include "core/analysis/container/MpegPsStructureAnalyzer.h"
 #include "core/analysis/container/MxfStructureAnalyzer.h"
+#include "core/analysis/container/OggStructureAnalyzer.h"
+#include "core/analysis/container/TsStructureAnalyzer.h"
 #include "core/domain/model/ContainerStructureInfo.h"
 
 using namespace videoeye;
@@ -40,12 +40,12 @@ namespace {
 using AnalyzeFn = std::function<bool(const std::string&, model::ContainerStructureResult&)>;
 
 struct AnalyzerCase {
-    const char* name;                // gtest 打印用的参数名
+    const char* name; // gtest 打印用的参数名
     AnalyzeFn run;
-    model::ContainerFormat format;   // 最小合法样本应识别出的格式
+    model::ContainerFormat format; // 最小合法样本应识别出的格式
     const char* format_name;
-    QByteArray minimal_valid;        // 最小合法样本字节
-    bool rejects_foreign_magic;      // 魔数对不上时是否报错
+    QByteArray minimal_valid;   // 最小合法样本字节
+    bool rejects_foreign_magic; // 魔数对不上时是否报错
 };
 
 // ---- 最小合法样本 ----------------------------------------------------------
@@ -55,9 +55,9 @@ struct AnalyzerCase {
 // ASF: Header Object GUID + size(30) + 子对象数 0 + 2 字节保留
 QByteArray AsfMinimal() {
     QByteArray b = QByteArray::fromHex("3026B2758E66CF11A6D900AA0062CE6C");
-    b.append(QByteArray::fromHex("1E00000000000000"));   // LE64: 30（= 本文件长度）
-    b.append(QByteArray::fromHex("00000000"));           // LE32: 0 个子对象
-    b.append(QByteArray::fromHex("0000"));               // reserved
+    b.append(QByteArray::fromHex("1E00000000000000")); // LE64: 30（= 本文件长度）
+    b.append(QByteArray::fromHex("00000000"));         // LE32: 0 个子对象
+    b.append(QByteArray::fromHex("0000"));             // reserved
     return b;
 }
 
@@ -73,8 +73,8 @@ QByteArray AviMinimal() {
 QByteArray FlvMinimal() {
     QByteArray b("FLV");
     b.append(char(0x01));
-    b.append(char(0x05));                        // 0x01 video | 0x04 audio
-    b.append(QByteArray::fromHex("00000009"));   // BE32: header size = 9
+    b.append(char(0x05));                      // 0x01 video | 0x04 audio
+    b.append(QByteArray::fromHex("00000009")); // BE32: header size = 9
     return b;
 }
 
@@ -82,10 +82,10 @@ QByteArray FlvMinimal() {
 // 的同步字节判定，又不引入任何真实的 PAT/PMT 解析。
 QByteArray TsMinimal() {
     QByteArray pkt(188, '\0');
-    pkt[0] = char(0x47);    // sync byte
-    pkt[1] = char(0x1F);    // PID 高 5 位 -> 0x1FFF (null packet)
-    pkt[2] = char(0xFF);    // PID 低 8 位
-    pkt[3] = char(0x10);    // 仅载荷, 无适配域, cc=0
+    pkt[0] = char(0x47); // sync byte
+    pkt[1] = char(0x1F); // PID 高 5 位 -> 0x1FFF (null packet)
+    pkt[2] = char(0xFF); // PID 低 8 位
+    pkt[3] = char(0x10); // 仅载荷, 无适配域, cc=0
     QByteArray b = pkt;
     b.append(pkt);
     return b;
@@ -94,14 +94,14 @@ QByteArray TsMinimal() {
 // OGG: 一个 BOS page（"OggS" + 27 字节头 + 1 段长度为 0），没有载荷
 QByteArray OggMinimal() {
     QByteArray b("OggS");
-    b.append(char(0x00));                        // version
-    b.append(char(0x02));                        // header_type = BOS
-    b.append(QByteArray(8, '\0'));               // granule position
-    b.append(QByteArray::fromHex("01000000"));   // serial number
-    b.append(QByteArray(4, '\0'));               // page sequence
-    b.append(QByteArray(4, '\0'));               // checksum（本测试不校验）
-    b.append(char(0x01));                        // 1 个 segment
-    b.append(char(0x00));                        // segment 长度 0
+    b.append(char(0x00));                      // version
+    b.append(char(0x02));                      // header_type = BOS
+    b.append(QByteArray(8, '\0'));             // granule position
+    b.append(QByteArray::fromHex("01000000")); // serial number
+    b.append(QByteArray(4, '\0'));             // page sequence
+    b.append(QByteArray(4, '\0'));             // checksum（本测试不校验）
+    b.append(char(0x01));                      // 1 个 segment
+    b.append(char(0x00));                      // segment 长度 0
     return b;
 }
 
@@ -117,41 +117,54 @@ QByteArray MxfMinimal() {
 
 std::vector<AnalyzerCase> AllCases() {
     return {
-        {"Asf",  [](const std::string& p, model::ContainerStructureResult& r) {
+        {"Asf",
+         [](const std::string& p, model::ContainerStructureResult& r) {
              return videoeye::AsfStructureAnalyzer().Analyze(p, r);
-         }, model::ContainerFormat::ASF, "ASF", AsfMinimal(), true},
-        {"Avi",  [](const std::string& p, model::ContainerStructureResult& r) {
+         },
+         model::ContainerFormat::ASF, "ASF", AsfMinimal(), true},
+        {"Avi",
+         [](const std::string& p, model::ContainerStructureResult& r) {
              return videoeye::AviStructureAnalyzer().Analyze(p, r);
-         }, model::ContainerFormat::AVI, "AVI", AviMinimal(), true},
-        {"Flv",  [](const std::string& p, model::ContainerStructureResult& r) {
+         },
+         model::ContainerFormat::AVI, "AVI", AviMinimal(), true},
+        {"Flv",
+         [](const std::string& p, model::ContainerStructureResult& r) {
              return videoeye::FlvStructureAnalyzer().Analyze(p, r);
-         }, model::ContainerFormat::FLV, "FLV", FlvMinimal(), true},
-        {"Ogg",  [](const std::string& p, model::ContainerStructureResult& r) {
+         },
+         model::ContainerFormat::FLV, "FLV", FlvMinimal(), true},
+        {"Ogg",
+         [](const std::string& p, model::ContainerStructureResult& r) {
              return videoeye::OggStructureAnalyzer().Analyze(p, r);
-         }, model::ContainerFormat::OGG, "OGG", OggMinimal(), false},
-        {"Ts",   [](const std::string& p, model::ContainerStructureResult& r) {
+         },
+         model::ContainerFormat::OGG, "OGG", OggMinimal(), false},
+        {"Ts",
+         [](const std::string& p, model::ContainerStructureResult& r) {
              return videoeye::TsStructureAnalyzer().Analyze(p, r);
-         }, model::ContainerFormat::MPEG_TS, "MPEG-TS", TsMinimal(), true},
-        {"MpegPs", [](const std::string& p, model::ContainerStructureResult& r) {
+         },
+         model::ContainerFormat::MPEG_TS, "MPEG-TS", TsMinimal(), true},
+        {"MpegPs",
+         [](const std::string& p, model::ContainerStructureResult& r) {
              return videoeye::MpegPsStructureAnalyzer().Analyze(p, r);
-         }, model::ContainerFormat::MPEG_PS, "MPEG-PS", MpegPsMinimal(), true},
-        {"Mxf", [](const std::string& p, model::ContainerStructureResult& r) {
+         },
+         model::ContainerFormat::MPEG_PS, "MPEG-PS", MpegPsMinimal(), true},
+        {"Mxf",
+         [](const std::string& p, model::ContainerStructureResult& r) {
              return videoeye::MxfStructureAnalyzer().Analyze(p, r);
-         }, model::ContainerFormat::MXF, "MXF", MxfMinimal(), true},
+         },
+         model::ContainerFormat::MXF, "MXF", MxfMinimal(), true},
     };
 }
 
 std::vector<AnalyzerCase> MagicCheckingCases() {
     std::vector<AnalyzerCase> out;
     for (const auto& c : AllCases()) {
-        if (c.rejects_foreign_magic) out.push_back(c);
+        if (c.rejects_foreign_magic)
+            out.push_back(c);
     }
     return out;
 }
 
-auto CaseName = [](const testing::TestParamInfo<AnalyzerCase>& info) {
-    return std::string(info.param.name);
-};
+auto CaseName = [](const testing::TestParamInfo<AnalyzerCase>& info) { return std::string(info.param.name); };
 
 // 把一个字节串写成临时文件，返回路径（失败返回空串）
 // 返回 std::string 而不是 QString：样本落盘后交给的是已经不碰 Qt 的容器分析器，
@@ -159,7 +172,8 @@ auto CaseName = [](const testing::TestParamInfo<AnalyzerCase>& info) {
 std::string WriteTemp(const QTemporaryDir& dir, const QString& name, const QByteArray& bytes) {
     const QString path = dir.filePath(name);
     QFile f(path);
-    if (!f.open(QIODevice::WriteOnly)) return std::string();
+    if (!f.open(QIODevice::WriteOnly))
+        return std::string();
     f.write(bytes);
     f.close();
     return path.toStdString();
@@ -182,8 +196,7 @@ TEST_P(MissingFileTest, ReportsOpenFailureWithoutTouchingResult) {
     EXPECT_TRUE(result.element_tree.empty());
 }
 
-INSTANTIATE_TEST_SUITE_P(AllAnalyzers, MissingFileTest,
-                         testing::ValuesIn(AllCases()), CaseName);
+INSTANTIATE_TEST_SUITE_P(AllAnalyzers, MissingFileTest, testing::ValuesIn(AllCases()), CaseName);
 
 // ---- 2. 魔数对不上 --------------------------------------------------------
 class ForeignMagicTest : public testing::TestWithParam<AnalyzerCase> {};
@@ -206,8 +219,7 @@ TEST_P(ForeignMagicTest, RejectsNonMatchingSignature) {
     EXPECT_TRUE(result.element_tree.empty());
 }
 
-INSTANTIATE_TEST_SUITE_P(MagicCheckingAnalyzers, ForeignMagicTest,
-                         testing::ValuesIn(MagicCheckingCases()), CaseName);
+INSTANTIATE_TEST_SUITE_P(MagicCheckingAnalyzers, ForeignMagicTest, testing::ValuesIn(MagicCheckingCases()), CaseName);
 
 // ---- 3. 最小合法文件 ------------------------------------------------------
 class MinimalValidTest : public testing::TestWithParam<AnalyzerCase> {};
@@ -232,8 +244,7 @@ TEST_P(MinimalValidTest, AcceptsAndFillsCoreFields) {
     EXPECT_TRUE(result.error_message.empty());
 }
 
-INSTANTIATE_TEST_SUITE_P(AllAnalyzers, MinimalValidTest,
-                         testing::ValuesIn(AllCases()), CaseName);
+INSTANTIATE_TEST_SUITE_P(AllAnalyzers, MinimalValidTest, testing::ValuesIn(AllCases()), CaseName);
 
 // OGG 是唯一不校验魔数的分析器：它会把任意字节当成"待重新同步的页流"，
 // 扫不到 OggS 就当 0 页正常返回。这是刻意的容错（Ogg 允许前置垃圾数据），
@@ -260,7 +271,7 @@ TEST(MpegPsAnalyzer, ParsesPsmMappingAndPes) {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
 
-    QByteArray b = QByteArray::fromHex("000001BA44000400040189C3F800");  // Pack Header
+    QByteArray b = QByteArray::fromHex("000001BA44000400040189C3F800"); // Pack Header
     b.append(QByteArray::fromHex("000001BC000B"));                      // PSM 起始码 + 长度 11
     b.append(QByteArray::fromHex("80FFFF000000041BE00000"));            // 0xE0 -> stream_type 0x1B
     b.append(QByteArray::fromHex("000001E00009"));                      // 视频 PES，长度 9
@@ -287,9 +298,9 @@ TEST(MxfAnalyzer, CollectsEssenceTracks) {
 
     QByteArray b = QByteArray::fromHex("060E2B34020501010D01020101020100");
     b.append(char(0x00));                                              // BER 长度 0
-    b.append(QByteArray::fromHex("060E2B34010201010D01030101010000"));  // track 1 / video
+    b.append(QByteArray::fromHex("060E2B34010201010D01030101010000")); // track 1 / video
     b.append(char(0x00));
-    b.append(QByteArray::fromHex("060E2B34010201010D01030102020000"));  // track 2 / audio
+    b.append(QByteArray::fromHex("060E2B34010201010D01030102020000")); // track 2 / audio
     b.append(char(0x00));
 
     const std::string path = WriteTemp(dir, "clip.mxf", b);
@@ -321,8 +332,10 @@ QByteArray TsPacket(uint16_t pid, bool pusi, int cc, const QByteArray& payload) 
     pkt[2] = char(pid & 0xFF);
     pkt[3] = char(0x10 | (cc & 0x0F));
     const int n = std::min<int>(static_cast<int>(payload.size()), 184);
-    for (int i = 0; i < n; ++i) pkt[4 + i] = payload[i];
-    for (int i = 4 + n; i < 188; ++i) pkt[i] = char(0xFF);
+    for (int i = 0; i < n; ++i)
+        pkt[4 + i] = payload[i];
+    for (int i = 4 + n; i < 188; ++i)
+        pkt[i] = char(0xFF);
     return pkt;
 }
 
@@ -338,18 +351,18 @@ QByteArray PsiPayload(const QByteArray& section) {
 QByteArray PatSection(uint16_t program, uint16_t pmt_pid) {
     const int len = 5 + 4 + 4;
     QByteArray s;
-    s.append(char(0x00));                       // table_id
+    s.append(char(0x00)); // table_id
     s.append(char(0xB0 | ((len >> 8) & 0x0F)));
     s.append(char(len & 0xFF));
-    s.append(QByteArray::fromHex("0001"));      // transport_stream_id
-    s.append(char(0xC1));                       // version=0 / current_next=1
-    s.append(char(0x00));                       // section_number
-    s.append(char(0x00));                       // last_section_number
+    s.append(QByteArray::fromHex("0001")); // transport_stream_id
+    s.append(char(0xC1));                  // version=0 / current_next=1
+    s.append(char(0x00));                  // section_number
+    s.append(char(0x00));                  // last_section_number
     s.append(char((program >> 8) & 0xFF));
     s.append(char(program & 0xFF));
     s.append(char(0xE0 | ((pmt_pid >> 8) & 0x1F)));
     s.append(char(pmt_pid & 0xFF));
-    s.append(QByteArray(4, '\0'));              // CRC（本解析器不校验）
+    s.append(QByteArray(4, '\0')); // CRC（本解析器不校验）
     return s;
 }
 
@@ -360,18 +373,18 @@ QByteArray PmtSection(uint16_t program, uint16_t pcr_pid) {
     es.append(char(0x1B));
     es.append(char(0xE0 | ((0x1000 >> 8) & 0x1F)));
     es.append(char(0x00));
-    es.append(char(0x00));   // es_info_length 高 4 位
-    es.append(char(0x00));   // es_info_length 低 8 位
+    es.append(char(0x00)); // es_info_length 高 4 位
+    es.append(char(0x00)); // es_info_length 低 8 位
     // ES #2: 私有数据 0x06 + 描述符
     QByteArray desc;
-    desc.append(char(0x0A));                    // ISO_639_language_descriptor
+    desc.append(char(0x0A)); // ISO_639_language_descriptor
     desc.append(char(0x04));
     desc.append("eng", 3);
-    desc.append(char(0x00));                    // audio_type
-    desc.append(char(0x05));                    // registration_descriptor
+    desc.append(char(0x00)); // audio_type
+    desc.append(char(0x05)); // registration_descriptor
     desc.append(char(0x04));
     desc.append("AC-3", 4);
-    desc.append(char(0x6A));                    // AC-3_descriptor
+    desc.append(char(0x6A)); // AC-3_descriptor
     desc.append(char(0x01));
     desc.append(char(0x00));
     es.append(char(0x06));
@@ -383,7 +396,7 @@ QByteArray PmtSection(uint16_t program, uint16_t pcr_pid) {
 
     const int len = 9 + static_cast<int>(es.size()) + 4;
     QByteArray s;
-    s.append(char(0x02));                       // table_id
+    s.append(char(0x02)); // table_id
     s.append(char(0xB0 | ((len >> 8) & 0x0F)));
     s.append(char(len & 0xFF));
     s.append(char((program >> 8) & 0xFF));
@@ -393,7 +406,7 @@ QByteArray PmtSection(uint16_t program, uint16_t pcr_pid) {
     s.append(char(0x00));
     s.append(char(0xE0 | ((pcr_pid >> 8) & 0x1F)));
     s.append(char(pcr_pid & 0xFF));
-    s.append(char(0xF0));                       // program_info_length 高 4 位
+    s.append(char(0xF0)); // program_info_length 高 4 位
     s.append(char(0x00));
     s.append(es);
     s.append(QByteArray(4, '\0'));
@@ -406,9 +419,9 @@ QByteArray SdtSection(uint16_t service_id, const char* name, const char* provide
     const QByteArray provider_b(provider);
 
     QByteArray desc;
-    desc.append(char(0x48));                    // service_descriptor
+    desc.append(char(0x48)); // service_descriptor
     desc.append(char(1 + 1 + provider_b.size() + 1 + name_b.size()));
-    desc.append(char(0x01));                    // service_type = 数字电视
+    desc.append(char(0x01)); // service_type = 数字电视
     desc.append(char(provider_b.size()));
     desc.append(provider_b);
     desc.append(char(name_b.size()));
@@ -419,12 +432,12 @@ QByteArray SdtSection(uint16_t service_id, const char* name, const char* provide
     s.append(char(0x42));
     s.append(char(0xB0 | ((len >> 8) & 0x0F)));
     s.append(char(len & 0xFF));
-    s.append(QByteArray::fromHex("0001"));      // transport_stream_id
+    s.append(QByteArray::fromHex("0001")); // transport_stream_id
     s.append(char(0xC1));
     s.append(char(0x00));
     s.append(char(0x00));
-    s.append(QByteArray::fromHex("0001"));      // original_network_id
-    s.append(char(0xFF));                       // reserved
+    s.append(QByteArray::fromHex("0001")); // original_network_id
+    s.append(char(0xFF));                  // reserved
     s.append(char((service_id >> 8) & 0xFF));
     s.append(char(service_id & 0xFF));
     // reserved(6) + EIT_schedule_flag(1) + EIT_present_following_flag(1)
@@ -493,7 +506,8 @@ TEST(TsStructureDepthTest, ParsesPatPmtDescriptorsAndSdt) {
     bool node_has_service_name = false;
     const auto& root = result.element_tree[0];
     for (const auto& child : root.children) {
-        if (child.name.find("CCTV-1 HD") != std::string::npos) node_has_service_name = true;
+        if (child.name.find("CCTV-1 HD") != std::string::npos)
+            node_has_service_name = true;
     }
     EXPECT_TRUE(node_has_service_name);
 }
@@ -549,8 +563,7 @@ TEST(TsStructureDepthTest, ReportsScanTruncation) {
     TsStructureOptions options;
     options.max_scan_packets = 3;
     model::ContainerStructureResult result;
-    ASSERT_TRUE(TsStructureAnalyzer().Analyze(path, result, nullptr, options))
-        << result.error_message;
+    ASSERT_TRUE(TsStructureAnalyzer().Analyze(path, result, nullptr, options)) << result.error_message;
     EXPECT_EQ(result.metadata["已扫描包数"], "3");
     EXPECT_NE(result.metadata["扫描是否完整"].find("否"), std::string::npos);
 }
@@ -576,18 +589,18 @@ const char* kContainerCorpusDir = VIDEOEYE_CONTAINER_CORPUS_DIR;
 // 一起走，这里就是必跑的。
 std::string RealSample(const QString& name) {
     const QString path = QDir(kContainerCorpusDir).filePath(name);
-    if (!QFileInfo::exists(path)) return std::string();
+    if (!QFileInfo::exists(path))
+        return std::string();
     return path.toStdString();
 }
 
 void SkipIfMissing(const std::string& path, const char* name) {
     if (path.empty()) {
-        GTEST_SKIP() << "缺真实样本 " << name
-                     << "，先跑 tests/corpus/generate_real_corpus.py";
+        GTEST_SKIP() << "缺真实样本 " << name << "，先跑 tests/corpus/generate_real_corpus.py";
     }
 }
 
-}  // namespace
+} // namespace
 
 TEST(RealContainerSampleTest, TsPacketSizeAndScanRangeMatchTheFile) {
     const std::string path = RealSample("real_h264_aac.ts");
@@ -680,4 +693,4 @@ TEST(RealContainerSampleTest, RealOggHasPageChain) {
     EXPECT_FALSE(result.summary.empty());
 }
 
-}  // namespace
+} // namespace

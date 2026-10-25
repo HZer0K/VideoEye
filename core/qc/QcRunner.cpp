@@ -22,7 +22,7 @@ namespace {
 
 constexpr std::chrono::milliseconds kCancelPollInterval{100};
 
-}  // namespace
+} // namespace
 
 MediaInput ClassifyMediaInput(const std::string& uri) {
     MediaInput input;
@@ -42,8 +42,7 @@ MediaInput ClassifyMediaInput(const std::string& uri) {
     }
     // "file://" 指向本地文件系统，仍按本地文件处理；其余 scheme 一律视为网络源
     // （http/https/rtmp/rtmps/rtsp/rtsps/rtp/udp/tcp/srt/... 都在此列）。
-    input.kind = (scheme == "file") ? MediaInput::Kind::LocalFile
-                                    : MediaInput::Kind::NetworkUri;
+    input.kind = (scheme == "file") ? MediaInput::Kind::LocalFile : MediaInput::Kind::NetworkUri;
     return input;
 }
 
@@ -86,11 +85,8 @@ bool IsAnalyzableInput(const MediaInput& input, std::string& reason) {
     return IsAnalyzableFile(input.uri, reason);
 }
 
-QcRunResult QcRunner::AnalyzeFile(const MediaInput& input,
-                                  const QcProfile& profile,
-                                  videoeye::AnalysisOptions options,
-                                  const QcRunCallbacks& callbacks,
-                                  int join_budget_ms) {
+QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& profile, videoeye::AnalysisOptions options,
+                                  const QcRunCallbacks& callbacks, int join_budget_ms) {
     QcRunResult output;
     output.profile_id = profile.id;
 
@@ -122,11 +118,11 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input,
         model::AnalysisResult result;
         std::mutex mutex;
         std::condition_variable cv;
-        std::shared_ptr<videoeye::AnalysisEngine> engine;  // 自持有: detach 后线程仍安全
-        std::shared_ptr<std::atomic<bool>> cancel_flag;    // 本次分析的取消源
+        std::shared_ptr<videoeye::AnalysisEngine> engine; // 自持有: detach 后线程仍安全
+        std::shared_ptr<std::atomic<bool>> cancel_flag;   // 本次分析的取消源
         std::string path;
         videoeye::AnalysisOptions options;
-        std::function<void(double, const std::string&)> progress;  // 调用方的进度回调
+        std::function<void(double, const std::string&)> progress; // 调用方的进度回调
     };
     auto box = std::make_shared<Box>();
     // 引擎含 atomic 成员、不可移动, 只能按 shared_ptr 交给 worker —— 盒子里放 shared_ptr
@@ -143,7 +139,8 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input,
     // 若把回调存进盒子(回调又捕获盒子), 就是一个 shared_ptr 环 —— 每次分析都留下
     // 一个永不释放的盒子(结果数据还在里面), ASan/LSan 必报泄漏。回调只可能在
     // Run() 期间触发, 那时盒子必然活着(worker 自己就持有一份强引用)。
-    if (callbacks.progress) box->progress = callbacks.progress;
+    if (callbacks.progress)
+        box->progress = callbacks.progress;
 
     // 取消源用盒子自持的那颗原子标志: 调用方的 should_cancel 在等待循环里被转成它的置位,
     // 引擎的所有取消轮询点（含 FFmpeg 中断回调）都看它 —— 取消只有这一颗, 不再有两套。
@@ -166,15 +163,15 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input,
             }
             box->cv.notify_all();
         };
-        if (box->progress) effective.on_progress = box->progress;
+        if (box->progress)
+            effective.on_progress = box->progress;
         // 异常必须就地收口：这是裸 std::thread 的线程体，任何逃逸的异常都会直接
         // std::terminate()（连等待线程一起带走），任务永远等不到结算 —— 分析器 /
         // 解析器抛异常就从"进程没了"降级成"这条任务失败"。
         // 收口模板与其它线程入口共用同一份（core/domain/task/ThreadBody.h），
         // 不再在这里抄一遍 try/catch —— 抄的那份迟早会漏或会跑偏。
-        const std::optional<std::string> failure = task::GuardBody([&]() {
-            box->engine->Run(box->path, box->options, effective, nullptr, box->cancel_flag);
-        });
+        const std::optional<std::string> failure =
+            task::GuardBody([&]() { box->engine->Run(box->path, box->options, effective, nullptr, box->cancel_flag); });
         if (failure) {
             NotifyFailed(effective, std::string("分析异常: ") + *failure);
         }
@@ -186,8 +183,7 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input,
 
     // 等结果: 带总预算。到点还没结算 -> 说明引擎既没回调、也没响应取消,
     // 按失败收尾并把线程转受控回收 —— worker 只持盒子(含引擎本体), detach 后自洽。
-    const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::milliseconds(join_budget_ms);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(join_budget_ms);
     {
         std::unique_lock<std::mutex> lock(box->mutex);
         while (!box->settled) {
@@ -223,8 +219,7 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input,
         // 的引擎；取消则保证它尽快自己收尾。
         box->cancel_flag->store(true, std::memory_order_release);
         box->engine->Cancel();
-        LOG_WARN("QcRunner 等待预算耗尽, 已请求取消后台分析 (" + box->path +
-                 "), 线程转入受控回收");
+        LOG_WARN("QcRunner 等待预算耗尽, 已请求取消后台分析 (" + box->path + "), 线程转入受控回收");
         worker.detach();
     }
 
@@ -245,7 +240,8 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input,
         output.error = box->error;
         // 把扫描失败的状态也带出来，便于上层区分
         output.analysis.scan_status = model::AnalysisStatus::Failed;
-        if (!box->error.empty()) output.analysis.error_message = box->error;
+        if (!box->error.empty())
+            output.analysis.error_message = box->error;
         return output;
     }
 
@@ -254,18 +250,17 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input,
 
     // 区分终态：取消 / 失败都算没跑完；抽样(命中包数上限)是部分结果但可算成功
     switch (output.analysis.scan_status) {
-        case model::AnalysisStatus::Cancelled:
-            output.ok = false;
-            output.error = "分析被取消";
-            return output;
-        case model::AnalysisStatus::Failed:
-            output.ok = false;
-            output.error = output.analysis.error_message.empty()
-                              ? "分析失败" : output.analysis.error_message;
-            return output;
-        case model::AnalysisStatus::Complete:
-        case model::AnalysisStatus::Sampled:
-            break;  // 到达终态，继续判定
+    case model::AnalysisStatus::Cancelled:
+        output.ok = false;
+        output.error = "分析被取消";
+        return output;
+    case model::AnalysisStatus::Failed:
+        output.ok = false;
+        output.error = output.analysis.error_message.empty() ? "分析失败" : output.analysis.error_message;
+        return output;
+    case model::AnalysisStatus::Complete:
+    case model::AnalysisStatus::Sampled:
+        break; // 到达终态，继续判定
     }
 
     if (!output.analysis.error_message.empty()) {
@@ -278,11 +273,9 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input,
     return output;
 }
 
-QcAnalyzeFn QcRunner::MakeAnalyzeFunction(const QcProfile& profile,
-                                          videoeye::AnalysisOptions options) {
+QcAnalyzeFn QcRunner::MakeAnalyzeFunction(const QcProfile& profile, videoeye::AnalysisOptions options) {
     // profile / options 在闭包之间共享（只读），cancel 状态每次调用由 request 带入。
-    auto shared = std::make_shared<std::pair<QcProfile, videoeye::AnalysisOptions>>(
-        profile, options);
+    auto shared = std::make_shared<std::pair<QcProfile, videoeye::AnalysisOptions>>(profile, options);
 
     return [shared](const QcAnalyzeRequest& request) -> QcRunResult {
         QcRunner runner;
@@ -292,11 +285,10 @@ QcAnalyzeFn QcRunner::MakeAnalyzeFunction(const QcProfile& profile,
         };
         // 每个文件的等待预算由请求带入（批量调度从 BatchQcOptions::per_item_timeout_ms
         // 透传）；请求没给（<=0）时退回本执行器的默认预算。
-        const int budget = request.join_budget_ms > 0 ? request.join_budget_ms
-                                                      : QcRunner::kDefaultJoinBudgetMs;
+        const int budget = request.join_budget_ms > 0 ? request.join_budget_ms : QcRunner::kDefaultJoinBudgetMs;
         return runner.AnalyzeFile(request.path, shared->first, shared->second, callbacks, budget);
     };
 }
 
-}  // namespace qc
-}  // namespace videoeye
+} // namespace qc
+} // namespace videoeye

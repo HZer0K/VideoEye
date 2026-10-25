@@ -64,5 +64,5 @@ struct PacketRecord {
     double timestamp_seconds = 0.0;
 };
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

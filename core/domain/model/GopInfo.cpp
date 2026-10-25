@@ -12,18 +12,21 @@ double GopInfo::DurationSeconds() const {
 
 double GopInfo::AverageBitrateKbps() const {
     const double d = DurationSeconds();
-    if (d <= 0.0 || byte_count <= 0) return 0.0;
+    if (d <= 0.0 || byte_count <= 0)
+        return 0.0;
     return static_cast<double>(byte_count) * 8.0 / 1000.0 / d;
 }
 
 double GopInfo::AverageFrameBytes() const {
-    if (frame_count <= 0) return 0.0;
+    if (frame_count <= 0)
+        return 0.0;
     return static_cast<double>(byte_count) / static_cast<double>(frame_count);
 }
 
 double GopInfo::AverageFps() const {
     const double d = DurationSeconds();
-    if (d <= 0.0) return 0.0;
+    if (d <= 0.0)
+        return 0.0;
     return static_cast<double>(frame_count) / d;
 }
 
@@ -36,15 +39,12 @@ std::string GopInfo::FrameTypeSummary() const {
 
 std::string GopInfo::ToString() const {
     char buf[256];
-    std::snprintf(buf, sizeof(buf),
-                  "GOP#%d [%.3f - %.3f] %.3fs %d帧 %.1fKB 平均%.0fkbps 最大帧%.1fKB %s%s",
-                  index, start_seconds, end_seconds, DurationSeconds(), frame_count,
-                  static_cast<double>(byte_count) / 1024.0, AverageBitrateKbps(),
-                  static_cast<double>(max_frame_bytes) / 1024.0,
-                  closed_gop ? "closed" : "open",
+    std::snprintf(buf, sizeof(buf), "GOP#%d [%.3f - %.3f] %.3fs %d帧 %.1fKB 平均%.0fkbps 最大帧%.1fKB %s%s", index,
+                  start_seconds, end_seconds, DurationSeconds(), frame_count, static_cast<double>(byte_count) / 1024.0,
+                  AverageBitrateKbps(), static_cast<double>(max_frame_bytes) / 1024.0, closed_gop ? "closed" : "open",
                   complete ? "" : " (未收尾)");
     return std::string(buf);
 }
 
-}  // namespace model
-}  // namespace videoeye
+} // namespace model
+} // namespace videoeye

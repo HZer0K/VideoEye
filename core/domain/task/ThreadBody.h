@@ -60,10 +60,11 @@ std::optional<std::string> GuardBody(Body&& body) noexcept {
 }
 
 // 只有 GuardBody 的结果与令牌、不想套 RunTerminalBody 时用这个纯判定(幂等、可单测)。
-inline TaskState ResolveTerminal(const std::optional<std::string>& failure,
-                                 const CancelToken& token) noexcept {
-    if (token.IsCanceled()) return TaskState::Canceled;
-    if (failure) return TaskState::Failed;
+inline TaskState ResolveTerminal(const std::optional<std::string>& failure, const CancelToken& token) noexcept {
+    if (token.IsCanceled())
+        return TaskState::Canceled;
+    if (failure)
+        return TaskState::Failed;
     return TaskState::Succeeded;
 }
 
@@ -84,8 +85,11 @@ TaskState RunTerminalBody(const CancelToken& token, Body&& body) noexcept {
 template <typename Cleanup>
 class ScopeExit {
 public:
-    explicit ScopeExit(Cleanup cleanup) : cleanup_(std::move(cleanup)) {}
-    ~ScopeExit() { cleanup_(); }
+    explicit ScopeExit(Cleanup cleanup) : cleanup_(std::move(cleanup)) {
+    }
+    ~ScopeExit() {
+        cleanup_();
+    }
     ScopeExit(const ScopeExit&) = delete;
     ScopeExit& operator=(const ScopeExit&) = delete;
     ScopeExit(ScopeExit&&) = delete;
@@ -100,5 +104,5 @@ ScopeExit<Cleanup> MakeScopeExit(Cleanup cleanup) {
     return ScopeExit<Cleanup>(std::move(cleanup));
 }
 
-}  // namespace task
-}  // namespace videoeye
+} // namespace task
+} // namespace videoeye

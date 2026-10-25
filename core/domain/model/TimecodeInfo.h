@@ -57,23 +57,23 @@ bool IsDropFrameRate(double fps);
 // 时码来源
 enum class TimecodeSource {
     Unknown = 0,
-    TimecodeTrack,  // MOV/MP4 的 tmcd track（AV_CODEC_ID_TIMECODE）
-    Metadata,       // 容器或流 metadata 里的 timecode tag
-    Both,           // 两条路都拿到了（UI 只显示一条，但可交叉核对）
+    TimecodeTrack, // MOV/MP4 的 tmcd track（AV_CODEC_ID_TIMECODE）
+    Metadata,      // 容器或流 metadata 里的 timecode tag
+    Both,          // 两条路都拿到了（UI 只显示一条，但可交叉核对）
 };
 
 // 一条时码轨（同一文件可能既有 tmcd track 又有 metadata tag）
 struct TimecodeTrack {
-    int stream_index = -1;             // tmcd track 的流号；metadata 来源为 -1
+    int stream_index = -1; // tmcd track 的流号；metadata 来源为 -1
     TimecodeSource source = TimecodeSource::Unknown;
     std::string codec_name;
-    std::string metadata_key;          // metadata 来源时的 tag 名（如 "timecode"）
-    std::string raw_text;              // metadata 来源时的原始字符串
-    double frame_rate = 0.0;           // 换算用的帧率
+    std::string metadata_key; // metadata 来源时的 tag 名（如 "timecode"）
+    std::string raw_text;     // metadata 来源时的原始字符串
+    double frame_rate = 0.0;  // 换算用的帧率
     bool drop_frame = false;
-    int64_t first_frame_count = -1;    // tmcd 首包里的帧序号（-1 = 未取到）
-    Timecode first_timecode;           // 首帧时码
-    double first_presentation_seconds = 0.0;  // 首帧对应的媒体时间（秒）
+    int64_t first_frame_count = -1;          // tmcd 首包里的帧序号（-1 = 未取到）
+    Timecode first_timecode;                 // 首帧时码
+    double first_presentation_seconds = 0.0; // 首帧对应的媒体时间（秒）
     std::string note;
 };
 
@@ -83,18 +83,20 @@ struct ChapterInfo {
     double start_seconds = 0.0;
     double end_seconds = 0.0;
     std::string title;
-    std::string language;              // 章节可能带语言 metadata
-    int64_t start_timestamp = 0;       // 原始时间戳（流 timebase 单位）
+    std::string language;        // 章节可能带语言 metadata
+    int64_t start_timestamp = 0; // 原始时间戳（流 timebase 单位）
     int64_t end_timestamp = 0;
 
-    double Duration() const { return end_seconds - start_seconds; }
+    double Duration() const {
+        return end_seconds - start_seconds;
+    }
 };
 
 enum class ChapterIssueType {
-    Overlap = 0,     // 与上一章节重叠
-    OutOfRange,      // 超出媒体时长
-    NonMonotonic,    // 起点早于上一章节
-    ZeroDuration,    // 零时长章节
+    Overlap = 0,  // 与上一章节重叠
+    OutOfRange,   // 超出媒体时长
+    NonMonotonic, // 起点早于上一章节
+    ZeroDuration, // 零时长章节
     MissingTitle,
 };
 
@@ -129,5 +131,5 @@ const char* ToString(TimecodeSource source);
 const char* ToString(ChapterIssueType type);
 const char* ChapterIssueCode(ChapterIssueType type);
 
-}  // namespace model
-}  // namespace videoeye
+} // namespace model
+} // namespace videoeye

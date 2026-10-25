@@ -6,8 +6,8 @@
 // 扫描请求通过 ScanRequested() 交给面板编排；与另两页共有的生命周期动作
 // （换文件路径 / 扫描态 / 进度 / 选项并入）实现在 ScanClient 接口里。
 
-#include <QWidget>
 #include <QString>
+#include <QWidget>
 
 #include <QCheckBox>
 #include <QLabel>
@@ -28,7 +28,9 @@ class ColorHdrPage : public QWidget, public ScanClient {
 public:
     explicit ColorHdrPage(QWidget* parent = nullptr);
 
-    void SetSourcePath(const QString& path) override { source_path_ = path; }
+    void SetSourcePath(const QString& path) override {
+        source_path_ = path;
+    }
     // 异常表来自 QC 规则引擎（category=色彩/HDR），所以要连报告一起给
     void SetResult(const model::AnalysisResult& result, const model::QcReport& qc_report);
 
@@ -42,7 +44,9 @@ public:
     int IssueCount() const override;
     // 同 BitrateGopPage::IsScanActive: 状态必须可观察，否则"某页卡在扫描中"只能靠肉眼发现。
     // 不在 ScanClient 接口里：它是给人/测试看的，不是面板驱动页面要用的。
-    bool IsScanActive() const { return scan_active_; }
+    bool IsScanActive() const {
+        return scan_active_;
+    }
     void SetProgress(int percent) override;
     void SetProgressFormat(const QString& format) override;
 
@@ -79,9 +83,9 @@ private:
     QPushButton* cancel_button_ = nullptr;
     QCheckBox* probe_frame_check_ = nullptr;
     QTabWidget* sub_tabs_ = nullptr;
-    QTableWidget* color_info_table_ = nullptr;   // 色彩信息（项目/值/说明）
-    QTableWidget* hdr_info_table_ = nullptr;     // HDR 元数据（项目/值/说明）
-    QTableWidget* issue_table_ = nullptr;        // 异常组合（QC 规则 category=色彩/HDR）
+    QTableWidget* color_info_table_ = nullptr; // 色彩信息（项目/值/说明）
+    QTableWidget* hdr_info_table_ = nullptr;   // HDR 元数据（项目/值/说明）
+    QTableWidget* issue_table_ = nullptr;      // 异常组合（QC 规则 category=色彩/HDR）
 };
 
 } // namespace ui

@@ -53,7 +53,7 @@ namespace ui {
 // 分析面板类
 class AnalysisPanel : public QWidget {
     Q_OBJECT
-    
+
 public:
     // 分析功能开关枚举
     //
@@ -66,7 +66,7 @@ public:
 
     explicit AnalysisPanel(QWidget* parent = nullptr);
     ~AnalysisPanel();
-    
+
     // 将分析面板各页添加到外部 QStackedWidget
     // 返回添加的页面数量 (流分析/视频帧/音频帧/数据包/异常事件/同步分析/时间轴/音频 QC/容器结构等)
     int PopulateStackedWidget(QStackedWidget* stack);
@@ -87,21 +87,27 @@ public:
         current_video_path_ = path.toStdString();
         // 切换文件后重置时间轴累计状态 (避免上一文件的数据混入)；
         // 时间轴与 facade 都在诊断页里，由它自己清空
-        if (pages_.diagnostics) pages_.diagnostics->ResetForNewFile();
+        if (pages_.diagnostics)
+            pages_.diagnostics->ResetForNewFile();
         // 报告与批量 QC 页需要当前文件来"按模板重新分析"
-        if (pages_.reporting) pages_.reporting->SetCurrentFile(path);
+        if (pages_.reporting)
+            pages_.reporting->SetCurrentFile(path);
         // 拆出去的页面用当前路径拼导出 CSV 的默认文件名
-        if (pages_.scene_change) pages_.scene_change->SetSourcePath(path);
+        if (pages_.scene_change)
+            pages_.scene_change->SetSourcePath(path);
         // 共用同一次扫描的页面统一走注册表（码率 GOP / 音频 QC / 色彩 HDR）
-        for (ScanClient* page : scan_clients_) page->SetSourcePath(path);
+        for (ScanClient* page : scan_clients_)
+            page->SetSourcePath(path);
         // 扫描总控在诊断页，换文件要同步它手里的当前路径
-        if (pages_.diagnostics) pages_.diagnostics->SetSourcePath(path);
+        if (pages_.diagnostics)
+            pages_.diagnostics->SetSourcePath(path);
         // 场景切换记录是播放期的累计结果，换文件必须清零（与帧/包那几页一致）
-        if (pages_.scene_change) pages_.scene_change->Reset();
+        if (pages_.scene_change)
+            pages_.scene_change->Reset();
         // 换文件 = 上一文件的分析结论全部作废：通知首页重置「分析状态」区
         emit DiagnosticsStateChanged();
     }
-    
+
     // 重新发射所有启用状态的开关信号 (用于文件打开后同步播放器状态)
     void EmitInitialFeatureStates();
 
@@ -112,7 +118,9 @@ public:
     // ---- 诊断状态只读快照（供首页「分析状态」区拉取）----
     // 扫描起止 / 报告重算 / 换文件都会发 DiagnosticsStateChanged，MainWindow 收到后
     // 再调这几个取数刷新首页 —— 页面不互相持有指针，快照式读取与容器结构页等一致。
-    bool IsScanRunning() const { return scan_running_; }
+    bool IsScanRunning() const {
+        return scan_running_;
+    }
     bool HasDiagnosticsResult() const;
     const model::QcReport& DiagnosticsReport() const;
     // 最近一次全文件扫描的失败原因（无失败返回空串）
@@ -129,7 +137,7 @@ public:
     // AnalysisPanel::PageBadgeInfo 写法（MainWindow 取标记用）一个字都不用改。
     using PageBadgeInfo = PageBadge;
     QMap<QString, PageBadgeInfo> PageBadges() const;
-    
+
 signals:
     // 分析功能开关变化信号 (供 MainWindow 连接 MediaPlayer)
     void AnalysisFeatureToggled(int feature, bool enabled);
@@ -149,7 +157,7 @@ signals:
 
     // 报告与批量 QC 页把状态（"已导出报告…""模板已加载"等）冒泡给主窗口状态栏
     void StatusMessage(const QString& text);
-    
+
 public slots:
     // 以下播放期回吐的槽都只做两件事：套用 Master/功能开关的过滤，再转发给
     // 对应的页面组件。数据本身不再由面板持有（评审 P2：面板退化为协调层）。
@@ -159,8 +167,8 @@ public slots:
     void ResetVideoFrameList();
     void AppendVideoFrameInfo(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds);
     void ResetAudioFrameList();
-    void AppendAudioFrameInfo(int index, qint64 pts, double timestamp_seconds,
-                              int sample_count, int sample_rate, int channels, int byte_count);
+    void AppendAudioFrameInfo(int index, qint64 pts, double timestamp_seconds, int sample_count, int sample_rate,
+                              int channels, int byte_count);
     void ResetPacketList();
     void AppendPacketInfo(const model::PacketInfo& packet_info);
     void ResetAnalysisEventList();
@@ -179,8 +187,7 @@ public slots:
     void OnVisualDefectFrame(const model::FrameQualityMetric& metric);
     void OnVisualDefectDetected(const model::VisualDefect& defect);
     void OnVisualDefectReset();
-    void OnVisualDefectStats(int analyzed_frames, int dropped_frames,
-                             const model::ActivePictureArea& effective_area);
+    void OnVisualDefectStats(int analyzed_frames, int dropped_frames, const model::ActivePictureArea& effective_area);
     void OnVisualDefectOptionChanged();
 
     // 参数集页「开始分析」：复用同一次全文件扫描
@@ -206,28 +213,28 @@ private:
     // 将页面包裹 QScrollArea 并添加到页面列表。同时把导航元数据（稳定 pageId、
     // 分组 id、组内排序键、口径）写成控件属性，供 MainWindow 生成侧栏；见
     // ui/main_window/navigation_model.h。由 MakePageBuildDeps 作为 add_page 交给工厂。
-    void AddPageWithScroll(QWidget* tab_widget, const QString& title, const QString& page_id,
-                           const QString& group_id, int order, const QString& scope = QString());
+    void AddPageWithScroll(QWidget* tab_widget, const QString& title, const QString& page_id, const QString& group_id,
+                           int order, const QString& scope = QString());
     void FlushPendingUiUpdates();
 
     // 「关联场景切换」：页面不持有 facade，这一步由面板编排（重算 QC + 刷新问题表）
     void OnSceneLinkRequested(const std::vector<model::SceneChangeResult>& records,
                               const videoeye::BitrateGopOptions& options);
 
-    void UpdateBitstreamUi();         // 参数集页：结构树 + 容器/码流对比 + 不一致表
+    void UpdateBitstreamUi(); // 参数集页：结构树 + 容器/码流对比 + 不一致表
     // 字幕的「过短 / 过长 / 阅读速度」阈值以「规则与阈值」那张可编辑的表为准，
     // 每次扫描前同步一次，避免选项与规则两处阈值各说各话。
     void SyncSubtitleThresholds(videoeye::AnalysisOptions& options);
     void OnStreamingRefreshRequested();
-    void UpdateStreamingUi();         // 流媒体包页：结构树 + ladder + 分片时间轴 + 问题
-    
+    void UpdateStreamingUi(); // 流媒体包页：结构树 + ladder + 分片时间轴 + 问题
+
     // 分析功能开关
     QMap<AnalysisFeature, bool> feature_enabled_;
-    
+
     // 页面管理 (替代 QTabWidget)
-    QList<QWidget*> page_widgets_;      // 各页面的 QScrollArea (含内容)
-    QStringList page_titles_;           // 各页面标题
-    QStackedWidget* external_stack_ = nullptr;  // 外部 QStackedWidget (由 MainWindow 提供)
+    QList<QWidget*> page_widgets_;             // 各页面的 QScrollArea (含内容)
+    QStringList page_titles_;                  // 各页面标题
+    QStackedWidget* external_stack_ = nullptr; // 外部 QStackedWidget (由 MainWindow 提供)
 
     // 各分析页的指针登记表（由 AnalysisPageFactory 建好并整体交回来）。
     //

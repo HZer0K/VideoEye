@@ -56,8 +56,8 @@ QLabel* SummaryLabel(PacketTableWidget& widget) {
     return nullptr;
 }
 
-PacketInfo MakePacket(int index, int stream_index, int stream_type, int64_t pts,
-                      int64_t dts, int64_t duration, int size, double timestamp_seconds) {
+PacketInfo MakePacket(int index, int stream_index, int stream_type, int64_t pts, int64_t dts, int64_t duration,
+                      int size, double timestamp_seconds) {
     PacketInfo info;
     info.index = index;
     info.stream_index = stream_index;
@@ -72,10 +72,13 @@ PacketInfo MakePacket(int index, int stream_index, int stream_type, int64_t pts,
     return info;
 }
 
+int RowCount(QTableView* table) {
+    return table->model()->rowCount();
+}
 
-int RowCount(QTableView* table) { return table->model()->rowCount(); }
-
-int ColumnCount(QTableView* table) { return table->model()->columnCount(); }
+int ColumnCount(QTableView* table) {
+    return table->model()->columnCount();
+}
 
 QString Header(QTableView* table, int column) {
     return table->model()->headerData(column, Qt::Horizontal).toString();
@@ -88,7 +91,7 @@ QString Cell(QTableView* table, int row, int column) {
 bool HasCell(QTableView* table, int row, int column) {
     return table->model()->index(row, column).isValid();
 }
-}  // namespace
+} // namespace
 
 // ---------------------------------------------------------------------------
 // 1. 表结构：7 列 + 列名 + 筛选下拉 4 项 + 开关默认未勾选
@@ -140,7 +143,7 @@ TEST(PacketTableWidgetTests, AppendMarksPendingAndFlushFillsCells) {
 
     widget.AppendPacket(MakePacket(1, 0, AVMEDIA_TYPE_VIDEO, 1000, 900, 40, 1234, 0.5));
     EXPECT_TRUE(widget.HasPending());
-    EXPECT_EQ(0, RowCount(table));  // 增量提交前不落到表上
+    EXPECT_EQ(0, RowCount(table)); // 增量提交前不落到表上
 
     widget.FlushPending();
     EXPECT_FALSE(widget.HasPending());
@@ -148,13 +151,13 @@ TEST(PacketTableWidgetTests, AppendMarksPendingAndFlushFillsCells) {
 
     ASSERT_TRUE(HasCell(table, 0, 0));
     ASSERT_TRUE(HasCell(table, 0, 6));
-    EXPECT_EQ(QStringLiteral("1"), Cell(table, 0, 0));          // #
-    EXPECT_EQ(QStringLiteral("#0 视频"), Cell(table, 0, 1));     // 流（索引+类型合并列）
-    EXPECT_EQ(QStringLiteral("0.500"), Cell(table, 0, 2));      // 播放时间(s)
-    EXPECT_EQ(QStringLiteral("1000"), Cell(table, 0, 3));       // 显示时间(PTS)
-    EXPECT_EQ(QStringLiteral("900"), Cell(table, 0, 4));        // 解码时间(DTS)
-    EXPECT_EQ(QStringLiteral("40"), Cell(table, 0, 5));         // 时长
-    EXPECT_EQ(QStringLiteral("1234"), Cell(table, 0, 6));       // 包大小
+    EXPECT_EQ(QStringLiteral("1"), Cell(table, 0, 0));       // #
+    EXPECT_EQ(QStringLiteral("#0 视频"), Cell(table, 0, 1)); // 流（索引+类型合并列）
+    EXPECT_EQ(QStringLiteral("0.500"), Cell(table, 0, 2));   // 播放时间(s)
+    EXPECT_EQ(QStringLiteral("1000"), Cell(table, 0, 3));    // 显示时间(PTS)
+    EXPECT_EQ(QStringLiteral("900"), Cell(table, 0, 4));     // 解码时间(DTS)
+    EXPECT_EQ(QStringLiteral("40"), Cell(table, 0, 5));      // 时长
+    EXPECT_EQ(QStringLiteral("1234"), Cell(table, 0, 6));    // 包大小
 
     EXPECT_EQ(QStringLiteral("总包数: 1 | 总字节数: 1.2 KB | 视频包: 1 | 音频包: 0 | 其他包: 0 | "
                              "平均包大小: 1234 B | 最大包大小: 1234 B | 最小包大小: 1234 B"),

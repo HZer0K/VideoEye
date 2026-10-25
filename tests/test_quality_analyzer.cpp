@@ -6,17 +6,17 @@
 #include "core/analysis/quality/QualityAnalyzer.h"
 
 extern "C" {
-#include<libavutil/frame.h>
-#include<libavutil/pixfmt.h>
+#include <libavutil/frame.h>
+#include <libavutil/pixfmt.h>
 }
 
 namespace {
 
 class FrameGuard {
 public:
-    FrameGuard(int width, int height, uint8_t value) 
-        : frame_(av_frame_alloc()){
-        if (!frame_) return;
+    FrameGuard(int width, int height, uint8_t value) : frame_(av_frame_alloc()) {
+        if (!frame_)
+            return;
         frame_->format = AV_PIX_FMT_GRAY8;
         frame_->width = width;
         frame_->height = height;
@@ -64,8 +64,7 @@ TEST(QualityAnalyzerTest, IdenticalFramesHaveInfinitePsnrAndPerfectSsim) {
     ASSERT_NE(reference.get(), nullptr);
     ASSERT_NE(distorted.get(), nullptr);
 
-    const auto metrics = videoeye::QualityAnalyzer::CompareFrames(
-        reference.get(), distorted.get(), 7, 1.25);
+    const auto metrics = videoeye::QualityAnalyzer::CompareFrames(reference.get(), distorted.get(), 7, 1.25);
 
     ASSERT_TRUE(metrics.valid) << metrics.error_message;
     EXPECT_EQ(metrics.frame_index, 7);
@@ -82,8 +81,7 @@ TEST(QualityAnalyzerTest, ConstantPixelDeltaProducesExpectedPsnr) {
     ASSERT_NE(reference.get(), nullptr);
     ASSERT_NE(distorted.get(), nullptr);
 
-    const auto metrics = videoeye::QualityAnalyzer::CompareFrames(
-        reference.get(), distorted.get());
+    const auto metrics = videoeye::QualityAnalyzer::CompareFrames(reference.get(), distorted.get());
 
     ASSERT_TRUE(metrics.valid) << metrics.error_message;
     // 每个像素差 10 -> MSE = 100 -> PSNR = 10*log10(255^2/100) = 28.1308...
@@ -112,8 +110,7 @@ TEST(QualityAnalyzerTest, InvertedFrameYieldsNegativeSsim) {
         }
     }
 
-    const auto metrics = videoeye::QualityAnalyzer::CompareFrames(
-        reference.get(), distorted.get());
+    const auto metrics = videoeye::QualityAnalyzer::CompareFrames(reference.get(), distorted.get());
 
     ASSERT_TRUE(metrics.valid) << metrics.error_message;
     // mu 均为 127.5, var 均为 16256.25, cov = -16256.25:
@@ -129,8 +126,7 @@ TEST(QualityAnalyzerTest, RejectsSizeMismatch) {
     ASSERT_NE(reference.get(), nullptr);
     ASSERT_NE(distorted.get(), nullptr);
 
-    const auto metrics = videoeye::QualityAnalyzer::CompareFrames(
-        reference.get(), distorted.get());
+    const auto metrics = videoeye::QualityAnalyzer::CompareFrames(reference.get(), distorted.get());
 
     EXPECT_FALSE(metrics.valid);
     EXPECT_EQ(metrics.error_message, "Gray planes have different dimensions");

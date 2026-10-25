@@ -3,7 +3,7 @@
 #include <cstring>
 
 extern "C" {
-#include <libavutil/common.h>   // AV_CEIL_RSHIFT
+#include <libavutil/common.h> // AV_CEIL_RSHIFT
 #include <libavutil/pixdesc.h>
 }
 
@@ -23,8 +23,7 @@ bool CopyFrameData(const model::FrameData& src, model::FrameData& dst) {
     dst.pts = src.pts;
     dst.timestamp = src.timestamp;
 
-    const AVPixFmtDescriptor* desc =
-        av_pix_fmt_desc_get(static_cast<AVPixelFormat>(src.format));
+    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(src.format));
 
     bool complete = true;
     for (int i = 0; i < 8; ++i) {

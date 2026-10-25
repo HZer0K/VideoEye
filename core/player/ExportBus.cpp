@@ -3,7 +3,8 @@
 namespace videoeye {
 namespace player {
 
-ExportBus::ExportBus(QObject* parent) : QObject(parent) {}
+ExportBus::ExportBus(QObject* parent) : QObject(parent) {
+}
 
-}  // namespace player
-}  // namespace videoeye
+} // namespace player
+} // namespace videoeye

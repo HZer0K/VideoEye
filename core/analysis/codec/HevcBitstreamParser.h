@@ -1,15 +1,15 @@
 #pragma once
 
-#include <vector>
-#include <cstdint>
 #include "core/domain/model/BitstreamInfo.h"
-#include "core/media/codec/ExtradataTypes.h"
 #include "core/media/codec/BitReader.h"
+#include "core/media/codec/ExtradataTypes.h"
+#include <cstdint>
+#include <vector>
 
 namespace videoeye {
 
 // H.265 (HEVC) 码流解析器
-// 
+//
 // 职责：
 //   1. 从 extradata 中解析 HEVC VPS/SPS/PPS
 //   2. 提取 profile tier level、bit depth、chroma、CTU size 等关键参数
@@ -24,21 +24,21 @@ class HevcBitstreamParser {
 public:
     // 从 extradata 开始解析
     static model::HevcVpsInfo ParseVps(const uint8_t* extradata, size_t size);
-    
+
     static model::HevcSpsInfo ParseSpf(const uint8_t* extradata, size_t size);
-    
+
     static model::HevcPpsInfo ParsePps(const uint8_t* extradata, size_t size);
-    
+
     // 从 NAL 单元解析（用于实时解析）
     static model::HevcVpsInfo ParseVpsFromNalUnit(const videoeye::NalUnit& nal_unit);
     static model::HevcSpsInfo ParseSpfFromNalUnit(const videoeye::NalUnit& nal_unit);
     static model::HevcPpsInfo ParsePpsFromNalUnit(const videoeye::NalUnit& nal_unit);
-    
+
     // 判断是否为 VPS/SPS/PPS NAL 单元
     static bool IsVpsNalUnit(const videoeye::NalUnit& nal_unit);
     static bool IsSpsNalUnit(const videoeye::NalUnit& nal_unit);
     static bool IsPpsNalUnit(const videoeye::NalUnit& nal_unit);
-    
+
     // Profile/Tier 名称转换（单元测试亦直接调用）
     static std::string GetProfileName(int general_profile_idc);
     static std::string GetTierName(int general_tier_flag);
@@ -49,12 +49,8 @@ private:
     static std::vector<uint8_t> GetRbsp(const videoeye::NalUnit& nal_unit);
 
     // profile_tier_level() —— 7.3.3
-    static void ParseProfileTierLevel(videoeye::BitReader& reader,
-                                      int max_sub_layers_minus1,
-                                      int& profile_space,
-                                      int& tier_flag,
-                                      int& profile_idc,
-                                      uint32_t& level_idc,
+    static void ParseProfileTierLevel(videoeye::BitReader& reader, int max_sub_layers_minus1, int& profile_space,
+                                      int& tier_flag, int& profile_idc, uint32_t& level_idc,
                                       std::vector<bool>& sub_layer_profile_present,
                                       std::vector<bool>& sub_layer_level_present);
 
@@ -64,9 +60,7 @@ private:
     // 返回 false 表示位流已经失效（读越界）。
     static bool SkipOneHrdCpbList(videoeye::BitReader& reader, uint32_t cpb_cnt_minus1, bool sub_pic);
     static void SkipShortTermRefPicSets(videoeye::BitReader& reader, int num_sets);
-    static void ParseVuiParameters(videoeye::BitReader& reader,
-                                   model::HevcSpsInfo& sps,
-                                   int max_sub_layers_minus1);
+    static void ParseVuiParameters(videoeye::BitReader& reader, model::HevcSpsInfo& sps, int max_sub_layers_minus1);
 };
 
 } // namespace videoeye

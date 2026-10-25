@@ -1,18 +1,18 @@
 #include "ui/player/AudioVizRenderer.h"
 
-#include <cmath>
 #include <algorithm>
+#include <cmath>
 #include <deque>
 
-#include <QPainter>
-#include <QImage>
 #include <QFont>
+#include <QImage>
+#include <QLinearGradient>
+#include <QPainter>
 #include <QPainterPath>
 #include <QRadialGradient>
-#include <QLinearGradient>
 
-#include "ui/main_window/VideoWidget.h"
 #include "core/domain/model/AudioVisualizationFrame.h"
+#include "ui/main_window/VideoWidget.h"
 
 // MSVC 在 <cmath> 前未定义 _USE_MATH_DEFINES 时不导出 M_PI，这里兜底。
 #ifndef M_PI
@@ -22,8 +22,7 @@
 namespace videoeye {
 namespace ui {
 
-AudioVizRenderer::AudioVizRenderer(QObject* parent)
-    : QObject(parent) {
+AudioVizRenderer::AudioVizRenderer(QObject* parent) : QObject(parent) {
     // 与抽取前一致：计时器在构造时启动，RenderAudioVisualization 据此计算帧间隔。
     audio_vis_timer_.start();
 }
@@ -57,20 +56,16 @@ void AudioVizRenderer::OnAudioLevelReady(double level, double timestamp_seconds)
 
     static constexpr qint64 kFrameIntervalMs = 33;
     const qint64 now_ms = audio_vis_timer_.elapsed();
-    if (audio_vis_last_render_ms_ >= 0 &&
-        (now_ms - audio_vis_last_render_ms_) < kFrameIntervalMs) {
+    if (audio_vis_last_render_ms_ >= 0 && (now_ms - audio_vis_last_render_ms_) < kFrameIntervalMs) {
         return;
     }
 
     RenderAudioVisualization(timestamp_seconds);
 }
 
-void AudioVizRenderer::OnAudioVisualizationForDisplay(
-        const model::AudioVisualizationFrame& frame) {
-    latest_spectrum_bins_ = QVector<double>(frame.spectrum_bins.begin(),
-                                            frame.spectrum_bins.end());
-    latest_waveform_points_ = QVector<double>(frame.waveform_points.begin(),
-                                              frame.waveform_points.end());
+void AudioVizRenderer::OnAudioVisualizationForDisplay(const model::AudioVisualizationFrame& frame) {
+    latest_spectrum_bins_ = QVector<double>(frame.spectrum_bins.begin(), frame.spectrum_bins.end());
+    latest_waveform_points_ = QVector<double>(frame.waveform_points.begin(), frame.waveform_points.end());
 
     // Smooth spectrum with fast attack, slow decay for persistence
     const int n = static_cast<int>(latest_spectrum_bins_.size());
@@ -86,12 +81,11 @@ void AudioVizRenderer::OnAudioVisualizationForDisplay(
 }
 
 void AudioVizRenderer::RenderAudioVisualization(double timestamp_seconds) {
-    if (!video_widget_) return;
+    if (!video_widget_)
+        return;
 
     const double dt = (audio_vis_last_render_ms_ >= 0)
-                          ? (static_cast<double>(audio_vis_timer_.elapsed() -
-                                                 audio_vis_last_render_ms_) /
-                             1000.0)
+                          ? (static_cast<double>(audio_vis_timer_.elapsed() - audio_vis_last_render_ms_) / 1000.0)
                           : (0.033);
     audio_vis_last_render_ms_ = audio_vis_timer_.elapsed();
 
@@ -133,9 +127,7 @@ void AudioVizRenderer::RenderAudioVisualization(double timestamp_seconds) {
     const int cover_y = cover_cy - cover_size / 2;
 
     if (!album_cover_.isNull()) {
-        QImage scaled = album_cover_.scaled(cover_size, cover_size,
-                                            Qt::KeepAspectRatio,
-                                            Qt::SmoothTransformation);
+        QImage scaled = album_cover_.scaled(cover_size, cover_size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
         const int sx = cover_x + (cover_size - scaled.width()) / 2;
         const int sy = cover_y + (cover_size - scaled.height()) / 2;
 
@@ -144,8 +136,8 @@ void AudioVizRenderer::RenderAudioVisualization(double timestamp_seconds) {
         const int glow_a = 50 + static_cast<int>(audio_vis_smoothed_ * 100);
         painter.setPen(Qt::NoPen);
         painter.setBrush(QColor(100, 160, 255, glow_a));
-        painter.drawRoundedRect(sx - glow_r / 2, sy - glow_r / 2,
-                                scaled.width() + glow_r, scaled.height() + glow_r, 18, 18);
+        painter.drawRoundedRect(sx - glow_r / 2, sy - glow_r / 2, scaled.width() + glow_r, scaled.height() + glow_r, 18,
+                                18);
 
         // Rounded cover
         QPainterPath clip;
@@ -178,10 +170,10 @@ void AudioVizRenderer::RenderAudioVisualization(double timestamp_seconds) {
         painter.setBrush(QColor(30, 40, 65, 200));
         painter.drawRoundedRect(cover_x, cover_y, cover_size, cover_size, 12, 12);
         painter.setPen(QColor(100, 120, 160, 140));
-        QFont f; f.setPixelSize(cover_size / 3);
+        QFont f;
+        f.setPixelSize(cover_size / 3);
         painter.setFont(f);
-        painter.drawText(QRect(cover_x, cover_y, cover_size, cover_size),
-                         Qt::AlignCenter, QStringLiteral("\u266B"));
+        painter.drawText(QRect(cover_x, cover_y, cover_size, cover_size), Qt::AlignCenter, QStringLiteral("\u266B"));
     }
 
     // --- Circular spectrum bars around cover ---
@@ -198,7 +190,8 @@ void AudioVizRenderer::RenderAudioVisualization(double timestamp_seconds) {
             // Apply logarithmic perception: boost quiet frequencies
             val = std::pow(val, 0.6);
             const double bar_len = val * max_bar_len;
-            if (bar_len < 2.0) continue;
+            if (bar_len < 2.0)
+                continue;
 
             const double angle = -M_PI / 2.0 + 2.0 * M_PI * i / bar_count;
             const double cos_a = std::cos(angle);
@@ -212,7 +205,7 @@ void AudioVizRenderer::RenderAudioVisualization(double timestamp_seconds) {
             // Gradient color along the bar: base color to tip color
             const double hue = 190.0 + (static_cast<double>(i) / bar_count) * 170.0;
             QColor c_base = QColor::fromHsvF(std::fmod(hue / 360.0, 1.0), 0.55, 0.85, 0.75);
-            QColor c_tip  = QColor::fromHsvF(std::fmod(hue / 360.0, 1.0), 0.75, 1.0, 0.95);
+            QColor c_tip = QColor::fromHsvF(std::fmod(hue / 360.0, 1.0), 0.75, 1.0, 0.95);
 
             QLinearGradient bar_grad(x1, y1, x2, y2);
             bar_grad.setColorAt(0.0, c_base);
@@ -259,8 +252,10 @@ void AudioVizRenderer::RenderAudioVisualization(double timestamp_seconds) {
             for (int i = 0; i < wf_n; ++i) {
                 const double x = static_cast<double>(i) / (wf_n - 1) * w;
                 const double y = mid_y - latest_waveform_points_[i] * amp;
-                if (i == 0) wf_line.moveTo(x, y);
-                else wf_line.lineTo(x, y);
+                if (i == 0)
+                    wf_line.moveTo(x, y);
+                else
+                    wf_line.lineTo(x, y);
             }
             QPen line_pen(QColor::fromHsvF((200.0 + hue_shift) / 360.0, 0.5, 1.0, 0.8));
             line_pen.setWidthF(1.8);
@@ -293,7 +288,8 @@ void AudioVizRenderer::RenderAudioVisualization(double timestamp_seconds) {
     } else {
         // Fallback: simple level bars if no waveform data yet
         static constexpr size_t kMaxHistory = 120;
-        if (audio_level_history_.size() >= kMaxHistory) audio_level_history_.pop_front();
+        if (audio_level_history_.size() >= kMaxHistory)
+            audio_level_history_.pop_front();
         audio_level_history_.push_back(audio_vis_smoothed_);
 
         const int n = static_cast<int>(audio_level_history_.size());
@@ -304,7 +300,8 @@ void AudioVizRenderer::RenderAudioVisualization(double timestamp_seconds) {
             for (int i = 0; i < n; ++i) {
                 const double v = std::clamp(audio_level_history_[static_cast<size_t>(i)], 0.0, 1.0);
                 const int amp = static_cast<int>(v * (bar_area_h * 0.8));
-                if (amp < 1) continue;
+                if (amp < 1)
+                    continue;
                 const int x0 = static_cast<int>(i * bar_w);
                 const int bw = std::max(1, static_cast<int>(bar_w) - 1);
                 const int my = bar_area_y + bar_area_h / 2;
@@ -324,11 +321,8 @@ void AudioVizRenderer::RenderAudioVisualization(double timestamp_seconds) {
     QFont info_font;
     info_font.setPixelSize(12);
     painter.setFont(info_font);
-    painter.drawText(QRect(10, 6, w - 20, 18),
-                     Qt::AlignLeft | Qt::AlignVCenter,
-                     QString("t=%1s  level=%2")
-                         .arg(timestamp_seconds, 0, 'f', 3)
-                         .arg(audio_vis_smoothed_, 0, 'f', 3));
+    painter.drawText(QRect(10, 6, w - 20, 18), Qt::AlignLeft | Qt::AlignVCenter,
+                     QString("t=%1s  level=%2").arg(timestamp_seconds, 0, 'f', 3).arg(audio_vis_smoothed_, 0, 'f', 3));
 
     video_widget_->SetFrame(img);
 }

@@ -39,4 +39,4 @@ public:
                  const MpegPsStructureOptions& options = MpegPsStructureOptions{});
 };
 
-}  // namespace videoeye
+} // namespace videoeye

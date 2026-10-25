@@ -11,21 +11,26 @@ namespace videoeye {
 namespace ui {
 
 struct MacroblockCoordination {
-    bool user_enabled = false;     // 用户在宏块页主动开启的分析
-    bool overlay_enabled = false;  // MV 叠加是否开启（依赖宏块分析）
+    bool user_enabled = false;    // 用户在宏块页主动开启的分析
+    bool overlay_enabled = false; // MV 叠加是否开启（依赖宏块分析）
 
     // 实际下发到播放器 / 宏块页的采集状态。
-    bool ActualEnabled() const { return user_enabled || overlay_enabled; }
+    bool ActualEnabled() const {
+        return user_enabled || overlay_enabled;
+    }
 
     // 用户在宏块页切换开关：关闭时叠加因失去依赖而一并失效。
     void OnUserToggle(bool enabled) {
         user_enabled = enabled;
-        if (!enabled) overlay_enabled = false;
+        if (!enabled)
+            overlay_enabled = false;
     }
 
     // MV 叠加开关变化。
-    void OnOverlayToggle(bool enabled) { overlay_enabled = enabled; }
+    void OnOverlayToggle(bool enabled) {
+        overlay_enabled = enabled;
+    }
 };
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

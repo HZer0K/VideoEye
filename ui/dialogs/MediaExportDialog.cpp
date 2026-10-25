@@ -1,14 +1,14 @@
 #include "ui/dialogs/MediaExportDialog.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QCheckBox>
-#include <QDoubleSpinBox>
 #include <QPushButton>
 #include <QVBoxLayout>
 
@@ -21,30 +21,20 @@ struct Fmt {
     QString ext;
 };
 const QList<Fmt> kVideoFormats = {
-    {QStringLiteral("MP4 (H.264 + AAC)"), "mp4"},
-    {QStringLiteral("MKV (H.264 + AAC)"), "mkv"},
-    {QStringLiteral("MOV (H.264 + AAC)"), "mov"},
-    {QStringLiteral("AVI (H.264 + MP3)"),  "avi"},
-    {QStringLiteral("WebM (VP9 + Opus)"),  "webm"},
-    {QStringLiteral("TS (H.264 + AAC)"),   "ts"},
+    {QStringLiteral("MP4 (H.264 + AAC)"), "mp4"},  {QStringLiteral("MKV (H.264 + AAC)"), "mkv"},
+    {QStringLiteral("MOV (H.264 + AAC)"), "mov"},  {QStringLiteral("AVI (H.264 + MP3)"), "avi"},
+    {QStringLiteral("WebM (VP9 + Opus)"), "webm"}, {QStringLiteral("TS (H.264 + AAC)"), "ts"},
 };
 const QList<Fmt> kAudioFormats = {
-    {QStringLiteral("MP3 (libmp3lame)"), "mp3"},
-    {QStringLiteral("WAV (PCM)"),        "wav"},
-    {QStringLiteral("M4A (AAC)"),        "m4a"},
-    {QStringLiteral("FLAC"),             "flac"},
-    {QStringLiteral("OGG (Opus)"),       "ogg"},
+    {QStringLiteral("MP3 (libmp3lame)"), "mp3"}, {QStringLiteral("WAV (PCM)"), "wav"},
+    {QStringLiteral("M4A (AAC)"), "m4a"},        {QStringLiteral("FLAC"), "flac"},
+    {QStringLiteral("OGG (Opus)"), "ogg"},
 };
 } // namespace
 
-MediaExportDialog::MediaExportDialog(QWidget* parent,
-                                     exporter::ExportKind kind,
-                                     const QString& source_path,
+MediaExportDialog::MediaExportDialog(QWidget* parent, exporter::ExportKind kind, const QString& source_path,
                                      qint64 duration_ms)
-    : QDialog(parent)
-    , kind_(kind)
-    , source_path_(source_path)
-    , duration_ms_(duration_ms) {
+    : QDialog(parent), kind_(kind), source_path_(source_path), duration_ms_(duration_ms) {
     setWindowTitle(kind == exporter::ExportKind::Video ? tr("导出视频") : tr("导出音频"));
     setMinimumWidth(460);
 
@@ -55,8 +45,8 @@ MediaExportDialog::MediaExportDialog(QWidget* parent,
     // 格式
     format_combo_ = new QComboBox(this);
     initFormats();
-    connect(format_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &MediaExportDialog::onFormatChanged);
+    connect(format_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &MediaExportDialog::onFormatChanged);
     form->addRow(tr("导出格式"), format_combo_);
 
     // 输出路径
@@ -146,7 +136,8 @@ QString MediaExportDialog::currentExtension() const {
 
 void MediaExportDialog::onFormatChanged() {
     const QString ext = currentExtension();
-    if (ext.isEmpty()) return;
+    if (ext.isEmpty())
+        return;
     QFileInfo fi(source_path_);
     const QString base = fi.completeBaseName().isEmpty() ? "media" : fi.completeBaseName();
     const QString dir = fi.absolutePath();
@@ -158,9 +149,9 @@ void MediaExportDialog::onFormatChanged() {
 void MediaExportDialog::onBrowse() {
     const QString ext = currentExtension();
     const QString filter = QString("*.%1").arg(ext);
-    QString path = QFileDialog::getSaveFileName(this, tr("选择输出文件"),
-                                                output_edit_->text(), filter);
-    if (!path.isEmpty()) output_edit_->setText(path);
+    QString path = QFileDialog::getSaveFileName(this, tr("选择输出文件"), output_edit_->text(), filter);
+    if (!path.isEmpty())
+        output_edit_->setText(path);
 }
 
 void MediaExportDialog::onReencodeToggled(bool on) {
@@ -178,7 +169,8 @@ exporter::ExportOptions MediaExportDialog::GetOptions() const {
     if (!ext.isEmpty()) {
         QFileInfo fi(out);
         if (fi.suffix().toLower() != ext) {
-            if (!out.isEmpty() && !out.endsWith('.')) out += ".";
+            if (!out.isEmpty() && !out.endsWith('.'))
+                out += ".";
             out += ext;
         }
     }

@@ -18,8 +18,8 @@ TEST(StreamStatsExporterTest, EscapesWindowsPathsInJson) {
     videoeye::model::StreamStats stats;
     stats.total_packets = 1;
 
-    ASSERT_TRUE(videoeye::reporting::StreamStatsExporter::ExportJSON(
-        out_path.toStdString(), stats, R"(D:\media\test.mp4)"));
+    ASSERT_TRUE(
+        videoeye::reporting::StreamStatsExporter::ExportJSON(out_path.toStdString(), stats, R"(D:\media\test.mp4)"));
 
     std::ifstream file(out_path.toStdString());
     ASSERT_TRUE(file.is_open());

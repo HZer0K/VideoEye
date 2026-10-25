@@ -70,8 +70,7 @@ TEST(ReportExportTests, BaseNameOfEmptyInputIsEmpty) {
 // 纯口径：汇总重算
 // ---------------------------------------------------------------------------
 
-BatchQcItemResult MakeItem(BatchItemStatus status, int critical, int error_count, int warning,
-                           int info) {
+BatchQcItemResult MakeItem(BatchItemStatus status, int critical, int error_count, int warning, int info) {
     BatchQcItemResult item;
     item.status = status;
     item.critical_count = critical;
@@ -83,10 +82,8 @@ BatchQcItemResult MakeItem(BatchItemStatus status, int critical, int error_count
 
 TEST(ReportExportTests, SummaryCountsEveryStatusBucket) {
     const std::vector<BatchQcItemResult> items = {
-        MakeItem(BatchItemStatus::Succeeded, 1, 0, 0, 0),
-        MakeItem(BatchItemStatus::Failed, 0, 2, 0, 0),
-        MakeItem(BatchItemStatus::TimedOut, 0, 0, 3, 0),
-        MakeItem(BatchItemStatus::Cancelled, 0, 0, 0, 4),
+        MakeItem(BatchItemStatus::Succeeded, 1, 0, 0, 0), MakeItem(BatchItemStatus::Failed, 0, 2, 0, 0),
+        MakeItem(BatchItemStatus::TimedOut, 0, 0, 3, 0),  MakeItem(BatchItemStatus::Cancelled, 0, 0, 0, 4),
         MakeItem(BatchItemStatus::Skipped, 0, 0, 0, 0),
     };
     const BatchQcSummary s = RecomputeBatchSummary(items);
@@ -132,7 +129,7 @@ TEST(ReportExportTests, SummaryCompletedIsFalseWhenAnythingCancelled) {
 TEST(ReportExportTests, SummaryOfEmptyListIsBlankButComplete) {
     const BatchQcSummary s = RecomputeBatchSummary({});
     EXPECT_EQ(s.total, 0);
-    EXPECT_TRUE(s.completed);  // 一个都没取消 —— 空列表谈不上不完整
+    EXPECT_TRUE(s.completed); // 一个都没取消 —— 空列表谈不上不完整
 }
 
 TEST(ReportExportTests, SummaryIgnoresNonTerminalStatuses) {
@@ -154,9 +151,9 @@ TEST(ReportExportTests, SummaryIgnoresNonTerminalStatuses) {
 TEST(ReportExportTests, TicketIsUnarmedUntilDirectoryPicked) {
     DeferredExportTicket ticket;
     EXPECT_FALSE(ticket.armed());
-    EXPECT_TRUE(ticket.Take().isEmpty());  // 没登记就取不到东西
+    EXPECT_TRUE(ticket.Take().isEmpty()); // 没登记就取不到东西
 
-    ticket.Arm(QString());  // 用户取消了目录对话框 —— 空目录等于不登记
+    ticket.Arm(QString()); // 用户取消了目录对话框 —— 空目录等于不登记
     EXPECT_FALSE(ticket.armed());
 }
 
@@ -223,9 +220,7 @@ struct ExportHarness {
             summary_picks += 1;
             return next_summary_file;
         };
-        deps.notice = [this](const QString& title, const QString& body) {
-            notices.emplace_back(title, body);
-        };
+        deps.notice = [this](const QString& title, const QString& body) { notices.emplace_back(title, body); };
         return deps;
     }
 
@@ -248,10 +243,14 @@ protected:
         controller_ = new ReportExportController(harness_.MakeDeps());
         harness_.Reset(controller_);
     }
-    void TearDown() override { delete controller_; }
+    void TearDown() override {
+        delete controller_;
+    }
 
     // 单文件报告落盘后的预期路径（base 取自报告里记的文件名）
-    QString ExpectedReport() const { return dir_.filePath("report.json"); }
+    QString ExpectedReport() const {
+        return dir_.filePath("report.json");
+    }
 
     QTemporaryDir dir_;
     ExportHarness harness_;
@@ -277,7 +276,7 @@ TEST_F(ReportExportControllerTest, BusyNoticesAndDoesNothing) {
 }
 
 TEST_F(ReportExportControllerTest, CancellingDirectoryPickerAborts) {
-    harness_.next_directory = QString();  // 用户关掉了对话框
+    harness_.next_directory = QString(); // 用户关掉了对话框
     controller_->ExportSingleReport();
     EXPECT_EQ(harness_.directory_picks, 1);
     EXPECT_EQ(harness_.analysis_starts, 0);
@@ -288,7 +287,7 @@ TEST_F(ReportExportControllerTest, CancellingDirectoryPickerAborts) {
 TEST_F(ReportExportControllerTest, FreshResultExportsImmediately) {
     controller_->ExportSingleReport();
     EXPECT_EQ(harness_.directory_picks, 1);
-    EXPECT_EQ(harness_.analysis_starts, 0);  // 结果新鲜，不需要先分析
+    EXPECT_EQ(harness_.analysis_starts, 0); // 结果新鲜，不需要先分析
     EXPECT_FALSE(controller_->HasPendingExport());
     EXPECT_TRUE(QFileInfo::exists(ExpectedReport()));
     EXPECT_TRUE(harness_.last_status.contains(QString::fromUtf8("报告已导出到")));
@@ -326,8 +325,8 @@ TEST_F(ReportExportControllerTest, FailedAnalysisDiscardsDeferredDirectory) {
     ASSERT_TRUE(controller_->HasPendingExport());
 
     controller_->OnSingleAnalysisFinished(false);
-    EXPECT_FALSE(QFileInfo::exists(ExpectedReport()));  // 失败的空报告不许落盘
-    EXPECT_FALSE(controller_->HasPendingExport());      // 也不许留到下一次成功
+    EXPECT_FALSE(QFileInfo::exists(ExpectedReport())); // 失败的空报告不许落盘
+    EXPECT_FALSE(controller_->HasPendingExport());     // 也不许留到下一次成功
 
     // 下一次成功也不该导出（票据已经被丢弃）
     controller_->OnSingleAnalysisFinished(true);
@@ -339,14 +338,14 @@ TEST_F(ReportExportControllerTest, AbortPendingExportDiscardsDirectory) {
     controller_->ExportSingleReport();
     ASSERT_TRUE(controller_->HasPendingExport());
 
-    controller_->AbortPendingExport();  // 任务线程抛异常 / 被取消时的收口
+    controller_->AbortPendingExport(); // 任务线程抛异常 / 被取消时的收口
     EXPECT_FALSE(controller_->HasPendingExport());
     controller_->OnSingleAnalysisFinished(true);
     EXPECT_FALSE(QFileInfo::exists(ExpectedReport()));
 }
 
 TEST_F(ReportExportControllerTest, AbortPendingExportIsIdempotent) {
-    controller_->AbortPendingExport();  // 没有挂起时不该有任何副作用
+    controller_->AbortPendingExport(); // 没有挂起时不该有任何副作用
     EXPECT_FALSE(controller_->HasPendingExport());
     EXPECT_TRUE(harness_.last_status.isEmpty());
 }
@@ -380,4 +379,4 @@ TEST_F(ReportExportControllerTest, BatchSummaryCancelledPickerAborts) {
     EXPECT_TRUE(harness_.last_status.isEmpty());
 }
 
-}  // namespace
+} // namespace

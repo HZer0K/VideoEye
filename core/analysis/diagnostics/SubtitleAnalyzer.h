@@ -19,9 +19,9 @@
 #include <string>
 #include <vector>
 
+#include "core/analysis/AnalysisOptions.h"
 #include "core/analysis/diagnostics/CeaCaptionDecoder.h"
 #include "core/domain/model/SubtitleCueInfo.h"
-#include "core/analysis/AnalysisOptions.h"
 
 struct AVFormatContext;
 struct AVPacket;
@@ -35,8 +35,8 @@ struct ParsedSubtitleCue {
     int cue_number = -1;
     double start_seconds = -1.0;
     double end_seconds = -1.0;
-    std::string text;      // 展示用纯文本
-    std::string raw_text;  // 原始文本
+    std::string text;     // 展示用纯文本
+    std::string raw_text; // 原始文本
 };
 
 class SubtitleAnalyzer {
@@ -51,8 +51,12 @@ public:
 
     void Finish(double media_duration_seconds = 0.0);
 
-    const model::SubtitleAnalysisResult& result() const { return result_; }
-    const SubtitleOptions& options() const { return options_; }
+    const model::SubtitleAnalysisResult& result() const {
+        return result_;
+    }
+    const SubtitleOptions& options() const {
+        return options_;
+    }
 
     // ---- 纯逻辑（不依赖 FFmpeg，单测直接调用）----
 
@@ -73,9 +77,8 @@ public:
     static std::string StripVttTags(const std::string& in);
 
     // 从一个字幕包里解析 cue（按 codec 自动分派）；失败时退化为"整包即文本"
-    static bool ParsePacketPayload(int codec_id, const uint8_t* data, size_t size,
-                                   double pts_seconds, double duration_seconds,
-                                   ParsedSubtitleCue& out);
+    static bool ParsePacketPayload(int codec_id, const uint8_t* data, size_t size, double pts_seconds,
+                                   double duration_seconds, ParsedSubtitleCue& out);
 
     // CEA-608：把字节对里的可见字符抽出来（控制码对跳过）。
     // 只做基础北美字符集映射，802/708 的扩展字符集不处理。
@@ -84,10 +87,8 @@ public:
     static std::string DecodeCea608Field(const uint8_t* data, size_t size);
 
     // 校验一组同流 cue（按出现顺序）。problem 追加到 issues，并回填 cue.has_issue。
-    static void ValidateCues(std::vector<model::SubtitleCue>& cues,
-                             std::vector<model::SubtitleIssue>& issues,
-                             const SubtitleOptions& options,
-                             double media_duration_seconds);
+    static void ValidateCues(std::vector<model::SubtitleCue>& cues, std::vector<model::SubtitleIssue>& issues,
+                             const SubtitleOptions& options, double media_duration_seconds);
 
     // 可见字符数（按 UTF-8 码点算，不算空白）
     static size_t CountVisibleChars(const std::string& text);
@@ -108,4 +109,4 @@ private:
     std::vector<CaptionSlot> caption_slots_;
 };
 
-}  // namespace videoeye
+} // namespace videoeye

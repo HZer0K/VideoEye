@@ -57,7 +57,8 @@ struct AppScope {
         }
     }
     ~AppScope() {
-        if (owned) delete app;
+        if (owned)
+            delete app;
     }
     AppScope(const AppScope&) = delete;
     AppScope& operator=(const AppScope&) = delete;
@@ -147,8 +148,7 @@ TEST(PlayerOpenTransaction, MoveTransfersContextOwnership) {
 
     player::OpenResult moved(std::move(source));
     EXPECT_TRUE(moved.format_ctx == ctx) << "移动构造: 目标必须拿到同一个上下文";
-    EXPECT_TRUE(source.format_ctx == nullptr)
-        << "移动构造: 源必须交出所有权, 否则它的析构会关掉目标手里的上下文";
+    EXPECT_TRUE(source.format_ctx == nullptr) << "移动构造: 源必须交出所有权, 否则它的析构会关掉目标手里的上下文";
 
     // 源在此析构: 目标手里的上下文必须还在(不能被顺手关掉)
     { player::OpenResult sink(std::move(source)); }
@@ -216,14 +216,16 @@ TEST(PlayerOpenAsync, MissingFileEmitsOpenFinishedFalseOnce) {
     player::MediaPlayer player;
     int finished = 0;
     bool last_ok = true;
-    QObject::connect(&player, &player::MediaPlayer::OpenFinished, &player,
-                     [&finished, &last_ok](bool ok) { ++finished; last_ok = ok; });
+    QObject::connect(&player, &player::MediaPlayer::OpenFinished, &player, [&finished, &last_ok](bool ok) {
+        ++finished;
+        last_ok = ok;
+    });
 
     player.OpenAsync(missing);
 
     ASSERT_TRUE(PumpUntil([&] { return finished > 0; }, 10000))
         << "OpenAsync 失败后没有任何 OpenFinished: 界面会一直停在'正在打开'";
-    PumpFor(300);   // 给可能的重复终态一个落地机会
+    PumpFor(300); // 给可能的重复终态一个落地机会
     EXPECT_EQ(1, finished) << "一次打开只该有一个终态";
     EXPECT_FALSE(last_ok);
     EXPECT_FALSE(player.GetLastError().trimmed().isEmpty())
@@ -248,8 +250,10 @@ TEST(PlayerOpenAsync, StaleResultIsDroppedWhenSuperseded) {
     player::MediaPlayer player;
     int finished = 0;
     bool last_ok = true;
-    QObject::connect(&player, &player::MediaPlayer::OpenFinished, &player,
-                     [&finished, &last_ok](bool ok) { ++finished; last_ok = ok; });
+    QObject::connect(&player, &player::MediaPlayer::OpenFinished, &player, [&finished, &last_ok](bool ok) {
+        ++finished;
+        last_ok = ok;
+    });
 
     // A: 卡在阻塞打开（不泵事件, 让它稳定停在中途）。
     player.OpenAsync(QString::fromStdString(endpoint.tcp_url()));
@@ -258,11 +262,9 @@ TEST(PlayerOpenAsync, StaleResultIsDroppedWhenSuperseded) {
     // B 取代 A。
     player.OpenAsync(missing_b);
 
-    ASSERT_TRUE(PumpUntil([&] { return finished > 0; }, 10000))
-        << "第二个打开没有给出终态";
-    PumpFor(600);   // 给迟到的 A 结果一个落地的机会
-    EXPECT_EQ(1, finished)
-        << "被后续打开取代的旧结果不得发 OpenFinished (否则界面的收尾对应的是上一个媒体)";
+    ASSERT_TRUE(PumpUntil([&] { return finished > 0; }, 10000)) << "第二个打开没有给出终态";
+    PumpFor(600); // 给迟到的 A 结果一个落地的机会
+    EXPECT_EQ(1, finished) << "被后续打开取代的旧结果不得发 OpenFinished (否则界面的收尾对应的是上一个媒体)";
     EXPECT_FALSE(last_ok) << "到达的应当是 B(不存在文件) 的结果";
 
     QFile::remove(missing_b);
@@ -281,8 +283,7 @@ TEST(PlayerOpenAsync, SuccessfulOpenRecordsOpenLatencyMetric) {
 
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
-    const videoeye_test::TestMedia media =
-        videoeye_test::CreateTestMedia(dir.path().toStdString(), "clip");
+    const videoeye_test::TestMedia media = videoeye_test::CreateTestMedia(dir.path().toStdString(), "clip");
     ASSERT_TRUE(media.ok) << "样本生成失败: " << media.error;
 
     auto& metrics = videoeye::PerfMetrics::GetInstance();
@@ -291,13 +292,14 @@ TEST(PlayerOpenAsync, SuccessfulOpenRecordsOpenLatencyMetric) {
     player::MediaPlayer player;
     int finished = 0;
     bool last_ok = false;
-    QObject::connect(&player, &player::MediaPlayer::OpenFinished, &player,
-                     [&finished, &last_ok](bool ok) { ++finished; last_ok = ok; });
+    QObject::connect(&player, &player::MediaPlayer::OpenFinished, &player, [&finished, &last_ok](bool ok) {
+        ++finished;
+        last_ok = ok;
+    });
 
     player.OpenAsync(QString::fromStdString(media.path));
 
-    ASSERT_TRUE(PumpUntil([&] { return finished > 0; }, 10000))
-        << "成功打开没有给出终态";
+    ASSERT_TRUE(PumpUntil([&] { return finished > 0; }, 10000)) << "成功打开没有给出终态";
     EXPECT_TRUE(last_ok) << "样本应当能打开: " << player.GetLastError().toStdString();
 
     const auto after = metrics.Snapshot(kMetricOpenMs);

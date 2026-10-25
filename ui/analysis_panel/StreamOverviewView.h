@@ -13,8 +13,8 @@
 // 「最大 GOP」统一取 GopSummary 的口径（解码帧 pict_type 推导），不再使用
 // StreamAnalyzer 基于 packet flags 的独立统计 —— 与「GOP 摘要」表保持一致。
 
-#include <QWidget>
 #include <QString>
+#include <QWidget>
 
 #include <QTableWidget>
 
@@ -41,11 +41,12 @@ public:
     // 页面只认自己的开关编号（0 = 流统计）。编号到 AnalysisFeature 的映射、以及
     // AnalysisFeatureToggled 的转发都由面板做。注入时会立即把真实开关状态回写到
     // 「启用分析」勾选框：控件是在构造函数里建的，那时钩子还不存在。
-    void SetFeatureHooks(std::function<bool(int)> is_enabled,
-                         std::function<void(int, bool)> set_enabled);
+    void SetFeatureHooks(std::function<bool(int)> is_enabled, std::function<void(int, bool)> set_enabled);
 
     // 导出分析报告时写进报告元信息（当前文件路径）
-    void SetSourcePath(const QString& path) { source_path_ = path; }
+    void SetSourcePath(const QString& path) {
+        source_path_ = path;
+    }
 
     // 播放期逐次回吐的流统计：攒到 FlushPending() 再刷 UI（与面板批量刷新节拍一致）
     void SetStreamStats(const model::StreamStats& stats);
@@ -56,7 +57,9 @@ public:
     // 换文件时配合「视频帧列表」一起清空曲线（原先由面板的 ResetVideoFrameList 触发）
     void ResetCharts();
 
-    bool HasPending() const { return has_pending_stats_ || gop_dirty_; }
+    bool HasPending() const {
+        return has_pending_stats_ || gop_dirty_;
+    }
     void FlushPending();
 
 private:
@@ -102,5 +105,5 @@ private:
     bool gop_dirty_ = false;
 };
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

@@ -63,8 +63,8 @@ struct PageBuildDeps {
     std::function<void(model::AnalysisFeature, bool)> set_feature;
 
     // 把页面连同导航元数据交给外部 stack（面板的 AddPageWithScroll）
-    std::function<void(QWidget* widget, const QString& title, const QString& page_id,
-                       const QString& group_id, int order, const QString& scope)>
+    std::function<void(QWidget* widget, const QString& title, const QString& page_id, const QString& group_id,
+                       int order, const QString& scope)>
         add_page;
 
     // 当前文件路径（导出 CSV 的默认名 / 扫描输入），以及画面质量页的选项初值
@@ -109,5 +109,5 @@ struct PageBadge {
 
 QMap<QString, PageBadge> CollectPageBadges(const AnalysisPages& pages, bool scanning);
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

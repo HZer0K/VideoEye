@@ -17,24 +17,20 @@ namespace {
 constexpr int kProgressMinIntervalMs = 100;
 constexpr int kProgressMinPackets = 2000;
 
-}  // namespace
+} // namespace
 
-PacketScanLoop::PacketScanLoop(AVFormatContext* fmt, const AnalysisOptions& options,
-                               model::AnalysisResult& result, const AnalysisCallbacks& callbacks)
-    : fmt_(fmt),
-      options_(options),
-      result_(result),
-      callbacks_(callbacks),
-      pkt_(av_packet_alloc()),
-      last_progress_(std::chrono::steady_clock::now()) {}
+PacketScanLoop::PacketScanLoop(AVFormatContext* fmt, const AnalysisOptions& options, model::AnalysisResult& result,
+                               const AnalysisCallbacks& callbacks)
+    : fmt_(fmt), options_(options), result_(result), callbacks_(callbacks), pkt_(av_packet_alloc()),
+      last_progress_(std::chrono::steady_clock::now()) {
+}
 
 PacketScanLoop::~PacketScanLoop() {
     av_packet_free(&pkt_);
 }
 
-ScanOutcome PacketScanLoop::Run(AnalysisPipeline& pipeline, ScanBuckets& buckets,
-                                double interval_seconds, const CancelPredicate& cancel_requested,
-                                const CancelledExitPredicate& cancelled_exit) {
+ScanOutcome PacketScanLoop::Run(AnalysisPipeline& pipeline, ScanBuckets& buckets, double interval_seconds,
+                                const CancelPredicate& cancel_requested, const CancelledExitPredicate& cancelled_exit) {
     if (pkt_ == nullptr) {
         result_.scan_error_code = AVERROR(ENOMEM);
         MarkFailed(result_, "无法分配数据包结构");
@@ -69,14 +65,12 @@ ScanOutcome PacketScanLoop::Run(AnalysisPipeline& pipeline, ScanBuckets& buckets
                 result_.scan_status = model::AnalysisStatus::Cancelled;
                 return ScanOutcome::Cancelled;
             }
-            result_.scan_error_code = ret;  // 真 AVERROR 优先，MarkFailed 不会覆盖它
-            MarkFailed(result_, "读取数据包失败（文件可能截断或 IO 错误）: " +
-                                    std::string(errbuf));
+            result_.scan_error_code = ret; // 真 AVERROR 优先，MarkFailed 不会覆盖它
+            MarkFailed(result_, "读取数据包失败（文件可能截断或 IO 错误）: " + std::string(errbuf));
             return ScanOutcome::Failed;
         }
 
-        if (pkt_->stream_index < 0 ||
-            pkt_->stream_index >= static_cast<int>(fmt_->nb_streams)) {
+        if (pkt_->stream_index < 0 || pkt_->stream_index >= static_cast<int>(fmt_->nb_streams)) {
             av_packet_unref(pkt_);
             continue;
         }
@@ -93,7 +87,8 @@ ScanOutcome PacketScanLoop::Run(AnalysisPipeline& pipeline, ScanBuckets& buckets
         AccountPacket(pkt_, is_video);
         FillBuckets(buckets, interval_seconds, pkt_, is_video, ts);
 
-        if (pkt_->pos > 0) last_pos = pkt_->pos;
+        if (pkt_->pos > 0)
+            last_pos = pkt_->pos;
         av_packet_unref(pkt_);
 
         // 进度上报（限频）
@@ -123,13 +118,16 @@ void PacketScanLoop::AccountPacket(AVPacket* pkt, bool is_video) {
         digest.frame_count += 1;
         result_.video_packets += 1;
     }
-    if (pkt->size > result_.max_packet_bytes) result_.max_packet_bytes = pkt->size;
-    if (pkt->dts == AV_NOPTS_VALUE) result_.packets_missing_dts += 1;
+    if (pkt->size > result_.max_packet_bytes)
+        result_.max_packet_bytes = pkt->size;
+    if (pkt->dts == AV_NOPTS_VALUE)
+        result_.packets_missing_dts += 1;
 }
 
-void PacketScanLoop::FillBuckets(ScanBuckets& buckets, double interval_seconds,
-                                 const AVPacket* pkt, bool is_video, double ts) {
-    if (ts < 0.0) return;
+void PacketScanLoop::FillBuckets(ScanBuckets& buckets, double interval_seconds, const AVPacket* pkt, bool is_video,
+                                 double ts) {
+    if (ts < 0.0)
+        return;
     const int64_t bucket_index = static_cast<int64_t>(std::floor(ts / interval_seconds));
     ScanBucket& bucket = buckets[bucket_index];
     bucket.total_bytes += pkt->size;
@@ -142,14 +140,12 @@ void PacketScanLoop::FillBuckets(ScanBuckets& buckets, double interval_seconds,
 // 返回是否真的上报了（上报了才更新 last_progress_）
 bool PacketScanLoop::ReportProgress(int64_t packet_index, int64_t last_pos, double ts) {
     const auto now = std::chrono::steady_clock::now();
-    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_progress_).count() <
-        kProgressMinIntervalMs) {
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_progress_).count() < kProgressMinIntervalMs) {
         return false;
     }
     double percent = 0.0;
     if (result_.file_size_bytes > 0 && last_pos > 0) {
-        percent = 100.0 * static_cast<double>(last_pos) /
-                  static_cast<double>(result_.file_size_bytes);
+        percent = 100.0 * static_cast<double>(last_pos) / static_cast<double>(result_.file_size_bytes);
     } else if (result_.duration_seconds > 0.0 && ts > 0.0) {
         percent = 100.0 * ts / result_.duration_seconds;
     }
@@ -158,4 +154,4 @@ bool PacketScanLoop::ReportProgress(int64_t packet_index, int64_t last_pos, doub
     return true;
 }
 
-}  // namespace videoeye
+} // namespace videoeye

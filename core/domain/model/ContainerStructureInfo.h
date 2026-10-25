@@ -6,9 +6,9 @@
 #include <vector>
 
 #include "core/domain/model/ContainerDiagnosticsInfo.h"
+#include "core/domain/model/EbmlInfo.h"
 #include "core/domain/model/Mp4BoxInfo.h"
 #include "core/domain/model/Mp4SampleInfo.h"
-#include "core/domain/model/EbmlInfo.h"
 #include "core/domain/model/StreamPackageInfo.h"
 #include "core/domain/model/TransportStreamInfo.h"
 
@@ -45,22 +45,22 @@ enum class ContainerFormat {
 
 /// 通用容器结构树节点
 struct ContainerElement {
-    std::string name;           // 元素名 (如 "moov", "RIFF LIST", "FLV Tag")
-    std::string type;           // 类型标识 (如 "Box", "EBML", "Chunk", "Tag")
+    std::string name; // 元素名 (如 "moov", "RIFF LIST", "FLV Tag")
+    std::string type; // 类型标识 (如 "Box", "EBML", "Chunk", "Tag")
     uint64_t size = 0;
     uint64_t offset = 0;
     int depth = 0;
-    std::string value;          // 叶子节点值
-    std::string extra;          // 额外信息
+    std::string value; // 叶子节点值
+    std::string extra; // 额外信息
     std::vector<ContainerElement> children;
 };
 
 /// 通用流信息
 struct ContainerStreamInfo {
     int index = 0;
-    std::string type;           // "video", "audio", "subtitle", "data"
+    std::string type; // "video", "audio", "subtitle", "data"
     std::string codec;
-    std::string details;        // 分辨率/采样率等
+    std::string details; // 分辨率/采样率等
     // 同一轨道 stsd 里声明的全部 sample entry（codec 为第一个）。
     // 单描述文件里它只有一项；Dolby Vision 双层等会出现 avc1 + dvhe 这样的组合。
     // 放在末尾：既有调用点大多用 {index, type, codec, details} 聚合初始化。
@@ -70,12 +70,12 @@ struct ContainerStreamInfo {
 /// 统一容器结构分析结果
 struct ContainerStructureResult {
     ContainerFormat format = ContainerFormat::Unknown;
-    std::string format_name;        // "MP4", "MKV", "AVI" 等
+    std::string format_name; // "MP4", "MKV", "AVI" 等
     std::string file_path;
-    std::vector<ContainerElement> element_tree;     // 通用结构树
-    std::vector<ContainerStreamInfo> streams;       // 流信息
-    std::map<std::string, std::string> metadata;    // 元数据键值对
-    std::string summary;                            // 概要文本
+    std::vector<ContainerElement> element_tree;  // 通用结构树
+    std::vector<ContainerStreamInfo> streams;    // 流信息
+    std::map<std::string, std::string> metadata; // 元数据键值对
+    std::string summary;                         // 概要文本
     bool valid = false;
     std::string error_message;
 

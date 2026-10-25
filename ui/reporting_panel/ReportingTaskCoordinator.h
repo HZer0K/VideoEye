@@ -22,7 +22,7 @@
 #include <memory>
 #include <string>
 
-#include <QObject>  // QMetaObject::invokeMethod 的目标类型
+#include <QObject> // QMetaObject::invokeMethod 的目标类型
 #include <QString>
 
 #include "core/domain/task/TaskProtocol.h"
@@ -43,10 +43,10 @@ public:
         // UI 更新的投递目标（面板自己，不拥有）。所有回调都经它排队回主线程。
         QObject* ui = nullptr;
         // 线程体抓到异常时的收尾动作。控制器不认识标签控件，所以整段注入。
-        std::function<void(const QString& text)> show_failure;  // 结论 / 汇总标签刷异常文本
-        std::function<void(const QString& text)> append;        // 摘要区追加一行
+        std::function<void(const QString& text)> show_failure; // 结论 / 汇总标签刷异常文本
+        std::function<void(const QString& text)> append;       // 摘要区追加一行
         std::function<void(bool busy)> set_busy;
-        std::function<void()> abort_pending_export;  // 异常时丢弃挂起的输出目录
+        std::function<void()> abort_pending_export; // 异常时丢弃挂起的输出目录
     };
 
     explicit ReportingTaskCoordinator(Deps deps);
@@ -60,8 +60,8 @@ public:
     // 启动一个后台任务：回收同槽位的旧任务 → 分配句柄 → 起线程（异常就地收口）。
     // 返回空表示并发已满，调用方负责提示，不要静默不跑。
     // body 在**线程里**执行，入参即本次任务（取消令牌与句柄都已经装好）。
-    std::shared_ptr<AnalysisTask> Start(
-        Slot slot, const std::function<void(const std::shared_ptr<AnalysisTask>&)>& body);
+    std::shared_ptr<AnalysisTask> Start(Slot slot,
+                                        const std::function<void(const std::shared_ptr<AnalysisTask>&)>& body);
 
     // 只请求取消（取消按钮）：终态留给任务体自己归还，已完成的条目保留结果。
     void RequestCancel(Slot slot);
@@ -73,15 +73,13 @@ public:
     void RetireAll();
 
     // 仅当任务仍存活时把更新投递回主线程；否则静默丢弃（面板正在销毁）。
-    void PostToUi(const std::shared_ptr<AnalysisTask>& task,
-                  const std::function<void()>& updater) const;
+    void PostToUi(const std::shared_ptr<AnalysisTask>& task, const std::function<void()>& updater) const;
 
 private:
     std::shared_ptr<AnalysisTask>& SlotTask(Slot slot);
     void Retire(std::shared_ptr<AnalysisTask>& task);
     // 线程体抓到异常时的收尾（见 core/domain/task/ThreadBody.h 的 GuardBody）。
-    void ReportThreadFailure(const std::shared_ptr<AnalysisTask>& task,
-                             const std::string& message);
+    void ReportThreadFailure(const std::shared_ptr<AnalysisTask>& task, const std::string& message);
     const char* SlotName(Slot slot) const;
 
     Deps deps_;
@@ -92,5 +90,5 @@ private:
     std::shared_ptr<AnalysisTask> batch_;
 };
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

@@ -9,8 +9,8 @@
 namespace {
 
 using videoeye::Av1BitstreamParser;
-using videoeye::ExtradataParser;
 using videoeye::ExtradataFormat;
+using videoeye::ExtradataParser;
 using videoeye::ObuUnit;
 
 // 测试数据由 _smoke/gen_av1_seqhdr.py 逐位生成，语法元素顺序以 dav1d 的
@@ -22,62 +22,54 @@ using videoeye::ObuUnit;
 
 // Profile 0, 4:2:0 8bit, 1920x1080, level 3.0, BT.709
 const std::vector<uint8_t> kSeqHdrProfile0_1080p = {
-    0x0A, 0x0E, 0x00, 0x00, 0x00, 0x25, 0x57, 0x7F, 0x86, 0xE7, 0xF4, 0xEC,
-    0x80, 0x80, 0x80, 0x82,
+    0x0A, 0x0E, 0x00, 0x00, 0x00, 0x25, 0x57, 0x7F, 0x86, 0xE7, 0xF4, 0xEC, 0x80, 0x80, 0x80, 0x82,
 };
 
 // 同上，但只有 payload（用于直接测 ParseFromObuUnit）
 const std::vector<uint8_t> kSeqHdrProfile0_1080p_Payload = {
-    0x00, 0x00, 0x00, 0x25, 0x57, 0x7F, 0x86, 0xE7, 0xF4, 0xEC, 0x80, 0x80,
-    0x80, 0x82,
+    0x00, 0x00, 0x00, 0x25, 0x57, 0x7F, 0x86, 0xE7, 0xF4, 0xEC, 0x80, 0x80, 0x80, 0x82,
 };
 
 // Profile 0, 4:2:0 10bit, 3840x2160, level 5.1 tier=1, BT.2020/PQ
 const std::vector<uint8_t> kSeqHdrProfile0_4k10bitHdr = {
-    0x0A, 0x0F, 0x00, 0x00, 0x00, 0x6E, 0xEF, 0xBF, 0xE1, 0xBC, 0xFE, 0x9D,
-    0xD0, 0x91, 0x00, 0x90, 0x40,
+    0x0A, 0x0F, 0x00, 0x00, 0x00, 0x6E, 0xEF, 0xBF, 0xE1, 0xBC, 0xFE, 0x9D, 0xD0, 0x91, 0x00, 0x90, 0x40,
 };
 
 // Profile 2, 4:2:2 12bit, 1920x1080, level 4.0
 const std::vector<uint8_t> kSeqHdrProfile2_422_12bit = {
-    0x0A, 0x0F, 0x40, 0x00, 0x00, 0x42, 0xAB, 0xBF, 0xC3, 0x73, 0xFA, 0x77,
-    0xA1, 0x22, 0x01, 0x28, 0x80,
+    0x0A, 0x0F, 0x40, 0x00, 0x00, 0x42, 0xAB, 0xBF, 0xC3, 0x73, 0xFA, 0x77, 0xA1, 0x22, 0x01, 0x28, 0x80,
 };
 
 // Profile 1, 4:4:4 8bit, 640x480, level 2.1
 const std::vector<uint8_t> kSeqHdrProfile1_444 = {
-    0x0A, 0x0E, 0x20, 0x00, 0x00, 0x0C, 0xC4, 0xFF, 0xDF, 0x3F, 0xA7, 0x68,
-    0x08, 0x08, 0x08, 0x80,
+    0x0A, 0x0E, 0x20, 0x00, 0x00, 0x0C, 0xC4, 0xFF, 0xDF, 0x3F, 0xA7, 0x68, 0x08, 0x08, 0x08, 0x80,
 };
 
 // Profile 0, 4:0:0 8bit, 320x240, full range
 const std::vector<uint8_t> kSeqHdrMonochrome = {
-    0x0A, 0x0D, 0x00, 0x00, 0x00, 0x04, 0x3C, 0xFF, 0xBC, 0xFE, 0x9D, 0xB0,
-    0x10, 0x10, 0x1A,
+    0x0A, 0x0D, 0x00, 0x00, 0x00, 0x04, 0x3C, 0xFF, 0xBC, 0xFE, 0x9D, 0xB0, 0x10, 0x10, 0x1A,
 };
 
 // 带 timing_info + decoder_model_info + 2 个 operating point
 const std::vector<uint8_t> kSeqHdrWithTiming = {
-    0x0A, 0x20, 0x04, 0x00, 0x00, 0x0F, 0xA4, 0x00, 0x03, 0xA9, 0x82, 0x4B,
-    0xC0, 0x00, 0x00, 0xFA, 0x67, 0x40, 0x40, 0x01, 0x10, 0x00, 0x22, 0xA9,
-    0x9F, 0xF6, 0x79, 0xFD, 0x3B, 0x20, 0x20, 0x20, 0x20, 0x80,
+    0x0A, 0x20, 0x04, 0x00, 0x00, 0x0F, 0xA4, 0x00, 0x03, 0xA9, 0x82, 0x4B, 0xC0, 0x00, 0x00, 0xFA, 0x67,
+    0x40, 0x40, 0x01, 0x10, 0x00, 0x22, 0xA9, 0x9F, 0xF6, 0x79, 0xFD, 0x3B, 0x20, 0x20, 0x20, 0x20, 0x80,
 };
 
 // 带 OBU extension header: temporal_id=2 spatial_id=1, level 3.1
 const std::vector<uint8_t> kSeqHdrWithExtension = {
-    0x0E, 0x48, 0x0E, 0x00, 0x00, 0x00, 0x2C, 0xC6, 0xAB, 0xDF, 0x3F, 0xA7,
-    0x64, 0x04, 0x04, 0x04, 0x10,
+    0x0E, 0x48, 0x0E, 0x00, 0x00, 0x00, 0x2C, 0xC6, 0xAB, 0xDF, 0x3F, 0xA7, 0x64, 0x04, 0x04, 0x04, 0x10,
 };
 
 // 序列头 + PADDING。PADDING 长度 200，leb128 编码为 2 字节 0xC8 0x01；
 // payload 全是 0，在测试里现场拼出来，免得占几十行字面量。
-const std::vector<uint8_t> kPaddingObuHeader = {0x7A, 0xC8, 0x01};  // 200 字节 PADDING
+const std::vector<uint8_t> kPaddingObuHeader = {0x7A, 0xC8, 0x01}; // 200 字节 PADDING
 const size_t kPaddingObuPayloadSize = 200;
 
 // TD + SequenceHeader + Padding 三个 OBU 连在一起（Padding 只放 1 字节示意）
 const std::vector<uint8_t> kObuStream3Units = {
-    0x12, 0x00, 0x0A, 0x0E, 0x00, 0x00, 0x00, 0x25, 0x57, 0x7F, 0x86, 0xE7,
-    0xF4, 0xEC, 0x80, 0x80, 0x80, 0x82, 0x7A, 0x01, 0x00,
+    0x12, 0x00, 0x0A, 0x0E, 0x00, 0x00, 0x00, 0x25, 0x57, 0x7F, 0x86,
+    0xE7, 0xF4, 0xEC, 0x80, 0x80, 0x80, 0x82, 0x7A, 0x01, 0x00,
 };
 
 // av1C: profile 0, level 4.0, 4:2:0 8bit
@@ -88,8 +80,8 @@ const std::vector<uint8_t> kAv1CProfile0_420_10bit = {0x81, 0x0D, 0xCC, 0x00};
 
 // av1C + 尾部 configOBUs（内含序列头）
 const std::vector<uint8_t> kAv1CWithSeqHeader = {
-    0x81, 0x08, 0x0C, 0x00, 0x0A, 0x0E, 0x00, 0x00, 0x00, 0x25, 0x57, 0x7F,
-    0x86, 0xE7, 0xF4, 0xEC, 0x80, 0x80, 0x80, 0x82,
+    0x81, 0x08, 0x0C, 0x00, 0x0A, 0x0E, 0x00, 0x00, 0x00, 0x25,
+    0x57, 0x7F, 0x86, 0xE7, 0xF4, 0xEC, 0x80, 0x80, 0x80, 0x82,
 };
 
 // av1C: 单色 + initial_presentation_delay=5
@@ -101,7 +93,8 @@ std::vector<ObuUnit> Extract(const std::vector<uint8_t>& bytes) {
 
 videoeye::model::Av1SequenceHeaderInfo ParseFirst(const std::vector<uint8_t>& bytes) {
     std::vector<ObuUnit> obus = Extract(bytes);
-    if (obus.empty()) return videoeye::model::Av1SequenceHeaderInfo();
+    if (obus.empty())
+        return videoeye::model::Av1SequenceHeaderInfo();
     return Av1BitstreamParser::ParseFromObuUnit(obus[0]);
 }
 
@@ -110,8 +103,10 @@ videoeye::model::Av1SequenceHeaderInfo ParseFirst(const std::vector<uint8_t>& by
 // --------------------------------------------------------------------------
 class Av1ObuExtractionTest : public testing::Test {
 protected:
-    void SetUp() override {}
-    void TearDown() override {}
+    void SetUp() override {
+    }
+    void TearDown() override {
+    }
 };
 
 TEST_F(Av1ObuExtractionTest, ObuHeaderBitLayout) {
@@ -150,7 +145,7 @@ TEST_F(Av1ObuExtractionTest, MultiByteLeb128) {
     std::vector<ObuUnit> obus = Extract(stream);
     ASSERT_EQ(obus.size(), 2u);
     EXPECT_EQ(obus[0].type, 1);
-    EXPECT_EQ(obus[1].type, 15);          // OBU_PADDING
+    EXPECT_EQ(obus[1].type, 15); // OBU_PADDING
     EXPECT_EQ(obus[1].size, 200u);
     EXPECT_EQ(obus[1].data.size(), 200u);
 }
@@ -158,9 +153,9 @@ TEST_F(Av1ObuExtractionTest, MultiByteLeb128) {
 TEST_F(Av1ObuExtractionTest, MultipleObusInOrder) {
     std::vector<ObuUnit> obus = Extract(kObuStream3Units);
     ASSERT_EQ(obus.size(), 3u);
-    EXPECT_EQ(obus[0].type, 2);           // OBU_TEMPORAL_DELIMITER
-    EXPECT_EQ(obus[1].type, 1);           // OBU_SEQUENCE_HEADER
-    EXPECT_EQ(obus[2].type, 15);          // OBU_PADDING
+    EXPECT_EQ(obus[0].type, 2);  // OBU_TEMPORAL_DELIMITER
+    EXPECT_EQ(obus[1].type, 1);  // OBU_SEQUENCE_HEADER
+    EXPECT_EQ(obus[2].type, 15); // OBU_PADDING
     EXPECT_EQ(obus[0].size, 0u);
     EXPECT_EQ(obus[2].size, 1u);
 }
@@ -184,15 +179,17 @@ TEST_F(Av1ObuExtractionTest, EmptyAndTruncatedInput) {
 // --------------------------------------------------------------------------
 class Av1SequenceHeaderTest : public testing::Test {
 protected:
-    void SetUp() override {}
-    void TearDown() override {}
+    void SetUp() override {
+    }
+    void TearDown() override {
+    }
 };
 
 TEST_F(Av1SequenceHeaderTest, Profile0_1080p_8bit) {
     videoeye::model::Av1SequenceHeaderInfo sh = ParseFirst(kSeqHdrProfile0_1080p);
     ASSERT_TRUE(sh.present);
     EXPECT_EQ(sh.profile, 0);
-    EXPECT_EQ(sh.level, 4);                       // seq_level_idx：level 3.0
+    EXPECT_EQ(sh.level, 4); // seq_level_idx：level 3.0
     EXPECT_EQ(sh.LevelString(), "3.0");
     EXPECT_EQ(sh.tier, 0);
     EXPECT_EQ(sh.FrameWidth(), 1920);
@@ -203,7 +200,7 @@ TEST_F(Av1SequenceHeaderTest, Profile0_1080p_8bit) {
     EXPECT_EQ(sh.color_config.subsampling_y, 1);
     EXPECT_EQ(sh.ChromaFormatString(), "4:2:0");
     EXPECT_TRUE(sh.color_config.color_description_present_flag);
-    EXPECT_EQ(sh.color_config.color_primaries, 1);         // BT.709
+    EXPECT_EQ(sh.color_config.color_primaries, 1); // BT.709
     EXPECT_EQ(sh.color_config.transfer_characteristics, 1);
     EXPECT_EQ(sh.color_config.matrix_coefficients, 1);
     EXPECT_EQ(sh.operating_points_count, 1);
@@ -216,15 +213,15 @@ TEST_F(Av1SequenceHeaderTest, Profile0_4k_10bit_Hdr) {
     EXPECT_EQ(sh.profile, 0);
     EXPECT_EQ(sh.level, 13);
     EXPECT_EQ(sh.LevelString(), "5.1");
-    EXPECT_EQ(sh.tier, 1);                        // level 5.x 才带 seq_tier
+    EXPECT_EQ(sh.tier, 1); // level 5.x 才带 seq_tier
     EXPECT_EQ(sh.FrameWidth(), 3840);
     EXPECT_EQ(sh.FrameHeight(), 2160);
     EXPECT_TRUE(sh.color_config.high_bitdepth);
     EXPECT_EQ(sh.BitDepth(), 10);
     EXPECT_EQ(sh.ChromaFormatString(), "4:2:0");
-    EXPECT_EQ(sh.color_config.color_primaries, 9);         // BT.2020
+    EXPECT_EQ(sh.color_config.color_primaries, 9);           // BT.2020
     EXPECT_EQ(sh.color_config.transfer_characteristics, 16); // PQ
-    EXPECT_EQ(sh.color_config.matrix_coefficients, 9);     // BT.2020 NCL
+    EXPECT_EQ(sh.color_config.matrix_coefficients, 9);       // BT.2020 NCL
 }
 
 TEST_F(Av1SequenceHeaderTest, Profile2_422_12bit) {
@@ -278,7 +275,7 @@ TEST_F(Av1SequenceHeaderTest, TimingInfoAndOperatingPoints) {
     EXPECT_TRUE(sh.decoder_model_info_present_flag);
     EXPECT_EQ(sh.decoder_buffer_delay_length, 16);
     EXPECT_EQ(sh.operating_points_count, 2);
-    EXPECT_EQ(sh.level, 8);                       // level 4.0
+    EXPECT_EQ(sh.level, 8); // level 4.0
     EXPECT_EQ(sh.LevelString(), "4.0");
     EXPECT_EQ(sh.tier, 1);
     // 跨过 timing / decoder model / 两个 operating point 之后仍要对齐到宽高
@@ -296,8 +293,7 @@ TEST_F(Av1SequenceHeaderTest, WithExtensionHeader) {
 }
 
 TEST_F(Av1SequenceHeaderTest, ParseFromPayloadDirectly) {
-    ObuUnit obu(1, kSeqHdrProfile0_1080p_Payload.size(),
-                kSeqHdrProfile0_1080p_Payload, false, true);
+    ObuUnit obu(1, kSeqHdrProfile0_1080p_Payload.size(), kSeqHdrProfile0_1080p_Payload, false, true);
     videoeye::model::Av1SequenceHeaderInfo sh = Av1BitstreamParser::ParseFromObuUnit(obu);
     ASSERT_TRUE(sh.present);
     EXPECT_EQ(sh.FrameWidth(), 1920);
@@ -309,16 +305,18 @@ TEST_F(Av1SequenceHeaderTest, ParseFromPayloadDirectly) {
 // --------------------------------------------------------------------------
 class Av1CodecConfigTest : public testing::Test {
 protected:
-    void SetUp() override {}
-    void TearDown() override {}
+    void SetUp() override {
+    }
+    void TearDown() override {
+    }
 };
 
 TEST_F(Av1CodecConfigTest, Profile0_420_8bit) {
-    auto result = ExtradataParser::ParseWithFormat(
-        ExtradataFormat::Av1C, kAv1CProfile0_420_8bit.data(), kAv1CProfile0_420_8bit.size());
+    auto result = ExtradataParser::ParseWithFormat(ExtradataFormat::Av1C, kAv1CProfile0_420_8bit.data(),
+                                                   kAv1CProfile0_420_8bit.size());
     ASSERT_TRUE(result.valid);
     EXPECT_EQ(result.config.profile, 0);
-    EXPECT_EQ(result.config.level_idc, 8u);       // seq_level_idx_0 = 4.0
+    EXPECT_EQ(result.config.level_idc, 8u); // seq_level_idx_0 = 4.0
     EXPECT_EQ(result.config.general_tier_flag, 0);
     EXPECT_EQ(result.config.high_bitdepth, 0);
     EXPECT_EQ(result.config.bit_depth_minus_8, 0);
@@ -332,33 +330,32 @@ TEST_F(Av1CodecConfigTest, Profile0_420_8bit) {
 }
 
 TEST_F(Av1CodecConfigTest, Profile0_420_10bit_Tier1) {
-    auto result = ExtradataParser::ParseWithFormat(
-        ExtradataFormat::Av1C, kAv1CProfile0_420_10bit.data(), kAv1CProfile0_420_10bit.size());
+    auto result = ExtradataParser::ParseWithFormat(ExtradataFormat::Av1C, kAv1CProfile0_420_10bit.data(),
+                                                   kAv1CProfile0_420_10bit.size());
     ASSERT_TRUE(result.valid);
     EXPECT_EQ(result.config.profile, 0);
-    EXPECT_EQ(result.config.level_idc, 13u);      // 5.1
+    EXPECT_EQ(result.config.level_idc, 13u); // 5.1
     EXPECT_EQ(result.config.general_tier_flag, 1);
     EXPECT_EQ(result.config.high_bitdepth, 1);
     EXPECT_EQ(result.config.bit_depth_minus_8, 2);
 }
 
 TEST_F(Av1CodecConfigTest, ConfigObusAreExtracted) {
-    auto result = ExtradataParser::ParseWithFormat(
-        ExtradataFormat::Av1C, kAv1CWithSeqHeader.data(), kAv1CWithSeqHeader.size());
+    auto result =
+        ExtradataParser::ParseWithFormat(ExtradataFormat::Av1C, kAv1CWithSeqHeader.data(), kAv1CWithSeqHeader.size());
     ASSERT_TRUE(result.valid);
     ASSERT_EQ(result.obu_units.size(), 1u);
     EXPECT_EQ(result.obu_units[0].type, 1);
 
-    videoeye::model::Av1SequenceHeaderInfo sh =
-        Av1BitstreamParser::ParseFromObuUnit(result.obu_units[0]);
+    videoeye::model::Av1SequenceHeaderInfo sh = Av1BitstreamParser::ParseFromObuUnit(result.obu_units[0]);
     ASSERT_TRUE(sh.present);
     EXPECT_EQ(sh.FrameWidth(), 1920);
     EXPECT_EQ(sh.FrameHeight(), 1080);
 }
 
 TEST_F(Av1CodecConfigTest, MonochromeAndInitialPresentationDelay) {
-    auto result = ExtradataParser::ParseWithFormat(
-        ExtradataFormat::Av1C, kAv1CMonochrome.data(), kAv1CMonochrome.size());
+    auto result =
+        ExtradataParser::ParseWithFormat(ExtradataFormat::Av1C, kAv1CMonochrome.data(), kAv1CMonochrome.size());
     ASSERT_TRUE(result.valid);
     EXPECT_EQ(result.config.monochrome, 1);
     EXPECT_EQ(result.config.initial_presentation_delay_bits, 5);
@@ -366,8 +363,7 @@ TEST_F(Av1CodecConfigTest, MonochromeAndInitialPresentationDelay) {
 
 TEST_F(Av1CodecConfigTest, TooSmallIsRejected) {
     const std::vector<uint8_t> tiny = {0x81, 0x08, 0x0C};
-    auto result = ExtradataParser::ParseWithFormat(
-        ExtradataFormat::Av1C, tiny.data(), tiny.size());
+    auto result = ExtradataParser::ParseWithFormat(ExtradataFormat::Av1C, tiny.data(), tiny.size());
     EXPECT_FALSE(result.valid);
     EXPECT_FALSE(result.error_message.empty());
 }
@@ -377,8 +373,10 @@ TEST_F(Av1CodecConfigTest, TooSmallIsRejected) {
 // --------------------------------------------------------------------------
 class Av1MiscTest : public testing::Test {
 protected:
-    void SetUp() override {}
-    void TearDown() override {}
+    void SetUp() override {
+    }
+    void TearDown() override {
+    }
 };
 
 TEST_F(Av1MiscTest, ProfileName) {
@@ -419,17 +417,17 @@ TEST_F(Av1MiscTest, ReservedProfileIsRejected) {
 }
 
 TEST_F(Av1MiscTest, ParseSequenceHeaderFromExtradata) {
-    videoeye::model::Av1SequenceHeaderInfo sh = Av1BitstreamParser::ParseSequenceHeader(
-        kAv1CWithSeqHeader.data(), kAv1CWithSeqHeader.size());
+    videoeye::model::Av1SequenceHeaderInfo sh =
+        Av1BitstreamParser::ParseSequenceHeader(kAv1CWithSeqHeader.data(), kAv1CWithSeqHeader.size());
     ASSERT_TRUE(sh.present);
     EXPECT_EQ(sh.FrameWidth(), 1920);
 
     // 没有序列头的纯 av1C 只能返回未解析，不能拿默认值冒充
-    videoeye::model::Av1SequenceHeaderInfo none = Av1BitstreamParser::ParseSequenceHeader(
-        kAv1CProfile0_420_8bit.data(), kAv1CProfile0_420_8bit.size());
+    videoeye::model::Av1SequenceHeaderInfo none =
+        Av1BitstreamParser::ParseSequenceHeader(kAv1CProfile0_420_8bit.data(), kAv1CProfile0_420_8bit.size());
     EXPECT_FALSE(none.present);
 
     EXPECT_FALSE(Av1BitstreamParser::ParseSequenceHeader(nullptr, 0).present);
 }
 
-}  // namespace
+} // namespace

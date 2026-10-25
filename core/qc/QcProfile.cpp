@@ -42,13 +42,16 @@ QcRuleOverride MakeDisabled(const char* id) {
     return item;
 }
 
-}  // namespace
+} // namespace
 
 const char* ToString(QcAnalysisDepth depth) {
     switch (depth) {
-        case QcAnalysisDepth::Fast:     return "fast";
-        case QcAnalysisDepth::Standard: return "standard";
-        case QcAnalysisDepth::Deep:     return "deep";
+    case QcAnalysisDepth::Fast:
+        return "fast";
+    case QcAnalysisDepth::Standard:
+        return "standard";
+    case QcAnalysisDepth::Deep:
+        return "deep";
     }
     return "standard";
 }
@@ -71,10 +74,14 @@ bool ParseQcAnalysisDepth(const std::string& text, QcAnalysisDepth& out) {
 
 std::string ToStableString(model::IssueSeverity severity) {
     switch (severity) {
-        case model::IssueSeverity::Critical: return "critical";
-        case model::IssueSeverity::Error:    return "error";
-        case model::IssueSeverity::Warning:  return "warning";
-        case model::IssueSeverity::Info:     return "info";
+    case model::IssueSeverity::Critical:
+        return "critical";
+    case model::IssueSeverity::Error:
+        return "error";
+    case model::IssueSeverity::Warning:
+        return "warning";
+    case model::IssueSeverity::Info:
+        return "info";
     }
     return "info";
 }
@@ -111,8 +118,7 @@ std::vector<QcProfile> BuiltinQcProfiles() {
         QcProfile profile;
         profile.id = "general";
         profile.name = "通用";
-        profile.description =
-            "按默认规则集全量检查，不做任何阈值偏移。适合拿到一份来历不明的文件先过一遍。";
+        profile.description = "按默认规则集全量检查，不做任何阈值偏移。适合拿到一份来历不明的文件先过一遍。";
         profile.depth = QcAnalysisDepth::Standard;
         profiles.push_back(std::move(profile));
     }
@@ -122,9 +128,8 @@ std::vector<QcProfile> BuiltinQcProfiles() {
         QcProfile profile;
         profile.id = "broadcast";
         profile.name = "广播交付 (EBU R128)";
-        profile.description =
-            "电视台/广电交付口径：积分响度 -23 ±1 LUFS、真峰值不超过 -1 dBTP、48 kHz 采样率、"
-            "色彩标注必须写全。响度与色彩两项按错误处理。";
+        profile.description = "电视台/广电交付口径：积分响度 -23 ±1 LUFS、真峰值不超过 -1 dBTP、48 kHz 采样率、"
+                              "色彩标注必须写全。响度与色彩两项按错误处理。";
         profile.depth = QcAnalysisDepth::Standard;
         profile.overrides = {
             MakeBoth("audio.loudness.target_high", -22.0, model::IssueSeverity::Error),
@@ -148,9 +153,8 @@ std::vector<QcProfile> BuiltinQcProfiles() {
         QcProfile profile;
         profile.id = "hls-vod";
         profile.name = "HLS VOD";
-        profile.description =
-            "点播 HLS 包：分片时长、码率阶梯、关键帧对齐、缺失分片一律按错误处理；"
-            "视频侧要求 6 秒以内一个 IDR，保证 ABR 切换点够密。";
+        profile.description = "点播 HLS 包：分片时长、码率阶梯、关键帧对齐、缺失分片一律按错误处理；"
+                              "视频侧要求 6 秒以内一个 IDR，保证 ABR 切换点够密。";
         profile.depth = QcAnalysisDepth::Standard;
         profile.overrides = {
             MakeSeverity("container.hls.missing_target_duration", model::IssueSeverity::Error),
@@ -176,9 +180,8 @@ std::vector<QcProfile> BuiltinQcProfiles() {
         QcProfile profile;
         profile.id = "short-video";
         profile.name = "短视频 / 社媒";
-        profile.description =
-            "抖音/快手/YouTube Shorts 一类平台口径：响度目标 -14 ±1 LUFS（-1 dBTP 上限），"
-            "必须偶数分辨率与 faststart（否则首帧起播慢），长时间静音容忍度更低。";
+        profile.description = "抖音/快手/YouTube Shorts 一类平台口径：响度目标 -14 ±1 LUFS（-1 dBTP 上限），"
+                              "必须偶数分辨率与 faststart（否则首帧起播慢），长时间静音容忍度更低。";
         profile.depth = QcAnalysisDepth::Standard;
         profile.overrides = {
             MakeOverride("audio.loudness.target_high", -13.0),
@@ -200,9 +203,8 @@ std::vector<QcProfile> BuiltinQcProfiles() {
         QcProfile profile;
         profile.id = "archive-master";
         profile.name = "归档母版";
-        profile.description =
-            "长期保存/再分发母版：色彩与 HDR 元数据必须完整（PQ 内容缺 mastering 直接判错）、"
-            "时码与声道布局缺失升级为警告，并使用深度模式逐帧核对帧类型。";
+        profile.description = "长期保存/再分发母版：色彩与 HDR 元数据必须完整（PQ 内容缺 mastering 直接判错）、"
+                              "时码与声道布局缺失升级为警告，并使用深度模式逐帧核对帧类型。";
         profile.depth = QcAnalysisDepth::Deep;
         profile.overrides = {
             MakeSeverity("video.color.unspecified", model::IssueSeverity::Error),
@@ -230,7 +232,8 @@ const QcProfile* FindBuiltinQcProfile(const std::string& id) {
     // BuiltinQcProfiles() 每次重建 5 个对象，调用频率很低（切换模板、解析命令行），不值得缓存。
     static const std::vector<QcProfile> kProfiles = BuiltinQcProfiles();
     for (const auto& profile : kProfiles) {
-        if (profile.id == id) return &profile;
+        if (profile.id == id)
+            return &profile;
     }
     return nullptr;
 }
@@ -246,8 +249,10 @@ std::string SerializeQcProfile(const QcProfile& profile, bool pretty) {
     videoeye::JsonValue rules = videoeye::JsonValue::MakeObject();
     for (const auto& item : profile.overrides) {
         videoeye::JsonValue entry = videoeye::JsonValue::MakeObject();
-        if (item.has_enabled) entry.Set("enabled", videoeye::JsonValue(item.enabled));
-        if (item.has_threshold) entry.Set("threshold", videoeye::JsonValue(item.threshold));
+        if (item.has_enabled)
+            entry.Set("enabled", videoeye::JsonValue(item.enabled));
+        if (item.has_threshold)
+            entry.Set("threshold", videoeye::JsonValue(item.threshold));
         if (item.has_severity) {
             entry.Set("severity", videoeye::JsonValue(ToStableString(item.severity)));
         }
@@ -278,8 +283,7 @@ bool ParseQcProfileJson(const std::string& json, QcProfile& out, std::string& er
     profile.version = version;
     profile.id = root.Find("id") != nullptr ? root.Find("id")->StringValueOr("") : "";
     profile.name = root.Find("name") != nullptr ? root.Find("name")->StringValueOr("") : "";
-    profile.description =
-        root.Find("description") != nullptr ? root.Find("description")->StringValueOr("") : "";
+    profile.description = root.Find("description") != nullptr ? root.Find("description")->StringValueOr("") : "";
 
     if (const videoeye::JsonValue* depth = root.Find("analysis_depth")) {
         if (!ParseQcAnalysisDepth(depth->StringValueOr(""), profile.depth)) {
@@ -333,7 +337,8 @@ bool ParseQcProfileJson(const std::string& json, QcProfile& out, std::string& er
 
 bool SaveQcProfileToFile(const std::string& path, const QcProfile& profile) {
     std::ofstream file(ToNativePath(path), std::ios::binary);
-    if (!file.is_open()) return false;
+    if (!file.is_open())
+        return false;
     file << SerializeQcProfile(profile, true);
     return file.good();
 }
@@ -357,10 +362,14 @@ std::vector<model::QcRule> BuildRulesForProfile(const QcProfile& profile) {
 void ApplyProfileOverrides(const QcProfile& profile, std::vector<model::QcRule>& rules) {
     for (const auto& item : profile.overrides) {
         model::QcRule* rule = model::FindQcRule(rules, item.id);
-        if (rule == nullptr) continue;  // 未知 id 由 UnknownRuleIds 单独报告
-        if (item.has_enabled) rule->enabled = item.enabled;
-        if (item.has_threshold) rule->threshold = item.threshold;
-        if (item.has_severity) rule->severity = item.severity;
+        if (rule == nullptr)
+            continue; // 未知 id 由 UnknownRuleIds 单独报告
+        if (item.has_enabled)
+            rule->enabled = item.enabled;
+        if (item.has_threshold)
+            rule->threshold = item.threshold;
+        if (item.has_severity)
+            rule->severity = item.severity;
     }
 }
 
@@ -368,10 +377,11 @@ std::vector<std::string> UnknownRuleIds(const QcProfile& profile) {
     const std::vector<model::QcRule> defaults = model::DefaultQcRules();
     std::vector<std::string> unknown;
     for (const auto& item : profile.overrides) {
-        if (model::FindQcRule(defaults, item.id) == nullptr) unknown.push_back(item.id);
+        if (model::FindQcRule(defaults, item.id) == nullptr)
+            unknown.push_back(item.id);
     }
     return unknown;
 }
 
-}  // namespace qc
-}  // namespace videoeye
+} // namespace qc
+} // namespace videoeye

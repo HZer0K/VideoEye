@@ -42,8 +42,8 @@ using videoeye::qc::QcAnalysisDepth;
 using videoeye::qc::QcAnalyzeRequest;
 using videoeye::qc::QcProfile;
 using videoeye::qc::QcRunCallbacks;
-using videoeye::qc::QcRunResult;
 using videoeye::qc::QcRunner;
+using videoeye::qc::QcRunResult;
 
 namespace {
 
@@ -87,7 +87,7 @@ fs::path WriteGarbageMediaFile(const fs::path& dir, const std::string& file_name
     return file;
 }
 
-}  // namespace
+} // namespace
 
 // 生命周期错误路径：这三种输入在起线程之前就被挡下，不创建盒子 / worker。
 TEST(QcRunnerTest, RejectsMissingEmptyAndDirectoryPaths) {
@@ -125,13 +125,12 @@ TEST(QcRunnerTest, ReturnsEngineFailureWithinBudgetWithoutTimeout) {
     const fs::path file = WriteGarbageMediaFile(dir, "garbage.mp4");
 
     QcRunner runner;
-    const QcRunResult result = runner.AnalyzeFile(file.string(), FastProfile(),
-                                                  OptionsForDepth(QcAnalysisDepth::Fast),
+    const QcRunResult result = runner.AnalyzeFile(file.string(), FastProfile(), OptionsForDepth(QcAnalysisDepth::Fast),
                                                   QcRunCallbacks{}, /*join_budget_ms=*/8000);
     EXPECT_FALSE(result.ok);
-    EXPECT_NE(result.error, kTimeoutError);  // 走的是结算路径，不是超时
-    EXPECT_FALSE(result.timed_out);          // 预算内结算不得误标超时
-    EXPECT_FALSE(result.error.empty());      // 失败原因来自引擎（FFmpeg 的打开错误）
+    EXPECT_NE(result.error, kTimeoutError); // 走的是结算路径，不是超时
+    EXPECT_FALSE(result.timed_out);         // 预算内结算不得误标超时
+    EXPECT_FALSE(result.error.empty());     // 失败原因来自引擎（FFmpeg 的打开错误）
     EXPECT_EQ(result.profile_id, "unit-test");
 
     std::error_code ec;
@@ -149,12 +148,10 @@ TEST(QcRunnerTest, JoinBudgetZeroTimesOutAndDetachesWithoutCrash) {
 
     QcRunner runner;
     const auto started = std::chrono::steady_clock::now();
-    const QcRunResult result = runner.AnalyzeFile(file.string(), FastProfile(),
-                                                  OptionsForDepth(QcAnalysisDepth::Fast),
+    const QcRunResult result = runner.AnalyzeFile(file.string(), FastProfile(), OptionsForDepth(QcAnalysisDepth::Fast),
                                                   QcRunCallbacks{}, /*join_budget_ms=*/0);
-    const double wall_ms = std::chrono::duration<double, std::milli>(
-                               std::chrono::steady_clock::now() - started)
-                               .count();
+    const double wall_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
 
     EXPECT_FALSE(result.ok);
     EXPECT_EQ(result.error, kTimeoutError);
@@ -173,8 +170,7 @@ TEST(QcRunnerTest, JoinBudgetZeroTimesOutAndDetachesWithoutCrash) {
 
 // MakeAnalyzeFunction 的封装只做参数绑定，错误路径同样在起线程前返回。
 TEST(QcRunnerTest, MakeAnalyzeFunctionKeepsPathErrors) {
-    const auto analyze = QcRunner::MakeAnalyzeFunction(
-        FastProfile(), OptionsForDepth(QcAnalysisDepth::Fast));
+    const auto analyze = QcRunner::MakeAnalyzeFunction(FastProfile(), OptionsForDepth(QcAnalysisDepth::Fast));
     QcAnalyzeRequest request;
     request.path = (fs::temp_directory_path() / "videoeye_qc_runner_absent.mp4").string();
     std::error_code ec;
@@ -246,8 +242,7 @@ TEST(QcRunnerTest, NetworkUriIsNotRejectedAsMissingFile) {
     input.kind = MediaInput::Kind::NetworkUri;
     input.uri = "rtsp://127.0.0.1:6553/videoeye-not-here";
 
-    const QcRunResult result = runner.AnalyzeFile(input, FastProfile(),
-                                                  OptionsForDepth(QcAnalysisDepth::Fast),
+    const QcRunResult result = runner.AnalyzeFile(input, FastProfile(), OptionsForDepth(QcAnalysisDepth::Fast),
                                                   QcRunCallbacks{}, /*join_budget_ms=*/0);
     EXPECT_FALSE(result.ok);
     EXPECT_EQ(result.error.find("文件不存在"), std::string::npos)

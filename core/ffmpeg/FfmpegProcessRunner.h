@@ -37,28 +37,28 @@ namespace ffmpeg {
 enum class FfmpegRunStatus {
     Idle,
     Running,
-    Finished,   // 正常退出（exitCode == 0）
-    Failed,     // 退出码非 0
-    Stopped,    // 被用户停止
-    StartError  // 进程没起来（程序不存在 / 无权限 / 工作目录不存在）
+    Finished,  // 正常退出（exitCode == 0）
+    Failed,    // 退出码非 0
+    Stopped,   // 被用户停止
+    StartError // 进程没起来（程序不存在 / 无权限 / 工作目录不存在）
 };
 
 /// 停止走到哪一档了。Stopped 的结果**必须**带上它: 优雅退出（QuitSent）产出的
 /// 文件是完整的，被杀掉（Killed）的那个多半缺 moov box —— 界面得如实区分，
 /// 不能一律显示"已停止"。
 enum class FfmpegStopStage {
-    None,        // 没请求过停止
-    QuitSent,    // 已向 stdin 写 q，等 ffmpeg 自己收尾（唯一能保证输出完整的一档）
-    Terminated,  // 宽限到点没退出，已 terminate()
-    Killed,      // 最后一档：强杀（输出文件可能不可用）
+    None,       // 没请求过停止
+    QuitSent,   // 已向 stdin 写 q，等 ffmpeg 自己收尾（唯一能保证输出完整的一档）
+    Terminated, // 宽限到点没退出，已 terminate()
+    Killed,     // 最后一档：强杀（输出文件可能不可用）
 };
 
 struct FfmpegRunResult {
     FfmpegRunStatus status = FfmpegRunStatus::Idle;
     int exit_code = -1;
     qint64 elapsed_ms = 0;
-    QString error_message;   // StartError / Failed 时的补充说明
-    QString command_line;    // 实际执行的命令（用于日志抬头）
+    QString error_message; // StartError / Failed 时的补充说明
+    QString command_line;  // 实际执行的命令（用于日志抬头）
     FfmpegStopStage stop_stage = FfmpegStopStage::None;
 
     /// 被用户停止，且 ffmpeg 有机会自己收尾（输出文件可以放心用）
@@ -88,8 +88,7 @@ public:
 
     /// 启动。成功返回 true（此后 IsRunning() 为 true）。
     /// 失败时通过 Finished() 抛出一个 status=StartError 的结果，便于调用方统一处理。
-    bool Start(const QString& program, const QStringList& arguments,
-               const QString& working_directory = QString());
+    bool Start(const QString& program, const QStringList& arguments, const QString& working_directory = QString());
 
     /// 请求停止，分三档递进:
     ///   1. 向 stdin 写 "q\n" —— ffmpeg 自己收尾（写出合法的 moov box）；
@@ -101,7 +100,9 @@ public:
     bool IsRunning() const;
 
     /// 当前停止进度（没请求过停止时是 None）。界面用它区分"优雅退出"与"被杀"。
-    FfmpegStopStage stop_stage() const { return stop_stage_; }
+    FfmpegStopStage stop_stage() const {
+        return stop_stage_;
+    }
 
     /// 拼一个给人看的命令行（含引号），只用于展示，不参与执行。
     static QString BuildDisplayCommand(const QString& program, const QStringList& arguments);
@@ -134,7 +135,7 @@ private:
     QByteArray pending_stderr_;
     QElapsedTimer timer_;
     FfmpegRunResult last_result_;
-    QStringList arguments_;      // 本次运行的参数（Stop() 时判断能不能写 q）
+    QStringList arguments_; // 本次运行的参数（Stop() 时判断能不能写 q）
     bool running_ = false;
     bool stop_requested_ = false;
     FfmpegStopStage stop_stage_ = FfmpegStopStage::None;
@@ -143,5 +144,5 @@ private:
     quint64 run_id_ = 0;
 };
 
-}  // namespace ffmpeg
-}  // namespace videoeye
+} // namespace ffmpeg
+} // namespace videoeye

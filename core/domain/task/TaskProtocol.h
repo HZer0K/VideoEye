@@ -34,28 +34,34 @@ using TaskId = std::uint64_t;
 // (超时的那条是**被放弃**的, 它可能仍在收尾)。批量 QC、抽帧、容器分析三处过去各有
 // 各的超时记法(bool / 独立枚举), 这里给它们一个共同的去处。
 enum class TaskState {
-    Idle,       // 该 slot 上当前没有任务
-    Running,    // 运行中
-    Succeeded,  // 终态: 成功
-    Failed,     // 终态: 出错(含异常逃逸)
-    Canceled,   // 终态: 被取消 / 被同 slot 的新任务取代
-    TimedOut,   // 终态: 超过宿主给的回收预算仍未回来（线程按 TaskKind 被放弃或继续 join）
+    Idle,      // 该 slot 上当前没有任务
+    Running,   // 运行中
+    Succeeded, // 终态: 成功
+    Failed,    // 终态: 出错(含异常逃逸)
+    Canceled,  // 终态: 被取消 / 被同 slot 的新任务取代
+    TimedOut,  // 终态: 超过宿主给的回收预算仍未回来（线程按 TaskKind 被放弃或继续 join）
 };
 
 inline bool IsTerminalState(TaskState state) {
-    return state == TaskState::Succeeded || state == TaskState::Failed ||
-           state == TaskState::Canceled || state == TaskState::TimedOut;
+    return state == TaskState::Succeeded || state == TaskState::Failed || state == TaskState::Canceled ||
+           state == TaskState::TimedOut;
 }
 
 // 人类可读名(日志/调试用)。别用它做业务分支 —— 分支一律直接比枚举值。
 inline const char* TaskStateName(TaskState state) {
     switch (state) {
-        case TaskState::Idle:      return "Idle";
-        case TaskState::Running:   return "Running";
-        case TaskState::Succeeded: return "Succeeded";
-        case TaskState::Failed:    return "Failed";
-        case TaskState::Canceled:  return "Canceled";
-        case TaskState::TimedOut:  return "TimedOut";
+    case TaskState::Idle:
+        return "Idle";
+    case TaskState::Running:
+        return "Running";
+    case TaskState::Succeeded:
+        return "Succeeded";
+    case TaskState::Failed:
+        return "Failed";
+    case TaskState::Canceled:
+        return "Canceled";
+    case TaskState::TimedOut:
+        return "TimedOut";
     }
     return "Unknown";
 }
@@ -101,7 +107,8 @@ public:
     //
     // 故意做成 const: 置位不需要改令牌本身，只是改它指着的那一颗。
     void RequestCancel() const {
-        if (flag_) flag_->store(true, std::memory_order_release);
+        if (flag_)
+            flag_->store(true, std::memory_order_release);
     }
     explicit operator bool() const {
         return static_cast<bool>(flag_);
@@ -129,13 +136,15 @@ private:
 // 自带线程(QThread / 自建 std::thread)的任务也走这份协议: 它照样经 Begin 拿到 id 与
 // 令牌, 在自己的线程里轮询, 收尾时把终态还回同一个 slot。
 struct TaskHandle {
-    TaskId id = 0;                       // 0 = 未登记 / 并发已满被拒
-    CancelToken cancel;                  // 唯一的取消来源
+    TaskId id = 0;      // 0 = 未登记 / 并发已满被拒
+    CancelToken cancel; // 唯一的取消来源
     TaskKind kind = TaskKind::Cooperative;
-    std::string slot;                    // 归还终态 / 判过期要用的槽位
+    std::string slot; // 归还终态 / 判过期要用的槽位
 
-    bool valid() const noexcept { return id != 0; }
+    bool valid() const noexcept {
+        return id != 0;
+    }
 };
 
-}  // namespace task
-}  // namespace videoeye
+} // namespace task
+} // namespace videoeye

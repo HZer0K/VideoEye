@@ -61,8 +61,7 @@ public:
     // wait_for_previous_ms: 0=不等待, <0=等到它结束为止。
     // kind: 见 TaskKind 注释, 决定关闭时这个任务的线程能不能被放弃。
     // 返回 0 表示并发已满(调用方应把这次请求当作失败处理)。
-    TaskId Begin(const std::string& slot, int wait_for_previous_ms = 0,
-                 TaskKind kind = TaskKind::Cooperative);
+    TaskId Begin(const std::string& slot, int wait_for_previous_ms = 0, TaskKind kind = TaskKind::Cooperative);
 
     // 便捷入口: 在受管 std::thread 上执行 body(id, token), 收尾自动写入终态。
     // body 里的异常会被捕获并记成 Failed(MSVC 的 std::thread 入口是 noexcept,
@@ -72,8 +71,8 @@ public:
     // RunWithResult 显式返回终态 —— 靠 UI 回调补写 End() 是不行的: 那条消息排队到
     // UI 线程时才落地, 届时 slot 可能已经记过一次终态(终态一次性, 后到的会被丢弃),
     // 也可能已经换了新任务。
-    TaskId Run(const std::string& slot, std::function<void(TaskId, CancelToken)> body,
-               int wait_for_previous_ms = 0, TaskKind kind = TaskKind::Cooperative);
+    TaskId Run(const std::string& slot, std::function<void(TaskId, CancelToken)> body, int wait_for_previous_ms = 0,
+               TaskKind kind = TaskKind::Cooperative);
 
     // Run() 的"任务体自己声明终态"版本: body 的返回值就是要写入 slot 的终态。
     // 返回值是过程态(Idle/Running)时按 Failed 记 —— 那是任务体违约, 不能让它把
@@ -88,8 +87,7 @@ public:
                          int wait_for_previous_ms = 0);
 
     // RunWithResult() 的 TaskKind::BlockingIo 版本。
-    TaskId RunBlockingIoWithResult(const std::string& slot,
-                                   std::function<TaskState(TaskId, CancelToken)> body,
+    TaskId RunBlockingIoWithResult(const std::string& slot, std::function<TaskState(TaskId, CancelToken)> body,
                                    int wait_for_previous_ms = 0);
 
     // 取该 slot 当前任务的取消令牌(供自带线程的任务体轮询)。
@@ -106,7 +104,7 @@ public:
     // 新任务接管, 拿到的取消令牌就是下一个任务的, 本任务从此不可取消。
     // Begin() 就是本函数的 id 版本(id == 0 即并发已满被拒, 此时其余字段也一律为空)。
     TaskHandle BeginHandle(const std::string& slot, int wait_for_previous_ms = 0,
-                            TaskKind kind = TaskKind::Cooperative);
+                           TaskKind kind = TaskKind::Cooperative);
 
     // 任务体收尾时用手柄归还终态(与 End(slot, id, terminal) 同语义; id 对不上 slot 当前
     // 任务时静默丢弃 —— 也就是"这个任务已经被取代"或"句柄已经失效")。

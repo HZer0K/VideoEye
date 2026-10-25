@@ -48,8 +48,8 @@ public:
     // 三元组后才能和 AVCodecParameters 的 color_primaries / trc / space 直接比对。
     // 映射照 FFmpeg libvpx 的写法（vpx Li encoding 时的助教映射）。
     // 返回 false 表示未知（UCF i.e. CSP_UNKNOWN）——调用方应跳过这项比对。
-    static bool ColorSpaceToCicp(int color_space, int& color_primaries,
-                                 int& transfer_characteristics, int& matrix_coefficients);
+    static bool ColorSpaceToCicp(int color_space, int& color_primaries, int& transfer_characteristics,
+                                 int& matrix_coefficients);
 
     // 按 Annex A.2 的表由「帧尺寸 + 帧率」反查 Level，返回 vpcC 的同款编码值
     // （10=Level 1、11=1.1、20=2 ... 62=6.2，0 = 未知/超上限）。
@@ -60,4 +60,4 @@ public:
     static std::string GetLevelName(int level_code);
 };
 
-}  // namespace videoeye
+} // namespace videoeye

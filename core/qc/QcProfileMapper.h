@@ -17,5 +17,5 @@ namespace qc {
 // 后者由调用方决定（UI 有自己的开关面板）。
 videoeye::AnalysisOptions OptionsForDepth(QcAnalysisDepth depth);
 
-}  // namespace qc
-}  // namespace videoeye
+} // namespace qc
+} // namespace videoeye

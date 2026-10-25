@@ -14,11 +14,11 @@ namespace model {
 // FFmpeg 与 Qt 独立编译（与 SceneChangeAnalyzer 一致的做法）。
 // 接入侧只需 `static_cast<FrameType>(pict_type)`。
 enum class FrameType {
-    Unknown = 0,  // 未解析（未开解析器，或解析器无法判定）
+    Unknown = 0, // 未解析（未开解析器，或解析器无法判定）
     I = 1,
     P = 2,
     B = 3,
-    S = 4,        // MPEG-4 S(GMC)-VOP
+    S = 4, // MPEG-4 S(GMC)-VOP
     SI = 5,
     SP = 6,
     BI = 7,
@@ -39,20 +39,24 @@ bool IsReferenceFrame(FrameType type);
 // 所有视频包字节数换算出的瞬时码率。窗口之间按 hop 步进（默认 window/4），
 // 因此相邻点有重叠，曲线比"逐秒分桶"更平滑、峰值更接近真实 VBV 表现。
 struct BitratePoint {
-    double timestamp_seconds = 0.0;   // 窗口中心时刻（秒）
-    double window_seconds = 1.0;      // 窗口长度（秒）
-    int64_t bytes = 0;                // 窗口内字节数
-    int frame_count = 0;              // 窗口内帧数
-    double bitrate_kbps = 0.0;        // bytes * 8 / window / 1000
-    bool overshoot = false;           // 是否超过目标峰值码率
-    bool peak_region = false;         // 是否位于被标记为"峰值区间"的连续段内
+    double timestamp_seconds = 0.0; // 窗口中心时刻（秒）
+    double window_seconds = 1.0;    // 窗口长度（秒）
+    int64_t bytes = 0;              // 窗口内字节数
+    int frame_count = 0;            // 窗口内帧数
+    double bitrate_kbps = 0.0;      // bytes * 8 / window / 1000
+    bool overshoot = false;         // 是否超过目标峰值码率
+    bool peak_region = false;       // 是否位于被标记为"峰值区间"的连续段内
 
-    double WindowStart() const { return timestamp_seconds - window_seconds * 0.5; }
-    double WindowEnd() const { return timestamp_seconds + window_seconds * 0.5; }
+    double WindowStart() const {
+        return timestamp_seconds - window_seconds * 0.5;
+    }
+    double WindowEnd() const {
+        return timestamp_seconds + window_seconds * 0.5;
+    }
 };
 
 // 由窗口内字节数换算码率(kbps)；window 非法时返回 0
 double BytesToKbps(int64_t bytes, double window_seconds);
 
-}  // namespace model
-}  // namespace videoeye
+} // namespace model
+} // namespace videoeye

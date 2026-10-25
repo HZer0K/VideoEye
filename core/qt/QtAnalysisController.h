@@ -67,14 +67,18 @@ public:
     // slot 上那个任务当前的状态。测试与 UI 用它在"信号已发出"之后核对任务协议
     // 那一侧是否同步 —— 两条路径记的不一致（信号说失败、协议说成功）正是这里要
     // 消灭的那类偏差。
-    task::TaskState terminal_state() const { return tasks_.State(kSlot); }
+    task::TaskState terminal_state() const {
+        return tasks_.State(kSlot);
+    }
 
     // 当前代际 = slot 上那个任务的 id。
     //
     // 故意不做成"自己自增出来的计数器"：facade 拿它给回包判代际（AnalysisFacade 里
     // `generation != coordinator.generation()` 就把旧任务的回包丢掉），而 slot 的
     // current_id 由 TaskManager 在锁内维护 —— 两者是同一个数，就不用再比一次。
-    quint64 generation() const { return tasks_.CurrentId(kSlot); }
+    quint64 generation() const {
+        return tasks_.CurrentId(kSlot);
+    }
 
 signals:
     // percent: 0..100
@@ -100,8 +104,7 @@ private:
         task::TaskHandle handle;
     };
 
-    void Launch(const std::string& file_path, const videoeye::AnalysisOptions& options,
-                const task::TaskHandle& handle);
+    void Launch(const std::string& file_path, const videoeye::AnalysisOptions& options, const task::TaskHandle& handle);
     // WorkerExited 的处理体：回收已结束的工作线程并启动排队请求（不阻塞 UI，因为
     // 被 join 的线程已经返回，只剩线程收尾）。
     void OnWorkerExited(task::TaskId exited_id);
@@ -163,7 +166,7 @@ private:
     // 以下字段只由 UI 线程访问（StartAnalysis / Cancel / OnWorkerExited 都在该线程）。
     std::thread worker_;
     std::shared_ptr<Box> worker_box_;
-    task::TaskId worker_id_ = 0;  // worker_ 身上那个任务的 id；WorkerExited 按它认领
+    task::TaskId worker_id_ = 0; // worker_ 身上那个任务的 id；WorkerExited 按它认领
     // 宿主还活着。工作线程 emit 前先看它 —— 关闭超预算、线程被迫放弃时，
     // 它拿到的是已经销毁的 this，没有这颗标志就一定会打上去。
     std::shared_ptr<std::atomic<bool>> alive_;

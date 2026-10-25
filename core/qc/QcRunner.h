@@ -63,26 +63,22 @@ public:
     // join_budget_ms 是**这次分析本身的等待预算**: 到点还没出结果就按失败收尾,
     // 工作线程转入受控回收(不再无限等)。以前这里是无条件 join —— 引擎卡在第三方 IO
     // 上时整条批量扫描会永久挂死, 而"有一份结果"和"卡死"之间只有这个预算可区分。
-    QcRunResult AnalyzeFile(const MediaInput& input,
-                            const QcProfile& profile,
+    QcRunResult AnalyzeFile(const MediaInput& input, const QcProfile& profile,
                             videoeye::AnalysisOptions options = videoeye::AnalysisOptions{},
                             const QcRunCallbacks& callbacks = QcRunCallbacks{},
                             int join_budget_ms = kDefaultJoinBudgetMs);
 
     // 便捷重载：按 uri 自动归类（ClassifyMediaInput）。等价于把 ClassifyMediaInput(path)
     // 交给上面那个重载 —— 只是省去调用方每次都写一遍归类。
-    QcRunResult AnalyzeFile(const std::string& path,
-                            const QcProfile& profile,
+    QcRunResult AnalyzeFile(const std::string& path, const QcProfile& profile,
                             videoeye::AnalysisOptions options = videoeye::AnalysisOptions{},
                             const QcRunCallbacks& callbacks = QcRunCallbacks{},
                             int join_budget_ms = kDefaultJoinBudgetMs) {
-        return AnalyzeFile(ClassifyMediaInput(path), profile, std::move(options), callbacks,
-                           join_budget_ms);
+        return AnalyzeFile(ClassifyMediaInput(path), profile, std::move(options), callbacks, join_budget_ms);
     }
 
     // 生成一个绑定了 profile + options 的分析闭包（批量扫描的每个 worker 各持一份 QcRunner）
-    static QcAnalyzeFn MakeAnalyzeFunction(const QcProfile& profile,
-                                           videoeye::AnalysisOptions options);
+    static QcAnalyzeFn MakeAnalyzeFunction(const QcProfile& profile, videoeye::AnalysisOptions options);
 
     static constexpr int kDefaultJoinBudgetMs = 30000;
 };
@@ -96,5 +92,5 @@ bool IsAnalyzableFile(const std::string& path, std::string& reason);
 // NetworkUri 只校验 uri 非空（是否存在、能否连上交给 FFmpeg，由分析预算兜底）。
 bool IsAnalyzableInput(const MediaInput& input, std::string& reason);
 
-}  // namespace qc
-}  // namespace videoeye
+} // namespace qc
+} // namespace videoeye

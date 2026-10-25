@@ -16,9 +16,8 @@ std::string StreamStats::ToString() const {
     oss << std::endl;
 
     oss << "帧率: " << current_fps << " fps (平均: " << avg_fps << " fps)" << std::endl;
-    oss << "码率: " << (current_bitrate_bps / 1000) << " kbps (平均: "
-        << (avg_bitrate_bps / 1000) << " kbps, 峰值: " << (peak_bitrate_bps / 1000) << " kbps)"
-        << std::endl;
+    oss << "码率: " << (current_bitrate_bps / 1000) << " kbps (平均: " << (avg_bitrate_bps / 1000)
+        << " kbps, 峰值: " << (peak_bitrate_bps / 1000) << " kbps)" << std::endl;
     oss << std::endl;
 
     oss << "GOP 大小: " << current_gop_size << " (最大: " << max_gop_size << ")" << std::endl;
@@ -27,12 +26,12 @@ std::string StreamStats::ToString() const {
         << " 其他=" << other_frame_count << std::endl;
     oss << std::endl;
 
-    oss << "包大小: 平均 " << avg_packet_size << " B, 最大 " << max_packet_size << " B, 最小 "
-        << min_packet_size << " B" << std::endl;
+    oss << "包大小: 平均 " << avg_packet_size << " B, 最大 " << max_packet_size << " B, 最小 " << min_packet_size
+        << " B" << std::endl;
     oss << "持续时间: " << duration_seconds << " 秒" << std::endl;
 
     return oss.str();
 }
 
-}  // namespace model
-}  // namespace videoeye
+} // namespace model
+} // namespace videoeye

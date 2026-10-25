@@ -9,33 +9,46 @@ namespace reporting {
 
 const char* SeverityCode(model::IssueSeverity severity) {
     switch (severity) {
-        case model::IssueSeverity::Critical: return "critical";
-        case model::IssueSeverity::Error:    return "error";
-        case model::IssueSeverity::Warning:  return "warning";
-        case model::IssueSeverity::Info:     return "info";
+    case model::IssueSeverity::Critical:
+        return "critical";
+    case model::IssueSeverity::Error:
+        return "error";
+    case model::IssueSeverity::Warning:
+        return "warning";
+    case model::IssueSeverity::Info:
+        return "info";
     }
     return "info";
 }
 
 const char* CategoryCode(model::IssueCategory category) {
     switch (category) {
-        case model::IssueCategory::Container: return "container";
-        case model::IssueCategory::Video:     return "video";
-        case model::IssueCategory::Audio:     return "audio";
-        case model::IssueCategory::Timing:    return "timing";
-        case model::IssueCategory::Bitrate:   return "bitrate";
-        case model::IssueCategory::Gop:       return "gop";
-        case model::IssueCategory::Metadata:  return "metadata";
-        case model::IssueCategory::ColorHdr:  return "color_hdr";
-        case model::IssueCategory::Other:     return "other";
+    case model::IssueCategory::Container:
+        return "container";
+    case model::IssueCategory::Video:
+        return "video";
+    case model::IssueCategory::Audio:
+        return "audio";
+    case model::IssueCategory::Timing:
+        return "timing";
+    case model::IssueCategory::Bitrate:
+        return "bitrate";
+    case model::IssueCategory::Gop:
+        return "gop";
+    case model::IssueCategory::Metadata:
+        return "metadata";
+    case model::IssueCategory::ColorHdr:
+        return "color_hdr";
+    case model::IssueCategory::Other:
+        return "other";
     }
     return "other";
 }
 
-std::string QcReportOutputPath(const std::string& directory, const std::string& base_name,
-                               qc::QcReportFormat format) {
+std::string QcReportOutputPath(const std::string& directory, const std::string& base_name, qc::QcReportFormat format) {
     std::string path = directory;
-    if (!path.empty() && path.back() != '/' && path.back() != '\\') path += '/';
+    if (!path.empty() && path.back() != '/' && path.back() != '\\')
+        path += '/';
     path += base_name;
     path += qc::QcReportExtension(format);
     return path;
@@ -45,16 +58,21 @@ std::string QcReportOutputPath(const std::string& directory, const std::string& 
 // 各格式的 Auto 分派入口（具体 Export* 实现见 QcReportExporter{Json,Csv,Html,Text,Pdf}.cpp）
 // ===========================================================================
 
-bool QcReportExporter::ExportComparisonAuto(const std::string& path,
-                                           const qc::QcComparison& comparison) {
+bool QcReportExporter::ExportComparisonAuto(const std::string& path, const qc::QcComparison& comparison) {
     qc::QcReportFormat format = qc::QcReportFormat::Json;
-    if (!qc::QcReportFormatFromPath(path, format)) format = qc::QcReportFormat::Json;
+    if (!qc::QcReportFormatFromPath(path, format))
+        format = qc::QcReportFormat::Json;
     switch (format) {
-        case qc::QcReportFormat::Json: return ExportComparisonJson(path, comparison);
-        case qc::QcReportFormat::Csv:  return ExportComparisonCsv(path, comparison);
-        case qc::QcReportFormat::Html: return ExportComparisonHtml(path, comparison);
-        case qc::QcReportFormat::Text: return ExportComparisonText(path, comparison);
-        case qc::QcReportFormat::Pdf:  return ExportComparisonText(path, comparison);
+    case qc::QcReportFormat::Json:
+        return ExportComparisonJson(path, comparison);
+    case qc::QcReportFormat::Csv:
+        return ExportComparisonCsv(path, comparison);
+    case qc::QcReportFormat::Html:
+        return ExportComparisonHtml(path, comparison);
+    case qc::QcReportFormat::Text:
+        return ExportComparisonText(path, comparison);
+    case qc::QcReportFormat::Pdf:
+        return ExportComparisonText(path, comparison);
     }
     return false;
 }
@@ -63,8 +81,7 @@ bool QcReportExporter::ExportComparisonAuto(const std::string& path,
 // 批量汇总：BatchQcRun -> QcBatchSummaryInput
 // ===========================================================================
 
-QcBatchSummaryInput QcReportExporter::MakeBatchSummary(const std::string& root,
-                                                       const qc::BatchQcRun& run,
+QcBatchSummaryInput QcReportExporter::MakeBatchSummary(const std::string& root, const qc::BatchQcRun& run,
                                                        const qc::QcProfile& profile) {
     QcBatchSummaryInput input;
     input.root = root;
@@ -101,16 +118,21 @@ QcBatchSummaryInput QcReportExporter::MakeBatchSummary(const std::string& root,
     return input;
 }
 
-bool QcReportExporter::ExportBatchSummaryAuto(const std::string& path,
-                                             const QcBatchSummaryInput& input) {
+bool QcReportExporter::ExportBatchSummaryAuto(const std::string& path, const QcBatchSummaryInput& input) {
     qc::QcReportFormat format = qc::QcReportFormat::Json;
-    if (!qc::QcReportFormatFromPath(path, format)) format = qc::QcReportFormat::Json;
+    if (!qc::QcReportFormatFromPath(path, format))
+        format = qc::QcReportFormat::Json;
     switch (format) {
-        case qc::QcReportFormat::Json: return ExportBatchSummaryJson(path, input);
-        case qc::QcReportFormat::Csv:  return ExportBatchSummaryCsv(path, input);
-        case qc::QcReportFormat::Html: return ExportBatchSummaryHtml(path, input);
-        case qc::QcReportFormat::Text: return ExportBatchSummaryCsv(path, input);
-        case qc::QcReportFormat::Pdf:  return ExportBatchSummaryHtml(path, input);
+    case qc::QcReportFormat::Json:
+        return ExportBatchSummaryJson(path, input);
+    case qc::QcReportFormat::Csv:
+        return ExportBatchSummaryCsv(path, input);
+    case qc::QcReportFormat::Html:
+        return ExportBatchSummaryHtml(path, input);
+    case qc::QcReportFormat::Text:
+        return ExportBatchSummaryCsv(path, input);
+    case qc::QcReportFormat::Pdf:
+        return ExportBatchSummaryHtml(path, input);
     }
     return false;
 }
@@ -119,14 +141,18 @@ bool QcReportExporter::ExportBatchSummaryAuto(const std::string& path,
 // 分派
 // ===========================================================================
 
-bool QcReportExporter::Export(const std::string& path, const QcExportBundle& bundle,
-                              qc::QcReportFormat format) {
+bool QcReportExporter::Export(const std::string& path, const QcExportBundle& bundle, qc::QcReportFormat format) {
     switch (format) {
-        case qc::QcReportFormat::Json: return ExportJson(path, bundle);
-        case qc::QcReportFormat::Csv:  return ExportCsv(path, bundle);
-        case qc::QcReportFormat::Html: return ExportHtml(path, bundle);
-        case qc::QcReportFormat::Text: return ExportText(path, bundle);
-        case qc::QcReportFormat::Pdf:  return ExportPdf(path, bundle).ok;
+    case qc::QcReportFormat::Json:
+        return ExportJson(path, bundle);
+    case qc::QcReportFormat::Csv:
+        return ExportCsv(path, bundle);
+    case qc::QcReportFormat::Html:
+        return ExportHtml(path, bundle);
+    case qc::QcReportFormat::Text:
+        return ExportText(path, bundle);
+    case qc::QcReportFormat::Pdf:
+        return ExportPdf(path, bundle).ok;
     }
     return false;
 }
@@ -139,16 +165,18 @@ bool QcReportExporter::ExportReport(const std::string& path, const model::QcRepo
     bundle.profile_name = "默认规则";
     bundle.run.ok = report.completed;
     bundle.run.report = report;
-    if (!bundle.run.ok) bundle.run.error = "分析未完成";
+    if (!bundle.run.ok)
+        bundle.run.error = "分析未完成";
     bundle.has_comparison = false;
     return ExportAuto(path, bundle);
 }
 
 bool QcReportExporter::ExportAuto(const std::string& path, const QcExportBundle& bundle) {
     qc::QcReportFormat format = qc::QcReportFormat::Json;
-    if (!qc::QcReportFormatFromPath(path, format)) format = qc::QcReportFormat::Json;
+    if (!qc::QcReportFormatFromPath(path, format))
+        format = qc::QcReportFormat::Json;
     return Export(path, bundle, format);
 }
 
-}  // namespace reporting
-}  // namespace videoeye
+} // namespace reporting
+} // namespace videoeye

@@ -131,7 +131,7 @@ TEST(AnalysisTextUtilTest, TrimAndCaseCopiesDoNotMutateInput) {
     const std::string src = "AbC-123_xyz";
     EXPECT_EQ(ToUpperCopy(src), "ABC-123_XYZ");
     EXPECT_EQ(ToLowerCopy(src), "abc-123_xyz");
-    EXPECT_EQ(src, "AbC-123_xyz");  // 返回副本，原串不变
+    EXPECT_EQ(src, "AbC-123_xyz"); // 返回副本，原串不变
     // 大小写变换只动字母：容器名里的数字/连字符/下划线原样
     EXPECT_EQ(ToUpperCopy("pcm_s24le"), "PCM_S24LE");
 }
@@ -146,8 +146,8 @@ TEST(AnalysisTextUtilTest, RemoveAllCopyDropsEveryOccurrence) {
 
 TEST(AnalysisTextUtilTest, StartsWithMatchesQtSemanticsIncludingTooLongPrefix) {
     EXPECT_TRUE(StartsWith("Ogg data", "Ogg"));
-    EXPECT_FALSE(StartsWith("Ogg data", "ogg"));  // 大小写敏感
-    EXPECT_FALSE(StartsWith("Ogg", "OggS"));      // prefix 比被查串长 → false
+    EXPECT_FALSE(StartsWith("Ogg data", "ogg")); // 大小写敏感
+    EXPECT_FALSE(StartsWith("Ogg", "OggS"));     // prefix 比被查串长 → false
     EXPECT_TRUE(StartsWith("whatever", ""));
     EXPECT_TRUE(StartsWith("", ""));
     // char* 重载（OggStructureAnalyzer 用的就是它）
@@ -201,7 +201,9 @@ protected:
         out.close();
     }
 
-    void TearDown() override { fs::remove_all(dir_); }
+    void TearDown() override {
+        fs::remove_all(dir_);
+    }
 
     fs::path dir_;
     fs::path path_;
@@ -275,4 +277,4 @@ TEST_F(SeqFileReaderTest, OpenFailureLeavesTheReaderClosed) {
     EXPECT_EQ(f.ReadAll(), "");
 }
 
-}  // namespace
+} // namespace

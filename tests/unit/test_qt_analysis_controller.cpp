@@ -40,7 +40,8 @@ using namespace videoeye;
 QString WriteManifest(const QString& name) {
     const QString path = QDir::tempPath() + "/" + name;
     QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return QString();
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return QString();
     f.write("#EXTM3U\n"
             "#EXT-X-VERSION:3\n"
             "#EXT-X-TARGETDURATION:4\n"
@@ -59,19 +60,22 @@ QString WriteManifest(const QString& name) {
 struct TerminalSink {
     std::vector<quint64> generations;
 
-    void Record(quint64 gen) { generations.push_back(gen); }
+    void Record(quint64 gen) {
+        generations.push_back(gen);
+    }
     bool Saw(quint64 gen) const {
         return std::find(generations.begin(), generations.end(), gen) != generations.end();
     }
-    int Count() const { return static_cast<int>(generations.size()); }
+    int Count() const {
+        return static_cast<int>(generations.size());
+    }
 };
 
 void WireSink(videoeye::qt::QtAnalysisController& controller, TerminalSink& sink) {
-    QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFinished,
-                     &controller,
+    QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFinished, &controller,
                      [&sink](quint64 gen, bool, const model::AnalysisResult&) { sink.Record(gen); });
-    QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFailed,
-                     &controller, [&sink](quint64 gen, const QString&) { sink.Record(gen); });
+    QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFailed, &controller,
+                     [&sink](quint64 gen, const QString&) { sink.Record(gen); });
 }
 
 // 泵事件直到谓词成立或超时。
@@ -101,7 +105,8 @@ void EnsureApp() {
     static int argc = 1;
     static char arg0[] = "test_qt_analysis_controller";
     static char* argv[] = {arg0, nullptr};
-    if (!QCoreApplication::instance()) new QCoreApplication(argc, argv);
+    if (!QCoreApplication::instance())
+        new QCoreApplication(argc, argv);
 }
 
 } // namespace
@@ -160,16 +165,14 @@ TEST(QtAnalysisControllerLifecycle, RestartAfterCancelStillStarts) {
     ASSERT_TRUE(PumpUntil([&] { return sink.Saw(gen_active); }, 15000))
         << "旧线程还在跑时重启的那次分析必须真的启动（gen=" << gen_active << "）";
     ASSERT_TRUE(PumpUntil([&] { return !controller.IsRunning(); }, 3000));
-    PumpFor(120);   // 消费掉可能还排队的 WorkerExited
+    PumpFor(120); // 消费掉可能还排队的 WorkerExited
 
     // --- (2) 空闲态取消 + 重启 ---
-    controller.Cancel();   // 没有 pending 时是空操作, 但会顺手置引擎取消标志
+    controller.Cancel(); // 没有 pending 时是空操作, 但会顺手置引擎取消标志
     const quint64 gen_idle = controller.StartAnalysis(manifest.toStdString());
     ASSERT_TRUE(PumpUntil([&] { return sink.Saw(gen_idle); }, 15000))
-        << "空闲态下重启的分析必须真的启动（gen=" << gen_idle
-        << "；原缺陷: 已结束的句柄仍 joinable -> 永久排队）";
-    ASSERT_TRUE(PumpUntil([&] { return !controller.IsRunning(); }, 3000))
-        << "重新分析结束后 IsRunning() 仍为 true";
+        << "空闲态下重启的分析必须真的启动（gen=" << gen_idle << "；原缺陷: 已结束的句柄仍 joinable -> 永久排队）";
+    ASSERT_TRUE(PumpUntil([&] { return !controller.IsRunning(); }, 3000)) << "重新分析结束后 IsRunning() 仍为 true";
     // 迟到的旧代际回包不能顶替新代际：最后一次终态必须属于 gen_idle。
     EXPECT_EQ(sink.generations.back(), gen_idle);
 
@@ -183,9 +186,11 @@ namespace {
 QString WriteCorruptInput(const QString& name) {
     const QString path = QDir::tempPath() + "/" + name;
     QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return QString();
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return QString();
     QByteArray junk(8192, '\0');
-    for (int i = 0; i < junk.size(); ++i) junk[i] = static_cast<char>((i * 73 + 11) & 0xFF);
+    for (int i = 0; i < junk.size(); ++i)
+        junk[i] = static_cast<char>((i * 73 + 11) & 0xFF);
     f.write(junk);
     f.close();
     return path;
@@ -214,7 +219,7 @@ TEST(QtAnalysisControllerLifecycle, FailedInputReachesTerminalAndAllowsRestart) 
         << "损坏输入没有在超时前产生终态（gen=" << gen_bad << "）";
     ASSERT_TRUE(PumpUntil([&] { return !controller.IsRunning(); }, 3000))
         << "失败后 IsRunning() 仍为 true，界面会永久停在分析中";
-    PumpFor(120);  // 消费掉排队的 WorkerExited
+    PumpFor(120); // 消费掉排队的 WorkerExited
 
     // 第二次：失败之后仍能重新开始，且这次的分析真的启动并成功收尾。
     const quint64 gen_good = controller.StartAnalysis(manifest.toStdString());
@@ -247,19 +252,16 @@ TEST(QtAnalysisControllerLifecycle, CancelOnBlockingInputReturnsWithinBudget) {
 
     // 等它真的进入飞行态。若输入瞬间就回包（端口未按预期阻塞），说明本用例没测到
     // "取消打断阻塞 IO"，跳过而不是把判定放宽成"随便什么时候回来都算过"。
-    ASSERT_TRUE(PumpUntil([&] { return controller.IsRunning(); }, 3000))
-        << "分析没有进入运行态，无法验证取消路径";
+    ASSERT_TRUE(PumpUntil([&] { return controller.IsRunning(); }, 3000)) << "分析没有进入运行态，无法验证取消路径";
     if (PumpUntil([&] { return sink.Saw(gen); }, 200)) {
         GTEST_SKIP() << "阻塞输入瞬间就回包了（端口未真正阻塞），本轮不算测到取消路径";
     }
 
     const auto t0 = std::chrono::steady_clock::now();
     controller.Cancel();
-    ASSERT_TRUE(PumpUntil([&] { return sink.Saw(gen); }, 8000))
-        << "取消后没有在预算内回到终态（gen=" << gen << "）";
-    const auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now() - t0)
-                        .count();
+    ASSERT_TRUE(PumpUntil([&] { return sink.Saw(gen); }, 8000)) << "取消后没有在预算内回到终态（gen=" << gen << "）";
+    const auto dt =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
 
     EXPECT_LT(dt, 5000) << "取消到终态耗时 " << dt << "ms，接近/超过预算"
                         << "（取消链没打断阻塞的 avformat_open_input）";
@@ -283,29 +285,22 @@ TEST(QtAnalysisControllerLifecycle, FailedInputIsSettledAsFailed) {
     videoeye::qt::QtAnalysisController controller;
     std::vector<quint64> failures;
     std::vector<quint64> finishes;
-    QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFailed,
-                     &controller, [&failures](quint64 gen, const QString&) {
-                         failures.push_back(gen);
-                     });
-    QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFinished,
-                     &controller,
-                     [&finishes](quint64 gen, bool, const model::AnalysisResult&) {
-                         finishes.push_back(gen);
-                     });
+    QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFailed, &controller,
+                     [&failures](quint64 gen, const QString&) { failures.push_back(gen); });
+    QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFinished, &controller,
+                     [&finishes](quint64 gen, bool, const model::AnalysisResult&) { finishes.push_back(gen); });
 
     const quint64 gen = controller.StartAnalysis(corrupt.toStdString());
     ASSERT_GT(gen, 0u);
     ASSERT_TRUE(PumpUntil([&] { return !failures.empty() || !finishes.empty(); }, 15000))
         << "损坏输入没有产生任何终态通知";
-    ASSERT_FALSE(failures.empty())
-        << "本用例的前提是引擎走失败分支（这次走的是 finished）";
+    ASSERT_FALSE(failures.empty()) << "本用例的前提是引擎走失败分支（这次走的是 finished）";
 
     // 交还终态发生在 WorkerExited 里，所以要再泵一会儿
     ASSERT_TRUE(PumpUntil([&] { return !controller.IsRunning(); }, 3000));
     PumpFor(120);
     EXPECT_EQ(controller.terminal_state(), task::TaskState::Failed)
-        << "UI 收到的是 AnalysisFailed，任务协议里却是 "
-        << task::TaskStateName(controller.terminal_state());
+        << "UI 收到的是 AnalysisFailed，任务协议里却是 " << task::TaskStateName(controller.terminal_state());
 
     QFile::remove(corrupt);
 }
@@ -320,15 +315,10 @@ TEST(QtAnalysisControllerLifecycle, SuccessfulInputIsSettledAsSucceeded) {
     videoeye::qt::QtAnalysisController controller;
     std::vector<quint64> failures;
     std::vector<quint64> finishes;
-    QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFailed,
-                     &controller, [&failures](quint64 gen, const QString&) {
-                         failures.push_back(gen);
-                     });
-    QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFinished,
-                     &controller,
-                     [&finishes](quint64 gen, bool, const model::AnalysisResult&) {
-                         finishes.push_back(gen);
-                     });
+    QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFailed, &controller,
+                     [&failures](quint64 gen, const QString&) { failures.push_back(gen); });
+    QObject::connect(&controller, &videoeye::qt::QtAnalysisController::AnalysisFinished, &controller,
+                     [&finishes](quint64 gen, bool, const model::AnalysisResult&) { finishes.push_back(gen); });
 
     const quint64 gen = controller.StartAnalysis(manifest.toStdString());
     ASSERT_GT(gen, 0u);
@@ -351,7 +341,8 @@ namespace {
 QString WriteTextFile(const QString& name, const QByteArray& content) {
     const QString path = QDir::tempPath() + "/" + name;
     QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return QString();
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return QString();
     f.write(content);
     f.close();
     return path;
@@ -397,4 +388,3 @@ TEST(QtAnalysisControllerLifecycle, MalformedManifestsReachTerminal) {
         QFile::remove(path);
     }
 }
-

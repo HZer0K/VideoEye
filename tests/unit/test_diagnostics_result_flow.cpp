@@ -44,7 +44,8 @@ void EnsureApp() {
     static int argc = 1;
     static char arg0[] = "test_diagnostics_result_flow";
     static char* argv[] = {arg0, nullptr};
-    if (!QCoreApplication::instance()) new QCoreApplication(argc, argv);
+    if (!QCoreApplication::instance())
+        new QCoreApplication(argc, argv);
 }
 
 // 泵事件直到谓词成立或超时。
@@ -73,7 +74,8 @@ void PumpFor(int ms) {
 QString WriteHlsManifest(const QString& name) {
     const QString path = QDir::tempPath() + "/" + name;
     QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return QString();
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return QString();
     f.write("#EXTM3U\n"
             "#EXT-X-VERSION:3\n"
             "#EXT-X-TARGETDURATION:4\n"
@@ -92,9 +94,11 @@ QString WriteHlsManifest(const QString& name) {
 QString WriteCorruptInput(const QString& name) {
     const QString path = QDir::tempPath() + "/" + name;
     QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return QString();
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return QString();
     QByteArray junk(8192, '\0');
-    for (int i = 0; i < junk.size(); ++i) junk[i] = static_cast<char>((i * 73 + 11) & 0xFF);
+    for (int i = 0; i < junk.size(); ++i)
+        junk[i] = static_cast<char>((i * 73 + 11) & 0xFF);
     f.write(junk);
     f.close();
     return path;
@@ -115,7 +119,9 @@ struct FlowSink {
     quint64 failed_gen = 0;
     QString failed_message;
 
-    int TerminalCount() const { return (finished ? 1 : 0) + (failed ? 1 : 0); }
+    int TerminalCount() const {
+        return (finished ? 1 : 0) + (failed ? 1 : 0);
+    }
     bool Saw(quint64 gen) const {
         return (finished && finished_gen == gen) || (failed && failed_gen == gen);
     }
@@ -208,8 +214,7 @@ TEST(DiagnosticsResultFlow, FacadeSavesResultBeforeEmittingFinished) {
     const auto before_container = facade.result().container_format;
     const double before_duration = facade.result().duration_seconds;
     const int64_t before_size = facade.result().file_size_bytes;
-    facade.ApplySceneChanges({model::SceneChangeResult{0, 1.0, 0.9},
-                              model::SceneChangeResult{120, 5.0, 0.8}},
+    facade.ApplySceneChanges({model::SceneChangeResult{0, 1.0, 0.9}, model::SceneChangeResult{120, 5.0, 0.8}},
                              videoeye::BitrateGopOptions{});
     EXPECT_EQ(facade.result().container_format, before_container);
     EXPECT_DOUBLE_EQ(facade.result().duration_seconds, before_duration);
@@ -260,8 +265,7 @@ TEST(DiagnosticsResultFlow, ProgressFinishThenEvaluateAndExportProducesReportFil
     // （按钮本身会弹 QFileDialog，模态对话框无法在无头测试里点）。
     const QString report_path = QDir::tempPath() + "/videoeye_flow_export_report.json";
     QFile::remove(report_path);
-    ASSERT_TRUE(reporting::QcReportExporter::ExportReport(report_path.toStdString(), report))
-        << "导出报告失败";
+    ASSERT_TRUE(reporting::QcReportExporter::ExportReport(report_path.toStdString(), report)) << "导出报告失败";
     const QFileInfo exported(report_path);
     ASSERT_TRUE(exported.exists()) << "导出后报告文件不存在";
     EXPECT_GT(exported.size(), 0) << "导出的报告文件为空";
@@ -283,8 +287,7 @@ TEST(DiagnosticsResultFlow, FailedInputEmitsFailedNotFinished) {
     WireFlow(facade, sink);
 
     const quint64 gen = facade.StartAnalysis(corrupt.toStdString());
-    ASSERT_TRUE(PumpUntil([&] { return sink.Saw(gen); }, 15000))
-        << "损坏输入没有在超时前产生终态";
+    ASSERT_TRUE(PumpUntil([&] { return sink.Saw(gen); }, 15000)) << "损坏输入没有在超时前产生终态";
 
     EXPECT_TRUE(sink.failed);
     EXPECT_FALSE(sink.finished) << "失败输入不应发出 AnalysisFinished";
@@ -312,16 +315,14 @@ TEST(DiagnosticsResultFlow, CancelOnBlockingInputFinishesAsIncomplete) {
 
     const quint64 gen = facade.StartAnalysis(endpoint.tcp_url());
 
-    ASSERT_TRUE(PumpUntil([&] { return facade.IsRunning(); }, 3000))
-        << "分析没有进入运行态，无法验证取消路径";
+    ASSERT_TRUE(PumpUntil([&] { return facade.IsRunning(); }, 3000)) << "分析没有进入运行态，无法验证取消路径";
     // 若输入瞬间就回包（端口未按预期阻塞），本轮没测到"取消打断阻塞 IO"，跳过。
     if (PumpUntil([&] { return sink.Saw(gen); }, 200)) {
         GTEST_SKIP() << "阻塞输入瞬间就回包了（端口未真正阻塞），本轮不算测到取消路径";
     }
 
     facade.Cancel();
-    ASSERT_TRUE(PumpUntil([&] { return sink.Saw(gen); }, 8000))
-        << "取消后没有在预算内回到终态（gen=" << gen << "）";
+    ASSERT_TRUE(PumpUntil([&] { return sink.Saw(gen); }, 8000)) << "取消后没有在预算内回到终态（gen=" << gen << "）";
 
     EXPECT_TRUE(sink.finished) << "取消应产生 AnalysisFinished(completed=false)";
     EXPECT_FALSE(sink.failed) << "取消不应被当作失败";
@@ -329,8 +330,7 @@ TEST(DiagnosticsResultFlow, CancelOnBlockingInputFinishesAsIncomplete) {
     EXPECT_FALSE(sink.finished_completed) << "取消的结果 completed 必须为 false";
 
     // 界面按钮恢复可用的前置条件：运行态归位，不会永久停在"分析中"。
-    EXPECT_TRUE(PumpUntil([&] { return !facade.IsRunning(); }, 3000))
-        << "取消后 IsRunning() 仍为 true";
+    EXPECT_TRUE(PumpUntil([&] { return !facade.IsRunning(); }, 3000)) << "取消后 IsRunning() 仍为 true";
 }
 
 } // namespace

@@ -24,14 +24,14 @@ namespace videoeye {
 namespace qc {
 
 enum class BatchItemStatus {
-    Pending,    // 还没轮到
-    Running,    // 正在分析
-    Succeeded,  // 分析完成（不代表没问题，只看 report 里的严重度计数）
-    Failed,     // 打开失败 / 分析器报错
-    TimedOut,   // 超过 per_item_timeout_ms 仍未结算（后台线程被放弃并已请求取消）
-    Cancelled,  // 取消后未执行，或执行中被中断
-    Skipped,    // 被选项排除（如超过大小上限）
-    ExportFailed,  // 分析成功，但报告导出失败（目录不可写 / 写入异常）
+    Pending,      // 还没轮到
+    Running,      // 正在分析
+    Succeeded,    // 分析完成（不代表没问题，只看 report 里的严重度计数）
+    Failed,       // 打开失败 / 分析器报错
+    TimedOut,     // 超过 per_item_timeout_ms 仍未结算（后台线程被放弃并已请求取消）
+    Cancelled,    // 取消后未执行，或执行中被中断
+    Skipped,      // 被选项排除（如超过大小上限）
+    ExportFailed, // 分析成功，但报告导出失败（目录不可写 / 写入异常）
 };
 
 const char* ToString(BatchItemStatus status);
@@ -55,34 +55,40 @@ struct BatchQcItemResult {
     double score = 0.0;
     std::string verdict;
     double elapsed_ms = 0.0;
-    std::string output_path;    // 主导出文件的落盘路径（由调用方通过 output_path_factory 决定）
+    std::string output_path; // 主导出文件的落盘路径（由调用方通过 output_path_factory 决定）
 
-    bool HasReport() const { return status == BatchItemStatus::Succeeded; }
-    int IssueCount() const { return critical_count + error_count + warning_count + info_count; }
-    int BlockingCount() const { return critical_count + error_count; }
+    bool HasReport() const {
+        return status == BatchItemStatus::Succeeded;
+    }
+    int IssueCount() const {
+        return critical_count + error_count + warning_count + info_count;
+    }
+    int BlockingCount() const {
+        return critical_count + error_count;
+    }
 };
 
 struct BatchQcSummary {
     int total = 0;
     int succeeded = 0;
     int failed = 0;
-    int timed_out = 0;    // 单项超过 per_item_timeout_ms（后台线程被放弃并已请求取消）
+    int timed_out = 0; // 单项超过 per_item_timeout_ms（后台线程被放弃并已请求取消）
     int cancelled = 0;
-    int skipped = 0;      // 超过大小上限被跳过
+    int skipped = 0; // 超过大小上限被跳过
     int critical_count = 0;
     int error_count = 0;
     int warning_count = 0;
     int info_count = 0;
     double elapsed_ms = 0.0;
-    bool completed = false;   // false = 被取消，列表里有没跑到的数据
+    bool completed = false; // false = 被取消，列表里有没跑到的数据
 };
 
 struct BatchQcOptions {
     bool recursive = true;
-    std::vector<std::string> extensions;   // 无点小写；空 = 不按扩展名过滤
-    int max_parallel = 4;                  // 并发上限，会再夹到 [1, 16]
-    int64_t max_file_size_bytes = 0;       // 0 = 不限制；超限记 Skipped
-    bool keep_reports = true;              // false = 结果里只留计数，不留 QcReport 本体
+    std::vector<std::string> extensions; // 无点小写；空 = 不按扩展名过滤
+    int max_parallel = 4;                // 并发上限，会再夹到 [1, 16]
+    int64_t max_file_size_bytes = 0;     // 0 = 不限制；超限记 Skipped
+    bool keep_reports = true;            // false = 结果里只留计数，不留 QcReport 本体
     // 单个文件的最长等待（毫秒）。0 = 用分析函数自带的默认预算（QcRunner 的
     // kDefaultJoinBudgetMs）。透传到 QcAnalyzeRequest::join_budget_ms；超预算的条目
     // 落成 BatchItemStatus::TimedOut，其后台分析线程由执行器放弃并请求取消。
@@ -114,13 +120,11 @@ public:
     BatchQcRunner& operator=(const BatchQcRunner&) = delete;
 
     // 目录发现。返回的列表已排序（Windows 上 filesystem 的遍历顺序不稳定，排一下便于复现）。
-    static std::vector<BatchQcItem> Discover(const std::string& root,
-                                             bool recursive = true,
+    static std::vector<BatchQcItem> Discover(const std::string& root, bool recursive = true,
                                              const std::vector<std::string>& extensions = {});
 
     // 扩展名过滤规则：空列表放行；命中列表时按无点小写比较（".MP4" 与 "mp4" 等价）
-    static bool ExtensionMatches(const std::string& path,
-                                 const std::vector<std::string>& extensions);
+    static bool ExtensionMatches(const std::string& path, const std::vector<std::string>& extensions);
 
     // 执行批量分析。返回时所有**调度 worker** 已经 join，本层不留后台线程。
     //
@@ -130,20 +134,29 @@ public:
     // per_item_timeout_ms 超预算时 analyze() 会放弃它自己的分析线程（detach + 请求取消），
     // 于是本函数会先于"那条被放弃的线程真正退出"返回 —— 对应条目记为 TimedOut，
     // 汇总里的 timed_out 就是这批"已停止派发、后台仍在收尾"的条目数。
-    BatchQcRun Run(const std::vector<BatchQcItem>& items,
-                   const BatchQcOptions& options,
-                   const QcAnalyzeFn& analyze,
+    BatchQcRun Run(const std::vector<BatchQcItem>& items, const BatchQcOptions& options, const QcAnalyzeFn& analyze,
                    const BatchQcCallbacks& callbacks = BatchQcCallbacks{});
 
-    void Cancel() { cancel_.store(true, std::memory_order_release); }
-    void Reset() { cancel_.store(false, std::memory_order_release); }
-    bool IsCancelling() const { return cancel_.load(std::memory_order_acquire); }
-    bool IsRunning() const { return running_.load(std::memory_order_acquire); }
-    int ActiveWorkerCount() const { return active_workers_.load(std::memory_order_acquire); }
+    void Cancel() {
+        cancel_.store(true, std::memory_order_release);
+    }
+    void Reset() {
+        cancel_.store(false, std::memory_order_release);
+    }
+    bool IsCancelling() const {
+        return cancel_.load(std::memory_order_acquire);
+    }
+    bool IsRunning() const {
+        return running_.load(std::memory_order_acquire);
+    }
+    int ActiveWorkerCount() const {
+        return active_workers_.load(std::memory_order_acquire);
+    }
 
 private:
     bool IsCancelled(const BatchQcCallbacks& callbacks) const {
-        if (cancel_.load(std::memory_order_acquire)) return true;
+        if (cancel_.load(std::memory_order_acquire))
+            return true;
         return callbacks.is_cancelled ? callbacks.is_cancelled() : false;
     }
 
@@ -152,5 +165,5 @@ private:
     std::atomic<int> active_workers_{0};
 };
 
-}  // namespace qc
-}  // namespace videoeye
+} // namespace qc
+} // namespace videoeye

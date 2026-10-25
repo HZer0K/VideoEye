@@ -54,8 +54,7 @@ TEST(ThreadBodyProtocolTests, GuardBodyReturnsEmptyOnNormalReturn) {
 }
 
 TEST(ThreadBodyProtocolTests, GuardBodyCapturesStdExceptionMessage) {
-    const std::optional<std::string> failure =
-        GuardBody([&]() { throw std::runtime_error("boom"); });
+    const std::optional<std::string> failure = GuardBody([&]() { throw std::runtime_error("boom"); });
     ASSERT_TRUE(failure.has_value());
     EXPECT_EQ(*failure, "boom");
 }
@@ -87,11 +86,9 @@ TEST(ThreadBodyProtocolTests, RunTerminalBodyCombinesGuardAndVerdict) {
     const auto flag = std::make_shared<std::atomic<bool>>(false);
     const CancelToken token(flag);
     EXPECT_EQ(RunTerminalBody(token, []() {}), TaskState::Succeeded);
-    EXPECT_EQ(RunTerminalBody(token, []() { throw std::logic_error("no"); }),
-              TaskState::Failed);
+    EXPECT_EQ(RunTerminalBody(token, []() { throw std::logic_error("no"); }), TaskState::Failed);
     flag->store(true);
-    EXPECT_EQ(RunTerminalBody(token, []() { throw std::logic_error("no"); }),
-              TaskState::Canceled);
+    EXPECT_EQ(RunTerminalBody(token, []() { throw std::logic_error("no"); }), TaskState::Canceled);
 }
 
 TEST(ThreadBodyProtocolTests, ScopeExitRunsOnNormalAndExceptionalExit) {
@@ -126,7 +123,7 @@ TEST(ThreadBodyProtocolTests, RealThreadBodySurvivesThrownException) {
     }
     EXPECT_TRUE(body_done.load());
     ASSERT_TRUE(worker.joinable());
-    worker.join();  // 能走到这里就说明线程体正常退出，没有 terminate
+    worker.join(); // 能走到这里就说明线程体正常退出，没有 terminate
 }
 
-}  // namespace
+} // namespace

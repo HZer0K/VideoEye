@@ -14,7 +14,7 @@
 //
 // 与 batch_filter.h / result_stamp.h 同一思路：能被测试直接调用的逻辑一律抽成自由函数。
 
-#include <QObject>   // QObject::tr（文本模板的翻译入口）
+#include <QObject> // QObject::tr（文本模板的翻译入口）
 #include <QString>
 
 #include "core/domain/task/TaskProtocol.h"
@@ -52,9 +52,8 @@ inline task::TaskState BatchTerminalState(const qc::BatchQcSummary& summary, boo
 // 注：文本用 QObject::tr 而不是某个 QObject 子类的 tr()，翻译上下文随之变成 QObject。
 // 项目当前没有 .ts 翻译文件（构建期就有 "Translations will not be available"），无影响。
 inline QString BatchSummaryText(const qc::BatchQcSummary& summary, int total) {
-    return QObject::tr(
-               "共 %1 个 ｜ 完成 %2 ｜ 失败 %3 ｜ 超时 %4 ｜ 取消 %5 ｜ 跳过 %6 ｜ "
-               "致命 %7 错误 %8 警告 %9 提示 %10 ｜ 耗时 %11 ms")
+    return QObject::tr("共 %1 个 ｜ 完成 %2 ｜ 失败 %3 ｜ 超时 %4 ｜ 取消 %5 ｜ 跳过 %6 ｜ "
+                       "致命 %7 错误 %8 警告 %9 提示 %10 ｜ 耗时 %11 ms")
         .arg(total)
         .arg(summary.succeeded)
         .arg(summary.failed)
@@ -100,8 +99,7 @@ inline QString BatchDetailText(const qc::BatchQcItemResult& item) {
         text += QObject::tr("\n问题清单:");
         for (const model::DiagnosticIssue& issue : item.report.issues) {
             text += QObject::tr("\n  [%1] %2 — %3")
-                        .arg(QString::fromStdString(issue.SeverityText()),
-                             QString::fromStdString(issue.title),
+                        .arg(QString::fromStdString(issue.SeverityText()), QString::fromStdString(issue.title),
                              QString::fromStdString(issue.detail));
         }
     }
@@ -141,5 +139,5 @@ inline BatchRowCells MakeBatchRowCells(const qc::BatchQcItemResult& item) {
     return cells;
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

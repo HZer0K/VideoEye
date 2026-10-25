@@ -18,8 +18,8 @@
 #include <cstdint>
 #include <string>
 
-#include "core/domain/model/Mp4SampleInfo.h"
 #include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/Mp4SampleInfo.h"
 
 namespace videoeye {
 
@@ -32,8 +32,7 @@ public:
     //
     // cancel: 可选的取消标志（nullptr = 不关心取消）。样本表展开会把每个 chunk 的
     // 样本全展开，长片动辄上亿个样本，是取消时最该立刻停手的地方。
-    bool AnalyzeFile(const std::string& file_path,
-                     model::Mp4SampleTableResult& out,
+    bool AnalyzeFile(const std::string& file_path, model::Mp4SampleTableResult& out,
                      const Mp4SampleTableOptions& options = Mp4SampleTableOptions{},
                      const std::atomic<bool>* cancel = nullptr);
 
@@ -48,4 +47,4 @@ private:
     Mp4SampleTableOptions options_;
 };
 
-}  // namespace videoeye
+} // namespace videoeye

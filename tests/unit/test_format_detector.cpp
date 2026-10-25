@@ -62,8 +62,7 @@ TEST(FormatDetectorTest, detectsMxfPartitionPackKey) {
     ASSERT_EQ(file.write(data), static_cast<qint64>(data.size()));
     file.close();
 
-    EXPECT_EQ(videoeye::model::ContainerFormat::MXF,
-              videoeye::FormatDetector::Detect(file.fileName().toStdString()));
+    EXPECT_EQ(videoeye::model::ContainerFormat::MXF, videoeye::FormatDetector::Detect(file.fileName().toStdString()));
 }
 
 TEST(FormatDetectorTest, detectsRawAnnexBWithSecondStartCode) {
@@ -97,7 +96,7 @@ TEST(FormatDetectorTest, fallsBackToExtensionForNewFormats) {
     for (const auto& c : cases) {
         const QString path = dir.filePath(QString::fromLatin1(c.name));
         QFile f(path);
-        ASSERT_TRUE(f.open(QIODevice::WriteOnly)) << c.name;  // 空文件：魔数无从判断
+        ASSERT_TRUE(f.open(QIODevice::WriteOnly)) << c.name; // 空文件：魔数无从判断
         f.close();
         EXPECT_EQ(c.expected, videoeye::FormatDetector::Detect(path.toStdString())) << c.name;
     }

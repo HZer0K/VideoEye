@@ -27,8 +27,7 @@ public:
 
     // 裸 PCM 同步解析 (裸流无法自动探测, 需带上用户选择的格式参数),
     // 返回可直接展示的文本; 仍是 UI 线程同步执行。
-    QString DescribeRawPcm(const QString& source, const QString& demuxer_name,
-                           int sample_rate, int channels);
+    QString DescribeRawPcm(const QString& source, const QString& demuxer_name, int sample_rate, int channels);
 
 signals:
     void InfoReady(const QString& text);

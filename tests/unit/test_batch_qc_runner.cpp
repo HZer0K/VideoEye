@@ -24,9 +24,7 @@ using videoeye::qc::ToString;
 namespace {
 // 假分析函数：睡 ~20ms 模拟解码，期间轮询 cancel 标记。
 // 记录被调用的路径，便于校验取消后没被继续派发。
-QcAnalyzeFn MakeFakeAnalyze(std::vector<std::string>* called,
-                            std::mutex* called_mutex,
-                            std::atomic<int>* max_active,
+QcAnalyzeFn MakeFakeAnalyze(std::vector<std::string>* called, std::mutex* called_mutex, std::atomic<int>* max_active,
                             std::atomic<int>* active) {
     return [called, called_mutex, max_active, active](const QcAnalyzeRequest& req) {
         active->fetch_add(1, std::memory_order_acq_rel);
@@ -50,8 +48,7 @@ QcAnalyzeFn MakeFakeAnalyze(std::vector<std::string>* called,
 }
 
 TEST(BatchQcRunnerTest, DiscoverFiltersByExtension) {
-    const std::filesystem::path dir = std::filesystem::temp_directory_path() /
-                                      "videoeye_batch_discover_test";
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "videoeye_batch_discover_test";
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
     std::filesystem::create_directories(dir, ec);
@@ -62,8 +59,7 @@ TEST(BatchQcRunnerTest, DiscoverFiltersByExtension) {
     std::ofstream(std::filesystem::path(dir / "sub" / "d.mkv"));
 
     // 不递归 + 过滤 mp4/mov
-    auto items = BatchQcRunner::Discover(dir.string(), /*recursive=*/false,
-                                         {"mp4", "mov"});
+    auto items = BatchQcRunner::Discover(dir.string(), /*recursive=*/false, {"mp4", "mov"});
     EXPECT_EQ(items.size(), 2u);
 
     // 递归 + 不过滤
@@ -72,7 +68,7 @@ TEST(BatchQcRunnerTest, DiscoverFiltersByExtension) {
 
     // 空扩展名列表 = 全部放行
     auto nofilter = BatchQcRunner::Discover(dir.string(), /*recursive=*/false, {});
-    EXPECT_EQ(nofilter.size(), 3u);  // a.mp4 / b.MOV / c.txt
+    EXPECT_EQ(nofilter.size(), 3u); // a.mp4 / b.MOV / c.txt
 
     std::filesystem::remove_all(dir, ec);
 }
@@ -96,8 +92,8 @@ TEST(BatchQcRunnerTest, RunsAllAndJoinsThreads) {
 
     // Run() 返回即代表所有 worker 已 join —— 没有任何后台线程残留（12.6 要求）。
     EXPECT_EQ(called.size(), 12u);
-    EXPECT_LE(max_active.load(), 4);  // 默认 max_parallel = 4
-    EXPECT_EQ(active.load(), 0);      // 离开 Run 后没有线程还在跑
+    EXPECT_LE(max_active.load(), 4); // 默认 max_parallel = 4
+    EXPECT_EQ(active.load(), 0);     // 离开 Run 后没有线程还在跑
 }
 
 TEST(BatchQcRunnerTest, CancelStopsDispatchAndReportsStatus) {
@@ -171,7 +167,7 @@ TEST(BatchQcRunnerTest, SucceededVsExportFailed) {
         BatchQcRunner runner;
         const auto run = runner.Run(items, BatchQcOptions{}, MakeResultAnalyze(true, true), {});
         EXPECT_EQ(run.items[0].status, BatchItemStatus::ExportFailed);
-        EXPECT_EQ(run.summary.failed, 1);  // 导出失败计入失败
+        EXPECT_EQ(run.summary.failed, 1); // 导出失败计入失败
         EXPECT_EQ(run.summary.succeeded, 0);
     }
     {
@@ -192,7 +188,7 @@ TEST(BatchQcRunnerTest, PerItemTimeoutPropagatesAndMarksTimedOut) {
         seen_budget.store(req.join_budget_ms, std::memory_order_release);
         QcRunResult r;
         r.ok = false;
-        r.timed_out = true;  // 执行器自己的等待预算耗尽，后台线程被放弃
+        r.timed_out = true; // 执行器自己的等待预算耗尽，后台线程被放弃
         r.error = "分析在等待预算内没有结束";
         return r;
     };
@@ -239,4 +235,4 @@ TEST(BatchQcRunnerTest, DefaultPerItemTimeoutStaysZeroAndDoesNotTimeOut) {
     EXPECT_EQ(run.items[0].status, BatchItemStatus::Succeeded);
     EXPECT_EQ(run.summary.timed_out, 0);
 }
-}  // namespace
+} // namespace

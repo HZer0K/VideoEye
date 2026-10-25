@@ -1,10 +1,10 @@
 #include "ui/player/RawImageSequence.h"
 
-#include <QInputDialog>
-#include <QMessageBox>
 #include <QFile>
 #include <QFileInfo>
+#include <QInputDialog>
 #include <QLabel>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSignalBlocker>
@@ -18,8 +18,8 @@
 namespace videoeye {
 namespace ui {
 
-RawImageSequence::RawImageSequence(QWidget* parent)
-    : QObject(parent), dialog_parent_(parent) {}
+RawImageSequence::RawImageSequence(QWidget* parent) : QObject(parent), dialog_parent_(parent) {
+}
 
 void RawImageSequence::SetVideoWidget(VideoWidget* widget) {
     video_widget_ = widget;
@@ -31,8 +31,8 @@ void RawImageSequence::SetControlBar(ControlBarWidget* bar) {
 
 bool RawImageSequence::LoadRawImageFile(const QString& filename) {
     const QString suffix = QFileInfo(filename).suffix().toLower();
-    if (suffix != "yuv" && suffix != "nv12" && suffix != "rgb" &&
-        suffix != "bgr" && suffix != "yuy2" && suffix != "raw") {
+    if (suffix != "yuv" && suffix != "nv12" && suffix != "rgb" && suffix != "bgr" && suffix != "yuy2" &&
+        suffix != "raw") {
         return false;
     }
 
@@ -68,27 +68,19 @@ bool RawImageSequence::LoadRawImageFile(const QString& filename) {
     }
 
     bool ok = false;
-    const int width = QInputDialog::getInt(dialog_parent_, tr("图像宽度"),
-                                           tr("请输入宽度(px):"),
-                                           default_width, 1, 16384, 1, &ok);
+    const int width =
+        QInputDialog::getInt(dialog_parent_, tr("图像宽度"), tr("请输入宽度(px):"), default_width, 1, 16384, 1, &ok);
     if (!ok) {
         return false;
     }
-    const int height = QInputDialog::getInt(dialog_parent_, tr("图像高度"),
-                                            tr("请输入高度(px):"),
-                                            default_height, 1, 16384, 1, &ok);
+    const int height =
+        QInputDialog::getInt(dialog_parent_, tr("图像高度"), tr("请输入高度(px):"), default_height, 1, 16384, 1, &ok);
     if (!ok) {
         return false;
     }
 
     const QString lower_name = QFileInfo(filename).fileName().toLower();
-    const QStringList formats = {
-        "YUV420P(I420)",
-        "NV12",
-        "YUY2",
-        "RGB24",
-        "BGR24"
-    };
+    const QStringList formats = {"YUV420P(I420)", "NV12", "YUY2", "RGB24", "BGR24"};
 
     QString default_format = "YUV420P(I420)";
     if (suffix == "nv12" || lower_name.contains("nv12")) {
@@ -101,11 +93,8 @@ bool RawImageSequence::LoadRawImageFile(const QString& filename) {
         default_format = "BGR24";
     }
 
-    const QString selected = QInputDialog::getItem(dialog_parent_, tr("原始图像格式"),
-                                                   tr("选择像素格式:"),
-                                                   formats,
-                                                   formats.indexOf(default_format),
-                                                   false, &ok);
+    const QString selected = QInputDialog::getItem(dialog_parent_, tr("原始图像格式"), tr("选择像素格式:"), formats,
+                                                   formats.indexOf(default_format), false, &ok);
     if (!ok || selected.isEmpty()) {
         return false;
     }
@@ -115,15 +104,13 @@ bool RawImageSequence::LoadRawImageFile(const QString& filename) {
         frame_size = static_cast<qint64>(width) * static_cast<qint64>(height) * 3;
     } else if (selected == "YUV420P(I420)" || selected == "NV12") {
         if ((width % 2) != 0 || (height % 2) != 0) {
-            QMessageBox::warning(dialog_parent_, tr("尺寸不支持"),
-                                 tr("%1 仅支持偶数宽高。").arg(selected));
+            QMessageBox::warning(dialog_parent_, tr("尺寸不支持"), tr("%1 仅支持偶数宽高。").arg(selected));
             return false;
         }
         frame_size = static_cast<qint64>(width) * static_cast<qint64>(height) * 3 / 2;
     } else if (selected == "YUY2") {
         if ((width % 2) != 0) {
-            QMessageBox::warning(dialog_parent_, tr("尺寸不支持"),
-                                 tr("YUY2 仅支持偶数宽度。"));
+            QMessageBox::warning(dialog_parent_, tr("尺寸不支持"), tr("YUY2 仅支持偶数宽度。"));
             return false;
         }
         frame_size = static_cast<qint64>(width) * static_cast<qint64>(height) * 2;
@@ -131,10 +118,9 @@ bool RawImageSequence::LoadRawImageFile(const QString& filename) {
 
     const qint64 file_size = QFileInfo(filename).size();
     if (frame_size <= 0 || file_size < frame_size) {
-        QMessageBox::warning(dialog_parent_, tr("打开失败"),
-                             tr("文件大小不足以组成一帧。\n单帧大小: %1 字节\n文件大小: %2 字节")
-                                 .arg(frame_size)
-                                 .arg(file_size));
+        QMessageBox::warning(
+            dialog_parent_, tr("打开失败"),
+            tr("文件大小不足以组成一帧。\n单帧大小: %1 字节\n文件大小: %2 字节").arg(frame_size).arg(file_size));
         return false;
     }
 
@@ -147,28 +133,27 @@ bool RawImageSequence::LoadRawImageFile(const QString& filename) {
     raw_current_frame_ = 0;
 
     const qint64 remain = file_size % frame_size;
-    emit RawImageInfoReady(
-        tr("Raw Image Sequence\n"
-           "File: %1\n"
-           "Format: %2\n"
-           "Size: %3x%4\n"
-           "Frame Size: %5 bytes\n"
-           "Total Frames: %6\n"
-           "Ignored Tail Bytes: %7")
-            .arg(filename)
-            .arg(selected)
-            .arg(width)
-            .arg(height)
-            .arg(frame_size)
-            .arg(raw_total_frames_)
-            .arg(remain));
+    emit RawImageInfoReady(tr("Raw Image Sequence\n"
+                              "File: %1\n"
+                              "Format: %2\n"
+                              "Size: %3x%4\n"
+                              "Frame Size: %5 bytes\n"
+                              "Total Frames: %6\n"
+                              "Ignored Tail Bytes: %7")
+                               .arg(filename)
+                               .arg(selected)
+                               .arg(width)
+                               .arg(height)
+                               .arg(frame_size)
+                               .arg(raw_total_frames_)
+                               .arg(remain));
 
     return ShowRawFrame(0);
 }
 
 bool RawImageSequence::ShowRawFrame(int frame_index) {
-    if (!showing_raw_image_ || raw_image_path_.isEmpty() || raw_frame_size_ <= 0 ||
-        frame_index < 0 || frame_index >= raw_total_frames_) {
+    if (!showing_raw_image_ || raw_image_path_.isEmpty() || raw_frame_size_ <= 0 || frame_index < 0 ||
+        frame_index >= raw_total_frames_) {
         return false;
     }
 
@@ -189,17 +174,15 @@ bool RawImageSequence::ShowRawFrame(int frame_index) {
     const QByteArray data = file.read(raw_frame_size_);
     file.close();
     if (data.size() != raw_frame_size_) {
-        emit StatusMessage(
-            tr("读取第 %1 帧失败，期望 %2 字节，实际 %3 字节。")
-                .arg(frame_index + 1)
-                .arg(raw_frame_size_)
-                .arg(data.size()), 0);
+        emit StatusMessage(tr("读取第 %1 帧失败，期望 %2 字节，实际 %3 字节。")
+                               .arg(frame_index + 1)
+                               .arg(raw_frame_size_)
+                               .arg(data.size()),
+                           0);
         return false;
     }
 
-    auto clamp_to_u8 = [](int value) -> uchar {
-        return static_cast<uchar>(qBound(0, value, 255));
-    };
+    auto clamp_to_u8 = [](int value) -> uchar { return static_cast<uchar>(qBound(0, value, 255)); };
     auto yuv_to_rgb = [&](int Y, int U, int V, uchar* dst) {
         const int u = U - 128;
         const int v = V - 128;

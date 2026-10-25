@@ -11,8 +11,8 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLocale>
-#include <QMetaObject>
 #include <QMessageBox>
+#include <QMetaObject>
 #include <QStyledItemDelegate>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -33,10 +33,9 @@ namespace ui {
 namespace {
 
 QStringList BatchTableHeaders() {
-    return QStringList() << QObject::tr("文件") << QObject::tr("状态") << QObject::tr("评分")
-                         << QObject::tr("结论") << QObject::tr("致命") << QObject::tr("错误")
-                         << QObject::tr("警告") << QObject::tr("提示") << QObject::tr("耗时(ms)")
-                         << QObject::tr("输出");
+    return QStringList() << QObject::tr("文件") << QObject::tr("状态") << QObject::tr("评分") << QObject::tr("结论")
+                         << QObject::tr("致命") << QObject::tr("错误") << QObject::tr("警告") << QObject::tr("提示")
+                         << QObject::tr("耗时(ms)") << QObject::tr("输出");
 }
 
 std::vector<std::string> ParseExtensionList(const QString& text) {
@@ -53,7 +52,8 @@ std::vector<std::string> ParseExtensionList(const QString& text) {
             current += c;
         }
     }
-    if (!current.empty()) extensions.push_back(current);
+    if (!current.empty())
+        extensions.push_back(current);
     return extensions;
 }
 
@@ -62,7 +62,8 @@ std::vector<std::string> ParseExtensionList(const QString& text) {
 // 第一列带 batch_results_ 下标：排序（sortItems 会移动 item 对象，数据跟着走）
 // 与筛选（只切可见性）之后仍能对回原始结果。
 void ApplyBatchRow(QTableWidget* table, int row, const BatchRowCells& cells, int result_index) {
-    if (!table) return;
+    if (!table)
+        return;
     QTableWidgetItem* path_item = new QTableWidgetItem(cells.path);
     path_item->setData(Qt::UserRole, result_index);
     table->setItem(row, 0, path_item);
@@ -91,8 +92,8 @@ void ApplyBatchRow(QTableWidget* table, int row, const BatchRowCells& cells, int
 // displayText 拿不到列号，所以一列一个委托实例（评分 1 位、耗时取整）。
 class DoubleFormatDelegate : public QStyledItemDelegate {
 public:
-    DoubleFormatDelegate(int decimals, QObject* parent = nullptr)
-        : QStyledItemDelegate(parent), decimals_(decimals) {}
+    DoubleFormatDelegate(int decimals, QObject* parent = nullptr) : QStyledItemDelegate(parent), decimals_(decimals) {
+    }
 
     QString displayText(const QVariant& value, const QLocale& locale) const override {
         if (value.typeId() == QMetaType::Double || value.typeId() == QMetaType::Float) {
@@ -105,10 +106,10 @@ private:
     int decimals_;
 };
 
-}  // namespace
+} // namespace
 
 ReportingPanel::ReportingPanel(QWidget* parent) : QWidget(parent) {
-    profile_ = qc::BuiltinQcProfiles().front();  // 通用
+    profile_ = qc::BuiltinQcProfiles().front(); // 通用
     BuildUi();
     // 控制器要读 batch_dir_edit_ 等控件，必须在 BuildUi 之后建。
     SetupExportController();
@@ -125,7 +126,8 @@ void ReportingPanel::SetupTaskCoordinator() {
     deps.append = [this](const QString& text) { AppendSummary(text); };
     deps.set_busy = [this](bool busy) { SetBusy(busy); };
     deps.abort_pending_export = [this]() {
-        if (export_controller_) export_controller_->AbortPendingExport();
+        if (export_controller_)
+            export_controller_->AbortPendingExport();
     };
     task_runner_ = std::make_unique<ReportingTaskCoordinator>(std::move(deps));
 }
@@ -142,23 +144,16 @@ void ReportingPanel::SetupExportController() {
     deps.profile = [this]() { return profile_; };
     deps.formats = [this]() { return SelectedFormats(); };
     deps.batch_results = [this]() { return batch_results_; };
-    deps.batch_root = [this]() {
-        return batch_dir_edit_ ? batch_dir_edit_->text().toStdString() : std::string();
-    };
+    deps.batch_root = [this]() { return batch_dir_edit_ ? batch_dir_edit_->text().toStdString() : std::string(); };
     deps.start_single_analysis = [this]() { StartSingleAnalysis(current_path_); };
-    deps.pick_output_directory = [this]() {
-        return QFileDialog::getExistingDirectory(this, tr("选择报告输出目录"));
-    };
+    deps.pick_output_directory = [this]() { return QFileDialog::getExistingDirectory(this, tr("选择报告输出目录")); };
     deps.pick_summary_file = [this]() {
         return QFileDialog::getSaveFileName(this, tr("导出批量汇总"), tr("qc-summary.csv"),
                                             tr("CSV (*.csv);;JSON (*.json);;HTML (*.html)"));
     };
-    deps.notice = [this](const QString& title, const QString& body) {
-        QMessageBox::information(this, title, body);
-    };
+    deps.notice = [this](const QString& title, const QString& body) { QMessageBox::information(this, title, body); };
     export_controller_ = new ReportExportController(std::move(deps), this);
-    connect(export_controller_, &ReportExportController::StatusMessage,
-            this, &ReportingPanel::StatusMessage);
+    connect(export_controller_, &ReportExportController::StatusMessage, this, &ReportingPanel::StatusMessage);
 }
 
 ReportingPanel::~ReportingPanel() {
@@ -168,7 +163,8 @@ ReportingPanel::~ReportingPanel() {
     // （P0：原先对仍 joinable 的 std::thread 直接 detach，且第二次启动会对其赋值导致 terminate。）
     //
     // 预算这件事是评审 P1-3 的要求：关界面不能再无限等下去。
-    if (task_runner_) task_runner_->RetireAll();
+    if (task_runner_)
+        task_runner_->RetireAll();
 }
 
 // ===========================================================================
@@ -185,8 +181,7 @@ void ReportingPanel::BuildUi() {
     QHBoxLayout* profile_row = new QHBoxLayout(profile_box);
     profile_combo_ = new QComboBox(profile_box);
     for (const auto& profile : qc::BuiltinQcProfiles()) {
-        profile_combo_->addItem(QString::fromStdString(profile.name),
-                                QString::fromStdString(profile.id));
+        profile_combo_->addItem(QString::fromStdString(profile.name), QString::fromStdString(profile.id));
     }
     profile_combo_->setToolTip(tr("内置模板按交付场景调整了阈值与严重度；也可加载自定义 JSON 模板"));
     profile_row->addWidget(profile_combo_);
@@ -326,8 +321,7 @@ void ReportingPanel::BuildUi() {
     batch_status_filter_ = new QComboBox(batch_box);
     batch_status_filter_->addItem(tr("全部状态"), kBatchStatusFilterAll);
     batch_status_filter_->addItem(tr("已完成"), static_cast<int>(qc::BatchItemStatus::Succeeded));
-    batch_status_filter_->addItem(tr("导出失败"),
-                                  static_cast<int>(qc::BatchItemStatus::ExportFailed));
+    batch_status_filter_->addItem(tr("导出失败"), static_cast<int>(qc::BatchItemStatus::ExportFailed));
     batch_status_filter_->addItem(tr("失败"), static_cast<int>(qc::BatchItemStatus::Failed));
     batch_status_filter_->addItem(tr("超时"), static_cast<int>(qc::BatchItemStatus::TimedOut));
     batch_status_filter_->addItem(tr("已取消"), static_cast<int>(qc::BatchItemStatus::Cancelled));
@@ -382,8 +376,7 @@ void ReportingPanel::BuildUi() {
     open_report_button_ = new QPushButton(tr("打开报告文件"), batch_box);
     open_report_button_->setEnabled(false);
     open_report_button_->setToolTip(tr("打开该条目落盘的报告文件 —— 完整问题清单在里面"));
-    connect(open_report_button_, &QPushButton::clicked,
-            this, &ReportingPanel::OnOpenSelectedReport);
+    connect(open_report_button_, &QPushButton::clicked, this, &ReportingPanel::OnOpenSelectedReport);
     detail_actions->addWidget(open_report_button_);
     batch_layout->addLayout(detail_actions);
 
@@ -396,15 +389,14 @@ void ReportingPanel::BuildUi() {
     log_view_->setPlaceholderText(tr("分析报告的纯文本摘要会显示在这里"));
     root->addWidget(log_view_, 1);
 
-    connect(profile_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &ReportingPanel::OnProfileChanged);
+    connect(profile_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &ReportingPanel::OnProfileChanged);
 
-    connect(batch_status_filter_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &ReportingPanel::OnBatchFilterChanged);
-    connect(batch_severity_filter_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &ReportingPanel::OnBatchFilterChanged);
-    connect(batch_table_, &QTableWidget::itemSelectionChanged,
-            this, &ReportingPanel::OnBatchSelectionChanged);
+    connect(batch_status_filter_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &ReportingPanel::OnBatchFilterChanged);
+    connect(batch_severity_filter_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &ReportingPanel::OnBatchFilterChanged);
+    connect(batch_table_, &QTableWidget::itemSelectionChanged, this, &ReportingPanel::OnBatchSelectionChanged);
 
     // 初始没有结果：导出按钮必须是禁用的（BuildUi 里创建的控件默认 enabled）。
     UpdateExportEnabled();
@@ -424,7 +416,8 @@ void ReportingPanel::SetCurrentFile(const QString& path) {
     current_file_label_->setText(path.isEmpty() ? tr("未选择") : path);
     // 换文件后上一次的结果不再对应当前文件 —— 标为过期并禁用导出，避免把旧结果导出去。
     // 同一个路径重复同步（主窗口可能不止一处发）不算切换，保留结果。
-    if (changed) InvalidateResult();
+    if (changed)
+        InvalidateResult();
 }
 
 void ReportingPanel::OnProfileChanged(int index) {
@@ -436,14 +429,16 @@ void ReportingPanel::OnProfileChanged(int index) {
         const bool changed = (profile_.id != builtin->id);
         profile_ = *builtin;
         profile_description_->setText(QString::fromStdString(profile_.description));
-        if (changed) RefreshResultForProfile();
+        if (changed)
+            RefreshResultForProfile();
     }
 }
 
 void ReportingPanel::OnLoadProfileFile() {
-    const QString path = QFileDialog::getOpenFileName(
-        this, tr("选择 QC 模板"), QString(), tr("JSON 模板 (*.json);;所有文件 (*.*)"));
-    if (path.isEmpty()) return;
+    const QString path =
+        QFileDialog::getOpenFileName(this, tr("选择 QC 模板"), QString(), tr("JSON 模板 (*.json);;所有文件 (*.*)"));
+    if (path.isEmpty())
+        return;
 
     std::string error;
     qc::QcProfile loaded;
@@ -454,15 +449,15 @@ void ReportingPanel::OnLoadProfileFile() {
     const auto unknown = qc::UnknownRuleIds(loaded);
     if (!unknown.empty()) {
         QStringList ids;
-        for (const auto& id : unknown) ids << QString::fromStdString(id);
-        QMessageBox::information(this, tr("模板已加载"),
-                                 tr("以下规则 id 未识别，已忽略:\n%1").arg(ids.join("\n")));
+        for (const auto& id : unknown)
+            ids << QString::fromStdString(id);
+        QMessageBox::information(this, tr("模板已加载"), tr("以下规则 id 未识别，已忽略:\n%1").arg(ids.join("\n")));
     }
 
     profile_ = loaded;
-    profile_description_->setText(tr("自定义模板: %1（%2）")
-                                      .arg(QString::fromStdString(profile_.name),
-                                           QString::fromStdString(profile_.description)));
+    profile_description_->setText(
+        tr("自定义模板: %1（%2）")
+            .arg(QString::fromStdString(profile_.name), QString::fromStdString(profile_.description)));
     // 自定义模板同样只决定"重算规则"：满足复用条件（同文件版本 + 选项覆盖 + 完整成功）
     // 时按它重算，否则标为过期。
     RefreshResultForProfile();
@@ -471,9 +466,9 @@ void ReportingPanel::OnLoadProfileFile() {
 
 void ReportingPanel::OnSaveProfile() {
     const QString path = QFileDialog::getSaveFileName(
-        this, tr("导出 QC 模板为 JSON"), QString::fromStdString(profile_.id + ".json"),
-        tr("JSON 模板 (*.json)"));
-    if (path.isEmpty()) return;
+        this, tr("导出 QC 模板为 JSON"), QString::fromStdString(profile_.id + ".json"), tr("JSON 模板 (*.json)"));
+    if (path.isEmpty())
+        return;
     if (!qc::SaveQcProfileToFile(path.toStdString(), profile_)) {
         QMessageBox::warning(this, tr("保存失败"), tr("无法写入: %1").arg(path));
         return;
@@ -495,17 +490,20 @@ void ReportingPanel::OnAnalyzeCurrentFile() {
 
 void ReportingPanel::OnExportSingleReport() {
     // 完整决策（新鲜就直接导 / 不新鲜先挂起再分析 / 弹什么提示）都在导出控制器里。
-    if (export_controller_) export_controller_->ExportSingleReport();
+    if (export_controller_)
+        export_controller_->ExportSingleReport();
 }
 
 void ReportingPanel::OnPickBatchDirectory() {
     const QString path = QFileDialog::getExistingDirectory(this, tr("选择批量扫描目录"));
-    if (!path.isEmpty()) batch_dir_edit_->setText(path);
+    if (!path.isEmpty())
+        batch_dir_edit_->setText(path);
 }
 
 void ReportingPanel::OnPickOutputDirectory() {
     const QString path = QFileDialog::getExistingDirectory(this, tr("选择报告输出目录"));
-    if (!path.isEmpty()) batch_out_edit_->setText(path);
+    if (!path.isEmpty())
+        batch_out_edit_->setText(path);
 }
 
 void ReportingPanel::OnStartBatch() {
@@ -529,16 +527,17 @@ void ReportingPanel::OnCancelBatch() {
 }
 
 void ReportingPanel::OnExportBatchSummary() {
-    if (export_controller_) export_controller_->ExportBatchSummary();
+    if (export_controller_)
+        export_controller_->ExportBatchSummary();
 }
 
 // ===========================================================================
 // 分析执行
 // ===========================================================================
 
-void ReportingPanel::PostToUi(const std::shared_ptr<AnalysisTask>& task,
-                              const std::function<void()>& updater) const {
-    if (task_runner_) task_runner_->PostToUi(task, updater);
+void ReportingPanel::PostToUi(const std::shared_ptr<AnalysisTask>& task, const std::function<void()>& updater) const {
+    if (task_runner_)
+        task_runner_->PostToUi(task, updater);
 }
 
 void ReportingPanel::StartSingleAnalysis(const std::string& path) {
@@ -547,9 +546,9 @@ void ReportingPanel::StartSingleAnalysis(const std::string& path) {
     issue_count_label_->setText(QString());
 
     // 起线程（回收上一次 / 分配句柄 / 异常收口）全在任务协调器里。
-    const std::shared_ptr<AnalysisTask> task = task_runner_->Start(
-        ReportingTaskCoordinator::Slot::Single,
-        [this, path](const std::shared_ptr<AnalysisTask>& t) { RunSingle(t, path); });
+    const std::shared_ptr<AnalysisTask> task =
+        task_runner_->Start(ReportingTaskCoordinator::Slot::Single,
+                            [this, path](const std::shared_ptr<AnalysisTask>& t) { RunSingle(t, path); });
     // 并发满。busy_ 本该拦住，这里兜一次：宁可提示，别静默不跑。
     if (!task) {
         SetBusy(false);
@@ -567,9 +566,7 @@ void ReportingPanel::RunSingle(std::shared_ptr<AnalysisTask> task, const std::st
     callbacks.progress = [this, task](double percent, const std::string& stage) {
         PostToUi(task, [this, percent, stage]() {
             batch_progress_->setValue(static_cast<int>(percent));
-            emit StatusMessage(tr("分析进度 %1% %2")
-                                   .arg(static_cast<int>(percent))
-                                   .arg(QString::fromStdString(stage)));
+            emit StatusMessage(tr("分析进度 %1% %2").arg(static_cast<int>(percent)).arg(QString::fromStdString(stage)));
         });
     };
     // 取消只看令牌这一颗 —— 与批量扫描、诊断页、QcRunner 内部轮询的是同一个来源。
@@ -580,20 +577,17 @@ void ReportingPanel::RunSingle(std::shared_ptr<AnalysisTask> task, const std::st
     // 所以正常情况下任务体会很快自己收尾；这个预算只是兜底 —— 免得引擎卡在一次不响应
     // 中断的调用里时，关界面变成"5s 等任务体 + 30s 等引擎"两段预算相加。超预算时
     // QcRunner 只持 Box 的 worker 会被放弃(detach)，RunSingle 照常返回。
-    qc::QcRunResult result = runner.AnalyzeFile(
-        path, profile, analyzed_options, callbacks, kDefaultRecycleBudgetMs);
+    qc::QcRunResult result = runner.AnalyzeFile(path, profile, analyzed_options, callbacks, kDefaultRecycleBudgetMs);
     // 终态由结果 + 取消令牌共同判定：用户取消 -> Canceled；分析跑完 -> Succeeded；
     // 其余（打开失败 / 超时 / 引擎报错）-> Failed。
-    const task::TaskState terminal =
-        task->cancel.IsCanceled() ? task::TaskState::Canceled
-                                  : (result.ok ? task::TaskState::Succeeded
-                                               : task::TaskState::Failed);
+    const task::TaskState terminal = task->cancel.IsCanceled()
+                                         ? task::TaskState::Canceled
+                                         : (result.ok ? task::TaskState::Succeeded : task::TaskState::Failed);
     // 结果的新鲜度要素在发起分析时（主线程已冻结 profile_ 与 path）就固定下来，
     // 完成回调里按同一份身份登记，避免分析期间状态被改导致"结果对不上文件/模板"。
     const std::string analyzed_path = path;
     const std::string analyzed_profile_id = profile.id;
-    PostToUi(task, [this, task, result, terminal, analyzed_path, analyzed_profile_id,
-                    analyzed_options]() {
+    PostToUi(task, [this, task, result, terminal, analyzed_path, analyzed_profile_id, analyzed_options]() {
         if (result.ok) {
             last_result_ = result;
             result_stamp_ = ResultStamp{};
@@ -616,7 +610,8 @@ void ReportingPanel::RunSingle(std::shared_ptr<AnalysisTask> task, const std::st
 
         // 无结果时点导出 -> 分析成功后在同一目录继续导出；失败则丢弃挂起的目录，
         // 避免悄悄导出空报告（票据取走即作废，见 ReportExportController）。
-        if (export_controller_) export_controller_->OnSingleAnalysisFinished(result.ok);
+        if (export_controller_)
+            export_controller_->OnSingleAnalysisFinished(result.ok);
     });
 }
 
@@ -626,7 +621,8 @@ void ReportingPanel::StartBatchScan(const std::string& directory) {
     batch_table_->setRowCount(0);
     batch_progress_->setValue(0);
     batch_summary_label_->setText(tr("正在扫描目录…"));
-    if (batch_detail_) batch_detail_->setText(tr("选中表格中的一行查看详情"));
+    if (batch_detail_)
+        batch_detail_->setText(tr("选中表格中的一行查看详情"));
 
     // 所有控件读取都在这一帧（主线程）里完成
     BatchRequest request;
@@ -638,9 +634,9 @@ void ReportingPanel::StartBatchScan(const std::string& directory) {
     request.jobs = jobs_spin_->value();
     request.recursive = recursive_check_->isChecked();
 
-    const std::shared_ptr<AnalysisTask> task = task_runner_->Start(
-        ReportingTaskCoordinator::Slot::Batch,
-        [this, request](const std::shared_ptr<AnalysisTask>& t) { RunBatch(t, request); });
+    const std::shared_ptr<AnalysisTask> task =
+        task_runner_->Start(ReportingTaskCoordinator::Slot::Batch,
+                            [this, request](const std::shared_ptr<AnalysisTask>& t) { RunBatch(t, request); });
     // 并发满：busy_ 本该拦住，兜一次别静默不跑
     if (!task) {
         SetBusy(false);
@@ -649,8 +645,7 @@ void ReportingPanel::StartBatchScan(const std::string& directory) {
 }
 
 void ReportingPanel::RunBatch(std::shared_ptr<AnalysisTask> task, const BatchRequest& request) {
-    auto items = qc::BatchQcRunner::Discover(request.directory, request.recursive,
-                                             request.extensions);
+    auto items = qc::BatchQcRunner::Discover(request.directory, request.recursive, request.extensions);
     if (items.empty()) {
         PostToUi(task, [this]() {
             batch_summary_label_->setText(tr("目录下没有匹配的文件"));
@@ -698,22 +693,21 @@ void ReportingPanel::RunBatch(std::shared_ptr<AnalysisTask> task, const BatchReq
     // 关键修复（P0）：导出与 UI 共用同一组"保留相对子目录"的预定路径（ApplyExportPaths），
     // 避免不同子目录同名文件互相覆盖、且表格路径 = 真实落盘路径；导出失败时也能区分
     // "分析成功 / 导出失败"。
-    const qc::QcAnalyzeFn analyze_with_export =
-        [analyze, out_dir, directory, formats, profile](const qc::QcAnalyzeRequest& req) {
-            qc::QcRunResult result = analyze(req);
-            if (!out_dir.empty() && result.ok) {
-                ApplyExportPaths(result, out_dir, directory, req.path, formats, profile);
-            }
-            return result;
-        };
+    const qc::QcAnalyzeFn analyze_with_export = [analyze, out_dir, directory, formats,
+                                                 profile](const qc::QcAnalyzeRequest& req) {
+        qc::QcRunResult result = analyze(req);
+        if (!out_dir.empty() && result.ok) {
+            ApplyExportPaths(result, out_dir, directory, req.path, formats, profile);
+        }
+        return result;
+    };
 
     qc::BatchQcRunner runner;
     const auto run = runner.Run(items, options, analyze_with_export, callbacks);
 
     // 终态与汇总文本的口径都在 batch_result_model.h（有单测）：
     // 取消 > 失败/超时 > 成功；"共 N 个"用发现到的条目数（跳过/未跑到的也占一行）。
-    const task::TaskState terminal =
-        BatchTerminalState(run.summary, task->cancel.IsCanceled());
+    const task::TaskState terminal = BatchTerminalState(run.summary, task->cancel.IsCanceled());
     PostToUi(task, [this, task, run, total, terminal]() {
         batch_progress_->setRange(0, std::max(1, total));
         batch_progress_->setValue(batch_table_->rowCount());
@@ -733,23 +727,21 @@ void ReportingPanel::UpdateVerdictLabel(const qc::QcRunResult& result) {
     }
     verdict_label_->setText(QString::number(result.report.score, 'f', 1) + " / 100  " +
                             QString::fromStdString(result.report.verdict));
-    const QString color = (result.report.score >= 90.0) ? "#1b7f3b"
+    const QString color = (result.report.score >= 90.0)   ? "#1b7f3b"
                           : (result.report.score >= 70.0) ? "#b26a00"
-                                                         : "#b3261e";
+                                                          : "#b3261e";
     verdict_label_->setStyleSheet("color: " + color + ";");
-    issue_count_label_->setText(
-        tr("致命 %1 ｜ 错误 %2 ｜ 警告 %3 ｜ 提示 %4")
-            .arg(result.report.CountBySeverity(model::IssueSeverity::Critical))
-            .arg(result.report.CountBySeverity(model::IssueSeverity::Error))
-            .arg(result.report.CountBySeverity(model::IssueSeverity::Warning))
-            .arg(result.report.CountBySeverity(model::IssueSeverity::Info)));
+    issue_count_label_->setText(tr("致命 %1 ｜ 错误 %2 ｜ 警告 %3 ｜ 提示 %4")
+                                    .arg(result.report.CountBySeverity(model::IssueSeverity::Critical))
+                                    .arg(result.report.CountBySeverity(model::IssueSeverity::Error))
+                                    .arg(result.report.CountBySeverity(model::IssueSeverity::Warning))
+                                    .arg(result.report.CountBySeverity(model::IssueSeverity::Info)));
 }
 
 void ReportingPanel::ShowResult(const qc::QcRunResult& result) {
     UpdateVerdictLabel(result);
     if (!result.ok) {
-        log_view_->setPlainText(
-            tr("分析失败: %1").arg(QString::fromStdString(result.error)));
+        log_view_->setPlainText(tr("分析失败: %1").arg(QString::fromStdString(result.error)));
         return;
     }
     reporting::QcExportBundle bundle;
@@ -776,8 +768,7 @@ void ReportingPanel::RefreshResultForProfile() {
     result_stamp_.profile_id = profile_.id;
     ShowResult(last_result_);
     UpdateExportEnabled();
-    emit StatusMessage(tr("已复用现有分析结果，按模板 %1 重算规则")
-                           .arg(QString::fromStdString(profile_.name)));
+    emit StatusMessage(tr("已复用现有分析结果，按模板 %1 重算规则").arg(QString::fromStdString(profile_.name)));
 }
 
 void ReportingPanel::SetBusy(bool busy) {
@@ -788,7 +779,8 @@ void ReportingPanel::SetBusy(bool busy) {
     profile_combo_->setEnabled(!busy);
     // 排序随扫描状态切换：扫描中关掉（每插一行整表重排一次，几百个文件能卡死界面），
     // 结束后打开（打开时会按当前排序指示立即排一次，用户也可再点表头改排法）。
-    if (batch_table_) batch_table_->setSortingEnabled(!busy);
+    if (batch_table_)
+        batch_table_->setSortingEnabled(!busy);
     // 导出使能 = 空闲 && 结果新鲜。不能只看 busy_ —— 否则切换文件/模板后仍可点导出。
     UpdateExportEnabled();
 }
@@ -807,7 +799,8 @@ void ReportingPanel::InvalidateResult() {
 }
 
 void ReportingPanel::UpdateExportEnabled() {
-    if (export_button_) export_button_->setEnabled(!busy_ && HasFreshResult());
+    if (export_button_)
+        export_button_->setEnabled(!busy_ && HasFreshResult());
 }
 
 bool ReportingPanel::HasFreshResult() const {
@@ -819,7 +812,8 @@ bool ReportingPanel::IsExportEnabled() const {
 }
 
 bool ReportingPanel::BatchRowVisible(const qc::BatchQcItemResult& item) const {
-    if (!batch_status_filter_ || !batch_severity_filter_) return true;
+    if (!batch_status_filter_ || !batch_severity_filter_)
+        return true;
     return BatchMatchesStatusFilter(batch_status_filter_->currentData().toInt(), item.status) &&
            BatchMatchesSeverityFilter(batch_severity_filter_->currentData().toInt(), item);
 }
@@ -829,16 +823,19 @@ void ReportingPanel::OnBatchFilterChanged() {
 }
 
 void ReportingPanel::ReapplyBatchFilter() {
-    if (!batch_table_) return;
+    if (!batch_table_)
+        return;
     // 批量动辄几百上千行，逐行 setRowHidden 每行都会触发一次视口重算/重绘。
     // 整段关掉更新，最后一次重绘即可 —— 用户感知是"筛选立刻生效"而不是逐行闪。
     const bool was_updates_enabled = batch_table_->updatesEnabled();
     batch_table_->setUpdatesEnabled(false);
     for (int row = 0; row < batch_table_->rowCount(); ++row) {
         QTableWidgetItem* first = batch_table_->item(row, 0);
-        if (!first) continue;
+        if (!first)
+            continue;
         const int index = first->data(Qt::UserRole).toInt();
-        if (index < 0 || index >= static_cast<int>(batch_results_.size())) continue;
+        if (index < 0 || index >= static_cast<int>(batch_results_.size()))
+            continue;
         batch_table_->setRowHidden(row, !BatchRowVisible(batch_results_[index]));
     }
     batch_table_->setUpdatesEnabled(was_updates_enabled);
@@ -852,7 +849,8 @@ void ReportingPanel::ReapplyBatchFilter() {
 }
 
 void ReportingPanel::OnBatchSelectionChanged() {
-    if (!batch_table_ || !batch_detail_) return;
+    if (!batch_table_ || !batch_detail_)
+        return;
     // 先回到"未选中"态：下面只有真的定位到一条结果时才会把详情和按钮填回来。
     if (open_report_button_) {
         open_report_button_->setEnabled(false);
@@ -877,8 +875,7 @@ void ReportingPanel::OnBatchSelectionChanged() {
 }
 
 void ReportingPanel::ShowBatchDetail(int result_index) {
-    if (!batch_detail_ || result_index < 0 ||
-        result_index >= static_cast<int>(batch_results_.size())) {
+    if (!batch_detail_ || result_index < 0 || result_index >= static_cast<int>(batch_results_.size())) {
         return;
     }
     const qc::BatchQcItemResult& item = batch_results_[result_index];
@@ -894,21 +891,21 @@ void ReportingPanel::ShowBatchDetail(int result_index) {
 }
 
 void ReportingPanel::OnOpenSelectedReport() {
-    const QString path =
-        open_report_button_ ? open_report_button_->property("reportPath").toString() : QString();
-    if (path.isEmpty()) return;
+    const QString path = open_report_button_ ? open_report_button_->property("reportPath").toString() : QString();
+    if (path.isEmpty())
+        return;
     if (!QFileInfo::exists(path)) {
-        QMessageBox::warning(this, tr("报告文件不存在"),
-                             tr("该条目的报告文件已不在原处:\n%1").arg(path));
+        QMessageBox::warning(this, tr("报告文件不存在"), tr("该条目的报告文件已不在原处:\n%1").arg(path));
         return;
     }
     if (!QDesktopServices::openUrl(QUrl::fromLocalFile(path))) {
-        QMessageBox::warning(this, tr("打不开报告文件"),
-                             tr("系统没有为这类文件关联打开方式:\n%1").arg(path));
+        QMessageBox::warning(this, tr("打不开报告文件"), tr("系统没有为这类文件关联打开方式:\n%1").arg(path));
     }
 }
 
-qc::QcProfile ReportingPanel::CurrentProfile() const { return profile_; }
+qc::QcProfile ReportingPanel::CurrentProfile() const {
+    return profile_;
+}
 
 bool ReportingPanel::IsTaskRunning() const {
     return task_runner_ && task_runner_->IsRunning();
@@ -916,12 +913,18 @@ bool ReportingPanel::IsTaskRunning() const {
 
 std::vector<qc::QcReportFormat> ReportingPanel::SelectedFormats() const {
     std::vector<qc::QcReportFormat> formats;
-    if (format_json_->isChecked()) formats.push_back(qc::QcReportFormat::Json);
-    if (format_csv_->isChecked()) formats.push_back(qc::QcReportFormat::Csv);
-    if (format_html_->isChecked()) formats.push_back(qc::QcReportFormat::Html);
-    if (format_txt_->isChecked()) formats.push_back(qc::QcReportFormat::Text);
-    if (format_pdf_->isChecked()) formats.push_back(qc::QcReportFormat::Pdf);
-    if (formats.empty()) formats.push_back(qc::QcReportFormat::Json);  // 一个都不勾退回 JSON
+    if (format_json_->isChecked())
+        formats.push_back(qc::QcReportFormat::Json);
+    if (format_csv_->isChecked())
+        formats.push_back(qc::QcReportFormat::Csv);
+    if (format_html_->isChecked())
+        formats.push_back(qc::QcReportFormat::Html);
+    if (format_txt_->isChecked())
+        formats.push_back(qc::QcReportFormat::Text);
+    if (format_pdf_->isChecked())
+        formats.push_back(qc::QcReportFormat::Pdf);
+    if (formats.empty())
+        formats.push_back(qc::QcReportFormat::Json); // 一个都不勾退回 JSON
     return formats;
 }
 
@@ -929,5 +932,5 @@ void ReportingPanel::AppendSummary(const QString& text) {
     log_view_->append(text);
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

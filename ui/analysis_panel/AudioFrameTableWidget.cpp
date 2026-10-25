@@ -4,8 +4,8 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QGroupBox>
-#include <QHeaderView>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QMessageBox>
 #include <QTextStream>
 #include <QVBoxLayout>
@@ -24,28 +24,20 @@ constexpr std::size_t kMaxAudioFrameRecords = kDefaultMaxRecordCount;
 std::vector<RecordTableModel<AudioFrameRecord>::ColumnSpec> AudioFrameColumns() {
     using Spec = RecordTableModel<AudioFrameRecord>::ColumnSpec;
     return {
-        Spec{QStringLiteral("#"),
-             [](const AudioFrameRecord& r) { return QString::number(r.index); }, {}},
+        Spec{QStringLiteral("#"), [](const AudioFrameRecord& r) { return QString::number(r.index); }, {}},
         Spec{QStringLiteral("播放时间(s)"),
-             [](const AudioFrameRecord& r) {
-                 return QString::number(r.timestamp_seconds, 'f', 3);
-             }, {}},
-        Spec{QStringLiteral("原始 PTS"),
-             [](const AudioFrameRecord& r) { return QString::number(r.pts); }, {}},
-        Spec{QStringLiteral("样本数"),
-             [](const AudioFrameRecord& r) { return QString::number(r.sample_count); }, {}},
-        Spec{QStringLiteral("采样率"),
-             [](const AudioFrameRecord& r) { return QString::number(r.sample_rate); }, {}},
-        Spec{QStringLiteral("声道"),
-             [](const AudioFrameRecord& r) { return QString::number(r.channels); }, {}},
-        Spec{QStringLiteral("字节"),
-             [](const AudioFrameRecord& r) { return QString::number(r.byte_count); }, {}},
+             [](const AudioFrameRecord& r) { return QString::number(r.timestamp_seconds, 'f', 3); },
+             {}},
+        Spec{QStringLiteral("原始 PTS"), [](const AudioFrameRecord& r) { return QString::number(r.pts); }, {}},
+        Spec{QStringLiteral("样本数"), [](const AudioFrameRecord& r) { return QString::number(r.sample_count); }, {}},
+        Spec{QStringLiteral("采样率"), [](const AudioFrameRecord& r) { return QString::number(r.sample_rate); }, {}},
+        Spec{QStringLiteral("声道"), [](const AudioFrameRecord& r) { return QString::number(r.channels); }, {}},
+        Spec{QStringLiteral("字节"), [](const AudioFrameRecord& r) { return QString::number(r.byte_count); }, {}},
     };
 }
-}  // namespace
+} // namespace
 
-AudioFrameTableWidget::AudioFrameTableWidget(QWidget* parent)
-    : QWidget(parent) {
+AudioFrameTableWidget::AudioFrameTableWidget(QWidget* parent) : QWidget(parent) {
     SetupUi();
 }
 
@@ -96,8 +88,7 @@ void AudioFrameTableWidget::SetupUi() {
     a_layout->addWidget(a_table_group);
 
     // 导出按钮是本子页内部的事（只依赖自己的记录缓存），就地连回。
-    connect(export_audio_frame_csv_button_, &QPushButton::clicked,
-            this, &AudioFrameTableWidget::OnExportAudioFrameCsv);
+    connect(export_audio_frame_csv_button_, &QPushButton::clicked, this, &AudioFrameTableWidget::OnExportAudioFrameCsv);
 }
 
 const std::vector<AudioFrameRecord>& AudioFrameTableWidget::AudioFrameRecords() const {
@@ -114,9 +105,8 @@ void AudioFrameTableWidget::ResetAudioFrames() {
     UpdateAudioFrameSummary();
 }
 
-void AudioFrameTableWidget::AppendAudioFrame(int index, qint64 pts, double timestamp_seconds,
-                                             int sample_count, int sample_rate, int channels,
-                                             int byte_count) {
+void AudioFrameTableWidget::AppendAudioFrame(int index, qint64 pts, double timestamp_seconds, int sample_count,
+                                             int sample_rate, int channels, int byte_count) {
     if (!audio_frame_model_) {
         return;
     }
@@ -165,10 +155,7 @@ void AudioFrameTableWidget::UpdateAudioFrameSummary() {
     }
 
     audio_frame_summary_label_->setText(
-        tr("总音频帧数: %1 | 总样本数: %2 | 总字节数: %3")
-            .arg(records.size())
-            .arg(total_samples)
-            .arg(total_bytes));
+        tr("总音频帧数: %1 | 总样本数: %2 | 总字节数: %3").arg(records.size()).arg(total_samples).arg(total_bytes));
 }
 
 void AudioFrameTableWidget::FlushPendingAudioFrameTableUpdates() {
@@ -200,23 +187,19 @@ void AudioFrameTableWidget::OnExportAudioFrameCsv() {
     }
 
     const int rows = static_cast<int>(audio_frame_model_->record_count());
-    ExportCsvStream(this,
-        tr("导出音频帧 CSV"),
+    ExportCsvStream(
+        this, tr("导出音频帧 CSV"),
         QString("videoeye_audio_frames_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
         [this](QTextStream& out) {
             out << "index,timestamp_seconds,pts,sample_count,sample_rate,channels,byte_count\n";
             for (const auto& record : audio_frame_model_->records()) {
-                out << record.index << ','
-                    << QString::number(record.timestamp_seconds, 'f', 6) << ','
-                    << record.pts << ','
-                    << record.sample_count << ','
-                    << record.sample_rate << ','
-                    << record.channels << ','
+                out << record.index << ',' << QString::number(record.timestamp_seconds, 'f', 6) << ',' << record.pts
+                    << ',' << record.sample_count << ',' << record.sample_rate << ',' << record.channels << ','
                     << record.byte_count << '\n';
             }
         },
         rows);
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

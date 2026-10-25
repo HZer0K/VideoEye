@@ -78,10 +78,8 @@ inline std::string ManifestReadErrorMessage(ManifestReadStatus status, const std
 inline constexpr char kUtf8Bom[] = "\xEF\xBB\xBF";
 
 inline bool StartsWithBom(const std::string& text) {
-    return text.size() >= 3 &&
-           static_cast<unsigned char>(text[0]) == 0xEF &&
-           static_cast<unsigned char>(text[1]) == 0xBB &&
-           static_cast<unsigned char>(text[2]) == 0xBF;
+    return text.size() >= 3 && static_cast<unsigned char>(text[0]) == 0xEF &&
+           static_cast<unsigned char>(text[1]) == 0xBB && static_cast<unsigned char>(text[2]) == 0xBF;
 }
 
 // 把已在内存里的整块文本切成行。
@@ -128,7 +126,7 @@ ManifestReadStatus ReadManifestLinesImpl(const std::string& path, const Manifest
 
     const size_t chunk = options.chunk_size > 0 ? options.chunk_size : 65536u;
     std::vector<char> buffer(chunk);
-    std::string pending; // 上一块末尾没凑齐一行的残部
+    std::string pending;   // 上一块末尾没凑齐一行的残部
     bool bom_done = false; // 首行 BOM 是否已剥离（只可能出现在整个文件最开头）
     uint64_t consumed = 0;
     bool too_large = false;
@@ -272,7 +270,8 @@ inline ManifestReadStatus ReadManifestText(const std::string& path, const Manife
             // 带 BOM 的清单：首块（首个请求）拿到的数据最前面就是 BOM，
             // 不剥掉的话 DASH 那一侧扫到的第一个字符是 0xEF，XML/标签全对不上。
             // 极端情况下 BOM 被拆到两个块里，这里只保证最常见的"整块内"能吃掉。
-            if (StartsWithBom(text)) text.erase(0, 3);
+            if (StartsWithBom(text))
+                text.erase(0, 3);
             if (too_large)
                 return ManifestReadStatus::TooLarge;
         }

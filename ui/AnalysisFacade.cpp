@@ -17,11 +17,9 @@ struct AnalysisFacade::Impl {
     model::AnalysisResult result;
 };
 
-AnalysisFacade::AnalysisFacade(QObject* parent)
-    : QObject(parent), impl_(std::make_unique<Impl>()) {
+AnalysisFacade::AnalysisFacade(QObject* parent) : QObject(parent), impl_(std::make_unique<Impl>()) {
     // 底层协调器的信号原样转发给本 facade 的信号，UI 只连 facade。
-    connect(&impl_->coordinator, &qt::QtAnalysisController::ProgressReported,
-            this, &AnalysisFacade::ProgressReported);
+    connect(&impl_->coordinator, &qt::QtAnalysisController::ProgressReported, this, &AnalysisFacade::ProgressReported);
     // AnalysisFinished 不是"原样转发"，而是 facade 自己先落库再转发。
     //
     // 为什么放在这里: 扫描结果必须先写进 facade，任何监听 AnalysisFinished 的人
@@ -34,8 +32,8 @@ AnalysisFacade::AnalysisFacade(QObject* parent)
     // 页面只要有一处忘了判代际，旧任务的完成/失败就会把当前任务的状态顶掉：
     // 界面显示"分析完成"但 result() 是新任务的（或反过来弹一条上一个文件的错误）。
     // 统一在源头拦，所有监听者就都只剩"收到的一定是新鲜事件"这一条假设。
-    connect(&impl_->coordinator, &qt::QtAnalysisController::AnalysisFinished,
-            this, [this](quint64 generation, bool completed, const model::AnalysisResult& result) {
+    connect(&impl_->coordinator, &qt::QtAnalysisController::AnalysisFinished, this,
+            [this](quint64 generation, bool completed, const model::AnalysisResult& result) {
                 if (generation != impl_->coordinator.generation())
                     return;
                 impl_->result = result;
@@ -43,8 +41,8 @@ AnalysisFacade::AnalysisFacade(QObject* parent)
             });
     // 失败同理：on_failed 带的是**失败那次任务**的代际号，切文件后来迟到的那条
     // 不该弹给现在的用户。
-    connect(&impl_->coordinator, &qt::QtAnalysisController::AnalysisFailed,
-            this, [this](quint64 generation, const QString& message) {
+    connect(&impl_->coordinator, &qt::QtAnalysisController::AnalysisFailed, this,
+            [this](quint64 generation, const QString& message) {
                 if (generation != impl_->coordinator.generation())
                     return;
                 emit AnalysisFailed(generation, message);
@@ -53,8 +51,7 @@ AnalysisFacade::AnalysisFacade(QObject* parent)
 
 AnalysisFacade::~AnalysisFacade() = default;
 
-quint64 AnalysisFacade::StartAnalysis(const std::string& file_path,
-                                      const videoeye::AnalysisOptions& options) {
+quint64 AnalysisFacade::StartAnalysis(const std::string& file_path, const videoeye::AnalysisOptions& options) {
     return impl_->coordinator.StartAnalysis(file_path, options);
 }
 

@@ -90,5 +90,5 @@ void ApplyProfileOverrides(const QcProfile& profile, std::vector<model::QcRule>&
 // 模板里引用了规则表里没有的 id（多半是手抄写错了），调用方据此给出警告。
 std::vector<std::string> UnknownRuleIds(const QcProfile& profile);
 
-}  // namespace qc
-}  // namespace videoeye
+} // namespace qc
+} // namespace videoeye

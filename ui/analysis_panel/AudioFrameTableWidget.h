@@ -41,22 +41,28 @@ public:
 
     // === 数据进来（由 FramePacketView 转发）===
     void ResetAudioFrames();
-    void AppendAudioFrame(int index, qint64 pts, double timestamp_seconds,
-                          int sample_count, int sample_rate, int channels, int byte_count);
+    void AppendAudioFrame(int index, qint64 pts, double timestamp_seconds, int sample_count, int sample_rate,
+                          int channels, int byte_count);
 
     // === 增量刷新（由面板节拍驱动）===
     bool HasPending() const;
     void FlushPending();
 
     // 视图与模型：父页/测试要读行数与单元格都用 model()（QTableView 本身不存数据）。
-    QTableView* audioFrameTable() const { return audio_frame_table_; }
-    RecordTableModel<AudioFrameRecord>* audioFrameModel() const { return audio_frame_model_; }
+    QTableView* audioFrameTable() const {
+        return audio_frame_table_;
+    }
+    RecordTableModel<AudioFrameRecord>* audioFrameModel() const {
+        return audio_frame_model_;
+    }
     // 记录缓存的唯一所有者是模型；这里只是转发，避免外部再拿一份副本。
     const std::vector<AudioFrameRecord>& AudioFrameRecords() const;
 
     // 「启用分析」勾选框。必须外露：面板注入 SetFeatureHooks 后要拿它回写真实开关状态，
     // 否则界面与实际行为不一致（评审 P1）。
-    QCheckBox* toggle() const { return audio_toggle_; }
+    QCheckBox* toggle() const {
+        return audio_toggle_;
+    }
 
 private:
     void SetupUi();
@@ -77,5 +83,5 @@ private:
     bool audio_frame_summary_dirty_ = false;
 };
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

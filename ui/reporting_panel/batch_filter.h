@@ -35,16 +35,21 @@ inline bool BatchMatchesStatusFilter(int filter, qc::BatchItemStatus status) {
 // Pending/Running 不会出现在终态表里，计数为 0，只有"无异常"会匹配它们。
 inline bool BatchMatchesSeverityFilter(int filter, const qc::BatchQcItemResult& item) {
     switch (filter) {
-        case kBatchSeverityFilterCritical: return item.critical_count > 0;
-        case kBatchSeverityFilterError: return item.BlockingCount() > 0;
-        case kBatchSeverityFilterWarning:
-            return item.BlockingCount() > 0 || item.warning_count > 0;
-        case kBatchSeverityFilterInfo: return item.IssueCount() > 0;
-        case kBatchSeverityFilterClean: return item.IssueCount() == 0;
-        case kBatchSeverityFilterAll: break;
+    case kBatchSeverityFilterCritical:
+        return item.critical_count > 0;
+    case kBatchSeverityFilterError:
+        return item.BlockingCount() > 0;
+    case kBatchSeverityFilterWarning:
+        return item.BlockingCount() > 0 || item.warning_count > 0;
+    case kBatchSeverityFilterInfo:
+        return item.IssueCount() > 0;
+    case kBatchSeverityFilterClean:
+        return item.IssueCount() == 0;
+    case kBatchSeverityFilterAll:
+        break;
     }
     return true;
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

@@ -32,8 +32,8 @@
 namespace videoeye {
 namespace ui {
 
-class FfmpegDictionaryWidget;  // 前向声明：指令字典区 (见 FfmpegDictionaryWidget.{h,cpp})
-class FfmpegOutputWidget;      // 前向声明：输出与解释区 (见 FfmpegOutputWidget.{h,cpp})
+class FfmpegDictionaryWidget; // 前向声明：指令字典区 (见 FfmpegDictionaryWidget.{h,cpp})
+class FfmpegOutputWidget;     // 前向声明：输出与解释区 (见 FfmpegOutputWidget.{h,cpp})
 
 class FfmpegPanel : public QWidget {
     Q_OBJECT
@@ -96,7 +96,7 @@ private:
     QLabel* tool_status_label_ = nullptr;
     QPushButton* browse_button_ = nullptr;
     QPushButton* reset_button_ = nullptr;
-    QWidget* tool_missing_bar_ = nullptr;    // 只在找不到 ffmpeg 时出现的补救入口
+    QWidget* tool_missing_bar_ = nullptr; // 只在找不到 ffmpeg 时出现的补救入口
     QPushButton* guide_button_ = nullptr;
     QPushButton* download_button_ = nullptr;
     QPushButton* redetect_button_ = nullptr;
@@ -142,5 +142,5 @@ private:
     QSettings settings_;
 };
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

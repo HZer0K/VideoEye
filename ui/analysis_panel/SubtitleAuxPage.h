@@ -6,8 +6,8 @@
 // 扫描（AnalysisResult 的 subtitle / timecode / aux_data），本页不再单独发起
 // demux —— 字幕包本来就在同一次 demux 里过了一遍，重复扫一遍纯属浪费 I/O。
 
-#include <QWidget>
 #include <QString>
+#include <QWidget>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -35,12 +35,13 @@ public:
     // ScanClient：本页与码率/音频/HDR 共用诊断页发起的那次全文件扫描，
     // 扫描中「开始分析」按钮跟着禁用，终态一起复位。
     void SetScanActive(bool active) override;
-    bool IsScanActive() const { return scan_active_; }
+    bool IsScanActive() const {
+        return scan_active_;
+    }
 
     // 字幕阈值以「规则与阈值」页那张可编辑规则表为准，扫描前同步一次，
     // 避免选项与规则两处阈值各说各话。
-    void ApplyRuleThresholds(const std::vector<model::QcRule>& rules,
-                             videoeye::SubtitleOptions& options) const;
+    void ApplyRuleThresholds(const std::vector<model::QcRule>& rules, videoeye::SubtitleOptions& options) const;
 
 signals:
     void ScanRequested();

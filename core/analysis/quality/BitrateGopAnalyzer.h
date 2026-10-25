@@ -4,11 +4,11 @@
 #include <string>
 #include <vector>
 
+#include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/BitrateGopResult.h"
 #include "core/domain/model/BitratePoint.h"
 #include "core/domain/model/GopInfo.h"
 #include "core/domain/model/MetricSeries.h"
-#include "core/analysis/AnalysisOptions.h"
-#include "core/domain/model/BitrateGopResult.h"
 #include "core/domain/model/SceneChangeResult.h"
 
 namespace videoeye {
@@ -43,7 +43,9 @@ public:
 
     void Reset(const BitrateGopOptions& options = BitrateGopOptions{});
     void SetOptions(const BitrateGopOptions& options);
-    const BitrateGopOptions& options() const { return options_; }
+    const BitrateGopOptions& options() const {
+        return options_;
+    }
 
     // ---- 数据输入（显式事件，每个语义单元只进一次统计）----
     //
@@ -69,13 +71,11 @@ public:
     // "重复"在结构上不再可能。
 
     // 帧级输入（codec parser 或解码器拿到 pict_type 后使用）
-    void OnFrame(int stream_index, double timestamp_seconds, int64_t size,
-                 model::FrameType type, bool is_idr);
+    void OnFrame(int stream_index, double timestamp_seconds, int64_t size, model::FrameType type, bool is_idr);
 
     // 纯字节事件：不计帧、不计 GOP，只入账字节并参与码率曲线。
     // awaiting_frame=true 时字节额外进待认领池（见 OnFramesClaimPending）。
-    void OnPacketBytes(int stream_index, double timestamp_seconds, int64_t size,
-                       bool awaiting_frame = false);
+    void OnPacketBytes(int stream_index, double timestamp_seconds, int64_t size, bool awaiting_frame = false);
 
     // 解码器产出的一批帧：把待认领池里的字节按帧数均分认领（余数给最后一帧）。
     // 池为空、或多个帧分摊同一池时，帧字节是估算 —— 会置 frame_bytes_estimated，
@@ -91,19 +91,24 @@ public:
     // 对"已经 Finish 过"的结果补充/刷新场景切换关联。
     // 场景切换通常来自播放过程中的逐帧检测，晚于全文件扫描，因此 UI 需要在拿到
     // 切换点后单独调用一次；不会重算码率与 GOP 统计。
-    static void ApplySceneChanges(BitrateGopAnalysis& result,
-                                 const std::vector<SceneChangeResult>& changes,
-                                 const BitrateGopOptions& options);
+    static void ApplySceneChanges(BitrateGopAnalysis& result, const std::vector<SceneChangeResult>& changes,
+                                  const BitrateGopOptions& options);
     // 按当前结果重新生成建议列表（阈值或场景关联变化后调用）
     static void RebuildSuggestions(BitrateGopAnalysis& result, const BitrateGopOptions& options);
 
     // ---- 结果 ----
     const BitrateGopAnalysis& Finish();
-    const BitrateGopAnalysis& result() const { return result_; }
-    bool finished() const { return finished_; }
+    const BitrateGopAnalysis& result() const {
+        return result_;
+    }
+    bool finished() const {
+        return finished_;
+    }
 
     // 便捷查询
-    const std::vector<model::MetricSeries>& window_curves() const { return result_.window_curves; }
+    const std::vector<model::MetricSeries>& window_curves() const {
+        return result_.window_curves;
+    }
     // 取指定窗口长度的曲线（找不到返回 nullptr）
     const model::MetricSeries* WindowCurve(double window_seconds) const;
 
@@ -128,11 +133,10 @@ private:
     };
 
     // stream_bytes 进包级账（total_bytes + 曲线），frame_bytes 进帧级账
-    //（frame_bytes + GOP 大小 + 大帧判定）。认领池场景下 stream_bytes 传 0 ——
+    // （frame_bytes + GOP 大小 + 大帧判定）。认领池场景下 stream_bytes 传 0 ——
     // 那些字节早就按包到达时间入过账了，再记一次就是重复计数。
-    void AddSample(int stream_index, double timestamp_seconds, int64_t stream_bytes,
-                   int64_t frame_bytes, model::FrameType type, bool is_idr,
-                   bool counts_frame, bool bytes_estimated);
+    void AddSample(int stream_index, double timestamp_seconds, int64_t stream_bytes, int64_t frame_bytes,
+                   model::FrameType type, bool is_idr, bool counts_frame, bool bytes_estimated);
     void StartGop(double timestamp_seconds, int stream_index, bool closed);
     void CloseCurrentGop(double end_seconds, bool complete);
 
@@ -153,8 +157,7 @@ private:
     void DetectSparseKeyframes();
 
     // 场景切换关联与建议生成也支持对已有结果调用（见 ApplySceneChanges / RebuildSuggestions）
-    static void MatchSceneChanges(BitrateGopAnalysis& result,
-                                  const std::vector<SceneChangeResult>& changes,
+    static void MatchSceneChanges(BitrateGopAnalysis& result, const std::vector<SceneChangeResult>& changes,
                                   const BitrateGopOptions& options);
 
     BitrateGopOptions options_;
@@ -182,4 +185,4 @@ private:
     int64_t frame_event_count_ = 0;
 };
 
-}  // namespace videoeye
+} // namespace videoeye

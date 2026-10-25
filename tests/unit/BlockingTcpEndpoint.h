@@ -15,22 +15,22 @@
 //     本机常见的 Clash 之类的代理会把请求改道，本地端口就永远等不到连接。
 
 #ifdef _WIN32
-#  ifndef WIN32_LEAN_AND_MEAN
-#    define WIN32_LEAN_AND_MEAN
-#  endif
-#  include <winsock2.h>
-#  include <ws2tcpip.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
 using videoeye_test_socket_t = SOCKET;
-#  define VIDEOEYE_TEST_INVALID_SOCKET INVALID_SOCKET
-#  define videoeye_test_close_socket closesocket
+#define VIDEOEYE_TEST_INVALID_SOCKET INVALID_SOCKET
+#define videoeye_test_close_socket closesocket
 #else
-#  include <arpa/inet.h>
-#  include <netinet/in.h>
-#  include <sys/socket.h>
-#  include <unistd.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 using videoeye_test_socket_t = int;
-#  define VIDEOEYE_TEST_INVALID_SOCKET (-1)
-#  define videoeye_test_close_socket ::close
+#define VIDEOEYE_TEST_INVALID_SOCKET (-1)
+#define videoeye_test_close_socket ::close
 #endif
 
 #include <string>
@@ -45,15 +45,17 @@ public:
             WSADATA data;
             return WSAStartup(MAKEWORD(2, 2), &data) == 0;
         }();
-        if (!wsa_ready) return;
+        if (!wsa_ready)
+            return;
 #endif
         const videoeye_test_socket_t s = socket(AF_INET, SOCK_STREAM, 0);
-        if (s == VIDEOEYE_TEST_INVALID_SOCKET) return;
+        if (s == VIDEOEYE_TEST_INVALID_SOCKET)
+            return;
 
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        addr.sin_port = 0;  // 让内核挑一个空闲端口
+        addr.sin_port = 0; // 让内核挑一个空闲端口
         if (bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
             videoeye_test_close_socket(s);
             return;
@@ -79,14 +81,19 @@ public:
     }
 
     ~BlockingTcpEndpoint() {
-        if (fd_ != VIDEOEYE_TEST_INVALID_SOCKET) videoeye_test_close_socket(fd_);
+        if (fd_ != VIDEOEYE_TEST_INVALID_SOCKET)
+            videoeye_test_close_socket(fd_);
     }
 
     BlockingTcpEndpoint(const BlockingTcpEndpoint&) = delete;
     BlockingTcpEndpoint& operator=(const BlockingTcpEndpoint&) = delete;
 
-    bool valid() const { return fd_ != VIDEOEYE_TEST_INVALID_SOCKET; }
-    int port() const { return port_; }
+    bool valid() const {
+        return fd_ != VIDEOEYE_TEST_INVALID_SOCKET;
+    }
+    int port() const {
+        return port_;
+    }
 
     std::string tcp_url() const {
         return "tcp://127.0.0.1:" + std::to_string(port_);
@@ -97,4 +104,4 @@ private:
     int port_ = 0;
 };
 
-}  // namespace videoeye_test
+} // namespace videoeye_test

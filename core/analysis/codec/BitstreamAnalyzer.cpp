@@ -21,12 +21,18 @@ namespace {
 // 便于日志与报告里直接读枚举名；没落在已知分支上的编码返回 NONE
 std::string CodecIdName(int codec_id) {
     switch (static_cast<AVCodecID>(codec_id)) {
-        case AV_CODEC_ID_H264: return "AV_CODEC_ID_H264";
-        case AV_CODEC_ID_HEVC: return "AV_CODEC_ID_HEVC";
-        case AV_CODEC_ID_AV1:  return "AV_CODEC_ID_AV1";
-        case AV_CODEC_ID_VVC:  return "AV_CODEC_ID_VVC";
-        case AV_CODEC_ID_VP9:  return "AV_CODEC_ID_VP9";
-        default:               return "AV_CODEC_ID_NONE";
+    case AV_CODEC_ID_H264:
+        return "AV_CODEC_ID_H264";
+    case AV_CODEC_ID_HEVC:
+        return "AV_CODEC_ID_HEVC";
+    case AV_CODEC_ID_AV1:
+        return "AV_CODEC_ID_AV1";
+    case AV_CODEC_ID_VVC:
+        return "AV_CODEC_ID_VVC";
+    case AV_CODEC_ID_VP9:
+        return "AV_CODEC_ID_VP9";
+    default:
+        return "AV_CODEC_ID_NONE";
     }
 }
 
@@ -51,14 +57,20 @@ using codec::CapabilityGap;
 
 videoeye::ExtradataFormat ConfigFormatForCodec(int codec_id) {
     switch (static_cast<AVCodecID>(codec_id)) {
-        case AV_CODEC_ID_H264: return videoeye::ExtradataFormat::AvcC;
-        case AV_CODEC_ID_HEVC: return videoeye::ExtradataFormat::HvcC;
-        case AV_CODEC_ID_AV1:  return videoeye::ExtradataFormat::Av1C;
-        case AV_CODEC_ID_VVC:  return videoeye::ExtradataFormat::VvcC;
-        // MP4 的 VP9 extradata 是 vpcC（ISO/IEC 14496-30）。WebM/Matroska 的
-        // VP9 **没有 codec private** —— 那种文件走 AnalyzeInBand()。
-        case AV_CODEC_ID_VP9:  return videoeye::ExtradataFormat::VpcC;
-        default:               return videoeye::ExtradataFormat::Unknown;
+    case AV_CODEC_ID_H264:
+        return videoeye::ExtradataFormat::AvcC;
+    case AV_CODEC_ID_HEVC:
+        return videoeye::ExtradataFormat::HvcC;
+    case AV_CODEC_ID_AV1:
+        return videoeye::ExtradataFormat::Av1C;
+    case AV_CODEC_ID_VVC:
+        return videoeye::ExtradataFormat::VvcC;
+    // MP4 的 VP9 extradata 是 vpcC（ISO/IEC 14496-30）。WebM/Matroska 的
+    // VP9 **没有 codec private** —— 那种文件走 AnalyzeInBand()。
+    case AV_CODEC_ID_VP9:
+        return videoeye::ExtradataFormat::VpcC;
+    default:
+        return videoeye::ExtradataFormat::Unknown;
     }
 }
 
@@ -66,10 +78,14 @@ videoeye::ExtradataFormat ConfigFormatForCodec(int codec_id) {
 // VVC 的 nal_unit_type 在第 2 字节，靠首字节的启发式一定会读错。
 videoeye::NalSyntax NalSyntaxForCodec(int codec_id) {
     switch (static_cast<AVCodecID>(codec_id)) {
-        case AV_CODEC_ID_H264: return videoeye::NalSyntax::H264;
-        case AV_CODEC_ID_HEVC: return videoeye::NalSyntax::Hevc;
-        case AV_CODEC_ID_VVC:  return videoeye::NalSyntax::Vvc;
-        default:               return videoeye::NalSyntax::Auto;
+    case AV_CODEC_ID_H264:
+        return videoeye::NalSyntax::H264;
+    case AV_CODEC_ID_HEVC:
+        return videoeye::NalSyntax::Hevc;
+    case AV_CODEC_ID_VVC:
+        return videoeye::NalSyntax::Vvc;
+    default:
+        return videoeye::NalSyntax::Auto;
     }
 }
 
@@ -80,26 +96,27 @@ videoeye::NalSyntax NalSyntaxForCodec(int codec_id) {
 // 永远不等于 1 —— 结果 AV1 的 extradata 一律落到自动检测分支，
 // 又被 `data[0] & 0x03` 误判成长度前缀格式，OBU 列表恒为空。
 bool LooksLikeConfigRecord(videoeye::ExtradataFormat cfg, const uint8_t* data, size_t size) {
-    if (data == nullptr) return false;
+    if (data == nullptr)
+        return false;
     switch (cfg) {
-        case videoeye::ExtradataFormat::AvcC:
-            // configurationVersion=1，且第 5 字节高 6 位是保留位（全 1）
-            return size >= 8 && data[0] == 1 && (data[4] & 0xFC) == 0xFC;
-        case videoeye::ExtradataFormat::HvcC:
-            return size >= 23 && data[0] == 1;
-        case videoeye::ExtradataFormat::Av1C:
-            // marker=1 且 version<=1，即 0x80 或 0x81
-            return size >= 4 && (data[0] & 0x80) != 0 && (data[0] & 0x7F) <= 1;
-        case videoeye::ExtradataFormat::VvcC:
-            // vvcC 第 0 字节高 5 位是保留位，恒为 11111（0xF8）。
-            // FFmpeg 的 ff_isom_write_vvcc() 用的就是这条判据。
-            return size >= 2 && (data[0] & 0xF8) == 0xF8;
-        case videoeye::ExtradataFormat::VpcC:
-            // 具体布局见 VpccPayloadOffset() 的注释：两种形态都见过，
-            // 所以用同一个函数判定主偏移 —— 返回 size 即"哪种都不像"。
-            return size >= 8 && videoeye::VpccPayloadOffset(data, size) < size;
-        default:
-            return false;
+    case videoeye::ExtradataFormat::AvcC:
+        // configurationVersion=1，且第 5 字节高 6 位是保留位（全 1）
+        return size >= 8 && data[0] == 1 && (data[4] & 0xFC) == 0xFC;
+    case videoeye::ExtradataFormat::HvcC:
+        return size >= 23 && data[0] == 1;
+    case videoeye::ExtradataFormat::Av1C:
+        // marker=1 且 version<=1，即 0x80 或 0x81
+        return size >= 4 && (data[0] & 0x80) != 0 && (data[0] & 0x7F) <= 1;
+    case videoeye::ExtradataFormat::VvcC:
+        // vvcC 第 0 字节高 5 位是保留位，恒为 11111（0xF8）。
+        // FFmpeg 的 ff_isom_write_vvcc() 用的就是这条判据。
+        return size >= 2 && (data[0] & 0xF8) == 0xF8;
+    case videoeye::ExtradataFormat::VpcC:
+        // 具体布局见 VpccPayloadOffset() 的注释：两种形态都见过，
+        // 所以用同一个函数判定主偏移 —— 返回 size 即"哪种都不像"。
+        return size >= 8 && videoeye::VpccPayloadOffset(data, size) < size;
+    default:
+        return false;
     }
 }
 
@@ -119,7 +136,7 @@ model::ObuUnit ToModelObuUnit(const videoeye::ObuUnit& o) {
     return unit;
 }
 
-}  // namespace
+} // namespace
 
 BitstreamAnalyzer::BitstreamAnalyzer() {
     result_.analyzed = false;
@@ -175,9 +192,7 @@ void BitstreamAnalyzer::IngestUnits(const videoeye::ExtradataResult& parsed) {
     }
 }
 
-model::BitstreamAnalysisResult BitstreamAnalyzer::Analyze(const uint8_t* extradata,
-                                                           size_t size,
-                                                           int codec_id) {
+model::BitstreamAnalysisResult BitstreamAnalyzer::Analyze(const uint8_t* extradata, size_t size, int codec_id) {
     result_ = model::BitstreamAnalysisResult();
     result_.analyzed = true;
     result_.codec_id_str = CodecIdName(codec_id);
@@ -201,8 +216,8 @@ model::BitstreamAnalysisResult BitstreamAnalyzer::Analyze(const uint8_t* extrada
     const videoeye::ExtradataResult parsed =
         LooksLikeConfigRecord(cfg, extradata, size)
             ? videoeye::ExtradataParser::ParseWithFormat(cfg, extradata, size)
-            : videoeye::ExtradataParser::ParseWithFormat(videoeye::ExtradataFormat::AnnexB, extradata,
-                                                      size, NalSyntaxForCodec(codec_id));
+            : videoeye::ExtradataParser::ParseWithFormat(videoeye::ExtradataFormat::AnnexB, extradata, size,
+                                                         NalSyntaxForCodec(codec_id));
     IngestUnits(parsed);
     // av1C 配置记录只在输入确实是 av1C 时才回填 —— 无条件置 av1_config.present
     // 会把 AnyParameterSet() 恒变 true，SEI-only / 截断输入也会被误判成 FullParse。
@@ -233,10 +248,8 @@ model::BitstreamAnalysisResult BitstreamAnalyzer::Analyze(const uint8_t* extrada
     return result_;
 }
 
-model::BitstreamAnalysisResult BitstreamAnalyzer::AnalyzeWithFormat(
-    videoeye::ExtradataFormat format,
-    const uint8_t* data, size_t size,
-    int codec_id) {
+model::BitstreamAnalysisResult BitstreamAnalyzer::AnalyzeWithFormat(videoeye::ExtradataFormat format,
+                                                                    const uint8_t* data, size_t size, int codec_id) {
     result_ = model::BitstreamAnalysisResult();
     result_.analyzed = true;
     result_.codec_id_str = CodecIdName(codec_id);
@@ -249,18 +262,17 @@ model::BitstreamAnalysisResult BitstreamAnalyzer::AnalyzeWithFormat(
         return result_;
     }
 
-    const videoeye::ExtradataResult parsed =
-        videoeye::ExtradataParser::ParseWithFormat(format, data, size);
+    const videoeye::ExtradataResult parsed = videoeye::ExtradataParser::ParseWithFormat(format, data, size);
     IngestUnits(parsed);
     if (format == videoeye::ExtradataFormat::Av1C) {
         PopulateAv1Config(parsed.config);
     }
     if (format == videoeye::ExtradataFormat::VvcC) {
-    // 同 Analyze()：has_vvc_config 表示"输入确实是 vvcC"，present 才表示解析成功。
-    result_.has_vvc_config = true;
-    if (parsed.valid) {
-        PopulateVvcConfig(parsed.config);
-    }
+        // 同 Analyze()：has_vvc_config 表示"输入确实是 vvcC"，present 才表示解析成功。
+        result_.has_vvc_config = true;
+        if (parsed.valid) {
+            PopulateVvcConfig(parsed.config);
+        }
     }
     if (parsed.format == videoeye::ExtradataFormat::VpcC) {
         // 与 vvcC 同理：present 只在真的解出来时才置（截断 vpcC 会让 AnyParameterSet
@@ -285,9 +297,7 @@ model::BitstreamAnalysisResult BitstreamAnalyzer::AnalyzeWithFormat(
 // 与 Analyze() 的差别只有两处：
 //   1. 不经过 LooksLikeConfigRecord —— 带内数据里不可能有 avcC/hvcC 头；
 //   2. 没找到参数集时的说明换成"带内没出现"，而不是"容器没携带"。
-model::BitstreamAnalysisResult BitstreamAnalyzer::AnalyzeInBand(const uint8_t* es_data,
-                                                                size_t size,
-                                                                int codec_id) {
+model::BitstreamAnalysisResult BitstreamAnalyzer::AnalyzeInBand(const uint8_t* es_data, size_t size, int codec_id) {
     result_ = model::BitstreamAnalysisResult();
     result_.analyzed = true;
     result_.codec_id_str = CodecIdName(codec_id);
@@ -315,8 +325,8 @@ model::BitstreamAnalysisResult BitstreamAnalyzer::AnalyzeInBand(const uint8_t* e
         // TypeOnly（喂的不是关键帧）与 ParseFailed（是关键帧但解不出来）。
         parsed.valid = Vp9BitstreamParser::LooksLikeKeyFrame(es_data, size);
     } else {
-        parsed = videoeye::ExtradataParser::ParseWithFormat(
-            videoeye::ExtradataFormat::AnnexB, es_data, size, NalSyntaxForCodec(codec_id));
+        parsed = videoeye::ExtradataParser::ParseWithFormat(videoeye::ExtradataFormat::AnnexB, es_data, size,
+                                                            NalSyntaxForCodec(codec_id));
     }
     IngestUnits(parsed);
     ApplyContainerSnapshot();
@@ -355,13 +365,11 @@ model::BitstreamAnalysisResult BitstreamAnalyzer::AnalyzeInBand(const uint8_t* e
         result_.capability = model::AnalysisCapability::Partial;
         result_.partial = true;
         if (static_cast<AVCodecID>(codec_id) == AV_CODEC_ID_VP9) {
-            result_.capability_note =
-                "带内未出现 VP9 关键帧：序列配置只写在关键帧头部，"
-                "从中间开始读取时会一直抓不到";
+            result_.capability_note = "带内未出现 VP9 关键帧：序列配置只写在关键帧头部，"
+                                      "从中间开始读取时会一直抓不到";
         } else {
-            result_.capability_note =
-                "带内码流中未找到参数集：该流可能只在开头写过一次 SPS/VPS，"
-                "或首帧不是含参数集的关键帧";
+            result_.capability_note = "带内码流中未找到参数集：该流可能只在开头写过一次 SPS/VPS，"
+                                      "或首帧不是含参数集的关键帧";
         }
         result_.parameter_set_source.clear();
     }
@@ -374,42 +382,41 @@ model::BitstreamAnalysisResult BitstreamAnalyzer::AnalyzeInBand(const uint8_t* e
 
 void BitstreamAnalyzer::Dispatch(int codec_id, const uint8_t* data, size_t size) {
     switch (static_cast<AVCodecID>(codec_id)) {
-        case AV_CODEC_ID_H264:
-            result_.codec_name = "h264";
-            result_.has_h264 = true;
-            ParseH264(data, size);
-            break;
-        case AV_CODEC_ID_HEVC:
-            result_.codec_name = "hevc";
-            result_.has_hevc = true;
-            ParseHevc(data, size);
-            break;
-        case AV_CODEC_ID_AV1:
-            result_.codec_name = "av1";
-            result_.has_av1 = true;
-            ParseAv1(data, size);
-            break;
-        case AV_CODEC_ID_VP9:
-            result_.codec_name = "vp9";
-            result_.has_vp9 = true;
-            ParseVp9(data, size);
-            break;
-        case AV_CODEC_ID_VVC:
-            result_.codec_name = "vvc";
-            result_.has_vvc = true;
-            ParseVvc(data, size);
-            break;
-        default:
-            // 不支持的编码：明确标记未分析，别让上层把默认 0 当成真实码流参数
-            result_.analyzed = false;
-            result_.codec_name.clear();
-            result_.has_h264 = result_.has_hevc = result_.has_av1 = result_.has_vp9 =
-                result_.has_vvc = false;
-            result_.parse_outcome = model::BitstreamParseOutcome::UnsupportedCodec;
-            result_.capability = model::AnalysisCapability::Unavailable;
-            result_.partial = true;
-            result_.capability_note = "编码格式不在支持列表（当前支持 H.264 / HEVC / AV1 / VP9 / VVC）";
-            break;
+    case AV_CODEC_ID_H264:
+        result_.codec_name = "h264";
+        result_.has_h264 = true;
+        ParseH264(data, size);
+        break;
+    case AV_CODEC_ID_HEVC:
+        result_.codec_name = "hevc";
+        result_.has_hevc = true;
+        ParseHevc(data, size);
+        break;
+    case AV_CODEC_ID_AV1:
+        result_.codec_name = "av1";
+        result_.has_av1 = true;
+        ParseAv1(data, size);
+        break;
+    case AV_CODEC_ID_VP9:
+        result_.codec_name = "vp9";
+        result_.has_vp9 = true;
+        ParseVp9(data, size);
+        break;
+    case AV_CODEC_ID_VVC:
+        result_.codec_name = "vvc";
+        result_.has_vvc = true;
+        ParseVvc(data, size);
+        break;
+    default:
+        // 不支持的编码：明确标记未分析，别让上层把默认 0 当成真实码流参数
+        result_.analyzed = false;
+        result_.codec_name.clear();
+        result_.has_h264 = result_.has_hevc = result_.has_av1 = result_.has_vp9 = result_.has_vvc = false;
+        result_.parse_outcome = model::BitstreamParseOutcome::UnsupportedCodec;
+        result_.capability = model::AnalysisCapability::Unavailable;
+        result_.partial = true;
+        result_.capability_note = "编码格式不在支持列表（当前支持 H.264 / HEVC / AV1 / VP9 / VVC）";
+        break;
     }
 }
 
@@ -434,14 +441,17 @@ void BitstreamAnalyzer::ParseH264(const uint8_t* data, size_t size) {
 
 void BitstreamAnalyzer::ApplyH264Summary() {
     const model::H264SpsInfo& sps = result_.h264_sps;
-    if (!sps.present) return;
+    if (!sps.present)
+        return;
 
     // H264SpsInfo::width()/height() 已按 7.4.2.1.1 应用 frame_cropping。
     // 这里直接使用显示尺寸，避免对常见的 1920x1088 -> 1920x1080 再裁一次。
     const int width = sps.width();
     const int height = sps.height();
-    if (width > 0) result_.width = width;
-    if (height > 0) result_.height = height;
+    if (width > 0)
+        result_.width = width;
+    if (height > 0)
+        result_.height = height;
     result_.bit_depth = sps.BitDepthLuma();
 
     if (sps.vui.present) {
@@ -479,8 +489,10 @@ void BitstreamAnalyzer::ApplyHevcSummary() {
     const model::HevcSpsInfo& sps = result_.hevc_sps;
     if (sps.present) {
         // width()/height() 已应用 HEVC conformance window，给出裁剪后的显示尺寸。
-        if (sps.width() > 0) result_.width = sps.width();
-        if (sps.height() > 0) result_.height = sps.height();
+        if (sps.width() > 0)
+            result_.width = sps.width();
+        if (sps.height() > 0)
+            result_.height = sps.height();
         result_.bit_depth = sps.BitDepthLuma();
         if (sps.vui_parameters_present_flag) {
             result_.color_primaries = sps.colour_primaries;
@@ -549,8 +561,7 @@ void BitstreamAnalyzer::PopulateVvcConfig(const videoeye::ExtradataResult::Codec
 // 用 LooksLikeKeyFrame() 先廉价筛一次：错帧/非关键帧不值得投入解析，而且
 // 非关键帧里根本没有 color_config 与 frame_size，硬解只会得到一堆 0。
 void BitstreamAnalyzer::ParseVp9(const uint8_t* data, size_t size) {
-    const bool looks_like_key =
-        (data != nullptr && size >= 6 && Vp9BitstreamParser::LooksLikeKeyFrame(data, size));
+    const bool looks_like_key = (data != nullptr && size >= 6 && Vp9BitstreamParser::LooksLikeKeyFrame(data, size));
     saw_vp9_keyframe_input_ = looks_like_key;
     if (looks_like_key) {
         model::Vp9SequenceHeaderInfo sh = Vp9BitstreamParser::ParseFromFrame(data, size);
@@ -585,15 +596,16 @@ void BitstreamAnalyzer::ApplyVp9Summary() {
     if (sh.present) {
         const int width = sh.width();
         const int height = sh.height();
-        if (width > 0) result_.width = width;
-        if (height > 0) result_.height = height;
+        if (width > 0)
+            result_.width = width;
+        if (height > 0)
+            result_.height = height;
         result_.bit_depth = sh.BitDepth();
 
         int primaries = 0;
         int transfer = 0;
         int matrix = 0;
-        if (Vp9BitstreamParser::ColorSpaceToCicp(static_cast<int>(sh.color_space),
-                                                 primaries, transfer, matrix)) {
+        if (Vp9BitstreamParser::ColorSpaceToCicp(static_cast<int>(sh.color_space), primaries, transfer, matrix)) {
             result_.color_primaries = primaries;
             result_.transfer_characteristics = transfer;
             result_.matrix_coefficients = matrix;
@@ -623,13 +635,16 @@ void BitstreamAnalyzer::ApplyVp9Summary() {
 void BitstreamAnalyzer::ApplyAv1Summary() {
     const model::Av1SequenceHeaderInfo& sh = result_.av1_seq_header;
     if (sh.present) {
-        if (sh.FrameWidth() > 0) result_.width = sh.FrameWidth();
-        if (sh.FrameHeight() > 0) result_.height = sh.FrameHeight();
+        if (sh.FrameWidth() > 0)
+            result_.width = sh.FrameWidth();
+        if (sh.FrameHeight() > 0)
+            result_.height = sh.FrameHeight();
 
         // AV1 的 color_primaries / transfer / matrix 与 H.264 VUI 用的是同一套
         // ISO/IEC 23001-8（CICP）枚举值，可以直接和 AVCodecParameters 比对。
         const int depth = sh.BitDepth();
-        if (depth > 0) result_.bit_depth = depth;
+        if (depth > 0)
+            result_.bit_depth = depth;
 
         if (sh.color_config.color_description_present_flag) {
             result_.color_primaries = sh.color_config.color_primaries;
@@ -680,13 +695,16 @@ void BitstreamAnalyzer::ApplyVvcSummary() {
     if (sps.present) {
         // sps_res_change_in_clvs_allowed_flag 时真实尺寸可能由 PPS 覆盖
         const model::VvcPpsInfo& pps = result_.vvc_pps;
-        if (sps.sps_res_change_in_clvs_allowed_flag && pps.present &&
-            pps.pps_pic_width_in_luma_samples > 0) {
-            if (pps.width() > 0) result_.width = pps.width();
-            if (pps.height() > 0) result_.height = pps.height();
+        if (sps.sps_res_change_in_clvs_allowed_flag && pps.present && pps.pps_pic_width_in_luma_samples > 0) {
+            if (pps.width() > 0)
+                result_.width = pps.width();
+            if (pps.height() > 0)
+                result_.height = pps.height();
         } else {
-            if (sps.width() > 0) result_.width = sps.width();
-            if (sps.height() > 0) result_.height = sps.height();
+            if (sps.width() > 0)
+                result_.width = sps.width();
+            if (sps.height() > 0)
+                result_.height = sps.height();
         }
         result_.bit_depth = sps.BitDepthLuma();
 
@@ -718,44 +736,45 @@ void BitstreamAnalyzer::ApplyVvcSummary() {
 }
 
 bool BitstreamAnalyzer::AnyParameterSet() const {
-    return result_.h264_sps.present || result_.hevc_sps.present ||
-           result_.hevc_vps.present || result_.av1_seq_header.present ||
-           result_.av1_config.present || result_.vvc_vps.present ||
-           result_.vvc_sps.present || result_.vvc_config.present ||
-           result_.vp9_seq_header.present || result_.vp9_config.present;
+    return result_.h264_sps.present || result_.hevc_sps.present || result_.hevc_vps.present ||
+           result_.av1_seq_header.present || result_.av1_config.present || result_.vvc_vps.present ||
+           result_.vvc_sps.present || result_.vvc_config.present || result_.vp9_seq_header.present ||
+           result_.vp9_config.present;
 }
 
 bool BitstreamAnalyzer::SawParameterSetInput(int codec_id) const {
     switch (static_cast<AVCodecID>(codec_id)) {
-        case AV_CODEC_ID_H264:
-            for (const auto& nal : nal_units_) {
-                if (H264BitstreamParser::IsSpsNalUnit(nal)) return true;
-            }
-            return false;
-        case AV_CODEC_ID_HEVC:
-            for (const auto& nal : nal_units_) {
-                if (HevcBitstreamParser::IsVpsNalUnit(nal) ||
-                    HevcBitstreamParser::IsSpsNalUnit(nal)) return true;
-            }
-            return false;
-        case AV_CODEC_ID_AV1:
-            for (const auto& obu : obu_units_) {
-                if (Av1BitstreamParser::IsSequenceHeaderObu(obu)) return true;
-            }
-            return result_.has_av1_config;
-        case AV_CODEC_ID_VP9:
-            // VP9 没有 NAL / OBU 列表，输入就是整帧。这里问的是"喂进来的是不是
-            // 关键帧"—— 由 ParseVp9() 在动手之前先记下来（saw_vp9_keyframe_input_）。
-            // 关键帧解不出 = ParseFailed（截断/畸形）；压根不是关键帧 = TypeOnly。
-            return saw_vp9_keyframe_input_;
-        case AV_CODEC_ID_VVC:
-            for (const auto& nal : nal_units_) {
-                if (VvcBitstreamParser::IsVpsNalUnit(nal) ||
-                    VvcBitstreamParser::IsSpsNalUnit(nal)) return true;
-            }
-            return result_.has_vvc_config;
-        default:
-            return false;
+    case AV_CODEC_ID_H264:
+        for (const auto& nal : nal_units_) {
+            if (H264BitstreamParser::IsSpsNalUnit(nal))
+                return true;
+        }
+        return false;
+    case AV_CODEC_ID_HEVC:
+        for (const auto& nal : nal_units_) {
+            if (HevcBitstreamParser::IsVpsNalUnit(nal) || HevcBitstreamParser::IsSpsNalUnit(nal))
+                return true;
+        }
+        return false;
+    case AV_CODEC_ID_AV1:
+        for (const auto& obu : obu_units_) {
+            if (Av1BitstreamParser::IsSequenceHeaderObu(obu))
+                return true;
+        }
+        return result_.has_av1_config;
+    case AV_CODEC_ID_VP9:
+        // VP9 没有 NAL / OBU 列表，输入就是整帧。这里问的是"喂进来的是不是
+        // 关键帧"—— 由 ParseVp9() 在动手之前先记下来（saw_vp9_keyframe_input_）。
+        // 关键帧解不出 = ParseFailed（截断/畸形）；压根不是关键帧 = TypeOnly。
+        return saw_vp9_keyframe_input_;
+    case AV_CODEC_ID_VVC:
+        for (const auto& nal : nal_units_) {
+            if (VvcBitstreamParser::IsVpsNalUnit(nal) || VvcBitstreamParser::IsSpsNalUnit(nal))
+                return true;
+        }
+        return result_.has_vvc_config;
+    default:
+        return false;
     }
 }
 
@@ -785,111 +804,101 @@ void BitstreamAnalyzer::FinalizeCapability(int codec_id) {
     }
 
     switch (static_cast<AVCodecID>(codec_id)) {
-        case AV_CODEC_ID_H264: {
-            if (result_.parse_outcome == BitstreamParseOutcome::ParseFailed) {
-                result_.capability = AnalysisCapability::Failed;
-                break;
-            }
-            const CapabilityGap gap =
-                result_.h264_sps.present ? codec::H264SpsGap(result_.h264_sps)
-                                         : CapabilityGap::None;
-            if (result_.parse_outcome == BitstreamParseOutcome::FullParse &&
-                result_.h264_sps.present && gap == CapabilityGap::None) {
-                result_.capability = AnalysisCapability::Supported;
-                break;
-            }
-            result_.capability = AnalysisCapability::Partial;
-            if (result_.h264_sps.present) {
-                // 说清楚是 Profile / 色度 / 位深哪一项没落在验证过的组合里，
-                // 而不是笼统一句"字段仅供参考" —— 4:2:2 10bit 用户的疑问就在这里。
-                result_.capability_note = codec::GapNote(
-                    "H.264", gap, "profile_idc=" + std::to_string(result_.h264_sps.profile_idc),
-                    "chroma_format_idc=" + std::to_string(result_.h264_sps.chroma_format_idc),
-                    std::to_string(result_.h264_sps.BitDepthLuma()) + "bit");
-            }
+    case AV_CODEC_ID_H264: {
+        if (result_.parse_outcome == BitstreamParseOutcome::ParseFailed) {
+            result_.capability = AnalysisCapability::Failed;
             break;
         }
-        case AV_CODEC_ID_HEVC: {
-            // VPS 只能提供 PTL/时序，不能证明宽高、位深、色彩等 SPS 字段已解析。
-            // 只有 SPS 且组合落入验证矩阵，才允许严格容器一致性比对。
-            if (result_.parse_outcome == BitstreamParseOutcome::ParseFailed) {
-                result_.capability = AnalysisCapability::Failed;
-                break;
-            }
-            const CapabilityGap gap =
-                result_.hevc_sps.present ? codec::HevcSpsGap(result_.hevc_sps)
-                                         : CapabilityGap::None;
-            if (result_.parse_outcome == BitstreamParseOutcome::FullParse &&
-                result_.hevc_sps.present && gap == CapabilityGap::None) {
-                result_.capability = AnalysisCapability::Supported;
-                break;
-            }
+        const CapabilityGap gap = result_.h264_sps.present ? codec::H264SpsGap(result_.h264_sps) : CapabilityGap::None;
+        if (result_.parse_outcome == BitstreamParseOutcome::FullParse && result_.h264_sps.present &&
+            gap == CapabilityGap::None) {
+            result_.capability = AnalysisCapability::Supported;
+            break;
+        }
+        result_.capability = AnalysisCapability::Partial;
+        if (result_.h264_sps.present) {
+            // 说清楚是 Profile / 色度 / 位深哪一项没落在验证过的组合里，
+            // 而不是笼统一句"字段仅供参考" —— 4:2:2 10bit 用户的疑问就在这里。
+            result_.capability_note =
+                codec::GapNote("H.264", gap, "profile_idc=" + std::to_string(result_.h264_sps.profile_idc),
+                               "chroma_format_idc=" + std::to_string(result_.h264_sps.chroma_format_idc),
+                               std::to_string(result_.h264_sps.BitDepthLuma()) + "bit");
+        }
+        break;
+    }
+    case AV_CODEC_ID_HEVC: {
+        // VPS 只能提供 PTL/时序，不能证明宽高、位深、色彩等 SPS 字段已解析。
+        // 只有 SPS 且组合落入验证矩阵，才允许严格容器一致性比对。
+        if (result_.parse_outcome == BitstreamParseOutcome::ParseFailed) {
+            result_.capability = AnalysisCapability::Failed;
+            break;
+        }
+        const CapabilityGap gap = result_.hevc_sps.present ? codec::HevcSpsGap(result_.hevc_sps) : CapabilityGap::None;
+        if (result_.parse_outcome == BitstreamParseOutcome::FullParse && result_.hevc_sps.present &&
+            gap == CapabilityGap::None) {
+            result_.capability = AnalysisCapability::Supported;
+            break;
+        }
+        result_.capability = AnalysisCapability::Partial;
+        if (result_.hevc_sps.present) {
+            result_.capability_note = codec::GapNote(
+                "HEVC", gap, "general_profile_idc=" + std::to_string(result_.hevc_sps.general_profile_idc),
+                "chroma_format_idc=" + std::to_string(result_.hevc_sps.chroma_format_idc),
+                std::to_string(result_.hevc_sps.BitDepthLuma()) + "bit");
+        } else if (result_.hevc_vps.present) {
+            result_.capability_note = "仅解析到 HEVC VPS：Profile/Tier/Level 可用，宽高、位深与色彩未知";
+        }
+        break;
+    }
+    case AV_CODEC_ID_AV1:
+        // av1C 兜底给了位深/采样结构，但没有分辨率与色彩描述 —— 仍是 Partial。
+        if (result_.parse_outcome == BitstreamParseOutcome::FullParse && result_.av1_seq_header.present) {
+            result_.capability = AnalysisCapability::Supported;
+        } else if (result_.parse_outcome == BitstreamParseOutcome::ParseFailed) {
+            result_.capability = AnalysisCapability::Failed;
+        } else {
             result_.capability = AnalysisCapability::Partial;
-            if (result_.hevc_sps.present) {
-                result_.capability_note = codec::GapNote(
-                    "HEVC", gap,
-                    "general_profile_idc=" + std::to_string(result_.hevc_sps.general_profile_idc),
-                    "chroma_format_idc=" + std::to_string(result_.hevc_sps.chroma_format_idc),
-                    std::to_string(result_.hevc_sps.BitDepthLuma()) + "bit");
-            } else if (result_.hevc_vps.present) {
+            if (result_.has_av1_config) {
+                result_.capability_note = "仅有 av1C 配置记录：位深/采样结构可信，"
+                                          "分辨率与色彩描述未知（仅识别类型级信息）";
+            }
+        }
+        break;
+    case AV_CODEC_ID_VP9:
+        // VP9 的两条数据链质量差别很大，能力必须分开给：
+        //   * 解出关键帧 → 宽高/位深/色度/range/色彩都有，能参与容器比对
+        //   * 只有 vpcC  → 分辨率一概不知（TypeOnly），参加比对只会造假告警
+        if (result_.parse_outcome == BitstreamParseOutcome::ParseFailed) {
+            result_.capability = AnalysisCapability::Failed;
+        } else if (result_.parse_outcome == BitstreamParseOutcome::FullParse && result_.vp9_seq_header.present) {
+            result_.capability = AnalysisCapability::Supported;
+        } else {
+            result_.capability = AnalysisCapability::Partial;
+            if (result_.vp9_config.present) {
+                result_.capability_note = "仅有 vpcC 配置记录：Profile/Level/位深/色度可信，"
+                                          "但分辨率不在其中 —— VP9 的宽高写在关键帧里";
+            } else {
+                result_.capability_note = "未解出 VP9 关键帧：序列配置写在关键帧的 uncompressed header 里，"
+                                          "容器内没有可独立取得的参数集";
+            }
+        }
+        break;
+    case AV_CODEC_ID_VVC:
+        if (result_.parse_outcome == BitstreamParseOutcome::ParseFailed) {
+            result_.capability = AnalysisCapability::Failed;
+        } else {
+            result_.capability = AnalysisCapability::Partial;
+            if (result_.vvc_sps.present) {
                 result_.capability_note =
-                    "仅解析到 HEVC VPS：Profile/Tier/Level 可用，宽高、位深与色彩未知";
+                    "VVC 为实验性/部分支持：已解析 SPS/VPS 关键字段，PPS 与真实样本覆盖仍不完整，结果仅供参考";
+            } else if (result_.vvc_config.present) {
+                result_.capability_note = "仅有 vvcC 配置记录：位深、采样结构与最大尺寸仅供参考";
             }
-            break;
         }
-        case AV_CODEC_ID_AV1:
-            // av1C 兜底给了位深/采样结构，但没有分辨率与色彩描述 —— 仍是 Partial。
-            if (result_.parse_outcome == BitstreamParseOutcome::FullParse &&
-                result_.av1_seq_header.present) {
-                result_.capability = AnalysisCapability::Supported;
-            } else if (result_.parse_outcome == BitstreamParseOutcome::ParseFailed) {
-                result_.capability = AnalysisCapability::Failed;
-            } else {
-                result_.capability = AnalysisCapability::Partial;
-                if (result_.has_av1_config) {
-                    result_.capability_note = "仅有 av1C 配置记录：位深/采样结构可信，"
-                                              "分辨率与色彩描述未知（仅识别类型级信息）";
-                }
-            }
-            break;
-        case AV_CODEC_ID_VP9:
-            // VP9 的两条数据链质量差别很大，能力必须分开给：
-            //   * 解出关键帧 → 宽高/位深/色度/range/色彩都有，能参与容器比对
-            //   * 只有 vpcC  → 分辨率一概不知（TypeOnly），参加比对只会造假告警
-            if (result_.parse_outcome == BitstreamParseOutcome::ParseFailed) {
-                result_.capability = AnalysisCapability::Failed;
-            } else if (result_.parse_outcome == BitstreamParseOutcome::FullParse &&
-                       result_.vp9_seq_header.present) {
-                result_.capability = AnalysisCapability::Supported;
-            } else {
-                result_.capability = AnalysisCapability::Partial;
-                if (result_.vp9_config.present) {
-                    result_.capability_note = "仅有 vpcC 配置记录：Profile/Level/位深/色度可信，"
-                                              "但分辨率不在其中 —— VP9 的宽高写在关键帧里";
-                } else {
-                    result_.capability_note =
-                        "未解出 VP9 关键帧：序列配置写在关键帧的 uncompressed header 里，"
-                        "容器内没有可独立取得的参数集";
-                }
-            }
-            break;
-        case AV_CODEC_ID_VVC:
-            if (result_.parse_outcome == BitstreamParseOutcome::ParseFailed) {
-                result_.capability = AnalysisCapability::Failed;
-            } else {
-                result_.capability = AnalysisCapability::Partial;
-                if (result_.vvc_sps.present) {
-                    result_.capability_note =
-                        "VVC 为实验性/部分支持：已解析 SPS/VPS 关键字段，PPS 与真实样本覆盖仍不完整，结果仅供参考";
-                } else if (result_.vvc_config.present) {
-                    result_.capability_note =
-                        "仅有 vvcC 配置记录：位深、采样结构与最大尺寸仅供参考";
-                }
-            }
-            break;
-        default:
-            result_.capability = AnalysisCapability::Unavailable;
-            break;
+        break;
+    default:
+        result_.capability = AnalysisCapability::Unavailable;
+        break;
     }
 
     result_.partial = (result_.capability != AnalysisCapability::Supported);
@@ -905,10 +914,10 @@ void BitstreamAnalyzer::CompareWithContainer(const model::BitstreamAnalysisResul
                                              model::BitstreamAnalysisResult& result) {
     (void)bitstream;
     if (!AnyParameterSet()) {
-        return;   // 什么都没解析出来，别拿默认值制造假告警
+        return; // 什么都没解析出来，别拿默认值制造假告警
     }
     if (!kCompareParameterSetFields) {
-        return;   // 见 kCompareParameterSetFields 的注释：解析器还没对齐规范
+        return; // 见 kCompareParameterSetFields 的注释：解析器还没对齐规范
     }
     if (result.capability != model::AnalysisCapability::Supported) {
         // Partial / Failed / Unavailable 的解析字段未经完整验证，不参与严格一致性比对。
@@ -916,40 +925,30 @@ void BitstreamAnalyzer::CompareWithContainer(const model::BitstreamAnalysisResul
     }
 
     // Width/Height comparison（只在码流侧真的算出尺寸时比）
-    if (result.width > 0 && container_metadata_.width > 0 &&
-        result.width != container_metadata_.width) {
+    if (result.width > 0 && container_metadata_.width > 0 && result.width != container_metadata_.width) {
         const int diff_w = std::abs(result.width - container_metadata_.width);
         const bool minor = diff_w <= kGeometryTolerancePixels;
-        AddInconsistency(result, "Width",
-                        std::to_string(container_metadata_.width),
-                        std::to_string(result.width),
-                        minor ? "容器宽度与码流宽度相差 " + std::to_string(diff_w) +
-                                " 像素，通常是 conformance window / cropping 的统计口径差异"
-                              : "Container width differs from bitstream width",
-                        minor ? "一般无需处理，确认播放器按显示尺寸渲染即可" : "",
-                        minor ? "info" : "warning");
+        AddInconsistency(result, "Width", std::to_string(container_metadata_.width), std::to_string(result.width),
+                         minor ? "容器宽度与码流宽度相差 " + std::to_string(diff_w) +
+                                     " 像素，通常是 conformance window / cropping 的统计口径差异"
+                               : "Container width differs from bitstream width",
+                         minor ? "一般无需处理，确认播放器按显示尺寸渲染即可" : "", minor ? "info" : "warning");
     }
-    if (result.height > 0 && container_metadata_.height > 0 &&
-        result.height != container_metadata_.height) {
+    if (result.height > 0 && container_metadata_.height > 0 && result.height != container_metadata_.height) {
         const int diff_h = std::abs(result.height - container_metadata_.height);
         const bool minor = diff_h <= kGeometryTolerancePixels;
-        AddInconsistency(result, "Height",
-                        std::to_string(container_metadata_.height),
-                        std::to_string(result.height),
-                        minor ? "容器高度与码流高度相差 " + std::to_string(diff_h) +
-                                " 像素，通常是 conformance window / cropping 的统计口径差异"
-                              : "Container height differs from bitstream height",
-                        minor ? "一般无需处理，确认播放器按显示尺寸渲染即可" : "",
-                        minor ? "info" : "warning");
+        AddInconsistency(result, "Height", std::to_string(container_metadata_.height), std::to_string(result.height),
+                         minor ? "容器高度与码流高度相差 " + std::to_string(diff_h) +
+                                     " 像素，通常是 conformance window / cropping 的统计口径差异"
+                               : "Container height differs from bitstream height",
+                         minor ? "一般无需处理，确认播放器按显示尺寸渲染即可" : "", minor ? "info" : "warning");
     }
 
     // Bit depth comparison（码流侧位深未知时 bit_depth 可能仍是默认 8，别拿它去误报）
     if (container_metadata_.bit_depth > 0 && result.bit_depth > 0 &&
         result.bit_depth != container_metadata_.bit_depth) {
-        AddInconsistency(result, "Bit Depth",
-                        std::to_string(container_metadata_.bit_depth),
-                        std::to_string(result.bit_depth),
-                        "Container bit depth differs from bitstream bit depth");
+        AddInconsistency(result, "Bit Depth", std::to_string(container_metadata_.bit_depth),
+                         std::to_string(result.bit_depth), "Container bit depth differs from bitstream bit depth");
     }
 
     // Color range comparison（0 = 未指定）
@@ -959,31 +958,23 @@ void BitstreamAnalyzer::CompareWithContainer(const model::BitstreamAnalysisResul
     // 没毛病"。AV1 / VP9 这类 Full-range 常见的容器尤其值得查。
     if (container_metadata_.color_range > 0 && result.color_range > 0 &&
         result.color_range != container_metadata_.color_range) {
-        AddInconsistency(result, "Color Range",
-                        std::to_string(container_metadata_.color_range),
-                        std::to_string(result.color_range),
-                        "Container color range differs from bitstream",
-                        "1=limited/studio, 2=full/JPEG: 搞反会让画面整体发灰或过曝",
-                        "warning");
+        AddInconsistency(result, "Color Range", std::to_string(container_metadata_.color_range),
+                         std::to_string(result.color_range), "Container color range differs from bitstream",
+                         "1=limited/studio, 2=full/JPEG: 搞反会让画面整体发灰或过曝", "warning");
     }
 
     // Color primaries comparison（0 = 未指定，两边都可能没有）
     if (container_metadata_.color_primaries > 0 && result.color_primaries > 0 &&
         result.color_primaries != container_metadata_.color_primaries) {
-        AddInconsistency(result, "Color Primaries",
-                        "Container: " + std::to_string(container_metadata_.color_primaries),
-                        "Bitstream: " + std::to_string(result.color_primaries),
-                        "Container color primaries differ from bitstream",
-                        "This may cause color display issues");
+        AddInconsistency(result, "Color Primaries", "Container: " + std::to_string(container_metadata_.color_primaries),
+                         "Bitstream: " + std::to_string(result.color_primaries),
+                         "Container color primaries differ from bitstream", "This may cause color display issues");
     }
 }
 
-void BitstreamAnalyzer::AddInconsistency(model::BitstreamAnalysisResult& result,
-                                         const std::string& field,
-                                         const std::string& container_value,
-                                         const std::string& bitstream_value,
-                                         const std::string& description,
-                                         const std::string& suggestion,
+void BitstreamAnalyzer::AddInconsistency(model::BitstreamAnalysisResult& result, const std::string& field,
+                                         const std::string& container_value, const std::string& bitstream_value,
+                                         const std::string& description, const std::string& suggestion,
                                          const std::string& severity) {
     model::BitstreamAnalysisResult::Inconsistency inconsistency;
     inconsistency.field = field;

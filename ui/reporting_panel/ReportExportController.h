@@ -22,11 +22,11 @@
 #include <QString>
 
 #include "core/qc/BatchQcRunner.h"
+#include "core/qc/QcAnalyzeRequest.h" // qc::QcRunResult
 #include "core/qc/QcProfile.h"
 #include "core/qc/QcReportFormat.h"
-#include "core/qc/QcAnalyzeRequest.h"  // qc::QcRunResult
 
-#include "ui/reporting_panel/report_export.h"  // DeferredExportTicket / RecomputeBatchSummary
+#include "ui/reporting_panel/report_export.h" // DeferredExportTicket / RecomputeBatchSummary
 
 namespace videoeye {
 namespace ui {
@@ -37,15 +37,15 @@ class ReportExportController : public QObject {
 public:
     struct Deps {
         // ---- 查询：控制器看得到面板状态，但不持有控件 ----
-        std::function<bool()> has_file;          // 是否打开了媒体文件
-        std::function<bool()> busy;              // 是否正在跑任务
-        std::function<bool()> has_fresh_result;  // 结果是否与当前文件 + 当前模板匹配
+        std::function<bool()> has_file;         // 是否打开了媒体文件
+        std::function<bool()> busy;             // 是否正在跑任务
+        std::function<bool()> has_fresh_result; // 结果是否与当前文件 + 当前模板匹配
         std::function<std::string()> current_path;
-        std::function<qc::QcRunResult()> single_result;  // last_result_
+        std::function<qc::QcRunResult()> single_result; // last_result_
         std::function<qc::QcProfile()> profile;
         std::function<std::vector<qc::QcReportFormat>()> formats;
         std::function<std::vector<qc::BatchQcItemResult>()> batch_results;
-        std::function<std::string()> batch_root;  // 汇总里记的"扫描目录"
+        std::function<std::string()> batch_root; // 汇总里记的"扫描目录"
 
         // ---- 动作 ----
         // 结果不新鲜时挂起输出目录后要跑的那次分析。控制器不知道分析怎么起。
@@ -60,7 +60,9 @@ public:
     explicit ReportExportController(Deps deps, QObject* parent = nullptr);
 
     // 是否挂着一个"等这次分析成功后导出到某目录"的票据。
-    bool HasPendingExport() const { return pending_.armed(); }
+    bool HasPendingExport() const {
+        return pending_.armed();
+    }
 
     // 「导出报告…」按钮：新鲜就直接导，不新鲜就挂起 + 启动分析。
     void ExportSingleReport();
@@ -84,5 +86,5 @@ private:
     DeferredExportTicket pending_;
 };
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

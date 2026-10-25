@@ -27,10 +27,9 @@ namespace {
 constexpr std::size_t kMaxFrameRecords = kDefaultMaxRecordCount;
 // GOP 段数远少于帧数（典型几百~几千），上限取 5000。
 constexpr std::size_t kMaxGopSummaries = 5000;
-}  // namespace
+} // namespace
 
-VideoFrameTableWidget::VideoFrameTableWidget(QWidget* parent)
-    : QWidget(parent) {
+VideoFrameTableWidget::VideoFrameTableWidget(QWidget* parent) : QWidget(parent) {
     SetupUi();
 }
 
@@ -70,23 +69,15 @@ void VideoFrameTableWidget::SetupUi() {
     // 已由「帧类型」(I) 覆盖; 同时将协议术语 PTS 改为更易懂的「原始 PTS」)
     using Spec = RecordTableModel<VideoFrameRecord>::ColumnSpec;
     std::vector<Spec> columns;
-    columns.push_back(Spec{tr("#"),
-                           [](const VideoFrameRecord& r) { return QString::number(r.index); }, {}});
-    columns.push_back(Spec{tr("帧类型"), [this](const VideoFrameRecord& r) {
-                               return FrameTypeToString(r.frame_type);
-                           }, {}});
-    columns.push_back(Spec{tr("播放时间(s)"),
-                           [](const VideoFrameRecord& r) {
-                               return QString::number(r.timestamp_seconds, 'f', 3);
-                           }, {}});
-    columns.push_back(Spec{tr("原始 PTS"),
-                           [](const VideoFrameRecord& r) { return QString::number(r.pts); }, {}});
-    columns.push_back(Spec{tr("GOP #"),
-                           [](const VideoFrameRecord& r) { return QString::number(r.gop_index); },
-                           {}});
-    columns.push_back(Spec{tr("GOP 内"),
-                           [](const VideoFrameRecord& r) { return QString::number(r.gop_position); },
-                           {}});
+    columns.push_back(Spec{tr("#"), [](const VideoFrameRecord& r) { return QString::number(r.index); }, {}});
+    columns.push_back(
+        Spec{tr("帧类型"), [this](const VideoFrameRecord& r) { return FrameTypeToString(r.frame_type); }, {}});
+    columns.push_back(Spec{
+        tr("播放时间(s)"), [](const VideoFrameRecord& r) { return QString::number(r.timestamp_seconds, 'f', 3); }, {}});
+    columns.push_back(Spec{tr("原始 PTS"), [](const VideoFrameRecord& r) { return QString::number(r.pts); }, {}});
+    columns.push_back(Spec{tr("GOP #"), [](const VideoFrameRecord& r) { return QString::number(r.gop_index); }, {}});
+    columns.push_back(
+        Spec{tr("GOP 内"), [](const VideoFrameRecord& r) { return QString::number(r.gop_position); }, {}});
     frame_model_ = new RecordTableModel<VideoFrameRecord>(std::move(columns), this);
 
     frame_table_ = new QTableView(table_group);
@@ -98,11 +89,11 @@ void VideoFrameTableWidget::SetupUi() {
     frame_table_->setSortingEnabled(false);
     frame_table_->horizontalHeader()->setStretchLastSection(true);
     frame_table_->horizontalHeader()->setMinimumSectionSize(40);
-    frame_table_->setColumnWidth(0, 60);   // #
-    frame_table_->setColumnWidth(1, 70);   // 帧类型
-    frame_table_->setColumnWidth(2, 110);  // 播放时间(s)
-    frame_table_->setColumnWidth(3, 110);  // 原始 PTS
-    frame_table_->setColumnWidth(4, 70);   // GOP #
+    frame_table_->setColumnWidth(0, 60);  // #
+    frame_table_->setColumnWidth(1, 70);  // 帧类型
+    frame_table_->setColumnWidth(2, 110); // 播放时间(s)
+    frame_table_->setColumnWidth(3, 110); // 原始 PTS
+    frame_table_->setColumnWidth(4, 70);  // GOP #
     frame_table_->setMinimumWidth(400);
     frame_table_->setMinimumHeight(120);
     table_layout->addWidget(frame_table_);
@@ -124,9 +115,8 @@ void VideoFrameTableWidget::SetupUi() {
     QVBoxLayout* g_table_layout = new QVBoxLayout(g_table_group);
     // GOP 列名升级 (列数保持 9 列, 起止类列改为「帧号」「时间(s)」表述, 与其它表统一)
     gop_table_ = new QTableWidget(0, 9, g_table_group);
-    gop_table_->setHorizontalHeaderLabels({
-        "GOP #", "起始帧号", "结束帧号", "起始(s)", "结束(s)", "总帧数", "I", "P", "B"
-    });
+    gop_table_->setHorizontalHeaderLabels(
+        {"GOP #", "起始帧号", "结束帧号", "起始(s)", "结束(s)", "总帧数", "I", "P", "B"});
     gop_table_->verticalHeader()->setVisible(false);
     gop_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     gop_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -138,12 +128,9 @@ void VideoFrameTableWidget::SetupUi() {
     g_table_layout->addWidget(gop_table_);
     g_layout->addWidget(g_table_group);
 
-    connect(frame_filter_combo_, &QComboBox::currentIndexChanged, this,
-            [this](int) { OnFrameFilterChanged(); });
-    connect(export_frame_csv_button_, &QPushButton::clicked,
-            this, &VideoFrameTableWidget::OnExportFrameCsv);
-    connect(g_export_btn, &QPushButton::clicked,
-            this, &VideoFrameTableWidget::OnExportGopCsv);
+    connect(frame_filter_combo_, &QComboBox::currentIndexChanged, this, [this](int) { OnFrameFilterChanged(); });
+    connect(export_frame_csv_button_, &QPushButton::clicked, this, &VideoFrameTableWidget::OnExportFrameCsv);
+    connect(g_export_btn, &QPushButton::clicked, this, &VideoFrameTableWidget::OnExportGopCsv);
     // 帧表的 itemSelectionChanged 不在这里连：帧表 ↔ 包表按 PTS 互跳要同时碰两张表，
     // 连线留在 FramePacketView（它持有两侧）。
 }
@@ -194,8 +181,8 @@ void VideoFrameTableWidget::ResetVideoFrames() {
     UpdateFrameSummary();
 }
 
-void VideoFrameTableWidget::AppendVideoFrame(int index, int frame_type, bool is_key_frame,
-                                             qint64 pts, double timestamp_seconds) {
+void VideoFrameTableWidget::AppendVideoFrame(int index, int frame_type, bool is_key_frame, qint64 pts,
+                                             double timestamp_seconds) {
     if (!frame_model_ || !gop_table_) {
         return;
     }
@@ -285,22 +272,20 @@ void VideoFrameTableWidget::UpdateGopSummariesFor(const VideoFrameRecord& record
         }
     }
     gop_table_dirty_ = true;
-    TrimRecords(gop_summaries_, gop_table_synced_count_, gop_table_, gop_table_dirty_,
-                kMaxGopSummaries);
+    TrimRecords(gop_summaries_, gop_table_synced_count_, gop_table_, gop_table_dirty_, kMaxGopSummaries);
 }
 
 // 筛选条件变了：让模型按新条件重算可见行（记录本身不动）。
 void VideoFrameTableWidget::ApplyFrameFilter() {
-    if (!frame_model_) return;
+    if (!frame_model_)
+        return;
     if (!MatchesFrameFilterIsActive()) {
         frame_model_->SetFilter(nullptr);
         return;
     }
     // 捕获筛选模式的值而不是 this：谓词会被模型长期持有，捕获 this 的话
     // 每次判定都要解引用一个可能已经析构的组件。
-    frame_model_->SetFilter([](const VideoFrameRecord& r) {
-        return r.frame_type == AV_PICTURE_TYPE_I;
-    });
+    frame_model_->SetFilter([](const VideoFrameRecord& r) { return r.frame_type == AV_PICTURE_TYPE_I; });
 }
 
 void VideoFrameTableWidget::UpdateFrameSummary() {
@@ -320,12 +305,11 @@ void VideoFrameTableWidget::UpdateFrameSummary() {
         }
     }
 
-    frame_summary_label_->setText(
-        tr("总帧数: %1 | 显示: %2 | 关键帧: %3 | GOP: %4")
-            .arg(records.size())
-            .arg(visible_count)
-            .arg(key_count)
-            .arg(gop_summaries_.size()));
+    frame_summary_label_->setText(tr("总帧数: %1 | 显示: %2 | 关键帧: %3 | GOP: %4")
+                                      .arg(records.size())
+                                      .arg(visible_count)
+                                      .arg(key_count)
+                                      .arg(gop_summaries_.size()));
 }
 
 void VideoFrameTableWidget::OnFrameFilterChanged() {
@@ -369,7 +353,8 @@ void VideoFrameTableWidget::FlushPendingFrameTableUpdates() {
         // 帧都没了却留着 GOP 段，界面上就会出现"GOP 5 的帧一条都找不到"。
         gop_summaries_.clear();
         gop_table_synced_count_ = 0;
-        if (gop_table_) gop_table_->setRowCount(0);
+        if (gop_table_)
+            gop_table_->setRowCount(0);
         gop_table_dirty_ = true;
     }
 
@@ -386,8 +371,7 @@ void VideoFrameTableWidget::FlushPendingGopTableUpdates() {
     gop_table_->setUpdatesEnabled(false);
     while (gop_table_synced_count_ < gop_summaries_.size()) {
         gop_table_->insertRow(static_cast<int>(gop_table_synced_count_));
-        UpdateGopRowInTable(static_cast<int>(gop_table_synced_count_),
-                            gop_summaries_[gop_table_synced_count_]);
+        UpdateGopRowInTable(static_cast<int>(gop_table_synced_count_), gop_summaries_[gop_table_synced_count_]);
         ++gop_table_synced_count_;
     }
 
@@ -403,18 +387,15 @@ void VideoFrameTableWidget::OnExportFrameCsv() {
     }
 
     const int rows = static_cast<int>(frame_model_->record_count());
-    ExportCsvStream(this,
-        tr("导出视频帧 CSV"),
+    ExportCsvStream(
+        this, tr("导出视频帧 CSV"),
         QString("videoeye_frames_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
         [this](QTextStream& out) {
             out << "index,frame_type,timestamp_seconds,pts,gop_index,gop_position\n";
             for (const auto& record : frame_model_->records()) {
-                out << record.index << ','
-                    << FrameTypeToString(record.frame_type) << ','
-                    << QString::number(record.timestamp_seconds, 'f', 6) << ','
-                    << record.pts << ','
-                    << record.gop_index << ','
-                    << record.gop_position << '\n';
+                out << record.index << ',' << FrameTypeToString(record.frame_type) << ','
+                    << QString::number(record.timestamp_seconds, 'f', 6) << ',' << record.pts << ',' << record.gop_index
+                    << ',' << record.gop_position << '\n';
             }
         },
         rows);
@@ -426,23 +407,17 @@ void VideoFrameTableWidget::OnExportGopCsv() {
         return;
     }
 
-    ExportCsvStream(this,
-        tr("导出 GOP CSV"),
+    ExportCsvStream(
+        this, tr("导出 GOP CSV"),
         QString("videoeye_gop_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
         [this](QTextStream& out) {
             out << "gop_index,start_frame,end_frame,start_ts,end_ts,total_frames,key_count,"
                    "i_count,p_count,b_count\n";
             for (const auto& g : gop_summaries_) {
-                out << g.gop_index << ','
-                    << g.start_frame << ','
-                    << g.end_frame << ','
-                    << QString::number(g.start_ts, 'f', 6) << ','
-                    << QString::number(g.end_ts, 'f', 6) << ','
-                    << g.total_frames << ','
-                    << g.key_count << ','
-                    << g.i_count << ','
-                    << g.p_count << ','
-                    << g.b_count << '\n';
+                out << g.gop_index << ',' << g.start_frame << ',' << g.end_frame << ','
+                    << QString::number(g.start_ts, 'f', 6) << ',' << QString::number(g.end_ts, 'f', 6) << ','
+                    << g.total_frames << ',' << g.key_count << ',' << g.i_count << ',' << g.p_count << ',' << g.b_count
+                    << '\n';
             }
         },
         static_cast<int>(gop_summaries_.size()));
@@ -462,5 +437,5 @@ void VideoFrameTableWidget::UpdateGopRowInTable(int row, const GopSummary& summa
     SetTableItemText(gop_table_, row, 8, QString::number(summary.b_count));
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

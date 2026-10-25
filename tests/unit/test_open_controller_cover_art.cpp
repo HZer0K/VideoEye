@@ -29,7 +29,8 @@ using videoeye::player::IsCoverArtStream;
 
 struct FormatContextDeleter {
     void operator()(AVFormatContext* ctx) const {
-        if (ctx) avformat_free_context(ctx);
+        if (ctx)
+            avformat_free_context(ctx);
     }
 };
 using FormatContextPtr = std::unique_ptr<AVFormatContext, FormatContextDeleter>;
@@ -38,7 +39,7 @@ FormatContextPtr MakeContext() {
     return FormatContextPtr(avformat_alloc_context());
 }
 
-}  // namespace
+} // namespace
 
 // 空上下文：任何索引都不命中，且绝不能解引用空指针。
 TEST(OpenControllerCoverArt, NullContextIsNotCoverArt) {
@@ -63,7 +64,7 @@ TEST(OpenControllerCoverArt, AudioOnlyNegativeVideoIndexIsNotCoverArt) {
 TEST(OpenControllerCoverArt, OutOfRangeIndexIsNotCoverArt) {
     auto ctx = MakeContext();
     ASSERT_NE(ctx, nullptr);
-    ASSERT_NE(avformat_new_stream(ctx.get(), nullptr), nullptr);  // 只有 index 0
+    ASSERT_NE(avformat_new_stream(ctx.get(), nullptr), nullptr); // 只有 index 0
     ASSERT_EQ(ctx->nb_streams, 1u);
 
     EXPECT_FALSE(IsCoverArtStream(ctx.get(), 1));

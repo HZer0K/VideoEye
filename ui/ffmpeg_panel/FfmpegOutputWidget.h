@@ -78,5 +78,5 @@ private:
     ffmpeg::FfmpegCommandExplanation explanation_;
 };
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

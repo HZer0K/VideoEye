@@ -25,24 +25,19 @@ public:
     ~StreamStatsExporter() = default;
 
     // 导出为文本报告
-    static bool ExportTextReport(const std::string& filename,
-                                 const model::StreamStats& stats,
+    static bool ExportTextReport(const std::string& filename, const model::StreamStats& stats,
                                  const std::string& video_file = "");
 
     // 导出为 CSV 格式（用于 Excel）
-    static bool ExportCSV(const std::string& filename,
-                          const std::vector<model::StreamStats>& stats_history);
+    static bool ExportCSV(const std::string& filename, const std::vector<model::StreamStats>& stats_history);
 
     // 导出为 JSON 格式
-    static bool ExportJSON(const std::string& filename,
-                           const model::StreamStats& stats,
+    static bool ExportJSON(const std::string& filename, const model::StreamStats& stats,
                            const std::string& video_file = "");
 
     // 导出为 HTML 报告（带图表）
-    static bool ExportHTMLReport(const std::string& filename,
-                                 const model::StreamStats& stats,
-                                 const std::vector<double>& fps_history,
-                                 const std::vector<int>& bitrate_history,
+    static bool ExportHTMLReport(const std::string& filename, const model::StreamStats& stats,
+                                 const std::vector<double>& fps_history, const std::vector<int>& bitrate_history,
                                  const std::string& video_file = "");
 
     // 生成报告摘要
@@ -55,5 +50,5 @@ private:
     static std::string EscapeJSON(const std::string& text);
 };
 
-}  // namespace reporting
-}  // namespace videoeye
+} // namespace reporting
+} // namespace videoeye

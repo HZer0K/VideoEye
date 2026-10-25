@@ -29,7 +29,7 @@ namespace {
 
 using namespace videoeye;
 
-constexpr double kNtscFps = 30000.0 / 1001.0;   // 29.97
+constexpr double kNtscFps = 30000.0 / 1001.0; // 29.97
 
 // ---- 小工具: 大端比特写入（用来拼 SCTE-35 section）----
 class BitWriter {
@@ -38,16 +38,22 @@ public:
         for (int i = bits - 1; i >= 0; --i) {
             const uint8_t bit = static_cast<uint8_t>((value >> i) & 1u);
             const size_t index = bits_;
-            if (index % 8 == 0) bytes_.push_back(0);
+            if (index % 8 == 0)
+                bytes_.push_back(0);
             bytes_[index / 8] |= static_cast<uint8_t>(bit << (7 - (index % 8)));
             ++bits_;
         }
     }
     void WriteBytes(const std::vector<uint8_t>& data) {
-        for (uint8_t b : data) Write(b, 8);
+        for (uint8_t b : data)
+            Write(b, 8);
     }
-    size_t BitCount() const { return bits_; }
-    std::vector<uint8_t> Bytes() const { return bytes_; }
+    size_t BitCount() const {
+        return bits_;
+    }
+    std::vector<uint8_t> Bytes() const {
+        return bytes_;
+    }
 
 private:
     std::vector<uint8_t> bytes_;
@@ -58,74 +64,72 @@ private:
 std::vector<uint8_t> BuildSpliceInsertSection() {
     // ---- 命令体（splice_insert）----
     BitWriter body;
-    body.Write(0x12345678, 32);          // splice_event_id
-    body.Write(0, 1);                    // splice_event_cancel_indicator
+    body.Write(0x12345678, 32); // splice_event_id
+    body.Write(0, 1);           // splice_event_cancel_indicator
     body.Write(0, 7);
-    body.Write(1, 1);                    // out_of_network_indicator
-    body.Write(1, 1);                    // program_splice_flag
-    body.Write(1, 1);                    // duration_flag
-    body.Write(0, 1);                    // splice_immediate_flag
+    body.Write(1, 1); // out_of_network_indicator
+    body.Write(1, 1); // program_splice_flag
+    body.Write(1, 1); // duration_flag
+    body.Write(0, 1); // splice_immediate_flag
     body.Write(0, 4);
-    body.Write(1, 1);                    // splice_time: time_specified_flag
+    body.Write(1, 1); // splice_time: time_specified_flag
     body.Write(0, 6);
-    body.Write(900000, 33);              // pts_time = 10 s（90000 时基）
-    body.Write(1, 1);                    // break_duration: auto_return
+    body.Write(900000, 33); // pts_time = 10 s（90000 时基）
+    body.Write(1, 1);       // break_duration: auto_return
     body.Write(0, 6);
-    body.Write(2700000, 33);             // duration = 30 s
-    body.Write(0x0001, 16);              // unique_program_id
-    body.Write(1, 8);                    // avail_num
-    body.Write(2, 8);                    // avails_expected
+    body.Write(2700000, 33); // duration = 30 s
+    body.Write(0x0001, 16);  // unique_program_id
+    body.Write(1, 8);        // avail_num
+    body.Write(2, 8);        // avails_expected
     const std::vector<uint8_t> command_body = body.Bytes();
     const size_t command_length = command_body.size();
 
     // ---- segmentation_descriptor ----
     BitWriter seg_body;
-    seg_body.Write(0xABCD1234, 32);      // segmentation_event_id
-    seg_body.Write(0, 1);                // cancel
+    seg_body.Write(0xABCD1234, 32); // segmentation_event_id
+    seg_body.Write(0, 1);           // cancel
     seg_body.Write(0, 7);
-    seg_body.Write(1, 1);                // program_segmentation_flag
-    seg_body.Write(1, 1);                // segmentation_duration_flag
-    seg_body.Write(1, 1);                // delivery_not_restricted_flag
+    seg_body.Write(1, 1); // program_segmentation_flag
+    seg_body.Write(1, 1); // segmentation_duration_flag
+    seg_body.Write(1, 1); // delivery_not_restricted_flag
     seg_body.Write(0, 5);
-    seg_body.Write(2700000, 40);         // segmentation_duration = 30 s
-    seg_body.Write(0x08, 8);             // upid_type
-    seg_body.Write(0, 8);                // upid_length
-    seg_body.Write(0x30, 8);             // type_id = Provider Advertisement Start
-    seg_body.Write(1, 8);                // segment_num
-    seg_body.Write(3, 8);                // segments_expected
+    seg_body.Write(2700000, 40); // segmentation_duration = 30 s
+    seg_body.Write(0x08, 8);     // upid_type
+    seg_body.Write(0, 8);        // upid_length
+    seg_body.Write(0x30, 8);     // type_id = Provider Advertisement Start
+    seg_body.Write(1, 8);        // segment_num
+    seg_body.Write(3, 8);        // segments_expected
     const std::vector<uint8_t> seg_bytes = seg_body.Bytes();
-    const size_t descriptor_length = 4 + seg_bytes.size();   // identifier("CUEI") + body
+    const size_t descriptor_length = 4 + seg_bytes.size(); // identifier("CUEI") + body
 
     // descriptor_loop_length = tag(8) + length(8) + body，与下面按 8 bit 写 tag 对应
     const size_t descriptor_loop_length = 2 + descriptor_length;
-    const size_t section_length = 1 /*protocol_version*/ + 5 /*flags + pts_adjustment*/ +
-                                  1 /*cw_index*/ + 3 /*tier + splice_command_length*/ +
-                                  1 /*splice_command_type*/ + command_length +
-                                  2 /*descriptor_loop_length*/ + descriptor_loop_length +
-                                  4 /*CRC_32*/;
+    const size_t section_length = 1 /*protocol_version*/ + 5 /*flags + pts_adjustment*/ + 1 /*cw_index*/ +
+                                  3 /*tier + splice_command_length*/ + 1 /*splice_command_type*/ + command_length +
+                                  2 /*descriptor_loop_length*/ + descriptor_loop_length + 4 /*CRC_32*/;
 
     BitWriter out;
-    out.Write(0xFC, 8);                  // table_id
-    out.Write(0, 1);                     // section_syntax_indicator
-    out.Write(0, 1);                     // private_indicator
-    out.Write(0, 2);                     // sap_type
+    out.Write(0xFC, 8); // table_id
+    out.Write(0, 1);    // section_syntax_indicator
+    out.Write(0, 1);    // private_indicator
+    out.Write(0, 2);    // sap_type
     out.Write(section_length, 12);
-    out.Write(0, 8);                     // protocol_version
-    out.Write(0, 1);                     // encrypted_packet
-    out.Write(0, 6);                     // encryption_algorithm
-    out.Write(0, 33);                    // pts_adjustment
-    out.Write(0, 8);                     // cw_index
-    out.Write(0, 12);                    // tier
-    out.Write(command_length, 12);       // splice_command_length
-    out.Write(0x05, 8);                  // splice_command_type = splice_insert
+    out.Write(0, 8);               // protocol_version
+    out.Write(0, 1);               // encrypted_packet
+    out.Write(0, 6);               // encryption_algorithm
+    out.Write(0, 33);              // pts_adjustment
+    out.Write(0, 8);               // cw_index
+    out.Write(0, 12);              // tier
+    out.Write(command_length, 12); // splice_command_length
+    out.Write(0x05, 8);            // splice_command_type = splice_insert
     out.WriteBytes(command_body);
     out.Write(descriptor_loop_length, 16);
     // splice_descriptor_tag 按 8 bit 写（SCTE-35 里就是 1 字节）：
     // 写成 16 bit 会多吐一个前导 0x00，Scte35Analyzer 读出的 tag 恒为 0x00，
     // segmentation 描述符整段被当成"不认识的描述符"跳过，插入点永远判不出来。
-    out.Write(0x02, 8);                  // splice_descriptor_tag = segmentation
+    out.Write(0x02, 8); // splice_descriptor_tag = segmentation
     out.Write(descriptor_length, 8);
-    out.Write('C', 8);                   // identifier "CUEI"
+    out.Write('C', 8); // identifier "CUEI"
     out.Write('U', 8);
     out.Write('E', 8);
     out.Write('I', 8);
@@ -158,7 +162,8 @@ model::SubtitleCue MakeCue(int index, double start, double end, const std::strin
 int CountType(const std::vector<model::SubtitleIssue>& issues, model::SubtitleIssueType type) {
     int count = 0;
     for (const model::SubtitleIssue& issue : issues) {
-        if (issue.type == type) ++count;
+        if (issue.type == type)
+            ++count;
     }
     return count;
 }
@@ -169,7 +174,8 @@ int CountType(const std::vector<model::SubtitleIssue>& issues, model::SubtitleIs
 std::vector<model::SubtitleIssue> RunStreamLevelCheck(const std::string& language) {
     std::vector<model::SubtitleIssue> issues;
     AVFormatContext* fmt = avformat_alloc_context();
-    if (fmt == nullptr) return issues;
+    if (fmt == nullptr)
+        return issues;
     AVStream* st = avformat_new_stream(fmt, nullptr);
     if (st == nullptr) {
         avformat_free_context(fmt);
@@ -177,7 +183,8 @@ std::vector<model::SubtitleIssue> RunStreamLevelCheck(const std::string& languag
     }
     st->codecpar->codec_type = AVMEDIA_TYPE_SUBTITLE;
     st->codecpar->codec_id = AV_CODEC_ID_MOV_TEXT;
-    if (!language.empty()) av_dict_set(&st->metadata, "language", language.c_str(), 0);
+    if (!language.empty())
+        av_dict_set(&st->metadata, "language", language.c_str(), 0);
     // handler_name 一并写上：MP4 里 demuxer 一定会给，免得 missing_handler 混进计数
     av_dict_set(&st->metadata, "handler_name", "SubtitleHandler", 0);
 
@@ -194,22 +201,21 @@ int CountMissingLanguage(const std::string& language) {
     return CountType(RunStreamLevelCheck(language), model::SubtitleIssueType::MissingLanguage);
 }
 
-}  // namespace
+} // namespace
 
 // ============================================================
 // 字幕：文本解析
 // ============================================================
 
 TEST(SubtitleAnalyzerTest, ParseSrtCues) {
-    const std::string srt =
-        "1\n"
-        "00:00:01,000 --> 00:00:04,000\n"
-        "第一行\n"
-        "\n"
-        "2\n"
-        "00:00:05,500 --> 00:00:07,000\n"
-        "第二行\n"
-        "换行也在一起\n";
+    const std::string srt = "1\n"
+                            "00:00:01,000 --> 00:00:04,000\n"
+                            "第一行\n"
+                            "\n"
+                            "2\n"
+                            "00:00:05,500 --> 00:00:07,000\n"
+                            "第二行\n"
+                            "换行也在一起\n";
 
     std::vector<videoeye::ParsedSubtitleCue> cues;
     ASSERT_TRUE(videoeye::SubtitleAnalyzer::ParseSrtText(srt, cues));
@@ -223,35 +229,33 @@ TEST(SubtitleAnalyzerTest, ParseSrtCues) {
     EXPECT_EQ(cues[1].cue_number, 2);
     EXPECT_NEAR(cues[1].start_seconds, 5.5, 1e-6);
     EXPECT_NEAR(cues[1].end_seconds, 7.0, 1e-6);
-    EXPECT_EQ(cues[1].text, "第二行 换行也在一起");   // 多行压成单行显示
+    EXPECT_EQ(cues[1].text, "第二行 换行也在一起"); // 多行压成单行显示
 }
 
 TEST(SubtitleAnalyzerTest, ParseWebVttSkipsHeaderAndNote) {
-    const std::string vtt =
-        "WEBVTT - 测试\n"
-        "\n"
-        "NOTE 这不是 cue\n"
-        "\n"
-        "1\n"
-        "00:00:02.000 --> 00:00:05.000 align:start position:10%\n"
-        "<v Speaker>你好</v>\n";
+    const std::string vtt = "WEBVTT - 测试\n"
+                            "\n"
+                            "NOTE 这不是 cue\n"
+                            "\n"
+                            "1\n"
+                            "00:00:02.000 --> 00:00:05.000 align:start position:10%\n"
+                            "<v Speaker>你好</v>\n";
 
     std::vector<videoeye::ParsedSubtitleCue> cues;
     ASSERT_TRUE(videoeye::SubtitleAnalyzer::ParseWebVttText(vtt, cues));
     ASSERT_EQ(cues.size(), 1u);
     EXPECT_NEAR(cues[0].start_seconds, 2.0, 1e-6);
     EXPECT_NEAR(cues[0].end_seconds, 5.0, 1e-6);
-    EXPECT_EQ(cues[0].text, "你好");   // <v> 标签被剥掉
+    EXPECT_EQ(cues[0].text, "你好"); // <v> 标签被剥掉
 }
 
 TEST(SubtitleAnalyzerTest, ParseAssDialogueLine) {
-    const std::string line =
-        "Dialogue: 0,0:00:01.50,0:00:04.00,Default,,0,0,0,,{\\pos(10,20)}你好\\N世界";
+    const std::string line = "Dialogue: 0,0:00:01.50,0:00:04.00,Default,,0,0,0,,{\\pos(10,20)}你好\\N世界";
     videoeye::ParsedSubtitleCue cue;
     ASSERT_TRUE(videoeye::SubtitleAnalyzer::ParseAssDialogueLine(line, cue));
     EXPECT_NEAR(cue.start_seconds, 1.5, 1e-6);
     EXPECT_NEAR(cue.end_seconds, 4.0, 1e-6);
-    EXPECT_EQ(cue.text, "你好 世界");   // 覆盖指令与 \N 都处理掉
+    EXPECT_EQ(cue.text, "你好 世界"); // 覆盖指令与 \N 都处理掉
 }
 
 TEST(SubtitleAnalyzerTest, ParseMovTextPacketPayload) {
@@ -260,15 +264,16 @@ TEST(SubtitleAnalyzerTest, ParseMovTextPacketPayload) {
     std::vector<uint8_t> data;
     data.push_back(0x00);
     data.push_back(static_cast<uint8_t>(payload.size()));
-    for (char c : payload) data.push_back(static_cast<uint8_t>(c));
-    data.push_back(0x00);   // 尾部样式 box，应当被忽略
+    for (char c : payload)
+        data.push_back(static_cast<uint8_t>(c));
+    data.push_back(0x00); // 尾部样式 box，应当被忽略
 
     videoeye::ParsedSubtitleCue cue;
-    ASSERT_TRUE(videoeye::SubtitleAnalyzer::ParsePacketPayload(
-        AV_CODEC_ID_MOV_TEXT, data.data(), data.size(), 12.0, 2.0, cue));
+    ASSERT_TRUE(
+        videoeye::SubtitleAnalyzer::ParsePacketPayload(AV_CODEC_ID_MOV_TEXT, data.data(), data.size(), 12.0, 2.0, cue));
     EXPECT_EQ(cue.text, "Hello");
-    EXPECT_NEAR(cue.start_seconds, 12.0, 1e-6);   // 包里没写时间 -> 用 PTS
-    EXPECT_NEAR(cue.end_seconds, 14.0, 1e-6);     // 用包时长补结束时间
+    EXPECT_NEAR(cue.start_seconds, 12.0, 1e-6); // 包里没写时间 -> 用 PTS
+    EXPECT_NEAR(cue.end_seconds, 14.0, 1e-6);   // 用包时长补结束时间
 }
 
 TEST(SubtitleAnalyzerTest, DecodeCea608BasicText) {
@@ -285,7 +290,7 @@ TEST(SubtitleAnalyzerTest, DecodeCea608BasicText) {
 TEST(SubtitleAnalyzerTest, OverlappingCuesProduceWarning) {
     std::vector<model::SubtitleCue> cues;
     cues.push_back(MakeCue(0, 1.0, 4.0, "第一条"));
-    cues.push_back(MakeCue(1, 3.0, 5.0, "第二条"));   // 3.0 < 4.0 -> 重叠
+    cues.push_back(MakeCue(1, 3.0, 5.0, "第二条")); // 3.0 < 4.0 -> 重叠
 
     std::vector<model::SubtitleIssue> issues;
     videoeye::SubtitleAnalyzer::ValidateCues(cues, issues, videoeye::SubtitleOptions{}, 60.0);
@@ -302,7 +307,7 @@ TEST(SubtitleAnalyzerTest, OverlappingCuesProduceWarning) {
 TEST(SubtitleAnalyzerTest, EmptyCueProducesWarning) {
     std::vector<model::SubtitleCue> cues;
     cues.push_back(MakeCue(0, 1.0, 4.0, ""));
-    cues.push_back(MakeCue(1, 5.0, 8.0, "   "));   // 只有空白也算空
+    cues.push_back(MakeCue(1, 5.0, 8.0, "   ")); // 只有空白也算空
 
     std::vector<model::SubtitleIssue> issues;
     videoeye::SubtitleAnalyzer::ValidateCues(cues, issues, videoeye::SubtitleOptions{}, 60.0);
@@ -331,9 +336,9 @@ TEST(SubtitleAnalyzerTest, NonMonotonicCuesProduceError) {
 
 TEST(SubtitleAnalyzerTest, DurationWindowAndOutOfRange) {
     std::vector<model::SubtitleCue> cues;
-    cues.push_back(MakeCue(0, 1.0, 1.2, "太快了"));      // 0.2s < 0.5s
-    cues.push_back(MakeCue(1, 2.0, 12.0, "太慢了"));     // 10s > 8s
-    cues.push_back(MakeCue(2, 90.0, 92.0, "超出时长"));  // 媒体只有 30s
+    cues.push_back(MakeCue(0, 1.0, 1.2, "太快了"));     // 0.2s < 0.5s
+    cues.push_back(MakeCue(1, 2.0, 12.0, "太慢了"));    // 10s > 8s
+    cues.push_back(MakeCue(2, 90.0, 92.0, "超出时长")); // 媒体只有 30s
 
     std::vector<model::SubtitleIssue> issues;
     videoeye::SubtitleAnalyzer::ValidateCues(cues, issues, videoeye::SubtitleOptions{}, 30.0);
@@ -357,13 +362,13 @@ TEST(SubtitleAnalyzerTest, AdjacentCuesAreNotOverlap) {
 // und 是 demuxer 在文件没写语言时填的占位值（MP4 mdhd 的 0x55C4），非空但语义上
 // 等于"没标语言"。以前只判空串，这类字幕轨会被漏报。
 TEST(SubtitleAnalyzerTest, MissingLanguageCoversUnspecifiedPlaceholders) {
-    EXPECT_EQ(CountMissingLanguage(""), 1);      // 压根没写 tag
-    EXPECT_EQ(CountMissingLanguage("und"), 1);   // ISO 639-2 未指定
-    EXPECT_EQ(CountMissingLanguage("UND"), 1);   // 大小写不敏感
-    EXPECT_EQ(CountMissingLanguage("mul"), 1);   // 多语言
-    EXPECT_EQ(CountMissingLanguage("zxx"), 1);   // 无语言内容
+    EXPECT_EQ(CountMissingLanguage(""), 1);    // 压根没写 tag
+    EXPECT_EQ(CountMissingLanguage("und"), 1); // ISO 639-2 未指定
+    EXPECT_EQ(CountMissingLanguage("UND"), 1); // 大小写不敏感
+    EXPECT_EQ(CountMissingLanguage("mul"), 1); // 多语言
+    EXPECT_EQ(CountMissingLanguage("zxx"), 1); // 无语言内容
 
-    EXPECT_EQ(CountMissingLanguage("chi"), 0);   // 真语言码不能误报
+    EXPECT_EQ(CountMissingLanguage("chi"), 0); // 真语言码不能误报
     EXPECT_EQ(CountMissingLanguage("zh"), 0);
     EXPECT_EQ(CountMissingLanguage("eng"), 0);
 }
@@ -372,7 +377,8 @@ TEST(SubtitleAnalyzerTest, MissingLanguageDetailNamesPlaceholder) {
     const std::vector<model::SubtitleIssue> issues = RunStreamLevelCheck("und");
     ASSERT_EQ(CountType(issues, model::SubtitleIssueType::MissingLanguage), 1);
     for (const model::SubtitleIssue& issue : issues) {
-        if (issue.type != model::SubtitleIssueType::MissingLanguage) continue;
+        if (issue.type != model::SubtitleIssueType::MissingLanguage)
+            continue;
         // 文案要把 und 点出来：修法是改成具体语言码，不是"补一个 tag"
         EXPECT_NE(issue.detail.find("und"), std::string::npos) << issue.detail;
     }
@@ -395,7 +401,7 @@ TEST(TimecodeTest, ParseAndFormat) {
     const model::Timecode df = model::TimecodeFromString("01:02:03;04");
     ASSERT_TRUE(df.valid);
     EXPECT_TRUE(df.drop_frame);
-    EXPECT_EQ(df.ToString(), "01:02:03;04");   // drop frame 用 ';' 分隔
+    EXPECT_EQ(df.ToString(), "01:02:03;04"); // drop frame 用 ';' 分隔
 }
 
 TEST(TimecodeTest, FrameCountRoundTrip) {
@@ -413,10 +419,9 @@ TEST(TimecodeTest, FrameCountRoundTrip) {
     // 真实经过时间由帧数决定，两种写法算出来应当一致（≈1 小时）
     EXPECT_NEAR(drop.ToSeconds(kNtscFps), 3600.0, 0.05);
     EXPECT_NEAR(non_drop.ToSeconds(kNtscFps), 3600.0, 0.05);
-    const double non_drop_label_seconds = static_cast<double>(non_drop.hours) * 3600.0 +
-                                          static_cast<double>(non_drop.minutes) * 60.0 +
-                                          static_cast<double>(non_drop.seconds) +
-                                          static_cast<double>(non_drop.frames) / 30.0;
+    const double non_drop_label_seconds =
+        static_cast<double>(non_drop.hours) * 3600.0 + static_cast<double>(non_drop.minutes) * 60.0 +
+        static_cast<double>(non_drop.seconds) + static_cast<double>(non_drop.frames) / 30.0;
     EXPECT_NEAR(3600.0 - non_drop_label_seconds, 3.6, 0.05);
 }
 
@@ -424,8 +429,7 @@ TEST(TimecodeTest, TmcdSampleGivesFirstFrameTimecode) {
     // tmcd 样本是 4 字节大端帧序号：360 帧 @30fps = 00:00:12:00
     const std::vector<uint8_t> sample = {0x00, 0x00, 0x01, 0x68};
     model::Timecode tc;
-    ASSERT_TRUE(videoeye::TimecodeAnalyzer::DecodeTmcdSample(sample.data(), sample.size(), 30.0,
-                                                             false, tc));
+    ASSERT_TRUE(videoeye::TimecodeAnalyzer::DecodeTmcdSample(sample.data(), sample.size(), 30.0, false, tc));
     ASSERT_TRUE(tc.valid);
     EXPECT_EQ(tc.ToString(), "00:00:12:00");
 
@@ -456,16 +460,15 @@ TEST(TimecodeTest, DropFrameDetectionAndValidity) {
 
 TEST(Scte35AnalyzerTest, Crc32Mpeg2CheckValue) {
     const std::string check = "123456789";
-    const uint32_t crc = videoeye::Scte35Analyzer::Crc32Mpeg2(
-        reinterpret_cast<const uint8_t*>(check.data()), check.size());
-    EXPECT_EQ(crc, 0x0376E6E7u);   // CRC-32/MPEG-2 的标准校验值
+    const uint32_t crc =
+        videoeye::Scte35Analyzer::Crc32Mpeg2(reinterpret_cast<const uint8_t*>(check.data()), check.size());
+    EXPECT_EQ(crc, 0x0376E6E7u); // CRC-32/MPEG-2 的标准校验值
 }
 
 TEST(Scte35AnalyzerTest, ParseSpliceInsertWithSegmentation) {
     const std::vector<uint8_t> section = BuildSpliceInsertSection();
     model::Scte35Cue cue;
-    ASSERT_TRUE(videoeye::Scte35Analyzer::ParseSection(section.data(), section.size(), cue))
-        << cue.parse_error;
+    ASSERT_TRUE(videoeye::Scte35Analyzer::ParseSection(section.data(), section.size(), cue)) << cue.parse_error;
 
     EXPECT_TRUE(cue.valid);
     EXPECT_TRUE(cue.crc_checked);

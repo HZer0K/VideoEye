@@ -9,8 +9,8 @@
 //   - FeatureToggled()   页内「启用分析」开关，由面板转成统一的 feature 信号
 // 页面本体就是 QWidget（外部 QStackedWidget 的一页），不需要再包一层 tab widget。
 
-#include <QWidget>
 #include <QString>
+#include <QWidget>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -45,8 +45,12 @@ public:
     // 全文件诊断扫描也跑了样本表时，只刷新样本相关的四张表（不重建结构树）
     void ApplySampleTable(const model::Mp4SampleTableResult& samples);
 
-    const model::ContainerStructureResult& result() const { return result_; }
-    bool feature_checked() const { return feature_checked_; }
+    const model::ContainerStructureResult& result() const {
+        return result_;
+    }
+    bool feature_checked() const {
+        return feature_checked_;
+    }
 
 signals:
     // 页内开关变化：面板负责写回 feature 表并对外发射 AnalysisFeatureToggled
@@ -59,7 +63,7 @@ private:
 
     bool feature_checked_ = true;
 
-    QLabel* title_label_ = nullptr;          // 动态标题（格式名 + 结构分析）
+    QLabel* title_label_ = nullptr; // 动态标题（格式名 + 结构分析）
     QLabel* summary_label_ = nullptr;
     QTreeWidget* tree_ = nullptr;            // 通用结构树
     QStackedWidget* detail_stack_ = nullptr; // 右侧详情区（通用 / MP4 / EBML）

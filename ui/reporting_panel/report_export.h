@@ -15,7 +15,7 @@
 #include <string>
 #include <vector>
 
-#include <QObject>  // tr 的翻译上下文（与 batch_result_model.h 一致）
+#include <QObject> // tr 的翻译上下文（与 batch_result_model.h 一致）
 #include <QString>
 
 #include "core/qc/BatchQcRunner.h"
@@ -27,8 +27,7 @@ namespace ui {
 //
 // 优先用**报告里记的文件路径**而不是当前文件路径：批量 / 历史结果 / 网络源下二者
 // 可能不同，报告自己认的是 report.file_path；它为空（没跑出结果）才退回当前文件。
-inline std::string SingleExportBaseName(const std::string& report_file_path,
-                                        const std::string& fallback_path) {
+inline std::string SingleExportBaseName(const std::string& report_file_path, const std::string& fallback_path) {
     const std::string& chosen = report_file_path.empty() ? fallback_path : report_file_path;
     return std::filesystem::path(chosen).stem().string();
 }
@@ -42,23 +41,35 @@ inline std::string SingleExportBaseName(const std::string& report_file_path,
 //   * completed = 一个都没取消 —— 取消过就意味着列表里有没跑到的数据，这份汇总
 //     不能自称完整。
 // elapsed_ms 不重算：条目里没有可靠的墙钟，留 0 比编一个假的强。
-inline qc::BatchQcSummary RecomputeBatchSummary(
-    const std::vector<qc::BatchQcItemResult>& items) {
+inline qc::BatchQcSummary RecomputeBatchSummary(const std::vector<qc::BatchQcItemResult>& items) {
     qc::BatchQcSummary summary;
     for (const qc::BatchQcItemResult& item : items) {
         summary.total += 1;
         switch (item.status) {
-            case qc::BatchItemStatus::Succeeded: summary.succeeded += 1; break;
-            case qc::BatchItemStatus::Failed:    summary.failed += 1;    break;
-            case qc::BatchItemStatus::ExportFailed: summary.failed += 1; break;
-            case qc::BatchItemStatus::TimedOut:  summary.timed_out += 1; break;
-            case qc::BatchItemStatus::Cancelled: summary.cancelled += 1; break;
-            case qc::BatchItemStatus::Skipped:   summary.skipped += 1;   break;
-            // Pending / Running 不该出现在终态列表里；真出现也不计数 —— 它既没成功
-            // 也没失败，算进任何一档都会让 "已完成 + 失败 + ..." 对不上 total。
-            case qc::BatchItemStatus::Pending:
-            case qc::BatchItemStatus::Running:
-            default: break;
+        case qc::BatchItemStatus::Succeeded:
+            summary.succeeded += 1;
+            break;
+        case qc::BatchItemStatus::Failed:
+            summary.failed += 1;
+            break;
+        case qc::BatchItemStatus::ExportFailed:
+            summary.failed += 1;
+            break;
+        case qc::BatchItemStatus::TimedOut:
+            summary.timed_out += 1;
+            break;
+        case qc::BatchItemStatus::Cancelled:
+            summary.cancelled += 1;
+            break;
+        case qc::BatchItemStatus::Skipped:
+            summary.skipped += 1;
+            break;
+        // Pending / Running 不该出现在终态列表里；真出现也不计数 —— 它既没成功
+        // 也没失败，算进任何一档都会让 "已完成 + 失败 + ..." 对不上 total。
+        case qc::BatchItemStatus::Pending:
+        case qc::BatchItemStatus::Running:
+        default:
+            break;
         }
         summary.critical_count += item.critical_count;
         summary.error_count += item.error_count;
@@ -80,11 +91,19 @@ inline qc::BatchQcSummary RecomputeBatchSummary(
 //   * 失败 / 取消必须 Clear() —— 免得下一次成功时悄悄导出一份不相干的东西。
 class DeferredExportTicket {
 public:
-    bool armed() const { return !dir_.isEmpty(); }
-    const QString& dir() const { return dir_; }
+    bool armed() const {
+        return !dir_.isEmpty();
+    }
+    const QString& dir() const {
+        return dir_;
+    }
 
-    void Arm(const QString& directory) { dir_ = directory; }  // 空串即等于不登记
-    void Clear() { dir_.clear(); }
+    void Arm(const QString& directory) {
+        dir_ = directory;
+    } // 空串即等于不登记
+    void Clear() {
+        dir_.clear();
+    }
 
     // 取走即作废。未登记时返回空串，调用方据此判断"没有待导出"。
     QString Take() {
@@ -97,5 +116,5 @@ private:
     QString dir_;
 };
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

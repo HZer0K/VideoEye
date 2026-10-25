@@ -23,13 +23,13 @@ namespace model {
 
 // 异常类型
 enum class BitrateAnomalyType {
-    LongGop,                     // GOP 时长或帧数超过阈值
-    IrregularKeyInterval,        // 关键帧间隔不均匀
-    PeakOvershoot,               // 瞬时码率超过目标峰值
-    OversizedFrame,              // 异常大帧
-    OversizedIFrame,             // I 帧过大
-    SceneChangeWithoutKeyframe,  // 场景切换附近没有关键帧
-    SparseKeyframes,             // 关键帧密度过低（seek 困难）
+    LongGop,                    // GOP 时长或帧数超过阈值
+    IrregularKeyInterval,       // 关键帧间隔不均匀
+    PeakOvershoot,              // 瞬时码率超过目标峰值
+    OversizedFrame,             // 异常大帧
+    OversizedIFrame,            // I 帧过大
+    SceneChangeWithoutKeyframe, // 场景切换附近没有关键帧
+    SparseKeyframes,            // 关键帧密度过低（seek 困难）
 };
 
 const char* ToString(BitrateAnomalyType type);
@@ -37,14 +37,14 @@ const char* ToString(BitrateAnomalyType type);
 // 一条异常记录（UI 表格 + 图表标记的数据源）
 struct BitrateAnomaly {
     BitrateAnomalyType type = BitrateAnomalyType::LongGop;
-    double start_seconds = 0.0;  // 异常起始时刻
-    double end_seconds = 0.0;    // 异常结束时刻（点状异常与 start 相同）
-    double value = 0.0;          // 实测值（见 unit）
-    double threshold = 0.0;      // 触发阈值（与 value 同单位）
-    std::string unit;            // value/threshold 的单位：s / 帧 / kbps / B / 个
-    int gop_index = -1;          // 关联的 GOP 序号（-1 = 无）
-    std::string detail;          // 人类可读描述
-    std::string suggestion;      // 优化建议
+    double start_seconds = 0.0; // 异常起始时刻
+    double end_seconds = 0.0;   // 异常结束时刻（点状异常与 start 相同）
+    double value = 0.0;         // 实测值（见 unit）
+    double threshold = 0.0;     // 触发阈值（与 value 同单位）
+    std::string unit;           // value/threshold 的单位：s / 帧 / kbps / B / 个
+    int gop_index = -1;         // 关联的 GOP 序号（-1 = 无）
+    std::string detail;         // 人类可读描述
+    std::string suggestion;     // 优化建议
 };
 
 // 码率与 GOP 分析结果
@@ -59,8 +59,8 @@ struct BitrateGopAnalysis {
     double median_bitrate_kbps = 0.0;
     double p95_bitrate_kbps = 0.0;
     double target_peak_kbps = 0.0;
-    double peak_to_mean_ratio = 0.0;   // 峰值/均值，衡量 VBR 波动
-    double window_seconds = 1.0;       // 下列曲线使用的窗口长度
+    double peak_to_mean_ratio = 0.0; // 峰值/均值，衡量 VBR 波动
+    double window_seconds = 1.0;     // 下列曲线使用的窗口长度
 
     // 默认窗口的采样点（含 overshoot 标记，UI 折线图 + 异常峰值标记用）
     std::vector<model::BitratePoint> bitrate_points;
@@ -72,8 +72,8 @@ struct BitrateGopAnalysis {
     int64_t p_frame_count = 0;
     int64_t b_frame_count = 0;
     int64_t unknown_frame_count = 0;
-    int64_t i_frame_bytes_ = 0;      // I 帧字节数累计（用于计算平均 I 帧大小）
-    bool frame_types_known = false;  // false = 只有 I 帧（来自关键帧标记）可信
+    int64_t i_frame_bytes_ = 0;     // I 帧字节数累计（用于计算平均 I 帧大小）
+    bool frame_types_known = false; // false = 只有 I 帧（来自关键帧标记）可信
 
     // ---- 字节的两套账（包级 vs 帧级）----
     //
@@ -106,7 +106,7 @@ struct BitrateGopAnalysis {
     double gop_frames_mean = 0.0;
     double key_interval_mean = 0.0;
     double key_interval_stddev = 0.0;
-    double key_interval_irregularity = 0.0;  // stddev / mean
+    double key_interval_irregularity = 0.0; // stddev / mean
     int long_gop_count = 0;
     int closed_gop_count = 0;
     int open_gop_count = 0;
@@ -137,5 +137,5 @@ struct BitrateGopAnalysis {
     bool downsampled = false;
 };
 
-}  // namespace model
-}  // namespace videoeye
+} // namespace model
+} // namespace videoeye

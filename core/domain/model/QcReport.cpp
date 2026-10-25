@@ -11,7 +11,8 @@ namespace model {
 int QcReport::CountBySeverity(IssueSeverity severity) const {
     int count = 0;
     for (const auto& issue : issues) {
-        if (issue.severity == severity) ++count;
+        if (issue.severity == severity)
+            ++count;
     }
     return count;
 }
@@ -19,7 +20,8 @@ int QcReport::CountBySeverity(IssueSeverity severity) const {
 int QcReport::CountByCategory(IssueCategory category) const {
     int count = 0;
     for (const auto& issue : issues) {
-        if (issue.category == category) ++count;
+        if (issue.category == category)
+            ++count;
     }
     return count;
 }
@@ -34,10 +36,18 @@ double ComputeQcScore(const std::vector<DiagnosticIssue>& issues) {
     double penalty = 0.0;
     for (const auto& issue : issues) {
         switch (issue.severity) {
-            case IssueSeverity::Critical: penalty += 30.0; break;
-            case IssueSeverity::Error:    penalty += 12.0; break;
-            case IssueSeverity::Warning:  penalty += 5.0;  break;
-            case IssueSeverity::Info:     penalty += 1.0;  break;
+        case IssueSeverity::Critical:
+            penalty += 30.0;
+            break;
+        case IssueSeverity::Error:
+            penalty += 12.0;
+            break;
+        case IssueSeverity::Warning:
+            penalty += 5.0;
+            break;
+        case IssueSeverity::Info:
+            penalty += 1.0;
+            break;
         }
     }
     const double score = 100.0 - penalty;
@@ -45,16 +55,20 @@ double ComputeQcScore(const std::vector<DiagnosticIssue>& issues) {
 }
 
 std::string ComputeQcVerdict(double score) {
-    if (score >= 90.0) return "通过";
-    if (score >= 70.0) return "警告";
+    if (score >= 90.0)
+        return "通过";
+    if (score >= 70.0)
+        return "警告";
     return "不通过";
 }
 
 std::string ComputeQcVerdict(double score, bool has_critical, bool has_error) {
-    if (has_critical) return "不通过";
+    if (has_critical)
+        return "不通过";
     const std::string verdict = ComputeQcVerdict(score);
     // Error 不允许被判成"通过"，往下降一档即可（分数本来也不会到 Critical 那种程度）
-    if (has_error && verdict == "通过") return "警告";
+    if (has_error && verdict == "通过")
+        return "警告";
     return verdict;
 }
 
@@ -67,9 +81,8 @@ std::string CurrentTimestampString() {
     localtime_r(&now, &tm_now);
 #endif
     char buf[32];
-    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
-                  tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday,
-                  tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d", tm_now.tm_year + 1900, tm_now.tm_mon + 1,
+                  tm_now.tm_mday, tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
     return std::string(buf);
 }
 

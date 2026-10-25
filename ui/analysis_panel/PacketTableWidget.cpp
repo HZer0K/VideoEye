@@ -27,10 +27,9 @@ namespace {
 // 记录上限统一取 10 万（见 RecordTableModel.h）。以前本页是 1 万 —— 一小时视频的包
 // 数远不止一万（每帧至少一个视频包），1 万意味着只留得下开头几十秒的包。
 constexpr std::size_t kMaxPacketRecords = kDefaultMaxRecordCount;
-}  // namespace
+} // namespace
 
-PacketTableWidget::PacketTableWidget(QWidget* parent)
-    : QWidget(parent) {
+PacketTableWidget::PacketTableWidget(QWidget* parent) : QWidget(parent) {
     SetupUi();
 }
 
@@ -66,26 +65,19 @@ void PacketTableWidget::SetupUi() {
     // 模型由本组件持有并在析构里释放：QTableView::setModel 只是引用，不接管所有权。
     auto columns = std::vector<RecordTableModel<PacketRecord>::ColumnSpec>();
     using Spec = RecordTableModel<PacketRecord>::ColumnSpec;
-    columns.push_back(Spec{tr("#"),
-                           [](const PacketRecord& r) { return QString::number(r.index); }, {}});
-    columns.push_back(Spec{tr("流"), [this](const PacketRecord& r) {
+    columns.push_back(Spec{tr("#"), [](const PacketRecord& r) { return QString::number(r.index); }, {}});
+    columns.push_back(Spec{tr("流"),
+                           [this](const PacketRecord& r) {
                                // 「流」列把流索引与类型合到一个单元格, 形如 "#0 视频"
-                               return QString("#%1 %2")
-                                   .arg(r.stream_index)
-                                   .arg(PacketStreamTypeToName(r.stream_type));
-                           }, {}});
-    columns.push_back(Spec{tr("播放时间(s)"),
-                           [](const PacketRecord& r) {
-                               return QString::number(r.timestamp_seconds, 'f', 3);
-                           }, {}});
-    columns.push_back(Spec{tr("显示时间(PTS)"),
-                           [](const PacketRecord& r) { return QString::number(r.pts); }, {}});
-    columns.push_back(Spec{tr("解码时间(DTS)"),
-                           [](const PacketRecord& r) { return QString::number(r.dts); }, {}});
-    columns.push_back(Spec{tr("时长"),
-                           [](const PacketRecord& r) { return QString::number(r.duration); }, {}});
-    columns.push_back(Spec{tr("包大小"),
-                           [](const PacketRecord& r) { return QString::number(r.size); }, {}});
+                               return QString("#%1 %2").arg(r.stream_index).arg(PacketStreamTypeToName(r.stream_type));
+                           },
+                           {}});
+    columns.push_back(Spec{
+        tr("播放时间(s)"), [](const PacketRecord& r) { return QString::number(r.timestamp_seconds, 'f', 3); }, {}});
+    columns.push_back(Spec{tr("显示时间(PTS)"), [](const PacketRecord& r) { return QString::number(r.pts); }, {}});
+    columns.push_back(Spec{tr("解码时间(DTS)"), [](const PacketRecord& r) { return QString::number(r.dts); }, {}});
+    columns.push_back(Spec{tr("时长"), [](const PacketRecord& r) { return QString::number(r.duration); }, {}});
+    columns.push_back(Spec{tr("包大小"), [](const PacketRecord& r) { return QString::number(r.size); }, {}});
     packet_model_ = new RecordTableModel<PacketRecord>(std::move(columns), this);
 
     packet_table_ = new QTableView(p_table_group);
@@ -97,22 +89,21 @@ void PacketTableWidget::SetupUi() {
     packet_table_->setSortingEnabled(false);
     packet_table_->horizontalHeader()->setStretchLastSection(true);
     packet_table_->horizontalHeader()->setMinimumSectionSize(50);
-    packet_table_->setColumnWidth(0, 60);   // #
-    packet_table_->setColumnWidth(1, 90);   // 流
-    packet_table_->setColumnWidth(2, 110);  // 播放时间(s)
-    packet_table_->setColumnWidth(3, 110);  // 显示时间(PTS)
-    packet_table_->setColumnWidth(4, 110);  // 解码时间(DTS)
-    packet_table_->setColumnWidth(5, 80);   // 时长
-    packet_table_->setColumnWidth(6, 90);   // 包大小
+    packet_table_->setColumnWidth(0, 60);  // #
+    packet_table_->setColumnWidth(1, 90);  // 流
+    packet_table_->setColumnWidth(2, 110); // 播放时间(s)
+    packet_table_->setColumnWidth(3, 110); // 显示时间(PTS)
+    packet_table_->setColumnWidth(4, 110); // 解码时间(DTS)
+    packet_table_->setColumnWidth(5, 80);  // 时长
+    packet_table_->setColumnWidth(6, 90);  // 包大小
     packet_table_->setMinimumWidth(650);
     packet_table_->setMinimumHeight(120);
     p_table_layout->addWidget(packet_table_);
     p_layout->addWidget(p_table_group);
 
     // 筛选与导出是本子页内部的事（只依赖自己的记录缓存），就地连回。
-    connect(packet_filter_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int idx) {
-        packet_filter_mode_ = idx - 1;  // 0->全部(-1), 1->视频(0), 2->音频(1), 3->其他(2)
+    connect(packet_filter_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+        packet_filter_mode_ = idx - 1; // 0->全部(-1), 1->视频(0), 2->音频(1), 3->其他(2)
         ApplyFilter();
     });
     connect(export_packet_csv_button_, &QPushButton::clicked, this, &PacketTableWidget::OnExportPacketCsv);
@@ -192,22 +183,31 @@ QString PacketTableWidget::PacketFlagsToString(int flags) const {
 
 QString PacketTableWidget::PacketStreamTypeToName(int type) const {
     switch (type) {
-        case AVMEDIA_TYPE_VIDEO: return tr("视频");
-        case AVMEDIA_TYPE_AUDIO: return tr("音频");
-        case AVMEDIA_TYPE_DATA: return tr("数据");
-        case AVMEDIA_TYPE_SUBTITLE: return tr("字幕");
-        case AVMEDIA_TYPE_ATTACHMENT: return tr("附件");
-        default: return tr("未知");
+    case AVMEDIA_TYPE_VIDEO:
+        return tr("视频");
+    case AVMEDIA_TYPE_AUDIO:
+        return tr("音频");
+    case AVMEDIA_TYPE_DATA:
+        return tr("数据");
+    case AVMEDIA_TYPE_SUBTITLE:
+        return tr("字幕");
+    case AVMEDIA_TYPE_ATTACHMENT:
+        return tr("附件");
+    default:
+        return tr("未知");
     }
 }
 
 bool PacketTableWidget::PacketMatchesFilter(const PacketRecord& record) const {
     switch (packet_filter_mode_) {
-        case 0: return record.stream_type == AVMEDIA_TYPE_VIDEO;
-        case 1: return record.stream_type == AVMEDIA_TYPE_AUDIO;
-        case 2: return record.stream_type != AVMEDIA_TYPE_VIDEO &&
-                       record.stream_type != AVMEDIA_TYPE_AUDIO;
-        default: return true;  // -1 = 全部
+    case 0:
+        return record.stream_type == AVMEDIA_TYPE_VIDEO;
+    case 1:
+        return record.stream_type == AVMEDIA_TYPE_AUDIO;
+    case 2:
+        return record.stream_type != AVMEDIA_TYPE_VIDEO && record.stream_type != AVMEDIA_TYPE_AUDIO;
+    default:
+        return true; // -1 = 全部
     }
 }
 
@@ -216,7 +216,8 @@ bool PacketTableWidget::PacketMatchesFilter(const PacketRecord& record) const {
 // 以前这里是 setRowCount(0) + 逐条重插（O(n) 次 insertRow）。现在模型内部
 // 重排可见索引并 reset —— 记录本身不动，也不会因为"重建"丢掉刚进来的包。
 void PacketTableWidget::ApplyFilter() {
-    if (!packet_model_) return;
+    if (!packet_model_)
+        return;
     if (packet_filter_mode_ < 0) {
         packet_model_->SetFilter(nullptr);
         return;
@@ -226,11 +227,14 @@ void PacketTableWidget::ApplyFilter() {
     const int mode = packet_filter_mode_;
     packet_model_->SetFilter([mode](const PacketRecord& r) {
         switch (mode) {
-            case 0: return r.stream_type == AVMEDIA_TYPE_VIDEO;
-            case 1: return r.stream_type == AVMEDIA_TYPE_AUDIO;
-            case 2: return r.stream_type != AVMEDIA_TYPE_VIDEO &&
-                           r.stream_type != AVMEDIA_TYPE_AUDIO;
-            default: return true;
+        case 0:
+            return r.stream_type == AVMEDIA_TYPE_VIDEO;
+        case 1:
+            return r.stream_type == AVMEDIA_TYPE_AUDIO;
+        case 2:
+            return r.stream_type != AVMEDIA_TYPE_VIDEO && r.stream_type != AVMEDIA_TYPE_AUDIO;
+        default:
+            return true;
         }
     });
 }
@@ -279,16 +283,16 @@ void PacketTableWidget::UpdatePacketSummary() {
 
     const int avg_size = records.empty() ? 0 : static_cast<int>(sum_size / records.size());
 
-    packet_summary_label_->setText(
-        tr("总包数: %1 | 总字节数: %2 | 视频包: %3 | 音频包: %4 | 其他包: %5 | 平均包大小: %6 B | 最大包大小: %7 B | 最小包大小: %8 B")
-            .arg(records.size())
-            .arg(format_bytes(total_bytes))
-            .arg(video_packets)
-            .arg(audio_packets)
-            .arg(other_packets)
-            .arg(avg_size)
-            .arg(max_size)
-            .arg(records.empty() ? 0 : min_size));
+    packet_summary_label_->setText(tr("总包数: %1 | 总字节数: %2 | 视频包: %3 | 音频包: %4 | 其他包: %5 | 平均包大小: "
+                                      "%6 B | 最大包大小: %7 B | 最小包大小: %8 B")
+                                       .arg(records.size())
+                                       .arg(format_bytes(total_bytes))
+                                       .arg(video_packets)
+                                       .arg(audio_packets)
+                                       .arg(other_packets)
+                                       .arg(avg_size)
+                                       .arg(max_size)
+                                       .arg(records.empty() ? 0 : min_size));
 }
 
 void PacketTableWidget::OnExportPacketCsv() {
@@ -298,21 +302,16 @@ void PacketTableWidget::OnExportPacketCsv() {
     }
 
     const int rows = static_cast<int>(packet_model_->record_count());
-    ExportCsvStream(this,
-        tr("导出包分析 CSV"),
+    ExportCsvStream(
+        this, tr("导出包分析 CSV"),
         QString("videoeye_packets_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
         [this](QTextStream& out) {
             out << "index,stream_index,timestamp_seconds,pts,dts,duration,size,flags,file_pos\n";
             for (const auto& record : packet_model_->records()) {
-                out << record.index << ','
-                    << record.stream_index << ','
-                    << QString::number(record.timestamp_seconds, 'f', 6) << ','
-                    << record.pts << ','
-                    << record.dts << ','
-                    << record.duration << ','
-                    << record.size << ','
-                    << '"' << PacketFlagsToString(record.flags) << '"' << ','
-                    << record.pos << '\n';
+                out << record.index << ',' << record.stream_index << ','
+                    << QString::number(record.timestamp_seconds, 'f', 6) << ',' << record.pts << ',' << record.dts
+                    << ',' << record.duration << ',' << record.size << ',' << '"' << PacketFlagsToString(record.flags)
+                    << '"' << ',' << record.pos << '\n';
             }
         },
         rows);
@@ -338,5 +337,5 @@ void PacketTableWidget::FlushPendingPacketTableUpdates() {
     }
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

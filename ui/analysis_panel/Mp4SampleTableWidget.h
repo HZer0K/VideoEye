@@ -10,8 +10,8 @@
 //   - ShowFragmentTab()  分片类 box 联动时切到底部「分片 (moof)」tab
 // 页面本体负责把本控件放进 mp4_detail_tabs_，并按需切 detail_stack_ / 外层 tab。
 
-#include <QWidget>
 #include <QString>
+#include <QWidget>
 
 #include <QComboBox>
 #include <QLabel>
@@ -39,8 +39,12 @@ public:
     // 分片类 box 联动时，把底部 tab 切到「分片 (moof)」
     void ShowFragmentTab();
 
-    int TrackCount() const { return track_combo_->count(); }
-    void SetTrackIndex(int index) { track_combo_->setCurrentIndex(index); }
+    int TrackCount() const {
+        return track_combo_->count();
+    }
+    void SetTrackIndex(int index) {
+        track_combo_->setCurrentIndex(index);
+    }
 
 private:
     void SetupUi();
@@ -60,7 +64,7 @@ private:
     QPushButton* export_button_ = nullptr;
 
     model::Mp4SampleTableResult samples_;
-    QString focus_box_;  // 结构树点击的 box 名（"" = 不过滤）
+    QString focus_box_; // 结构树点击的 box 名（"" = 不过滤）
 };
 
 } // namespace ui

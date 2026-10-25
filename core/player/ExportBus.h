@@ -40,5 +40,5 @@ signals:
     void MediaExportError(const QString& message);
 };
 
-}  // namespace player
-}  // namespace videoeye
+} // namespace player
+} // namespace videoeye

@@ -10,22 +10,28 @@ namespace {
 
 // shell 操作符。只在**引号外**检测 —— "-vf drawtext=text='a|b'" 里的竖线是参数内容。
 bool IsShellOperatorChar(QChar c) {
-    return c == QLatin1Char('|') || c == QLatin1Char(';') ||
-           c == QLatin1Char('>') || c == QLatin1Char('<') ||
-           c == QLatin1Char('&') || c == QLatin1Char('`') ||
-           c == QLatin1Char('$');
+    return c == QLatin1Char('|') || c == QLatin1Char(';') || c == QLatin1Char('>') || c == QLatin1Char('<') ||
+           c == QLatin1Char('&') || c == QLatin1Char('`') || c == QLatin1Char('$');
 }
 
 QString ShellOperatorName(QChar c) {
     switch (c.toLatin1()) {
-    case '|': return QStringLiteral("管道 |");
-    case ';': return QStringLiteral("命令分隔 ;");
-    case '>': return QStringLiteral("输出重定向 >");
-    case '<': return QStringLiteral("输入重定向 <");
-    case '&': return QStringLiteral("后台/串联 &");
-    case '`': return QStringLiteral("命令替换 `");
-    case '$': return QStringLiteral("变量/命令替换 $");
-    default:  return QString(c);
+    case '|':
+        return QStringLiteral("管道 |");
+    case ';':
+        return QStringLiteral("命令分隔 ;");
+    case '>':
+        return QStringLiteral("输出重定向 >");
+    case '<':
+        return QStringLiteral("输入重定向 <");
+    case '&':
+        return QStringLiteral("后台/串联 &");
+    case '`':
+        return QStringLiteral("命令替换 `");
+    case '$':
+        return QStringLiteral("变量/命令替换 $");
+    default:
+        return QString(c);
     }
 }
 
@@ -37,8 +43,7 @@ bool IsOptionToken(const QString& token) {
 // 往进程通道（而不是文件）写的输出目标。注意 pipe:2 写的是 stderr，
 // 一样会把二进制灌进本页的日志区。
 bool IsPipeOutputTarget(const QString& target) {
-    return target == QLatin1String("-") ||
-           target.startsWith(QLatin1String("pipe:"), Qt::CaseInsensitive);
+    return target == QLatin1String("-") || target.startsWith(QLatin1String("pipe:"), Qt::CaseInsensitive);
 }
 
 // 只产出文本的 muxer。它们即使写到管道上也只是几行文本，不会灌满日志框。
@@ -47,7 +52,7 @@ bool WritesTextOnly(const QString& format) {
         return false;
     }
     static const QStringList kTextOnly = {
-        QStringLiteral("null"), QStringLiteral("md5"), QStringLiteral("framemd5"),
+        QStringLiteral("null"),     QStringLiteral("md5"),        QStringLiteral("framemd5"),
         QStringLiteral("framecrc"), QStringLiteral("ffmetadata"),
     };
     return kTextOnly.contains(format, Qt::CaseInsensitive);
@@ -70,12 +75,11 @@ NextSignificant FindNextSignificant(const QStringList& arguments, int from) {
             return NextSignificant::Input;
         }
         if (!IsOptionToken(token)) {
-            return NextSignificant::Output;   // 裸 token = 输出目标
+            return NextSignificant::Output; // 裸 token = 输出目标
         }
         const FfmpegCatalogEntry* entry = FfmpegCommandCatalog::Find(token);
         const bool takes_value = (entry != nullptr && entry->takes_value) ||
-                                 (entry == nullptr && i + 1 < arguments.size() &&
-                                  !IsOptionToken(arguments.at(i + 1)));
+                                 (entry == nullptr && i + 1 < arguments.size() && !IsOptionToken(arguments.at(i + 1)));
         i += takes_value ? 2 : 1;
     }
     return NextSignificant::None;
@@ -108,7 +112,7 @@ const InfoOption kInfoOptions[] = {
     {"-help", "打印帮助；-h long / -h full 可以看到更完整的选项列表"},
 };
 
-}  // namespace
+} // namespace
 
 bool LooksLikeFfmpegProgram(const QString& token) {
     if (token.isEmpty()) {
@@ -163,7 +167,7 @@ ParsedCommand ParseCommandLine(const QString& text) {
     QString current;
     bool in_quote = false;
     QChar quote_char;
-    bool has_content = false;   // 是否出现过非空字符（用于区分 "" 这种空引号参数）
+    bool has_content = false; // 是否出现过非空字符（用于区分 "" 这种空引号参数）
 
     for (int i = 0; i < text.size(); ++i) {
         const QChar c = text.at(i);
@@ -256,7 +260,7 @@ FfmpegCommandStructure AnalyzeCommandStructure(const QStringList& arguments) {
 
     int inputs_seen = 0;
     int outputs_seen = 0;
-    QString pending_output_format;   // 尚未落地的那个输出组当前的 -f 值
+    QString pending_output_format; // 尚未落地的那个输出组当前的 -f 值
 
     for (int i = 0; i < n; ++i) {
         const QString token = arguments.at(i);
@@ -266,7 +270,7 @@ FfmpegCommandStructure AnalyzeCommandStructure(const QStringList& arguments) {
         if (token == QLatin1String("-i")) {
             place.role = FfmpegArgRole::Option;
             if (i + 1 >= n) {
-                out.complete = false;   // -i 少了文件名
+                out.complete = false; // -i 少了文件名
                 continue;
             }
             place.value_index = i + 1;
@@ -294,8 +298,7 @@ FfmpegCommandStructure AnalyzeCommandStructure(const QStringList& arguments) {
                     // 方向由"它后面先遇到什么"决定，而不是"之前出过几个输出":
                     // 后面紧接着一个 -i → 它是输入格式（哪怕前面已经有输出了）；
                     // 后面先撞上输出目标 → 它是那个输出的格式。
-                    place.applies_to_input =
-                        (FindNextSignificant(arguments, i + 2) == NextSignificant::Input);
+                    place.applies_to_input = (FindNextSignificant(arguments, i + 2) == NextSignificant::Input);
                     if (!place.applies_to_input) {
                         pending_output_format = arguments.at(i + 1);
                     }
@@ -340,8 +343,8 @@ QString DetectStdoutMediaOutput(const QStringList& arguments) {
     for (const FfmpegArgPlacement& place : structure.args) {
         // 输出组里的明晰目标 + 归属不明但落在输出侧的候选，都要看一眼 ——
         // 后者宁可多问一次，也不能让二进制灌进日志框。
-        const bool candidate = place.role == FfmpegArgRole::OutputUrl ||
-                               (place.role == FfmpegArgRole::Uncertain && place.output_side);
+        const bool candidate =
+            place.role == FfmpegArgRole::OutputUrl || (place.role == FfmpegArgRole::Uncertain && place.output_side);
         if (!candidate) {
             continue;
         }
@@ -358,5 +361,5 @@ QString DetectStdoutMediaOutput(const QStringList& arguments) {
     return QString();
 }
 
-}  // namespace ffmpeg
-}  // namespace videoeye
+} // namespace ffmpeg
+} // namespace videoeye

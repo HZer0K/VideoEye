@@ -58,14 +58,15 @@ struct StatusSpy {
     std::vector<QString> texts;
     std::vector<int> timeouts;
 
-    QString Last() const { return texts.empty() ? QString() : texts.back(); }
+    QString Last() const {
+        return texts.empty() ? QString() : texts.back();
+    }
 
     void Attach(ExportCoordinator& coord) {
-        QObject::connect(&coord, &ExportCoordinator::StatusMessage, &coord,
-                         [this](const QString& text, int timeout) {
-                             texts.push_back(text);
-                             timeouts.push_back(timeout);
-                         });
+        QObject::connect(&coord, &ExportCoordinator::StatusMessage, &coord, [this](const QString& text, int timeout) {
+            texts.push_back(text);
+            timeouts.push_back(timeout);
+        });
     }
 };
 
@@ -76,12 +77,16 @@ struct Harness {
     ExportCoordinator coord{&player, &host};
     StatusSpy status;
 
-    Harness() { status.Attach(coord); }
+    Harness() {
+        status.Attach(coord);
+    }
 
-    QProgressDialog* Dialog() const { return host.findChild<QProgressDialog*>(); }
+    QProgressDialog* Dialog() const {
+        return host.findChild<QProgressDialog*>();
+    }
 };
 
-}  // namespace
+} // namespace
 
 // ---------------------------------------------------------------------------
 // 1. 构造惰性 + HideProgress 无框安全
@@ -91,10 +96,10 @@ TEST(ExportCoordinatorTests, ConstructorIsLazyAndHideProgressIsSafe) {
     EnsureApp();
 
     Harness h;
-    EXPECT_EQ(nullptr, h.Dialog());       // 构造不建进度框
-    h.coord.HideProgress();               // 无框时安全
+    EXPECT_EQ(nullptr, h.Dialog()); // 构造不建进度框
+    h.coord.HideProgress();         // 无框时安全
     EXPECT_EQ(nullptr, h.Dialog());
-    EXPECT_TRUE(h.status.texts.empty());  // 不发任何提示
+    EXPECT_TRUE(h.status.texts.empty()); // 不发任何提示
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +206,7 @@ TEST(ExportCoordinatorTests, MediaProgressDrivesDialogWithoutStatusSpam) {
     EXPECT_EQ(100, dlg->maximum());
     EXPECT_EQ(42, dlg->value());
     EXPECT_EQ(QStringLiteral("正在导出音视频... 42%"), dlg->labelText());
-    EXPECT_TRUE(h.status.texts.empty());  // 音视频进度只动框, 不刷状态栏
+    EXPECT_TRUE(h.status.texts.empty()); // 音视频进度只动框, 不刷状态栏
 }
 
 // ---------------------------------------------------------------------------
@@ -220,7 +225,7 @@ TEST(ExportCoordinatorTests, CancelButtonRequestsTerminationAndReports) {
     ASSERT_NE(nullptr, cancel_btn);
     EXPECT_EQ(QStringLiteral("终止"), cancel_btn->text());
 
-    cancel_btn->click();  // 与用户点「终止」同一路径 (QProgressDialog::canceled -> 协调器)
+    cancel_btn->click(); // 与用户点「终止」同一路径 (QProgressDialog::canceled -> 协调器)
     ASSERT_EQ(1u, h.status.texts.size());
     EXPECT_EQ(QStringLiteral("正在终止导出..."), h.status.Last());
 }

@@ -33,5 +33,5 @@ enum class AnalysisFeature {
     VisualDefect        // 画面质量 (黑场/冻结/马赛克/模糊/闪烁/曝光/色偏/梳齿/黑边)
 };
 
-}  // namespace model
-}  // namespace videoeye
+} // namespace model
+} // namespace videoeye

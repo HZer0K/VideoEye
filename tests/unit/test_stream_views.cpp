@@ -63,12 +63,13 @@ struct ToggleRecorder {
 // 由一个「编号 -> 状态」表驱动的 is_enabled 钩子
 std::function<bool(int)> StatesHook(const std::vector<bool>& states, bool fallback = true) {
     return [states, fallback](int id) {
-        if (id < 0 || id >= static_cast<int>(states.size())) return fallback;
+        if (id < 0 || id >= static_cast<int>(states.size()))
+            return fallback;
         return states[static_cast<std::size_t>(id)];
     };
 }
 
-}  // namespace
+} // namespace
 
 // ---------------------------------------------------------------------------
 // StreamOverviewView（流统计，组件内编号 0）
@@ -115,7 +116,7 @@ TEST(StreamViewsToggleTests, FramePacketTogglesFollowInjectedFeatureState) {
 
     QTabWidget* tabs = view.findChild<QTabWidget*>();
     ASSERT_TRUE(tabs != nullptr);
-    ASSERT_EQ(tabs->count(), 4);   // 视频帧 / 包 / GOP 摘要 / 音频帧
+    ASSERT_EQ(tabs->count(), 4); // 视频帧 / 包 / GOP 摘要 / 音频帧
     // 子页顺序与 SetupUi 的 addTab 顺序一致
     QCheckBox* video = tabs->widget(0)->findChild<QCheckBox*>();
     QCheckBox* packet = tabs->widget(1)->findChild<QCheckBox*>();
@@ -131,16 +132,16 @@ TEST(StreamViewsToggleTests, FramePacketTogglesFollowInjectedFeatureState) {
     EXPECT_FALSE(video->isChecked());
     EXPECT_FALSE(audio->isChecked());
     EXPECT_TRUE(packet->isChecked());
-    EXPECT_TRUE(rec.calls.empty());   // 回写不触发 toggled
+    EXPECT_TRUE(rec.calls.empty()); // 回写不触发 toggled
 
     // 逐个点击，验证钩子收到的编号与本组件的内部编号一致
     video->setChecked(true);
     audio->setChecked(true);
     packet->setChecked(false);
     ASSERT_EQ(rec.calls.size(), 3u);
-    EXPECT_EQ(rec.calls[0].first, 0);  // 视频帧
-    EXPECT_EQ(rec.calls[1].first, 1);  // 音频帧
-    EXPECT_EQ(rec.calls[2].first, 2);  // 数据包
+    EXPECT_EQ(rec.calls[0].first, 0); // 视频帧
+    EXPECT_EQ(rec.calls[1].first, 1); // 音频帧
+    EXPECT_EQ(rec.calls[2].first, 2); // 数据包
     EXPECT_TRUE(rec.calls[0].second);
     EXPECT_TRUE(rec.calls[1].second);
     EXPECT_FALSE(rec.calls[2].second);
@@ -153,8 +154,7 @@ TEST(StreamViewsToggleTests, FramePacketEmitsGopSummariesOnlyWhenChanged) {
     FramePacketView view;
 
     int gop_signals = 0;
-    QObject::connect(&view, &FramePacketView::GopSummariesChanged,
-                     [&gop_signals]() { ++gop_signals; });
+    QObject::connect(&view, &FramePacketView::GopSummariesChanged, [&gop_signals]() { ++gop_signals; });
 
     // 第一帧是关键帧 -> 开一个新 GOP 段
     view.AppendVideoFrame(0, AV_PICTURE_TYPE_I, true, 0, 0.0);
@@ -194,9 +194,12 @@ TEST(StreamViewsToggleTests, StreamOverviewAcceptsGopSummaries) {
     StreamOverviewView view;
 
     std::vector<GopSummary> sums(3);
-    sums[0].gop_index = 1; sums[0].total_frames = 30;
-    sums[1].gop_index = 2; sums[1].total_frames = 45;
-    sums[2].gop_index = 3; sums[2].total_frames = 30;
+    sums[0].gop_index = 1;
+    sums[0].total_frames = 30;
+    sums[1].gop_index = 2;
+    sums[1].total_frames = 45;
+    sums[2].gop_index = 3;
+    sums[2].total_frames = 30;
     view.SetGopSummaries(sums);
     EXPECT_TRUE(view.HasPending());
     view.FlushPending();

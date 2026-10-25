@@ -18,8 +18,7 @@ inline uint16_t LoadBE16(const unsigned char* p) {
 }
 
 inline uint32_t LoadBE24(const unsigned char* p) {
-    return (static_cast<uint32_t>(p[0]) << 16) | (static_cast<uint32_t>(p[1]) << 8) |
-           static_cast<uint32_t>(p[2]);
+    return (static_cast<uint32_t>(p[0]) << 16) | (static_cast<uint32_t>(p[1]) << 8) | static_cast<uint32_t>(p[2]);
 }
 
 inline uint32_t LoadBE32(const unsigned char* p) {
@@ -29,8 +28,9 @@ inline uint32_t LoadBE32(const unsigned char* p) {
 
 inline uint64_t LoadBE64(const unsigned char* p) {
     uint64_t v = 0;
-    for (int i = 0; i < 8; ++i) v = (v << 8) | static_cast<uint64_t>(p[i]);
+    for (int i = 0; i < 8; ++i)
+        v = (v << 8) | static_cast<uint64_t>(p[i]);
     return v;
 }
 
-}  // namespace videoeye
+} // namespace videoeye

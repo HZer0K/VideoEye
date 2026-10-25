@@ -9,16 +9,16 @@ namespace model {
 
 // MP4 Box 树节点
 struct Mp4BoxNode {
-    std::string type;           // 4CC 名称如 "moov", "trak", "stbl", "stts"
-    uint64_t size = 0;          // Box 总大小
-    uint64_t offset = 0;        // Box 在文件中的偏移
-    int depth = 0;              // 树深度
+    std::string type;    // 4CC 名称如 "moov", "trak", "stbl", "stts"
+    uint64_t size = 0;   // Box 总大小
+    uint64_t offset = 0; // Box 在文件中的偏移
+    int depth = 0;       // 树深度
     std::vector<Mp4BoxNode> children;
 
     // 字段信息 (从自研 videoeye::IsobmffParser 收集)
     struct Field {
         std::string name;
-        std::string value;      // 字符串表示
+        std::string value; // 字符串表示
     };
     std::vector<Field> fields;
 };
@@ -59,13 +59,13 @@ struct StssEntry {
 // 每个 Track 的 Box 表数据
 struct TrackBoxTables {
     int track_id = 0;
-    std::string track_type;         // "video", "audio", etc.
+    std::string track_type; // "video", "audio", etc.
     std::vector<SttsEntry> stts_entries;
     std::vector<StcoEntry> stco_entries;
     std::vector<Co64Entry> co64_entries;
     std::vector<StscEntry> stsc_entries;
     std::vector<StszEntry> stsz_entries;
-    std::vector<StssEntry> stss_entries;  // stss: 关键帧列表
+    std::vector<StssEntry> stss_entries; // stss: 关键帧列表
     uint32_t stsz_default_size = 0;
     uint32_t stsz_sample_count = 0;
 };

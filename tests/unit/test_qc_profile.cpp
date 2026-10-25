@@ -22,7 +22,8 @@ TEST(QcProfileTest, BuiltinsArePresent) {
     ASSERT_EQ(profiles.size(), 5u);
 
     std::vector<std::string> ids;
-    for (const auto& p : profiles) ids.push_back(p.id);
+    for (const auto& p : profiles)
+        ids.push_back(p.id);
     EXPECT_EQ(ids[0], "general");
     EXPECT_EQ(ids[1], "broadcast");
     EXPECT_EQ(ids[2], "hls-vod");
@@ -46,7 +47,7 @@ TEST(QcProfileTest, BuiltinIdsResolve) {
 }
 
 TEST(QcProfileTest, RoundTripSerialization) {
-    QcProfile profile = BuiltinQcProfiles()[2];  // hls-vod
+    QcProfile profile = BuiltinQcProfiles()[2]; // hls-vod
     const std::string json = SerializeQcProfile(profile, /*pretty=*/true);
 
     QcProfile reparsed;
@@ -59,7 +60,7 @@ TEST(QcProfileTest, RoundTripSerialization) {
 }
 
 TEST(QcProfileTest, OverrideApplyChangesThreshold) {
-    QcProfile profile = BuiltinQcProfiles()[1];  // broadcast：确实带 video.gop.max_seconds 覆盖项
+    QcProfile profile = BuiltinQcProfiles()[1]; // broadcast：确实带 video.gop.max_seconds 覆盖项
     // 改一个 gop 规则的阈值，确认序列化后能区分"已覆盖"与"未覆盖"
     bool found = false;
     for (auto& o : profile.overrides) {
@@ -67,7 +68,7 @@ TEST(QcProfileTest, OverrideApplyChangesThreshold) {
             o.has_enabled = true;
             o.enabled = true;
             o.has_threshold = true;
-            o.threshold = 12.0;  // 与默认不同
+            o.threshold = 12.0; // 与默认不同
             found = true;
             break;
         }
@@ -104,9 +105,8 @@ TEST(QcProfileTest, UnknownRuleIdsDetected) {
 }
 
 TEST(QcProfileTest, FileRoundTrip) {
-    QcProfile profile = BuiltinQcProfiles()[3];  // short-video
-    const std::string path = std::filesystem::temp_directory_path().string() +
-                             "/videoeye_qc_profile_test.json";
+    QcProfile profile = BuiltinQcProfiles()[3]; // short-video
+    const std::string path = std::filesystem::temp_directory_path().string() + "/videoeye_qc_profile_test.json";
     ASSERT_TRUE(SaveQcProfileToFile(path, profile));
 
     QcProfile loaded;
@@ -118,4 +118,4 @@ TEST(QcProfileTest, FileRoundTrip) {
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }
-}  // namespace
+} // namespace

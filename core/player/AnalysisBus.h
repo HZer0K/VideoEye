@@ -18,17 +18,17 @@
 #include <QObject>
 #include <QString>
 
-#include "core/analysis/stream/StreamAnalyzer.h"   // videoeye::StreamStats
+#include "core/analysis/stream/StreamAnalyzer.h" // videoeye::StreamStats
 #include "core/domain/model/AnalysisEvent.h"
 #include "core/domain/model/AudioVisualizationFrame.h"
-#include "core/domain/model/FrameTimingInfo.h"     // PacketTiming / FrameTimingInfo
-#include "core/domain/model/MacroblockInfo.h"      // MacroblockFrameAnalysis
+#include "core/domain/model/FrameTimingInfo.h" // PacketTiming / FrameTimingInfo
+#include "core/domain/model/MacroblockInfo.h"  // MacroblockFrameAnalysis
 #include "core/domain/model/PacketInfo.h"
-#include "core/domain/model/QualityMetric.h"       // FrameQualityMetric / ActivePictureArea
-#include "core/domain/model/SceneChangeResult.h"   // model::SceneChangeResult
+#include "core/domain/model/QualityMetric.h"     // FrameQualityMetric / ActivePictureArea
+#include "core/domain/model/SceneChangeResult.h" // model::SceneChangeResult
 #include "core/domain/model/SyncSample.h"
 #include "core/domain/model/TimelineEvent.h"
-#include "core/domain/model/VisualDefect.h"        // model::VisualDefect
+#include "core/domain/model/VisualDefect.h" // model::VisualDefect
 
 namespace videoeye {
 namespace player {
@@ -50,10 +50,9 @@ signals:
 
     // --- 实时分析结果 ---
     void StreamStatsReady(const videoeye::StreamStats& stats);
-    void VideoFrameInfoReady(int index, int frame_type, bool is_key_frame, qint64 pts,
-                             double timestamp_seconds);
-    void AudioFrameInfoReady(int index, qint64 pts, double timestamp_seconds,
-                             int sample_count, int sample_rate, int channels, int byte_count);
+    void VideoFrameInfoReady(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds);
+    void AudioFrameInfoReady(int index, qint64 pts, double timestamp_seconds, int sample_count, int sample_rate,
+                             int channels, int byte_count);
     void PacketInfoReady(const model::PacketInfo& packet_info);
     void AnalysisEventReady(const model::AnalysisEvent& event_info);
     void SyncSampleReady(const model::SyncSample& sample);
@@ -75,5 +74,5 @@ signals:
                                 const model::ActivePictureArea& effective_area);
 };
 
-}  // namespace player
-}  // namespace videoeye
+} // namespace player
+} // namespace videoeye

@@ -12,13 +12,13 @@
 // 数据全部由 MainWindow 喂进来（本页不持有 AnalysisPanel / MediaPlayer），
 // 跳转意图以 NavigateToPage(page_id) 信号外抛，由 MainWindow 切 stack + 侧栏。
 
-#include <QWidget>
 #include <QString>
 #include <QVector>
+#include <QWidget>
 
-#include "core/domain/model/FrameData.h"        // model::StreamInfo
-#include "core/domain/model/DiagnosticIssue.h"  // model::DiagnosticIssue / IssueSeverity
-#include "ui/main_window/overview_analysis.h"   // OverviewAnalysisSummary
+#include "core/domain/model/DiagnosticIssue.h" // model::DiagnosticIssue / IssueSeverity
+#include "core/domain/model/FrameData.h"       // model::StreamInfo
+#include "ui/main_window/overview_analysis.h"  // OverviewAnalysisSummary
 
 class QGroupBox;
 class QLabel;
@@ -36,7 +36,9 @@ public:
     explicit OverviewPage(QWidget* parent = nullptr);
 
     // 是否已登记了打开的文件（MainWindow 刷新分析状态时要带上，未打开时只显示空态）
-    bool HasFile() const { return summary_.has_file; }
+    bool HasFile() const {
+        return summary_.has_file;
+    }
 
     // 完整媒体信息文本（FFmpeg 探测结果 / Raw 图像详情 / PCM 详情）
     void SetMediaInfoText(const QString& text);
@@ -102,5 +104,5 @@ private:
     AnalysisSummary summary_;
 };
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

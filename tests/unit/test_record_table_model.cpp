@@ -26,10 +26,8 @@ struct Row {
 std::vector<RecordTableModel<Row>::ColumnSpec> MakeColumns() {
     using Spec = RecordTableModel<Row>::ColumnSpec;
     return {
-        Spec{QStringLiteral("id"),
-             [](const Row& r) { return QString::number(r.id); }, {}},
-        Spec{QStringLiteral("value"),
-             [](const Row& r) { return QString::number(r.value); },
+        Spec{QStringLiteral("id"), [](const Row& r) { return QString::number(r.id); }, {}},
+        Spec{QStringLiteral("value"), [](const Row& r) { return QString::number(r.value); },
              // 负数染红：顺带验证 ForegroundRole 走列适配器
              [](const Row& r) { return r.value < 0 ? QColor("#e53935") : QColor(); }},
     };
@@ -44,7 +42,7 @@ std::vector<Row> MakeRows(int from, int count) {
     return out;
 }
 
-}  // namespace
+} // namespace
 
 TEST(RecordTableModelTest, EmptyModel) {
     RecordTableModel<Row> model(MakeColumns());
@@ -144,7 +142,7 @@ TEST(RecordTableModelTest, FilterShrinksVisibleRowsButKeepsRecords) {
 
     model.SetFilter([](const Row& r) { return r.id % 2 == 0; });
     ASSERT_EQ(5, model.rowCount());
-    EXPECT_EQ(10u, model.record_count());   // 记录还在，只是不显示
+    EXPECT_EQ(10u, model.record_count()); // 记录还在，只是不显示
 
     EXPECT_EQ(QStringLiteral("0"), model.index(0, 0).data(Qt::DisplayRole).toString());
     EXPECT_EQ(QStringLiteral("2"), model.index(1, 0).data(Qt::DisplayRole).toString());
@@ -168,10 +166,10 @@ TEST(RecordTableModelTest, RowOfRecordAccountsForFilter) {
 TEST(RecordTableModelTest, AppendRespectsActiveFilter) {
     RecordTableModel<Row> model(MakeColumns());
     model.SetFilter([](const Row& r) { return r.id % 2 == 0; });
-    model.AppendRecords(MakeRows(0, 4));   // 0,2 可见
+    model.AppendRecords(MakeRows(0, 4)); // 0,2 可见
     ASSERT_EQ(2, model.rowCount());
 
-    model.AppendRecords(MakeRows(4, 4));   // 4,6 可见
+    model.AppendRecords(MakeRows(4, 4)); // 4,6 可见
     ASSERT_EQ(4, model.rowCount());
     EXPECT_EQ(QStringLiteral("6"), model.index(3, 0).data(Qt::DisplayRole).toString());
     // 记录是全量保留的（0..7 共 8 条），筛选只影响行号
@@ -185,12 +183,12 @@ TEST(RecordTableModelTest, TrimFrontWithFilterReindexesVisible) {
     model.SetFilter([](const Row& r) { return r.id % 2 == 0; });
     ASSERT_EQ(5, model.rowCount());
 
-    model.TrimFront(4);   // 记录 0..3 被裁，剩下 4..9；可见的应为 4,6,8
+    model.TrimFront(4); // 记录 0..3 被裁，剩下 4..9；可见的应为 4,6,8
     ASSERT_EQ(3, model.rowCount());
     EXPECT_EQ(QStringLiteral("4"), model.index(0, 0).data(Qt::DisplayRole).toString());
     EXPECT_EQ(QStringLiteral("6"), model.index(1, 0).data(Qt::DisplayRole).toString());
     EXPECT_EQ(QStringLiteral("8"), model.index(2, 0).data(Qt::DisplayRole).toString());
-    EXPECT_EQ(0, model.RowOfRecord(0u));   // 记录索引 0 == 原 id 4
+    EXPECT_EQ(0, model.RowOfRecord(0u)); // 记录索引 0 == 原 id 4
 }
 
 TEST(RecordTableModelTest, ResetFilterRestoresAllRows) {
@@ -217,8 +215,8 @@ TEST(RecordTableModelTest, HandlesHundredThousandRecords) {
     for (int batch = 0; batch < 10; ++batch) {
         model.AppendRecords(MakeRows(batch * 10000, 10000));
     }
-    const double elapsed_ms = std::chrono::duration<double, std::milli>(
-                                  std::chrono::steady_clock::now() - start).count();
+    const double elapsed_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 
     ASSERT_EQ(static_cast<int>(kDefaultMaxRecordCount), model.rowCount());
     EXPECT_EQ(kDefaultMaxRecordCount, model.record_count());
@@ -228,8 +226,7 @@ TEST(RecordTableModelTest, HandlesHundredThousandRecords) {
     EXPECT_LT(elapsed_ms, 2000.0) << "插入 10 万条耗时 " << elapsed_ms << " ms，疑似退化";
 
     // 末尾行的映射必须仍然正确：这是"裁过/追加过很多次之后索引还准不准"的取证点
-    EXPECT_EQ(QStringLiteral("99999"),
-              model.index(99999, 0).data(Qt::DisplayRole).toString());
+    EXPECT_EQ(QStringLiteral("99999"), model.index(99999, 0).data(Qt::DisplayRole).toString());
     EXPECT_EQ(kDefaultMaxRecordCount - 1, model.RecordIndexOfRow(99999));
 }
 
@@ -241,7 +238,7 @@ TEST(RecordTableModelTest, DefaultMaxRecordCountCoversOneHourVideo) {
 // 反复追加 + 裁剪（模拟长视频播到上限之后持续滚动），行号不能漂移。
 TEST(RecordTableModelTest, RollingWindowStaysConsistent) {
     RecordTableModel<Row> model(MakeColumns());
-    constexpr std::size_t kMax = 1000;   // 用小窗口跑同样的逻辑
+    constexpr std::size_t kMax = 1000; // 用小窗口跑同样的逻辑
 
     int next_id = 0;
     for (int round = 0; round < 20; ++round) {

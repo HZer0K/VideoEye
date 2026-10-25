@@ -9,8 +9,7 @@ namespace diagnostics {
 namespace detail {
 
 // 字幕规则（subtitle.*）。调用方（CheckRule 前缀路由）保证 rule.id 属于本类。
-std::vector<model::DiagnosticIssue> CheckSubtitleRules(const model::QcRule& rule,
-                                                       const model::AnalysisResult& result,
+std::vector<model::DiagnosticIssue> CheckSubtitleRules(const model::QcRule& rule, const model::AnalysisResult& result,
                                                        const IssueFactory& make_issue) {
     std::vector<model::DiagnosticIssue> issues;
 
@@ -18,26 +17,28 @@ std::vector<model::DiagnosticIssue> CheckSubtitleRules(const model::QcRule& rule
     // 这两条与下面的 cue 级规则不同：它们看的是"整条 CC 轨有没有解出东西"，
     // 属于流级结论，所以不走 SubtitleIssue 的计数模型。
     if (rule.id == "subtitle.cc.no_text" || rule.id == "subtitle.cc.dtvcc_loss") {
-        if (!result.subtitle_analyzed) return issues;
+        if (!result.subtitle_analyzed)
+            return issues;
 
         if (rule.id == "subtitle.cc.no_text") {
             double count = 0.0;
             std::string detail;
             int stream_index = -1;
             for (const auto& stream : result.subtitle.streams) {
-                if (stream.kind != model::SubtitleKind::ClosedCaption) continue;
-                if (stream.cue_count > 0) continue;
+                if (stream.kind != model::SubtitleKind::ClosedCaption)
+                    continue;
+                if (stream.cue_count > 0)
+                    continue;
                 count += 1.0;
                 if (detail.empty()) {
                     stream_index = stream.stream_index;
-                    detail = "字幕流 " + std::to_string(stream.stream_index) + "（" +
-                             model::ToString(stream.format) + "）没有解出任何上屏文本";
+                    detail = "字幕流 " + std::to_string(stream.stream_index) + "（" + model::ToString(stream.format) +
+                             "）没有解出任何上屏文本";
                 }
             }
             if (Triggered(rule, count)) {
-                issues.push_back(make_issue(count,
-                    detail + "（共 " + FormatValue(count, 0) + " 条隐藏字幕流）。",
-                    model::TimeRange::Global(), stream_index, static_cast<int>(count)));
+                issues.push_back(make_issue(count, detail + "（共 " + FormatValue(count, 0) + " 条隐藏字幕流）。",
+                                            model::TimeRange::Global(), stream_index, static_cast<int>(count)));
             }
             return issues;
         }
@@ -46,7 +47,8 @@ std::vector<model::DiagnosticIssue> CheckSubtitleRules(const model::QcRule& rule
         std::string detail;
         int stream_index = -1;
         for (const auto& stream : result.subtitle.streams) {
-            if (stream.cc708.sequence_gap_count <= 0) continue;
+            if (stream.cc708.sequence_gap_count <= 0)
+                continue;
             gaps += static_cast<double>(stream.cc708.sequence_gap_count);
             if (detail.empty()) {
                 stream_index = stream.stream_index;
@@ -55,13 +57,11 @@ std::vector<model::DiagnosticIssue> CheckSubtitleRules(const model::QcRule& rule
             }
         }
         if (Triggered(rule, gaps)) {
-            issues.push_back(make_issue(gaps,
-                detail + "（合计 " + FormatValue(gaps, 0) + " 处，成片会缺句）。",
-                model::TimeRange::Global(), stream_index, static_cast<int>(gaps)));
+            issues.push_back(make_issue(gaps, detail + "（合计 " + FormatValue(gaps, 0) + " 处，成片会缺句）。",
+                                        model::TimeRange::Global(), stream_index, static_cast<int>(gaps)));
         }
         return issues;
     }
-
 
     // ---------- 字幕（core/analysis/diagnostics/SubtitleAnalyzer.h）----------
     // 具体阈值（最短/最长停留、阅读速度）由 SubtitleOptions 决定，规则只决定
@@ -87,7 +87,8 @@ std::vector<model::DiagnosticIssue> CheckSubtitleRules(const model::QcRule& rule
             break;
         }
     }
-    if (!matched || !result.subtitle_analyzed) return issues;
+    if (!matched || !result.subtitle_analyzed)
+        return issues;
 
     const int count = result.subtitle.CountIssues(target);
     if (Triggered(rule, static_cast<double>(count))) {
@@ -99,7 +100,8 @@ std::vector<model::DiagnosticIssue> CheckSubtitleRules(const model::QcRule& rule
             }
         }
         std::string detail = "共 " + std::to_string(count) + " 处";
-        if (first != nullptr && !first->detail.empty()) detail += "，例如：" + first->detail;
+        if (first != nullptr && !first->detail.empty())
+            detail += "，例如：" + first->detail;
         model::TimeRange range = model::TimeRange::Global();
         int stream_index = -1;
         if (first != nullptr && !first->IsStreamLevel() && first->start_seconds >= 0.0) {
@@ -108,12 +110,11 @@ std::vector<model::DiagnosticIssue> CheckSubtitleRules(const model::QcRule& rule
         } else if (first != nullptr) {
             stream_index = first->stream_index;
         }
-        issues.push_back(make_issue(static_cast<double>(count), detail, range, stream_index,
-                                    count > 0 ? count : 1));
+        issues.push_back(make_issue(static_cast<double>(count), detail, range, stream_index, count > 0 ? count : 1));
     }
     return issues;
 }
 
-}  // namespace detail
-}  // namespace diagnostics
-}  // namespace videoeye
+} // namespace detail
+} // namespace diagnostics
+} // namespace videoeye

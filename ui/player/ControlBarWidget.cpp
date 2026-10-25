@@ -3,13 +3,13 @@
 #include "core/player/MediaPlayer.h"
 
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QMenu>
 #include <QPushButton>
 #include <QResizeEvent>
-#include <QSlider>
-#include <QLabel>
-#include <QStyle>
 #include <QSize>
+#include <QSlider>
+#include <QStyle>
 #include <QToolButton>
 #include <QWidgetAction>
 #include <algorithm>
@@ -21,8 +21,7 @@ namespace {
 constexpr int kControlBarHeight = 56;
 } // namespace
 
-ControlBarWidget::ControlBarWidget(QWidget* parent)
-    : QWidget(parent) {
+ControlBarWidget::ControlBarWidget(QWidget* parent) : QWidget(parent) {
     SetupUI();
     SetupConnections();
 }
@@ -94,13 +93,12 @@ void ControlBarWidget::SetupUI() {
     volume_button_->setIconSize(QSize(16, 16));
     volume_button_->setFixedSize(32, 28);
     volume_button_->setToolTip(tr("静音/取消静音"));
-    volume_button_->setStyleSheet(
-        "QPushButton#volumeButton {"
-        "  background-color: transparent; border: none;"
-        "}"
-        "QPushButton#volumeButton:hover {"
-        "  background-color: #21262D; border-radius: 4px;"
-        "}");
+    volume_button_->setStyleSheet("QPushButton#volumeButton {"
+                                  "  background-color: transparent; border: none;"
+                                  "}"
+                                  "QPushButton#volumeButton:hover {"
+                                  "  background-color: #21262D; border-radius: 4px;"
+                                  "}");
     control_layout->addWidget(volume_button_);
 
     volume_slider_ = new QSlider(Qt::Horizontal, this);
@@ -109,20 +107,19 @@ void ControlBarWidget::SetupUI() {
     volume_slider_->setValue(100);
     volume_slider_->setFixedWidth(80);
     volume_slider_->setToolTip(tr("音量: 100%"));
-    volume_slider_->setStyleSheet(
-        "QSlider#volumeSlider::groove:horizontal {"
-        "  border: none; height: 4px; background: #30363D; border-radius: 2px;"
-        "}"
-        "QSlider#volumeSlider::sub-page:horizontal {"
-        "  background: #58A6FF; border-radius: 2px;"
-        "}"
-        "QSlider#volumeSlider::handle:horizontal {"
-        "  background: #C9D1D9; width: 12px; height: 12px;"
-        "  margin: -5px 0; border-radius: 6px;"
-        "}"
-        "QSlider#volumeSlider::handle:horizontal:hover {"
-        "  background: #FFFFFF;"
-        "}");
+    volume_slider_->setStyleSheet("QSlider#volumeSlider::groove:horizontal {"
+                                  "  border: none; height: 4px; background: #30363D; border-radius: 2px;"
+                                  "}"
+                                  "QSlider#volumeSlider::sub-page:horizontal {"
+                                  "  background: #58A6FF; border-radius: 2px;"
+                                  "}"
+                                  "QSlider#volumeSlider::handle:horizontal {"
+                                  "  background: #C9D1D9; width: 12px; height: 12px;"
+                                  "  margin: -5px 0; border-radius: 6px;"
+                                  "}"
+                                  "QSlider#volumeSlider::handle:horizontal:hover {"
+                                  "  background: #FFFFFF;"
+                                  "}");
     control_layout->addWidget(volume_slider_);
 
     // 运动矢量叠加开关
@@ -131,17 +128,16 @@ void ControlBarWidget::SetupUI() {
     mv_overlay_button_->setCheckable(true);
     mv_overlay_button_->setToolTip(tr("运动矢量叠加显示 (需软件解码)"));
     mv_overlay_button_->setFixedSize(40, 28);
-    mv_overlay_button_->setStyleSheet(
-        "QPushButton#MvOverlayButton {"
-        "  background-color: #21262D; border: 1px solid #30363D;"
-        "  border-radius: 4px; color: #8B949E; font-size: 11px; font-weight: bold;"
-        "}"
-        "QPushButton#MvOverlayButton:hover {"
-        "  border-color: #58A6FF; color: #C9D1D9;"
-        "}"
-        "QPushButton#MvOverlayButton:checked {"
-        "  background-color: #1F6FEB; border-color: #58A6FF; color: #FFFFFF;"
-        "}");
+    mv_overlay_button_->setStyleSheet("QPushButton#MvOverlayButton {"
+                                      "  background-color: #21262D; border: 1px solid #30363D;"
+                                      "  border-radius: 4px; color: #8B949E; font-size: 11px; font-weight: bold;"
+                                      "}"
+                                      "QPushButton#MvOverlayButton:hover {"
+                                      "  border-color: #58A6FF; color: #C9D1D9;"
+                                      "}"
+                                      "QPushButton#MvOverlayButton:checked {"
+                                      "  background-color: #1F6FEB; border-color: #58A6FF; color: #FFFFFF;"
+                                      "}");
     control_layout->addWidget(mv_overlay_button_);
 
     // 收起播放区 (分析为主: 收起后播放区隐藏, 分析区占满整个内容区)
@@ -151,13 +147,12 @@ void ControlBarWidget::SetupUI() {
     collapse_player_button_->setIconSize(QSize(16, 16));
     collapse_player_button_->setFixedSize(32, 28);
     collapse_player_button_->setToolTip(tr("收起播放区 (F9)"));
-    collapse_player_button_->setStyleSheet(
-        "QPushButton#collapsePlayerButton {"
-        "  background-color: transparent; border: none;"
-        "}"
-        "QPushButton#collapsePlayerButton:hover {"
-        "  background-color: #21262D; border-radius: 4px;"
-        "}");
+    collapse_player_button_->setStyleSheet("QPushButton#collapsePlayerButton {"
+                                           "  background-color: transparent; border: none;"
+                                           "}"
+                                           "QPushButton#collapsePlayerButton:hover {"
+                                           "  background-color: #21262D; border-radius: 4px;"
+                                           "}");
     control_layout->addWidget(collapse_player_button_);
 
     // 次要控件在布局里的原始下标：窄宽收纳移出、恢复原位都靠它（不写死位置）
@@ -172,7 +167,7 @@ void ControlBarWidget::BuildOverflowMenu() {
     // "⋯" 溢出按钮：默认隐藏，窄宽收纳模式才出现
     overflow_button_ = new QToolButton(this);
     overflow_button_->setObjectName("OverflowButton");
-    overflow_button_->setText(QStringLiteral("\xE2\x8B\xAF"));  // ⋯
+    overflow_button_->setText(QStringLiteral("\xE2\x8B\xAF")); // ⋯
     overflow_button_->setToolTip(tr("次要控件（窄宽度时收进这里）"));
     overflow_button_->setPopupMode(QToolButton::InstantPopup);
     overflow_button_->setFixedSize(32, 28);
@@ -196,8 +191,10 @@ void ControlBarWidget::BuildOverflowMenu() {
 }
 
 void ControlBarWidget::SetSecondaryInMenu(bool in_menu) {
-    if (in_menu == secondary_in_menu_) return;
-    if (!control_layout_ || !overflow_button_) return;
+    if (in_menu == secondary_in_menu_)
+        return;
+    if (!control_layout_ || !overflow_button_)
+        return;
     secondary_in_menu_ = in_menu;
 
     // QLayout::removeWidget 只解除布局管理，不会隐藏控件 —— 不显式 hide 的话，
@@ -232,14 +229,17 @@ void ControlBarWidget::SetSecondaryInMenu(bool in_menu) {
 void ControlBarWidget::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
     const int width = event->size().width();
-    if (width <= 0) return;
+    if (width <= 0)
+        return;
 
     // 阈值只在不处于收纳态时量一次 —— 见 full_min_width_ 的注释。
     // 若直接用"当前状态的 minimumSizeHint"当阈值，收纳会把阈值一起变小，于是下一次
     // resizeEvent 又判定"放得下"而移回栏上，父布局随之再次变窄：两个状态互相翻转，
     // 拖窗口时会无限抖动（甚至递归到栈溢出）。
-    if (!secondary_in_menu_) full_min_width_ = minimumSizeHint().width();
-    if (full_min_width_ <= 0) return;  // 布局还没建好，先不动
+    if (!secondary_in_menu_)
+        full_min_width_ = minimumSizeHint().width();
+    if (full_min_width_ <= 0)
+        return; // 布局还没建好，先不动
 
     // 本机 WM 拖拽中会无视窗口最小尺寸约束，宽度可能被拖到 1100 以下，
     // 这时次要控件必须自己收进菜单，而不是互相重叠 / 被裁掉。

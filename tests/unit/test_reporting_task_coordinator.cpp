@@ -51,10 +51,12 @@ void PumpUi() {
 }
 
 bool WaitBodyDone(const std::shared_ptr<AnalysisTask>& task, int budget_ms = 3000) {
-    if (!task) return false;
+    if (!task)
+        return false;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget_ms);
     while (!task->body_done.load(std::memory_order_acquire)) {
-        if (std::chrono::steady_clock::now() >= deadline) return false;
+        if (std::chrono::steady_clock::now() >= deadline)
+            return false;
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     return true;
@@ -83,7 +85,9 @@ protected:
         receiver_ = new QObject;
         rec_ = Recording{};
     }
-    void TearDown() override { delete receiver_; }
+    void TearDown() override {
+        delete receiver_;
+    }
 
     QObject* receiver_ = nullptr;
     Recording rec_;
@@ -95,12 +99,11 @@ TEST_F(ReportingTaskCoordinatorTest, StartRunsBodyAndMarksSlotRunning) {
 
     std::atomic<bool> ran{false};
     const std::shared_ptr<AnalysisTask> task = runner.Start(
-        ReportingTaskCoordinator::Slot::Single,
-        [&](const std::shared_ptr<AnalysisTask>&) { ran.store(true); });
+        ReportingTaskCoordinator::Slot::Single, [&](const std::shared_ptr<AnalysisTask>&) { ran.store(true); });
     ASSERT_TRUE(task != nullptr);
     EXPECT_TRUE(WaitBodyDone(task));
     EXPECT_TRUE(ran.load());
-    EXPECT_TRUE(runner.IsRunning());  // 还没归还终态
+    EXPECT_TRUE(runner.IsRunning()); // 还没归还终态
 
     runner.Finish(task, TaskState::Succeeded);
     EXPECT_FALSE(runner.IsRunning());
@@ -136,9 +139,8 @@ TEST_F(ReportingTaskCoordinatorTest, RestartingSameSlotRetiresPreviousBody) {
     std::atomic<bool> first_saw_cancel{false};
     std::atomic<bool> first_done{false};
 
-    const auto first = runner.Start(
-        ReportingTaskCoordinator::Slot::Single,
-        [&](const std::shared_ptr<AnalysisTask>& t) {
+    const auto first =
+        runner.Start(ReportingTaskCoordinator::Slot::Single, [&](const std::shared_ptr<AnalysisTask>& t) {
             // 一个"会响应取消"的任务体：不响应就永远收不回来
             while (!t->cancel.IsCanceled()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -150,8 +152,8 @@ TEST_F(ReportingTaskCoordinatorTest, RestartingSameSlotRetiresPreviousBody) {
 
     // 同槽位再启动：必须先回收上一个 —— 对仍 joinable 的 std::thread 直接赋值
     // 会 std::terminate（连续分析两次的老根因）。
-    const auto second = runner.Start(ReportingTaskCoordinator::Slot::Single,
-                                     [](const std::shared_ptr<AnalysisTask>&) {});
+    const auto second =
+        runner.Start(ReportingTaskCoordinator::Slot::Single, [](const std::shared_ptr<AnalysisTask>&) {});
     ASSERT_TRUE(second != nullptr);
     EXPECT_TRUE(WaitBodyDone(second));
     EXPECT_TRUE(first_done.load());       // 上一个任务体确实被收回来了（join 到了）
@@ -161,9 +163,8 @@ TEST_F(ReportingTaskCoordinatorTest, RestartingSameSlotRetiresPreviousBody) {
 
 TEST_F(ReportingTaskCoordinatorTest, BodyExceptionIsContainedAndReported) {
     ReportingTaskCoordinator runner(rec_.MakeDeps(receiver_));
-    const auto task = runner.Start(
-        ReportingTaskCoordinator::Slot::Batch,
-        [](const std::shared_ptr<AnalysisTask>&) { throw std::runtime_error("boom"); });
+    const auto task = runner.Start(ReportingTaskCoordinator::Slot::Batch,
+                                   [](const std::shared_ptr<AnalysisTask>&) { throw std::runtime_error("boom"); });
     ASSERT_TRUE(task != nullptr);
     ASSERT_TRUE(WaitBodyDone(task));
 
@@ -174,40 +175,36 @@ TEST_F(ReportingTaskCoordinatorTest, BodyExceptionIsContainedAndReported) {
     EXPECT_TRUE(rec_.failures[0].contains(QString::fromUtf8("boom")));
     EXPECT_EQ(rec_.appended.size(), 1u);
     ASSERT_EQ(rec_.busy_calls.size(), 1u);
-    EXPECT_FALSE(rec_.busy_calls[0]);  // set_busy(false)
-    EXPECT_EQ(rec_.aborts, 1);         // 挂起的输出目录必须丢弃
+    EXPECT_FALSE(rec_.busy_calls[0]); // set_busy(false)
+    EXPECT_EQ(rec_.aborts, 1);        // 挂起的输出目录必须丢弃
     EXPECT_FALSE(runner.IsRunning());
 }
 
 TEST_F(ReportingTaskCoordinatorTest, CancelWinsOverExceptionForTerminalState) {
     // 终态按统一语义：取消优先于异常（见 core/domain/task/ThreadBody.h）。
     ReportingTaskCoordinator runner(rec_.MakeDeps(receiver_));
-    const auto task = runner.Start(
-        ReportingTaskCoordinator::Slot::Single,
-        [](const std::shared_ptr<AnalysisTask>& t) {
-            t->cancel.RequestCancel();  // 任务体自己判定为"被中断"
-            throw std::runtime_error("interrupted");
-        });
+    const auto task = runner.Start(ReportingTaskCoordinator::Slot::Single, [](const std::shared_ptr<AnalysisTask>& t) {
+        t->cancel.RequestCancel(); // 任务体自己判定为"被中断"
+        throw std::runtime_error("interrupted");
+    });
     ASSERT_TRUE(task != nullptr);
     ASSERT_TRUE(WaitBodyDone(task));
     PumpUi();
-    EXPECT_EQ(rec_.failures.size(), 1u);  // 仍然要报告（异常文本不能消失）
-    EXPECT_FALSE(runner.IsRunning());     // 终态已归还，slot 不停在 Running
+    EXPECT_EQ(rec_.failures.size(), 1u); // 仍然要报告（异常文本不能消失）
+    EXPECT_FALSE(runner.IsRunning());    // 终态已归还，slot 不停在 Running
 }
 
 TEST_F(ReportingTaskCoordinatorTest, RequestCancelOnlySignalsTerminalComesFromBody) {
     ReportingTaskCoordinator runner(rec_.MakeDeps(receiver_));
-    const auto task = runner.Start(
-        ReportingTaskCoordinator::Slot::Batch,
-        [](const std::shared_ptr<AnalysisTask>& t) {
-            while (!t->cancel.IsCanceled()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(2));
-            }
-        });
+    const auto task = runner.Start(ReportingTaskCoordinator::Slot::Batch, [](const std::shared_ptr<AnalysisTask>& t) {
+        while (!t->cancel.IsCanceled()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    });
     ASSERT_TRUE(task != nullptr);
     EXPECT_FALSE(task->cancel.IsCanceled());
 
-    runner.RequestCancel(ReportingTaskCoordinator::Slot::Batch);  // 取消按钮那条路
+    runner.RequestCancel(ReportingTaskCoordinator::Slot::Batch); // 取消按钮那条路
     EXPECT_TRUE(WaitBodyDone(task));
     runner.Finish(task, TaskState::Canceled);
     EXPECT_FALSE(runner.IsRunning());
@@ -232,9 +229,9 @@ TEST_F(ReportingTaskCoordinatorTest, PostToUiSkipsDeadTask) {
 
 TEST_F(ReportingTaskCoordinatorTest, RetireAllIsSafeWithoutAnyTask) {
     ReportingTaskCoordinator runner(rec_.MakeDeps(receiver_));
-    runner.RetireAll();  // 一次任务都没起过：不该崩、不该卡
+    runner.RetireAll(); // 一次任务都没起过：不该崩、不该卡
     EXPECT_FALSE(runner.IsRunning());
     EXPECT_TRUE(rec_.busy_calls.empty());
 }
 
-}  // namespace
+} // namespace

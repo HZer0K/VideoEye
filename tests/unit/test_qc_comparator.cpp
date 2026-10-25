@@ -5,10 +5,10 @@
 #include "core/qc/QcAnalyzeRequest.h"
 #include "core/qc/QcComparator.h"
 
+using videoeye::model::IssueSeverity;
 using videoeye::qc::CompareRuns;
 using videoeye::qc::QcCompareRow;
 using videoeye::qc::QcRunResult;
-using videoeye::model::IssueSeverity;
 
 namespace {
 TEST(QcComparatorTest, ProducesRowsAndDetectsFileNameDiff) {
@@ -21,7 +21,7 @@ TEST(QcComparatorTest, ProducesRowsAndDetectsFileNameDiff) {
 
     QcRunResult right;
     right.ok = true;
-    right.report.file_name = "transcoded.mp4";  // 文件名必然不同
+    right.report.file_name = "transcoded.mp4"; // 文件名必然不同
     right.report.duration_seconds = 10.0;
     right.report.score = 95.0;
     right.report.verdict = "通过";
@@ -32,7 +32,8 @@ TEST(QcComparatorTest, ProducesRowsAndDetectsFileNameDiff) {
 
     bool saw_diff = false;
     for (const QcCompareRow& row : cmp.rows) {
-        if (row.diff == videoeye::qc::QcFieldDiff::Different) saw_diff = true;
+        if (row.diff == videoeye::qc::QcFieldDiff::Different)
+            saw_diff = true;
     }
     EXPECT_TRUE(saw_diff) << "文件名不同应当至少产生一行 Different";
 }
@@ -46,7 +47,7 @@ TEST(QcComparatorTest, SameFilesYieldNoDifferences) {
     left.report.verdict = "警告";
     left.report.container_format = "mov";
 
-    QcRunResult right = left;  // 完全相等
+    QcRunResult right = left; // 完全相等
     const auto cmp = CompareRuns(left, right);
     EXPECT_EQ(cmp.DifferentCount(), 0);
 }
@@ -56,7 +57,7 @@ TEST(QcComparatorTest, ScoreAndDurationAreNumericRows) {
     left.report.score = 90.0;
     left.report.duration_seconds = 10.0;
     QcRunResult right;
-    right.report.score = 70.0;  // 评分变化
+    right.report.score = 70.0; // 评分变化
     right.report.duration_seconds = 10.0;
 
     const auto cmp = CompareRuns(left, right);
@@ -68,4 +69,4 @@ TEST(QcComparatorTest, ScoreAndDurationAreNumericRows) {
     }
     EXPECT_TRUE(saw_numeric_diff);
 }
-}  // namespace
+} // namespace

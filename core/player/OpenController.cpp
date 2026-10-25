@@ -15,7 +15,7 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
-#include "core/analysis/orchestration/MediaInfoAnalyzer.h"  // FormatFromContext（复用本次探测）
+#include "core/analysis/orchestration/MediaInfoAnalyzer.h" // FormatFromContext（复用本次探测）
 #include "core/media/probe/FileProbe.h"
 #include "core/player/AudioOutput.h"
 #include "core/player/Decoders.h"
@@ -42,10 +42,11 @@ QString AvErrorString(int ret) {
 // 交给析构时看一眼 result.ok 统一判。
 class OpenTimingScope {
 public:
-    explicit OpenTimingScope(const OpenResult* result)
-        : result_(result), scope_(kMetricOpenMs, kOpenBudgetMs) {}
+    explicit OpenTimingScope(const OpenResult* result) : result_(result), scope_(kMetricOpenMs, kOpenBudgetMs) {
+    }
     ~OpenTimingScope() {
-        if (result_ == nullptr || !result_->ok) scope_.Discard();
+        if (result_ == nullptr || !result_->ok)
+            scope_.Discard();
     }
 
     OpenTimingScope(const OpenTimingScope&) = delete;
@@ -56,7 +57,7 @@ private:
     PerfScope scope_;
 };
 
-}  // namespace
+} // namespace
 
 // --- OpenResult 的所有权 ---
 //
@@ -105,8 +106,8 @@ OpenResult::~OpenResult() {
     Release();
 }
 
-OpenController::OpenController(PlaybackSession& playback, QObject* parent)
-    : QObject(parent), playback_(playback) {}
+OpenController::OpenController(PlaybackSession& playback, QObject* parent) : QObject(parent), playback_(playback) {
+}
 
 // --- 事务的提交侧 (UI 线程) ---
 
@@ -120,7 +121,7 @@ bool OpenController::Commit(OpenResult&& result, model::StreamInfo& out_info, QS
     }
 
     AVFormatContext* fmt = result.format_ctx;
-    result.format_ctx = nullptr;  // 所有权转移给播放会话
+    result.format_ctx = nullptr; // 所有权转移给播放会话
     playback_.AdoptFormatContext(fmt);
     playback_.SetStreamIndices(result.video_stream_index, result.audio_stream_index);
     playback_.SetVideoDecoder(std::move(result.video_decoder));
@@ -132,7 +133,8 @@ bool OpenController::Commit(OpenResult&& result, model::StreamInfo& out_info, QS
 
     out_info = result.stream_info;
     // 信号顺序与拆分前一致: 封面图先于媒体模式。
-    if (!result.cover_art.isNull()) emit FrameReady(result.cover_art);
+    if (!result.cover_art.isNull())
+        emit FrameReady(result.cover_art);
     // has_video 是"文件里有没有视频轨"—— 封面图也算有（界面据此切布局），
     // 与降级后的 video_index（"有没有可播放的视频流"）是两件事。
     emit MediaModeChanged(result.has_video);
@@ -152,7 +154,8 @@ OpenResult OpenController::Prepare(const OpenPrepareParams& params) {
     OpenTimingScope open_timing(&result);
     const std::string url_str = params.url.toStdString();
 
-    if (!CheckRuntimeVersion(result.error)) return result;
+    if (!CheckRuntimeVersion(result.error))
+        return result;
 
     if (!params.attempt) {
         result.error = QStringLiteral("内部错误: 缺少打开尝试状态");
@@ -164,7 +167,8 @@ OpenResult OpenController::Prepare(const OpenPrepareParams& params) {
     params.attempt->interrupt.cancel = &params.attempt->cancel;
     params.attempt->interrupt.deadline_us = 0;
 
-    if (!OpenAndProbe(params, result)) return result;
+    if (!OpenAndProbe(params, result))
+        return result;
 
     AVFormatContext* fmt = result.format_ctx;
     if (!fmt) {
@@ -180,7 +184,8 @@ OpenResult OpenController::Prepare(const OpenPrepareParams& params) {
     int video_index = -1;
     int audio_index = -1;
     const AVCodec* best_video_codec = nullptr;
-    if (!FindStreams(fmt, video_index, audio_index, best_video_codec, result.error)) return result;
+    if (!FindStreams(fmt, video_index, audio_index, best_video_codec, result.error))
+        return result;
 
     result.has_video = (video_index >= 0);
 
@@ -195,13 +200,11 @@ OpenResult OpenController::Prepare(const OpenPrepareParams& params) {
     result.audio_stream_index = audio_index;
 
     if (video_index >= 0 &&
-        !PrepareVideoDecoder(params, fmt, video_index, best_video_codec, result.video_decoder,
-                             result.error)) {
+        !PrepareVideoDecoder(params, fmt, video_index, best_video_codec, result.video_decoder, result.error)) {
         return result;
     }
     if (audio_index >= 0 &&
-        !PrepareAudioDecoder(params, fmt, audio_index, result.audio_decoder, result.audio_output,
-                             result.error)) {
+        !PrepareAudioDecoder(params, fmt, audio_index, result.audio_decoder, result.audio_output, result.error)) {
         return result;
     }
 
@@ -219,7 +222,8 @@ OpenResult OpenController::Prepare(const OpenPrepareParams& params) {
 bool OpenController::CheckRuntimeVersion(QString& out_error) {
     const unsigned header_avcodec_major = LIBAVCODEC_VERSION_MAJOR;
     const unsigned runtime_avcodec_major = static_cast<unsigned>(avcodec_version() >> 16);
-    if (header_avcodec_major == runtime_avcodec_major) return true;
+    if (header_avcodec_major == runtime_avcodec_major)
+        return true;
     out_error = QString("FFmpeg libavcodec 版本不匹配：编译期头文件=%1，运行期库=%2。")
                     .arg(header_avcodec_major)
                     .arg(runtime_avcodec_major);
@@ -241,22 +245,21 @@ bool OpenController::OpenAndProbe(const OpenPrepareParams& params, OpenResult& r
     ffmpeg_io::AttachInterrupt(fmt, params.attempt->interrupt, ffmpeg_io::kOpenTimeoutUs);
 
     AVDictionary* open_options = params.input_options;
-    int ret = avformat_open_input(&fmt, url_str.c_str(), params.input_format,
-                                  open_options ? &open_options : nullptr);
+    int ret = avformat_open_input(&fmt, url_str.c_str(), params.input_format, open_options ? &open_options : nullptr);
     // 探测到的上下文立刻交给 result 拥有: 之后的每一步失败都由 result 负责释放。
     result.format_ctx = fmt;
-    if (open_options) av_dict_free(&open_options);
+    if (open_options)
+        av_dict_free(&open_options);
 
     if (ret < 0) {
         if (ret == AVERROR_EXIT) {
-            result.error = QString("打开输入超时 (超过 %1 秒): %2")
-                               .arg(ffmpeg_io::kOpenTimeoutUs / 1000000)
-                               .arg(url);
+            result.error = QString("打开输入超时 (超过 %1 秒): %2").arg(ffmpeg_io::kOpenTimeoutUs / 1000000).arg(url);
         } else {
             result.error = QString("打开输入失败: %1 | FFmpeg: %2").arg(url, AvErrorString(ret));
             // 定向诊断: fMP4 分片缺 init 段等特征, 给出可操作的修复建议
             const std::string extra = videoeye::DiagnoseUnopenableFile(url_str);
-            if (!extra.empty()) result.error += QString::fromStdString("；" + extra);
+            if (!extra.empty())
+                result.error += QString::fromStdString("；" + extra);
         }
         return false;
     }
@@ -269,12 +272,10 @@ bool OpenController::OpenAndProbe(const OpenPrepareParams& params, OpenResult& r
     // 误杀正常的长素材读取。（回调本身留着，但已是一个只响应取消的空钩子。）
     params.attempt->interrupt.deadline_us = 0;
     if (ret < 0) {
-        result.error = (ret == AVERROR_EXIT)
-                           ? QString("解析流信息超时 (超过 %1 秒): %2")
-                                 .arg(ffmpeg_io::kProbeTimeoutUs / 1000000)
-                                 .arg(url)
-                           : QString("无法解析流信息 (文件可能损坏、截断或格式不受支持) | FFmpeg: %1")
-                                 .arg(AvErrorString(ret));
+        result.error =
+            (ret == AVERROR_EXIT)
+                ? QString("解析流信息超时 (超过 %1 秒): %2").arg(ffmpeg_io::kProbeTimeoutUs / 1000000).arg(url)
+                : QString("无法解析流信息 (文件可能损坏、截断或格式不受支持) | FFmpeg: %1").arg(AvErrorString(ret));
         return false;
     }
     LOG_INFO("Open: avformat_find_stream_info OK, streams=" + std::to_string(fmt->nb_streams));
@@ -287,7 +288,8 @@ bool OpenController::FindStreams(AVFormatContext* fmt, int& video_index, int& au
     video_index = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, &best_video_codec, 0);
     audio_index = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, &best_audio_codec, 0);
 
-    if (video_index >= 0 || audio_index >= 0) return true;
+    if (video_index >= 0 || audio_index >= 0)
+        return true;
     out_error = QStringLiteral("文件中未找到可播放的视频/音频流 (可能已损坏或为不支持的编码)");
     return false;
 }
@@ -296,8 +298,7 @@ bool IsCoverArtStream(const AVFormatContext* format, int video_index) {
     // 顺序不能动: 先判索引合法性, 再取 streams[video_index]。音频-only 时
     // video_index == -1, 旧写法 `AVStream* vs = fmt->streams[video_index];` 会先
     // 越界读 streams[-1] —— 未定义行为, 可能直接崩溃。
-    if (!format || video_index < 0 ||
-        video_index >= static_cast<int>(format->nb_streams)) {
+    if (!format || video_index < 0 || video_index >= static_cast<int>(format->nb_streams)) {
         return false;
     }
     const AVStream* vs = format->streams[video_index];
@@ -305,12 +306,15 @@ bool IsCoverArtStream(const AVFormatContext* format, int video_index) {
 }
 
 QImage OpenController::DecodeCoverArt(AVStream* vs) {
-    if (!vs->codecpar || !vs->attached_pic.data || vs->attached_pic.size <= 0) return QImage();
+    if (!vs->codecpar || !vs->attached_pic.data || vs->attached_pic.size <= 0)
+        return QImage();
     const AVCodec* cover_codec = avcodec_find_decoder(vs->codecpar->codec_id);
-    if (!cover_codec) return QImage();
+    if (!cover_codec)
+        return QImage();
 
     AVCodecContext* cover_ctx = avcodec_alloc_context3(cover_codec);
-    if (!cover_ctx) return QImage();
+    if (!cover_ctx)
+        return QImage();
     if (avcodec_parameters_to_context(cover_ctx, vs->codecpar) < 0) {
         avcodec_free_context(&cover_ctx);
         return QImage();
@@ -330,28 +334,28 @@ QImage OpenController::DecodeCoverArt(AVStream* vs) {
         return QImage();
     }
     model::FrameData cover_frame;
-    if (!cover_decoder.DecodePacket(&vs->attached_pic, cover_frame)) return QImage();
-    if (cover_frame.width <= 0 || cover_frame.height <= 0 || !cover_frame.data[0]) return QImage();
+    if (!cover_decoder.DecodePacket(&vs->attached_pic, cover_frame))
+        return QImage();
+    if (cover_frame.width <= 0 || cover_frame.height <= 0 || !cover_frame.data[0])
+        return QImage();
 
     SwsContext* cover_sws = sws_getCachedContext(
-        nullptr, cover_frame.width, cover_frame.height,
-        static_cast<AVPixelFormat>(cover_frame.format), cover_frame.width, cover_frame.height,
-        AV_PIX_FMT_BGRA, SWS_BILINEAR, nullptr, nullptr, nullptr);
-    if (!cover_sws) return QImage();
+        nullptr, cover_frame.width, cover_frame.height, static_cast<AVPixelFormat>(cover_frame.format),
+        cover_frame.width, cover_frame.height, AV_PIX_FMT_BGRA, SWS_BILINEAR, nullptr, nullptr, nullptr);
+    if (!cover_sws)
+        return QImage();
     QImage cover_img(cover_frame.width, cover_frame.height, QImage::Format_ARGB32);
     if (!cover_img.isNull()) {
         uint8_t* dst_slices[4] = {cover_img.bits(), nullptr, nullptr, nullptr};
         int dst_linesize[4] = {static_cast<int>(cover_img.bytesPerLine()), 0, 0, 0};
-        sws_scale(cover_sws, cover_frame.data, cover_frame.linesize, 0, cover_frame.height,
-                  dst_slices, dst_linesize);
+        sws_scale(cover_sws, cover_frame.data, cover_frame.linesize, 0, cover_frame.height, dst_slices, dst_linesize);
     }
     sws_freeContext(cover_sws);
     return cover_img;
 }
 
-bool OpenController::PrepareVideoDecoder(const OpenPrepareParams& params, AVFormatContext* fmt,
-                                         int video_index, const AVCodec* best_video_codec,
-                                         std::unique_ptr<VideoDecoder>& out_decoder,
+bool OpenController::PrepareVideoDecoder(const OpenPrepareParams& params, AVFormatContext* fmt, int video_index,
+                                         const AVCodec* best_video_codec, std::unique_ptr<VideoDecoder>& out_decoder,
                                          QString& out_error) {
     out_decoder = std::make_unique<VideoDecoder>();
     AVStream* video_stream = fmt->streams[video_index];
@@ -367,10 +371,8 @@ bool OpenController::PrepareVideoDecoder(const OpenPrepareParams& params, AVForm
         // VAAPI / D3D11VA / CUDA / QSV ...
         for (auto hw_type : VideoDecoder::GetAvailableHwDeviceTypes()) {
             if (out_decoder->InitializeWithHw(video_stream->codecpar, hw_type)) {
-                LOG_INFO("HW decoding initialized: " +
-                         std::string(av_hwdevice_get_type_name(hw_type)));
-                LOG_INFO("Video decoder initialized: " +
-                         std::to_string(out_decoder->GetWidth()) + "x" +
+                LOG_INFO("HW decoding initialized: " + std::string(av_hwdevice_get_type_name(hw_type)));
+                LOG_INFO("Video decoder initialized: " + std::to_string(out_decoder->GetWidth()) + "x" +
                          std::to_string(out_decoder->GetHeight()) + " (HW)");
                 return true;
             }
@@ -380,10 +382,10 @@ bool OpenController::PrepareVideoDecoder(const OpenPrepareParams& params, AVForm
 
     // 软件解码回退
     const AVCodec* video_codec = best_video_codec;
-    if (!video_codec) video_codec = avcodec_find_decoder(video_stream->codecpar->codec_id);
+    if (!video_codec)
+        video_codec = avcodec_find_decoder(video_stream->codecpar->codec_id);
     if (!video_codec) {
-        out_error = QString("找不到视频解码器 (codec_id=%1)")
-                        .arg(avcodec_get_name(video_stream->codecpar->codec_id));
+        out_error = QString("找不到视频解码器 (codec_id=%1)").arg(avcodec_get_name(video_stream->codecpar->codec_id));
         return false;
     }
     AVCodecContext* video_codec_ctx = avcodec_alloc_context3(video_codec);
@@ -407,8 +409,7 @@ bool OpenController::PrepareVideoDecoder(const OpenPrepareParams& params, AVForm
     ret = avcodec_open2(video_codec_ctx, video_codec, nullptr);
     if (ret < 0) {
         avcodec_free_context(&video_codec_ctx);
-        out_error = QString("打开视频解码器失败 (%1): %2")
-                        .arg(avcodec_get_name(video_codec->id), AvErrorString(ret));
+        out_error = QString("打开视频解码器失败 (%1): %2").arg(avcodec_get_name(video_codec->id), AvErrorString(ret));
         return false;
     }
     if (!out_decoder->InitializeFromContext(video_codec_ctx)) {
@@ -416,16 +417,14 @@ bool OpenController::PrepareVideoDecoder(const OpenPrepareParams& params, AVForm
         out_error = QStringLiteral("初始化视频解码器失败");
         return false;
     }
-    LOG_INFO("Video decoder initialized: " +
-             std::to_string(out_decoder->GetWidth()) + "x" +
+    LOG_INFO("Video decoder initialized: " + std::to_string(out_decoder->GetWidth()) + "x" +
              std::to_string(out_decoder->GetHeight()) + " (SW)");
     return true;
 }
 
-bool OpenController::PrepareAudioDecoder(const OpenPrepareParams& params, AVFormatContext* fmt,
-                                         int audio_index, std::unique_ptr<AudioDecoder>& out_decoder,
-                                         std::unique_ptr<AudioOutput>& out_output,
-                                         QString& out_error) {
+bool OpenController::PrepareAudioDecoder(const OpenPrepareParams& params, AVFormatContext* fmt, int audio_index,
+                                         std::unique_ptr<AudioDecoder>& out_decoder,
+                                         std::unique_ptr<AudioOutput>& out_output, QString& out_error) {
     out_decoder = std::make_unique<AudioDecoder>();
     AVStream* audio_stream = fmt->streams[audio_index];
     if (!audio_stream->codecpar) {
@@ -449,5 +448,5 @@ bool OpenController::PrepareAudioDecoder(const OpenPrepareParams& params, AVForm
     return true;
 }
 
-}  // namespace player
-}  // namespace videoeye
+} // namespace player
+} // namespace videoeye

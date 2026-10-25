@@ -33,5 +33,5 @@ signals:
     void ContainerStructureFailed(const QString& message);
 };
 
-}  // namespace player
-}  // namespace videoeye
+} // namespace player
+} // namespace videoeye

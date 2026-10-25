@@ -1,7 +1,7 @@
 #pragma once
 
-#include <QDialog>
 #include "core/exporter/MediaExporter.h"
+#include <QDialog>
 
 class QComboBox;
 class QLineEdit;
@@ -17,10 +17,7 @@ class MediaExportDialog : public QDialog {
     Q_OBJECT
 
 public:
-    MediaExportDialog(QWidget* parent,
-                      exporter::ExportKind kind,
-                      const QString& source_path,
-                      qint64 duration_ms);
+    MediaExportDialog(QWidget* parent, exporter::ExportKind kind, const QString& source_path, qint64 duration_ms);
 
     exporter::ExportOptions GetOptions() const;
 
@@ -42,7 +39,7 @@ private:
     QPushButton* browse_btn_ = nullptr;
     QCheckBox* reencode_check_ = nullptr;
     QCheckBox* no_audio_check_ = nullptr; // 仅视频导出: 不包含音频
-    QComboBox* quality_combo_ = nullptr; // 视频: 高/中/低; 音频: 码率
+    QComboBox* quality_combo_ = nullptr;  // 视频: 高/中/低; 音频: 码率
     QCheckBox* range_check_ = nullptr;
     QDoubleSpinBox* start_spin_ = nullptr;
     QDoubleSpinBox* end_spin_ = nullptr;

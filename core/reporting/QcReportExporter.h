@@ -40,7 +40,7 @@ struct QcExportBundle {
 // PDF 结果：除了成败还要告诉调用方"有没有丢字形"，CLI 据此给出提示。
 struct QcPdfExportResult {
     bool ok = false;
-    bool text_loss = false;   // true = 有字符（BMP 外，如 emoji）无法表示，被降级成 '?'
+    bool text_loss = false; // true = 有字符（BMP 外，如 emoji）无法表示，被降级成 '?'
 };
 
 // 批量汇总的一行。用扁平结构而不是直接吃 BatchQcItemResult，
@@ -87,8 +87,7 @@ public:
 
     // 按扩展名自动选格式；认不出来时退回 JSON。
     static bool ExportAuto(const std::string& path, const QcExportBundle& bundle);
-    static bool Export(const std::string& path, const QcExportBundle& bundle,
-                       qc::QcReportFormat format);
+    static bool Export(const std::string& path, const QcExportBundle& bundle, qc::QcReportFormat format);
 
     static bool ExportJson(const std::string& path, const QcExportBundle& bundle);
     static bool ExportCsv(const std::string& path, const QcExportBundle& bundle);
@@ -110,8 +109,7 @@ public:
     static bool ExportBatchSummaryHtml(const std::string& path, const QcBatchSummaryInput& input);
 
     // BatchQcRun -> QcBatchSummaryInput
-    static QcBatchSummaryInput MakeBatchSummary(const std::string& root,
-                                                const qc::BatchQcRun& run,
+    static QcBatchSummaryInput MakeBatchSummary(const std::string& root, const qc::BatchQcRun& run,
                                                 const qc::QcProfile& profile);
 
     // ---- 内存里的文本稿（UI 想直接贴到 QTextEdit 时用）----
@@ -123,12 +121,11 @@ public:
 };
 
 // 生成导出文件名：<base> + <扩展名>（调用方负责目录存在）
-std::string QcReportOutputPath(const std::string& directory, const std::string& base_name,
-                               qc::QcReportFormat format);
+std::string QcReportOutputPath(const std::string& directory, const std::string& base_name, qc::QcReportFormat format);
 
 // 严重的级别名（英文代号，写进 JSON 的 severity 字段）
 const char* SeverityCode(model::IssueSeverity severity);
 const char* CategoryCode(model::IssueCategory category);
 
-}  // namespace reporting
-}  // namespace videoeye
+} // namespace reporting
+} // namespace videoeye

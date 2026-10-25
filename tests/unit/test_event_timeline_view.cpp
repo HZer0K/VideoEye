@@ -17,8 +17,8 @@
 #include <QCheckBox>
 #include <QLabel>
 #include <QString>
-#include <QTableWidget>
 #include <QTabWidget>
+#include <QTableWidget>
 
 #include "core/domain/model/TimelineEvent.h"
 #include "ui/analysis_panel/EventTimelineView.h"
@@ -43,9 +43,11 @@ QApplication* EnsureApp() {
 // 与侧边栏期望顺序（Event / Sync / Timeline）并不一致，靠下标会写出一条脆弱的测试。
 QCheckBox* ToggleOf(EventTimelineView& view, const QString& tab_text) {
     auto* tabs = view.findChild<QTabWidget*>();
-    if (!tabs) return nullptr;
+    if (!tabs)
+        return nullptr;
     for (int i = 0; i < tabs->count(); ++i) {
-        if (tabs->tabText(i) != tab_text) continue;
+        if (tabs->tabText(i) != tab_text)
+            continue;
         QWidget* page = tabs->widget(i);
         return page ? page->findChild<QCheckBox*>() : nullptr;
     }
@@ -63,8 +65,7 @@ TEST(EventTimelineViewToggleInit, TogglesFollowInjectedFeatureState) {
 
     EventTimelineView view;
     int toggled_signals = 0;
-    QObject::connect(&view, &EventTimelineView::FeatureToggled,
-                     [&toggled_signals](int, bool) { ++toggled_signals; });
+    QObject::connect(&view, &EventTimelineView::FeatureToggled, [&toggled_signals](int, bool) { ++toggled_signals; });
 
     view.SetFeatureHooks([&states](int feature) { return states[feature]; },
                          [&states, &set_enabled_calls](int feature, bool enabled) {
@@ -93,8 +94,7 @@ TEST(EventTimelineViewToggleInit, TogglesFollowInjectedFeatureState) {
     //    否则上面三条 EXPECT_FALSE 用"恒不勾选"也能过，测试就失去意义了。
     bool all_on[3] = {true, true, true};
     EventTimelineView view_on;
-    view_on.SetFeatureHooks([&all_on](int feature) { return all_on[feature]; },
-                            [](int, bool) {});
+    view_on.SetFeatureHooks([&all_on](int feature) { return all_on[feature]; }, [](int, bool) {});
 
     QCheckBox* event_on = ToggleOf(view_on, QStringLiteral("异常事件"));
     QCheckBox* sync_on = ToggleOf(view_on, QStringLiteral("同步分析"));
@@ -115,8 +115,7 @@ TEST(EventTimelineViewTimelineCategory, EnumCategoriesDriveTableAndSummary) {
 
     bool all_on[3] = {true, true, true};
     EventTimelineView view;
-    view.SetFeatureHooks([&all_on](int feature) { return all_on[feature]; },
-                         [](int, bool) {});
+    view.SetFeatureHooks([&all_on](int feature) { return all_on[feature]; }, [](int, bool) {});
 
     videoeye::model::TimelineEvent keyframe;
     keyframe.index = 0;
@@ -170,6 +169,5 @@ TEST(EventTimelineViewTimelineCategory, EnumCategoriesDriveTableAndSummary) {
         }
     }
     ASSERT_TRUE(summary != nullptr) << "找不到时间轴摘要标签";
-    EXPECT_EQ(summary->text(),
-              QStringLiteral("事件数: 3 | 视频关键帧: 1 | 音频采样: 1 | 异常事件: 1"));
+    EXPECT_EQ(summary->text(), QStringLiteral("事件数: 3 | 视频关键帧: 1 | 音频采样: 1 | 异常事件: 1"));
 }

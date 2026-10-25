@@ -52,8 +52,7 @@ void SceneChangePage::SetupUi() {
         layout->addWidget(row);
     }
 
-    summary_label_ = new QLabel(
-        tr("开启分析后播放视频，将在此列出检测到的镜头切换点（时间戳 + 切换强度）。"));
+    summary_label_ = new QLabel(tr("开启分析后播放视频，将在此列出检测到的镜头切换点（时间戳 + 切换强度）。"));
     summary_label_->setWordWrap(true);
     layout->addWidget(summary_label_);
 
@@ -91,11 +90,12 @@ void SceneChangePage::SetupUi() {
 
 void SceneChangePage::AppendResult(const model::SceneChangeResult& result) {
     records_.push_back(result);
-    table_dirty_ = true;   // 真正刷新等面板的批量定时器，避免每个切换点重绘一次
+    table_dirty_ = true; // 真正刷新等面板的批量定时器，避免每个切换点重绘一次
 }
 
 void SceneChangePage::FlushPending() {
-    if (!table_dirty_) return;
+    if (!table_dirty_)
+        return;
     table_dirty_ = false;
     const size_t total = records_.size();
     for (size_t i = table_synced_count_; i < total; ++i) {
@@ -115,12 +115,14 @@ void SceneChangePage::AppendRow(const model::SceneChangeResult& result) {
 }
 
 void SceneChangePage::UpdateChart() {
-    if (!series_) return;
+    if (!series_)
+        return;
     // 柱状图每根柱子都要画一个矩形，几千根时绘制与悬停命中都会明显变慢，
     // 所以这里不是"抽稀"而是**保留最近一段**（滚动窗口）—— 用户要看的是
     // 刚播过的那几十秒。上限与抽稀口径都在 ui/charts/ChartDecimation.h。
     const int start = records_.size() > static_cast<size_t>(kMaxRecentChartItems)
-                          ? static_cast<int>(records_.size() - kMaxRecentChartItems) : 0;
+                          ? static_cast<int>(records_.size() - kMaxRecentChartItems)
+                          : 0;
     {
         // 逐点 Append 会每根柱子投一次重绘，攒完一次性提交
         SeriesBatch batch(series_);
@@ -135,16 +137,20 @@ void SceneChangePage::UpdateChart() {
 void SceneChangePage::UpdateSummary() {
     const int n = static_cast<int>(records_.size());
     if (n == 0) {
-        summary_label_->setText(
-            tr("开启分析后播放视频，将在此列出检测到的镜头切换点（时间戳 + 切换强度）。"));
+        summary_label_->setText(tr("开启分析后播放视频，将在此列出检测到的镜头切换点（时间戳 + 切换强度）。"));
         return;
     }
     double sum = 0.0;
     double max_s = 0.0;
-    for (const auto& r : records_) { sum += r.score; if (r.score > max_s) max_s = r.score; }
-    summary_label_->setText(
-        tr("共检测到 %1 个切换点 | 平均强度 %2 | 最大强度 %3")
-            .arg(n).arg(QString::number(sum / n, 'f', 3)).arg(QString::number(max_s, 'f', 3)));
+    for (const auto& r : records_) {
+        sum += r.score;
+        if (r.score > max_s)
+            max_s = r.score;
+    }
+    summary_label_->setText(tr("共检测到 %1 个切换点 | 平均强度 %2 | 最大强度 %3")
+                                .arg(n)
+                                .arg(QString::number(sum / n, 'f', 3))
+                                .arg(QString::number(max_s, 'f', 3)));
 }
 
 void SceneChangePage::OnExportCsv() {
@@ -152,8 +158,8 @@ void SceneChangePage::OnExportCsv() {
         QMessageBox::information(this, tr("提示"), tr("当前没有可导出的切换点数据。"));
         return;
     }
-    ExportCsvStream(this, tr("导出切换点 CSV"),
-        source_path_.section('/', -1) + "_scenecut.csv",
+    ExportCsvStream(
+        this, tr("导出切换点 CSV"), source_path_.section('/', -1) + "_scenecut.csv",
         [this](QTextStream& stream) {
             stream << "frame_index,timestamp_seconds,score\n";
             for (const auto& r : records_) {
@@ -168,11 +174,11 @@ void SceneChangePage::Reset() {
     records_.clear();
     table_dirty_ = false;
     table_synced_count_ = 0;
-    if (table_) table_->setRowCount(0);
+    if (table_)
+        table_->setRowCount(0);
     UpdateChart();
     UpdateSummary();
 }
-
 
 } // namespace ui
 } // namespace videoeye

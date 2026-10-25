@@ -12,16 +12,16 @@ extern "C" {
 
 namespace videoeye {
 
-QualityMetrics QualityAnalyzer::CompareFrames(const AVFrame* reference, 
-                                            const AVFrame* distorted, 
-                                            int frame_index, 
-                                            double timestamp_seconds) {
-    
+QualityMetrics QualityAnalyzer::CompareFrames(const AVFrame* reference, const AVFrame* distorted, int frame_index,
+                                              double timestamp_seconds) {
+
     QualityMetrics metrics;
     metrics.frame_index = frame_index;
     metrics.timestamp_seconds = timestamp_seconds;
-    if(reference) metrics.reference_pts = reference->pts;
-    if(distorted) metrics.distorted_pts = distorted->pts;
+    if (reference)
+        metrics.reference_pts = reference->pts;
+    if (distorted)
+        metrics.distorted_pts = distorted->pts;
 
     GrayPlane reference_gray;
     GrayPlane distorted_gray;
@@ -34,15 +34,13 @@ QualityMetrics QualityAnalyzer::CompareFrames(const AVFrame* reference,
         metrics.error_message = error;
         return metrics;
     }
-    if (reference_gray.width != distorted_gray.width ||
-        reference_gray.height != distorted_gray.height) {
+    if (reference_gray.width != distorted_gray.width || reference_gray.height != distorted_gray.height) {
         metrics.error_message = "Gray planes have different dimensions";
         return metrics;
     }
     // 不变式: 平面像素数由 w*h 决定，尺寸一致时必然相等。校验一次是为了让
     // 下面两个指标函数不必再处理错配 —— 它们的 NaN 返回永远不会流到这里之外。
-    if (reference_gray.pixels.size() != distorted_gray.pixels.size() ||
-        reference_gray.pixels.empty()) {
+    if (reference_gray.pixels.size() != distorted_gray.pixels.size() || reference_gray.pixels.empty()) {
         metrics.error_message = "Gray planes have inconsistent pixel counts";
         return metrics;
     }
@@ -57,7 +55,7 @@ QualityMetrics QualityAnalyzer::CompareFrames(const AVFrame* reference,
 }
 
 QualityMetrics QualityAnalyzer::CompareSamples(const model::FrameSample& reference,
-                                                const model::FrameSample& distorted) {
+                                               const model::FrameSample& distorted) {
     QualityMetrics metrics;
     metrics.frame_index = distorted.frame_index;
     metrics.timestamp_seconds = distorted.timestamp_seconds;
@@ -73,10 +71,8 @@ QualityMetrics QualityAnalyzer::CompareSamples(const model::FrameSample& referen
         metrics.error_message = error;
         return metrics;
     }
-    if (reference_gray.width != distorted_gray.width ||
-        reference_gray.height != distorted_gray.height ||
-        reference_gray.pixels.empty() ||
-        reference_gray.pixels.size() != distorted_gray.pixels.size()) {
+    if (reference_gray.width != distorted_gray.width || reference_gray.height != distorted_gray.height ||
+        reference_gray.pixels.empty() || reference_gray.pixels.size() != distorted_gray.pixels.size()) {
         metrics.error_message = "Frame samples have different dimensions";
         return metrics;
     }
@@ -110,26 +106,31 @@ std::optional<double> QualityAnalyzer::ComputeVmaf(const model::FrameSample& ref
     return std::nullopt;
 }
 
-bool QualityAnalyzer::VmafSupported() { return false; }
+bool QualityAnalyzer::VmafSupported() {
+    return false;
+}
 
 namespace {
 
 // 按原比例算缩放后的高度，并保证至少 2 行且为偶数（隔行/场分析要成对的行）
 int ScaledHeight(int src_width, int src_height, int dst_width) {
-    if (src_width <= 0 || src_height <= 0 || dst_width <= 0) return 0;
+    if (src_width <= 0 || src_height <= 0 || dst_width <= 0)
+        return 0;
     double h = std::round(static_cast<double>(dst_width) * src_height / src_width);
     int height = static_cast<int>(h);
-    if (height < 2) height = 2;
-    if ((height % 2) != 0) --height;
-    if (height < 2) height = 2;
+    if (height < 2)
+        height = 2;
+    if ((height % 2) != 0)
+        --height;
+    if (height < 2)
+        height = 2;
     return height;
 }
 
-}  // namespace
+} // namespace
 
-bool QualityAnalyzer::BuildSample(const AVFrame* frame, int gray_width, int rgb_width,
-                                  bool capture_rgb, model::FrameSample& out,
-                                  std::string& error) {
+bool QualityAnalyzer::BuildSample(const AVFrame* frame, int gray_width, int rgb_width, bool capture_rgb,
+                                  model::FrameSample& out, std::string& error) {
     out = model::FrameSample();
     if (!frame) {
         error = "Frame is null";
@@ -147,7 +148,8 @@ bool QualityAnalyzer::BuildSample(const AVFrame* frame, int gray_width, int rgb_
         return false;
     }
     std::vector<uint8_t> gray;
-    if (!ScaleToGray(frame, gw, gh, gray, error)) return false;
+    if (!ScaleToGray(frame, gw, gh, gray, error))
+        return false;
     out.width = gw;
     out.height = gh;
     // 记下源宽：下游要把编码块这类"源像素量级"的判定换算到样本像素（见块效应检测）
@@ -169,8 +171,8 @@ bool QualityAnalyzer::BuildSample(const AVFrame* frame, int gray_width, int rgb_
     return true;
 }
 
-bool QualityAnalyzer::ScaleToGray(const AVFrame* frame, int width, int height,
-                                  std::vector<uint8_t>& out, std::string& error) {
+bool QualityAnalyzer::ScaleToGray(const AVFrame* frame, int width, int height, std::vector<uint8_t>& out,
+                                  std::string& error) {
     out.clear();
     if (!frame || width <= 0 || height <= 0 || frame->format < 0 || !frame->data[0]) {
         error = "Frame dimensions are invalid";
@@ -183,8 +185,7 @@ bool QualityAnalyzer::ScaleToGray(const AVFrame* frame, int width, int height,
     }
 
     out.resize(static_cast<size_t>(width) * height);
-    SwsContext* sws = sws_getContext(frame->width, frame->height, src_fmt,
-                                     width, height, AV_PIX_FMT_GRAY8,
+    SwsContext* sws = sws_getContext(frame->width, frame->height, src_fmt, width, height, AV_PIX_FMT_GRAY8,
                                      SWS_BILINEAR, nullptr, nullptr, nullptr);
     if (!sws) {
         error = "Failed to create sws context (gray)";
@@ -193,8 +194,7 @@ bool QualityAnalyzer::ScaleToGray(const AVFrame* frame, int width, int height,
     }
     uint8_t* dst_data[4] = {out.data(), nullptr, nullptr, nullptr};
     const int dst_linesize[4] = {width, 0, 0, 0};
-    const int ret = sws_scale(sws, frame->data, frame->linesize, 0, frame->height,
-                              dst_data, dst_linesize);
+    const int ret = sws_scale(sws, frame->data, frame->linesize, 0, frame->height, dst_data, dst_linesize);
     sws_freeContext(sws);
     if (ret < 0) {
         error = "Failed to scale gray plane";
@@ -204,8 +204,8 @@ bool QualityAnalyzer::ScaleToGray(const AVFrame* frame, int width, int height,
     return true;
 }
 
-bool QualityAnalyzer::ScaleToRgb24(const AVFrame* frame, int width, int height,
-                                   std::vector<uint8_t>& out, std::string& error) {
+bool QualityAnalyzer::ScaleToRgb24(const AVFrame* frame, int width, int height, std::vector<uint8_t>& out,
+                                   std::string& error) {
     out.clear();
     if (!frame || width <= 0 || height <= 0 || frame->format < 0 || !frame->data[0]) {
         error = "Frame dimensions are invalid";
@@ -218,8 +218,7 @@ bool QualityAnalyzer::ScaleToRgb24(const AVFrame* frame, int width, int height,
     }
 
     out.resize(static_cast<size_t>(width) * height * 3);
-    SwsContext* sws = sws_getContext(frame->width, frame->height, src_fmt,
-                                     width, height, AV_PIX_FMT_RGB24,
+    SwsContext* sws = sws_getContext(frame->width, frame->height, src_fmt, width, height, AV_PIX_FMT_RGB24,
                                      SWS_BILINEAR, nullptr, nullptr, nullptr);
     if (!sws) {
         error = "Failed to create sws context (rgb24)";
@@ -228,8 +227,7 @@ bool QualityAnalyzer::ScaleToRgb24(const AVFrame* frame, int width, int height,
     }
     uint8_t* dst_data[4] = {out.data(), nullptr, nullptr, nullptr};
     const int dst_linesize[4] = {width * 3, 0, 0, 0};
-    const int ret = sws_scale(sws, frame->data, frame->linesize, 0, frame->height,
-                              dst_data, dst_linesize);
+    const int ret = sws_scale(sws, frame->data, frame->linesize, 0, frame->height, dst_data, dst_linesize);
     sws_freeContext(sws);
     if (ret < 0) {
         error = "Failed to scale rgb plane";
@@ -239,8 +237,7 @@ bool QualityAnalyzer::ScaleToRgb24(const AVFrame* frame, int width, int height,
     return true;
 }
 
-bool QualityAnalyzer::MakeGrayPlane(const model::FrameSample& sample, GrayPlane& gray_plane,
-                                    std::string& error) {
+bool QualityAnalyzer::MakeGrayPlane(const model::FrameSample& sample, GrayPlane& gray_plane, std::string& error) {
     gray_plane = GrayPlane();
     if (!sample.valid()) {
         error = "Frame sample is invalid";
@@ -288,9 +285,8 @@ bool QualityAnalyzer::ExtractGrayPlane(const AVFrame* frame, GrayPlane& out, std
         return true;
     }
 
-    SwsContext* sws = sws_getContext(frame->width, frame->height, src_fmt,
-                                        out.width, out.height, AV_PIX_FMT_GRAY8,
-                                        SWS_BILINEAR, nullptr, nullptr, nullptr);
+    SwsContext* sws = sws_getContext(frame->width, frame->height, src_fmt, out.width, out.height, AV_PIX_FMT_GRAY8,
+                                     SWS_BILINEAR, nullptr, nullptr, nullptr);
     if (!sws) {
         error = "Failed to create sws context";
         return false;
@@ -298,9 +294,8 @@ bool QualityAnalyzer::ExtractGrayPlane(const AVFrame* frame, GrayPlane& out, std
 
     uint8_t* dts_data[4] = {out.pixels.data(), nullptr, nullptr, nullptr};
     int dst_linesize[4] = {out.width, 0, 0, 0};
-    const int ret = sws_scale(sws, frame->data, frame->linesize, 0, 
-                                frame->height, dts_data, dst_linesize);
-    
+    const int ret = sws_scale(sws, frame->data, frame->linesize, 0, frame->height, dts_data, dst_linesize);
+
     sws_freeContext(sws);
     if (ret < 0) {
         error = "Failed to scale gray plane";
@@ -318,16 +313,13 @@ double QualityAnalyzer::CalculateMse(const GrayPlane& reference, const GrayPlane
 
     long double sum = 0.0;
     for (size_t i = 0; i < reference.pixels.size(); ++i) {
-        const int diff = static_cast<int>(reference.pixels[i]) -
-                         static_cast<int>(distorted.pixels[i]);
+        const int diff = static_cast<int>(reference.pixels[i]) - static_cast<int>(distorted.pixels[i]);
         sum += static_cast<long double>(diff) * diff;
     }
     return static_cast<double>(sum) / reference.pixels.size();
 }
 
-double QualityAnalyzer::CalculateSsim(const GrayPlane& reference,
-                                      const GrayPlane& distorted,
-                                      double maxPixelValue) {
+double QualityAnalyzer::CalculateSsim(const GrayPlane& reference, const GrayPlane& distorted, double maxPixelValue) {
     const size_t count = reference.pixels.size();
     if (count == 0 || count != distorted.pixels.size()) {
         // 同上: 这里的 0.0 会被读成"结构无关"，与真实失效无法区分
@@ -354,7 +346,7 @@ double QualityAnalyzer::CalculateSsim(const GrayPlane& reference,
     const long double mu_x = inv_count * sum_x;
     const long double mu_y = inv_count * sum_y;
     const long double var_x = inv_count * sum_x2 - mu_x * mu_x;
-    const long double var_y = inv_count * sum_y2 - mu_y * mu_y; 
+    const long double var_y = inv_count * sum_y2 - mu_y * mu_y;
     const long double cov_xy = inv_count * sum_xy - mu_x * mu_y;
 
     // 稳定常数按 Wang 2004 的建议系数由动态范围推导，与 CalculatePsnr 的
@@ -372,10 +364,8 @@ double QualityAnalyzer::CalculateSsim(const GrayPlane& reference,
     // 亮度项的分母是 mu_x^2 + mu_y^2（两项相加），不是 (mu_x^2+c1)*(mu_y^2+c1)
     // 相乘。写成相乘时两帧完全相同（mu_x=mu_y=100）会算出 3.4e-06 而不是 1.0，
     // 差了近三个数量级 —— 这类错误用肉眼比对视频质量是发现不了的。
-    const long double numerator = (2.0L * mu_x * mu_y + c1) *
-                                  (2.0L * cov_xy + c2);
-    const long double denominator = (mu_x * mu_x + mu_y * mu_y + c1) *
-                                    (var_x + var_y + c2);
+    const long double numerator = (2.0L * mu_x * mu_y + c1) * (2.0L * cov_xy + c2);
+    const long double denominator = (mu_x * mu_x + mu_y * mu_y + c1) * (var_x + var_y + c2);
 
     if (denominator <= 0.0L) {
         // 只在退化输入下发生（maxPixelValue<=0 之类），此时指标本身无意义

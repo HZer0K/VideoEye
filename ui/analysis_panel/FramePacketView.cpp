@@ -23,8 +23,7 @@
 namespace videoeye {
 namespace ui {
 
-FramePacketView::FramePacketView(QWidget* parent)
-    : QWidget(parent) {
+FramePacketView::FramePacketView(QWidget* parent) : QWidget(parent) {
     SetupUi();
 }
 
@@ -47,8 +46,7 @@ void FramePacketView::SetupUi() {
     // 帧记录被裁剪时 GOP 要一并清空重建。
     video_page_ = new VideoFrameTableWidget(this);
     // GOP 摘要是组件产出的派生数据，原样转发给面板（面板再转「流概览」区）。
-    connect(video_page_, &VideoFrameTableWidget::GopSummariesChanged,
-            this, &FramePacketView::GopSummariesChanged);
+    connect(video_page_, &VideoFrameTableWidget::GopSummariesChanged, this, &FramePacketView::GopSummariesChanged);
 
     // ---- 子页 1: 包 ----
     // 已抽为独立组件 PacketTableWidget：记录缓存 / 筛选 / 脏标志 / 增量游标 / CSV 导出
@@ -76,47 +74,56 @@ void FramePacketView::SetupUi() {
     // currentRowChanged —— QTableView 没有 itemSelectionChanged（那是 QTableWidget 的
     // 便利信号，依赖"每行都有 item 对象"，而 model 视图恰恰没有）。
     if (auto* packet_selection = packet_page_->packetTable()->selectionModel()) {
-        connect(packet_selection, &QItemSelectionModel::currentRowChanged,
-                this, &FramePacketView::OnPacketTableSelectionChanged);
+        connect(packet_selection, &QItemSelectionModel::currentRowChanged, this,
+                &FramePacketView::OnPacketTableSelectionChanged);
     }
     if (auto* frame_selection = video_page_->frameTable()->selectionModel()) {
-        connect(frame_selection, &QItemSelectionModel::currentRowChanged,
-                this, &FramePacketView::OnVideoFrameTableSelectionChanged);
+        connect(frame_selection, &QItemSelectionModel::currentRowChanged, this,
+                &FramePacketView::OnVideoFrameTableSelectionChanged);
     }
 }
 
-void FramePacketView::SetFeatureHooks(std::function<bool(int)> is_enabled,
-                                      std::function<void(int, bool)> set_enabled) {
+void FramePacketView::SetFeatureHooks(std::function<bool(int)> is_enabled, std::function<void(int, bool)> set_enabled) {
     is_enabled_ = std::move(is_enabled);
     set_enabled_ = std::move(set_enabled);
 
     SyncTogglesFromHooks();
 
-    const struct { QCheckBox* box; int id; } toggles[] = {
+    const struct {
+        QCheckBox* box;
+        int id;
+    } toggles[] = {
         {video_page_->toggle(), 0},
         {audio_page_->toggle(), 1},
         {packet_page_->toggle(), 2},
     };
     for (const auto& t : toggles) {
-        if (!t.box) continue;
+        if (!t.box)
+            continue;
         const int id = t.id;
         connect(t.box, &QCheckBox::toggled, this, [this, id](bool checked) {
-            if (set_enabled_) set_enabled_(id, checked);
+            if (set_enabled_)
+                set_enabled_(id, checked);
         });
     }
 }
 
 void FramePacketView::SyncTogglesFromHooks() {
-    const struct { QCheckBox* box; int id; } toggles[] = {
+    const struct {
+        QCheckBox* box;
+        int id;
+    } toggles[] = {
         {video_page_->toggle(), 0},
         {audio_page_->toggle(), 1},
         {packet_page_->toggle(), 2},
     };
     for (const auto& t : toggles) {
-        if (!t.box) continue;
+        if (!t.box)
+            continue;
         // 没有钩子时按控件当前值保留（组件可脱离面板单独构造）
         const bool enabled = is_enabled_ ? is_enabled_(t.id) : t.box->isChecked();
-        if (enabled == t.box->isChecked()) continue;
+        if (enabled == t.box->isChecked())
+            continue;
         const QSignalBlocker blocker(t.box);
         t.box->setChecked(enabled);
     }
@@ -146,15 +153,14 @@ void FramePacketView::ResetPackets() {
     packet_page_->ResetPackets();
 }
 
-void FramePacketView::AppendVideoFrame(int index, int frame_type, bool is_key_frame,
-                                       qint64 pts, double timestamp_seconds) {
+void FramePacketView::AppendVideoFrame(int index, int frame_type, bool is_key_frame, qint64 pts,
+                                       double timestamp_seconds) {
     video_page_->AppendVideoFrame(index, frame_type, is_key_frame, pts, timestamp_seconds);
 }
 
-void FramePacketView::AppendAudioFrame(int index, qint64 pts, double timestamp_seconds,
-                                       int sample_count, int sample_rate, int channels, int byte_count) {
-    audio_page_->AppendAudioFrame(index, pts, timestamp_seconds,
-                                  sample_count, sample_rate, channels, byte_count);
+void FramePacketView::AppendAudioFrame(int index, qint64 pts, double timestamp_seconds, int sample_count,
+                                       int sample_rate, int channels, int byte_count) {
+    audio_page_->AppendAudioFrame(index, pts, timestamp_seconds, sample_count, sample_rate, channels, byte_count);
 }
 
 void FramePacketView::AppendPacket(const model::PacketInfo& packet_info) {
@@ -171,7 +177,8 @@ std::size_t NearestByPts(const std::vector<Record>& records, qint64 target_pts, 
     std::size_t best = records.size();
     qint64 best_diff = std::numeric_limits<qint64>::max();
     for (std::size_t i = 0; i < records.size(); ++i) {
-        if (!pred(records[i])) continue;
+        if (!pred(records[i]))
+            continue;
         const qint64 diff = std::llabs(records[i].pts - target_pts);
         if (diff < best_diff) {
             best_diff = diff;
@@ -194,9 +201,11 @@ std::size_t NearestByPts(const std::vector<Record>& records, qint64 target_pts) 
 // 这个隐式契约；列顺序一改互跳就静默错位。现在映射是模型自己的职责，
 // 一次二分搞定，也不再碰单元格文本。
 bool SelectRecordRow(QTableView* view, int row) {
-    if (view == nullptr || row < 0) return false;
+    if (view == nullptr || row < 0)
+        return false;
     QAbstractItemModel* model = view->model();
-    if (!model || row >= model->rowCount()) return false;
+    if (!model || row >= model->rowCount())
+        return false;
     view->setCurrentIndex(model->index(row, 0));
     view->scrollTo(model->index(row, 0), QAbstractItemView::PositionAtCenter);
     return true;
@@ -204,29 +213,37 @@ bool SelectRecordRow(QTableView* view, int row) {
 
 // 包表选中 → 在视频帧记录中找 PTS 最接近的视频帧, 跳转并高亮
 void FramePacketView::OnPacketTableSelectionChanged() {
-    if (linking_) return;
-    if (!video_page_ || !packet_page_) return;
+    if (linking_)
+        return;
+    if (!video_page_ || !packet_page_)
+        return;
 
     auto* packet_model = packet_page_->packetModel();
     QTableView* packet_table = packet_page_->packetTable();
-    if (!packet_model || !packet_table) return;
+    if (!packet_model || !packet_table)
+        return;
 
     auto* frame_model = video_page_->frameModel();
     QTableView* frame_table = video_page_->frameTable();
-    if (!frame_model || !frame_table) return;
+    if (!frame_model || !frame_table)
+        return;
 
     const int row = packet_table->currentIndex().row();
-    if (row < 0) return;
+    if (row < 0)
+        return;
     const PacketRecord* packet = packet_model->RecordAt(row);
-    if (packet == nullptr) return;
+    if (packet == nullptr)
+        return;
     const qint64 target_pts = packet->pts;
 
     const std::size_t best = NearestByPts(frame_model->records(), target_pts);
-    if (best >= frame_model->record_count()) return;
+    if (best >= frame_model->record_count())
+        return;
 
     // 帧表可能被筛选：记录索引 -> 行号要问模型
     const int target_row = frame_model->RowOfRecord(best);
-    if (target_row < 0) return;   // 该帧被筛掉了，不动
+    if (target_row < 0)
+        return; // 该帧被筛掉了，不动
 
     linking_ = true;
     SelectRecordRow(frame_table, target_row);
@@ -240,31 +257,38 @@ void FramePacketView::OnPacketTableSelectionChanged() {
 
 // 帧表选中 → 在包记录中找 PTS 最接近的视频包, 跳转并高亮
 void FramePacketView::OnVideoFrameTableSelectionChanged() {
-    if (linking_) return;
-    if (!video_page_ || !packet_page_) return;
+    if (linking_)
+        return;
+    if (!video_page_ || !packet_page_)
+        return;
 
     auto* frame_model = video_page_->frameModel();
     QTableView* frame_table = video_page_->frameTable();
-    if (!frame_model || !frame_table) return;
+    if (!frame_model || !frame_table)
+        return;
 
     auto* packet_model = packet_page_->packetModel();
     QTableView* packet_table = packet_page_->packetTable();
-    if (!packet_model || !packet_table) return;
+    if (!packet_model || !packet_table)
+        return;
 
     const int row = frame_table->currentIndex().row();
-    if (row < 0) return;
+    if (row < 0)
+        return;
     const VideoFrameRecord* frame = frame_model->RecordAt(row);
-    if (frame == nullptr) return;
+    if (frame == nullptr)
+        return;
     const qint64 target_pts = frame->pts;
 
     // 包记录含视频/音频包, 仅匹配视频包以保证 PTS 时基一致
-    const std::size_t best = NearestByPts(
-        packet_model->records(), target_pts,
-        [](const PacketRecord& p) { return p.stream_type == AVMEDIA_TYPE_VIDEO; });
-    if (best >= packet_model->record_count()) return;
+    const std::size_t best = NearestByPts(packet_model->records(), target_pts,
+                                          [](const PacketRecord& p) { return p.stream_type == AVMEDIA_TYPE_VIDEO; });
+    if (best >= packet_model->record_count())
+        return;
 
     const int target_row = packet_model->RowOfRecord(best);
-    if (target_row < 0) return;   // 该包被筛掉了，不动
+    if (target_row < 0)
+        return; // 该包被筛掉了，不动
 
     linking_ = true;
     SelectRecordRow(packet_table, target_row);
@@ -276,5 +300,5 @@ void FramePacketView::OnVideoFrameTableSelectionChanged() {
     }
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

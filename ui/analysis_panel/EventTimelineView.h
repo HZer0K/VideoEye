@@ -1,20 +1,20 @@
 #pragma once
 
-#include <QWidget>
-#include <QTableWidget>
-#include <QLabel>
-#include <QTabWidget>
-#include <QPushButton>
 #include <QCheckBox>
+#include <QLabel>
+#include <QPushButton>
 #include <QString>
+#include <QTabWidget>
+#include <QTableWidget>
+#include <QWidget>
 #include <deque>
 #include <functional>
 #include <vector>
 
-#include "ui/charts/MetricChartWidget.h"
 #include "core/domain/model/AnalysisEvent.h"
 #include "core/domain/model/SyncSample.h"
 #include "core/domain/model/TimelineEvent.h"
+#include "ui/charts/MetricChartWidget.h"
 
 namespace videoeye {
 namespace ui {
@@ -39,8 +39,7 @@ public:
     // 注入后会立即按钩子的真实状态刷新三个 QCheckBox：控件是在构造函数里建的，
     // 那时钩子还不存在，只能先按默认值创建；不同步的话界面会显示"启用分析"，
     // 而面板里的 feature_enabled_ 其实是关的 —— 数据被过滤掉、界面却毫无提示。
-    void SetFeatureHooks(std::function<bool(int)> is_enabled,
-                         std::function<void(int, bool)> set_enabled);
+    void SetFeatureHooks(std::function<bool(int)> is_enabled, std::function<void(int, bool)> set_enabled);
 
     // 同步样本的消费方由 AnalysisPanel 统一分发：本视图负责同步表/曲线，
     // 诊断页负责音视频偏移曲线。本视图不持诊断页指针，也不做信号中继

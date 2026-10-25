@@ -10,7 +10,8 @@ namespace {
 
 bool ReadHeaderBytes(const std::string& path, size_t count, std::string& out) {
     std::ifstream f(ToNativePath(path), std::ios::binary);
-    if (!f) return false;
+    if (!f)
+        return false;
     out.resize(count);
     f.read(out.data(), static_cast<std::streamsize>(count));
     out.resize(static_cast<size_t>(f.gcount()));
@@ -19,7 +20,8 @@ bool ReadHeaderBytes(const std::string& path, size_t count, std::string& out) {
 
 // 读取 offset 处的 32 位大端 box 类型；缓冲不足返回空
 std::string BoxTypeAt(const std::string& buf, size_t offset) {
-    if (offset + 8 > buf.size()) return "";
+    if (offset + 8 > buf.size())
+        return "";
     // size 字段至少不能为明显非法值 (0 到 7 之间只有 size=0 表示到文件尾，罕见，仍可读类型)
     return buf.substr(offset + 4, 4);
 }
@@ -36,9 +38,7 @@ FileHeaderInfo ProbeFileHeader(const std::string& file_path) {
     info.first_box_type = BoxTypeAt(buf, 0);
     // fMP4 媒体分片特征: 首盒为 styp (segment type, DASH/Smooth Streaming)，
     // 或直接以 moof/mdat 开头 (无 ftyp/moov)。完整的 fMP4 文件首盒是 ftyp。
-    if (info.first_box_type == "styp" ||
-        info.first_box_type == "moof" ||
-        info.first_box_type == "mdat") {
+    if (info.first_box_type == "styp" || info.first_box_type == "moof" || info.first_box_type == "mdat") {
         info.is_fmp4_segment_without_init = true;
     }
     return info;

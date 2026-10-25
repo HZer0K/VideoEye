@@ -41,21 +41,20 @@ bool FinitePoint(const QPointF& p) {
     return std::isfinite(p.x()) && std::isfinite(p.y());
 }
 
-}  // namespace
+} // namespace
 
 void ChartSeries::NotifyUpdate() {
     // 数据或外观一变就排一次重绘，不等别的事件顺带刷出去 —— 以前改完数据
     // 界面停在旧曲线上，要等切页/缩放之类的随机事件才更新，用户看到的就是"没刷新"。
     // update() 是排期不是立即画，Qt 会把同一帧内的多次调用合并成一次 paint，
     // 所以批量 Append / Replace 不会退化成逐点重绘。
-    if (owner_) owner_->update();
+    if (owner_)
+        owner_->update();
 }
 
 MetricChartWidget::MetricChartWidget(QWidget* parent)
-    : QWidget(parent)
-    , axis_x_(std::make_unique<ChartAxis>())
-    , axis_y_(std::make_unique<ChartAxis>())
-    , axis_y2_(std::make_unique<ChartAxis>()) {
+    : QWidget(parent), axis_x_(std::make_unique<ChartAxis>()), axis_y_(std::make_unique<ChartAxis>()),
+      axis_y2_(std::make_unique<ChartAxis>()) {
     setAttribute(Qt::WA_Hover, true);
     setMouseTracking(true);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -106,7 +105,8 @@ void MetricChartWidget::SetAxisY2Visible(bool visible) {
 }
 
 void MetricChartWidget::AttachAxis(ChartSeries* series, ChartAxis* axis) {
-    if (!series || !axis) return;
+    if (!series || !axis)
+        return;
     // X 轴全图共用，只需要区分左右两个 Y 轴
     if (axis == axis_y2_.get()) {
         series->SetValueAxisIndex(1);
@@ -115,16 +115,22 @@ void MetricChartWidget::AttachAxis(ChartSeries* series, ChartAxis* axis) {
     }
 }
 
-QSize MetricChartWidget::sizeHint() const { return QSize(360, 220); }
-QSize MetricChartWidget::minimumSizeHint() const { return QSize(120, 80); }
+QSize MetricChartWidget::sizeHint() const {
+    return QSize(360, 220);
+}
+QSize MetricChartWidget::minimumSizeHint() const {
+    return QSize(120, 80);
+}
 
 int MetricChartWidget::LegendHeight(int width) const {
-    if (!legend_visible_) return 0;
+    if (!legend_visible_)
+        return 0;
     QFontMetrics fm(font());
     int x = kLeftMargin;
     int rows = 0;
     for (const auto& s : series_) {
-        if (s->Name().isEmpty()) continue;
+        if (s->Name().isEmpty())
+            continue;
         const int w = 16 + fm.horizontalAdvance(s->Name()) + 12;
         if (rows == 0) {
             rows = 1;
@@ -142,11 +148,13 @@ MetricChartWidget::Geometry MetricChartWidget::ComputeGeometry() const {
     const QRect full = rect();
 
     int top = full.top() + kTopMargin;
-    if (!title_.isEmpty()) top += kTitleHeight;
+    if (!title_.isEmpty())
+        top += kTitleHeight;
     top += LegendHeight(full.width());
 
     int bottom = full.bottom() - kBottomMargin;
-    if (axis_x_->HasTitle()) bottom -= kAxisTitleExtra;
+    if (axis_x_->HasTitle())
+        bottom -= kAxisTitleExtra;
 
     const int left = full.left() + kLeftMargin;
     const int right = full.right() - (axis_y2_visible_ ? kLeftMargin : kRightMargin);
@@ -158,8 +166,13 @@ MetricChartWidget::Geometry MetricChartWidget::ComputeGeometry() const {
     bool has_x = false;
     for (const auto& s : series_) {
         for (const QPointF& p : s->Points()) {
-            if (!FinitePoint(p)) continue;
-            if (!has_x) { x_min = x_max = p.x(); has_x = true; continue; }
+            if (!FinitePoint(p))
+                continue;
+            if (!has_x) {
+                x_min = x_max = p.x();
+                has_x = true;
+                continue;
+            }
             x_min = std::min(x_min, p.x());
             x_max = std::max(x_max, p.x());
         }
@@ -179,11 +192,13 @@ MetricChartWidget::Geometry MetricChartWidget::ComputeGeometry() const {
         geo.x_min = 0.0;
         geo.x_max = 1.0;
     }
-    if (geo.x_max - geo.x_min < 1e-9) geo.x_max = geo.x_min + 1.0;
+    if (geo.x_max - geo.x_min < 1e-9)
+        geo.x_max = geo.x_min + 1.0;
 
     // ---- Y 量程（左 / 右轴各自独立）----
-    const bool has_bars = std::any_of(series_.begin(), series_.end(),
-        [](const std::unique_ptr<ChartSeries>& s) { return s->Kind() == ChartSeriesKind::Bar; });
+    const bool has_bars = std::any_of(series_.begin(), series_.end(), [](const std::unique_ptr<ChartSeries>& s) {
+        return s->Kind() == ChartSeriesKind::Bar;
+    });
     for (int axis_index = 0; axis_index < 2; ++axis_index) {
         ChartAxis* axis = (axis_index == 0) ? axis_y_.get() : axis_y2_.get();
         double* out_min = (axis_index == 0) ? &geo.y_min : &geo.y2_min;
@@ -193,10 +208,16 @@ MetricChartWidget::Geometry MetricChartWidget::ComputeGeometry() const {
         double v_max = 0.0;
         bool has_v = false;
         for (const auto& s : series_) {
-            if (s->ValueAxisIndex() != axis_index) continue;
+            if (s->ValueAxisIndex() != axis_index)
+                continue;
             for (const QPointF& p : s->Points()) {
-                if (!FinitePoint(p)) continue;
-                if (!has_v) { v_min = v_max = p.y(); has_v = true; continue; }
+                if (!FinitePoint(p))
+                    continue;
+                if (!has_v) {
+                    v_min = v_max = p.y();
+                    has_v = true;
+                    continue;
+                }
                 v_min = std::min(v_min, p.y());
                 v_max = std::max(v_max, p.y());
             }
@@ -205,7 +226,8 @@ MetricChartWidget::Geometry MetricChartWidget::ComputeGeometry() const {
             *out_min = axis->Min();
             *out_max = axis->Max();
         } else if (has_v) {
-            if (has_bars) v_min = std::min(0.0, v_min);
+            if (has_bars)
+                v_min = std::min(0.0, v_min);
             const double pad = std::max(1e-6, (v_max - v_min) * 0.08);
             *out_min = v_min - pad;
             *out_max = v_max + pad;
@@ -213,14 +235,16 @@ MetricChartWidget::Geometry MetricChartWidget::ComputeGeometry() const {
             *out_min = 0.0;
             *out_max = 1.0;
         }
-        if (*out_max - *out_min < 1e-9) *out_max = *out_min + 1.0;
+        if (*out_max - *out_min < 1e-9)
+            *out_max = *out_min + 1.0;
     }
     return geo;
 }
 
 void MetricChartWidget::DrawTitle(QPainter& painter, const Geometry& geo) {
     Q_UNUSED(geo);
-    if (title_.isEmpty()) return;
+    if (title_.isEmpty())
+        return;
     QFont f = font();
     f.setBold(true);
     painter.setFont(f);
@@ -232,7 +256,8 @@ void MetricChartWidget::DrawTitle(QPainter& painter, const Geometry& geo) {
 
 void MetricChartWidget::DrawLegend(QPainter& painter, const Geometry& geo) {
     Q_UNUSED(geo);
-    if (!legend_visible_) return;
+    if (!legend_visible_)
+        return;
     QFontMetrics fm(font());
     const QRect full = rect();
     int x = full.left() + kLeftMargin;
@@ -240,15 +265,15 @@ void MetricChartWidget::DrawLegend(QPainter& painter, const Geometry& geo) {
 
     painter.setPen(palette().color(QPalette::WindowText));
     for (const auto& s : series_) {
-        if (s->Name().isEmpty()) continue;
+        if (s->Name().isEmpty())
+            continue;
         const int w = 16 + fm.horizontalAdvance(s->Name()) + 12;
         if (x + w > full.right() - kRightMargin) {
             x = full.left() + kLeftMargin;
             y += kLegendRowHeight;
         }
         painter.fillRect(QRect(x, y + 3, 10, 10), s->Color());
-        painter.drawText(QRect(x + 16, y, w - 16, kLegendRowHeight),
-                         Qt::AlignLeft | Qt::AlignVCenter, s->Name());
+        painter.drawText(QRect(x + 16, y, w - 16, kLegendRowHeight), Qt::AlignLeft | Qt::AlignVCenter, s->Name());
         x += w;
     }
 }
@@ -284,9 +309,9 @@ void MetricChartWidget::DrawAxisAndGrid(QPainter& painter, const Geometry& geo) 
         painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
         painter.setPen(text_color);
         const QString label = FormatTick(value, axis_y_->LabelFormat());
-        painter.drawText(QRect(plot.left() - kLeftMargin + 4, static_cast<int>(y) - fm.height() / 2,
-                               kLeftMargin - 8, fm.height()),
-                         Qt::AlignRight | Qt::AlignVCenter, label);
+        painter.drawText(
+            QRect(plot.left() - kLeftMargin + 4, static_cast<int>(y) - fm.height() / 2, kLeftMargin - 8, fm.height()),
+            Qt::AlignRight | Qt::AlignVCenter, label);
     }
 
     // 右轴（仅刻度，不画网格，避免与左轴网格打架）
@@ -296,10 +321,9 @@ void MetricChartWidget::DrawAxisAndGrid(QPainter& painter, const Geometry& geo) 
             const double value = geo.y2_min + (geo.y2_max - geo.y2_min) * i / (y2_ticks - 1);
             const qreal y = to_py(value, 1);
             painter.setPen(text_color);
-            painter.drawText(QRect(plot.right() + 6, static_cast<int>(y) - fm.height() / 2,
-                                   kLeftMargin - 10, fm.height()),
-                             Qt::AlignLeft | Qt::AlignVCenter,
-                             FormatTick(value, axis_y2_->LabelFormat()));
+            painter.drawText(
+                QRect(plot.right() + 6, static_cast<int>(y) - fm.height() / 2, kLeftMargin - 10, fm.height()),
+                Qt::AlignLeft | Qt::AlignVCenter, FormatTick(value, axis_y2_->LabelFormat()));
         }
     }
 
@@ -320,7 +344,7 @@ void MetricChartWidget::DrawAxisAndGrid(QPainter& painter, const Geometry& geo) 
         }
     } else {
         const int n = categories.size();
-        const double group = 1.0;   // 分类轴: 一个分类占 1 个数据单位
+        const double group = 1.0; // 分类轴: 一个分类占 1 个数据单位
         for (int i = 0; i < n; ++i) {
             const double value = -0.5 + (i + 0.5) * group;
             const qreal x = to_px(value);
@@ -337,15 +361,17 @@ void MetricChartWidget::DrawAxisAndGrid(QPainter& painter, const Geometry& geo) 
                          Qt::AlignHCenter | Qt::AlignTop, axis_x_->Title());
     }
     for (int axis_index = 0; axis_index < 2; ++axis_index) {
-        if (axis_index == 1 && !axis_y2_visible_) continue;
+        if (axis_index == 1 && !axis_y2_visible_)
+            continue;
         ChartAxis* axis = (axis_index == 0) ? axis_y_.get() : axis_y2_.get();
-        if (!axis->HasTitle()) continue;
+        if (!axis->HasTitle())
+            continue;
         painter.save();
         painter.translate(12, plot.center().y());
         painter.rotate(-90);
         painter.setPen(text_color);
-        painter.drawText(QRect(-plot.height() / 2, -fm.height() / 2, plot.height(), fm.height()),
-                         Qt::AlignCenter, axis->Title());
+        painter.drawText(QRect(-plot.height() / 2, -fm.height() / 2, plot.height(), fm.height()), Qt::AlignCenter,
+                         axis->Title());
         painter.restore();
     }
 
@@ -373,13 +399,15 @@ void MetricChartWidget::DrawSeries(QPainter& painter, const Geometry& geo) {
     // 1) 柱状（先画，避免盖住折线）
     int bar_series_count = 0;
     for (const auto& s : series_) {
-        if (s->Kind() == ChartSeriesKind::Bar) ++bar_series_count;
+        if (s->Kind() == ChartSeriesKind::Bar)
+            ++bar_series_count;
     }
     if (bar_series_count > 0) {
         const QStringList& categories = axis_x_->Categories();
         int bar_index = 0;
         for (const auto& s : series_) {
-            if (s->Kind() != ChartSeriesKind::Bar) continue;
+            if (s->Kind() != ChartSeriesKind::Bar)
+                continue;
             const QVector<QPointF>& pts = s->Points();
             painter.setPen(Qt::NoPen);
             painter.setBrush(s->Color());
@@ -388,7 +416,8 @@ void MetricChartWidget::DrawSeries(QPainter& painter, const Geometry& geo) {
                 const double bar_w = std::max(2.0, group_w * 0.8 / bar_series_count);
                 const double offset = (bar_index - (bar_series_count - 1) / 2.0) * bar_w;
                 for (const QPointF& p : pts) {
-                    if (!FinitePoint(p)) continue;
+                    if (!FinitePoint(p))
+                        continue;
                     const double cx = to_px(p.x()) + offset;
                     const double zero = to_py(0.0, s->ValueAxisIndex());
                     const double top = to_py(p.y(), s->ValueAxisIndex());
@@ -400,7 +429,8 @@ void MetricChartWidget::DrawSeries(QPainter& painter, const Geometry& geo) {
                 const int n = std::max(1, static_cast<int>(pts.size()));
                 const double bar_w = std::max(2.0, static_cast<double>(plot.width()) / n * 0.7);
                 for (const QPointF& p : pts) {
-                    if (!FinitePoint(p)) continue;
+                    if (!FinitePoint(p))
+                        continue;
                     const double cx = to_px(p.x());
                     const double zero = to_py(0.0, s->ValueAxisIndex());
                     const double top = to_py(p.y(), s->ValueAxisIndex());
@@ -415,9 +445,11 @@ void MetricChartWidget::DrawSeries(QPainter& painter, const Geometry& geo) {
 
     // 2) 折线
     for (const auto& s : series_) {
-        if (s->Kind() != ChartSeriesKind::Line) continue;
+        if (s->Kind() != ChartSeriesKind::Line)
+            continue;
         const QVector<QPointF>& pts = s->Points();
-        if (pts.isEmpty()) continue;
+        if (pts.isEmpty())
+            continue;
         const int axis_index = s->ValueAxisIndex();
         painter.setPen(QPen(s->Color(), 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.setBrush(Qt::NoBrush);
@@ -429,7 +461,8 @@ void MetricChartWidget::DrawSeries(QPainter& painter, const Geometry& geo) {
         QVector<QPointF> polyline;
         polyline.reserve(pts.size());
         for (const QPointF& p : pts) {
-            if (!FinitePoint(p)) continue;
+            if (!FinitePoint(p))
+                continue;
             polyline.append(QPointF(to_px(p.x()), to_py(p.y(), axis_index)));
         }
         painter.drawPolyline(polyline);
@@ -445,29 +478,30 @@ void MetricChartWidget::DrawSeries(QPainter& painter, const Geometry& geo) {
 
     // 3) 散点（画在最上层）
     for (const auto& s : series_) {
-        if (s->Kind() != ChartSeriesKind::Scatter) continue;
+        if (s->Kind() != ChartSeriesKind::Scatter)
+            continue;
         const int axis_index = s->ValueAxisIndex();
         const double r = s->MarkerSize() * 0.5;
         painter.setPen(QPen(s->BorderColor(), 1.0));
         painter.setBrush(s->Color());
         for (const QPointF& p : s->Points()) {
-            if (!FinitePoint(p)) continue;
+            if (!FinitePoint(p))
+                continue;
             const QPointF c(to_px(p.x()), to_py(p.y(), axis_index));
             switch (s->MarkerShape()) {
-                case ChartMarkerShape::Rectangle:
-                    painter.drawRect(QRectF(c.x() - r, c.y() - r, r * 2, r * 2));
-                    break;
-                case ChartMarkerShape::Triangle: {
-                    QPolygonF tri;
-                    tri << QPointF(c.x(), c.y() - r) << QPointF(c.x() + r, c.y() + r)
-                        << QPointF(c.x() - r, c.y() + r);
-                    painter.drawPolygon(tri);
-                    break;
-                }
-                case ChartMarkerShape::Circle:
-                default:
-                    painter.drawEllipse(c, r, r);
-                    break;
+            case ChartMarkerShape::Rectangle:
+                painter.drawRect(QRectF(c.x() - r, c.y() - r, r * 2, r * 2));
+                break;
+            case ChartMarkerShape::Triangle: {
+                QPolygonF tri;
+                tri << QPointF(c.x(), c.y() - r) << QPointF(c.x() + r, c.y() + r) << QPointF(c.x() - r, c.y() + r);
+                painter.drawPolygon(tri);
+                break;
+            }
+            case ChartMarkerShape::Circle:
+            default:
+                painter.drawEllipse(c, r, r);
+                break;
             }
         }
     }
@@ -504,7 +538,8 @@ void MetricChartWidget::paintEvent(QPaintEvent* event) {
 
 bool MetricChartWidget::HitTest(const QPoint& pos, const Geometry& geo, QPointF* out) {
     const QRect& plot = geo.plot;
-    if (!plot.contains(pos)) return false;
+    if (!plot.contains(pos))
+        return false;
     const double span_x = geo.x_max - geo.x_min;
     const auto to_px = [&](double x) {
         return plot.left() + (x - geo.x_min) / span_x * static_cast<double>(plot.width());
@@ -522,7 +557,8 @@ bool MetricChartWidget::HitTest(const QPoint& pos, const Geometry& geo, QPointF*
         const QVector<QPointF>& pts = s->Points();
         for (int i = 0; i < pts.size(); ++i) {
             const QPointF& p = pts.at(i);
-            if (!FinitePoint(p)) continue;
+            if (!FinitePoint(p))
+                continue;
             const double dx = to_px(p.x()) - pos.x();
             const double dy = to_py(p.y(), s->ValueAxisIndex()) - pos.y();
             const double dist = dx * dx + dy * dy;
@@ -530,7 +566,8 @@ bool MetricChartWidget::HitTest(const QPoint& pos, const Geometry& geo, QPointF*
                 best = dist;
                 hover_series_ = si;
                 hover_index_ = i;
-                if (out) *out = p;
+                if (out)
+                    *out = p;
                 found = true;
             }
         }
@@ -569,5 +606,5 @@ void MetricChartWidget::leaveEvent(QEvent* event) {
     QWidget::leaveEvent(event);
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

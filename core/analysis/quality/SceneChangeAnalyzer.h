@@ -25,16 +25,23 @@ public:
     void Reset();
 
     // 设置切换判定阈值 (0..1)。默认 0.45, 越低越灵敏。
-    void SetThreshold(double t) { threshold_ = t; }
-    double GetThreshold() const { return threshold_; }
+    void SetThreshold(double t) {
+        threshold_ = t;
+    }
+    double GetThreshold() const {
+        return threshold_;
+    }
 
     // 喂入单帧灰度直方图 (任意量纲, 内部会归一化)。
     // 返回检测结果 (仅在检测到切换时); 首帧不会触发。
-    std::optional<SceneChangeResult> Feed(int frame_index, double timestamp,
-                                          const std::vector<float>& gray_hist);
+    std::optional<SceneChangeResult> Feed(int frame_index, double timestamp, const std::vector<float>& gray_hist);
 
-    int detected_count() const { return detected_count_; }
-    double last_score() const { return last_score_; }
+    int detected_count() const {
+        return detected_count_;
+    }
+    double last_score() const {
+        return last_score_;
+    }
 
 private:
     std::vector<float> prev_hist_;

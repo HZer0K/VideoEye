@@ -12,12 +12,12 @@ namespace {
 // 最常见的"参数写了没反应"原因，必须在解释里点出来。
 bool IsInputSideOption(const QString& name) {
     static const QStringList kInputSide = {
-        QStringLiteral("-y"), QStringLiteral("-n"), QStringLiteral("-hide_banner"),
-        QStringLiteral("-loglevel"), QStringLiteral("-nostdin"), QStringLiteral("-threads"),
-        QStringLiteral("-hwaccel"), QStringLiteral("-i"), QStringLiteral("-f"),
-        QStringLiteral("-ss"), QStringLiteral("-re"), QStringLiteral("-stream_loop"),
-        QStringLiteral("-r"), QStringLiteral("-t"), QStringLiteral("-itsoffset"),
-        QStringLiteral("-copyts"), QStringLiteral("-framerate"),
+        QStringLiteral("-y"),        QStringLiteral("-n"),         QStringLiteral("-hide_banner"),
+        QStringLiteral("-loglevel"), QStringLiteral("-nostdin"),   QStringLiteral("-threads"),
+        QStringLiteral("-hwaccel"),  QStringLiteral("-i"),         QStringLiteral("-f"),
+        QStringLiteral("-ss"),       QStringLiteral("-re"),        QStringLiteral("-stream_loop"),
+        QStringLiteral("-r"),        QStringLiteral("-t"),         QStringLiteral("-itsoffset"),
+        QStringLiteral("-copyts"),   QStringLiteral("-framerate"),
     };
     return kInputSide.contains(name, Qt::CaseInsensitive);
 }
@@ -30,8 +30,7 @@ QString FirstFilterName(const QString& chain) {
 
 // 一条命令里有多个输出时给它们编号，否则就是普通的"输出文件"
 QString OutputRoleLabel(int index, int output_count) {
-    return output_count > 1 ? QStringLiteral("输出文件 %1").arg(index + 1)
-                            : QStringLiteral("输出文件");
+    return output_count > 1 ? QStringLiteral("输出文件 %1").arg(index + 1) : QStringLiteral("输出文件");
 }
 
 QString OutputDescription(const QString& target) {
@@ -48,7 +47,7 @@ QString OutputDescription(const QString& target) {
     return text;
 }
 
-}  // namespace
+} // namespace
 
 FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& arguments) {
     FfmpegCommandExplanation out;
@@ -97,10 +96,9 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
             item.token = token;
             item.role = FfmpegTokenRole::Unresolved;
             item.role_label = QStringLiteral("未解析");
-            item.description =
-                QStringLiteral("认不出它是前面那个选项的值，还是一个输出文件"
-                               "（前面紧挨着的是一个本字典没有收录的选项）。"
-                               "这里不替你定，请以 ffmpeg 实际运行的结果为准。");
+            item.description = QStringLiteral("认不出它是前面那个选项的值，还是一个输出文件"
+                                              "（前面紧挨着的是一个本字典没有收录的选项）。"
+                                              "这里不替你定，请以 ffmpeg 实际运行的结果为准。");
             out.tokens.push_back(item);
             ++i;
             continue;
@@ -134,8 +132,7 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
             // 值是否真的能用（编码器 / 滤镜 / 格式）
             if (!item.value.isEmpty()) {
                 const auto& caps = FfmpegCapabilityCache::Instance();
-                if (entry->value_kind == FfmpegValueKind::Encoder &&
-                    item.value != QLatin1String("copy") &&
+                if (entry->value_kind == FfmpegValueKind::Encoder && item.value != QLatin1String("copy") &&
                     !caps.HasEncoder(item.value)) {
                     item.warning = QStringLiteral("当前这个 ffmpeg 里没有编码器「%1」，运行会报 Unknown encoder。"
                                                   "用 ffmpeg -encoders 可以列出实际可用的编码器。")
@@ -159,15 +156,16 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
                     }
                 } else if (entry->value_kind == FfmpegValueKind::Filter &&
                            !caps.HasFilter(FirstFilterName(item.value))) {
-                    item.warning = QStringLiteral("滤镜「%1」在当前这个 ffmpeg 里不可用。")
-                                       .arg(FirstFilterName(item.value));
+                    item.warning =
+                        QStringLiteral("滤镜「%1」在当前这个 ffmpeg 里不可用。").arg(FirstFilterName(item.value));
                 }
             }
 
             if (token == QLatin1String("-i")) {
                 item.role = FfmpegTokenRole::InputFile;
                 item.role_label = QStringLiteral("输入文件");
-                if (item.value == QLatin1String("-") || item.value.compare(QLatin1String("pipe:0"), Qt::CaseInsensitive) == 0) {
+                if (item.value == QLatin1String("-") ||
+                    item.value.compare(QLatin1String("pipe:0"), Qt::CaseInsensitive) == 0) {
                     item.warning = QStringLiteral("它表示从标准输入读数据，而本页不给子进程喂 stdin —— "
                                                   "ffmpeg 会立刻读到 EOF 退出。");
                 }
@@ -180,10 +178,9 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
         } else {
             item.role = FfmpegTokenRole::UnknownOption;
             item.role_label = QStringLiteral("未知参数");
-            item.description =
-                QStringLiteral("字典里没有收录「%1」。它可能是编码器私有选项、"
-                               "新版本新增的参数，或者拼错了 —— 这里不做猜测，请以实际运行输出为准。")
-                    .arg(token);
+            item.description = QStringLiteral("字典里没有收录「%1」。它可能是编码器私有选项、"
+                                              "新版本新增的参数，或者拼错了 —— 这里不做猜测，请以实际运行输出为准。")
+                                   .arg(token);
             // 私有选项通常带值，但值是否以 '-' 开头无从判断，保守地不吞掉下一个 token。
         }
         out.tokens.push_back(item);
@@ -275,8 +272,7 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
                 item.role_label != QStringLiteral("不覆盖已存在的文件") &&
                 item.role_label != QStringLiteral("隐藏版本横幅") &&
                 item.role_label != QStringLiteral("日志详细程度") &&
-                item.role_label != QStringLiteral("不读标准输入") &&
-                item.role_label != QStringLiteral("线程数")) {
+                item.role_label != QStringLiteral("不读标准输入") && item.role_label != QStringLiteral("线程数")) {
                 flow_parts.push_back(item.role_label);
             }
         }
@@ -289,5 +285,5 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
     return out;
 }
 
-}  // namespace ffmpeg
-}  // namespace videoeye
+} // namespace ffmpeg
+} // namespace videoeye

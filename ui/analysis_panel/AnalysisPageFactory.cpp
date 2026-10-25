@@ -22,11 +22,13 @@ template <typename ViewT>
 void InjectIndexedHooks(ViewT* view, const PageBuildDeps& deps, FeatureTable table) {
     view->SetFeatureHooks(
         [deps, table](int view_feature) {
-            if (view_feature < 0 || view_feature >= static_cast<int>(table.size())) return true;
+            if (view_feature < 0 || view_feature >= static_cast<int>(table.size()))
+                return true;
             return deps.is_feature_on(table[view_feature]);
         },
         [deps, table](int view_feature, bool enabled) {
-            if (view_feature < 0 || view_feature >= static_cast<int>(table.size())) return;
+            if (view_feature < 0 || view_feature >= static_cast<int>(table.size()))
+                return;
             deps.set_feature(table[view_feature], enabled);
         });
 }
@@ -38,9 +40,9 @@ QWidget* BuildPlaybackStatsPage(AnalysisPages* pages, const PageBuildDeps& deps)
     pages->frame_packet->setMinimumHeight(360);
 
     InjectIndexedHooks(pages->stream_overview, deps, {model::AnalysisFeature::StreamStats});
-    InjectIndexedHooks(pages->frame_packet, deps,
-                       {model::AnalysisFeature::VideoFrame, model::AnalysisFeature::AudioFrame,
-                        model::AnalysisFeature::Packet});
+    InjectIndexedHooks(
+        pages->frame_packet, deps,
+        {model::AnalysisFeature::VideoFrame, model::AnalysisFeature::AudioFrame, model::AnalysisFeature::Packet});
 
     // GOP 摘要由「帧/包明细」从解码帧 pict_type 推导产出，「流概览」区拿它填
     // 「最大GOP大小」并画「GOP 帧数分布」曲线。两个视图互不认识，只在建页处连一次
@@ -51,9 +53,7 @@ QWidget* BuildPlaybackStatsPage(AnalysisPages* pages, const PageBuildDeps& deps)
     StreamOverviewView* overview = pages->stream_overview;
     FramePacketView* frames = pages->frame_packet;
     QObject::connect(frames, &FramePacketView::GopSummariesChanged, deps.signal_context,
-                     [overview, frames]() {
-                         overview->SetGopSummaries(frames->GopSummaries());
-                     });
+                     [overview, frames]() { overview->SetGopSummaries(frames->GopSummaries()); });
 
     QWidget* page = new QWidget(deps.parent);
     QVBoxLayout* layout = new QVBoxLayout(page);
@@ -70,7 +70,7 @@ QWidget* BuildPlaybackStatsPage(AnalysisPages* pages, const PageBuildDeps& deps)
     return page;
 }
 
-}  // namespace
+} // namespace
 
 AnalysisPages BuildAnalysisPages(const PageBuildDeps& deps) {
     AnalysisPages pages;
@@ -89,28 +89,26 @@ AnalysisPages BuildAnalysisPages(const PageBuildDeps& deps) {
             page_widget = BuildPlaybackStatsPage(&pages, deps);
         } else if (id == QStringLiteral("event_timeline")) {
             pages.event_timeline = new EventTimelineView(deps.parent);
-            InjectIndexedHooks(pages.event_timeline, deps,
-                               {model::AnalysisFeature::Event, model::AnalysisFeature::SyncSample,
-                                model::AnalysisFeature::Timeline});
+            InjectIndexedHooks(
+                pages.event_timeline, deps,
+                {model::AnalysisFeature::Event, model::AnalysisFeature::SyncSample, model::AnalysisFeature::Timeline});
             page_widget = pages.event_timeline;
         } else if (id == QStringLiteral("file_structure")) {
-            pages.container = new ContainerStructurePage(
-                deps.is_feature_on(model::AnalysisFeature::ContainerStructure), deps.parent);
+            pages.container =
+                new ContainerStructurePage(deps.is_feature_on(model::AnalysisFeature::ContainerStructure), deps.parent);
             page_widget = pages.container;
         } else if (id == QStringLiteral("motion_vectors")) {
             pages.macroblock = new MacroblockView(deps.parent);
             InjectIndexedHooks(pages.macroblock, deps, {model::AnalysisFeature::Macroblock});
             page_widget = pages.macroblock;
         } else if (id == QStringLiteral("scene_change")) {
-            pages.scene_change = new SceneChangePage(
-                deps.is_feature_on(model::AnalysisFeature::SceneChange), deps.parent);
+            pages.scene_change =
+                new SceneChangePage(deps.is_feature_on(model::AnalysisFeature::SceneChange), deps.parent);
             page_widget = pages.scene_change;
         } else if (id == QStringLiteral("visual_quality")) {
             pages.visual_defect = new VisualDefectPage(
                 deps.is_feature_on(model::AnalysisFeature::VisualDefect),
-                deps.visual_defect_options ? deps.visual_defect_options()
-                                          : model::VisualDefectOptions(),
-                deps.parent);
+                deps.visual_defect_options ? deps.visual_defect_options() : model::VisualDefectOptions(), deps.parent);
             page_widget = pages.visual_defect;
         } else if (id == QStringLiteral("bitrate_gop")) {
             pages.bitrate_gop = new BitrateGopPage(deps.parent);
@@ -150,8 +148,8 @@ AnalysisPages BuildAnalysisPages(const PageBuildDeps& deps) {
             continue;
         }
 
-        deps.add_page(page_widget, text(entry.title), id, QString::fromUtf8(entry.group),
-                      entry.order, (entry.scope[0] != '\0') ? text(entry.scope) : QString());
+        deps.add_page(page_widget, text(entry.title), id, QString::fromUtf8(entry.group), entry.order,
+                      (entry.scope[0] != '\0') ? text(entry.scope) : QString());
     }
 
     return pages;
@@ -161,7 +159,8 @@ QMap<QString, PageBadge> CollectPageBadges(const AnalysisPages& pages, bool scan
     QMap<QString, PageBadge> badges;
 
     auto add = [&badges, scanning](const QString& page_id, int count, int level) {
-        if (count <= 0 && !scanning) return;
+        if (count <= 0 && !scanning)
+            return;
         PageBadge info;
         info.issue_count = count;
         info.level = count > 0 ? level : 0;
@@ -187,24 +186,29 @@ QMap<QString, PageBadge> CollectPageBadges(const AnalysisPages& pages, bool scan
     }
 
     // 共用同一次扫描的页面: 各自的异常表行数（没有异常表的页面只标扫描态）
-    if (pages.bitrate_gop) add(QStringLiteral("bitrate_gop"), pages.bitrate_gop->IssueCount(), 1);
-    if (pages.audio_qc) add(QStringLiteral("audio_qc"), pages.audio_qc->IssueCount(), 1);
-    if (pages.color_hdr) add(QStringLiteral("color_hdr"), pages.color_hdr->IssueCount(), 1);
+    if (pages.bitrate_gop)
+        add(QStringLiteral("bitrate_gop"), pages.bitrate_gop->IssueCount(), 1);
+    if (pages.audio_qc)
+        add(QStringLiteral("audio_qc"), pages.audio_qc->IssueCount(), 1);
+    if (pages.color_hdr)
+        add(QStringLiteral("color_hdr"), pages.color_hdr->IssueCount(), 1);
     if (pages.streaming) {
         add(QStringLiteral("streaming_packets"), pages.streaming->IssueCount(), 1);
     }
     if (pages.bitstream_params) {
         add(QStringLiteral("codec_parameters"), pages.bitstream_params->IssueCount(), 1);
     }
-    if (pages.subtitle_aux) add(QStringLiteral("subtitle_aux"), 0, 0);
+    if (pages.subtitle_aux)
+        add(QStringLiteral("subtitle_aux"), 0, 0);
 
     // 画面质量是播放期累积的缺陷记录，不随全文件扫描走，但同样值得一个计数徽标
     if (pages.visual_defect) {
         const int count = static_cast<int>(pages.visual_defect->DefectRecords().size());
-        if (count > 0) add(QStringLiteral("visual_quality"), count, 1);
+        if (count > 0)
+            add(QStringLiteral("visual_quality"), count, 1);
     }
     return badges;
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

@@ -33,12 +33,13 @@ namespace ui {
 // 这里只做"两次取值是否相等"的比较，不换算成挂钟时间，所以 file_time_type 的纪元
 // 与 system_clock 是否一致都无所谓 —— 同机同 API 取值就自洽。
 struct FileVersionStamp {
-    bool valid = false;         // 是否取到本地指纹（网络源 / 文件已删除 / 读取失败 => false）
-    std::uint64_t size = 0;     // 字节数
-    std::int64_t mtime_ns = 0;  // 修改时间（纳秒计数，仅用于同机比较是否变化）
+    bool valid = false;        // 是否取到本地指纹（网络源 / 文件已删除 / 读取失败 => false）
+    std::uint64_t size = 0;    // 字节数
+    std::int64_t mtime_ns = 0; // 修改时间（纳秒计数，仅用于同机比较是否变化）
 
     bool operator==(const FileVersionStamp& other) const {
-        if (valid != other.valid) return false;
+        if (valid != other.valid)
+            return false;
         return !valid || (size == other.size && mtime_ns == other.mtime_ns);
     }
 };
@@ -48,9 +49,11 @@ inline FileVersionStamp QueryFileVersion(const std::string& path) {
     FileVersionStamp stamp;
     std::error_code ec;
     const auto size = std::filesystem::file_size(path, ec);
-    if (ec) return stamp;
+    if (ec)
+        return stamp;
     const auto mtime = std::filesystem::last_write_time(path, ec);
-    if (ec) return stamp;
+    if (ec)
+        return stamp;
     stamp.size = static_cast<std::uint64_t>(size);
     stamp.mtime_ns = static_cast<std::int64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(mtime.time_since_epoch()).count());
@@ -60,22 +63,20 @@ inline FileVersionStamp QueryFileVersion(const std::string& path) {
 
 // 一次分析结果的"身份戳"：属于哪个文件（哪个版本）、按哪个模板、用哪套分析参数。
 struct ResultStamp {
-    std::string path;        // 分析时对应的媒体路径
-    std::string profile_id;  // 分析时使用的模板 id
-    bool valid = false;      // 是否成功产出过结果（失败 / 取消 / 超时都保持 false）
+    std::string path;       // 分析时对应的媒体路径
+    std::string profile_id; // 分析时使用的模板 id
+    bool valid = false;     // 是否成功产出过结果（失败 / 取消 / 超时都保持 false）
 
     // ---- 复用判定所需的额外身份（"谨慎复用报告页结果"）----
-    AnalysisOptions options;                                             // 产出这份结果所用的分析参数
-    model::AnalysisStatus scan_status = model::AnalysisStatus::Failed;   // 扫描终态
-    FileVersionStamp version;                                            // 分析时的本地文件版本
+    AnalysisOptions options;                                           // 产出这份结果所用的分析参数
+    model::AnalysisStatus scan_status = model::AnalysisStatus::Failed; // 扫描终态
+    FileVersionStamp version;                                          // 分析时的本地文件版本
 };
 
 // 结果是否仍匹配当前 (文件, 模板)：有效 + 当前文件非空 + 路径与模板都一致。
-inline bool IsResultFresh(const ResultStamp& stamp,
-                          const std::string& current_path,
+inline bool IsResultFresh(const ResultStamp& stamp, const std::string& current_path,
                           const std::string& current_profile_id) {
-    return stamp.valid && !current_path.empty() && stamp.path == current_path &&
-           stamp.profile_id == current_profile_id;
+    return stamp.valid && !current_path.empty() && stamp.path == current_path && stamp.profile_id == current_profile_id;
 }
 
 // 所需的分析选项是否都被缓存的选项覆盖。
@@ -84,18 +85,27 @@ inline bool IsResultFresh(const ResultStamp& stamp,
 // 只比这些开关：被要求的分析必须已经在缓存结果里跑过，采样粒度不能比要求的更粗。
 // 各维度内部的阈值（如音频门限）不参与判定 —— 它们影响的是**判定**而非**采集**，
 // 换模板时本来就由规则引擎重新套用。
-inline bool AnalysisOptionsCovers(const AnalysisOptions& cached,
-                                  const AnalysisOptions& required) {
-    if (required.analyze_bitrate_gop && !cached.analyze_bitrate_gop) return false;
-    if (required.decode_frame_types && !cached.decode_frame_types) return false;
-    if (required.analyze_audio_qc && !cached.analyze_audio_qc) return false;
-    if (required.analyze_color_hdr && !cached.analyze_color_hdr) return false;
-    if (required.analyze_bitstream && !cached.analyze_bitstream) return false;
-    if (required.analyze_mp4_sample_table && !cached.analyze_mp4_sample_table) return false;
-    if (required.analyze_streaming_package && !cached.analyze_streaming_package) return false;
-    if (required.analyze_subtitle && !cached.analyze_subtitle) return false;
-    if (required.analyze_timecode && !cached.analyze_timecode) return false;
-    if (required.analyze_aux_data && !cached.analyze_aux_data) return false;
+inline bool AnalysisOptionsCovers(const AnalysisOptions& cached, const AnalysisOptions& required) {
+    if (required.analyze_bitrate_gop && !cached.analyze_bitrate_gop)
+        return false;
+    if (required.decode_frame_types && !cached.decode_frame_types)
+        return false;
+    if (required.analyze_audio_qc && !cached.analyze_audio_qc)
+        return false;
+    if (required.analyze_color_hdr && !cached.analyze_color_hdr)
+        return false;
+    if (required.analyze_bitstream && !cached.analyze_bitstream)
+        return false;
+    if (required.analyze_mp4_sample_table && !cached.analyze_mp4_sample_table)
+        return false;
+    if (required.analyze_streaming_package && !cached.analyze_streaming_package)
+        return false;
+    if (required.analyze_subtitle && !cached.analyze_subtitle)
+        return false;
+    if (required.analyze_timecode && !cached.analyze_timecode)
+        return false;
+    if (required.analyze_aux_data && !cached.analyze_aux_data)
+        return false;
     // 采样间隔：缓存比要求更粗（数值更大）时序列点更少，可能不足以支撑判定。
     return cached.sample_interval_seconds <= required.sample_interval_seconds;
 }
@@ -105,20 +115,20 @@ inline bool AnalysisOptionsCovers(const AnalysisOptions& cached,
 //   1) 同一文件版本：本地文件要求 size + mtime 一致；网络源没有指纹，直接不复用；
 //   2) 所需分析选项已被缓存选项覆盖；
 //   3) 上次扫描完整成功（Complete / Sampled；Cancelled / Failed 不算）。
-inline bool CanReuseAnalysis(const ResultStamp& stamp,
-                             const std::string& current_path,
-                             const FileVersionStamp& current_version,
-                             const AnalysisOptions& required_options) {
-    if (!stamp.valid || current_path.empty() || stamp.path != current_path) return false;
+inline bool CanReuseAnalysis(const ResultStamp& stamp, const std::string& current_path,
+                             const FileVersionStamp& current_version, const AnalysisOptions& required_options) {
+    if (!stamp.valid || current_path.empty() || stamp.path != current_path)
+        return false;
     // 单侧取不到指纹（网络源 / 文件已变化到读不到）时保守地重新分析。
-    if (!stamp.version.valid || !current_version.valid) return false;
-    if (!(stamp.version == current_version)) return false;
-    if (stamp.scan_status != model::AnalysisStatus::Complete &&
-        stamp.scan_status != model::AnalysisStatus::Sampled) {
+    if (!stamp.version.valid || !current_version.valid)
+        return false;
+    if (!(stamp.version == current_version))
+        return false;
+    if (stamp.scan_status != model::AnalysisStatus::Complete && stamp.scan_status != model::AnalysisStatus::Sampled) {
         return false;
     }
     return AnalysisOptionsCovers(stamp.options, required_options);
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

@@ -25,19 +25,23 @@ namespace detail {
 inline constexpr int kReportSchemaVersion = 1;
 
 inline std::string Fixed(double value, int precision) {
-    if (!std::isfinite(value)) return std::string();
+    if (!std::isfinite(value))
+        return std::string();
     char buf[64];
     std::snprintf(buf, sizeof(buf), ("%." + std::to_string(precision) + "f").c_str(), value);
     return std::string(buf);
 }
 
-inline std::string Int64Text(long long value) { return std::to_string(value); }
+inline std::string Int64Text(long long value) {
+    return std::to_string(value);
+}
 
 // CSV/PDF 里换行会把一行拆成两行，而 detail/suggestion 里有换行（如 FFmpeg 命令行示例）。
 inline std::string SingleLine(const std::string& text) {
     std::string out = text;
     for (char& c : out) {
-        if (c == '\n' || c == '\r') c = ' ';
+        if (c == '\n' || c == '\r')
+            c = ' ';
     }
     return out;
 }
@@ -52,6 +56,6 @@ inline bool WriteUtf8File(const std::string& path, const std::string& content) {
     return file.good();
 }
 
-}  // namespace detail
-}  // namespace reporting
-}  // namespace videoeye
+} // namespace detail
+} // namespace reporting
+} // namespace videoeye

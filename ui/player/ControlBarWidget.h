@@ -40,17 +40,39 @@ public:
     void SetMediaPlayer(player::MediaPlayer* player);
 
     // 子控件访问器（供 PlayerPanel 连接信号 / 回写状态）
-    QPushButton* playPauseButton() const { return play_pause_button_; }
-    QPushButton* stopButton() const { return stop_button_; }
-    QPushButton* prevFrameButton() const { return prev_frame_button_; }
-    QPushButton* nextFrameButton() const { return next_frame_button_; }
-    QPushButton* volumeButton() const { return volume_button_; }
-    QSlider* volumeSlider() const { return volume_slider_; }
-    QLabel* timecodeLabel() const { return timecode_label_; }
-    QPushButton* mvOverlayButton() const { return mv_overlay_button_; }
-    QPushButton* collapseButton() const { return collapse_player_button_; }
-    QSlider* seekSlider() const { return seek_slider_; }
-    QLabel* timeLabel() const { return time_label_; }
+    QPushButton* playPauseButton() const {
+        return play_pause_button_;
+    }
+    QPushButton* stopButton() const {
+        return stop_button_;
+    }
+    QPushButton* prevFrameButton() const {
+        return prev_frame_button_;
+    }
+    QPushButton* nextFrameButton() const {
+        return next_frame_button_;
+    }
+    QPushButton* volumeButton() const {
+        return volume_button_;
+    }
+    QSlider* volumeSlider() const {
+        return volume_slider_;
+    }
+    QLabel* timecodeLabel() const {
+        return timecode_label_;
+    }
+    QPushButton* mvOverlayButton() const {
+        return mv_overlay_button_;
+    }
+    QPushButton* collapseButton() const {
+        return collapse_player_button_;
+    }
+    QSlider* seekSlider() const {
+        return seek_slider_;
+    }
+    QLabel* timeLabel() const {
+        return time_label_;
+    }
 
 private slots:
     void OnVolumeChanged(int value);
@@ -83,11 +105,11 @@ private:
     QLabel* time_label_ = nullptr;
 
     // ---- 窄宽收纳 ----
-    QToolButton* overflow_button_ = nullptr;   // "⋯" 溢出按钮（窄模式才可见）
+    QToolButton* overflow_button_ = nullptr; // "⋯" 溢出按钮（窄模式才可见）
     QMenu* overflow_menu_ = nullptr;
-    QWidgetAction* timecode_action_ = nullptr;  // 时码标签
-    QWidgetAction* volume_action_ = nullptr;    // 音量滑块
-    QWidgetAction* mv_action_ = nullptr;        // MV 叠加开关
+    QWidgetAction* timecode_action_ = nullptr; // 时码标签
+    QWidgetAction* volume_action_ = nullptr;   // 音量滑块
+    QWidgetAction* mv_action_ = nullptr;       // MV 叠加开关
     bool secondary_in_menu_ = false;
     // "全部控件就位"时布局的最小宽度。只在控件都在栏上时量：收进菜单后布局变小，
     // 拿当时那个更小的值当阈值会让判定随状态翻转（收紧→变宽→放松→变窄→…）无限抖动。

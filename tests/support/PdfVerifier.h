@@ -21,14 +21,14 @@ namespace videoeye_test {
 
 struct PdfVerifyResult {
     bool ok = false;
-    std::string error;              // 第一条失败原因（ok=false 时非空）
+    std::string error; // 第一条失败原因（ok=false 时非空）
 
-    std::string version;            // 形如 "%PDF-1.4"
-    long long xref_offset = -1;     // startxref 给的偏移
-    int object_count = 0;           // trailer /Size（含 0 号 free 对象）
+    std::string version;        // 形如 "%PDF-1.4"
+    long long xref_offset = -1; // startxref 给的偏移
+    int object_count = 0;       // trailer /Size（含 0 号 free 对象）
     int root_object = 0;
     int pages_object = 0;
-    int page_count = 0;             // /Pages 里的 /Count
+    int page_count = 0; // /Pages 里的 /Count
     std::vector<int> page_objects;
     std::vector<int> content_objects;
     std::vector<int> font_objects;
@@ -45,4 +45,4 @@ PdfVerifyResult VerifyPdfFile(const std::string& path);
 // 把整个文件读成字符串（二进制安全）
 bool ReadWholeFile(const std::string& path, std::string& out);
 
-}  // namespace videoeye_test
+} // namespace videoeye_test

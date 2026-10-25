@@ -39,7 +39,7 @@ bool EnsureWritableDirectory(const QString& dir, QString* reason) {
     return true;
 }
 
-}  // namespace
+} // namespace
 
 LogFileLocation ResolveDebugLogPath(const QString& app_dir, const QString& app_name) {
     LogFileLocation out;
@@ -87,5 +87,5 @@ void RotateLogFileIfOversized(const QString& path, qint64 max_bytes, int backup_
     QFile::rename(path, QStringLiteral("%1.1").arg(path));
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

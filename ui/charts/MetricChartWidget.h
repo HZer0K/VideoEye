@@ -22,17 +22,9 @@
 namespace videoeye {
 namespace ui {
 
-enum class ChartSeriesKind {
-    Line,
-    Scatter,
-    Bar
-};
+enum class ChartSeriesKind { Line, Scatter, Bar };
 
-enum class ChartMarkerShape {
-    Circle,
-    Rectangle,
-    Triangle
-};
+enum class ChartMarkerShape { Circle, Rectangle, Triangle };
 
 // 坐标轴。由 MetricChartWidget 持有，外部只改属性。
 class ChartAxis {
@@ -42,22 +34,48 @@ public:
         max_ = max;
         has_range_ = true;
     }
-    void ResetRange() { has_range_ = false; }
+    void ResetRange() {
+        has_range_ = false;
+    }
 
-    void SetLabelFormat(const QString& format) { label_format_ = format; }
-    void SetTitleText(const QString& title) { title_ = title; }
-    void SetTickCount(int count) { tick_count_ = count < 2 ? 2 : count; }
+    void SetLabelFormat(const QString& format) {
+        label_format_ = format;
+    }
+    void SetTitleText(const QString& title) {
+        title_ = title;
+    }
+    void SetTickCount(int count) {
+        tick_count_ = count < 2 ? 2 : count;
+    }
     // 柱状图用：设置后 X 轴按分类渲染，柱子分组并列
-    void SetCategories(const QStringList& categories) { categories_ = categories; }
+    void SetCategories(const QStringList& categories) {
+        categories_ = categories;
+    }
 
-    double Min() const { return min_; }
-    double Max() const { return max_; }
-    bool HasRange() const { return has_range_; }
-    bool HasTitle() const { return !title_.isEmpty(); }
-    const QString& Title() const { return title_; }
-    const QString& LabelFormat() const { return label_format_; }
-    int TickCount() const { return tick_count_; }
-    const QStringList& Categories() const { return categories_; }
+    double Min() const {
+        return min_;
+    }
+    double Max() const {
+        return max_;
+    }
+    bool HasRange() const {
+        return has_range_;
+    }
+    bool HasTitle() const {
+        return !title_.isEmpty();
+    }
+    const QString& Title() const {
+        return title_;
+    }
+    const QString& LabelFormat() const {
+        return label_format_;
+    }
+    int TickCount() const {
+        return tick_count_;
+    }
+    const QStringList& Categories() const {
+        return categories_;
+    }
 
 private:
     double min_ = 0.0;
@@ -79,49 +97,108 @@ class MetricChartWidget;
 // 都能顺手排一次重绘，不再依赖别的事件顺带把界面刷出来。
 class ChartSeries {
 public:
-    ChartSeries(ChartSeriesKind kind, const QString& name, const QColor& color,
-                MetricChartWidget* owner = nullptr)
-        : kind_(kind), name_(name), color_(color), border_color_(color), owner_(owner) {}
+    ChartSeries(ChartSeriesKind kind, const QString& name, const QColor& color, MetricChartWidget* owner = nullptr)
+        : kind_(kind), name_(name), color_(color), border_color_(color), owner_(owner) {
+    }
 
-    ChartSeriesKind Kind() const { return kind_; }
+    ChartSeriesKind Kind() const {
+        return kind_;
+    }
 
-    void SetName(const QString& name) { name_ = name; NotifyUpdate(); }
-    const QString& Name() const { return name_; }
+    void SetName(const QString& name) {
+        name_ = name;
+        NotifyUpdate();
+    }
+    const QString& Name() const {
+        return name_;
+    }
 
-    void SetColor(const QColor& color) { color_ = color; NotifyUpdate(); }
-    QColor Color() const { return color_; }
+    void SetColor(const QColor& color) {
+        color_ = color;
+        NotifyUpdate();
+    }
+    QColor Color() const {
+        return color_;
+    }
 
-    void SetBorderColor(const QColor& color) { border_color_ = color; NotifyUpdate(); }
-    QColor BorderColor() const { return border_color_; }
+    void SetBorderColor(const QColor& color) {
+        border_color_ = color;
+        NotifyUpdate();
+    }
+    QColor BorderColor() const {
+        return border_color_;
+    }
 
-    void SetMarkerSize(double size) { marker_size_ = size < 1.0 ? 1.0 : size; NotifyUpdate(); }
-    double MarkerSize() const { return marker_size_; }
+    void SetMarkerSize(double size) {
+        marker_size_ = size < 1.0 ? 1.0 : size;
+        NotifyUpdate();
+    }
+    double MarkerSize() const {
+        return marker_size_;
+    }
 
-    void SetMarkerShape(ChartMarkerShape shape) { marker_shape_ = shape; NotifyUpdate(); }
-    ChartMarkerShape MarkerShape() const { return marker_shape_; }
+    void SetMarkerShape(ChartMarkerShape shape) {
+        marker_shape_ = shape;
+        NotifyUpdate();
+    }
+    ChartMarkerShape MarkerShape() const {
+        return marker_shape_;
+    }
 
-    void SetPointsVisible(bool visible) { points_visible_ = visible; NotifyUpdate(); }
-    bool PointsVisible() const { return points_visible_; }
+    void SetPointsVisible(bool visible) {
+        points_visible_ = visible;
+        NotifyUpdate();
+    }
+    bool PointsVisible() const {
+        return points_visible_;
+    }
 
     // 0 = 左轴, 1 = 右轴
-    void SetValueAxisIndex(int index) { value_axis_ = (index == 1) ? 1 : 0; NotifyUpdate(); }
-    int ValueAxisIndex() const { return value_axis_; }
+    void SetValueAxisIndex(int index) {
+        value_axis_ = (index == 1) ? 1 : 0;
+        NotifyUpdate();
+    }
+    int ValueAxisIndex() const {
+        return value_axis_;
+    }
 
-    void Clear() { points_.clear(); NotifyUpdate(); }
-    void Append(double x, double y) { points_.append(QPointF(x, y)); NotifyUpdate(); }
-    void Append(const QPointF& point) { points_.append(point); NotifyUpdate(); }
-    ChartSeries& operator<<(const QPointF& point) { points_.append(point); NotifyUpdate(); return *this; }
-    void Replace(QVector<QPointF> points) { points_ = std::move(points); NotifyUpdate(); }
+    void Clear() {
+        points_.clear();
+        NotifyUpdate();
+    }
+    void Append(double x, double y) {
+        points_.append(QPointF(x, y));
+        NotifyUpdate();
+    }
+    void Append(const QPointF& point) {
+        points_.append(point);
+        NotifyUpdate();
+    }
+    ChartSeries& operator<<(const QPointF& point) {
+        points_.append(point);
+        NotifyUpdate();
+        return *this;
+    }
+    void Replace(QVector<QPointF> points) {
+        points_ = std::move(points);
+        NotifyUpdate();
+    }
 
-    const QVector<QPointF>& Points() const { return points_; }
-    int Count() const { return points_.size(); }
-    bool IsEmpty() const { return points_.isEmpty(); }
+    const QVector<QPointF>& Points() const {
+        return points_;
+    }
+    int Count() const {
+        return points_.size();
+    }
+    bool IsEmpty() const {
+        return points_.isEmpty();
+    }
 
 private:
     // 定义在 .cpp：那里 ChartSeries 与 MetricChartWidget 都已是完整类型
     void NotifyUpdate();
 
-    MetricChartWidget* owner_ = nullptr;   // 本系列所属图表，nullptr = 还没挂上
+    MetricChartWidget* owner_ = nullptr; // 本系列所属图表，nullptr = 还没挂上
     ChartSeriesKind kind_ = ChartSeriesKind::Line;
     QString name_;
     QColor color_ = QColor("#42a5f5");
@@ -140,10 +217,14 @@ public:
     explicit MetricChartWidget(QWidget* parent = nullptr);
 
     void SetTitle(const QString& title);
-    const QString& Title() const { return title_; }
+    const QString& Title() const {
+        return title_;
+    }
 
     void SetLegendVisible(bool visible);
-    bool LegendVisible() const { return legend_visible_; }
+    bool LegendVisible() const {
+        return legend_visible_;
+    }
 
     // 工厂：创建系列并由图表接管所有权，返回裸指针供外部保存
     ChartSeries* AddSeries(const QString& name, ChartSeriesKind kind, const QColor& color);
@@ -154,15 +235,23 @@ public:
     // 清空所有系列的数据点（保留系列本身与配色）
     void ClearSeriesData();
 
-    ChartAxis* AxisX() { return axis_x_.get(); }
-    ChartAxis* AxisY() { return axis_y_.get(); }
-    ChartAxis* AxisY2() { return axis_y2_.get(); }
+    ChartAxis* AxisX() {
+        return axis_x_.get();
+    }
+    ChartAxis* AxisY() {
+        return axis_y_.get();
+    }
+    ChartAxis* AxisY2() {
+        return axis_y2_.get();
+    }
     void SetAxisY2Visible(bool visible);
 
     // 当一个图表里有多个 Y 轴时，用它把系列绑到右轴
     void AttachAxis(ChartSeries* series, ChartAxis* axis);
 
-    void SetCategories(const QStringList& categories) { axis_x_->SetCategories(categories); }
+    void SetCategories(const QStringList& categories) {
+        axis_x_->SetCategories(categories);
+    }
 
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
@@ -192,7 +281,7 @@ private:
     void DrawSeries(QPainter& painter, const Geometry& geo);
     void DrawLegend(QPainter& painter, const Geometry& geo);
     void DrawTitle(QPainter& painter, const Geometry& geo);
-    int  LegendHeight(int width) const;
+    int LegendHeight(int width) const;
     bool HitTest(const QPoint& pos, const Geometry& geo, QPointF* out);
 
     QString title_;
@@ -208,5 +297,5 @@ private:
     int hover_index_ = -1;
 };
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

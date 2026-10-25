@@ -23,8 +23,8 @@
 #endif
 
 #include "core/analysis/AnalysisOptions.h"
-#include "core/domain/model/AnalysisResult.h"
 #include "core/analysis/diagnostics/QcRuleEngine.h"
+#include "core/domain/model/AnalysisResult.h"
 #include "core/qc/BatchQcRunner.h"
 #include "core/qc/QcProfile.h"
 #include "core/qc/QcProfileMapper.h"
@@ -41,11 +41,11 @@ namespace fs = std::filesystem;
 namespace model = videoeye::model;
 
 using videoeye::AnalysisOptions;
+using videoeye::QcRuleEngine;
 using videoeye::model::AnalysisResult;
 using videoeye::model::AnalysisStatus;
 using videoeye::qc::BatchItemStatus;
 using videoeye::qc::BatchQcItemResult;
-using videoeye::QcRuleEngine;
 using videoeye::qc::QcProfile;
 using videoeye::qc::QcReportFormat;
 using videoeye::qc::QcRunResult;
@@ -73,7 +73,8 @@ namespace {
 
 // 跨平台路径后缀判断（忽略分隔符差异）
 bool EndsWith(const std::string& s, const std::string& suffix) {
-    if (suffix.size() > s.size()) return false;
+    if (suffix.size() > s.size())
+        return false;
     return s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
@@ -87,8 +88,8 @@ TEST(ReportBasePathTest, SameNameDifferentSubdirAreDistinct) {
     const auto p1 = ReportBasePath(out, root, "C:/root/sub1/clip.mp4").string();
     const auto p2 = ReportBasePath(out, root, "C:/root/sub2/clip.mp4").string();
 
-    EXPECT_NE(p1, p2);  // 同名文件不得互相覆盖
-    EXPECT_EQ(fs::path(p1).filename().string(), "clip");  // 去掉扩展名
+    EXPECT_NE(p1, p2);                                   // 同名文件不得互相覆盖
+    EXPECT_EQ(fs::path(p1).filename().string(), "clip"); // 去掉扩展名
     EXPECT_EQ(fs::path(p2).filename().string(), "clip");
     // 相对子目录被保留
     EXPECT_NE(fs::path(p1).parent_path().string().find("sub1"), std::string::npos);
@@ -112,8 +113,7 @@ TEST(ReportBasePathTest, NotUnderRootFallsBackToFileName) {
 // 目录逃逸：file 借 ".." 爬出 root。relative() 算出来的相对部分带 ".."，
 // 拼到 out_dir 上就写到导出目录外面去了 —— 必须退回只取文件名。
 TEST(ReportBasePathTest, ParentEscapeFallsBackToFileName) {
-    const auto p =
-        ReportBasePath("C:/out", "C:/root/sub", "C:/root/../outside/clip.mp4").string();
+    const auto p = ReportBasePath("C:/out", "C:/root/sub", "C:/root/../outside/clip.mp4").string();
     EXPECT_EQ(fs::path(p).filename().string(), "clip");
     EXPECT_TRUE(fs::path(p).has_parent_path());
     // 落盘路径里不允许残留任何 ".." 分量
@@ -137,7 +137,8 @@ bool MakeDirectoryLink(const fs::path& link, const fs::path& target, std::error_
     ec.clear();
 #ifdef _WIN32
     fs::create_directory(link, ec);
-    if (ec && !fs::is_directory(link, ec)) return false;
+    if (ec && !fs::is_directory(link, ec))
+        return false;
     ec.clear();
     const std::wstring sub = L"\\??\\" + target.wstring();
     const std::wstring print = target.wstring();
@@ -173,17 +174,17 @@ bool MakeDirectoryLink(const fs::path& link, const fs::path& target, std::error_
     cursor += print.size();
     *cursor++ = L'\0';
 
-    const HANDLE handle =
-        CreateFileW(link.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
-                    FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    const HANDLE handle = CreateFileW(link.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                                      FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
         return false;
     }
     DWORD returned = 0;
-    const BOOL ok = DeviceIoControl(handle, FSCTL_SET_REPARSE_POINT, buf.data(),
-                                    static_cast<DWORD>(total), nullptr, 0, &returned, nullptr);
-    if (!ok) ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+    const BOOL ok = DeviceIoControl(handle, FSCTL_SET_REPARSE_POINT, buf.data(), static_cast<DWORD>(total), nullptr, 0,
+                                    &returned, nullptr);
+    if (!ok)
+        ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
     CloseHandle(handle);
     return ok != 0;
 #else
@@ -221,13 +222,12 @@ TEST(ReportBasePathTest, LinkedOutputSubdirFallsBackToFlatName) {
         GTEST_SKIP() << "当前环境建不出可用的目录链接，跳过: " << link_ec.message();
     }
 
-    const auto p = ReportBasePath((tmp / "out").string(), (tmp / "root").string(),
-                                  (tmp / "root" / "sub" / "clip.mp4").string());
+    const auto p =
+        ReportBasePath((tmp / "out").string(), (tmp / "root").string(), (tmp / "root" / "sub" / "clip.mp4").string());
     // 不能落进链接指向的 outside 目录里
     const auto canonical_parent = fs::weakly_canonical(fs::path(p).parent_path(), ec);
     ASSERT_FALSE(ec);
-    EXPECT_NE(fs::weakly_canonical(tmp / "outside", ec), canonical_parent)
-        << "报告路径穿过了输出目录里的链接";
+    EXPECT_NE(fs::weakly_canonical(tmp / "outside", ec), canonical_parent) << "报告路径穿过了输出目录里的链接";
     // 退回"铺平到导出目录"：文件名还在，子目录不再保留
     EXPECT_EQ(fs::path(p).filename().string(), "clip");
     EXPECT_EQ(fs::path(p).parent_path(), tmp / "out");
@@ -242,10 +242,9 @@ TEST(ReportBasePathTest, NormalOutputSubdirIsStillPreserved) {
     fs::remove_all(tmp, ec);
     fs::create_directories(tmp / "out" / "sub", ec);
 
-    const auto p = ReportBasePath((tmp / "out").string(), (tmp / "root").string(),
-                                  (tmp / "root" / "sub" / "clip.mp4").string());
-    EXPECT_EQ(fs::weakly_canonical(fs::path(p).parent_path(), ec),
-              fs::weakly_canonical(tmp / "out" / "sub", ec));
+    const auto p =
+        ReportBasePath((tmp / "out").string(), (tmp / "root").string(), (tmp / "root" / "sub" / "clip.mp4").string());
+    EXPECT_EQ(fs::weakly_canonical(fs::path(p).parent_path(), ec), fs::weakly_canonical(tmp / "out" / "sub", ec));
     EXPECT_EQ(fs::path(p).filename().string(), "clip");
 
     fs::remove_all(tmp, ec);
@@ -273,8 +272,7 @@ TEST(ApplyExportPathsTest, WritableDirWritesAllFormats) {
     result.report.duration_seconds = 1.0;
 
     QcProfile profile;
-    const std::vector<QcReportFormat> formats{QcReportFormat::Json, QcReportFormat::Csv,
-                                              QcReportFormat::Html};
+    const std::vector<QcReportFormat> formats{QcReportFormat::Json, QcReportFormat::Csv, QcReportFormat::Html};
 
     ApplyExportPaths(result, tmp.string(), root.string(), file, formats, profile);
 
@@ -292,8 +290,7 @@ TEST(ApplyExportPathsTest, EmptyOutDirIsNoOp) {
     QcRunResult result;
     result.ok = true;
     QcProfile profile;
-    ApplyExportPaths(result, "", "C:/root", "C:/root/a.mp4",
-                     {QcReportFormat::Json}, profile);
+    ApplyExportPaths(result, "", "C:/root", "C:/root/a.mp4", {QcReportFormat::Json}, profile);
     EXPECT_FALSE(result.export_failed);
     EXPECT_TRUE(result.output_path.empty());
 }
@@ -302,8 +299,8 @@ TEST(ApplyExportPathsTest, FailedAnalysisIsNoOp) {
     QcRunResult result;
     result.ok = false;
     QcProfile profile;
-    ApplyExportPaths(result, fs::temp_directory_path().string(), "C:/root", "C:/root/a.mp4",
-                     {QcReportFormat::Json}, profile);
+    ApplyExportPaths(result, fs::temp_directory_path().string(), "C:/root", "C:/root/a.mp4", {QcReportFormat::Json},
+                     profile);
     EXPECT_FALSE(result.export_failed);
     EXPECT_TRUE(result.output_path.empty());
 }
@@ -333,10 +330,9 @@ TEST(ApplyExportPathsTest, UnwritableDirMarksExportFailed) {
     result.report.container_format = "mp4";
 
     QcProfile profile;
-    ApplyExportPaths(result, blocker.string(), root.string(), file,
-                     {QcReportFormat::Json}, profile);
+    ApplyExportPaths(result, blocker.string(), root.string(), file, {QcReportFormat::Json}, profile);
 
-    EXPECT_TRUE(result.export_failed);                 // 导出失败被标记
+    EXPECT_TRUE(result.export_failed);                  // 导出失败被标记
     EXPECT_TRUE(EndsWith(result.output_path, ".json")); // 路径仍填回（UI 可展示）
     EXPECT_FALSE(fs::exists(result.output_path));       // 实际没落盘
 
@@ -355,23 +351,21 @@ namespace {
 // 起一个"立刻跑完并自报回来"的线程，模拟一次秒结束的分析任务体。
 std::shared_ptr<AnalysisTask> MakeFinishedTask() {
     auto task = std::make_shared<AnalysisTask>();
-    task->thread = std::thread([task] {
-        task->body_done.store(true, std::memory_order_release);
-    });
+    task->thread = std::thread([task] { task->body_done.store(true, std::memory_order_release); });
     return task;
 }
 
-}  // namespace
+} // namespace
 
 TEST(AnalysisTaskTest, RecycleJoinsJoinableAndResets) {
     auto task = MakeFinishedTask();
     RecycleTask(task);
-    EXPECT_FALSE(task);  // 已 reset
+    EXPECT_FALSE(task); // 已 reset
 }
 
 TEST(AnalysisTaskTest, RestartAfterRecycleDoesNotTerminate) {
     auto task = MakeFinishedTask();
-    RecycleTask(task);  // 第一次"运行"结束并回收
+    RecycleTask(task); // 第一次"运行"结束并回收
     EXPECT_FALSE(task);
 
     // 第二次运行：若第一次仍 joinable，下面对 task 重新赋值（std::thread 赋值）会 terminate
@@ -384,7 +378,7 @@ TEST(AnalysisTaskTest, RecycleNullAndUnstartedSafe) {
     std::shared_ptr<AnalysisTask> nulltask;
     EXPECT_NO_THROW(RecycleTask(nulltask));
 
-    auto empty = std::make_shared<AnalysisTask>();  // 默认构造，未启动线程
+    auto empty = std::make_shared<AnalysisTask>(); // 默认构造，未启动线程
     // 未启动的线程立刻放行（不让 WaitTaskBody 白等满整个预算）
     RecycleTask(empty);
     EXPECT_FALSE(empty);
@@ -407,15 +401,13 @@ TEST(AnalysisTaskTest, RecycleGivesUpAfterBudget) {
     const auto start = std::chrono::steady_clock::now();
     const bool body_back = RecycleTask(task, 150);
     const auto elapsed_ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)
-            .count();
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
 
     EXPECT_FALSE(body_back) << "预算内没等到 body_done, 必须如实返回 false（告警线）";
-    EXPECT_GE(elapsed_ms, 600)
-        << "严格 Cooperative: 超预算后仍然 join 到任务体真正退出（不 detach）; 实测 "
-        << elapsed_ms << "ms";
+    EXPECT_GE(elapsed_ms, 600) << "严格 Cooperative: 超预算后仍然 join 到任务体真正退出（不 detach）; 实测 "
+                               << elapsed_ms << "ms";
     EXPECT_LT(elapsed_ms, 5000);
-    EXPECT_FALSE(task);           // 无论如何都把句柄还了出来
+    EXPECT_FALSE(task); // 无论如何都把句柄还了出来
 }
 
 // ---------------------------------------------------------------------------
@@ -442,9 +434,9 @@ TEST(QcScanStatusTest, SampledIsPartialAndNotPass) {
     r.scan_status = model::AnalysisStatus::Sampled;
 
     const auto report = QcRuleEngine().Evaluate(r);
-    EXPECT_TRUE(report.completed);  // 抽样是"跑完"的部分结果，可结算
-    EXPECT_TRUE(report.partial);    // 但标记为部分
-    EXPECT_EQ(report.verdict, "抽样完成·仅供参考");  // 禁止给出"通过"
+    EXPECT_TRUE(report.completed);                  // 抽样是"跑完"的部分结果，可结算
+    EXPECT_TRUE(report.partial);                    // 但标记为部分
+    EXPECT_EQ(report.verdict, "抽样完成·仅供参考"); // 禁止给出"通过"
 }
 
 TEST(QcScanStatusTest, FailedIsNotCompleted) {
@@ -482,19 +474,16 @@ TEST(ResultFreshnessTest, MatchingFileAndProfileIsFresh) {
 
 TEST(ResultFreshnessTest, SwitchingFileInvalidates) {
     const ResultStamp stamp{"a.mp4", "hls-vod", true};
-    EXPECT_FALSE(IsResultFresh(stamp, "b.mp4", "hls-vod"))
-        << "切换到另一个文件后旧结果必须过期";
+    EXPECT_FALSE(IsResultFresh(stamp, "b.mp4", "hls-vod")) << "切换到另一个文件后旧结果必须过期";
 }
 
 TEST(ResultFreshnessTest, SwitchingProfileInvalidates) {
     const ResultStamp stamp{"a.mp4", "hls-vod", true};
-    EXPECT_FALSE(IsResultFresh(stamp, "a.mp4", "broadcast"))
-        << "切换到另一个模板后旧结果必须过期";
+    EXPECT_FALSE(IsResultFresh(stamp, "a.mp4", "broadcast")) << "切换到另一个模板后旧结果必须过期";
 }
 
 TEST(ResultFreshnessTest, InvalidStampOrEmptyPathIsNeverFresh) {
-    EXPECT_FALSE(IsResultFresh(ResultStamp{}, "a.mp4", "hls-vod"))
-        << "没产出过结果（失败/未分析）永远不新鲜";
+    EXPECT_FALSE(IsResultFresh(ResultStamp{}, "a.mp4", "hls-vod")) << "没产出过结果（失败/未分析）永远不新鲜";
     EXPECT_FALSE(IsResultFresh(ResultStamp{"", "", true}, "a.mp4", "hls-vod"));
     EXPECT_FALSE(IsResultFresh(ResultStamp{"a.mp4", "hls-vod", true}, "", "hls-vod"))
         << "未选择文件时不新鲜（导出应禁用）";
@@ -519,21 +508,19 @@ TEST(AnalysisOptionsCoversTest, DeeperCachedCoversShallowerRequired) {
 }
 
 TEST(AnalysisOptionsCoversTest, CoarserSampleIntervalDoesNotCover) {
-    AnalysisOptions cached;  // 默认 1.0s
+    AnalysisOptions cached; // 默认 1.0s
     AnalysisOptions required;
-    required.sample_interval_seconds = 0.5;  // 要求更细
+    required.sample_interval_seconds = 0.5; // 要求更细
     EXPECT_FALSE(AnalysisOptionsCovers(cached, required));
 
-    required.sample_interval_seconds = 2.0;  // 要求更粗 -> 覆盖
+    required.sample_interval_seconds = 2.0; // 要求更粗 -> 覆盖
     EXPECT_TRUE(AnalysisOptionsCovers(cached, required));
 }
 
 namespace {
 
-videoeye::ui::ResultStamp MakeStamp(const std::string& path,
-                                    const videoeye::ui::FileVersionStamp& version,
-                                    const AnalysisOptions& options,
-                                    videoeye::model::AnalysisStatus status) {
+videoeye::ui::ResultStamp MakeStamp(const std::string& path, const videoeye::ui::FileVersionStamp& version,
+                                    const AnalysisOptions& options, videoeye::model::AnalysisStatus status) {
     videoeye::ui::ResultStamp stamp;
     stamp.path = path;
     stamp.profile_id = "deep";
@@ -552,20 +539,18 @@ videoeye::ui::FileVersionStamp VersionOf(std::uint64_t size, std::int64_t mtime_
     return v;
 }
 
-}  // namespace
+} // namespace
 
 TEST(CanReuseAnalysisTest, SameVersionCoveredAndCompleteIsReusable) {
     const auto deep = videoeye::qc::OptionsForDepth(videoeye::qc::QcAnalysisDepth::Deep);
     const auto standard = videoeye::qc::OptionsForDepth(videoeye::qc::QcAnalysisDepth::Standard);
-    const auto stamp = MakeStamp("a.mp4", VersionOf(1024, 100),
-                                 deep, videoeye::model::AnalysisStatus::Complete);
+    const auto stamp = MakeStamp("a.mp4", VersionOf(1024, 100), deep, videoeye::model::AnalysisStatus::Complete);
     EXPECT_TRUE(CanReuseAnalysis(stamp, "a.mp4", VersionOf(1024, 100), standard));
 }
 
 TEST(CanReuseAnalysisTest, FileVersionChangeForcesReanalysis) {
     const auto options = videoeye::qc::OptionsForDepth(videoeye::qc::QcAnalysisDepth::Deep);
-    const auto stamp = MakeStamp("a.mp4", VersionOf(1024, 100),
-                                 options, videoeye::model::AnalysisStatus::Complete);
+    const auto stamp = MakeStamp("a.mp4", VersionOf(1024, 100), options, videoeye::model::AnalysisStatus::Complete);
     // 大小变了
     EXPECT_FALSE(CanReuseAnalysis(stamp, "a.mp4", VersionOf(2048, 100), options));
     // 修改时间变了
@@ -577,8 +562,8 @@ TEST(CanReuseAnalysisTest, FileVersionChangeForcesReanalysis) {
 TEST(CanReuseAnalysisTest, SameSecondButDifferentSubSecondIsNotReusable) {
     const auto options = videoeye::qc::OptionsForDepth(videoeye::qc::QcAnalysisDepth::Deep);
     // 1.5s 与 1.9s：取整到秒都是 1s，但确实是两个不同的版本
-    const auto stamp = MakeStamp("a.mp4", VersionOf(1024, 1500000000LL), options,
-                                 videoeye::model::AnalysisStatus::Complete);
+    const auto stamp =
+        MakeStamp("a.mp4", VersionOf(1024, 1500000000LL), options, videoeye::model::AnalysisStatus::Complete);
     EXPECT_FALSE(CanReuseAnalysis(stamp, "a.mp4", VersionOf(1024, 1900000000LL), options));
     // 同一版本照常可复用（精度提高不能把"没变"判成"变了"）
     EXPECT_TRUE(CanReuseAnalysis(stamp, "a.mp4", VersionOf(1024, 1500000000LL), options));
@@ -587,10 +572,9 @@ TEST(CanReuseAnalysisTest, SameSecondButDifferentSubSecondIsNotReusable) {
 TEST(CanReuseAnalysisTest, NetworkUriOrMissingVersionIsNeverReusable) {
     const auto options = videoeye::qc::OptionsForDepth(videoeye::qc::QcAnalysisDepth::Deep);
     // 网络源没有本地指纹（valid=false）—— 默认重新分析
-    const auto stamp = MakeStamp("http://host/a.m3u8", videoeye::ui::FileVersionStamp{},
-                                 options, videoeye::model::AnalysisStatus::Complete);
-    EXPECT_FALSE(CanReuseAnalysis(stamp, "http://host/a.m3u8", videoeye::ui::FileVersionStamp{},
-                                  options));
+    const auto stamp = MakeStamp("http://host/a.m3u8", videoeye::ui::FileVersionStamp{}, options,
+                                 videoeye::model::AnalysisStatus::Complete);
+    EXPECT_FALSE(CanReuseAnalysis(stamp, "http://host/a.m3u8", videoeye::ui::FileVersionStamp{}, options));
     // 当前路径取不到指纹同样不复用
     EXPECT_FALSE(CanReuseAnalysis(stamp, "a.mp4", videoeye::ui::FileVersionStamp{}, options));
 }
@@ -598,16 +582,13 @@ TEST(CanReuseAnalysisTest, NetworkUriOrMissingVersionIsNeverReusable) {
 TEST(CanReuseAnalysisTest, IncompleteScanIsNeverReusable) {
     const auto options = videoeye::qc::OptionsForDepth(videoeye::qc::QcAnalysisDepth::Deep);
     const auto version = VersionOf(1024, 100);
-    EXPECT_FALSE(CanReuseAnalysis(
-        MakeStamp("a.mp4", version, options, videoeye::model::AnalysisStatus::Failed),
-        "a.mp4", version, options));
-    EXPECT_FALSE(CanReuseAnalysis(
-        MakeStamp("a.mp4", version, options, videoeye::model::AnalysisStatus::Cancelled),
-        "a.mp4", version, options));
+    EXPECT_FALSE(CanReuseAnalysis(MakeStamp("a.mp4", version, options, videoeye::model::AnalysisStatus::Failed),
+                                  "a.mp4", version, options));
+    EXPECT_FALSE(CanReuseAnalysis(MakeStamp("a.mp4", version, options, videoeye::model::AnalysisStatus::Cancelled),
+                                  "a.mp4", version, options));
     // 抽样完成属于"跑完"，可复用（报告本身会标 partial）
-    EXPECT_TRUE(CanReuseAnalysis(
-        MakeStamp("a.mp4", version, options, videoeye::model::AnalysisStatus::Sampled),
-        "a.mp4", version, options));
+    EXPECT_TRUE(CanReuseAnalysis(MakeStamp("a.mp4", version, options, videoeye::model::AnalysisStatus::Sampled),
+                                 "a.mp4", version, options));
 }
 
 TEST(CanReuseAnalysisTest, InsufficientOptionsOrDifferentPathForcesReanalysis) {
@@ -647,10 +628,8 @@ TEST(QueryFileVersionTest, LocalFileYieldsConsistentVersion) {
 
 TEST(QueryFileVersionTest, MissingFileAndNetworkUriHaveNoVersion) {
     EXPECT_FALSE(QueryFileVersion("").valid);
-    EXPECT_FALSE(QueryFileVersion("C:/definitely/not/here/ve_nope.mp4").valid)
-        << "取不到指纹时不得冒充可用版本";
-    EXPECT_FALSE(QueryFileVersion("http://127.0.0.1:9/live.m3u8").valid)
-        << "网络源没有本地指纹，默认重新分析";
+    EXPECT_FALSE(QueryFileVersion("C:/definitely/not/here/ve_nope.mp4").valid) << "取不到指纹时不得冒充可用版本";
+    EXPECT_FALSE(QueryFileVersion("http://127.0.0.1:9/live.m3u8").valid) << "网络源没有本地指纹，默认重新分析";
 }
 
 // ---------------------------------------------------------------------------
@@ -682,7 +661,7 @@ TEST(BatchStatusFilterTest, SpecificStatusMatchesOnlyItself) {
 }
 
 TEST(BatchSeverityFilterTest, AtLeastNotEquals) {
-    videoeye::qc::BatchQcItemResult item;  // 一条同时带致命与警告的结果
+    videoeye::qc::BatchQcItemResult item; // 一条同时带致命与警告的结果
     item.critical_count = 1;
     item.warning_count = 2;
 
@@ -720,12 +699,11 @@ TEST(BatchSeverityFilterTest, WarningOnlyItemStaysBelowBlockingFilters) {
 }
 
 TEST(BatchSeverityFilterTest, CleanMatchesOnlyCleanFilter) {
-    videoeye::qc::BatchQcItemResult item;  // 分析完成且零问题
+    videoeye::qc::BatchQcItemResult item; // 分析完成且零问题
     item.status = videoeye::qc::BatchItemStatus::Succeeded;
     EXPECT_TRUE(BatchMatchesSeverityFilter(kBatchSeverityFilterClean, item));
     EXPECT_TRUE(BatchMatchesSeverityFilter(kBatchSeverityFilterAll, item));
-    EXPECT_FALSE(BatchMatchesSeverityFilter(kBatchSeverityFilterInfo, item))
-        << "零问题不等于含提示";
+    EXPECT_FALSE(BatchMatchesSeverityFilter(kBatchSeverityFilterInfo, item)) << "零问题不等于含提示";
 
     // 失败条目计数也是全 0：归进"无异常"是合理的（要看失败请用状态筛选），
     // 这条用例把该语义钉住，防止以后有人给 Clean 加"必须成功"的隐藏条件。
@@ -734,4 +712,4 @@ TEST(BatchSeverityFilterTest, CleanMatchesOnlyCleanFilter) {
     EXPECT_TRUE(BatchMatchesSeverityFilter(kBatchSeverityFilterClean, failed));
 }
 
-}  // namespace
+} // namespace

@@ -18,22 +18,22 @@ namespace qc {
 
 // 一次分析的完整产物
 struct QcRunResult {
-    bool ok = false;               // 分析是否跑完（false = 打开失败 / 被取消 / 超时）
+    bool ok = false; // 分析是否跑完（false = 打开失败 / 被取消 / 超时）
     // 分析在等待预算（AnalyzeFile 的 join_budget_ms）内没有给出终态 —— 后台线程被
     // 放弃（detach）并已收到取消请求。与"引擎自己报失败"区分开：调用方据此知道
     // 这次结果不完整、且后台可能还在收尾以便记录资源回收。
     bool timed_out = false;
-    std::string error;             // ok=false 时的原因
+    std::string error; // ok=false 时的原因
     model::QcReport report;
-    model::AnalysisResult analysis;  // 原始数据，对比模式要靠它拿详细的编码参数
+    model::AnalysisResult analysis; // 原始数据，对比模式要靠它拿详细的编码参数
     std::string profile_id;
     double elapsed_ms = 0.0;
 
     // 批量导出：导出的实际落盘路径与是否全部格式成功。
     // 让 UI 表格显示的路径 = 真实文件，并让"分析成功但导出失败"可区分。
-    std::string output_path;                       // 主格式（第一个勾选格式）的落盘路径
-    std::vector<std::string> output_paths;         // 各选中格式的实际路径（与 formats 一一对应）
-    bool export_failed = false;                    // 任一格式导出失败（仅当 out_dir 非空且分析成功时）
+    std::string output_path;               // 主格式（第一个勾选格式）的落盘路径
+    std::vector<std::string> output_paths; // 各选中格式的实际路径（与 formats 一一对应）
+    bool export_failed = false;            // 任一格式导出失败（仅当 out_dir 非空且分析成功时）
 };
 
 // 统一输入类型：QC 的输入既可能是本地文件，也可能是网络源（HTTP / RTMP / RTSP ...）。
@@ -75,5 +75,5 @@ struct QcAnalyzeRequest {
 // 单测里则换成不需要任何媒体文件的假实现。
 using QcAnalyzeFn = std::function<QcRunResult(const QcAnalyzeRequest&)>;
 
-}  // namespace qc
-}  // namespace videoeye
+} // namespace qc
+} // namespace videoeye

@@ -49,8 +49,7 @@ public:
     // tasks: 调用方的任务调度器（slot / 令牌 / 终态都在那儿）。必须活过本对象。
     // current_url: 取"当前打开的媒体"。不直接存 QString 是因为排队请求续跑前要拿**此刻**
     //   的 url 与发起时的比对，换了媒体就得作废（见 StartVideoFrameExportNow 的续跑分支）。
-    ExportController(task::TaskManager& tasks, std::function<QString()> current_url,
-                     QObject* parent = nullptr);
+    ExportController(task::TaskManager& tasks, std::function<QString()> current_url, QObject* parent = nullptr);
     ~ExportController() override;
 
     ExportController(const ExportController&) = delete;
@@ -63,8 +62,8 @@ public:
     // 抽帧导出。若上一次抽帧的线程还没退出来，本次请求**排队**而不是立即启动：
     // 两次任务写同一个输出目录、文件名只由帧序号决定，并行跑会互相覆盖产物。
     // 排队请求会在旧线程真正结束的 finished 回调里自动续跑（用户不必再点一次）。
-    void StartVideoFrameExport(const QString& output_dir, const QString& format,
-                               int jpg_quality = 90, int frame_interval = 1);
+    void StartVideoFrameExport(const QString& output_dir, const QString& format, int jpg_quality = 90,
+                               int frame_interval = 1);
     // 只置取消标志并请求线程退出，**不等待**：调用方在 UI 线程，绝不能被卡住。
     void CancelVideoFrameExport();
 
@@ -81,13 +80,15 @@ public:
 
     // 对外的导出信号总线。UI 经 MediaPlayer::export_bus() 拿它连信号；
     // 本类所有"该发信号了"的地方都直接 emit bus_.Xxx()。
-    ExportBus& bus() { return bus_; }
+    ExportBus& bus() {
+        return bus_;
+    }
 
 private:
     bool IsFrameExportWorkerAlive() const;
     bool IsMediaExportWorkerAlive() const;
-    void StartVideoFrameExportNow(const QString& output_dir, const QString& format,
-                                  int jpg_quality, int frame_interval);
+    void StartVideoFrameExportNow(const QString& output_dir, const QString& format, int jpg_quality,
+                                  int frame_interval);
     void StartMediaExportNow(const exporter::ExportOptions& opt);
     // 只请求旧线程停止（置取消标志 / 断开信号 / 不限时地"看一眼"是否已结束），
     // 绝不阻塞等待。排队请求由它保留；用户主动取消请走 CancelXxxExport()。
@@ -102,7 +103,7 @@ private:
     // 排队的导出请求（旧任务线程还没退出时用）。用 optional 而非裸指针:
     // 无请求、有请求、被覆盖都只有一处状态，不存在"忘了置空"。
     struct PendingFrameExport {
-        QString url;          // 发起时打开的媒体: 续跑前若已换文件, 本次请求作废
+        QString url; // 发起时打开的媒体: 续跑前若已换文件, 本次请求作废
         QString output_dir;
         QString format;
         int jpg_quality = 90;
@@ -139,5 +140,5 @@ private:
     quint64 media_export_gen_ = 0;
 };
 
-}  // namespace player
-}  // namespace videoeye
+} // namespace player
+} // namespace videoeye

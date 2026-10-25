@@ -41,7 +41,7 @@ DiagnosticIssue MakeIssue(IssueSeverity severity, const std::string& title) {
     return issue;
 }
 
-}  // namespace
+} // namespace
 
 TEST(OverviewAnalysisTests, SeverityRankIsOrderedBySeriousness) {
     EXPECT_GT(IssueSeverityRank(IssueSeverity::Critical), IssueSeverityRank(IssueSeverity::Error));
@@ -98,7 +98,7 @@ TEST(OverviewAnalysisTests, RankIssuesDoesNotModifyInput) {
     RankIssuesBySeverity(issues);
 
     ASSERT_EQ(issues.size(), 2u);
-    EXPECT_EQ(issues[0].title, "i1");  // 入参原样保留
+    EXPECT_EQ(issues[0].title, "i1"); // 入参原样保留
     EXPECT_EQ(issues[1].title, "c1");
 }
 
@@ -162,7 +162,7 @@ TEST(OverviewAnalysisTests, SummaryCopiesScoreVerdictAndPartialFlag) {
     QcReport report;
     report.score = 62.5;
     report.verdict = "警告";
-    report.completed = false;  // 被取消 -> 结果不完整
+    report.completed = false; // 被取消 -> 结果不完整
 
     OverviewAnalysisInput input;
     input.has_file = true;
@@ -219,7 +219,7 @@ TEST(OverviewAnalysisTests, SummaryTopIssuesAreValueCopies) {
     ASSERT_EQ(summary.top_issues.size(), 1);
     summary.top_issues[0].title = "改过了";
 
-    EXPECT_EQ(report.issues[0].title, "c0");  // 源报告不受影响
+    EXPECT_EQ(report.issues[0].title, "c0"); // 源报告不受影响
 }
 
 TEST(OverviewAnalysisTests, SummaryWithoutResultLeavesCountersAtZero) {
@@ -260,7 +260,7 @@ TEST(OverviewAnalysisTests, FailedIsSetOnlyWhenNotScanning) {
     const OverviewAnalysisSummary running = BuildOverviewAnalysisSummary(input);
     EXPECT_FALSE(running.failed);
     EXPECT_TRUE(running.scan_running);
-    EXPECT_EQ(running.error, QString::fromUtf8("解码失败"));  // 文本保留，只是不判失败
+    EXPECT_EQ(running.error, QString::fromUtf8("解码失败")); // 文本保留，只是不判失败
 }
 
 TEST(OverviewAnalysisTests, EmptyErrorIsNotAFailure) {

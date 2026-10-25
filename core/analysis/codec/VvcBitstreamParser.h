@@ -5,8 +5,8 @@
 #include <vector>
 
 #include "core/domain/model/BitstreamInfo.h"
-#include "core/media/codec/ExtradataTypes.h"
 #include "core/media/codec/BitReader.h"
+#include "core/media/codec/ExtradataTypes.h"
 
 namespace videoeye {
 
@@ -59,17 +59,16 @@ private:
                                      int max_num_sub_layers_minus1);
     // 返回解析出的 PTL 关键字段（profile_tier_present 时有效）
     static void ParseProfileTierLevel(videoeye::BitReader& reader, bool profile_tier_present,
-                                      int max_num_sub_layers_minus1, int* profile_idc,
-                                      int* tier_flag, uint32_t* level_idc, int* num_sub_profiles);
-    static void SkipDpbParameters(videoeye::BitReader& reader, int max_sublayers_minus1,
-                                  bool sublayer_info_flag);
+                                      int max_num_sub_layers_minus1, int* profile_idc, int* tier_flag,
+                                      uint32_t* level_idc, int* num_sub_profiles);
+    static void SkipDpbParameters(videoeye::BitReader& reader, int max_sublayers_minus1, bool sublayer_info_flag);
     static void SkipGeneralTimingHrdParameters(videoeye::BitReader& reader, TimingHrdContext* ctx);
     static void SkipSubLayerHrdParameters(videoeye::BitReader& reader, const TimingHrdContext& ctx);
-    static void SkipOlsTimingHrdParameters(videoeye::BitReader& reader, int first_sublayer,
-                                           int max_sublayers_minus1, const TimingHrdContext& ctx);
-    static void SkipRefPicListStruct(videoeye::BitReader& reader, int poc_lsb_bits,
-                                     bool long_term_ref_pics, bool inter_layer_prediction);
+    static void SkipOlsTimingHrdParameters(videoeye::BitReader& reader, int first_sublayer, int max_sublayers_minus1,
+                                           const TimingHrdContext& ctx);
+    static void SkipRefPicListStruct(videoeye::BitReader& reader, int poc_lsb_bits, bool long_term_ref_pics,
+                                     bool inter_layer_prediction);
     static void ParseVuiParameters(videoeye::BitReader& reader, model::VvcVuiInfo& vui);
 };
 
-}  // namespace videoeye
+} // namespace videoeye

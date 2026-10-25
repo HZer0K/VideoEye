@@ -24,19 +24,19 @@ QtAnalysisController::QtAnalysisController(QObject* parent)
     // 工作线程体返回后通知回本对象所在线程，用来接手排队请求。
     // 显式声明 QueuedConnection: 发送方是纯 std::thread，接收方在 UI 线程，
     // 必须排队（顺便也避免任何人以后把本对象 moveToThread 之后语义悄悄变直连）。
-    connect(this, &QtAnalysisController::WorkerExited,
-            this, &QtAnalysisController::OnWorkerExited, Qt::QueuedConnection);
+    connect(this, &QtAnalysisController::WorkerExited, this, &QtAnalysisController::OnWorkerExited,
+            Qt::QueuedConnection);
 }
 
 QtAnalysisController::~QtAnalysisController() {
     // 析构路径要设总预算：此时已经没有界面要响应，但也不接受无限等下去。
     shutting_down_ = true;
-    if (alive_) alive_->store(false, std::memory_order_release);
+    if (alive_)
+        alive_->store(false, std::memory_order_release);
     Shutdown();
 }
 
-quint64 QtAnalysisController::StartAnalysis(const std::string& file_path,
-                                            const videoeye::AnalysisOptions& options) {
+quint64 QtAnalysisController::StartAnalysis(const std::string& file_path, const videoeye::AnalysisOptions& options) {
     Cancel();
     // 代际号**立刻**分配并返回：调用方（诊断页）拿它做结果过滤。排队也不改变语义 ——
     // 这次请求将来完成时发出的仍是这个号，旧任务迟到的回包照样被丢弃。
@@ -63,7 +63,7 @@ quint64 QtAnalysisController::StartAnalysis(const std::string& file_path,
         // BlockingIo 的语义一致。任务体只按值捕获盒子，detach 后自洽。
         const task::TaskHandle handle = tasks_.BeginHandle(kSlot, 0, task::TaskKind::BlockingIo);
         if (!handle.valid())
-            return 0;  // 并发已满：交给调用方按失败处理（旧实现是永远排在 pending_ 里）
+            return 0; // 并发已满：交给调用方按失败处理（旧实现是永远排在 pending_ 里）
         pending_ = PendingRequest{file_path, options, handle};
         return handle.id;
     }
@@ -122,23 +122,25 @@ void QtAnalysisController::Launch(const std::string& file_path, const videoeye::
 
     videoeye::AnalysisCallbacks& callbacks = box->callbacks;
     callbacks.on_progress = [self, alive = alive_, id = handle.id](double percent, const std::string& stage) {
-        if (!self || !alive->load(std::memory_order_acquire)) return;
+        if (!self || !alive->load(std::memory_order_acquire))
+            return;
         emit self->ProgressReported(id, percent, QString::fromStdString(stage));
     };
     // 失败通知必须先记账再转发：引擎内部的失败分支（打不开文件、探测失败）是
     // **正常返回**的，线程体捕获不到任何异常，只有这里知道"这次是失败了"。
     // 捕获 weak_box 而不是 box：回调住在盒子里，按值捕获 box 会让盒子自引用成环。
-    callbacks.on_failed = [self, alive = alive_, id = handle.id,
-                           weak_box](const std::string& message) {
+    callbacks.on_failed = [self, alive = alive_, id = handle.id, weak_box](const std::string& message) {
         if (const auto box = weak_box.lock()) {
             box->reported_failure.store(true, std::memory_order_release);
         }
-        if (!self || !alive->load(std::memory_order_acquire)) return;
+        if (!self || !alive->load(std::memory_order_acquire))
+            return;
         emit self->AnalysisFailed(id, QString::fromStdString(message));
     };
     callbacks.on_finished = [self, alive = alive_, id = handle.id](bool completed,
-                                                                  const model::AnalysisResult& result) {
-        if (!self || !alive->load(std::memory_order_acquire)) return;
+                                                                   const model::AnalysisResult& result) {
+        if (!self || !alive->load(std::memory_order_acquire))
+            return;
         emit self->AnalysisFinished(id, completed, result);
     };
 
@@ -152,15 +154,14 @@ void QtAnalysisController::Launch(const std::string& file_path, const videoeye::
     // 顺序也要注意：box->on_body_done 必须在起线程之前填好，线程一起来就可能立刻走到收尾。
     // 工作线程**不碰 tasks_**：关预算耗尽时它会被 detach，那时 tasks_ 比它先析构，
     // 从线程里调 EndHandle 就是悬空访问。终态一律由宿主在宿主线程里归还
-    //（见 SettleTask），工作线程只负责"我回来了"这一件事。
+    // （见 SettleTask），工作线程只负责"我回来了"这一件事。
     worker_ = std::thread([box, token]() {
         // 异常必须就地收口: 这是裸 std::thread 的线程体，逃逸出去的异常直接
         // std::terminate()（整个进程被拖走，UI 连"失败"都看不到）。这里把它降级成
         // 一次 AnalysisFailed —— 任务照常走到失败终态，下面的收尾也照常执行。
         // 与其它线程入口共用同一份收口模板（core/domain/task/ThreadBody.h）。
-        const std::optional<std::string> failure = task::GuardBody([&]() {
-            box->engine.Run(box->path, box->options, box->callbacks, nullptr, token.flag());
-        });
+        const std::optional<std::string> failure =
+            task::GuardBody([&]() { box->engine.Run(box->path, box->options, box->callbacks, nullptr, token.flag()); });
         if (failure && box->callbacks.on_failed) {
             box->callbacks.on_failed(std::string("分析异常: ") + *failure);
         }
@@ -170,8 +171,7 @@ void QtAnalysisController::Launch(const std::string& file_path, const videoeye::
         task::TaskState terminal = task::ResolveTerminal(failure, token);
         // 引擎自己报的失败（Run 正常返回 + on_failed）也要落到终态上，
         // 否则"UI 显示失败 / 协议记为成功"这个矛盾依然存在。
-        if (terminal == task::TaskState::Succeeded &&
-            box->reported_failure.load(std::memory_order_acquire)) {
+        if (terminal == task::TaskState::Succeeded && box->reported_failure.load(std::memory_order_acquire)) {
             terminal = task::TaskState::Failed;
         }
         box->terminal = terminal;
@@ -215,7 +215,8 @@ bool QtAnalysisController::AwaitWorker(int budget_ms) {
 
 void QtAnalysisController::ReapWorker() {
     // 线程体已返回时 join 只是收句柄，不会长时间阻塞。
-    if (worker_.joinable()) worker_.join();
+    if (worker_.joinable())
+        worker_.join();
     // 盒子只被这里与工作线程握着；work 线程一结束就没别人了，可以放掉。
     // 注意别在 join 之前 reset —— 那样工作线程收尾时访问的盒子就只剩它自己那一份，
     // 虽然还活着（shared_ptr 保活）但语义上等于在线程自己手上有对象时被回收。
@@ -233,7 +234,8 @@ void QtAnalysisController::SettleTask(const task::TaskHandle& handle, task::Task
 void QtAnalysisController::OnWorkerExited(task::TaskId exited_id) {
     // 迟到 / 过期的通知直接忽略（比如它已被更晚的一次启动取代）。
     // 注意这里**不能顺手 join**：该代际的句柄已经被新的 worker_ 顶替，那个是真在跑的。
-    if (exited_id != worker_id_ || !worker_box_) return;
+    if (exited_id != worker_id_ || !worker_box_)
+        return;
 
     // 无条件回收本代际的句柄（线程体此刻已返回）。以前是"有排队请求才 join"，
     // 于是没有 pending 的那次会留下一个 joinable 但早已结束的句柄，让下一次
@@ -248,7 +250,8 @@ void QtAnalysisController::OnWorkerExited(task::TaskId exited_id) {
         ReapWorker();
     }
 
-    if (shutting_down_ || !pending_.has_value()) return;
+    if (shutting_down_ || !pending_.has_value())
+        return;
 
     PendingRequest req = std::move(*pending_);
     pending_.reset();
@@ -281,7 +284,7 @@ void QtAnalysisController::Shutdown() {
 
     if (worker_.joinable()) {
         if (body_returned) {
-            ReapWorker();  // 线程体已返回，收句柄
+            ReapWorker(); // 线程体已返回，收句柄
             return;
         }
         // 预算耗尽。任务在 TaskManager 里登记的是 BlockingIo（见 StartAnalysis），
@@ -292,7 +295,7 @@ void QtAnalysisController::Shutdown() {
         // 而不会让签发线程永远挂住退出流程，更不会访问已销毁的 QObject。
         LOG_WARN("分析工作线程在 " + std::to_string(kJoinBudgetMs) +
                  "ms 内未响应取消，按 BlockingIo 契约放弃该线程（已置位取消令牌）");
-        worker_.detach();   // 线程只握着盒子，盒子自己保活到跑完
+        worker_.detach(); // 线程只握着盒子，盒子自己保活到跑完
         worker_id_ = 0;
         // 放弃之后它自己不会再回来写终态了，这里补一个 —— 否则 slot 永远停在 Running。
         // 记 TimedOut 而不是 Canceled：取消令牌确实置了位，但**没能**让它回来，

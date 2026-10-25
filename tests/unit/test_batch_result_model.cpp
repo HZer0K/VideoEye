@@ -37,7 +37,7 @@ BatchQcItemResult MakeItem(BatchItemStatus status, const std::string& path) {
     return item;
 }
 
-}  // namespace
+} // namespace
 
 // ---- 终态判定 ----
 
@@ -107,7 +107,7 @@ TEST(BatchResultModelTests, SummaryTextCarriesEveryCounter) {
 // "共 N 个"用发现到的条目数，不是 summary.total —— 被跳过 / 未跑到的也占一行。
 TEST(BatchResultModelTests, SummaryTotalComesFromDiscoveredItems) {
     BatchQcSummary summary;
-    summary.total = 1;   // 故意与实参不一致
+    summary.total = 1; // 故意与实参不一致
     EXPECT_TRUE(BatchSummaryText(summary, 42).contains(QStringLiteral("共 42 个")));
 }
 
@@ -122,7 +122,7 @@ TEST(BatchResultModelTests, DetailTextStartsWithFileAndStatus) {
     const QString text = BatchDetailText(item);
 
     EXPECT_TRUE(text.contains(QString::fromUtf8("/tmp/clip.mp4")));
-    EXPECT_TRUE(text.contains(QString::fromUtf8("88.3")));   // 评分一位小数
+    EXPECT_TRUE(text.contains(QString::fromUtf8("88.3"))); // 评分一位小数
     EXPECT_TRUE(text.contains(QString::fromUtf8("警告")));
     EXPECT_TRUE(text.contains(QString::fromUtf8("致命 1")));
 }
@@ -215,11 +215,9 @@ TEST(BatchResultModelTests, NumericCellsProduceNumericVariants) {
 }
 
 TEST(BatchResultModelTests, StatusTextIsNeverEmpty) {
-    for (const BatchItemStatus status : {BatchItemStatus::Pending, BatchItemStatus::Running,
-                                         BatchItemStatus::Succeeded, BatchItemStatus::Failed,
-                                         BatchItemStatus::TimedOut, BatchItemStatus::Cancelled,
-                                         BatchItemStatus::Skipped,
-                                         BatchItemStatus::ExportFailed}) {
+    for (const BatchItemStatus status : {BatchItemStatus::Pending, BatchItemStatus::Running, BatchItemStatus::Succeeded,
+                                         BatchItemStatus::Failed, BatchItemStatus::TimedOut, BatchItemStatus::Cancelled,
+                                         BatchItemStatus::Skipped, BatchItemStatus::ExportFailed}) {
         EXPECT_FALSE(BatchItemStatusText(status).isEmpty())
             << "状态文本为空会让表格该格显示空白，看不出这条为什么没结果";
     }

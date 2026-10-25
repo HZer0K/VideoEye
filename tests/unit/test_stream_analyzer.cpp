@@ -11,10 +11,15 @@ namespace {
 
 class AVFormatContextGuard {
 public:
-    AVFormatContextGuard() : ctx_(avformat_alloc_context()) {}
-    ~AVFormatContextGuard() { avformat_close_input(&ctx_); }
+    AVFormatContextGuard() : ctx_(avformat_alloc_context()) {
+    }
+    ~AVFormatContextGuard() {
+        avformat_close_input(&ctx_);
+    }
 
-    AVFormatContext* get() { return ctx_; }
+    AVFormatContext* get() {
+        return ctx_;
+    }
 
 private:
     AVFormatContext* ctx_ = nullptr;
@@ -114,8 +119,8 @@ TEST(StreamAnalyzerTest, GopCountsOnlyVideoKeyframes) {
     EXPECT_EQ(stats.audio_packets, 1);
     // 关键帧 / GOP 只统计视频关键帧 (音频关键帧被忽略)
     EXPECT_EQ(stats.key_frame_count, 1);
-    EXPECT_EQ(stats.current_gop_size, 2);  // 视频帧: 1 关键 + 1 非关键
-    EXPECT_EQ(stats.max_gop_size, 0);       // 只出现一个 GOP, 尚未闭合
+    EXPECT_EQ(stats.current_gop_size, 2); // 视频帧: 1 关键 + 1 非关键
+    EXPECT_EQ(stats.max_gop_size, 0);     // 只出现一个 GOP, 尚未闭合
 }
 
 // Reset 必须清空所有累计统计与历史.

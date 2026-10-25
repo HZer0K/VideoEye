@@ -66,10 +66,13 @@ void AppendStandardFrames(VideoFrameTableWidget& widget) {
     widget.AppendVideoFrame(4, AV_PICTURE_TYPE_I, true, 3000, 3.0);
 }
 
+int RowCount(QTableView* table) {
+    return table->model()->rowCount();
+}
 
-int RowCount(QTableView* table) { return table->model()->rowCount(); }
-
-int ColumnCount(QTableView* table) { return table->model()->columnCount(); }
+int ColumnCount(QTableView* table) {
+    return table->model()->columnCount();
+}
 
 QString Header(QTableView* table, int column) {
     return table->model()->headerData(column, Qt::Horizontal).toString();
@@ -82,7 +85,7 @@ QString Cell(QTableView* table, int row, int column) {
 bool HasCell(QTableView* table, int row, int column) {
     return table->model()->index(row, column).isValid();
 }
-}  // namespace
+} // namespace
 
 // ---------------------------------------------------------------------------
 // 1. 表结构：帧表 6 列、GOP 表 9 列、筛选下拉两项、宿主自身不可见
@@ -169,12 +172,11 @@ TEST(VideoFrameTableWidgetTests, FlushFillsBothTablesAndEmitsGopChangedOnce) {
     ASSERT_TRUE(gop_table != nullptr);
 
     int gop_changed = 0;
-    QObject::connect(&widget, &VideoFrameTableWidget::GopSummariesChanged,
-                     [&gop_changed]() { ++gop_changed; });
+    QObject::connect(&widget, &VideoFrameTableWidget::GopSummariesChanged, [&gop_changed]() { ++gop_changed; });
 
     AppendStandardFrames(widget);
     EXPECT_TRUE(widget.HasPending());
-    EXPECT_EQ(0, RowCount(frame_table));  // 增量提交前不落表
+    EXPECT_EQ(0, RowCount(frame_table)); // 增量提交前不落表
     EXPECT_EQ(0, gop_table->rowCount());
 
     widget.FlushPending();
@@ -188,14 +190,14 @@ TEST(VideoFrameTableWidgetTests, FlushFillsBothTablesAndEmitsGopChangedOnce) {
     ASSERT_TRUE(HasCell(frame_table, 0, 1));
     EXPECT_EQ(QStringLiteral("I"), Cell(frame_table, 0, 1));
     EXPECT_EQ(QStringLiteral("P"), Cell(frame_table, 1, 1));
-    EXPECT_EQ(QStringLiteral("1"), Cell(frame_table, 1, 4));  // GOP #
-    EXPECT_EQ(QStringLiteral("2"), Cell(frame_table, 1, 5));  // GOP 内
-    EXPECT_EQ(QStringLiteral("2"), Cell(frame_table, 3, 4));  // 第 4 帧属于第 2 段
+    EXPECT_EQ(QStringLiteral("1"), Cell(frame_table, 1, 4)); // GOP #
+    EXPECT_EQ(QStringLiteral("2"), Cell(frame_table, 1, 5)); // GOP 内
+    EXPECT_EQ(QStringLiteral("2"), Cell(frame_table, 3, 4)); // 第 4 帧属于第 2 段
 
     ASSERT_TRUE(gop_table->item(0, 6) != nullptr);
-    EXPECT_EQ(QStringLiteral("3"), gop_table->item(0, 5)->text());  // 总帧数
-    EXPECT_EQ(QStringLiteral("1"), gop_table->item(0, 6)->text());  // I
-    EXPECT_EQ(QStringLiteral("2"), gop_table->item(0, 7)->text());  // P
+    EXPECT_EQ(QStringLiteral("3"), gop_table->item(0, 5)->text()); // 总帧数
+    EXPECT_EQ(QStringLiteral("1"), gop_table->item(0, 6)->text()); // I
+    EXPECT_EQ(QStringLiteral("2"), gop_table->item(0, 7)->text()); // P
 }
 
 // ---------------------------------------------------------------------------
@@ -215,7 +217,7 @@ TEST(VideoFrameTableWidgetTests, IFrameFilterRebuildsVisibleRows) {
     widget.FlushPending();
     ASSERT_EQ(4, RowCount(frame_table));
 
-    filter->setCurrentIndex(1);  // 仅 I 帧
+    filter->setCurrentIndex(1); // 仅 I 帧
     EXPECT_EQ(2, RowCount(frame_table));
     EXPECT_EQ(QStringLiteral("I"), Cell(frame_table, 0, 1));
 
@@ -223,7 +225,7 @@ TEST(VideoFrameTableWidgetTests, IFrameFilterRebuildsVisibleRows) {
     ASSERT_TRUE(summary != nullptr);
     EXPECT_TRUE(summary->text().contains(QStringLiteral("显示: 2")));
 
-    filter->setCurrentIndex(0);  // 全部帧
+    filter->setCurrentIndex(0); // 全部帧
     EXPECT_EQ(4, RowCount(frame_table));
 }
 
@@ -264,8 +266,7 @@ TEST(VideoFrameTableWidgetTests, ResetClearsTablesAndNotifiesGopChanged) {
     ASSERT_EQ(4, RowCount(frame_table));
 
     int gop_changed = 0;
-    QObject::connect(&widget, &VideoFrameTableWidget::GopSummariesChanged,
-                     [&gop_changed]() { ++gop_changed; });
+    QObject::connect(&widget, &VideoFrameTableWidget::GopSummariesChanged, [&gop_changed]() { ++gop_changed; });
 
     widget.ResetVideoFrames();
     EXPECT_TRUE(widget.FrameRecords().empty());

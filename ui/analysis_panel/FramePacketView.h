@@ -36,9 +36,9 @@
 namespace videoeye {
 namespace ui {
 
-class AudioFrameTableWidget;  // 前向声明：音频帧子页 (见 AudioFrameTableWidget.{h,cpp})
-class PacketTableWidget;      // 前向声明：包子页 (见 PacketTableWidget.{h,cpp})
-class VideoFrameTableWidget;  // 前向声明：视频帧 + GOP 摘要子页 (见 VideoFrameTableWidget.{h,cpp})
+class AudioFrameTableWidget; // 前向声明：音频帧子页 (见 AudioFrameTableWidget.{h,cpp})
+class PacketTableWidget;     // 前向声明：包子页 (见 PacketTableWidget.{h,cpp})
+class VideoFrameTableWidget; // 前向声明：视频帧 + GOP 摘要子页 (见 VideoFrameTableWidget.{h,cpp})
 
 class FramePacketView : public QWidget {
     Q_OBJECT
@@ -50,8 +50,7 @@ public:
     // AnalysisFeature 的映射、以及 AnalysisFeatureToggled 的转发都由面板做。
     // 注入时会立即把真实开关状态回写到三个「启用分析」勾选框：控件是在子页组件
     // 的构造函数里建的，那时钩子还不存在。
-    void SetFeatureHooks(std::function<bool(int)> is_enabled,
-                         std::function<void(int, bool)> set_enabled);
+    void SetFeatureHooks(std::function<bool(int)> is_enabled, std::function<void(int, bool)> set_enabled);
 
     // GOP 摘要的最新快照（面板在收到 GopSummariesChanged 后转给「流概览」区）
     // 视频帧记录与 GOP 推导都在 VideoFrameTableWidget 里，本页只转发快照。
@@ -70,12 +69,11 @@ signals:
 
 public slots:
     void ResetVideoFrames();
-    void AppendVideoFrame(int index, int frame_type, bool is_key_frame,
-                          qint64 pts, double timestamp_seconds);
+    void AppendVideoFrame(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds);
 
     void ResetAudioFrames();
-    void AppendAudioFrame(int index, qint64 pts, double timestamp_seconds,
-                          int sample_count, int sample_rate, int channels, int byte_count);
+    void AppendAudioFrame(int index, qint64 pts, double timestamp_seconds, int sample_count, int sample_rate,
+                          int channels, int byte_count);
 
     void ResetPackets();
     void AppendPacket(const model::PacketInfo& packet_info);
@@ -93,12 +91,12 @@ private:
 
     QTabWidget* sub_tabs_ = nullptr;
     // 四个子页已全部抽为独立组件，本页只持有指针并转发数据。
-    VideoFrameTableWidget* video_page_ = nullptr;  // 视频帧 + GOP 摘要（子页 0 / 2）
-    PacketTableWidget* packet_page_ = nullptr;     // 包（子页 1）
-    AudioFrameTableWidget* audio_page_ = nullptr;  // 音频帧（子页 3）
+    VideoFrameTableWidget* video_page_ = nullptr; // 视频帧 + GOP 摘要（子页 0 / 2）
+    PacketTableWidget* packet_page_ = nullptr;    // 包（子页 1）
+    AudioFrameTableWidget* audio_page_ = nullptr; // 音频帧（子页 3）
 
-    bool linking_ = false;  // 包/帧互跳回调重入保护
+    bool linking_ = false; // 包/帧互跳回调重入保护
 };
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

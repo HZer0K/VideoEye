@@ -23,33 +23,33 @@ namespace videoeye {
 namespace ffmpeg {
 
 enum class FfmpegTokenRole {
-    InputFile,      // -i 的值
-    OutputFile,     // 输出目标（一条命令可以有多个）
-    KnownOption,    // 字典里有的选项
-    UnknownOption,  // 字典里没有的选项
-    Unresolved,     // 结构不明：认不出它是某个选项的值还是输出文件，不做猜测
+    InputFile,     // -i 的值
+    OutputFile,    // 输出目标（一条命令可以有多个）
+    KnownOption,   // 字典里有的选项
+    UnknownOption, // 字典里没有的选项
+    Unresolved,    // 结构不明：认不出它是某个选项的值还是输出文件，不做猜测
 };
 
 struct FfmpegTokenExplanation {
-    QString token;              // "-crf"
-    QString value;              // "23"（无值选项为空）
+    QString token; // "-crf"
+    QString value; // "23"（无值选项为空）
     FfmpegTokenRole role = FfmpegTokenRole::UnknownOption;
-    QString role_label;         // "视频质量 (CRF)" / "输入文件" / "未解析"
-    QString description;        // 这一项在干什么
-    QString position;           // 该放在命令的哪个位置
+    QString role_label;  // "视频质量 (CRF)" / "输入文件" / "未解析"
+    QString description; // 这一项在干什么
+    QString position;    // 该放在命令的哪个位置
     QString example;
     QStringList related;
     QStringList typical_values;
     bool known = false;
-    int group_index = -1;       // OutputFile: 第几个输出（0-based）
-    QString warning;            // 空表示没问题（比如"当前 ffmpeg 里没有这个编码器"）
+    int group_index = -1; // OutputFile: 第几个输出（0-based）
+    QString warning;      // 空表示没问题（比如"当前 ffmpeg 里没有这个编码器"）
 };
 
 struct FfmpegCommandExplanation {
     QStringList arguments;
-    QString flow;                              // "输入文件 → 视频质量 (CRF) → 输出文件"
+    QString flow; // "输入文件 → 视频质量 (CRF) → 输出文件"
     std::vector<FfmpegTokenExplanation> tokens;
-    QStringList notes;                         // 命令级的提醒
+    QStringList notes; // 命令级的提醒
     bool has_input = false;
     bool has_output = false;
     int input_count = 0;
@@ -63,5 +63,5 @@ public:
     static FfmpegCommandExplanation Explain(const QStringList& arguments);
 };
 
-}  // namespace ffmpeg
-}  // namespace videoeye
+} // namespace ffmpeg
+} // namespace videoeye

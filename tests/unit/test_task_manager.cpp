@@ -103,7 +103,7 @@ TEST(TaskManagerTest, StaleFailureAfterSupersedeKeepsNewTerminal) {
     const TaskId first = mgr.Begin(kSlot);
     const TaskId second = mgr.Begin(kSlot);
     mgr.End(kSlot, second, TaskState::Succeeded);
-    mgr.End(kSlot, first, TaskState::Failed);  // 旧任务的失败消息后到
+    mgr.End(kSlot, first, TaskState::Failed); // 旧任务的失败消息后到
     EXPECT_EQ(mgr.State(kSlot), TaskState::Succeeded);
 
     // 反过来: 新任务先失败, 旧任务的"成功"后到, 同样不得改写
@@ -151,8 +151,8 @@ TEST(TaskManagerTest, RunWithResultCancelWinsOverSucceeded) {
 TEST(TaskManagerTest, RunWithResultKeepsBodyTerminalEvenIfBodyEndsFirst) {
     TaskManager mgr;
     mgr.RunWithResult(kSlot, [&](TaskId id, CancelToken) {
-        mgr.End(kSlot, id, TaskState::Canceled);  // 任务体自己先收尾
-        return TaskState::Succeeded;              // 返回值的这次写入必须被丢弃
+        mgr.End(kSlot, id, TaskState::Canceled); // 任务体自己先收尾
+        return TaskState::Succeeded;             // 返回值的这次写入必须被丢弃
     });
     EXPECT_TRUE(mgr.WaitForIdle(kSlot, 5000));
     EXPECT_EQ(mgr.State(kSlot), TaskState::Canceled);
@@ -204,13 +204,12 @@ TEST(TaskManagerTest, WaitForAllForcesTerminalOnUnreportedTask) {
 TEST(TaskManagerTest, WaitForAllTreatsTimeoutAsTotalBudget) {
     TaskManager mgr;
     for (int i = 0; i < 3; ++i)
-        mgr.Begin("slot-" + std::to_string(i));   // 故意都不报终态
+        mgr.Begin("slot-" + std::to_string(i)); // 故意都不报终态
 
     const auto start = std::chrono::steady_clock::now();
     mgr.WaitForAll(200);
-    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - start)
-                                .count();
+    const auto elapsed_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
 
     EXPECT_LT(elapsed_ms, 600) << "timeout 是总预算, 不是每个 slot 各等一份 (3 个 slot 不该等 600ms)";
     EXPECT_EQ(mgr.RunningCount(), 0u) << "超时的自管线程任务应被强制收尾";
@@ -360,14 +359,12 @@ TEST(TaskManagerTest, CancelTokenExposesFlagReflectsCancel) {
     ASSERT_NE(id, 0u);
 
     CancelToken token = mgr.Token(kSlot);
-    ASSERT_NE(token.flag(), nullptr)
-        << "flag() 必须返回底层取消标志, 供 FFmpeg 中断回调读取";
+    ASSERT_NE(token.flag(), nullptr) << "flag() 必须返回底层取消标志, 供 FFmpeg 中断回调读取";
     EXPECT_FALSE(token.IsCanceled());
 
     mgr.Cancel(kSlot);
     EXPECT_TRUE(token.IsCanceled());
-    EXPECT_TRUE(token.flag()->load())
-        << "Cancel 后底层标志必须置位, 否则 WaitForAll 不会因中断而返回";
+    EXPECT_TRUE(token.flag()->load()) << "Cancel 后底层标志必须置位, 否则 WaitForAll 不会因中断而返回";
 
     mgr.End(kSlot, id, TaskState::Succeeded);
 }
@@ -387,8 +384,7 @@ TEST(TaskManagerTest, RunTaskReachesTerminalAfterCancel) {
     EXPECT_TRUE(mgr.IsRunning(kSlot));
     mgr.Cancel(kSlot);
 
-    EXPECT_TRUE(mgr.WaitForIdle(kSlot, 2000))
-        << "取消后受管任务必须及时到达终态, 关闭路径才不会挂死";
+    EXPECT_TRUE(mgr.WaitForIdle(kSlot, 2000)) << "取消后受管任务必须及时到达终态, 关闭路径才不会挂死";
     EXPECT_TRUE(saw_cancel.load());
     EXPECT_FALSE(mgr.IsRunning(kSlot));
 }
@@ -408,19 +404,19 @@ TEST(TaskManagerTest, WaitForAllAbandonsBlockingIoTaskWithinBudget) {
     // 故意完全不轮询取消令牌: 模拟连 AVIOInterruptCB 都不响应的那种卡死的 FFmpeg IO。
     mgr.RunBlockingIo(slot, [&](TaskId, CancelToken) {
         entered.store(true);
-        SleepMs(3000);   // 远超本次关闭预算
+        SleepMs(3000); // 远超本次关闭预算
     });
     while (!entered.load())
-        SleepMs(1);      // 等 body 真的跑起来, 否则测到的就不是"卡住"了
+        SleepMs(1); // 等 body 真的跑起来, 否则测到的就不是"卡住"了
 
     const auto start = std::chrono::steady_clock::now();
     mgr.WaitForAll(200);
-    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - start)
-                                .count();
+    const auto elapsed_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
 
     EXPECT_LT(elapsed_ms, 2000) << "BlockingIo 任务超预算时必须被放弃, 不能 join 到它跑完(3s); "
-                                   "实测耗时 " << elapsed_ms << "ms";
+                                   "实测耗时 "
+                                << elapsed_ms << "ms";
     EXPECT_EQ(mgr.AbandonedCount(), 1u) << "确实应该走'放弃'这条路径";
     // 放弃了它, slot 也必须能立刻重新投入使用 —— 否则之后每次 Begin 都要白等一整轮预算
     EXPECT_FALSE(mgr.IsRunning(slot));
@@ -508,21 +504,21 @@ TEST(TaskManagerTest, RapidSupersedeOnOneSlotKeepsSlotUsable) {
 
     for (int i = 0; i < kRounds; ++i) {
         // 任务体不理取消令牌: 上一个任务会被下一起 Begin 顶成孤儿, 正是要压的路径。
-        mgr.RunWithResult(kSlot,
-                          [&](TaskId, CancelToken) {
-                              launched.fetch_add(1);
-                              SleepMs(20);
-                              return TaskState::Succeeded;
-                          },
-                          0, TaskKind::BlockingIo);
+        mgr.RunWithResult(
+            kSlot,
+            [&](TaskId, CancelToken) {
+                launched.fetch_add(1);
+                SleepMs(20);
+                return TaskState::Succeeded;
+            },
+            0, TaskKind::BlockingIo);
     }
 
     const TaskId last = mgr.CurrentId(kSlot);
     EXPECT_NE(last, 0u);
     // 最后一个任务必须能正常收尾: 孤儿收纳要是漏了线程, Begin 的并发预算会被占满,
     // 后面的任务就会被"并发已满"拒掉(返回 0)。
-    EXPECT_TRUE(mgr.WaitForIdle(kSlot, 5000))
-        << "高频取代之后 slot 必须还能到达终态; 终态卡住说明有线程没被正确收纳";
+    EXPECT_TRUE(mgr.WaitForIdle(kSlot, 5000)) << "高频取代之后 slot 必须还能到达终态; 终态卡住说明有线程没被正确收纳";
     EXPECT_EQ(mgr.State(kSlot), TaskState::Succeeded);
     EXPECT_GT(launched.load(), 0) << "任务体一个都没跑起来, 这条用例等于没测";
 }
@@ -566,13 +562,14 @@ TEST(TaskManagerTest, ConcurrentRegistrationFromManyThreadsStaysConsistent) {
                 // 偶数轮打自己的 slot(多个 slot 并发登记), 奇数轮打共享 slot —— 后者才是
                 // 把线程顶进 orphans_ 的那条路径: 同一 slot 被多个线程同时取代。
                 const std::string& slot = (r % 2 == 0) ? own : shared;
-                mgr.RunWithResult(slot,
-                                  [&](TaskId, CancelToken) {
-                                      launched.fetch_add(1);
-                                      SleepMs(1);
-                                      return TaskState::Succeeded;
-                                  },
-                                  0, TaskKind::BlockingIo);
+                mgr.RunWithResult(
+                    slot,
+                    [&](TaskId, CancelToken) {
+                        launched.fetch_add(1);
+                        SleepMs(1);
+                        return TaskState::Succeeded;
+                    },
+                    0, TaskKind::BlockingIo);
             }
         });
     }
@@ -590,7 +587,6 @@ TEST(TaskManagerTest, ConcurrentRegistrationFromManyThreadsStaysConsistent) {
     EXPECT_EQ(mgr.RunningCount(), 0u) << "所有线程收尾之后并发占用必须归零(孤儿也要回收)";
 }
 
-
 // 压测用的共享收集盒: 任务外侧(调用方)和任务内侧(任务体)都往里记 id, 最后在这里比对。
 //
 // 为什么必须是 shared_ptr, 不能让任务体直接引用 TEST 栈上的容器 ——
@@ -601,9 +597,9 @@ TEST(TaskManagerTest, ConcurrentRegistrationFromManyThreadsStaysConsistent) {
 // 就属于这一类 —— 谁持有盒子谁负责保活, 任务被放弃也照样安全。
 struct IdRelay {
     std::mutex m;
-    std::vector<TaskId> returned;  // 任务外侧: RunWithResult 的返回值
-    std::vector<TaskId> body;      // 任务内侧: 任务体实际收到的 id
-    std::atomic<int> seen{0};      // 任务体跑过的次数
+    std::vector<TaskId> returned; // 任务外侧: RunWithResult 的返回值
+    std::vector<TaskId> body;     // 任务内侧: 任务体实际收到的 id
+    std::atomic<int> seen{0};     // 任务体跑过的次数
 };
 
 // --- Begin() 返回的任务 id 必须属于"发起它的那次调用" ---
@@ -622,7 +618,8 @@ struct IdRelay {
 // 屏障把"各跑各的"变成"同时冲", 这个窗口才会反复被真实撞上。
 class Phase {
 public:
-    explicit Phase(int n) : n_(n) {}
+    explicit Phase(int n) : n_(n) {
+    }
 
     void Sync() {
         const int gen = generation_.load(std::memory_order_acquire);
@@ -663,8 +660,8 @@ TEST(TaskManagerTest, ConcurrentBeginOnOneSlotReturnsUniqueIds) {
             starters.emplace_back([&, t]() {
                 const std::string own = slot + "-" + std::to_string(t);
                 for (int r = 0; r < kRounds; ++r) {
-                    barrier.Sync();   // 同一轮的所有线程一起冲进 Begin
-                    const std::string use = (r % 2 == 0) ? own : slot;  // 一半落在共享 slot 上
+                    barrier.Sync();                                    // 同一轮的所有线程一起冲进 Begin
+                    const std::string use = (r % 2 == 0) ? own : slot; // 一半落在共享 slot 上
                     const TaskId id = mgr.Begin(use);
                     if (id == 0)
                         continue;
@@ -716,7 +713,7 @@ TEST(TaskManagerTest, ConcurrentBeginReturnsIdWhoseBodyWasLaunchedWithIt) {
     for (int t = 0; t < kThreads; ++t) {
         starters.emplace_back([&, t]() {
             for (int r = 0; r < kRounds; ++r) {
-                barrier.Sync();   // 同一轮的所有线程一起冲进 Begin 的临界区
+                barrier.Sync(); // 同一轮的所有线程一起冲进 Begin 的临界区
                 const TaskId id = mgr.RunWithResult(
                     slot,
                     // 按值捕获盒子(不是引用): 任务体可能被放弃后继续跑, 只有自己持有的
@@ -730,7 +727,7 @@ TEST(TaskManagerTest, ConcurrentBeginReturnsIdWhoseBodyWasLaunchedWithIt) {
                         SleepMs(1);
                         return TaskState::Succeeded;
                     },
-                    0, TaskKind::BlockingIo);   // 故意不理取消: 让每次 Begin 都把上一个顶成孤儿
+                    0, TaskKind::BlockingIo); // 故意不理取消: 让每次 Begin 都把上一个顶成孤儿
                 if (id == 0)
                     continue;
                 {
@@ -753,7 +750,7 @@ TEST(TaskManagerTest, ConcurrentBeginReturnsIdWhoseBodyWasLaunchedWithIt) {
     }
     EXPECT_GT(registered, 0) << "一个任务都没登记成功, 这条用例等于没测";
 
-    const int limit = 20000;   // 上限只防死等, 正常情况下这轮几十轮就跑完了
+    const int limit = 20000; // 上限只防死等, 正常情况下这轮几十轮就跑完了
     for (int spin = 0; relay->seen.load() < registered && spin < limit; ++spin)
         SleepMs(1);
 
@@ -763,8 +760,7 @@ TEST(TaskManagerTest, ConcurrentBeginReturnsIdWhoseBodyWasLaunchedWithIt) {
         std::lock_guard<std::mutex> lk(relay->m);
         std::sort(returned_ids.begin(), returned_ids.end());
         std::sort(relay->body.begin(), relay->body.end());
-        EXPECT_EQ(returned_ids, relay->body)
-            << "调用方返回的 TaskId 必须与它自己那次任务体收到的 TaskId 完全一致";
+        EXPECT_EQ(returned_ids, relay->body) << "调用方返回的 TaskId 必须与它自己那次任务体收到的 TaskId 完全一致";
     }
 }
 
@@ -780,15 +776,14 @@ TEST(TaskManagerTest, SupersededTaskEndCannotOverwriteNewTerminalState) {
         const std::string slot = "stale-crosstalk";
         const TaskId first = mgr.Begin(slot);
         ASSERT_NE(first, 0u);
-        const TaskId second = mgr.Begin(slot);       // 取代它( Begin 会给 first 置取消标志 )
+        const TaskId second = mgr.Begin(slot); // 取代它( Begin 会给 first 置取消标志 )
         ASSERT_NE(second, 0u);
         ASSERT_NE(first, second);
 
         mgr.End(slot, second, TaskState::Succeeded); // 新任务先收尾
         SleepMs(20);
-        mgr.End(slot, first, TaskState::Failed);     // 旧任务迟到的失败消息
-        EXPECT_EQ(mgr.State(slot), TaskState::Succeeded)
-            << "被取代的旧任务不得改写新任务的终态";
+        mgr.End(slot, first, TaskState::Failed); // 旧任务迟到的失败消息
+        EXPECT_EQ(mgr.State(slot), TaskState::Succeeded) << "被取代的旧任务不得改写新任务的终态";
 
         // 方向反过来同样成立: 旧任务的"成功"后到, 也不得改写新任务的 Failed。
         const TaskId third = mgr.Begin(slot);
@@ -802,7 +797,7 @@ TEST(TaskManagerTest, SupersededTaskEndCannotOverwriteNewTerminalState) {
     {
         constexpr int kThreads = 8;
         constexpr int kRounds = 25;
-        TaskManager mgr(4096);   // 预算给足, 尽量不走"并发已满"的拒绝分支
+        TaskManager mgr(4096); // 预算给足, 尽量不走"并发已满"的拒绝分支
         const std::string slot = "concurrent-crosstalk";
 
         // 记录每个调用方拿到的 id, 收尾后用来认领 slot 的终态。
@@ -847,8 +842,7 @@ TEST(TaskManagerTest, SupersededTaskEndCannotOverwriteNewTerminalState) {
         EXPECT_NE(last, 0u);
         {
             std::lock_guard<std::mutex> lk(relay->m);
-            EXPECT_NE(std::find(relay->returned.begin(), relay->returned.end(), last),
-                      relay->returned.end())
+            EXPECT_NE(std::find(relay->returned.begin(), relay->returned.end(), last), relay->returned.end())
                 << "slot 的当前 id 必须是某次真实登记返回的 id";
             EXPECT_GT(relay->returned.size(), 1u);
         }
@@ -867,8 +861,7 @@ TEST(TaskManagerTest, BeginHandleRejectionReturnsFullyEmptyHandle) {
     const auto rejected = mgr.BeginHandle("slot-b");
     EXPECT_FALSE(rejected.valid());
     EXPECT_EQ(rejected.id, 0u);
-    EXPECT_EQ(rejected.cancel.flag(), nullptr)
-        << "被拒绝的句柄不得带上任何任务的取消令牌";
+    EXPECT_EQ(rejected.cancel.flag(), nullptr) << "被拒绝的句柄不得带上任何任务的取消令牌";
     EXPECT_TRUE(rejected.slot.empty());
 
     mgr.End("slot-a", first.id, TaskState::Succeeded);
@@ -896,8 +889,8 @@ TEST(TaskManagerTest, ConcurrentBeginHandleKeepsIdAndCancelPaired) {
     std::vector<TaskId> ids;
     std::vector<std::shared_ptr<std::atomic<bool>>> flags;
     std::atomic<int> accepted{0};
-    std::atomic<int> mismatched_token{0};    // 当前任务却拿着别人的令牌
-    std::atomic<int> stale_uncancelled{0};   // 已被取代却还没看到取消
+    std::atomic<int> mismatched_token{0};  // 当前任务却拿着别人的令牌
+    std::atomic<int> stale_uncancelled{0}; // 已被取代却还没看到取消
 
     Phase barrier(kThreads);
     std::vector<std::thread> starters;
@@ -905,7 +898,7 @@ TEST(TaskManagerTest, ConcurrentBeginHandleKeepsIdAndCancelPaired) {
     for (int t = 0; t < kThreads; ++t) {
         starters.emplace_back([&]() {
             for (int r = 0; r < kRounds; ++r) {
-                barrier.Sync();   // 同一轮一起冲进 BeginHandle 的临界区
+                barrier.Sync(); // 同一轮一起冲进 BeginHandle 的临界区
                 const auto handle = mgr.BeginHandle(slot, 0, TaskKind::BlockingIo);
                 if (!handle.valid())
                     continue;
@@ -935,8 +928,7 @@ TEST(TaskManagerTest, ConcurrentBeginHandleKeepsIdAndCancelPaired) {
         th.join();
 
     EXPECT_GT(accepted.load(), 0) << "一个句柄都没登记成功, 这条用例等于没测";
-    EXPECT_EQ(mismatched_token.load(), 0)
-        << "句柄还是当前任务时, handle.cancel 必须就是 slot 上那颗令牌";
+    EXPECT_EQ(mismatched_token.load(), 0) << "句柄还是当前任务时, handle.cancel 必须就是 slot 上那颗令牌";
     EXPECT_EQ(stale_uncancelled.load(), 0)
         << "句柄被取代后, handle.cancel 必须已经被置位(取代在同一把锁内先置位旧令牌)";
 
@@ -945,5 +937,3 @@ TEST(TaskManagerTest, ConcurrentBeginHandleKeepsIdAndCancelPaired) {
     EXPECT_EQ(std::unique(flags.begin(), flags.end()), flags.end())
         << "每次成功登记都必须持有自己新建的取消令牌, 不能被两次登记共用";
 }
-
-

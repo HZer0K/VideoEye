@@ -20,9 +20,9 @@ namespace ui {
 
 // 打开路径的种类。
 enum class OpenTargetKind {
-    Media,     // 通用媒体：事务式异步打开，收尾靠 OpenFinished
-    RawImage,  // 裸图像（yuv/nv12/rgb/bgr/yuy2/raw）：不进播放器，没有异步收尾
-    Pcm,       // 裸 PCM：同步打开，参数由用户现场指定
+    Media,    // 通用媒体：事务式异步打开，收尾靠 OpenFinished
+    RawImage, // 裸图像（yuv/nv12/rgb/bgr/yuy2/raw）：不进播放器，没有异步收尾
+    Pcm,      // 裸 PCM：同步打开，参数由用户现场指定
 };
 
 inline OpenTargetKind ClassifyOpenTarget(const QString& source) {
@@ -30,8 +30,8 @@ inline OpenTargetKind ClassifyOpenTarget(const QString& source) {
     // 注意 URL（rtmp://…、http://…/x.m3u8）也走这里：没有扩展名时 suffix() 为空，
     // 落到 Media 分支，与历史行为相同。
     const QString suffix = QFileInfo(source).suffix().toLower();
-    if (suffix == "yuv" || suffix == "nv12" || suffix == "rgb" ||
-        suffix == "bgr" || suffix == "yuy2" || suffix == "raw") {
+    if (suffix == "yuv" || suffix == "nv12" || suffix == "rgb" || suffix == "bgr" || suffix == "yuy2" ||
+        suffix == "raw") {
         return OpenTargetKind::RawImage;
     }
     if (suffix == "pcm") {
@@ -73,11 +73,13 @@ inline bool TakeOpenTicket(OpenTicket& ticket, QString* source, bool* autoplay) 
     if (!IsOpenTicketArmed(ticket)) {
         return false;
     }
-    if (source) *source = ticket.source;
-    if (autoplay) *autoplay = ticket.autoplay;
+    if (source)
+        *source = ticket.source;
+    if (autoplay)
+        *autoplay = ticket.autoplay;
     ClearOpenTicket(ticket);
     return true;
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

@@ -15,7 +15,8 @@ constexpr double kPi = 3.14159265358979323846;
 // 计算不小于 n 的最小 2 的幂
 int NextPow2(int n) {
     int p = 1;
-    while (p < n) p <<= 1;
+    while (p < n)
+        p <<= 1;
     return p;
 }
 
@@ -73,8 +74,7 @@ AudioVisualizer::FftTables& AudioVisualizer::GetTables(int fft_size) {
     return t;
 }
 
-void AudioVisualizer::FftInPlace(std::vector<double>& re, std::vector<double>& im,
-                                  const FftTables& tables) {
+void AudioVisualizer::FftInPlace(std::vector<double>& re, std::vector<double>& im, const FftTables& tables) {
     const int N = tables.size;
     const int log2N = static_cast<int>(std::log2(N));
 
@@ -89,9 +89,9 @@ void AudioVisualizer::FftInPlace(std::vector<double>& re, std::vector<double>& i
 
     // Cooley-Tukey 蝶形运算
     for (int stage = 1; stage <= log2N; ++stage) {
-        const int m = 1 << stage;        // 当前子 DFT 大小
+        const int m = 1 << stage; // 当前子 DFT 大小
         const int half_m = m >> 1;
-        const int step = N / m;           // twiddle 步长
+        const int step = N / m; // twiddle 步长
 
         for (int k = 0; k < N; k += m) {
             for (int j = 0; j < half_m; ++j) {
@@ -115,8 +115,8 @@ void AudioVisualizer::FftInPlace(std::vector<double>& re, std::vector<double>& i
     }
 }
 
-AudioVisualizationResult AudioVisualizer::Process(const int16_t* samples, int sample_count,
-                                                   int sample_rate, int channels) const {
+AudioVisualizationResult AudioVisualizer::Process(const int16_t* samples, int sample_count, int sample_rate,
+                                                  int channels) const {
     AudioVisualizationResult result;
     if (!samples || sample_count <= 0 || channels <= 0) {
         return result;
@@ -150,8 +150,10 @@ AudioVisualizationResult AudioVisualizer::Process(const int16_t* samples, int sa
     // ===== 3. FFT 频谱 (Cooley-Tukey, 预计算表) =====
     // 找到不超过 frame_count 的最大 2 的幂, 最大 kMaxFftSize
     int fft_size = NextPow2(frame_count);
-    if (fft_size > kMaxFftSize) fft_size = kMaxFftSize;
-    if (fft_size > frame_count) fft_size >>= 1;
+    if (fft_size > kMaxFftSize)
+        fft_size = kMaxFftSize;
+    if (fft_size > frame_count)
+        fft_size >>= 1;
 
     if (fft_size >= 8) {
         const auto& tables = GetTables(fft_size);
@@ -175,8 +177,7 @@ AudioVisualizationResult AudioVisualizer::Process(const int16_t* samples, int sa
         for (int bin = 0; bin < kSpectrumBinCount; ++bin) {
             // 对数映射: bin -> FFT bin index
             const double frac = static_cast<double>(bin) / static_cast<double>(kSpectrumBinCount);
-            const int k = std::max(0, std::min(half_fft - 1,
-                                               static_cast<int>(std::exp(frac * log_half))));
+            const int k = std::max(0, std::min(half_fft - 1, static_cast<int>(std::exp(frac * log_half))));
 
             // 取相邻几个 bin 的平均值以平滑
             const int k_lo = std::max(0, k - 1);
@@ -195,7 +196,8 @@ AudioVisualizationResult AudioVisualizer::Process(const int16_t* samples, int sa
     double max_abs = 0.0;
     for (int i = 0; i < frame_count; ++i) {
         const double a = std::abs(mono[i]);
-        if (a > max_abs) max_abs = a;
+        if (a > max_abs)
+            max_abs = a;
     }
     if (max_abs > 1e-10) {
         result.peak_dbfs = 20.0 * std::log10(max_abs);
@@ -228,7 +230,8 @@ AudioVisualizationResult AudioVisualizer::Process(const int16_t* samples, int sa
         const double a3 = std::abs(0.75 * s0 + 0.25 * s1);
         const double a4 = std::abs(s1);
         const double local_max = std::max({a0, a1, a2, a3, a4});
-        if (local_max > true_peak) true_peak = local_max;
+        if (local_max > true_peak)
+            true_peak = local_max;
     }
     if (true_peak > 1e-10) {
         result.true_peak_dbtp = 20.0 * std::log10(true_peak);

@@ -2,21 +2,21 @@
 
 #include "ui/analysis_panel/AnalysisPageSupport.h"
 
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QGroupBox>
 #include <QCheckBox>
-#include <QHeaderView>
 #include <QDateTime>
-#include <QFileDialog>
 #include <QFile>
+#include <QFileDialog>
+#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QHeaderView>
 #include <QMessageBox>
 #include <QSignalBlocker>
 #include <QTextStream>
+#include <QVBoxLayout>
 
-#include <deque>
 #include <algorithm>
 #include <cmath>
+#include <deque>
 
 namespace videoeye {
 namespace ui {
@@ -30,8 +30,7 @@ constexpr size_t kMaxTimelineRecords = 5000;
 // 注：TrimRecords 原本在这里有一份匿名命名空间副本（与 FramePacketView 那份同语义），
 // 现已统一提到 AnalysisPageSupport.h，本文件直接用共享版本，不再各抄一份。
 
-EventTimelineView::EventTimelineView(QWidget* parent)
-    : QWidget(parent) {
+EventTimelineView::EventTimelineView(QWidget* parent) : QWidget(parent) {
     event_analysis_sub_tabs_ = new QTabWidget(this);
     event_analysis_sub_tabs_->setDocumentMode(true);
 
@@ -69,10 +68,10 @@ void EventTimelineView::SyncTogglesFromHooks() {
     };
 
     for (const auto& t : toggles) {
-        if (!t.box) continue;
+        if (!t.box)
+            continue;
         // 没有钩子（独立使用本视图时）就保持控件现状，不做无意义的改写。
-        const bool enabled =
-            is_enabled_ ? is_enabled_(static_cast<int>(t.feature)) : t.box->isChecked();
+        const bool enabled = is_enabled_ ? is_enabled_(static_cast<int>(t.feature)) : t.box->isChecked();
         // 必须屏蔽信号：setChecked() 会触发 toggled，而那个槽会回调 set_enabled_
         // 改写面板的 feature_enabled_ 并转发 AnalysisFeatureToggled —— 那是"用户操作"
         // 的语义，不该由一次初始化同步伪造出来。
@@ -102,7 +101,8 @@ void EventTimelineView::SetupEventTab() {
     event_toggle_->setToolTip(tr("播放时实时采集，需要额外的数据留存，默认关闭，按需开启。"));
     event_toggle_->setChecked(is_enabled_ ? is_enabled_(static_cast<int>(ViewFeature::Event)) : true);
     connect(event_toggle_, &QCheckBox::toggled, this, [this](bool checked) {
-        if (set_enabled_) set_enabled_(static_cast<int>(ViewFeature::Event), checked);
+        if (set_enabled_)
+            set_enabled_(static_cast<int>(ViewFeature::Event), checked);
     });
     toolbar_layout->addWidget(event_toggle_);
     layout->addLayout(toolbar_layout);
@@ -154,7 +154,8 @@ void EventTimelineView::SetupSyncTab() {
     sync_toggle_->setToolTip(tr("播放时实时采集，需要额外的数据留存，默认关闭，按需开启。"));
     sync_toggle_->setChecked(is_enabled_ ? is_enabled_(static_cast<int>(ViewFeature::Sync)) : true);
     connect(sync_toggle_, &QCheckBox::toggled, this, [this](bool checked) {
-        if (set_enabled_) set_enabled_(static_cast<int>(ViewFeature::Sync), checked);
+        if (set_enabled_)
+            set_enabled_(static_cast<int>(ViewFeature::Sync), checked);
     });
     toolbar_layout->addWidget(sync_toggle_);
     layout->addLayout(toolbar_layout);
@@ -219,7 +220,8 @@ void EventTimelineView::SetupTimelineTab() {
     timeline_toggle_->setToolTip(tr("播放时实时采集，需要额外的数据留存，默认关闭，按需开启。"));
     timeline_toggle_->setChecked(is_enabled_ ? is_enabled_(static_cast<int>(ViewFeature::Timeline)) : true);
     connect(timeline_toggle_, &QCheckBox::toggled, this, [this](bool checked) {
-        if (set_enabled_) set_enabled_(static_cast<int>(ViewFeature::Timeline), checked);
+        if (set_enabled_)
+            set_enabled_(static_cast<int>(ViewFeature::Timeline), checked);
     });
     toolbar_layout->addWidget(timeline_toggle_);
     layout->addLayout(toolbar_layout);
@@ -276,7 +278,8 @@ void EventTimelineView::SetupTimelineTab() {
 // ---------------------------------------------------------------------------
 
 void EventTimelineView::ResetAnalysisEventList() {
-    if (!is_enabled_ || !is_enabled_(static_cast<int>(ViewFeature::Event))) return;
+    if (!is_enabled_ || !is_enabled_(static_cast<int>(ViewFeature::Event)))
+        return;
     analysis_event_records_.clear();
     event_table_synced_record_count_ = 0;
     event_table_dirty_ = false;
@@ -288,7 +291,8 @@ void EventTimelineView::ResetAnalysisEventList() {
 }
 
 void EventTimelineView::AppendAnalysisEvent(const model::AnalysisEvent& event_info) {
-    if (!is_enabled_ || !is_enabled_(static_cast<int>(ViewFeature::Event))) return;
+    if (!is_enabled_ || !is_enabled_(static_cast<int>(ViewFeature::Event)))
+        return;
     if (!event_table_) {
         return;
     }
@@ -306,11 +310,13 @@ void EventTimelineView::AppendAnalysisEvent(const model::AnalysisEvent& event_in
     analysis_event_records_.push_back(record);
     event_table_dirty_ = true;
     event_summary_dirty_ = true;
-    TrimRecords(analysis_event_records_, event_table_synced_record_count_, event_table_, event_table_dirty_, kMaxEventRecords);
+    TrimRecords(analysis_event_records_, event_table_synced_record_count_, event_table_, event_table_dirty_,
+                kMaxEventRecords);
 }
 
 void EventTimelineView::ResetSyncSampleList() {
-    if (!is_enabled_ || !is_enabled_(static_cast<int>(ViewFeature::Sync))) return;
+    if (!is_enabled_ || !is_enabled_(static_cast<int>(ViewFeature::Sync)))
+        return;
     sync_sample_records_.clear();
     sync_table_synced_record_count_ = 0;
     sync_table_dirty_ = false;
@@ -332,7 +338,8 @@ void EventTimelineView::ResetSyncSampleList() {
 }
 
 void EventTimelineView::AppendSyncSample(const model::SyncSample& sample) {
-    if (!is_enabled_ || !is_enabled_(static_cast<int>(ViewFeature::Sync))) return;
+    if (!is_enabled_ || !is_enabled_(static_cast<int>(ViewFeature::Sync)))
+        return;
     if (!sync_table_) {
         return;
     }
@@ -351,7 +358,8 @@ void EventTimelineView::AppendSyncSample(const model::SyncSample& sample) {
 }
 
 void EventTimelineView::ResetTimelineEventList() {
-    if (!is_enabled_ || !is_enabled_(static_cast<int>(ViewFeature::Timeline))) return;
+    if (!is_enabled_ || !is_enabled_(static_cast<int>(ViewFeature::Timeline)))
+        return;
     timeline_event_records_.clear();
     timeline_table_synced_record_count_ = 0;
     timeline_table_dirty_ = false;
@@ -378,7 +386,8 @@ void EventTimelineView::ResetTimelineEventList() {
 }
 
 void EventTimelineView::AppendTimelineEvent(const model::TimelineEvent& event) {
-    if (!is_enabled_ || !is_enabled_(static_cast<int>(ViewFeature::Timeline))) return;
+    if (!is_enabled_ || !is_enabled_(static_cast<int>(ViewFeature::Timeline)))
+        return;
     if (!timeline_table_) {
         return;
     }
@@ -393,14 +402,18 @@ void EventTimelineView::AppendTimelineEvent(const model::TimelineEvent& event) {
     timeline_event_records_.push_back(record);
     timeline_table_dirty_ = true;
     timeline_summary_dirty_ = true;
-    TrimRecords(timeline_event_records_, timeline_table_synced_record_count_, timeline_table_, timeline_table_dirty_, kMaxTimelineRecords);
+    TrimRecords(timeline_event_records_, timeline_table_synced_record_count_, timeline_table_, timeline_table_dirty_,
+                kMaxTimelineRecords);
 }
 
 QString EventTimelineView::CategoryDisplayName(model::TimelineEventCategory category) {
     switch (category) {
-        case model::TimelineEventCategory::VideoKeyframe: return tr("视频关键帧");
-        case model::TimelineEventCategory::AudioSample: return tr("音频采样");
-        case model::TimelineEventCategory::Event: break;
+    case model::TimelineEventCategory::VideoKeyframe:
+        return tr("视频关键帧");
+    case model::TimelineEventCategory::AudioSample:
+        return tr("音频采样");
+    case model::TimelineEventCategory::Event:
+        break;
     }
     return tr("事件");
 }
@@ -410,7 +423,8 @@ QString EventTimelineView::CategoryDisplayName(model::TimelineEventCategory cate
 // ---------------------------------------------------------------------------
 
 void EventTimelineView::RebuildEventTable() {
-    if (!event_table_) return;
+    if (!event_table_)
+        return;
     event_table_->setUpdatesEnabled(false);
     event_table_->setRowCount(0);
     for (const auto& record : analysis_event_records_) {
@@ -421,7 +435,8 @@ void EventTimelineView::RebuildEventTable() {
 }
 
 void EventTimelineView::RebuildSyncTable() {
-    if (!sync_table_) return;
+    if (!sync_table_)
+        return;
     sync_table_->setUpdatesEnabled(false);
     sync_table_->setRowCount(0);
     for (const auto& record : sync_sample_records_) {
@@ -433,7 +448,8 @@ void EventTimelineView::RebuildSyncTable() {
 }
 
 void EventTimelineView::RebuildTimelineTable() {
-    if (!timeline_table_) return;
+    if (!timeline_table_)
+        return;
     timeline_table_->setUpdatesEnabled(false);
     timeline_table_->setRowCount(0);
     for (const auto& record : timeline_event_records_) {
@@ -445,7 +461,8 @@ void EventTimelineView::RebuildTimelineTable() {
 }
 
 void EventTimelineView::UpdateEventSummary() {
-    if (!event_summary_label_) return;
+    if (!event_summary_label_)
+        return;
 
     int error_count = 0;
     int warning_count = 0;
@@ -460,16 +477,16 @@ void EventTimelineView::UpdateEventSummary() {
         }
     }
 
-    event_summary_label_->setText(
-        tr("总事件数: %1 | 错误: %2 | 警告: %3 | 信息: %4")
-            .arg(analysis_event_records_.size())
-            .arg(error_count)
-            .arg(warning_count)
-            .arg(info_count));
+    event_summary_label_->setText(tr("总事件数: %1 | 错误: %2 | 警告: %3 | 信息: %4")
+                                      .arg(analysis_event_records_.size())
+                                      .arg(error_count)
+                                      .arg(warning_count)
+                                      .arg(info_count));
 }
 
 void EventTimelineView::UpdateSyncSummary() {
-    if (!sync_summary_label_) return;
+    if (!sync_summary_label_)
+        return;
 
     if (sync_sample_records_.empty()) {
         sync_summary_label_->setText(tr("样本数: 0 | 平均偏移: 0.00 ms | 最大偏移: 0.00 ms"));
@@ -484,33 +501,38 @@ void EventTimelineView::UpdateSyncSummary() {
         max_abs = std::max(max_abs, abs_diff);
     }
 
-    sync_summary_label_->setText(
-        tr("样本数: %1 | 平均偏移: %2 ms | 最大偏移: %3 ms")
-            .arg(sync_sample_records_.size())
-            .arg(abs_sum / static_cast<double>(sync_sample_records_.size()), 0, 'f', 2)
-            .arg(max_abs, 0, 'f', 2));
+    sync_summary_label_->setText(tr("样本数: %1 | 平均偏移: %2 ms | 最大偏移: %3 ms")
+                                     .arg(sync_sample_records_.size())
+                                     .arg(abs_sum / static_cast<double>(sync_sample_records_.size()), 0, 'f', 2)
+                                     .arg(max_abs, 0, 'f', 2));
 }
 
 void EventTimelineView::UpdateTimelineSummary() {
-    if (!timeline_summary_label_) return;
+    if (!timeline_summary_label_)
+        return;
 
     int video_count = 0;
     int audio_count = 0;
     int event_count = 0;
     for (const auto& record : timeline_event_records_) {
         switch (record.category) {
-            case model::TimelineEventCategory::VideoKeyframe: video_count++; break;
-            case model::TimelineEventCategory::AudioSample: audio_count++; break;
-            case model::TimelineEventCategory::Event: event_count++; break;
+        case model::TimelineEventCategory::VideoKeyframe:
+            video_count++;
+            break;
+        case model::TimelineEventCategory::AudioSample:
+            audio_count++;
+            break;
+        case model::TimelineEventCategory::Event:
+            event_count++;
+            break;
         }
     }
 
-    timeline_summary_label_->setText(
-        tr("事件数: %1 | 视频关键帧: %2 | 音频采样: %3 | 异常事件: %4")
-            .arg(timeline_event_records_.size())
-            .arg(video_count)
-            .arg(audio_count)
-            .arg(event_count));
+    timeline_summary_label_->setText(tr("事件数: %1 | 视频关键帧: %2 | 音频采样: %3 | 异常事件: %4")
+                                         .arg(timeline_event_records_.size())
+                                         .arg(video_count)
+                                         .arg(audio_count)
+                                         .arg(event_count));
 }
 
 void EventTimelineView::OnExportEventCsv() {
@@ -519,20 +541,15 @@ void EventTimelineView::OnExportEventCsv() {
         return;
     }
 
-    ExportCsvStream(this,
-        tr("导出异常事件 CSV"),
+    ExportCsvStream(
+        this, tr("导出异常事件 CSV"),
         QString("videoeye_events_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
         [this](QTextStream& out) {
             out << "index,severity,type,stream_index,timestamp_seconds,pts,summary,detail\n";
             for (const auto& record : analysis_event_records_) {
-                out << record.index << ','
-                    << '"' << record.severity << '"' << ','
-                    << '"' << record.type << '"' << ','
-                    << record.stream_index << ','
-                    << QString::number(record.timestamp_seconds, 'f', 6) << ','
-                    << record.pts << ','
-                    << '"' << record.summary << '"' << ','
-                    << '"' << record.detail << '"' << '\n';
+                out << record.index << ',' << '"' << record.severity << '"' << ',' << '"' << record.type << '"' << ','
+                    << record.stream_index << ',' << QString::number(record.timestamp_seconds, 'f', 6) << ','
+                    << record.pts << ',' << '"' << record.summary << '"' << ',' << '"' << record.detail << '"' << '\n';
             }
         },
         static_cast<int>(analysis_event_records_.size()));
@@ -544,17 +561,16 @@ void EventTimelineView::OnExportSyncCsv() {
         return;
     }
 
-    ExportCsvStream(this,
-        tr("导出同步分析 CSV"),
+    ExportCsvStream(
+        this, tr("导出同步分析 CSV"),
         QString("videoeye_sync_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
         [this](QTextStream& out) {
             out << "index,audio_timestamp_seconds,video_timestamp_seconds,diff_ms,anchor\n";
             for (const auto& record : sync_sample_records_) {
-                out << record.index << ','
-                    << QString::number(record.audio_timestamp_seconds, 'f', 6) << ','
+                out << record.index << ',' << QString::number(record.audio_timestamp_seconds, 'f', 6) << ','
                     << QString::number(record.video_timestamp_seconds, 'f', 6) << ','
-                    << QString::number(record.diff_ms, 'f', 3) << ','
-                    << '"' << (record.audio_anchor ? tr("音频") : tr("视频")) << '"' << '\n';
+                    << QString::number(record.diff_ms, 'f', 3) << ',' << '"'
+                    << (record.audio_anchor ? tr("音频") : tr("视频")) << '"' << '\n';
             }
         },
         static_cast<int>(sync_sample_records_.size()));
@@ -566,16 +582,14 @@ void EventTimelineView::OnExportTimelineCsv() {
         return;
     }
 
-    ExportCsvStream(this,
-        tr("导出统一时间轴 CSV"),
+    ExportCsvStream(
+        this, tr("导出统一时间轴 CSV"),
         QString("videoeye_timeline_%1.csv").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
         [this](QTextStream& out) {
             out << "index,category,timestamp_seconds,label,detail\n";
             for (const auto& record : timeline_event_records_) {
-                out << record.index << ','
-                    << '"' << CategoryDisplayName(record.category) << '"' << ','
-                    << QString::number(record.timestamp_seconds, 'f', 6) << ','
-                    << '"' << record.label << '"' << ','
+                out << record.index << ',' << '"' << CategoryDisplayName(record.category) << '"' << ','
+                    << QString::number(record.timestamp_seconds, 'f', 6) << ',' << '"' << record.label << '"' << ','
                     << '"' << record.detail << '"' << '\n';
             }
         },
@@ -585,9 +599,7 @@ void EventTimelineView::OnExportTimelineCsv() {
 void EventTimelineView::AppendEventRowToTable(const AnalysisEventRecord& record) {
     const int row = event_table_->rowCount();
     event_table_->insertRow(row);
-    auto cell = [&](int col, const QString& text) {
-        event_table_->setItem(row, col, new QTableWidgetItem(text));
-    };
+    auto cell = [&](int col, const QString& text) { event_table_->setItem(row, col, new QTableWidgetItem(text)); };
     cell(0, QString::number(record.index));
     cell(1, record.severity);
     cell(2, record.type);
@@ -601,9 +613,7 @@ void EventTimelineView::AppendEventRowToTable(const AnalysisEventRecord& record)
 void EventTimelineView::AppendSyncRowToTable(const SyncSampleRecord& record) {
     const int row = sync_table_->rowCount();
     sync_table_->insertRow(row);
-    auto cell = [&](int col, const QString& text) {
-        sync_table_->setItem(row, col, new QTableWidgetItem(text));
-    };
+    auto cell = [&](int col, const QString& text) { sync_table_->setItem(row, col, new QTableWidgetItem(text)); };
     cell(0, QString::number(record.index));
     cell(1, QString::number(record.audio_timestamp_seconds, 'f', 6));
     cell(2, QString::number(record.video_timestamp_seconds, 'f', 6));
@@ -614,9 +624,7 @@ void EventTimelineView::AppendSyncRowToTable(const SyncSampleRecord& record) {
 void EventTimelineView::AppendTimelineRowToTable(const TimelineEventRecord& record) {
     const int row = timeline_table_->rowCount();
     timeline_table_->insertRow(row);
-    auto cell = [&](int col, const QString& text) {
-        timeline_table_->setItem(row, col, new QTableWidgetItem(text));
-    };
+    auto cell = [&](int col, const QString& text) { timeline_table_->setItem(row, col, new QTableWidgetItem(text)); };
     cell(0, QString::number(record.index));
     cell(1, CategoryDisplayName(record.category));
     cell(2, QString::number(record.timestamp_seconds, 'f', 6));
@@ -653,8 +661,8 @@ void EventTimelineView::UpdateSyncChart() {
 }
 
 void EventTimelineView::UpdateTimelineChart() {
-    if (!timeline_video_series_ || !timeline_audio_series_ || !timeline_event_series_ ||
-        !timeline_axis_x_ || !timeline_axis_y_) {
+    if (!timeline_video_series_ || !timeline_audio_series_ || !timeline_event_series_ || !timeline_axis_x_ ||
+        !timeline_axis_y_) {
         return;
     }
 
@@ -678,15 +686,15 @@ void EventTimelineView::UpdateTimelineChart() {
         for (int i = start; i < static_cast<int>(timeline_event_records_.size()); ++i) {
             const auto& record = timeline_event_records_[i];
             switch (record.category) {
-                case model::TimelineEventCategory::VideoKeyframe:
-                    video_batch.Add(record.timestamp_seconds, 3.0);
-                    break;
-                case model::TimelineEventCategory::AudioSample:
-                    audio_batch.Add(record.timestamp_seconds, 2.0);
-                    break;
-                case model::TimelineEventCategory::Event:
-                    event_batch.Add(record.timestamp_seconds, 1.0);
-                    break;
+            case model::TimelineEventCategory::VideoKeyframe:
+                video_batch.Add(record.timestamp_seconds, 3.0);
+                break;
+            case model::TimelineEventCategory::AudioSample:
+                audio_batch.Add(record.timestamp_seconds, 2.0);
+                break;
+            case model::TimelineEventCategory::Event:
+                event_batch.Add(record.timestamp_seconds, 1.0);
+                break;
             }
             min_ts = std::min(min_ts, record.timestamp_seconds);
             max_ts = std::max(max_ts, record.timestamp_seconds);
@@ -701,7 +709,8 @@ void EventTimelineView::UpdateTimelineChart() {
 }
 
 void EventTimelineView::FlushPendingEventTableUpdates() {
-    if (!event_table_) return;
+    if (!event_table_)
+        return;
     event_table_->setUpdatesEnabled(false);
     for (size_t i = event_table_synced_record_count_; i < analysis_event_records_.size(); ++i) {
         AppendEventRowToTable(analysis_event_records_[i]);
@@ -714,7 +723,8 @@ void EventTimelineView::FlushPendingEventTableUpdates() {
 }
 
 void EventTimelineView::FlushPendingSyncTableUpdates() {
-    if (!sync_table_) return;
+    if (!sync_table_)
+        return;
     sync_table_->setUpdatesEnabled(false);
     for (size_t i = sync_table_synced_record_count_; i < sync_sample_records_.size(); ++i) {
         AppendSyncRowToTable(sync_sample_records_[i]);
@@ -728,7 +738,8 @@ void EventTimelineView::FlushPendingSyncTableUpdates() {
 }
 
 void EventTimelineView::FlushPendingTimelineTableUpdates() {
-    if (!timeline_table_) return;
+    if (!timeline_table_)
+        return;
     timeline_table_->setUpdatesEnabled(false);
     for (size_t i = timeline_table_synced_record_count_; i < timeline_event_records_.size(); ++i) {
         AppendTimelineRowToTable(timeline_event_records_[i]);

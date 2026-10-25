@@ -17,9 +17,9 @@
 
 #include <gtest/gtest.h>
 
+#include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/ColorHdrResult.h"
-#include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/domain/model/QcReport.h"
 
 namespace {
@@ -41,9 +41,8 @@ constexpr int kRangeLimited = 1;
 constexpr int kRangeFull = 2;
 
 // 按 FFmpeg 原生枚举值填一份 ColorInfo（与 ColorHdrAnalyzer::UpdateFromStream 同一条路径）
-model::ColorInfo MakeColor(int primaries, int transfer, int matrix, int range,
-                           int bit_depth, const std::string& pix_fmt = "yuv420p",
-                           const std::string& subsampling = "4:2:0") {
+model::ColorInfo MakeColor(int primaries, int transfer, int matrix, int range, int bit_depth,
+                           const std::string& pix_fmt = "yuv420p", const std::string& subsampling = "4:2:0") {
     model::ColorInfo color;
     color.analyzed = true;
     color.stream_index = 0;
@@ -77,17 +76,20 @@ model::MasteringDisplayMetadata MakeMastering() {
     md.present = true;
     md.has_primaries = true;
     md.has_luminance = true;
-    md.red_x = 0.68;   md.red_y = 0.32;
-    md.green_x = 0.265; md.green_y = 0.69;
-    md.blue_x = 0.15;  md.blue_y = 0.06;
-    md.white_x = 0.3127; md.white_y = 0.3290;
+    md.red_x = 0.68;
+    md.red_y = 0.32;
+    md.green_x = 0.265;
+    md.green_y = 0.69;
+    md.blue_x = 0.15;
+    md.blue_y = 0.06;
+    md.white_x = 0.3127;
+    md.white_y = 0.3290;
     md.max_luminance = 1000.0;
     md.min_luminance = 0.005;
     return md;
 }
 
-model::ColorHdrAnalysis MakeAnalysis(const model::ColorInfo& color,
-                                        const model::HdrMetadataInfo& hdr) {
+model::ColorHdrAnalysis MakeAnalysis(const model::ColorInfo& color, const model::HdrMetadataInfo& hdr) {
     model::ColorHdrAnalysis analysis;
     analysis.analyzed = true;
     analysis.stream_index = color.stream_index;
@@ -106,7 +108,7 @@ model::AnalysisResult MakeResult(const model::ColorHdrAnalysis& analysis) {
 
     model::StreamDigest video;
     video.index = 0;
-    video.media_type = 0;   // AVMEDIA_TYPE_VIDEO
+    video.media_type = 0; // AVMEDIA_TYPE_VIDEO
     video.codec_name = "hevc";
     video.width = 1920;
     video.height = 1080;
@@ -116,11 +118,12 @@ model::AnalysisResult MakeResult(const model::ColorHdrAnalysis& analysis) {
     return result;
 }
 
-bool HasIssue(const model::QcReport& report, const std::string& rule_id,
-              model::DiagnosticIssue* out = nullptr) {
+bool HasIssue(const model::QcReport& report, const std::string& rule_id, model::DiagnosticIssue* out = nullptr) {
     for (const auto& issue : report.issues) {
-        if (issue.rule_id != rule_id) continue;
-        if (out) *out = issue;
+        if (issue.rule_id != rule_id)
+            continue;
+        if (out)
+            *out = issue;
         return true;
     }
     return false;
@@ -129,18 +132,18 @@ bool HasIssue(const model::QcReport& report, const std::string& rule_id,
 int CountColorIssues(const model::QcReport& report) {
     int count = 0;
     for (const auto& issue : report.issues) {
-        if (issue.category == model::IssueCategory::ColorHdr) ++count;
+        if (issue.category == model::IssueCategory::ColorHdr)
+            ++count;
     }
     return count;
 }
 
-}  // namespace
+} // namespace
 
 // ---------------- 1) SDR Rec.709 ----------------
 
 TEST(ColorHdrTest, SdrBt709ClassifiesTo709AcrossPrimariesTransferMatrix) {
-    const model::ColorInfo color =
-        MakeColor(kPriBt709, kTrcBt709, kSpcBt709, kRangeLimited, 8, "yuv420p");
+    const model::ColorInfo color = MakeColor(kPriBt709, kTrcBt709, kSpcBt709, kRangeLimited, 8, "yuv420p");
 
     EXPECT_EQ(color.primaries, model::ColorPrimariesKind::Bt709);
     EXPECT_EQ(color.transfer, model::TransferKind::Sdr);
@@ -165,8 +168,7 @@ TEST(ColorHdrTest, SdrBt709ClassifiesTo709AcrossPrimariesTransferMatrix) {
 // ---------------- 2) HDR10 ----------------
 
 TEST(ColorHdrTest, Hdr10SampleIsRecognizedWithoutWarnings) {
-    const model::ColorInfo color =
-        MakeColor(kPriBt2020, kTrcPq, kSpcBt2020Ncl, kRangeLimited, 10, "yuv420p10le");
+    const model::ColorInfo color = MakeColor(kPriBt2020, kTrcPq, kSpcBt2020Ncl, kRangeLimited, 10, "yuv420p10le");
 
     EXPECT_EQ(color.primaries, model::ColorPrimariesKind::Bt2020);
     EXPECT_EQ(color.transfer, model::TransferKind::Pq);
@@ -212,9 +214,8 @@ TEST(ColorHdrTest, Hdr10SampleIsRecognizedWithoutWarnings) {
 }
 
 TEST(ColorHdrTest, HlgDoesNotRequireStaticMetadata) {
-    const model::ColorInfo color =
-        MakeColor(kPriBt2020, kTrcHlg, kSpcBt2020Ncl, kRangeLimited, 10, "yuv420p10le");
-    model::HdrMetadataInfo hdr;   // HLG 本就不需要 MaxCLL/MaxFALL
+    const model::ColorInfo color = MakeColor(kPriBt2020, kTrcHlg, kSpcBt2020Ncl, kRangeLimited, 10, "yuv420p10le");
+    model::HdrMetadataInfo hdr; // HLG 本就不需要 MaxCLL/MaxFALL
 
     ASSERT_EQ(model::ClassifyHdrFormat(color, hdr), model::HdrFormat::Hlg);
 
@@ -227,9 +228,8 @@ TEST(ColorHdrTest, HlgDoesNotRequireStaticMetadata) {
 // ---------------- 3) 缺元数据的 HDR ----------------
 
 TEST(ColorHdrTest, PqWithoutMetadataWarns) {
-    const model::ColorInfo color =
-        MakeColor(kPriBt2020, kTrcPq, kSpcBt2020Ncl, kRangeLimited, 10, "yuv420p10le");
-    const model::HdrMetadataInfo hdr;   // 什么都没写
+    const model::ColorInfo color = MakeColor(kPriBt2020, kTrcPq, kSpcBt2020Ncl, kRangeLimited, 10, "yuv420p10le");
+    const model::HdrMetadataInfo hdr; // 什么都没写
 
     ASSERT_EQ(model::ClassifyHdrFormat(color, hdr), model::HdrFormat::Hdr10Basic);
 
@@ -247,8 +247,7 @@ TEST(ColorHdrTest, PqWithoutMetadataWarns) {
 }
 
 TEST(ColorHdrTest, EightBitPqIsAnError) {
-    const model::ColorInfo color =
-        MakeColor(kPriBt2020, kTrcPq, kSpcBt2020Ncl, kRangeLimited, 8, "yuv420p");
+    const model::ColorInfo color = MakeColor(kPriBt2020, kTrcPq, kSpcBt2020Ncl, kRangeLimited, 8, "yuv420p");
     model::HdrMetadataInfo hdr;
     hdr.mastering_display = MakeMastering();
     hdr.content_light.present = true;
@@ -266,8 +265,7 @@ TEST(ColorHdrTest, EightBitPqIsAnError) {
 
 TEST(ColorHdrTest, WideGamutWithSdrTransferWarns) {
     // BT.2020 原色 + BT.709 传递函数：SDR BT.2020 或误标的 HDR，需要核查
-    const model::ColorInfo color =
-        MakeColor(kPriBt2020, kTrcBt709, kSpcBt2020Ncl, kRangeLimited, 10, "yuv420p10le");
+    const model::ColorInfo color = MakeColor(kPriBt2020, kTrcBt709, kSpcBt2020Ncl, kRangeLimited, 10, "yuv420p10le");
     model::HdrMetadataInfo hdr;
 
     videoeye::QcRuleEngine engine;
@@ -280,8 +278,7 @@ TEST(ColorHdrTest, WideGamutWithSdrTransferWarns) {
 
 TEST(ColorHdrTest, MatrixMismatchWarns) {
     // BT.2020 原色配 BT.709 矩阵
-    const model::ColorInfo color =
-        MakeColor(kPriBt2020, kTrcPq, kSpcBt709, kRangeLimited, 10, "yuv420p10le");
+    const model::ColorInfo color = MakeColor(kPriBt2020, kTrcPq, kSpcBt709, kRangeLimited, 10, "yuv420p10le");
     model::HdrMetadataInfo hdr;
     hdr.mastering_display = MakeMastering();
     hdr.content_light.present = true;
@@ -294,8 +291,8 @@ TEST(ColorHdrTest, MatrixMismatchWarns) {
 }
 
 TEST(ColorHdrTest, TotallyUnspecifiedMetadataIsReported) {
-    const model::ColorInfo color = MakeColor(kPriUnspecified, kTrcUnspecified, kSpcBt709,
-                                             kRangeUnspecified, 8, "yuv420p");
+    const model::ColorInfo color =
+        MakeColor(kPriUnspecified, kTrcUnspecified, kSpcBt709, kRangeUnspecified, 8, "yuv420p");
     model::HdrMetadataInfo hdr;
 
     videoeye::QcRuleEngine engine;
@@ -304,16 +301,14 @@ TEST(ColorHdrTest, TotallyUnspecifiedMetadataIsReported) {
     model::DiagnosticIssue issue;
     ASSERT_TRUE(HasIssue(report, "video.color.unspecified", &issue));
     EXPECT_EQ(issue.severity, model::IssueSeverity::Info);
-    EXPECT_EQ(issue.occurrence_count, 3);   // primaries / transfer / range
+    EXPECT_EQ(issue.occurrence_count, 3); // primaries / transfer / range
 }
 
 // ---------------- 4) full range vs limited range ----------------
 
 TEST(ColorHdrTest, FullAndLimitedRangeAreDistinguished) {
-    const model::ColorInfo limited =
-        MakeColor(kPriBt709, kTrcBt709, kSpcBt709, kRangeLimited, 8, "yuv420p");
-    const model::ColorInfo full =
-        MakeColor(kPriBt709, kTrcBt709, kSpcBt709, kRangeFull, 8, "yuv420p");
+    const model::ColorInfo limited = MakeColor(kPriBt709, kTrcBt709, kSpcBt709, kRangeLimited, 8, "yuv420p");
+    const model::ColorInfo full = MakeColor(kPriBt709, kTrcBt709, kSpcBt709, kRangeFull, 8, "yuv420p");
 
     EXPECT_EQ(limited.range, model::ColorRangeKind::Limited);
     EXPECT_EQ(full.range, model::ColorRangeKind::Full);
@@ -326,10 +321,8 @@ TEST(ColorHdrTest, FullAndLimitedRangeAreDistinguished) {
     // 两种都不应触发 range 冲突（像素格式没有隐含范围）
     model::HdrMetadataInfo hdr;
     videoeye::QcRuleEngine engine;
-    EXPECT_FALSE(HasIssue(engine.Evaluate(MakeResult(MakeAnalysis(limited, hdr))),
-                          "video.color.range_conflict"));
-    EXPECT_FALSE(HasIssue(engine.Evaluate(MakeResult(MakeAnalysis(full, hdr))),
-                          "video.color.range_conflict"));
+    EXPECT_FALSE(HasIssue(engine.Evaluate(MakeResult(MakeAnalysis(limited, hdr))), "video.color.range_conflict"));
+    EXPECT_FALSE(HasIssue(engine.Evaluate(MakeResult(MakeAnalysis(full, hdr))), "video.color.range_conflict"));
 }
 
 TEST(ColorHdrTest, YuvjPixelFormatImpliesFullRange) {
@@ -342,8 +335,7 @@ TEST(ColorHdrTest, YuvjPixelFormatImpliesFullRange) {
 
 TEST(ColorHdrTest, YuvjMarkedAsLimitedIsAConflict) {
     // yuvj420p 隐含 full range，容器却标了 Limited
-    const model::ColorInfo color =
-        MakeColor(kPriBt709, kTrcBt709, kSpcBt709, kRangeLimited, 8, "yuvj420p");
+    const model::ColorInfo color = MakeColor(kPriBt709, kTrcBt709, kSpcBt709, kRangeLimited, 8, "yuvj420p");
     model::HdrMetadataInfo hdr;
 
     videoeye::QcRuleEngine engine;
@@ -355,8 +347,7 @@ TEST(ColorHdrTest, YuvjMarkedAsLimitedIsAConflict) {
 }
 
 TEST(ColorHdrTest, RgbMarkedAsLimitedIsAConflict) {
-    model::ColorInfo color = MakeColor(kPriBt709, kTrcBt709, kSpcBt709, kRangeLimited, 8,
-                                       "rgb24", "");
+    model::ColorInfo color = MakeColor(kPriBt709, kTrcBt709, kSpcBt709, kRangeLimited, 8, "rgb24", "");
     color.pixel_format.rgb = true;
     model::HdrMetadataInfo hdr;
 
@@ -368,14 +359,13 @@ TEST(ColorHdrTest, RgbMarkedAsLimitedIsAConflict) {
 // ---------------- Dolby Vision ----------------
 
 TEST(ColorHdrTest, DolbyVisionWithoutCompatibilityLayerIsReported) {
-    const model::ColorInfo color =
-        MakeColor(kPriBt2020, kTrcPq, kSpcBt2020Ncl, kRangeLimited, 10, "yuv420p10le");
+    const model::ColorInfo color = MakeColor(kPriBt2020, kTrcPq, kSpcBt2020Ncl, kRangeLimited, 10, "yuv420p10le");
     model::HdrMetadataInfo hdr;
     hdr.dolby_vision.present = true;
     hdr.dolby_vision.profile = 5;
     hdr.dolby_vision.level = 6;
     hdr.dolby_vision.rpu_present = true;
-    hdr.dolby_vision.compatibility_id = 0;   // Profile 5：无 HDR10/SDR 兼容层
+    hdr.dolby_vision.compatibility_id = 0; // Profile 5：无 HDR10/SDR 兼容层
 
     ASSERT_EQ(model::ClassifyHdrFormat(color, hdr), model::HdrFormat::DolbyVision);
 

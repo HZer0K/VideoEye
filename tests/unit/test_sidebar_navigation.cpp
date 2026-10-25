@@ -47,8 +47,8 @@ QApplication* EnsureApp() {
 }
 
 // 造一个登记了导航属性的页面（与真实页面登记方式一致：setProperty）
-QWidget* MakePage(QStackedWidget* stack, const QString& page_id, const QString& title,
-                  const QString& group, int order, const QString& scope = QString()) {
+QWidget* MakePage(QStackedWidget* stack, const QString& page_id, const QString& title, const QString& group, int order,
+                  const QString& scope = QString()) {
     QWidget* page = new QWidget(stack);
     page->setProperty("pageId", page_id);
     page->setProperty("pageTitle", title);
@@ -62,13 +62,13 @@ bool HasStackIndex(QListWidget* sidebar, int row) {
     return sidebar->item(row)->data(Qt::UserRole).isValid();
 }
 
-}  // namespace
+} // namespace
 
 TEST(SidebarNavigationTests, CollectPageNavigationReadsWidgetProperties) {
     EnsureApp();
     QStackedWidget stack;
-    stack.addWidget(MakePage(&stack, QStringLiteral("overview"), QStringLiteral("总览"),
-                             QStringLiteral("overview"), 0));
+    stack.addWidget(
+        MakePage(&stack, QStringLiteral("overview"), QStringLiteral("总览"), QStringLiteral("overview"), 0));
     stack.addWidget(MakePage(&stack, QStringLiteral("bitrate"), QStringLiteral("码率与 GOP"),
                              QStringLiteral("full_quality"), 2, QStringLiteral("全文件")));
 
@@ -130,7 +130,7 @@ TEST(SidebarNavigationTests, ApplyNavigationRowsSelectsTheFirstPageItem) {
     second.stack_index = 1;
 
     ApplyNavigationRows(&sidebar, {header, first, second});
-    EXPECT_EQ(sidebar.currentRow(), 1);  // 跳过标题行
+    EXPECT_EQ(sidebar.currentRow(), 1); // 跳过标题行
 }
 
 TEST(SidebarNavigationTests, ApplyNavigationRowsEmitsOnlyForTheFinalSelection) {
@@ -147,21 +147,23 @@ TEST(SidebarNavigationTests, ApplyNavigationRowsEmitsOnlyForTheFinalSelection) {
 
     int emitted = 0;
     QVector<int> rows;
-    QObject::connect(&sidebar, &QListWidget::currentRowChanged,
-                     [&emitted, &rows](int row) { ++emitted; rows.append(row); });
+    QObject::connect(&sidebar, &QListWidget::currentRowChanged, [&emitted, &rows](int row) {
+        ++emitted;
+        rows.append(row);
+    });
     NavRow row;
     row.stack_index = 0;
     ApplyNavigationRows(&sidebar, {row, row});
     EXPECT_EQ(emitted, 1);
     ASSERT_EQ(rows.size(), 1);
-    EXPECT_EQ(rows.front(), 0);  // 落在第一个页面项上
+    EXPECT_EQ(rows.front(), 0); // 落在第一个页面项上
 }
 
 TEST(SidebarNavigationTests, ApplySidebarBadgesWritesAllThreeRoles) {
     EnsureApp();
     QStackedWidget stack;
-    stack.addWidget(MakePage(&stack, QStringLiteral("visual"), QStringLiteral("画面质检"),
-                             QStringLiteral("full_quality"), 0));
+    stack.addWidget(
+        MakePage(&stack, QStringLiteral("visual"), QStringLiteral("画面质检"), QStringLiteral("full_quality"), 0));
     QListWidget sidebar;
     NavRow row;
     row.stack_index = 0;
@@ -182,8 +184,8 @@ TEST(SidebarNavigationTests, ApplySidebarBadgesSkipsHeaderRows) {
     // 分组标题没有 UserRole，也不该去问 lookup（它的 pageId 无从谈起）
     EnsureApp();
     QStackedWidget stack;
-    stack.addWidget(MakePage(&stack, QStringLiteral("visual"), QStringLiteral("画面质检"),
-                             QStringLiteral("full_quality"), 0));
+    stack.addWidget(
+        MakePage(&stack, QStringLiteral("visual"), QStringLiteral("画面质检"), QStringLiteral("full_quality"), 0));
     QListWidget sidebar;
     NavRow header;
     header.text = QStringLiteral("全片质量");
@@ -203,8 +205,8 @@ TEST(SidebarNavigationTests, ApplySidebarBadgesClearsBadgeWhenPageHasNone) {
     // 扫描结束后 count 要回到 0 —— 写了就画，不写就留着上一次的数字。
     EnsureApp();
     QStackedWidget stack;
-    stack.addWidget(MakePage(&stack, QStringLiteral("visual"), QStringLiteral("画面质检"),
-                             QStringLiteral("full_quality"), 0));
+    stack.addWidget(
+        MakePage(&stack, QStringLiteral("visual"), QStringLiteral("画面质检"), QStringLiteral("full_quality"), 0));
     QListWidget sidebar;
     NavRow row;
     row.stack_index = 0;
@@ -224,10 +226,10 @@ TEST(SidebarNavigationTests, ApplySidebarBadgesClearsBadgeWhenPageHasNone) {
 TEST(SidebarNavigationTests, ApplySidebarBadgesSurvivesDesynchronizedStack) {
     // 侧栏项与 stack 不同步（换页 / 重建的窗口期）时不能解引用空页指针
     EnsureApp();
-    QStackedWidget stack;  // 空栈
+    QStackedWidget stack; // 空栈
     QListWidget sidebar;
     NavRow row;
-    row.stack_index = 5;  // 越界
+    row.stack_index = 5; // 越界
     ApplyNavigationRows(&sidebar, {row});
     ApplySidebarBadges(&sidebar, &stack, [](const QString&) { return SidebarBadge{}; });
     EXPECT_FALSE(sidebar.item(0)->data(kBadgeCountRole).isValid());
@@ -246,7 +248,7 @@ TEST(SidebarNavigationTests, SelectSidebarRowForStackIndexSkipsHeaderRows) {
     ApplyNavigationRows(&sidebar, {header, a, b});
 
     SelectSidebarRowForStackIndex(&sidebar, 1);
-    EXPECT_EQ(sidebar.currentRow(), 2);  // 行号 != 下标，只能反查
+    EXPECT_EQ(sidebar.currentRow(), 2); // 行号 != 下标，只能反查
 }
 
 TEST(SidebarNavigationTests, SelectSidebarRowForStackIndexDoesNotRetriggerNavigation) {
@@ -276,7 +278,8 @@ TEST(SidebarNavigationTests, DefaultNavGroupsCoverEveryRegisteredGroupId) {
     const auto groups = DefaultNavGroups();
     ASSERT_EQ(groups.size(), 5);
     QVector<QString> ids;
-    for (const auto& g : groups) ids.append(g.id);
+    for (const auto& g : groups)
+        ids.append(g.id);
     EXPECT_TRUE(ids.contains(QStringLiteral("overview")));
     EXPECT_TRUE(ids.contains(QStringLiteral("playback")));
     EXPECT_TRUE(ids.contains(QStringLiteral("file_parse")));

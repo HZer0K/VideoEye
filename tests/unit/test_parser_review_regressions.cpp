@@ -46,8 +46,7 @@ protected:
         static std::atomic<unsigned> serial{0};
         const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
         directory_ = std::filesystem::temp_directory_path() /
-                     ("videoeye-parser-review-" + std::to_string(stamp) + "-" +
-                      std::to_string(serial.fetch_add(1))) /
+                     ("videoeye-parser-review-" + std::to_string(stamp) + "-" + std::to_string(serial.fetch_add(1))) /
                      std::filesystem::u8path(u8"\u4e2d\u6587-\u89c6\u9891");
         ASSERT_TRUE(std::filesystem::create_directories(directory_));
     }
@@ -65,7 +64,7 @@ protected:
     }
     std::filesystem::path directory_;
 };
-}  // namespace
+} // namespace
 
 // ---------------------------------------------------------------------------
 // 时间轴：B 帧重排不是"PTS 非单调"
@@ -166,11 +165,9 @@ TEST_F(UnicodeFiles, SequentialReaderOpensUtf8Paths) {
 }
 
 TEST_F(UnicodeFiles, Mp4ParserAndProbeOpenUtf8Paths) {
-    const unsigned char bytes[] = {
-        0, 0, 0, 20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm',
-        0, 0, 0, 0, 'i', 's', 'o', 'm', 0, 0, 0, 8, 'm', 'o', 'o', 'v'};
-    const auto path = Write(u8"\u89c6\u9891.mp4",
-                            std::string(reinterpret_cast<const char*>(bytes), sizeof(bytes)));
+    const unsigned char bytes[] = {0, 0, 0,   20,  'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0,   0,
+                                   0, 0, 'i', 's', 'o', 'm', 0,   0,   0,   8,   'm', 'o', 'o', 'v'};
+    const auto path = Write(u8"\u89c6\u9891.mp4", std::string(reinterpret_cast<const char*>(bytes), sizeof(bytes)));
     EXPECT_EQ(ProbeFileHeader(path.u8string()).first_box_type, "ftyp");
     IsobmffFile parsed;
     ASSERT_TRUE(IsobmffParser::Parse(path.u8string(), parsed));
@@ -187,12 +184,10 @@ TEST_F(UnicodeFiles, ManifestSizeTextAndLineReadersOpenUtf8Paths) {
     ASSERT_TRUE(manifest::FileSizeOf(path.u8string(), size));
     EXPECT_EQ(size, static_cast<int64_t>(contents.size()));
     std::string text;
-    EXPECT_EQ(manifest::ReadManifestText(path.u8string(), {}, nullptr, text),
-              manifest::ManifestReadStatus::Ok);
+    EXPECT_EQ(manifest::ReadManifestText(path.u8string(), {}, nullptr, text), manifest::ManifestReadStatus::Ok);
     EXPECT_EQ(text, contents);
     std::vector<std::string> lines;
-    EXPECT_EQ(manifest::ReadManifestLines(path.u8string(), {}, nullptr, lines),
-              manifest::ManifestReadStatus::Ok);
+    EXPECT_EQ(manifest::ReadManifestLines(path.u8string(), {}, nullptr, lines), manifest::ManifestReadStatus::Ok);
     ASSERT_EQ(lines.size(), 2u);
     EXPECT_EQ(lines[1], "#EXT-X-ENDLIST");
 }

@@ -34,8 +34,7 @@ constexpr int kNoFfmpegErrorCode = -1;
 // 回调是可选的（批处理可能不关心进度），逐个判空再调用。
 void NotifyProgress(const AnalysisCallbacks& callbacks, double percent, const std::string& stage);
 void NotifyFailed(const AnalysisCallbacks& callbacks, const std::string& message);
-void NotifyFinished(const AnalysisCallbacks& callbacks, bool completed,
-                    const model::AnalysisResult& result);
+void NotifyFinished(const AnalysisCallbacks& callbacks, bool completed, const model::AnalysisResult& result);
 
 // 取消收尾：与 NotifyFailed 互斥的两条终态之一（另一条是 NotifyFinished(completed=true)）。
 // 以前取消信号是从「失败」分支里漏出去的，界面就会弹"文件损坏"这类文案 ——
@@ -57,11 +56,12 @@ void MarkFailed(model::AnalysisResult& result, const std::string& message);
 // return 路径，免得以后每加一条失败分支就漏一处赋值。
 class ResultSink {
 public:
-    ResultSink(model::AnalysisResult* out, const model::AnalysisResult* src) noexcept
-        : out_(out), src_(src) {}
+    ResultSink(model::AnalysisResult* out, const model::AnalysisResult* src) noexcept : out_(out), src_(src) {
+    }
 
     ~ResultSink() {
-        if (out_ != nullptr) *out_ = *src_;
+        if (out_ != nullptr)
+            *out_ = *src_;
     }
 
     ResultSink(const ResultSink&) = delete;
@@ -72,4 +72,4 @@ private:
     const model::AnalysisResult* src_;
 };
 
-}  // namespace videoeye
+} // namespace videoeye

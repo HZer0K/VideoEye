@@ -67,7 +67,7 @@ QString ExpandPath(const QString& raw) {
     return out;
 }
 
-}  // namespace
+} // namespace
 
 bool FfmpegToolLocator::IsExecutable(const QString& path) {
     if (path.isEmpty()) {
@@ -82,14 +82,14 @@ bool FfmpegToolLocator::IsExecutable(const QString& path) {
     // 文件属性反推出来的近似值，解压出来的 .exe 完全可能被判成"不可执行"。
     // 这里只要它是个可执行类型的文件就放行 —— 能不能真跑起来，交给 QProcess 报错。
     const QString suffix = info.suffix().toLower();
-    if (suffix == QLatin1String("exe") || suffix == QLatin1String("bat") ||
-        suffix == QLatin1String("cmd") || suffix == QLatin1String("com")) {
+    if (suffix == QLatin1String("exe") || suffix == QLatin1String("bat") || suffix == QLatin1String("cmd") ||
+        suffix == QLatin1String("com")) {
         return true;
     }
     return info.permission(QFile::ExeUser) || info.permission(QFile::ExeOwner);
 #else
-    return info.permission(QFile::ExeUser) || info.permission(QFile::ExeOwner) ||
-           info.permission(QFile::ExeGroup) || info.permission(QFile::ExeOther);
+    return info.permission(QFile::ExeUser) || info.permission(QFile::ExeOwner) || info.permission(QFile::ExeGroup) ||
+           info.permission(QFile::ExeOther);
 #endif
 }
 
@@ -115,31 +115,24 @@ QStringList FfmpegToolLocator::CommonSearchDirs() {
 #ifdef Q_OS_WIN
     // Windows 没有统一安装位置: 包管理器、手工解压、绿色版各有各的习惯。
     // 只列"真的有人这么装"的目录，别把整个 Program Files 扫一遍。
-    dirs << QStringLiteral("%ProgramFiles%\\ffmpeg\\bin")
-         << QStringLiteral("%ProgramFiles%\\ffmpeg")
+    dirs << QStringLiteral("%ProgramFiles%\\ffmpeg\\bin") << QStringLiteral("%ProgramFiles%\\ffmpeg")
          << QStringLiteral("%ProgramFiles(x86)%\\ffmpeg\\bin")
          << QStringLiteral("%LOCALAPPDATA%\\Programs\\ffmpeg\\bin")
          << QStringLiteral("%LOCALAPPDATA%\\Programs\\ffmpeg")
-         << QStringLiteral("%ProgramData%\\chocolatey\\bin")           // choco install ffmpeg
-         << QStringLiteral("%USERPROFILE%\\scoop\\apps\\ffmpeg\\current\\bin")  // scoop
-         << QStringLiteral("%ProgramFiles%\\Gyan\\ffmpeg\\bin")        // winget Gyan.FFmpeg
-         << QStringLiteral("C:\\ffmpeg\\bin")
-         << QStringLiteral("C:\\Program Files\\ffmpeg\\bin");
+         << QStringLiteral("%ProgramData%\\chocolatey\\bin")                   // choco install ffmpeg
+         << QStringLiteral("%USERPROFILE%\\scoop\\apps\\ffmpeg\\current\\bin") // scoop
+         << QStringLiteral("%ProgramFiles%\\Gyan\\ffmpeg\\bin")                // winget Gyan.FFmpeg
+         << QStringLiteral("C:\\ffmpeg\\bin") << QStringLiteral("C:\\Program Files\\ffmpeg\\bin");
 #elif defined(Q_OS_MACOS)
-    dirs << QStringLiteral("/opt/homebrew/bin")      // Apple Silicon 的 Homebrew
-         << QStringLiteral("/usr/local/bin")         // Intel 的 Homebrew / 手工安装
-         << QStringLiteral("/opt/local/bin")         // MacPorts
-         << QStringLiteral("/opt/homebrew/sbin")
-         << QStringLiteral("/usr/local/opt/ffmpeg/bin")
+    dirs << QStringLiteral("/opt/homebrew/bin") // Apple Silicon 的 Homebrew
+         << QStringLiteral("/usr/local/bin")    // Intel 的 Homebrew / 手工安装
+         << QStringLiteral("/opt/local/bin")    // MacPorts
+         << QStringLiteral("/opt/homebrew/sbin") << QStringLiteral("/usr/local/opt/ffmpeg/bin")
          << QStringLiteral("/Applications");
 #else
-    dirs << QStringLiteral("/usr/bin")
-         << QStringLiteral("/usr/local/bin")
-         << QStringLiteral("/snap/bin")
-         << QStringLiteral("/var/lib/flatpak/exports/bin")
-         << QStringLiteral("~/.local/bin")
-         << QStringLiteral("/opt/ffmpeg/bin")
-         << QStringLiteral("/usr/lib/ffmpeg");
+    dirs << QStringLiteral("/usr/bin") << QStringLiteral("/usr/local/bin") << QStringLiteral("/snap/bin")
+         << QStringLiteral("/var/lib/flatpak/exports/bin") << QStringLiteral("~/.local/bin")
+         << QStringLiteral("/opt/ffmpeg/bin") << QStringLiteral("/usr/lib/ffmpeg");
 #endif
     return dirs;
 }
@@ -231,8 +224,7 @@ FfmpegInstallGuide FfmpegToolLocator::InstallGuide() {
     guide.platform = PlatformName();
 
 #ifdef Q_OS_WIN
-    guide.headline =
-        QStringLiteral("Windows 不自带 ffmpeg。装一次即可，之后本页会自动找到它。");
+    guide.headline = QStringLiteral("Windows 不自带 ffmpeg。装一次即可，之后本页会自动找到它。");
     guide.package_commands = {
         QStringLiteral("winget install --id Gyan.FFmpeg -e"),
         QStringLiteral("scoop install ffmpeg"),
@@ -245,14 +237,12 @@ FfmpegInstallGuide FfmpegToolLocator::InstallGuide() {
         QStringLiteral("（可选）把 C:\\ffmpeg\\bin 加进系统 PATH 后重开本程序"),
         QStringLiteral("不想改 PATH 也行：点本页的「浏览…」直接选中 ffmpeg.exe，路径会被记住"),
     };
-    guide.note = QStringLiteral(
-        "VideoEye 的 Windows 安装包若随包分发了 ffmpeg.exe，会自动优先用它，无需另外安装。");
+    guide.note = QStringLiteral("VideoEye 的 Windows 安装包若随包分发了 ffmpeg.exe，会自动优先用它，无需另外安装。");
 #elif defined(Q_OS_MACOS)
-    guide.headline =
-        QStringLiteral("macOS 不自带 ffmpeg。用 Homebrew 装最省事，装完本页会自动在两个常见目录里找到。");
+    guide.headline = QStringLiteral("macOS 不自带 ffmpeg。用 Homebrew 装最省事，装完本页会自动在两个常见目录里找到。");
     guide.package_commands = {
         QStringLiteral("brew install ffmpeg"),
-        QStringLiteral("sudo port install ffmpeg"),  // MacPorts 备选
+        QStringLiteral("sudo port install ffmpeg"), // MacPorts 备选
     };
     guide.download_url = QStringLiteral("https://ffmpeg.org/download.html#build-mac");
     guide.manual_steps = {
@@ -261,16 +251,14 @@ FfmpegInstallGuide FfmpegToolLocator::InstallGuide() {
         QStringLiteral("macOS 会拦截未签名的下载程序：首次运行如被 Gatekeeper 拦下，"
                        "在「系统设置 → 隐私与安全性」里点「仍要打开」"),
     };
-    guide.note = QStringLiteral(
-        "Homebrew 装的 ffmpeg 依赖一堆 dylib，别直接把它拷进别的目录使用。");
+    guide.note = QStringLiteral("Homebrew 装的 ffmpeg 依赖一堆 dylib，别直接把它拷进别的目录使用。");
 #else
-    guide.headline =
-        QStringLiteral("Linux 上 ffmpeg 由发行版提供，一条命令就能装好。");
+    guide.headline = QStringLiteral("Linux 上 ffmpeg 由发行版提供，一条命令就能装好。");
     guide.package_commands = {
-        QStringLiteral("sudo apt install -y ffmpeg"),        // Debian / Ubuntu
-        QStringLiteral("sudo dnf install -y ffmpeg-free"),   // Fedora
-        QStringLiteral("sudo pacman -S ffmpeg"),             // Arch
-        QStringLiteral("sudo zypper install -y ffmpeg"),     // openSUSE
+        QStringLiteral("sudo apt install -y ffmpeg"),      // Debian / Ubuntu
+        QStringLiteral("sudo dnf install -y ffmpeg-free"), // Fedora
+        QStringLiteral("sudo pacman -S ffmpeg"),           // Arch
+        QStringLiteral("sudo zypper install -y ffmpeg"),   // openSUSE
     };
     guide.download_url = QStringLiteral("https://ffmpeg.org/download.html#build-linux");
     guide.manual_steps = {
@@ -278,8 +266,7 @@ FfmpegInstallGuide FfmpegToolLocator::InstallGuide() {
         QStringLiteral("需要新版本可下载静态构建（johnvansickle.com），解压后在本页「浏览…」指定路径"),
         QStringLiteral("用 AppImage / Flatpak / Snap 安装的话路径不在标准位置，必须手动指定"),
     };
-    guide.note = QStringLiteral(
-        "Linux 版刻意不随包分发 ffmpeg：复制进安装树会和系统的 libav* 版本打架。");
+    guide.note = QStringLiteral("Linux 版刻意不随包分发 ffmpeg：复制进安装树会和系统的 libav* 版本打架。");
 #endif
 
     return guide;
@@ -300,5 +287,5 @@ QString FfmpegToolLocator::ParseVersionLine(const QString& version_output) {
     return first_line.isEmpty() ? QString() : first_line;
 }
 
-}  // namespace ffmpeg
-}  // namespace videoeye
+} // namespace ffmpeg
+} // namespace videoeye

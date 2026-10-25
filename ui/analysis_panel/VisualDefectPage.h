@@ -13,9 +13,9 @@
 //   - SeekRequested()               点缺陷行跳到时间点，转发给播放器
 // 页面本体就是 QWidget（外部 QStackedWidget 的一页），不需要再包一层 tab widget。
 
-#include <QWidget>
 #include <QImage>
 #include <QString>
+#include <QWidget>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -51,23 +51,30 @@ public:
     void AppendDefect(model::VisualDefect defect);
 
     // 供测试/诊断观察：是否发生过证据图释放（决定"无证据图"的提示文案）
-    bool evidence_trimmed() const { return evidence_trimmed_; }
+    bool evidence_trimmed() const {
+        return evidence_trimmed_;
+    }
 
     // 播放器回报的统计（已分析帧数 / 因压力丢弃的分析帧数 / 有效画面区域）
-    void ApplyStats(int analyzed_frames, int dropped_frames,
-                    const model::ActivePictureArea& effective_area);
+    void ApplyStats(int analyzed_frames, int dropped_frames, const model::ActivePictureArea& effective_area);
 
-    bool HasPending() const { return dirty_; }
+    bool HasPending() const {
+        return dirty_;
+    }
     void FlushPending();
 
     void ResetAll();
 
-    const model::VisualDefectOptions& options() const { return options_; }
+    const model::VisualDefectOptions& options() const {
+        return options_;
+    }
 
     // 缺陷记录（唯一数据源）。外露给 CSV 导出之外的两件事：
     // ① 报告页要按缺陷类型汇总；② 测试要验证"证据图限额"真的释放了内存 ——
     //    内存这件事只能从外部观察到"第 N 条还有没有图"，页面自己说不算数。
-    const std::vector<model::VisualDefect>& DefectRecords() const { return records_; }
+    const std::vector<model::VisualDefect>& DefectRecords() const {
+        return records_;
+    }
 
 signals:
     void FeatureToggled(bool enabled);

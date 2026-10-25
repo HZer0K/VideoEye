@@ -55,7 +55,8 @@ struct AppScope {
         }
     }
     ~AppScope() {
-        if (owned) delete app;
+        if (owned)
+            delete app;
     }
     AppScope(const AppScope&) = delete;
     AppScope& operator=(const AppScope&) = delete;
@@ -66,16 +67,11 @@ int SignalIndex(const QMetaObject& mo, const char* signature) {
 }
 
 const char* const kExportSignatures[] = {
-    "VideoFrameExportStarted(int)",
-    "VideoFrameExportProgress(int)",
-    "VideoFrameExportFinished(QString)",
-    "VideoFrameExportCanceled(int,QString)",
-    "VideoFrameExportError(QString)",
-    "MediaExportStarted(qint64)",
-    "MediaExportProgress(int)",
-    "MediaExportFinished(QString)",
-    "MediaExportCanceled(QString)",
-    "MediaExportError(QString)",
+    "VideoFrameExportStarted(int)",      "VideoFrameExportProgress(int)",
+    "VideoFrameExportFinished(QString)", "VideoFrameExportCanceled(int,QString)",
+    "VideoFrameExportError(QString)",    "MediaExportStarted(qint64)",
+    "MediaExportProgress(int)",          "MediaExportFinished(QString)",
+    "MediaExportCanceled(QString)",      "MediaExportError(QString)",
 };
 
 const char* const kContainerSignatures[] = {
@@ -120,7 +116,7 @@ bool PumpUntil(const std::function<bool()>& done, int timeout_ms) {
     return done();
 }
 
-}  // namespace
+} // namespace
 
 // ---------------------------------------------------------------------------
 // 1. 门面不再背这十条信号（否则等于白搬一趟）
@@ -137,8 +133,7 @@ TEST(ExportBusTests, FacadeDoesNotDeclareExportSignalsAnymore) {
 // ---------------------------------------------------------------------------
 TEST(ExportBusTests, BusDeclaresTheFullExportContract) {
     for (const char* sig : kExportSignatures) {
-        EXPECT_GE(SignalIndex(ExportBus::staticMetaObject, sig), 0)
-            << "ExportBus 缺少导出信号 " << sig;
+        EXPECT_GE(SignalIndex(ExportBus::staticMetaObject, sig), 0) << "ExportBus 缺少导出信号 " << sig;
     }
 }
 
@@ -167,13 +162,11 @@ TEST(ExportBusTests, ControllerEmitsErrorThroughBusWhenNoMediaOpened) {
     int started_count = 0;
     QString last_error;
 
-    QObject::connect(&player.export_bus(), &ExportBus::VideoFrameExportError, &player,
-                     [&](const QString& msg) {
-                         ++error_count;
-                         last_error = msg;
-                     });
-    QObject::connect(&player.export_bus(), &ExportBus::VideoFrameExportStarted, &player,
-                     [&](int) { ++started_count; });
+    QObject::connect(&player.export_bus(), &ExportBus::VideoFrameExportError, &player, [&](const QString& msg) {
+        ++error_count;
+        last_error = msg;
+    });
+    QObject::connect(&player.export_bus(), &ExportBus::VideoFrameExportStarted, &player, [&](int) { ++started_count; });
 
     player.StartVideoFrameExport(QDir::tempPath(), "jpg");
 
@@ -189,8 +182,7 @@ TEST(ContainerBusTests, FacadeDoesNotDeclareContainerSignalsAnymore) {
     for (const char* sig : kContainerSignatures) {
         EXPECT_EQ(-1, SignalIndex(MediaPlayer::staticMetaObject, sig))
             << "MediaPlayer 还在声明容器信号 " << sig << " —— 它该在 ContainerBus 上";
-        EXPECT_GE(SignalIndex(ContainerBus::staticMetaObject, sig), 0)
-            << "ContainerBus 缺少信号 " << sig;
+        EXPECT_GE(SignalIndex(ContainerBus::staticMetaObject, sig), 0) << "ContainerBus 缺少信号 " << sig;
     }
 }
 
@@ -233,8 +225,7 @@ TEST(AnalysisBusTests, FacadeDoesNotDeclareAnalysisSignalsAnymore) {
     for (const char* sig : kAnalysisSignatures) {
         EXPECT_EQ(-1, SignalIndex(MediaPlayer::staticMetaObject, sig))
             << "MediaPlayer 还在声明分析信号 " << sig << " —— 它该在 AnalysisBus 上";
-        EXPECT_GE(SignalIndex(AnalysisBus::staticMetaObject, sig), 0)
-            << "AnalysisBus 缺少信号 " << sig;
+        EXPECT_GE(SignalIndex(AnalysisBus::staticMetaObject, sig), 0) << "AnalysisBus 缺少信号 " << sig;
     }
 }
 

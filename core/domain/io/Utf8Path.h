@@ -21,7 +21,8 @@
 namespace videoeye {
 
 inline std::filesystem::path ToNativePath(const std::string& utf8_path) {
-    if (utf8_path.empty()) return std::filesystem::path();
+    if (utf8_path.empty())
+        return std::filesystem::path();
     try {
         return std::filesystem::u8path(utf8_path);
     } catch (const std::filesystem::filesystem_error&) {
@@ -29,4 +30,4 @@ inline std::filesystem::path ToNativePath(const std::string& utf8_path) {
     }
 }
 
-}  // namespace videoeye
+} // namespace videoeye

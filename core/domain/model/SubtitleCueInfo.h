@@ -41,23 +41,23 @@ enum class SubtitleFormat {
 // 字幕承载方式
 enum class SubtitleKind {
     Unknown = 0,
-    Text,            // 文本字幕（能直接解析文本与时长）
-    Bitmap,          // 图形字幕（需解码位图，第二阶段做预览）
-    ClosedCaption,   // CEA-608/708 之类的隐藏字幕数据流
+    Text,          // 文本字幕（能直接解析文本与时长）
+    Bitmap,        // 图形字幕（需解码位图，第二阶段做预览）
+    ClosedCaption, // CEA-608/708 之类的隐藏字幕数据流
 };
 
 // 单条 cue 的问题类型。顺序即 UI 表格里的默认顺序。
 enum class SubtitleIssueType {
-    EmptyText = 0,     // 空字幕（无可见文本）
-    Overlap,           // 与上一条 cue 时间重叠
-    TooShort,          // 停留时间过短（来不及读）
-    TooLong,           // 停留时间过长（通常意味着忘记结束）
-    NonMonotonic,      // 时间倒序（开始时间早于上一条）
-    InvalidDuration,   // end <= start
-    TooFast,           // 阅读速度过快（字符/秒）
-    OutOfRange,        // 超出媒体时长
-    MissingLanguage,   // 流级：缺少 language tag
-    MissingHandler,    // 流级：缺少 handler name（MP4 hdlr）
+    EmptyText = 0,   // 空字幕（无可见文本）
+    Overlap,         // 与上一条 cue 时间重叠
+    TooShort,        // 停留时间过短（来不及读）
+    TooLong,         // 停留时间过长（通常意味着忘记结束）
+    NonMonotonic,    // 时间倒序（开始时间早于上一条）
+    InvalidDuration, // end <= start
+    TooFast,         // 阅读速度过快（字符/秒）
+    OutOfRange,      // 超出媒体时长
+    MissingLanguage, // 流级：缺少 language tag
+    MissingHandler,  // 流级：缺少 handler name（MP4 hdlr）
 };
 
 // 一条字幕 problem（QC 报告里以 category=Metadata 呈现）
@@ -65,28 +65,30 @@ struct SubtitleIssue {
     SubtitleIssueType type = SubtitleIssueType::EmptyText;
     IssueSeverity severity = IssueSeverity::Warning;
     int stream_index = -1;
-    int cue_index = -1;              // 流内 cue 序号（-1 = 流级问题）
+    int cue_index = -1; // 流内 cue 序号（-1 = 流级问题）
     double start_seconds = -1.0;
     double end_seconds = -1.0;
-    std::string detail;              // 中文简述，含关键数值
+    std::string detail; // 中文简述，含关键数值
 
-    bool IsStreamLevel() const { return cue_index < 0; }
+    bool IsStreamLevel() const {
+        return cue_index < 0;
+    }
 };
 
 // 一条字幕 cue
 struct SubtitleCue {
-    int index = 0;                   // 流内序号（0-based，与 issues.cue_index 对应）
+    int index = 0; // 流内序号（0-based，与 issues.cue_index 对应）
     int stream_index = -1;
-    int cue_number = -1;             // SRT 里的序号列（-1 = 格式本身没有）
+    int cue_number = -1; // SRT 里的序号列（-1 = 格式本身没有）
     double start_seconds = 0.0;
     double end_seconds = 0.0;
-    double duration_seconds = 0.0;   // end - start（<=0 表示未给出结束时间）
+    double duration_seconds = 0.0; // end - start（<=0 表示未给出结束时间）
 
-    std::string text;                // 展示用纯文本（已剥离 ASS 覆盖指令 / WebVTT 标签）
-    std::string raw_text;            // 原始文本（可含标签）
-    std::string language;            // ISO 639 语言 tag（可能为空）
+    std::string text;     // 展示用纯文本（已剥离 ASS 覆盖指令 / WebVTT 标签）
+    std::string raw_text; // 原始文本（可含标签）
+    std::string language; // ISO 639 语言 tag（可能为空）
     SubtitleFormat format = SubtitleFormat::Unknown;
-    size_t char_count = 0;           // 可见字符数（用于阅读速度）
+    size_t char_count = 0; // 可见字符数（用于阅读速度）
 
     // 隐藏字幕专用：这条 cue 来自哪个 608 通道（1..4）或 708 服务（1..63）。
     // 其它格式恒为 0。bilingual 判定、UI 分组、报告里的"服务层"都靠这两个字段，
@@ -94,10 +96,12 @@ struct SubtitleCue {
     int caption_channel = 0;
     bool caption_708 = false;
 
-    bool empty = false;              // 剥离标签后没有任何可见字符
+    bool empty = false; // 剥离标签后没有任何可见字符
     bool has_issue = false;
 
-    double Duration() const { return end_seconds - start_seconds; }
+    double Duration() const {
+        return end_seconds - start_seconds;
+    }
     // 阅读速度（字符/秒）；时长为 0 时返回 -1（无意义）
     double CharsPerSecond() const;
 };
@@ -107,17 +111,17 @@ struct SubtitleStreamInfo {
     int stream_index = -1;
     SubtitleFormat format = SubtitleFormat::Unknown;
     SubtitleKind kind = SubtitleKind::Unknown;
-    std::string codec_name;     // avcodec_get_name() 的结果
-    std::string codec_tag;      // MP4 的 'tx3g' / 'c608' 等四字符 tag
-    std::string language;       // language tag
-    std::string title;          // metadata title
-    std::string handler_name;   // MP4 hdlr 里的 handler name
+    std::string codec_name;   // avcodec_get_name() 的结果
+    std::string codec_tag;    // MP4 的 'tx3g' / 'c608' 等四字符 tag
+    std::string language;     // language tag
+    std::string title;        // metadata title
+    std::string handler_name; // MP4 hdlr 里的 handler name
     bool default_disposition = false;
     bool forced = false;
     bool hearing_impaired = false;
-    bool burned_in_note = false;  // 占位：容器标记了"已烧录"的旁注
+    bool burned_in_note = false; // 占位：容器标记了"已烧录"的旁注
 
-    int cue_count = 0;            // 解析出的 cue 数
+    int cue_count = 0; // 解析出的 cue 数
     int64_t packet_count = 0;
     int64_t byte_count = 0;
     double start_seconds = 0.0;
@@ -125,7 +129,7 @@ struct SubtitleStreamInfo {
 
     // 文本字幕是否已真正解析出 cue（图形字幕为 false，只给 metadata）
     bool parsed = false;
-    std::string note;             // 降级/来源说明（如"图形字幕仅输出 metadata"）
+    std::string note; // 降级/来源说明（如"图形字幕仅输出 metadata"）
 
     // 隐藏字幕（CEA-608/708）的服务层统计。只有 ClosedCaption 流会填：
     //   cc608 —— 出现过哪些 CC1..CC4 通道、各模式次数、XDS 条数；
@@ -135,7 +139,9 @@ struct SubtitleStreamInfo {
     Cea608Stats cc608;
     Cea708Stats cc708;
 
-    bool IsText() const { return kind == SubtitleKind::Text; }
+    bool IsText() const {
+        return kind == SubtitleKind::Text;
+    }
 };
 
 // 一次字幕分析的结果
@@ -151,7 +157,9 @@ struct SubtitleAnalysisResult {
     std::string error_message;
 
     int CountIssues(SubtitleIssueType type) const;
-    bool HasIssue() const { return !issues.empty(); }
+    bool HasIssue() const {
+        return !issues.empty();
+    }
     // 只统计 Warning 及以上
     int CountWarnings() const;
 };
@@ -165,5 +173,5 @@ const char* ToString(SubtitleKind kind);
 const char* SubtitleFormatCode(SubtitleFormat format);
 const char* SubtitleIssueCode(SubtitleIssueType type);
 
-}  // namespace model
-}  // namespace videoeye
+} // namespace model
+} // namespace videoeye

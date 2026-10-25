@@ -21,8 +21,8 @@ struct TaskManager::Slot {
     std::atomic<TaskState> state{TaskState::Idle};
     std::shared_ptr<std::atomic<bool>> cancel{std::make_shared<std::atomic<bool>>(false)};
     TaskKind kind = TaskKind::Cooperative;
-    std::thread thread;        // 仅 Run() 使用
-    std::future<void> done;    // 该线程真正跑完时置位
+    std::thread thread;     // 仅 Run() 使用
+    std::future<void> done; // 该线程真正跑完时置位
 };
 
 // 受管线程可能比 TaskManager 活得久(BlockingIo 任务被放弃时), 所以凡是线程结束后还要
@@ -59,11 +59,15 @@ void SetDoneOnce(std::shared_ptr<std::promise<void>>& p) {
 // 少置这一次位会让 WaitForAll 把"已经跑完"误判成"还在跑", 白白多等一整个预算。
 class SignalOnExit {
 public:
-    explicit SignalOnExit(std::shared_ptr<std::promise<void>> p) : p_(std::move(p)) {}
-    SignalOnExit(SignalOnExit&& other) noexcept : p_(std::move(other.p_)) {}
+    explicit SignalOnExit(std::shared_ptr<std::promise<void>> p) : p_(std::move(p)) {
+    }
+    SignalOnExit(SignalOnExit&& other) noexcept : p_(std::move(other.p_)) {
+    }
     SignalOnExit(const SignalOnExit&) = delete;
     SignalOnExit& operator=(const SignalOnExit&) = delete;
-    ~SignalOnExit() { SetDoneOnce(p_); }
+    ~SignalOnExit() {
+        SetDoneOnce(p_);
+    }
 
 private:
     std::shared_ptr<std::promise<void>> p_;
@@ -80,7 +84,8 @@ private:
 // 捕获 Core 的 shared_ptr 与任务体, 脱离后仍能自己跑到结束, 不碰 TaskManager。
 class ThreadGuard {
 public:
-    explicit ThreadGuard(std::thread t) : t_(std::move(t)) {}
+    explicit ThreadGuard(std::thread t) : t_(std::move(t)) {
+    }
     ThreadGuard(const ThreadGuard&) = delete;
     ThreadGuard& operator=(const ThreadGuard&) = delete;
     ~ThreadGuard() {
@@ -88,7 +93,9 @@ public:
             t_.detach();
     }
     // 登记成功: 交出所有权, 守卫不再处置它。
-    std::thread Release() { return std::move(t_); }
+    std::thread Release() {
+        return std::move(t_);
+    }
 
 private:
     std::thread t_;
@@ -101,8 +108,7 @@ private:
 // ---------------------------------------------------------------------------
 
 TaskManager::TaskManager(std::size_t max_concurrent)
-    : max_concurrent_(max_concurrent > 0 ? max_concurrent : 1),
-      core_(std::make_shared<Core>()) {
+    : max_concurrent_(max_concurrent > 0 ? max_concurrent : 1), core_(std::make_shared<Core>()) {
 }
 
 TaskManager::~TaskManager() {
@@ -182,26 +188,28 @@ TaskId TaskManager::Run(const std::string& slot, std::function<void(TaskId, Canc
     if (!body) {
         // 没有任务体却有 id: 直接登记再立刻记失败, 别把 slot 挂在 Running 上
         const TaskId id = Begin(slot, wait_for_previous_ms, kind);
-        if (id != 0) EndTask(*core_, slot, id, TaskState::Failed);
+        if (id != 0)
+            EndTask(*core_, slot, id, TaskState::Failed);
         return id;
     }
     // 转交给带返回值的版本: 那边才是真正的实现, 免得两份线程启动逻辑各错各的。
-    return RunWithResult(slot,
-                         [body = std::move(body)](TaskId id, CancelToken token) {
-                             body(id, token);
-                             return TaskState::Succeeded;
-                         },
-                         wait_for_previous_ms, kind);
+    return RunWithResult(
+        slot,
+        [body = std::move(body)](TaskId id, CancelToken token) {
+            body(id, token);
+            return TaskState::Succeeded;
+        },
+        wait_for_previous_ms, kind);
 }
 
-TaskId TaskManager::RunWithResult(const std::string& slot,
-                                  std::function<TaskState(TaskId, CancelToken)> body,
+TaskId TaskManager::RunWithResult(const std::string& slot, std::function<TaskState(TaskId, CancelToken)> body,
                                   int wait_for_previous_ms, TaskKind kind) {
     // 一次锁内拿到完整句柄: id 与取消令牌必然属于同一个任务。
     const TaskHandle handle = BeginHandle(slot, wait_for_previous_ms, kind);
     const TaskId id = handle.id;
     if (id == 0 || !body) {
-        if (id != 0) EndTask(*core_, slot, id, TaskState::Failed);
+        if (id != 0)
+            EndTask(*core_, slot, id, TaskState::Failed);
         return id;
     }
 
@@ -228,32 +236,30 @@ TaskId TaskManager::RunWithResult(const std::string& slot,
         // worker **不能**捕获 this: BlockingIo 任务在关闭时可能被放弃(detach),
         // 那种情况下 TaskManager 会先于线程析构, 任何对 this 的访问都是悬空的。
         // Core 用 shared_ptr 按值捕获, 由线程自己保活到跑完为止。
-        std::thread worker([st = core_, slot, id, kind,
-                            body = std::move(body),
-                            cancel = std::move(cancel),
-                            done_sig]() mutable {
-            SignalOnExit signal(done_sig);
-            TaskState terminal = TaskState::Succeeded;
-            try {
-                terminal = body(id, CancelToken(cancel));
-            } catch (const std::exception& e) {
-                LOG_ERROR("后台任务异常终止 [" + slot + "]: " + std::string(e.what()));
-                terminal = TaskState::Failed;
-            } catch (...) {
-                LOG_ERROR("后台任务异常终止 [" + slot + "]: 未知异常");
-                terminal = TaskState::Failed;
-            }
-            // 任务体返回过程态属于违约(等于没给结论): 按失败记, 不能让 slot 挂在 Running 上。
-            if (!IsTerminalState(terminal)) {
-                LOG_ERROR("后台任务返回了非终态 [" + slot + "], 按失败处理");
-                terminal = TaskState::Failed;
-            }
-            // 已被取消 / 被新任务取代时, 终态按 Canceled 记, 避免把"被丢弃"报成成功
-            if (terminal == TaskState::Succeeded && cancel && cancel->load(std::memory_order_acquire)) {
-                terminal = TaskState::Canceled;
-            }
-            EndTask(*st, slot, id, terminal);
-        });
+        std::thread worker(
+            [st = core_, slot, id, kind, body = std::move(body), cancel = std::move(cancel), done_sig]() mutable {
+                SignalOnExit signal(done_sig);
+                TaskState terminal = TaskState::Succeeded;
+                try {
+                    terminal = body(id, CancelToken(cancel));
+                } catch (const std::exception& e) {
+                    LOG_ERROR("后台任务异常终止 [" + slot + "]: " + std::string(e.what()));
+                    terminal = TaskState::Failed;
+                } catch (...) {
+                    LOG_ERROR("后台任务异常终止 [" + slot + "]: 未知异常");
+                    terminal = TaskState::Failed;
+                }
+                // 任务体返回过程态属于违约(等于没给结论): 按失败记, 不能让 slot 挂在 Running 上。
+                if (!IsTerminalState(terminal)) {
+                    LOG_ERROR("后台任务返回了非终态 [" + slot + "], 按失败处理");
+                    terminal = TaskState::Failed;
+                }
+                // 已被取消 / 被新任务取代时, 终态按 Canceled 记, 避免把"被丢弃"报成成功
+                if (terminal == TaskState::Succeeded && cancel && cancel->load(std::memory_order_acquire)) {
+                    terminal = TaskState::Canceled;
+                }
+                EndTask(*st, slot, id, terminal);
+            });
         // 从这一行起线程已经在跑了: 交给守卫, 保证任何异常路径都不会让它 joinable 着析构。
         ThreadGuard guard(std::move(worker));
 
@@ -271,13 +277,13 @@ TaskId TaskManager::RunWithResult(const std::string& slot,
             // joinable 的线程析构 —— std::thread 的析构直接 std::terminate(), 连日志都
             // 来不及打。现在前两步仍可能抛, 但那时线程还在 guard 手里(异常时 detach),
             // 容器与 orphan_count 也都还没被改动。
-            OwnedThread orphan;                            // 不含线程
+            OwnedThread orphan; // 不含线程
             orphan.kind = kind;
             orphan.id = id;
-            orphan.slot = slot;                            // 可能抛(bad_alloc)
+            orphan.slot = slot; // 可能抛(bad_alloc)
             orphan.done = std::move(finished);
-            orphans_.push_back(std::move(orphan));          // 可能抛(扩容); 抛时元素未被改动
-            orphans_.back().thread = guard.Release();       // noexcept: 交出所有权
+            orphans_.push_back(std::move(orphan));    // 可能抛(扩容); 抛时元素未被改动
+            orphans_.back().thread = guard.Release(); // noexcept: 交出所有权
             ++core_->orphan_count;
         }
     } catch (const std::exception& e) {
@@ -290,20 +296,17 @@ TaskId TaskManager::RunWithResult(const std::string& slot,
     return id;
 }
 
-TaskId TaskManager::RunBlockingIo(const std::string& slot,
-                                  std::function<void(TaskId, CancelToken)> body,
+TaskId TaskManager::RunBlockingIo(const std::string& slot, std::function<void(TaskId, CancelToken)> body,
                                   int wait_for_previous_ms) {
     return Run(slot, std::move(body), wait_for_previous_ms, TaskKind::BlockingIo);
 }
 
-TaskId TaskManager::RunBlockingIoWithResult(const std::string& slot,
-                                            std::function<TaskState(TaskId, CancelToken)> body,
+TaskId TaskManager::RunBlockingIoWithResult(const std::string& slot, std::function<TaskState(TaskId, CancelToken)> body,
                                             int wait_for_previous_ms) {
     return RunWithResult(slot, std::move(body), wait_for_previous_ms, TaskKind::BlockingIo);
 }
 
-TaskHandle TaskManager::BeginHandle(const std::string& slot, int wait_for_previous_ms,
-                                    TaskKind kind) {
+TaskHandle TaskManager::BeginHandle(const std::string& slot, int wait_for_previous_ms, TaskKind kind) {
     Slot* s = nullptr;
     {
         std::lock_guard<std::mutex> lk(core_->mutex);
@@ -344,13 +347,13 @@ TaskHandle TaskManager::BeginHandle(const std::string& slot, int wait_for_previo
                 // 部分(字符串拷贝 / 容器扩容)全部做完, 最后一步才把线程**无异常地**搬进来。
                 // 这里比那边还要紧一点 —— 一旦在 s->thread 已被搬空之后抛异常, 这条线程
                 // 就既不在 slot 上也不在孤儿表里, 临时对象析构时直接 std::terminate()。
-                OwnedThread orphan;                            // 不含线程
+                OwnedThread orphan; // 不含线程
                 orphan.kind = s->kind;
                 orphan.id = s->current_id.load(std::memory_order_acquire);
-                orphan.slot = slot;                            // 可能抛(bad_alloc)
+                orphan.slot = slot; // 可能抛(bad_alloc)
                 orphan.done = std::move(s->done);
-                orphans_.push_back(std::move(orphan));          // 可能抛(扩容)
-                orphans_.back().thread = std::move(s->thread);  // noexcept: 交出所有权
+                orphans_.push_back(std::move(orphan));         // 可能抛(扩容)
+                orphans_.back().thread = std::move(s->thread); // noexcept: 交出所有权
                 ++core_->orphan_count;
             }
             s->done = std::future<void>();
@@ -367,10 +370,10 @@ TaskHandle TaskManager::BeginHandle(const std::string& slot, int wait_for_previo
         // 句柄的全部字段必须在**写入 slot 之前**构造完成: 字符串拷贝与 make_shared 都可能
         // 抛, 而 s->current_id / s->cancel 一旦写上, 这个任务就已经"存在于 slot 上"了 ——
         // 此时若抛异常, 调用方拿不到句柄, 却留下一个没有归属者的 Running 任务。
-        handle.slot = slot;                                                       // 可能抛
+        handle.slot = slot; // 可能抛
         handle.kind = kind;
-        handle.cancel = CancelToken(std::make_shared<std::atomic<bool>>(false));  // 可能抛
-        handle.id = ++core_->next_id;   // 锁内取值: 解锁后别人会推进 current_id
+        handle.cancel = CancelToken(std::make_shared<std::atomic<bool>>(false)); // 可能抛
+        handle.id = ++core_->next_id; // 锁内取值: 解锁后别人会推进 current_id
 
         s->kind = kind;
         s->cancel = handle.cancel.flag();
@@ -493,10 +496,10 @@ bool TaskManager::WaitForIdle(const std::string& slot, int timeout_ms) {
 }
 
 int TaskManager::RemainingMs(std::chrono::steady_clock::time_point deadline, bool bounded) {
-    if (!bounded) return -1;
-    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
-                          deadline - std::chrono::steady_clock::now())
-                          .count();
+    if (!bounded)
+        return -1;
+    const auto left =
+        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
     return left > 0 ? static_cast<int>(left) : 0;
 }
 
@@ -504,8 +507,7 @@ void TaskManager::WaitForAll(int timeout_ms) {
     // timeout_ms 是**总预算**: 既不是每个 slot 各等一份, 也不是每个阶段各等一份,
     // 而是从进入到返回的全部时间。N 个 slot 最坏也只等 timeout_ms。
     const bool bounded = timeout_ms >= 0;
-    const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::milliseconds(bounded ? timeout_ms : 0);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(bounded ? timeout_ms : 0);
 
     // --- 阶段一: 等终态 ---
     std::vector<std::string> names;
@@ -518,7 +520,7 @@ void TaskManager::WaitForAll(int timeout_ms) {
     for (const auto& name : names) {
         WaitForIdle(name, RemainingMs(deadline, bounded));
         if (bounded && RemainingMs(deadline, bounded) <= 0)
-            break;   // 预算用完: 剩下的 slot 交给下面的强制收尾
+            break; // 预算用完: 剩下的 slot 交给下面的强制收尾
     }
 
     // --- 阶段二: 回收受管线程 ---
@@ -536,12 +538,12 @@ void TaskManager::WaitForAll(int timeout_ms) {
                 // 与登记路径同一套两阶段写法: 线程所有权最后一步才转移。写成
                 // push_back(OwnedThread{..., std::move(s->thread), ...}) 的话, 扩容一失败
                 // 那个临时对象就带着 joinable 的线程析构 —— 直接 std::terminate()。
-                OwnedThread adopted;                        // 不含线程
+                OwnedThread adopted; // 不含线程
                 adopted.kind = s->kind;
                 adopted.id = s->current_id.load(std::memory_order_acquire);
-                adopted.slot = kv.first;                    // 可能抛(bad_alloc)
+                adopted.slot = kv.first; // 可能抛(bad_alloc)
                 adopted.done = std::move(s->done);
-                pending.push_back(std::move(adopted));       // 可能抛(扩容)
+                pending.push_back(std::move(adopted));        // 可能抛(扩容)
                 pending.back().thread = std::move(s->thread); // noexcept: 交出所有权
                 s->done = std::future<void>();
             } else if (s->running.load(std::memory_order_acquire)) {
@@ -558,26 +560,25 @@ void TaskManager::WaitForAll(int timeout_ms) {
 
     abandoned_ = 0;
     std::vector<std::thread> leaked;
-    std::vector<OwnedThread> gave_up;   // 被放弃的那些, 稍后给它们的 slot 补写终态
+    std::vector<OwnedThread> gave_up; // 被放弃的那些, 稍后给它们的 slot 补写终态
     for (auto& p : pending) {
-        const int wait_ms = RemainingMs(deadline, bounded);   // bounded=false 时恒为 -1
+        const int wait_ms = RemainingMs(deadline, bounded); // bounded=false 时恒为 -1
         bool finished = true;
         if (wait_ms < 0) {
-            finished = true;                       // 不限时: 直接 join
+            finished = true; // 不限时: 直接 join
         } else if (p.done.valid()) {
             // wait_ms >= 0 时先用 promise 问一句"跑完了吗"(std::thread 没有带超时的 join):
             // 回答"跑完了"才 join(瞬间返回), 否则一分钱时间都不花在 join 上。
             // 预算哪怕已经归零也要用 0ms 轮询一次 —— 让恰好刚跑完的任务正常收尾,
             // 而不是被误判成"不响应取消"再打一条 ERROR 出来。
             try {
-                finished = p.done.wait_for(std::chrono::milliseconds(wait_ms)) ==
-                           std::future_status::ready;
+                finished = p.done.wait_for(std::chrono::milliseconds(wait_ms)) == std::future_status::ready;
             } catch (...) {
                 // promise 处于异常状态(线程压根没起来): 按已结束处理, 下面 join 会跳过
                 finished = true;
             }
         } else {
-            finished = false;                      // 连 future 都没有, 只能按没跑完处理
+            finished = false; // 连 future 都没有, 只能按没跑完处理
         }
 
         if (finished) {
@@ -618,7 +619,7 @@ void TaskManager::WaitForAll(int timeout_ms) {
         for (const auto& g : gave_up) {
             Slot* s = FindLocked(*core_, g.slot);
             if (!s || s->current_id.load(std::memory_order_acquire) != g.id)
-                continue;   // 期间被新任务接管了, 那是新任务的事
+                continue; // 期间被新任务接管了, 那是新任务的事
             // 终态一次性: 放弃之后它自己跑完并写了终态(可能是真的成功了)的话,
             // 这里再补一个 Canceled 就会把那个结论盖掉 —— 只在它还没收尾时才补。
             if (!s->running.load(std::memory_order_acquire))

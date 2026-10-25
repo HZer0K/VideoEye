@@ -1,7 +1,7 @@
 #pragma once
 
-#include <QString>
 #include "core/domain/model/FrameData.h"
+#include <QString>
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -19,14 +19,11 @@ public:
         int duration_ms = 0;
     };
 
-    ExtractResult Extract(AVFormatContext* format_ctx,
-                          int video_stream_index,
-                          int audio_stream_index,
+    ExtractResult Extract(AVFormatContext* format_ctx, int video_stream_index, int audio_stream_index,
                           const QString& url) const;
 
     // 辅助：根据 codec 参数估算原始 PCM 文件时长
-    static int64_t EstimateRawPcmDurationMs(const QString& url,
-                                            const AVCodecParameters* codecpar);
+    static int64_t EstimateRawPcmDurationMs(const QString& url, const AVCodecParameters* codecpar);
 
     // 辅助：从 AVFormatContext 获取时长（毫秒）
     static int64_t DurationMsFromFormat(const AVFormatContext* format_ctx);

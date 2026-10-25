@@ -19,7 +19,7 @@ inline bool IsValidTimestamp(double timestamp_ms) {
 struct PacketTiming {
     int index = 0;
     int stream_index = -1;
-    int media_type = -1;        // AVMediaType: 0=video, 1=audio
+    int media_type = -1; // AVMediaType: 0=video, 1=audio
     double pts_ms = kNoTimestamp;
     double dts_ms = kNoTimestamp;
     double duration_ms = kNoTimestamp;
@@ -34,15 +34,17 @@ struct FrameTimingInfo {
     int index = 0;
     int stream_index = -1;
     double pts_ms = kNoTimestamp;
-    double best_effort_ms = kNoTimestamp;   // AVFrame::best_effort_timestamp
-    double display_ms = kNoTimestamp;       // 实际显示时间（播放器采用的时间戳）
-    double duration_ms = kNoTimestamp;      // 帧持续时间（含 repeat_pict 时可用于修正）
-    int pict_type = 0;                      // AVPictureType
-    int repeat_pict = 0;                    // 重复场/帧指示（3:2 pulldown 等）
+    double best_effort_ms = kNoTimestamp; // AVFrame::best_effort_timestamp
+    double display_ms = kNoTimestamp;     // 实际显示时间（播放器采用的时间戳）
+    double duration_ms = kNoTimestamp;    // 帧持续时间（含 repeat_pict 时可用于修正）
+    int pict_type = 0;                    // AVPictureType
+    int repeat_pict = 0;                  // 重复场/帧指示（3:2 pulldown 等）
     bool key_frame = false;
     int size = 0;
 
-    bool IsValid() const { return IsValidTimestamp(display_ms); }
+    bool IsValid() const {
+        return IsValidTimestamp(display_ms);
+    }
 };
 
 } // namespace model

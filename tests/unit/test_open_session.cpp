@@ -21,7 +21,7 @@ using videoeye::ui::OpenTargetKind;
 using videoeye::ui::OpenTicket;
 using videoeye::ui::TakeOpenTicket;
 
-}  // namespace
+} // namespace
 
 TEST(OpenSessionTests, RawImageSuffixesRouteToRawImage) {
     EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("a.yuv")), OpenTargetKind::RawImage);
@@ -47,17 +47,14 @@ TEST(OpenSessionTests, EverythingElseRoutesToAsyncMedia) {
     EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("a.mp4")), OpenTargetKind::Media);
     EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("a.mkv")), OpenTargetKind::Media);
     // 无扩展名：URL（rtmp://… / 流媒体地址）走通用异步打开，与历史行为一致
-    EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("rtmp://host/app/stream")),
-              OpenTargetKind::Media);
-    EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("/tmp/no_extension_file")),
-              OpenTargetKind::Media);
+    EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("rtmp://host/app/stream")), OpenTargetKind::Media);
+    EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("/tmp/no_extension_file")), OpenTargetKind::Media);
 }
 
 // 只有"最后一个点之后"的那一段算扩展名：路径里的点不能被误判。
 TEST(OpenSessionTests, DotsInDirectoryNamesAreNotSuffixes) {
     EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("/my.dir/clip.mp4")), OpenTargetKind::Media);
-    EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("/clips/raw.data/video.mp4")),
-              OpenTargetKind::Media);
+    EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("/clips/raw.data/video.mp4")), OpenTargetKind::Media);
 }
 
 TEST(OpenSessionTests, FreshTicketIsNotArmed) {
@@ -91,7 +88,7 @@ TEST(OpenSessionTests, TakeConsumesTheTicket) {
 
     QString second = QString::fromUtf8("不该被写到");
     EXPECT_FALSE(TakeOpenTicket(ticket, &second, nullptr));
-    EXPECT_EQ(second, QString::fromUtf8("不该被写到"));  // 失败时不动出参
+    EXPECT_EQ(second, QString::fromUtf8("不该被写到")); // 失败时不动出参
 }
 
 // 新打开作废上一次登记：这正是"同步分支期间迟到的旧回调"被丢掉的路径。

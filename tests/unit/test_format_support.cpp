@@ -23,16 +23,16 @@
 #include <QTabWidget>
 #include <QTableWidget>
 
-#include "ui/dialogs/FormatSupportDialog.h"
 #include "ui/dialogs/FfmpegSupportProbe.h"
+#include "ui/dialogs/FormatSupportDialog.h"
 
 namespace {
 
 using videoeye::ui::CodecSupportEntry;
 using videoeye::ui::CollectFfmpegSupport;
 using videoeye::ui::ContainerSupportEntry;
-using videoeye::ui::FormatSupportDialog;
 using videoeye::ui::FfmpegSupportSnapshot;
+using videoeye::ui::FormatSupportDialog;
 using videoeye::ui::ProtocolSupportEntry;
 
 QApplication* EnsureApp() {
@@ -48,14 +48,16 @@ QApplication* EnsureApp() {
 
 const CodecSupportEntry* FindCodec(const FfmpegSupportSnapshot& s, const QString& name) {
     for (const auto& c : s.codecs) {
-        if (c.name.compare(name, Qt::CaseInsensitive) == 0) return &c;
+        if (c.name.compare(name, Qt::CaseInsensitive) == 0)
+            return &c;
     }
     return nullptr;
 }
 
 const ProtocolSupportEntry* FindProtocol(const FfmpegSupportSnapshot& s, const QString& name) {
     for (const auto& p : s.protocols) {
-        if (p.name.compare(name, Qt::CaseInsensitive) == 0) return &p;
+        if (p.name.compare(name, Qt::CaseInsensitive) == 0)
+            return &p;
     }
     return nullptr;
 }
@@ -65,7 +67,8 @@ const ContainerSupportEntry* FindContainer(const FfmpegSupportSnapshot& s, const
     for (const auto& c : s.containers) {
         const QStringList aliases = c.name.split(',');
         for (const QString& alias : aliases) {
-            if (alias.trimmed().compare(name, Qt::CaseInsensitive) == 0) return &c;
+            if (alias.trimmed().compare(name, Qt::CaseInsensitive) == 0)
+                return &c;
         }
     }
     return nullptr;
@@ -127,11 +130,15 @@ TEST(FfmpegSupportProbe, MergesBothDirectionsIntoOneRow) {
         const QStringList aliases = c.name.split(',');
         bool has_mp4 = false;
         for (const QString& alias : aliases) {
-            if (alias.trimmed().compare(QStringLiteral("mp4"), Qt::CaseInsensitive) == 0) has_mp4 = true;
+            if (alias.trimmed().compare(QStringLiteral("mp4"), Qt::CaseInsensitive) == 0)
+                has_mp4 = true;
         }
-        if (!has_mp4) continue;
-        if (c.can_demux) readable_mp4 = true;
-        if (c.can_mux) writable_mp4 = true;
+        if (!has_mp4)
+            continue;
+        if (c.can_demux)
+            readable_mp4 = true;
+        if (c.can_mux)
+            writable_mp4 = true;
     }
     EXPECT_TRUE(readable_mp4) << "读不到 mp4 —— 别名表没解析对";
     EXPECT_TRUE(writable_mp4) << "写不了 mp4 —— muxer 没枚举到";
@@ -163,21 +170,19 @@ TEST(FormatSupportDialog, EachTabShowsExactlyTheCollectedRows) {
     EXPECT_EQ(dialog.TableAt(FormatSupportDialog::kContainers)->rowCount(),
               static_cast<int>(snapshot.containers.size()));
     ASSERT_TRUE(dialog.TableAt(FormatSupportDialog::kCodecs) != nullptr);
-    EXPECT_EQ(dialog.TableAt(FormatSupportDialog::kCodecs)->rowCount(),
-              static_cast<int>(snapshot.codecs.size()));
+    EXPECT_EQ(dialog.TableAt(FormatSupportDialog::kCodecs)->rowCount(), static_cast<int>(snapshot.codecs.size()));
     ASSERT_TRUE(dialog.TableAt(FormatSupportDialog::kProtocols) != nullptr);
-    EXPECT_EQ(dialog.TableAt(FormatSupportDialog::kProtocols)->rowCount(),
-              static_cast<int>(snapshot.protocols.size()));
+    EXPECT_EQ(dialog.TableAt(FormatSupportDialog::kProtocols)->rowCount(), static_cast<int>(snapshot.protocols.size()));
     ASSERT_TRUE(dialog.TableAt(FormatSupportDialog::kHwAccel) != nullptr);
-    EXPECT_EQ(dialog.TableAt(FormatSupportDialog::kHwAccel)->rowCount(),
-              static_cast<int>(snapshot.hwaccels.size()));
+    EXPECT_EQ(dialog.TableAt(FormatSupportDialog::kHwAccel)->rowCount(), static_cast<int>(snapshot.hwaccels.size()));
 
     // h264 必须真的出现在编解码器表的一行里（不是只躺在数据结构里）
     auto* codecs = dialog.TableAt(FormatSupportDialog::kCodecs);
     bool found = false;
     for (int row = 0; row < codecs->rowCount(); ++row) {
         auto* item = codecs->item(row, 0);
-        if (item && item->text() == QStringLiteral("h264")) found = true;
+        if (item && item->text() == QStringLiteral("h264"))
+            found = true;
     }
     EXPECT_TRUE(found);
 }
@@ -217,7 +222,7 @@ TEST(FormatSupportDialog, SearchAndFilterOnlyHideRows) {
     filter->setCurrentIndex(1);
     EXPECT_EQ(dialog.VisibleRowCount(), snapshot.DecoderCount());
 
-    filter->setCurrentIndex(2);  // 仅能编码
+    filter->setCurrentIndex(2); // 仅能编码
     EXPECT_EQ(dialog.VisibleRowCount(), snapshot.EncoderCount());
     EXPECT_LT(dialog.VisibleRowCount(), total);
 }

@@ -10,8 +10,8 @@
 //
 // 术语随编码自适应（HEVC→CTU，其余→宏块），判断依赖模型里的 CodecType 辅助函数。
 
-#include <QWidget>
 #include <QString>
+#include <QWidget>
 
 #include <QLabel>
 #include <QPushButton>
@@ -37,8 +37,7 @@ public:
     // 注入时会立即把真实开关状态回写到「启用分析」勾选框：控件是在构造函数里建的，
     // 那时钩子还不存在，只能先按默认值创建；不同步的话界面会显示"启用分析"，
     // 而面板里的 feature_enabled_ 其实是关的。
-    void SetFeatureHooks(std::function<bool(int)> is_enabled,
-                         std::function<void(int, bool)> set_enabled);
+    void SetFeatureHooks(std::function<bool(int)> is_enabled, std::function<void(int, bool)> set_enabled);
 
     // 播放期逐帧回吐：与面板的批量刷新节拍一致，攒到 FlushPending() 再画
     void SetAnalysis(const model::MacroblockFrameAnalysis& analysis);
@@ -48,7 +47,9 @@ public:
     // QSignalBlocker，不会反过来触发 set_enabled_ 回调造成循环。
     void SyncToggleFromHooks();
 
-    bool HasPending() const { return dirty_; }
+    bool HasPending() const {
+        return dirty_;
+    }
     void FlushPending();
 
 private:
@@ -64,14 +65,14 @@ private:
     // 必须留成员：SetFeatureHooks 注入钩子后要拿它把真实开关状态回写到界面
     QCheckBox* toggle_ = nullptr;
 
-    QTableWidget* mv_table_ = nullptr;          // 运动矢量列表
-    QLabel* viz_label_ = nullptr;               // 运动矢量可视化预览
-    QTableWidget* blocksize_table_ = nullptr;   // 块大小分布
-    QTableWidget* mag_table_ = nullptr;         // 运动幅度分布
+    QTableWidget* mv_table_ = nullptr;        // 运动矢量列表
+    QLabel* viz_label_ = nullptr;             // 运动矢量可视化预览
+    QTableWidget* blocksize_table_ = nullptr; // 块大小分布
+    QTableWidget* mag_table_ = nullptr;       // 运动幅度分布
 
     model::MacroblockFrameAnalysis analysis_;
     bool dirty_ = false;
 };
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

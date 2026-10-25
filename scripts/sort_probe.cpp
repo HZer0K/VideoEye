@@ -23,8 +23,8 @@ namespace {
 // 与 ReportingPanel.cpp 里同款同参的委托（复制一份，探针自证行为）
 class DoubleFormatDelegate : public QStyledItemDelegate {
 public:
-    DoubleFormatDelegate(int decimals, QObject* parent = nullptr)
-        : QStyledItemDelegate(parent), decimals_(decimals) {}
+    DoubleFormatDelegate(int decimals, QObject* parent = nullptr) : QStyledItemDelegate(parent), decimals_(decimals) {
+    }
 
     QString displayText(const QVariant& value, const QLocale& locale) const override {
         if (value.typeId() == QMetaType::Double || value.typeId() == QMetaType::Float) {
@@ -37,14 +37,14 @@ private:
     int decimals_;
 };
 
-}  // namespace
+} // namespace
 
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
 
     QTableWidget table(0, 4);
     table.setHorizontalHeaderLabels({"file", "score", "elapsed_ms", "critical"});
-    table.setSortingEnabled(false);  // 模拟扫描中
+    table.setSortingEnabled(false); // 模拟扫描中
     table.setItemDelegateForColumn(1, new DoubleFormatDelegate(1, &table));
     table.setItemDelegateForColumn(2, new DoubleFormatDelegate(0, &table));
 
@@ -56,11 +56,8 @@ int main(int argc, char* argv[]) {
     };
     // 刻意选会让字典序出错的值: 9.5 / 10.0 / 100.0 / 85.3
     const Row rows[] = {
-        {"a.mp4", 9.5, 9.44, 0},
-        {"b.mp4", 100.0, 1200.56, 3},
-        {"c.mp4", 10.0, 99.99, 1},
-        {"d.mp4", 85.3, 10000.0, 0},
-        {"e.mp4", 85.25, 5.0, 2},
+        {"a.mp4", 9.5, 9.44, 0},     {"b.mp4", 100.0, 1200.56, 3}, {"c.mp4", 10.0, 99.99, 1},
+        {"d.mp4", 85.3, 10000.0, 0}, {"e.mp4", 85.25, 5.0, 2},
     };
     for (const Row& r : rows) {
         const int row = table.rowCount();
@@ -80,8 +77,10 @@ int main(int argc, char* argv[]) {
     auto order_of = [](QTableWidget& t) {
         QStringList names;
         for (int i = 0; i < t.rowCount(); ++i) {
-            if (t.isRowHidden(i)) names << "(" + t.item(i, 0)->text() + ")";
-            else names << t.item(i, 0)->text();
+            if (t.isRowHidden(i))
+                names << "(" + t.item(i, 0)->text() + ")";
+            else
+                names << t.item(i, 0)->text();
         }
         return names.join(",");
     };
@@ -90,8 +89,7 @@ int main(int argc, char* argv[]) {
 
     // ---- 1) 评分列降序（扫描结束 -> 打开排序） ----
     table.setSortingEnabled(true);
-    fprintf(stderr, "[after-enable]       %s   (看 Qt 是否自动按第 0 列排一次)\n",
-            qPrintable(order_of(table)));
+    fprintf(stderr, "[after-enable]       %s   (看 Qt 是否自动按第 0 列排一次)\n", qPrintable(order_of(table)));
     table.sortItems(1, Qt::DescendingOrder);
     fprintf(stderr, "[score-desc]         %s   (期望 b,d,e,c,a = 100/85.3/85.25/10/9.5)\n",
             qPrintable(order_of(table)));
@@ -126,8 +124,7 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < table.rowCount(); ++i) {
         bound << QString("%1:%2").arg(table.item(i, 0)->text()).arg(table.item(i, 0)->data(Qt::UserRole).toInt());
     }
-    fprintf(stderr, "[userrole-after-sort] %s   (期望 a:30,c:20,e:10,d:40,b:0)\n",
-            qPrintable(bound.join(",")));
+    fprintf(stderr, "[userrole-after-sort] %s   (期望 a:30,c:20,e:10,d:40,b:0)\n", qPrintable(bound.join(",")));
 
     // ---- 6) 隐藏行在排序后保持隐藏且 UserRole 仍对 ----
     table.setRowHidden(0, true);

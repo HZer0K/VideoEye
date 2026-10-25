@@ -14,11 +14,14 @@ namespace ui {
 
 namespace {
 constexpr const char* kTaskSlot = "reporting-panel";
-}  // namespace
+} // namespace
 
-ReportingTaskCoordinator::ReportingTaskCoordinator(Deps deps) : deps_(std::move(deps)) {}
+ReportingTaskCoordinator::ReportingTaskCoordinator(Deps deps) : deps_(std::move(deps)) {
+}
 
-ReportingTaskCoordinator::~ReportingTaskCoordinator() { RetireAll(); }
+ReportingTaskCoordinator::~ReportingTaskCoordinator() {
+    RetireAll();
+}
 
 const char* ReportingTaskCoordinator::SlotName(Slot slot) const {
     return slot == Slot::Single ? "单文件" : "批量";
@@ -28,24 +31,27 @@ std::shared_ptr<AnalysisTask>& ReportingTaskCoordinator::SlotTask(Slot slot) {
     return slot == Slot::Single ? single_ : batch_;
 }
 
-bool ReportingTaskCoordinator::IsRunning() const { return tasks_.IsRunning(kTaskSlot); }
+bool ReportingTaskCoordinator::IsRunning() const {
+    return tasks_.IsRunning(kTaskSlot);
+}
 
 void ReportingTaskCoordinator::RequestCancel(Slot slot) {
     const std::shared_ptr<AnalysisTask>& task = SlotTask(slot);
-    if (task) task->cancel.RequestCancel();
+    if (task)
+        task->cancel.RequestCancel();
 }
 
-std::shared_ptr<AnalysisTask> ReportingTaskCoordinator::Start(
-    Slot slot, const std::function<void(const std::shared_ptr<AnalysisTask>&)>& body) {
+std::shared_ptr<AnalysisTask>
+ReportingTaskCoordinator::Start(Slot slot, const std::function<void(const std::shared_ptr<AnalysisTask>&)>& body) {
     // 先回收同槽位的旧任务：对仍 joinable 的 std::thread 直接赋值会 std::terminate
     // （连续分析两次的老根因）。busy_ 在外面已拦住重复启动，这里是兜底。
     Retire(SlotTask(slot));
 
     // 任务身份与取消令牌一并向协议要：id 由 slot 分配（"第几次分析"不再自己另起
     // 一套），取消只有 handle.cancel 这一颗，任务体与 QcRunner 轮询的是同一颗。
-    const task::TaskHandle handle =
-        tasks_.BeginHandle(kTaskSlot, 0, task::TaskKind::Cooperative);
-    if (!handle.valid()) return nullptr;  // 并发满：调用方提示，别静默不跑
+    const task::TaskHandle handle = tasks_.BeginHandle(kTaskSlot, 0, task::TaskKind::Cooperative);
+    if (!handle.valid())
+        return nullptr; // 并发满：调用方提示，别静默不跑
 
     auto task = std::make_shared<AnalysisTask>();
     task->handle = handle;
@@ -60,13 +66,15 @@ std::shared_ptr<AnalysisTask> ReportingTaskCoordinator::Start(
     task->thread = std::thread([this, task, body]() {
         const std::optional<std::string> failure = task::GuardBody([&]() { body(task); });
         task->body_done.store(true, std::memory_order_release);
-        if (failure) ReportThreadFailure(task, *failure);
+        if (failure)
+            ReportThreadFailure(task, *failure);
     });
     return task;
 }
 
 void ReportingTaskCoordinator::Retire(std::shared_ptr<AnalysisTask>& task) {
-    if (!task) return;
+    if (!task)
+        return;
     // 先要一份句柄副本：下面的 RecycleTask 会把 task 置空，句柄得先拿出来。
     const task::TaskHandle handle = task->handle;
 
@@ -87,16 +95,14 @@ void ReportingTaskCoordinator::Retire(std::shared_ptr<AnalysisTask>& task) {
     // 一次启动 / 析构时补记 —— 正常流程下 join 已返回，这里一定是干净的
     // Running -> Canceled/Succeeded。
     if (handle.valid()) {
-        tasks_.EndHandle(handle, handle.cancel.IsCanceled() ? task::TaskState::Canceled
-                                                            : task::TaskState::Succeeded);
+        tasks_.EndHandle(handle, handle.cancel.IsCanceled() ? task::TaskState::Canceled : task::TaskState::Succeeded);
     }
 
     // 回收：等线程体返回（观测预算）→ join 收句柄 → 置空。任务体捕获了面板指针并
     // 往面板上排队 UI 更新，detach 之后那些投递会落到已销毁的 QWidget 上；在"硬性
     // 时间上限"与"不悬空访问"之间，报告页明确选后者。
     if (!RecycleTask(task)) {
-        LOG_WARN(std::string("报告页任务回收超出预期预算 ") +
-                 std::to_string(kDefaultRecycleBudgetMs) +
+        LOG_WARN(std::string("报告页任务回收超出预期预算 ") + std::to_string(kDefaultRecycleBudgetMs) +
                  "ms，按严格 Cooperative 继续等待其响应取消（不 detach）");
     }
 }
@@ -106,9 +112,9 @@ void ReportingTaskCoordinator::RetireAll() {
     Retire(batch_);
 }
 
-void ReportingTaskCoordinator::Finish(const std::shared_ptr<AnalysisTask>& task,
-                                      task::TaskState terminal) {
-    if (!task) return;
+void ReportingTaskCoordinator::Finish(const std::shared_ptr<AnalysisTask>& task, task::TaskState terminal) {
+    if (!task)
+        return;
     // 终态一次性写入：EndHandle 只在 id 仍与 slot 当前任务匹配时才生效，否则静默丢弃
     // （说明这个任务已被取代 / 句柄已失效）。写完之后 slot 不再停在 Running。
     tasks_.EndHandle(task->handle, terminal);
@@ -127,8 +133,10 @@ void ReportingTaskCoordinator::Finish(const std::shared_ptr<AnalysisTask>& task,
 void ReportingTaskCoordinator::PostToUi(const std::shared_ptr<AnalysisTask>& task,
                                         const std::function<void()>& updater) const {
     // 任务已不再存活（面板正在销毁）时丢弃，避免触碰已销毁的 UI 对象
-    if (!task || !task->alive.load(std::memory_order_acquire)) return;
-    if (!deps_.ui) return;
+    if (!task || !task->alive.load(std::memory_order_acquire))
+        return;
+    if (!deps_.ui)
+        return;
     QMetaObject::invokeMethod(deps_.ui, updater, Qt::QueuedConnection);
 }
 
@@ -139,20 +147,23 @@ void ReportingTaskCoordinator::PostToUi(const std::shared_ptr<AnalysisTask>& tas
 void ReportingTaskCoordinator::ReportThreadFailure(const std::shared_ptr<AnalysisTask>& task,
                                                    const std::string& message) {
     LOG_ERROR("报告页任务线程抛出异常: " + message);
-    const task::TaskState terminal =
-        task::ResolveTerminal(std::optional<std::string>(message), task->cancel);
+    const task::TaskState terminal = task::ResolveTerminal(std::optional<std::string>(message), task->cancel);
     PostToUi(task, [this, task, terminal, msg = QString::fromStdString(message)]() {
         // 翻译上下文随之为 QObject（项目当前没有 .ts 文件，见 batch_result_model.h 的
         // 同类说明）：这是把口径搬出 QWidget 之后唯一的变化。
         const QString text = QObject::tr("分析异常: %1").arg(msg);
-        if (deps_.show_failure) deps_.show_failure(text);
-        if (deps_.append) deps_.append(text);
-        if (deps_.set_busy) deps_.set_busy(false);
+        if (deps_.show_failure)
+            deps_.show_failure(text);
+        if (deps_.append)
+            deps_.append(text);
+        if (deps_.set_busy)
+            deps_.set_busy(false);
         // 失败就不再把待导出目录留着 —— 免得下一次成功时悄悄导出一份不相干的东西。
-        if (deps_.abort_pending_export) deps_.abort_pending_export();
+        if (deps_.abort_pending_export)
+            deps_.abort_pending_export();
         Finish(task, terminal);
     });
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

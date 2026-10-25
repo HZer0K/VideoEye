@@ -33,15 +33,15 @@ enum class SupportMediaType {
 
 // 一个编解码器（按名字归并: 同名的解码器与编码器合成一行）
 struct CodecSupportEntry {
-    QString name;       // "h264" / "libx264"
-    QString long_name;  // "H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10"
+    QString name;      // "h264" / "libx264"
+    QString long_name; // "H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10"
     SupportMediaType type = SupportMediaType::Unknown;
     bool can_decode = false;
     bool can_encode = false;
-    bool intra_only = false;    // 只有帧内编码（ProRes / MJPEG 一类）
-    bool lossless = false;      // 支持无损
-    bool experimental = false;  // AV_CODEC_CAP_EXPERIMENTAL: 默认不会被自动选中
-    QString wrapper;            // 实现: 空 = FFmpeg 原生; 否则是外部库名 (libx264 / ...)
+    bool intra_only = false;   // 只有帧内编码（ProRes / MJPEG 一类）
+    bool lossless = false;     // 支持无损
+    bool experimental = false; // AV_CODEC_CAP_EXPERIMENTAL: 默认不会被自动选中
+    QString wrapper;           // 实现: 空 = FFmpeg 原生; 否则是外部库名 (libx264 / ...)
 };
 
 // 一个封装格式（按名字归并: 能读与能写合成一行）
@@ -50,10 +50,10 @@ struct ContainerSupportEntry {
     // "mov,mp4,m4a,3gp,3g2,mj2"）—— 原样保留，用户搜 "mp4" 时也要能命中它。
     QString name;
     QString long_name;
-    QString extensions;  // 逗号分隔 ("mp4,m4a,3gp,3g2,mj2")
+    QString extensions; // 逗号分隔 ("mp4,m4a,3gp,3g2,mj2")
     QString mime_type;
-    bool can_demux = false;  // 能读（解复用）
-    bool can_mux = false;    // 能写（复用）
+    bool can_demux = false; // 能读（解复用）
+    bool can_mux = false;   // 能写（复用）
 };
 
 // 一个协议（file / http / rtmp ...）
@@ -64,14 +64,14 @@ struct ProtocolSupportEntry {
 };
 
 struct HwAccelEntry {
-    QString name;         // "cuda" / "d3d11va"
-    QString description;  // 中文说明（认识的类型才给，其余回落到原名）
-    int decoder_count = 0;  // 声明支持该设备类型的解码器数量
+    QString name;          // "cuda" / "d3d11va"
+    QString description;   // 中文说明（认识的类型才给，其余回落到原名）
+    int decoder_count = 0; // 声明支持该设备类型的解码器数量
 };
 
 struct FfmpegBuildInfo {
-    QString version;        // av_version_info()
-    QString configuration;  // 编译时的 configure 行
+    QString version;       // av_version_info()
+    QString configuration; // 编译时的 configure 行
     QString license;
     // (库名, 版本串): libavutil / libavcodec / libavformat / libswscale / libswresample
     std::vector<std::pair<QString, QString>> libraries;

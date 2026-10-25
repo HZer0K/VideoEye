@@ -23,10 +23,14 @@ namespace {
 // 徽标配色（按级别: 1 警告 / 2 错误 / 3 致命）
 QColor BadgeColor(int level) {
     switch (level) {
-        case 3: return QColor(0xF8, 0x51, 0x49);  // 致命红
-        case 2: return QColor(0xFF, 0x7B, 0x72);  // 错误橙红
-        case 1: return QColor(0xD2, 0x99, 0x22);  // 警告橙
-        default: return QColor(0x8B, 0x94, 0x9E);  // 无级别灰
+    case 3:
+        return QColor(0xF8, 0x51, 0x49); // 致命红
+    case 2:
+        return QColor(0xFF, 0x7B, 0x72); // 错误橙红
+    case 1:
+        return QColor(0xD2, 0x99, 0x22); // 警告橙
+    default:
+        return QColor(0x8B, 0x94, 0x9E); // 无级别灰
     }
 }
 
@@ -38,8 +42,7 @@ class SidebarItemDelegate : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
 
-    void paint(QPainter* painter, const QStyleOptionViewItem& option,
-               const QModelIndex& index) const override {
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
         // 分组标题登记时置了 Qt::NoItemFlags，没有 ItemIsSelectable，以此区分两类行。
         const bool is_header = !(index.flags() & Qt::ItemIsSelectable);
         if (!is_header) {
@@ -51,7 +54,7 @@ public:
         QStyleOptionViewItem opt = option;
         initStyleOption(&opt, index);
         const QString text = opt.text;
-        opt.text.clear();  // 文本自己画，不交给默认样式（否则又会拿到页面项的颜色）
+        opt.text.clear(); // 文本自己画，不交给默认样式（否则又会拿到页面项的颜色）
         const QWidget* widget = opt.widget;
         QStyle* style = widget ? widget->style() : QApplication::style();
         style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
@@ -69,11 +72,11 @@ public:
 private:
     // 页面项右侧的导航标记: 扫描态画强调色小圆点，异常数画彩色数字徽标。
     // 数据来自 ApplySidebarBadges 写进 item 的角色；两者都没有就不画。
-    static void DrawBadge(QPainter* painter, const QStyleOptionViewItem& option,
-                          const QModelIndex& index) {
+    static void DrawBadge(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) {
         const int count = index.data(kBadgeCountRole).toInt();
         const bool scanning = index.data(kScanningRole).toBool();
-        if (count <= 0 && !scanning) return;
+        if (count <= 0 && !scanning)
+            return;
 
         const QRect rect = option.rect;
         const int right = rect.right() - 10;
@@ -96,7 +99,7 @@ private:
             const int pill_right = scanning ? right - 12 : right;
             const QRect pill(pill_right - pill_width, rect.center().y() - 8, pill_width, 16);
             QColor background = color;
-            background.setAlpha(38);  // ~15% 透明度底
+            background.setAlpha(38); // ~15% 透明度底
             painter->setPen(QPen(color, 1.0));
             painter->setBrush(background);
             painter->drawRoundedRect(pill, 8, 8);
@@ -107,20 +110,23 @@ private:
     }
 };
 
-}  // namespace
+} // namespace
 
 void InstallSidebarDelegate(QListWidget* sidebar) {
-    if (!sidebar) return;
+    if (!sidebar)
+        return;
     sidebar->setItemDelegate(new SidebarItemDelegate(sidebar));
 }
 
 QVector<PageNavigation> CollectPageNavigation(QStackedWidget* stack) {
     QVector<PageNavigation> pages;
-    if (!stack) return pages;
+    if (!stack)
+        return pages;
     pages.reserve(stack->count());
     for (int i = 0; i < stack->count(); ++i) {
         QWidget* page = stack->widget(i);
-        if (!page) continue;
+        if (!page)
+            continue;
         PageNavigation nav;
         nav.stack_index = i;
         nav.page_id = page->property("pageId").toString();
@@ -129,7 +135,8 @@ QVector<PageNavigation> CollectPageNavigation(QStackedWidget* stack) {
         nav.scope = page->property("pageScope").toString();
         nav.order = page->property("pageOrder").toInt();
         // 未登记标题的页面（新增页忘了写属性）也要能在侧栏里点得到，兜一个占位名
-        if (nav.title.isEmpty()) nav.title = QObject::tr("页面 %1").arg(i);
+        if (nav.title.isEmpty())
+            nav.title = QObject::tr("页面 %1").arg(i);
         pages.append(nav);
     }
     return pages;
@@ -146,7 +153,8 @@ QVector<NavGroup> DefaultNavGroups() {
 }
 
 void ApplyNavigationRows(QListWidget* sidebar, const QVector<NavRow>& rows) {
-    if (!sidebar) return;
+    if (!sidebar)
+        return;
 
     // 逐条 addItem 会反复触发 currentRowChanged，而此刻 content_stack_ 与侧栏正处在
     // 半重建状态（条目已铺、页面可能还没同步），按中间态切页会闪 —— 全程静音。
@@ -178,22 +186,24 @@ void ApplyNavigationRows(QListWidget* sidebar, const QVector<NavRow>& rows) {
     }
 }
 
-void ApplySidebarBadges(QListWidget* sidebar, QStackedWidget* stack,
-                        const SidebarBadgeLookup& lookup) {
-    if (!sidebar || !stack || !lookup) return;
+void ApplySidebarBadges(QListWidget* sidebar, QStackedWidget* stack, const SidebarBadgeLookup& lookup) {
+    if (!sidebar || !stack || !lookup)
+        return;
 
     bool changed = false;
     for (int row = 0; row < sidebar->count(); ++row) {
         QListWidgetItem* item = sidebar->item(row);
-        if (!item) continue;
+        if (!item)
+            continue;
         const QVariant stack_index = item->data(Qt::UserRole);
-        if (!stack_index.isValid()) continue;  // 分组标题没有徽标
+        if (!stack_index.isValid())
+            continue; // 分组标题没有徽标
         QWidget* page = stack->widget(stack_index.toInt());
-        if (!page) continue;  // 侧栏项与 stack 不同步（换页/重建的窗口期）时别解引用
+        if (!page)
+            continue; // 侧栏项与 stack 不同步（换页/重建的窗口期）时别解引用
 
         const SidebarBadge badge = lookup(page->property("pageId").toString());
-        if (item->data(kBadgeCountRole).toInt() != badge.count ||
-            item->data(kBadgeLevelRole).toInt() != badge.level ||
+        if (item->data(kBadgeCountRole).toInt() != badge.count || item->data(kBadgeLevelRole).toInt() != badge.level ||
             item->data(kScanningRole).toBool() != badge.scanning) {
             item->setData(kBadgeCountRole, badge.count);
             item->setData(kBadgeLevelRole, badge.level);
@@ -201,14 +211,17 @@ void ApplySidebarBadges(QListWidget* sidebar, QStackedWidget* stack,
             changed = true;
         }
     }
-    if (changed) sidebar->update();
+    if (changed)
+        sidebar->update();
 }
 
 void SelectSidebarRowForStackIndex(QListWidget* sidebar, int stack_index) {
-    if (!sidebar) return;
+    if (!sidebar)
+        return;
     for (int row = 0; row < sidebar->count(); ++row) {
         QListWidgetItem* item = sidebar->item(row);
-        if (!item || item->data(Qt::UserRole).toInt() != stack_index) continue;
+        if (!item || item->data(Qt::UserRole).toInt() != stack_index)
+            continue;
         // 静音：调用方（首页「跳转到分析页」）已经把 stack 切过去了，这里只是让侧栏
         // 的选中态跟上；再触发一次 currentRowChanged 会让同一次跳转走两遍切页路径。
         const QSignalBlocker blocker(sidebar);
@@ -217,5 +230,5 @@ void SelectSidebarRowForStackIndex(QListWidget* sidebar, int stack_index) {
     }
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

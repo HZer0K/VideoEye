@@ -1,10 +1,10 @@
 #pragma once
 
-#include <QWidget>
 #include <QImage>
-#include <QString>
 #include <QPointer>
 #include <QRectF>
+#include <QString>
+#include <QWidget>
 
 #include "core/domain/model/MacroblockInfo.h"
 
@@ -13,10 +13,10 @@ namespace ui {
 
 // 视频叠加信息 (分辨率/编码/FPS/状态)
 struct VideoOverlayInfo {
-    QString resolution;    // e.g. "1920x1080"
-    QString codec;         // e.g. "H.264"
-    QString fps;           // e.g. "30 fps"
-    QString status;        // e.g. "播放中"
+    QString resolution; // e.g. "1920x1080"
+    QString codec;      // e.g. "H.264"
+    QString fps;        // e.g. "30 fps"
+    QString status;     // e.g. "播放中"
     bool is_playing = false;
     bool has_video = false;
 };

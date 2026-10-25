@@ -49,9 +49,13 @@ QLabel* SummaryLabel(AudioFrameTableWidget& widget) {
     return widget.findChild<QLabel*>();
 }
 
-int RowCount(QTableView* table) { return table->model()->rowCount(); }
+int RowCount(QTableView* table) {
+    return table->model()->rowCount();
+}
 
-int ColumnCount(QTableView* table) { return table->model()->columnCount(); }
+int ColumnCount(QTableView* table) {
+    return table->model()->columnCount();
+}
 
 QString Header(QTableView* table, int column) {
     return table->model()->headerData(column, Qt::Horizontal).toString();
@@ -65,7 +69,7 @@ bool HasCell(QTableView* table, int row, int column) {
     return table->model()->index(row, column).isValid();
 }
 
-}  // namespace
+} // namespace
 
 // ---------------------------------------------------------------------------
 // 1. 表结构：7 列 + 列名 + 初始汇总 + 开关默认未勾选
@@ -106,7 +110,7 @@ TEST(AudioFrameTableWidgetTests, AppendMarksPendingAndFlushFillsCells) {
 
     widget.AppendAudioFrame(1, 1000, 0.5, 1024, 48000, 2, 4096);
     EXPECT_TRUE(widget.HasPending());
-    EXPECT_EQ(0, RowCount(table));  // 增量提交前不落到表上
+    EXPECT_EQ(0, RowCount(table)); // 增量提交前不落到表上
 
     widget.FlushPending();
     EXPECT_FALSE(widget.HasPending());
@@ -114,13 +118,13 @@ TEST(AudioFrameTableWidgetTests, AppendMarksPendingAndFlushFillsCells) {
 
     ASSERT_TRUE(HasCell(table, 0, 0));
     ASSERT_TRUE(HasCell(table, 0, 6));
-    EXPECT_EQ(QStringLiteral("1"), Cell(table, 0, 0));        // #
-    EXPECT_EQ(QStringLiteral("0.500"), Cell(table, 0, 1));    // 播放时间(s)
-    EXPECT_EQ(QStringLiteral("1000"), Cell(table, 0, 2));     // 原始 PTS
-    EXPECT_EQ(QStringLiteral("1024"), Cell(table, 0, 3));     // 样本数
-    EXPECT_EQ(QStringLiteral("48000"), Cell(table, 0, 4));    // 采样率
-    EXPECT_EQ(QStringLiteral("2"), Cell(table, 0, 5));        // 声道
-    EXPECT_EQ(QStringLiteral("4096"), Cell(table, 0, 6));     // 字节
+    EXPECT_EQ(QStringLiteral("1"), Cell(table, 0, 0));     // #
+    EXPECT_EQ(QStringLiteral("0.500"), Cell(table, 0, 1)); // 播放时间(s)
+    EXPECT_EQ(QStringLiteral("1000"), Cell(table, 0, 2));  // 原始 PTS
+    EXPECT_EQ(QStringLiteral("1024"), Cell(table, 0, 3));  // 样本数
+    EXPECT_EQ(QStringLiteral("48000"), Cell(table, 0, 4)); // 采样率
+    EXPECT_EQ(QStringLiteral("2"), Cell(table, 0, 5));     // 声道
+    EXPECT_EQ(QStringLiteral("4096"), Cell(table, 0, 6));  // 字节
 }
 
 // ---------------------------------------------------------------------------
@@ -141,8 +145,7 @@ TEST(AudioFrameTableWidgetTests, FlushIsIncrementalAndSummaryAggregates) {
     widget.FlushPending();
 
     ASSERT_EQ(2, RowCount(table));
-    EXPECT_EQ(QStringLiteral("总音频帧数: 2 | 总样本数: 1536 | 总字节数: 6144"),
-              summary->text());
+    EXPECT_EQ(QStringLiteral("总音频帧数: 2 | 总样本数: 1536 | 总字节数: 6144"), summary->text());
 
     // 再追加一行：只补这一行，已有行的内容不能被重排/丢失
     widget.AppendAudioFrame(3, 3000, 1.5, 256, 44100, 1, 512);
@@ -153,8 +156,7 @@ TEST(AudioFrameTableWidgetTests, FlushIsIncrementalAndSummaryAggregates) {
     EXPECT_EQ(QStringLiteral("1"), Cell(table, 0, 0));
     EXPECT_EQ(QStringLiteral("2"), Cell(table, 1, 0));
     EXPECT_EQ(QStringLiteral("3"), Cell(table, 2, 0));
-    EXPECT_EQ(QStringLiteral("总音频帧数: 3 | 总样本数: 1792 | 总字节数: 6656"),
-              summary->text());
+    EXPECT_EQ(QStringLiteral("总音频帧数: 3 | 总样本数: 1792 | 总字节数: 6656"), summary->text());
 
     // 无新数据时再刷一次是 no-op，行数不翻倍
     widget.FlushPending();

@@ -35,7 +35,7 @@ videoeye::model::HevcSpsInfo MakeHevcSps(int profile, int chroma, int luma_minus
     return sps;
 }
 
-}  // namespace
+} // namespace
 
 // ==========================================================================
 // 单维度
@@ -45,9 +45,9 @@ TEST(BitstreamCapabilityRulesTests, ChromaFormatAllows422And444) {
     // C2 的核心：4:2:0 / 4:2:2 / 4:4:4 全部放行。
     // 以前只认 chroma_format_idc == 1，4:2:2 10bit 的贡献流因此永远判 Partial、
     // 也不参与容器一致性比对。
-    EXPECT_TRUE(IsValidatedChromaFormat(1));  // 4:2:0
-    EXPECT_TRUE(IsValidatedChromaFormat(2));  // 4:2:2
-    EXPECT_TRUE(IsValidatedChromaFormat(3));  // 4:4:4
+    EXPECT_TRUE(IsValidatedChromaFormat(1)); // 4:2:0
+    EXPECT_TRUE(IsValidatedChromaFormat(2)); // 4:2:2
+    EXPECT_TRUE(IsValidatedChromaFormat(3)); // 4:4:4
 
     // 4:0:0 与越界值继续拦：面板没有它的比对通路
     EXPECT_FALSE(IsValidatedChromaFormat(0));
@@ -58,31 +58,31 @@ TEST(BitstreamCapabilityRulesTests, ChromaFormatAllows422And444) {
 TEST(BitstreamCapabilityRulesTests, BitDepthAllows12) {
     EXPECT_TRUE(IsValidatedBitDepth(8));
     EXPECT_TRUE(IsValidatedBitDepth(10));
-    EXPECT_TRUE(IsValidatedBitDepth(12));  // RExt 的 4:2:2 12bit 是广电常见组合
+    EXPECT_TRUE(IsValidatedBitDepth(12)); // RExt 的 4:2:2 12bit 是广电常见组合
     EXPECT_FALSE(IsValidatedBitDepth(0));
     EXPECT_FALSE(IsValidatedBitDepth(9));
     EXPECT_FALSE(IsValidatedBitDepth(14));
 }
 
 TEST(BitstreamCapabilityRulesTests, H264ProfileWhitelist) {
-    EXPECT_TRUE(IsValidatedH264Profile(66));   // Baseline
-    EXPECT_TRUE(IsValidatedH264Profile(77));   // Main
-    EXPECT_TRUE(IsValidatedH264Profile(100));  // High
-    EXPECT_TRUE(IsValidatedH264Profile(110));  // High 10
-    EXPECT_TRUE(IsValidatedH264Profile(122));  // High 4:2:2 —— 4:2:2 流的归处
-    EXPECT_TRUE(IsValidatedH264Profile(244));  // High 4:4:4 Predictive
+    EXPECT_TRUE(IsValidatedH264Profile(66));  // Baseline
+    EXPECT_TRUE(IsValidatedH264Profile(77));  // Main
+    EXPECT_TRUE(IsValidatedH264Profile(100)); // High
+    EXPECT_TRUE(IsValidatedH264Profile(110)); // High 10
+    EXPECT_TRUE(IsValidatedH264Profile(122)); // High 4:2:2 —— 4:2:2 流的归处
+    EXPECT_TRUE(IsValidatedH264Profile(244)); // High 4:4:4 Predictive
     EXPECT_FALSE(IsValidatedH264Profile(0));
     EXPECT_FALSE(IsValidatedH264Profile(999));
 }
 
 TEST(BitstreamCapabilityRulesTests, HevcProfileWhitelist) {
-    EXPECT_TRUE(IsValidatedHevcProfile(1));   // Main
-    EXPECT_TRUE(IsValidatedHevcProfile(2));   // Main 10
-    EXPECT_TRUE(IsValidatedHevcProfile(3));   // Main Still Picture
-    EXPECT_TRUE(IsValidatedHevcProfile(4));   // Range Extensions（4:2:2/4:4:4 的归处）
-    EXPECT_TRUE(IsValidatedHevcProfile(9));   // Screen-Extended Main
-    EXPECT_FALSE(IsValidatedHevcProfile(6));  // Multiview Main：无样本矩阵
-    EXPECT_FALSE(IsValidatedHevcProfile(7));  // Scalable Main
+    EXPECT_TRUE(IsValidatedHevcProfile(1));  // Main
+    EXPECT_TRUE(IsValidatedHevcProfile(2));  // Main 10
+    EXPECT_TRUE(IsValidatedHevcProfile(3));  // Main Still Picture
+    EXPECT_TRUE(IsValidatedHevcProfile(4));  // Range Extensions（4:2:2/4:4:4 的归处）
+    EXPECT_TRUE(IsValidatedHevcProfile(9));  // Screen-Extended Main
+    EXPECT_FALSE(IsValidatedHevcProfile(6)); // Multiview Main：无样本矩阵
+    EXPECT_FALSE(IsValidatedHevcProfile(7)); // Scalable Main
     EXPECT_FALSE(IsValidatedHevcProfile(0));
 }
 
@@ -124,27 +124,24 @@ TEST(BitstreamCapabilityRulesTests, GapIsReportedByDimension) {
     // 放开色度不等于什么都放行：不认识的 Profile / 位深仍要给出具体的 gap
     EXPECT_EQ(H264SpsGap(MakeH264Sps(9, 1, 0)), CapabilityGap::Profile);
     EXPECT_EQ(H264SpsGap(MakeH264Sps(100, 0, 0)), CapabilityGap::ChromaFormat);
-    EXPECT_EQ(H264SpsGap(MakeH264Sps(100, 1, 6)), CapabilityGap::BitDepth);  // 14bit
+    EXPECT_EQ(H264SpsGap(MakeH264Sps(100, 1, 6)), CapabilityGap::BitDepth); // 14bit
     EXPECT_EQ(H264ProfileGap(9), CapabilityGap::Profile);
 
     EXPECT_EQ(HevcSpsGap(MakeHevcSps(6, 1, 0)), CapabilityGap::Profile);
     EXPECT_EQ(HevcSpsGap(MakeHevcSps(1, 0, 0)), CapabilityGap::ChromaFormat);
-    EXPECT_EQ(HevcSpsGap(MakeHevcSps(1, 1, 8)), CapabilityGap::BitDepth);  // 16bit
+    EXPECT_EQ(HevcSpsGap(MakeHevcSps(1, 1, 8)), CapabilityGap::BitDepth); // 16bit
 }
 
 TEST(BitstreamCapabilityRulesTests, GapNoteNamesTheOffendingField) {
-    const std::string chroma_note = videoeye::codec::GapNote(
-        "HEVC", CapabilityGap::ChromaFormat, "general_profile_idc=4",
-        "chroma_format_idc=0", "10bit");
+    const std::string chroma_note = videoeye::codec::GapNote("HEVC", CapabilityGap::ChromaFormat,
+                                                             "general_profile_idc=4", "chroma_format_idc=0", "10bit");
     EXPECT_NE(chroma_note.find("色度采样"), std::string::npos);
     EXPECT_NE(chroma_note.find("不参与容器一致性比对"), std::string::npos);
 
-    const std::string bit_note = videoeye::codec::GapNote(
-        "H.264", CapabilityGap::BitDepth, "profile_idc=100", "chroma_format_idc=1", "14bit");
+    const std::string bit_note =
+        videoeye::codec::GapNote("H.264", CapabilityGap::BitDepth, "profile_idc=100", "chroma_format_idc=1", "14bit");
     EXPECT_NE(bit_note.find("位深"), std::string::npos);
 
     // 没有 gap 就不该给文案（避免 UI 在 Supported 态下还挂着一句"仅供参考"）
-    EXPECT_TRUE(videoeye::codec::GapNote(
-                    "HEVC", CapabilityGap::None, "1", "1", "8bit")
-                    .empty());
+    EXPECT_TRUE(videoeye::codec::GapNote("HEVC", CapabilityGap::None, "1", "1", "8bit").empty());
 }

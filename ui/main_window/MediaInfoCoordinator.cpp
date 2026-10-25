@@ -13,8 +13,7 @@
 namespace videoeye {
 namespace ui {
 
-MediaInfoCoordinator::MediaInfoCoordinator(QObject* parent)
-    : QObject(parent) {
+MediaInfoCoordinator::MediaInfoCoordinator(QObject* parent) : QObject(parent) {
 }
 
 MediaInfoCoordinator::~MediaInfoCoordinator() {
@@ -26,8 +25,8 @@ MediaInfoCoordinator::~MediaInfoCoordinator() {
     tasks_.WaitForAll(3000);
 }
 
-QString MediaInfoCoordinator::DescribeRawPcm(const QString& source, const QString& demuxer_name,
-                                             int sample_rate, int channels) {
+QString MediaInfoCoordinator::DescribeRawPcm(const QString& source, const QString& demuxer_name, int sample_rate,
+                                             int channels) {
     videoeye::MediaInfoAnalyzer mi;
     // 只有这一个调用点需要跨 Qt 边界：MediaInfoAnalyzer 已经不碰 Qt。
     mi.SetRawPcmHints(demuxer_name.toStdString(), sample_rate, channels);
@@ -50,8 +49,7 @@ void MediaInfoCoordinator::StartAsync(const QString& source) {
     // 本任务体只按值捕获 (QPointer self + QString source), 满足 TaskKind::BlockingIo 的
     // "不得持有可能先于线程销毁的裸引用"约定。
     QPointer<MediaInfoCoordinator> self = this;
-    tasks_.RunBlockingIo(kSlotMediaInfo,
-                         [self, source, generation](task::TaskId, task::CancelToken token) {
+    tasks_.RunBlockingIo(kSlotMediaInfo, [self, source, generation](task::TaskId, task::CancelToken token) {
         // MediaInfoAnalyzer 现在返回 std::string；后台线程到 UI 这一段都在用 std::string 传，
         // 转换点只有 InfoReady() 处一处（Qt 6 的 fromStdString）。
         std::string text;
@@ -61,12 +59,18 @@ void MediaInfoCoordinator::StartAsync(const QString& source) {
             const bool opened = mi.Open(source.toStdString(), token.flag());
             text = opened ? mi.GetCompleteInfo() : std::string("(无法解析媒体信息)");
         }
-        if (!self || token.IsCanceled()) return;
-        if (generation != self->generation_.load()) return;
-        QMetaObject::invokeMethod(self, [self, generation, text]() {
-            if (!self || generation != self->generation_.load()) return;  // 已经切到别的文件
-            emit self->InfoReady(QString::fromStdString(text));
-        }, Qt::QueuedConnection);
+        if (!self || token.IsCanceled())
+            return;
+        if (generation != self->generation_.load())
+            return;
+        QMetaObject::invokeMethod(
+            self,
+            [self, generation, text]() {
+                if (!self || generation != self->generation_.load())
+                    return; // 已经切到别的文件
+                emit self->InfoReady(QString::fromStdString(text));
+            },
+            Qt::QueuedConnection);
     });
 }
 

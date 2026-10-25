@@ -42,7 +42,7 @@ QApplication* EnsureApp() {
     return app;
 }
 
-}  // namespace
+} // namespace
 
 // ---------------------------------------------------------------------------
 // 1. 控件初值：布局契约（范围 / 默认值 / 隐藏状态 / objectName）
@@ -147,7 +147,7 @@ TEST(ControlBarWidgetTests, MuteRemembersAndRestoresPreviousVolume) {
 TEST(ControlBarWidgetTests, VolumeChangeWithoutPlayerIsSafe) {
     EnsureApp();
 
-    ControlBarWidget bar;  // 不调用 SetMediaPlayer，player_ 为 nullptr
+    ControlBarWidget bar; // 不调用 SetMediaPlayer，player_ 为 nullptr
     QSlider* volume = bar.volumeSlider();
     ASSERT_TRUE(volume != nullptr);
 

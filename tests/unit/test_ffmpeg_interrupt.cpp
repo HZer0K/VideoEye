@@ -39,10 +39,10 @@ TEST(FfmpegInterrupt, CancelFlagInterrupts) {
 // 到期即中断：没有这条，不可达的 URL 会把 UI 线程永远挂住。
 TEST(FfmpegInterrupt, ExpiredDeadlineInterrupts) {
     ffmpeg_io::AvInterruptState state;
-    state.deadline_us = av_gettime() - 1;   // 已经过期
+    state.deadline_us = av_gettime() - 1; // 已经过期
     EXPECT_EQ(1, ffmpeg_io::AvIoInterruptCallback(&state));
 
-    state.deadline_us = av_gettime() + 60'000'000;   // 还早
+    state.deadline_us = av_gettime() + 60'000'000; // 还早
     EXPECT_EQ(0, ffmpeg_io::AvIoInterruptCallback(&state));
 }
 
@@ -85,4 +85,4 @@ TEST(FfmpegInterrupt, AttachInterruptWiresCallbackAndDeadline) {
     avformat_free_context(fmt);
 }
 
-}  // namespace
+} // namespace

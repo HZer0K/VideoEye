@@ -79,7 +79,7 @@ const FfmpegCatalogEntry* FirstEntryOfKind(FfmpegEntryKind kind) {
     return nullptr;
 }
 
-}  // namespace
+} // namespace
 
 // ---------------------------------------------------------------------------
 // 1. 构造：分类下拉 + 全部词条 + 默认选中可用
@@ -102,7 +102,7 @@ TEST(FfmpegDictionaryWidgetTests, ConstructorPopulatesCategoriesAndFullEntryList
     EXPECT_EQ(QStringLiteral("全部分类"), combo->itemText(0));
 
     EXPECT_EQ(static_cast<int>(FfmpegCommandCatalog::Entries().size()), list->count());
-    EXPECT_EQ(0, list->currentRow());       // 默认选中第一条 -> 详情可见、可插入
+    EXPECT_EQ(0, list->currentRow()); // 默认选中第一条 -> 详情可见、可插入
     EXPECT_TRUE(insert->isEnabled());
     EXPECT_FALSE(detail->toPlainText().isEmpty());
 }
@@ -121,13 +121,11 @@ TEST(FfmpegDictionaryWidgetTests, SearchTextFiltersListToCatalogHits) {
     ASSERT_TRUE(list != nullptr);
 
     edit->setText(QStringLiteral("crf"));
-    EXPECT_EQ(static_cast<int>(FfmpegCommandCatalog::Search(QStringLiteral("crf")).size()),
-              list->count());
+    EXPECT_EQ(static_cast<int>(FfmpegCommandCatalog::Search(QStringLiteral("crf")).size()), list->count());
     EXPECT_GT(list->count(), 0);
 
     edit->setText(QStringLiteral("scale"));
-    EXPECT_EQ(static_cast<int>(FfmpegCommandCatalog::Search(QStringLiteral("scale")).size()),
-              list->count());
+    EXPECT_EQ(static_cast<int>(FfmpegCommandCatalog::Search(QStringLiteral("scale")).size()), list->count());
     EXPECT_GT(list->count(), 0);
 }
 
@@ -149,8 +147,7 @@ TEST(FfmpegDictionaryWidgetTests, CategorySelectionRestrictsList) {
     combo->setCurrentIndex(last);
 
     const QString category = combo->itemText(last);
-    const int expected =
-        static_cast<int>(FfmpegCommandCatalog::Search(QString(), category).size());
+    const int expected = static_cast<int>(FfmpegCommandCatalog::Search(QString(), category).size());
     EXPECT_GT(expected, 0);
     EXPECT_EQ(expected, list->count());
     EXPECT_LT(list->count(), static_cast<int>(FfmpegCommandCatalog::Entries().size()));
@@ -186,8 +183,7 @@ TEST(FfmpegDictionaryWidgetTests, InsertFilterEntryPrependsVfOrAfPrefix) {
     ASSERT_EQ(1u, snippets.size());
 
     const QString snippet = snippets[0];
-    EXPECT_TRUE(snippet.startsWith(QStringLiteral("-vf ")) ||
-                snippet.startsWith(QStringLiteral("-af ")));
+    EXPECT_TRUE(snippet.startsWith(QStringLiteral("-vf ")) || snippet.startsWith(QStringLiteral("-af ")));
     EXPECT_TRUE(snippet.contains(filter->name));
     EXPECT_TRUE(snippet.endsWith(QLatin1Char(' ')));
 }
@@ -254,5 +250,5 @@ TEST(FfmpegDictionaryWidgetTests, NoMatchDisablesInsertAndShowsEmptyDetail) {
     QObject::connect(&widget, &FfmpegDictionaryWidget::InsertRequested,
                      [&snippets](const QString& snippet) { snippets.push_back(snippet); });
     insert->click();
-    EXPECT_TRUE(snippets.empty());  // 越界行号不能让插入路径发信号
+    EXPECT_TRUE(snippets.empty()); // 越界行号不能让插入路径发信号
 }

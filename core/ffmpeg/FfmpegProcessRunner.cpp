@@ -29,21 +29,17 @@ QString DescribeProcessError(QProcess::ProcessError error) {
     }
 }
 
-}  // namespace
+} // namespace
 
-FfmpegProcessRunner::FfmpegProcessRunner(QObject* parent)
-    : QObject(parent) {
+FfmpegProcessRunner::FfmpegProcessRunner(QObject* parent) : QObject(parent) {
     process_ = new QProcess(this);
     process_->setProcessChannelMode(QProcess::SeparateChannels);
 
-    connect(process_, &QProcess::readyReadStandardOutput,
-            this, &FfmpegProcessRunner::OnReadyReadStdout);
-    connect(process_, &QProcess::readyReadStandardError,
-            this, &FfmpegProcessRunner::OnReadyReadStderr);
-    connect(process_, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, &FfmpegProcessRunner::OnProcessFinished);
-    connect(process_, &QProcess::errorOccurred,
-            this, &FfmpegProcessRunner::OnProcessError);
+    connect(process_, &QProcess::readyReadStandardOutput, this, &FfmpegProcessRunner::OnReadyReadStdout);
+    connect(process_, &QProcess::readyReadStandardError, this, &FfmpegProcessRunner::OnReadyReadStderr);
+    connect(process_, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            &FfmpegProcessRunner::OnProcessFinished);
+    connect(process_, &QProcess::errorOccurred, this, &FfmpegProcessRunner::OnProcessError);
 }
 
 FfmpegProcessRunner::~FfmpegProcessRunner() {
@@ -94,16 +90,14 @@ bool FfmpegProcessRunner::Start(const QString& program, const QStringList& argum
     const QFileInfo info(program);
     if (!info.exists() || !info.isFile()) {
         last_result_.status = FfmpegRunStatus::StartError;
-        last_result_.error_message =
-            QStringLiteral("ffmpeg 可执行程序不存在: %1").arg(program);
+        last_result_.error_message = QStringLiteral("ffmpeg 可执行程序不存在: %1").arg(program);
         emit Finished(last_result_);
         return false;
     }
 
     if (!working_directory.isEmpty() && !QDir(working_directory).exists()) {
         last_result_.status = FfmpegRunStatus::StartError;
-        last_result_.error_message =
-            QStringLiteral("工作目录不存在: %1").arg(working_directory);
+        last_result_.error_message = QStringLiteral("工作目录不存在: %1").arg(working_directory);
         emit Finished(last_result_);
         return false;
     }
@@ -130,7 +124,7 @@ void FfmpegProcessRunner::Stop(int quit_grace_ms, int terminate_grace_ms) {
         return;
     }
     if (stop_stage_ != FfmpegStopStage::None) {
-        return;   // 已经在停了：再点一次不该把宽限期往前提
+        return; // 已经在停了：再点一次不该把宽限期往前提
     }
     stop_requested_ = true;
 
@@ -156,7 +150,7 @@ void FfmpegProcessRunner::Stop(int quit_grace_ms, int terminate_grace_ms) {
     int delay_to_terminate = 0;
     if (can_quit && advance(FfmpegStopStage::QuitSent)) {
         process_->write("q\n");
-        process_->closeWriteChannel();   // 写完就关，避免 ffmpeg 等一个不会来的输入
+        process_->closeWriteChannel(); // 写完就关，避免 ffmpeg 等一个不会来的输入
         delay_to_terminate = quit_grace_ms;
     }
 
@@ -202,8 +196,14 @@ void FfmpegProcessRunner::Drain(QByteArray& pending, const QByteArray& chunk, bo
         int cr = -1;
         for (int i = start; i < pending.size(); ++i) {
             const char c = pending.at(i);
-            if (c == '\n') { nl = i; break; }
-            if (c == '\r') { cr = i; break; }
+            if (c == '\n') {
+                nl = i;
+                break;
+            }
+            if (c == '\r') {
+                cr = i;
+                break;
+            }
         }
         const int cut = (nl >= 0) ? nl : cr;
         if (cut < 0) {
@@ -226,7 +226,7 @@ void FfmpegProcessRunner::Drain(QByteArray& pending, const QByteArray& chunk, bo
 
 void FfmpegProcessRunner::EmitPending(const QString& text, bool is_error) {
     if (text.trimmed().isEmpty()) {
-        return;   // ffmpeg 的进度行会刷出大量空行，不进日志
+        return; // ffmpeg 的进度行会刷出大量空行，不进日志
     }
     emit OutputLine(text, is_error);
 }
@@ -274,7 +274,7 @@ void FfmpegProcessRunner::OnProcessFinished(int exit_code, QProcess::ExitStatus 
 void FfmpegProcessRunner::OnProcessError(QProcess::ProcessError error) {
     if (error == QProcess::FailedToStart) {
         running_ = false;
-        ++run_id_;   // 同上：让这一代遗留的停止定时器失效
+        ++run_id_; // 同上：让这一代遗留的停止定时器失效
         last_result_.status = FfmpegRunStatus::StartError;
         last_result_.elapsed_ms = timer_.elapsed();
         last_result_.error_message = DescribeProcessError(error);
@@ -283,5 +283,5 @@ void FfmpegProcessRunner::OnProcessError(QProcess::ProcessError error) {
     // 其余错误（读/写失败、崩溃）都以 finished() 收尾，这里不重复发 Finished。
 }
 
-}  // namespace ffmpeg
-}  // namespace videoeye
+} // namespace ffmpeg
+} // namespace videoeye

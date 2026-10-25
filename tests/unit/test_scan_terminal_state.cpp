@@ -81,9 +81,11 @@ bool PumpUntil(const std::function<bool()>& done, int timeout_ms) {
 QString WriteCorruptInput() {
     const QString path = QDir::tempPath() + "/videoeye_scan_terminal_corrupt.mp4";
     QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return QString();
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return QString();
     QByteArray junk(4096, '\x00');
-    for (int i = 0; i < junk.size(); ++i) junk[i] = static_cast<char>((i * 73 + 11) & 0xFF);
+    for (int i = 0; i < junk.size(); ++i)
+        junk[i] = static_cast<char>((i * 73 + 11) & 0xFF);
     f.write(junk);
     f.close();
     return path;
@@ -94,7 +96,8 @@ QString WriteCorruptInput() {
 QString WriteHlsManifest(const QString& name) {
     const QString path = QDir::tempPath() + "/" + name;
     QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return QString();
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return QString();
     f.write("#EXTM3U\n"
             "#EXT-X-VERSION:3\n"
             "#EXT-X-TARGETDURATION:4\n"
@@ -119,13 +122,11 @@ struct ScanPages {
     ui::BitstreamPanel* bitstream = nullptr;
 
     bool AllFound() const {
-        return diagnostics && bitrate_gop && audio_qc && color_hdr && subtitle && streaming &&
-               bitstream;
+        return diagnostics && bitrate_gop && audio_qc && color_hdr && subtitle && streaming && bitstream;
     }
     bool AllInactive() const {
-        return !bitrate_gop->IsScanActive() && !audio_qc->IsScanActive() &&
-               !color_hdr->IsScanActive() && !subtitle->IsScanActive() &&
-               !streaming->IsScanActive() && !bitstream->IsScanActive();
+        return !bitrate_gop->IsScanActive() && !audio_qc->IsScanActive() && !color_hdr->IsScanActive() &&
+               !subtitle->IsScanActive() && !streaming->IsScanActive() && !bitstream->IsScanActive();
     }
 };
 
@@ -192,12 +193,10 @@ TEST(ScanTerminalState, FailedScanRestoresAllSharedPages) {
     EXPECT_TRUE(streaming->IsScanActive());
     EXPECT_TRUE(bitstream->IsScanActive());
 
-    ASSERT_TRUE(PumpUntil([&] { return terminal_count > 0; }, 30000))
-        << "损坏输入没有在超时前产生扫描终态";
+    ASSERT_TRUE(PumpUntil([&] { return terminal_count > 0; }, 30000)) << "损坏输入没有在超时前产生扫描终态";
 
     EXPECT_EQ(1, terminal_count) << "一次扫描只应产生一个终态事件";
-    EXPECT_TRUE(last_reason == ui::DiagnosticsPage::ScanEndReason::Failed)
-        << "损坏输入必须走 Failed 终态";
+    EXPECT_TRUE(last_reason == ui::DiagnosticsPage::ScanEndReason::Failed) << "损坏输入必须走 Failed 终态";
 
     // 核心断言: 共用同一次扫描的页面都必须回到 Idle。
     // 修复前它们会一直停在扫描态（取消按钮亮着、"开始分析"永久禁用）。
@@ -272,8 +271,7 @@ TEST(ScanTerminalState, CancelScanRestoresSharedPagesWithinBudget) {
     pages.diagnostics->SetSourcePath(QString::fromStdString(endpoint.tcp_url()));
     pages.diagnostics->StartScan(pages.diagnostics->options());
 
-    ASSERT_TRUE(PumpUntil([&] { return pages.bitrate_gop->IsScanActive(); }, 3000))
-        << "扫描没有进入扫描态";
+    ASSERT_TRUE(PumpUntil([&] { return pages.bitrate_gop->IsScanActive(); }, 3000)) << "扫描没有进入扫描态";
     // 端口未真正阻塞（瞬间就回终态）时没测到取消路径，跳过。
     if (PumpUntil([&] { return terminal_count > 0; }, 200)) {
         GTEST_SKIP() << "阻塞输入瞬间就回终态（端口未真正阻塞），本轮不算测到取消路径";
@@ -281,16 +279,13 @@ TEST(ScanTerminalState, CancelScanRestoresSharedPagesWithinBudget) {
 
     const auto t0 = std::chrono::steady_clock::now();
     pages.diagnostics->CancelScan();
-    ASSERT_TRUE(PumpUntil([&] { return terminal_count > 0; }, 8000))
-        << "取消后没有在预算内回到终态";
-    const auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now() - t0)
-                        .count();
+    ASSERT_TRUE(PumpUntil([&] { return terminal_count > 0; }, 8000)) << "取消后没有在预算内回到终态";
+    const auto dt =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
 
     EXPECT_LT(dt, 5000) << "取消到终态耗时 " << dt << "ms，接近/超过预算";
     EXPECT_EQ(terminal_count, 1) << "一次扫描只应产生一个终态事件";
-    EXPECT_TRUE(last_reason == ui::DiagnosticsPage::ScanEndReason::Cancelled)
-        << "取消必须走 Cancelled 终态";
+    EXPECT_TRUE(last_reason == ui::DiagnosticsPage::ScanEndReason::Cancelled) << "取消必须走 Cancelled 终态";
     EXPECT_TRUE(pages.AllInactive()) << "取消后共用页必须回到 Idle（按钮恢复可用）";
 }
 
@@ -319,15 +314,12 @@ TEST(ScanTerminalState, SingleFileScanDoesNotDisturbReportingTask) {
 
     panel.SetCurrentVideoPath(manifest);
     pages.diagnostics->StartScan(pages.diagnostics->options());
-    EXPECT_FALSE(reporting->IsTaskRunning())
-        << "诊断页的单文件扫描不应把报告页任务状态置为运行中";
+    EXPECT_FALSE(reporting->IsTaskRunning()) << "诊断页的单文件扫描不应把报告页任务状态置为运行中";
 
     ASSERT_TRUE(PumpUntil([&] { return terminal_count > 0; }, 20000)) << "扫描未回终态";
     EXPECT_TRUE(pages.diagnostics->hasResult());
-    EXPECT_FALSE(reporting->IsTaskRunning())
-        << "诊断扫描结束后报告页任务状态被牵连";
-    EXPECT_FALSE(reporting->HasFreshResult())
-        << "诊断扫描不应在报告页产生'新鲜结果'";
+    EXPECT_FALSE(reporting->IsTaskRunning()) << "诊断扫描结束后报告页任务状态被牵连";
+    EXPECT_FALSE(reporting->HasFreshResult()) << "诊断扫描不应在报告页产生'新鲜结果'";
 
     QFile::remove(manifest);
 }
@@ -352,7 +344,7 @@ TEST(PlaybackLinkage, FrameTableRefreshesThenClearsAndDoesNotAccumulate) {
 
     // 视频帧默认开启（Master && VideoFrame 默认开）—— 播放期回吐的帧必须进表。
     panel.AppendVideoFrameInfo(0, 1, true, 0, 0.0);      // I 帧
-    panel.AppendVideoFrameInfo(1, 2, false, 1000, 0.04);  // P 帧
+    panel.AppendVideoFrameInfo(1, 2, false, 1000, 0.04); // P 帧
     panel.AppendVideoFrameInfo(2, 2, false, 2000, 0.08);
     frame_view->FlushPending();
     EXPECT_EQ(table->model()->rowCount(), 3) << "播放期帧表没有持续刷新";
@@ -408,8 +400,7 @@ TEST(PlaybackLinkage, PlaybackFeedDoesNotBleedIntoFullFileResult) {
     ASSERT_TRUE(PumpUntil([&] { return terminal_count > 0; }, 20000)) << "扫描未回终态";
     ASSERT_TRUE(pages.diagnostics->hasResult());
 
-    const QString full_container =
-        QString::fromStdString(pages.diagnostics->result().container_format);
+    const QString full_container = QString::fromStdString(pages.diagnostics->result().container_format);
     const double full_duration = pages.diagnostics->result().duration_seconds;
 
     // 播放期回吐：一份"大得离谱"的播放期统计 + 一帧解码帧。
@@ -453,7 +444,8 @@ TEST(PlaybackLinkage, SwitchingPagesKeepsScanResultConsistent) {
     const double duration = pages.diagnostics->result().duration_seconds;
 
     // 模拟用户点侧栏在分析页间来回切换。
-    for (int i = 0; i < stack.count(); ++i) stack.setCurrentIndex(i);
+    for (int i = 0; i < stack.count(); ++i)
+        stack.setCurrentIndex(i);
     stack.setCurrentIndex(0);
 
     EXPECT_TRUE(pages.diagnostics->hasResult()) << "切换页面把扫描结果弄丢了";
@@ -514,8 +506,7 @@ TEST(MacroblockCoordinationTest, SetMacroblockEnabledSyncsWithoutSignal) {
 
     ui::AnalysisPanel panel;
     int toggled_count = 0;
-    QObject::connect(&panel, &ui::AnalysisPanel::AnalysisFeatureToggled, &panel,
-                     [&](int, bool) { ++toggled_count; });
+    QObject::connect(&panel, &ui::AnalysisPanel::AnalysisFeatureToggled, &panel, [&](int, bool) { ++toggled_count; });
 
     panel.SetMacroblockAnalysisEnabled(true);
     EXPECT_TRUE(panel.IsFeatureEnabled(model::AnalysisFeature::Macroblock));
@@ -566,7 +557,7 @@ TEST(NavigationModelTest, GroupScopeSkippedWhenPagesDisagree) {
     const QVector<ui::NavRow> rows = ui::BuildNavigationRows(pages, groups);
     ASSERT_EQ(rows.size(), 3);
     EXPECT_TRUE(rows[0].is_header);
-    EXPECT_EQ(rows[0].text, QStringLiteral("一组"));  // 口径不一致 -> 不标，避免误导
+    EXPECT_EQ(rows[0].text, QStringLiteral("一组")); // 口径不一致 -> 不标，避免误导
 }
 
 TEST(NavigationModelTest, GroupScopeIgnoresPagesWithoutScope) {
@@ -578,7 +569,7 @@ TEST(NavigationModelTest, GroupScopeIgnoresPagesWithoutScope) {
 
     const QVector<ui::NavRow> rows = ui::BuildNavigationRows(pages, groups);
     ASSERT_EQ(rows.size(), 3);
-    EXPECT_EQ(rows[0].text, QStringLiteral("一组（播放期）"));  // 未标口径的页面不参与判断
+    EXPECT_EQ(rows[0].text, QStringLiteral("一组（播放期）")); // 未标口径的页面不参与判断
     EXPECT_EQ(rows[1].text, QStringLiteral("A页"));
     EXPECT_EQ(rows[2].text, QStringLiteral("B页"));
 }
@@ -593,10 +584,10 @@ TEST(NavigationModelTest, UnknownGroupPagesGoLastWithoutHeader) {
 
     const QVector<ui::NavRow> rows = ui::BuildNavigationRows(pages, groups);
     ASSERT_EQ(rows.size(), 4);
-    EXPECT_TRUE(rows[0].is_header);      // g1 有两个页面 -> 有标题
+    EXPECT_TRUE(rows[0].is_header); // g1 有两个页面 -> 有标题
     EXPECT_EQ(rows[1].stack_index, 1);
     EXPECT_EQ(rows[2].stack_index, 4);
-    EXPECT_FALSE(rows[3].is_header);     // 未登记分组：排最后，不加标题头
+    EXPECT_FALSE(rows[3].is_header); // 未登记分组：排最后，不加标题头
     EXPECT_EQ(rows[3].stack_index, 9);
 }
 
@@ -644,23 +635,22 @@ TEST(NavigationModelTest, AnalysisPanelPagesMapToExpectedNavigation) {
     QStringList headers;
     QStringList texts;
     for (const ui::NavRow& row : rows) {
-        if (row.is_header) headers << row.text;
-        else texts << row.text;
+        if (row.is_header)
+            headers << row.text;
+        else
+            texts << row.text;
     }
 
-    const QStringList expected_headers{QStringLiteral("播放监看（播放期）"),
-                                       QStringLiteral("文件解析（全文件）"),
+    const QStringList expected_headers{QStringLiteral("播放监看（播放期）"), QStringLiteral("文件解析（全文件）"),
                                        QStringLiteral("全片质量（全文件）")};
     EXPECT_EQ(headers, expected_headers);
 
     // 页面标题只留标题本身；口径已上提到分组标题（播放监看/全片质量）。
     const QStringList expected_texts{
-        QStringLiteral("播放统计与帧包"),           QStringLiteral("运动矢量与块分析"),
-        QStringLiteral("场景切换"),                 QStringLiteral("画面质量"),
-        QStringLiteral("事件与时间轴"),             QStringLiteral("文件结构"),
-        QStringLiteral("编码参数集"),               QStringLiteral("流媒体包"),
-        QStringLiteral("字幕与辅助数据"),           QStringLiteral("码率与 GOP"),
-        QStringLiteral("音频 QC"),                  QStringLiteral("色彩与 HDR"),
-        QStringLiteral("质量诊断"),                 QStringLiteral("报告与批量 QC")};
+        QStringLiteral("播放统计与帧包"), QStringLiteral("运动矢量与块分析"), QStringLiteral("场景切换"),
+        QStringLiteral("画面质量"),       QStringLiteral("事件与时间轴"),     QStringLiteral("文件结构"),
+        QStringLiteral("编码参数集"),     QStringLiteral("流媒体包"),         QStringLiteral("字幕与辅助数据"),
+        QStringLiteral("码率与 GOP"),     QStringLiteral("音频 QC"),          QStringLiteral("色彩与 HDR"),
+        QStringLiteral("质量诊断"),       QStringLiteral("报告与批量 QC")};
     EXPECT_EQ(texts, expected_texts);
 }

@@ -19,7 +19,7 @@ namespace videoeye {
 namespace ui {
 namespace {
 
-constexpr int kMaxLogChars = 4 * 1024 * 1024;   // 日志缓存上限，防止长任务把内存吃光
+constexpr int kMaxLogChars = 4 * 1024 * 1024; // 日志缓存上限，防止长任务把内存吃光
 
 QString FormatDuration(qint64 ms) {
     if (ms < 1000) {
@@ -43,10 +43,9 @@ void AppendLine(QPlainTextEdit* view, const QString& line) {
     view->verticalScrollBar()->setValue(view->verticalScrollBar()->maximum());
 }
 
-}  // namespace
+} // namespace
 
-FfmpegOutputWidget::FfmpegOutputWidget(QWidget* parent)
-    : QGroupBox(tr("输出与解释"), parent) {
+FfmpegOutputWidget::FfmpegOutputWidget(QWidget* parent) : QGroupBox(tr("输出与解释"), parent) {
     SetupUi();
 }
 
@@ -84,8 +83,8 @@ void FfmpegOutputWidget::SetupUi() {
     explain_list_ = new QListWidget(explain_splitter);
     explain_list_->setFont(theme::font::monoFont(9));
     explain_list_->setAlternatingRowColors(true);
-    connect(explain_list_, &QListWidget::currentItemChanged,
-            this, [this](QListWidgetItem*, QListWidgetItem*) { OnExplanationCurrentChanged(); });
+    connect(explain_list_, &QListWidget::currentItemChanged, this,
+            [this](QListWidgetItem*, QListWidgetItem*) { OnExplanationCurrentChanged(); });
     explain_detail_ = new QTextBrowser(explain_splitter);
     explain_detail_->setOpenExternalLinks(true);
     explain_splitter->addWidget(explain_list_);
@@ -130,9 +129,8 @@ void FfmpegOutputWidget::RefreshExplanation(const QString& command_text) {
     const auto parsed = ffmpeg::ParseCommandLine(command_text);
     if (parsed.status != ffmpeg::CommandParseStatus::Ok) {
         if (parsed.status != ffmpeg::CommandParseStatus::Empty) {
-            explain_detail_->setHtml(
-                QStringLiteral("<p style='color:%1'>%2</p>")
-                    .arg(QLatin1String(theme::color::kDanger), EscapeHtml(parsed.message)));
+            explain_detail_->setHtml(QStringLiteral("<p style='color:%1'>%2</p>")
+                                         .arg(QLatin1String(theme::color::kDanger), EscapeHtml(parsed.message)));
         }
         return;
     }
@@ -159,8 +157,7 @@ void FfmpegOutputWidget::RefreshExplanation(const QString& command_text) {
     // 默认视图: 流程 + 命令级提醒
     QString html = QStringLiteral("<h3 style='margin:2px'>%1</h3>").arg(EscapeHtml(explanation_.flow));
     if (!explanation_.notes.isEmpty()) {
-        html += QStringLiteral("<p style='color:%1'><b>提醒</b></p><ul>")
-                    .arg(QLatin1String(theme::color::kWarning));
+        html += QStringLiteral("<p style='color:%1'><b>提醒</b></p><ul>").arg(QLatin1String(theme::color::kWarning));
         for (const QString& note : explanation_.notes) {
             html += QStringLiteral("<li>%1</li>").arg(EscapeHtml(note));
         }
@@ -188,8 +185,8 @@ void FfmpegOutputWidget::OnExplanationCurrentChanged() {
                     .arg(QLatin1String(theme::color::kWarning), EscapeHtml(item.warning));
     }
     if (!item.description.isEmpty()) {
-        html += QStringLiteral("<p>%1</p>").arg(EscapeHtml(item.description).replace(
-            QLatin1String("\n"), QStringLiteral("<br>")));
+        html += QStringLiteral("<p>%1</p>")
+                    .arg(EscapeHtml(item.description).replace(QLatin1String("\n"), QStringLiteral("<br>")));
     }
     if (!item.position.isEmpty()) {
         html += QStringLiteral("<p><b>适用位置:</b> %1</p>").arg(EscapeHtml(item.position));
@@ -211,8 +208,7 @@ void FfmpegOutputWidget::OnExplanationCurrentChanged() {
 
 void FfmpegOutputWidget::SetStatusText(const QString& text, const QString& color) {
     status_label_->setText(text);
-    status_label_->setStyleSheet(color.isEmpty() ? QString()
-                                                 : QStringLiteral("color: %1;").arg(color));
+    status_label_->setStyleSheet(color.isEmpty() ? QString() : QStringLiteral("color: %1;").arg(color));
 }
 
 void FfmpegOutputWidget::ClearOutput() {
@@ -266,10 +262,8 @@ void FfmpegOutputWidget::ShowRunResult(const ffmpeg::FfmpegRunResult& result) {
     case ffmpeg::FfmpegRunStatus::Stopped:
         // "停止"有两种：ffmpeg 自己收了尾（输出完整）和被强杀（输出多半坏了）。
         // 一律显示"已停止"会让用户拿一个坏掉的 mp4 当结果。
-        text = result.stopped_cleanly() ? tr("状态: 已停止（正常收尾）")
-                                        : tr("状态: 已停止（输出可能不可用）");
-        color = result.stopped_cleanly() ? QLatin1String(theme::color::kWarning)
-                                         : QLatin1String(theme::color::kDanger);
+        text = result.stopped_cleanly() ? tr("状态: 已停止（正常收尾）") : tr("状态: 已停止（输出可能不可用）");
+        color = result.stopped_cleanly() ? QLatin1String(theme::color::kWarning) : QLatin1String(theme::color::kDanger);
         break;
     case ffmpeg::FfmpegRunStatus::StartError:
         text = tr("状态: 无法启动");
@@ -298,7 +292,8 @@ void FfmpegOutputWidget::ShowRunResult(const ffmpeg::FfmpegRunResult& result) {
             emit StatusMessage(tr("ffmpeg 已停止（正常收尾，输出文件完整）"));
         } else {
             AppendLog(tr("警告: ffmpeg 是被强制终止的 —— mp4/mov 这类需要先写完整索引的容器"
-                         "可能缺 moov box 而无法播放，建议重新跑一次。"), true);
+                         "可能缺 moov box 而无法播放，建议重新跑一次。"),
+                      true);
             emit StatusMessage(tr("ffmpeg 已停止，但输出可能不可用"));
         }
     }
@@ -318,8 +313,7 @@ void FfmpegOutputWidget::OnSaveLog() {
         QMessageBox::information(this, tr("提示"), tr("还没有日志可保存。"));
         return;
     }
-    const QString path = QFileDialog::getSaveFileName(this, tr("保存日志"),
-                                                      QStringLiteral("ffmpeg-log.txt"),
+    const QString path = QFileDialog::getSaveFileName(this, tr("保存日志"), QStringLiteral("ffmpeg-log.txt"),
                                                       tr("文本文件 (*.txt);;所有文件 (*)"));
     if (path.isEmpty()) {
         return;
@@ -335,5 +329,5 @@ void FfmpegOutputWidget::OnSaveLog() {
     emit StatusMessage(tr("日志已保存: %1").arg(path));
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

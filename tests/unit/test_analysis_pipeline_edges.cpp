@@ -46,13 +46,16 @@ struct PipelineCase {
 
     ~PipelineCase() {
         pipeline.ReleaseProbes();
-        if (format != nullptr) avformat_free_context(format);
+        if (format != nullptr)
+            avformat_free_context(format);
     }
 
     AVStream* Add(AVMediaType type, AVCodecID codec) {
-        if (format == nullptr) return nullptr;
+        if (format == nullptr)
+            return nullptr;
         AVStream* stream = avformat_new_stream(format, nullptr);
-        if (stream == nullptr) return nullptr;
+        if (stream == nullptr)
+            return nullptr;
         stream->codecpar->codec_type = type;
         stream->codecpar->codec_id = codec;
         stream->time_base = AVRational{1, 1000};
@@ -70,7 +73,8 @@ struct PipelineCase {
     // 喂一个关键帧包：GOP 统计只看包级 flags，不需要真码流
     void Key(int stream, int64_t pts) {
         AVPacket* packet = av_packet_alloc();
-        if (packet == nullptr) return;
+        if (packet == nullptr)
+            return;
         packet->stream_index = stream;
         packet->pts = packet->dts = pts;
         packet->flags = AV_PKT_FLAG_KEY;
@@ -126,8 +130,7 @@ void CheckTwelveChannelPcm(AVCodecID codec, bool planar) {
     ASSERT_EQ(audio.channels.size(), static_cast<size_t>(channels));
     for (int c = 0; c < channels; ++c) {
         EXPECT_EQ(audio.channels[c].sample_count, frames) << "channel " << c;
-        EXPECT_NEAR(audio.channels[c].peak, (c + 1) * 1000.0 / 32768.0, 0.00001)
-            << "channel " << c;
+        EXPECT_NEAR(audio.channels[c].peak, (c + 1) * 1000.0 / 32768.0, 0.00001) << "channel " << c;
     }
 }
 
@@ -137,12 +140,9 @@ void CheckBitDepth(int raw_bits, bool expect_mismatch) {
     ASSERT_TRUE(test.format != nullptr);
     AVStream* video = test.Add(AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_H264);
     ASSERT_TRUE(video != nullptr);
-    const uint8_t annexb[] = {
-        0, 0, 0, 1, 0x67, 0x6E, 0x00, 0x33, 0xA6, 0xCC, 0xA4,
-        0x01, 0xE0, 0x08, 0x9F, 0x95,
-        0, 0, 0, 1, 0x68, 0xEB, 0x4B, 0x2C, 0x80};
-    video->codecpar->extradata = static_cast<uint8_t*>(
-        av_mallocz(sizeof(annexb) + AV_INPUT_BUFFER_PADDING_SIZE));
+    const uint8_t annexb[] = {0,    0,    0,    1, 0x67, 0x6E, 0x00, 0x33, 0xA6, 0xCC, 0xA4, 0x01, 0xE0,
+                              0x08, 0x9F, 0x95, 0, 0,    0,    1,    0x68, 0xEB, 0x4B, 0x2C, 0x80};
+    video->codecpar->extradata = static_cast<uint8_t*>(av_mallocz(sizeof(annexb) + AV_INPUT_BUFFER_PADDING_SIZE));
     ASSERT_TRUE(video->codecpar->extradata != nullptr);
     std::memcpy(video->codecpar->extradata, annexb, sizeof(annexb));
     video->codecpar->extradata_size = sizeof(annexb);
@@ -155,11 +155,12 @@ void CheckBitDepth(int raw_bits, bool expect_mismatch) {
     EXPECT_EQ(test.result.bitstream_analysis.container_bit_depth, raw_bits);
     bool mismatch = false;
     for (const auto& issue : test.result.bitstream_analysis.inconsistencies) {
-        if (issue.field == "Bit Depth") mismatch = true;
+        if (issue.field == "Bit Depth")
+            mismatch = true;
     }
     EXPECT_EQ(mismatch, expect_mismatch);
 }
-}  // namespace
+} // namespace
 
 // 两条视频轨交错到达：GOP 相邻关键帧时间必须按流分别记账，
 // 共用一份"上一关键帧"会把 A 轨的间隔算成 A->B 的半截。

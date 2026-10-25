@@ -18,8 +18,8 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "core/domain/model/AuxiliaryDataInfo.h"
 #include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/AuxiliaryDataInfo.h"
 
 namespace videoeye {
 
@@ -37,4 +37,4 @@ private:
     Scte35Analyzer() = delete;
 };
 
-}  // namespace videoeye
+} // namespace videoeye

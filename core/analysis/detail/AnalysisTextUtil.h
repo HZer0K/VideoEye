@@ -38,16 +38,21 @@ inline std::string HexToBytes(const std::string& hex) {
     std::string out;
     out.reserve(hex.size() / 2);
     auto nibble = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        if (c >= '0' && c <= '9')
+            return c - '0';
+        if (c >= 'a' && c <= 'f')
+            return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F')
+            return c - 'A' + 10;
         return -1;
     };
     int hi = -1;
     for (char c : hex) {
-        if (c == '_') continue;  // Qt 的 fromHex 也跳过下划线
+        if (c == '_')
+            continue; // Qt 的 fromHex 也跳过下划线
         const int v = nibble(c);
-        if (v < 0) continue;
+        if (v < 0)
+            continue;
         if (hi < 0) {
             hi = v;
         } else {
@@ -76,19 +81,20 @@ inline std::string RemoveAllCopy(const std::string& s, char c) {
     std::string out;
     out.reserve(s.size());
     for (char ch : s) {
-        if (ch != c) out.push_back(ch);
+        if (ch != c)
+            out.push_back(ch);
     }
     return out;
 }
 
 /// QString::trimmed()：去掉首尾空白（空格 / \t \n \r \f \v）。
 inline std::string TrimCopy(const std::string& s) {
-    auto is_ws = [](char c) {
-        return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
-    };
+    auto is_ws = [](char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'; };
     size_t b = 0, e = s.size();
-    while (b < e && is_ws(s[b])) ++b;
-    while (e > b && is_ws(s[e - 1])) --e;
+    while (b < e && is_ws(s[b]))
+        ++b;
+    while (e > b && is_ws(s[e - 1]))
+        --e;
     return s.substr(b, e - b);
 }
 
@@ -96,7 +102,8 @@ inline std::string TrimCopy(const std::string& s) {
 inline std::string ToUpperCopy(const std::string& s) {
     std::string out = s;
     for (char& c : out) {
-        if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+        if (c >= 'a' && c <= 'z')
+            c = static_cast<char>(c - 'a' + 'A');
     }
     return out;
 }
@@ -105,7 +112,8 @@ inline std::string ToUpperCopy(const std::string& s) {
 inline std::string ToLowerCopy(const std::string& s) {
     std::string out = s;
     for (char& c : out) {
-        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        if (c >= 'A' && c <= 'Z')
+            c = static_cast<char>(c - 'A' + 'a');
     }
     return out;
 }
@@ -114,13 +122,14 @@ inline std::string ToLowerCopy(const std::string& s) {
 /// Qt 的 base=16 默认就是小写数字，所以这是更贴原义的那个；大写版由它转出来。
 inline std::string HexFillLow(uint64_t v, int width) {
     char buf[32];
-    const int n = std::snprintf(buf, sizeof(buf), "%0*llx", width,
-                                static_cast<unsigned long long>(v));
+    const int n = std::snprintf(buf, sizeof(buf), "%0*llx", width, static_cast<unsigned long long>(v));
     return std::string(buf, static_cast<size_t>(n < 0 ? 0 : n));
 }
 
 /// 同上但大写。用法上对应原本在 .arg(...) 后面又 .toUpper() 的那些点。
-inline std::string HexFill(uint64_t v, int width) { return ToUpperCopy(HexFillLow(v, width)); }
+inline std::string HexFill(uint64_t v, int width) {
+    return ToUpperCopy(HexFillLow(v, width));
+}
 
 /// QString::number(v, 'f', digits) 的等价物：定宽小数，不切科学计数法。
 inline std::string Fixed(double v, int digits) {
@@ -148,22 +157,28 @@ inline std::string Fixed(double v, int digits) {
 /// 这种串只有把日志打出来才看得见，所以钉在这里。
 inline bool EmitNext(std::ostringstream& os, const char*& p) {
     const char* s = p;
-    while (*p && *p != '%') ++p;
+    while (*p && *p != '%')
+        ++p;
     os.write(s, static_cast<std::streamsize>(p - s));
-    if (*p == '\0') return false;
-    ++p;                                    // 吃掉 %
+    if (*p == '\0')
+        return false;
+    ++p; // 吃掉 %
     if (*p == '%') {
         ++p;
-        os << '%';                          // `%%` → 一个 %（别把这个 % 吞掉）
-        return false;                       // 且它不是占位符，不吃实参
+        os << '%';    // `%%` → 一个 %（别把这个 % 吞掉）
+        return false; // 且它不是占位符，不吃实参
     }
-    if (*p >= '1' && *p <= '9') { ++p; return true; }
-    return false;                           // 孤立的 '%'，原样留着
+    if (*p >= '1' && *p <= '9') {
+        ++p;
+        return true;
+    }
+    return false; // 孤立的 '%'，原样留着
 }
 
 template <typename T>
 inline void EmitNext(std::ostringstream& os, const char*& p, const T& v) {
-    if (EmitNext(os, p)) os << v;
+    if (EmitNext(os, p))
+        os << v;
 }
 
 template <typename T, typename... Rest>
@@ -212,10 +227,13 @@ inline std::string FileExtension(const std::string& path) {
     // 千万别写成 `dot <= slash`：slash 找不到时是 npos = (size_t)-1，任何真的 dot
     // 都 <= npos，于是**无目录分隔符的路径一律返回空** —— 也就是相对文件名
     // （"clip.mp4"）这条路会被判成"没有扩展名"。FormatDetector 正在用它做格式探测。
-    if (dot == std::string::npos || dot == 0) return {};
-    if (slash != std::string::npos && dot <= slash) return {};
-    if (dot + 1 >= path.size()) return {};
+    if (dot == std::string::npos || dot == 0)
+        return {};
+    if (slash != std::string::npos && dot <= slash)
+        return {};
+    if (dot + 1 >= path.size())
+        return {};
     return ToLowerCopy(path.substr(dot + 1));
 }
 
-}  // namespace videoeye
+} // namespace videoeye

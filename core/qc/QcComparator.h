@@ -18,17 +18,17 @@ namespace videoeye {
 namespace qc {
 
 enum class QcFieldDiff {
-    Same,           // 两侧一致（数值类按容差判定）
-    Different,      // 不一致
-    OnlyLeft,       // 只有左文件有（右侧缺失，如转码后丢了时码轨）
+    Same,      // 两侧一致（数值类按容差判定）
+    Different, // 不一致
+    OnlyLeft,  // 只有左文件有（右侧缺失，如转码后丢了时码轨）
     OnlyRight,
-    Unavailable,    // 两侧都没有 / 没采集到（不算差异）
+    Unavailable, // 两侧都没有 / 没采集到（不算差异）
 };
 
 const char* ToString(QcFieldDiff diff);
 
 struct QcCompareRow {
-    std::string group;    // 分组名（容器 / 视频 / 码率与 GOP / 音频 / 色彩与 HDR）
+    std::string group; // 分组名（容器 / 视频 / 码率与 GOP / 音频 / 色彩与 HDR）
     std::string field;
     std::string left;
     std::string right;
@@ -36,7 +36,7 @@ struct QcCompareRow {
     bool numeric = false;
     double left_value = 0.0;
     double right_value = 0.0;
-    double delta = 0.0;   // right - left
+    double delta = 0.0; // right - left
     std::string unit;
 };
 
@@ -61,12 +61,12 @@ struct QcComparison {
 // 数值判定用的相对/绝对容差：时长差 3 毫秒不算差异（容器时间基不同必然有舍入差），
 // 响度差 0.1 LU 也不该提示"变了"。
 struct QcCompareTolerance {
-    double absolute = 0.0;   // abs(right-left) <= absolute 视为一致
-    double relative = 0.0;   // 或 abs(delta) <= relative * max(|left|,1)
+    double absolute = 0.0; // abs(right-left) <= absolute 视为一致
+    double relative = 0.0; // 或 abs(delta) <= relative * max(|left|,1)
 };
 
 QcComparison CompareRuns(const QcRunResult& left, const QcRunResult& right,
                          const QcCompareTolerance& tolerance = QcCompareTolerance{});
 
-}  // namespace qc
-}  // namespace videoeye
+} // namespace qc
+} // namespace videoeye

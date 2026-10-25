@@ -1,8 +1,8 @@
 #pragma once
 
-#include <QObject>
-#include <QImage>
 #include <QElapsedTimer>
+#include <QImage>
+#include <QObject>
 #include <QVector>
 #include <deque>
 

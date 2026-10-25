@@ -1,8 +1,7 @@
 #include "core/analysis/orchestration/MediaInfoAnalyzer.h"
-#include "core/analysis/detail/AnalysisTextUtil.h"  // Fixed / StrCat
-#include "core/media/streaming/ManifestText.h"      // videoeye::manifest::FileSizeOf
-#include "core/ffmpeg_io/FfmpegInterrupt.h"  // 共享 FFmpeg 中断回调
-
+#include "core/analysis/detail/AnalysisTextUtil.h" // Fixed / StrCat
+#include "core/ffmpeg_io/FfmpegInterrupt.h"        // 共享 FFmpeg 中断回调
+#include "core/media/streaming/ManifestText.h"     // videoeye::manifest::FileSizeOf
 
 #include <algorithm>
 #include <cmath>
@@ -26,7 +25,8 @@ namespace {
 
 // 把秒数格式化成 "1 h 23 min"、"4 min 5 s"、"678 ms" 这种短串
 std::string FormatDuration(double seconds) {
-    if (seconds <= 0 || !std::isfinite(seconds)) return "-";
+    if (seconds <= 0 || !std::isfinite(seconds))
+        return "-";
 
     const long long total_ms = static_cast<long long>(seconds * 1000.0 + 0.5);
     const long long ms = total_ms % 1000;
@@ -37,15 +37,19 @@ std::string FormatDuration(double seconds) {
     const long long h = total_min / 60;
 
     std::string out;
-    if (h > 0) out += std::to_string(h) + " h ";
-    if (h > 0 || min > 0) out += std::to_string(min) + " min ";
+    if (h > 0)
+        out += std::to_string(h) + " h ";
+    if (h > 0 || min > 0)
+        out += std::to_string(min) + " min ";
     out += std::to_string(s) + " s";
-    if (h == 0 && total_min == 0) out += " " + std::to_string(ms) + " ms";
+    if (h == 0 && total_min == 0)
+        out += " " + std::to_string(ms) + " ms";
     return out;
 }
 
 std::string FormatBitRate(int64_t bit_rate) {
-    if (bit_rate <= 0) return "-";
+    if (bit_rate <= 0)
+        return "-";
     if (bit_rate >= 1000000) {
         return Fixed(static_cast<double>(bit_rate) / 1000000.0, 1) + " Mb/s";
     }
@@ -56,7 +60,8 @@ std::string FormatBitRate(int64_t bit_rate) {
 }
 
 std::string FormatFileSize(int64_t bytes) {
-    if (bytes <= 0) return "-";
+    if (bytes <= 0)
+        return "-";
     static const char* kUnits[] = {"B", "KiB", "MiB", "GiB", "TiB"};
     double value = static_cast<double>(bytes);
     int unit = 0;
@@ -69,12 +74,14 @@ std::string FormatFileSize(int64_t bytes) {
 
 std::string CodecName(const AVCodecParameters* par) {
     const AVCodecDescriptor* desc = avcodec_descriptor_get(par->codec_id);
-    if (desc && desc->name) return desc->name;
+    if (desc && desc->name)
+        return desc->name;
     return avcodec_get_name(par->codec_id);
 }
 
 std::string CodecTag(const AVCodecParameters* par) {
-    if (!par->codec_tag) return std::string();
+    if (!par->codec_tag)
+        return std::string();
     char buf[AV_FOURCC_MAX_STRING_SIZE] = {0};
     av_fourcc_make_string(buf, par->codec_tag);
     return buf;
@@ -82,10 +89,12 @@ std::string CodecTag(const AVCodecParameters* par) {
 
 std::string PixFmtName(int pix_fmt) {
     const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(pix_fmt));
-    if (!desc) return "-";
+    if (!desc)
+        return "-";
     std::string name = desc->name;
     int bits = desc->comp[0].depth;
-    if (bits > 0) name += " (" + std::to_string(bits) + " bit)";
+    if (bits > 0)
+        name += " (" + std::to_string(bits) + " bit)";
     return name;
 }
 
@@ -95,14 +104,17 @@ std::string SampleFmtName(int sample_fmt) {
 }
 
 std::string RationalToString(const AVRational& q) {
-    if (q.den == 0) return "-";
+    if (q.den == 0)
+        return "-";
     const double v = av_q2d(q);
-    if (q.num == 0) return "0";
+    if (q.num == 0)
+        return "0";
     return Fixed(v, 3);
 }
 
 std::string AspectRatioToString(const AVRational& q) {
-    if (q.num <= 0 || q.den <= 0) return "-";
+    if (q.num <= 0 || q.den <= 0)
+        return "-";
     return std::to_string(q.num) + ":" + std::to_string(q.den);
 }
 
@@ -122,33 +134,41 @@ std::string LanguageName(const AVDictionary* metadata, const AVStream* stream) {
     if (!lang && metadata) {
         lang = av_dict_get(metadata, "language", nullptr, 0);
     }
-    if (!lang || !lang->value || !*lang->value) return std::string();
+    if (!lang || !lang->value || !*lang->value)
+        return std::string();
     return lang->value;
 }
 
 void AppendMetadata(std::string& out, const AVDictionary* dict, const std::string& indent) {
-    if (!dict) return;
+    if (!dict)
+        return;
     const AVDictionaryEntry* entry = nullptr;
     bool any = false;
     while ((entry = av_dict_get(dict, "", entry, AV_DICT_IGNORE_SUFFIX))) {
-        if (!entry->value || !*entry->value) continue;
+        if (!entry->value || !*entry->value)
+            continue;
         if (!any) {
             out += indent + "Metadata:\n";
             any = true;
         }
-        out += indent + "  " + entry->key +
-               " : " + entry->value + '\n';
+        out += indent + "  " + entry->key + " : " + entry->value + '\n';
     }
 }
 
 std::string StreamTitle(AVMediaType type) {
     switch (type) {
-        case AVMEDIA_TYPE_VIDEO:    return "Video";
-        case AVMEDIA_TYPE_AUDIO:    return "Audio";
-        case AVMEDIA_TYPE_SUBTITLE: return "Text";
-        case AVMEDIA_TYPE_DATA:     return "Data";
-        case AVMEDIA_TYPE_ATTACHMENT: return "Attachment";
-        default:                    return "Other";
+    case AVMEDIA_TYPE_VIDEO:
+        return "Video";
+    case AVMEDIA_TYPE_AUDIO:
+        return "Audio";
+    case AVMEDIA_TYPE_SUBTITLE:
+        return "Text";
+    case AVMEDIA_TYPE_DATA:
+        return "Data";
+    case AVMEDIA_TYPE_ATTACHMENT:
+        return "Attachment";
+    default:
+        return "Other";
     }
 }
 
@@ -164,7 +184,8 @@ struct MediaInfoAnalyzer::Impl {
     bool opened = false;
 };
 
-MediaInfoAnalyzer::MediaInfoAnalyzer() : impl_(new Impl()) {}
+MediaInfoAnalyzer::MediaInfoAnalyzer() : impl_(new Impl()) {
+}
 
 MediaInfoAnalyzer::~MediaInfoAnalyzer() {
     Close();
@@ -216,8 +237,7 @@ bool MediaInfoAnalyzer::Open(const std::string& filePath, std::shared_ptr<std::a
     fmt->probesize = 32 * 1024 * 1024;
     fmt->max_analyze_duration = 5 * AV_TIME_BASE;
 
-    int ret = avformat_open_input(&fmt, filePath.c_str(),
-                                  const_cast<AVInputFormat*>(iformat), &opts);
+    int ret = avformat_open_input(&fmt, filePath.c_str(), const_cast<AVInputFormat*>(iformat), &opts);
     av_dict_free(&opts);
     if (ret < 0) {
         char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
@@ -244,11 +264,11 @@ bool MediaInfoAnalyzer::Open(const std::string& filePath, std::shared_ptr<std::a
     return true;
 }
 
-std::string MediaInfoAnalyzer::FormatFromContext(const AVFormatContext* fmt,
-                                                 const std::string& filePath) {
+std::string MediaInfoAnalyzer::FormatFromContext(const AVFormatContext* fmt, const std::string& filePath) {
     // 已在别处完成打开/探测的调用方（打开链路）复用本函数：媒体信息不再触发
     // 第二次 avformat_open_input + find_stream_info（同一个文件被读第四遍）。
-    if (!fmt) return std::string();
+    if (!fmt)
+        return std::string();
 
     // ---- 组装文本报告 ----
     std::string out;
@@ -267,7 +287,8 @@ std::string MediaInfoAnalyzer::FormatFromContext(const AVFormatContext* fmt,
     if (fmt->iformat) {
         std::string container = Trimmed(fmt->iformat->name);
         if (const char* long_name = fmt->iformat->long_name) {
-            if (long_name && *long_name) container += StrCat(" (%1)", long_name);
+            if (long_name && *long_name)
+                container += StrCat(" (%1)", long_name);
         }
         out += kIndent + "Format                     : " + container + '\n';
     }
@@ -285,15 +306,15 @@ std::string MediaInfoAnalyzer::FormatFromContext(const AVFormatContext* fmt,
     out += '\n';
 
     // ===== 每种流类型各一段 =====
-    static const AVMediaType kOrder[] = {
-        AVMEDIA_TYPE_VIDEO, AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_SUBTITLE, AVMEDIA_TYPE_DATA
-    };
+    static const AVMediaType kOrder[] = {AVMEDIA_TYPE_VIDEO, AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_SUBTITLE,
+                                         AVMEDIA_TYPE_DATA};
 
     for (AVMediaType type : kOrder) {
         int index_in_type = 0;
         for (unsigned i = 0; i < fmt->nb_streams; ++i) {
             const AVStream* st = fmt->streams[i];
-            if (!st || st->codecpar->codec_type != type) continue;
+            if (!st || st->codecpar->codec_type != type)
+                continue;
 
             const AVCodecParameters* par = st->codecpar;
             out += StreamTitle(type) + " #" + std::to_string(index_in_type) + '\n';
@@ -324,15 +345,14 @@ std::string MediaInfoAnalyzer::FormatFromContext(const AVFormatContext* fmt,
 
                 AVRational dar = par->sample_aspect_ratio;
                 if (dar.num > 0 && dar.den > 0 && par->width > 0 && par->height > 0) {
-                    av_reduce(&dar.num, &dar.den,
-                              static_cast<int64_t>(par->width) * dar.num,
-                              static_cast<int64_t>(par->height) * dar.den,
-                              INT_MAX);
+                    av_reduce(&dar.num, &dar.den, static_cast<int64_t>(par->width) * dar.num,
+                              static_cast<int64_t>(par->height) * dar.den, INT_MAX);
                     out += kIndent + "Display aspect ratio       : " + AspectRatioToString(dar) + '\n';
                 }
                 out += kIndent + "Frame rate                 : " + RationalToString(st->avg_frame_rate) + " fps" + '\n';
                 if (st->r_frame_rate.num > 0 && av_cmp_q(st->r_frame_rate, st->avg_frame_rate) != 0) {
-                    out += kIndent + "Real frame rate            : " + RationalToString(st->r_frame_rate) + " fps" + '\n';
+                    out +=
+                        kIndent + "Real frame rate            : " + RationalToString(st->r_frame_rate) + " fps" + '\n';
                 }
                 if (st->nb_frames > 0) {
                     out += kIndent + "Frame count                : " + std::to_string(st->nb_frames) + '\n';
@@ -344,26 +364,30 @@ std::string MediaInfoAnalyzer::FormatFromContext(const AVFormatContext* fmt,
                     out += kIndent + "Color range                : " + av_color_range_name(par->color_range) + '\n';
                 }
                 if (par->color_primaries != AVCOL_PRI_UNSPECIFIED) {
-                    out += kIndent + "Color primaries            : " + av_color_primaries_name(par->color_primaries) + '\n';
+                    out += kIndent + "Color primaries            : " + av_color_primaries_name(par->color_primaries) +
+                           '\n';
                 }
                 if (par->color_trc != AVCOL_TRC_UNSPECIFIED) {
                     out += kIndent + "Transfer characteristics   : " + av_color_transfer_name(par->color_trc) + '\n';
                 }
                 if (par->chroma_location != AVCHROMA_LOC_UNSPECIFIED) {
-                    out += kIndent + "Chroma subsampling         : " + av_chroma_location_name(par->chroma_location) + '\n';
+                    out += kIndent + "Chroma subsampling         : " + av_chroma_location_name(par->chroma_location) +
+                           '\n';
                 }
                 // 旋转角度 (手机竖拍视频常见)
                 // FFmpeg 8 移除了 AVStream::side_data，容器级 side data 只能从
                 // AVCodecParameters::coded_side_data 读。
                 const AVPacketSideData* display_matrix =
-                    av_packet_side_data_get(par->coded_side_data, par->nb_coded_side_data,
-                                            AV_PKT_DATA_DISPLAYMATRIX);
+                    av_packet_side_data_get(par->coded_side_data, par->nb_coded_side_data, AV_PKT_DATA_DISPLAYMATRIX);
                 if (display_matrix && display_matrix->size >= 36) {
                     double theta = 0.0;
                     const int32_t* m = reinterpret_cast<const int32_t*>(display_matrix->data);
-                    if (m[0] == 0 && m[1] == 65536) theta = 90.0;
-                    else if (m[0] == 0 && m[1] == -65536) theta = 270.0;
-                    else if (m[0] == -65536 && m[1] == 0) theta = 180.0;
+                    if (m[0] == 0 && m[1] == 65536)
+                        theta = 90.0;
+                    else if (m[0] == 0 && m[1] == -65536)
+                        theta = 270.0;
+                    else if (m[0] == -65536 && m[1] == 0)
+                        theta = 180.0;
                     if (theta != 0.0) {
                         out += kIndent + "Rotation                   : " + Fixed(theta, 1) + '\n';
                     }
@@ -379,9 +403,9 @@ std::string MediaInfoAnalyzer::FormatFromContext(const AVFormatContext* fmt,
                 }
                 out += kIndent + "Channels                   : " + std::to_string(par->ch_layout.nb_channels) + '\n';
                 if (par->bits_per_raw_sample > 0) {
-                    out += kIndent + "Bit depth                  : " + std::to_string(par->bits_per_raw_sample) + " bit" + '\n';
-                } else if (av_sample_fmt_is_planar(static_cast<AVSampleFormat>(par->format)) ||
-                           par->format >= 0) {
+                    out += kIndent + "Bit depth                  : " + std::to_string(par->bits_per_raw_sample) +
+                           " bit" + '\n';
+                } else if (av_sample_fmt_is_planar(static_cast<AVSampleFormat>(par->format)) || par->format >= 0) {
                     const int bps = av_get_bytes_per_sample(static_cast<AVSampleFormat>(par->format)) * 8;
                     if (bps > 0) {
                         out += kIndent + "Bit depth                  : " + std::to_string(bps) + " bit" + '\n';
@@ -422,10 +446,10 @@ std::string MediaInfoAnalyzer::FormatFromContext(const AVFormatContext* fmt,
         for (unsigned i = 0; i < fmt->nb_chapters; ++i) {
             const AVChapter* ch = fmt->chapters[i];
             const double start = static_cast<double>(ch->start) * av_q2d(ch->time_base);
-            out += kIndent + "Chapter #" + std::to_string(i + 1) +
-                   "           : " + Fixed(start, 3) + " s";
+            out += kIndent + "Chapter #" + std::to_string(i + 1) + "           : " + Fixed(start, 3) + " s";
             AVDictionaryEntry* title = av_dict_get(ch->metadata, "title", nullptr, 0);
-            if (title && title->value) out += StrCat(" - %1", title->value);
+            if (title && title->value)
+                out += StrCat(" - %1", title->value);
             out += '\n';
         }
         out += '\n';

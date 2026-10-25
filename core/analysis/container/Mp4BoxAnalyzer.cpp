@@ -33,20 +33,19 @@ void FillTableFields(model::Mp4BoxNode& node, const videoeye::IsobmffTrack& trac
         PushFieldInt(node, "sample_count", track.SttsSampleCount());
         for (int i = 0; i < std::min<int>(kMaxPreviewEntries, static_cast<int>(track.stts.size())); ++i) {
             PushField(node, "entry[" + std::to_string(i) + "]",
-                      "sample_count=" + std::to_string(track.stts[i].sample_count)
-                          + ", sample_duration=" + std::to_string(track.stts[i].sample_delta));
+                      "sample_count=" + std::to_string(track.stts[i].sample_count) +
+                          ", sample_duration=" + std::to_string(track.stts[i].sample_delta));
         }
     } else if (type == "ctts") {
         PushFieldInt(node, "entry_count", track.ctts.size());
         for (int i = 0; i < std::min<int>(kMaxPreviewEntries, static_cast<int>(track.ctts.size())); ++i) {
             PushField(node, "entry[" + std::to_string(i) + "]",
-                      "sample_count=" + std::to_string(track.ctts[i].sample_count)
-                          + ", sample_offset=" + std::to_string(track.ctts[i].sample_offset));
+                      "sample_count=" + std::to_string(track.ctts[i].sample_count) +
+                          ", sample_offset=" + std::to_string(track.ctts[i].sample_offset));
         }
     } else if (type == "stco" || type == "co64") {
         PushFieldInt(node, "entry_count", track.chunk_offsets.size());
-        for (int i = 0; i < std::min<int>(kMaxPreviewEntries,
-                                          static_cast<int>(track.chunk_offsets.size())); ++i) {
+        for (int i = 0; i < std::min<int>(kMaxPreviewEntries, static_cast<int>(track.chunk_offsets.size())); ++i) {
             PushField(node, "entry[" + std::to_string(i) + "]",
                       "chunk_offset=" + std::to_string(track.chunk_offsets[i]));
         }
@@ -54,17 +53,15 @@ void FillTableFields(model::Mp4BoxNode& node, const videoeye::IsobmffTrack& trac
         PushFieldInt(node, "entry_count", track.stsc.size());
         for (int i = 0; i < std::min<int>(kMaxPreviewEntries, static_cast<int>(track.stsc.size())); ++i) {
             PushField(node, "entry[" + std::to_string(i) + "]",
-                      "first_chunk=" + std::to_string(track.stsc[i].first_chunk)
-                          + ", samples_per_chunk=" + std::to_string(track.stsc[i].samples_per_chunk)
-                          + ", sample_description_index=" + std::to_string(track.stsc[i].sample_description_index));
+                      "first_chunk=" + std::to_string(track.stsc[i].first_chunk) +
+                          ", samples_per_chunk=" + std::to_string(track.stsc[i].samples_per_chunk) +
+                          ", sample_description_index=" + std::to_string(track.stsc[i].sample_description_index));
         }
     } else if (type == "stsz") {
         PushFieldInt(node, "sample_size", track.stsz.default_size);
         PushFieldInt(node, "sample_count", track.stsz.sample_count);
-        for (int i = 0; i < std::min<int>(kMaxPreviewEntries,
-                                          static_cast<int>(track.stsz.sizes.size())); ++i) {
-            PushField(node, "entry[" + std::to_string(i) + "]",
-                      "size=" + std::to_string(track.stsz.sizes[i]));
+        for (int i = 0; i < std::min<int>(kMaxPreviewEntries, static_cast<int>(track.stsz.sizes.size())); ++i) {
+            PushField(node, "entry[" + std::to_string(i) + "]", "size=" + std::to_string(track.stsz.sizes[i]));
         }
     } else if (type == "stz2") {
         PushFieldInt(node, "field_size", track.stsz.field_size);
@@ -72,15 +69,14 @@ void FillTableFields(model::Mp4BoxNode& node, const videoeye::IsobmffTrack& trac
     } else if (type == "stss") {
         PushFieldInt(node, "entry_count", track.stss.size());
         for (int i = 0; i < std::min<int>(kMaxPreviewEntries, static_cast<int>(track.stss.size())); ++i) {
-            PushField(node, "entry[" + std::to_string(i) + "]",
-                      "sample_number=" + std::to_string(track.stss[i]));
+            PushField(node, "entry[" + std::to_string(i) + "]", "sample_number=" + std::to_string(track.stss[i]));
         }
     } else if (type == "elst") {
         PushFieldInt(node, "entry_count", track.elst.size());
         for (int i = 0; i < std::min<int>(4, static_cast<int>(track.elst.size())); ++i) {
             PushField(node, "entry[" + std::to_string(i) + "]",
-                      "segment_duration=" + std::to_string(track.elst[i].segment_duration)
-                          + ", media_time=" + std::to_string(track.elst[i].media_time));
+                      "segment_duration=" + std::to_string(track.elst[i].segment_duration) +
+                          ", media_time=" + std::to_string(track.elst[i].media_time));
         }
     } else if (type == "stsd") {
         PushField(node, "format", track.codec);
@@ -91,8 +87,7 @@ void FillTableFields(model::Mp4BoxNode& node, const videoeye::IsobmffTrack& trac
 }
 
 // 解析器 box -> UI 模型 box（递归）
-model::Mp4BoxNode ConvertBox(const videoeye::IsobmffBox& src,
-                             const videoeye::IsobmffTrack* track) {
+model::Mp4BoxNode ConvertBox(const videoeye::IsobmffBox& src, const videoeye::IsobmffTrack* track) {
     model::Mp4BoxNode node;
     node.type = src.type;
     node.size = src.size;
@@ -127,7 +122,8 @@ model::TrackBoxTables ConvertTrackTables(const videoeye::IsobmffTrack& src) {
 
     const uint32_t cap = kMaxTableEntries;
     for (const auto& e : src.stts) {
-        if (t.stts_entries.size() >= static_cast<int>(cap)) break;
+        if (t.stts_entries.size() >= static_cast<int>(cap))
+            break;
         model::SttsEntry out;
         out.sample_count = e.sample_count;
         out.sample_delta = e.sample_delta;
@@ -135,7 +131,8 @@ model::TrackBoxTables ConvertTrackTables(const videoeye::IsobmffTrack& src) {
     }
     const bool use_co64 = src.has_co64;
     for (const auto& off : src.chunk_offsets) {
-        if (t.stco_entries.size() >= static_cast<int>(cap)) break;
+        if (t.stco_entries.size() >= static_cast<int>(cap))
+            break;
         if (use_co64) {
             model::Co64Entry out;
             out.chunk_offset = off;
@@ -147,7 +144,8 @@ model::TrackBoxTables ConvertTrackTables(const videoeye::IsobmffTrack& src) {
         }
     }
     for (const auto& e : src.stsc) {
-        if (t.stsc_entries.size() >= static_cast<int>(cap)) break;
+        if (t.stsc_entries.size() >= static_cast<int>(cap))
+            break;
         model::StscEntry out;
         out.first_chunk = e.first_chunk;
         out.samples_per_chunk = e.samples_per_chunk;
@@ -155,13 +153,15 @@ model::TrackBoxTables ConvertTrackTables(const videoeye::IsobmffTrack& src) {
         t.stsc_entries.push_back(out);
     }
     for (const auto& s : src.stsz.sizes) {
-        if (t.stsz_entries.size() >= static_cast<int>(cap)) break;
+        if (t.stsz_entries.size() >= static_cast<int>(cap))
+            break;
         model::StszEntry out;
         out.sample_size = s;
         t.stsz_entries.push_back(out);
     }
     for (const auto& n : src.stss) {
-        if (t.stss_entries.size() >= static_cast<int>(cap)) break;
+        if (t.stss_entries.size() >= static_cast<int>(cap))
+            break;
         model::StssEntry out;
         out.sample_number = n;
         t.stss_entries.push_back(out);
@@ -171,14 +171,13 @@ model::TrackBoxTables ConvertTrackTables(const videoeye::IsobmffTrack& src) {
     return t;
 }
 
-}  // namespace
+} // namespace
 
 Mp4BoxAnalyzer::Mp4BoxAnalyzer() = default;
 
 Mp4BoxAnalyzer::~Mp4BoxAnalyzer() = default;
 
-bool Mp4BoxAnalyzer::AnalyzeFile(const std::string& file_path,
-                                 model::Mp4BoxAnalysisResult& result,
+bool Mp4BoxAnalyzer::AnalyzeFile(const std::string& file_path, model::Mp4BoxAnalysisResult& result,
                                  const std::atomic<bool>* cancel) {
     result = model::Mp4BoxAnalysisResult();
     result.file_path = file_path;
@@ -224,8 +223,8 @@ bool Mp4BoxAnalyzer::AnalyzeFile(const std::string& file_path,
     }
 
     result.valid = true;
-    LOG_INFO("MP4 Box 分析完成: " + std::to_string(result.box_tree.size()) +
-             " 个顶级 Box, " + std::to_string(result.track_tables.size()) + " 个 Track 表");
+    LOG_INFO("MP4 Box 分析完成: " + std::to_string(result.box_tree.size()) + " 个顶级 Box, " +
+             std::to_string(result.track_tables.size()) + " 个 Track 表");
     return true;
 }
 
@@ -233,4 +232,4 @@ void Mp4BoxAnalyzer::Reset() {
     // 无状态需要清理
 }
 
-}  // namespace videoeye
+} // namespace videoeye

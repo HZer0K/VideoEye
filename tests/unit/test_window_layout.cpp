@@ -29,7 +29,7 @@ WindowLayoutMetrics Metrics(int bars, int content, int player) {
     return m;
 }
 
-}  // namespace
+} // namespace
 
 TEST(WindowLayoutTests, MinimumHeightIsTheSumOfEveryBarAndBothPanes) {
     // 三条栏 + 内容区 + 播放区，一条都不能漏：漏一条就允许窗口比内容矮。
@@ -46,8 +46,7 @@ TEST(WindowLayoutTests, CollapsedPlayerAreaLetsTheWindowShrink) {
     // 播放区收起时 MinimumHeightHint 返回 0，这是刻意的：分析为主的场景下
     // 用户应该能把窗口压到只剩分析区。
     EXPECT_EQ(MinimumWindowSize(Metrics(24, 250, 0)).height(), 274);
-    EXPECT_LT(MinimumWindowSize(Metrics(24, 250, 0)).height(),
-              MinimumWindowSize(Metrics(24, 250, 300)).height());
+    EXPECT_LT(MinimumWindowSize(Metrics(24, 250, 0)).height(), MinimumWindowSize(Metrics(24, 250, 300)).height());
 }
 
 TEST(WindowLayoutTests, MinimumWidthAddsSidebarOnTopOfTheBase) {
@@ -67,8 +66,7 @@ TEST(WindowLayoutTests, EmptyMetricsStillProduceAUsableSize) {
 
 TEST(WindowLayoutTests, SmallScreensStartInTheAnalysisPreset) {
     // 860 是 1366x768 笔记本减掉任务栏后的典型可用高度，阈值以下必须走「分析」。
-    EXPECT_EQ(InitialLayoutPreset(kSmallScreenHeightThreshold - 1),
-              WindowLayoutPreset::Analysis);
+    EXPECT_EQ(InitialLayoutPreset(kSmallScreenHeightThreshold - 1), WindowLayoutPreset::Analysis);
     EXPECT_EQ(InitialLayoutPreset(700), WindowLayoutPreset::Analysis);
 }
 
@@ -86,8 +84,8 @@ TEST(WindowLayoutTests, UnknownScreenHeightFallsBackToMonitor) {
 
 TEST(WindowLayoutTests, BelowMinimumTriggersOnEitherAxis) {
     const QSize min(1000, 700);
-    EXPECT_TRUE(IsBelowMinimum(QSize(999, 700), min));  // 只窄了
+    EXPECT_TRUE(IsBelowMinimum(QSize(999, 700), min));   // 只窄了
     EXPECT_TRUE(IsBelowMinimum(QSize(1000, 699), min));  // 只矮了
-    EXPECT_FALSE(IsBelowMinimum(QSize(1000, 700), min));  // 正好卡在最小值上不算
+    EXPECT_FALSE(IsBelowMinimum(QSize(1000, 700), min)); // 正好卡在最小值上不算
     EXPECT_FALSE(IsBelowMinimum(QSize(1200, 900), min));
 }

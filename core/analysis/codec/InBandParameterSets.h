@@ -45,32 +45,48 @@ public:
     // 默认值写成函数体而不是默认实参：GCC 在类还没定义完时无法求值 Options{}
     // （嵌套类的默认成员初始化器尚未就绪），会直接报
     // "default member initializer for 'max_bytes' required before the end of its enclosing class"。
-    void Reset(int codec_id) { Reset(codec_id, Options{}); }
+    void Reset(int codec_id) {
+        Reset(codec_id, Options{});
+    }
     void Reset(int codec_id, const Options& options);
 
     // 容器层快照，供"码流 vs 容器"一致性比对。必须在第一次 Feed() 之前设置。
     void SetContainerMetadata(const ContainerMetadata& metadata);
 
     // 该编码有没有参数集解析器（H.264 / HEVC / VVC / AV1 之外的编码不启用）
-    bool enabled() const { return enabled_; }
+    bool enabled() const {
+        return enabled_;
+    }
     // 是否已经有结果（Feed 返回过 true）
-    bool done() const { return done_; }
+    bool done() const {
+        return done_;
+    }
     // 是否已经放弃（超出字节/包上限，或重试次数耗尽）
-    bool given_up() const { return given_up_; }
+    bool given_up() const {
+        return given_up_;
+    }
     // 已经喂了多少个包
-    int packets() const { return packets_; }
+    int packets() const {
+        return packets_;
+    }
     // 已经攒了多少字节
-    size_t buffered_bytes() const { return buffer_.size(); }
+    size_t buffered_bytes() const {
+        return buffer_.size();
+    }
 
     // 喂一个视频包（一个访问单元）。返回 true = 参数集已解析出来，可以收结果。
     // 返回 false 且 given_up()=true 表示别再喂了。
     bool Feed(const uint8_t* data, size_t size);
 
     // 仅在 done() 为 true 时有效
-    const model::BitstreamAnalysisResult& result() const { return result_; }
+    const model::BitstreamAnalysisResult& result() const {
+        return result_;
+    }
 
     // 给调用方拼日志/说明用
-    std::string GiveUpReason() const { return give_up_reason_; }
+    std::string GiveUpReason() const {
+        return give_up_reason_;
+    }
 
 private:
     // AnnexB：在 [scan_pos_ - overlap, size) 里扫起始码并按 NAL 类型判参数集
@@ -103,4 +119,4 @@ private:
     model::BitstreamAnalysisResult result_;
 };
 
-}  // namespace videoeye
+} // namespace videoeye

@@ -30,15 +30,19 @@ inline std::string FormatValue(double value, int decimals = 2) {
 
 inline bool Triggered(const model::QcRule& rule, double value) {
     switch (rule.op) {
-        case model::QcRuleOp::MaxExceeded: return value > rule.threshold;
-        case model::QcRuleOp::MinBelow:    return value < rule.threshold;
-        case model::QcRuleOp::NonZero:     return std::abs(value) > 1e-9;
+    case model::QcRuleOp::MaxExceeded:
+        return value > rule.threshold;
+    case model::QcRuleOp::MinBelow:
+        return value < rule.threshold;
+    case model::QcRuleOp::NonZero:
+        return std::abs(value) > 1e-9;
     }
     return false;
 }
 
 inline std::string ThresholdText(const model::QcRule& rule) {
-    if (rule.op == model::QcRuleOp::NonZero) return "存在";
+    if (rule.op == model::QcRuleOp::NonZero)
+        return "存在";
     const std::string op_text = (rule.op == model::QcRuleOp::MaxExceeded) ? ">" : "<";
     return op_text + " " + FormatValue(rule.threshold, 2) + rule.unit;
 }
@@ -50,8 +54,8 @@ struct IssueFactory {
     const model::QcRule& rule;
 
     model::DiagnosticIssue operator()(double value, const std::string& detail,
-                                      model::TimeRange range = model::TimeRange::Global(),
-                                      int stream_index = -1, int occurrences = 1) const {
+                                      model::TimeRange range = model::TimeRange::Global(), int stream_index = -1,
+                                      int occurrences = 1) const {
         model::DiagnosticIssue issue;
         issue.rule_id = rule.id;
         issue.title = rule.name;
@@ -69,50 +73,38 @@ struct IssueFactory {
 };
 
 // 分类入口（各 TU 定义）。签名统一：rule + 全文件结果 + issue 工厂。
-std::vector<model::DiagnosticIssue> CheckContainerRules(const model::QcRule& rule,
-                                                        const model::AnalysisResult& result,
+std::vector<model::DiagnosticIssue> CheckContainerRules(const model::QcRule& rule, const model::AnalysisResult& result,
                                                         const IssueFactory& make_issue);
-std::vector<model::DiagnosticIssue> CheckMp4ContainerRules(const model::QcRule& rule,
-                                                           const model::AnalysisResult& result,
-                                                           const IssueFactory& make_issue);
+std::vector<model::DiagnosticIssue>
+CheckMp4ContainerRules(const model::QcRule& rule, const model::AnalysisResult& result, const IssueFactory& make_issue);
 std::vector<model::DiagnosticIssue> CheckStreamingContainerRules(const model::QcRule& rule,
                                                                  const model::AnalysisResult& result,
                                                                  const IssueFactory& make_issue);
-std::vector<model::DiagnosticIssue> CheckTsTransportRules(const model::QcRule& rule,
-                                                          const model::AnalysisResult& result,
-                                                          const IssueFactory& make_issue);
+std::vector<model::DiagnosticIssue>
+CheckTsTransportRules(const model::QcRule& rule, const model::AnalysisResult& result, const IssueFactory& make_issue);
 // 老式容器：AVI / FLV / ASF / OGG（读 AnalysisResult::container_diagnostics）
-std::vector<model::DiagnosticIssue> CheckAviContainerRules(const model::QcRule& rule,
-                                                           const model::AnalysisResult& result,
-                                                           const IssueFactory& make_issue);
-std::vector<model::DiagnosticIssue> CheckFlvContainerRules(const model::QcRule& rule,
-                                                           const model::AnalysisResult& result,
-                                                           const IssueFactory& make_issue);
-std::vector<model::DiagnosticIssue> CheckAsfContainerRules(const model::QcRule& rule,
-                                                           const model::AnalysisResult& result,
-                                                           const IssueFactory& make_issue);
-std::vector<model::DiagnosticIssue> CheckOggContainerRules(const model::QcRule& rule,
-                                                           const model::AnalysisResult& result,
-                                                           const IssueFactory& make_issue);
-std::vector<model::DiagnosticIssue> CheckVideoRules(const model::QcRule& rule,
-                                                    const model::AnalysisResult& result,
+std::vector<model::DiagnosticIssue>
+CheckAviContainerRules(const model::QcRule& rule, const model::AnalysisResult& result, const IssueFactory& make_issue);
+std::vector<model::DiagnosticIssue>
+CheckFlvContainerRules(const model::QcRule& rule, const model::AnalysisResult& result, const IssueFactory& make_issue);
+std::vector<model::DiagnosticIssue>
+CheckAsfContainerRules(const model::QcRule& rule, const model::AnalysisResult& result, const IssueFactory& make_issue);
+std::vector<model::DiagnosticIssue>
+CheckOggContainerRules(const model::QcRule& rule, const model::AnalysisResult& result, const IssueFactory& make_issue);
+std::vector<model::DiagnosticIssue> CheckVideoRules(const model::QcRule& rule, const model::AnalysisResult& result,
                                                     const IssueFactory& make_issue);
-std::vector<model::DiagnosticIssue> CheckAudioRules(const model::QcRule& rule,
-                                                    const model::AnalysisResult& result,
+std::vector<model::DiagnosticIssue> CheckAudioRules(const model::QcRule& rule, const model::AnalysisResult& result,
                                                     const IssueFactory& make_issue);
-std::vector<model::DiagnosticIssue> CheckColorHdrRules(const model::QcRule& rule,
-                                                       const model::AnalysisResult& result,
+std::vector<model::DiagnosticIssue> CheckColorHdrRules(const model::QcRule& rule, const model::AnalysisResult& result,
                                                        const IssueFactory& make_issue);
-std::vector<model::DiagnosticIssue> CheckSubtitleRules(const model::QcRule& rule,
-                                                       const model::AnalysisResult& result,
+std::vector<model::DiagnosticIssue> CheckSubtitleRules(const model::QcRule& rule, const model::AnalysisResult& result,
                                                        const IssueFactory& make_issue);
 std::vector<model::DiagnosticIssue> CheckTimecodeChapterRules(const model::QcRule& rule,
                                                               const model::AnalysisResult& result,
                                                               const IssueFactory& make_issue);
-std::vector<model::DiagnosticIssue> CheckScte35Rules(const model::QcRule& rule,
-                                                     const model::AnalysisResult& result,
+std::vector<model::DiagnosticIssue> CheckScte35Rules(const model::QcRule& rule, const model::AnalysisResult& result,
                                                      const IssueFactory& make_issue);
 
-}  // namespace detail
-}  // namespace diagnostics
-}  // namespace videoeye
+} // namespace detail
+} // namespace diagnostics
+} // namespace videoeye

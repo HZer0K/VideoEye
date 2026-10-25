@@ -41,16 +41,16 @@ struct ContainerMetadata {
 // 不要传 0/1/2/3 之类的自定义编号：历史上这里用过自定义枚举，结果调用方
 // 一旦写错就静默落到 default 分支，什么都不解析。
 //
-    // 当前覆盖范围（能力口径见 core/domain/model/AnalysisCapability.h）：
-    //   - H.264 : SPS + PPS（含 VUI 色彩/时基）—— Supported
-    //   - HEVC  : VPS + SPS + PPS —— Supported
-    //   - AV1   : Sequence Header OBU（含 color_config）；MP4 里通常只有 av1C，
-    //             此时仅位深/采样结构可信（TypeOnly）
-    //   - VP9   : **没有参数集**。关键信息写在每个关键帧的 uncompressed header
-    //             里（Vp9BitstreamParser）：WebM/IVF/带内走这条路；MP4 的 vpcC
-    //             只有 profile/level/位深/色度，给不出分辨率（TypeOnly）
-    //   - VVC   : VPS/SPS/PPS/vvcC 均可解析（含真实编码器回归），但畸形码流验证
-    //             不充分 —— 按方案 A 标 Partial，partial=true，不参与严格一致性比对
+// 当前覆盖范围（能力口径见 core/domain/model/AnalysisCapability.h）：
+//   - H.264 : SPS + PPS（含 VUI 色彩/时基）—— Supported
+//   - HEVC  : VPS + SPS + PPS —— Supported
+//   - AV1   : Sequence Header OBU（含 color_config）；MP4 里通常只有 av1C，
+//             此时仅位深/采样结构可信（TypeOnly）
+//   - VP9   : **没有参数集**。关键信息写在每个关键帧的 uncompressed header
+//             里（Vp9BitstreamParser）：WebM/IVF/带内走这条路；MP4 的 vpcC
+//             只有 profile/level/位深/色度，给不出分辨率（TypeOnly）
+//   - VVC   : VPS/SPS/PPS/vvcC 均可解析（含真实编码器回归），但畸形码流验证
+//             不充分 —— 按方案 A 标 Partial，partial=true，不参与严格一致性比对
 // ==========================================================================
 class BitstreamAnalyzer {
 public:
@@ -59,15 +59,11 @@ public:
 
     // 从 extradata 开始解析（主入口）。codec_id 传 AVCodecID。
     // 不支持的编码 / 空 extradata 会返回 analyzed=false，调用方应据此跳过展示。
-    model::BitstreamAnalysisResult Analyze(const uint8_t* extradata,
-                                           size_t size,
-                                           int codec_id);
+    model::BitstreamAnalysisResult Analyze(const uint8_t* extradata, size_t size, int codec_id);
 
     // 指定封装格式解析（调用方已经知道是 avcC / hvcC / AnnexB 时用）
-    model::BitstreamAnalysisResult AnalyzeWithFormat(
-        videoeye::ExtradataFormat format,
-        const uint8_t* data, size_t size,
-        int codec_id);
+    model::BitstreamAnalysisResult AnalyzeWithFormat(videoeye::ExtradataFormat format, const uint8_t* data, size_t size,
+                                                     int codec_id);
 
     // 带内参数集解析：es_data 是一段**码流本身**（H.264/HEVC/VVC 的 AnnexB，
     // 或 AV1 的裸 OBU 流），不是 extradata。
@@ -76,18 +72,20 @@ public:
     // （每个 IDR 前重复的 SPS/PPS/VPS）。以前这类封装一律落 NoExtradata，码流分析
     // 整块不可用。调用方（AnalysisPipeline）负责"攒到参数集出现为止"，
     // 本函数只解一次，攒包策略见 core/analysis/codec/InBandParameterSets.h。
-    model::BitstreamAnalysisResult AnalyzeInBand(const uint8_t* es_data,
-                                                 size_t size,
-                                                 int codec_id);
+    model::BitstreamAnalysisResult AnalyzeInBand(const uint8_t* es_data, size_t size, int codec_id);
 
     // 设置容器 metadata 用于对比
     void SetContainerMetadata(const ContainerMetadata& metadata);
 
     // 获取分析结果
-    const model::BitstreamAnalysisResult& result() const { return result_; }
+    const model::BitstreamAnalysisResult& result() const {
+        return result_;
+    }
 
     // 是否完成分析
-    bool finished() const { return result_.analyzed; }
+    bool finished() const {
+        return result_.analyzed;
+    }
 
 private:
     // 按 AVCodecID 分发到具体解析器
@@ -137,17 +135,13 @@ private:
     bool SawParameterSetInput(int codec_id) const;
 
     // 对比容器和码流 metadata
-    void CompareWithContainer(const model::BitstreamAnalysisResult& bitstream,
-                             model::BitstreamAnalysisResult& result);
+    void CompareWithContainer(const model::BitstreamAnalysisResult& bitstream, model::BitstreamAnalysisResult& result);
 
     // 添加不一致警告
-    void AddInconsistency(model::BitstreamAnalysisResult& result,
-                         const std::string& field,
-                         const std::string& container_value,
-                         const std::string& bitstream_value,
-                         const std::string& description,
-                         const std::string& suggestion = "",
-                         const std::string& severity = "warning");
+    void AddInconsistency(model::BitstreamAnalysisResult& result, const std::string& field,
+                          const std::string& container_value, const std::string& bitstream_value,
+                          const std::string& description, const std::string& suggestion = "",
+                          const std::string& severity = "warning");
 
     model::BitstreamAnalysisResult result_;
     // media 层的原始单元：只在解析过程中喂给 codec parser，不出现在对外结果里

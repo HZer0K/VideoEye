@@ -45,7 +45,7 @@ QApplication* EnsureApp() {
     return app;
 }
 
-}  // namespace
+} // namespace
 
 // ---------------------------------------------------------------------------
 // 1. 扩展名守卫：非裸数据后缀在弹对话框之前就被拒
@@ -149,7 +149,7 @@ TEST(RawImageSequenceTests, SetModeAndResetToggleShowingFlag) {
 TEST(RawImageSequenceTests, UpdateNavigationStateWithoutControlBarIsSafe) {
     EnsureApp();
 
-    RawImageSequence sequence;  // 不调用 SetControlBar
+    RawImageSequence sequence; // 不调用 SetControlBar
     sequence.UpdateRawNavigationState();
     sequence.SetRawImageMode(true);
     sequence.UpdateRawNavigationState();

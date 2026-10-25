@@ -26,10 +26,10 @@ namespace model {
 
 // 分析能力状态（按编码/功能维度，粗粒度）。
 enum class AnalysisCapability : uint8_t {
-    Supported,    // 完整实现且有测试覆盖，字段可信
-    Partial,      // 部分实现：只识别类型 / 字段解析可用但验证不充分 / 数据源不全
-    Unavailable,  // 该输入/该构建下没有此能力（无 extradata、编码不支持、依赖缺失）
-    Failed        // 尝试过但失败（输入存在，解析报错或产出不合理）
+    Supported,   // 完整实现且有测试覆盖，字段可信
+    Partial,     // 部分实现：只识别类型 / 字段解析可用但验证不充分 / 数据源不全
+    Unavailable, // 该输入/该构建下没有此能力（无 extradata、编码不支持、依赖缺失）
+    Failed       // 尝试过但失败（输入存在，解析报错或产出不合理）
 };
 
 // 码流解析的细粒度结果状态。
@@ -45,22 +45,32 @@ enum class BitstreamParseOutcome : uint8_t {
 // 供 JSON 导出与日志使用的枚举名（与字段值一一对应，不要改动已有取值）。
 inline const char* CapabilityToString(AnalysisCapability c) {
     switch (c) {
-        case AnalysisCapability::Supported:   return "supported";
-        case AnalysisCapability::Partial:     return "partial";
-        case AnalysisCapability::Unavailable: return "unavailable";
-        case AnalysisCapability::Failed:     return "failed";
+    case AnalysisCapability::Supported:
+        return "supported";
+    case AnalysisCapability::Partial:
+        return "partial";
+    case AnalysisCapability::Unavailable:
+        return "unavailable";
+    case AnalysisCapability::Failed:
+        return "failed";
     }
     return "unavailable";
 }
 
 inline const char* ParseOutcomeToString(BitstreamParseOutcome o) {
     switch (o) {
-        case BitstreamParseOutcome::NotAnalyzed:     return "not_analyzed";
-        case BitstreamParseOutcome::NoExtradata:     return "no_extradata";
-        case BitstreamParseOutcome::UnsupportedCodec: return "unsupported_codec";
-        case BitstreamParseOutcome::TypeOnly:        return "type_only";
-        case BitstreamParseOutcome::ParseFailed:      return "parse_failed";
-        case BitstreamParseOutcome::FullParse:       return "full_parse";
+    case BitstreamParseOutcome::NotAnalyzed:
+        return "not_analyzed";
+    case BitstreamParseOutcome::NoExtradata:
+        return "no_extradata";
+    case BitstreamParseOutcome::UnsupportedCodec:
+        return "unsupported_codec";
+    case BitstreamParseOutcome::TypeOnly:
+        return "type_only";
+    case BitstreamParseOutcome::ParseFailed:
+        return "parse_failed";
+    case BitstreamParseOutcome::FullParse:
+        return "full_parse";
     }
     return "not_analyzed";
 }

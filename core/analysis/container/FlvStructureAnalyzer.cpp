@@ -220,8 +220,7 @@ void parseAmf0Value(const std::string& b, int& pos, const std::string& key, std:
 } // namespace
 
 bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::ContainerStructureResult& result,
-                                   const std::atomic<bool>* cancel,
-                                   const Options& options) {
+                                   const std::atomic<bool>* cancel, const Options& options) {
     SeqFileReader file(file_path);
     if (!file.IsOpen()) {
         result.error_message = "无法打开文件";
@@ -326,19 +325,19 @@ bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
             file.Seek(data_start + static_cast<int64_t>(data_size));
             const std::string prev = file.Read(4);
             if (prev.size() == 4) {
-                const uint32_t declared =
-                    LoadBE32(reinterpret_cast<const unsigned char*>(prev.data()));
-                if (declared != data_size + 11u) ++diag.tag_size_mismatch;
+                const uint32_t declared = LoadBE32(reinterpret_cast<const unsigned char*>(prev.data()));
+                if (declared != data_size + 11u)
+                    ++diag.tag_size_mismatch;
             }
             file.Seek(data_start);
         }
 
-        if (timestamp > diag.max_timestamp_ms) diag.max_timestamp_ms = timestamp;
+        if (timestamp > diag.max_timestamp_ms)
+            diag.max_timestamp_ms = timestamp;
         {
             const int slot = (tag_type == 8) ? 0 : (tag_type == 9 ? 1 : (tag_type == 18 ? 2 : -1));
             if (slot >= 0) {
-                if (last_timestamp[slot] >= 0 &&
-                    static_cast<int64_t>(timestamp) < last_timestamp[slot]) {
+                if (last_timestamp[slot] >= 0 && static_cast<int64_t>(timestamp) < last_timestamp[slot]) {
                     ++diag.timestamp_backwards;
                 }
                 last_timestamp[slot] = static_cast<int64_t>(timestamp);
@@ -386,8 +385,7 @@ bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
             // 每个视频 tag 都要看包头：序列头（Sequence Start）可能夹在任何位置，
             // 只读第一个 tag 会漏判 —— 而这正是"能播但首帧花屏"的关键事实。
             if (data_size >= 1) {
-                const std::string head =
-                    file.Read(static_cast<size_t>(std::min<uint32_t>(data_size, 5)));
+                const std::string head = file.Read(static_cast<size_t>(std::min<uint32_t>(data_size, 5)));
                 if (!head.empty()) {
                     const uint8_t vh = static_cast<uint8_t>(head[0]);
                     std::string codec;
@@ -419,14 +417,19 @@ bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
                         }
                     }
 
-                    if (is_avc) diag.video_codec_avc = true;
-                    if (is_hevc) diag.video_codec_hevc = true;
-                    if (is_av1) diag.video_codec_av1 = true;
-                    if (sequence_start) diag.video_sequence_header_seen = true;
+                    if (is_avc)
+                        diag.video_codec_avc = true;
+                    if (is_hevc)
+                        diag.video_codec_hevc = true;
+                    if (is_av1)
+                        diag.video_codec_av1 = true;
+                    if (sequence_start)
+                        diag.video_sequence_header_seen = true;
 
                     tag.value += StrCat(" | %1", codec);
                     if (!video_codec_found) {
-                        if (video_stream_idx >= 0) result.streams[video_stream_idx].codec = codec;
+                        if (video_stream_idx >= 0)
+                            result.streams[video_stream_idx].codec = codec;
                         video_codec_found = true;
                     }
                 }
@@ -469,7 +472,8 @@ bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
             break;
         }
 
-        if (options.build_tree) root.children.push_back(tag);
+        if (options.build_tree)
+            root.children.push_back(tag);
 
         // 跳过 tag data + PreviousTagSize (4 bytes)，始终基于 data_start 定位以避免上面读了部分数据
         file.Seek(tag_end);
@@ -486,7 +490,8 @@ bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
         diag.scan_complete = false;
     }
 
-    if (options.build_tree) result.element_tree.push_back(root);
+    if (options.build_tree)
+        result.element_tree.push_back(root);
     result.valid = true;
     std::string summary = "FLV | Video Tags: " + std::to_string(video_tags) +
                           " | Audio Tags: " + std::to_string(audio_tags) +

@@ -23,7 +23,7 @@
 
 #include "core/analysis/AnalysisOptions.h"
 #include "core/analysis/orchestration/AnalysisPipeline.h"
-#include "core/analysis/orchestration/AnalysisResultAssembler.h"  // ScanBuckets
+#include "core/analysis/orchestration/AnalysisResultAssembler.h" // ScanBuckets
 #include "core/analysis/orchestration/AnalysisTerminalState.h"
 #include "core/domain/model/AnalysisResult.h"
 
@@ -50,8 +50,8 @@ public:
     using CancelPredicate = std::function<bool()>;
     using CancelledExitPredicate = std::function<bool(int)>;
 
-    PacketScanLoop(AVFormatContext* fmt, const AnalysisOptions& options,
-                   model::AnalysisResult& result, const AnalysisCallbacks& callbacks);
+    PacketScanLoop(AVFormatContext* fmt, const AnalysisOptions& options, model::AnalysisResult& result,
+                   const AnalysisCallbacks& callbacks);
     ~PacketScanLoop();
 
     PacketScanLoop(const PacketScanLoop&) = delete;
@@ -60,15 +60,13 @@ public:
     // 跑完整循环。buckets 是出参（交给 AnalysisResultAssembler 换算码率序列），
     // interval_seconds 是分桶间隔（秒）。进度按包数与时间双重限频后直发回调。
     ScanOutcome Run(AnalysisPipeline& pipeline, ScanBuckets& buckets, double interval_seconds,
-                    const CancelPredicate& cancel_requested,
-                    const CancelledExitPredicate& cancelled_exit);
+                    const CancelPredicate& cancel_requested, const CancelledExitPredicate& cancelled_exit);
 
 private:
     // 扫描事实：包数 / 字节 / 逐流累加 / 最大包 / 缺 DTS 计数
     void AccountPacket(AVPacket* pkt, bool is_video);
     // 逐秒桶：总字节记所有包，视频字节与帧数只记视频包
-    void FillBuckets(ScanBuckets& buckets, double interval_seconds, const AVPacket* pkt,
-                     bool is_video, double ts);
+    void FillBuckets(ScanBuckets& buckets, double interval_seconds, const AVPacket* pkt, bool is_video, double ts);
     bool ReportProgress(int64_t packet_index, int64_t last_pos, double ts);
 
     AVFormatContext* fmt_;
@@ -80,4 +78,4 @@ private:
     std::chrono::steady_clock::time_point last_progress_;
 };
 
-}  // namespace videoeye
+} // namespace videoeye

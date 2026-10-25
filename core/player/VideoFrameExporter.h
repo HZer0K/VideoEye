@@ -21,12 +21,16 @@ public:
     // 为什么不能让 Export() 自己重置取消标志: 用户可能在 worker 线程还没跑起来时就点了
     // 取消 —— 原实现在 Export() 开头写 cancel_ = false，于是"立即取消"被吃掉，
     // 导出照常跑完全片。现在取消状态只由外部写（Cancel() / 令牌），Export() 只读。
-    void SetCancelToken(const task::CancelToken& token) { cancel_token_ = token; }
+    void SetCancelToken(const task::CancelToken& token) {
+        cancel_token_ = token;
+    }
 
-    void Export(const QString& url, const QString& output_dir,
-                const QString& format, int jpg_quality, int frame_interval);
+    void Export(const QString& url, const QString& output_dir, const QString& format, int jpg_quality,
+                int frame_interval);
     void Cancel();
-    bool IsExporting() const { return exporting_.load(); }
+    bool IsExporting() const {
+        return exporting_.load();
+    }
     bool IsCanceled() const;
 
 signals:

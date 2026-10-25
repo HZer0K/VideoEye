@@ -13,26 +13,28 @@ struct EbmlElementNode {
     std::string id_hex;
     std::string name;
     uint64_t size = 0;
-    uint64_t offset = 0;       // 数据区在文件中的偏移
+    uint64_t offset = 0; // 数据区在文件中的偏移
     uint64_t header_size = 0;
     int depth = 0;
     std::vector<EbmlElementNode> children;
-    std::string value;         // 叶子节点的解析值
-    std::string extra;         // 额外解析信息 (如 Block 解析)
+    std::string value; // 叶子节点的解析值
+    std::string extra; // 额外解析信息 (如 Block 解析)
 
-    uint64_t startOffset() const { return offset - header_size; }
+    uint64_t startOffset() const {
+        return offset - header_size;
+    }
 };
 
 /// 从 TrackEntry 解析出的轨道信息
 struct EbmlTrackInfo {
     int track_number = 0;
     uint64_t track_uid = 0;
-    int track_type = 0;        // 1=video, 2=audio, 0x11=subtitle
-    std::string track_type_name;   // "视频", "音频", "字幕", "其他"
-    std::string codec_id;          // "V_VP9", "A_OPUS" 等
-    std::string codec_name;        // 解析后的可读编码名
-    std::string language;          // "eng", "chi" 等
-    std::string track_name;        // 轨道名称
+    int track_type = 0;          // 1=video, 2=audio, 0x11=subtitle
+    std::string track_type_name; // "视频", "音频", "字幕", "其他"
+    std::string codec_id;        // "V_VP9", "A_OPUS" 等
+    std::string codec_name;      // 解析后的可读编码名
+    std::string language;        // "eng", "chi" 等
+    std::string track_name;      // 轨道名称
     int pixel_width = 0;
     int pixel_height = 0;
     double frame_rate = 0.0;
@@ -49,7 +51,7 @@ struct EbmlTrackInfo {
 
 /// 从 CuePoint 解析出的索引条目
 struct EbmlCueEntry {
-    uint64_t time = 0;          // 时间戳 (TimestampScale 单位)
+    uint64_t time = 0; // 时间戳 (TimestampScale 单位)
     int track_number = 0;
     uint64_t cluster_position = 0; // Cluster 的文件偏移
     uint64_t block_number = 0;     // Cluster 内的块序号
@@ -58,7 +60,7 @@ struct EbmlCueEntry {
 /// 从 BlockGroup/SimpleBlock 解析出的数据块信息摘要
 struct EbmlBlockSummary {
     int track_number = 0;
-    int16_t timecode = 0;       // 相对时间偏移
+    int16_t timecode = 0; // 相对时间偏移
     bool keyframe = false;
     bool discardable = false;
     uint64_t cluster_offset = 0;
@@ -71,7 +73,7 @@ struct EbmlBlockSummary {
 struct EbmlAnalysisResult {
     std::string file_path;
     std::vector<EbmlElementNode> element_tree;
-    std::string doc_type;                     // "matroska", "webm"
+    std::string doc_type; // "matroska", "webm"
     int doc_type_version = 0;
     int doc_type_read_version = 0;
 
@@ -82,17 +84,17 @@ struct EbmlAnalysisResult {
     int ebml_max_size_length = 0;
 
     // 从 Info 提取
-    uint64_t timestamp_scale = 1000000;   // 默认 1ms
-    double duration_seconds = 0.0;        // 时长 (秒)
+    uint64_t timestamp_scale = 1000000; // 默认 1ms
+    double duration_seconds = 0.0;      // 时长 (秒)
     std::string title;
     std::string muxing_app;
     std::string writing_app;
     std::string segment_uid;
 
     // 提取的表格数据
-    std::vector<EbmlTrackInfo> tracks;        // 轨道表
-    std::vector<EbmlCueEntry> cues;           // 索引表
-    std::vector<EbmlBlockSummary> blocks;     // 数据块摘要 (截断: 最多 1000 条)
+    std::vector<EbmlTrackInfo> tracks;    // 轨道表
+    std::vector<EbmlCueEntry> cues;       // 索引表
+    std::vector<EbmlBlockSummary> blocks; // 数据块摘要 (截断: 最多 1000 条)
     int total_clusters = 0;
     int total_blockgroups = 0;
     int total_simpleblocks = 0;

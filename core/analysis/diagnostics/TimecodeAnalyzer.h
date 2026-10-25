@@ -19,8 +19,8 @@
 #include <string>
 #include <vector>
 
-#include "core/domain/model/TimecodeInfo.h"
 #include "core/analysis/AnalysisOptions.h"
+#include "core/domain/model/TimecodeInfo.h"
 
 struct AVFormatContext;
 struct AVPacket;
@@ -40,18 +40,20 @@ public:
 
     void Finish();
 
-    const model::TimecodeAnalysisResult& result() const { return result_; }
-    const TimecodeOptions& options() const { return options_; }
+    const model::TimecodeAnalysisResult& result() const {
+        return result_;
+    }
+    const TimecodeOptions& options() const {
+        return options_;
+    }
 
     // tmcd 样本 -> 时码。样本是 4 字节大端帧序号（QuickTime timecode media）。
     // 纯逻辑，单测直接调用。
-    static bool DecodeTmcdSample(const uint8_t* data, size_t size, double fps,
-                                 bool drop_frame, model::Timecode& out);
+    static bool DecodeTmcdSample(const uint8_t* data, size_t size, double fps, bool drop_frame, model::Timecode& out);
 
 private:
     void CheckChapters();
-    void AddChapterIssue(model::ChapterIssueType type, int index, double start, double end,
-                         const std::string& detail);
+    void AddChapterIssue(model::ChapterIssueType type, int index, double start, double end, const std::string& detail);
 
     TimecodeOptions options_;
     model::TimecodeAnalysisResult result_;
@@ -60,4 +62,4 @@ private:
     double inferred_fps_ = 0.0;
 };
 
-}  // namespace videoeye
+} // namespace videoeye

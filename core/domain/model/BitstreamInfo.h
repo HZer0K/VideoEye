@@ -21,13 +21,13 @@
 #include <vector>
 
 #include "core/domain/model/AnalysisCapability.h"
+#include "core/domain/model/Av1BitstreamInfo.h"
 #include "core/domain/model/BitstreamUnits.h"
-#include "core/domain/model/SliceSeiInfo.h"
 #include "core/domain/model/H264BitstreamInfo.h"
 #include "core/domain/model/HevcBitstreamInfo.h"
-#include "core/domain/model/Av1BitstreamInfo.h"
-#include "core/domain/model/VvcBitstreamInfo.h"
+#include "core/domain/model/SliceSeiInfo.h"
 #include "core/domain/model/Vp9BitstreamInfo.h"
+#include "core/domain/model/VvcBitstreamInfo.h"
 
 namespace videoeye {
 namespace model {
@@ -38,8 +38,8 @@ namespace model {
 struct BitstreamAnalysisResult {
     bool analyzed = false;
     int stream_index = -1;
-    std::string codec_name;           // "h264", "hevc", "av1", "vvc"
-    std::string codec_id_str;         // "AV_CODEC_ID_H264" 等
+    std::string codec_name;   // "h264", "hevc", "av1", "vvc"
+    std::string codec_id_str; // "AV_CODEC_ID_H264" 等
 
     // ---- 能力状态（阶段 4：消除"假完成"）----
     // analyzed 只回答"有没有跑过解析"；下面两个字段回答"跑到了什么程度、
@@ -49,7 +49,7 @@ struct BitstreamAnalysisResult {
     // partial=true：结果不完整或能力未全面验证（TypeOnly/ParseFailed/VVC 的
     // FullParse 也算），消费方不得把它当成"已通过"。
     bool partial = false;
-    std::string capability_note;      // 状态的人类可读说明（UI tooltip / 报告）
+    std::string capability_note; // 状态的人类可读说明（UI tooltip / 报告）
 
     // 参数集是从哪儿拿到的（空 = 没解析出参数集）：
     //   "extradata" —— 容器携带（MP4/MKV 的 avcC/hvcC/av1C/vvcC，或 AnnexB extradata）
@@ -57,15 +57,15 @@ struct BitstreamAnalysisResult {
     // 消费方必须能区分：同一组 Profile/Level，"容器写了什么"和"码流里实际是什么"
     // 的可信度不同 —— 后者才是编码器真正写进码流的那一份。
     std::string parameter_set_source;
-    
+
     // 基本视频属性（从码流解析）
     int width = 0;
     int height = 0;
-    int bit_depth = 0;  // 0 = 未解析/未知，不能用默认 8bit 制造假结论
+    int bit_depth = 0; // 0 = 未解析/未知，不能用默认 8bit 制造假结论
     int color_primaries = 0;
     int transfer_characteristics = 0;
     int matrix_coefficients = 0;
-    int color_range = 0;              // 0=未知/未设置（VP9 vpcC 会写它）
+    int color_range = 0; // 0=未知/未设置（VP9 vpcC 会写它）
 
     // 容器层（AVCodecParameters）的同名字段快照，供 UI 对比表两侧并列展示。
     // 由 BitstreamAnalyzer::SetContainerMetadata() 在 Analyze() 时写入；
@@ -78,33 +78,33 @@ struct BitstreamAnalysisResult {
     int container_transfer_characteristics = 0;
     int container_matrix_coefficients = 0;
     int container_color_range = 0;
-    
+
     // 各编码类型的解析结果（最多只有一个为 true）
     bool has_h264 = false;
     bool has_hevc = false;
     bool has_av1 = false;
     bool has_vvc = false;
     bool has_vp9 = false;
-    
+
     // H.264 信息
     H264SpsInfo h264_sps;
     H264PpsInfo h264_pps;
-    
+
     // H.265 信息
     HevcVpsInfo hevc_vps;
     HevcSpsInfo hevc_sps;
     HevcPpsInfo hevc_pps;
-    
+
     // AV1 信息
     Av1SequenceHeaderInfo av1_seq_header;
-    Av1CodecConfigInfo av1_config;      // av1C 里解析出的（序列头缺失时的兜底）
+    Av1CodecConfigInfo av1_config; // av1C 里解析出的（序列头缺失时的兜底）
     bool has_av1_config = false;
-    
+
     // VVC 信息
     VvcVpsInfo vvc_vps;
     VvcSpsInfo vvc_sps;
     VvcPpsInfo vvc_pps;
-    VvcCodecConfigInfo vvc_config;  // vvcC 里解析出的（SPS/VPS 都缺 PTL 时的兜底）
+    VvcCodecConfigInfo vvc_config; // vvcC 里解析出的（SPS/VPS 都缺 PTL 时的兜底）
     bool has_vvc_config = false;
 
     // VP9 信息
@@ -114,9 +114,9 @@ struct BitstreamAnalysisResult {
     //   * 带关键帧的码流（WebM / IVF / 带内）→ 从帧头解，落在 vp9_seq_header
     //   * MP4 的 vpcC（extradata）→ 落在 vp9_config，只有 profile/level/位深/色度
     Vp9SequenceHeaderInfo vp9_seq_header;
-    Vp9CodecConfigInfo vp9_config;      // vpcC 里解析出的（无关键帧时的兜底）
+    Vp9CodecConfigInfo vp9_config; // vpcC 里解析出的（无关键帧时的兜底）
     bool has_vp9_config = false;
-    
+
     // 提取的 NAL/OBU 列表
     std::vector<NalUnit> nal_units;
     std::vector<ObuUnit> obu_units;
@@ -128,29 +128,27 @@ struct BitstreamAnalysisResult {
     // 之后再回填到这里 —— 所以打开分析结果时它可能还是 analyzed=false。
     // 消费方必须先看 analyzed，别把它和 bitstream 参数集的可信度混为一谈。
     SliceSeiSummary slice_sei;
-    
+
     // 不一致警告（与容器 metadata 对比）
     struct Inconsistency {
-        std::string field;             // 字段名
-        std::string container_value;   // 容器中的值
-        std::string bitstream_value;   // 码流中的值
-        std::string severity;          // "warning" / "error" / "info"
-        std::string description;       // 详细描述
-        std::string suggestion;        // 建议
+        std::string field;           // 字段名
+        std::string container_value; // 容器中的值
+        std::string bitstream_value; // 码流中的值
+        std::string severity;        // "warning" / "error" / "info"
+        std::string description;     // 详细描述
+        std::string suggestion;      // 建议
     };
-    
+
     std::vector<Inconsistency> inconsistencies;
-    
+
     // 添加不一致警告
-    void AddInconsistency(const std::string& field,
-                         const std::string& container_value,
-                         const std::string& bitstream_value,
-                         const std::string& description,
-                         const std::string& suggestion = "");
-    
+    void AddInconsistency(const std::string& field, const std::string& container_value,
+                          const std::string& bitstream_value, const std::string& description,
+                          const std::string& suggestion = "");
+
     // 摘要信息
     std::string Summary() const;
-    
+
     // JSON 格式输出
     std::string ToJson() const;
 };

@@ -18,17 +18,17 @@ namespace model {
 
 // 缺陷类型。枚举值顺序即 UI 表格里的默认顺序。
 enum class VisualDefectType {
-    BlackFrame = 0,     // 黑场
-    FreezeFrame,        // 冻结帧（画面静止但音频还在走）
-    Blockiness,         // 花屏 / 马赛克（块效应）
-    Blur,               // 模糊
-    Flicker,            // 闪烁
-    OverExposure,       // 过曝
-    UnderExposure,      // 欠曝
-    ColorCast,          // 色偏
-    InterlaceCombing,   // 隔行梳齿（隔行素材当逐行处理）
-    Letterbox,          // 上下黑边
-    Pillarbox,          // 左右黑边
+    BlackFrame = 0,   // 黑场
+    FreezeFrame,      // 冻结帧（画面静止但音频还在走）
+    Blockiness,       // 花屏 / 马赛克（块效应）
+    Blur,             // 模糊
+    Flicker,          // 闪烁
+    OverExposure,     // 过曝
+    UnderExposure,    // 欠曝
+    ColorCast,        // 色偏
+    InterlaceCombing, // 隔行梳齿（隔行素材当逐行处理）
+    Letterbox,        // 上下黑边
+    Pillarbox,        // 左右黑边
 };
 
 // 严重度。与 QC 规则引擎的 Severity 保持同一套语义，便于以后接入报告。
@@ -45,11 +45,10 @@ enum class VisualDefectSeverity {
 struct EvidenceFrame {
     int width = 0;
     int height = 0;
-    std::vector<uint8_t> rgb;   // RGB24，行优先，无对齐
+    std::vector<uint8_t> rgb; // RGB24，行优先，无对齐
 
     bool valid() const {
-        return width > 0 && height > 0 &&
-               rgb.size() == static_cast<size_t>(width) * static_cast<size_t>(height) * 3u;
+        return width > 0 && height > 0 && rgb.size() == static_cast<size_t>(width) * static_cast<size_t>(height) * 3u;
     }
 };
 
@@ -69,10 +68,12 @@ struct VisualDefect {
     // 当时用的阈值。写进报告，方便事后复核"为什么这条算缺陷"。
     double threshold = kQualityNoValue;
 
-    std::string description;   // 中文简述，含关键数值
-    EvidenceFrame evidence;    // 可能为空（未采样到 / 采样时 rgb 关闭）
+    std::string description; // 中文简述，含关键数值
+    EvidenceFrame evidence;  // 可能为空（未采样到 / 采样时 rgb 关闭）
 
-    double DurationSeconds() const { return end_seconds - start_seconds; }
+    double DurationSeconds() const {
+        return end_seconds - start_seconds;
+    }
 };
 
 // 一段素材的视觉缺陷报告。
@@ -84,15 +85,17 @@ struct VisualDefectReport {
     // 单看某一帧会把"刚好全黑的一帧"误判成整片都是黑边，所以取中位数。
     ActivePictureArea effective_area;
 
-    int analyzed_frames = 0;    // 真正参与分析的采样帧数
-    int dropped_frames = 0;     // 因队列满被丢弃的帧数（实时播放压力大的证据）
-    int total_frames = 0;       // 送进来的帧数（含被抽样跳过的）
+    int analyzed_frames = 0; // 真正参与分析的采样帧数
+    int dropped_frames = 0;  // 因队列满被丢弃的帧数（实时播放压力大的证据）
+    int total_frames = 0;    // 送进来的帧数（含被抽样跳过的）
     double duration_seconds = 0.0;
     bool analyzed = false;
 
     int CountByType(VisualDefectType type) const;
     int CountBySeverity(VisualDefectSeverity severity) const;
-    bool HasDefect() const { return !defects.empty(); }
+    bool HasDefect() const {
+        return !defects.empty();
+    }
 };
 
 // 显示用名称（UI 表格 / 报告导出）
@@ -103,5 +106,5 @@ const char* ToString(VisualDefectSeverity severity);
 // 避免把中文本直接写进文件（跨 locale 与 Excel 打开都容易出问题）。
 const char* DefectTypeCode(VisualDefectType type);
 
-}  // namespace model
-}  // namespace videoeye
+} // namespace model
+} // namespace videoeye

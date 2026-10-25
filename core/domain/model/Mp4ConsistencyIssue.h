@@ -19,42 +19,42 @@ namespace model {
 // 一致性问题码（同时用作 QC 规则 id）
 namespace Mp4IssueCode {
 // 文件级
-constexpr const char* kNotFastStart          = "container.mp4.not_faststart";
-constexpr const char* kSampleCountMismatch   = "container.mp4.sample_count_mismatch";
-constexpr const char* kMissingChunkOffsets   = "container.mp4.missing_chunk_offsets";
-constexpr const char* kStcoOverflow          = "container.mp4.stco_overflow";
-constexpr const char* kBothStcoAndCo64       = "container.mp4.stco_co64_conflict";
+constexpr const char* kNotFastStart = "container.mp4.not_faststart";
+constexpr const char* kSampleCountMismatch = "container.mp4.sample_count_mismatch";
+constexpr const char* kMissingChunkOffsets = "container.mp4.missing_chunk_offsets";
+constexpr const char* kStcoOverflow = "container.mp4.stco_overflow";
+constexpr const char* kBothStcoAndCo64 = "container.mp4.stco_co64_conflict";
 // 样本级
 constexpr const char* kChunkOffsetOutOfRange = "container.mp4.chunk_offset_out_of_range";
-constexpr const char* kZeroSizeSample        = "container.mp4.zero_size_sample";
-constexpr const char* kNegativeCts           = "container.mp4.negative_cts";
-constexpr const char* kDtsNotMonotonic       = "container.mp4.dts_not_monotonic";
-constexpr const char* kZeroDuration          = "container.mp4.zero_duration_sample";
-constexpr const char* kOffsetDiscontinuity   = "container.mp4.sample_offset_gap";
-constexpr const char* kFirstSampleNotSync    = "container.mp4.first_sample_not_sync";
-constexpr const char* kStssCountMismatch     = "container.mp4.stss_count_mismatch";
+constexpr const char* kZeroSizeSample = "container.mp4.zero_size_sample";
+constexpr const char* kNegativeCts = "container.mp4.negative_cts";
+constexpr const char* kDtsNotMonotonic = "container.mp4.dts_not_monotonic";
+constexpr const char* kZeroDuration = "container.mp4.zero_duration_sample";
+constexpr const char* kOffsetDiscontinuity = "container.mp4.sample_offset_gap";
+constexpr const char* kFirstSampleNotSync = "container.mp4.first_sample_not_sync";
+constexpr const char* kStssCountMismatch = "container.mp4.stss_count_mismatch";
 constexpr const char* kMultipleSampleEntries = "container.mp4.multiple_sample_entries";
 // edit list
-constexpr const char* kElstFirstFrameShift   = "container.mp4.elst_first_frame_shift";
-constexpr const char* kElstEmptyEdit         = "container.mp4.elst_empty_edit";
-constexpr const char* kAvStartMismatch       = "container.mp4.av_start_mismatch";
+constexpr const char* kElstFirstFrameShift = "container.mp4.elst_first_frame_shift";
+constexpr const char* kElstEmptyEdit = "container.mp4.elst_empty_edit";
+constexpr const char* kAvStartMismatch = "container.mp4.av_start_mismatch";
 // 分片
-constexpr const char* kFragmentSequenceGap   = "container.mp4.fragment_sequence_gap";
-constexpr const char* kFragmentTimeGap       = "container.mp4.fragment_time_gap";
-constexpr const char* kFragmentTimeOrigin    = "container.mp4.fragment_time_origin";
-constexpr const char* kFragmentDataOffset    = "container.mp4.fragment_data_offset";
-}  // namespace Mp4IssueCode
+constexpr const char* kFragmentSequenceGap = "container.mp4.fragment_sequence_gap";
+constexpr const char* kFragmentTimeGap = "container.mp4.fragment_time_gap";
+constexpr const char* kFragmentTimeOrigin = "container.mp4.fragment_time_origin";
+constexpr const char* kFragmentDataOffset = "container.mp4.fragment_data_offset";
+} // namespace Mp4IssueCode
 
 struct Mp4ConsistencyIssue {
-    std::string code;                 // 见 Mp4IssueCode
+    std::string code; // 见 Mp4IssueCode
     std::string title;
-    std::string detail;               // 含实测值
+    std::string detail; // 含实测值
     std::string suggestion;
     IssueSeverity severity = IssueSeverity::Warning;
     IssueCategory category = IssueCategory::Container;
-    int track_id = -1;                // 关联轨道（-1 = 文件级）
-    int fragment_index = -1;          // 关联分片（-1 = 不适用）
-    uint32_t sample_index = 0;        // 首个相关样本（用于 UI 定位）
+    int track_id = -1;         // 关联轨道（-1 = 文件级）
+    int fragment_index = -1;   // 关联分片（-1 = 不适用）
+    uint32_t sample_index = 0; // 首个相关样本（用于 UI 定位）
     bool has_sample_index = false;
     double metric_value = 0.0;
     double threshold = 0.0;
@@ -79,5 +79,5 @@ struct Mp4ConsistencyIssue {
     }
 };
 
-}  // namespace model
-}  // namespace videoeye
+} // namespace model
+} // namespace videoeye

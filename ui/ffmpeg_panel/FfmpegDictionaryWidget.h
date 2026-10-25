@@ -62,5 +62,5 @@ private:
     std::vector<const ffmpeg::FfmpegCatalogEntry*> dict_results_;
 };
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

@@ -83,7 +83,7 @@ struct PlaybackClock {
         }
 
         const auto target = wall_start + std::chrono::duration_cast<SteadyClock::duration>(
-            std::chrono::duration<double>(media_ts - first_media_ts));
+                                             std::chrono::duration<double>(media_ts - first_media_ts));
         const auto now = SteadyClock::now();
         if (target > now) {
             std::this_thread::sleep_for(target - now);

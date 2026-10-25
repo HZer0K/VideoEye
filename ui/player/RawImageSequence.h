@@ -1,9 +1,9 @@
 #pragma once
 
-#include <QObject>
-#include <QWidget>
-#include <QString>
 #include <QImage>
+#include <QObject>
+#include <QString>
+#include <QWidget>
 
 namespace videoeye {
 namespace ui {
@@ -46,7 +46,9 @@ public:
     // 复位所有 Raw 序列状态（不刷新导航控件，调用方自行在之后调 UpdateRawNavigationState）。
     void Reset();
 
-    bool IsShowingRawImage() const { return showing_raw_image_; }
+    bool IsShowingRawImage() const {
+        return showing_raw_image_;
+    }
 
 signals:
     // 与 PlayerPanel 同名信号对齐，由面板转发到真正订阅者（MainWindow 状态栏 / 媒体信息框）。

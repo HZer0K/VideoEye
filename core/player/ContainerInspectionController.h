@@ -58,7 +58,9 @@ public:
     // 对外的容器结构信号总线（成功 / 失败二选一，见 core/player/ContainerBus.h）。
     // UI 经 MediaPlayer::container_bus() 拿它连信号；本类所有"该发信号了"的地方
     // 直接 emit bus_.Xxx()。
-    ContainerBus& bus() { return bus_; }
+    ContainerBus& bus() {
+        return bus_;
+    }
 
 private:
     // 后台任务 slot 名。同一 slot 上永远只有一个任务在跑
@@ -71,5 +73,5 @@ private:
     task::TaskManager& tasks_;
 };
 
-}  // namespace player
-}  // namespace videoeye
+} // namespace player
+} // namespace videoeye

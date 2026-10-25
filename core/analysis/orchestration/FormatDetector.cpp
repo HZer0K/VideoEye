@@ -40,11 +40,8 @@ model::ContainerFormat FormatDetector::DetectByMagic(const std::string& file_pat
     }
 
     // EBML (MKV/WebM): \x1A\x45\xDF\xA3
-    if (header.size() >= 4 &&
-        (unsigned char)header[0] == 0x1A &&
-        (unsigned char)header[1] == 0x45 &&
-        (unsigned char)header[2] == 0xDF &&
-        (unsigned char)header[3] == 0xA3) {
+    if (header.size() >= 4 && (unsigned char)header[0] == 0x1A && (unsigned char)header[1] == 0x45 &&
+        (unsigned char)header[2] == 0xDF && (unsigned char)header[3] == 0xA3) {
         // 在头部区域搜索 DocType 来区分 MKV vs WebM
         if (header.find("webm") != std::string::npos) {
             return model::ContainerFormat::WebM;
@@ -53,9 +50,7 @@ model::ContainerFormat FormatDetector::DetectByMagic(const std::string& file_pat
     }
 
     // AVI: "RIFF" + 4 bytes size + "AVI "
-    if (header.size() >= 12 &&
-        header.substr(0, 4) == "RIFF" &&
-        header.substr(8, 4) == "AVI ") {
+    if (header.size() >= 12 && header.substr(0, 4) == "RIFF" && header.substr(8, 4) == "AVI ") {
         return model::ContainerFormat::AVI;
     }
 
@@ -85,7 +80,8 @@ model::ContainerFormat FormatDetector::DetectByMagic(const std::string& file_pat
                         ran_out_of_header = true;
                         break;
                     }
-                    if (static_cast<unsigned char>(header[static_cast<size_t>(at)]) != 0x47) break;
+                    if (static_cast<unsigned char>(header[static_cast<size_t>(at)]) != 0x47)
+                        break;
                     ++matches;
                 }
                 // 三个同步点是正常文件的判据。只有"文件短到装不下第三个包"时
@@ -99,15 +95,9 @@ model::ContainerFormat FormatDetector::DetectByMagic(const std::string& file_pat
     }
 
     // ASF: Header Object GUID = 30 26 B2 75 8E 66 CF 11
-    if (header.size() >= 8 &&
-        (unsigned char)header[0] == 0x30 &&
-        (unsigned char)header[1] == 0x26 &&
-        (unsigned char)header[2] == 0xB2 &&
-        (unsigned char)header[3] == 0x75 &&
-        (unsigned char)header[4] == 0x8E &&
-        (unsigned char)header[5] == 0x66 &&
-        (unsigned char)header[6] == 0xCF &&
-        (unsigned char)header[7] == 0x11) {
+    if (header.size() >= 8 && (unsigned char)header[0] == 0x30 && (unsigned char)header[1] == 0x26 &&
+        (unsigned char)header[2] == 0xB2 && (unsigned char)header[3] == 0x75 && (unsigned char)header[4] == 0x8E &&
+        (unsigned char)header[5] == 0x66 && (unsigned char)header[6] == 0xCF && (unsigned char)header[7] == 0x11) {
         return model::ContainerFormat::ASF;
     }
 
@@ -118,20 +108,14 @@ model::ContainerFormat FormatDetector::DetectByMagic(const std::string& file_pat
 
     // MPEG-PS: 以 pack header 起始码 00 00 01 BA 开头（.mpg/.vob/.m2p）。
     // 必须在"裸流"判断之前：PS 里同样全是 00 00 01 起始码。
-    if (header.size() >= 4 &&
-        (unsigned char)header[0] == 0x00 &&
-        (unsigned char)header[1] == 0x00 &&
-        (unsigned char)header[2] == 0x01 &&
-        (unsigned char)header[3] == 0xBA) {
+    if (header.size() >= 4 && (unsigned char)header[0] == 0x00 && (unsigned char)header[1] == 0x00 &&
+        (unsigned char)header[2] == 0x01 && (unsigned char)header[3] == 0xBA) {
         return model::ContainerFormat::MPEG_PS;
     }
 
     // MXF: SMPTE 通用键前缀 06 0E 2B 34（UL 的前 4 字节）。
-    if (header.size() >= 4 &&
-        (unsigned char)header[0] == 0x06 &&
-        (unsigned char)header[1] == 0x0E &&
-        (unsigned char)header[2] == 0x2B &&
-        (unsigned char)header[3] == 0x34) {
+    if (header.size() >= 4 && (unsigned char)header[0] == 0x06 && (unsigned char)header[1] == 0x0E &&
+        (unsigned char)header[2] == 0x2B && (unsigned char)header[3] == 0x34) {
         return model::ContainerFormat::MXF;
     }
 
@@ -195,18 +179,15 @@ model::ContainerFormat FormatDetector::DetectByExtension(const std::string& file
     }
     // MPEG-PS：.mpg/.mpeg/.vob/.m2p/.ps。规则层的别名表早就把它们归到 "mpeg"，
     // 但解析层以前不认识，这些文件只能落到 FFmpeg 通用分析。
-    if (ext == "mpg" || ext == "mpe" || ext == "mpeg" || ext == "m2p" ||
-        ext == "vob" || ext == "ps" || ext == "m2v") {
+    if (ext == "mpg" || ext == "mpe" || ext == "mpeg" || ext == "m2p" || ext == "vob" || ext == "ps" || ext == "m2v") {
         return model::ContainerFormat::MPEG_PS;
     }
     if (ext == "mxf") {
         return model::ContainerFormat::MXF;
     }
     // 裸流：没有容器层，结构页走 FFmpeg 通用分析，但格式名要认出来。
-    if (ext == "h264" || ext == "264" || ext == "avc" ||
-        ext == "h265" || ext == "265" || ext == "hevc" || ext == "hvc" ||
-        ext == "vvc" || ext == "266" || ext == "h266" ||
-        ext == "av1" || ext == "obu") {
+    if (ext == "h264" || ext == "264" || ext == "avc" || ext == "h265" || ext == "265" || ext == "hevc" ||
+        ext == "hvc" || ext == "vvc" || ext == "266" || ext == "h266" || ext == "av1" || ext == "obu") {
         return model::ContainerFormat::RAW_ES;
     }
     // 流媒体清单是纯文本（#EXTM3U / <MPD），魔数无从判断，只能看扩展名。
@@ -232,43 +213,75 @@ model::ContainerFormat FormatDetector::Detect(const std::string& file_path) {
 
 std::string FormatDetector::FormatName(model::ContainerFormat fmt) {
     switch (fmt) {
-    case model::ContainerFormat::MP4:            return "MP4";
-    case model::ContainerFormat::MOV:            return "MOV";
-    case model::ContainerFormat::MKV:            return "MKV";
-    case model::ContainerFormat::WebM:           return "WebM";
-    case model::ContainerFormat::AVI:            return "AVI";
-    case model::ContainerFormat::FLV:            return "FLV";
-    case model::ContainerFormat::MPEG_TS:        return "MPEG-TS";
-    case model::ContainerFormat::ASF:            return "ASF";
-    case model::ContainerFormat::OGG:            return "OGG";
-    case model::ContainerFormat::MPEG_PS:        return "MPEG-PS";
-    case model::ContainerFormat::MXF:            return "MXF";
-    case model::ContainerFormat::RAW_ES:         return "Raw ES";
-    case model::ContainerFormat::HLS:            return "HLS";
-    case model::ContainerFormat::DASH:           return "DASH";
-    case model::ContainerFormat::FFmpeg_Generic: return "Generic";
-    default:                                     return "Unknown";
+    case model::ContainerFormat::MP4:
+        return "MP4";
+    case model::ContainerFormat::MOV:
+        return "MOV";
+    case model::ContainerFormat::MKV:
+        return "MKV";
+    case model::ContainerFormat::WebM:
+        return "WebM";
+    case model::ContainerFormat::AVI:
+        return "AVI";
+    case model::ContainerFormat::FLV:
+        return "FLV";
+    case model::ContainerFormat::MPEG_TS:
+        return "MPEG-TS";
+    case model::ContainerFormat::ASF:
+        return "ASF";
+    case model::ContainerFormat::OGG:
+        return "OGG";
+    case model::ContainerFormat::MPEG_PS:
+        return "MPEG-PS";
+    case model::ContainerFormat::MXF:
+        return "MXF";
+    case model::ContainerFormat::RAW_ES:
+        return "Raw ES";
+    case model::ContainerFormat::HLS:
+        return "HLS";
+    case model::ContainerFormat::DASH:
+        return "DASH";
+    case model::ContainerFormat::FFmpeg_Generic:
+        return "Generic";
+    default:
+        return "Unknown";
     }
 }
 
 std::string FormatDetector::FormatTitle(model::ContainerFormat fmt) {
     switch (fmt) {
-    case model::ContainerFormat::MP4:            return "MP4 Box 结构";
-    case model::ContainerFormat::MOV:            return "MOV (QuickTime) 结构";
-    case model::ContainerFormat::MKV:            return "MKV (EBML) 结构";
-    case model::ContainerFormat::WebM:           return "WebM (EBML) 结构";
-    case model::ContainerFormat::AVI:            return "AVI (RIFF) 结构";
-    case model::ContainerFormat::FLV:            return "FLV 结构";
-    case model::ContainerFormat::MPEG_TS:        return "MPEG-TS 结构";
-    case model::ContainerFormat::ASF:            return "ASF/WMV 结构";
-    case model::ContainerFormat::OGG:            return "OGG 结构";
-    case model::ContainerFormat::MPEG_PS:        return "MPEG-PS (Pack/PES) 结构";
-    case model::ContainerFormat::MXF:            return "MXF (KLV) 结构";
-    case model::ContainerFormat::RAW_ES:         return "裸流 (Annex-B) 结构";
-    case model::ContainerFormat::HLS:            return "HLS 清单结构";
-    case model::ContainerFormat::DASH:           return "DASH MPD 结构";
-    case model::ContainerFormat::FFmpeg_Generic: return "FFmpeg 通用结构";
-    default:                                     return "文件结构";
+    case model::ContainerFormat::MP4:
+        return "MP4 Box 结构";
+    case model::ContainerFormat::MOV:
+        return "MOV (QuickTime) 结构";
+    case model::ContainerFormat::MKV:
+        return "MKV (EBML) 结构";
+    case model::ContainerFormat::WebM:
+        return "WebM (EBML) 结构";
+    case model::ContainerFormat::AVI:
+        return "AVI (RIFF) 结构";
+    case model::ContainerFormat::FLV:
+        return "FLV 结构";
+    case model::ContainerFormat::MPEG_TS:
+        return "MPEG-TS 结构";
+    case model::ContainerFormat::ASF:
+        return "ASF/WMV 结构";
+    case model::ContainerFormat::OGG:
+        return "OGG 结构";
+    case model::ContainerFormat::MPEG_PS:
+        return "MPEG-PS (Pack/PES) 结构";
+    case model::ContainerFormat::MXF:
+        return "MXF (KLV) 结构";
+    case model::ContainerFormat::RAW_ES:
+        return "裸流 (Annex-B) 结构";
+    case model::ContainerFormat::HLS:
+        return "HLS 清单结构";
+    case model::ContainerFormat::DASH:
+        return "DASH MPD 结构";
+    case model::ContainerFormat::FFmpeg_Generic:
+        return "FFmpeg 通用结构";
+    default:
+        return "文件结构";
     }
 }
 

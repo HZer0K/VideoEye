@@ -2,13 +2,13 @@
 #include <QMetaType>
 #include <QTimer>
 
-#include "infrastructure/logging/Logger.h"
-#include "ui/app/LogDirectory.h"
 #include "core/domain/model/AnalysisEvent.h"
 #include "core/domain/model/AudioVisualizationFrame.h"
 #include "core/domain/model/PacketInfo.h"
 #include "core/domain/model/SyncSample.h"
 #include "core/domain/model/TimelineEvent.h"
+#include "infrastructure/logging/Logger.h"
+#include "ui/app/LogDirectory.h"
 #include "ui/main_window/MainWindow.h"
 
 int main(int argc, char* argv[]) {
@@ -23,22 +23,20 @@ int main(int argc, char* argv[]) {
     // 也写得进去 —— 以前固定写 exe 同目录，恰好在"装好了但启动异常"这个最需要日志
     // 的场景下拿不到日志。真写不了才回退 exe 同目录，并把这个事实打进日志。
     {
-        const videoeye::ui::LogFileLocation log_location =
-            videoeye::ui::ResolveDebugLogPath(app.applicationDirPath());
+        const videoeye::ui::LogFileLocation log_location = videoeye::ui::ResolveDebugLogPath(app.applicationDirPath());
         videoeye::ui::RotateLogFileIfOversized(log_location.path);
 
         videoeye::Logger::GetInstance().SetLevel(videoeye::LogLevel::Debug);
         if (!videoeye::Logger::GetInstance().SetLogFile(log_location.path.toStdString())) {
             // Logger 默认同时输出到控制台，这条警告不会跟着一起丢
-            videoeye::Logger::GetInstance().Warning(
-                "日志文件无法打开，本次运行只有控制台输出: " + log_location.path.toStdString());
+            videoeye::Logger::GetInstance().Warning("日志文件无法打开，本次运行只有控制台输出: " +
+                                                    log_location.path.toStdString());
         }
         if (log_location.fell_back_to_app_dir) {
-            videoeye::Logger::GetInstance().Warning(
-                "用户级日志目录不可用，已回退到程序目录: " + log_location.reason.toStdString());
+            videoeye::Logger::GetInstance().Warning("用户级日志目录不可用，已回退到程序目录: " +
+                                                    log_location.reason.toStdString());
         }
-        videoeye::Logger::GetInstance().Info(
-            "日志文件: " + log_location.path.toStdString());
+        videoeye::Logger::GetInstance().Info("日志文件: " + log_location.path.toStdString());
     }
 
     qRegisterMetaType<videoeye::model::AudioVisualizationFrame>("videoeye::model::AudioVisualizationFrame");

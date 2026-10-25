@@ -1,11 +1,11 @@
 #pragma once
 
-#include <vector>
+#include "core/domain/model/BitstreamInfo.h"
+#include "core/media/codec/BitReader.h"
+#include "core/media/codec/ExtradataTypes.h"
 #include <cstdint>
 #include <string>
-#include "core/domain/model/BitstreamInfo.h"
-#include "core/media/codec/ExtradataTypes.h"
-#include "core/media/codec/BitReader.h"
+#include <vector>
 
 namespace videoeye {
 
@@ -40,12 +40,9 @@ public:
     static std::string GetLevelString(int seq_level_idx);
 
 private:
-    static bool SkipTimingInfo(videoeye::BitReader& reader,
-                              model::Av1SequenceHeaderInfo& sh);
-    static bool SkipOperatingPoints(videoeye::BitReader& reader,
-                                   model::Av1SequenceHeaderInfo& sh);
-    static bool ParseColorConfig(videoeye::BitReader& reader,
-                                model::Av1SequenceHeaderInfo& sh);
+    static bool SkipTimingInfo(videoeye::BitReader& reader, model::Av1SequenceHeaderInfo& sh);
+    static bool SkipOperatingPoints(videoeye::BitReader& reader, model::Av1SequenceHeaderInfo& sh);
+    static bool ParseColorConfig(videoeye::BitReader& reader, model::Av1SequenceHeaderInfo& sh);
 };
 
 } // namespace videoeye

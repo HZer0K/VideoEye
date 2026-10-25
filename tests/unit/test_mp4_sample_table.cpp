@@ -14,13 +14,13 @@ using namespace videoeye;
 
 namespace {
 
-using videoeye::Mp4SampleTableAnalyzer;
-using videoeye::Mp4SampleTableOptions;
 using model::IssueSeverity;
 using model::Mp4ConsistencyIssue;
 using model::Mp4Sample;
 using model::Mp4SampleTableResult;
 using model::Mp4TrackSampleTable;
+using videoeye::Mp4SampleTableAnalyzer;
+using videoeye::Mp4SampleTableOptions;
 
 Mp4SampleTableResult MakeResult(uint64_t file_size, bool moov_before_mdat) {
     Mp4SampleTableResult r;
@@ -35,8 +35,7 @@ Mp4SampleTableResult MakeResult(uint64_t file_size, bool moov_before_mdat) {
     return r;
 }
 
-Mp4TrackSampleTable MakeTrack(uint32_t track_id, const std::string& type,
-                              uint32_t timescale = 1000) {
+Mp4TrackSampleTable MakeTrack(uint32_t track_id, const std::string& type, uint32_t timescale = 1000) {
     Mp4TrackSampleTable t;
     t.track_id = track_id;
     t.type = type;
@@ -50,8 +49,7 @@ Mp4TrackSampleTable MakeTrack(uint32_t track_id, const std::string& type,
 }
 
 // 追加 n 个等长样本，offset 依次递增
-void AppendSamples(Mp4TrackSampleTable& t, uint32_t n, uint32_t size,
-                   uint64_t start_offset, uint32_t duration = 100) {
+void AppendSamples(Mp4TrackSampleTable& t, uint32_t n, uint32_t size, uint64_t start_offset, uint32_t duration = 100) {
     for (uint32_t i = 0; i < n; ++i) {
         Mp4Sample s;
         s.index = i;
@@ -82,7 +80,7 @@ const Mp4ConsistencyIssue* FindCode(const Mp4SampleTableResult& r, const std::st
     return r.FindIssue(code);
 }
 
-}  // namespace
+} // namespace
 
 // ---- faststart ----
 
@@ -120,12 +118,11 @@ TEST(Mp4SampleTable, SampleCountMismatchIsError) {
     Mp4TrackSampleTable t = MakeTrack(1, "video");
     AppendSamples(t, 10, 100, 0);
     t.stsz_sample_count = 10;
-    t.stts_sample_count = 8;  // stts 只覆盖 8 个
+    t.stts_sample_count = 8; // stts 只覆盖 8 个
     r.tracks.push_back(t);
 
     Mp4SampleTableAnalyzer::Validate(r);
-    const Mp4ConsistencyIssue* issue =
-        FindCode(r, model::Mp4IssueCode::kSampleCountMismatch);
+    const Mp4ConsistencyIssue* issue = FindCode(r, model::Mp4IssueCode::kSampleCountMismatch);
     ASSERT_NE(issue, nullptr);
     EXPECT_EQ(issue->severity, IssueSeverity::Error);
     EXPECT_EQ(issue->track_id, 1);
@@ -159,7 +156,7 @@ TEST(Mp4SampleTable, StcoOverflowRequiresCo64) {
     Mp4SampleTableResult r = MakeResult(0x200000000ull, true);
     Mp4TrackSampleTable t = MakeTrack(1, "video");
     AppendSamples(t, 4, 100, 0);
-    t.max_chunk_offset = 0x1'0000'0100ull;  // > 4 GB
+    t.max_chunk_offset = 0x1'0000'0100ull; // > 4 GB
     r.tracks.push_back(t);
 
     Mp4SampleTableAnalyzer::Validate(r);
@@ -182,7 +179,7 @@ TEST(Mp4SampleTable, StcoAndCo64ConflictIsError) {
 TEST(Mp4SampleTable, OffsetBeyondFileSizeIsError) {
     Mp4SampleTableResult r = MakeResult(/*file_size=*/1000, true);
     Mp4TrackSampleTable t = MakeTrack(1, "video");
-    AppendSamples(t, 10, 100, 0);  // 恰好占满 0..999，不越界
+    AppendSamples(t, 10, 100, 0); // 恰好占满 0..999，不越界
     r.tracks.push_back(t);
     Mp4SampleTableAnalyzer::Validate(r);
     EXPECT_FALSE(HasCode(r, model::Mp4IssueCode::kChunkOffsetOutOfRange));
@@ -191,17 +188,15 @@ TEST(Mp4SampleTable, OffsetBeyondFileSizeIsError) {
     Mp4SampleTableResult broken = MakeResult(1000, true);
     Mp4TrackSampleTable bt = MakeTrack(1, "video");
     AppendSamples(bt, 10, 100, 0);
-    bt.samples.back().offset = 950;  // 950 + 100 = 1050 > 1000
+    bt.samples.back().offset = 950; // 950 + 100 = 1050 > 1000
     broken.tracks.push_back(bt);
     Mp4SampleTableAnalyzer::Validate(broken);
 
-    const Mp4ConsistencyIssue* issue =
-        FindCode(broken, model::Mp4IssueCode::kChunkOffsetOutOfRange);
+    const Mp4ConsistencyIssue* issue = FindCode(broken, model::Mp4IssueCode::kChunkOffsetOutOfRange);
     ASSERT_NE(issue, nullptr);
     EXPECT_EQ(issue->severity, IssueSeverity::Error);
     // flags 打在结果里的样本上（Validate 改的是 broken.tracks 里的副本，不是局部变量 bt）
-    EXPECT_TRUE(
-        broken.tracks[0].samples.back().HasFlag(model::Mp4SampleFlags::kOffsetOutOfRange));
+    EXPECT_TRUE(broken.tracks[0].samples.back().HasFlag(model::Mp4SampleFlags::kOffsetOutOfRange));
     EXPECT_TRUE(issue->has_sample_index);
     EXPECT_EQ(issue->sample_index, 9u);
 }
@@ -210,7 +205,7 @@ TEST(Mp4SampleTable, NegativeCompositionTimeIsWarning) {
     Mp4SampleTableResult r = MakeResult(100000, true);
     Mp4TrackSampleTable t = MakeTrack(1, "video", /*timescale=*/1000);
     AppendSamples(t, 5, 100, 0);
-    t.samples[2].cts = -150;  // -150 ms
+    t.samples[2].cts = -150; // -150 ms
     t.samples[2].cts_delta = -150;
     t.has_ctts = true;
     t.ctts_sample_count = 5;
@@ -229,7 +224,7 @@ TEST(Mp4SampleTable, DtsRegressionIsError) {
     Mp4SampleTableResult r = MakeResult(100000, true);
     Mp4TrackSampleTable t = MakeTrack(1, "video");
     AppendSamples(t, 5, 100, 0);
-    t.samples[3].dts = 50;  // 比前一帧小
+    t.samples[3].dts = 50; // 比前一帧小
     r.tracks.push_back(t);
 
     Mp4SampleTableAnalyzer::Validate(r);
@@ -243,7 +238,7 @@ TEST(Mp4SampleTable, ChunkInternalOffsetGapIsWarning) {
     Mp4SampleTableResult r = MakeResult(100000, true);
     Mp4TrackSampleTable t = MakeTrack(1, "video");
     AppendSamples(t, 5, 100, 0);
-    t.samples[2].offset += 8;  // 与上一帧结束位置之间多了 8 字节空洞
+    t.samples[2].offset += 8; // 与上一帧结束位置之间多了 8 字节空洞
     r.tracks.push_back(t);
 
     Mp4SampleTableAnalyzer::Validate(r);
@@ -280,8 +275,7 @@ TEST(Mp4SampleTable, ElstFirstFrameShiftRespectsThreshold) {
     r.tracks.push_back(t);
 
     Mp4SampleTableAnalyzer::Validate(r, opt);
-    const Mp4ConsistencyIssue* issue =
-        FindCode(r, model::Mp4IssueCode::kElstFirstFrameShift);
+    const Mp4ConsistencyIssue* issue = FindCode(r, model::Mp4IssueCode::kElstFirstFrameShift);
     ASSERT_NE(issue, nullptr);
     EXPECT_EQ(issue->severity, IssueSeverity::Warning);
     EXPECT_GT(issue->metric_value, opt.elst_shift_tolerance_ms);
@@ -327,7 +321,8 @@ TEST(Mp4SampleTable, AvStartMismatchIsWarning) {
     Mp4TrackSampleTable a = MakeTrack(2, "audio", 48000);
     AppendSamples(a, 5, 100, 100000);
     // 视频首帧晚了 500 ms
-    for (auto& s : v.samples) s.cts += 500;
+    for (auto& s : v.samples)
+        s.cts += 500;
     v.samples.front().cts = 500;
     r.tracks.push_back(v);
     r.tracks.push_back(a);
@@ -348,7 +343,7 @@ TEST(Mp4SampleTable, FragmentSequenceJumpIsWarning) {
         model::Mp4FragmentInfo f;
         f.moof_index = i;
         f.index = i;
-        f.sequence_number = (i == 2) ? 4 : (i + 1);  // 1, 2, 4
+        f.sequence_number = (i == 2) ? 4 : (i + 1); // 1, 2, 4
         f.track_id = 1;
         f.has_tfdt = true;
         f.base_media_decode_time = i * 1000;
@@ -391,7 +386,7 @@ TEST(Mp4SampleTable, FragmentSequenceBackwardsIsError) {
 TEST(Mp4SampleTable, FragmentDecodeTimeGapIsWarning) {
     Mp4SampleTableResult r = MakeResult(100000, true);
     r.fragmented = true;
-    const uint64_t tfdt[3] = {0, 1000, 3000};  // 第二段应始于 2000，实际 3000
+    const uint64_t tfdt[3] = {0, 1000, 3000}; // 第二段应始于 2000，实际 3000
     for (uint32_t i = 0; i < 3; ++i) {
         model::Mp4FragmentInfo f;
         f.moof_index = i;

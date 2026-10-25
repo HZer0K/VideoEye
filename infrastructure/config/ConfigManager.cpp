@@ -33,8 +33,7 @@ namespace {
 std::filesystem::path UniqueTempPath(const std::filesystem::path& target) {
     static std::atomic<std::uint64_t> sequence{0};
     std::ostringstream suffix;
-    suffix << "." << std::this_thread::get_id() << "."
-           << sequence.fetch_add(1, std::memory_order_relaxed) << ".tmp";
+    suffix << "." << std::this_thread::get_id() << "." << sequence.fetch_add(1, std::memory_order_relaxed) << ".tmp";
     return std::filesystem::path(target.string() + suffix.str());
 }
 
@@ -48,8 +47,7 @@ std::filesystem::path UniqueTempPath(const std::filesystem::path& target) {
 //   * POSIX 的 rename() 覆盖同名文件，本身就是原子的；
 //   * Windows 的 rename（std::filesystem::rename 走 MoveFile）**不能**覆盖已存在的
 //     目标，必须显式要 MOVEFILE_REPLACE_EXISTING。
-bool AtomicReplaceFile(const std::filesystem::path& from, const std::filesystem::path& to,
-                       std::error_code& ec) {
+bool AtomicReplaceFile(const std::filesystem::path& from, const std::filesystem::path& to, std::error_code& ec) {
 #ifdef _WIN32
     // Windows 上"替换"要求此刻没有别的句柄开着目标文件：另一个线程正在读配置、
     // 或者杀毒软件刚扫到它，都会让这一次替换以 ACCESS_DENIED / SHARING_VIOLATION
@@ -58,15 +56,12 @@ bool AtomicReplaceFile(const std::filesystem::path& from, const std::filesystem:
     constexpr int kMaxAttempts = 10;
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
         ec.clear();
-        if (MoveFileExW(from.c_str(), to.c_str(),
-                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+        if (MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
             return true;
         }
         const DWORD err = GetLastError();
-        const bool transient = (err == ERROR_ACCESS_DENIED) ||
-                               (err == ERROR_SHARING_VIOLATION) ||
-                               (err == ERROR_LOCK_VIOLATION) ||
-                               (err == ERROR_USER_MAPPED_FILE);
+        const bool transient = (err == ERROR_ACCESS_DENIED) || (err == ERROR_SHARING_VIOLATION) ||
+                               (err == ERROR_LOCK_VIOLATION) || (err == ERROR_USER_MAPPED_FILE);
         if (!transient || attempt + 1 == kMaxAttempts) {
             ec = std::error_code(static_cast<int>(err), std::system_category());
             return false;
@@ -80,7 +75,7 @@ bool AtomicReplaceFile(const std::filesystem::path& from, const std::filesystem:
 #endif
 }
 
-}  // namespace
+} // namespace
 
 ConfigManager& ConfigManager::GetInstance() {
     static ConfigManager instance;
@@ -107,12 +102,12 @@ bool ConfigManager::LoadFromFile(const std::string& filename) {
         } catch (const std::exception&) {
             version = kLegacySchemaVersion;
         }
-        parsed.erase(version_it);  // 版本键是元数据，不进业务配置（GetAllKeys 不该看到它）
+        parsed.erase(version_it); // 版本键是元数据，不进业务配置（GetAllKeys 不该看到它）
     }
     if (version > kConfigSchemaVersion) {
         // 比本程序更新的 schema 读不懂，硬读只会得到半套配置。
-        LOG_WARN("配置文件 schema 版本 (" + std::to_string(version) + ") 高于本程序 ("
-                 + std::to_string(kConfigSchemaVersion) + ")，保留现有配置: " + filename);
+        LOG_WARN("配置文件 schema 版本 (" + std::to_string(version) + ") 高于本程序 (" +
+                 std::to_string(kConfigSchemaVersion) + ")，保留现有配置: " + filename);
         return false;
     }
 
@@ -172,12 +167,10 @@ bool ConfigManager::SaveToFile(const std::string& filename) {
     // 备份失败不影响本次保存，只记一条警告。
     std::error_code backup_ec;
     if (std::filesystem::exists(target, backup_ec)) {
-        std::filesystem::copy_file(target, target.string() + ".bak",
-                                   std::filesystem::copy_options::overwrite_existing,
+        std::filesystem::copy_file(target, target.string() + ".bak", std::filesystem::copy_options::overwrite_existing,
                                    backup_ec);
         if (backup_ec) {
-            LOG_WARN("配置备份失败（不影响本次保存）: " + target.string() + ".bak - " +
-                     backup_ec.message());
+            LOG_WARN("配置备份失败（不影响本次保存）: " + target.string() + ".bak - " + backup_ec.message());
         }
     }
 
@@ -195,7 +188,7 @@ bool ConfigManager::SaveToFile(const std::string& filename) {
 
 std::string ConfigManager::GetString(const std::string& key, const std::string& default_value) const {
     std::lock_guard<std::mutex> lock(config_mutex_);
-    
+
     auto it = config_map_.find(key);
     if (it != config_map_.end()) {
         return it->second;
@@ -208,7 +201,7 @@ int ConfigManager::GetInt(const std::string& key, int default_value) const {
     if (value.empty()) {
         return default_value;
     }
-    
+
     try {
         return std::stoi(value);
     } catch (const std::exception& e) {
@@ -222,7 +215,7 @@ double ConfigManager::GetDouble(const std::string& key, double default_value) co
     if (value.empty()) {
         return default_value;
     }
-    
+
     try {
         return std::stod(value);
     } catch (const std::exception& e) {
@@ -236,20 +229,19 @@ bool ConfigManager::GetBool(const std::string& key, bool default_value) const {
     if (value.empty()) {
         return default_value;
     }
-    
+
     // 转换为小写。::tolower 的参数必须是"能表示成 unsigned char 的值"，
     // 直接把 char 传进去时，中文/带重音字符的高位是 1 -> 负值的 char，
     // 属于未定义行为。这里先转 unsigned char 再转回来。
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
     if (value == "true" || value == "1" || value == "yes" || value == "on") {
         return true;
     } else if (value == "false" || value == "0" || value == "no" || value == "off") {
         return false;
     }
-    
+
     LOG_WARN("配置值不是有效的布尔值: " + key + " = " + value);
     return default_value;
 }
@@ -288,7 +280,7 @@ void ConfigManager::Clear() {
 
 std::vector<std::string> ConfigManager::GetAllKeys() const {
     std::lock_guard<std::mutex> lock(config_mutex_);
-    
+
     std::vector<std::string> keys;
     for (const auto& pair : config_map_) {
         keys.push_back(pair.first);
@@ -298,67 +290,67 @@ std::vector<std::string> ConfigManager::GetAllKeys() const {
 
 std::map<std::string, std::string> ConfigManager::ParseFile(const std::string& filename) {
     std::map<std::string, std::string> config;
-    
+
     std::ifstream file(filename);
     if (!file.is_open()) {
         return config;
     }
-    
+
     std::string line;
     while (std::getline(file, line)) {
         // 去除首尾空白
         line.erase(0, line.find_first_not_of(" \t\r\n"));
         line.erase(line.find_last_not_of(" \t\r\n") + 1);
-        
+
         // 跳过空行和注释
         if (line.empty() || line[0] == '#' || line[0] == ';') {
             continue;
         }
-        
+
         // 查找等号
         size_t pos = line.find('=');
         if (pos == std::string::npos) {
             continue;
         }
-        
+
         // 提取键和值
         std::string key = line.substr(0, pos);
         std::string value = line.substr(pos + 1);
-        
+
         // 去除键的空白
         key.erase(0, key.find_first_not_of(" \t"));
         key.erase(key.find_last_not_of(" \t") + 1);
-        
+
         // 去除值的空白和引号
         value.erase(0, value.find_first_not_of(" \t"));
         value.erase(value.find_last_not_of(" \t") + 1);
-        
+
         if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
             value = value.substr(1, value.size() - 2);
         }
-        
+
         if (!key.empty()) {
             config[key] = value;
         }
     }
-    
+
     return config;
 }
 
 std::string ConfigManager::Serialize() const {
     std::ostringstream oss;
-    
+
     oss << "# VideoEye Configuration File" << std::endl;
     oss << "# Generated automatically" << std::endl;
     // schema 版本写在正文里（而不是只出现在注释里）：将来字段改名/换语义时，
     // 加载方能据此拒绝读不懂的高版本文件，而不是静默拿半套配置继续跑。
     oss << kSchemaVersionKey << " = " << kConfigSchemaVersion << std::endl;
     oss << std::endl;
-    
+
     for (const auto& pair : config_map_) {
         oss << pair.first << " = " << pair.second << std::endl;
     }
-    
+
     return oss.str();
 }
 

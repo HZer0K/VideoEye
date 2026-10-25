@@ -1,7 +1,7 @@
 #pragma once
 
-#include <string>
 #include "core/domain/model/ContainerStructureInfo.h"
+#include <string>
 
 namespace videoeye {
 

@@ -351,8 +351,8 @@ void PlaybackSession::DecodeThread() {
                             // 与 OnVideoFrame 的判空保持一致: 格式合法但像素平面为空 /
                             // 宽高为 0 的帧(畸形帧或异常像素格式)不能交给 sws_scale,
                             // 否则会拿空 src_data[0] 段错误, 且不在 try/catch 内 -> 整进程崩。
-                            if (frame_data.format >= 0 && frame_data.data[0] &&
-                                frame_data.width > 0 && frame_data.height > 0) {
+                            if (frame_data.format >= 0 && frame_data.data[0] && frame_data.width > 0 &&
+                                frame_data.height > 0) {
                                 if (sws_src_w != frame_data.width || sws_src_h != frame_data.height ||
                                     sws_src_fmt != frame_data.format) {
                                     sws_src_w = frame_data.width;

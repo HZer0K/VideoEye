@@ -44,8 +44,7 @@ TEST(ConfigManagerTest, ConcurrentSavesNeverCorruptTheFile) {
     auto& config = videoeye::ConfigManager::GetInstance();
     config.Clear();
 
-    const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "videoeye_config_concurrent.ini";
+    const std::filesystem::path path = std::filesystem::temp_directory_path() / "videoeye_config_concurrent.ini";
     std::error_code ec;
     std::filesystem::remove(path, ec);
     std::filesystem::remove(std::filesystem::path(path.string() + ".bak"), ec);
@@ -68,36 +67,31 @@ TEST(ConfigManagerTest, ConcurrentSavesNeverCorruptTheFile) {
                 // 每一次保存之后，文件都必须是一份**完整可读**的配置
                 // （半截文件里不会有 schema 版本键）
                 std::ifstream in(path, std::ios::binary);
-                const std::string content((std::istreambuf_iterator<char>(in)),
-                                          std::istreambuf_iterator<char>());
+                const std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
                 if (content.find(videoeye::kSchemaVersionKey) == std::string::npos) {
                     unreadable.fetch_add(1, std::memory_order_relaxed);
                 }
             }
         });
     }
-    for (auto& thread : threads) thread.join();
+    for (auto& thread : threads)
+        thread.join();
 
-    EXPECT_EQ(save_failures.load(), 0)
-        << "并发保存失败次数（老实现 6 线程 / 600 次保存失败 332 次）";
+    EXPECT_EQ(save_failures.load(), 0) << "并发保存失败次数（老实现 6 线程 / 600 次保存失败 332 次）";
     EXPECT_EQ(unreadable.load(), 0) << "保存后文件不可解析（半截内容）的次数";
 
     // 最终文件必须同时含有全部线程的键 —— 说明没有一次保存把别人的内容顶掉
     std::ifstream in(path, std::ios::binary);
-    const std::string content((std::istreambuf_iterator<char>(in)),
-                              std::istreambuf_iterator<char>());
+    const std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     for (int t = 0; t < kThreads; ++t) {
-        EXPECT_NE(content.find("thread." + std::to_string(t)), std::string::npos)
-            << "线程 " << t << " 写入的键丢失了";
+        EXPECT_NE(content.find("thread." + std::to_string(t)), std::string::npos) << "线程 " << t << " 写入的键丢失了";
     }
 
     // 临时文件必须被收干净（唯一文件名也不能泄漏在临时目录里）
     int leftover = 0;
-    for (const auto& entry :
-         std::filesystem::directory_iterator(std::filesystem::temp_directory_path(), ec)) {
+    for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::temp_directory_path(), ec)) {
         const std::string name = entry.path().filename().string();
-        if (name.rfind("videoeye_config_concurrent.ini", 0) == 0 &&
-            name.find(".tmp") != std::string::npos) {
+        if (name.rfind("videoeye_config_concurrent.ini", 0) == 0 && name.find(".tmp") != std::string::npos) {
             ++leftover;
         }
     }
@@ -117,8 +111,7 @@ TEST(ConfigManagerTest, FailedSaveLeavesExistingFileIntact) {
     config.Clear();
     config.SetString("probe.key", "probe");
 
-    const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "videoeye_config_keep.ini";
+    const std::filesystem::path path = std::filesystem::temp_directory_path() / "videoeye_config_keep.ini";
     std::error_code ec;
     std::filesystem::remove_all(path, ec);
     ASSERT_TRUE(config.SaveToFile(path.string()));
@@ -142,8 +135,7 @@ TEST(ConfigManagerTest, SaveThenLoadRoundTrip) {
     config.Clear();
     config.SetString("round.trip", "value");
 
-    const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "videoeye_config_roundtrip.ini";
+    const std::filesystem::path path = std::filesystem::temp_directory_path() / "videoeye_config_roundtrip.ini";
     std::error_code ec;
     std::filesystem::remove(path, ec);
     ASSERT_TRUE(config.SaveToFile(path.string()));

@@ -21,17 +21,18 @@ using namespace videoeye;
 
 bool HasIssue(const model::QcReport& report, const std::string& rule_id) {
     for (const auto& issue : report.issues) {
-        if (issue.rule_id == rule_id) return true;
+        if (issue.rule_id == rule_id)
+            return true;
     }
     return false;
 }
 
 bool HasAnyLegacyIssue(const model::QcReport& report) {
-    static const char* kPrefixes[] = {"container.avi.", "container.flv.",
-                                      "container.asf.", "container.ogg."};
+    static const char* kPrefixes[] = {"container.avi.", "container.flv.", "container.asf.", "container.ogg."};
     for (const auto& issue : report.issues) {
         for (const char* prefix : kPrefixes) {
-            if (issue.rule_id.rfind(prefix, 0) == 0) return true;
+            if (issue.rule_id.rfind(prefix, 0) == 0)
+                return true;
         }
     }
     return false;
@@ -88,7 +89,7 @@ model::OggDiagnostics HealthyOgg() {
     return ogg;
 }
 
-}  // namespace
+} // namespace
 
 // ---------------- AVI ----------------
 

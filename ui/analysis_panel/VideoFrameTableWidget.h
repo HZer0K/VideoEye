@@ -59,27 +59,38 @@ public:
     // 两个子页 widget：由 FramePacketView 按原顺序 addTab 到它自己的 QTabWidget 上
     // （视频帧 = 0、包 = 1、GOP 摘要 = 2、音频帧 = 3），这样 tab 序号与既有的
     // setCurrentIndex(0/1) 互跳逻辑保持一致。
-    QWidget* videoFramePage() const { return video_sub_; }
-    QWidget* gopPage() const { return gop_sub_; }
+    QWidget* videoFramePage() const {
+        return video_sub_;
+    }
+    QWidget* gopPage() const {
+        return gop_sub_;
+    }
 
     // === 数据进来（由 FramePacketView 转发）===
     void ResetVideoFrames();
-    void AppendVideoFrame(int index, int frame_type, bool is_key_frame,
-                          qint64 pts, double timestamp_seconds);
+    void AppendVideoFrame(int index, int frame_type, bool is_key_frame, qint64 pts, double timestamp_seconds);
 
     // === 派生 / 刷新 ===
-    const std::vector<GopSummary>& GopSummaries() const { return gop_summaries_; }
+    const std::vector<GopSummary>& GopSummaries() const {
+        return gop_summaries_;
+    }
     // 包表 → 帧表按 PTS 互跳要用：父页需要一个"找最近帧"的记录源和一个可操作的表。
     const std::vector<VideoFrameRecord>& FrameRecords() const;
-    QTableView* frameTable() const { return frame_table_; }
-    RecordTableModel<VideoFrameRecord>* frameModel() const { return frame_model_; }
+    QTableView* frameTable() const {
+        return frame_table_;
+    }
+    RecordTableModel<VideoFrameRecord>* frameModel() const {
+        return frame_model_;
+    }
 
     bool HasPending() const;
     void FlushPending();
 
     // 「启用分析」勾选框。必须外露：父页注入 SetFeatureHooks 后要拿它回写真实开关状态，
     // 否则界面与实际行为不一致（评审 P1）。
-    QCheckBox* toggle() const { return video_toggle_; }
+    QCheckBox* toggle() const {
+        return video_toggle_;
+    }
 
 signals:
     // gop_summaries_ 发生变化（新增 GOP 段 / 被裁剪 / 被清空）时发出，由 FlushPending
@@ -106,8 +117,8 @@ private:
     void FlushPendingGopTableUpdates();
     void UpdateGopRowInTable(int row, const GopSummary& summary);
 
-    QWidget* video_sub_ = nullptr;   // 子页 0: 视频帧
-    QWidget* gop_sub_ = nullptr;     // 子页 2: GOP 摘要
+    QWidget* video_sub_ = nullptr; // 子页 0: 视频帧
+    QWidget* gop_sub_ = nullptr;   // 子页 2: GOP 摘要
 
     QComboBox* frame_filter_combo_ = nullptr;
     QLabel* frame_summary_label_ = nullptr;
@@ -134,5 +145,5 @@ private:
     bool frame_summary_dirty_ = false;
 };
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

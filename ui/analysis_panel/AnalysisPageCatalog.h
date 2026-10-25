@@ -22,11 +22,11 @@ namespace videoeye {
 namespace ui {
 
 struct AnalysisPageDescriptor {
-    const char* id = "";      // 稳定标识（侧栏徽标按它归集，见 CollectPageBadges）
-    const char* title = "";   // 未翻译的源文本；由建页方过一遍 tr()
-    const char* group = "";   // 侧栏分组 id
-    int order = 0;            // 组内排序键
-    const char* scope = "";   // 口径说明（"播放期" / "全文件"），空 = 不显示
+    const char* id = "";    // 稳定标识（侧栏徽标按它归集，见 CollectPageBadges）
+    const char* title = ""; // 未翻译的源文本；由建页方过一遍 tr()
+    const char* group = ""; // 侧栏分组 id
+    int order = 0;          // 组内排序键
+    const char* scope = ""; // 口径说明（"播放期" / "全文件"），空 = 不显示
 };
 
 // 顺序 == 外部 stack 的页序号。调整顺序前先看 tests/unit/test_analysis_page_catalog.cpp：
@@ -51,5 +51,5 @@ inline const std::vector<AnalysisPageDescriptor>& AnalysisPageCatalog() {
     return kCatalog;
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

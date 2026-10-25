@@ -3,8 +3,8 @@
 #include <atomic>
 #include <mutex>
 
-#include "core/analysis/stream/StreamAnalyzer.h"
 #include "core/analysis/quality/VisualDefectAnalyzer.h"
+#include "core/analysis/stream/StreamAnalyzer.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>

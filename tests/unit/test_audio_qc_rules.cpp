@@ -14,9 +14,9 @@
 
 #include <gtest/gtest.h>
 
+#include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/analysis/quality/AudioQcAnalyzer.h"
 #include "core/domain/model/AnalysisResult.h"
-#include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/domain/model/QcReport.h"
 
 namespace {
@@ -27,9 +27,8 @@ constexpr int kSampleRate = 48000;
 constexpr double kPi = 3.14159265358979323846;
 
 // 用合成 PCM 跑一遍 AudioQcAnalyzer，填出 AnalysisResult.audio_qc
-model::AnalysisResult BuildResult(int channels, int frames, double amplitude,
-                                     bool invert_second_channel = false, double dc = 0.0,
-                                     double container_duration = 0.0) {
+model::AnalysisResult BuildResult(int channels, int frames, double amplitude, bool invert_second_channel = false,
+                                  double dc = 0.0, double container_duration = 0.0) {
     std::vector<std::vector<float>> planes(static_cast<size_t>(channels),
                                            std::vector<float>(static_cast<size_t>(frames), 0.0f));
     std::vector<const float*> ptrs(static_cast<size_t>(channels));
@@ -38,7 +37,8 @@ model::AnalysisResult BuildResult(int channels, int frames, double amplitude,
         for (int i = 0; i < frames; ++i) {
             const double t = static_cast<double>(i) / kSampleRate;
             double v = dc + amplitude * std::sin(2.0 * kPi * 1000.0 * t);
-            if (c == 1 && invert_second_channel) v = -(v - dc) + dc;
+            if (c == 1 && invert_second_channel)
+                v = -(v - dc) + dc;
             plane[static_cast<size_t>(i)] = static_cast<float>(v);
         }
         ptrs[static_cast<size_t>(c)] = plane.data();
@@ -49,16 +49,15 @@ model::AnalysisResult BuildResult(int channels, int frames, double amplitude,
         info.emplace_back("FL", model::AudioChannelRole::Front);
         info.emplace_back("FR", model::AudioChannelRole::Front);
     }
-    for (int c = 2; c < channels; ++c) info.emplace_back("Ch" + std::to_string(c + 1),
-                                                         model::AudioChannelRole::Front);
+    for (int c = 2; c < channels; ++c)
+        info.emplace_back("Ch" + std::to_string(c + 1), model::AudioChannelRole::Front);
 
     videoeye::AudioQcAnalyzer analyzer;
     analyzer.Reset();
     analyzer.SetStreamInfo(kSampleRate, channels, "fltp", 32);
     analyzer.SetChannelInfo(info);
     if (container_duration > 0.0) {
-        analyzer.SetDurations(static_cast<double>(frames) / kSampleRate, container_duration,
-                              container_duration, false);
+        analyzer.SetDurations(static_cast<double>(frames) / kSampleRate, container_duration, container_duration, false);
     }
     analyzer.OnSamples(ptrs.data(), frames, 0.0);
 
@@ -68,7 +67,7 @@ model::AnalysisResult BuildResult(int channels, int frames, double amplitude,
     result.duration_seconds = container_duration;
     model::StreamDigest audio_stream;
     audio_stream.index = 1;
-    audio_stream.media_type = 1;   // AVMEDIA_TYPE_AUDIO
+    audio_stream.media_type = 1; // AVMEDIA_TYPE_AUDIO
     audio_stream.sample_rate = kSampleRate;
     audio_stream.channels = channels;
     result.streams.push_back(audio_stream);
@@ -76,20 +75,21 @@ model::AnalysisResult BuildResult(int channels, int frames, double amplitude,
     return result;
 }
 
-bool HasIssue(const model::QcReport& report, const std::string& rule_id,
-              model::DiagnosticIssue* out = nullptr) {
+bool HasIssue(const model::QcReport& report, const std::string& rule_id, model::DiagnosticIssue* out = nullptr) {
     for (const auto& issue : report.issues) {
-        if (issue.rule_id != rule_id) continue;
-        if (out) *out = issue;
+        if (issue.rule_id != rule_id)
+            continue;
+        if (out)
+            *out = issue;
         return true;
     }
     return false;
 }
 
-}  // namespace
+} // namespace
 
 TEST(AudioQcRulesTest, LoudLoudnessTriggersHighTargetRule) {
-    const auto result = BuildResult(1, kSampleRate * 5, 1.0);   // 满刻度 -> 约 -3 LUFS
+    const auto result = BuildResult(1, kSampleRate * 5, 1.0); // 满刻度 -> 约 -3 LUFS
     videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
@@ -110,7 +110,7 @@ TEST(AudioQcRulesTest, QuietLoudnessTriggersLowTargetRule) {
 }
 
 TEST(AudioQcRulesTest, TargetLoudnessPassesBothRules) {
-    const auto result = BuildResult(1, kSampleRate * 5, 0.1);   // 约 -23 LUFS
+    const auto result = BuildResult(1, kSampleRate * 5, 0.1); // 约 -23 LUFS
     videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
@@ -122,7 +122,7 @@ TEST(AudioQcRulesTest, FullScaleTriggersTruePeakAndClipping) {
     std::vector<float> plane(static_cast<size_t>(kSampleRate * 3));
     for (size_t i = 0; i < plane.size(); ++i) {
         const double t = static_cast<double>(i) / kSampleRate;
-        const double v = 1.6 * std::sin(2.0 * kPi * 440.0 * t);   // 超过满刻度
+        const double v = 1.6 * std::sin(2.0 * kPi * 440.0 * t); // 超过满刻度
         plane[i] = static_cast<float>(std::max(-1.0, std::min(1.0, v)));
     }
     const float* ptrs[1] = {plane.data()};

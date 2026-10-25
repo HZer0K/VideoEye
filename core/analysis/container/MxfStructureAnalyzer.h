@@ -39,8 +39,7 @@ struct MxfStructureOptions {
 class MxfStructureAnalyzer {
 public:
     bool Analyze(const std::string& file_path, model::ContainerStructureResult& result,
-                 const std::atomic<bool>* cancel = nullptr,
-                 const MxfStructureOptions& options = MxfStructureOptions{});
+                 const std::atomic<bool>* cancel = nullptr, const MxfStructureOptions& options = MxfStructureOptions{});
 };
 
-}  // namespace videoeye
+} // namespace videoeye

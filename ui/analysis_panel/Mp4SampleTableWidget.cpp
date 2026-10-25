@@ -58,9 +58,8 @@ void Mp4SampleTableWidget::SetupUi() {
     layout->addWidget(summary_label_);
 
     sample_table_ = new QTableWidget(0, 9, this);
-    sample_table_->setHorizontalHeaderLabels({
-        tr("#"), tr("偏移"), tr("DTS(s)"), tr("PTS(s)"), tr("ΔCTS(ms)"),
-        tr("时长(ms)"), tr("大小(B)"), tr("Chunk"), tr("关键帧")});
+    sample_table_->setHorizontalHeaderLabels({tr("#"), tr("偏移"), tr("DTS(s)"), tr("PTS(s)"), tr("ΔCTS(ms)"),
+                                              tr("时长(ms)"), tr("大小(B)"), tr("Chunk"), tr("关键帧")});
     sample_table_->horizontalHeader()->setStretchLastSection(true);
     sample_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     sample_table_->setAlternatingRowColors(true);
@@ -80,9 +79,8 @@ void Mp4SampleTableWidget::SetupUi() {
     bottom->addTab(issue_table_, tr("一致性问题"));
 
     fragment_table_ = new QTableWidget(0, 8, bottom);
-    fragment_table_->setHorizontalHeaderLabels({
-        tr("#"), tr("序号"), tr("Track"), tr("偏移"), tr("tfdt"),
-        tr("时长"), tr("样本数"), tr("字节数")});
+    fragment_table_->setHorizontalHeaderLabels(
+        {tr("#"), tr("序号"), tr("Track"), tr("偏移"), tr("tfdt"), tr("时长"), tr("样本数"), tr("字节数")});
     fragment_table_->horizontalHeader()->setStretchLastSection(true);
     fragment_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     fragment_table_->setAlternatingRowColors(true);
@@ -97,10 +95,9 @@ void Mp4SampleTableWidget::SetupUi() {
     splitter->setChildrenCollapsible(false);
     layout->addWidget(splitter, 1);
 
-    connect(track_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &Mp4SampleTableWidget::OnTrackChanged);
-    connect(export_button_, &QPushButton::clicked,
-            this, &Mp4SampleTableWidget::OnExportCsv);
+    connect(track_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &Mp4SampleTableWidget::OnTrackChanged);
+    connect(export_button_, &QPushButton::clicked, this, &Mp4SampleTableWidget::OnExportCsv);
 }
 
 void Mp4SampleTableWidget::SetSamples(const model::Mp4SampleTableResult& samples) {
@@ -110,8 +107,7 @@ void Mp4SampleTableWidget::SetSamples(const model::Mp4SampleTableResult& samples
         const QSignalBlocker blocker(track_combo_);
         track_combo_->clear();
         for (const auto& t : samples_.tracks) {
-            QString label = QString("Track %1 (%2").arg(t.track_id)
-                                .arg(QString::fromStdString(t.type));
+            QString label = QString("Track %1 (%2").arg(t.track_id).arg(QString::fromStdString(t.type));
             if (!t.codec.empty()) {
                 label += " / " + QString::fromStdString(t.codec);
             }
@@ -127,8 +123,8 @@ void Mp4SampleTableWidget::SetSamples(const model::Mp4SampleTableResult& samples
 
 void Mp4SampleTableWidget::SetFocusBox(const QString& box) {
     focus_box_ = box;
-    const bool is_fragment_box = (box == "moof" || box == "traf" || box == "tfhd" ||
-                                  box == "tfdt" || box == "trun" || box == "mfhd");
+    const bool is_fragment_box =
+        (box == "moof" || box == "traf" || box == "tfhd" || box == "tfdt" || box == "trun" || box == "mfhd");
     if (is_fragment_box) {
         focus_label_->setText(tr("已联动：%1（分片信息见下方「分片 (moof)」）").arg(box));
     } else {
@@ -146,19 +142,18 @@ void Mp4SampleTableWidget::ShowFragmentTab() {
 void Mp4SampleTableWidget::UpdateSummary() {
     const auto& r = samples_;
     if (!r.valid) {
-        summary_label_->setText(
-            tr("样本表：未分析（文件不是 MP4/MOV，或容器解析失败）"));
+        summary_label_->setText(tr("样本表：未分析（文件不是 MP4/MOV，或容器解析失败）"));
         summary_label_->setStyleSheet("font-size: 11px; color: #8B949E; padding: 2px;");
         return;
     }
 
     QString order;
     for (const auto& box : r.top_level_order) {
-        if (!order.isEmpty()) order += " → ";
+        if (!order.isEmpty())
+            order += " → ";
         order += QString::fromStdString(box);
     }
-    const int errors = r.CountIssues(model::IssueSeverity::Error) +
-                       r.CountIssues(model::IssueSeverity::Critical);
+    const int errors = r.CountIssues(model::IssueSeverity::Error) + r.CountIssues(model::IssueSeverity::Critical);
     const int warnings = r.CountIssues(model::IssueSeverity::Warning);
     const int infos = r.CountIssues(model::IssueSeverity::Info);
 
@@ -178,41 +173,50 @@ void Mp4SampleTableWidget::UpdateSummary() {
             .arg(errors)
             .arg(warnings)
             .arg(infos));
-    summary_label_->setStyleSheet(
-        errors > 0 ? "font-size: 11px; color: #F85149; padding: 2px;"
-                   : (warnings > 0 ? "font-size: 11px; color: #D29922; padding: 2px;"
-                                   : "font-size: 11px; color: #3FB950; padding: 2px;"));
+    summary_label_->setStyleSheet(errors > 0 ? "font-size: 11px; color: #F85149; padding: 2px;"
+                                             : (warnings > 0 ? "font-size: 11px; color: #D29922; padding: 2px;"
+                                                             : "font-size: 11px; color: #3FB950; padding: 2px;"));
 }
 
 void Mp4SampleTableWidget::RebuildSampleTable() {
     sample_table_->setRowCount(0);
-    if (!samples_.valid) return;
+    if (!samples_.valid)
+        return;
 
     const int track_index = track_combo_->currentIndex();
-    if (track_index < 0 || track_index >= static_cast<int>(samples_.tracks.size())) return;
+    if (track_index < 0 || track_index >= static_cast<int>(samples_.tracks.size()))
+        return;
     const model::Mp4TrackSampleTable& track = samples_.tracks[track_index];
-    if (track.samples.empty()) return;
+    if (track.samples.empty())
+        return;
 
     // 结构树点了 stss 时只看关键帧
     const bool keyframe_only = (focus_box_ == "stss");
     // 结构树联动的列高亮
     QVector<int> focus_cols;
-    if (focus_box_ == "stts")       focus_cols = {2, 5};
-    else if (focus_box_ == "ctts")  focus_cols = {3, 4};
-    else if (focus_box_ == "stsz")  focus_cols = {6};
-    else if (focus_box_ == "stsc")  focus_cols = {7};
-    else if (focus_box_ == "stco" ||
-             focus_box_ == "co64")  focus_cols = {1, 7};
-    else if (focus_box_ == "stss")  focus_cols = {8};
+    if (focus_box_ == "stts")
+        focus_cols = {2, 5};
+    else if (focus_box_ == "ctts")
+        focus_cols = {3, 4};
+    else if (focus_box_ == "stsz")
+        focus_cols = {6};
+    else if (focus_box_ == "stsc")
+        focus_cols = {7};
+    else if (focus_box_ == "stco" || focus_box_ == "co64")
+        focus_cols = {1, 7};
+    else if (focus_box_ == "stss")
+        focus_cols = {8};
 
-    constexpr int kMaxSampleRows = 5000;  // UI 安全上限（样本本身可按 options 截断）
+    constexpr int kMaxSampleRows = 5000; // UI 安全上限（样本本身可按 options 截断）
 
     // 先算出实际要显示多少行，一次性 setRowCount：
     // 逐行 insertRow 在几千行时是 O(n^2)，实测 5000 行要 200ms+。
     int visible = 0;
     for (const auto& s : track.samples) {
-        if (keyframe_only && !s.keyframe) continue;
-        if (visible >= kMaxSampleRows) break;
+        if (keyframe_only && !s.keyframe)
+            continue;
+        if (visible >= kMaxSampleRows)
+            break;
         ++visible;
     }
     TableBatch table(sample_table_);
@@ -220,23 +224,21 @@ void Mp4SampleTableWidget::RebuildSampleTable() {
 
     int row = 0;
     for (const auto& s : track.samples) {
-        if (keyframe_only && !s.keyframe) continue;
-        if (row >= kMaxSampleRows) break;
+        if (keyframe_only && !s.keyframe)
+            continue;
+        if (row >= kMaxSampleRows)
+            break;
 
-        auto set = [&](int col, const QString& text) {
-            return table.SetText(row, col, text);
-        };
+        auto set = [&](int col, const QString& text) { return table.SetText(row, col, text); };
         set(0, QString::number(s.index));
         set(1, QString("0x%1").arg(static_cast<quint64>(s.offset), 0, 16));
         set(2, QString::number(s.DtsSeconds(track.media_timescale), 'f', 4));
         set(3, QString::number(s.CtsSeconds(track.media_timescale), 'f', 4));
         set(4, track.media_timescale > 0
-                   ? QString::number(static_cast<double>(s.cts_delta) * 1000.0 /
-                                         track.media_timescale, 'f', 2)
+                   ? QString::number(static_cast<double>(s.cts_delta) * 1000.0 / track.media_timescale, 'f', 2)
                    : QString::number(s.cts_delta));
         set(5, track.media_timescale > 0
-                   ? QString::number(static_cast<double>(s.duration) * 1000.0 /
-                                         track.media_timescale, 'f', 2)
+                   ? QString::number(static_cast<double>(s.duration) * 1000.0 / track.media_timescale, 'f', 2)
                    : QString::number(s.duration));
         set(6, QString::number(static_cast<quint64>(s.size)));
         set(7, QString("%1.%2").arg(s.chunk_index).arg(s.index_in_chunk));
@@ -247,33 +249,48 @@ void Mp4SampleTableWidget::RebuildSampleTable() {
         bool error_row = false, warn_row = false;
         auto note = [&reasons](const char* text) { reasons << QString::fromUtf8(text); };
         if (s.HasFlag(model::Mp4SampleFlags::kOffsetOutOfRange)) {
-            error_row = true; note("偏移越过文件末尾");
+            error_row = true;
+            note("偏移越过文件末尾");
         }
         if (s.HasFlag(model::Mp4SampleFlags::kDtsNotMonotonic)) {
-            error_row = true; note("DTS 回退");
+            error_row = true;
+            note("DTS 回退");
         }
-        if (s.HasFlag(model::Mp4SampleFlags::kNegativeCts)) { warn_row = true; note("合成时间为负"); }
-        if (s.HasFlag(model::Mp4SampleFlags::kZeroSize)) { warn_row = true; note("大小为 0"); }
-        if (s.HasFlag(model::Mp4SampleFlags::kZeroDuration)) { warn_row = true; note("时长为 0"); }
+        if (s.HasFlag(model::Mp4SampleFlags::kNegativeCts)) {
+            warn_row = true;
+            note("合成时间为负");
+        }
+        if (s.HasFlag(model::Mp4SampleFlags::kZeroSize)) {
+            warn_row = true;
+            note("大小为 0");
+        }
+        if (s.HasFlag(model::Mp4SampleFlags::kZeroDuration)) {
+            warn_row = true;
+            note("时长为 0");
+        }
         if (s.HasFlag(model::Mp4SampleFlags::kChunkDiscontinuity)) {
-            warn_row = true; note("chunk 内偏移不连续");
+            warn_row = true;
+            note("chunk 内偏移不连续");
         }
 
         if (error_row || warn_row) {
             const QColor bg = error_row ? QColor("#5C1F1F") : QColor("#5C4A1F");
             for (int c = 0; c < sample_table_->columnCount(); ++c) {
                 auto* item = sample_table_->item(row, c);
-                if (item) item->setBackground(bg);
+                if (item)
+                    item->setBackground(bg);
             }
             for (int c = 0; c < sample_table_->columnCount(); ++c) {
                 auto* item = sample_table_->item(row, c);
-                if (item) item->setToolTip(reasons.join(" / "));
+                if (item)
+                    item->setToolTip(reasons.join(" / "));
             }
         }
         // 结构树联动的高亮列
         for (int col : focus_cols) {
             auto* item = sample_table_->item(row, col);
-            if (item) item->setForeground(QColor("#58A6FF"));
+            if (item)
+                item->setForeground(QColor("#58A6FF"));
         }
         ++row;
     }
@@ -292,14 +309,13 @@ void Mp4SampleTableWidget::RebuildSampleTable() {
 
 void Mp4SampleTableWidget::RebuildIssueTable() {
     issue_table_->setRowCount(0);
-    if (!samples_.valid) return;
+    if (!samples_.valid)
+        return;
 
     int row = 0;
     for (const auto& issue : samples_.issues) {
         issue_table_->insertRow(row);
-        auto set = [&](int col, const QString& text) {
-            issue_table_->setItem(row, col, new QTableWidgetItem(text));
-        };
+        auto set = [&](int col, const QString& text) { issue_table_->setItem(row, col, new QTableWidgetItem(text)); };
         set(0, QString::fromUtf8(model::ToString(issue.severity)));
 
         QString where = tr("文件级");
@@ -308,22 +324,23 @@ void Mp4SampleTableWidget::RebuildIssueTable() {
         } else if (issue.fragment_index >= 0) {
             where = QString("分片 #%1").arg(issue.fragment_index);
         }
-        if (issue.has_sample_index) where += QString(" @样本#%1").arg(issue.sample_index);
-        if (issue.occurrence_count > 1) where += QString(" ×%1").arg(issue.occurrence_count);
+        if (issue.has_sample_index)
+            where += QString(" @样本#%1").arg(issue.sample_index);
+        if (issue.occurrence_count > 1)
+            where += QString(" ×%1").arg(issue.occurrence_count);
         set(1, where);
 
         set(2, QString::fromStdString(issue.title));
         set(3, QString::fromStdString(issue.detail));
         set(4, QString::fromStdString(issue.suggestion));
 
-        const QColor fg = (issue.severity == model::IssueSeverity::Error ||
-                           issue.severity == model::IssueSeverity::Critical)
-                              ? QColor("#F85149")
-                              : (issue.severity == model::IssueSeverity::Warning
-                                     ? QColor("#D29922")
-                                     : QColor("#8B949E"));
+        const QColor fg =
+            (issue.severity == model::IssueSeverity::Error || issue.severity == model::IssueSeverity::Critical)
+                ? QColor("#F85149")
+                : (issue.severity == model::IssueSeverity::Warning ? QColor("#D29922") : QColor("#8B949E"));
         for (int c = 0; c < issue_table_->columnCount(); ++c) {
-            if (auto* item = issue_table_->item(row, c)) item->setForeground(fg);
+            if (auto* item = issue_table_->item(row, c))
+                item->setForeground(fg);
         }
         ++row;
     }
@@ -332,7 +349,8 @@ void Mp4SampleTableWidget::RebuildIssueTable() {
 
 void Mp4SampleTableWidget::RebuildFragmentTable() {
     fragment_table_->setRowCount(0);
-    if (!samples_.valid || samples_.fragments.empty()) return;
+    if (!samples_.valid || samples_.fragments.empty())
+        return;
 
     int row = 0;
     for (const auto& f : samples_.fragments) {
@@ -346,16 +364,14 @@ void Mp4SampleTableWidget::RebuildFragmentTable() {
         set(1, QString::number(f.sequence_number));
         set(2, QString::number(f.track_id));
         set(3, QString("0x%1").arg(static_cast<quint64>(f.offset), 0, 16));
-        set(4, f.has_tfdt ? QString::number(static_cast<quint64>(f.base_media_decode_time))
-                          : tr("缺失"));
+        set(4, f.has_tfdt ? QString::number(static_cast<quint64>(f.base_media_decode_time)) : tr("缺失"));
         set(5, ts > 0 ? QString("%1 (%2 s)")
                             .arg(QString::number(static_cast<quint64>(f.duration)))
                             .arg(QString::number(static_cast<double>(f.duration) / ts, 'f', 3))
                       : QString::number(static_cast<quint64>(f.duration)));
         set(6, QString::number(f.sample_count));
         set(7, QString::number(static_cast<quint64>(f.total_size)));
-        if (!f.has_tfdt || (!f.base_data_offset_present && !f.default_base_is_moof &&
-                            !f.trun_data_offset_present)) {
+        if (!f.has_tfdt || (!f.base_data_offset_present && !f.default_base_is_moof && !f.trun_data_offset_present)) {
             for (int c = 0; c < fragment_table_->columnCount(); ++c) {
                 if (auto* item = fragment_table_->item(row, c)) {
                     item->setBackground(QColor("#5C4A1F"));
@@ -377,10 +393,12 @@ void Mp4SampleTableWidget::OnExportCsv() {
         return;
     }
     const int track_index = track_combo_->currentIndex();
-    if (track_index < 0 || track_index >= static_cast<int>(samples_.tracks.size())) return;
+    if (track_index < 0 || track_index >= static_cast<int>(samples_.tracks.size()))
+        return;
     const model::Mp4TrackSampleTable& track = samples_.tracks[track_index];
 
-    ExportCsvStream(this, tr("导出 MP4 样本表 CSV"),
+    ExportCsvStream(
+        this, tr("导出 MP4 样本表 CSV"),
         QString("videoeye_mp4_samples_track%1_%2.csv")
             .arg(track.track_id)
             .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
@@ -388,17 +406,10 @@ void Mp4SampleTableWidget::OnExportCsv() {
             out << "index,offset,dts,pts,cts_delta,duration,size,chunk,index_in_chunk,keyframe,flags\n";
             const double ts = static_cast<double>(track.media_timescale);
             for (const auto& s : track.samples) {
-                out << s.index << ','
-                    << s.offset << ','
-                    << QString::number(ts > 0 ? s.dts / ts : 0.0, 'f', 6) << ','
-                    << QString::number(ts > 0 ? s.cts / ts : 0.0, 'f', 6) << ','
-                    << s.cts_delta << ','
-                    << s.duration << ','
-                    << s.size << ','
-                    << s.chunk_index << ','
-                    << s.index_in_chunk << ','
-                    << (s.keyframe ? 1 : 0) << ','
-                    << s.flags << '\n';
+                out << s.index << ',' << s.offset << ',' << QString::number(ts > 0 ? s.dts / ts : 0.0, 'f', 6) << ','
+                    << QString::number(ts > 0 ? s.cts / ts : 0.0, 'f', 6) << ',' << s.cts_delta << ',' << s.duration
+                    << ',' << s.size << ',' << s.chunk_index << ',' << s.index_in_chunk << ',' << (s.keyframe ? 1 : 0)
+                    << ',' << s.flags << '\n';
             }
         },
         static_cast<int>(track.samples.size()));

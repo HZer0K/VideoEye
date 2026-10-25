@@ -10,8 +10,8 @@
 namespace videoeye {
 namespace ui {
 
-OpenSessionController::OpenSessionController(const Deps& deps, QObject* parent)
-    : QObject(parent), deps_(deps) {}
+OpenSessionController::OpenSessionController(const Deps& deps, QObject* parent) : QObject(parent), deps_(deps) {
+}
 
 bool OpenSessionController::Open(const QString& source, bool autoplay) {
     if (source.isEmpty() || !deps_.player) {
@@ -36,15 +36,19 @@ bool OpenSessionController::Open(const QString& source, bool autoplay) {
     }
 
     switch (ClassifyOpenTarget(source)) {
-        case OpenTargetKind::RawImage: return OpenRawImage(source);
-        case OpenTargetKind::Pcm: return OpenPcm(source, autoplay);
-        case OpenTargetKind::Media: break;
+    case OpenTargetKind::RawImage:
+        return OpenRawImage(source);
+    case OpenTargetKind::Pcm:
+        return OpenPcm(source, autoplay);
+    case OpenTargetKind::Media:
+        break;
     }
     return OpenMediaAsync(source, autoplay);
 }
 
 bool OpenSessionController::OpenRawImage(const QString& source) {
-    if (!deps_.player_panel) return false;
+    if (!deps_.player_panel)
+        return false;
 
     // 裸图像不走 player_->Open()，拿不到打开链路里那次统一的导出取消 ——
     // 这里显式补上，否则旧媒体的抽帧 / 转码导出会继续在后台跑。
@@ -70,7 +74,8 @@ bool OpenSessionController::OpenRawImage(const QString& source) {
 }
 
 bool OpenSessionController::OpenPcm(const QString& source, bool autoplay) {
-    if (!deps_.player_panel || !deps_.analysis_panel) return false;
+    if (!deps_.player_panel || !deps_.analysis_panel)
+        return false;
 
     QString demuxer_name;
     int sample_rate = 44100;
@@ -90,10 +95,8 @@ bool OpenSessionController::OpenPcm(const QString& source, bool autoplay) {
     }
 
     emit StatusMessage(tr("已打开 PCM: %1").arg(source));
-    emit CurrentMediaLabelChanged(tr("%1 [PCM %2, %3 Hz, %4 ch]")
-                                      .arg(source, demuxer_name)
-                                      .arg(sample_rate)
-                                      .arg(channels));
+    emit CurrentMediaLabelChanged(
+        tr("%1 [PCM %2, %3 Hz, %4 ch]").arg(source, demuxer_name).arg(sample_rate).arg(channels));
 
     current_media_url_ = source;
     deps_.analysis_panel->SetCurrentVideoPath(source);
@@ -116,7 +119,8 @@ bool OpenSessionController::OpenPcm(const QString& source, bool autoplay) {
 }
 
 bool OpenSessionController::OpenMediaAsync(const QString& source, bool autoplay) {
-    if (!deps_.player_panel || !deps_.analysis_panel) return false;
+    if (!deps_.player_panel || !deps_.analysis_panel)
+        return false;
 
     deps_.player_panel->SetRawImageMode(false);
     deps_.player_panel->SetCurrentSource(source);
@@ -207,5 +211,5 @@ void OpenSessionController::OnPlayerOpenFinished(bool ok) {
     }
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

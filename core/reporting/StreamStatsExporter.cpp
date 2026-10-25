@@ -13,10 +13,8 @@
 namespace videoeye {
 namespace reporting {
 
-bool StreamStatsExporter::ExportTextReport(
-    const std::string& filename,
-    const model::StreamStats& stats,
-    const std::string& video_file) {
+bool StreamStatsExporter::ExportTextReport(const std::string& filename, const model::StreamStats& stats,
+                                           const std::string& video_file) {
 
     std::ofstream file(ToNativePath(filename));
     if (!file.is_open()) {
@@ -78,9 +76,7 @@ bool StreamStatsExporter::ExportTextReport(
     return true;
 }
 
-bool StreamStatsExporter::ExportCSV(
-    const std::string& filename,
-    const std::vector<model::StreamStats>& stats_history) {
+bool StreamStatsExporter::ExportCSV(const std::string& filename, const std::vector<model::StreamStats>& stats_history) {
 
     std::ofstream file(ToNativePath(filename));
     if (!file.is_open()) {
@@ -95,19 +91,10 @@ bool StreamStatsExporter::ExportCSV(
 
     // 数据行
     for (const auto& stats : stats_history) {
-        file << stats.duration_seconds << ","
-             << stats.total_packets << ","
-             << stats.total_bytes << ","
-             << stats.video_packets << ","
-             << stats.audio_packets << ","
-             << stats.current_fps << ","
-             << stats.avg_fps << ","
-             << stats.current_bitrate_bps << ","
-             << stats.avg_bitrate_bps << ","
-             << stats.peak_bitrate_bps << ","
-             << stats.current_gop_size << ","
-             << stats.key_frame_count << ","
-             << stats.avg_packet_size << std::endl;
+        file << stats.duration_seconds << "," << stats.total_packets << "," << stats.total_bytes << ","
+             << stats.video_packets << "," << stats.audio_packets << "," << stats.current_fps << "," << stats.avg_fps
+             << "," << stats.current_bitrate_bps << "," << stats.avg_bitrate_bps << "," << stats.peak_bitrate_bps << ","
+             << stats.current_gop_size << "," << stats.key_frame_count << "," << stats.avg_packet_size << std::endl;
     }
 
     file.close();
@@ -115,10 +102,8 @@ bool StreamStatsExporter::ExportCSV(
     return true;
 }
 
-bool StreamStatsExporter::ExportJSON(
-    const std::string& filename,
-    const model::StreamStats& stats,
-    const std::string& video_file) {
+bool StreamStatsExporter::ExportJSON(const std::string& filename, const model::StreamStats& stats,
+                                     const std::string& video_file) {
 
     std::ofstream file(ToNativePath(filename));
     if (!file.is_open()) {
@@ -153,12 +138,9 @@ bool StreamStatsExporter::ExportJSON(
     return true;
 }
 
-bool StreamStatsExporter::ExportHTMLReport(
-    const std::string& filename,
-    const model::StreamStats& stats,
-    const std::vector<double>& fps_history,
-    const std::vector<int>& bitrate_history,
-    const std::string& video_file) {
+bool StreamStatsExporter::ExportHTMLReport(const std::string& filename, const model::StreamStats& stats,
+                                           const std::vector<double>& fps_history,
+                                           const std::vector<int>& bitrate_history, const std::string& video_file) {
 
     std::ofstream file(ToNativePath(filename));
     if (!file.is_open()) {
@@ -193,8 +175,10 @@ bool StreamStatsExporter::ExportHTMLReport(
     file << "    <tr><th>指标</th><th>值</th></tr>" << std::endl;
     file << "    <tr><td>总包数</td><td>" << stats.total_packets << "</td></tr>" << std::endl;
     file << "    <tr><td>总字节数</td><td>" << (stats.total_bytes / 1024) << " KB</td></tr>" << std::endl;
-    file << "    <tr><td>当前帧率</td><td>" << std::fixed << std::setprecision(2) << stats.current_fps << " fps</td></tr>" << std::endl;
-    file << "    <tr><td>平均帧率</td><td>" << std::fixed << std::setprecision(2) << stats.avg_fps << " fps</td></tr>" << std::endl;
+    file << "    <tr><td>当前帧率</td><td>" << std::fixed << std::setprecision(2) << stats.current_fps
+         << " fps</td></tr>" << std::endl;
+    file << "    <tr><td>平均帧率</td><td>" << std::fixed << std::setprecision(2) << stats.avg_fps << " fps</td></tr>"
+         << std::endl;
     file << "    <tr><td>当前码率</td><td>" << FormatBitrate(stats.current_bitrate_bps) << "</td></tr>" << std::endl;
     file << "    <tr><td>平均码率</td><td>" << FormatBitrate(stats.avg_bitrate_bps) << "</td></tr>" << std::endl;
     file << "    <tr><td>峰值码率</td><td>" << FormatBitrate(stats.peak_bitrate_bps) << "</td></tr>" << std::endl;
@@ -210,8 +194,8 @@ bool StreamStatsExporter::ExportHTMLReport(
         double max_fps = *std::max_element(fps_history.begin(), fps_history.end());
         for (size_t i = 0; i < fps_history.size() && i < 60; ++i) {
             double height = (fps_history[i] / max_fps) * 100;
-            file << "    <div style=\"display: inline-block; width: 10px; height: "
-                 << height << "px; background: #4CAF50; margin: 1px;\" "
+            file << "    <div style=\"display: inline-block; width: 10px; height: " << height
+                 << "px; background: #4CAF50; margin: 1px;\" "
                  << "title=\"" << fps_history[i] << " fps\"></div>" << std::endl;
         }
     }
@@ -231,8 +215,8 @@ bool StreamStatsExporter::ExportHTMLReport(
 
 std::string StreamStatsExporter::GenerateSummary(const model::StreamStats& stats) {
     std::ostringstream oss;
-    oss << "总包数: " << stats.total_packets
-        << ", 平均帧率: " << std::fixed << std::setprecision(2) << stats.avg_fps << " fps"
+    oss << "总包数: " << stats.total_packets << ", 平均帧率: " << std::fixed << std::setprecision(2) << stats.avg_fps
+        << " fps"
         << ", 平均码率: " << FormatBitrate(stats.avg_bitrate_bps)
         << ", 持续时间: " << FormatTime(stats.duration_seconds);
     return oss.str();
@@ -244,8 +228,7 @@ std::string StreamStatsExporter::FormatTime(double seconds) {
     int secs = static_cast<int>(seconds) % 60;
 
     std::ostringstream oss;
-    oss << std::setfill('0') << std::setw(2) << hours << ":"
-        << std::setfill('0') << std::setw(2) << minutes << ":"
+    oss << std::setfill('0') << std::setw(2) << hours << ":" << std::setfill('0') << std::setw(2) << minutes << ":"
         << std::setfill('0') << std::setw(2) << secs;
     return oss.str();
 }
@@ -264,11 +247,20 @@ std::string StreamStatsExporter::EscapeHTML(const std::string& text) {
     std::string result;
     for (char c : text) {
         switch (c) {
-            case '<': result += "&lt;"; break;
-            case '>': result += "&gt;"; break;
-            case '&': result += "&amp;"; break;
-            case '\"': result += "&quot;"; break;
-            default: result += c;
+        case '<':
+            result += "&lt;";
+            break;
+        case '>':
+            result += "&gt;";
+            break;
+        case '&':
+            result += "&amp;";
+            break;
+        case '\"':
+            result += "&quot;";
+            break;
+        default:
+            result += c;
         }
     }
     return result;
@@ -279,25 +271,38 @@ std::string StreamStatsExporter::EscapeJSON(const std::string& text) {
     oss << std::hex << std::uppercase;
     for (unsigned char c : text) {
         switch (c) {
-            case '\"': oss << "\\\""; break;
-            case '\\': oss << "\\\\"; break;
-            case '\b': oss << "\\b"; break;
-            case '\f': oss << "\\f"; break;
-            case '\n': oss << "\\n"; break;
-            case '\r': oss << "\\r"; break;
-            case '\t': oss << "\\t"; break;
-            default:
-                if (c < 0x20) {
-                    oss << "\\u" << std::setw(4) << std::setfill('0')
-                        << static_cast<int>(c) << std::setfill(' ');
-                } else {
-                    oss << static_cast<char>(c);
-                }
-                break;
+        case '\"':
+            oss << "\\\"";
+            break;
+        case '\\':
+            oss << "\\\\";
+            break;
+        case '\b':
+            oss << "\\b";
+            break;
+        case '\f':
+            oss << "\\f";
+            break;
+        case '\n':
+            oss << "\\n";
+            break;
+        case '\r':
+            oss << "\\r";
+            break;
+        case '\t':
+            oss << "\\t";
+            break;
+        default:
+            if (c < 0x20) {
+                oss << "\\u" << std::setw(4) << std::setfill('0') << static_cast<int>(c) << std::setfill(' ');
+            } else {
+                oss << static_cast<char>(c);
+            }
+            break;
         }
     }
     return oss.str();
 }
 
-}  // namespace reporting
-}  // namespace videoeye
+} // namespace reporting
+} // namespace videoeye

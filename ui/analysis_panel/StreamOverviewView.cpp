@@ -30,8 +30,7 @@ namespace ui {
 // 曲线窗口上限不再本地定义：统一用 ui/charts/ChartDecimation.h 的 kMaxRecentChartItems
 // （滚动窗口语义，与"抽稀"的 kMaxChartPoints 是两回事，别混用）。
 
-StreamOverviewView::StreamOverviewView(QWidget* parent)
-    : QWidget(parent) {
+StreamOverviewView::StreamOverviewView(QWidget* parent) : QWidget(parent) {
     SetupUi();
 }
 
@@ -61,9 +60,7 @@ void StreamOverviewView::SetupUi() {
     }
 
     // 第二行: 流概览 5 指标横排
-    QStringList stream_labels = {
-        tr("当前码率"), tr("平均码率"), tr("峰值码率"), tr("分析时长"), tr("最大GOP大小")
-    };
+    QStringList stream_labels = {tr("当前码率"), tr("平均码率"), tr("峰值码率"), tr("分析时长"), tr("最大GOP大小")};
     stats_table_ = new QTableWidget(1, stream_labels.size(), this);
     stats_table_->setHorizontalHeaderLabels(stream_labels);
     stats_table_->verticalHeader()->setVisible(false);
@@ -82,7 +79,7 @@ void StreamOverviewView::SetupUi() {
     auto make_chart_box = [&](const QString& title) -> MetricChartWidget* {
         MetricChartWidget* view = new MetricChartWidget(chart_row);
         view->setMinimumHeight(180);
-        view->SetLegendVisible(false);   // 标题已在 GroupBox 上, 图例无信息量
+        view->SetLegendVisible(false); // 标题已在 GroupBox 上, 图例无信息量
         QGroupBox* box = new QGroupBox(title, chart_row);
         QVBoxLayout* bl = new QVBoxLayout(box);
         bl->setContentsMargins(4, 12, 4, 4);
@@ -128,23 +125,26 @@ void StreamOverviewView::SetupUi() {
 }
 
 void StreamOverviewView::SetFeatureHooks(std::function<bool(int)> is_enabled,
-                                        std::function<void(int, bool)> set_enabled) {
+                                         std::function<void(int, bool)> set_enabled) {
     is_enabled_ = std::move(is_enabled);
     set_enabled_ = std::move(set_enabled);
 
     SyncToggleFromHooks();
     if (toggle_) {
         connect(toggle_, &QCheckBox::toggled, this, [this](bool checked) {
-            if (set_enabled_) set_enabled_(0, checked);
+            if (set_enabled_)
+                set_enabled_(0, checked);
         });
     }
 }
 
 void StreamOverviewView::SyncToggleFromHooks() {
-    if (!toggle_) return;
+    if (!toggle_)
+        return;
     // 没有钩子时按控件当前值保留（组件可脱离面板单独构造）
     const bool enabled = is_enabled_ ? is_enabled_(0) : toggle_->isChecked();
-    if (enabled == toggle_->isChecked()) return;
+    if (enabled == toggle_->isChecked())
+        return;
     const QSignalBlocker blocker(toggle_);
     toggle_->setChecked(enabled);
 }
@@ -162,9 +162,12 @@ void StreamOverviewView::SetGopSummaries(const std::vector<GopSummary>& summarie
 void StreamOverviewView::ResetCharts() {
     bitrate_chart_values_.clear();
     fps_chart_values_.clear();
-    if (bitrate_series_) bitrate_series_->Clear();
-    if (fps_series_) fps_series_->Clear();
-    if (gop_series_) gop_series_->Clear();
+    if (bitrate_series_)
+        bitrate_series_->Clear();
+    if (fps_series_)
+        fps_series_->Clear();
+    if (gop_series_)
+        gop_series_->Clear();
 }
 
 void StreamOverviewView::FlushPending() {
@@ -179,7 +182,8 @@ void StreamOverviewView::FlushPending() {
 }
 
 void StreamOverviewView::RefreshStatsUi() {
-    if (!stats_table_) return;
+    if (!stats_table_)
+        return;
     const model::StreamStats& stats = latest_stats_;
 
     // 流级指标 (包级统计已移至「数据包」tab，避免重复维护)
@@ -187,14 +191,15 @@ void StreamOverviewView::RefreshStatsUi() {
     SetTableItemText(stats_table_, 0, 1, QString::number(stats.avg_bitrate_bps / 1000) + " Kbps");
     SetTableItemText(stats_table_, 0, 2, QString::number(stats.peak_bitrate_bps / 1000) + " Kbps");
 
-    const auto duration = std::chrono::duration_cast<std::chrono::seconds>(
-        std::chrono::steady_clock::now() - stats.start_time);
+    const auto duration =
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - stats.start_time);
     SetTableItemText(stats_table_, 0, 3, QString::number(duration.count()) + " s");
     // 最大 GOP 统一取 GopSummary 的口径 (解码帧 pict_type),
     // 与「码流分析」页的 GOP 摘要表保持一致。
     int ui_max_gop = 0;
     for (const auto& g : gop_summaries_) {
-        if (g.total_frames > ui_max_gop) ui_max_gop = g.total_frames;
+        if (g.total_frames > ui_max_gop)
+            ui_max_gop = g.total_frames;
     }
     SetTableItemText(stats_table_, 0, 4, QString::number(ui_max_gop));
 
@@ -215,7 +220,8 @@ void StreamOverviewView::RefreshStatsUi() {
 }
 
 void StreamOverviewView::UpdateBitrateChart() {
-    if (!bitrate_series_ || !bitrate_axis_x_ || !bitrate_axis_y_) return;
+    if (!bitrate_series_ || !bitrate_axis_x_ || !bitrate_axis_y_)
+        return;
 
     bitrate_series_->Clear();
     qreal max_value = 0.0;
@@ -225,7 +231,8 @@ void StreamOverviewView::UpdateBitrateChart() {
         for (size_t i = 0; i < bitrate_chart_values_.size(); ++i) {
             const qreal v = bitrate_chart_values_[i];
             batch.Add(static_cast<qreal>(i), v);
-            if (v > max_value) max_value = v;
+            if (v > max_value)
+                max_value = v;
         }
     }
     bitrate_axis_x_->SetRange(0, std::max<qreal>(1.0, bitrate_chart_values_.size()));
@@ -234,7 +241,8 @@ void StreamOverviewView::UpdateBitrateChart() {
 }
 
 void StreamOverviewView::UpdateFpsChart() {
-    if (!fps_series_ || !fps_axis_x_ || !fps_axis_y_) return;
+    if (!fps_series_ || !fps_axis_x_ || !fps_axis_y_)
+        return;
 
     fps_series_->Clear();
     qreal max_value = 0.0;
@@ -244,7 +252,8 @@ void StreamOverviewView::UpdateFpsChart() {
         for (size_t i = 0; i < fps_chart_values_.size(); ++i) {
             const qreal v = fps_chart_values_[i];
             batch.Add(static_cast<qreal>(i), v);
-            if (v > max_value) max_value = v;
+            if (v > max_value)
+                max_value = v;
         }
     }
     fps_axis_x_->SetRange(0, std::max<qreal>(1.0, fps_chart_values_.size()));
@@ -252,7 +261,8 @@ void StreamOverviewView::UpdateFpsChart() {
 }
 
 void StreamOverviewView::UpdateGopChart() {
-    if (!gop_series_ || !gop_axis_x_ || !gop_axis_y_) return;
+    if (!gop_series_ || !gop_axis_x_ || !gop_axis_y_)
+        return;
 
     // 数据源统一为 GopSummary (由解码帧 pict_type 推导),
     // 不再使用 StreamAnalyzer 基于 packet flags 的独立 GOP 统计。
@@ -269,7 +279,8 @@ void StreamOverviewView::UpdateGopChart() {
         batch.Reserve(static_cast<int>(gop_summaries_.size()));
         for (const auto& g : gop_summaries_) {
             batch.Add(static_cast<qreal>(g.gop_index), static_cast<qreal>(g.total_frames));
-            if (g.total_frames > max_frames) max_frames = g.total_frames;
+            if (g.total_frames > max_frames)
+                max_frames = g.total_frames;
         }
     }
     gop_axis_x_->SetRange(0, std::max(1, static_cast<int>(gop_summaries_.size())));
@@ -278,8 +289,7 @@ void StreamOverviewView::UpdateGopChart() {
 
 void StreamOverviewView::OnExportReport() {
     QString filename = QFileDialog::getSaveFileName(
-        this,
-        tr("导出分析报告"),
+        this, tr("导出分析报告"),
         QString("videoeye_report_%1.html").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
         tr("HTML文件 (*.html);;JSON文件 (*.json);;文本文件 (*.txt);;所有文件 (*)"));
 
@@ -303,19 +313,17 @@ void StreamOverviewView::OnExportReport() {
     }
 
     if (ext == "html") {
-        success = reporting::StreamStatsExporter::ExportHTMLReport(
-            fname, latest_stats_, fps_history, bitrate_history, source);
+        success = reporting::StreamStatsExporter::ExportHTMLReport(fname, latest_stats_, fps_history, bitrate_history,
+                                                                   source);
     } else if (ext == "json") {
-        success = reporting::StreamStatsExporter::ExportJSON(
-            fname, latest_stats_, source);
+        success = reporting::StreamStatsExporter::ExportJSON(fname, latest_stats_, source);
     } else if (ext == "txt") {
-        success = reporting::StreamStatsExporter::ExportTextReport(
-            fname, latest_stats_, source);
+        success = reporting::StreamStatsExporter::ExportTextReport(fname, latest_stats_, source);
     } else {
         // 未知扩展名，默认生成 HTML
         filename += ".html";
-        success = reporting::StreamStatsExporter::ExportHTMLReport(
-            filename.toStdString(), latest_stats_, fps_history, bitrate_history, source);
+        success = reporting::StreamStatsExporter::ExportHTMLReport(filename.toStdString(), latest_stats_, fps_history,
+                                                                   bitrate_history, source);
     }
 
     if (success) {
@@ -325,5 +333,5 @@ void StreamOverviewView::OnExportReport() {
     }
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

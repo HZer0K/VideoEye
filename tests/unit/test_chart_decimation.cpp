@@ -18,17 +18,18 @@ namespace {
 
 using videoeye::ui::ChartSeries;
 using videoeye::ui::ChartSeriesKind;
+using videoeye::ui::DecimatedPoints;
 using videoeye::ui::DecimateFrom;
 using videoeye::ui::DecimateXY;
 using videoeye::ui::DecimationMode;
-using videoeye::ui::DecimatedPoints;
-using videoeye::ui::SubmitDecimated;
 using videoeye::ui::kMaxChartPoints;
+using videoeye::ui::SubmitDecimated;
 
 std::vector<double> Range(double from, double to, int n) {
     std::vector<double> v;
     v.reserve(n);
-    for (int i = 0; i < n; ++i) v.push_back(from + (to - from) * i / std::max(1, n - 1));
+    for (int i = 0; i < n; ++i)
+        v.push_back(from + (to - from) * i / std::max(1, n - 1));
     return v;
 }
 
@@ -45,7 +46,8 @@ void MakeSquareWave(std::vector<double>& xs, std::vector<double>& ys, int cycles
 
 bool ContainsValue(const DecimatedPoints& d, double v) {
     for (const QPointF& p : d.points) {
-        if (std::abs(p.y() - v) < 1e-9) return true;
+        if (std::abs(p.y() - v) < 1e-9)
+            return true;
     }
     return false;
 }
@@ -70,7 +72,7 @@ TEST(ChartDecimationTest, EmptyInput) {
 TEST(ChartDecimationTest, MinMaxKeepsBothPeaksAndValleys) {
     std::vector<double> xs;
     std::vector<double> ys;
-    MakeSquareWave(xs, ys, 5000);   // 10000 个点
+    MakeSquareWave(xs, ys, 5000); // 10000 个点
 
     const auto d = DecimateXY(xs, ys, 4000, DecimationMode::MinMax);
 
@@ -141,7 +143,7 @@ TEST(ChartDecimationTest, AllNonFiniteYieldsEmpty) {
         ys.push_back(std::nan(""));
     }
     const auto d = DecimateXY(xs, ys, 4000);
-    EXPECT_EQ(100, d.source_count);   // 源点数如实反映
+    EXPECT_EQ(100, d.source_count); // 源点数如实反映
     EXPECT_TRUE(d.points.isEmpty());
 }
 
@@ -169,10 +171,7 @@ TEST(ChartDecimationTest, DecimateFromWorksOnStructArray) {
         samples.push_back({static_cast<double>(i) * 0.1, (i % 2 == 0) ? -1.0 : 1.0});
     }
 
-    const auto d = DecimateFrom(samples,
-                                [](const Sample& s) { return s.t; },
-                                [](const Sample& s) { return s.v; },
-                                400);
+    const auto d = DecimateFrom(samples, [](const Sample& s) { return s.t; }, [](const Sample& s) { return s.v; }, 400);
     EXPECT_EQ(5000, d.source_count);
     EXPECT_LE(d.output_count, 400);
     EXPECT_TRUE(ContainsValue(d, -1.0));
@@ -213,4 +212,4 @@ TEST(ChartDecimationTest, ConstantRelationships) {
     EXPECT_GE(videoeye::ui::kMaxRecentChartItems, 2);
 }
 
-}  // namespace
+} // namespace

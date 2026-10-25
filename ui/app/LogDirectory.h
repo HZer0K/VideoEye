@@ -21,15 +21,15 @@ namespace ui {
 // 选路结果。调用方要把 fell_back 的情况告知用户（至少写进日志），
 // 否则"日志到底写哪去了"又变成一个需要猜的问题。
 struct LogFileLocation {
-    QString path;                  // 最终采用的日志文件绝对路径
+    QString path;                      // 最终采用的日志文件绝对路径
     bool fell_back_to_app_dir = false; // true = 用户目录不可用，退回了 exe 同目录
-    QString reason;                // 回退原因（用户目录不可写 / 无法创建 / 为空）
+    QString reason;                    // 回退原因（用户目录不可写 / 无法创建 / 为空）
 };
 
 // 日志文件的体积上限，超过就滚动一次。Debug 级别下扫一个大文件几秒钟就能
 // 写出几十 MB，不设上限的话它会悄悄吃满磁盘 —— 而日志是"排查时才有用的东西"，
 // 不值得为它保留全部历史。
-constexpr qint64 kMaxLogFileBytes = 16 * 1024 * 1024;  // 16 MiB
+constexpr qint64 kMaxLogFileBytes = 16 * 1024 * 1024; // 16 MiB
 // 滚动保留的备份个数（.1 ~ .N）
 constexpr int kLogBackupCount = 2;
 

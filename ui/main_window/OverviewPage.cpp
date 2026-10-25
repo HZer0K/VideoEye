@@ -52,10 +52,14 @@ struct BadgeStyle {
 };
 
 BadgeStyle BadgeStyleFor(const OverviewPage::AnalysisSummary& s) {
-    if (s.scan_running) return {"#58A6FF", "rgba(88, 166, 255, 0.12)", "rgba(88, 166, 255, 0.3)"};
-    if (s.failed) return {"#F85149", "rgba(248, 81, 73, 0.12)", "rgba(248, 81, 73, 0.3)"};
-    if (s.has_result && s.partial) return {"#D29922", "rgba(210, 153, 34, 0.12)", "rgba(210, 153, 34, 0.3)"};
-    if (s.has_result) return {"#3FB950", "rgba(63, 185, 80, 0.12)", "rgba(63, 185, 80, 0.3)"};
+    if (s.scan_running)
+        return {"#58A6FF", "rgba(88, 166, 255, 0.12)", "rgba(88, 166, 255, 0.3)"};
+    if (s.failed)
+        return {"#F85149", "rgba(248, 81, 73, 0.12)", "rgba(248, 81, 73, 0.3)"};
+    if (s.has_result && s.partial)
+        return {"#D29922", "rgba(210, 153, 34, 0.12)", "rgba(210, 153, 34, 0.3)"};
+    if (s.has_result)
+        return {"#3FB950", "rgba(63, 185, 80, 0.12)", "rgba(63, 185, 80, 0.3)"};
     return {"#8B949E", "rgba(139, 148, 158, 0.12)", "rgba(139, 148, 158, 0.3)"};
 }
 
@@ -63,10 +67,9 @@ QString NonEmptyOr(const std::string& value, const QString& fallback) {
     return value.empty() ? fallback : QString::fromStdString(value);
 }
 
-}  // namespace
+} // namespace
 
-OverviewPage::OverviewPage(QWidget* parent)
-    : QWidget(parent) {
+OverviewPage::OverviewPage(QWidget* parent) : QWidget(parent) {
     BuildUi();
     RefreshUi();
 }
@@ -161,7 +164,8 @@ void OverviewPage::BuildUi() {
         // 占位行（分析进行中 / 无结果 / 未发现异常）被 setSpan 铺满三列，
         // 点它仍会触发 cellClicked，但它们不带跳转数据 —— 这里按"无数据就不跳"处理。
         QTableWidgetItem* first = issues_table_->item(row, 0);
-        if (!first) return;
+        if (!first)
+            return;
         const QVariant target = first->data(Qt::UserRole);
         if (target.isValid()) {
             emit NavigateToPage(target.toString());
@@ -178,9 +182,8 @@ void OverviewPage::BuildUi() {
         QPushButton* button = new QPushButton(tr(kJumpTargets[i].title), jump_group_);
         button->setProperty("pageId", QString::fromLatin1(kJumpTargets[i].page_id));
         button->setToolTip(tr(kJumpTargets[i].title));
-        connect(button, &QPushButton::clicked, this, [this, button]() {
-            emit NavigateToPage(button->property("pageId").toString());
-        });
+        connect(button, &QPushButton::clicked, this,
+                [this, button]() { emit NavigateToPage(button->property("pageId").toString()); });
         jump_grid->addWidget(button, i / kColumns, i % kColumns);
     }
     for (int c = 0; c < kColumns; ++c) {
@@ -201,9 +204,9 @@ void OverviewPage::BuildUi() {
     root->addWidget(mediainfo_group_, 1);
 
     // ---- 空态提示（未打开文件时替代摘要/分析两区）----
-    empty_hint_ = new QLabel(
-        tr("打开一个媒体文件后，这里会显示文件摘要、分析状态与最重要的异常；"
-           "完整媒体信息保留在下方。"), this);
+    empty_hint_ = new QLabel(tr("打开一个媒体文件后，这里会显示文件摘要、分析状态与最重要的异常；"
+                                "完整媒体信息保留在下方。"),
+                             this);
     empty_hint_->setObjectName("HintLabel");
     empty_hint_->setWordWrap(true);
     root->addWidget(empty_hint_);
@@ -241,8 +244,7 @@ void OverviewPage::RefreshUi() {
     state_badge_->setStyleSheet(
         QStringLiteral("color: %1; background-color: %2; border: 1px solid %3;"
                        "border-radius: 4px; padding: 2px 8px; font-size: 12px; font-weight: 600;")
-            .arg(QString::fromLatin1(style.fg), QString::fromLatin1(style.bg),
-                 QString::fromLatin1(style.border)));
+            .arg(QString::fromLatin1(style.fg), QString::fromLatin1(style.bg), QString::fromLatin1(style.border)));
 
     // 结论行（富文本：评分 + 结论 + 分级计数）
     if (summary_.scan_running) {
@@ -256,16 +258,12 @@ void OverviewPage::RefreshUi() {
                            "<span style=\"color:#FF7B72\">%7 %8</span> · "
                            "<span style=\"color:#D29922\">%9 %10</span> · "
                            "<span style=\"color:#58A6FF\">%11 %12</span>")
-                .arg(tr("评分"), QString::number(summary_.score, 'f', 1),
-                     summary_.verdict,
-                     summary_.partial ? tr("（结果不完整）") : QString(),
-                     tr("致命"), QString::number(summary_.critical),
-                     tr("错误"), QString::number(summary_.error_count),
-                     tr("警告"), QString::number(summary_.warning),
-                     tr("提示"), QString::number(summary_.info)));
+                .arg(tr("评分"), QString::number(summary_.score, 'f', 1), summary_.verdict,
+                     summary_.partial ? tr("（结果不完整）") : QString(), tr("致命"),
+                     QString::number(summary_.critical), tr("错误"), QString::number(summary_.error_count), tr("警告"),
+                     QString::number(summary_.warning), tr("提示"), QString::number(summary_.info)));
     } else {
-        verdict_label_->setText(
-            tr("尚未分析 —— 打开文件后会自动运行一次全文件扫描，也可点右侧「重新分析」。"));
+        verdict_label_->setText(tr("尚未分析 —— 打开文件后会自动运行一次全文件扫描，也可点右侧「重新分析」。"));
     }
 
     // 失败原因
@@ -281,14 +279,14 @@ void OverviewPage::RefreshUi() {
         const int row = issues_table_->rowCount();
         issues_table_->insertRow(row);
         auto* item = new QTableWidgetItem(tr("分析进行中，结束后这里显示最重要的异常…"));
-        item->setFlags(Qt::ItemIsEnabled);  // 占位行不可点、不带跳转数据
+        item->setFlags(Qt::ItemIsEnabled); // 占位行不可点、不带跳转数据
         issues_table_->setItem(row, 0, item);
         issues_table_->setSpan(row, 0, 1, 3);
     } else if (summary_.failed || !summary_.has_result) {
         const int row = issues_table_->rowCount();
         issues_table_->insertRow(row);
-        auto* item = new QTableWidgetItem(
-            summary_.failed ? tr("扫描失败，无异常数据（原因见上）") : tr("暂无分析结果"));
+        auto* item =
+            new QTableWidgetItem(summary_.failed ? tr("扫描失败，无异常数据（原因见上）") : tr("暂无分析结果"));
         item->setFlags(Qt::ItemIsEnabled);
         issues_table_->setItem(row, 0, item);
         issues_table_->setSpan(row, 0, 1, 3);
@@ -345,9 +343,8 @@ void OverviewPage::SetFileSummary(const model::StreamInfo& info) {
     } else {
         QString video_text = QString::fromStdString(info.video.format);
         if (!info.video.width.empty() && !info.video.height.empty()) {
-            video_text += QStringLiteral(" %1x%2")
-                              .arg(QString::fromStdString(info.video.width),
-                                   QString::fromStdString(info.video.height));
+            video_text += QStringLiteral(" %1x%2").arg(QString::fromStdString(info.video.width),
+                                                       QString::fromStdString(info.video.height));
         }
         if (!info.video.frame_rate.empty()) {
             video_text += QStringLiteral(" @ %1 fps").arg(QString::fromStdString(info.video.frame_rate));
@@ -420,20 +417,28 @@ void OverviewPage::SetAnalysisSummary(const AnalysisSummary& summary) {
 
 QString OverviewPage::SeverityText(model::IssueSeverity severity) {
     switch (severity) {
-        case model::IssueSeverity::Critical: return tr("致命");
-        case model::IssueSeverity::Error: return tr("错误");
-        case model::IssueSeverity::Warning: return tr("警告");
-        case model::IssueSeverity::Info: return tr("提示");
+    case model::IssueSeverity::Critical:
+        return tr("致命");
+    case model::IssueSeverity::Error:
+        return tr("错误");
+    case model::IssueSeverity::Warning:
+        return tr("警告");
+    case model::IssueSeverity::Info:
+        return tr("提示");
     }
     return QString();
 }
 
 QString OverviewPage::SeverityColor(model::IssueSeverity severity) {
     switch (severity) {
-        case model::IssueSeverity::Critical: return QStringLiteral("#F85149");
-        case model::IssueSeverity::Error: return QStringLiteral("#FF7B72");
-        case model::IssueSeverity::Warning: return QStringLiteral("#D29922");
-        case model::IssueSeverity::Info: return QStringLiteral("#58A6FF");
+    case model::IssueSeverity::Critical:
+        return QStringLiteral("#F85149");
+    case model::IssueSeverity::Error:
+        return QStringLiteral("#FF7B72");
+    case model::IssueSeverity::Warning:
+        return QStringLiteral("#D29922");
+    case model::IssueSeverity::Info:
+        return QStringLiteral("#58A6FF");
     }
     return QStringLiteral("#8B949E");
 }
@@ -445,5 +450,5 @@ QString OverviewPage::FormatPosition(const model::DiagnosticIssue& issue) {
     return QStringLiteral("%1 s").arg(QString::number(issue.range.start_seconds, 'f', 1));
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

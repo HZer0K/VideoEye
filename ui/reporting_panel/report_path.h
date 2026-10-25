@@ -23,9 +23,11 @@ namespace ui {
 // 判据只有两条：不能是绝对路径（跨盘、root 为空时 relative() 会原样返回它），
 // 也不能含 ".." 分量 —— 两者都会让最终结果逃出 out_dir。
 inline bool IsContainedRelativePath(const std::filesystem::path& rel) {
-    if (rel.empty() || rel.is_absolute()) return false;
+    if (rel.empty() || rel.is_absolute())
+        return false;
     for (const auto& part : rel) {
-        if (part == std::filesystem::path("..")) return false;
+        if (part == std::filesystem::path(".."))
+            return false;
     }
     return true;
 }
@@ -35,17 +37,19 @@ inline bool IsContainedRelativePath(const std::filesystem::path& rel) {
 // 只查输入路径里的 ".." 是不够的：导出目录里**已经存在**的链接同样能把写操作带出去
 // —— out/sub 是指向外部目录的 junction 时，out/sub/clip.json 会如实落到外部。
 // 所以最终落盘目录要在解析完链接之后再判一次从属关系。
-inline bool IsContainedUnder(const std::filesystem::path& dir,
-                             const std::filesystem::path& parent) {
+inline bool IsContainedUnder(const std::filesystem::path& dir, const std::filesystem::path& parent) {
     std::error_code ec;
     // weakly_canonical 会解析已存在的那一段（含 junction / 符号链接），
     // 不存在的那一段只做词法归一化 —— 不要求路径已经存在。
     const auto child = std::filesystem::weakly_canonical(dir, ec);
-    if (ec) return false;
+    if (ec)
+        return false;
     const auto base = std::filesystem::weakly_canonical(parent, ec);
-    if (ec) return false;
+    if (ec)
+        return false;
     const auto rel = std::filesystem::relative(child, base, ec);
-    if (ec) return false;
+    if (ec)
+        return false;
     return IsContainedRelativePath(rel);
 }
 
@@ -63,59 +67,57 @@ inline bool IsContainedUnder(const std::filesystem::path& dir,
 //   2. 输出侧：out_dir 里的子目录**可能已经是链接**（Windows junction / 符号链接）。
 //      输入侧查不出这种情况（"sub/clip.json" 本身很干净），但拼出来的
 //      out_dir/sub 解析后可能指向盘外。所以最终父目录还要再判一次从属关系。
-inline std::filesystem::path ReportBasePath(const std::string& out_dir,
-                                            const std::string& root,
+inline std::filesystem::path ReportBasePath(const std::string& out_dir, const std::string& root,
                                             const std::string& file_path) {
     std::error_code ec;
-    const auto abs_file =
-        std::filesystem::weakly_canonical(std::filesystem::path(file_path), ec);
+    const auto abs_file = std::filesystem::weakly_canonical(std::filesystem::path(file_path), ec);
     const auto abs_root = std::filesystem::weakly_canonical(std::filesystem::path(root), ec);
     std::filesystem::path rel;
     if (!ec && !abs_root.empty()) {
         const auto candidate = std::filesystem::relative(abs_file, abs_root, ec);
-        if (!ec && IsContainedRelativePath(candidate)) rel = candidate;
+        if (!ec && IsContainedRelativePath(candidate))
+            rel = candidate;
     }
-    if (rel.empty()) rel = std::filesystem::path(file_path).filename();
+    if (rel.empty())
+        rel = std::filesystem::path(file_path).filename();
 
     const std::filesystem::path out(out_dir);
     const std::filesystem::path parent = out / rel.parent_path();
     // 链接目录一律拒绝，退回"铺平到 out_dir"：宁可少保留一层子目录，
     // 也不能把报告写到导出目录之外。
-    if (!IsContainedUnder(parent, out)) return out / rel.stem();
+    if (!IsContainedUnder(parent, out))
+        return out / rel.stem();
     return parent / rel.stem();
 }
 
 // 分析成功后按选定格式落盘；与 UI 共用同一组"保留相对子目录"的路径。
 // 导出失败（目录不可写 / 写入异常）时仍填 output_path，但 export_failed=true，
 // 让上层能区分"分析成功 / 导出失败"。out_dir 为空或分析未成功时原样返回。
-inline void ApplyExportPaths(qc::QcRunResult& result,
-                             const std::string& out_dir,
-                             const std::string& root,
-                             const std::string& file_path,
-                             const std::vector<qc::QcReportFormat>& formats,
+inline void ApplyExportPaths(qc::QcRunResult& result, const std::string& out_dir, const std::string& root,
+                             const std::string& file_path, const std::vector<qc::QcReportFormat>& formats,
                              const qc::QcProfile& profile) {
-    if (out_dir.empty() || !result.ok) return;
+    if (out_dir.empty() || !result.ok)
+        return;
     const std::filesystem::path base = ReportBasePath(out_dir, root, file_path);
     std::error_code ec;
-    std::filesystem::create_directories(base.parent_path(), ec);  // 创建保留下来的子目录
+    std::filesystem::create_directories(base.parent_path(), ec); // 创建保留下来的子目录
     reporting::QcExportBundle bundle;
     bundle.profile_id = profile.id;
     bundle.profile_name = profile.name;
     bundle.run = result;
-    const auto fmts = formats.empty()
-                         ? std::vector<qc::QcReportFormat>{qc::QcReportFormat::Json}
-                         : formats;
+    const auto fmts = formats.empty() ? std::vector<qc::QcReportFormat>{qc::QcReportFormat::Json} : formats;
     bool any_fail = false;
     for (const auto format : fmts) {
         const std::string target = base.string() + qc::QcReportExtension(format);
         const bool ok = (format == qc::QcReportFormat::Pdf)
-                           ? reporting::QcReportExporter::ExportPdf(target, bundle).ok
-                           : reporting::QcReportExporter::Export(target, bundle, format);
-        if (!ok) any_fail = true;
+                            ? reporting::QcReportExporter::ExportPdf(target, bundle).ok
+                            : reporting::QcReportExporter::Export(target, bundle, format);
+        if (!ok)
+            any_fail = true;
     }
     result.output_path = base.string() + qc::QcReportExtension(fmts.front());
     result.export_failed = any_fail;
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

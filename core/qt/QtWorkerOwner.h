@@ -78,8 +78,7 @@ public:
     //                   在**线程**上下文执行（与 body 同级），调用方需要跨线程投递。
     //                   这是导出任务写入 Failed 终态、发错误信号的入口；不传则只记日志。
     // 返回线程指针仅供连线；所有权仍在本对象。
-    QThread* StartWorker(QObject* worker, std::function<void()> body,
-                         std::function<void()> request_stop = {},
+    QThread* StartWorker(QObject* worker, std::function<void()> body, std::function<void()> request_stop = {},
                          std::function<void(QThread*)> on_finished = {},
                          std::function<void(QThread*, const std::string&)> on_error = {});
 
@@ -95,10 +94,8 @@ public:
     //
     // 句柄放第 3 位（排在 request_stop 之前）：接上协议之后 request_stop 通常就该留空，
     // 让它站在前排，免得读代码的人以为这里还有第二颗取消标志。
-    QThread* StartWorker(QObject* worker, std::function<void()> body,
-                         const task::TaskHandle& handle,
-                         std::function<void()> request_stop = {},
-                         std::function<void(QThread*)> on_finished = {},
+    QThread* StartWorker(QObject* worker, std::function<void()> body, const task::TaskHandle& handle,
+                         std::function<void()> request_stop = {}, std::function<void(QThread*)> on_finished = {},
                          std::function<void(QThread*, const std::string&)> on_error = {});
 
     // 请求停止某个线程: 置取消标志 -> quit -> 限时 wait。

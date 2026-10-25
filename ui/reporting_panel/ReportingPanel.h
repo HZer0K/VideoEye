@@ -42,9 +42,9 @@
 #include "core/qc/QcRunner.h"
 #include "infrastructure/concurrency/TaskManager.h"
 
-#include "ui/reporting_panel/analysis_task.h"
 #include "ui/reporting_panel/ReportExportController.h"
 #include "ui/reporting_panel/ReportingTaskCoordinator.h"
+#include "ui/reporting_panel/analysis_task.h"
 #include "ui/reporting_panel/result_stamp.h"
 
 namespace videoeye {
@@ -136,8 +136,7 @@ private:
 
     // 仅当任务仍存活时把更新投递回主线程；否则静默丢弃（面板正在销毁）。
     // 实际实现在任务协调器里（它持有 alive 标志与投递目标）。
-    void PostToUi(const std::shared_ptr<AnalysisTask>& task,
-                  const std::function<void()>& updater) const;
+    void PostToUi(const std::shared_ptr<AnalysisTask>& task, const std::function<void()>& updater) const;
 
     void StartSingleAnalysis(const std::string& path);
     void StartBatchScan(const std::string& directory);
@@ -204,8 +203,8 @@ private:
     // "子对象比宿主晚死"的窗口。
     std::unique_ptr<ReportingTaskCoordinator> task_runner_;
 
-    qc::QcProfile profile_;                     // 当前模板（可能是从文件加载的自定义模板）
-    qc::QcRunResult last_result_;               // 最近一次单文件分析结果，导出按钮用它
+    qc::QcProfile profile_;       // 当前模板（可能是从文件加载的自定义模板）
+    qc::QcRunResult last_result_; // 最近一次单文件分析结果，导出按钮用它
     std::string current_path_;
     // 结果"身份戳"：记录 last_result_ 属于哪个文件、按哪个模板算出（见 result_stamp.h）。
     // 与当前 (current_path_, profile_.id) 一致才算新鲜 —— 切换文件/模板后自然过期。
@@ -216,5 +215,5 @@ private:
     bool busy_ = false;
 };
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

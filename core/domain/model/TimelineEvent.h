@@ -9,9 +9,9 @@ namespace model {
 /// 用枚举而不是文本：界面侧的分类统计/曲线分组不再依赖 tr() 文本比较，
 /// 切换翻译语言时不会因文案变化导致分组错位。
 enum class TimelineEventCategory {
-    Event = 0,          // 异常事件（来自 AnalysisEvent）
-    VideoKeyframe = 1,  // 视频关键帧
-    AudioSample = 2,    // 音频采样（每 N 帧抽一条）
+    Event = 0,         // 异常事件（来自 AnalysisEvent）
+    VideoKeyframe = 1, // 视频关键帧
+    AudioSample = 2,   // 音频采样（每 N 帧抽一条）
 };
 
 struct TimelineEvent {

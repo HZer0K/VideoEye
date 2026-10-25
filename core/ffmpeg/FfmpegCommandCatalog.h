@@ -19,41 +19,41 @@ namespace videoeye {
 namespace ffmpeg {
 
 enum class FfmpegEntryCategory {
-    Global,           // 全局
-    InputOutput,      // 输入输出
-    Time,             // 时间与裁剪
-    StreamSelection,  // 流选择
-    Encoding,         // 编码
-    Video,            // 画面
-    Audio,            // 音频
-    Muxing,           // 封装
+    Global,          // 全局
+    InputOutput,     // 输入输出
+    Time,            // 时间与裁剪
+    StreamSelection, // 流选择
+    Encoding,        // 编码
+    Video,           // 画面
+    Audio,           // 音频
+    Muxing,          // 封装
 };
 
 enum class FfmpegEntryKind {
-    Option,  // 命令行选项（-crf）
-    Filter,  // 滤镜（scale），只能出现在 -vf / -af / -filter_complex 里
+    Option, // 命令行选项（-crf）
+    Filter, // 滤镜（scale），只能出现在 -vf / -af / -filter_complex 里
 };
 
 // 参数值该拿什么清单去校验。None 表示不需要校验。
 enum class FfmpegValueKind {
     None,
-    Encoder,  // 值是编码器名（libx264 / aac ...），查 `-encoders`
-    Filter,   // 值是滤镜名
-    Format,   // 值是容器/封装格式名（mp4 / matroska ...），查 `-formats`
+    Encoder, // 值是编码器名（libx264 / aac ...），查 `-encoders`
+    Filter,  // 值是滤镜名
+    Format,  // 值是容器/封装格式名（mp4 / matroska ...），查 `-formats`
 };
 
 struct FfmpegCatalogEntry {
-    QString name;            // "-crf"；滤镜没有前导 '-'
-    QString title;           // "视频质量 (CRF)" —— 解释区流程里显示的名字
+    QString name;  // "-crf"；滤镜没有前导 '-'
+    QString title; // "视频质量 (CRF)" —— 解释区流程里显示的名字
     FfmpegEntryCategory category = FfmpegEntryCategory::Encoding;
     FfmpegEntryKind kind = FfmpegEntryKind::Option;
     bool takes_value = false;
     FfmpegValueKind value_kind = FfmpegValueKind::None;
-    QString summary;         // 一句话作用
-    QString detail;          // 详细说明
-    QString position;        // 适用位置
-    QString example;         // 示例片段
-    QString insert_text;     // 「插入」按钮往命令行里写的东西
+    QString summary;     // 一句话作用
+    QString detail;      // 详细说明
+    QString position;    // 适用位置
+    QString example;     // 示例片段
+    QString insert_text; // 「插入」按钮往命令行里写的东西
     QStringList typical_values;
     QStringList related;
 };
@@ -63,8 +63,8 @@ struct FfmpegCatalogEntry {
 // 输出侧 —— 拿一张表互相替代就会在 `-f lavfi`（只有 D）、`-f ffmetadata`（只有 E）
 // 这类组合上误报"这个 ffmpeg 不支持 xxx"。
 struct FfmpegFormatLists {
-    QStringList demuxers;   // 能读
-    QStringList muxers;     // 能写
+    QStringList demuxers; // 能读
+    QStringList muxers;   // 能写
 };
 
 /// 当前 ffmpeg 实际支持的编码器 / 滤镜 / 格式。
@@ -85,14 +85,28 @@ public:
     bool HasDemuxer(const QString& name) const;
     bool HasMuxer(const QString& name) const;
 
-    bool encoders_known() const { return encoders_known_; }
-    bool filters_known() const { return filters_known_; }
-    bool formats_known() const { return formats_known_; }
+    bool encoders_known() const {
+        return encoders_known_;
+    }
+    bool filters_known() const {
+        return filters_known_;
+    }
+    bool formats_known() const {
+        return formats_known_;
+    }
 
-    int encoder_count() const { return encoders_.size(); }
-    int filter_count() const { return filters_.size(); }
-    int demuxer_count() const { return demuxers_.size(); }
-    int muxer_count() const { return muxers_.size(); }
+    int encoder_count() const {
+        return encoders_.size();
+    }
+    int filter_count() const {
+        return filters_.size();
+    }
+    int demuxer_count() const {
+        return demuxers_.size();
+    }
+    int muxer_count() const {
+        return muxers_.size();
+    }
 
     void Clear();
 
@@ -132,5 +146,5 @@ public:
     static QStringList ParseMuxerNames(const QString& output);
 };
 
-}  // namespace ffmpeg
-}  // namespace videoeye
+} // namespace ffmpeg
+} // namespace videoeye

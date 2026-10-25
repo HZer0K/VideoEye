@@ -17,8 +17,12 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+// 这两个系统头有顺序要求：psapi.h 依赖 windows.h 先定义 DWORD/WINAPI，
+// 按字母序重排会编译失败，所以这一块不能让 clang-format 的 SortIncludes 动。
+// clang-format off
 #include <windows.h>
 #include <psapi.h>
+// clang-format on
 // psapi 的函数实际由 kernel32 转发，但导入库仍要显式链。
 // 写在源码里而不是 CMake 里：这个头只被本 TU 用，扩散到构建脚本反而让人
 // 以为"整个工程都需要 psapi"。
@@ -35,7 +39,7 @@ std::string FormatValue(double v) {
     return std::string(buf);
 }
 
-}  // namespace
+} // namespace
 
 // ---------------------------------------------------------------------------
 // PerfMetrics
@@ -64,8 +68,7 @@ void PerfMetrics::RecordTiming(const std::string& name, double ms, double budget
 
     // 日志在锁外写：WriteLog 自己有锁，且会 flush，别把统计的临界区拖长。
     if (budget_ms > 0.0 && ms > budget_ms) {
-        LOG_WARN("[metric][超预算] " + name + "=" + FormatValue(ms) + " ms (budget " +
-                 FormatValue(budget_ms) + " ms)");
+        LOG_WARN("[metric][超预算] " + name + "=" + FormatValue(ms) + " ms (budget " + FormatValue(budget_ms) + " ms)");
     } else {
         LOG_INFO("[metric] " + name + "=" + FormatValue(ms) + " ms");
     }
@@ -112,7 +115,8 @@ std::vector<std::string> PerfMetrics::Names() const {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<std::string> names;
     names.reserve(stats_.size());
-    for (const auto& kv : stats_) names.push_back(kv.first);
+    for (const auto& kv : stats_)
+        names.push_back(kv.first);
     return names;
 }
 
@@ -124,15 +128,15 @@ void PerfMetrics::Reset() {
 double PerfMetrics::CurrentRssMb() {
 #ifdef _WIN32
     PROCESS_MEMORY_COUNTERS_EX counters{};
-    if (!GetProcessMemoryInfo(GetCurrentProcess(),
-                              reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
                               sizeof(counters))) {
         return 0.0;
     }
     return static_cast<double>(counters.WorkingSetSize) / (1024.0 * 1024.0);
 #else
     std::ifstream in("/proc/self/status");
-    if (!in.is_open()) return 0.0;
+    if (!in.is_open())
+        return 0.0;
     std::string line;
     while (std::getline(in, line)) {
         if (line.compare(0, 6, "VmRSS:") == 0) {
@@ -153,8 +157,7 @@ double PerfMetrics::CurrentRssMb() {
 double PerfMetrics::PeakRssMb() {
 #ifdef _WIN32
     PROCESS_MEMORY_COUNTERS_EX counters{};
-    if (!GetProcessMemoryInfo(GetCurrentProcess(),
-                              reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
                               sizeof(counters))) {
         return 0.0;
     }
@@ -163,7 +166,8 @@ double PerfMetrics::PeakRssMb() {
     return static_cast<double>(counters.PeakWorkingSetSize) / (1024.0 * 1024.0);
 #else
     std::ifstream in("/proc/self/status");
-    if (!in.is_open()) return 0.0;
+    if (!in.is_open())
+        return 0.0;
     std::string line;
     while (std::getline(in, line)) {
         if (line.compare(0, 6, "VmHWM:") == 0) {
@@ -185,18 +189,17 @@ double PerfMetrics::PeakRssMb() {
 // ---------------------------------------------------------------------------
 
 PerfScope::PerfScope(std::string name, double budget_ms)
-    : name_(std::move(name)),
-      budget_ms_(budget_ms),
-      start_(std::chrono::steady_clock::now()) {}
+    : name_(std::move(name)), budget_ms_(budget_ms), start_(std::chrono::steady_clock::now()) {
+}
 
 PerfScope::~PerfScope() {
-    if (discarded_) return;
+    if (discarded_)
+        return;
     PerfMetrics::GetInstance().RecordTiming(name_, ElapsedMs(), budget_ms_);
 }
 
 double PerfScope::ElapsedMs() const {
-    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start_)
-        .count();
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start_).count();
 }
 
 // ---------------------------------------------------------------------------
@@ -210,17 +213,18 @@ void CancelLatencyProbe::Arm() {
 }
 
 double CancelLatencyProbe::ElapsedMs() const {
-    if (!armed_) return -1.0;
-    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - armed_at_)
-        .count();
+    if (!armed_)
+        return -1.0;
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - armed_at_).count();
 }
 
 double CancelLatencyProbe::Settle() {
-    if (!armed_ || settled_) return -1.0;
+    if (!armed_ || settled_)
+        return -1.0;
     settled_ = true;
     const double ms = ElapsedMs();
     PerfMetrics::GetInstance().RecordTiming(kMetricCancelSettleMs, ms, kCancelSettleBudgetMs);
     return ms;
 }
 
-}  // namespace videoeye
+} // namespace videoeye

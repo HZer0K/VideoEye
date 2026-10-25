@@ -32,7 +32,7 @@
 #include <QTemporaryDir>
 #include <QThread>
 
-#include "BlockingTcpEndpoint.h"  // 同目录: 只监听不回包的本地端口(可控阻塞输入)
+#include "BlockingTcpEndpoint.h" // 同目录: 只监听不回包的本地端口(可控阻塞输入)
 #include "core/exporter/MediaExporter.h"
 #include "tests/support/TestMediaFactory.h"
 
@@ -65,7 +65,8 @@ struct AppScope {
         }
     }
     ~AppScope() {
-        if (owned) delete app;
+        if (owned)
+            delete app;
     }
     AppScope(const AppScope&) = delete;
     AppScope& operator=(const AppScope&) = delete;
@@ -74,9 +75,11 @@ struct AppScope {
 QString WriteCorruptInput() {
     const QString path = QDir::tempPath() + "/videoeye_xport_corrupt_in.bin";
     QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return QString();
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return QString();
     QByteArray junk(2048, '\x00');
-    for (int i = 0; i < junk.size(); ++i) junk[i] = static_cast<char>((i * 73 + 11) & 0xFF);
+    for (int i = 0; i < junk.size(); ++i)
+        junk[i] = static_cast<char>((i * 73 + 11) & 0xFF);
     f.write(junk);
     f.close();
     return path;
@@ -99,16 +102,22 @@ struct ExportRun {
 ExportRun RunExport(const exporter::ExportOptions& opt) {
     ExportRun run;
     exporter::MediaExporter exporter;
-    QObject::connect(&exporter, &exporter::MediaExporter::ExportStarted,
-                     [&run](qint64 duration) { run.started = true; run.duration_ms = duration; });
+    QObject::connect(&exporter, &exporter::MediaExporter::ExportStarted, [&run](qint64 duration) {
+        run.started = true;
+        run.duration_ms = duration;
+    });
     QObject::connect(&exporter, &exporter::MediaExporter::ExportProgress,
                      [&run](int percent) { run.last_progress = percent; });
-    QObject::connect(&exporter, &exporter::MediaExporter::ExportFinished,
-                     [&run](const QString& path) { run.finished = true; run.finished_path = path; });
+    QObject::connect(&exporter, &exporter::MediaExporter::ExportFinished, [&run](const QString& path) {
+        run.finished = true;
+        run.finished_path = path;
+    });
     QObject::connect(&exporter, &exporter::MediaExporter::ExportCanceled,
                      [&run](const QString&) { run.canceled = true; });
-    QObject::connect(&exporter, &exporter::MediaExporter::ExportError,
-                     [&run](const QString& message) { run.error = true; run.error_msg = message; });
+    QObject::connect(&exporter, &exporter::MediaExporter::ExportError, [&run](const QString& message) {
+        run.error = true;
+        run.error_msg = message;
+    });
     exporter.Export(opt);
     EXPECT_FALSE(exporter.IsExporting()) << "Export() 返回后必须不再是导出中状态";
     return run;
@@ -117,9 +126,15 @@ ExportRun RunExport(const exporter::ExportOptions& opt) {
 // 每个用例一份独立临时目录：既能断言"目录里只剩该有的文件"，也不会互相踩。
 struct WorkDir {
     QTemporaryDir dir;
-    bool valid() const { return dir.isValid(); }
-    QString path() const { return dir.path(); }
-    std::string stdPath() const { return dir.path().toStdString(); }
+    bool valid() const {
+        return dir.isValid();
+    }
+    QString path() const {
+        return dir.path();
+    }
+    std::string stdPath() const {
+        return dir.path().toStdString();
+    }
 
     // 导出用的临时产物（xxx.part-<pid>-<uuid>）与替换备份（xxx.bak-<pid>-<uuid>）
     // 都不该在终态之后还躺在目录里。
@@ -127,7 +142,8 @@ struct WorkDir {
         const QStringList all = QDir(dir.path()).entryList(QDir::Files | QDir::NoDotAndDotDot);
         QStringList residue;
         for (const QString& name : all) {
-            if (name.contains(".part-") || name.contains(".bak-")) residue << name;
+            if (name.contains(".part-") || name.contains(".bak-"))
+                residue << name;
         }
         return residue;
     }
@@ -135,20 +151,19 @@ struct WorkDir {
 
 // 生成一份样本，并**先验证样本本身合格** —— 否则后面所有断言都是在测一份坏输入。
 videoeye_test::TestMedia MakeSampleMedia(const std::string& directory) {
-    videoeye_test::TestMediaSpec spec;   // 128x72 / 25fps / 40 帧 / H.264+AAC
-    videoeye_test::TestMedia media =
-        videoeye_test::CreateTestMedia(directory, "clip", spec);
+    videoeye_test::TestMediaSpec spec; // 128x72 / 25fps / 40 帧 / H.264+AAC
+    videoeye_test::TestMedia media = videoeye_test::CreateTestMedia(directory, "clip", spec);
     return media;
 }
 
 QByteArray ReadWholeFile(const QString& path) {
     QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) return QByteArray();
+    if (!file.open(QIODevice::ReadOnly))
+        return QByteArray();
     return file.readAll();
 }
 
-exporter::ExportOptions MakeOptions(const std::string& input, const QString& output,
-                                    const QString& format) {
+exporter::ExportOptions MakeOptions(const std::string& input, const QString& output, const QString& format) {
     exporter::ExportOptions opt;
     opt.input_path = QString::fromStdString(input);
     opt.output_path = output;
@@ -175,15 +190,18 @@ TEST(MediaExporterError, CorruptInputEmitsErrorNotFinished) {
     auto* exporter = new exporter::MediaExporter();
     QObject::connect(exporter, &exporter::MediaExporter::ExportFinished,
                      [&sink](const QString&) { sink.finished = true; });
-    QObject::connect(exporter, &exporter::MediaExporter::ExportError,
-                     [&sink](const QString& m) { sink.error = true; sink.error_msg = m; });
+    QObject::connect(exporter, &exporter::MediaExporter::ExportError, [&sink](const QString& m) {
+        sink.error = true;
+        sink.error_msg = m;
+    });
     QObject::connect(exporter, &exporter::MediaExporter::ExportCanceled,
                      [&sink](const QString&) { sink.canceled = true; });
 
     const QString in = WriteCorruptInput();
     ASSERT_FALSE(in.isEmpty());
     const QString out = QDir::tempPath() + "/videoeye_xport_corrupt_out.mp4";
-    if (QFile::exists(out)) QFile::remove(out);
+    if (QFile::exists(out))
+        QFile::remove(out);
 
     exporter::ExportOptions opt;
     opt.input_path = in;
@@ -191,11 +209,10 @@ TEST(MediaExporterError, CorruptInputEmitsErrorNotFinished) {
     opt.format = "mp4";
     opt.kind = exporter::ExportKind::Video;
 
-    exporter->Export(opt);  // 同步执行, 与 worker 线程内调用一致
+    exporter->Export(opt); // 同步执行, 与 worker 线程内调用一致
 
     EXPECT_FALSE(sink.finished) << "损坏输入不应被误报为导出成功";
-    EXPECT_TRUE(sink.error) << "损坏输入必须上报 ExportError; msg="
-                            << sink.error_msg.toStdString();
+    EXPECT_TRUE(sink.error) << "损坏输入必须上报 ExportError; msg=" << sink.error_msg.toStdString();
     EXPECT_FALSE(sink.canceled);
     EXPECT_FALSE(QFile::exists(out)) << "失败导出不应残留目标文件";
 
@@ -223,8 +240,10 @@ TEST(MediaExporterCancel, CancelAbortsBlockingInput) {
     auto* exporter = new exporter::MediaExporter();
     QObject::connect(exporter, &exporter::MediaExporter::ExportFinished,
                      [&sink](const QString&) { sink.finished = true; });
-    QObject::connect(exporter, &exporter::MediaExporter::ExportError,
-                     [&sink](const QString& m) { sink.error = true; sink.error_msg = m; });
+    QObject::connect(exporter, &exporter::MediaExporter::ExportError, [&sink](const QString& m) {
+        sink.error = true;
+        sink.error_msg = m;
+    });
     QObject::connect(exporter, &exporter::MediaExporter::ExportCanceled,
                      [&sink](const QString&) { sink.canceled = true; });
 
@@ -233,7 +252,8 @@ TEST(MediaExporterCancel, CancelAbortsBlockingInput) {
     opt.output_path = QDir::tempPath() + "/videoeye_xport_blocking_out.mp4";
     opt.format = "mp4";
     opt.kind = exporter::ExportKind::Video;
-    if (QFile::exists(opt.output_path)) QFile::remove(opt.output_path);
+    if (QFile::exists(opt.output_path))
+        QFile::remove(opt.output_path);
 
     std::atomic<bool> returned{false};
     std::thread worker([exporter, &opt, &returned]() {
@@ -251,7 +271,7 @@ TEST(MediaExporterCancel, CancelAbortsBlockingInput) {
 
     QElapsedTimer timer;
     timer.start();
-    exporter->Cancel();   // 只置标志: 能否退出全靠中断回调
+    exporter->Cancel(); // 只置标志: 能否退出全靠中断回调
 
     while (!returned.load(std::memory_order_acquire) && timer.elapsed() < 5000) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -267,7 +287,7 @@ TEST(MediaExporterCancel, CancelAbortsBlockingInput) {
     }
 
     worker.join();
-    QCoreApplication::processEvents();   // 投递 worker 线程发出的终态信号
+    QCoreApplication::processEvents(); // 投递 worker 线程发出的终态信号
 
     EXPECT_LT(elapsed_ms, 5000) << "取消耗时 " << elapsed_ms << " ms, 应当远小于超时预算";
     EXPECT_TRUE(sink.canceled) << "被取消的导出必须上报 ExportCanceled";
@@ -298,14 +318,12 @@ TEST(MediaExporterSuccess, RemuxKeepsStreamsFramesAndDuration) {
     const auto source = videoeye_test::ProbeMediaFile(media.path);
     ASSERT_TRUE(source.opened) << source.error;
     // 码流层: 编码器确实输出了 spec 要求的帧数（包数不受容器元数据口径影响）
-    EXPECT_EQ(source.video_packet_count, media.frame_count)
-        << " 视频流时长=" << source.video_duration_seconds;
+    EXPECT_EQ(source.video_packet_count, media.frame_count) << " 视频流时长=" << source.video_duration_seconds;
     // 解码层: mp4 的 track duration 只记到最后一个样本的 dts（少最后一帧的时长），
     // 回读时因此会比写入帧数少 1 —— 这是容器口径, 不是丢帧。
     // 所以下面一律拿"产物"跟"源"用同一把尺子比, 而不是拿硬编码的 40 去比。
     ASSERT_GE(source.frame_count, media.frame_count - 1)
-        << "样本自身必须完整; 包数=" << source.video_packet_count
-        << " 容器时长=" << source.duration_seconds
+        << "样本自身必须完整; 包数=" << source.video_packet_count << " 容器时长=" << source.duration_seconds
         << " 视频流时长=" << source.video_duration_seconds;
     ASSERT_LE(source.frame_count, media.frame_count) << "回读帧数不应多于写入帧数";
     ASSERT_EQ(source.audio_streams, 1);
@@ -437,8 +455,7 @@ TEST(MediaExporterSuccess, FailureLeavesNoTempFiles) {
     WorkDir work;
     ASSERT_TRUE(work.valid());
 
-    const std::string corrupt =
-        videoeye_test::CreateCorruptMediaFile(work.stdPath(), "corrupt");
+    const std::string corrupt = videoeye_test::CreateCorruptMediaFile(work.stdPath(), "corrupt");
     const QString output = work.path() + "/never.mp4";
     exporter::ExportOptions opt = MakeOptions(corrupt, output, QStringLiteral("mp4"));
 
@@ -466,8 +483,7 @@ TEST(MediaExporterSuccess, FailedReExportKeepsPreviousGoodFile) {
     const QByteArray before = ReadWholeFile(output);
     ASSERT_FALSE(before.isEmpty());
 
-    const std::string corrupt =
-        videoeye_test::CreateCorruptMediaFile(work.stdPath(), "corrupt2");
+    const std::string corrupt = videoeye_test::CreateCorruptMediaFile(work.stdPath(), "corrupt2");
     exporter::ExportOptions bad = MakeOptions(corrupt, output, QStringLiteral("mp4"));
     const ExportRun run = RunExport(bad);
     EXPECT_FALSE(run.finished);
@@ -503,7 +519,7 @@ TEST(MediaExporterSuccess, SecondExportReplacesTargetWithoutResidue) {
 
     exporter::ExportOptions second = MakeOptions(media.path, output, QStringLiteral("mp4"));
     second.reencode = true;
-    second.videoQuality = 2;   // 码率不同 -> 产物字节必然不同
+    second.videoQuality = 2; // 码率不同 -> 产物字节必然不同
     const ExportRun run = RunExport(second);
     ASSERT_TRUE(run.finished) << run.error_msg.toStdString();
 
@@ -536,8 +552,10 @@ TEST(MediaExporterSuccess, CancelBeforeStartEmitsCanceledOnly) {
                      [&run](const QString&) { run.finished = true; });
     QObject::connect(&exporter, &exporter::MediaExporter::ExportCanceled,
                      [&run](const QString&) { run.canceled = true; });
-    QObject::connect(&exporter, &exporter::MediaExporter::ExportError,
-                     [&run](const QString& message) { run.error = true; run.error_msg = message; });
+    QObject::connect(&exporter, &exporter::MediaExporter::ExportError, [&run](const QString& message) {
+        run.error = true;
+        run.error_msg = message;
+    });
     exporter.Cancel();
     exporter.Export(opt);
 

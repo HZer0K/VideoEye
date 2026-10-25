@@ -23,7 +23,7 @@ TEST(FrameDataTest, CopyFromCreatesIndependentPlaneStorage) {
     std::vector<uint8_t> y(16, 1);
     std::vector<uint8_t> u(4, 2);
     std::vector<uint8_t> v(4, 3);
-    
+
     source.data[0] = y.data();
     source.linesize[0] = 4;
     source.data[1] = u.data();

@@ -26,11 +26,11 @@ struct AviDiagnostics {
     bool has_idx1 = false;
     bool has_indx = false;
     bool has_dmlh = false;
-    bool has_avix = false;          // 存在 OpenDML 扩展 RIFF（'AVIX'）
+    bool has_avix = false; // 存在 OpenDML 扩展 RIFF（'AVIX'）
     uint64_t idx1_entries = 0;
-    uint64_t idx1_bad_offsets = 0;  // offset + size 越过文件末尾
+    uint64_t idx1_bad_offsets = 0; // offset + size 越过文件末尾
     uint64_t indx_entries = 0;
-    bool indx_truncated = false;  // indx 头声明条目数装不下实际块长
+    bool indx_truncated = false; // indx 头声明条目数装不下实际块长
     uint64_t dmlh_total_frames = 0;
 
     // ---- 结构 ----
@@ -38,8 +38,8 @@ struct AviDiagnostics {
     uint64_t truncated_chunks = 0;
     int video_streams = 0;
     int audio_streams = 0;
-    uint64_t max_video_stream_length = 0;  // strh.dwLength（视频轨，单位由 dwScale/dwRate 决定）
-    int zero_length_streams = 0;           // strh.dwLength == 0
+    uint64_t max_video_stream_length = 0; // strh.dwLength（视频轨，单位由 dwScale/dwRate 决定）
+    int zero_length_streams = 0;          // strh.dwLength == 0
 };
 
 struct FlvDiagnostics {
@@ -61,9 +61,9 @@ struct FlvDiagnostics {
     bool video_codec_av1 = false;
     bool video_sequence_header_seen = false;
 
-    uint64_t timestamp_backwards = 0;  // 同一 tag 类型内时间戳回退次数
-    uint64_t truncated_tags = 0;       // tag 数据越过文件末尾
-    uint64_t tag_size_mismatch = 0;    // PreviousTagSize 与实际不符
+    uint64_t timestamp_backwards = 0; // 同一 tag 类型内时间戳回退次数
+    uint64_t truncated_tags = 0;      // tag 数据越过文件末尾
+    uint64_t tag_size_mismatch = 0;   // PreviousTagSize 与实际不符
     uint64_t max_timestamp_ms = 0;
 };
 
@@ -76,7 +76,7 @@ struct AsfDiagnostics {
 
     uint32_t declared_header_objects = 0;
     uint32_t parsed_header_objects = 0;
-    uint64_t invalid_object_sizes = 0;   // size < 24 或越过文件末尾
+    uint64_t invalid_object_sizes = 0; // size < 24 或越过文件末尾
     bool header_size_exceeds_file = false;
     bool duration_invalid = false;
     double duration_seconds = 0.0;
@@ -88,11 +88,11 @@ struct OggDiagnostics {
 
     uint64_t pages = 0;
     uint64_t logical_streams = 0;
-    uint64_t sequence_gaps = 0;   // page_seq 不连续或回退
-    uint64_t missing_bos = 0;     // 某逻辑流的首个页面不是 BOS
-    uint64_t missing_eos = 0;     // 扫到文件尾仍未看到 EOS
+    uint64_t sequence_gaps = 0; // page_seq 不连续或回退
+    uint64_t missing_bos = 0;   // 某逻辑流的首个页面不是 BOS
+    uint64_t missing_eos = 0;   // 扫到文件尾仍未看到 EOS
     uint64_t truncated_pages = 0;
-    uint64_t resyncs = 0;         // 非 OggS 处重新同步次数
+    uint64_t resyncs = 0; // 非 OggS 处重新同步次数
 };
 
 struct ContainerDiagnosticsInfo {
@@ -102,5 +102,5 @@ struct ContainerDiagnosticsInfo {
     OggDiagnostics ogg;
 };
 
-}  // namespace model
-}  // namespace videoeye
+} // namespace model
+} // namespace videoeye

@@ -19,27 +19,32 @@ namespace player {
 namespace {
 
 std::string FormatDurationMs(int64_t ms) {
-    if (ms <= 0) return {};
+    if (ms <= 0)
+        return {};
     int64_t total_seconds = ms / 1000;
     int64_t hours = total_seconds / 3600;
     int64_t minutes = (total_seconds % 3600) / 60;
     int64_t seconds = total_seconds % 60;
     std::ostringstream oss;
-    if (hours > 0) oss << hours << " h ";
-    if (minutes > 0 || hours > 0) oss << minutes << " min ";
+    if (hours > 0)
+        oss << hours << " h ";
+    if (minutes > 0 || hours > 0)
+        oss << minutes << " min ";
     oss << seconds << " s";
     return oss.str();
 }
 
 std::string FormatBitrate(int64_t bps) {
-    if (bps <= 0) return {};
+    if (bps <= 0)
+        return {};
     std::ostringstream oss;
     oss << (bps / 1000) << " kb/s";
     return oss.str();
 }
 
 std::string FormatFrameRate(double fps) {
-    if (fps <= 0.0) return {};
+    if (fps <= 0.0)
+        return {};
     std::ostringstream oss;
     oss.setf(std::ios::fixed);
     oss.precision(3);
@@ -48,12 +53,14 @@ std::string FormatFrameRate(double fps) {
 }
 
 std::string FormatPixels(int v) {
-    if (v <= 0) return {};
+    if (v <= 0)
+        return {};
     return std::to_string(v) + " pixels";
 }
 
 std::string FourCC(uint32_t tag) {
-    if (tag == 0) return {};
+    if (tag == 0)
+        return {};
     char s[5];
     s[0] = static_cast<char>(tag & 0xFF);
     s[1] = static_cast<char>((tag >> 8) & 0xFF);
@@ -61,15 +68,18 @@ std::string FourCC(uint32_t tag) {
     s[3] = static_cast<char>((tag >> 24) & 0xFF);
     s[4] = '\0';
     for (int i = 0; i < 4; ++i) {
-        if (s[i] == '\0') s[i] = ' ';
+        if (s[i] == '\0')
+            s[i] = ' ';
     }
     return std::string(s);
 }
 
 std::string GetMetadata(AVDictionary* dict, const char* key) {
-    if (!dict || !key) return {};
+    if (!dict || !key)
+        return {};
     if (AVDictionaryEntry* e = av_dict_get(dict, key, nullptr, 0)) {
-        if (e->value) return std::string(e->value);
+        if (e->value)
+            return std::string(e->value);
     }
     return {};
 }
@@ -106,27 +116,33 @@ int BitsPerSampleForCodec(AVCodecID codec_id) {
 
 std::string ColorRangeName(AVColorRange range) {
     switch (range) {
-    case AVCOL_RANGE_MPEG: return "Limited";
-    case AVCOL_RANGE_JPEG: return "Full";
-    default: return {};
+    case AVCOL_RANGE_MPEG:
+        return "Limited";
+    case AVCOL_RANGE_JPEG:
+        return "Full";
+    default:
+        return {};
     }
 }
 
 std::string ScanTypeName(AVFieldOrder order) {
     switch (order) {
-    case AV_FIELD_PROGRESSIVE: return "Progressive";
+    case AV_FIELD_PROGRESSIVE:
+        return "Progressive";
     case AV_FIELD_TT:
     case AV_FIELD_BB:
     case AV_FIELD_TB:
     case AV_FIELD_BT:
         return "Interlaced";
-    default: return {};
+    default:
+        return {};
     }
 }
 
 std::string ChromaSubsamplingFromPixFmt(int pix_fmt) {
     const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(pix_fmt));
-    if (!desc || desc->nb_components <= 0) return {};
+    if (!desc || desc->nb_components <= 0)
+        return {};
     if (!(desc->flags & AV_PIX_FMT_FLAG_RGB) && desc->log2_chroma_w == 0 && desc->log2_chroma_h == 0)
         return "4:4:4";
     if (!(desc->flags & AV_PIX_FMT_FLAG_RGB) && desc->log2_chroma_w == 1 && desc->log2_chroma_h == 0)
@@ -138,19 +154,24 @@ std::string ChromaSubsamplingFromPixFmt(int pix_fmt) {
 
 std::string BitDepthFromPixFmt(int pix_fmt) {
     const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(pix_fmt));
-    if (!desc || desc->nb_components <= 0) return {};
+    if (!desc || desc->nb_components <= 0)
+        return {};
     int depth = desc->comp[0].depth;
-    if (depth <= 0) return {};
+    if (depth <= 0)
+        return {};
     return std::to_string(depth) + " bits";
 }
 
 const uint8_t* GetCodedSideData(const AVCodecParameters* par, AVPacketSideDataType type, int* size) {
-    if (size) *size = 0;
-    if (!par || !par->coded_side_data || par->nb_coded_side_data <= 0) return nullptr;
+    if (size)
+        *size = 0;
+    if (!par || !par->coded_side_data || par->nb_coded_side_data <= 0)
+        return nullptr;
     for (int i = 0; i < par->nb_coded_side_data; ++i) {
         const AVPacketSideData& sd = par->coded_side_data[i];
         if (sd.type == type && sd.data && sd.size > 0) {
-            if (size) *size = sd.size;
+            if (size)
+                *size = sd.size;
             return sd.data;
         }
     }
@@ -159,46 +180,63 @@ const uint8_t* GetCodedSideData(const AVCodecParameters* par, AVPacketSideDataTy
 
 std::string FriendlyColorPrimaries(AVColorPrimaries prim) {
     switch (prim) {
-    case AVCOL_PRI_BT709: return "BT.709";
-    case AVCOL_PRI_BT2020: return "BT.2020";
-    case AVCOL_PRI_SMPTE432: return "Display P3";
-    default: break;
+    case AVCOL_PRI_BT709:
+        return "BT.709";
+    case AVCOL_PRI_BT2020:
+        return "BT.2020";
+    case AVCOL_PRI_SMPTE432:
+        return "Display P3";
+    default:
+        break;
     }
-    if (const char* n = av_color_primaries_name(prim)) return n;
+    if (const char* n = av_color_primaries_name(prim))
+        return n;
     return {};
 }
 
 std::string FriendlyTransfer(AVColorTransferCharacteristic trc) {
     switch (trc) {
-    case AVCOL_TRC_BT709: return "BT.709";
-    case AVCOL_TRC_SMPTE2084: return "PQ";
-    case AVCOL_TRC_ARIB_STD_B67: return "HLG";
-    default: break;
+    case AVCOL_TRC_BT709:
+        return "BT.709";
+    case AVCOL_TRC_SMPTE2084:
+        return "PQ";
+    case AVCOL_TRC_ARIB_STD_B67:
+        return "HLG";
+    default:
+        break;
     }
-    if (const char* n = av_color_transfer_name(trc)) return n;
+    if (const char* n = av_color_transfer_name(trc))
+        return n;
     return {};
 }
 
 std::string FriendlyColorSpace(AVColorSpace spc) {
     switch (spc) {
-    case AVCOL_SPC_BT709: return "BT.709";
-    case AVCOL_SPC_BT2020_NCL: return "BT.2020 (non-constant)";
-    case AVCOL_SPC_BT2020_CL: return "BT.2020 (constant)";
-    default: break;
+    case AVCOL_SPC_BT709:
+        return "BT.709";
+    case AVCOL_SPC_BT2020_NCL:
+        return "BT.2020 (non-constant)";
+    case AVCOL_SPC_BT2020_CL:
+        return "BT.2020 (constant)";
+    default:
+        break;
     }
-    if (const char* n = av_color_space_name(spc)) return n;
+    if (const char* n = av_color_space_name(spc))
+        return n;
     return {};
 }
 
 std::string FormatMasteringDisplayPrimaries(const AVMasteringDisplayMetadata& md) {
     auto RationalToDouble = [](AVRational r) -> double {
-        if (r.num == 0 || r.den == 0) return 0.0;
+        if (r.num == 0 || r.den == 0)
+            return 0.0;
         return static_cast<double>(r.num) / static_cast<double>(r.den);
     };
     std::ostringstream oss;
     oss.setf(std::ios::fixed);
     oss.precision(4);
-    if (!md.has_primaries) return {};
+    if (!md.has_primaries)
+        return {};
     const double rx = RationalToDouble(md.display_primaries[0][0]);
     const double ry = RationalToDouble(md.display_primaries[0][1]);
     const double gx = RationalToDouble(md.display_primaries[1][0]);
@@ -215,9 +253,11 @@ std::string FormatMasteringDisplayPrimaries(const AVMasteringDisplayMetadata& md
 }
 
 std::string FormatMasteringDisplayLuminance(const AVMasteringDisplayMetadata& md) {
-    if (!md.has_luminance) return {};
+    if (!md.has_luminance)
+        return {};
     auto LuminanceToDouble = [](AVRational r) -> double {
-        if (r.num == 0 || r.den == 0) return 0.0;
+        if (r.num == 0 || r.den == 0)
+            return 0.0;
         return static_cast<double>(r.num) / static_cast<double>(r.den);
     };
     const double max_l = LuminanceToDouble(md.max_luminance);
@@ -232,7 +272,8 @@ std::string FormatMasteringDisplayLuminance(const AVMasteringDisplayMetadata& md
 } // namespace
 
 int64_t StreamInfoExtractor::DurationMsFromFormat(const AVFormatContext* format_ctx) {
-    if (!format_ctx) return 0;
+    if (!format_ctx)
+        return 0;
     int64_t best_ms = 0;
     if (format_ctx->duration != AV_NOPTS_VALUE && format_ctx->duration > 0) {
         best_ms = av_rescale(format_ctx->duration, 1000, AV_TIME_BASE);
@@ -241,49 +282,56 @@ int64_t StreamInfoExtractor::DurationMsFromFormat(const AVFormatContext* format_
         const AVRational kMsBase{1, 1000};
         for (unsigned i = 0; i < format_ctx->nb_streams; ++i) {
             const AVStream* s = format_ctx->streams[i];
-            if (!s || s->time_base.den == 0) continue;
-            if (s->duration == AV_NOPTS_VALUE || s->duration <= 0) continue;
+            if (!s || s->time_base.den == 0)
+                continue;
+            if (s->duration == AV_NOPTS_VALUE || s->duration <= 0)
+                continue;
             const int64_t ms = av_rescale_q(s->duration, s->time_base, kMsBase);
-            if (ms > best_ms) best_ms = ms;
+            if (ms > best_ms)
+                best_ms = ms;
         }
     }
     return best_ms;
 }
 
 int StreamInfoExtractor::ClampMsToInt(int64_t ms) {
-    if (ms <= 0) return 0;
-    if (ms > std::numeric_limits<int>::max()) return std::numeric_limits<int>::max();
+    if (ms <= 0)
+        return 0;
+    if (ms > std::numeric_limits<int>::max())
+        return std::numeric_limits<int>::max();
     return static_cast<int>(ms);
 }
 
-int64_t StreamInfoExtractor::EstimateRawPcmDurationMs(const QString& url,
-                                                       const AVCodecParameters* codecpar) {
-    if (!codecpar || codecpar->sample_rate <= 0) return 0;
+int64_t StreamInfoExtractor::EstimateRawPcmDurationMs(const QString& url, const AVCodecParameters* codecpar) {
+    if (!codecpar || codecpar->sample_rate <= 0)
+        return 0;
     int channels = codecpar->ch_layout.nb_channels;
-    if (channels <= 0) channels = 1;
+    if (channels <= 0)
+        channels = 1;
     int bits_per_sample = codecpar->bits_per_coded_sample;
-    if (bits_per_sample <= 0) bits_per_sample = BitsPerSampleForCodec(codecpar->codec_id);
-    if (bits_per_sample <= 0) return 0;
+    if (bits_per_sample <= 0)
+        bits_per_sample = BitsPerSampleForCodec(codecpar->codec_id);
+    if (bits_per_sample <= 0)
+        return 0;
     const QFileInfo fi(url);
-    if (!fi.exists() || !fi.isFile()) return 0;
-    const int64_t bytes_per_second =
-        static_cast<int64_t>(codecpar->sample_rate) * channels * bits_per_sample / 8;
-    if (bytes_per_second <= 0) return 0;
+    if (!fi.exists() || !fi.isFile())
+        return 0;
+    const int64_t bytes_per_second = static_cast<int64_t>(codecpar->sample_rate) * channels * bits_per_sample / 8;
+    if (bytes_per_second <= 0)
+        return 0;
     return (fi.size() * 1000LL) / bytes_per_second;
 }
 
-StreamInfoExtractor::ExtractResult StreamInfoExtractor::Extract(AVFormatContext* format_ctx,
-                                                int video_stream_index,
-                                                int audio_stream_index,
-                                                const QString& url) const {
+StreamInfoExtractor::ExtractResult StreamInfoExtractor::Extract(AVFormatContext* format_ctx, int video_stream_index,
+                                                                int audio_stream_index, const QString& url) const {
     ExtractResult result;
     model::StreamInfo& info = result.info;
-    if (!format_ctx) return result;
+    if (!format_ctx)
+        return result;
 
     info.filename = url.toStdString();
     int64_t duration_ms = DurationMsFromFormat(format_ctx);
-    if (duration_ms <= 0 && audio_stream_index >= 0 &&
-        format_ctx->streams && format_ctx->streams[audio_stream_index]) {
+    if (duration_ms <= 0 && audio_stream_index >= 0 && format_ctx->streams && format_ctx->streams[audio_stream_index]) {
         duration_ms = EstimateRawPcmDurationMs(url, format_ctx->streams[audio_stream_index]->codecpar);
     }
     result.duration_ms = ClampMsToInt(duration_ms);
@@ -324,7 +372,8 @@ StreamInfoExtractor::ExtractResult StreamInfoExtractor::Extract(AVFormatContext*
     info.extractor.writing_application = GetMetadata(format_ctx->metadata, "encoder");
     {
         std::string desc = GetMetadata(format_ctx->metadata, "description");
-        if (desc.empty()) desc = GetMetadata(format_ctx->metadata, "comment");
+        if (desc.empty())
+            desc = GetMetadata(format_ctx->metadata, "comment");
         info.extractor.description = desc;
     }
 
@@ -347,12 +396,15 @@ StreamInfoExtractor::ExtractResult StreamInfoExtractor::Extract(AVFormatContext*
         }
         {
             const char* profile = avcodec_profile_name(vp->codec_id, vp->profile);
-            if (profile) info.video.format_profile = profile;
+            if (profile)
+                info.video.format_profile = profile;
         }
         {
             std::string tag = FourCC(vp->codec_tag);
-            if (!tag.empty()) info.video.codec_id = tag;
-            else if (vdesc && vdesc->name) info.video.codec_id = vdesc->name;
+            if (!tag.empty())
+                info.video.codec_id = tag;
+            else if (vdesc && vdesc->name)
+                info.video.codec_id = vdesc->name;
         }
         info.video.duration = info.extractor.duration;
         info.video.bit_rate = FormatBitrate(vp->bit_rate > 0 ? vp->bit_rate : vs->codecpar->bit_rate);
@@ -361,8 +413,8 @@ StreamInfoExtractor::ExtractResult StreamInfoExtractor::Extract(AVFormatContext*
         {
             AVRational sar = vs->sample_aspect_ratio.num ? vs->sample_aspect_ratio : vp->sample_aspect_ratio;
             if (sar.num > 0 && sar.den > 0 && vp->width > 0 && vp->height > 0) {
-                const double dar = (static_cast<double>(vp->width) * sar.num) /
-                                   (static_cast<double>(vp->height) * sar.den);
+                const double dar =
+                    (static_cast<double>(vp->width) * sar.num) / (static_cast<double>(vp->height) * sar.den);
                 std::ostringstream oss;
                 oss.setf(std::ios::fixed);
                 oss.precision(3);
@@ -388,7 +440,8 @@ StreamInfoExtractor::ExtractResult StreamInfoExtractor::Extract(AVFormatContext*
         {
             bool is_pq = (vp->color_trc == AVCOL_TRC_SMPTE2084);
             bool is_hlg = (vp->color_trc == AVCOL_TRC_ARIB_STD_B67);
-            if (is_pq) info.video.hdr_format = "PQ";
+            if (is_pq)
+                info.video.hdr_format = "PQ";
             else if (is_hlg) {
                 info.video.hdr_format = "HLG";
                 info.video.hdr_format_compatibility = "HLG";
@@ -401,8 +454,10 @@ StreamInfoExtractor::ExtractResult StreamInfoExtractor::Extract(AVFormatContext*
                 const auto* md = reinterpret_cast<const AVMasteringDisplayMetadata*>(side);
                 std::string prim = FormatMasteringDisplayPrimaries(*md);
                 std::string lum = FormatMasteringDisplayLuminance(*md);
-                if (!prim.empty()) info.video.mastering_display_color_primaries = prim;
-                if (!lum.empty()) info.video.mastering_display_luminance = lum;
+                if (!prim.empty())
+                    info.video.mastering_display_color_primaries = prim;
+                if (!lum.empty())
+                    info.video.mastering_display_luminance = lum;
                 if ((!prim.empty() || !lum.empty()) && vp->color_trc == AVCOL_TRC_SMPTE2084) {
                     info.video.hdr_format = "HDR10";
                     info.video.hdr_format_compatibility = "HDR10";
@@ -444,12 +499,10 @@ StreamInfoExtractor::ExtractResult StreamInfoExtractor::Extract(AVFormatContext*
         info.audio.duration = info.extractor.duration;
         int64_t audio_bit_rate = ap->bit_rate;
         if (audio_bit_rate <= 0 && ap->sample_rate > 0 && ap->ch_layout.nb_channels > 0) {
-            const int bits_per_sample = ap->bits_per_coded_sample > 0
-                ? ap->bits_per_coded_sample
-                : BitsPerSampleForCodec(ap->codec_id);
+            const int bits_per_sample =
+                ap->bits_per_coded_sample > 0 ? ap->bits_per_coded_sample : BitsPerSampleForCodec(ap->codec_id);
             if (bits_per_sample > 0)
-                audio_bit_rate = static_cast<int64_t>(ap->sample_rate) *
-                                 ap->ch_layout.nb_channels * bits_per_sample;
+                audio_bit_rate = static_cast<int64_t>(ap->sample_rate) * ap->ch_layout.nb_channels * bits_per_sample;
         }
         info.audio.bit_rate = FormatBitrate(audio_bit_rate);
         if (ap->sample_rate > 0)

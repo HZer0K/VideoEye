@@ -52,10 +52,8 @@ public:
     // 又写在结果对象里 —— 上层（批处理、单测）想拿到"失败时到底是个什么状态"
     // 就必须有这条通道，否则只能像 QcRunner 那样在外面凭失败信号自己补一个状态。
     // 取消分支同样会回传（scan_status=Cancelled）。
-    void Run(const std::string& file_path, const AnalysisOptions& options,
-             const AnalysisCallbacks& callbacks,
-             model::AnalysisResult* out_result = nullptr,
-             std::shared_ptr<std::atomic<bool>> cancel_source = nullptr);
+    void Run(const std::string& file_path, const AnalysisOptions& options, const AnalysisCallbacks& callbacks,
+             model::AnalysisResult* out_result = nullptr, std::shared_ptr<std::atomic<bool>> cancel_source = nullptr);
 
 private:
     // 本次 Run 是否要取消。外部取消源优先于引擎自己的 Cancel()，
@@ -88,13 +86,14 @@ private:
 // 提前 return，而取消源是要一直跟着的 —— 漏摘一次，下一次 Run 就会误判"被取消了"。
 class AnalysisEngine::CancelSourceScope {
 public:
-    explicit CancelSourceScope(AnalysisEngine& owner, std::shared_ptr<std::atomic<bool>> source)
-        : owner_(owner) {
+    explicit CancelSourceScope(AnalysisEngine& owner, std::shared_ptr<std::atomic<bool>> source) : owner_(owner) {
         owner_.active_cancel_source_ = std::move(source);
     }
     CancelSourceScope(const CancelSourceScope&) = delete;
     CancelSourceScope& operator=(const CancelSourceScope&) = delete;
-    ~CancelSourceScope() { owner_.active_cancel_source_.reset(); }
+    ~CancelSourceScope() {
+        owner_.active_cancel_source_.reset();
+    }
 
 private:
     AnalysisEngine& owner_;

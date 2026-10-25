@@ -10,8 +10,8 @@
 
 #include <gtest/gtest.h>
 
-#include "core/domain/model/AnalysisResult.h"
 #include "core/analysis/diagnostics/QcRuleEngine.h"
+#include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/QcReport.h"
 #include "core/domain/model/QcRule.h"
 
@@ -19,11 +19,11 @@ namespace {
 
 using namespace videoeye;
 
-bool HasIssue(const model::QcReport& report, const std::string& rule_id,
-              model::DiagnosticIssue* out = nullptr) {
+bool HasIssue(const model::QcReport& report, const std::string& rule_id, model::DiagnosticIssue* out = nullptr) {
     for (const auto& issue : report.issues) {
         if (issue.rule_id == rule_id) {
-            if (out != nullptr) *out = issue;
+            if (out != nullptr)
+                *out = issue;
             return true;
         }
     }
@@ -31,8 +31,7 @@ bool HasIssue(const model::QcReport& report, const std::string& rule_id,
 }
 
 // 造一个"字幕分析过、带指定问题"的最小 AnalysisResult
-model::AnalysisResult MakeSubtitleResult(model::SubtitleIssueType type,
-                                            model::IssueSeverity severity, int count = 1) {
+model::AnalysisResult MakeSubtitleResult(model::SubtitleIssueType type, model::IssueSeverity severity, int count = 1) {
     model::AnalysisResult result;
     result.subtitle_analyzed = true;
 
@@ -58,16 +57,15 @@ model::AnalysisResult MakeSubtitleResult(model::SubtitleIssueType type,
     return result;
 }
 
-}  // namespace
+} // namespace
 
 TEST(AuxQcRulesTest, DefaultRulesCoverFeatureNine) {
     const std::vector<model::QcRule> rules = model::DefaultQcRules();
     const char* kRequired[] = {
-        "subtitle.cue_empty", "subtitle.cue_overlap", "subtitle.cue_order",
-        "subtitle.cue_too_short", "subtitle.cue_too_long", "subtitle.missing_language",
-        "timecode.missing", "timecode.drop_frame_mismatch", "timecode.invalid_frame",
-        "chapter.overlap", "chapter.out_of_range",
-        "scte35.parse_error", "scte35.duration_missing",
+        "subtitle.cue_empty",      "subtitle.cue_overlap",      "subtitle.cue_order",   "subtitle.cue_too_short",
+        "subtitle.cue_too_long",   "subtitle.missing_language", "timecode.missing",     "timecode.drop_frame_mismatch",
+        "timecode.invalid_frame",  "chapter.overlap",           "chapter.out_of_range", "scte35.parse_error",
+        "scte35.duration_missing",
     };
     for (const char* id : kRequired) {
         EXPECT_NE(model::FindQcRule(rules, id), nullptr) << "缺少规则: " << id;
@@ -87,7 +85,7 @@ TEST(AuxQcRulesTest, SubtitleOverlapIsReportedAsWarning) {
     EXPECT_EQ(issue.category, model::IssueCategory::Metadata);
     EXPECT_EQ(issue.occurrence_count, 2);
     EXPECT_EQ(issue.stream_index, 2);
-    EXPECT_FALSE(issue.range.IsGlobal());   // 定位到第一条问题 cue 的时间
+    EXPECT_FALSE(issue.range.IsGlobal()); // 定位到第一条问题 cue 的时间
 }
 
 TEST(AuxQcRulesTest, SubtitleEmptyCueIsReportedAsWarning) {
@@ -122,7 +120,7 @@ TEST(AuxQcRulesTest, SubtitleRulesStaySilentWhenNotAnalyzed) {
     const model::AnalysisResult result =
         MakeSubtitleResult(model::SubtitleIssueType::Overlap, model::IssueSeverity::Warning);
     model::AnalysisResult skipped = result;
-    skipped.subtitle_analyzed = false;   // 没跑过字幕分析（如没有字幕流）
+    skipped.subtitle_analyzed = false; // 没跑过字幕分析（如没有字幕流）
 
     const videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(skipped);
@@ -131,7 +129,7 @@ TEST(AuxQcRulesTest, SubtitleRulesStaySilentWhenNotAnalyzed) {
 
 TEST(AuxQcRulesTest, MissingTimecodeIsReported) {
     model::AnalysisResult result;
-    result.timecode_analyzed = true;     // 跑过但没找到时码
+    result.timecode_analyzed = true; // 跑过但没找到时码
     result.timecode.has_primary = false;
 
     const videoeye::QcRuleEngine engine;
@@ -150,9 +148,9 @@ TEST(AuxQcRulesTest, DropFrameMismatchOnNtscFootage) {
     model::AnalysisResult result;
     result.timecode_analyzed = true;
     result.timecode.has_primary = true;
-    result.timecode.primary = model::TimecodeFromString("00:00:00:00");   // non-drop 写法
+    result.timecode.primary = model::TimecodeFromString("00:00:00:00"); // non-drop 写法
     result.timecode.primary_drop_frame = false;
-    result.timecode.primary_frame_rate = 30000.0 / 1001.0;                // 29.97
+    result.timecode.primary_frame_rate = 30000.0 / 1001.0; // 29.97
 
     const videoeye::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
@@ -196,7 +194,7 @@ TEST(AuxQcRulesTest, Scte35MissingDurationIsReported) {
     cue.command = model::Scte35Command::SpliceInsert;
     cue.has_splice_time = true;
     cue.splice_time_seconds = 30.0;
-    cue.has_duration = false;            // 没给 duration
+    cue.has_duration = false; // 没给 duration
     result.aux_data.cues.push_back(cue);
     result.aux_data.scte35_cue_count = 1;
 

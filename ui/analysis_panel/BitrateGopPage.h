@@ -14,8 +14,8 @@
 // facade，也不知道诊断页的问题表。执行完由面板回调 ShowSceneLinkSummary()。
 // 页面本体就是 QWidget（外部 QStackedWidget 的一页），不需要再包一层 tab widget。
 
-#include <QWidget>
 #include <QString>
+#include <QWidget>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -46,7 +46,9 @@ public:
     explicit BitrateGopPage(QWidget* parent = nullptr);
 
     // 导出 CSV 的默认文件名用当前文件路径拼，面板换文件时同步一次
-    void SetSourcePath(const QString& path) override { source_path_ = path; }
+    void SetSourcePath(const QString& path) override {
+        source_path_ = path;
+    }
 
     // 扫描结束（或规则重算后）由面板喂结果
     void SetResult(const model::AnalysisResult& result);
@@ -64,7 +66,9 @@ public:
     // 与 SetScanActive 配对的状态查询。三页共用同一次扫描，任何一页卡在 active
     // 都是 bug（取消按钮亮着、"开始分析"永久禁用），所以这个状态必须能被观察到。
     // 不在 ScanClient 接口里：它是给人/测试看的，不是面板驱动页面要用的。
-    bool IsScanActive() const { return scan_active_; }
+    bool IsScanActive() const {
+        return scan_active_;
+    }
     void SetProgress(int percent) override;
     void SetProgressFormat(const QString& format) override;
 
@@ -111,7 +115,7 @@ private:
     videoeye::BitrateGopOptions options_;
     bool decode_frame_types_ = false;
     std::vector<model::SceneChangeResult> scene_changes_;
-    double display_window_ = 1.0;   // 当前图表显示的窗口长度
+    double display_window_ = 1.0; // 当前图表显示的窗口长度
 
     QLabel* summary_label_ = nullptr;
     QProgressBar* progress_bar_ = nullptr;

@@ -40,8 +40,8 @@ struct ActivePictureArea {
     int height = 0;
     bool valid = false;
 
-    bool letterbox = false;   // 上下黑边
-    bool pillarbox = false;   // 左右黑边
+    bool letterbox = false; // 上下黑边
+    bool pillarbox = false; // 左右黑边
 
     // 四条边各自占整帧宽/高的比例（0 表示没有黑边）
     double top_bar_ratio = 0.0;
@@ -49,9 +49,11 @@ struct ActivePictureArea {
     double left_bar_ratio = 0.0;
     double right_bar_ratio = 0.0;
 
-    double active_ratio = 1.0;   // 有效区面积 / 整帧面积
+    double active_ratio = 1.0; // 有效区面积 / 整帧面积
 
-    bool HasBars() const { return letterbox || pillarbox; }
+    bool HasBars() const {
+        return letterbox || pillarbox;
+    }
 };
 
 // 供视觉分析使用的降采样帧快照。
@@ -68,19 +70,18 @@ struct FrameSample {
     // 降采样前的源帧宽度（为 0 表示未知，例如单测里手造的样本）。
     // 视觉缺陷检测要用它把"源图像素"量级的参数（如编码块边长）换算到样本像素。
     int source_width = 0;
-    std::vector<uint8_t> gray;      // width * height，GRAY8，无行对齐
+    std::vector<uint8_t> gray; // width * height，GRAY8，无行对齐
 
     int rgb_width = 0;
     int rgb_height = 0;
-    std::vector<uint8_t> rgb;       // RGB24，色偏检测与证据缩略图用；可为空
+    std::vector<uint8_t> rgb; // RGB24，色偏检测与证据缩略图用；可为空
 
     // 该时刻音频是否静音。冻结帧判定要用: 静止画面 + 静音 = 正常的静帧（片尾/黑屏留白），
     // 静止画面 + 有声音 = 真正的冻结故障。没有音频流时填 false（无从判断，按"不静音"处理）。
     bool audio_silent = false;
 
     bool valid() const {
-        return width > 0 && height > 0 &&
-               gray.size() == static_cast<size_t>(width) * static_cast<size_t>(height);
+        return width > 0 && height > 0 && gray.size() == static_cast<size_t>(width) * static_cast<size_t>(height);
     }
 
     bool has_rgb() const {
@@ -97,25 +98,25 @@ struct FrameQualityMetric {
     int sample_height = 0;
 
     // ---- 亮度 ----
-    double luma_mean = kQualityNoValue;        // 全帧亮度均值 [0,255]
-    double luma_std = kQualityNoValue;         // 亮度标准差（对比度参考）
-    double black_ratio = kQualityNoValue;      // Y <= black_luma 的像素占比（黑场判定）
-    double dark_ratio = kQualityNoValue;       // Y <= shadow_luma 的像素占比（欠曝判定）
-    double highlight_ratio = kQualityNoValue;  // Y >= highlight_luma 的像素占比（过曝判定）
-    double clip_high_ratio = kQualityNoValue;  // Y >= clip_high_luma，硬削波（高光死白）
-    double clip_low_ratio = kQualityNoValue;   // Y <= clip_low_luma，暗部压死
+    double luma_mean = kQualityNoValue;       // 全帧亮度均值 [0,255]
+    double luma_std = kQualityNoValue;        // 亮度标准差（对比度参考）
+    double black_ratio = kQualityNoValue;     // Y <= black_luma 的像素占比（黑场判定）
+    double dark_ratio = kQualityNoValue;      // Y <= shadow_luma 的像素占比（欠曝判定）
+    double highlight_ratio = kQualityNoValue; // Y >= highlight_luma 的像素占比（过曝判定）
+    double clip_high_ratio = kQualityNoValue; // Y >= clip_high_luma，硬削波（高光死白）
+    double clip_low_ratio = kQualityNoValue;  // Y <= clip_low_luma，暗部压死
 
     // ---- 清晰度 ----
     // 拉普拉斯方差 / 1000（见 VisualDefectAnalyzer 的说明）。越小越模糊。
     double blur_score = kQualityNoValue;
 
     // ---- 时域（与上一采样帧比较）----
-    double frame_diff = kQualityNoValue;   // 平均绝对差 / 255，0 = 完全相同（冻结判定）
-    double luma_delta = kQualityNoValue;   // 亮度均值变化的绝对值 [0,255]（闪烁判定）
+    double frame_diff = kQualityNoValue; // 平均绝对差 / 255，0 = 完全相同（冻结判定）
+    double luma_delta = kQualityNoValue; // 亮度均值变化的绝对值 [0,255]（闪烁判定）
 
     // ---- 色彩 ----
-    double color_cast_score = kQualityNoValue;  // 色偏强度 0..1（R/B 偏离亮度的合成量 / 255）
-    double color_cast_rb = kQualityNoValue;     // mean(R) - mean(B)，>0 偏红，<0 偏蓝
+    double color_cast_score = kQualityNoValue; // 色偏强度 0..1（R/B 偏离亮度的合成量 / 255）
+    double color_cast_rb = kQualityNoValue;    // mean(R) - mean(B)，>0 偏红，<0 偏蓝
 
     // ---- 结构 ----
     double combing_score = kQualityNoValue;    // 隔行梳齿 0..1
@@ -135,5 +136,5 @@ struct FrameQualityMetric {
     std::string error_message;
 };
 
-}  // namespace model
-}  // namespace videoeye
+} // namespace model
+} // namespace videoeye

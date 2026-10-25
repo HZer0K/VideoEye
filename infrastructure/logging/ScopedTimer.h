@@ -12,9 +12,8 @@ namespace videoeye {
 
 class ScopedTimer {
 public:
-    explicit ScopedTimer(std::string name)
-        : name_(std::move(name)),
-          start_(std::chrono::steady_clock::now()) {}
+    explicit ScopedTimer(std::string name) : name_(std::move(name)), start_(std::chrono::steady_clock::now()) {
+    }
 
     ~ScopedTimer() {
         const double ms = ElapsedMs();
@@ -29,14 +28,16 @@ public:
         return std::chrono::duration<double, std::milli>(now - start_).count();
     }
 
-    const std::string& name() const { return name_; }
+    const std::string& name() const {
+        return name_;
+    }
 
 private:
     std::string name_;
     std::chrono::steady_clock::time_point start_;
 };
 
-}  // namespace videoeye
+} // namespace videoeye
 
 // 用法: { VE_PERF("MediaInfo 解析"); ... }
 #define VE_PERF_CONCAT_IMPL(a, b) a##b

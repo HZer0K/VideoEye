@@ -65,33 +65,39 @@ struct DecimatedPoints {
     int source_count = 0;
     int output_count = 0;
 
-    bool decimated() const { return output_count < source_count; }
+    bool decimated() const {
+        return output_count < source_count;
+    }
 };
 
 namespace detail {
 
 // NaN / Inf 一律跳过：指标算不出来时写的是 NaN（kQualityNoValue），
 // 混进曲线里会让 QPainter 画出一段飞到无穷远的线，剩下的正常点全被压成一条平线。
-inline bool Usable(double x, double y) { return std::isfinite(x) && std::isfinite(y); }
+inline bool Usable(double x, double y) {
+    return std::isfinite(x) && std::isfinite(y);
+}
 
-}  // namespace detail
+} // namespace detail
 
 // 抽稀的核心：输入已过滤掉非有限值的 (x, y) 序列。
 //
 // 抽成独立函数是为了让"从数组来"和"从任意容器来"两条路共用同一段桶划分逻辑 ——
 // 抽稀算法只有一份，改口径只改这一处。
-inline DecimatedPoints DecimatePairs(const std::vector<std::pair<double, double>>& usable,
-                                     int source_count, int limit = kMaxChartPoints,
-                                     DecimationMode mode = DecimationMode::MinMax) {
+inline DecimatedPoints DecimatePairs(const std::vector<std::pair<double, double>>& usable, int source_count,
+                                     int limit = kMaxChartPoints, DecimationMode mode = DecimationMode::MinMax) {
     DecimatedPoints out;
     out.source_count = source_count;
-    if (usable.empty()) return out;
-    if (limit < 2) limit = 2;
+    if (usable.empty())
+        return out;
+    if (limit < 2)
+        limit = 2;
 
     const std::size_t m = usable.size();
     if (m <= static_cast<std::size_t>(limit)) {
         out.points.reserve(static_cast<int>(m));
-        for (const auto& p : usable) out.points.append(QPointF(p.first, p.second));
+        for (const auto& p : usable)
+            out.points.append(QPointF(p.first, p.second));
         out.output_count = out.points.size();
         return out;
     }
@@ -115,8 +121,10 @@ inline DecimatedPoints DecimatePairs(const std::vector<std::pair<double, double>
         std::size_t min_i = start;
         std::size_t max_i = start;
         for (std::size_t i = start + 1; i < end; ++i) {
-            if (usable[i].second < usable[min_i].second) min_i = i;
-            if (usable[i].second > usable[max_i].second) max_i = i;
+            if (usable[i].second < usable[min_i].second)
+                min_i = i;
+            if (usable[i].second > usable[max_i].second)
+                max_i = i;
         }
         // 按原始时间序输出，否则折线会在桶内来回折返，画出不存在的锯齿
         if (min_i <= max_i) {
@@ -135,15 +143,15 @@ inline DecimatedPoints DecimatePairs(const std::vector<std::pair<double, double>
 
 // 从两个等长的数组抽稀。xs 通常是时间戳（秒），ys 是指标值。
 inline DecimatedPoints DecimateXY(const std::vector<double>& xs, const std::vector<double>& ys,
-                                  int limit = kMaxChartPoints,
-                                  DecimationMode mode = DecimationMode::MinMax) {
+                                  int limit = kMaxChartPoints, DecimationMode mode = DecimationMode::MinMax) {
     const std::size_t n = std::min(xs.size(), ys.size());
     // 先按"可用点"收集：源里可能混着 NaN，抽稀的桶必须按**可用点**均分，
     // 否则一个 NaN 密集的区间会吃掉了整整几个桶的配额，曲线在那段变秃。
     std::vector<std::pair<double, double>> usable;
     usable.reserve(n);
     for (std::size_t i = 0; i < n; ++i) {
-        if (detail::Usable(xs[i], ys[i])) usable.emplace_back(xs[i], ys[i]);
+        if (detail::Usable(xs[i], ys[i]))
+            usable.emplace_back(xs[i], ys[i]);
     }
     return DecimatePairs(usable, static_cast<int>(n), limit, mode);
 }
@@ -155,15 +163,15 @@ inline DecimatedPoints DecimateXY(const std::vector<double>& xs, const std::vect
 // 七份大内存，正是要避免的那类开销。这里一步直接攒成 (x, y) 对，
 // 中间不再落一层数组。
 template <typename Container, typename XGetter, typename YGetter>
-DecimatedPoints DecimateFrom(const Container& items, XGetter gx, YGetter gy,
-                             int limit = kMaxChartPoints,
+DecimatedPoints DecimateFrom(const Container& items, XGetter gx, YGetter gy, int limit = kMaxChartPoints,
                              DecimationMode mode = DecimationMode::MinMax) {
     std::vector<std::pair<double, double>> usable;
     usable.reserve(items.size());
     for (const auto& item : items) {
         const double x = static_cast<double>(gx(item));
         const double y = static_cast<double>(gy(item));
-        if (detail::Usable(x, y)) usable.emplace_back(x, y);
+        if (detail::Usable(x, y))
+            usable.emplace_back(x, y);
     }
     return DecimatePairs(usable, static_cast<int>(items.size()), limit, mode);
 }
@@ -174,9 +182,10 @@ DecimatedPoints DecimateFrom(const Container& items, XGetter gx, YGetter gy,
 // 等价于给控件投一个 paint 事件。几千点就是几千次投递，主线程在填曲线的
 // 那段时间里基本不干别的（实测 7 条曲线 × 4000 点 ≈ 3.5 s）。
 inline void SubmitDecimated(ChartSeries* series, const DecimatedPoints& data) {
-    if (series == nullptr) return;
+    if (series == nullptr)
+        return;
     series->Replace(data.points);
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

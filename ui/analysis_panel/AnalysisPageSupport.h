@@ -34,7 +34,8 @@ namespace ui {
 // 各页面组件都在用，所以放这里；AnalysisPanel 自己还有一个同名的成员函数，
 // 类内查找优先命中成员，不会冲突。
 inline void SetTableItemText(QTableWidget* table, int row, int column, const QString& text) {
-    if (!table) return;
+    if (!table)
+        return;
     QTableWidgetItem* item = table->item(row, column);
     if (!item) {
         item = new QTableWidgetItem();
@@ -46,19 +47,25 @@ inline void SetTableItemText(QTableWidget* table, int row, int column, const QSt
 // 指标值 + 单位 -> 展示串（异常表 / 汇总行都在用）
 inline QString FormatMetricValue(double value, const QString& unit) {
     if (unit == QStringLiteral("B")) {
-        if (value >= 1024.0 * 1024.0) return QString::number(value / 1048576.0, 'f', 2) + " MB";
-        if (value >= 1024.0) return QString::number(value / 1024.0, 'f', 1) + " KB";
+        if (value >= 1024.0 * 1024.0)
+            return QString::number(value / 1048576.0, 'f', 2) + " MB";
+        if (value >= 1024.0)
+            return QString::number(value / 1024.0, 'f', 1) + " KB";
         return QString::number(value, 'f', 0) + " B";
     }
-    if (unit == QStringLiteral("kbps")) return QString::number(value, 'f', 0) + " kbps";
+    if (unit == QStringLiteral("kbps"))
+        return QString::number(value, 'f', 0) + " kbps";
     if (unit == QStringLiteral("帧") || unit == QStringLiteral("个")) {
         return QString::number(value, 'f', 0) + " " + unit;
     }
-    if (unit == QStringLiteral("s")) return QString::number(value, 'f', 2) + " s";
+    if (unit == QStringLiteral("s"))
+        return QString::number(value, 'f', 2) + " s";
     return QString::number(value, 'f', 3);
 }
 
-inline QString FormatKb(double bytes) { return QString::number(bytes / 1024.0, 'f', 1); }
+inline QString FormatKb(double bytes) {
+    return QString::number(bytes / 1024.0, 'f', 1);
+}
 
 // 图表数据批量提交。
 //
@@ -70,14 +77,22 @@ inline QString FormatKb(double bytes) { return QString::number(bytes / 1024.0, '
 // 它内部就是走这套批量提交，且统一了点数上限与"保留峰谷"的策略。
 class SeriesBatch {
 public:
-    explicit SeriesBatch(ChartSeries* series) : series_(series) {}
+    explicit SeriesBatch(ChartSeries* series) : series_(series) {
+    }
     ~SeriesBatch() {
-        if (series_) series_->Replace(points_);
+        if (series_)
+            series_->Replace(points_);
     }
 
-    void Reserve(int n) { points_.reserve(n); }
-    void Add(double x, double y) { points_.append(QPointF(x, y)); }
-    bool Empty() const { return points_.isEmpty(); }
+    void Reserve(int n) {
+        points_.reserve(n);
+    }
+    void Add(double x, double y) {
+        points_.append(QPointF(x, y));
+    }
+    bool Empty() const {
+        return points_.isEmpty();
+    }
 
 private:
     ChartSeries* series_ = nullptr;
@@ -90,12 +105,11 @@ private:
 // 峰值留下了、**谷值被抹掉** —— 码率塌陷、响度掉底这类缺陷在抽完稀的曲线上
 // 会变成一条平线，看着像没检测出来。现在走 MinMax（每桶保留 min 与 max 两点）。
 inline void AppendDecimated(ChartSeries* series, const model::MetricSeries& curve, int limit) {
-    if (series == nullptr || curve.IsEmpty()) return;
-    SubmitDecimated(series,
-                    DecimateFrom(curve.samples,
-                                 [](const model::MetricSample& s) { return s.timestamp_seconds; },
-                                 [](const model::MetricSample& s) { return s.value; },
-                                 limit));
+    if (series == nullptr || curve.IsEmpty())
+        return;
+    SubmitDecimated(series, DecimateFrom(
+                                curve.samples, [](const model::MetricSample& s) { return s.timestamp_seconds; },
+                                [](const model::MetricSample& s) { return s.value; }, limit));
 }
 
 // 裁剪记录向量到指定上限：移除最早的多余记录，并让表格从头重建
@@ -103,10 +117,11 @@ inline void AppendDecimated(ChartSeries* series, const model::MetricSeries& curv
 //
 // 原为各页面里的匿名命名空间副本，随「音频帧子页」从 FramePacketView 抽出时提到这里：
 // 视频帧 / GOP / 包 / 音频帧四张表共用同一套裁剪语义，不该每拆一个子页就抄一份。
-template<typename T>
-inline void TrimRecords(std::vector<T>& records, std::size_t& synced_count,
-                        QTableWidget* table, bool& table_dirty, std::size_t max_count) {
-    if (records.size() <= max_count) return;
+template <typename T>
+inline void TrimRecords(std::vector<T>& records, std::size_t& synced_count, QTableWidget* table, bool& table_dirty,
+                        std::size_t max_count) {
+    if (records.size() <= max_count)
+        return;
     const std::size_t remove_count = records.size() - max_count;
     records.erase(records.begin(), records.begin() + remove_count);
     if (table) {
@@ -121,19 +136,27 @@ inline void TrimRecords(std::vector<T>& records, std::size_t& synced_count,
 class TableBatch {
 public:
     explicit TableBatch(QTableWidget* table) : table_(table) {
-        if (!table_) return;
+        if (!table_)
+            return;
         was_updates_enabled_ = table_->updatesEnabled();
         table_->setUpdatesEnabled(false);
     }
     ~TableBatch() {
-        if (!table_) return;
+        if (!table_)
+            return;
         table_->setUpdatesEnabled(was_updates_enabled_);
     }
 
-    void SetRowCount(int rows) { if (table_) table_->setRowCount(rows); }
-    int RowCount() const { return table_ ? table_->rowCount() : 0; }
+    void SetRowCount(int rows) {
+        if (table_)
+            table_->setRowCount(rows);
+    }
+    int RowCount() const {
+        return table_ ? table_->rowCount() : 0;
+    }
     void SetText(int row, int column, const QString& text, bool bold = false) {
-        if (!table_) return;
+        if (!table_)
+            return;
         auto* item = new QTableWidgetItem(text);
         if (bold) {
             QFont f = item->font();
@@ -165,10 +188,10 @@ private:
 
 // 打开 path 写 CSV 正文：UTF-8 + BOM，正文由 write_body 往流里写。
 // 打开失败返回 false（不弹窗，调用方 / 单测自己决定怎么提示）。
-inline bool WriteCsvStream(const QString& path,
-                           const std::function<void(QTextStream&)>& write_body) {
+inline bool WriteCsvStream(const QString& path, const std::function<void(QTextStream&)>& write_body) {
     QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) return false;
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+        return false;
     // BOM 必须按原始字节直接写设备，不能 stream << "\xEF\xBB\xBF"：
     // QTextStream 的 UTF-8 编码器会把写进流的开头 U+FEFF 当 BOM 标记消费掉，
     // 那样落盘的文件头是空的（实测踩过），Excel 打开中文列照样乱码。
@@ -182,24 +205,21 @@ inline bool WriteCsvStream(const QString& path,
 
 // UI 层导出样板：选择文件名 -> 写入 -> 结果提示。
 // exported_rows 只用于成功提示里的行数；用户取消返回 false（不弹任何框）。
-inline bool ExportCsvStream(QWidget* parent, const QString& dialog_title,
-                            const QString& default_name,
-                            const std::function<void(QTextStream&)>& write_body,
-                            int exported_rows) {
+inline bool ExportCsvStream(QWidget* parent, const QString& dialog_title, const QString& default_name,
+                            const std::function<void(QTextStream&)>& write_body, int exported_rows) {
     const QString path = QFileDialog::getSaveFileName(
         parent, dialog_title, default_name,
         QCoreApplication::translate("AnalysisPageSupport", "CSV 文件 (*.csv);;所有文件 (*)"));
-    if (path.isEmpty()) return false;
+    if (path.isEmpty())
+        return false;
     if (!WriteCsvStream(path, write_body)) {
-        QMessageBox::warning(parent,
-            QCoreApplication::translate("AnalysisPageSupport", "错误"),
-            QCoreApplication::translate("AnalysisPageSupport", "无法写入文件: %1").arg(path));
+        QMessageBox::warning(parent, QCoreApplication::translate("AnalysisPageSupport", "错误"),
+                             QCoreApplication::translate("AnalysisPageSupport", "无法写入文件: %1").arg(path));
         return false;
     }
-    QMessageBox::information(parent,
-        QCoreApplication::translate("AnalysisPageSupport", "成功"),
-        QCoreApplication::translate("AnalysisPageSupport", "已导出 %1 行到:\n%2")
-            .arg(exported_rows).arg(path));
+    QMessageBox::information(
+        parent, QCoreApplication::translate("AnalysisPageSupport", "成功"),
+        QCoreApplication::translate("AnalysisPageSupport", "已导出 %1 行到:\n%2").arg(exported_rows).arg(path));
     return true;
 }
 

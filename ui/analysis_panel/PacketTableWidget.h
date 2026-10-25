@@ -55,13 +55,19 @@ public:
     void FlushPending();
 
     // === 跨表互跳（父页同时碰帧表与包表做 PTS 联动）===
-    QTableView* packetTable() const { return packet_table_; }
-    RecordTableModel<PacketRecord>* packetModel() const { return packet_model_; }
+    QTableView* packetTable() const {
+        return packet_table_;
+    }
+    RecordTableModel<PacketRecord>* packetModel() const {
+        return packet_model_;
+    }
     const std::vector<PacketRecord>& PacketRecords() const;
 
     // 「启用分析」勾选框。必须外露：面板注入 SetFeatureHooks 后要拿它回写真实开关状态，
     // 否则界面与实际行为不一致（评审 P1）。
-    QCheckBox* toggle() const { return packet_toggle_; }
+    QCheckBox* toggle() const {
+        return packet_toggle_;
+    }
 
 private:
     void SetupUi();
@@ -84,7 +90,7 @@ private:
     QPushButton* export_packet_csv_button_ = nullptr;
     QCheckBox* packet_toggle_ = nullptr;
 
-    int packet_filter_mode_ = -1;  // -1=全部, 0=视频流, 1=音频流, 2=其他流
+    int packet_filter_mode_ = -1; // -1=全部, 0=视频流, 1=音频流, 2=其他流
 
     // 播放期回调只入队 + 置脏，FlushPending 时一次性交给模型
     std::vector<PacketRecord> pending_packets_;
@@ -92,5 +98,5 @@ private:
     bool packet_summary_dirty_ = false;
 };
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

@@ -31,14 +31,14 @@ namespace videoeye {
 // "analyze_ms" 之后历史数据就断了。
 // ---------------------------------------------------------------------------
 
-inline constexpr const char* kMetricOpenMs = "open_ms";                    // 打开媒体耗时
-inline constexpr const char* kMetricAnalysisMs = "analysis_ms";            // 全文件分析耗时
-inline constexpr const char* kMetricCancelResponseMs = "cancel_response_ms";  // 取消响应（请求→状态更新）
-inline constexpr const char* kMetricCancelSettleMs = "cancel_settle_ms";   // 取消收敛（请求→后台终态）
-inline constexpr const char* kMetricReportExportMs = "report_export_ms";   // 报告导出耗时
-inline constexpr const char* kMetricFrameExportMs = "frame_export_ms";     // 媒体导出（片段）耗时
-inline constexpr const char* kMetricPeakMemoryMb = "peak_memory_mb";       // 峰值内存（OS 高水位）
-inline constexpr const char* kMetricRssMemoryMb = "rss_memory_mb";         // 当前驻留内存
+inline constexpr const char* kMetricOpenMs = "open_ms";                      // 打开媒体耗时
+inline constexpr const char* kMetricAnalysisMs = "analysis_ms";              // 全文件分析耗时
+inline constexpr const char* kMetricCancelResponseMs = "cancel_response_ms"; // 取消响应（请求→状态更新）
+inline constexpr const char* kMetricCancelSettleMs = "cancel_settle_ms";     // 取消收敛（请求→后台终态）
+inline constexpr const char* kMetricReportExportMs = "report_export_ms";     // 报告导出耗时
+inline constexpr const char* kMetricFrameExportMs = "frame_export_ms";       // 媒体导出（片段）耗时
+inline constexpr const char* kMetricPeakMemoryMb = "peak_memory_mb";         // 峰值内存（OS 高水位）
+inline constexpr const char* kMetricRssMemoryMb = "rss_memory_mb";           // 当前驻留内存
 //
 // 表格行数 / 曲线点数**不设指标**：它们有硬上限（kDefaultMaxRecordCount /
 // kMaxChartPoints），由代码保证、由单测钉住，而不是靠事后看日志发现"长歪了"。
@@ -127,9 +127,13 @@ public:
     PerfScope& operator=(const PerfScope&) = delete;
 
     // 放弃这次记录（析构时什么都不写）。用于"被取消 / 提前 return 的异常路径"。
-    void Discard() { discarded_ = true; }
+    void Discard() {
+        discarded_ = true;
+    }
     double ElapsedMs() const;
-    const std::string& name() const { return name_; }
+    const std::string& name() const {
+        return name_;
+    }
 
 private:
     std::string name_;
@@ -152,7 +156,9 @@ class CancelLatencyProbe {
 public:
     // 记录"发出取消请求"的时刻。
     void Arm();
-    bool Armed() const { return armed_; }
+    bool Armed() const {
+        return armed_;
+    }
 
     // 距上次 Arm 过去了多久（毫秒）。未 Arm 返回 -1。
     double ElapsedMs() const;
@@ -163,7 +169,10 @@ public:
     double Settle();
 
     // 放弃这次测量（例如任务其实没在跑）。
-    void Abandon() { armed_ = false; settled_ = false; }
+    void Abandon() {
+        armed_ = false;
+        settled_ = false;
+    }
 
 private:
     bool armed_ = false;
@@ -171,10 +180,9 @@ private:
     std::chrono::steady_clock::time_point armed_at_;
 };
 
-}  // namespace videoeye
+} // namespace videoeye
 
 // 用法：{ VE_METRIC_SCOPE(videoeye::kMetricReportExportMs, videoeye::kReportExportBudgetMs); ... }
 #define VE_METRIC_CONCAT_IMPL(a, b) a##b
 #define VE_METRIC_CONCAT(a, b) VE_METRIC_CONCAT_IMPL(a, b)
-#define VE_METRIC_SCOPE(name, budget) \
-    ::videoeye::PerfScope VE_METRIC_CONCAT(_ve_metric_scope_, __LINE__)(name, budget)
+#define VE_METRIC_SCOPE(name, budget) ::videoeye::PerfScope VE_METRIC_CONCAT(_ve_metric_scope_, __LINE__)(name, budget)

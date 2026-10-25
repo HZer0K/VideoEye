@@ -37,18 +37,23 @@ namespace codec {
 // 哪一项没通过验证。None = 全部通过。
 enum class CapabilityGap {
     None = 0,
-    Profile,       // profile / general_profile_idc 不在验证过的清单里
-    ChromaFormat,  // chroma_format_idc 不在 {4:2:0, 4:2:2, 4:4:4}
-    BitDepth,      // 位深不在 {8, 10, 12}
+    Profile,      // profile / general_profile_idc 不在验证过的清单里
+    ChromaFormat, // chroma_format_idc 不在 {4:2:0, 4:2:2, 4:4:4}
+    BitDepth,     // 位深不在 {8, 10, 12}
 };
 
 inline const char* GapFieldName(CapabilityGap gap) {
     switch (gap) {
-        case CapabilityGap::Profile: return "Profile";
-        case CapabilityGap::ChromaFormat: return "色度采样";
-        case CapabilityGap::BitDepth: return "位深";
-        case CapabilityGap::None: return "无";
-        default: return "未知";
+    case CapabilityGap::Profile:
+        return "Profile";
+    case CapabilityGap::ChromaFormat:
+        return "色度采样";
+    case CapabilityGap::BitDepth:
+        return "位深";
+    case CapabilityGap::None:
+        return "无";
+    default:
+        return "未知";
     }
 }
 
@@ -72,19 +77,19 @@ inline bool IsValidatedBitDepth(int bit_depth) {
 // 部分），真实文件里几乎见不到，也没有样本矩阵覆盖。
 inline bool IsValidatedH264Profile(int profile_idc) {
     switch (profile_idc) {
-        case 44:
-        case 66:
-        case 77:
-        case 88:
-        case 100:
-        case 110:
-        case 118:
-        case 122:
-        case 128:
-        case 244:
-            return true;
-        default:
-            return false;
+    case 44:
+    case 66:
+    case 77:
+    case 88:
+    case 100:
+    case 110:
+    case 118:
+    case 122:
+    case 128:
+    case 244:
+        return true;
+    default:
+        return false;
     }
 }
 
@@ -94,16 +99,16 @@ inline bool IsValidatedH264Profile(int profile_idc) {
 // Multiview Main / Scalable Main / 3D Main（6/7/8）没有样本，不放行。
 inline bool IsValidatedHevcProfile(int general_profile_idc) {
     switch (general_profile_idc) {
-        case 1:
-        case 2:
-        case 3:
-        case 4:
-        case 9:
-        case 10:
-        case 11:
-            return true;
-        default:
-            return false;
+    case 1:
+    case 2:
+    case 3:
+    case 4:
+    case 9:
+    case 10:
+    case 11:
+        return true;
+    default:
+        return false;
     }
 }
 
@@ -114,16 +119,22 @@ inline CapabilityGap H264ProfileGap(int profile_idc) {
 }
 
 inline CapabilityGap H264SpsGap(const model::H264SpsInfo& sps) {
-    if (!IsValidatedH264Profile(sps.profile_idc)) return CapabilityGap::Profile;
-    if (!IsValidatedChromaFormat(sps.chroma_format_idc)) return CapabilityGap::ChromaFormat;
-    if (!IsValidatedBitDepth(sps.BitDepthLuma())) return CapabilityGap::BitDepth;
+    if (!IsValidatedH264Profile(sps.profile_idc))
+        return CapabilityGap::Profile;
+    if (!IsValidatedChromaFormat(sps.chroma_format_idc))
+        return CapabilityGap::ChromaFormat;
+    if (!IsValidatedBitDepth(sps.BitDepthLuma()))
+        return CapabilityGap::BitDepth;
     return CapabilityGap::None;
 }
 
 inline CapabilityGap HevcSpsGap(const model::HevcSpsInfo& sps) {
-    if (!IsValidatedHevcProfile(sps.general_profile_idc)) return CapabilityGap::Profile;
-    if (!IsValidatedChromaFormat(sps.chroma_format_idc)) return CapabilityGap::ChromaFormat;
-    if (!IsValidatedBitDepth(sps.BitDepthLuma())) return CapabilityGap::BitDepth;
+    if (!IsValidatedHevcProfile(sps.general_profile_idc))
+        return CapabilityGap::Profile;
+    if (!IsValidatedChromaFormat(sps.chroma_format_idc))
+        return CapabilityGap::ChromaFormat;
+    if (!IsValidatedBitDepth(sps.BitDepthLuma()))
+        return CapabilityGap::BitDepth;
     return CapabilityGap::None;
 }
 
@@ -139,11 +150,10 @@ inline bool IsValidatedHevcSps(const model::HevcSpsInfo& sps) {
 // ---- 原因文案 ----
 
 // codec_label 例："H.264" / "HEVC"；field_values 由调用方给具体数值串。
-inline std::string GapNote(const std::string& codec_label, CapabilityGap gap,
-                           const std::string& profile_text,
-                           const std::string& chroma_text,
-                           const std::string& bit_depth_text) {
-    if (gap == CapabilityGap::None) return std::string();
+inline std::string GapNote(const std::string& codec_label, CapabilityGap gap, const std::string& profile_text,
+                           const std::string& chroma_text, const std::string& bit_depth_text) {
+    if (gap == CapabilityGap::None)
+        return std::string();
     std::string out = codec_label + " 参数集已解析，但该组合尚无完整真实样本矩阵：";
     out += GapFieldName(gap);
     out += " 不在验证过的范围内（";
@@ -152,5 +162,5 @@ inline std::string GapNote(const std::string& codec_label, CapabilityGap gap,
     return out;
 }
 
-}  // namespace codec
-}  // namespace videoeye
+} // namespace codec
+} // namespace videoeye

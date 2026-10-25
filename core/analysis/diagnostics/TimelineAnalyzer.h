@@ -18,17 +18,17 @@ namespace videoeye {
 class TimelineAnalyzer {
 public:
     struct Options {
-        double av_start_offset_warn_ms = 100.0;   // 首帧偏移告警
-        double av_start_offset_error_ms = 500.0;  // 首帧偏移错误
+        double av_start_offset_warn_ms = 100.0;  // 首帧偏移告警
+        double av_start_offset_error_ms = 500.0; // 首帧偏移错误
         double av_duration_mismatch_warn_ms = 500.0;
-        double frame_interval_spike_ratio = 3.0;      // 相对平均间隔倍数
-        double frame_interval_spike_min_ms = 80.0;    // 绝对下限，避免小间隔噪声
-        double duplicate_tolerance_ms = 0.5;          // 重复时间戳容差
+        double frame_interval_spike_ratio = 3.0;   // 相对平均间隔倍数
+        double frame_interval_spike_min_ms = 80.0; // 绝对下限，避免小间隔噪声
+        double duplicate_tolerance_ms = 0.5;       // 重复时间戳容差
         double dts_after_pts_tolerance_ms = 0.5;
-        double vfr_stddev_ms = 1.0;                   // 帧间隔标准差阈值
-        double vfr_relative_spread = 0.02;            // (p95-p5)/中位数 阈值
-        int max_issues_per_type = 40;                 // 同类问题最多记录条数
-        int histogram_max_ms = 200;                   // 直方图覆盖的最大间隔
+        double vfr_stddev_ms = 1.0;        // 帧间隔标准差阈值
+        double vfr_relative_spread = 0.02; // (p95-p5)/中位数 阈值
+        int max_issues_per_type = 40;      // 同类问题最多记录条数
+        int histogram_max_ms = 200;        // 直方图覆盖的最大间隔
         // 逐包 delta 曲线的点数上限：超过就对曲线减半（保留偶数下标）。
         // 默认**必须给一个有限值**：这条曲线是"每包一个采样点"，长视频/高码率文件
         // 轻松累积到数百万点（每点 16 字节 → 上百 MB），曾经默认 0（不限制）等于把
@@ -47,7 +47,9 @@ public:
 
     void Reset();
     void SetOptions(const Options& options);
-    const Options& options() const { return options_; }
+    const Options& options() const {
+        return options_;
+    }
 
     void OnPacket(const model::PacketTiming& packet);
     void OnFrame(const model::FrameTimingInfo& frame);
@@ -59,8 +61,12 @@ public:
     // 不修改内部状态地获取"当前快照"（直播/播放过程中周期性刷新 UI 用）
     model::TimelineAnalysisResult Snapshot() const;
 
-    const model::TimelineAnalysisResult& result() const { return result_; }
-    model::TimelineAnalysisResult& result() { return result_; }
+    const model::TimelineAnalysisResult& result() const {
+        return result_;
+    }
+    model::TimelineAnalysisResult& result() {
+        return result_;
+    }
 
 private:
     struct StreamState {
@@ -75,9 +81,9 @@ private:
         int64_t keyframe_count = 0;
     };
 
-    void AddIssue(model::TimelineIssueType type, model::IssueSeverity severity, int stream_index,
-                  double timestamp_ms, double metric_value_ms, double threshold_ms,
-                  const std::string& detail, const std::string& suggestion);
+    void AddIssue(model::TimelineIssueType type, model::IssueSeverity severity, int stream_index, double timestamp_ms,
+                  double metric_value_ms, double threshold_ms, const std::string& detail,
+                  const std::string& suggestion);
     void FinalizeFrameStats();
     void FinalizeStreamSummary();
 
@@ -86,8 +92,8 @@ private:
     std::map<int, StreamState> streams_;
     // 解码帧的显示顺序检查：按流各存上一帧（多轨交错时不能共用一份）
     std::map<int, double> last_display_pts_ms_;
-    std::map<int, std::map<int, size_t>> issue_index_;   // type -> (stream -> index in issues)
-    std::map<int, int> issue_total_count_;               // type -> 累计条数（含被限流丢弃的）
+    std::map<int, std::map<int, size_t>> issue_index_; // type -> (stream -> index in issues)
+    std::map<int, int> issue_total_count_;             // type -> 累计条数（含被限流丢弃的）
     int packet_index_ = 0;
     int frame_index_ = 0;
     bool finished_ = false;

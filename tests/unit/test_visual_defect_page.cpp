@@ -60,19 +60,25 @@ QApplication* EnsureApp() {
 struct OptionsRecorder {
     std::vector<VisualDefectOptions> emitted;
 
-    void Push(const VisualDefectOptions& options) { emitted.push_back(options); }
+    void Push(const VisualDefectOptions& options) {
+        emitted.push_back(options);
+    }
 };
 
 struct BoolRecorder {
     std::vector<bool> calls;
 
-    void Push(bool enabled) { calls.push_back(enabled); }
+    void Push(bool enabled) {
+        calls.push_back(enabled);
+    }
 };
 
 struct SeekRecorder {
     std::vector<double> calls;
 
-    void Push(double seconds) { calls.push_back(seconds); }
+    void Push(double seconds) {
+        calls.push_back(seconds);
+    }
 };
 
 QComboBox* PresetCombo(VisualDefectPage& page) {
@@ -108,7 +114,7 @@ VisualDefect MakeDefect(int id, double start, double end) {
     return d;
 }
 
-}  // namespace
+} // namespace
 
 // ---------------------------------------------------------------------------
 // 1. 构造：入参里的非档位字段应当原样留下
@@ -190,8 +196,7 @@ TEST(VisualDefectPageTests, IncomingPresetIsMirroredByCombo) {
     // 「实际送进分析器的是离线全帧」分家（旧用例名 IncomingPresetIsKeptButCombo
     // StaysOnItsDefaultEntry 钉的就是那个现状）。现在下拉必须跟着入参走。
     EXPECT_EQ(VisualSamplingPreset::OfflineFull, page.options().preset);
-    EXPECT_EQ(static_cast<int>(VisualSamplingPreset::OfflineFull),
-              combo->currentData().toInt());
+    EXPECT_EQ(static_cast<int>(VisualSamplingPreset::OfflineFull), combo->currentData().toInt());
     EXPECT_EQ(3, combo->currentIndex());
     // 构造期不 emit（setCurrentIndex 排在 connect 前面），"改控件"的用例都以空基线起步
     EXPECT_TRUE(rec.emitted.empty());
@@ -304,8 +309,7 @@ TEST(VisualDefectPageTests, FeatureToggleFollowsConstructorFlag) {
     BoolRecorder rec;
     {
         VisualDefectPage page(false, VisualDefectOptions());
-        QObject::connect(&page, &VisualDefectPage::FeatureToggled,
-                     [&rec](bool enabled) { rec.Push(enabled); });
+        QObject::connect(&page, &VisualDefectPage::FeatureToggled, [&rec](bool enabled) { rec.Push(enabled); });
         QCheckBox* toggle = FeatureToggle(page);
         ASSERT_TRUE(toggle != nullptr);
         EXPECT_FALSE(toggle->isChecked());
@@ -367,8 +371,7 @@ TEST(VisualDefectPageTests, ClickingDefectRowAsksSeekToItsStartSecond) {
 
     VisualDefectPage page(true, VisualDefectOptions());
     SeekRecorder rec;
-    QObject::connect(&page, &VisualDefectPage::SeekRequested,
-                     [&rec](double seconds) { rec.Push(seconds); });
+    QObject::connect(&page, &VisualDefectPage::SeekRequested, [&rec](double seconds) { rec.Push(seconds); });
 
     page.AppendDefect(MakeDefect(7, 12.5, 14.0));
     page.FlushPending();
@@ -406,7 +409,7 @@ VisualDefect MakeDefectWithEvidence(int id, double start, double end) {
     return d;
 }
 
-}  // namespace
+} // namespace
 
 TEST(VisualDefectPageTests, EvidenceFramesAreCappedToRecentOnes) {
     EnsureApp();
@@ -424,13 +427,11 @@ TEST(VisualDefectPageTests, EvidenceFramesAreCappedToRecentOnes) {
 
     // 最早的 10 条：图已释放
     for (int i = 0; i < 10; ++i) {
-        EXPECT_TRUE(records[static_cast<size_t>(i)].evidence.rgb.empty())
-            << "第 " << i << " 条的证据图应当已被释放";
+        EXPECT_TRUE(records[static_cast<size_t>(i)].evidence.rgb.empty()) << "第 " << i << " 条的证据图应当已被释放";
     }
     // 最近 200 条：图还在
     for (int i = 10; i < 210; ++i) {
-        EXPECT_FALSE(records[static_cast<size_t>(i)].evidence.rgb.empty())
-            << "第 " << i << " 条的证据图不该被释放";
+        EXPECT_FALSE(records[static_cast<size_t>(i)].evidence.rgb.empty()) << "第 " << i << " 条的证据图不该被释放";
     }
 
     // 提示文案要能区分"没采集"和"采过但被限额释放了"

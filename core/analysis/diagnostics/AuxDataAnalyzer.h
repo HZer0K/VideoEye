@@ -18,9 +18,9 @@
 #include <string>
 #include <vector>
 
+#include "core/analysis/AnalysisOptions.h"
 #include "core/analysis/diagnostics/Scte35Analyzer.h"
 #include "core/domain/model/AuxiliaryDataInfo.h"
-#include "core/analysis/AnalysisOptions.h"
 
 struct AVFormatContext;
 struct AVPacket;
@@ -41,21 +41,24 @@ public:
 
     void Finish();
 
-    const model::AuxiliaryDataResult& result() const { return result_; }
-    const AuxDataOptions& options() const { return options_; }
+    const model::AuxiliaryDataResult& result() const {
+        return result_;
+    }
+    const AuxDataOptions& options() const {
+        return options_;
+    }
 
     // codec id -> data 流类型（未知返回 GenericData）
     static model::AuxStreamKind KindFromCodecId(int codec_id);
 
 private:
     void CollectMetadata(const AVFormatContext* fmt);
-    void AddMetadata(const char* scope, int stream_index, int chapter_index,
-                     const struct AVDictionary* dict);
+    void AddMetadata(const char* scope, int stream_index, int chapter_index, const struct AVDictionary* dict);
 
     AuxDataOptions options_;
     model::AuxiliaryDataResult result_;
-    std::vector<int> data_stream_indices_;   // 需要在逐包阶段关注的流号
+    std::vector<int> data_stream_indices_; // 需要在逐包阶段关注的流号
     bool registered_ = false;
 };
 
-}  // namespace videoeye
+} // namespace videoeye

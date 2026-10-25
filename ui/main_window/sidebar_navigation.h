@@ -26,15 +26,15 @@ namespace ui {
 // 侧栏 item 的自定义数据角色。
 // Qt::UserRole 存 stack 下标（见 ApplyNavigationRows），这里三个是导航标记三件套：
 // 由 ApplySidebarBadges 写入、SidebarItemDelegate 画出。
-constexpr int kBadgeCountRole = Qt::UserRole + 1;  // 异常条数（int）
-constexpr int kBadgeLevelRole = Qt::UserRole + 2;  // 级别 0/1/2/3（int）
-constexpr int kScanningRole = Qt::UserRole + 3;    // 是否共用扫描中（bool）
+constexpr int kBadgeCountRole = Qt::UserRole + 1; // 异常条数（int）
+constexpr int kBadgeLevelRole = Qt::UserRole + 2; // 级别 0/1/2/3（int）
+constexpr int kScanningRole = Qt::UserRole + 3;   // 是否共用扫描中（bool）
 
 // 一条侧栏项此刻该显示什么徽标。
 struct SidebarBadge {
-    int count = 0;        // 异常条数（0 = 不画数字徽标）
-    int level = 0;        // 0 无 / 1 警告 / 2 错误 / 3 致命（决定配色）
-    bool scanning = false;  // 该页共用的一次全文件扫描正在进行
+    int count = 0;         // 异常条数（0 = 不画数字徽标）
+    int level = 0;         // 0 无 / 1 警告 / 2 错误 / 3 致命（决定配色）
+    bool scanning = false; // 该页共用的一次全文件扫描正在进行
 };
 
 // 给侧栏装上按行绘制的委托（分组标题 vs 页面项 + 徽标）。
@@ -60,12 +60,11 @@ using SidebarBadgeLookup = std::function<SidebarBadge(const QString& page_id)>;
 
 // 把所有页面项的徽标刷新一遍：先由 stack 下标反查 pageId，再问 lookup。
 // 只在值真的变了时才写回并 update()（这个列表重绘不算便宜，而扫描期每帧都可能调）。
-void ApplySidebarBadges(QListWidget* sidebar, QStackedWidget* stack,
-                        const SidebarBadgeLookup& lookup);
+void ApplySidebarBadges(QListWidget* sidebar, QStackedWidget* stack, const SidebarBadgeLookup& lookup);
 
 // 按 stack 下标选中对应侧栏行（首页「跳转到分析页」用）。
 // 行号因分组标题会与下标错位，不能当下标用，只能逐行反查 UserRole。
 void SelectSidebarRowForStackIndex(QListWidget* sidebar, int stack_index);
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

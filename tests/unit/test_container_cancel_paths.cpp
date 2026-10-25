@@ -58,7 +58,8 @@ bool WriteBytes(const fs::path& path, const std::vector<std::uint8_t>& bytes) {
     std::error_code ec;
     fs::create_directories(path.parent_path(), ec);
     std::ofstream out(path, std::ios::binary);
-    if (!out) return false;
+    if (!out)
+        return false;
     out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     return out.good();
 }
@@ -75,22 +76,26 @@ bool WriteText(const fs::path& path, const std::string& text) {
 // ---------------------------------------------------------------------------
 
 void Put32(std::vector<std::uint8_t>& v, std::uint32_t x) {
-    for (int i = 3; i >= 0; --i) v.push_back(static_cast<std::uint8_t>((x >> (i * 8)) & 0xFF));
+    for (int i = 3; i >= 0; --i)
+        v.push_back(static_cast<std::uint8_t>((x >> (i * 8)) & 0xFF));
 }
 
 std::vector<std::uint8_t> Box(const std::string& type, const std::vector<std::uint8_t>& payload) {
     std::vector<std::uint8_t> out;
     Put32(out, static_cast<std::uint32_t>(8 + payload.size()));
-    for (char c : type) out.push_back(static_cast<std::uint8_t>(c));
+    for (char c : type)
+        out.push_back(static_cast<std::uint8_t>(c));
     out.insert(out.end(), payload.begin(), payload.end());
     return out;
 }
 
 std::vector<std::uint8_t> MakeMp4(int extra_boxes) {
     std::vector<std::uint8_t> ftyp_body;
-    for (char c : std::string("isom")) ftyp_body.push_back(static_cast<std::uint8_t>(c));
+    for (char c : std::string("isom"))
+        ftyp_body.push_back(static_cast<std::uint8_t>(c));
     Put32(ftyp_body, 0);
-    for (char c : std::string("isom")) ftyp_body.push_back(static_cast<std::uint8_t>(c));
+    for (char c : std::string("isom"))
+        ftyp_body.push_back(static_cast<std::uint8_t>(c));
 
     std::vector<std::uint8_t> out = Box("ftyp", ftyp_body);
     for (const auto& b : {Box("moov", {}), Box("mdat", std::vector<std::uint8_t>(64, 0))})
@@ -109,7 +114,7 @@ std::vector<std::uint8_t> MakeMp4(int extra_boxes) {
 // 完全合成。关键是**必须造出大量轨道**: 轨道列表是 ExtractEbmlStreamInfo 里唯一
 // 会循环的容器, 没有它这一阶段是一闪而过的, "取消落在提取阶段"根本无从发生 ——
 // 而那正是本轮要补的洞。轨道条目里刻意塞满宽高 / 帧率字段, 让提取阶段每轨都有
-//实实在在的字符串格式化开销, 不至于薄到测不出来。
+// 实实在在的字符串格式化开销, 不至于薄到测不出来。
 // ---------------------------------------------------------------------------
 
 void PutEbmlId(std::vector<std::uint8_t>& out, std::uint32_t id) {
@@ -121,7 +126,8 @@ void PutEbmlId(std::vector<std::uint8_t>& out, std::uint32_t id) {
 // EBML 长度用 VINT: 前导零个数决定总字节数, 首字节里剩下的位与后续字节一起是值
 void PutEbmlSize(std::vector<std::uint8_t>& out, std::uint64_t value) {
     int len = 1;
-    while (len < 8 && value >= (static_cast<std::uint64_t>(1) << (7 * len)) - 1) ++len;
+    while (len < 8 && value >= (static_cast<std::uint64_t>(1) << (7 * len)) - 1)
+        ++len;
     out.push_back(static_cast<std::uint8_t>((value >> (8 * (len - 1))) | (0x80 >> (len - 1))));
     for (int i = len - 2; i >= 0; --i)
         out.push_back(static_cast<std::uint8_t>((value >> (i * 8)) & 0xFF));
@@ -133,8 +139,7 @@ void PutBe(std::vector<std::uint8_t>& out, std::uint64_t value, int bytes) {
 }
 
 // 叶子元素: id + size + 载荷
-void PutEbmlLeaf(std::vector<std::uint8_t>& out, std::uint32_t id,
-                 const std::vector<std::uint8_t>& payload) {
+void PutEbmlLeaf(std::vector<std::uint8_t>& out, std::uint32_t id, const std::vector<std::uint8_t>& payload) {
     PutEbmlId(out, id);
     PutEbmlSize(out, payload.size());
     out.insert(out.end(), payload.begin(), payload.end());
@@ -148,36 +153,36 @@ std::vector<std::uint8_t> BeBytes(std::uint64_t value, int bytes) {
 
 std::vector<std::uint8_t> MakeTrackEntry(int index) {
     std::vector<std::uint8_t> body;
-    PutEbmlLeaf(body, 0xD7, {static_cast<std::uint8_t>((index % 250) + 1)});  // TrackNumber
-    PutEbmlLeaf(body, 0x83, {0x01});                                          // TrackType = video
-    PutEbmlLeaf(body, 0xB0, BeBytes(1920, 4));                                // PixelWidth
-    PutEbmlLeaf(body, 0xBA, BeBytes(1080, 4));                                // PixelHeight
-    PutEbmlLeaf(body, 0x23E383, BeBytes(40000000ULL, 8));                     // DefaultDuration
-    PutEbmlLeaf(body, 0x536E, {0x74, 0x72, 0x61, 0x63, 0x6B});                // TrackName
+    PutEbmlLeaf(body, 0xD7, {static_cast<std::uint8_t>((index % 250) + 1)}); // TrackNumber
+    PutEbmlLeaf(body, 0x83, {0x01});                                         // TrackType = video
+    PutEbmlLeaf(body, 0xB0, BeBytes(1920, 4));                               // PixelWidth
+    PutEbmlLeaf(body, 0xBA, BeBytes(1080, 4));                               // PixelHeight
+    PutEbmlLeaf(body, 0x23E383, BeBytes(40000000ULL, 8));                    // DefaultDuration
+    PutEbmlLeaf(body, 0x536E, {0x74, 0x72, 0x61, 0x63, 0x6B});               // TrackName
 
     std::vector<std::uint8_t> entry;
-    PutEbmlId(entry, 0xAE);  // TrackEntry
+    PutEbmlId(entry, 0xAE); // TrackEntry
     PutEbmlSize(entry, body.size());
     entry.insert(entry.end(), body.begin(), body.end());
     return entry;
 }
 
 std::vector<std::uint8_t> MakeMkv(int tracks, int extra_elements) {
-    std::vector<std::uint8_t> out = {0x1A, 0x45, 0xDF, 0xA3};  // EBML header id
-    out.push_back(0x83);                                        // size = 3 (1 字节 VINT)
-    out.insert(out.end(), {0xEC, 0x81, 0x00});                  // 载荷就是一个 Void 元素
+    std::vector<std::uint8_t> out = {0x1A, 0x45, 0xDF, 0xA3}; // EBML header id
+    out.push_back(0x83);                                      // size = 3 (1 字节 VINT)
+    out.insert(out.end(), {0xEC, 0x81, 0x00});                // 载荷就是一个 Void 元素
 
     std::vector<std::uint8_t> tracks_body;
     for (int i = 0; i < tracks; ++i) {
         const auto entry = MakeTrackEntry(i);
         tracks_body.insert(tracks_body.end(), entry.begin(), entry.end());
     }
-    PutEbmlId(out, 0x1654AE6B);  // Tracks
+    PutEbmlId(out, 0x1654AE6B); // Tracks
     PutEbmlSize(out, tracks_body.size());
     out.insert(out.end(), tracks_body.begin(), tracks_body.end());
 
     for (int i = 0; i < extra_elements; ++i) {
-        out.insert(out.end(), {0xEC, 0x81, 0x00});  // Void: id=EC, size=1, 1 字节载荷
+        out.insert(out.end(), {0xEC, 0x81, 0x00}); // Void: id=EC, size=1, 1 字节载荷
     }
     return out;
 }
@@ -204,7 +209,8 @@ bool WriteHlsPackage(const fs::path& root, int playlists, int segs) {
         const std::string dir = "v" + std::to_string(i);
         master += "#EXT-X-STREAM-INF:BANDWIDTH=" + std::to_string(800000 + i * 1000) +
                   ",RESOLUTION=640x360,CODECS=\"avc1.4d401e\"\n" + dir + "/index.m3u8\n";
-        if (!WriteText(root / dir / "index.m3u8", MakeMediaPlaylist(segs))) return false;
+        if (!WriteText(root / dir / "index.m3u8", MakeMediaPlaylist(segs)))
+            return false;
     }
     return WriteText(root / "master.m3u8", master);
 }
@@ -258,9 +264,7 @@ Outcome AnalyzeOnce(const QString& path, const std::shared_ptr<std::atomic<bool>
     // 分析器这一侧已经不认 Qt 了（去 Qt 之后签名是 const std::string&），
     // 所以 QString 只在这一条边界函数上收口，转成 std::string 再喂进去。
     o.ok = analyzer.Analyze(path.toStdString(), o.result, cancel, on_stage);
-    o.elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                       std::chrono::steady_clock::now() - t0)
-                       .count();
+    o.elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
     return o;
 }
 
@@ -271,7 +275,8 @@ Outcome AnalyzeOnce(const QString& path, const std::shared_ptr<std::atomic<bool>
 void WaitUntilDeadline(const std::chrono::steady_clock::time_point& deadline) {
     constexpr auto kSpinWindow = std::chrono::milliseconds(3);
     const auto now = std::chrono::steady_clock::now();
-    if (deadline - now > kSpinWindow) std::this_thread::sleep_for(deadline - now - kSpinWindow);
+    if (deadline - now > kSpinWindow)
+        std::this_thread::sleep_for(deadline - now - kSpinWindow);
     while (std::chrono::steady_clock::now() < deadline) {
         /* 自旋逼近, 不用 yield: yield 在 Windows 上可能让出整个时间片 */
     }
@@ -336,7 +341,8 @@ struct Probe {
 //                太小会把那一小段算成漏检而误报; 太大则把尾部最后那两步整个划到"不作数"
 //                里, 能测的洞就少了。
 bool LandedMidParse(const Probe& p) {
-    if (!p.outcome.ok) return true;
+    if (!p.outcome.ok)
+        return true;
     const long long margin = std::max<long long>(10, p.outcome.elapsed_ms * 3 / 200);
     return p.delay_ms + margin < p.outcome.elapsed_ms;
 }
@@ -348,15 +354,13 @@ bool LandedMidParse(const Probe& p) {
 using DeepEnough = std::function<bool(const model::ContainerStructureResult&)>;
 
 // 四条路径共用的断言
-void ExpectNoResult(const Outcome& o, model::ContainerFormat expected, const char* label,
-                    const char* when) {
+void ExpectNoResult(const Outcome& o, model::ContainerFormat expected, const char* label, const char* when) {
     EXPECT_FALSE(o.ok) << label << "/" << when << ": 取消之后 Analyze 必须返回 false";
     EXPECT_FALSE(o.result.valid) << label << "/" << when << ": 取消之后绝不能产出有效结果";
     // format 还等于预期值, 同时证明两件事: 取消确实发生在格式分派之后(越过入口
     // 守卫), 且这条路径没有回退 FFmpeg —— 回退成功会把 format 改成 FFmpeg_Generic。
     EXPECT_EQ(o.result.format, expected) << label << "/" << when << ": 取消后不得回退 FFmpeg";
-    EXPECT_FALSE(o.result.error_message.empty())
-        << label << "/" << when << ": 取消必须给出可读的说明";
+    EXPECT_FALSE(o.result.error_message.empty()) << label << "/" << when << ": 取消必须给出可读的说明";
 }
 
 // @param deep_enough 尾部深处的进度痕迹谓词, 用来证明扫描确实覆盖到了那几步。
@@ -375,19 +379,20 @@ void ExpectCancelPath(const QString& path, model::ContainerFormat expected, cons
     ASSERT_EQ(control.result.format, expected);
 
     std::string trace;
-    int mid_parse = 0;         // 已证明落在中途的探测数
-    int deep_mid_parse = 0;    // 其中进到尾部深处、且确实落在中途的探测数
+    int mid_parse = 0;      // 已证明落在中途的探测数
+    int deep_mid_parse = 0; // 其中进到尾部深处、且确实落在中途的探测数
 
     auto run = [&](long long delay_ms) {
         Probe p;
         p.delay_ms = std::max<long long>(1, delay_ms);
         p.outcome = AnalyzeAndCancelMidway(path, static_cast<int>(p.delay_ms));
-        trace += "    " + std::to_string(p.delay_ms) + "ms -> " +
-                 (p.outcome.ok ? "解析跑完了" : "被中断") + " (本次耗时 " +
-                 std::to_string(p.outcome.elapsed_ms) + "ms)\n";
-        if (!LandedMidParse(p)) return p;  // 取消到得太晚, 这一发不作数
+        trace += "    " + std::to_string(p.delay_ms) + "ms -> " + (p.outcome.ok ? "解析跑完了" : "被中断") +
+                 " (本次耗时 " + std::to_string(p.outcome.elapsed_ms) + "ms)\n";
+        if (!LandedMidParse(p))
+            return p; // 取消到得太晚, 这一发不作数
         ++mid_parse;
-        if (deep_enough(p.outcome.result)) ++deep_mid_parse;
+        if (deep_enough(p.outcome.result))
+            ++deep_mid_parse;
         ExpectNoResult(p.outcome, expected, label, "取消");
         return p;
     };
@@ -409,12 +414,14 @@ void ExpectCancelPath(const QString& path, model::ContainerFormat expected, cons
     //    就用它实测出来的耗时当新基准再往前贴一次, 逐轮逼近。
     long long est = full_ms;
     for (int i = 0; i < 5; ++i) {
-        const long long back_ms = 15 + 20 * i;  // 15 / 35 / 55 / 75 / 95ms
-        if (est <= back_ms + 1) break;
+        const long long back_ms = 15 + 20 * i; // 15 / 35 / 55 / 75 / 95ms
+        if (est <= back_ms + 1)
+            break;
         const Probe p = run(est - back_ms);
         // 被中断 -> 这一发有效, 继续往更深处贴; 落在中途却跑完 -> run() 已经报错, 收工;
         // 取消到得太晚 -> 用本次实测收缩基准。
-        if (p.outcome.ok && !LandedMidParse(p)) est = p.outcome.elapsed_ms;
+        if (p.outcome.ok && !LandedMidParse(p))
+            est = p.outcome.elapsed_ms;
     }
 
     // 3) 二分往深处捞。收敛过程中凡是谓词为真的探测都是深部覆盖点。上界用基准耗时:
@@ -423,28 +430,35 @@ void ExpectCancelPath(const QString& path, model::ContainerFormat expected, cons
     long long hi = full_ms;
     for (int i = 0; i < 10 && lo < hi; ++i) {
         const long long mid = lo + (hi - lo) / 2;
-        if (mid <= lo) break;
+        if (mid <= lo)
+            break;
         const Probe p = run(mid);
-        if (deep_enough(p.outcome.result)) hi = mid;
-        else lo = mid;
+        if (deep_enough(p.outcome.result))
+            hi = mid;
+        else
+            lo = mid;
     }
 
-    EXPECT_GE(mid_parse, 3) << label << ": 落在解析中途的探测太少(基准耗时 " << full_ms
-                            << "ms), 样本规模需要调大。\n" << trace;
-    EXPECT_GE(deep_mid_parse, 1)
-        << label << ": 没有一发取消既落在解析中途、又进到尾部深处 —— 头部解析器自己的循环"
-                    "本来就有检查, 只测到它等于什么都没测。调大样本规模, 别放宽判定。\n"
-        << trace;
+    EXPECT_GE(mid_parse, 3) << label << ": 落在解析中途的探测太少(基准耗时 " << full_ms << "ms), 样本规模需要调大。\n"
+                            << trace;
+    EXPECT_GE(deep_mid_parse, 1) << label
+                                 << ": 没有一发取消既落在解析中途、又进到尾部深处 —— 头部解析器自己的循环"
+                                    "本来就有检查, 只测到它等于什么都没测。调大样本规模, 别放宽判定。\n"
+                                 << trace;
 }
 
 // 尾部痕迹(MP4 / EBML): 通用结构树由头部解析器成功之后的建树阶段填, 树非空 = 已越过
 // 头部解析器(Mp4BoxAnalyzer / EbmlAnalyzer), 后面是建树 / 提取流信息 / 计数递归。
-bool TreeStarted(const model::ContainerStructureResult& r) { return !r.element_tree.empty(); }
+bool TreeStarted(const model::ContainerStructureResult& r) {
+    return !r.element_tree.empty();
+}
 
 // 尾部痕迹(流媒体): 清单阶段的产物被置为有效 = 已越过清单解析, 后面是分片校验 / 建树。
-bool ManifestDone(const model::ContainerStructureResult& r) { return r.streaming_package.valid; }
+bool ManifestDone(const model::ContainerStructureResult& r) {
+    return r.streaming_package.valid;
+}
 
-}  // namespace
+} // namespace
 
 // --- MP4 ---
 
@@ -452,8 +466,7 @@ TEST(ContainerCancelPathTest, Mp4CancelYieldsNoResult) {
     const fs::path dir = MakeTempDir("mp4");
     const fs::path path = dir / "big.mp4";
     ASSERT_TRUE(WriteBytes(path, MakeMp4(50000)));
-    ExpectCancelPath(QString::fromStdString(path.string()), model::ContainerFormat::MP4, "MP4",
-                     TreeStarted);
+    ExpectCancelPath(QString::fromStdString(path.string()), model::ContainerFormat::MP4, "MP4", TreeStarted);
 }
 
 // --- MKV / WebM (EBML) ---
@@ -469,8 +482,7 @@ TEST(ContainerCancelPathTest, EbmlCancelYieldsNoResult) {
     const fs::path dir = MakeTempDir("mkv");
     const fs::path path = dir / "big.mkv";
     ASSERT_TRUE(WriteBytes(path, MakeMkv(20000, 20000)));
-    ExpectCancelPath(QString::fromStdString(path.string()), model::ContainerFormat::MKV, "MKV",
-                     TreeStarted);
+    ExpectCancelPath(QString::fromStdString(path.string()), model::ContainerFormat::MKV, "MKV", TreeStarted);
 }
 
 // --- HLS ---
@@ -478,8 +490,8 @@ TEST(ContainerCancelPathTest, EbmlCancelYieldsNoResult) {
 TEST(ContainerCancelPathTest, HlsCancelYieldsNoResult) {
     const fs::path dir = MakeTempDir("hls");
     ASSERT_TRUE(WriteHlsPackage(dir, 4, 3000));
-    ExpectCancelPath(QString::fromStdString((dir / "master.m3u8").string()),
-                     model::ContainerFormat::HLS, "HLS", ManifestDone);
+    ExpectCancelPath(QString::fromStdString((dir / "master.m3u8").string()), model::ContainerFormat::HLS, "HLS",
+                     ManifestDone);
 }
 
 // --- DASH ---
@@ -488,8 +500,7 @@ TEST(ContainerCancelPathTest, DashCancelYieldsNoResult) {
     const fs::path dir = MakeTempDir("dash");
     const fs::path path = dir / "index.mpd";
     ASSERT_TRUE(WriteText(path, MakeDashMpd(20000)));
-    ExpectCancelPath(QString::fromStdString(path.string()), model::ContainerFormat::DASH, "DASH",
-                     ManifestDone);
+    ExpectCancelPath(QString::fromStdString(path.string()), model::ContainerFormat::DASH, "DASH", ManifestDone);
 }
 
 // --- 尾部阶段的确定性取消: Stage 回调测试接缝 ---
@@ -508,7 +519,8 @@ void ExpectCancelAtTailStage(const QString& path, model::ContainerFormat expecte
     auto cancel = std::make_shared<std::atomic<bool>>(false);
     bool reached = false;
     const Outcome o = AnalyzeOnce(path, cancel, [&](TailStage stage) {
-        if (stage != target) return;
+        if (stage != target)
+            return;
         reached = true;
         cancel->store(true, std::memory_order_release);
     });
@@ -518,15 +530,12 @@ void ExpectCancelAtTailStage(const QString& path, model::ContainerFormat expecte
     ExpectNoResult(o, expected, label, "阶段边界取消");
 }
 
-void ExpectAllTailStagesCancel(const QString& path, model::ContainerFormat expected,
-                               const char* label) {
+void ExpectAllTailStagesCancel(const QString& path, model::ContainerFormat expected, const char* label) {
     // 对照组: 小样本本身必须能解析完, 否则下面的 false 说明不了问题。
     const Outcome control = AnalyzeOnce(path, nullptr);
-    ASSERT_TRUE(control.ok) << label << ": 对照组必须解析成功(错误说明: "
-                            << control.result.error_message << ")";
+    ASSERT_TRUE(control.ok) << label << ": 对照组必须解析成功(错误说明: " << control.result.error_message << ")";
     ASSERT_TRUE(control.result.valid);
-    for (const TailStage stage : {TailStage::kBuildTree, TailStage::kExtractStreamInfo,
-                                  TailStage::kElementCount}) {
+    for (const TailStage stage : {TailStage::kBuildTree, TailStage::kExtractStreamInfo, TailStage::kElementCount}) {
         ExpectCancelAtTailStage(path, expected, stage, label);
     }
 }
@@ -535,16 +544,14 @@ TEST(ContainerCancelPathTest, Mp4CancelAtTailStagesYieldsNoResult) {
     const fs::path dir = MakeTempDir("mp4_stage");
     const fs::path path = dir / "small.mp4";
     ASSERT_TRUE(WriteBytes(path, MakeMp4(8)));
-    ExpectAllTailStagesCancel(QString::fromStdString(path.string()), model::ContainerFormat::MP4,
-                              "MP4/尾阶段");
+    ExpectAllTailStagesCancel(QString::fromStdString(path.string()), model::ContainerFormat::MP4, "MP4/尾阶段");
 }
 
 TEST(ContainerCancelPathTest, EbmlCancelAtTailStagesYieldsNoResult) {
     const fs::path dir = MakeTempDir("mkv_stage");
     const fs::path path = dir / "small.mkv";
     ASSERT_TRUE(WriteBytes(path, MakeMkv(6, 6)));
-    ExpectAllTailStagesCancel(QString::fromStdString(path.string()), model::ContainerFormat::MKV,
-                              "MKV/尾阶段");
+    ExpectAllTailStagesCancel(QString::fromStdString(path.string()), model::ContainerFormat::MKV, "MKV/尾阶段");
 }
 
 // --- 关闭流程: 进门就是取消态 ---

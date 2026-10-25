@@ -23,10 +23,15 @@ namespace {
 
 class AVFormatContextGuard {
 public:
-    AVFormatContextGuard() : ctx_(avformat_alloc_context()) {}
-    ~AVFormatContextGuard() { avformat_close_input(&ctx_); }
+    AVFormatContextGuard() : ctx_(avformat_alloc_context()) {
+    }
+    ~AVFormatContextGuard() {
+        avformat_close_input(&ctx_);
+    }
 
-    AVFormatContext* get() { return ctx_; }
+    AVFormatContext* get() {
+        return ctx_;
+    }
 
 private:
     AVFormatContext* ctx_ = nullptr;
@@ -62,8 +67,7 @@ TEST(MediaInfoFormatTest, FormatsGeneralAndStreamSectionsFromContext) {
     audio->codecpar->codec_id = AV_CODEC_ID_AAC;
     audio->codecpar->sample_rate = 48000;
 
-    const std::string text =
-        videoeye::MediaInfoAnalyzer::FormatFromContext(format.get(), "D:/media/sample.mp4");
+    const std::string text = videoeye::MediaInfoAnalyzer::FormatFromContext(format.get(), "D:/media/sample.mp4");
 
     ASSERT_FALSE(text.empty());
     EXPECT_TRUE(Contains(text, "General"));

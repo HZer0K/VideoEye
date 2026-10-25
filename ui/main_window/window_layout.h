@@ -17,8 +17,8 @@ namespace ui {
 // 播放区布局预设（与 PlayerPanel::LayoutPreset 同义，这里不 include 那个头 ——
 // 本文件要给纯逻辑单测用，不该拖进整个播放面板）。
 enum class WindowLayoutPreset {
-    Monitor,   // 播放区占大头（58%）
-    Analysis,  // 播放区占小头（30%）
+    Monitor,  // 播放区占大头（58%）
+    Analysis, // 播放区占小头（30%）
 };
 
 // 可用高度低于该值时按「分析」布局起手。
@@ -28,12 +28,12 @@ constexpr int kSmallScreenHeightThreshold = 860;
 
 // 最小尺寸的输入：各条栏与两个内容区的实测高度。
 struct WindowLayoutMetrics {
-    int app_bar_height = 0;      // 顶部应用栏
-    int menu_bar_height = 0;     // 菜单栏
-    int status_bar_height = 0;   // 状态栏
-    int content_min_height = 0;  // 内容栈的最小高度（分析页自己报）
-    int player_min_height = 0;   // 播放区的最小高度（收起时为 0）
-    int sidebar_width = 0;       // 侧栏当前宽度（0 表示还没有侧栏）
+    int app_bar_height = 0;     // 顶部应用栏
+    int menu_bar_height = 0;    // 菜单栏
+    int status_bar_height = 0;  // 状态栏
+    int content_min_height = 0; // 内容栈的最小高度（分析页自己报）
+    int player_min_height = 0;  // 播放区的最小高度（收起时为 0）
+    int sidebar_width = 0;      // 侧栏当前宽度（0 表示还没有侧栏）
 };
 
 // 基础最小宽度：侧栏之外的主内容区。低于这个宽度分析表格就横着滚了。
@@ -42,9 +42,8 @@ constexpr int kBaseMinimumWidth = 900;
 inline QSize MinimumWindowSize(const WindowLayoutMetrics& metrics) {
     // 高度是「上面几条栏 + 内容区最小 + 播放区最小」的硬加总；播放区收起时
     // player_min_height 为 0，于是窗口可以缩得更矮（这是刻意的）。
-    const int min_height = metrics.app_bar_height + metrics.menu_bar_height +
-                           metrics.status_bar_height + metrics.content_min_height +
-                           metrics.player_min_height;
+    const int min_height = metrics.app_bar_height + metrics.menu_bar_height + metrics.status_bar_height +
+                           metrics.content_min_height + metrics.player_min_height;
     return QSize(kBaseMinimumWidth + metrics.sidebar_width, min_height);
 }
 
@@ -63,5 +62,5 @@ inline bool IsBelowMinimum(const QSize& current, const QSize& minimum) {
     return current.width() < minimum.width() || current.height() < minimum.height();
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

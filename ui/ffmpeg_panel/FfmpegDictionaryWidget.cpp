@@ -10,8 +10,7 @@
 namespace videoeye {
 namespace ui {
 
-FfmpegDictionaryWidget::FfmpegDictionaryWidget(QWidget* parent)
-    : QWidget(parent) {
+FfmpegDictionaryWidget::FfmpegDictionaryWidget(QWidget* parent) : QWidget(parent) {
     SetupUi();
     // 词条是静态表，构造时就能列出全部，不必等页面注入任何东西。
     RefreshDictionary();
@@ -30,8 +29,7 @@ void FfmpegDictionaryWidget::SetupUi() {
 
     search_edit_ = new QLineEdit(box);
     search_edit_->setPlaceholderText(tr("搜索参数或滤镜，如 crf / scale / 码率"));
-    connect(search_edit_, &QLineEdit::textChanged,
-            this, &FfmpegDictionaryWidget::OnSearchTextChanged);
+    connect(search_edit_, &QLineEdit::textChanged, this, &FfmpegDictionaryWidget::OnSearchTextChanged);
     layout->addWidget(search_edit_);
 
     category_combo_ = new QComboBox(box);
@@ -39,19 +37,18 @@ void FfmpegDictionaryWidget::SetupUi() {
     for (const QString& name : ffmpeg::FfmpegCommandCatalog::CategoryNames()) {
         category_combo_->addItem(name);
     }
-    connect(category_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &FfmpegDictionaryWidget::OnCategoryChanged);
+    connect(category_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &FfmpegDictionaryWidget::OnCategoryChanged);
     layout->addWidget(category_combo_);
 
     dict_list_ = new QListWidget(box);
     dict_list_->setAlternatingRowColors(true);
-    connect(dict_list_, &QListWidget::currentItemChanged,
-            this, [this](QListWidgetItem*, QListWidgetItem*) { OnDictionaryCurrentChanged(); });
+    connect(dict_list_, &QListWidget::currentItemChanged, this,
+            [this](QListWidgetItem*, QListWidgetItem*) { OnDictionaryCurrentChanged(); });
     layout->addWidget(dict_list_, 1);
 
     dict_insert_button_ = new QPushButton(tr("插入到命令"), box);
-    connect(dict_insert_button_, &QPushButton::clicked,
-            this, &FfmpegDictionaryWidget::OnInsertEntry);
+    connect(dict_insert_button_, &QPushButton::clicked, this, &FfmpegDictionaryWidget::OnInsertEntry);
     layout->addWidget(dict_insert_button_);
 
     dict_detail_ = new QTextBrowser(box);
@@ -107,9 +104,8 @@ void FfmpegDictionaryWidget::OnDictionaryCurrentChanged() {
 
 void FfmpegDictionaryWidget::ShowEntryDetail(const ffmpeg::FfmpegCatalogEntry* entry) {
     if (entry == nullptr) {
-        dict_detail_->setHtml(
-            QStringLiteral("<p style='color:%1'>没有匹配的词条。</p>")
-                .arg(QLatin1String(theme::color::kTextSecondary)));
+        dict_detail_->setHtml(QStringLiteral("<p style='color:%1'>没有匹配的词条。</p>")
+                                  .arg(QLatin1String(theme::color::kTextSecondary)));
         dict_insert_button_->setEnabled(false);
         return;
     }
@@ -127,8 +123,7 @@ void FfmpegDictionaryWidget::ShowEntryDetail(const ffmpeg::FfmpegCatalogEntry* e
                     .arg(entry->typical_values.join(QStringLiteral(" / ")).toHtmlEscaped());
     }
     if (!entry->related.isEmpty()) {
-        html += QStringLiteral("<p><b>相关:</b> %1</p>")
-                    .arg(entry->related.join(QStringLiteral("、")).toHtmlEscaped());
+        html += QStringLiteral("<p><b>相关:</b> %1</p>").arg(entry->related.join(QStringLiteral("、")).toHtmlEscaped());
     }
     if (entry->kind == ffmpeg::FfmpegEntryKind::Filter) {
         html += QStringLiteral("<p style='color:%1'>滤镜只能出现在 -vf / -af / -filter_complex 里，"
@@ -147,9 +142,8 @@ void FfmpegDictionaryWidget::OnInsertEntry() {
     QString snippet = entry->insert_text;
     if (entry->kind == ffmpeg::FfmpegEntryKind::Filter) {
         // 滤镜自己不能独立出现，按它所属的分类补上 -vf / -af
-        const QString prefix = (entry->category == ffmpeg::FfmpegEntryCategory::Audio)
-                                   ? QStringLiteral("-af ")
-                                   : QStringLiteral("-vf ");
+        const QString prefix =
+            (entry->category == ffmpeg::FfmpegEntryCategory::Audio) ? QStringLiteral("-af ") : QStringLiteral("-vf ");
         snippet = prefix + snippet;
     }
     if (!snippet.endsWith(QLatin1Char(' '))) {
@@ -159,5 +153,5 @@ void FfmpegDictionaryWidget::OnInsertEntry() {
     emit InsertRequested(snippet);
 }
 
-}  // namespace ui
-}  // namespace videoeye
+} // namespace ui
+} // namespace videoeye

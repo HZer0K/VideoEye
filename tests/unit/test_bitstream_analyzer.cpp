@@ -28,17 +28,15 @@ constexpr const char* kCodecCorpusDir = VIDEOEYE_CODEC_CORPUS_DIR;
 
 std::vector<uint8_t> ReadCodecCorpus(const std::string& filename) {
     std::ifstream in(std::string(kCodecCorpusDir) + "/" + filename, std::ios::binary);
-    return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)),
-                                std::istreambuf_iterator<char>());
+    return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
 // 与 tests/unit/test_h264_bitstream_parser.cpp 同一套真实 SPS：
 // High / Level 3.1 / 1280x720 / 4:2:0 8bit / VUI(timing + colour)，
 // 由 _smoke/gen_h264_sps.py 逐位生成。
 const std::vector<uint8_t> kSpsHigh720p = {
-    0x64, 0x00, 0x1F, 0xAC, 0x72, 0x14, 0x05, 0x00, 0x5B, 0xA6, 0xA0, 0x20,
-    0x20, 0x28, 0x00, 0x00, 0x1F, 0x40, 0x00, 0x07, 0x53, 0x04, 0x78, 0xB1,
-    0x6C, 0xB0,
+    0x64, 0x00, 0x1F, 0xAC, 0x72, 0x14, 0x05, 0x00, 0x5B, 0xA6, 0xA0, 0x20, 0x20,
+    0x28, 0x00, 0x00, 0x1F, 0x40, 0x00, 0x07, 0x53, 0x04, 0x78, 0xB1, 0x6C, 0xB0,
 };
 
 // High 10 / 1920x1088，frame crop bottom 4（4:2:0 的 CropUnitY=2）→ 1920x1080。
@@ -50,15 +48,13 @@ const std::vector<uint8_t> kPps = {0xEB, 0x4B, 0x2C, 0x80};
 
 // Main 10 / 1920x1080 / 10bit / VUI(BT.2020 + PQ)，用于打通 hvcC -> SPS -> 摘要。
 const std::vector<uint8_t> kHevcVpsMain10 = {
-    0x0C, 0x01, 0xFF, 0xFF, 0x02, 0x00, 0x00, 0x03, 0x00, 0x00, 0x90, 0x00,
-    0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x99, 0x27, 0x03, 0x00, 0x00, 0x03,
-    0x03, 0xE8, 0x00, 0x00, 0xEA, 0x60, 0x60,
+    0x0C, 0x01, 0xFF, 0xFF, 0x02, 0x00, 0x00, 0x03, 0x00, 0x00, 0x90, 0x00, 0x00, 0x03, 0x00, 0x00,
+    0x03, 0x00, 0x99, 0x27, 0x03, 0x00, 0x00, 0x03, 0x03, 0xE8, 0x00, 0x00, 0xEA, 0x60, 0x60,
 };
 const std::vector<uint8_t> kHevcSpsMain10 = {
-    0x01, 0x02, 0x00, 0x00, 0x03, 0x00, 0x00, 0x90, 0x00, 0x00, 0x03, 0x00,
-    0x00, 0x03, 0x00, 0x99, 0xA0, 0x03, 0xC0, 0x80, 0x10, 0xE4, 0xD9, 0x49,
-    0xE4, 0x91, 0xB6, 0x4B, 0xB9, 0xA8, 0x48, 0x80, 0x4D, 0xB2, 0x80, 0x00,
-    0x01, 0xF4, 0x00, 0x00, 0x75, 0x30, 0x04,
+    0x01, 0x02, 0x00, 0x00, 0x03, 0x00, 0x00, 0x90, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00,
+    0x99, 0xA0, 0x03, 0xC0, 0x80, 0x10, 0xE4, 0xD9, 0x49, 0xE4, 0x91, 0xB6, 0x4B, 0xB9, 0xA8,
+    0x48, 0x80, 0x4D, 0xB2, 0x80, 0x00, 0x01, 0xF4, 0x00, 0x00, 0x75, 0x30, 0x04,
 };
 const std::vector<uint8_t> kHevcPpsMain10 = {0xC0, 0x35, 0x3E, 0x0C, 0xC6, 0x80};
 
@@ -66,52 +62,41 @@ const std::vector<uint8_t> kHevcPpsMain10 = {0xC0, 0x35, 0x3E, 0x0C, 0xC6, 0x80}
 // 与 tests/unit/test_vvc_bitstream_parser.cpp 同款；这里是 VVC 能力提升与容器比对
 // 的判据来源（真实编码器输出，不是"生成器和解析器互相理解错"的合成数据）。
 const std::vector<uint8_t> kVvcCRealLibvvenc = {
-    0xFF, 0x00, 0x65, 0x5F, 0x01, 0x02, 0x23, 0x80, 0x00, 0x00, 0x02, 0x80,
-    0x01, 0x68, 0x00, 0x00, 0x02, 0x8F, 0x00, 0x01, 0x00, 0xF3, 0x00, 0x79,
-    0x00, 0xAB, 0x02, 0x23, 0x80, 0x00, 0x00, 0x80, 0x14, 0x08, 0x05, 0xA4,
-    0x6A, 0x00, 0x73, 0x7A, 0x21, 0x34, 0x52, 0x7B, 0xCE, 0x13, 0x65, 0x63,
-    0x04, 0x08, 0x27, 0x00, 0x13, 0x10, 0x10, 0x41, 0x04, 0x20, 0x61, 0x08,
-    0x42, 0xC4, 0x42, 0x16, 0x48, 0x42, 0xD4, 0x21, 0x7A, 0x3D, 0x5A, 0x92,
-    0xF2, 0x49, 0xA9, 0x2C, 0x91, 0x16, 0xA2, 0x2F, 0x11, 0x26, 0xA2, 0x24,
-    0x52, 0x44, 0x49, 0x92, 0x22, 0x4D, 0x46, 0x58, 0x88, 0x42, 0xC9, 0x08,
-    0x5A, 0x84, 0x2F, 0x08, 0x49, 0xA8, 0x42, 0x45, 0x24, 0x21, 0x26, 0x48,
-    0x42, 0x5D, 0x49, 0x08, 0x48, 0x48, 0x88, 0x42, 0x45, 0x11, 0x08, 0x49,
-    0x88, 0x84, 0x25, 0xD4, 0x44, 0x21, 0x22, 0x8C, 0x84, 0x24, 0xC6, 0x42,
-    0x12, 0xEA, 0x32, 0x10, 0xA0, 0x41, 0x61, 0x08, 0x20, 0x31, 0x10, 0x81,
-    0x92, 0x20, 0xD4, 0x80, 0x4C, 0xC1, 0x04, 0x10, 0x58, 0x40, 0x08, 0x2C,
-    0x40, 0x20, 0x21, 0x02, 0x01, 0x01, 0x50, 0x81, 0x00, 0x80, 0xD2, 0x10,
-    0x20, 0x10, 0x16, 0x20, 0x40, 0x20, 0x22, 0x08, 0x04, 0x05, 0x90, 0x40,
-    0x20, 0x24, 0x20, 0x10, 0x32, 0x02, 0x02, 0x21, 0x01, 0x01, 0x64, 0x20,
-    0x20, 0x24, 0x40, 0x40, 0xD0, 0x20, 0x24, 0x81, 0x03, 0x82, 0x06, 0x20,
-    0x10, 0xB2, 0x04, 0x08, 0x84, 0x08, 0x16, 0x42, 0x04, 0x09, 0x10, 0x20,
-    0xD0, 0x40, 0x92, 0x08, 0x38, 0x41, 0x90, 0x22, 0xD0, 0x82, 0x48, 0x43,
-    0x88, 0x68, 0x4B, 0x91, 0xCA, 0x81, 0x05, 0x84, 0x00, 0x82, 0xC4, 0x02,
-    0x02, 0x10, 0x20, 0x10, 0x15, 0x08, 0x10, 0x08, 0x1F, 0x7A, 0x5D, 0x8A,
-    0xCE, 0x48, 0x00, 0x00, 0x03, 0x00, 0x08, 0x00, 0x00, 0x03, 0x00, 0xF0,
-    0xC4, 0x90, 0x00, 0x01, 0x00, 0x0C, 0x00, 0x81, 0x00, 0x00, 0x0A, 0x04,
-    0x02, 0xD2, 0x22, 0x41, 0xFB, 0x82,
+    0xFF, 0x00, 0x65, 0x5F, 0x01, 0x02, 0x23, 0x80, 0x00, 0x00, 0x02, 0x80, 0x01, 0x68, 0x00, 0x00, 0x02, 0x8F, 0x00,
+    0x01, 0x00, 0xF3, 0x00, 0x79, 0x00, 0xAB, 0x02, 0x23, 0x80, 0x00, 0x00, 0x80, 0x14, 0x08, 0x05, 0xA4, 0x6A, 0x00,
+    0x73, 0x7A, 0x21, 0x34, 0x52, 0x7B, 0xCE, 0x13, 0x65, 0x63, 0x04, 0x08, 0x27, 0x00, 0x13, 0x10, 0x10, 0x41, 0x04,
+    0x20, 0x61, 0x08, 0x42, 0xC4, 0x42, 0x16, 0x48, 0x42, 0xD4, 0x21, 0x7A, 0x3D, 0x5A, 0x92, 0xF2, 0x49, 0xA9, 0x2C,
+    0x91, 0x16, 0xA2, 0x2F, 0x11, 0x26, 0xA2, 0x24, 0x52, 0x44, 0x49, 0x92, 0x22, 0x4D, 0x46, 0x58, 0x88, 0x42, 0xC9,
+    0x08, 0x5A, 0x84, 0x2F, 0x08, 0x49, 0xA8, 0x42, 0x45, 0x24, 0x21, 0x26, 0x48, 0x42, 0x5D, 0x49, 0x08, 0x48, 0x48,
+    0x88, 0x42, 0x45, 0x11, 0x08, 0x49, 0x88, 0x84, 0x25, 0xD4, 0x44, 0x21, 0x22, 0x8C, 0x84, 0x24, 0xC6, 0x42, 0x12,
+    0xEA, 0x32, 0x10, 0xA0, 0x41, 0x61, 0x08, 0x20, 0x31, 0x10, 0x81, 0x92, 0x20, 0xD4, 0x80, 0x4C, 0xC1, 0x04, 0x10,
+    0x58, 0x40, 0x08, 0x2C, 0x40, 0x20, 0x21, 0x02, 0x01, 0x01, 0x50, 0x81, 0x00, 0x80, 0xD2, 0x10, 0x20, 0x10, 0x16,
+    0x20, 0x40, 0x20, 0x22, 0x08, 0x04, 0x05, 0x90, 0x40, 0x20, 0x24, 0x20, 0x10, 0x32, 0x02, 0x02, 0x21, 0x01, 0x01,
+    0x64, 0x20, 0x20, 0x24, 0x40, 0x40, 0xD0, 0x20, 0x24, 0x81, 0x03, 0x82, 0x06, 0x20, 0x10, 0xB2, 0x04, 0x08, 0x84,
+    0x08, 0x16, 0x42, 0x04, 0x09, 0x10, 0x20, 0xD0, 0x40, 0x92, 0x08, 0x38, 0x41, 0x90, 0x22, 0xD0, 0x82, 0x48, 0x43,
+    0x88, 0x68, 0x4B, 0x91, 0xCA, 0x81, 0x05, 0x84, 0x00, 0x82, 0xC4, 0x02, 0x02, 0x10, 0x20, 0x10, 0x15, 0x08, 0x10,
+    0x08, 0x1F, 0x7A, 0x5D, 0x8A, 0xCE, 0x48, 0x00, 0x00, 0x03, 0x00, 0x08, 0x00, 0x00, 0x03, 0x00, 0xF0, 0xC4, 0x90,
+    0x00, 0x01, 0x00, 0x0C, 0x00, 0x81, 0x00, 0x00, 0x0A, 0x04, 0x02, 0xD2, 0x22, 0x41, 0xFB, 0x82,
 };
 
 // 拼一份真实 avcC（FFmpeg 交出的 extradata 形态；NAL 里带 1 字节 header）
-std::vector<uint8_t> MakeAvcCWithSps(const std::vector<uint8_t>& sps_payload,
-                                     uint8_t profile_idc,
-                                     uint8_t level_idc) {
+std::vector<uint8_t> MakeAvcCWithSps(const std::vector<uint8_t>& sps_payload, uint8_t profile_idc, uint8_t level_idc) {
     std::vector<uint8_t> sps;
-    sps.push_back(0x67);  // nal_ref_idc=3, type=7
+    sps.push_back(0x67); // nal_ref_idc=3, type=7
     sps.insert(sps.end(), sps_payload.begin(), sps_payload.end());
     std::vector<uint8_t> pps;
-    pps.push_back(0x68);  // type=8
+    pps.push_back(0x68); // type=8
     pps.insert(pps.end(), kPps.begin(), kPps.end());
 
     std::vector<uint8_t> out = {
         0x01, profile_idc, 0x00, level_idc,
-        0xFF,  // reserved(6b) + lengthSizeMinusOne=3
-        0xE1,  // reserved(3b) + numSPS=1
+        0xFF, // reserved(6b) + lengthSizeMinusOne=3
+        0xE1, // reserved(3b) + numSPS=1
     };
     out.push_back(static_cast<uint8_t>(sps.size() >> 8));
     out.push_back(static_cast<uint8_t>(sps.size() & 0xFF));
     out.insert(out.end(), sps.begin(), sps.end());
-    out.push_back(0x01);  // numPPS=1
+    out.push_back(0x01); // numPPS=1
     out.push_back(static_cast<uint8_t>(pps.size() >> 8));
     out.push_back(static_cast<uint8_t>(pps.size() & 0xFF));
     out.insert(out.end(), pps.begin(), pps.end());
@@ -124,23 +109,22 @@ std::vector<uint8_t> MakeAvcC() {
 
 std::vector<uint8_t> MakeHvcC() {
     std::vector<uint8_t> out;
-    out.reserve(23 + kHevcVpsMain10.size() + kHevcSpsMain10.size() +
-                kHevcPpsMain10.size() + 21);
-    out.push_back(0x01);             // configurationVersion
-    out.push_back(0x02);             // profile_space(0)|tier(0)|profile_idc=2
+    out.reserve(23 + kHevcVpsMain10.size() + kHevcSpsMain10.size() + kHevcPpsMain10.size() + 21);
+    out.push_back(0x01);            // configurationVersion
+    out.push_back(0x02);            // profile_space(0)|tier(0)|profile_idc=2
     out.insert(out.end(), 4, 0x60); // profile_compatibility_flags
     out.insert(out.end(), 6, 0x00); // constraint_indicator_flags
-    out.push_back(153);              // general_level_idc = 5.1
+    out.push_back(153);             // general_level_idc = 5.1
     out.push_back(0xF0);
     out.push_back(0x00);
     out.push_back(0xFC);
-    out.push_back(0xFD);             // chromaFormat = 1
-    out.push_back(0xFA);             // bitDepthLumaMinus8 = 2
-    out.push_back(0xFA);             // bitDepthChromaMinus8 = 2
+    out.push_back(0xFD); // chromaFormat = 1
+    out.push_back(0xFA); // bitDepthLumaMinus8 = 2
+    out.push_back(0xFA); // bitDepthChromaMinus8 = 2
     out.push_back(0x00);
     out.push_back(0x00);
-    out.push_back(0x0F);             // temporal layers / lengthSizeMinusOne
-    out.push_back(0x03);             // numOfArrays
+    out.push_back(0x0F); // temporal layers / lengthSizeMinusOne
+    out.push_back(0x03); // numOfArrays
 
     auto append_array = [&out](uint8_t nal_type, const std::vector<uint8_t>& payload) {
         out.push_back(static_cast<uint8_t>(0x80 | nal_type));
@@ -165,9 +149,9 @@ ContainerMetadata MakeContainer(int width, int height, int bit_depth = 8) {
     meta.width = width;
     meta.height = height;
     meta.bit_depth = bit_depth;
-    meta.color_primaries = 1;             // BT.709
-    meta.transfer_characteristics = 1;    // BT.709
-    meta.matrix_coefficients = 1;         // BT.709
+    meta.color_primaries = 1;          // BT.709
+    meta.transfer_characteristics = 1; // BT.709
+    meta.matrix_coefficients = 1;      // BT.709
     meta.color_range = 1;
     return meta;
 }
@@ -182,19 +166,21 @@ BitstreamAnalysisResult AnalyzeWith(const ContainerMetadata& meta) {
 int CountSeverity(const BitstreamAnalysisResult& r, const std::string& severity) {
     int n = 0;
     for (const auto& item : r.inconsistencies) {
-        if (item.severity == severity) ++n;
+        if (item.severity == severity)
+            ++n;
     }
     return n;
 }
 
 bool HasField(const BitstreamAnalysisResult& r, const std::string& field) {
     for (const auto& item : r.inconsistencies) {
-        if (item.field == field) return true;
+        if (item.field == field)
+            return true;
     }
     return false;
 }
 
-}  // namespace
+} // namespace
 
 // --------------------------------------------------------------------------
 // extradata -> 参数集
@@ -218,12 +204,10 @@ TEST(BitstreamAnalyzerTest, ParsesAvcCIntoSpsAndPps) {
 }
 
 TEST(BitstreamAnalyzerTest, H264CroppedSpsIsAppliedExactlyOnce) {
-    const std::vector<uint8_t> avcc =
-        MakeAvcCWithSps(kSpsHigh10Cropped1080p, 110, 51);
+    const std::vector<uint8_t> avcc = MakeAvcCWithSps(kSpsHigh10Cropped1080p, 110, 51);
     BitstreamAnalyzer analyzer;
     analyzer.SetContainerMetadata(MakeContainer(1920, 1080, 10));
-    const BitstreamAnalysisResult r =
-        analyzer.Analyze(avcc.data(), avcc.size(), AV_CODEC_ID_H264);
+    const BitstreamAnalysisResult r = analyzer.Analyze(avcc.data(), avcc.size(), AV_CODEC_ID_H264);
 
     ASSERT_TRUE(r.h264_sps.present);
     EXPECT_EQ(r.h264_sps.height(), 1080);
@@ -245,8 +229,7 @@ TEST(BitstreamAnalyzerTest, HevcHvcCSummaryUsesParsedSpsFields) {
     meta.color_primaries = 9;
     BitstreamAnalyzer analyzer;
     analyzer.SetContainerMetadata(meta);
-    const BitstreamAnalysisResult r =
-        analyzer.Analyze(hvcc.data(), hvcc.size(), AV_CODEC_ID_HEVC);
+    const BitstreamAnalysisResult r = analyzer.Analyze(hvcc.data(), hvcc.size(), AV_CODEC_ID_HEVC);
 
     ASSERT_TRUE(r.hevc_sps.present);
     EXPECT_EQ(r.capability, AnalysisCapability::Supported);
@@ -266,8 +249,7 @@ TEST(BitstreamAnalyzerTest, HevcVpsOnlyIsPartialAndDoesNotInventBitDepth) {
     meta.bit_depth = 10;
     BitstreamAnalyzer analyzer;
     analyzer.SetContainerMetadata(meta);
-    const BitstreamAnalysisResult r =
-        analyzer.Analyze(annexb.data(), annexb.size(), AV_CODEC_ID_HEVC);
+    const BitstreamAnalysisResult r = analyzer.Analyze(annexb.data(), annexb.size(), AV_CODEC_ID_HEVC);
 
     ASSERT_TRUE(r.hevc_vps.present);
     EXPECT_FALSE(r.hevc_sps.present);
@@ -281,8 +263,7 @@ TEST(BitstreamAnalyzerTest, RealX264AnnexBReportsCroppedGeometryAndHrd) {
     ASSERT_FALSE(sample.empty());
 
     BitstreamAnalyzer analyzer;
-    const BitstreamAnalysisResult r =
-        analyzer.Analyze(sample.data(), sample.size(), AV_CODEC_ID_H264);
+    const BitstreamAnalysisResult r = analyzer.Analyze(sample.data(), sample.size(), AV_CODEC_ID_H264);
 
     ASSERT_TRUE(r.h264_sps.present);
     EXPECT_EQ(r.h264_sps.profile_idc, 66);
@@ -302,8 +283,7 @@ TEST(BitstreamAnalyzerTest, RealX265RextTenBitAnnexBReportsGeometryColorAndHrd) 
     ASSERT_FALSE(sample.empty());
 
     BitstreamAnalyzer analyzer;
-    const BitstreamAnalysisResult r =
-        analyzer.Analyze(sample.data(), sample.size(), AV_CODEC_ID_HEVC);
+    const BitstreamAnalysisResult r = analyzer.Analyze(sample.data(), sample.size(), AV_CODEC_ID_HEVC);
 
     ASSERT_TRUE(r.hevc_sps.present);
     EXPECT_EQ(r.hevc_sps.general_profile_idc, 4);
@@ -321,8 +301,7 @@ TEST(BitstreamAnalyzerTest, RealX265RextTenBitAnnexBReportsGeometryColorAndHrd) 
 TEST(BitstreamAnalyzerTest, UnsupportedCodecIsNotAnalyzed) {
     const std::vector<uint8_t> avcc = MakeAvcC();
     BitstreamAnalyzer analyzer;
-    const BitstreamAnalysisResult r =
-        analyzer.Analyze(avcc.data(), avcc.size(), AV_CODEC_ID_MPEG4);
+    const BitstreamAnalysisResult r = analyzer.Analyze(avcc.data(), avcc.size(), AV_CODEC_ID_MPEG4);
 
     // 不支持的编码必须显式标记未分析，别让上层把默认 0 当成真实参数
     EXPECT_FALSE(r.analyzed);
@@ -359,8 +338,7 @@ TEST(BitstreamAnalyzerTest, EmptyExtradataIsUnavailable) {
 TEST(BitstreamAnalyzerTest, UnsupportedCodecIsUnavailable) {
     const std::vector<uint8_t> avcc = MakeAvcC();
     BitstreamAnalyzer analyzer;
-    const BitstreamAnalysisResult r =
-        analyzer.Analyze(avcc.data(), avcc.size(), AV_CODEC_ID_MPEG4);
+    const BitstreamAnalysisResult r = analyzer.Analyze(avcc.data(), avcc.size(), AV_CODEC_ID_MPEG4);
     EXPECT_EQ(r.parse_outcome, BitstreamParseOutcome::UnsupportedCodec);
     EXPECT_EQ(r.capability, AnalysisCapability::Unavailable);
     EXPECT_TRUE(r.partial);
@@ -370,12 +348,10 @@ TEST(BitstreamAnalyzerTest, UnsupportedCodecIsUnavailable) {
 TEST(BitstreamAnalyzerTest, TypeOnlyExtradataIsPartial) {
     // AnnexB 里只有 SEI NAL：识别出编码类型，但没有任何参数集
     const std::vector<uint8_t> annexb = {
-        0x00, 0x00, 0x00, 0x01,
-        0x06, 0x01, 0x04, 0x00, 0x00, 0x80,   // SEI（type 6）
+        0x00, 0x00, 0x00, 0x01, 0x06, 0x01, 0x04, 0x00, 0x00, 0x80, // SEI（type 6）
     };
     BitstreamAnalyzer analyzer;
-    const BitstreamAnalysisResult r =
-        analyzer.Analyze(annexb.data(), annexb.size(), AV_CODEC_ID_H264);
+    const BitstreamAnalysisResult r = analyzer.Analyze(annexb.data(), annexb.size(), AV_CODEC_ID_H264);
     EXPECT_TRUE(r.analyzed);
     EXPECT_EQ(r.parse_outcome, BitstreamParseOutcome::TypeOnly);
     EXPECT_EQ(r.capability, AnalysisCapability::Partial);
@@ -389,8 +365,7 @@ TEST(BitstreamAnalyzerTest, TruncatedSpsIsParseFailed) {
     annexb.push_back(kSpsHigh720p[0]);
     annexb.push_back(kSpsHigh720p[1]);
     BitstreamAnalyzer analyzer;
-    const BitstreamAnalysisResult r =
-        analyzer.Analyze(annexb.data(), annexb.size(), AV_CODEC_ID_H264);
+    const BitstreamAnalysisResult r = analyzer.Analyze(annexb.data(), annexb.size(), AV_CODEC_ID_H264);
     EXPECT_TRUE(r.analyzed);
     EXPECT_EQ(r.parse_outcome, BitstreamParseOutcome::ParseFailed);
     EXPECT_EQ(r.capability, AnalysisCapability::Failed);
@@ -402,21 +377,19 @@ TEST(BitstreamAnalyzerTest, TruncatedSpsIsParseFailed) {
 // 仍是 Partial，不参与严格一致性比对 —— 与 AV1 的 av1C-only 口径一致。
 TEST(BitstreamAnalyzerTest, VvcConfigOnlyRecordIsPartialAndSkipsComparison) {
     const std::vector<uint8_t> kVvcCRecordOnly = {
-        0xFF, 0x00, 0x01, 0x40, 0x01, 0x02, 0x33, 0x80, 0x00,
-        0x07, 0x80, 0x04, 0x38, 0x00, 0x00, 0x00,
+        0xFF, 0x00, 0x01, 0x40, 0x01, 0x02, 0x33, 0x80, 0x00, 0x07, 0x80, 0x04, 0x38, 0x00, 0x00, 0x00,
     };
     // 容器故意报不一致的尺寸/位深：Partial 能力必须跳过严格比对，不产生告警
     ContainerMetadata meta = MakeContainer(1280, 720, 8);
     meta.codec_name = "vvc";
     BitstreamAnalyzer analyzer;
     analyzer.SetContainerMetadata(meta);
-    const BitstreamAnalysisResult r =
-        analyzer.Analyze(kVvcCRecordOnly.data(), kVvcCRecordOnly.size(), AV_CODEC_ID_VVC);
+    const BitstreamAnalysisResult r = analyzer.Analyze(kVvcCRecordOnly.data(), kVvcCRecordOnly.size(), AV_CODEC_ID_VVC);
 
     EXPECT_TRUE(r.analyzed);
     EXPECT_TRUE(r.has_vvc);
     EXPECT_TRUE(r.vvc_config.present);
-    EXPECT_FALSE(r.vvc_sps.present);   // 记录里没有 SPS 数组
+    EXPECT_FALSE(r.vvc_sps.present); // 记录里没有 SPS 数组
     EXPECT_EQ(r.parse_outcome, BitstreamParseOutcome::FullParse);
     EXPECT_EQ(r.capability, AnalysisCapability::Partial);
     EXPECT_TRUE(r.partial);
@@ -430,15 +403,13 @@ TEST(BitstreamAnalyzerTest, VvcConfigOnlyRecordIsPartialAndSkipsComparison) {
 TEST(BitstreamAnalyzerTest, VvcTruncatedConfigRecordIsParseFailedNotFullParse) {
     // 真实 vvcC 只留前 4 字节：够 LooksLikeConfigRecord 的 0xF8 判据，
     // 但字段不全 -> ParseVvcC 早退，valid=false。
-    const std::vector<uint8_t> truncated(kVvcCRealLibvvenc.begin(),
-                                         kVvcCRealLibvvenc.begin() + 4);
+    const std::vector<uint8_t> truncated(kVvcCRealLibvvenc.begin(), kVvcCRealLibvvenc.begin() + 4);
     BitstreamAnalyzer analyzer;
-    const BitstreamAnalysisResult r =
-        analyzer.Analyze(truncated.data(), truncated.size(), AV_CODEC_ID_VVC);
+    const BitstreamAnalysisResult r = analyzer.Analyze(truncated.data(), truncated.size(), AV_CODEC_ID_VVC);
 
     EXPECT_TRUE(r.analyzed);
-    EXPECT_TRUE(r.has_vvc_config);       // 输入确实是 vvcC
-    EXPECT_FALSE(r.vvc_config.present);  // 但没解析成功，不许置 present
+    EXPECT_TRUE(r.has_vvc_config);      // 输入确实是 vvcC
+    EXPECT_FALSE(r.vvc_config.present); // 但没解析成功，不许置 present
     EXPECT_EQ(r.parse_outcome, BitstreamParseOutcome::ParseFailed);
     EXPECT_EQ(r.capability, AnalysisCapability::Failed);
     EXPECT_TRUE(r.partial);
@@ -447,7 +418,7 @@ TEST(BitstreamAnalyzerTest, VvcTruncatedConfigRecordIsParseFailedNotFullParse) {
 
 // VVC 即使解析出真实编码器 SPS 也保持 Partial：当前 PPS 和样本矩阵仍不完整。
 TEST(BitstreamAnalyzerTest, VvcFullParseWithSpsRemainsPartial) {
-    BitstreamAnalyzer analyzer;  // 不设容器 metadata：只验能力状态
+    BitstreamAnalyzer analyzer; // 不设容器 metadata：只验能力状态
     const BitstreamAnalysisResult r =
         analyzer.Analyze(kVvcCRealLibvvenc.data(), kVvcCRealLibvvenc.size(), AV_CODEC_ID_VVC);
 
@@ -503,16 +474,14 @@ TEST(BitstreamAnalyzerTest, VvcContainerMismatchSkipsStrictComparison) {
 // 容器位深不同，也不产生 Bit Depth 告警。
 TEST(BitstreamAnalyzerTest, VvcBitDepthUnknownDoesNotReportFalseMismatch) {
     const std::vector<uint8_t> kVvcCRecordOnly = {
-        0xFF, 0x00, 0x01, 0x40, 0x01, 0x02, 0x33, 0x80, 0x00,
-        0x07, 0x80, 0x04, 0x38, 0x00, 0x00, 0x00,
+        0xFF, 0x00, 0x01, 0x40, 0x01, 0x02, 0x33, 0x80, 0x00, 0x07, 0x80, 0x04, 0x38, 0x00, 0x00, 0x00,
     };
     ContainerMetadata meta;
     meta.codec_name = "vvc";
-    meta.bit_depth = 8;   // 与 vvcC 声称的 10bit 不同
+    meta.bit_depth = 8; // 与 vvcC 声称的 10bit 不同
     BitstreamAnalyzer analyzer;
     analyzer.SetContainerMetadata(meta);
-    const BitstreamAnalysisResult r =
-        analyzer.Analyze(kVvcCRecordOnly.data(), kVvcCRecordOnly.size(), AV_CODEC_ID_VVC);
+    const BitstreamAnalysisResult r = analyzer.Analyze(kVvcCRecordOnly.data(), kVvcCRecordOnly.size(), AV_CODEC_ID_VVC);
 
     EXPECT_EQ(r.capability, AnalysisCapability::Partial);
     EXPECT_FALSE(HasField(r, "Bit Depth"));
@@ -555,8 +524,7 @@ TEST(BitstreamAnalyzerTest, ContainerSnapshotIsSerialized) {
 TEST(BitstreamAnalyzerTest, NoContainerMetadataMeansNoSnapshotAndNoWarnings) {
     const std::vector<uint8_t> avcc = MakeAvcC();
     BitstreamAnalyzer analyzer;
-    const BitstreamAnalysisResult r =
-        analyzer.Analyze(avcc.data(), avcc.size(), AV_CODEC_ID_H264);
+    const BitstreamAnalysisResult r = analyzer.Analyze(avcc.data(), avcc.size(), AV_CODEC_ID_H264);
 
     EXPECT_TRUE(r.analyzed);
     EXPECT_EQ(r.width, 1280);
@@ -610,8 +578,7 @@ TEST(InBandParameterSetTest, AnalyzeInBandParsesAnnexBH264) {
     ASSERT_FALSE(sample.empty());
 
     BitstreamAnalyzer analyzer;
-    const BitstreamAnalysisResult r =
-        analyzer.AnalyzeInBand(sample.data(), sample.size(), AV_CODEC_ID_H264);
+    const BitstreamAnalysisResult r = analyzer.AnalyzeInBand(sample.data(), sample.size(), AV_CODEC_ID_H264);
 
     EXPECT_EQ(r.parse_outcome, BitstreamParseOutcome::FullParse);
     EXPECT_EQ(r.parameter_set_source, "in_band");
@@ -683,7 +650,7 @@ TEST(InBandParameterSetTest, ProbeDisabledForCodecWithoutParser) {
 TEST(InBandParameterSetTest, ProbeGivesUpAtByteCap) {
     InBandParameterSetProbe::Options opt;
     opt.max_bytes = 16;
-    opt.max_packets = 0;  // 只看字节上限
+    opt.max_packets = 0; // 只看字节上限
     InBandParameterSetProbe probe;
     probe.Reset(AV_CODEC_ID_H264, opt);
 
@@ -710,7 +677,7 @@ TEST(InBandParameterSetTest, ProbeReportsReasonAtPacketCap) {
     const std::vector<uint8_t> slice = {0x00, 0x00, 0x00, 0x01, 0x41, 0x9A, 0x02, 0x03};
     EXPECT_FALSE(probe.Feed(slice.data(), slice.size()));
     EXPECT_FALSE(probe.Feed(slice.data(), slice.size()));
-    EXPECT_FALSE(probe.given_up());  // 第 2 个包刚好到上限，还没触发
+    EXPECT_FALSE(probe.given_up()); // 第 2 个包刚好到上限，还没触发
     EXPECT_FALSE(probe.Feed(slice.data(), slice.size()));
     EXPECT_TRUE(probe.given_up());
     EXPECT_NE(probe.GiveUpReason().find("参数集"), std::string::npos);

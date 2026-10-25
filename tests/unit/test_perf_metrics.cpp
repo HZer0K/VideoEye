@@ -22,8 +22,12 @@ using videoeye::PerfScope;
 // "上一个用例的 count 混进下一个断言"这类最难查的偶发失败。
 class PerfMetricsTest : public ::testing::Test {
 protected:
-    void SetUp() override { PerfMetrics::GetInstance().Reset(); }
-    void TearDown() override { PerfMetrics::GetInstance().Reset(); }
+    void SetUp() override {
+        PerfMetrics::GetInstance().Reset();
+    }
+    void TearDown() override {
+        PerfMetrics::GetInstance().Reset();
+    }
 };
 
 TEST_F(PerfMetricsTest, RecordTimingAccumulates) {
@@ -36,7 +40,7 @@ TEST_F(PerfMetricsTest, RecordTimingAccumulates) {
     EXPECT_DOUBLE_EQ(60.0, s.sum);
     EXPECT_DOUBLE_EQ(10.0, s.min);
     EXPECT_DOUBLE_EQ(30.0, s.max);
-    EXPECT_DOUBLE_EQ(20.0, s.last);   // last 必须是最后一次，不是平均
+    EXPECT_DOUBLE_EQ(20.0, s.last); // last 必须是最后一次，不是平均
 }
 
 TEST_F(PerfMetricsTest, SnapshotOfUnknownNameIsEmpty) {
@@ -87,7 +91,7 @@ TEST_F(PerfMetricsTest, ScopeRecordsOnDestruction) {
     }
     const auto s = PerfMetrics::GetInstance().Snapshot("scoped");
     EXPECT_EQ(1, s.count);
-    EXPECT_GE(s.last, 1.0);   // 睡了 2ms，不会是 0
+    EXPECT_GE(s.last, 1.0); // 睡了 2ms，不会是 0
 }
 
 // Discard 的意义：被取消的流程不该把"半程耗时"混进正常样本，
@@ -124,7 +128,7 @@ TEST_F(PerfMetricsTest, ProbeSettleOnce) {
     EXPECT_GE(probe.ElapsedMs(), 0.0);
 
     const double first = probe.Settle();
-    ASSERT_GE(first, 0.0);   // 第一次有效
+    ASSERT_GE(first, 0.0); // 第一次有效
 
     // 重复终态必须被识别出来（-1），而不是再写一条假指标
     EXPECT_DOUBLE_EQ(-1.0, probe.Settle());
@@ -139,7 +143,7 @@ TEST_F(PerfMetricsTest, ProbeRearmResetsClock) {
     probe.Arm();
     const double settle = probe.Settle();
     EXPECT_GE(settle, 0.0);
-    EXPECT_LT(settle, 500.0);   // 中间没睡，不该被算成很久
+    EXPECT_LT(settle, 500.0); // 中间没睡，不该被算成很久
 }
 
 TEST_F(PerfMetricsTest, ProbeAbandonStopsSettle) {
@@ -177,4 +181,4 @@ TEST_F(PerfMetricsTest, BudgetsAreSane) {
     EXPECT_GT(videoeye::kReportExportBudgetMs, 0.0);
 }
 
-}  // namespace
+} // namespace

@@ -10,10 +10,10 @@ namespace videoeye {
 namespace model {
 
 struct SceneChangeResult {
-    int frame_index = 0;     // 视频帧序号（从 0 开始）
-    double timestamp = 0.0;  // 时间戳（秒）
-    double score = 0.0;      // 切换强度 0..1，越大越可能是镜头切换
+    int frame_index = 0;    // 视频帧序号（从 0 开始）
+    double timestamp = 0.0; // 时间戳（秒）
+    double score = 0.0;     // 切换强度 0..1，越大越可能是镜头切换
 };
 
-}  // namespace model
-}  // namespace videoeye
+} // namespace model
+} // namespace videoeye

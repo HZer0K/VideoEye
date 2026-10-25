@@ -30,7 +30,7 @@ enum class JsonType {
 
 class JsonValue {
 public:
-    JsonValue() = default;                       // Null
+    JsonValue() = default; // Null
     explicit JsonValue(bool value);
     explicit JsonValue(double value);
     explicit JsonValue(int value);
@@ -41,13 +41,27 @@ public:
     static JsonValue MakeArray();
     static JsonValue MakeObject();
 
-    JsonType type() const { return type_; }
-    bool IsNull() const { return type_ == JsonType::Null; }
-    bool IsBool() const { return type_ == JsonType::Bool; }
-    bool IsNumber() const { return type_ == JsonType::Number; }
-    bool IsString() const { return type_ == JsonType::String; }
-    bool IsArray() const { return type_ == JsonType::Array; }
-    bool IsObject() const { return type_ == JsonType::Object; }
+    JsonType type() const {
+        return type_;
+    }
+    bool IsNull() const {
+        return type_ == JsonType::Null;
+    }
+    bool IsBool() const {
+        return type_ == JsonType::Bool;
+    }
+    bool IsNumber() const {
+        return type_ == JsonType::Number;
+    }
+    bool IsString() const {
+        return type_ == JsonType::String;
+    }
+    bool IsArray() const {
+        return type_ == JsonType::Array;
+    }
+    bool IsObject() const {
+        return type_ == JsonType::Object;
+    }
 
     // ---- 取值：类型不匹配时返回默认参数，绝不抛异常（配置文件可读性是第一位）----
     bool BoolValueOr(bool fallback = false) const;
@@ -56,17 +70,27 @@ public:
     std::string StringValueOr(const std::string& fallback = "") const;
 
     // ---- 数组 ----
-    const std::vector<JsonValue>& Items() const { return items_; }
-    std::size_t Size() const { return items_.size(); }
+    const std::vector<JsonValue>& Items() const {
+        return items_;
+    }
+    std::size_t Size() const {
+        return items_.size();
+    }
     JsonValue& PushBack(JsonValue value);
 
     // ---- 对象 ----
-    const std::vector<std::string>& MemberKeys() const { return member_keys_; }
-    const std::vector<JsonValue>& MemberValues() const { return member_values_; }
+    const std::vector<std::string>& MemberKeys() const {
+        return member_keys_;
+    }
+    const std::vector<JsonValue>& MemberValues() const {
+        return member_values_;
+    }
     // 未找到返回 nullptr（调用方据此判断"键不存在"与"键存在但值是 null"）
     const JsonValue* Find(const std::string& key) const;
     JsonValue* FindMutable(const std::string& key);
-    bool Has(const std::string& key) const { return Find(key) != nullptr; }
+    bool Has(const std::string& key) const {
+        return Find(key) != nullptr;
+    }
     JsonValue& Set(const std::string& key, JsonValue value);
 
     // ---- 序列化 ----
@@ -91,4 +115,4 @@ bool JsonParse(const std::string& text, JsonValue& out, std::string* error_out =
 // 序列化时对字符串做 JSON 转义（双引号 / 反斜杠 / 控制字符），非 ASCII 原样输出 UTF-8。
 std::string JsonEscape(const std::string& text);
 
-}  // namespace videoeye
+} // namespace videoeye

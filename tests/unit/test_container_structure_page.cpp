@@ -18,8 +18,8 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QLabel>
-#include <QString>
 #include <QStackedWidget>
+#include <QString>
 #include <QTableWidget>
 #include <QTreeWidget>
 #include <QWidget>
@@ -65,9 +65,17 @@ ContainerStructureResult MakeMp4Result() {
     r.summary = "summary-ok";
 
     ContainerElement moov;
-    moov.name = "moov"; moov.type = "Box"; moov.size = 100; moov.offset = 0; moov.depth = 0;
+    moov.name = "moov";
+    moov.type = "Box";
+    moov.size = 100;
+    moov.offset = 0;
+    moov.depth = 0;
     ContainerElement trak;
-    trak.name = "trak"; trak.type = "Box"; trak.size = 50; trak.offset = 8; trak.depth = 1;
+    trak.name = "trak";
+    trak.type = "Box";
+    trak.size = 50;
+    trak.offset = 8;
+    trak.depth = 1;
     trak.value = "video";
     moov.children.push_back(trak);
     r.element_tree.push_back(moov);
@@ -77,7 +85,8 @@ ContainerStructureResult MakeMp4Result() {
 
     r.mp4_detail.valid = true;
     TrackBoxTables tb;
-    tb.track_id = 1; tb.track_type = "video";
+    tb.track_id = 1;
+    tb.track_type = "video";
     tb.stts_entries.push_back({2, 1024});
     tb.stco_entries.push_back({0x1000});
     tb.stsc_entries.push_back({1, 1, 1});
@@ -92,15 +101,30 @@ ContainerStructureResult MakeMp4Result() {
     r.mp4_samples.moov_size = 100;
     r.mp4_samples.moov_before_mdat = true;
     Mp4TrackSampleTable track;
-    track.track_id = 1; track.type = "video"; track.codec = "avc1";
-    track.media_timescale = 1024; track.stsz_sample_count = 2;
+    track.track_id = 1;
+    track.type = "video";
+    track.codec = "avc1";
+    track.media_timescale = 1024;
+    track.stsz_sample_count = 2;
     Mp4Sample a;
-    a.index = 0; a.chunk_index = 0; a.offset = 0x1000; a.size = 100;
-    a.dts = 0; a.cts = 0; a.duration = 1024; a.keyframe = true;
+    a.index = 0;
+    a.chunk_index = 0;
+    a.offset = 0x1000;
+    a.size = 100;
+    a.dts = 0;
+    a.cts = 0;
+    a.duration = 1024;
+    a.keyframe = true;
     track.samples.push_back(a);
     Mp4Sample b;
-    b.index = 1; b.chunk_index = 0; b.offset = 0x1100; b.size = 100;
-    b.dts = 1024; b.cts = 1024; b.duration = 1024; b.keyframe = false;
+    b.index = 1;
+    b.chunk_index = 0;
+    b.offset = 0x1100;
+    b.size = 100;
+    b.dts = 1024;
+    b.cts = 1024;
+    b.duration = 1024;
+    b.keyframe = false;
     track.samples.push_back(b);
     r.mp4_samples.tracks.push_back(track);
     return r;
@@ -116,9 +140,14 @@ ContainerStructureResult MakeMkvResult() {
 
     r.ebml_detail.valid = true;
     EbmlTrackInfo t;
-    t.track_number = 1; t.track_type = 1; t.track_type_name = "视频";
-    t.codec_id = "V_VP9"; t.codec_name = "VP9";
-    t.pixel_width = 1920; t.pixel_height = 1080; t.language = "eng";
+    t.track_number = 1;
+    t.track_type = 1;
+    t.track_type_name = "视频";
+    t.codec_id = "V_VP9";
+    t.codec_name = "VP9";
+    t.pixel_width = 1920;
+    t.pixel_height = 1080;
+    t.language = "eng";
     t.default_track = true;
     r.ebml_detail.tracks.push_back(t);
     return r;
@@ -140,11 +169,20 @@ Mp4SampleTableResult MakeSampleTable() {
     samples.valid = true;
     samples.file_size = 5000;
     Mp4TrackSampleTable tr;
-    tr.track_id = 5; tr.type = "audio"; tr.codec = "mp4a";
-    tr.media_timescale = 44100; tr.stsz_sample_count = 1;
+    tr.track_id = 5;
+    tr.type = "audio";
+    tr.codec = "mp4a";
+    tr.media_timescale = 44100;
+    tr.stsz_sample_count = 1;
     Mp4Sample s;
-    s.index = 0; s.chunk_index = 0; s.offset = 0x200; s.size = 200;
-    s.dts = 0; s.cts = 0; s.duration = 1024; s.keyframe = true;
+    s.index = 0;
+    s.chunk_index = 0;
+    s.offset = 0x200;
+    s.size = 200;
+    s.dts = 0;
+    s.cts = 0;
+    s.duration = 1024;
+    s.keyframe = true;
     tr.samples.push_back(s);
     samples.tracks.push_back(tr);
     return samples;
@@ -153,12 +191,13 @@ Mp4SampleTableResult MakeSampleTable() {
 bool AnyTableHasRows(ContainerStructurePage* page) {
     const auto tables = page->findChildren<QTableWidget*>();
     for (const auto* t : tables) {
-        if (t->rowCount() > 0) return true;
+        if (t->rowCount() > 0)
+            return true;
     }
     return false;
 }
 
-}  // namespace
+} // namespace
 
 // MP4 结果要切到详情页 1，并填充结构树 / 样本轨下拉 / 至少一张表。
 TEST(ContainerStructurePageTests, Mp4ResultShowsMp4DetailPage) {
@@ -168,15 +207,15 @@ TEST(ContainerStructurePageTests, Mp4ResultShowsMp4DetailPage) {
 
     QStackedWidget* stack = page.findChild<QStackedWidget*>();
     ASSERT_TRUE(stack != nullptr);
-    EXPECT_EQ(stack->currentIndex(), 1);  // MP4 详情页
+    EXPECT_EQ(stack->currentIndex(), 1); // MP4 详情页
 
     QTreeWidget* tree = page.findChild<QTreeWidget*>();
     ASSERT_TRUE(tree != nullptr);
-    EXPECT_EQ(tree->topLevelItemCount(), 1);  // moov
+    EXPECT_EQ(tree->topLevelItemCount(), 1); // moov
 
     QComboBox* combo = page.findChild<QComboBox*>();
     ASSERT_TRUE(combo != nullptr);
-    EXPECT_EQ(combo->count(), 1);  // 1 路样本轨
+    EXPECT_EQ(combo->count(), 1); // 1 路样本轨
 
     EXPECT_TRUE(AnyTableHasRows(&page));
     EXPECT_TRUE(page.result().valid);
@@ -190,13 +229,13 @@ TEST(ContainerStructurePageTests, MkvResultShowsEbmlDetailPage) {
 
     QStackedWidget* stack = page.findChild<QStackedWidget*>();
     ASSERT_TRUE(stack != nullptr);
-    EXPECT_EQ(stack->currentIndex(), 2);  // EBML 详情页
+    EXPECT_EQ(stack->currentIndex(), 2); // EBML 详情页
 
     QTreeWidget* tree = page.findChild<QTreeWidget*>();
     ASSERT_TRUE(tree != nullptr);
-    EXPECT_EQ(tree->topLevelItemCount(), 0);  // 没填通用树
+    EXPECT_EQ(tree->topLevelItemCount(), 0); // 没填通用树
 
-    EXPECT_TRUE(AnyTableHasRows(&page));  // EBML 轨道表
+    EXPECT_TRUE(AnyTableHasRows(&page)); // EBML 轨道表
     EXPECT_TRUE(page.result().valid);
 }
 
@@ -243,7 +282,7 @@ TEST(ContainerStructurePageTests, ApplySampleTableRefreshesSampleTables) {
 
     QComboBox* combo = page.findChild<QComboBox*>();
     ASSERT_TRUE(combo != nullptr);
-    EXPECT_EQ(combo->count(), 1);  // 1 路样本轨
+    EXPECT_EQ(combo->count(), 1); // 1 路样本轨
 }
 
 // 「启用分析」开关初始态跟随构造参数，点击发出 FeatureToggled(true)。
@@ -257,8 +296,7 @@ TEST(ContainerStructurePageTests, FeatureToggleFollowsCtorAndEmits) {
     EXPECT_FALSE(toggle->isChecked());
 
     bool emitted = false;
-    QObject::connect(&page, &ContainerStructurePage::FeatureToggled,
-                     [&emitted](bool on) { emitted = on; });
+    QObject::connect(&page, &ContainerStructurePage::FeatureToggled, [&emitted](bool on) { emitted = on; });
 
     toggle->setChecked(true);
     EXPECT_TRUE(emitted);

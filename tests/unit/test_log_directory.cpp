@@ -52,7 +52,7 @@ QString ParentDir(const QString& path) {
     return slash > 0 ? path.left(slash) : QString();
 }
 
-}  // namespace
+} // namespace
 
 // 正常路径: 解析结果必须落在用户级数据目录，而不是传进去的 app_dir
 TEST(LogDirectoryTest, ResolvesToUserDirectoryNotAppDir) {
@@ -61,23 +61,18 @@ TEST(LogDirectoryTest, ResolvesToUserDirectoryNotAppDir) {
     QTemporaryDir app_dir;
     ASSERT_TRUE(app_dir.isValid());
 
-    const videoeye::ui::LogFileLocation loc =
-        videoeye::ui::ResolveDebugLogPath(app_dir.path());
+    const videoeye::ui::LogFileLocation loc = videoeye::ui::ResolveDebugLogPath(app_dir.path());
 
     EXPECT_FALSE(loc.path.isEmpty());
-    EXPECT_FALSE(loc.fell_back_to_app_dir)
-        << "不该回退到程序目录: " << loc.reason.toStdString();
+    EXPECT_FALSE(loc.fell_back_to_app_dir) << "不该回退到程序目录: " << loc.reason.toStdString();
 
-    const QString user_base =
-        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    const QString user_base = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
     ASSERT_FALSE(user_base.isEmpty());
     EXPECT_TRUE(loc.path.startsWith(user_base))
-        << "日志路径 " << loc.path.toStdString() << " 不在用户目录 "
-        << user_base.toStdString() << " 下";
+        << "日志路径 " << loc.path.toStdString() << " 不在用户目录 " << user_base.toStdString() << " 下";
 
     // 目录必须已经存在 —— 否则 Logger::SetLogFile 会失败
-    EXPECT_TRUE(QFileInfo::exists(ParentDir(loc.path)))
-        << "日志目录没被创建: " << ParentDir(loc.path).toStdString();
+    EXPECT_TRUE(QFileInfo::exists(ParentDir(loc.path))) << "日志目录没被创建: " << ParentDir(loc.path).toStdString();
 }
 
 // 超过上限时滚动: 当前 -> .1，第二次滚动把 .1 推成 .2

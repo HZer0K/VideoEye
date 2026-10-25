@@ -37,21 +37,21 @@ namespace videoeye {
 namespace ffmpeg {
 
 struct FfmpegToolInfo {
-    QString path;                // 解析出的路径（可能为空 = 没找到）
-    bool exists = false;         // 文件是否真的在
-    QString origin;              // "用户设置" / "随包分发" / "构建期探测" / "PATH" / "常见安装位置" / "未找到"
-    QString bundled_name;        // 随包分发时的文件名
-    bool bundled = false;        // 本项目是否随包分发了 ffmpeg
+    QString path;        // 解析出的路径（可能为空 = 没找到）
+    bool exists = false; // 文件是否真的在
+    QString origin; // "用户设置" / "随包分发" / "构建期探测" / "PATH" / "常见安装位置" / "未找到"
+    QString bundled_name; // 随包分发时的文件名
+    bool bundled = false; // 本项目是否随包分发了 ffmpeg
 };
 
 /// 平台相关的安装指引。内容全部来自本文件，不查网络、不依赖任何外部资源。
 struct FfmpegInstallGuide {
-    QString platform;               // "Windows" / "macOS" / "Linux" / "其他"
-    QString headline;               // 一句话结论
-    QStringList package_commands;   // 包管理器命令（可能为空）
-    QString download_url;           // 官方下载页
-    QStringList manual_steps;       // 手动安装步骤
-    QString note;                   // 额外提示（作用域 / 许可证 / 架构差异）
+    QString platform;             // "Windows" / "macOS" / "Linux" / "其他"
+    QString headline;             // 一句话结论
+    QStringList package_commands; // 包管理器命令（可能为空）
+    QString download_url;         // 官方下载页
+    QStringList manual_steps;     // 手动安装步骤
+    QString note;                 // 额外提示（作用域 / 许可证 / 架构差异）
 };
 
 class FfmpegToolLocator {
@@ -78,5 +78,5 @@ public:
     static QString FindInDirectory(const QString& dir);
 };
 
-}  // namespace ffmpeg
-}  // namespace videoeye
+} // namespace ffmpeg
+} // namespace videoeye

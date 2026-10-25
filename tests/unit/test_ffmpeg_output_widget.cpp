@@ -34,8 +34,8 @@
 #include "ui/ffmpeg_panel/FfmpegOutputWidget.h"
 
 using videoeye::ffmpeg::CommandParseStatus;
-using videoeye::ffmpeg::FfmpegCommandExplanation;
 using videoeye::ffmpeg::FfmpegCommandExplainer;
+using videoeye::ffmpeg::FfmpegCommandExplanation;
 using videoeye::ffmpeg::FfmpegRunResult;
 using videoeye::ffmpeg::FfmpegRunStatus;
 using videoeye::ffmpeg::FfmpegStopStage;
@@ -70,7 +70,7 @@ QLabel* LabelWithPrefix(FfmpegOutputWidget& widget, const QString& prefix) {
     return nullptr;
 }
 
-}  // namespace
+} // namespace
 
 // ---------------------------------------------------------------------------
 // 1. 构造：组标题 + 三个页签 + 状态行初值
@@ -211,7 +211,7 @@ TEST(FfmpegOutputWidgetTests, FailedResultSwitchesToErrorTabAndAnnouncesFailure)
     ASSERT_TRUE(log != nullptr);
 
     widget.PrepareForRun();
-    widget.AppendLog(QStringLiteral("boom"), true);   // 错误页非空才值得切过去
+    widget.AppendLog(QStringLiteral("boom"), true); // 错误页非空才值得切过去
 
     std::vector<QString> messages;
     QObject::connect(&widget, &FfmpegOutputWidget::StatusMessage,

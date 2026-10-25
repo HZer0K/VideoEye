@@ -26,7 +26,8 @@ using videoeye::ui::WriteCsvStream;
 
 QString ReadAllText(const QString& path) {
     QFile f(path);
-    if (!f.open(QIODevice::ReadOnly)) return QString();
+    if (!f.open(QIODevice::ReadOnly))
+        return QString();
     return QString::fromUtf8(f.readAll());
 }
 
@@ -49,13 +50,13 @@ TEST(CsvExportHelperTest, WritesUtf8BomHeaderAndRows) {
     ASSERT_FALSE(raw.isEmpty());
     // BOM 必须按**原始字节**检查：QString::fromUtf8 默认会把开头的 3 字节 BOM
     // 消费掉（QStringConverter 的初始 BOM 语义），读成 QString 反而看不见它。
-    EXPECT_EQ(raw.left(3), QByteArray("\xEF\xBB\xBF", 3))
-        << "文件头必须是 UTF-8 BOM，否则 Excel 打开中文列乱码";
+    EXPECT_EQ(raw.left(3), QByteArray("\xEF\xBB\xBF", 3)) << "文件头必须是 UTF-8 BOM，否则 Excel 打开中文列乱码";
 
     QString body = QString::fromUtf8(raw);
     // fromUtf8 若没消费 BOM（不同 Qt 版本语义），正文可能还带 U+FEFF，先摘掉再比
-    if (body.startsWith(QChar(0xFEFF))) body.remove(0, 1);
-    body.replace("\r\n", "\n");  // Text 模式在 Windows 写 CRLF，按逻辑行比较
+    if (body.startsWith(QChar(0xFEFF)))
+        body.remove(0, 1);
+    body.replace("\r\n", "\n"); // Text 模式在 Windows 写 CRLF，按逻辑行比较
     EXPECT_EQ(body, QStringLiteral("index,score\n1,2.50\n"));
 }
 
@@ -72,8 +73,7 @@ TEST(CsvExportHelperTest, OverwritesExistingFileInsteadOfAppending) {
     ASSERT_TRUE(WriteCsvStream(path, [](QTextStream& stream) { stream << "a,b\n"; }));
 
     const QString text = ReadAllText(path);
-    EXPECT_FALSE(text.contains(QStringLiteral("stale")))
-        << "二次导出复用了旧文件，应在打开时就截断";
+    EXPECT_FALSE(text.contains(QStringLiteral("stale"))) << "二次导出复用了旧文件，应在打开时就截断";
     EXPECT_TRUE(text.contains(QStringLiteral("a,b")));
 }
 

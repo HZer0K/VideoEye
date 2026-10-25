@@ -28,8 +28,8 @@
 
 #include <QApplication>
 
-#include "ui/reporting_panel/analysis_task.h"
 #include "ui/reporting_panel/ReportingPanel.h"
+#include "ui/reporting_panel/analysis_task.h"
 
 #include "BlockingTcpEndpoint.h"
 
@@ -48,8 +48,8 @@ int64_t ElapsedMs(Clock::time_point from) {
 
 // gtest 崩溃时 stdout 会被整批丢掉，这类诊断输出一律走 stderr（无缓冲）。
 void Note(int round, int64_t baseline_ms, int64_t flying_ms) {
-    fprintf(stderr, "  [note] 第 %d 轮: 基线=%lldms 飞行=%lldms\n",
-            round, (long long)baseline_ms, (long long)flying_ms);
+    fprintf(stderr, "  [note] 第 %d 轮: 基线=%lldms 飞行=%lldms\n", round, (long long)baseline_ms,
+            (long long)flying_ms);
 }
 
 // QApplication 长期持有 argv，必须是静态存储。用 offscreen 平台（CMake 里
@@ -61,7 +61,8 @@ static char* g_argv[] = {g_arg0, nullptr};
 
 struct App {
     QApplication app;
-    App() : app(g_argc, g_argv) {}
+    App() : app(g_argc, g_argv) {
+    }
 };
 
 // ---------- 1. 未启动的任务不能白等满回收预算 ----------
@@ -69,7 +70,7 @@ struct App {
 // 回归: RecycleTask 对"构造好还没起线程"的任务也会等满 budget（默认 5s），
 // 于是关一次面板卡 5 秒。这条断言的是"无事可做时必须立刻返回"。
 TEST(ReportingPanelLifecycle, WaitTaskBodyOnUnstartedTaskReturnsImmediately) {
-    auto task = std::make_shared<AnalysisTask>();  // 没有 thread
+    auto task = std::make_shared<AnalysisTask>(); // 没有 thread
     const auto t0 = Clock::now();
     const bool ok = WaitTaskBody(task, 5000);
     const int64_t dt = ElapsedMs(t0);
@@ -193,14 +194,14 @@ std::string MakeProbeFile() {
 }
 
 TEST(ReportingPanelLifecycle, DestructWhileTaskInFlightIsBoundedAndSafe) {
-    const App app;  // 进程内只构造一次（QApplication 不能在循环里反复造）
+    const App app; // 进程内只构造一次（QApplication 不能在循环里反复造）
     EXPECT_TRUE(QApplication::instance() != nullptr);
 
     const std::string file = MakeProbeFile();
     ASSERT_FALSE(file.empty()) << "临时目录不可用，本用例无法造探针文件";
 
     constexpr int kRounds = 3;
-    constexpr int64_t kDestructCeiling = 2500;  // 远小于回收预算的 5s / 两段之和 10s
+    constexpr int64_t kDestructCeiling = 2500; // 远小于回收预算的 5s / 两段之和 10s
     constexpr int64_t kHitMargin = 20;
 
     int hits = 0;
@@ -213,9 +214,12 @@ TEST(ReportingPanelLifecycle, DestructWhileTaskInFlightIsBoundedAndSafe) {
         // 飞行轮：worker 已经起了，正卡在 RunSingle() → AnalyzeFile() 内部。
         const int64_t flying = RunOneDestruct(file);
 
-        if (baseline < 0 || idle > baseline) baseline = idle;
-        if (flying > worst) worst = flying;
-        if (flying > idle + kHitMargin) ++hits;
+        if (baseline < 0 || idle > baseline)
+            baseline = idle;
+        if (flying > worst)
+            worst = flying;
+        if (flying > idle + kHitMargin)
+            ++hits;
         Note(i, idle, flying);
     }
 
@@ -227,9 +231,8 @@ TEST(ReportingPanelLifecycle, DestructWhileTaskInFlightIsBoundedAndSafe) {
 
     // 硬断言：有上界。历史上的坏版本是"无限等"或"detach 后往已销毁的 QWidget 排队"，
     // 这两条都会在这一行红。
-    EXPECT_LT(worst, kDestructCeiling)
-        << "面板析构耗时 " << worst << "ms 已接近回收预算上限 —— 关停路径退回成"
-        << "长时间等待（取消没生效 / 又在干等满预算）";
+    EXPECT_LT(worst, kDestructCeiling) << "面板析构耗时 " << worst << "ms 已接近回收预算上限 —— 关停路径退回成"
+                                       << "长时间等待（取消没生效 / 又在干等满预算）";
 }
 
 // ---------- 5. 连续启停不崩（历史 bug 的回归闸门） ----------
@@ -288,8 +291,7 @@ TEST(ReportingPanelLifecycle, NormalCompletionReturnsSlotToTerminalState) {
     if (!started) {
         GTEST_SKIP() << "任务没起来（并发被拒或事件队列未连接）—— 本轮不算测到正常完成路径";
     }
-    EXPECT_FALSE(still_running)
-        << "分析正常完成后 slot 仍在 Running（终态没归还），等待了 " << dt << "ms";
+    EXPECT_FALSE(still_running) << "分析正常完成后 slot 仍在 Running（终态没归还），等待了 " << dt << "ms";
 }
 
 // ---------- 7. 取消响应：协作体必须观察到取消令牌并自行收尾（P2-4） ----------
@@ -368,4 +370,4 @@ TEST(ReportingPanelLifecycle, FailedAnalysisLeavesExportDisabled) {
     delete panel;
 }
 
-}  // namespace
+} // namespace

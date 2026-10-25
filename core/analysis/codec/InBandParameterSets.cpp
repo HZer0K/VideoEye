@@ -19,24 +19,24 @@ constexpr size_t kScanOverlap = 5;
 //   VVC  : 2 字节，type = (b1 >> 3) & 0x1F（首字节是 nuh_layer_id）
 bool IsParameterSetNalType(int codec_id, uint8_t b0, uint8_t b1) {
     switch (static_cast<AVCodecID>(codec_id)) {
-        case AV_CODEC_ID_H264: {
-            const uint8_t type = static_cast<uint8_t>(b0 & 0x1F);
-            return type == 7 || type == 8;  // SPS / PPS
-        }
-        case AV_CODEC_ID_HEVC: {
-            const uint8_t type = static_cast<uint8_t>((b0 >> 1) & 0x3F);
-            return type == 32 || type == 33 || type == 34;  // VPS / SPS / PPS
-        }
-        case AV_CODEC_ID_VVC: {
-            const uint8_t type = static_cast<uint8_t>((b1 >> 3) & 0x1F);
-            return type == 14 || type == 15 || type == 16;  // VPS / SPS / PPS
-        }
-        default:
-            return false;
+    case AV_CODEC_ID_H264: {
+        const uint8_t type = static_cast<uint8_t>(b0 & 0x1F);
+        return type == 7 || type == 8; // SPS / PPS
+    }
+    case AV_CODEC_ID_HEVC: {
+        const uint8_t type = static_cast<uint8_t>((b0 >> 1) & 0x3F);
+        return type == 32 || type == 33 || type == 34; // VPS / SPS / PPS
+    }
+    case AV_CODEC_ID_VVC: {
+        const uint8_t type = static_cast<uint8_t>((b1 >> 3) & 0x1F);
+        return type == 14 || type == 15 || type == 16; // VPS / SPS / PPS
+    }
+    default:
+        return false;
     }
 }
 
-}  // namespace
+} // namespace
 
 void InBandParameterSetProbe::Reset(int codec_id, const Options& options) {
     codec_id_ = codec_id;
@@ -44,19 +44,19 @@ void InBandParameterSetProbe::Reset(int codec_id, const Options& options) {
 
     // 只有真的有参数集解析器的编码才值得攒包：其余编码攒到最后也解不出东西。
     switch (static_cast<AVCodecID>(codec_id)) {
-        case AV_CODEC_ID_H264:
-        case AV_CODEC_ID_HEVC:
-        case AV_CODEC_ID_VVC:
-        case AV_CODEC_ID_AV1:
-        // VP9：**不攒包**。一个包就是一个访问单元（一张图），而帧头要么在第 1 个
-        // 包里、要么只在这包所在的关键帧里。把 P 帧字节攒到一块只会让 LooksLikeKeyFrame
-        // 更晚找回同步。所以 VP9 走"逐包单独试"的分支（见 Feed()）。
-        case AV_CODEC_ID_VP9:
-            enabled_ = true;
-            break;
-        default:
-            enabled_ = false;
-            break;
+    case AV_CODEC_ID_H264:
+    case AV_CODEC_ID_HEVC:
+    case AV_CODEC_ID_VVC:
+    case AV_CODEC_ID_AV1:
+    // VP9：**不攒包**。一个包就是一个访问单元（一张图），而帧头要么在第 1 个
+    // 包里、要么只在这包所在的关键帧里。把 P 帧字节攒到一块只会让 LooksLikeKeyFrame
+    // 更晚找回同步。所以 VP9 走"逐包单独试"的分支（见 Feed()）。
+    case AV_CODEC_ID_VP9:
+        enabled_ = true;
+        break;
+    default:
+        enabled_ = false;
+        break;
     }
 
     done_ = false;
@@ -104,7 +104,8 @@ bool InBandParameterSetProbe::ScanAnnexBForParameterSet(const uint8_t* data, siz
     size_t i = (scan_pos_ > kScanOverlap) ? scan_pos_ - kScanOverlap : 0;
     bool found = false;
     for (; i + 3 + header_len <= size; ++i) {
-        if (data[i] != 0x00 || data[i + 1] != 0x00 || data[i + 2] != 0x01) continue;
+        if (data[i] != 0x00 || data[i + 1] != 0x00 || data[i + 2] != 0x01)
+            continue;
         // 00 00 00 01 会在这里命中 i+1 那一组，不影响判定。
         const size_t header_at = i + 3;
         const uint8_t b0 = data[header_at];
@@ -141,21 +142,24 @@ bool InBandParameterSetProbe::TryParseVp9(const uint8_t* data, size_t size) {
     // 攒了这么多包还没碰上关键帧，继续扫下去只是白烧 CPU
     if (packets_ >= kMaxVp9ProbePackets) {
         given_up_ = true;
-        give_up_reason_ = "已扫描 " + std::to_string(kMaxVp9ProbePackets) +
-                          " 个 VP9 包仍未见到关键帧（序列配置只写在关键帧头部）";
+        give_up_reason_ =
+            "已扫描 " + std::to_string(kMaxVp9ProbePackets) + " 个 VP9 包仍未见到关键帧（序列配置只写在关键帧头部）";
     }
     return false;
 }
 
 bool InBandParameterSetProbe::Feed(const uint8_t* data, size_t size) {
-    if (done_) return true;
-    if (!enabled_ || given_up_) return false;
-    if (data == nullptr || size == 0) return false;
+    if (done_)
+        return true;
+    if (!enabled_ || given_up_)
+        return false;
+    if (data == nullptr || size == 0)
+        return false;
 
     if (options_.max_packets > 0 && packets_ >= options_.max_packets) {
         given_up_ = true;
-        give_up_reason_ = "已扫满 " + std::to_string(options_.max_packets) +
-                          " 个包仍未见参数集（参数集可能只在流开头写过一次）";
+        give_up_reason_ =
+            "已扫满 " + std::to_string(options_.max_packets) + " 个包仍未见参数集（参数集可能只在流开头写过一次）";
         return false;
     }
     ++packets_;
@@ -166,12 +170,10 @@ bool InBandParameterSetProbe::Feed(const uint8_t* data, size_t size) {
         return TryParseVp9(data, size);
     }
 
-    const size_t room =
-        (options_.max_bytes > buffer_.size()) ? options_.max_bytes - buffer_.size() : 0;
+    const size_t room = (options_.max_bytes > buffer_.size()) ? options_.max_bytes - buffer_.size() : 0;
     if (room == 0) {
         given_up_ = true;
-        give_up_reason_ = "带内数据已攒到上限 " + std::to_string(options_.max_bytes) +
-                          " 字节仍未见参数集";
+        give_up_reason_ = "带内数据已攒到上限 " + std::to_string(options_.max_bytes) + " 字节仍未见参数集";
         return false;
     }
     buffer_.insert(buffer_.end(), data, data + (size < room ? size : room));
@@ -189,9 +191,11 @@ bool InBandParameterSetProbe::Feed(const uint8_t* data, size_t size) {
         should_try = true;
     }
 
-    if (!should_try) return false;
+    if (!should_try)
+        return false;
 
-    if (TryParse()) return true;
+    if (TryParse())
+        return true;
 
     if (!is_av1) {
         // 记下"曾经看到过参数集但没解成"，供上面的补齐重试判据使用
@@ -202,4 +206,4 @@ bool InBandParameterSetProbe::Feed(const uint8_t* data, size_t size) {
     return false;
 }
 
-}  // namespace videoeye
+} // namespace videoeye

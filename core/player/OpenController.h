@@ -84,12 +84,12 @@ struct OpenAttempt {
 // Prepare()（可在后台线程执行）所需的全部输入。
 struct OpenPrepareParams {
     QString url;
-    const AVInputFormat* input_format = nullptr;   // 借用; 通常为 nullptr
-    AVDictionary* input_options = nullptr;          // 借用并移交所有权(由 Prepare 释放)
+    const AVInputFormat* input_format = nullptr; // 借用; 通常为 nullptr
+    AVDictionary* input_options = nullptr;       // 借用并移交所有权(由 Prepare 释放)
     int volume_percent = 100;
-    bool prefer_hw_decoding = false;                // 是否允许硬件解码
-    bool macroblock_analysis = false;               // 宏块分析启用时强制软件解码
-    std::shared_ptr<OpenAttempt> attempt;           // 取消/超时状态(必须非空)
+    bool prefer_hw_decoding = false;      // 是否允许硬件解码
+    bool macroblock_analysis = false;     // 宏块分析启用时强制软件解码
+    std::shared_ptr<OpenAttempt> attempt; // 取消/超时状态(必须非空)
 };
 
 // 一次打开请求的产物: 完全独立于 PlaybackSession。
@@ -100,20 +100,20 @@ struct OpenResult {
     bool ok = false;
     QString error;
 
-    AVFormatContext* format_ctx = nullptr;          // 独立上下文, 由本结构拥有
+    AVFormatContext* format_ctx = nullptr; // 独立上下文, 由本结构拥有
     std::unique_ptr<VideoDecoder> video_decoder;
     std::unique_ptr<AudioDecoder> audio_decoder;
     std::unique_ptr<AudioOutput> audio_output;
 
-    int video_stream_index = -1;                    // 已按封面图降级后的可播放视频流
+    int video_stream_index = -1; // 已按封面图降级后的可播放视频流
     int audio_stream_index = -1;
-    bool has_video = false;                          // 文件里有没有视频轨(含封面图)
+    bool has_video = false; // 文件里有没有视频轨(含封面图)
     model::StreamInfo stream_info;
     // 媒体信息文本: 在后台探测时顺带从同一个上下文格式化（MediaInfoAnalyzer::
     // FormatFromContext），UI 不再为它单独跑一次 avformat 打开/探测。
     std::string media_info_text;
     int duration_ms = 0;
-    QImage cover_art;                                // 可能为空
+    QImage cover_art; // 可能为空
 
     OpenResult() = default;
     OpenResult(const OpenResult&) = delete;
@@ -126,7 +126,9 @@ struct OpenResult {
     // 源对象再析构一次又变成 double free。
     // OpenAsync 正是靠 lambda 捕获 `result = std::move(result)` 把产物从后台线程搬进
     // UI 队列的, 这条路径一走就是"打开必崩"。
-    OpenResult(OpenResult&& other) noexcept { MoveFrom(other); }
+    OpenResult(OpenResult&& other) noexcept {
+        MoveFrom(other);
+    }
     OpenResult& operator=(OpenResult&& other) noexcept {
         if (this != &other) {
             Release();
@@ -178,19 +180,19 @@ private:
     static bool CheckRuntimeVersion(QString& out_error);
     // 打开输入并探测流信息；成功后上下文交由 result 拥有(失败时 result.format_ctx 可能为空)。
     static bool OpenAndProbe(const OpenPrepareParams& params, OpenResult& result);
-    static bool FindStreams(AVFormatContext* fmt, int& video_index, int& audio_index,
-                            const AVCodec*& best_video_codec, QString& out_error);
+    static bool FindStreams(AVFormatContext* fmt, int& video_index, int& audio_index, const AVCodec*& best_video_codec,
+                            QString& out_error);
     // 封面图: 解出 QImage 返回(可能为空)；是否命中由调用方用 IsCoverArtStream 判定。
     static QImage DecodeCoverArt(AVStream* video_stream);
-    static bool PrepareVideoDecoder(const OpenPrepareParams& params, AVFormatContext* fmt,
-                                    int video_index, const AVCodec* best_video_codec,
-                                    std::unique_ptr<VideoDecoder>& out_decoder, QString& out_error);
-    static bool PrepareAudioDecoder(const OpenPrepareParams& params, AVFormatContext* fmt,
-                                    int audio_index, std::unique_ptr<AudioDecoder>& out_decoder,
+    static bool PrepareVideoDecoder(const OpenPrepareParams& params, AVFormatContext* fmt, int video_index,
+                                    const AVCodec* best_video_codec, std::unique_ptr<VideoDecoder>& out_decoder,
+                                    QString& out_error);
+    static bool PrepareAudioDecoder(const OpenPrepareParams& params, AVFormatContext* fmt, int audio_index,
+                                    std::unique_ptr<AudioDecoder>& out_decoder,
                                     std::unique_ptr<AudioOutput>& out_output, QString& out_error);
 
     PlaybackSession& playback_;
 };
 
-}  // namespace player
-}  // namespace videoeye
+} // namespace player
+} // namespace videoeye

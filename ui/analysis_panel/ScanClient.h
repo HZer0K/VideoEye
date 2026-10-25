@@ -26,12 +26,16 @@ public:
 
     // 导出 CSV 的默认文件名用当前文件路径拼，面板换文件时同步一次。
     // 默认不存 —— 只有需要按文件路径起默认名的页面才覆盖。
-    virtual void SetSourcePath(const QString& path) { (void)path; }
+    virtual void SetSourcePath(const QString& path) {
+        (void)path;
+    }
 
     // 本页结果里的异常条数（侧栏导航标记用：页面对应的"问题表/异常表"行数）。
     // 默认 0 = 本页没有异常口径，侧栏不显示徽标；不要返回"表里所有行"这种
     // 把明细当异常的数（帧表/包表有几千行，徽标会变成噪音）。
-    virtual int IssueCount() const { return 0; }
+    virtual int IssueCount() const {
+        return 0;
+    }
 
     // 扫描开始 / 终态一起切扫描态。三种终态（完成/取消/失败）都必须复位，
     // 否则页面卡在扫描中：取消按钮还亮着、"开始分析"永久禁用。
@@ -39,12 +43,18 @@ public:
 
     // 共用扫描的进度显示。默认不显示 —— 没有进度条的页面不必覆盖；
     // 进度本身已在质量诊断页集中展示，不必每页再复制一条。
-    virtual void SetProgress(int percent) { (void)percent; }
-    virtual void SetProgressFormat(const QString& format) { (void)format; }
+    virtual void SetProgress(int percent) {
+        (void)percent;
+    }
+    virtual void SetProgressFormat(const QString& format) {
+        (void)format;
+    }
 
     // 面板发起扫描前调用：把本页 UI 上的选项并入全局 AnalysisOptions。
     // 默认不并 —— 没有独立选项的页面不必实现。
-    virtual void FillScanOptions(AnalysisOptions& options) { (void)options; }
+    virtual void FillScanOptions(AnalysisOptions& options) {
+        (void)options;
+    }
 };
 
 } // namespace ui

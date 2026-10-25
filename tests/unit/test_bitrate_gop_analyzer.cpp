@@ -33,7 +33,8 @@ void Generate(BitrateGopAnalyzer& analyzer, const GenOptions& opt) {
         const double ts = static_cast<double>(i) * frame_dur;
         const bool is_key = (i % opt.gop) == 0;
         double bytes = opt.base_bytes * (is_key ? 5.0 : 1.0);
-        if (opt.vbr && (i % 60) < 20) bytes *= 4.0;  // 每 60 帧一段高复杂度
+        if (opt.vbr && (i % 60) < 20)
+            bytes *= 4.0; // 每 60 帧一段高复杂度
         const int64_t size = static_cast<int64_t>(bytes);
         if (opt.emit_frame_types) {
             model::FrameType type = model::FrameType::P;
@@ -49,7 +50,7 @@ void Generate(BitrateGopAnalyzer& analyzer, const GenOptions& opt) {
     }
 }
 
-}  // namespace
+} // namespace
 
 // ---- 验收 1: 固定 GOP 应输出稳定 GOP 长度 ----
 TEST(BitrateGopAnalyzerTest, FixedGopProducesStableLength) {
@@ -91,7 +92,8 @@ TEST(BitrateGopAnalyzerTest, LongGopTriggersWarning) {
     }
     bool has_suggestion = false;
     for (const auto& s : r.suggestions) {
-        if (s.find("超长 GOP") != std::string::npos) has_suggestion = true;
+        if (s.find("超长 GOP") != std::string::npos)
+            has_suggestion = true;
     }
     EXPECT_TRUE(has_suggestion);
 }
@@ -124,7 +126,7 @@ TEST(BitrateGopAnalyzerTest, VbrShowsPeakVsAverage) {
 
 TEST(BitrateGopAnalyzerTest, AutoTargetPeakDoesNotFireWhenBelow) {
     BitrateGopAnalyzer analyzer;
-    analyzer.Reset();  // 自动目标峰值 = 平均 * 2.0
+    analyzer.Reset(); // 自动目标峰值 = 平均 * 2.0
     GenOptions g;
     g.frames = 600;
     g.gop = 50;
@@ -142,16 +144,16 @@ TEST(BitrateGopAnalyzerTest, SceneChangeWithoutKeyframeProducesSuggestion) {
     analyzer.Reset();
     GenOptions g;
     g.frames = 750;
-    g.gop = 250;  // 25fps -> 10 秒一个关键帧
+    g.gop = 250; // 25fps -> 10 秒一个关键帧
     Generate(analyzer, g);
 
     std::vector<SceneChangeResult> cuts;
-    SceneChangeResult far_cut;  // 4.8s，远离关键帧
+    SceneChangeResult far_cut; // 4.8s，远离关键帧
     far_cut.frame_index = 120;
     far_cut.timestamp = 120.0 / 25.0;
     far_cut.score = 0.85;
     cuts.push_back(far_cut);
-    SceneChangeResult on_key;  // 20.0s，正好是关键帧
+    SceneChangeResult on_key; // 20.0s，正好是关键帧
     on_key.frame_index = 500;
     on_key.timestamp = 500.0 / 25.0;
     on_key.score = 0.90;
@@ -167,7 +169,8 @@ TEST(BitrateGopAnalyzerTest, SceneChangeWithoutKeyframeProducesSuggestion) {
 
     bool has_suggestion = false;
     for (const auto& s : r.suggestions) {
-        if (s.find("场景切换") != std::string::npos) has_suggestion = true;
+        if (s.find("场景切换") != std::string::npos)
+            has_suggestion = true;
     }
     EXPECT_TRUE(has_suggestion);
 }
@@ -216,8 +219,8 @@ TEST(BitrateGopAnalyzerTest, SingleKeyframeIsFlaggedAsSparse) {
     BitrateGopAnalyzer analyzer;
     analyzer.Reset();
     GenOptions g;
-    g.frames = 1800;      // 25fps -> 72 秒
-    g.gop = 100000;       // 仅第 0 帧为关键帧
+    g.frames = 1800; // 25fps -> 72 秒
+    g.gop = 100000;  // 仅第 0 帧为关键帧
     Generate(analyzer, g);
     const BitrateGopAnalysis& r = analyzer.Finish();
 
@@ -255,7 +258,8 @@ TEST(BitrateGopAnalyzerTest, FinishIsIdempotent) {
 // 修法: 包字节进"待认领池"，帧产出时从池里认领 —— 两套账分开维护、总量守恒。
 int64_t SumGopBytes(const BitrateGopAnalysis& r) {
     int64_t total = 0;
-    for (const auto& gop : r.gops) total += gop.byte_count;
+    for (const auto& gop : r.gops)
+        total += gop.byte_count;
     return total;
 }
 
@@ -270,15 +274,14 @@ TEST(BitrateGopAnalyzerTest, DelayedDecoderFramesConserveBytes) {
     // 5 帧一起出来（第 0 帧是 IDR），时间戳回到各自的位置
     std::vector<BitrateGopAnalyzer::FrameEvent> frames;
     for (int i = 0; i < 5; ++i) {
-        frames.push_back({static_cast<double>(i) * 0.1,
-                          i == 0 ? model::FrameType::I : model::FrameType::P, i == 0});
+        frames.push_back({static_cast<double>(i) * 0.1, i == 0 ? model::FrameType::I : model::FrameType::P, i == 0});
     }
     analyzer.OnFramesClaimPending(0, frames);
     const BitrateGopAnalysis& r = analyzer.Finish();
 
-    EXPECT_EQ(r.total_bytes, 500);   // 包级账：一个字节都不少
+    EXPECT_EQ(r.total_bytes, 500); // 包级账：一个字节都不少
     EXPECT_EQ(r.total_frames, 5);
-    EXPECT_EQ(r.frame_bytes, 500);   // 帧级账：全部字节都归到了帧上
+    EXPECT_EQ(r.frame_bytes, 500); // 帧级账：全部字节都归到了帧上
     EXPECT_EQ(r.unassociated_bytes, 0);
     // 关键断言：GOP 字节之和 == 总字节（老实现只有 100）
     EXPECT_EQ(SumGopBytes(r), r.total_bytes);
@@ -297,8 +300,7 @@ TEST(BitrateGopAnalyzerTest, ImmediateDecoderFramesAreExact) {
         analyzer.OnPacketBytes(0, static_cast<double>(i) * 0.1, 100,
                                /*awaiting_frame=*/true);
         std::vector<BitrateGopAnalyzer::FrameEvent> one{
-            {static_cast<double>(i) * 0.1,
-             i == 0 ? model::FrameType::I : model::FrameType::P, i == 0}};
+            {static_cast<double>(i) * 0.1, i == 0 ? model::FrameType::I : model::FrameType::P, i == 0}};
         analyzer.OnFramesClaimPending(0, one);
     }
     const BitrateGopAnalysis& r = analyzer.Finish();
@@ -348,8 +350,8 @@ TEST(BitrateGopAnalyzerTest, BytesWithoutFramesStayUnassociated) {
 TEST(BitrateGopAnalyzerTest, DownsamplingConservesBytesAndDuration) {
     auto feed = [](BitrateGopAnalyzer& analyzer) {
         for (int i = 0; i < 20; ++i) {
-            analyzer.OnFrame(0, static_cast<double>(i) * 0.1, 100,
-                             i == 0 ? model::FrameType::I : model::FrameType::P, i == 0);
+            analyzer.OnFrame(0, static_cast<double>(i) * 0.1, 100, i == 0 ? model::FrameType::I : model::FrameType::P,
+                             i == 0);
         }
     };
 
@@ -383,7 +385,7 @@ TEST(BitrateGopAnalyzerTest, DownsamplingConservesBytesAndDuration) {
     const model::MetricSeries* w_limited = limited.WindowCurve(5.0);
     ASSERT_TRUE(w_full != nullptr);
     ASSERT_TRUE(w_limited != nullptr);
-    const double expected_kbps = 2000.0 * 8.0 / 1000.0 / 5.0;  // 3.2 kbps
+    const double expected_kbps = 2000.0 * 8.0 / 1000.0 / 5.0; // 3.2 kbps
     EXPECT_NEAR(w_full->Max(), expected_kbps, 0.01);
     EXPECT_NEAR(w_limited->Max(), expected_kbps, 0.01);
 }
@@ -396,8 +398,8 @@ TEST(BitrateGopAnalyzerTest, DownsampledBucketsAreNotReportedAsOversizedFrames) 
     analyzer.Reset(opts);
     // 20 帧等大（100 字节）：没有任何一帧超过均值 8 倍，不该有异常
     for (int i = 0; i < 20; ++i) {
-        analyzer.OnFrame(0, static_cast<double>(i) * 0.1, 100,
-                         i == 0 ? model::FrameType::I : model::FrameType::P, i == 0);
+        analyzer.OnFrame(0, static_cast<double>(i) * 0.1, 100, i == 0 ? model::FrameType::I : model::FrameType::P,
+                         i == 0);
     }
     const BitrateGopAnalysis& r = analyzer.Finish();
 

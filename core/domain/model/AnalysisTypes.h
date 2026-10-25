@@ -24,10 +24,10 @@ namespace model {
 // 区分"完整扫到 EOF"、"命中包数上限只抽样"、"被取消"、"读取/打开失败"，
 // 让报告与 UI 能明确标注非完整结果，避免把截断/IO 错误或抽样当成完整 QC 结论。
 enum class AnalysisStatus {
-    Complete,    // 完整扫描到 EOF
-    Sampled,     // 命中 max_packets 上限，仅完成抽样
-    Cancelled,   // 被用户取消
-    Failed,      // 打开 / 探测 / 读取数据包失败
+    Complete,  // 完整扫描到 EOF
+    Sampled,   // 命中 max_packets 上限，仅完成抽样
+    Cancelled, // 被用户取消
+    Failed,    // 打开 / 探测 / 读取数据包失败
 };
 
 const char* ToString(AnalysisStatus status);
@@ -35,8 +35,8 @@ const char* ToString(AnalysisStatus status);
 // 单条流的静态摘要（demux 层，不解码）
 struct StreamDigest {
     int index = -1;
-    int media_type = -1;          // AVMediaType
-    bool attached_picture = false;  // 封面图片：不计入可播放视频轨，也不进视频 QC
+    int media_type = -1;           // AVMediaType
+    bool attached_picture = false; // 封面图片：不计入可播放视频轨，也不进视频 QC
     std::string codec_name;
     std::string profile_name;
     int width = 0;
@@ -47,13 +47,17 @@ struct StreamDigest {
     int64_t bitrate_bps = 0;
     int64_t packet_count = 0;
     int64_t byte_count = 0;
-    int64_t frame_count = 0;      // 视频按包估算
+    int64_t frame_count = 0; // 视频按包估算
     int64_t key_frame_count = 0;
     double start_seconds = 0.0;
     double duration_seconds = 0.0;
 
-    bool IsVideo() const { return media_type == 0; }  // AVMEDIA_TYPE_VIDEO
-    bool IsAudio() const { return media_type == 1; }  // AVMEDIA_TYPE_AUDIO
+    bool IsVideo() const {
+        return media_type == 0;
+    } // AVMEDIA_TYPE_VIDEO
+    bool IsAudio() const {
+        return media_type == 1;
+    } // AVMEDIA_TYPE_AUDIO
 };
 
 } // namespace model

@@ -45,7 +45,8 @@ bool WriteFile(const fs::path& path, const std::string& content) {
     std::error_code ec;
     fs::create_directories(path.parent_path(), ec);
     std::ofstream out(path, std::ios::binary);
-    if (!out) return false;
+    if (!out)
+        return false;
     out << content;
     return true;
 }
@@ -71,7 +72,7 @@ RunOutcome RunEngine(const fs::path& path) {
         out.result = result;
     };
 
-    AnalysisOptions options;  // analyze_streaming_package 默认开
+    AnalysisOptions options; // analyze_streaming_package 默认开
     AnalysisEngine engine;
     engine.Run(path.string(), options, callbacks, &out.result);
     return out;
@@ -90,15 +91,17 @@ const char* const kValidHls = "#EXTM3U\n"
                               "#EXT-X-ENDLIST\n";
 
 bool WriteValidHlsPackage(const fs::path& root) {
-    if (!WriteFile(root / "index.m3u8", kValidHls)) return false;
+    if (!WriteFile(root / "index.m3u8", kValidHls))
+        return false;
     // 分片本体只要存在即可：本阶段不解析 TS 内容（那是 TsStructureAnalyzer 的活）
     for (const char* name : {"seg0.ts", "seg1.ts"}) {
-        if (!WriteFile(root / name, std::string(2048, '\0'))) return false;
+        if (!WriteFile(root / name, std::string(2048, '\0')))
+            return false;
     }
     return true;
 }
 
-}  // namespace
+} // namespace
 
 // ---------------------------------------------------------------------------
 // 无效清单：两条失败分支都必须把 scan_status 改成 Failed
@@ -116,8 +119,7 @@ TEST(StreamingManifestScanStatus, InvalidHlsReportsFailedStatus) {
     EXPECT_EQ(0, out.finished_calls) << "失败分支不该再走 on_finished";
 
     // 核心断言: 回调说失败，结果对象也必须说失败（默认值是 Complete）
-    EXPECT_EQ(AnalysisStatus::Failed, out.result.scan_status)
-        << "scan_status 仍停在默认的 Complete";
+    EXPECT_EQ(AnalysisStatus::Failed, out.result.scan_status) << "scan_status 仍停在默认的 Complete";
     EXPECT_FALSE(out.result.error_message.empty()) << "失败终态必须写明原因";
     EXPECT_NE(0, out.result.scan_error_code) << "失败终态不该留着 0(=无错误)";
     EXPECT_FALSE(out.result.streaming_analyzed) << "没跑完就不能标成已分析";
@@ -138,8 +140,7 @@ TEST(StreamingManifestScanStatus, InvalidDashReportsFailedStatus) {
 
     EXPECT_EQ(1, out.failed_calls);
     EXPECT_EQ(0, out.finished_calls);
-    EXPECT_EQ(AnalysisStatus::Failed, out.result.scan_status)
-        << "scan_status 仍停在默认的 Complete";
+    EXPECT_EQ(AnalysisStatus::Failed, out.result.scan_status) << "scan_status 仍停在默认的 Complete";
     EXPECT_FALSE(out.result.error_message.empty());
     EXPECT_NE(0, out.result.scan_error_code);
     EXPECT_FALSE(out.result.streaming_analyzed);
@@ -153,15 +154,14 @@ TEST(StreamingManifestScanStatus, InvalidDashReportsFailedStatus) {
 
 TEST(AnalysisScanStatus, UnopenableFileReportsFailedStatus) {
     const fs::path dir = MakeTempDir("open");
-    const fs::path missing = dir / "does_not_exist.mp4";  // 故意不创建
+    const fs::path missing = dir / "does_not_exist.mp4"; // 故意不创建
     ASSERT_FALSE(fs::exists(missing));
 
     const RunOutcome out = RunEngine(missing);
 
     EXPECT_EQ(1, out.failed_calls);
     EXPECT_EQ(0, out.finished_calls);
-    EXPECT_EQ(AnalysisStatus::Failed, out.result.scan_status)
-        << "scan_status 仍停在默认的 Complete";
+    EXPECT_EQ(AnalysisStatus::Failed, out.result.scan_status) << "scan_status 仍停在默认的 Complete";
     EXPECT_FALSE(out.result.error_message.empty());
     // 打开失败这条路上有真 AVERROR，不能退化成 -1
     EXPECT_LT(out.result.scan_error_code, 0);

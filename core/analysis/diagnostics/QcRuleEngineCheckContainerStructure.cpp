@@ -9,26 +9,27 @@ namespace detail {
 
 // MP4/fMP4 容器一致性（container.mp4.*）。调用方（CheckRule 前缀路由）保证
 // rule.id 属于本类，故此处不再做前缀判断。
-std::vector<model::DiagnosticIssue> CheckMp4ContainerRules(const model::QcRule& rule,
-                                                           const model::AnalysisResult& result,
-                                                           const IssueFactory& make_issue) {
+std::vector<model::DiagnosticIssue>
+CheckMp4ContainerRules(const model::QcRule& rule, const model::AnalysisResult& result, const IssueFactory& make_issue) {
     std::vector<model::DiagnosticIssue> issues;
 
     // ---------- MP4/fMP4 容器一致性 ----------
     // 问题由 Mp4SampleTableAnalyzer 产出（含具体样本号 / 偏移 / 分片号），
     // 规则只做三件事: 决定要不要报、按什么级别报、阈值类再核一次阈值。
-    if (!result.mp4_samples_analyzed || !result.mp4_samples.valid) return issues;
+    if (!result.mp4_samples_analyzed || !result.mp4_samples.valid)
+        return issues;
 
     for (const auto& finding : result.mp4_samples.issues) {
-        if (finding.code != rule.id) continue;
+        if (finding.code != rule.id)
+            continue;
         // 阈值类规则（elst 首帧偏移 / 音视频起点差）：分析器用的是自己的默认阈值，
         // 这里按用户在规则表里改过的阈值再核一次
-        if (rule.op == model::QcRuleOp::MaxExceeded && rule.threshold > 0.0 &&
-            finding.metric_value > 0.0 && finding.metric_value <= rule.threshold) {
+        if (rule.op == model::QcRuleOp::MaxExceeded && rule.threshold > 0.0 && finding.metric_value > 0.0 &&
+            finding.metric_value <= rule.threshold) {
             continue;
         }
-        if (rule.op == model::QcRuleOp::MinBelow && rule.threshold != 0.0 &&
-            finding.metric_value != 0.0 && finding.metric_value >= rule.threshold) {
+        if (rule.op == model::QcRuleOp::MinBelow && rule.threshold != 0.0 && finding.metric_value != 0.0 &&
+            finding.metric_value >= rule.threshold) {
             continue;
         }
 
@@ -37,8 +38,7 @@ std::vector<model::DiagnosticIssue> CheckMp4ContainerRules(const model::QcRule& 
         if (finding.has_sample_index && finding.track_id >= 0) {
             const model::Mp4TrackSampleTable* track =
                 result.mp4_samples.FindTrack(static_cast<uint32_t>(finding.track_id));
-            const model::Mp4Sample* sample =
-                track ? track->FindSample(finding.sample_index) : nullptr;
+            const model::Mp4Sample* sample = track ? track->FindSample(finding.sample_index) : nullptr;
             if (sample && track->media_timescale > 0) {
                 seconds = sample->CtsSeconds(track->media_timescale);
             }
@@ -72,16 +72,18 @@ std::vector<model::DiagnosticIssue> CheckStreamingContainerRules(const model::Qc
     // 与 container.mp4.* 完全同构：问题（含 variant 号 / 分片序号 / 时间点）由
     // HlsManifestAnalyzer / DashManifestAnalyzer / SegmentQcAnalyzer 产出，
     // 规则只决定"要不要报、以什么级别报、阈值类再核一次"。
-    if (!result.streaming_analyzed || !result.streaming_package.valid) return issues;
+    if (!result.streaming_analyzed || !result.streaming_package.valid)
+        return issues;
 
     for (const auto& finding : result.streaming_package.issues) {
-        if (finding.code != rule.id) continue;
-        if (rule.op == model::QcRuleOp::MaxExceeded && rule.threshold > 0.0 &&
-            finding.metric_value > 0.0 && finding.metric_value <= rule.threshold) {
+        if (finding.code != rule.id)
+            continue;
+        if (rule.op == model::QcRuleOp::MaxExceeded && rule.threshold > 0.0 && finding.metric_value > 0.0 &&
+            finding.metric_value <= rule.threshold) {
             continue;
         }
-        if (rule.op == model::QcRuleOp::MinBelow && rule.threshold != 0.0 &&
-            finding.metric_value != 0.0 && finding.metric_value >= rule.threshold) {
+        if (rule.op == model::QcRuleOp::MinBelow && rule.threshold != 0.0 && finding.metric_value != 0.0 &&
+            finding.metric_value >= rule.threshold) {
             continue;
         }
 
@@ -102,6 +104,6 @@ std::vector<model::DiagnosticIssue> CheckStreamingContainerRules(const model::Qc
     return issues;
 }
 
-}  // namespace detail
-}  // namespace diagnostics
-}  // namespace videoeye
+} // namespace detail
+} // namespace diagnostics
+} // namespace videoeye

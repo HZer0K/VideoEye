@@ -40,7 +40,7 @@ std::vector<QString> Ids() {
     return out;
 }
 
-}  // namespace
+} // namespace
 
 TEST(AnalysisPageCatalogTest, PageOrderMatchesStackContract) {
     // 顺序 == 外部 QStackedWidget 的页序号。改这张表之前先想清楚：
@@ -85,10 +85,8 @@ TEST(AnalysisPageCatalogTest, GroupOrderKeysAreUnique) {
     // 表格的插入次序 —— 表面上还排得对，但改一个不相关的页就可能翻掉。
     std::set<QString> seen;
     for (const AnalysisPageDescriptor& entry : AnalysisPageCatalog()) {
-        const QString key = QString::fromUtf8(entry.group) + QStringLiteral("/") +
-                            QString::number(entry.order);
-        EXPECT_TRUE(seen.insert(key).second)
-            << "同一分组里组内序号撞车: " << key.toStdString();
+        const QString key = QString::fromUtf8(entry.group) + QStringLiteral("/") + QString::number(entry.order);
+        EXPECT_TRUE(seen.insert(key).second) << "同一分组里组内序号撞车: " << key.toStdString();
     }
 }
 
@@ -97,9 +95,8 @@ TEST(AnalysisPageCatalogTest, BadgePagesExistInCatalog) {
     // 那边写死的 id 必须在目录里 —— 否则徽标永远画不出来，且不报错。
     const std::vector<QString> ids = Ids();
     const std::vector<QString> badge_pages = {
-        QStringLiteral("quality_diagnostics"), QStringLiteral("bitrate_gop"),
-        QStringLiteral("audio_qc"),            QStringLiteral("color_hdr"),
-        QStringLiteral("streaming_packets"),   QStringLiteral("codec_parameters"),
+        QStringLiteral("quality_diagnostics"), QStringLiteral("bitrate_gop"),       QStringLiteral("audio_qc"),
+        QStringLiteral("color_hdr"),           QStringLiteral("streaming_packets"), QStringLiteral("codec_parameters"),
         QStringLiteral("subtitle_aux"),        QStringLiteral("visual_quality"),
     };
     for (const QString& id : badge_pages) {

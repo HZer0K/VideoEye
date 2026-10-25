@@ -46,8 +46,7 @@ void StreamingManifestScan::Run(const std::string& file_path, const AnalysisOpti
     if (!ok) {
         // 清单解析失败也是失败终态：pkg 里只有半截数据，scan_status 必须跟着改成
         // Failed（默认值 Complete 会让"回调报失败 + 结果报完成"同时成立）。
-        MarkFailed(result, pkg.error_message.empty() ? ("无法解析清单: " + file_path)
-                                                     : pkg.error_message);
+        MarkFailed(result, pkg.error_message.empty() ? ("无法解析清单: " + file_path) : pkg.error_message);
         NotifyFailed(callbacks, result.error_message);
         return;
     }
@@ -62,8 +61,7 @@ void StreamingManifestScan::Run(const std::string& file_path, const AnalysisOpti
         if (qc == SegmentQcAnalyzer::StageStatus::kFailed) {
             // 走失败收尾: pkg 里已经填了 error_message / issues, 交给 NotifyFailed 报出去。
             // 与清单解析失败同理: 状态必须一起改, 否则结果是 Failed 的回调 + Complete 的对象。
-            MarkFailed(result, pkg.error_message.empty() ? ("分片级校验失败: " + file_path)
-                                                         : pkg.error_message);
+            MarkFailed(result, pkg.error_message.empty() ? ("分片级校验失败: " + file_path) : pkg.error_message);
             NotifyFailed(callbacks, result.error_message);
             return;
         }
@@ -87,7 +85,8 @@ void StreamingManifestScan::Run(const std::string& file_path, const AnalysisOpti
     } else {
         double longest = 0.0;
         for (const model::MediaPlaylistInfo& pl : pkg.playlists) {
-            if (pl.total_duration_seconds > longest) longest = pl.total_duration_seconds;
+            if (pl.total_duration_seconds > longest)
+                longest = pl.total_duration_seconds;
         }
         result.duration_seconds = longest;
     }
@@ -95,11 +94,10 @@ void StreamingManifestScan::Run(const std::string& file_path, const AnalysisOpti
     result.scan_status = model::AnalysisStatus::Complete;
 
     LOG_INFO("流媒体清单分析完成: kind=" + std::to_string(static_cast<int>(pkg.kind)) +
-             " ladder=" + std::to_string(pkg.ladder.size()) +
-             " segments=" + std::to_string(pkg.TotalSegments()) +
+             " ladder=" + std::to_string(pkg.ladder.size()) + " segments=" + std::to_string(pkg.TotalSegments()) +
              " issues=" + std::to_string(pkg.issues.size()));
     NotifyProgress(callbacks, 100.0, "清单分析完成");
     NotifyFinished(callbacks, true, result);
 }
 
-}  // namespace videoeye
+} // namespace videoeye
