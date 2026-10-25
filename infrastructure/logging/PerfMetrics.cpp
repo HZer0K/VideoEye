@@ -17,12 +17,13 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-// 这两个系统头有顺序要求：psapi.h 依赖 windows.h 先定义 DWORD/WINAPI，
-// 按字母序重排会编译失败，所以这一块不能让 clang-format 的 SortIncludes 动。
-// clang-format off
+// psapi.h 本身只 include winapifamily.h，DWORD / WINAPI / HANDLE 全靠调用方先带进
+// windows.h —— 两个头必须**按这个顺序**出现，字母序重排会直接编译失败。
+// 用空行把它们切成两个独立的 include 块：clang-format 只块内排序、不跨空行合并，
+// 因此顺序天然保住，不需要 clang-format off/on（那会把整段从格式化里摘出去）。
 #include <windows.h>
+
 #include <psapi.h>
-// clang-format on
 // psapi 的函数实际由 kernel32 转发，但导入库仍要显式链。
 // 写在源码里而不是 CMake 里：这个头只被本 TU 用，扩散到构建脚本反而让人
 // 以为"整个工程都需要 psapi"。

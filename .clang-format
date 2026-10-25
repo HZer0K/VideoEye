@@ -75,6 +75,12 @@ AccessModifierOffset: -4
 # 注释
 ReflowComments: true
 SortIncludes: true
+# include 分块策略：Preserve = 空行分隔的块各自排序、**不跨块合并**。
+# 基础设施的 PerfMetrics.cpp 靠这一点保住 windows.h -> psapi.h 的顺序
+# （psapi.h 只用 winapifamily.h，DWORD / WINAPI 全靠调用方先带进 windows.h）。
+# LLVM 的内建默认值当前也是 Preserve，但那是隐式继承：这里显式钉住，
+# 将来若有人改成 Regroup，空行会被合并、两个头按字母序颠倒并直接编译失败。
+IncludeBlocks: Preserve
 CommentPragmas: '^ IWYU pragma:'
 
 # 宏
