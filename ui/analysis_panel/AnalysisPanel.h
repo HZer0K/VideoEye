@@ -14,10 +14,8 @@
 
 #include <QList>
 #include <QMap>
-#include <QStackedWidget>
 #include <QString>
 #include <QStringList>
-#include <QTimer>
 #include <QWidget>
 
 #include <string>
@@ -26,9 +24,9 @@
 #include "core/domain/model/AnalysisEvent.h"
 #include "core/domain/model/AnalysisFeature.h"
 #include "core/domain/model/ContainerStructureInfo.h"
-#include "core/domain/model/FrameTimingInfo.h"
 #include "core/domain/model/MacroblockInfo.h"
 #include "core/domain/model/PacketInfo.h"
+#include "core/domain/model/QcReport.h"
 #include "core/domain/model/QualityMetric.h"
 #include "core/domain/model/SceneChangeResult.h"
 #include "core/domain/model/StreamStats.h"
@@ -37,17 +35,21 @@
 #include "core/domain/model/VisualDefect.h"
 #include "core/domain/model/VisualDefectOptions.h"
 
-#include "ui/AnalysisFacade.h"
-#include "ui/bitstream_panel/BitstreamPanel.h"
-#include "ui/reporting_panel/ReportingPanel.h"
-#include "ui/streaming_panel/StreamingPanel.h"
-
-// 建页工厂: 页面目录（顺序 = stack 页序号）、建页、侧栏徽标口径都在这里。
-// 面板自己只留"页面之间怎么接线"。
 #include "ui/analysis_panel/AnalysisPageFactory.h"
 #include "ui/analysis_panel/ScanClient.h"
+#include "ui/analysis_panel/ScanEndReason.h"
+
+class QStackedWidget;
+class QTimer;
 
 namespace videoeye {
+
+// AnalysisOptions / BitrateGopOptions 只在 OnSceneLinkRequested 与
+// SyncSubtitleThresholds 的引用形参里出现，前向声明就够 —— 不必把
+// AnalysisOptions.h 拖进每个包含本头的 TU。
+struct AnalysisOptions;
+struct BitrateGopOptions;
+
 namespace ui {
 
 // 分析面板类
@@ -83,30 +85,9 @@ public:
     void SetMacroblockAnalysisEnabled(bool enabled);
 
     // 设置当前视频文件路径 (供导出报告)
-    void SetCurrentVideoPath(const QString& path) {
-        current_video_path_ = path.toStdString();
-        // 切换文件后重置时间轴累计状态 (避免上一文件的数据混入)；
-        // 时间轴与 facade 都在诊断页里，由它自己清空
-        if (pages_.diagnostics)
-            pages_.diagnostics->ResetForNewFile();
-        // 报告与批量 QC 页需要当前文件来"按模板重新分析"
-        if (pages_.reporting)
-            pages_.reporting->SetCurrentFile(path);
-        // 拆出去的页面用当前路径拼导出 CSV 的默认文件名
-        if (pages_.scene_change)
-            pages_.scene_change->SetSourcePath(path);
-        // 共用同一次扫描的页面统一走注册表（码率 GOP / 音频 QC / 色彩 HDR）
-        for (ScanClient* page : scan_clients_)
-            page->SetSourcePath(path);
-        // 扫描总控在诊断页，换文件要同步它手里的当前路径
-        if (pages_.diagnostics)
-            pages_.diagnostics->SetSourcePath(path);
-        // 场景切换记录是播放期的累计结果，换文件必须清零（与帧/包那几页一致）
-        if (pages_.scene_change)
-            pages_.scene_change->Reset();
-        // 换文件 = 上一文件的分析结论全部作废：通知首页重置「分析状态」区
-        emit DiagnosticsStateChanged();
-    }
+    // 实现放在 .cpp：它要逐页调用 SetSourcePath / Reset，页面类型在头里只有前向
+    // 声明（见 AnalysisPageFactory.h），不能在这里内联。
+    void SetCurrentVideoPath(const QString& path);
 
     // 重新发射所有启用状态的开关信号 (用于文件打开后同步播放器状态)
     void EmitInitialFeatureStates();
@@ -198,7 +179,7 @@ public slots:
     void OnDiagnosticsProgress(double percent, const QString& stage);
     // 唯一的扫描终态收尾: 恢复共用页的按钮/进度（三种终态一视同仁），
     // 非失败时再把同一份结果分发下去。不再有"成功/取消各走一半"的分裂路径。
-    void OnScanEnded(DiagnosticsPage::ScanEndReason reason);
+    void OnScanEnded(ScanEndReason reason);
 
 private:
     // 初始化UI: 建页交给工厂（AnalysisPageFactory，顺序见 AnalysisPageCatalog），

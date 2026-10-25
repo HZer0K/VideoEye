@@ -26,24 +26,29 @@
 #include "core/domain/model/VisualDefectOptions.h"
 
 #include "ui/analysis_panel/AnalysisPageCatalog.h"
-#include "ui/analysis_panel/AudioQcPage.h"
-#include "ui/analysis_panel/BitrateGopPage.h"
-#include "ui/analysis_panel/ColorHdrPage.h"
-#include "ui/analysis_panel/ContainerStructurePage.h"
-#include "ui/analysis_panel/DiagnosticsPage.h"
-#include "ui/analysis_panel/EventTimelineView.h"
-#include "ui/analysis_panel/FramePacketView.h"
-#include "ui/analysis_panel/MacroblockView.h"
-#include "ui/analysis_panel/SceneChangePage.h"
-#include "ui/analysis_panel/StreamOverviewView.h"
-#include "ui/analysis_panel/SubtitleAuxPage.h"
-#include "ui/analysis_panel/VisualDefectPage.h"
-#include "ui/bitstream_panel/BitstreamPanel.h"
-#include "ui/reporting_panel/ReportingPanel.h"
-#include "ui/streaming_panel/StreamingPanel.h"
 
 namespace videoeye {
 namespace ui {
+
+// 页面类型只做前向声明：这个头被 AnalysisPanel.h（进而 MainWindow.h）包含，
+// 把 15 个页面头扇出去会让每个碰主窗口的 TU 都拖进整棵页面头树。
+// 真正需要完整类型的只有 AnalysisPageFactory.cpp（建页）与 AnalysisPanel.cpp
+// （跨页接线），它们在 .cpp 里各自 include。
+class AudioQcPage;
+class BitrateGopPage;
+class ColorHdrPage;
+class ContainerStructurePage;
+class DiagnosticsPage;
+class EventTimelineView;
+class FramePacketView;
+class MacroblockView;
+class SceneChangePage;
+class StreamOverviewView;
+class SubtitleAuxPage;
+class VisualDefectPage;
+class BitstreamPanel;
+class ReportingPanel;
+class StreamingPanel;
 
 // 建页所需的外部能力（面板注入）。全部是惰性求值 —— 建页顺序不保证诊断页已经建好，
 // 而若干页面钩子里要用它，所以一律以回调形式在**调用时**取，不在建页时取快照。

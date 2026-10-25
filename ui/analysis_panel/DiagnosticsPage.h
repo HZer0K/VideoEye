@@ -36,6 +36,7 @@
 #include "infrastructure/logging/PerfMetrics.h"
 #include "ui/AnalysisFacade.h"
 #include "ui/analysis_panel/AnalysisPageSupport.h"
+#include "ui/analysis_panel/ScanEndReason.h"
 
 #include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/QcReport.h"
@@ -60,12 +61,10 @@ public:
     // 码率 GOP / 音频 QC / 色彩 HDR / 字幕辅助 几页共用，它们必须在同一时刻一起回到
     // Idle。以前只在"成功"和"取消"时通知，失败时其它几页就一直停在扫描态
     // （取消按钮还亮着、"开始分析"永久禁用），和诊断页的"失败"状态互相矛盾。
-    enum class ScanEndReason {
-        Completed, // 正常跑完（含用户中途取消后回包 completed=false 的情形见 Cancelled）
-        Cancelled, // 被取消（结果不完整，但可用）
-        Failed,    // 打开 / 探测 / 读取失败，没有可用结果
-    };
-    Q_ENUM(ScanEndReason)
+    //
+    // 定义已提到 ui/analysis_panel/ScanEndReason.h：面板的公共 slot 也要用它，
+    // 不该为此 include 整个页面头。这里保留类内别名，既有写法不变。
+    using ScanEndReason = videoeye::ui::ScanEndReason;
 
     explicit DiagnosticsPage(QWidget* parent = nullptr);
 

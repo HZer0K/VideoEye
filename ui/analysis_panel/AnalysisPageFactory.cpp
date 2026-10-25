@@ -6,6 +6,23 @@
 #include "core/domain/model/QcReport.h"
 #include "infrastructure/logging/Logger.h"
 
+// 建页需要完整类型（工厂头只做前向声明，见那里的说明）。
+#include "ui/analysis_panel/AudioQcPage.h"
+#include "ui/analysis_panel/BitrateGopPage.h"
+#include "ui/analysis_panel/ColorHdrPage.h"
+#include "ui/analysis_panel/ContainerStructurePage.h"
+#include "ui/analysis_panel/DiagnosticsPage.h"
+#include "ui/analysis_panel/EventTimelineView.h"
+#include "ui/analysis_panel/FramePacketView.h"
+#include "ui/analysis_panel/MacroblockView.h"
+#include "ui/analysis_panel/SceneChangePage.h"
+#include "ui/analysis_panel/StreamOverviewView.h"
+#include "ui/analysis_panel/SubtitleAuxPage.h"
+#include "ui/analysis_panel/VisualDefectPage.h"
+#include "ui/bitstream_panel/BitstreamPanel.h"
+#include "ui/reporting_panel/ReportingPanel.h"
+#include "ui/streaming_panel/StreamingPanel.h"
+
 namespace videoeye {
 namespace ui {
 namespace {

@@ -32,8 +32,9 @@
 #include <memory>
 #include <vector>
 
+#include "core/domain/model/AnalysisOptions.h"
+#include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/SceneChangeResult.h"
-#include "ui/AnalysisFacade.h"
 #include "ui/analysis_panel/ScanClient.h"
 #include "ui/charts/MetricChartWidget.h"
 

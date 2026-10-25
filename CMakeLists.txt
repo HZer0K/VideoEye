@@ -208,6 +208,25 @@ list(FILTER UI_SOURCES EXCLUDE
     REGEX "ui/analysis_panel/(AudioFrameTableWidget|MacroblockView|PacketTableWidget|VideoFrameTableWidget)\\.")
 # 入口不属于 UI 库：主程序只编译 ui/app/main.cpp，其余 ui/*.cpp 进 VideoEyeUi。
 list(FILTER UI_SOURCES EXCLUDE REGEX "ui/app/main\\.cpp$")
+# 分析页组件（ui/analysis_panel）、码流页、流媒体页与 AnalysisFacade 单独成一个
+# target（见下面 VideoEyeUiAnalysisPages）：它们此前全在 VideoEyeUi 里，导致每个
+# 页面组件测试只能手列 .cpp 重编（新增子视图忘了同步就是 LNK2019）。
+# 独立成库后测试链库即可，页面源清单只在这一个 glob 里维护。
+file(GLOB_RECURSE ANALYSIS_PANEL_SOURCES CONFIGURE_DEPENDS
+    "ui/analysis_panel/*.cpp" "ui/analysis_panel/*.h"
+    "ui/bitstream_panel/*.cpp" "ui/bitstream_panel/*.h"
+    "ui/streaming_panel/*.cpp" "ui/streaming_panel/*.h"
+    "ui/AnalysisFacade.cpp" "ui/AnalysisFacade.h")
+# 四个记录表 / 宏块控件已在 VideoEyeUiAnalysisWidgets（见上面 ANALYSIS_WIDGET_SOURCES），
+# 不要在新库里重复 AUTOMOC。
+list(FILTER ANALYSIS_PANEL_SOURCES EXCLUDE
+    REGEX "ui/analysis_panel/(AudioFrameTableWidget|MacroblockView|PacketTableWidget|VideoFrameTableWidget)\\.")
+list(FILTER UI_SOURCES EXCLUDE REGEX "ui/analysis_panel/")
+list(FILTER UI_SOURCES EXCLUDE REGEX "ui/bitstream_panel/")
+list(FILTER UI_SOURCES EXCLUDE REGEX "ui/streaming_panel/")
+list(FILTER UI_SOURCES EXCLUDE REGEX "ui/AnalysisFacade\\.")
+# AnalysisFacade.h 带 Q_OBJECT，moc 只能在新库里生成一份。
+list(FILTER UI_HEADERS EXCLUDE REGEX "ui/AnalysisFacade\\.h")
 
 file(GLOB_RECURSE DOMAIN_SOURCES CONFIGURE_DEPENDS "core/domain/*.cpp" "core/domain/*.h")
 file(GLOB_RECURSE INFRA_SOURCES CONFIGURE_DEPENDS "infrastructure/*.cpp" "infrastructure/*.h")
@@ -230,6 +249,16 @@ file(GLOB_RECURSE ANALYSIS_PACKAGE_SOURCES CONFIGURE_DEPENDS
     "core/analysis/streaming/*.cpp" "core/analysis/streaming/*.h")
 list(FILTER ANALYSIS_PACKAGE_SOURCES EXCLUDE REGEX "ContainerStructureAnalyzer\\.")
 list(FILTER ANALYSIS_SOURCES EXCLUDE REGEX "core/analysis/(container|streaming)/")
+# quality 里的三个纯 C++ 分析器（音频 QC / 码率 GOP / 视觉缺陷）单独成一个 target
+# （见下面 VideoEyeAnalysisQuality）：它们只吃 domain / infrastructure，一行 libav
+# include 都没有，却因同属 VideoEyeAnalysis 被三个单测各自手列 .cpp 重编。
+# 拆出去之后测试链库即可，也不必为了一次单测把 FFmpeg 拖进来。
+file(GLOB_RECURSE ANALYSIS_QUALITY_SOURCES CONFIGURE_DEPENDS
+    "core/analysis/quality/AudioQcAnalyzer.cpp" "core/analysis/quality/AudioQcAnalyzer.h"
+    "core/analysis/quality/BitrateGopAnalyzer.cpp" "core/analysis/quality/BitrateGopAnalyzer.h"
+    "core/analysis/quality/VisualDefectAnalyzer.cpp" "core/analysis/quality/VisualDefectAnalyzer.h")
+list(FILTER ANALYSIS_SOURCES EXCLUDE
+    REGEX "core/analysis/quality/(AudioQcAnalyzer|BitrateGopAnalyzer|VisualDefectAnalyzer)\\.")
 # 分发器仍在 analysis 层：从上面那次目录级排除里单独取回来。
 file(GLOB_RECURSE ANALYSIS_DISPATCH_SOURCES CONFIGURE_DEPENDS
     "core/analysis/container/ContainerStructureAnalyzer.cpp"
@@ -354,6 +383,17 @@ target_link_libraries(VideoEyeAnalysisPackage
     PRIVATE VideoEyeInfrastructure
 )
 
+# --- analysis-quality: 三个不碰 FFmpeg 的分析器（analysis 的叶子层）---
+# AudioQcAnalyzer / BitrateGopAnalyzer / VisualDefectAnalyzer 只 include domain 结果
+# 类型、infrastructure 的 Logger 与 analysis 的 header-only 文本工具，没有任何
+# libav 调用。单独成库后，对应单测链库即可（以前各编一份 .cpp），也不会被迫把
+# 整层 analysis 与 FFmpeg 拖进测试的链接闭包。
+videoeye_add_module(VideoEyeAnalysisQuality ${ANALYSIS_QUALITY_SOURCES})
+target_link_libraries(VideoEyeAnalysisQuality
+    PUBLIC VideoEyeDomain
+    PRIVATE VideoEyeInfrastructure
+)
+
 # --- analysis: 各分析器与 orchestration ---
 videoeye_add_module(VideoEyeAnalysis ${ANALYSIS_SOURCES})
 # FFmpeg 与 Qt 挂 PUBLIC 而不是 PRIVATE: 这一层有多个公共头文件直接 include libav*
@@ -388,6 +428,8 @@ target_link_libraries(VideoEyeAnalysis
             # 容器 / 流媒体解析器与 FormatDetector 已下沉到叶子库；analysis 的编排
             # 只在 .cpp 里调用它们（公共头不 include），所以这条边保持 PRIVATE。
             VideoEyeAnalysisPackage
+            # 三个 FFmpeg-free 分析器（音频 QC / 码率 GOP / 视觉缺陷）
+            VideoEyeAnalysisQuality
             # 分析器的打开/探测阶段装 FFmpeg 中断回调（core/ffmpeg_io）
             VideoEyeFfmpegIo
 )
@@ -526,10 +568,15 @@ if(REPORTING_PANEL_SOURCES)
     # ReportingPanel.h"而拆出来的，而 ReportingPanel.h 本身就是 QWidget 系
     # （QCheckBox / QTableWidget 等 14 个 Qt 头）。挂 PRIVATE 的话，链它的目标
     # 编译这一页时直接找不到 Qt 的 include 目录。
+    # VideoEyeQc 挂 PUBLIC: ReportingPanel.h 的公共接口直接暴露 qc::QcProfile /
+    # qc::QcRunResult（成员与私有方法签名），include 这个头的目标必须能看见 core/qc
+    # 的类型。挂在 PRIVATE 只是靠静态库的 link 传播"看起来能编"，与"公共头依赖必须
+    # 从 PUBLIC 边透出"的规则不一致（audit_link_visibility.py 只校验 Qt / FFmpeg
+    # 这类系统依赖，模块间的这条边不归它管）。
     target_link_libraries(VideoEyeReportingPanel
         PUBLIC Qt6::Widgets
-        PRIVATE VideoEyeQc
-                VideoEyeReporting
+               VideoEyeQc
+        PRIVATE VideoEyeReporting
                 VideoEyeInfrastructure
     )
 endif()
@@ -575,6 +622,43 @@ target_link_libraries(VideoEyeUiAnalysisWidgets
             FFmpeg::avcodec
 )
 
+# --- ui/analysis pages: 分析面板各页 / 码流页 / 流媒体页（与 VideoEye 主库分开）---
+# 这一层是"页面组件 + 建页工厂 + AnalysisFacade"，不含主窗口与播放器。单独成库
+# 之后，页面组件测试链库即可，不必再手列 .cpp；新增一个子视图也不会因为测试
+# CMake 没同步而在链接期报 LNK2019（ARCHITECTURE §5.3 记录的历史坑）。
+#
+# PUBLIC 边只放**公共头直接需要**的模块：页面头 include Qt Widgets、domain 结果
+# 类型与图表控件（MetricChartWidget）。工厂头已经改成前向声明各页类型，页面头也
+# 不再 include ReportingPanel.h / 记录表控件头 —— 这两块只在 .cpp 里用，挂 PRIVATE
+# 即可（PRIVATE 依赖仍以 LINK_ONLY 形式传播链接，测试链本库不会缺符号）。
+if(ANALYSIS_PANEL_SOURCES)
+    videoeye_add_module(VideoEyeUiAnalysisPages ${ANALYSIS_PANEL_SOURCES})
+    # ui 内部子目录 include（"analysis_panel/..."）与 VideoEyeUi 保持同一套。
+    target_include_directories(VideoEyeUiAnalysisPages PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/ui
+    )
+    target_link_libraries(VideoEyeUiAnalysisPages
+        PUBLIC Qt6::Widgets
+               VideoEyeDomain
+               VideoEyeUiCharts
+        PRIVATE VideoEyeReportingPanel
+                VideoEyeUiAnalysisWidgets
+                VideoEyeAnalysis
+                VideoEyeQc
+                VideoEyeQcRules
+                VideoEyeReporting
+                VideoEyeMedia
+                VideoEyeInfrastructure
+                VideoEyeUiTheme
+                # FramePacketView.cpp 只取 AV_PICTURE_TYPE_* 等编译期常量
+                FFmpeg::avcodec
+    )
+    # AnalysisFacade.cpp 用 QtAnalysisController（core/qt）。
+    if(QTADAPTER_SOURCES)
+        target_link_libraries(VideoEyeUiAnalysisPages PRIVATE VideoEyeQtAdapters)
+    endif()
+endif()
+
 # --- ui: 主程序界面层 ---
 # 所有 ui/*.cpp（入口除外）编成一个静态库，主程序只保留 ui/app/main.cpp。
 # 好处: UI 组件测试链同一份实现，不必再把整层源码编进测试 exe；同一个 Q_OBJECT
@@ -605,6 +689,7 @@ if(UI_SOURCES)
                 VideoEyeUiCharts
                 VideoEyeUiTheme
                 VideoEyeUiAnalysisWidgets
+                VideoEyeUiAnalysisPages
                 VideoEyeReportingPanel
                 VideoEyeFfmpegTools
                 VideoEyeAnalysis

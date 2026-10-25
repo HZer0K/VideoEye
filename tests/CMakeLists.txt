@@ -453,9 +453,8 @@ add_test(NAME FrameDataTests COMMAND test_frame_data)
 # =================================================
 videoeye_add_test(test_bitrate_gop_analyzer
     unit/test_bitrate_gop_analyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/quality/BitrateGopAnalyzer.cpp
 )
-target_link_libraries(test_bitrate_gop_analyzer PRIVATE VideoEyeDomain)
+target_link_libraries(test_bitrate_gop_analyzer PRIVATE VideoEyeAnalysisQuality)
 add_test(NAME BitrateGopAnalyzerTests COMMAND test_bitrate_gop_analyzer)
 
 # =================================================
@@ -493,9 +492,8 @@ add_test(NAME QualityAnalyzerTests COMMAND test_quality_analyzer)
 # =================================================
 videoeye_add_test(test_audio_qc_analyzer
     unit/test_audio_qc_analyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/quality/AudioQcAnalyzer.cpp
 )
-target_link_libraries(test_audio_qc_analyzer PRIVATE VideoEyeDomain)
+target_link_libraries(test_audio_qc_analyzer PRIVATE VideoEyeAnalysisQuality)
 add_test(NAME AudioQcAnalyzerTests COMMAND test_audio_qc_analyzer)
 
 # =================================================
@@ -790,12 +788,11 @@ add_test(NAME ContainerLegacyQcRulesTests COMMAND test_container_legacy_qc_rules
 # =================================================
 videoeye_add_test(test_visual_defect
     unit/test_visual_defect.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/quality/VisualDefectAnalyzer.cpp
 )
-target_link_libraries(test_visual_defect PRIVATE VideoEyeDomain VideoEyeInfrastructure)
+target_link_libraries(test_visual_defect PRIVATE VideoEyeAnalysisQuality)
 # StopWorker() 在"工作线程没按时响应停止"时会打一条 ERROR —— 那是这类问题唯一的可观测
-# 出口: 它跑在析构路径上, 不适合抛异常, 调用方也普遍不查返回值。这条依赖由上面的
-# VideoEyeInfrastructure 提供。
+# 出口: 它跑在析构路径上, 不适合抛异常, 调用方也普遍不查返回值。这条依赖由
+# VideoEyeAnalysisQuality 的 PRIVATE 边（VideoEyeInfrastructure）传递过来。
 add_test(NAME VisualDefectTests COMMAND test_visual_defect)
 
 # =================================================
@@ -943,8 +940,8 @@ add_test(NAME QcReportExporterTests COMMAND test_qc_report_exporter)
 videoeye_add_test(test_diagnostics_result_flow
     unit/test_diagnostics_result_flow.cpp
 )
-target_sources(test_diagnostics_result_flow PRIVATE ../ui/AnalysisFacade.cpp)
 target_link_libraries(test_diagnostics_result_flow PRIVATE
+    VideoEyeUiAnalysisPages
     VideoEyeQtAdapters
     VideoEyeAnalysis
     VideoEyeDomain
@@ -1097,9 +1094,9 @@ set_tests_properties(ScanTerminalStateTests PROPERTIES
 # =================================================
 videoeye_add_test(test_event_timeline_view
     unit/test_event_timeline_view.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/EventTimelineView.cpp
 )
 target_link_libraries(test_event_timeline_view PRIVATE
+    VideoEyeUiAnalysisPages
     VideoEyeDomain
     VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
@@ -1118,14 +1115,11 @@ set_tests_properties(EventTimelineViewToggleTests PROPERTIES
 # =================================================
 videoeye_add_test(test_stream_views
     unit/test_stream_views.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/FramePacketView.cpp
-    # 视频帧 / 包 / 音频帧 / 宏块四个子页已抽成 VideoEyeUiAnalysisWidgets，
-    # 这里链库即可，不再手列它们的源。
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/StreamOverviewView.cpp
 )
 # FramePacketView.cpp 直接用 AV_PICTURE_TYPE_* / AV_PKT_FLAG_* / AVMEDIA_TYPE_*
-# （FFmpeg 公共常量），所以这里要拿到 avcodec 的 include 目录。
+# （FFmpeg 公共常量），这条依赖由 VideoEyeUiAnalysisPages 的 PRIVATE 边提供。
 target_link_libraries(test_stream_views PRIVATE
+    VideoEyeUiAnalysisPages
     VideoEyeDomain
     VideoEyeInfrastructure
     VideoEyeReporting
@@ -1295,9 +1289,9 @@ add_test(NAME AnalysisTextUtilTests COMMAND test_analysis_text_util)
 # =================================================
 videoeye_add_test(test_visual_defect_page
     unit/test_visual_defect_page.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/VisualDefectPage.cpp
 )
 target_link_libraries(test_visual_defect_page PRIVATE
+    VideoEyeUiAnalysisPages
     VideoEyeDomain
     VideoEyeInfrastructure
     VideoEyeUiCharts
@@ -1317,10 +1311,9 @@ set_tests_properties(VisualDefectPageTests PROPERTIES
 # =================================================
 videoeye_add_test(test_container_structure_page
     unit/test_container_structure_page.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/ContainerStructurePage.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/Mp4SampleTableWidget.cpp
 )
 target_link_libraries(test_container_structure_page PRIVATE
+    VideoEyeUiAnalysisPages
     VideoEyeDomain
     VideoEyeInfrastructure
     VideoEyeReporting
@@ -1523,9 +1516,9 @@ set_tests_properties(ExportCoordinatorTests PROPERTIES
 # =================================================
 videoeye_add_test(test_scene_change_page
     unit/test_scene_change_page.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/SceneChangePage.cpp
 )
 target_link_libraries(test_scene_change_page PRIVATE
+    VideoEyeUiAnalysisPages
     VideoEyeDomain
     VideoEyeUiCharts
     VideoEyeUiTheme
@@ -1562,9 +1555,9 @@ set_tests_properties(MacroblockViewTests PROPERTIES
 # =================================================
 videoeye_add_test(test_color_hdr_page
     unit/test_color_hdr_page.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/ColorHdrPage.cpp
 )
 target_link_libraries(test_color_hdr_page PRIVATE
+    VideoEyeUiAnalysisPages
     VideoEyeDomain
     VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
@@ -1583,17 +1576,9 @@ set_tests_properties(ColorHdrPageTests PROPERTIES
 # =================================================
 videoeye_add_test(test_audio_qc_page
     unit/test_audio_qc_page.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioQcPage.cpp
-    # 本页的 5 个子页已各自拆成独立组件（响度与电平 / 静音与削波 / 声道与相位 /
-    # 规则结果 / 音轨对照）。本目标手工列源（不走 UI_SOURCES），漏了会在链接期
-    # 报符号未解析。
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioLoudnessView.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioEventView.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioChannelView.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioVerdictView.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioTrackView.cpp
 )
 target_link_libraries(test_audio_qc_page PRIVATE
+    VideoEyeUiAnalysisPages
     VideoEyeDomain
     VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
@@ -1612,9 +1597,9 @@ set_tests_properties(AudioQcPageTests PROPERTIES
 # =================================================
 videoeye_add_test(test_bitrate_gop_page
     unit/test_bitrate_gop_page.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/BitrateGopPage.cpp
 )
 target_link_libraries(test_bitrate_gop_page PRIVATE
+    VideoEyeUiAnalysisPages
     VideoEyeDomain
     VideoEyeUiCharts
     VideoEyeUiTheme
@@ -1633,9 +1618,9 @@ set_tests_properties(BitrateGopPageTests PROPERTIES
 # =================================================
 videoeye_add_test(test_subtitle_aux_page
     unit/test_subtitle_aux_page.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/SubtitleAuxPage.cpp
 )
 target_link_libraries(test_subtitle_aux_page PRIVATE
+    VideoEyeUiAnalysisPages
     VideoEyeDomain
     VideoEyeUiCharts
     Qt6::Core Qt6::Gui Qt6::Widgets)
@@ -1656,18 +1641,9 @@ set_tests_properties(SubtitleAuxPageTests PROPERTIES
 # =================================================
 videoeye_add_test(test_diagnostics_page
     unit/test_diagnostics_page.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/DiagnosticsPage.cpp
-    # 本页的 5 个子页已各自拆成独立组件（问题清单 / 规则与阈值 / 证据与覆盖 /
-    # 参数变化 / 帧顺序）。本目标手工列源（不走 UI_SOURCES），漏了会在链接期
-    # 报符号未解析。
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/DiagnosticsIssueView.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/QcRuleTableView.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/EvidenceCoverageView.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/ParameterTimelineView.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/FrameOrderView.cpp
 )
-target_sources(test_diagnostics_page PRIVATE ../ui/AnalysisFacade.cpp)
 target_link_libraries(test_diagnostics_page PRIVATE
+    VideoEyeUiAnalysisPages
     VideoEyeQtAdapters
     VideoEyeAnalysis
     VideoEyeQc
@@ -1962,14 +1938,9 @@ add_test(NAME MacroblockAnalyzerTests COMMAND test_macroblock_analyzer)
 # =================================================
 videoeye_add_test(test_streaming_panel
     unit/test_streaming_panel.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/streaming_panel/StreamingPanel.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/streaming_panel/StreamingStructureView.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/streaming_panel/StreamingLadderView.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/streaming_panel/StreamingTimelineView.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/streaming_panel/StreamingIssueView.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/streaming_panel/StreamingPackageJson.cpp
 )
 target_link_libraries(test_streaming_panel PRIVATE
+    VideoEyeUiAnalysisPages
     VideoEyeDomain
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME StreamingPanelTests COMMAND test_streaming_panel)

@@ -6,10 +6,30 @@
 // 面板只把这份记录转交给诊断页，不自己算。
 // 这个结构体住在 AnalysisOptions.h —— 以前这里 include 的是具体实现它的
 // BitrateGopAnalyzer.h，等于为了一个参数把整个码率分析器拖进面板的编译图。
+// 头文件只前向声明它，完整定义在这里补。
 #include "core/domain/model/AnalysisOptions.h"
+
+// 跨页接线需要页面的完整类型（AnalysisPageFactory.h 只做前向声明）。
+#include "ui/analysis_panel/AudioQcPage.h"
+#include "ui/analysis_panel/BitrateGopPage.h"
+#include "ui/analysis_panel/ColorHdrPage.h"
+#include "ui/analysis_panel/ContainerStructurePage.h"
+#include "ui/analysis_panel/DiagnosticsPage.h"
+#include "ui/analysis_panel/EventTimelineView.h"
+#include "ui/analysis_panel/FramePacketView.h"
+#include "ui/analysis_panel/MacroblockView.h"
+#include "ui/analysis_panel/SceneChangePage.h"
+#include "ui/analysis_panel/StreamOverviewView.h"
+#include "ui/analysis_panel/SubtitleAuxPage.h"
+#include "ui/analysis_panel/VisualDefectPage.h"
+#include "ui/bitstream_panel/BitstreamPanel.h"
+#include "ui/reporting_panel/ReportingPanel.h"
+#include "ui/streaming_panel/StreamingPanel.h"
 
 #include <QFrame>
 #include <QScrollArea>
+#include <QStackedWidget>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <chrono>
@@ -28,6 +48,31 @@ constexpr int kUiFlushIntervalMs = 120;
 // 的具体内容 —— 那由页面自己在 ScanClient 实现里决定。
 void AnalysisPanel::AddScanClient(ScanClient* page) {
     scan_clients_.push_back(page);
+}
+
+void AnalysisPanel::SetCurrentVideoPath(const QString& path) {
+    current_video_path_ = path.toStdString();
+    // 切换文件后重置时间轴累计状态 (避免上一文件的数据混入)；
+    // 时间轴与 facade 都在诊断页里，由它自己清空
+    if (pages_.diagnostics)
+        pages_.diagnostics->ResetForNewFile();
+    // 报告与批量 QC 页需要当前文件来"按模板重新分析"
+    if (pages_.reporting)
+        pages_.reporting->SetCurrentFile(path);
+    // 拆出去的页面用当前路径拼导出 CSV 的默认文件名
+    if (pages_.scene_change)
+        pages_.scene_change->SetSourcePath(path);
+    // 共用同一次扫描的页面统一走注册表（码率 GOP / 音频 QC / 色彩 HDR）
+    for (ScanClient* page : scan_clients_)
+        page->SetSourcePath(path);
+    // 扫描总控在诊断页，换文件要同步它手里的当前路径
+    if (pages_.diagnostics)
+        pages_.diagnostics->SetSourcePath(path);
+    // 场景切换记录是播放期的累计结果，换文件必须清零（与帧/包那几页一致）
+    if (pages_.scene_change)
+        pages_.scene_change->Reset();
+    // 换文件 = 上一文件的分析结论全部作废：通知首页重置「分析状态」区
+    emit DiagnosticsStateChanged();
 }
 
 template <typename PageT>
@@ -557,9 +602,9 @@ void AnalysisPanel::OnScanStarted() {
     emit DiagnosticsStateChanged();
 }
 
-void AnalysisPanel::OnScanEnded(DiagnosticsPage::ScanEndReason reason) {
-    const bool failed = (reason == DiagnosticsPage::ScanEndReason::Failed);
-    const bool completed = (reason == DiagnosticsPage::ScanEndReason::Completed);
+void AnalysisPanel::OnScanEnded(ScanEndReason reason) {
+    const bool failed = (reason == ScanEndReason::Failed);
+    const bool completed = (reason == ScanEndReason::Completed);
 
     scan_running_ = false;
 

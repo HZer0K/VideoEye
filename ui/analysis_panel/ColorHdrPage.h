@@ -18,7 +18,9 @@
 
 #include <memory>
 
-#include "ui/AnalysisFacade.h"
+#include "core/domain/model/AnalysisOptions.h"
+#include "core/domain/model/AnalysisResult.h"
+#include "core/domain/model/QcReport.h"
 #include "ui/analysis_panel/ScanClient.h"
 
 namespace videoeye {
