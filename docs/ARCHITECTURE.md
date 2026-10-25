@@ -327,10 +327,14 @@ domain 之后，reporting 已经是零 FFmpeg 依赖的一层。
   `OnExportMp4Box()` 与匿名命名空间的 `PopulateMp4BoxTablesInContainer()`（真正的实现
   已在 `ContainerStructurePage.cpp` 里）、只写不读的 `bitstream_page_index_`、
   以及三段属于码率 GOP / 音频 QC 页的重复格式化辅助函数。
-- **大文件拆解进展（2026-10-24 复核，行数按非空行计）**。`MediaPlayer.cpp` 523 行
+- **大文件拆解进展（2026-10-25 复核，行数按非空行计）**。`MediaPlayer.cpp` 577 行
   （拆成 `export_controller_` / `container_inspection_` / `realtime_analysis_` / `open_controller_`
-  四个会话/控制器，播放机械对分析一无所知；这批成员现已全部收进 `MediaPlayer::Impl`，
-  公共头 `MediaPlayer.h` 只剩 209 行 + 若干前向声明，不再把 libav*/会话/控制器拖给下游）；`AnalysisEngine.cpp` 从 1134 行降到 **280 行**
+  四个会话/控制器，播放机械对分析一无所知；这批成员**以及门面原有的全部私有逻辑**
+  ——打开事务（`OpenInternal` / `BeginMediaSwitch` / `CommitOpen` / `MakeOpenParams` /
+  `RequestCancel`）、播放收尾 `StopPlayback`、分析开关分派 `ApplyAnalysisFeature` ——
+  现已全部收进 `MediaPlayer::Impl`，公共头 `MediaPlayer.h` 只剩 177 行，private 区只有
+  `impl_` 一行成员、零私有成员函数，也不再前置声明 `AVInputFormat` / `AVDictionary`
+  与打开事务的 `OpenResult` / `OpenPrepareParams`）；`AnalysisEngine.cpp` 从 1134 行降到 **280 行**
   （拆成 `AnalysisPipeline` / `PacketScanLoop` / `AnalysisInputSession` /
   `AnalysisResultAssembler` / `StreamingManifestScan`，本文件只管"何时建、何时分发、何时收尾"，
   不再直接 include 任何具体分析器，§7.1 的接线点随之迁移到 `AnalysisPipeline` 等文件，
@@ -537,7 +541,7 @@ python scripts/check_layering.py
 | 1 | `core/domain/model/XxxInfo.h` | 结果类型 |
 | 2 | `core/analysis/quality/XxxAnalyzer.{h,cpp}` | 分析器本体（`Reset/OnFrame/Finish` 或 `OnPacket`） |
 | 3 | `core/player/AnalysisSession.h` | 会话内持有分析器实例 |
-| 4 | `core/player/MediaPlayer.{h,cpp}` | `SetAnalysisFeature(AnalysisFeature, bool)` 唯一开关入口 + 转发 + 取结果的 getter（旧 `SetXxxAnalysisEnabled` 已私有化） |
+| 4 | `core/player/MediaPlayer.{h,cpp}` | `SetAnalysisFeature(AnalysisFeature, bool)` 唯一开关入口 + 转发 + 取结果的 getter（旧 `SetXxxAnalysisEnabled` 已下沉进 `MediaPlayer::Impl`） |
 | 5 | `core/qt/DomainMetatypes.h` | 结果要过信号槽跨线程传时加 `Q_DECLARE_METATYPE` |
 | 6 | `ui/analysis_panel/XxxView.{h,cpp}` | 页面组件（按 §4.1 的规则：只认自己内部的 feature 编号） |
 | 7 | `ui/analysis_panel/AnalysisPanel.{h,cpp}` | 建页、`SetupUI()` 里的顺序（决定侧边栏顺序）、feature 钩子注入与回写、数据转发 |
@@ -553,14 +557,17 @@ python scripts/check_layering.py
 代价就是上面这两张表。**别偷偷引入注册表来消除它**：真要减成本，先做第 4 项
 （`MediaPlayer` 的 10 个 `SetXxxAnalysisEnabled` 收敛成一个入口）—— **这一项已于
 2026-10-07 落地**：唯一入口是 `SetAnalysisFeature(model::AnalysisFeature, bool)`
-（`MediaPlayer.h`），旧 `SetXxx` 已私有化，`MainWindow` 只做枚举到调用的转发 ——
+（`MediaPlayer.h`），旧 `SetXxx` 已下沉进 `MediaPlayer::Impl`（2026-10-25 进一步收口，
+公共头不再声明它们），`MainWindow` 只做枚举到调用的转发 ——
 B 路线 3、4、7、8 四处接线已经收敛，且没有引入任何抽象层。
 
-**`MediaPlayer` 公共面按门面维护（2026-10-24 复核：37 个公共方法 / 43 条信号，不含
-构造与析构；`MediaPlayer.cpp` 523 行）**：播放机械已拆进 `ExportController` /
+**`MediaPlayer` 公共面按门面维护（2026-10-25 复核：37 个公共方法 / 43 条信号，不含
+构造与析构；`MediaPlayer.cpp` 577 行）**：播放机械已拆进 `ExportController` /
 `ContainerInspectionController` / `RealtimeAnalysisController` / `OpenController`
 四个控制器（§5.3），它只做"对外转发 + 会话编排"。成员本身收进 `MediaPlayer::Impl`
 （定义只在 `MediaPlayer.cpp`），公共头只依赖 domain 值类型 + 前向声明，`#include
-MediaPlayer.h` 不再传播 libav*、播放/分析会话与控制器。新增能力**优先加在对应控制器上**，
+MediaPlayer.h` 不再传播 libav*、播放/分析会话与控制器；**门面的私有逻辑也已全部搬进
+Impl**，`MediaPlayer.h` 的 private 区只剩 `struct Impl; std::unique_ptr<Impl> impl_;`，
+改实现（含新增分析维度）不会再触发下游重编。新增能力**优先加在对应控制器上**，
 确需动 `MediaPlayer` 时先评估是不是既有控制器的职责 —— 公共面每多一个方法，
 调用方就多一条绕过控制器状态的路径，门面迟早重新长回上帝对象。

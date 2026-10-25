@@ -14,10 +14,10 @@
 
 // 以下类型只以指针/引用出现在签名里，定义由用到它们的 .cpp 自己 include：
 // 公共头不再把 libav*、播放会话、分析会话、导出控制器拖给所有下游。
-extern "C" {
-struct AVInputFormat;
-struct AVDictionary;
-}
+//
+// libav 的 AVInputFormat / AVDictionary 曾经也在这里前置声明：它们只服务于打开链路，
+// 而打开链路（含 OpenRawPcm 的 demuxer 查找）已经整体搬进 Impl，公共头连这两个名字
+// 都不再出现 —— 只 include 本头的翻译单元连 "libav 存在" 这件事都看不到。
 
 namespace videoeye {
 
@@ -32,8 +32,6 @@ namespace player {
 class AnalysisBus;
 class ContainerBus;
 class ExportBus;
-struct OpenPrepareParams;
-struct OpenResult;
 
 // 媒体播放器类 - 使用Qt信号槽机制
 class MediaPlayer : public QObject {
@@ -191,51 +189,16 @@ signals:
     // 门面现在只背"播放 + 打开"这两件真正属于它的契约。
 
 private:
-    // --- SetAnalysisFeature() 的分派目标 ---
+    // 实现体：播放信息 + 播放会话 + 分析会话 + 实时分析 + 任务调度 + 三类控制器，
+    // 以及打开链路的全部细节（换媒体复位、Prepare/Commit、取消、分析开关分派）。
     //
-    // 各维度开关的实际实现。UI 不要直接调这些，一律走 SetAnalysisFeature()：
-    // 那才是"按 AnalysisFeature 设开关"的唯一入口，也是新增维度时唯一要改的地方。
-    // 其中几个不是单纯转发 —— VisualDefect / Macroblock / FrameType 还会启停工作
-    // 线程或重置分析器状态，所以必须以函数而不是内联赋值的形式存在。
-    void SetFrameTypeAnalysisEnabled(bool enable);
-    void SetAudioFrameAnalysisEnabled(bool enable);
-    void SetPacketAnalysisEnabled(bool enable);
-    void SetEventAnalysisEnabled(bool enable);
-    void SetSyncAnalysisEnabled(bool enable);
-    void SetTimelineAnalysisEnabled(bool enable);
-    void SetContainerStructureEnabled(bool enable);
-    void SetMacroblockAnalysisEnabled(bool enable);
-    void SetSceneChangeAnalysisEnabled(bool enable);
-    void SetVisualDefectAnalysisEnabled(bool enable);
-
-    bool OpenInternal(const QString& url, const AVInputFormat* input_format, AVDictionary* input_options);
-
-    // 换媒体的公共复位（UI 线程）: 作废上一次尝试、取消全部导出、停播放、释放旧会话、
-    // 复位分析状态，并为本次打开新建一份独立的取消/中断状态。Open/OpenAsync 共用。
-    void BeginMediaSwitch(const QString& url);
-    // UI 线程提交: 把 Prepare 的成果交给 OpenController::Commit，成功时接管流信息、
-    // 清空错误、派发容器结构分析。Open/OpenAsync 共用。
-    bool CommitOpen(const QString& url, OpenResult&& result);
-    // 组装 Prepare 的输入（读当前音量 / 解码开关，并带上本次尝试的取消状态）。
-    OpenPrepareParams MakeOpenParams(const QString& url, const AVInputFormat* input_format,
-                                     AVDictionary* input_options);
-    // 让当前尝试（打开期后台线程，或已提交会话的播放期阻塞读）立刻退出。
-    void RequestCancel();
-
-    // 异步打开任务 slot。同一 slot 上只允许一个任务: 换文件时旧任务被取消、结果作废。
-    static constexpr const char* kSlotOpen = "player-open";
-
-    // 导出的实际启动 / 排队 / 代际 / 取消全部在 ExportController 里
-    // （见 core/player/ExportController.h），本类不保留任何导出状态。
-
-    // 实现体：播放信息 + 播放会话 + 分析会话 + 实时分析 + 任务调度 + 三类控制器。
-    //
-    // 为什么指针化：这些成员的类型头会把 libav*、分析器与导出编排全部拉进
+    // 为什么指针化：这些成员的类型会把 libav*、分析器与导出编排全部拉进
     // MediaPlayer.h 的 include 闭包 —— 任何 include 本头的 UI 文件都被迫重编一遍
-    // FFmpeg 与整个分析层。Impl 的完整定义在 MediaPlayer.cpp 里，公共头只剩一个
-    // 不完整类型；析构必须留在 .cpp（unique_ptr 的惯例）。
+    // FFmpeg 与整个分析层。Impl 的完整定义只在 MediaPlayer.cpp 里，公共头只剩一个
+    // 不完整类型；因此本类的 private 区只有这一行成员，没有任何私有成员函数 ——
+    // 改实现（含新增分析维度、调整打开事务）都只动 .cpp，不再牵动下游重编。
     //
-    // 依赖顺序（构造顺序）约束写在 Impl 的定义处：会话在前、借用它们的控制器在后。
+    // 析构必须留在 .cpp（unique_ptr 的惯例）。
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
