@@ -1,73 +1,29 @@
 #include "ui/analysis_panel/AudioQcPage.h"
 
-#include <QAbstractItemView>
-#include <QFile>
+#include <QColor>
 #include <QFileDialog>
 #include <QFont>
 #include <QHBoxLayout>
-#include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QTextStream>
 #include <QVBoxLayout>
 
-#include "infrastructure/logging/ScopedTimer.h"
 #include "ui/analysis_panel/AnalysisPageSupport.h"
+#include "ui/analysis_panel/AudioChannelView.h"
+#include "ui/analysis_panel/AudioEventView.h"
+#include "ui/analysis_panel/AudioLoudnessView.h"
+#include "ui/analysis_panel/AudioTrackView.h"
+#include "ui/analysis_panel/AudioVerdictView.h"
 
 #include "core/domain/model/AudioQcResult.h"
 #include "core/domain/model/LoudnessPoint.h"
 #include "core/domain/model/QcReport.h"
 
-#include <QColor>
-
 namespace videoeye {
 namespace ui {
-
-AudioQcPage::AudioQcPage(QWidget* parent) : QWidget(parent) {
-    SetupUi();
-}
-
-// ===========================================================================
-// 音频 QC 标签页（响度 / 真峰值 / 削波 / 静音 / 声道相位 / metadata 一致性）
-// ===========================================================================
 namespace {
-
-// 参与「音频 QC → 规则结果」展示的规则 id（与 QcModels.cpp 的 audio.* 保持一致）
-const char* const kAudioQcRuleIds[] = {
-    "audio.loudness.target_high",
-    "audio.loudness.target_low",
-    "audio.loudness.range",
-    "audio.true_peak",
-    "audio.clipping",
-    "audio.silence.longest",
-    "audio.silence.ratio",
-    "audio.dc_offset",
-    "audio.phase_correlation",
-    "audio.metadata.layout",
-    "audio.metadata.duration_mismatch",
-    // 覆盖完整性：不解码成功的部分不进统计，必须让用户看见"这条结论只覆盖多少时长"
-    "audio.qc.incomplete",
-};
-
-QString AudioVerdictText(const model::QcReport& report, const QString& rule_id, QString* detail_out = nullptr) {
-    for (const auto& issue : report.issues) {
-        if (issue.rule_id != rule_id.toStdString())
-            continue;
-        if (detail_out)
-            *detail_out = QString::fromStdString(issue.detail);
-        switch (issue.severity) {
-        case model::IssueSeverity::Critical:
-        case model::IssueSeverity::Error:
-            return QStringLiteral("失败");
-        case model::IssueSeverity::Warning:
-            return QStringLiteral("警告");
-        default:
-            return QStringLiteral("提示");
-        }
-    }
-    return QStringLiteral("通过");
-}
 
 QString AudioFormatDb(double value, double silence_floor) {
     if (value <= silence_floor + 1.0)
@@ -75,24 +31,15 @@ QString AudioFormatDb(double value, double silence_floor) {
     return QString::number(value, 'f', 2);
 }
 
-// 抽稀（保留每组极值，避免丢掉峰值）
-void AppendAudioPoints(ChartSeries* series, const std::vector<model::LoudnessPoint>& points, int limit,
-                       double(model::LoudnessPoint::*member), double floor_value) {
-    if (points.empty())
-        return;
-    const double fallback = floor_value;
-    auto get = [member, fallback](const model::LoudnessPoint& p) {
-        const double v = p.*member;
-        return (v <= fallback + 1.0) ? fallback : v;
-    };
-    // 抽稀走 ui/charts/ChartDecimation.h 的统一实现（MinMax，峰谷都留）：
-    // 这里是响度曲线，"掉到底"的静音段和"冲上去"的削波同样是要看的特征，
-    // 等间隔取点会把它们一并抽掉。
-    SubmitDecimated(
-        series, DecimateFrom(points, [](const model::LoudnessPoint& p) { return p.timestamp_seconds; }, get, limit));
+} // namespace
+
+AudioQcPage::AudioQcPage(QWidget* parent) : QWidget(parent) {
+    SetupUi();
 }
 
-} // namespace
+// ===========================================================================
+// 音频 QC 页（响度 / 真峰值 / 削波 / 静音 / 声道相位 / metadata 一致性）
+// ===========================================================================
 
 void AudioQcPage::SetupUi() {
     QVBoxLayout* layout = new QVBoxLayout(this);
@@ -212,176 +159,21 @@ void AudioQcPage::SetupUi() {
     sub_tabs_ = new QTabWidget(this);
     sub_tabs_->setMinimumHeight(340);
 
-    // ---- 子页 0: 响度与电平 ----
-    {
-        QWidget* page = new QWidget(sub_tabs_);
-        QVBoxLayout* pl = new QVBoxLayout(page);
-        pl->setContentsMargins(2, 2, 2, 2);
+    loudness_view_ = new AudioLoudnessView(sub_tabs_);
+    sub_tabs_->addTab(loudness_view_, tr("响度与电平"));
 
-        lufs_chart_ = new MetricChartWidget(page);
-        lufs_chart_->SetTitle(tr("响度曲线（M 400ms / S 3s / I 累计）"));
-        momentary_series_ = lufs_chart_->AddLineSeries(tr("瞬时 M"), QColor("#42a5f5"));
-        short_term_series_ = lufs_chart_->AddLineSeries(tr("短期 S"), QColor("#66bb6a"));
-        integrated_series_ = lufs_chart_->AddLineSeries(tr("累计 I"), QColor("#8e24aa"));
-        target_series_ = lufs_chart_->AddLineSeries(tr("目标"), QColor("#e53935"));
-        lufs_axis_x_ = lufs_chart_->AxisX();
-        lufs_axis_y_ = lufs_chart_->AxisY();
-        lufs_axis_x_->SetTitleText(tr("时间 (s)"));
-        lufs_axis_y_->SetTitleText(tr("LUFS"));
-        lufs_chart_->setMinimumHeight(210);
-        pl->addWidget(lufs_chart_);
+    event_view_ = new AudioEventView(sub_tabs_);
+    connect(event_view_, &AudioEventView::SeekRequested, this, &AudioQcPage::SeekRequested);
+    sub_tabs_->addTab(event_view_, tr("静音与削波"));
 
-        level_chart_ = new MetricChartWidget(page);
-        level_chart_->SetTitle(tr("电平曲线（RMS / 采样峰值 / 真峰值）"));
-        rms_series_ = level_chart_->AddLineSeries(tr("RMS dBFS"), QColor("#42a5f5"));
-        peak_series_ = level_chart_->AddLineSeries(tr("峰值 dBFS"), QColor("#66bb6a"));
-        true_peak_series_ = level_chart_->AddLineSeries(tr("真峰值 dBTP"), QColor("#fb8c00"));
-        level_axis_x_ = level_chart_->AxisX();
-        level_axis_y_ = level_chart_->AxisY();
-        level_axis_x_->SetTitleText(tr("时间 (s)"));
-        level_axis_y_->SetTitleText(tr("dB"));
-        level_chart_->setMinimumHeight(210);
-        pl->addWidget(level_chart_);
+    channel_view_ = new AudioChannelView(sub_tabs_);
+    sub_tabs_->addTab(channel_view_, tr("声道与相位"));
 
-        sub_tabs_->addTab(page, tr("响度与电平"));
-    }
+    verdict_view_ = new AudioVerdictView(sub_tabs_);
+    sub_tabs_->addTab(verdict_view_, tr("规则结果"));
 
-    // ---- 子页 1: 静音与削波 ----
-    {
-        QWidget* page = new QWidget(sub_tabs_);
-        QVBoxLayout* pl = new QVBoxLayout(page);
-        pl->setContentsMargins(2, 2, 2, 2);
-
-        event_chart_ = new MetricChartWidget(page);
-        event_chart_->SetTitle(tr("静音段（方波）与削波点（三角）时间轴"));
-        silence_series_ = event_chart_->AddLineSeries(tr("静音段"), QColor("#1e88e5"));
-        clip_series_ = event_chart_->AddScatterSeries(tr("削波"), QColor("#e53935"));
-        clip_series_->SetMarkerSize(9.0);
-        clip_series_->SetMarkerShape(ChartMarkerShape::Triangle);
-        clip_series_->SetBorderColor(QColor("#e53935"));
-        event_axis_x_ = event_chart_->AxisX();
-        event_axis_y_ = event_chart_->AxisY();
-        event_axis_x_->SetTitleText(tr("时间 (s)"));
-        event_axis_y_->SetTitleText(tr("静音 0/1 ｜ 削波 1.5"));
-        event_axis_y_->SetRange(-0.2, 1.8);
-        event_chart_->setMinimumHeight(180);
-        pl->addWidget(event_chart_);
-
-        QLabel* clip_hint = new QLabel(tr("点击任意一行跳转到该位置。"), page);
-        pl->addWidget(clip_hint);
-        clip_table_ = new QTableWidget(0, 5, page);
-        clip_table_->setHorizontalHeaderLabels({tr("起始"), tr("结束"), tr("声道"), tr("削波样本"), tr("峰值 dBFS")});
-        clip_table_->verticalHeader()->setVisible(false);
-        clip_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-        clip_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
-        clip_table_->horizontalHeader()->setStretchLastSection(true);
-        clip_table_->setMinimumHeight(120);
-        connect(clip_table_, &QTableWidget::cellClicked, this, &AudioQcPage::OnClipCellClicked);
-        pl->addWidget(clip_table_);
-
-        silence_table_ = new QTableWidget(0, 4, page);
-        silence_table_->setHorizontalHeaderLabels({tr("起始"), tr("结束"), tr("时长(s)"), tr("平均 RMS dBFS")});
-        silence_table_->verticalHeader()->setVisible(false);
-        silence_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-        silence_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
-        silence_table_->horizontalHeader()->setStretchLastSection(true);
-        silence_table_->setMinimumHeight(120);
-        connect(silence_table_, &QTableWidget::cellClicked, this, &AudioQcPage::OnSilenceCellClicked);
-        pl->addWidget(silence_table_);
-
-        sub_tabs_->addTab(page, tr("静音与削波"));
-    }
-
-    // ---- 子页 2: 声道与相位 ----
-    {
-        QWidget* page = new QWidget(sub_tabs_);
-        QVBoxLayout* pl = new QVBoxLayout(page);
-        pl->setContentsMargins(2, 2, 2, 2);
-
-        channel_chart_ = new MetricChartWidget(page);
-        channel_chart_->SetTitle(tr("声道能量（RMS / 峰值 dBFS）"));
-        channel_series_ = channel_chart_->AddBarSeries(tr("RMS dBFS"), QColor("#42a5f5"));
-        channel_peak_series_ = channel_chart_->AddBarSeries(tr("峰值 dBFS"), QColor("#66bb6a"));
-        channel_axis_x_ = channel_chart_->AxisX();
-        channel_axis_y_ = channel_chart_->AxisY();
-        channel_axis_y_->SetTitleText(tr("dBFS"));
-        channel_chart_->setMinimumHeight(200);
-        pl->addWidget(channel_chart_);
-
-        corr_chart_ = new MetricChartWidget(page);
-        corr_chart_->SetTitle(tr("声道相关性（最差声道对，1=同相 / -1=反相）"));
-        corr_series_ = corr_chart_->AddLineSeries(tr("相关性"), QColor("#42a5f5"));
-        corr_axis_x_ = corr_chart_->AxisX();
-        corr_axis_y_ = corr_chart_->AxisY();
-        corr_axis_x_->SetTitleText(tr("时间 (s)"));
-        corr_axis_y_->SetRange(-1.05, 1.05);
-        corr_chart_->setMinimumHeight(200);
-        pl->addWidget(corr_chart_);
-
-        metadata_table_ = new QTableWidget(0, 2, page);
-        metadata_table_->setHorizontalHeaderLabels({tr("项目"), tr("值")});
-        metadata_table_->verticalHeader()->setVisible(false);
-        metadata_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-        metadata_table_->horizontalHeader()->setStretchLastSection(true);
-        metadata_table_->setMinimumHeight(150);
-        pl->addWidget(metadata_table_);
-
-        sub_tabs_->addTab(page, tr("声道与相位"));
-    }
-
-    // ---- 子页 3: 规则结果 ----
-    {
-        QWidget* page = new QWidget(sub_tabs_);
-        QVBoxLayout* pl = new QVBoxLayout(page);
-        pl->setContentsMargins(2, 2, 2, 2);
-
-        QLabel* hint = new QLabel(tr("判定阈值取自「诊断与报告 → 规则与阈值」，改完会立即重算；"
-                                     "这些音频问题也会一并进入诊断报告的评分。"),
-                                  page);
-        hint->setWordWrap(true);
-        pl->addWidget(hint);
-
-        verdict_table_ = new QTableWidget(0, 4, page);
-        verdict_table_->setHorizontalHeaderLabels({tr("规则"), tr("判定"), tr("实测值"), tr("说明")});
-        verdict_table_->verticalHeader()->setVisible(false);
-        verdict_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-        verdict_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
-        verdict_table_->horizontalHeader()->setStretchLastSection(true);
-        verdict_table_->setMinimumHeight(220);
-        pl->addWidget(verdict_table_);
-
-        sub_tabs_->addTab(page, tr("规则结果"));
-    }
-
-    // ---- 子页 4: 音轨对照 ----
-    //
-    // 前面的子页都只描述**主音轨**（响度/静音/声道/规则都是单轨口径）。
-    // 多语言、评论轨、不同混音版本只有这一页能看到，而且必须逐轨给覆盖率 ——
-    // "N/N 条轨都分析了"不代表每条轨都跑满了整段。
-    {
-        QWidget* page = new QWidget(sub_tabs_);
-        QVBoxLayout* pl = new QVBoxLayout(page);
-        pl->setContentsMargins(2, 2, 2, 2);
-
-        track_hint_ = new QLabel(tr("前面几页的响度/静音/规则均为**主音轨**口径；本页给出全部参与分析的音轨，"
-                                    "用于多语言、评论轨与不同混音版本之间的横向对照。"),
-                                 page);
-        track_hint_->setWordWrap(true);
-        pl->addWidget(track_hint_);
-
-        track_table_ = new QTableWidget(0, 10, page);
-        track_table_->setHorizontalHeaderLabels({tr("流"), tr("声道布局"), tr("采样率"), tr("积分响度"), tr("真峰值"),
-                                                 tr("LRA"), tr("静音占比"), tr("覆盖率"), tr("与视频时长差"),
-                                                 tr("失败/丢帧")});
-        track_table_->verticalHeader()->setVisible(false);
-        track_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-        track_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
-        track_table_->horizontalHeader()->setStretchLastSection(true);
-        track_table_->setMinimumHeight(220);
-        pl->addWidget(track_table_);
-
-        sub_tabs_->addTab(page, tr("音轨对照"));
-    }
+    track_view_ = new AudioTrackView(sub_tabs_);
+    sub_tabs_->addTab(track_view_, tr("音轨对照"));
 
     layout->addWidget(sub_tabs_);
 }
@@ -409,35 +201,17 @@ void AudioQcPage::OnOptionChanged() {
         return;
     ApplyOptionsFromUi();
     if (target_lufs_spin_ && has_result_)
-        UpdateCharts();
-}
-
-void AudioQcPage::OnClipCellClicked(int row, int) {
-    if (!has_result_ || row < 0)
-        return;
-    const auto& events = result_.audio_qc.clipping_events;
-    if (row >= static_cast<int>(events.size()))
-        return;
-    emit SeekRequested(events[static_cast<size_t>(row)].start_seconds);
-}
-
-void AudioQcPage::OnSilenceCellClicked(int row, int) {
-    if (!has_result_ || row < 0)
-        return;
-    const auto& ranges = result_.audio_qc.silence_ranges;
-    if (row >= static_cast<int>(ranges.size()))
-        return;
-    emit SeekRequested(ranges[static_cast<size_t>(row)].start_seconds);
+        loudness_view_->SetResult(&result_, target_lufs_spin_->value());
 }
 
 void AudioQcPage::Refresh() {
     UpdateSummary();
-    UpdateCharts();
-    RebuildClipTable();
-    RebuildSilenceTable();
-    RebuildVerdictTable();
-    RebuildMetadataTable();
-    RebuildTrackTable();
+    loudness_view_->SetResult(has_result_ ? &result_ : nullptr, target_lufs_spin_ ? target_lufs_spin_->value() : -23.0);
+    event_view_->SetResult(has_result_ ? &result_ : nullptr);
+    channel_view_->SetResult(has_result_ ? &result_ : nullptr);
+    if (has_result_)
+        verdict_view_->SetQcReport(qc_report_);
+    track_view_->SetResult(has_result_ ? &result_ : nullptr);
 }
 
 void AudioQcPage::UpdateSummary() {
@@ -501,303 +275,6 @@ void AudioQcPage::UpdateSummary() {
     summary_label_->setText(text);
 }
 
-void AudioQcPage::UpdateCharts() {
-    if (!lufs_chart_)
-        return;
-    momentary_series_->Clear();
-    short_term_series_->Clear();
-    integrated_series_->Clear();
-    target_series_->Clear();
-    rms_series_->Clear();
-    peak_series_->Clear();
-    true_peak_series_->Clear();
-    silence_series_->Clear();
-    clip_series_->Clear();
-    corr_series_->Clear();
-
-    const auto& qc = result_.audio_qc;
-    if (!has_result_ || !qc.analyzed)
-        return;
-
-    const auto& points = qc.loudness_points;
-    AppendAudioPoints(momentary_series_, points, kMaxChartPoints, &model::LoudnessPoint::momentary_lufs,
-                      model::kSilenceLufs);
-    AppendAudioPoints(short_term_series_, points, kMaxChartPoints, &model::LoudnessPoint::short_term_lufs,
-                      model::kSilenceLufs);
-    AppendAudioPoints(integrated_series_, points, kMaxChartPoints, &model::LoudnessPoint::integrated_lufs,
-                      model::kSilenceLufs);
-    AppendAudioPoints(rms_series_, points, kMaxChartPoints, &model::LoudnessPoint::rms_dbfs, model::kSilenceLevelDb);
-    AppendAudioPoints(peak_series_, points, kMaxChartPoints, &model::LoudnessPoint::sample_peak_dbfs,
-                      model::kSilenceLevelDb);
-    AppendAudioPoints(true_peak_series_, points, kMaxChartPoints, &model::LoudnessPoint::true_peak_dbtp,
-                      model::kSilenceLevelDb);
-    AppendAudioPoints(corr_series_, points, kMaxChartPoints, &model::LoudnessPoint::correlation, -2.0);
-
-    // 目标响度参考线
-    const double target = target_lufs_spin_ ? target_lufs_spin_->value() : -23.0;
-    if (!points.empty()) {
-        target_series_->Append(points.front().timestamp_seconds, target);
-        target_series_->Append(points.back().timestamp_seconds, target);
-    }
-
-    // 静音段画成方波；削波点画在 y=1.5
-    {
-        SeriesBatch silence(silence_series_);
-        silence.Reserve(static_cast<int>(qc.silence_ranges.size() * 4));
-        for (const auto& range : qc.silence_ranges) {
-            silence.Add(range.start_seconds, 0.0);
-            silence.Add(range.start_seconds, 1.0);
-            silence.Add(range.end_seconds, 1.0);
-            silence.Add(range.end_seconds, 0.0);
-        }
-    }
-    {
-        SeriesBatch clip(clip_series_);
-        clip.Reserve(static_cast<int>(qc.clipping_events.size()));
-        for (const auto& event : qc.clipping_events) {
-            clip.Add(event.start_seconds, 1.5);
-        }
-    }
-
-    const double span = std::max(1.0, qc.duration_seconds);
-    lufs_axis_x_->SetRange(0.0, span);
-    level_axis_x_->SetRange(0.0, span);
-    event_axis_x_->SetRange(0.0, span);
-    corr_axis_x_->SetRange(0.0, span);
-    lufs_axis_y_->SetRange(-60.0, 0.0);
-    level_axis_y_->SetRange(-90.0, 6.0);
-
-    // 声道能量柱状图（每个声道两根柱: RMS / 峰值）
-    channel_series_->Clear();
-    channel_peak_series_->Clear();
-    if (!qc.channels.empty()) {
-        QStringList categories;
-        // 多轨素材的声道数可以到几十（5.1 / 7.1 / 多语言音轨各一组），
-        // 逐点 Append 就是"每根柱子投一次重绘"，这里攒完一次性提交。
-        SeriesBatch channel(channel_series_);
-        SeriesBatch channel_peak(channel_peak_series_);
-        channel.Reserve(static_cast<int>(qc.channels.size()));
-        channel_peak.Reserve(static_cast<int>(qc.channels.size()));
-        for (const auto& ch : qc.channels) {
-            const QString name = ch.name.empty() ? QString("Ch%1").arg(ch.index + 1) : QString::fromStdString(ch.name);
-            categories << name;
-            const double rms = (ch.rms_dbfs <= model::kSilenceLevelDb + 1.0) ? -120.0 : ch.rms_dbfs;
-            const double peak = (ch.peak_dbfs <= model::kSilenceLevelDb + 1.0) ? -120.0 : ch.peak_dbfs;
-            const double x = static_cast<double>(categories.size() - 1);
-            channel.Add(x, rms);
-            channel_peak.Add(x, peak);
-        }
-        channel_chart_->SetCategories(categories);
-        channel_axis_y_->SetRange(-90.0, 6.0);
-    }
-}
-
-void AudioQcPage::RebuildClipTable() {
-    if (!clip_table_)
-        return;
-    clip_table_->setRowCount(0);
-    if (!has_result_)
-        return;
-    const auto& qc = result_.audio_qc;
-    const int rows = std::min<int>(static_cast<int>(qc.clipping_events.size()), 2000);
-    clip_table_->setRowCount(rows);
-    for (int i = 0; i < rows; ++i) {
-        const auto& e = qc.clipping_events[static_cast<size_t>(i)];
-        SetTableItemText(clip_table_, i, 0, QString::number(e.start_seconds, 'f', 3));
-        SetTableItemText(clip_table_, i, 1, QString::number(e.end_seconds, 'f', 3));
-        QString channel = (e.channel < 0)
-                              ? tr("全部")
-                              : QString::fromStdString(e.channel < static_cast<int>(qc.channels.size())
-                                                           ? qc.channels[static_cast<size_t>(e.channel)].name
-                                                           : std::string());
-        SetTableItemText(clip_table_, i, 2, channel);
-        SetTableItemText(clip_table_, i, 3, QString::number(e.sample_count));
-        SetTableItemText(clip_table_, i, 4,
-                         QString::number(e.peak > 0.0 ? 20.0 * std::log10(e.peak) : model::kSilenceLevelDb, 'f', 2));
-    }
-}
-
-void AudioQcPage::RebuildSilenceTable() {
-    if (!silence_table_)
-        return;
-    silence_table_->setRowCount(0);
-    if (!has_result_)
-        return;
-    const auto& qc = result_.audio_qc;
-    const int rows = std::min<int>(static_cast<int>(qc.silence_ranges.size()), 2000);
-    silence_table_->setRowCount(rows);
-    for (int i = 0; i < rows; ++i) {
-        const auto& r = qc.silence_ranges[static_cast<size_t>(i)];
-        SetTableItemText(silence_table_, i, 0, QString::number(r.start_seconds, 'f', 3));
-        SetTableItemText(silence_table_, i, 1, QString::number(r.end_seconds, 'f', 3));
-        SetTableItemText(silence_table_, i, 2, QString::number(r.duration_seconds, 'f', 3));
-        SetTableItemText(silence_table_, i, 3, QString::number(r.rms_dbfs, 'f', 1));
-    }
-}
-
-void AudioQcPage::RebuildVerdictTable() {
-    if (!verdict_table_)
-        return;
-    verdict_table_->setRowCount(0);
-    if (!has_result_)
-        return;
-
-    const size_t count = sizeof(kAudioQcRuleIds) / sizeof(kAudioQcRuleIds[0]);
-    verdict_table_->setRowCount(static_cast<int>(count));
-    for (size_t i = 0; i < count; ++i) {
-        const QString id = QString::fromUtf8(kAudioQcRuleIds[i]);
-        QString name = id;
-        QString threshold_text;
-        for (const auto& rule : qc_report_.rules) {
-            if (rule.id == id.toStdString()) {
-                name = QString::fromStdString(rule.name);
-                threshold_text = QString::fromStdString(
-                    rule.unit.empty()
-                        ? QString::number(rule.threshold, 'f', 2).toStdString()
-                        : (QString::number(rule.threshold, 'f', 2) + QString::fromStdString(rule.unit)).toStdString());
-                break;
-            }
-        }
-        QString detail;
-        const QString verdict = AudioVerdictText(qc_report_, id, &detail);
-        SetTableItemText(verdict_table_, static_cast<int>(i), 0, name);
-        SetTableItemText(verdict_table_, static_cast<int>(i), 1, verdict);
-        SetTableItemText(verdict_table_, static_cast<int>(i), 2, threshold_text);
-        SetTableItemText(verdict_table_, static_cast<int>(i), 3, detail);
-        QTableWidgetItem* item = verdict_table_->item(static_cast<int>(i), 1);
-        if (item != nullptr) {
-            item->setForeground(verdict == tr("失败")   ? QColor("#e53935")
-                                : verdict == tr("警告") ? QColor("#fb8c00")
-                                : verdict == tr("提示") ? QColor("#1e88e5")
-                                                        : QColor("#43a047"));
-        }
-    }
-}
-
-void AudioQcPage::RebuildMetadataTable() {
-    if (!metadata_table_)
-        return;
-    metadata_table_->setRowCount(0);
-    if (!has_result_)
-        return;
-    const auto& meta = result_.audio_qc.metadata;
-
-    auto add_row = [this](const QString& key, const QString& value) {
-        const int row = metadata_table_->rowCount();
-        metadata_table_->insertRow(row);
-        SetTableItemText(metadata_table_, row, 0, key);
-        SetTableItemText(metadata_table_, row, 1, value);
-    };
-
-    add_row(tr("声道布局"), QString::fromStdString(meta.channel_layout));
-    add_row(tr("声道数"), QString::number(meta.channels));
-    add_row(tr("采样率"), QString::number(meta.sample_rate) + tr(" Hz"));
-    add_row(tr("采样格式"), meta.sample_format.empty() ? tr("未知") : QString::fromStdString(meta.sample_format));
-    add_row(tr("位深"), meta.bits_per_sample > 0 ? QString::number(meta.bits_per_sample) + tr(" bit") : tr("未知"));
-    add_row(tr("音频时长"), QString::number(meta.stream_duration_seconds, 'f', 3) + tr(" s"));
-    add_row(tr("容器时长"), QString::number(meta.container_duration_seconds, 'f', 3) + tr(" s"));
-    add_row(tr("视频时长"),
-            meta.has_video ? QString::number(meta.video_duration_seconds, 'f', 3) + tr(" s") : tr("无视频流"));
-    add_row(tr("与容器时差"), QString::number(meta.container_delta_seconds, 'f', 3) + tr(" s"));
-    if (meta.has_video) {
-        add_row(tr("与视频时差"), QString::number(meta.video_delta_seconds, 'f', 3) + tr(" s"));
-    }
-    add_row(tr("一致性问题"),
-            meta.inconsistencies.empty() ? tr("无") : QString::fromStdString(meta.inconsistencies.front()));
-
-    // ---- 音频位流参数（D1）----
-    // 这些行来自**帧头**而不是 PCM，所以即使响度那一段因解码失败没有数据，
-    // 这里仍然有结论 —— 审核时"容器说 48k、码流其实是 44.1k"正是靠这几行看出来。
-    if (!result_.audio_bitstream_analyzed)
-        return;
-    for (const auto& stream : result_.audio_bitstream.streams) {
-        const QString prefix =
-            result_.audio_bitstream.streams.size() > 1 ? tr("位流 #%1 ").arg(stream.stream_index) : tr("位流 ");
-        QString codec = QString::fromStdString(model::ToString(stream.codec));
-        if (!stream.profile.empty()) {
-            codec += QStringLiteral(" / ") + QString::fromStdString(stream.profile);
-        }
-        add_row(prefix + tr("编码"), codec);
-
-        if (stream.sample_rate > 0) {
-            QString rate = QString::number(stream.sample_rate) + tr(" Hz");
-            if (stream.container_sample_rate > 0 && stream.container_sample_rate != stream.sample_rate) {
-                rate += tr("（容器声明 %1 Hz）").arg(stream.container_sample_rate);
-            }
-            add_row(prefix + tr("采样率"), rate);
-        }
-        if (stream.channels > 0) {
-            QString channels = QString::number(stream.channels);
-            if (stream.acmod >= 0) {
-                channels +=
-                    QStringLiteral(" — ") + QString::fromStdString(model::DescribeAcmod(stream.acmod, stream.lfeon));
-            } else if (!stream.container_channel_layout.empty()) {
-                channels += QStringLiteral(" — ") + QString::fromStdString(stream.container_channel_layout);
-            }
-            if (stream.container_channels > 0 && stream.container_channels != stream.channels) {
-                channels += tr("（容器声明 %1）").arg(stream.container_channels);
-            }
-            add_row(prefix + tr("声道"), channels);
-        }
-        if (stream.bit_rate_kbps > 0) {
-            add_row(prefix + tr("码率"), QString::number(stream.bit_rate_kbps) + tr(" kbps") +
-                                             (stream.vbr ? tr("（帧长变化，疑似 VBR）") : QString()));
-        }
-        if (stream.has_dialnorm) {
-            QString dialnorm = QString::number(stream.dialnorm_dbfs) + tr(" dBFS");
-            if (stream.dialnorm_delta_available) {
-                dialnorm += tr("（与实测响度差 %1 LU）").arg(stream.dialnorm_delta_lu, 0, 'f', 1);
-            }
-            add_row(prefix + tr("dialnorm"), dialnorm);
-        } else if (stream.codec == model::AudioBitstreamCodec::Ac3 ||
-                   stream.codec == model::AudioBitstreamCodec::Eac3) {
-            add_row(prefix + tr("dialnorm"), tr("未声明"));
-        }
-        if (stream.eac3) {
-            QString substreams = stream.dependent_substream_count > 0 ? tr("%1 个从属子流（+%2 声道）")
-                                                                            .arg(stream.dependent_substream_count)
-                                                                            .arg(stream.dependent_channels)
-                                                                      : tr("无");
-            add_row(prefix + tr("E-AC-3 子流"), substreams);
-        }
-        if (stream.atmos_joc) {
-            // 启发式命中必须写成"疑似"，不能给用户一个确定结论
-            QString atmos = stream.atmos_heuristic ? tr("疑似检出（启发式线索）") : tr("检出");
-            if (!stream.atmos_source.empty()) {
-                atmos += QStringLiteral("（") + QString::fromStdString(stream.atmos_source) + QStringLiteral("）");
-            }
-            add_row(prefix + tr("Atmos / JOC"), atmos);
-        }
-        if (stream.codec == model::AudioBitstreamCodec::Opus && stream.opus_head) {
-            QString opus = tr("pre-skip %1 样本 / 增益 %2 dB / 原始采样率 %3 Hz")
-                               .arg(stream.pre_skip)
-                               .arg(stream.OutputGainDb(), 0, 'f', 2)
-                               .arg(stream.input_sample_rate);
-            if (stream.opus_mode >= 0) {
-                opus += tr(" / %1 %2")
-                            .arg(QString::fromStdString(model::OpusModeName(stream.opus_mode)))
-                            .arg(QString::fromStdString(model::OpusBandwidthName(stream.opus_bandwidth)));
-            }
-            add_row(prefix + tr("Opus"), opus);
-        }
-        if (stream.unsupported_packets > 0) {
-            add_row(prefix + tr("帧头解析"), tr("该编码尚未实现逐帧解析，%1 个包未参与判定")
-                                                 .arg(static_cast<qlonglong>(stream.unsupported_packets)));
-        } else {
-            add_row(prefix + tr("帧头解析"), tr("%1 个包 / %2 帧，失败 %3 个")
-                                                 .arg(static_cast<qlonglong>(stream.parsed_packets))
-                                                 .arg(static_cast<qlonglong>(stream.frame_count))
-                                                 .arg(static_cast<qlonglong>(stream.invalid_packets)));
-        }
-        if (!stream.inconsistencies.empty()) {
-            add_row(prefix + tr("不一致"), QString::fromStdString(stream.inconsistencies.front()));
-        }
-        if (!stream.note.empty()) {
-            add_row(prefix + tr("说明"), QString::fromStdString(stream.note));
-        }
-    }
-}
-
 void AudioQcPage::OnExportCsv() {
     if (!has_result_ || !result_.audio_qc.analyzed) {
         QMessageBox::information(this, tr("提示"), tr("请先完成一次音频 QC 分析。"));
@@ -832,7 +309,7 @@ void AudioQcPage::SetQcReport(const model::QcReport& qc_report) {
 }
 
 int AudioQcPage::VerdictRuleCount() {
-    return static_cast<int>(sizeof(kAudioQcRuleIds) / sizeof(kAudioQcRuleIds[0]));
+    return AudioVerdictView::RuleCount();
 }
 
 void AudioQcPage::FillScanOptions(videoeye::AnalysisOptions& options) {
@@ -844,85 +321,7 @@ void AudioQcPage::FillScanOptions(videoeye::AnalysisOptions& options) {
 }
 
 int AudioQcPage::IssueCount() const {
-    int count = 0;
-    if (clip_table_)
-        count += clip_table_->rowCount();
-    if (silence_table_)
-        count += silence_table_->rowCount();
-    return count;
-}
-
-void AudioQcPage::RebuildTrackTable() {
-    if (!track_table_)
-        return;
-    track_table_->setRowCount(0);
-
-    const auto& tracks = result_.audio_qc_streams;
-    if (!has_result_) {
-        if (track_hint_)
-            track_hint_->setText(tr("尚无结果。点击「开始分析」后会列出全部音轨的横向对照。"));
-        return;
-    }
-    if (tracks.empty()) {
-        // 空表要说明"为什么空"：没音轨 / 选项关闭 / 全部未解出码 是三种不同的事
-        if (track_hint_)
-            track_hint_->setText(tr("本次没有音轨参与分析（可能是文件无音频流、选项已关闭，"
-                                    "或全部音轨都未能打开解码器）。"));
-        return;
-    }
-
-    if (track_hint_)
-        track_hint_->setText(tr("共 %1 / %2 条音轨参与分析。前面几页的响度/静音/规则均为主音轨口径；"
-                                "本页用于多语言、评论轨与不同混音版本之间的横向对照。")
-                                 .arg(result_.audio_qc_tracks_analyzed)
-                                 .arg(result_.audio_qc_tracks_total));
-
-    track_table_->setRowCount(static_cast<int>(tracks.size()));
-    for (int i = 0; i < static_cast<int>(tracks.size()); ++i) {
-        const model::AudioQcResult& qc = tracks[static_cast<size_t>(i)];
-        const int stream_index = (static_cast<size_t>(i) < result_.audio_qc_stream_indices.size())
-                                     ? result_.audio_qc_stream_indices[static_cast<size_t>(i)]
-                                     : -1;
-        SetTableItemText(track_table_, i, 0, QString::number(stream_index));
-
-        if (!qc.analyzed) {
-            // 未分析的轨不要把默认值（-70 LUFS 之类）当成实测值填进去
-            SetTableItemText(track_table_, i, 1,
-                             qc.notes.empty() ? tr("未分析") : QString::fromStdString(qc.notes.front()));
-            for (int c = 2; c < track_table_->columnCount(); ++c)
-                SetTableItemText(track_table_, i, c, QStringLiteral("-"));
-            for (int c = 0; c < track_table_->columnCount(); ++c) {
-                if (QTableWidgetItem* cell = track_table_->item(i, c))
-                    cell->setForeground(QColor("#9e9e9e"));
-            }
-            continue;
-        }
-
-        SetTableItemText(track_table_, i, 1, QString::fromStdString(qc.metadata.channel_layout));
-        SetTableItemText(track_table_, i, 2, tr("%1 Hz").arg(qc.metadata.sample_rate));
-        SetTableItemText(track_table_, i, 3, QString::number(qc.integrated_lufs, 'f', 2) + QStringLiteral(" LUFS"));
-        SetTableItemText(track_table_, i, 4, QString::number(qc.true_peak_dbtp, 'f', 2) + QStringLiteral(" dBTP"));
-        SetTableItemText(track_table_, i, 5, QString::number(qc.loudness_range_lu, 'f', 2) + QStringLiteral(" LU"));
-        SetTableItemText(track_table_, i, 6, QString::number(qc.silence_ratio * 100.0, 'f', 1) + QStringLiteral(" %"));
-        SetTableItemText(track_table_, i, 7, QString::number(qc.coverage_ratio * 100.0, 'f', 1) + QStringLiteral(" %"));
-        // 音轨与视频流的时长差：音画不同步最直接的一个数（正值 = 音频更长）
-        const double delta = qc.metadata.video_delta_seconds;
-        SetTableItemText(track_table_, i, 8,
-                         qc.metadata.has_video ? QString::number(delta, 'f', 3) + QStringLiteral(" s")
-                                               : QStringLiteral("-（无视频流）"));
-        const qlonglong errors =
-            static_cast<qlonglong>(qc.decode_error_packets + qc.decode_error_frames + qc.dropped_frames);
-        SetTableItemText(track_table_, i, 9, QString::number(errors));
-
-        // 覆盖率不足的轨标色：这是"分析跑过但没跑满"，最容易被误读成已完成
-        if (qc.coverage_ratio > 0.0 && qc.coverage_ratio < 0.99) {
-            for (int c = 0; c < track_table_->columnCount(); ++c) {
-                if (QTableWidgetItem* cell = track_table_->item(i, c))
-                    cell->setForeground(QColor("#ef6c00"));
-            }
-        }
-    }
-    track_table_->resizeColumnsToContents();
+    return event_view_ ? event_view_->ClipRows() + event_view_->SilenceRows() : 0;
 }
 
 void AudioQcPage::SetScanActive(bool active) {

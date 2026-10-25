@@ -1591,6 +1591,14 @@ set_tests_properties(ColorHdrPageTests PROPERTIES
 videoeye_add_test(test_audio_qc_page
     unit/test_audio_qc_page.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioQcPage.cpp
+    # 本页的 5 个子页已各自拆成独立组件（响度与电平 / 静音与削波 / 声道与相位 /
+    # 规则结果 / 音轨对照）。本目标手工列源（不走 UI_SOURCES），漏了会在链接期
+    # 报符号未解析。
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioLoudnessView.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioEventView.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioChannelView.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioVerdictView.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/AudioTrackView.cpp
 )
 target_link_libraries(test_audio_qc_page PRIVATE
     VideoEyeDomain
@@ -1656,6 +1664,14 @@ set_tests_properties(SubtitleAuxPageTests PROPERTIES
 videoeye_add_test(test_diagnostics_page
     unit/test_diagnostics_page.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/DiagnosticsPage.cpp
+    # 本页的 5 个子页已各自拆成独立组件（问题清单 / 规则与阈值 / 证据与覆盖 /
+    # 参数变化 / 帧顺序）。本目标手工列源（不走 UI_SOURCES），漏了会在链接期
+    # 报符号未解析。
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/DiagnosticsIssueView.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/QcRuleTableView.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/EvidenceCoverageView.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/ParameterTimelineView.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/analysis_panel/FrameOrderView.cpp
 )
 target_sources(test_diagnostics_page PRIVATE ../ui/AnalysisFacade.cpp)
 target_link_libraries(test_diagnostics_page PRIVATE

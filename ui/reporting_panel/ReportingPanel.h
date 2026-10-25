@@ -6,6 +6,9 @@
 // 看总体结论 → 选导出格式 → 落盘。UI 只做编排，真正的分析逻辑在
 // core/qc/{QcRunner,BatchQcRunner,QcProfile}，导出在 core/reporting/QcReportExporter.h。
 //
+// 版面已按职责拆成三个视图组件（见 ui/reporting_panel/{QcProfileView,SingleReportView,
+// BatchScanView}.h）；本页只保留模板与文件的语义、分析执行、结果新鲜度与导出编排。
+//
 // 线程模型（与项目其余部分一致，不用 QtConcurrent）：
 //   * 后台用 std::thread 跑分析，回调在 worker 线程触发；
 //   * 所有 UI 更新都经 QMetaObject::invokeMethod(..., Qt::QueuedConnection) 投递回主线程；
@@ -16,7 +19,6 @@
 //     中断回调）必须一路通到任务体，否则关停可能长时间等待。回收预算只是告警线。
 //     （见 ui/reporting_panel/analysis_task.h 的 RecycleTask 与 ReportingTaskCoordinator。）
 
-#include <atomic>
 #include <memory>
 #include <string>
 #include <thread>
@@ -24,15 +26,6 @@
 
 #include <QString>
 
-#include <QCheckBox>
-#include <QComboBox>
-#include <QGroupBox>
-#include <QLabel>
-#include <QLineEdit>
-#include <QProgressBar>
-#include <QPushButton>
-#include <QSpinBox>
-#include <QTableWidget>
 #include <QTextEdit>
 #include <QWidget>
 
@@ -40,7 +33,6 @@
 #include "core/qc/QcProfile.h"
 #include "core/qc/QcReportFormat.h"
 #include "core/qc/QcRunner.h"
-#include "infrastructure/concurrency/TaskManager.h"
 
 #include "ui/reporting_panel/ReportExportController.h"
 #include "ui/reporting_panel/ReportingTaskCoordinator.h"
@@ -49,6 +41,10 @@
 
 namespace videoeye {
 namespace ui {
+
+class QcProfileView;
+class SingleReportView;
+class BatchScanView;
 
 class ReportingPanel : public QWidget {
     Q_OBJECT
@@ -81,22 +77,14 @@ signals:
     void StatusMessage(const QString& text);
 
 private slots:
-    void OnProfileChanged(int index);
+    void OnProfileSelected(const QString& profile_id);
     void OnLoadProfileFile();
     void OnSaveProfile();
     void OnAnalyzeCurrentFile();
     void OnExportSingleReport();
-    void OnPickBatchDirectory();
-    void OnPickOutputDirectory();
     void OnStartBatch();
     void OnCancelBatch();
     void OnExportBatchSummary();
-    // 批量表格筛选下拉框变化: 只切行可见性，不动数据与选中绑定
-    void OnBatchFilterChanged();
-    // 批量表格选中行变化: 展开该行对应结果的详情
-    void OnBatchSelectionChanged();
-    // 打开选中行对应的报告文件（批量跑完才看得到问题清单，详情标签只放摘要）
-    void OnOpenSelectedReport();
 
 private:
     // 后台任务的明确所有权载体（线程 / 取消令牌 / 生命周期守卫）定义在
@@ -105,7 +93,6 @@ private:
 
     void BuildUi();
     void AppendSummary(const QString& text);
-    void UpdateVerdictLabel(const qc::QcRunResult& result);
     // 把一次结果刷到结论标签与分析摘要（分析完成、模板复用两条路径共用）。
     void ShowResult(const qc::QcRunResult& result);
     void SetBusy(bool busy);
@@ -120,13 +107,6 @@ private:
     void InvalidateResult();
     // 依据 busy_ 与 HasFreshResult() 刷新导出按钮使能，SetBusy 与结果变化都走它。
     void UpdateExportEnabled();
-    // 按两个筛选下拉框的口径重设批量表格所有行的可见性（setRowHidden）。
-    // 行与 batch_results_ 的绑定存在第一列 item 的 UserRole 上，排序后依然有效。
-    void ReapplyBatchFilter();
-    // 把 batch_results_[index] 铺进详情标签（选中一行时调用）。
-    void ShowBatchDetail(int result_index);
-    // 当前筛选口径下这条结果是否可见（纯判定在 batch_filter.h，这里只做组合）。
-    bool BatchRowVisible(const qc::BatchQcItemResult& item) const;
     // 构造时建好导出控制器：单文件报告、批量汇总两条导出路径连同"先选目录、分析完
     // 再导出"的挂起票据都在它里面（见 ReportExportController.h）。
     void SetupExportController();
@@ -159,41 +139,9 @@ private:
     qc::QcProfile CurrentProfile() const;
     std::vector<qc::QcReportFormat> SelectedFormats() const;
 
-    // ---- 模板区 ----
-    QComboBox* profile_combo_ = nullptr;
-    QLabel* profile_description_ = nullptr;
-
-    // ---- 单文件区 ----
-    QLabel* current_file_label_ = nullptr;
-    QLabel* verdict_label_ = nullptr;
-    QLabel* issue_count_label_ = nullptr;
-    QCheckBox* format_json_ = nullptr;
-    QCheckBox* format_csv_ = nullptr;
-    QCheckBox* format_html_ = nullptr;
-    QCheckBox* format_pdf_ = nullptr;
-    QCheckBox* format_txt_ = nullptr;
-    QPushButton* analyze_button_ = nullptr;
-    QPushButton* export_button_ = nullptr;
-
-    // ---- 批量区 ----
-    QLineEdit* batch_dir_edit_ = nullptr;
-    QLineEdit* batch_ext_edit_ = nullptr;
-    QLineEdit* batch_out_edit_ = nullptr;
-    QSpinBox* jobs_spin_ = nullptr;
-    QCheckBox* recursive_check_ = nullptr;
-    QPushButton* start_button_ = nullptr;
-    QPushButton* cancel_button_ = nullptr;
-    QProgressBar* batch_progress_ = nullptr;
-    QLabel* batch_summary_label_ = nullptr;
-    // 批量表格筛选: 状态 / 严重度两个口径（itemData 见 batch_filter.h 的常量）
-    QComboBox* batch_status_filter_ = nullptr;
-    QComboBox* batch_severity_filter_ = nullptr;
-    QTableWidget* batch_table_ = nullptr;
-    QPushButton* summary_button_ = nullptr;
-    // 选中行详情: 表格十列装不下失败原因/问题清单，选中后在这里展开
-    QLabel* batch_detail_ = nullptr;
-    QPushButton* open_report_button_ = nullptr;
-
+    QcProfileView* profile_view_ = nullptr;
+    SingleReportView* single_view_ = nullptr;
+    BatchScanView* batch_view_ = nullptr;
     QTextEdit* log_view_ = nullptr;
 
     // ---- 状态 ----
@@ -211,7 +159,6 @@ private:
     ResultStamp result_stamp_;
     // 导出控制器（本页拥有）：挂起票据与两条导出路径都搬进去了，本页只留按钮转发。
     ReportExportController* export_controller_ = nullptr;
-    std::vector<qc::BatchQcItemResult> batch_results_;
     bool busy_ = false;
 };
 

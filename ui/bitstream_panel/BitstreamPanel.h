@@ -1,9 +1,6 @@
 #pragma once
 
-#include <QLabel>
-#include <QPushButton>
-#include <QTableWidget>
-#include <QTreeWidget>
+#include <QString>
 #include <QWidget>
 
 #include "core/domain/model/BitstreamInfo.h"
@@ -12,16 +9,23 @@
 namespace videoeye {
 namespace ui {
 
+class BitstreamSummaryView;
+class BitstreamStructureView;
+class BitstreamComparisonView;
+class BitstreamInconsistencyView;
+
 // ==========================================================================
 // BitstreamPanel - 编码参数集解析面板
 //
 // 数据来源：core/analysis/codec/BitstreamAnalyzer.h（只读 extradata，不解码），
 // 结果由 QtAnalysisController 汇总到 AnalysisResult::bitstream_analysis。
 //
-// 布局：
-//   顶部  一行摘要（codec / 分辨率 / profile / level / 位深 / 参数集 / 不一致数）
-//   中部  左侧参数集结构树 + 右侧「容器值 vs 码流值」对比表
-//   底部  不一致项表格（级别 / 字段 / 容器值 / 码流值 / 说明）
+// 布局已按职责拆成四个视图组件（见 ui/bitstream_panel/Bitstream*View.h）：
+//   顶部  摘要行 + 复制/导出 JSON 工具栏（BitstreamSummaryView）
+//   中部  左侧参数集结构树 + 右侧「容器值 vs 码流值」对比表（BitstreamStructureView /
+//         BitstreamComparisonView，装进同一个 QSplitter）
+//   底部  不一致项表格（BitstreamInconsistencyView）
+// 本页只保留结果缓存、JSON 序列化/落盘与扫描态。
 // ==========================================================================
 class BitstreamPanel : public QWidget, public ScanClient {
     Q_OBJECT
@@ -63,28 +67,12 @@ private slots:
     void OnExportJsonClicked();
 
 private:
-    void UpdateSummary(const model::BitstreamAnalysisResult& result);
-    void BuildStructureTree(const model::BitstreamAnalysisResult& result);
-    void BuildComparisonTable(const model::BitstreamAnalysisResult& result);
-    void BuildInconsistencyTable(const model::BitstreamAnalysisResult& result);
+    void BuildUi();
 
-    // 摘要里那一行「codec / 分辨率 / profile / level」
-    static QString DescribeCodec(const model::BitstreamAnalysisResult& result);
-
-    // CICP（ISO/IEC 23001-8）枚举 -> 可读名，H.264 VUI / HEVC VUI / AV1 通用
-    static QString PrimariesName(int value);
-    static QString TransferName(int value);
-    static QString MatrixName(int value);
-    static QString ChromaName(int chroma_format_idc);
-    static QString LevelName(const model::BitstreamAnalysisResult& result);
-
-    QLabel* summary_label_ = nullptr;
-    QTreeWidget* structure_tree_ = nullptr;
-    QTableWidget* comparison_table_ = nullptr;
-    QTableWidget* inconsistency_table_ = nullptr;
-    QPushButton* refresh_button_ = nullptr;
-    QPushButton* copy_json_button_ = nullptr;
-    QPushButton* export_json_button_ = nullptr;
+    BitstreamSummaryView* summary_view_ = nullptr;
+    BitstreamStructureView* structure_view_ = nullptr;
+    BitstreamComparisonView* comparison_view_ = nullptr;
+    BitstreamInconsistencyView* inconsistency_view_ = nullptr;
 
     model::BitstreamAnalysisResult current_result_;
     bool has_result_ = false;

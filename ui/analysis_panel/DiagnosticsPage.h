@@ -13,6 +13,10 @@
 // 并提供「跳转到问题位置」。以前这里另有一份与时间轴页重复的实时曲线/问题表，同一
 // 份同步样本被同时喂给两页 —— 已收敛：本页不再累积实时时间轴，也不再有第二套视图。
 //
+// 页面内的 5 个子页已各自拆成独立组件（DiagnosticsIssueView / QcRuleTableView /
+// EvidenceCoverageView / ParameterTimelineView / FrameOrderView），本页只保留
+// 「扫描总控 + 汇总」：把 facade 结果分发给各视图、维护扫描状态机与导出。
+//
 // 面板侧要拿结果时用 result() / qcReport() / hasResult() 取只读快照，
 // 不要反过来碰本页成员（与 ContainerStructurePage / AudioQcPage 一致的约定）。
 
@@ -27,13 +31,11 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QTabWidget>
-#include <QTableWidget>
 #include <QTimer>
 
 #include "infrastructure/logging/PerfMetrics.h"
 #include "ui/AnalysisFacade.h"
 #include "ui/analysis_panel/AnalysisPageSupport.h"
-#include "ui/charts/MetricChartWidget.h"
 
 #include "core/analysis/AnalysisOptions.h"
 #include "core/domain/model/QcReport.h"
@@ -41,6 +43,12 @@
 
 namespace videoeye {
 namespace ui {
+
+class DiagnosticsIssueView;
+class QcRuleTableView;
+class EvidenceCoverageView;
+class ParameterTimelineView;
+class FrameOrderView;
 
 class DiagnosticsPage : public QWidget {
     Q_OBJECT
@@ -132,28 +140,15 @@ private slots:
     void OnCancelClicked();
     void OnCancelWatchdog();
     void OnExportClicked();
-    void OnRuleItemChanged(QTableWidgetItem* item);
-    void OnResetRulesClicked();
     void OnFacadeProgress(quint64 generation, double percent, const QString& stage);
     void OnFacadeFinished(quint64 generation, bool completed, const model::AnalysisResult& result);
     void OnFacadeFailed(quint64 generation, const QString& message);
-    void OnJumpToIssue();
 
 private:
     void SetupUi();
-    void SetupRuleTab();
-    // 子页「证据与覆盖」+「参数变化」：两者都是"从扫描结果直接摊开的表"，
-    // 不参与规则判定，所以与问题清单/规则表分开建，也分开刷。
-    void SetupEvidenceTabs();
-    // 用 facade 结果 + QC 规则引擎重算报告并刷新本页（同时外发 QcReportChanged）
+    // 用 facade 结果 + QC 规则引擎重算报告并刷新各视图（同时外发 QcReportChanged）
     void Evaluate();
-    void RebuildIssueTable();
-    // 刷「证据与覆盖」（每个分析维度一行）、「参数变化」（配置变化事件）
-    // 与「帧顺序」（逐帧 POC，解码顺序）三张表
-    void RebuildEvidenceTables();
     void UpdateQcSummary();
-    void UpdateQcChart();
-    void RebuildRuleTable();
     void SetScanButtonState(bool running);
     // 终态到达（成功 / 取消 / 失败共用）：停掉取消看门狗、结算取消延迟
     void ClearCancelPending();
@@ -163,7 +158,6 @@ private:
     model::QcReport report_;
     quint64 generation_ = 0;
     bool has_result_ = false;
-    bool rule_table_updating_ = false;
     // 最近一次扫描的失败原因（空 = 没有失败过或已被新的扫描清掉）
     QString last_error_;
     std::chrono::steady_clock::time_point scan_start_time_;
@@ -190,27 +184,12 @@ private:
     QPushButton* export_button_ = nullptr;
     QTabWidget* sub_tabs_ = nullptr;
 
-    // 子页 0：问题清单（逐秒码率/帧率曲线 + 问题表 + 跳转到问题位置）
-    MetricChartWidget* qc_chart_ = nullptr;
-    ChartSeries* qc_bitrate_series_ = nullptr;
-    ChartSeries* qc_fps_series_ = nullptr;
-    ChartAxis* qc_axis_x_ = nullptr;
-    ChartAxis* qc_axis_bitrate_ = nullptr;
-    ChartAxis* qc_axis_fps_ = nullptr;
-    QTableWidget* issue_table_ = nullptr;
-
-    // 子页 1：规则与阈值
-    QTableWidget* rule_table_ = nullptr;
-
-    // 子页 2：证据与覆盖（每个分析维度一行）
-    QTableWidget* dimension_table_ = nullptr;
-    QLabel* dimension_hint_ = nullptr;
-    // 子页 3：参数变化（每条视频轨的配置变化事件）
-    QTableWidget* parameter_table_ = nullptr;
-    QLabel* parameter_hint_ = nullptr;
-    // 子页 4：帧顺序（每条 H.264 视频轨的逐帧 POC，按解码顺序排列）
-    QTableWidget* frame_order_table_ = nullptr;
-    QLabel* frame_order_hint_ = nullptr;
+    // 5 个子页各自独立成组件：本页只负责建页与分发结果
+    DiagnosticsIssueView* issue_view_ = nullptr;      // 子页 0：问题清单（曲线 + 问题表 + 跳转）
+    QcRuleTableView* rule_view_ = nullptr;            // 子页 1：规则与阈值
+    EvidenceCoverageView* coverage_view_ = nullptr;   // 子页 2：证据与覆盖
+    ParameterTimelineView* parameter_view_ = nullptr; // 子页 3：参数变化
+    FrameOrderView* frame_order_view_ = nullptr;      // 子页 4：帧顺序（逐帧 POC）
 };
 
 } // namespace ui

@@ -7,6 +7,10 @@
 // （面板才知道 current_video_path_ / diagnostics_options_ / 进度条总控）。
 // 与码率 GOP / 色彩 HDR 共有的生命周期动作（换文件路径 / 扫描态 / 进度 / 选项
 // 并入）实现在 ScanClient 接口里，由面板按注册表统一驱动。
+//
+// 5 个子页已各自拆成独立组件（AudioLoudnessView / AudioEventView /
+// AudioChannelView / AudioVerdictView / AudioTrackView）；本页保留工具栏、
+// 扫描选项、汇总与扫描生命周期。
 
 #include <QString>
 #include <QWidget>
@@ -17,14 +21,18 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QTabWidget>
-#include <QTableWidget>
 
 #include "ui/AnalysisFacade.h"
 #include "ui/analysis_panel/ScanClient.h"
-#include "ui/charts/MetricChartWidget.h"
 
 namespace videoeye {
 namespace ui {
+
+class AudioLoudnessView;
+class AudioEventView;
+class AudioChannelView;
+class AudioVerdictView;
+class AudioTrackView;
 
 class AudioQcPage : public QWidget, public ScanClient {
     Q_OBJECT
@@ -43,7 +51,7 @@ public:
     // 只换报告（用户在「规则与阈值」页改了规则后重新评估）再刷一次
     void SetQcReport(const model::QcReport& qc_report);
 
-    // 判定表的固定规则条数（= .cpp 里 kAudioQcRuleIds 的长度）。
+    // 判定表的固定规则条数（= 实现里 kAudioQcRuleIds 的长度）。
     // 行序是页面契约，测试与侧栏都靠它对齐：新增一条 audio.* 规则只需改实现一处，
     // 不必再去测试里改魔法数字。
     static int VerdictRuleCount();
@@ -81,16 +89,7 @@ private:
     void OnStartAnalysis();
     void OnCancelAnalysis();
     void OnOptionChanged();
-    void OnClipCellClicked(int row, int column);
-    void OnSilenceCellClicked(int row, int column);
     void UpdateSummary();
-    void UpdateCharts();
-    void RebuildClipTable();
-    void RebuildSilenceTable();
-    void RebuildVerdictTable();
-    void RebuildMetadataTable();
-    // 逐轨对照表：全部参与分析的音轨（不是只有主轨）
-    void RebuildTrackTable();
     void OnExportCsv();
 
     QString source_path_;
@@ -112,46 +111,12 @@ private:
     QCheckBox* correlation_check_ = nullptr;
     QTabWidget* sub_tabs_ = nullptr;
 
-    // 响度曲线
-    MetricChartWidget* lufs_chart_ = nullptr;
-    ChartSeries* momentary_series_ = nullptr;
-    ChartSeries* short_term_series_ = nullptr;
-    ChartSeries* integrated_series_ = nullptr;
-    ChartSeries* target_series_ = nullptr;
-    ChartAxis* lufs_axis_x_ = nullptr;
-    ChartAxis* lufs_axis_y_ = nullptr;
-    // 电平曲线
-    MetricChartWidget* level_chart_ = nullptr;
-    ChartSeries* rms_series_ = nullptr;
-    ChartSeries* peak_series_ = nullptr;
-    ChartSeries* true_peak_series_ = nullptr;
-    ChartAxis* level_axis_x_ = nullptr;
-    ChartAxis* level_axis_y_ = nullptr;
-    // 静音段 / 削波点时间轴
-    MetricChartWidget* event_chart_ = nullptr;
-    ChartSeries* silence_series_ = nullptr;
-    ChartSeries* clip_series_ = nullptr;
-    ChartAxis* event_axis_x_ = nullptr;
-    ChartAxis* event_axis_y_ = nullptr;
-    // 声道能量柱状图
-    MetricChartWidget* channel_chart_ = nullptr;
-    ChartSeries* channel_series_ = nullptr;      // RMS dBFS
-    ChartSeries* channel_peak_series_ = nullptr; // 峰值 dBFS
-    ChartAxis* channel_axis_x_ = nullptr;
-    ChartAxis* channel_axis_y_ = nullptr;
-    // 声道相关性曲线
-    MetricChartWidget* corr_chart_ = nullptr;
-    ChartSeries* corr_series_ = nullptr;
-    ChartAxis* corr_axis_x_ = nullptr;
-    ChartAxis* corr_axis_y_ = nullptr;
-
-    QTableWidget* clip_table_ = nullptr;
-    QTableWidget* silence_table_ = nullptr;
-    QTableWidget* verdict_table_ = nullptr;
-    QTableWidget* metadata_table_ = nullptr;
-    // 逐轨对照（子页 4）：全部音轨，不只是主轨
-    QTableWidget* track_table_ = nullptr;
-    QLabel* track_hint_ = nullptr;
+    // 5 个子页各自独立成组件：本页只负责建页与分发结果
+    AudioLoudnessView* loudness_view_ = nullptr; // 子页 0：响度与电平
+    AudioEventView* event_view_ = nullptr;       // 子页 1：静音与削波
+    AudioChannelView* channel_view_ = nullptr;   // 子页 2：声道与相位
+    AudioVerdictView* verdict_view_ = nullptr;   // 子页 3：规则结果
+    AudioTrackView* track_view_ = nullptr;       // 子页 4：音轨对照
 };
 
 } // namespace ui
