@@ -1,6 +1,12 @@
 #include "core/analysis/stream/StreamAnalyzer.h"
 #include "core/domain/model/StreamStats.h"
 #include "infrastructure/logging/Logger.h"
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+}
+
 #include <algorithm>
 #include <climits>
 #include <numeric>
@@ -141,7 +147,7 @@ void StreamAnalyzer::Reset() {
     LOG_INFO("流分析器已重置");
 }
 
-void StreamAnalyzer::AnalyzeVideoFrame(AVPictureType type) {
+void StreamAnalyzer::AnalyzeVideoFrame(int picture_type) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!is_analyzing_) {
         return;
@@ -149,7 +155,7 @@ void StreamAnalyzer::AnalyzeVideoFrame(AVPictureType type) {
     stats_.total_video_frames++;
     frame_count_++;
 
-    switch (type) {
+    switch (picture_type) {
     case AV_PICTURE_TYPE_I:
         stats_.i_frame_count++;
         break;

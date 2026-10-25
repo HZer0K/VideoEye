@@ -1,13 +1,13 @@
 #pragma once
 
+#include <cstdint>
 #include <vector>
 
-extern "C" {
-#include <libavutil/frame.h>
-#include <libavutil/motion_vector.h>
-}
-
 #include "core/domain/model/MacroblockInfo.h"
+
+// 公共头不 include libav*：这里只用到指针与引用，前向声明即可。
+struct AVFrame;
+struct AVMotionVector;
 
 namespace videoeye {
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <map>
 #include <mutex>
 #include <string>
@@ -8,10 +9,10 @@
 
 #include "core/domain/model/StreamStats.h"
 
-extern "C" {
-#include <libavcodec/avcodec.h>
-#include <libavformat/avformat.h>
-}
+// 公共头不 include libav*：这里只用到指针与枚举值，前向声明即可。
+// 否则 FFmpeg 的 include 目录与编译定义会随这个头传染给每个调用方。
+struct AVPacket;
+struct AVFormatContext;
 
 namespace videoeye {
 
@@ -60,7 +61,9 @@ public:
     std::vector<double> GetFpsHistory() const;
     std::vector<int> GetBitrateHistory() const;
 
-    void AnalyzeVideoFrame(AVPictureType type);
+    // picture_type 取 AV_PICTURE_TYPE_* 的值（I/P/B…）。用 int 而不是 AVPictureType，
+    // 是为了让公共头不必 include libavutil/pixfmt.h。
+    void AnalyzeVideoFrame(int picture_type);
     void AnalyzeAudioFrame();
 
 private:

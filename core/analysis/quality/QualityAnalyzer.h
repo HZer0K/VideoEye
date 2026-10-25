@@ -5,13 +5,17 @@
 #include <string>
 #include <vector>
 
-extern "C" {
-#include <libavutil/frame.h>
-}
-
 #include "core/domain/model/QualityMetric.h"
 
+// 公共头不 include libavutil：这里只用到帧指针，前向声明即可。
+struct AVFrame;
+
 namespace videoeye {
+
+// AV_NOPTS_VALUE 的等价值（INT64_MIN）。
+// 不 include libavutil/frame.h，避免 FFmpeg 的 include 目录随公共头传染给所有调用方；
+// 数值与 AV_NOPTS_VALUE 完全一致，调用方拿它跟 AV_NOPTS_VALUE 比较不会出分歧。
+constexpr int64_t kNoPtsValue = INT64_MIN;
 
 // 单帧参考质量评估结果，基于灰度/亮度平面计算全帧 MSE、PSNR、SSIM。
 // 取值约定（全类统一，不要再引入哨兵值）:
@@ -21,8 +25,8 @@ namespace videoeye {
 //   ssim            -> [-1, 1]，见下方字段说明
 struct QualityMetrics {
     int frame_index = 0;
-    int64_t reference_pts = AV_NOPTS_VALUE;
-    int64_t distorted_pts = AV_NOPTS_VALUE;
+    int64_t reference_pts = kNoPtsValue;
+    int64_t distorted_pts = kNoPtsValue;
     double timestamp_seconds = 0.0;
     int width = 0;
     int height = 0;
