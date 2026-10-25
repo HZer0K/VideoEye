@@ -216,14 +216,16 @@ std::string QcReportExporter::BuildHtml(const QcExportBundle& bundle) {
         }
     }
 
-    // ---- 帧级显示顺序（POC，仅 H.264）----
+    // ---- 帧级显示顺序（POC / VP9 的显示序）----
     //
     // HTML 报告是给人快速扫的，所以这里给统计表 + 前若干帧的解码/显示对照，
     // 全量逐帧明细仍以 JSON 为准（几千行塞进 HTML 没人看，还会拖慢打开）。
     if (!run.analysis.frame_order_timelines.empty()) {
-        out << "  <h2>帧级显示顺序（POC）</h2>\n";
-        out << "  <p class=\"meta\">来自逐 slice 解析出的 POC。支持范围：H.264 与 HEVC；"
-               "AV1/VP9/VVC 未实现，H.264 的 pic_order_cnt_type=1 不支持；不重建参考帧列表。</p>\n";
+        out << "  <h2>帧级显示顺序</h2>\n";
+        out << "  <p class=\"meta\">H.264 / HEVC 来自逐 slice 解析出的 POC；VP9 没有 POC，"
+               "由 show_frame / show_existing_frame 的显示事件序还原成「显示序号」。"
+               "支持范围：H.264 / HEVC / VP9；AV1/VVC 未实现，H.264 的 picture_order_cnt_type=1 "
+               "不支持；不重建参考帧列表。</p>\n";
         for (const model::FrameOrderTimeline& timeline : run.analysis.frame_order_timelines) {
             out << "  <h3>视频流 #" << timeline.stream_index << "</h3>\n";
             if (!timeline.available) {

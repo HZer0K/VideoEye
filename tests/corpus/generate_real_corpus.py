@@ -255,6 +255,48 @@ def build_hevc_bframes(ffmpeg):
     ], ".mp4")
 
 
+def build_vp9_altref(ffmpeg):
+    r"""WebM / VP9: libvpx-vp9 **两遍编码 + auto-alt-ref**，带 4 个 superframe。
+
+    这份语料是为 VP9 帧级显示顺序准备的，而 VP9 的特殊之处在于**它没有 POC**：
+    显示顺序只能靠 show_frame / show_existing_frame 的事件序还原（见
+    Vp9FrameOrderTracker.h）。要测到这条路径，码流里必须有"隐藏帧"：
+
+      * alt-ref 帧以 show_frame=0 编码，自己从不显示，只提供参考；
+      * 稍后由 show_existing_frame 把它显示出来 —— 这才是 VP9 的重排。
+
+    关键参数（都是试出来的，缺一条就没有隐藏帧，样本会退化成"无重排"）：
+      -auto-alt-ref 1 -lag-in-frames 16 -arnr-maxframes 4
+      -pass 1 / -pass 2  —— **单遍编码不出 ARF**，实测单遍 50 个包 0 个 superframe，
+                            两遍才有 4 个（每个 = ARF + 可见帧）。
+      -g 12              —— 4 个 GOP，顺带验 GOP 分段
+      -auto-alt-ref 打开时 libvpx 会把 [ARF, 可见帧] 打成一个 **superframe**，
+      所以"容器包数"（50）会**少于**"已编码帧数"（54）。测试用例正是拿这个
+      差值来证明 superframe 真的被拆开了 —— 不拆的话 frames_observed 会等于 50。
+
+    封装选 WebM 而不是 IVF：WebM 是一等容器（本项目有完整解析链路），
+    IVF 只是个裸流外壳。
+    """
+    # 两遍编码：第一遍只做统计（输出丢弃），第二遍才是产物。
+    # ❗ passlog 必须显式指定并清掉，否则会在仓库工作目录里留一堆
+    # ffmpeg2pass-0.log —— 那东西会被 git status 认成未跟踪文件。
+    passlog = os.path.join(tempfile.gettempdir(), "ve_vp9_altref_passlog")
+    common = [
+        "-f", "lavfi", "-i", "testsrc2=size=160x96:rate=25:duration=2",
+        "-c:v", "libvpx-vp9", "-b:v", "300k", "-g", "12", "-keyint_min", "12",
+        "-auto-alt-ref", "1", "-lag-in-frames", "16", "-arnr-maxframes", "4",
+        "-passlogfile", passlog, "-an",
+    ]
+    try:
+        run_ffmpeg(ffmpeg, common + ["-pass", "1", "-f", "null"], ".log")
+        return run_ffmpeg(ffmpeg, common + ["-pass", "2", "-f", "webm"], ".webm")
+    finally:
+        for extra in ("-0.log", "-0.log.mbtree"):
+            path = passlog + extra
+            if os.path.exists(path):
+                os.unlink(path)
+
+
 register("container/real_h264_aac.ts", "ts", build=build_ts)
 register("container/real_h264_aac.m2ts", "m2ts", derived="container/real_h264_aac.ts")
 register("container/real_mpeg4_mp3.avi", "avi", build=build_avi)
@@ -264,6 +306,7 @@ register("container/real_mpeg2_pcm.mxf", "mxf", build=build_mxf)
 register("container/real_mpeg2_mp2.mpg", "ps", build=build_ps)
 register("codec/real_x264_bframes_gop.mp4", "mp4", build=build_h264_bframes)
 register("codec/real_x265_bframes_gop.mp4", "mp4", build=build_hevc_bframes)
+register("codec/real_vp9_altref_gop.webm", "mkv", build=build_vp9_altref)
 
 
 # ---------------------------------------------------------------------------
@@ -361,8 +404,10 @@ def check(data, rel):
         if data[0:4] != b"\x1a\x45\xdf\xa3":
             problems.append("%s: 不是 EBML 头（开头 %r）" % (rel, data[0:4]))
             return problems
-        if b"matroska" not in data[:256]:
-            problems.append("%s: EBML 头里没有 DocType=matroska" % rel)
+        # WebM 只是 Matroska 的一个受限子集：DocType 是 "webm" 而不是
+        # "matroska"，元素骨架完全一样（VP9 的样本就是 webm）。
+        if b"matroska" not in data[:256] and b"webm" not in data[:256]:
+            problems.append("%s: EBML 头里 DocType 既不是 matroska 也不是 webm" % rel)
         # Cluster ID 0x1F43B675 / Cues ID 0x1C53BB6B。ffmpeg 默认把 Cues 写在片尾，
         # 少了它 container.mkv.missing_cues 在真实样本上就无从判定。
         for elem_id, name in ((b"\x1f\x43\xb6\x75", "Cluster"),

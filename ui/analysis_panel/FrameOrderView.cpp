@@ -18,17 +18,17 @@ void FrameOrderView::SetupUi() {
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->setContentsMargins(2, 2, 2, 2);
 
-    hint_ = new QLabel(tr("按解码顺序列出每一帧的 POC（显示顺序值）。POC 比上一行小的行标红，"
-                          "那是显示顺序要往回插的帧 —— 重排的存在与深度因此一目了然。"
-                          "支持范围：仅 H.264；pic_order_cnt_type=1 与 HEVC/AV1/VP9/VVC 不支持；"
-                          "不重建参考帧列表。"),
+    hint_ = new QLabel(tr("按解码顺序列出每一帧的显示顺序值。它比上一行小，就说明这一帧的显示时间"
+                          "要往回插 —— 重排的存在与深度一目了然。支持范围：H.264 / HEVC 用 POC；"
+                          "VP9 没有 POC，用「第几次显示」还原（帧头里也不区分 P/B）；"
+                          "H.264 的 pic_order_cnt_type=1 与 AV1/VVC 不支持；不重建参考帧列表。"),
                        this);
     hint_->setWordWrap(true);
     layout->addWidget(hint_);
 
     table_ = new QTableWidget(0, 6, this);
     table_->setHorizontalHeaderLabels(
-        {tr("流"), tr("解码序"), tr("类型"), tr("frame_num"), tr("POC"), tr("包号 / 时间")});
+        {tr("流"), tr("解码序"), tr("类型"), tr("frame_num"), tr("POC / 显示序"), tr("包号 / 时间")});
     table_->verticalHeader()->setVisible(false);
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);

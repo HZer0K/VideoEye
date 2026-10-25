@@ -1,5 +1,7 @@
 #include "core/analysis/codec/Vp9BitstreamParser.h"
 
+#include "core/analysis/codec/Vp9ColorConfig.h"
+
 #include <cmath>
 
 namespace videoeye {
@@ -113,47 +115,16 @@ model::Vp9SequenceHeaderInfo Vp9BitstreamParser::ParseFromFrame(const uint8_t* d
         return sh; // 同步码不对，说明流的起点找错了
 
     // ---- color_config()（规范 6.2.2）----
-    if (sh.profile == 2 || sh.profile == 3) {
-        sh.bit_depth = reader.ReadBit() ? 12 : 10; // ten_or_twelve_bit
-    } else {
-        sh.bit_depth = 8;
-    }
-
-    // ❗ 这段的坑：ColorRange 对**所有 profile** 都无条件存在，而 profile 1/3
-    // 在它前面/后面各多一位 reserved_zero。旧实现把"有没有 ColorRange"和
-    // "profile 是不是 1/3"绑成同一个 has_range_flag，于是两个方向各错 1 位：
-    //   * 非 RGB + profile 0/2：少读 ColorRange  → frame_size 提前 1 位，
-    //     高度读成 32822（> 32768）→ 整份作废，present=false；
-    //   * RGB + profile 1/3：多读一个不存在的 reserved_zero → 192x108 读成
-    //     383x215（191<<1|1、107<<1|1）。
-    // 两个分支必须一起改，只补 ColorRange 会把 RGB 分支继续留在错的状态。
-    sh.color_space = static_cast<model::Vp9ColorSpace>(static_cast<int>(reader.ReadBits(3)));
-    const bool is_444_profile = (sh.profile == 1 || sh.profile == 3);
-    if (sh.color_space != model::Vp9ColorSpace::Srgb) {
-        if (is_444_profile) {
-            // reserved_zero —— profile 1/3 的非 RGB 分支独有，必须为 0
-            if (reader.ReadBit() != 0)
-                return sh;
-        }
-        sh.color_range_full = reader.ReadBit() != 0; // 所有 profile 都有
-        if (is_444_profile) {
-            sh.subsampling_x = static_cast<int>(reader.ReadBit());
-            sh.subsampling_y = static_cast<int>(reader.ReadBit());
-            // reserved_zero —— 同上，非零即违反规范
-            if (reader.ReadBit() != 0)
-                return sh;
-        } else {
-            sh.subsampling_x = 1;
-            sh.subsampling_y = 1;
-        }
-    } else {
-        // RGB 分支：只有 ColorRange，没有 subsampling、也没有 reserved_zero
-        sh.color_range_full = reader.ReadBit() != 0;
-        sh.subsampling_x = 0;
-        sh.subsampling_y = 0;
-    }
-    if (reader.HasError())
+    // 位布局只有一份实现（Vp9ColorConfig.h）：帧顺序追踪要跳过同一个函数，
+    // 抄第二份的代价历史上已经付过一次（见那个文件头的说明）。
+    Vp9ColorConfigInfo color;
+    if (!ParseVp9ColorConfig(reader, sh.profile, color))
         return sh;
+    sh.bit_depth = color.bit_depth;
+    sh.color_space = static_cast<model::Vp9ColorSpace>(color.color_space);
+    sh.color_range_full = color.full_range;
+    sh.subsampling_x = color.subsampling_x;
+    sh.subsampling_y = color.subsampling_y;
 
     // ---- frame_size()（6.2.4）----
     sh.frame_width = static_cast<int>(reader.ReadBits(16)) + 1;

@@ -178,12 +178,15 @@ struct AnalysisResult {
     std::vector<ParameterTimeline> parameter_timelines;
 
     // 帧级显示/解码顺序（每条视频轨一份，见 FrameOrderTracker / H264PocTracker /
-    // HevcPocTracker）。
+    // HevcPocTracker / Vp9FrameOrderTracker）。
     //
     // 与 bitrate_gop 的分工：后者按包统计"关键帧间隔"，只有长度；这里给的是
-    // 逐帧 POC，能回答"显示顺序重排了多深""GOP 边界在哪一帧""POC 有没有重复/缺失"。
-    // 支持 H.264 与 HEVC —— AV1/VP9/VVC 的 POC 需要各自的 block/frame header 与
-    // 参考结构，尚未实现，对应维度会明确标为不可用而不是给空结果。
+    // 逐帧的显示顺序值，能回答"显示顺序重排了多深""GOP 边界在哪一帧"
+    // "顺序值有没有重复/缺失"。
+    //
+    // 覆盖 H.264 / HEVC（顺序值来自 POC）与 VP9（它没有 POC，顺序值由
+    // show_frame / show_existing 的事件序还原，见 order_source）。
+    // AV1/VVC 尚未实现 —— 对应维度会明确标为不可用，而不是给空结果。
     std::vector<FrameOrderTimeline> frame_order_timelines;
 
     // 每个分析维度的证据与覆盖状态（见 core/domain/model/DimensionStatus.h）。

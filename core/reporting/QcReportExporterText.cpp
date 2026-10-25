@@ -145,13 +145,13 @@ std::string QcReportExporter::BuildText(const QcExportBundle& bundle) {
         }
     }
 
-    // ---- 帧级显示顺序（POC，仅 H.264）----
+    // ---- 帧级显示顺序（POC / VP9 的显示序）----
     //
     // 文本报告里逐帧明细意义不大（几千行没人看），所以这里只落统计量 + 支持范围，
     // 逐帧明细留给 JSON 与 UI。空数组时不落这一节：那代表"没有可追踪的视频轨
-    // （H.264 / HEVC）"，落了反而让人以为"跑了但没结果"。
+    // （H.264 / HEVC / VP9）"，落了反而让人以为"跑了但没结果"。
     if (!run.analysis.frame_order_timelines.empty()) {
-        out << "\n--- 帧级显示顺序（POC）---\n";
+        out << "\n--- 帧级显示顺序 ---\n";
         for (const model::FrameOrderTimeline& timeline : run.analysis.frame_order_timelines) {
             out << "  视频流 #" << timeline.stream_index << "：";
             if (!timeline.available) {
@@ -169,19 +169,25 @@ std::string QcReportExporter::BuildText(const QcExportBundle& bundle) {
             } else {
                 out << "无法判定（没有识别到 GOP 边界）\n";
             }
+            // VP9 的顺序值是"第几次显示"，说"个 POC 槽位"会让人以为它有 POC。
+            const bool by_display_rank = (timeline.order_source == "display_rank");
+            const char* unit = by_display_rank ? " 帧" : " 个 POC 槽位";
             if (timeline.HasReordering()) {
                 out << "      显示顺序重排 " << Int64Text(timeline.reorder_events) << " 处，最大回退 "
-                    << Int64Text(timeline.reorder_depth) << " 个 POC 槽位（正常编码结构，非缺陷）\n";
+                    << Int64Text(timeline.reorder_depth) << unit << "（正常编码结构，非缺陷）\n";
             }
-            if (timeline.duplicate_poc_count > 0)
-                out << "      ❗ " << Int64Text(timeline.duplicate_poc_count) << " 处 POC 重复\n";
+            if (timeline.duplicate_poc_count > 0) {
+                out << "      ❗ " << Int64Text(timeline.duplicate_poc_count)
+                    << (by_display_rank ? " 处重复显示\n" : " 处 POC 重复\n");
+            }
             if (timeline.poc_gap_slots > 0)
                 out << "      ❗ 按 POC 步长推断缺 " << Int64Text(timeline.poc_gap_slots) << " 帧\n";
             if (timeline.truncated)
                 out << "      逐帧明细已达上限，只保留前 " << Int64Text(static_cast<int64_t>(timeline.frames.size()))
                     << " 帧（统计量仍覆盖全程）\n";
-            out << "      支持范围: 仅 H.264；pic_order_cnt_type=1 与 HEVC/AV1/VP9/VVC 不支持；"
-                   "不重建参考帧列表\n";
+            out << "      顺序值来源: "
+                << (by_display_rank ? "显示事件序（VP9 没有 POC，帧间帧也不区分 P/B）" : "码流 POC")
+                << "；不支持 H.264 的 pic_order_cnt_type=1 与 AV1/VVC；不重建参考帧列表\n";
         }
     }
 

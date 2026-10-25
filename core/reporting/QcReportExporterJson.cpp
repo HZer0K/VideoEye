@@ -212,11 +212,11 @@ JsonValue BuildParameterTimelinesArray(const model::AnalysisResult& result) {
     return array;
 }
 
-// 帧级显示顺序（POC 重建，仅 H.264）。
+// 帧级显示顺序（POC 重建 / VP9 的显示事件序）。
 //
 // 与 parameter_timelines 的分工：那条记"配置怎么变"，这条记"帧怎么排"。
 // 字段全部来自逐 slice 解析出的 POC；解析不出来的组合（H.264 的
-// pic_order_cnt_type=1、AV1/VP9/VVC）走 available=false + reason，
+// pic_order_cnt_type=1、AV1/VVC）走 available=false + reason，
 // 不给推断不出的字段留 0 占位。
 JsonValue BuildFrameOrdersArray(const model::AnalysisResult& result) {
     JsonValue array = JsonValue::MakeArray();
@@ -231,6 +231,8 @@ JsonValue BuildFrameOrdersArray(const model::AnalysisResult& result) {
             array.PushBack(node);
             continue;
         }
+        // 顺序值的来源：VP9 没有 POC，"poc" 字段指的是"第几次显示"。
+        node.Set("order_source", JText(timeline.order_source.empty() ? std::string("poc") : timeline.order_source));
         node.Set("poc_type", JNumber(static_cast<double>(timeline.poc_type)));
         node.Set("field_coded", JsonValue(timeline.field_coded));
         node.Set("truncated", JsonValue(timeline.truncated));
@@ -256,7 +258,8 @@ JsonValue BuildFrameOrdersArray(const model::AnalysisResult& result) {
 
         // 支持范围：把"哪些结论能下、哪些不能"写进报告，避免读者把缺失当通过。
         JsonValue scope = JsonValue::MakeObject();
-        scope.Set("codecs", JText("H.264 与 HEVC；AV1/VP9/VVC 的 POC 未实现（对应维度标记为不可用）"));
+        scope.Set("codecs", JText("H.264 / HEVC（POC）与 VP9（显示事件序）；"
+                                  "AV1/VVC 未实现（对应维度标记为不可用）"));
         scope.Set("poc_type", JText("H.264：pic_order_cnt_type 0 与 2 支持，1 不支持"
                                     "（需要 offset_for_ref_frame 表）；HEVC 只有一套公式，恒记 0"));
         scope.Set("reference_lists", JText("不重建 DPB / 参考帧列表（H.264 无 MMCO、HEVC 无 RPL），只给 POC 序列"));

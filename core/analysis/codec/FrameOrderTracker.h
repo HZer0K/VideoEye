@@ -10,9 +10,9 @@
 // + enabled() + Feed/FeedExtradata/Finish），这样管线里两条追踪链路长得一样，
 // 改动时不会因为"一个是类一个是 variant"而漏改一条。
 //
-// 明确不做：AV1 / VP9 / VVC。它们的显示顺序需要各自的语法
-// （AV1 的 order_hint、VP9 的 show_existing_frame 语义），没实现就不建槽，
-// 上层据 frame_order_timelines 为空把维度标成"不可用"，不静默给 0。
+// 当前覆盖：H.264（POC）、HEVC（POC）、VP9（显示事件序 —— 该编码没有 POC，
+// 见 Vp9FrameOrderTracker）。其余编码（AV1 / VVC）没实现就不建槽，上层据
+// frame_order_timelines 为空把维度标成"不可用"，不静默给 0。
 
 #include <cstddef>
 #include <cstdint>
@@ -22,6 +22,7 @@
 #include "core/analysis/codec/FrameOrderTypes.h"
 #include "core/analysis/codec/H264PocTracker.h"
 #include "core/analysis/codec/HevcPocTracker.h"
+#include "core/analysis/codec/Vp9FrameOrderTracker.h"
 #include "core/domain/model/FrameOrderInfo.h"
 
 namespace videoeye {
@@ -43,7 +44,7 @@ public:
     const std::string& disabled_reason() const {
         return disabled_reason_;
     }
-    // 当前选中的实现名（"h264" / "hevc" / ""），只用于日志。
+    // 当前选中的实现名（"h264" / "hevc" / "vp9" / ""），只用于日志与文案。
     const char* codec_name() const;
 
     void SetFraming(Framing framing);
@@ -61,7 +62,7 @@ private:
     std::string disabled_reason_;
     // 两个实现都不是多态基类的派生类：它们的骨架相同但状态字段完全不同，
     // 硬抽一个虚基类只会把两边各自的字段都摊到基类里。
-    std::variant<std::monostate, H264PocTracker, HevcPocTracker> impl_;
+    std::variant<std::monostate, H264PocTracker, HevcPocTracker, Vp9FrameOrderTracker> impl_;
 };
 
 } // namespace videoeye

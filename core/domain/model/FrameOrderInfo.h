@@ -6,8 +6,10 @@
 // "这一段是不是拼接过来的"。
 //
 // 结构本身与编码器无关：H.264 与 HEVC 的 POC 推导公式不同（H.264 有
-// pic_order_cnt_type 0/1/2，HEVC 只有 lsb 一套），但产出的是同一组字段：
-// 一幅图像在解码顺序上的位置 + 它的 POC + 它是不是随机接入点。
+// pic_order_cnt_type 0/1/2，HEVC 只有 lsb 一套），VP9 连 POC 都没有（显示顺序
+// 靠 show_frame / show_existing_frame 的事件序还原），但产出的是同一组字段：
+// 一幅画面在解码顺序上的位置 + 它的显示顺序值 + 它是不是随机接入点。
+// 顺序值的来源写在 order_source 里，读的人不必猜。
 //
 // 边界（明确不做，避免用户误以为已支持）：
 //   * 不重建参考帧列表（H.264 的 MMCO / HEVC 的 RPL，都要按解码过程维护 DPB）
@@ -75,8 +77,14 @@ struct FrameOrderTimeline {
     bool available = false;
     std::string unavailable_reason; // available=false 时必填，不能空着让人猜
     // H.264 的 pic_order_cnt_type（0/1/2）；HEVC 只有一套公式，恒记 0。
-    // -1 = 还没拿到参数集。
+    // VP9 没有这个字段（见 order_source），恒为 -1。
+    // -1 = 还没拿到参数集，或该编码没有 POC 的概念。
     int poc_type = -1;
+    // 显示顺序值的来源，决定报告与 UI 的措辞：
+    //   "poc"          —— 从码流 POC 推出（H.264 / HEVC）
+    //   "display_rank" —— 由显示事件序还原的显示序号（VP9；该编码没有 POC）
+    // 空串 = 手构造的测试对象或旧数据，按 "poc" 处理。
+    std::string order_source;
     bool field_coded = false;
 
     std::vector<FrameOrderEntry> frames; // 上限见 Options::max_frames

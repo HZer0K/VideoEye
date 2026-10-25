@@ -596,6 +596,24 @@ target_compile_definitions(test_hevc_poc_tracker PRIVATE
 add_test(NAME HevcPocTrackerTests COMMAND test_hevc_poc_tracker)
 
 # =================================================
+# 测试 9-B3：VP9 帧级显示顺序
+# 说明: VP9 没有 POC（头里没有 order_hint），显示顺序只能靠
+#       show_frame / show_existing_frame 的事件序还原。重点测：
+#         * 隐藏帧（alt-ref）先编码后显示 = 重排，重排深度 = lag
+#         * superframe 必须拆开（真实语料里每个 ARF pair 就是一个 superframe）
+#         * 帧间帧不区分 P/B（slice_type 留 -1），别照 H.264 的文案写
+#       B 组用 libvpx 两遍编码的 webm，拿容器同步样本数对账。
+# =================================================
+videoeye_add_test(test_vp9_frame_order_tracker
+    unit/test_vp9_frame_order_tracker.cpp
+)
+target_link_libraries(test_vp9_frame_order_tracker PRIVATE
+    VideoEyeAnalysis)
+target_compile_definitions(test_vp9_frame_order_tracker PRIVATE
+    VIDEOEYE_CODEC_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus/codec")
+add_test(NAME Vp9FrameOrderTrackerTests COMMAND test_vp9_frame_order_tracker)
+
+# =================================================
 # 测试 9-B4：证据与覆盖状态（阶段 5）
 # 说明: 重点测 MarkConclusive 的口径边界 —— 这是全仓唯一能产生"假通过"的地方。
 #       99% 覆盖率阈值、总量未知、失败计数三条边界都有正反例。
