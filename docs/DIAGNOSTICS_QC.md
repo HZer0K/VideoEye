@@ -108,7 +108,7 @@ HEVC 认 19/20/21 当 IDR；其余编码不认（认错 NAL 头会把随机字�
   此时 `max_no_idr_interval_ms == 0` 的含义是"没测"，不是"很健康"；
 - 故障类规则的 detail 必须带出「扫了多少 / 共多少」，否则窗口结论会被读成全文件结论。
 
-### 4.2 AVI / FLV / ASF / OGG（`container.avi.*` / `flv.*` / `asf.*` / `ogg.*`）
+### 4.2 AVI / FLV / ASF / OGG / MKV（`container.avi.*` / `flv.*` / `asf.*` / `ogg.*` / `mkv.*`）
 
 输入是 `AnalysisResult::container_diagnostics`（`ContainerDiagnosticsInfo`），由
 `AnalysisInputSession::FillLegacyContainerFacts()` 按容器格式调用对应的
@@ -142,6 +142,40 @@ HEVC 认 19/20/21 当 IDR；其余编码不认（认错 NAL 头会把随机字�
 | `container.ogg.missing_eos` | > 0 条 | Info | 逻辑流没有 EOS 页（可能仍在写入） |
 | `container.ogg.truncated_pages` | > 0 页 | Error | 页声明长度越过文件末尾 |
 | `container.ogg.resyncs` | > 0 次 | Warning | 扫描中需要重新找 `OggS` 同步 |
+
+#### MKV / WebM 为什么有两套解析
+
+`container.mkv.*` 的事实来自 `MkvContainerScanner`，**不是**结构页那棵元素树（`EbmlAnalyzer`）：
+
+| | `EbmlAnalyzer`（结构页） | `MkvContainerScanner`（QC） |
+|---|---|---|
+| 产物 | 整棵元素树 + Track/Cue/Block 表 | 十来个计数（Cues、Cluster 时间轴、CodecPrivate、unknown-size） |
+| 读取方式 | `ReadAll()` 整份读入内存 | 只读元素头，载荷一律 `Seek` 跳过，内存 O(1) |
+| 上限 | `ParserLimits::kMaxNodes`（20 万节点），撞上限即判解析失败 | `MkvScanOptions::max_elements`（20 万元素头），撞上限置 `scan_complete=false` |
+| 长片 | 一部 3 小时的 MKV 有十万量级 Block，必然撞上限 → 拿不到结果 | 一级扫描只碰 Cluster/Cues/Tracks，正常文件几百次元素头，能覆盖到片尾 |
+
+也就是说：**结构页看树，QC 看事实**。凡是"必须扫完整个文件才敢下结论"的规则
+（缺 Cues、时间戳回退、截断）都只能建立在扫描器上；反过来，扫描器**不建树**，
+不承担结构展示。
+
+`unknown_size_elements` 的处理是这一层最容易写错的地方：Matroska 允许元素
+`size` 全 1 表示"长度未知"（流式写出的 Segment/Cluster 很常见），此时边界只能靠
+**下一个 level-1 元素**（Cluster / Cues / Tags / Chapters / Attachments / SeekHead /
+Info / Tracks）推断。推断错了轻则后面的 Cues 被吞掉，重则原地打转 ——
+`fuzz_container_structure` 每轮都会跑这个入口。
+
+| 规则 id | 默认阈值 | 严重度 | 判定 |
+|---------|----------|--------|------|
+| `container.mkv.missing_cues` | — | Warning | 扫完全文件仍没有 Cues 索引（点播不可 seek） |
+| `container.mkv.cluster_timestamp_backwards` | > 0 次 | Error | 相邻 Cluster 时间戳回退 |
+| `container.mkv.missing_codec_private` | > 0 条 | Error | AVC/HEVC/AAC/Vorbis 轨道缺 CodecPrivate |
+| `container.mkv.unknown_size_element` | > 0 个 | Info | 元素声明"长度未知"（流式写出的典型特征） |
+| `container.mkv.truncated` | — | Warning | 元素头/载荷越过 Segment 或文件末尾 |
+| `container.mkv.scan_incomplete` | — | Info | 元素预算用尽，结论只覆盖已扫描部分 |
+
+`missing_cues` 有三道门控，缺一条就会变成刷屏的假警报：`scan_complete=false`（没扫完）、
+`truncated=true`（截断文件天然没索引，那是 truncated 规则的账）、
+`duration_seconds<=0`（直播录制边写边发，本来就不写 Cues）。
 
 ### 4.3 MP4 多 sample entry（`container.mp4.*`）
 

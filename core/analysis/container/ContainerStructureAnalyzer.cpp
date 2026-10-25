@@ -3,6 +3,7 @@
 #include "core/analysis/container/AviStructureAnalyzer.h"
 #include "core/analysis/container/EbmlAnalyzer.h"
 #include "core/analysis/container/FlvStructureAnalyzer.h"
+#include "core/analysis/container/MkvContainerScanner.h"
 #include "core/analysis/container/Mp4BoxAnalyzer.h"
 #include "core/analysis/container/Mp4SampleTableAnalyzer.h"
 #include "core/analysis/container/MpegPsStructureAnalyzer.h"
@@ -242,6 +243,20 @@ bool ContainerStructureAnalyzer::Analyze(const std::string& file_path, model::Co
     case model::ContainerFormat::WebM: {
         EbmlAnalyzer ebml_analyzer;
         if (ebml_analyzer.Analyze(file_path, result.ebml_detail, cancel.get())) {
+            // 元素级体检（QC 事实来源）与元素树分开跑：EbmlAnalyzer 要建树、
+            // 受 kMaxNodes / 整份读入内存的约束，长片根本走不到片尾；这一遍只读
+            // 元素头、不建树，内存 O(1)，Cues / Cluster 时间轴 / CodecPrivate
+            // 这些结论要的是"整份文件都扫过"。失败不影响结构页（analyzed 保持
+            // false，相关规则自然静默），但取消必须当取消处理。
+            MkvContainerScanner mkv_scan;
+            if (!mkv_scan.Analyze(file_path, result.diagnostics.mkv, cancel.get())) {
+                if (infrastructure::Checkpoint(cancel.get()))
+                    return MarkCancelled(result);
+                LOG_WARN("MKV 元素级体检失败（结构页不受影响）");
+            }
+            if (infrastructure::Checkpoint(cancel.get()))
+                return MarkCancelled(result);
+
             if (on_stage)
                 on_stage(Stage::kBuildTree);
             if (!ConvertEbmlTree(result.ebml_detail.element_tree, 0, result.element_tree, cancel.get())) {

@@ -795,6 +795,23 @@ target_link_libraries(test_container_extension_mismatch PRIVATE VideoEyeQcRules 
 add_test(NAME ContainerExtensionMismatchTests COMMAND test_container_extension_mismatch)
 
 # =================================================
+# 测试 19e：MKV / WebM 容器级体检与 QC 规则（container.mkv.*）
+# 说明: 两层。扫描器层造最小 MKV 字节流（临时文件），验证元素级顺序扫描的
+#       Cluster 时间轴 / Cues / CodecPrivate / unknown-size 边界；
+#       规则层手工构造 MkvDiagnostics，验证报告口径与门控。
+#       只链 VideoEyeQcRules + VideoEyeAnalysisPackage —— 两者都不带 Qt / FFmpeg。
+# =================================================
+videoeye_add_test(test_container_mkv_qc_rules
+    unit/test_container_mkv_qc_rules.cpp
+)
+target_link_libraries(test_container_mkv_qc_rules PRIVATE VideoEyeQcRules VideoEyeAnalysisPackage)
+# 语料里那两个"专门造的坏样本"（unknown-size / 截断）用来验证扫描器在 ffmpeg 产出的
+# 真实字节上成立 —— 合成样本与解析实现同源，光靠它们测不出两边一起错。
+target_compile_definitions(test_container_mkv_qc_rules PRIVATE
+    VIDEOEYE_CONTAINER_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus/container")
+add_test(NAME ContainerMkvQcRulesTests COMMAND test_container_mkv_qc_rules)
+
+# =================================================
 # 测试 21：视觉缺陷检测（黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 曝光 / 色偏 / 梳齿 / 黑边）
 # 说明: VisualDefectAnalyzer 只吃 model::FrameSample 里的降采样像素，不依赖 FFmpeg（
 #       AVFrame -> FrameSample 的缩放在 QualityAnalyzer::BuildSample），所以这里全部用

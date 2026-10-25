@@ -91,6 +91,9 @@ std::vector<model::DiagnosticIssue>
 CheckAsfContainerRules(const model::QcRule& rule, const model::AnalysisResult& result, const IssueFactory& make_issue);
 std::vector<model::DiagnosticIssue>
 CheckOggContainerRules(const model::QcRule& rule, const model::AnalysisResult& result, const IssueFactory& make_issue);
+// MKV / WebM：索引、Cluster 时间轴、CodecPrivate、截断（MkvContainerScanner 的元素级事实）
+std::vector<model::DiagnosticIssue>
+CheckMkvContainerRules(const model::QcRule& rule, const model::AnalysisResult& result, const IssueFactory& make_issue);
 std::vector<model::DiagnosticIssue> CheckVideoRules(const model::QcRule& rule, const model::AnalysisResult& result,
                                                     const IssueFactory& make_issue);
 std::vector<model::DiagnosticIssue> CheckAudioRules(const model::QcRule& rule, const model::AnalysisResult& result,

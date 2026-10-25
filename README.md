@@ -18,7 +18,7 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 - **多源输入**: HTTP / RTMP / RTSP 网络流及本地文件
 - **流分析**: 实时统计 FPS、码率、关键帧并可视化曲线
 - **视频帧分析**: 单独标签页展示 I/P/B 帧类型、序号、PTS、时间戳
-- **容器结构分析**: 统一调度解析 MP4/MOV、MKV/WebM、AVI、FLV、MPEG-TS、ASF/WMV、OGG；MP4 树到字段级（`ftyp`/`mvhd`/`tkhd`/`stsd` 入口 + `avcC`/`hvcC`/`av1C`/`esds`/`colr`/`pasp`/`btrt`/`sidx`/`moof`），MPEG-TS 支持 188/192/204 包长自适应、失步重同步、PAT/PMT 跨包组装、描述符与 SDT 服务名、PCR 与连续计数统计
+- **容器结构分析**: 统一调度解析 MP4/MOV、MKV/WebM、AVI、FLV、MPEG-TS、ASF/WMV、OGG；MP4 树到字段级（`ftyp`/`mvhd`/`tkhd`/`stsd` 入口 + `avcC`/`hvcC`/`av1C`/`esds`/`colr`/`pasp`/`btrt`/`sidx`/`moof`），MPEG-TS 支持 188/192/204 包长自适应、失步重同步、PAT/PMT 跨包组装、描述符与 SDT 服务名、PCR 与连续计数统计；MKV/WebM 除元素树外另跑一遍**只读元素头的顺序扫描**（内存 O(1)、覆盖到片尾），给出 Cues 索引 / Cluster 时间轴 / CodecPrivate / unknown-size 等体检结论
 - **媒体信息**: 基于 FFmpeg `libavformat` 展示完整元数据（容器 / 视频 / 音频 / 字幕 / 章节）
 - **码流参数集**: H.264 / HEVC / AV1 按能力矩阵解析；VVC 为实验性部分支持，字段仅供参考、不参与严格容器一致性判定。extradata 为空的封装（TS / 裸流 / fMP4 分片）走**带内参数集**：扫前 8 MiB 视频包抽 SPS/VPS/序列头
 - **硬件加速**: VAAPI/CUDA/D3D11VA/QSV 等硬件解码（解码后统一转 CPU 图像渲染）
@@ -292,12 +292,12 @@ TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红�
 <!-- BEGIN GENERATED TEST SUMMARY -->
 | 指标 | 数量 |
 |---|---|
-| 测试可执行文件 | 107 |
-| ctest 用例组（gtest 可执行文件） | 107 |
+| 测试可执行文件 | 108 |
+| ctest 用例组（gtest 可执行文件） | 108 |
 | python 脚本用例组（非 gtest） | 16 |
-| gtest 用例声明（含 `TEST` / `TEST_F` / `TEST_P`） | 1246 |
+| gtest 用例声明（含 `TEST` / `TEST_F` / `TEST_P`） | 1261 |
 
-启用测试且找到 Python 时，静态注册的 ctest 用例组共 **123 = 107 + 16**。
+启用测试且找到 Python 时，静态注册的 ctest 用例组共 **124 = 108 + 16**。
 这里统计源码中的测试声明，不代表本次已运行通过的数量；参数化测试运行时可能展开成多个用例。
 <!-- END GENERATED TEST SUMMARY -->
 

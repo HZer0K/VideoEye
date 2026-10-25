@@ -1,11 +1,12 @@
 // 容器字节级解析 fuzz 入口（阶段 3.3）。
 //
 // 覆盖全部手写容器解析器：ISOBMFF(MP4/MOV) / EBML(MKV/WebM) / AVI / FLV / ASF /
-// OGG / MPEG-PS / MXF / MPEG-TS，以及 MP4 的样本表（stbl 全表交叉校验）。
+// OGG / MPEG-PS / MXF / MPEG-TS，以及 MP4 的样本表（stbl 全表交叉校验）
+// 与 MKV 的元素级体检扫描（MkvContainerScanner，QC 事实来源，与 EbmlAnalyzer 独立）。
 //
-// 为什么这九个要挤在一个入口里：它们都是**路径型**接口（QC 与 UI 都按文件组织），
-// 没有"从内存解析"的入口。如果拆成九个 target，每个都要把同一份 MP4 语料跑一遍，
-// 覆盖率并不增加，反而要维护九份 write-temp 胶水。同一个输入依次喂给九个解析器，
+// 为什么这些要挤在一个入口里：它们都是**路径型**接口（QC 与 UI 都按文件组织），
+// 没有"从内存解析"的入口。如果拆成多个 target，每个都要把同一份 MP4 语料跑一遍，
+// 覆盖率并不增加，反而要维护多份 write-temp 胶水。同一个输入依次喂给所有解析器，
 // 一次回调就能打到所有路径 —— 而且它们本来就共享"魔数不对就立刻返回 false"的
 // 快速失败，多跑几个的边际成本只有首字节比较。
 //
@@ -32,6 +33,7 @@
 #include "core/analysis/container/AviStructureAnalyzer.h"
 #include "core/analysis/container/EbmlAnalyzer.h"
 #include "core/analysis/container/FlvStructureAnalyzer.h"
+#include "core/analysis/container/MkvContainerScanner.h"
 #include "core/analysis/container/Mp4SampleTableAnalyzer.h"
 #include "core/analysis/container/MpegPsStructureAnalyzer.h"
 #include "core/analysis/container/MxfStructureAnalyzer.h"
@@ -109,6 +111,12 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     videoeye::model::EbmlAnalysisResult ebml;
     videoeye::EbmlAnalyzer ebml_analyzer;
     ebml_analyzer.Analyze(path, ebml, &kNeverCancel);
+
+    // MKV 的元素级顺序扫描（QC 事实来源）：与 EbmlAnalyzer 是两套独立实现，
+    // unknown-size 元素的"下一个一级元素"边界判定最容易写成死循环，必须单独 fuzz。
+    videoeye::model::MkvDiagnostics mkv_diag;
+    videoeye::MkvContainerScanner mkv_scanner;
+    mkv_scanner.Analyze(path, mkv_diag, &kNeverCancel);
 
     // ---- 其余走统一 ContainerStructureResult 的解析器 ----
     videoeye::model::ContainerStructureResult flv;

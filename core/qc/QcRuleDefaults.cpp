@@ -216,6 +216,40 @@ std::vector<QcRule> DefaultQcRules() {
         "次", "解析时找不到 \"OggS\" 同步码并重新对齐，说明前面字节不对齐或中间损坏。",
         "偶发一次通常是文件中间被改写；持续出现说明容器损坏，需要重新获取。");
 
+    // MKV / WebM：索引、Cluster 时间轴、CodecPrivate、截断。
+    // 事实来自 MkvContainerScanner 的元素级顺序扫描（只读元素头，不建树），
+    // 因此这些结论覆盖整份文件，不受结构页元素树上限的影响。
+    add("container.mkv.missing_cues", "MKV 缺少 Cues 索引", IssueCategory::Container, IssueSeverity::Warning,
+        QcRuleOp::NonZero, 0.0, "",
+        "文件里没有 Cues 索引，播放器/剪辑软件只能线性扫到目标位置，拖动进度条与帧级定位会非常慢甚至失效。",
+        "重新封装让 muxer 写索引：ffmpeg -i 输入.mkv -c copy 输出.mkv"
+        "（录制/直播用 -live 1 写出的文件通常没有 Cues）。");
+
+    add("container.mkv.cluster_timestamp_backwards", "MKV Cluster 时间戳回退", IssueCategory::Container,
+        IssueSeverity::Error, QcRuleOp::MaxExceeded, 0.0, "次",
+        "相邻 Cluster 的时间戳出现回退，时间轴非单调，播放会卡顿、音画不同步，seek 落点也会错乱。",
+        "多半是分段拼接时没重排时间戳；用 ffmpeg 重封装或重新转码修复时间轴。");
+
+    add("container.mkv.missing_codec_private", "MKV 轨道缺少 CodecPrivate", IssueCategory::Container,
+        IssueSeverity::Error, QcRuleOp::MaxExceeded, 0.0, "条",
+        "H.264/HEVC/AAC/Vorbis 轨道的 CodecPrivate（avcC / hvcC / AudioSpecificConfig / Vorbis 头）缺失，"
+        "解码器无法初始化，表现为能识别轨道但黑屏或无声。",
+        "重新封装/转码生成完整参数集；不要用 --no-private 之类的裁剪选项。");
+
+    add("container.mkv.unknown_size_element", "MKV 存在未知长度元素", IssueCategory::Container, IssueSeverity::Info,
+        QcRuleOp::MaxExceeded, 0.0, "个",
+        "有元素用「长度未知」写法（size 全 1），通常是流式写出的文件：Segment/Cluster 的结束位置靠后续元素推断，"
+        "元数据里常常连带缺少 Duration 与 Cues。",
+        "点播分发前用 -c copy 重新封装，让 muxer 回填长度与索引。");
+
+    add("container.mkv.truncated", "MKV 元素越过文件末尾", IssueCategory::Container, IssueSeverity::Warning,
+        QcRuleOp::NonZero, 0.0, "处", "元素头或载荷长度越过 Segment / 文件末尾，文件被截断，末尾数据缺失。",
+        "确认拷贝/录制完整；源文件不完整时重新获取。");
+
+    add("container.mkv.scan_incomplete", "MKV 体检未扫完", IssueCategory::Container, IssueSeverity::Info,
+        QcRuleOp::NonZero, 0.0, "", "元素级体检撞到元素预算上限提前结束，Cues / 时间戳回退等结论只代表已扫描的部分。",
+        "文件极大或高度畸形时才出现；需要完整结论时用正常封装的文件复核。");
+
     // ---- MP4/fMP4 容器一致性（core/analysis/container/Mp4SampleTableAnalyzer.h，走自研 IsobmffParser）----
     // 这些规则只决定"是否上报 / 以什么级别上报"，问题本身（含具体样本号、偏移、分片号）
     // 由分析器给出；级别取「规则级别」与「分析器级别」中更严重的一侧，

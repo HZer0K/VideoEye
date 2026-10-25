@@ -92,6 +92,8 @@ std::vector<model::DiagnosticIssue> QcRuleEngine::CheckRule(const model::QcRule&
         return detail::CheckAsfContainerRules(rule, result, make_issue);
     if (id.rfind("container.ogg.", 0) == 0)
         return detail::CheckOggContainerRules(rule, result, make_issue);
+    if (id.rfind("container.mkv.", 0) == 0)
+        return detail::CheckMkvContainerRules(rule, result, make_issue);
     // 注意顺序：container.ts. 必须排在下面那条 container. 兜底之前，
     // 否则会被 CheckContainerRules 抢走（它对不认识的 id 直接返回空，规则静默失效）。
     if (id.rfind("container.ts.", 0) == 0)

@@ -692,10 +692,11 @@ void AnalysisResultAssembler::FinalizeDimensionStatus(int audio_tracks_analyzed,
     // ---- 老式容器体检 ----
     {
         const model::ContainerDiagnosticsInfo& diag = result_.container_diagnostics;
-        const bool any = diag.avi.analyzed || diag.flv.analyzed || diag.asf.analyzed || diag.ogg.analyzed;
+        const bool any =
+            diag.avi.analyzed || diag.flv.analyzed || diag.asf.analyzed || diag.ogg.analyzed || diag.mkv.analyzed;
         if (!any) {
             add(model::MakeSkippedDimension(AnalysisDimension::LegacyContainer,
-                                            "不是 AVI/FLV/ASF/OGG 容器，或该格式无需额外体检"));
+                                            "不是 AVI/FLV/ASF/OGG/MKV 容器，或该格式无需额外体检"));
         } else {
             DimensionStatus status;
             status.dimension = AnalysisDimension::LegacyContainer;
@@ -708,7 +709,8 @@ void AnalysisResultAssembler::FinalizeDimensionStatus(int audio_tracks_analyzed,
             status.coverage_ratio = 1.0;
             const bool complete =
                 (!diag.avi.analyzed || diag.avi.scan_complete) && (!diag.flv.analyzed || diag.flv.scan_complete) &&
-                (!diag.asf.analyzed || diag.asf.scan_complete) && (!diag.ogg.analyzed || diag.ogg.scan_complete);
+                (!diag.asf.analyzed || diag.asf.scan_complete) && (!diag.ogg.analyzed || diag.ogg.scan_complete) &&
+                (!diag.mkv.analyzed || diag.mkv.scan_complete);
             if (!complete) {
                 status.capability = AnalysisCapability::Partial;
                 status.failure_reason = "结构扫描未跑完（文件过大或中途遇到畸形数据）";
