@@ -11,7 +11,16 @@ std::string FrameOrderTimeline::Summary() const {
                        std::to_string(p_count) + " / B " + std::to_string(b_count);
     if (other_count > 0)
         text += " / 其它 " + std::to_string(other_count);
-    text += "），IDR " + std::to_string(idr_count) + " 个";
+    text += "），";
+    if (codec == "hevc") {
+        // HEVC 的开放 GOP 里"随机接入点"与"POC 复位点"不是一回事：
+        // 插在中间的 CRA 可以跳进去，但它的 POC 不复位。两个数都给，省得
+        // 出现"随机接入点 1 个 / GOP 4 段"这种看着自相矛盾的组合。
+        text +=
+            "随机接入点 " + std::to_string(irap_count) + " 个（其中 POC 复位 " + std::to_string(idr_count) + " 个）";
+    } else {
+        text += "IDR " + std::to_string(idr_count) + " 个";
+    }
     if (gop_count > 0) {
         text += "，GOP " + std::to_string(gop_count) + " 段";
         text += "（最短 " + std::to_string(min_gop_frames) + " 帧 / 最长 " + std::to_string(max_gop_frames) +

@@ -575,6 +575,27 @@ target_compile_definitions(test_h264_poc_tracker PRIVATE
 add_test(NAME H264PocTrackerTests COMMAND test_h264_poc_tracker)
 
 # =================================================
+# 测试 9-B3：帧级 POC 追踪（HEVC）
+# 说明: 与 H.264 那条同一个问题、完全不同的三处语义 —— NAL 切分（2 字节 header）、
+#       slice_segment_header 布局、POC 推导与复位点。A 组合成样本按 H.265
+#       7.3.6.1 / 8.3.1 / 8.1.3 逐位构造，重点钉住四条最容易抄错的地方：
+#         * slice_type 是 0=B / 1=P / 2=I（与 H.264 相反）；
+#         * IDR(19/20) 没有 slice_pic_order_cnt_lsb 字段，POC 恒 0；
+#         * 复位点只有 IRAP + NoRaslOutputFlag，中间的 CRA 不复位；
+#         * CRA 之后的 RASL POC 更小，但那是 leading picture，不算重排。
+#       B 组用 libx265 预生成的入库 MP4（repeat-headers=0，参数集只在 hvcC 里），
+#       拿编码器自己写的 PTS 当参考输出对账。
+# =================================================
+videoeye_add_test(test_hevc_poc_tracker
+    unit/test_hevc_poc_tracker.cpp
+)
+target_link_libraries(test_hevc_poc_tracker PRIVATE
+    VideoEyeAnalysis)
+target_compile_definitions(test_hevc_poc_tracker PRIVATE
+    VIDEOEYE_CODEC_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus/codec")
+add_test(NAME HevcPocTrackerTests COMMAND test_hevc_poc_tracker)
+
+# =================================================
 # 测试 9-B4：证据与覆盖状态（阶段 5）
 # 说明: 重点测 MarkConclusive 的口径边界 —— 这是全仓唯一能产生"假通过"的地方。
 #       99% 覆盖率阈值、总量未知、失败计数三条边界都有正反例。

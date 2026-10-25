@@ -1,14 +1,19 @@
-// 帧级解码顺序 / 显示顺序（H.264 POC）的最小实证结果。
+// 帧级解码顺序 / 显示顺序（POC）的最小实证结果。
 //
 // 为什么需要这一层：容器给的是**解码顺序**（sample 顺序 + DTS），而播放要的是
 // **显示顺序**。两者之间的重排信息只存在于码流的 POC 里。没有 POC 时，工具只能
 // 说"这里有 B 帧"（靠 slice_type），说不出"B 帧重排了几帧"、"显示顺序有没有跳"、
 // "这一段是不是拼接过来的"。
 //
+// 结构本身与编码器无关：H.264 与 HEVC 的 POC 推导公式不同（H.264 有
+// pic_order_cnt_type 0/1/2，HEVC 只有 lsb 一套），但产出的是同一组字段：
+// 一幅图像在解码顺序上的位置 + 它的 POC + 它是不是随机接入点。
+//
 // 边界（明确不做，避免用户误以为已支持）：
-//   * 不重建参考帧列表（需要 MMCO / RPL，且要按解码过程维护 DPB）
-//   * 不支持 pic_order_cnt_type == 1（需要 offset_for_ref_frame 表，实际素材极少）
-//   * field coding（隔行）只做保守处理：POC 仍算得出来，但不据此推断"缺帧"
+//   * 不重建参考帧列表（H.264 的 MMCO / HEVC 的 RPL，都要按解码过程维护 DPB）
+//   * H.264 不支持 pic_order_cnt_type == 1（需要 offset_for_ref_frame 表，素材极少）
+//   * field coding（H.264 隔行）只做保守处理：POC 仍算得出来，但不据此推断"缺帧"
+//   * 不区分 temporal sub-layer（POC 推导里 prevTid0Pic 的那些细节），逐幅图像累进
 #pragma once
 
 #include <cstdint>
@@ -21,11 +26,23 @@ namespace model {
 // 一帧（一幅图像）在解码顺序上的位置与它的 POC。
 // 同一幅图像可能有多个 slice，这里按 first_mb_in_slice == 0 只记一条。
 struct FrameOrderEntry {
-    int nal_unit_type = -1; // 1 = 非 IDR slice，5 = IDR slice
-    int slice_type = -1;    // 归一化后：0=P 1=B 2=I 3=SP 4=SI
+    // 编码器原生的 NAL 单元类型。
+    //   H.264：1 = 非 IDR slice，5 = IDR slice（上层只关心这两个）
+    //   HEVC ：0..9 普通 VCL，16..23 IRAP（19/20 = IDR，16..18 = BLA，21 = CRA）
+    // 两者语义不同，判"是不是随机接入点"请用 irap / idr 字段，别看数字。
+    int nal_unit_type = -1;
+    int slice_type = -1; // 归一化后：0=P 1=B 2=I 3=SP 4=SI
+    // POC 归零的随机接入点（H.264 IDR / HEVC IDR、BLA，以及码流起点上的 CRA）。
+    // GOP 是以它分段、重排也不跨它计数。
     bool idr = false;
-    int frame_num = 0;
-    int64_t poc = 0; // 显示顺序值（小于 0 是正常的：POC 可以回绕到负值）
+    // 随机接入点（HEVC 的 16..23 全部，含 CRA；H.264 与 idr 同义）。
+    //
+    // ❗ 与 idr 必须分开：开放 GOP 里 CRA 之后解码出来的是 RASL/leading picture，
+    // 它们的 POC 本来就在 CRA 之前 —— 那不是"B 帧重排"，据 idr 之外再看这一位，
+    // 才能把"IRAP 后面的第一处 POC 回退"排除在重排统计之外。
+    bool irap = false;
+    int frame_num = 0; // H.264 的 frame_num；HEVC 没有这个字段，恒为 0
+    int64_t poc = 0;   // 显示顺序值（小于 0 是正常的：POC 可以回绕到负值）
     int64_t packet_index = -1;
     bool has_time = false;
     double time_seconds = 0.0;
@@ -51,8 +68,14 @@ struct FrameOrderEntry {
 // 一条流的帧顺序时间线。
 struct FrameOrderTimeline {
     int stream_index = -1; // 所属视频流；-1 = 未绑定（只有手构造的测试对象会是）
+    // 产出这条时间线的编码（"h264" / "hevc"）。
+    // 由管线填（domain 不认 AVCodecID），也可以是空串（手构造的测试对象）。
+    // 用途只有文案：HEVC 没有 frame_num，报"IDR"也不如报"随机接入点"准确。
+    std::string codec;
     bool available = false;
     std::string unavailable_reason; // available=false 时必填，不能空着让人猜
+    // H.264 的 pic_order_cnt_type（0/1/2）；HEVC 只有一套公式，恒记 0。
+    // -1 = 还没拿到参数集。
     int poc_type = -1;
     bool field_coded = false;
 
@@ -64,7 +87,12 @@ struct FrameOrderTimeline {
     int p_count = 0;
     int b_count = 0;
     int other_count = 0;
+    // POC 归零的随机接入点个数（H.264 的 IDR；HEVC 的 IDR / BLA，以及码流起点上的 CRA）
     int idr_count = 0;
+    // 随机接入点个数（HEVC 的 16..23 全部，含插在中间的 CRA；H.264 与 idr_count 相同）。
+    // 与 idr_count 分开是因为开放 GOP 里这两者会差得很多：GOP 段数按后者分段，
+    // 但"这个文件有几个可跳转的点"要按前者回答。
+    int irap_count = 0;
 
     // 解码顺序里 POC 回退的次数与最大回退幅度。
     // 这是"存在显示顺序重排（B 帧）"的直接证据；回退幅度就是重排深度。

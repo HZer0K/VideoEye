@@ -148,8 +148,8 @@ std::string QcReportExporter::BuildText(const QcExportBundle& bundle) {
     // ---- 帧级显示顺序（POC，仅 H.264）----
     //
     // 文本报告里逐帧明细意义不大（几千行没人看），所以这里只落统计量 + 支持范围，
-    // 逐帧明细留给 JSON 与 UI。空数组时不落这一节：那代表"没有 H.264 轨"，
-    // 落了反而让人以为"跑了但没结果"。
+    // 逐帧明细留给 JSON 与 UI。空数组时不落这一节：那代表"没有可追踪的视频轨
+    // （H.264 / HEVC）"，落了反而让人以为"跑了但没结果"。
     if (!run.analysis.frame_order_timelines.empty()) {
         out << "\n--- 帧级显示顺序（POC）---\n";
         for (const model::FrameOrderTimeline& timeline : run.analysis.frame_order_timelines) {

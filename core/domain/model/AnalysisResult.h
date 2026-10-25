@@ -177,11 +177,12 @@ struct AnalysisResult {
     // 中途换分辨率/位深，只有看这条时间线才发现得了。
     std::vector<ParameterTimeline> parameter_timelines;
 
-    // 帧级显示/解码顺序（每条 H.264 视频轨一份，见 H264PocTracker）。
+    // 帧级显示/解码顺序（每条视频轨一份，见 FrameOrderTracker / H264PocTracker /
+    // HevcPocTracker）。
     //
     // 与 bitrate_gop 的分工：后者按包统计"关键帧间隔"，只有长度；这里给的是
     // 逐帧 POC，能回答"显示顺序重排了多深""GOP 边界在哪一帧""POC 有没有重复/缺失"。
-    // 目前只支持 H.264 —— HEVC/AV1 的 POC 需要各自的 slice header 与
+    // 支持 H.264 与 HEVC —— AV1/VP9/VVC 的 POC 需要各自的 block/frame header 与
     // 参考结构，尚未实现，对应维度会明确标为不可用而不是给空结果。
     std::vector<FrameOrderTimeline> frame_order_timelines;
 

@@ -41,6 +41,7 @@
 #include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/AnalysisResult.h"
 
+#include "tests/support/FrameOrderTestSupport.h"
 #include "tests/support/TestMediaFactory.h"
 
 extern "C" {
@@ -56,6 +57,16 @@ using videoeye::H264PocTracker;
 using videoeye::model::AnalysisResult;
 using videoeye::model::FrameOrderEntry;
 using videoeye::model::FrameOrderTimeline;
+// 共用装置（容器参考顺序 / 只开帧顺序维度的引擎调用）在 tests/support 里，
+// 与 HEVC 的用例共用同一份 —— 两边的对账口径必须逐字相同。
+using videoeye_test::CodecSample;
+using videoeye_test::DemuxedOrderFacts;
+using videoeye_test::DemuxForDisplayOrder;
+using videoeye_test::DisplayOrderPerGop;
+using videoeye_test::MaxBackwardStep;
+using videoeye_test::RunFrameOrderAnalysis;
+using videoeye_test::Sequential;
+using videoeye_test::SkipIfMissing;
 
 // ---------------------------------------------------------------------------
 // 极简位写入器（MSB-first，与 H.264 的 RBSP 位序一致）
@@ -719,156 +730,6 @@ TEST(H264PocTrackerTest, MaxFramesTruncatesDetailButNotStatistics) {
 // 解码器的输出顺序），与被测代码零共享。
 // ---------------------------------------------------------------------------
 
-const char* kCodecCorpusDir = VIDEOEYE_CODEC_CORPUS_DIR;
-
-// 语料文件缺失时返回空串（GTEST_SKIP 不能写在非 void 函数里），由调用点跳过。
-// 语料由 tests/corpus/generate_real_corpus.py 用 ffmpeg 生成并入库，
-// 没生成过的机器上不该 FAIL；入库之后它随仓库一起走，这里就是必跑的。
-std::string CodecSample(const char* name) {
-    const std::filesystem::path path = std::filesystem::path(kCodecCorpusDir) / name;
-    std::error_code ec;
-    if (!std::filesystem::exists(path, ec))
-        return std::string();
-    return path.string();
-}
-
-void SkipIfMissing(const std::string& path, const char* name) {
-    if (path.empty()) {
-        GTEST_SKIP() << "缺真实样本 " << name << "，先跑 tests/corpus/generate_real_corpus.py";
-    }
-}
-
-// 0,1,2,...n-1 —— 用来判断一份"显示顺序"参考有没有区分度（全等 = 没有重排）
-std::vector<int64_t> Sequential(std::size_t n) {
-    std::vector<int64_t> out(n);
-    for (std::size_t i = 0; i < n; ++i)
-        out[i] = static_cast<int64_t>(i);
-    return out;
-}
-
-// 序列里最大的"向后跳步"幅度（相邻两项下降了多少）。给 0,3,2,4,1 得 3（4→1）。
-int64_t MaxBackwardStep(const std::vector<int64_t>& values) {
-    int64_t worst = 0;
-    for (std::size_t i = 1; i < values.size(); ++i) {
-        const int64_t back = values[i - 1] - values[i];
-        if (back > worst)
-            worst = back;
-    }
-    return worst;
-}
-
-// 容器自己给出的**显示顺序**：按"文件里的包顺序"记下每个包的 PTS。
-//
-// 这三个概念别搞混：
-//   * 文件里的**包顺序** == 解码顺序（MP4 里 sample 按 DTS 递增排布）；
-//   * 每个包的 **PTS** == 该帧的显示时刻，是**编码器**写进 ctts/stts 的，
-//     不是任何解析器事后推出来的 —— 这正是它适合当参考输出的原因：
-//     与被测代码零共享，且是"真实编码器认为的显示顺序"；
-//   * 于是"把包按 PTS 排序"得到的下标序列，就是权威的 显示序 → 解码序 映射。
-//
-// ❗ 特意**不用**两条看起来更"直接"的路：
-//   * AVFrame::coded_picture_number —— FFmpeg 7 起已移除，且它是解码器的内部记账；
-//   * 裸 H.264 的 PTS —— 那是 libavformat 的 h264 parser 自己按 POC 推的，
-//     与被测逻辑同源，对得上也不能证明什么。
-struct DemuxedOrderFacts {
-    bool ok = false;
-    // 第 i 项 = 文件里第 i 个视频包（解码顺序）的显示时间戳（秒）
-    std::vector<double> pts_in_decode_order;
-    // 第 i 项 = 容器（stss 同步样本表）标记的关键帧。与被测侧的 NAL type 5
-    // 是两条完全独立的通道，先各自数一遍再对账。
-    std::vector<bool> is_key_in_decode_order;
-
-    // 按 GOP 切开后的"显示序 → 解码序"映射。
-    //
-    // ❗ 必须**分段**排：POC 在每个 IDR 处被重置回 0，两个 GOP 的 POC 值域
-    // 完全重叠。整条时间线一起排会得到 0,0,2,2,4,4... 这种两两并列的序列 ——
-    // 那不是 POC 算错了，是排序的口径错了。
-    std::vector<std::vector<int64_t>> DecodeIndexInDisplayOrderPerGop() const {
-        std::vector<std::vector<int64_t>> out;
-        std::vector<std::size_t> current;
-        auto flush = [&]() {
-            if (current.empty())
-                return;
-            std::sort(current.begin(), current.end(),
-                      [this](std::size_t a, std::size_t b) { return pts_in_decode_order[a] < pts_in_decode_order[b]; });
-            std::vector<int64_t> segment;
-            segment.reserve(current.size());
-            for (std::size_t index : current)
-                segment.push_back(static_cast<int64_t>(index));
-            out.push_back(std::move(segment));
-            current.clear();
-        };
-        for (std::size_t i = 0; i < pts_in_decode_order.size(); ++i) {
-            if (is_key_in_decode_order[i])
-                flush();
-            current.push_back(i);
-        }
-        flush();
-        return out;
-    }
-};
-
-DemuxedOrderFacts DemuxForDisplayOrder(const std::string& path) {
-    DemuxedOrderFacts facts;
-    AVFormatContext* fmt = nullptr;
-    if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) < 0 || !fmt)
-        return facts;
-    if (avformat_find_stream_info(fmt, nullptr) < 0) {
-        avformat_close_input(&fmt);
-        return facts;
-    }
-    int video_stream = -1;
-    for (unsigned i = 0; i < fmt->nb_streams; ++i) {
-        if (fmt->streams[i]->codecpar && fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            video_stream = static_cast<int>(i);
-            break;
-        }
-    }
-    if (video_stream < 0) {
-        avformat_close_input(&fmt);
-        return facts;
-    }
-    AVStream* stream = fmt->streams[video_stream];
-
-    AVPacket* pkt = av_packet_alloc();
-    while (av_read_frame(fmt, pkt) >= 0) {
-        if (pkt->stream_index == video_stream && pkt->pts != AV_NOPTS_VALUE) {
-            facts.pts_in_decode_order.push_back(static_cast<double>(pkt->pts) * av_q2d(stream->time_base));
-            facts.is_key_in_decode_order.push_back((pkt->flags & AV_PKT_FLAG_KEY) != 0);
-        }
-        av_packet_unref(pkt);
-    }
-    av_packet_free(&pkt);
-    avformat_close_input(&fmt);
-    facts.ok = facts.pts_in_decode_order.size() >= 2;
-    return facts;
-}
-
-// 只开帧顺序维度，其余全关：这两条只验证 POC，别的维度既无关又拖慢。
-AnalysisResult RunFrameOrderAnalysis(const std::string& path) {
-    AnalysisResult result;
-    videoeye::AnalysisCallbacks callbacks;
-    callbacks.on_failed = [](const std::string&) {};
-    callbacks.on_finished = [](bool, const AnalysisResult&) {};
-
-    AnalysisOptions options;
-    options.analyze_frame_order = true;
-    options.analyze_bitrate_gop = false;
-    options.analyze_audio_qc = false;
-    options.analyze_color_hdr = false;
-    options.analyze_bitstream = false;
-    options.analyze_mp4_sample_table = false;
-    options.analyze_streaming_package = false;
-    options.analyze_subtitle = false;
-    options.analyze_timecode = false;
-    options.analyze_aux_data = false;
-    options.analyze_parameter_timeline = false;
-
-    AnalysisEngine engine;
-    engine.Run(path, options, callbacks, &result);
-    return result;
-}
-
 std::string MakeMedia(const std::string& dir_name, int max_b_frames) {
     const std::string dir = (std::filesystem::temp_directory_path() / dir_name).string();
     std::filesystem::create_directories(dir);
@@ -914,38 +775,6 @@ TEST(H264PocTrackerRealEncoderTest, WithoutBFramesThereIsNoReordering) {
     EXPECT_EQ(t.max_gop_frames, 25);
     EXPECT_EQ(t.duplicate_poc_count, 0);
     EXPECT_EQ(t.poc_gap_slots, 0);
-}
-
-// 把一条时间线按 IDR 切成若干段，每段内给出"显示序 → 解码序"映射。
-//
-// 分段这件事不是实现细节，是 H.264 的语义：**POC 在每个 IDR 处重置回 0**，
-// 所以"按 POC 排显示顺序"只在段内有意义。跨段排会得到 0,0,2,2,4,4...，
-// 看着像 POC 算重了，其实是排序口径错了。
-std::vector<std::vector<int64_t>> DisplayOrderPerGop(const FrameOrderTimeline& t) {
-    struct Ranked {
-        int64_t poc = 0;
-        std::size_t decode_index = 0;
-    };
-    std::vector<std::vector<int64_t>> out;
-    std::vector<Ranked> current;
-    auto flush = [&]() {
-        if (current.empty())
-            return;
-        std::sort(current.begin(), current.end(), [](const Ranked& a, const Ranked& b) { return a.poc < b.poc; });
-        std::vector<int64_t> segment;
-        segment.reserve(current.size());
-        for (const Ranked& item : current)
-            segment.push_back(static_cast<int64_t>(item.decode_index));
-        out.push_back(std::move(segment));
-        current.clear();
-    };
-    for (std::size_t i = 0; i < t.frames.size(); ++i) {
-        if (t.frames[i].idr)
-            flush();
-        current.push_back({t.frames[i].poc, i});
-    }
-    flush();
-    return out;
 }
 
 // ---------------------------------------------------------------------------

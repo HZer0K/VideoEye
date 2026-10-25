@@ -52,12 +52,12 @@ void FrameOrderView::RebuildTable() {
     }
     if (result_->frame_order_timelines.empty()) {
         if (hint_)
-            hint_->setText(tr("本次未追踪帧顺序（没有 H.264 视频轨，或「帧级顺序追踪」选项已关闭）。"));
+            hint_->setText(tr("本次未追踪帧顺序（没有可追踪的视频轨，或「帧级顺序追踪」选项已关闭）。"));
         return;
     }
 
     // 与参数变化表同理：每条轨至少留一行，不可用的轨留「不可用 + 原因」，
-    // 否则"没有 H.264 轨"和"有轨但算不出 POC"在界面上长得一样。
+    // 否则"没有可追踪的轨"和"有轨但算不出 POC"在界面上长得一样。
     struct Row {
         int stream_index = -1;
         QString decode_index;
@@ -93,7 +93,9 @@ void FrameOrderView::RebuildTable() {
             row.decode_index = QString::number(static_cast<qulonglong>(i));
             const char type_char = entry.TypeChar();
             row.type = QString::fromLatin1(&type_char, 1) + (entry.idr ? QStringLiteral("(IDR)") : QString());
-            row.frame_num = QString::number(entry.frame_num);
+            // HEVC 没有 frame_num 这个字段（模型里恒 0）。直接印 0 会被读成
+            // "所有帧的 frame_num 都是 0"，所以按"这条轨是 HEVC"显示成 "-"。
+            row.frame_num = (timeline.codec == "hevc") ? QStringLiteral("-") : QString::number(entry.frame_num);
             row.poc = QString::number(static_cast<qlonglong>(entry.poc));
             row.position = tr("包 %1").arg(static_cast<qlonglong>(entry.packet_index));
             if (entry.has_time)

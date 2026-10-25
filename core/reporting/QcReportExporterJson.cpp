@@ -215,13 +215,16 @@ JsonValue BuildParameterTimelinesArray(const model::AnalysisResult& result) {
 // 帧级显示顺序（POC 重建，仅 H.264）。
 //
 // 与 parameter_timelines 的分工：那条记"配置怎么变"，这条记"帧怎么排"。
-// 字段全部来自逐 slice 解析出的 POC；解析不出来的组合（pic_order_cnt_type=1、
-// 非 H.264）走 available=false + reason，不给推断不出的字段留 0 占位。
+// 字段全部来自逐 slice 解析出的 POC；解析不出来的组合（H.264 的
+// pic_order_cnt_type=1、AV1/VP9/VVC）走 available=false + reason，
+// 不给推断不出的字段留 0 占位。
 JsonValue BuildFrameOrdersArray(const model::AnalysisResult& result) {
     JsonValue array = JsonValue::MakeArray();
     for (const model::FrameOrderTimeline& timeline : result.frame_order_timelines) {
         JsonValue node = JsonValue::MakeObject();
         node.Set("stream_index", JNumber(static_cast<double>(timeline.stream_index)));
+        if (!timeline.codec.empty())
+            node.Set("codec", JText(timeline.codec));
         node.Set("available", JsonValue(timeline.available));
         if (!timeline.available) {
             node.Set("reason", JText(timeline.unavailable_reason));
@@ -236,6 +239,9 @@ JsonValue BuildFrameOrdersArray(const model::AnalysisResult& result) {
         node.Set("p_count", JNumber(static_cast<double>(timeline.p_count)));
         node.Set("b_count", JNumber(static_cast<double>(timeline.b_count)));
         node.Set("idr_count", JNumber(static_cast<double>(timeline.idr_count)));
+        // 随机接入点总数（HEVC 含 CRA）：GOP 段数按它分段，idr_count 只是
+        // 其中"顺带把 POC 归零"的那些。开放 GOP 里两个数会差得很多。
+        node.Set("irap_count", JNumber(static_cast<double>(timeline.irap_count)));
         // 显示顺序重排：解码顺序里 POC 回退的次数与最大幅度（POC 步长通常为 2，
         // 所以"回退 4"≈ 重排 2 帧）。这是 B 帧存在的直接证据，不是靠 slice_type 猜。
         node.Set("reorder_events", JNumber(static_cast<double>(timeline.reorder_events)));
@@ -250,11 +256,12 @@ JsonValue BuildFrameOrdersArray(const model::AnalysisResult& result) {
 
         // 支持范围：把"哪些结论能下、哪些不能"写进报告，避免读者把缺失当通过。
         JsonValue scope = JsonValue::MakeObject();
-        scope.Set("codecs", JText("仅 H.264；HEVC/AV1/VP9/VVC 的 POC 未实现（对应维度标记为不可用）"));
-        scope.Set("poc_type", JText("pic_order_cnt_type 0 与 2 支持；1 不支持（需要 offset_for_ref_frame 表）"));
-        scope.Set("reference_lists", JText("不重建 DPB / 参考帧列表（无 MMCO、无 RPL），只给 POC 序列"));
+        scope.Set("codecs", JText("H.264 与 HEVC；AV1/VP9/VVC 的 POC 未实现（对应维度标记为不可用）"));
+        scope.Set("poc_type", JText("H.264：pic_order_cnt_type 0 与 2 支持，1 不支持"
+                                    "（需要 offset_for_ref_frame 表）；HEVC 只有一套公式，恒记 0"));
+        scope.Set("reference_lists", JText("不重建 DPB / 参考帧列表（H.264 无 MMCO、HEVC 无 RPL），只给 POC 序列"));
         scope.Set("gap_inference", JText("缺帧数按观测到的最小 POC 步长推断，只给总量不给具体帧号；"
-                                         "隔行（field coding）时不推断"));
+                                         "H.264 隔行（field coding）时不推断，HEVC 只有帧编码，恒推断"));
         node.Set("scope", scope);
 
         JsonValue frames = JsonValue::MakeArray();
@@ -265,6 +272,9 @@ JsonValue BuildFrameOrdersArray(const model::AnalysisResult& result) {
             item.Set("decode_index", JNumber(static_cast<double>(frames.Size())));
             item.Set("type", JText(std::string(1, entry.TypeChar())));
             item.Set("idr", JsonValue(entry.idr));
+            // HEVC 存的是真实 NAL 类型（16..23 = IRAP，可区分 IDR/BLA/CRA）；
+            // H.264 只有 1/5 两种取值。判"是不是随机接入点"请看 idr，不要看数字。
+            item.Set("nal_unit_type", JNumber(static_cast<double>(entry.nal_unit_type)));
             item.Set("frame_num", JNumber(static_cast<double>(entry.frame_num)));
             item.Set("poc", JNumber(static_cast<double>(entry.poc)));
             item.Set("packet_index", JNumber(static_cast<double>(entry.packet_index)));

@@ -222,8 +222,8 @@ std::string QcReportExporter::BuildHtml(const QcExportBundle& bundle) {
     // 全量逐帧明细仍以 JSON 为准（几千行塞进 HTML 没人看，还会拖慢打开）。
     if (!run.analysis.frame_order_timelines.empty()) {
         out << "  <h2>帧级显示顺序（POC）</h2>\n";
-        out << "  <p class=\"meta\">来自逐 slice 解析出的 POC。支持范围：仅 H.264；"
-               "pic_order_cnt_type=1 与 HEVC/AV1/VP9/VVC 不支持；不重建参考帧列表。</p>\n";
+        out << "  <p class=\"meta\">来自逐 slice 解析出的 POC。支持范围：H.264 与 HEVC；"
+               "AV1/VP9/VVC 未实现，H.264 的 pic_order_cnt_type=1 不支持；不重建参考帧列表。</p>\n";
         for (const model::FrameOrderTimeline& timeline : run.analysis.frame_order_timelines) {
             out << "  <h3>视频流 #" << timeline.stream_index << "</h3>\n";
             if (!timeline.available) {

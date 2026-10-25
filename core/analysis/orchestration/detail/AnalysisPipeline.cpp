@@ -401,12 +401,12 @@ void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisRes
         }
     }
 
-    // ---- 帧级 POC 追踪（仅 H.264）----
+    // ---- 帧级 POC 追踪（H.264 / HEVC）----
     //
     // 与参数集追踪同样是"extradata 路径也要跑"，所以放在 return 之前。
-    // 只对 H.264 建：HEVC/AV1 的显示顺序需要各自的 slice/frame header 语义
-    // （HEVC 的 POC 还要看 IRAP 类型与 NoRaslOutputFlag），没实现就不建，
-    // 上层据 frame_order_timelines 为空把维度标成"不可用"。
+    // 按编码分派交给 FrameOrderTracker：没有实现的编码（AV1/VP9/VVC）会
+    // enabled()==false，这里直接不建槽 —— 上层据 frame_order_timelines 为空
+    // 把维度标成"不可用"，而不是给一条"0 帧、无重排"的假结论。
     poc_trackers_.clear();
     frame_order_timelines_.clear();
     if (options_.analyze_frame_order) {
@@ -414,25 +414,26 @@ void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisRes
             const AVStream* st = fmt->streams[i];
             if (st == nullptr || st->codecpar == nullptr)
                 continue;
-            if (st->codecpar->codec_id != AV_CODEC_ID_H264)
-                continue;
             PocTrackerSlot slot;
             slot.stream_index = static_cast<int>(i);
             slot.time_base = av_q2d(st->time_base);
-            slot.tracker.Reset(static_cast<int>(i));
-            slot.tracker.SetFraming(H264PocTracker::Framing::Auto);
+            slot.tracker.Reset(static_cast<int>(st->codecpar->codec_id), static_cast<int>(i));
+            if (!slot.tracker.enabled())
+                continue;
+            slot.tracker.SetFraming(FrameOrderTracker::Framing::Auto);
             slot.tracker.SetLengthPrefixBytes(NalLengthSizeFromExtradata(st->codecpar));
-            // ❗ 先喂 extradata：MP4/MKV 的参数集只写在 avcC 里，码流里一个 SPS 都没有
-            // （libx264 在 AV_CODEC_FLAG_GLOBAL_HEADER 下会关掉 b_repeat_headers）。
-            // 少了这一步，"帧顺序"在主力封装上恒为"不可用"，而原因会被记成
-            // "扫到 slice 之前没有 SPS"，指向完全错误的方向。
+            // ❗ 先喂 extradata：MP4/MKV 的参数集只写在 avcC / hvcC 里，码流里
+            // 一个 SPS 都没有（libx26x 在 AV_CODEC_FLAG_GLOBAL_HEADER 下会关掉
+            // repeat-headers）。少了这一步，"帧顺序"在主力封装上恒为"不可用"，
+            // 而原因会被记成"扫到 slice 之前没有 SPS"，指向完全错误的方向。
             if (st->codecpar->extradata != nullptr && st->codecpar->extradata_size > 0) {
                 slot.tracker.FeedExtradata(st->codecpar->extradata, static_cast<size_t>(st->codecpar->extradata_size));
             }
+            LOG_INFO("帧级顺序追踪: 流 #" + std::to_string(i) + " 按 " + slot.tracker.codec_name() + " 解析 POC");
             poc_trackers_.push_back(std::move(slot));
         }
         if (poc_trackers_.empty()) {
-            LOG_INFO("帧级顺序追踪: 没有 H.264 视频轨（HEVC/AV1/VP9 的 POC 尚未实现）");
+            LOG_INFO("帧级顺序追踪: 没有可追踪的视频轨（当前覆盖 H.264 / HEVC，AV1/VP9/VVC 尚未实现）");
         }
     }
 
@@ -740,7 +741,7 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt, model::Anal
             slot.tracker.Feed(pkt->data, static_cast<size_t>(pkt->size), pts_seconds, packet_index, pkt->pos);
         }
 
-        // 帧级 POC：只对 H.264 轨跑，同样在 extradata 路径上也要扫。
+        // 帧级 POC：H.264 / HEVC 轨，同样在 extradata 路径上也要扫。
         // 时间戳用 PTS（显示顺序的时间），不是 DTS —— 这一层就是来比对显示顺序的。
         for (PocTrackerSlot& slot : poc_trackers_) {
             if (slot.stream_index != pkt->stream_index)
@@ -856,9 +857,10 @@ void AnalysisPipeline::BeforeClose(AVFormatContext* fmt, model::AnalysisResult& 
     frame_order_timelines_.clear();
     for (PocTrackerSlot& slot : poc_trackers_) {
         // 拷一份再落：FrameOrderTimeline 不带流号（domain 不认 AVStream），
-        // 而报告要按流分节展示，流号只能在这里补。
+        // 而报告要按流分节展示，流号只能在这里补。编码名同理（只用于文案）。
         model::FrameOrderTimeline timeline = slot.tracker.Finish();
         timeline.stream_index = slot.stream_index;
+        timeline.codec = slot.tracker.codec_name();
         frame_order_timelines_.push_back(timeline);
         LOG_INFO("帧级顺序(流#" + std::to_string(slot.stream_index) + "): " + timeline.Summary());
     }

@@ -230,6 +230,31 @@ def build_h264_bframes(ffmpeg):
     ], ".mp4")
 
 
+def build_hevc_bframes(ffmpeg):
+    r"""MP4 / HEVC: libx265 + **B 帧** + 四个 IDR（keyint 12 / 40 帧）。
+
+    与 build_h264_bframes 同样是为帧级 POC 对账准备的，但 HEVC 的 POC 公式、
+    slice_segment_header 布局、IRAP 语义整套都不一样（见 HevcPocTracker.h），
+    拿 H.264 的样本测不到任何一条 HEVC 专属判据。
+
+    关键参数：
+      bframes=3 + b-adapt=0  —— 固定 IBBB P BBB P 结构，POC 回退幅度可预测
+      keyint=min-keyint=12   —— 四个 IDR，顺带验"IDR 不参与重排计数"
+      scenecut=0             —— 否则 testsrc2 的色块变化会插进额外 I 帧
+      repeat-headers=0       —— 参数集**只**写进 hvcC，强制走 extradata 路径
+                                （真实 MP4 就是这样；这条路径最容易静默失效）
+    封装选 MP4 的理由同 H.264：对账的参考是容器 PTS，裸流没有时间戳。
+    """
+    return run_ffmpeg(ffmpeg, [
+        "-f", "lavfi", "-i", "testsrc2=size=192x108:rate=25:duration=1.6",
+        "-c:v", "libx265", "-preset", "medium",
+        "-x265-params",
+        "keyint=12:min-keyint=12:bframes=3:b-adapt=0:scenecut=0:repeat-headers=0:log-level=error",
+        "-pix_fmt", "yuv420p", "-tag:v", "hvc1",
+        "-f", "mp4",
+    ], ".mp4")
+
+
 register("container/real_h264_aac.ts", "ts", build=build_ts)
 register("container/real_h264_aac.m2ts", "m2ts", derived="container/real_h264_aac.ts")
 register("container/real_mpeg4_mp3.avi", "avi", build=build_avi)
@@ -238,6 +263,7 @@ register("container/real_h264_aac.mkv", "mkv", build=build_mkv)
 register("container/real_mpeg2_pcm.mxf", "mxf", build=build_mxf)
 register("container/real_mpeg2_mp2.mpg", "ps", build=build_ps)
 register("codec/real_x264_bframes_gop.mp4", "mp4", build=build_h264_bframes)
+register("codec/real_x265_bframes_gop.mp4", "mp4", build=build_hevc_bframes)
 
 
 # ---------------------------------------------------------------------------

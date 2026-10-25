@@ -8,6 +8,11 @@
 //   * 显示顺序有没有跳变 / 重复（拼接、丢帧、重复封装）
 //   * GOP 边界在哪、每段多长
 //
+// 与 HevcPocTracker 的分工：两者的扫包骨架（SplitNals / Feed / FeedExtradata /
+// Finish）与统计汇总（FrameOrderStats）是同一套，只有三处编码语义不同 ——
+// NAL 切分语法、slice_header 布局、POC 推导公式。所以是两个类而不是一个
+// if/else 大函数：混在一起后每读一处都要先确认"这段是哪个编码的"。
+//
 // 明确不做（避免用"看起来像"冒充"已验证"）：
 //   * 不重建参考帧列表（DPB / MMCO / RPL）。那需要按解码过程维护滑动窗口，
 //     且对"这份文件能不能播"这个问题没有增量信息 —— POC 异常已经能报警。
@@ -33,21 +38,15 @@
 #include "core/domain/model/FrameOrderInfo.h"
 #include "core/domain/model/H264BitstreamInfo.h"
 
+#include "core/analysis/codec/FrameOrderTypes.h"
+
 namespace videoeye {
 
 class H264PocTracker {
 public:
-    // 与 ParameterSetTracker::Framing 同义（这里只支持 H.264）
-    enum class Framing {
-        Auto = 0,
-        AnnexB,
-        LengthPrefixed,
-    };
-
-    struct Options {
-        // 最多把多少帧记进 frames（统计量不受此上限影响，只有逐帧明细受限）
-        size_t max_frames = 4096;
-    };
+    // 与 ParameterSetTracker::Framing 同义；两种编码共用一份枚举（见 FrameOrderTypes.h）
+    using Framing = NalFraming;
+    using Options = FrameOrderOptions;
 
     void Reset(int stream_index, const Options& options = Options{});
     void SetFraming(Framing framing) {
@@ -106,6 +105,7 @@ private:
     bool ParseSliceHeader(const NalUnit& nal, SliceHead& out);
     int64_t ComputePoc(const SliceHead& head);
     void PushFrame(const SliceHead& head, int64_t poc, bool has_time, double time_seconds, int64_t packet_index);
+    // 汇总重排 / GOP / 重复 / 缺口。规则本体在 FrameOrderStats.cpp，与 HEVC 共用。
     void Recompute();
 
     int stream_index_ = -1;

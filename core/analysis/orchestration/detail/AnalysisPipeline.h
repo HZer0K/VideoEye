@@ -29,7 +29,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "core/analysis/codec/H264PocTracker.h"
+#include "core/analysis/codec/FrameOrderTracker.h"
 #include "core/analysis/codec/InBandParameterSets.h"
 #include "core/analysis/codec/ParameterSetTracker.h"
 #include "core/analysis/codec/VideoEsInspector.h"
@@ -315,11 +315,12 @@ private:
     // 收尾后写进 result 的时间线（BeforeClose 里填充）
     std::vector<model::ParameterTimeline> parameter_timelines_;
 
-    // 帧级 POC 追踪（仅 H.264；每条视频轨一个）
+    // 帧级 POC 追踪（H.264 / HEVC；每条视频轨一个）。
+    // FrameOrderTracker 内部按 codec_id 选实现，所以这里不需要 knowing 编码。
     struct PocTrackerSlot {
         int stream_index = -1;
         double time_base = 0.0;
-        H264PocTracker tracker;
+        FrameOrderTracker tracker;
     };
     std::vector<PocTrackerSlot> poc_trackers_;
     std::vector<model::FrameOrderTimeline> frame_order_timelines_;
