@@ -1,14 +1,16 @@
-#include "core/analysis/diagnostics/QcRuleEngine.h"
+#include "core/qc/QcRuleEngine.h"
 
 #include <algorithm>
 #include <string>
 #include <utility>
 
-#include "core/analysis/diagnostics/QcRuleEngineInternal.h"
+#include "core/qc/QcRuleDefaults.h"
+#include "core/qc/QcRuleEngineInternal.h"
 
 namespace videoeye {
+namespace qc {
 
-QcRuleEngine::QcRuleEngine() : rules_(model::DefaultQcRules()) {
+QcRuleEngine::QcRuleEngine() : rules_(DefaultQcRules()) {
 }
 
 QcRuleEngine::QcRuleEngine(std::vector<model::QcRule> rules) : rules_(std::move(rules)) {
@@ -77,43 +79,44 @@ model::QcReport QcRuleEngine::Evaluate(const model::AnalysisResult& result) cons
 // 注意分支顺序不可调换（video.color. 必须排在 video. 之前）。
 std::vector<model::DiagnosticIssue> QcRuleEngine::CheckRule(const model::QcRule& rule,
                                                             const model::AnalysisResult& result) const {
-    const diagnostics::detail::IssueFactory make_issue{rule};
+    const detail::IssueFactory make_issue{rule};
     const std::string& id = rule.id;
     if (id.rfind("container.mp4.", 0) == 0)
-        return diagnostics::detail::CheckMp4ContainerRules(rule, result, make_issue);
+        return detail::CheckMp4ContainerRules(rule, result, make_issue);
     // 老式容器（AVI/FLV/ASF/OGG）走各自的事实摘要，同样必须排在 container. 兜底之前。
     if (id.rfind("container.avi.", 0) == 0)
-        return diagnostics::detail::CheckAviContainerRules(rule, result, make_issue);
+        return detail::CheckAviContainerRules(rule, result, make_issue);
     if (id.rfind("container.flv.", 0) == 0)
-        return diagnostics::detail::CheckFlvContainerRules(rule, result, make_issue);
+        return detail::CheckFlvContainerRules(rule, result, make_issue);
     if (id.rfind("container.asf.", 0) == 0)
-        return diagnostics::detail::CheckAsfContainerRules(rule, result, make_issue);
+        return detail::CheckAsfContainerRules(rule, result, make_issue);
     if (id.rfind("container.ogg.", 0) == 0)
-        return diagnostics::detail::CheckOggContainerRules(rule, result, make_issue);
+        return detail::CheckOggContainerRules(rule, result, make_issue);
     // 注意顺序：container.ts. 必须排在下面那条 container. 兜底之前，
     // 否则会被 CheckContainerRules 抢走（它对不认识的 id 直接返回空，规则静默失效）。
     if (id.rfind("container.ts.", 0) == 0)
-        return diagnostics::detail::CheckTsTransportRules(rule, result, make_issue);
+        return detail::CheckTsTransportRules(rule, result, make_issue);
     if (id.rfind("container.hls.", 0) == 0 || id.rfind("container.dash.", 0) == 0 ||
         id.rfind("container.streaming.", 0) == 0)
-        return diagnostics::detail::CheckStreamingContainerRules(rule, result, make_issue);
+        return detail::CheckStreamingContainerRules(rule, result, make_issue);
     if (id.rfind("container.", 0) == 0)
-        return diagnostics::detail::CheckContainerRules(rule, result, make_issue);
+        return detail::CheckContainerRules(rule, result, make_issue);
     if (id.rfind("video.color.", 0) == 0)
-        return diagnostics::detail::CheckColorHdrRules(rule, result, make_issue);
+        return detail::CheckColorHdrRules(rule, result, make_issue);
     if (id.rfind("video.", 0) == 0)
-        return diagnostics::detail::CheckVideoRules(rule, result, make_issue);
+        return detail::CheckVideoRules(rule, result, make_issue);
     if (id.rfind("timing.", 0) == 0)
-        return diagnostics::detail::CheckVideoRules(rule, result, make_issue); // timing.dts_missing 与视频同 TU
+        return detail::CheckVideoRules(rule, result, make_issue); // timing.dts_missing 与视频同 TU
     if (id.rfind("audio.", 0) == 0)
-        return diagnostics::detail::CheckAudioRules(rule, result, make_issue);
+        return detail::CheckAudioRules(rule, result, make_issue);
     if (id.rfind("subtitle.", 0) == 0)
-        return diagnostics::detail::CheckSubtitleRules(rule, result, make_issue);
+        return detail::CheckSubtitleRules(rule, result, make_issue);
     if (id.rfind("timecode.", 0) == 0 || id.rfind("chapter.", 0) == 0)
-        return diagnostics::detail::CheckTimecodeChapterRules(rule, result, make_issue);
+        return detail::CheckTimecodeChapterRules(rule, result, make_issue);
     if (id.rfind("scte35.", 0) == 0)
-        return diagnostics::detail::CheckScte35Rules(rule, result, make_issue);
+        return detail::CheckScte35Rules(rule, result, make_issue);
     return {};
 }
 
+} // namespace qc
 } // namespace videoeye

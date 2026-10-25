@@ -38,7 +38,7 @@ flowchart LR
 
 改动点：`core/analysis/AnalysisOptions.h`（`analyze_audio_qc`）、
 `core/domain/model/AnalysisResult.h`（`audio_qc`）、
-`QtAnalysisController.cpp`（音频解码通路）、`QcModels.cpp`（11 条新规则）、
+`QtAnalysisController.cpp`（音频解码通路）、`core/qc/QcRuleDefaults.cpp`（11 条新规则）、
 `QcRuleEngine.cpp`（`audio.*` 规则分支）。
 
 ## 3. 指标与算法

@@ -1,9 +1,9 @@
-#include "core/analysis/diagnostics/QcRuleEngineInternal.h"
+#include "core/qc/QcRuleEngineInternal.h"
 
 #include <string>
 
 namespace videoeye {
-namespace diagnostics {
+namespace qc {
 namespace detail {
 
 // AVI（container.avi.*）。调用方（CheckRule 前缀路由）保证 rule.id 属于本类。
@@ -287,5 +287,5 @@ CheckOggContainerRules(const model::QcRule& rule, const model::AnalysisResult& r
 }
 
 } // namespace detail
-} // namespace diagnostics
+} // namespace qc
 } // namespace videoeye

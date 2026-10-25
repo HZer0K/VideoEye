@@ -1,8 +1,8 @@
 #include "ui/AnalysisFacade.h"
 
 // 具体分析器的头文件只出现在这里 —— 它们是实现细节，不进 facade 的公开头。
-#include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/analysis/quality/BitrateGopAnalyzer.h"
+#include "core/qc/QcRuleEngine.h"
 #include "core/qt/QtAnalysisController.h"
 
 namespace videoeye {
@@ -13,7 +13,7 @@ namespace ui {
 // 不设 Qt 父对象以免与 unique_ptr 双重析构。
 struct AnalysisFacade::Impl {
     qt::QtAnalysisController coordinator;
-    videoeye::QcRuleEngine qc_rule_engine;
+    videoeye::qc::QcRuleEngine qc_rule_engine;
     model::AnalysisResult result;
 };
 

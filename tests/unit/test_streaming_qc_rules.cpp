@@ -9,11 +9,12 @@
 
 #include <gtest/gtest.h>
 
-#include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/analysis/streaming/DashManifestAnalyzer.h"
 #include "core/analysis/streaming/HlsManifestAnalyzer.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/QcReport.h"
+#include "core/qc/QcRuleDefaults.h"
+#include "core/qc/QcRuleEngine.h"
 
 namespace {
 
@@ -91,7 +92,7 @@ TEST(StreamingQcRulesTest, HlsSegmentOverTargetBecomesWarningIssue) {
     hls.Validate(pkg);
     result.streaming_analyzed = true;
 
-    videoeye::QcRuleEngine engine;
+    videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     model::DiagnosticIssue issue;
@@ -117,7 +118,7 @@ TEST(StreamingQcRulesTest, DashSegmentTimelineGapBecomesErrorIssue) {
     dash.Validate(pkg);
     result.streaming_analyzed = true;
 
-    videoeye::QcRuleEngine engine;
+    videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     model::DiagnosticIssue issue;
@@ -141,7 +142,7 @@ TEST(StreamingQcRulesTest, DashLiveMissingAvailabilityStartTimeBecomesErrorIssue
     dash.Validate(pkg);
     result.streaming_analyzed = true;
 
-    videoeye::QcRuleEngine engine;
+    videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     model::DiagnosticIssue issue;
@@ -166,7 +167,7 @@ TEST(StreamingQcRulesTest, NoStreamingIssuesWhenNotAnalyzed) {
     // 故意不置 streaming_analyzed：规则引擎必须整体跳过这一族规则
     result.streaming_analyzed = false;
 
-    videoeye::QcRuleEngine engine;
+    videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
     EXPECT_FALSE(HasIssue(report, model::StreamingIssueCode::kHlsSegmentOverTarget));
 }
@@ -186,7 +187,7 @@ TEST(StreamingQcRulesTest, DisabledRuleSuppressesStreamingIssue) {
     hls.Validate(pkg);
     result.streaming_analyzed = true;
 
-    videoeye::QcRuleEngine engine;
+    videoeye::qc::QcRuleEngine engine;
     std::vector<model::QcRule> rules = engine.rules();
     model::QcRule* rule = model::FindQcRule(rules, model::StreamingIssueCode::kHlsSegmentOverTarget);
     ASSERT_NE(nullptr, rule);
@@ -200,7 +201,7 @@ TEST(StreamingQcRulesTest, DisabledRuleSuppressesStreamingIssue) {
 // ---------------- 规则表里确实注册了这些规则 ----------------
 
 TEST(StreamingQcRulesTest, DefaultRulesContainStreamingFamily) {
-    std::vector<model::QcRule> rules = model::DefaultQcRules();
+    std::vector<model::QcRule> rules = qc::DefaultQcRules();
     EXPECT_NE(nullptr, model::FindQcRule(rules, model::StreamingIssueCode::kHlsSegmentOverTarget));
     EXPECT_NE(nullptr, model::FindQcRule(rules, model::StreamingIssueCode::kHlsVariantKeyframeMisalign));
     EXPECT_NE(nullptr, model::FindQcRule(rules, model::StreamingIssueCode::kDashSegmentTimelineGap));
@@ -256,7 +257,7 @@ TEST(StreamingQcRulesTest, OpenEndedScte35MarkerEscalatesToWarning) {
     ASSERT_TRUE(hls.ParseText(playlist, ".", pkg));
     hls.Validate(pkg);
 
-    videoeye::QcRuleEngine engine;
+    videoeye::qc::QcRuleEngine engine;
     model::DiagnosticIssue issue;
     const model::QcReport report = engine.Evaluate(result);
     ASSERT_TRUE(HasIssue(report, model::StreamingIssueCode::kHlsDateRangeOpenEnded, &issue));

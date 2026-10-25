@@ -44,6 +44,7 @@
 #include "core/analysis/AnalysisOptions.h"
 #include "core/domain/model/QcReport.h"
 #include "core/domain/model/QcRule.h"
+#include "core/qc/QcRuleDefaults.h"
 #include "infrastructure/logging/PerfMetrics.h"
 #include "ui/analysis_panel/DiagnosticsPage.h"
 #include "ui/charts/MetricChartWidget.h"
@@ -51,9 +52,9 @@
 #include "BlockingTcpEndpoint.h"
 
 using videoeye::PerfMetrics;
-using videoeye::model::DefaultQcRules;
 using videoeye::model::QcReport;
 using videoeye::model::QcRule;
+using videoeye::qc::DefaultQcRules;
 using videoeye::ui::DiagnosticsPage;
 using videoeye::ui::MetricChartWidget;
 

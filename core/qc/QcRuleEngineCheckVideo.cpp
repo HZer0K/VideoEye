@@ -1,4 +1,4 @@
-#include "core/analysis/diagnostics/QcRuleEngineInternal.h"
+#include "core/qc/QcRuleEngineInternal.h"
 
 #include <algorithm>
 #include <cmath>
@@ -6,7 +6,7 @@
 #include <string>
 
 namespace videoeye {
-namespace diagnostics {
+namespace qc {
 namespace detail {
 
 namespace {
@@ -176,5 +176,5 @@ std::vector<model::DiagnosticIssue> CheckVideoRules(const model::QcRule& rule, c
 }
 
 } // namespace detail
-} // namespace diagnostics
+} // namespace qc
 } // namespace videoeye

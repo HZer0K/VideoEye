@@ -1,11 +1,11 @@
-#include "core/analysis/diagnostics/QcRuleEngineInternal.h"
+#include "core/qc/QcRuleEngineInternal.h"
 
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace videoeye {
-namespace diagnostics {
+namespace qc {
 namespace detail {
 
 // 字幕规则（subtitle.*）。调用方（CheckRule 前缀路由）保证 rule.id 属于本类。
@@ -116,5 +116,5 @@ std::vector<model::DiagnosticIssue> CheckSubtitleRules(const model::QcRule& rule
 }
 
 } // namespace detail
-} // namespace diagnostics
+} // namespace qc
 } // namespace videoeye

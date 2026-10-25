@@ -17,9 +17,9 @@
 #include <QUrl>
 #include <QVBoxLayout>
 
-#include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/domain/task/ThreadBody.h"
 #include "core/qc/QcProfileMapper.h"
+#include "core/qc/QcRuleEngine.h"
 #include "core/reporting/QcReportExporter.h"
 
 #include "infrastructure/logging/Logger.h"
@@ -761,7 +761,7 @@ void ReportingPanel::RefreshResultForProfile() {
     }
 
     // 复用缓存的原始 AnalysisResult，只按新模板重算规则（不重跑 FFmpeg / 不解码）。
-    QcRuleEngine engine(qc::BuildRulesForProfile(profile_));
+    videoeye::qc::QcRuleEngine engine(qc::BuildRulesForProfile(profile_));
     last_result_.report = engine.Evaluate(last_result_.analysis);
     last_result_.profile_id = profile_.id;
     // 重算后这份结果对应的就是新模板 —— 身份戳同步更新，导出保持可用。

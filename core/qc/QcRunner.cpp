@@ -101,7 +101,7 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& prof
     const std::string& path = input.uri;
 
     const auto started_at = std::chrono::steady_clock::now();
-    videoeye::QcRuleEngine rules_engine(BuildRulesForProfile(profile));
+    videoeye::qc::QcRuleEngine rules_engine(BuildRulesForProfile(profile));
 
     // worker 与等待线程之间的交接区。std::promise 也能做, 但需要额外处理
     // "进度回调要持续转发"这件事, 条件变量版本更直观。

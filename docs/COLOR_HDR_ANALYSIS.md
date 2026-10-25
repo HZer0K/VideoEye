@@ -19,7 +19,7 @@
 | `core/analysis/quality/ColorHdrAnalyzer.h/.cpp` | 分析器：从 codecpar / coded_side_data / AVPacket / AVFrame 抽取并汇总 |
 | `core/analysis/AnalysisOptions.h` + `core/domain/model/AnalysisResult.h` | `analyze_color_hdr` 开关 + `color_hdr` 结果字段 |
 | `core/analysis/orchestration/AnalysisEngine.cpp` | 在既有全文件 demux 循环中更新（几乎零额外 I/O） |
-| `core/domain/model/QcModels.cpp` + `core/analysis/diagnostics/QcRuleEngine.cpp` | 8 条 `video.color.*` 规则，异常进入诊断报告 |
+| `core/qc/QcRuleDefaults.cpp` + `core/qc/QcRuleEngine*.cpp` | 8 条 `video.color.*` 规则，异常进入诊断报告 |
 | `core/reporting/QcReportExporter.cpp` | 报告的「色彩与 HDR」章节（HTML / JSON / TXT） |
 | `ui/analysis_panel/AnalysisPanel.*` | 「色彩与 HDR」页：色彩信息 / HDR 元数据 / 异常组合 + CSV 导出 |
 | `tests/unit/test_color_hdr_rules.cpp` | 14 个 gtest 用例，覆盖 6.6 四项验收 |

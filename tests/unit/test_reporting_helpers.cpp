@@ -23,12 +23,12 @@
 #endif
 
 #include "core/analysis/AnalysisOptions.h"
-#include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/qc/BatchQcRunner.h"
 #include "core/qc/QcProfile.h"
 #include "core/qc/QcProfileMapper.h"
 #include "core/qc/QcReportFormat.h"
+#include "core/qc/QcRuleEngine.h"
 #include "ui/reporting_panel/analysis_task.h"
 #include "ui/reporting_panel/batch_filter.h"
 #include "ui/reporting_panel/report_path.h"
@@ -41,13 +41,13 @@ namespace fs = std::filesystem;
 namespace model = videoeye::model;
 
 using videoeye::AnalysisOptions;
-using videoeye::QcRuleEngine;
 using videoeye::model::AnalysisResult;
 using videoeye::model::AnalysisStatus;
 using videoeye::qc::BatchItemStatus;
 using videoeye::qc::BatchQcItemResult;
 using videoeye::qc::QcProfile;
 using videoeye::qc::QcReportFormat;
+using videoeye::qc::QcRuleEngine;
 using videoeye::qc::QcRunResult;
 using videoeye::ui::AnalysisOptionsCovers;
 using videoeye::ui::AnalysisTask;

@@ -1,11 +1,11 @@
-#include "core/analysis/diagnostics/QcRuleEngineInternal.h"
+#include "core/qc/QcRuleEngineInternal.h"
 
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace videoeye {
-namespace diagnostics {
+namespace qc {
 namespace detail {
 
 // 时码与章节规则（timecode.* / chapter.*）。调用方（CheckRule 前缀路由）保证
@@ -100,5 +100,5 @@ std::vector<model::DiagnosticIssue> CheckTimecodeChapterRules(const model::QcRul
 }
 
 } // namespace detail
-} // namespace diagnostics
+} // namespace qc
 } // namespace videoeye

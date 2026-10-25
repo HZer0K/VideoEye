@@ -10,10 +10,11 @@
 
 #include <gtest/gtest.h>
 
-#include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/QcReport.h"
 #include "core/domain/model/QcRule.h"
+#include "core/qc/QcRuleDefaults.h"
+#include "core/qc/QcRuleEngine.h"
 
 namespace {
 
@@ -60,7 +61,7 @@ model::AnalysisResult MakeSubtitleResult(model::SubtitleIssueType type, model::I
 } // namespace
 
 TEST(AuxQcRulesTest, DefaultRulesCoverFeatureNine) {
-    const std::vector<model::QcRule> rules = model::DefaultQcRules();
+    const std::vector<model::QcRule> rules = qc::DefaultQcRules();
     const char* kRequired[] = {
         "subtitle.cue_empty",      "subtitle.cue_overlap",      "subtitle.cue_order",   "subtitle.cue_too_short",
         "subtitle.cue_too_long",   "subtitle.missing_language", "timecode.missing",     "timecode.drop_frame_mismatch",
@@ -76,7 +77,7 @@ TEST(AuxQcRulesTest, SubtitleOverlapIsReportedAsWarning) {
     const model::AnalysisResult result =
         MakeSubtitleResult(model::SubtitleIssueType::Overlap, model::IssueSeverity::Warning, 2);
 
-    const videoeye::QcRuleEngine engine;
+    const videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     model::DiagnosticIssue issue;
@@ -92,7 +93,7 @@ TEST(AuxQcRulesTest, SubtitleEmptyCueIsReportedAsWarning) {
     const model::AnalysisResult result =
         MakeSubtitleResult(model::SubtitleIssueType::EmptyText, model::IssueSeverity::Warning, 3);
 
-    const videoeye::QcRuleEngine engine;
+    const videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     model::DiagnosticIssue issue;
@@ -108,7 +109,7 @@ TEST(AuxQcRulesTest, SubtitleOrderIsErrorNotWarning) {
     const model::AnalysisResult result =
         MakeSubtitleResult(model::SubtitleIssueType::NonMonotonic, model::IssueSeverity::Error);
 
-    const videoeye::QcRuleEngine engine;
+    const videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     model::DiagnosticIssue issue;
@@ -122,7 +123,7 @@ TEST(AuxQcRulesTest, SubtitleRulesStaySilentWhenNotAnalyzed) {
     model::AnalysisResult skipped = result;
     skipped.subtitle_analyzed = false; // 没跑过字幕分析（如没有字幕流）
 
-    const videoeye::QcRuleEngine engine;
+    const videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(skipped);
     EXPECT_FALSE(HasIssue(report, "subtitle.cue_overlap"));
 }
@@ -132,7 +133,7 @@ TEST(AuxQcRulesTest, MissingTimecodeIsReported) {
     result.timecode_analyzed = true; // 跑过但没找到时码
     result.timecode.has_primary = false;
 
-    const videoeye::QcRuleEngine engine;
+    const videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
     EXPECT_TRUE(HasIssue(report, "timecode.missing"));
 
@@ -152,7 +153,7 @@ TEST(AuxQcRulesTest, DropFrameMismatchOnNtscFootage) {
     result.timecode.primary_drop_frame = false;
     result.timecode.primary_frame_rate = 30000.0 / 1001.0; // 29.97
 
-    const videoeye::QcRuleEngine engine;
+    const videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
     EXPECT_TRUE(HasIssue(report, "timecode.drop_frame_mismatch"));
 
@@ -176,7 +177,7 @@ TEST(AuxQcRulesTest, ChapterOverlapIsReported) {
     issue.detail = "章节 1 起点早于上一章节终点";
     result.timecode.chapter_issues.push_back(issue);
 
-    const videoeye::QcRuleEngine engine;
+    const videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     model::DiagnosticIssue reported;
@@ -198,7 +199,7 @@ TEST(AuxQcRulesTest, Scte35MissingDurationIsReported) {
     result.aux_data.cues.push_back(cue);
     result.aux_data.scte35_cue_count = 1;
 
-    const videoeye::QcRuleEngine engine;
+    const videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
     EXPECT_TRUE(HasIssue(report, "scte35.duration_missing"));
 

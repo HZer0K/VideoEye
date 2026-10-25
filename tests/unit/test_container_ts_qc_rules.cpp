@@ -12,13 +12,15 @@
 #include <string>
 #include <vector>
 
-#include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/QcReport.h"
+#include "core/qc/QcRuleDefaults.h"
+#include "core/qc/QcRuleEngine.h"
 
 namespace {
 
 using namespace videoeye;
+using videoeye::qc::QcRuleEngine;
 
 bool HasIssue(const model::QcReport& report, const std::string& rule_id, model::DiagnosticIssue* out = nullptr) {
     for (const auto& issue : report.issues) {
@@ -310,7 +312,7 @@ TEST(TsQcRulesTest, PayloadRulesStaySilentWhenNotScanned) {
 // ---------------- 规则表注册 ----------------
 
 TEST(TsQcRulesTest, DefaultRulesContainTsFamily) {
-    std::vector<model::QcRule> rules = model::DefaultQcRules();
+    std::vector<model::QcRule> rules = qc::DefaultQcRules();
     for (const char* id : {"container.ts.missing_pat", "container.ts.missing_pmt", "container.ts.sync_loss",
                            "container.ts.continuity_error", "container.ts.pcr_gap", "container.ts.scrambled",
                            "container.ts.scan_incomplete", "container.ts.no_idr", "container.ts.pid_stall"}) {

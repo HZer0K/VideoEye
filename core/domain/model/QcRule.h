@@ -31,9 +31,6 @@ struct QcRule {
     std::string suggestion;  // 命中后的修复建议
 };
 
-// 默认规则集（顺序即 UI 展示顺序）
-std::vector<QcRule> DefaultQcRules();
-
 // 在规则集中按 id 查找（未找到返回 nullptr）
 QcRule* FindQcRule(std::vector<QcRule>& rules, const std::string& id);
 const QcRule* FindQcRule(const std::vector<QcRule>& rules, const std::string& id);

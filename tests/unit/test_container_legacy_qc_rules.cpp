@@ -11,13 +11,14 @@
 
 #include <string>
 
-#include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/QcReport.h"
+#include "core/qc/QcRuleEngine.h"
 
 namespace {
 
 using namespace videoeye;
+using videoeye::qc::QcRuleEngine;
 
 bool HasIssue(const model::QcReport& report, const std::string& rule_id) {
     for (const auto& issue : report.issues) {

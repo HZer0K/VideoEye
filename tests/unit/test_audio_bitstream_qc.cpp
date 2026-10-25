@@ -12,13 +12,15 @@
 
 #include <string>
 
-#include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/QcReport.h"
+#include "core/qc/QcRuleDefaults.h"
+#include "core/qc/QcRuleEngine.h"
 
 namespace {
 
 using namespace videoeye;
+using videoeye::qc::QcRuleEngine;
 
 bool HasIssue(const model::QcReport& report, const std::string& rule_id, model::DiagnosticIssue* out = nullptr) {
     for (const auto& issue : report.issues) {
@@ -55,7 +57,7 @@ model::AnalysisResult MakeResult() {
 } // namespace
 
 TEST(AudioBitstreamRulesTest, RulesExistInDefaultCatalog) {
-    const auto rules = model::DefaultQcRules();
+    const auto rules = qc::DefaultQcRules();
     const char* ids[] = {
         "audio.bitstream.container_mismatch",
         "audio.bitstream.header_invalid",

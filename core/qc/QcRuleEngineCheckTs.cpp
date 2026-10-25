@@ -1,9 +1,9 @@
-#include "core/analysis/diagnostics/QcRuleEngineInternal.h"
+#include "core/qc/QcRuleEngineInternal.h"
 
 #include <string>
 
 namespace videoeye {
-namespace diagnostics {
+namespace qc {
 namespace detail {
 
 // MPEG-TS 传输层（container.ts.*）。调用方（CheckRule 前缀路由）保证 rule.id
@@ -144,5 +144,5 @@ CheckTsTransportRules(const model::QcRule& rule, const model::AnalysisResult& re
 }
 
 } // namespace detail
-} // namespace diagnostics
+} // namespace qc
 } // namespace videoeye

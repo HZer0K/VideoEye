@@ -1,10 +1,10 @@
-#include "core/analysis/diagnostics/QcRuleEngineInternal.h"
+#include "core/qc/QcRuleEngineInternal.h"
 
 #include <string>
 #include <vector>
 
 namespace videoeye {
-namespace diagnostics {
+namespace qc {
 namespace detail {
 
 // 色彩与 HDR 规则（video.color.*）。调用方（CheckRule 前缀路由）保证 rule.id
@@ -129,5 +129,5 @@ std::vector<model::DiagnosticIssue> CheckColorHdrRules(const model::QcRule& rule
 }
 
 } // namespace detail
-} // namespace diagnostics
+} // namespace qc
 } // namespace videoeye

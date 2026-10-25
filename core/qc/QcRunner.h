@@ -29,10 +29,10 @@
 #include <utility>
 
 #include "core/analysis/AnalysisOptions.h"
-#include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/domain/model/QcReport.h"
 #include "core/qc/QcAnalyzeRequest.h"
 #include "core/qc/QcProfile.h"
+#include "core/qc/QcRuleEngine.h"
 
 namespace videoeye {
 namespace qc {

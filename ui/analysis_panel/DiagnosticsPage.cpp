@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 
+#include "core/qc/QcRuleDefaults.h"
 #include "core/reporting/QcReportExporter.h"
 #include "infrastructure/logging/PerfMetrics.h"
 #include "infrastructure/logging/ScopedTimer.h"
@@ -933,7 +934,7 @@ void DiagnosticsPage::OnRuleItemChanged(QTableWidgetItem* item) {
 }
 
 void DiagnosticsPage::OnResetRulesClicked() {
-    facade_->SetRules(model::DefaultQcRules());
+    facade_->SetRules(qc::DefaultQcRules());
     RebuildRuleTable();
     if (has_result_)
         Evaluate();

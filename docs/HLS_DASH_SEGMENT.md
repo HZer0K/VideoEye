@@ -251,8 +251,8 @@ MPD 元素上的四个 live 属性现在都会解析（`StreamingPackageResult` 
 | `core/analysis/container/ContainerStructureAnalyzer.cpp` | 新增 `AnalyzeStreamingManifest` / `BuildStreamingTree` / `ProbeTsSegments` |
 | `core/analysis/AnalysisOptions.h` + `core/domain/model/AnalysisResult.h` | `analyze_streaming_package` 开关 + `streaming_package` 结果字段 |
 | `core/analysis/orchestration/AnalysisEngine.cpp` | `Run()` 前置分流 + `RunStreamingManifest()` |
-| `core/domain/model/QcModels.cpp` | 新增 46 条规则（HLS 20 / DASH 23 / streaming 3），id 与问题码同名 |
-| `core/analysis/diagnostics/QcRuleEngine.cpp` | 新增 `container.hls.` / `container.dash.` / `container.streaming.` 三个前缀分支 |
+| `core/qc/QcRuleDefaults.cpp` | 新增 46 条规则（HLS 20 / DASH 23 / streaming 3），id 与问题码同名 |
+| `core/qc/QcRuleEngine*.cpp` | 新增 `container.hls.` / `container.dash.` / `container.streaming.` 三个前缀分支 |
 | `ui/main_window/MainWindow.cpp` | 打开对话框补「流媒体清单 (*.m3u8 *.mpd)」 |
 
 ## 6. 测试

@@ -1,11 +1,11 @@
-#include "core/analysis/diagnostics/QcRuleEngineInternal.h"
+#include "core/qc/QcRuleEngineInternal.h"
 
 #include <algorithm>
 #include <cmath>
 #include <string>
 
 namespace videoeye {
-namespace diagnostics {
+namespace qc {
 namespace detail {
 
 // 音频规则（audio.*）。调用方（CheckRule 前缀路由）保证 rule.id 属于本类。
@@ -358,5 +358,5 @@ std::vector<model::DiagnosticIssue> CheckAudioRules(const model::QcRule& rule, c
 }
 
 } // namespace detail
-} // namespace diagnostics
+} // namespace qc
 } // namespace videoeye

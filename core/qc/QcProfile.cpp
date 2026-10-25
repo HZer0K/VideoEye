@@ -4,6 +4,7 @@
 #include <fstream>
 
 #include "core/domain/io/Utf8Path.h"
+#include "core/qc/QcRuleDefaults.h"
 #include "infrastructure/serialization/Json.h"
 
 namespace videoeye {
@@ -354,7 +355,7 @@ bool LoadQcProfileFromFile(const std::string& path, QcProfile& out, std::string&
 }
 
 std::vector<model::QcRule> BuildRulesForProfile(const QcProfile& profile) {
-    std::vector<model::QcRule> rules = model::DefaultQcRules();
+    std::vector<model::QcRule> rules = DefaultQcRules();
     ApplyProfileOverrides(profile, rules);
     return rules;
 }
@@ -374,7 +375,7 @@ void ApplyProfileOverrides(const QcProfile& profile, std::vector<model::QcRule>&
 }
 
 std::vector<std::string> UnknownRuleIds(const QcProfile& profile) {
-    const std::vector<model::QcRule> defaults = model::DefaultQcRules();
+    const std::vector<model::QcRule> defaults = DefaultQcRules();
     std::vector<std::string> unknown;
     for (const auto& item : profile.overrides) {
         if (model::FindQcRule(defaults, item.id) == nullptr)

@@ -14,10 +14,10 @@
 
 #include <gtest/gtest.h>
 
-#include "core/analysis/diagnostics/QcRuleEngine.h"
 #include "core/analysis/quality/AudioQcAnalyzer.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/QcReport.h"
+#include "core/qc/QcRuleEngine.h"
 
 namespace {
 
@@ -90,7 +90,7 @@ bool HasIssue(const model::QcReport& report, const std::string& rule_id, model::
 
 TEST(AudioQcRulesTest, LoudLoudnessTriggersHighTargetRule) {
     const auto result = BuildResult(1, kSampleRate * 5, 1.0); // 满刻度 -> 约 -3 LUFS
-    videoeye::QcRuleEngine engine;
+    videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     model::DiagnosticIssue issue;
@@ -102,7 +102,7 @@ TEST(AudioQcRulesTest, LoudLoudnessTriggersHighTargetRule) {
 
 TEST(AudioQcRulesTest, QuietLoudnessTriggersLowTargetRule) {
     const auto result = BuildResult(1, kSampleRate * 5, 0.0005);
-    videoeye::QcRuleEngine engine;
+    videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     EXPECT_TRUE(HasIssue(report, "audio.loudness.target_low"));
@@ -111,7 +111,7 @@ TEST(AudioQcRulesTest, QuietLoudnessTriggersLowTargetRule) {
 
 TEST(AudioQcRulesTest, TargetLoudnessPassesBothRules) {
     const auto result = BuildResult(1, kSampleRate * 5, 0.1); // 约 -23 LUFS
-    videoeye::QcRuleEngine engine;
+    videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     EXPECT_FALSE(HasIssue(report, "audio.loudness.target_high"));
@@ -136,7 +136,7 @@ TEST(AudioQcRulesTest, FullScaleTriggersTruePeakAndClipping) {
     result.file_path = "clip.wav";
     result.audio_qc = analyzer.Finish();
 
-    videoeye::QcRuleEngine engine;
+    videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     model::DiagnosticIssue tp;
@@ -153,7 +153,7 @@ TEST(AudioQcRulesTest, FullScaleTriggersTruePeakAndClipping) {
 TEST(AudioQcRulesTest, DigitalSilenceTriggersSilenceRules) {
     // 全静音 15 秒：最长静音 15s 超过 10s 阈值 -> 命中 longest；占比 100% 超过 50% -> 命中 ratio
     const auto result = BuildResult(2, kSampleRate * 15, 0.0);
-    videoeye::QcRuleEngine engine;
+    videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     EXPECT_TRUE(HasIssue(report, "audio.silence.longest"));
@@ -162,7 +162,7 @@ TEST(AudioQcRulesTest, DigitalSilenceTriggersSilenceRules) {
 
 TEST(AudioQcRulesTest, DcOffsetAndOutOfPhaseAreReported) {
     const auto result = BuildResult(2, kSampleRate * 4, 0.1, true, 0.05);
-    videoeye::QcRuleEngine engine;
+    videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     model::DiagnosticIssue dc;
@@ -176,7 +176,7 @@ TEST(AudioQcRulesTest, DcOffsetAndOutOfPhaseAreReported) {
 
 TEST(AudioQcRulesTest, DurationMismatchIsReported) {
     const auto result = BuildResult(2, kSampleRate * 4, 0.1, false, 0.0, 30.0);
-    videoeye::QcRuleEngine engine;
+    videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
     EXPECT_TRUE(HasIssue(report, "audio.metadata.duration_mismatch"));
 }
@@ -186,7 +186,7 @@ TEST(AudioQcRulesTest, NoFalsePositiveWithoutAudioAnalysis) {
     result.file_path = "noaudio.mp4";
     result.duration_seconds = 10.0;
     // audio_qc 保持默认: analyzed=false
-    videoeye::QcRuleEngine engine;
+    videoeye::qc::QcRuleEngine engine;
     const model::QcReport report = engine.Evaluate(result);
 
     for (const auto& issue : report.issues) {
@@ -200,7 +200,7 @@ TEST(AudioQcRulesTest, NoFalsePositiveWithoutAudioAnalysis) {
 TEST(AudioQcRulesTest, AudioIssuesLowerTheScore) {
     const auto quiet = BuildResult(1, kSampleRate * 5, 0.1);
     const auto loud = BuildResult(1, kSampleRate * 5, 1.0);
-    videoeye::QcRuleEngine engine;
+    videoeye::qc::QcRuleEngine engine;
     const model::QcReport quiet_report = engine.Evaluate(quiet);
     const model::QcReport loud_report = engine.Evaluate(loud);
     EXPECT_LT(loud_report.score, quiet_report.score);

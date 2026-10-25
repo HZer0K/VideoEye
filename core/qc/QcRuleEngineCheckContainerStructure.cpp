@@ -1,10 +1,10 @@
-#include "core/analysis/diagnostics/QcRuleEngineInternal.h"
+#include "core/qc/QcRuleEngineInternal.h"
 
 #include <string>
 #include <utility>
 
 namespace videoeye {
-namespace diagnostics {
+namespace qc {
 namespace detail {
 
 // MP4/fMP4 容器一致性（container.mp4.*）。调用方（CheckRule 前缀路由）保证
@@ -105,5 +105,5 @@ std::vector<model::DiagnosticIssue> CheckStreamingContainerRules(const model::Qc
 }
 
 } // namespace detail
-} // namespace diagnostics
+} // namespace qc
 } // namespace videoeye

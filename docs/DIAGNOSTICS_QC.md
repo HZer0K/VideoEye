@@ -50,7 +50,7 @@ flowchart LR
 
 ## 4. 规则集
 
-> **权威来源是 `core/domain/model/QcModels.cpp` 的 `DefaultQcRules()`**，不是这张表。
+> **权威来源是 `core/qc/QcRuleDefaults.cpp` 的 `DefaultQcRules()`**，不是这张表。
 > 下面只列早期手写的核心规则；后来按分析器拆出的规则族（`container.mp4.*`、
 > `container.hls.*` / `container.dash.*`、`container.ts.*`、`subtitle.*`、
 > `timecode.*`、`video.color.*`、`scte35.*` …）数量已经远超这张表，
@@ -152,7 +152,7 @@ HEVC 认 19/20/21 当 IDR；其余编码不认（认错 NAL 头会把随机字�
 
 ### 新增一条规则
 
-1. 在 `core/domain/model/QcModels.cpp` 的 `DefaultQcRules()` 里追加一条（id / 名称 / 类别 / 严重度 / 判定 / 阈值 / 建议）；
+1. 在 `core/qc/QcRuleDefaults.cpp` 的 `DefaultQcRules()` 里追加一条（id / 名称 / 类别 / 严重度 / 判定 / 阈值 / 建议）；
 2. 在 `QcRuleEngine::CheckRule()` 中按 id 增加分支，从 `AnalysisResult` 取数并调用 `Triggered(rule, value)`；
 3. UI 的「规则与阈值」表与 JSON/HTML 导出都会自动带上新规则，无需改 UI 代码。
 

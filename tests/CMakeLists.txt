@@ -294,16 +294,7 @@ target_link_libraries(test_format_detector PRIVATE Qt6::Core)
 add_test(NAME FormatDetectorTests COMMAND test_format_detector)
 
 # ============================================================
-# 测试 2: ConfigManager (仅依赖 C++ stdlib)
-# ============================================================
-videoeye_add_test(test_config_manager
-    unit/test_config_manager.cpp
-)
-target_link_libraries(test_config_manager PRIVATE VideoEyeInfrastructure Qt6::Core)
-add_test(NAME ConfigManagerTests COMMAND test_config_manager)
-
-# ============================================================
-# 测试 2b: PerfMetrics (长期性能指标口径)
+# 测试 2: PerfMetrics (长期性能指标口径)
 #
 # 只链 infrastructure（纯 stdlib，不碰 Qt 业务逻辑），不整层拉 core ——
 # 指标通道必须能被任何层（core / ui）直接引用，一旦拖上依赖就没人敢在热路径上埋点。
@@ -515,7 +506,7 @@ add_test(NAME AudioQcAnalyzerTests COMMAND test_audio_qc_analyzer)
 videoeye_add_test(test_audio_qc_rules
     unit/test_audio_qc_rules.cpp
 )
-target_link_libraries(test_audio_qc_rules PRIVATE VideoEyeAnalysis)
+target_link_libraries(test_audio_qc_rules PRIVATE VideoEyeAnalysis VideoEyeQc)
 add_test(NAME AudioQcRulesTests COMMAND test_audio_qc_rules)
 
 # =================================================
@@ -604,7 +595,7 @@ add_test(NAME DimensionStatusTests COMMAND test_dimension_status)
 videoeye_add_test(test_audio_bitstream_qc
     unit/test_audio_bitstream_qc.cpp
 )
-target_link_libraries(test_audio_bitstream_qc PRIVATE VideoEyeAnalysis)
+target_link_libraries(test_audio_bitstream_qc PRIVATE VideoEyeAnalysis VideoEyeQc)
 add_test(NAME AudioBitstreamRulesTests COMMAND test_audio_bitstream_qc)
 
 # =================================================
@@ -628,7 +619,7 @@ add_test(NAME CeaCaptionDecoderTests COMMAND test_cea_caption_decoder)
 videoeye_add_test(test_color_hdr_rules
     unit/test_color_hdr_rules.cpp
 )
-target_link_libraries(test_color_hdr_rules PRIVATE VideoEyeAnalysis)
+target_link_libraries(test_color_hdr_rules PRIVATE VideoEyeAnalysis VideoEyeQc)
 add_test(NAME ColorHdrRulesTests COMMAND test_color_hdr_rules)
 
 # =================================================
@@ -755,7 +746,7 @@ add_test(NAME StreamingManifestScanStatusTests COMMAND test_streaming_scan_statu
 videoeye_add_test(test_streaming_qc_rules
     unit/test_streaming_qc_rules.cpp
 )
-target_link_libraries(test_streaming_qc_rules PRIVATE VideoEyeAnalysis)
+target_link_libraries(test_streaming_qc_rules PRIVATE VideoEyeAnalysis VideoEyeQc)
 add_test(NAME StreamingQcRulesTests COMMAND test_streaming_qc_rules)
 
 # =================================================
@@ -767,7 +758,7 @@ add_test(NAME StreamingQcRulesTests COMMAND test_streaming_qc_rules)
 videoeye_add_test(test_container_ts_qc_rules
     unit/test_container_ts_qc_rules.cpp
 )
-target_link_libraries(test_container_ts_qc_rules PRIVATE VideoEyeAnalysis)
+target_link_libraries(test_container_ts_qc_rules PRIVATE VideoEyeAnalysis VideoEyeQc)
 add_test(NAME ContainerTsQcRulesTests COMMAND test_container_ts_qc_rules)
 
 # =================================================
@@ -789,7 +780,7 @@ add_test(NAME TsPesPayloadTests COMMAND test_ts_pes_payload)
 videoeye_add_test(test_container_legacy_qc_rules
     unit/test_container_legacy_qc_rules.cpp
 )
-target_link_libraries(test_container_legacy_qc_rules PRIVATE VideoEyeAnalysis)
+target_link_libraries(test_container_legacy_qc_rules PRIVATE VideoEyeAnalysis VideoEyeQc)
 add_test(NAME ContainerLegacyQcRulesTests COMMAND test_container_legacy_qc_rules)
 
 # =================================================
@@ -830,7 +821,7 @@ add_test(NAME SubtitleTimecodeAuxTests COMMAND test_subtitle_timecode_aux)
 videoeye_add_test(test_aux_qc_rules
     unit/test_aux_qc_rules.cpp
 )
-target_link_libraries(test_aux_qc_rules PRIVATE VideoEyeAnalysis)
+target_link_libraries(test_aux_qc_rules PRIVATE VideoEyeAnalysis VideoEyeQc)
 add_test(NAME AuxQcRulesTests COMMAND test_aux_qc_rules)
 
 # =================================================
@@ -1196,7 +1187,8 @@ add_test(NAME FfmpegProcessTests COMMAND test_ffmpeg_process)
 videoeye_add_test(test_reporting_helpers
     unit/test_reporting_helpers.cpp
 )
-target_link_libraries(test_reporting_helpers PRIVATE VideoEyeReporting)
+target_link_libraries(test_reporting_helpers PRIVATE VideoEyeReporting
+    VideoEyeQc)
 target_link_libraries(test_reporting_helpers PRIVATE Qt6::Core)
 add_test(NAME ReportingHelpersTests COMMAND test_reporting_helpers)
 
@@ -1669,6 +1661,7 @@ target_sources(test_diagnostics_page PRIVATE ../ui/AnalysisFacade.cpp)
 target_link_libraries(test_diagnostics_page PRIVATE
     VideoEyeQtAdapters
     VideoEyeAnalysis
+    VideoEyeQc
     VideoEyeReporting
     VideoEyeInfrastructure
     VideoEyeUiCharts

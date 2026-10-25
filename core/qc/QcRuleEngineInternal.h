@@ -19,7 +19,7 @@
 #include "core/domain/model/QcRule.h"
 
 namespace videoeye {
-namespace diagnostics {
+namespace qc {
 namespace detail {
 
 inline std::string FormatValue(double value, int decimals = 2) {
@@ -106,5 +106,5 @@ std::vector<model::DiagnosticIssue> CheckScte35Rules(const model::QcRule& rule, 
                                                      const IssueFactory& make_issue);
 
 } // namespace detail
-} // namespace diagnostics
+} // namespace qc
 } // namespace videoeye

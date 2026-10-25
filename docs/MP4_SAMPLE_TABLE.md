@@ -21,8 +21,8 @@ MP4 的「索引」和「数据」是分开写的：mdat 里是一坨连续的�
 | `core/media/container/IsobmffParser.h/.cpp` | 自研 ISOBMFF 解析：box 树 + stbl 全表 + fMP4 moof/traf（纯 C++17 标准库） |
 | `core/domain/model/Mp4ConsistencyIssue.h` | 一致性问题（含问题码常量 + 转 `DiagnosticIssue`） |
 | `core/analysis/container/Mp4SampleTableAnalyzer.h/.cpp` | 基于 IsobmffParser 展开逐样本 + 纯逻辑校验 `Validate()` |
-| `core/domain/model/QcModels.cpp` | `container.mp4.*` 规则定义（阈值与级别） |
-| `core/analysis/diagnostics/QcRuleEngine.cpp` | 把 finding 转成 QC 报告条目（按规则级别/阈值再过滤） |
+| `core/qc/QcRuleDefaults.cpp` | `container.mp4.*` 规则定义（阈值与级别） |
+| `core/qc/QcRuleEngine*.cpp` | 把 finding 转成 QC 报告条目（按规则级别/阈值再过滤） |
 | `core/analysis/AnalysisOptions.h` + `core/domain/model/AnalysisResult.h` | `analyze_mp4_sample_table` 开关 / `mp4_samples` 结果字段 |
 | `core/analysis/orchestration/AnalysisEngine.cpp` | 全文件扫描时对 MP4 家族顺带跑一遍 |
 | `core/analysis/container/ContainerStructureAnalyzer.cpp` | 打开文件做结构分析时顺带跑一遍（供容器页展示） |

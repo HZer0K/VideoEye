@@ -15,7 +15,7 @@ targe —— 目录只是命名习惯，编译器不认识；能被机器检查�
 | 目录 | CMake target | 职责 | 允许依赖 |
 |------|--------------|------|----------|
 | `core/domain/model/` | `VideoEyeDomain` | 纯结果类型与值对象 | standard library、Qt Core（历史包袱，见 §5） |
-| `infrastructure/config`<br>`infrastructure/serialization`<br>`infrastructure/logging`<br>`infrastructure/concurrency` | `VideoEyeInfrastructure` | 配置、JSON、日志、后台任务调度 | standard library |
+| `infrastructure/serialization`<br>`infrastructure/logging`<br>`infrastructure/concurrency` | `VideoEyeInfrastructure` | JSON、日志、后台任务调度 | standard library |
 | `core/ffmpeg_io/` | `VideoEyeFfmpegIo` | FFmpeg 阻塞 IO 的中断与超时（**叶子模块**，分析/播放/导出共用） | FFmpeg |
 | `core/media/codec`<br>`core/media/container`<br>`core/media/probe`<br>`core/media/streaming` | `VideoEyeMedia` | 容器字节级解析、extradata / 比特读取、文件探测 | domain、infrastructure |
 | `core/analysis/codec` | `VideoEyeCodec` | 码流参数集 / slice / SEI 解析（analysis 的叶子层：只用 `AVCodecID` 枚举做分派，不调用 FFmpeg 函数） | domain、media、infrastructure、FFmpeg 头文件 |
@@ -513,7 +513,7 @@ python scripts/check_layering.py
 | 一种新的分析维度 | `core/analysis/<类别>/`（容器 / 码流 / 质量 / 流媒体 / 诊断） |
 | 新分析维度的开关 | `core/analysis/AnalysisOptions.h` 里的对应 options 结构 |
 | 分析结果里的新字段 | 先在 `core/domain/model/` 起结果类型，再让 `core/domain/model/AnalysisResult.h` 引用它 |
-| 一种新的 QC 规则 | `QcRuleEngine::DefaultQcRules()` + 对应 `CheckRule()` 分支 |
+| 一种新的 QC 规则 | `core/qc/QcRuleDefaults.cpp` 的 `DefaultQcRules()` + `QcRuleEngine::CheckRule()` 分支 |
 | 新的报告格式 | `core/reporting/` |
 | 界面 | `ui/`，通过 facade / controller 调一层之下的东西 |
 
@@ -531,7 +531,7 @@ python scripts/check_layering.py
 | 3 | `core/analysis/AnalysisOptions.h` | 开关字段 + 对应的 options 结构 |
 | 4 | `core/domain/model/AnalysisResult.h` | 结果字段 + 配套的 `xxx_analyzed` 标志位 |
 | 5 | `core/analysis/orchestration/AnalysisPipeline.cpp`（建分析器 + `OnPacket` 分发）、`AnalysisInputSession.cpp`（喂数据 / 取消）、`AnalysisResultAssembler.cpp`（收尾与 `xxx_analyzed` 标志位） | **至少 4 处**接线点 |
-| 6 | `core/analysis/diagnostics/QcRuleEngine.cpp` | 可选：要加 QC 规则时改 `DefaultQcRules()` + `CheckRule()` |
+| 6 | `core/qc/QcRuleDefaults.cpp` + `core/qc/QcRuleEngine*.cpp` | 可选：要加 QC 规则时改 `DefaultQcRules()` + `CheckRule()` |
 | 7 | `ui/analysis_panel/*.cpp` | 展示。可以新建页面，也可以并入现有页（`timecode` 就并进了 `SubtitleAuxPage`） |
 
 **B 路线：播放期维度**（随解码逐帧跑，实时刷新）—— **约 15 个文件**
