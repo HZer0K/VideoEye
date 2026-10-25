@@ -292,12 +292,12 @@ TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红�
 <!-- BEGIN GENERATED TEST SUMMARY -->
 | 指标 | 数量 |
 |---|---|
-| 测试可执行文件 | 106 |
-| ctest 用例组（gtest 可执行文件） | 106 |
+| 测试可执行文件 | 107 |
+| ctest 用例组（gtest 可执行文件） | 107 |
 | python 脚本用例组（非 gtest） | 16 |
-| gtest 用例声明（含 `TEST` / `TEST_F` / `TEST_P`） | 1227 |
+| gtest 用例声明（含 `TEST` / `TEST_F` / `TEST_P`） | 1246 |
 
-启用测试且找到 Python 时，静态注册的 ctest 用例组共 **122 = 106 + 16**。
+启用测试且找到 Python 时，静态注册的 ctest 用例组共 **123 = 107 + 16**。
 这里统计源码中的测试声明，不代表本次已运行通过的数量；参数化测试运行时可能展开成多个用例。
 <!-- END GENERATED TEST SUMMARY -->
 
@@ -313,7 +313,8 @@ CI 和 ctest 使用 `python scripts/summarize_tests.py --check-readme` 验证快
 `ctest -R LayeringRulesTests` 确认它真的在扫仓库。
 
 阶段 3.3 起还有四个 libFuzzer 入口（`tests/fuzz/`）：码流参数集 + extradata、容器结构
-（MP4 / EBML / FLV / ASF）、HLS / DASH 清单、字幕 + SCTE-35。它们只在 **Linux + clang**
+（ISOBMFF / EBML / AVI / FLV / ASF / OGG / MPEG-PS / MXF / MPEG-TS + MP4 样本表）、
+HLS / DASH 清单、字幕 + SCTE-35。它们只在 **Linux + clang**
 下构建（Windows 上打开开关会在配置期直接报错，这是 libFuzzer 运行时的平台限制）：
 `cmake -DVIDEOEYE_ENABLE_FUZZERS=ON` 会把整个构建树带上 ASan/UBSan 插桩（`fuzzer-no-link`），
 四个入口各自链 fuzzer 运行时与 main。跑法示例：

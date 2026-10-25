@@ -4,6 +4,10 @@
 #include <map>
 #include <string>
 
+// 扩展名 ↔ 解复用器名的口径（含别名表）单独成头，好让单测直接钉住：
+// 判错方向是"对着正常文件报扩展名不符"，必须可测。
+#include "core/qc/ContainerExtensionMatch.h"
+
 namespace videoeye {
 namespace qc {
 namespace detail {
@@ -46,43 +50,6 @@ bool IsAudioOnlyContainer(const model::AnalysisResult& result) {
 
 // ---- container.extension_mismatch 辅助 ----
 
-// 常见"扩展名 -> 容器名 token"别名（iformat->name 中不含该扩展名本身时的等价映射）
-const std::map<std::string, std::string>& ExtensionAliasMap() {
-    static const std::map<std::string, std::string> kAlias = {
-        {"ts", "mpegts"},
-        {"m2ts", "mpegts"},
-        {"mts", "mpegts"},
-        {"tts", "mpegts"},
-        {"mkv", "matroska"},
-        {"mka", "matroska"},
-        {"mk3d", "matroska"},
-        {"webm", "matroska"},
-        {"wmv", "asf"},
-        {"wma", "asf"},
-        {"mpg", "mpeg"},
-        {"mpe", "mpeg"},
-        {"m2p", "mpeg"},
-        {"ps", "mpeg"},
-        {"vob", "mpeg"},
-        {"mxf", "mxf"},
-        // 裸流：FFmpeg 的 iformat 名是 h264/hevc/vvc/obu，扩展名常写成无 h 前缀的短名
-        {"264", "h264"},
-        {"avc", "h264"},
-        {"265", "hevc"},
-        {"hvc", "hevc"},
-        {"266", "vvc"},
-        {"h266", "vvc"},
-        {"av1", "obu"},
-        {"m4v", "mov"},
-        {"3gpp", "3gp"},
-        // 流媒体清单：container_format 由 QtAnalysisController 直接写 "hls" / "dash"
-        {"m3u8", "hls"},
-        {"m3u", "hls"},
-        {"mpd", "dash"},
-    };
-    return kAlias;
-}
-
 // 容器名 token -> 可读名称（用于问题说明）
 std::string FriendlyContainerName(const std::string& token) {
     static const std::map<std::string, std::string> kNames = {
@@ -105,35 +72,8 @@ std::string FriendlyContainerName(const std::string& token) {
     return (it != kNames.end()) ? it->second : token;
 }
 
-// 判断扩展名是否与 FFmpeg 探测到的容器一致（container_format 为 iformat->name，
-// 如 "mov,mp4,m4a,3gp,3g2,mj2" / "mpegts"）
-bool ExtensionMatchesContainer(const std::string& ext, const std::string& container_format) {
-    const auto& alias = ExtensionAliasMap();
-    const auto alias_it = alias.find(ext);
-    size_t start = 0;
-    while (start <= container_format.size()) {
-        const size_t comma = container_format.find(',', start);
-        const size_t end = (comma == std::string::npos) ? container_format.size() : comma;
-        std::string token = container_format.substr(start, end - start);
-        // 去空格 + 小写
-        std::string trimmed;
-        for (const char c : token) {
-            if (!std::isspace(static_cast<unsigned char>(c))) {
-                trimmed += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            }
-        }
-        if (!trimmed.empty()) {
-            if (trimmed == ext)
-                return true;
-            if (alias_it != alias.end() && trimmed == alias_it->second)
-                return true;
-        }
-        if (comma == std::string::npos)
-            break;
-        start = comma + 1;
-    }
-    return false;
-}
+// 扩展名与容器的比对口径见 core/qc/ContainerExtensionMatch.h
+// （ExtensionAliasMap / ExtensionMatchesContainer，header-only，可被单测直接钉住）。
 
 } // namespace
 

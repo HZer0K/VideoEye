@@ -781,6 +781,20 @@ target_link_libraries(test_container_legacy_qc_rules PRIVATE VideoEyeQcRules)
 add_test(NAME ContainerLegacyQcRulesTests COMMAND test_container_legacy_qc_rules)
 
 # =================================================
+# 测试 19d：扩展名与实际容器不符（container.extension_mismatch）
+# 说明: 这条规则的判错方向是"对着正常文件报扩展名不符"，所以既要钉住别名表，
+#       也要钉住「FormatDetector 的扩展名表里每一条都被本测试登记过」。
+#       为此把 FormatDetector.cpp 直接编进来（它只依赖 Qt6::Core），
+#       VideoEyeQcRules 本身仍然不带 Qt / FFmpeg 依赖。
+# =================================================
+videoeye_add_test(test_container_extension_mismatch
+    unit/test_container_extension_mismatch.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/orchestration/FormatDetector.cpp
+)
+target_link_libraries(test_container_extension_mismatch PRIVATE VideoEyeQcRules Qt6::Core)
+add_test(NAME ContainerExtensionMismatchTests COMMAND test_container_extension_mismatch)
+
+# =================================================
 # 测试 21：视觉缺陷检测（黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 曝光 / 色偏 / 梳齿 / 黑边）
 # 说明: VisualDefectAnalyzer 只吃 model::FrameSample 里的降采样像素，不依赖 FFmpeg（
 #       AVFrame -> FrameSample 的缩放在 QualityAnalyzer::BuildSample），所以这里全部用
