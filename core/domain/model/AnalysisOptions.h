@@ -322,12 +322,13 @@ struct AnalysisOptions {
     // <=0 表示扫完整个文件。
     int ts_transport_max_packets = 200000;
 
-    // 老式容器（AVI / FLV / ASF / OGG）的结构体检：索引（idx1 / indx / dmlh）、
-    // FLV 时间戳与序列头、ASF 对象完整性、Ogg 页序号与 BOS/EOS。
+    // 容器体检（AVI / FLV / ASF / OGG / MKV）：索引（idx1 / indx / dmlh / Cues）、
+    // FLV 时间戳与序列头、ASF 对象完整性、Ogg 页序号与 BOS/EOS、MKV Cluster 时间轴与
+    // CodecPrivate 完整性。
     //
     // 和 TS 那趟一样，这些是 avformat demux 看不到的**容器层事实**，
     // 由 core/analysis/container 下的专用解析器再扫一遍本地文件得出，
-    // 结果进 AnalysisResult::container_diagnostics，由 container.avi/flv/asf/ogg.* 规则消费。
+    // 结果进 AnalysisResult::container_diagnostics，由 container.avi/flv/asf/ogg/mkv.* 规则消费。
     // QC 模式只取事实、不建结构树，也不逐块遍历 movi 媒体数据（否则大文件会慢一个量级）。
     bool analyze_legacy_container = true;
 

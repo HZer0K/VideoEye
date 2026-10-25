@@ -81,7 +81,7 @@ const char* DimensionName(AnalysisDimension dimension) {
     case AnalysisDimension::Streaming:
         return "流媒体包";
     case AnalysisDimension::LegacyContainer:
-        return "老式容器体检";
+        return "容器体检";
     case AnalysisDimension::FrameOrder:
         return "帧级显示顺序（POC）";
     case AnalysisDimension::Count:

@@ -241,6 +241,7 @@ Header Object 声明长度 `0xD100560000002E46` 让 `obj_start + obj_size` 溢�
 | `real_h264_aac.m2ts` | 192 步长（由上面那份 .ts 插 TP_extra 派生，内容同源） |
 | `real_mpeg4_mp3.avi` | 真实 hdrl/strl/movi/idx1 |
 | `real_vorbis.ogg` | 真实 OggS 页链 |
+| `real_h264_aac.mkv` | 真实 EBML/Segment/Info/Tracks/Cluster/片尾 Cues（H.264 + AAC） |
 
 `--check` 做的是**语义校验**（同步字节步长、容器魔数、长度整除性），不比字节 ——
 ffmpeg 的输出不是字节可复现的，但"换版本产出变成别的容器"和"样本被截断"

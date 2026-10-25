@@ -99,6 +99,20 @@ struct EbmlAnalysisResult {
     int total_blockgroups = 0;
     int total_simpleblocks = 0;
 
+    // ---- 扫描窗口 ----
+    // 元素树只覆盖文件开头的一段（EbmlAnalyzer::kMaxScanBytes）：4 GB 的母版素材
+    // 不可能整份读进内存建树，而结构页要的是容器骨架（EBML/Segment/Info/Tracks/
+    // Cluster），不是逐帧列表。超出窗口时 scan_truncated=true —— 尾部的 Cues /
+    // Tags / Chapters 可能没进树，界面必须说清楚"这份树只到哪"。
+    int64_t file_bytes = 0;
+    int64_t scanned_bytes = 0;
+    bool scan_truncated = false;
+
+    // 元素树里的块节点（SimpleBlock / BlockGroup）同样有上限：它是一份文件里
+    // 唯一随片长线性增长的节点类型。超限后**照旧计数**，只是不再挂进树 ——
+    // 于是 total_* 仍然精确，树也不会被十万个 Block 撑爆。
+    bool block_nodes_truncated = false;
+
     bool valid = false;
     std::string error_message;
 };

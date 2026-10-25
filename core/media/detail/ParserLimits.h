@@ -38,6 +38,8 @@ struct ParserLimits {
 
     // 单次解析最多扫描的输入字节数。与 ManifestReader 的 32MiB 清单上限对齐：
     // 超过这个量级的"清单/结构文件"在质检场景里没有意义，直接按不可解析处理。
+    // EBML 元素树也用它当"扫描窗口"：只读开头这一段建树，尾部靠
+    // EbmlAnalysisResult::scan_truncated 显式声明没覆盖到（不再整份 ReadAll）。
     static constexpr uint64_t kMaxScanBytes = 32ULL * 1024ULL * 1024ULL;
 
     // 单个列表（样本表 / 分片表 / cue 列表 / 参数集数组 …）最多收纳的元素数。

@@ -689,7 +689,7 @@ void AnalysisResultAssembler::FinalizeDimensionStatus(int audio_tracks_analyzed,
         add(status);
     }
 
-    // ---- 老式容器体检 ----
+    // ---- 容器体检（AVI / FLV / ASF / OGG / MKV） ----
     {
         const model::ContainerDiagnosticsInfo& diag = result_.container_diagnostics;
         const bool any =

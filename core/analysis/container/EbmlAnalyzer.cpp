@@ -1108,6 +1108,30 @@ bool EbmlAnalyzer::ParseElement(const std::string& buf, int64_t& pos, int64_t en
             node.size = size;
         }
 
+        // --- 块节点预算 ---
+        // SimpleBlock / BlockGroup 是唯一随片长线性增长的节点类型。全挂进树的话
+        // 一部 3 小时的片子有十万量级 Block，必然撞 kMaxNodes —— 而撞上限意味着
+        // Analyze() 把整份结果判为"无效"，长片连容器骨架都看不到（还要回退 FFmpeg
+        // 重新开一遍文件）。所以超预算后：**照旧计数**（帧数结论不变），载荷整块
+        // 跳过、不挂树，节点数与内存都变成常数级。
+        const bool is_simple_block = (id == 0xA3);
+        const bool is_block_group = (id == 0xA0);
+        if (is_simple_block || is_block_group) {
+            if (is_simple_block)
+                ++simpleblock_count_;
+            else
+                ++blockgroup_count_;
+            if (block_tree_nodes_ >= kMaxTreeBlocks) {
+                block_budget_hit_ = true;
+                // 跳过时同样要夹在父元素末尾之内（与下面超长叶子同一条规则），
+                // 否则一次跳过会冲出 end_offset，后面的兄弟元素全落在范围外。
+                const int64_t remain = end_offset - pos;
+                pos += std::min<int64_t>(static_cast<int64_t>(size), remain > 0 ? remain : 0);
+                continue;
+            }
+            ++block_tree_nodes_;
+        }
+
         // --- 容器元素：递归解析子元素 ---
         if (IsContainerElement(id) && size > 0) {
             int64_t child_end = node.offset + static_cast<int64_t>(size);
@@ -1176,6 +1200,10 @@ bool EbmlAnalyzer::Analyze(const std::string& filePath, model::EbmlAnalysisResul
     // 每次分析都从头计数（Reset() 之外也要清，免得上次的节点数被下一份文件接着算）
     node_count_ = 0;
     limit_reached_ = false;
+    block_tree_nodes_ = 0;
+    blockgroup_count_ = 0;
+    simpleblock_count_ = 0;
+    block_budget_hit_ = false;
 
     SeqFileReader file(filePath);
     if (!file.IsOpen()) {
@@ -1192,9 +1220,18 @@ bool EbmlAnalyzer::Analyze(const std::string& filePath, model::EbmlAnalysisResul
     }
 
     file.Seek(0);
-    // Matroska 的头部（Segment 之前那几百字节 + Segment 里的索引表）都是小体量，
-    // 整份读进内存比维护一份 istream 更简单，也和 Ts/Flv/Asf/Avi 的解析方式一致。
-    const std::string buf = file.ReadAll();
+    // 只读文件开头的一段（见 kMaxScanBytes）。以前这里是 ReadAll()：整份读进内存，
+    // 一个 4 GB 的母版 MKV 就要 4 GB 的 std::string —— 结构分析这种"看骨架"的活
+    // 没有理由为此付出 O(文件大小) 的内存。
+    //
+    // 窗口截断不是失败：解析照样成立，只是尾部（Cues / Tags / Chapters）不在树里。
+    // 这件事必须显式告诉上层（scan_truncated），否则界面会把"只扫描了前 32 MiB"
+    // 显示成"这份文件没有索引"，那比不显示更糟。
+    result.file_bytes = file.Size();
+    const int64_t window = std::min<int64_t>(result.file_bytes, kMaxScanBytes);
+    const std::string buf = file.Read(window);
+    result.scanned_bytes = static_cast<int64_t>(buf.size());
+    result.scan_truncated = result.scanned_bytes < result.file_bytes;
     int64_t pos = 0;
 
     model::EbmlElementNode root;
@@ -1216,28 +1253,19 @@ bool EbmlAnalyzer::Analyze(const std::string& filePath, model::EbmlAnalysisResul
         return false;
     }
 
-    // 统计 BlockGroup / SimpleBlock 计数
-    int bg = 0, sb = 0;
-    std::function<void(const std::vector<model::EbmlElementNode>&)> countBlocks;
-    countBlocks = [&](const std::vector<model::EbmlElementNode>& nodes) {
-        for (const auto& n : nodes) {
-            if (n.id == 0xA0)
-                bg++; // BlockGroup
-            if (n.id == 0xA3)
-                sb++; // SimpleBlock
-            countBlocks(n.children);
-        }
-    };
-    countBlocks(root.children);
-    result.total_blockgroups = bg;
-    result.total_simpleblocks = sb;
+    // 块计数在 ParseElement 里记账（不再遍历元素树反推）：超预算的块不挂树，
+    // 树遍历数不出来，而这两个数字恰恰是结构页最关心的量级。
+    result.total_blockgroups = static_cast<int>(blockgroup_count_);
+    result.total_simpleblocks = static_cast<int>(simpleblock_count_);
+    result.block_nodes_truncated = block_budget_hit_;
 
     result.element_tree = root.children;
     result.valid = true;
 
     LOG_INFO("EBML 分析完成: " + result.doc_type + " | " + std::to_string(result.tracks.size()) + " 轨道" + " | " +
              std::to_string(result.cues.size()) + " 索引点" + " | " + std::to_string(result.total_clusters) +
-             " Cluster");
+             " Cluster" + (result.scan_truncated ? " (扫描窗口截断)" : "") +
+             (result.block_nodes_truncated ? " (块列表截断)" : ""));
     return true;
 }
 

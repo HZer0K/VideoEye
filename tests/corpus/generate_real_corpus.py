@@ -122,6 +122,26 @@ def build_ogg(ffmpeg):
     ], ".ogg")
 
 
+def build_mkv(ffmpeg):
+    """Matroska：H.264 + AAC，ffmpeg 会写 EBML 头 / Segment / Info / Tracks / Cluster / Cues。
+
+    为什么要额外加这一份：语料里此前**一个真实 MKV 都没有**，MKV 侧全靠手工拼的
+    畸形字节（unknown-size / 深嵌套 / 截断）撑着 —— 那只能证明解析器不崩，证明不了
+    "在真实文件上读出来的 Cues / Cluster 时间轴 / CodecPrivate 是对的"。而
+    container.mkv.* 六条规则与元素树窗口行为都建立在"真实 muxer 的产物"上。
+
+    -g 5 / 时长 1s / 10fps → 两个关键帧、两个 Cluster，Cues 落在片尾 ——
+    正好能测"片尾索引在不在扫描窗口里"这类结论。
+    """
+    return run_ffmpeg(ffmpeg, [
+        "-f", "lavfi", "-i", VIDEO,
+        "-f", "lavfi", "-i", AUDIO,
+        "-c:v", "libx264", "-preset", "ultrafast", "-g", "5",
+        "-c:a", "aac", "-b:a", "64k",
+        "-f", "matroska",
+    ], ".mkv")
+
+
 def build_m2ts(ts_bytes):
     r"""M2TS/AVCHD：每个 188 字节 TS 包前面插 4 字节 TP_extra_header。
 
@@ -174,6 +194,7 @@ register("container/real_h264_aac.ts", "ts", build=build_ts)
 register("container/real_h264_aac.m2ts", "m2ts", derived="container/real_h264_aac.ts")
 register("container/real_mpeg4_mp3.avi", "avi", build=build_avi)
 register("container/real_vorbis.ogg", "ogg", build=build_ogg)
+register("container/real_h264_aac.mkv", "mkv", build=build_mkv)
 register("codec/real_x264_bframes_gop.mp4", "mp4", build=build_h264_bframes)
 
 
@@ -264,6 +285,23 @@ def check(data, rel):
         if data.count(b"OggS") < 2:
             problems.append("%s: 只有 %d 个 OggS 页，测不出页链"
                             % (rel, data.count(b"OggS")))
+        return problems
+
+    if kind == "mkv":
+        # 只校验"这是 Matroska、骨架元素都在"。深度解析的正确性由 C++ 用例断言
+        # （解析器和这里各写一遍 EBML 走查，才是真的交叉验证）。
+        if data[0:4] != b"\x1a\x45\xdf\xa3":
+            problems.append("%s: 不是 EBML 头（开头 %r）" % (rel, data[0:4]))
+            return problems
+        if b"matroska" not in data[:256]:
+            problems.append("%s: EBML 头里没有 DocType=matroska" % rel)
+        # Cluster ID 0x1F43B675 / Cues ID 0x1C53BB6B。ffmpeg 默认把 Cues 写在片尾，
+        # 少了它 container.mkv.missing_cues 在真实样本上就无从判定。
+        for elem_id, name in ((b"\x1f\x43\xb6\x75", "Cluster"),
+                              (b"\x1c\x53\xbb\x6b", "Cues")):
+            if data.find(elem_id) < 0:
+                problems.append("%s: 找不到 %s 元素（%r）"
+                                % (rel, name, elem_id))
         return problems
 
     if kind == "h264_annexb":

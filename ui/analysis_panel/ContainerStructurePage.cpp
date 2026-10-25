@@ -693,6 +693,15 @@ void ContainerStructurePage::OnExportContainerStructure() {
             out << "DocType: " << QString::fromStdString(ebml.doc_type) << " v" << ebml.doc_type_version << "\n";
             out << "TimestampScale: " << ebml.timestamp_scale << " ns\n";
             out << "Duration: " << ebml.duration_seconds << " s\n";
+            // 元素树只覆盖文件开头的扫描窗口：这里必须把"扫了多少"写出来，
+            // 否则下面 Cues / Blocks 显示 0 会被读成"文件真的没有"，而不是"没扫到"。
+            if (ebml.scan_truncated) {
+                out << "扫描窗口: 前 " << (ebml.scanned_bytes / (1024 * 1024)) << " MiB / 共 "
+                    << (ebml.file_bytes / (1024 * 1024)) << " MiB（尾部元素未建树）\n";
+            }
+            if (ebml.block_nodes_truncated) {
+                out << "块列表: 元素树里只挂了前若干个块（计数仍为全量，见下面的 Clusters 行）\n";
+            }
             out << "Clusters: " << ebml.total_clusters << "  BlockGroups: " << ebml.total_blockgroups
                 << "  SimpleBlocks: " << ebml.total_simpleblocks << "\n";
 

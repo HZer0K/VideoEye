@@ -241,13 +241,14 @@ bool ContainerStructureAnalyzer::Analyze(const std::string& file_path, model::Co
 
     case model::ContainerFormat::MKV:
     case model::ContainerFormat::WebM: {
-        EbmlAnalyzer ebml_analyzer;
-        if (ebml_analyzer.Analyze(file_path, result.ebml_detail, cancel.get())) {
-            // 元素级体检（QC 事实来源）与元素树分开跑：EbmlAnalyzer 要建树、
-            // 受 kMaxNodes / 整份读入内存的约束，长片根本走不到片尾；这一遍只读
-            // 元素头、不建树，内存 O(1)，Cues / Cluster 时间轴 / CodecPrivate
-            // 这些结论要的是"整份文件都扫过"。失败不影响结构页（analyzed 保持
-            // false，相关规则自然静默），但取消必须当取消处理。
+        // ---- 元素级体检（QC 事实来源）先跑，且**不受**元素树成败影响 ----
+        // 以前这一遍写在 EbmlAnalyzer 成功的分支里，于是最容易出问题的那批文件
+        // （超长片、畸形文件 —— 正是 EbmlAnalyzer 会判失败的那些）一条 MKV 规则
+        // 都拿不到事实，6 条规则集体静默。两件事的可失败性是独立的：树建不出来
+        // 只说明"这份骨架给不了"，不代表"扫不出 Cues / 时间戳回退 / 缺 CodecPrivate"。
+        // 这一遍只读元素头、内存 O(1)，失败也不影响结构页（analyzed 保持 false，
+        // 相关规则自然静默），但取消必须当取消处理。
+        {
             MkvContainerScanner mkv_scan;
             if (!mkv_scan.Analyze(file_path, result.diagnostics.mkv, cancel.get())) {
                 if (infrastructure::Checkpoint(cancel.get()))
@@ -256,7 +257,10 @@ bool ContainerStructureAnalyzer::Analyze(const std::string& file_path, model::Co
             }
             if (infrastructure::Checkpoint(cancel.get()))
                 return MarkCancelled(result);
+        }
 
+        EbmlAnalyzer ebml_analyzer;
+        if (ebml_analyzer.Analyze(file_path, result.ebml_detail, cancel.get())) {
             if (on_stage)
                 on_stage(Stage::kBuildTree);
             if (!ConvertEbmlTree(result.ebml_detail.element_tree, 0, result.element_tree, cancel.get())) {
@@ -299,6 +303,17 @@ bool ContainerStructureAnalyzer::Analyze(const std::string& file_path, model::Co
             // 后面的计数递归即使被取消也已经来不及。
             result.summary =
                 (StrCat("%1 | %2 个元素 | %3 轨道", (result.ebml_detail.doc_type), elem_count, result.streams.size()));
+            // 扫描窗口截断必须写在摘要里：树里看不到 Cues / Tags 是"没扫到"，
+            // 不是"文件没有"。不写清楚的话，用户会把一份正常的 4 GB 母版看成
+            // "这个 MKV 连索引都没有"。
+            if (result.ebml_detail.scan_truncated) {
+                result.summary += StrCat(" | 仅扫描前 %1 MiB（共 %2 MiB，尾部索引可能未覆盖）",
+                                         result.ebml_detail.scanned_bytes / (1024 * 1024),
+                                         result.ebml_detail.file_bytes / (1024 * 1024));
+            }
+            if (result.ebml_detail.block_nodes_truncated) {
+                result.summary += StrCat(" | 块节点仅展示前 %1 个（计数仍为全量）", EbmlAnalyzer::kMaxTreeBlocks);
+            }
             result.valid = true;
         } else {
             // 同上：解析被中断不是"失败"，此时回退 FFmpeg 会把一次取消换成"分析成功"。

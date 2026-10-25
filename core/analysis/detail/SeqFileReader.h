@@ -134,6 +134,10 @@ public:
     }
 
     /// 只读一整份（std::ifstream::readAll 的路径：先探大小再一次性读完）。
+    ///
+    /// ⚠️ 内存是 O(文件大小)。**不要拿它读用户媒体文件**：一个 4 GB 的母版 MKV
+    /// 就是 4 GB 的 std::string。EBML 元素树也只读开头一段（见 EbmlAnalyzer::kMaxScanBytes），
+    /// 需要"前 N 字节"的地方直接用 Read(N)。目前只有单测在用它。
     std::string ReadAll() {
         Clear();
         const int64_t size = Size();

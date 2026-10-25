@@ -76,7 +76,7 @@ private:
     // 容器级事实：格式名 / 时长 / 体积 / 码率 / 可定位 / moov 顺序 / MP4 sample table。
     // 这几个都只在打开成功后才有意义，且都不依赖逐包扫描，所以归在输入侧。
     void FillContainerFacts(model::AnalysisResult& result);
-    // 老式容器（AVI / FLV / ASF / OGG）的结构体检。只对本地文件执行：
+    // 容器级体检（AVI / FLV / ASF / OGG / MKV）的结构事实。只对本地文件执行：
     // 网络源重扫一遍既不必要也不可靠。结果写进 result.container_diagnostics。
     void FillLegacyContainerFacts(model::AnalysisResult& result);
     void BuildStreamDigests(model::AnalysisResult& result);

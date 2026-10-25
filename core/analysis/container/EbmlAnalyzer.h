@@ -28,6 +28,20 @@ public:
     static constexpr int kMaxDepth = ParserLimits::kMaxDepth;
     static constexpr int kMaxNodes = static_cast<int>(ParserLimits::kMaxNodes);
 
+    // 扫描窗口：只把文件开头这一段读进内存建树。
+    // 以前是 ReadAll() —— 4 GB 的 MKV 就是 4 GB 的 std::string，长片直接 OOM。
+    // 32 MiB 覆盖得下 EBML 头 + Info + Tracks + 前若干 Cluster；尾部（Cues/Tags/
+    // Chapters）落在窗口外时靠 scan_truncated 明确告知，而不是假装文件就这么长。
+    // QC 侧的整份事实另有 MkvContainerScanner 负责（只读元素头，内存 O(1)）。
+    static constexpr int64_t kMaxScanBytes = static_cast<int64_t>(ParserLimits::kMaxScanBytes);
+
+    // 元素树里保留的块节点（SimpleBlock / BlockGroup）上限。
+    // 块是唯一随片长线性增长的节点类型：3 小时的片子有十万量级，全挂进树必然撞
+    // kMaxNodes，而撞上限等于整个结构页判"解析失败"回退 FFmpeg —— 长片连容器骨架
+    // 都看不到。超限后块照旧计数（total_simpleblocks / total_blockgroups 仍然精确），
+    // 只是不再挂树、载荷也不再拷进 node.value。
+    static constexpr uint64_t kMaxTreeBlocks = 20000;
+
     EbmlAnalyzer();
     ~EbmlAnalyzer();
 
@@ -95,6 +109,15 @@ private:
 
     // 已解析出的元素个数（Analyze() 开头重置），到 kMaxNodes 就停解析
     uint64_t node_count_ = 0;
+
+    // 块节点计数（Analyze() 开头重置）。
+    // 计数在解析时记账，不再像以前那样靠遍历元素树反推 —— 块一旦因为超预算
+    // 不挂树，树遍历就数不出来了，而 total_simpleblocks / total_blockgroups
+    // 恰恰是结构页要的"这份文件有多少帧"的近似答案。
+    uint64_t block_tree_nodes_ = 0; // 已挂进树的块节点数
+    uint64_t blockgroup_count_ = 0;
+    uint64_t simpleblock_count_ = 0;
+    bool block_budget_hit_ = false;
 
     // 解析途中撞到深度/节点上限时为 true。上限触发后元素树只是"半份"，
     // Analyze() 必须据此把结果标成无效 —— 半份树 + valid=true 是最危险的

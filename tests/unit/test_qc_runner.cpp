@@ -301,3 +301,44 @@ TEST(QcRunnerTest, TsTransportStaysInapplicableForNonTsInput) {
     EXPECT_FALSE(result.analysis.ts_transport.applicable);
     EXPECT_FALSE(result.analysis.ts_transport.analyzed);
 }
+
+// ==========================================================================
+// 端到端：AnalysisEngine -> FillLegacyContainerFacts -> container_diagnostics.mkv
+//
+// MKV 的六条 container.mkv.* 规则靠 AnalysisResult::container_diagnostics.mkv 供料，
+// 而这份事实由 AnalysisInputSession 里那趟"容器体检"填充。这条链路以前**根本没有
+// MKV 分支**（只接了 avi/flv/asf/ogg），于是规则全部静默 —— 报告上看不出区别，
+// 因为"没命中"和"没检查"长得一模一样。契约级用例（手工造 MkvDiagnostics）也照不出
+// 这个洞：它们绕过输入会话直接喂事实。
+//
+// 所以这里必须端到端跑一遍真实 MKV，断言的落点是"事实到了 AnalysisResult 里"。
+// ==========================================================================
+TEST(QcRunnerTest, MkvContainerFactsReachTheQcResult) {
+    const fs::path mkv = fs::path(VIDEOEYE_CONTAINER_CORPUS_DIR) / "real_h264_aac.mkv";
+    if (!fs::exists(mkv)) {
+        GTEST_SKIP() << "缺真实样本 real_h264_aac.mkv，"
+                        "先跑 tests/corpus/generate_real_corpus.py";
+    }
+
+    QcRunner runner;
+    const QcRunResult result = runner.AnalyzeFile(mkv.string(), FastProfile());
+    ASSERT_TRUE(result.ok) << result.error;
+
+    const videoeye::model::MkvDiagnostics& mkv_diag = result.analysis.container_diagnostics.mkv;
+    ASSERT_TRUE(mkv_diag.analyzed) << "MKV 容器体检没跑到 —— container.mkv.* 六条规则会集体静默";
+    EXPECT_EQ("matroska", mkv_diag.doc_type);
+    EXPECT_TRUE(mkv_diag.scan_complete);
+    EXPECT_FALSE(mkv_diag.truncated);
+    EXPECT_GT(mkv_diag.clusters, 0u);
+    EXPECT_EQ(mkv_diag.clusters, mkv_diag.clusters_with_timecode) << "ffmpeg 写的每个 Cluster 都带 Timecode";
+    EXPECT_EQ(0u, mkv_diag.cluster_timestamp_backwards);
+    // ffmpeg 默认把 Cues 写在片尾：正好验证"扫到片尾"这件事，也让 missing_cues 有得判
+    EXPECT_TRUE(mkv_diag.has_cues);
+    // AVC / AAC 都必须带 CodecPrivate，缺了就是黑屏/无声
+    EXPECT_EQ(0u, mkv_diag.tracks_missing_codec_private) << mkv_diag.missing_codec_private_codecs;
+
+    // 规则层不该在这份干净样本上误报
+    for (const auto& issue : result.report.issues) {
+        EXPECT_NE(0u, issue.rule_id.rfind("container.mkv.", 0)) << "干净 MKV 被误判: " << issue.rule_id;
+    }
+}

@@ -17,6 +17,7 @@ extern "C" {
 #include "core/analysis/container/AsfStructureAnalyzer.h"
 #include "core/analysis/container/AviStructureAnalyzer.h"
 #include "core/analysis/container/FlvStructureAnalyzer.h"
+#include "core/analysis/container/MkvContainerScanner.h"
 #include "core/analysis/container/Mp4SampleTableAnalyzer.h"
 #include "core/analysis/container/OggStructureAnalyzer.h"
 #include "core/analysis/detail/AnalysisStreamSelection.h"
@@ -226,7 +227,8 @@ void AnalysisInputSession::FillLegacyContainerFacts(model::AnalysisResult& resul
         return;
 
     // iformat->name 是 FFmpeg 的 demuxer token，不是扩展名：
-    // .wmv/.wma → "asf"，.oga/.opus → "ogg"，这样命名不一致的文件也能进入体检。
+    // .wmv/.wma → "asf"，.oga/.opus → "ogg"，.mkv/.webm → "matroska,webm"，
+    // 这样命名不一致的文件也能进入体检。
     const std::string& fmt = result.container_format;
     model::ContainerStructureResult structure;
     bool ok = false;
@@ -255,6 +257,13 @@ void AnalysisInputSession::FillLegacyContainerFacts(model::AnalysisResult& resul
         opt.max_pages = 0; // 缺 EOS 只有扫到文件尾才能下结论
         OggStructureAnalyzer analyzer;
         ok = analyzer.Analyze(file_path_, structure, cancel_source_, opt);
+    } else if (fmt.rfind("matroska", 0) == 0 || fmt == "webm") {
+        // MKV/WebM：用只读元素头的顺序扫描器（内存 O(1)），**不是** EbmlAnalyzer。
+        // EbmlAnalyzer 要为结构页建整棵树，长片必然撞节点上限并整份判失败；
+        // 而 container.mkv.* 这几条规则恰恰在长片上最有用（点播不可 seek、
+        // Cluster 时间戳回退、缺 CodecPrivate）。两者口径完全不同，不能互换。
+        MkvContainerScanner scanner;
+        ok = scanner.Analyze(file_path_, structure.diagnostics.mkv, cancel_source_);
     } else {
         return;
     }

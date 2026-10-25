@@ -1,11 +1,14 @@
 // MKV / WebM 容器级 QC（container.mkv.*）单元测试
 //
-// 两层分工：
+// 三层分工：
 //   * MkvContainerScannerTest —— 造一份最小 MKV 字节流，验证元素级顺序扫描
 //     真的把 Cues / Cluster 时间轴 / CodecPrivate / unknown-size 读对了。
 //     （unknown-size Cluster 的边界是这一层最容易写错的地方，必须钉住。）
 //   * MkvQcRulesTest —— 手工构造 MkvDiagnostics，验证规则把事实翻译成
 //     报告（级别、文案、门控）。
+//   * EbmlTreeScanTest —— EbmlAnalyzer（结构页那棵元素树）的扫描窗口与块节点
+//     预算：截断要说清楚、计数不能被预算悄悄改小。它与上面那层是**两套实现**，
+//     各自的边界要各测各的。
 //
 // 样本不依赖任何真实媒体文件；扫描器测试把字节写进临时文件再扫。
 
@@ -17,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "core/analysis/container/EbmlAnalyzer.h"
 #include "core/analysis/container/MkvContainerScanner.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/ContainerDiagnosticsInfo.h"
@@ -437,6 +441,132 @@ TEST(MkvQcRulesTest, DefaultRulesRegisterMkvFamily) {
         EXPECT_TRUE(rule->enabled);
         EXPECT_FALSE(rule->suggestion.empty()) << id << " 缺少可执行的修复建议";
     }
+}
+
+// ---------------------------------------------------------------------------
+// 元素树扫描窗口（EbmlAnalyzer）
+//
+// 结构页与 QC 是两套口径，别混：QC 读 MkvContainerScanner 的"整份事实"
+// （只读元素头，内存 O(1)），结构页读 EbmlAnalyzer 的元素树。建树的代价是内存：
+// 以前 ReadAll() 把整份文件读进内存，4 GB 的母版素材就是 4 GB 的 std::string。
+// 现在只读前 32 MiB（kMaxScanBytes），块节点另外封顶（kMaxTreeBlocks）。
+//
+// 这一组钉两件事：
+//   * 截断必须**说清楚**（scan_truncated / scanned_bytes），不能把"没扫到"显示成
+//     "文件没有索引" —— 那比不显示更糟；
+//   * 块不挂树了，但 total_simpleblocks / total_blockgroups 必须**仍然精确**，
+//     否则结构页显示的"帧数量级"会随着预算悄悄变成 20000。
+// ---------------------------------------------------------------------------
+
+// 树里某个 ID 的节点数（用于断言"块挂了多少个进树"，比节点总数稳定 ——
+// 总数会随 EBML 头 / Segment / Timecode 这些骨架节点变化）
+std::size_t CountTreeNodesById(const std::vector<model::EbmlElementNode>& nodes, uint64_t id) {
+    std::size_t n = 0;
+    for (const auto& node : nodes) {
+        if (node.id == id)
+            ++n;
+        n += CountTreeNodesById(node.children, id);
+    }
+    return n;
+}
+
+bool AnalyzeTree(const std::string& name, const std::string& bytes, model::EbmlAnalysisResult* out) {
+    const std::string path = WriteTemp(name, bytes);
+    if (path.empty())
+        return false;
+    EbmlAnalyzer analyzer;
+    const bool ok = analyzer.Analyze(path, *out);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    return ok;
+}
+
+// 小文件必须完整覆盖：窗口判定写错（比如比较方向反了）会让每个正常文件的摘要
+// 都挂上"仅扫描前 0 MiB"。
+TEST(EbmlTreeScanTest, SmallFileIsScannedCompletely) {
+#ifdef VIDEOEYE_CONTAINER_CORPUS_DIR
+    const std::filesystem::path path = std::filesystem::path(VIDEOEYE_CONTAINER_CORPUS_DIR) / "real_h264_aac.mkv";
+    if (!std::filesystem::exists(path)) {
+        GTEST_SKIP() << "缺真实样本 real_h264_aac.mkv，先跑 tests/corpus/generate_real_corpus.py";
+    }
+
+    model::EbmlAnalysisResult result;
+    EbmlAnalyzer analyzer;
+    ASSERT_TRUE(analyzer.Analyze(path.string(), result)) << result.error_message;
+
+    EXPECT_TRUE(result.valid);
+    EXPECT_EQ("matroska", result.doc_type);
+    // ffmpeg 产出的真实 MKV：文件大小就是扫描字节，没有任何截断
+    EXPECT_EQ(result.file_bytes, result.scanned_bytes);
+    EXPECT_FALSE(result.scan_truncated);
+    EXPECT_FALSE(result.block_nodes_truncated);
+    EXPECT_GE(result.tracks.size(), 2u) << "H.264 + AAC 应该是两条轨";
+    EXPECT_GE(result.total_clusters, 1);
+    // 块可能走 SimpleBlock 也可能走 BlockGroup（关键帧带 ReferenceBlock 那种）
+    EXPECT_GT(result.total_simpleblocks + result.total_blockgroups, 0);
+    EXPECT_FALSE(result.element_tree.empty());
+#endif
+}
+
+// 超过 32 MiB 的文件：尾部**真的不读**。把 Tracks 放到窗口之后 —— 如果实现还是
+// ReadAll()，这条会拿到轨道；现在必须拿不到。
+TEST(EbmlTreeScanTest, TailBeyondWindowIsNotRead) {
+    constexpr std::size_t kMiB = 1024 * 1024;
+    std::string body = Element(kIdInfo, Element(kIdTimestampScale, BeUInt(1000000)));
+    // 1 MiB 一个 Void，铺满 34 MiB（> kMaxScanBytes），把 Tracks 顶到窗口之外
+    for (int i = 0; i < 34; ++i)
+        body += Element(0xEC, std::string(kMiB, '\0'));
+    body += Element(kIdTracks, TrackEntry(1, "V_MPEG4/ISO/AVC", true));
+
+    const std::string bytes = EbmlHeader("matroska") + Element(kIdSegment, body);
+
+    model::EbmlAnalysisResult result;
+    ASSERT_TRUE(AnalyzeTree("windowed", bytes, &result)) << result.error_message;
+
+    EXPECT_TRUE(result.valid);
+    EXPECT_TRUE(result.scan_truncated);
+    EXPECT_EQ(static_cast<int64_t>(bytes.size()), result.file_bytes);
+    EXPECT_EQ(EbmlAnalyzer::kMaxScanBytes, result.scanned_bytes);
+    EXPECT_TRUE(result.tracks.empty()) << "Tracks 在窗口之后，读到它就说明尾部还是被整份读进了内存";
+}
+
+// 块数量超过 kMaxTreeBlocks：树里只留前面一批，但计数必须精确。
+TEST(EbmlTreeScanTest, BlockNodesAreCappedButCountsStayExact) {
+    constexpr int kBlocks = 30000;
+    std::string cluster = Element(kIdClusterTimecode, BeUInt(0));
+    for (int i = 0; i < kBlocks; ++i)
+        cluster += Element(kIdSimpleBlock, std::string(8, '\x11'));
+    const std::string bytes = EbmlHeader("matroska") + Element(kIdSegment, Element(kIdCluster, cluster));
+
+    model::EbmlAnalysisResult result;
+    ASSERT_TRUE(AnalyzeTree("many_blocks", bytes, &result)) << result.error_message;
+
+    EXPECT_TRUE(result.valid);
+    EXPECT_EQ(1, result.total_clusters);
+    // 不挂树的块照样计数 —— 这条是"预算不许悄悄改变结论"的落点
+    EXPECT_EQ(kBlocks, result.total_simpleblocks);
+    EXPECT_EQ(0, result.total_blockgroups);
+    EXPECT_TRUE(result.block_nodes_truncated);
+    // 树里恰好是前 kMaxTreeBlocks 个块（再多就是没省，再少就是白丢）
+    EXPECT_EQ(EbmlAnalyzer::kMaxTreeBlocks, CountTreeNodesById(result.element_tree, kIdSimpleBlock));
+}
+
+// 预算内一个都不能少：小文件的结构页必须还是"完整的一棵树"。
+TEST(EbmlTreeScanTest, BlocksUnderCapStayInTree) {
+    constexpr int kBlocks = 200;
+    std::string cluster = Element(kIdClusterTimecode, BeUInt(0));
+    for (int i = 0; i < kBlocks; ++i)
+        cluster += Element(kIdSimpleBlock, std::string(8, '\x11'));
+    const std::string bytes = EbmlHeader("matroska") + Element(kIdSegment, Element(kIdCluster, cluster));
+
+    model::EbmlAnalysisResult result;
+    ASSERT_TRUE(AnalyzeTree("few_blocks", bytes, &result)) << result.error_message;
+
+    EXPECT_TRUE(result.valid);
+    EXPECT_FALSE(result.block_nodes_truncated);
+    EXPECT_EQ(kBlocks, result.total_simpleblocks);
+    // 预算内一个都不能少：小文件的结构页必须还是"完整的一棵树"
+    EXPECT_EQ(static_cast<std::size_t>(kBlocks), CountTreeNodesById(result.element_tree, kIdSimpleBlock));
 }
 
 } // namespace

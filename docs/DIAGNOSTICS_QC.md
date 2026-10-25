@@ -149,14 +149,18 @@ HEVC 认 19/20/21 当 IDR；其余编码不认（认错 NAL 头会把随机字�
 
 | | `EbmlAnalyzer`（结构页） | `MkvContainerScanner`（QC） |
 |---|---|---|
-| 产物 | 整棵元素树 + Track/Cue/Block 表 | 十来个计数（Cues、Cluster 时间轴、CodecPrivate、unknown-size） |
-| 读取方式 | `ReadAll()` 整份读入内存 | 只读元素头，载荷一律 `Seek` 跳过，内存 O(1) |
-| 上限 | `ParserLimits::kMaxNodes`（20 万节点），撞上限即判解析失败 | `MkvScanOptions::max_elements`（20 万元素头），撞上限置 `scan_complete=false` |
-| 长片 | 一部 3 小时的 MKV 有十万量级 Block，必然撞上限 → 拿不到结果 | 一级扫描只碰 Cluster/Cues/Tracks，正常文件几百次元素头，能覆盖到片尾 |
+| 产物 | 元素树 + Track/Cue/Block 表 | 十来个计数（Cues、Cluster 时间轴、CodecPrivate、unknown-size） |
+| 读取方式 | 只读文件开头 32 MiB（`kMaxScanBytes`）建树 | 只读元素头，载荷一律 `Seek` 跳过，内存 O(1) |
+| 上限 | 20 万节点 + 树内块节点 2 万（`kMaxTreeBlocks`）；撞节点上限即判解析失败 | `MkvScanOptions::max_elements`（20 万元素头），撞上限置 `scan_complete=false` |
+| 长片 | 窗口外的尾部不建树，`scan_truncated=true`，摘要里写明"仅扫描前 N MiB" | 一级扫描只碰 Cluster/Cues/Tracks，正常文件几百次元素头，能覆盖到片尾 |
 
 也就是说：**结构页看树，QC 看事实**。凡是"必须扫完整个文件才敢下结论"的规则
 （缺 Cues、时间戳回退、截断）都只能建立在扫描器上；反过来，扫描器**不建树**，
 不承担结构展示。
+
+⚠️ 两件事的可失败性也是独立的：结构树建不出来（畸形文件 / 超长片）时
+`ContainerStructureAnalyzer` 仍会先跑一遍扫描器，所以 `container.mkv.*` 不会因为
+"树建失败"而集体静默。反过来说，**别把扫描器塞回树成功之后的分支**。
 
 `unknown_size_elements` 的处理是这一层最容易写错的地方：Matroska 允许元素
 `size` 全 1 表示"长度未知"（流式写出的 Segment/Cluster 很常见），此时边界只能靠
