@@ -236,7 +236,8 @@ public:
     const std::vector<model::ParameterTimeline>& parameter_timelines() const {
         return parameter_timelines_;
     }
-    // 帧级 POC 时间线（仅 H.264 会产出；其余编码为空，对应维度标不可用）
+    // 帧级显示顺序时间线（H.264 / HEVC 走 POC，VP9 走显示事件序；
+    // 其余编码为空，对应维度标不可用）
     const std::vector<model::FrameOrderTimeline>& frame_order_timelines() const {
         return frame_order_timelines_;
     }

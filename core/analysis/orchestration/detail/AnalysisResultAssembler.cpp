@@ -342,16 +342,17 @@ void AnalysisResultAssembler::FinalizeDimensionStatus(int audio_tracks_analyzed,
         }
     }
 
-    // ---- 帧级显示顺序（POC，仅 H.264）----
+    // ---- 帧级显示顺序（H.264 / HEVC 走 POC，VP9 走显示事件序）----
     //
     // 与"参数变化时间线"是同一个包扫描循环里产出的两类结论，但覆盖判据不同：
-    // 那里按包计覆盖，这里按**帧**计 —— 帧数能从 POC 时间线直接数出来，
+    // 那里按包计覆盖，这里按**帧**计 —— 帧数能从顺序时间线直接数出来，
     // 总量拿不到（容器不给"总帧数"这个事实）时就不给覆盖率，不用 0 冒充全覆盖。
     if (!options_.analyze_frame_order) {
         add(model::MakeSkippedDimension(AnalysisDimension::FrameOrder, "帧级顺序追踪选项已关闭"));
     } else if (result_.frame_order_timelines.empty()) {
         add(model::MakeSkippedDimension(AnalysisDimension::FrameOrder,
-                                        "没有 H.264 视频轨（HEVC/AV1/VP9/VVC 的 POC 尚未实现）"));
+                                        "没有可追踪的视频轨（当前覆盖 H.264 / HEVC（POC）与 VP9（显示事件序），"
+                                        "AV1 / VVC 尚未实现）"));
     } else {
         DimensionStatus status;
         status.dimension = AnalysisDimension::FrameOrder;
@@ -363,6 +364,10 @@ void AnalysisResultAssembler::FinalizeDimensionStatus(int audio_tracks_analyzed,
         int64_t gaps = 0;
         int64_t reorders = 0;
         bool truncated = false;
+        // 顺序值来源决定文案用词：POC 与"显示序号"不是同一个东西，
+        // 把 VP9 的显示序号说成"POC 重复"会让读者去码流里找一个不存在的字段。
+        bool any_poc = false;
+        bool any_rank = false;
         for (const model::FrameOrderTimeline& timeline : result_.frame_order_timelines) {
             status.stream_indices.push_back(timeline.stream_index);
             if (!timeline.available) {
@@ -371,6 +376,10 @@ void AnalysisResultAssembler::FinalizeDimensionStatus(int audio_tracks_analyzed,
                     status.failure_reason = timeline.unavailable_reason;
                 continue;
             }
+            if (timeline.order_source == "display_rank")
+                any_rank = true;
+            else
+                any_poc = true;
             frames += timeline.frames_observed;
             duplicates += timeline.duplicate_poc_count;
             gaps += timeline.poc_gap_slots;
@@ -378,19 +387,23 @@ void AnalysisResultAssembler::FinalizeDimensionStatus(int audio_tracks_analyzed,
             truncated = truncated || timeline.truncated;
             status.notes.push_back("流 #" + std::to_string(timeline.stream_index) + "：" + timeline.Summary());
         }
+        // 混合封装（一条轨 H.264、另一条 VP9）里两种来源都有 → 用中性说法。
+        const bool poc_only = any_poc && !any_rank;
+        const char* order_word = poc_only ? "POC" : (any_rank && !any_poc ? "显示序号" : "顺序值");
         status.units_scanned = frames;
         status.capability =
             (unavailable > 0 || truncated) ? AnalysisCapability::Partial : AnalysisCapability::Supported;
-        // POC 重复与缺帧都是"内容层面的事实异常"，计进 failures 让结论不能当通过。
-        // 重排（B 帧）不算：那是正常编码结构。
+        // 顺序值重复与缺帧都是"内容层面的事实异常"，计进 failures 让结论不能当通过。
+        // 重排不算：那是正常编码结构（H.264/HEVC 的 B 帧、VP9 的 alt-ref）。
         status.failures = duplicates + gaps;
         if (duplicates > 0)
-            status.notes.push_back("有 " + std::to_string(duplicates) + " 处 POC 重复：同一幅图像被写入多次");
+            status.notes.push_back("有 " + std::to_string(duplicates) + " 处 " + order_word +
+                                   "重复：同一幅图像被写入多次");
         if (gaps > 0)
-            status.notes.push_back("按 POC 步长推断共缺 " + std::to_string(gaps) + " 帧");
+            status.notes.push_back(std::string("按 ") + order_word + " 步长推断共缺 " + std::to_string(gaps) + " 帧");
         if (reorders > 0)
-            status.notes.push_back("存在显示顺序重排（B 帧）" + std::to_string(reorders) +
-                                   " 处 —— 这是正常结构，不是缺陷");
+            status.notes.push_back("存在显示顺序重排 " + std::to_string(reorders) +
+                                   " 处 —— 这是正常编码结构，不是缺陷");
         if (truncated && status.failure_reason.empty())
             status.failure_reason = "已达逐帧明细上限，统计量仍覆盖全程，但明细只留了前面一段";
         add(status);

@@ -261,10 +261,12 @@ JsonValue BuildFrameOrdersArray(const model::AnalysisResult& result) {
         scope.Set("codecs", JText("H.264 / HEVC（POC）与 VP9（显示事件序）；"
                                   "AV1/VVC 未实现（对应维度标记为不可用）"));
         scope.Set("poc_type", JText("H.264：pic_order_cnt_type 0 与 2 支持，1 不支持"
-                                    "（需要 offset_for_ref_frame 表）；HEVC 只有一套公式，恒记 0"));
+                                    "（需要 offset_for_ref_frame 表）；HEVC 只有一套公式，恒记 0；"
+                                    "VP9 没有该概念，恒记 -1"));
         scope.Set("reference_lists", JText("不重建 DPB / 参考帧列表（H.264 无 MMCO、HEVC 无 RPL），只给 POC 序列"));
         scope.Set("gap_inference", JText("缺帧数按观测到的最小 POC 步长推断，只给总量不给具体帧号；"
-                                         "H.264 隔行（field coding）时不推断，HEVC 只有帧编码，恒推断"));
+                                         "H.264 隔行（field coding）时不推断，HEVC 只有帧编码，恒推断；"
+                                         "VP9 的顺序值是显示序号（0,1,2… 连续分配），恒不推断"));
         node.Set("scope", scope);
 
         JsonValue frames = JsonValue::MakeArray();
@@ -276,7 +278,8 @@ JsonValue BuildFrameOrdersArray(const model::AnalysisResult& result) {
             item.Set("type", JText(std::string(1, entry.TypeChar())));
             item.Set("idr", JsonValue(entry.idr));
             // HEVC 存的是真实 NAL 类型（16..23 = IRAP，可区分 IDR/BLA/CRA）；
-            // H.264 只有 1/5 两种取值。判"是不是随机接入点"请看 idr，不要看数字。
+            // H.264 只有 1/5 两种取值；VP9 没有 NAL 概念，记 0=关键帧 / 1=帧间帧。
+            // 判"是不是随机接入点"请看 idr，不要看数字。
             item.Set("nal_unit_type", JNumber(static_cast<double>(entry.nal_unit_type)));
             item.Set("frame_num", JNumber(static_cast<double>(entry.frame_num)));
             item.Set("poc", JNumber(static_cast<double>(entry.poc)));

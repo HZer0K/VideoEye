@@ -45,11 +45,12 @@ enum class AnalysisDimension : uint8_t {
     Mp4SampleTable,     // MP4 样本表
     TsTransport,        // MPEG-TS 传输层
     Streaming,          // HLS/DASH 流媒体包
-    LegacyContainer,    // AVI/FLV/ASF/OGG/MKV 体检
-    // 帧级显示顺序（POC 重建）。与 FrameStructure 分开：后者靠包/巡检统计"帧类型与
-    // slice"，这条靠逐 slice 的 POC 回答"显示顺序怎么排、GOP 边界在哪、POC 有没有
-    // 重复或缺失"。两者开关不同（analyze_bitstream vs analyze_frame_order），
-    // 支持范围也不同（FrameStructure 覆盖多种编码，POC 目前只有 H.264）。
+    LegacyContainer,    // AVI/FLV/ASF/OGG/MKV/MXF/MPEG-PS 体检
+    // 帧级显示顺序（逐帧顺序值重建）。与 FrameStructure 分开：后者靠包/巡检统计
+    // "帧类型与 slice"，这条靠每一帧的顺序值回答"显示顺序怎么排、GOP 边界在哪、
+    // 顺序值有没有重复或缺失"。两者开关不同（analyze_bitstream vs
+    // analyze_frame_order），支持范围也不同（FrameStructure 覆盖多种编码，
+    // 顺序重建目前覆盖 H.264 / HEVC（POC）与 VP9（显示事件序）；AV1 / VVC 未实现）。
     // 追加在末尾（Count 之前）：已发布的取值不能改名/改编号。
     FrameOrder,
     Count

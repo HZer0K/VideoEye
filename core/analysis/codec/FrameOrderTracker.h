@@ -1,10 +1,11 @@
 #pragma once
 
-// 帧级 POC 追踪的按编码分派入口。
+// 帧级显示顺序追踪的按编码分派入口。
 //
 // 为什么要有这层：调用方（AnalysisPipeline）只关心"这条视频轨的显示顺序"，
-// 不关心底层是 H.264 还是 HEVC 的 slice_header。没有这一层，管线里就得写
-// `std::variant` + 三处 `std::visit`，而那些细节没有一条属于编排层的职责。
+// 不关心底层是 H.264 / HEVC 的 slice_header，还是 VP9 的 uncompressed frame
+// header。没有这一层，管线里就得写 `std::variant` + 三处 `std::visit`，而那些
+// 细节没有一条属于编排层的职责。
 //
 // 与 ParameterSetTracker 的接口刻意保持一致（Reset(codec_id, stream_index)
 // + enabled() + Feed/FeedExtradata/Finish），这样管线里两条追踪链路长得一样，
@@ -46,6 +47,10 @@ public:
     }
     // 当前选中的实现名（"h264" / "hevc" / "vp9" / ""），只用于日志与文案。
     const char* codec_name() const;
+    // 顺序值来源（"poc" / "display_rank" / ""），取值与
+    // model::FrameOrderTimeline::order_source 逐字一致，只用于日志与文案。
+    // ❗ 不要用"是不是 POC"来判断实现是否可用：VP9 没有 POC，顺序值来自显示事件序。
+    const char* order_source_name() const;
 
     void SetFraming(Framing framing);
     void SetLengthPrefixBytes(int bytes);

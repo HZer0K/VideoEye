@@ -57,7 +57,7 @@ void FrameOrderView::RebuildTable() {
     }
 
     // 与参数变化表同理：每条轨至少留一行，不可用的轨留「不可用 + 原因」，
-    // 否则"没有可追踪的轨"和"有轨但算不出 POC"在界面上长得一样。
+    // 否则"没有可追踪的轨"和"有轨但算不出顺序值"在界面上长得一样。
     struct Row {
         int stream_index = -1;
         QString decode_index;
@@ -120,8 +120,8 @@ void FrameOrderView::RebuildTable() {
         SetTableItemText(table_, i, 3, row.frame_num);
         SetTableItemText(table_, i, 4, row.poc);
         SetTableItemText(table_, i, 5, row.position);
-        // 重排（POC 回退）是正常编码结构，用橙色提示而非红色；
-        // 红色留给"这条轨算不出 POC"这种真的没结论的情况。
+        // 重排（顺序值回退）是正常编码结构，用橙色提示而非红色；
+        // 红色留给"这条轨算不出顺序值"这种真的没结论的情况。
         if (row.abnormal) {
             for (int c = 0; c < table_->columnCount(); ++c) {
                 if (QTableWidgetItem* cell = table_->item(i, c))

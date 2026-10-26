@@ -189,7 +189,7 @@ private:
     QcRuleTableView* rule_view_ = nullptr;            // 子页 1：规则与阈值
     EvidenceCoverageView* coverage_view_ = nullptr;   // 子页 2：证据与覆盖
     ParameterTimelineView* parameter_view_ = nullptr; // 子页 3：参数变化
-    FrameOrderView* frame_order_view_ = nullptr;      // 子页 4：帧顺序（逐帧 POC）
+    FrameOrderView* frame_order_view_ = nullptr;      // 子页 4：帧顺序（逐帧显示顺序值）
 };
 
 } // namespace ui

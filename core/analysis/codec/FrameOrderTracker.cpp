@@ -13,7 +13,7 @@ namespace {
 const model::FrameOrderTimeline& EmptyTimeline() {
     static const model::FrameOrderTimeline empty = [] {
         model::FrameOrderTimeline timeline;
-        timeline.unavailable_reason = "该编码未实现帧级顺序（POC）追踪";
+        timeline.unavailable_reason = "该编码未实现帧级顺序追踪（没有可用的顺序值来源）";
         return timeline;
     }();
     return empty;
@@ -55,6 +55,16 @@ const char* FrameOrderTracker::codec_name() const {
         return "hevc";
     if (std::holds_alternative<Vp9FrameOrderTracker>(impl_))
         return "vp9";
+    return "";
+}
+
+const char* FrameOrderTracker::order_source_name() const {
+    // 与 model::FrameOrderTimeline::order_source 的取值逐字一致，
+    // 这样日志、报告、UI 三处不会各造一套说法。
+    if (std::holds_alternative<H264PocTracker>(impl_) || std::holds_alternative<HevcPocTracker>(impl_))
+        return "poc";
+    if (std::holds_alternative<Vp9FrameOrderTracker>(impl_))
+        return "display_rank";
     return "";
 }
 
