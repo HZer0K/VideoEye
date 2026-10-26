@@ -236,8 +236,8 @@ public:
     const std::vector<model::ParameterTimeline>& parameter_timelines() const {
         return parameter_timelines_;
     }
-    // 帧级显示顺序时间线（H.264 / HEVC 走 POC，VP9 走显示事件序；
-    // 其余编码为空，对应维度标不可用）
+    // 帧级显示顺序时间线（H.264 / HEVC 走 POC，VP9 走显示事件序，
+    // AV1 走 order_hint；其余编码为空，对应维度标不可用）
     const std::vector<model::FrameOrderTimeline>& frame_order_timelines() const {
         return frame_order_timelines_;
     }
@@ -316,14 +316,14 @@ private:
     // 收尾后写进 result 的时间线（BeforeClose 里填充）
     std::vector<model::ParameterTimeline> parameter_timelines_;
 
-    // 帧级 POC 追踪（H.264 / HEVC；每条视频轨一个）。
-    // FrameOrderTracker 内部按 codec_id 选实现，所以这里不需要 knowing 编码。
-    struct PocTrackerSlot {
+    // 帧级显示顺序追踪（H.264 / HEVC / VP9 / AV1；每条视频轨一个）。
+    // FrameOrderTracker 内部按 codec_id 选实现，这里不需要判断编码。
+    struct OrderTrackerSlot {
         int stream_index = -1;
         double time_base = 0.0;
         FrameOrderTracker tracker;
     };
-    std::vector<PocTrackerSlot> poc_trackers_;
+    std::vector<OrderTrackerSlot> order_trackers_;
     std::vector<model::FrameOrderTimeline> frame_order_timelines_;
     // 本次音轨总数 / 实际参与 QC 的条数（给 DimensionStatus 的覆盖说明用）
     int audio_tracks_total_ = 0;

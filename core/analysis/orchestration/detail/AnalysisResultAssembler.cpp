@@ -342,7 +342,7 @@ void AnalysisResultAssembler::FinalizeDimensionStatus(int audio_tracks_analyzed,
         }
     }
 
-    // ---- 帧级显示顺序（H.264 / HEVC 走 POC，VP9 走显示事件序）----
+    // ---- 帧级显示顺序（H.264 / HEVC 走 POC，VP9 走显示事件序，AV1 走 order_hint）----
     //
     // 与"参数变化时间线"是同一个包扫描循环里产出的两类结论，但覆盖判据不同：
     // 那里按包计覆盖，这里按**帧**计 —— 帧数能从顺序时间线直接数出来，
@@ -351,8 +351,8 @@ void AnalysisResultAssembler::FinalizeDimensionStatus(int audio_tracks_analyzed,
         add(model::MakeSkippedDimension(AnalysisDimension::FrameOrder, "帧级顺序追踪选项已关闭"));
     } else if (result_.frame_order_timelines.empty()) {
         add(model::MakeSkippedDimension(AnalysisDimension::FrameOrder,
-                                        "没有可追踪的视频轨（当前覆盖 H.264 / HEVC（POC）与 VP9（显示事件序），"
-                                        "AV1 / VVC 尚未实现）"));
+                                        "没有可追踪的视频轨（当前覆盖 H.264 / HEVC（POC）、VP9（显示事件序）"
+                                        "与 AV1（order_hint），VVC 尚未实现）"));
     } else {
         DimensionStatus status;
         status.dimension = AnalysisDimension::FrameOrder;
@@ -364,10 +364,12 @@ void AnalysisResultAssembler::FinalizeDimensionStatus(int audio_tracks_analyzed,
         int64_t gaps = 0;
         int64_t reorders = 0;
         bool truncated = false;
-        // 顺序值来源决定文案用词：POC 与"显示序号"不是同一个东西，
-        // 把 VP9 的显示序号说成"POC 重复"会让读者去码流里找一个不存在的字段。
+        // 顺序值来源决定文案用词：POC、"显示序号"（VP9）与 order_hint（AV1）
+        // 不是同一个东西，把 VP9 的显示序号说成"POC 重复"会让读者去码流里
+        // 找一个不存在的字段。
         bool any_poc = false;
         bool any_rank = false;
+        bool any_hint = false;
         for (const model::FrameOrderTimeline& timeline : result_.frame_order_timelines) {
             status.stream_indices.push_back(timeline.stream_index);
             if (!timeline.available) {
@@ -376,10 +378,12 @@ void AnalysisResultAssembler::FinalizeDimensionStatus(int audio_tracks_analyzed,
                     status.failure_reason = timeline.unavailable_reason;
                 continue;
             }
-            if (timeline.order_source == "display_rank")
+            if (timeline.UsesPoc())
+                any_poc = true;
+            else if (timeline.order_source == "display_rank")
                 any_rank = true;
             else
-                any_poc = true;
+                any_hint = true;
             frames += timeline.frames_observed;
             duplicates += timeline.duplicate_poc_count;
             gaps += timeline.poc_gap_slots;
@@ -388,8 +392,8 @@ void AnalysisResultAssembler::FinalizeDimensionStatus(int audio_tracks_analyzed,
             status.notes.push_back("流 #" + std::to_string(timeline.stream_index) + "：" + timeline.Summary());
         }
         // 混合封装（一条轨 H.264、另一条 VP9）里两种来源都有 → 用中性说法。
-        const bool poc_only = any_poc && !any_rank;
-        const char* order_word = poc_only ? "POC" : (any_rank && !any_poc ? "显示序号" : "顺序值");
+        const int sources = (any_poc ? 1 : 0) + (any_rank ? 1 : 0) + (any_hint ? 1 : 0);
+        const char* order_word = (sources > 1) ? "顺序值" : (any_poc ? "POC" : (any_rank ? "显示序号" : "order_hint"));
         status.units_scanned = frames;
         status.capability =
             (unavailable > 0 || truncated) ? AnalysisCapability::Partial : AnalysisCapability::Supported;

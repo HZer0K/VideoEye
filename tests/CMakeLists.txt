@@ -614,6 +614,25 @@ target_compile_definitions(test_vp9_frame_order_tracker PRIVATE
 add_test(NAME Vp9FrameOrderTrackerTests COMMAND test_vp9_frame_order_tracker)
 
 # =================================================
+# 测试 9-B3b：AV1 帧级显示顺序（order_hint）
+# 说明: AV1 与 VP9 的关键差别是**有** order_hint 这个真字段，所以顺序值是
+#       从码流读出来的；只有 enable_order_hint == 0 或静图才退化成显示事件序。
+#       重点测：
+#         * order_hint 是模 2^bits 的环形量 —— 回绕（7→0）不是"回退 7 帧"
+#         * showable_frame 只在 show_frame == 0 时存在（多读一位就整体错位）
+#         * show_existing_frame 不是编码帧，不涨帧数，但同一画面出现两次算重复
+#         * 序列头声明 decoder_model_info 时要明确报"不支持"，不能瞎猜
+# =================================================
+videoeye_add_test(test_av1_frame_order_tracker
+    unit/test_av1_frame_order_tracker.cpp
+)
+target_link_libraries(test_av1_frame_order_tracker PRIVATE
+    VideoEyeAnalysis)
+target_compile_definitions(test_av1_frame_order_tracker PRIVATE
+    VIDEOEYE_CODEC_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus/codec")
+add_test(NAME Av1FrameOrderTrackerTests COMMAND test_av1_frame_order_tracker)
+
+# =================================================
 # 测试 9-B4：证据与覆盖状态（阶段 5）
 # 说明: 重点测 MarkConclusive 的口径边界 —— 这是全仓唯一能产生"假通过"的地方。
 #       99% 覆盖率阈值、总量未知、失败计数三条边界都有正反例。

@@ -401,7 +401,7 @@ TEST(Vp9FrameOrderTrackerTest, DetailLimitTruncatesButCountsAll) {
 }
 
 // ---------------------------------------------------------------------------
-// 12) 外壳分派：VP9 建槽，AV1 不建
+// 12) 外壳分派：VP9 建槽，未实现的编码不建
 // ---------------------------------------------------------------------------
 TEST(Vp9FrameOrderTrackerTest, DispatcherEnablesVp9OnlyForVp9) {
     FrameOrderTracker vp9;
@@ -412,11 +412,13 @@ TEST(Vp9FrameOrderTrackerTest, DispatcherEnablesVp9OnlyForVp9) {
     // VP9 没有参数集，extradata 路径恒返回 false
     EXPECT_FALSE(vp9.FeedExtradata(nullptr, 0));
 
-    FrameOrderTracker av1;
-    av1.Reset(AV_CODEC_ID_AV1, 0);
-    EXPECT_FALSE(av1.enabled());
-    EXPECT_FALSE(av1.disabled_reason().empty());
-    EXPECT_STREQ(av1.codec_name(), "");
+    // ❗ 这里曾经拿 AV1 当"未实现"的代表，AV1 落地后本用例就红了。
+    // 唯一还没实现的编码现在是 VVC —— 别再用 AV1/VP9 互相当反例。
+    FrameOrderTracker vvc;
+    vvc.Reset(AV_CODEC_ID_VVC, 0);
+    EXPECT_FALSE(vvc.enabled());
+    EXPECT_FALSE(vvc.disabled_reason().empty());
+    EXPECT_STREQ(vvc.codec_name(), "");
 }
 
 // ---------------------------------------------------------------------------

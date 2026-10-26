@@ -401,20 +401,20 @@ void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisRes
         }
     }
 
-    // ---- 帧级 POC 追踪（H.264 / HEVC）----
+    // ---- 帧级显示顺序追踪（H.264 / HEVC / VP9 / AV1）----
     //
     // 与参数集追踪同样是"extradata 路径也要跑"，所以放在 return 之前。
-    // 按编码分派交给 FrameOrderTracker：没有实现的编码（AV1/VVC）会
+    // 按编码分派交给 FrameOrderTracker：没有实现的编码（VVC）会
     // enabled()==false，这里直接不建槽 —— 上层据 frame_order_timelines 为空
     // 把维度标成"不可用"，而不是给一条"0 帧、无重排"的假结论。
-    poc_trackers_.clear();
+    order_trackers_.clear();
     frame_order_timelines_.clear();
     if (options_.analyze_frame_order) {
         for (unsigned i : video_order) {
             const AVStream* st = fmt->streams[i];
             if (st == nullptr || st->codecpar == nullptr)
                 continue;
-            PocTrackerSlot slot;
+            OrderTrackerSlot slot;
             slot.stream_index = static_cast<int>(i);
             slot.time_base = av_q2d(st->time_base);
             slot.tracker.Reset(static_cast<int>(st->codecpar->codec_id), static_cast<int>(i));
@@ -431,11 +431,11 @@ void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisRes
             }
             LOG_INFO("帧级顺序追踪: 流 #" + std::to_string(i) + " 用 " + slot.tracker.codec_name() +
                      " 解析，顺序值来源 " + slot.tracker.order_source_name());
-            poc_trackers_.push_back(std::move(slot));
+            order_trackers_.push_back(std::move(slot));
         }
-        if (poc_trackers_.empty()) {
-            LOG_INFO("帧级顺序追踪: 没有可追踪的视频轨（当前覆盖 H.264 / HEVC（POC）与 VP9（显示事件序），"
-                     "AV1 / VVC 尚未实现）");
+        if (order_trackers_.empty()) {
+            LOG_INFO("帧级顺序追踪: 没有可追踪的视频轨（当前覆盖 H.264 / HEVC（POC）、VP9（显示事件序）"
+                     "与 AV1（order_hint），VVC 尚未实现）");
         }
     }
 
@@ -743,9 +743,9 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt, model::Anal
             slot.tracker.Feed(pkt->data, static_cast<size_t>(pkt->size), pts_seconds, packet_index, pkt->pos);
         }
 
-        // 帧级 POC：H.264 / HEVC 轨，同样在 extradata 路径上也要扫。
+        // 帧级显示顺序：H.264 / HEVC / VP9 / AV1 轨，同样在 extradata 路径上也要扫。
         // 时间戳用 PTS（显示顺序的时间），不是 DTS —— 这一层就是来比对显示顺序的。
-        for (PocTrackerSlot& slot : poc_trackers_) {
+        for (OrderTrackerSlot& slot : order_trackers_) {
             if (slot.stream_index != pkt->stream_index)
                 continue;
             const bool has_time = (pkt->pts != AV_NOPTS_VALUE && slot.time_base > 0.0);
@@ -855,9 +855,9 @@ void AnalysisPipeline::BeforeClose(AVFormatContext* fmt, model::AnalysisResult& 
         }
     }
 
-    // 帧级 POC 收尾：reorder / GOP / 重复 / 缺口都在这里结账
+    // 帧级显示顺序收尾：reorder / GOP / 重复 / 缺口都在这里结账
     frame_order_timelines_.clear();
-    for (PocTrackerSlot& slot : poc_trackers_) {
+    for (OrderTrackerSlot& slot : order_trackers_) {
         // 拷一份再落：FrameOrderTimeline 不带流号（domain 不认 AVStream），
         // 而报告要按流分节展示，流号只能在这里补。编码名同理（只用于文案）。
         model::FrameOrderTimeline timeline = slot.tracker.Finish();

@@ -225,10 +225,11 @@ model::Av1SequenceHeaderInfo Av1BitstreamParser::ParseFromObuUnit(const videoeye
     sh.frame_height_minus_1 = static_cast<int>(reader.ReadBits(height_bits));
 
     if (!sh.reduced_still_picture_header) {
-        const bool frame_id_numbers_present = reader.ReadBit();
-        if (frame_id_numbers_present) {
-            reader.SkipBits(4); // delta_frame_id_length_minus_2
-            reader.SkipBits(3); // additional_frame_id_length_minus_1
+        sh.frame_id_numbers_present_flag = reader.ReadBit();
+        if (sh.frame_id_numbers_present_flag) {
+            const int delta_frame_id_length_minus_2 = static_cast<int>(reader.ReadBits(4));
+            const int additional_frame_id_length_minus_1 = static_cast<int>(reader.ReadBits(3));
+            sh.frame_id_length = (additional_frame_id_length_minus_1 + 1) + (delta_frame_id_length_minus_2 + 2);
         }
     }
 

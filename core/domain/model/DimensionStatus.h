@@ -50,7 +50,8 @@ enum class AnalysisDimension : uint8_t {
     // "帧类型与 slice"，这条靠每一帧的顺序值回答"显示顺序怎么排、GOP 边界在哪、
     // 顺序值有没有重复或缺失"。两者开关不同（analyze_bitstream vs
     // analyze_frame_order），支持范围也不同（FrameStructure 覆盖多种编码，
-    // 顺序重建目前覆盖 H.264 / HEVC（POC）与 VP9（显示事件序）；AV1 / VVC 未实现）。
+    // 顺序重建目前覆盖 H.264 / HEVC（POC）、VP9（显示事件序）与 AV1（order_hint）；
+    // VVC 未实现）。
     // 追加在末尾（Count 之前）：已发布的取值不能改名/改编号。
     FrameOrder,
     Count

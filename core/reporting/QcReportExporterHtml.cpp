@@ -216,15 +216,16 @@ std::string QcReportExporter::BuildHtml(const QcExportBundle& bundle) {
         }
     }
 
-    // ---- 帧级显示顺序（POC / VP9 的显示序）----
+    // ---- 帧级显示顺序（POC / VP9 的显示序 / AV1 的 order_hint）----
     //
     // HTML 报告是给人快速扫的，所以这里给统计表 + 前若干帧的解码/显示对照，
     // 全量逐帧明细仍以 JSON 为准（几千行塞进 HTML 没人看，还会拖慢打开）。
     if (!run.analysis.frame_order_timelines.empty()) {
         out << "  <h2>帧级显示顺序</h2>\n";
         out << "  <p class=\"meta\">H.264 / HEVC 来自逐 slice 解析出的 POC；VP9 没有 POC，"
-               "由 show_frame / show_existing_frame 的显示事件序还原成「显示序号」。"
-               "支持范围：H.264 / HEVC / VP9；AV1/VVC 未实现，H.264 的 picture_order_cnt_type=1 "
+               "由 show_frame / show_existing_frame 的显示事件序还原成「显示序号」；"
+               "AV1 用帧头里的 order_hint（模 2^bits 的环形量，已按 get_relative_dist 解环）。"
+               "支持范围：H.264 / HEVC / VP9 / AV1；VVC 未实现，H.264 的 picture_order_cnt_type=1 "
                "不支持；不重建参考帧列表。</p>\n";
         for (const model::FrameOrderTimeline& timeline : run.analysis.frame_order_timelines) {
             out << "  <h3>视频流 #" << timeline.stream_index << "</h3>\n";
@@ -236,9 +237,13 @@ std::string QcReportExporter::BuildHtml(const QcExportBundle& bundle) {
                 continue;
             }
             out << "  <p class=\"meta\">" << Html(timeline.Summary()) << "</p>\n";
+            // 顺序值不是 POC 时，列名跟着换 —— 让人一眼知道该去码流里找什么字段。
+            const bool by_poc = timeline.UsesPoc();
+            const char* order_label =
+                by_poc ? "POC" : (timeline.order_source == "display_rank" ? "显示序" : "order_hint");
             out << "  <table>\n    <tr><th>帧数</th><th>I</th><th>P</th><th>B</th><th>IDR</th>"
-                   "<th>GOP 段数</th><th>最短/最长/平均</th><th>重排处数</th><th>最大回退(POC)</th>"
-                   "<th>POC 重复</th><th>推断缺帧</th></tr>\n";
+                   "<th>GOP 段数</th><th>最短/最长/平均</th><th>重排处数</th><th>最大回退("
+                << order_label << ")</th><th>" << (by_poc ? "POC 重复" : "重复显示") << "</th><th>推断缺帧</th></tr>\n";
             out << "    <tr"
                 << ((timeline.duplicate_poc_count > 0 || timeline.poc_gap_slots > 0) ? " class=\"warn\"" : "")
                 << "><td>" << Int64Text(timeline.frames_observed) << "</td>"
@@ -259,8 +264,8 @@ std::string QcReportExporter::BuildHtml(const QcExportBundle& bundle) {
             // —— 解码顺序里 POC 回退的那一帧，就是显示时要往回插的 B 帧。
             constexpr std::size_t kMaxListedFrames = 40;
             if (!timeline.frames.empty()) {
-                out << "  <table>\n    <tr><th>解码序</th><th>类型</th><th>frame_num</th><th>POC</th>"
-                       "<th>包号</th><th>时间</th></tr>\n";
+                out << "  <table>\n    <tr><th>解码序</th><th>类型</th><th>frame_num</th><th>" << order_label
+                    << "</th><th>包号</th><th>时间</th></tr>\n";
                 for (std::size_t i = 0; i < timeline.frames.size() && i < kMaxListedFrames; ++i) {
                     const model::FrameOrderEntry& entry = timeline.frames[i];
                     const bool reorder = i > 0 && entry.poc < timeline.frames[i - 1].poc;

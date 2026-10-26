@@ -41,9 +41,14 @@ void FrameOrderTracker::Reset(int codec_id, int stream_index, const Options& opt
         std::get<Vp9FrameOrderTracker>(impl_).Reset(stream_index, options);
         enabled_ = true;
         break;
+    case AV_CODEC_ID_AV1:
+        impl_.emplace<Av1FrameOrderTracker>();
+        std::get<Av1FrameOrderTracker>(impl_).Reset(stream_index, options);
+        enabled_ = true;
+        break;
     default:
         impl_.emplace<std::monostate>();
-        disabled_reason_ = "该编码未实现帧级顺序追踪（当前覆盖 H.264 / HEVC / VP9）";
+        disabled_reason_ = "该编码未实现帧级顺序追踪（当前覆盖 H.264 / HEVC / VP9 / AV1，VVC 未实现）";
         break;
     }
 }
@@ -55,6 +60,8 @@ const char* FrameOrderTracker::codec_name() const {
         return "hevc";
     if (std::holds_alternative<Vp9FrameOrderTracker>(impl_))
         return "vp9";
+    if (std::holds_alternative<Av1FrameOrderTracker>(impl_))
+        return "av1";
     return "";
 }
 
@@ -65,6 +72,17 @@ const char* FrameOrderTracker::order_source_name() const {
         return "poc";
     if (std::holds_alternative<Vp9FrameOrderTracker>(impl_))
         return "display_rank";
+    if (std::holds_alternative<Av1FrameOrderTracker>(impl_)) {
+        // ❗ AV1 两种都可能：enable_order_hint 关掉时 order_hint 一位都不读，
+        // 顺序值退化成显示事件序。所以只要序列头已经到手就答准，别继续报
+        // order_hint —— 那种流会得到一句与事实相反的话。
+        // 还没拿到序列头时按常见情形答（AV1 编码器默认都开），
+        // 最终结论以 Finish() 后的 timeline.order_source 为准。
+        const auto* av1 = std::get_if<Av1FrameOrderTracker>(&impl_);
+        if (av1 != nullptr && av1->sequence_known())
+            return av1->order_hint_enabled() ? "order_hint" : "display_rank";
+        return "order_hint";
+    }
     return "";
 }
 
@@ -75,6 +93,8 @@ void FrameOrderTracker::SetFraming(Framing framing) {
         t->SetFraming(framing);
     else if (auto* t = std::get_if<Vp9FrameOrderTracker>(&impl_))
         t->SetFraming(framing);
+    else if (auto* t = std::get_if<Av1FrameOrderTracker>(&impl_))
+        t->SetFraming(framing);
 }
 
 void FrameOrderTracker::SetLengthPrefixBytes(int bytes) {
@@ -83,6 +103,8 @@ void FrameOrderTracker::SetLengthPrefixBytes(int bytes) {
     else if (auto* t = std::get_if<HevcPocTracker>(&impl_))
         t->SetLengthPrefixBytes(bytes);
     else if (auto* t = std::get_if<Vp9FrameOrderTracker>(&impl_))
+        t->SetLengthPrefixBytes(bytes);
+    else if (auto* t = std::get_if<Av1FrameOrderTracker>(&impl_))
         t->SetLengthPrefixBytes(bytes);
 }
 
@@ -94,6 +116,8 @@ int FrameOrderTracker::Feed(const uint8_t* data, size_t size, bool has_time, dou
         return t->Feed(data, size, has_time, time_seconds, packet_index);
     if (auto* t = std::get_if<Vp9FrameOrderTracker>(&impl_))
         return t->Feed(data, size, has_time, time_seconds, packet_index);
+    if (auto* t = std::get_if<Av1FrameOrderTracker>(&impl_))
+        return t->Feed(data, size, has_time, time_seconds, packet_index);
     return 0;
 }
 
@@ -103,6 +127,8 @@ bool FrameOrderTracker::FeedExtradata(const uint8_t* data, size_t size) {
     if (auto* t = std::get_if<HevcPocTracker>(&impl_))
         return t->FeedExtradata(data, size);
     if (auto* t = std::get_if<Vp9FrameOrderTracker>(&impl_))
+        return t->FeedExtradata(data, size);
+    if (auto* t = std::get_if<Av1FrameOrderTracker>(&impl_))
         return t->FeedExtradata(data, size);
     return false;
 }
@@ -114,6 +140,8 @@ const model::FrameOrderTimeline& FrameOrderTracker::Finish() {
         return t->Finish();
     if (auto* t = std::get_if<Vp9FrameOrderTracker>(&impl_))
         return t->Finish();
+    if (auto* t = std::get_if<Av1FrameOrderTracker>(&impl_))
+        return t->Finish();
     return EmptyTimeline();
 }
 
@@ -124,6 +152,8 @@ const model::FrameOrderTimeline& FrameOrderTracker::timeline() const {
         return t->timeline();
     if (const auto* t = std::get_if<Vp9FrameOrderTracker>(&impl_))
         return t->timeline();
+    if (const auto* t = std::get_if<Av1FrameOrderTracker>(&impl_))
+        return t->timeline();
     return EmptyTimeline();
 }
 
@@ -133,6 +163,8 @@ int FrameOrderTracker::stream_index() const {
     if (const auto* t = std::get_if<HevcPocTracker>(&impl_))
         return t->stream_index();
     if (const auto* t = std::get_if<Vp9FrameOrderTracker>(&impl_))
+        return t->stream_index();
+    if (const auto* t = std::get_if<Av1FrameOrderTracker>(&impl_))
         return t->stream_index();
     return -1;
 }

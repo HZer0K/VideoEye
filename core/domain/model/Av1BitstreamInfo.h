@@ -146,6 +146,10 @@ struct Av1SequenceHeaderInfo {
     int decoder_buffer_delay_length = 0;          // 位宽，operating point 里要用
     bool display_model_info_present_flag = false; // display_model_info_present
     int operating_points_count = 1;
+    // frame_id 长度：帧头里的 current_frame_id / display_frame_id 都是这么宽。
+    // ❗ 不记这两个字段就没法跳过帧头里那几位，后面的 order_hint 会整体错位。
+    bool frame_id_numbers_present_flag = false;
+    int frame_id_length = 0; // (additional_frame_id_length_minus_1 + 1) + (delta_frame_id_length_minus_2 + 2)
 
     // Color config
     Av1ColorConfigInfo color_config;

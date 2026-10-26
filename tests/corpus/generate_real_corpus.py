@@ -297,6 +297,45 @@ def build_vp9_altref(ffmpeg):
                 os.unlink(path)
 
 
+def build_av1_altref(ffmpeg):
+    r"""MP4 / AV1: libaom-av1 **两遍编码 + auto-alt-ref**，带隐藏帧（alt-ref）。
+
+    这份语料是为 AV1 帧级显示顺序准备的。AV1 与 VP9 的关键差别是它**有**
+    order_hint 这个真字段，所以测试能第一次拿"码流里读出来的顺序值"去对
+    容器 PTS，而不只是靠显示事件序反推。
+
+    关键参数：
+      -auto-alt-ref 1 -lag-in-frames 16 —— libaom 的 alt-ref **只在两遍编码下
+                                          才生效**（"2-pass only"），单遍跑
+                                          不会产出隐藏帧，样本会退化成
+                                          "解码顺序 == 显示顺序"的空跑。
+      -g 12                             —— 两个关键帧，顺带验 GOP 分段
+      -cpu-used 8                       —— 语料生成不该成为 CI / 本地最慢的一步
+
+    ❗ passlog 必须显式指向临时目录并清理，否则会在仓库根目录留下
+    ffmpeg2pass-0.log（VP9 那一次就踩过）。
+
+    封装选 MP4：AV1 在 MP4 里是**一包一帧**（不像 VP9 有 superframe），
+    于是"扫到的帧数 == 容器包数"本身就是一条有用的断言。
+    """
+    passlog = os.path.join(tempfile.gettempdir(), "ve_av1_altref_passlog")
+    common = [
+        "-f", "lavfi", "-i", "testsrc2=size=176x96:rate=25:duration=2.4",
+        "-c:v", "libaom-av1", "-b:v", "300k", "-g", "12",
+        "-cpu-used", "8", "-row-mt", "1",
+        "-auto-alt-ref", "1", "-lag-in-frames", "16",
+        "-passlogfile", passlog, "-an",
+    ]
+    try:
+        run_ffmpeg(ffmpeg, common + ["-pass", "1", "-f", "null"], ".log")
+        return run_ffmpeg(ffmpeg, common + ["-pass", "2", "-pix_fmt", "yuv420p", "-f", "mp4"], ".mp4")
+    finally:
+        for extra in ("-0.log", "-0.log.mbtree"):
+            path = passlog + extra
+            if os.path.exists(path):
+                os.unlink(path)
+
+
 register("container/real_h264_aac.ts", "ts", build=build_ts)
 register("container/real_h264_aac.m2ts", "m2ts", derived="container/real_h264_aac.ts")
 register("container/real_mpeg4_mp3.avi", "avi", build=build_avi)
@@ -307,6 +346,7 @@ register("container/real_mpeg2_mp2.mpg", "ps", build=build_ps)
 register("codec/real_x264_bframes_gop.mp4", "mp4", build=build_h264_bframes)
 register("codec/real_x265_bframes_gop.mp4", "mp4", build=build_hevc_bframes)
 register("codec/real_vp9_altref_gop.webm", "mkv", build=build_vp9_altref)
+register("codec/real_av1_altref_gop.mp4", "mp4", build=build_av1_altref)
 
 
 # ---------------------------------------------------------------------------

@@ -20,8 +20,9 @@ void FrameOrderView::SetupUi() {
 
     hint_ = new QLabel(tr("按解码顺序列出每一帧的显示顺序值。它比上一行小，就说明这一帧的显示时间"
                           "要往回插 —— 重排的存在与深度一目了然。支持范围：H.264 / HEVC 用 POC；"
-                          "VP9 没有 POC，用「第几次显示」还原（帧头里也不区分 P/B）；"
-                          "H.264 的 pic_order_cnt_type=1 与 AV1/VVC 不支持；不重建参考帧列表。"),
+                          "VP9 没有 POC，用「第几次显示」还原；AV1 用帧头的 order_hint（环形量已解环）。"
+                          "后两种编码的帧头里都不区分 P/B；H.264 的 pic_order_cnt_type=1 与 VVC 不支持；"
+                          "不重建参考帧列表。"),
                        this);
     hint_->setWordWrap(true);
     layout->addWidget(hint_);

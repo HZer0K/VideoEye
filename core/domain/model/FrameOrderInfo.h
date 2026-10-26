@@ -80,15 +80,27 @@ struct FrameOrderTimeline {
     // VP9 没有这个字段（见 order_source），恒为 -1。
     // -1 = 还没拿到参数集，或该编码没有 POC 的概念。
     int poc_type = -1;
-    // 显示顺序值的来源，决定报告与 UI 的措辞：
+    // 顺序值的来源，决定报告与 UI 的措辞：
     //   "poc"          —— 从码流 POC 推出（H.264 / HEVC）
     //   "display_rank" —— 由显示事件序还原的显示序号（VP9；该编码没有 POC）
+    //   "order_hint"   —— AV1 的 order_hint（模 2^bits 的环形量，已解环；
+    //                     与 POC 一样是码流字段，但同样没有 P/B 的概念）
     // 空串 = 手构造的测试对象或旧数据，按 "poc" 处理。
     std::string order_source;
+
+    // 顺序值是不是真正的 POC。措辞与单位都跟着它走：
+    // false 时不要说"个 POC"、不要按 I/P/B 分段叙述。
+    bool UsesPoc() const {
+        return order_source.empty() || order_source == "poc";
+    }
     bool field_coded = false;
 
     std::vector<FrameOrderEntry> frames; // 上限见 Options::max_frames
-    int64_t frames_observed = 0;         // 实际扫到的帧数（含未入库的）
+    // 实际扫到的帧数（含未入库的）。❗ 它是**编码帧**口径：VP9 的 ARF 与 AV1 的
+    // alt-ref 是隐藏帧，自己从不输出，算在这里但**不进 frames** —— 因此
+    // "frames_observed > frames.size()" 在这两种编码上是正常的，
+    // 差额就是从未显示过的隐藏帧（GOP 段长按显示事件算，别拿它对不上就以为统计坏了）。
+    int64_t frames_observed = 0;
     bool truncated = false;
 
     int i_count = 0;

@@ -687,12 +687,13 @@ TEST(FrameOrderTrackerTest, DispatchesByCodecId) {
     EXPECT_EQ(tracker.stream_index(), 1);
 }
 
-// AV1 / VP9 / VVC 的显示顺序需要各自的语法（AV1 的 order_hint、VP9 的
-// show_existing_frame），没实现就必须明确说"没实现"，不能给一条
-// "0 帧、无重排"的假结论 —— 那种输出会让用户以为文件真的没有 B 帧。
+// VVC 的显示顺序需要 picture header 里的 POC，没实现就必须明确说"没实现"，
+// 不能给一条"0 帧、无重排"的假结论 —— 那种输出会让用户以为文件真的没有 B 帧。
 TEST(FrameOrderTrackerTest, UnsupportedCodecIsExplicitlyDisabled) {
     FrameOrderTracker tracker;
-    tracker.Reset(AV_CODEC_ID_AV1, 0);
+    // ❗ 这个用例原先用 AV1 当反例；AV1 与 VP9 都已实现，唯一没实现的是 VVC。
+    // 以后 VVC 也落地了，就把这里换成"未知编码"，别再去挑一个已实现的编码。
+    tracker.Reset(AV_CODEC_ID_VVC, 0);
     EXPECT_FALSE(tracker.enabled());
     EXPECT_FALSE(tracker.disabled_reason().empty());
 

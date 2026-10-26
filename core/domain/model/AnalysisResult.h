@@ -184,9 +184,10 @@ struct AnalysisResult {
     // 逐帧的显示顺序值，能回答"显示顺序重排了多深""GOP 边界在哪一帧"
     // "顺序值有没有重复/缺失"。
     //
-    // 覆盖 H.264 / HEVC（顺序值来自 POC）与 VP9（它没有 POC，顺序值由
-    // show_frame / show_existing 的事件序还原，见 order_source）。
-    // AV1/VVC 尚未实现 —— 对应维度会明确标为不可用，而不是给空结果。
+    // 覆盖 H.264 / HEVC（顺序值来自 POC）、VP9（没有 POC，顺序值由
+    // show_frame / show_existing 的事件序还原）、AV1（帧头的 order_hint，
+    // 模 2^bits 的环形量已解环）。三者都写在 order_source 里。
+    // VVC 尚未实现 —— 对应维度会明确标为不可用，而不是给空结果。
     std::vector<FrameOrderTimeline> frame_order_timelines;
 
     // 每个分析维度的证据与覆盖状态（见 core/domain/model/DimensionStatus.h）。

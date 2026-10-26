@@ -3,16 +3,17 @@
 // 帧级显示顺序追踪的按编码分派入口。
 //
 // 为什么要有这层：调用方（AnalysisPipeline）只关心"这条视频轨的显示顺序"，
-// 不关心底层是 H.264 / HEVC 的 slice_header，还是 VP9 的 uncompressed frame
-// header。没有这一层，管线里就得写 `std::variant` + 三处 `std::visit`，而那些
-// 细节没有一条属于编排层的职责。
+// 不关心底层是 H.264 / HEVC 的 slice_header、VP9 的 uncompressed frame
+// header，还是 AV1 的 OBU 帧头。没有这一层，管线里就得写 `std::variant` +
+// 多处 `std::visit`，而那些细节没有一条属于编排层的职责。
 //
 // 与 ParameterSetTracker 的接口刻意保持一致（Reset(codec_id, stream_index)
 // + enabled() + Feed/FeedExtradata/Finish），这样管线里两条追踪链路长得一样，
 // 改动时不会因为"一个是类一个是 variant"而漏改一条。
 //
 // 当前覆盖：H.264（POC）、HEVC（POC）、VP9（显示事件序 —— 该编码没有 POC，
-// 见 Vp9FrameOrderTracker）。其余编码（AV1 / VVC）没实现就不建槽，上层据
+// 见 Vp9FrameOrderTracker）、AV1（order_hint —— 环形量，见
+// Av1FrameOrderTracker）。其余编码（VVC）没实现就不建槽，上层据
 // frame_order_timelines 为空把维度标成"不可用"，不静默给 0。
 
 #include <cstddef>
@@ -20,6 +21,7 @@
 #include <string>
 #include <variant>
 
+#include "core/analysis/codec/Av1FrameOrderTracker.h"
 #include "core/analysis/codec/FrameOrderTypes.h"
 #include "core/analysis/codec/H264PocTracker.h"
 #include "core/analysis/codec/HevcPocTracker.h"
@@ -67,7 +69,7 @@ private:
     std::string disabled_reason_;
     // 两个实现都不是多态基类的派生类：它们的骨架相同但状态字段完全不同，
     // 硬抽一个虚基类只会把两边各自的字段都摊到基类里。
-    std::variant<std::monostate, H264PocTracker, HevcPocTracker, Vp9FrameOrderTracker> impl_;
+    std::variant<std::monostate, H264PocTracker, HevcPocTracker, Vp9FrameOrderTracker, Av1FrameOrderTracker> impl_;
 };
 
 } // namespace videoeye

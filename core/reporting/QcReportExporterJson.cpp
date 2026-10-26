@@ -258,15 +258,16 @@ JsonValue BuildFrameOrdersArray(const model::AnalysisResult& result) {
 
         // 支持范围：把"哪些结论能下、哪些不能"写进报告，避免读者把缺失当通过。
         JsonValue scope = JsonValue::MakeObject();
-        scope.Set("codecs", JText("H.264 / HEVC（POC）与 VP9（显示事件序）；"
-                                  "AV1/VVC 未实现（对应维度标记为不可用）"));
+        scope.Set("codecs", JText("H.264 / HEVC（POC）、VP9（显示事件序）与 AV1（order_hint，"
+                                  "模 2^bits 的环形量已解环）；VVC 未实现（对应维度标记为不可用）"));
         scope.Set("poc_type", JText("H.264：pic_order_cnt_type 0 与 2 支持，1 不支持"
                                     "（需要 offset_for_ref_frame 表）；HEVC 只有一套公式，恒记 0；"
-                                    "VP9 没有该概念，恒记 -1"));
+                                    "VP9 与 AV1 没有该概念，恒记 -1"));
         scope.Set("reference_lists", JText("不重建 DPB / 参考帧列表（H.264 无 MMCO、HEVC 无 RPL），只给 POC 序列"));
         scope.Set("gap_inference", JText("缺帧数按观测到的最小 POC 步长推断，只给总量不给具体帧号；"
                                          "H.264 隔行（field coding）时不推断，HEVC 只有帧编码，恒推断；"
-                                         "VP9 的顺序值是显示序号（0,1,2… 连续分配），恒不推断"));
+                                         "VP9 的顺序值是显示序号（0,1,2… 连续分配），恒不推断；"
+                                         "AV1 的 order_hint 由编码器按显示顺序分配，同样只在跳号时才推断"));
         node.Set("scope", scope);
 
         JsonValue frames = JsonValue::MakeArray();
