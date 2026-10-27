@@ -87,8 +87,50 @@ const std::vector<uint8_t> kAv1CWithSeqHeader = {
 // av1C: 单色 + initial_presentation_delay=5
 const std::vector<uint8_t> kAv1CMonochrome = {0x81, 0x00, 0x1C, 0x14};
 
+// 真实 libaom **静图**（still-picture）序列头，两条只差第 7 个 payload 字节：
+//   ffmpeg -f lavfi -i color=c=red:s=320x240:d=1:r=1 -frames:v 1 \
+//          -c:v libaom-av1 -still-picture 1 [-color_range tv|pc] out.ivf
+// 再从 IVF 第 44 字节（32B 文件头 + 12B 帧头）起取 OBU 流。
+//
+// 用真实编码器输出而不是合成数据，是为了让下面两条判据站得住：
+//   * reduced_still_picture_header == 1 的序列头长什么样（含"没有 order_hint"）；
+//   * color_description_present_flag == 0 时 color_range **照样在码流里**
+//     （0x00 -> 0/0x88 -> 1）。这两条一起证明色域范围与色彩描述互相独立。
+const std::vector<uint8_t> kSeqHdrStillPictureLimited = {
+    0x0A, 0x07, 0x18, 0x21, 0xE7, 0xFD, 0xED, 0x00, 0x40,
+};
+
+const std::vector<uint8_t> kSeqHdrStillPictureFullRange = {
+    0x0A, 0x07, 0x18, 0x21, 0xE7, 0xFD, 0xED, 0x88, 0x40,
+};
+
 std::vector<ObuUnit> Extract(const std::vector<uint8_t>& bytes) {
     return ExtradataParser::ExtractObuUnits(bytes.data(), bytes.size());
+}
+
+// 零拷贝遍历的结果快照 —— 用来和 ExtractObuUnits 逐字段对账。
+struct ObuSnapshot {
+    uint8_t type = 0;
+    size_t size = 0;
+    bool has_extension_header = false;
+    uint8_t temporal_id = 0;
+    uint8_t spatial_id = 0;
+    std::vector<uint8_t> payload;
+};
+
+std::vector<ObuSnapshot> Walk(const std::vector<uint8_t>& bytes) {
+    std::vector<ObuSnapshot> out;
+    ExtradataParser::ForEachObuUnit(bytes.data(), bytes.size(), [&out](const videoeye::ObuView& view) {
+        ObuSnapshot snap;
+        snap.type = view.type;
+        snap.size = view.size;
+        snap.has_extension_header = view.has_extension_header;
+        snap.temporal_id = view.temporal_id;
+        snap.spatial_id = view.spatial_id;
+        snap.payload.assign(view.payload, view.payload + view.size);
+        out.push_back(std::move(snap));
+    });
+    return out;
 }
 
 videoeye::model::Av1SequenceHeaderInfo ParseFirst(const std::vector<uint8_t>& bytes) {
@@ -172,6 +214,70 @@ TEST_F(Av1ObuExtractionTest, EmptyAndTruncatedInput) {
     // forbidden bit = 1 的字节不是合法 OBU 起始
     const std::vector<uint8_t> bad = {0x8A, 0x01, 0x00};
     EXPECT_TRUE(Extract(bad).empty());
+}
+
+// --------------------------------------------------------------------------
+// 零拷贝遍历（ForEachObuUnit）
+//
+// ❗ 这两条路径共用一份 ReadObuView，但一个是"拷成 ObuUnit"、一个是"给视图"。
+// 只要哪天两边对同一段字节划出不同的 OBU，热路径就会静默算错 —— 所以这里
+// 逐字段对账，并且额外验证"payload 指针确实落在输入缓冲区里"（零拷贝的
+// 可观测证据：如果哪天改回了复制版，这条会先红）。
+// --------------------------------------------------------------------------
+TEST_F(Av1ObuExtractionTest, ForEachObuUnitMatchesExtractObuUnits) {
+    const std::vector<ObuUnit> copied = Extract(kObuStream3Units);
+    const std::vector<ObuSnapshot> walked = Walk(kObuStream3Units);
+
+    ASSERT_EQ(walked.size(), copied.size());
+    for (size_t i = 0; i < copied.size(); ++i) {
+        EXPECT_EQ(walked[i].type, copied[i].type) << "第 " << i << " 个 OBU 类型不一致";
+        EXPECT_EQ(walked[i].size, copied[i].size) << "第 " << i << " 个 OBU 长度不一致";
+        EXPECT_EQ(walked[i].has_extension_header, copied[i].has_extension_header);
+        EXPECT_EQ(walked[i].payload, copied[i].data) << "第 " << i << " 个 OBU payload 不一致";
+    }
+}
+
+TEST_F(Av1ObuExtractionTest, ForEachObuUnitHandlesMultiByteLeb128TheSameWay) {
+    // 200 字节的 PADDING：leb128 是多字节（0xC8 0x01），最容易在两份实现里
+    // 各自写错成"累加" —— 用大 payload 才能把这类差异照出来。
+    std::vector<uint8_t> stream = kSeqHdrProfile0_1080p;
+    stream.insert(stream.end(), kPaddingObuHeader.begin(), kPaddingObuHeader.end());
+    stream.insert(stream.end(), kPaddingObuPayloadSize, 0x00);
+
+    const std::vector<ObuSnapshot> walked = Walk(stream);
+    ASSERT_EQ(walked.size(), 2u);
+    EXPECT_EQ(walked[1].type, 15); // OBU_PADDING
+    EXPECT_EQ(walked[1].size, kPaddingObuPayloadSize);
+    EXPECT_EQ(walked[1].payload.size(), kPaddingObuPayloadSize);
+}
+
+TEST_F(Av1ObuExtractionTest, ForEachObuUnitPayloadPointsIntoInputBuffer) {
+    // 零拷贝的核心不变量：payload 是输入缓冲区的指针，不是副本。
+    const uint8_t* const begin = kObuStream3Units.data();
+    const uint8_t* const end = begin + kObuStream3Units.size();
+    size_t non_empty = 0;
+    ExtradataParser::ForEachObuUnit(begin, kObuStream3Units.size(), [&](const videoeye::ObuView& view) {
+        ASSERT_TRUE(view.payload >= begin && view.payload + view.size <= end) << "payload 越界 = 不是零拷贝";
+        if (view.size > 0)
+            ++non_empty;
+    });
+    EXPECT_GT(non_empty, 0u);
+}
+
+TEST_F(Av1ObuExtractionTest, ForEachObuUnitStopsEarlyWhenCallbackReturnsFalse) {
+    // bool 回调：找到想要的 OBU 就收工，不必把整帧 tile 数据扫完。
+    int visited = 0;
+    ExtradataParser::ForEachObuUnit(kObuStream3Units.data(), kObuStream3Units.size(),
+                                    [&visited](const videoeye::ObuView&) -> bool {
+                                        ++visited;
+                                        return false;
+                                    });
+    EXPECT_EQ(visited, 1);
+
+    // 空输入两种形态都不该回调
+    int calls = 0;
+    ExtradataParser::ForEachObuUnit(nullptr, 0, [&calls](const videoeye::ObuView&) { ++calls; });
+    EXPECT_EQ(calls, 0);
 }
 
 // --------------------------------------------------------------------------
@@ -263,6 +369,52 @@ TEST_F(Av1SequenceHeaderTest, Monochrome) {
     EXPECT_EQ(sh.BitDepth(), 8);
     EXPECT_EQ(sh.FrameWidth(), 320);
     EXPECT_EQ(sh.FrameHeight(), 240);
+}
+
+// 静图序列头（reduced_still_picture_header == 1）
+//
+// 这条分支的字段布局与普通序列头差别很大：seq_level_idx 直接 5 位、
+// 没有 timing / operating point / order_hint / 屏幕内容工具，
+// initial_display_delay 更要靠规范缺省值补 —— 以前留 0，于是"静图"和
+// "普通流"给出的默认值自相矛盾。
+TEST_F(Av1SequenceHeaderTest, StillPictureUsesDefaultInitialDisplayDelay) {
+    videoeye::model::Av1SequenceHeaderInfo sh = ParseFirst(kSeqHdrStillPictureLimited);
+    ASSERT_TRUE(sh.present);
+    EXPECT_TRUE(sh.still_picture);
+    EXPECT_TRUE(sh.reduced_still_picture_header);
+    EXPECT_EQ(sh.profile, 0);
+    EXPECT_EQ(sh.level, 0); // seq_level_idx 0 -> "2.0"
+    EXPECT_EQ(sh.LevelString(), "2.0");
+    EXPECT_EQ(sh.FrameWidth(), 320);
+    EXPECT_EQ(sh.FrameHeight(), 240);
+    // 静图分支没有 order_hint / 屏幕内容工具，按规范取推断值
+    EXPECT_FALSE(sh.enable_order_hint);
+    EXPECT_EQ(sh.seq_force_screen_content_tools, 2); // SELECT_SCREEN_CONTENT_TOOLS
+    EXPECT_EQ(sh.seq_force_integer_mv, 2);           // SELECT_INTEGER_MV
+    EXPECT_EQ(sh.operating_points_count, 1);
+    // ❗ 与"非静图但没声明 initial_display_delay"必须同一个值
+    EXPECT_EQ(sh.initial_presentation_delay_bits, 10);
+}
+
+// color_range 与 color_description_present_flag **互相独立**（规范 6.4.2）：
+// 两条真实样本的色彩描述都没出现（cdp=0），但色域范围一位照样在码流里，
+// 而且取值不同 —— 谁把 full_range 挂在 color_description 分支下，这两条就会红。
+TEST_F(Av1SequenceHeaderTest, ColorRangeIsIndependentOfColorDescription) {
+    videoeye::model::Av1SequenceHeaderInfo limited = ParseFirst(kSeqHdrStillPictureLimited);
+    videoeye::model::Av1SequenceHeaderInfo full = ParseFirst(kSeqHdrStillPictureFullRange);
+    ASSERT_TRUE(limited.present);
+    ASSERT_TRUE(full.present);
+
+    ASSERT_FALSE(limited.color_config.color_description_present_flag);
+    ASSERT_FALSE(full.color_config.color_description_present_flag);
+
+    EXPECT_EQ(limited.color_config.full_range_flag, 0);
+    EXPECT_EQ(full.color_config.full_range_flag, 1);
+
+    // 两条样本的宽高/位深必须一致，否则"只有 range 那一位不同"这个前提就不成立
+    EXPECT_EQ(limited.FrameWidth(), full.FrameWidth());
+    EXPECT_EQ(limited.FrameHeight(), full.FrameHeight());
+    EXPECT_EQ(limited.BitDepth(), full.BitDepth());
 }
 
 TEST_F(Av1SequenceHeaderTest, TimingInfoAndOperatingPoints) {

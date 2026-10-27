@@ -565,6 +565,82 @@ TEST(BitstreamAnalyzerTest, BitDepthMismatchIsReported) {
 }
 
 // ===========================================================================
+// AV1
+//
+// 与 tests/unit/test_av1_bitstream_parser.cpp 共用同一批逐位生成的序列头，
+// 这里只关心两件事：解析结果有没有走到统一字段、以及能力门禁有没有生效。
+// ===========================================================================
+
+// Profile 0 / 4:2:0 8bit / 1920x1080 / level 3.0 / BT.709，color_range=0(limited)
+const std::vector<uint8_t> kAv1SeqHdr1080p = {
+    0x0A, 0x0E, 0x00, 0x00, 0x00, 0x25, 0x57, 0x7F, 0x86, 0xE7, 0xF4, 0xEC, 0x80, 0x80, 0x80, 0x82,
+};
+
+// Profile 0 / 4:0:0 8bit / 320x240 / full range —— 色度不合格的那一条
+const std::vector<uint8_t> kAv1SeqHdrMonochrome = {
+    0x0A, 0x0D, 0x00, 0x00, 0x00, 0x04, 0x3C, 0xFF, 0xBC, 0xFE, 0x9D, 0xB0, 0x10, 0x10, 0x1A,
+};
+
+ContainerMetadata MakeAv1Container(int width, int height, int color_range) {
+    ContainerMetadata meta;
+    meta.codec_name = "av1";
+    meta.width = width;
+    meta.height = height;
+    meta.bit_depth = 8;
+    meta.color_primaries = 1;          // BT.709 —— 与上面两条序列头一致
+    meta.transfer_characteristics = 1; // BT.709
+    meta.matrix_coefficients = 1;      // BT.709
+    meta.color_range = color_range;
+    return meta;
+}
+
+BitstreamAnalysisResult AnalyzeAv1InBand(const std::vector<uint8_t>& obus, const ContainerMetadata& meta) {
+    BitstreamAnalyzer analyzer;
+    analyzer.SetContainerMetadata(meta);
+    return analyzer.AnalyzeInBand(obus.data(), obus.size(), AV_CODEC_ID_AV1);
+}
+
+TEST(BitstreamAnalyzerTest, Av1SequenceHeaderIsSupportedAndFeedsSummary) {
+    const BitstreamAnalysisResult r = AnalyzeAv1InBand(kAv1SeqHdr1080p, MakeAv1Container(1920, 1080, 1));
+
+    ASSERT_TRUE(r.av1_seq_header.present);
+    EXPECT_EQ(r.parse_outcome, BitstreamParseOutcome::FullParse);
+    EXPECT_EQ(r.capability, AnalysisCapability::Supported);
+    EXPECT_EQ(r.width, 1920);
+    EXPECT_EQ(r.height, 1080);
+    EXPECT_EQ(r.bit_depth, 8);
+    EXPECT_EQ(r.color_primaries, 1);
+
+    // ❗ 色域范围：码流里是 0(limited) -> 统一字段按 AVColorRange 口径记 1。
+    // 以前这一项从来没被填过，于是"容器 full / 码流 limited"这类错配一条都报不出来。
+    EXPECT_EQ(r.color_range, 1);
+    EXPECT_TRUE(r.inconsistencies.empty());
+}
+
+TEST(BitstreamAnalyzerTest, Av1ColorRangeMismatchIsReported) {
+    // 容器声明 full(2)、码流是 limited(1)：搞反会让画面发灰，是最该被抓到的一类
+    const BitstreamAnalysisResult r = AnalyzeAv1InBand(kAv1SeqHdr1080p, MakeAv1Container(1920, 1080, 2));
+
+    EXPECT_EQ(r.color_range, 1);
+    EXPECT_TRUE(HasField(r, "Color Range"));
+    // 宽高一致，不该有别的噪声
+    EXPECT_FALSE(HasField(r, "Width"));
+    EXPECT_FALSE(HasField(r, "Height"));
+}
+
+TEST(BitstreamAnalyzerTest, Av1MonochromeIsPartialAndSkipsComparison) {
+    // 4:0:0 没有面板比对通路 —— 与 H.264/HEVC 拦 chroma_format_idc==0 同口径。
+    const BitstreamAnalysisResult r = AnalyzeAv1InBand(kAv1SeqHdrMonochrome, MakeAv1Container(320, 240, 2));
+
+    ASSERT_TRUE(r.av1_seq_header.present);
+    EXPECT_EQ(r.capability, AnalysisCapability::Partial);
+    EXPECT_TRUE(r.partial);
+    EXPECT_NE(r.capability_note.find("色度采样"), std::string::npos);
+    // Partial 不参与严格比对：哪怕容器写的是 full、码流也是 full，也不该有告警
+    EXPECT_TRUE(r.inconsistencies.empty());
+}
+
+// ===========================================================================
 // 带内参数集（extradata 为空的封装：MPEG-TS / 裸流 / fMP4 媒体分片）
 //
 // 这一组锁定"没有 extradata 也能拿到参数集"这条链路：

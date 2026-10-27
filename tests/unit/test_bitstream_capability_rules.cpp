@@ -6,10 +6,13 @@
 
 namespace {
 
+using videoeye::codec::Av1SeqGap;
 using videoeye::codec::CapabilityGap;
+using videoeye::codec::GapNote;
 using videoeye::codec::H264ProfileGap;
 using videoeye::codec::H264SpsGap;
 using videoeye::codec::HevcSpsGap;
+using videoeye::codec::IsValidatedAv1Profile;
 using videoeye::codec::IsValidatedBitDepth;
 using videoeye::codec::IsValidatedChromaFormat;
 using videoeye::codec::IsValidatedH264Profile;
@@ -24,6 +27,24 @@ videoeye::model::H264SpsInfo MakeH264Sps(int profile_idc, int chroma, int luma_m
     sps.chroma_format_idc = chroma;
     sps.bit_depth_luma_minus8 = luma_minus8;
     return sps;
+}
+
+// AV1 没有 chroma_format_idc：色度是 subsampling_x/y 两个位，取值天然只有
+// 4:2:0 / 4:2:2 / 4:4:4，所以这里用 mono_chrome 当"色度不合格"的开关。
+// 位深 12 只在 seq_profile == 2 时成立（color_config 的 BitDepth 推导如此）。
+videoeye::model::Av1SequenceHeaderInfo MakeAv1Seq(int profile, bool monochrome, int bit_depth) {
+    videoeye::model::Av1SequenceHeaderInfo sh;
+    sh.present = true;
+    sh.profile = profile;
+    sh.color_config.present = true;
+    sh.color_config.monochrome = monochrome;
+    if (bit_depth == 12) {
+        sh.color_config.high_bitdepth = true;
+        sh.color_config.twelve_bit = true;
+    } else if (bit_depth == 10) {
+        sh.color_config.high_bitdepth = true;
+    }
+    return sh;
 }
 
 videoeye::model::HevcSpsInfo MakeHevcSps(int profile, int chroma, int luma_minus8) {
@@ -84,6 +105,45 @@ TEST(BitstreamCapabilityRulesTests, HevcProfileWhitelist) {
     EXPECT_FALSE(IsValidatedHevcProfile(6)); // Multiview Main：无样本矩阵
     EXPECT_FALSE(IsValidatedHevcProfile(7)); // Scalable Main
     EXPECT_FALSE(IsValidatedHevcProfile(0));
+}
+
+// ==========================================================================
+// AV1
+//
+// AV1 分支以前根本没有门禁 —— 只要解出序列头就判 Supported，等于把
+// 4:0:0 这种面板没有比对通路的组合也宣传成可信结论。这里与 H.264/HEVC 同口径。
+// ==========================================================================
+
+TEST(BitstreamCapabilityRulesTests, Av1ProfileWhitelist) {
+    EXPECT_TRUE(IsValidatedAv1Profile(0));  // Main：8/10bit 4:2:0
+    EXPECT_TRUE(IsValidatedAv1Profile(1));  // High：4:4:4
+    EXPECT_TRUE(IsValidatedAv1Profile(2));  // Professional：8/10/12bit
+    EXPECT_FALSE(IsValidatedAv1Profile(3)); // 保留档
+    EXPECT_FALSE(IsValidatedAv1Profile(-1));
+}
+
+TEST(BitstreamCapabilityRulesTests, Av1MainProfile420IsAccepted) {
+    // 与 tests/corpus/codec/real_av1_altref_gop.mp4 同款组合（libaom 默认）
+    EXPECT_EQ(Av1SeqGap(MakeAv1Seq(0, false, 8)), CapabilityGap::None);
+    EXPECT_EQ(Av1SeqGap(MakeAv1Seq(0, false, 10)), CapabilityGap::None);
+}
+
+TEST(BitstreamCapabilityRulesTests, Av1ProfessionalTwelveBitIsAccepted) {
+    // 12bit 只在 seq_profile == 2 下成立（color_config 的 BitDepth 推导如此）
+    EXPECT_EQ(Av1SeqGap(MakeAv1Seq(2, false, 12)), CapabilityGap::None);
+    EXPECT_EQ(Av1SeqGap(MakeAv1Seq(1, false, 8)), CapabilityGap::None); // High 4:4:4
+}
+
+TEST(BitstreamCapabilityRulesTests, Av1MonochromeIsChromaGap) {
+    // 4:0:0：与 H.264/HEVC 拦 chroma_format_idc==0 同口径
+    EXPECT_EQ(Av1SeqGap(MakeAv1Seq(0, true, 8)), CapabilityGap::ChromaFormat);
+}
+
+TEST(BitstreamCapabilityRulesTests, Av1GapNoteNamesTheOffendingField) {
+    const videoeye::model::Av1SequenceHeaderInfo mono = MakeAv1Seq(0, true, 8);
+    const std::string note = GapNote("AV1", Av1SeqGap(mono), "seq_profile=0", mono.ChromaFormatString(), "8bit");
+    EXPECT_NE(note.find("色度采样"), std::string::npos);
+    EXPECT_NE(note.find("4:0:0"), std::string::npos);
 }
 
 // ==========================================================================
