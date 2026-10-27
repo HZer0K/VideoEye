@@ -250,19 +250,23 @@ int Av1FrameOrderTracker::Feed(const uint8_t* data, size_t size, bool has_time, 
     int frames = 0;
     // 一包里的 OBU 顺序有意义：序列头通常在关键帧包的最前面，
     // 因此"先看序列头再看帧头"必须按遍历顺序自然地发生。
-    for (const ObuUnit& obu : ExtradataParser::ExtractObuUnits(data, size)) {
-        if (obu.type == static_cast<uint8_t>(Av1ObuType::SequenceHeader)) {
-            ApplySequenceHeader(Av1BitstreamParser::ParseFromObuUnit(obu));
-            continue;
+    //
+    // ❗ 走零拷贝遍历：这是每包都要跑的路，而 OBU_FRAME 的 payload 就是整帧
+    // tile 数据。ExtractObuUnits 会先把它整份复制出来再让我们读前几十位 ——
+    // 一次纯浪费的几十 KB~几百 KB memcpy（每包一次）。
+    ExtradataParser::ForEachObuUnit(data, size, [&](const ObuView& view) {
+        if (view.is_sequence_header()) {
+            ApplySequenceHeader(Av1BitstreamParser::ParseSequenceHeaderPayload(view.payload, view.size));
+            return;
         }
-        if (obu.type == static_cast<uint8_t>(Av1ObuType::FrameHeader) ||
-            obu.type == static_cast<uint8_t>(Av1ObuType::Frame)) {
-            if (HandleFrame(obu.data.data(), obu.data.size(), has_time, time_seconds, packet_index))
+        if (view.type == static_cast<uint8_t>(Av1ObuType::FrameHeader) ||
+            view.type == static_cast<uint8_t>(Av1ObuType::Frame)) {
+            if (HandleFrame(view.payload, view.size, has_time, time_seconds, packet_index))
                 ++frames;
         }
         // 其它 OBU（temporal delimiter / tile group / metadata / padding）与
         // 帧顺序无关，直接跳过。
-    }
+    });
     return frames;
 }
 
@@ -280,16 +284,19 @@ bool Av1FrameOrderTracker::FeedExtradata(const uint8_t* data, size_t size) {
     // ❗ 兜底：Matroska 的 CodecPrivate 可能是一串**裸 OBU**（没有 av1C 外壳），
     // 而 av1C 的嗅探在这种输入上认不出来。判据不用"格式检测成功"，而是
     // "解析结果里真的出现了 sequence_header_obu"。
-    for (const ObuUnit& obu : ExtradataParser::ExtractObuUnits(data, size)) {
-        if (!obu.is_sequence_header)
-            continue;
-        const model::Av1SequenceHeaderInfo from_obu = Av1BitstreamParser::ParseFromObuUnit(obu);
-        if (from_obu.present) {
-            ApplySequenceHeader(from_obu);
+    bool applied = false;
+    ExtradataParser::ForEachObuUnit(data, size, [&](const ObuView& view) -> bool {
+        if (!view.is_sequence_header())
+            return true; // 继续找
+        const model::Av1SequenceHeaderInfo from_obu =
+            Av1BitstreamParser::ParseSequenceHeaderPayload(view.payload, view.size);
+        if (!from_obu.present)
             return true;
-        }
-    }
-    return false;
+        ApplySequenceHeader(from_obu);
+        applied = true;
+        return false; // 拿到了就停，别让后面的 OBU 覆盖掉这一份
+    });
+    return applied;
 }
 
 void Av1FrameOrderTracker::NoteReason(const std::string& reason) {

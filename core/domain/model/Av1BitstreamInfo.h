@@ -86,14 +86,27 @@ struct Av1SequenceHeaderInfo {
     bool film_grain_params_present = false;
 
     // Frame size
+    //
+    // ❗ 规范里这两个字段叫 **max_frame_width_minus_1 / max_frame_height_minus_1**：
+    // 它们是序列级上界，不是某一帧的实际尺寸 —— 帧头 frame_size_override_flag
+    // 打开时单帧可以更小（superres / 动态分辨率）。常见编码器都把上界写成实际
+    // 尺寸，所以这里仍当作分辨率使用，但容器比对要容忍 ≤kGeometryTolerancePixels
+    // 的差值，别把"上界 vs 实际"当成错误。
     int frame_width_minus_1 = 0;
     int frame_height_minus_1 = 0;
 
-    int FrameWidth() const {
+    // 序列级上界（= max_frame_width / max_frame_height）
+    int MaxFrameWidth() const {
         return frame_width_minus_1 + 1;
     }
-    int FrameHeight() const {
+    int MaxFrameHeight() const {
         return frame_height_minus_1 + 1;
+    }
+    int FrameWidth() const {
+        return MaxFrameWidth();
+    }
+    int FrameHeight() const {
+        return MaxFrameHeight();
     }
 
     // AV1 的 seq_level_idx 是 0..23，映射规则：主版本 = 2 + idx/4，次版本 = idx%4
@@ -116,7 +129,11 @@ struct Av1SequenceHeaderInfo {
         return 8;
     }
 
+    // ❗ color_config 没解析出来时返回空串，**不要**落一个默认值：
+    // subsampling 默认 0/0 会被读成 "4:4:4"，等于把"没解出来"说成"确认是 4:4:4"。
     std::string ChromaFormatString() const {
+        if (!color_config.present)
+            return std::string();
         if (color_config.monochrome)
             return "4:0:0";
         if (color_config.subsampling_x && color_config.subsampling_y)
@@ -144,7 +161,10 @@ struct Av1SequenceHeaderInfo {
     // 解析后续语法元素需要的中间状态（不是展示字段）
     bool decoder_model_info_present_flag = false; // decoder_model_info_present
     int decoder_buffer_delay_length = 0;          // 位宽，operating point 里要用
-    bool display_model_info_present_flag = false; // display_model_info_present
+    // 规范里叫 initial_display_delay_present_flag（不是 display_model_info）：
+    // 它管的是 operating point 里那组 initial_display_delay_minus_1，与
+    // "display model" 无关。名字对不上规范时，改位序的人会找错参考章节。
+    bool initial_display_delay_present_flag = false;
     int operating_points_count = 1;
     // frame_id 长度：帧头里的 current_frame_id / display_frame_id 都是这么宽。
     // ❗ 不记这两个字段就没法跳过帧头里那几位，后面的 order_hint 会整体错位。
@@ -184,7 +204,11 @@ struct Av1CodecConfigInfo {
     int subsampling_x = 1;
     int subsampling_y = 1;
     int chroma_sample_position = 0;
-    int color_range = 1; // 1 = full range
+    // 0 = 未知。av1C 配置记录里**没有** color range 字段（只有序列头的
+    // color_config 里才有），所以从 av1C 来的结果必须留 0，别拿默认值充数。
+    // 非 0 时按 FFmpeg 的 AVColorRange 口径：1=limited(MPEG) 2=full(JPEG)。
+    // ❗ AV1 码流里的 color_range 位与这套相反（1=full），搬运时必须翻过来。
+    int color_range = 0;
     int initial_presentation_delay = 0;
 
     std::string LevelString() const {

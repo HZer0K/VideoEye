@@ -15,6 +15,13 @@ constexpr int kMatrixCoefficientsUnknown = 2;
 
 // screen content tools / integer mv 的「自适应」常量
 constexpr int kSelectAdaptive = 2;
+
+// initial_display_delay 的缺省值：initial_display_delay_present_flag == 0，或
+// 该 operating point 没有声明时，两边都按这个值算（单位：帧）。
+// ❗ 规范只写了 initial_display_delay_present_flag == 0 时的推断值，静图
+// （reduced_still_picture_header）分支更是压根不出现这个字段 —— 与其各写一套，
+// 不如统一常量，避免"静图算出 0、普通流算出 10"这种自相矛盾。
+constexpr int kDefaultInitialDisplayDelay = 10;
 } // namespace
 
 std::string Av1BitstreamParser::GetProfileName(int profile) {
@@ -66,8 +73,11 @@ bool Av1BitstreamParser::SkipTimingInfo(videoeye::BitReader& reader, model::Av1S
 }
 
 // operating_points 循环（AV1 规范 5.5.1）
+//
+// 规范里的顺序是 initial_display_delay_present_flag(1) → operating_points_cnt_minus_1(5)
+// → 循环。display_model 这个词不出现在语法表里，别照老注释去找章节。
 bool Av1BitstreamParser::SkipOperatingPoints(videoeye::BitReader& reader, model::Av1SequenceHeaderInfo& sh) {
-    sh.display_model_info_present_flag = reader.ReadBit();
+    sh.initial_display_delay_present_flag = reader.ReadBit();
     sh.operating_points_count = static_cast<int>(reader.ReadBits(5)) + 1;
 
     for (int i = 0; i < sh.operating_points_count; i++) {
@@ -97,10 +107,11 @@ bool Av1BitstreamParser::SkipOperatingPoints(videoeye::BitReader& reader, model:
         }
 
         bool display_model_param_present = false;
-        if (sh.display_model_info_present_flag) {
+        if (sh.initial_display_delay_present_flag) {
             display_model_param_present = reader.ReadBit();
         }
-        const int initial_display_delay = display_model_param_present ? static_cast<int>(reader.ReadBits(4)) + 1 : 10;
+        const int initial_display_delay =
+            display_model_param_present ? static_cast<int>(reader.ReadBits(4)) + 1 : kDefaultInitialDisplayDelay;
         if (i == 0) {
             sh.initial_presentation_delay_bits = initial_display_delay;
         }
@@ -189,14 +200,14 @@ bool Av1BitstreamParser::ParseColorConfig(videoeye::BitReader& reader, model::Av
     return !reader.HasError();
 }
 
-model::Av1SequenceHeaderInfo Av1BitstreamParser::ParseFromObuUnit(const videoeye::ObuUnit& obu_unit) {
+model::Av1SequenceHeaderInfo Av1BitstreamParser::ParseSequenceHeaderPayload(const uint8_t* payload, size_t size) {
     model::Av1SequenceHeaderInfo sh;
-    if (!IsSequenceHeaderObu(obu_unit) || obu_unit.data.empty()) {
+    if (payload == nullptr || size == 0) {
         return sh;
     }
 
     videoeye::BitReader reader;
-    reader.Reset(obu_unit.data.data(), obu_unit.data.size());
+    reader.Reset(payload, size);
 
     sh.profile = static_cast<int>(reader.ReadBits(3));
     if (sh.profile > 2) {
@@ -212,6 +223,9 @@ model::Av1SequenceHeaderInfo Av1BitstreamParser::ParseFromObuUnit(const videoeye
         sh.level = (major - 2) * 4 + minor;
         sh.tier = 0;
         sh.operating_points_count = 1;
+        // 静图分支里 initial_display_delay 同样按规范缺省值走（旧代码留 0，
+        // 于是"静图"和"普通流"给出的默认值不一致）。
+        sh.initial_presentation_delay_bits = kDefaultInitialDisplayDelay;
     } else {
         if (!SkipTimingInfo(reader, sh))
             return sh;
@@ -277,6 +291,13 @@ model::Av1SequenceHeaderInfo Av1BitstreamParser::ParseFromObuUnit(const videoeye
 
     sh.present = true;
     return sh;
+}
+
+model::Av1SequenceHeaderInfo Av1BitstreamParser::ParseFromObuUnit(const videoeye::ObuUnit& obu_unit) {
+    if (!IsSequenceHeaderObu(obu_unit) || obu_unit.data.empty()) {
+        return model::Av1SequenceHeaderInfo();
+    }
+    return ParseSequenceHeaderPayload(obu_unit.data.data(), obu_unit.data.size());
 }
 
 model::Av1SequenceHeaderInfo Av1BitstreamParser::ParseSequenceHeader(const uint8_t* extradata, size_t size) {

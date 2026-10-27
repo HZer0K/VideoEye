@@ -532,7 +532,10 @@ void BitstreamAnalyzer::PopulateAv1Config(const videoeye::ExtradataResult::Codec
     out.subsampling_x = cfg.chroma_subsampling_x;
     out.subsampling_y = cfg.chroma_subsampling_y;
     out.chroma_sample_position = cfg.chroma_sample_position;
-    out.color_range = cfg.color_range;
+    // ❗ av1C 记录里没有 color range 字段（它只存在于序列头的 color_config），
+    // 所以这里保持 0 = 未知。照抄 CodecConfig::color_range 的默认值会把
+    // "没这个字段"变成"确认是 limited"，进而凭空造出容器不一致告警。
+    out.color_range = 0;
     out.initial_presentation_delay = cfg.initial_presentation_delay_bits;
     result_.has_av1_config = true;
 }
@@ -650,6 +653,14 @@ void BitstreamAnalyzer::ApplyAv1Summary() {
             result_.color_primaries = sh.color_config.color_primaries;
             result_.transfer_characteristics = sh.color_config.transfer_characteristics;
             result_.matrix_coefficients = sh.color_config.matrix_coefficients;
+        }
+        // ❗ AV1 的 color_range 位是「1=full」，容器侧（AVColorRange）是
+        // 「1=limited / 2=full」—— 两套里 1 的含义正好相反，直接搬会把
+        // full 报成 limited、limited 报成 full，比不报更糟。
+        // 而且它和 color_description_present_flag **互相独立**：色彩描述没出现
+        // 时这一位照样在码流里（UI 曾把它挂在 color_description 分支下，属错挂）。
+        if (sh.color_config.present) {
+            result_.color_range = sh.color_config.full_range_flag ? 2 : 1;
         }
         return;
     }
@@ -850,20 +861,33 @@ void BitstreamAnalyzer::FinalizeCapability(int codec_id) {
         }
         break;
     }
-    case AV_CODEC_ID_AV1:
-        // av1C 兜底给了位深/采样结构，但没有分辨率与色彩描述 —— 仍是 Partial。
-        if (result_.parse_outcome == BitstreamParseOutcome::FullParse && result_.av1_seq_header.present) {
-            result_.capability = AnalysisCapability::Supported;
-        } else if (result_.parse_outcome == BitstreamParseOutcome::ParseFailed) {
+    case AV_CODEC_ID_AV1: {
+        // 与 H.264/HEVC 同口径：解出序列头还不够，组合必须落在验证过的
+        // Profile / 色度 / 位深矩阵里才算 Supported。以前这里只判"有没有序列头"，
+        // 于是 4:0:0 这类面板没有比对通路的组合也被宣传成可信结论。
+        if (result_.parse_outcome == BitstreamParseOutcome::ParseFailed) {
             result_.capability = AnalysisCapability::Failed;
-        } else {
-            result_.capability = AnalysisCapability::Partial;
-            if (result_.has_av1_config) {
-                result_.capability_note = "仅有 av1C 配置记录：位深/采样结构可信，"
-                                          "分辨率与色彩描述未知（仅识别类型级信息）";
-            }
+            break;
+        }
+        const CapabilityGap gap =
+            result_.av1_seq_header.present ? codec::Av1SeqGap(result_.av1_seq_header) : CapabilityGap::None;
+        if (result_.parse_outcome == BitstreamParseOutcome::FullParse && result_.av1_seq_header.present &&
+            gap == CapabilityGap::None) {
+            result_.capability = AnalysisCapability::Supported;
+            break;
+        }
+        result_.capability = AnalysisCapability::Partial;
+        if (result_.av1_seq_header.present) {
+            result_.capability_note = codec::GapNote(
+                "AV1", gap, "seq_profile=" + std::to_string(result_.av1_seq_header.profile),
+                result_.av1_seq_header.ChromaFormatString(), std::to_string(result_.av1_seq_header.BitDepth()) + "bit");
+        } else if (result_.has_av1_config) {
+            // av1C 兜底给了位深/采样结构，但没有分辨率与色彩描述 —— 仍是 Partial。
+            result_.capability_note = "仅有 av1C 配置记录：位深/采样结构可信，"
+                                      "分辨率与色彩描述未知（仅识别类型级信息）";
         }
         break;
+    }
     case AV_CODEC_ID_VP9:
         // VP9 的两条数据链质量差别很大，能力必须分开给：
         //   * 解出关键帧 → 宽高/位深/色度/range/色彩都有，能参与容器比对

@@ -173,6 +173,27 @@ struct ObuUnit {
     }
 };
 
+// OBU 视图：与 ObuUnit 一一对应，但**不拥有内存** —— payload 指向调用方的缓冲区。
+//
+// 存在的理由：AV1 的每包扫描路径（帧顺序 / ES 检查 / 参数变化）都要遍历 OBU，
+// 而帧 OBU 的 payload 就是整帧的 tile 数据（几十 KB ~ 几百 KB）。用 ObuUnit
+// 意味着每包每个模块各分配 + 复制一遍全帧，一帧三份拷贝纯属浪费。
+//
+// ❗ 生命周期：只在 ForEachObuUnit 的回调里有效，回调返回后即失效。需要跨包
+// 保存（比如 ExtradataResult::obu_units）时必须拷成 ObuUnit。
+struct ObuView {
+    uint8_t type = 0;
+    const uint8_t* payload = nullptr; // OBU payload（不含 header / 长度 / 扩展头）
+    size_t size = 0;                  // payload 大小
+    bool has_extension_header = false;
+    uint8_t temporal_id = 0;
+    uint8_t spatial_id = 0;
+
+    bool is_sequence_header() const {
+        return type == static_cast<uint8_t>(Av1ObuType::SequenceHeader);
+    }
+};
+
 // ==========================================================================
 // vpcC（VP Codec Configuration Box，ISO/IEC 14496-30）布局判定
 //
@@ -243,7 +264,11 @@ struct ExtradataResult {
         int chroma_subsampling_x = 1;
         int chroma_subsampling_y = 1;
         int chroma_sample_position = 0; // 0=UNKNOWN 1=VERTICAL 2=COLOCATED 3=RESERVED
-        int color_range = 1;
+        // 0 = 未知。av1C **不含** color range（它只在序列头的 color_config 里），
+        // 也**不含**色彩三元组 —— 下面三个 CICP 字段同样只有 vpcC 会填。
+        // 别拿默认值当解析结果：默认成 "1" 会被读成"确认是某个范围"，
+        // 而两套口径里 1 的含义还是反的（AV1 码流 1=full / AVColorRange 1=limited）。
+        int color_range = 0;
         int color_primaries = 9;           // BT.2020
         int transfer_characteristics = 14; // PQ
         int matrix_coefficients = 9;       // BT.2020 NCL

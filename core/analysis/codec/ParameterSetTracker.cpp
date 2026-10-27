@@ -444,13 +444,13 @@ bool ParameterSetTracker::FeedExtradata(const uint8_t* data, size_t size) {
 
 void ParameterSetTracker::FeedAv1(const uint8_t* data, size_t size, double pts, int64_t packet_index,
                                   int64_t file_offset) {
-    const std::vector<ObuUnit> obus = ExtradataParser::ExtractObuUnits(data, size);
-    for (const ObuUnit& obu : obus) {
-        if (!Av1BitstreamParser::IsSequenceHeaderObu(obu))
-            continue;
-        const model::Av1SequenceHeaderInfo sh = Av1BitstreamParser::ParseFromObuUnit(obu);
+    // 逐包调用：走零拷贝遍历（理由同 VideoEsInspector::InspectAv1）。
+    ExtradataParser::ForEachObuUnit(data, size, [&](const ObuView& view) {
+        if (!view.is_sequence_header())
+            return;
+        const model::Av1SequenceHeaderInfo sh = Av1BitstreamParser::ParseSequenceHeaderPayload(view.payload, view.size);
         if (!sh.present)
-            continue;
+            return;
         // AV1 的序列头没有 id（一份流只有一个生效），统一记 id=0；
         // 内容变了就是"被替换"，语义与 H.264 的 SPS 替换一致。
         // 色度格式用 ChromaFormatString() 直接取，别自己从 subsampling 位推。
@@ -460,9 +460,9 @@ void ParameterSetTracker::FeedAv1(const uint8_t* data, size_t size, double pts, 
         const std::string chroma = sh.ChromaFormatString();
         if (!chroma.empty())
             summary += " / " + chroma;
-        RegisterSet(model::ParameterSetKind::Av1SequenceHeader, 0, summary, obu.data.data(), obu.data.size(), pts,
-                    packet_index, file_offset);
-    }
+        RegisterSet(model::ParameterSetKind::Av1SequenceHeader, 0, summary, view.payload, view.size, pts, packet_index,
+                    file_offset);
+    });
 }
 
 model::ParameterSetEntry* ParameterSetTracker::FindEntry(model::ParameterSetKind kind, int id) {

@@ -343,45 +343,50 @@ NalUnit ExtradataParser::ParseVvcNalUnit(const uint8_t* data, size_t size) {
     return nal;
 }
 
-ObuUnit ExtradataParser::ParseAv1Obu(const uint8_t*& ptr, size_t remaining) {
-    ObuUnit obu;
+// OBU 头解析（AV1 规范 6.2.1 / 6.2.2）：
+//   obu_header:
+//     obu_forbidden_bit   f(1)  bit7，必须为 0
+//     obu_type            f(4)  bit6..3
+//     obu_extension_flag  f(1)  bit2
+//     obu_has_size_field  f(1)  bit1
+//     obu_reserved_1bit   f(1)  bit0
+//   obu_extension_header：temporal_id f(3) / spatial_id f(2) / reserved f(3)
+//   obu_size：leb128，低 7 位有效、最高位表示还有后续字节
+//             （每一位组要左移拼接，不是累加）
+//
+// 这是 ExtractObuUnits 与 ForEachObuUnit **共用**的唯一实现：两条路径的
+// 遍历规则必须一模一样，否则"零拷贝版"和"拷贝版"会对同一段字节给出不同的
+// OBU 划分 —— 那是最难查的一类 bug。
+bool ExtradataParser::ReadObuView(const uint8_t*& ptr, size_t remaining, ObuView& out) {
     if (ptr == nullptr || remaining < 1)
-        return obu;
+        return false;
 
-    // obu_header（AV1 规范 6.2.1）：
-    //   obu_forbidden_bit   f(1)  bit7，必须为 0
-    //   obu_type            f(4)  bit6..3
-    //   obu_extension_flag  f(1)  bit2
-    //   obu_has_size_field  f(1)  bit1
-    //   obu_reserved_1bit   f(1)  bit0
     size_t pos = 0;
     const uint8_t header = ptr[pos++];
     if ((header >> 7) & 0x01)
-        return obu; // forbidden bit 为 1，不是合法 OBU 起始
+        return false; // forbidden bit 为 1，不是合法 OBU 起始
 
-    obu.type = (header >> 3) & 0x0F;
+    out = ObuView();
+    out.type = (header >> 3) & 0x0F;
     const bool extension_flag = ((header >> 2) & 0x01) != 0;
     const bool has_size_field = ((header >> 1) & 0x01) != 0;
-    obu.has_extension_header = extension_flag;
+    out.has_extension_header = extension_flag;
 
-    // obu_extension_header：temporal_id f(3) / spatial_id f(2) / reserved f(3)
     if (extension_flag) {
         if (pos >= remaining)
-            return obu;
+            return false;
         const uint8_t ext = ptr[pos++];
-        obu.temporal_id = (ext >> 5) & 0x07;
-        obu.spatial_id = (ext >> 3) & 0x03;
+        out.temporal_id = (ext >> 5) & 0x07;
+        out.spatial_id = (ext >> 3) & 0x03;
     }
 
-    // obu_size：leb128，低 7 位有效、最高位表示还有后续字节。
-    // 注意每一位组要左移拼接，不是累加。
     size_t obu_size = 0;
     if (has_size_field) {
         int shift = 0;
         uint8_t byte = 0;
         do {
             if (pos >= remaining || shift > 28)
-                return obu;
+                return false;
             byte = ptr[pos++];
             obu_size |= static_cast<size_t>(byte & 0x7F) << shift;
             shift += 7;
@@ -396,11 +401,26 @@ ObuUnit ExtradataParser::ParseAv1Obu(const uint8_t*& ptr, size_t remaining) {
         obu_size = remaining - pos;
     }
 
-    obu.size = static_cast<uint32_t>(obu_size);
-    obu.data.assign(ptr + pos, ptr + pos + obu_size);
-    obu.is_sequence_header = (obu.type == static_cast<uint8_t>(Av1ObuType::SequenceHeader));
+    out.size = obu_size;
+    out.payload = ptr + pos;
 
     ptr += (pos + obu_size);
+    return true;
+}
+
+ObuUnit ExtradataParser::ParseAv1Obu(const uint8_t*& ptr, size_t remaining) {
+    ObuUnit obu;
+    ObuView view;
+    if (!ReadObuView(ptr, remaining, view))
+        return obu;
+
+    obu.type = view.type;
+    obu.size = static_cast<uint32_t>(view.size);
+    obu.data.assign(view.payload, view.payload + view.size);
+    obu.has_extension_header = view.has_extension_header;
+    obu.is_sequence_header = view.is_sequence_header();
+    obu.temporal_id = view.temporal_id;
+    obu.spatial_id = view.spatial_id;
     return obu;
 }
 
@@ -409,22 +429,20 @@ std::vector<ObuUnit> ExtradataParser::ExtractObuUnits(const uint8_t* data, size_
     if (data == nullptr || size == 0)
         return obu_units;
 
-    const uint8_t* ptr = data;
-    size_t remaining = size;
-
-    while (remaining > 0) {
-        const uint8_t* before = ptr;
-        ObuUnit obu = ParseAv1Obu(ptr, remaining);
-
-        // 只在指针没有推进时停止，避免死循环。
-        // 注意不能拿 `data.empty()` 当失败判据：OBU_TEMPORAL_DELIMITER
-        // 是合法的 0 长度 OBU，会被误当成解析失败而提前结束。
-        if (ptr <= before)
-            break;
-
+    // 只在指针没有推进时停止，避免死循环。
+    // 注意不能拿 `data.empty()` 当失败判据：OBU_TEMPORAL_DELIMITER
+    // 是合法的 0 长度 OBU，会被误当成解析失败而提前结束。
+    ForEachObuUnit(data, size, [&obu_units](const ObuView& view) {
+        ObuUnit obu;
+        obu.type = view.type;
+        obu.size = static_cast<uint32_t>(view.size);
+        obu.data.assign(view.payload, view.payload + view.size);
+        obu.has_extension_header = view.has_extension_header;
+        obu.is_sequence_header = view.is_sequence_header();
+        obu.temporal_id = view.temporal_id;
+        obu.spatial_id = view.spatial_id;
         obu_units.push_back(std::move(obu));
-        remaining = static_cast<size_t>(data + size - ptr);
-    }
+    });
 
     return obu_units;
 }

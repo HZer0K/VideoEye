@@ -26,6 +26,7 @@
 
 #include <string>
 
+#include "core/domain/model/Av1BitstreamInfo.h"
 #include "core/domain/model/H264BitstreamInfo.h"
 #include "core/domain/model/HevcBitstreamInfo.h"
 
@@ -112,6 +113,13 @@ inline bool IsValidatedHevcProfile(int general_profile_idc) {
     }
 }
 
+// AV1 seq_profile 放行清单：0=Main（8/10bit 4:2:0）1=High（4:4:4）2=Professional（8/10/12bit）。
+// 解析层已把 >2 直接判非法，这里再判一次只为口径统一 —— 门禁和解析是两件事，
+// 哪天解析层放宽了，门禁仍然该按"有没有样本矩阵"说话。
+inline bool IsValidatedAv1Profile(int seq_profile) {
+    return seq_profile >= 0 && seq_profile <= 2;
+}
+
 // ---- 组合判据 ----
 
 inline CapabilityGap H264ProfileGap(int profile_idc) {
@@ -134,6 +142,19 @@ inline CapabilityGap HevcSpsGap(const model::HevcSpsInfo& sps) {
     if (!IsValidatedChromaFormat(sps.chroma_format_idc))
         return CapabilityGap::ChromaFormat;
     if (!IsValidatedBitDepth(sps.BitDepthLuma()))
+        return CapabilityGap::BitDepth;
+    return CapabilityGap::None;
+}
+
+// AV1 的门禁维度和 H.264/HEVC 不同：没有 chroma_format_idc，色度是
+// subsampling_x/y 两个位，取值天然只有 4:2:0 / 4:2:2 / 4:4:4 —— 唯一要拦的
+// 色度情形是 mono_chrome（4:0:0），与另两个 codec 拦 chroma_format_idc==0 同口径。
+inline CapabilityGap Av1SeqGap(const model::Av1SequenceHeaderInfo& sh) {
+    if (!IsValidatedAv1Profile(sh.profile))
+        return CapabilityGap::Profile;
+    if (sh.color_config.monochrome)
+        return CapabilityGap::ChromaFormat;
+    if (!IsValidatedBitDepth(sh.BitDepth()))
         return CapabilityGap::BitDepth;
     return CapabilityGap::None;
 }

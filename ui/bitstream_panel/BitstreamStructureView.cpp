@@ -200,11 +200,14 @@ void BitstreamStructureView::BuildTree(const model::BitstreamAnalysisResult& res
                 MakeNode(cc_node, tr("twelve_bit"), BitstreamFlagText(cc.twelve_bit));
                 MakeNode(cc_node, tr("monochrome"), BitstreamFlagText(cc.monochrome));
                 MakeNode(cc_node, tr("subsampling x/y"), tr("%1 / %2").arg(cc.subsampling_x).arg(cc.subsampling_y));
+                // ❗ full_range 与 color_description_present_flag **互相独立**：
+                // 色彩描述没出现时 color_range f(1) 照样在码流里。挂在
+                // color_description 分支下会让"无色彩标注"的流连色域范围也看不到。
+                MakeNode(cc_node, tr("full_range"), BitstreamFlagText(cc.full_range_flag != 0));
                 if (cc.color_description_present_flag) {
                     MakeNode(cc_node, tr("Color Primaries"), BitstreamPrimariesName(cc.color_primaries));
                     MakeNode(cc_node, tr("Transfer"), BitstreamTransferName(cc.transfer_characteristics));
                     MakeNode(cc_node, tr("Matrix"), BitstreamMatrixName(cc.matrix_coefficients));
-                    MakeNode(cc_node, tr("full_range"), BitstreamFlagText(cc.full_range_flag != 0));
                 } else {
                     MakeNode(cc_node, tr("color_description"), tr("未出现（色彩标注缺失）"));
                 }

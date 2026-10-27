@@ -30,6 +30,10 @@ public:
     // 从 OBU 单元解析（data 只含 payload，不含 OBU header）
     static model::Av1SequenceHeaderInfo ParseFromObuUnit(const videoeye::ObuUnit& obu_unit);
 
+    // 直接吃一段 sequence_header_obu 的 payload（OBU 视图版）。
+    // 逐包扫描时走这条：省掉"先拷成 ObuUnit 再解析"那一次分配 + 复制。
+    static model::Av1SequenceHeaderInfo ParseSequenceHeaderPayload(const uint8_t* payload, size_t size);
+
     // 判断是否为 Sequence Header OBU
     static bool IsSequenceHeaderObu(const videoeye::ObuUnit& obu_unit);
 

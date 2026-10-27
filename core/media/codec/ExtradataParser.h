@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -62,9 +63,50 @@ public:
     // 从裸 OBU 流（或 av1C 尾部的 configOBUs）中依次抽出所有 OBU。
     // 对外可见：AV1 的序列头往往在 packet 里而不是 extradata 里，
     // 上层需要自己拿一段 OBU 字节来解析。
+    //
+    // ⚠️ 会为每个 OBU 分配并复制一份 payload。**逐包**扫描的热路径请用
+    // ForEachObuUnit —— 那边零拷贝。
     static std::vector<ObuUnit> ExtractObuUnits(const uint8_t* data, size_t size);
 
+    // 零拷贝遍历一段 OBU 流：回调拿到的是指向 data 的视图，不分配、不复制。
+    //
+    // Fn 可以是 `void(const ObuView&)`，也可以是 `bool(const ObuView&)`
+    // —— 返回 false 立即停止遍历（找到想要的 OBU 就能收工，不必扫完整个包）。
+    //
+    // 遍历规则与 ExtractObuUnits 完全一致（同一份 ReadObuView），包括
+    // "0 长度的 OBU_TEMPORAL_DELIMITER 是合法的" 与 "截断时拿多少算多少"。
+    template <typename Fn>
+    static void ForEachObuUnit(const uint8_t* data, size_t size, Fn&& fn) {
+        if (data == nullptr || size == 0) {
+            return;
+        }
+        const uint8_t* ptr = data;
+        size_t remaining = size;
+        while (remaining > 0) {
+            const uint8_t* before = ptr;
+            ObuView view;
+            if (!ReadObuView(ptr, remaining, view)) {
+                break;
+            }
+            // 只在指针没有推进时停止，避免死循环（见 ReadObuView 的失败语义）。
+            if (ptr <= before) {
+                break;
+            }
+            if constexpr (std::is_same_v<std::invoke_result_t<Fn, const ObuView&>, bool>) {
+                if (!fn(view)) {
+                    return;
+                }
+            } else {
+                fn(view);
+            }
+            remaining = static_cast<size_t>(data + size - ptr);
+        }
+    }
+
 private:
+    // 从 ptr 处读一个 OBU 头并算出 payload 区间；成功时把 ptr 推进到下一个 OBU。
+    // 返回 false 表示"这里不是合法 OBU 起始"—— 此时不推进 ptr，由调用方决定停止。
+    static bool ReadObuView(const uint8_t*& ptr, size_t remaining, ObuView& out);
     // 格式检测
     static ExtradataFormat DetectFormat(const uint8_t* data, size_t size);
 

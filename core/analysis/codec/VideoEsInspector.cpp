@@ -361,35 +361,34 @@ void VideoEsInspector::InspectHevc(const uint8_t* data, size_t size) {
 }
 
 void VideoEsInspector::InspectAv1(const uint8_t* data, size_t size) {
-    const std::vector<ObuUnit> obus = ExtradataParser::ExtractObuUnits(data, size);
-    for (const ObuUnit& obu : obus) {
-        if (obu.type != static_cast<uint8_t>(Av1ObuType::Metadata))
-            continue;
+    // 逐包调用：走零拷贝遍历。ExtractObuUnits 会把整帧 tile 数据复制一份，
+    // 而这里只看 metadata OBU（几十字节），那次复制纯属白花。
+    ExtradataParser::ForEachObuUnit(data, size, [this](const ObuView& view) {
+        if (view.type != static_cast<uint8_t>(Av1ObuType::Metadata))
+            return;
+        const uint8_t* p = view.payload;
+        const size_t n = view.size;
         size_t pos = 0;
         uint64_t metadata_type = 0;
-        if (!ReadLeb128(obu.data.data(), obu.data.size(), pos, metadata_type))
-            continue;
+        if (!ReadLeb128(p, n, pos, metadata_type))
+            return;
 
         if (metadata_type == kAv1MetadataTypeHdrCll) {
-            if (pos + 4 <= obu.data.size()) {
+            if (pos + 4 <= n) {
                 model::SeiSummary& sei = result_.sei;
                 sei.has_content_light_level = true;
-                sei.max_content_light_level = (static_cast<uint32_t>(obu.data[pos]) << 8) | obu.data[pos + 1];
-                sei.max_pic_average_light_level = (static_cast<uint32_t>(obu.data[pos + 2]) << 8) | obu.data[pos + 3];
+                sei.max_content_light_level = (static_cast<uint32_t>(p[pos]) << 8) | p[pos + 1];
+                sei.max_pic_average_light_level = (static_cast<uint32_t>(p[pos + 2]) << 8) | p[pos + 3];
             }
         } else if (metadata_type == kAv1MetadataTypeHdrMdcv) {
             // primary_chromaticity_x/y[3] u(16) + white_point x/y u(16)
             // + luminance_max/min u(32)
-            if (pos + 16 + 8 <= obu.data.size()) {
+            if (pos + 16 + 8 <= n) {
                 model::SeiSummary& sei = result_.sei;
-                const auto u16 = [&](size_t i) {
-                    return (static_cast<uint32_t>(obu.data[pos + i]) << 8) | obu.data[pos + i + 1];
-                };
+                const auto u16 = [&](size_t i) { return (static_cast<uint32_t>(p[pos + i]) << 8) | p[pos + i + 1]; };
                 const auto u32 = [&](size_t i) {
-                    return (static_cast<uint32_t>(obu.data[pos + i]) << 24) |
-                           (static_cast<uint32_t>(obu.data[pos + i + 1]) << 16) |
-                           (static_cast<uint32_t>(obu.data[pos + i + 2]) << 8) |
-                           static_cast<uint32_t>(obu.data[pos + i + 3]);
+                    return (static_cast<uint32_t>(p[pos + i]) << 24) | (static_cast<uint32_t>(p[pos + i + 1]) << 16) |
+                           (static_cast<uint32_t>(p[pos + i + 2]) << 8) | static_cast<uint32_t>(p[pos + i + 3]);
                 };
                 for (int i = 0; i < 3; ++i) {
                     sei.display_primaries_x[i] = static_cast<double>(u16(i * 4)) * kChromaScaleAv1;
@@ -402,16 +401,16 @@ void VideoEsInspector::InspectAv1(const uint8_t* data, size_t size) {
                 sei.has_mastering_display = true;
             }
         } else if (metadata_type == kAv1MetadataTypeItutT35) {
-            if (pos + 4 <= obu.data.size() && obu.data[pos] == kT35CountryCodeUs) {
+            if (pos + 4 <= n && p[pos] == kT35CountryCodeUs) {
                 const uint16_t provider_code =
-                    static_cast<uint16_t>((static_cast<uint16_t>(obu.data[pos + 1]) << 8) | obu.data[pos + 2]);
+                    static_cast<uint16_t>((static_cast<uint16_t>(p[pos + 1]) << 8) | p[pos + 2]);
                 if (provider_code == kT35TerminalProviderSmpte) {
                     result_.sei.has_hdr10plus = true;
                     ++result_.sei.hdr10plus_count;
                 }
             }
         }
-    }
+    });
 }
 
 void VideoEsInspector::ParseSeiRbsp(const uint8_t* data, size_t size, bool is_hevc) {
