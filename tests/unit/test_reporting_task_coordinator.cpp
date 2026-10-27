@@ -33,6 +33,8 @@ namespace {
 
 using videoeye::task::TaskState;
 using videoeye::ui::AnalysisTask;
+using videoeye::ui::MakeUiReportChannel;
+using videoeye::ui::PostUiUpdate;
 using videoeye::ui::ReportingTaskCoordinator;
 
 // QueuedConnection 要真的投递，得有一个应用实例和一个活着的接收者。
@@ -215,6 +217,7 @@ TEST_F(ReportingTaskCoordinatorTest, PostToUiSkipsDeadTask) {
     // alive=false 表示面板正在销毁：此时排队的 UI 更新必须被丢掉，
     // 否则会落到已销毁的 QWidget 上。
     auto dead = std::make_shared<AnalysisTask>();
+    dead->report = MakeUiReportChannel(receiver_, 1);
     dead->alive.store(false, std::memory_order_release);
     std::atomic<int> calls{0};
     runner.PostToUi(dead, [&]() { calls += 1; });
@@ -222,9 +225,97 @@ TEST_F(ReportingTaskCoordinatorTest, PostToUiSkipsDeadTask) {
     EXPECT_EQ(calls.load(), 0);
 
     auto live = std::make_shared<AnalysisTask>();
+    live->report = MakeUiReportChannel(receiver_, 2);
     runner.PostToUi(live, [&]() { calls += 1; });
     PumpUi();
     EXPECT_EQ(calls.load(), 1);
+}
+
+// 通道关闭之后投递一律作废 —— 这是"面板已销毁 / 任务已失效后，后台线程仍在回报"
+// 那条路径的唯一护栏（评审 P1-2）。
+TEST_F(ReportingTaskCoordinatorTest, ClosedReportChannelDropsUpdates) {
+    ReportingTaskCoordinator runner(rec_.MakeDeps(receiver_));
+    std::atomic<int> calls{0};
+
+    // 直接走自由函数：后台线程用的就是这一条路径，它不经过任何宿主对象。
+    const auto channel = MakeUiReportChannel(receiver_, 7);
+    auto live = std::make_shared<AnalysisTask>();
+    live->report = channel;
+
+    runner.PostToUi(live, [&]() { calls += 1; });
+    PumpUi();
+    EXPECT_EQ(calls.load(), 1);
+
+    channel->Close(); // 任务失效 / 面板回收
+    runner.PostToUi(live, [&]() { calls += 1; });
+    PostUiUpdate(channel, [&]() { calls += 1; });
+    PumpUi();
+    EXPECT_EQ(calls.load(), 1) << "关闭之后不该再有更新落到界面上";
+    EXPECT_FALSE(channel->IsOpen());
+}
+
+// 关闭必须带**任务身份**：换任务时新旧任务短暂并存，按"槽位"去关会关掉新任务
+// 刚开的那条通道，让它一上来就哑掉。
+TEST_F(ReportingTaskCoordinatorTest, ClosingAChannelRequiresTheMatchingTaskId) {
+    const auto channel = MakeUiReportChannel(receiver_, 42);
+    EXPECT_TRUE(channel->BelongsTo(42));
+    EXPECT_FALSE(channel->BelongsTo(43));
+
+    EXPECT_FALSE(channel->Close(43)) << "身份不符时不能关掉别人的通道";
+    EXPECT_TRUE(channel->IsOpen());
+    EXPECT_TRUE(channel->Close(42));
+    EXPECT_FALSE(channel->IsOpen());
+}
+
+// 已排队但还没执行的更新：执行时复核通道，关闭后一律跳过。
+TEST_F(ReportingTaskCoordinatorTest, QueuedUpdateRevalidatesChannelBeforeRunning) {
+    ReportingTaskCoordinator runner(rec_.MakeDeps(receiver_));
+    std::atomic<int> calls{0};
+    const auto channel = MakeUiReportChannel(receiver_, 8);
+
+    auto task = std::make_shared<AnalysisTask>();
+    task->report = channel;
+    runner.PostToUi(task, [&]() { calls += 1; }); // 排队
+    channel->Close();                             // 执行之前通道被关（面板正在销毁）
+    PumpUi();
+    EXPECT_EQ(calls.load(), 0) << "排队后关闭的更新不该再执行";
+}
+
+// 后台线程持有的是**通道**而不是宿主对象：模拟"QcRunner 放弃线程后面板继续跑"，
+// 线程在另一条线程上反复上报，通道一关就必须彻底安静（不崩、不投递）。
+TEST_F(ReportingTaskCoordinatorTest, BackgroundThreadKeepsReportingSafelyAfterClose) {
+    ReportingTaskCoordinator runner(rec_.MakeDeps(receiver_));
+    const auto channel = MakeUiReportChannel(receiver_, 11);
+
+    std::atomic<int> calls{0};
+    std::atomic<bool> stop{false};
+    std::thread reporter([&]() {
+        while (!stop.load()) {
+            // 后台线程只认识通道，不认识面板（正是 RunSingle 的进度回调形态）
+            PostUiUpdate(channel, [&]() { calls += 1; });
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    });
+
+    // 主线程一边转事件循环（让排队的更新真的执行），一边观察计数
+    for (int i = 0; i < 20; ++i) {
+        QCoreApplication::processEvents();
+        QCoreApplication::sendPostedEvents();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    const int before_close = calls.load();
+    channel->Close();
+    for (int i = 0; i < 20; ++i) {
+        QCoreApplication::processEvents();
+        QCoreApplication::sendPostedEvents();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    const int after_close = calls.load();
+    stop.store(true);
+    reporter.join();
+
+    EXPECT_GT(before_close, 0) << "关闭前那段时间里应当真的投递过（否则这条用例没验证到东西）";
+    EXPECT_EQ(after_close, before_close) << "通道关闭之后后台线程不该再投递任何更新";
 }
 
 TEST_F(ReportingTaskCoordinatorTest, RetireAllIsSafeWithoutAnyTask) {

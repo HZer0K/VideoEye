@@ -2,12 +2,16 @@
 //
 // 背景（评审 P1-1 / P1-2 的落点）：
 //   1) 旧实现：Box 里只放 AnalysisEngine 的裸指针，引擎本体挂在 AnalyzeFile 的局部
-//      shared_ptr 上。join_budget_ms 到点后 worker 被 detach，而 AnalyzeFile 一返回
+//      shared_ptr 上。等待预算到点后 worker 被 detach，而 AnalyzeFile 一返回
 //      局部 shared_ptr 就析构 —— 后台线程随后访问的就是已释放的引擎（悬空访问）。
-//      现在 Box 自持 shared_ptr<AnalysisEngine>。本文件用 join_budget_ms=0 把
-//      "超时 → detach" 这条路径稳定打出来，并在返回后让测试继续存活一小段时间，
+//      现在 Box 自持 shared_ptr<AnalysisEngine>。本文件用"预算 1ms + 取消等待 0"
+//      把"判定放弃 → detach" 这条路径稳定打出来，并在返回后让测试继续存活一小段时间，
 //      给被 detach 的 worker 留出收尾窗口 —— 这条用例就是 ASan 的回归落点
 //      （回退成裸指针实现时，ASan 会在这里报 use-after-free）。
+//   1b) 旧实现的等待预算只有一个 join_budget_ms，同时被当成"分析能跑多久"和"关停等
+//      多久"：报告页把 5 秒的关停回收预算塞进来，于是正常运行超过 5 秒的分析也被
+//      请求取消。现在三项策略各归各的（见 QcRunBudgets.h），"跑了很久但不限时 ==
+//      继续等"由下面的策略用例钉住。
 //   2) 旧实现"未获准（handle.valid()==false）仍会创建线程"：QcRunner 已改成无状态
 //      同步执行器，不再自持 TaskManager，这条路径随之消失；调度拒绝语义由
 //      TaskManager 的 BeginHandleRejectionReturnsFullyEmptyHandle 与并发句柄配对
@@ -16,7 +20,7 @@
 // 为什么用"垃圾内容 + 媒体扩展名"的假文件触发超时：
 //   IsAnalyzableFile 要求"存在 / 非空 / 不是目录"，而 AnalysisEngine 要真实走完
 //   avformat_open_input（读盘 + 探测）才可能失败结算 —— 比主线程"到点检查预算"
-//   的一步慢几个数量级，join_budget_ms=0 因此稳定走超时分支，且不依赖任何真实
+//   的一步慢几个数量级，"1 毫秒运行时长预算"因此稳定走放弃分支，且不依赖任何真实
 //   媒体文件（CI 不需要媒体样本）。
 
 #include <gtest/gtest.h>
@@ -27,28 +31,42 @@
 #include <string>
 #include <thread>
 
+#include "core/qc/AnalysisTaskRegistry.h"
 #include "core/qc/QcProfileMapper.h"
+#include "core/qc/QcRunBudgets.h"
 #include "core/qc/QcRunner.h"
+// 报告页的单文件等待策略住在这个"不依赖 Qt"的头里，因此这个不带 Qt 的测试目标也能
+// 直接断言它（评审 P1-1：单文件分析必须是不限时的）。
+#include "ui/reporting_panel/analysis_task.h"
 
 namespace fs = std::filesystem;
 
+using videoeye::qc::AnalysisTaskRegistry;
 using videoeye::qc::ClassifyMediaInput;
+using videoeye::qc::DecideWait;
 using videoeye::qc::IsAnalyzableFile;
 using videoeye::qc::IsAnalyzableInput;
 using videoeye::qc::IsNetworkUri;
 using videoeye::qc::MediaInput;
 using videoeye::qc::OptionsForDepth;
+using videoeye::qc::QcAbandonReason;
 using videoeye::qc::QcAnalysisDepth;
 using videoeye::qc::QcAnalyzeRequest;
 using videoeye::qc::QcProfile;
+using videoeye::qc::QcRunBudgets;
 using videoeye::qc::QcRunCallbacks;
 using videoeye::qc::QcRunner;
 using videoeye::qc::QcRunResult;
+using videoeye::qc::QcWaitDecision;
+using videoeye::qc::QcWaitState;
+using videoeye::ui::SingleAnalysisBudgets;
 
 namespace {
 
-// AnalyzeFile 超时收尾的固定文案；用整串相等断言，防止未来改文案时静默漂移。
-constexpr char kTimeoutError[] = "分析在等待预算内没有结束";
+// AnalyzeFile 放弃收尾的固定文案；用整串相等断言，防止未来改文案时静默漂移。
+constexpr char kOverBudgetError[] = "分析超出允许的运行时长";
+constexpr char kIoStalledError[] = "分析输入长时间无响应";
+constexpr char kCancelledError[] = "分析被取消";
 
 // 用 Fast 档：假文件本来打不开，档位只影响"打开成功后"的扫描深度。
 QcProfile FastProfile() {
@@ -70,7 +88,8 @@ fs::path MakeScratchDir(const std::string& name) {
 
 // 写一个"能过 IsAnalyzableFile 但 FFmpeg 一定打不开"的假媒体文件。
 // 4 MiB 接近 FFmpeg 默认探测上限（5 MiB），把 open 失败前的读盘/探测拉得足够长：
-// join_budget_ms=0 的"立刻检查预算"必定发生在引擎结算之前，超时分支才是确定的。
+// 1 毫秒的运行时长预算必定在引擎结算之前命中（NextWaitSlice 会把轮询夹到 1ms），
+// 放弃分支因此是确定的。
 fs::path WriteGarbageMediaFile(const fs::path& dir, const std::string& file_name) {
     const fs::path file = dir / file_name;
     std::ofstream out(file, std::ios::binary);
@@ -126,44 +145,138 @@ TEST(QcRunnerTest, ReturnsEngineFailureWithinBudgetWithoutTimeout) {
 
     QcRunner runner;
     const QcRunResult result = runner.AnalyzeFile(file.string(), FastProfile(), OptionsForDepth(QcAnalysisDepth::Fast),
-                                                  QcRunCallbacks{}, /*join_budget_ms=*/8000);
+                                                  QcRunCallbacks{}, QcRunBudgets::WithAnalysisBudget(8000));
     EXPECT_FALSE(result.ok);
-    EXPECT_NE(result.error, kTimeoutError); // 走的是结算路径，不是超时
-    EXPECT_FALSE(result.timed_out);         // 预算内结算不得误标超时
-    EXPECT_FALSE(result.error.empty());     // 失败原因来自引擎（FFmpeg 的打开错误）
+    EXPECT_NE(result.error, kOverBudgetError); // 走的是结算路径，不是超时
+    EXPECT_FALSE(result.timed_out);            // 预算内结算不得误标超时
+    EXPECT_FALSE(result.error.empty());        // 失败原因来自引擎（FFmpeg 的打开错误）
     EXPECT_EQ(result.profile_id, "unit-test");
 
     std::error_code ec;
     fs::remove_all(dir, ec);
 }
 
-// ---- 评审要求的核心回归：join_budget_ms = 0 的真超时 + detach ----
+// ---- 评审要求的核心回归：极短运行时长预算 -> 判定放弃 + detach ----
 //
 // 断言之外的关键：函数返回后测试不立刻结束，继续睡 ~1.5s —— 被 detach 的 worker
 // 仍在跑（盒子由它自己保活）。在"引擎挂局部 shared_ptr"的旧实现下，这段时间里
 // worker 访问 box->engine 就是 use-after-free，ASan 构建必报；现在的实现应当安静。
-TEST(QcRunnerTest, JoinBudgetZeroTimesOutAndDetachesWithoutCrash) {
+TEST(QcRunnerTest, TinyAnalysisBudgetAbandonsAndDetachesWithoutCrash) {
     const fs::path dir = MakeScratchDir("videoeye_qc_runner_timeout");
     const fs::path file = WriteGarbageMediaFile(dir, "garbage.mp4");
 
     QcRunner runner;
     const auto started = std::chrono::steady_clock::now();
+    // 运行 1ms 就判超预算，且取消等待 0ms —— 判定与放弃都在毫秒级发生。
     const QcRunResult result = runner.AnalyzeFile(file.string(), FastProfile(), OptionsForDepth(QcAnalysisDepth::Fast),
-                                                  QcRunCallbacks{}, /*join_budget_ms=*/0);
+                                                  QcRunCallbacks{}, QcRunBudgets{1, 0, 0});
     const double wall_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
 
     EXPECT_FALSE(result.ok);
-    EXPECT_EQ(result.error, kTimeoutError);
-    // 超时必须被标记出来（评审 P1-3）：调用方据此区分"引擎自己报失败"与"预算内没结算"，
-    // 也说明这次返回时后台线程已被放弃(detach)并收到强制取消请求。
+    EXPECT_EQ(result.error, kOverBudgetError);
+    // 放弃必须被标记出来（评审 P1-3）：调用方据此区分"引擎自己报失败"与"执行器放弃了它"，
+    // 也说明这次返回时后台线程已被 detach 并收到强制取消请求。
     EXPECT_TRUE(result.timed_out);
-    // 预算 0 = 一秒都不等：引擎打开垃圾文件也要毫秒级，主线程不能等它。
+    // 预算 1ms：引擎打开 4MiB 垃圾文件也要几十毫秒，主线程不能等它。
     EXPECT_LT(wall_ms, 1000.0);
 
-    // ASan 回归窗口：给被 detach 的 worker 足够时间跑完 Run 并触发回调收尾。
-    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    // 并发额度（评审 P2-3）：被放弃的线程仍占着额度 —— 它还没退出，FFmpeg / 内存 /
+    // 磁盘都还被它拿着。派发侧因此能统计"实际存活的分析任务"，而不是"已返回的条目数"。
+    EXPECT_GE(AnalysisTaskRegistry::Instance().TotalCount(), 1);
 
+    // ASan 回归窗口：给被 detach 的 worker 足够时间跑完 Run 并触发回调收尾。
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    // 线程体真正退出之后额度必须归还 —— 不归还的话批量侧会永久背压。
+    EXPECT_EQ(AnalysisTaskRegistry::Instance().TotalCount(), 0);
+
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
+// ---- 评审 P1-1 的核心回归：正常运行超过 5 秒**不该**被取消 ----
+//
+// 以前报告页把 kDefaultRecycleBudgetMs(5000) 当成"分析能跑多久"传进来，于是任何跑过
+// 5 秒的合法分析（长视频 / 多音轨 / 深度档）都会被请求取消并按超时收尾。
+// 现在"允许跑多久"是独立的 analysis_budget_ms，默认 0 = 不限时：跑了 10 分钟只要
+// 还在正常跑（或被明确允许）就继续等。这条用例用纯策略函数钉住，不依赖真实媒体。
+TEST(QcRunnerTest, LongRunningAnalysisWithoutBudgetKeepsWaiting) {
+    // 报告页单文件分析用的策略：不限时（关停走取消令牌 + cancel_wait_ms）
+    const QcRunBudgets budgets = SingleAnalysisBudgets();
+    EXPECT_EQ(budgets.analysis_budget_ms, 0) << "单文件分析不该带运行时长上限";
+
+    QcWaitState running;
+    running.elapsed_ms = 6000; // 已经跑了 6 秒 —— 换旧实现这里就已经被判超时了
+    running.idle_ms = 20;      // 而且一直在出进度，不是卡住
+    EXPECT_EQ(DecideWait(budgets, running), QcWaitDecision::Continue);
+
+    running.elapsed_ms = 10 * 60 * 1000; // 10 分钟也一样
+    running.idle_ms = 50;
+    EXPECT_EQ(DecideWait(budgets, running), QcWaitDecision::Continue);
+
+    // 给了上限才会在到点时判定放弃
+    const QcRunBudgets limited = QcRunBudgets::WithAnalysisBudget(5000);
+    EXPECT_EQ(DecideWait(limited, running), QcWaitDecision::RequestCancel);
+
+    // 判完之后只看 cancel_wait_ms：没到就继续等它自己收尾，到了才放弃线程
+    QcWaitState abandoning;
+    abandoning.reason = QcAbandonReason::OverBudget;
+    abandoning.abandon_elapsed_ms = 100;
+    EXPECT_EQ(DecideWait(budgets, abandoning), QcWaitDecision::Continue);
+    abandoning.abandon_elapsed_ms = budgets.cancel_wait_ms;
+    EXPECT_EQ(DecideWait(budgets, abandoning), QcWaitDecision::Abandon);
+}
+
+// IO 空闲超时：与总时长无关 —— "跑了很久但一直在出结果"不算卡住，
+// "开跑之后一点动静都没有"才放弃。
+TEST(QcRunnerTest, IdleTimeoutAbandonsStalledAnalysis) {
+    const QcRunBudgets budgets{0, 1000, 0}; // 不限总时长，静默 1 秒即判定无响应
+
+    QcWaitState busy_but_slow;
+    busy_but_slow.elapsed_ms = 9 * 60 * 1000; // 跑了 9 分钟
+    busy_but_slow.idle_ms = 100;              // 但 100ms 前刚出过进度
+    EXPECT_EQ(DecideWait(budgets, busy_but_slow), QcWaitDecision::Continue);
+
+    QcWaitState stalled;
+    stalled.elapsed_ms = 1200;
+    stalled.idle_ms = 1200; // 开跑之后毫无动静
+    EXPECT_EQ(DecideWait(budgets, stalled), QcWaitDecision::RequestCancel);
+}
+
+// 端到端：不限时的正常分析不会因为"跑得久"被误标超时（引擎自己失败就是失败）。
+TEST(QcRunnerTest, UnlimitedBudgetNeverMarksTimeout) {
+    const fs::path dir = MakeScratchDir("videoeye_qc_runner_unlimited");
+    const fs::path file = WriteGarbageMediaFile(dir, "garbage.mp4");
+
+    QcRunner runner;
+    const QcRunResult result = runner.AnalyzeFile(file.string(), FastProfile(), OptionsForDepth(QcAnalysisDepth::Fast),
+                                                  QcRunCallbacks{}, QcRunBudgets::Unlimited());
+    EXPECT_FALSE(result.ok);
+    EXPECT_FALSE(result.timed_out) << "不限时就不该有任何放弃判定";
+    EXPECT_NE(result.error, kOverBudgetError);
+    EXPECT_NE(result.error, kIoStalledError);
+    EXPECT_FALSE(result.error.empty());
+
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
+// 调用方取消：放弃线程但**不**标 timed_out（批量侧按文案落成 Cancelled，
+// 标了就会把"用户点了停止"显示成"文件有问题"）。
+TEST(QcRunnerTest, CallerCancelAbandonsThreadWithoutTimeoutFlag) {
+    const fs::path dir = MakeScratchDir("videoeye_qc_runner_cancel");
+    const fs::path file = WriteGarbageMediaFile(dir, "garbage.mp4");
+
+    QcRunner runner;
+    QcRunCallbacks callbacks;
+    callbacks.should_cancel = []() { return true; };
+    const QcRunResult result = runner.AnalyzeFile(file.string(), FastProfile(), OptionsForDepth(QcAnalysisDepth::Fast),
+                                                  callbacks, QcRunBudgets{0, 0, 0});
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.error, kCancelledError);
+    EXPECT_FALSE(result.timed_out) << "调用方取消不该被记成超时";
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(300)); // 给被放弃的线程一点收尾时间
     std::error_code ec;
     fs::remove_all(dir, ec);
 }
@@ -234,7 +347,7 @@ TEST(QcRunnerTest, IsAnalyzableInputSplitsNetworkAndLocalGates) {
 
 // 网络源进单文件 QC：不再被本地闸门判成"文件不存在"（评审 P2-7 的核心回归）。
 //
-// join_budget_ms = 0 让 AnalyzeFile 立刻超时返回，测试不依赖任何真实网络媒体；
+// 1 毫秒的运行时长预算让 AnalyzeFile 立刻放弃并返回，测试不依赖任何真实网络媒体；
 // 关键是错误原因不再是"文件不存在" —— 修复前 rtsp/http/rtmp 一进来就是这句。
 TEST(QcRunnerTest, NetworkUriIsNotRejectedAsMissingFile) {
     QcRunner runner;
@@ -243,7 +356,7 @@ TEST(QcRunnerTest, NetworkUriIsNotRejectedAsMissingFile) {
     input.uri = "rtsp://127.0.0.1:6553/videoeye-not-here";
 
     const QcRunResult result = runner.AnalyzeFile(input, FastProfile(), OptionsForDepth(QcAnalysisDepth::Fast),
-                                                  QcRunCallbacks{}, /*join_budget_ms=*/0);
+                                                  QcRunCallbacks{}, QcRunBudgets{1, 0, 0});
     EXPECT_FALSE(result.ok);
     EXPECT_EQ(result.error.find("文件不存在"), std::string::npos)
         << "网络源被本地存在性闸门拦下了（分类没接通）: " << result.error;

@@ -8,6 +8,8 @@
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "core/analysis/detail/AnalysisStreamSelection.h"
@@ -280,4 +282,51 @@ TEST(ParserReviewPipeline, DimensionStatusIsAuthoritativeOverLegacyFlags) {
     analyzed_assembler.FinalizeDimensionStatus(0, 0);
     EXPECT_TRUE(analyzed.DimensionExecuted(AnalysisDimension::AudioBitstream));
     EXPECT_TRUE(analyzed.audio_bitstream_analyzed);
+}
+
+// ==========================================================================
+// 探针必须是不变量：禁拷贝、可移动、析构即释放（评审 P2-4）
+//
+// 以前它们只是"带 Release() 的裸聚合体"，释放全靠 AnalysisPipeline 显式调
+// ReleaseProbes()。栈展开（Prepare / 逐包分析 / 回调抛异常）不会走到那一步，
+// 外围的异常捕获能让线程不直接结束，却补不上 FFmpeg 资源的释放。
+// 现在"最终一定被释放"由析构兜底，禁拷贝则杜绝"两份句柄各释放一次"的双释放。
+// ==========================================================================
+TEST(AnalysisPipelineEdges, ProbesAreMoveOnlyAndReleaseOnDestruction) {
+    static_assert(!std::is_copy_constructible<AudioQcProbe>::value, "probe 必须禁拷贝");
+    static_assert(!std::is_copy_constructible<FrameTypeProbe>::value, "probe 必须禁拷贝");
+    static_assert(!std::is_copy_constructible<ColorFrameProbe>::value, "probe 必须禁拷贝");
+    static_assert(std::is_move_constructible<AudioQcProbe>::value, "probe 必须可移动（vector 扩容要用）");
+    static_assert(std::is_move_constructible<FrameTypeProbe>::value, "probe 必须可移动");
+    static_assert(std::is_move_constructible<ColorFrameProbe>::value, "probe 必须可移动");
+
+    AudioQcProbe probe;
+    probe.frame = av_frame_alloc();
+    ASSERT_TRUE(probe.frame != nullptr);
+    probe.ready = true;
+
+    AVFrame* borrowed = probe.frame;
+    {
+        AudioQcProbe moved = std::move(probe);
+        EXPECT_TRUE(moved.frame == borrowed);
+        // 搬走之后源对象不再拥有句柄 —— 否则它析构时会把同一个 AVFrame 放两次
+        EXPECT_TRUE(probe.frame == nullptr);
+        EXPECT_FALSE(probe.ready);
+    } // moved 析构：AVFrame 在这里被释放（ASan/LSan 会盯住"有没有真释放"）
+    EXPECT_TRUE(probe.frame == nullptr);
+}
+
+// 管线析构兜底：即使一次 ReleaseProbes() 都没调（栈展开那条路径），
+// 三条通路也必须在管线消失时收干净。这里只验证"析构不崩 + 可重复释放"，
+// 真正的"有没有漏"由 ASan / LSan 构建兜底。
+TEST(AnalysisPipelineEdges, PipelineDestructorReleasesProbesWithoutExplicitCall) {
+    AnalysisOptions options = QuietOptions();
+    options.analyze_audio_qc = true;
+    options.analyze_bitrate_gop = true;
+    options.analyze_color_hdr = true;
+    {
+        AnalysisPipeline pipeline(options);
+        pipeline.ReleaseProbes(); // 幂等：调几次都不会重复释放
+        pipeline.ReleaseProbes();
+    } // 析构再收一次：显式释放过的探针已回到"什么都没拿"的状态
 }

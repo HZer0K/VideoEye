@@ -9,8 +9,11 @@
 #include <thread>
 #include <vector>
 
+#include "core/qc/AnalysisTaskRegistry.h"
 #include "core/qc/BatchQcRunner.h"
+#include "core/qc/QcRunBudgets.h"
 
+using videoeye::qc::AnalysisTaskRegistry;
 using videoeye::qc::BatchItemStatus;
 using videoeye::qc::BatchQcCallbacks;
 using videoeye::qc::BatchQcItem;
@@ -18,6 +21,7 @@ using videoeye::qc::BatchQcOptions;
 using videoeye::qc::BatchQcRunner;
 using videoeye::qc::QcAnalyzeFn;
 using videoeye::qc::QcAnalyzeRequest;
+using videoeye::qc::QcRunBudgets;
 using videoeye::qc::QcRunResult;
 using videoeye::qc::ToString;
 
@@ -178,18 +182,18 @@ TEST(BatchQcRunnerTest, SucceededVsExportFailed) {
     }
 }
 
-// ---- 单项超时预算：透传 + TimedOut 终态（评审 P2-5）----
+// ---- 单项等待策略：透传 + TimedOut 终态（评审 P2-5 / P1-1）----
 //
 // per_item_timeout_ms 必须随请求下发给分析函数（不带，批量侧就没法为每个文件设定
-// 最长等待）；分析函数回传 timed_out 的条目要落成 TimedOut，且不与"引擎报错"混计。
+// 最长运行时长）；分析函数回传 timed_out 的条目要落成 TimedOut，且不与"引擎报错"混计。
 TEST(BatchQcRunnerTest, PerItemTimeoutPropagatesAndMarksTimedOut) {
     std::atomic<int> seen_budget{-1};
     QcAnalyzeFn analyze = [&seen_budget](const QcAnalyzeRequest& req) {
-        seen_budget.store(req.join_budget_ms, std::memory_order_release);
+        seen_budget.store(req.budgets.analysis_budget_ms, std::memory_order_release);
         QcRunResult r;
         r.ok = false;
-        r.timed_out = true; // 执行器自己的等待预算耗尽，后台线程被放弃
-        r.error = "分析在等待预算内没有结束";
+        r.timed_out = true; // 执行器判定放弃（超运行时长 / IO 无响应）
+        r.error = "分析超出允许的运行时长";
         return r;
     };
 
@@ -204,7 +208,7 @@ TEST(BatchQcRunnerTest, PerItemTimeoutPropagatesAndMarksTimedOut) {
     BatchQcRunner runner;
     const auto run = runner.Run(items, options, analyze, BatchQcCallbacks{});
 
-    EXPECT_EQ(seen_budget.load(), 1234) << "per_item_timeout_ms 没透传到 QcAnalyzeRequest::join_budget_ms";
+    EXPECT_EQ(seen_budget.load(), 1234) << "per_item_timeout_ms 没透传到 QcAnalyzeRequest::budgets";
     EXPECT_EQ(run.items[0].status, BatchItemStatus::TimedOut);
     EXPECT_EQ(run.items[1].status, BatchItemStatus::TimedOut);
     EXPECT_EQ(run.summary.timed_out, 2);
@@ -212,27 +216,58 @@ TEST(BatchQcRunnerTest, PerItemTimeoutPropagatesAndMarksTimedOut) {
     EXPECT_EQ(std::string(ToString(BatchItemStatus::TimedOut)), std::string("超时"));
 }
 
-// 默认不设 per_item_timeout_ms：请求里保持 0（"用分析函数自带默认预算"），
-// 批量层不塞任何魔法值，也不误标 TimedOut。
-TEST(BatchQcRunnerTest, DefaultPerItemTimeoutStaysZeroAndDoesNotTimeOut) {
-    std::atomic<int> seen_budget{-1};
-    QcAnalyzeFn analyze = [&seen_budget](const QcAnalyzeRequest& req) {
-        seen_budget.store(req.join_budget_ms, std::memory_order_release);
+// 三项策略各自独立下传：运行时长 / IO 空闲 / 取消等待不能互相覆盖
+// （以前只有一个 join_budget_ms，改一个就动另一个，评审 P1-1 的根因）。
+TEST(BatchQcRunnerTest, AllThreeWaitBudgetsTravelTogether) {
+    QcRunBudgets seen{};
+    QcAnalyzeFn analyze = [&seen](const QcAnalyzeRequest& req) {
+        seen = req.budgets;
         QcRunResult r;
         r.ok = true;
-        r.report.score = 100.0;
-        r.report.verdict = "通过";
         return r;
     };
 
     std::vector<BatchQcItem> items(1);
     items[0].path = "a.mp4";
 
-    BatchQcRunner runner;
-    const auto run = runner.Run(items, BatchQcOptions{}, analyze, BatchQcCallbacks{});
+    BatchQcOptions options;
+    options.per_item_timeout_ms = 5000;
+    options.io_idle_timeout_ms = 1500;
+    options.cancel_wait_ms = 800;
 
-    EXPECT_EQ(seen_budget.load(), 0);
+    BatchQcRunner runner;
+    const auto run = runner.Run(items, options, analyze, BatchQcCallbacks{});
+
     EXPECT_EQ(run.items[0].status, BatchItemStatus::Succeeded);
-    EXPECT_EQ(run.summary.timed_out, 0);
+    EXPECT_EQ(seen.analysis_budget_ms, 5000);
+    EXPECT_EQ(seen.io_idle_timeout_ms, 1500);
+    EXPECT_EQ(seen.cancel_wait_ms, 800);
+}
+
+// 批量派发前必须向登记处领额度，且额度在分析函数返回后**已归还**（未被认领时兜底还）。
+// 这条用例盯的是"统一登记"不会把计数泄漏成永久占用的额度（评审 P2-3）。
+TEST(BatchQcRunnerTest, AnalysisSlotsAreRegisteredAndReturned) {
+    std::atomic<bool> saw_slot{false};
+    QcAnalyzeFn analyze = [&saw_slot](const QcAnalyzeRequest& req) {
+        saw_slot.store(req.slot != nullptr);
+        QcRunResult r;
+        r.ok = true;
+        return r;
+    };
+
+    std::vector<BatchQcItem> items(3);
+    for (int i = 0; i < 3; ++i)
+        items[i].path = "a" + std::to_string(i) + ".mp4";
+
+    BatchQcOptions options;
+    options.max_parallel = 2;
+
+    BatchQcRunner runner;
+    const auto run = runner.Run(items, options, analyze, BatchQcCallbacks{});
+
+    EXPECT_TRUE(saw_slot.load()) << "派发时没带上并发额度";
+    EXPECT_EQ(run.summary.succeeded, 3);
+    // 假分析函数不认领额度 -> 派发侧兜底归还；跑完不该有额度滞留。
+    EXPECT_EQ(AnalysisTaskRegistry::Instance().TotalCount(), 0);
 }
 } // namespace

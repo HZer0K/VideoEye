@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -55,7 +56,10 @@ using videoeye::ui::ApplyExportPaths;
 using videoeye::ui::BatchMatchesSeverityFilter;
 using videoeye::ui::BatchMatchesStatusFilter;
 using videoeye::ui::CanReuseAnalysis;
+using videoeye::ui::CoveredAnalysisFlags;
 using videoeye::ui::FileVersionStamp;
+using videoeye::ui::FreezeInputIdentity;
+using videoeye::ui::InputIdentity;
 using videoeye::ui::IsResultFresh;
 using videoeye::ui::kBatchSeverityFilterAll;
 using videoeye::ui::kBatchSeverityFilterClean;
@@ -467,6 +471,19 @@ TEST(QcScanStatusTest, CancelledIsNotCompleted) {
 // 报告页"结果新鲜度"：切换文件 / 模板后上一次结果必须作废，否则会把旧结果导出去。
 // （UI 侧的导出按钮使能就是这套判定的直接映射。）
 // ---------------------------------------------------------------------------
+namespace {
+
+// 手工造一个文件版本指纹（不碰磁盘，判定逻辑可脱离文件系统驱动）
+FileVersionStamp VersionOf(std::uint64_t size, std::int64_t mtime_ns) {
+    FileVersionStamp v;
+    v.valid = true;
+    v.size = size;
+    v.mtime_ns = mtime_ns;
+    return v;
+}
+
+} // namespace
+
 TEST(ResultFreshnessTest, MatchingFileAndProfileIsFresh) {
     const ResultStamp stamp{"a.mp4", "hls-vod", true};
     EXPECT_TRUE(IsResultFresh(stamp, "a.mp4", "hls-vod"));
@@ -480,6 +497,70 @@ TEST(ResultFreshnessTest, SwitchingFileInvalidates) {
 TEST(ResultFreshnessTest, SwitchingProfileInvalidates) {
     const ResultStamp stamp{"a.mp4", "hls-vod", true};
     EXPECT_FALSE(IsResultFresh(stamp, "a.mp4", "broadcast")) << "切换到另一个模板后旧结果必须过期";
+}
+
+// 评审 P2-5：新鲜度必须重新核对**文件版本**。只比路径与模板 id 时，
+// "分析完把文件换成另一个同名文件"仍算新鲜 —— 导出按钮照常可点，导出去的报告
+// 对不上当前文件。
+TEST(ResultFreshnessTest, FileVersionChangeMakesResultStale) {
+    ResultStamp stamp{"a.mp4", "hls-vod", true};
+    stamp.version = VersionOf(1024, 100);
+    EXPECT_TRUE(IsResultFresh(stamp, "a.mp4", "hls-vod", VersionOf(1024, 100)));
+    // 大小变了
+    EXPECT_FALSE(IsResultFresh(stamp, "a.mp4", "hls-vod", VersionOf(2048, 100)));
+    // 修改时间变了（大小相同：脚本重导出的典型形态）
+    EXPECT_FALSE(IsResultFresh(stamp, "a.mp4", "hls-vod", VersionOf(1024, 200)));
+    // 现在取不到指纹（文件被删 / 换成了网络源）也不能算新鲜
+    EXPECT_FALSE(IsResultFresh(stamp, "a.mp4", "hls-vod", FileVersionStamp{}));
+}
+
+// 网络源没有版本可比：退化为只比路径与模板（这是唯一能做的判定）
+TEST(ResultFreshnessTest, NetworkSourceFallsBackToPathAndProfile) {
+    ResultStamp stamp{"http://host/a.m3u8", "hls-vod", true};
+    stamp.version = FileVersionStamp{}; // 网络源拿不到本地指纹
+    EXPECT_TRUE(IsResultFresh(stamp, "http://host/a.m3u8", "hls-vod", FileVersionStamp{}));
+    EXPECT_FALSE(IsResultFresh(stamp, "http://host/a.m3u8", "broadcast", FileVersionStamp{}));
+}
+
+// 输入身份：发起时冻结、完成时复核（评审 P2-5）
+TEST(InputIdentityTest, FrozenIdentityDetectsFilesReplacedDuringAnalysis) {
+    const InputIdentity frozen{"a.mp4", VersionOf(1024, 100)};
+    EXPECT_TRUE(frozen.Matches("a.mp4", VersionOf(1024, 100)));
+    // 分析期间文件被替换：完成时取到的版本不同
+    EXPECT_FALSE(frozen.Matches("a.mp4", VersionOf(1024, 999)));
+    EXPECT_FALSE(frozen.Matches("a.mp4", VersionOf(4096, 100)));
+    // 换了路径
+    EXPECT_FALSE(frozen.Matches("b.mp4", VersionOf(1024, 100)));
+    // 网络源：两侧都没有指纹时只比路径
+    const InputIdentity network{"http://host/a.m3u8", FileVersionStamp{}};
+    EXPECT_TRUE(network.Matches("http://host/a.m3u8", FileVersionStamp{}));
+    EXPECT_FALSE(network.Matches("http://host/b.m3u8", FileVersionStamp{}));
+}
+
+// 真实文件：冻结 -> 改写 -> 复核，必须判否（这条覆盖纳秒精度那条口径）
+TEST(InputIdentityTest, FrozenIdentityOfARealFileChangesAfterRewrite) {
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "videoeye_result_stamp_identity";
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir, ec);
+    const std::filesystem::path file = dir / "clip.mp4";
+
+    {
+        std::ofstream out(file, std::ios::binary);
+        out << "first";
+    }
+    const InputIdentity frozen = FreezeInputIdentity(file.string());
+    EXPECT_TRUE(frozen.version.valid);
+    EXPECT_TRUE(frozen.Matches(file.string(), QueryFileVersion(file.string())));
+
+    {
+        std::ofstream out(file, std::ios::binary);
+        out << "second version with a different length";
+    }
+    EXPECT_FALSE(frozen.Matches(file.string(), QueryFileVersion(file.string())))
+        << "文件在分析期间被替换，冻结的身份必须判否（否则旧结果会被登记到新文件上）";
+
+    std::filesystem::remove_all(dir, ec);
 }
 
 TEST(ResultFreshnessTest, InvalidStampOrEmptyPathIsNeverFresh) {
@@ -507,6 +588,87 @@ TEST(AnalysisOptionsCoversTest, DeeperCachedCoversShallowerRequired) {
     EXPECT_FALSE(AnalysisOptionsCovers(standard, deep)) << "Standard 没解帧类型";
 }
 
+// 覆盖判定必须是**表驱动**的（评审 P2-5）：手工逐个 if 漏过帧顺序 / 音频位流 /
+// 参数时间轴 / TS 传输层 / 容器体检五个开关 —— 它们恰好在当前内置深度模板里取值相同，
+// 所以一直没暴露。这里逐字段核对表里有没有它们，新增采集开关而不登记就会红。
+TEST(AnalysisOptionsCoversTest, EveryAcquisitionFlagIsRegisteredInTheCoverageTable) {
+    const std::vector<videoeye::ui::AnalysisOptionFlag> table = CoveredAnalysisFlags();
+    const std::vector<videoeye::ui::AnalysisOptionFlag> all = {
+        &AnalysisOptions::detect_container_layout,    &AnalysisOptions::analyze_bitrate_gop,
+        &AnalysisOptions::decode_frame_types,         &AnalysisOptions::analyze_audio_qc,
+        &AnalysisOptions::audio_qc_all_tracks,        &AnalysisOptions::analyze_audio_bitstream,
+        &AnalysisOptions::analyze_color_hdr,          &AnalysisOptions::analyze_bitstream,
+        &AnalysisOptions::analyze_parameter_timeline, &AnalysisOptions::analyze_frame_order,
+        &AnalysisOptions::analyze_mp4_sample_table,   &AnalysisOptions::analyze_streaming_package,
+        &AnalysisOptions::analyze_subtitle,           &AnalysisOptions::analyze_timecode,
+        &AnalysisOptions::analyze_aux_data,           &AnalysisOptions::analyze_ts_transport,
+        &AnalysisOptions::analyze_legacy_container,
+    };
+    for (const auto flag : all) {
+        EXPECT_NE(std::find(table.begin(), table.end(), flag), table.end())
+            << "有采集开关没登记进覆盖表（新增维度时最容易漏这一步）";
+    }
+    EXPECT_EQ(table.size(), all.size()) << "表里有多余/重复项";
+}
+
+// 漏掉的那五个开关：单独关掉其中任意一个，覆盖都必须判否。
+TEST(AnalysisOptionsCoversTest, PreviouslyMissingFlagsBreakCoverage) {
+    const auto deep = videoeye::qc::OptionsForDepth(videoeye::qc::QcAnalysisDepth::Deep);
+    // 先确认内置模板确实给不出差异（这正是"漏了也不报错"的原因）
+    EXPECT_TRUE(deep.analyze_frame_order);
+    EXPECT_TRUE(deep.analyze_audio_bitstream);
+    EXPECT_TRUE(deep.analyze_parameter_timeline);
+    EXPECT_TRUE(deep.analyze_ts_transport);
+    EXPECT_TRUE(deep.analyze_legacy_container);
+
+    const std::vector<videoeye::ui::AnalysisOptionFlag> flags = {
+        &AnalysisOptions::analyze_frame_order,        &AnalysisOptions::analyze_audio_bitstream,
+        &AnalysisOptions::analyze_parameter_timeline, &AnalysisOptions::analyze_ts_transport,
+        &AnalysisOptions::analyze_legacy_container,
+    };
+    for (const auto flag : flags) {
+        AnalysisOptions cached = deep;
+        cached.*flag = false; // 缓存没采这一维
+        EXPECT_FALSE(AnalysisOptionsCovers(cached, deep)) << "关掉的开关没被覆盖判定看见（等于允许拿缺维度的结果复用）";
+        // 要求里关掉则不构成要求
+        AnalysisOptions required = deep;
+        required.*flag = false;
+        EXPECT_TRUE(AnalysisOptionsCovers(deep, required));
+    }
+}
+
+// 扫描上限的覆盖关系：0 表示"不限制"，不能只比大小。
+TEST(AnalysisOptionsCoversTest, ScanLimitsFollowUnlimitedWinsRule) {
+    AnalysisOptions cached;
+    AnalysisOptions required = cached;
+
+    // 包数上限：要求全扫(0)而缓存是抽样 -> 不覆盖；缓存不限 -> 覆盖任何要求
+    cached.max_packets = 1000;
+    EXPECT_FALSE(AnalysisOptionsCovers(cached, required));
+    cached.max_packets = 0;
+    required.max_packets = 1000;
+    EXPECT_TRUE(AnalysisOptionsCovers(cached, required));
+    cached.max_packets = 2000;
+    EXPECT_TRUE(AnalysisOptionsCovers(cached, required));
+    cached.max_packets = 500;
+    EXPECT_FALSE(AnalysisOptionsCovers(cached, required));
+
+    // 音轨上限：缓存少测了几条轨 -> 不覆盖
+    cached = AnalysisOptions{};
+    required = AnalysisOptions{};
+    required.audio_qc_max_tracks = 4;
+    cached.audio_qc_max_tracks = 2;
+    EXPECT_FALSE(AnalysisOptionsCovers(cached, required));
+
+    // TS 传输层：要求扫全文(<=0)而缓存只扫了前 20 万包 -> 不覆盖
+    cached = AnalysisOptions{};
+    required = AnalysisOptions{};
+    required.ts_transport_max_packets = 0;
+    EXPECT_FALSE(AnalysisOptionsCovers(cached, required));
+    required.ts_transport_max_packets = 1000;
+    EXPECT_TRUE(AnalysisOptionsCovers(cached, required));
+}
+
 TEST(AnalysisOptionsCoversTest, CoarserSampleIntervalDoesNotCover) {
     AnalysisOptions cached; // 默认 1.0s
     AnalysisOptions required;
@@ -529,14 +691,6 @@ videoeye::ui::ResultStamp MakeStamp(const std::string& path, const videoeye::ui:
     stamp.scan_status = status;
     stamp.version = version;
     return stamp;
-}
-
-videoeye::ui::FileVersionStamp VersionOf(std::uint64_t size, std::int64_t mtime_ns) {
-    videoeye::ui::FileVersionStamp v;
-    v.valid = true;
-    v.size = size;
-    v.mtime_ns = mtime_ns;
-    return v;
 }
 
 } // namespace
