@@ -13,13 +13,90 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <thread>
 
 #include "core/domain/task/TaskProtocol.h"
+#include "core/qc/QcRunBudgets.h"
+
+class QObject; // 前向声明即可：本头文件不依赖 Qt，可被单测直接引用
 
 namespace videoeye {
 namespace ui {
+
+// 后台线程回报 UI 的**唯一通道**（评审 P1-2）。
+//
+// 以前后台线程拿到的是"面板指针 + 一个 std::function"，进度回调直接捕获裸 this 并调
+// 面板的 PostToUi()。QcRunner 超预算 detach 之后，那条线程还活着而面板可能已经销毁：
+// 它恢复运行或收尾时仍会调用面板成员函数 —— alive 检查虽然在里面，却发生在"已经解引用
+// 面板指针之后"，护不住前面的访问。
+//
+// 现在后台线程只持有这份**自持有**的通道（shared_ptr，不指向任何宿主对象）与任务身份：
+//   * 通道里只有"接收端 QObject*"与"是否还开着"，没有面板 this；
+//   * 任务结束/失效时宿主关闭通道，之后任何回报都被静默丢弃（连投递都不会发生）；
+//   * 已排队但还没执行的更新，执行前会再校验一次通道 —— 关闭后一律跳过。
+// 于是"面板已销毁"与"后台仍在回报"这两种时序不再相交。
+struct UiReportChannel {
+    mutable std::mutex mutex;
+    // false 之后不再投递任何更新（任务已完成 / 已失效 / 面板正在销毁）。
+    bool open = true;
+    // 受生命周期约束的接收端：Qt 在它销毁时会丢弃排给它的事件，所以"投递了但接收端没了"
+    // 这件事由 Qt 兜底，不需要通道自己追踪对象存活。
+    QObject* receiver = nullptr;
+    // 任务身份：每次分析一条新通道，id 不同 —— 旧任务的迟来回报不会落到新任务上。
+    std::uint64_t task_id = 0;
+
+    bool IsOpen() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return open;
+    }
+    // 关闭通道。返回后**不会再有任何投递在飞行中**（Post 全程持同一把锁，
+    // 所以 Close 只可能排在"某次投递已经完成"之后）。
+    void Close() {
+        std::lock_guard<std::mutex> lock(mutex);
+        open = false;
+    }
+    // 带身份校验的关闭：只有**这条任务自己**（或它的宿主拿着同一个 id）能关。
+    // 换任务时新旧任务会短暂并存，旧任务的迟来收尾若按"槽位"去关，关掉的会是
+    // 新任务刚开的那条通道 —— 于是新任务一开始就哑了。返回 false 表示没关（id 不符）。
+    bool Close(std::uint64_t expected_task_id) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (task_id != expected_task_id)
+            return false;
+        open = false;
+        return true;
+    }
+    // 这条通道属于哪个任务（迟来回报的身份判据）
+    bool BelongsTo(std::uint64_t expected_task_id) const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return task_id == expected_task_id;
+    }
+};
+
+using UiReportChannelPtr = std::shared_ptr<UiReportChannel>;
+
+inline UiReportChannelPtr MakeUiReportChannel(QObject* receiver, std::uint64_t task_id) {
+    auto channel = std::make_shared<UiReportChannel>();
+    channel->receiver = receiver;
+    channel->task_id = task_id;
+    return channel;
+}
+
+// 把一次 UI 更新投递回接收端所在的线程。通道关闭 / 为空时静默丢弃。
+// 定义在 ReportingTaskCoordinator.cpp（那里才有 Qt 的 QMetaObject）。
+void PostUiUpdate(const UiReportChannelPtr& channel, std::function<void()> updater);
+
+// 单文件分析的等待策略（评审 P1-1）。
+//
+// ❗ 以前这里传的是 kDefaultRecycleBudgetMs(5000) —— 那是"关停时等多久"的预算，被当成
+// "分析能跑多久"用，于是任何正常运行超过 5 秒的分析都会被请求取消并按超时收尾。
+// 现在正常运行**不限时**（跑多久由业务配置决定），关停走取消令牌 + cancel_wait_ms。
+inline qc::QcRunBudgets SingleAnalysisBudgets() {
+    return qc::QcRunBudgets{};
+}
 
 struct AnalysisTask {
     std::thread thread;
@@ -27,6 +104,8 @@ struct AnalysisTask {
     task::CancelToken cancel;
     // 任务身份与归还终态的凭证。报告页不自己编号，id 由 TaskManager 在 slot 里分配。
     task::TaskHandle handle;
+    // 后台线程回报 UI 的独立通道（自持有，不指向面板）。任务失效时由宿主关闭。
+    UiReportChannelPtr report;
     // 任务存续期间为 true；析构/回收时置 false 阻止回调触碰 this。
     // 这是**面板**的存活标志（不是任务的），所以仍留在这一层。
     std::atomic<bool> alive{true};

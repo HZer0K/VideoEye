@@ -16,6 +16,35 @@ namespace {
 constexpr const char* kTaskSlot = "reporting-panel";
 } // namespace
 
+// ---- 后台线程回报 UI 的唯一入口（评审 P1-2）----
+//
+// 这里刻意**不**碰任何宿主对象：入参只有通道（自持有）与更新动作。
+// 通道关着就直接返回 —— 于是"面板已销毁 / 任务已失效"之后，后台线程连一次投递都不会发，
+// 更不会去解引用面板指针。
+//
+// 投递全程持通道的锁，Close() 同样要这把锁：所以 Close 返回之后不可能还有投递在飞行中
+// （这正是"关界面"与"后台仍在回报"两个时序不相交的依据）。
+void PostUiUpdate(const UiReportChannelPtr& channel, std::function<void()> updater) {
+    if (!channel)
+        return;
+    UiReportChannelPtr held = channel;
+    std::unique_lock<std::mutex> lock(held->mutex);
+    if (!held->open)
+        return;
+    QObject* receiver = held->receiver;
+    if (receiver == nullptr)
+        return;
+    // 执行时**再校验一次**：从投递到执行之间通道可能已被关闭（任务完成 / 回收 / 换任务）。
+    QMetaObject::invokeMethod(
+        receiver,
+        [held, updater]() {
+            if (!held->IsOpen())
+                return;
+            updater();
+        },
+        Qt::QueuedConnection);
+}
+
 ReportingTaskCoordinator::ReportingTaskCoordinator(Deps deps) : deps_(std::move(deps)) {
 }
 
@@ -56,6 +85,9 @@ ReportingTaskCoordinator::Start(Slot slot, const std::function<void(const std::s
     auto task = std::make_shared<AnalysisTask>();
     task->handle = handle;
     task->cancel = handle.cancel;
+    // 回报通道随任务一起生：里面只有接收端与任务身份，后台线程不再持有面板指针。
+    // 任务 id 进通道是为了让"旧任务的迟来回报"能被认出来（每个任务一条新通道）。
+    task->report = MakeUiReportChannel(deps_.ui, static_cast<std::uint64_t>(handle.id));
     task->body_done.store(false, std::memory_order_release);
     SlotTask(slot) = task;
 
@@ -84,11 +116,16 @@ void ReportingTaskCoordinator::Retire(std::shared_ptr<AnalysisTask>& task) {
     LOG_INFO(std::string("报告页开始回收任务 #") + std::to_string(handle.id) +
              "（严格 Cooperative：请求取消后等待线程体收尾，无硬时间上限）");
 
-    // 请求取消并封死"还允许往面板上刷结果"这条路。顺序不能反 —— 先取消，任务体
-    // 才可能在预算内自己收尾；取消必须做，否则取消按钮点了没反应（这条路径就是
-    // 取消按钮 / 析构两条路共用的一份收尾逻辑）。
-    task->cancel.RequestCancel();
+    // 先关回报通道，再请求取消 —— 顺序不能反：
+    // 通道一关，后台线程（含 QcRunner 超预算后 detach 出去的那条）就再也不会往面板上
+    // 投递任何东西，也不必再碰到面板指针；之后才轮到取消，让任务体在预算内自己收尾
+    // （取消必须做，否则取消按钮点了没反应 —— 这条路径是取消按钮 / 析构共用的）。
+    // 按**任务身份**关而不是按槽位关：槽位上的任务可能已经被换掉，
+    // 关错对象会把新任务刚开的那条通道关哑。
+    if (task->report)
+        task->report->Close(static_cast<std::uint64_t>(handle.id));
     task->alive.store(false, std::memory_order_release);
+    task->cancel.RequestCancel();
 
     // 终态只在这里（宿主线程）归还：任务体不能碰 tasks_（它捕获了面板指针，关停时
     // tasks_ 比它先析构，从线程里 EndHandle 就是悬空访问）。于是 slot 上的终态在下
@@ -118,6 +155,10 @@ void ReportingTaskCoordinator::Finish(const std::shared_ptr<AnalysisTask>& task,
     // 终态一次性写入：EndHandle 只在 id 仍与 slot 当前任务匹配时才生效，否则静默丢弃
     // （说明这个任务已被取代 / 句柄已失效）。写完之后 slot 不再停在 Running。
     tasks_.EndHandle(task->handle, terminal);
+    // 任务已经走到终态：回报通道随之关闭，之后这条任务的任何迟来回报（含被 detach 的
+    // 后台线程）都不再落到界面上。同样按**任务身份**关（见 Retire 的注释）。
+    if (task->report)
+        task->report->Close(static_cast<std::uint64_t>(task->handle.id));
 
     // 归还句柄前必须先把线程收回（join）：任务体按值捕获了 task（shared_ptr），而
     // AnalysisTask 又持有 std::thread —— 二者构成引用环。若这里只置空不 join，环没人
@@ -135,9 +176,9 @@ void ReportingTaskCoordinator::PostToUi(const std::shared_ptr<AnalysisTask>& tas
     // 任务已不再存活（面板正在销毁）时丢弃，避免触碰已销毁的 UI 对象
     if (!task || !task->alive.load(std::memory_order_acquire))
         return;
-    if (!deps_.ui)
-        return;
-    QMetaObject::invokeMethod(deps_.ui, updater, Qt::QueuedConnection);
+    // 走通道而不是直接投递到 deps_.ui：通道是后台线程唯一持有的回报路径，
+    // 关闭之后连"投递"这个动作都不会发生（见 PostUiUpdate）。
+    PostUiUpdate(task->report, updater);
 }
 
 // 线程体抓到异常时的另一半收尾：由**任务线程**调用，UI 那一半经 PostToUi 排队回
