@@ -241,9 +241,11 @@ void ReportingPanel::OnExportBatchSummary() {
 // 分析执行
 // ===========================================================================
 
+// ❗ 后台线程请直接用 PostUiUpdate(task->report, ...)：本函数是**面板成员**，
+// 从后台线程调用它等于先解引用 this —— 面板销毁后那条路径就是访问已释放对象
+// （评审 P1-2）。这里只留给主线程上那些已经持有任务的场合。
 void ReportingPanel::PostToUi(const std::shared_ptr<AnalysisTask>& task, const std::function<void()>& updater) const {
-    if (task_runner_)
-        task_runner_->PostToUi(task, updater);
+    PostUiUpdate(task ? task->report : nullptr, updater);
 }
 
 void ReportingPanel::StartSingleAnalysis(const std::string& path) {
@@ -268,8 +270,12 @@ void ReportingPanel::RunSingle(std::shared_ptr<AnalysisTask> task, const std::st
     const videoeye::AnalysisOptions analyzed_options = qc::OptionsForDepth(profile.depth);
     qc::QcRunner runner;
     qc::QcRunCallbacks callbacks;
+    // 后台线程在这条 lambda 里**不解引用**面板指针：它只把任务（内含自持有的回报通道）
+    // 交给 PostUiUpdate。this 只被**转发**给内层 updater，而后者只会在接收端所在的
+    // 线程上、且通道仍然开着时才执行 —— QcRunner 判定放弃后 detach 出去的那条线程
+    // 可能比面板活得久，但它碰到的是通道，不是 this。
     callbacks.progress = [this, task](double percent, const std::string& stage) {
-        PostToUi(task, [this, percent, stage]() {
+        PostUiUpdate(task->report, [this, percent, stage]() {
             batch_view_->SetProgress(static_cast<int>(percent), 100);
             emit StatusMessage(tr("分析进度 %1% %2").arg(static_cast<int>(percent)).arg(QString::fromStdString(stage)));
         });
@@ -277,12 +283,11 @@ void ReportingPanel::RunSingle(std::shared_ptr<AnalysisTask> task, const std::st
     // 取消只看令牌这一颗 —— 与批量扫描、诊断页、QcRunner 内部轮询的是同一个来源。
     callbacks.should_cancel = [task]() { return task->cancel.IsCanceled(); };
 
-    // 把这次分析的等待预算压到"回收预算"量级：面板关停时 RetireAll 先置取消令牌，
-    // QcRunner 在等待循环里把它转成引擎的 cancel_source（FFmpeg 中断回调也能看见），
-    // 所以正常情况下任务体会很快自己收尾；这个预算只是兜底 —— 免得引擎卡在一次不响应
-    // 中断的调用里时，关界面变成"5s 等任务体 + 30s 等引擎"两段预算相加。超预算时
-    // QcRunner 只持 Box 的 worker 会被放弃(detach)，RunSingle 照常返回。
-    qc::QcRunResult result = runner.AnalyzeFile(path, profile, analyzed_options, callbacks, kDefaultRecycleBudgetMs);
+    // 等待策略：正常分析**不限时**（评审 P1-1 —— 以前把 5 秒的关停回收预算当运行时长
+    // 传进来，长视频 / 多音轨 / 深度档一律被判超时）。关停不再靠这个预算兜底：
+    // RetireAll 先关回报通道再置取消令牌，QcRunner 见到取消后按 cancel_wait_ms 收尾，
+    // 到点就把线程转入受控回收 —— 关界面因此只有一个预算，不再是两段相加。
+    qc::QcRunResult result = runner.AnalyzeFile(path, profile, analyzed_options, callbacks, SingleAnalysisBudgets());
     // 终态由结果 + 取消令牌共同判定：用户取消 -> Canceled；分析跑完 -> Succeeded；
     // 其余（打开失败 / 超时 / 引擎报错）-> Failed。
     const task::TaskState terminal = task->cancel.IsCanceled()
@@ -292,17 +297,28 @@ void ReportingPanel::RunSingle(std::shared_ptr<AnalysisTask> task, const std::st
     // 完成回调里按同一份身份登记，避免分析期间状态被改导致"结果对不上文件/模板"。
     const std::string analyzed_path = path;
     const std::string analyzed_profile_id = profile.id;
-    PostToUi(task, [this, task, result, terminal, analyzed_path, analyzed_profile_id, analyzed_options]() {
+    // 输入身份在**打开文件之前**冻结（评审 P2-5）：完成回调里若再取一次版本，取到的是
+    // "分析结束那一刻的文件"，而结果对应的是分析期间读到的那份内容 —— 文件在这段时间
+    // 被替换时，旧结果会被登记到新文件上。冻结的版本才是这份结果的真实身份。
+    // （放在 worker 线程刚起来、还没交给 FFmpeg 的这一刻，正是"分析开始时"。）
+    const InputIdentity analyzed_identity = FreezeInputIdentity(analyzed_path);
+    PostUiUpdate(task->report, [this, task, result, terminal, analyzed_path, analyzed_profile_id, analyzed_options,
+                                analyzed_identity]() {
         if (result.ok) {
             last_result_ = result;
             result_stamp_ = ResultStamp{};
             result_stamp_.path = analyzed_path;
             result_stamp_.profile_id = analyzed_profile_id;
-            result_stamp_.valid = true;
-            // 复用判据：这次用的参数、扫描终态、分析时本地文件版本（网络源为 invalid）。
             result_stamp_.options = analyzed_options;
             result_stamp_.scan_status = result.analysis.scan_status;
-            result_stamp_.version = QueryFileVersion(analyzed_path);
+            // 登记**冻结时**的版本，再核对一次：文件在分析期间被替换 -> 这份结果不属于
+            // 当前文件，标记无效（导出随之禁用），而不是把它当成当前文件的结果。
+            result_stamp_.version = analyzed_identity.version;
+            const bool identity_holds = analyzed_identity.Matches(analyzed_path, QueryFileVersion(analyzed_path));
+            result_stamp_.valid = identity_holds;
+            if (!identity_holds) {
+                emit StatusMessage(tr("分析期间文件已被替换，本次结果不对应当前文件，请重新分析"));
+            }
         } else {
             // 失败结果不作数：导出继续禁用，等待用户重新分析。
             result_stamp_ = ResultStamp{};
@@ -348,7 +364,7 @@ void ReportingPanel::StartBatchScan(const std::string& directory) {
 void ReportingPanel::RunBatch(std::shared_ptr<AnalysisTask> task, const BatchRequest& request) {
     auto items = qc::BatchQcRunner::Discover(request.directory, request.recursive, request.extensions);
     if (items.empty()) {
-        PostToUi(task, [this]() {
+        PostUiUpdate(task->report, [this]() {
             batch_view_->SetSummaryText(tr("目录下没有匹配的文件"));
             SetBusy(false);
         });
@@ -370,12 +386,12 @@ void ReportingPanel::RunBatch(std::shared_ptr<AnalysisTask> task, const BatchReq
     qc::BatchQcCallbacks callbacks;
     callbacks.is_cancelled = [task]() { return task->cancel.IsCanceled(); };
     callbacks.progress = [this, task, total](int finished, int) {
-        PostToUi(task, [this, finished, total]() { batch_view_->SetProgress(finished, total); });
+        PostUiUpdate(task->report, [this, finished, total]() { batch_view_->SetProgress(finished, total); });
     };
     callbacks.item_finished = [this, task](const qc::BatchQcItemResult& item) {
         // 注意：item 是 worker 线程的栈对象，跨线程投递前必须先拷一份
         const qc::BatchQcItemResult copy = item;
-        PostToUi(task, [this, copy]() { batch_view_->AppendResult(copy); });
+        PostUiUpdate(task->report, [this, copy]() { batch_view_->AppendResult(copy); });
     };
 
     const auto analyze = qc::QcRunner::MakeAnalyzeFunction(profile, qc::OptionsForDepth(profile.depth));
@@ -398,7 +414,7 @@ void ReportingPanel::RunBatch(std::shared_ptr<AnalysisTask> task, const BatchReq
     // 终态与汇总文本的口径都在 batch_result_model.h（有单测）：
     // 取消 > 失败/超时 > 成功；"共 N 个"用发现到的条目数（跳过/未跑到的也占一行）。
     const task::TaskState terminal = BatchTerminalState(run.summary, task->cancel.IsCanceled());
-    PostToUi(task, [this, task, run, total, terminal]() {
+    PostUiUpdate(task->report, [this, task, run, total, terminal]() {
         batch_view_->SetProgress(batch_view_->RowCount(), total);
         batch_view_->SetSummaryText(BatchSummaryText(run.summary, total));
         SetBusy(false);

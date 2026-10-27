@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <string>
 #include <system_error>
+#include <vector>
 
 #include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/AnalysisTypes.h"
@@ -73,41 +74,124 @@ struct ResultStamp {
     FileVersionStamp version;                                          // 分析时的本地文件版本
 };
 
-// 结果是否仍匹配当前 (文件, 模板)：有效 + 当前文件非空 + 路径与模板都一致。
-inline bool IsResultFresh(const ResultStamp& stamp, const std::string& current_path,
-                          const std::string& current_profile_id) {
-    return stamp.valid && !current_path.empty() && stamp.path == current_path && stamp.profile_id == current_profile_id;
+// 一次分析**发起时**冻结的输入身份（路径 + 本地文件版本）。
+//
+// 为什么不"分析完了再取一次版本"：那样取到的是**完成时**的文件，而结果对应的是
+// 分析期间读到的那份内容 —— 文件在被分析的过程中被替换（脚本重导出、拷回旧版本）
+// 时，两者是不同的文件，却会被登记成"当前文件的结果"。冻结的版本才是这份结果的
+// 真实身份；完成时只负责**复核**（IdentityStillHolds）。
+struct InputIdentity {
+    std::string path;
+    FileVersionStamp version;
+
+    // 与"现在的这个文件"是否还是同一个输入。
+    // 两侧都取不到指纹（网络源）时退化为只比路径 —— 网络源没有版本可言，
+    // 这是唯一能做的判定，也是"网络源不复用缓存"这条口径的落点（见 CanReuseAnalysis）。
+    bool Matches(const std::string& current_path, const FileVersionStamp& current_version) const {
+        if (path != current_path)
+            return false;
+        if (!version.valid && !current_version.valid)
+            return true;
+        return version.valid && current_version.valid && version == current_version;
+    }
+};
+
+inline InputIdentity FreezeInputIdentity(const std::string& path) {
+    return InputIdentity{path, QueryFileVersion(path)};
 }
 
-// 所需的分析选项是否都被缓存的选项覆盖。
+// 结果是否仍匹配当前 (文件, 模板)：有效 + 当前文件非空 + 路径与模板都一致 +
+// **文件版本一致**。
 //
-// 模板只决定"要不要跑某个分析维度"（见 QcProfileMapper::OptionsForDepth），所以覆盖判定
-// 只比这些开关：被要求的分析必须已经在缓存结果里跑过，采样粒度不能比要求的更粗。
-// 各维度内部的阈值（如音频门限）不参与判定 —— 它们影响的是**判定**而非**采集**，
+// 版本这一条是评审 P2-5 补的：以前只比路径和模板 id，于是"分析完之后文件被替换成
+// 另一个同名文件"仍会被判定为新鲜，导出按钮照常可点 —— 导出去的报告对不上当前文件。
+inline bool IsResultFresh(const ResultStamp& stamp, const std::string& current_path,
+                          const std::string& current_profile_id, const FileVersionStamp& current_version) {
+    if (!stamp.valid || current_path.empty() || stamp.path != current_path || stamp.profile_id != current_profile_id)
+        return false;
+    // 双方都取不到指纹（网络源 / 文件已不在）时只比路径与模板 —— 没有版本可比。
+    if (!stamp.version.valid && !current_version.valid)
+        return true;
+    return stamp.version.valid && current_version.valid && stamp.version == current_version;
+}
+
+// 便捷重载：自己取一次当前文件版本（调用方手上没有指纹时用）。
+inline bool IsResultFresh(const ResultStamp& stamp, const std::string& current_path,
+                          const std::string& current_profile_id) {
+    return IsResultFresh(stamp, current_path, current_profile_id, QueryFileVersion(current_path));
+}
+
+// ---- 覆盖判定：采集开关表 + 采样上限 ----
+//
+// 参与判定的只有"决定原始 AnalysisResult 里有没有某个维度数据"的开关与上限：
+// 被要求的分析必须已经在缓存结果里跑过，采样粒度不能比要求的更粗。
+// 各维度内部的阈值（音频门限、GOP 上限…）不参与 —— 它们影响的是**判定**而非**采集**，
 // 换模板时本来就由规则引擎重新套用。
-inline bool AnalysisOptionsCovers(const AnalysisOptions& cached, const AnalysisOptions& required) {
-    if (required.analyze_bitrate_gop && !cached.analyze_bitrate_gop)
-        return false;
-    if (required.decode_frame_types && !cached.decode_frame_types)
-        return false;
-    if (required.analyze_audio_qc && !cached.analyze_audio_qc)
-        return false;
-    if (required.analyze_color_hdr && !cached.analyze_color_hdr)
-        return false;
-    if (required.analyze_bitstream && !cached.analyze_bitstream)
-        return false;
-    if (required.analyze_mp4_sample_table && !cached.analyze_mp4_sample_table)
-        return false;
-    if (required.analyze_streaming_package && !cached.analyze_streaming_package)
-        return false;
-    if (required.analyze_subtitle && !cached.analyze_subtitle)
-        return false;
-    if (required.analyze_timecode && !cached.analyze_timecode)
-        return false;
-    if (required.analyze_aux_data && !cached.analyze_aux_data)
-        return false;
+//
+// ❗ **表驱动而不是手工逐个 if**：手工比对漏过五个开关（帧顺序、音频位流、参数时间轴、
+// TS 传输层、容器体检）—— 它们恰好在当前内置深度模板里取值相同，所以一直没暴露，
+// 但任何新增模板/开关都可能踩到。现在"加一个采集开关 = 表里加一行"，
+// 而"表里有没有漏"由单测逐字段核对（见 test_reporting_helpers.cpp）。
+using AnalysisOptionFlag = bool AnalysisOptions::*;
+
+inline const std::vector<AnalysisOptionFlag>& CoveredAnalysisFlags() {
+    static const std::vector<AnalysisOptionFlag> flags = {
+        &AnalysisOptions::detect_container_layout,    &AnalysisOptions::analyze_bitrate_gop,
+        &AnalysisOptions::decode_frame_types,         &AnalysisOptions::analyze_audio_qc,
+        &AnalysisOptions::audio_qc_all_tracks,        &AnalysisOptions::analyze_audio_bitstream,
+        &AnalysisOptions::analyze_color_hdr,          &AnalysisOptions::analyze_bitstream,
+        &AnalysisOptions::analyze_parameter_timeline, &AnalysisOptions::analyze_frame_order,
+        &AnalysisOptions::analyze_mp4_sample_table,   &AnalysisOptions::analyze_streaming_package,
+        &AnalysisOptions::analyze_subtitle,           &AnalysisOptions::analyze_timecode,
+        &AnalysisOptions::analyze_aux_data,           &AnalysisOptions::analyze_ts_transport,
+        &AnalysisOptions::analyze_legacy_container,
+    };
+    return flags;
+}
+
+// 上限类的覆盖关系：0 在很多字段里表示"不限制"，所以不能简单比大小 ——
+// "缓存不限、要求有限"是覆盖，"缓存有限、要求不限"不是。
+inline bool AnalysisOptionsCoversLimits(const AnalysisOptions& cached, const AnalysisOptions& required) {
     // 采样间隔：缓存比要求更粗（数值更大）时序列点更少，可能不足以支撑判定。
-    return cached.sample_interval_seconds <= required.sample_interval_seconds;
+    if (cached.sample_interval_seconds > required.sample_interval_seconds)
+        return false;
+    // 包数上限（0 = 不限制）：要求全扫时缓存是抽样 -> 不覆盖。
+    if (required.max_packets == 0) {
+        if (cached.max_packets != 0)
+            return false;
+    } else if (cached.max_packets != 0 && cached.max_packets < required.max_packets) {
+        return false;
+    }
+    // 音轨上限：缓存少测了几条轨（多音轨文件）-> 不覆盖。
+    if (cached.audio_qc_max_tracks < required.audio_qc_max_tracks)
+        return false;
+    // TS 传输层包数上限（<=0 = 扫全文）：要求扫全文而缓存只扫了头 -> 不覆盖。
+    if (required.ts_transport_max_packets <= 0) {
+        if (cached.ts_transport_max_packets > 0)
+            return false;
+    } else if (cached.ts_transport_max_packets > 0 &&
+               cached.ts_transport_max_packets < required.ts_transport_max_packets) {
+        return false;
+    }
+    // 曲线点数上限（0 = 不限制）：缓存被降采样过 -> 曲线比要求的稀。
+    if (required.timeline_max_curve_points == 0) {
+        if (cached.timeline_max_curve_points != 0)
+            return false;
+    } else if (cached.timeline_max_curve_points != 0 &&
+               cached.timeline_max_curve_points < required.timeline_max_curve_points) {
+        return false;
+    }
+    return true;
+}
+
+inline bool AnalysisOptionsCovers(const AnalysisOptions& cached, const AnalysisOptions& required) {
+    for (const AnalysisOptionFlag flag : CoveredAnalysisFlags()) {
+        // ❗ 括号不能省：`.*` 的优先级低于 `!`，写成 `!cached.*flag` 会被解析成
+        // `(!cached).*flag` —— 编译不过还算好，悄悄取反错对象才致命。
+        if ((required.*flag) && !(cached.*flag))
+            return false;
+    }
+    return AnalysisOptionsCoversLimits(cached, required);
 }
 
 // 是否可复用缓存的原始 AnalysisResult 并按新模板重算规则（不重跑 FFmpeg）。

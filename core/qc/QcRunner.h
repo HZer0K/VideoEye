@@ -25,14 +25,17 @@
 // 跨线程更新 UI 前要自己投递回主线程。
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 
 #include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/QcReport.h"
+#include "core/qc/AnalysisTaskRegistry.h"
 #include "core/qc/QcAnalyzeRequest.h"
 #include "core/qc/QcProfile.h"
 #include "core/qc/QcRuleEngine.h"
+#include "core/qc/QcRunBudgets.h"
 
 namespace videoeye {
 namespace qc {
@@ -55,32 +58,40 @@ public:
     //
     // input.kind == LocalFile 时先过 IsAnalyzableFile（存在 / 非空 / 非目录）；
     // input.kind == NetworkUri 时跳过本地存在性校验，直接交给 FFmpeg 打开
-    // （网络侧的预算由 join_budget_ms 与 FFmpeg 中断/超时共同保证）。
+    // （网络侧的等待由 budgets 的三项策略与 FFmpeg 中断/超时共同保证）。
     //
     // options 由调用方给出时按调用方的来（UI 有自己的开关面板）；批量/CLI 场景通常
     // 直接传 OptionsForDepth(profile.depth)。
     //
-    // join_budget_ms 是**这次分析本身的等待预算**: 到点还没出结果就按失败收尾,
-    // 工作线程转入受控回收(不再无限等)。以前这里是无条件 join —— 引擎卡在第三方 IO
-    // 上时整条批量扫描会永久挂死, 而"有一份结果"和"卡死"之间只有这个预算可区分。
+    // budgets 是**三项独立的等待策略**（见 QcRunBudgets.h）：
+    //   analysis_budget_ms 允许这次分析跑多久（0 = 不限时）；
+    //   io_idle_timeout_ms 多久没有动静就算卡住（0 = 不判）；
+    //   cancel_wait_ms    判定放弃之后最多再等线程体多久（到点即 detach）。
+    // ❗ 它**不是**关停预算：以前调用方把"关停回收预算"（5 秒）塞进这个位置，于是正常
+    // 运行超过 5 秒的分析也会被请求取消。关停请走取消令牌 —— 本函数见到取消后按
+    // cancel_wait_ms 收尾，那个预算只在"已经决定放弃"之后才计时。
+    //
+    // slot 是调用方（批量调度）在派发前占好的并发额度：交给本函数后由分析线程体在
+    // **真正退出**时归还（含被 detach 的那条路径）。留空时执行器自己登记一条，
+    // 于是"当前实际存活多少条分析"始终是全局可观测的（见 AnalysisTaskRegistry）。
     QcRunResult AnalyzeFile(const MediaInput& input, const QcProfile& profile,
                             videoeye::AnalysisOptions options = videoeye::AnalysisOptions{},
                             const QcRunCallbacks& callbacks = QcRunCallbacks{},
-                            int join_budget_ms = kDefaultJoinBudgetMs);
+                            const QcRunBudgets& budgets = QcRunBudgets{},
+                            const std::shared_ptr<AnalysisTaskSlot>& slot = nullptr);
 
     // 便捷重载：按 uri 自动归类（ClassifyMediaInput）。等价于把 ClassifyMediaInput(path)
     // 交给上面那个重载 —— 只是省去调用方每次都写一遍归类。
     QcRunResult AnalyzeFile(const std::string& path, const QcProfile& profile,
                             videoeye::AnalysisOptions options = videoeye::AnalysisOptions{},
                             const QcRunCallbacks& callbacks = QcRunCallbacks{},
-                            int join_budget_ms = kDefaultJoinBudgetMs) {
-        return AnalyzeFile(ClassifyMediaInput(path), profile, std::move(options), callbacks, join_budget_ms);
+                            const QcRunBudgets& budgets = QcRunBudgets{},
+                            const std::shared_ptr<AnalysisTaskSlot>& slot = nullptr) {
+        return AnalyzeFile(ClassifyMediaInput(path), profile, std::move(options), callbacks, budgets, slot);
     }
 
     // 生成一个绑定了 profile + options 的分析闭包（批量扫描的每个 worker 各持一份 QcRunner）
     static QcAnalyzeFn MakeAnalyzeFunction(const QcProfile& profile, videoeye::AnalysisOptions options);
-
-    static constexpr int kDefaultJoinBudgetMs = 30000;
 };
 
 // 本地文件是否可被分析器打开（存在且非空）。把"文件不存在""路径是目录""文件为空"分开 ——

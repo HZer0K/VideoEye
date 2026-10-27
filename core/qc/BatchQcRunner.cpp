@@ -29,6 +29,31 @@ std::string LowerWithoutDot(const std::string& extension) {
     return result;
 }
 
+// 派发前的并发额度（评审 P2-3）。
+//
+// 关键：额度统计的是**分析任务**而不是调度 worker。一个条目超预算返回后，它那条分析
+// 线程还要跑一会儿才退出 —— 那段时间它仍占着 FFmpeg / 内存 / 磁盘，也必须占着额度，
+// 否则 max_parallel=4 时真正跑着的分析可能是 4 + N 条。
+//
+// 拿不到额度（取消 / 背压超时）时不丢活：退化成"不限量登记"，只打日志 —— 宁可实际
+// 并发超标并可观测，也不能静默漏掉一个文件。
+std::shared_ptr<AnalysisTaskSlot> AcquireAnalysisSlot(const BatchQcOptions& options,
+                                                      const BatchQcCallbacks& callbacks) {
+    const int limit = std::clamp(options.max_parallel, 1, kMaxParallelLimit);
+    const int max_exiting = options.max_exiting_tasks > 0 ? options.max_exiting_tasks : limit;
+    const std::function<bool()> cancelled = [&callbacks]() {
+        return callbacks.is_cancelled ? callbacks.is_cancelled() : false;
+    };
+    AnalysisTaskRegistry& registry = AnalysisTaskRegistry::Instance();
+    auto slot = registry.Acquire(limit, max_exiting, options.backpressure_wait_ms, cancelled);
+    if (slot)
+        return slot;
+    LOG_WARN("批量分析并发额度不足（存活 " + std::to_string(registry.TotalCount()) + " 条，其中退出中 " +
+             std::to_string(registry.ExitingCount()) + " 条），等待 " + std::to_string(options.backpressure_wait_ms) +
+             "ms 后按不限量派发");
+    return registry.AcquireUnbounded();
+}
+
 std::string ExtensionOf(const std::string& path) {
     const std::size_t dot = path.find_last_of('.');
     if (dot == std::string::npos)
@@ -152,16 +177,26 @@ BatchQcRun BatchQcRunner::Run(const std::vector<BatchQcItem>& items, const Batch
                     const auto item_started_at = std::chrono::steady_clock::now();
                     QcAnalyzeRequest request;
                     request.path = item.path;
-                    // 每个文件的等待预算随请求下发给分析函数（QcRunner 用它作为
-                    // AnalyzeFile 的 join_budget_ms）；超预算的条目会带着 timed_out 回来。
-                    request.join_budget_ms = options.per_item_timeout_ms;
+                    // 三项等待策略随请求下发给分析函数（QcRunner 直接消费）；
+                    // 超预算 / IO 无响应的条目会带着 timed_out 回来。
+                    request.budgets =
+                        QcRunBudgets{options.per_item_timeout_ms, options.io_idle_timeout_ms, options.cancel_wait_ms};
                     // 把外部取消源（UI 停止按钮）最新的状态同步进内部标记，
                     // 这样正在跑的单文件分析也能通过 request.cancel 即时感知到取消。
                     cancel_.store(IsCancelled(callbacks), std::memory_order_release);
                     request.cancel = &cancel_;
+                    // 派发前先领一个分析额度（评审 P2-3）：额度不足时背压等待，
+                    // 于是"实际存活的分析任务数"不会超过 max_parallel —— 包括那些
+                    // 已经返回但线程体还在退出的条目。
+                    request.slot = AcquireAnalysisSlot(options, callbacks);
 
                     try {
                         const QcRunResult result = analyze(request);
+                        // 分析函数没认领额度（假实现 / 换执行器）时兜底归还；
+                        // 认领了的由线程体在自己退出时归还，这里**不能**提前还 ——
+                        // 那会让"线程还在退"这段时间从统计里消失。
+                        if (request.slot && !request.slot->IsAdopted())
+                            request.slot->Release();
                         // 显示路径以实际落盘路径为准（与导出共用同一组路径）；
                         // 未导出时退回工厂给出的路径，避免表格路径与实际文件不一致。
                         if (!result.output_path.empty()) {

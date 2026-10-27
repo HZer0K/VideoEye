@@ -18,11 +18,6 @@
 
 namespace videoeye {
 namespace qc {
-namespace {
-
-constexpr std::chrono::milliseconds kCancelPollInterval{100};
-
-} // namespace
 
 MediaInput ClassifyMediaInput(const std::string& uri) {
     MediaInput input;
@@ -85,8 +80,27 @@ bool IsAnalyzableInput(const MediaInput& input, std::string& reason) {
     return IsAnalyzableFile(input.uri, reason);
 }
 
+// 放弃原因 -> 收尾文案。三条各有各的处置方式，所以文案不能并成一句"分析超时"：
+//   * 调用方取消（Cancelled）必须与引擎自己报的取消同文案 —— 批量侧按它落成
+//     BatchItemStatus::Cancelled，混进"超时"会让"用户点了停止"看起来像文件有问题；
+//   * 超预算 / IO 无响应才是真正需要去看文件/网络的两类。
+std::string AbandonErrorText(QcAbandonReason reason) {
+    switch (reason) {
+    case QcAbandonReason::Cancelled:
+        return "分析被取消";
+    case QcAbandonReason::OverBudget:
+        return "分析超出允许的运行时长";
+    case QcAbandonReason::IoStalled:
+        return "分析输入长时间无响应";
+    case QcAbandonReason::None:
+        break;
+    }
+    return "分析在等待预算内没有结束";
+}
+
 QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& profile, videoeye::AnalysisOptions options,
-                                  const QcRunCallbacks& callbacks, int join_budget_ms) {
+                                  const QcRunCallbacks& callbacks, const QcRunBudgets& budgets,
+                                  const std::shared_ptr<AnalysisTaskSlot>& slot) {
     QcRunResult output;
     output.profile_id = profile.id;
 
@@ -123,14 +137,27 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& prof
         std::string path;
         videoeye::AnalysisOptions options;
         std::function<void(double, const std::string&)> progress; // 调用方的进度回调
+        // "距开始多久"的毫秒数，进度回调与结算都会刷新它 —— io_idle_timeout_ms 判的是
+        // "距上一次动静"，与总时长无关（跑了 10 分钟但一直在出结果不算卡住）。
+        std::atomic<long long> activity_ms{0};
+        std::chrono::steady_clock::time_point started_at = std::chrono::steady_clock::now();
+        // 放弃这次分析的原因（决定收尾文案与 timed_out 标记）
+        QcAbandonReason abandon_reason = QcAbandonReason::None;
+        // 并发额度：由**分析线程体**在真正退出时归还（见 AnalysisTaskRegistry）。
+        std::shared_ptr<AnalysisTaskSlot> slot;
     };
     auto box = std::make_shared<Box>();
+    // 额度要么由调用方（批量调度）占好带进来，要么在这里登记一条 —— 两种情况下
+    // "当前实际存活多少条分析"都可观测，且都在线程体退出时才归还。
+    box->slot = slot ? slot : AnalysisTaskRegistry::Instance().AcquireUnbounded();
     // 引擎含 atomic 成员、不可移动, 只能按 shared_ptr 交给 worker —— 盒子里放 shared_ptr
     // 而不是 .get() 出来的裸指针, 就是"任务只携带自持有的 shared state"的形态。
     box->engine = std::make_shared<videoeye::AnalysisEngine>();
     box->cancel_flag = std::make_shared<std::atomic<bool>>(false);
     box->path = path;
     box->options = std::move(options);
+    // 计时基准：放弃判定的 elapsed / idle 都相对它（盒子自带默认值，这里与本次开跑对齐）
+    box->started_at = started_at;
 
     // 以前这里要通过 QtAnalysisController 绕一圈 Qt 信号（还要挂 QObject 上下文），
     // 现在直接用 AnalysisEngine 的回调 —— QC 批处理不需要任何 Qt 事件循环。
@@ -145,8 +172,27 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& prof
     // 取消源用盒子自持的那颗原子标志: 调用方的 should_cancel 在等待循环里被转成它的置位,
     // 引擎的所有取消轮询点（含 FFmpeg 中断回调）都看它 —— 取消只有这一颗, 不再有两套。
     std::thread worker([box]() {
+        // 额度认领 + 退出时归还（含被 detach 的那条路径）：
+        // "分析任务数"统计的是线程体的真实寿命，不是 analyze() 的返回时点。
+        // MarkExiting 在归还之前跑，让派发侧看得见"这条已经在退了"。
+        if (box->slot)
+            box->slot->Adopt();
+        const auto release_slot = task::MakeScopeExit([box]() {
+            if (!box->slot)
+                return;
+            box->slot->MarkExiting();
+            box->slot->Release();
+        });
+
+        // 进度/结算都算"有动静"：io_idle_timeout_ms 判的是"距上一次动静"。
+        const auto touch = [box]() {
+            const auto elapsed = std::chrono::steady_clock::now() - box->started_at;
+            box->activity_ms.store(
+                static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()));
+        };
         videoeye::AnalysisCallbacks effective;
-        effective.on_finished = [box](bool, const model::AnalysisResult& result) {
+        effective.on_finished = [box, touch](bool, const model::AnalysisResult& result) {
+            touch();
             {
                 std::lock_guard<std::mutex> lock(box->mutex);
                 box->result = result;
@@ -154,7 +200,8 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& prof
             }
             box->cv.notify_all();
         };
-        effective.on_failed = [box](const std::string& message) {
+        effective.on_failed = [box, touch](const std::string& message) {
+            touch();
             {
                 std::lock_guard<std::mutex> lock(box->mutex);
                 box->failed = true;
@@ -163,8 +210,12 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& prof
             }
             box->cv.notify_all();
         };
-        if (box->progress)
-            effective.on_progress = box->progress;
+        if (box->progress) {
+            effective.on_progress = [box, touch](double percent, const std::string& stage) {
+                touch();
+                box->progress(percent, stage);
+            };
+        }
         // 异常必须就地收口：这是裸 std::thread 的线程体，任何逃逸的异常都会直接
         // std::terminate()（连等待线程一起带走），任务永远等不到结算 —— 分析器 /
         // 解析器抛异常就从"进程没了"降级成"这条任务失败"。
@@ -181,27 +232,55 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& prof
         LOG_DEBUG("QcRunner: 分析线程退出 (" + box->path + ")");
     });
 
-    // 等结果: 带总预算。到点还没结算 -> 说明引擎既没回调、也没响应取消,
-    // 按失败收尾并把线程转受控回收 —— worker 只持盒子(含引擎本体), detach 后自洽。
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(join_budget_ms);
+    // 等结果：三项策略分别判（见 QcRunBudgets.h）。
+    //
+    // ❗ 这里**不**用"总时长"当唯一的放弃条件：analysis_budget_ms = 0 表示不限时，
+    // 正常运行多久都不该被判超时（评审 P1-1 的根因就是"跑过 5 秒被误杀"）。
+    // 放弃只可能来自：调用方取消 / 超预算 / IO 长时间无动静。
+    QcWaitState wait_state;
+    QcAbandonReason abandon_reason = QcAbandonReason::None;
+    auto abandon_at = std::chrono::steady_clock::now();
     {
         std::unique_lock<std::mutex> lock(box->mutex);
         while (!box->settled) {
-            // 预算检查放在等待**之前**: join_budget_ms=0 的语义是"一秒都不等"。
-            // 先 wait_for 再判预算的话, 0 预算在 worker 恰好快速结算时会滑进正常路径,
-            // "超时 detach"这条回归路径就失去确定性(评审要求的 join_budget_ms=0 用例
-            // 正是冲它来的)。现有调用方最小预算是 500ms, 提前判预算不会改变它们的语义。
-            if (std::chrono::steady_clock::now() >= deadline) {
+            const auto now = std::chrono::steady_clock::now();
+            wait_state.elapsed_ms =
+                static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(now - box->started_at).count());
+            wait_state.idle_ms = wait_state.elapsed_ms - static_cast<int>(box->activity_ms.load());
+            wait_state.reason = abandon_reason;
+            if (abandon_reason != QcAbandonReason::None) {
+                wait_state.abandon_elapsed_ms =
+                    static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(now - abandon_at).count());
+            }
+            // 调用方的取消请求(批处理任务的取消按钮/面板回收)在这一刻转成"判定放弃"，
+            // 并开始计 cancel_wait_ms —— 引擎卡在 FFmpeg 网络 IO 上时也能被它打断。
+            if (abandon_reason == QcAbandonReason::None && callbacks.should_cancel && callbacks.should_cancel()) {
+                abandon_reason = QcAbandonReason::Cancelled;
+                abandon_at = now;
+            }
+            const QcWaitDecision decision = DecideWait(budgets, wait_state);
+            if (decision == QcWaitDecision::Abandon) {
                 box->timed_out = true;
+                box->abandon_reason = abandon_reason;
                 break;
             }
-            if (box->cv.wait_for(lock, kCancelPollInterval) == std::cv_status::timeout) {
-                // 调用方的取消请求(批处理任务的取消按钮/面板回收)在这一刻转成引擎可见的
-                // 取消源置位 —— 引擎卡在 FFmpeg 网络 IO 上也能被它打断。
-                if (callbacks.should_cancel && callbacks.should_cancel()) {
-                    box->cancel_flag->store(true, std::memory_order_release);
-                }
+            if (decision == QcWaitDecision::RequestCancel) {
+                // 由预算/空闲判出的放弃：区分是因为处置方式不同（超预算去看文件/网络，
+                // IO 无响应去看 IO/超时配置）。
+                abandon_reason = (budgets.analysis_budget_ms > 0 && wait_state.elapsed_ms >= budgets.analysis_budget_ms)
+                                     ? QcAbandonReason::OverBudget
+                                     : QcAbandonReason::IoStalled;
+                abandon_at = now;
+                // 立刻复核而不是先睡一个轮询片：cancel_wait_ms = 0 的语义是"判定即放弃"，
+                // 多等 1ms 就可能让引擎抢在前面结算，把"放弃"变成"取消" —— 放弃原因与
+                // timed_out 标记就此失真（批量侧会把超预算的条目记成用户取消）。
+                continue;
             }
+            if (abandon_reason != QcAbandonReason::None) {
+                box->cancel_flag->store(true, std::memory_order_release);
+                box->engine->Cancel();
+            }
+            box->cv.wait_for(lock, NextWaitSlice(budgets, wait_state));
         }
     }
 
@@ -209,17 +288,24 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& prof
         // 已经结算, join 只是收句柄(瞬间返回)。
         worker.join();
     } else if (worker.joinable()) {
-        // 超时: detach **之前**必须先强制取消。
-        // 等待循环可能一次都没进（join_budget_ms == 0 时"预算检查先于首次 wait_for"就
-        // 命中 break），上面那条 should_cancel -> cancel_flag 的转换因此根本没机会执行。
-        // 不取消就 detach，后台 AnalysisEngine 会继续跑到自然结束，FFmpeg / 内存 / 磁盘 /
-        // CPU 继续被占用 —— 批量任务取消后会积累大量脱离的后台分析线程。
+        // 放弃这条线程: detach **之前**必须先强制取消。
+        // 等待循环可能一次都没进（预算极小时第一轮就命中 Abandon），上面那条
+        // should_cancel -> cancel_flag 的转换因此根本没机会执行。不取消就 detach，
+        // 后台 AnalysisEngine 会继续跑到自然结束，FFmpeg / 内存 / 磁盘 / CPU 继续被
+        // 占用 —— 批量任务取消后会积累大量脱离的后台分析线程。
         //
         // 这里只持盒子(shared_ptr 自持, 含引擎本体), detach 后线程自洽, 不会读到已析构
-        // 的引擎；取消则保证它尽快自己收尾。
+        // 的引擎；取消则保证它尽快自己收尾。额度由线程体自己归还（见上面的 ScopeExit）。
+        //
+        // ❗ 先把它标成"正在退出"再 detach：从这一刻起到线程体真正退出，这条任务仍占着
+        // FFmpeg / 内存 / 磁盘，派发侧必须看得见（评审 P2-3）—— 否则 max_parallel 只
+        // 约束了"已返回的任务数"，退不干净的那批会悄悄超额。
+        if (box->slot)
+            box->slot->MarkExiting();
         box->cancel_flag->store(true, std::memory_order_release);
         box->engine->Cancel();
-        LOG_WARN("QcRunner 等待预算耗尽, 已请求取消后台分析 (" + box->path + "), 线程转入受控回收");
+        LOG_WARN("QcRunner 判定放弃后台分析 (" + box->path + "), 原因=" + AbandonErrorText(abandon_reason) +
+                 ", 线程转入受控回收");
         worker.detach();
     }
 
@@ -228,8 +314,10 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& prof
 
     if (box->timed_out) {
         output.ok = false;
-        output.timed_out = true;
-        output.error = "分析在等待预算内没有结束";
+        // 调用方取消导致的放弃**不**标 timed_out：批量侧按 error 把它落成 Cancelled，
+        // 标了就变成"文件有问题"了（见 QcRunResult::timed_out 的注释）。
+        output.timed_out = box->abandon_reason != QcAbandonReason::Cancelled;
+        output.error = AbandonErrorText(box->abandon_reason);
         output.analysis.scan_status = model::AnalysisStatus::Failed;
         output.analysis.error_message = output.error;
         return output;
@@ -283,10 +371,10 @@ QcAnalyzeFn QcRunner::MakeAnalyzeFunction(const QcProfile& profile, videoeye::An
         callbacks.should_cancel = [&request]() {
             return request.cancel != nullptr && request.cancel->load(std::memory_order_acquire);
         };
-        // 每个文件的等待预算由请求带入（批量调度从 BatchQcOptions::per_item_timeout_ms
-        // 透传）；请求没给（<=0）时退回本执行器的默认预算。
-        const int budget = request.join_budget_ms > 0 ? request.join_budget_ms : QcRunner::kDefaultJoinBudgetMs;
-        return runner.AnalyzeFile(request.path, shared->first, shared->second, callbacks, budget);
+        // 三项等待策略随请求带入（批量调度从 BatchQcOptions 透传）；并发额度同样随请求
+        // 交给执行器，由分析线程体在真正退出时归还。
+        return runner.AnalyzeFile(request.path, shared->first, shared->second, callbacks, request.budgets,
+                                  request.slot);
     };
 }
 

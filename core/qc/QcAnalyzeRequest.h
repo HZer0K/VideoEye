@@ -8,10 +8,13 @@
 
 #include <atomic>
 #include <functional>
+#include <memory>
 #include <string>
 
 #include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/QcReport.h"
+#include "core/qc/AnalysisTaskRegistry.h"
+#include "core/qc/QcRunBudgets.h"
 
 namespace videoeye {
 namespace qc {
@@ -19,9 +22,10 @@ namespace qc {
 // 一次分析的完整产物
 struct QcRunResult {
     bool ok = false; // 分析是否跑完（false = 打开失败 / 被取消 / 超时）
-    // 分析在等待预算（AnalyzeFile 的 join_budget_ms）内没有给出终态 —— 后台线程被
-    // 放弃（detach）并已收到取消请求。与"引擎自己报失败"区分开：调用方据此知道
-    // 这次结果不完整、且后台可能还在收尾以便记录资源回收。
+    // 分析被判超时/无响应：后台线程被放弃（detach）并已收到取消请求。与"引擎自己报
+    // 失败"区分开：调用方据此知道这次结果不完整、且后台可能还在收尾以便记录资源回收。
+    // ❗ 调用方主动取消导致的放弃**不**置这一位（那时 error = "分析被取消"），
+    // 否则批量侧会把"用户点了停止"记成超时 —— 两者的处置方式不同。
     bool timed_out = false;
     std::string error; // ok=false 时的原因
     model::QcReport report;
@@ -65,10 +69,21 @@ bool IsNetworkUri(const std::string& uri);
 struct QcAnalyzeRequest {
     std::string path;
     const std::atomic<bool>* cancel = nullptr;
-    // 本次分析在等待预算内的等待时长（毫秒）。0 = 用分析函数自带的默认预算。
-    // 批量调度把 BatchQcOptions::per_item_timeout_ms 透传到这里，让"每个文件最长等多久"
-    // 成为批量参数的一部分，而不是在别处埋一个魔法值。
-    int join_budget_ms = 0;
+    // 本次分析的等待策略（允许跑多久 / IO 多久无响应 / 取消后等多久）。
+    // 批量调度把 BatchQcOptions 的 per_item_timeout_ms / io_idle_timeout_ms /
+    // cancel_wait_ms 透传到这里，让"每个文件最长跑多久"成为批量参数的一部分，
+    // 而不是在别处埋一个魔法值。
+    //
+    // ❗ 以前这里只有一个 join_budget_ms，它同时被当成"分析能跑多久"和"关停等多久"，
+    // 于是单文件分析被 5 秒的关停预算误杀（评审 P1-1）。三项策略现在各归各的，
+    // 见 QcRunBudgets.h。
+    QcRunBudgets budgets;
+
+    // 调用方（批量调度）在派发前占好的并发额度。交给分析函数之后由**分析线程体**
+    // 在真正退出时归还；调用方只在"分析函数没有认领它"时兜底归还（见
+    // AnalysisTaskRegistry）。没有占额度时留空 —— 执行器会自己登记一条，
+    // 于是"当前实际存活多少条分析"是全局可观测的。
+    std::shared_ptr<AnalysisTaskSlot> slot;
 };
 
 // 分析函数签名：QcRunner::MakeAnalyzeFunction 产出它，BatchQcRunner 消费它，

@@ -19,6 +19,7 @@
 #include "core/qc/BatchQcResults.h"
 #include "core/qc/QcAnalyzeRequest.h"
 #include "core/qc/QcReportFormat.h"
+#include "core/qc/QcRunBudgets.h"
 
 namespace videoeye {
 namespace qc {
@@ -34,10 +35,28 @@ struct BatchQcOptions {
     int max_parallel = 4;                // 并发上限，会再夹到 [1, 16]
     int64_t max_file_size_bytes = 0;     // 0 = 不限制；超限记 Skipped
     bool keep_reports = true;            // false = 结果里只留计数，不留 QcReport 本体
-    // 单个文件的最长等待（毫秒）。0 = 用分析函数自带的默认预算（QcRunner 的
-    // kDefaultJoinBudgetMs）。透传到 QcAnalyzeRequest::join_budget_ms；超预算的条目
-    // 落成 BatchItemStatus::TimedOut，其后台分析线程由执行器放弃并请求取消。
-    int per_item_timeout_ms = 0;
+
+    // ---- 单文件的三项等待策略（见 QcRunBudgets.h）----
+    // 单个文件允许的**运行时长**（毫秒）。<=0 = 不限时（由下面两项兜底）。
+    // 默认 30 秒：批量场景里"某一个文件卡住"必须能被跳过，否则整批挂着不动；
+    // 想让长文件跑完就显式调大或设 0 —— 这是业务配置，不该在别处埋魔法值。
+    // 超预算的条目落成 BatchItemStatus::TimedOut。
+    int per_item_timeout_ms = 30000;
+    // 多久没有任何动静就算卡住（毫秒）。0 = 不判空闲。与总时长无关：跑了 10 分钟但
+    // 一直在出进度不算卡住，打开后再无回音则会被及时放弃。
+    int io_idle_timeout_ms = 0;
+    // 判定放弃（取消 / 超预算 / 无响应）之后最多再等线程体多久（毫秒）。
+    int cancel_wait_ms = kDefaultCancelWaitMs;
+
+    // ---- 并发额度（评审 P2-3）----
+    // 正在退出（已判定放弃、线程体还没退）的分析任务数上限。<=0 = 取 max_parallel。
+    // 一条被 detach 的分析线程在真正退出前仍占着 FFmpeg / 内存 / 磁盘，放任它们堆积
+    // 等于"并发上限形同虚设"，所以这里单独设一道闸。
+    int max_exiting_tasks = 0;
+    // 额度不够时最多背压等待多久（毫秒）。0 = 不等待（拿不到就照旧派发）。
+    // ⚠️ 不等待并不等于允许超额：额度由登记处统一计数，放行只是放弃"等一等"这个优化，
+    // 退不干净的任务多时仍会打日志说明实际并发。
+    int backpressure_wait_ms = 10000;
 
     // 输出路径由调用方算（例如 <out>/<相对路径>.json），runner 不碰磁盘
     std::function<std::string(const std::string& source_path)> output_path_factory;
@@ -71,9 +90,13 @@ public:
     // 注意区分两个时点（评审 P2-5 要求）：
     //   * "批量调度结束" = 本函数返回，run.items 里每一项都已是终态；
     //   * "单文件线程完全回收" = 每个 analyze() 内部的执行器把自己那条分析线程 join 回来。
-    // per_item_timeout_ms 超预算时 analyze() 会放弃它自己的分析线程（detach + 请求取消），
+    // 超预算 / IO 无响应时 analyze() 会放弃它自己的分析线程（detach + 请求取消），
     // 于是本函数会先于"那条被放弃的线程真正退出"返回 —— 对应条目记为 TimedOut，
     // 汇总里的 timed_out 就是这批"已停止派发、后台仍在收尾"的条目数。
+    //
+    // 并发额度（评审 P2-3）：派发每一项之前先向 AnalysisTaskRegistry 领一个额度，
+    // 额度在**分析线程体真正退出**时才归还 —— 于是 max_parallel 约束的是"实际存活的
+    // 分析任务"，而不是"调度 worker 数"。正在退出的任务单独计数并设上限，超了就背压。
     BatchQcRun Run(const std::vector<BatchQcItem>& items, const BatchQcOptions& options, const QcAnalyzeFn& analyze,
                    const BatchQcCallbacks& callbacks = BatchQcCallbacks{});
 
