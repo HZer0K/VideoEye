@@ -64,6 +64,16 @@ namespace videoeye {
 //
 // ❗ 解码器输出本身就是 FLTP 时直接用 AVFrame::extended_data，省掉一次无谓的拷贝
 // （data[] 只有 8 个指针，超过 8 声道时后面全是 nullptr）。
+// RAII（评审 P2-4）：三个 probe 都是**禁拷贝、可移动、析构即释放**的值类型。
+//
+// 以前它们只是"带一个 Release() 的裸聚合体"，释放全靠 AnalysisPipeline 显式调
+// ReleaseProbes()：正常返回与已知错误分支确实都调了，但 Prepare() / 逐包分析 /
+// 回调**抛异常**时栈展开不会自动补这一步 —— 外围的异常捕获能让线程不直接结束，
+// 却补不上 FFmpeg 资源的释放（解码器上下文 / swr / AVFrame 就此滞留）。
+//
+// 于是规则改成：显式 Release() 仍然保留（有序的解码器 flush 必须显式执行），
+// 但"最终一定会被释放"由析构兜底 —— 拷贝被禁掉正是为了杜绝"两个对象各持一份
+// 裸指针、各释放一次"这种静默双释放。
 struct AudioQcProbe {
     bool ready = false;
     bool rate_changed = false;
@@ -76,6 +86,53 @@ struct AudioQcProbe {
     int sample_rate = 0;
     std::vector<model::AudioChannelInfo> channel_info;
 
+    AudioQcProbe() = default;
+    ~AudioQcProbe() {
+        Release();
+    }
+    AudioQcProbe(const AudioQcProbe&) = delete;
+    AudioQcProbe& operator=(const AudioQcProbe&) = delete;
+    AudioQcProbe(AudioQcProbe&& other) noexcept
+        : ready(other.ready), rate_changed(other.rate_changed), decoder(other.decoder), frame(other.frame),
+          swr(other.swr), out_data(other.out_data), out_frames(other.out_frames), channels(other.channels),
+          sample_rate(other.sample_rate), channel_info(std::move(other.channel_info)) {
+        // 搬走之后源对象不再拥有任何句柄：析构时不会重复释放
+        other.ready = false;
+        other.rate_changed = false;
+        other.decoder = nullptr;
+        other.frame = nullptr;
+        other.swr = nullptr;
+        other.out_data = nullptr;
+        other.out_frames = 0;
+        other.channels = 0;
+        other.sample_rate = 0;
+    }
+    AudioQcProbe& operator=(AudioQcProbe&& other) noexcept {
+        if (this != &other) {
+            Release(); // 先放下自己手里的，再接管对方的
+            ready = other.ready;
+            rate_changed = other.rate_changed;
+            decoder = other.decoder;
+            frame = other.frame;
+            swr = other.swr;
+            out_data = other.out_data;
+            out_frames = other.out_frames;
+            channels = other.channels;
+            sample_rate = other.sample_rate;
+            channel_info = std::move(other.channel_info);
+            other.ready = false;
+            other.rate_changed = false;
+            other.decoder = nullptr;
+            other.frame = nullptr;
+            other.swr = nullptr;
+            other.out_data = nullptr;
+            other.out_frames = 0;
+            other.channels = 0;
+            other.sample_rate = 0;
+        }
+        return *this;
+    }
+
     void Release() {
         if (out_data) {
             av_freep(&out_data[0]);
@@ -87,6 +144,11 @@ struct AudioQcProbe {
             av_frame_free(&frame);
         if (decoder)
             avcodec_free_context(&decoder);
+        // 句柄一并清空：Release() 之后对象回到"什么都没拿"的状态，可重复调用。
+        out_data = nullptr;
+        swr = nullptr;
+        frame = nullptr;
+        decoder = nullptr;
         ready = false;
     }
 };
@@ -102,12 +164,45 @@ struct AudioQcTrack {
 
 // 帧类型探测：优先用解码器（准确但慢），否则用 codec parser（几乎零成本）。
 // 两者都拿不到时，调用方退回 OnPacket()，只按 AV_PKT_FLAG_KEY 识别 I 帧。
+// RAII：见 AudioQcProbe 的注释（禁拷贝 / 可移动 / 析构即释放）。
 struct FrameTypeProbe {
     AVCodecContext* parser_ctx = nullptr; // 仅供 av_parser_parse2 使用的参数上下文
     AVCodecParserContext* parser = nullptr;
     AVCodecContext* decoder = nullptr;
     AVFrame* frame = nullptr;
     bool use_decoder = false;
+
+    FrameTypeProbe() = default;
+    ~FrameTypeProbe() {
+        Release();
+    }
+    FrameTypeProbe(const FrameTypeProbe&) = delete;
+    FrameTypeProbe& operator=(const FrameTypeProbe&) = delete;
+    FrameTypeProbe(FrameTypeProbe&& other) noexcept
+        : parser_ctx(other.parser_ctx), parser(other.parser), decoder(other.decoder), frame(other.frame),
+          use_decoder(other.use_decoder) {
+        other.parser_ctx = nullptr;
+        other.parser = nullptr;
+        other.decoder = nullptr;
+        other.frame = nullptr;
+        other.use_decoder = false;
+    }
+    FrameTypeProbe& operator=(FrameTypeProbe&& other) noexcept {
+        if (this != &other) {
+            Release();
+            parser_ctx = other.parser_ctx;
+            parser = other.parser;
+            decoder = other.decoder;
+            frame = other.frame;
+            use_decoder = other.use_decoder;
+            other.parser_ctx = nullptr;
+            other.parser = nullptr;
+            other.decoder = nullptr;
+            other.frame = nullptr;
+            other.use_decoder = false;
+        }
+        return *this;
+    }
 
     void Release() {
         if (parser)
@@ -128,12 +223,45 @@ struct FrameTypeProbe {
 
 // 色彩与 HDR 的帧级兜底探测：容器/码流层信息不全时，解码前几帧读 AVFrame side data
 // （HDR10+/DV RPU 这类动态元数据通常只在解码帧上出现）
+// RAII：见 AudioQcProbe 的注释（禁拷贝 / 可移动 / 析构即释放）。
 struct ColorFrameProbe {
     AVCodecContext* decoder = nullptr;
     AVFrame* frame = nullptr;
     bool opened = false;
     bool failed = false;
     int frames_read = 0;
+
+    ColorFrameProbe() = default;
+    ~ColorFrameProbe() {
+        Release();
+    }
+    ColorFrameProbe(const ColorFrameProbe&) = delete;
+    ColorFrameProbe& operator=(const ColorFrameProbe&) = delete;
+    ColorFrameProbe(ColorFrameProbe&& other) noexcept
+        : decoder(other.decoder), frame(other.frame), opened(other.opened), failed(other.failed),
+          frames_read(other.frames_read) {
+        other.decoder = nullptr;
+        other.frame = nullptr;
+        other.opened = false;
+        other.failed = false;
+        other.frames_read = 0;
+    }
+    ColorFrameProbe& operator=(ColorFrameProbe&& other) noexcept {
+        if (this != &other) {
+            Release();
+            decoder = other.decoder;
+            frame = other.frame;
+            opened = other.opened;
+            failed = other.failed;
+            frames_read = other.frames_read;
+            other.decoder = nullptr;
+            other.frame = nullptr;
+            other.opened = false;
+            other.failed = false;
+            other.frames_read = 0;
+        }
+        return *this;
+    }
 
     bool Ready() const {
         return decoder != nullptr && frame != nullptr && !failed;
@@ -173,6 +301,12 @@ struct ColorFrameProbe {
 class AnalysisPipeline {
 public:
     explicit AnalysisPipeline(const AnalysisOptions& options);
+    // 析构兜底释放三条解码通路（评审 P2-4）：
+    // 正常返回与已知错误分支都会显式调 ReleaseProbes()，但 Prepare() / 逐包分析 /
+    // 回调抛异常时栈展开不会走到那一步 —— 这时只有析构能把 FFmpeg 资源收干净。
+    ~AnalysisPipeline();
+    AnalysisPipeline(const AnalysisPipeline&) = delete;
+    AnalysisPipeline& operator=(const AnalysisPipeline&) = delete;
 
     // ---- 扫描之前：建分析器、注册流、解析 extradata、打开解码器 ----
     // 必须在 avformat_close_input 之前（要读 codecpar / extradata），只调用一次。

@@ -81,6 +81,13 @@ int NalLengthSizeFromExtradata(const AVCodecParameters* par) {
 AnalysisPipeline::AnalysisPipeline(const AnalysisOptions& options) : options_(options) {
 }
 
+AnalysisPipeline::~AnalysisPipeline() {
+    // 兜底释放（评审 P2-4）：正常/已知错误分支都会显式 ReleaseProbes()，这里收的是
+    // "栈展开"那条路径 —— Prepare() / 逐包分析 / 回调抛异常时不会走到显式释放。
+    // ReleaseProbes() 本身幂等，重复调用没有副作用。
+    ReleaseProbes();
+}
+
 // ---- 扫描之前 ----
 
 void AnalysisPipeline::Prepare(AVFormatContext* fmt, model::AnalysisResult& result, double file_duration) {
