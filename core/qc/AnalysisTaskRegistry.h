@@ -39,6 +39,11 @@ class AnalysisTaskRegistry;
 //     那条路径）经析构/作用域守卫归还 —— 额度因此跟线程体的真实寿命对齐；
 //   * 若分析函数根本不认领（单测里的假实现、未来换执行器），派发侧在 analyze() 返回
 //     后兜底归还（IsAdopted() 为假时才还），既不泄漏额度也不会提前释放。
+//
+// ❗ 状态转换一律**委托给登记处**（本类自己不写原子标志）：凭证状态与计数必须同一个
+// 临界区里改，分开做会留下"已标退出、还没计数"的窗口 —— 超时等待线程（MarkExiting）
+// 与分析线程退出（Release）在这个窗口里并发操作同一张凭证，就会先减一个从未加过的
+// 数、再把已释放的任务计回退出数，计数从此偏高，背压永久失真（评审 P1/P2 遗留）。
 class AnalysisTaskSlot {
 public:
     AnalysisTaskSlot() = default;
@@ -46,7 +51,9 @@ public:
     AnalysisTaskSlot(const AnalysisTaskSlot&) = delete;
     AnalysisTaskSlot& operator=(const AnalysisTaskSlot&) = delete;
 
-    // 分析线程体认领这个额度（幂等）。
+    // 分析线程体认领这个额度（幂等；已退出 / 已归还之后不再生效）。
+    // 下面的查询（IsAdopted / IsExiting / IsReleased）只是读原子标志，供派发侧在不加锁
+    // 的场合快速判断；**写入**一律走登记处的临界区。
     void Adopt();
     bool IsAdopted() const;
     // 标记"已经判定放弃、正在退出"：仍占额度，但计入 exiting 而不是 running。
@@ -66,6 +73,10 @@ private:
     // 是否由登记处发出（RegisterLocked 里置位）。统计只认登记过的凭证 —— 直接
     // make_shared 出来的裸凭证（单测里常见）不该把计数减成负数。
     bool registered_ = false;
+    // 这张凭证在登记处账本上的**位置**（只在 mutex_ 下读写）。原子标志回答"现在什么状态"，
+    // 账本回答"该减哪一边" —— 两者分开就会出现"减了没加过的那一边"。
+    enum class Booked { None, Running, Exiting, Released };
+    Booked booked_ = Booked::None;
     std::atomic<bool> adopted_{false};
     std::atomic<bool> exiting_{false};
     std::atomic<bool> released_{false};
@@ -86,9 +97,19 @@ public:
     AnalysisTaskSlotPtr Acquire(int limit, int max_exiting, int backpressure_ms = 0,
                                 const std::function<bool()>& cancelled = nullptr);
 
+    // 占一个分析额度（语义同 Acquire），但拿不到时**一直排队**直到有额度或被取消。
+    //
+    // 这是"max_parallel / max_exiting_tasks 是硬约束"的那一半：Acquire 到点就返回
+    // nullptr（让调用方决定），AcquireUntilFit 则是"宁可等也不超额"。取消谓词是唯一的
+    // 出口 —— 没有它（传 nullptr）就会无限等，所以调用方必须把取消源接进来。
+    AnalysisTaskSlotPtr AcquireUntilFit(int limit, int max_exiting, const std::function<bool()>& cancelled);
+
     // 不限量的登记（单文件分析等没有调度上限的场景）：只为可观测，不做背压。
     AnalysisTaskSlotPtr AcquireUnbounded();
 
+    // 凭证状态转换。三者**都是**"状态 + 计数"的原子操作，调用方（AnalysisTaskSlot 的
+    // 同名方法）只做转发 —— 不要把判断搬到锁外去，那正是要修的那个竞态。
+    void Adopt(AnalysisTaskSlot& slot);
     void MarkExiting(AnalysisTaskSlot& slot);
     void Release(AnalysisTaskSlot& slot);
 

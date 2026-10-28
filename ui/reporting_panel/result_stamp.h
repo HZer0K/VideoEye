@@ -17,6 +17,8 @@
 #include <filesystem>
 #include <string>
 #include <system_error>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "core/domain/model/AnalysisOptions.h"
@@ -98,6 +100,60 @@ struct InputIdentity {
 
 inline InputIdentity FreezeInputIdentity(const std::string& path) {
     return InputIdentity{path, QueryFileVersion(path)};
+}
+
+// ---- 单文件分析的"身份链"（评审 P2-5 的落地形态）----
+//
+// 三步的顺序就是这条链的全部意义：**冻结 -> 分析 -> 按冻结的身份登记**。
+// 报告页的 RunSingle 是私有成员、里面跑的是真的 QcRunner，"分析期间把文件换掉"这个
+// 窗口在里面塞不进测试夹具，所以把顺序抽成下面两个可单测的入口，页面本体只负责调用：
+//   * AnalyzeWithFrozenInputIdentity —— 冻结发生在 analyze() **之前**；
+//   * CommitAnalysisResult           —— 登记用冻结的那份身份，完成时只复核一次。
+//
+// 冻结晚一步（分析之后）的后果：拿到的是"分析结束那一刻"的版本，于是分析期间被替换
+// 的文件会被冻结成替换后的版本，复核自然也通过 —— 旧内容的结果登记到新文件上，
+// 导出随之放行，报告与文件对不上。
+
+// 把一次单文件分析的结果登记进 stamp。身份一律用**分析开始前冻结**的那一份（frozen），
+// 当前版本在这里自己取一次用于复核（UI 侧在回调里调用，也就落在主线程上）。
+// 返回身份是否仍然成立（false = 分析期间文件被替换，这份结果不属于当前文件）。
+inline bool CommitAnalysisResult(ResultStamp& stamp, const std::string& path, const std::string& profile_id,
+                                 const AnalysisOptions& options, model::AnalysisStatus scan_status,
+                                 const InputIdentity& frozen, bool ok) {
+    // 失败结果不作数：清空，导出继续禁用，等待用户重新分析。
+    if (!ok) {
+        stamp = ResultStamp{};
+        return false;
+    }
+    stamp = ResultStamp{};
+    stamp.path = path;
+    stamp.profile_id = profile_id;
+    stamp.options = options;
+    stamp.scan_status = scan_status;
+    // 登记**冻结时**的版本，再核对一次：文件在分析期间被替换 -> 这份结果不属于
+    // 当前文件，标记无效（导出随之禁用），而不是把它当成当前文件的结果。
+    stamp.version = frozen.version;
+    const bool identity_holds = frozen.Matches(path, QueryFileVersion(path));
+    stamp.valid = identity_holds;
+    return identity_holds;
+}
+
+// 冻结 -> 分析 -> 带回冻结身份的产物。
+//
+// analyze 的签名是 `Result(const InputIdentity& frozen)`：把冻结的身份递进去，既让调用方
+// （报告页）不必另存一份，也让测试能在"分析过程中"拿到"冻结的到底是什么"。
+// 写成模板是为了不把 QcRunResult 拖进本头文件 —— 真实链路上它就是 QcRunner::AnalyzeFile。
+template <typename Analyze>
+auto AnalyzeWithFrozenInputIdentity(const std::string& path, Analyze&& analyze) {
+    using Result = typename std::decay<decltype(analyze(std::declval<const InputIdentity&>()))>::type;
+    struct Outcome {
+        InputIdentity frozen;
+        Result result;
+    };
+    Outcome outcome;
+    outcome.frozen = FreezeInputIdentity(path); // ① 分析**之前**冻结（在交给 FFmpeg 之前）
+    outcome.result = analyze(outcome.frozen);   // ② 分析（期间文件可能被替换）
+    return outcome;
 }
 
 // 结果是否仍匹配当前 (文件, 模板)：有效 + 当前文件非空 + 路径与模板都一致 +

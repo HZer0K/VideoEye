@@ -283,45 +283,44 @@ void ReportingPanel::RunSingle(std::shared_ptr<AnalysisTask> task, const std::st
     // 取消只看令牌这一颗 —— 与批量扫描、诊断页、QcRunner 内部轮询的是同一个来源。
     callbacks.should_cancel = [task]() { return task->cancel.IsCanceled(); };
 
+    // 结果的新鲜度要素在发起分析时（主线程已冻结 profile_ 与 path）就固定下来，
+    // 完成回调里按同一份身份登记，避免分析期间状态被改导致"结果对不上文件/模板"。
+    const std::string analyzed_path = path;
+    const std::string analyzed_profile_id = profile.id;
+
     // 等待策略：正常分析**不限时**（评审 P1-1 —— 以前把 5 秒的关停回收预算当运行时长
     // 传进来，长视频 / 多音轨 / 深度档一律被判超时）。关停不再靠这个预算兜底：
     // RetireAll 先关回报通道再置取消令牌，QcRunner 见到取消后按 cancel_wait_ms 收尾，
     // 到点就把线程转入受控回收 —— 关界面因此只有一个预算，不再是两段相加。
-    qc::QcRunResult result = runner.AnalyzeFile(path, profile, analyzed_options, callbacks, SingleAnalysisBudgets());
+    //
+    // 输入身份在**打开文件之前**冻结（评审 P2-5）：若等分析结束再取版本，取到的是
+    // "分析结束那一刻的文件"，而结果对应的是分析期间读到的那份内容 —— 文件在这段时间
+    // 被替换时，旧结果会被登记到新文件上。冻结的版本才是这份结果的真实身份。
+    //
+    // ❗ 顺序由 AnalyzeWithFrozenInputIdentity 钉住：冻结发生在 AnalyzeFile() **之前**
+    // （以前这里是先跑完同步的 AnalyzeFile 再冻结，于是"分析期间被替换"既挡不住也测
+    // 不出来 —— 冻到的就是替换后的版本，复核自然通过）。放在 worker 线程刚起来、还没
+    // 交给 FFmpeg 的这一刻，正是"分析开始时"。
+    const auto chain = AnalyzeWithFrozenInputIdentity(analyzed_path, [&](const InputIdentity&) {
+        return runner.AnalyzeFile(path, profile, analyzed_options, callbacks, SingleAnalysisBudgets());
+    });
+    const qc::QcRunResult result = chain.result;
+    const InputIdentity analyzed_identity = chain.frozen;
     // 终态由结果 + 取消令牌共同判定：用户取消 -> Canceled；分析跑完 -> Succeeded；
     // 其余（打开失败 / 超时 / 引擎报错）-> Failed。
     const task::TaskState terminal = task->cancel.IsCanceled()
                                          ? task::TaskState::Canceled
                                          : (result.ok ? task::TaskState::Succeeded : task::TaskState::Failed);
-    // 结果的新鲜度要素在发起分析时（主线程已冻结 profile_ 与 path）就固定下来，
-    // 完成回调里按同一份身份登记，避免分析期间状态被改导致"结果对不上文件/模板"。
-    const std::string analyzed_path = path;
-    const std::string analyzed_profile_id = profile.id;
-    // 输入身份在**打开文件之前**冻结（评审 P2-5）：完成回调里若再取一次版本，取到的是
-    // "分析结束那一刻的文件"，而结果对应的是分析期间读到的那份内容 —— 文件在这段时间
-    // 被替换时，旧结果会被登记到新文件上。冻结的版本才是这份结果的真实身份。
-    // （放在 worker 线程刚起来、还没交给 FFmpeg 的这一刻，正是"分析开始时"。）
-    const InputIdentity analyzed_identity = FreezeInputIdentity(analyzed_path);
     PostUiUpdate(task->report, [this, task, result, terminal, analyzed_path, analyzed_profile_id, analyzed_options,
                                 analyzed_identity]() {
-        if (result.ok) {
+        if (result.ok)
             last_result_ = result;
-            result_stamp_ = ResultStamp{};
-            result_stamp_.path = analyzed_path;
-            result_stamp_.profile_id = analyzed_profile_id;
-            result_stamp_.options = analyzed_options;
-            result_stamp_.scan_status = result.analysis.scan_status;
-            // 登记**冻结时**的版本，再核对一次：文件在分析期间被替换 -> 这份结果不属于
-            // 当前文件，标记无效（导出随之禁用），而不是把它当成当前文件的结果。
-            result_stamp_.version = analyzed_identity.version;
-            const bool identity_holds = analyzed_identity.Matches(analyzed_path, QueryFileVersion(analyzed_path));
-            result_stamp_.valid = identity_holds;
-            if (!identity_holds) {
-                emit StatusMessage(tr("分析期间文件已被替换，本次结果不对应当前文件，请重新分析"));
-            }
-        } else {
-            // 失败结果不作数：导出继续禁用，等待用户重新分析。
-            result_stamp_ = ResultStamp{};
+        // 按**冻结时**的身份登记，并复核一次（登记细节见 result_stamp.h）。
+        const bool identity_holds =
+            CommitAnalysisResult(result_stamp_, analyzed_path, analyzed_profile_id, analyzed_options,
+                                 result.analysis.scan_status, analyzed_identity, result.ok);
+        if (result.ok && !identity_holds) {
+            emit StatusMessage(tr("分析期间文件已被替换，本次结果不对应当前文件，请重新分析"));
         }
         ShowResult(result);
         SetBusy(false);

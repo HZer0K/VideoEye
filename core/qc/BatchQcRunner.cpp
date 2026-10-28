@@ -35,23 +35,27 @@ std::string LowerWithoutDot(const std::string& extension) {
 // 线程还要跑一会儿才退出 —— 那段时间它仍占着 FFmpeg / 内存 / 磁盘，也必须占着额度，
 // 否则 max_parallel=4 时真正跑着的分析可能是 4 + N 条。
 //
-// 拿不到额度（取消 / 背压超时）时不丢活：退化成"不限量登记"，只打日志 —— 宁可实际
-// 并发超标并可观测，也不能静默漏掉一个文件。
+// ❗❗ 拿不到额度时**不再**退化成"不限量派发" —— 那样 max_parallel 与 max_exiting_tasks
+// 就只是"建议值"：旧分析线程迟迟不退出时后续任务会持续叠加实际资源占用，登记处只
+// 提高了可观测性，却没有约束力。现在背压超时之后**继续排队**（AcquireUntilFit），
+// 直到腾出额度或整批被取消 —— 上限因此是硬的，代价只是这一项多等一会儿。
+//
+// 唯一的出口是取消：返回 nullptr 让派发侧立刻停止，还没取走的文件留在队列里
+// （末尾统一落成 Cancelled），既不静默漏文件，也不悄悄超额。
 std::shared_ptr<AnalysisTaskSlot> AcquireAnalysisSlot(const BatchQcOptions& options,
-                                                      const BatchQcCallbacks& callbacks) {
+                                                      const std::function<bool()>& cancelled) {
     const int limit = std::clamp(options.max_parallel, 1, kMaxParallelLimit);
     const int max_exiting = options.max_exiting_tasks > 0 ? options.max_exiting_tasks : limit;
-    const std::function<bool()> cancelled = [&callbacks]() {
-        return callbacks.is_cancelled ? callbacks.is_cancelled() : false;
-    };
     AnalysisTaskRegistry& registry = AnalysisTaskRegistry::Instance();
     auto slot = registry.Acquire(limit, max_exiting, options.backpressure_wait_ms, cancelled);
     if (slot)
         return slot;
+    if (cancelled && cancelled())
+        return nullptr; // 取消：不再派发（不占额度、不留后台任务）
     LOG_WARN("批量分析并发额度不足（存活 " + std::to_string(registry.TotalCount()) + " 条，其中退出中 " +
              std::to_string(registry.ExitingCount()) + " 条），等待 " + std::to_string(options.backpressure_wait_ms) +
-             "ms 后按不限量派发");
-    return registry.AcquireUnbounded();
+             "ms 后继续排队 —— 不突破 max_parallel");
+    return registry.AcquireUntilFit(limit, max_exiting, cancelled);
 }
 
 std::string ExtensionOf(const std::string& path) {
@@ -185,10 +189,18 @@ BatchQcRun BatchQcRunner::Run(const std::vector<BatchQcItem>& items, const Batch
                     // 这样正在跑的单文件分析也能通过 request.cancel 即时感知到取消。
                     cancel_.store(IsCancelled(callbacks), std::memory_order_release);
                     request.cancel = &cancel_;
-                    // 派发前先领一个分析额度（评审 P2-3）：额度不足时背压等待，
-                    // 于是"实际存活的分析任务数"不会超过 max_parallel —— 包括那些
-                    // 已经返回但线程体还在退出的条目。
-                    request.slot = AcquireAnalysisSlot(options, callbacks);
+                    // 派发前先领一个分析额度（评审 P2-3）：额度不足时先背压等待、
+                    // 之后继续排队，于是"实际存活的分析任务数"不会超过 max_parallel
+                    // —— 包括那些已经返回但线程体还在退出的条目。
+                    // 取消源要连本 runner 的 cancel_ 与调用方的 is_cancelled：只接后者时
+                    // "点了停止"之后排队中的这一项要等到背压超时才肯退出。
+                    const std::function<bool()> cancelled = [this, &callbacks]() {
+                        return cancel_.load(std::memory_order_acquire) ||
+                               (callbacks.is_cancelled && callbacks.is_cancelled());
+                    };
+                    request.slot = AcquireAnalysisSlot(options, cancelled);
+                    if (!request.slot)
+                        break; // 取消：停止派发，本项与队列里剩下的留给末尾统一落成 Cancelled
 
                     try {
                         const QcRunResult result = analyze(request);

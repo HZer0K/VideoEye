@@ -52,10 +52,12 @@ using videoeye::qc::QcRuleEngine;
 using videoeye::qc::QcRunResult;
 using videoeye::ui::AnalysisOptionsCovers;
 using videoeye::ui::AnalysisTask;
+using videoeye::ui::AnalyzeWithFrozenInputIdentity;
 using videoeye::ui::ApplyExportPaths;
 using videoeye::ui::BatchMatchesSeverityFilter;
 using videoeye::ui::BatchMatchesStatusFilter;
 using videoeye::ui::CanReuseAnalysis;
+using videoeye::ui::CommitAnalysisResult;
 using videoeye::ui::CoveredAnalysisFlags;
 using videoeye::ui::FileVersionStamp;
 using videoeye::ui::FreezeInputIdentity;
@@ -561,6 +563,103 @@ TEST(InputIdentityTest, FrozenIdentityOfARealFileChangesAfterRewrite) {
         << "文件在分析期间被替换，冻结的身份必须判否（否则旧结果会被登记到新文件上）";
 
     std::filesystem::remove_all(dir, ec);
+}
+
+// ---------------------------------------------------------------------------
+// 单文件分析的**调用链顺序**：冻结 -> 分析 -> 按冻结的身份登记
+//
+// 上面两条测的是"比较函数对不对"；报告页真正的缺口在**先后**：以前 RunSingle 先把
+// AnalyzeFile() 同步跑完，返回之后才 FreezeInputIdentity() —— 冻到的是"分析结束那一刻"
+// 的文件。分析期间被替换时，冻到的是替换后的版本，复核必然通过，旧内容的结果照样
+// 登记到新文件上（导出随之放行）。
+//
+// RunSingle 是私有成员、里面跑的是真 QcRunner，"分析期间换文件"这个窗口塞不进夹具，
+// 所以顺序抽到了 AnalyzeWithFrozenInputIdentity / CommitAnalysisResult 里 —— 这里用
+// 假 analyze（它自己把文件换掉）驱动同一条链，页面本体只负责调用它。
+// ---------------------------------------------------------------------------
+namespace {
+
+std::string RewriteChainFile(const std::filesystem::path& file, const std::string& body) {
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    out << body;
+    return file.string();
+}
+
+struct ChainScratch {
+    std::filesystem::path dir = std::filesystem::temp_directory_path() / "videoeye_identity_chain";
+    std::filesystem::path file = dir / "clip.mp4";
+
+    ChainScratch() {
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+        std::filesystem::create_directories(dir, ec);
+    }
+    ~ChainScratch() {
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+};
+
+} // namespace
+
+TEST(InputIdentityChainTest, IdentityIsFrozenBeforeTheAnalysisRuns) {
+    const ChainScratch scratch;
+    const std::string path = RewriteChainFile(scratch.file, "first");
+    const FileVersionStamp before = QueryFileVersion(path);
+    ASSERT_TRUE(before.valid);
+
+    FileVersionStamp seen_by_analyze;
+    // 假分析动作：进去就把文件换掉（脚本重导出的典型形态），然后"成功"返回。
+    const auto chain = AnalyzeWithFrozenInputIdentity(path, [&](const InputIdentity& frozen) {
+        seen_by_analyze = frozen.version;
+        RewriteChainFile(scratch.file, std::string(4096, 'x'));
+        return true; // 假装分析成功
+    });
+
+    EXPECT_EQ(chain.frozen.version, before) << "冻结点跑到分析之后了 —— 冻到的是替换后的文件";
+    EXPECT_EQ(seen_by_analyze, before) << "交给分析动作的身份必须是**分析开始前**的版本";
+
+    ResultStamp stamp;
+    const bool holds = CommitAnalysisResult(stamp, path, "hls-vod", AnalysisOptions{}, AnalysisStatus::Complete,
+                                            chain.frozen, chain.result);
+    EXPECT_FALSE(holds) << "分析期间被替换 -> 这份结果不属于当前文件";
+    EXPECT_FALSE(stamp.valid) << "必须标记无效，导出随之禁用";
+    EXPECT_EQ(stamp.version, before) << "登记的是冻结时的版本（这份结果的真实身份）";
+    EXPECT_FALSE(IsResultFresh(stamp, path, "hls-vod"));
+}
+
+TEST(InputIdentityChainTest, UnchangedFileIsRegisteredAsFresh) {
+    const ChainScratch scratch;
+    const std::string path = RewriteChainFile(scratch.file, "first");
+    const FileVersionStamp before = QueryFileVersion(path);
+
+    // 分析期间什么都没发生：冻结 -> 分析 -> 登记，身份必须成立。
+    const auto chain = AnalyzeWithFrozenInputIdentity(path, [](const InputIdentity&) { return true; });
+
+    ResultStamp stamp;
+    const bool holds = CommitAnalysisResult(stamp, path, "hls-vod", AnalysisOptions{}, AnalysisStatus::Complete,
+                                            chain.frozen, chain.result);
+    EXPECT_TRUE(holds);
+    EXPECT_TRUE(stamp.valid);
+    EXPECT_EQ(stamp.version, before);
+    EXPECT_TRUE(IsResultFresh(stamp, path, "hls-vod"));
+}
+
+TEST(InputIdentityChainTest, FailedAnalysisRegistersNothing) {
+    const ChainScratch scratch;
+    const std::string path = RewriteChainFile(scratch.file, "first");
+
+    const auto chain = AnalyzeWithFrozenInputIdentity(path, [&](const InputIdentity&) {
+        RewriteChainFile(scratch.file, "replaced after a failed run");
+        return false; // 失败：打开失败 / 超时 / 被取消都走这条
+    });
+
+    ResultStamp stamp{"a.mp4", "hls-vod", true};
+    const bool holds = CommitAnalysisResult(stamp, path, "hls-vod", AnalysisOptions{}, AnalysisStatus::Failed,
+                                            chain.frozen, chain.result);
+    EXPECT_FALSE(holds);
+    EXPECT_FALSE(stamp.valid) << "失败结果不作数，导出必须保持禁用";
+    EXPECT_TRUE(stamp.path.empty()) << "失败时 stamp 要清空，不能留下上一次的身份";
 }
 
 TEST(ResultFreshnessTest, InvalidStampOrEmptyPathIsNeverFresh) {

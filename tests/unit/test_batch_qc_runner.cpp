@@ -270,4 +270,61 @@ TEST(BatchQcRunnerTest, AnalysisSlotsAreRegisteredAndReturned) {
     // 假分析函数不认领额度 -> 派发侧兜底归还；跑完不该有额度滞留。
     EXPECT_EQ(AnalysisTaskRegistry::Instance().TotalCount(), 0);
 }
+
+// 并发额度是**硬约束**，不是建议值（评审 P2-3）。
+//
+// 假分析函数按真实语义认领额度，并把它交给一条"延迟归还"的后台线程 —— 模拟真实存在的
+// 那个窗口：analyze() 已经返回，而分析线程体还在退出（FFmpeg / 内存 / 磁盘都还占着）。
+// 上限为 1 时，后一个条目必须等前一个的额度真正归还才被派发；退化成"不限量派发"时，
+// 登记处会同时出现 2 条存活任务 —— 实际资源占用就此突破 max_parallel。
+TEST(BatchQcRunnerTest, AnalysisSlotLimitIsAHardCap) {
+    std::atomic<int> observed_max{0};
+    std::atomic<int> dispatched{0};
+    QcAnalyzeFn analyze = [&observed_max, &dispatched](const QcAnalyzeRequest& req) {
+        dispatched.fetch_add(1);
+        EXPECT_NE(req.slot, nullptr) << "派发时没带上并发额度";
+        if (req.slot) {
+            req.slot->Adopt(); // 真实的分析线程体在开跑时认领
+            // 模拟"analyze 已返回、线程体还在退"：额度要过一会儿才归还。
+            std::thread late([slot = req.slot]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(40));
+                slot->MarkExiting();
+                slot->Release();
+            });
+            late.detach();
+        }
+        const int now = AnalysisTaskRegistry::Instance().TotalCount();
+        int prev = observed_max.load();
+        while (now > prev && !observed_max.compare_exchange_weak(prev, now)) {
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+        QcRunResult result;
+        result.ok = true;
+        return result;
+    };
+
+    std::vector<BatchQcItem> items(3);
+    for (int i = 0; i < 3; ++i)
+        items[i].path = "a" + std::to_string(i) + ".mp4";
+
+    BatchQcOptions options;
+    options.max_parallel = 1;
+    options.max_exiting_tasks = 1;
+    options.backpressure_wait_ms = 0; // 不做额外等待：额度不够就必须排队
+
+    BatchQcRunner runner;
+    const auto run = runner.Run(items, options, analyze, BatchQcCallbacks{});
+
+    EXPECT_EQ(dispatched.load(), 3) << "排队不是丢活：三个文件都得跑到";
+    EXPECT_EQ(run.summary.succeeded, 3);
+    EXPECT_LE(observed_max.load(), 1) << "同一时刻登记了超过 max_parallel 条存活分析 —— 上限被绕过了";
+
+    // 收尾：被延迟归还的额度最终必须回到登记处，否则派发侧会永久背压。
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (AnalysisTaskRegistry::Instance().TotalCount() != 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_EQ(AnalysisTaskRegistry::Instance().TotalCount(), 0);
+}
 } // namespace

@@ -59,6 +59,7 @@ using videoeye::qc::QcRunner;
 using videoeye::qc::QcRunResult;
 using videoeye::qc::QcWaitDecision;
 using videoeye::qc::QcWaitState;
+using videoeye::qc::SettleAbandon;
 using videoeye::ui::SingleAnalysisBudgets;
 
 namespace {
@@ -277,6 +278,56 @@ TEST(QcRunnerTest, CallerCancelAbandonsThreadWithoutTimeoutFlag) {
     EXPECT_FALSE(result.timed_out) << "调用方取消不该被记成超时";
 
     std::this_thread::sleep_for(std::chrono::milliseconds(300)); // 给被放弃的线程一点收尾时间
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
+// ---- 收尾分类只认"首次触发收尾的原因"（纯函数部分）----
+//
+// 线程要不要脱离（detach）是**回收方式**，不是业务分类：以前分类看的是 box->timed_out，
+// 于是同一个超预算事件 —— 引擎退得慢记超时、退得快记用户取消，批量汇总里的
+// timed_out / cancelled 随机器的快慢漂移。
+TEST(QcRunnerTest, AbandonSettlementFollowsTheFirstReason) {
+    const auto over_budget = SettleAbandon(QcAbandonReason::OverBudget, kOverBudgetError);
+    EXPECT_TRUE(over_budget.applies);
+    EXPECT_FALSE(over_budget.ok);
+    EXPECT_TRUE(over_budget.timed_out);
+    EXPECT_EQ(over_budget.error, kOverBudgetError);
+
+    const auto stalled = SettleAbandon(QcAbandonReason::IoStalled, kIoStalledError);
+    EXPECT_TRUE(stalled.timed_out) << "IO 无响应与超预算同属「超时」口径，批量侧要能看见";
+
+    const auto cancelled = SettleAbandon(QcAbandonReason::Cancelled, kCancelledError);
+    EXPECT_TRUE(cancelled.applies);
+    EXPECT_FALSE(cancelled.timed_out) << "用户点了停止不能标超时（否则显示成文件有问题）";
+    EXPECT_EQ(cancelled.error, kCancelledError);
+
+    const auto none = SettleAbandon(QcAbandonReason::None, "");
+    EXPECT_FALSE(none.applies) << "没放弃过就不该采用这份结算";
+}
+
+// ---- 端到端：超预算之后引擎**自己结算回来**也仍是超时，不是用户取消 ----
+//
+// 预算 1ms 必定在引擎结算之前命中放弃（与上面那条 detach 用例同一处时序假设）；
+// 取消等待放宽到 5 秒，于是"引擎在等待窗口内收到取消并结算回来"这条路径被稳定走到
+// —— 旧实现在这里返回"分析被取消"，批量侧因此把超预算的条目记成用户取消。
+TEST(QcRunnerTest, BudgetAbandonStaysTimeoutEvenWhenEngineSettlesQuickly) {
+    const fs::path dir = MakeScratchDir("videoeye_qc_runner_abandon_settles");
+    const fs::path file = WriteGarbageMediaFile(dir, "garbage.mp4");
+
+    QcRunner runner;
+    const auto started = std::chrono::steady_clock::now();
+    const QcRunResult result = runner.AnalyzeFile(file.string(), FastProfile(), OptionsForDepth(QcAnalysisDepth::Fast),
+                                                  QcRunCallbacks{}, QcRunBudgets{1, 0, 5000});
+    const double wall_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_NE(result.error, kCancelledError) << "没有调用方取消，却报成了「用户取消」（退得快就被改写的老 bug）";
+    EXPECT_EQ(result.error, kOverBudgetError);
+    EXPECT_TRUE(result.timed_out) << "超预算就是超时 —— 线程退得快也不例外";
+    EXPECT_LT(wall_ms, 4000.0) << "引擎已经自己结算回来，不该干等满 cancel_wait_ms";
+
     std::error_code ec;
     fs::remove_all(dir, ec);
 }

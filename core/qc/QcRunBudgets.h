@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <string>
 
 namespace videoeye {
 namespace qc {
@@ -88,6 +89,29 @@ enum class QcWaitDecision {
     RequestCancel, // 判定放弃：请求取消（引擎可见），并在 cancel_wait_ms 内继续等它收尾
     Abandon,       // 放弃这条线程（detach），本次按放弃原因收尾
 };
+
+// 放弃之后的结果分类（纯函数，可单测）。
+//
+// ❗ 分类只认**首次触发收尾的原因**：线程体要不要脱离（detach）只是回收方式，不改变
+// 业务口径。以前"超预算 / IO 无响应"触发收尾后，引擎若赶在 cancel_wait_ms 内自己结算
+// 回来，流程就走到"引擎报取消"那条分支 —— 于是同一类事件退出慢记超时、退出快记
+// 用户取消，批量统计里的 timed_out / cancelled 随机器快慢漂移。
+struct QcAbandonSettlement {
+    bool applies = false;   // 是否真的发生过放弃（None 时为 false，调用方不该采用）
+    bool ok = false;        // 放弃过的结果一律不算成功
+    bool timed_out = false; // 调用方取消 -> false（否则"用户点了停止"会被显示成文件有问题）
+    std::string error;
+};
+
+inline QcAbandonSettlement SettleAbandon(QcAbandonReason reason, const std::string& error_text) {
+    QcAbandonSettlement settlement;
+    if (reason == QcAbandonReason::None)
+        return settlement;
+    settlement.applies = true;
+    settlement.error = error_text;
+    settlement.timed_out = reason != QcAbandonReason::Cancelled;
+    return settlement;
+}
 
 // 等待决策（纯函数）：
 //   * 还没判定放弃时，只有"超预算"与"IO 无响应"能触发放弃；

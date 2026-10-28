@@ -1000,6 +1000,18 @@ target_link_libraries(test_batch_qc_runner PRIVATE VideoEyeQc)
 add_test(NAME BatchQcRunnerTests COMMAND test_batch_qc_runner)
 
 # =================================================
+# 测试 26c：分析任务登记处（并发额度计数的并发契约）
+# 说明: 登记处的全部价值就在"计数准不准" —— 准，派发侧的背压与 max_parallel 才成立；
+#       不准（MarkExiting / Release 并发留下残账）则永久偏严。本目标只吃 std::，
+#       不链 Qt / FFmpeg，用高频并发把状态转换与计数更新之间的窗口撞出来。
+# =================================================
+videoeye_add_test(test_analysis_task_registry
+    unit/test_analysis_task_registry.cpp
+)
+target_link_libraries(test_analysis_task_registry PRIVATE VideoEyeQc)
+add_test(NAME AnalysisTaskRegistryTests COMMAND test_analysis_task_registry)
+
+# =================================================
 # 测试 26b：QcRunner 单文件执行器（生命周期错误路径 / 预算内结算 / 判定放弃后 detach）
 #          以及三项等待策略（允许跑多久 / IO 多久无响应 / 取消后等多久）各自的判定
 # 说明: 用"垃圾内容 + .mp4 扩展名"的假文件触发引擎打开失败与超时, 不需要真实媒体样本;

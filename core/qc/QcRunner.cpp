@@ -210,12 +210,18 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& prof
             }
             box->cv.notify_all();
         };
-        if (box->progress) {
-            effective.on_progress = [box, touch](double percent, const std::string& stage) {
-                touch();
+        // 进度回调**无条件**安装：它先刷新"距上一次动静"的活动时间，再按需转发给外部
+        // 订阅者。
+        //
+        // 以前只有 box->progress 非空时才装 —— 于是批量入口（MakeAnalyzeFunction 没有
+        // 进度回调）那条路上，即使引擎一直在出进度，也没人刷新 activity_ms；一旦配了
+        // io_idle_timeout_ms，一个正常运行很久的分析会被判成"输入无响应"而放弃。
+        // 空闲超时是执行器自己的判据，不该依赖调用方有没有订阅进度。
+        effective.on_progress = [box, touch](double percent, const std::string& stage) {
+            touch();
+            if (box->progress)
                 box->progress(percent, stage);
-            };
-        }
+        };
         // 异常必须就地收口：这是裸 std::thread 的线程体，任何逃逸的异常都会直接
         // std::terminate()（连等待线程一起带走），任务永远等不到结算 —— 分析器 /
         // 解析器抛异常就从"进程没了"降级成"这条任务失败"。
@@ -240,6 +246,14 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& prof
     QcWaitState wait_state;
     QcAbandonReason abandon_reason = QcAbandonReason::None;
     auto abandon_at = std::chrono::steady_clock::now();
+    // 首次触发收尾的原因在此**定格**（只有第一次算数）。之后引擎无论自己结算成什么
+    // （完成 / 取消 / 失败），业务分类都按它来 —— 线程是否需要脱离只决定回收方式。
+    // 写盒子而不仅是局部变量：等待循环结束之后还要靠它收尾（见下面的结算段）。
+    // 全程持有 box->mutex（等待循环就在这把锁下跑），工作线程不碰这个字段。
+    const auto record_abandon = [&box](QcAbandonReason reason) {
+        if (reason != QcAbandonReason::None && box->abandon_reason == QcAbandonReason::None)
+            box->abandon_reason = reason;
+    };
     {
         std::unique_lock<std::mutex> lock(box->mutex);
         while (!box->settled) {
@@ -257,11 +271,12 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& prof
             if (abandon_reason == QcAbandonReason::None && callbacks.should_cancel && callbacks.should_cancel()) {
                 abandon_reason = QcAbandonReason::Cancelled;
                 abandon_at = now;
+                record_abandon(abandon_reason);
             }
             const QcWaitDecision decision = DecideWait(budgets, wait_state);
             if (decision == QcWaitDecision::Abandon) {
                 box->timed_out = true;
-                box->abandon_reason = abandon_reason;
+                record_abandon(abandon_reason);
                 break;
             }
             if (decision == QcWaitDecision::RequestCancel) {
@@ -271,6 +286,9 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& prof
                                      ? QcAbandonReason::OverBudget
                                      : QcAbandonReason::IoStalled;
                 abandon_at = now;
+                // ❗ 判定即定格：引擎可能就在这之后、取消生效之前自己结算回来，
+                // 那时不能把"超预算"改写成"用户取消"（批量统计会失真）。
+                record_abandon(abandon_reason);
                 // 立刻复核而不是先睡一个轮询片：cancel_wait_ms = 0 的语义是"判定即放弃"，
                 // 多等 1ms 就可能让引擎抢在前面结算，把"放弃"变成"取消" —— 放弃原因与
                 // timed_out 标记就此失真（批量侧会把超预算的条目记成用户取消）。
@@ -312,12 +330,22 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& prof
     const auto elapsed = std::chrono::steady_clock::now() - started_at;
     output.elapsed_ms = std::chrono::duration<double, std::milli>(elapsed).count();
 
-    if (box->timed_out) {
+    // 收尾分类只看**首次触发收尾的原因**（评审 P1-1/P2 遗留）。
+    //
+    // 以前这里看的是 box->timed_out（"线程有没有被脱离"），于是同一个超预算事件：
+    // 引擎退得慢 -> detach -> 记超时；引擎退得快 -> 自己结算回来 -> 记"用户取消"。
+    // 回收方式与业务口径被混成了一个量，批量汇总里的 timed_out / cancelled 随之失真。
+    // 现在 detach 只影响"线程怎么回收"，分类由 abandon_reason 说了算。
+    QcAbandonReason final_reason = QcAbandonReason::None;
+    {
+        std::lock_guard<std::mutex> lock(box->mutex);
+        final_reason = box->abandon_reason;
+    }
+    const QcAbandonSettlement settlement = SettleAbandon(final_reason, AbandonErrorText(final_reason));
+    if (settlement.applies) {
         output.ok = false;
-        // 调用方取消导致的放弃**不**标 timed_out：批量侧按 error 把它落成 Cancelled，
-        // 标了就变成"文件有问题"了（见 QcRunResult::timed_out 的注释）。
-        output.timed_out = box->abandon_reason != QcAbandonReason::Cancelled;
-        output.error = AbandonErrorText(box->abandon_reason);
+        output.timed_out = settlement.timed_out;
+        output.error = settlement.error;
         output.analysis.scan_status = model::AnalysisStatus::Failed;
         output.analysis.error_message = output.error;
         return output;
