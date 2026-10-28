@@ -104,13 +104,19 @@ private:
     void FeedHevc(const uint8_t* data, size_t size, double pts, int64_t packet_index, int64_t file_offset);
     void FeedAv1(const uint8_t* data, size_t size, double pts, int64_t packet_index, int64_t file_offset);
 
+    // 这一包用长度前缀还是 Annex B（Auto 模式下可能在这里做首包探测）。
+    // 返回 true 时 *width 是前缀字节数；<= 0 表示"判定为长度前缀但宽度未知"，该包放弃。
+    bool DecideFraming(const uint8_t* data, size_t size, int& width);
+
     // 单个参数集 NAL 的登记。抽出来是因为"扫包"与"扫 extradata"两条路径
     // 必须用同一份登记逻辑 —— 各写一遍迟早会在摘要口径上分叉。
-    bool RegisterH264Sps(const NalUnit& nal, double pts, int64_t packet_index, int64_t file_offset);
-    bool RegisterH264Pps(const NalUnit& nal, double pts, int64_t packet_index, int64_t file_offset);
-    bool RegisterHevcVps(const NalUnit& nal, double pts, int64_t packet_index, int64_t file_offset);
-    bool RegisterHevcSps(const NalUnit& nal, double pts, int64_t packet_index, int64_t file_offset);
-    bool RegisterHevcPps(const NalUnit& nal, double pts, int64_t packet_index, int64_t file_offset);
+    // 参数用 NalView（不拥有内存）：扫包路径直接拿到零拷贝视图，
+    // extradata 路径用 ToNalView() 把已复制好的 NalUnit 借成视图。
+    bool RegisterH264Sps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset);
+    bool RegisterH264Pps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset);
+    bool RegisterHevcVps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset);
+    bool RegisterHevcSps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset);
+    bool RegisterHevcPps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset);
 
     // 登记（或更新）一份参数集；内容变化时产出变化事件
     void RegisterSet(model::ParameterSetKind kind, int id, const std::string& summary, const uint8_t* payload,

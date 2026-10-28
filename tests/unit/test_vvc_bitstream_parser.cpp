@@ -422,6 +422,9 @@ public:
             Bit(0);
         Bits(code, len + 1);
     }
+    void Se(int v) {
+        Ue(v <= 0 ? static_cast<uint32_t>(-2 * v) : static_cast<uint32_t>(2 * v - 1));
+    }
     std::vector<uint8_t> Bytes() {
         std::vector<uint8_t> out = out_;
         if (n_ > 0)
@@ -463,6 +466,136 @@ TEST_F(VvcPpsTest, SubpicIdMappingOverLimitIsRejected) {
     const std::vector<uint8_t> over = MakePpsWithNumSubpics(1025);
     const VvcPpsInfo pps = VvcBitstreamParser::ParsePpsFromNalUnit(MakeNal(16, over));
     EXPECT_FALSE(pps.present) << "越界 subpic 计数必须拒绝置 present";
+}
+
+// --------------------------------------------------------------------------
+// PPS 后半段（QP / 权重 / 去块）：按 H.266 7.3.2.4 Table 15 逐位构造
+//
+// ⚠️ 这段以前没有测试，于是"字段顺序读反"这种错误一路活到了面板上：
+//    按正确语法构造的 QP=30 输入会被判成 qp_fields_valid=false（字段全被回滚）。
+// 生成器独立于实现：只照规范表写，不抄解析器的 if 分支。
+// --------------------------------------------------------------------------
+namespace {
+
+struct PpsQpOptions {
+    bool rpl1_idx_present = false;
+    int second_default_active_minus1 = 0; // 仅在 rpl1_idx_present 时有意义
+    bool ref_wraparound = false;
+    int wraparound_offset = 0;
+    int pic_init_qp_minus26 = 4; // 26 + 4 = 30
+    // true = 走 tile 划分段（no_pic_partition_flag = 0）：2 列 × 1 行 tile。
+    // 这一段是"顺序差一位、QP 全错"的重灾区，单独给它一个用例。
+    bool tile_partition = false;
+};
+
+// no_pic_partition_flag = 1（跳过 tile 段）→ 直接进 QP 段。
+std::vector<uint8_t> MakePpsWithQp(const PpsQpOptions& opt) {
+    BitWriter w;
+    w.Bits(0, 6);                      // pps_pic_parameter_set_id
+    w.Bits(0, 4);                      // pps_seq_parameter_set_id
+    w.Bit(0);                          // pps_mixed_nalu_types_in_pic_flag
+    w.Ue(1920);                        // pps_pic_width_in_luma_samples
+    w.Ue(1080);                        // pps_pic_height_in_luma_samples
+    w.Bit(0);                          // pps_conformance_window_flag
+    w.Bit(0);                          // pps_scaling_window_explicit_signalling_flag
+    w.Bit(0);                          // pps_output_flag_present_flag
+    w.Bit(opt.tile_partition ? 0 : 1); // pps_no_pic_partition_flag
+    w.Bit(0);                          // pps_subpic_id_mapping_present_flag
+    if (opt.tile_partition) {
+        // ---- tile 段（H.266 7.3.2.4）----
+        w.Bits(1, 2); // pps_log2_ctu_size_minus5（规范要求与 SPS 相同）
+        w.Ue(1);      // pps_num_exp_tile_columns_minus1 = 1 → 2 列
+        w.Ue(0);      // pps_num_exp_tile_rows_minus1    = 0 → 1 行
+        // ❗ 宽/高数组长度是 minus1 + 1：两列都要显式给宽度
+        w.Ue(9);  // pps_tile_column_width_minus1[0]
+        w.Ue(9);  // pps_tile_column_width_minus1[1]
+        w.Ue(16); // pps_tile_row_height_minus1[0]
+        w.Bit(0); // pps_loop_filter_across_tiles_enabled_flag
+        w.Bit(1); // pps_rect_slice_flag
+        w.Bit(1); // pps_single_slice_per_subpic_flag
+        // ❗ NumTilesInPic > 1 且 rect_slice/single_slice 都为 1 时这一位照样存在
+        w.Bit(0); // pps_loop_filter_across_slices_enabled_flag
+    }
+    // ---- 后半段：顺序即规范顺序 ----
+    w.Bit(0); // pps_cabac_init_present_flag
+    w.Ue(0);  // pps_num_ref_idx_default_active_minus1[0]  ← 无条件
+    w.Ue(static_cast<uint32_t>(opt.second_default_active_minus1)); // [1]  ← 无条件
+    w.Bit(opt.rpl1_idx_present ? 1 : 0);                           // pps_rpl1_idx_present_flag（在两条之后）
+    w.Bit(0);                                                      // pps_weighted_pred_flag
+    w.Bit(0);                                                      // pps_weighted_bipred_flag
+    w.Bit(opt.ref_wraparound ? 1 : 0);                             // pps_ref_wraparound_enabled_flag
+    if (opt.ref_wraparound)
+        w.Ue(static_cast<uint32_t>(opt.wraparound_offset)); // pps_pic_width_minus_wraparound_offset
+    w.Se(opt.pic_init_qp_minus26);                          // pps_pic_init_qp_minus26
+    w.Bit(0);                                               // pps_cu_qp_delta_enabled_flag
+    w.Bit(0);                                               // pps_chroma_tool_offsets_present_flag
+    w.Bit(0);                                               // pps_deblocking_filter_control_present_flag
+    w.Bit(0);                                               // pps_picture_header_extension_present_flag
+    w.Bit(0);                                               // pps_slice_header_extension_present_flag
+    w.Bit(0);                                               // pps_extension_flag
+    w.Bit(1);                                               // rbsp trailing bits：stop bit
+    return w.Bytes();
+}
+
+} // namespace
+
+TEST_F(VvcPpsTest, QpSectionFollowsSpecOrder) {
+    const std::vector<uint8_t> rbsp = MakePpsWithQp(PpsQpOptions{});
+    const VvcPpsInfo pps = VvcBitstreamParser::ParsePpsFromNalUnit(MakeNal(16, rbsp));
+    ASSERT_TRUE(pps.present);
+    EXPECT_TRUE(pps.qp_fields_valid) << "规范顺序的 PPS 必须能解出 QP 段";
+    EXPECT_EQ(pps.parse_depth, VvcPpsInfo::ParseDepth::Full);
+    EXPECT_EQ(pps.pps_pic_init_qp_minus26, 4);
+    EXPECT_EQ(pps.pps_pic_init_qp_minus26 + 26, 30);
+    // 两条默认 active 都是无条件的：rpl1_idx_present_flag = 0 时第二条照样存在
+    EXPECT_FALSE(pps.pps_rpl1_idx_present_flag);
+    EXPECT_EQ(pps.pps_num_ref_idx_default_active_minus1[0], 0);
+    EXPECT_EQ(pps.pps_num_ref_idx_default_active_minus1[1], 0);
+}
+
+TEST_F(VvcPpsTest, TwoDefaultActiveRefIdxAreAlwaysPresent) {
+    // pps_rpl1_idx_present_flag = 1 时第二条取 2：若实现"用 flag 决定读不读"，
+    // 这个 2 会被读成后面的 flag 位，QP 段整体错位。
+    PpsQpOptions opt;
+    opt.rpl1_idx_present = true;
+    opt.second_default_active_minus1 = 2;
+    const VvcPpsInfo pps = VvcBitstreamParser::ParsePpsFromNalUnit(MakeNal(16, MakePpsWithQp(opt)));
+    ASSERT_TRUE(pps.present);
+    ASSERT_TRUE(pps.qp_fields_valid);
+    EXPECT_TRUE(pps.pps_rpl1_idx_present_flag);
+    EXPECT_EQ(pps.pps_num_ref_idx_default_active_minus1[1], 2);
+    EXPECT_EQ(pps.pps_pic_init_qp_minus26, 4);
+}
+
+TEST_F(VvcPpsTest, TilePartitionSectionKeepsQpAligned) {
+    // tile 段最容易"差一位"的两处：
+    //   1. pps_tile_column_width_minus1[] 的长度是 minus1 **+1**（少读一个 → 后面全错）
+    //   2. pps_loop_filter_across_slices_enabled_flag 的读取条件与 num_tiles 无关
+    //      （num_tiles > 1、rect_slice=1、single_slice=1 时**照样**要读一位）
+    PpsQpOptions opt;
+    opt.tile_partition = true;
+    const VvcPpsInfo pps = VvcBitstreamParser::ParsePpsFromNalUnit(MakeNal(16, MakePpsWithQp(opt)));
+    ASSERT_TRUE(pps.present);
+    ASSERT_TRUE(pps.qp_fields_valid) << "tile 段走位错一位，QP 段就整体读废";
+    EXPECT_FALSE(pps.pps_no_pic_partition_flag);
+    EXPECT_EQ(pps.pps_num_exp_tile_columns_minus1, 1);
+    EXPECT_EQ(pps.pps_num_exp_tile_rows_minus1, 0);
+    EXPECT_TRUE(pps.pps_rect_slice_flag);
+    EXPECT_TRUE(pps.pps_single_slice_per_subpic_flag);
+    EXPECT_EQ(pps.pps_pic_init_qp_minus26, 4);
+}
+
+TEST_F(VvcPpsTest, WraparoundOffsetIsConsumedBeforeQp) { // pps_ref_wraparound_enabled_flag = 1 时多一个 ue(v)。漏读它，
+    // pps_pic_init_qp_minus26 就会按错位读 —— 这里直接钉住 offset 与 QP。
+    PpsQpOptions opt;
+    opt.ref_wraparound = true;
+    opt.wraparound_offset = 64;
+    const VvcPpsInfo pps = VvcBitstreamParser::ParsePpsFromNalUnit(MakeNal(16, MakePpsWithQp(opt)));
+    ASSERT_TRUE(pps.present);
+    ASSERT_TRUE(pps.qp_fields_valid);
+    EXPECT_TRUE(pps.pps_ref_wraparound_enabled_flag);
+    EXPECT_EQ(pps.pps_pic_width_minus_wraparound_offset, 64);
+    EXPECT_EQ(pps.pps_pic_init_qp_minus26, 4);
 }
 
 // --------------------------------------------------------------------------

@@ -56,6 +56,63 @@ void parseVorbisComments(const std::string& d, int start, std::map<std::string, 
 }
 } // namespace
 
+namespace {
+
+// ---- 失步重同步 ----
+//
+// OGG 没有全局包长字段，只能靠 "OggS" 魔数重新对齐。旧实现有两个问题：
+//   1. 它把 header.substr(1,3) 预填进滑动窗口，却把文件位置退回 page_start+1，
+//      窗口内容与游标**从第一字节就不一致** —— 紧邻损坏字节之后的那一页正好
+//      被跳过（前面加 1 个垃圾字节就能让整份文件变成 0 页，却仍返回"成功"）。
+//   2. 内层逐字节循环没有取消检查：页数上限只在外层判断，一个损坏文件可以让
+//      "取消"按钮彻底失效。
+// 现在统一成"按块读 + 块内 find"：游标与窗口由同一次 Read 得到，不可能错位；
+// 每块检查一次取消；整次重同步有扫描预算（损坏文件可能到文件尾都没有第二页）。
+constexpr int64_t kResyncChunkBytes = 64 * 1024;
+constexpr int64_t kResyncScanBudgetBytes = 16 * 1024 * 1024;
+
+enum class ResyncOutcome {
+    Found,
+    NotFound,
+    Canceled,
+};
+
+// 从 start 起找下一个 "OggS"。out_offset 是命中的页首偏移。
+ResyncOutcome FindNextOggPage(SeqFileReader& file, int64_t start, const std::atomic<bool>* cancel,
+                              int64_t& out_offset) {
+    const int64_t size = file.Size();
+    int64_t pos = start;
+    int64_t scanned = 0;
+    while (pos + 4 <= size && scanned < kResyncScanBudgetBytes) {
+        if (infrastructure::Checkpoint(cancel))
+            return ResyncOutcome::Canceled;
+
+        file.Seek(pos);
+        const int64_t want = std::min(kResyncChunkBytes, size - pos);
+        if (want < 4)
+            break;
+        const std::string chunk = file.Read(want);
+        if (chunk.size() < 4)
+            break;
+
+        const size_t hit = chunk.find("OggS");
+        if (hit != std::string::npos) {
+            out_offset = pos + static_cast<int64_t>(hit);
+            return ResyncOutcome::Found;
+        }
+
+        // 前进 chunk.size() - 3：留下 3 字节重叠，页头跨块边界时不会被切掉
+        const int64_t step = static_cast<int64_t>(chunk.size()) - 3;
+        if (step <= 0)
+            break;
+        pos += step;
+        scanned += step;
+    }
+    return ResyncOutcome::NotFound;
+}
+
+} // namespace
+
 bool OggStructureAnalyzer::Analyze(const std::string& file_path, model::ContainerStructureResult& result,
                                    const std::atomic<bool>* cancel, const Options& options) {
     SeqFileReader file(file_path);
@@ -110,26 +167,20 @@ bool OggStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
             break;
 
         if (header.substr(0, 4) != "OggS") {
-            // 重新同步：从当前页起始位置 +1 开始滑动 4 字节窗口找 "OggS"。
-            // 注意不能像旧实现那样"读到 'O' 就 continue" —— 那会让下一轮从 'O'+1
-            // 开始读 27 字节头，永远对不齐真正的页边界。
+            // 重新同步：从当前页起始位置 +1 开始找下一个 "OggS"。
+            // 窗口与游标统一由 FindNextOggPage 内部的块读取推进（旧实现把
+            // header.substr(1,3) 预填进窗口又退回 page_start+1，两者不一致，
+            // 紧邻损坏字节之后的页会被跳过）。
             ++diag.resyncs;
-            file.Seek(page_start + 1);
-            std::string window = header.substr(1, 3);
-            bool found = false;
-            while (!file.AtEnd()) {
-                const std::string one = file.Read(1);
-                if (one.empty())
-                    break;
-                window = window.substr(1) + one[0];
-                if (window == "OggS") {
-                    file.Seek(file.Pos() - 4);
-                    found = true;
-                    break;
-                }
+            int64_t page_offset = 0;
+            const ResyncOutcome outcome = FindNextOggPage(file, page_start + 1, cancel, page_offset);
+            if (outcome == ResyncOutcome::Canceled) {
+                result.error_message = "已取消";
+                return false;
             }
-            if (!found)
-                break;
+            if (outcome != ResyncOutcome::Found)
+                break; // 扫描预算用尽或文件尾：没有更多页可解析
+            file.Seek(page_offset);
             continue;
         }
 

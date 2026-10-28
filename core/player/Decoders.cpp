@@ -293,9 +293,19 @@ bool VideoDecoder::SendPacket(AVPacket* packet) {
         // 输出队列满(上一批帧还没被取走), 送包被拒。
         // 这里不能直接 return false: 那样整包被丢弃、已解码的帧也永远取不出来,
         // 表现为卡帧 / 音画不同步 / 长时间播放状态错乱。
-        // 先把缓冲里的帧收进 pending_frames_ 腾出位置, 这个包 FFmpeg 已经收下,
-        // 帧由 ReceiveFrame 补齐, 于是什么都不丢。
+        //
+        // ❗ 但"把缓冲收进 pending_frames_ 就完事"同样不对 —— 这时包**还没有**
+        // 被解码器接受，ret 仍是 EAGAIN，旧代码照原样往下走 return false，上层
+        // 于是跳过这个包（丢帧，且 pending 里的帧补齐的是更早的包）。
+        // FFmpeg 的约定是：把输出读干净后**重送同一个包**，这次不会再 EAGAIN。
         StashBufferedFrames();
+        ret = avcodec_send_packet(codec_ctx_, packet);
+        if (ret == AVERROR(EAGAIN)) {
+            // 理论上到不了这里（收干之后必须能收包）。真到了说明解码器状态异常，
+            // 宁可报失败也不要静默丢包 —— 上层跳过一包会让时间轴整体错位。
+            std::cerr << "Decoder still not accepting packets after draining output" << std::endl;
+            return false;
+        }
     }
     if (ret < 0) {
         std::cerr << "Error sending packet to decoder" << std::endl;
@@ -528,15 +538,38 @@ bool AudioDecoder::SendPacket(AVPacket* packet) {
     }
 
     int ret = avcodec_send_packet(codec_ctx_, packet);
+    if (ret == AVERROR(EAGAIN)) {
+        // 与视频侧同一条约定：输出队列满 → 先把已解码帧收进 pending_frames_，
+        // 然后**重送同一个包**。旧实现直接 return false，上层于是跳过这一包音频
+        // （听感上是几十毫秒的断续，时间轴也会整体前移）。
+        StashBufferedFrames();
+        ret = avcodec_send_packet(codec_ctx_, packet);
+    }
     if (ret < 0) {
-        if (ret == AVERROR(EAGAIN)) {
-            return false;
-        }
         std::cerr << "Error sending audio packet" << std::endl;
         return false;
     }
 
     return true;
+}
+
+void AudioDecoder::StashBufferedFrames() {
+    if (!codec_ctx_ || !frame_) {
+        return;
+    }
+    // 收干解码器内部已解码、调用方还没取走的帧（先入先出交给 ReceiveFrame）
+    while (true) {
+        const int ret = avcodec_receive_frame(codec_ctx_, frame_);
+        if (ret < 0) {
+            return; // EAGAIN / EOF: 已经收干
+        }
+        AVFrame* stashed = av_frame_clone(frame_);
+        if (!stashed) {
+            std::cerr << "Failed to clone audio frame" << std::endl;
+            return;
+        }
+        pending_frames_.push_back(stashed);
+    }
 }
 
 bool AudioDecoder::SwrMatches(const AVChannelLayout& in_layout, AVSampleFormat in_fmt, int in_rate) const {
@@ -592,7 +625,17 @@ bool AudioDecoder::ReceiveFrame(uint8_t* output_buffer, int buffer_size, int& ou
         return false;
     }
 
-    int ret = avcodec_receive_frame(codec_ctx_, frame_);
+    // 上次 SendPacket 撞 EAGAIN 时收下的帧还排着队：必须先入先出交出去，
+    // 否则输出顺序就乱了（听感上是"抖"，分析侧的时间轴也对不上）。
+    if (!pending_frames_.empty()) {
+        AVFrame* queued = pending_frames_.front();
+        pending_frames_.pop_front();
+        const bool ok = ConvertFrameToPcm(queued, output_buffer, buffer_size, output_size);
+        av_frame_free(&queued);
+        return ok;
+    }
+
+    const int ret = avcodec_receive_frame(codec_ctx_, frame_);
     if (ret < 0) {
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
             return false;
@@ -600,37 +643,44 @@ bool AudioDecoder::ReceiveFrame(uint8_t* output_buffer, int buffer_size, int& ou
         std::cerr << "Error receiving audio frame" << std::endl;
         return false;
     }
+    // frame_ 的生命周期归解码器（下一次 receive 会自己 unref），这里不释放
+    return ConvertFrameToPcm(frame_, output_buffer, buffer_size, output_size);
+}
 
-    last_frame_pts_ = frame_->pts;
-    if (last_frame_pts_ == AV_NOPTS_VALUE) {
-        last_frame_pts_ = frame_->best_effort_timestamp;
+bool AudioDecoder::ConvertFrameToPcm(AVFrame* src, uint8_t* output_buffer, int buffer_size, int& output_size) {
+    output_size = 0;
+    if (!src || !swr_ctx_ || !output_buffer || buffer_size <= 0) {
+        return false;
     }
-    last_frame_sample_count_ = frame_->nb_samples;
-    last_frame_sample_rate_ = frame_->sample_rate > 0 ? frame_->sample_rate : sample_rate_;
-    last_frame_channels_ = frame_->ch_layout.nb_channels > 0 ? frame_->ch_layout.nb_channels : channels_;
+
+    last_frame_pts_ = src->pts;
+    if (last_frame_pts_ == AV_NOPTS_VALUE) {
+        last_frame_pts_ = src->best_effort_timestamp;
+    }
+    last_frame_sample_count_ = src->nb_samples;
+    last_frame_sample_rate_ = src->sample_rate > 0 ? src->sample_rate : sample_rate_;
+    last_frame_channels_ = src->ch_layout.nb_channels > 0 ? src->ch_layout.nb_channels : channels_;
 
     if (channels_ <= 0) {
-        av_frame_unref(frame_);
         return false;
     }
 
     // 流中途改布局：用帧自己的 ch_layout/format/sample_rate 重建 swr。
     // 不重建的话 swr 会按 Init 时的旧布局解释新帧。
     AVChannelLayout in_layout{};
-    if (frame_->ch_layout.nb_channels > 0) {
-        if (av_channel_layout_copy(&in_layout, &frame_->ch_layout) < 0) {
+    if (src->ch_layout.nb_channels > 0) {
+        if (av_channel_layout_copy(&in_layout, &src->ch_layout) < 0) {
             av_channel_layout_default(&in_layout, channels_);
         }
     } else {
         av_channel_layout_default(&in_layout, channels_);
     }
-    const AVSampleFormat in_fmt = static_cast<AVSampleFormat>(frame_->format);
-    const int in_rate = frame_->sample_rate > 0 ? frame_->sample_rate : sample_rate_;
+    const AVSampleFormat in_fmt = static_cast<AVSampleFormat>(src->format);
+    const int in_rate = src->sample_rate > 0 ? src->sample_rate : sample_rate_;
     if (!SwrMatches(in_layout, in_fmt, in_rate)) {
         const bool rebuilt = RebuildSwr(in_layout, in_fmt, in_rate);
         av_channel_layout_uninit(&in_layout);
         if (!rebuilt) {
-            av_frame_unref(frame_);
             return false;
         }
     } else {
@@ -639,24 +689,22 @@ bool AudioDecoder::ReceiveFrame(uint8_t* output_buffer, int buffer_size, int& ou
 
     // 重采样
     uint8_t* output_ptrs[8] = {output_buffer, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
-    // ❗ 输入一侧必须走 extended_data：frame_->data 只有 8 个指针（AV_NUM_DATA_POINTERS），
+    // ❗ 输入一侧必须走 extended_data：src->data 只有 8 个指针（AV_NUM_DATA_POINTERS），
     // 超过 8 声道的 planar 帧其余声道在 extended_data 里。传 data 会让 swr 按
     // nb_channels 去读 data[8..N-1] —— 那几格其实是 linesize 的内容，会被当指针解引用。
     // 离线分析路径（AnalysisPipeline::FeedAudioFrame）早就改成 extended_data 了，
     // 只有播放这条漏了。
     output_size = swr_convert(swr_ctx_, output_ptrs, buffer_size / (channels_ * 2),
-                              (const uint8_t* const*)frame_->extended_data, frame_->nb_samples);
+                              (const uint8_t* const*)src->extended_data, src->nb_samples);
 
     if (output_size < 0) {
         std::cerr << "Error during audio resampling" << std::endl;
-        av_frame_unref(frame_);
+        output_size = 0;
         return false;
     }
 
     output_size *= channels_ * 2; // 转换为字节数
     last_output_size_ = output_size;
-    av_frame_unref(frame_);
-
     return true;
 }
 
@@ -675,12 +723,35 @@ std::string AudioDecoder::GetCodecName() const {
 }
 
 void AudioDecoder::Flush() {
+    // 排队的帧是定位前就收下的，同样过期，必须一起丢掉
+    for (AVFrame* f : pending_frames_) {
+        av_frame_free(&f);
+    }
+    pending_frames_.clear();
     if (codec_ctx_) {
         avcodec_flush_buffers(codec_ctx_);
     }
 }
 
+int AudioDecoder::DrainResampler(uint8_t* output_buffer, int buffer_size) {
+    if (!swr_ctx_ || !output_buffer || buffer_size <= 0 || channels_ <= 0) {
+        return 0;
+    }
+    // 输入给 nullptr / 0 = 把 swr 内部残留吐出来。
+    // 与 ReceiveFrame 保持同一套输出格式：交错 S16、channels_ 声道。
+    uint8_t* output_ptrs[8] = {output_buffer, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    const int samples = swr_convert(swr_ctx_, output_ptrs, buffer_size / (channels_ * 2), nullptr, 0);
+    if (samples <= 0) {
+        return 0;
+    }
+    return samples * channels_ * 2;
+}
+
 void AudioDecoder::Close() {
+    for (AVFrame* f : pending_frames_) {
+        av_frame_free(&f);
+    }
+    pending_frames_.clear();
     if (swr_ctx_) {
         swr_free(&swr_ctx_);
         swr_ctx_ = nullptr;

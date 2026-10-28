@@ -30,6 +30,8 @@
 #include "core/domain/model/SliceSeiInfo.h"
 #include "core/media/codec/ExtradataTypes.h"
 
+#include <functional>
+
 namespace videoeye {
 
 class VideoEsInspector {
@@ -91,8 +93,13 @@ private:
     void InspectHevc(const uint8_t* data, size_t size);
     void InspectAv1(const uint8_t* data, size_t size);
 
-    // 按当前 framing 把一段包字节切成 NAL 列表（Annex B / 长度前缀两条路）
-    std::vector<NalUnit> SplitNalUnits(const uint8_t* data, size_t size, NalSyntax syntax);
+    // 按当前 framing 逐 NAL 遍历（**零拷贝**：回调拿到的是指向本包内存的视图）。
+    //
+    // 为什么不是"先切出 std::vector<NalUnit> 再遍历"：NalUnit 会为每个 NAL
+    // 复制一份载荷，4K 包一次几百 KB。逐包巡检只需要读 NAL 头 + slice header
+    // 前几十字节，复制纯属白花 —— 这里改成沿用 AV1 的 ObuView 同一套思路。
+    void ForEachNalUnit(const uint8_t* data, size_t size, NalSyntax syntax,
+                        const std::function<void(const NalView&)>& fn);
 
     // H.264 / HEVC 的 SEI payload 结构完全相同：都会进这里
     void ParseSeiRbsp(const uint8_t* data, size_t size, bool is_hevc);

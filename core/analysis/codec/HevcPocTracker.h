@@ -7,7 +7,7 @@
 //   1. NAL 切分语法（2 字节 header，type = (byte0 >> 1) & 0x3F）
 //   2. slice_segment_header() 的布局与字段顺序
 //   3. POC 的推导公式
-// 扫包骨架（SplitNals / Feed / FeedExtradata / Finish）与统计汇总
+// 扫包骨架（Feed / FeedExtradata / Finish）与统计汇总
 // （FrameOrderStats）两边一致，统计规则只在 FrameOrderStats.cpp 维护一份。
 //
 // ==========================================================================
@@ -117,14 +117,17 @@ private:
     static constexpr int kMaxSpsId = 16;
     static constexpr int kMaxPpsId = 64;
 
-    std::vector<NalUnit> SplitNals(const uint8_t* data, size_t size);
+    // 切分语法的决定与遍历都在 Feed 里（见 cpp）：容器给了前缀宽度就照它切，
+    // 没给才逐包判定。为什么不能无条件自动判定，见 cpp 里对 `00 00 01 XX` 前缀的说明。
     bool DetectLengthPrefixed(const uint8_t* data, size_t size, int& prefix_bytes) const;
-    void FeedNal(const NalUnit& nal, bool has_time, double time_seconds, int64_t packet_index, int& new_frames);
-    bool HandleSps(const NalUnit& nal);
-    bool HandlePps(const NalUnit& nal);
+    // 处理单个 NAL。参数是 NalView（不拥有内存）：逐包路径直接拿零拷贝视图，
+    // extradata 路径用 ToNalView() 把已复制好的 NalUnit 借成视图，两条路共用一份逻辑。
+    void FeedNal(const NalView& nal, bool has_time, double time_seconds, int64_t packet_index, int& new_frames);
+    bool HandleSps(const NalView& nal);
+    bool HandlePps(const NalView& nal);
     // 读 slice_segment_header 里算 POC 需要的前缀。返回 false = 不是图像第一段 /
     // 参数集缺失 / 位流被截断 —— 三种情况都不该记一帧。
-    bool ReadPicture(const NalUnit& nal, PictureHead& out);
+    bool ReadPicture(const NalView& nal, PictureHead& out);
     int64_t ComputePoc(const PictureHead& head);
     void PushFrame(const PictureHead& head, int64_t poc, bool has_time, double time_seconds, int64_t packet_index);
     void Recompute();

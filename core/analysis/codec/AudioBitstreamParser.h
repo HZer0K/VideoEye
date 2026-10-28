@@ -104,22 +104,26 @@ struct OpusHead {
     bool big_endian = false; // 记录实际走的是哪条（dOps = true）
 };
 
-// Opus 包 TOC（RFC 6716 §3.1）
+// Opus 包 TOC（RFC 6716 §3.1 / §3.2.1）
 struct OpusToc {
     bool valid = false;
     int config = 0;
     bool stereo = false;
     int frame_count_code = 0;
     int frame_count = 1;
-    // code 1/3 的第 2 个字节里带 vbr 标志；code 3 还有 padding 标志。
-    // "TOC 读得出来"和"包结构合法"是两件事，后者要靠这两个标志判断。
+    // ❗ 只有 **code 3** 在第二个字节里带 vbr / padding 标志（bit7 / bit6）。
+    // code 1 是"两帧等长、无额外字节"，code 2 是"两帧不等长、紧跟一个长度字段"——
+    // 把 code 1 的第 2 字节当 vbr 标志读，看到的是第一帧的载荷首字节。
+    // "TOC 读得出来"和"包结构合法"是两件事，后者要靠这里的结构判定。
     bool vbr = false;
     bool padding = false;
     int mode = -1;      // 0 = SILK / 1 = Hybrid / 2 = CELT
     int bandwidth = -1; // 0..4
     double frame_duration_ms = 0.0;
     int channels = 0;
-    int frame_bytes = 0;
+    int frame_bytes = 0;       // 整个包的字节数
+    int payload_offset = 1;    // 第一个帧载荷的起点（code 2 要跳过长度字段）
+    int first_frame_bytes = 0; // code 1/2 的单帧字节数（0 = 不由 TOC 决定）
 };
 
 // AAC AudioSpecificConfig（MP4 extradata / LATM 共用）

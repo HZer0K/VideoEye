@@ -101,7 +101,7 @@ void AppendSeiMessage(std::vector<uint8_t>& rbsp, int payload_type, const std::v
 // 参数集固定为：frame_mbs_only_flag=1、pic_order_cnt_type=0、
 // weighted_pred_flag=0、weighted_bipred_idc=0、entropy_coding_mode_flag=0。
 std::vector<uint8_t> MakeSliceHeader(int slice_type, int slice_qp_delta, bool idr, int nal_ref_idc = 3,
-                                     int first_mb_in_slice = 0) {
+                                     int first_mb_in_slice = 0, int l0_mod_entries = 0, int l1_mod_entries = 0) {
     const int t = slice_type % 5; // 0=P 1=B 2=I 3=SP 4=SI（5..9 是同一套的变体）
     BitWriter w;
     w.PutUE(static_cast<uint32_t>(first_mb_in_slice)); // first_mb_in_slice
@@ -116,11 +116,36 @@ std::vector<uint8_t> MakeSliceHeader(int slice_type, int slice_qp_delta, bool id
     if (t == 0 || t == 1 || t == 3) {
         w.PutBool(false); // num_ref_idx_active_override_flag（用 PPS 默认值）
     }
+    // ref_pic_list_modification()：每个 idc 后面**必须**再跟一个 ue(v) 操作数
+    // （idc 0/1 = abs_diff_pic_num_minus1、idc 2 = long_term_pic_num、3 = 结束）。
+    // 测试按规范逐位写全，才能钉住实现有没有漏读。
+    //
+    // ❗ 操作数刻意取 5..7（都 > 3）：只读 idc 的实现在这里会读到"idc = 5"，
+    // 直接越界失败，而不是靠数值巧合把位对齐 —— 否则一两条修改项时新旧实现
+    // 消耗的位数可能刚好相同，测试就成了永远绿的摆设。
+    const auto put_modification = [&w](int entries) {
+        for (int i = 0; i < entries; ++i) {
+            w.PutUE(static_cast<uint32_t>(i % 3)); // 三种 idc 都覆盖一遍
+            w.PutUE(static_cast<uint32_t>(5 + i)); // 对应的操作数
+        }
+        w.PutUE(3); // modification_of_pic_nums_idc = 3 收尾
+    };
     if (t != 2 && t != 4) {
-        w.PutBool(false); // ref_pic_list_modification_flag_l0
+        if (l0_mod_entries > 0) {
+            w.PutBool(true); // ref_pic_list_modification_flag_l0
+            put_modification(l0_mod_entries);
+        } else {
+            w.PutBool(false); // ref_pic_list_modification_flag_l0
+        }
     }
-    if (t == 1)
-        w.PutBool(false); // ref_pic_list_modification_flag_l1
+    if (t == 1) {
+        if (l1_mod_entries > 0) {
+            w.PutBool(true); // ref_pic_list_modification_flag_l1
+            put_modification(l1_mod_entries);
+        } else {
+            w.PutBool(false); // ref_pic_list_modification_flag_l1
+        }
+    }
     // pred_weight_table()：weighted_pred_flag=0 且 weighted_bipred_idc=0 → 不存在
     if (nal_ref_idc != 0) { // dec_ref_pic_marking()
         if (idr) {
@@ -379,6 +404,39 @@ TEST(VideoEsInspectorTests, H264PSliceHasItsOwnSyntax) {
     EXPECT_EQ(s.type_i, 0);
     ASSERT_TRUE(s.qp_valid);
     EXPECT_EQ(s.qp_min, 28);
+}
+
+TEST(VideoEsInspectorTests, H264RefPicListModificationOperandsAreConsumed) {
+    // ⚠️ 回归：ref_pic_list_modification() 里每个 modification_of_pic_nums_idc 后面
+    // 都跟着一个 ue(v) 操作数（0/1 → abs_diff_pic_num_minus1、2 → long_term_pic_num）。
+    // 旧实现只读 idc、不读操作数，于是 pred_weight_table / dec_ref_pic_marking /
+    // slice_qp_delta 全部按错误偏移读 —— 实测同一条 QP=30 的 slice 给出 QP=28，
+    // 而且 qp_valid 仍然是 true（错得很"有效"）。
+    //
+    // 下面三条 slice 的 QP 目标值完全一致（26 + delta 4 = 30），差别只在
+    // 修改列表是否打开、有几个条目。只要实现漏读一位，QP 就会对不上。
+    struct Case {
+        int l0_entries;
+        int l1_entries;
+        int slice_type; // 0 = P, 1 = B
+    };
+    const Case cases[] = {{0, 0, 0}, {1, 0, 0}, {3, 0, 0}, {2, 2, 1}, {0, 0, 1}};
+    for (const Case& c : cases) {
+        const std::vector<uint8_t> nal =
+            MakeAnnexB(0x41, MakeSliceHeader(c.slice_type, 4, /*idr=*/false, /*nal_ref_idc=*/3,
+                                             /*first_mb_in_slice=*/0, c.l0_entries, c.l1_entries));
+
+        VideoEsInspector inspector;
+        inspector.Reset(AV_CODEC_ID_H264);
+        inspector.SetH264ParameterSets(MakeSps(), MakePps(0));
+        inspector.Feed(nal.data(), nal.size());
+        inspector.Finish();
+
+        const auto& s = inspector.result().slices;
+        ASSERT_TRUE(s.analyzed) << "slice_type=" << c.slice_type << " l0=" << c.l0_entries << " l1=" << c.l1_entries;
+        ASSERT_TRUE(s.qp_valid) << "slice_type=" << c.slice_type << " l0=" << c.l0_entries << " l1=" << c.l1_entries;
+        EXPECT_EQ(s.qp_min, 30) << "slice_type=" << c.slice_type << " l0=" << c.l0_entries << " l1=" << c.l1_entries;
+    }
 }
 
 TEST(VideoEsInspectorTests, H264NonReferenceSliceSkipsDecRefPicMarking) {

@@ -340,7 +340,48 @@ TEST(ParameterSetTrackerTest, LengthPrefixedPacketsAreParsed) {
 }
 
 // ---------------------------------------------------------------------------
-// 6) 范围与降级：编码不支持 / 上限截断
+// 6) HEVC 的长度前缀封装：2 字节 NAL header 必须被剥掉
+//
+// 这条只钉一件事：HEVC 的 NAL header 是 2 字节（type = (byte0 >> 1) & 0x3F），
+// H.264 是 1 字节。切分改走零拷贝视图（MakeNalView）之后，header 长度这一处
+// 一旦退回 1 字节，PPS 的 pic_parameter_set_id 就会从 header 的第 2 字节开始读，
+// 得到的是垃圾值而不是 3 —— 而且不会报错，只是"登记了一个 id 很奇怪的参数集"。
+//
+// 负载只写 PPS 的前两个 ue(v)（pps_id / sps_id）：RegisterHevcPps 只读这两个，
+// 不必为了这条用例拼一份完整的 HEVC SPS/PPS。
+// ---------------------------------------------------------------------------
+TEST(ParameterSetTrackerTest, HevcLengthPrefixedPpsStripsTwoByteNalHeader) {
+    ParameterSetTracker tracker;
+    tracker.Reset(AV_CODEC_ID_HEVC, 0);
+    tracker.SetFraming(ParameterSetTracker::Framing::LengthPrefixed, 4);
+
+    BitWriter w;
+    w.Ue(3); // pic_parameter_set_id = 3
+    w.Ue(1); // pps_seq_parameter_set_id = 1
+    w.Trailing();
+    const std::vector<uint8_t> rbsp = w.Bytes();
+
+    std::vector<uint8_t> packet;
+    const uint32_t nal_len = static_cast<uint32_t>(rbsp.size() + 2);
+    packet.push_back(static_cast<uint8_t>((nal_len >> 24) & 0xFF));
+    packet.push_back(static_cast<uint8_t>((nal_len >> 16) & 0xFF));
+    packet.push_back(static_cast<uint8_t>((nal_len >> 8) & 0xFF));
+    packet.push_back(static_cast<uint8_t>(nal_len & 0xFF));
+    packet.push_back(0x44); // nal_unit_type = 34 (PPS)，(34 << 1) = 0x44
+    packet.push_back(0x01); // nuh_layer_id = 0, nuh_temporal_id_plus1 = 1
+    packet.insert(packet.end(), rbsp.begin(), rbsp.end());
+
+    tracker.Feed(packet.data(), packet.size(), 0.0, 0, 0);
+
+    const auto& timeline = tracker.result();
+    ASSERT_EQ(timeline.parameter_sets.size(), 1u) << "HEVC 长度前缀包必须能切出 PPS";
+    EXPECT_EQ(timeline.parameter_sets[0].kind, videoeye::model::ParameterSetKind::Pps);
+    EXPECT_EQ(timeline.parameter_sets[0].id, 3) << "2 字节 NAL header 没剥干净会读成别的 id";
+    EXPECT_EQ(timeline.parameter_sets[0].summary, "引用 SPS(id=1)");
+}
+
+// ---------------------------------------------------------------------------
+// 7) 范围与降级：编码不支持 / 上限截断
 // ---------------------------------------------------------------------------
 TEST(ParameterSetTrackerTest, UnsupportedCodecIsDisabledWithReason) {
     ParameterSetTracker tracker;

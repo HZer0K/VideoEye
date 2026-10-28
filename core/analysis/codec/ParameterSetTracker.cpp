@@ -220,37 +220,44 @@ void ParameterSetTracker::Feed(const uint8_t* data, size_t size, double pts_seco
     }
 }
 
-void ParameterSetTracker::FeedH264(const uint8_t* data, size_t size, double pts, int64_t packet_index,
-                                   int64_t file_offset) {
-    std::vector<NalUnit> nals;
-    bool length_prefixed = false;
-    int width = prefix_bytes_;
+// 决定这一包用哪种切分语法。返回 true = 长度前缀（*width 为前缀字节数），false = Annex B。
+//
+// H.264 / HEVC 两条路原本各抄一遍这 15 行（唯一差别是 NalSyntax），
+// 改成扫包零拷贝后共用一个判定 —— 顺便把"Auto 首包探测之后 framing_decided_ 置位"
+// 这件事只留一份，不会再出现一边改了一边忘。
+bool ParameterSetTracker::DecideFraming(const uint8_t* data, size_t size, int& width) {
+    width = prefix_bytes_;
     if (framing_ == Framing::LengthPrefixed) {
-        length_prefixed = true;
-    } else if (framing_ == Framing::Auto && !framing_decided_) {
+        return true;
+    }
+    if (framing_ == Framing::Auto && !framing_decided_) {
         int detected = 0;
         if (DetectLengthPrefixed(data, size, detected)) {
-            length_prefixed = true;
             width = detected;
             prefix_bytes_ = detected;
             framing_decided_ = true;
-        } else {
-            framing_decided_ = true;
+            return true;
         }
-    } else if (framing_ == Framing::Auto) {
-        length_prefixed = (prefix_bytes_ > 0);
+        framing_decided_ = true;
+        return false;
+    }
+    if (framing_ == Framing::Auto) {
         width = prefix_bytes_;
+        return prefix_bytes_ > 0;
     }
+    return false;
+}
 
-    if (length_prefixed) {
-        if (width <= 0)
-            return;
-        nals = ExtradataParser::ExtractLengthPrefixedNalUnits(data, size, NalSyntax::H264, width, nullptr);
-    } else {
-        nals = ExtradataParser::ExtractAnnBNalUnits(data, size, NalSyntax::H264);
-    }
+void ParameterSetTracker::FeedH264(const uint8_t* data, size_t size, double pts, int64_t packet_index,
+                                   int64_t file_offset) {
+    int width = 0;
+    const bool length_prefixed = DecideFraming(data, size, width);
+    if (length_prefixed && width <= 0)
+        return;
 
-    for (const NalUnit& nal : nals) {
+    // 零拷贝遍历：回调里的 nal.payload 直接指向包缓冲区，不再为每个 NAL
+    // 分配一份 vector 并整段复制（4K 关键帧一次就是几百 KB）。
+    auto visit = [&](const NalView& nal) {
         const int type = static_cast<int>(nal.type);
         if (type == kH264Sps) {
             RegisterH264Sps(nal, pts, packet_index, file_offset);
@@ -258,49 +265,32 @@ void ParameterSetTracker::FeedH264(const uint8_t* data, size_t size, double pts,
             RegisterH264Pps(nal, pts, packet_index, file_offset);
         } else if (IsH264Slice(type)) {
             // slice_header(): first_mb_in_slice ue(v), slice_type ue(v), pic_parameter_set_id ue(v)
-            RbspBits bits(nal.data.data(), nal.data.size());
+            RbspBits bits(nal.payload, nal.size);
             uint32_t first_mb = 0;
             uint32_t slice_type = 0;
             uint32_t pps_id = 0;
             if (!bits.ReadUe(first_mb) || !bits.ReadUe(slice_type) || !bits.ReadUe(pps_id))
-                continue;
+                return;
             // 只把 first_mb_in_slice == 0 的 slice 记为"一帧"，否则一帧多 slice 会把帧数放大
             AddReference(model::ParameterSetKind::Pps, static_cast<int>(pps_id), first_mb == 0, pts, packet_index);
         }
+    };
+
+    if (length_prefixed) {
+        ExtradataParser::ForEachLengthPrefixedNalUnit(data, size, NalSyntax::H264, width, nullptr, visit);
+    } else {
+        ExtradataParser::ForEachAnnexBNalUnit(data, size, NalSyntax::H264, visit);
     }
 }
 
 void ParameterSetTracker::FeedHevc(const uint8_t* data, size_t size, double pts, int64_t packet_index,
                                    int64_t file_offset) {
-    std::vector<NalUnit> nals;
-    bool length_prefixed = false;
-    int width = prefix_bytes_;
-    if (framing_ == Framing::LengthPrefixed) {
-        length_prefixed = true;
-    } else if (framing_ == Framing::Auto && !framing_decided_) {
-        int detected = 0;
-        if (DetectLengthPrefixed(data, size, detected)) {
-            length_prefixed = true;
-            width = detected;
-            prefix_bytes_ = detected;
-            framing_decided_ = true;
-        } else {
-            framing_decided_ = true;
-        }
-    } else if (framing_ == Framing::Auto) {
-        length_prefixed = (prefix_bytes_ > 0);
-        width = prefix_bytes_;
-    }
+    int width = 0;
+    const bool length_prefixed = DecideFraming(data, size, width);
+    if (length_prefixed && width <= 0)
+        return;
 
-    if (length_prefixed) {
-        if (width <= 0)
-            return;
-        nals = ExtradataParser::ExtractLengthPrefixedNalUnits(data, size, NalSyntax::Hevc, width, nullptr);
-    } else {
-        nals = ExtradataParser::ExtractAnnBNalUnits(data, size, NalSyntax::Hevc);
-    }
-
-    for (const NalUnit& nal : nals) {
+    auto visit = [&](const NalView& nal) {
         const int type = static_cast<int>(nal.type);
         if (type == kHevcVps) {
             RegisterHevcVps(nal, pts, packet_index, file_offset);
@@ -312,74 +302,80 @@ void ParameterSetTracker::FeedHevc(const uint8_t* data, size_t size, double pts,
             // slice_segment_header(): first_slice_segment_in_pic_flag(1)
             //   IRAP 时还有 no_output_of_prior_pics_flag(1)
             //   然后 slice_pic_parameter_set_id ue(v)
-            RbspBits bits(nal.data.data(), nal.data.size());
+            RbspBits bits(nal.payload, nal.size);
             uint32_t first_slice = 0;
             if (!bits.ReadBit(first_slice))
-                continue;
+                return;
             if (IsHevcIrap(type)) {
                 uint32_t no_output = 0;
                 if (!bits.ReadBit(no_output))
-                    continue;
+                    return;
             }
             uint32_t pps_id = 0;
             if (!bits.ReadUe(pps_id))
-                continue;
+                return;
             AddReference(model::ParameterSetKind::Pps, static_cast<int>(pps_id), first_slice == 1, pts, packet_index);
         }
+    };
+
+    if (length_prefixed) {
+        ExtradataParser::ForEachLengthPrefixedNalUnit(data, size, NalSyntax::Hevc, width, nullptr, visit);
+    } else {
+        ExtradataParser::ForEachAnnexBNalUnit(data, size, NalSyntax::Hevc, visit);
     }
 }
 
 // ---- 单个参数集 NAL 的登记（扫包与扫 extradata 共用）----
 
-bool ParameterSetTracker::RegisterH264Sps(const NalUnit& nal, double pts, int64_t packet_index, int64_t file_offset) {
-    const model::H264SpsInfo sps = H264BitstreamParser::ParseFromNalUnit(nal);
+bool ParameterSetTracker::RegisterH264Sps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset) {
+    const model::H264SpsInfo sps = H264BitstreamParser::ParseFromNal(nal.type, nal.payload, nal.size);
     if (!sps.present)
         return false;
     const std::string summary = ConfigText(sps.width(), sps.height(), sps.BitDepthLuma(), sps.chroma_format_idc);
-    RegisterSet(model::ParameterSetKind::Sps, sps.seq_parameter_set_id, summary, nal.data.data(), nal.data.size(), pts,
+    RegisterSet(model::ParameterSetKind::Sps, sps.seq_parameter_set_id, summary, nal.payload, nal.size, pts,
                 packet_index, file_offset);
     return true;
 }
 
-bool ParameterSetTracker::RegisterH264Pps(const NalUnit& nal, double pts, int64_t packet_index, int64_t file_offset) {
-    RbspBits bits(nal.data.data(), nal.data.size());
+bool ParameterSetTracker::RegisterH264Pps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset) {
+    RbspBits bits(nal.payload, nal.size);
     uint32_t pps_id = 0;
     uint32_t sps_id = 0;
     if (!bits.ReadUe(pps_id) || !bits.ReadUe(sps_id))
         return false;
     RegisterSet(model::ParameterSetKind::Pps, static_cast<int>(pps_id), "引用 SPS(id=" + std::to_string(sps_id) + ")",
-                nal.data.data(), nal.data.size(), pts, packet_index, file_offset);
+                nal.payload, nal.size, pts, packet_index, file_offset);
     return true;
 }
 
-bool ParameterSetTracker::RegisterHevcVps(const NalUnit& nal, double pts, int64_t packet_index, int64_t file_offset) {
-    RbspBits bits(nal.data.data(), nal.data.size());
+bool ParameterSetTracker::RegisterHevcVps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset) {
+    RbspBits bits(nal.payload, nal.size);
     uint32_t vps_id = 0;
     if (!bits.ReadBits(4, vps_id))
         return false;
-    RegisterSet(model::ParameterSetKind::Vps, static_cast<int>(vps_id), "VPS id=" + std::to_string(vps_id),
-                nal.data.data(), nal.data.size(), pts, packet_index, file_offset);
+    RegisterSet(model::ParameterSetKind::Vps, static_cast<int>(vps_id), "VPS id=" + std::to_string(vps_id), nal.payload,
+                nal.size, pts, packet_index, file_offset);
     return true;
 }
 
-bool ParameterSetTracker::RegisterHevcSps(const NalUnit& nal, double pts, int64_t packet_index, int64_t file_offset) {
-    const model::HevcSpsInfo sps = HevcBitstreamParser::ParseSpfFromNalUnit(nal);
+bool ParameterSetTracker::RegisterHevcSps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset) {
+    const model::HevcSpsInfo sps = HevcBitstreamParser::ParseSpfFromNal(nal.type, nal.payload, nal.size);
     if (!sps.present)
         return false;
     const std::string summary = ConfigText(sps.width(), sps.height(), sps.BitDepthLuma(), sps.chroma_format_idc);
-    RegisterSet(model::ParameterSetKind::Sps, sps.sps_seq_parameter_set_id, summary, nal.data.data(), nal.data.size(),
-                pts, packet_index, file_offset);
+    RegisterSet(model::ParameterSetKind::Sps, sps.sps_seq_parameter_set_id, summary, nal.payload, nal.size, pts,
+                packet_index, file_offset);
     return true;
 }
 
-bool ParameterSetTracker::RegisterHevcPps(const NalUnit& nal, double pts, int64_t packet_index, int64_t file_offset) {
-    RbspBits bits(nal.data.data(), nal.data.size());
+bool ParameterSetTracker::RegisterHevcPps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset) {
+    RbspBits bits(nal.payload, nal.size);
     uint32_t pps_id = 0;
     uint32_t sps_id = 0;
     if (!bits.ReadUe(pps_id) || !bits.ReadUe(sps_id))
         return false;
     RegisterSet(model::ParameterSetKind::Pps, static_cast<int>(pps_id), "引用 SPS(id=" + std::to_string(sps_id) + ")",
-                nal.data.data(), nal.data.size(), pts, packet_index, file_offset);
+                nal.payload, nal.size, pts, packet_index, file_offset);
     return true;
 }
 
@@ -400,10 +396,10 @@ bool ParameterSetTracker::FeedExtradata(const uint8_t* data, size_t size) {
         for (const NalUnit& nal : parsed.nal_units) {
             const int type = static_cast<int>(nal.type);
             if (type == kH264Sps) {
-                if (RegisterH264Sps(nal, kNoPts, kNoPosition, kNoPosition))
+                if (RegisterH264Sps(ToNalView(nal), kNoPts, kNoPosition, kNoPosition))
                     ++registered;
             } else if (type == kH264Pps) {
-                if (RegisterH264Pps(nal, kNoPts, kNoPosition, kNoPosition))
+                if (RegisterH264Pps(ToNalView(nal), kNoPts, kNoPosition, kNoPosition))
                     ++registered;
             }
         }
@@ -411,13 +407,13 @@ bool ParameterSetTracker::FeedExtradata(const uint8_t* data, size_t size) {
         for (const NalUnit& nal : parsed.nal_units) {
             const int type = static_cast<int>(nal.type);
             if (type == kHevcVps) {
-                if (RegisterHevcVps(nal, kNoPts, kNoPosition, kNoPosition))
+                if (RegisterHevcVps(ToNalView(nal), kNoPts, kNoPosition, kNoPosition))
                     ++registered;
             } else if (type == kHevcSps) {
-                if (RegisterHevcSps(nal, kNoPts, kNoPosition, kNoPosition))
+                if (RegisterHevcSps(ToNalView(nal), kNoPts, kNoPosition, kNoPosition))
                     ++registered;
             } else if (type == kHevcPps) {
-                if (RegisterHevcPps(nal, kNoPts, kNoPosition, kNoPosition))
+                if (RegisterHevcPps(ToNalView(nal), kNoPts, kNoPosition, kNoPosition))
                     ++registered;
             }
         }

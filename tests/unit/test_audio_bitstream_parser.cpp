@@ -437,20 +437,81 @@ TEST(AudioBitstreamParserTest, OpusTocCeltFramesAndStereo) {
 TEST(AudioBitstreamParserTest, OpusTocRejectsOverlongAndMissingLengthBytes) {
     // 1) 60 ms × 3 帧 = 180 ms > 上限 120 ms（RFC 6716 §3.2.5）→ 必须拒绝。
     //    config 3 = SILK/WB/60ms，code 3 + 第二字节 M=3。
-    const uint8_t overlong[2] = {static_cast<uint8_t>((3 << 3) | 0x03), 0x03};
+    const uint8_t overlong[3] = {static_cast<uint8_t>((3 << 3) | 0x03), 0x03, 0x00};
     OpusToc toc;
     EXPECT_FALSE(AudioBitstreamParser::ParseOpusToc(overlong, sizeof(overlong), toc));
 
-    // 2) code 1（两帧 CBR）但只有 1 字节：缺 vbr 标志所在的第 2 字节 → 拒绝。
-    // 旧实现把 "TOC 读得出来" 当成 "包有效"，frame_count 直接给 2。
+    // 2) code 1（两帧等长 CBR）但只有 1 字节：连载荷都没有 → 拒绝。
     const uint8_t short_cbr[1] = {static_cast<uint8_t>((3 << 3) | 0x01)};
     EXPECT_FALSE(AudioBitstreamParser::ParseOpusToc(short_cbr, sizeof(short_cbr), toc));
 
-    // 3) 同样的 code 1 补上第 2 字节（vbr=0）就合法：60ms × 2 = 120ms 正好在上限
-    const uint8_t cbr[2] = {static_cast<uint8_t>((3 << 3) | 0x01), 0x00};
+    // 3) code 1 的载荷是 1 字节（奇数）：切不出两帧等长 → 拒绝。
+    const uint8_t odd_cbr[2] = {static_cast<uint8_t>((3 << 3) | 0x01), 0x00};
+    EXPECT_FALSE(AudioBitstreamParser::ParseOpusToc(odd_cbr, sizeof(odd_cbr), toc));
+
+    // 4) 载荷 2 字节（各 1 字节）就合法：60ms × 2 = 120ms 正好在上限
+    const uint8_t cbr[3] = {static_cast<uint8_t>((3 << 3) | 0x01), 0x5A, 0x5B};
     ASSERT_TRUE(AudioBitstreamParser::ParseOpusToc(cbr, sizeof(cbr), toc));
     EXPECT_EQ(toc.frame_count, 2);
     EXPECT_FALSE(toc.vbr);
+    EXPECT_EQ(toc.first_frame_bytes, 1);
+}
+
+// code 1 是"两帧等长、没有额外字节"—— 第一个载荷字节**不是** vbr 标志。
+// 旧实现按 code 3 的布局去读 data[1] 的最高位，于是 0x80 这种普通载荷被标成 vbr。
+TEST(AudioBitstreamParserTest, OpusTocCode1IsNotVbr) {
+    const uint8_t data[3] = {0x81, 0x80, 0x00};
+    OpusToc toc;
+    ASSERT_TRUE(AudioBitstreamParser::ParseOpusToc(data, sizeof(data), toc));
+    EXPECT_EQ(toc.frame_count_code, 1);
+    EXPECT_EQ(toc.frame_count, 2);
+    EXPECT_FALSE(toc.vbr);
+    EXPECT_EQ(toc.first_frame_bytes, 1);
+    EXPECT_EQ(toc.payload_offset, 1); // 没有长度字段，载荷从第 2 字节开始
+}
+
+// code 2 是"两帧不等长"，紧跟一个 1~2 字节的长度字段；缺了它就不是合法包。
+TEST(AudioBitstreamParserTest, OpusTocCode2ReadsFirstFrameLength) {
+    // TOC=0x82（config 16, stereo=0, code 2）+ 长度字段 0x02 + 载荷 2+3 字节
+    const uint8_t data[6] = {0x82, 0x02, 0xAA, 0xBB, 0xCC, 0xDD};
+    OpusToc toc;
+    ASSERT_TRUE(AudioBitstreamParser::ParseOpusToc(data, sizeof(data), toc));
+    EXPECT_EQ(toc.frame_count_code, 2);
+    EXPECT_EQ(toc.frame_count, 2);
+    EXPECT_FALSE(toc.vbr);
+    EXPECT_EQ(toc.first_frame_bytes, 2);
+    EXPECT_EQ(toc.payload_offset, 2); // 跳过 1 字节长度字段
+
+    // 两字节长度编码：b0 >= 252 → len = 4*b1 + b0
+    std::vector<uint8_t> wide = {0x82, 252, 1};
+    wide.resize(3 + 4u * 1u + 252u + 4, 0x5A); // 第一帧 256 字节 + 第二帧 4 字节
+    ASSERT_TRUE(AudioBitstreamParser::ParseOpusToc(wide.data(), wide.size(), toc));
+    EXPECT_EQ(toc.first_frame_bytes, 256);
+    EXPECT_EQ(toc.payload_offset, 3);
+}
+
+TEST(AudioBitstreamParserTest, OpusTocCode2RejectsBrokenLengthField) {
+    OpusToc toc;
+
+    // 只有 TOC，长度字段整个缺失
+    const uint8_t only_toc[1] = {0x82};
+    EXPECT_FALSE(AudioBitstreamParser::ParseOpusToc(only_toc, sizeof(only_toc), toc));
+
+    // 有长度字段但没有载荷
+    const uint8_t no_payload[2] = {0x82, 0x00};
+    EXPECT_FALSE(AudioBitstreamParser::ParseOpusToc(no_payload, sizeof(no_payload), toc));
+
+    // 两字节长度编码但第二个字节缺失
+    const uint8_t truncated_len[2] = {0x82, 252};
+    EXPECT_FALSE(AudioBitstreamParser::ParseOpusToc(truncated_len, sizeof(truncated_len), toc));
+
+    // 声明的第一帧长度 >= 剩余载荷（第二帧为空）
+    const uint8_t overrun[3] = {0x82, 0x05, 0xAA};
+    EXPECT_FALSE(AudioBitstreamParser::ParseOpusToc(overrun, sizeof(overrun), toc));
+
+    // 第一帧长度 0：不是合法的双帧包
+    const uint8_t zero_len[3] = {0x82, 0x00, 0xAA};
+    EXPECT_FALSE(AudioBitstreamParser::ParseOpusToc(zero_len, sizeof(zero_len), toc));
 }
 
 TEST(AudioBitstreamParserTest, OpusTocReadsVbrAndPaddingFlags) {

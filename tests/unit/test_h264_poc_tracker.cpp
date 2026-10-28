@@ -578,7 +578,7 @@ TEST(H264PocTrackerTest, ExtradataParameterSetsEnablePocForLengthPrefixedPackets
 // 实测代价（libopenh264 + MP4，40 帧）：样本大小落在 256~511 的有 33 个，
 // 于是 40 帧只扫到 7 帧，而且丢的帧毫无规律 —— 从日志上看只像"某些包没帧"。
 //
-// 修法是"容器给了前缀宽度就照它切，不猜"（见 H264PocTracker::SplitNals）。
+// 修法是"容器给了前缀宽度就照它切，不猜"（见 H264PocTracker::Feed）。
 // 这条用例把前缀长度**凑到** 256~511 区间，让误判必然发生，
 // 从而把"有人把自动判定改回无条件优先"这件事钉死。
 TEST(H264PocTrackerTest, LengthPrefixInStartCodeByteRangeIsNotMistakenForAnnexB) {

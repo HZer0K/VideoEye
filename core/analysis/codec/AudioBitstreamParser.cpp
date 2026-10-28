@@ -726,31 +726,66 @@ bool AudioBitstreamParser::ParseOpusToc(const uint8_t* data, size_t size, OpusTo
     out.bandwidth = kBandwidth[out.config];
     out.frame_duration_ms = kFrameMs[out.config];
 
-    // RFC 6716 §3.2.1：code 1 与 code 3 的第 2 个字节里都有 vbr 标志（code 3 还有
-    // padding 标志）—— 只有 toc 首字节时无法确认包结构，必须要求 size >= 2。
+    // RFC 6716 §3.2.1：TOC 低 2 位决定**包结构**，四种取值不是"标志位集合"：
+    //   0 → 1 帧，没有额外字节
+    //   1 → 2 帧、等长（CBR），没有额外字节；长度 = (剩余载荷)/2，必须能被 2 整除
+    //   2 → 2 帧、不等长（VBR），紧跟一个 1~2 字节的"第一帧长度"字段
+    //   3 → 任意帧数，第二个字节才是 vbr(bit7) / padding(bit6) / 帧数(bits0-5)
+    // 旧实现把 code 1 的载荷首字节当 vbr 标志、又直接接受 code 2 而不读长度字段，
+    // 于是 {0x81,0x80,0x00} 被标成 vbr=true、只有 {0x82} 的残缺包被判有效。
+    size_t payload_offset = 1;
     switch (out.frame_count_code) {
     case 0:
         out.frame_count = 1;
         break;
-    case 1:
-        if (size < 2)
-            return false; // 缺 vbr 字节
-        out.vbr = (data[1] & 0x80) != 0;
+    case 1: {
+        // 两帧等长：载荷必须非空且能被 2 整除，否则连"两帧"都切不出来
+        const size_t payload = size - 1;
+        if (payload < 2 || (payload % 2) != 0)
+            return false;
         out.frame_count = 2;
+        out.first_frame_bytes = static_cast<int>(payload / 2);
         break;
-    case 2:
-        out.frame_count = 2; // 2 帧 CBR，没有额外字节
+    }
+    case 2: {
+        // 两帧不等长：长度字段编码（RFC 6716 §3.2.1，与 libopus 的 parse_size 一致）
+        //   b0 < 252 → len = b0            （1 字节）
+        //   b0 >= 252 → len = 4*b1 + b0    （2 字节）
+        if (size < 3)
+            return false; // 至少要有 TOC + 长度字段 + 1 字节载荷
+        const uint8_t b0 = data[1];
+        size_t len_bytes = 1;
+        size_t first_len = b0;
+        if (b0 >= 252) {
+            if (size < 4)
+                return false; // 长度字段的第二个字节缺失
+            len_bytes = 2;
+            first_len = static_cast<size_t>(4u * data[2]) + b0;
+        }
+        const size_t frame_bytes_total = size - 1 - len_bytes;
+        // 第一帧不能是空帧，第二帧也必须至少 1 字节（否则总长与声明不符）
+        if (first_len == 0 || first_len >= frame_bytes_total)
+            return false;
+        out.frame_count = 2;
+        out.first_frame_bytes = static_cast<int>(first_len);
+        payload_offset = 1 + len_bytes;
         break;
-    case 3:
-        if (size < 2)
-            return false; // 缺 vbr/padding/M 字节
+    }
+    case 3: {
+        if (size < 3)
+            return false; // 缺 vbr/padding/帧数字节，或缺载荷
         out.vbr = (data[1] & 0x80) != 0;
         out.padding = (data[1] & 0x40) != 0;
         out.frame_count = data[1] & 0x3F;
+        if (out.frame_count <= 0)
+            return false; // M = 0 是非法帧数
+        payload_offset = 2;
         break;
+    }
     default:
         break;
     }
+    out.payload_offset = static_cast<int>(payload_offset);
     out.channels = out.stereo ? 2 : 1;
     // RFC 6716 §3.2.5：一包的总时长不得超过 120 ms。60ms×3 = 180ms 的 TOC
     // 是畸形数据，以前因为只看 frame_count<=48 而被判 valid。

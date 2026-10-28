@@ -35,46 +35,8 @@ void H264PocTracker::Reset(int stream_index, const Options& options) {
     finished_ = false;
 }
 
-std::vector<NalUnit> H264PocTracker::SplitNals(const uint8_t* data, size_t size) {
-    // ---- 一、容器已经明说了前缀宽度 → 直接用，不猜 ----
-    //
-    // ❗ 这一步**不能**省，也不能让位给下面的启发式：
-    // 长度前缀是定长的，当某个 NAL 的长度落在 [0x100, 0x1FF]（也就是 256~511 字节，
-    // 恰好是 P 帧最常见的量级）时，前缀四字节就是 `00 00 01 XX` —— 与 Annex B 的
-    // 3 字节起始码**逐字节相同**。此时"找起始码"这条启发式必然误判，然后把
-    // 258 字节的 slice 载荷当成一条 `nal_type = XX` 的 NAL 丢掉。
-    //
-    // 实测（libopenh264 + MP4, 40 帧）：样本大小落在 256~511 的有 33 个，
-    // 于是 40 帧里只扫到 7 帧 —— 而且丢的那 33 帧毫无规律可言，
-    // 从日志上看只像"某些包没有帧"，是最难查的那一类静默失效。
-    //
-    // 反过来，容器没给 extradata 时（TS / 裸流 / 无配置记录的封装）才需要猜，
-    // 那种场景 prefix_bytes_ == 0，正好落到下面的分支。
-    if (prefix_bytes_ > 0) {
-        std::vector<NalUnit> nals =
-            ExtradataParser::ExtractLengthPrefixedNalUnits(data, size, NalSyntax::H264, prefix_bytes_, nullptr);
-        if (!nals.empty())
-            return nals;
-        // 前缀宽度是容器给的，取不出 NAL 说明这个包本身异常（截断 / 填充）。
-        // 这时不要再拿启发式去猜 —— 猜出来的东西比"没有"更危险。
-    }
-
-    if (framing_ == Framing::AnnexB)
-        return ExtradataParser::ExtractAnnBNalUnits(data, size, NalSyntax::H264);
-    if (framing_ == Framing::LengthPrefixed) {
-        return ExtradataParser::ExtractLengthPrefixedNalUnits(data, size, NalSyntax::H264,
-                                                              prefix_bytes_ > 0 ? prefix_bytes_ : 4, nullptr);
-    }
-
-    // ---- 二、Auto：逐包判定（prefix_bytes_ == 0 时才走得到这里）----
-    int detected = 0;
-    if (DetectLengthPrefixed(data, size, detected))
-        return ExtradataParser::ExtractLengthPrefixedNalUnits(data, size, NalSyntax::H264, detected, nullptr);
-    return ExtradataParser::ExtractAnnBNalUnits(data, size, NalSyntax::H264);
-}
-
 bool H264PocTracker::DetectLengthPrefixed(const uint8_t* data, size_t size, int& prefix_bytes) const {
-    // 只有"容器没给前缀宽度"时才需要这条启发式，见 SplitNals 里的说明。
+    // 只有"容器没给前缀宽度"时才需要这条启发式，见 Feed 里的说明。
     //
     // 顺序上先找起始码，是因为裸流 / TS 里"整段都是起始码"这件事比
     // "整段恰好能被长度链整除"更可信；代价就是上面那条 [256,511] 的坑，
@@ -98,15 +60,58 @@ int H264PocTracker::Feed(const uint8_t* data, size_t size, bool has_time, double
     if (data == nullptr || size == 0)
         return 0;
 
-    std::vector<NalUnit> nals = SplitNals(data, size);
     int new_frames = 0;
-    for (const NalUnit& nal : nals)
-        FeedNal(nal, has_time, time_seconds, packet_index, new_frames);
+    // 这一包到底切出了 NAL 没有 —— 只用于复现原 SplitNals 的"取不到就往下试"语义。
+    bool any = false;
+    auto visit = [&](const NalView& view) {
+        any = true;
+        FeedNal(view, has_time, time_seconds, packet_index, new_frames);
+    };
+
+    // ---- 一、容器已经明说了前缀宽度 → 直接用，不猜 ----
+    //
+    // ❗ 这一步**不能**省，也不能让位给下面的启发式：
+    // 长度前缀是定长的，当某个 NAL 的长度落在 [0x100, 0x1FF]（也就是 256~511 字节，
+    // 恰好是 P 帧最常见的量级）时，前缀四字节就是 `00 00 01 XX` —— 与 Annex B 的
+    // 3 字节起始码**逐字节相同**。此时"找起始码"这条启发式必然误判，然后把
+    // 258 字节的 slice 载荷当成一条 `nal_type = XX` 的 NAL 丢掉。
+    //
+    // 实测（libopenh264 + MP4, 40 帧）：样本大小落在 256~511 的有 33 个，
+    // 于是 40 帧里只扫到 7 帧 —— 而且丢的那 33 帧毫无规律可言，
+    // 从日志上看只像"某些包没有帧"，是最难查的那一类静默失效。
+    //
+    // 反过来，容器没给 extradata 时（TS / 裸流 / 无配置记录的封装）才需要猜，
+    // 那种场景 prefix_bytes_ == 0，正好落到下面的分支。
+    if (prefix_bytes_ > 0) {
+        ExtradataParser::ForEachLengthPrefixedNalUnit(data, size, NalSyntax::H264, prefix_bytes_, nullptr, visit);
+        if (any)
+            return new_frames;
+        // 前缀宽度是容器给的，取不出 NAL 说明这个包本身异常（截断 / 填充）。
+        // 这时不要再拿启发式去猜 —— 猜出来的东西比"没有"更危险。
+    }
+
+    if (framing_ == Framing::AnnexB) {
+        ExtradataParser::ForEachAnnexBNalUnit(data, size, NalSyntax::H264, visit);
+        return new_frames;
+    }
+    if (framing_ == Framing::LengthPrefixed) {
+        ExtradataParser::ForEachLengthPrefixedNalUnit(data, size, NalSyntax::H264,
+                                                      prefix_bytes_ > 0 ? prefix_bytes_ : 4, nullptr, visit);
+        return new_frames;
+    }
+
+    // ---- 二、Auto：逐包判定（prefix_bytes_ == 0 时才走得到这里）----
+    int detected = 0;
+    if (DetectLengthPrefixed(data, size, detected)) {
+        ExtradataParser::ForEachLengthPrefixedNalUnit(data, size, NalSyntax::H264, detected, nullptr, visit);
+    } else {
+        ExtradataParser::ForEachAnnexBNalUnit(data, size, NalSyntax::H264, visit);
+    }
     return new_frames;
 }
 
-bool H264PocTracker::HandleSps(const NalUnit& nal) {
-    const model::H264SpsInfo sps = H264BitstreamParser::ParseFromNalUnit(nal);
+bool H264PocTracker::HandleSps(const NalView& nal) {
+    const model::H264SpsInfo sps = H264BitstreamParser::ParseFromNal(nal.type, nal.payload, nal.size);
     if (!sps.present)
         return false;
     // log2_*_minus4 的规范范围是 [0,12]；越界说明这个 SPS 本身不合法，
@@ -130,8 +135,8 @@ bool H264PocTracker::HandleSps(const NalUnit& nal) {
     return true;
 }
 
-bool H264PocTracker::HandlePps(const NalUnit& nal) {
-    const model::H264PpsInfo pps = H264BitstreamParser::ParsePpsFromNalUnit(nal);
+bool H264PocTracker::HandlePps(const NalView& nal) {
+    const model::H264PpsInfo pps = H264BitstreamParser::ParsePpsFromNal(nal.type, nal.payload, nal.size);
     if (!pps.present)
         return false;
     pps_ = pps;
@@ -161,14 +166,14 @@ bool H264PocTracker::FeedExtradata(const uint8_t* data, size_t size) {
     bool got_sps = false;
     for (const NalUnit& nal : nals) {
         if (nal.type == 7)
-            got_sps = HandleSps(nal) || got_sps;
+            got_sps = HandleSps(ToNalView(nal)) || got_sps;
         else if (nal.type == 8)
-            HandlePps(nal);
+            HandlePps(ToNalView(nal));
     }
     return got_sps;
 }
 
-void H264PocTracker::FeedNal(const NalUnit& nal, bool has_time, double time_seconds, int64_t packet_index,
+void H264PocTracker::FeedNal(const NalView& nal, bool has_time, double time_seconds, int64_t packet_index,
                              int& new_frames) {
     switch (nal.type) {
     case 7: { // SPS
@@ -216,13 +221,13 @@ void H264PocTracker::FeedNal(const NalUnit& nal, bool has_time, double time_seco
     ++new_frames;
 }
 
-bool H264PocTracker::ParseSliceHeader(const NalUnit& nal, SliceHead& out) {
+bool H264PocTracker::ParseSliceHeader(const NalView& nal, SliceHead& out) {
     if (max_frame_num_ <= 0)
         return false;
     // 不用 H264BitstreamParser::GetRbsp()：那是 private，且它现在只等价于
     // UnescapeRbsp(NalUnit::data)（data 已不含 NAL header，见 GetRbsp 实现）。
     // 为一个纯工具函数放宽另一个类的访问级别不值当。
-    const std::vector<uint8_t> rbsp = UnescapeRbsp(nal.data.data(), nal.data.size());
+    const std::vector<uint8_t> rbsp = UnescapeRbsp(nal.payload, nal.size);
     if (rbsp.empty())
         return false;
     BitReader br;

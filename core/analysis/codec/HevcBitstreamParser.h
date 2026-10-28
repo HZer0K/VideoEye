@@ -34,6 +34,12 @@ public:
     static model::HevcSpsInfo ParseSpfFromNalUnit(const videoeye::NalUnit& nal_unit);
     static model::HevcPpsInfo ParsePpsFromNalUnit(const videoeye::NalUnit& nal_unit);
 
+    // 零拷贝入口（逐包扫描用，理由同 H264BitstreamParser::ParseFromNal）：
+    // payload 是未反转义的 NAL 载荷，不含起始码与 NAL header。
+    static model::HevcVpsInfo ParseVpsFromNal(uint8_t nal_type, const uint8_t* payload, size_t size);
+    static model::HevcSpsInfo ParseSpfFromNal(uint8_t nal_type, const uint8_t* payload, size_t size);
+    static model::HevcPpsInfo ParsePpsFromNal(uint8_t nal_type, const uint8_t* payload, size_t size);
+
     // 判断是否为 VPS/SPS/PPS NAL 单元
     static bool IsVpsNalUnit(const videoeye::NalUnit& nal_unit);
     static bool IsSpsNalUnit(const videoeye::NalUnit& nal_unit);
@@ -47,6 +53,8 @@ public:
 private:
     // NalUnit::data 已不含 NAL header，这里只做 emulation prevention 反转义
     static std::vector<uint8_t> GetRbsp(const videoeye::NalUnit& nal_unit);
+    // 同上，但从裸载荷开始（NalView 路径）
+    static std::vector<uint8_t> GetRbsp(const uint8_t* payload, size_t size);
 
     // profile_tier_level() —— 7.3.3
     static void ParseProfileTierLevel(videoeye::BitReader& reader, int max_sub_layers_minus1, int& profile_space,

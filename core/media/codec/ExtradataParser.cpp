@@ -447,6 +447,57 @@ std::vector<ObuUnit> ExtradataParser::ExtractObuUnits(const uint8_t* data, size_
     return obu_units;
 }
 
+NalView ExtradataParser::MakeNalView(const uint8_t* nal, size_t nal_size, NalSyntax syntax) {
+    NalView view;
+    if (nal == nullptr || nal_size == 0) {
+        return view;
+    }
+
+    switch (syntax) {
+    case NalSyntax::Hevc: {
+        if (nal_size < 2) {
+            return view; // header 都不完整
+        }
+        view.type = static_cast<uint8_t>((nal[0] >> 1) & 0x3F);
+        if (view.type >= 32 && view.type <= 35) {
+            view.is_keyframe = true; // VPS / SPS / PPS 所在 NAL 属于 CLVS 边界
+        }
+        view.payload = nal + 2;
+        view.size = nal_size - 2;
+        break;
+    }
+    case NalSyntax::Vvc: {
+        if (nal_size < 2) {
+            return view;
+        }
+        view.type = static_cast<uint8_t>((nal[1] >> 3) & 0x1F);
+        if (view.type >= 7 && view.type <= 10) {
+            view.is_keyframe = true;
+            view.is_idr = (view.type == 7 || view.type == 8);
+        }
+        view.payload = nal + 2;
+        view.size = nal_size - 2;
+        break;
+    }
+    case NalSyntax::H264:
+    case NalSyntax::Auto:
+    default: {
+        // Auto 与 ExtractAnnBNalUnits 的启发式一致：按 H.264 解读（那条判定
+        // (byte0 & 0x1F) < 32 恒真，历史行为如此，这里不改语义）。
+        view.type = static_cast<uint8_t>(nal[0] & 0x1F);
+        view.nal_ref_idc = (nal[0] >> 5) & 0x03;
+        if (view.type == 5) {
+            view.is_idr = true;
+            view.is_keyframe = true;
+        }
+        view.payload = nal + 1;
+        view.size = nal_size - 1;
+        break;
+    }
+    }
+    return view;
+}
+
 std::vector<NalUnit> ExtradataParser::ExtractAnnBNalUnits(const uint8_t* data, size_t size, NalSyntax syntax) {
     std::vector<NalUnit> nal_units;
 

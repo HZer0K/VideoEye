@@ -234,8 +234,9 @@ struct VvcPpsInfo {
 
     // ---- Tile / slice 划分（7.3.2.4 后半段）----
     int pps_log2_ctu_size_minus5 = 0;
-    int pps_exp_ctu_width_minus1 = 0;
-    int pps_exp_ctu_height_minus1 = 0;
+    // ❗ 这里**没有** pps_exp_ctu_width/height 这种字段：VVC 的 PPS tile 段只声明
+    // 每列宽/每行高的 minus1（最后一行/列铺满剩余），CTU 栅格数由 SPS 的 CTU 尺寸
+    // 与 PPS 图像尺寸推出来。旧实现多读两个 ue(v)，此后整段整体错位。
     int pps_num_exp_tile_columns_minus1 = 0;
     int pps_num_exp_tile_rows_minus1 = 0;
     bool pps_loop_filter_across_tiles_flag = false;
@@ -251,6 +252,9 @@ struct VvcPpsInfo {
     bool pps_weighted_pred_flag = false;
     bool pps_weighted_bipred_flag = false;
     bool pps_ref_wraparound_enabled_flag = false;
+    // 只在 pps_ref_wraparound_enabled_flag = 1 时存在（ue(v)）。漏读它会让
+    // 紧跟其后的 pps_pic_init_qp_minus26 直接错位 —— 那是 QP 本身。
+    int pps_pic_width_minus_wraparound_offset = 0;
     int pps_pic_init_qp_minus26 = 0; // 实际 init QP = 26 + 该值
     bool pps_cu_qp_delta_enabled_flag = false;
     bool pps_chroma_tool_offsets_present_flag = false;

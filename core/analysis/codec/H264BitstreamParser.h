@@ -35,6 +35,15 @@ public:
     // 从 PPS NAL 单元解析（用于实时解析）
     static model::H264PpsInfo ParsePpsFromNalUnit(const videoeye::NalUnit& nal_unit);
 
+    // 零拷贝入口：逐包扫描（参数集跟踪 / POC 跟踪）直接喂 NalView 的
+    // payload/size，省掉每包每 NAL 一次 vector 分配 + 整段载荷复制。
+    //
+    // payload 是**未反转义**的 NAL 载荷（不含起始码、不含 NAL header），
+    // 与 NalView 的约定一致；反转义在内部做。
+    // nal_type 只为把"这是不是 SPS/PPS"的判断留在解析器内部（误喂也只会返回空）。
+    static model::H264SpsInfo ParseFromNal(uint8_t nal_type, const uint8_t* payload, size_t size);
+    static model::H264PpsInfo ParsePpsFromNal(uint8_t nal_type, const uint8_t* payload, size_t size);
+
     // 判断是否为 SPS NAL 单元
     static bool IsSpsNalUnit(const videoeye::NalUnit& nal_unit);
 
@@ -54,6 +63,9 @@ private:
     // ExtradataParser 的两条路径对 data 是否含 header 并不一致
     // （AnnexB 剥掉、avcC 保留），这里统一处理。
     static std::vector<uint8_t> GetRbsp(const videoeye::NalUnit& nal_unit);
+
+    // 同上，但从裸载荷开始（NalView 路径）：只做 emulation prevention 反转义。
+    static std::vector<uint8_t> GetRbsp(const uint8_t* payload, size_t size);
 
     // 判断 profile 是否带 chroma_format_idc / bit_depth 等扩展字段
     static bool HasChromaFormatExtension(int profile_idc);

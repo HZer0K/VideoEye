@@ -261,6 +261,27 @@ TEST(OggAnalyzerLeniency, AcceptsArbitraryBytesByDesign) {
     EXPECT_EQ(result.format, model::ContainerFormat::OGG);
 }
 
+// 重同步回归：页头前面加 1 / 2 / 3 个垃圾字节，页必须照样被认出来。
+//
+// 旧实现的滑动窗口用 header.substr(1,3) 预填（那是 page_start+1..3 的内容），
+// 文件位置却退回 page_start+1 —— 窗口与游标从第一字节就不一致，于是**紧邻**
+// 垃圾字节之后的那一页正好被跳过：前面加 1 个字节就能让整份文件变成 0 页，
+// 而 Analyze() 仍然返回 true（结果看起来像"这文件本来就没有页"）。
+TEST(OggAnalyzerResync, FindsPageImmediatelyAfterGarbageBytes) {
+    for (int pad = 1; pad <= 3; ++pad) {
+        QTemporaryDir dir;
+        ASSERT_TRUE(dir.isValid());
+        const QByteArray bytes = QByteArray(pad, 'X') + OggMinimal();
+        const std::string path = WriteTemp(dir, QStringLiteral("resync_%1.ogg").arg(pad), bytes);
+        ASSERT_FALSE(path.empty());
+
+        model::ContainerStructureResult result;
+        ASSERT_TRUE(videoeye::OggStructureAnalyzer().Analyze(path, result));
+        EXPECT_EQ(result.diagnostics.ogg.pages, 1u) << "前置垃圾字节数 = " << pad;
+        EXPECT_EQ(result.diagnostics.ogg.resyncs, 1u) << "前置垃圾字节数 = " << pad;
+    }
+}
+
 // ===========================================================================
 // MPEG-PS / MXF：B3 新增的两个解析器
 // ===========================================================================

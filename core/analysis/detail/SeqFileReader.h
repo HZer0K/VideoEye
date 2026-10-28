@@ -21,6 +21,8 @@
 //      std::ifstream 在 EOF 之后还能 seek 回去继续读，而 ifstream 一旦 failbit 上了，
 //      seekg() 会静默变成空操作（不报错也不动），那类 bug 表现为"偶发读到半截数据"，
 //      比编译错误难查一个量级。
+//   4. Size() 走**打开时缓存的**文件大小（分析器只读，文件不会中途变），
+//      不再每次 seekg 到末尾再回来 —— 见 Size() 的注释。
 //
 #include <cstdint>
 #include <fstream>
@@ -46,11 +48,16 @@ public:
     bool Open(const std::string& path) {
         Clear();
         stream_.open(ToNativePath(path), std::ios::in | std::ios::binary);
+        size_ = -1;
+        if (stream_.is_open()) {
+            size_ = ProbeSize(); // 打开时量一次，之后 Size() 只读缓存
+        }
         return stream_.is_open();
     }
     void Close() {
         if (stream_.is_open())
             stream_.close();
+        size_ = -1;
     }
     bool IsOpen() const {
         return stream_.is_open();
@@ -79,16 +86,21 @@ public:
         return ok;
     }
 
-    /// std::ifstream::size()：文件总字节数。
+    /// std::ifstream::size()：文件总字节数（**打开时缓存**）。
+    ///
+    /// ❗ 这里必须缓存，不能每次现量。旧实现每次 Size() 都要 seekg(0, end) 再
+    /// seekg 回来：OGG 的逐字节重同步 / 每个 `while (Pos() < Size() - k)` 判据
+    /// 都会调它，一个 100 MB 的损坏文件能打出上百亿次文件定位，I/O 全花在
+    /// 挪游标上。分析器只读打开、文件在其生命周期内不会变，所以一次测量就够。
+    /// 需要重新探测（文件被外部改写）时调用 RefreshSize()。
     int64_t Size() const {
-        SeqFileReader* self = const_cast<SeqFileReader*>(this);
-        self->Clear();
-        const std::streampos cur = stream_.tellg();
-        stream_.seekg(0, std::ios::end);
-        const int64_t size = static_cast<int64_t>(stream_.tellg());
-        stream_.seekg(cur);
-        self->Clear();
-        return size < 0 ? 0 : size;
+        return size_ < 0 ? 0 : size_;
+    }
+
+    /// 重新量一次真实文件大小（仅在文件可能被外部改动时用）。
+    int64_t RefreshSize() {
+        size_ = ProbeSize();
+        return Size();
     }
 
     /// std::ifstream::pos()：当前读位置。
@@ -153,6 +165,18 @@ public:
     }
 
 private:
+    /// 一次性测量文件大小（定位到文件尾再恢复原位）。只在 Open / RefreshSize 里调用。
+    int64_t ProbeSize() {
+        Clear();
+        const std::streampos cur = stream_.tellg();
+        stream_.seekg(0, std::ios::end);
+        const int64_t size = static_cast<int64_t>(stream_.tellg());
+        if (cur != std::streampos(std::streamoff(-1)))
+            stream_.seekg(cur);
+        Clear();
+        return size < 0 ? 0 : size;
+    }
+
     /// 只在"已经处于失败态"时清标志；good() 时 clear() 是空操作。
     void Clear() {
         if (!stream_.good())
@@ -160,6 +184,8 @@ private:
     }
 
     mutable std::ifstream stream_;
+    /// 打开时缓存的文件大小（-1 = 未测量）。
+    int64_t size_ = -1;
 };
 
 } // namespace videoeye

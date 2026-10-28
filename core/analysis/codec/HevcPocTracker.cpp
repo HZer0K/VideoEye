@@ -72,35 +72,9 @@ void HevcPocTracker::NoteReason(const std::string& reason) {
         timeline_.unavailable_reason = reason;
 }
 
-std::vector<NalUnit> HevcPocTracker::SplitNals(const uint8_t* data, size_t size) {
-    // 与 H264PocTracker::SplitNals 同样的优先级，理由也一样：
-    // 容器给了前缀宽度就直接用，不能让"找起始码"的启发式插队 ——
-    // 长度落在 [0x100, 0x1FF] 的 NAL，其 4 字节长度前缀与 Annex B 的
-    // `00 00 01 XX` 三个字节逐字节相同，启发式必然误判并把载荷整条丢掉。
-    if (prefix_bytes_ > 0) {
-        std::vector<NalUnit> nals =
-            ExtradataParser::ExtractLengthPrefixedNalUnits(data, size, NalSyntax::Hevc, prefix_bytes_, nullptr);
-        if (!nals.empty())
-            return nals;
-        // 取不出来说明这包本身异常（截断 / 填充）。此时不要再拿启发式去猜。
-    }
-
-    if (framing_ == Framing::AnnexB)
-        return ExtradataParser::ExtractAnnBNalUnits(data, size, NalSyntax::Hevc);
-    if (framing_ == Framing::LengthPrefixed) {
-        return ExtradataParser::ExtractLengthPrefixedNalUnits(data, size, NalSyntax::Hevc,
-                                                              prefix_bytes_ > 0 ? prefix_bytes_ : 4, nullptr);
-    }
-
-    int detected = 0;
-    if (DetectLengthPrefixed(data, size, detected))
-        return ExtradataParser::ExtractLengthPrefixedNalUnits(data, size, NalSyntax::Hevc, detected, nullptr);
-    return ExtradataParser::ExtractAnnBNalUnits(data, size, NalSyntax::Hevc);
-}
-
 bool HevcPocTracker::DetectLengthPrefixed(const uint8_t* data, size_t size, int& prefix_bytes) const {
     // 先找起始码：裸流 / TS 里"整段都是起始码"比"整段恰好能被长度链整除"更可信。
-    // 代价是上面 SplitNals 里说的 [0x100,0x1FF] 坑，那个坑由 prefix_bytes_ 分支挡住。
+    // 代价是上面 Feed 里说的 [0x100,0x1FF] 坑，那个坑由 prefix_bytes_ 分支挡住。
     for (size_t i = 0; i + 3 <= size && i < 64; ++i) {
         if (data[i] == 0 && data[i + 1] == 0 &&
             (data[i + 2] == 1 || (data[i + 2] == 0 && i + 3 < size && data[i + 3] == 1)))
@@ -120,15 +94,46 @@ int HevcPocTracker::Feed(const uint8_t* data, size_t size, bool has_time, double
     if (data == nullptr || size == 0)
         return 0;
 
-    std::vector<NalUnit> nals = SplitNals(data, size);
     int new_frames = 0;
-    for (const NalUnit& nal : nals)
-        FeedNal(nal, has_time, time_seconds, packet_index, new_frames);
+    // 这一包到底切出了 NAL 没有 —— 只用于复现原 SplitNals 的"取不到就往下试"语义。
+    bool any = false;
+    auto visit = [&](const NalView& view) {
+        any = true;
+        FeedNal(view, has_time, time_seconds, packet_index, new_frames);
+    };
+
+    // 与 H264PocTracker::Feed 同样的优先级，理由也一样：
+    // 容器给了前缀宽度就直接用，不能让"找起始码"的启发式插队 ——
+    // 长度落在 [0x100, 0x1FF] 的 NAL，其 4 字节长度前缀与 Annex B 的
+    // `00 00 01 XX` 三个字节逐字节相同，启发式必然误判并把载荷整条丢掉。
+    if (prefix_bytes_ > 0) {
+        ExtradataParser::ForEachLengthPrefixedNalUnit(data, size, NalSyntax::Hevc, prefix_bytes_, nullptr, visit);
+        if (any)
+            return new_frames;
+        // 取不出来说明这包本身异常（截断 / 填充）。此时不要再拿启发式去猜。
+    }
+
+    if (framing_ == Framing::AnnexB) {
+        ExtradataParser::ForEachAnnexBNalUnit(data, size, NalSyntax::Hevc, visit);
+        return new_frames;
+    }
+    if (framing_ == Framing::LengthPrefixed) {
+        ExtradataParser::ForEachLengthPrefixedNalUnit(data, size, NalSyntax::Hevc,
+                                                      prefix_bytes_ > 0 ? prefix_bytes_ : 4, nullptr, visit);
+        return new_frames;
+    }
+
+    int detected = 0;
+    if (DetectLengthPrefixed(data, size, detected)) {
+        ExtradataParser::ForEachLengthPrefixedNalUnit(data, size, NalSyntax::Hevc, detected, nullptr, visit);
+    } else {
+        ExtradataParser::ForEachAnnexBNalUnit(data, size, NalSyntax::Hevc, visit);
+    }
     return new_frames;
 }
 
-bool HevcPocTracker::HandleSps(const NalUnit& nal) {
-    const model::HevcSpsInfo sps = HevcBitstreamParser::ParseSpfFromNalUnit(nal);
+bool HevcPocTracker::HandleSps(const NalView& nal) {
+    const model::HevcSpsInfo sps = HevcBitstreamParser::ParseSpfFromNal(nal.type, nal.payload, nal.size);
     if (!sps.present)
         return false;
     const int id = sps.sps_seq_parameter_set_id;
@@ -149,8 +154,8 @@ bool HevcPocTracker::HandleSps(const NalUnit& nal) {
     return true;
 }
 
-bool HevcPocTracker::HandlePps(const NalUnit& nal) {
-    const model::HevcPpsInfo pps = HevcBitstreamParser::ParsePpsFromNalUnit(nal);
+bool HevcPocTracker::HandlePps(const NalView& nal) {
+    const model::HevcPpsInfo pps = HevcBitstreamParser::ParsePpsFromNal(nal.type, nal.payload, nal.size);
     if (!pps.present)
         return false;
     const int id = pps.pic_parameter_set_id;
@@ -214,14 +219,14 @@ bool HevcPocTracker::FeedExtradata(const uint8_t* data, size_t size) {
     bool got_sps = false;
     for (const NalUnit& nal : nals) {
         if (nal.type == kNalSps)
-            got_sps = HandleSps(nal) || got_sps;
+            got_sps = HandleSps(ToNalView(nal)) || got_sps;
         else if (nal.type == kNalPps)
-            HandlePps(nal);
+            HandlePps(ToNalView(nal));
     }
     return got_sps;
 }
 
-void HevcPocTracker::FeedNal(const NalUnit& nal, bool has_time, double time_seconds, int64_t packet_index,
+void HevcPocTracker::FeedNal(const NalView& nal, bool has_time, double time_seconds, int64_t packet_index,
                              int& new_frames) {
     const int type = static_cast<int>(nal.type);
     if (type == kNalSps) {
@@ -255,9 +260,9 @@ void HevcPocTracker::FeedNal(const NalUnit& nal, bool has_time, double time_seco
     ++new_frames;
 }
 
-bool HevcPocTracker::ReadPicture(const NalUnit& nal, PictureHead& out) {
+bool HevcPocTracker::ReadPicture(const NalView& nal, PictureHead& out) {
     const int type = static_cast<int>(nal.type);
-    const std::vector<uint8_t> rbsp = UnescapeRbsp(nal.data.data(), nal.data.size());
+    const std::vector<uint8_t> rbsp = UnescapeRbsp(nal.payload, nal.size);
     if (rbsp.empty())
         return false;
     BitReader br;

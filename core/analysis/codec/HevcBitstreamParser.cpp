@@ -83,6 +83,13 @@ std::vector<uint8_t> HevcBitstreamParser::GetRbsp(const videoeye::NalUnit& nal_u
     return videoeye::UnescapeRbsp(nal_unit.data.data(), nal_unit.data.size());
 }
 
+std::vector<uint8_t> HevcBitstreamParser::GetRbsp(const uint8_t* payload, size_t size) {
+    if (payload == nullptr || size == 0) {
+        return {};
+    }
+    return videoeye::UnescapeRbsp(payload, size);
+}
+
 // --------------------------------------------------------------------------
 // profile_tier_level() —— 7.3.3
 // --------------------------------------------------------------------------
@@ -389,13 +396,17 @@ void HevcBitstreamParser::ParseVuiParameters(videoeye::BitReader& reader, model:
 // VPS —— 7.3.2.2
 // --------------------------------------------------------------------------
 model::HevcVpsInfo HevcBitstreamParser::ParseVpsFromNalUnit(const videoeye::NalUnit& nal_unit) {
+    return ParseVpsFromNal(nal_unit.type, nal_unit.data.data(), nal_unit.data.size());
+}
+
+model::HevcVpsInfo HevcBitstreamParser::ParseVpsFromNal(uint8_t nal_type, const uint8_t* payload, size_t size) {
     model::HevcVpsInfo vps;
 
-    if (!IsVpsNalUnit(nal_unit)) {
+    if (nal_type != 32) { // VPS
         return vps;
     }
 
-    const std::vector<uint8_t> rbsp = GetRbsp(nal_unit);
+    const std::vector<uint8_t> rbsp = GetRbsp(payload, size);
     if (rbsp.empty()) {
         return vps;
     }
@@ -464,13 +475,17 @@ model::HevcVpsInfo HevcBitstreamParser::ParseVpsFromNalUnit(const videoeye::NalU
 // SPS —— 7.3.2.2.1
 // --------------------------------------------------------------------------
 model::HevcSpsInfo HevcBitstreamParser::ParseSpfFromNalUnit(const videoeye::NalUnit& nal_unit) {
+    return ParseSpfFromNal(nal_unit.type, nal_unit.data.data(), nal_unit.data.size());
+}
+
+model::HevcSpsInfo HevcBitstreamParser::ParseSpfFromNal(uint8_t nal_type, const uint8_t* payload, size_t size) {
     model::HevcSpsInfo sps;
 
-    if (!IsSpsNalUnit(nal_unit)) {
+    if (nal_type != 33) { // SPS
         return sps;
     }
 
-    const std::vector<uint8_t> rbsp = GetRbsp(nal_unit);
+    const std::vector<uint8_t> rbsp = GetRbsp(payload, size);
     if (rbsp.empty()) {
         return sps;
     }
@@ -616,13 +631,17 @@ model::HevcSpsInfo HevcBitstreamParser::ParseSpfFromNalUnit(const videoeye::NalU
 // PPS —— 7.3.2.3.1
 // --------------------------------------------------------------------------
 model::HevcPpsInfo HevcBitstreamParser::ParsePpsFromNalUnit(const videoeye::NalUnit& nal_unit) {
+    return ParsePpsFromNal(nal_unit.type, nal_unit.data.data(), nal_unit.data.size());
+}
+
+model::HevcPpsInfo HevcBitstreamParser::ParsePpsFromNal(uint8_t nal_type, const uint8_t* payload, size_t size) {
     model::HevcPpsInfo pps;
 
-    if (!IsPpsNalUnit(nal_unit)) {
+    if (nal_type != 34) { // PPS
         return pps;
     }
 
-    const std::vector<uint8_t> rbsp = GetRbsp(nal_unit);
+    const std::vector<uint8_t> rbsp = GetRbsp(payload, size);
     if (rbsp.empty()) {
         return pps;
     }

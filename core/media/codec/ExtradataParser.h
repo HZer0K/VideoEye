@@ -107,6 +107,112 @@ private:
     // 从 ptr 处读一个 OBU 头并算出 payload 区间；成功时把 ptr 推进到下一个 OBU。
     // 返回 false 表示"这里不是合法 OBU 起始"—— 此时不推进 ptr，由调用方决定停止。
     static bool ReadObuView(const uint8_t*& ptr, size_t remaining, ObuView& out);
+
+    // NAL header 判定：返回视图（payload 指向 nal + header_len，绝不复制）。
+    // 三种 syntax 的 type 位域规则与 ParseH264/Hevc/VvcNalUnit 逐位一致。
+    static NalView MakeNalView(const uint8_t* nal, size_t nal_size, NalSyntax syntax);
+
+public:
+    // ---- 零拷贝 NAL 遍历 ----
+    //
+    // 与 ForEachObuUnit 同样的取舍：不分配、不复制、不反转义；回调拿到的是视图。
+    // Fn 可以是 `void(const NalView&)`，也可以是 `bool(const NalView&)`
+    // （返回 false 立即停止）。
+    //
+    // ⚠️ 逐包扫描的热路径应该走这两个入口，而不是 Extract*NalUnits ——
+    // 后者会把每个 NAL 的 payload 复制进 std::vector<uint8_t>。
+    //
+    // 切分规则与 ExtractAnnBNalUnits / ExtractLengthPrefixedNalUnits 完全一致：
+    //   * AnnexB：起始码 3/4 字节都吃；最后一个 NAL 吃到缓冲区末尾；
+    //     nal_size == 0 的项跳过（旧实现同样不产出）。
+    //   * 长度前缀：prefix_bytes 只能是 1/2/4；长度 0 / 越界时收手，
+    //     越界时把 *truncated 置 true（调用方据此标记"包被截断"）。
+    template <typename Fn>
+    static void ForEachAnnexBNalUnit(const uint8_t* data, size_t size, NalSyntax syntax, Fn&& fn) {
+        if (data == nullptr || size == 0) {
+            return;
+        }
+        const uint8_t* pos = data;
+        const uint8_t* end = data + size;
+        while (pos < end) {
+            const uint8_t* start_code = FindStartCode(pos, end);
+            if (start_code == nullptr) {
+                break;
+            }
+            const size_t sc_len = (start_code[2] == 1) ? 3u : 4u;
+            const uint8_t* nal_begin = start_code + sc_len;
+
+            const uint8_t* next_start = end;
+            if (const uint8_t* sc = FindStartCode(nal_begin, end)) {
+                next_start = sc;
+            }
+            const size_t nal_size = static_cast<size_t>(next_start - nal_begin);
+            if (nal_size > 0) {
+                const NalView view = MakeNalView(nal_begin, nal_size, syntax);
+                if constexpr (std::is_same_v<std::invoke_result_t<Fn, const NalView&>, bool>) {
+                    if (!fn(view)) {
+                        return;
+                    }
+                } else {
+                    fn(view);
+                }
+            }
+            // 保证每次迭代都前进（与 ExtractAnnBNalUnits 的写法一致）
+            pos = (next_start > start_code) ? next_start : (nal_begin > start_code ? nal_begin : end);
+        }
+    }
+
+    template <typename Fn>
+    static void ForEachLengthPrefixedNalUnit(const uint8_t* data, size_t size, NalSyntax syntax, int prefix_bytes,
+                                             bool* truncated, Fn&& fn) {
+        if (truncated != nullptr) {
+            *truncated = false;
+        }
+        if (data == nullptr || size == 0) {
+            return;
+        }
+        if (prefix_bytes != 1 && prefix_bytes != 2 && prefix_bytes != 4) {
+            return;
+        }
+        const size_t header_len = (syntax == NalSyntax::Hevc || syntax == NalSyntax::Vvc) ? 2u : 1u;
+        size_t pos = 0;
+        while (pos + static_cast<size_t>(prefix_bytes) <= size) {
+            const uint8_t* p = data + pos;
+            uint32_t nal_size = 0;
+            if (prefix_bytes == 1) {
+                nal_size = p[0];
+            } else if (prefix_bytes == 2) {
+                nal_size = (static_cast<uint32_t>(p[0]) << 8) | p[1];
+            } else {
+                nal_size = (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+                           (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
+            }
+            pos += static_cast<size_t>(prefix_bytes);
+            if (nal_size == 0) {
+                break; // 长度 0 不是合法 NAL
+            }
+            if (static_cast<size_t>(size - pos) < nal_size) {
+                if (truncated != nullptr) {
+                    *truncated = true;
+                }
+                break;
+            }
+            if (nal_size < header_len) {
+                break; // 连 NAL header 都不完整
+            }
+            const NalView view = MakeNalView(data + pos, nal_size, syntax);
+            if constexpr (std::is_same_v<std::invoke_result_t<Fn, const NalView&>, bool>) {
+                if (!fn(view)) {
+                    return;
+                }
+            } else {
+                fn(view);
+            }
+            pos += nal_size;
+        }
+    }
+
+private:
     // 格式检测
     static ExtradataFormat DetectFormat(const uint8_t* data, size_t size);
 

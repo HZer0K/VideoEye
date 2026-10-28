@@ -173,6 +173,43 @@ struct ObuUnit {
     }
 };
 
+// NAL 视图：与 NalUnit 一一对应，但**不拥有内存** —— payload 指向调用方的包缓冲区。
+//
+// 存在的理由与 ObuView 相同：逐包扫描（参数集跟踪 / POC 跟踪 / ES 巡检）每个模块
+// 都在切同一份数据，用 NalUnit 意味着每个 NAL 一次堆分配 + 一次整段载荷复制。
+// 4K 包一次就是几百 KB，一帧切三遍＝三份拷贝，纯属浪费。
+//
+// ❗ 生命周期：只在 ForEachAnnexBNalUnit / ForEachLengthPrefixedNalUnit 的回调里
+//    有效，回调返回后即失效。需要跨包保存时必须拷成 NalUnit。
+// ❗ payload 是**未反转义**的 NAL 载荷（不含起始码 / 不含 NAL header）。需要 RBSP
+//    的调用方自己 UnescapeRbsp —— 只读头几个字节的场景（type / 分片标志）没必要付
+//    这次复制。
+struct NalView {
+    uint8_t type = 0;
+    int nal_ref_idc = -1; // H.264 专用；-1 = 未知（非 H.264 或构造方没给）
+    bool is_idr = false;
+    bool is_keyframe = false;
+    const uint8_t* payload = nullptr; // 不含起始码、不含 NAL header
+    size_t size = 0;                  // payload 字节数
+};
+
+// 把已拥有的 NalUnit 借成视图：两者字段一一对应，payload 指向 NalUnit 自己的 data。
+//
+// 用途：让"扫包"和"扫 extradata"两条路共用同一个（视图版）处理函数 ——
+// extradata 本来就已经复制过一次（结果要留在 ExtradataResult 里），再借成视图
+// 不会多付任何拷贝；而扫包那条路就直接省掉了每包每 NAL 的一次堆分配。
+// ❗ 与 NalView 同样的生命周期约束：`nal` 还在，视图才有效。
+inline NalView ToNalView(const NalUnit& nal) {
+    NalView view;
+    view.type = nal.type;
+    view.nal_ref_idc = nal.nal_ref_idc;
+    view.is_idr = nal.is_idr;
+    view.is_keyframe = nal.is_keyframe;
+    view.payload = nal.data.data();
+    view.size = nal.data.size();
+    return view;
+}
+
 // OBU 视图：与 ObuUnit 一一对应，但**不拥有内存** —— payload 指向调用方的缓冲区。
 //
 // 存在的理由：AV1 的每包扫描路径（帧顺序 / ES 检查 / 参数变化）都要遍历 OBU，

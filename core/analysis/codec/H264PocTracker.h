@@ -8,7 +8,7 @@
 //   * 显示顺序有没有跳变 / 重复（拼接、丢帧、重复封装）
 //   * GOP 边界在哪、每段多长
 //
-// 与 HevcPocTracker 的分工：两者的扫包骨架（SplitNals / Feed / FeedExtradata /
+// 与 HevcPocTracker 的分工：两者的扫包骨架（Feed / FeedExtradata /
 // Finish）与统计汇总（FrameOrderStats）是同一套，只有三处编码语义不同 ——
 // NAL 切分语法、slice_header 布局、POC 推导公式。所以是两个类而不是一个
 // if/else 大函数：混在一起后每读一处都要先确认"这段是哪个编码的"。
@@ -93,16 +93,17 @@ private:
         int32_t delta_poc_bottom_field = 0;
     };
 
-    // 把一包负载切成 NAL：容器给了前缀宽度就照它切，没给才逐包判定。
-    // （为什么不无条件自动判定 —— 见 cpp 里对 `00 00 01 XX` 前缀的说明。）
-    std::vector<NalUnit> SplitNals(const uint8_t* data, size_t size);
+    // 切分语法的决定与遍历都在 Feed 里（见 cpp）：容器给了前缀宽度就照它切，
+    // 没给才逐包判定。为什么不能无条件自动判定，见 cpp 里对 `00 00 01 XX` 前缀的说明。
     bool DetectLengthPrefixed(const uint8_t* data, size_t size, int& prefix_bytes) const;
-    void FeedNal(const NalUnit& nal, bool has_time, double time_seconds, int64_t packet_index, int& new_frames);
+    // 处理单个 NAL。参数是 NalView（不拥有内存）：逐包路径直接拿零拷贝视图，
+    // extradata 路径用 ToNalView() 把已复制好的 NalUnit 借成视图，两条路共用一份逻辑。
+    void FeedNal(const NalView& nal, bool has_time, double time_seconds, int64_t packet_index, int& new_frames);
     // 返回 false = 这份 SPS 不合法（log2_* 越界），调用方据此判定"没拿到参数集"
-    bool HandleSps(const NalUnit& nal);
-    bool HandlePps(const NalUnit& nal);
+    bool HandleSps(const NalView& nal);
+    bool HandlePps(const NalView& nal);
     // 非 const：解析过程中要把 field_pic 记进 timeline_.field_coded
-    bool ParseSliceHeader(const NalUnit& nal, SliceHead& out);
+    bool ParseSliceHeader(const NalView& nal, SliceHead& out);
     int64_t ComputePoc(const SliceHead& head);
     void PushFrame(const SliceHead& head, int64_t poc, bool has_time, double time_seconds, int64_t packet_index);
     // 汇总重排 / GOP / 重复 / 缺口。规则本体在 FrameOrderStats.cpp，与 HEVC 共用。

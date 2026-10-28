@@ -66,9 +66,17 @@ bool SkipTileAndSlicePartition(BitReader& reader, model::VvcPpsInfo& pps) {
     // 一条 ue(v) 顶到 40 亿时，这里的循环会先把 reader 拖到越界并置 HasError。
     constexpr int kMaxTiles = 4096;
 
+    // H.266 7.3.2.4（Table 15）的顺序，一个字段都不能多、不能少：
+    //   pps_log2_ctu_size_minus5 u(2)
+    //   pps_num_exp_tile_columns_minus1 ue(v)
+    //   pps_num_exp_tile_rows_minus1    ue(v)
+    //   pps_tile_column_width_minus1[i]  i = 0 .. num_exp_tile_columns_minus1
+    //   pps_tile_row_height_minus1[i]    i = 0 .. num_exp_tile_rows_minus1
+    // ❗ 旧实现在 log2_ctu_size 之后还读了两个 "exp_ctu_width/height"，那是
+    // **语法里不存在**的字段 —— 多读两个 ue(v)，此后整段（含 QP）整体错位。
+    // ❗ 宽/高数组的长度是 minus1 **+1**（VVC 没有 HEVC 那种"最后一列铺满剩余"
+    // 的隐含条目，每一列/行都要显式写），旧实现少读一个。
     pps.pps_log2_ctu_size_minus5 = static_cast<int>(reader.ReadBits(2));
-    pps.pps_exp_ctu_width_minus1 = static_cast<int>(reader.ReadUEBounded(kMaxTiles));
-    pps.pps_exp_ctu_height_minus1 = static_cast<int>(reader.ReadUEBounded(kMaxTiles));
     pps.pps_num_exp_tile_columns_minus1 = static_cast<int>(reader.ReadUEBounded(kMaxTiles));
     pps.pps_num_exp_tile_rows_minus1 = static_cast<int>(reader.ReadUEBounded(kMaxTiles));
     if (reader.HasError())
@@ -77,12 +85,11 @@ bool SkipTileAndSlicePartition(BitReader& reader, model::VvcPpsInfo& pps) {
     const int num_tile_cols = pps.pps_num_exp_tile_columns_minus1 + 1;
     const int num_tile_rows = pps.pps_num_exp_tile_rows_minus1 + 1;
 
-    // exp_tile_col_width_minus1[] / exp_tile_row_height_minus1[]（各 defects 1 个 ue(v)）
-    for (int i = 0; i < pps.pps_num_exp_tile_columns_minus1 && !reader.HasError(); ++i) {
-        reader.ReadUEBounded(kMaxTiles);
+    for (int i = 0; i <= pps.pps_num_exp_tile_columns_minus1 && !reader.HasError(); ++i) {
+        reader.ReadUEBounded(kMaxTiles); // pps_tile_column_width_minus1[i]
     }
-    for (int i = 0; i < pps.pps_num_exp_tile_rows_minus1 && !reader.HasError(); ++i) {
-        reader.ReadUEBounded(kMaxTiles);
+    for (int i = 0; i <= pps.pps_num_exp_tile_rows_minus1 && !reader.HasError(); ++i) {
+        reader.ReadUEBounded(kMaxTiles); // pps_tile_row_height_minus1[i]
     }
     if (reader.HasError())
         return false;
@@ -91,26 +98,37 @@ bool SkipTileAndSlicePartition(BitReader& reader, model::VvcPpsInfo& pps) {
     if (num_tiles > 1) {
         pps.pps_loop_filter_across_tiles_flag = reader.ReadBit();
         pps.pps_rect_slice_flag = reader.ReadBit();
-        if (pps.pps_rect_slice_flag) {
-            pps.pps_single_slice_per_subpic_flag = reader.ReadBit();
+    } else {
+        // NumTilesInPic == 1 时这两个标志不存在，而是**推导**为 0 / 1（7.4.3.4）
+        pps.pps_loop_filter_across_tiles_flag = false;
+        pps.pps_rect_slice_flag = true;
+    }
+    if (pps.pps_rect_slice_flag) {
+        pps.pps_single_slice_per_subpic_flag = reader.ReadBit();
+    } else {
+        pps.pps_single_slice_per_subpic_flag = true; // 非矩形 slice ⇒ 每子图一片
+    }
+    if (pps.pps_rect_slice_flag && !pps.pps_single_slice_per_subpic_flag) {
+        pps.pps_num_slices_in_pic_minus1 = static_cast<int>(reader.ReadUEBounded(kMaxTiles));
+        if (reader.HasError())
+            return false;
+        if (pps.pps_num_slices_in_pic_minus1 > 0) {
+            // 多 slice 的每条 slice 尺寸字段靠 NumSlicesInTile()/tile 几何逐步推导
+            // （pps_num_exp_slices_in_tile 还会展开成一维 CTU 高度数组，循环变量 i
+            // 也要按条数跳）。走错一步，后面 pps_loop_filter_across_slices_flag
+            // 到 QP 全部错位，而症状只是「QP 是个看着挺合理的数」。
+            // 本层**明确放弃**：宁可让 qp_fields_valid = false，也不产出假 QP。
+            pps.pps_num_slices_in_pic_minus1 = 0;
+            return false;
         }
-        if (pps.pps_rect_slice_flag && !pps.pps_single_slice_per_subpic_flag) {
-            pps.pps_num_slices_in_pic_minus1 = static_cast<int>(reader.ReadUEBounded(kMaxTiles));
-            if (reader.HasError())
-                return false;
-            if (pps.pps_num_slices_in_pic_minus1 > 0) {
-                reader.ReadBit(); // pps_tile_idx_delta_present_flag（本层不消费）
-                if (reader.HasError())
-                    return false;
-                // slice 尺寸叉分：按 tile 排布决定走"宽"还是"高"那一列
-                for (int i = 0; i < pps.pps_num_slices_in_pic_minus1 && !reader.HasError(); ++i) {
-                    reader.ReadUEBounded(kMaxTiles);
-                }
-                if (reader.HasError())
-                    return false;
-            }
-        }
+    }
+    // 这个标志的读取条件与 num_tiles 无关（旧实现把它关在 num_tiles > 1 里，
+    // 单 tile 的 PPS 会少读一位 → QP 全错）：
+    //   !rect_slice || single_slice_per_subpic || num_slices_in_pic_minus1 > 0
+    if (!pps.pps_rect_slice_flag || pps.pps_single_slice_per_subpic_flag || pps.pps_num_slices_in_pic_minus1 > 0) {
         pps.pps_loop_filter_across_slices_flag = reader.ReadBit();
+    } else {
+        pps.pps_loop_filter_across_slices_flag = false;
     }
     return !reader.HasError();
 }
@@ -120,18 +138,31 @@ bool ParseQpAndFilterSection(BitReader& reader, model::VvcPpsInfo& pps) {
     constexpr int kMaxChromaQpOffsetList = 64;
 
     pps.pps_cabac_init_present_flag = reader.ReadBit();
-    // ❗ rpl1_idx_present_flag 必须**先**读：它决定后面到底有几个
-    // pps_num_ref_idx_default_active_minus1[] 条目 —— 顺序读反，QP 会整体错位一位。
-    pps.pps_rpl1_idx_present_flag = reader.ReadBit();
+    // ❗ 顺序（H.266 7.3.2.4 / Table 15）：
+    //     pps_cabac_init_present_flag
+    //     for( i = 0; i < 2; i++ ) pps_num_ref_idx_default_active_minus1[i]   ← 无条件两条
+    //     pps_rpl1_idx_present_flag
+    //     pps_weighted_pred_flag / pps_weighted_bipred_flag /
+    //     pps_ref_wraparound_enabled_flag [ + pps_pic_width_minus_wraparound_offset ]
+    //     pps_pic_init_qp_minus26
+    // 旧实现把 rpl1_idx_present_flag 提到两个条目**之前**、又拿它决定第二条读不读，
+    // 一位之差就把 QP 段整体带偏 —— 按正确语法构造的 QP=30 输入会被判成"不可信"。
+    // 该 flag 只影响 slice header 里 L1 默认值的解释方式，不影响 PPS 自身字段个数。
     pps.pps_num_ref_idx_default_active_minus1[0] = static_cast<int>(reader.ReadUEBounded(kMaxNumRefPicLists));
-    if (pps.pps_rpl1_idx_present_flag) {
-        pps.pps_num_ref_idx_default_active_minus1[1] = static_cast<int>(reader.ReadUEBounded(kMaxNumRefPicLists));
-    }
+    pps.pps_num_ref_idx_default_active_minus1[1] = static_cast<int>(reader.ReadUEBounded(kMaxNumRefPicLists));
+    pps.pps_rpl1_idx_present_flag = reader.ReadBit();
     pps.pps_weighted_pred_flag = reader.ReadBit();
     pps.pps_weighted_bipred_flag = reader.ReadBit();
     pps.pps_ref_wraparound_enabled_flag = reader.ReadBit();
     if (reader.HasError())
         return false;
+    if (pps.pps_ref_wraparound_enabled_flag) {
+        // 这个 ue(v) 以前整段漏读：打开 wraparound 的 PPS，QP 一定错位。
+        pps.pps_pic_width_minus_wraparound_offset =
+            static_cast<int>(reader.ReadUEBounded(static_cast<uint32_t>(kMaxPictureSize)));
+        if (reader.HasError())
+            return false;
+    }
     pps.pps_pic_init_qp_minus26 = reader.ReadSE();
     pps.pps_cu_qp_delta_enabled_flag = reader.ReadBit();
     pps.pps_chroma_tool_offsets_present_flag = reader.ReadBit();
@@ -204,8 +235,6 @@ void ResetQpFields(model::VvcPpsInfo& pps) {
     // tile / slice 划分字段同样回滚：它们跟 QP 在同一段流程里解出，
     // 半解状态（例如 columns 读了、rows 没读）比全 0 更容易误导。
     pps.pps_log2_ctu_size_minus5 = 0;
-    pps.pps_exp_ctu_width_minus1 = 0;
-    pps.pps_exp_ctu_height_minus1 = 0;
     pps.pps_num_exp_tile_columns_minus1 = 0;
     pps.pps_num_exp_tile_rows_minus1 = 0;
     pps.pps_loop_filter_across_tiles_flag = false;
@@ -216,9 +245,11 @@ void ResetQpFields(model::VvcPpsInfo& pps) {
 
     pps.pps_num_ref_idx_default_active_minus1[0] = 0;
     pps.pps_num_ref_idx_default_active_minus1[1] = 0;
+    pps.pps_rpl1_idx_present_flag = false;
     pps.pps_weighted_pred_flag = false;
     pps.pps_weighted_bipred_flag = false;
     pps.pps_ref_wraparound_enabled_flag = false;
+    pps.pps_pic_width_minus_wraparound_offset = 0;
     pps.pps_pic_init_qp_minus26 = 0;
     pps.pps_cu_qp_delta_enabled_flag = false;
     pps.pps_chroma_tool_offsets_present_flag = false;

@@ -116,6 +116,13 @@ std::vector<uint8_t> H264BitstreamParser::GetRbsp(const videoeye::NalUnit& nal_u
     return videoeye::UnescapeRbsp(nal_unit.data.data(), nal_unit.data.size());
 }
 
+std::vector<uint8_t> H264BitstreamParser::GetRbsp(const uint8_t* payload, size_t size) {
+    if (payload == nullptr || size == 0) {
+        return {};
+    }
+    return videoeye::UnescapeRbsp(payload, size);
+}
+
 // --------------------------------------------------------------------------
 // scaling_list( sizeOfScalingList ) —— 7.3.2.1.1.1
 // 我们只需要跳过它，但仍要正确跟踪 nextScale，否则 delta_scale 的取舍会错位。
@@ -262,13 +269,17 @@ void H264BitstreamParser::ParseVuiParameters(videoeye::BitReader& reader, model:
 // seq_parameter_set_data() —— 7.3.2.1.1
 // --------------------------------------------------------------------------
 model::H264SpsInfo H264BitstreamParser::ParseFromNalUnit(const videoeye::NalUnit& nal_unit) {
+    return ParseFromNal(nal_unit.type, nal_unit.data.data(), nal_unit.data.size());
+}
+
+model::H264SpsInfo H264BitstreamParser::ParseFromNal(uint8_t nal_type, const uint8_t* payload, size_t size) {
     model::H264SpsInfo sps;
 
-    if (!IsSpsNalUnit(nal_unit)) {
+    if (nal_type != 7) { // SPS
         return sps;
     }
 
-    const std::vector<uint8_t> rbsp = GetRbsp(nal_unit);
+    const std::vector<uint8_t> rbsp = GetRbsp(payload, size);
     if (rbsp.empty()) {
         return sps;
     }
@@ -435,13 +446,17 @@ model::H264SpsInfo H264BitstreamParser::ParseFromNalUnit(const videoeye::NalUnit
 // pic_parameter_set_rbsp() —— 7.3.2.2
 // --------------------------------------------------------------------------
 model::H264PpsInfo H264BitstreamParser::ParsePpsFromNalUnit(const videoeye::NalUnit& nal_unit) {
+    return ParsePpsFromNal(nal_unit.type, nal_unit.data.data(), nal_unit.data.size());
+}
+
+model::H264PpsInfo H264BitstreamParser::ParsePpsFromNal(uint8_t nal_type, const uint8_t* payload, size_t size) {
     model::H264PpsInfo pps;
 
-    if (!IsPpsNalUnit(nal_unit)) {
+    if (nal_type != 8) { // PPS
         return pps;
     }
 
-    const std::vector<uint8_t> rbsp = GetRbsp(nal_unit);
+    const std::vector<uint8_t> rbsp = GetRbsp(payload, size);
     if (rbsp.empty()) {
         return pps;
     }

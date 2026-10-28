@@ -94,8 +94,15 @@ int QpRangeOffset(int bit_depth_luma_minus8) {
 // 撑出几十亿次迭代（同 BitReader.h 里写的教训）。
 
 // ref_pic_list_modification()（7.3.3.1）
+//
+// ❗ 每个 idc 后面都跟着**一个操作数**，漏读就是整条 slice header 从这里开始错位：
+//      idc == 0 / 1 → abs_diff_pic_num_minus1 ue(v)
+//      idc == 2     → long_term_pic_num       ue(v)
+//      idc == 3     → 结束，没有操作数
+// 少了这些 ue(v)，后面的 pred_weight_table / dec_ref_pic_marking / slice_qp_delta
+// 全部按错误偏移读，结果是"QP 看着合理但差 2"这种最难查的错。
 bool SkipRefPicListModification(BitReader& reader) {
-    // do { modification_of_pic_nums_idc ue(v) } while (idc != 3)
+    // do { modification_of_pic_nums_idc ue(v) ... } while (idc != 3)
     // 上界 66：num_ref_idx_lX_active_minus1 最大 31（32 条），加结束符 1 条。
     for (int guard = 0; guard < 66; ++guard) {
         const uint32_t idc = reader.ReadUEBounded(3);
@@ -103,6 +110,13 @@ bool SkipRefPicListModification(BitReader& reader) {
             return false;
         if (idc == 3)
             return true;
+        if (idc > 3)
+            return false; // 规范只有 0..3，其余是畸形码流
+        // 0/1/2 各带一个 ue(v) 操作数。这里不做上界夹断：它不驱动任何循环，
+        // 只是个数值，读成多大都不影响后续字段位置。
+        reader.ReadUE();
+        if (reader.HasError())
+            return false;
     }
     return false; // 没有 3 收尾，说明已经错位/畸形
 }
@@ -285,10 +299,10 @@ bool VideoEsInspector::Feed(const uint8_t* data, size_t size) {
     return true;
 }
 
-std::vector<NalUnit> VideoEsInspector::SplitNalUnits(const uint8_t* data, size_t size, NalSyntax syntax) {
-    std::vector<NalUnit> nals;
+void VideoEsInspector::ForEachNalUnit(const uint8_t* data, size_t size, NalSyntax syntax,
+                                      const std::function<void(const NalView&)>& fn) {
     if (data == nullptr || size == 0)
-        return nals;
+        return;
 
     // Annex B 起始码优先：fMP4 的包头里常常先把 SPS/PPS 以 Annex B 塞在前面，
     // 再跟长度前缀的 slice —— 这种混合包按起始码切才两头都不丢。
@@ -296,60 +310,66 @@ std::vector<NalUnit> VideoEsInspector::SplitNalUnits(const uint8_t* data, size_t
                                               (data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1));
 
     if (framing_ == NalFraming::AnnexB || (framing_ == NalFraming::Auto && has_start_code)) {
-        return ExtradataParser::ExtractAnnBNalUnits(data, size, syntax);
+        ExtradataParser::ForEachAnnexBNalUnit(data, size, syntax, fn);
+        return;
     }
 
     // 长度前缀：给了宽度就只信它；没给就按 4 → 2 → 1 依次验证（4 字节是绝对主流）
     if (prefix_bytes_ > 0) {
         bool truncated = false;
-        nals = ExtradataParser::ExtractLengthPrefixedNalUnits(data, size, syntax, prefix_bytes_, &truncated);
+        ExtradataParser::ForEachLengthPrefixedNalUnit(data, size, syntax, prefix_bytes_, &truncated, fn);
         if (truncated)
             result_.truncated = true;
-        return nals;
+        return;
     }
+
     const int candidates[3] = {4, 2, 1};
     for (int w : candidates) {
         if (!ExtradataParser::LooksLikeLengthPrefixed(data, size, w))
             continue;
         bool truncated = false;
-        nals = ExtradataParser::ExtractLengthPrefixedNalUnits(data, size, syntax, w, &truncated);
+        size_t visited = 0;
+        ExtradataParser::ForEachLengthPrefixedNalUnit(data, size, syntax, w, &truncated,
+                                                      [&fn, &visited](const NalView& view) {
+                                                          ++visited;
+                                                          fn(view);
+                                                      });
         if (truncated)
             result_.truncated = true;
-        if (!nals.empty())
-            return nals;
+        if (visited > 0)
+            return;
+        // visited == 0：这条宽度虽然"看起来像"，但一个完整 NAL 都没切出来
+        // （例如 HEVC 的 2 字节 header 比声明的长度还长），继续换下一个宽度。
     }
 
     // 两条路都不像：退回 Annex B。宁可少产出，也不要空转（旧行为）。
-    return ExtradataParser::ExtractAnnBNalUnits(data, size, syntax);
+    ExtradataParser::ForEachAnnexBNalUnit(data, size, syntax, fn);
 }
 
 void VideoEsInspector::InspectH264(const uint8_t* data, size_t size) {
-    const std::vector<NalUnit> nals = SplitNalUnits(data, size, NalSyntax::H264);
-    for (const NalUnit& nal : nals) {
+    ForEachNalUnit(data, size, NalSyntax::H264, [this](const NalView& nal) {
         if (IsH264SliceNal(nal.type)) {
             int slice_type = 0;
             int slice_qp = 0;
             bool first_of_picture = false;
-            if (ParseH264SliceHeader(nal.data.data(), nal.data.size(), nal.is_idr,
-                                     nal.nal_ref_idc < 0 ? 0 : nal.nal_ref_idc, slice_type, slice_qp,
-                                     first_of_picture)) {
+            if (ParseH264SliceHeader(nal.payload, nal.size, nal.is_idr, nal.nal_ref_idc < 0 ? 0 : nal.nal_ref_idc,
+                                     slice_type, slice_qp, first_of_picture)) {
                 slice_types_.push_back(slice_type);
                 slice_qps_.push_back(slice_qp);
                 if (first_of_picture)
                     ++first_slice_count_;
             }
         } else if (IsH264SeiNal(nal.type)) {
-            ParseSeiRbsp(nal.data.data(), nal.data.size(), /*is_hevc=*/false);
+            ParseSeiRbsp(nal.payload, nal.size, /*is_hevc=*/false);
         }
-    }
+    });
 }
 
 void VideoEsInspector::InspectHevc(const uint8_t* data, size_t size) {
-    const std::vector<NalUnit> nals = SplitNalUnits(data, size, NalSyntax::Hevc);
-    for (const NalUnit& nal : nals) {
+    ForEachNalUnit(data, size, NalSyntax::Hevc, [this](const NalView& nal) {
         if (IsHevcSeiNal(nal.type)) {
-            ParseSeiRbsp(nal.data.data(), nal.data.size(), /*is_hevc=*/true);
-        } else if (nal.type == kHevcNalUnspecified62 && !nal.data.empty() && nal.data[0] == kDvRpuPrefix) {
+            ParseSeiRbsp(nal.payload, nal.size, /*is_hevc=*/true);
+        } else if (nal.type == kHevcNalUnspecified62 && nal.size > 0 && nal.payload[0] == kDvRpuPrefix) {
             result_.sei.has_dolby_vision_rpu = true;
             ++result_.sei.dolby_vision_rpu_count;
         } else if (IsHevcSliceNal(nal.type)) {
@@ -357,7 +377,7 @@ void VideoEsInspector::InspectHevc(const uint8_t* data, size_t size) {
             // 的前置条件也不具备（slice_type 在 dependent_slice 判定之后），所以
             // 干脆不碰 —— 宁可缺一块，也不给可能对不上号的分布表。
         }
-    }
+    });
 }
 
 void VideoEsInspector::InspectAv1(const uint8_t* data, size_t size) {

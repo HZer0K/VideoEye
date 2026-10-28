@@ -12,14 +12,17 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/analysis/detail/SeqFileReader.h"
 #include "core/analysis/diagnostics/TimelineAnalyzer.h"
 #include "core/domain/model/AnalysisResult.h"
+#include "core/media/codec/ExtradataParser.h"
 #include "core/media/container/IsobmffParser.h"
 #include "core/media/probe/FileProbe.h"
 #include "core/media/streaming/ManifestReader.h"
@@ -214,4 +217,113 @@ TEST(ParserReviewStreams, AttachedPicturesAreExcludedAndPrimarySelectionIsHonore
     ASSERT_TRUE(result.FirstVideoStream() != nullptr);
     EXPECT_EQ(result.FirstVideoStream()->index, 2);
     EXPECT_EQ(result.VideoStreamCount(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// 零拷贝 NAL 遍历：视图必须与 Extract* 逐项等价
+//
+// ForEachAnnexBNalUnit / ForEachLengthPrefixedNalUnit 是逐包热路径的新入口
+// （EP 巡检不再给每个 NAL 复制一份载荷）。这里用同一个输入跑两条路，逐项比对
+// type / nal_ref_idc / payload 内容与长度 —— 任何"切分规则悄悄分叉"都会红。
+// ---------------------------------------------------------------------------
+namespace {
+
+// 拼一条 AnnexB 流：每个 NAL 用 4 字节起始码分隔
+std::vector<uint8_t> AnnexBStream(const std::vector<std::pair<uint8_t, std::vector<uint8_t>>>& nals) {
+    std::vector<uint8_t> out;
+    for (const auto& nal : nals) {
+        out.insert(out.end(), {0x00, 0x00, 0x00, 0x01});
+        out.push_back(nal.first);
+        out.insert(out.end(), nal.second.begin(), nal.second.end());
+    }
+    return out;
+}
+
+// 拼一条 4 字节长度前缀流
+std::vector<uint8_t> LengthPrefixedStream(const std::vector<std::pair<uint8_t, std::vector<uint8_t>>>& nals) {
+    std::vector<uint8_t> out;
+    for (const auto& nal : nals) {
+        const uint32_t len = static_cast<uint32_t>(nal.second.size() + 1);
+        out.push_back(static_cast<uint8_t>((len >> 24) & 0xFF));
+        out.push_back(static_cast<uint8_t>((len >> 16) & 0xFF));
+        out.push_back(static_cast<uint8_t>((len >> 8) & 0xFF));
+        out.push_back(static_cast<uint8_t>(len & 0xFF));
+        out.push_back(nal.first);
+        out.insert(out.end(), nal.second.begin(), nal.second.end());
+    }
+    return out;
+}
+
+void ExpectViewsMatchUnits(const std::vector<NalUnit>& units, const std::vector<NalView>& views,
+                           const std::vector<uint8_t>& buffer) {
+    ASSERT_EQ(units.size(), views.size());
+    for (size_t i = 0; i < units.size(); ++i) {
+        EXPECT_EQ(views[i].type, units[i].type) << "index " << i;
+        EXPECT_EQ(views[i].nal_ref_idc, units[i].nal_ref_idc) << "index " << i;
+        EXPECT_EQ(views[i].is_idr, units[i].is_idr) << "index " << i;
+        ASSERT_EQ(views[i].size, units[i].data.size()) << "index " << i;
+        EXPECT_EQ(0, std::memcmp(views[i].payload, units[i].data.data(), views[i].size)) << "index " << i;
+        // 零拷贝的证据：payload 必须落在输入缓冲内部
+        ASSERT_GE(views[i].payload, buffer.data()) << "index " << i;
+        ASSERT_LE(views[i].payload + views[i].size, buffer.data() + buffer.size()) << "index " << i;
+    }
+}
+
+} // namespace
+
+TEST(ParserReviewExtradata, AnnexBNalViewsMatchExtractedUnits) {
+    const auto buffer = AnnexBStream(
+        {{0x67, {0x42, 0x00, 0x1F, 0xAA}}, {0x68, {0xCE, 0x3C, 0x80}}, {0x65, {0x88, 0x84, 0x00, 0x33, 0xFF}}});
+
+    const std::vector<NalUnit> units =
+        ExtradataParser::ExtractAnnBNalUnits(buffer.data(), buffer.size(), NalSyntax::H264);
+    std::vector<NalView> views;
+    ExtradataParser::ForEachAnnexBNalUnit(buffer.data(), buffer.size(), NalSyntax::H264,
+                                          [&views](const NalView& view) { views.push_back(view); });
+
+    ExpectViewsMatchUnits(units, views, buffer);
+    // 顺带钉住 header 语义：SPS=7 / PPS=8 / IDR=5
+    ASSERT_EQ(views.size(), 3u);
+    EXPECT_EQ(views[0].type, 7);
+    EXPECT_EQ(views[2].type, 5);
+    EXPECT_TRUE(views[2].is_idr);
+    EXPECT_EQ(views[2].nal_ref_idc, 3);
+}
+
+TEST(ParserReviewExtradata, LengthPrefixedNalViewsMatchExtractedUnits) {
+    const auto buffer =
+        LengthPrefixedStream({{0x67, {0x42, 0x00, 0x1F}}, {0x68, {0xCE, 0x3C, 0x80}}, {0x65, {0x88, 0x84, 0x00}}});
+
+    const std::vector<NalUnit> units =
+        ExtradataParser::ExtractLengthPrefixedNalUnits(buffer.data(), buffer.size(), NalSyntax::H264, 4, nullptr);
+    std::vector<NalView> views;
+    bool truncated = true;
+    ExtradataParser::ForEachLengthPrefixedNalUnit(buffer.data(), buffer.size(), NalSyntax::H264, 4, &truncated,
+                                                  [&views](const NalView& view) { views.push_back(view); });
+
+    ExpectViewsMatchUnits(units, views, buffer);
+    EXPECT_FALSE(truncated);
+}
+
+// SeqFileReader::Size() 改成打开时缓存后，这个不变量必须继续成立：
+// 读位置怎么变、读到 EOF 再 seek 回来，Size() 都还是文件真实大小。
+TEST_F(UnicodeFiles, SequentialReaderCachedSizeSurvivesSeeksAndEof) {
+    const std::string contents = "0123456789";
+    const auto path = Write("size.bin", contents);
+    SeqFileReader reader(path.u8string());
+    ASSERT_TRUE(reader.IsOpen());
+    EXPECT_EQ(reader.Size(), static_cast<int64_t>(contents.size()));
+
+    EXPECT_EQ(reader.Read(4), "0123");
+    EXPECT_EQ(reader.Pos(), 4);
+    EXPECT_EQ(reader.Size(), static_cast<int64_t>(contents.size())); // 读位置不影响缓存大小
+
+    reader.Seek(reader.Size()); // 停到 EOF
+    EXPECT_TRUE(reader.AtEnd());
+    EXPECT_EQ(reader.Pos(), static_cast<int64_t>(contents.size()));
+
+    reader.Seek(2);
+    EXPECT_FALSE(reader.AtEnd());
+    EXPECT_EQ(reader.Read(100), "23456789"); // 短读返回实际长度
+    EXPECT_EQ(reader.Size(), static_cast<int64_t>(contents.size()));
 }

@@ -137,6 +137,13 @@ public:
 
     // 清空解码器内部缓冲 (定位后丢弃旧参考帧, 避免过期音频输出)
     void Flush();
+
+    // 冲刷重采样器里残留的样本（EOF 收尾用）。
+    //
+    // swr 内部有滤波器延迟：输入的最后一帧转换完，还有几十个样本压在 swr 里，
+    // 不冲刷就会在结尾凭空缺一小段。传空输入调 swr_convert 是官方做法，
+    // 返回写出的字节数（0 = 已空）。
+    int DrainResampler(uint8_t* output_buffer, int buffer_size);
     int64_t GetLastFramePts() const {
         return last_frame_pts_;
     }
@@ -162,9 +169,15 @@ private:
     // 拿旧布局去解释新帧会静默重采样错（5.1 → 7.1 那种完全不报错）。
     bool RebuildSwr(const AVChannelLayout& in_layout, AVSampleFormat in_fmt, int in_rate);
     bool SwrMatches(const AVChannelLayout& in_layout, AVSampleFormat in_fmt, int in_rate) const;
+    // 把一帧解出来的 PCM 转成输出（重采样 + 交错 S16）。src 的生命周期由调用方管理。
+    bool ConvertFrameToPcm(AVFrame* src, uint8_t* output_buffer, int buffer_size, int& output_size);
+    // 把解码器内部已解码、但调用方还没取走的帧收进 pending_frames_（腾出送包空间）
+    void StashBufferedFrames();
 
     AVCodecContext* codec_ctx_ = nullptr;
     AVFrame* frame_ = nullptr;
+    // SendPacket 撞上 AVERROR(EAGAIN) 时暂存下来的帧，由 ReceiveFrame 先入先出取走。
+    std::deque<AVFrame*> pending_frames_;
     SwrContext* swr_ctx_ = nullptr;
     int sample_rate_ = 0;
     int channels_ = 0;

@@ -273,6 +273,159 @@ void PlaybackSession::DecodeThread() {
             return true;
         };
 
+        // ---- 单帧交付（主循环与 EOF 排空共用）----
+        //
+        // 尾帧排空必须走**同一条**渲染/上报路径: 另写一份排空逻辑等于给
+        // "最后一帧"维护第二套 sws / 分析 / 音频入队行为，两边迟早不一致。
+        // pkt 只作为分析侧回调的上下文（排空阶段没有"当前包"，可传 nullptr）。
+        //
+        // out_size 提到 lambda 外面: 解码器输出与 swr 冲刷都写它，交付逻辑只认它。
+        int out_size = 0;
+        auto deliver_video_frame = [&](const AVPacket* pkt) {
+            double frame_ts = frame_data.timestamp;
+            if (format_ctx_ && video_stream_index_ >= 0) {
+                AVStream* vs = format_ctx_->streams[video_stream_index_];
+                if (vs && vs->time_base.den != 0 && frame_data.pts != AV_NOPTS_VALUE) {
+                    frame_ts = frame_data.pts * av_q2d(vs->time_base);
+                    frame_data.timestamp = frame_ts;
+                }
+            }
+            // 精确帧定位: 从关键帧向前逐帧解码到目标时间戳。
+            // 追赶阶段放行显示(画面快速前进到目标, 不再冻结), 但跳过分析开销
+            // (由 catching_up 告知分析侧); 越过目标帧后清除标志。
+            if (drop_until_sec_.load() >= 0.0 && frame_ts + 0.001 >= drop_until_sec_.load()) {
+                drop_until_sec_.store(-1.0);
+            }
+
+            if (frame_paced_video) {
+                playback_clock.PaceTo(frame_ts);
+                EmitPositionIfNeeded(frame_ts, last_emitted_position_ms);
+            }
+            last_video_sync_ts_ = frame_ts;
+            if (std::isfinite(last_audio_sync_ts_) && hooks_.on_sync_sample) {
+                hooks_.on_sync_sample(last_audio_sync_ts_, last_video_sync_ts_, false);
+            }
+
+            // 画面输出只有一条路径: sws_scale 转 BGRA -> QImage -> FrameReady。
+            // 播放区隐藏时整段跳过: 解码、实时分析、音频均不受影响。
+            if (!rendering_suppressed_.load(std::memory_order_relaxed)) {
+                // 与 OnVideoFrame 的判空保持一致: 格式合法但像素平面为空 /
+                // 宽高为 0 的帧(畸形帧或异常像素格式)不能交给 sws_scale,
+                // 否则会拿空 src_data[0] 段错误, 且不在 try/catch 内 -> 整进程崩。
+                if (frame_data.format >= 0 && frame_data.data[0] && frame_data.width > 0 && frame_data.height > 0) {
+                    if (sws_src_w != frame_data.width || sws_src_h != frame_data.height ||
+                        sws_src_fmt != frame_data.format) {
+                        sws_src_w = frame_data.width;
+                        sws_src_h = frame_data.height;
+                        sws_src_fmt = frame_data.format;
+                    }
+                    sws_ctx = sws_getCachedContext(
+                        sws_ctx, frame_data.width, frame_data.height, static_cast<AVPixelFormat>(frame_data.format),
+                        frame_data.width, frame_data.height, AV_PIX_FMT_BGRA, SWS_BILINEAR, nullptr, nullptr, nullptr);
+                }
+                if (sws_ctx) {
+                    QImage qimage(frame_data.width, frame_data.height, QImage::Format_ARGB32);
+                    if (!qimage.isNull()) {
+                        std::uint8_t* dst_slices[4] = {qimage.bits(), nullptr, nullptr, nullptr};
+                        int dst_linesize[4] = {static_cast<int>(qimage.bytesPerLine()), 0, 0, 0};
+                        sws_scale(sws_ctx, frame_data.data, frame_data.linesize, 0, frame_data.height, dst_slices,
+                                  dst_linesize);
+                        emit FrameReady(qimage);
+                        if (++decoded_frames % 120 == 0) {
+                            LOG_INFO("DecodeThread heartbeat: frames=" + std::to_string(decoded_frames) +
+                                     " pos_ms=" + std::to_string(current_position_ms_.load()));
+                        }
+                    }
+                }
+            }
+
+            if (hooks_.on_video_frame) {
+                VideoFrameContext ctx;
+                ctx.frame = &frame_data;
+                ctx.raw_frame = video_decoder_->GetLastRawFrame();
+                // 排空阶段没有"当前包": 传 nullptr 而不是把上一包的残壳递下去
+                ctx.packet = pkt;
+                ctx.format_ctx = format_ctx_;
+                ctx.decoder = video_decoder_.get();
+                ctx.video_stream_index = video_stream_index_;
+                ctx.timestamp_seconds = frame_ts;
+                ctx.catching_up = drop_until_sec_.load() >= 0.0;
+                hooks_.on_video_frame(ctx);
+            }
+        };
+
+        // 音频单帧交付：out_size / audio_buffer 由调用方填好（解码器输出或 swr 冲刷）。
+        auto deliver_audio_frame = [&](const AVPacket* pkt, double packet_ts_sec) {
+            // 精确帧定位追赶阶段 / 拖动进度条期间: 丢弃音频输出与分析事件, 避免过期声音。
+            // 越过目标时间戳后必须像视频路径一样把标志清掉: 原来只有视频分支清,
+            // 纯音频流(永远等不到视频帧来清)会一直停在丢弃状态 —— 音频永久静音,
+            // 剩下的视频帧也因 catching_up 恒真而关掉全部视频分析。
+            if (drop_until_sec_.load() >= 0.0 && packet_ts_sec + 0.001 >= drop_until_sec_.load()) {
+                drop_until_sec_.store(-1.0);
+            }
+
+            if (drop_until_sec_.load() >= 0.0 || drag_seeking_.load())
+                return;
+
+            const std::int64_t frame_pts = static_cast<std::int64_t>(audio_decoder_->GetLastFramePts());
+            double ts = current_position_ms_.load() / 1000.0;
+            if (format_ctx_ && audio_stream_index_ >= 0) {
+                AVStream* as = format_ctx_->streams[audio_stream_index_];
+                if (as && as->time_base.den != 0 && frame_pts != AV_NOPTS_VALUE) {
+                    ts = frame_pts * av_q2d(as->time_base);
+                } else if (std::isfinite(packet_ts_sec)) {
+                    ts = packet_ts_sec;
+                }
+            } else if (std::isfinite(packet_ts_sec)) {
+                ts = packet_ts_sec;
+            }
+
+            last_audio_sync_ts_ = ts;
+            if (std::isfinite(last_video_sync_ts_) && hooks_.on_sync_sample) {
+                hooks_.on_sync_sample(last_audio_sync_ts_, last_video_sync_ts_, true);
+            }
+
+            // 推送 PCM 到环形缓冲，由音频后端线程 pull 播放
+            bool enqueued = false;
+            double level = 0.0;
+            if (out_size >= static_cast<int>(sizeof(std::int16_t))) {
+                if (audio_output_) {
+                    audio_output_->Enqueue(audio_buffer.data(), out_size);
+                }
+                enqueued = true;
+
+                const std::int16_t* samples = reinterpret_cast<const std::int16_t*>(audio_buffer.data());
+                const int sample_count = out_size / static_cast<int>(sizeof(std::int16_t));
+                long double sumsq = 0.0;
+                for (int i = 0; i < sample_count; ++i) {
+                    const long double s = static_cast<long double>(samples[i]);
+                    sumsq += s * s;
+                }
+                if (sample_count > 0) {
+                    level = std::sqrt(static_cast<double>(sumsq / sample_count)) / 32768.0;
+                    level = std::clamp(level, 0.0, 1.0);
+                }
+            }
+
+            if (hooks_.on_audio_frame) {
+                AudioFrameContext ctx;
+                ctx.packet = pkt;
+                ctx.format_ctx = format_ctx_;
+                ctx.decoder = audio_decoder_.get();
+                ctx.samples = reinterpret_cast<const std::int16_t*>(audio_buffer.data());
+                ctx.sample_count = out_size / static_cast<int>(sizeof(std::int16_t));
+                ctx.sample_rate = audio_decoder_->GetLastFrameSampleRate();
+                ctx.channels = std::max(1, audio_decoder_->GetLastFrameChannels());
+                ctx.byte_count = out_size;
+                ctx.frame_pts = frame_pts;
+                ctx.timestamp_seconds = ts;
+                ctx.level = level;
+                ctx.audio_stream_index = audio_stream_index_;
+                ctx.enqueued = enqueued;
+                hooks_.on_audio_frame(ctx);
+            }
+        };
+
         while (!should_stop_.load()) {
             if (process_pending_seek()) {
                 continue;
@@ -292,8 +445,51 @@ void PlaybackSession::DecodeThread() {
 
             int ret = av_read_frame(format_ctx_, packet);
             if (ret < 0) {
-                LOG_INFO("DecodeThread: av_read_frame EOF -> PlaybackFinished");
-                // 播到结尾: 通知分析侧闭合还开着的缺陷段, 否则最后一条要等下次播放才出现
+                // ❗ 三种"读不出包"必须分开，旧实现一律当"播到结尾"：
+                //   * 用户停止 / avio 中断（AVERROR_EXIT）→ 静默退出，不算播完
+                //   * 真 EOF → 先把解码器里压着的帧收干净，再宣布结束
+                //   * 其它读取错误（磁盘掉了 / 解码器断了 / 文件被截断）→ 必须报错
+                if (should_stop_.load() || ret == AVERROR_EXIT) {
+                    LOG_INFO("DecodeThread: read aborted (cancel) -> exit");
+                    break;
+                }
+                if (ret != AVERROR_EOF) {
+                    LOG_ERROR("DecodeThread: av_read_frame failed, err=" + std::to_string(ret));
+                    emit Error(QString("读取媒体数据失败（错误码 %1），播放已停止").arg(ret));
+                    break;
+                }
+
+                LOG_INFO("DecodeThread: av_read_frame EOF -> draining decoders");
+                // ---- EOF 收尾：送空包把解码器排空 ----
+                // 不排空就发 PlaybackFinished 会丢尾部：带重排序的视频（B 帧）和
+                // 有解码延迟的音频，最后几帧还压在解码器内部缓冲里，永远出不来。
+                // avcodec_send_packet(ctx, nullptr) 是 FFmpeg 规定的"进入排空模式"，
+                // 之后 receive 会一直给到 AVERROR_EOF。
+                if (video_decoder_) {
+                    video_decoder_->SendPacket(nullptr);
+                    while (!should_stop_.load() && video_decoder_->ReceiveFrame(frame_data)) {
+                        deliver_video_frame(nullptr);
+                    }
+                }
+                if (audio_decoder_) {
+                    audio_decoder_->SendPacket(nullptr);
+                    while (!should_stop_.load() &&
+                           audio_decoder_->ReceiveFrame(audio_buffer.data(), static_cast<int>(audio_buffer.size()),
+                                                        out_size)) {
+                        deliver_audio_frame(nullptr, current_position_ms_.load() / 1000.0);
+                    }
+                    // 重采样器里还压着一小段（重采样滤波器的群延迟）。不收的话
+                    // 结尾会凭空缺几毫秒 —— 表现为"最后一点突然截断"。
+                    for (int guard = 0; guard < 64 && !should_stop_.load(); ++guard) {
+                        const int drained =
+                            audio_decoder_->DrainResampler(audio_buffer.data(), static_cast<int>(audio_buffer.size()));
+                        if (drained <= 0)
+                            break;
+                        out_size = drained;
+                        deliver_audio_frame(nullptr, current_position_ms_.load() / 1000.0);
+                    }
+                }
+                // 通知分析侧闭合还开着的缺陷段, 否则最后一条要等下次播放才出现
                 if (hooks_.on_end_of_stream)
                     hooks_.on_end_of_stream();
                 emit PlaybackFinished();
@@ -321,77 +517,7 @@ void PlaybackSession::DecodeThread() {
             if (packet->stream_index == video_stream_index_ && video_decoder_) {
                 if (video_decoder_->SendPacket(packet)) {
                     while (!should_stop_.load() && video_decoder_->ReceiveFrame(frame_data)) {
-                        double frame_ts = frame_data.timestamp;
-                        if (format_ctx_ && video_stream_index_ >= 0) {
-                            AVStream* vs = format_ctx_->streams[video_stream_index_];
-                            if (vs && vs->time_base.den != 0 && frame_data.pts != AV_NOPTS_VALUE) {
-                                frame_ts = frame_data.pts * av_q2d(vs->time_base);
-                                frame_data.timestamp = frame_ts;
-                            }
-                        }
-                        // 精确帧定位: 从关键帧向前逐帧解码到目标时间戳。
-                        // 追赶阶段放行显示(画面快速前进到目标, 不再冻结), 但跳过分析开销
-                        // (由 catching_up 告知分析侧); 越过目标帧后清除标志。
-                        if (drop_until_sec_.load() >= 0.0 && frame_ts + 0.001 >= drop_until_sec_.load()) {
-                            drop_until_sec_.store(-1.0);
-                        }
-
-                        if (frame_paced_video) {
-                            playback_clock.PaceTo(frame_ts);
-                            EmitPositionIfNeeded(frame_ts, last_emitted_position_ms);
-                        }
-                        last_video_sync_ts_ = frame_ts;
-                        if (std::isfinite(last_audio_sync_ts_) && hooks_.on_sync_sample) {
-                            hooks_.on_sync_sample(last_audio_sync_ts_, last_video_sync_ts_, false);
-                        }
-
-                        // 画面输出只有一条路径: sws_scale 转 BGRA -> QImage -> FrameReady。
-                        // 播放区隐藏时整段跳过: 解码、实时分析、音频均不受影响。
-                        if (!rendering_suppressed_.load(std::memory_order_relaxed)) {
-                            // 与 OnVideoFrame 的判空保持一致: 格式合法但像素平面为空 /
-                            // 宽高为 0 的帧(畸形帧或异常像素格式)不能交给 sws_scale,
-                            // 否则会拿空 src_data[0] 段错误, 且不在 try/catch 内 -> 整进程崩。
-                            if (frame_data.format >= 0 && frame_data.data[0] && frame_data.width > 0 &&
-                                frame_data.height > 0) {
-                                if (sws_src_w != frame_data.width || sws_src_h != frame_data.height ||
-                                    sws_src_fmt != frame_data.format) {
-                                    sws_src_w = frame_data.width;
-                                    sws_src_h = frame_data.height;
-                                    sws_src_fmt = frame_data.format;
-                                }
-                                sws_ctx = sws_getCachedContext(sws_ctx, frame_data.width, frame_data.height,
-                                                               static_cast<AVPixelFormat>(frame_data.format),
-                                                               frame_data.width, frame_data.height, AV_PIX_FMT_BGRA,
-                                                               SWS_BILINEAR, nullptr, nullptr, nullptr);
-                            }
-                            if (sws_ctx) {
-                                QImage qimage(frame_data.width, frame_data.height, QImage::Format_ARGB32);
-                                if (!qimage.isNull()) {
-                                    std::uint8_t* dst_slices[4] = {qimage.bits(), nullptr, nullptr, nullptr};
-                                    int dst_linesize[4] = {static_cast<int>(qimage.bytesPerLine()), 0, 0, 0};
-                                    sws_scale(sws_ctx, frame_data.data, frame_data.linesize, 0, frame_data.height,
-                                              dst_slices, dst_linesize);
-                                    emit FrameReady(qimage);
-                                    if (++decoded_frames % 120 == 0) {
-                                        LOG_INFO("DecodeThread heartbeat: frames=" + std::to_string(decoded_frames) +
-                                                 " pos_ms=" + std::to_string(current_position_ms_.load()));
-                                    }
-                                }
-                            }
-                        }
-
-                        if (hooks_.on_video_frame) {
-                            VideoFrameContext ctx;
-                            ctx.frame = &frame_data;
-                            ctx.raw_frame = video_decoder_->GetLastRawFrame();
-                            ctx.packet = packet;
-                            ctx.format_ctx = format_ctx_;
-                            ctx.decoder = video_decoder_.get();
-                            ctx.video_stream_index = video_stream_index_;
-                            ctx.timestamp_seconds = frame_ts;
-                            ctx.catching_up = drop_until_sec_.load() >= 0.0;
-                            hooks_.on_video_frame(ctx);
-                        }
+                        deliver_video_frame(packet);
                     }
                 }
             }
@@ -399,77 +525,9 @@ void PlaybackSession::DecodeThread() {
             // --- 音频解码 ---
             if (packet->stream_index == audio_stream_index_ && audio_decoder_) {
                 if (audio_decoder_->SendPacket(packet)) {
-                    int out_size = 0;
                     while (audio_decoder_->ReceiveFrame(audio_buffer.data(), static_cast<int>(audio_buffer.size()),
                                                         out_size)) {
-                        // 精确帧定位追赶阶段 / 拖动进度条期间: 丢弃音频输出与分析事件, 避免过期声音。
-                        // 越过目标时间戳后必须像视频路径一样把标志清掉: 原来只有视频分支清,
-                        // 纯音频流(永远等不到视频帧来清)会一直停在丢弃状态 —— 音频永久静音,
-                        // 剩下的视频帧也因 catching_up 恒真而关掉全部视频分析。
-                        if (drop_until_sec_.load() >= 0.0 && packet_ts_sec + 0.001 >= drop_until_sec_.load()) {
-                            drop_until_sec_.store(-1.0);
-                        }
-
-                        if (drop_until_sec_.load() >= 0.0 || drag_seeking_.load())
-                            continue;
-
-                        const std::int64_t frame_pts = static_cast<std::int64_t>(audio_decoder_->GetLastFramePts());
-                        double ts = current_position_ms_.load() / 1000.0;
-                        if (format_ctx_ && audio_stream_index_ >= 0) {
-                            AVStream* as = format_ctx_->streams[audio_stream_index_];
-                            if (as && as->time_base.den != 0 && frame_pts != AV_NOPTS_VALUE) {
-                                ts = frame_pts * av_q2d(as->time_base);
-                            } else if (std::isfinite(packet_ts_sec)) {
-                                ts = packet_ts_sec;
-                            }
-                        } else if (std::isfinite(packet_ts_sec)) {
-                            ts = packet_ts_sec;
-                        }
-
-                        last_audio_sync_ts_ = ts;
-                        if (std::isfinite(last_video_sync_ts_) && hooks_.on_sync_sample) {
-                            hooks_.on_sync_sample(last_audio_sync_ts_, last_video_sync_ts_, true);
-                        }
-
-                        // 推送 PCM 到环形缓冲，由音频后端线程 pull 播放
-                        bool enqueued = false;
-                        double level = 0.0;
-                        if (out_size >= static_cast<int>(sizeof(std::int16_t))) {
-                            if (audio_output_) {
-                                audio_output_->Enqueue(audio_buffer.data(), out_size);
-                            }
-                            enqueued = true;
-
-                            const std::int16_t* samples = reinterpret_cast<const std::int16_t*>(audio_buffer.data());
-                            const int sample_count = out_size / static_cast<int>(sizeof(std::int16_t));
-                            long double sumsq = 0.0;
-                            for (int i = 0; i < sample_count; ++i) {
-                                const long double s = static_cast<long double>(samples[i]);
-                                sumsq += s * s;
-                            }
-                            if (sample_count > 0) {
-                                level = std::sqrt(static_cast<double>(sumsq / sample_count)) / 32768.0;
-                                level = std::clamp(level, 0.0, 1.0);
-                            }
-                        }
-
-                        if (hooks_.on_audio_frame) {
-                            AudioFrameContext ctx;
-                            ctx.packet = packet;
-                            ctx.format_ctx = format_ctx_;
-                            ctx.decoder = audio_decoder_.get();
-                            ctx.samples = reinterpret_cast<const std::int16_t*>(audio_buffer.data());
-                            ctx.sample_count = out_size / static_cast<int>(sizeof(std::int16_t));
-                            ctx.sample_rate = audio_decoder_->GetLastFrameSampleRate();
-                            ctx.channels = std::max(1, audio_decoder_->GetLastFrameChannels());
-                            ctx.byte_count = out_size;
-                            ctx.frame_pts = frame_pts;
-                            ctx.timestamp_seconds = ts;
-                            ctx.level = level;
-                            ctx.audio_stream_index = audio_stream_index_;
-                            ctx.enqueued = enqueued;
-                            hooks_.on_audio_frame(ctx);
-                        }
+                        deliver_audio_frame(packet, packet_ts_sec);
                     }
                 }
             }
