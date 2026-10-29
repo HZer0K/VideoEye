@@ -289,13 +289,26 @@ void MainWindow::SetupContentArea() {
     // 原来的"媒体信息"页是一段不可换行的纯文本，用户打开文件后仍不知道该看哪个
     // 分析页；现在首页把"该看什么"收在一屏里，完整媒体信息整段保留在下方。
     // 页面不持有 AnalysisPanel / MediaPlayer，数据由本窗口喂入、跳转意图信号外抛。
-    overview_page_ = new OverviewPage(content_stack_);
-    overview_page_->setProperty("pageTitle", tr("总览"));
-    overview_page_->setProperty("pageId", QStringLiteral("overview"));
-    overview_page_->setProperty("pageGroup", QStringLiteral("overview"));
-    overview_page_->setProperty("pageOrder", 0);
-    overview_page_->setProperty("pageScope", QString());
-    content_stack_->addWidget(overview_page_);
+    //
+    // 套一层 QScrollArea（与下面的分析页同款）：本页各区的自然高度加起来可能超过
+    // 矮窗口的可视区，页面保持自然高度、视口不够高就出滚动条，比让 QVBoxLayout
+    // 把各分组压到最小尺寸以下更稳。
+    // 注意：曾把「分析状态」标题与内容叠字误判成这种压缩，真因是那个分组框压根
+    // 没被 addWidget 进布局（见 OverviewPage::BuildUi）——滚动层不能替代那条。
+    // 导航元数据（pageId 等）要写在 scroll 包装层上：侧栏收集/徽标都按
+    // stack->widget(i) 的动态属性读（CollectPageNavigation / ApplySidebarBadges）。
+    overview_page_ = new OverviewPage();
+    QScrollArea* overview_scroll = new QScrollArea(content_stack_);
+    overview_scroll->setObjectName("OverviewScroll");
+    overview_scroll->setWidgetResizable(true);
+    overview_scroll->setFrameShape(QFrame::NoFrame);
+    overview_scroll->setWidget(overview_page_);
+    overview_scroll->setProperty("pageTitle", tr("总览"));
+    overview_scroll->setProperty("pageId", QStringLiteral("overview"));
+    overview_scroll->setProperty("pageGroup", QStringLiteral("overview"));
+    overview_scroll->setProperty("pageOrder", 0);
+    overview_scroll->setProperty("pageScope", QString());
+    content_stack_->addWidget(overview_scroll);
 
     // Page 1-N: 分析面板各页
     // AnalysisPanel 会创建自己的页面并添加到 content_stack_

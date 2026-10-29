@@ -71,7 +71,7 @@ private:
     // 构造打开会话控制器（分派 / 换媒体复位 / 异步收尾）。须在 SetupUI 之后:
     // 它要接 player_panel_ / overview_page_ / analysis_panel_ 三个此刻才存在的对象。
     void SetupOpenSession();
-    // 按 pageId 跳转到内容栈页（首页「跳转到分析页」用）：切 stack 并同步侧栏选中
+    // 按 pageId 跳转到内容栈页（首页异常表点击跳「质量诊断」用）：切 stack 并同步侧栏选中
     void ShowPageById(const QString& page_id);
     // 拉取 AnalysisPanel 的诊断状态快照，刷新首页「分析状态」区
     void RefreshOverviewAnalysis();

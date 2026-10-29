@@ -62,7 +62,7 @@ using SidebarBadgeLookup = std::function<SidebarBadge(const QString& page_id)>;
 // 只在值真的变了时才写回并 update()（这个列表重绘不算便宜，而扫描期每帧都可能调）。
 void ApplySidebarBadges(QListWidget* sidebar, QStackedWidget* stack, const SidebarBadgeLookup& lookup);
 
-// 按 stack 下标选中对应侧栏行（首页「跳转到分析页」用）。
+// 按 stack 下标选中对应侧栏行（首页异常表点击跳转等入口用）。
 // 行号因分组标题会与下标错位，不能当下标用，只能逐行反查 UserRole。
 void SelectSidebarRowForStackIndex(QListWidget* sidebar, int stack_index);
 

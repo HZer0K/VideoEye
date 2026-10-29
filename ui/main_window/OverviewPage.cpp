@@ -21,29 +21,6 @@ namespace ui {
 
 namespace {
 
-// 分析页快捷跳转：pageId 与 AddPageWithScroll 登记的一致（MainWindow 据此切 stack）。
-struct JumpTarget {
-    const char* page_id;
-    const char* title;
-};
-
-const JumpTarget kJumpTargets[] = {
-    {"quality_diagnostics", "质量诊断"},
-    {"file_structure", "文件结构"},
-    {"playback_stats_packets", "播放统计与帧包"},
-    {"motion_vectors", "运动矢量与块分析"},
-    {"scene_change", "场景切换"},
-    {"visual_quality", "画面质量"},
-    {"bitrate_gop", "码率与 GOP"},
-    {"audio_qc", "音频 QC"},
-    {"color_hdr", "色彩与 HDR"},
-    {"event_timeline", "事件与时间轴"},
-    {"streaming_packets", "流媒体包"},
-    {"codec_parameters", "编码参数集"},
-    {"subtitle_aux", "字幕与辅助数据"},
-    {"report_batch_qc", "报告与批量 QC"},
-};
-
 // 状态徽章的配色（与 QSS 里的 StatusBadge 同风格，按状态换色）
 struct BadgeStyle {
     const char* fg;
@@ -172,24 +149,10 @@ void OverviewPage::BuildUi() {
         }
     });
     analysis_layout->addWidget(issues_table_, 1);
-
-    // ---- 各分析页快捷跳转 ----
-    jump_group_ = new QGroupBox(tr("跳转到分析页"), this);
-    QGridLayout* jump_grid = new QGridLayout(jump_group_);
-    jump_grid->setSpacing(6);
-    const int kColumns = 5;
-    for (int i = 0; i < static_cast<int>(sizeof(kJumpTargets) / sizeof(kJumpTargets[0])); ++i) {
-        QPushButton* button = new QPushButton(tr(kJumpTargets[i].title), jump_group_);
-        button->setProperty("pageId", QString::fromLatin1(kJumpTargets[i].page_id));
-        button->setToolTip(tr(kJumpTargets[i].title));
-        connect(button, &QPushButton::clicked, this,
-                [this, button]() { emit NavigateToPage(button->property("pageId").toString()); });
-        jump_grid->addWidget(button, i / kColumns, i % kColumns);
-    }
-    for (int c = 0; c < kColumns; ++c) {
-        jump_grid->setColumnStretch(c, 1);
-    }
-    root->addWidget(jump_group_);
+    // 必须真的挂进 root 布局：漏了这行时分组框不进布局，几何停在默认的
+    // 100x30 @ (0,0)，被画在页头上面，标题「分析状态」与自己的内容互相叠写
+    // （历史 bug：控件建了但没 addWidget，逻辑测试全绿也看不出来）。
+    root->addWidget(analysis_group_);
 
     // ---- 完整媒体信息（原媒体信息页的纯文本整段保留在下方）----
     mediainfo_group_ = new QGroupBox(tr("完整媒体信息"), this);
@@ -218,7 +181,6 @@ void OverviewPage::RefreshUi() {
     file_path_label_->setVisible(has_file);
     summary_group_->setVisible(has_file);
     analysis_group_->setVisible(has_file);
-    jump_group_->setVisible(has_file);
     mediainfo_group_->setVisible(has_file);
     empty_hint_->setVisible(!has_file);
 

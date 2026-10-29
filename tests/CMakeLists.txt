@@ -1909,6 +1909,35 @@ target_link_libraries(test_window_layout PRIVATE Qt6::Core)
 add_test(NAME WindowLayoutTests COMMAND test_window_layout)
 
 # =================================================
+# 测试: 首页分组框真的进了布局 (ui/main_window/OverviewPage.cpp)
+#
+# 用户截图"分析状态文字重叠"的真因不是字体或布局压扁，而是 BuildUi 里漏了
+# `root->addWidget(analysis_group_)`：控件不进布局就停在默认几何 100x30 @ (0,0)，
+# 被画在页头上面，标题与自己的结论行/按钮叠写。数据链路是对的，纯逻辑测试
+# （OverviewAnalysisTests）永远绿 —— 只有比对实际几何才抓得住，所以这里要
+# QApplication + offscreen，并链 VideoEyeUi（OverviewPage 的 moc 与实现在里面）。
+# =================================================
+videoeye_add_test(test_overview_page_layout unit/test_overview_page_layout.cpp)
+target_link_libraries(test_overview_page_layout PRIVATE
+    VideoEyeUi
+    VideoEyeQtAdapters
+    # ReportingPanel 独立成库；MainWindow 侧引用它，静库链接按需取成员。
+    VideoEyeReportingPanel
+    VideoEyePlayback
+    VideoEyeExporter
+    VideoEyeReporting
+    VideoEyeQc
+    VideoEyeFfmpegTools
+    VideoEyeAnalysis
+    VideoEyeMedia
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    Qt6::Widgets Qt6::Gui Qt6::Core)
+add_test(NAME OverviewPageLayoutTests COMMAND test_overview_page_layout)
+set_tests_properties(OverviewPageLayoutTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
 # 测试: 侧栏导航的 Qt 侧机制 (ui/main_window/sidebar_navigation.{h,cpp})
 #
 # 这块原先住在 MainWindow.cpp 顶部的匿名命名空间里。它守的是三条「错了就是静默

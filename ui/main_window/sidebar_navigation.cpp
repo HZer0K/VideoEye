@@ -222,7 +222,7 @@ void SelectSidebarRowForStackIndex(QListWidget* sidebar, int stack_index) {
         QListWidgetItem* item = sidebar->item(row);
         if (!item || item->data(Qt::UserRole).toInt() != stack_index)
             continue;
-        // 静音：调用方（首页「跳转到分析页」）已经把 stack 切过去了，这里只是让侧栏
+        // 静音：调用方（首页异常表点击跳转）已经把 stack 切过去了，这里只是让侧栏
         // 的选中态跟上；再触发一次 currentRowChanged 会让同一次跳转走两遍切页路径。
         const QSignalBlocker blocker(sidebar);
         sidebar->setCurrentRow(row);
