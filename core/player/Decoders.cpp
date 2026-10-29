@@ -694,8 +694,11 @@ bool AudioDecoder::ConvertFrameToPcm(AVFrame* src, uint8_t* output_buffer, int b
     // nb_channels 去读 data[8..N-1] —— 那几格其实是 linesize 的内容，会被当指针解引用。
     // 离线分析路径（AnalysisPipeline::FeedAudioFrame）早就改成 extended_data 了，
     // 只有播放这条漏了。
+    // swr_convert() 的 in 形参在 FFmpeg 7.0 起收紧成 const uint8_t* const*；这里只落到
+    // const uint8_t**：新版头文件会自己补上顶层 const，老版（Ubuntu 24.04 的 FFmpeg 6.1）
+    // 也才接得住 —— 写死 const uint8_t* const* 在 6.1 上是 invalid conversion。
     output_size = swr_convert(swr_ctx_, output_ptrs, buffer_size / (channels_ * 2),
-                              (const uint8_t* const*)src->extended_data, src->nb_samples);
+                              const_cast<const uint8_t**>(src->extended_data), src->nb_samples);
 
     if (output_size < 0) {
         std::cerr << "Error during audio resampling" << std::endl;
