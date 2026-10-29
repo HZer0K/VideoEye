@@ -22,6 +22,10 @@ constexpr int kRightMargin = 16;
 constexpr int kTopMargin = 6;
 constexpr int kBottomMargin = 22;
 constexpr int kAxisTitleExtra = 16;
+// 竖排轴标题横向占位 = 一个字高，再留一点与刻度文本之间的间隙
+constexpr int kAxisTitleGap = 4;
+// 刻度文本与轴线之间的间隙
+constexpr int kTickPad = 6;
 constexpr int kHitRadiusPx = 8;
 constexpr int kMaxXTicks = 6;
 
@@ -39,6 +43,21 @@ QString FormatTick(double value, const QString& format) {
 
 bool FinitePoint(const QPointF& p) {
     return std::isfinite(p.x()) && std::isfinite(p.y());
+}
+
+// 某个 Y 轴在当前量程下，所有刻度文本里最宽的那个有多宽。
+//
+// 边距必须按"实际要写的字"来算：左轴写 191.25 这种 6 字符刻度，右轴只写 0.75，
+// 写死一个常数不是太挤（叠字）就是太空（绘图区白白变窄）。量程定了刻度值就定了，
+// 所以这里能把每个刻度格式化一遍取最大宽度。
+int TickLabelMaxWidth(const ChartAxis& axis, double lo, double hi, const QFontMetrics& fm) {
+    const int ticks = std::max(2, axis.TickCount());
+    int width = 0;
+    for (int i = 0; i < ticks; ++i) {
+        const double value = lo + (hi - lo) * i / (ticks - 1);
+        width = std::max(width, fm.horizontalAdvance(FormatTick(value, axis.LabelFormat())));
+    }
+    return width;
 }
 
 } // namespace
@@ -122,11 +141,11 @@ QSize MetricChartWidget::minimumSizeHint() const {
     return QSize(120, 80);
 }
 
-int MetricChartWidget::LegendHeight(int width) const {
+int MetricChartWidget::LegendHeight(int width, int start_x) const {
     if (!legend_visible_)
         return 0;
     QFontMetrics fm(font());
-    int x = kLeftMargin;
+    int x = start_x;
     int rows = 0;
     for (const auto& s : series_) {
         if (s->Name().isEmpty())
@@ -135,7 +154,7 @@ int MetricChartWidget::LegendHeight(int width) const {
         if (rows == 0) {
             rows = 1;
         } else if (x + w > width - kRightMargin) {
-            x = kLeftMargin;
+            x = start_x;
             ++rows;
         }
         x += w;
@@ -146,19 +165,6 @@ int MetricChartWidget::LegendHeight(int width) const {
 MetricChartWidget::Geometry MetricChartWidget::ComputeGeometry() const {
     Geometry geo;
     const QRect full = rect();
-
-    int top = full.top() + kTopMargin;
-    if (!title_.isEmpty())
-        top += kTitleHeight;
-    top += LegendHeight(full.width());
-
-    int bottom = full.bottom() - kBottomMargin;
-    if (axis_x_->HasTitle())
-        bottom -= kAxisTitleExtra;
-
-    const int left = full.left() + kLeftMargin;
-    const int right = full.right() - (axis_y2_visible_ ? kLeftMargin : kRightMargin);
-    geo.plot = QRect(left, top, std::max(1, right - left), std::max(1, bottom - top));
 
     // ---- X 量程 ----
     double x_min = 0.0;
@@ -238,6 +244,40 @@ MetricChartWidget::Geometry MetricChartWidget::ComputeGeometry() const {
         if (*out_max - *out_min < 1e-9)
             *out_max = *out_min + 1.0;
     }
+
+    // ---- 左右边距：量程定了才算得出刻度文字，算完再回头定绘图区 ----
+    //
+    // 绘图区左右各留两段：最外侧是竖排轴标题（旋转 90° 后横向只占一个字高），
+    // 往里是刻度文本。两段都按当前字体实测，谁都不会压到谁。
+    QFontMetrics fm(font());
+    const int left_tick_w = TickLabelMaxWidth(*axis_y_, geo.y_min, geo.y_max, fm) + kTickPad;
+    const int right_tick_w = axis_y2_visible_ ? TickLabelMaxWidth(*axis_y2_, geo.y2_min, geo.y2_max, fm) + kTickPad : 0;
+    const int left_title_w = axis_y_->HasTitle() ? fm.height() + kAxisTitleGap : 0;
+    const int right_title_w = (axis_y2_visible_ && axis_y2_->HasTitle()) ? fm.height() + kAxisTitleGap : 0;
+
+    // 下限兜住没有轴标题、刻度又很短的情况，避免绘图区贴到控件边缘
+    const int left_margin = std::max(kLeftMargin, left_title_w + left_tick_w);
+    const int right_margin = std::max(kRightMargin, right_title_w + right_tick_w);
+
+    const int left = full.left() + left_margin;
+    const int right = full.right() - right_margin;
+
+    // ---- 上下边界 ----
+    int top = full.top() + kTopMargin;
+    if (!title_.isEmpty())
+        top += kTitleHeight;
+    top += LegendHeight(full.width(), left);
+
+    int bottom = full.bottom() - kBottomMargin;
+    if (axis_x_->HasTitle())
+        bottom -= kAxisTitleExtra;
+
+    geo.plot = QRect(left, top, std::max(1, right - left), std::max(1, bottom - top));
+
+    geo.left_tick_width = left_tick_w;
+    geo.right_tick_width = right_tick_w;
+    geo.left_title_x = full.left() + left_title_w / 2;
+    geo.right_title_x = full.right() - right_title_w / 2;
     return geo;
 }
 
@@ -255,12 +295,13 @@ void MetricChartWidget::DrawTitle(QPainter& painter, const Geometry& geo) {
 }
 
 void MetricChartWidget::DrawLegend(QPainter& painter, const Geometry& geo) {
-    Q_UNUSED(geo);
     if (!legend_visible_)
         return;
     QFontMetrics fm(font());
     const QRect full = rect();
-    int x = full.left() + kLeftMargin;
+    // 与绘图区左边界对齐：图例起点跟着左边距走，才不会压到左轴最上面那个刻度
+    const int start_x = geo.plot.left();
+    int x = start_x;
     int y = full.top() + kTopMargin + (title_.isEmpty() ? 0 : kTitleHeight) + 2;
 
     painter.setPen(palette().color(QPalette::WindowText));
@@ -269,7 +310,7 @@ void MetricChartWidget::DrawLegend(QPainter& painter, const Geometry& geo) {
             continue;
         const int w = 16 + fm.horizontalAdvance(s->Name()) + 12;
         if (x + w > full.right() - kRightMargin) {
-            x = full.left() + kLeftMargin;
+            x = start_x;
             y += kLegendRowHeight;
         }
         painter.fillRect(QRect(x, y + 3, 10, 10), s->Color());
@@ -300,6 +341,10 @@ void MetricChartWidget::DrawAxisAndGrid(QPainter& painter, const Geometry& geo) 
     QFontMetrics fm(font());
     painter.setPen(QPen(grid_color, 1, Qt::SolidLine));
 
+    // 刻度文本区：紧挨轴线外侧，宽度由 ComputeGeometry 按实测文本给出
+    const int left_tick_w = geo.left_tick_width > 0 ? geo.left_tick_width : kLeftMargin;
+    const int right_tick_w = geo.right_tick_width > 0 ? geo.right_tick_width : kLeftMargin;
+
     // 横向网格 + 左轴刻度
     const int y_ticks = std::max(2, axis_y_->TickCount());
     for (int i = 0; i < y_ticks; ++i) {
@@ -309,9 +354,9 @@ void MetricChartWidget::DrawAxisAndGrid(QPainter& painter, const Geometry& geo) 
         painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
         painter.setPen(text_color);
         const QString label = FormatTick(value, axis_y_->LabelFormat());
-        painter.drawText(
-            QRect(plot.left() - kLeftMargin + 4, static_cast<int>(y) - fm.height() / 2, kLeftMargin - 8, fm.height()),
-            Qt::AlignRight | Qt::AlignVCenter, label);
+        painter.drawText(QRect(plot.left() - left_tick_w, static_cast<int>(y) - fm.height() / 2, left_tick_w - kTickPad,
+                               fm.height()),
+                         Qt::AlignRight | Qt::AlignVCenter, label);
     }
 
     // 右轴（仅刻度，不画网格，避免与左轴网格打架）
@@ -321,9 +366,9 @@ void MetricChartWidget::DrawAxisAndGrid(QPainter& painter, const Geometry& geo) 
             const double value = geo.y2_min + (geo.y2_max - geo.y2_min) * i / (y2_ticks - 1);
             const qreal y = to_py(value, 1);
             painter.setPen(text_color);
-            painter.drawText(
-                QRect(plot.right() + 6, static_cast<int>(y) - fm.height() / 2, kLeftMargin - 10, fm.height()),
-                Qt::AlignLeft | Qt::AlignVCenter, FormatTick(value, axis_y2_->LabelFormat()));
+            painter.drawText(QRect(plot.right() + kTickPad, static_cast<int>(y) - fm.height() / 2,
+                                   right_tick_w - kTickPad, fm.height()),
+                             Qt::AlignLeft | Qt::AlignVCenter, FormatTick(value, axis_y2_->LabelFormat()));
         }
     }
 
@@ -366,8 +411,11 @@ void MetricChartWidget::DrawAxisAndGrid(QPainter& painter, const Geometry& geo) 
         ChartAxis* axis = (axis_index == 0) ? axis_y_.get() : axis_y2_.get();
         if (!axis->HasTitle())
             continue;
+        // 左轴标题贴控件左边、右轴标题贴控件右边 —— 以前两边都写死 x=12，
+        // 于是"亮度"和"黑像素比例"两条竖排标题叠在同一条窄带上，还一起压住刻度数字
+        const int title_x = (axis_index == 0) ? geo.left_title_x : geo.right_title_x;
         painter.save();
-        painter.translate(12, plot.center().y());
+        painter.translate(title_x, plot.center().y());
         painter.rotate(-90);
         painter.setPen(text_color);
         painter.drawText(QRect(-plot.height() / 2, -fm.height() / 2, plot.height(), fm.height()), Qt::AlignCenter,

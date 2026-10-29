@@ -266,6 +266,9 @@ protected:
     void leaveEvent(QEvent* event) override;
 
 private:
+    // 绘图区左/右两侧留给刻度文本与轴标题的实际宽度（按当前字体与刻度值算出来）。
+    // 以前是写死的 kLeftMargin，轴标题（竖排）与刻度文本抢同一条窄带，
+    // 于是"亮度""黑像素比例"两条竖排标题互相叠，还压住 191.25 这类长刻度。
     struct Geometry {
         QRect plot;
         double x_min = 0.0;
@@ -274,6 +277,10 @@ private:
         double y_max = 1.0;
         double y2_min = 0.0;
         double y2_max = 1.0;
+        int left_tick_width = 0;  // 左轴刻度文本区宽度（含与轴线之间的间隙）
+        int right_tick_width = 0; // 右轴刻度文本区宽度，右轴隐藏时为 0
+        int left_title_x = 0;     // 左轴竖排标题的中心 x
+        int right_title_x = 0;    // 右轴竖排标题的中心 x
     };
 
     Geometry ComputeGeometry() const;
@@ -281,7 +288,9 @@ private:
     void DrawSeries(QPainter& painter, const Geometry& geo);
     void DrawLegend(QPainter& painter, const Geometry& geo);
     void DrawTitle(QPainter& painter, const Geometry& geo);
-    int LegendHeight(int width) const;
+    // start_x = 图例首行的起始横坐标（与绘图区左边界对齐），行数算准了才知道
+    // 绘图区该从哪里开始，也就不会让"255"这类顶部刻度顶到图例行上
+    int LegendHeight(int width, int start_x) const;
     bool HitTest(const QPoint& pos, const Geometry& geo, QPointF* out);
 
     QString title_;
