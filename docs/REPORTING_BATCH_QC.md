@@ -78,6 +78,18 @@ QC 的入口是 GUI 的「报告与批量 QC」页 —— 项目不再提供独�
   文件 / 状态 / 评分 / 结论 / 各类问题计数 / 耗时 / 输出路径，可随时「停止」（已完成的保留）。
 - **导出汇总**：把批量结果聚合成 CSV/JSON/HTML 汇总。
 
+**五种导出格式的正文只有一处来源**：JSON / CSV / HTML / PDF / TXT 里，PDF 与纯文本共用同一份
+正文（`BuildText` 的逐行输出按显示宽度折行后画进 PDF），所以「证据与覆盖」「参数变化时间线」
+「帧级显示顺序」「音频 QC（逐轨）」「MPEG-TS 传输层」这些章节在哪一种格式里都不会缺。
+CSV 是"每个问题一行"的数据表，本来就只承载问题清单，不参与这条约定。
+
+这条约束由 `test_qc_report_exporter` 的 `PdfBodyIsTheSameTextAsTheTxtReport` 守着 ——
+判据是"去掉空白后 PDF 还原出的文本与纯文本报告逐字相同"。以前 PDF 自己另排了一套
+（英文抬头 + 问题清单 + 主轨响度），于是同一份结论导出成 PDF 就丢掉全部覆盖说明，
+而 PDF 恰恰是最常用于交付与存档的格式。另一个用例
+`PdfWrapsOverlongLinesInsteadOfDrawingPastTheMargin` 守折行：`MiniPdfWriter` 只按 `\n`
+切段、不自动换行，超宽的行会一路画出页面右边界被裁掉，而文件仍然"结构有效"。
+
 **结果新鲜度与复用**（`ui/reporting_panel/result_stamp.h`）：导出的单文件报告永远绑定
 「当前文件 + 当前模板」。
 

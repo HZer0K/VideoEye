@@ -12,13 +12,55 @@ namespace videoeye {
 namespace reporting {
 
 using detail::Fixed;
-using detail::Int64Text;
-using detail::SingleLine;
 using detail::WriteUtf8File;
 
 namespace {
 
-const char* kRowGroupSeparator = "----------------------------------------";
+// 一行最多画多少"显示单位"：A4 宽 595pt、左右各 48pt 边距 → 正文宽 499pt。
+// 10pt Helvetica 的 ASCII 平均字宽约 0.55em（5.5pt），中文（STSong-Light）
+// 是全宽 1em（10pt）。按"半角 1、全角 2"的显示单位折算，理论上一行约 90 个
+// 半角字符；取 88 略保守，免得 W / M 这类宽字母把最后一个字顶出右边界。
+constexpr std::size_t kMaxLineUnits = 88;
+
+// 按显示宽度折行。
+//
+// 为什么必须有这一层：PDF 的正文直接复用纯文本报告（见 ExportPdf），而文本
+// 报告里有整段很长的行（TS 传输层那串统计、参数集的 Summary、issue 的 detail
+// 展开后都可能上百字）。MiniPdfWriter 只按 \n 切段、不做自动换行 —— 超宽的行
+// 会一路画出 /MediaBox 右边界，阅读器里直接被裁掉，而 PDF 自身仍然"结构有效"、
+// 导出仍然返回成功。这类缺陷只有真渲染或逐字符量宽才看得见。
+//
+// 断行时不丢任何字符（包括断点处的空格），所以"PDF 去掉空白"与"文本报告去掉
+// 空白"逐字相等 —— 这一点由 test_qc_report_exporter 的跨格式一致性用例守着。
+std::vector<std::string> WrapToUnits(const std::string& line, std::size_t max_units) {
+    std::vector<std::string> out;
+    std::string current;
+    std::size_t units = 0;
+    for (std::size_t i = 0; i < line.size();) {
+        const unsigned char lead = static_cast<unsigned char>(line[i]);
+        std::size_t advance = 1;
+        if (lead >= 0xF0)
+            advance = 4;
+        else if (lead >= 0xE0)
+            advance = 3;
+        else if (lead >= 0xC0)
+            advance = 2;
+        if (i + advance > line.size())
+            advance = 1; // 尾部截断的字节按单字节处理，别越界
+        // 非 ASCII 一律按全角算：报告正文里的非 ASCII 只有 CJK 与全角标点。
+        const std::size_t width = (lead < 0x80) ? 1 : 2;
+        if (units + width > max_units && !current.empty()) {
+            out.push_back(current);
+            current.clear();
+            units = 0;
+        }
+        current.append(line, i, advance);
+        units += width;
+        i += advance;
+    }
+    out.push_back(current);
+    return out;
+}
 
 // ===========================================================================
 // 极简 PDF 写入器（A4 / Helvetica / WinAnsi）
@@ -287,52 +329,29 @@ private:
 
 QcPdfExportResult QcReportExporter::ExportPdf(const std::string& path, const QcExportBundle& bundle) {
     QcPdfExportResult result;
-    const qc::QcRunResult& run = bundle.run;
-    const model::QcReport& report = run.report;
 
+    // 正文只有一处来源：纯文本版。
+    //
+    // 此前 PDF 自己另排一套（英文抬头 + 问题清单 + 主轨响度三项），于是
+    // 「证据与覆盖」「参数变化时间线」「帧级显示顺序」「音频 QC（逐轨）」
+    // 「MPEG-TS 传输层」这五节在 PDF 里一个字都没有。同一份 QC 结论换个格式
+    // 导出就丢掉全部覆盖说明 —— 而 PDF 恰恰是最常用于交付与存档的格式，
+    // 于是"问题清单里没问题"与"这个维度根本没跑"在存档件上又长得一样了，
+    // 正是 DimensionStatus 这套结构要消灭的那种虚假结论。
+    //
+    // 复用之后两端在结构上不可能再漂移：文本报告加一节，PDF 自动就有。
+    // 代价是 PDF 少了英文抬头与分隔线排版，换来的是结论一致 —— 值得。
     MiniPdfWriter writer;
-    writer.AddLine("VideoEye QC Report");
-    writer.AddLine("");
-    writer.AddLine("Profile : " + bundle.profile_name + " (" + bundle.profile_id + ")");
-    writer.AddLine("File    : " + report.file_name);
-    writer.AddLine("Path    : " + report.file_path);
-    writer.AddLine("Time    : " + report.generated_at);
-    writer.AddLine("Verdict : " + Fixed(report.score, 1) + " / 100  " + report.verdict);
-    writer.AddLine("Elapsed : " + Fixed(run.elapsed_ms, 0) + " ms");
-    writer.AddLine(kRowGroupSeparator);
-
-    writer.AddLine("Issues: critical " + std::to_string(report.CountBySeverity(model::IssueSeverity::Critical)) +
-                   " / error " + std::to_string(report.CountBySeverity(model::IssueSeverity::Error)) + " / warning " +
-                   std::to_string(report.CountBySeverity(model::IssueSeverity::Warning)) + " / info " +
-                   std::to_string(report.CountBySeverity(model::IssueSeverity::Info)));
-    writer.AddLine("Container  : " + report.container_format);
-    writer.AddLine("Duration   : " + Fixed(report.duration_seconds, 3) + " s");
-    writer.AddLine("Size       : " + Int64Text(report.file_size_bytes) + " bytes");
-    writer.AddLine("Bitrate    : " + Fixed(report.overall_bitrate_bps / 1000.0, 1) + " kbps");
-    writer.AddLine("Streams    : video " + std::to_string(report.video_stream_count) + " / audio " +
-                   std::to_string(report.audio_stream_count));
-    writer.AddLine(kRowGroupSeparator);
-
-    if (report.issues.empty()) {
-        writer.AddLine("No issue found.");
-    } else {
-        writer.AddLine("Issue list:");
-        for (std::size_t i = 0; i < report.issues.size(); ++i) {
-            const auto& issue = report.issues[i];
-            writer.AddLine("[" + std::to_string(i + 1) + "] " + std::string(SeverityCode(issue.severity)) + " / " +
-                           issue.rule_id + " / " + issue.title);
-            writer.AddLine("    " + issue.range.ToString());
-            writer.AddLine("    " + SingleLine(issue.detail));
-            if (!issue.suggestion.empty())
-                writer.AddLine("    fix: " + SingleLine(issue.suggestion));
-        }
-    }
-
-    if (run.analysis.audio_qc.analyzed) {
-        writer.AddLine(kRowGroupSeparator);
-        writer.AddLine("Loudness   : " + Fixed(run.analysis.audio_qc.integrated_lufs, 2) + " LUFS");
-        writer.AddLine("True peak  : " + Fixed(run.analysis.audio_qc.true_peak_dbtp, 2) + " dBTP");
-        writer.AddLine("LRA        : " + Fixed(run.analysis.audio_qc.loudness_range_lu, 2) + " LU");
+    const std::string text = BuildText(bundle);
+    std::size_t begin = 0;
+    while (true) {
+        const std::size_t end = text.find('\n', begin);
+        const std::string line = (end == std::string::npos) ? text.substr(begin) : text.substr(begin, end - begin);
+        for (const std::string& wrapped : WrapToUnits(line, kMaxLineUnits))
+            writer.AddLine(wrapped);
+        if (end == std::string::npos)
+            break;
+        begin = end + 1;
     }
 
     std::string bytes;

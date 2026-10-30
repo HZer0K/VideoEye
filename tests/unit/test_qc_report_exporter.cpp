@@ -357,7 +357,8 @@ TEST(QcReportExporterTest, PdfSinglePageIsStructurallyValid) {
 TEST(QcReportExporterTest, PdfMultiPageIsStructurallyValid) {
     ScopedDir dir("pdf_multi");
     const std::string path = dir.File("report.pdf");
-    // 每页 50 行上限: 固定抬头约 16 行, 每个 issue 4 行 -> 14 个 issue 必然溢出到第二页
+    // 每页 50 行上限；正文来自纯文本报告，固定头部 14 行 + 每个 issue 4 行，
+    // 14 个 issue 就是 70 行，必然溢出到第二页。
     ASSERT_TRUE(QcReportExporter::ExportPdf(path, MakeBundle(14)).ok);
 
     const auto pdf = videoeye_test::VerifyPdfFile(path);
@@ -380,8 +381,8 @@ TEST(QcReportExporterTest, PdfEmptyReportIsStillValid) {
     const auto pdf = videoeye_test::VerifyPdfFile(path);
     ASSERT_TRUE(pdf.ok) << pdf.error;
     EXPECT_EQ(pdf.page_count, 1);
-    EXPECT_NE(pdf.text.find("No issue found."), std::string::npos);
-    EXPECT_NE(pdf.text.find("VideoEye QC Report"), std::string::npos);
+    EXPECT_NE(pdf.text.find("未发现问题。"), std::string::npos);
+    EXPECT_NE(pdf.text.find("VideoEye QC 报告"), std::string::npos);
 }
 
 // 中文标题 / 中文 issue / 中文 verdict 一个都不许变成 ?。
@@ -924,6 +925,97 @@ TEST(QcReportExporterTest, NewSectionsAppearInTextAndHtml) {
     EXPECT_NE(html.find("证据与覆盖"), std::string::npos);
     EXPECT_NE(html.find("参数变化时间线"), std::string::npos);
     EXPECT_NE(html.find("音频 QC（逐轨）"), std::string::npos);
+}
+
+// ============================================================
+// PDF 与纯文本报告必须同源
+//
+// 背景（2026-10-30）：PDF 导出器一直自己另排一套正文（英文抬头 + 问题清单 +
+// 主轨响度三项），于是「证据与覆盖」「参数变化时间线」「帧级显示顺序」
+// 「音频 QC（逐轨）」「MPEG-TS 传输层」这五节在 PDF 里一个字都没有。同一份 QC
+// 结论换个格式导出就丢掉全部覆盖说明 —— 而 PDF 恰恰是最常用于交付与存档的
+// 格式，读者只能看到"问题清单里没问题"，无法区分"真没问题"和"这个维度根本
+// 没跑"。这正是 DimensionStatus 那套结构要消灭的虚假结论，换个格式又长回来了。
+//
+// 现在 PDF 的正文直接复用 BuildText，下面这条用例把"同源"钉死：谁再在 PDF 侧
+// 另起一套，它立刻红。
+//
+// 判据为什么选"去掉空白后逐字全等"而不是抽查关键词：关键词抽查漏得掉整节
+// （本轮就是这么漏的）；去空白能容忍两端各自的分隔线与折行，却对"少一段正文"
+// 零容忍，顺带把"折行不丢字符"也一起守住。
+// ============================================================
+
+std::string DropWhitespace(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    for (const char c : text) {
+        if (c == ' ' || c == '\n' || c == '\r' || c == '\t')
+            continue;
+        out.push_back(c);
+    }
+    return out;
+}
+
+TEST(QcReportExporterTest, PdfBodyIsTheSameTextAsTheTxtReport) {
+    ScopedDir dir("pdf_parity");
+    const std::string path = dir.File("parity.pdf");
+    const QcExportBundle bundle = MakeEnrichedBundle();
+    const auto result = QcReportExporter::ExportPdf(path, bundle);
+    ASSERT_TRUE(result.ok);
+    EXPECT_FALSE(result.text_loss) << "中文不该被判成丢字（只有 BMP 外字符才算）";
+
+    const auto pdf = videoeye_test::VerifyPdfFile(path);
+    ASSERT_TRUE(pdf.ok) << pdf.error;
+
+    // 逐节点名，失败时能直接看出缺的是哪一节（比"全等失败"好定位）。
+    for (const char* section : {"证据与覆盖", "参数变化时间线", "音频 QC（逐轨）"}) {
+        EXPECT_NE(pdf.text.find(section), std::string::npos)
+            << "PDF 里缺这一节: " << section << " —— 正文应与纯文本报告同源";
+    }
+
+    const std::string expected = DropWhitespace(QcReportExporter::BuildText(bundle));
+    const std::string actual = DropWhitespace(pdf.text);
+    ASSERT_FALSE(expected.empty());
+
+    std::size_t i = 0;
+    while (i < expected.size() && i < actual.size() && expected[i] == actual[i])
+        ++i;
+    const std::size_t from = (i > 24) ? (i - 24) : 0;
+    ASSERT_EQ(i, expected.size()) << "PDF 正文在偏移 " << i
+                                  << " 处与纯文本报告不同\n  文本: " << expected.substr(from, 40)
+                                  << "\n  PDF : " << actual.substr(from, 40);
+    ASSERT_EQ(i, actual.size()) << "PDF 比纯文本报告多出内容: " << actual.substr(from, 40);
+}
+
+// 折行守护：文本报告里有整段很长的行（TS 统计、参数集 Summary、issue 的 detail），
+// 而 MiniPdfWriter 只按 \n 切段、不做自动换行。PDF 侧必须自己折 —— 不折就会一路
+// 画出 /MediaBox 右边界被裁掉，而文件仍然"结构有效"、导出仍然返回成功。
+//
+// 为什么不用 pdf.text 判：VerifyPdfFile 还原文本时不插行分隔符，折没折在 text 上
+// 看不出来。改用"同一份内容、标题长短不同的两版对照"：长版必须多占行。
+TEST(QcReportExporterTest, PdfWrapsOverlongLinesInsteadOfDrawingPastTheMargin) {
+    ScopedDir dir("pdf_wrap");
+    QcExportBundle short_bundle = MakeBundle(1);
+    QcExportBundle long_bundle = MakeBundle(1);
+    // 每行上限是 88 个半角单位，追加 180 个字符至少要折成 3 行。
+    long_bundle.run.report.issues[0].title += std::string(180, 'x');
+    short_bundle.run.report.issues[0].title += "y";
+
+    const std::string short_path = dir.File("short.pdf");
+    const std::string long_path = dir.File("long.pdf");
+    ASSERT_TRUE(QcReportExporter::ExportPdf(short_path, short_bundle).ok);
+    ASSERT_TRUE(QcReportExporter::ExportPdf(long_path, long_bundle).ok);
+
+    const auto short_pdf = videoeye_test::VerifyPdfFile(short_path);
+    const auto long_pdf = videoeye_test::VerifyPdfFile(long_path);
+    ASSERT_TRUE(short_pdf.ok) << short_pdf.error;
+    ASSERT_TRUE(long_pdf.ok) << long_pdf.error;
+    // 两版都必须落在单页里，行数差异才只由折行引起（分页会给每页多算一行）。
+    ASSERT_EQ(short_pdf.page_count, 1);
+    ASSERT_EQ(long_pdf.page_count, 1);
+    EXPECT_GE(long_pdf.text_lines, short_pdf.text_lines + 2)
+        << "长标题没有折行：短版 " << short_pdf.text_lines << " 行、长版 " << long_pdf.text_lines
+        << " 行。超宽的行会画出页面右边界被裁掉，而 PDF 自身仍然结构有效。";
 }
 
 } // namespace
