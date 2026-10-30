@@ -65,10 +65,37 @@ if(FFMPEG_TOOL)
 elseif(WIN32 AND FFMPEG_BIN_DIR AND EXISTS "${FFMPEG_BIN_DIR}/ffmpeg.exe")
     set(_tool "${FFMPEG_BIN_DIR}/ffmpeg.exe")
 else()
-    find_program(_ffmpeg_in_path NAMES ffmpeg ffmpeg.exe
+    # 候选名按平台区分：Linux/macOS 上不能把 ffmpeg.exe 当候选。
+    # WSL 默认 appendWindowsPath=true，PATH 里混着 /mnt/{c,d}/... 下的 Windows 目录，
+    # 于是这里会"找到"一份 ffmpeg.exe —— 而它是 PE 程序，工作台拿着 Linux 路径去调
+    # 必然失败，且失败点离"探测"很远，看起来像分析功能坏了。
+    if(WIN32)
+        set(_ffmpeg_tool_names ffmpeg ffmpeg.exe)
+    else()
+        set(_ffmpeg_tool_names ffmpeg)
+    endif()
+    find_program(_ffmpeg_in_path NAMES ${_ffmpeg_tool_names}
         HINTS /usr/local/bin /opt/homebrew/bin /opt/local/bin)
     if(_ffmpeg_in_path)
         set(_tool "${_ffmpeg_in_path}")
+    endif()
+endif()
+
+# ---- 1.5) 非 Windows 上拒绝 Windows 可执行文件 ----
+# 只看扩展名不够：PATH 里混进来的那份可能不带 .exe，或者被改名/包成 wrapper。
+# 直接读前几个字节判格式，PE 的魔数是 'MZ'(4d5a)，ELF 是 7f454c46。
+# 这条要放在**所有**来源（显式 FFMPEG_TOOL / 预编译包 / PATH）之后，一处判全部。
+# 典型现场：WSL 上 `-DFFMPEG_TOOL=/mnt/d/APP/FFMPEG/.../ffmpeg.exe`，或干脆是缓存里
+# 上一轮写死的那个值 —— 那会让 Linux 构建把 Windows 程序当原生 CLI。
+if(_tool AND NOT WIN32)
+    file(READ "${_tool}" _tool_magic LIMIT 4 HEX)
+    if(_tool_magic MATCHES "^[4][d][5][a]")
+        message(WARNING
+            "[ffmpeg-tool] ${_tool} 是 Windows 可执行文件（PE/MZ），${CMAKE_SYSTEM_NAME} 上跑不起来，已忽略。\n"
+            "  Linux 请装原生版本: sudo apt install -y ffmpeg，或 -DFFMPEG_TOOL=/usr/bin/ffmpeg 显式指定。\n"
+            "  构建本身不受影响（分析用的是链接进来的 libav*），只是「FFmpeg 命令工作台」页会显示未找到。\n"
+            "  WSL 提示: 上面这条多半是因为 WSL 继承了 Windows 的 PATH（appendWindowsPath=true）。")
+        set(_tool "")
     endif()
 endif()
 
