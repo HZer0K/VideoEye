@@ -254,6 +254,204 @@ bool open_output(AVFormatContext*& out_fmt, const ExportOptions& opt, const std:
 
 } // namespace
 
+// 建立 输入流 -> 输出流 的映射，并为需要重编码的流备好解码器/编码器。
+//
+// 从 Export() 里整段搬出来的（原来 200 行挤在主流程中间，读的人要同时跟
+// 上下文、错误收尾、区间裁剪四条线）。本函数只负责"建流"：
+//   * 失败时把原因写进 err 并返回 false，收尾（释放 + 发信号）由调用方做；
+//   * 它自己造出来、但还没进 streams 的 StreamCtx 必须在返回前释放 ——
+//     那些指针此时 release_all() 看不见（见 abort_stream_setup）。
+bool BuildOutputStreamMapping(AVFormatContext* in_fmt, AVFormatContext* out_fmt, const ExportOptions& opt,
+                              const QString& video_enc_name, const QString& audio_enc_name,
+                              std::vector<StreamCtx>& streams, QString& err) {
+    // 建立流映射
+    for (unsigned i = 0; i < in_fmt->nb_streams; ++i) {
+        AVStream* in_st = in_fmt->streams[i];
+        if (!in_st || !in_st->codecpar)
+            continue;
+        const AVMediaType mt = in_st->codecpar->codec_type;
+        if (in_st->disposition & AV_DISPOSITION_ATTACHED_PIC)
+            continue; // 跳过封面图
+
+        bool include = false;
+        if (opt.kind == ExportKind::Audio) {
+            include = (mt == AVMEDIA_TYPE_AUDIO);
+        } else {
+            // 视频导出: 默认包含音轨; 勾选 no_audio 时仅导出视频画面
+            include = (mt == AVMEDIA_TYPE_VIDEO) || (!opt.no_audio && mt == AVMEDIA_TYPE_AUDIO);
+        }
+        if (!include)
+            continue;
+
+        bool do_encode = opt.reencode;
+        if (!do_encode) {
+            // 容器是否原生支持该编码 -> 不支持则必须重编码
+            const int q = avformat_query_codec(out_fmt->oformat, in_st->codecpar->codec_id, FF_COMPLIANCE_NORMAL);
+            if (q != 1)
+                do_encode = true;
+        }
+
+        AVStream* out_st = avformat_new_stream(out_fmt, nullptr);
+        if (!out_st) {
+            err = "无法创建输出流";
+            return false;
+        }
+
+        StreamCtx sc;
+        sc.in_idx = static_cast<int>(i);
+        sc.out_idx = static_cast<int>(out_st->index);
+        sc.do_encode = do_encode;
+
+        // sc 要到本轮循环体末尾才 push_back 进 streams, 在此之前调用方的 release_all() /
+        // free_streams() 都看不见它。所以这段里所有提前 return 都必须走这个函数 ——
+        // 否则 dec / enc 就漏在半路上了。它顺带把失败原因写进 err（调用方据此收尾）。
+        auto abort_stream_setup = [&](const QString& msg) -> bool {
+            if (sc.sws) {
+                sws_freeContext(sc.sws);
+                sc.sws = nullptr;
+            }
+            if (sc.swr) {
+                swr_free(&sc.swr);
+                sc.swr = nullptr;
+            }
+            if (sc.dec) {
+                avcodec_free_context(&sc.dec);
+                sc.dec = nullptr;
+            }
+            if (sc.enc) {
+                avcodec_free_context(&sc.enc);
+                sc.enc = nullptr;
+            }
+            err = msg;
+            return false;
+        };
+
+        if (!do_encode) {
+            if (avcodec_parameters_copy(out_st->codecpar, in_st->codecpar) < 0) {
+                return abort_stream_setup("复制流参数失败");
+            }
+            out_st->codecpar->codec_tag = 0;
+            out_st->time_base = in_st->time_base;
+        } else {
+            const AVCodec* dec_codec = avcodec_find_decoder(in_st->codecpar->codec_id);
+            if (!dec_codec) {
+                return abort_stream_setup(QString("找不到解码器: %1").arg(avcodec_get_name(in_st->codecpar->codec_id)));
+            }
+            // 两处 AVCodecContext 都必须先看返回值: 紧接着就是 `enc->width = ...`，
+            // 拿到 nullptr 会当场崩，而不是报出可读的 ExportError。
+            AVCodecContext* dec = avcodec_alloc_context3(dec_codec);
+            if (!dec) {
+                return abort_stream_setup(QStringLiteral("内存不足: 无法分配解码器上下文"));
+            }
+            sc.dec = dec; // 从这里起所有权归 sc, 后续任一路径都由 abort_stream_setup 收回
+            // 参数拷不过来时后续要用的是半初始化的上下文，宁可停在这里。
+            if (avcodec_parameters_to_context(dec, in_st->codecpar) < 0) {
+                return abort_stream_setup(QStringLiteral("解码器参数拷贝失败"));
+            }
+            if (avcodec_open2(dec, dec_codec, nullptr) < 0) {
+                return abort_stream_setup("打开解码器失败");
+            }
+
+            const bool is_video = (mt == AVMEDIA_TYPE_VIDEO);
+            const QStringList candidates = is_video ? video_encoder_candidates(video_enc_name)
+                                                    : QStringList{audio_enc_name, QStringLiteral("aac")};
+
+            QString enc_name;
+            const AVCodec* enc_codec = nullptr;
+            for (const QString& candidate : candidates) {
+                const QByteArray name_bytes = candidate.toUtf8();
+                enc_codec = avcodec_find_encoder_by_name(name_bytes.constData());
+                if (enc_codec) {
+                    enc_name = candidate;
+                    break;
+                }
+            }
+            if (!enc_codec) {
+                return abort_stream_setup(QString("找不到 %1 编码器（已尝试: %2；该 FFmpeg 构建可能未包含它们）")
+                                              .arg(is_video ? QStringLiteral("视频") : QStringLiteral("音频"),
+                                                   candidates.join(QStringLiteral(" / "))));
+            }
+            AVCodecContext* enc = avcodec_alloc_context3(enc_codec);
+            if (!enc) {
+                return abort_stream_setup(QStringLiteral("内存不足: 无法分配编码器上下文"));
+            }
+            sc.enc = enc; // 同上: 交给 sc 之后就不存在漏释放的路径
+            if (mt == AVMEDIA_TYPE_VIDEO) {
+                enc->width = dec->width;
+                enc->height = dec->height;
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 19, 100) // FFmpeg >= 7.1
+                {
+                    // FFmpeg 9.0 移除了 AVCodec::pix_fmts, 改用 avcodec_get_supported_config
+                    const void* supported = nullptr;
+                    if (avcodec_get_supported_config(nullptr, enc_codec, AV_CODEC_CONFIG_PIX_FORMAT, 0, &supported,
+                                                     nullptr) >= 0 &&
+                        supported)
+                        enc->pix_fmt = static_cast<const AVPixelFormat*>(supported)[0];
+                    else
+                        enc->pix_fmt = AV_PIX_FMT_YUV420P;
+                }
+#else
+                enc->pix_fmt = (enc_codec->pix_fmts) ? enc_codec->pix_fmts[0] : AV_PIX_FMT_YUV420P;
+#endif
+                sc.enc_pix_fmt = enc->pix_fmt;
+                enc->time_base = in_st->time_base;
+                const int base = enc->width * enc->height;
+                const int br = (opt.videoQuality == 0) ? base * 4 : (opt.videoQuality == 1) ? base * 2 : base;
+                enc->bit_rate = static_cast<int64_t>(br) * 1000;
+                enc->gop_size = 25;
+                enc->max_b_frames = 2;
+                enc->thread_count = 0;
+                if (out_fmt->oformat->flags & AVFMT_GLOBALHEADER)
+                    enc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+            } else {
+                enc->sample_rate = dec->sample_rate > 0 ? dec->sample_rate : 44100;
+                // av_channel_layout_copy() 返回负值表示失败，此时 dst 处于未定义状态，
+                // 不能直接拿去编码。先按源声道数兜一次默认值，兜不住才判失败。
+                int layout_ret = av_channel_layout_copy(&enc->ch_layout, &dec->ch_layout);
+                if (layout_ret >= 0 && enc->ch_layout.nb_channels == 0) {
+                    // av_channel_layout_default() 返回 void（FFmpeg 里本来就没有返回值），
+                    // 不能赋值给 layout_ret —— 成功与否看下面 enc->ch_layout.nb_channels 即可。
+                    av_channel_layout_default(&enc->ch_layout,
+                                              dec->ch_layout.nb_channels > 0 ? dec->ch_layout.nb_channels : 2);
+                }
+                if (layout_ret < 0 || enc->ch_layout.nb_channels == 0) {
+                    return abort_stream_setup(QStringLiteral("声道布局初始化失败: %1").arg(AvErrorString(layout_ret)));
+                }
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 19, 100) // FFmpeg >= 7.1
+                {
+                    // FFmpeg 9.0 移除了 AVCodec::sample_fmts, 改用 avcodec_get_supported_config
+                    const void* supported = nullptr;
+                    if (avcodec_get_supported_config(nullptr, enc_codec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0, &supported,
+                                                     nullptr) >= 0 &&
+                        supported)
+                        enc->sample_fmt = static_cast<const AVSampleFormat*>(supported)[0];
+                    else
+                        enc->sample_fmt = AV_SAMPLE_FMT_FLTP;
+                }
+#else
+                enc->sample_fmt = (enc_codec->sample_fmts) ? enc_codec->sample_fmts[0] : AV_SAMPLE_FMT_FLTP;
+#endif
+                enc->bit_rate = static_cast<int64_t>(opt.audioBitrateKbps) * 1000;
+                enc->time_base = {1, enc->sample_rate};
+                if (out_fmt->oformat->flags & AVFMT_GLOBALHEADER)
+                    enc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+            }
+            if (avcodec_open2(enc, enc_codec, nullptr) < 0) {
+                return abort_stream_setup("打开编码器失败");
+            }
+            if (avcodec_parameters_from_context(out_st->codecpar, enc) < 0) {
+                // 这条路径以前会连带漏掉 dec / enc: sc 还没进 streams, release_all() 看不见它。
+                return abort_stream_setup("写入编码器参数失败");
+            }
+            out_st->time_base = enc->time_base;
+            if (mt == AVMEDIA_TYPE_VIDEO && dec->sample_aspect_ratio.num)
+                out_st->sample_aspect_ratio = dec->sample_aspect_ratio;
+        }
+        streams.push_back(sc);
+    }
+    return true;
+}
+
 void MediaExporter::Export(const ExportOptions& opt) {
     // 取消状态只由外部写，这里绝不重置：启动前点的取消必须能被看到，
     // 否则"立即取消"会被吃掉、导出照常跑完。
@@ -405,201 +603,9 @@ void MediaExporter::Export(const ExportOptions& opt) {
     QString video_enc_name, audio_enc_name;
     resolve_encoder_names(opt, video_enc_name, audio_enc_name);
 
-    // 建立流映射
-    for (unsigned i = 0; i < in_fmt->nb_streams; ++i) {
-        AVStream* in_st = in_fmt->streams[i];
-        if (!in_st || !in_st->codecpar)
-            continue;
-        const AVMediaType mt = in_st->codecpar->codec_type;
-        if (in_st->disposition & AV_DISPOSITION_ATTACHED_PIC)
-            continue; // 跳过封面图
-
-        bool include = false;
-        if (opt.kind == ExportKind::Audio) {
-            include = (mt == AVMEDIA_TYPE_AUDIO);
-        } else {
-            // 视频导出: 默认包含音轨; 勾选 no_audio 时仅导出视频画面
-            include = (mt == AVMEDIA_TYPE_VIDEO) || (!opt.no_audio && mt == AVMEDIA_TYPE_AUDIO);
-        }
-        if (!include)
-            continue;
-
-        bool do_encode = opt.reencode;
-        if (!do_encode) {
-            // 容器是否原生支持该编码 -> 不支持则必须重编码
-            const int q = avformat_query_codec(out_fmt->oformat, in_st->codecpar->codec_id, FF_COMPLIANCE_NORMAL);
-            if (q != 1)
-                do_encode = true;
-        }
-
-        AVStream* out_st = avformat_new_stream(out_fmt, nullptr);
-        if (!out_st) {
-            err_msg = "无法创建输出流";
-            cleanup_and_emit(true, err_msg);
-            return;
-        }
-
-        StreamCtx sc;
-        sc.in_idx = static_cast<int>(i);
-        sc.out_idx = static_cast<int>(out_st->index);
-        sc.do_encode = do_encode;
-
-        // sc 要到本轮循环体末尾才 push_back 进 streams, 在此之前 release_all() /
-        // free_streams() 都看不见它。所以这段里所有提前 return 都必须走这个函数 ——
-        // 否则 dec / enc 就漏在半路上了。
-        auto abort_stream_setup = [&](const QString& msg) {
-            if (sc.sws) {
-                sws_freeContext(sc.sws);
-                sc.sws = nullptr;
-            }
-            if (sc.swr) {
-                swr_free(&sc.swr);
-                sc.swr = nullptr;
-            }
-            if (sc.dec) {
-                avcodec_free_context(&sc.dec);
-                sc.dec = nullptr;
-            }
-            if (sc.enc) {
-                avcodec_free_context(&sc.enc);
-                sc.enc = nullptr;
-            }
-            cleanup_and_emit(true, msg);
-            return;
-        };
-
-        if (!do_encode) {
-            if (avcodec_parameters_copy(out_st->codecpar, in_st->codecpar) < 0) {
-                abort_stream_setup("复制流参数失败");
-                return;
-            }
-            out_st->codecpar->codec_tag = 0;
-            out_st->time_base = in_st->time_base;
-        } else {
-            const AVCodec* dec_codec = avcodec_find_decoder(in_st->codecpar->codec_id);
-            if (!dec_codec) {
-                abort_stream_setup(QString("找不到解码器: %1").arg(avcodec_get_name(in_st->codecpar->codec_id)));
-                return;
-            }
-            // 两处 AVCodecContext 都必须先看返回值: 紧接着就是 `enc->width = ...`，
-            // 拿到 nullptr 会当场崩，而不是报出可读的 ExportError。
-            AVCodecContext* dec = avcodec_alloc_context3(dec_codec);
-            if (!dec) {
-                abort_stream_setup(QStringLiteral("内存不足: 无法分配解码器上下文"));
-                return;
-            }
-            sc.dec = dec; // 从这里起所有权归 sc, 后续任一路径都由 abort_stream_setup 收回
-            // 参数拷不过来时后续要用的是半初始化的上下文，宁可停在这里。
-            if (avcodec_parameters_to_context(dec, in_st->codecpar) < 0) {
-                abort_stream_setup(QStringLiteral("解码器参数拷贝失败"));
-                return;
-            }
-            if (avcodec_open2(dec, dec_codec, nullptr) < 0) {
-                abort_stream_setup("打开解码器失败");
-                return;
-            }
-
-            const bool is_video = (mt == AVMEDIA_TYPE_VIDEO);
-            const QStringList candidates = is_video ? video_encoder_candidates(video_enc_name)
-                                                    : QStringList{audio_enc_name, QStringLiteral("aac")};
-
-            QString enc_name;
-            const AVCodec* enc_codec = nullptr;
-            for (const QString& candidate : candidates) {
-                const QByteArray name_bytes = candidate.toUtf8();
-                enc_codec = avcodec_find_encoder_by_name(name_bytes.constData());
-                if (enc_codec) {
-                    enc_name = candidate;
-                    break;
-                }
-            }
-            if (!enc_codec) {
-                abort_stream_setup(QString("找不到 %1 编码器（已尝试: %2；该 FFmpeg 构建可能未包含它们）")
-                                       .arg(is_video ? QStringLiteral("视频") : QStringLiteral("音频"),
-                                            candidates.join(QStringLiteral(" / "))));
-                return;
-            }
-            AVCodecContext* enc = avcodec_alloc_context3(enc_codec);
-            if (!enc) {
-                abort_stream_setup(QStringLiteral("内存不足: 无法分配编码器上下文"));
-                return;
-            }
-            sc.enc = enc; // 同上: 交给 sc 之后就不存在漏释放的路径
-            if (mt == AVMEDIA_TYPE_VIDEO) {
-                enc->width = dec->width;
-                enc->height = dec->height;
-#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 19, 100) // FFmpeg >= 7.1
-                {
-                    // FFmpeg 9.0 移除了 AVCodec::pix_fmts, 改用 avcodec_get_supported_config
-                    const void* supported = nullptr;
-                    if (avcodec_get_supported_config(nullptr, enc_codec, AV_CODEC_CONFIG_PIX_FORMAT, 0, &supported,
-                                                     nullptr) >= 0 &&
-                        supported)
-                        enc->pix_fmt = static_cast<const AVPixelFormat*>(supported)[0];
-                    else
-                        enc->pix_fmt = AV_PIX_FMT_YUV420P;
-                }
-#else
-                enc->pix_fmt = (enc_codec->pix_fmts) ? enc_codec->pix_fmts[0] : AV_PIX_FMT_YUV420P;
-#endif
-                sc.enc_pix_fmt = enc->pix_fmt;
-                enc->time_base = in_st->time_base;
-                const int base = enc->width * enc->height;
-                const int br = (opt.videoQuality == 0) ? base * 4 : (opt.videoQuality == 1) ? base * 2 : base;
-                enc->bit_rate = static_cast<int64_t>(br) * 1000;
-                enc->gop_size = 25;
-                enc->max_b_frames = 2;
-                enc->thread_count = 0;
-                if (out_fmt->oformat->flags & AVFMT_GLOBALHEADER)
-                    enc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-            } else {
-                enc->sample_rate = dec->sample_rate > 0 ? dec->sample_rate : 44100;
-                // av_channel_layout_copy() 返回负值表示失败，此时 dst 处于未定义状态，
-                // 不能直接拿去编码。先按源声道数兜一次默认值，兜不住才判失败。
-                int layout_ret = av_channel_layout_copy(&enc->ch_layout, &dec->ch_layout);
-                if (layout_ret >= 0 && enc->ch_layout.nb_channels == 0) {
-                    // av_channel_layout_default() 返回 void（FFmpeg 里本来就没有返回值），
-                    // 不能赋值给 layout_ret —— 成功与否看下面 enc->ch_layout.nb_channels 即可。
-                    av_channel_layout_default(&enc->ch_layout,
-                                              dec->ch_layout.nb_channels > 0 ? dec->ch_layout.nb_channels : 2);
-                }
-                if (layout_ret < 0 || enc->ch_layout.nb_channels == 0) {
-                    abort_stream_setup(QStringLiteral("声道布局初始化失败: %1").arg(AvErrorString(layout_ret)));
-                    return;
-                }
-#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 19, 100) // FFmpeg >= 7.1
-                {
-                    // FFmpeg 9.0 移除了 AVCodec::sample_fmts, 改用 avcodec_get_supported_config
-                    const void* supported = nullptr;
-                    if (avcodec_get_supported_config(nullptr, enc_codec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0, &supported,
-                                                     nullptr) >= 0 &&
-                        supported)
-                        enc->sample_fmt = static_cast<const AVSampleFormat*>(supported)[0];
-                    else
-                        enc->sample_fmt = AV_SAMPLE_FMT_FLTP;
-                }
-#else
-                enc->sample_fmt = (enc_codec->sample_fmts) ? enc_codec->sample_fmts[0] : AV_SAMPLE_FMT_FLTP;
-#endif
-                enc->bit_rate = static_cast<int64_t>(opt.audioBitrateKbps) * 1000;
-                enc->time_base = {1, enc->sample_rate};
-                if (out_fmt->oformat->flags & AVFMT_GLOBALHEADER)
-                    enc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-            }
-            if (avcodec_open2(enc, enc_codec, nullptr) < 0) {
-                abort_stream_setup("打开编码器失败");
-                return;
-            }
-            if (avcodec_parameters_from_context(out_st->codecpar, enc) < 0) {
-                // 这条路径以前会连带漏掉 dec / enc: sc 还没进 streams, release_all() 看不见它。
-                abort_stream_setup("写入编码器参数失败");
-                return;
-            }
-            out_st->time_base = enc->time_base;
-            if (mt == AVMEDIA_TYPE_VIDEO && dec->sample_aspect_ratio.num)
-                out_st->sample_aspect_ratio = dec->sample_aspect_ratio;
-        }
-        streams.push_back(sc);
+    if (!BuildOutputStreamMapping(in_fmt, out_fmt, opt, video_enc_name, audio_enc_name, streams, err_msg)) {
+        cleanup_and_emit(true, err_msg);
+        return;
     }
 
     if (streams.empty()) {
@@ -779,6 +785,40 @@ void MediaExporter::Export(const ExportOptions& opt) {
         return err_msg.isEmpty();
     };
 
+    // 区间**起点**裁剪。
+    //
+    // av_seek_frame() 只能落在关键帧上，而请求的起点几乎总在两个关键帧之间：
+    // 回退之后拿到的第一个包可能**早于** start_ms。以前这里只把 start_ms 用于 seek
+    // 和进度零点，没有任何地方丢弃早于起点的包/帧 —— 于是"仅导出 0.8s 之后"实际会把
+    // 0~0.8s 的内容一起写进产物（实测 1.6s 素材导出 800~1600ms 得到整条 1.6s）。
+    // 终点一直有检查，起点没有，是这个 bug 藏这么久的原因。
+    //
+    // 两种模式的丢法必须不同：
+    //   * 拷贝：整包丢。产物从非关键帧开头，这是 -c copy 裁剪的固有限制
+    //     （ffmpeg 命令行同样如此），但至少不把用户排除掉的内容塞进来。
+    //   * 编码：包**照喂**给解码器（从关键帧起才能解出后续帧，跳过会直接解码报错），
+    //     只丢掉解出来但早于起点的帧。
+    auto packet_before_start = [&](const AVPacket* p, const AVStream* st) -> bool {
+        if (start_ms <= 0 || p->pts == AV_NOPTS_VALUE)
+            return false;
+        const qint64 pts_ms = static_cast<qint64>(p->pts * av_q2d(st->time_base) * 1000.0);
+        return pts_ms < start_ms;
+    };
+    auto frame_outside_range = [&](const StreamCtx& s, const AVFrame* f) -> bool {
+        if (start_ms <= 0 && opt.end_ms <= 0)
+            return false;
+        const int64_t ts = (f->pts != AV_NOPTS_VALUE) ? f->pts : f->best_effort_timestamp;
+        if (ts == AV_NOPTS_VALUE)
+            return false;
+        const qint64 pts_ms =
+            static_cast<qint64>(ts * av_q2d(in_fmt->streams[static_cast<unsigned>(s.in_idx)]->time_base) * 1000.0);
+        if (start_ms > 0 && pts_ms < start_ms)
+            return true;
+        // 终点只按用户明确要求的 opt.end_ms 裁：end_ms 在时长未知时是 int64 上限、
+        // 在时长已知时是容器声明的时长，拿它裁会误伤元数据少报的真实尾帧。
+        return opt.end_ms > 0 && pts_ms > end_ms;
+    };
+
     // 主读取循环
     bool reached_end = false;
     // 被中断回调打断的读: 必须与"读错了"分开 —— 前者是取消, 后者是失败。
@@ -810,23 +850,30 @@ void MediaExporter::Export(const ExportOptions& opt) {
         }
 
         AVStream* in_st = in_fmt->streams[pkt->stream_index];
-        if (pkt->pts != AV_NOPTS_VALUE && duration_ms > 0) {
-            const qint64 pts_ms = static_cast<qint64>(pkt->pts * av_q2d(in_st->time_base) * 1000.0);
+        // PTS(ms) 一次算好复用：进度统计、起点裁剪、终点检查都要它，
+        // 原来每处各算一遍（浮点换算重复三次，改一处漏两处）。
+        const qint64 pkt_pts_ms = (pkt->pts != AV_NOPTS_VALUE)
+                                      ? static_cast<qint64>(pkt->pts * av_q2d(in_st->time_base) * 1000.0)
+                                      : AV_NOPTS_VALUE;
+        if (pkt_pts_ms != AV_NOPTS_VALUE && duration_ms > 0) {
             qint64& seen = stream_seen_ms[static_cast<size_t>(pkt->stream_index)];
-            if (pts_ms > seen)
-                seen = pts_ms;
+            if (pkt_pts_ms > seen)
+                seen = pkt_pts_ms;
             if (seen > max_seen_ms)
                 max_seen_ms = seen;
         }
 
+        // 区间起点检查（拷贝模式才丢包；编码模式的丢帧在解出帧之后，见 encode 分支）
+        if (!sc->do_encode && packet_before_start(pkt, in_st)) {
+            av_packet_unref(pkt);
+            continue;
+        }
+
         // 区间终点检查
-        if (end_ms > 0 && pkt->pts != AV_NOPTS_VALUE) {
-            const qint64 pts_ms = static_cast<qint64>(pkt->pts * av_q2d(in_st->time_base) * 1000.0);
-            if (pts_ms > end_ms) {
-                av_packet_unref(pkt);
-                reached_end = true;
-                break;
-            }
+        if (end_ms > 0 && pkt_pts_ms != AV_NOPTS_VALUE && pkt_pts_ms > end_ms) {
+            av_packet_unref(pkt);
+            reached_end = true;
+            break;
         }
 
         if (!sc->do_encode) {
@@ -855,6 +902,12 @@ void MediaExporter::Export(const ExportOptions& opt) {
                         if (err_msg.isEmpty())
                             err_msg = QString("解码失败: %1").arg(AvErrorString(recv_ret));
                         break;
+                    }
+                    // 包已喂进解码器（从关键帧起才解得动），但解出来的帧可能早于起点
+                    // 或晚于终点 —— 这些不进编码器，否则产物仍会带上区间外的内容。
+                    if (frame_outside_range(*sc, frame)) {
+                        av_frame_unref(frame);
+                        continue;
                     }
                     const bool ok =
                         (mt == AVMEDIA_TYPE_VIDEO) ? encode_video_frame(*sc, frame) : encode_audio_frame(*sc, frame);
@@ -910,6 +963,10 @@ void MediaExporter::Export(const ExportOptions& opt) {
                 if (rr < 0) {
                     err_msg = QString("解码失败: %1").arg(AvErrorString(rr));
                     break;
+                }
+                if (frame_outside_range(s, frame)) {
+                    av_frame_unref(frame);
+                    continue;
                 }
                 const bool ok = (s.dec->codec_type == AVMEDIA_TYPE_VIDEO) ? encode_video_frame(s, frame)
                                                                           : encode_audio_frame(s, frame);

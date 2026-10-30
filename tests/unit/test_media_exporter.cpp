@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <string>
@@ -563,5 +564,202 @@ TEST(MediaExporterSuccess, CancelBeforeStartEmitsCanceledOnly) {
     EXPECT_FALSE(run.finished) << "取消绝不能报成功";
     EXPECT_FALSE(run.error) << "取消不是失败, 不该报 ExportError";
     EXPECT_FALSE(QFileInfo::exists(output)) << "启动前取消不该产生任何文件";
+    EXPECT_TRUE(work.TempResidue().isEmpty());
+}
+
+// ============================================================
+// 片段区间 (ExportOptions::start_ms / end_ms)
+//
+// 这个功能在 UI 上是「仅导出指定片段」+ 两个秒级 spinbox，**默认走拷贝模式**
+// （「重新编码」默认不勾），却一直没有任何测试。
+//
+// 原来只实现了区间终点：start_ms 只喂给 av_seek_frame()，而 seek 只能落在关键帧上，
+// 回退之后拿到的包没有被丢弃 —— 于是"仅导出 0.8s 之后"会静默产出整条视频
+// （实测 1.6s 素材、区间 800~1600ms，产物是 40 个包 / 1.602s）。
+// 终点有检查、起点没有，是这个 bug 长期没被发现的原因。
+//
+// 下面用确定性样本（128x72 / 25fps / 40 帧 / 1.6s / GOP=25 即 1 秒一个关键帧）钉住：
+//   * 两个端点都必须生效（包数按区间算，不是整条）；
+//   * 产物时间轴从请求的起点开始（容器写编辑列表，video_start_seconds ≈ start）；
+//   * 只给终点时行为不变（别为了修起点把终点弄坏）；
+//   * 起点 ≥ 终点要报错，而不是产出空文件。
+// ============================================================
+
+namespace {
+
+// 按 fps 把毫秒区间换算成期望帧/包数。
+//
+// 两个细节容易写错（第一版就写错了）：
+//   * 终点是**含**的（循环里判 `pts_ms > end_ms` 才停），所以末尾要 +1；
+//   * 但源的最后一帧通常早于 end_ms（1.6s 素材的帧在 0..1560ms），
+//     所以结果必须用「源里剩下的帧数」封顶，否则会期望一个不存在的帧。
+int ExpectedPackets(int fps, qint64 start_ms, qint64 end_ms, int source_packets) {
+    const qint64 from = (start_ms > 0) ? start_ms : 0;
+    const int skipped = static_cast<int>(from * fps / 1000);
+    const int kept = static_cast<int>((end_ms - from) * fps / 1000) + 1;
+    const int available = source_packets - skipped;
+    // 不写 std::min：windows.h 的 min 宏会把它打断成 `std::(`（MSVC C2589）。
+    return (kept < available) ? kept : available;
+}
+
+// 请求区间与实际产物时长允许的偏差：两个端点都不是帧边界的整数倍时，
+// 落点最多差一帧（40ms）；再加容器层「最后一帧时长」的口径差，给两帧余量。
+constexpr double kRangeToleranceSec = 0.12;
+
+} // namespace
+
+// 拷贝模式：按起点裁掉前面的包。产物从非关键帧开头（-c copy 裁剪的固有限制），
+// 但**绝不能把用户排除掉的内容一起写进去**。
+TEST(MediaExporterRange, CopyHonorsRequestedStartAndEnd) {
+    AppScope app_scope;
+    WorkDir work;
+    ASSERT_TRUE(work.valid());
+
+    const auto media = MakeSampleMedia(work.stdPath());
+    ASSERT_TRUE(media.ok) << media.error;
+    const auto source = videoeye_test::ProbeMediaFile(media.path);
+    ASSERT_TRUE(source.opened) << source.error;
+    ASSERT_GT(media.fps, 0);
+
+    const QString output = work.path() + "/range_copy.mp4";
+    exporter::ExportOptions opt = MakeOptions(media.path, output, QStringLiteral("mp4"));
+    opt.reencode = false;
+    opt.start_ms = 800;
+    opt.end_ms = 1600;
+
+    const ExportRun run = RunExport(opt);
+    ASSERT_TRUE(run.finished) << "区间导出必须成功; error=" << run.error_msg.toStdString();
+    EXPECT_FALSE(run.error);
+
+    ASSERT_TRUE(QFileInfo::exists(output));
+    const auto probe = videoeye_test::ProbeMediaFile(output.toStdString());
+    ASSERT_TRUE(probe.opened) << probe.error;
+
+    const int expected = ExpectedPackets(media.fps, opt.start_ms, opt.end_ms, source.video_packet_count);
+    // 决定性断言：修复前这里是 40（整条），现在是 20。
+    EXPECT_EQ(probe.video_packet_count, expected) << "起点必须生效：包数应按 800~1600ms 算，而不是整条";
+    EXPECT_LT(probe.video_packet_count, source.video_packet_count) << "片段不该比源还长";
+
+    // 时间轴从请求的起点开始：mp4 用编辑列表表达（start_time > 0），
+    // 播放器据此跳过前面的部分。它若为 0，说明产物仍从文件开头播起。
+    EXPECT_NEAR(probe.video_start_seconds, 0.8, 0.061) << "产物时间轴应从请求起点 0.8s 开始";
+    EXPECT_NEAR(probe.video_duration_seconds, (opt.end_ms - opt.start_ms) / 1000.0, kRangeToleranceSec);
+
+    // 拷贝模式起点不在关键帧上 → 残余 GOP 的那几帧解不出来，这是已知限制。
+    // 不断言具体数字，只保证"确实是从非关键帧起"，将来 FFmpeg 改进也不会假红。
+    EXPECT_LT(probe.frame_count, probe.video_packet_count)
+        << "拷贝裁剪的产物首帧不在关键帧上，能解出的帧应少于包数（若相等说明起点被对齐到了关键帧）";
+    EXPECT_GT(probe.frame_count, 0) << "至少要有可解码的部分";
+
+    EXPECT_TRUE(work.TempResidue().isEmpty());
+}
+
+// 编码模式：包照喂解码器（要关键帧才解得动），只丢掉区间外的帧 —— 结果是
+// **两端都精确、且首帧可解码**的片段。
+TEST(MediaExporterRange, ReencodeTrimsExactlyAndStaysDecodable) {
+    AppScope app_scope;
+    WorkDir work;
+    ASSERT_TRUE(work.valid());
+
+    const auto media = MakeSampleMedia(work.stdPath());
+    ASSERT_TRUE(media.ok) << media.error;
+    const auto source = videoeye_test::ProbeMediaFile(media.path);
+    ASSERT_TRUE(source.opened) << source.error;
+
+    const QString output = work.path() + "/range_enc.mp4";
+    exporter::ExportOptions opt = MakeOptions(media.path, output, QStringLiteral("mp4"));
+    opt.reencode = true;
+    opt.start_ms = 800;
+    opt.end_ms = 1600;
+
+    const ExportRun run = RunExport(opt);
+    ASSERT_TRUE(run.finished) << "区间转码必须成功; error=" << run.error_msg.toStdString();
+
+    const auto probe = videoeye_test::ProbeMediaFile(output.toStdString());
+    ASSERT_TRUE(probe.opened) << probe.error;
+
+    EXPECT_NEAR(probe.video_start_seconds, 0.8, 0.061) << "产物时间轴应从请求起点开始";
+    EXPECT_NEAR(probe.video_duration_seconds, (opt.end_ms - opt.start_ms) / 1000.0, kRangeToleranceSec);
+    // 解码器少还原一帧是容器口径（源的 40 包也只解出 39 帧），所以拿**解码帧数**封顶。
+    const int expected = ExpectedPackets(media.fps, opt.start_ms, opt.end_ms, source.frame_count);
+    EXPECT_NEAR(static_cast<double>(probe.video_packet_count), expected, 1.5);
+    // 重编码路径从关键帧起解码、只丢帧不丢包，所以首帧一定可解码。
+    EXPECT_GE(probe.frame_count, probe.video_packet_count - 1)
+        << "重编码片段必须从头就能解码（不该像拷贝模式那样有残 GOP）";
+
+    EXPECT_TRUE(work.TempResidue().isEmpty());
+}
+
+// 只设终点（不设起点）是原来就正确的路径，修复起点时不能把它带坏。
+TEST(MediaExporterRange, EndOnlyTrimStillWorks) {
+    AppScope app_scope;
+    WorkDir work;
+    ASSERT_TRUE(work.valid());
+
+    const auto media = MakeSampleMedia(work.stdPath());
+    ASSERT_TRUE(media.ok) << media.error;
+
+    for (const bool reencode : {false, true}) {
+        const QString output = work.path() + (reencode ? "/end_only_enc.mp4" : "/end_only_copy.mp4");
+        exporter::ExportOptions opt = MakeOptions(media.path, output, QStringLiteral("mp4"));
+        opt.reencode = reencode;
+        opt.start_ms = -1;
+        opt.end_ms = 800;
+
+        const ExportRun run = RunExport(opt);
+        ASSERT_TRUE(run.finished) << "只设终点必须成功; error=" << run.error_msg.toStdString();
+
+        const auto probe = videoeye_test::ProbeMediaFile(output.toStdString());
+        ASSERT_TRUE(probe.opened) << probe.error;
+        EXPECT_NEAR(probe.video_start_seconds, 0.0, 0.061) << "没要求起点就不该裁剪开头";
+        EXPECT_NEAR(probe.video_duration_seconds, 0.8, kRangeToleranceSec)
+            << (reencode ? "转码" : "拷贝") << " 只设终点时产物应为 0~0.8s";
+    }
+    EXPECT_TRUE(work.TempResidue().isEmpty());
+}
+
+// 不设区间 = 整条导出，不能被新加的裁剪逻辑误伤。
+TEST(MediaExporterRange, NoRangeExportsWholeFile) {
+    AppScope app_scope;
+    WorkDir work;
+    ASSERT_TRUE(work.valid());
+
+    const auto media = MakeSampleMedia(work.stdPath());
+    ASSERT_TRUE(media.ok) << media.error;
+    const auto source = videoeye_test::ProbeMediaFile(media.path);
+    ASSERT_TRUE(source.opened) << source.error;
+
+    const QString output = work.path() + "/whole.mp4";
+    exporter::ExportOptions opt = MakeOptions(media.path, output, QStringLiteral("mp4"));
+    opt.start_ms = -1;
+    opt.end_ms = -1;
+
+    const ExportRun run = RunExport(opt);
+    ASSERT_TRUE(run.finished) << run.error_msg.toStdString();
+
+    const auto probe = videoeye_test::ProbeMediaFile(output.toStdString());
+    ASSERT_TRUE(probe.opened) << probe.error;
+    EXPECT_EQ(probe.video_packet_count, source.video_packet_count) << "整条导出不应丢任何包";
+    ExpectDurationInRange(probe.duration_seconds, media.duration_seconds);
+}
+
+// 起点 >= 终点：必须报错退出，不能产出一个空壳文件冒充成功。
+TEST(MediaExporterRange, InvertedRangeIsRejected) {
+    AppScope app_scope;
+    WorkDir work;
+    ASSERT_TRUE(work.valid());
+
+    const auto media = MakeSampleMedia(work.stdPath());
+    ASSERT_TRUE(media.ok) << media.error;
+
+    const QString output = work.path() + "/inverted.mp4";
+    exporter::ExportOptions opt = MakeOptions(media.path, output, QStringLiteral("mp4"));
+    opt.start_ms = 1200;
+    opt.end_ms = 800;
+
+    const ExportRun run = RunExport(opt);
+    EXPECT_FALSE(run.finished) << "区间反了绝不能报成功";
+    EXPECT_TRUE(run.error);
+    EXPECT_FALSE(QFileInfo::exists(output)) << "失败不该留下产物";
     EXPECT_TRUE(work.TempResidue().isEmpty());
 }
