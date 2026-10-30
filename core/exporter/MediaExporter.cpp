@@ -4,10 +4,12 @@
 #include "infrastructure/logging/PerfMetrics.h"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QStringList>
 #include <QUuid>
+#include <QtGlobal> // Q_OS_WIN / Qt::CaseSensitivity
 #include <algorithm>
 #include <limits>
 #include <vector>
@@ -230,6 +232,22 @@ QString MuxerNameForFormat(const QString& format) {
     if (format == QLatin1String("m4a"))
         return QStringLiteral("ipod");
     return format;
+}
+
+// 判定"两条路径是不是同一个文件"的键。
+//
+// 文件已存在时用规范路径：canonicalFilePath 会把 `./a.mp4`、`a/../a.mp4`
+// 与符号链接都归一成同一条绝对路径 —— 手写字符串比较会漏掉这些写法，而用户
+// 在导出框里敲 `./a.mp4` 是很常见的。
+// 文件还不存在时（输出路径大多如此）canonicalFilePath 返回空，退回绝对路径 ——
+// 它对不存在的路径同样返回一条完整的绝对路径，所以两条不同的路径不会退化成
+// 两个空串、进而被误判成"同一个文件"。
+QString SameFileKey(const QString& path) {
+    const QFileInfo info(path);
+    const QString canonical = info.canonicalFilePath();
+    if (!canonical.isEmpty())
+        return canonical;
+    return QDir::cleanPath(info.absoluteFilePath());
 }
 
 // 真实路径是"临时文件"（xxx.mp4.part-<pid>-<uuid>），交给 avformat 按文件名猜封装时
@@ -458,6 +476,26 @@ void MediaExporter::Export(const ExportOptions& opt) {
     if (IsCanceled()) {
         emit ExportCanceled(opt.output_path);
         return;
+    }
+    // ---- 输出路径就是源文件时直接拒绝 ----
+    //
+    // 原子替换（目标 -> 备份 / 临时 -> 目标 / 删备份）保证了"失败或取消时原目标
+    // 完好"，但目标就是源文件时，这套保护的方向正好反了：三条 rename 全成功之后
+    // 备份被删掉，源片被片段**永久**替换，没有提示、也没有第二份拷贝。用户只是在
+    // 导出框里选了同一个名字（或默认填了同名），不该因此静默丢掉原始素材。
+    // "原地裁剪"不是本工具承诺的能力 —— 想要它，请先备份。
+    if (!opt.input_path.isEmpty() && !opt.output_path.isEmpty()) {
+#ifdef Q_OS_WIN
+        // NTFS 不区分大小写：clip.mp4 与 CLIP.MP4 是同一个文件
+        const Qt::CaseSensitivity path_cs = Qt::CaseInsensitive;
+#else
+        const Qt::CaseSensitivity path_cs = Qt::CaseSensitive;
+#endif
+        if (SameFileKey(opt.output_path).compare(SameFileKey(opt.input_path), path_cs) == 0) {
+            emit ExportError(QStringLiteral("输出路径与源文件是同一个文件：完成后会用片段原地替换原文件，"
+                                            "且无法撤销。请另选输出路径"));
+            return;
+        }
     }
     // 见上方 ExportTimingGuard：只有下面两处 ExportFinished 会把标志置起来
     bool export_succeeded = false;

@@ -763,3 +763,86 @@ TEST(MediaExporterRange, InvertedRangeIsRejected) {
     EXPECT_FALSE(QFileInfo::exists(output)) << "失败不该留下产物";
     EXPECT_TRUE(work.TempResidue().isEmpty());
 }
+
+// ============================================================
+// 输出路径指向源文件（数据安全）
+//
+// 原子替换的设计意图是"失败或取消时原目标完好"：目标 -> 备份 / 临时 -> 目标 /
+// 删备份，任一步失败都把备份改回去。但**目标就是源文件**时这套保护的方向反了 ——
+// 三步全成功之后备份被删掉，唯一那一份原始素材被片段永久替换，全程无提示、
+// 也没有第二份拷贝。用户只是在导出框里选了同一个名字（或默认填了同名），
+// 不该因此静默丢掉素材。下面三条把这个拒绝钉死。
+// ============================================================
+
+TEST(MediaExporterSourceGuard, RefusesToExportOntoTheSourceFile) {
+    AppScope app_scope;
+    WorkDir work;
+    ASSERT_TRUE(work.valid());
+
+    const auto media = MakeSampleMedia(work.stdPath());
+    ASSERT_TRUE(media.ok) << media.error;
+
+    const QString source = QString::fromStdString(media.path);
+    const QByteArray before = ReadWholeFile(source);
+    ASSERT_FALSE(before.isEmpty());
+
+    // 输出路径就写源路径本身
+    const ExportRun run = RunExport(MakeOptions(media.path, source, QStringLiteral("mp4")));
+
+    EXPECT_FALSE(run.finished) << "覆盖源文件的导出绝不能报成功";
+    EXPECT_FALSE(run.canceled);
+    ASSERT_TRUE(run.error) << "必须报出明确的失败原因";
+    EXPECT_NE(run.error_msg.indexOf(QStringLiteral("同一个文件")), -1)
+        << "失败原因要点明是同一个文件, 实际是: " << run.error_msg.toStdString();
+
+    // 源文件一个字节都不能变，而且仍然是一份能被打开的媒体。
+    EXPECT_EQ(ReadWholeFile(source), before) << "源文件被改动了";
+    const auto probe = videoeye_test::ProbeMediaFile(media.path);
+    EXPECT_TRUE(probe.opened) << probe.error;
+    // 只判"还是一份能打开、有音视频流的媒体"。别拿 media.frame_count 比对：
+    // 那是 spec 声明的 40 帧，实际解码常是 39（编码器侧的固有差异），与本次保护无关。
+    EXPECT_EQ(probe.video_streams, 1);
+    EXPECT_EQ(probe.audio_streams, 1);
+    EXPECT_GT(probe.frame_count, 0) << "源文件仍能解码出帧";
+    EXPECT_TRUE(work.TempResidue().isEmpty()) << "不该留下 .part / .bak 残留";
+}
+
+// 同一文件的不同写法：`dir/./clip.mp4` 与 `dir/clip.mp4` 指向同一份数据，
+// 单靠字符串比较会放过它（用户在导出框里敲 `./clip.mp4` 是很常见的写法）。
+TEST(MediaExporterSourceGuard, EquivalentSpellingsAreStillRefused) {
+    AppScope app_scope;
+    WorkDir work;
+    ASSERT_TRUE(work.valid());
+
+    const auto media = MakeSampleMedia(work.stdPath());
+    ASSERT_TRUE(media.ok) << media.error;
+
+    const QString dotted = work.path() + "/./" + QFileInfo(QString::fromStdString(media.path)).fileName();
+    const QByteArray before = ReadWholeFile(QString::fromStdString(media.path));
+
+    const ExportRun run = RunExport(MakeOptions(media.path, dotted, QStringLiteral("mp4")));
+
+    EXPECT_FALSE(run.finished);
+    ASSERT_TRUE(run.error);
+    EXPECT_NE(run.error_msg.indexOf(QStringLiteral("同一个文件")), -1) << run.error_msg.toStdString();
+    EXPECT_EQ(ReadWholeFile(QString::fromStdString(media.path)), before) << "源文件被改动了";
+}
+
+// 反向守护：校验不能误伤正常导出。改成"只要两边都非空就拒绝"也能让上面两条全绿，
+// 所以必须有一条证明不同路径照样能跑完。
+TEST(MediaExporterSourceGuard, ADifferentOutputPathIsStillAccepted) {
+    AppScope app_scope;
+    WorkDir work;
+    ASSERT_TRUE(work.valid());
+
+    const auto media = MakeSampleMedia(work.stdPath());
+    ASSERT_TRUE(media.ok) << media.error;
+
+    const QString output = work.path() + "/elsewhere.mp4";
+    const ExportRun run = RunExport(MakeOptions(media.path, output, QStringLiteral("mp4")));
+
+    ASSERT_TRUE(run.finished) << run.error_msg.toStdString();
+    EXPECT_FALSE(run.error) << "正常路径不该被同文件校验拦下";
+    EXPECT_TRUE(QFileInfo::exists(output));
+    EXPECT_EQ(run.error_msg.indexOf(QStringLiteral("同一个文件")), -1);
+}

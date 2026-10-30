@@ -297,6 +297,11 @@ void ExportController::StartMediaExportNow(const exporter::ExportOptions& opt) {
     }
     // 注意: 不再预先删除目标文件。MediaExporter 先写同目录临时文件, 成功后才原子替换目标,
     // 因此导出失败/取消时原文件完好保留, 不会出现"旧文件被删、新导出又失败"的数据丢失。
+    //
+    // ❗ 但"目标就是源文件"这一种情况原子替换保护不了 —— 三步 rename 全成功之后备份
+    // 被删掉，唯一那一份原片被片段永久替换。这道判定放在 MediaExporter::Export 的
+    // 最前面（同一份逻辑，任何调用方都受保护），**别在 UI 侧另抄一份**；这里不再拦，
+    // 用户会在后台线程开工前收到一条 ExportError。
 
     // 取消令牌在线程启动**之前**注入: 启动前的"立即取消"必须能被 worker 看到。
     auto* exporter = new exporter::MediaExporter();
