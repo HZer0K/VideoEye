@@ -1347,6 +1347,24 @@ add_test(NAME ReportingPanelLayoutTests COMMAND test_reporting_panel_layout)
 set_tests_properties(ReportingPanelLayoutTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# =================================================
+# 测试 35：维度状态聚合（FinalizeDimensionStatus 到底把哪些算成"跑过"）
+# 说明: test_dimension_status.cpp 测的是 DimensionStatus 结构自身的口径，
+#       test_analysis_pipeline_edges.cpp 只验"dimensions 是权威口径"用音频位流一个维度。
+#       "每个维度都被填进去了吗""某类事实算不算这个维度跑过"长期零覆盖。
+#
+#       立门时抓到的真问题：ContainerDiagnosticsInfo 有 7 个成员
+#       （avi/flv/asf/ogg/mkv/mxf/mpeg_ps），枚举注释与 QcRuleEngine 注释也都写 7 种，
+#       唯独聚合只看前 5 个 —— MXF / MPEG-PS 文件的 container.* 规则照常报缺陷，
+#       报告里「容器体检」却写着"不是 AVI/FLV/ASF/OGG/MKV 容器，未执行"。
+# =================================================
+videoeye_add_test(test_dimension_aggregation
+    unit/test_dimension_aggregation.cpp
+)
+target_link_libraries(test_dimension_aggregation PRIVATE VideoEyeAnalysis)
+add_test(NAME DimensionAggregationTests COMMAND test_dimension_aggregation)
+
+
 
 # =================================================
 # 测试 32：七个容器结构分析器的参数化健壮性（评审第 10 项）

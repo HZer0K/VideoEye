@@ -706,14 +706,42 @@ void AnalysisResultAssembler::FinalizeDimensionStatus(int audio_tracks_analyzed,
         add(status);
     }
 
-    // ---- 容器体检（AVI / FLV / ASF / OGG / MKV） ----
+    // ---- 容器体检（AVI / FLV / ASF / OGG / MKV / MXF / MPEG-PS）----
     {
         const model::ContainerDiagnosticsInfo& diag = result_.container_diagnostics;
-        const bool any =
-            diag.avi.analyzed || diag.flv.analyzed || diag.asf.analyzed || diag.ogg.analyzed || diag.mkv.analyzed;
+        // 七种容器的体检结构体字段名是同一套（analyzed / scan_complete），列成一张表。
+        //
+        // ❗ 别再手抄两串 `||`（一轮 any、一轮 complete）：2026-10-30 的 bug 就是这么来的 ——
+        // ContainerDiagnosticsInfo 加了 mxf / mpeg_ps 两个成员，两串都忘了跟着改，于是
+        // MXF 文件的 container.mxf.* 规则照常跑、照常报缺陷，这里却判成"不是
+        // AVI/FLV/ASF/OGG/MKV 容器，未执行"，报告自相矛盾。表只有一处，未执行文案也由它
+        // 生成，不会再出现"文案里列的格式"与"真正参与判定的格式"不一致。
+        struct FormatFacts {
+            const char* label;
+            bool analyzed;
+            bool scan_complete;
+        };
+        const FormatFacts formats[] = {
+            {"AVI", diag.avi.analyzed, diag.avi.scan_complete},
+            {"FLV", diag.flv.analyzed, diag.flv.scan_complete},
+            {"ASF", diag.asf.analyzed, diag.asf.scan_complete},
+            {"OGG", diag.ogg.analyzed, diag.ogg.scan_complete},
+            {"MKV", diag.mkv.analyzed, diag.mkv.scan_complete},
+            {"MXF", diag.mxf.analyzed, diag.mxf.scan_complete},
+            {"MPEG-PS", diag.mpeg_ps.analyzed, diag.mpeg_ps.scan_complete},
+        };
+        bool any = false;
+        std::string supported;
+        for (const FormatFacts& format : formats) {
+            any = any || format.analyzed;
+            if (!supported.empty())
+                supported += "/";
+            supported += format.label;
+        }
+
         if (!any) {
             add(model::MakeSkippedDimension(AnalysisDimension::LegacyContainer,
-                                            "不是 AVI/FLV/ASF/OGG/MKV 容器，或该格式无需额外体检"));
+                                            "不是 " + supported + " 容器，或该格式无需额外体检"));
         } else {
             DimensionStatus status;
             status.dimension = AnalysisDimension::LegacyContainer;
@@ -724,10 +752,9 @@ void AnalysisResultAssembler::FinalizeDimensionStatus(int audio_tracks_analyzed,
             status.units_total = 1;
             status.has_coverage = true;
             status.coverage_ratio = 1.0;
-            const bool complete =
-                (!diag.avi.analyzed || diag.avi.scan_complete) && (!diag.flv.analyzed || diag.flv.scan_complete) &&
-                (!diag.asf.analyzed || diag.asf.scan_complete) && (!diag.ogg.analyzed || diag.ogg.scan_complete) &&
-                (!diag.mkv.analyzed || diag.mkv.scan_complete);
+            bool complete = true;
+            for (const FormatFacts& format : formats)
+                complete = complete && (!format.analyzed || format.scan_complete);
             if (!complete) {
                 status.capability = AnalysisCapability::Partial;
                 status.failure_reason = "结构扫描未跑完（文件过大或中途遇到畸形数据）";
