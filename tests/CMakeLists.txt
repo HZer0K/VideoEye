@@ -1325,6 +1325,30 @@ set_tests_properties(ReportingPanelLifecycleTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # =================================================
+# 测试 34：「报告与批量 QC」页的布局回归
+# 说明: 上一轮给分析页 14 页补了逐 tab 的几何守卫（test_analysis_page_layout），
+#       但这一页不在 AnalysisPageCatalog 里 —— 它由 MainWindow 直接 new，是全项目
+#       控件最多、却零几何覆盖的一片。"控件建了但漏 addWidget → 停在 100x30@(0,0)
+#       压在页头上叠字"那个手误在这一页完全没人守。
+#
+#       判据（重叠 / 默认几何 / 逐 tab）与阈值复用 tests/support/WidgetLayoutScan.h，
+#       与分析页用例是同一份，不另抄一套。
+#       面板自带后台任务协调器，但本用例只 new 面板 + 直接调 BatchScanView 的
+#       BeginScan/AppendResult，不跑分析、不扫目录 —— 仍然是纯布局用例。
+# =================================================
+videoeye_add_test(test_reporting_panel_layout
+    unit/test_reporting_panel_layout.cpp
+)
+target_link_libraries(test_reporting_panel_layout PRIVATE
+    VideoEyeReportingPanel
+    Qt6::Widgets
+)
+add_test(NAME ReportingPanelLayoutTests COMMAND test_reporting_panel_layout)
+set_tests_properties(ReportingPanelLayoutTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+
+# =================================================
 # 测试 32：七个容器结构分析器的参数化健壮性（评审第 10 项）
 # 说明: Asf / Avi / Flv / Ogg / Ts / MpegPs / Mxf 的 Analyze() 签名完全一致，却长期零覆盖。
 #       这里用 TEST_P 跑"七分析器 × 三种输入"：文件不存在 / 魔数对不上 /

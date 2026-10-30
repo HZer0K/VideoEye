@@ -14,9 +14,12 @@
 // 判据（任一条失败即红）
 // ----------------------
 //   1) 页面的可见控件里，**同一父下**的两个兄弟不得几何重叠（>2px 才算，容忍圆角/边框）；
-//   2) 不得出现"默认几何 100x30 @ (0,0)"的可见控件 —— 这是没进布局的强特征；
+//   2) 不得出现"停在构造默认几何"的可见控件 —— 这是没进布局的强特征；
 //   3) 套在 QScrollArea 里的页面内容高度不得小于自身 minimumSizeHint 的高度
 //      （widgetResizable 下内容至少该拿到最小尺寸，不够说明被压扁了）。
+//
+// 判据 1/2 的实现在 tests/support/WidgetLayoutScan.h，与「报告与批量 QC」页
+// （test_reporting_panel_layout.cpp）共用同一份 —— 那个手误在那一页同样会犯。
 //
 // 两件容易被忽略的事（都量过，不是凭感觉加的）
 // --------------------------------------------
@@ -35,29 +38,28 @@
 //
 // 已知局限
 // --------
-//   * 质量诊断页与报告页只有空态覆盖 —— 它们要 AnalysisFacade 出内容，那会把
-//     纯布局用例变成集成用例（起线程 / 读文件）。
+//   * 质量诊断页只有空态覆盖 —— 它要 AnalysisFacade 出内容，那会把纯布局用例变成
+//     集成用例（起线程 / 读文件）。报告页由 test_reporting_panel_layout.cpp 单独守
+//     （它不在 AnalysisPageCatalog 里，是 MainWindow 直接 new 的）。
 //   * 嵌套 QTabWidget 只保证外层被激活到（内层在外层隐藏时切不出几何）。
 //   * 像素级截图比对是另一条路，但 offscreen 下字体度量跟真实平台有差异，判据不稳。
 
 #include <gtest/gtest.h>
 
 #include <QApplication>
-#include <QGroupBox>
 #include <QLayout>
-#include <QRect>
 #include <QScrollArea>
 #include <QTabWidget>
 #include <QVBoxLayout>
 #include <QWidget>
 
-#include <set>
 #include <string>
 #include <vector>
 
 #include "core/domain/model/AnalysisFeature.h"
 #include "core/domain/model/VisualDefectOptions.h"
 #include "tests/support/AnalysisPageDataFixture.h"
+#include "tests/support/WidgetLayoutScan.h"
 #include "ui/analysis_panel/AnalysisPageCatalog.h"
 #include "ui/analysis_panel/AnalysisPageFactory.h"
 
@@ -66,6 +68,10 @@ namespace {
 using videoeye::model::AnalysisFeature;
 using videoeye::model::VisualDefectOptions;
 using namespace videoeye::ui;
+
+// 判据本身在 tests/support/WidgetLayoutScan.h（报告与批量 QC 页也用同一份）。
+using videoeye_test::ScanEveryTabState;
+using videoeye_test::TabScanResult;
 
 // 与 test_overview_page_layout.cpp 同款：只构造、不渲染，跑 offscreen 平台。
 QApplication* EnsureApp() {
@@ -77,83 +83,6 @@ QApplication* EnsureApp() {
         return new QApplication(argc, argv);
     }();
     return app;
-}
-
-std::string Describe(const QWidget* w) {
-    return std::string(w->metaObject()->className()) + " geo=" + std::to_string(w->x()) + "," + std::to_string(w->y()) +
-           " " + std::to_string(w->width()) + "x" + std::to_string(w->height());
-}
-
-// 判据 1：同一父下可见兄弟两两不重叠。
-void CollectSiblingOverlaps(QWidget* root, const std::string& where, std::vector<std::string>& out) {
-    std::vector<QWidget*> pending{root};
-    while (!pending.empty()) {
-        QWidget* parent = pending.back();
-        pending.pop_back();
-
-        std::vector<QWidget*> visible;
-        for (QObject* child : parent->children()) {
-            auto* w = qobject_cast<QWidget*>(child);
-            if (!w || w->isWindow())
-                continue;
-            pending.push_back(w);
-            if (!w->isVisible() || w->width() <= 0 || w->height() <= 0)
-                continue;
-            visible.push_back(w);
-        }
-
-        for (size_t i = 0; i < visible.size(); ++i) {
-            for (size_t j = i + 1; j < visible.size(); ++j) {
-                const QRect overlap = visible[i]->geometry().intersected(visible[j]->geometry());
-                // 2px 以内不算：边框、圆角、焦点框会有一两像素的合法交叠。
-                if (overlap.width() > 2 && overlap.height() > 2) {
-                    out.push_back(where + ": 兄弟控件重叠 —— " + Describe(visible[i]) + "  X  " + Describe(visible[j]) +
-                                  "（父 " + parent->metaObject()->className() + "）");
-                }
-            }
-        }
-    }
-}
-
-// 判据 2：默认几何 = 没进布局。
-void CollectDefaultGeometry(QWidget* root, const std::string& where, std::vector<std::string>& out) {
-    std::vector<QWidget*> pending{root};
-    while (!pending.empty()) {
-        QWidget* parent = pending.back();
-        pending.pop_back();
-        for (QObject* child : parent->children()) {
-            auto* w = qobject_cast<QWidget*>(child);
-            if (!w || w->isWindow())
-                continue;
-            pending.push_back(w);
-            // 100x30 @ (0,0) 是 QWidget 未进任何布局时的默认几何 —— 它必然压在页面
-            // 左上角的页头/分组标题上。真有一个天生就这么大的控件也认了：先让它红，
-            // 再决定是放宽判据还是修布局，总比静默叠字强。
-            if (w->isVisible() && w->x() == 0 && w->y() == 0 && w->width() == 100 && w->height() == 30)
-                out.push_back(where + ": 可见控件停在默认几何（疑似漏 addWidget）—— " + Describe(w));
-        }
-    }
-}
-
-// 扫一遍当前可见树：前两条判据 + 把这次看到的可见控件记进 seen（用于并集统计）。
-void ScanCurrentState(QWidget* page, const std::string& where, std::vector<std::string>& findings,
-                      std::set<const QWidget*>& seen) {
-    CollectSiblingOverlaps(page, where, findings);
-    CollectDefaultGeometry(page, where, findings);
-
-    std::vector<QWidget*> pending{page};
-    while (!pending.empty()) {
-        QWidget* parent = pending.back();
-        pending.pop_back();
-        for (QObject* child : parent->children()) {
-            auto* w = qobject_cast<QWidget*>(child);
-            if (!w || w->isWindow())
-                continue;
-            pending.push_back(w);
-            if (w->isVisible())
-                seen.insert(w);
-        }
-    }
 }
 
 // 一套建好的页面 + 承载它们的宿主。页面轮流进宿主的布局里量几何。
@@ -213,24 +142,10 @@ ScanOutcome ScanAllPages(PageSet& set) {
         QApplication::processEvents();
         QApplication::processEvents();
 
-        std::set<const QWidget*> seen;
-        ScanCurrentState(page, set.names[i], outcome.findings, seen);
-        const size_t first_state = seen.size();
+        const TabScanResult scanned = ScanEveryTabState(page, set.names[i], outcome.findings);
 
-        for (QTabWidget* tabs : page->findChildren<QTabWidget*>()) {
-            for (int k = 1; k < tabs->count(); ++k) { // 第 0 页上面已经扫过
-                tabs->setCurrentIndex(k);
-                QApplication::processEvents();
-                QApplication::processEvents();
-                ScanCurrentState(page, set.names[i] + " tab" + std::to_string(k) + "/" + std::to_string(tabs->count()),
-                                 outcome.findings, seen);
-            }
-            tabs->setCurrentIndex(0);
-        }
-        QApplication::processEvents();
-
-        outcome.visible_union += static_cast<int>(seen.size());
-        if (seen.size() > first_state)
+        outcome.visible_union += static_cast<int>(scanned.all_states);
+        if (scanned.all_states > scanned.first_state)
             ++outcome.improved_pages;
 
         // 判据 3：滚动区内容不该比自身最小尺寸还矮（在默认 tab 状态下量）。
