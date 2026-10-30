@@ -1938,6 +1938,39 @@ set_tests_properties(OverviewPageLayoutTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # =================================================
+# 测试: 14 个分析页的布局回归 (ui/analysis_panel/AnalysisPageFactory.cpp)
+#
+# OverviewPageLayoutTests 守的是总览页；分析页有 14 个，建页走同一套工厂 +
+# 各页自己的 SetupUi，同一个"漏 addWidget"的手误在任何一页都可能重犯。
+# 这里按 AnalysisPageCatalog 把所有页都建出来，逐页校验：
+#   1) 同一父下可见兄弟不重叠；2) 没有停在默认几何 100x30 @(0,0) 的可见控件；
+#   3) QScrollArea 里的内容高度不小于自身 minimumSizeHint（没被压扁）。
+#
+# ❗ 只喂空态：明细表在空态隐藏，所以对它们无覆盖。要让它守"有数据时"的叠字，
+#    得先喂一份真实 AnalysisResult 再扫 —— 别误以为这条已经全覆盖。
+# ❗ 不要手工 resize 页面来"加压测试"：压到小于 minimumSizeHint 时 QVBoxLayout
+#    会把子控件挤重叠，那是测量方式造出来的假象（2026-10-30 踩过）。
+# =================================================
+videoeye_add_test(test_analysis_page_layout unit/test_analysis_page_layout.cpp)
+target_link_libraries(test_analysis_page_layout PRIVATE
+    VideoEyeUi
+    VideoEyeQtAdapters
+    VideoEyeReportingPanel
+    VideoEyePlayback
+    VideoEyeExporter
+    VideoEyeReporting
+    VideoEyeQc
+    VideoEyeFfmpegTools
+    VideoEyeAnalysis
+    VideoEyeMedia
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    Qt6::Widgets Qt6::Gui Qt6::Core)
+add_test(NAME AnalysisPageLayoutTests COMMAND test_analysis_page_layout)
+set_tests_properties(AnalysisPageLayoutTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
 # 测试: 侧栏导航的 Qt 侧机制 (ui/main_window/sidebar_navigation.{h,cpp})
 #
 # 这块原先住在 MainWindow.cpp 顶部的匿名命名空间里。它守的是三条「错了就是静默
