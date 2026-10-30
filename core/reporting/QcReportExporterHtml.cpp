@@ -48,31 +48,36 @@ std::string OffsetText(long long offset) {
     return out.str();
 }
 
-} // namespace
-
-// ===========================================================================
-// HTML
-// ===========================================================================
-
-std::string QcReportExporter::BuildHtml(const QcExportBundle& bundle) {
-    const qc::QcRunResult& run = bundle.run;
-    const model::QcReport& report = run.report;
-
-    auto severity_class = [](model::IssueSeverity severity) {
-        switch (severity) {
-        case model::IssueSeverity::Critical:
-            return "critical";
-        case model::IssueSeverity::Error:
-            return "error";
-        case model::IssueSeverity::Warning:
-            return "warning";
-        case model::IssueSeverity::Info:
-            return "info";
-        }
+// 严重度 -> 表格行的 CSS class。
+const char* SeverityClass(model::IssueSeverity severity) {
+    switch (severity) {
+    case model::IssueSeverity::Critical:
+        return "critical";
+    case model::IssueSeverity::Error:
+        return "error";
+    case model::IssueSeverity::Warning:
+        return "warning";
+    case model::IssueSeverity::Info:
         return "info";
-    };
+    }
+    return "info";
+}
 
-    std::ostringstream out;
+// ===========================================================================
+// BuildHtml 的章节（一节一个函数，由 BuildHtml 按固定顺序调用）
+//
+// 拆开的理由不是 382 行这个数字本身：那一坨里混着 11 个章节，改任何一处都得先确认自己
+// 没顺手碰坏隔壁章节的 </table>，而"新增一节"只能往中间插。拆开之后每节自带表头与收尾，
+// 加一节 = 加一个函数 + 一行调用。
+//
+// ❗ 约定一：每个 Append* 只往 out 后面追加，不返回字符串。
+// ❗ 约定二：章节**顺序**仍由 BuildHtml 决定 —— 顺序是有语义的（"证据与覆盖"必须排在
+//   "流列表"之前：读者要先知道哪些维度真跑了，才知道后面的数字能推到什么结论）。
+//   挪动顺序请改调用处，并同步 test_qc_report_exporter 的 kSectionPairs。
+// ===========================================================================
+
+// 文档头 + 内联样式。报告要单文件交付，样式不能外链。
+void AppendDocumentHead(std::ostringstream& out, const model::QcReport& report) {
     out << "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n"
         << "  <meta charset=\"UTF-8\">\n  <title>VideoEye QC 报告 - " << Html(report.file_name) << "</title>\n"
         << "  <style>\n"
@@ -90,14 +95,20 @@ std::string QcReportExporter::BuildHtml(const QcExportBundle& bundle) {
         << "    .info td:first-child { color: #1565c0; }\n"
         << "    .meta { color: #6b7280; font-size: 12px; }\n"
         << "  </style>\n</head>\n<body>\n";
+}
 
-    const std::string verdict_class = (report.score >= 90.0) ? "pass" : ((report.score >= 70.0) ? "warn" : "fail");
-
+void AppendTitleAndMeta(std::ostringstream& out, const QcExportBundle& bundle, const qc::QcRunResult& run,
+                        const model::QcReport& report) {
     out << "  <h1>VideoEye QC 报告</h1>\n";
     out << "  <p class=\"meta\">模板: " << Html(bundle.profile_name) << " (" << Html(bundle.profile_id)
         << ") ｜ 生成时间: " << Html(report.generated_at) << " ｜ 分析耗时: " << Fixed(run.elapsed_ms, 0) << " ms"
         << (report.completed ? (report.partial ? " ｜ <b>抽样完成·非全量</b>" : "") : " ｜ <b>分析未跑完</b>")
         << "</p>\n";
+}
+
+void AppendVerdict(std::ostringstream& out, const qc::QcRunResult& run) {
+    const model::QcReport& report = run.report;
+    const std::string verdict_class = (report.score >= 90.0) ? "pass" : ((report.score >= 70.0) ? "warn" : "fail");
 
     out << "  <h2>总体结论</h2>\n";
     out << "  <p class=\"score " << verdict_class << "\">" << Fixed(report.score, 1) << " / 100 — "
@@ -117,178 +128,178 @@ std::string QcReportExporter::BuildHtml(const QcExportBundle& bundle) {
     if (!run.error.empty())
         out << "    <tr><td>错误信息</td><td>" << Html(run.error) << "</td></tr>\n";
     out << "  </table>\n";
+}
 
+void AppendIssueList(std::ostringstream& out, const model::QcReport& report) {
     out << "  <h2>问题清单</h2>\n";
     if (report.issues.empty()) {
         out << "  <p>未发现问题。</p>\n";
-    } else {
-        out << "  <table>\n    <tr><th>严重度</th><th>类别</th><th>规则</th><th>问题</th>"
-               "<th>位置</th><th>说明</th><th>建议</th></tr>\n";
-        for (const auto& issue : report.issues) {
-            out << "    <tr class=\"" << severity_class(issue.severity) << "\">"
-                << "<td>" << Html(issue.SeverityText()) << "</td>"
-                << "<td>" << Html(issue.CategoryText()) << "</td>"
-                << "<td>" << Html(issue.rule_id) << "</td>"
-                << "<td>" << Html(issue.title) << "</td>"
-                << "<td>" << Html(issue.range.ToString()) << "</td>"
-                << "<td>" << Html(issue.detail) << "</td>"
-                << "<td>" << Html(issue.suggestion) << "</td></tr>\n";
-        }
-        out << "  </table>\n";
+        return;
     }
-
-    // ---- 证据与覆盖（阶段 5）----
-    //
-    // 放在流列表**之前**：读者要先知道"哪些维度真跑了、覆盖多少"，
-    // 才知道后面那些数字能推到什么结论。
-    if (!run.analysis.dimensions.empty()) {
-        out << "  <h2>证据与覆盖</h2>\n";
-        out << "  <p class=\"meta\">“结论可作通过用”是唯一权威口径：只有该维度确实执行、"
-               "能力完整、无失败且覆盖达标时才成立。未执行的行会写明原因。</p>\n";
-        out << "  <table>\n    <tr><th>维度</th><th>状态</th><th>能力</th><th>结论可用</th>"
-               "<th>处理对象</th><th>扫描 / 总量</th><th>覆盖率</th><th>失败</th><th>说明</th></tr>\n";
-        for (const model::DimensionStatus& status : run.analysis.dimensions) {
-            const std::string scope = status.scope_unit.empty() ? std::string("-") : status.scope_unit;
-            const std::string units = status.has_coverage
-                                          ? (Int64Text(status.units_scanned) + " / " + Int64Text(status.units_total))
-                                          : (Int64Text(status.units_scanned) + " / 未知");
-            const std::string coverage =
-                status.has_coverage ? (Fixed(status.CoveragePercent(), 1) + " %") : std::string("-");
-            std::string remark = status.failure_reason;
-            for (const std::string& note : status.notes) {
-                if (!remark.empty())
-                    remark += "；";
-                remark += note;
-            }
-            out << "    <tr" << (status.executed ? "" : " class=\"warn\"") << "><td>"
-                << Html(model::DimensionName(status.dimension)) << "</td>"
-                << "<td>" << (status.executed ? "已执行" : "未执行") << "</td>"
-                << "<td>" << Html(model::CapabilityToString(status.capability)) << "</td>"
-                << "<td>" << (status.conclusive ? "是" : "否") << "</td>"
-                << "<td>" << Html(scope) << "</td>"
-                << "<td>" << Html(units) << "</td>"
-                << "<td>" << Html(coverage) << "</td>"
-                << "<td>" << Int64Text(status.failures) << "</td>"
-                << "<td>" << Html(remark) << "</td></tr>\n";
-        }
-        out << "  </table>\n";
+    out << "  <table>\n    <tr><th>严重度</th><th>类别</th><th>规则</th><th>问题</th>"
+           "<th>位置</th><th>说明</th><th>建议</th></tr>\n";
+    for (const auto& issue : report.issues) {
+        out << "    <tr class=\"" << SeverityClass(issue.severity) << "\">"
+            << "<td>" << Html(issue.SeverityText()) << "</td>"
+            << "<td>" << Html(issue.CategoryText()) << "</td>"
+            << "<td>" << Html(issue.rule_id) << "</td>"
+            << "<td>" << Html(issue.title) << "</td>"
+            << "<td>" << Html(issue.range.ToString()) << "</td>"
+            << "<td>" << Html(issue.detail) << "</td>"
+            << "<td>" << Html(issue.suggestion) << "</td></tr>\n";
     }
+    out << "  </table>\n";
+}
 
-    // ---- 参数变化时间线（阶段 1）----
-    if (!run.analysis.parameter_timelines.empty()) {
-        out << "  <h2>参数变化时间线</h2>\n";
-        for (const model::ParameterTimeline& timeline : run.analysis.parameter_timelines) {
-            out << "  <h3>视频流 #" << timeline.stream_index;
-            if (!timeline.codec_name.empty())
-                out << "（" << Html(timeline.codec_name) << "）";
-            out << "</h3>\n";
-            out << "  <p class=\"meta\">" << Html(timeline.Summary()) << " ｜ 扫描 "
-                << Int64Text(timeline.packets_scanned) << " 个包，见到 " << Int64Text(timeline.parameter_set_units)
-                << " 份参数集";
-            if (timeline.truncated)
-                out << "（已达追踪上限，后面的变化未记录）";
-            out << "</p>\n";
-            if (timeline.missing_reference_count > 0) {
-                out << "  <p class=\"meta\"><strong>有 " << Int64Text(timeline.missing_reference_count)
-                    << " 处引用了从未传输的参数集</strong>（解码必然失败）。</p>\n";
-            }
-            if (!timeline.changes.empty()) {
-                out << "  <table>\n    <tr><th>时间</th><th>来源</th><th>变化前</th><th>变化后</th>"
-                       "<th>差异</th><th>包号</th><th>文件偏移</th><th>同 id 替换</th></tr>\n";
-                for (const model::ParameterChangeEvent& event : timeline.changes) {
-                    out << "    <tr" << (event.replaced_same_id ? " class=\"warn\"" : "") << ">"
-                        << "<td>" << (event.has_time ? (Fixed(event.time_seconds, 3) + " s") : std::string("无 PTS"))
-                        << "</td>"
-                        << "<td>" << Html(event.source) << "</td>"
-                        << "<td>" << Html(event.old_config.empty() ? std::string("-") : event.old_config) << "</td>"
-                        << "<td>" << Html(event.new_config.empty() ? std::string("-") : event.new_config) << "</td>"
-                        << "<td>" << Html(event.changes) << "</td>"
-                        << "<td>" << Int64Text(event.packet_index) << "</td>"
-                        << "<td>" << OffsetText(static_cast<long long>(event.file_offset)) << "</td>"
-                        << "<td>" << (event.replaced_same_id ? "是（危险）" : "否") << "</td></tr>\n";
-                }
-                out << "  </table>\n";
-            } else {
-                out << "  <p>未检测到配置变化。</p>\n";
-            }
-            for (const std::string& note : timeline.notes)
-                out << "  <p class=\"meta\">" << Html(note) << "</p>\n";
+// 证据与覆盖（阶段 5）。
+//
+// 放在流列表**之前**：读者要先知道"哪些维度真跑了、覆盖多少"，才知道后面那些数字能推到
+// 什么结论。
+void AppendCoverageTable(std::ostringstream& out, const model::AnalysisResult& analysis) {
+    if (analysis.dimensions.empty())
+        return;
+    out << "  <h2>证据与覆盖</h2>\n";
+    out << "  <p class=\"meta\">“结论可作通过用”是唯一权威口径：只有该维度确实执行、"
+           "能力完整、无失败且覆盖达标时才成立。未执行的行会写明原因。</p>\n";
+    out << "  <table>\n    <tr><th>维度</th><th>状态</th><th>能力</th><th>结论可用</th>"
+           "<th>处理对象</th><th>扫描 / 总量</th><th>覆盖率</th><th>失败</th><th>说明</th></tr>\n";
+    for (const model::DimensionStatus& status : analysis.dimensions) {
+        const std::string scope = status.scope_unit.empty() ? std::string("-") : status.scope_unit;
+        const std::string units = status.has_coverage
+                                      ? (Int64Text(status.units_scanned) + " / " + Int64Text(status.units_total))
+                                      : (Int64Text(status.units_scanned) + " / 未知");
+        const std::string coverage =
+            status.has_coverage ? (Fixed(status.CoveragePercent(), 1) + " %") : std::string("-");
+        std::string remark = status.failure_reason;
+        for (const std::string& note : status.notes) {
+            if (!remark.empty())
+                remark += "；";
+            remark += note;
         }
+        out << "    <tr" << (status.executed ? "" : " class=\"warn\"") << "><td>"
+            << Html(model::DimensionName(status.dimension)) << "</td>"
+            << "<td>" << (status.executed ? "已执行" : "未执行") << "</td>"
+            << "<td>" << Html(model::CapabilityToString(status.capability)) << "</td>"
+            << "<td>" << (status.conclusive ? "是" : "否") << "</td>"
+            << "<td>" << Html(scope) << "</td>"
+            << "<td>" << Html(units) << "</td>"
+            << "<td>" << Html(coverage) << "</td>"
+            << "<td>" << Int64Text(status.failures) << "</td>"
+            << "<td>" << Html(remark) << "</td></tr>\n";
     }
+    out << "  </table>\n";
+}
 
-    // ---- 帧级显示顺序（POC / VP9 的显示序 / AV1 的 order_hint）----
-    //
-    // HTML 报告是给人快速扫的，所以这里给统计表 + 前若干帧的解码/显示对照，
-    // 全量逐帧明细仍以 JSON 为准（几千行塞进 HTML 没人看，还会拖慢打开）。
-    if (!run.analysis.frame_order_timelines.empty()) {
-        out << "  <h2>帧级显示顺序</h2>\n";
-        out << "  <p class=\"meta\">H.264 / HEVC 来自逐 slice 解析出的 POC；VP9 没有 POC，"
-               "由 show_frame / show_existing_frame 的显示事件序还原成「显示序号」；"
-               "AV1 用帧头里的 order_hint（模 2^bits 的环形量，已按 get_relative_dist 解环）。"
-               "支持范围：H.264 / HEVC / VP9 / AV1；VVC 未实现，H.264 的 picture_order_cnt_type=1 "
-               "不支持；不重建参考帧列表。</p>\n";
-        for (const model::FrameOrderTimeline& timeline : run.analysis.frame_order_timelines) {
-            out << "  <h3>视频流 #" << timeline.stream_index << "</h3>\n";
-            if (!timeline.available) {
-                out << "  <p class=\"meta\">不可用 —— "
-                    << Html(timeline.unavailable_reason.empty() ? std::string("原因未记录")
-                                                                : timeline.unavailable_reason)
-                    << "</p>\n";
-                continue;
+// 参数变化时间线（阶段 1）。
+void AppendParameterTimelines(std::ostringstream& out, const model::AnalysisResult& analysis) {
+    if (analysis.parameter_timelines.empty())
+        return;
+    out << "  <h2>参数变化时间线</h2>\n";
+    for (const model::ParameterTimeline& timeline : analysis.parameter_timelines) {
+        out << "  <h3>视频流 #" << timeline.stream_index;
+        if (!timeline.codec_name.empty())
+            out << "（" << Html(timeline.codec_name) << "）";
+        out << "</h3>\n";
+        out << "  <p class=\"meta\">" << Html(timeline.Summary()) << " ｜ 扫描 " << Int64Text(timeline.packets_scanned)
+            << " 个包，见到 " << Int64Text(timeline.parameter_set_units) << " 份参数集";
+        if (timeline.truncated)
+            out << "（已达追踪上限，后面的变化未记录）";
+        out << "</p>\n";
+        if (timeline.missing_reference_count > 0) {
+            out << "  <p class=\"meta\"><strong>有 " << Int64Text(timeline.missing_reference_count)
+                << " 处引用了从未传输的参数集</strong>（解码必然失败）。</p>\n";
+        }
+        if (!timeline.changes.empty()) {
+            out << "  <table>\n    <tr><th>时间</th><th>来源</th><th>变化前</th><th>变化后</th>"
+                   "<th>差异</th><th>包号</th><th>文件偏移</th><th>同 id 替换</th></tr>\n";
+            for (const model::ParameterChangeEvent& event : timeline.changes) {
+                out << "    <tr" << (event.replaced_same_id ? " class=\"warn\"" : "") << ">"
+                    << "<td>" << (event.has_time ? (Fixed(event.time_seconds, 3) + " s") : std::string("无 PTS"))
+                    << "</td>"
+                    << "<td>" << Html(event.source) << "</td>"
+                    << "<td>" << Html(event.old_config.empty() ? std::string("-") : event.old_config) << "</td>"
+                    << "<td>" << Html(event.new_config.empty() ? std::string("-") : event.new_config) << "</td>"
+                    << "<td>" << Html(event.changes) << "</td>"
+                    << "<td>" << Int64Text(event.packet_index) << "</td>"
+                    << "<td>" << OffsetText(static_cast<long long>(event.file_offset)) << "</td>"
+                    << "<td>" << (event.replaced_same_id ? "是（危险）" : "否") << "</td></tr>\n";
             }
-            out << "  <p class=\"meta\">" << Html(timeline.Summary()) << "</p>\n";
-            // 顺序值不是 POC 时，列名跟着换 —— 让人一眼知道该去码流里找什么字段。
-            const bool by_poc = timeline.UsesPoc();
-            const char* order_label =
-                by_poc ? "POC" : (timeline.order_source == "display_rank" ? "显示序" : "order_hint");
-            out << "  <table>\n    <tr><th>帧数</th><th>I</th><th>P</th><th>B</th><th>IDR</th>"
-                   "<th>GOP 段数</th><th>最短/最长/平均</th><th>重排处数</th><th>最大回退("
-                << order_label << ")</th><th>" << (by_poc ? "POC 重复" : "重复显示") << "</th><th>推断缺帧</th></tr>\n";
-            out << "    <tr"
-                << ((timeline.duplicate_poc_count > 0 || timeline.poc_gap_slots > 0) ? " class=\"warn\"" : "")
-                << "><td>" << Int64Text(timeline.frames_observed) << "</td>"
-                << "<td>" << timeline.i_count << "</td>"
-                << "<td>" << timeline.p_count << "</td>"
-                << "<td>" << timeline.b_count << "</td>"
-                << "<td>" << timeline.idr_count << "</td>"
-                << "<td>" << timeline.gop_count << "</td>"
-                << "<td>" << Int64Text(timeline.min_gop_frames) << " / " << Int64Text(timeline.max_gop_frames) << " / "
-                << Fixed(timeline.avg_gop_frames, 1) << "</td>"
-                << "<td>" << Int64Text(timeline.reorder_events) << "</td>"
-                << "<td>" << Int64Text(timeline.reorder_depth) << "</td>"
-                << "<td>" << Int64Text(timeline.duplicate_poc_count) << "</td>"
-                << "<td>" << Int64Text(timeline.poc_gap_slots) << "</td></tr>\n";
             out << "  </table>\n";
+        } else {
+            out << "  <p>未检测到配置变化。</p>\n";
+        }
+        for (const std::string& note : timeline.notes)
+            out << "  <p class=\"meta\">" << Html(note) << "</p>\n";
+    }
+}
 
-            // 前若干帧的解码顺序 vs 显示顺序对照：这是"POC 到底对不对"最直观的呈现
-            // —— 解码顺序里 POC 回退的那一帧，就是显示时要往回插的 B 帧。
-            constexpr std::size_t kMaxListedFrames = 40;
-            if (!timeline.frames.empty()) {
-                out << "  <table>\n    <tr><th>解码序</th><th>类型</th><th>frame_num</th><th>" << order_label
-                    << "</th><th>包号</th><th>时间</th></tr>\n";
-                for (std::size_t i = 0; i < timeline.frames.size() && i < kMaxListedFrames; ++i) {
-                    const model::FrameOrderEntry& entry = timeline.frames[i];
-                    const bool reorder = i > 0 && entry.poc < timeline.frames[i - 1].poc;
-                    out << "    <tr" << (reorder ? " class=\"warn\"" : "") << "><td>" << i << "</td><td>"
-                        << entry.TypeChar() << (entry.idr ? "(IDR)" : "") << "</td><td>" << entry.frame_num
-                        << "</td><td>" << Int64Text(entry.poc) << "</td><td>" << Int64Text(entry.packet_index)
-                        << "</td><td>" << (entry.has_time ? (Fixed(entry.time_seconds, 3) + " s") : std::string("-"))
-                        << "</td></tr>\n";
-                }
-                out << "  </table>\n";
-                if (timeline.frames.size() > kMaxListedFrames) {
-                    out << "  <p class=\"meta\">另有 "
-                        << Int64Text(static_cast<int64_t>(timeline.frames.size() - kMaxListedFrames))
-                        << " 帧未列出，完整明细见 JSON 报告的 frame_orders.frames。</p>\n";
-                }
+// 帧级显示顺序（POC / VP9 的显示序 / AV1 的 order_hint）。
+//
+// HTML 报告是给人快速扫的，所以这里给统计表 + 前若干帧的解码/显示对照，
+// 全量逐帧明细仍以 JSON 为准（几千行塞进 HTML 没人看，还会拖慢打开）。
+void AppendFrameOrder(std::ostringstream& out, const model::AnalysisResult& analysis) {
+    if (analysis.frame_order_timelines.empty())
+        return;
+    out << "  <h2>帧级显示顺序</h2>\n";
+    out << "  <p class=\"meta\">H.264 / HEVC 来自逐 slice 解析出的 POC；VP9 没有 POC，"
+           "由 show_frame / show_existing_frame 的显示事件序还原成「显示序号」；"
+           "AV1 用帧头里的 order_hint（模 2^bits 的环形量，已按 get_relative_dist 解环）。"
+           "支持范围：H.264 / HEVC / VP9 / AV1；VVC 未实现，H.264 的 picture_order_cnt_type=1 "
+           "不支持；不重建参考帧列表。</p>\n";
+    for (const model::FrameOrderTimeline& timeline : analysis.frame_order_timelines) {
+        out << "  <h3>视频流 #" << timeline.stream_index << "</h3>\n";
+        if (!timeline.available) {
+            out << "  <p class=\"meta\">不可用 —— "
+                << Html(timeline.unavailable_reason.empty() ? std::string("原因未记录") : timeline.unavailable_reason)
+                << "</p>\n";
+            continue;
+        }
+        out << "  <p class=\"meta\">" << Html(timeline.Summary()) << "</p>\n";
+        // 顺序值不是 POC 时，列名跟着换 —— 让人一眼知道该去码流里找什么字段。
+        const bool by_poc = timeline.UsesPoc();
+        const char* order_label = by_poc ? "POC" : (timeline.order_source == "display_rank" ? "显示序" : "order_hint");
+        out << "  <table>\n    <tr><th>帧数</th><th>I</th><th>P</th><th>B</th><th>IDR</th>"
+               "<th>GOP 段数</th><th>最短/最长/平均</th><th>重排处数</th><th>最大回退("
+            << order_label << ")</th><th>" << (by_poc ? "POC 重复" : "重复显示") << "</th><th>推断缺帧</th></tr>\n";
+        out << "    <tr" << ((timeline.duplicate_poc_count > 0 || timeline.poc_gap_slots > 0) ? " class=\"warn\"" : "")
+            << "><td>" << Int64Text(timeline.frames_observed) << "</td><td>" << timeline.i_count << "</td><td>"
+            << timeline.p_count << "</td><td>" << timeline.b_count << "</td><td>" << timeline.idr_count << "</td><td>"
+            << timeline.gop_count << "</td><td>" << Int64Text(timeline.min_gop_frames) << " / "
+            << Int64Text(timeline.max_gop_frames) << " / " << Fixed(timeline.avg_gop_frames, 1) << "</td><td>"
+            << Int64Text(timeline.reorder_events) << "</td><td>" << Int64Text(timeline.reorder_depth) << "</td><td>"
+            << Int64Text(timeline.duplicate_poc_count) << "</td><td>" << Int64Text(timeline.poc_gap_slots)
+            << "</td></tr>\n";
+        out << "  </table>\n";
+
+        // 前若干帧的解码顺序 vs 显示顺序对照：这是"POC 到底对不对"最直观的呈现
+        // —— 解码顺序里 POC 回退的那一帧，就是显示时要往回插的 B 帧。
+        constexpr std::size_t kMaxListedFrames = 40;
+        if (!timeline.frames.empty()) {
+            out << "  <table>\n    <tr><th>解码序</th><th>类型</th><th>frame_num</th><th>" << order_label
+                << "</th><th>包号</th><th>时间</th></tr>\n";
+            for (std::size_t i = 0; i < timeline.frames.size() && i < kMaxListedFrames; ++i) {
+                const model::FrameOrderEntry& entry = timeline.frames[i];
+                const bool reorder = i > 0 && entry.poc < timeline.frames[i - 1].poc;
+                out << "    <tr" << (reorder ? " class=\"warn\"" : "") << "><td>" << i << "</td><td>"
+                    << entry.TypeChar() << (entry.idr ? "(IDR)" : "") << "</td><td>" << entry.frame_num << "</td><td>"
+                    << Int64Text(entry.poc) << "</td><td>" << Int64Text(entry.packet_index) << "</td><td>"
+                    << (entry.has_time ? (Fixed(entry.time_seconds, 3) + " s") : std::string("-")) << "</td></tr>\n";
+            }
+            out << "  </table>\n";
+            if (timeline.frames.size() > kMaxListedFrames) {
+                out << "  <p class=\"meta\">另有 "
+                    << Int64Text(static_cast<int64_t>(timeline.frames.size() - kMaxListedFrames))
+                    << " 帧未列出，完整明细见 JSON 报告的 frame_orders.frames。</p>\n";
             }
         }
     }
+}
 
+void AppendStreamList(std::ostringstream& out, const model::AnalysisResult& analysis) {
     out << "  <h2>流列表</h2>\n";
     out << "  <table>\n    <tr><th>#</th><th>类型</th><th>编码</th><th>Profile</th>"
            "<th>分辨率 / 采样率</th><th>码率</th><th>帧数 / 包数</th></tr>\n";
-    for (const auto& stream : run.analysis.streams) {
+    for (const auto& stream : analysis.streams) {
         // 封面图在流列表里是"视频"类型的一帧 MJPEG，但用户看到的不是画面
         const char* type =
             stream.attached_picture ? "封面" : (stream.IsVideo() ? "视频" : (stream.IsAudio() ? "音频" : "其他"));
@@ -302,127 +313,129 @@ std::string QcReportExporter::BuildHtml(const QcExportBundle& bundle) {
             << stream.packet_count << "</td></tr>\n";
     }
     out << "  </table>\n";
+}
 
-    // ---- 逐轨音频 QC（阶段 4）----
-    //
-    // 先出横向对照表（多语言/评论轨一眼可比），再给主轨的详细指标。
-    if (!run.analysis.audio_qc_streams.empty()) {
-        out << "  <h2>音频 QC（逐轨）</h2>\n";
-        out << "  <p class=\"meta\">共 " << run.analysis.audio_qc_tracks_analyzed << " / "
-            << run.analysis.audio_qc_tracks_total
-            << " 条音轨参与分析。每条轨的覆盖率独立计算 —— 轨数对上不代表每条都跑满。</p>\n";
-        out << "  <table>\n    <tr><th>流</th><th>声道布局</th><th>采样率</th><th>积分响度</th>"
-               "<th>真峰值</th><th>LRA</th><th>静音占比</th><th>最长静音</th><th>覆盖率</th><th>失败/丢帧</th></tr>\n";
-        for (std::size_t i = 0; i < run.analysis.audio_qc_streams.size(); ++i) {
-            const model::AudioQcResult& qc = run.analysis.audio_qc_streams[i];
-            const int stream_index =
-                (i < run.analysis.audio_qc_stream_indices.size()) ? run.analysis.audio_qc_stream_indices[i] : -1;
-            if (!qc.analyzed) {
-                out << "    <tr class=\"warn\"><td>" << stream_index << "</td><td colspan=\"9\">未能分析"
-                    << (qc.notes.empty() ? "" : "：" + Html(qc.notes.front())) << "</td></tr>\n";
-                continue;
-            }
-            const int64_t errors = qc.decode_error_packets + qc.decode_error_frames + qc.dropped_frames;
-            out << "    <tr><td>" << stream_index << "</td>"
-                << "<td>" << Html(qc.metadata.channel_layout) << "</td>"
-                << "<td>" << qc.metadata.sample_rate << " Hz</td>"
-                << "<td>" << Fixed(qc.integrated_lufs, 2) << " LUFS</td>"
-                << "<td>" << Fixed(qc.true_peak_dbtp, 2) << " dBTP</td>"
-                << "<td>" << Fixed(qc.loudness_range_lu, 2) << " LU</td>"
-                << "<td>" << Fixed(qc.silence_ratio * 100.0, 2) << " %</td>"
-                << "<td>" << Fixed(qc.longest_silence_seconds, 2) << " s</td>"
-                << "<td>" << Fixed(qc.coverage_ratio * 100.0, 1) << " %</td>"
-                << "<td>" << Int64Text(errors) << "</td></tr>\n";
+// 逐轨音频 QC（阶段 4）。
+//
+// 先出横向对照表（多语言/评论轨一眼可比），主轨的详细指标由 AppendMainTrackAudioQc 给。
+void AppendPerTrackAudioQc(std::ostringstream& out, const model::AnalysisResult& analysis) {
+    if (analysis.audio_qc_streams.empty())
+        return;
+    out << "  <h2>音频 QC（逐轨）</h2>\n";
+    out << "  <p class=\"meta\">共 " << analysis.audio_qc_tracks_analyzed << " / " << analysis.audio_qc_tracks_total
+        << " 条音轨参与分析。每条轨的覆盖率独立计算 —— 轨数对上不代表每条都跑满。</p>\n";
+    out << "  <table>\n    <tr><th>流</th><th>声道布局</th><th>采样率</th><th>积分响度</th>"
+           "<th>真峰值</th><th>LRA</th><th>静音占比</th><th>最长静音</th><th>覆盖率</th><th>失败/丢帧</th></tr>\n";
+    for (std::size_t i = 0; i < analysis.audio_qc_streams.size(); ++i) {
+        const model::AudioQcResult& qc = analysis.audio_qc_streams[i];
+        const int stream_index =
+            (i < analysis.audio_qc_stream_indices.size()) ? analysis.audio_qc_stream_indices[i] : -1;
+        if (!qc.analyzed) {
+            out << "    <tr class=\"warn\"><td>" << stream_index << "</td><td colspan=\"9\">未能分析"
+                << (qc.notes.empty() ? "" : "：" + Html(qc.notes.front())) << "</td></tr>\n";
+            continue;
         }
-        out << "  </table>\n";
+        const int64_t errors = qc.decode_error_packets + qc.decode_error_frames + qc.dropped_frames;
+        out << "    <tr><td>" << stream_index << "</td>"
+            << "<td>" << Html(qc.metadata.channel_layout) << "</td>"
+            << "<td>" << qc.metadata.sample_rate << " Hz</td>"
+            << "<td>" << Fixed(qc.integrated_lufs, 2) << " LUFS</td>"
+            << "<td>" << Fixed(qc.true_peak_dbtp, 2) << " dBTP</td>"
+            << "<td>" << Fixed(qc.loudness_range_lu, 2) << " LU</td>"
+            << "<td>" << Fixed(qc.silence_ratio * 100.0, 2) << " %</td>"
+            << "<td>" << Fixed(qc.longest_silence_seconds, 2) << " s</td>"
+            << "<td>" << Fixed(qc.coverage_ratio * 100.0, 1) << " %</td>"
+            << "<td>" << Int64Text(errors) << "</td></tr>\n";
     }
+    out << "  </table>\n";
+}
 
-    if (run.analysis.audio_qc.analyzed) {
-        out << "  <h2>响度与音频 QC（主音轨）</h2>\n  <table>\n    <tr><th>指标</th><th>值</th></tr>\n";
-        out << "    <tr><td>积分响度</td><td>" << Fixed(run.analysis.audio_qc.integrated_lufs, 2)
-            << " LUFS</td></tr>\n";
-        out << "    <tr><td>真峰值</td><td>" << Fixed(run.analysis.audio_qc.true_peak_dbtp, 2) << " dBTP</td></tr>\n";
-        out << "    <tr><td>响度范围 LRA</td><td>" << Fixed(run.analysis.audio_qc.loudness_range_lu, 2)
-            << " LU</td></tr>\n";
-        out << "    <tr><td>采样峰值</td><td>" << Fixed(run.analysis.audio_qc.sample_peak_dbfs, 2)
-            << " dBFS</td></tr>\n";
-        out << "    <tr><td>静音占比</td><td>" << Fixed(run.analysis.audio_qc.silence_ratio * 100.0, 2)
-            << " %</td></tr>\n";
-        out << "    <tr><td>削波样本</td><td>" << run.analysis.audio_qc.clipping_sample_count << "</td></tr>\n";
-        out << "  </table>\n";
-    }
+void AppendMainTrackAudioQc(std::ostringstream& out, const model::AudioQcResult& qc) {
+    if (!qc.analyzed)
+        return;
+    out << "  <h2>响度与音频 QC（主音轨）</h2>\n  <table>\n    <tr><th>指标</th><th>值</th></tr>\n";
+    out << "    <tr><td>积分响度</td><td>" << Fixed(qc.integrated_lufs, 2) << " LUFS</td></tr>\n";
+    out << "    <tr><td>真峰值</td><td>" << Fixed(qc.true_peak_dbtp, 2) << " dBTP</td></tr>\n";
+    out << "    <tr><td>响度范围 LRA</td><td>" << Fixed(qc.loudness_range_lu, 2) << " LU</td></tr>\n";
+    out << "    <tr><td>采样峰值</td><td>" << Fixed(qc.sample_peak_dbfs, 2) << " dBFS</td></tr>\n";
+    out << "    <tr><td>静音占比</td><td>" << Fixed(qc.silence_ratio * 100.0, 2) << " %</td></tr>\n";
+    out << "    <tr><td>削波样本</td><td>" << qc.clipping_sample_count << "</td></tr>\n";
+    out << "  </table>\n";
+}
 
-    // MPEG-TS 传输层体检。为什么必须整体落进报告见 QcReportExporterJson.cpp 同节注释：
-    // 规则只在命中时才有 detail，未命中什么都不留，所以"扫了多少包、是否扫完"要由
-    // 报告自己说，否则 container.ts.* 的未命中无法区分"没问题"与"没证据"。
-    if (run.analysis.ts_transport.applicable) {
-        const model::TransportStreamInfo& ts = run.analysis.ts_transport;
-        out << "  <h2>MPEG-TS 传输层</h2>\n";
-        if (!ts.analyzed) {
-            out << "  <p class=\"meta\">未拿到传输层结论，以下 container.ts.* 规则的未命中"
-                   "只代表没有证据，不代表没有问题。";
-            if (!ts.error_message.empty()) {
-                out << " 原因: " << Html(ts.error_message);
-            }
-            out << "</p>\n";
-        } else {
-            out << "  <table>\n    <tr><th>指标</th><th>值</th></tr>\n";
-            out << "    <tr><td>包长</td><td>" << ts.packet_size << " 字节</td></tr>\n";
-            out << "    <tr><td>扫描范围</td><td>" << Int64Text(ts.scanned_packets) << " / "
-                << Int64Text(ts.estimated_packets) << " 包 "
-                << (ts.scan_complete ? "（已扫全文件）" : "（只扫了前若干包，结论不代表整个文件）") << "</td></tr>\n";
-            out << "    <tr><td>节目 / 流 / 服务</td><td>" << ts.programs << " / " << ts.streams << " / " << ts.services
-                << "</td></tr>\n";
-            out << "    <tr><td>PAT / PMT / SDT</td><td>" << (ts.has_pat ? "有" : "无") << " / "
-                << (ts.has_pmt ? "有" : "无") << " / " << (ts.has_sdt ? "有" : "无") << "</td></tr>\n";
-            out << "    <tr><td>失步次数</td><td>" << Int64Text(ts.sync_loss) << "</td></tr>\n";
-            out << "    <tr><td>连续计数错误</td><td>" << Int64Text(ts.continuity_errors) << "（占已扫包 "
-                << Fixed(ts.ContinuityErrorPercent(), 3) << "%）</td></tr>\n";
-            out << "    <tr><td>加扰包</td><td>" << Int64Text(ts.scrambled_packets) << "</td></tr>\n";
-            out << "    <tr><td>最大 PCR 间隔</td><td>" << Fixed(ts.pcr_max_gap_ms, 1) << " ms"
-                << (ts.pcr_max_gap_ms > 0.0 ? "" : "（未采到 PCR）") << "</td></tr>\n";
-            // 载荷级：没扫过要明说，否则 0 会被读成"没有断流 / 每个 GOP 都有 IDR"。
-            if (!ts.pes_payload_scanned) {
-                out << "    <tr><td>PES 载荷级检查</td><td>未执行（非 H.264/HEVC，"
-                       "或 scan_pes_payload 已关闭）</td></tr>\n";
-            } else if (ts.pes_streams_checked <= 0) {
-                out << "    <tr><td>PES 载荷级检查</td><td>没有可跟踪的 ES"
-                       "（缺 PMT / 全加扰）</td></tr>\n";
-            } else {
-                out << "    <tr><td>PES 载荷级检查</td><td>跟踪 " << ts.pes_streams_checked << " 条 ES，识别到 "
-                    << Int64Text(ts.idr_count) << " 个随机接入点</td></tr>\n";
-                out << "    <tr><td>最长无 IDR</td><td>" << Fixed(ts.max_no_idr_interval_ms, 1) << " ms"
-                    << (ts.max_no_idr_pid.empty() ? "" : ("（PID " + Html(ts.max_no_idr_pid) + "）"))
-                    << (ts.video_pids_without_idr > 0
-                            ? "，有 " + std::to_string(ts.video_pids_without_idr) + " 条视频 PID 整段没有 IDR"
-                            : "")
-                    << "</td></tr>\n";
-                out << "    <tr><td>最大 PES 断档</td><td>" << Fixed(ts.max_pid_gap_ms, 1) << " ms"
-                    << (ts.max_pid_gap_pid.empty() ? "" : ("（PID " + Html(ts.max_pid_gap_pid) + "）"))
-                    << (ts.stalled_pids > 1 ? "，共 " + std::to_string(ts.stalled_pids) + " 个 PID 超阈值" : "")
-                    << "</td></tr>\n";
-            }
-            out << "  </table>\n";
+// MPEG-TS 传输层体检。为什么必须整体落进报告见 QcReportExporterJson.cpp 同节注释：
+// 规则只在命中时才有 detail，未命中什么都不留，所以"扫了多少包、是否扫完"要由
+// 报告自己说，否则 container.ts.* 的未命中无法区分"没问题"与"没证据"。
+void AppendTransportStream(std::ostringstream& out, const model::TransportStreamInfo& ts) {
+    if (!ts.applicable)
+        return;
+    out << "  <h2>MPEG-TS 传输层</h2>\n";
+    if (!ts.analyzed) {
+        out << "  <p class=\"meta\">未拿到传输层结论，以下 container.ts.* 规则的未命中"
+               "只代表没有证据，不代表没有问题。";
+        if (!ts.error_message.empty()) {
+            out << " 原因: " << Html(ts.error_message);
         }
+        out << "</p>\n";
+        return;
     }
-
-    if (bundle.has_comparison) {
-        out << "  <h2>文件对比</h2>\n";
-        out << "  <p class=\"meta\">原文件: " << Html(bundle.comparison.left_path)
-            << " ｜ 对比文件: " << Html(bundle.comparison.right_path)
-            << " ｜ 差异项: " << bundle.comparison.DifferentCount() << "</p>\n";
-        out << "  <table>\n    <tr><th>分组</th><th>字段</th><th>原文件</th><th>对比文件</th>"
-               "<th>差异</th></tr>\n";
-        for (const auto& row : bundle.comparison.rows) {
-            if (row.diff == qc::QcFieldDiff::Unavailable)
-                continue;
-            out << "    <tr><td>" << Html(row.group) << "</td><td>" << Html(row.field) << "</td><td>" << Html(row.left)
-                << " " << Html(row.unit) << "</td><td>" << Html(row.right) << " " << Html(row.unit) << "</td><td>"
-                << Html(qc::ToString(row.diff)) << "</td></tr>\n";
-        }
-        out << "  </table>\n";
+    out << "  <table>\n    <tr><th>指标</th><th>值</th></tr>\n";
+    out << "    <tr><td>包长</td><td>" << ts.packet_size << " 字节</td></tr>\n";
+    out << "    <tr><td>扫描范围</td><td>" << Int64Text(ts.scanned_packets) << " / " << Int64Text(ts.estimated_packets)
+        << " 包 " << (ts.scan_complete ? "（已扫全文件）" : "（只扫了前若干包，结论不代表整个文件）") << "</td></tr>\n";
+    out << "    <tr><td>节目 / 流 / 服务</td><td>" << ts.programs << " / " << ts.streams << " / " << ts.services
+        << "</td></tr>\n";
+    out << "    <tr><td>PAT / PMT / SDT</td><td>" << (ts.has_pat ? "有" : "无") << " / " << (ts.has_pmt ? "有" : "无")
+        << " / " << (ts.has_sdt ? "有" : "无") << "</td></tr>\n";
+    out << "    <tr><td>失步次数</td><td>" << Int64Text(ts.sync_loss) << "</td></tr>\n";
+    out << "    <tr><td>连续计数错误</td><td>" << Int64Text(ts.continuity_errors) << "（占已扫包 "
+        << Fixed(ts.ContinuityErrorPercent(), 3) << "%）</td></tr>\n";
+    out << "    <tr><td>加扰包</td><td>" << Int64Text(ts.scrambled_packets) << "</td></tr>\n";
+    out << "    <tr><td>最大 PCR 间隔</td><td>" << Fixed(ts.pcr_max_gap_ms, 1) << " ms"
+        << (ts.pcr_max_gap_ms > 0.0 ? "" : "（未采到 PCR）") << "</td></tr>\n";
+    // 载荷级：没扫过要明说，否则 0 会被读成"没有断流 / 每个 GOP 都有 IDR"。
+    if (!ts.pes_payload_scanned) {
+        out << "    <tr><td>PES 载荷级检查</td><td>未执行（非 H.264/HEVC，"
+               "或 scan_pes_payload 已关闭）</td></tr>\n";
+    } else if (ts.pes_streams_checked <= 0) {
+        out << "    <tr><td>PES 载荷级检查</td><td>没有可跟踪的 ES"
+               "（缺 PMT / 全加扰）</td></tr>\n";
+    } else {
+        out << "    <tr><td>PES 载荷级检查</td><td>跟踪 " << ts.pes_streams_checked << " 条 ES，识别到 "
+            << Int64Text(ts.idr_count) << " 个随机接入点</td></tr>\n";
+        out << "    <tr><td>最长无 IDR</td><td>" << Fixed(ts.max_no_idr_interval_ms, 1) << " ms"
+            << (ts.max_no_idr_pid.empty() ? "" : ("（PID " + Html(ts.max_no_idr_pid) + "）"))
+            << (ts.video_pids_without_idr > 0
+                    ? "，有 " + std::to_string(ts.video_pids_without_idr) + " 条视频 PID 整段没有 IDR"
+                    : "")
+            << "</td></tr>\n";
+        out << "    <tr><td>最大 PES 断档</td><td>" << Fixed(ts.max_pid_gap_ms, 1) << " ms"
+            << (ts.max_pid_gap_pid.empty() ? "" : ("（PID " + Html(ts.max_pid_gap_pid) + "）"))
+            << (ts.stalled_pids > 1 ? "，共 " + std::to_string(ts.stalled_pids) + " 个 PID 超阈值" : "")
+            << "</td></tr>\n";
     }
+    out << "  </table>\n";
+}
 
+void AppendComparisonTable(std::ostringstream& out, const qc::QcComparison& comparison) {
+    out << "  <h2>文件对比</h2>\n";
+    out << "  <p class=\"meta\">原文件: " << Html(comparison.left_path)
+        << " ｜ 对比文件: " << Html(comparison.right_path) << " ｜ 差异项: " << comparison.DifferentCount() << "</p>\n";
+    out << "  <table>\n    <tr><th>分组</th><th>字段</th><th>原文件</th><th>对比文件</th>"
+           "<th>差异</th></tr>\n";
+    for (const auto& row : comparison.rows) {
+        if (row.diff == qc::QcFieldDiff::Unavailable)
+            continue;
+        out << "    <tr><td>" << Html(row.group) << "</td><td>" << Html(row.field) << "</td><td>" << Html(row.left)
+            << " " << Html(row.unit) << "</td><td>" << Html(row.right) << " " << Html(row.unit) << "</td><td>"
+            << Html(qc::ToString(row.diff)) << "</td></tr>\n";
+    }
+    out << "  </table>\n";
+}
+
+// 规则快照：让结论可复现。同一份文件换一套阈值会得到完全不同的判定，报告里不带快照时，
+// "没报问题"和"阈值放得很宽"在纸面上长得一模一样。
+void AppendRuleSnapshot(std::ostringstream& out, const model::QcReport& report) {
     out << "  <h2>规则快照</h2>\n";
     out << "  <table>\n    <tr><th>规则</th><th>类别</th><th>阈值</th><th>启用</th></tr>\n";
     for (const auto& rule : report.rules) {
@@ -431,9 +444,42 @@ std::string QcReportExporter::BuildHtml(const QcExportBundle& bundle) {
             << "</td><td>" << (rule.enabled ? "是" : "否") << "</td></tr>\n";
     }
     out << "  </table>\n";
+}
 
+void AppendFooter(std::ostringstream& out) {
     out << "  <p class=\"meta\">Generated by VideoEye 2.0 ｜ schema version " << kReportSchemaVersion
         << "</p>\n</body>\n</html>\n";
+}
+
+} // namespace
+
+// ===========================================================================
+// HTML
+// ===========================================================================
+
+std::string QcReportExporter::BuildHtml(const QcExportBundle& bundle) {
+    const qc::QcRunResult& run = bundle.run;
+    const model::QcReport& report = run.report;
+
+    // 章节顺序就是输出顺序（顺序有语义 —— 见各 Append* 上方的注释）。
+    std::ostringstream out;
+    AppendDocumentHead(out, report);
+    AppendTitleAndMeta(out, bundle, run, report);
+    AppendVerdict(out, run);
+    AppendIssueList(out, report);
+    // 证据与覆盖必须排在流列表之前：读者要先知道"哪些维度真跑了、覆盖多少"，
+    // 才知道后面那些数字能推到什么结论。
+    AppendCoverageTable(out, run.analysis);
+    AppendParameterTimelines(out, run.analysis);
+    AppendFrameOrder(out, run.analysis);
+    AppendStreamList(out, run.analysis);
+    AppendPerTrackAudioQc(out, run.analysis);
+    AppendMainTrackAudioQc(out, run.analysis.audio_qc);
+    AppendTransportStream(out, run.analysis.ts_transport);
+    if (bundle.has_comparison)
+        AppendComparisonTable(out, bundle.comparison);
+    AppendRuleSnapshot(out, report);
+    AppendFooter(out);
     return out.str();
 }
 

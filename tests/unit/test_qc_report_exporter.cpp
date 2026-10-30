@@ -1163,8 +1163,9 @@ std::set<std::string> CollectTextSections(const std::string& text) {
     return titles;
 }
 
-std::set<std::string> CollectHtmlSections(const std::string& html) {
-    std::set<std::string> titles;
+// 按**出现顺序**抓（顺序有语义，见 HtmlSectionsAppearInTheDocumentedOrder）。
+std::vector<std::string> CollectHtmlSectionsInOrder(const std::string& html) {
+    std::vector<std::string> titles;
     const std::string open = "<h2>";
     const std::string close = "</h2>";
     std::size_t pos = 0;
@@ -1173,9 +1174,16 @@ std::set<std::string> CollectHtmlSections(const std::string& html) {
         const std::size_t end = html.find(close, pos);
         if (end == std::string::npos)
             break;
-        titles.insert(html.substr(pos, end - pos));
+        titles.push_back(html.substr(pos, end - pos));
         pos = end + close.size();
     }
+    return titles;
+}
+
+std::set<std::string> CollectHtmlSections(const std::string& html) {
+    std::set<std::string> titles;
+    for (const std::string& title : CollectHtmlSectionsInOrder(html))
+        titles.insert(title);
     return titles;
 }
 
@@ -1269,6 +1277,26 @@ TEST(QcReportExporterTest, TextAndHtmlEmitTheSameSetOfSections) {
     EXPECT_EQ(matched, static_cast<int>(pairs.size()))
         << "两端同时命中的章节只有 " << matched << " / " << pairs.size()
         << " 节 —— fixture 少喂了数据，或某一端不再渲染某一节。一致性检查正在退化成空操作";
+}
+
+// 章节**齐全**还不够，**顺序**也有语义：
+//   * 「证据与覆盖」必须在「流列表」之前 —— 读者要先知道哪些维度真跑了、覆盖多少，
+//     才知道流列表里那些数字能推到什么结论；
+//   * 「规则快照」在最后 —— 先给结论，依据殿后。
+//
+// BuildHtml 现在就是一串 Append* 调用（章节各自独立成函数之后，挪一行就换顺序、且不会
+// 有任何编译错误），所以顺序必须由用例钉死在 kSectionPairs 上。
+TEST(QcReportExporterTest, HtmlSectionsAppearInTheDocumentedOrder) {
+    const std::string html = QcReportExporter::BuildHtml(MakeEnrichedBundle());
+    const std::vector<std::string> actual = CollectHtmlSectionsInOrder(html);
+
+    std::vector<std::string> expected;
+    for (const SectionPair& p : kSectionPairs)
+        expected.push_back(p.html_title);
+
+    // 覆盖守护：抓不到任何 h2 时下面的逐项比对会退化成空转。
+    ASSERT_FALSE(actual.empty()) << "一个 h2 都没抓到 —— 抓取辅助函数或 HTML 结构变了";
+    EXPECT_EQ(actual, expected) << "HTML 章节顺序与 kSectionPairs 不一致（BuildHtml 的调用顺序被改过？）";
 }
 
 } // namespace

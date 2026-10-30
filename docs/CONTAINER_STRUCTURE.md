@@ -56,6 +56,14 @@
 ### MP4 的字段级覆盖
 
 `IsobmffBox::fields` 是"规范字段名 → 可读值"。展示层只负责显示，不再自己判 `type`。
+
+⭐ **哪些类型会填字段的唯一事实源是 `IsobmffParser::FieldBoxTypes()`**（它直接导出
+`IsobmffParser.cpp` 里的派发表 `kFieldSpecs`：一种 box 一个 `Fill*` 函数 + 一行表项）。
+下面这张表列的是**每种类型具体填哪些字段名**，新增/删除支持时两边都要动 ——
+先改 `kFieldSpecs`，字段名再同步到下表。
+`test_isobmff_parser` 的 `EveryFieldBoxTypeFillsAtLeastOneField` 遍历 `FieldBoxTypes()`，
+逐一验证"登记过的类型确实填出了字段"。
+
 已填字段的类型：
 
 ```

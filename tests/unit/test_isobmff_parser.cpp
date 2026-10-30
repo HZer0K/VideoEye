@@ -777,4 +777,156 @@ TEST(IsobmffParserTest, Fmp4MissingFlagsIsReportedAsIncomplete) {
         << "缺省值可能来自 init 段的 trex，本解析器不跨文件读，必须显式告知";
 }
 
+// ---------------------------------------------------------------------------
+// 字段级解析：派发表里登记过的每一种 box，都必须真能填出字段
+//
+// 动机（量过，不是凭感觉）：改表驱动之前，18 种 box 里只有 8 种有字段断言
+// （ftyp / mvhd / tkhd / mdhd / hdlr / avcC / colr / pasp），
+// 剩下 10 种 —— styp / sidx / mfhd / tfhd / tfdt / trun / hvcC / av1C / esds / btrt ——
+// **一条断言都没有**。Fill* 的长度守卫写错（n < X 算大了）会让那种 box 永远填不出字段，
+// 而现有用例一条都不会红。
+// ---------------------------------------------------------------------------
+
+std::vector<uint8_t> Put32All(std::initializer_list<uint32_t> words) {
+    std::vector<uint8_t> out;
+    for (uint32_t w : words)
+        Put32(out, w);
+    return out;
+}
+
+// FullBox 载荷：version/flags(4) + 若干 32 位大端字段
+std::vector<uint8_t> FullWords(uint8_t version, std::initializer_list<uint32_t> words) {
+    std::vector<uint8_t> out{version, 0, 0, 0};
+    for (uint32_t w : words)
+        Put32(out, w);
+    return out;
+}
+
+// 一种 box 的最小合法载荷（不含 box 头），只要够走完该类型的字段解析。
+// ❗ 新增支持的 box 类型时这里必须同步 —— 下面会明确报"不认识"，不会静默跳过。
+std::vector<uint8_t> MinimalFieldBoxPayload(const std::string& type, bool& known) {
+    known = true;
+    if (type == "ftyp" || type == "styp") { // major_brand(4) + minor_version(4)
+        std::vector<uint8_t> p;
+        for (char c : std::string("isom"))
+            Put8(p, static_cast<uint8_t>(c));
+        Put32(p, 512);
+        return p;
+    }
+    if (type == "mvhd") // creation(4) mod(4) timescale(4) duration(4)
+        return FullWords(0, {0, 0, 1000, 2000});
+    if (type == "tkhd") { // track_id@12、duration@20、width/height@76 起
+        std::vector<uint8_t> p = FullWords(0, {0, 0, 1, 0, 2000});
+        p.resize(84, 0);
+        return p;
+    }
+    if (type == "mdhd") { // timescale@12、duration@16、language@20
+        std::vector<uint8_t> p = FullWords(0, {0, 0, 30000, 2000});
+        p.resize(24, 0);
+        return p;
+    }
+    if (type == "hdlr") { // predefined(4) + handler_type(4)@8
+        std::vector<uint8_t> p = FullWords(0, {0});
+        for (char c : std::string("vide"))
+            Put8(p, static_cast<uint8_t>(c));
+        return p;
+    }
+    if (type == "sidx") { // reference_id@4 timescale@8 ept@12 first_offset@16 ref_count@22
+        std::vector<uint8_t> p = FullWords(0, {1, 1000, 0, 0});
+        p.resize(24, 0);
+        return p;
+    }
+    if (type == "mfhd")
+        return FullWords(0, {7}); // sequence_number
+    if (type == "tfhd")
+        return FullWords(0, {1}); // track_id
+    if (type == "tfdt")
+        return FullWords(0, {0}); // base_media_decode_time
+    if (type == "trun")
+        return FullWords(0, {3}); // sample_count
+    if (type == "avcC")           // 非 FullBox，载荷从 configurationVersion 开始
+        return {1, 100, 0, 41, 0xFF, 0x01};
+    if (type == "hvcC") {
+        std::vector<uint8_t> p(23, 0);
+        p[0] = 1;    // configurationVersion
+        p[12] = 120; // general_level_idc
+        return p;
+    }
+    if (type == "av1C")
+        return {0x81, 0x00, 0x00, 0x00};
+    if (type == "esds") { // FullBox(4) + DecoderConfigDescriptor(tag 0x04, len 13, body 13)
+        std::vector<uint8_t> p = FullWords(0, {0});
+        Put8(p, 0x04);
+        Put8(p, 13);
+        p.resize(p.size() + 13, 0);
+        return p;
+    }
+    if (type == "colr") { // "nclx" + primaries(2) transfer(2) matrix(2) range(1)
+        std::vector<uint8_t> p;
+        for (char c : std::string("nclx"))
+            Put8(p, static_cast<uint8_t>(c));
+        const std::vector<uint8_t> tail = {0, 1, 0, 1, 0, 1, 0x00};
+        p.insert(p.end(), tail.begin(), tail.end());
+        return p;
+    }
+    if (type == "pasp")
+        return Put32All({1, 1}); // hSpacing / vSpacing
+    if (type == "btrt")
+        return Put32All({0, 128000, 96000});
+    known = false;
+    return {};
+}
+
+TEST(IsobmffParserTest, EveryFieldBoxTypeFillsAtLeastOneField) {
+    const std::vector<std::string> types = videoeye::IsobmffParser::FieldBoxTypes();
+    ASSERT_FALSE(types.empty()) << "FieldBoxTypes() 返回空 —— 派发表被清空了";
+
+    // 所有 box 平铺在顶层：FillBoxFields 对每个遇到的 box 都会跑，与层级无关。
+    std::vector<uint8_t> file;
+    std::vector<std::string> unknown;
+    for (const std::string& type : types) {
+        bool known = false;
+        const std::vector<uint8_t> payload = MinimalFieldBoxPayload(type, known);
+        if (!known || payload.empty()) {
+            unknown.push_back(type);
+            continue;
+        }
+        const std::vector<uint8_t> box = Box(type, payload);
+        file.insert(file.end(), box.begin(), box.end());
+    }
+    // 一次性把不认识的全报出来：逐个 ASSERT 会让后面所有类型的覆盖一起丢掉。
+    if (!unknown.empty()) {
+        std::string joined;
+        for (const std::string& t : unknown)
+            joined += " " + t;
+        FAIL() << "FieldBoxTypes() 里有用例不认识的类型:" << joined
+               << " —— 请补上它的最小载荷（新增一种受支持的 box 必须同步这里）";
+    }
+
+    const std::string path = "isobmff_field_boxes_tmp.mp4";
+    ASSERT_TRUE(WriteTemp(path, file));
+    videoeye::IsobmffFile out;
+    ASSERT_TRUE(videoeye::IsobmffParser::Parse(path, out)) << out.error_message;
+    std::remove(path.c_str());
+
+    int filled = 0;
+    for (const std::string& type : types) {
+        const videoeye::IsobmffBox* box = FindBox(out.top_level, type);
+        if (box == nullptr) {
+            ADD_FAILURE() << "顶层没找到「" << type << "」—— fixture 没拼进去？";
+            continue;
+        }
+        if (!box->fields.empty()) {
+            ++filled;
+        } else {
+            ADD_FAILURE() << "「" << type
+                          << "」在派发表里登记过，却一个字段都没填出来 —— 要么 Fill* 的长度守卫"
+                             "（n < X）算大了，要么派发到了空实现";
+        }
+    }
+    // 覆盖守护：Parse 失败 / FindBox 失效时上面的循环会静默空转。
+    EXPECT_EQ(filled, static_cast<int>(types.size()))
+        << "只有 " << filled << " / " << types.size() << " 种 box 填出了字段";
+}
+
 } // namespace

@@ -208,6 +208,15 @@ public:
     using Options = IsobmffOptions;
 
     static bool Parse(const std::string& file_path, IsobmffFile& out, const Options& options = Options{});
+
+    // 会做字段级解析的 box 类型（唯一事实源，与 .cpp 里的 kFieldSpecs 同一处定义）。
+    //
+    // 以前"哪些 box 有字段"是两份清单：一份 kFieldBoxes 决定要不要读载荷，另一份是
+    // if (type == ...) 链 —— 往一份里加了却忘了另一份，编译时完全无声，那种 box 会被
+    // 读出来然后一个字段都不填，看上去像"它本来就没有可读字段"。现在两张合成一张，
+    // 这个查询函数就是它的出口：展示层不用自己判 type，回归用例也不用另抄一份名单
+    // （test_isobmff_parser 的 EveryFieldBoxTypeFillsAtLeastOneField 直接遍历它）。
+    static std::vector<std::string> FieldBoxTypes();
 };
 
 } // namespace videoeye

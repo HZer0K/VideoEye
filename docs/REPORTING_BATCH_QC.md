@@ -87,7 +87,7 @@ QC 的入口是 GUI 的「报告与批量 QC」页 —— 项目不再提供独�
 
 CSV 是"每个问题一行"的数据表，本来就只承载问题清单，不参与这条约定。
 
-这条约束由 `test_qc_report_exporter` 的两个用例守着：
+这条约束由 `test_qc_report_exporter` 的三个用例守着：
 
 - `PdfBodyIsTheSameTextAsTheTxtReport` —— 判据是"去掉空白后 PDF 还原出的文本与纯文本报告
   逐字相同"。以前 PDF 自己另排了一套（英文抬头 + 问题清单 + 主轨响度），于是同一份结论
@@ -97,6 +97,10 @@ CSV 是"每个问题一行"的数据表，本来就只承载问题清单，不�
   「流列表」「规则快照」在 HTML 与 JSON 里存在了若干版本，纯文本与 PDF 里一个字都没有 ——
   少了流列表，拿 PDF 交付时看不到被检查的对象里有哪些轨；少了规则快照，"没报问题"
   与"阈值放得很宽"在纸面上长得一模一样。
+- `HtmlSectionsAppearInTheDocumentedOrder` —— 章节**齐全**还不够，**顺序**也有语义：
+  「证据与覆盖」必须在「流列表」之前（读者要先知道哪些维度真跑了，才知道后面的数字能推到
+  什么结论），「规则快照」在最后。`BuildHtml` 现在就是一串 `Append*` 调用，挪一行就换顺序
+  且不会有任何编译错误，所以顺序钉死在 `kSectionPairs` 上。
 
 另一个用例 `PdfWrapsOverlongLinesInsteadOfDrawingPastTheMargin` 守折行：`MiniPdfWriter`
 只按 `\n` 切段、不自动换行，超宽的行会一路画出页面右边界被裁掉，而文件仍然"结构有效"。

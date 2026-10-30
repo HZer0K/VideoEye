@@ -11,6 +11,7 @@
 #include <QUuid>
 #include <QtGlobal> // Q_OS_WIN / Qt::CaseSensitivity
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <vector>
 
@@ -121,6 +122,173 @@ void free_streams(std::vector<StreamCtx>& streams) {
         }
     }
     streams.clear();
+}
+
+// 编码输出：把解出来的帧送进编码器，再把编码后的包写进输出容器。
+//
+// 这三段原先是 Export() 里的三个 lambda（write_encoded_packets / encode_video_frame /
+// encode_audio_frame，约 140 行），只捕获 out_fmt 与 err_msg 两个局部变量 —— 正因如此
+// 它们能整块搬出来，Export() 里只剩下"读包 -> 交给谁"那条主线。
+//
+// ❗ 出错时**不**早期返回，只在 err_ 为空时写一次：调用方（主循环 / flush）统一在下
+// 一轮开头检查 error()，于是"某条流编码失败"与"读包失败"走的是同一条收尾路径。返回
+// 值沿用原先的语义 —— err_ 是否为空，也就是"到目前为止整次导出有没有出错"。
+class FrameEncoder {
+public:
+    FrameEncoder(AVFormatContext* out_fmt, QString* err) : out_fmt_(out_fmt), err_(err) {
+    }
+
+    // 视频：源规格变了就重建 sws -> 缩放 -> 送编码 -> 写出包。
+    bool EncodeVideo(StreamCtx& s, AVFrame* src);
+    // 音频：首次建 swr -> 重采样 -> 送编码 -> 写出包。
+    bool EncodeAudio(StreamCtx& s, AVFrame* src);
+
+    // 把编码器里已经攒好的包全部写出。EAGAIN / EOF 是正常状态，不是错误。
+    // 排空阶段（flush）送完 EOF 帧后要单独调一次，把编码器最后攒着的几帧取出来。
+    void WriteEncodedPackets(StreamCtx& s);
+
+private:
+    AVFormatContext* out_fmt_;
+    QString* err_;
+};
+
+void FrameEncoder::WriteEncodedPackets(StreamCtx& s) {
+    AVPacket* epkt = av_packet_alloc();
+    if (!epkt) {
+        // 每写一轮都重新分配, 所以这里失败只影响本轮; 记进 err_ 让外层按失败收尾。
+        if (err_->isEmpty())
+            *err_ = QStringLiteral("内存不足: 无法分配编码输出包");
+        return;
+    }
+    for (;;) {
+        const int ret = avcodec_receive_packet(s.enc, epkt);
+        // EAGAIN(输出还没就绪) / EOF(编码器已排空) 都是正常状态, 不算错误
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+            break;
+        if (ret < 0) {
+            // 编码器真实错误: 必须记下来, 否则外层会把它当成"正常结束"并报成功
+            if (err_->isEmpty())
+                *err_ = QString("取出编码输出包失败: %1").arg(AvErrorString(ret));
+            break;
+        }
+        epkt->stream_index = s.out_idx;
+        av_packet_rescale_ts(epkt, s.enc->time_base, out_fmt_->streams[s.out_idx]->time_base);
+        const int wr = av_interleaved_write_frame(out_fmt_, epkt);
+        av_packet_unref(epkt);
+        if (wr < 0 && err_->isEmpty())
+            *err_ = "写入编码输出包失败";
+    }
+    av_packet_free(&epkt);
+}
+
+bool FrameEncoder::EncodeVideo(StreamCtx& s, AVFrame* src) {
+    // 源规格变了（或首次）就重建 sws。原来只建一份、之后一直复用，源流中途改
+    // 分辨率/像素格式时缩放结果全错。
+    if (s.sws &&
+        (s.sws_src_w != src->width || s.sws_src_h != src->height || s.sws_src_fmt != (AVPixelFormat)src->format)) {
+        sws_freeContext(s.sws);
+        s.sws = nullptr;
+    }
+    if (!s.sws) {
+        s.sws = sws_getContext(src->width, src->height, (AVPixelFormat)src->format, s.enc->width, s.enc->height,
+                               s.enc_pix_fmt, SWS_BILINEAR, nullptr, nullptr, nullptr);
+        if (!s.sws) {
+            *err_ = "初始化图像缩放器失败";
+            return false;
+        }
+        s.sws_src_w = src->width;
+        s.sws_src_h = src->height;
+        s.sws_src_fmt = (AVPixelFormat)src->format;
+    }
+    AVFrame* out_frame = av_frame_alloc();
+    if (!out_frame) {
+        *err_ = QStringLiteral("内存不足: 无法分配视频编码帧");
+        return false;
+    }
+    out_frame->format = s.enc_pix_fmt;
+    out_frame->width = s.enc->width;
+    out_frame->height = s.enc->height;
+    if (av_frame_get_buffer(out_frame, 0) < 0) {
+        av_frame_free(&out_frame);
+        *err_ = "分配编码帧缓冲区失败";
+        return false;
+    }
+    // sws_scale 成功时返回输出图像的高度, 负值表示缩放失败。
+    // 原来这里完全没看返回值: 缩放失败会继续把未初始化/残缺的帧送进编码器,
+    // 产物是花屏甚至空轨, 却因为 err_ 仍为空而被判成"导出成功"。
+    const int scaled = sws_scale(s.sws, src->data, src->linesize, 0, src->height, out_frame->data, out_frame->linesize);
+    if (scaled < s.enc->height) {
+        av_frame_free(&out_frame);
+        *err_ = "图像缩放失败";
+        return false;
+    }
+    out_frame->pts = (src->pts == AV_NOPTS_VALUE) ? s.enc_pts++ : src->pts;
+    s.enc_pts = out_frame->pts + 1;
+    const int send_ret = avcodec_send_frame(s.enc, out_frame);
+    av_frame_free(&out_frame);
+    if (send_ret < 0) {
+        *err_ = "送入编码帧失败";
+        return false;
+    }
+    WriteEncodedPackets(s); // 写入失败会在内部写 err_
+    return err_->isEmpty();
+}
+
+bool FrameEncoder::EncodeAudio(StreamCtx& s, AVFrame* src) {
+    if (!s.swr) {
+        if (swr_alloc_set_opts2(&s.swr, &s.enc->ch_layout, s.enc->sample_fmt, s.enc->sample_rate, &src->ch_layout,
+                                (AVSampleFormat)src->format, src->sample_rate, 0, nullptr) < 0 ||
+            !s.swr) {
+            *err_ = "初始化音频重采样器失败";
+            return false;
+        }
+        if (swr_init(s.swr) < 0) {
+            swr_free(&s.swr);
+            *err_ = "初始化音频重采样器失败";
+            return false;
+        }
+    }
+    const int dst_nb = av_rescale_rnd(src->nb_samples, s.enc->sample_rate, src->sample_rate, AV_ROUND_UP);
+    AVFrame* out_frame = av_frame_alloc();
+    if (!out_frame) {
+        *err_ = QStringLiteral("内存不足: 无法分配音频编码帧");
+        return false;
+    }
+    out_frame->format = s.enc->sample_fmt;
+    out_frame->sample_rate = s.enc->sample_rate;
+    // 布局拷不过来时, av_frame_get_buffer() 会按 nb_channels=0 分配出 0 字节缓冲,
+    // 后面 swr_convert() 就写成越界。这里是每帧都要做的操作, 必须看返回值。
+    const int layout_ret = av_channel_layout_copy(&out_frame->ch_layout, &s.enc->ch_layout);
+    if (layout_ret < 0) {
+        av_frame_free(&out_frame);
+        *err_ = QStringLiteral("拷贝声道布局失败: %1").arg(AvErrorString(layout_ret));
+        return false;
+    }
+    out_frame->nb_samples = dst_nb;
+    if (av_frame_get_buffer(out_frame, 0) < 0) {
+        av_frame_free(&out_frame);
+        *err_ = "分配编码帧缓冲区失败";
+        return false;
+    }
+    // swr_convert 需要 const uint8_t**；AVFrame::data 是 uint8_t*[8]
+    const uint8_t** src_data = (const uint8_t**)src->data;
+    const int got = swr_convert(s.swr, out_frame->data, dst_nb, src_data, src->nb_samples);
+    if (got < 0) {
+        av_frame_free(&out_frame);
+        *err_ = "音频重采样失败";
+        return false;
+    }
+    out_frame->nb_samples = got;
+    out_frame->pts = s.enc_pts;
+    s.enc_pts += got;
+    const int send_ret = avcodec_send_frame(s.enc, out_frame);
+    av_frame_free(&out_frame);
+    if (send_ret < 0) {
+        *err_ = "送入编码帧失败";
+        return false;
+    }
+    WriteEncodedPackets(s);
+    return err_->isEmpty();
 }
 
 // 依据目标格式推断默认编码器名称
@@ -268,6 +436,398 @@ bool open_output(AVFormatContext*& out_fmt, const ExportOptions& opt, const std:
         }
     }
     return true;
+}
+
+// 一步流程的结局。
+//
+// ⭐⭐ 取消与失败**必须**分开：取消不是错误，报成 ExportError 会让界面弹出"导出失败"
+// 的假告警 —— 用户明明是自己点的取消。走 StepResult::Canceled 的路径只删临时文件、
+// 保留原目标文件，且不发 ExportError。
+enum class StepResult { Ok, Canceled, Failed };
+
+// 打开输入文件并探测流信息。
+//
+// 打开阶段带绝对超时（网络地址 / 管道 / 异常设备可能永远不返回），探测阶段允许更长时间，
+// 两者都受取消约束；返回 Ok 时已把绝对截止时间清零 —— 逐包读取长素材可以远超打开超时，
+// 留着它会误杀。取消状态由 is_canceled 查询（调用方转发 MediaExporter::IsCanceled）。
+StepResult open_input_and_probe(AVFormatContext*& in_fmt, const std::string& in_path, const QString& display_path,
+                                ffmpeg_io::AvInterruptState& interrupt, const std::function<bool()>& is_canceled,
+                                QString& err) {
+    const int open_ret = avformat_open_input(&in_fmt, in_path.c_str(), nullptr, nullptr);
+    if (open_ret < 0) {
+        // AVERROR_EXIT 只可能来自我们自己的中断回调: 取消 -> 走取消收尾; 超时 -> 报打开超时。
+        // (以前这里不看返回值来源, 被取消也会被报成"无法打开输入文件"。)
+        if (open_ret == AVERROR_EXIT && is_canceled())
+            return StepResult::Canceled;
+        err = (open_ret == AVERROR_EXIT)
+                  ? QString("打开输入超时 (%1 秒): %2").arg(ffmpeg_io::kOpenTimeoutUs / 1000000).arg(display_path)
+                  : QString("无法打开输入文件: %1").arg(display_path);
+        return StepResult::Failed;
+    }
+
+    // 探测阶段允许更长时间, 但仍受取消约束
+    interrupt.deadline_us = av_gettime() + ffmpeg_io::kProbeTimeoutUs;
+    const int probe_ret = avformat_find_stream_info(in_fmt, nullptr);
+    if (probe_ret < 0) {
+        if (probe_ret == AVERROR_EXIT && is_canceled())
+            return StepResult::Canceled;
+        err = (probe_ret == AVERROR_EXIT) ? QStringLiteral("获取输入流信息超时") : QStringLiteral("无法获取输入流信息");
+        return StepResult::Failed;
+    }
+    // 进入逐包读取/编码阶段: 关掉绝对截止时间, 只保留取消响应。
+    // (长素材的正常读取可以远超打开超时, 留着它会误杀。)
+    interrupt.deadline_us = 0;
+    return StepResult::Ok;
+}
+
+// 解析导出区间。
+//
+// 起点取 opt.start_ms（<=0 视为从 0 开始），终点取"容器声明时长"与"用户显式要求"的较小
+// 者；容器没报时长时终点取 int64 上限（等于不裁）。
+// ❗ duration_ms 是**从 0 量到最后一帧**的整片长度，带 start 偏移，不能直接拿它跟
+//   end-start 比。
+bool resolve_export_range(const ExportOptions& opt, qint64 duration_ms, qint64& start_ms, qint64& end_ms,
+                          QString& err) {
+    start_ms = (opt.start_ms > 0) ? opt.start_ms : 0;
+    end_ms = duration_ms;
+    if (opt.end_ms > 0) {
+        end_ms = (duration_ms > 0) ? std::min(opt.end_ms, duration_ms) : opt.end_ms;
+    } else if (duration_ms <= 0) {
+        end_ms = std::numeric_limits<qint64>::max();
+    }
+    if (start_ms >= end_ms) {
+        err = "导出区间无效 (起点需小于终点)";
+        return false;
+    }
+    return true;
+}
+
+// 区间裁剪判据。
+//
+// av_seek_frame() 只能落在关键帧上，而请求的起点几乎总在两个关键帧之间：回退之后拿到的
+// 第一个包可能**早于** start_ms。以前这里只把 start_ms 用于 seek 和进度零点，没有任何
+// 地方丢弃早于起点的包/帧 —— 于是"仅导出 0.8s 之后"实际会把 0~0.8s 的内容一起写进产物
+// （实测 1.6s 素材导出 800~1600ms 得到整条 1.6s）。终点一直有检查、起点没有，是这个 bug
+// 藏这么久的原因。
+//
+// ⭐⭐ 两种模式的丢法必须不同，**别把两个判据对调**：
+//   * 拷贝：整包丢（PacketBeforeStart）。产物从非关键帧开头，是 -c copy 裁剪的固有限制
+//     （ffmpeg 命令行同样如此），但至少不把用户排除掉的内容塞进来。
+//   * 编码：包**照喂**给解码器（从关键帧起才解得动后续帧，跳过会直接解码报错），
+//     只丢掉解出来但早于起点的帧（FrameOutside，在解出帧之后才调用）。
+class ExportRange {
+public:
+    ExportRange(qint64 start_ms, qint64 end_ms, qint64 requested_end_ms)
+        : start_ms_(start_ms), end_ms_(end_ms), requested_end_ms_(requested_end_ms) {
+    }
+
+    // 拷贝模式：这个包是否早于起点（是就整包丢掉）。
+    bool PacketBeforeStart(const AVPacket* p, const AVStream* st) const {
+        if (start_ms_ <= 0 || p->pts == AV_NOPTS_VALUE)
+            return false;
+        const qint64 pts_ms = static_cast<qint64>(p->pts * av_q2d(st->time_base) * 1000.0);
+        return pts_ms < start_ms_;
+    }
+
+    // 编码模式：解出的这一帧是否在区间外（在就丢帧 —— 包已经喂进解码器了）。
+    bool FrameOutside(const AVStream* in_st, const AVFrame* f) const {
+        if (start_ms_ <= 0 && requested_end_ms_ <= 0)
+            return false;
+        const int64_t ts = (f->pts != AV_NOPTS_VALUE) ? f->pts : f->best_effort_timestamp;
+        if (ts == AV_NOPTS_VALUE)
+            return false;
+        const qint64 pts_ms = static_cast<qint64>(ts * av_q2d(in_st->time_base) * 1000.0);
+        if (start_ms_ > 0 && pts_ms < start_ms_)
+            return true;
+        // 终点只按用户**明确要求**的 end 裁：end_ms_ 在时长未知时是 int64 上限、在时长
+        // 已知时是容器声明的时长，拿它裁会误伤元数据少报的真实尾帧。
+        return requested_end_ms_ > 0 && pts_ms > end_ms_;
+    }
+
+    qint64 start_ms() const {
+        return start_ms_;
+    }
+    qint64 end_ms() const {
+        return end_ms_;
+    }
+
+private:
+    qint64 start_ms_ = 0;
+    qint64 end_ms_ = 0;
+    qint64 requested_end_ms_ = 0;
+};
+
+// 逐包搬运阶段：读输入 -> 按区间裁 -> 拷贝或解码重编码 -> 报进度。
+//
+// 这些状态原先是 Export() 里的十来个局部变量（进度游标、区间、流表、出错原因……），主循环
+// 因此嵌在 605 行的函数里，谁想改它都得先把整个函数读完。搬进结构体之后 Run() 之外每步只
+// 碰自己的成员。
+//
+// ❗ 出错一律只往 *err_ 里写、不提前返回，由 Run() 的循环条件统一收口 —— 这样"某条流编码
+// 失败"和"读包失败"走的是同一条收尾路径，不会有一支漏掉替换/清理。
+class PacketPump {
+public:
+    PacketPump(AVFormatContext* in_fmt, AVFormatContext* out_fmt, std::vector<StreamCtx>& streams, AVPacket* pkt,
+               AVFrame* frame, FrameEncoder& encoder, const ExportRange& range, qint64 duration_ms,
+               const std::function<bool()>& is_canceled, const std::function<void(int)>& report_progress, QString* err)
+        : in_fmt_(in_fmt), out_fmt_(out_fmt), streams_(streams), pkt_(pkt), frame_(frame), encoder_(encoder),
+          range_(range), duration_ms_(duration_ms), is_canceled_(is_canceled), report_progress_(report_progress),
+          err_(err) {
+        stream_seen_ms_.assign(static_cast<size_t>(in_fmt->nb_streams), 0);
+    }
+
+    void Run();
+
+    // 读到文件尾（或命中终点）—— 与"被打断"分开，前者才是"导出成功"的前提之一。
+    bool reached_end() const {
+        return reached_end_;
+    }
+    // 被中断回调打断的读：导出阶段已把绝对截止时间清零，所以只可能是用户取消。
+    bool interrupted() const {
+        return interrupted_;
+    }
+
+private:
+    // 返回 false = 这一轮之后该停了（命中终点 / 写失败）。
+    bool HandlePacket();
+    void CopyPacket(StreamCtx& sc, AVStream* in_st);
+    void EncodePacket(StreamCtx& sc);
+    void RememberPts(int stream_index, qint64 pts_ms);
+    void ReportProgress();
+
+    AVFormatContext* in_fmt_;
+    AVFormatContext* out_fmt_;
+    std::vector<StreamCtx>& streams_;
+    AVPacket* pkt_;
+    AVFrame* frame_;
+    FrameEncoder& encoder_;
+    const ExportRange& range_;
+    qint64 duration_ms_;
+    std::function<bool()> is_canceled_;
+    std::function<void(int)> report_progress_;
+    QString* err_;
+
+    bool reached_end_ = false;
+    bool interrupted_ = false;
+    // 各流 PTS 互不相通（time_base / 时基起点都不同），所以逐流记一份"已见到的最大
+    // PTS(ms)"，取全局最大当进度位置 —— 任一流的 PTS 回退（环绕时基、非单调时间轴）
+    // 都不会把进度条往回拽。
+    std::vector<qint64> stream_seen_ms_;
+    qint64 max_seen_ms_ = 0;
+    int last_progress_ = -1;
+};
+
+void PacketPump::Run() {
+    while (!is_canceled_()) {
+        const int ret = av_read_frame(in_fmt_, pkt_);
+        if (ret < 0) {
+            if (ret == AVERROR_EOF) {
+                reached_end_ = true; // 正常读到文件尾
+            } else if (ret == AVERROR_EXIT) {
+                // 中断回调打断。导出阶段已把 deadline 清零, 所以只可能是用户取消。
+                interrupted_ = true;
+            } else if (err_->isEmpty()) {
+                *err_ = "读取输入文件失败"; // 真实读错误, 不应被当作成功结束
+            }
+            break;
+        }
+
+        if (!HandlePacket())
+            break;
+
+        // 写入失败立即停止, 避免后续包继续写入并掩盖错误 (否则会被误报为成功)
+        if (!err_->isEmpty())
+            break;
+
+        ReportProgress();
+    }
+}
+
+bool PacketPump::HandlePacket() {
+    StreamCtx* sc = nullptr;
+    for (auto& s : streams_)
+        if (s.in_idx == pkt_->stream_index) {
+            sc = &s;
+            break;
+        }
+    if (!sc) {
+        av_packet_unref(pkt_);
+        return true;
+    }
+
+    AVStream* in_st = in_fmt_->streams[pkt_->stream_index];
+    // PTS(ms) 一次算好复用：进度统计、起点裁剪、终点检查都要它，
+    // 原来每处各算一遍（浮点换算重复三次，改一处漏两处）。
+    const qint64 pkt_pts_ms = (pkt_->pts != AV_NOPTS_VALUE)
+                                  ? static_cast<qint64>(pkt_->pts * av_q2d(in_st->time_base) * 1000.0)
+                                  : AV_NOPTS_VALUE;
+    if (pkt_pts_ms != AV_NOPTS_VALUE && duration_ms_ > 0)
+        RememberPts(pkt_->stream_index, pkt_pts_ms);
+
+    // 区间起点检查（拷贝模式才丢包；编码模式丢的是解出来的帧，见 EncodePacket）
+    if (!sc->do_encode && range_.PacketBeforeStart(pkt_, in_st)) {
+        av_packet_unref(pkt_);
+        return true;
+    }
+
+    // 区间终点检查
+    if (range_.end_ms() > 0 && pkt_pts_ms != AV_NOPTS_VALUE && pkt_pts_ms > range_.end_ms()) {
+        av_packet_unref(pkt_);
+        reached_end_ = true;
+        return false;
+    }
+
+    if (!sc->do_encode)
+        CopyPacket(*sc, in_st);
+    else
+        EncodePacket(*sc);
+    return true;
+}
+
+void PacketPump::CopyPacket(StreamCtx& sc, AVStream* in_st) {
+    pkt_->stream_index = sc.out_idx;
+    av_packet_rescale_ts(pkt_, in_st->time_base, out_fmt_->streams[sc.out_idx]->time_base);
+    const int write_ret = av_interleaved_write_frame(out_fmt_, pkt_);
+    av_packet_unref(pkt_);
+    if (write_ret < 0) {
+        *err_ = "写入输出包失败";
+        reached_end_ = false;
+    }
+}
+
+void PacketPump::EncodePacket(StreamCtx& sc) {
+    const AVMediaType mt = sc.dec->codec_type;
+    // 解码输入: 真实错误(非 EAGAIN)要记录, 否则损坏输入会被当成正常结束
+    const int send_ret = avcodec_send_packet(sc.dec, pkt_);
+    if (send_ret == 0) {
+        for (;;) {
+            const int recv_ret = avcodec_receive_frame(sc.dec, frame_);
+            // EAGAIN(还要继续喂包) / EOF(解码器已排空) 都是正常状态
+            if (recv_ret == AVERROR(EAGAIN) || recv_ret == AVERROR_EOF)
+                break;
+            if (recv_ret < 0) {
+                // 真实解码错误。旧代码写成 `while (... >= 0)`, 这里会静默退出,
+                // 截断/损坏的输入于是被当成"读完了", 最终误报导出成功。
+                if (err_->isEmpty())
+                    *err_ = QString("解码失败: %1").arg(AvErrorString(recv_ret));
+                break;
+            }
+            // 包已喂进解码器（从关键帧起才解得动），但解出来的帧可能早于起点
+            // 或晚于终点 —— 这些不进编码器，否则产物仍会带上区间外的内容。
+            if (range_.FrameOutside(in_fmt_->streams[sc.in_idx], frame_)) {
+                av_frame_unref(frame_);
+                continue;
+            }
+            const bool ok =
+                (mt == AVMEDIA_TYPE_VIDEO) ? encoder_.EncodeVideo(sc, frame_) : encoder_.EncodeAudio(sc, frame_);
+            av_frame_unref(frame_);
+            if (!ok)
+                break; // 编码/重采样失败 -> err_ 已置, 外层据此停止
+        }
+    } else if (send_ret != AVERROR(EAGAIN)) {
+        if (err_->isEmpty())
+            *err_ = QString("解码输入失败: %1").arg(AvErrorString(send_ret));
+    }
+    av_packet_unref(pkt_);
+}
+
+void PacketPump::RememberPts(int stream_index, qint64 pts_ms) {
+    qint64& seen = stream_seen_ms_[static_cast<size_t>(stream_index)];
+    if (pts_ms > seen)
+        seen = pts_ms;
+    if (seen > max_seen_ms_)
+        max_seen_ms_ = seen;
+}
+
+void PacketPump::ReportProgress() {
+    if (duration_ms_ <= 0)
+        return;
+    // 进度按"已见最大 PTS"算，不再用当前包单点，因此只会往前走。
+    const qint64 span = range_.end_ms() - range_.start_ms();
+    int progress_percent = 0;
+    if (span > 0) {
+        // 先比大小再乘：end_ms 可能是 int64 上限（时长未知时），直接乘 100 会溢出。
+        const qint64 elapsed = max_seen_ms_ - range_.start_ms();
+        progress_percent = (elapsed >= span) ? 100 : static_cast<int>(elapsed * 100 / span);
+    }
+    progress_percent = qBound(0, progress_percent, 100);
+    if (progress_percent != last_progress_) {
+        last_progress_ = progress_percent;
+        report_progress_(progress_percent);
+    }
+}
+
+// 排空解码器与编码器，把最后攒着的帧/包写出来。
+//
+// 返回 true = 收尾干净，调用方随后补发 ExportProgress(100)。
+// ❗ 任一步失败都直接返回 false，不再继续写 av_write_trailer —— 带着已知错误继续收尾，
+// 会把一个坏文件当成"写完了"交出去。
+bool flush_encoders(std::vector<StreamCtx>& streams, AVFormatContext* in_fmt, AVFormatContext* out_fmt, AVFrame* frame,
+                    FrameEncoder& encoder, const ExportRange& range, QString& err) {
+    for (auto& s : streams) {
+        if (!s.do_encode)
+            continue;
+
+        // 排空解码器。AVERROR_EOF 表示此前已排空过, 与 EAGAIN 一样属于正常状态。
+        const int dp = avcodec_send_packet(s.dec, nullptr);
+        if (dp < 0 && dp != AVERROR_EOF) {
+            err = QString("结束解码失败: %1").arg(AvErrorString(dp));
+            return false;
+        }
+        for (;;) {
+            const int rr = avcodec_receive_frame(s.dec, frame);
+            if (rr == AVERROR(EAGAIN) || rr == AVERROR_EOF)
+                break;
+            if (rr < 0) {
+                err = QString("解码失败: %1").arg(AvErrorString(rr));
+                return false;
+            }
+            if (range.FrameOutside(in_fmt->streams[s.in_idx], frame)) {
+                av_frame_unref(frame);
+                continue;
+            }
+            const bool ok = (s.dec->codec_type == AVMEDIA_TYPE_VIDEO) ? encoder.EncodeVideo(s, frame)
+                                                                      : encoder.EncodeAudio(s, frame);
+            av_frame_unref(frame);
+            if (!ok)
+                return false; // 编码/重采样失败, err 已置
+        }
+        if (!err.isEmpty())
+            return false; // 解码/编码失败则停止 flush
+
+        // 排空编码器。AVERROR_EOF 表示编码器此前已被 flush 过, 不是错误;
+        // 原来这里连返回值都不看, 编码器真出错时照样会走到"替换目标文件"那一步。
+        const int ef = avcodec_send_frame(s.enc, nullptr);
+        if (ef < 0 && ef != AVERROR_EOF) {
+            err = QString("结束编码失败: %1").arg(AvErrorString(ef));
+            return false;
+        }
+        encoder.WriteEncodedPackets(s);
+        if (!err.isEmpty())
+            return false; // 写入失败则停止 flush
+    }
+    if (av_write_trailer(out_fmt) < 0) {
+        err = "写入文件尾失败";
+        return false;
+    }
+    return true;
+}
+
+// 定位到起点。av_seek_frame 只落在关键帧上，seek 之后必须把解码器/编码器里残留的参考帧
+// 冲掉，否则区间外的旧帧会跟着一起排出来。
+void seek_to_start(AVFormatContext* in_fmt, qint64 start_ms, std::vector<StreamCtx>& streams) {
+    if (start_ms <= 0)
+        return;
+    const int64_t seek_ts = start_ms * 1000LL; // 微秒
+    if (av_seek_frame(in_fmt, -1, seek_ts, AVSEEK_FLAG_BACKWARD) < 0) {
+        av_seek_frame(in_fmt, -1, seek_ts, AVSEEK_FLAG_ANY);
+    }
+    for (auto& s : streams) {
+        if (s.dec)
+            avcodec_flush_buffers(s.dec);
+        if (s.enc)
+            avcodec_flush_buffers(s.enc);
+    }
 }
 
 } // namespace
@@ -583,37 +1143,16 @@ void MediaExporter::Export(const ExportOptions& opt) {
     interrupt.cancel = &cancel_;
     ffmpeg_io::AttachInterrupt(in_fmt, interrupt, ffmpeg_io::kOpenTimeoutUs);
 
-    const int open_ret = avformat_open_input(&in_fmt, in_path.c_str(), nullptr, nullptr);
-    if (open_ret < 0) {
-        // AVERROR_EXIT 只可能来自我们自己的中断回调: 取消 -> 走取消收尾; 超时 -> 报打开超时。
-        // (以前这里不看返回值来源, 被取消也会被报成"无法打开输入文件"。)
-        if (open_ret == AVERROR_EXIT && IsCanceled()) {
-            cancel_and_emit();
-            return;
-        }
-        err_msg = (open_ret == AVERROR_EXIT)
-                      ? QString("打开输入超时 (%1 秒): %2").arg(ffmpeg_io::kOpenTimeoutUs / 1000000).arg(opt.input_path)
-                      : QString("无法打开输入文件: %1").arg(opt.input_path);
+    const StepResult opened =
+        open_input_and_probe(in_fmt, in_path, opt.input_path, interrupt, [this] { return IsCanceled(); }, err_msg);
+    if (opened == StepResult::Canceled) {
+        cancel_and_emit();
+        return;
+    }
+    if (opened == StepResult::Failed) {
         cleanup_and_emit(true, err_msg);
         return;
     }
-
-    // 探测阶段允许更长时间, 但仍受取消约束
-    interrupt.deadline_us = av_gettime() + ffmpeg_io::kProbeTimeoutUs;
-    const int probe_ret = avformat_find_stream_info(in_fmt, nullptr);
-    if (probe_ret < 0) {
-        if (probe_ret == AVERROR_EXIT && IsCanceled()) {
-            cancel_and_emit();
-            return;
-        }
-        err_msg =
-            (probe_ret == AVERROR_EXIT) ? QStringLiteral("获取输入流信息超时") : QStringLiteral("无法获取输入流信息");
-        cleanup_and_emit(true, err_msg);
-        return;
-    }
-    // 进入逐包读取/编码阶段: 关掉绝对截止时间, 只保留取消响应。
-    // (长素材的正常读取可以远超打开超时, 留着它会误杀。)
-    interrupt.deadline_us = 0;
 
     // 失败收尾统一交给 cleanup_and_emit: 它比手写的这堆 free 多做了两件事 ——
     // 关掉可能已经打开的输出 pb、删掉可能已经生成的临时文件。
@@ -625,18 +1164,13 @@ void MediaExporter::Export(const ExportOptions& opt) {
     const qint64 duration_ms = (in_fmt->duration != AV_NOPTS_VALUE)
                                    ? static_cast<qint64>(in_fmt->duration / (double)AV_TIME_BASE * 1000.0)
                                    : 0;
-    qint64 start_ms = (opt.start_ms > 0) ? opt.start_ms : 0;
-    qint64 end_ms = duration_ms;
-    if (opt.end_ms > 0) {
-        end_ms = (duration_ms > 0) ? std::min(opt.end_ms, duration_ms) : opt.end_ms;
-    } else if (duration_ms <= 0) {
-        end_ms = std::numeric_limits<qint64>::max();
-    }
-    if (start_ms >= end_ms) {
-        err_msg = "导出区间无效 (起点需小于终点)";
+    qint64 start_ms = 0;
+    qint64 end_ms = 0;
+    if (!resolve_export_range(opt, duration_ms, start_ms, end_ms, err_msg)) {
         cleanup_and_emit(true, err_msg);
         return;
     }
+    const ExportRange range(start_ms, end_ms, opt.end_ms);
 
     QString video_enc_name, audio_enc_name;
     resolve_encoder_names(opt, video_enc_name, audio_enc_name);
@@ -661,378 +1195,23 @@ void MediaExporter::Export(const ExportOptions& opt) {
     emit ExportStarted(duration_ms);
 
     // 定位到起点
-    if (start_ms > 0) {
-        const int64_t seek_ts = start_ms * 1000LL; // 微秒
-        if (av_seek_frame(in_fmt, -1, seek_ts, AVSEEK_FLAG_BACKWARD) < 0) {
-            av_seek_frame(in_fmt, -1, seek_ts, AVSEEK_FLAG_ANY);
-        }
-        for (auto& s : streams) {
-            if (s.dec)
-                avcodec_flush_buffers(s.dec);
-            if (s.enc)
-                avcodec_flush_buffers(s.enc);
-        }
-    }
+    seek_to_start(in_fmt, start_ms, streams);
 
-    int last_progress = -1;
-    // 进度基线。各个流的 PTS 互不相通（time_base / 时基起点都不同），所以逐流记一份
-    // "已见到的最大 PTS(ms)"，取全局最大当进度位置 —— 任一流的 PTS 回退（环绕时基、
-    // 非单调时间轴）都不会把进度条往回拽。
-    std::vector<qint64> stream_seen_ms(static_cast<size_t>(in_fmt->nb_streams), 0);
-    qint64 max_seen_ms = 0;     // 各流已见最大 PTS(ms)，只增不减
-    qint64 base_pts = start_ms; // 进度零点（导出的起点）
+    // 编码输出（缩放 / 重采样 / 送编码 / 写包）都在 FrameEncoder 里，出错原因写回 err_msg。
+    FrameEncoder encoder(out_fmt, &err_msg);
 
-    // 把一帧送进编码器并写出数据包
-    auto write_encoded_packets = [&](StreamCtx& s) {
-        AVPacket* epkt = av_packet_alloc();
-        if (!epkt) {
-            // 每写一轮都重新分配, 所以这里失败只影响本轮; 记进 err_msg 让外层按失败收尾。
-            if (err_msg.isEmpty())
-                err_msg = QStringLiteral("内存不足: 无法分配编码输出包");
-            return;
-        }
-        for (;;) {
-            const int ret = avcodec_receive_packet(s.enc, epkt);
-            // EAGAIN(输出还没就绪) / EOF(编码器已排空) 都是正常状态, 不算错误
-            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
-                break;
-            if (ret < 0) {
-                // 编码器真实错误: 必须记下来, 否则外层会把它当成"正常结束"并报成功
-                if (err_msg.isEmpty())
-                    err_msg = QString("取出编码输出包失败: %1").arg(AvErrorString(ret));
-                break;
-            }
-            epkt->stream_index = s.out_idx;
-            av_packet_rescale_ts(epkt, s.enc->time_base, out_fmt->streams[s.out_idx]->time_base);
-            const int wr = av_interleaved_write_frame(out_fmt, epkt);
-            av_packet_unref(epkt);
-            if (wr < 0 && err_msg.isEmpty())
-                err_msg = "写入编码输出包失败";
-        }
-        av_packet_free(&epkt);
-    };
+    PacketPump pump(
+        in_fmt, out_fmt, streams, pkt, frame, encoder, range, duration_ms, [this] { return IsCanceled(); },
+        [this](int percent) { emit ExportProgress(percent); }, &err_msg);
+    pump.Run();
 
-    auto encode_video_frame = [&](StreamCtx& s, AVFrame* src) -> bool {
-        // 源规格变了（或首次）就重建 sws。原来只建一份、之后一直复用，源流中途改
-        // 分辨率/像素格式时缩放结果全错。
-        if (s.sws &&
-            (s.sws_src_w != src->width || s.sws_src_h != src->height || s.sws_src_fmt != (AVPixelFormat)src->format)) {
-            sws_freeContext(s.sws);
-            s.sws = nullptr;
-        }
-        if (!s.sws) {
-            s.sws = sws_getContext(src->width, src->height, (AVPixelFormat)src->format, s.enc->width, s.enc->height,
-                                   s.enc_pix_fmt, SWS_BILINEAR, nullptr, nullptr, nullptr);
-            if (!s.sws) {
-                err_msg = "初始化图像缩放器失败";
-                return false;
-            }
-            s.sws_src_w = src->width;
-            s.sws_src_h = src->height;
-            s.sws_src_fmt = (AVPixelFormat)src->format;
-        }
-        AVFrame* out_frame = av_frame_alloc();
-        if (!out_frame) {
-            err_msg = QStringLiteral("内存不足: 无法分配视频编码帧");
-            return false;
-        }
-        out_frame->format = s.enc_pix_fmt;
-        out_frame->width = s.enc->width;
-        out_frame->height = s.enc->height;
-        if (av_frame_get_buffer(out_frame, 0) < 0) {
-            av_frame_free(&out_frame);
-            err_msg = "分配编码帧缓冲区失败";
-            return false;
-        }
-        // sws_scale 成功时返回输出图像的高度, 负值表示缩放失败。
-        // 原来这里完全没看返回值: 缩放失败会继续把未初始化/残缺的帧送进编码器,
-        // 产物是花屏甚至空轨, 却因为 err_msg 仍为空而被判成"导出成功"。
-        const int scaled =
-            sws_scale(s.sws, src->data, src->linesize, 0, src->height, out_frame->data, out_frame->linesize);
-        if (scaled < s.enc->height) {
-            av_frame_free(&out_frame);
-            err_msg = "图像缩放失败";
-            return false;
-        }
-        out_frame->pts = (src->pts == AV_NOPTS_VALUE) ? s.enc_pts++ : src->pts;
-        s.enc_pts = out_frame->pts + 1;
-        const int send_ret = avcodec_send_frame(s.enc, out_frame);
-        av_frame_free(&out_frame);
-        if (send_ret < 0) {
-            err_msg = "送入编码帧失败";
-            return false;
-        }
-        write_encoded_packets(s); // 写入失败会在内部写 err_msg
-        return err_msg.isEmpty();
-    };
-
-    auto encode_audio_frame = [&](StreamCtx& s, AVFrame* src) -> bool {
-        if (!s.swr) {
-            if (swr_alloc_set_opts2(&s.swr, &s.enc->ch_layout, s.enc->sample_fmt, s.enc->sample_rate, &src->ch_layout,
-                                    (AVSampleFormat)src->format, src->sample_rate, 0, nullptr) < 0 ||
-                !s.swr) {
-                err_msg = "初始化音频重采样器失败";
-                return false;
-            }
-            if (swr_init(s.swr) < 0) {
-                swr_free(&s.swr);
-                err_msg = "初始化音频重采样器失败";
-                return false;
-            }
-        }
-        const int dst_nb = av_rescale_rnd(src->nb_samples, s.enc->sample_rate, src->sample_rate, AV_ROUND_UP);
-        AVFrame* out_frame = av_frame_alloc();
-        if (!out_frame) {
-            err_msg = QStringLiteral("内存不足: 无法分配音频编码帧");
-            return false;
-        }
-        out_frame->format = s.enc->sample_fmt;
-        out_frame->sample_rate = s.enc->sample_rate;
-        // 布局拷不过来时, av_frame_get_buffer() 会按 nb_channels=0 分配出 0 字节缓冲,
-        // 后面 swr_convert() 就写成越界。这里是每帧都要做的操作, 必须看返回值。
-        const int layout_ret = av_channel_layout_copy(&out_frame->ch_layout, &s.enc->ch_layout);
-        if (layout_ret < 0) {
-            av_frame_free(&out_frame);
-            err_msg = QStringLiteral("拷贝声道布局失败: %1").arg(AvErrorString(layout_ret));
-            return false;
-        }
-        out_frame->nb_samples = dst_nb;
-        if (av_frame_get_buffer(out_frame, 0) < 0) {
-            av_frame_free(&out_frame);
-            err_msg = "分配编码帧缓冲区失败";
-            return false;
-        }
-        // swr_convert 需要 const uint8_t**；AVFrame::data 是 uint8_t*[8]
-        const uint8_t** src_data = (const uint8_t**)src->data;
-        const int got = swr_convert(s.swr, out_frame->data, dst_nb, src_data, src->nb_samples);
-        if (got < 0) {
-            av_frame_free(&out_frame);
-            err_msg = "音频重采样失败";
-            return false;
-        }
-        out_frame->nb_samples = got;
-        out_frame->pts = s.enc_pts;
-        s.enc_pts += got;
-        const int send_ret = avcodec_send_frame(s.enc, out_frame);
-        av_frame_free(&out_frame);
-        if (send_ret < 0) {
-            err_msg = "送入编码帧失败";
-            return false;
-        }
-        write_encoded_packets(s);
-        return err_msg.isEmpty();
-    };
-
-    // 区间**起点**裁剪。
-    //
-    // av_seek_frame() 只能落在关键帧上，而请求的起点几乎总在两个关键帧之间：
-    // 回退之后拿到的第一个包可能**早于** start_ms。以前这里只把 start_ms 用于 seek
-    // 和进度零点，没有任何地方丢弃早于起点的包/帧 —— 于是"仅导出 0.8s 之后"实际会把
-    // 0~0.8s 的内容一起写进产物（实测 1.6s 素材导出 800~1600ms 得到整条 1.6s）。
-    // 终点一直有检查，起点没有，是这个 bug 藏这么久的原因。
-    //
-    // 两种模式的丢法必须不同：
-    //   * 拷贝：整包丢。产物从非关键帧开头，这是 -c copy 裁剪的固有限制
-    //     （ffmpeg 命令行同样如此），但至少不把用户排除掉的内容塞进来。
-    //   * 编码：包**照喂**给解码器（从关键帧起才能解出后续帧，跳过会直接解码报错），
-    //     只丢掉解出来但早于起点的帧。
-    auto packet_before_start = [&](const AVPacket* p, const AVStream* st) -> bool {
-        if (start_ms <= 0 || p->pts == AV_NOPTS_VALUE)
-            return false;
-        const qint64 pts_ms = static_cast<qint64>(p->pts * av_q2d(st->time_base) * 1000.0);
-        return pts_ms < start_ms;
-    };
-    auto frame_outside_range = [&](const StreamCtx& s, const AVFrame* f) -> bool {
-        if (start_ms <= 0 && opt.end_ms <= 0)
-            return false;
-        const int64_t ts = (f->pts != AV_NOPTS_VALUE) ? f->pts : f->best_effort_timestamp;
-        if (ts == AV_NOPTS_VALUE)
-            return false;
-        const qint64 pts_ms =
-            static_cast<qint64>(ts * av_q2d(in_fmt->streams[static_cast<unsigned>(s.in_idx)]->time_base) * 1000.0);
-        if (start_ms > 0 && pts_ms < start_ms)
-            return true;
-        // 终点只按用户明确要求的 opt.end_ms 裁：end_ms 在时长未知时是 int64 上限、
-        // 在时长已知时是容器声明的时长，拿它裁会误伤元数据少报的真实尾帧。
-        return opt.end_ms > 0 && pts_ms > end_ms;
-    };
-
-    // 主读取循环
-    bool reached_end = false;
-    // 被中断回调打断的读: 必须与"读错了"分开 —— 前者是取消, 后者是失败。
-    // (前者以前会被当成"读取输入文件失败", 用户点取消却看到一条报错。)
-    bool interrupted = false;
-    while (!IsCanceled()) {
-        const int ret = av_read_frame(in_fmt, pkt);
-        if (ret < 0) {
-            if (ret == AVERROR_EOF) {
-                reached_end = true; // 正常读到文件尾
-            } else if (ret == AVERROR_EXIT) {
-                // 中断回调打断。导出阶段已把 deadline 清零, 所以只可能是用户取消。
-                interrupted = true;
-            } else if (err_msg.isEmpty()) {
-                err_msg = "读取输入文件失败"; // 真实读错误, 不应被当作成功结束
-            }
-            break;
-        }
-
-        StreamCtx* sc = nullptr;
-        for (auto& s : streams)
-            if (s.in_idx == pkt->stream_index) {
-                sc = &s;
-                break;
-            }
-        if (!sc) {
-            av_packet_unref(pkt);
-            continue;
-        }
-
-        AVStream* in_st = in_fmt->streams[pkt->stream_index];
-        // PTS(ms) 一次算好复用：进度统计、起点裁剪、终点检查都要它，
-        // 原来每处各算一遍（浮点换算重复三次，改一处漏两处）。
-        const qint64 pkt_pts_ms = (pkt->pts != AV_NOPTS_VALUE)
-                                      ? static_cast<qint64>(pkt->pts * av_q2d(in_st->time_base) * 1000.0)
-                                      : AV_NOPTS_VALUE;
-        if (pkt_pts_ms != AV_NOPTS_VALUE && duration_ms > 0) {
-            qint64& seen = stream_seen_ms[static_cast<size_t>(pkt->stream_index)];
-            if (pkt_pts_ms > seen)
-                seen = pkt_pts_ms;
-            if (seen > max_seen_ms)
-                max_seen_ms = seen;
-        }
-
-        // 区间起点检查（拷贝模式才丢包；编码模式的丢帧在解出帧之后，见 encode 分支）
-        if (!sc->do_encode && packet_before_start(pkt, in_st)) {
-            av_packet_unref(pkt);
-            continue;
-        }
-
-        // 区间终点检查
-        if (end_ms > 0 && pkt_pts_ms != AV_NOPTS_VALUE && pkt_pts_ms > end_ms) {
-            av_packet_unref(pkt);
-            reached_end = true;
-            break;
-        }
-
-        if (!sc->do_encode) {
-            pkt->stream_index = sc->out_idx;
-            av_packet_rescale_ts(pkt, in_st->time_base, out_fmt->streams[sc->out_idx]->time_base);
-            const int write_ret = av_interleaved_write_frame(out_fmt, pkt);
-            av_packet_unref(pkt);
-            if (write_ret < 0) {
-                err_msg = "写入输出包失败";
-                reached_end = false;
-                break;
-            }
-        } else {
-            const AVMediaType mt = sc->dec->codec_type;
-            // 解码输入: 真实错误(非 EAGAIN)要记录, 否则损坏输入会被当成正常结束
-            const int send_ret = avcodec_send_packet(sc->dec, pkt);
-            if (send_ret == 0) {
-                for (;;) {
-                    const int recv_ret = avcodec_receive_frame(sc->dec, frame);
-                    // EAGAIN(还要继续喂包) / EOF(解码器已排空) 都是正常状态
-                    if (recv_ret == AVERROR(EAGAIN) || recv_ret == AVERROR_EOF)
-                        break;
-                    if (recv_ret < 0) {
-                        // 真实解码错误。旧代码写成 `while (... >= 0)`, 这里会静默退出,
-                        // 截断/损坏的输入于是被当成"读完了", 最终误报导出成功。
-                        if (err_msg.isEmpty())
-                            err_msg = QString("解码失败: %1").arg(AvErrorString(recv_ret));
-                        break;
-                    }
-                    // 包已喂进解码器（从关键帧起才解得动），但解出来的帧可能早于起点
-                    // 或晚于终点 —— 这些不进编码器，否则产物仍会带上区间外的内容。
-                    if (frame_outside_range(*sc, frame)) {
-                        av_frame_unref(frame);
-                        continue;
-                    }
-                    const bool ok =
-                        (mt == AVMEDIA_TYPE_VIDEO) ? encode_video_frame(*sc, frame) : encode_audio_frame(*sc, frame);
-                    av_frame_unref(frame);
-                    if (!ok)
-                        break; // 编码/重采样失败 -> err_msg 已置, 外层据此停止
-                }
-            } else if (send_ret != AVERROR(EAGAIN)) {
-                if (err_msg.isEmpty())
-                    err_msg = QString("解码输入失败: %1").arg(AvErrorString(send_ret));
-            }
-            av_packet_unref(pkt);
-        }
-
-        // 写入失败立即停止, 避免后续包继续写入并掩盖错误 (否则会被误报为成功)
-        if (!err_msg.isEmpty())
-            break;
-
-        // 进度：按"已见最大 PTS"算，不再用当前包单点，因此只会往前走。
-        if (duration_ms > 0) {
-            const qint64 span = end_ms - start_ms;
-            int progress_percent = 0;
-            if (span > 0) {
-                // 先比大小再乘：end_ms 可能是 int64 上限（时长未知时），直接乘 100 会溢出。
-                const qint64 elapsed = max_seen_ms - base_pts;
-                progress_percent = (elapsed >= span) ? 100 : static_cast<int>(elapsed * 100 / span);
-            }
-            progress_percent = qBound(0, progress_percent, 100);
-            if (progress_percent != last_progress) {
-                last_progress = progress_percent;
-                emit ExportProgress(progress_percent);
-            }
-        }
-    }
-
-    // flush 编码器
+    // 排空解码器/编码器。取消或已经出错时不再排空：带着已知错误继续写 trailer，
+    // 会把一个坏文件当成"写完了"交出去。
     bool flushed_ok = false;
     if (!IsCanceled() && err_msg.isEmpty()) {
-        for (auto& s : streams) {
-            if (!s.do_encode)
-                continue;
-
-            // 排空解码器。AVERROR_EOF 表示此前已排空过, 与 EAGAIN 一样属于正常状态。
-            const int dp = avcodec_send_packet(s.dec, nullptr);
-            if (dp < 0 && dp != AVERROR_EOF) {
-                err_msg = QString("结束解码失败: %1").arg(AvErrorString(dp));
-                break;
-            }
-            for (;;) {
-                const int rr = avcodec_receive_frame(s.dec, frame);
-                if (rr == AVERROR(EAGAIN) || rr == AVERROR_EOF)
-                    break;
-                if (rr < 0) {
-                    err_msg = QString("解码失败: %1").arg(AvErrorString(rr));
-                    break;
-                }
-                if (frame_outside_range(s, frame)) {
-                    av_frame_unref(frame);
-                    continue;
-                }
-                const bool ok = (s.dec->codec_type == AVMEDIA_TYPE_VIDEO) ? encode_video_frame(s, frame)
-                                                                          : encode_audio_frame(s, frame);
-                av_frame_unref(frame);
-                if (!ok)
-                    break; // 编码/重采样失败, err_msg 已置
-            }
-            if (!err_msg.isEmpty())
-                break; // 解码/编码失败则停止 flush
-
-            // 排空编码器。AVERROR_EOF 表示编码器此前已被 flush 过, 不是错误;
-            // 原来这里连返回值都不看, 编码器真出错时照样会走到"替换目标文件"那一步。
-            const int ef = avcodec_send_frame(s.enc, nullptr);
-            if (ef < 0 && ef != AVERROR_EOF) {
-                err_msg = QString("结束编码失败: %1").arg(AvErrorString(ef));
-                break;
-            }
-            write_encoded_packets(s);
-            if (!err_msg.isEmpty())
-                break; // 写入失败则停止 flush
-        }
-        if (err_msg.isEmpty()) {
-            if (av_write_trailer(out_fmt) < 0) {
-                err_msg = "写入文件尾失败";
-            } else {
-                emit ExportProgress(100);
-                flushed_ok = true;
-            }
+        if (flush_encoders(streams, in_fmt, out_fmt, frame, encoder, range, err_msg)) {
+            emit ExportProgress(100);
+            flushed_ok = true;
         }
     }
 
@@ -1043,7 +1222,7 @@ void MediaExporter::Export(const ExportOptions& opt) {
         av_frame_free(&frame);
     free_streams(streams);
 
-    const bool canceled = IsCanceled() || interrupted;
+    const bool canceled = IsCanceled() || pump.interrupted();
     if (out_fmt && out_fmt->pb)
         avio_closep(&out_fmt->pb);
     avformat_free_context(out_fmt);
@@ -1057,7 +1236,7 @@ void MediaExporter::Export(const ExportOptions& opt) {
         // 取消: 只删除临时文件, 保留原目标文件
         QFile::remove(temp_path);
         emit ExportCanceled(opt.output_path);
-    } else if (reached_end && err_msg.isEmpty() && flushed_ok) {
+    } else if (pump.reached_end() && err_msg.isEmpty() && flushed_ok) {
         // 成功: 写完临时文件并关闭后才替换目标。
         // 替换走"目标改名备份 -> 临时改名目标 -> 删备份", 任一步失败都能把备份改回来,
         // 不会出现"旧文件已删、新文件又没换上"的双向丢失。

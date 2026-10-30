@@ -703,329 +703,339 @@ void FillSampleEntryFields(IsobmffBox& box, const uint8_t* p, uint64_t n) {
 //
 // 只读载荷前缀、任何长度不足都直接放弃：字段解析失败不能让 box 树本身失败
 // （损坏文件的树仍然要能看，只是没有字段）。
-void FillBoxFields(ParseContext& ctx, IsobmffBox& box) {
-    const std::string& type = box.type;
-    static const char* kFieldBoxes[] = {
-        "ftyp", "styp", "mvhd", "tkhd", "mdhd", "hdlr", "sidx", "mfhd", "tfhd",
-        "tfdt", "trun", "avcC", "hvcC", "av1C", "esds", "colr", "pasp", "btrt",
-    };
-    bool known = false;
-    for (const char* c : kFieldBoxes) {
-        if (type == c) {
-            known = true;
-            break;
-        }
-    }
-    if (!known)
-        return;
+// ===========================================================================
+// box 字段填充：一种 box 一个函数，由一张表派发（见下方 kFieldSpecs）
+//
+// 以前这里是一个 324 行的 if (type == "...") 链，**外加**一份 kFieldBoxes 名单用来决定
+// "这种 box 要不要读载荷"。两份清单必须手工同步 —— 往名单里加了 box 却忘了写分支（或
+// 反过来），编译时完全无声：名单里有的 box 会被读出来、然后一个字段都不填，看上去像
+// "这种 box 本来就没可读字段"，实际是分支漏了。这正是前面几轮反复出现的"两份清单各自
+// 维护"的洞（MXF 容器体检、PDF 章节都是同一类）。
+//
+// 现在只有一张表：type -> (读多少字节, 怎么填)。加一种 box = 加一个函数 + 加一行。
+// "没有表项"与"不读载荷、不填字段"结构上不可能再不一致。
+// ===========================================================================
 
-    const uint64_t cap = (type == "esds") ? 1024 : 256;
-    std::vector<uint8_t> buf;
-    if (ReadPayload(ctx, box, buf, cap) == 0)
-        return;
-    const uint8_t* p = buf.data();
-    const uint64_t n = buf.size();
+using FieldFiller = void (*)(IsobmffBox& box, const uint8_t* p, uint64_t n);
 
-    if (type == "ftyp" || type == "styp") {
-        if (n < 8)
-            return;
-        AddField(box, "major_brand", FourCC(p));
-        AddFieldInt(box, "minor_version", Rd32(p + 4));
-        std::string brands;
-        for (uint64_t pos = 8; pos + 4 <= n && pos < 8 + 4 * 8; pos += 4) {
-            if (!brands.empty())
-                brands += ",";
-            brands += FourCC(p + pos);
-        }
+struct BoxFieldSpec {
+    const char* type;
+    uint64_t payload_cap; // 读多少字节就够（esds 要顺着描述符链走，给得多一些）
+    FieldFiller fill;
+};
+
+// ftyp / styp 结构一样：major_brand + minor_version + 兼容品牌列表。
+void FillFtyp(IsobmffBox& box, const uint8_t* p, uint64_t n) {
+    if (n < 8)
+        return;
+    AddField(box, "major_brand", FourCC(p));
+    AddFieldInt(box, "minor_version", Rd32(p + 4));
+    std::string brands;
+    for (uint64_t pos = 8; pos + 4 <= n && pos < 8 + 4 * 8; pos += 4) {
         if (!brands.empty())
-            AddField(box, "compatible_brands", brands);
-        return;
+            brands += ",";
+        brands += FourCC(p + pos);
     }
+    if (!brands.empty())
+        AddField(box, "compatible_brands", brands);
+}
 
-    if (type == "mvhd") {
-        if (n < 8)
-            return;
-        const uint8_t version = p[0];
-        AddFieldInt(box, "version", version);
-        const uint64_t ts_off = (version == 1) ? 20 : 12;
-        const uint64_t dur_off = (version == 1) ? 24 : 16;
-        const uint64_t next_off = (version == 1) ? 108 : 96;
-        uint32_t timescale = 0;
-        if (ts_off + 4 <= n) {
-            timescale = Rd32(p + ts_off);
-            AddFieldInt(box, "timescale", timescale);
-        }
-        const bool dur_ok = (version == 1) ? (dur_off + 8 <= n) : (dur_off + 4 <= n);
-        if (dur_ok) {
-            const uint64_t duration = (version == 1) ? Rd64(p + dur_off) : Rd32(p + dur_off);
-            AddFieldInt(box, "duration", duration);
-            if (timescale > 0) {
-                char sec[32];
-                std::snprintf(sec, sizeof(sec), "%.3f", static_cast<double>(duration) / static_cast<double>(timescale));
-                AddField(box, "duration_seconds", sec);
-            }
-        }
-        if (next_off + 4 <= n)
-            AddFieldInt(box, "next_track_id", Rd32(p + next_off));
+void FillMvhd(IsobmffBox& box, const uint8_t* p, uint64_t n) {
+    if (n < 8)
         return;
+    const uint8_t version = p[0];
+    AddFieldInt(box, "version", version);
+    const uint64_t ts_off = (version == 1) ? 20 : 12;
+    const uint64_t dur_off = (version == 1) ? 24 : 16;
+    const uint64_t next_off = (version == 1) ? 108 : 96;
+    uint32_t timescale = 0;
+    if (ts_off + 4 <= n) {
+        timescale = Rd32(p + ts_off);
+        AddFieldInt(box, "timescale", timescale);
     }
-
-    if (type == "tkhd") {
-        if (n < 8)
-            return;
-        const uint8_t version = p[0];
-        const uint32_t flags = Rd32(p) & 0x00FFFFFF;
-        AddFieldInt(box, "version", version);
-        static const char* kFlagNames[] = {"enabled", "in_movie", "in_preview", "in_poster"};
-        std::string flag_text;
-        for (int bit = 0; bit < 4; ++bit) {
-            if ((flags & (1u << bit)) == 0)
-                continue;
-            if (!flag_text.empty())
-                flag_text += ",";
-            flag_text += kFlagNames[bit];
+    const bool dur_ok = (version == 1) ? (dur_off + 8 <= n) : (dur_off + 4 <= n);
+    if (dur_ok) {
+        const uint64_t duration = (version == 1) ? Rd64(p + dur_off) : Rd32(p + dur_off);
+        AddFieldInt(box, "duration", duration);
+        if (timescale > 0) {
+            char sec[32];
+            std::snprintf(sec, sizeof(sec), "%.3f", static_cast<double>(duration) / static_cast<double>(timescale));
+            AddField(box, "duration_seconds", sec);
         }
+    }
+    if (next_off + 4 <= n)
+        AddFieldInt(box, "next_track_id", Rd32(p + next_off));
+}
+
+void FillTkhd(IsobmffBox& box, const uint8_t* p, uint64_t n) {
+    if (n < 8)
+        return;
+    const uint8_t version = p[0];
+    const uint32_t flags = Rd32(p) & 0x00FFFFFF;
+    AddFieldInt(box, "version", version);
+    static const char* kFlagNames[] = {"enabled", "in_movie", "in_preview", "in_poster"};
+    std::string flag_text;
+    for (int bit = 0; bit < 4; ++bit) {
+        if ((flags & (1u << bit)) == 0)
+            continue;
         if (!flag_text.empty())
-            AddField(box, "flags", flag_text);
-        const uint64_t id_off = (version == 1) ? 20 : 12;
-        const uint64_t dur_off = (version == 1) ? 28 : 20;
-        const uint64_t wh_off = (version == 1) ? 88 : 76;
-        if (id_off + 4 <= n)
-            AddFieldInt(box, "track_id", Rd32(p + id_off));
-        const bool dur_ok = (version == 1) ? (dur_off + 8 <= n) : (dur_off + 4 <= n);
-        if (dur_ok) {
-            AddFieldInt(box, "duration(movie_timescale)", (version == 1) ? Rd64(p + dur_off) : Rd32(p + dur_off));
-        }
-        if (wh_off + 8 <= n) {
-            AddField(box, "width", Fixed1616(Rd32(p + wh_off)));
-            AddField(box, "height", Fixed1616(Rd32(p + wh_off + 4)));
-        }
-        return;
+            flag_text += ",";
+        flag_text += kFlagNames[bit];
     }
+    if (!flag_text.empty())
+        AddField(box, "flags", flag_text);
+    const uint64_t id_off = (version == 1) ? 20 : 12;
+    const uint64_t dur_off = (version == 1) ? 28 : 20;
+    const uint64_t wh_off = (version == 1) ? 88 : 76;
+    if (id_off + 4 <= n)
+        AddFieldInt(box, "track_id", Rd32(p + id_off));
+    const bool dur_ok = (version == 1) ? (dur_off + 8 <= n) : (dur_off + 4 <= n);
+    if (dur_ok) {
+        AddFieldInt(box, "duration(movie_timescale)", (version == 1) ? Rd64(p + dur_off) : Rd32(p + dur_off));
+    }
+    if (wh_off + 8 <= n) {
+        AddField(box, "width", Fixed1616(Rd32(p + wh_off)));
+        AddField(box, "height", Fixed1616(Rd32(p + wh_off + 4)));
+    }
+}
 
-    if (type == "mdhd") {
-        if (n < 8)
+void FillMdhd(IsobmffBox& box, const uint8_t* p, uint64_t n) {
+    if (n < 8)
+        return;
+    const uint8_t version = p[0];
+    AddFieldInt(box, "version", version);
+    const uint64_t ts_off = (version == 1) ? 20 : 12;
+    const uint64_t dur_off = (version == 1) ? 24 : 16;
+    const uint64_t lang_off = (version == 1) ? 32 : 20;
+    if (ts_off + 4 <= n)
+        AddFieldInt(box, "timescale", Rd32(p + ts_off));
+    const bool dur_ok = (version == 1) ? (dur_off + 8 <= n) : (dur_off + 4 <= n);
+    if (dur_ok) {
+        AddFieldInt(box, "duration", (version == 1) ? Rd64(p + dur_off) : Rd32(p + dur_off));
+    }
+    if (lang_off + 2 <= n)
+        AddField(box, "language", LanguageCode(Rd16(p + lang_off)));
+}
+
+void FillHdlr(IsobmffBox& box, const uint8_t* p, uint64_t n) {
+    if (n >= 12)
+        AddField(box, "handler_type", FourCC(p + 8));
+    const std::string name = HandlerName(p, n);
+    if (!name.empty())
+        AddField(box, "name", name);
+}
+
+void FillSidx(IsobmffBox& box, const uint8_t* p, uint64_t n) {
+    if (n < 8)
+        return;
+    const uint8_t version = p[0];
+    AddFieldInt(box, "version", version);
+    AddFieldInt(box, "reference_id", Rd32(p + 4));
+    if (8 + 4 <= n)
+        AddFieldInt(box, "timescale", Rd32(p + 8));
+    if (version == 1) {
+        if (20 <= n)
+            AddFieldInt(box, "earliest_presentation_time", Rd64(p + 12));
+        if (28 <= n)
+            AddFieldInt(box, "first_offset", Rd64(p + 20));
+        if (30 <= n)
+            AddFieldInt(box, "reference_count", Rd16(p + 28));
+    } else {
+        if (16 <= n)
+            AddFieldInt(box, "earliest_presentation_time", Rd32(p + 12));
+        if (20 <= n)
+            AddFieldInt(box, "first_offset", Rd32(p + 16));
+        if (22 <= n)
+            AddFieldInt(box, "reference_count", Rd16(p + 20));
+    }
+}
+
+void FillMfhd(IsobmffBox& box, const uint8_t* p, uint64_t n) {
+    if (n >= 8)
+        AddFieldInt(box, "sequence_number", Rd32(p + 4));
+}
+
+void FillTfhd(IsobmffBox& box, const uint8_t* p, uint64_t n) {
+    if (n < 8)
+        return;
+    AddFieldHex(box, "flags", Rd32(p) & 0x00FFFFFF);
+    AddFieldInt(box, "track_id", Rd32(p + 4));
+}
+
+void FillTfdt(IsobmffBox& box, const uint8_t* p, uint64_t n) {
+    if (n < 8)
+        return;
+    const uint8_t version = p[0];
+    AddFieldInt(box, "version", version);
+    AddFieldInt(box, "base_media_decode_time", (version == 1 && n >= 12) ? Rd64(p + 4) : Rd32(p + 4));
+}
+
+void FillTrun(IsobmffBox& box, const uint8_t* p, uint64_t n) {
+    if (n < 8)
+        return;
+    AddFieldHex(box, "flags", Rd32(p) & 0x00FFFFFF);
+    AddFieldInt(box, "sample_count", Rd32(p + 4));
+    if ((Rd32(p) & 0x000001) != 0 && n >= 12) {
+        AddFieldInt(box, "data_offset", static_cast<int32_t>(Rd32(p + 8)));
+    }
+}
+
+void FillAvcC(IsobmffBox& box, const uint8_t* p, uint64_t n) {
+    if (n < 6)
+        return;
+    AddFieldInt(box, "configuration_version", p[0]);
+    AddFieldInt(box, "profile_idc", p[1]);
+    AddFieldInt(box, "profile_compatibility", p[2]);
+    AddFieldInt(box, "level_idc", p[3]);
+    const int num_sps = p[5] & 0x1F;
+    AddFieldInt(box, "num_of_sps", static_cast<uint64_t>(num_sps));
+    AddFieldInt(box, "length_size_minus_one", static_cast<uint64_t>(p[4] & 0x03));
+    // 顺着 SPS/PPS 长度走一遍，把 PPS 个数也报出来（找不到就只留 SPS 数）
+    uint64_t pos = 6;
+    for (int i = 0; i < num_sps && pos + 2 <= n; ++i) {
+        const uint16_t len = Rd16(p + pos);
+        pos += 2 + len;
+    }
+    if (pos + 1 <= n)
+        AddFieldInt(box, "num_of_pps", static_cast<uint64_t>(p[pos]));
+}
+
+void FillHvcC(IsobmffBox& box, const uint8_t* p, uint64_t n) {
+    if (n < 23)
+        return;
+    AddFieldInt(box, "configuration_version", p[0]);
+    AddFieldInt(box, "general_profile_space", static_cast<uint64_t>(p[1] >> 6));
+    AddFieldInt(box, "general_tier_flag", static_cast<uint64_t>((p[1] >> 5) & 0x01));
+    AddFieldInt(box, "general_profile_idc", static_cast<uint64_t>(p[1] & 0x1F));
+    AddFieldInt(box, "general_level_idc", p[12]);
+    AddFieldInt(box, "min_spatial_segmentation_idc", static_cast<uint64_t>(Rd16(p + 13) & 0x0FFF));
+    AddFieldInt(box, "parallelism_type", static_cast<uint64_t>(p[15] & 0x03));
+    AddFieldInt(box, "chroma_format_idc", static_cast<uint64_t>(p[16] & 0x03));
+    AddFieldInt(box, "bit_depth_luma_minus8", static_cast<uint64_t>(p[17] & 0x07));
+    AddFieldInt(box, "bit_depth_chroma_minus8", static_cast<uint64_t>(p[18] & 0x07));
+    AddFieldInt(box, "num_temporal_layers", static_cast<uint64_t>((p[21] >> 3) & 0x07) + 1);
+    AddFieldInt(box, "length_size_minus_one", static_cast<uint64_t>(p[21] & 0x03));
+    AddFieldInt(box, "num_of_arrays", p[22]);
+}
+
+void FillAv1C(IsobmffBox& box, const uint8_t* p, uint64_t n) {
+    if (n < 4)
+        return;
+    // p[0]: marker(1) + version(7)；marker 位写在地 1 位，别整字节当版本
+    AddFieldInt(box, "seq_profile", static_cast<uint64_t>((p[1] >> 5) & 0x07));
+    AddFieldInt(box, "seq_level_idx_0", static_cast<uint64_t>(p[1] & 0x1F));
+    AddFieldInt(box, "seq_tier_0", static_cast<uint64_t>((p[2] >> 7) & 0x01));
+    const int bit_depth = ((p[2] >> 6) & 0x01) != 0 ? (((p[2] >> 5) & 0x01) != 0 ? 12 : 10) : 8;
+    AddFieldInt(box, "bit_depth", static_cast<uint64_t>(bit_depth));
+    AddFieldInt(box, "monochrome", static_cast<uint64_t>((p[2] >> 4) & 0x01));
+    AddFieldInt(box, "chroma_subsampling_x", static_cast<uint64_t>((p[2] >> 3) & 0x01));
+    AddFieldInt(box, "chroma_subsampling_y", static_cast<uint64_t>((p[2] >> 2) & 0x01));
+    AddFieldInt(box, "chroma_sample_position", static_cast<uint64_t>(p[2] & 0x03));
+}
+
+void FillEsds(IsobmffBox& box, const uint8_t* p, uint64_t n) {
+    if (n < 6)
+        return;
+    uint64_t pos = 4; // FullBox(4)
+    for (int guard = 0; guard < 8 && pos + 2 <= n; ++guard) {
+        const uint8_t tag = p[pos++];
+        uint32_t len = 0;
+        if (!ReadDescLength(p, n, pos, len))
             return;
-        const uint8_t version = p[0];
-        AddFieldInt(box, "version", version);
-        const uint64_t ts_off = (version == 1) ? 20 : 12;
-        const uint64_t dur_off = (version == 1) ? 24 : 16;
-        const uint64_t lang_off = (version == 1) ? 32 : 20;
-        if (ts_off + 4 <= n)
-            AddFieldInt(box, "timescale", Rd32(p + ts_off));
-        const bool dur_ok = (version == 1) ? (dur_off + 8 <= n) : (dur_off + 4 <= n);
-        if (dur_ok) {
-            AddFieldInt(box, "duration", (version == 1) ? Rd64(p + dur_off) : Rd32(p + dur_off));
-        }
-        if (lang_off + 2 <= n)
-            AddField(box, "language", LanguageCode(Rd16(p + lang_off)));
-        return;
-    }
-
-    if (type == "hdlr") {
-        if (n >= 12)
-            AddField(box, "handler_type", FourCC(p + 8));
-        const std::string name = HandlerName(p, n);
-        if (!name.empty())
-            AddField(box, "name", name);
-        return;
-    }
-
-    if (type == "sidx") {
-        if (n < 8)
+        const uint64_t body = pos;
+        if (body + len > n)
             return;
-        const uint8_t version = p[0];
-        AddFieldInt(box, "version", version);
-        AddFieldInt(box, "reference_id", Rd32(p + 4));
-        if (8 + 4 <= n)
-            AddFieldInt(box, "timescale", Rd32(p + 8));
-        if (version == 1) {
-            if (20 <= n)
-                AddFieldInt(box, "earliest_presentation_time", Rd64(p + 12));
-            if (28 <= n)
-                AddFieldInt(box, "first_offset", Rd64(p + 20));
-            if (30 <= n)
-                AddFieldInt(box, "reference_count", Rd16(p + 28));
-        } else {
-            if (16 <= n)
-                AddFieldInt(box, "earliest_presentation_time", Rd32(p + 12));
-            if (20 <= n)
-                AddFieldInt(box, "first_offset", Rd32(p + 16));
-            if (22 <= n)
-                AddFieldInt(box, "reference_count", Rd16(p + 20));
-        }
-        return;
-    }
-
-    if (type == "mfhd") {
-        if (n >= 8)
-            AddFieldInt(box, "sequence_number", Rd32(p + 4));
-        return;
-    }
-
-    if (type == "tfhd") {
-        if (n < 8)
-            return;
-        AddFieldHex(box, "flags", Rd32(p) & 0x00FFFFFF);
-        AddFieldInt(box, "track_id", Rd32(p + 4));
-        return;
-    }
-
-    if (type == "tfdt") {
-        if (n < 8)
-            return;
-        const uint8_t version = p[0];
-        AddFieldInt(box, "version", version);
-        AddFieldInt(box, "base_media_decode_time", (version == 1 && n >= 12) ? Rd64(p + 4) : Rd32(p + 4));
-        return;
-    }
-
-    if (type == "trun") {
-        if (n < 8)
-            return;
-        AddFieldHex(box, "flags", Rd32(p) & 0x00FFFFFF);
-        AddFieldInt(box, "sample_count", Rd32(p + 4));
-        if ((Rd32(p) & 0x000001) != 0 && n >= 12) {
-            AddFieldInt(box, "data_offset", static_cast<int32_t>(Rd32(p + 8)));
-        }
-        return;
-    }
-
-    if (type == "avcC") {
-        if (n < 6)
-            return;
-        AddFieldInt(box, "configuration_version", p[0]);
-        AddFieldInt(box, "profile_idc", p[1]);
-        AddFieldInt(box, "profile_compatibility", p[2]);
-        AddFieldInt(box, "level_idc", p[3]);
-        const int num_sps = p[5] & 0x1F;
-        AddFieldInt(box, "num_of_sps", static_cast<uint64_t>(num_sps));
-        AddFieldInt(box, "length_size_minus_one", static_cast<uint64_t>(p[4] & 0x03));
-        // 顺着 SPS/PPS 长度走一遍，把 PPS 个数也报出来（找不到就只留 SPS 数）
-        uint64_t pos = 6;
-        for (int i = 0; i < num_sps && pos + 2 <= n; ++i) {
-            const uint16_t len = Rd16(p + pos);
-            pos += 2 + len;
-        }
-        if (pos + 1 <= n)
-            AddFieldInt(box, "num_of_pps", static_cast<uint64_t>(p[pos]));
-        return;
-    }
-
-    if (type == "hvcC") {
-        if (n < 23)
-            return;
-        AddFieldInt(box, "configuration_version", p[0]);
-        AddFieldInt(box, "general_profile_space", static_cast<uint64_t>(p[1] >> 6));
-        AddFieldInt(box, "general_tier_flag", static_cast<uint64_t>((p[1] >> 5) & 0x01));
-        AddFieldInt(box, "general_profile_idc", static_cast<uint64_t>(p[1] & 0x1F));
-        AddFieldInt(box, "general_level_idc", p[12]);
-        AddFieldInt(box, "min_spatial_segmentation_idc", static_cast<uint64_t>(Rd16(p + 13) & 0x0FFF));
-        AddFieldInt(box, "parallelism_type", static_cast<uint64_t>(p[15] & 0x03));
-        AddFieldInt(box, "chroma_format_idc", static_cast<uint64_t>(p[16] & 0x03));
-        AddFieldInt(box, "bit_depth_luma_minus8", static_cast<uint64_t>(p[17] & 0x07));
-        AddFieldInt(box, "bit_depth_chroma_minus8", static_cast<uint64_t>(p[18] & 0x07));
-        AddFieldInt(box, "num_temporal_layers", static_cast<uint64_t>((p[21] >> 3) & 0x07) + 1);
-        AddFieldInt(box, "length_size_minus_one", static_cast<uint64_t>(p[21] & 0x03));
-        AddFieldInt(box, "num_of_arrays", p[22]);
-        return;
-    }
-
-    if (type == "av1C") {
-        if (n < 4)
-            return;
-        // p[0]: marker(1) + version(7)；marker 位写在地 1 位，别整字节当版本
-        AddFieldInt(box, "seq_profile", static_cast<uint64_t>((p[1] >> 5) & 0x07));
-        AddFieldInt(box, "seq_level_idx_0", static_cast<uint64_t>(p[1] & 0x1F));
-        AddFieldInt(box, "seq_tier_0", static_cast<uint64_t>((p[2] >> 7) & 0x01));
-        const int bit_depth = ((p[2] >> 6) & 0x01) != 0 ? (((p[2] >> 5) & 0x01) != 0 ? 12 : 10) : 8;
-        AddFieldInt(box, "bit_depth", static_cast<uint64_t>(bit_depth));
-        AddFieldInt(box, "monochrome", static_cast<uint64_t>((p[2] >> 4) & 0x01));
-        AddFieldInt(box, "chroma_subsampling_x", static_cast<uint64_t>((p[2] >> 3) & 0x01));
-        AddFieldInt(box, "chroma_subsampling_y", static_cast<uint64_t>((p[2] >> 2) & 0x01));
-        AddFieldInt(box, "chroma_sample_position", static_cast<uint64_t>(p[2] & 0x03));
-        return;
-    }
-
-    if (type == "esds") {
-        if (n < 6)
-            return;
-        uint64_t pos = 4; // FullBox(4)
-        for (int guard = 0; guard < 8 && pos + 2 <= n; ++guard) {
-            const uint8_t tag = p[pos++];
-            uint32_t len = 0;
-            if (!ReadDescLength(p, n, pos, len))
+        if (tag == 0x03) { // ES_Descriptor：跳过头部，进入子描述符
+            if (len < 3)
                 return;
-            const uint64_t body = pos;
-            if (body + len > n)
+            const uint8_t flags = p[body + 2];
+            uint64_t next = body + 3;
+            if ((flags & 0x80) != 0)
+                next += 2;                                  // dependsOn_ES_ID
+            if ((flags & 0x40) != 0 && next < body + len) { // URL
+                next += 1 + p[next];
+            }
+            if ((flags & 0x20) != 0)
+                next += 2; // OCR_ES_Id
+            if (next > body + len)
                 return;
-            if (tag == 0x03) { // ES_Descriptor：跳过头部，进入子描述符
-                if (len < 3)
-                    return;
-                const uint8_t flags = p[body + 2];
-                uint64_t next = body + 3;
-                if ((flags & 0x80) != 0)
-                    next += 2;                                  // dependsOn_ES_ID
-                if ((flags & 0x40) != 0 && next < body + len) { // URL
-                    next += 1 + p[next];
-                }
-                if ((flags & 0x20) != 0)
-                    next += 2; // OCR_ES_Id
-                if (next > body + len)
-                    return;
-                pos = next;
-                continue;
-            }
-            if (tag == 0x04) { // DecoderConfigDescriptor
-                if (len >= 13) {
-                    AddFieldInt(box, "object_type_indication", p[body]);
-                    AddFieldInt(box, "stream_type", static_cast<uint64_t>(p[body + 1] >> 2));
-                    AddFieldHex(box, "buffer_size_db",
-                                (static_cast<uint32_t>(p[body + 2]) << 16) | (static_cast<uint32_t>(p[body + 3]) << 8) |
-                                    p[body + 4]);
-                    AddFieldInt(box, "max_bitrate", Rd32(p + body + 5));
-                    AddFieldInt(box, "avg_bitrate", Rd32(p + body + 9));
-                }
-                return;
-            }
-            pos = body + len;
+            pos = next;
+            continue;
         }
-        return;
-    }
-
-    if (type == "colr") {
-        if (n < 4)
-            return;
-        const std::string colour_type = FourCC(p);
-        AddField(box, "colour_type", colour_type);
-        // nclx / nclc 都是 primaries(2) transfer(2) matrix(2)；nclx 末尾还有 1 位 range
-        if ((colour_type == "nclx" || colour_type == "nclc") && n >= 10) {
-            AddFieldInt(box, "colour_primaries", Rd16(p + 4));
-            AddFieldInt(box, "transfer_characteristics", Rd16(p + 6));
-            AddFieldInt(box, "matrix_coefficients", Rd16(p + 8));
-            if (colour_type == "nclx" && n >= 11) {
-                AddFieldInt(box, "full_range_flag", static_cast<uint64_t>((p[10] >> 7) & 0x01));
+        if (tag == 0x04) { // DecoderConfigDescriptor
+            if (len >= 13) {
+                AddFieldInt(box, "object_type_indication", p[body]);
+                AddFieldInt(box, "stream_type", static_cast<uint64_t>(p[body + 1] >> 2));
+                AddFieldHex(box, "buffer_size_db",
+                            (static_cast<uint32_t>(p[body + 2]) << 16) | (static_cast<uint32_t>(p[body + 3]) << 8) |
+                                p[body + 4]);
+                AddFieldInt(box, "max_bitrate", Rd32(p + body + 5));
+                AddFieldInt(box, "avg_bitrate", Rd32(p + body + 9));
             }
+            return;
         }
-        return;
+        pos = body + len;
     }
+}
 
-    if (type == "pasp") {
-        if (n < 8)
-            return;
-        AddFieldInt(box, "hSpacing", Rd32(p));
-        AddFieldInt(box, "vSpacing", Rd32(p + 4));
+void FillColr(IsobmffBox& box, const uint8_t* p, uint64_t n) {
+    if (n < 4)
         return;
+    const std::string colour_type = FourCC(p);
+    AddField(box, "colour_type", colour_type);
+    // nclx / nclc 都是 primaries(2) transfer(2) matrix(2)；nclx 末尾还有 1 位 range
+    if ((colour_type == "nclx" || colour_type == "nclc") && n >= 10) {
+        AddFieldInt(box, "colour_primaries", Rd16(p + 4));
+        AddFieldInt(box, "transfer_characteristics", Rd16(p + 6));
+        AddFieldInt(box, "matrix_coefficients", Rd16(p + 8));
+        if (colour_type == "nclx" && n >= 11) {
+            AddFieldInt(box, "full_range_flag", static_cast<uint64_t>((p[10] >> 7) & 0x01));
+        }
     }
+}
 
-    if (type == "btrt") {
-        if (n < 12)
-            return;
-        AddFieldInt(box, "bufferSizeDB", Rd32(p));
-        AddFieldInt(box, "maxBitrate", Rd32(p + 4));
-        AddFieldInt(box, "avgBitrate", Rd32(p + 8));
+void FillPasp(IsobmffBox& box, const uint8_t* p, uint64_t n) {
+    if (n < 8)
         return;
+    AddFieldInt(box, "hSpacing", Rd32(p));
+    AddFieldInt(box, "vSpacing", Rd32(p + 4));
+}
+
+void FillBtrt(IsobmffBox& box, const uint8_t* p, uint64_t n) {
+    if (n < 12)
+        return;
+    AddFieldInt(box, "bufferSizeDB", Rd32(p));
+    AddFieldInt(box, "maxBitrate", Rd32(p + 4));
+    AddFieldInt(box, "avgBitrate", Rd32(p + 8));
+}
+
+// ⭐⭐ 唯一事实源：哪些 box 会被读载荷、读多少、怎么填，全在这张表里。
+// 加一种 box = 写一个 Fill* + 加一行；**别**再去别处维护第二份名单。
+const BoxFieldSpec kFieldSpecs[] = {
+    {"ftyp", 256, FillFtyp}, {"styp", 256, FillFtyp}, {"mvhd", 256, FillMvhd},  {"tkhd", 256, FillTkhd},
+    {"mdhd", 256, FillMdhd}, {"hdlr", 256, FillHdlr}, {"sidx", 256, FillSidx},  {"mfhd", 256, FillMfhd},
+    {"tfhd", 256, FillTfhd}, {"tfdt", 256, FillTfdt}, {"trun", 256, FillTrun},  {"avcC", 256, FillAvcC},
+    {"hvcC", 256, FillHvcC}, {"av1C", 256, FillAv1C}, {"esds", 1024, FillEsds}, {"colr", 256, FillColr},
+    {"pasp", 256, FillPasp}, {"btrt", 256, FillBtrt},
+};
+
+const BoxFieldSpec* FindFieldSpec(const std::string& type) {
+    for (const BoxFieldSpec& spec : kFieldSpecs) {
+        if (type == spec.type)
+            return &spec;
     }
+    return nullptr;
+}
+
+void FillBoxFields(ParseContext& ctx, IsobmffBox& box) {
+    const BoxFieldSpec* spec = FindFieldSpec(box.type);
+    if (!spec)
+        return; // 没登记 = 不读载荷、不填字段
+
+    std::vector<uint8_t> buf;
+    if (ReadPayload(ctx, box, buf, spec->payload_cap) == 0)
+        return;
+    spec->fill(box, buf.data(), buf.size());
 }
 
 // 解析一个 box 区间 [start, end) 内的所有 box，挂到 parent->children
@@ -1254,6 +1264,14 @@ void ParseBoxes(ParseContext& ctx, uint64_t start, uint64_t end, int depth, std:
 } // namespace
 
 // ---- 对外接口 ----
+std::vector<std::string> IsobmffParser::FieldBoxTypes() {
+    std::vector<std::string> types;
+    types.reserve(sizeof(kFieldSpecs) / sizeof(kFieldSpecs[0]));
+    for (const BoxFieldSpec& spec : kFieldSpecs)
+        types.push_back(spec.type);
+    return types;
+}
+
 std::string IsobmffTrack::TypeName() const {
     if (handler == "vide")
         return "video";
