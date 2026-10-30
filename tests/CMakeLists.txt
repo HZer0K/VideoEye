@@ -2090,6 +2090,25 @@ videoeye_add_test(test_analysis_pipeline_edges unit/test_analysis_pipeline_edges
 target_link_libraries(test_analysis_pipeline_edges PRIVATE VideoEyeAnalysis)
 add_test(NAME AnalysisPipelineEdgeTests COMMAND test_analysis_pipeline_edges)
 
+# =================================================
+# 测试: 码流一致性（端到端，从 AnalysisPipeline 入口跑真实样本）
+#
+# docs/audit/CODEC_AUDIT_2026-10-24.md 第五节 Step 0 的遗留项。现有的解析器用例
+# 多是「逐位拼出参数集，断言解出来的数等于拼进去的数」—— 生成器和解析器可能犯同一个
+# 错（383×215 那个错值就这么活下来的）。这一层换两样东西：
+#   * 输入是 ffmpeg/libx264 真编出来的文件（tests/corpus/codec/）；
+#   * 期望值来自 ffprobe，硬编码在 test_codec_conformance.cpp 的 kSamples 里。
+#
+# 它还能回答单测回答不了的问题：巡检器到底被**启用**过没有 ——
+# `analyzed==true` 只说明跑过解析，`packets_scanned>0` 才说明包真喂进去了。
+# 语料缺失时 SKIP（没跑过 generate_real_corpus.py 的机器不该红）。
+# =================================================
+videoeye_add_test(test_codec_conformance unit/test_codec_conformance.cpp)
+target_link_libraries(test_codec_conformance PRIVATE VideoEyeAnalysis)
+target_compile_definitions(test_codec_conformance PRIVATE
+    VIDEOEYE_CODEC_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus/codec")
+add_test(NAME CodecConformanceTests COMMAND test_codec_conformance)
+
 videoeye_add_test(test_realtime_analysis_controller unit/test_realtime_analysis_controller.cpp)
 target_link_libraries(test_realtime_analysis_controller PRIVATE VideoEyePlayback Qt6::Core Qt6::Gui)
 if(WIN32)
