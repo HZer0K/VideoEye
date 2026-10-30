@@ -115,7 +115,7 @@ void BitstreamSummaryView::SetResult(const model::BitstreamAnalysisResult& resul
         } else {
             const QString codec = result.codec_name.empty() ? QString::fromStdString(result.codec_id_str)
                                                             : QString::fromStdString(result.codec_name);
-            summary_label_->setText(tr("编码格式 %1 暂不支持码流级解析（当前支持 H.264 / HEVC / AV1；"
+            summary_label_->setText(tr("编码格式 %1 暂不支持码流级解析（当前支持 H.264 / HEVC / VP9 / AV1；"
                                        "VVC 为实验性部分支持）。")
                                         .arg(codec.isEmpty() ? tr("未知") : codec));
         }
