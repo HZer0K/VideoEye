@@ -5,6 +5,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <set>
 #include <sstream>
@@ -773,6 +774,26 @@ QcExportBundle MakeEnrichedBundle() {
     timeline.changes.push_back(change);
     analysis.parameter_timelines.push_back(timeline);
 
+    // 帧级显示顺序：带重排与 GOP 分段，够两端各自渲染出一整节
+    model::FrameOrderTimeline frame_order;
+    frame_order.stream_index = 0;
+    frame_order.codec = "h264";
+    frame_order.order_source = "poc";
+    frame_order.available = true;
+    frame_order.frames_observed = 300;
+    frame_order.i_count = 3;
+    frame_order.p_count = 120;
+    frame_order.b_count = 177;
+    frame_order.idr_count = 3;
+    frame_order.irap_count = 3;
+    frame_order.reorder_events = 60;
+    frame_order.reorder_depth = 2;
+    frame_order.gop_count = 3;
+    frame_order.min_gop_frames = 90;
+    frame_order.max_gop_frames = 110;
+    frame_order.avg_gop_frames = 100.0;
+    analysis.frame_order_timelines.push_back(frame_order);
+
     // 逐轨音频：两条轨，一条满覆盖一条半覆盖
     model::AudioQcResult track0;
     track0.analyzed = true;
@@ -791,6 +812,96 @@ QcExportBundle MakeEnrichedBundle() {
     analysis.audio_qc_stream_indices.push_back(2);
     analysis.audio_qc_tracks_analyzed = 2;
     analysis.audio_qc_tracks_total = 3;
+
+    // 主音轨响度：点亮「响度（主音轨）」，让这份 fixture 覆盖全部章节
+    analysis.audio_qc.analyzed = true;
+    analysis.audio_qc.integrated_lufs = -23.0;
+    analysis.audio_qc.true_peak_dbtp = -1.0;
+    analysis.audio_qc.loudness_range_lu = 5.0;
+
+    // 流列表：一条视频 + 一张封面 + 一条音频。
+    // 封面必须显示成"封面"而不是"视频" —— 它在码流里是一轨 MJPEG，但用户眼里不是画面。
+    model::StreamDigest video_stream;
+    video_stream.index = 0;
+    video_stream.media_type = 0; // AVMEDIA_TYPE_VIDEO
+    video_stream.codec_name = "h264";
+    video_stream.profile_name = "High";
+    video_stream.width = 1920;
+    video_stream.height = 1080;
+    video_stream.bitrate_bps = 5200000;
+    video_stream.frame_count = 300;
+    video_stream.packet_count = 300;
+    analysis.streams.push_back(video_stream);
+
+    model::StreamDigest cover_stream = video_stream;
+    cover_stream.index = 1;
+    cover_stream.attached_picture = true;
+    cover_stream.codec_name = "mjpeg";
+    cover_stream.profile_name.clear();
+    cover_stream.width = 640;
+    cover_stream.height = 640;
+    cover_stream.bitrate_bps = 0;
+    cover_stream.frame_count = 1;
+    cover_stream.packet_count = 1;
+    analysis.streams.push_back(cover_stream);
+
+    model::StreamDigest audio_stream;
+    audio_stream.index = 2;
+    audio_stream.media_type = 1; // AVMEDIA_TYPE_AUDIO
+    audio_stream.codec_name = "aac";
+    audio_stream.profile_name = "LC";
+    audio_stream.sample_rate = 48000;
+    audio_stream.channels = 2;
+    audio_stream.bitrate_bps = 128000;
+    audio_stream.packet_count = 560;
+    analysis.streams.push_back(audio_stream);
+
+    // 规则快照：故意带一条停用的 —— 报告要能说清"启用 3 / 4"，
+    // 否则读者会把"停用了响度规则"读成"响度没问题"。
+    const struct {
+        const char* id;
+        const char* name;
+        IssueCategory category;
+        double threshold;
+        const char* unit;
+        bool enabled;
+    } rule_specs[] = {
+        {"video.gop.max_seconds", "GOP 最长时长", IssueCategory::Gop, 4.0, "s", true},
+        {"audio.loudness.range", "响度范围上限", IssueCategory::Audio, 20.0, "LU", true},
+        {"container.missing_subtitle", "缺字幕", IssueCategory::Container, 0.0, "", false},
+        {"video.bitrate.min", "视频码率下限", IssueCategory::Video, 2000.0, "kbps", true},
+    };
+    for (const auto& spec : rule_specs) {
+        model::QcRule rule;
+        rule.id = spec.id;
+        rule.name = spec.name;
+        rule.category = spec.category;
+        rule.threshold = spec.threshold;
+        rule.unit = spec.unit;
+        rule.enabled = spec.enabled;
+        bundle.run.report.rules.push_back(rule);
+    }
+
+    // 对比 与 MPEG-TS 传输层：这两节两端的标题不同（"对比" / "文件对比"），
+    // 正好把对照表本身的映射也验一遍。
+    bundle.has_comparison = true;
+    bundle.comparison.left_path = "/tmp/left.ts";
+    bundle.comparison.right_path = "/tmp/right.ts";
+
+    analysis.ts_transport.applicable = true;
+    analysis.ts_transport.analyzed = true;
+    analysis.ts_transport.packet_size = 188;
+    analysis.ts_transport.scanned_packets = 120000;
+    analysis.ts_transport.estimated_packets = 120000;
+    analysis.ts_transport.scan_complete = true;
+    analysis.ts_transport.programs = 1;
+    analysis.ts_transport.streams = 2;
+    analysis.ts_transport.services = 1;
+    analysis.ts_transport.has_pat = true;
+    analysis.ts_transport.has_pmt = true;
+    analysis.ts_transport.has_sdt = false;
+    analysis.ts_transport.continuity_errors = 7;
+    analysis.ts_transport.pcr_max_gap_ms = 38.0;
     return bundle;
 }
 
@@ -1016,6 +1127,148 @@ TEST(QcReportExporterTest, PdfWrapsOverlongLinesInsteadOfDrawingPastTheMargin) {
     EXPECT_GE(long_pdf.text_lines, short_pdf.text_lines + 2)
         << "长标题没有折行：短版 " << short_pdf.text_lines << " 行、长版 " << long_pdf.text_lines
         << " 行。超宽的行会画出页面右边界被裁掉，而 PDF 自身仍然结构有效。";
+}
+
+// ============================================================
+// 章节一致性：纯文本（= PDF 正文）与 HTML 必须落同样多的章节
+//
+// 这两个格式各自维护一份"该输出哪些章节"的清单，谁多一节谁少一节都不会编译报错，
+// 于是「流列表」「规则快照」在 HTML / JSON 里存在了两三个版本，纯文本与 PDF 里
+// 一个字都没有 —— PDF 恰恰是交付与存档最常用的那一版。
+//
+// 所以这里不用关键词抽查（抽查天生会漏掉整节，本轮就是这么漏的），改成：
+//   * 先把两格式实际输出的章节名全抓出来；
+//   * 再跟下面这张对照表核：表外的章节 = 有人在某一端加了章节却没同步 → 直接红；
+//   * 表内每一对：一端有一端没有 → 红。
+// 新增章节必须同步这张表和两端实现，代价很小，收益是以后不可能再静默漂移。
+// ============================================================
+
+std::set<std::string> CollectTextSections(const std::string& text) {
+    std::set<std::string> titles;
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        // 形如 "--- 汇总 ---"：整行只有分节标题。
+        // 结尾那个空格是可选的（历史上有两节写成了 "--- 音频 QC（逐轨）---"），
+        // 不能因为少个空格就整行认不出来 —— 那等于让一致性检查静默漏掉一节。
+        if (line.size() > 8 && line.compare(0, 4, "--- ") == 0 && line.compare(line.size() - 3, 3, "---") == 0) {
+            std::string title = line.substr(4, line.size() - 7);
+            while (!title.empty() && (title.back() == ' ' || title.back() == '\t'))
+                title.pop_back();
+            titles.insert(title);
+        }
+    }
+    return titles;
+}
+
+std::set<std::string> CollectHtmlSections(const std::string& html) {
+    std::set<std::string> titles;
+    const std::string open = "<h2>";
+    const std::string close = "</h2>";
+    std::size_t pos = 0;
+    while ((pos = html.find(open, pos)) != std::string::npos) {
+        pos += open.size();
+        const std::size_t end = html.find(close, pos);
+        if (end == std::string::npos)
+            break;
+        titles.insert(html.substr(pos, end - pos));
+        pos = end + close.size();
+    }
+    return titles;
+}
+
+struct SectionPair {
+    const char* text_title;
+    const char* html_title;
+};
+
+// 名字允许不同（HTML 是表格标题、纯文本是分节线），所以显式列对照。
+const SectionPair kSectionPairs[] = {
+    {"汇总", "总体结论"},
+    {"问题清单", "问题清单"},
+    {"证据与覆盖", "证据与覆盖"},
+    {"参数变化时间线", "参数变化时间线"},
+    {"帧级显示顺序", "帧级显示顺序"},
+    {"流列表", "流列表"},
+    {"音频 QC（逐轨）", "音频 QC（逐轨）"},
+    {"响度（主音轨）", "响度与音频 QC（主音轨）"},
+    {"MPEG-TS 传输层", "MPEG-TS 传输层"},
+    {"对比", "文件对比"},
+    {"规则快照", "规则快照"},
+};
+
+// 章节在还不够，内容也得对：流列表要把封面标成"封面"（它在码流里是一轨 MJPEG，
+// 但用户眼里不是画面，写成"视频"等于凭空多一路画面）；规则快照要能说清
+// "启用 3 / 4"，否则读者会把"停用了响度规则"读成"响度没问题"。
+TEST(QcReportExporterTest, StreamListAndRuleSnapshotCarryTheRightContent) {
+    const std::string text = QcReportExporter::BuildText(MakeEnrichedBundle());
+
+    for (const char* needle : {"--- 流列表 ---", "#0 视频 h264（High） ｜ 1920x1080", "#1 封面 mjpeg ｜ 640x640",
+                               "#2 音频 aac（LC） ｜ 48000 Hz / 2 声道 ｜ 128.0 kbps", "--- 规则快照 ---",
+                               "启用 3 / 4 条", "GOP 最长时长（video.gop.max_seconds）", "已停用"}) {
+        EXPECT_NE(text.find(needle), std::string::npos) << "纯文本（以及复用它的 PDF）里找不到: " << needle;
+    }
+    // 封面那一行绝不能出现"视频"字样
+    const std::size_t cover = text.find("#1 ");
+    ASSERT_NE(cover, std::string::npos);
+    const std::string cover_line = text.substr(cover, text.find('\n', cover) - cover);
+    EXPECT_EQ(cover_line.find("视频"), std::string::npos) << "封面被写成视频轨了: " << cover_line;
+}
+
+TEST(QcReportExporterTest, TextAndHtmlEmitTheSameSetOfSections) {
+    const QcExportBundle bundle = MakeEnrichedBundle();
+    const std::string text = QcReportExporter::BuildText(bundle);
+    const std::string html = QcReportExporter::BuildHtml(bundle);
+
+    const std::set<std::string> text_titles = CollectTextSections(text);
+    const std::set<std::string> html_titles = CollectHtmlSections(html);
+    ASSERT_FALSE(html_titles.empty()) << "HTML 一个 h2 章节都没有，抓章节名的辅助函数可能失效了";
+
+    const std::vector<SectionPair> pairs(std::begin(kSectionPairs), std::end(kSectionPairs));
+    auto known_text = [&pairs](const std::string& title) {
+        for (const SectionPair& p : pairs) {
+            if (p.text_title == title)
+                return true;
+        }
+        return false;
+    };
+    auto known_html = [&pairs](const std::string& title) {
+        for (const SectionPair& p : pairs) {
+            if (p.html_title == title)
+                return true;
+        }
+        return false;
+    };
+
+    // 表外章节：某一端加了新章节却没同步这张表与另一端。
+    for (const std::string& title : text_titles)
+        EXPECT_TRUE(known_text(title)) << "纯文本出现了对照表外的章节「" << title
+                                       << "」—— 请同步本表的 html_title 与 QcReportExporterHtml.cpp";
+    for (const std::string& title : html_titles)
+        EXPECT_TRUE(known_html(title)) << "HTML 出现了对照表外的章节「" << title
+                                       << "」—— 请同步本表的 text_title 与 QcReportExporterText.cpp";
+
+    // 表内每一对：一端有一端没有就是内容缺失（PDF 复用纯文本，所以这也守着 PDF）。
+    int matched = 0;
+    for (const SectionPair& p : pairs) {
+        const bool in_text = text_titles.count(p.text_title) > 0;
+        const bool in_html = html_titles.count(p.html_title) > 0;
+        if (in_text && in_html)
+            ++matched;
+        else if (in_html)
+            ADD_FAILURE() << "HTML 有「" << p.html_title << "」但纯文本（以及复用它的 PDF）没有「" << p.text_title
+                          << "」—— 两种格式的结论不再等价";
+        else if (in_text)
+            ADD_FAILURE() << "纯文本有「" << p.text_title << "」但 HTML 没有「" << p.html_title << "」";
+    }
+
+    // 覆盖守护：fixture 缩水或章节抓取失效时，上面所有循环都会变成空转（全绿）。
+    // 这份 fixture 应该点亮对照表里的**全部**章节，少一节就说明这一轮覆盖退化了。
+    EXPECT_EQ(matched, static_cast<int>(pairs.size()))
+        << "两端同时命中的章节只有 " << matched << " / " << pairs.size()
+        << " 节 —— fixture 少喂了数据，或某一端不再渲染某一节。一致性检查正在退化成空操作";
 }
 
 } // namespace

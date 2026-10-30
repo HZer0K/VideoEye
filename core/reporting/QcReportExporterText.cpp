@@ -199,12 +199,35 @@ std::string QcReportExporter::BuildText(const QcExportBundle& bundle) {
         }
     }
 
+    // ---- 流列表 ----
+    //
+    // HTML / JSON 一直有这一节，纯文本（以及复用纯文本的 PDF）没有 —— 拿 PDF 交付时
+    // 读者看不到被检查的对象里到底有哪些轨。顺带把封面图标出来：它在码流里是一轨
+    // MJPEG 视频，但在用户眼里不是画面，写成"视频"会让人以为多了一路画面。
+    if (!run.analysis.streams.empty()) {
+        out << "\n--- 流列表 ---\n";
+        for (const auto& stream : run.analysis.streams) {
+            const char* type =
+                stream.attached_picture ? "封面" : (stream.IsVideo() ? "视频" : (stream.IsAudio() ? "音频" : "其他"));
+            out << "  #" << stream.index << " " << type << " " << stream.codec_name;
+            if (!stream.profile_name.empty())
+                out << "（" << stream.profile_name << "）";
+            out << " ｜ ";
+            if (stream.IsVideo())
+                out << stream.width << "x" << stream.height;
+            else
+                out << stream.sample_rate << " Hz / " << stream.channels << " 声道";
+            out << " ｜ " << Fixed(stream.bitrate_bps / 1000.0, 1) << " kbps ｜ " << stream.frame_count << " 帧 / "
+                << stream.packet_count << " 包\n";
+        }
+    }
+
     // ---- 逐轨音频 QC（阶段 4）----
     //
     // 主轨的数字在 metrics 里也有一份（兼容旧读者），但多语言/评论轨只有这里能看到。
     // 每条轨必须独立给出覆盖率：轨数对上了不代表每条轨都跑满了。
     if (!run.analysis.audio_qc_streams.empty()) {
-        out << "\n--- 音频 QC（逐轨）---\n";
+        out << "\n--- 音频 QC（逐轨） ---\n";
         out << "  共 " << run.analysis.audio_qc_tracks_analyzed << " / " << run.analysis.audio_qc_tracks_total
             << " 条音轨参与分析\n";
         for (std::size_t i = 0; i < run.analysis.audio_qc_streams.size(); ++i) {
@@ -239,7 +262,7 @@ std::string QcReportExporter::BuildText(const QcExportBundle& bundle) {
     }
 
     if (run.analysis.audio_qc.analyzed) {
-        out << "\n--- 响度（主音轨）---\n";
+        out << "\n--- 响度（主音轨） ---\n";
         out << "  积分响度: " << Fixed(run.analysis.audio_qc.integrated_lufs, 2) << " LUFS\n";
         out << "  真峰值: " << Fixed(run.analysis.audio_qc.true_peak_dbtp, 2) << " dBTP\n";
         out << "  LRA: " << Fixed(run.analysis.audio_qc.loudness_range_lu, 2) << " LU\n";
@@ -293,6 +316,29 @@ std::string QcReportExporter::BuildText(const QcExportBundle& bundle) {
 
     if (bundle.has_comparison) {
         out << "\n--- 对比 ---\n" << BuildComparisonText(bundle.comparison);
+    }
+
+    // ---- 规则快照 ----
+    //
+    // 结论可复现的凭据：同一个文件换一套规则或阈值会得到完全不同的判定。报告里不带
+    // 这份快照，"没报问题" 与 "阈值放得很宽" 在纸面上长得一模一样 —— 而这正是
+    // 「证据与覆盖」那一套要消灭的虚假结论，只不过发生在规则层面。
+    // HTML / JSON 都有这一节，纯文本与 PDF 曾长期缺失。
+    if (!report.rules.empty()) {
+        out << "\n--- 规则快照 ---\n";
+        std::size_t enabled = 0;
+        for (const auto& rule : report.rules) {
+            if (rule.enabled)
+                ++enabled;
+        }
+        out << "  启用 " << enabled << " / " << report.rules.size() << " 条\n";
+        for (const auto& rule : report.rules) {
+            out << "  " << rule.name << "（" << rule.id << "）｜ " << model::ToString(rule.category) << " ｜ 阈值 "
+                << Fixed(rule.threshold, 2);
+            if (!rule.unit.empty())
+                out << " " << rule.unit;
+            out << " ｜ " << (rule.enabled ? "已启用" : "已停用") << "\n";
+        }
     }
 
     return out.str();
