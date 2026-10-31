@@ -147,10 +147,87 @@ public:
     // 排空阶段（flush）送完 EOF 帧后要单独调一次，把编码器最后攒着的几帧取出来。
     void WriteEncodedPackets(StreamCtx& s);
 
+    // 收尾阶段（flush_encoders）先调一次：之后送帧失败的错误信息里会带上这个状态，
+    // 否则"主循环里编码失败"和"排空时编码失败"在日志里长得一模一样。
+    void BeginDrain() {
+        draining_ = true;
+    }
+
+    // 送 EOF 给编码器并把剩下攒着的包全部写出（收尾阶段用）。
+    bool DrainEncoder(StreamCtx& s) {
+        if (!SendFrame(s, nullptr))
+            return false;
+        WriteEncodedPackets(s);
+        return err_->isEmpty();
+    }
+
 private:
+    // 送一帧，并按 API 契约处理 AVERROR(EAGAIN)。
+    // ⭐ avcodec_send_frame 返回 EAGAIN **不是错误**：上一帧还压在内置缓冲里没被取走，
+    // 必须先 receive_packet 排空再重送（文档原文："once all output is read, the packet
+    // should be resent, and the call will not fail with EAGAIN"）。
+    // 旧代码把所有负值都当致命错误，于是 libx264 在流尾（lookahead 满 + B 帧重排）走到
+    // 这条路时，整个导出被判失败 —— 见下面的详细说明。
+    bool SendFrame(StreamCtx& s, AVFrame* frame);
+    // 错误信息用：把流身份说清楚，否则"N 条流里哪条炸了"根本看不出来。
+    QString StreamLabel(const StreamCtx& s) const;
+
     AVFormatContext* out_fmt_;
     QString* err_;
+    bool draining_ = false;
+    int packets_written_ = 0; // 只用于判断"排空是否真有进展"，不做业务统计
 };
+
+QString FrameEncoder::StreamLabel(const StreamCtx& s) const {
+    const char* kind = "unknown";
+    if (s.dec) {
+        kind = (s.dec->codec_type == AVMEDIA_TYPE_VIDEO) ? "video" : "audio";
+    } else if (s.enc) {
+        kind = (s.enc->codec_type == AVMEDIA_TYPE_VIDEO) ? "video" : "audio";
+    }
+    return QString("stream#%1(%2)").arg(s.in_idx).arg(QLatin1String(kind));
+}
+
+// 送帧 + 按需重试。
+//
+// 为什么值得单独一个函数：AVERROR(EAGAIN) 的处理在视频/音频两处必须完全一致，
+// 而且要"先排空再重送"这个顺序 —— 各写一遍迟早有一处写错。
+bool FrameEncoder::SendFrame(StreamCtx& s, AVFrame* frame) {
+    const int ret = avcodec_send_frame(s.enc, frame);
+    if (ret >= 0) {
+        WriteEncodedPackets(s);
+        return err_->isEmpty();
+    }
+
+    const QString where = StreamLabel(s);
+    const QString state = draining_ ? QStringLiteral("排空阶段") : QStringLiteral("逐包阶段");
+
+    if (ret != AVERROR(EAGAIN)) {
+        if (err_->isEmpty()) {
+            *err_ = QString("送入编码帧失败 (%1, %2, %3): 错误码 %4").arg(where, state, AvErrorString(ret)).arg(ret);
+        }
+        return false;
+    }
+
+    // EAGAIN：把编码器里攒着的包取出来，然后**重送同一帧**。
+    const int before = packets_written_;
+    WriteEncodedPackets(s);
+    if (!err_->isEmpty())
+        return false;
+
+    const int retry = avcodec_send_frame(s.enc, frame);
+    if (retry < 0) {
+        if (err_->isEmpty()) {
+            *err_ = QString("送入编码帧失败 (%1, %2): 排空 %3 个包后重送仍失败, 错误码 %4")
+                        .arg(where, state)
+                        .arg(packets_written_ - before)
+                        .arg(retry);
+        }
+        return false;
+    }
+    WriteEncodedPackets(s);
+    return err_->isEmpty();
+}
 
 void FrameEncoder::WriteEncodedPackets(StreamCtx& s) {
     AVPacket* epkt = av_packet_alloc();
@@ -168,15 +245,19 @@ void FrameEncoder::WriteEncodedPackets(StreamCtx& s) {
         if (ret < 0) {
             // 编码器真实错误: 必须记下来, 否则外层会把它当成"正常结束"并报成功
             if (err_->isEmpty())
-                *err_ = QString("取出编码输出包失败: %1").arg(AvErrorString(ret));
+                *err_ = QString("取出编码输出包失败 (%1): %2").arg(StreamLabel(s), AvErrorString(ret));
             break;
         }
         epkt->stream_index = s.out_idx;
         av_packet_rescale_ts(epkt, s.enc->time_base, out_fmt_->streams[s.out_idx]->time_base);
         const int wr = av_interleaved_write_frame(out_fmt_, epkt);
         av_packet_unref(epkt);
-        if (wr < 0 && err_->isEmpty())
-            *err_ = "写入编码输出包失败";
+        if (wr < 0) {
+            if (err_->isEmpty())
+                *err_ = QString("写入编码输出包失败 (%1): %2").arg(StreamLabel(s), AvErrorString(wr));
+            break;
+        }
+        ++packets_written_;
     }
     av_packet_free(&epkt);
 }
@@ -224,14 +305,10 @@ bool FrameEncoder::EncodeVideo(StreamCtx& s, AVFrame* src) {
     }
     out_frame->pts = (src->pts == AV_NOPTS_VALUE) ? s.enc_pts++ : src->pts;
     s.enc_pts = out_frame->pts + 1;
-    const int send_ret = avcodec_send_frame(s.enc, out_frame);
+    // EAGAIN 的排空+重送在 SendFrame 里统一处理（旧代码把 EAGAIN 当致命错误）。
+    const bool ok = SendFrame(s, out_frame);
     av_frame_free(&out_frame);
-    if (send_ret < 0) {
-        *err_ = "送入编码帧失败";
-        return false;
-    }
-    WriteEncodedPackets(s); // 写入失败会在内部写 err_
-    return err_->isEmpty();
+    return ok;
 }
 
 bool FrameEncoder::EncodeAudio(StreamCtx& s, AVFrame* src) {
@@ -281,14 +358,16 @@ bool FrameEncoder::EncodeAudio(StreamCtx& s, AVFrame* src) {
     out_frame->nb_samples = got;
     out_frame->pts = s.enc_pts;
     s.enc_pts += got;
-    const int send_ret = avcodec_send_frame(s.enc, out_frame);
-    av_frame_free(&out_frame);
-    if (send_ret < 0) {
-        *err_ = "送入编码帧失败";
-        return false;
+    // swr_convert 返回 0 是合法的（输入全被内部缓冲吃掉，样本稍后才出来）。
+    // 这时帧里一个样本都没有，绝不能送进编码器：aac 这类定长帧编码器会以
+    // "frame_size was not respected" 判 EINVAL，整次导出直接失败。
+    if (got == 0) {
+        av_frame_free(&out_frame);
+        return true;
     }
-    WriteEncodedPackets(s);
-    return err_->isEmpty();
+    const bool ok = SendFrame(s, out_frame);
+    av_frame_free(&out_frame);
+    return ok;
 }
 
 // 依据目标格式推断默认编码器名称
@@ -697,20 +776,21 @@ void PacketPump::CopyPacket(StreamCtx& sc, AVStream* in_st) {
 
 void PacketPump::EncodePacket(StreamCtx& sc) {
     const AVMediaType mt = sc.dec->codec_type;
-    // 解码输入: 真实错误(非 EAGAIN)要记录, 否则损坏输入会被当成正常结束
-    const int send_ret = avcodec_send_packet(sc.dec, pkt_);
-    if (send_ret == 0) {
+
+    // 把解码器当前能吐出的帧全部取出并编码。返回 false = 出错（err_ 已置）。
+    // 抽成 lambda：送包遇到 EAGAIN 时要"先收帧、再重送同一个包"，两处共用这段。
+    const auto drain_decoded_frames = [&]() -> bool {
         for (;;) {
             const int recv_ret = avcodec_receive_frame(sc.dec, frame_);
             // EAGAIN(还要继续喂包) / EOF(解码器已排空) 都是正常状态
             if (recv_ret == AVERROR(EAGAIN) || recv_ret == AVERROR_EOF)
-                break;
+                return true;
             if (recv_ret < 0) {
                 // 真实解码错误。旧代码写成 `while (... >= 0)`, 这里会静默退出,
                 // 截断/损坏的输入于是被当成"读完了", 最终误报导出成功。
                 if (err_->isEmpty())
                     *err_ = QString("解码失败: %1").arg(AvErrorString(recv_ret));
-                break;
+                return false;
             }
             // 包已喂进解码器（从关键帧起才解得动），但解出来的帧可能早于起点
             // 或晚于终点 —— 这些不进编码器，否则产物仍会带上区间外的内容。
@@ -722,11 +802,26 @@ void PacketPump::EncodePacket(StreamCtx& sc) {
                 (mt == AVMEDIA_TYPE_VIDEO) ? encoder_.EncodeVideo(sc, frame_) : encoder_.EncodeAudio(sc, frame_);
             av_frame_unref(frame_);
             if (!ok)
-                break; // 编码/重采样失败 -> err_ 已置, 外层据此停止
+                return false; // 编码/重采样失败 -> err_ 已置, 外层据此停止
         }
-    } else if (send_ret != AVERROR(EAGAIN)) {
-        if (err_->isEmpty())
-            *err_ = QString("解码输入失败: %1").arg(AvErrorString(send_ret));
+    };
+
+    // 解码输入: 真实错误(非 EAGAIN)要记录, 否则损坏输入会被当成正常结束
+    int send_ret = avcodec_send_packet(sc.dec, pkt_);
+    if (send_ret == AVERROR(EAGAIN)) {
+        // ⭐ EAGAIN 是"解码器里还有帧没取走, 先收帧再重送这个包"。旧代码把它当成
+        // 可以忽略的状态 —— 包在函数末尾被 unref 掉，**这个包就永久丢了**：区间模式
+        // 下表现为产物少一段画面，而导出仍报成功。
+        if (!drain_decoded_frames()) {
+            av_packet_unref(pkt_);
+            return;
+        }
+        send_ret = avcodec_send_packet(sc.dec, pkt_);
+    }
+    if (send_ret == 0) {
+        drain_decoded_frames();
+    } else if (err_->isEmpty()) {
+        *err_ = QString("解码输入失败: %1").arg(AvErrorString(send_ret));
     }
     av_packet_unref(pkt_);
 }
@@ -764,45 +859,61 @@ void PacketPump::ReportProgress() {
 // 会把一个坏文件当成"写完了"交出去。
 bool flush_encoders(std::vector<StreamCtx>& streams, AVFormatContext* in_fmt, AVFormatContext* out_fmt, AVFrame* frame,
                     FrameEncoder& encoder, const ExportRange& range, QString& err) {
+    // 之后所有送帧失败的错误信息都会标上"排空阶段"（见 FrameEncoder::SendFrame）。
+    encoder.BeginDrain();
+
     for (auto& s : streams) {
         if (!s.do_encode)
             continue;
 
-        // 排空解码器。AVERROR_EOF 表示此前已排空过, 与 EAGAIN 一样属于正常状态。
-        const int dp = avcodec_send_packet(s.dec, nullptr);
+        // 把解码器里剩下的帧全部取出并编码。返回 false = 出错（err 已置）。
+        // 抽成 lambda 是因为它在下面要跑两遍：先取一遍，再发 EOF，再取一遍。
+        const auto drain_decoded_frames = [&]() -> bool {
+            for (;;) {
+                const int rr = avcodec_receive_frame(s.dec, frame);
+                if (rr == AVERROR(EAGAIN) || rr == AVERROR_EOF)
+                    return true;
+                if (rr < 0) {
+                    err = QString("解码失败: %1").arg(AvErrorString(rr));
+                    return false;
+                }
+                if (range.FrameOutside(in_fmt->streams[s.in_idx], frame)) {
+                    av_frame_unref(frame);
+                    continue;
+                }
+                const bool ok = (s.dec->codec_type == AVMEDIA_TYPE_VIDEO) ? encoder.EncodeVideo(s, frame)
+                                                                          : encoder.EncodeAudio(s, frame);
+                av_frame_unref(frame);
+                if (!ok)
+                    return false; // 编码/重采样失败, err 已置
+            }
+        };
+
+        // ⭐ 送 EOF 给解码器时返回 EAGAIN 不是错误：意思是"解码器里还有帧没取走，
+        // 你得先 receive_frame"。区间模式尤其容易撞上 —— 主循环在终点处直接 break，
+        // 解码器里通常还压着几帧。旧代码把它当"结束解码失败"，一条正常素材被判失败。
+        int dp = avcodec_send_packet(s.dec, nullptr);
+        if (dp == AVERROR(EAGAIN)) {
+            if (!drain_decoded_frames())
+                return false;
+            if (!err.isEmpty())
+                return false;
+            dp = avcodec_send_packet(s.dec, nullptr);
+        }
         if (dp < 0 && dp != AVERROR_EOF) {
             err = QString("结束解码失败: %1").arg(AvErrorString(dp));
             return false;
         }
-        for (;;) {
-            const int rr = avcodec_receive_frame(s.dec, frame);
-            if (rr == AVERROR(EAGAIN) || rr == AVERROR_EOF)
-                break;
-            if (rr < 0) {
-                err = QString("解码失败: %1").arg(AvErrorString(rr));
-                return false;
-            }
-            if (range.FrameOutside(in_fmt->streams[s.in_idx], frame)) {
-                av_frame_unref(frame);
-                continue;
-            }
-            const bool ok = (s.dec->codec_type == AVMEDIA_TYPE_VIDEO) ? encoder.EncodeVideo(s, frame)
-                                                                      : encoder.EncodeAudio(s, frame);
-            av_frame_unref(frame);
-            if (!ok)
-                return false; // 编码/重采样失败, err 已置
-        }
+        if (!drain_decoded_frames())
+            return false;
         if (!err.isEmpty())
             return false; // 解码/编码失败则停止 flush
 
         // 排空编码器。AVERROR_EOF 表示编码器此前已被 flush 过, 不是错误;
         // 原来这里连返回值都不看, 编码器真出错时照样会走到"替换目标文件"那一步。
-        const int ef = avcodec_send_frame(s.enc, nullptr);
-        if (ef < 0 && ef != AVERROR_EOF) {
-            err = QString("结束编码失败: %1").arg(AvErrorString(ef));
-            return false;
-        }
-        encoder.WriteEncodedPackets(s);
+        // EAGAIN（还有帧没取走）由 DrainEncoder 内部排空后重送。
+        if (!encoder.DrainEncoder(s))
+            return false; // err 已置
         if (!err.isEmpty())
             return false; // 写入失败则停止 flush
     }
