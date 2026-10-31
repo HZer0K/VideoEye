@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <set>
 #include <sstream>
 #include <string>
@@ -147,6 +148,95 @@ std::vector<std::vector<std::string>> ParseCsvRecords(const std::string& content
     return rows;
 }
 
+// ---- CSV 元数据头（行首为 '#' 的行）----
+//
+// 行语法见 QcReportExporterCsv.cpp 顶部注释。这里按**物理行**切分是有意的：
+// 元数据行的值在导出端被压过换行，物理行数必须等于记录数 —— 一旦哪天忘了压，
+// 下面这些按行读取的辅助函数就会把一行拆成两行，断言随即失败（正是要守的东西）。
+
+std::vector<std::string> SplitCsvPhysicalLines(const std::string& content) {
+    std::vector<std::string> lines;
+    std::string current;
+    for (std::size_t i = 0; i < content.size(); ++i) {
+        if (i == 0 && content.compare(0, 3, "\xEF\xBB\xBF") == 0) {
+            i = 2; // 跳过 UTF-8 BOM
+            continue;
+        }
+        const char c = content[i];
+        if (c == '\r')
+            continue;
+        if (c == '\n') {
+            lines.push_back(current);
+            current.clear();
+            continue;
+        }
+        current += c;
+    }
+    if (!current.empty())
+        lines.push_back(current);
+    return lines;
+}
+
+// 只留表头 + 数据行：模拟"用 comment='#' 读表"的下游脚本
+std::string DropCsvMetaLines(const std::string& content) {
+    std::string out;
+    for (const std::string& line : SplitCsvPhysicalLines(content)) {
+        if (!line.empty() && line.front() == '#')
+            continue;
+        out += line;
+        out += '\n';
+    }
+    return out;
+}
+
+std::vector<std::vector<std::string>> ParseCsvDataRecords(const std::string& content) {
+    return ParseCsvRecords(DropCsvMetaLines(content));
+}
+
+// 元数据头解析结果：单值事实按"节 -> 键 -> 值"收，覆盖表单独收。
+struct CsvMetaFacts {
+    std::map<std::string, std::map<std::string, std::string>> sections;
+    std::vector<std::string> coverage_columns;
+    std::vector<std::vector<std::string>> coverage_rows;
+    std::size_t meta_line_count = 0;
+
+    // 找不到时返回空串（而不是让用例抛异常）：缺字段正是要被断言出来的那种失败
+    std::string Value(const std::string& section, const std::string& key) const {
+        const auto section_it = sections.find(section);
+        if (section_it == sections.end())
+            return std::string();
+        const auto value_it = section_it->second.find(key);
+        return value_it == section_it->second.end() ? std::string() : value_it->second;
+    }
+};
+
+CsvMetaFacts ParseCsvMetaFacts(const std::string& content) {
+    CsvMetaFacts facts;
+    for (const std::string& line : SplitCsvPhysicalLines(content)) {
+        if (line.empty() || line.front() != '#')
+            continue;
+        ++facts.meta_line_count;
+        // 元数据行保证一行一条记录，取第一条即可
+        const auto records = ParseCsvRecords(line);
+        if (records.empty())
+            continue;
+        const auto& fields = records.front();
+        if (fields.empty())
+            continue;
+        const std::string section = fields.front().substr(1); // 去掉行首的 '#'
+        if (section == "覆盖") {
+            if (fields.size() > 1 && fields[1] == "维度")
+                facts.coverage_columns = fields; // 列名行
+            else
+                facts.coverage_rows.push_back(fields); // 一个维度一行，列与列名行对齐
+            continue;
+        }
+        for (std::size_t i = 1; i + 1 < fields.size(); i += 2)
+            facts.sections[section][fields[i]] = fields[i + 1];
+    }
+    return facts;
+}
+
 // 四种"最容易导出错"的内容各来一份：
 //   中文标题 / 中文结论（编码）
 //   detail 里带换行（CSV 行数、PDF 单行渲染）
@@ -223,16 +313,9 @@ TEST(QcReportExporterTest, CsvHasOneRowPerIssue) {
     const std::string path = std::filesystem::temp_directory_path().string() + "/videoeye_qc_export_csv_test.csv";
     ASSERT_TRUE(QcReportExporter::ExportCsv(path, MakeBundle(3)));
 
-    std::ifstream in(path);
-    std::string line;
-    int lines = 0;
-    std::string content;
-    while (std::getline(in, line)) {
-        ++lines;
-        content += line + "\n";
-    }
-    // BOM + 表头 + 3 个 issue = 4 行
-    EXPECT_EQ(lines, 4);
+    const std::string content = ReadWholeFile(path);
+    // 表头 + 3 个 issue（'#' 开头的元数据行不属于数据表）
+    EXPECT_EQ(ParseCsvDataRecords(content).size(), 4u);
     EXPECT_NE(content.find("video.gop.max_seconds"), std::string::npos);
     EXPECT_NE(content.find("audio.loudness.range"), std::string::npos);
     EXPECT_NE(content.find("container.missing_subtitle"), std::string::npos);
@@ -276,15 +359,60 @@ TEST(QcReportExporterTest, JsonSchemaIsStable) {
 TEST(QcReportExporterTest, EmptyIssuesStillExportsHeader) {
     const std::string path = std::filesystem::temp_directory_path().string() + "/videoeye_qc_export_empty_test.csv";
     ASSERT_TRUE(QcReportExporter::ExportCsv(path, MakeBundle(0)));
-    std::ifstream in(path);
-    int lines = 0;
-    std::string line;
-    while (std::getline(in, line))
-        ++lines;
-    EXPECT_EQ(lines, 1); // 只有表头
+    const std::string content = ReadWholeFile(path);
+    EXPECT_EQ(ParseCsvDataRecords(content).size(), 1u); // 只剩表头
+
+    // 空表本身证明不了"跑过"：元数据头必须把结论与计数一起落下。
+    const CsvMetaFacts facts = ParseCsvMetaFacts(content);
+    EXPECT_EQ(facts.Value("统计", "问题数"), "0");
+    EXPECT_EQ(facts.Value("结论", "分析成功"), "是");
+    EXPECT_EQ(facts.Value("结论", "结论完整"), "是");
+    // 规则条数也要在：0 条启用 与 "12 条全跑过且没命中" 在空表上长得一样
+    EXPECT_EQ(facts.Value("统计", "规则"), "0");
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }
+
+// CSV 最容易被忽略的一种失效：数据区只有表头时，"真没问题"与"没跑完/被取消/超时"
+// 肉眼和脚本都分不出来。下面这条同时钉住两件事：
+//   1) 两种情况下数据区**确实完全一样**（所以只靠数据区的判据根本不存在）；
+//   2) 元数据头必须把两者区分开，且写清原因。
+TEST(QcReportExporterTest, CsvMetaHeaderSeparatesNoIssuesFromNotRun) {
+    ScopedDir dir("csv_meta");
+    QcExportBundle clean = MakeBundle(0);
+    QcExportBundle interrupted = MakeBundle(0);
+    interrupted.run.ok = false;
+    interrupted.run.timed_out = true;
+    interrupted.run.error = "分析超时（后台线程无响应）";
+    interrupted.run.report.completed = false;
+
+    const std::string clean_path = dir.File("clean.csv");
+    const std::string interrupted_path = dir.File("interrupted.csv");
+    ASSERT_TRUE(QcReportExporter::ExportCsv(clean_path, clean));
+    ASSERT_TRUE(QcReportExporter::ExportCsv(interrupted_path, interrupted));
+
+    const std::string clean_content = ReadWholeFile(clean_path);
+    const std::string interrupted_content = ReadWholeFile(interrupted_path);
+    ASSERT_FALSE(clean_content.empty());
+    EXPECT_EQ(DropCsvMetaLines(clean_content), DropCsvMetaLines(interrupted_content))
+        << "两种情形的数据区本来就该一样 —— 区分只能靠元数据头";
+
+    const CsvMetaFacts ok_facts = ParseCsvMetaFacts(clean_content);
+    const CsvMetaFacts bad_facts = ParseCsvMetaFacts(interrupted_content);
+    EXPECT_EQ(ok_facts.Value("结论", "分析成功"), "是");
+    EXPECT_EQ(ok_facts.Value("结论", "超时放弃"), "否");
+    EXPECT_TRUE(ok_facts.Value("结论", "错误原因").empty());
+
+    EXPECT_EQ(bad_facts.Value("结论", "分析成功"), "否");
+    EXPECT_EQ(bad_facts.Value("结论", "结论完整"), "否");
+    EXPECT_EQ(bad_facts.Value("结论", "超时放弃"), "是");
+    EXPECT_EQ(bad_facts.Value("结论", "错误原因"), "分析超时（后台线程无响应）");
+    // 两份都是 0 个问题 —— 所以"问题数"不能当区分依据，完整性标志才是
+    EXPECT_EQ(ok_facts.Value("统计", "问题数"), "0");
+    EXPECT_EQ(bad_facts.Value("统计", "问题数"), "0");
+}
+
+// 逐维度覆盖的用例放在 MakeEnrichedBundle() 之后（需要那份带维度状态的 fixture）。
 
 TEST(QcReportExporterTest, OutputPathUsesExtension) {
     const std::string dir = std::filesystem::temp_directory_path().string();
@@ -502,11 +630,14 @@ TEST_P(ReportArtifactMatrix, ExportedArtifactCanBeReadBack) {
         break;
     }
     case ArtifactFormat::Csv: {
-        const auto rows = ParseCsvRecords(content);
         // 表头 + 每个 issue 一行。detail 里本来就带换行，导出端把它压成空格，
-        // 于是"物理行数"必须正好等于"记录数" —— 一旦哪天忘了压，行数会虚增，
+        // 于是"物理行数"必须正好等于"元数据行数 + 记录数" —— 一旦哪天忘了压，行数会虚增，
         // 下游按行读取的脚本就全错位了。
-        EXPECT_EQ(std::count(content.begin(), content.end(), '\n'), issue_count + 1);
+        const CsvMetaFacts meta = ParseCsvMetaFacts(content);
+        EXPECT_GT(meta.meta_line_count, 0u) << "CSV 必须带元数据头，否则空表无法自证";
+        const auto rows = ParseCsvDataRecords(content);
+        EXPECT_EQ(static_cast<long>(std::count(content.begin(), content.end(), '\n')),
+                  static_cast<long>(issue_count) + 1 + static_cast<long>(meta.meta_line_count));
         ASSERT_EQ(rows.size(), static_cast<std::size_t>(issue_count) + 1);
         for (const auto& row : rows)
             ASSERT_EQ(row.size(), 12u);
@@ -1036,6 +1167,44 @@ TEST(QcReportExporterTest, NewSectionsAppearInTextAndHtml) {
     EXPECT_NE(html.find("证据与覆盖"), std::string::npos);
     EXPECT_NE(html.find("参数变化时间线"), std::string::npos);
     EXPECT_NE(html.find("音频 QC（逐轨）"), std::string::npos);
+}
+
+// 逐维度覆盖在 CSV 里的落法：与 TXT / HTML 的「证据与覆盖」同一份口径，换成列而已。
+// 没有它，空表读者只能猜"黑帧检测是不是压根没跑"。
+TEST(QcReportExporterTest, CsvCoverageRowsMirrorDimensionStatus) {
+    ScopedDir dir("csv_coverage");
+    const QcExportBundle bundle = MakeEnrichedBundle();
+    const std::string path = dir.File("report.csv");
+    ASSERT_TRUE(QcReportExporter::ExportCsv(path, bundle));
+
+    const CsvMetaFacts facts = ParseCsvMetaFacts(ReadWholeFile(path));
+    ASSERT_FALSE(facts.coverage_columns.empty()) << "有维度状态时必须给出覆盖表的列名行";
+    ASSERT_GT(facts.coverage_columns.size(), 10u);
+    EXPECT_EQ(facts.coverage_columns[1], "维度");
+    EXPECT_EQ(facts.coverage_columns[8], "覆盖率(%)");
+
+    // 行序 = dimensions 的顺序，不重排：读者按报告里同一顺序对照
+    ASSERT_EQ(facts.coverage_rows.size(), 3u);
+
+    const auto& skipped = facts.coverage_rows[0];
+    EXPECT_EQ(skipped[1], "MPEG-TS 传输层");
+    EXPECT_EQ(skipped[2], "未执行");
+    // 占位符必须原样是 '-'：它曾被当成"以 - 开头的字段"加公式前缀，读回来是 "'-"
+    EXPECT_EQ(skipped[5], "-");
+    EXPECT_NE(skipped[10].find("不是 MPEG-TS"), std::string::npos) << "未执行必须写清原因";
+
+    const auto& partial = facts.coverage_rows[1];
+    EXPECT_EQ(partial[1], "帧级结构");
+    EXPECT_EQ(partial[2], "已执行");
+    EXPECT_EQ(partial[6], "5000");
+    EXPECT_EQ(partial[7], "10000");
+    EXPECT_EQ(partial[8], "50.0");
+    EXPECT_NE(partial[10].find("扫描窗口上限"), std::string::npos);
+
+    const auto& unknown_total = facts.coverage_rows[2];
+    EXPECT_EQ(unknown_total[1], "视频码流参数");
+    EXPECT_EQ(unknown_total[7], "-") << "总量未知不能落 0（0 会被读成覆盖 0%）";
+    EXPECT_EQ(unknown_total[8], "-");
 }
 
 // ============================================================
