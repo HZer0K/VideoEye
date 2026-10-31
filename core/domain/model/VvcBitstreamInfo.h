@@ -116,11 +116,27 @@ struct VvcSpsInfo {
     int sps_conf_win_bottom_offset = 0;
 
     int sps_num_subpics_minus1 = 0;
+    // 下面三个是 2026-10 为帧级顺序追踪补的：PH / slice_header 里跳过可变长段
+    // 需要知道"有没有 subpic id、有多少 extra bit"，靠猜会让 POC 直接错位。
+    bool sps_subpic_info_present_flag = false;
+    int sps_subpic_id_len_minus1 = 0;
     int sps_bitdepth_minus8 = 0;
     bool sps_entropy_coding_sync_enabled_flag = false;
     bool sps_entry_point_offsets_present_flag = false;
     int sps_log2_max_pic_order_cnt_lsb_minus4 = 0;
     bool sps_poc_msb_cycle_flag = false;
+    // ph_poc_msb_cycle_val 的位宽 = 该值 + 1（H.266 7.3.2.3）。0 表示"没有该字段"。
+    // 规范范围 [0,31]，解析器按有界 ue 读入。
+    int sps_poc_msb_cycle_len_minus1 = 0;
+    // picture_header 里在 POC 之后、msb_cycle 之前的可变段：
+    //   for (i = 0; i < sps_num_extra_ph_bytes * 8; i++)
+    //       if (sps_extra_ph_bit_present_flag[i]) ph_extra_bit[i]
+    // 数量与"哪些位真的存在"分开存 —— 只记字节数会把 msb_cycle 的起始位算错。
+    int sps_num_extra_ph_bytes = 0;
+    bool sps_extra_ph_bit_present_flag[8] = {};
+    // slice_header 里同样形态的段（sh_extra_bit），读 slice_type 之前必须精确跳过。
+    int sps_num_extra_sh_bytes = 0;
+    bool sps_extra_sh_bit_present_flag[8] = {};
 
     int sps_log2_min_luma_coding_block_size_minus2 = 0;
     bool sps_partition_constraints_override_enabled_flag = false;

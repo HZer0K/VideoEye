@@ -36,6 +36,11 @@ void FrameOrderTracker::Reset(int codec_id, int stream_index, const Options& opt
         std::get<HevcPocTracker>(impl_).Reset(stream_index, options);
         enabled_ = true;
         break;
+    case AV_CODEC_ID_VVC:
+        impl_.emplace<VvcPocTracker>();
+        std::get<VvcPocTracker>(impl_).Reset(stream_index, options);
+        enabled_ = true;
+        break;
     case AV_CODEC_ID_VP9:
         impl_.emplace<Vp9FrameOrderTracker>();
         std::get<Vp9FrameOrderTracker>(impl_).Reset(stream_index, options);
@@ -48,7 +53,7 @@ void FrameOrderTracker::Reset(int codec_id, int stream_index, const Options& opt
         break;
     default:
         impl_.emplace<std::monostate>();
-        disabled_reason_ = "该编码未实现帧级顺序追踪（当前覆盖 H.264 / HEVC / VP9 / AV1，VVC 未实现）";
+        disabled_reason_ = "该编码未实现帧级顺序追踪（当前覆盖 H.264 / HEVC / VVC / VP9 / AV1）";
         break;
     }
 }
@@ -58,6 +63,8 @@ const char* FrameOrderTracker::codec_name() const {
         return "h264";
     if (std::holds_alternative<HevcPocTracker>(impl_))
         return "hevc";
+    if (std::holds_alternative<VvcPocTracker>(impl_))
+        return "vvc";
     if (std::holds_alternative<Vp9FrameOrderTracker>(impl_))
         return "vp9";
     if (std::holds_alternative<Av1FrameOrderTracker>(impl_))
@@ -68,7 +75,8 @@ const char* FrameOrderTracker::codec_name() const {
 const char* FrameOrderTracker::order_source_name() const {
     // 与 model::FrameOrderTimeline::order_source 的取值逐字一致，
     // 这样日志、报告、UI 三处不会各造一套说法。
-    if (std::holds_alternative<H264PocTracker>(impl_) || std::holds_alternative<HevcPocTracker>(impl_))
+    if (std::holds_alternative<H264PocTracker>(impl_) || std::holds_alternative<HevcPocTracker>(impl_) ||
+        std::holds_alternative<VvcPocTracker>(impl_))
         return "poc";
     if (std::holds_alternative<Vp9FrameOrderTracker>(impl_))
         return "display_rank";
@@ -91,6 +99,8 @@ void FrameOrderTracker::SetFraming(Framing framing) {
         t->SetFraming(framing);
     else if (auto* t = std::get_if<HevcPocTracker>(&impl_))
         t->SetFraming(framing);
+    else if (auto* t = std::get_if<VvcPocTracker>(&impl_))
+        t->SetFraming(framing);
     else if (auto* t = std::get_if<Vp9FrameOrderTracker>(&impl_))
         t->SetFraming(framing);
     else if (auto* t = std::get_if<Av1FrameOrderTracker>(&impl_))
@@ -101,6 +111,8 @@ void FrameOrderTracker::SetLengthPrefixBytes(int bytes) {
     if (auto* t = std::get_if<H264PocTracker>(&impl_))
         t->SetLengthPrefixBytes(bytes);
     else if (auto* t = std::get_if<HevcPocTracker>(&impl_))
+        t->SetLengthPrefixBytes(bytes);
+    else if (auto* t = std::get_if<VvcPocTracker>(&impl_))
         t->SetLengthPrefixBytes(bytes);
     else if (auto* t = std::get_if<Vp9FrameOrderTracker>(&impl_))
         t->SetLengthPrefixBytes(bytes);
@@ -114,6 +126,8 @@ int FrameOrderTracker::Feed(const uint8_t* data, size_t size, bool has_time, dou
         return t->Feed(data, size, has_time, time_seconds, packet_index);
     if (auto* t = std::get_if<HevcPocTracker>(&impl_))
         return t->Feed(data, size, has_time, time_seconds, packet_index);
+    if (auto* t = std::get_if<VvcPocTracker>(&impl_))
+        return t->Feed(data, size, has_time, time_seconds, packet_index);
     if (auto* t = std::get_if<Vp9FrameOrderTracker>(&impl_))
         return t->Feed(data, size, has_time, time_seconds, packet_index);
     if (auto* t = std::get_if<Av1FrameOrderTracker>(&impl_))
@@ -125,6 +139,8 @@ bool FrameOrderTracker::FeedExtradata(const uint8_t* data, size_t size) {
     if (auto* t = std::get_if<H264PocTracker>(&impl_))
         return t->FeedExtradata(data, size);
     if (auto* t = std::get_if<HevcPocTracker>(&impl_))
+        return t->FeedExtradata(data, size);
+    if (auto* t = std::get_if<VvcPocTracker>(&impl_))
         return t->FeedExtradata(data, size);
     if (auto* t = std::get_if<Vp9FrameOrderTracker>(&impl_))
         return t->FeedExtradata(data, size);
@@ -138,6 +154,8 @@ const model::FrameOrderTimeline& FrameOrderTracker::Finish() {
         return t->Finish();
     if (auto* t = std::get_if<HevcPocTracker>(&impl_))
         return t->Finish();
+    if (auto* t = std::get_if<VvcPocTracker>(&impl_))
+        return t->Finish();
     if (auto* t = std::get_if<Vp9FrameOrderTracker>(&impl_))
         return t->Finish();
     if (auto* t = std::get_if<Av1FrameOrderTracker>(&impl_))
@@ -150,6 +168,8 @@ const model::FrameOrderTimeline& FrameOrderTracker::timeline() const {
         return t->timeline();
     if (const auto* t = std::get_if<HevcPocTracker>(&impl_))
         return t->timeline();
+    if (const auto* t = std::get_if<VvcPocTracker>(&impl_))
+        return t->timeline();
     if (const auto* t = std::get_if<Vp9FrameOrderTracker>(&impl_))
         return t->timeline();
     if (const auto* t = std::get_if<Av1FrameOrderTracker>(&impl_))
@@ -161,6 +181,8 @@ int FrameOrderTracker::stream_index() const {
     if (const auto* t = std::get_if<H264PocTracker>(&impl_))
         return t->stream_index();
     if (const auto* t = std::get_if<HevcPocTracker>(&impl_))
+        return t->stream_index();
+    if (const auto* t = std::get_if<VvcPocTracker>(&impl_))
         return t->stream_index();
     if (const auto* t = std::get_if<Vp9FrameOrderTracker>(&impl_))
         return t->stream_index();

@@ -907,19 +907,45 @@ void BitstreamAnalyzer::FinalizeCapability(int codec_id) {
             }
         }
         break;
-    case AV_CODEC_ID_VVC:
+    case AV_CODEC_ID_VVC: {
+        // 2026-10 起 VVC 不再一刀切判 Partial：
+        //   要 Supported 需同时满足"SPS + PPS 都在、不是解析失败、组合落在验证矩阵"。
+        //   只解到 SPS 时仍然 Partial —— VVC 的宽高有两个来源（SPS 的
+        //   sps_res_change_in_clvs_allowed_flag 允许 PPS 覆盖），没有 PPS 无法确认
+        //   最终显示尺寸，拿 SPS 值去做严格容器比对会造出假告警。
+        //   vvcC-only 保持 Partial：它只有最大尺寸，没有色彩描述。
         if (result_.parse_outcome == BitstreamParseOutcome::ParseFailed) {
             result_.capability = AnalysisCapability::Failed;
-        } else {
-            result_.capability = AnalysisCapability::Partial;
-            if (result_.vvc_sps.present) {
+            break;
+        }
+        const bool has_sps = result_.vvc_sps.present;
+        const bool has_pps = result_.vvc_pps.present;
+        // SPS 里 PTL 可能缺（单层流常只写在 VPS 里），此时退到 vvcC 的 PTL。
+        const int profile_idc = result_.vvc_sps.sps_ptl_dpb_hrd_params_present_flag
+                                    ? result_.vvc_sps.general_profile_idc
+                                    : (result_.vvc_config.present ? result_.vvc_config.general_profile_idc : 0);
+        const CapabilityGap gap = has_sps ? codec::VvcSpsGap(result_.vvc_sps, profile_idc) : CapabilityGap::None;
+        if (result_.parse_outcome == BitstreamParseOutcome::FullParse && has_sps && has_pps &&
+            gap == CapabilityGap::None) {
+            result_.capability = AnalysisCapability::Supported;
+            break;
+        }
+        result_.capability = AnalysisCapability::Partial;
+        if (has_sps) {
+            if (!has_pps) {
+                result_.capability_note = "VVC 只解析到 SPS：宽高可能被 PPS 覆盖"
+                                          "（sps_res_change_in_clvs_allowed_flag），未拿到 PPS 前不做严格比对";
+            } else {
                 result_.capability_note =
-                    "VVC 为实验性/部分支持：已解析 SPS/VPS 关键字段，PPS 与真实样本覆盖仍不完整，结果仅供参考";
-            } else if (result_.vvc_config.present) {
-                result_.capability_note = "仅有 vvcC 配置记录：位深、采样结构与最大尺寸仅供参考";
+                    codec::GapNote("VVC", gap, "general_profile_idc=" + std::to_string(profile_idc),
+                                   "chroma_format_idc=" + std::to_string(result_.vvc_sps.sps_chroma_format_idc),
+                                   std::to_string(result_.vvc_sps.BitDepthLuma()) + "bit");
             }
+        } else if (result_.vvc_config.present) {
+            result_.capability_note = "仅有 vvcC 配置记录：位深、采样结构与最大尺寸仅供参考";
         }
         break;
+    }
     default:
         result_.capability = AnalysisCapability::Unavailable;
         break;

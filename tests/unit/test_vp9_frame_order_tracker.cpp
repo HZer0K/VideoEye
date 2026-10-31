@@ -401,7 +401,7 @@ TEST(Vp9FrameOrderTrackerTest, DetailLimitTruncatesButCountsAll) {
 }
 
 // ---------------------------------------------------------------------------
-// 12) 外壳分派：VP9 建槽，未实现的编码不建
+// 12) 外壳分派：VP9 建槽，未支持的编码不建
 // ---------------------------------------------------------------------------
 TEST(Vp9FrameOrderTrackerTest, DispatcherEnablesVp9OnlyForVp9) {
     FrameOrderTracker vp9;
@@ -412,13 +412,25 @@ TEST(Vp9FrameOrderTrackerTest, DispatcherEnablesVp9OnlyForVp9) {
     // VP9 没有参数集，extradata 路径恒返回 false
     EXPECT_FALSE(vp9.FeedExtradata(nullptr, 0));
 
-    // ❗ 这里曾经拿 AV1 当"未实现"的代表，AV1 落地后本用例就红了。
-    // 唯一还没实现的编码现在是 VVC —— 别再用 AV1/VP9 互相当反例。
-    FrameOrderTracker vvc;
-    vvc.Reset(AV_CODEC_ID_VVC, 0);
-    EXPECT_FALSE(vvc.enabled());
-    EXPECT_FALSE(vvc.disabled_reason().empty());
-    EXPECT_STREQ(vvc.codec_name(), "");
+    // ❗ 反例别再用"我们以为还没实现的那个编码"：
+    //    这里先后拿 AV1、VVC 当过反例，两次都在对应能力落地当天变红。
+    //    "未支持"的语义要用一个**永远不会**进这个分派表的编码来表达。
+    FrameOrderTracker unsupported;
+    unsupported.Reset(AV_CODEC_ID_MPEG2VIDEO, 0);
+    EXPECT_FALSE(unsupported.enabled());
+    EXPECT_FALSE(unsupported.disabled_reason().empty());
+    EXPECT_STREQ(unsupported.codec_name(), "");
+
+    // 反向守护：支持清单本身也要钉住，否则上面这条"某编码不支持"的断言
+    // 会在整个分派表被清空时继续全绿。
+    const AVCodecID kEnabled[] = {AV_CODEC_ID_H264, AV_CODEC_ID_HEVC, AV_CODEC_ID_VVC, AV_CODEC_ID_VP9,
+                                  AV_CODEC_ID_AV1};
+    for (const AVCodecID id : kEnabled) {
+        FrameOrderTracker t;
+        t.Reset(id, 0);
+        EXPECT_TRUE(t.enabled()) << "codec id " << static_cast<int>(id) << " 应当支持帧序追踪";
+        EXPECT_STRNE(t.codec_name(), "");
+    }
 }
 
 // ---------------------------------------------------------------------------

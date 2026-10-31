@@ -267,6 +267,185 @@ def build_codec_truncated_avcc():
 
 
 # ---------------------------------------------------------------------------
+# 样本构造: codec/VVC (H.266)
+#
+# 为什么要单独一批: VVC 的 NAL header 是 2 字节、POC 写在 picture header 里,
+# 与 H.264/HEVC 的 slice_header 完全不同。"能跑通"在 VVC 上特别容易是假象 ——
+# 位错开一位照样能读出看起来合理的数值。这批样本只负责一件事: 让"拒绝"这条
+# 路径可复现, 而不是靠人工挑文件。
+#
+# 语法顺序以 FFmpeg libavcodec/cbs_h266_syntax_template.c 为准
+# (与 H.266 7.3.2.3/7.3.2.4/7.3.2.8/7.3.2.9 逐条对应)。
+# ---------------------------------------------------------------------------
+
+def rbsp_escape(rbsp):
+    """按 H.264/H.266 的 emulation prevention 规则插入 0x03。
+
+    ❗ 合成样本必须真的做这一步, 否则"手写位流"和"真实码流"不是同一种东西:
+    一个荒谬大的 ue(v) 会写出长串 0, 很容易在字节边界凑出 `00 00 01` —— 分析器
+    按 Annex B 找起始码时会在那里**截断 NAL**, 于是样本"被拒绝"是因为尾巴没了,
+    而不是因为我们想测的那个上界。解析器侧会做反向去转义 (GetRbsp), 所以带上
+    转义不会改变解出来的语法。
+    """
+    out = bytearray()
+    zeros = 0
+    for b in rbsp:
+        if zeros == 2 and b <= 3:
+            out.append(0x03)
+            zeros = 0
+        out.append(b)
+        zeros = zeros + 1 if b == 0 else 0
+    return bytes(out)
+
+
+def vvc_nal(nal_type, payload):
+    """Annex B 封装一个 VVC NAL: 4 字节起始码 + 2 字节 header + (已转义的) RBSP。"""
+    return b"\x00\x00\x00\x01" + bytes([0x00, (nal_type << 3) | 0x01]) + rbsp_escape(payload)
+
+
+def vvc_sps_prefix(w, subpic_info=False):
+    """按 7.3.2.3 写到 conformance_window 为止的 SPS 公共前缀。
+
+    只写帧级解析真正会读到的字段; 之后的工具开关与 VUI 与本批样本的畸形点无关。
+    """
+    w.u(4, 0)    # sps_seq_parameter_set_id
+    w.u(4, 0)    # sps_video_parameter_set_id
+    w.u(3, 0)    # sps_max_sublayers_minus1
+    w.u(2, 1)    # sps_chroma_format_idc = 4:2:0
+    w.u(2, 1)    # sps_log2_ctu_size_minus5 -> CTU 64
+    w.u(1, 0)    # sps_ptl_dpb_hrd_params_present_flag
+    w.u(1, 0)    # sps_gdr_enabled_flag
+    w.u(1, 0)    # sps_ref_pic_resampling_enabled_flag
+    w.ue(1920)   # sps_pic_width_max_in_luma_samples
+    w.ue(1080)   # sps_pic_height_max_in_luma_samples
+    w.u(1, 0)    # sps_conformance_window_flag
+    w.u(1, 1 if subpic_info else 0)  # sps_subpic_info_present_flag
+
+
+def build_codec_vvc_sps_absurd_subpic_count():
+    """VVC SPS 的 sps_num_subpics_minus1 是荒谬大的 ue(v) (10 亿, 规范上限 1024)。
+
+    subpic 数直接决定后面三个 SkipBits 循环的次数; 无界读就是 10 亿次跳过,
+    分析线程会被一个 6 字节的 SPS 拖死。期望: present=false, 且有界返回。
+
+    ❗ 这条上界的守护点在**时间域**, 不是"样本被拒"这个结果本身: 去掉上界后循环
+    次数由码流决定, 用例里的限时断言才会报警。别把"样本被拒"当成"上界被测到了" ——
+    位流在荒谬值之后本来就不够读, 尾巴耗尽同样会置错并判非法(实测把循环强行夹到
+    3 次, 样本照样被拒)。详见 test_corpus_robustness.cpp 里该用例的注释。
+    """
+    w = BitWriter()
+    vvc_sps_prefix(w, subpic_info=True)
+    w.ue(1000000000)  # sps_num_subpics_minus1
+    return vvc_nal(15, w.flush())
+
+
+def build_codec_vvc_sps_absurd_poc_msb_len():
+    """VVC SPS 的 sps_poc_msb_cycle_len_minus1 是 2^31 量级的 ue(v)。
+
+    这个值是 ph_poc_msb_cycle_val 的**位宽**; 无界读会让帧级 POC 解析去
+    `ReadBits(2147483649)` —— 结果是位流被读穿后补 0, 造出一条 POC 全 0 的
+    假时间线, 而且每一步都"成功"。期望: 整份 SPS 判非法。
+
+    ❗ 这条样本钉的是端到端"不产结论", 而不是这条上界本身: ReadUEBounded(31) 属于
+    纵深防御 —— 黑盒上观察不到差异(ReadUE 自己在 32 位前缀处就会报错, 换回去样本
+    照样被拒, 实测变异为绿)。真正防"假时间线"的是追踪器对 msb_cycle 的显式拒绝,
+    那条有专门用例(test_vvc_frame_order_tracker.cpp 的拒绝路径)。
+    """
+    w = BitWriter()
+    vvc_sps_prefix(w, subpic_info=False)
+    w.ue(2)      # sps_bitdepth_minus8 -> 10bit
+    w.u(1, 0)    # sps_entropy_coding_sync_enabled_flag
+    w.u(1, 0)    # sps_entry_point_offsets_present_flag
+    w.u(4, 8)    # sps_log2_max_pic_order_cnt_lsb_minus4 -> 12 位 lsb
+    w.u(1, 1)    # sps_poc_msb_cycle_flag
+    w.ue(2147483648)  # sps_poc_msb_cycle_len_minus1: 远超规范上限 31
+    return vvc_nal(15, w.flush())
+
+
+def build_codec_vvc_pps_absurd_tile_count():
+    """VVC PPS 的 pps_num_exp_tile_columns_minus1 是荒谬大的 ue(v)。
+
+    与 HEVC 的 tile 样本同型: 这个值决定 tile 列宽数组的读取次数,
+    裸 ReadUE() 读到 10 亿就会循环 10 亿次。
+    """
+    w = BitWriter()
+    w.u(6, 0)    # pps_pic_parameter_set_id
+    w.u(4, 0)    # pps_seq_parameter_set_id
+    w.u(1, 0)    # pps_mixed_nalu_types_in_pic_flag
+    w.ue(1920)   # pps_pic_width_in_luma_samples
+    w.ue(1080)   # pps_pic_height_in_luma_samples
+    w.u(1, 0)    # pps_conformance_window_flag
+    w.u(1, 0)    # pps_scaling_window_explicit_signalling_flag
+    w.u(1, 0)    # pps_output_flag_present_flag
+    w.u(1, 0)    # pps_no_pic_partition_flag = 0 -> 进入 tile 段
+    w.u(1, 0)    # pps_subpic_id_mapping_present_flag
+    w.u(2, 1)    # pps_log2_ctu_size_minus5
+    w.ue(1000000000)  # pps_num_exp_tile_columns_minus1
+    return vvc_nal(16, w.flush())
+
+
+def build_codec_vvc_ph_missing_pps():
+    """VVC picture header 引用了不存在的 PPS (id=63)。
+
+    POC 的位宽来自"PPS -> SPS"这条链; 链断了就只能拒绝。
+    期望: 帧级追踪不产帧、给出"没有解析到 PPS"的原因, 而不是按 0 位宽读一个 POC。
+    """
+    w = BitWriter()
+    w.u(1, 1)    # ph_gdr_or_irap_pic_flag
+    w.u(1, 0)    # ph_non_ref_pic_flag
+    w.u(1, 0)    # ph_gdr_pic_flag
+    w.u(1, 1)    # ph_inter_slice_allowed_flag
+    w.u(1, 0)    # ph_intra_slice_allowed_flag
+    w.ue(63)     # ph_pic_parameter_set_id (没有对应 PPS)
+    w.u(8, 0)    # 随便一些位, 解析器不应走到这里
+    return vvc_nal(19, w.flush())
+
+
+def build_codec_vvc_slice_truncated():
+    """slice header 里内联的 picture header 只写了一半就结束。
+
+    sh_picture_header_in_slice_header_flag=1 时 PH 直接在 slice 里; 位流在
+    ph_pic_order_cnt_lsb 之前就耗尽, 读出来的是补 0。期望: 不落帧。
+    """
+    w = BitWriter()
+    w.u(1, 1)    # sh_picture_header_in_slice_header_flag
+    w.u(1, 0)    # ph_gdr_or_irap_pic_flag
+    w.u(1, 0)    # ph_non_ref_pic_flag
+    w.u(1, 1)    # ph_inter_slice_allowed_flag
+    w.u(1, 0)    # ph_intra_slice_allowed_flag
+    w.ue(0)      # ph_pic_parameter_set_id
+    return vvc_nal(0, w.flush())  # TRAIL_NUT
+
+
+def build_codec_vvc_truncated_vvcc():
+    """截断的 vvcC: num_of_arrays=1, NAL 声明 256 字节, 实际只剩 6 字节。
+
+    ❗ 这条样本是"valid 语义"的回归: 与 avcC/av1C 一致, 截断必须
+    valid=false + 非空 error_message。旧实现只写 error_message、valid 仍为 true,
+    上层会把"全 0 的 config"当成一次成功的配置记录解析。
+    """
+    ptl = bytes([
+        0xFF,               # reserved(5) | lengthSizeMinusOne(2)=3 | ptl_present(1)
+        0x00, 0x01,         # ols_idx(9)=0 | num_sublayers(3)=0 | cfr(2)=0 | chroma(2)=1
+        0x40,               # bit_depth_minus8(3)=2 | reserved(5)
+        0x01,               # reserved(2) | num_bytes_constraint_info(6)=1
+        0x02,               # general_profile_idc(7)=1 | general_tier_flag(1)=0
+        0x33,               # general_level_idc = 51 (3.1)
+        0x80,               # frame_only(1) | multilayer(1) | constraint info(6)
+        0x00,               # num_sub_profiles = 0
+        0x07, 0x80,         # max_picture_width  = 1920
+        0x04, 0x38,         # max_picture_height = 1080
+        0x00, 0x00,         # avg_frame_rate
+    ])
+    arrays = bytes([0x01])          # num_of_arrays = 1
+    arrays += bytes([0x0F])         # completeness | reserved | NAL_unit_type = 15 (SPS)
+    arrays += bytes([0x00, 0x01])   # numNalus = 1
+    arrays += bytes([0x01, 0x00])   # nalUnitLength = 256 (实际只有 6 字节)
+    arrays += bytes([0x00, 0x00, 0x51, 0x80, 0x00, 0x40])
+    return ptl + arrays
+
+
+# ---------------------------------------------------------------------------
 # 样本构造: container/
 # ---------------------------------------------------------------------------
 
@@ -517,6 +696,13 @@ SAMPLES = {
     "codec/huge_uev.h264": build_codec_huge_uev_h264,
     "codec/truncated_avcc.bin": build_codec_truncated_avcc,
     "codec/hevc_pps_absurd_tile_count.bin": build_codec_hevc_pps_absurd_tile_count,
+    # VVC: 参数集与帧头解析的拒绝路径
+    "codec/vvc_sps_absurd_subpic_count.bin": build_codec_vvc_sps_absurd_subpic_count,
+    "codec/vvc_sps_absurd_poc_msb_len.bin": build_codec_vvc_sps_absurd_poc_msb_len,
+    "codec/vvc_pps_absurd_tile_count.bin": build_codec_vvc_pps_absurd_tile_count,
+    "codec/vvc_ph_missing_pps.bin": build_codec_vvc_ph_missing_pps,
+    "codec/vvc_slice_truncated.bin": build_codec_vvc_slice_truncated,
+    "codec/vvc_truncated_vvcc.bin": build_codec_vvc_truncated_vvcc,
 
     # container/
     "container/empty.bin": lambda: b"",

@@ -685,15 +685,22 @@ TEST(FrameOrderTrackerTest, DispatchesByCodecId) {
     EXPECT_TRUE(tracker.enabled());
     EXPECT_STREQ(tracker.codec_name(), "hevc");
     EXPECT_EQ(tracker.stream_index(), 1);
+
+    // VVC 已落地（POC 在 picture header 里，见 test_vvc_frame_order_tracker.cpp）
+    tracker.Reset(AV_CODEC_ID_VVC, 2);
+    EXPECT_TRUE(tracker.enabled());
+    EXPECT_STREQ(tracker.codec_name(), "vvc");
+    EXPECT_STREQ(tracker.order_source_name(), "poc");
 }
 
-// VVC 的显示顺序需要 picture header 里的 POC，没实现就必须明确说"没实现"，
+// 没有实现帧级顺序追踪的编码必须明确说"没实现"，
 // 不能给一条"0 帧、无重排"的假结论 —— 那种输出会让用户以为文件真的没有 B 帧。
 TEST(FrameOrderTrackerTest, UnsupportedCodecIsExplicitlyDisabled) {
     FrameOrderTracker tracker;
-    // ❗ 这个用例原先用 AV1 当反例；AV1 与 VP9 都已实现，唯一没实现的是 VVC。
-    // 以后 VVC 也落地了，就把这里换成"未知编码"，别再去挑一个已实现的编码。
-    tracker.Reset(AV_CODEC_ID_VVC, 0);
+    // ❗ 反例要挑一个**确实没实现**的编码。这里用 MPEG-2（面板支持它作为容器
+    // 里的常见编码，但帧级顺序追踪没做）；H.264/HEVC/VVC/VP9/AV1 都已实现，
+    // 别再拿它们当反例。
+    tracker.Reset(AV_CODEC_ID_MPEG2VIDEO, 0);
     EXPECT_FALSE(tracker.enabled());
     EXPECT_FALSE(tracker.disabled_reason().empty());
 

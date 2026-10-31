@@ -408,10 +408,10 @@ void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisRes
         }
     }
 
-    // ---- 帧级显示顺序追踪（H.264 / HEVC / VP9 / AV1）----
+    // ---- 帧级显示顺序追踪（H.264 / HEVC / VVC / VP9 / AV1）----
     //
     // 与参数集追踪同样是"extradata 路径也要跑"，所以放在 return 之前。
-    // 按编码分派交给 FrameOrderTracker：没有实现的编码（VVC）会
+    // 按编码分派交给 FrameOrderTracker：没有实现的编码会
     // enabled()==false，这里直接不建槽 —— 上层据 frame_order_timelines 为空
     // 把维度标成"不可用"，而不是给一条"0 帧、无重排"的假结论。
     order_trackers_.clear();
@@ -441,8 +441,8 @@ void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisRes
             order_trackers_.push_back(std::move(slot));
         }
         if (order_trackers_.empty()) {
-            LOG_INFO("帧级顺序追踪: 没有可追踪的视频轨（当前覆盖 H.264 / HEVC（POC）、VP9（显示事件序）"
-                     "与 AV1（order_hint），VVC 尚未实现）");
+            LOG_INFO("帧级顺序追踪: 没有可追踪的视频轨（当前覆盖 H.264 / HEVC / VVC（POC）、"
+                     "VP9（显示事件序）与 AV1（order_hint））");
         }
     }
 

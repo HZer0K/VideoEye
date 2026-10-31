@@ -125,8 +125,8 @@ DimensionStatus BuildFrameOrderStatus(const DimensionContext& ctx) {
         return model::MakeSkippedDimension(AnalysisDimension::FrameOrder, "帧级顺序追踪选项已关闭");
     if (timelines.empty()) {
         return model::MakeSkippedDimension(AnalysisDimension::FrameOrder,
-                                           "没有可追踪的视频轨（当前覆盖 H.264 / HEVC（POC）、VP9（显示事件序）"
-                                           "与 AV1（order_hint），VVC 尚未实现）");
+                                           "没有可追踪的视频轨（当前覆盖 H.264 / HEVC / VVC（POC）、"
+                                           "VP9（显示事件序）与 AV1（order_hint））");
     }
     DimensionStatus status;
     status.dimension = AnalysisDimension::FrameOrder;

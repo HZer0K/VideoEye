@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "core/analysis/codec/BitstreamAnalyzer.h"
+#include "core/analysis/codec/FrameOrderTracker.h"
 #include "core/analysis/container/AsfStructureAnalyzer.h"
 #include "core/analysis/container/EbmlAnalyzer.h"
 #include "core/analysis/container/FlvStructureAnalyzer.h"
@@ -165,6 +166,10 @@ TEST(CorpusRobustnessTest, AllSamplesTerminateWithBoundedResults) {
 
             videoeye::BitstreamAnalyzer bs;
             bs.Analyze(bytes.data(), bytes.size(), AV_CODEC_ID_H264);
+            // VVC 也过一遍：它的 NAL header 是 2 字节、参数集解析路径独立，
+            // 只喂 H.264 等于这条路径在语料上从没被跑过。
+            videoeye::BitstreamAnalyzer bs_vvc;
+            bs_vvc.Analyze(bytes.data(), bytes.size(), AV_CODEC_ID_VVC);
             videoeye::ExtradataParser::Parse(bytes.data(), bytes.size());
 
             const std::string text(bytes.begin(), bytes.end());
@@ -226,6 +231,132 @@ TEST(CorpusRobustnessTest, HevcPpsAbsurdTileCountIsRejected) {
     EXPECT_LT(ElapsedMs(t0), kPerSampleBudgetMs);
     EXPECT_FALSE(r.hevc_pps.present);
     EXPECT_EQ(r.hevc_pps.num_tile_columns_minus1, 0);
+}
+
+// --------------------------------------------------------------------------
+// codec/VVC: 参数集与帧头的拒绝路径
+//
+// 这几条是 VVC 帧级解析能"被信任"的前提：畸形样本要么被**整份拒绝**，要么
+// 严格回滚到"位流位置仍然确定"的那个前缀，绝不允许读出一份看起来自洽的字段。
+// 所有断言都同时限时 —— 这类缺陷的表现形式通常不是崩溃，而是解析循环失去上界。
+//
+// ❗ 注意两种口径的差别（测过就知道，别抄成一样的）：
+//    SPS 中途非法 => present=false，但**已读到的半截字段还在**；
+//    PPS 深解析非法 => present=true + 后置字段全 0 + parse_depth=SubpicIdMapping。
+//
+// ❗ 也注意这两条断言**能**证明什么、**不能**证明什么。两条 SPS 样本的守护点
+//    在上界上，但"样本被拒"这个结果并不能证明上界起作用：荒谬值之后位流本来
+//    就不够读，尾巴耗尽同样会置错判非法。实测把 `sps_num_subpics_minus1` 的守卫
+//    换成"夹到 3 次"、把 `ReadUEBounded(31)` 换回 `ReadUE()`，本用例**仍然全绿**
+//    （已跑过变异）。所以：
+//      * 上界真正的守护是这里的**限时断言**（去掉守卫会让循环次数由码流决定）与
+//        ReadUE 自身 32 位前缀的上限，不是下面的 present/Failed；
+//      * 别为了"让变异变红"去给样本加全 0 尾巴 —— 那只会让每个 ue(v) 各吃 32 位，
+//        样本反而更难读通（试过）。
+// --------------------------------------------------------------------------
+TEST(CorpusRobustnessTest, VvcAbsurdParameterSetCountsAreRejected) {
+    // 两条 SPS 样本：参数集存在但字段荒谬 → 整份判非法 → Failed。
+    const char* kSpsSamples[] = {
+        "codec/vvc_sps_absurd_subpic_count.bin",
+        "codec/vvc_sps_absurd_poc_msb_len.bin",
+    };
+    for (const char* rel : kSpsSamples) {
+        const std::vector<uint8_t> bytes = ReadBytes(rel);
+        ASSERT_FALSE(bytes.empty()) << rel;
+
+        videoeye::BitstreamAnalyzer analyzer;
+        const Clock::time_point t0 = Clock::now();
+        const videoeye::model::BitstreamAnalysisResult r =
+            analyzer.Analyze(bytes.data(), bytes.size(), AV_CODEC_ID_VVC);
+        EXPECT_LT(ElapsedMs(t0), kPerSampleBudgetMs) << rel;
+
+        // ❗ 判"被拒绝"只能看 present —— 三条参数集解析路径（H.264 / HEVC / VVC）
+        //    都是"就地解析、中途 return sps"，拒绝时**已读到的那半截字段仍在**
+        //    （这两条样本的宽高就是 1920x1080，看起来完全自洽）。
+        //    所以不要在别处拿 present==false 的参数字段当数据用；这里也**不**断言
+        //    宽高为 0，那是给一个并不存在的约定上锁。真正的守护是下面这条 Failed。
+        EXPECT_FALSE(r.vvc_sps.present) << rel;
+        // 有 SPS 输入却没解析出来 => ParseFailed => Failed（与 HEVC 同口径）
+        EXPECT_EQ(r.capability, videoeye::model::AnalysisCapability::Failed) << rel;
+        // 拒绝路径必须给出原因，否则界面上只是一个"分析失败"的空壳
+        EXPECT_FALSE(r.capability_note.empty()) << rel;
+    }
+
+    // PPS 样本：荒谬的 pps_num_exp_tile_columns_minus1。VVC 这里不是整份作废 ——
+    // tile/slice 划分段之前解出的字段（宽高、subpic id 映射）与这段无关，
+    // 落非法时的契约是「保住浅字段 + 后置字段整体回滚 + parse_depth 停在
+    // SubpicIdMapping」（见 VvcBitstreamParser.cpp 顶部那三条原则）。
+    // 对齐 HEVC 的 tile 样本"整份拒绝"会得到一个与设计不符的期望。
+    {
+        const std::vector<uint8_t> bytes = ReadBytes("codec/vvc_pps_absurd_tile_count.bin");
+        ASSERT_FALSE(bytes.empty());
+
+        videoeye::BitstreamAnalyzer analyzer;
+        const Clock::time_point t0 = Clock::now();
+        const videoeye::model::BitstreamAnalysisResult r =
+            analyzer.Analyze(bytes.data(), bytes.size(), AV_CODEC_ID_VVC);
+        EXPECT_LT(ElapsedMs(t0), kPerSampleBudgetMs);
+
+        // 浅字段可信（它们在畸形点之前，位流位置没有歧义）
+        EXPECT_TRUE(r.vvc_pps.present);
+        EXPECT_EQ(r.vvc_pps.pps_pic_width_in_luma_samples, 1920);
+        EXPECT_EQ(r.vvc_pps.pps_pic_height_in_luma_samples, 1080);
+        // 深解析失败 => 回滚到全 0，且 depth 明说"没走完"
+        EXPECT_EQ(r.vvc_pps.pps_num_exp_tile_columns_minus1, 0);
+        EXPECT_EQ(r.vvc_pps.pps_num_exp_tile_rows_minus1, 0);
+        EXPECT_FALSE(r.vvc_pps.pps_rect_slice_flag);
+        EXPECT_NE(r.vvc_pps.parse_depth, videoeye::model::VvcPpsInfo::ParseDepth::Full);
+        // PPS-only 输入落在 Partial，且原因可见
+        EXPECT_EQ(r.capability, videoeye::model::AnalysisCapability::Partial);
+        EXPECT_FALSE(r.capability_note.empty());
+    }
+}
+
+// 截断的 vvcC：与 avcC / av1C 同口径 —— valid=false 且带原因。
+// 旧实现只写 error_message、valid 仍为 true，上层会把全 0 的 config 当成
+// 一次成功的配置记录解析（详见 generate_corpus.py 里这条样本的注释）。
+TEST(CorpusRobustnessTest, VvcTruncatedVvcCIsInvalidWithReason) {
+    const std::vector<uint8_t> bytes = ReadBytes("codec/vvc_truncated_vvcc.bin");
+    ASSERT_FALSE(bytes.empty());
+
+    const videoeye::ExtradataResult parsed =
+        videoeye::ExtradataParser::ParseWithFormat(videoeye::ExtradataFormat::VvcC, bytes.data(), bytes.size());
+    EXPECT_FALSE(parsed.valid);
+    EXPECT_FALSE(parsed.error_message.empty());
+    // 未被完整读到的 NAL 不得入库（否则调用方会拿到半截 SPS 当参数集）
+    EXPECT_TRUE(parsed.nal_units.empty());
+}
+
+// 畸形 VVC 样本喂给帧级追踪器：不许产帧，也不许卡住。
+// ❗ "不崩"是不够的 —— 一条 POC 全 0 的假时间线同样会让报告说谎，
+//    所以这里钉住 frames_observed == 0。
+TEST(CorpusRobustnessTest, VvcTrackerDoesNotInventFramesFromMalformedSamples) {
+    const char* kSamples[] = {
+        "codec/vvc_sps_absurd_subpic_count.bin", "codec/vvc_sps_absurd_poc_msb_len.bin",
+        "codec/vvc_pps_absurd_tile_count.bin",   "codec/vvc_ph_missing_pps.bin",
+        "codec/vvc_slice_truncated.bin",         "codec/vvc_truncated_vvcc.bin",
+    };
+
+    for (const char* rel : kSamples) {
+        const std::vector<uint8_t> bytes = ReadBytes(rel);
+        ASSERT_FALSE(bytes.empty()) << rel;
+
+        videoeye::FrameOrderTracker tracker;
+        tracker.Reset(AV_CODEC_ID_VVC, 0);
+        ASSERT_TRUE(tracker.enabled()) << rel;
+        tracker.SetFraming(videoeye::FrameOrderTracker::Framing::AnnexB);
+
+        const Clock::time_point t0 = Clock::now();
+        tracker.Feed(bytes.data(), bytes.size(), false, 0.0, 0);
+        const videoeye::model::FrameOrderTimeline& timeline = tracker.Finish();
+        EXPECT_LT(ElapsedMs(t0), kPerSampleBudgetMs) << rel;
+
+        EXPECT_EQ(timeline.frames_observed, 0) << rel;
+        EXPECT_TRUE(timeline.frames.empty()) << rel;
+        EXPECT_FALSE(timeline.available) << rel;
+        // 不可用时必须给原因，不能空着让人猜
+        EXPECT_FALSE(timeline.unavailable_reason.empty()) << rel;
+    }
 }
 
 // --------------------------------------------------------------------------

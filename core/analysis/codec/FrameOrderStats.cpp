@@ -38,11 +38,13 @@ void ComputeFrameOrderStatistics(model::FrameOrderTimeline& timeline) {
     }
     timeline.gop_count = static_cast<int>(starts.size());
 
-    // 前导图像（HEVC 的 RADL/RASL = NAL 6..9）：它们按定义就该排在所属
+    // 前导图像（HEVC 的 RADL/RASL、VVC 的 RADL/RASL）：它们按定义就该排在所属
     // 随机接入点**之前**，所以"解码顺序里 POC 变小"是语义本身，不是 B 帧重排。
-    // H.264 的 frame entry 里 nal_unit_type 只会是 1/5，取不到 6..9，
-    // 因此这条判据对 H.264 恒不成立（那里的 6..9 是 SEI/SPS/PPS/AUD，从不入库帧）。
-    auto is_leading_picture = [](int nal_type) { return nal_type >= 6 && nal_type <= 9; };
+    //
+    // ❗ 判据取 entry.leading，由各追踪器按自己的编码填。以前这里写死
+    //    `nal_type ∈ [6,9]`，那是 HEVC 的编号；VVC 的 7/8/9 恰好是 IDR/CRA，
+    //    照抄会把每个随机接入点之后的重排整段排除，得到"没有重排"的假结论。
+    auto is_leading_picture = [](const model::FrameOrderEntry& e) { return e.leading; };
 
     // ---- 显示顺序重排 ----
     // 解码顺序里 POC 变小，就说明这一帧的显示时间早于上一帧 —— 这是 B 帧存在的
@@ -58,7 +60,7 @@ void ComputeFrameOrderStatistics(model::FrameOrderTimeline& timeline) {
     //      不排除的话一份普通的 open-GOP 文件会被报成"最大回退 16 个 POC"
     //      这种无从判断真假的值。
     for (size_t i = 1; i < f.size(); ++i) {
-        if (f[i].idr || f[i - 1].irap || is_leading_picture(f[i].nal_unit_type))
+        if (f[i].idr || f[i - 1].irap || is_leading_picture(f[i]))
             continue;
         if (f[i].poc < f[i - 1].poc) {
             ++timeline.reorder_events;

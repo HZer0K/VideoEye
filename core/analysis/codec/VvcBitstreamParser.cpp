@@ -719,7 +719,8 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
     const int tmp_height_val = CeilShift(sps.sps_pic_height_max_in_luma_samples, ctb_log2_size_y);
 
     // ---- subpicture ----
-    if (reader.ReadBit()) { // sps_subpic_info_present_flag
+    sps.sps_subpic_info_present_flag = reader.ReadBit();
+    if (sps.sps_subpic_info_present_flag) {
         sps.sps_num_subpics_minus1 = static_cast<int>(reader.ReadUE());
         // 每个 subpic 要读若干 SkipBits，最后那个 subpic_id 循环更是 × subpic 数；
         // 不封顶的话一个 ue(v) 就能把解析时间顶到无穷
@@ -762,6 +763,7 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
         // 按 H.266 u(v) 长度 1..16 封到 15，与 PPS 侧对齐。
         const int subpic_id_len_minus1 =
             static_cast<int>(reader.ReadUEBounded(static_cast<uint32_t>(kMaxSubpicIdLenMinus1)));
+        sps.sps_subpic_id_len_minus1 = subpic_id_len_minus1;
         if (reader.ReadBit()) {     // sps_subpic_id_mapping_explicitly_signalled_flag
             if (reader.ReadBit()) { // sps_subpic_id_mapping_present_flag
                 for (int i = 0; i <= sps.sps_num_subpics_minus1; ++i) {
@@ -781,13 +783,22 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
     sps.sps_log2_max_pic_order_cnt_lsb_minus4 = static_cast<int>(reader.ReadBits(4));
     sps.sps_poc_msb_cycle_flag = reader.ReadBit();
     if (sps.sps_poc_msb_cycle_flag) {
-        reader.ReadUE(); // sps_poc_msb_cycle_len_minus1
+        // 规范范围 [0,31]（ph_poc_msb_cycle_val 的位宽 = 值 + 1）。无界读会让
+        // 下游 `1 << (len + 1)` 直接 UB，也可能把一块巨大的位段当"有效 POC"。
+        sps.sps_poc_msb_cycle_len_minus1 = static_cast<int>(reader.ReadUEBounded(31));
     }
 
-    const int num_extra_ph_bytes = static_cast<int>(reader.ReadBits(2));
-    reader.SkipBits(num_extra_ph_bytes * 8);
-    const int num_extra_sh_bytes = static_cast<int>(reader.ReadBits(2));
-    reader.SkipBits(num_extra_sh_bytes * 8);
+    // extra_ph / extra_sh：每个 bit 是"这一位到底存不存在"的开关，不是 8 位数据。
+    // 以前这里一次性 SkipBits(num * 8) —— 总位宽恰好相等，但开关值丢了，
+    // 于是 PH / slice_header 里想跳这段就只能瞎猜，POC 与 slice_type 会错位。
+    sps.sps_num_extra_ph_bytes = static_cast<int>(reader.ReadBits(2));
+    for (int i = 0; i < sps.sps_num_extra_ph_bytes * 8; ++i) {
+        sps.sps_extra_ph_bit_present_flag[i] = reader.ReadBit();
+    }
+    sps.sps_num_extra_sh_bytes = static_cast<int>(reader.ReadBits(2));
+    for (int i = 0; i < sps.sps_num_extra_sh_bytes * 8; ++i) {
+        sps.sps_extra_sh_bit_present_flag[i] = reader.ReadBit();
+    }
 
     if (sps.sps_ptl_dpb_hrd_params_present_flag) {
         bool sublayer_dpb_params = false;

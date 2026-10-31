@@ -16,8 +16,8 @@
 //   TypeOnly         -> Partial       只识别出编码类型，没有可信字段
 //   ParseFailed      -> Failed        有参数集输入但解析失败（截断/畸形）
 //   FullParse        -> Supported     参数集解析成功且该编码的能力已验证
-//                     （VVC 例外：解析能跑通，但畸形码流验证不充分，
-//                       按方案 A 降为 Partial，partial=true）
+//                     （VVC 还额外要求 SPS + PPS 都在：SPS 的尺寸可能被 PPS
+//                       覆盖，只有 SPS 时不做严格容器比对，见 BitstreamAnalyzer）
 
 #include <cstdint>
 

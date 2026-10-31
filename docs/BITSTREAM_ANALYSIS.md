@@ -19,7 +19,9 @@
 - **AV1**: OBU、sequence header、color_config、`film_grain_params_present` 标志
   （只取这个布尔标志：film grain 是否启用；**不解析** film grain 的具体参数，
   详见 1.5）
-- **VVC (H.266，实验性/部分支持)**: VPS/SPS/PPS、profile tier level、VUI；PPS 为浅解析，字段仅供参考
+- **VVC (H.266)**: VPS / SPS / PPS、profile tier level、VUI；PPS 解析到 tile / slice 划分与
+  QP 段（tile 段非法时**只回滚后置字段**，浅字段保留并降 `Partial`，口径见 §2.4 与
+  `VvcBitstreamParser.cpp` 顶部的三条原则）
 
 ### 1.3 参数集从哪来：extradata 与带内
 
@@ -442,6 +444,11 @@ TEST(H264BitstreamParserTest, ParseHighProfileSPS) {
    - 容器标 8bit 但码流标 10bit 的文件
    - 验证不一致警告正确生成
 
+6. **畸形码流样本（已入库，见 §4 的 VVC 表）**
+   - `tests/corpus/` 下由 `tests/corpus/generate_corpus.py` 逐字节生成，`--check` 进 ctest
+   - 覆盖容器（MP4/FLV/ASF/EBML）、清单（HLS/DASH）、字幕、SCTE-35 与四种编码参数集
+   - 判据是"拒绝或整体回滚"，不是"没崩" —— 见 `tests/unit/test_corpus_robustness.cpp`
+
 ### 7.3 验收检查清单
 
 - [ ] H.264 avcC 封装能正确解析 profile/level/chroma/bit_depth
@@ -522,7 +529,7 @@ TEST(H264BitstreamParserTest, ParseHighProfileSPS) {
 | H.264 | SPS + PPS | avcC / AnnexB；Baseline/Main/High/High 10、4:2:0、8/10bit 组合已有规范回归与真实 x264 样本，判 `Supported`；其它组合判 `Partial` |
 | HEVC | VPS + SPS + PPS | hvcC / AnnexB；Main/Main 10/Main Rext、4:2:0、8/10bit 组合已有规范回归与真实 x265 样本，判 `Supported`；仅 VPS 或其它组合判 `Partial` |
 | AV1 | Sequence Header OBU | 走 av1C；只有 av1C（无序列头 OBU）时给位深/采样结构，判 `Partial` |
-| VVC | VPS + SPS + PPS | 实验性/部分支持；即使解析出 SPS 仍判 `Partial`，不参与严格容器比对 |
+| VVC | VPS + SPS + PPS + vvcC | SPS 与 PPS 都在、且 profile / 色度 / 位深落在已验证组合内时判 `Supported`（可参与严格比对）；只有 SPS（宽高可能被 PPS 覆盖，`sps_res_change_in_clvs_allowed_flag`）或只有 vvcC 时判 `Partial` |
 
 **能力状态**：结果里的 `parse_outcome`（`NoExtradata` / `UnsupportedCodec` /
 `TypeOnly` / `ParseFailed` / `FullParse`）与 `capability`（`Supported` / `Partial` /
@@ -532,10 +539,51 @@ TEST(H264BitstreamParserTest, ParseHighProfileSPS) {
 （几何差 `kGeometryTolerancePixels = 8` 像素以内记为 info）。`Partial` 字段仍可在
 结构树中查看，但摘要明确标“参考”，对比表不显示“一致/不一致”结论。
 
-**已知限制**：VVC 的 PPS 只读到 `subpic_id_mapping`，不解析 tile / slice 划分；
-当前真实样本只覆盖 libvvenc 640x360 / 10bit / 4:2:0 的有限组合。VVC 的宽高、位深、
-色彩字段均只供参考，正式发布不得宣传为完整支持。H.264/HEVC 的非常用 Profile、
-4:2:2/4:4:4、场编码和多子层组合仍需继续扩充真实样本矩阵。
+**帧级显示顺序（POC）**：H.264 / HEVC / VVC 走 POC，VP9 走显示事件序，AV1 走 `order_hint`。
+VVC 的 POC 不在 slice_header 里 —— 它在 **picture header（NAL 19）** 的
+`picture_header_structure()` 中，`sh_picture_header_in_slice_header_flag=1` 时内联在
+slice header 开头（规范语义：该图像只有一个 slice）。因此 VVC 的帧级追踪必须先有 PH
+再谈 slice，`FrameOrderTracker` 的 VVC 槽位遵守三条硬规则：
+
+1. **地址宽度不猜**：`sh_slice_address` / `sh_subpic_id` 的位宽由 tile / slice 划分决定，
+   现有 PPS 字段不足以反推时，只给 POC，slice_type 记未知（`other_count`），**不按猜出来的
+   宽度读** —— 猜错的后果是 I/P/B 计数整体偏移且没有任何报错。
+2. **MSB cycle 不支持就拒绝**：SPS 置了 `sps_poc_msb_cycle_flag` 时明确返回"未验证该路径，
+   拒绝给出显示顺序"，而不是回落成一条 POC 全 0 的假时间线。
+3. **复位只认首次触发**：IDR 恒 NoRasl；CRA / GDR 只在"首幅图或 EOS 之后"才复位
+   （H.266 8.1.3），中途 CRA 不清 POC —— 清早了后面整条时间线都偏一个回绕周期。
+   前导图像由追踪器逐帧填 `FrameOrderEntry::leading`（VVC 是 RADL=2 / RASL=3），
+   统计侧不再按 `nal_unit_type ∈ [6,9]` 判区间（那是 HEVC 的编号，套到 VVC 上会把
+   随机接入点之后的重排整段吞掉）。
+
+**已知限制**：VVC 的宽高、位深、色彩字段在 `capability == Supported` 时可按正式结论使用，
+但真实样本目前只覆盖 libvvenc 640x360 / 10bit / 4:2:0 的有限组合，其它 profile 组合
+（`IsValidatedVvcProfile` 之外的、多层/多子层、4:2:2/4:4:4）仍只判 `Partial`，
+正式发布不得宣传为"完整支持 H.266"。VVC 的 POC MSB cycle 路径**未实现**（上一条规则 2）。
+H.264/HEVC 的非常用 Profile、4:2:2/4:4:4、场编码和多子层组合仍需继续扩充真实样本矩阵。
+
+畸形样本（`tests/corpus/codec/vvc_*.bin`，由 `generate_corpus.py` 逐字节生成）钉住
+"拒绝或整体回滚"的口径，测试在 `tests/unit/test_corpus_robustness.cpp`：
+
+| 样本 | 畸形点 | 期望 |
+|------|--------|------|
+| `vvc_sps_absurd_subpic_count.bin` | `sps_num_subpics_minus1` = 10 亿 | SPS 整份非法（否则 SkipBits 循环跑 10 亿次） |
+| `vvc_sps_absurd_poc_msb_len.bin` | `sps_poc_msb_cycle_len_minus1` ≈ 2^31 | SPS 整份非法（否则下游 `1 << len` 直接 UB） |
+| `vvc_pps_absurd_tile_count.bin` | `pps_num_exp_tile_columns_minus1` = 10 亿 | 深解析放弃 + 后置字段回滚到 0 + `parse_depth` 停在 SubpicIdMapping，浅字段保留 |
+| `vvc_ph_missing_pps.bin` | PH 引用不存在的 PPS | 追踪器不产帧，并给出"没有解析到 PPS"的原因 |
+| `vvc_slice_truncated.bin` | 内联 PH 只写一半 | 不产帧（不按补 0 造出一个 POC=0 的假帧） |
+| `vvc_truncated_vvcc.bin` | vvcC 声明的 NAL 长度超出载荷 | `valid=false` + 非空原因 + 不入库任何 NAL |
+
+整批 VVC 样本都做了 **emulation prevention**（`00 00` 后跟 ≤0x03 时插 0x03）。
+这不是洁癖：一个荒谬大的 `ue(v)` 写出的长串 0 会在**字节层**凑出 `00 00 01`，
+Annex B 扫描在那里就把 NAL 截断了 —— 样本"被拒绝"的真实原因会变成"尾巴没了"，
+而不是我们要测的那个上界。
+
+同样要留心的还有**断言能证明什么**。上界类守护（`kMaxNumSubpics`、
+`ReadUEBounded(31)`）即便被删掉，这两条样本依旧被拒（位流本来就不够读），所以
+"样本被拒"不能当作"上界被测到了"：它们真正的守护是用例里的限时断言，
+以及 `BitReader::ReadUE` 自身 32 位前缀的上限。变异验证的结论按此口径记录，
+不要为了让用例变红去给样本塞全 0 尾巴（那会让每个 `ue(v)` 各吃 32 位，样本更难读通）。
 
 当前已入库的真实编码器回归样本：
 
@@ -574,11 +622,14 @@ TEST(H264BitstreamParserTest, ParseHighProfileSPS) {
 7. `core/domain/model/AnalysisOptions.h` + `core/domain/model/AnalysisResult.h` - 扩展（已添加 bitstream_analysis 字段）
 8. `ui/bitstream_panel/BitstreamPanel.h` - UI 组件框架
 
-9. `core/media/codec/ExtradataParser.cpp` - 封装格式识别实现（avcC / hvcC / av1C）
+9. `core/media/codec/ExtradataParser.cpp` - 封装格式识别实现（avcC / hvcC / av1C / vvcC）
 10. `core/analysis/codec/Av1BitstreamParser.h/.cpp` - AV1 解析器
-11. `core/analysis/codec/VvcBitstreamParser.h/.cpp` - VVC 解析器（VPS/SPS/PPS；PPS 为浅解析，止于 subpic id mapping）
-12. `ui/bitstream_panel/BitstreamPanel.cpp` - UI 实现
-13. `tests/unit/test_h264_bitstream_parser.cpp`、`tests/unit/test_hevc_bitstream_parser.cpp` - 单元测试
+11. `core/analysis/codec/VvcBitstreamParser.h/.cpp` - VVC 解析器（VPS/SPS/PPS；PPS 读到 tile / slice 划分与 QP 段）
+12. `core/analysis/codec/VvcPocTracker.h/.cpp` - VVC 帧级显示顺序追踪（PH → POC）
+13. `core/analysis/codec/FrameOrderTracker.h/.cpp` - 按编码分派（H.264 / HEVC / VVC / VP9 / AV1）
+14. `ui/bitstream_panel/BitstreamPanel.cpp` - UI 实现
+15. `tests/unit/test_h264_bitstream_parser.cpp`、`tests/unit/test_hevc_bitstream_parser.cpp`、
+    `tests/unit/test_vvc_frame_order_tracker.cpp` - 单元测试
 
 ---
 

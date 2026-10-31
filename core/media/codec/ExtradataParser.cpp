@@ -777,6 +777,7 @@ ExtradataResult ExtradataParser::ParseVvcC(const uint8_t* data, size_t size) {
     //   每组: byte(completeness|reserved(2)|NAL_unit_type(5)) [u16 numNalus]
     //         + numNalus × (u16 length + payload)
     if (size < 1) {
+        result.valid = false;
         result.error_message = "vvcC too small";
         return result;
     }
@@ -790,6 +791,7 @@ ExtradataResult ExtradataParser::ParseVvcC(const uint8_t* data, size_t size) {
 
     if (ptl_present) {
         if (pos + 2 > end) {
+            result.valid = false;
             result.error_message = "vvcC truncated (ols/sublayers/chroma)";
             return result;
         }
@@ -799,6 +801,7 @@ ExtradataResult ExtradataParser::ParseVvcC(const uint8_t* data, size_t size) {
         result.config.chroma_format_idc = ols_field & 0x03;
 
         if (pos >= end) {
+            result.valid = false;
             result.error_message = "vvcC truncated (bit depth)";
             return result;
         }
@@ -806,6 +809,7 @@ ExtradataResult ExtradataParser::ParseVvcC(const uint8_t* data, size_t size) {
         ++pos;
 
         if (pos >= end) {
+            result.valid = false;
             result.error_message = "vvcC truncated (constraint info size)";
             return result;
         }
@@ -813,6 +817,7 @@ ExtradataResult ExtradataParser::ParseVvcC(const uint8_t* data, size_t size) {
         ++pos;
 
         if (pos + 2 > end) {
+            result.valid = false;
             result.error_message = "vvcC truncated (profile/level)";
             return result;
         }
@@ -828,6 +833,7 @@ ExtradataResult ExtradataParser::ParseVvcC(const uint8_t* data, size_t size) {
             constraint_bits = 0;
         const int ptl_bits = 2 + constraint_bits;
         if (pos + (ptl_bits + 7) / 8 > end) {
+            result.valid = false;
             result.error_message = "vvcC truncated (constraint bits)";
             return result;
         }
@@ -835,6 +841,7 @@ ExtradataResult ExtradataParser::ParseVvcC(const uint8_t* data, size_t size) {
 
         if (result.config.num_sublayers > 1) {
             if (pos >= end) {
+                result.valid = false;
                 result.error_message = "vvcC truncated (sublayer flags)";
                 return result;
             }
@@ -843,6 +850,7 @@ ExtradataResult ExtradataParser::ParseVvcC(const uint8_t* data, size_t size) {
                 const bool present = ((flags >> i) & 0x01) != 0;
                 if (present) {
                     if (pos >= end) {
+                        result.valid = false;
                         result.error_message = "vvcC truncated (sublayer level)";
                         return result;
                     }
@@ -852,17 +860,20 @@ ExtradataResult ExtradataParser::ParseVvcC(const uint8_t* data, size_t size) {
         }
 
         if (pos >= end) {
+            result.valid = false;
             result.error_message = "vvcC truncated (num_sub_profiles)";
             return result;
         }
         const int num_sub_profiles = *pos++;
         if (pos + static_cast<size_t>(num_sub_profiles) * 4 > end) {
+            result.valid = false;
             result.error_message = "vvcC truncated (sub profiles)";
             return result;
         }
         pos += static_cast<size_t>(num_sub_profiles) * 4;
 
         if (pos + 6 > end) {
+            result.valid = false;
             result.error_message = "vvcC truncated (max picture size)";
             return result;
         }
@@ -872,6 +883,7 @@ ExtradataResult ExtradataParser::ParseVvcC(const uint8_t* data, size_t size) {
     }
 
     if (pos >= end) {
+        result.valid = false;
         result.error_message = "vvcC truncated (num_of_arrays)";
         return result;
     }
@@ -880,27 +892,41 @@ ExtradataResult ExtradataParser::ParseVvcC(const uint8_t* data, size_t size) {
     result.height = result.config.max_picture_height;
 
     for (int i = 0; i < num_of_arrays; ++i) {
-        if (pos >= end)
+        if (pos >= end) {
+            // 声明了 num_of_arrays 却提前没数据：必须写原因 + 判无效，
+            // 不能像旧实现那样静默 break —— 上层看到的会是"配置记录有效但数组为空"。
+            result.valid = false;
+            result.error_message = "vvcC truncated (num_of_arrays exceeds payload)";
             break;
+        }
         const uint8_t array_header = *pos++;
         const uint8_t nal_type = array_header & 0x1F;
 
         // DCI(13) / OPI(12) 组不带 numNalus 字段，固定 1 个
         int num_nalus = 1;
         if (nal_type != 13 && nal_type != 12) {
-            if (pos + 2 > end)
+            if (pos + 2 > end) {
+                result.valid = false;
+                result.error_message = "vvcC truncated (nal array header)";
                 break;
+            }
             num_nalus = static_cast<int>(BytesToUint16BE(pos));
             pos += 2;
         }
 
         for (int j = 0; j < num_nalus; ++j) {
-            if (pos + 2 > end)
+            if (pos + 2 > end) {
+                result.valid = false;
+                result.error_message = "vvcC truncated (nal length)";
                 break;
+            }
             const uint16_t nal_length = BytesToUint16BE(pos);
             pos += 2;
-            if (pos + nal_length > end)
+            if (pos + nal_length > end) {
+                result.valid = false;
+                result.error_message = "vvcC truncated (nal array payload)";
                 break;
+            }
 
             // 与 AnnexB 路径一致：只保留 RBSP payload（剥掉 2 字节 NAL header）
             NalUnit nal = ParseVvcNalUnit(pos, nal_length);

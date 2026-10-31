@@ -381,6 +381,9 @@ void HevcPocTracker::PushFrame(const PictureHead& head, int64_t poc, bool has_ti
     entry.slice_type = head.slice_type;
     entry.idr = head.idr;
     entry.irap = head.irap;
+    // RADL(6..9) 是前导图像：POC 天生小于所属 IRAP，统计里要排除。
+    // 由这里落值而不是让 FrameOrderStats 按类型区间猜 —— VVC 的同号类型含义完全不同。
+    entry.leading = head.nal_unit_type >= 6 && head.nal_unit_type <= 9;
     entry.frame_num = 0; // HEVC 没有 frame_num
     entry.poc = poc;
     entry.packet_index = packet_index;

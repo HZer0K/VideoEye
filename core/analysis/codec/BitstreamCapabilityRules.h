@@ -29,6 +29,7 @@
 #include "core/domain/model/Av1BitstreamInfo.h"
 #include "core/domain/model/H264BitstreamInfo.h"
 #include "core/domain/model/HevcBitstreamInfo.h"
+#include "core/domain/model/VvcBitstreamInfo.h"
 
 namespace videoeye {
 // 具名子命名空间必须跟目录走（scripts/audit_namespace_layout.py 的 R3），
@@ -120,6 +121,21 @@ inline bool IsValidatedAv1Profile(int seq_profile) {
     return seq_profile >= 0 && seq_profile <= 2;
 }
 
+// VVC general_profile_idc 是**位组合**（不是递增枚举）：
+//   1 = Main 10、+32 = 4:4:4、+64 = Still Picture ⇒ 1/33/65/97 四个合法组合。
+// 其余组合（含 scalable / multilayer 那几档）没有样本矩阵，不放行。
+inline bool IsValidatedVvcProfile(int general_profile_idc) {
+    switch (general_profile_idc) {
+    case 1:
+    case 33:
+    case 65:
+    case 97:
+        return true;
+    default:
+        return false;
+    }
+}
+
 // ---- 组合判据 ----
 
 inline CapabilityGap H264ProfileGap(int profile_idc) {
@@ -157,6 +173,24 @@ inline CapabilityGap Av1SeqGap(const model::Av1SequenceHeaderInfo& sh) {
     if (!IsValidatedBitDepth(sh.BitDepth()))
         return CapabilityGap::BitDepth;
     return CapabilityGap::None;
+}
+
+// VVC 的 profile 可能不在 SPS 里：单层码流常把 PTL 只放 VPS，而 MP4 的 extradata
+// 只有 vvcC。所以 profile 由调用方给 —— SPS 带 PTL 就用 SPS 的，否则退到 vvcC。
+// ❗ 不要在这里 `sps.general_profile_idc == 0` 时自己猜：0 是"没有这个信息"，
+//    不是 Main 10。
+inline CapabilityGap VvcSpsGap(const model::VvcSpsInfo& sps, int general_profile_idc) {
+    if (!IsValidatedVvcProfile(general_profile_idc))
+        return CapabilityGap::Profile;
+    if (!IsValidatedChromaFormat(sps.sps_chroma_format_idc))
+        return CapabilityGap::ChromaFormat;
+    if (!IsValidatedBitDepth(sps.BitDepthLuma()))
+        return CapabilityGap::BitDepth;
+    return CapabilityGap::None;
+}
+
+inline CapabilityGap VvcSpsGap(const model::VvcSpsInfo& sps) {
+    return VvcSpsGap(sps, sps.general_profile_idc);
 }
 
 // 向后兼容的布尔包装（老调用点形态）

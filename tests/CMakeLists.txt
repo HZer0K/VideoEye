@@ -938,6 +938,23 @@ target_link_libraries(test_vvc_bitstream_parser PRIVATE VideoEyeCodec)
 add_test(NAME VvcBitstreamParserTests COMMAND test_vvc_bitstream_parser)
 
 # =================================================
+# 测试 20-B：VVC 帧级显示顺序（picture header 里的 POC）
+# 说明: VVC 的 POC 不在 slice_header 里，而在 PH（NAL 19）里，或内联在
+#       slice header 开头。合成样本按 H.266 7.3.2.8 / 7.3.2.9 / 8.3.1 /
+#       8.1.3 逐位构造，重点钉住四件事：
+#         * PH 开头两位无条件存在、pps_id 是 ue(v)；
+#         * IDR 也有 ph_pic_order_cnt_lsb（与 HEVC 相反）；
+#         * 中间的 CRA 不复位 POC；前导图像（RADL/RASL=2/3）不算重排；
+#         * 地址宽度不可证为 0 时 slice_type 记未知，不猜。
+#       畸形码流另有一组确定性语料（tests/corpus/codec/vvc_*.bin）。
+# =================================================
+videoeye_add_test(test_vvc_frame_order_tracker
+    unit/test_vvc_frame_order_tracker.cpp
+)
+target_link_libraries(test_vvc_frame_order_tracker PRIVATE VideoEyeAnalysis)
+add_test(NAME VvcFrameOrderTrackerTests COMMAND test_vvc_frame_order_tracker)
+
+# =================================================
 # 测试 23-B：VP9 码流解析（关键帧 uncompressed header）
 # 说明: VP9 没有参数集，序列配置写在关键帧头部；测试数据由测试文件内的
 #       逐位 BitWriter 按规范 6.2 生成，不参考 parser 实现。

@@ -416,8 +416,10 @@ TEST(BitstreamAnalyzerTest, VvcTruncatedConfigRecordIsParseFailedNotFullParse) {
     EXPECT_FALSE(r.capability_note.empty());
 }
 
-// VVC 即使解析出真实编码器 SPS 也保持 Partial：当前 PPS 和样本矩阵仍不完整。
-TEST(BitstreamAnalyzerTest, VvcFullParseWithSpsRemainsPartial) {
+// VVC 从"一刀切 Partial"改为按证据分级：SPS + PPS 都解出来、组合落在验证过的
+// Profile/色度/位深矩阵里，才判 Supported（2026-10 起，配套畸形语料
+// tests/corpus/codec/vvc_*.bin 与 test_vvc_frame_order_tracker.cpp）。
+TEST(BitstreamAnalyzerTest, VvcFullParseWithSpsAndPpsIsSupported) {
     BitstreamAnalyzer analyzer; // 不设容器 metadata：只验能力状态
     const BitstreamAnalysisResult r =
         analyzer.Analyze(kVvcCRealLibvvenc.data(), kVvcCRealLibvvenc.size(), AV_CODEC_ID_VVC);
@@ -425,16 +427,16 @@ TEST(BitstreamAnalyzerTest, VvcFullParseWithSpsRemainsPartial) {
     EXPECT_TRUE(r.analyzed);
     EXPECT_TRUE(r.has_vvc);
     ASSERT_TRUE(r.vvc_sps.present);
+    ASSERT_TRUE(r.vvc_pps.present); // 缺 PPS 时尺寸可能被覆盖，能力必须留在 Partial
     EXPECT_EQ(r.parse_outcome, BitstreamParseOutcome::FullParse);
-    EXPECT_EQ(r.capability, AnalysisCapability::Partial);
-    EXPECT_TRUE(r.partial);
-    EXPECT_FALSE(r.capability_note.empty());
+    EXPECT_EQ(r.capability, AnalysisCapability::Supported);
+    EXPECT_FALSE(r.partial);
     EXPECT_EQ(r.width, 640);
     EXPECT_EQ(r.height, 360);
     EXPECT_EQ(r.bit_depth, 10);
 }
 
-// 容器与真实码流一致时没有告警；能力仍必须明确保持 Partial。
+// 容器与真实码流一致时没有告警（能力已升为 Supported，字段参与严格比对）。
 TEST(BitstreamAnalyzerTest, VvcMatchingContainerReportsNoInconsistency) {
     ContainerMetadata meta;
     meta.codec_name = "vvc";
@@ -446,14 +448,16 @@ TEST(BitstreamAnalyzerTest, VvcMatchingContainerReportsNoInconsistency) {
     const BitstreamAnalysisResult r =
         analyzer.Analyze(kVvcCRealLibvvenc.data(), kVvcCRealLibvvenc.size(), AV_CODEC_ID_VVC);
 
-    EXPECT_EQ(r.capability, AnalysisCapability::Partial);
+    EXPECT_EQ(r.capability, AnalysisCapability::Supported);
     EXPECT_FALSE(HasField(r, "Width"));
     EXPECT_FALSE(HasField(r, "Height"));
     EXPECT_FALSE(HasField(r, "Bit Depth"));
 }
 
-// 即使容器故意报错，VVC Partial 能力也不做严格一致性判断，避免假告警。
-TEST(BitstreamAnalyzerTest, VvcContainerMismatchSkipsStrictComparison) {
+// 反例：能力升为 Supported 之后，容器报的尺寸/位深与码流不一致就必须**看得见**。
+// 这条同时兜住"能力升级了但比对开关没跟上"——那种情况下面板会显示
+// Supported 却对明显的不一致保持沉默。
+TEST(BitstreamAnalyzerTest, VvcContainerMismatchIsReportedWhenSupported) {
     ContainerMetadata meta;
     meta.codec_name = "vvc";
     meta.width = 1920;
@@ -464,10 +468,10 @@ TEST(BitstreamAnalyzerTest, VvcContainerMismatchSkipsStrictComparison) {
     const BitstreamAnalysisResult r =
         analyzer.Analyze(kVvcCRealLibvvenc.data(), kVvcCRealLibvvenc.size(), AV_CODEC_ID_VVC);
 
-    EXPECT_EQ(r.capability, AnalysisCapability::Partial);
-    EXPECT_FALSE(HasField(r, "Width"));
-    EXPECT_FALSE(HasField(r, "Height"));
-    EXPECT_FALSE(HasField(r, "Bit Depth"));
+    ASSERT_EQ(r.capability, AnalysisCapability::Supported);
+    EXPECT_TRUE(HasField(r, "Width"));
+    EXPECT_TRUE(HasField(r, "Height"));
+    EXPECT_TRUE(HasField(r, "Bit Depth"));
 }
 
 // 位深来源不可信时不许误报：vvcC-only（Partial，位深只有配置记录兜底）即便与

@@ -625,10 +625,17 @@ TEST(Av1FrameOrderTracker, DispatcherSelectsAv1) {
 }
 
 TEST(Av1FrameOrderTracker, DispatcherRejectsUnimplementedCodec) {
+    // ❗ 这里原来拿 VVC 当"未实现"的代表（VVC 帧级解析落地后它必然红）。
+    //    "未支持"要用一个永远不会进分派表的编码表达：支持清单只会变长，
+    //    拿"当前最后一个没做的"当反例，每次补一个能力就要改一条无关的用例。
     FrameOrderTracker tracker;
-    tracker.Reset(AV_CODEC_ID_VVC, 0);
+    tracker.Reset(AV_CODEC_ID_MPEG2VIDEO, 0);
     EXPECT_FALSE(tracker.enabled());
-    EXPECT_NE(tracker.disabled_reason().find("VVC"), std::string::npos);
+    EXPECT_FALSE(tracker.disabled_reason().empty());
+    // 原因要能让用户知道"换个能做的期待"，也就是必须列出当前覆盖的编码；
+    // 光写一句"未实现"等于什么都没说（曾经就是这样）。
+    EXPECT_NE(tracker.disabled_reason().find("H.264"), std::string::npos) << tracker.disabled_reason();
+    EXPECT_NE(tracker.disabled_reason().find("VVC"), std::string::npos) << tracker.disabled_reason();
 }
 
 TEST(Av1FrameOrderTracker, OrderSourceNameFollowsSequenceHeader) {

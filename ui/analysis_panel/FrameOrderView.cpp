@@ -94,9 +94,10 @@ void FrameOrderView::RebuildTable() {
             row.decode_index = QString::number(static_cast<qulonglong>(i));
             const char type_char = entry.TypeChar();
             row.type = QString::fromLatin1(&type_char, 1) + (entry.idr ? QStringLiteral("(IDR)") : QString());
-            // HEVC 没有 frame_num 这个字段（模型里恒 0）。直接印 0 会被读成
-            // "所有帧的 frame_num 都是 0"，所以按"这条轨是 HEVC"显示成 "-"。
-            row.frame_num = (timeline.codec == "hevc") ? QStringLiteral("-") : QString::number(entry.frame_num);
+            // HEVC / VVC 都没有 frame_num 这个字段（模型里恒 0）。直接印 0 会被读成
+            // "所有帧的 frame_num 都是 0"，所以按编码显示成 "-"。
+            row.frame_num = (timeline.codec == "hevc" || timeline.codec == "vvc") ? QStringLiteral("-")
+                                                                                  : QString::number(entry.frame_num);
             row.poc = QString::number(static_cast<qlonglong>(entry.poc));
             row.position = tr("包 %1").arg(static_cast<qlonglong>(entry.packet_index));
             if (entry.has_time)

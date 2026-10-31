@@ -43,6 +43,14 @@ struct FrameOrderEntry {
     // 它们的 POC 本来就在 CRA 之前 —— 那不是"B 帧重排"，据 idr 之外再看这一位，
     // 才能把"IRAP 后面的第一处 POC 回退"排除在重排统计之外。
     bool irap = false;
+    // 前导图像（HEVC 的 RADL/RASL = NAL 6..9；VVC 的 RADL/RASL = NAL 2/3）。
+    // 它们的 POC 按定义就小于所属随机接入点，解码顺序里"POC 变小"是语义本身，
+    // 不是 B 帧重排 —— 统计时必须排除。
+    //
+    // ❗ 由各追踪器按自己的编码填，**不要**在统计里按 nal_unit_type 判区间：
+    //    VVC 的 7/8/9 是 IDR/CRA，套用 HEVC 的 [6,9] 会把每个随机接入点之后的
+    //    重排统计整段吞掉，而且看起来"这份文件没有 B 帧重排"。
+    bool leading = false;
     int frame_num = 0; // H.264 的 frame_num；HEVC 没有这个字段，恒为 0
     int64_t poc = 0;   // 显示顺序值（小于 0 是正常的：POC 可以回绕到负值）
     int64_t packet_index = -1;
