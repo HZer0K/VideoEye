@@ -205,3 +205,132 @@ TEST(AudioQcRulesTest, AudioIssuesLowerTheScore) {
     const model::QcReport loud_report = engine.Evaluate(loud);
     EXPECT_LT(loud_report.score, quiet_report.score);
 }
+
+// ---------------------------------------------------------------------------
+// 多音轨（R2）：次轨的问题必须出现在 QC 结论里，并带自己的 stream_index。
+//
+// 以前规则只读 result.audio_qc（主轨兼容字段），构造"主轨正常、次轨 100 个削波
+// 样本"时 secondary_clipping_issues=0、verdict=通过 —— 次轨等于没检查。
+// ---------------------------------------------------------------------------
+TEST(AudioQcRulesTest, SecondaryTrackClippingIsReportedWithItsStreamIndex) {
+    model::AnalysisResult result;
+    result.file_path = "multi_audio.mkv";
+    result.primary_audio_stream_index = 1;
+    for (int index : {1, 2}) {
+        model::StreamDigest audio;
+        audio.index = index;
+        audio.media_type = 1; // AVMEDIA_TYPE_AUDIO
+        audio.sample_rate = kSampleRate;
+        audio.channels = 2;
+        result.streams.push_back(audio);
+    }
+
+    model::AudioQcResult primary;
+    primary.analyzed = true;
+    primary.coverage_ratio = 1.0;
+    primary.completeness = model::AudioQcResult::Completeness::Complete;
+
+    model::AudioQcResult secondary;
+    secondary.analyzed = true;
+    secondary.coverage_ratio = 1.0;
+    secondary.completeness = model::AudioQcResult::Completeness::Complete;
+    secondary.clipping_sample_count = 100;
+    secondary.clipping_event_count = 1;
+
+    result.audio_qc = primary; // 主轨兼容字段：正常
+    result.audio_qc_streams = {primary, secondary};
+    result.audio_qc_stream_indices = {1, 2};
+    result.audio_qc_tracks_analyzed = 2;
+    result.audio_qc_tracks_total = 2;
+
+    videoeye::qc::QcRuleEngine engine;
+    const model::QcReport report = engine.Evaluate(result);
+
+    model::DiagnosticIssue issue;
+    ASSERT_TRUE(HasIssue(report, "audio.clipping", &issue)) << "次轨削波未进入 QC 结论";
+    EXPECT_EQ(issue.stream_index, 2) << "问题必须标在真正削波的那条轨上";
+    EXPECT_NE(issue.detail.find("流 #2"), std::string::npos) << "多轨时明细要说明是哪条流";
+    EXPECT_GT(issue.metric_value, 90.0);
+}
+
+// ---------------------------------------------------------------------------
+// 全部解码失败（R3）：analyzed=false 不是"跳过判定"的理由。
+// 以前 audio.qc.incomplete 和响度规则共用 if (!qc.analyzed) return，
+// 一条 PCM 都没拿到时失败被"没有足够数据判响度"顺带屏蔽了。
+// ---------------------------------------------------------------------------
+TEST(AudioQcRulesTest, AllDecodeFailuresTriggerIncompleteRule) {
+    model::AnalysisResult result;
+    result.file_path = "broken_audio.mp4";
+    model::StreamDigest audio;
+    audio.index = 1;
+    audio.media_type = 1;
+    result.streams.push_back(audio);
+
+    result.audio_qc.analyzed = false;
+    result.audio_qc.completeness = model::AudioQcResult::Completeness::Failed;
+    result.audio_qc_tracks_analyzed = 0;
+    result.audio_qc_tracks_total = 1;
+
+    videoeye::qc::QcRuleEngine engine;
+    const model::QcReport report = engine.Evaluate(result);
+    EXPECT_TRUE(HasIssue(report, "audio.qc.incomplete")) << "全部解码失败时必须报不完整，不能静默通过";
+}
+
+// ---------------------------------------------------------------------------
+// 维度级结论（R3）：规则没命中 ≠ 完整通过。
+// ---------------------------------------------------------------------------
+TEST(AudioQcRulesTest, FailedDimensionForcesNonPassVerdict) {
+    model::AnalysisResult result;
+    result.file_path = "dimension_failed.wav";
+    // 基线先做成"干净通过"：时长/流齐全，避免 container.duration_invalid 之类的
+    // Critical 提前把结论打成"不通过"，那样这条用例就测不出维度降级了。
+    result.duration_seconds = 10.0;
+    result.container_format = "wav";
+    model::StreamDigest video;
+    video.index = 0;
+    video.media_type = 0; // AVMEDIA_TYPE_VIDEO
+    result.streams.push_back(video);
+    model::StreamDigest audio;
+    audio.index = 1;
+    audio.media_type = 1; // AVMEDIA_TYPE_AUDIO
+    audio.sample_rate = kSampleRate;
+    audio.channels = 2;
+    result.streams.push_back(audio);
+
+    model::DimensionStatus status;
+    status.dimension = model::AnalysisDimension::AudioQc;
+    status.executed = true;
+    status.capability = model::AnalysisCapability::Failed;
+    result.SetDimension(status);
+
+    videoeye::qc::QcRuleEngine engine;
+    const model::QcReport report = engine.Evaluate(result);
+    EXPECT_EQ(report.verdict, "不通过") << "维度 Failed 时不能给出通过结论";
+}
+
+TEST(AudioQcRulesTest, PartialDimensionDowngradesPassVerdict) {
+    model::AnalysisResult result;
+    result.file_path = "dimension_partial.wav";
+    result.duration_seconds = 10.0;
+    result.container_format = "wav";
+    model::StreamDigest video;
+    video.index = 0;
+    video.media_type = 0;
+    result.streams.push_back(video);
+    model::StreamDigest audio;
+    audio.index = 1;
+    audio.media_type = 1;
+    audio.sample_rate = kSampleRate;
+    audio.channels = 2;
+    result.streams.push_back(audio);
+
+    model::DimensionStatus status;
+    status.dimension = model::AnalysisDimension::AudioQc;
+    status.executed = true;
+    status.capability = model::AnalysisCapability::Partial;
+    result.SetDimension(status);
+
+    videoeye::qc::QcRuleEngine engine;
+    const model::QcReport report = engine.Evaluate(result);
+    EXPECT_EQ(report.verdict, "警告") << "维度 Partial 时不能继续给「通过」";
+}

@@ -122,9 +122,9 @@ void DiagnosticsIssueView::SetupUi() {
     QSplitter* body = new QSplitter(Qt::Vertical, this);
 
     chart_ = new MetricChartWidget(body);
-    chart_->SetTitle(tr("逐秒码率 / 帧率"));
+    chart_->SetTitle(tr("逐秒码率 / 视频包率"));
     bitrate_series_ = chart_->AddLineSeries(tr("码率 (kbps)"), QColor("#1e88e5"));
-    fps_series_ = chart_->AddLineSeries(tr("帧率 (fps)"), QColor("#43a047"));
+    fps_series_ = chart_->AddLineSeries(tr("视频包率 (pkt/s, 估算)"), QColor("#43a047"));
     axis_x_ = chart_->AxisX();
     axis_bitrate_ = chart_->AxisY(); // 左轴
     axis_fps_ = chart_->AxisY2();    // 右轴
@@ -132,7 +132,7 @@ void DiagnosticsIssueView::SetupUi() {
     chart_->AttachAxis(fps_series_, axis_fps_);
     axis_x_->SetTitleText(tr("时间 (s)"));
     axis_bitrate_->SetTitleText(tr("kbps"));
-    axis_fps_->SetTitleText(tr("fps"));
+    axis_fps_->SetTitleText(tr("pkt/s"));
     chart_->setMinimumHeight(150);
     body->addWidget(chart_);
 

@@ -66,6 +66,18 @@ public:
         return fmt_;
     }
 
+    // 逐包扫描阶段需要重新武装 IO 空闲截止时间（网络源）。
+    // 生命周期由本会话保证，扫描期间会话一定还活着。
+    ffmpeg_io::AvInterruptState& interrupt() {
+        return interrupt_;
+    }
+
+    // 网络源（任意带 "://" 的 URI）与本地文件的扫描超时策略不同：
+    // 本地文件不设超时，网络源必须能从中断里退出来。
+    bool network_input() const {
+        return file_path_.find("://") != std::string::npos;
+    }
+
 private:
     // 打开/探测阶段被打断 = 用户取消。判据与引擎原先的 IsCancelledExit 完全一致：
     // 取消标记已置位 **且** FFmpeg 确实以 AVERROR_EXIT 收场 —— 只看 ret 会把

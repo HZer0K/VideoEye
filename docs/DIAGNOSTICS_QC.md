@@ -45,7 +45,7 @@ flowchart LR
 
 - 文件级：容器格式、时长、大小、整体码率、是否可 seek、moov/mdat 顺序（仅 MP4 家族）
 - 流级：`StreamDigest`（codec/profile/分辨率/fps/采样率/声道/码率/包数/关键帧数）
-- 序列：`total_bitrate_kbps` / `video_bitrate_kbps` / `video_fps`（默认 1 s 粒度）
+- 序列：`total_bitrate_kbps` / `video_bitrate_kbps` / `video_fps`（默认 1 s 粒度；`video_fps` 是主视频轨的**包率估算**，不是精确帧率）
 - 健康度：PTS 单调性、DTS 缺失率、最大时间戳跳变、GOP 间隔序列、包大小极值
 
 ## 4. 规则集

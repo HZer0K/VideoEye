@@ -64,6 +64,22 @@ model::QcReport QcRuleEngine::Evaluate(const model::AnalysisResult& result) cons
     // 结论与严重度脱钩（形同虚设）。这里把严重度也带进去再判。
     report.verdict = model::ComputeQcVerdict(report.score, report.CountBySeverity(model::IssueSeverity::Critical) > 0,
                                              report.CountBySeverity(model::IssueSeverity::Error) > 0);
+    // 维度层面的失败/部分完成必须反映到总结论：规则没命中不等于"完整通过"。
+    //
+    // 只降级 executed && Failed/Partial 的维度。executed && Unavailable 是"选项开着、
+    // 但这次素材里没有该类事实"的正常情况（没有音频流、不是 MP4…），不能据此降级，
+    // 否则每个只有视频的文件都会被判成非通过。
+    for (const auto& dimension : result.dimensions) {
+        if (!dimension.executed)
+            continue;
+        if (dimension.capability == model::AnalysisCapability::Failed) {
+            report.verdict = "不通过";
+            break;
+        }
+        if (dimension.capability == model::AnalysisCapability::Partial && report.verdict == "通过") {
+            report.verdict = "警告";
+        }
+    }
     if (report.partial) {
         // 抽样扫描（命中 max_packets 上限）不完整，禁止给出"通过"结论：仅供参考
         report.verdict = "抽样完成·仅供参考";
@@ -109,6 +125,10 @@ std::vector<model::DiagnosticIssue> QcRuleEngine::CheckRule(const model::QcRule&
         return detail::CheckContainerRules(rule, result, make_issue);
     if (id.rfind("video.color.", 0) == 0)
         return detail::CheckColorHdrRules(rule, result, make_issue);
+    // 视觉画质 QC 的规则与视频规则同 TU（都是"画面"层结论），前缀独开 visual.：
+    // 这一维度需要完整解码视频，与 video.* 的元数据口径不是一回事。
+    if (id.rfind("visual.", 0) == 0)
+        return detail::CheckVideoRules(rule, result, make_issue);
     if (id.rfind("video.", 0) == 0)
         return detail::CheckVideoRules(rule, result, make_issue);
     if (id.rfind("timing.", 0) == 0)

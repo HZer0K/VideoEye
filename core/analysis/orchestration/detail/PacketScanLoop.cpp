@@ -9,6 +9,7 @@
 extern "C" {
 #include <libavutil/avutil.h>
 #include <libavutil/error.h>
+#include <libavutil/time.h>
 }
 
 namespace videoeye {
@@ -20,9 +21,10 @@ constexpr int kProgressMinPackets = 2000;
 } // namespace
 
 PacketScanLoop::PacketScanLoop(AVFormatContext* fmt, const AnalysisOptions& options, model::AnalysisResult& result,
-                               const AnalysisCallbacks& callbacks)
+                               const AnalysisCallbacks& callbacks, ffmpeg_io::AvInterruptState* interrupt,
+                               int64_t idle_timeout_us)
     : fmt_(fmt), options_(options), result_(result), callbacks_(callbacks), pkt_(av_packet_alloc()),
-      last_progress_(std::chrono::steady_clock::now()) {
+      interrupt_(interrupt), idle_timeout_us_(idle_timeout_us), last_progress_(std::chrono::steady_clock::now()) {
 }
 
 PacketScanLoop::~PacketScanLoop() {
@@ -48,6 +50,10 @@ ScanOutcome PacketScanLoop::Run(AnalysisPipeline& pipeline, ScanBuckets& buckets
             result_.scan_status = model::AnalysisStatus::Cancelled;
             return ScanOutcome::Cancelled;
         }
+        // 网络源：每次读包前重新武装空闲截止时间（上一次成功读取之后重新计时）。
+        // 本地输入 idle_timeout_us_ == 0，这里什么都不做。
+        if (interrupt_ != nullptr && idle_timeout_us_ > 0)
+            interrupt_->deadline_us.store(av_gettime() + idle_timeout_us_, std::memory_order_relaxed);
         const int ret = av_read_frame(fmt_, pkt_);
         if (ret < 0) {
             if (ret == AVERROR_EOF) {
@@ -64,6 +70,15 @@ ScanOutcome PacketScanLoop::Run(AnalysisPipeline& pipeline, ScanBuckets& buckets
             if (cancelled_exit(ret)) {
                 result_.scan_status = model::AnalysisStatus::Cancelled;
                 return ScanOutcome::Cancelled;
+            }
+            // 中断回调只可能因为"取消"或"截止时间到期"返回 1：取消已在上面处理，
+            // 所以这里的 AVERROR_EXIT 就是本循环武装的空闲超时到期。
+            // 必须报成失败而不是半个结果 —— 网络断流后的部分扫描不能当完整 QC 用。
+            if (ret == AVERROR_EXIT && idle_timeout_us_ > 0) {
+                result_.scan_error_code = AVERROR(ETIMEDOUT);
+                MarkFailed(result_, "读取数据包超过 " + std::to_string(idle_timeout_us_ / 1000) +
+                                        " ms 没有新数据（输入 IO 空闲超时）");
+                return ScanOutcome::Failed;
             }
             result_.scan_error_code = ret; // 真 AVERROR 优先，MarkFailed 不会覆盖它
             MarkFailed(result_, "读取数据包失败（文件可能截断或 IO 错误）: " + std::string(errbuf));
@@ -115,6 +130,8 @@ void PacketScanLoop::AccountPacket(AVPacket* pkt, bool is_video) {
     digest.packet_count += 1;
     digest.byte_count += pkt->size;
     if (is_video) {
+        // 注意：这里是**视频包数**，不是精确帧数（demux 层没有逐帧事件）。
+        // 保留该字段给"每轨包数"消费方，真正的帧级统计在 BitrateGopAnalyzer。
         digest.frame_count += 1;
         result_.video_packets += 1;
     }
@@ -129,12 +146,32 @@ void PacketScanLoop::FillBuckets(ScanBuckets& buckets, double interval_seconds, 
     if (ts < 0.0)
         return;
     const int64_t bucket_index = static_cast<int64_t>(std::floor(ts / interval_seconds));
-    ScanBucket& bucket = buckets[bucket_index];
-    bucket.total_bytes += pkt->size;
-    if (is_video) {
-        bucket.video_bytes += pkt->size;
-        bucket.video_frames += 1;
+    // 桶数上限：超出后不再新增，仅标记截断（last_bucket_index 仍在 Acquire 里更新，
+    // 时长兜底因此不受影响）。已经存在的桶继续累加，前段曲线仍是完整统计。
+    ScanBucket* slot = buckets.Acquire(bucket_index);
+    if (slot == nullptr)
+        return;
+    slot->total_bytes += pkt->size;
+    if (!is_video)
+        return;
+
+    // 只累计**主视频轨**的字节与包数。以前所有视频轨都往同一个桶里加：
+    // 多节目/多角度文件会让 video_fps 翻倍，而这条曲线又被"逐秒帧率标准差"规则消费。
+    // 注意这里统计的是**包数**，不是帧数（一个包可能含多帧，也不保证一帧一包）。
+    int primary_video = result_.primary_video_stream_index;
+    if (primary_video < 0) {
+        // 主轨未标（旧结果/直接构造的测试）：退化为第一条非封面视频轨。
+        for (const auto& digest : result_.streams) {
+            if (digest.IsVideo() && !digest.attached_picture) {
+                primary_video = digest.index;
+                break;
+            }
+        }
     }
+    if (primary_video >= 0 && pkt->stream_index != primary_video)
+        return;
+    slot->video_bytes += pkt->size;
+    slot->video_packets += 1;
 }
 
 // 返回是否真的上报了（上报了才更新 last_progress_）

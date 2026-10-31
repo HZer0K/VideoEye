@@ -137,9 +137,10 @@ std::vector<model::DiagnosticIssue> CheckVideoRules(const model::QcRule& rule, c
         if (result.video_fps.Size() >= 3) {
             const double stddev = result.video_fps.StdDev();
             if (Triggered(rule, stddev)) {
-                issues.push_back(make_issue(stddev, "逐秒帧率标准差为 " + FormatValue(stddev, 2) + " fps（均值 " +
-                                                        FormatValue(result.video_fps.Mean(), 2) + " fps，最低 " +
-                                                        FormatValue(result.video_fps.Min(), 2) + " fps，阈值 " +
+                issues.push_back(make_issue(stddev, "逐秒视频包率标准差为 " + FormatValue(stddev, 2) +
+                                                        " pkt/s（按主视频轨的包数估算，均值 " +
+                                                        FormatValue(result.video_fps.Mean(), 2) + " pkt/s，最低 " +
+                                                        FormatValue(result.video_fps.Min(), 2) + " pkt/s，阈值 " +
                                                         ThresholdText(rule) + "）。"));
             }
         }
@@ -171,6 +172,50 @@ std::vector<model::DiagnosticIssue> CheckVideoRules(const model::QcRule& rule, c
         return issues;
     }
     // 时间戳跳变（gap）已由 TimelineAnalyzer 统一产出，不再重复规则。
+
+    // ---------- 视觉画质 QC（无参考全文件画面体检）----------
+    //
+    // 前提是**维度真的执行过**：画质 QC 默认关闭，没跑时 result.visual_qc 是一份空报告。
+    // 那种情况下返回空问题是对的（不能凭空报缺陷），但也不能因此把"没测"读成"没问题"
+    // —— 这件事由 dimensions 表里的 executed=false 说明，规则不负责。
+    if (rule.id == "visual.defects" || rule.id == "visual.defects_severe") {
+        if (!result.DimensionExecuted(model::AnalysisDimension::VisualQuality))
+            return issues;
+        const bool severe_only = (rule.id == "visual.defects_severe");
+        // Info 级不算"缺陷规则命中"：letterbox/pillarbox（每部宽银幕影片都有）和
+        // 静音时段的冻结（片尾静帧/停格）都是正常呈现，把它们算进来会让默认模板
+        // 在几乎每个宽银幕文件上凭空报一条 Warning。
+        const model::VisualDefectSeverity min_severity =
+            severe_only ? model::VisualDefectSeverity::Error : model::VisualDefectSeverity::Warning;
+        std::vector<const model::VisualDefect*> matched;
+        for (const model::VisualDefect& defect : result.visual_qc.defects) {
+            if (static_cast<int>(defect.severity) < static_cast<int>(min_severity))
+                continue;
+            matched.push_back(&defect);
+        }
+        if (matched.empty())
+            return issues;
+
+        // 与上面几条逐条展开的规则同一口径：最多 50 条，余下的合并成一条汇总。
+        constexpr std::size_t kMaxExpanded = 50;
+        const std::size_t count = std::min(matched.size(), kMaxExpanded);
+        for (std::size_t i = 0; i < count; ++i) {
+            const model::VisualDefect& defect = *matched[i];
+            std::string detail = std::string(model::ToString(defect.type)) + "：" +
+                                 (defect.description.empty() ? std::string("未提供说明") : defect.description) + "（" +
+                                 FormatValue(defect.start_seconds, 2) + "–" + FormatValue(defect.end_seconds, 2) +
+                                 " s，持续 " + FormatValue(defect.DurationSeconds(), 2) + " s）";
+            issues.push_back(make_issue(1.0, detail,
+                                        model::TimeRange::Between(defect.start_seconds, defect.end_seconds),
+                                        result.primary_video_stream_index, 1));
+        }
+        if (matched.size() > count) {
+            issues.push_back(make_issue(static_cast<double>(matched.size()),
+                                        "另有 " + std::to_string(matched.size() - count) + " 条「" + rule.name +
+                                            "」未展开，完整列表见「画质 QC」页。"));
+        }
+        return issues;
+    }
 
     return issues;
 }

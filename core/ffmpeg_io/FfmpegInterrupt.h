@@ -20,6 +20,7 @@
 //     interrupt.deadline_us = av_gettime() + ffmpeg_io::kProbeTimeoutUs;   // 探测阶段放宽
 //     ...
 //     interrupt.deadline_us = 0;   // 进入逐包扫描: 只响应取消
+//     // 网络源例外：每次读包前用 ScanIdleTimeoutUs() 重新武装空闲截止时间
 //
 // ⚠️ 两个必须遵守的前提:
 //   1) 回调要在**打开之前**就装好，所以 fmt 必须由调用方自己
@@ -65,6 +66,26 @@ void AttachInterrupt(AVFormatContext* fmt, AvInterruptState& state, int64_t time
 // 打开 / 探测阶段的绝对超时（单位微秒）。扫描阶段不依赖它们，仅响应取消。
 constexpr int64_t kOpenTimeoutUs = 15'000'000;  // 打开输入的最大等待
 constexpr int64_t kProbeTimeoutUs = 30'000'000; // 探测流信息的最大等待
+
+// 逐包扫描阶段的 IO 空闲超时（网络源默认值，单位微秒）。
+//
+// 为什么必须有：本地文件的 av_read_frame 一定会返回（读到 EOF 或真 IO 错误），
+// 而网络源在服务端断流/半开连接时可能永远不返回。外层（QcRunner）的
+// io_idle_timeout_ms 只能放弃等待并 detach，那颗引擎线程仍然卡在 IO 里，
+// 继续占着 AVFormatContext、解码器与内存 —— 关窗/退出进程照样可能被它拖住。
+// 只有把截止时间重新装进中断回调，才能真正把读操作踢出来。
+constexpr int64_t kNetworkScanIdleTimeoutUs = 15'000'000;
+
+// 扫描阶段该用多大的 IO 空闲超时（单位微秒，0 = 不设）。
+//
+// option_ms > 0 时以调用方配置为准（QC 的 QcRunBudgets::io_idle_timeout_ms 会透传到
+// AnalysisOptions）；否则网络源退回默认值，本地输入不设超时 —— 长本地文件的正常
+// 读取不能被任何固定超时误杀。
+inline int64_t ScanIdleTimeoutUs(bool network_input, int option_ms) {
+    if (option_ms > 0)
+        return static_cast<int64_t>(option_ms) * 1000;
+    return network_input ? kNetworkScanIdleTimeoutUs : 0;
+}
 
 } // namespace ffmpeg_io
 } // namespace videoeye

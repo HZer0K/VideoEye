@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <utility>
 
 #include "infrastructure/logging/Logger.h"
 
@@ -33,6 +34,23 @@ struct DimensionContext {
     // 桶算出来的实测时长（没有容器时长时的唯一可信参照），只有码率/GOP 维度用
     double measured_duration = 0.0;
 };
+
+// 主音轨静音段与 [start, end] 的重叠时长（秒）。
+//
+// 冻结的判据是"画面静止 + 音频在走"。实时路径靠 FrameSample::audio_silent 当场
+// 排除静音时段；离线路径抽帧时音频还没收尾拿不到这个状态，只能在收尾后回查
+// 主音轨的静音段 —— 两条路径必须得出同一个结论，否则片尾静帧在批量 QC 里会被
+// 误报成"冻结"。
+double SilentOverlapSeconds(const model::AudioQcResult& audio, double start, double end) {
+    double overlap = 0.0;
+    for (const model::AudioSilenceRange& range : audio.silence_ranges) {
+        const double from = std::max(start, range.start_seconds);
+        const double to = std::min(end, range.end_seconds);
+        if (to > from)
+            overlap += to - from;
+    }
+    return overlap;
+}
 
 using model::AnalysisCapability;
 using model::AnalysisDimension;
@@ -278,10 +296,73 @@ DimensionStatus BuildColorHdrStatus(const DimensionContext& ctx) {
     return status;
 }
 
+// 视觉画质 QC（无参考全文件画面体检）。
+//
+// 与其它维度不同，这一项的"覆盖"是**解码覆盖率**：analyzed_frames 是真正参与
+// 分析的采样帧数，total_frames 是本次实际解码出来的帧数。按 sample_fps 抽帧时
+// 覆盖率天然小于 1，此时评级必须是 Partial —— 否则"抽样看了一半画面"会被当成
+// "逐帧看完全片都没问题"（MarkConclusive 也会因此判成可信）。
+DimensionStatus BuildVisualQualityStatus(const DimensionContext& ctx) {
+    if (!ctx.options.analyze_visual_qc) {
+        return model::MakeSkippedDimension(AnalysisDimension::VisualQuality,
+                                           "画质 QC 选项已关闭（需要完整解码视频，默认关闭）");
+    }
+    if (ctx.result.VideoStreamCount() <= 0 || ctx.result.primary_video_stream_index < 0)
+        return model::MakeSkippedDimension(AnalysisDimension::VisualQuality, "没有视频流");
+    const model::VisualDefectReport& report = ctx.result.visual_qc;
+    if (!report.analyzed || report.analyzed_frames <= 0) {
+        return model::MakeFailedDimension(AnalysisDimension::VisualQuality,
+                                          "视频解码没有产出可用帧（可能缺少解码器或像素格式不支持）", 1);
+    }
+
+    DimensionStatus status;
+    status.dimension = AnalysisDimension::VisualQuality;
+    status.executed = true;
+    status.stream_indices.push_back(ctx.result.primary_video_stream_index);
+    status.scope_unit = "帧";
+    status.units_scanned = report.analyzed_frames;
+    status.units_total = report.total_frames > 0 ? report.total_frames : report.analyzed_frames;
+    status.has_coverage = report.total_frames > 0;
+    if (status.has_coverage && status.units_total > 0) {
+        status.coverage_ratio =
+            std::min(1.0, static_cast<double>(status.units_scanned) / static_cast<double>(status.units_total));
+    }
+
+    const int severe = report.CountBySeverity(model::VisualDefectSeverity::Error) +
+                       report.CountBySeverity(model::VisualDefectSeverity::Critical);
+    // 缺陷不算 failures。failures 记的是"这个维度有没有扫失败"（解码报错、帧降采样失败），
+    // 而"检出 3 条 Error 冻结"恰恰是扫描**成功**给出的结论 —— 把缺陷数塞进 failures 会让
+    // MarkConclusive 把维度判成"结论不可用"，报告出现"已逐帧扫完全片、检出严重缺陷、
+    // 结论却不可作通过用"这种自相矛盾的表述。缺陷数量留在 notes，能否通过由规则层回答。
+    if (status.has_coverage && status.coverage_ratio < 0.99) {
+        status.capability = AnalysisCapability::Partial;
+        status.failure_reason = "按 " + std::to_string(report.analyzed_frames) + "/" +
+                                std::to_string(report.total_frames) + " 帧抽样分析（覆盖 " +
+                                std::to_string(static_cast<int>(status.coverage_ratio * 100.0)) +
+                                "%），未逐帧检查全片画面";
+    } else {
+        status.capability = AnalysisCapability::Supported;
+    }
+    if (report.dropped_frames > 0)
+        status.notes.push_back("有 " + std::to_string(report.dropped_frames) + " 帧因队列满被丢弃");
+
+    status.notes.push_back("分析 " + std::to_string(report.analyzed_frames) + " 个采样帧（共解码 " +
+                           std::to_string(report.total_frames) + " 帧），检出 " +
+                           std::to_string(report.defects.size()) + " 条画面缺陷");
+    if (severe > 0)
+        status.notes.push_back("其中严重缺陷 " + std::to_string(severe) + " 条");
+    return status;
+}
+
 // 音频 QC（多音轨：覆盖 M/N 条）。
 //
 // audio_tracks_analyzed / audio_tracks_total 是**调用参数**而不是 result 字段：
 // 它们是"这次真的解了哪几条轨"的运行时事实，由管线数出来，不落在结果对象里。
+//
+// 2026-10-31：以前这里的能力评级只检查主轨（audio_qc）的 coverage / 解码错误，
+// 于是主轨完整、次轨只解出部分 PCM 时维度仍会判成 Supported —— 与规则层"逐轨
+// 判定"的口径分裂。现在与规则层共用 audio_qc_streams 这一份事实：取所有已分析
+// 轨道里最低的覆盖率与全部失败计数。没有逐轨数据（旧结果/单测）时回退主轨。
 DimensionStatus BuildAudioQcStatus(const DimensionContext& ctx, int audio_tracks_analyzed, int audio_tracks_total) {
     if (!ctx.options.analyze_audio_qc)
         return model::MakeSkippedDimension(AnalysisDimension::AudioQc, "音频 QC 选项已关闭");
@@ -296,22 +377,69 @@ DimensionStatus BuildAudioQcStatus(const DimensionContext& ctx, int audio_tracks
     status.units_total = audio_tracks_total;
     status.has_coverage = true;
     status.coverage_ratio = static_cast<double>(audio_tracks_analyzed) / static_cast<double>(audio_tracks_total);
-    // 能力评级看两件事：是否所有轨都分析到了，以及主轨的 PCM 覆盖率
     const bool all_tracks = (audio_tracks_analyzed == audio_tracks_total);
-    const bool full_pcm = main_track.analyzed && main_track.coverage_ratio >= 0.99;
+
+    bool any_pcm = false;
+    bool any_partial = false;
+    bool any_failed = false;
+    double min_coverage = 1.0;
+    int64_t failures = 0;
+
+    if (!ctx.result.audio_qc_streams.empty()) {
+        for (const model::AudioQcResult& qc : ctx.result.audio_qc_streams) {
+            if (!qc.analyzed) {
+                if (qc.completeness == model::AudioQcResult::Completeness::Failed ||
+                    qc.completeness == model::AudioQcResult::Completeness::Unsupported) {
+                    any_failed = true;
+                } else {
+                    any_partial = true; // 这条轨没产出可统计的 PCM
+                }
+                continue;
+            }
+            any_pcm = true;
+            min_coverage = std::min(min_coverage, qc.coverage_ratio);
+            failures += qc.decode_error_packets + qc.decode_error_frames + qc.dropped_frames;
+            // Completeness::NotRun 视为"分析器未填该字段"（旧结果/合成样本），不据此降级；
+            // 只有显式的 Partial / Failed / Unsupported 才算不完整。
+            if (qc.completeness != model::AudioQcResult::Completeness::Complete &&
+                qc.completeness != model::AudioQcResult::Completeness::NotRun) {
+                any_partial = true;
+            }
+            if (qc.coverage_ratio < 0.99)
+                any_partial = true;
+        }
+    } else {
+        // 兼容旧结果/单测：只有主轨兼容字段时按主轨算（与拆函数前的判据一致）。
+        any_pcm = main_track.analyzed;
+        min_coverage = main_track.analyzed ? main_track.coverage_ratio : 0.0;
+        failures = main_track.decode_error_packets + main_track.decode_error_frames + main_track.dropped_frames;
+        if (main_track.analyzed && min_coverage < 0.99)
+            any_partial = true;
+        if (!main_track.analyzed && main_track.completeness == model::AudioQcResult::Completeness::Failed)
+            any_failed = true;
+    }
+
     if (audio_tracks_analyzed == 0) {
         status.capability = AnalysisCapability::Failed;
         status.failures = 1;
         status.failure_reason = "所有音轨都未能解出 PCM";
-    } else if (all_tracks && full_pcm) {
+    } else if (all_tracks && any_pcm && !any_partial && !any_failed && min_coverage >= 0.99) {
         status.capability = AnalysisCapability::Supported;
     } else {
         status.capability = AnalysisCapability::Partial;
-        status.failure_reason = !all_tracks ? ("只分析了 " + std::to_string(audio_tracks_analyzed) + "/" +
-                                               std::to_string(audio_tracks_total) + " 条音轨")
-                                            : "部分音频样本未参与统计（见 coverage）";
+        if (!all_tracks) {
+            status.failure_reason = "只分析了 " + std::to_string(audio_tracks_analyzed) + "/" +
+                                    std::to_string(audio_tracks_total) + " 条音轨";
+        } else if (!any_pcm) {
+            status.failure_reason = "已分析音轨都没有产出可统计的 PCM";
+        } else if (min_coverage < 0.99) {
+            status.failure_reason =
+                "部分音轨的 PCM 覆盖率不足（最低 " + std::to_string(static_cast<int>(min_coverage * 100.0)) + "%）";
+        } else {
+            status.failure_reason = "部分音轨的 PCM QC 未完整完成";
+        }
     }
-    status.failures += main_track.decode_error_packets + main_track.decode_error_frames + main_track.dropped_frames;
+    status.failures += failures;
     if (status.failures > 0)
         status.notes.push_back("解码失败/丢帧合计 " + std::to_string(status.failures));
     for (size_t i = 0; i < ctx.result.audio_qc_stream_indices.size(); ++i)
@@ -565,6 +693,8 @@ std::vector<DimensionStatus> BuildAllDimensions(const DimensionContext& ctx, int
     out.push_back(BuildParameterTimelineStatus(ctx));
     out.push_back(BuildBitrateGopStatus(ctx));
     out.push_back(BuildColorHdrStatus(ctx));
+    // 画质 QC 紧跟色彩与 HDR：两者都是"画面"层的结论（前者只读元数据，后者看画面内容）。
+    out.push_back(BuildVisualQualityStatus(ctx));
     out.push_back(BuildAudioQcStatus(ctx, audio_tracks_analyzed, audio_tracks_total));
     out.push_back(BuildAudioBitstreamStatus(ctx));
     out.push_back(BuildSubtitleStatus(ctx));
@@ -591,7 +721,9 @@ double AnalysisResultAssembler::FinalizeBuckets(const ScanBuckets& buckets, doub
     const double measured_duration =
         (result_.duration_seconds > 0.0)
             ? result_.duration_seconds
-            : (buckets.empty() ? 0.0 : (static_cast<double>(buckets.rbegin()->first) + 1.0) * interval_seconds);
+            : ((buckets.last_bucket_index >= 0)
+                   ? (static_cast<double>(buckets.last_bucket_index) + 1.0) * interval_seconds
+                   : 0.0);
     if (result_.overall_bitrate_bps <= 0 && measured_duration > 0.0) {
         result_.overall_bitrate_bps = static_cast<int64_t>(result_.total_bytes * 8 / measured_duration);
     }
@@ -609,16 +741,21 @@ double AnalysisResultAssembler::FinalizeBuckets(const ScanBuckets& buckets, doub
     result_.video_bitrate_kbps.name = "video_bitrate";
     result_.video_bitrate_kbps.unit = "kbps";
     result_.video_fps.name = "video_fps";
-    result_.video_fps.unit = "fps";
-    result_.total_bitrate_kbps.Reserve(buckets.size());
-    result_.video_bitrate_kbps.Reserve(buckets.size());
-    result_.video_fps.Reserve(buckets.size());
-    for (const auto& [index, bucket] : buckets) {
+    // 单位仍是 fps，但数值来自**主视频轨的包率**：demux 层拿不到可靠的逐秒帧数，
+    // 一个包可能含多帧。消费方（UI/规则）要把这条曲线当作估算值，不能当精确帧率。
+    result_.video_fps.unit = "fps(估算)";
+    result_.total_bitrate_kbps.Reserve(buckets.by_second.size());
+    result_.video_bitrate_kbps.Reserve(buckets.by_second.size());
+    result_.video_fps.Reserve(buckets.by_second.size());
+    for (const auto& [index, bucket] : buckets.by_second) {
         const double t = static_cast<double>(index) * interval_seconds;
         result_.total_bitrate_kbps.Add(t, static_cast<double>(bucket.total_bytes) * kbps_per_byte_per_sec);
         result_.video_bitrate_kbps.Add(t, static_cast<double>(bucket.video_bytes) * kbps_per_byte_per_sec);
-        result_.video_fps.Add(t, static_cast<double>(bucket.video_frames) / interval_seconds);
+        result_.video_fps.Add(t, static_cast<double>(bucket.video_packets) / interval_seconds);
     }
+    // 覆盖率分母用 last_bucket_index，不受截断影响；曲线本身只有前
+    // kMaxBuckets 个桶，截断时 result_.series_truncated=true 明确告诉报告读者。
+    result_.series_truncated = buckets.truncated;
     // 覆盖率的公共分母：容器没给时长时这就是唯一可信的实测时长
     measured_duration_ = measured_duration;
     return measured_duration;
@@ -640,7 +777,9 @@ void AnalysisResultAssembler::FinalizeBitrateGop(BitrateGopAnalyzer& bitrate_gop
         return;
     result_.bitrate_gop = bitrate_gop.Finish();
     LOG_INFO("码率与 GOP 分析: frames=" + std::to_string(result_.bitrate_gop.total_frames) +
-             " gops=" + std::to_string(result_.bitrate_gop.gops.size()) +
+             " gops=" + std::to_string(result_.bitrate_gop.gop_count) +
+             " retained=" + std::to_string(result_.bitrate_gop.gops.size()) +
+             (result_.bitrate_gop.gops_truncated ? "(明细已截断)" : "") +
              " anomalies=" + std::to_string(result_.bitrate_gop.anomalies.size()));
 }
 
@@ -686,7 +825,7 @@ void AnalysisResultAssembler::FinalizeAudioQc(const std::vector<AudioQcTrackInpu
             one.notes.push_back("音频采样率/声道数中途改变，部分样本未参与统计");
         if (one.analyzed)
             ++result_.audio_qc_tracks_analyzed;
-        result_.audio_qc_streams.push_back(one);
+        result_.audio_qc_streams.push_back(std::move(one));
         result_.audio_qc_stream_indices.push_back(track.stream_index);
     }
 
@@ -792,6 +931,52 @@ void AnalysisResultAssembler::FinalizeColorHdr(ColorHdrAnalyzer& color_hdr, int 
     LOG_INFO("色彩与 HDR: " + result_.color_hdr.ToString());
 }
 
+void AnalysisResultAssembler::FinalizeVisualQc(VisualDefectAnalyzer& visual_qc, int video_stream_index,
+                                               int64_t decoded_frames) {
+    if (!options_.analyze_visual_qc || video_stream_index < 0)
+        return;
+    result_.visual_qc = visual_qc.Snapshot();
+    // Snapshot() 不知道"送进来多少帧"与"有效画面区域"（那是管线侧的事实），这里补齐。
+    // total_frames 是维度覆盖率的分母：缺了它 BuildVisualQualityStatus 只能不给覆盖率。
+    result_.visual_qc.total_frames = static_cast<int>(decoded_frames);
+    result_.visual_qc.effective_area = visual_qc.EffectiveArea();
+    if (result_.visual_qc.duration_seconds <= 0.0 && result_.duration_seconds > 0.0)
+        result_.visual_qc.duration_seconds = result_.duration_seconds;
+
+    // 离线路径的冻结复核：整段（≥90%）落在主音轨静音里的冻结候选，按"片尾静帧/
+    // 停格"降级为 Info —— 与实时路径 audio_silent 的语义一致，并且 Info 不参与
+    // visual.* 规则（见 QcRuleEngineCheckVideo）。没有音频流/音频没跑过时无从判断，
+    // 保持原判（宁可报出来）。
+    int silent_freeze_downgraded = 0;
+    if (result_.audio_qc.analyzed && result_.audio_qc.has_audio) {
+        for (model::VisualDefect& defect : result_.visual_qc.defects) {
+            if (defect.type != model::VisualDefectType::FreezeFrame)
+                continue;
+            const double duration = defect.DurationSeconds();
+            if (duration <= 0.0)
+                continue;
+            const double silent = SilentOverlapSeconds(result_.audio_qc, defect.start_seconds, defect.end_seconds);
+            if (silent < duration * 0.9)
+                continue;
+            if (defect.severity != model::VisualDefectSeverity::Info) {
+                defect.severity = model::VisualDefectSeverity::Info;
+                if (!defect.description.empty())
+                    defect.description += "；";
+                defect.description += "主音轨在该时段静音，按片尾/停格处理，不计入缺陷规则";
+                ++silent_freeze_downgraded;
+            }
+        }
+    }
+
+    result_.visual_qc_analyzed = result_.visual_qc.analyzed;
+    LOG_INFO("画质 QC: 解码 " + std::to_string(decoded_frames) + " 帧，分析 " +
+             std::to_string(result_.visual_qc.analyzed_frames) + " 帧，缺陷 " +
+             std::to_string(result_.visual_qc.defects.size()) + " 条" +
+             (silent_freeze_downgraded > 0
+                  ? "（其中 " + std::to_string(silent_freeze_downgraded) + " 条冻结因主音轨静音降级为提示）"
+                  : ""));
+}
+
 void AnalysisResultAssembler::FinalizeSubtitle(SubtitleAnalyzer& subtitle_analyzer, double measured_duration) {
     if (!options_.analyze_subtitle)
         return;
@@ -853,6 +1038,7 @@ void AnalysisResultAssembler::SyncLegacyDimensionFlags() {
     result_.aux_data_analyzed = result_.DimensionExecuted(AnalysisDimension::AuxiliaryData);
     result_.mp4_samples_analyzed = result_.DimensionExecuted(AnalysisDimension::Mp4SampleTable);
     result_.streaming_analyzed = result_.DimensionExecuted(AnalysisDimension::Streaming);
+    result_.visual_qc_analyzed = result_.DimensionExecuted(AnalysisDimension::VisualQuality);
 }
 
 void AnalysisResultAssembler::Finish(const AnalysisCallbacks& callbacks) {

@@ -2,7 +2,12 @@
 
 #include "core/reporting/QcReportExporterInternal.h"
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <sstream>
+#include <string>
+#include <vector>
 
 namespace videoeye {
 namespace reporting {
@@ -13,6 +18,113 @@ using detail::kReportSchemaVersion;
 using detail::WriteUtf8File;
 
 namespace {
+
+// ---- 证据缩略图 -> 内嵌 PNG -------------------------------------------------
+//
+// 报告要单文件交付，图片只能内嵌；而 reporting 层不依赖 Qt / FFmpeg，所以这里自带
+// 一个"只存储、不压缩"的最小 PNG 编码器（zlib 的 stored 块 + CRC32/Adler32）。
+// 缩略图只有 128x72x3 ≈ 27KB，不压缩也能接受；换来的是零依赖、可单测。
+uint32_t Crc32(const uint8_t* data, size_t size) {
+    static const std::vector<uint32_t> table = [] {
+        std::vector<uint32_t> t(256, 0);
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; ++k)
+                c = (c & 1u) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+            t[i] = c;
+        }
+        return t;
+    }();
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < size; ++i)
+        crc = table[(crc ^ data[i]) & 0xFFu] ^ (crc >> 8);
+    return crc ^ 0xFFFFFFFFu;
+}
+
+uint32_t Adler32(const uint8_t* data, size_t size) {
+    uint32_t a = 1, b = 0;
+    for (size_t i = 0; i < size; ++i) {
+        a = (a + data[i]) % 65521u;
+        b = (b + a) % 65521u;
+    }
+    return (b << 16) | a;
+}
+
+void AppendBigEndian(std::vector<uint8_t>& out, uint32_t value) {
+    out.push_back(static_cast<uint8_t>((value >> 24) & 0xFFu));
+    out.push_back(static_cast<uint8_t>((value >> 16) & 0xFFu));
+    out.push_back(static_cast<uint8_t>((value >> 8) & 0xFFu));
+    out.push_back(static_cast<uint8_t>(value & 0xFFu));
+}
+
+void AppendPngChunk(std::vector<uint8_t>& png, const char type[4], const std::vector<uint8_t>& data) {
+    AppendBigEndian(png, static_cast<uint32_t>(data.size()));
+    std::vector<uint8_t> body(type, type + 4);
+    body.insert(body.end(), data.begin(), data.end());
+    png.insert(png.end(), body.begin(), body.end());
+    AppendBigEndian(png, Crc32(body.data(), body.size()));
+}
+
+std::string Base64(const std::vector<uint8_t>& bytes) {
+    static const char kAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve((bytes.size() + 2) / 3 * 4);
+    for (size_t i = 0; i < bytes.size(); i += 3) {
+        const uint32_t b0 = bytes[i];
+        const uint32_t b1 = (i + 1 < bytes.size()) ? bytes[i + 1] : 0;
+        const uint32_t b2 = (i + 2 < bytes.size()) ? bytes[i + 2] : 0;
+        const uint32_t triple = (b0 << 16) | (b1 << 8) | b2;
+        out += kAlphabet[(triple >> 18) & 0x3F];
+        out += kAlphabet[(triple >> 12) & 0x3F];
+        out += (i + 1 < bytes.size()) ? kAlphabet[(triple >> 6) & 0x3F] : '=';
+        out += (i + 2 < bytes.size()) ? kAlphabet[triple & 0x3F] : '=';
+    }
+    return out;
+}
+
+// 返回可直接塞进 <img src="..."> 的 data URI；证据无效时返回空串。
+std::string EvidenceDataUri(const model::EvidenceFrame& frame) {
+    if (!frame.valid())
+        return {};
+    const size_t stride = static_cast<size_t>(frame.width) * 3u;
+    std::vector<uint8_t> raw;
+    raw.reserve((stride + 1u) * static_cast<size_t>(frame.height));
+    for (int y = 0; y < frame.height; ++y) {
+        raw.push_back(0); // filter type None
+        const uint8_t* row = frame.rgb.data() + static_cast<size_t>(y) * stride;
+        raw.insert(raw.end(), row, row + stride);
+    }
+
+    // zlib 流：stored deflate 块（BTYPE=00），每块最多 65535 字节。
+    std::vector<uint8_t> zlib = {0x78, 0x01};
+    size_t offset = 0;
+    do {
+        const size_t chunk = std::min<size_t>(raw.size() - offset, 65535u);
+        const bool final_block = (offset + chunk == raw.size());
+        zlib.push_back(final_block ? 0x01 : 0x00);
+        const uint16_t len = static_cast<uint16_t>(chunk);
+        zlib.push_back(static_cast<uint8_t>(len & 0xFFu));
+        zlib.push_back(static_cast<uint8_t>((len >> 8) & 0xFFu));
+        const uint16_t nlen = static_cast<uint16_t>(~len);
+        zlib.push_back(static_cast<uint8_t>(nlen & 0xFFu));
+        zlib.push_back(static_cast<uint8_t>((nlen >> 8) & 0xFFu));
+        zlib.insert(zlib.end(), raw.begin() + static_cast<std::ptrdiff_t>(offset),
+                    raw.begin() + static_cast<std::ptrdiff_t>(offset + chunk));
+        offset += chunk;
+    } while (offset < raw.size());
+    AppendBigEndian(zlib, Adler32(raw.data(), raw.size()));
+
+    std::vector<uint8_t> png = {137, 80, 78, 71, 13, 10, 26, 10};
+    std::vector<uint8_t> ihdr;
+    AppendBigEndian(ihdr, static_cast<uint32_t>(frame.width));
+    AppendBigEndian(ihdr, static_cast<uint32_t>(frame.height));
+    ihdr.insert(ihdr.end(), {8, 2, 0, 0, 0}); // 8bit / RGB / deflate / 无滤波 / 非隔行
+    AppendPngChunk(png, "IHDR", ihdr);
+    AppendPngChunk(png, "IDAT", zlib);
+    AppendPngChunk(png, "IEND", {});
+
+    return "data:image/png;base64," + Base64(png);
+}
 
 std::string Html(const std::string& text) {
     std::string out;
@@ -159,8 +271,8 @@ void AppendCoverageTable(std::ostringstream& out, const model::AnalysisResult& a
     if (analysis.dimensions.empty())
         return;
     out << "  <h2>证据与覆盖</h2>\n";
-    out << "  <p class=\"meta\">“结论可作通过用”是唯一权威口径：只有该维度确实执行、"
-           "能力完整、无失败且覆盖达标时才成立。未执行的行会写明原因。</p>\n";
+    out << "  <p class=\"meta\">“结论可用”是唯一权威口径：只有该维度确实执行、"
+           "能力完整、无扫描失败且覆盖达标时才成立。未执行的行会写明原因。</p>\n";
     out << "  <table>\n    <tr><th>维度</th><th>状态</th><th>能力</th><th>结论可用</th>"
            "<th>处理对象</th><th>扫描 / 总量</th><th>覆盖率</th><th>失败</th><th>说明</th></tr>\n";
     for (const model::DimensionStatus& status : analysis.dimensions) {
@@ -293,6 +405,63 @@ void AppendFrameOrder(std::ostringstream& out, const model::AnalysisResult& anal
             }
         }
     }
+}
+
+// 画质 QC（无参考、需要完整解码主视频流）。
+//
+// 只有真的跑过这一维度才落节：默认关闭，没跑时落空表会让人读成"逐帧看完整片
+// 都没问题"。没跑的原因在「证据与覆盖」里 visual_quality 一行。
+void AppendVisualQc(std::ostringstream& out, const model::AnalysisResult& analysis) {
+    if (!analysis.visual_qc.analyzed)
+        return;
+    const model::VisualDefectReport& visual = analysis.visual_qc;
+    out << "  <h2>画质 QC</h2>\n";
+    out << "  <p class=\"meta\">无参考画面体检：黑场 / 冻结 / 花屏 / 模糊 / 闪烁 / 过曝欠曝 / "
+           "色偏 / 隔行梳齿 / 黑边。这一维度需要完整解码主视频流（默认关闭），"
+           "按采样帧率抽帧分析。</p>\n";
+    out << "  <p class=\"meta\">分析 " << visual.analyzed_frames << " / " << visual.total_frames << " 帧";
+    if (visual.dropped_frames > 0)
+        out << "（丢弃 " << visual.dropped_frames << " 帧）";
+    out << " ｜ 检出 " << visual.defects.size() << " 条画面缺陷";
+    const model::ActivePictureArea& area = visual.effective_area;
+    if (area.valid) {
+        out << " ｜ 有效画面区域 " << area.width << "x" << area.height << "（" << Fixed(area.active_ratio * 100.0, 1)
+            << "%）";
+        if (area.letterbox || area.pillarbox)
+            out << " ｜ 黑边: " << (area.letterbox ? "上下" : "") << (area.pillarbox ? "左右" : "");
+    }
+    out << "</p>\n";
+
+    if (visual.defects.empty()) {
+        out << "  <p>未检出画面缺陷。</p>\n";
+        return;
+    }
+    out << "  <table>\n    <tr><th>类型</th><th>严重度</th><th>开始</th><th>结束</th><th>持续</th>"
+           "<th>证据</th><th>说明</th></tr>\n";
+    // 单张内嵌图 base64 后约 37KB；缺陷极多时报告会失控，只内嵌前 40 张。
+    constexpr size_t kMaxInlineEvidence = 40;
+    size_t inlined = 0;
+    size_t skipped_evidence = 0;
+    for (const model::VisualDefect& defect : visual.defects) {
+        const bool severe = static_cast<int>(defect.severity) >= static_cast<int>(model::VisualDefectSeverity::Error);
+        std::string evidence_cell = "-";
+        if (defect.evidence.valid()) {
+            if (inlined < kMaxInlineEvidence) {
+                evidence_cell = "<img width=\"160\" alt=\"缺陷证据\" src=\"" + EvidenceDataUri(defect.evidence) + "\">";
+                ++inlined;
+            } else {
+                ++skipped_evidence;
+            }
+        }
+        out << "    <tr" << (severe ? " class=\"warn\"" : "") << "><td>" << Html(model::ToString(defect.type)) << " ("
+            << Html(model::DefectTypeCode(defect.type)) << ")</td><td>" << Html(model::ToString(defect.severity))
+            << "</td><td>" << Fixed(defect.start_seconds, 2) << " s</td><td>" << Fixed(defect.end_seconds, 2)
+            << " s</td><td>" << Fixed(defect.DurationSeconds(), 2) << " s</td><td>" << evidence_cell << "</td><td>"
+            << Html(defect.description.empty() ? std::string("-") : defect.description) << "</td></tr>\n";
+    }
+    out << "  </table>\n";
+    if (skipped_evidence > 0)
+        out << "  <p class=\"meta\">另有 " << skipped_evidence << " 条缺陷带证据图，为控制报告体积未内嵌。</p>\n";
 }
 
 void AppendStreamList(std::ostringstream& out, const model::AnalysisResult& analysis) {
@@ -472,6 +641,7 @@ std::string QcReportExporter::BuildHtml(const QcExportBundle& bundle) {
     AppendCoverageTable(out, run.analysis);
     AppendParameterTimelines(out, run.analysis);
     AppendFrameOrder(out, run.analysis);
+    AppendVisualQc(out, run.analysis);
     AppendStreamList(out, run.analysis);
     AppendPerTrackAudioQc(out, run.analysis);
     AppendMainTrackAudioQc(out, run.analysis.audio_qc);

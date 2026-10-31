@@ -229,8 +229,8 @@ QcComparison CompareRuns(const QcRunResult& left, const QcRunResult& right, cons
                     b.bitrate_gop.key_interval_mean, 0.005);
         rows.Number("码率与 GOP", "关键帧间隔不规则度", 3, "", true, a.bitrate_gop.key_interval_irregularity,
                     b.bitrate_gop.key_interval_irregularity, 0.01);
-        rows.Count("码率与 GOP", "GOP 数量", "个", true, static_cast<long long>(a.bitrate_gop.gops.size()),
-                   static_cast<long long>(b.bitrate_gop.gops.size()));
+        rows.Count("码率与 GOP", "GOP 数量", "个", true, static_cast<long long>(a.bitrate_gop.gop_count),
+                   static_cast<long long>(b.bitrate_gop.gop_count));
     }
 
     // ---- 音频 ----

@@ -32,20 +32,51 @@
 #include "core/analysis/quality/AudioQcAnalyzer.h"
 #include "core/analysis/quality/BitrateGopAnalyzer.h"
 #include "core/analysis/quality/ColorHdrAnalyzer.h"
+#include "core/analysis/quality/VisualDefectAnalyzer.h"
 #include "core/domain/model/AnalysisResult.h"
 
 namespace videoeye {
 
-// 逐秒桶: 扫描循环按时间戳把包大小 / 帧数攒到这里，收尾时换算成码率与帧率序列。
+// 逐秒桶: 扫描循环按时间戳把包大小 / 视频包数攒到这里，收尾时换算成码率与包率序列。
 // 放在本头文件而不是扫描循环那边的匿名命名空间里 —— 它同时被"生产者"（逐包扫描）
 // 和"消费者"（本类）使用，藏在任何一边都会逼另一方抄一份定义。
 struct ScanBucket {
     int64_t total_bytes = 0;
     int64_t video_bytes = 0;
-    int64_t video_frames = 0;
+    // 主视频轨的**包数**，不是帧数：demux 层一个包可能含多帧，也不保证一帧一包。
+    // 消费方（video_fps 曲线与 fps 规则）必须按"包率估算"来解读。
+    int64_t video_packets = 0;
 };
 
-using ScanBuckets = std::map<int64_t, ScanBucket>;
+// 逐秒桶集合。
+//
+// 桶数上限存在的理由：map 按时间桶持续增长，24 小时 / 1 秒粒度会攒 86400 个桶，
+// 而消费方（三条逐秒曲线）最多只画 kMaxCurvePoints 个点 —— 保留更多没有意义，
+// 却让后端内存随素材时长无界增长。达到上限后**不再新增桶**，后续包不计入逐秒
+// 统计，truncated 标记"曲线只覆盖前一段"。
+struct ScanBuckets {
+    static constexpr size_t kMaxBuckets = 20000;
+    std::map<int64_t, ScanBucket> by_second;
+    // 见过的最后一个桶下标（含因上限被丢弃的）。时长兜底必须用它：
+    // 截断后用 rbegin() 会把素材时长算短。
+    int64_t last_bucket_index = -1;
+    bool truncated = false;
+
+    // 取/建桶。达到上限后不再新增、置 truncated 并返回 nullptr。
+    // 抽成方法是为了能脱离 FFmpeg 上下文单独验证上限语义。
+    ScanBucket* Acquire(int64_t index) {
+        if (index > last_bucket_index)
+            last_bucket_index = index;
+        auto it = by_second.find(index);
+        if (it != by_second.end())
+            return &it->second;
+        if (by_second.size() >= kMaxBuckets) {
+            truncated = true;
+            return nullptr;
+        }
+        return &by_second.emplace(index, ScanBucket{}).first->second;
+    }
+};
 
 // 一条参与 PCM QC 的音轨的收尾输入。
 //
@@ -88,6 +119,9 @@ public:
     void FinalizeFrameOrder(const std::vector<model::FrameOrderTimeline>& timelines);
     // 必须在 color_probe 释放之后调用（部分 HDR 元数据只在解码帧上出现）
     void FinalizeColorHdr(ColorHdrAnalyzer& color_hdr, int color_video_stream_index);
+    // 视觉画质 QC：必须在 FlushVisual 之后调用（EOF 残余帧已喂进分析器、缺陷段已闭合）。
+    // decoded_frames 是本次实际解码的视频帧数（维度覆盖率的"分母"）。
+    void FinalizeVisualQc(VisualDefectAnalyzer& visual_qc, int video_stream_index, int64_t decoded_frames);
     // 必须在 avformat_close_input 之后调用
     void FinalizeSubtitle(SubtitleAnalyzer& subtitle_analyzer, double measured_duration);
     void FinalizeTimecode(TimecodeAnalyzer& timecode_analyzer);

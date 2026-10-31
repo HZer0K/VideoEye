@@ -43,22 +43,14 @@ std::string FormatTime(double seconds) {
     return std::string(buf);
 }
 
-double MeanOf(const std::vector<double>& values) {
-    if (values.empty())
+// 由 sum / sumsq / n 还原样本标准差。GOP 统计必须覆盖全部 GOP，但明细列表有
+// max_gops 上限，不能靠遍历明细算统计 —— 累加器只留这两个和。
+double StdDevFromSums(double sum, double sumsq, int64_t n) {
+    if (n < 2)
         return 0.0;
-    return std::accumulate(values.begin(), values.end(), 0.0) / static_cast<double>(values.size());
-}
-
-double StdDevOf(const std::vector<double>& values) {
-    if (values.size() < 2)
-        return 0.0;
-    const double mean = MeanOf(values);
-    double acc = 0.0;
-    for (const double v : values) {
-        const double d = v - mean;
-        acc += d * d;
-    }
-    return std::sqrt(acc / static_cast<double>(values.size() - 1));
+    const double mean = sum / static_cast<double>(n);
+    const double variance = std::max(0.0, (sumsq - sum * mean) / static_cast<double>(n - 1));
+    return std::sqrt(variance);
 }
 
 // 在已排序的时刻表中找最近距离
@@ -88,6 +80,8 @@ void BitrateGopAnalyzer::Reset(const BitrateGopOptions& options) {
     samples_.clear();
     scene_changes_.clear();
     current_gop_ = model::GopInfo{};
+    gop_stats_ = GopStats{};
+    gop_index_ = 0;
     gop_open_ = false;
     video_stream_index_ = -1;
     last_timestamp_ = -1.0;
@@ -318,7 +312,8 @@ double BitrateGopAnalyzer::EstimatedFrameInterval() const {
 
 void BitrateGopAnalyzer::StartGop(double timestamp_seconds, int stream_index, bool closed) {
     current_gop_ = model::GopInfo{};
-    current_gop_.index = static_cast<int>(result_.gops.size());
+    // 序号单独计数：明细列表被 max_gops 截断后 size() 不再代表真实序号。
+    current_gop_.index = gop_index_++;
     current_gop_.stream_index = stream_index;
     current_gop_.start_seconds = timestamp_seconds;
     current_gop_.end_seconds = timestamp_seconds;
@@ -331,8 +326,91 @@ void BitrateGopAnalyzer::CloseCurrentGop(double end_seconds, bool complete) {
         return;
     current_gop_.end_seconds = std::max(end_seconds, current_gop_.start_seconds);
     current_gop_.complete = complete;
-    result_.gops.push_back(current_gop_);
+    // 统计走累加器，明细按上限保留：超长 GOP 的判定也在这里做，
+    // 否则被截断的尾部 GOP 永远不会被检出。
+    AccumulateGop(current_gop_);
+    const bool keep_detail = (options_.max_gops <= 0) || static_cast<int64_t>(result_.gops.size()) < options_.max_gops;
+    if (keep_detail) {
+        result_.gops.push_back(current_gop_);
+    } else {
+        result_.gops_truncated = true;
+    }
     gop_open_ = false;
+}
+
+void BitrateGopAnalyzer::AccumulateGop(const model::GopInfo& gop) {
+    GopStats& s = gop_stats_;
+    const double duration = gop.DurationSeconds();
+
+    s.count += 1;
+    result_.gop_count = s.count;
+    s.duration_sum += duration;
+    s.duration_sumsq += duration * duration;
+    s.duration_max = std::max(s.duration_max, duration);
+
+    if (s.count == 1) {
+        s.frames_min = gop.frame_count;
+        s.frames_max = gop.frame_count;
+    } else {
+        s.frames_min = std::min(s.frames_min, gop.frame_count);
+        s.frames_max = std::max(s.frames_max, gop.frame_count);
+    }
+    s.frames_sum += gop.frame_count;
+
+    if (gop.closed_gop)
+        s.closed_count += 1;
+    else
+        s.open_count += 1;
+
+    if (gop.complete) {
+        s.complete_count += 1;
+        s.complete_duration_sum += duration;
+        s.complete_duration_sumsq += duration * duration;
+        if (!s.has_shortest || duration < s.shortest_complete.DurationSeconds()) {
+            s.shortest_complete = gop;
+            s.has_shortest = true;
+        }
+        if (!s.has_longest || duration > s.longest_complete.DurationSeconds()) {
+            s.longest_complete = gop;
+            s.has_longest = true;
+        }
+    }
+
+    DetectLongGop(gop);
+}
+
+void BitrateGopAnalyzer::DetectLongGop(const model::GopInfo& gop) {
+    const double duration = gop.DurationSeconds();
+    const bool long_by_time = duration > options_.max_gop_seconds;
+    const bool long_by_frames = gop.frame_count > options_.max_gop_frames;
+    if (!long_by_time && !long_by_frames)
+        return;
+
+    result_.long_gop_count += 1;
+    const int max_anomalies = std::max(options_.max_anomalies_per_type, 1);
+    if (result_.CountAnomalies(BitrateAnomalyType::LongGop) >= max_anomalies)
+        return;
+
+    BitrateAnomaly anomaly;
+    anomaly.type = BitrateAnomalyType::LongGop;
+    anomaly.start_seconds = gop.start_seconds;
+    anomaly.end_seconds = gop.end_seconds;
+    anomaly.gop_index = gop.index;
+    if (long_by_time) {
+        anomaly.value = duration;
+        anomaly.threshold = options_.max_gop_seconds;
+    } else {
+        anomaly.value = static_cast<double>(gop.frame_count);
+        anomaly.threshold = static_cast<double>(options_.max_gop_frames);
+    }
+    anomaly.detail = "GOP #" + std::to_string(gop.index) + " 时长 " + FormatValue(duration, 2) + " 秒 / " +
+                     std::to_string(gop.frame_count) + " 帧（阈值 " + FormatValue(options_.max_gop_seconds, 1) +
+                     " 秒 / " + std::to_string(options_.max_gop_frames) + " 帧）。区间 [" +
+                     FormatTime(gop.start_seconds) + " - " + FormatTime(gop.end_seconds) + "]";
+    anomaly.suggestion = "缩短 GOP：设置 -g " + std::to_string(options_.max_gop_frames) + " -keyint_min " +
+                         std::to_string(options_.max_gop_frames) + "（或按帧率换算为 " +
+                         FormatValue(options_.max_gop_seconds, 0) + " 秒以内）。";
+    result_.anomalies.push_back(std::move(anomaly));
 }
 
 void BitrateGopAnalyzer::AssociateSceneChanges(const std::vector<SceneChangeResult>& changes) {
@@ -384,36 +462,26 @@ const BitrateGopAnalysis& BitrateGopAnalyzer::Finish() {
     SummarizeBitrate();
 
     // ---- GOP 统计 ----
-    std::vector<double> durations;
-    std::vector<double> intervals; // 仅统计已收尾的 GOP（完整间隔）
-    std::vector<int> frame_counts;
-    durations.reserve(result_.gops.size());
-    intervals.reserve(result_.gops.size());
-    frame_counts.reserve(result_.gops.size());
-    for (const auto& gop : result_.gops) {
-        durations.push_back(gop.DurationSeconds());
-        frame_counts.push_back(gop.frame_count);
-        if (gop.complete)
-            intervals.push_back(gop.DurationSeconds());
-        if (gop.closed_gop) {
-            result_.closed_gop_count += 1;
-        } else {
-            result_.open_gop_count += 1;
-        }
+    // 全部来自收尾时逐条累加的 GopStats，而不是遍历 result_.gops：
+    // 明细列表受 max_gops 上限截断，拿它算统计会让长素材的均值/最大值只覆盖前一段。
+    const GopStats& s = gop_stats_;
+    if (s.count > 0) {
+        result_.gop_duration_mean = s.duration_sum / static_cast<double>(s.count);
+        result_.gop_duration_stddev = StdDevFromSums(s.duration_sum, s.duration_sumsq, s.count);
+        result_.gop_duration_max = s.duration_max;
+        result_.gop_frames_min = s.frames_min;
+        result_.gop_frames_max = s.frames_max;
+        result_.gop_frames_mean = static_cast<double>(s.frames_sum) / static_cast<double>(s.count);
     }
-    result_.gop_duration_mean = MeanOf(durations);
-    result_.gop_duration_stddev = StdDevOf(durations);
-    result_.gop_duration_max = durations.empty() ? 0.0 : *std::max_element(durations.begin(), durations.end());
-    if (!frame_counts.empty()) {
-        result_.gop_frames_min = *std::min_element(frame_counts.begin(), frame_counts.end());
-        result_.gop_frames_max = *std::max_element(frame_counts.begin(), frame_counts.end());
-        result_.gop_frames_mean =
-            std::accumulate(frame_counts.begin(), frame_counts.end(), 0.0) / static_cast<double>(frame_counts.size());
+    if (s.complete_count > 0) {
+        result_.key_interval_mean = s.complete_duration_sum / static_cast<double>(s.complete_count);
+        result_.key_interval_stddev =
+            StdDevFromSums(s.complete_duration_sum, s.complete_duration_sumsq, s.complete_count);
     }
-    result_.key_interval_mean = MeanOf(intervals);
-    result_.key_interval_stddev = StdDevOf(intervals);
     result_.key_interval_irregularity =
         (result_.key_interval_mean > 0.0) ? result_.key_interval_stddev / result_.key_interval_mean : 0.0;
+    result_.closed_gop_count = static_cast<int>(s.closed_count);
+    result_.open_gop_count = static_cast<int>(s.open_count);
 
     DetectGopAnomalies();
     DetectPeakOvershoot();
@@ -545,55 +613,28 @@ void BitrateGopAnalyzer::SummarizeBitrate() {
 }
 
 void BitrateGopAnalyzer::DetectGopAnomalies() {
-    const int max_anomalies = std::max(options_.max_anomalies_per_type, 1);
-
-    for (const auto& gop : result_.gops) {
-        const double duration = gop.DurationSeconds();
-        const bool long_by_time = duration > options_.max_gop_seconds;
-        const bool long_by_frames = gop.frame_count > options_.max_gop_frames;
-        if (!long_by_time && !long_by_frames)
-            continue;
-
-        result_.long_gop_count += 1;
-        if (result_.CountAnomalies(BitrateAnomalyType::LongGop) >= max_anomalies)
-            continue;
-
-        BitrateAnomaly anomaly;
-        anomaly.type = BitrateAnomalyType::LongGop;
-        anomaly.start_seconds = gop.start_seconds;
-        anomaly.end_seconds = gop.end_seconds;
-        anomaly.gop_index = gop.index;
-        if (long_by_time) {
-            anomaly.value = duration;
-            anomaly.threshold = options_.max_gop_seconds;
-        } else {
-            anomaly.value = static_cast<double>(gop.frame_count);
-            anomaly.threshold = static_cast<double>(options_.max_gop_frames);
-        }
-        anomaly.detail = "GOP #" + std::to_string(gop.index) + " 时长 " + FormatValue(duration, 2) + " 秒 / " +
-                         std::to_string(gop.frame_count) + " 帧（阈值 " + FormatValue(options_.max_gop_seconds, 1) +
-                         " 秒 / " + std::to_string(options_.max_gop_frames) + " 帧）。区间 [" +
-                         FormatTime(gop.start_seconds) + " - " + FormatTime(gop.end_seconds) + "]";
-        anomaly.suggestion = "缩短 GOP：设置 -g " + std::to_string(options_.max_gop_frames) + " -keyint_min " +
-                             std::to_string(options_.max_gop_frames) + "（或按帧率换算为 " +
-                             FormatValue(options_.max_gop_seconds, 0) + " 秒以内）。";
-        result_.anomalies.push_back(std::move(anomaly));
-    }
+    // 超长 GOP 已在 CloseCurrentGop → DetectLongGop 里逐条判定（明细可能被截断，
+    // 这里不能再遍历 result_.gops）。本函数只剩"整体间隔不均匀"的定位。
 
     // 关键帧间隔不均匀（整体统计，只在最偏离的 GOP 上挂一条）
+    const GopStats& s = gop_stats_;
     if (result_.key_interval_irregularity > options_.gop_irregular_ratio && result_.key_interval_mean > 0.0 &&
-        !result_.gops.empty()) {
+        s.complete_count > 0) {
+        // 偏离均值最远的必然是最短或最长的完整 GOP。两者由累加器保存，
+        // 不受明细上限影响 —— 否则尾部 GOP 截断后这里会挑错对象甚至挑不到。
         const model::GopInfo* worst = nullptr;
         double worst_delta = -1.0;
-        for (const auto& gop : result_.gops) {
-            if (!gop.complete)
-                continue;
+        const auto consider = [&](const model::GopInfo& gop) {
             const double delta = std::abs(gop.DurationSeconds() - result_.key_interval_mean);
             if (delta > worst_delta) {
                 worst_delta = delta;
                 worst = &gop;
             }
-        }
+        };
+        if (s.has_shortest)
+            consider(s.shortest_complete);
+        if (s.has_longest)
+            consider(s.longest_complete);
         if (worst != nullptr) {
             BitrateAnomaly anomaly;
             anomaly.type = BitrateAnomalyType::IrregularKeyInterval;

@@ -156,6 +156,8 @@ BitrateGopAnalysis MakeBg() {
     g1.closed_gop = false;
     g1.complete = false;
     bg.gops = {g0, g1};
+    // 汇总里的"GOP N 个"读的是 gop_count（明细表读 gops），造数据时两边都要给。
+    bg.gop_count = 2;
     bg.gop_duration_mean = 6.5;
     bg.gop_duration_max = 12.0;
     bg.gop_frames_min = 50;
@@ -274,7 +276,9 @@ TEST(BitrateGopPageTests, ResultFillsGopTableAndHighlightsLongGop) {
     EXPECT_TRUE(summary->text().contains(QStringLiteral("平均 <b>1500</b> kbps")));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("I 5.0% / P 30.0% / B 65.0%")));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("目标峰值 0 kbps（自动=均值×2）")));
-    EXPECT_TRUE(summary->text().contains(QStringLiteral("GOP <b>2</b> 个")));
+    // 汇总里 GOP 段现在是"个数 ｜ 平均时长（帧数区间）｜ 最长 ｜ 超长 / closed-open / 关键帧间隔"，
+    // 个数自身就带"个"字（%13 是 "2 个"），所以是 <b>2 个</b>。
+    EXPECT_TRUE(summary->text().contains(QStringLiteral("GOP <b>2 个</b> ｜ 平均时长")));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("异常 2 条")));
 
     // 优化建议列表

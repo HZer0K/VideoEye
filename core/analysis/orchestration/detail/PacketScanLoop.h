@@ -26,6 +26,7 @@
 #include "core/analysis/orchestration/detail/AnalysisResultAssembler.h" // ScanBuckets
 #include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/AnalysisResult.h"
+#include "core/ffmpeg_io/FfmpegInterrupt.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -50,8 +51,14 @@ public:
     using CancelPredicate = std::function<bool()>;
     using CancelledExitPredicate = std::function<bool(int)>;
 
+    // interrupt / idle_timeout_us: 网络源的"逐包读取空闲超时"。
+    //
+    // 为什么要在这里武装：av_read_frame 在服务端断流时不返回，外层只能放弃等待；
+    // 只有中断回调里的截止时间能真正结束那次阻塞读。本地输入传 idle_timeout_us = 0
+    // （不设超时），长素材的正常读取因此不会被固定超时误杀。
+    // interrupt 可为空（只靠取消谓词的场合）。
     PacketScanLoop(AVFormatContext* fmt, const AnalysisOptions& options, model::AnalysisResult& result,
-                   const AnalysisCallbacks& callbacks);
+                   const AnalysisCallbacks& callbacks, ffmpeg_io::AvInterruptState* interrupt, int64_t idle_timeout_us);
     ~PacketScanLoop();
 
     PacketScanLoop(const PacketScanLoop&) = delete;
@@ -65,7 +72,8 @@ public:
 private:
     // 扫描事实：包数 / 字节 / 逐流累加 / 最大包 / 缺 DTS 计数
     void AccountPacket(AVPacket* pkt, bool is_video);
-    // 逐秒桶：总字节记所有包，视频字节与帧数只记视频包
+    // 逐秒桶：总字节记所有包；视频字节与**主视频轨的包数**只记主视频轨
+    // （一个包可能含多帧，所以这是包率估算，不是精确帧率）
     void FillBuckets(ScanBuckets& buckets, double interval_seconds, const AVPacket* pkt, bool is_video, double ts);
     bool ReportProgress(int64_t packet_index, int64_t last_pos, double ts);
 
@@ -75,6 +83,8 @@ private:
     const AnalysisCallbacks& callbacks_;
 
     AVPacket* pkt_;
+    ffmpeg_io::AvInterruptState* interrupt_;
+    int64_t idle_timeout_us_;
     std::chrono::steady_clock::time_point last_progress_;
 };
 

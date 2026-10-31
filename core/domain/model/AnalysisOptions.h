@@ -23,6 +23,8 @@
 // 这里继续 include 是为了让既有调用点不受影响 —— 谁 include 本文件，谁就仍能
 // 看见 AnalysisStatus，不必挨个补 include。新代码请直接 include AnalysisTypes.h。
 #include "core/domain/model/AnalysisTypes.h"
+// 视觉画质 QC 的检测参数（纯值对象，与分析器实现无关）
+#include "core/domain/model/VisualDefectOptions.h"
 
 namespace videoeye {
 
@@ -65,6 +67,12 @@ struct BitrateGopOptions {
     // 默认给一个上限而不是 0：0 意味着整条分析链路没有内存上界，一个损坏的
     // 时长头就能让 samples_ 把内存吃光。
     int64_t max_samples = 1000000;
+
+    // GOP 明细上限（0 = 不限制）。GOP 统计（时长均值/标准差、帧数、关键帧间隔、
+    // 超长 GOP 计数）在收尾时**由累加器**算出，不依赖明细列表，所以截断只影响
+    // 报告里逐条列出的 GOP 与异常定位，不影响统计数值。
+    // 超过上限后不再追加明细，用 BitrateGopAnalysis::gops_truncated 标记。
+    int max_gops = 20000;
 };
 
 // 音频 QC 分析配置
@@ -224,7 +232,12 @@ struct AuxDataOptions {
 struct AnalysisOptions {
     double sample_interval_seconds = 1.0; // 码率/帧率序列的采样粒度
     int64_t max_packets = 0;              // 0 表示不限制（超长文件可设上限做抽样）
-    bool detect_container_layout = true;  // MP4 家族是否检测 moov/mdat 顺序
+    // 逐包扫描阶段的 IO 空闲超时（毫秒）。0 = 默认策略：网络源取
+    // ffmpeg_io::kNetworkScanIdleTimeoutUs，本地文件不设超时。
+    // QC 的 io_idle_timeout_ms 会透传到这里：外层只能"放弃等待"，真正把卡在
+    // av_read_frame 里的读操作踢出来要靠引擎自己的中断截止时间。
+    int io_idle_timeout_ms = 0;
+    bool detect_container_layout = true; // MP4 家族是否检测 moov/mdat 顺序
 
     // 码率与 GOP 深度分析（滑动窗口码率 / I-P-B / GOP 列表 / 异常识别）
     bool analyze_bitrate_gop = true;
@@ -260,6 +273,17 @@ struct AnalysisOptions {
     // 只有在 HDR 静态元数据不全时才会额外解码首帧去读 AVFrame side data。
     bool analyze_color_hdr = true;
     ColorHdrOptions color_hdr_options;
+
+    // 视觉画质 QC（无参考全文件画面体检：黑场 / 冻结 / 花屏 / 模糊 / 闪烁 /
+    // 曝光 / 色偏 / 隔行梳齿 / 黑边，见 core/analysis/quality/VisualDefectAnalyzer.h）。
+    //
+    // ❗ 结构体默认关闭：它要把主视频流**完整解码一遍**，开销远大于其它维度（音频 QC
+    // 只解音频，码流/色彩维度几乎只看头）。离线 QC 入口（qc::OptionsForDepth）会按档位
+    // 显式打开：标准/深度档逐帧（OfflineFull），快速档保持关闭。
+    // 打开后按 visual_qc_options 的 sample_fps 抽帧（默认 2 fps）；设
+    // sample_fps=0 / preset=OfflineFull 才逐帧分析。
+    bool analyze_visual_qc = false;
+    model::VisualDefectOptions visual_qc_options;
 
     // 编码码流解析（从 AVCodecParameters::extradata 解析 SPS/VPS/Sequence Header，
     // 与容器层宽高/位深/色彩做一致性对比，见 core/analysis/codec/BitstreamAnalyzer.h）。

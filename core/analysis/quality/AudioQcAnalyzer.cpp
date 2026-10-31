@@ -559,7 +559,7 @@ void AudioQcAnalyzer::ProcessBlock(double end_seconds) {
 
     if (options_.enable_loudness) {
         point.momentary_lufs = model::PowerToLufs(weighted_power);
-        block_powers_.push_back(weighted_power);
+        block_powers_.push_back(static_cast<float>(weighted_power));
         if (point.momentary_lufs > momentary_max_)
             momentary_max_ = point.momentary_lufs;
 
@@ -579,7 +579,7 @@ void AudioQcAnalyzer::ProcessBlock(double end_seconds) {
         if (static_cast<int64_t>(block_powers_.size()) >= static_cast<int64_t>(window_blocks)) {
             const double st_power = short_term_sum_ / static_cast<double>(window_blocks);
             point.short_term_lufs = model::PowerToLufs(st_power);
-            short_term_values_.push_back(point.short_term_lufs);
+            short_term_values_.push_back(static_cast<float>(point.short_term_lufs));
             if (point.short_term_lufs > short_term_max_)
                 short_term_max_ = point.short_term_lufs;
             if (point.short_term_lufs < short_term_min_)
@@ -907,41 +907,39 @@ void AudioQcAnalyzer::FinalizeLoudnessRange() {
         return;
 
     // EBU Tech 3341: 绝对门限 -70 LUFS -> 相对门限（低于均值 20 LU 剔除）-> P95 - P10
-    std::vector<double> values;
-    values.reserve(short_term_values_.size());
-    for (double v : short_term_values_) {
-        if (v >= options_.absolute_gate_lufs)
-            values.push_back(v);
-    }
+    //
+    // 就地过滤：长素材的 short_term_values_ 可能上万条，两次"复制到新数组"会在
+    // 收尾时制造两份等长峰值内存。这里只做 erase/remove_if，峰值不再随素材增长。
+    auto& values = short_term_values_;
+    values.erase(
+        std::remove_if(values.begin(), values.end(), [this](float v) { return v < options_.absolute_gate_lufs; }),
+        values.end());
     if (values.empty())
         return;
 
     double power_sum = 0.0;
-    for (double v : values)
+    for (float v : values)
         power_sum += model::DbToPower(v);
     const double mean_lufs = model::PowerToLufs(power_sum / static_cast<double>(values.size()));
     const double rel_gate = mean_lufs + options_.lra_relative_gate_lu;
 
-    std::vector<double> gated;
-    gated.reserve(values.size());
-    for (double v : values) {
-        if (v >= rel_gate)
-            gated.push_back(v);
-    }
-    if (gated.size() < 2)
+    values.erase(std::remove_if(values.begin(), values.end(), [rel_gate](float v) { return v < rel_gate; }),
+                 values.end());
+    if (values.size() < 2)
         return;
-    std::sort(gated.begin(), gated.end());
+    std::sort(values.begin(), values.end());
 
-    const auto percentile = [](const std::vector<double>& sorted, double p) {
+    const auto percentile = [](const auto& sorted, double p) {
         const double pos = p * (static_cast<double>(sorted.size()) - 1.0);
         const size_t lo = static_cast<size_t>(std::floor(pos));
         const size_t hi = std::min(lo + 1, sorted.size() - 1);
         const double frac = pos - static_cast<double>(lo);
-        return sorted[lo] + (sorted[hi] - sorted[lo]) * frac;
+        return static_cast<double>(sorted[lo]) +
+               (static_cast<double>(sorted[hi]) - static_cast<double>(sorted[lo])) * frac;
     };
 
-    result_.loudness_range_low_lufs = percentile(gated, 0.10);
-    result_.loudness_range_high_lufs = percentile(gated, 0.95);
+    result_.loudness_range_low_lufs = percentile(values, 0.10);
+    result_.loudness_range_high_lufs = percentile(values, 0.95);
     result_.loudness_range_lu = result_.loudness_range_high_lufs - result_.loudness_range_low_lufs;
 }
 

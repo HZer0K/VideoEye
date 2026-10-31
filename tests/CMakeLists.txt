@@ -678,6 +678,18 @@ target_link_libraries(test_color_hdr_rules PRIVATE VideoEyeQcRules)
 add_test(NAME ColorHdrRulesTests COMMAND test_color_hdr_rules)
 
 # =================================================
+# 测试 10b：视觉画质 QC 规则（Info 不算缺陷、Warning/Error 分级）
+# 说明: 规则层是纯模型层，直接构造 AnalysisResult 与缺陷段即可；
+#       "维度没执行时不报"这条尤其重要 —— 默认关闭不能变成"没测 = 没问题"。
+# =================================================
+videoeye_add_test(test_visual_qc_rules
+    unit/test_visual_qc_rules.cpp
+)
+target_link_libraries(test_visual_qc_rules PRIVATE VideoEyeQcRules)
+add_test(NAME VisualQcRulesTests COMMAND test_visual_qc_rules)
+
+
+# =================================================
 # 测试 11：MP4/fMP4 容器一致性 (Mp4SampleTableAnalyzer 的纯逻辑校验)
 # 说明: 只测 Validate()——手工构造合成样本表，不需要 Qt 或真实文件。
 #       解析路径走自研 core/media/container/IsobmffParser.h（纯 stdlib），无需任何第三方容器库。

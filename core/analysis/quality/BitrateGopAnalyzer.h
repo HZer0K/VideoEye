@@ -140,6 +140,36 @@ private:
     void StartGop(double timestamp_seconds, int stream_index, bool closed);
     void CloseCurrentGop(double end_seconds, bool complete);
 
+    // GOP 统计累加器。
+    //
+    // 统计必须覆盖**全部** GOP，而明细列表受 options.max_gops 上限截断 ——
+    // 两者分开：截断只影响报告里逐条列出的 GOP，不影响均值/标准差/超长计数。
+    struct GopStats {
+        int64_t count = 0;
+        double duration_sum = 0.0;
+        double duration_sumsq = 0.0;
+        double duration_max = 0.0;
+        int frames_min = 0;
+        int frames_max = 0;
+        int64_t frames_sum = 0;
+        int64_t complete_count = 0;
+        double complete_duration_sum = 0.0;
+        double complete_duration_sumsq = 0.0;
+        int64_t closed_count = 0;
+        int64_t open_count = 0;
+        // "关键帧间隔不均匀"的定位只需要偏离均值最远的那一条，而极值必然
+        // 落在最短/最长的完整 GOP 上，因此只留这两条副本（不受明细上限影响）。
+        model::GopInfo shortest_complete;
+        model::GopInfo longest_complete;
+        bool has_shortest = false;
+        bool has_longest = false;
+    };
+
+    // 每个 GOP 收尾时累加统计，并做逐条的超长判定（明细可能已被截断，
+    // 不能等 Finish 再遍历 result_.gops）。
+    void AccumulateGop(const model::GopInfo& gop);
+    void DetectLongGop(const model::GopInfo& gop);
+
     // 超过 max_samples 时的有界降采样：相邻两点合并成桶，**字节相加**。
     // 直接丢一半样本（老做法）会让前缀和与帧间隔都缩水 —— 20 帧输入在
     // max_samples=4 下窗口字节数从 2000 掉到 200、估计时长从 2 秒涨到 3.6 秒。
@@ -166,6 +196,10 @@ private:
     std::vector<SceneChangeResult> scene_changes_;
 
     model::GopInfo current_gop_;
+    GopStats gop_stats_;
+    // 明细列表被上限截断后 result_.gops.size() 不再增长，GOP 序号必须单独计数，
+    // 否则被保留的条目会全部显示成同一个 index。
+    int gop_index_ = 0;
     bool gop_open_ = false;
     int video_stream_index_ = -1;
     double last_timestamp_ = -1.0;

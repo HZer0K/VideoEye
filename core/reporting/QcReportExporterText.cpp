@@ -75,7 +75,7 @@ std::string QcReportExporter::BuildText(const QcExportBundle& bundle) {
             }
             out << model::CapabilityToString(status.capability);
             if (status.conclusive)
-                out << "（结论可作通过用）";
+                out << "（结论可用）";
             if (status.has_coverage) {
                 out << " ｜ 覆盖 " << Int64Text(status.units_scanned);
                 if (!status.scope_unit.empty())
@@ -196,6 +196,51 @@ std::string QcReportExporter::BuildText(const QcExportBundle& bundle) {
             else
                 out << "码流 order_hint（AV1，模 2^bits 的环形量已解环；帧间帧不区分 P/B）";
             out << "；不支持 H.264 的 pic_order_cnt_type=1 与 VVC；不重建参考帧列表\n";
+        }
+    }
+
+    // ---- 画质 QC（无参考、需要完整解码视频）----
+    //
+    // 只在真的跑过这一维度时落节：默认为关闭，没跑时落一节空表会让人以为
+    // "逐帧看完整片都没问题"。没跑的原因在「证据与覆盖」的 visual_quality 一行。
+    // 缺陷逐条列出（最多 30 条）：文本报告的价值就是"能直接复制给剪辑看"。
+    if (run.analysis.visual_qc.analyzed) {
+        const model::VisualDefectReport& visual = run.analysis.visual_qc;
+        out << "\n--- 画质 QC ---\n";
+        out << "  分析 " << visual.analyzed_frames << " / " << visual.total_frames << " 帧（共解码 "
+            << visual.total_frames << " 帧）";
+        if (visual.dropped_frames > 0)
+            out << " ｜ 丢弃 " << visual.dropped_frames << " 帧";
+        out << " ｜ 检出 " << visual.defects.size() << " 条画面缺陷\n";
+        const model::ActivePictureArea& area = visual.effective_area;
+        if (area.valid) {
+            out << "  有效画面区域 " << area.width << "x" << area.height << "（占比 "
+                << Fixed(area.active_ratio * 100.0, 1) << "%）";
+            if (area.letterbox || area.pillarbox)
+                out << " ｜ 黑边: " << (area.letterbox ? "上下" : "") << (area.pillarbox ? "左右" : "");
+            out << "\n";
+        }
+        if (visual.defects.empty()) {
+            out << "  未检出画面缺陷。\n";
+        } else {
+            constexpr std::size_t kMaxListedDefects = 30;
+            std::size_t listed = 0;
+            for (const model::VisualDefect& defect : visual.defects) {
+                if (listed++ >= kMaxListedDefects)
+                    break;
+                // 用 ASCII 的 "-" 而不是 "·"：PDF 正文直接复用本函数，而 MiniPdfWriter
+                // 把 U+00B7 当 Latin-1 单字节写出，PDF 文本还原后就与 UTF-8 文本对不上。
+                out << "  - " << model::ToString(defect.type) << " [" << model::DefectTypeCode(defect.type) << "] "
+                    << Fixed(defect.start_seconds, 2) << "–" << Fixed(defect.end_seconds, 2) << " s（"
+                    << Fixed(defect.DurationSeconds(), 2) << " s）｜ " << model::ToString(defect.severity);
+                if (!defect.description.empty())
+                    out << " ｜ " << defect.description;
+                out << "\n";
+            }
+            if (visual.defects.size() > kMaxListedDefects) {
+                out << "  ...（另有 " << (visual.defects.size() - kMaxListedDefects)
+                    << " 条缺陷未列出，完整列表见 JSON 报告的 visual_qc.defects）\n";
+            }
         }
     }
 

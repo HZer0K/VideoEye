@@ -36,6 +36,7 @@
 #include "core/domain/model/TimecodeInfo.h"
 #include "core/domain/model/TimelineDiagnostic.h"
 #include "core/domain/model/TransportStreamInfo.h"
+#include "core/domain/model/VisualDefect.h"
 
 namespace videoeye {
 namespace model {
@@ -62,6 +63,9 @@ struct AnalysisResult {
     MetricSeries total_bitrate_kbps;
     MetricSeries video_bitrate_kbps;
     MetricSeries video_fps;
+    // 逐秒曲线被后端桶上限截断（曲线只覆盖前一段，尾部没有逐秒数据）。
+    // 与"时长未知"不同：截断时采样时长仍然准确，只是曲线点数被上限封顶。
+    bool series_truncated = false;
 
     // GOP / 关键帧（主视频轨的 demux 层轻量统计，供 QC 规则与报告使用）
     std::vector<double> gop_intervals_seconds;
@@ -111,6 +115,12 @@ struct AnalysisResult {
 
     // 色彩与 HDR 元数据（demux 层 + 可选的首帧解码，见 core/analysis/quality/ColorHdrAnalyzer.h）
     ColorHdrAnalysis color_hdr;
+
+    // 视觉画质 QC（无参考全文件画面体检，见 core/analysis/quality/VisualDefectAnalyzer.h）。
+    // 与上面的元数据级维度不同：这一项要完整解码视频、真正看画面内容。
+    // analyzed 是**生产阶段中间标志**：消费方一律用 DimensionExecuted(VisualQuality)。
+    VisualDefectReport visual_qc;
+    bool visual_qc_analyzed = false;
 
     // 时间轴与同步诊断（demux 层，不解码）
     TimelineAnalysisResult timeline;

@@ -383,3 +383,46 @@ TEST(AudioQcAnalyzerTest, InterleavedInputMatchesPlanar) {
     EXPECT_NEAR(interleaved_result.integrated_lufs, planar_result.integrated_lufs, 0.01);
     EXPECT_NEAR(interleaved_result.rms_dbfs, planar_result.rms_dbfs, 0.01);
 }
+
+// ---------------------------------------------------------------- 长素材基线
+//
+// 目的不是测"跑得多快"，而是钉住两件事：
+//   1) 长素材下统计仍然覆盖全部块（duration / block_count 精确），
+//      积分响度不是"只看了前一段"；
+//   2) 明细类数组（曲线点）有界，不会随素材时长线性膨胀。
+//
+// 用 8 kHz / 单声道 / 10 分钟合成音（1 秒一块喂入，模拟逐帧解码），关掉最贵的
+// 真峰值与相关性；块功率本身是 BS.1770 双门限的必需输入，不在明细上限之列。
+TEST(AudioQcAnalyzerTest, LongMaterialKeepsStatsExactAndCurveBounded) {
+    constexpr int sample_rate = 8000;
+    constexpr int seconds = 10 * 60;
+
+    AudioQcOptions options;
+    options.enable_true_peak = false;
+    options.enable_correlation = false;
+    options.max_loudness_points = 128;
+
+    AudioQcAnalyzer analyzer;
+    analyzer.Reset(options);
+    analyzer.SetStreamInfo(sample_rate, 1, "fltp", 32);
+
+    PlanarAudio chunk(1, sample_rate); // 1 s
+    FillSine(chunk, 1000.0, 0.1, sample_rate);
+    for (int s = 0; s < seconds; ++s)
+        analyzer.OnSamples(chunk.ptrs.data(), chunk.Frames(), static_cast<double>(s));
+
+    const AudioQcResult& r = analyzer.Finish();
+
+    // 400 ms 块 + 100 ms 跳步：每 100 ms 一个块
+    EXPECT_DOUBLE_EQ(r.duration_seconds, static_cast<double>(seconds));
+    EXPECT_EQ(r.block_count, static_cast<int64_t>(seconds) * 10 - 3);
+    EXPECT_GT(r.integrated_lufs, kSilenceLufs + 1.0); // 有稳态信号，不能落在静音哨兵
+    EXPECT_LT(r.integrated_lufs, 0.0);
+    EXPECT_GE(r.loudness_range_lu, 0.0);
+
+    // 曲线点数受上限约束（抽稀后 <= 上限），但统计覆盖全部块
+    EXPECT_TRUE(r.loudness_points_decimated);
+    EXPECT_LE(r.loudness_points.size(), static_cast<size_t>(options.max_loudness_points));
+    EXPECT_FALSE(r.loudness_points.empty());
+    EXPECT_LE(r.loudness_points.front().timestamp_seconds, 1.5);
+}

@@ -61,6 +61,8 @@ AnalysisPanel「画面质量」页    曲线 + 缺陷列表 + 证据缩略图 + 
 
 - **冻结必须排除静音段**：静止画面 + 静音是片尾/黑屏留白，不是故障；静止画面 + 有声音才是卡死。
   素材没有音频流时按"不静音"处理（无从判断，宁可报出来）。
+  实时路径靠 `FrameSample::audio_silent` 当场排除；离线路径（`FinalizeVisualQc`）在收尾后用
+  主音轨的静音段回查，重叠 ≥90% 的冻结候选降级为 Info（不参与 `visual.*` 规则）。
 - **纯色/黑场帧不算模糊**：它们的拉普拉斯方差天然接近 0，那是"没细节"，由黑场/曝光去报。
 - **黑场不重复计欠曝**：15/255 已经是黑场，不再叠一条欠曝。
 - **梳齿要求有运动**：静止的隔行素材看不出梳齿，只有场间时间差才会形成梳状边缘。
@@ -124,5 +126,12 @@ AnalysisPanel「画面质量」页    曲线 + 缺陷列表 + 证据缩略图 + 
 - 结果依赖采样率：闪烁这种高频现象建议在「精细」或「离线全帧」档位下看。
 - 色偏是统计意义的判定，本身是暖色调风格的素材（日落、钨丝灯）可能误报，可调阈值。
 - 模糊阈值基于降采样后的锐度指数，与分辨率/内容相关，实际使用建议按素材微调。
-- 当前是**播放时实时分析**；离线全文件批量体检（不播放、一次扫完出报告）尚未接入
-  `QtAnalysisController`，后续可复用同一套 `VisualDefectAnalyzer` 补齐。
+- 离线全文件批量体检已接入分析流水线（`AnalysisPipeline::FlushVisual` + `FinalizeVisualQc`），
+  结果进 `AnalysisResult::visual_qc`，并被 `visual.defects` / `visual.defects_severe` 规则与
+  JSON/文本/HTML 报告消费。`qc::OptionsForDepth` 的映射：快速档关闭，标准/深度档按
+   `OfflineFull` 逐帧（覆盖率可达 99% 以上，维度才能给出「结论可用」的评级）。
+- 证据缩略图只在 HTML 报告里内嵌（PNG base64，单图约 37KB，最多内嵌前 40 条，超出会注明省略）；
+  JSON 不承载二进制，只给 `evidence.available/width/height` 元数据，避免上千条缺陷把体积撑爆。
+  文本/PDF 报告不含图，需要看图时用 HTML。
+- 规则只统计 `severity >= Warning` 的缺陷：`Info` 级的 letterbox/pillarbox 与静音时段冻结
+  是正常呈现，不应让默认模板在宽银幕影片上凭空报 Warning。

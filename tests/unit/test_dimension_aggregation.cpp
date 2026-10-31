@@ -42,9 +42,11 @@
 #include <vector>
 
 #include "core/analysis/orchestration/detail/AnalysisResultAssembler.h"
+#include "core/analysis/quality/VisualDefectAnalyzer.h"
 #include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/DimensionStatus.h"
+#include "core/domain/model/VisualDefect.h"
 
 namespace {
 
@@ -54,6 +56,7 @@ using videoeye::model::AnalysisCapability;
 using videoeye::model::AnalysisDimension;
 using videoeye::model::AnalysisResult;
 using videoeye::model::AudioBitstreamStream;
+using videoeye::model::AudioQcResult;
 using videoeye::model::ContainerDiagnosticsInfo;
 using videoeye::model::DimensionName;
 using videoeye::model::DimensionStatus;
@@ -216,6 +219,65 @@ TEST(DimensionAggregation, LegacyContainerStaysSkippedWithoutAnyFacts) {
 }
 
 // ---------------------------------------------------------------------------
+// R2：音频 QC 维度必须聚合**全部**参与分析的音轨，而不是只看主轨。
+//
+// 主轨完整、次轨只解出 40% 的 PCM 时，旧实现给 Supported/conclusive ——
+// 报告读起来像"全部音轨都已通过"，而次轨自己的结果其实是 Partial。
+// ---------------------------------------------------------------------------
+TEST(DimensionAggregation, AudioQcDegradesWhenSecondaryTrackCoverageLow) {
+    const AnalysisResult result = Finalize(
+        AnalysisOptions{},
+        [](AnalysisResult& r) {
+            AudioQcResult primary;
+            primary.analyzed = true;
+            primary.coverage_ratio = 1.0;
+            primary.completeness = AudioQcResult::Completeness::Complete;
+
+            AudioQcResult secondary;
+            secondary.analyzed = true;
+            secondary.coverage_ratio = 0.4;
+            secondary.completeness = AudioQcResult::Completeness::Partial;
+
+            r.audio_qc = primary; // 主轨兼容字段：完整
+            r.audio_qc_streams = {primary, secondary};
+            r.audio_qc_stream_indices = {1, 2};
+            r.audio_qc_tracks_analyzed = 2;
+            r.audio_qc_tracks_total = 2;
+        },
+        2, 2);
+
+    const DimensionStatus status = StatusOrEmpty(result, AnalysisDimension::AudioQc);
+    EXPECT_TRUE(status.executed);
+    EXPECT_EQ(status.capability, AnalysisCapability::Partial)
+        << "次轨覆盖不足时维度不能判成 Supported（实际 " << static_cast<int>(status.capability) << "）";
+    EXPECT_FALSE(status.failure_reason.empty()) << "降级必须给出理由";
+}
+
+// ---------------------------------------------------------------------------
+// R3：所有音轨都解不出 PCM 时，维度必须是 Failed（而不是"没跑过"或"完整"）。
+// ---------------------------------------------------------------------------
+TEST(DimensionAggregation, AudioQcFailsWhenNoTrackProducesPcm) {
+    const AnalysisResult result = Finalize(
+        AnalysisOptions{},
+        [](AnalysisResult& r) {
+            AudioQcResult failed;
+            failed.analyzed = false;
+            failed.completeness = AudioQcResult::Completeness::Failed;
+            r.audio_qc_streams = {failed};
+            r.audio_qc_stream_indices = {1};
+            r.audio_qc_tracks_analyzed = 0;
+            r.audio_qc_tracks_total = 1;
+        },
+        0, 1);
+
+    const DimensionStatus status = StatusOrEmpty(result, AnalysisDimension::AudioQc);
+    EXPECT_TRUE(status.executed) << "选项开着且有音轨时，失败也是「执行过」的一种结论";
+    EXPECT_EQ(status.capability, AnalysisCapability::Failed)
+        << "全部解码失败必须判 Failed（实际 " << static_cast<int>(status.capability) << "）";
+    EXPECT_FALSE(status.failure_reason.empty());
+}
+
+// ---------------------------------------------------------------------------
 // 判据 4：每个维度只读自己那份事实
 //
 // 一行 = 一个维度 = 它的事实来源 + 它该给出的评级。两张面各自跑一遍：
@@ -233,6 +295,8 @@ struct DimensionCase {
     // 音频 QC 的覆盖分母来自**调用参数**而不是 result 字段，所以单独给。
     int audio_analyzed = 0;
     int audio_total = 0;
+    // 少数维度的开关默认关闭（画质 QC 需要完整解码视频），点亮前要先打开它。
+    std::function<void(AnalysisOptions&)> configure_options;
     AnalysisCapability lit = AnalysisCapability::Supported;
     // 事实缺席（但选项开着）时的期望。
     bool dark_executed = false;
@@ -269,6 +333,23 @@ DimensionCase AudioQcCase() {
     });
     one.audio_analyzed = 1;
     one.audio_total = 1;
+    return one;
+}
+
+// 画质 QC 的开关默认关闭（要完整解码视频），所以这一项必须先把选项打开才能点亮。
+// 覆盖率的分母是本次实际解码出来的帧数：这里全量分析，覆盖率 100% -> Supported。
+DimensionCase VisualQualityCase() {
+    DimensionCase one = MakeCase(AnalysisDimension::VisualQuality, [](AnalysisResult& r) {
+        StreamDigest video;
+        video.index = 0;
+        video.media_type = 0;
+        r.streams.push_back(video);
+        r.primary_video_stream_index = 0;
+        r.visual_qc.analyzed = true;
+        r.visual_qc.analyzed_frames = 100;
+        r.visual_qc.total_frames = 100;
+    });
+    one.configure_options = [](AnalysisOptions& options) { options.analyze_visual_qc = true; };
     return one;
 }
 
@@ -321,6 +402,7 @@ const std::vector<DimensionCase>& AllDimensionCases() {
                      r.color_hdr.analyzed = true;
                      r.color_hdr.color.analyzed = true;
                  }),
+        VisualQualityCase(),
         AudioQcCase(),
         MakeCase(AnalysisDimension::AudioBitstream,
                  [](AnalysisResult& r) {
@@ -379,7 +461,10 @@ TEST(DimensionAggregation, EveryDimensionLightsUpFromItsOwnFacts) {
     for (const DimensionCase& one : AllDimensionCases()) {
         if (!one.light_up)
             continue;
-        const AnalysisResult result = Finalize(AnalysisOptions{}, one.light_up, one.audio_analyzed, one.audio_total);
+        AnalysisOptions options;
+        if (one.configure_options)
+            one.configure_options(options);
+        const AnalysisResult result = Finalize(options, one.light_up, one.audio_analyzed, one.audio_total);
         const DimensionStatus status = StatusOrEmpty(result, one.dimension);
         EXPECT_TRUE(status.executed) << DimensionName(one.dimension)
                                      << " 的事实已经塞进 result，维度却被判成未执行 —— 报告会显示「"
@@ -393,9 +478,13 @@ TEST(DimensionAggregation, EveryDimensionLightsUpFromItsOwnFacts) {
 }
 
 TEST(DimensionAggregation, EveryDimensionStaysSkippedWithoutFacts) {
-    // 选项默认全开、result 里一条事实都没有 —— 这正是"素材里没这类数据"的样子。
-    const AnalysisResult empty = Finalize(AnalysisOptions{}, nullptr);
+    // 选项全开（含默认关闭的那几项）、result 里一条事实都没有 ——
+    // 这正是"素材里没这类数据"的样子。
     for (const DimensionCase& one : AllDimensionCases()) {
+        AnalysisOptions options;
+        if (one.configure_options)
+            one.configure_options(options);
+        const AnalysisResult empty = Finalize(options, nullptr);
         const DimensionStatus status = StatusOrEmpty(empty, one.dimension);
         const std::string label = DimensionName(one.dimension);
         EXPECT_EQ(status.executed, one.dark_executed)
@@ -408,6 +497,121 @@ TEST(DimensionAggregation, EveryDimensionStaysSkippedWithoutFacts) {
             EXPECT_FALSE(status.conclusive) << label << " 未执行却被判成「结论可信」";
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// 离线路径的冻结复核
+//
+// 冻结的判据是"画面静止 + 音频在走"。实时路径靠 FrameSample::audio_silent
+// 当场排除静音时段，离线抽帧拿不到这个状态，只能在收尾后用主音轨静音段回查。
+// 两条路径必须一致，否则片尾静帧（画面不动、声音已停）在批量 QC 里会被报成
+// Warning/Error 冻结。
+// ---------------------------------------------------------------------------
+namespace {
+
+videoeye::model::FrameSample StaticSample(double ts) {
+    videoeye::model::FrameSample sample;
+    sample.width = 64;
+    sample.height = 36;
+    sample.gray.assign(static_cast<size_t>(sample.width) * static_cast<size_t>(sample.height), 128);
+    sample.timestamp_seconds = ts;
+    sample.frame_index = static_cast<int>(ts * 25.0);
+    return sample;
+}
+
+// 喂三帧完全相同的画面：冻结段从第 2 帧（1.2s）起算，Flush 到 2.4s，
+// 时长 1.2s > 冻结阈值 1.0s，产出且只产出一条冻结。
+void FeedFreeze(videoeye::VisualDefectAnalyzer& analyzer) {
+    analyzer.Reset(videoeye::model::VisualDefectOptions{});
+    analyzer.Feed(StaticSample(0.0));
+    analyzer.Feed(StaticSample(1.2));
+    analyzer.Feed(StaticSample(2.4));
+    analyzer.Flush(2.4);
+}
+
+} // namespace
+
+TEST(DimensionAggregation, SilentPrimaryAudioDowngradesFreezeToInfo) {
+    AnalysisOptions options;
+    options.analyze_visual_qc = true;
+    AnalysisResult result;
+    result.audio_qc.analyzed = true;
+    result.audio_qc.has_audio = true;
+    videoeye::model::AudioSilenceRange silence;
+    silence.start_seconds = 0.0;
+    silence.end_seconds = 3.0;
+    silence.duration_seconds = 3.0;
+    result.audio_qc.silence_ranges.push_back(silence);
+
+    videoeye::VisualDefectAnalyzer analyzer;
+    FeedFreeze(analyzer);
+    AnalysisResultAssembler assembler(result, options);
+    assembler.FinalizeVisualQc(analyzer, 0, 30);
+
+    ASSERT_EQ(result.visual_qc.defects.size(), 1u);
+    const videoeye::model::VisualDefect& defect = result.visual_qc.defects.front();
+    EXPECT_EQ(defect.type, videoeye::model::VisualDefectType::FreezeFrame);
+    EXPECT_EQ(defect.severity, videoeye::model::VisualDefectSeverity::Info)
+        << "主音轨整段静音时的冻结是片尾静帧，不应保持 Warning/Error";
+    EXPECT_NE(defect.description.find("主音轨在该时段静音"), std::string::npos)
+        << "降级理由要写进说明，报告里才能解释为什么它不算缺陷";
+}
+
+TEST(DimensionAggregation, FreezeStaysFaultWhenPrimaryAudioIsNotSilent) {
+    // 没有音频就没有"音频在走/没在走"的证据：保持原判（宁可报出来）。
+    AnalysisOptions options;
+    options.analyze_visual_qc = true;
+    AnalysisResult result;
+
+    videoeye::VisualDefectAnalyzer analyzer;
+    FeedFreeze(analyzer);
+    AnalysisResultAssembler assembler(result, options);
+    assembler.FinalizeVisualQc(analyzer, 0, 30);
+
+    ASSERT_EQ(result.visual_qc.defects.size(), 1u);
+    const videoeye::model::VisualDefect& defect = result.visual_qc.defects.front();
+    EXPECT_EQ(defect.type, videoeye::model::VisualDefectType::FreezeFrame);
+    EXPECT_GE(static_cast<int>(defect.severity), static_cast<int>(videoeye::model::VisualDefectSeverity::Warning));
+}
+
+// 画质维度必须把"扫完了、检出严重缺陷"当成**扫描成功**的结论，而不是扫描失败。
+//
+// 以前 failures 被填成严重缺陷条数，于是 MarkConclusive 判成不可用 —— 报告会出现
+// "已逐帧扫完全片、检出 3 条 Error 冻结、结论却不可作通过用"。failures 应当是
+// "解码/降采样失败"的计数；缺陷数量只进 notes，通过与否由规则层回答。
+TEST(DimensionAggregation, VisualQualitySevereDefectsDoNotCountAsScanFailures) {
+    AnalysisOptions options;
+    options.analyze_visual_qc = true;
+
+    const AnalysisResult result = Finalize(options, [](AnalysisResult& r) {
+        StreamDigest video;
+        video.index = 0;
+        video.media_type = 0;
+        r.streams.push_back(video);
+        r.primary_video_stream_index = 0;
+        r.visual_qc.analyzed = true;
+        r.visual_qc.analyzed_frames = 100;
+        r.visual_qc.total_frames = 100;
+
+        videoeye::model::VisualDefect freeze;
+        freeze.type = videoeye::model::VisualDefectType::FreezeFrame;
+        freeze.severity = videoeye::model::VisualDefectSeverity::Error;
+        freeze.start_seconds = 10.0;
+        freeze.end_seconds = 15.0;
+        r.visual_qc.defects.push_back(freeze);
+    });
+
+    const DimensionStatus status = StatusOrEmpty(result, AnalysisDimension::VisualQuality);
+    EXPECT_TRUE(status.executed);
+    EXPECT_EQ(status.capability, AnalysisCapability::Supported);
+    EXPECT_EQ(status.failures, 0) << "缺陷条数不是扫描失败，不能记进 failures";
+    EXPECT_TRUE(status.conclusive) << "覆盖率 100% 的完整扫描必须给出可用结论 —— 结论就是「有严重缺陷」";
+    EXPECT_EQ(status.Summary().find("失败"), std::string::npos)
+        << "摘要里出现「失败」会让读者以为这一维度没跑完: " << status.Summary();
+    bool has_severe_note = false;
+    for (const std::string& note : status.notes)
+        has_severe_note = has_severe_note || note.find("严重缺陷") != std::string::npos;
+    EXPECT_TRUE(has_severe_note) << "缺陷数量仍要留在 notes 里，报告才看得见";
 }
 
 // ---------------------------------------------------------------------------
@@ -426,10 +630,10 @@ TEST(DimensionAggregation, DimensionsAppearInTheDocumentedOrder) {
     const std::vector<AnalysisDimension> expected = {
         AnalysisDimension::FileProbe,      AnalysisDimension::ContainerStructure, AnalysisDimension::VideoBitstream,
         AnalysisDimension::FrameStructure, AnalysisDimension::FrameOrder,         AnalysisDimension::ParameterTimeline,
-        AnalysisDimension::BitrateGop,     AnalysisDimension::ColorHdr,           AnalysisDimension::AudioQc,
-        AnalysisDimension::AudioBitstream, AnalysisDimension::Subtitle,           AnalysisDimension::Timecode,
-        AnalysisDimension::AuxiliaryData,  AnalysisDimension::Mp4SampleTable,     AnalysisDimension::TsTransport,
-        AnalysisDimension::Streaming,      AnalysisDimension::LegacyContainer,
+        AnalysisDimension::BitrateGop,     AnalysisDimension::ColorHdr,           AnalysisDimension::VisualQuality,
+        AnalysisDimension::AudioQc,        AnalysisDimension::AudioBitstream,     AnalysisDimension::Subtitle,
+        AnalysisDimension::Timecode,       AnalysisDimension::AuxiliaryData,      AnalysisDimension::Mp4SampleTable,
+        AnalysisDimension::TsTransport,    AnalysisDimension::Streaming,          AnalysisDimension::LegacyContainer,
     };
     ASSERT_EQ(result.dimensions.size(), expected.size());
     for (size_t i = 0; i < expected.size(); ++i) {

@@ -296,9 +296,11 @@ TEST(AnalysisPipelineEdges, ProbesAreMoveOnlyAndReleaseOnDestruction) {
     static_assert(!std::is_copy_constructible<AudioQcProbe>::value, "probe 必须禁拷贝");
     static_assert(!std::is_copy_constructible<FrameTypeProbe>::value, "probe 必须禁拷贝");
     static_assert(!std::is_copy_constructible<ColorFrameProbe>::value, "probe 必须禁拷贝");
+    static_assert(!std::is_copy_constructible<VisualFrameProbe>::value, "视觉 QC 的 probe 必须禁拷贝");
     static_assert(std::is_move_constructible<AudioQcProbe>::value, "probe 必须可移动（vector 扩容要用）");
     static_assert(std::is_move_constructible<FrameTypeProbe>::value, "probe 必须可移动");
     static_assert(std::is_move_constructible<ColorFrameProbe>::value, "probe 必须可移动");
+    static_assert(std::is_move_constructible<VisualFrameProbe>::value, "视觉 QC 的 probe 必须可移动");
 
     AudioQcProbe probe;
     probe.frame = av_frame_alloc();
@@ -329,4 +331,116 @@ TEST(AnalysisPipelineEdges, PipelineDestructorReleasesProbesWithoutExplicitCall)
         pipeline.ReleaseProbes(); // 幂等：调几次都不会重复释放
         pipeline.ReleaseProbes();
     } // 析构再收一次：显式释放过的探针已回到"什么都没拿"的状态
+}
+
+// ==========================================================================
+// 视觉画质 QC：离线抽帧必须真的走到解码出来的画面上。
+//
+// 用 rawvideo + RGB24 合成全黑帧：不需要真码流，解码器输出的就是喂进去的像素，
+// 这样"抽帧 -> BuildSample -> Feed"整条链路才被测到（而不是只测分析器算法）。
+// 10 帧 @25fps 的黑场跨越 0.36s，超过默认 0.3s 阈值 —— 必须落一条 BlackFrame。
+// ==========================================================================
+TEST(AnalysisPipelineEdges, VisualQcAnalyzesDecodedFramesAndReportsBlackSegment) {
+    using videoeye::model::VisualDefectReport;
+    using videoeye::model::VisualDefectType;
+
+    PipelineCase test;
+    ASSERT_TRUE(test.format != nullptr);
+    AVStream* video = test.Add(AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_RAWVIDEO);
+    ASSERT_TRUE(video != nullptr);
+    constexpr int kWidth = 64;
+    constexpr int kHeight = 36;
+    constexpr int kFrames = 10;
+    video->codecpar->width = kWidth;
+    video->codecpar->height = kHeight;
+    video->codecpar->format = AV_PIX_FMT_RGB24;
+    video->avg_frame_rate = AVRational{25, 1};
+    video->r_frame_rate = AVRational{25, 1};
+
+    test.options.analyze_visual_qc = true;
+    // 离线全帧：不抽样，覆盖率应当等于解码帧数
+    test.options.visual_qc_options.preset = videoeye::model::VisualSamplingPreset::OfflineFull;
+    test.pipeline.Prepare(test.format, test.result, 1.0);
+    ASSERT_GE(test.pipeline.visual_video_stream_index(), 0);
+
+    const int frame_bytes = kWidth * kHeight * 3;
+    for (int i = 0; i < kFrames; ++i) {
+        AVPacket* packet = av_packet_alloc();
+        ASSERT_TRUE(packet != nullptr);
+        if (av_new_packet(packet, frame_bytes) < 0) {
+            av_packet_free(&packet);
+            FAIL() << "无法分配 rawvideo 帧";
+            return;
+        }
+        std::memset(packet->data, 0, static_cast<size_t>(frame_bytes));
+        packet->stream_index = video->index;
+        packet->pts = packet->dts = i * 40; // 25fps，时基 1/1000
+        packet->duration = 40;
+        test.pipeline.OnPacket(test.format, packet, test.result, 0);
+        av_packet_free(&packet);
+    }
+    test.pipeline.FlushVisual();
+
+    EXPECT_EQ(test.pipeline.visual_frames_decoded(), kFrames) << "每个包都应解出一帧";
+    const VisualDefectReport report = test.pipeline.visual_qc().Snapshot();
+    ASSERT_TRUE(report.analyzed) << "全帧分析后必须标记已分析";
+    EXPECT_EQ(report.analyzed_frames, kFrames) << "逐帧档位不应抽样";
+    EXPECT_GE(report.CountByType(VisualDefectType::BlackFrame), 1) << "0.36s 黑场应落一条 BlackFrame";
+}
+
+// ==========================================================================
+// 逐秒桶的有界保留
+//
+// 桶按时间无限增长（24 小时 / 1 秒粒度 = 86400 个），而三条逐秒曲线最多只画
+// kMaxCurvePoints 个点。上限之后必须**停止新增**并显式置 truncated，但
+// last_bucket_index 仍要跟着走 —— 否则时长兜底会把素材算短。
+// ==========================================================================
+TEST(AnalysisPipelineEdges, ScanBucketsStopGrowingAtCapButRememberLastIndex) {
+    const int64_t cap = static_cast<int64_t>(videoeye::ScanBuckets::kMaxBuckets);
+    videoeye::ScanBuckets buckets;
+    for (int64_t i = 0; i < cap; ++i) {
+        videoeye::ScanBucket* slot = buckets.Acquire(i);
+        ASSERT_NE(slot, nullptr) << "上限之前的每个桶都应创建成功: " << i;
+        slot->total_bytes = 1;
+    }
+    EXPECT_EQ(static_cast<int64_t>(buckets.by_second.size()), cap);
+    EXPECT_FALSE(buckets.truncated);
+    EXPECT_EQ(buckets.last_bucket_index, cap - 1);
+
+    // 超过上限：不再新增、置 truncated，last_bucket_index 继续更新
+    for (int64_t i = 0; i < 5; ++i) {
+        EXPECT_EQ(buckets.Acquire(cap + i), nullptr);
+    }
+    EXPECT_TRUE(buckets.truncated);
+    EXPECT_EQ(static_cast<int64_t>(buckets.by_second.size()), cap);
+    EXPECT_EQ(buckets.last_bucket_index, cap + 4);
+
+    // 已存在的桶在截断后仍可累加（前段曲线不受影响）
+    videoeye::ScanBucket* existing = buckets.Acquire(0);
+    ASSERT_NE(existing, nullptr);
+    existing->total_bytes += 1;
+    EXPECT_EQ(existing->total_bytes, 2);
+}
+
+// 时长兜底必须用 last_bucket_index（含被丢弃的桶），不能用 rbegin()：
+// 截断后最后一个留在 map 里的桶远早于真实末尾，用它算时长会把素材算短。
+TEST(AnalysisPipelineEdges, TruncatedBucketsStillYieldFullMeasuredDuration) {
+    const int64_t cap = static_cast<int64_t>(videoeye::ScanBuckets::kMaxBuckets);
+    constexpr double interval = 0.5;
+    videoeye::ScanBuckets buckets;
+    for (int64_t i = 0; i < cap; ++i)
+        ASSERT_NE(buckets.Acquire(i), nullptr);
+    // 之后还有 10 秒的数据（桶被丢弃，但结束时间必须仍然知道）
+    for (int64_t i = 0; i < 20; ++i)
+        EXPECT_EQ(buckets.Acquire(cap + i), nullptr);
+
+    videoeye::model::AnalysisResult result; // duration_seconds 为 0 -> 走桶兜底
+    videoeye::AnalysisOptions options = QuietOptions();
+    videoeye::AnalysisResultAssembler assembler(result, options);
+    const double measured = assembler.FinalizeBuckets(buckets, interval);
+
+    EXPECT_TRUE(result.series_truncated);
+    EXPECT_EQ(result.total_bitrate_kbps.Size(), static_cast<size_t>(cap));
+    // 结束时刻 = (last_bucket_index + 1) * interval，覆盖被丢弃的尾部
+    EXPECT_NEAR(measured, static_cast<double>(cap + 20) * interval, 1e-9);
 }

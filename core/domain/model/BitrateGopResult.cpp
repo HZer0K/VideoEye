@@ -65,12 +65,13 @@ std::string model::BitrateGopAnalysis::ToString() const {
     char buf[512];
     std::snprintf(buf, sizeof(buf),
                   "码率: 平均 %.0f kbps / 峰值 %.0f kbps / 峰均比 %.2f (窗口 %.2fs) | "
-                  "GOP: %zu 个, 平均 %.2fs (%d~%d 帧), 最长 %.2fs, 超长 %d 个 | "
+                  "GOP: %lld 个, 平均 %.2fs (%d~%d 帧), 最长 %.2fs, 超长 %d 个 | "
                   "帧类型: I=%lld P=%lld B=%lld 未知=%lld | 异常 %zu 条",
-                  avg_bitrate_kbps, peak_bitrate_kbps, peak_to_mean_ratio, window_seconds, gops.size(),
-                  gop_duration_mean, gop_frames_min, gop_frames_max, gop_duration_max, long_gop_count,
-                  static_cast<long long>(i_frame_count), static_cast<long long>(p_frame_count),
-                  static_cast<long long>(b_frame_count), static_cast<long long>(unknown_frame_count), anomalies.size());
+                  avg_bitrate_kbps, peak_bitrate_kbps, peak_to_mean_ratio, window_seconds,
+                  static_cast<long long>(gop_count), gop_duration_mean, gop_frames_min, gop_frames_max,
+                  gop_duration_max, long_gop_count, static_cast<long long>(i_frame_count),
+                  static_cast<long long>(p_frame_count), static_cast<long long>(b_frame_count),
+                  static_cast<long long>(unknown_frame_count), anomalies.size());
     return std::string(buf);
 }
 

@@ -925,6 +925,37 @@ QcExportBundle MakeEnrichedBundle() {
     frame_order.avg_gop_frames = 100.0;
     analysis.frame_order_timelines.push_back(frame_order);
 
+    // 画质 QC：黑场 + 冻结两条缺陷，覆盖「画质 QC」这一节
+    analysis.visual_qc.analyzed = true;
+    analysis.visual_qc.analyzed_frames = 120;
+    analysis.visual_qc.total_frames = 300;
+    analysis.visual_qc.duration_seconds = 12.0;
+    model::VisualDefect black;
+    black.id = 1;
+    black.type = model::VisualDefectType::BlackFrame;
+    black.severity = model::VisualDefectSeverity::Warning;
+    black.start_seconds = 0.0;
+    black.end_seconds = 2.0;
+    black.start_frame = 0;
+    black.end_frame = 49;
+    black.score = 1.0;
+    black.threshold = 0.95;
+    black.description = "全帧亮度均值 3，黑像素占比 100%";
+    analysis.visual_qc.defects.push_back(black);
+    model::VisualDefect freeze = black;
+    freeze.id = 2;
+    freeze.type = model::VisualDefectType::FreezeFrame;
+    freeze.severity = model::VisualDefectSeverity::Error;
+    freeze.start_seconds = 30.0;
+    freeze.end_seconds = 35.0;
+    freeze.description = "画面静止且音频在走";
+    // 证据缩略图（8x4 RGB24）：离线扫描默认会采，报告要能看见它
+    freeze.evidence.width = 8;
+    freeze.evidence.height = 4;
+    freeze.evidence.rgb.assign(8u * 4u * 3u, 200);
+    analysis.visual_qc.defects.push_back(freeze);
+    analysis.visual_qc_analyzed = true;
+
     // 逐轨音频：两条轨，一条满覆盖一条半覆盖
     model::AudioQcResult track0;
     track0.analyzed = true;
@@ -1169,6 +1200,47 @@ TEST(QcReportExporterTest, NewSectionsAppearInTextAndHtml) {
     EXPECT_NE(html.find("音频 QC（逐轨）"), std::string::npos);
 }
 
+// 证据缩略图的落法：HTML 内嵌 PNG（单文件报告也能看图），JSON 只给元数据。
+//
+// 离线探针默认 capture_rgb=true，吐槽过很多次的"报告只有文字、说不出这条缺陷长什么样"
+// 就靠这里补上。JSON 不内嵌二进制是刻意的（单条 27KB，上千条会撑爆体积），
+// 但必须能区分"没采样到证据"和"有证据未导出"。
+TEST(QcReportExporterTest, VisualEvidenceIsEmbeddedInHtmlAndDescribedInJson) {
+    const QcExportBundle bundle = MakeEnrichedBundle();
+
+    const std::string html = QcReportExporter::BuildHtml(bundle);
+    EXPECT_NE(html.find("<th>证据</th>"), std::string::npos);
+    EXPECT_NE(html.find("data:image/png;base64,"), std::string::npos) << "缺陷带了证据图，报告里就该看得见";
+
+    JsonValue root;
+    std::string err;
+    ASSERT_TRUE(JsonParse(QcReportExporter::BuildJson(bundle), root, &err)) << err;
+    const JsonValue* visual = root.Find("visual_qc");
+    ASSERT_TRUE(visual != nullptr);
+    const JsonValue* defects = visual->Find("defects");
+    ASSERT_TRUE(defects != nullptr && defects->IsArray());
+
+    bool freeze_checked = false;
+    bool black_checked = false;
+    for (const JsonValue& item : defects->Items()) {
+        const JsonValue* evidence = item.Find("evidence");
+        ASSERT_TRUE(evidence != nullptr) << "每条缺陷都要有 evidence 元数据";
+        const JsonValue* id = item.Find("id");
+        ASSERT_TRUE(id != nullptr);
+        if (id->IntValueOr() == 2) {
+            EXPECT_TRUE(Flag(evidence, "available"));
+            EXPECT_EQ(evidence->Find("width")->IntValueOr(), 8);
+            EXPECT_EQ(evidence->Find("height")->IntValueOr(), 4);
+            freeze_checked = true;
+        } else if (id->IntValueOr() == 1) {
+            EXPECT_FALSE(Flag(evidence, "available")) << "黑场这条没造证据图";
+            black_checked = true;
+        }
+    }
+    EXPECT_TRUE(freeze_checked);
+    EXPECT_TRUE(black_checked);
+}
+
 // 逐维度覆盖在 CSV 里的落法：与 TXT / HTML 的「证据与覆盖」同一份口径，换成列而已。
 // 没有它，空表读者只能猜"黑帧检测是不是压根没跑"。
 TEST(QcReportExporterTest, CsvCoverageRowsMirrorDimensionStatus) {
@@ -1368,6 +1440,7 @@ const SectionPair kSectionPairs[] = {
     {"证据与覆盖", "证据与覆盖"},
     {"参数变化时间线", "参数变化时间线"},
     {"帧级显示顺序", "帧级显示顺序"},
+    {"画质 QC", "画质 QC"},
     {"流列表", "流列表"},
     {"音频 QC（逐轨）", "音频 QC（逐轨）"},
     {"响度（主音轨）", "响度与音频 QC（主音轨）"},

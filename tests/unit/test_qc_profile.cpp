@@ -5,11 +5,14 @@
 #include <vector>
 
 #include "core/qc/QcProfile.h"
+#include "core/qc/QcProfileMapper.h"
 
 using videoeye::qc::BuiltinQcProfiles;
 using videoeye::qc::FindBuiltinQcProfile;
 using videoeye::qc::LoadQcProfileFromFile;
+using videoeye::qc::OptionsForDepth;
 using videoeye::qc::ParseQcProfileJson;
+using videoeye::qc::QcAnalysisDepth;
 using videoeye::qc::QcProfile;
 using videoeye::qc::SaveQcProfileToFile;
 using videoeye::qc::SerializeQcProfile;
@@ -88,6 +91,21 @@ TEST(QcProfileTest, OverrideApplyChangesThreshold) {
         }
     }
     EXPECT_TRUE(ok);
+}
+
+// 离线 QC 入口必须真的开启视觉画质维度。这里钉住的是"装了要接电"：
+//   * 快速档保持关闭（批量初筛的成本模型不能被画面解码拖垮）；
+//   * 标准 / 深度档逐帧（OfflineFull），否则抽帧覆盖率永远 <99%，
+//     维度会恒为 Partial，"没检出缺陷"就没法当通过用。
+TEST(QcProfileTest, OptionsForDepthWiresVisualQcIntoOfflineTiers) {
+    const auto fast = OptionsForDepth(QcAnalysisDepth::Fast);
+    EXPECT_FALSE(fast.analyze_visual_qc);
+
+    for (QcAnalysisDepth depth : {QcAnalysisDepth::Standard, QcAnalysisDepth::Deep}) {
+        const auto options = OptionsForDepth(depth);
+        EXPECT_TRUE(options.analyze_visual_qc);
+        EXPECT_EQ(options.visual_qc_options.preset, videoeye::model::VisualSamplingPreset::OfflineFull);
+    }
 }
 
 TEST(QcProfileTest, UnknownRuleIdsDetected) {

@@ -156,6 +156,12 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& prof
     box->cancel_flag = std::make_shared<std::atomic<bool>>(false);
     box->path = path;
     box->options = std::move(options);
+    // 引擎自身的 IO 空闲超时与执行器的等待策略保持同一口径：外层 io_idle 只能
+    // "放弃等待 + detach"，那颗卡在 av_read_frame 的线程仍占着上下文；把同一个
+    // 值透传给引擎，它才会用中断截止时间真正结束阻塞读。0 保持默认策略
+    // （网络源用引擎默认值，本地文件不设超时）。
+    if (budgets.io_idle_timeout_ms > 0)
+        box->options.io_idle_timeout_ms = budgets.io_idle_timeout_ms;
     // 计时基准：放弃判定的 elapsed / idle 都相对它（盒子自带默认值，这里与本次开跑对齐）
     box->started_at = started_at;
 

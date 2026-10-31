@@ -57,6 +57,19 @@ TEST(FfmpegInterrupt, ZeroedDeadlineDisablesTimeout) {
     EXPECT_EQ(0, ffmpeg_io::AvIoInterruptCallback(&state));
 }
 
+// 扫描阶段的 IO 空闲超时策略（R6：引擎自身的网络 idle 超时）。
+//
+// 本地文件必须保持"不设超时"：超长素材的正常读取不能被固定超时误杀。
+// 网络源必须有默认值：服务端断流时 av_read_frame 不返回，取消标志唤不醒它。
+TEST(FfmpegInterrupt, ScanIdleTimeoutPolicy) {
+    EXPECT_EQ(0, ffmpeg_io::ScanIdleTimeoutUs(false, 0));
+    EXPECT_EQ(ffmpeg_io::kNetworkScanIdleTimeoutUs, ffmpeg_io::ScanIdleTimeoutUs(true, 0));
+
+    // 调用方显式配置优先（QcRunBudgets::io_idle_timeout_ms 透传），本地/网络都一样。
+    EXPECT_EQ(5'000'000, ffmpeg_io::ScanIdleTimeoutUs(true, 5000));
+    EXPECT_EQ(5'000'000, ffmpeg_io::ScanIdleTimeoutUs(false, 5000));
+}
+
 // AttachInterrupt: 装上回调、按 timeout_us 折算截止时间、opaque 指向传入的 state。
 TEST(FfmpegInterrupt, AttachInterruptWiresCallbackAndDeadline) {
     AVFormatContext* fmt = avformat_alloc_context();

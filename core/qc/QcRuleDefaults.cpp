@@ -642,6 +642,23 @@ std::vector<QcRule> DefaultQcRules() {
         "个别 I 帧远大于平均 I 帧，seek/首屏会产生瞬时带宽尖峰。",
         "降低 I 帧质量权重或调大 GOP；大 IDR 也可能导致首帧解码耗时偏高。");
 
+    // ---- 视觉画质 QC（无参考全文件画面体检，core/analysis/quality/VisualDefectAnalyzer.h）----
+    // 与上面几条只读元数据的规则不同，这两条的前提是「画质 QC」维度真的执行过
+    // （需要完整解码视频，默认关闭）。规则只负责把缺陷条数翻译成问题，
+    // 逐条缺陷的时间区间在 CheckVideoRules 里展开。
+    add("visual.defects", "存在画面缺陷", IssueCategory::Video, IssueSeverity::Warning, QcRuleOp::NonZero, 0.0, "段",
+        "全片画面体检检出黑场/冻结/花屏/模糊/闪烁/曝光/色偏/隔行梳齿/黑边等可见缺陷。",
+        "按诊断表里的时间区间定位问题片段：黑场/冻结检查片头片尾留白与转场，"
+        "花屏/模糊回溯编码码率与 GOP，闪烁/曝光/色偏核对调色与色彩标注，"
+        "梳齿确认素材是否为隔行且去隔行处理是否正确。");
+
+    add("visual.defects_severe", "存在严重画面缺陷", IssueCategory::Video, IssueSeverity::Error, QcRuleOp::NonZero, 0.0,
+        "段",
+        "画面体检中存在 Error/Critical 级缺陷（长时间冻结、大面积花屏、严重过曝欠曝等），"
+        "这类片段通常无法通过人工验收。",
+        "优先修复严重片段：冻结/黑场检查编码器与封装丢帧，花屏回溯解码错误与码率，"
+        "曝光/色偏重新调色后再交付。");
+
     // ---- 色彩与 HDR（core/analysis/quality/ColorHdrAnalyzer.h）----
     add("video.color.hdr_missing_mastering", "PQ 缺少母版显示信息", IssueCategory::ColorHdr, IssueSeverity::Warning,
         QcRuleOp::NonZero, 0.0, "",

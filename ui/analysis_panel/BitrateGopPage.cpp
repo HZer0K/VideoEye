@@ -344,7 +344,7 @@ void BitrateGopPage::UpdateSummary() {
     summary_label_->setText(tr("窗口 <b>%1</b> 秒 ｜ 平均 <b>%2</b> kbps ｜ 峰值 <b>%3</b> kbps ｜ 最低 %4 kbps ｜ "
                                "中位 %5 kbps ｜ P95 %6 kbps ｜ 峰均比 <b>%7</b><br>"
                                "目标峰值 %8 kbps（%9） ｜ 帧类型 %10 ｜ 平均帧 %11 KB ｜ 平均 I 帧 %12 KB<br>"
-                               "GOP <b>%13</b> 个 ｜ 平均时长 %14 s（%15~%16 帧）｜ 最长 %17 s ｜ 超长 %18 个 ｜ "
+                               "GOP <b>%13</b> ｜ 平均时长 %14 s（%15~%16 帧）｜ 最长 %17 s ｜ 超长 %18 个 ｜ "
                                "closed %19 / open %20 ｜ 关键帧间隔 %21 ± %22 s<br>"
                                "异常 %23 条")
                                 .arg(QString::number(display_window_, 'f', 2))
@@ -359,7 +359,10 @@ void BitrateGopPage::UpdateSummary() {
                                 .arg(frame_types)
                                 .arg(QString::number(bg.AverageFrameBytes() / 1024.0, 'f', 1))
                                 .arg(QString::number(bg.AverageIFrameBytes() / 1024.0, 'f', 1))
-                                .arg(bg.gops.size())
+                                .arg(bg.gops_truncated ? tr("%1 个（明细仅保留前 %2 条）")
+                                                             .arg(static_cast<qlonglong>(bg.gop_count))
+                                                             .arg(static_cast<qlonglong>(bg.gops.size()))
+                                                       : tr("%1 个").arg(static_cast<qlonglong>(bg.gop_count)))
                                 .arg(QString::number(bg.gop_duration_mean, 'f', 2))
                                 .arg(bg.gop_frames_min)
                                 .arg(bg.gop_frames_max)

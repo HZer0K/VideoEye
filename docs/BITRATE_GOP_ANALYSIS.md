@@ -41,7 +41,10 @@
 ### 2.2 GOP 口径
 
 - GOP 以**关键帧**（IDR / CRA / recovery point）开始，到下一个关键帧之前结束。
-- 因此 `gops.size()` 通常等于关键帧数；最后一个 GOP 若未被收尾，`complete = false`。
+- 因此 GOP 数通常等于关键帧数；最后一个 GOP 若未被收尾，`complete = false`。
+- 明细列表受 `max_gops`（默认 20000）上限约束：超出后不再追加，`gops_truncated = true`。
+  **报告 / 对比里的"GOP 数量"必须用 `gop_count`**（实际观察总数），不能用 `gops.size()`
+  （截断后的保留条数）；均值 / 标准差 / 超长计数等统计同样覆盖全部 GOP。
 - `closed_gop`：以 IDR 开头记 `true`；文件开头就不是关键帧时记 `false`。
   目前**不区分 IDR 与 CRA**（需要 bitstream 层 NAL 解析，未实现），
   `closed_gop` 实际表达的是"该 GOP 起点可独立解码"。

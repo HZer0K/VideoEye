@@ -265,7 +265,8 @@ TEST(DiagnosticsPageTests, UnscannedPageShowsInitialStateAndRuleTable) {
     EXPECT_EQ(progress->format(), QStringLiteral("未开始"));
 
     EXPECT_NE(FindLabelContaining(&page, QStringLiteral("点击「开始分析」对当前文件做一次完整扫描")), nullptr);
-    EXPECT_NE(FindChartByTitle(&page, QStringLiteral("逐秒码率 / 帧率")), nullptr);
+    // 曲线画的是 demux 层的视频**包率**（一包不保证一帧），标题就照实写"视频包率"。
+    EXPECT_NE(FindChartByTitle(&page, QStringLiteral("逐秒码率 / 视频包率")), nullptr);
 }
 
 // 空路径 + silent：静默放弃（不弹"请先打开文件"），不发任何扫描信号、界面原样

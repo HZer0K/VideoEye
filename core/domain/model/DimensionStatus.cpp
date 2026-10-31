@@ -42,6 +42,8 @@ const char* DimensionCode(AnalysisDimension dimension) {
         return "legacy_container";
     case AnalysisDimension::FrameOrder:
         return "frame_order";
+    case AnalysisDimension::VisualQuality:
+        return "visual_quality";
     case AnalysisDimension::Count:
     default:
         return "unknown";
@@ -84,6 +86,8 @@ const char* DimensionName(AnalysisDimension dimension) {
         return "容器体检";
     case AnalysisDimension::FrameOrder:
         return "帧级显示顺序（POC）";
+    case AnalysisDimension::VisualQuality:
+        return "画质 QC（视觉缺陷）";
     case AnalysisDimension::Count:
     default:
         return "未知维度";

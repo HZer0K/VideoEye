@@ -336,6 +336,85 @@ JsonValue BuildAudioQcStreamsArray(const model::AnalysisResult& result) {
     return array;
 }
 
+// 视觉画质 QC（无参考全文件画面体检）。默认不跑，analyzed=false 时数组为空。
+JsonValue BuildVisualQcObject(const model::AnalysisResult& result) {
+    const model::VisualDefectReport& qc = result.visual_qc;
+    JsonValue node = JsonValue::MakeObject();
+    node.Set("analyzed", JsonValue(qc.analyzed));
+    node.Set("analyzed_frames", JNumber(static_cast<double>(qc.analyzed_frames)));
+    node.Set("total_frames", JNumber(static_cast<double>(qc.total_frames)));
+    node.Set("dropped_frames", JNumber(static_cast<double>(qc.dropped_frames)));
+    node.Set("duration_seconds", JNumber(qc.duration_seconds));
+    node.Set("defect_count", JNumber(static_cast<double>(qc.defects.size())));
+
+    if (qc.effective_area.valid) {
+        JsonValue area = JsonValue::MakeObject();
+        area.Set("x", JNumber(static_cast<double>(qc.effective_area.x)));
+        area.Set("y", JNumber(static_cast<double>(qc.effective_area.y)));
+        area.Set("width", JNumber(static_cast<double>(qc.effective_area.width)));
+        area.Set("height", JNumber(static_cast<double>(qc.effective_area.height)));
+        area.Set("active_ratio", JNumber(qc.effective_area.active_ratio));
+        area.Set("letterbox", JsonValue(qc.effective_area.letterbox));
+        area.Set("pillarbox", JsonValue(qc.effective_area.pillarbox));
+        area.Set("top_bar_ratio", JNumber(qc.effective_area.top_bar_ratio));
+        area.Set("bottom_bar_ratio", JNumber(qc.effective_area.bottom_bar_ratio));
+        area.Set("left_bar_ratio", JNumber(qc.effective_area.left_bar_ratio));
+        area.Set("right_bar_ratio", JNumber(qc.effective_area.right_bar_ratio));
+        node.Set("effective_area", area);
+    }
+
+    JsonValue defects = JsonValue::MakeArray();
+    for (const model::VisualDefect& defect : qc.defects) {
+        JsonValue item = JsonValue::MakeObject();
+        item.Set("id", JNumber(static_cast<double>(defect.id)));
+        item.Set("type", JText(model::DefectTypeCode(defect.type)));
+        item.Set("type_text", JText(model::ToString(defect.type)));
+        item.Set("severity", JNumber(static_cast<double>(static_cast<int>(defect.severity))));
+        item.Set("severity_text", JText(model::ToString(defect.severity)));
+        item.Set("start_seconds", JNumber(defect.start_seconds));
+        item.Set("end_seconds", JNumber(defect.end_seconds));
+        item.Set("duration_seconds", JNumber(defect.DurationSeconds()));
+        item.Set("start_frame", JNumber(static_cast<double>(defect.start_frame)));
+        item.Set("end_frame", JNumber(static_cast<double>(defect.end_frame)));
+        // score / threshold 的"未计算"是 NaN：Json 会把非有限值写成 null，
+        // 这里只在真的有值时才落，读起来是"缺字段"而不是"值为 null"。
+        if (model::QualityValueValid(defect.score))
+            item.Set("score", JNumber(defect.score));
+        if (model::QualityValueValid(defect.threshold))
+            item.Set("threshold", JNumber(defect.threshold));
+        if (!defect.description.empty())
+            item.Set("description", JText(defect.description));
+        // 证据图二进制不进 JSON（单条 27KB、上千条会撑爆体积），只报"有没有、多大"。
+        // 需要看图时用 HTML 报告（内嵌 PNG）；这条元数据让消费方能区分
+        // "没采样到证据" 与 "有证据但没导出"。
+        JsonValue evidence = JsonValue::MakeObject();
+        evidence.Set("available", JsonValue(defect.evidence.valid()));
+        if (defect.evidence.valid()) {
+            evidence.Set("width", JNumber(static_cast<double>(defect.evidence.width)));
+            evidence.Set("height", JNumber(static_cast<double>(defect.evidence.height)));
+        }
+        item.Set("evidence", evidence);
+        defects.PushBack(item);
+    }
+    node.Set("defects", defects);
+
+    // 按类型的计数（图表/表格用）。显式列全部类型：为 0 也要出现，
+    // 这样"这项没检出问题"与"这项没检测"在消费方不会混在一起。
+    JsonValue counts = JsonValue::MakeObject();
+    const model::VisualDefectType all_types[] = {
+        model::VisualDefectType::BlackFrame,       model::VisualDefectType::FreezeFrame,
+        model::VisualDefectType::Blockiness,       model::VisualDefectType::Blur,
+        model::VisualDefectType::Flicker,          model::VisualDefectType::OverExposure,
+        model::VisualDefectType::UnderExposure,    model::VisualDefectType::ColorCast,
+        model::VisualDefectType::InterlaceCombing, model::VisualDefectType::Letterbox,
+        model::VisualDefectType::Pillarbox,
+    };
+    for (const model::VisualDefectType type : all_types)
+        counts.Set(model::DefectTypeCode(type), JNumber(static_cast<double>(qc.CountByType(type))));
+    node.Set("defect_counts", counts);
+    return node;
+}
+
 JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
     JsonValue metrics = JsonValue::MakeObject();
 
@@ -372,7 +451,12 @@ JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
     metrics.Set("bitrate", bitrate);
 
     JsonValue gop = JsonValue::MakeObject();
-    gop.Set("count", JNumber(static_cast<double>(result.bitrate_gop.gops.size())));
+    // count 是**实际观察到的 GOP 总数**，不是明细条数：明细受 max_gops 上限保留，
+    // 截断时 gops_truncated=true，retained 才等于 gops.size()。
+    gop.Set("count", JNumber(static_cast<double>(result.bitrate_gop.gop_count)));
+    gop.Set("retained", JNumber(static_cast<double>(result.bitrate_gop.gops.size())));
+    if (result.bitrate_gop.gops_truncated)
+        gop.Set("gops_truncated", JsonValue(true));
     gop.Set("mean_seconds", JNumber(result.bitrate_gop.gop_duration_mean));
     gop.Set("max_seconds", JNumber(result.bitrate_gop.gop_duration_max));
     gop.Set("stddev_seconds", JNumber(result.bitrate_gop.gop_duration_stddev));
@@ -445,7 +529,8 @@ JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
             node.Set("frame_count", JNumber(static_cast<double>(stream.frame_count)));
             node.Set("parsed_packets", JNumber(static_cast<double>(stream.parsed_packets)));
             node.Set("invalid_packets", JNumber(static_cast<double>(stream.invalid_packets)));
-            // 未实现逐帧解析的编码（MP3/FLAC/PCM…）：单独一栏，别和 invalid 混在一起
+            // 尚未接入逐帧解析的编码（PCM 等）：单独一栏，别和 invalid 混在一起
+            // （MP3 / FLAC 已支持，旧注释里的说法不再适用）
             node.Set("unsupported_packets", JNumber(static_cast<double>(stream.unsupported_packets)));
             node.Set("has_dialnorm", JsonValue(stream.has_dialnorm));
             node.Set("dialnorm_dbfs", JNumber(static_cast<double>(stream.dialnorm_dbfs)));
@@ -706,6 +791,9 @@ std::string QcReportExporter::BuildJson(const QcExportBundle& bundle) {
     // 逐轨音频 QC（阶段 4）：主轨的 loudness 已在 metrics.loudness 里，
     // 这里给出全部轨的横向对照（多语言/评论轨）。
     root.Set("audio_qc_streams", BuildAudioQcStreamsArray(run.analysis));
+    // 视觉画质 QC（无参考、需要完整解码视频）。无条件落：analyzed=false 表示
+    // 没开这一维度，与"跑了但没检出缺陷"（analyzed=true + 空数组）必须可区分。
+    root.Set("visual_qc", BuildVisualQcObject(run.analysis));
 
     if (bundle.has_comparison) {
         const qc::QcComparison& comparison = bundle.comparison;

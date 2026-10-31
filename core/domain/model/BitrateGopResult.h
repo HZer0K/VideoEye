@@ -97,7 +97,13 @@ struct BitrateGopAnalysis {
     double AverageIFrameBytes() const;
 
     // ---- GOP ----
+    // 逐条明细。受 options.max_gops 上限约束：超出后不再追加，
+    // gops_truncated 置位，但下面的统计字段仍覆盖**全部** GOP（统计走累加器）。
     std::vector<model::GopInfo> gops;
+    // 实际观察到的 GOP 总数（可能大于 gops.size()）。报告/对比里的"GOP 数量"
+    // 必须用这个，不能用明细条数。
+    int64_t gop_count = 0;
+    bool gops_truncated = false;
     double gop_duration_mean = 0.0;
     double gop_duration_stddev = 0.0;
     double gop_duration_max = 0.0;

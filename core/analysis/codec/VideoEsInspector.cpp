@@ -8,6 +8,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 }
 
+#include "core/analysis/codec/H264BitstreamParser.h"
 #include "core/media/codec/BitReader.h"
 #include "core/media/codec/ExtradataParser.h"
 
@@ -42,6 +43,13 @@ bool IsHevcSliceNal(int type) {
 bool IsHevcSeiNal(int type) {
     return type == 39 || type == 40;
 } // prefix / suffix SEI
+
+// H.264 NAL 类型（7.4.1）：只有这两种会更新参数集表
+constexpr int kH264NalSps = 7;
+constexpr int kH264NalPps = 8;
+// 参数集表容量上限：规范允许 32 个 SPS / 32 个 PPS，超出只能是畸形码流，
+// 按"淘汰最旧"处理，避免包内垃圾数据把表撑大。
+constexpr size_t kH264ParamSetCapacity = 32;
 
 // Dolby Vision RPU：HEVC 里挂在 NAL type 62（unspecified）上，
 // RPU payload 首字节恒为 0x19。
@@ -217,9 +225,8 @@ void VideoEsInspector::Reset(int codec_id, const Options& options) {
     // （不在这里保留上一份文件的值 —— 那正是 N6 那类"状态漏到下一份"的来源。）
     framing_ = NalFraming::Auto;
     prefix_bytes_ = 0;
-    has_h264_params_ = false;
-    h264_sps_ = model::H264SpsInfo();
-    h264_pps_ = model::H264PpsInfo();
+    h264_sps_list_.clear();
+    h264_pps_list_.clear();
     hevc_sps_ = model::HevcSpsInfo();
     hevc_pps_ = model::HevcPpsInfo();
     slice_types_.clear();
@@ -262,9 +269,52 @@ void VideoEsInspector::SetNalFraming(NalFraming framing, int prefix_bytes) {
 }
 
 void VideoEsInspector::SetH264ParameterSets(const model::H264SpsInfo& sps, const model::H264PpsInfo& pps) {
-    h264_sps_ = sps;
-    h264_pps_ = pps;
-    has_h264_params_ = sps.present && pps.present;
+    StoreH264Sps(sps);
+    StoreH264Pps(pps);
+}
+
+void VideoEsInspector::StoreH264Sps(const model::H264SpsInfo& sps) {
+    if (!sps.present)
+        return;
+    for (model::H264SpsInfo& existing : h264_sps_list_) {
+        if (existing.seq_parameter_set_id == sps.seq_parameter_set_id) {
+            existing = sps;
+            return;
+        }
+    }
+    if (h264_sps_list_.size() >= kH264ParamSetCapacity)
+        h264_sps_list_.erase(h264_sps_list_.begin());
+    h264_sps_list_.push_back(sps);
+}
+
+void VideoEsInspector::StoreH264Pps(const model::H264PpsInfo& pps) {
+    if (!pps.present)
+        return;
+    for (model::H264PpsInfo& existing : h264_pps_list_) {
+        if (existing.pic_parameter_set_id == pps.pic_parameter_set_id) {
+            existing = pps;
+            return;
+        }
+    }
+    if (h264_pps_list_.size() >= kH264ParamSetCapacity)
+        h264_pps_list_.erase(h264_pps_list_.begin());
+    h264_pps_list_.push_back(pps);
+}
+
+const model::H264SpsInfo* VideoEsInspector::FindH264Sps(int id) const {
+    for (const model::H264SpsInfo& sps : h264_sps_list_) {
+        if (sps.seq_parameter_set_id == id)
+            return &sps;
+    }
+    return nullptr;
+}
+
+const model::H264PpsInfo* VideoEsInspector::FindH264Pps(int id) const {
+    for (const model::H264PpsInfo& pps : h264_pps_list_) {
+        if (pps.pic_parameter_set_id == id)
+            return &pps;
+    }
+    return nullptr;
 }
 
 void VideoEsInspector::SetHevcParameterSets(const model::HevcSpsInfo& sps, const model::HevcPpsInfo& pps) {
@@ -304,10 +354,30 @@ void VideoEsInspector::ForEachNalUnit(const uint8_t* data, size_t size, NalSynta
     if (data == nullptr || size == 0)
         return;
 
-    // Annex B 起始码优先：fMP4 的包头里常常先把 SPS/PPS 以 Annex B 塞在前面，
-    // 再跟长度前缀的 slice —— 这种混合包按起始码切才两头都不丢。
+    // Annex B 起始码判定。
+    //
+    // ❗ 这**只是**"长得像"，不能优先于已知的封装配置：4 字节长度为 256 的 NAL
+    // 以 `00 00 01 00` 开头，前三个字节与三字节起始码完全一致。先按起始码切，
+    // 长度字段的末字节就会被当成 NAL header —— 类型读错、这条 slice/SEI 直接
+    // 漏检。首个 NAL 长度落在 256..511 之间时都会撞上（三字节起始码判定只需要
+    // data[0..2]，长度字段的第 4 个字节根本不参与判断）。
     const bool has_start_code = size >= 4 && ((data[0] == 0 && data[1] == 0 && data[2] == 1) ||
                                               (data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1));
+
+    // 宽度已知（容器配置里 avcC/hvcC 的 lengthSizeMinusOne）→ 先验证长度前缀链，
+    // 链自洽就以它为准。这条顺序是唯一能同时满足两个真实场景的：
+    //   * MP4/fMP4 的正常包：链自洽 → 走长度前缀，256..511 字节的 NAL 不再误判；
+    //   * 少数 fMP4 先在包内以 Annex B 塞一组 SPS/PPS 再跟长度前缀的 slice：
+    //     链验证不过（起始码 00 00 00 01 会被读成"长度 1"），自然落到下面的
+    //     起始码分支，两头都不丢。
+    if (framing_ == NalFraming::Auto && prefix_bytes_ > 0 &&
+        ExtradataParser::LooksLikeLengthPrefixed(data, size, prefix_bytes_)) {
+        bool truncated = false;
+        ExtradataParser::ForEachLengthPrefixedNalUnit(data, size, syntax, prefix_bytes_, &truncated, fn);
+        if (truncated)
+            result_.truncated = true;
+        return;
+    }
 
     if (framing_ == NalFraming::AnnexB || (framing_ == NalFraming::Auto && has_start_code)) {
         ExtradataParser::ForEachAnnexBNalUnit(data, size, syntax, fn);
@@ -361,6 +431,13 @@ void VideoEsInspector::InspectH264(const uint8_t* data, size_t size) {
             }
         } else if (IsH264SeiNal(nal.type)) {
             ParseSeiRbsp(nal.payload, nal.size, /*is_hevc=*/false);
+        } else if (nal.type == kH264NalSps) {
+            // 包内 SPS：带内参数集（TS / 裸流 / fMP4 分片）与"中途切参数集"
+            // 只有这条通路能把当前参数补进表里。以前只在 Prepare 阶段注入过一次
+            // extradata 的快照，切过参数集之后所有 slice 都按旧参数算。
+            StoreH264Sps(H264BitstreamParser::ParseFromNal(static_cast<uint8_t>(nal.type), nal.payload, nal.size));
+        } else if (nal.type == kH264NalPps) {
+            StoreH264Pps(H264BitstreamParser::ParsePpsFromNal(static_cast<uint8_t>(nal.type), nal.payload, nal.size));
         }
     });
 }
@@ -550,7 +627,7 @@ bool VideoEsInspector::ParseH264SliceHeader(const uint8_t* data, size_t size, bo
     if (data == nullptr || size == 0)
         return false;
     // 没有 SPS/PPS 就解不出有意义的字段位宽（frame_num、pic_order_cnt_lsb 都依赖它们）
-    if (!has_h264_params_)
+    if (h264_sps_list_.empty() || h264_pps_list_.empty())
         return false;
 
     BitReader reader;
@@ -576,13 +653,30 @@ bool VideoEsInspector::ParseH264SliceHeader(const uint8_t* data, size_t size, bo
         return false;
     slice_type = static_cast<int>(raw_slice_type % 5);
 
-    reader.ReadUE(); // pic_parameter_set_id
-    if (h264_sps_.separate_colour_plane_flag) {
+    // pic_parameter_set_id 决定这一条 slice 该用哪套参数（7.3.3 / 7.4.2.2）。
+    //
+    // ❗ 以前这里把 ID 读掉就丢，之后固定用"最后见到的那份"SPS/PPS。多 PPS、
+    // 或参数集在文件中间换过（拼接 / 编码器重启 / 广告段插播）时，pic_init_qp_minus26
+    // 与几个位宽开关都不是这一帧的 —— 若位宽刚好一致，会输出一个数值上完全
+    // 合理、实际错误的 QP；位宽或开关不同则整条 slice header 从这里错位。
+    // 现在按 PPS -> seq_parameter_set_id -> SPS 查表，查不到就**不给** QP：
+    // 宁可 qp_valid=false，也不要一个对不上号的数。
+    const uint32_t pps_id = reader.ReadUE();
+    if (reader.HasError())
+        return false;
+    const model::H264PpsInfo* pps = FindH264Pps(static_cast<int>(pps_id));
+    if (pps == nullptr)
+        return false;
+    const model::H264SpsInfo* sps = FindH264Sps(pps->seq_parameter_set_id);
+    if (sps == nullptr)
+        return false;
+
+    if (sps->separate_colour_plane_flag) {
         reader.SkipBits(2); // colour_plane_id
     }
-    skip_bits_clamped(h264_sps_.log2_max_frame_num_minus4 + 4); // frame_num
+    skip_bits_clamped(sps->log2_max_frame_num_minus4 + 4); // frame_num
     bool field_pic = false;
-    if (!h264_sps_.frame_mbs_only_flag) {
+    if (!sps->frame_mbs_only_flag) {
         field_pic = reader.ReadBit();
         if (field_pic) {
             reader.SkipBits(1); // bottom_field_flag
@@ -591,18 +685,18 @@ bool VideoEsInspector::ParseH264SliceHeader(const uint8_t* data, size_t size, bo
     if (is_idr) {
         reader.ReadUE(); // idr_pic_id
     }
-    if (h264_sps_.pic_order_cnt_type == 0) {
-        skip_bits_clamped(h264_sps_.log2_max_pic_order_cnt_lsb_minus4 + 4);
-        if (h264_pps_.bottom_field_pic_order_in_frame_present_flag && !field_pic) {
+    if (sps->pic_order_cnt_type == 0) {
+        skip_bits_clamped(sps->log2_max_pic_order_cnt_lsb_minus4 + 4);
+        if (pps->bottom_field_pic_order_in_frame_present_flag && !field_pic) {
             reader.ReadSE(); // delta_pic_order_cnt_bottom
         }
-    } else if (h264_sps_.pic_order_cnt_type == 1 && !h264_sps_.delta_pic_order_always_zero_flag) {
+    } else if (sps->pic_order_cnt_type == 1 && !sps->delta_pic_order_always_zero_flag) {
         reader.ReadSE(); // delta_pic_order_cnt[0]
-        if (h264_pps_.bottom_field_pic_order_in_frame_present_flag && !field_pic) {
+        if (pps->bottom_field_pic_order_in_frame_present_flag && !field_pic) {
             reader.ReadSE(); // delta_pic_order_cnt[1]
         }
     }
-    if (h264_pps_.redundant_pic_cnt_present_flag) {
+    if (pps->redundant_pic_cnt_present_flag) {
         reader.ReadUE(); // redundant_pic_cnt
     }
     if (slice_type == kSliceB) {
@@ -611,8 +705,8 @@ bool VideoEsInspector::ParseH264SliceHeader(const uint8_t* data, size_t size, bo
 
     // num_ref_idx_lX_active_minus1：slice 覆盖优先，否则用 PPS 的默认值。
     // pred_weight_table() 的循环次数就由它决定，所以必须留住这两个数。
-    int num_ref_l0_minus1 = h264_pps_.num_ref_idx_l0_default_active_minus1;
-    int num_ref_l1_minus1 = h264_pps_.num_ref_idx_l1_default_active_minus1;
+    int num_ref_l0_minus1 = pps->num_ref_idx_l0_default_active_minus1;
+    int num_ref_l1_minus1 = pps->num_ref_idx_l1_default_active_minus1;
     if (slice_type == kSliceP || slice_type == kSliceB || slice_type == kSliceSP) {
         if (reader.ReadBit()) { // num_ref_idx_active_override_flag
             num_ref_l0_minus1 = static_cast<int>(reader.ReadUEBounded(31));
@@ -637,9 +731,9 @@ bool VideoEsInspector::ParseH264SliceHeader(const uint8_t* data, size_t size, bo
     }
 
     // pred_weight_table()：条件两个来源（加权预测 + B 帧的 implicit 模式）
-    if ((h264_pps_.weighted_pred_flag && (slice_type == kSliceP || slice_type == kSliceSP)) ||
-        (h264_pps_.weighted_bipred_idc == 1 && slice_type == kSliceB)) {
-        const int chroma_array_type = h264_sps_.separate_colour_plane_flag ? 0 : h264_sps_.chroma_format_idc;
+    if ((pps->weighted_pred_flag && (slice_type == kSliceP || slice_type == kSliceSP)) ||
+        (pps->weighted_bipred_idc == 1 && slice_type == kSliceB)) {
+        const int chroma_array_type = sps->separate_colour_plane_flag ? 0 : sps->chroma_format_idc;
         if (!SkipPredWeightTable(reader, slice_type, num_ref_l0_minus1, num_ref_l1_minus1, chroma_array_type)) {
             return false;
         }
@@ -652,7 +746,7 @@ bool VideoEsInspector::ParseH264SliceHeader(const uint8_t* data, size_t size, bo
     }
 
     // cabac_init_idc：存在与否取决于 PPS 的 entropy_coding_mode_flag
-    if (h264_pps_.entropy_coding_mode_flag && slice_type != kSliceI && slice_type != kSliceSI) {
+    if (pps->entropy_coding_mode_flag && slice_type != kSliceI && slice_type != kSliceSI) {
         reader.ReadUEBounded(2); // 0..2
     }
 
@@ -662,10 +756,10 @@ bool VideoEsInspector::ParseH264SliceHeader(const uint8_t* data, size_t size, bo
     const int delta_qp = reader.ReadSE();
     if (reader.HasError())
         return false;
-    slice_qp = 26 + h264_pps_.pic_init_qp_minus26 + delta_qp;
+    slice_qp = 26 + pps->pic_init_qp_minus26 + delta_qp;
     // 错位不会报错，只会给出一个"看似合理"的数 —— 用取值范围做最后一道筛。
     // 高位深时 QP 下界是负的（-6*(bit_depth-8)），上界恒为 51（规范 7.4.2.1.1）。
-    const int qp_offset = QpRangeOffset(h264_sps_.bit_depth_luma_minus8);
+    const int qp_offset = QpRangeOffset(sps->bit_depth_luma_minus8);
     if (slice_qp < -qp_offset || slice_qp > 51)
         return false;
     return true;

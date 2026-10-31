@@ -18,12 +18,14 @@
 //
 // 顺序约束（搬动时不要重排）:
 //   Prepare()  ->  OnPacket() * N  ->  BeforeClose()  ->  FlushAudio()
-//              ->  FlushFrameProbe()  ->  ReleaseProbes()  ->  (外部关闭上下文)
-//              ->  Assembler 收尾
+//              ->  FlushFrameProbe()  ->  FlushVisual()  ->  ReleaseProbes()
+//              ->  (外部关闭上下文)  ->  Assembler 收尾
 //   * BeforeClose 必须在关上下文之前: HDR 元数据要读到包后才补进 codecpar；
 //   * FlushAudio 必须在 ReleaseProbes 之前: 释放后 ready 就变 false，再 flush 就是空转；
 //   * FlushFrameProbe 同样要在 ReleaseProbes 之前: 帧类型解码器到 EOF 可能还压着
 //     几帧（帧重排序延迟），不 flush 则"总帧数 < 视频包数"，I/P/B 与 GOP 统计失真；
+//   * FlushVisual 同样要在 ReleaseProbes 之前: 视觉解码器到 EOF 也可能压着帧，
+//     且未闭合的缺陷段要用到最后一帧的时间；
 //   * 各分析器的 Finish() 在 Assembler 里跑，ReleaseProbes 之后才安全。
 
 #include <cstdint>
@@ -41,6 +43,8 @@
 #include "core/analysis/quality/AudioQcAnalyzer.h"
 #include "core/analysis/quality/BitrateGopAnalyzer.h"
 #include "core/analysis/quality/ColorHdrAnalyzer.h"
+#include "core/analysis/quality/QualityAnalyzer.h"
+#include "core/analysis/quality/VisualDefectAnalyzer.h"
 #include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/AnalysisResult.h"
 #include "core/domain/model/ParameterTimeline.h"
@@ -298,6 +302,118 @@ struct ColorFrameProbe {
     }
 };
 
+// 视觉画质 QC 的解码通路：完整解码主视频流，按 sample_fps 抽帧后交给
+// VisualDefectAnalyzer。RAII 约定与上面三个 probe 一致（禁拷贝 / 可移动 / 析构即释放）。
+//
+// 抽帧的两个口径:
+//   * 帧有 PTS：按时间戳跨越 next_sample_ts 才采样，素材起点的空档不会算成"该多采几帧"；
+//   * 帧没有 PTS：按解码帧序号每 no_pts_stride 帧采一帧（stride 由流帧率与 sample_fps 推导）。
+// 逐帧全量分析（sample_fps <= 0）时不使用上面两条，每帧都采。
+struct VisualFrameProbe {
+    AVCodecContext* decoder = nullptr;
+    AVFrame* frame = nullptr;
+    bool opened = false;
+    bool failed = false;
+
+    // 时间戳与抽帧状态
+    double time_base = 0.0;
+    double sample_interval = 0.0; // 秒；<= 0 表示逐帧
+    double next_sample_ts = 0.0;
+    int no_pts_stride = 1;
+    double last_ts = 0.0;
+    // 无 PTS 帧的时间戳兜底（秒/帧，由流帧率或 25 fps 推导）
+    double frame_duration = 0.04;
+
+    // 降采样参数（Open 时定型，逐帧复用，避免每帧重复调 Effective*）
+    int gray_width = 256;
+    int rgb_width = 128;
+    bool capture_rgb = true;
+
+    // 统计（给维度状态与日志用）
+    int64_t frames_decoded = 0;
+    int64_t frames_sampled = 0;
+
+    VisualFrameProbe() = default;
+    ~VisualFrameProbe() {
+        Release();
+    }
+    VisualFrameProbe(const VisualFrameProbe&) = delete;
+    VisualFrameProbe& operator=(const VisualFrameProbe&) = delete;
+    VisualFrameProbe(VisualFrameProbe&& other) noexcept
+        : decoder(other.decoder), frame(other.frame), opened(other.opened), failed(other.failed),
+          time_base(other.time_base), sample_interval(other.sample_interval), next_sample_ts(other.next_sample_ts),
+          no_pts_stride(other.no_pts_stride), last_ts(other.last_ts), frame_duration(other.frame_duration),
+          gray_width(other.gray_width), rgb_width(other.rgb_width), capture_rgb(other.capture_rgb),
+          frames_decoded(other.frames_decoded), frames_sampled(other.frames_sampled) {
+        other.decoder = nullptr;
+        other.frame = nullptr;
+        other.opened = false;
+        other.failed = false;
+    }
+    VisualFrameProbe& operator=(VisualFrameProbe&& other) noexcept {
+        if (this != &other) {
+            Release();
+            decoder = other.decoder;
+            frame = other.frame;
+            opened = other.opened;
+            failed = other.failed;
+            time_base = other.time_base;
+            sample_interval = other.sample_interval;
+            next_sample_ts = other.next_sample_ts;
+            no_pts_stride = other.no_pts_stride;
+            last_ts = other.last_ts;
+            frame_duration = other.frame_duration;
+            gray_width = other.gray_width;
+            rgb_width = other.rgb_width;
+            capture_rgb = other.capture_rgb;
+            frames_decoded = other.frames_decoded;
+            frames_sampled = other.frames_sampled;
+            other.decoder = nullptr;
+            other.frame = nullptr;
+            other.opened = false;
+            other.failed = false;
+        }
+        return *this;
+    }
+
+    bool Ready() const {
+        return decoder != nullptr && frame != nullptr && !failed;
+    }
+
+    // 惰性打开解码器；打开失败会被记住，不会重复尝试。
+    bool EnsureOpen(AVStream* stream) {
+        if (failed)
+            return false;
+        if (opened)
+            return Ready();
+        opened = true;
+        const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
+        if (codec != nullptr) {
+            decoder = avcodec_alloc_context3(codec);
+            if (decoder != nullptr && avcodec_parameters_to_context(decoder, stream->codecpar) >= 0) {
+                decoder->pkt_timebase = stream->time_base;
+                frame = av_frame_alloc();
+                if (frame != nullptr && avcodec_open2(decoder, codec, nullptr) == 0) {
+                    return true;
+                }
+            }
+        }
+        Release();
+        failed = true;
+        return false;
+    }
+
+    void Release() {
+        if (frame)
+            av_frame_free(&frame);
+        if (decoder)
+            avcodec_free_context(&decoder);
+        frame = nullptr;
+        decoder = nullptr;
+        opened = false;
+    }
+};
+
 class AnalysisPipeline {
 public:
     explicit AnalysisPipeline(const AnalysisOptions& options);
@@ -330,6 +446,9 @@ public:
     // 这些帧的字节从待认领池里认领（它们的包早就按字节入过账了）——
     // 帧数与帧类型必须完整，字节也要归位，否则平均帧大小与 GOP 大小偏小。
     void FlushFrameProbe();
+    // flush 视觉画质解码器：把 EOF 时仍压在解码器里的帧收干净并喂给分析器，
+    // 然后闭合最后一段缺陷。必须在 ReleaseProbes 之前调用。
+    void FlushVisual();
     // 释放解码器 / parser / swr。可重复调用（各 probe 的 Release 自带幂等）。
     void ReleaseProbes();
 
@@ -351,6 +470,20 @@ public:
     }
     BitrateGopAnalyzer& bitrate_gop() {
         return bitrate_gop_;
+    }
+    // 视觉画质 QC 分析器（FlushVisual 之后由 Assembler 取 Snapshot）
+    VisualDefectAnalyzer& visual_qc() {
+        return visual_qc_;
+    }
+    int visual_video_stream_index() const {
+        return visual_video_stream_index_;
+    }
+    // 本次实际解码 / 实际采样的视频帧数（给维度覆盖率与日志用）
+    int64_t visual_frames_decoded() const {
+        return visual_probe_.frames_decoded;
+    }
+    int64_t visual_frames_sampled() const {
+        return visual_probe_.frames_sampled;
     }
     // 主音轨的 QC 分析器。没有音频流时返回一个空分析器（Finish 后 analyzed=false），
     // 这样收尾代码不必到处判空 —— 但调用方仍应先用 audio_stream_index() 判断有没有音轨。
@@ -409,6 +542,9 @@ private:
     void FeedAudioFrame(AudioQcTrack& track, AVFrame* frame);
     // 把一个包的音频样本喂给指定音轨（发送 + 收帧）
     void PumpAudioPacket(AudioQcTrack& track, const AVPacket* pkt);
+    // 视觉画质 QC：送包 -> 收帧 -> 按 sample_fps 抽帧 -> BuildSample -> Feed
+    void PumpVisualPacket(const AVPacket* pkt);
+    void FeedVisualFrame(AVFrame* frame);
 
     // ---- slice/SEI 巡检（C4）----
     // 把已解析的参数集注入巡检器：H.264 的 slice QP 需要 PPS 的 init_qp 作基准。
@@ -427,6 +563,8 @@ private:
     // 质量维度
     ColorHdrAnalyzer color_hdr_;
     BitrateGopAnalyzer bitrate_gop_;
+    // 视觉画质 QC（无参考全文件画面体检）。默认不开，见 AnalysisOptions。
+    VisualDefectAnalyzer visual_qc_;
     // 多音轨 PCM QC：每条参与分析的音轨一个元素（主轨恒在首位）。
     // 以前是单个 audio_qc_ + 单个 audio_probe_，只能分析主音轨 ——
     // 国配轨爆音、评论轨反相这类问题在主轨上根本看不出来。
@@ -439,6 +577,13 @@ private:
     // 上面三个维度各自要开的解码通路（RAII，见各自 Release）
     ColorFrameProbe color_probe_;
     FrameTypeProbe frame_probe_;
+    // 视觉画质 QC 的独立解码通路。
+    //
+    // ❗ 不与 frame_probe_ 共用：那条通路的开关是 decode_frame_types（只关心帧类型），
+    // 收帧后立刻 unref，拿它喂视觉分析会把"帧类型统计"和"画质分析"耦合在同一个
+    // receive 循环里。两者都开时视频会解码两遍 —— 这是显式的代价，换来的是两个维度
+    // 各自独立开关、独立失败，不会一处出错另一处跟着没数据。
+    VisualFrameProbe visual_probe_;
 
     // 参数集全程追踪：每条视频轨一个（多节目 TS 每条节目独立 PID、独立参数集）
     struct ParameterTrackerSlot {
@@ -467,6 +612,7 @@ private:
     int video_stream_index_ = -1;
     int audio_stream_index_ = -1;
     int color_video_stream_index_ = -1;
+    int visual_video_stream_index_ = -1;
     // 带内参数集探测（extradata 为空的封装：TS / 裸流 / fMP4 媒体分片 / WebM-VP9）。
     //
     // ❗ **每条视频轨一个 probe**（C3）：多节目 TS 的每条节目是独立 PID、独立参数集，

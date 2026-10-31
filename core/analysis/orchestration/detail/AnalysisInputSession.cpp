@@ -176,8 +176,11 @@ AnalysisInputSession::Outcome AnalysisInputSession::Open(model::AnalysisResult& 
         return Outcome::Failed;
     }
 
-    // 进入逐包扫描：关闭绝对截止时间，仅由取消标记中断，
+    // 进入逐包扫描：关掉打开/探测阶段的**绝对**截止时间，
     // 避免长本地文件的正常读取被早期打开超时误杀。
+    // 网络源不是"完全不设超时"：PacketScanLoop 每次读包前会用
+    // ffmpeg_io::ScanIdleTimeoutUs() 重新武装空闲截止时间 ——
+    // 服务端断流时 av_read_frame 可以永远不返回，光靠取消标志唤不醒它。
     interrupt_.deadline_us = 0;
 
     FillContainerFacts(result);

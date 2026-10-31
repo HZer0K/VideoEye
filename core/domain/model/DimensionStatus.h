@@ -14,7 +14,7 @@
 //   1. 跑了没有、跑到什么程度   —— executed / capability
 //   2. 扫了多少、总量多少       —— units_scanned / units_total / coverage_ratio
 //   3. 有没有失败、失败多少     —— failures / failure_reason
-//   4. 结论能不能当"通过"用     —— conclusive
+//   4. 证据够不够（结论能不能采信）—— conclusive
 //
 // 约束：本文件纯 C++17，不依赖 Qt / FFmpeg（与其它 domain/model 保持一致），
 // 便于单测直接构造，也便于报告层与 UI 共用同一份口径。
@@ -54,6 +54,10 @@ enum class AnalysisDimension : uint8_t {
     // VVC 未实现）。
     // 追加在末尾（Count 之前）：已发布的取值不能改名/改编号。
     FrameOrder,
+    // 视觉画质 QC（无参考全文件画面体检：黑场/冻结/花屏/模糊/闪烁/曝光/色偏/
+    // 隔行梳齿/黑边）。与 ColorHdr 分开：后者只读元数据，这一项必须完整解码视频。
+    // 追加在末尾（Count 之前）：已发布的取值不能改名/改编号。
+    VisualQuality,
     Count
 };
 
@@ -88,9 +92,12 @@ struct DimensionStatus {
     std::vector<int> stream_indices;
     std::vector<std::string> notes;
 
-    // 结论能否当"已通过"用。为了不制造假通过，默认 false：
-    // 只有 executed && capability==Supported && 无失败 && 覆盖达标 才置 true，
+    // 证据是否够用（这个维度的结论能不能采信）。为了不制造假通过，默认 false：
+    // 只有 executed && capability==Supported && 无**扫描失败** && 覆盖达标 才置 true，
     // 由 MarkConclusive() 统一判定，调用方不要手工置位。
+    //
+    // 注意"检出缺陷"不是扫描失败：扫完全片、明确检出 3 条 Error 缺陷是一个可信结论，
+    // 该维度仍应 conclusive=true；通过与否由问题/规则层回答。
     bool conclusive = false;
 
     void MarkConclusive();

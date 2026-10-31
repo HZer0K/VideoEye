@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <string>
 
 #include "core/analysis/codec/BitstreamAnalyzer.h"
 #include "core/analysis/detail/AnalysisStreamSelection.h"
@@ -130,6 +131,38 @@ void AnalysisPipeline::Prepare(AVFormatContext* fmt, model::AnalysisResult& resu
     if (options_.analyze_color_hdr && color_video_stream_index_ >= 0) {
         color_hdr_.Reset(options_.color_hdr_options);
         color_hdr_.UpdateFromStream(fmt->streams[color_video_stream_index_]);
+    }
+
+    // ---- 视觉画质 QC（无参考全文件画面体检，需要完整解码主视频流）----
+    //
+    // 抽帧的两个口径在这里定型（逐帧逻辑见 FeedVisualFrame）：
+    //   * 有 PTS：按 next_sample_ts 跨越采样，素材起点的空档不会多采；
+    //   * 无 PTS：按解码帧序号每 no_pts_stride 帧采一帧，时间戳用 frame_duration 兜底。
+    // 解码器惰性打开（首个视频包到来时才 EnsureOpen），Prepare 阶段只算参数。
+    visual_video_stream_index_ = (options_.analyze_visual_qc && video_stream_index_ >= 0) ? video_stream_index_ : -1;
+    if (visual_video_stream_index_ >= 0) {
+        visual_qc_.Reset(options_.visual_qc_options);
+        AVStream* vst = fmt->streams[visual_video_stream_index_];
+        visual_probe_.time_base = av_q2d(vst->time_base);
+        const double sample_fps = options_.visual_qc_options.EffectiveSampleFps();
+        visual_probe_.sample_interval = (sample_fps > 0.0) ? (1.0 / sample_fps) : 0.0;
+        double fps = av_q2d(vst->avg_frame_rate);
+        if (!(fps > 0.0))
+            fps = av_q2d(vst->r_frame_rate);
+        if (!(fps > 0.0))
+            fps = 25.0;
+        visual_probe_.frame_duration = 1.0 / fps;
+        visual_probe_.no_pts_stride = (sample_fps > 0.0) ? static_cast<int>(fps / sample_fps) : 1;
+        if (visual_probe_.no_pts_stride < 1)
+            visual_probe_.no_pts_stride = 1;
+        visual_probe_.gray_width = options_.visual_qc_options.EffectiveAnalysisWidth();
+        visual_probe_.rgb_width = options_.visual_qc_options.EffectiveEvidenceWidth();
+        visual_probe_.capture_rgb = options_.visual_qc_options.capture_rgb;
+        visual_probe_.next_sample_ts = 0.0;
+        visual_probe_.last_ts = 0.0;
+        LOG_INFO(
+            "画质 QC: 流#" + std::to_string(visual_video_stream_index_) + " 采样 " +
+            (sample_fps > 0.0 ? (std::to_string(static_cast<int>(sample_fps + 0.5)) + " fps") : std::string("逐帧")));
     }
 
     // ---- 码率与 GOP 深度分析准备 ----
@@ -533,7 +566,11 @@ void AnalysisPipeline::PrepareBitstreamAnalysis(AVFormatContext* fmt, model::Ana
         // 媒体包的 NAL 封装方式。MP4/MOV/fMP4 是 `[N 字节长度][NAL]`，
         // 一条起始码都没有 —— 只按 Annex B 抽会得到"零个 NAL"，而零个 NAL
         // 在外观上和"这段流没有 slice/SEI"完全一样，属于静默失效。
-        // 宽度未知时交给 Auto 逐包判定（先看起始码，再验证长度前缀链）。
+        //
+        // ❗ 给了宽度也仍然是 Auto：巡检器在 Auto 下**先验证长度前缀链**，链自洽
+        // 就以配置为准（否则 4 字节长度 256 的 NAL 会被 `00 00 01` 抢走），
+        // 链不自洽（包内先以 Annex B 塞了 SPS/PPS）才回退起始码。这里不能改成
+        // 强制 LengthPrefixed —— 那种混合包会连一组参数集都切不出来。
         es_inspector_.SetNalFraming(VideoEsInspector::NalFraming::Auto, NalLengthSizeFromExtradata(par));
         if (result.bitstream_analyzed && result.bitstream_analysis.stream_index == video_stream_index_) {
             ApplyParameterSetsToEsInspector(result.bitstream_analysis);
@@ -835,6 +872,13 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt, model::Anal
             }
         }
     }
+
+    // 视觉画质 QC：完整解码主视频流，按抽帧口径把画面交给 VisualDefectAnalyzer。
+    // 解码器惰性打开：没有该维度的开关时不进这里，也就不会为它多解一遍视频。
+    if (visual_video_stream_index_ >= 0 && is_video && pkt->stream_index == visual_video_stream_index_) {
+        if (visual_probe_.EnsureOpen(st))
+            PumpVisualPacket(pkt);
+    }
 }
 
 // ---- 扫描结束后的钩子 ----
@@ -906,6 +950,7 @@ void AnalysisPipeline::FlushAudio() {
 void AnalysisPipeline::ReleaseProbes() {
     frame_probe_.Release();
     color_probe_.Release();
+    visual_probe_.Release();
     for (AudioQcTrack& track : audio_tracks_) {
         if (track.probe.ready)
             track.probe.Release();
@@ -937,6 +982,22 @@ void AnalysisPipeline::FlushFrameProbe() {
     // 池里剩下的字节（最后几个包）归这批帧：它们的包确实已经全部送进了解码器。
     if (!pending.empty())
         bitrate_gop_.OnFramesClaimPending(video_stream_index_, pending);
+}
+
+// EOF 时视觉解码器里还压着几帧（帧重排序延迟）。要把它们喂给分析器，否则最后
+// 一段画面不参与统计、还开着的缺陷段也会缺一个结束时间。
+// 之后 Flush 把所有未闭合的缺陷段按最后一帧的时间闭合。
+void AnalysisPipeline::FlushVisual() {
+    if (visual_video_stream_index_ < 0)
+        return;
+    if (visual_probe_.Ready() && avcodec_send_packet(visual_probe_.decoder, nullptr) == 0) {
+        while (avcodec_receive_frame(visual_probe_.decoder, visual_probe_.frame) >= 0) {
+            FeedVisualFrame(visual_probe_.frame);
+            av_frame_unref(visual_probe_.frame);
+        }
+    }
+    // 没有采样到任何帧时 last_ts 仍是 0：Flush(0) 只是空转，不会伪造缺陷段。
+    visual_qc_.Flush(visual_probe_.last_ts > 0.0 ? visual_probe_.last_ts : 0.0);
 }
 
 // ---- 内部 ----
@@ -1014,6 +1075,74 @@ void AnalysisPipeline::FeedAudioFrame(AudioQcTrack& track, AVFrame* frame) {
         ts = -1.0; // 后续块沿用内部时钟
         got = swr_convert(probe.swr, probe.out_data, probe.out_frames, nullptr, 0);
     }
+}
+
+// 把一个视频包送进视觉 QC 的独立解码器，并把解出的帧全部交给抽帧逻辑。
+void AnalysisPipeline::PumpVisualPacket(const AVPacket* pkt) {
+    VisualFrameProbe& probe = visual_probe_;
+    if (!probe.Ready())
+        return;
+    const int send_ret = avcodec_send_packet(probe.decoder, pkt);
+    // EAGAIN = 解码器还压着包，不是错误；其余负值才表示这个包解不了。
+    if (send_ret < 0 && send_ret != AVERROR(EAGAIN))
+        return;
+    while (true) {
+        const int recv_ret = avcodec_receive_frame(probe.decoder, probe.frame);
+        if (recv_ret == AVERROR(EAGAIN) || recv_ret == AVERROR_EOF)
+            break;
+        if (recv_ret < 0)
+            break;
+        FeedVisualFrame(probe.frame);
+        av_frame_unref(probe.frame);
+    }
+}
+
+// 一帧解码后的视频：决定"这一帧该不该采样"，该采就降采样后喂给分析器。
+void AnalysisPipeline::FeedVisualFrame(AVFrame* frame) {
+    VisualFrameProbe& probe = visual_probe_;
+    if (!probe.Ready() || frame == nullptr)
+        return;
+    ++probe.frames_decoded;
+
+    // 时间戳：优先用帧自带的 PTS（解码器通常原样搬运包的 pts）；没有 PTS 的
+    // 素材（裸流 / 某些封装）按帧率外推，保证相邻采样帧的时间差仍然可信。
+    const bool has_pts = (frame->pts != AV_NOPTS_VALUE && probe.time_base > 0.0);
+    double ts = 0.0;
+    if (has_pts) {
+        ts = static_cast<double>(frame->pts) * probe.time_base;
+    } else {
+        ts = (probe.frames_decoded > 1) ? (probe.last_ts + probe.frame_duration) : 0.0;
+    }
+    if (ts < 0.0)
+        ts = 0.0;
+
+    // 采样闸门：逐帧模式（sample_interval <= 0）全采；有 PTS 时按时间跨越，
+    // 无 PTS 时按解码帧序号的步长。只更新 last_ts，不做别的状态。
+    bool sample_frame = false;
+    if (probe.sample_interval <= 0.0) {
+        sample_frame = true;
+    } else if (has_pts) {
+        if (ts + 1e-6 >= probe.next_sample_ts) {
+            sample_frame = true;
+            probe.next_sample_ts = ts + probe.sample_interval;
+        }
+    } else {
+        sample_frame = ((probe.frames_decoded - 1) % probe.no_pts_stride) == 0;
+    }
+    probe.last_ts = ts;
+    if (!sample_frame)
+        return;
+
+    model::FrameSample sample;
+    std::string error;
+    if (!QualityAnalyzer::BuildSample(frame, probe.gray_width, probe.rgb_width, probe.capture_rgb, sample, error)) {
+        // 单帧降采样失败不终止整条维度：探针里记不到样本，维度覆盖率会自然反映出来。
+        return;
+    }
+    sample.frame_index = static_cast<int>(probe.frames_decoded - 1);
+    sample.timestamp_seconds = ts;
+    ++probe.frames_sampled;
+    visual_qc_.Feed(sample);
 }
 
 } // namespace videoeye

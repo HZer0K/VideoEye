@@ -222,8 +222,10 @@ TEST(AudioBitstreamRulesTest, DialnormMismatchNeedsMeasuredLoudness) {
     EXPECT_NEAR(issue.metric_value, 7.0, 1e-6);
     EXPECT_EQ(issue.severity, model::IssueSeverity::Warning);
 
-    // 偏差 1 LU 属于正常范围
-    result.audio_bitstream.streams.front().dialnorm_delta_lu = 1.0;
+    // 偏差 1 LU 属于正常范围：改的是**实测响度**（-26 vs 声明 -27），
+    // 不是那个由实测推导出来的 dialnorm_delta_lu 缓存字段 —— 后者只是结果快照，
+    // 真实报告里两者永远一致，单改它等于伪造了一个不存在的测量值。
+    result.audio_qc.integrated_lufs = -26.0;
     const model::QcReport small = engine.Evaluate(result);
     EXPECT_FALSE(HasIssue(small, "audio.dialnorm.mismatch"));
 }

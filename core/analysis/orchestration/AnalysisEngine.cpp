@@ -230,12 +230,16 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     ScanBuckets buckets;
     ScanOutcome scan_outcome = ScanOutcome::Complete;
     {
-        PacketScanLoop loop(fmt, options, result, callbacks);
+        PacketScanLoop loop(fmt, options, result, callbacks, &input.interrupt(),
+                            ffmpeg_io::ScanIdleTimeoutUs(input.network_input(), options.io_idle_timeout_ms));
         // 取消判定的两个谓词按引擎的策略注入："看哪一颗标志"（外部源优先于引擎自有）
         // 是引擎的事，循环只是借来问一句。
         scan_outcome = loop.Run(
             pipeline, buckets, interval, [&] { return CancelRequested(); },
             [&](int ret) { return IsCancelledExit(ret); });
+        // 扫描结束后撤掉空闲截止时间：收尾阶段（BeforeClose 的 HDR 补读）不该被
+        // 残留的读包超时打断；取消仍然靠同一颗标志响应。
+        input.interrupt().deadline_us = 0;
     }
     if (scan_outcome == ScanOutcome::Failed) {
         // 失败终态（含 error_message / scan_error_code）已由循环写进 result，这里只发回调。
@@ -259,6 +263,9 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     // flush 帧类型探测解码器：EOF 时仍压在解码器里的帧（重排序延迟）在此收干净，
     // 同样不碰 fmt。必须在 ReleaseProbes 之前。
     pipeline.FlushFrameProbe();
+    // flush 视觉画质解码器：EOF 时压着的帧收干净并闭合最后一段缺陷。
+    // 同样必须在 ReleaseProbes 之前（释放后 ready 变 false，flush 就是空转）。
+    pipeline.FlushVisual();
     // 这两个标记必须在 ReleaseProbes 之前读：释放之后 ready 就变 false 了。
     // 放在 FlushAudio 之后而不是之前 —— flush 自己也会喂帧，那里发现的中途改采样率
     // 同样该记一笔（以前是在 flush 之前抓的，flush 期间的变更会被漏掉）。
@@ -296,6 +303,9 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     assembler.FinalizeParameterTimelines(pipeline.parameter_timelines());
     assembler.FinalizeFrameOrder(pipeline.frame_order_timelines());
     assembler.FinalizeColorHdr(pipeline.color_hdr(), pipeline.color_video_stream_index());
+    // 视觉画质 QC：FlushVisual 已经跑过（EOF 残余帧入账、缺陷段闭合），这里只取快照。
+    assembler.FinalizeVisualQc(pipeline.visual_qc(), pipeline.visual_video_stream_index(),
+                               pipeline.visual_frames_decoded());
     assembler.FinalizeSubtitle(pipeline.subtitle(), measured_duration);
     assembler.FinalizeTimecode(pipeline.timecode());
     assembler.FinalizeAuxData(pipeline.aux_data());

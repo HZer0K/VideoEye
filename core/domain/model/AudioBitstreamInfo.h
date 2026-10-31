@@ -53,9 +53,10 @@ struct AudioBitstreamStream {
     int64_t packet_count = 0;    // 交给分析器的包数
     int64_t parsed_packets = 0;  // 至少解析出一个帧头的包数
     int64_t invalid_packets = 0; // **已支持解析**但帧头校验失败的包数
-    // 该编码尚未实现逐帧位流头解析（MP3/FLAC/PCM ...），这些包既不算成功也不算失败。
+    // 该编码尚未接入逐帧位流头解析（PCM 等），这些包既不算成功也不算失败。
     // 必须与 invalid_packets 分开：混在一起会把"还没做"报成"素材坏了"，
     // 例如 PCM 会被算成 100% 帧头解析失败并触发 QC 告警。
+    // 注：MP3 / FLAC 已实现逐帧解析（见 AudioBitstreamParser），不要沿用旧说法。
     int64_t unsupported_packets = 0;
     int64_t frame_count = 0; // 解析出的帧数（AAC/AC-3 可能一包多帧）
 

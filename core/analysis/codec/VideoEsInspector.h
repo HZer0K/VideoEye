@@ -53,7 +53,10 @@ public:
     // 一条起始码都没有。只按 Annex B 抽的话结果是**零个 NAL** —— 而零个 NAL
     // 在外部看来和"这段码流没有 slice/SEI"完全一样，是一整条功能的静默失效。
     enum class NalFraming {
-        Auto = 0,       // 逐包判定：先看起始码，再看长度前缀链是否自洽
+        // 逐包判定，但**已知宽度优先**：给了 prefix_bytes 时先验证长度前缀链，
+        // 链自洽就用它（封装配置比"头几个字节像起始码"更权威），否则再看起始码。
+        // 宽度未知时先看起始码，再按 4 -> 2 -> 1 验证长度前缀链。
+        Auto = 0,
         AnnexB,         // 强制按起始码切
         LengthPrefixed, // 强制按 prefix_bytes 宽度的长度前缀切
     };
@@ -64,6 +67,12 @@ public:
 
     // 参数集已解出的情况下配置它们：slice QP 需要 PPS 的 init_qp 作基准，
     // slice header 的位偏移需要 SPS 的几个开关。拿不到也能跑，只是 QP 判为无效。
+    //
+    // ❗ 这里保存的是**一张按 ID 索引的表**，不是"最后见到的那一份"：
+    // slice header 里的 pic_parameter_set_id 决定它到底该用哪套参数
+    // （PPS -> seq_parameter_set_id -> SPS）。只留单份快照时，多 PPS 或中途
+    // 切换参数集的码流会拿错基准算出一个"看着完全合理"的 QP —— 位宽/开关
+    // 一旦不同还会让整条 slice header 从那儿开始错位。
     void SetH264ParameterSets(const model::H264SpsInfo& sps, const model::H264PpsInfo& pps);
     void SetHevcParameterSets(const model::HevcSpsInfo& sps, const model::HevcPpsInfo& pps);
 
@@ -109,6 +118,16 @@ private:
     bool ParseH264SliceHeader(const uint8_t* data, size_t size, bool is_idr, int nal_ref_idc, int& slice_type,
                               int& slice_qp, bool& first_slice_of_picture);
 
+    // ---- H.264 参数集表（按 ID 索引）----
+    //
+    // 容量足够覆盖任何真实码流（规范允许 32 个 PPS / 32 个 SPS，这里按 32 上限
+    // 淘汰最旧的一份）。包内遇到 SPS/PPS 时会就地更新 —— TS / 裸流 / 中途重启
+    // 编码器都只能靠这条通路拿到当前参数。
+    void StoreH264Sps(const model::H264SpsInfo& sps);
+    void StoreH264Pps(const model::H264PpsInfo& pps);
+    const model::H264SpsInfo* FindH264Sps(int id) const;
+    const model::H264PpsInfo* FindH264Pps(int id) const;
+
     int codec_id_ = 0;
     Options options_;
     bool enabled_ = false;
@@ -117,11 +136,10 @@ private:
     NalFraming framing_ = NalFraming::Auto;
     int prefix_bytes_ = 0;
 
-    model::H264SpsInfo h264_sps_;
-    model::H264PpsInfo h264_pps_;
+    std::vector<model::H264SpsInfo> h264_sps_list_;
+    std::vector<model::H264PpsInfo> h264_pps_list_;
     model::HevcSpsInfo hevc_sps_;
     model::HevcPpsInfo hevc_pps_;
-    bool has_h264_params_ = false;
 
     // 累积态（Finish() 时汇总进 result_）
     std::vector<int> slice_types_; // 已归一化到 0..4（H.264 的 slice_type % 5）

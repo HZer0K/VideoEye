@@ -406,3 +406,62 @@ TEST(BitrateGopAnalyzerTest, DownsampledBucketsAreNotReportedAsOversizedFrames) 
     EXPECT_TRUE(r.downsampled);
     EXPECT_EQ(r.CountAnomalies(BitrateAnomalyType::OversizedFrame), 0);
 }
+
+// ---- GOP 明细的有界保留 ----
+//
+// 明细列表受 options.max_gops 上限约束，但**统计必须覆盖全部 GOP**：
+// 均值/标准差/最大时长/帧数区间/超长计数都走收尾时的累加器，不能回头遍历
+// result.gops —— 截断后那只是前一段。
+TEST(BitrateGopAnalyzerTest, GopDetailIsBoundedButStatsCoverAll) {
+    BitrateGopOptions opts;
+    opts.max_gops = 2;
+    BitrateGopAnalyzer analyzer;
+    analyzer.Reset(opts);
+    Generate(analyzer, GenOptions{/*.frames=*/300, /*.gop=*/50});
+    const BitrateGopAnalysis& r = analyzer.Finish();
+
+    // 明细只留前 2 条，但真实 GOP 数是 6
+    EXPECT_EQ(r.gops.size(), 2u);
+    EXPECT_TRUE(r.gops_truncated);
+    EXPECT_EQ(r.gop_count, 6);
+    // 被保留的条目序号必须仍是真实序号，不能因为截断全部变成 0
+    EXPECT_EQ(r.gops[0].index, 0);
+    EXPECT_EQ(r.gops[1].index, 1);
+    // 统计覆盖全部 6 个 GOP（每个 2 秒），而不是只有被保留的 2 个
+    EXPECT_NEAR(r.gop_duration_mean, 2.0, 1e-6);
+    EXPECT_NEAR(r.gop_duration_stddev, 0.0, 1e-6);
+    EXPECT_EQ(r.gop_frames_mean, 50.0);
+    EXPECT_EQ(r.key_interval_mean, 2.0);
+}
+
+// 明细在上限处截断后，尾部 GOP 的超长判定仍必须发生（判定已移到
+// CloseCurrentGop，不依赖 result.gops 里还留着谁）。
+TEST(BitrateGopAnalyzerTest, GopTruncationStillDetectsLongGopBeyondDetailCap) {
+    BitrateGopOptions opts;
+    opts.max_gops = 1;
+    BitrateGopAnalyzer analyzer;
+    analyzer.Reset(opts);
+    // 25fps，每 1000 帧一个关键帧 -> 40 秒 / GOP，共 3 个
+    Generate(analyzer, GenOptions{/*.frames=*/2500, /*.gop=*/1000});
+    const BitrateGopAnalysis& r = analyzer.Finish();
+
+    EXPECT_TRUE(r.gops_truncated);
+    EXPECT_EQ(r.gops.size(), 1u);
+    EXPECT_EQ(r.gop_count, 3);
+    EXPECT_EQ(r.long_gop_count, 3);
+    EXPECT_GT(r.gop_duration_max, 10.0);
+}
+
+// max_gops = 0 表示不限制（保持老行为）
+TEST(BitrateGopAnalyzerTest, UnlimitedGopDetailKeepsEveryGop) {
+    BitrateGopOptions opts;
+    opts.max_gops = 0;
+    BitrateGopAnalyzer analyzer;
+    analyzer.Reset(opts);
+    Generate(analyzer, GenOptions{/*.frames=*/300, /*.gop=*/50});
+    const BitrateGopAnalysis& r = analyzer.Finish();
+
+    EXPECT_EQ(r.gops.size(), 6u);
+    EXPECT_EQ(r.gop_count, 6);
+    EXPECT_FALSE(r.gops_truncated);
+}

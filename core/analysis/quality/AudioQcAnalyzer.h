@@ -153,11 +153,14 @@ private:
     double clock_seconds_ = 0.0;
 
     // 400 ms 块功率（用于积分响度 + 短期响度窗口）
-    std::vector<double> block_powers_;      // 全部块（积分门限用）
+    // 全部块都必须保留：BS.1770 第二遍要按"绝对门限后的均值"回看每一个块，
+    // 抽稀/截断会改变门限结果。float 存储把常驻内存减半（10 块/秒 ≈ 40 B/s，
+    // 即约 144 KB/小时），功率到 LUFS 的精度损失可忽略（相对误差 ~1e-7）。
+    std::vector<float> block_powers_;
     std::vector<double> short_term_window_; // 最近 30 个块（3 s）
     size_t short_term_pos_ = 0;
     double short_term_sum_ = 0.0;
-    std::vector<double> short_term_values_; // 短期响度序列（LRA 用）
+    std::vector<float> short_term_values_; // 短期响度序列（LRA 用），同样必须全留
 
     double running_sample_peak_ = 0.0;
     double running_true_peak_ = 0.0;
