@@ -924,8 +924,18 @@ bool flush_encoders(std::vector<StreamCtx>& streams, AVFormatContext* in_fmt, AV
     return true;
 }
 
-// 定位到起点。av_seek_frame 只落在关键帧上，seek 之后必须把解码器/编码器里残留的参考帧
-// 冲掉，否则区间外的旧帧会跟着一起排出来。
+// 定位到起点。av_seek_frame 只落在关键帧上，接下去读到的第一批包可能早于起点，
+// 解码器里也因此还压着 seek 之前的参考帧 —— 所以 seek 之后必须冲掉**解码器**。
+//
+// ⭐⭐ 绝不能顺手把编码器也 flush 掉。这里的编码器刚在 BuildOutputStreamMapping 里
+// 建出来、一帧都还没编过，本来就没有可冲的东西；而 avcodec_flush_buffers() 对
+// libx264 是有破坏性的：它会把 lookahead 线程永久停掉（b_exit_thread），此后
+// x264_encoder_encode(pic_in != NULL) 一律返回 -1 并打印
+// "lookahead thread is already stopped"，FFmpeg 把它报成 AVERROR_EXTERNAL，
+// 整次导出直接失败。openh264 对这个调用不敏感，所以只在 Linux（系统 GPL 构建带
+// libx264）暴露：MediaExporterRange.ReencodeTrimsExactlyAndStaysDecodable 从加上
+// 区间功能起就一直红，而同样跑重编码的"只设终点"分支因为 start_ms <= 0 根本没走到
+// 这里，一直是绿的 —— 这就是它长期没被发现的原因。
 void seek_to_start(AVFormatContext* in_fmt, qint64 start_ms, std::vector<StreamCtx>& streams) {
     if (start_ms <= 0)
         return;
@@ -936,8 +946,6 @@ void seek_to_start(AVFormatContext* in_fmt, qint64 start_ms, std::vector<StreamC
     for (auto& s : streams) {
         if (s.dec)
             avcodec_flush_buffers(s.dec);
-        if (s.enc)
-            avcodec_flush_buffers(s.enc);
     }
 }
 
