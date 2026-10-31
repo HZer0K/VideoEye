@@ -572,6 +572,15 @@ python scripts/check_layering.py
 | 6 | `core/qc/QcRuleDefaults.cpp` + `core/qc/QcRuleEngine*.cpp` | 可选：要加 QC 规则时改 `DefaultQcRules()` + `CheckRule()` |
 | 7 | `ui/analysis_panel/*.cpp` | 展示。可以新建页面，也可以并入现有页（`timecode` 就并进了 `SubtitleAuxPage`） |
 
+第 5 项里的收尾那处（`AnalysisResultAssembler.cpp`）2026-10-31 起按维度拆开了：
+每个维度一个 `BuildXxxStatus()`（文件顶部匿名命名空间），驱动函数 `FinalizeDimensionStatus`
+只做"清表 → 按顺序构造 → `MarkConclusive` + `SetDimension` → 回填历史布尔"。所以加维度
+在那边是**两处**：写一个 `BuildXxxStatus`，再在 `BuildAllDimensions` 里按**报告章节顺序**
+插一行（顺序错了没有编译错误，`tests/unit/test_dimension_aggregation.cpp` 的
+`DimensionsAppearInTheDocumentedOrder` 会红）。同一文件的 `AllDimensionCases` 表也要补一行
+"这个维度的事实 → 它该给出的评级"，漏了 `FactTableCoversEveryDimension` 会先红 —— 这是
+"新维度忘了写判据"能被抓住的地方。
+
 **B 路线：播放期维度**（随解码逐帧跑，实时刷新）—— **约 15 个文件**
 
 | # | 文件 | 改什么 |

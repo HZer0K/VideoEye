@@ -97,6 +97,11 @@ public:
     //
     // 必须在所有 Finalize* 之后调用：它读的是已经落进 result 的各维度结论，
     // 提前调用会得到"未执行"的错误判断。
+    //
+    // 逐维度的判据在 .cpp 顶部的 Build*Status()（一个维度一个函数），本类的这个成员只
+    // 负责顺序与落表：清表 -> 构造 -> MarkConclusive + SetDimension -> 回填历史布尔。
+    // 加维度要改两处：写一个 Build*Status，再在 BuildAllDimensions 里按报告章节顺序插
+    // 一行（有 test_dimension_aggregation.cpp 的用例同时守"每个维度都有判据"与顺序）。
     void FinalizeDimensionStatus(int audio_tracks_analyzed, int audio_tracks_total);
 
     // 收尾: 记录已扫包数 -> 进度 100% -> on_finished。
