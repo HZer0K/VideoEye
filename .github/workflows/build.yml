@@ -601,33 +601,67 @@ jobs:
       #   1. 报告能落盘 —— 测试通过时 ctest 不回显输出, 文件是唯一来源;
       #   2. exitcode=0 真的生效 —— 不生效的话 Qt 内部那些竞态继续让进程以 66 退出,
       #      整条 job 还是红的, "不是我们的竞争就不判红"就只是句空话。
+      #
+      # ❗ 竞赛**不是每跑必现**：首版探针（主线程写一次、worker 写一次、直接 join）
+      #   在 47851a5 这次 run 上 TSan 一条报告都没出，job 红在"探针不可靠"而不是代码。
+      #   现在的打法：
+      #   * 每个线程各写 1000 次，并用 atomic 握手确认"worker 已经真的在跑"再开写 ——
+      #     冲突访问的数量从 2 涨到 2000，漏报概率大幅下降；
+      #   * 仍然重试 3 轮，任一轮落盘即通过（真坏了三轮都不落盘，红的仍然是它）；
+      #   * 把探针自己的 stdout/stderr 打出来 —— 首版吞掉了，红的时侯看不出 TSan
+      #     是没初始化、没检测到，还是根本没写文件。
       - name: Probe TSan report path and exit code
         if: matrix.sanitizer == 'tsan'
         env:
           TSAN_OPTIONS: print_stacktrace=1:halt_on_error=0:exitcode=0:log_exe_name=1:log_path=${{ github.workspace }}/build/tsan-probe/tsan
         run: |
           set -euo pipefail
-          rm -rf build/tsan-probe && mkdir -p build/tsan-probe
           cat > /tmp/race-probe.c <<'EOF'
           #include <pthread.h>
-          static int shared_counter;
-          static void *worker(void *arg) { shared_counter += 1; return arg; }
+          #include <stdatomic.h>
+          #include <stdio.h>
+
+          static int shared_counter;          /* 无任何同步的普通变量 */
+          static atomic_int worker_running;
+
+          static void *worker(void *arg) {
+              atomic_store(&worker_running, 1);
+              for (int i = 0; i < 1000; ++i)
+                  shared_counter += 1;        /* 与 main 的写构成竞争 */
+              return arg;
+          }
+
           int main(void) {
               pthread_t t;
               pthread_create(&t, 0, worker, 0);
-              shared_counter += 1;
+              while (!atomic_load(&worker_running)) { }  /* 保证两只线程同时在跑 */
+              for (int i = 0; i < 1000; ++i)
+                  shared_counter += 1;
               pthread_join(t, 0);
+              printf("counter=%d\n", shared_counter);
               return 0;
           }
           EOF
           gcc -fsanitize=thread -g /tmp/race-probe.c -o /tmp/race-probe -lpthread
-          set +e
-          /tmp/race-probe
-          code=$?
-          set -e
-          ls -l build/tsan-probe
-          if [ -z "$(ls -A build/tsan-probe)" ]; then
-            echo "::error::TSan 没有把报告写进 log_path —— 门禁会静默变绿，先修这里"
+
+          landed=0
+          code=-1
+          for attempt in 1 2 3; do
+            rm -rf build/tsan-probe && mkdir -p build/tsan-probe
+            set +e
+            /tmp/race-probe > /tmp/race-probe.out 2>&1
+            code=$?
+            set -e
+            echo "--- 第 $attempt 轮: exit=$code ---"
+            cat /tmp/race-probe.out
+            ls -l build/tsan-probe
+            if compgen -G "build/tsan-probe/tsan*" > /dev/null; then
+              landed=1
+              break
+            fi
+          done
+          if [ "$landed" -ne 1 ]; then
+            echo "::error::三轮都没有报告落进 log_path —— 不是'竞争没撞上'就是 log_path 失效，先修这里"
             exit 1
           fi
           grep -q "data race" build/tsan-probe/tsan* || {
