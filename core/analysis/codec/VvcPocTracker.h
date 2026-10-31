@@ -65,6 +65,9 @@
 
 #include "core/analysis/codec/FrameOrderTypes.h"
 #include "core/domain/model/FrameOrderInfo.h"
+// 只为拿 kMaxVvcExtraBitFlags：SpsState 里那两组开关必须与 SPS 解析结果同尺寸，
+// 各写一个 8/24 迟早会再错一次。
+#include "core/domain/model/VvcBitstreamInfo.h"
 
 namespace videoeye {
 
@@ -126,9 +129,12 @@ private:
         bool subpic_info_present = false;
         int subpic_id_len = 1;
         int num_extra_ph_bytes = 0;
-        bool extra_ph_present[8] = {};
+        // 与 model::VvcSpsInfo 的 sps_extra_*_bit_present_flag 同尺寸 —— 数量是 u(2)
+        // （≤3 字节）→ 最多 24 个开关。那边按 [8] 声明时 num = 3 直接把
+        // "index 8 out of bounds" 写进了 UBSan 报告，这里跟着同步。
+        bool extra_ph_present[model::kMaxVvcExtraBitFlags] = {};
         int num_extra_sh_bytes = 0;
-        bool extra_sh_present[8] = {};
+        bool extra_sh_present[model::kMaxVvcExtraBitFlags] = {};
     };
 
     struct PpsState {

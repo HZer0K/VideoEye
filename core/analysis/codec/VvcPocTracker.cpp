@@ -165,10 +165,10 @@ bool VvcPocTracker::HandleSps(const NalView& nal) {
     slot.subpic_id_len = sps.sps_subpic_id_len_minus1 + 1;
 
     slot.num_extra_ph_bytes = sps.sps_num_extra_ph_bytes;
-    for (int i = 0; i < 8; ++i)
+    for (int i = 0; i < model::kMaxVvcExtraBitFlags; ++i)
         slot.extra_ph_present[i] = sps.sps_extra_ph_bit_present_flag[i];
     slot.num_extra_sh_bytes = sps.sps_num_extra_sh_bytes;
-    for (int i = 0; i < 8; ++i)
+    for (int i = 0; i < model::kMaxVvcExtraBitFlags; ++i)
         slot.extra_sh_present[i] = sps.sps_extra_sh_bit_present_flag[i];
 
     any_sps_ = true;

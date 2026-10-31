@@ -791,6 +791,8 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
     // extra_ph / extra_sh：每个 bit 是"这一位到底存不存在"的开关，不是 8 位数据。
     // 以前这里一次性 SkipBits(num * 8) —— 总位宽恰好相等，但开关值丢了，
     // 于是 PH / slice_header 里想跳这段就只能瞎猜，POC 与 slice_type 会错位。
+    // 数量是 u(2)（≤3 字节 → ≤3*8 = 24 个开关），数组按 kMaxVvcExtraBitFlags 声明，
+    // 两者一起保证"最多写满"而不越界。
     sps.sps_num_extra_ph_bytes = static_cast<int>(reader.ReadBits(2));
     for (int i = 0; i < sps.sps_num_extra_ph_bytes * 8; ++i) {
         sps.sps_extra_ph_bit_present_flag[i] = reader.ReadBit();

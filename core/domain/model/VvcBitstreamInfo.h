@@ -92,6 +92,15 @@ struct VvcVpsInfo {
     std::string LevelString() const;
 };
 
+// H.266 7.3.2.3：sps_num_extra_ph_bytes / sps_num_extra_sh_bytes 都是 u(2)，
+// 取值 0..3；每一个字节 8 位、每位一个"这一位存不存在"的开关 → 最多 24 个开关。
+// ❗ 早先这两个开关数组按 [8] 声明，num = 3 时写到 flag[8] 就越界了
+// （fuzz + UBSan 实测：VvcBitstreamParser.cpp:796，输入 AAAB/nsAegBkg4MK23o=）。
+// 越界落在紧随其后的 int 字段上、稍后又被重新赋值覆盖，所以功能上"看不出异常"，
+// 但那是 UB，而且第 8..23 位的开关实际被丢掉了 → PH/SH 跳过位段会错位。
+inline constexpr int kMaxVvcExtraBytes = 3;
+inline constexpr int kMaxVvcExtraBitFlags = kMaxVvcExtraBytes * 8;
+
 struct VvcSpsInfo {
     bool present = false;
 
@@ -132,11 +141,12 @@ struct VvcSpsInfo {
     //   for (i = 0; i < sps_num_extra_ph_bytes * 8; i++)
     //       if (sps_extra_ph_bit_present_flag[i]) ph_extra_bit[i]
     // 数量与"哪些位真的存在"分开存 —— 只记字节数会把 msb_cycle 的起始位算错。
+    // 数组长度取 kMaxVvcExtraBitFlags（24）：num 是 u(2)，最大 3 字节 = 24 位。
     int sps_num_extra_ph_bytes = 0;
-    bool sps_extra_ph_bit_present_flag[8] = {};
+    bool sps_extra_ph_bit_present_flag[kMaxVvcExtraBitFlags] = {};
     // slice_header 里同样形态的段（sh_extra_bit），读 slice_type 之前必须精确跳过。
     int sps_num_extra_sh_bytes = 0;
-    bool sps_extra_sh_bit_present_flag[8] = {};
+    bool sps_extra_sh_bit_present_flag[kMaxVvcExtraBitFlags] = {};
 
     int sps_log2_min_luma_coding_block_size_minus2 = 0;
     bool sps_partition_constraints_override_enabled_flag = false;

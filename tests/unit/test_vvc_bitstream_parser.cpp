@@ -330,6 +330,40 @@ TEST_F(VvcSpsTest, LongGarbageStreamIsRejected) {
     EXPECT_FALSE(pps.present);
 }
 
+TEST_F(VvcSpsTest, ExtraBitFlagArraysCoverTheU2Maximum) {
+    // fuzz 回归（.github/workflows/fuzz.yml / FuzzBitstreamExtradata，
+    // artifact ef2f54a3fbddc5ea893e9e4fa379bc7fd135ed20 = AAAB/nsAegBkg4MK23o=）。
+    // 那 14 字节让 sps_num_extra_ph_bytes 读成 3 → 要写 flag[0..23]，而模型里曾只
+    // 声明 bool[8] → UBSan "index 8 out of bounds for type 'bool[8]'"（
+    // VvcBitstreamParser.cpp:796）。越界那 16 字节恰好落在紧随其后的 int 字段上，
+    // 稍后又被重新赋值覆盖，所以**功能断言抓不到**这处 UB：
+    //   * 判据一：下面的 static_assert，把数组改回 [8] 直接编译不过；
+    //   * 判据二：linux-test-asan 是 -fsanitize=address,undefined（含 bounds），
+    //     回到 [8] 时这些输入会让 UBSan 在 796 行报红、门禁判失败。
+    // 两段输入都是在 fuzz 原始字节上翻一位得到的（0x64→0x24 / 0x83→0x8E），
+    // 目的只是把"字节数"顶到 u(2) 的上限 3；其余字段仍是垃圾码流，没有规范含义。
+    struct Case {
+        std::vector<uint8_t> payload;
+        int expected_ph;
+        int expected_sh;
+    };
+    const std::vector<Case> cases = {
+        {{0x00, 0x7A, 0x00, 0x24, 0x83, 0x83, 0x0A, 0xDB, 0x7A}, 3, 0},
+        {{0x00, 0x7A, 0x00, 0x64, 0x83, 0x83, 0x0E, 0xDB, 0x7A}, 1, 3},
+    };
+    for (const Case& c : cases) {
+        const VvcSpsInfo sps = VvcBitstreamParser::ParseSpsFromNalUnit(MakeNal(15, c.payload));
+        // 前提：真的走到了"写满 3 字节 × 8 位"这条分支，否则这条用例什么都没验
+        ASSERT_EQ(sps.sps_num_extra_ph_bytes, c.expected_ph);
+        ASSERT_EQ(sps.sps_num_extra_sh_bytes, c.expected_sh);
+    }
+
+    static_assert(sizeof(VvcSpsInfo::sps_extra_ph_bit_present_flag) / sizeof(bool) >= 24,
+                  "sps_num_extra_ph_bytes 是 u(2) → 最多 3 字节 = 24 个开关");
+    static_assert(sizeof(VvcSpsInfo::sps_extra_sh_bit_present_flag) / sizeof(bool) >= 24,
+                  "sps_num_extra_sh_bytes 是 u(2) → 最多 3 字节 = 24 个开关");
+}
+
 TEST_F(VvcSpsTest, TruncatedSpsPrefixesAreRejected) {
     // 截断测试：对每个严格前缀，解析必须失败（present=false）。
     // SPS 的 VUI 段落在尾部且解析会一直读到接近末尾，任何截断前缀都会让
