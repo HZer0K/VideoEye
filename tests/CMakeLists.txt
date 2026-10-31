@@ -246,14 +246,53 @@ set(TEST_INCLUDE_DIRS
 )
 
 # ============================================================
+# AUTOMOC 按需开启
+#
+# 以前这里无条件 set_target_properties(... AUTOMOC ON)。125 个测试目标里
+# 只有 9 个真的需要 moc，其余生成的 mocs_compilation.cpp 全是
+# "No files found that require moc" 空壳 —— 空壳不做事，但每个都要跑一次
+# cmake_autogen 扫描 + 一次 cl 调用，实测合计约占全量构建 CPU 的
+# 12%(空壳编译) + 9%(autogen 扫描)。所以改成默认关、只有名单里的目标开。
+#
+# 判据: 目标源码（含手列进来的生产 .cpp）里有 Q_OBJECT / Q_GADGET /
+# Q_NAMESPACE，或 #include "moc_xxx.cpp"。核对名单（在构建目录里跑）:
+#   for f in tests/*_autogen/mocs_compilation.cpp; do grep -q moc_ "$f" && echo "${f%%_autogen*}"; done
+#
+# 漏登记的失败模式是安全的: 链接期会缺 vtable / metaObject，是显式报错而非
+# 静默通过 —— 报了就把目标名补进下面这张表（或在调用处加 AUTOMOC 关键字）。
+# 别为了"以防万一"多开: 每多一个就是一次白跑的 autogen + cl。
+# ============================================================
+set(VIDEOEYE_TESTS_NEEDING_AUTOMOC
+    test_audio_viz_renderer
+    test_cancel_and_robustness
+    test_control_bar_widget
+    test_export_coordinator
+    test_ffmpeg_dictionary_widget
+    test_ffmpeg_output_widget
+    test_format_support
+    test_raw_image_sequence
+    test_report_export
+)
+
+# ============================================================
 # 公共配置函数: 创建测试可执行文件并套上统一设置
 # 各测试自己的额外依赖（Qt6::Core / FFmpeg::*）仍用 target_link_libraries 追加。
+#
+# 可选关键字 AUTOMOC: 强制开启 AUTOMOC（不走名单，留给特殊场景）。
 # ============================================================
 function(videoeye_add_test name)
-    add_executable(${name} ${ARGN})
+    cmake_parse_arguments(ARG "AUTOMOC" "" "" ${ARGN})
+    add_executable(${name} ${ARG_UNPARSED_ARGUMENTS})
     target_include_directories(${name} PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(${name} PRIVATE GTest::gtest_main)
-    set_target_properties(${name} PROPERTIES AUTOMOC ON)
+    # "${name}" 必须带引号展开: 不加引号时 CMake 会把 name 当字符串常量，
+    # 结果整个名单判定恒为假（实测过）
+    if("${name}" IN_LIST VIDEOEYE_TESTS_NEEDING_AUTOMOC OR ARG_AUTOMOC)
+        set_target_properties(${name} PROPERTIES AUTOMOC ON)
+    else()
+        # 显式关掉: 万一上层开了 CMAKE_AUTOMOC 兜底，这里也要压住
+        set_target_properties(${name} PROPERTIES AUTOMOC OFF)
+    endif()
     # 测试可执行文件与主程序在同一个输出目录:
     #   Windows  —— Qt / FFmpeg DLL 已经被主程序的 POST_BUILD 拷过去了；
     #               gtest.dll 没人管，这里单独补一步
@@ -687,7 +726,6 @@ videoeye_add_test(test_visual_qc_rules
 )
 target_link_libraries(test_visual_qc_rules PRIVATE VideoEyeQcRules)
 add_test(NAME VisualQcRulesTests COMMAND test_visual_qc_rules)
-
 
 # =================================================
 # 测试 11：MP4/fMP4 容器一致性 (Mp4SampleTableAnalyzer 的纯逻辑校验)

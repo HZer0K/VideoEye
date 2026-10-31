@@ -46,6 +46,30 @@ if(MSVC)
 endif()
 
 # ============================================================
+# 编译缓存 (ccache)
+#
+# 为什么加: CI 每次都是干净 runner，Linux 侧同一个 commit 的全量构建要从头编
+# 一百多个 TU（实测 .ninja_log 合计约 9700s CPU / 16 核）。ccache 把跨次构建的
+# 编译结果留下来，只改几个文件时后续构建基本只剩链接。
+#
+# 只在非 MSVC 下启用 —— Windows 侧的 CMAKE_CXX_COMPILER_LAUNCHER 被下面
+# VSLANG=1033 那层占用了，要叠 ccache 必须做链式组合，不是 set 一次就完事。
+#
+# 关掉: -DVIDEOEYE_USE_CCACHE=OFF
+# ============================================================
+option(VIDEOEYE_USE_CCACHE "找到 ccache 时用它做编译缓存（仅 GCC/Clang）" ON)
+if(VIDEOEYE_USE_CCACHE AND NOT MSVC AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
+    find_program(VIDEOEYE_CCACHE_PROGRAM ccache)
+    if(VIDEOEYE_CCACHE_PROGRAM)
+        set(CMAKE_C_COMPILER_LAUNCHER "${VIDEOEYE_CCACHE_PROGRAM}"
+            CACHE STRING "ccache" FORCE)
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${VIDEOEYE_CCACHE_PROGRAM}"
+            CACHE STRING "ccache" FORCE)
+        message(STATUS "ccache 已启用: ${VIDEOEYE_CCACHE_PROGRAM}")
+    endif()
+endif()
+
+# ============================================================
 # 头文件依赖追踪（Ninja + MSVC 的 /showIncludes 前缀）
 #
 # 症状：改了一个被几十个 TU 包含的头文件，增量构建却只重编几个文件；

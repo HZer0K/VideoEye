@@ -65,6 +65,16 @@ jobs:
       - name: Check test-count snapshot (README table)
         run: python3 scripts/summarize_tests.py --check-readme
 
+      # AUTOMOC 名单（tests/CMakeLists.txt 的 VIDEOEYE_TESTS_NEEDING_AUTOMOC）是
+      # "哪些测试目标需要 moc"的唯一事实源。多登记的失败是静默的 —— 目标照样编过、
+      # 只是白跑一次 autogen + cl，优化被一点点吃回去且没人看得见。所以两个方向
+      # 都要在这道门里拦下，不能只靠链接期报错。
+      - name: Check AUTOMOC registry
+        run: python3 scripts/check_automoc_registry.py
+
+      - name: Self-check AUTOMOC registry exit codes
+        run: python3 scripts/test_check_automoc_registry.py
+
       - name: Self-check test summary generation
         run: python3 scripts/test_summarize_tests.py
 
@@ -166,7 +176,31 @@ jobs:
             build-essential cmake pkg-config ninja-build \
             qt6-base-dev \
             libavcodec-dev libavformat-dev libavutil-dev \
-            libswscale-dev libswresample-dev
+            libswscale-dev libswresample-dev \
+            ccache
+
+      # 编译缓存: 干净 runner 上的全量构建要从头编一百多个 TU，跨次运行留下来
+      # 的缓存能让"只改了几个文件"的构建基本只剩链接。
+      #
+      # key 带上 preset —— 不同 preset 的编译选项不同（Release / Debug+Sanitizer
+      # / fuzz），混在一个 key 里会互相冲掉；用 github.sha 做精确键、再回退到
+      # 同 preset 的最近一次，命中率比"只按 OS"高得多。
+      #
+      # max_size 收在 1G: 默认的 5G 会让缓存上传/下载比省下的编译时间还贵。
+      - name: Cache ccache (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ matrix.preset }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ matrix.preset }}-
+
+      - name: Show ccache config (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          ccache --set-config max_size=1G
+          ccache --zero-stats
 
       # 与 test / sanitizer job 共用同一个入口（.github/actions/ensure-ffmpeg），
       # 别再在这里内联一份「检测 → 兜底 → 拼 -D」的逻辑：三处各写一遍的结果
@@ -186,6 +220,12 @@ jobs:
       - name: Build (Linux)
         if: runner.os == 'Linux'
         run: cmake --build --preset ${{ matrix.preset }}
+
+      # 命中率打出来: 缓存没生效时这里是 0 hits，一眼能看出来（否则只会表现为
+      # "构建怎么还是这么慢"）。
+      - name: ccache stats (Linux)
+        if: runner.os == 'Linux'
+        run: ccache --show-stats
 
       # 必须从 install 出来的目录上传: 构建目录里的可执行文件靠 RPATH 指到
       # build/release/lib 才能找到 FFmpeg, 而上传物只有 bin/ —— 下载下来就是
@@ -369,7 +409,25 @@ jobs:
             build-essential cmake pkg-config ninja-build \
             qt6-base-dev libgtest-dev clang-tidy \
             libavcodec-dev libavformat-dev libavutil-dev \
-            libswscale-dev libswresample-dev
+            libswscale-dev libswresample-dev \
+            ccache
+
+      # 同 build job: 干净 runner 上省掉一遍全量编译。key 带 preset，别让
+      # Debug / Release / Sanitizer 的缓存互相冲掉。
+      - name: Cache ccache (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ matrix.preset }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ matrix.preset }}-
+
+      - name: Show ccache config (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          ccache --set-config max_size=1G
+          ccache --zero-stats
 
       - name: Setup vcpkg (Windows)
         if: runner.os == 'Windows'
@@ -545,7 +603,22 @@ jobs:
             build-essential cmake pkg-config ninja-build \
             qt6-base-dev libgtest-dev \
             libavcodec-dev libavformat-dev libavutil-dev \
-            libswscale-dev libswresample-dev
+            libswscale-dev libswresample-dev \
+            ccache
+
+      # 同 build job。asan / tsan 是两个 preset，key 分开存。
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ matrix.preset }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ matrix.preset }}-
+
+      - name: Show ccache config
+        run: |
+          ccache --set-config max_size=1G
+          ccache --zero-stats
 
       # sanitizer 构建也要过同一道 FFmpeg 门禁，否则连编都编不过。
       - name: Ensure FFmpeg >= 7.1

@@ -27,6 +27,14 @@ if /i "%PRESET%"=="clean" (
         echo   已删除: %%~nxd
         rmdir /s /q "%%d"
     )
+    REM build\ 根下的 _* 临时物（测量日志 / 探针目录 / 一次性 dump 等）: 上面的
+    REM for /d 只清一级子目录，这些散在根目录的东西从来清不掉，越攒越多。
+    REM 正规产物都在 build\<名字>\ 里，根目录只有临时物，所以 _* 可以放心删。
+    for /d %%d in ("%~dp0build\_*") do (
+        echo   已删除: %%~nxd
+        rmdir /s /q "%%d"
+    )
+    del /q "%~dp0build\_*" 2>nul
     echo 构建目录已清理
     exit /b 0
 )

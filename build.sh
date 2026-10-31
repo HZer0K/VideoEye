@@ -65,6 +65,15 @@ if [[ "${1:-release}" == "clean" ]]; then
     if [[ "$found" == "0" ]]; then
         echo "  build/ 下没有子目录"
     fi
+    # build/ 根下散着的 _* 临时物（测量日志 / 探针目录 / 一次性 dump 等）:
+    # 上面的循环只清一级子目录，这些东西从来清不掉，越攒越多。
+    # 正规产物都在 build/<名字>/ 里，根目录只有这些临时文件，所以 _* 可以放心删。
+    shopt -s nullglob
+    for f in "$PROJECT_ROOT"/build/_*; do
+        rm -rf "$f"
+        echo "  已删除: $(basename "$f")"
+    done
+    shopt -u nullglob
     echo "构建目录已清理"
     exit 0
 fi
