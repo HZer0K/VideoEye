@@ -757,6 +757,20 @@ void AnalysisPanel::OnDiagnosticsProgress(double percent, const QString& stage) 
         page->SetProgress(static_cast<int>(percent));
         page->SetProgressFormat(stage + " %p%");
     }
+    // 跨页面的任务条同源于这一路进度（诊断页内的进度条由页面自己更新）
+    emit DiagnosticsScanProgress(percent, stage);
+}
+
+void AnalysisPanel::CancelDiagnosticsScan() {
+    // 空闲态误调由 DiagnosticsPage::CancelScan 自己判掉（不会进"取消中"、不起看门狗）
+    if (pages_.diagnostics)
+        pages_.diagnostics->CancelScan();
+}
+
+bool AnalysisPanel::FocusDiagnosticIssue(const QString& rule_id, double start_seconds, int stream_index) {
+    if (!pages_.diagnostics)
+        return false;
+    return pages_.diagnostics->FocusIssue(rule_id, start_seconds, stream_index);
 }
 
 } // namespace ui

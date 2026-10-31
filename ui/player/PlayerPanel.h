@@ -40,17 +40,20 @@ class RawImageSequence; // 前向声明：Raw 图像序列 (见 ui/player/RawIma
 //   - 不拥有: MediaPlayer (分析侧共用, 生命周期归 MainWindow), 只持裸指针
 //   - 与 MainWindow 通信一律走信号 (状态栏/错误提示), 不反向持有主窗口指针
 //
-// 布局预设（监看 / 分析）：一次性的分割比例命令，与"收起播放区"（显隐开关）
-// 正交。监看 = 播放区 58%；分析 = 播放区 30%（且不低于播放区最小高度），
-// 让 1366x768 这类小屏默认给分析区让路。预设持久化在 QSettings。
+// 布局预设（监看 / 分析 / 并排）：一次性的分割比例命令，与"收起播放区"（显隐开关）
+// 正交。监看 = 上下分割、播放区 58%；分析 = 上下分割、播放区 30%（且不低于播放区
+// 最小高度），让 1366x768 这类小屏默认给分析区让路；并排 = 左右分割、预览在右，
+// 宽屏下把纵向空间全让给分析内容。预设持久化在 QSettings。
 class PlayerPanel : public QWidget {
     Q_OBJECT
 
 public:
-    // 播放区布局预设
+    // 播放区布局预设（⚠️ 与 ui/main_window/window_layout.h 的 WindowLayoutPreset
+    // 一一对应，MainWindow 在两处之间手工映射，增删值要一起改）
     enum class LayoutPreset {
-        Monitor,  // 监看：播放区占大头
-        Analysis, // 分析：分析区占大头
+        Monitor,    // 监看：上下分割，播放区占大头
+        Analysis,   // 分析：上下分割，分析区占大头
+        SideBySide, // 并排：左右分割，预览在右、分析在左
     };
     Q_ENUM(LayoutPreset)
 
@@ -65,8 +68,10 @@ public:
         splitter_ = splitter;
     }
 
-    // 应用布局预设（切分割比例；收起态下只记住预设，展开时按新预设分配）
-    void ApplyLayoutPreset(LayoutPreset preset);
+    // 应用布局预设（切分割比例与朝向；收起态下只记住预设，展开时按新预设分配）。
+    // persist=false 用于「换页时自动分配空间」这类自动行为：它不该覆盖用户存在
+    // QSettings 里的显式选择（用户下次启动仍应回到自己选的布局）。
+    void ApplyLayoutPreset(LayoutPreset preset, bool persist = true);
     LayoutPreset layoutPreset() const {
         return layout_preset_;
     }
@@ -142,8 +147,14 @@ private slots:
 private:
     void SetupUI();
     void SetupConnections();
-    // 按当前 layout_preset_ 分配 content_splitter_ 的上下比例（含最小高度钳制）
+    // 按当前 layout_preset_ 分配 content_splitter_ 的比例与朝向（含最小尺寸钳制）
     void ApplyPresetSizes();
+    // 并排模式下把预览摆到右侧、上下模式下摆回顶部。
+    // QSplitter::insertWidget / addWidget 对已在分割器里的控件是"移动"，不会重复加入。
+    void MovePlayerToEdge(bool right_side);
+    // 分割器里"不是播放区"的那一半（分析内容区）。并排模式下它在索引 0，
+    // 所以不能再像以前那样写死 widget(1)。
+    QWidget* ContentWidget() const;
 
     // 集中构造并下发叠加层信息 (状态/分辨率/编码/FPS), 避免多处各拼一份导致字段漏传。
     void UpdateOverlay();

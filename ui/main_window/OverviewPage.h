@@ -3,17 +3,21 @@
 // 首页（总览页）：把"打开一个文件后该看什么"收在一屏里。
 //
 // 原来的 Page 0 是一段不可换行的媒体信息纯文本 —— 用户打开文件后仍然不知道该
-// 先去哪个分析页、这次扫描有没有问题。本页分三区：
-//   1. 文件摘要：容器/时长/大小/码率 + 视频/音频一行式概要（来自 StreamInfo）；
-//   2. 分析状态：扫描状态徽章 + 评分/结论/问题计数 + 最重要的几条异常
-//      （按严重度排序，点条目跳「质量诊断」页看问题清单）；
-//   3. 完整媒体信息：原来的纯文本整段保留在下方（可滚动、可复制）。
+// 先去哪个分析页、这次扫描有没有问题。本页按"先回答结论，再回答细节"排：
+//   1. 素材身份：文件名 + 完整路径 + 状态徽章（这一屏在说什么文件、扫到哪了）；
+//   2. 分析状态：评分/结论/覆盖情况 + 问题计数 + 最重要的几条异常。
+//      —— 异常排在文件摘要之前：用户先要知道"有没有问题、点哪里"，
+//         容器/码率这些参数是"看完结论再核对"的次级信息；
+//   3. 文件摘要：容器/时长/大小/码率 + 视频/音频一行式概要（来自 StreamInfo）；
+//   4. 完整媒体信息：原来的纯文本整段保留，**默认折叠**（它很长，常驻展开会把
+//      上面三块挤出首屏）。
 //
-// 各分析页的入口就是侧边栏（与本页「质量诊断」表头跳转二选一即可），首页不再
-// 重复铺一版跳转按钮。
+// 各分析页的入口就是侧边栏（与本页异常条目跳转二选一即可），首页不再重复铺一版
+// 跳转按钮。
 //
 // 数据全部由 MainWindow 喂进来（本页不持有 AnalysisPanel / MediaPlayer），
-// 跳转意图以 NavigateToPage(page_id) 信号外抛，由 MainWindow 切 stack + 侧栏。
+// 跳转意图以 NavigateToIssue 信号外抛（带问题身份，由 MainWindow 转给诊断页选中
+// 对应那一行），由 MainWindow 切 stack + 侧栏。
 
 #include <QString>
 #include <QVector>
@@ -65,8 +69,11 @@ public:
     void SetAnalysisSummary(const AnalysisSummary& summary);
 
 signals:
-    // 跳转到指定分析页（pageId 与侧栏导航元数据一致，如 "quality_diagnostics"）
-    void NavigateToPage(const QString& page_id);
+    // 跳到「质量诊断」并直接定位到某条异常（首页异常表的点击意图）。
+    // 带的是问题身份而不是行号：首页那份 top_issues 是按严重度重排过的**副本**，
+    // 下标与报告里的 issues 并不对应，传下标会让用户落在另一条问题上
+    // （这条 bug 只看下标永远发现不了，因为两边行数一样）。
+    void NavigateToIssue(const QString& rule_id, double start_seconds, int stream_index);
     // 请求重新跑一次全文件扫描（由 MainWindow 转交诊断页）
     void RescanRequested();
 

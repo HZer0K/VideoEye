@@ -31,6 +31,11 @@ struct AnalysisPageDescriptor {
 
 // 顺序 == 外部 stack 的页序号。调整顺序前先看 tests/unit/test_analysis_page_catalog.cpp：
 // 那里把这条序列当作契约断言。
+//
+// 另一条口径与 stack 顺序**无关**：侧栏按 (group, order) 排序。所以同组内的
+// 展示次序可以单独调整，不会碰 stack 下标 —— 「全片质量」组就是这么把
+// quality_diagnostics 提到首位的：它是这一组的结论页，用户进来先看结论，
+// 再按需展开码率 / 音频 / 色彩这些分项（"组内首发"由 order 表达，不看表格行序）。
 inline const std::vector<AnalysisPageDescriptor>& AnalysisPageCatalog() {
     static const std::vector<AnalysisPageDescriptor> kCatalog = {
         {"playback_stats_packets", "播放统计与帧包", "playback", 0, "播放期"},
@@ -39,13 +44,13 @@ inline const std::vector<AnalysisPageDescriptor>& AnalysisPageCatalog() {
         {"motion_vectors", "运动矢量与块分析", "playback", 1, "播放期"},
         {"scene_change", "场景切换", "playback", 2, "播放期"},
         {"visual_quality", "画面质量", "playback", 3, "播放期"},
-        {"bitrate_gop", "码率与 GOP", "full_quality", 0, "全文件"},
-        {"audio_qc", "音频 QC", "full_quality", 1, "全文件"},
-        {"color_hdr", "色彩与 HDR", "full_quality", 2, "全文件"},
+        {"bitrate_gop", "码率与 GOP", "full_quality", 1, "全文件"},
+        {"audio_qc", "音频 QC", "full_quality", 2, "全文件"},
+        {"color_hdr", "色彩与 HDR", "full_quality", 3, "全文件"},
         {"codec_parameters", "编码参数集", "file_parse", 1, "全文件"},
         {"streaming_packets", "流媒体包", "file_parse", 2, "全文件"},
         {"subtitle_aux", "字幕与辅助数据", "file_parse", 3, "全文件"},
-        {"quality_diagnostics", "质量诊断", "full_quality", 3, "全文件"},
+        {"quality_diagnostics", "质量诊断", "full_quality", 0, "全文件"},
         {"report_batch_qc", "报告与批量 QC", "report_tools", 0, ""},
     };
     return kCatalog;

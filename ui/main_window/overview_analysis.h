@@ -77,6 +77,7 @@ struct OverviewAnalysisSummary {
     QString error;             // 失败原因（failed 时展示）
     bool has_result = false;   // 是否有一份可用结果
     bool partial = false;      // 结果是否不完整（被取消）
+    bool sampled = false;      // 是否只是抽样扫描（命中包数上限，未覆盖全片）
     double score = 0.0;        // 0..100
     QString verdict;           // 通过 / 警告 / 不通过
     int critical = 0;
@@ -112,8 +113,11 @@ inline OverviewAnalysisSummary BuildOverviewAnalysisSummary(const OverviewAnalys
     const model::QcReport& report = *in.report;
     summary.has_result = true;
     // 沿用抽出来之前的口径：以 completed 为准（取消/中断会让 completed=false）。
-    // 注：QcReport::partial 记的是"命中包数上限的抽样扫描"，目前不参与本判定。
     summary.partial = !report.completed;
+    // 抽样扫描是**另一种**不完整：跑完了、但只覆盖了前 N 个包。它必须和 partial
+    // 分开记 —— 合成一个"完整性"派生值的话，"用户取消"和"命中上限抽样"会挤进
+    // 同一个词，用户也就无从知道这份结果到底是"没跑完"还是"只跑了一部分"。
+    summary.sampled = report.partial;
     summary.score = report.score;
     summary.verdict = QString::fromStdString(report.verdict);
     summary.critical = report.CountBySeverity(model::IssueSeverity::Critical);

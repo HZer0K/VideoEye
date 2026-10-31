@@ -100,6 +100,11 @@ public:
     void ApplySceneLink(const std::vector<model::SceneChangeResult>& records,
                         const videoeye::BitrateGopOptions& gop_options);
 
+    // 首页「异常直达」：切到「问题清单」子页并按问题身份选中对应行
+    // （rule_id + 起始秒 + 流下标）。命中返回 true；没结果/找不到返回 false
+    // —— 此时界面仍停在问题清单子页，用户不至于"点了没反应"。
+    bool FocusIssue(const QString& rule_id, double start_seconds, int stream_index);
+
     // 换文件：清掉上一文件的扫描结果
     void ResetForNewFile();
 

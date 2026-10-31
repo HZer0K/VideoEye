@@ -33,7 +33,8 @@ BadgeStyle BadgeStyleFor(const OverviewPage::AnalysisSummary& s) {
         return {"#58A6FF", "rgba(88, 166, 255, 0.12)", "rgba(88, 166, 255, 0.3)"};
     if (s.failed)
         return {"#F85149", "rgba(248, 81, 73, 0.12)", "rgba(248, 81, 73, 0.3)"};
-    if (s.has_result && s.partial)
+    // 不完整（被取消）与抽样都算"有结果但不能当全量结论读"，用同一个警告色
+    if (s.has_result && (s.partial || s.sampled))
         return {"#D29922", "rgba(210, 153, 34, 0.12)", "rgba(210, 153, 34, 0.3)"};
     if (s.has_result)
         return {"#3FB950", "rgba(63, 185, 80, 0.12)", "rgba(63, 185, 80, 0.3)"};
@@ -81,30 +82,9 @@ void OverviewPage::BuildUi() {
     file_path_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     root->addWidget(file_path_label_);
 
-    // ---- 文件摘要 ----
-    summary_group_ = new QGroupBox(tr("文件摘要"), this);
-    QGridLayout* summary_grid = new QGridLayout(summary_group_);
-    summary_grid->setHorizontalSpacing(16);
-    summary_grid->setVerticalSpacing(6);
-    auto add_pair = [this, &summary_grid](int row, int col, const QString& label) {
-        QLabel* key = new QLabel(label, summary_group_);
-        key->setObjectName("HintLabel");
-        summary_grid->addWidget(key, row, col * 2);
-        QLabel* value = new QLabel(QStringLiteral("—"), summary_group_);
-        summary_grid->addWidget(value, row, col * 2 + 1);
-        return value;
-    };
-    summary_container_ = add_pair(0, 0, tr("容器格式"));
-    summary_duration_ = add_pair(0, 1, tr("时长"));
-    summary_size_ = add_pair(1, 0, tr("文件大小"));
-    summary_bitrate_ = add_pair(1, 1, tr("总码率"));
-    summary_video_ = add_pair(2, 0, tr("视频"));
-    summary_audio_ = add_pair(2, 1, tr("音频"));
-    summary_grid->setColumnStretch(1, 1);
-    summary_grid->setColumnStretch(3, 1);
-    root->addWidget(summary_group_);
-
-    // ---- 分析状态 ----
+    // ---- 分析状态（先回答"有没有问题、下一步看哪里"）----
+    // 顺序是刻意的：结论在文件摘要**之前**。以前摘要占了两三行网格，用户必须先
+    // 扫过容器/码率才看到"评分 62 / 不通过"，而结论才是这一屏的主语。
     analysis_group_ = new QGroupBox(tr("分析状态"), this);
     QVBoxLayout* analysis_layout = new QVBoxLayout(analysis_group_);
 
@@ -136,26 +116,55 @@ void OverviewPage::BuildUi() {
     issues_table_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     issues_table_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
     issues_table_->setMinimumHeight(150);
-    issues_table_->setToolTip(tr("点击条目跳到「质量诊断」页查看完整问题清单"));
+    issues_table_->setToolTip(tr("点击条目：直接跳到「质量诊断」并选中这条问题，右侧显示说明、证据与建议"));
     connect(issues_table_, &QTableWidget::cellClicked, this, [this](int row, int) {
         // 占位行（分析进行中 / 无结果 / 未发现异常）被 setSpan 铺满三列，
         // 点它仍会触发 cellClicked，但它们不带跳转数据 —— 这里按"无数据就不跳"处理。
         QTableWidgetItem* first = issues_table_->item(row, 0);
         if (!first)
             return;
-        const QVariant target = first->data(Qt::UserRole);
-        if (target.isValid()) {
-            emit NavigateToPage(target.toString());
-        }
+        const QVariant rule_id = first->data(Qt::UserRole);
+        if (!rule_id.isValid())
+            return;
+        emit NavigateToIssue(rule_id.toString(), first->data(Qt::UserRole + 1).toDouble(),
+                             first->data(Qt::UserRole + 2).toInt());
     });
     analysis_layout->addWidget(issues_table_, 1);
     // 必须真的挂进 root 布局：漏了这行时分组框不进布局，几何停在默认的
     // 100x30 @ (0,0)，被画在页头上面，标题「分析状态」与自己的内容互相叠写
     // （历史 bug：控件建了但没 addWidget，逻辑测试全绿也看不出来）。
-    root->addWidget(analysis_group_);
+    // 拉伸系数给分析状态：窗口变高时多出来的高度应该给异常表，而不是平均分给三个分组。
+    root->addWidget(analysis_group_, 1);
 
-    // ---- 完整媒体信息（原媒体信息页的纯文本整段保留在下方）----
+    // ---- 文件摘要（结论之后核对参数）----
+    summary_group_ = new QGroupBox(tr("文件摘要"), this);
+    QGridLayout* summary_grid = new QGridLayout(summary_group_);
+    summary_grid->setHorizontalSpacing(16);
+    summary_grid->setVerticalSpacing(6);
+    auto add_pair = [this, &summary_grid](int row, int col, const QString& label) {
+        QLabel* key = new QLabel(label, summary_group_);
+        key->setObjectName("HintLabel");
+        summary_grid->addWidget(key, row, col * 2);
+        QLabel* value = new QLabel(QStringLiteral("—"), summary_group_);
+        summary_grid->addWidget(value, row, col * 2 + 1);
+        return value;
+    };
+    summary_container_ = add_pair(0, 0, tr("容器格式"));
+    summary_duration_ = add_pair(0, 1, tr("时长"));
+    summary_size_ = add_pair(1, 0, tr("文件大小"));
+    summary_bitrate_ = add_pair(1, 1, tr("总码率"));
+    summary_video_ = add_pair(2, 0, tr("视频"));
+    summary_audio_ = add_pair(2, 1, tr("音频"));
+    summary_grid->setColumnStretch(1, 1);
+    summary_grid->setColumnStretch(3, 1);
+    root->addWidget(summary_group_);
+
+    // ---- 完整媒体信息（原媒体信息页的纯文本整段保留，默认折叠）----
+    // 默认折叠：它动辄上百行，常驻展开会把上面三块挤出首屏；需要逐项核对参数时
+    // 再展开。勾选框即标题本身（QGroupBox::setCheckable），不额外占一行。
     mediainfo_group_ = new QGroupBox(tr("完整媒体信息"), this);
+    mediainfo_group_->setCheckable(true);
+    mediainfo_group_->setChecked(false);
     QVBoxLayout* mediainfo_layout = new QVBoxLayout(mediainfo_group_);
     mediainfo_layout->setContentsMargins(8, 8, 8, 8);
     mediainfo_text_ = new QTextEdit(mediainfo_group_);
@@ -164,11 +173,16 @@ void OverviewPage::BuildUi() {
     mediainfo_text_->setLineWrapMode(QTextEdit::NoWrap);
     mediainfo_text_->setPlainText(tr("请打开一个媒体文件以查看详细信息"));
     mediainfo_layout->addWidget(mediainfo_text_);
-    root->addWidget(mediainfo_group_, 1);
+    mediainfo_text_->setVisible(false); // 与初始的未勾选状态一致（见 RefreshUi）
+    connect(mediainfo_group_, &QGroupBox::toggled, this, [this](bool on) {
+        if (mediainfo_text_)
+            mediainfo_text_->setVisible(on);
+    });
+    root->addWidget(mediainfo_group_);
 
     // ---- 空态提示（未打开文件时替代摘要/分析两区）----
-    empty_hint_ = new QLabel(tr("打开一个媒体文件后，这里会显示文件摘要、分析状态与最重要的异常；"
-                                "完整媒体信息保留在下方。"),
+    empty_hint_ = new QLabel(tr("打开一个媒体文件后，这里会先给分析结论，再列最重要的异常；"
+                                "文件摘要与完整媒体信息在下方。"),
                              this);
     empty_hint_->setObjectName("HintLabel");
     empty_hint_->setWordWrap(true);
@@ -183,6 +197,10 @@ void OverviewPage::RefreshUi() {
     analysis_group_->setVisible(has_file);
     mediainfo_group_->setVisible(has_file);
     empty_hint_->setVisible(!has_file);
+    // 「完整媒体信息」默认折叠：正文可见性跟着分组框的勾选走（QGroupBox 的
+    // checkable 只是禁用子控件，不会收起它 —— 真正收起靠这一行）。
+    if (mediainfo_text_)
+        mediainfo_text_->setVisible(has_file && mediainfo_group_->isChecked());
 
     if (!has_file) {
         return;
@@ -196,6 +214,8 @@ void OverviewPage::RefreshUi() {
         badge_text = tr("扫描失败");
     } else if (summary_.has_result && summary_.partial) {
         badge_text = tr("已取消（结果不完整）");
+    } else if (summary_.has_result && summary_.sampled) {
+        badge_text = tr("分析完成（抽样）");
     } else if (summary_.has_result) {
         badge_text = tr("分析完成");
     } else {
@@ -208,20 +228,23 @@ void OverviewPage::RefreshUi() {
                        "border-radius: 4px; padding: 2px 8px; font-size: 12px; font-weight: 600;")
             .arg(QString::fromLatin1(style.fg), QString::fromLatin1(style.bg), QString::fromLatin1(style.border)));
 
-    // 结论行（富文本：评分 + 结论 + 分级计数）
+    // 结论行（富文本：评分 + 结论 + 覆盖情况 + 分级计数）
     if (summary_.scan_running) {
-        verdict_label_->setText(tr("正在分析当前文件…（由「质量诊断」页编排，可在那里取消）"));
+        verdict_label_->setText(tr("正在分析当前文件…（进度与取消在窗口顶部的扫描任务条上）"));
     } else if (summary_.failed) {
         verdict_label_->setText(tr("最近一次全文件扫描失败，没有可用结果。"));
     } else if (summary_.has_result) {
+        // 覆盖口径必须与评分同屏：抽样/取消的结果里"92 分"不等于"全片通过"。
+        // 把覆盖情况挪到别处（或干脆不写），用户就会拿那个高分当结论用。
+        const QString coverage_note =
+            summary_.partial ? tr("（结果不完整）") : (summary_.sampled ? tr("（抽样扫描）") : QString());
         verdict_label_->setText(
             QStringLiteral("<b>%1 %2</b> · %3%4 · "
                            "<span style=\"color:#F85149\">%5 %6</span> · "
                            "<span style=\"color:#FF7B72\">%7 %8</span> · "
                            "<span style=\"color:#D29922\">%9 %10</span> · "
                            "<span style=\"color:#58A6FF\">%11 %12</span>")
-                .arg(tr("评分"), QString::number(summary_.score, 'f', 1), summary_.verdict,
-                     summary_.partial ? tr("（结果不完整）") : QString(), tr("致命"),
+                .arg(tr("评分"), QString::number(summary_.score, 'f', 1), summary_.verdict, coverage_note, tr("致命"),
                      QString::number(summary_.critical), tr("错误"), QString::number(summary_.error_count), tr("警告"),
                      QString::number(summary_.warning), tr("提示"), QString::number(summary_.info)));
     } else {
@@ -265,7 +288,11 @@ void OverviewPage::RefreshUi() {
             issues_table_->insertRow(row);
             auto* severity_item = new QTableWidgetItem(QString::fromStdString(issue.SeverityText()));
             severity_item->setForeground(QBrush(QColor(SeverityColor(issue.severity))));
-            severity_item->setData(Qt::UserRole, QStringLiteral("quality_diagnostics"));
+            // 三件"问题身份"写在首列，点击时原样交给诊断页定位。
+            // 传下标不行：top_issues 是按严重度重排过的副本，下标与报告 issues 不对应。
+            severity_item->setData(Qt::UserRole, QString::fromStdString(issue.rule_id));
+            severity_item->setData(Qt::UserRole + 1, issue.range.start_seconds);
+            severity_item->setData(Qt::UserRole + 2, issue.stream_index);
             issues_table_->setItem(row, 0, severity_item);
             issues_table_->setItem(row, 1, new QTableWidgetItem(FormatPosition(issue)));
             auto* title_item = new QTableWidgetItem(QString::fromStdString(issue.title));

@@ -229,7 +229,13 @@ TEST(DiagnosticsPageTests, UnscannedPageShowsInitialStateAndRuleTable) {
     ASSERT_NE(rule_table, nullptr);
     ASSERT_NE(dimension_table, nullptr);
     ASSERT_NE(parameter_table, nullptr);
-    EXPECT_EQ(issue_table->columnCount(), 6);
+    // 主表只有四列（严重度 / 问题 / 位置 / 类别）：说明与建议是长文本，进了右侧
+    // 详情区（跟着选中行走），不再与结构化字段抢横向空间。
+    EXPECT_EQ(issue_table->columnCount(), 4);
+    EXPECT_EQ(issue_table->horizontalHeaderItem(0)->text(), QStringLiteral("严重度"));
+    EXPECT_EQ(issue_table->horizontalHeaderItem(1)->text(), QStringLiteral("问题"));
+    EXPECT_EQ(issue_table->horizontalHeaderItem(2)->text(), QStringLiteral("位置"));
+    EXPECT_EQ(issue_table->horizontalHeaderItem(3)->text(), QStringLiteral("类别"));
     EXPECT_EQ(issue_table->rowCount(), 0);
     EXPECT_EQ(dimension_table->rowCount(), 0);
     EXPECT_EQ(parameter_table->rowCount(), 0);
@@ -384,15 +390,16 @@ TEST(DiagnosticsPageTests, SuccessfulManifestScanFillsIssueTableAndEnablesExport
     EXPECT_FALSE(FindButton(&page, QStringLiteral("取消"))->isEnabled());
     EXPECT_TRUE(FindButton(&page, QStringLiteral("导出报告"))->isEnabled());
 
-    // 问题表与报告逐行一致：严重度文案 / 类别文案 / 标题
+    // 问题表与报告逐行一致：严重度文案 / 标题 / 位置 / 类别
     const QcReport& report = page.qcReport();
     QTableWidget* issue_table = TableInTab(&page, 0, QStringLiteral("严重度"));
     ASSERT_NE(issue_table, nullptr);
     ASSERT_EQ(issue_table->rowCount(), static_cast<int>(report.issues.size()));
     for (int i = 0; i < issue_table->rowCount(); ++i) {
         EXPECT_EQ(Cell(issue_table, i, 0), QString::fromStdString(report.issues[i].SeverityText()));
-        EXPECT_EQ(Cell(issue_table, i, 1), QString::fromStdString(report.issues[i].CategoryText()));
-        EXPECT_EQ(Cell(issue_table, i, 2), QString::fromStdString(report.issues[i].title));
+        EXPECT_EQ(Cell(issue_table, i, 1), QString::fromStdString(report.issues[i].title));
+        EXPECT_FALSE(Cell(issue_table, i, 2).isEmpty()) << "位置列不该是空的（文件级问题写「全局」）";
+        EXPECT_EQ(Cell(issue_table, i, 3), QString::fromStdString(report.issues[i].CategoryText()));
     }
 
     QLabel* summary = FindLabelContaining(&page, QStringLiteral("评分"));

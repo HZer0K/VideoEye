@@ -2205,3 +2205,60 @@ target_link_libraries(test_streaming_panel PRIVATE
 add_test(NAME StreamingPanelTests COMMAND test_streaming_panel)
 set_tests_properties(StreamingPanelTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试：扫描任务条（ui/main_window/ScanTaskBar）
+#
+# 说明: 全文件扫描的状态与控制原先分居两页 —— 扫描由「质量诊断」页编排，取消按钮
+#       也在那一页，用户在首页看到"分析中…"却被指去另一页找按钮。这条常驻在应用栏
+#       下方的任务条要守三条：扫描期间出现/结束即隐藏；取消是一次意图（发一次信号、
+#       立刻进"取消中"并置灰按钮），不伪造终态；取消中不再被进度更新覆盖文案
+#       （进度还在爬会让用户以为取消没被受理）。用 offscreen 平台跑。
+# =================================================
+videoeye_add_test(test_scan_task_bar unit/test_scan_task_bar.cpp)
+target_link_libraries(test_scan_task_bar PRIVATE
+    VideoEyeUi
+    VideoEyeDomain
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME ScanTaskBarTests COMMAND test_scan_task_bar)
+set_tests_properties(ScanTaskBarTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试：「问题清单」子页（ui/analysis_panel/DiagnosticsIssueView）
+#
+# 说明: 三类"改错了不报错、只是用户看不懂"的口径 ——
+#       1. 主表只有四列可扫读字段（严重度/问题/位置/类别），说明与建议留在右侧详情；
+#          长文本回到表里就会把表格撑成横向滚动。
+#       2. 首页「异常直达」按问题身份（rule_id + 起始秒 + 流）选中行；目标被当前
+#          筛选挡住时必须先把筛选放开，否则"点了没反应"。
+#       3. 定位动作只对带时间的问题可用：文件级问题按钮置灰、不发 seek
+#          （对全局问题发 seek(0) 会让播放器跳到片头，看起来像跳错了位置）。
+#       只建控件不渲染，用 offscreen 平台跑。
+# =================================================
+videoeye_add_test(test_diagnostics_issue_view unit/test_diagnostics_issue_view.cpp)
+target_link_libraries(test_diagnostics_issue_view PRIVATE
+    VideoEyeUiAnalysisPages
+    VideoEyeDomain
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME DiagnosticsIssueViewTests COMMAND test_diagnostics_issue_view)
+set_tests_properties(DiagnosticsIssueViewTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试：应用栏的单行省略标签（ui/main_window/ElidedLabel）
+#
+# 说明: 媒体路径是任意长度的绝对路径，而 QLabel 非自动换行时的 minimumSizeHint
+#       就是整段文本宽度，布局会把它当硬下限 —— 打开一个深层目录里的文件就能把
+#       应用栏撑宽、把右侧「打开文件 / 打开 URL」挤出屏幕（1366x768 + 150% 缩放
+#       只有约 910 逻辑像素宽，这条几乎必现）。这里钉住：长文本不许抬高下限、
+#       窄宽度下省略中间但完整文本仍可取、宽度变化要重新省略。用 offscreen 跑。
+# =================================================
+videoeye_add_test(test_elided_label unit/test_elided_label.cpp)
+target_link_libraries(test_elided_label PRIVATE
+    VideoEyeUi
+    VideoEyeDomain
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME ElidedLabelTests COMMAND test_elided_label)
+set_tests_properties(ElidedLabelTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

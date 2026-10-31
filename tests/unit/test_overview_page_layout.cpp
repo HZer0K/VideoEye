@@ -10,9 +10,11 @@
 // 只是没上屏。纯逻辑测试和"构造控件查文案"的测试都发现不了，
 // 只有比对控件的实际几何才抓得住：
 //   1) 每个可见的直接子控件都被页面矩形包住，且两两不重叠；
-//   2) 三个分组框自上而下 = 文件摘要 → 分析状态 → 完整媒体信息；
+//   2) 三个分组框自上而下 = 分析状态 → 文件摘要 → 完整媒体信息
+//      （结论先于参数：用户先要知道"有没有问题、点哪里"）；
 //   3) 分析状态分组的高度不小于自身 minimumSizeHint（没被压扁），
-//      组内异常表可见。
+//      组内异常表可见；
+//   4) 完整媒体信息默认折叠 —— 它动辄上百行，常驻展开会把上面两块挤出首屏。
 //
 // 只构造控件、不渲染（offscreen），不依赖显示器与主题。
 
@@ -21,8 +23,10 @@
 #include <QApplication>
 #include <QGroupBox>
 #include <QLabel>
+#include <QMetaObject>
 #include <QPushButton>
 #include <QTableWidget>
+#include <QTextEdit>
 
 #include <algorithm>
 #include <string>
@@ -161,7 +165,7 @@ TEST(OverviewPageLayout, VisibleChildrenDoNotOverlapAndStayInsidePage) {
     }
 }
 
-// 2) 三个分组框按文档顺序自上而下排列。
+// 2) 三个分组框按文档顺序自上而下（结论 -> 参数 -> 全量文本）。
 TEST(OverviewPageLayout, GroupsFollowDocumentedOrderTopDown) {
     EnsureApp();
     OverviewPage page;
@@ -175,8 +179,9 @@ TEST(OverviewPageLayout, GroupsFollowDocumentedOrderTopDown) {
     ASSERT_NE(analysis, nullptr);
     ASSERT_NE(mediainfo, nullptr);
 
-    EXPECT_LT(summary->y(), analysis->y()) << "「分析状态」应排在「文件摘要」下面";
-    EXPECT_LT(analysis->y(), mediainfo->y()) << "「完整媒体信息」应排在「分析状态」下面";
+    // 「分析状态」在「文件摘要」上面：这一屏的主语是结论，不是容器参数。
+    EXPECT_LT(analysis->y(), summary->y()) << "「分析状态」应排在「文件摘要」上面";
+    EXPECT_LT(summary->y(), mediainfo->y()) << "「完整媒体信息」应排在最下面";
 
     // 分组框必须铺满页面可用宽度 —— 停在 100px 宽就是"没进布局"的指纹。
     for (QGroupBox* group : {summary, analysis, mediainfo}) {
@@ -227,4 +232,92 @@ TEST(OverviewPageLayout, EmptyStateKeepsGroupsHidden) {
             empty_hint_visible = true;
     }
     EXPECT_TRUE(empty_hint_visible) << "空态提示应在未打开文件时可见";
+}
+
+// 5) 完整媒体信息默认折叠 —— 它是上百行等宽文本，常驻展开会把结论区挤出首屏。
+TEST(OverviewPageLayout, FullMediaInfoStartsCollapsedAndExpandsOnDemand) {
+    EnsureApp();
+    OverviewPage page;
+    FeedOpenedFileWithResult(page);
+    ShowAtRealisticSize(page);
+
+    QGroupBox* mediainfo = FindGroup(&page, QStringLiteral("完整媒体信息"));
+    ASSERT_NE(mediainfo, nullptr);
+    // 勾选框就在分组标题上：默认未勾选，正文不可见
+    EXPECT_FALSE(mediainfo->isChecked());
+    QTextEdit* text = mediainfo->findChild<QTextEdit*>();
+    ASSERT_NE(text, nullptr);
+    EXPECT_FALSE(text->isVisible()) << "默认折叠时正文不该占位";
+
+    // 展开后正文出现（且内容仍是完整探测文本）
+    mediainfo->setChecked(true);
+    QApplication::processEvents();
+    EXPECT_TRUE(text->isVisible()) << "勾选后正文应展开";
+    EXPECT_TRUE(text->toPlainText().contains(QStringLiteral("Complete name")));
+}
+
+// 6) 首页异常条目点一下要带"问题身份"走。
+//    这条守的是一个只看行数永远发现不了的 bug：首页那份 top_issues 是按严重度
+//    重排过的副本，行号与报告里的 issues 下标并不对应。跳转必须传
+//    (rule_id, 起始秒, 流下标)，诊断页才能选中同一条问题。
+TEST(OverviewPageLayout, IssueRowClickCarriesIssueIdentity) {
+    EnsureApp();
+    OverviewPage page;
+
+    StreamInfo info;
+    info.filename = "D:/tmp/issue_identity.mp4";
+    page.SetFileSummary(info);
+
+    DiagnosticIssue global_issue = MakeIssue(IssueSeverity::Critical, "容器结构残缺");
+    global_issue.rule_id = "container.structure.missing_atom";
+    global_issue.range = videoeye::model::TimeRange::Global();
+    global_issue.stream_index = -1;
+
+    DiagnosticIssue timed_issue = MakeIssue(IssueSeverity::Warning, "GOP 偏长");
+    timed_issue.rule_id = "video.gop.max_seconds";
+    timed_issue.range = videoeye::model::TimeRange::At(12.5);
+    timed_issue.stream_index = 1;
+
+    OverviewPage::AnalysisSummary summary;
+    summary.has_file = true;
+    summary.has_result = true;
+    summary.score = 61.0;
+    summary.verdict = QStringLiteral("警告");
+    summary.top_issues = {global_issue, timed_issue};
+    page.SetAnalysisSummary(summary);
+    ShowAtRealisticSize(page);
+
+    QGroupBox* analysis = FindGroup(&page, QStringLiteral("分析状态"));
+    ASSERT_NE(analysis, nullptr);
+    QTableWidget* issues = analysis->findChild<QTableWidget*>();
+    ASSERT_NE(issues, nullptr);
+    ASSERT_EQ(issues->rowCount(), 2);
+
+    struct Captured {
+        int count = 0;
+        QString rule_id;
+        double start = 0.0;
+        int stream = 0;
+    } captured;
+    QObject::connect(&page, &OverviewPage::NavigateToIssue,
+                     [&captured](const QString& rule_id, double start_seconds, int stream_index) {
+                         ++captured.count;
+                         captured.rule_id = rule_id;
+                         captured.start = start_seconds;
+                         captured.stream = stream_index;
+                     });
+
+    // cellClicked 是信号：按签名直接调用即可复现"用户点了那一行"
+    ASSERT_TRUE(QMetaObject::invokeMethod(issues, "cellClicked", Qt::DirectConnection, Q_ARG(int, 1), Q_ARG(int, 2)));
+    ASSERT_EQ(captured.count, 1);
+    EXPECT_EQ(captured.rule_id, QStringLiteral("video.gop.max_seconds"));
+    EXPECT_DOUBLE_EQ(captured.start, 12.5);
+    EXPECT_EQ(captured.stream, 1);
+
+    // 触发所在列不参与定位：点"严重度"列与点"问题"列必须给同一份身份
+    ASSERT_TRUE(QMetaObject::invokeMethod(issues, "cellClicked", Qt::DirectConnection, Q_ARG(int, 0), Q_ARG(int, 0)));
+    ASSERT_EQ(captured.count, 2);
+    EXPECT_EQ(captured.rule_id, QStringLiteral("container.structure.missing_atom"));
+    EXPECT_LT(captured.start, 0.0) << "文件级问题应传负起点（诊断页据此禁用跳转）";
+    EXPECT_EQ(captured.stream, -1);
 }

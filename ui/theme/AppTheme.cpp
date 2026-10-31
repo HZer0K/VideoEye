@@ -98,6 +98,47 @@ QLabel#MediaPath {
     font-size: 13px;
 }
 
+/* ==== 扫描任务条 ====
+   全文件扫描期间常驻在应用栏下方，任何页面都能看到阶段 / 进度 / 取消入口。
+   用强调色左边界区分"这是正在进行的后台任务"，而不是页内的一段说明文字。 */
+QWidget#ScanTaskBar {
+    background-color: #161B22;
+    border-bottom: 1px solid #30363D;
+    border-left: 3px solid #58A6FF;
+}
+
+QLabel#ScanTaskStage {
+    color: #F0F6FC;
+    font-size: 13px;
+}
+
+QProgressBar#ScanTaskProgress {
+    background-color: #21262D;
+    border: 1px solid #30363D;
+    border-radius: 3px;
+    height: 6px;
+    text-align: center;
+}
+
+QProgressBar#ScanTaskProgress::chunk {
+    background-color: #58A6FF;
+    border-radius: 2px;
+}
+
+/* 布局切换段按钮：选中态用强调色底，与普通按钮区分 */
+QPushButton#LayoutSegment {
+    padding: 4px 10px;
+    font-size: 12px;
+    border-radius: 5px;
+}
+
+QPushButton#LayoutSegment:checked {
+    background-color: rgba(88, 166, 255, 0.18);
+    border: 1px solid rgba(88, 166, 255, 0.55);
+    color: #58A6FF;
+    font-weight: 600;
+}
+
 /* ==== Buttons ==== */
 QPushButton {
     background-color: #21262D;

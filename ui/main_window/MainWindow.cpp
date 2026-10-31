@@ -3,10 +3,12 @@
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/dialogs/FormatSupportDialog.h"
 #include "ui/ffmpeg_panel/FfmpegPanel.h"
+#include "ui/main_window/ElidedLabel.h"
 #include "ui/main_window/ExportCoordinator.h"
 #include "ui/main_window/MediaInfoCoordinator.h"
 #include "ui/main_window/OpenSessionController.h"
 #include "ui/main_window/OverviewPage.h"
+#include "ui/main_window/ScanTaskBar.h"
 #include "ui/main_window/menu_bar.h"
 #include "ui/main_window/navigation_model.h"
 #include "ui/main_window/overview_analysis.h"
@@ -23,6 +25,7 @@
 #include "core/player/MediaPlayer.h"
 #include <QActionGroup>
 #include <QApplication>
+#include <QButtonGroup>
 #include <QDebug>
 #include <QFileDialog>
 #include <QFontDatabase>
@@ -101,6 +104,33 @@ QString BuildMediaFileFilter() {
              join_patterns(FormatDetector::ManifestExtensions()));
 }
 
+// 两套同义枚举之间的映射（window_layout.h 的 WindowLayoutPreset 与
+// PlayerPanel::LayoutPreset）。集中在两个函数里，增删预设值时只会漏改这里一处，
+// 而不是散落在每个调用点。
+PlayerPanel::LayoutPreset ToPlayerPreset(ui::WindowLayoutPreset preset) {
+    switch (preset) {
+    case ui::WindowLayoutPreset::Analysis:
+        return PlayerPanel::LayoutPreset::Analysis;
+    case ui::WindowLayoutPreset::SideBySide:
+        return PlayerPanel::LayoutPreset::SideBySide;
+    case ui::WindowLayoutPreset::Monitor:
+        break;
+    }
+    return PlayerPanel::LayoutPreset::Monitor;
+}
+
+ui::WindowLayoutPreset ToWindowPreset(PlayerPanel::LayoutPreset preset) {
+    switch (preset) {
+    case PlayerPanel::LayoutPreset::Analysis:
+        return ui::WindowLayoutPreset::Analysis;
+    case PlayerPanel::LayoutPreset::SideBySide:
+        return ui::WindowLayoutPreset::SideBySide;
+    case PlayerPanel::LayoutPreset::Monitor:
+        break;
+    }
+    return ui::WindowLayoutPreset::Monitor;
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget* parent)
@@ -155,6 +185,12 @@ void MainWindow::SetupUI() {
     // === 1. 顶部应用栏 ===
     SetupAppBar();
     root_layout->addWidget(app_bar_);
+
+    // === 1b. 扫描任务条（全文件扫描期间常驻，任何页面都能看到进度并就地取消）===
+    // 放在应用栏下方而不是某个页面里：扫描由「质量诊断」页编排，但用户可能正在
+    // 其它页面看数据 —— 任务状态跟着"任务"走，不跟着"页面"走。
+    scan_task_bar_ = new ScanTaskBar(central_widget);
+    root_layout->addWidget(scan_task_bar_);
 
     // === 2. 水平分割器: 侧栏 | 主内容 ===
     main_splitter_ = new QSplitter(Qt::Horizontal, central_widget);
@@ -218,12 +254,55 @@ void MainWindow::SetupAppBar() {
     version_badge->setObjectName("VersionBadge");
     layout->addWidget(version_badge);
 
+    // 布局段按钮：监看 / 分析 / 并排。
+    // 放在产品名旁边而不是藏在「视图」菜单里 —— 这是每天都要用几次的操作，
+    // 而且换页时它会自己变（见 ApplyLayoutForPage），放在显眼处才解释得清"界面为什么变了"。
+    layout->addSpacing(16);
+    QLabel* layout_hint = new QLabel(tr("布局"), app_bar_);
+    layout_hint->setObjectName("HintLabel");
+    layout->addWidget(layout_hint);
+
+    QButtonGroup* layout_group = new QButtonGroup(app_bar_);
+    layout_group->setExclusive(true);
+    // 段按钮的 id = 预设的序数值：点哪一个就应用哪一个，不必按指针反查。
+    struct LayoutButtonSpec {
+        QString text;
+        QString tip;
+        ui::WindowLayoutPreset preset;
+        QPushButton** slot;
+    };
+    const LayoutButtonSpec layout_buttons[] = {
+        {tr("监看"), tr("播放区占大头，适合盯画面 / 逐帧定位"), ui::WindowLayoutPreset::Monitor,
+         &layout_monitor_button_},
+        {tr("分析"), tr("分析区占大头，适合看表格与扫描结果"), ui::WindowLayoutPreset::Analysis,
+         &layout_analysis_button_},
+        {tr("并排"), tr("左右分割、预览在右：宽屏下纵向空间全给分析内容"), ui::WindowLayoutPreset::SideBySide,
+         &layout_sidebyside_button_},
+    };
+    for (const LayoutButtonSpec& spec : layout_buttons) {
+        QPushButton* button = new QPushButton(spec.text, app_bar_);
+        button->setObjectName("LayoutSegment");
+        button->setCheckable(true);
+        button->setToolTip(spec.tip);
+        button->setCursor(Qt::PointingHandCursor);
+        layout_group->addButton(button, static_cast<int>(spec.preset));
+        layout->addWidget(button);
+        *spec.slot = button;
+    }
+    if (layout_monitor_button_)
+        layout_monitor_button_->setChecked(true);
+    connect(layout_group, &QButtonGroup::idClicked, this,
+            [this](int id) { ApplyLayoutPresetFromUi(static_cast<ui::WindowLayoutPreset>(id)); });
+
     layout->addSpacing(24);
 
-    // 媒体路径显示
-    current_media_label_ = new QLabel(tr("未选择媒体"), app_bar_);
+    // 媒体路径显示。用 ElidedLabel 而不是 QLabel：路径长度不受控，QLabel 的
+    // minimumSizeHint 是整段文本宽度，布局把它当硬下限 —— 打开一个深层目录里的
+    // 文件就能把应用栏撑宽，右侧「打开文件 / 打开 URL」被挤出屏幕。完整路径在
+    // tooltip 里；要复制路径可以去首页的「文件路径」（那里是可选中文本）。
+    current_media_label_ = new ElidedLabel(app_bar_);
     current_media_label_->setObjectName("MediaPath");
-    current_media_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    current_media_label_->SetFullText(tr("未选择媒体"));
     layout->addWidget(current_media_label_, 1);
 
     // 操作按钮
@@ -357,6 +436,9 @@ void MainWindow::OnSidebarChanged(int row) {
         return;
     }
     content_stack_->setCurrentIndex(index);
+    // 换页时按页面内容重新分配空间：诊断/结构这类表格页给分析区让位（见
+    // ui::PreferredLayoutForPage）。用户刚拖过分隔条也不要紧 —— 同一页内不重置。
+    ApplyLayoutForPage(content_stack_->widget(index)->property("pageId").toString());
 }
 
 void MainWindow::OnTogglePlayerArea(bool checked) {
@@ -382,6 +464,8 @@ void MainWindow::UpdateMinimumWindowSize() {
     metrics.app_bar_height = app_bar_ ? app_bar_->height() : 0;
     metrics.menu_bar_height = menuBar() ? menuBar()->sizeHint().height() : 0;
     metrics.status_bar_height = statusBar() ? statusBar()->sizeHint().height() : 0;
+    // 任务条只在扫描期间占位：不计它的实际可见高度，扫完窗口能立刻变矮回去
+    metrics.scan_bar_height = (scan_task_bar_ && scan_task_bar_->isVisible()) ? scan_task_bar_->height() : 0;
     metrics.content_min_height = content_stack_ ? content_stack_->minimumHeight() : 250;
     metrics.player_min_height = player_panel_ ? player_panel_->MinimumHeightHint() : 0;
     metrics.sidebar_width = sidebar_ ? sidebar_->width() : 0;
@@ -410,6 +494,10 @@ void MainWindow::showEvent(QShowEvent* event) {
                                 ? PlayerPanel::LayoutPreset::Analysis
                                 : PlayerPanel::LayoutPreset::Monitor;
         player_panel_->RestoreLayoutPreset(preset);
+        // 恢复完之后才允许"换页自动分配空间"接手：否则启动时第一页（总览）会把
+        // 用户存在 QSettings 里的布局顶成监看。
+        layout_auto_ready_ = true;
+        SyncLayoutSegments(ToWindowPreset(player_panel_->layoutPreset()));
     }
 }
 
@@ -484,7 +572,7 @@ void MainWindow::SetupOpenSession() {
             [this](const QString& text, int timeout) { statusBar()->showMessage(text, timeout); });
     connect(open_session_, &OpenSessionController::CurrentMediaLabelChanged, this, [this](const QString& text) {
         if (current_media_label_)
-            current_media_label_->setText(text);
+            current_media_label_->SetFullText(text);
     });
     // 事务式异步打开完成: 收尾在控制器里做 (状态栏/标签/自动播放/诊断扫描)。
     // 过期结果 (期间又开了新文件) 由"没有待收尾登记"判掉, 见 open_session.h。
@@ -622,19 +710,28 @@ void MainWindow::SetupConnections() {
         }
         UpdateMinimumWindowSize();
     });
-    // 布局预设变化时同步视图菜单勾选（预设也可能来自恢复 / 首次自适应，不止菜单）
+    // 布局预设变化时同步视图菜单勾选与应用栏段按钮（预设也可能来自恢复 / 首次自适应 / 换页自动分配）
     connect(player_panel_, &PlayerPanel::LayoutPresetChanged, this, [this](PlayerPanel::LayoutPreset preset) {
-        const bool analysis = (preset == PlayerPanel::LayoutPreset::Analysis);
-        if (menu_actions_.layout_analysis && menu_actions_.layout_analysis->isChecked() != analysis) {
+        const ui::WindowLayoutPreset target = ToWindowPreset(preset);
+        if (menu_actions_.layout_analysis &&
+            menu_actions_.layout_analysis->isChecked() != (target == ui::WindowLayoutPreset::Analysis)) {
             menu_actions_.layout_analysis->blockSignals(true);
-            menu_actions_.layout_analysis->setChecked(analysis);
+            menu_actions_.layout_analysis->setChecked(target == ui::WindowLayoutPreset::Analysis);
             menu_actions_.layout_analysis->blockSignals(false);
         }
-        if (menu_actions_.layout_monitor && menu_actions_.layout_monitor->isChecked() == analysis) {
+        if (menu_actions_.layout_monitor &&
+            menu_actions_.layout_monitor->isChecked() != (target == ui::WindowLayoutPreset::Monitor)) {
             menu_actions_.layout_monitor->blockSignals(true);
-            menu_actions_.layout_monitor->setChecked(!analysis);
+            menu_actions_.layout_monitor->setChecked(target == ui::WindowLayoutPreset::Monitor);
             menu_actions_.layout_monitor->blockSignals(false);
         }
+        if (menu_actions_.layout_sidebyside &&
+            menu_actions_.layout_sidebyside->isChecked() != (target == ui::WindowLayoutPreset::SideBySide)) {
+            menu_actions_.layout_sidebyside->blockSignals(true);
+            menu_actions_.layout_sidebyside->setChecked(target == ui::WindowLayoutPreset::SideBySide);
+            menu_actions_.layout_sidebyside->blockSignals(false);
+        }
+        SyncLayoutSegments(target);
     });
 
     // ---- 首页（总览）接线 ----
@@ -646,8 +743,29 @@ void MainWindow::SetupConnections() {
     connect(analysis_panel_, &ui::AnalysisPanel::DiagnosticsStateChanged, this, &MainWindow::RefreshOverviewAnalysis);
     // 2b) 同一信号也驱动侧栏导航标记（异常数徽标 / 扫描圆点）
     connect(analysis_panel_, &ui::AnalysisPanel::DiagnosticsStateChanged, this, &MainWindow::UpdateNavigationBadges);
-    // 3) 首页跳转 / 重新分析意图
-    connect(overview_page_, &OverviewPage::NavigateToPage, this, &MainWindow::ShowPageById);
+    // 2c) 以及顶部扫描任务条（任意页面可见的进度 + 取消入口）
+    connect(analysis_panel_, &ui::AnalysisPanel::DiagnosticsStateChanged, this, &MainWindow::RefreshScanTaskBar);
+    connect(analysis_panel_, &ui::AnalysisPanel::DiagnosticsScanProgress, this,
+            [this](double percent, const QString& stage) {
+                // 进度只做缓存 + 转发：条有没有显示由扫描状态决定，不由进度决定
+                // （第一帧进度到之前，条已经该出现了）。
+                scan_progress_percent_ = percent;
+                scan_progress_stage_ = stage;
+                if (scan_task_bar_ && analysis_panel_ && analysis_panel_->IsScanRunning())
+                    scan_task_bar_->SetScanState(true, percent, stage);
+            });
+    connect(scan_task_bar_, &ui::ScanTaskBar::CancelRequested, this, [this]() {
+        // 与诊断页的取消按钮同一入口；终态仍由扫描自己收尾（条会随之隐藏）
+        if (analysis_panel_)
+            analysis_panel_->CancelDiagnosticsScan();
+    });
+    // 3) 首页异常直达：切到「质量诊断」并选中那条问题（身份定位，不是行号）
+    connect(overview_page_, &OverviewPage::NavigateToIssue, this,
+            [this](const QString& rule_id, double start_seconds, int stream_index) {
+                ShowPageById(QStringLiteral("quality_diagnostics"));
+                if (analysis_panel_)
+                    analysis_panel_->FocusDiagnosticIssue(rule_id, start_seconds, stream_index);
+            });
     connect(overview_page_, &OverviewPage::RescanRequested, this, [this]() {
         if (analysis_panel_)
             analysis_panel_->StartDiagnosticsScanForCurrentFile();
@@ -668,9 +786,64 @@ void MainWindow::ShowPageById(const QString& page_id) {
         content_stack_->setCurrentIndex(i);
         // 同步侧栏选中：行号因分组标题与 stack 下标错位，按 UserRole 反查
         ui::SelectSidebarRowForStackIndex(sidebar_, i);
+        // 跳转也是一次换页：同样按目标页重新分配空间（诊断页要的是分析区高度）
+        ApplyLayoutForPage(page_id);
         return;
     }
     qWarning() << "跳转目标页面不存在:" << page_id;
+}
+
+void MainWindow::ApplyLayoutForPage(const QString& page_id) {
+    if (!layout_auto_ready_ || !player_panel_ || page_id.isEmpty())
+        return;
+    const ui::WindowLayoutPreset preferred = ui::PreferredLayoutForPage(page_id);
+    const ui::WindowLayoutPreset current = ToWindowPreset(player_panel_->layoutPreset());
+    if (!ui::ShouldAutoApplyLayout(current, preferred))
+        return;
+    // persist=false：自动分配不写 QSettings，用户显式选过的布局仍是下次启动的默认值
+    player_panel_->ApplyLayoutPreset(ToPlayerPreset(preferred), /*persist=*/false);
+}
+
+void MainWindow::ApplyLayoutPresetFromUi(ui::WindowLayoutPreset preset) {
+    if (!player_panel_)
+        return;
+    // 用户显式选择：落盘（与自动分配区分开）
+    player_panel_->ApplyLayoutPreset(ToPlayerPreset(preset), /*persist=*/true);
+    SyncLayoutSegments(preset);
+}
+
+void MainWindow::SyncLayoutSegments(ui::WindowLayoutPreset preset) {
+    const struct {
+        QPushButton* button;
+        ui::WindowLayoutPreset preset;
+    } segments[] = {
+        {layout_monitor_button_, ui::WindowLayoutPreset::Monitor},
+        {layout_analysis_button_, ui::WindowLayoutPreset::Analysis},
+        {layout_sidebyside_button_, ui::WindowLayoutPreset::SideBySide},
+    };
+    for (const auto& segment : segments) {
+        if (!segment.button)
+            continue;
+        // 不要 blockSignals：互斥组的内部记账靠按钮的 toggled 信号维护，
+        // 屏蔽掉会让"当前选中项"变陈旧，之后再点别的按钮会留下两个同时按下的段。
+        // 这里也不怕回环：组上连的是 idClicked（只由用户点击发出），setChecked 不会触发它。
+        segment.button->setChecked(segment.preset == preset);
+    }
+}
+
+void MainWindow::RefreshScanTaskBar() {
+    if (!scan_task_bar_ || !analysis_panel_)
+        return;
+    const bool running = analysis_panel_->IsScanRunning();
+    if (!running) {
+        scan_progress_percent_ = 0.0;
+        scan_progress_stage_.clear();
+        scan_task_bar_->SetScanState(false, 0.0, QString());
+    } else {
+        scan_task_bar_->SetScanState(true, scan_progress_percent_, scan_progress_stage_);
+    }
+    // 条的出现/消失改变可用高度：立刻重算最小尺寸，避免窗口比内容矮一截
+    UpdateMinimumWindowSize();
 }
 
 void MainWindow::RefreshOverviewAnalysis() {

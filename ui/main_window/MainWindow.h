@@ -8,9 +8,13 @@
 #include "core/player/MediaPlayerFwd.h"
 #include "ui/main_window/macroblock_coordination.h"
 #include "ui/main_window/menu_bar.h"
+// 布局预设用 window_layout.h 的那一份（与 PlayerPanel::LayoutPreset 同义），
+// 这样本头不必把整个播放面板拖进来 —— 两处枚举的映射只在 .cpp 里做一次。
+#include "ui/main_window/window_layout.h"
 
 class QLabel;
 class QListWidget;
+class QPushButton;
 class QSplitter;
 class QStackedWidget;
 class QTimer;
@@ -26,8 +30,10 @@ class ExportCoordinator;
 class FfmpegPanel;
 class MediaInfoCoordinator;
 class OpenSessionController;
+class ElidedLabel;
 class OverviewPage;
 class PlayerPanel;
+class ScanTaskBar;
 
 // 主窗口: 菜单 / 侧边栏 / 分析内容栈。
 //
@@ -75,6 +81,14 @@ private:
     void ShowPageById(const QString& page_id);
     // 拉取 AnalysisPanel 的诊断状态快照，刷新首页「分析状态」区
     void RefreshOverviewAnalysis();
+    // 把扫描状态同步到顶部任务条（任意页面可见的进度 + 取消入口）
+    void RefreshScanTaskBar();
+    // 换页时按页面内容分配播放区/分析区空间（口径见 ui::PreferredLayoutForPage）。
+    // 只在"自动布局就绪"之后生效：启动时用户存的预设优先。
+    void ApplyLayoutForPage(const QString& page_id);
+    // 应用栏里的布局段按钮（监看 / 分析 / 并排）与菜单勾选双向同步
+    void SyncLayoutSegments(WindowLayoutPreset preset);
+    void ApplyLayoutPresetFromUi(WindowLayoutPreset preset);
     // 把各分析页的异常数 / 级别 / 扫描态写进侧栏 item 的徽标角色，
     // 由 SidebarItemDelegate 画成右侧数字徽标与扫描圆点（见 DiagnosticsStateChanged）
     void UpdateNavigationBadges();
@@ -102,8 +116,8 @@ protected:
     // 首页（总览）: 文件摘要 + 分析状态 + 最重要异常 + 完整媒体信息
     OverviewPage* overview_page_ = nullptr;
 
-    // 顶部显示当前媒体路径
-    QLabel* current_media_label_;
+    // 顶部显示当前媒体路径（ElidedLabel：长路径按实际宽度省略，不撑宽应用栏）
+    ElidedLabel* current_media_label_ = nullptr;
     QLabel* stats_label_; // 状态栏右端常驻: 实时 FPS/码率/关键帧
 
     // 打开会话: 分派(裸图像/PCM/通用媒体) + 换媒体复位 + 异步收尾 + 下游登记。
@@ -132,6 +146,22 @@ protected:
     ui::MenuBarActions menu_actions_;
     // 首次 showEvent 时才应用布局预设（此前 splitter 还没有真实尺寸）
     bool layout_preset_applied_ = false;
+    // 自动布局（换页按页面内容分配空间）是否已就绪。
+    // 启动那一次切页要跳过它：用户在 QSettings 里存的布局必须能被恢复，
+    // 不能被"第一页是总览 -> 切成监看"顶掉。
+    bool layout_auto_ready_ = false;
+
+    // 跨页面可见的扫描任务条（阶段 / 进度 / 取消）。扫描结束即隐藏。
+    ScanTaskBar* scan_task_bar_ = nullptr;
+    // 任务条用的最近一次进度快照：DiagnosticsStateChanged 只告诉"状态变了"，
+    // 不含百分比，重开任务条时要拿这份补上，否则进度会从 0 重新爬。
+    double scan_progress_percent_ = 0.0;
+    QString scan_progress_stage_;
+
+    // 应用栏的布局段按钮（监看 / 分析 / 并排）
+    QPushButton* layout_monitor_button_ = nullptr;
+    QPushButton* layout_analysis_button_ = nullptr;
+    QPushButton* layout_sidebyside_button_ = nullptr;
 
     // UI 健康度探针 (主线程阻塞检测, 仅用于定位卡顿)
     QTimer* ui_health_timer_ = nullptr;

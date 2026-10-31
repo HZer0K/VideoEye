@@ -646,11 +646,13 @@ TEST(NavigationModelTest, AnalysisPanelPagesMapToExpectedNavigation) {
     EXPECT_EQ(headers, expected_headers);
 
     // 页面标题只留标题本身；口径已上提到分组标题（播放监看/全片质量）。
+    // 「全片质量」组内次序是 (group, order) 决定的展示次序，与 stack 下标无关：
+    // 质量诊断是这一组的结论页，排首位；码率 / 音频 / 色彩是它的分项，按需下钻。
     const QStringList expected_texts{
         QStringLiteral("播放统计与帧包"), QStringLiteral("运动矢量与块分析"), QStringLiteral("场景切换"),
         QStringLiteral("画面质量"),       QStringLiteral("事件与时间轴"),     QStringLiteral("文件结构"),
         QStringLiteral("编码参数集"),     QStringLiteral("流媒体包"),         QStringLiteral("字幕与辅助数据"),
-        QStringLiteral("码率与 GOP"),     QStringLiteral("音频 QC"),          QStringLiteral("色彩与 HDR"),
-        QStringLiteral("质量诊断"),       QStringLiteral("报告与批量 QC")};
+        QStringLiteral("质量诊断"),       QStringLiteral("码率与 GOP"),       QStringLiteral("音频 QC"),
+        QStringLiteral("色彩与 HDR"),     QStringLiteral("报告与批量 QC")};
     EXPECT_EQ(texts, expected_texts);
 }

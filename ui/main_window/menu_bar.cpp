@@ -70,8 +70,9 @@ MenuBarActions BuildMenuBar(QMenuBar* bar, const MenuBarDeps& deps) {
     }
     view_menu->addAction(actions.toggle_player);
 
-    // 播放区布局预设: 监看 = 播放区 58%; 分析 = 播放区 30% (小屏默认走分析)。
-    // 与上面的显隐开关正交 —— 预设管比例, 显隐管在不在。
+    // 播放区布局预设: 监看 = 上下、播放区 58%; 分析 = 上下、播放区 30%;
+    // 并排 = 左右、预览在右（宽屏专用）。与上面的显隐开关正交 —— 预设管比例与朝向,
+    // 显隐管在不在。同样的三个选项也在应用栏里（那一处更显眼，这里是可发现性兜底）。
     QMenu* layout_menu = view_menu->addMenu(QObject::tr("播放区布局"));
     QActionGroup* layout_ag = new QActionGroup(layout_menu);
     layout_ag->setExclusive(true);
@@ -81,17 +82,29 @@ MenuBarActions BuildMenuBar(QMenuBar* bar, const MenuBarDeps& deps) {
     actions.layout_analysis = layout_ag->addAction(QObject::tr("分析布局"));
     actions.layout_analysis->setCheckable(true);
     actions.layout_analysis->setStatusTip(QObject::tr("分析区占大头，适合看表格与扫描结果"));
+    actions.layout_sidebyside = layout_ag->addAction(QObject::tr("并排布局（宽屏）"));
+    actions.layout_sidebyside->setCheckable(true);
+    actions.layout_sidebyside->setStatusTip(QObject::tr("左右分割、预览在右，纵向空间全给分析内容"));
     actions.layout_monitor->setChecked(true);
     layout_menu->addAction(actions.layout_monitor);
     layout_menu->addAction(actions.layout_analysis);
-    // 「分析」那一项要在 lambda 里认回来，而 actions 是本函数的返回值、此刻还在填，
+    layout_menu->addAction(actions.layout_sidebyside);
+    // 三个动作要在 lambda 里认回来，而 actions 是本函数的返回值、此刻还在填，
     // 所以先把指针拷出来再捕获（拷的是 QAction*，不是整个返回值）。
+    QAction* const monitor_action = actions.layout_monitor;
     QAction* const analysis_action = actions.layout_analysis;
+    QAction* const sidebyside_action = actions.layout_sidebyside;
     QObject::connect(
-        layout_ag, &QActionGroup::triggered, [analysis_action, apply = deps.apply_layout_preset](QAction* action) {
+        layout_ag, &QActionGroup::triggered,
+        [monitor_action, analysis_action, sidebyside_action, apply = deps.apply_layout_preset](QAction* action) {
             if (!action || !apply)
                 return;
-            apply(action == analysis_action ? PlayerPanel::LayoutPreset::Analysis : PlayerPanel::LayoutPreset::Monitor);
+            if (action == analysis_action)
+                apply(PlayerPanel::LayoutPreset::Analysis);
+            else if (action == sidebyside_action)
+                apply(PlayerPanel::LayoutPreset::SideBySide);
+            else if (action == monitor_action)
+                apply(PlayerPanel::LayoutPreset::Monitor);
         });
 
     QMenu* seek_mode_menu = playback_menu->addMenu(QObject::tr("seek方式"));

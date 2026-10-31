@@ -96,6 +96,16 @@ public:
     // 播放器打开失败进入"分析模式"时由 MainWindow 调用, 让诊断页展示具体错误原因。
     void StartDiagnosticsScanForCurrentFile();
 
+    // 取消当前全文件扫描（跨页面的扫描任务条用）。
+    // 与诊断页的取消按钮同一入口：只发取消请求、不伪造终态，终态仍由扫描自己收尾。
+    void CancelDiagnosticsScan();
+
+    // 首页「异常直达」：切到诊断页的「问题清单」子页并选中对应问题（按问题身份定位：
+    // rule_id + 起始秒 + 流下标）。命中返回 true；没有结果或找不到返回 false，
+    // 调用方此时只完成"切到质量诊断"，用户仍落在问题清单上。
+    // 页面切换本身由 MainWindow 做（它才知道 stack 与侧栏），面板只管选中。
+    bool FocusDiagnosticIssue(const QString& rule_id, double start_seconds, int stream_index);
+
     // ---- 诊断状态只读快照（供首页「分析状态」区拉取）----
     // 扫描起止 / 报告重算 / 换文件都会发 DiagnosticsStateChanged，MainWindow 收到后
     // 再调这几个取数刷新首页 —— 页面不互相持有指针，快照式读取与容器结构页等一致。
@@ -125,6 +135,10 @@ signals:
 
     // 诊断扫描状态变化（开始 / 终态 / 报告重算 / 换文件）: MainWindow 转给首页刷新
     void DiagnosticsStateChanged();
+
+    // 全文件扫描进度（阶段文案 + 百分比）。MainWindow 用它驱动跨页面可见的
+    // 扫描任务条 —— 与诊断页内那条进度条同源，不会出现"两处进度打架"。
+    void DiagnosticsScanProgress(double percent, const QString& stage);
 
     // 画面质量分析的采样档位 / 阈值变化 (供 MainWindow 转发给 MediaPlayer)
     void VisualDefectOptionsChanged(const model::VisualDefectOptions& options);

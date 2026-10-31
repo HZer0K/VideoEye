@@ -90,6 +90,23 @@ TEST(AnalysisPageCatalogTest, GroupOrderKeysAreUnique) {
     }
 }
 
+TEST(AnalysisPageCatalogTest, QualityDiagnosticsLeadsItsGroup) {
+    // 「全片质量」组的结论页必须排第一：这一组里码率 / 音频 / 色彩都是分项，
+    // 用户进来先看"这次扫描的结论"，再按需下钻。组内次序由 (group, order) 决定，
+    // 与 stack 顺序无关 —— 所以这里断言 order 而不是表格行序。
+    int diagnostics_order = -1;
+    int smallest_in_group = 1000;
+    for (const AnalysisPageDescriptor& entry : AnalysisPageCatalog()) {
+        if (QString::fromUtf8(entry.group) != QStringLiteral("full_quality"))
+            continue;
+        smallest_in_group = std::min(smallest_in_group, entry.order);
+        if (QString::fromUtf8(entry.id) == QStringLiteral("quality_diagnostics"))
+            diagnostics_order = entry.order;
+    }
+    EXPECT_GE(diagnostics_order, 0) << "quality_diagnostics 不在 full_quality 组";
+    EXPECT_EQ(diagnostics_order, smallest_in_group) << "质量诊断不是「全片质量」组的首项";
+}
+
 TEST(AnalysisPageCatalogTest, BadgePagesExistInCatalog) {
     // CollectPageBadges 按 pageId 归集徽标（见 AnalysisPageFactory.cpp）。
     // 那边写死的 id 必须在目录里 —— 否则徽标永远画不出来，且不报错。

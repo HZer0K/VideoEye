@@ -40,6 +40,12 @@ namespace ui {
 
 namespace {
 constexpr int kVideoMinHeight = 160;
+// 并排（左右）模式下播放区占的宽度比例；余下给分析内容。
+constexpr int kSideBySidePlayerShare = 42;
+// 并排时分析区至少要有这么宽（表格 + 详情两栏的底线），否则"并排"只剩一条缝。
+constexpr int kSideBySideContentMinWidth = 560;
+// 上下模式下内容区再挤也要留一点：窗口被压得很矮时只按最小高度钳制会算出负数。
+constexpr int kMinContentHeight = 80;
 } // namespace
 
 PlayerPanel::PlayerPanel(QWidget* parent) : QWidget(parent) {
@@ -234,11 +240,11 @@ bool PlayerPanel::IsPlayerAreaVisible() const {
 // 布局预设（监看 / 分析）
 // ----------------------------------------------------------------------------
 
-void PlayerPanel::ApplyLayoutPreset(LayoutPreset preset) {
+void PlayerPanel::ApplyLayoutPreset(LayoutPreset preset, bool persist) {
     const bool changed = (layout_preset_ != preset);
     layout_preset_ = preset;
 
-    if (changed) {
+    if (changed && persist) {
         // 与显隐一样持久化: 下次启动沿用（没有存过时由 RestoreLayoutPreset 的默认值决定）
         QSettings settings;
         settings.setValue(QStringLiteral("ui/playerLayoutPreset"), static_cast<int>(preset));
@@ -259,30 +265,93 @@ void PlayerPanel::ApplyLayoutPreset(LayoutPreset preset) {
     emit LayoutPresetChanged(preset);
 }
 
+QWidget* PlayerPanel::ContentWidget() const {
+    if (!splitter_ || splitter_->count() != 2)
+        return nullptr;
+    QWidget* first = splitter_->widget(0);
+    return (first == this) ? splitter_->widget(1) : first;
+}
+
+void PlayerPanel::MovePlayerToEdge(bool right_side) {
+    if (!splitter_ || splitter_->count() != 2)
+        return;
+    const int want = right_side ? 1 : 0;
+    if (splitter_->indexOf(this) == want)
+        return;
+    if (want == 1) {
+        splitter_->addWidget(this); // 移到末尾 = 右侧
+    } else {
+        splitter_->insertWidget(0, this); // 移回开头 = 顶部
+    }
+}
+
 void PlayerPanel::ApplyPresetSizes() {
     if (!splitter_ || splitter_->count() != 2)
         return;
-    const QList<int> sizes = splitter_->sizes();
-    const int total = sizes.value(0, 0) + sizes.value(1, 0);
+
+    const bool side_by_side = (layout_preset_ == LayoutPreset::SideBySide);
+    // 朝向与"预览在哪一侧"必须一起定：只改 orientation 的话预览会留在左边，
+    // 与"分析区 + 右侧预览"的口径不符。
+    splitter_->setOrientation(side_by_side ? Qt::Horizontal : Qt::Vertical);
+    MovePlayerToEdge(side_by_side);
+
+    QWidget* content = ContentWidget();
+    if (!content)
+        return;
+    const int player_index = splitter_->indexOf(this);
+    const int content_index = splitter_->indexOf(content);
+    if (player_index < 0 || content_index < 0)
+        return;
+
+    // 拖动后的拉伸权重也跟着朝向走：分析内容永远是"该多拿空间"的那一半
+    // （上下模式播放区拿 3 是因为竖屏下画面本身更吃高度，这是既定产品口径）。
+    splitter_->setStretchFactor(content_index, 3);
+    splitter_->setStretchFactor(player_index, side_by_side ? 1 : 3);
+
+    // 真实可用尺寸优先用 splitter 自身的宽/高：切朝向后 sizes() 里还是旧轴上的像素值，
+    // 求和得到的是"上一轮的高度"，拿它算新轴比例会把播放区一次压到很小。
+    // 兜底取两者的较大值 —— 窗口还没完成布局时 height()/width() 可能是陈旧的小值，
+    // 此时 sizes() 里的初值（SetupContentArea 的 480/320）反而更接近真实可用空间。
+    const QList<int> current_sizes = splitter_->sizes();
+    int total = side_by_side ? splitter_->width() : splitter_->height();
+    total = std::max(total, current_sizes.value(0, 0) + current_sizes.value(1, 0));
     if (total <= 0)
         return;
 
-    // 监看: 播放区 58%; 分析: 30%。钳制在 [播放区最小高度, total - 内容区最小高度]
-    // 之间 —— setSizes 不遵守 minimum，超了下限 Qt 会把视频区压皱。
-    int player_share = (layout_preset_ == LayoutPreset::Monitor) ? total * 58 / 100 : total * 30 / 100;
-    const int player_min = MinimumHeightHint();
-    const QWidget* content = splitter_->widget(1);
-    const int content_min = content ? content->minimumHeight() : 250;
-    player_share = std::max(player_share, player_min);
-    player_share = std::min(player_share, total - content_min);
-    // 内容区再挤也要留一点：窗口被压得很矮时（total 接近 player_min），
-    // 只按上面的钳制会算出负的第二个尺寸，下面那栏直接消失。
-    constexpr int kMinContentHeight = 80;
-    if (total - player_share < kMinContentHeight)
-        player_share = total - kMinContentHeight;
-    if (player_share < player_min)
-        return; // 实在放不下就别动（用户手动拖的结果保留）
-    splitter_->setSizes({player_share, total - player_share});
+    // 监看 58% / 分析 30% / 并排 42%（宽度）
+    int player_share = 0;
+    if (side_by_side) {
+        player_share = total * kSideBySidePlayerShare / 100;
+    } else {
+        player_share = (layout_preset_ == LayoutPreset::Monitor) ? total * 58 / 100 : total * 30 / 100;
+    }
+
+    if (side_by_side) {
+        const int player_min = video_widget_ ? video_widget_->minimumWidth() : 0;
+        const int content_min = std::max(content->minimumWidth(), kSideBySideContentMinWidth);
+        player_share = std::max(player_share, player_min);
+        player_share = std::min(player_share, total - content_min);
+    } else {
+        const int player_min = MinimumHeightHint();
+        const int content_min = std::max(content->minimumHeight(), 0);
+        player_share = std::max(player_share, player_min);
+        player_share = std::min(player_share, total - content_min);
+        // 内容区再挤也要留一点：窗口被压得很矮时（total 接近 player_min），
+        // 只按上面的钳制会算出负的第二个尺寸，下面那栏直接消失。
+        if (total - player_share < kMinContentHeight)
+            player_share = total - kMinContentHeight;
+        if (player_share < player_min)
+            return; // 实在放不下就别动（用户手动拖的结果保留）
+    }
+
+    if (player_share <= 0 || total - player_share <= 0)
+        return;
+
+    QList<int> target;
+    target.resize(2);
+    target[player_index] = player_share;
+    target[content_index] = total - player_share;
+    splitter_->setSizes(target);
 }
 
 void PlayerPanel::RestoreLayoutPreset(LayoutPreset default_preset) {
@@ -291,7 +360,17 @@ void PlayerPanel::RestoreLayoutPreset(LayoutPreset default_preset) {
     LayoutPreset preset = default_preset;
     if (stored.isValid()) {
         const int value = stored.toInt();
-        preset = (value == static_cast<int>(LayoutPreset::Analysis)) ? LayoutPreset::Analysis : LayoutPreset::Monitor;
+        switch (value) {
+        case static_cast<int>(LayoutPreset::Analysis):
+            preset = LayoutPreset::Analysis;
+            break;
+        case static_cast<int>(LayoutPreset::SideBySide):
+            preset = LayoutPreset::SideBySide;
+            break;
+        default:
+            preset = LayoutPreset::Monitor;
+            break;
+        }
     }
     layout_preset_ = preset;
     if (IsPlayerAreaVisible()) {

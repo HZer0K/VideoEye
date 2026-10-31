@@ -367,6 +367,17 @@ void DiagnosticsPage::Evaluate() {
     emit QcReportChanged(report_);
 }
 
+bool DiagnosticsPage::FocusIssue(const QString& rule_id, double start_seconds, int stream_index) {
+    if (!sub_tabs_ || !issue_view_)
+        return false;
+    // 无论命中与否都先切子页：用户从首页点"异常"进来的预期就是"看问题清单"，
+    // 停在"规则与阈值"上会让人以为点错了。
+    sub_tabs_->setCurrentWidget(issue_view_);
+    if (!has_result_)
+        return false;
+    return issue_view_->SelectIssue(rule_id, start_seconds, stream_index);
+}
+
 void DiagnosticsPage::ApplySceneLink(const std::vector<model::SceneChangeResult>& records,
                                      const videoeye::BitrateGopOptions& gop_options) {
     if (!has_result_) {

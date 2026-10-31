@@ -18,6 +18,8 @@ using videoeye::ui::IsBelowMinimum;
 using videoeye::ui::kBaseMinimumWidth;
 using videoeye::ui::kSmallScreenHeightThreshold;
 using videoeye::ui::MinimumWindowSize;
+using videoeye::ui::PreferredLayoutForPage;
+using videoeye::ui::ShouldAutoApplyLayout;
 using videoeye::ui::WindowLayoutMetrics;
 using videoeye::ui::WindowLayoutPreset;
 
@@ -88,4 +90,59 @@ TEST(WindowLayoutTests, BelowMinimumTriggersOnEitherAxis) {
     EXPECT_TRUE(IsBelowMinimum(QSize(1000, 699), min));  // 只矮了
     EXPECT_FALSE(IsBelowMinimum(QSize(1000, 700), min)); // 正好卡在最小值上不算
     EXPECT_FALSE(IsBelowMinimum(QSize(1200, 900), min));
+}
+
+// ---------------------------------------------------------------------------
+// 扫描任务条占的高度必须计入最小尺寸
+// ---------------------------------------------------------------------------
+
+TEST(WindowLayoutTests, ScanBarHeightIsPartOfTheMinimumHeight) {
+    // 任务条是扫描期间才出现的一条栏。不计它的话，扫描一开始内容就比窗口高，
+    // 底部的分析页被裁掉一格 —— 用户看到的是"扫描时界面缺了一块"。
+    WindowLayoutMetrics without_bar;
+    without_bar.app_bar_height = 48;
+    without_bar.content_min_height = 250;
+    without_bar.player_min_height = 216;
+
+    WindowLayoutMetrics with_bar = without_bar;
+    with_bar.scan_bar_height = 36;
+
+    EXPECT_EQ(MinimumWindowSize(with_bar).height(), MinimumWindowSize(without_bar).height() + 36);
+}
+
+// ---------------------------------------------------------------------------
+// 「切到哪一页给分析区多少空间」
+// ---------------------------------------------------------------------------
+
+TEST(WindowLayoutTests, SummaryAndToolPagesKeepTheBigPreview) {
+    // 落地页先看素材；FFmpeg 页自己有 splitter 与滚动条，播放区抢高度会让输出区拿不到空间。
+    EXPECT_EQ(PreferredLayoutForPage(QStringLiteral("overview")), WindowLayoutPreset::Monitor);
+    EXPECT_EQ(PreferredLayoutForPage(QStringLiteral("ffmpeg_command")), WindowLayoutPreset::Monitor);
+}
+
+TEST(WindowLayoutTests, AnalysisPagesGetTheAnalysisLayout) {
+    // 这几页是表格 + 图表，纵向空间本来就紧张（诊断页里曲线与问题表各自有最小高度）
+    for (const char* page : {"quality_diagnostics", "file_structure", "bitrate_gop", "audio_qc", "report_batch_qc"}) {
+        EXPECT_EQ(PreferredLayoutForPage(QString::fromLatin1(page)), WindowLayoutPreset::Analysis)
+            << "分析页应优先呈现分析内容: " << page;
+    }
+}
+
+TEST(WindowLayoutTests, UnknownPageFallsBackToAnalysis) {
+    // 新增页面没有登记取向时，按"分析优先"处理 —— 这个软件的主语是分析，
+    // 漏登记最多是播放区小一点，反过来则是新页面一进来就被压成一条。
+    EXPECT_EQ(PreferredLayoutForPage(QString()), WindowLayoutPreset::Analysis);
+    EXPECT_EQ(PreferredLayoutForPage(QStringLiteral("brand_new_page")), WindowLayoutPreset::Analysis);
+}
+
+TEST(WindowLayoutTests, AutoApplySkipsSideBySideAndNoOps) {
+    // 并排是用户为宽屏显式选的模式，换页不去掰它，否则宽屏用户每点一页就被弹回上下分割。
+    EXPECT_FALSE(ShouldAutoApplyLayout(WindowLayoutPreset::SideBySide, WindowLayoutPreset::Analysis));
+    EXPECT_FALSE(ShouldAutoApplyLayout(WindowLayoutPreset::SideBySide, WindowLayoutPreset::Monitor));
+    // 已经是目标预设时不动：拖过分隔条的用户不该因为"点了同一页"被重置。
+    EXPECT_FALSE(ShouldAutoApplyLayout(WindowLayoutPreset::Monitor, WindowLayoutPreset::Monitor));
+    EXPECT_FALSE(ShouldAutoApplyLayout(WindowLayoutPreset::Analysis, WindowLayoutPreset::Analysis));
+    // 上下两种预设之间才真的切换
+    EXPECT_TRUE(ShouldAutoApplyLayout(WindowLayoutPreset::Monitor, WindowLayoutPreset::Analysis));
+    EXPECT_TRUE(ShouldAutoApplyLayout(WindowLayoutPreset::Analysis, WindowLayoutPreset::Monitor));
 }
