@@ -248,7 +248,7 @@
       },
       "environment": {
         "ASAN_OPTIONS": "detect_leaks=0:abort_on_error=0",
-        "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=0"
+        "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=0:log_exe_name=1:log_path=$penv{VE_UBSAN_LOG_DIR}/ubsan"
       }
     },
     {

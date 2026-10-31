@@ -5,8 +5,12 @@
 #   cmake -DVE_INPUTS="exe1;dll2"          # 要调查的文件（可执行文件与动态库，按扩展名自动分类）
 #         -DVE_DEST=<目标目录>             # 补全后的依赖也放这里
 #         -DVE_SEARCH_DIRS="dir1;dir2"     # 项目自带依赖所在的目录
+#         [-DVE_MANIFEST_OUT=<文件>]       # 写出本次闭包涉及的 DLL 名清单（一行一个）
 #         [-DVE_DRY_RUN=ON]                # 只打印要补齐的项, 不复制
 #         -P RuntimeDepsScan.cmake
+#
+# 幂等: 目标目录已有同名文件时**比内容**（大小 + SHA256），不同就覆盖写。
+#   比 mtime 没用 —— file(COPY) 会保留源文件的时间戳。
 #
 # 为什么需要它:
 #   $<TARGET_RUNTIME_DLLS> 只包含 CMake 链接图里认识的 imported target。
@@ -140,7 +144,27 @@ if(_unresolved)
     message(VERBOSE "[runtime-deps] 未解析（视为系统提供）: ${_unresolved}")
 endif()
 
+# ---- 两个文件是否"内容相同"（大小 + SHA256）----
+# 只比大小不够: DLL 换版本时大小常常一样。比 mtime 也不够: 复制会保留源时间戳。
+function(_scan_same_content a b out)
+    file(SIZE "${a}" _sa)
+    file(SIZE "${b}" _sb)
+    if(NOT _sa EQUAL _sb)
+        set(${out} FALSE PARENT_SCOPE)
+        return()
+    endif()
+    file(SHA256 "${a}" _ha)
+    file(SHA256 "${b}" _hb)
+    if(_ha STREQUAL _hb)
+        set(${out} TRUE PARENT_SCOPE)
+    else()
+        set(${out} FALSE PARENT_SCOPE)
+    endif()
+endfunction()
+
+set(_closure "")
 set(_needed "")
+set(_identical 0)
 foreach(_lib IN LISTS _resolved)
     if(NOT EXISTS "${_lib}")
         continue()
@@ -150,35 +174,61 @@ foreach(_lib IN LISTS _resolved)
         continue()
     endif()
     get_filename_component(_name "${_lib}" NAME)
+    list(APPEND _closure "${_name}")
     if(EXISTS "${VE_DEST}/${_name}")
-        continue()
+        # ⚠️ 同名 ≠ 同内容。这里以前是「目标目录已有同名文件就跳过」，于是升级
+        #    Qt / vcpkg 之后，zlib1.dll、pcre2-16.dll、double-conversion.dll 这批
+        #    **间接**依赖会永远停在上一个版本 —— 链接图里认识的那些由 RuntimeCopy
+        #    按内容覆盖，只有闭包补出来的这几十个没人管。症状是新旧依赖混装：
+        #    构建全绿、启动时偶发 0xc0000005 / 0x8007007e，崩溃现场与构建毫无关系。
+        _scan_same_content("${_lib}" "${VE_DEST}/${_name}" _same)
+        if(_same)
+            math(EXPR _identical "${_identical} + 1")
+            continue()
+        endif()
     endif()
     list(APPEND _needed "${_lib}")
 endforeach()
 
+list(REMOVE_DUPLICATES _closure)
 list(REMOVE_DUPLICATES _needed)
 
 if(VE_DRY_RUN)
     message(STATUS "[runtime-deps] dest : ${VE_DEST}")
-    message(STATUS "  missing (would copy):")
+    message(STATUS "  missing/outdated (would copy):")
     foreach(_lib IN LISTS _needed)
         message(STATUS "    ${_lib}")
     endforeach()
     return()
 endif()
 
-set(_copied 0)
+# 部署清单: RuntimeSync.cmake 靠它判断"上次补出来的东西还在不在"。
+# 交给闭包扫描自己写, 比让调用方去猜哪些文件是扫出来的可靠。
+if(VE_MANIFEST_OUT)
+    string(REPLACE ";" "\n" _closure_text "${_closure}")
+    file(WRITE "${VE_MANIFEST_OUT}" "${_closure_text}\n")
+endif()
+
+set(_written 0)
 foreach(_lib IN LISTS _needed)
+    get_filename_component(_name "${_lib}" NAME)
+    if(EXISTS "${VE_DEST}/${_name}")
+        message(STATUS "[runtime-deps]   更新 ${_name}")
+    else()
+        message(STATUS "[runtime-deps]   新增 ${_name}")
+    endif()
     file(COPY "${_lib}" DESTINATION "${VE_DEST}")
-    math(EXPR _copied "${_copied} + 1")
+    math(EXPR _written "${_written} + 1")
 endforeach()
-message(STATUS "[runtime-deps] 补齐 ${_copied} 个依赖到 ${VE_DEST}")
+
+list(LENGTH _closure _closure_count)
+message(STATUS
+    "[runtime-deps] 闭包 ${_closure_count} 项: 写入 ${_written} 项, 内容一致 ${_identical} 项 -> ${VE_DEST}")
 
 # 复制后就地校验 —— 这是这条链路唯一真正有价值的一步:
 # 缺 DLL 的后果只会在运行时爆发, 而那时报错信息跟构建完全无关。
 set(_missing "")
-foreach(_lib IN LISTS _needed)
-    get_filename_component(_name "${_lib}" NAME)
+foreach(_name IN LISTS _closure)
     if(NOT EXISTS "${VE_DEST}/${_name}")
         list(APPEND _missing "${_name}")
     endif()

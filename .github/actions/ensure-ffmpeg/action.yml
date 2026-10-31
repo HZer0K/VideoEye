@@ -1,0 +1,46 @@
+name: Ensure FFmpeg >= 7.1
+description: >-
+  统一 Linux/macOS 侧的 FFmpeg 准备入口：系统 FFmpeg 够新就用系统那份，
+  不够（Ubuntu 24.04 是 6.1）就取 cmake/ffmpeg-version.json 锁定的兜底包。
+
+  outputs.cmake_args 直接拼在 `cmake --preset <p>` 后面即可 —— 系统够新时它是空串，
+  调用方不需要再写 `if [[ -n "$root" ]]` 那套分支。
+
+  ⚠️ 为什么要做成 composite action 而不是在 4 个 job 里各抄一段：
+  这段逻辑原本在 build.yml（build / sanitizer）和 release.yml 里各写了一遍，
+  而 test job 漏了 —— 于是「系统 FFmpeg 6.1 + configure 阶段 API 门禁」会让
+  普通构建绿、单测任务红。同一个语义只允许有一份实现。
+
+inputs:
+  script:
+    description: 检测/获取脚本路径（相对仓库根）
+    required: false
+    default: scripts/fetch-ffmpeg.sh
+
+outputs:
+  cmake_args:
+    description: 需要追加给 cmake 的参数（空串表示用系统 FFmpeg）
+    value: ${{ steps.pick.outputs.cmake_args }}
+  root:
+    description: 兜底包根目录（空串表示用系统 FFmpeg）
+    value: ${{ steps.pick.outputs.root }}
+
+runs:
+  using: composite
+  steps:
+    - id: pick
+      shell: bash
+      run: |
+        set -euo pipefail
+        # 脚本约定：系统够新 → stdout 为空；不够 → stdout 只有一行兜底包路径。
+        # 人类可读的进度信息全部走 stderr，所以这里不会把日志当路径抓走。
+        root="$(bash "${{ inputs.script }}")"
+        if [[ -n "${root}" ]]; then
+          echo "root=${root}" >> "$GITHUB_OUTPUT"
+          echo "cmake_args=-DFFMPEG_ROOT=${root}" >> "$GITHUB_OUTPUT"
+          echo "使用锁定兜底包: ${root}"
+        else
+          echo "root=" >> "$GITHUB_OUTPUT"
+          echo "cmake_args=" >> "$GITHUB_OUTPUT"
+          echo "使用系统 FFmpeg"
+        fi

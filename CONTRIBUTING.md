@@ -28,7 +28,11 @@ build.bat clean      # 清理 build/release 与 build/debug
 （在「x64 Native Tools Command Prompt for VS 2022」中执行即可）。
 
 想自己铺本机路径就在 gitignore 掉的 `CMakeUserPresets.json` 里写，不要改 `CMakePresets.json`。
-FFmpeg 缺失时会自动调用 `scripts/fetch-ffmpeg.ps1`。
+
+`build.bat` 每次都会调一次 `scripts/fetch-ffmpeg.ps1`（幂等：目录与
+`cmake/ffmpeg-version.json` 的 **url + sha256 + 目录结构**完全对得上时只看几个文件就退出，
+不联网）。只比对版本号是不够的 —— 同一个版本号可能对应重新打包的上游构建，
+那样本机会静默继续用旧包，编出来的 ABI 与 CI / 别人机器不一致。
 
 ### Linux
 ```bash
@@ -198,3 +202,31 @@ cmake --preset linux-fuzz
 cmake --build --preset linux-fuzz
 ./build/fuzz/tests/fuzz/FuzzBitstreamExtradata -max_total_time=120 -timeout=10 -rss_limit_mb=2048
 ```
+
+### UBSan 门禁
+
+`linux-test-asan` 是 ASan + UBSan 一起开的，但 `halt_on_error=0`：Qt 的头文件被 include 进我们的
+TU，里面的内联代码也带插桩，开 halt 会整片红在 Qt 噪声上。代价是 UB 不会让进程退出 —— **ctest 不会
+变红**，日志里有没有那几行全看运气。
+
+所以 `build.yml` 里另有一道 `UBSan gate`：
+
+- **报告从哪来**：`VE_UBSAN_LOG_DIR` 指向的目录（CI 是 `$GITHUB_WORKSPACE/build/ubsan`），
+  UBSan 自己写 `ubsan.<exe>.<pid>`。不能只 grep ctest 日志 —— ctest 只在测试失败时回显输出，
+  测试通过时那几行被直接吞掉（`--test-output-size-passed` 也救不回来，实测过），
+  门禁会变成永远绿的摆设。
+- **判据**：只认落在本仓库源码里的 `runtime error:`，按路径排除 `build/`、`third_party/`、
+  `vcpkg_installed/`。同一位置多次出现会合并计数，命中会以 GitHub annotation 标到对应行。
+- **首轮摸底**：把仓库变量 `UBSAN_GATE_MODE` 设成 `warn`，照样在 job summary 里列全部命中、
+  照样标注释，但不判红。存量清完删掉该变量（或设回 `strict`）即收紧。
+
+本机想收集报告：
+
+```bash
+export VE_UBSAN_LOG_DIR=/tmp/ve-ubsan && mkdir -p "$VE_UBSAN_LOG_DIR"
+ctest --preset linux-test-asan
+ls "$VE_UBSAN_LOG_DIR"
+```
+
+不设 `VE_UBSAN_LOG_DIR` 时 preset 里会展开成 `log_path=/ubsan`（不可写），报告退回 stderr ——
+交互式调试反而看得见，但一经过 ctest 就没了。

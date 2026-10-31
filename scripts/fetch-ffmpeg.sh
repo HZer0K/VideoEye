@@ -108,14 +108,22 @@ if [[ -z "${URL}" || -z "${SHA256}" ]]; then
 fi
 
 # ---- 3) 已经装过就直接用 ----
+# 判据三条，缺一不可（与 Windows 侧 fetch-ffmpeg.ps1 同口径）:
+#   · stamp 里记的是同一个 buildId
+#   · stamp 里的 sha256 与锁定配置一致  ← 同一版本号可能对应重新打包的归档
+#   · stamp 里的下载地址一致            ← 版本号不变但换了 URL / 供应商
+# 只比 buildId 时，"同版本换了包"会被静默放过，本机与 CI 的 ABI 就此分叉。
 STAMP="${DEST}/.videoeye-ffmpeg.json"
-if [[ "${FORCE}" -eq 0 && -f "${DEST}/include/libavcodec/avcodec.h" ]]; then
-    if [[ -f "${STAMP}" ]] && grep -q "${BUILD_ID}" "${STAMP}" 2>/dev/null; then
-        log "已有兜底包（${BUILD_ID}）：${DEST}"
+if [[ "${FORCE}" -eq 0 && -f "${DEST}/include/libavcodec/avcodec.h" && -d "${DEST}/lib" ]]; then
+    if [[ -f "${STAMP}" ]] \
+       && grep -qF "${BUILD_ID}" "${STAMP}" 2>/dev/null \
+       && grep -qF "${SHA256}" "${STAMP}" 2>/dev/null \
+       && grep -qF "${URL}" "${STAMP}" 2>/dev/null; then
+        log "已有兜底包（${BUILD_ID}, sha256 ${SHA256:0:12}…）：${DEST}"
         echo "${DEST}"
         exit 0
     fi
-    log "${DEST} 已存在但不是 ${BUILD_ID}，重新下载"
+    log "${DEST} 已存在但 stamp 与 cmake/ffmpeg-version.json 不一致（buildId / sha256 / url），重新下载"
 fi
 
 # ---- 4) 下载 + 校验 ----

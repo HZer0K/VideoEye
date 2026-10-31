@@ -34,8 +34,8 @@ set(__VIDEOEYE_RUNTIME_DEPLOY_INCLUDED TRUE)
 
 set(VIDEOEYE_RUNTIME_DEPS_SCAN_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/RuntimeDepsScan.cmake"
     CACHE INTERNAL "运行时依赖闭包扫描脚本")
-set(VIDEOEYE_RUNTIME_COPY_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/RuntimeCopy.cmake"
-    CACHE INTERNAL "已知 DLL 拷贝脚本")
+set(VIDEOEYE_RUNTIME_SYNC_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/RuntimeSync.cmake"
+    CACHE INTERNAL "运行时依赖同步脚本（幂等 + 按需闭包扫描）")
 
 # ------------------------------------------------------------
 # 搜索目录: 项目自带依赖 DLL 的所在位置
@@ -87,14 +87,15 @@ endfunction()
 # ------------------------------------------------------------
 # 组装部署步骤。必须在所有 videoeye_register_runtime_target() 之后调用。
 #
-# 执行顺序:
+# 执行顺序（2、3 两步都在 RuntimeSync.cmake 里，且只有输入真的变了才干活）:
 #   1. 建输出目录
-#   2. 拷贝"已知"的 DLL: FFmpeg 整包 + 各 target 链接到的 Qt / FFmpeg 库
-#      + 登记的额外 DLL (gtest)
-#   3. 对拷过去的 Qt DLL 跑依赖闭包 —— 把 zlib1 / pcre2-16 /
+#   2. 同步"已知"的 DLL: FFmpeg 整包 + 各 target 链接到的 Qt / FFmpeg 库
+#      + 登记的额外 DLL (gtest)。按内容比较，不是"存在就跳过"
+#   3. 对同步过去的 Qt DLL 跑依赖闭包 —— 把 zlib1 / pcre2-16 /
 #      double-conversion 这类"只有读 PE 导入表才知道"的项补齐
-#      (FFmpeg 整包已经拷全了，没必要再扫；省一次全树遍历)
-#   4. 主程序单独跑 windeployqt 补 Qt 插件 (platforms/qwindows.dll 等)
+#      (FFmpeg 整包已经拷全了，没必要再扫；省一次全树遍历)。
+#      这一步递归几百个系统 DLL，单独一次约 37s，所以带 stamp 缓存。
+#   4. 主程序单独跑 windeployqt 补 Qt 插件 (platforms/qwindows.dll 等) —— 在安装期做
 # ------------------------------------------------------------
 function(videoeye_finalize_windows_runtime dest_dir)
     if(NOT WIN32)
@@ -156,19 +157,22 @@ function(videoeye_finalize_windows_runtime dest_dir)
         endif()
     endforeach()
 
+    # 部署本身交给 RuntimeSync.cmake —— 它同时负责"已知 DLL 按内容同步"和
+    # "闭包扫描要不要跑"两件事，判定与代价写在那个文件的文件头里。
+    #
+    # 为什么这里不是带 OUTPUT 的 custom command:
+    #   DEPENDS 里能写 $<TARGET_FILE:Qt6::Core>，但 _known 里的路径是
+    #   $<TARGET_RUNTIME_DLLS> 求值出来的，configure 期拿不到文件名，写不进 OUTPUT。
+    #   与其拼一个"永远不更新"的 stamp，不如让脚本自己按输入签名判定。
     add_custom_target(videoeye-runtime ALL
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${dest_dir}"
         COMMAND ${CMAKE_COMMAND}
                 "-DVE_LIST_FILE=${_known_list_file}"
                 "-DVE_DEST=${dest_dir}"
-                -P "${VIDEOEYE_RUNTIME_COPY_SCRIPT}"
-        COMMAND ${CMAKE_COMMAND}
-                "-DVE_INPUTS=${_qt_scan_inputs}"
-                "-DVE_DEST=${dest_dir}"
+                "-DVE_SCAN_INPUTS=${_qt_scan_inputs}"
                 "-DVE_SEARCH_DIRS=${_search_dirs}"
-                -P "${VIDEOEYE_RUNTIME_DEPS_SCAN_SCRIPT}"
-        COMMAND_EXPAND_LISTS
-        COMMENT "Deploy Windows runtime dependencies -> ${dest_dir}"
+                "-DVE_SCAN_SCRIPT=${VIDEOEYE_RUNTIME_DEPS_SCAN_SCRIPT}"
+                -P "${VIDEOEYE_RUNTIME_SYNC_SCRIPT}"
+        COMMENT "Sync Windows runtime dependencies -> ${dest_dir}"
         VERBATIM
     )
 

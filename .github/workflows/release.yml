@@ -103,8 +103,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: vcpkg_installed
-          key: vcpkg-rel-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'CMakePresets.json', 'scripts/triplets/**', 'scripts/overlay-ports/**') }}
-          restore-keys: vcpkg-rel-${{ runner.os }}-
+          # 与 build.yml 的 build / test job 共用同一个命名空间：发布只需要
+          # 一份同样的 x64-windows-release 依赖，没必要再冷装一遍。
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'CMakePresets.json', 'scripts/triplets/**', 'scripts/overlay-ports/**') }}
+          restore-keys: vcpkg-${{ runner.os }}-
 
       - name: Install vcpkg dependencies
         shell: pwsh
@@ -112,13 +114,18 @@ jobs:
           & scripts/run-vcpkg-install.ps1 -Config release
           exit $LASTEXITCODE
 
+      # ⚠️ 必须走 build.bat，不能直接 `cmake --preset win-release`。
+      # win-release 是 Ninja + MSVC 的 preset，它假定 PATH 里已经有 cl.exe / ninja
+      # （见 CMakePresets.json 的 vendor.note）。这里补两件事：
+      #   1) vswhere + vcvars64 注入 MSVC 环境 —— 前一个 PowerShell 步骤里的环境
+      #      变量不会流到后一个 cmd 步骤，只能在同一个进程里自己调；
+      #   2) 取 cmake/ffmpeg-version.json 锁定的 FFmpeg 预编译包 —— 它不在仓库里，
+      #      而 win-release 的 FFMPEG_ROOT 就指向那个目录。
+      # 少任何一件，干净的 runner 上都是 configure 直接失败。build.yml 的 Windows
+      # 构建早就走这条入口，两个 workflow 必须同一个，否则只有打 tag 时才会炸。
       - name: Configure + Build
         shell: cmd
-        run: |
-          cmake --preset win-release
-          if errorlevel 1 exit /b 1
-          cmake --build --preset win-release
-          if errorlevel 1 exit /b 1
+        run: build.bat release
 
       # 先 install 出一个目录（与 build.yml 同口径），它的产物不进包，只用来确认
       # 安装规则本身没坏 —— 真正发出去的是下面 cpack 产出的包。
@@ -272,22 +279,15 @@ jobs:
 
       # 与 build.yml 同一道门禁：系统 FFmpeg 必须 >= 7.1（libavcodec >= 61.19），
       # Ubuntu 24.04 的 6.1 不够，会自动换成 ffmpeg-version.json 里锁定的兜底包。
+      # 逻辑只有一份实现，见 .github/actions/ensure-ffmpeg。
       - name: Ensure FFmpeg >= 7.1
         id: ffmpeg
-        run: |
-          set -euo pipefail
-          root="$(bash scripts/fetch-ffmpeg.sh)"
-          echo "root=${root}" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/ensure-ffmpeg
 
       - name: Configure + Build
         run: |
           set -euo pipefail
-          root="${{ steps.ffmpeg.outputs.root }}"
-          if [[ -n "${root}" ]]; then
-            cmake --preset linux-release -DFFMPEG_ROOT="${root}"
-          else
-            cmake --preset linux-release
-          fi
+          cmake --preset linux-release ${{ steps.ffmpeg.outputs.cmake_args }}
           cmake --build --preset linux-release
 
       - name: Install (sanity)

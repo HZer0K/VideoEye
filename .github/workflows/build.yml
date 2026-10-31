@@ -163,26 +163,20 @@ jobs:
             libavcodec-dev libavformat-dev libavutil-dev \
             libswscale-dev libswresample-dev
 
+      # 与 test / sanitizer job 共用同一个入口（.github/actions/ensure-ffmpeg），
+      # 别再在这里内联一份「检测 → 兜底 → 拼 -D」的逻辑：三处各写一遍的结果
+      # 就是 test job 漏了这一步。
       - name: Ensure FFmpeg >= 7.1 (Linux)
         if: runner.os == 'Linux'
         id: ffmpeg
-        run: |
-          set -euo pipefail
-          # 系统够新时 stdout 为空（不下载任何东西）；不够时输出兜底包路径。
-          root="$(bash scripts/fetch-ffmpeg.sh)"
-          echo "root=${root}" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/ensure-ffmpeg
 
       - name: Configure (Linux)
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          root="${{ steps.ffmpeg.outputs.root }}"
-          if [[ -n "${root}" ]]; then
-            echo "使用兜底 FFmpeg: ${root}"
-            cmake --preset ${{ matrix.preset }} -DFFMPEG_ROOT="${root}"
-          else
-            cmake --preset ${{ matrix.preset }}
-          fi
+          # 系统够新时 cmake_args 是空串，直接展开即可，不需要分支。
+          cmake --preset ${{ matrix.preset }} ${{ steps.ffmpeg.outputs.cmake_args }}
 
       - name: Build (Linux)
         if: runner.os == 'Linux'
@@ -262,6 +256,13 @@ jobs:
       # key 必须覆盖所有会影响 vcpkg 产物的输入: manifest / baseline / overlay triplet /
       # overlay port，以及决定用哪个 triplet 的 CMakePresets.json。漏掉 overlay port
       # 的话改了自定义 port 也会命中旧缓存。
+      #
+      # 前缀刻意与 test / release 两个 job **共用同一个命名空间**（vcpkg-<os>-）。
+      # 以前三处各用一套前缀（vcpkg- / vcpkg-tests- / vcpkg-rel-），结果是同一份
+      # x64-windows-release 依赖被存了三份、也冷启了三次 —— 缓存命中率被自己砍掉 2/3。
+      # 现在无论哪个 job 先跑完，存下的那份其余 job 都能直接用。
+      # ⚠️ 已知代价: test job 的 vcpkg_installed 里多一个 gtest（VCPKG_MANIFEST_FEATURES=tests），
+      #    build job 恢复它之后 manifest 模式会把它裁掉——多花几秒，比冷装 Qt 便宜得多。
       - name: Cache vcpkg dependencies (Windows)
         if: runner.os == 'Windows'
         uses: actions/cache@v4
@@ -383,9 +384,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: vcpkg_installed
-          key: vcpkg-tests-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'CMakePresets.json', 'scripts/triplets/**', 'scripts/overlay-ports/**') }}
+          # 与 build job 同一命名空间，见那边的说明。
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'CMakePresets.json', 'scripts/triplets/**', 'scripts/overlay-ports/**') }}
           restore-keys: |
-            vcpkg-tests-${{ runner.os }}-
+            vcpkg-${{ runner.os }}-
 
       # Windows 上 gtest 由 preset 的 VCPKG_MANIFEST_FEATURES=tests 带来，
       # 所以这里必须显式带 -Feature tests 装上，否则 configure 才去装、链路绕一圈。
@@ -396,6 +398,16 @@ jobs:
           & scripts/run-vcpkg-install.ps1 -Config release -Feature tests
           exit $LASTEXITCODE
 
+      # ⚠️ 这一步不能漏。以前这里装完系统依赖就直接 configure：Ubuntu 24.04 的系统
+      # FFmpeg 是 6.1，而 cmake/deps/FfmpegApiProbe.cmake 的符号门禁要求 >= 7.1
+      # （libavcodec 61.19），于是「普通构建绿、单测任务配置失败」—— 同一份代码两种结论，
+      # 而且红的那个 job 与 FFmpeg 看起来毫无关系。现在与 build / sanitizer
+      # 共用同一个入口。
+      - name: Ensure FFmpeg >= 7.1 (Linux)
+        if: runner.os == 'Linux'
+        id: ffmpeg
+        uses: ./.github/actions/ensure-ffmpeg
+
       - name: Build + Run tests (Windows)
         if: runner.os == 'Windows'
         shell: cmd
@@ -403,7 +415,7 @@ jobs:
 
       - name: Configure (tests)
         if: runner.os == 'Linux'
-        run: cmake --preset ${{ matrix.preset }}
+        run: cmake --preset ${{ matrix.preset }} ${{ steps.ffmpeg.outputs.cmake_args }}
 
       - name: Build (tests)
         if: runner.os == 'Linux'
@@ -526,17 +538,13 @@ jobs:
             libavcodec-dev libavformat-dev libavutil-dev \
             libswscale-dev libswresample-dev
 
+      # sanitizer 构建也要过同一道 FFmpeg 门禁，否则连编都编不过。
+      - name: Ensure FFmpeg >= 7.1
+        id: ffmpeg
+        uses: ./.github/actions/ensure-ffmpeg
+
       - name: Configure
-        run: |
-          set -euo pipefail
-          # 与 build job 同理：系统 FFmpeg 不够 7.1 就换锁定兜底包。
-          # sanitizer 构建也要过同一道门禁，否则连编都编不过。
-          root="$(bash scripts/fetch-ffmpeg.sh)"
-          if [[ -n "${root}" ]]; then
-            cmake --preset ${{ matrix.preset }} -DFFMPEG_ROOT="${root}"
-          else
-            cmake --preset ${{ matrix.preset }}
-          fi
+        run: cmake --preset ${{ matrix.preset }} ${{ steps.ffmpeg.outputs.cmake_args }}
 
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
@@ -549,5 +557,220 @@ jobs:
       # QArrayData / operator delete / memmove 的范围又太宽，会连我们自己的竞争一起压掉。
       # 真属于 Qt 自身的那两处改成在用例里显式跳过（tests/unit/SanitizerSkip.h），
       # 哪几条、为什么，写在代码里比写在压制文件里可读。
+      # 自检：先确认 log_path 这套机制在 runner 上真的能把报告写成文件。
+      # 这道门禁最危险的失效方式不是误报，而是**静默变绿** —— 报告去不了文件、
+      # 又被 ctest 吞掉，于是一个 UB 都没有。拿一段必然溢出的代码试同一个开关，
+      # 比事后猜"为什么 CI 一直是绿的"便宜得多。
+      - name: Probe UBSan report path
+        if: matrix.sanitizer == 'asan'
+        env:
+          # 写到独立目录，别让探针的报告被正式门禁当成项目命中。
+          UBSAN_OPTIONS: print_stacktrace=1:log_exe_name=1:log_path=${{ github.workspace }}/build/ubsan-probe/ubsan
+        run: |
+          set -euo pipefail
+          rm -rf build/ubsan-probe && mkdir -p build/ubsan-probe
+          cat > /tmp/ub-probe.c <<'EOF'
+          /* argc 让 v + argc 在 -O0 下也逃不过常量折叠 */
+          int main(int argc, char **argv) {
+              int v = 2147483647;
+              int w = v + argc;
+              return w == 0 && argv[0];
+          }
+          EOF
+          gcc -fsanitize=undefined -O0 /tmp/ub-probe.c -o /tmp/ub-probe
+          /tmp/ub-probe || true
+          ls -l build/ubsan-probe
+          if [ -z "$(ls -A build/ubsan-probe)" ]; then
+            echo "::error::UBSan 没有把报告写进 log_path —— 门禁会静默变绿，先修这里"
+            exit 1
+          fi
+          grep -q "signed integer overflow" build/ubsan-probe/ubsan* || {
+            echo "::error::UBSan 报告里没有预期的 signed integer overflow，探针不可靠"
+            exit 1
+          }
+          echo "OK: UBSan 报告可落盘"
+
       - name: Run ctest
-        run: ctest --preset ${{ matrix.preset }} -j 1 --output-on-failure
+        env:
+          # UBSan 报告必须落成文件，原因见下面 gate 步骤。
+          # 值必须在这里给：ctest 是往进程环境里"追加" testPreset 的 environment，
+          # preset 里写的是 log_path=$penv{VE_UBSAN_LOG_DIR}/ubsan（CMakePresets.json），
+          # 不设就会展开成 /ubsan —— 不可写，报告回到 stderr 随风而去。
+          VE_UBSAN_LOG_DIR: ${{ github.workspace }}/build/ubsan
+        run: |
+          set -o pipefail
+          mkdir -p "$VE_UBSAN_LOG_DIR"
+          # 落盘一份明细：下面的 UBSan 判据要靠它 —— ctest 只会因为
+          # "进程非零退出" 变红，而 halt_on_error=0 让 UB 根本不会终止进程。
+          #
+          # ❗ 但**光靠这个日志收不到 UBSan 报告**：ctest 只在测试失败时回显它的
+          # 输出（--output-on-failure 的字面含义）。halt_on_error=0 时 UB 之后进程
+          # 照常返回 0、测试算通过，那段 runtime error 直接被吞掉。实测
+          # --test-output-size-passed=2000000 也救不回来，日志里仍然只有框架行。
+          ctest --preset ${{ matrix.preset }} -j 1 --output-on-failure 2>&1 | tee ctest-sanitizer.log
+
+      # UBSan 的失败判据（只对 asan 那一路，因为 preset 里是 ASan+UBSan 一起开的）。
+      #
+      # 背景：preset 把 halt_on_error 设成 0，因为 Qt 的头文件被 include 进我们的 TU，
+      # 其中的内联代码也带插桩，任何一处有符号溢出都会让 ctest 直接 abort，而我们既
+      # 改不了 Qt、也没法只按"某个头"关掉 UBSan。
+      #
+      # 但那把项目自己的 UB 也一起放过了。这里不调 halt（那会把 Qt 噪声变成红灯），
+      # 而是把**判据按路径收窄**：只认落在本仓库、且不在构建产物 / 第三方目录里的
+      # runtime error。这比"关掉 UBSan"精确，也比"人工看日志"可靠。
+      #
+      # 报告来源两处，缺一不可：
+      #   1. ctest 日志 —— 测试因别的缘故失败时，它的输出会被回显，UB 顺带在里面；
+      #   2. UBSan 自己写的文件（VE_UBSAN_LOG_DIR/ubsan.<exe>.<pid>）—— 测试通过时
+      #      唯一能拿到报告的途径。没这一路，这道门禁就是个永远绿的摆设。
+      #
+      # 顺带一提 if: always() 的用意：ctest 因 ASan/断言的测试失败时，这一步仍然跑，
+      # 一轮就能看到"哪些测试炸了 + 哪些地方有 UB"，不用改一遍推一遍。
+      - name: UBSan gate (project sources only)
+        if: always() && matrix.sanitizer == 'asan'
+        env:
+          VE_UBSAN_LOG_DIR: ${{ github.workspace }}/build/ubsan
+          WORKSPACE: ${{ github.workspace }}
+          # 首轮摸底：把仓库变量 UBSAN_GATE_MODE 设成 warn —— 照样在 step summary
+          # 和文件注释里列出全部命中，但不判红；存量修完后删掉该变量（或设回
+          # strict）即收紧。未设置时默认 strict。
+          GATE_MODE: ${{ vars.UBSAN_GATE_MODE || 'strict' }}
+        run: |
+          python3 - <<'PY'
+          import collections, glob, os, re, sys
+
+          ws = os.environ.get("WORKSPACE", "")
+          mode = (os.environ.get("GATE_MODE") or "strict").strip().lower()
+          strict = mode != "warn"
+
+          # 构建产物 / 第三方：路径里即便出现 core/ 也不算我们的源码。
+          exclude = ("build/", "third_party/", "vcpkg_installed/", "out/", ".git/")
+          # 相对路径的 __FILE__ 只能靠顶层目录名认（见下面 project_relative）。
+          source_tops = ("core/", "ui/", "infrastructure/", "tests/", "scripts/", "cmake/")
+
+          def project_relative(path):
+              """本仓库内的相对路径；不属于本仓库（Qt/系统头/构建目录）返回 None。"""
+              p = path.strip().replace("\\", "/").strip('"')
+              if not p:
+                  return None
+              absolute = p.startswith("/") or re.match(r"^[A-Za-z]:/", p)
+              if absolute:
+                  if not ws:
+                      return None
+                  try:
+                      rp = os.path.relpath(os.path.normpath(p), os.path.normpath(ws))
+                  except ValueError:
+                      return None
+                  rp = rp.replace("\\", "/")
+                  if rp == ".." or rp.startswith("../"):
+                      return None
+              else:
+                  rp = os.path.normpath(p).replace("\\", "/")
+                  if rp == ".." or rp.startswith("../"):
+                      # 构建目录落在源码树里时，__FILE__ 会是 ../core/xxx.cpp。
+                      # 剥掉前导 .. 后若落在源码顶层目录就算本仓库的，否则（../usr/...、
+                      # ../vcpkg_installed/...）照旧丢弃。不剥这一层会把它们全漏掉。
+                      stripped = rp
+                      while stripped.startswith("../"):
+                          stripped = stripped[3:]
+                      if not stripped.startswith(source_tops):
+                          return None
+                      rp = stripped
+              if any(rp.startswith(t) for t in exclude):
+                  return None
+              return rp
+
+          # 位置形如 dir/file.cpp:42:13 ，但 Qt 内部的行未必带行列号，
+          # 所以下面用"含 runtime error: 即计入"的兜底，避免格式一变就静默漏报。
+          located = re.compile(
+              r"^(?P<path>.+?):(?P<line>\d+):(?P<col>\d+):\s*runtime error:\s*(?P<msg>.+)$")
+
+          sources = []
+          if os.path.isfile("ctest-sanitizer.log"):
+              sources.append("ctest-sanitizer.log")
+          ub_dir = os.environ.get("VE_UBSAN_LOG_DIR", "")
+          # 目录必须由上面那步 mkdir 出来。不存在 = 变量没传进步骤，
+          # 报告只会回到 stderr、又被 ctest 吞掉 —— 门禁静默变绿。宁可红。
+          if not ub_dir or not os.path.isdir(ub_dir):
+              print("::error::VE_UBSAN_LOG_DIR 未设置或目录不存在（%r）："
+                    "UBSan 报告无处可落，这道门禁会静默变绿" % ub_dir)
+              sys.exit(1)
+          sources += sorted(p for p in glob.glob(os.path.join(ub_dir, "ubsan*"))
+                            if os.path.isfile(p))
+
+          total = 0
+          hits = []      # (相对路径, 行号, 信息原文)
+          unknown = []   # 有 runtime error 但没能定位到位置的原文
+          for src in sources:
+              with open(src, "r", errors="replace") as fh:
+                  for raw in fh:
+                      if "runtime error:" not in raw:
+                          continue
+                      total += 1
+                      line = raw.strip()
+                      m = located.match(line)
+                      rel = project_relative(m.group("path")) if m else None
+                      if rel:
+                          hits.append((rel, int(m.group("line")), m.group("msg").strip()))
+                      elif not m:
+                          unknown.append(line)
+
+          grouped = collections.OrderedDict()
+          for rel, ln, msg in hits:
+              key = (rel, ln, msg[:100])
+              grouped[key] = grouped.get(key, 0) + 1
+
+          # 人看的部分：按位置排序，同位置只出现一次并带出现次数。
+          rows = sorted(grouped.items(), key=lambda kv: (kv[0][0], kv[0][1]))
+          summary = ["## UBSan（本仓库源码）", ""]
+          summary.append("扫描来源：%s" % (", ".join(sources) if sources else "（无）"))
+          summary.append("")
+          summary.append("runtime error 共 %d 条，落在本仓库源码 %d 条，去重后 %d 处。"
+                         % (total, len(hits), len(rows)))
+          summary.append("")
+          if rows:
+              summary.append("| 位置 | 次数 | 类型 |")
+              summary.append("| --- | --- | --- |")
+              for (rel, ln, msg), n in rows[:60]:
+                  cell = msg.replace("|", "\\|")[:120]
+                  summary.append("| `%s:%d` | %d | %s |" % (rel, ln, n, cell))
+              if len(rows) > 60:
+                  summary.append("")
+                  summary.append("（另有 %d 处未列出，见 job 日志）" % (len(rows) - 60))
+          if unknown:
+              summary.append("")
+              summary.append("另有 %d 条 runtime error 没能解析出位置，需人工确认"
+                             "（可能是第三方代码）：" % len(unknown))
+              for line in unknown[:10]:
+                  summary.append("")
+                  summary.append("    " + line[:200])
+          text = "\n".join(summary)
+          print(text)
+
+          out = os.environ.get("GITHUB_STEP_SUMMARY")
+          if out:
+              try:
+                  with open(out, "a") as fh:
+                      fh.write(text + "\n")
+              except OSError:
+                  pass
+
+          severity = "error" if strict else "warning"
+          for (rel, ln, msg), _n in rows[:20]:
+              note = msg.replace("%", "%25").replace("\r", "").replace("\n", " ")[:180]
+              print("::%s file=%s,line=%d,title=UBSan::%s" % (severity, rel, ln, note))
+
+          if unknown:
+              print("::warning::有 %d 条 runtime error 无法定位来源，请翻上面的日志确认"
+                    % len(unknown))
+
+          if rows and strict:
+              print("::error::本仓库源码存在未定义行为（halt_on_error=0，所以 ctest 不会红）；"
+                    "修完再合，或把仓库变量 UBSAN_GATE_MODE 设成 warn 先摸底")
+              sys.exit(1)
+          if rows:
+              print("UBSan: %d 处命中，但 GATE_MODE=warn，本轮不判红。" % len(rows))
+          else:
+              print("UBSan: 本仓库源码无 runtime error")
+          PY
+

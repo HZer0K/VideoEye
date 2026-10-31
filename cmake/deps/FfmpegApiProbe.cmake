@@ -19,6 +19,12 @@
 #   原因: 探测阶段还没建 FFmpeg:: 的 imported target, 而且探测的是宏与函数声明,
 #   不需要解析符号 —— 强行链接只会让结果取决于"这台机器能不能链到 FFmpeg",
 #   而那不是我们要问的问题。
+#
+# 结果缓存:
+#   三条探测的结论按「编译器 + include 目录 + 被探测头文件内容」的指纹缓存在
+#   CMakeCache 里。输入没变就整段跳过 —— build.bat / build.sh 每次都会 configure,
+#   不缓存的话这几秒是每敲一次构建就重复付一次。指纹变了(换包/换编译器/改头文件)
+#   会自动重新探测, 不存在"缓存住旧结论"的问题。
 # ============================================================
 
 include_guard(GLOBAL)
@@ -213,24 +219,76 @@ extern \"C\" {
 int main() { const enum AVCodecID id = AV_CODEC_ID_VVC; return id == AV_CODEC_ID_NONE ? 1 : 0; }
 ")
 
+    # ---- 探测结果缓存 ----
+    # 三条探测各自要跑一次 try_compile（MSVC 上合计 ~2~4s），而 build.bat / build.sh
+    # 每次都会 configure —— 也就是说每敲一次构建，这几秒是重复付的，输入根本没变。
+    #
+    # 指纹覆盖"会让结论变"的全部输入:
+    #   · 编译器（换 cl / gcc / clang 或升级 → 探测行为可能不同）
+    #   · FFMPEG_INCLUDE_DIRS
+    #   · 被探测头文件的**内容**（换 FFmpeg 包、换个发行版，路径可能一模一样）
+    # 只按路径或只按版本号都不够 —— 同一路径下换了一份包正是这个门禁要防的场景。
+    set(_fp "")
+    string(APPEND _fp "${CMAKE_CXX_COMPILER_ID}|${CMAKE_CXX_COMPILER_VERSION}|${CMAKE_CXX_COMPILER}|")
+    string(APPEND _fp "${FFMPEG_INCLUDE_DIRS}|")
+    foreach(_hdr IN ITEMS
+            libavutil/frame.h
+            libavcodec/avcodec.h
+            libavcodec/packet.h
+            libavcodec/codec_id.h
+            libavcodec/version.h
+            libavcodec/version_major.h)
+        set(_hit "")
+        foreach(_dir IN LISTS FFMPEG_INCLUDE_DIRS)
+            if(EXISTS "${_dir}/${_hdr}")
+                set(_hit "${_dir}/${_hdr}")
+                break()
+            endif()
+        endforeach()
+        if(_hit)
+            file(SHA256 "${_hit}" _hdr_sha)
+            string(APPEND _fp "${_hdr}=${_hdr_sha};")
+        else()
+            string(APPEND _fp "${_hdr}=missing;")
+        endif()
+    endforeach()
+    string(SHA256 _fingerprint "${_fp}")
+
+    set(_have_key "")
+    set(_have_sd "")
+    set(_have_vvc "")
+    set(_reused FALSE)
+    if("${VIDEOEYE_FFMPEG_API_FINGERPRINT}" STREQUAL "${_fingerprint}"
+       AND DEFINED VE_FFMPEG_HAVE_FRAME_FLAG_KEY
+       AND DEFINED VE_FFMPEG_HAVE_PACKET_SIDE_DATA_GET
+       AND DEFINED VE_FFMPEG_HAVE_CODEC_ID_VVC)
+        set(_have_key "${VE_FFMPEG_HAVE_FRAME_FLAG_KEY}")
+        set(_have_sd "${VE_FFMPEG_HAVE_PACKET_SIDE_DATA_GET}")
+        set(_have_vvc "${VE_FFMPEG_HAVE_CODEC_ID_VVC}")
+        set(_reused TRUE)
+    else()
+        _ve_ffmpeg_try_compile("${_snippet_key}" VE_FFMPEG_HAVE_FRAME_FLAG_KEY _have_key)
+        _ve_ffmpeg_try_compile("${_snippet_side_data}" VE_FFMPEG_HAVE_PACKET_SIDE_DATA_GET _have_sd)
+        _ve_ffmpeg_try_compile("${_snippet_vvc}" VE_FFMPEG_HAVE_CODEC_ID_VVC _have_vvc)
+        set(VIDEOEYE_FFMPEG_API_FINGERPRINT "${_fingerprint}"
+            CACHE INTERNAL "FFmpeg API 探测的输入指纹（编译器 + include 目录 + 头文件内容）")
+    endif()
+
     set(_missing "")
     set(_missing_hints "")
 
-    _ve_ffmpeg_try_compile("${_snippet_key}" VE_FFMPEG_HAVE_FRAME_FLAG_KEY _have_key)
     if(NOT _have_key)
         list(APPEND _missing "AV_FRAME_FLAG_KEY")
         list(APPEND _missing_hints
              "AV_FRAME_FLAG_KEY  —— 关键帧标记位（libavutil 59.39 / FFmpeg 7.1 起）")
     endif()
 
-    _ve_ffmpeg_try_compile("${_snippet_side_data}" VE_FFMPEG_HAVE_PACKET_SIDE_DATA_GET _have_sd)
     if(NOT _have_sd)
         list(APPEND _missing "av_packet_side_data_get")
         list(APPEND _missing_hints
              "av_packet_side_data_get()  —— packet side data 查询（libavcodec 61 / FFmpeg 7.0 起）")
     endif()
 
-    _ve_ffmpeg_try_compile("${_snippet_vvc}" VE_FFMPEG_HAVE_CODEC_ID_VVC _have_vvc)
     if(NOT _have_vvc)
         list(APPEND _missing "AV_CODEC_ID_VVC")
         list(APPEND _missing_hints
@@ -277,6 +335,12 @@ int main() { const enum AVCodecID id = AV_CODEC_ID_VVC; return id == AV_CODEC_ID
     if(FFMPEG_LIBAVCODEC_VERSION MATCHES "^([0-9]+)\\.")
         videoeye_ffmpeg_series_from_major("${CMAKE_MATCH_1}" _series)
     endif()
-    message(STATUS
-        "FFmpeg API 门禁: 通过（${_series}, libavcodec ${FFMPEG_LIBAVCODEC_VERSION}, 来源 ${FFMPEG_SOURCE}）")
+    if(_reused)
+        message(STATUS
+            "FFmpeg API 门禁: 通过（${_series}, libavcodec ${FFMPEG_LIBAVCODEC_VERSION}, "
+            "来源 ${FFMPEG_SOURCE}, 复用上次探测 ${_fingerprint}）")
+    else()
+        message(STATUS
+            "FFmpeg API 门禁: 通过（${_series}, libavcodec ${FFMPEG_LIBAVCODEC_VERSION}, 来源 ${FFMPEG_SOURCE}）")
+    endif()
 endfunction()

@@ -3,6 +3,11 @@
 # 用法:
 #   powershell -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1
 #   powershell -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1 -DestDir <path>
+#   powershell -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1 -Force          # 强制重下
+#   powershell -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1 -SkipChecksum   # 仅在人工核对过着镜像时用
+#
+# 幂等: 每次都调用它是安全的 —— 目录已存在且与 cmake/ffmpeg-version.json 完全对得上时,
+#       只做几次文件检查就退出（不联网、不写盘）。
 #
 # 行为约定:
 #   * 版本/URL/SHA256 的唯一来源是 cmake/ffmpeg-version.json —— 所有入口必须一致,
@@ -32,7 +37,14 @@ param(
     [string]$DestDir = "",
     # 保留 ffmpeg.exe（默认删除，见文件头的许可证说明）。
     # 打包者确定要随包分发 ffmpeg CLI、或本机想直接调试「FFmpeg 命令工作台」时打开。
-    [switch]$KeepFfmpegExe
+    [switch]$KeepFfmpegExe,
+    # 忽略已有目录里的 stamp，重新下载并安装。
+    # ⚠️ 下面「已存在则跳过」的判断与完成时写 stamp 的两处都引用了它，但以前没有在
+    # param 里声明 —— 于是脚本自己打印的「用 -Force 强制重下」照着敲会直接报
+    # "找不到与参数名称 Force 匹配的参数"，那条提示等于骗人。
+    [switch]$Force,
+    # 跳过 SHA256 校验。只给「人工核对过镜像」的场景用，正常构建不要碰。
+    [switch]$SkipChecksum
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,7 +59,7 @@ if (-not (Test-Path $versionFile)) {
     Write-Error "缺少版本配置文件: $versionFile（本脚本不允许再使用 latest 滚动版本）"
     exit 1
 }
-$cfg = Get-Content $versionFile -Raw | ConvertFrom-Json
+$cfg = Get-Content $versionFile -Raw -Encoding UTF8 | ConvertFrom-Json
 $lockedVersion = $cfg.version
 if ([string]::IsNullOrWhiteSpace($lockedVersion)) {
     Write-Error "$versionFile 里没有 version 字段"
@@ -85,19 +97,55 @@ Write-Host "版本:   $Version"
 Write-Host "地址:   $url"
 Write-Host "目标:   $DestDir"
 
-# ── 已存在则跳过（以 stamp 为准, 与具体 DLL 文件名解耦）──
-$stampFile = Join-Path $DestDir ".videoeye-ffmpeg.json"
-if ((Test-Path $DestDir) -and (Test-Path $stampFile) -and -not $Force) {
-    $stamp = Get-Content $stampFile -Raw | ConvertFrom-Json
-    if ($stamp.Variant -eq $variant) {
-        Write-Host "已存在且版本一致 (variant=$variant, 获取于 $($stamp.FetchedAt))，跳过下载。用 -Force 强制重下。"
-        exit 0
-    } else {
-        Write-Host "检测到版本变更 ($($stamp.Variant) -> $variant)，重新获取..."
-    }
-} elseif ((Test-Path $DestDir) -and -not $Force) {
-    Write-Host "检测到旧版 FFmpeg（无版本 stamp），重新获取以保证版本可追踪..."
+# BtbN / gyan 的包解压后顶层都是一个 ffmpeg-<build>-<variant> 目录，这里不认名字，
+# 只认结构 —— 换供应商时不用改这段。
+#
+# ⚠️ 定义必须放在下面「已存在则跳过」判断之前：PowerShell 的函数要等定义那一行执行过
+# 才存在，写在文件后半段的话，前面的调用会直接报 "无法识别 Test-FfmpegLayout"。
+function Test-FfmpegLayout([string]$dir) {
+    return (Test-Path (Join-Path $dir "include\libavcodec\avcodec.h")) -and
+           (Test-Path (Join-Path $dir "lib\avcodec.lib")) -and
+           ((Get-ChildItem (Join-Path $dir "bin") -Filter "avcodec-*.dll" -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0)
 }
+
+# ── 已存在则跳过？三个判据缺一不可 ──
+#   1) stamp.Variant 与锁定配置一致（版本号 + 变体）
+#   2) stamp.Sha256 与 cmake/ffmpeg-version.json 的 windows.sha256 一致
+#   3) stamp.Source 与 windows.url 一致，且目录结构仍然完整
+#
+# 只比 Variant 是不够的（原来的实现）: 同一个版本号可以对应不同的归档 ——
+# BtbN 的 autobuild 每天重打一次，"版本号不变、url 与 sha256 变了"是常态。
+# 此时旧包会被**无提示地继续使用**，本机编出来的 ABI 与 CI / 别人机器不一致，
+# 而本机看起来一切正常，症状只以"某台机器上莫名崩溃"的形式出现。
+$stampFile = Join-Path $DestDir ".videoeye-ffmpeg.json"
+$skipReason = ""
+if ($Force) {
+    Write-Host "-Force: 忽略已有目录，强制重新获取"
+} elseif (-not (Test-Path $DestDir)) {
+    $skipReason = "目标目录不存在"
+} elseif (-not (Test-Path $stampFile)) {
+    $skipReason = "缺少版本 stamp（无法确认这份就是锁定包）"
+} else {
+    $stamp = $null
+    try { $stamp = Get-Content $stampFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $stamp = $null }
+    if (-not $stamp) {
+        $skipReason = "stamp 无法解析"
+    } elseif ("$($stamp.Variant)" -ne $variant) {
+        $skipReason = "variant 变更（$($stamp.Variant) -> $variant）"
+    } elseif ("$($stamp.Sha256)".ToLower() -ne $expectedSha.ToLower()) {
+        $skipReason = "归档 SHA256 变更（$($stamp.Sha256) -> $($expectedSha.ToLower())）"
+    } elseif ("$($stamp.Source)" -ne $url) {
+        $skipReason = "下载地址变更"
+    } elseif (-not (Test-FfmpegLayout $DestDir)) {
+        $skipReason = "目录结构不完整（include/ lib/ bin/ 有缺件）"
+    }
+}
+
+if (-not $skipReason) {
+    Write-Host "已存在且与锁定配置一致 (variant=$variant, sha256=$($expectedSha.ToLower().Substring(0,12))…, 获取于 $($stamp.FetchedAt))，跳过下载。用 -Force 强制重下。"
+    exit 0
+}
+Write-Host "已有目录不可复用：$skipReason —— 重新获取…"
 
 # ── 下载 ──
 Write-Host ""
@@ -192,14 +240,6 @@ if (-not $tarOk) {
         Write-Error "解压失败 (exit $LASTEXITCODE)"
         exit $LASTEXITCODE
     }
-}
-
-# BtbN / gyan 的包解压后顶层都是一个 ffmpeg-<build>-<variant> 目录，这里不认名字，
-# 只认结构 —— 换供应商时不用改这段。
-function Test-FfmpegLayout([string]$dir) {
-    return (Test-Path (Join-Path $dir "include\libavcodec\avcodec.h")) -and
-           (Test-Path (Join-Path $dir "lib\avcodec.lib")) -and
-           ((Get-ChildItem (Join-Path $dir "bin") -Filter "avcodec-*.dll" -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0)
 }
 
 $payload = $null
