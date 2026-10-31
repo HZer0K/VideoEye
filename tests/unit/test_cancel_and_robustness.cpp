@@ -27,6 +27,8 @@
 #include <QObject>
 #include <QThread>
 
+#include "SanitizerSkip.h"
+
 #include "core/analysis/codec/VvcBitstreamParser.h"
 #include "core/media/codec/BitReader.h"
 #include "core/media/container/IsobmffParser.h"
@@ -374,6 +376,16 @@ TEST(QtWorkerOwner, BodyExceptionStillQuitsThreadAndReportsError) {
 // ---------------------------------------------------------------------------
 
 TEST(QtWorkerOwner, ThrowingErrorCallbackStillEndsTaskAsFailed) {
+    // TSan 下这条会把整个二进制带走, 而且**不是**业务缺陷:
+    //   ThreadSanitizer: CHECK failed: sanitizer_thread_registry.cpp:186
+    //   "((live_.try_emplace(user_id, tid).second)) != (0)"
+    // 报头栈是 QThread::start -> pthread_create -> __tsan::ThreadCreate。TSan 的线程注册表
+    // 拿 pthread 参数地址当 user_id, 而本二进制前面那条孤儿线程用例故意留下了一个还在跑的
+    // 线程、它引用的对象已经析构 —— 后面的 QThread 复用同一块地址就被判成"重复 id",
+    // libtsan 直接 CHECK 失败 abort(实测两次 CI 都在同一行, 与本用例断言无关)。
+    // 它是本二进制里的**最后一条**用例, 跳过它不会连累别的用例; asan / 普通 Debug 构建
+    // 仍会完整跑这条, 所以这条链路(异常 -> on_error -> 任务落 Failed)并没有失守。
+    SKIP_UNDER_TSAN("libtsan 线程注册表把复用的 pthread 参数地址当成重复 id, CHECK 失败直接 abort");
     using videoeye::qt::QtWorkerOwner;
     using videoeye::task::CancelToken;
     using videoeye::task::TaskId;

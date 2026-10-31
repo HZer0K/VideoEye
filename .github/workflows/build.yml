@@ -68,6 +68,11 @@ jobs:
       - name: Self-check test summary generation
         run: python3 scripts/test_summarize_tests.py
 
+      # sanitizer 门禁自己的判别力: 顺手在这里跑, 因为它在 runner 上不需要编译器、
+      # 只用造出来的报告样本, 几秒钟; 而它失效的方式是"静默变绿", 靠人看日志发现不了。
+      - name: Self-check sanitizer gate
+        run: python3 scripts/test_sanitizer_gate.py
+
   # 格式门禁: .clang-format 一直在仓库里, 但此前没有任何机器执行过它 —— pre-commit
   # 钩子的第 4 道门在没装 clang-format 的机器上只 warning 跳过, CI 里则完全没有
   # 这一环, 等于「配置存在, 无人执行」。这里补上 CI 兜底。
@@ -502,8 +507,12 @@ jobs:
   # （加探针症状就消失），只有 sanitizer 能给出确定性结论。TSan 那一路盯的是
   # TaskManager / 取消令牌 / 面板关停这几处"两颗原子标志 + 一把锁"的并发协议。
   #
-  # 已知噪声：TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红了先看
-  # 报头是不是我们自己那几个 .cpp；必要时在 TSAN_OPTIONS 里加 suppression 文件。
+  # 已知噪声：TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库）—— 实测一轮
+  # 68 条报告全部落在 libQt6Core / libQt6Gui 内部。处理办法**不是** suppression 文件
+  # （TSan 的 race: 按函数名精确匹配，压 Qt 的符号压不住，压 QArrayData 又太宽），
+  # 而是让 preset 用 exitcode=0 不判红 + 一道按"访问点落在谁的源码里"收窄的 gate
+  # （见本文件末尾的 TSan gate 和 scripts/sanitizer_gate.py）。真属于我们自己的竞争
+  # 照样会红，而且红在准确的那一行上。
   #
   # ❗ 为什么这里**不**加 `-fno-sanitize-recover=undefined`（而 fuzz 树加了）：
   #   UBSan 只插桩"我们自己编译的 TU"，但 Qt 的头文件是被 include 进这些 TU 里的
@@ -552,15 +561,13 @@ jobs:
       # 不 --stop-on-failure: sanitizer 场景下想一次看到所有问题（ASan 报完进程就死，
       # 逐个跑能省很多轮）。Linux 上 ctest 默认并行跑，这里关掉以免互相抢 CPU 拖时间。
       #
-      # 为什么没有 TSAN_OPTIONS=suppressions=...: 试过，压不住。TSan 的 race: 按函数名
-      # 精确匹配，Qt 的 C++ 符号（QWaitCondition::~QWaitCondition 这类）对不上；而能压住
-      # QArrayData / operator delete / memmove 的范围又太宽，会连我们自己的竞争一起压掉。
-      # 真属于 Qt 自身的那两处改成在用例里显式跳过（tests/unit/SanitizerSkip.h），
-      # 哪几条、为什么，写在代码里比写在压制文件里可读。
-      # 自检：先确认 log_path 这套机制在 runner 上真的能把报告写成文件。
-      # 这道门禁最危险的失效方式不是误报，而是**静默变绿** —— 报告去不了文件、
-      # 又被 ctest 吞掉，于是一个 UB 都没有。拿一段必然溢出的代码试同一个开关，
-      # 比事后猜"为什么 CI 一直是绿的"便宜得多。
+      # 两个分支的判据都**不在进程退出码上**, 而在下面的 gate 步骤里按路径收窄
+      # (理由写在 scripts/sanitizer_gate.py 的模块说明)。这里只负责把报告喂到该去的地方:
+      #   UBSan: halt_on_error=0 —— UB 不会终止进程, --output-on-failure 收不到任何东西
+      #   TSan : exitcode=0      —— Qt 内部那几十条竞态不再让进程以 66 退出
+      # 两者都依赖 sanitizer 自己把报告写进文件(log_path)。而"文件到底写没写出来"这件事
+      # 必须自证: 这道门禁最危险的失效方式不是误报, 而是**静默变绿** —— 报告去不了文件、
+      # 又被 ctest 吞掉, 于是一个问题都没被看见。所以下面各有一段探针。
       - name: Probe UBSan report path
         if: matrix.sanitizer == 'asan'
         env:
@@ -590,187 +597,125 @@ jobs:
           }
           echo "OK: UBSan 报告可落盘"
 
+      # TSan 的探针要一次证两件事, 缺一件整道门禁就白设:
+      #   1. 报告能落盘 —— 测试通过时 ctest 不回显输出, 文件是唯一来源;
+      #   2. exitcode=0 真的生效 —— 不生效的话 Qt 内部那些竞态继续让进程以 66 退出,
+      #      整条 job 还是红的, "不是我们的竞争就不判红"就只是句空话。
+      - name: Probe TSan report path and exit code
+        if: matrix.sanitizer == 'tsan'
+        env:
+          TSAN_OPTIONS: print_stacktrace=1:halt_on_error=0:exitcode=0:log_exe_name=1:log_path=${{ github.workspace }}/build/tsan-probe/tsan
+        run: |
+          set -euo pipefail
+          rm -rf build/tsan-probe && mkdir -p build/tsan-probe
+          cat > /tmp/race-probe.c <<'EOF'
+          #include <pthread.h>
+          static int shared_counter;
+          static void *worker(void *arg) { shared_counter += 1; return arg; }
+          int main(void) {
+              pthread_t t;
+              pthread_create(&t, 0, worker, 0);
+              shared_counter += 1;
+              pthread_join(t, 0);
+              return 0;
+          }
+          EOF
+          gcc -fsanitize=thread -g /tmp/race-probe.c -o /tmp/race-probe -lpthread
+          set +e
+          /tmp/race-probe
+          code=$?
+          set -e
+          ls -l build/tsan-probe
+          if [ -z "$(ls -A build/tsan-probe)" ]; then
+            echo "::error::TSan 没有把报告写进 log_path —— 门禁会静默变绿，先修这里"
+            exit 1
+          fi
+          grep -q "data race" build/tsan-probe/tsan* || {
+            echo "::error::TSan 报告里没有预期的 data race，探针不可靠"
+            exit 1
+          }
+          if [ "$code" -ne 0 ]; then
+            echo "::error::exitcode=0 没生效（进程仍以 $code 退出）：Qt 噪声会让 ctest 继续全红"
+            exit 1
+          fi
+          echo "OK: TSan 报告可落盘，且 exitcode=0 生效"
+
       - name: Run ctest
         env:
-          # UBSan 报告必须落成文件，原因见下面 gate 步骤。
+          # 报告必须落成文件，原因见下面两个 gate 步骤。
           # 值必须在这里给：ctest 是往进程环境里"追加" testPreset 的 environment，
           # preset 里写的是 log_path=$penv{VE_UBSAN_LOG_DIR}/ubsan（CMakePresets.json），
           # 不设就会展开成 /ubsan —— 不可写，报告回到 stderr 随风而去。
           VE_UBSAN_LOG_DIR: ${{ github.workspace }}/build/ubsan
+          VE_TSAN_LOG_DIR: ${{ github.workspace }}/build/tsan
         run: |
           set -o pipefail
-          mkdir -p "$VE_UBSAN_LOG_DIR"
-          # 落盘一份明细：下面的 UBSan 判据要靠它 —— ctest 只会因为
-          # "进程非零退出" 变红，而 halt_on_error=0 让 UB 根本不会终止进程。
+          mkdir -p "$VE_UBSAN_LOG_DIR" "$VE_TSAN_LOG_DIR"
+          # 落盘一份明细供 gate 参考 —— ctest 只会因为"进程非零退出"变红,
+          # 而 halt_on_error=0 / exitcode=0 让 sanitizer 命中根本不终止进程。
           #
-          # ❗ 但**光靠这个日志收不到 UBSan 报告**：ctest 只在测试失败时回显它的
-          # 输出（--output-on-failure 的字面含义）。halt_on_error=0 时 UB 之后进程
-          # 照常返回 0、测试算通过，那段 runtime error 直接被吞掉。实测
-          # --test-output-size-passed=2000000 也救不回来，日志里仍然只有框架行。
+          # ❗ 但**光靠这个日志收不到报告**：ctest 只在测试失败时回显它的输出
+          # （--output-on-failure 的字面含义）。命中之后进程照常返回 0、测试算通过,
+          # 那段 runtime error / data race 直接被吞掉。实测 --test-output-size-passed
+          # 也救不回来, 日志里仍然只有框架行。所以判据主要靠 sanitizer 自己写的文件。
           ctest --preset ${{ matrix.preset }} -j 1 --output-on-failure 2>&1 | tee ctest-sanitizer.log
 
-      # UBSan 的失败判据（只对 asan 那一路，因为 preset 里是 ASan+UBSan 一起开的）。
+      # UBSan 判据（只对 asan 那一路，因为 preset 里是 ASan+UBSan 一起开的）。
       #
-      # 背景：preset 把 halt_on_error 设成 0，因为 Qt 的头文件被 include 进我们的 TU，
-      # 其中的内联代码也带插桩，任何一处有符号溢出都会让 ctest 直接 abort，而我们既
-      # 改不了 Qt、也没法只按"某个头"关掉 UBSan。
+      # preset 把 halt_on_error 设成 0，因为 Qt 的头文件被 include 进我们的 TU，其中的
+      # 内联代码也带插桩，任何一处有符号溢出都会让 ctest 直接 abort，而我们既改不了 Qt、
+      # 也没法只按"某个头"关掉 UBSan。代价是项目自己的 UB 也一起放过了。
+      # 这里不调 halt（那会把 Qt 噪声变成红灯），而是把**判据按路径收窄**：只认落在本仓库、
+      # 且不在构建产物 / 第三方目录里的 runtime error。这比"关掉 UBSan"精确，也比
+      # "人工看日志"可靠。报告来源两处，缺一不可：ctest 日志（测试因别的缘故失败时顺带
+      # 回显）+ UBSan 自己写的文件（测试通过时唯一的途径）。
       #
-      # 但那把项目自己的 UB 也一起放过了。这里不调 halt（那会把 Qt 噪声变成红灯），
-      # 而是把**判据按路径收窄**：只认落在本仓库、且不在构建产物 / 第三方目录里的
-      # runtime error。这比"关掉 UBSan"精确，也比"人工看日志"可靠。
-      #
-      # 报告来源两处，缺一不可：
-      #   1. ctest 日志 —— 测试因别的缘故失败时，它的输出会被回显，UB 顺带在里面；
-      #   2. UBSan 自己写的文件（VE_UBSAN_LOG_DIR/ubsan.<exe>.<pid>）—— 测试通过时
-      #      唯一能拿到报告的途径。没这一路，这道门禁就是个永远绿的摆设。
-      #
-      # 顺带一提 if: always() 的用意：ctest 因 ASan/断言的测试失败时，这一步仍然跑，
-      # 一轮就能看到"哪些测试炸了 + 哪些地方有 UB"，不用改一遍推一遍。
+      # if: always() 的用意：ctest 因 ASan/断言的测试失败时，这一步仍然跑，一轮就能看到
+      # "哪些测试炸了 + 哪些地方有 UB"，不用改一遍推一遍。
       - name: UBSan gate (project sources only)
         if: always() && matrix.sanitizer == 'asan'
         env:
           VE_UBSAN_LOG_DIR: ${{ github.workspace }}/build/ubsan
           WORKSPACE: ${{ github.workspace }}
           # 首轮摸底：把仓库变量 UBSAN_GATE_MODE 设成 warn —— 照样在 step summary
-          # 和文件注释里列出全部命中，但不判红；存量修完后删掉该变量（或设回
+          # 和注释里列出全部命中，但不判红；存量修完后删掉该变量（或设回
           # strict）即收紧。未设置时默认 strict。
           GATE_MODE: ${{ vars.UBSAN_GATE_MODE || 'strict' }}
         run: |
-          python3 - <<'PY'
-          import collections, glob, os, re, sys
+          python3 scripts/sanitizer_gate.py --kind ubsan \
+            --log-dir "$VE_UBSAN_LOG_DIR" \
+            --ctest-log ctest-sanitizer.log \
+            --workspace "$WORKSPACE" \
+            --mode "$GATE_MODE"
 
-          ws = os.environ.get("WORKSPACE", "")
-          mode = (os.environ.get("GATE_MODE") or "strict").strip().lower()
-          strict = mode != "warn"
-
-          # 构建产物 / 第三方：路径里即便出现 core/ 也不算我们的源码。
-          exclude = ("build/", "third_party/", "vcpkg_installed/", "out/", ".git/")
-          # 相对路径的 __FILE__ 只能靠顶层目录名认（见下面 project_relative）。
-          source_tops = ("core/", "ui/", "infrastructure/", "tests/", "scripts/", "cmake/")
-
-          def project_relative(path):
-              """本仓库内的相对路径；不属于本仓库（Qt/系统头/构建目录）返回 None。"""
-              p = path.strip().replace("\\", "/").strip('"')
-              if not p:
-                  return None
-              absolute = p.startswith("/") or re.match(r"^[A-Za-z]:/", p)
-              if absolute:
-                  if not ws:
-                      return None
-                  try:
-                      rp = os.path.relpath(os.path.normpath(p), os.path.normpath(ws))
-                  except ValueError:
-                      return None
-                  rp = rp.replace("\\", "/")
-                  if rp == ".." or rp.startswith("../"):
-                      return None
-              else:
-                  rp = os.path.normpath(p).replace("\\", "/")
-                  if rp == ".." or rp.startswith("../"):
-                      # 构建目录落在源码树里时，__FILE__ 会是 ../core/xxx.cpp。
-                      # 剥掉前导 .. 后若落在源码顶层目录就算本仓库的，否则（../usr/...、
-                      # ../vcpkg_installed/...）照旧丢弃。不剥这一层会把它们全漏掉。
-                      stripped = rp
-                      while stripped.startswith("../"):
-                          stripped = stripped[3:]
-                      if not stripped.startswith(source_tops):
-                          return None
-                      rp = stripped
-              if any(rp.startswith(t) for t in exclude):
-                  return None
-              return rp
-
-          # 位置形如 dir/file.cpp:42:13 ，但 Qt 内部的行未必带行列号，
-          # 所以下面用"含 runtime error: 即计入"的兜底，避免格式一变就静默漏报。
-          located = re.compile(
-              r"^(?P<path>.+?):(?P<line>\d+):(?P<col>\d+):\s*runtime error:\s*(?P<msg>.+)$")
-
-          sources = []
-          if os.path.isfile("ctest-sanitizer.log"):
-              sources.append("ctest-sanitizer.log")
-          ub_dir = os.environ.get("VE_UBSAN_LOG_DIR", "")
-          # 目录必须由上面那步 mkdir 出来。不存在 = 变量没传进步骤，
-          # 报告只会回到 stderr、又被 ctest 吞掉 —— 门禁静默变绿。宁可红。
-          if not ub_dir or not os.path.isdir(ub_dir):
-              print("::error::VE_UBSAN_LOG_DIR 未设置或目录不存在（%r）："
-                    "UBSan 报告无处可落，这道门禁会静默变绿" % ub_dir)
-              sys.exit(1)
-          sources += sorted(p for p in glob.glob(os.path.join(ub_dir, "ubsan*"))
-                            if os.path.isfile(p))
-
-          total = 0
-          hits = []      # (相对路径, 行号, 信息原文)
-          unknown = []   # 有 runtime error 但没能定位到位置的原文
-          for src in sources:
-              with open(src, "r", errors="replace") as fh:
-                  for raw in fh:
-                      if "runtime error:" not in raw:
-                          continue
-                      total += 1
-                      line = raw.strip()
-                      m = located.match(line)
-                      rel = project_relative(m.group("path")) if m else None
-                      if rel:
-                          hits.append((rel, int(m.group("line")), m.group("msg").strip()))
-                      elif not m:
-                          unknown.append(line)
-
-          grouped = collections.OrderedDict()
-          for rel, ln, msg in hits:
-              key = (rel, ln, msg[:100])
-              grouped[key] = grouped.get(key, 0) + 1
-
-          # 人看的部分：按位置排序，同位置只出现一次并带出现次数。
-          rows = sorted(grouped.items(), key=lambda kv: (kv[0][0], kv[0][1]))
-          summary = ["## UBSan（本仓库源码）", ""]
-          summary.append("扫描来源：%s" % (", ".join(sources) if sources else "（无）"))
-          summary.append("")
-          summary.append("runtime error 共 %d 条，落在本仓库源码 %d 条，去重后 %d 处。"
-                         % (total, len(hits), len(rows)))
-          summary.append("")
-          if rows:
-              summary.append("| 位置 | 次数 | 类型 |")
-              summary.append("| --- | --- | --- |")
-              for (rel, ln, msg), n in rows[:60]:
-                  cell = msg.replace("|", "\\|")[:120]
-                  summary.append("| `%s:%d` | %d | %s |" % (rel, ln, n, cell))
-              if len(rows) > 60:
-                  summary.append("")
-                  summary.append("（另有 %d 处未列出，见 job 日志）" % (len(rows) - 60))
-          if unknown:
-              summary.append("")
-              summary.append("另有 %d 条 runtime error 没能解析出位置，需人工确认"
-                             "（可能是第三方代码）：" % len(unknown))
-              for line in unknown[:10]:
-                  summary.append("")
-                  summary.append("    " + line[:200])
-          text = "\n".join(summary)
-          print(text)
-
-          out = os.environ.get("GITHUB_STEP_SUMMARY")
-          if out:
-              try:
-                  with open(out, "a") as fh:
-                      fh.write(text + "\n")
-              except OSError:
-                  pass
-
-          severity = "error" if strict else "warning"
-          for (rel, ln, msg), _n in rows[:20]:
-              note = msg.replace("%", "%25").replace("\r", "").replace("\n", " ")[:180]
-              print("::%s file=%s,line=%d,title=UBSan::%s" % (severity, rel, ln, note))
-
-          if unknown:
-              print("::warning::有 %d 条 runtime error 无法定位来源，请翻上面的日志确认"
-                    % len(unknown))
-
-          if rows and strict:
-              print("::error::本仓库源码存在未定义行为（halt_on_error=0，所以 ctest 不会红）；"
-                    "修完再合，或把仓库变量 UBSAN_GATE_MODE 设成 warn 先摸底")
-              sys.exit(1)
-          if rows:
-              print("UBSan: %d 处命中，但 GATE_MODE=warn，本轮不判红。" % len(rows))
-          else:
-              print("UBSan: 本仓库源码无 runtime error")
-          PY
-
+      # TSan 判据。Qt 不是 TSan-clean 的库：实测一轮 135 个用例里有 68 条竞态报告,
+      # SUMMARY 全部落在 libQt6Core / libQt6Gui 内部(QArrayData 引用计数、QMetaType::destroy、
+      # 渐变光栅化)。它们让我们自己的测试以 66 退出, 于是 5 个测试常年红 —— 真属于我们的
+      # 竞争反而淹在里面。preset 里改成 exitcode=0 之后噪声不再判红, 判据移到这道门禁:
+      #
+      # 每个报告按 section 切分, 取**最内层一帧**(跳过 libtsan 拦截器帧)当"访问点":
+      #   访问点在 core/ ui/ infrastructure/ tests/ ... 里 -> 我们的问题, 红
+      #   访问点在 /usr/include/c++ 或 Qt 头里             -> 别人内联进来的代码, 放行
+      #   访问点在我们自己的二进制里却没符号               -> 无法自证, 按红处理
+      # 分配点(Location is ... allocated by)和建线程点(Thread T7 created by)不参与判定:
+      # 它们只能说明"这块内存我们碰过", 说明不了访问发生在谁家 —— 拿它们判红等于把 Qt
+      # 内部的竞争全算到我们头上(实测第一份报告就是这种形状)。
+      #
+      # 为什么不加 TSAN_OPTIONS=suppressions=...: 试过, 压不住。TSan 的 race: 按函数名
+      # 精确匹配, Qt 的 C++ 符号(QWaitCondition::~QWaitCondition 这类)对不上; 而能压住
+      # QArrayData / operator delete / memmove 的范围又太宽, 会连我们自己的竞争一起压掉。
+      # 确实落在用例层面的(如 QProcess fork、TSan 自己的线程注册表 CHECK), 用
+      # tests/unit/SanitizerSkip.h 显式跳过, 哪几条、为什么, 写在代码里比压制文件可读。
+      - name: TSan gate (project sources only)
+        if: always() && matrix.sanitizer == 'tsan'
+        env:
+          VE_TSAN_LOG_DIR: ${{ github.workspace }}/build/tsan
+          WORKSPACE: ${{ github.workspace }}
+          # 与 UBSan 同一套开关: 设成 warn 只出清单不判红, 未设置默认 strict。
+          GATE_MODE: ${{ vars.TSAN_GATE_MODE || 'strict' }}
+        run: |
+          python3 scripts/sanitizer_gate.py --kind tsan \
+            --log-dir "$VE_TSAN_LOG_DIR" \
+            --ctest-log ctest-sanitizer.log \
+            --workspace "$WORKSPACE" \
+            --mode "$GATE_MODE"

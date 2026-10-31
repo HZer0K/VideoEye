@@ -258,7 +258,7 @@
         "outputOnFailure": true
       },
       "environment": {
-        "TSAN_OPTIONS": "second_deadlock_stack=1:history_size=4"
+        "TSAN_OPTIONS": "second_deadlock_stack=1:history_size=4:halt_on_error=0:exitcode=0:log_exe_name=1:log_path=$penv{VE_TSAN_LOG_DIR}/tsan"
       }
     }
   ]

@@ -230,3 +230,36 @@ ls "$VE_UBSAN_LOG_DIR"
 
 不设 `VE_UBSAN_LOG_DIR` 时 preset 里会展开成 `log_path=/ubsan`（不可写），报告退回 stderr ——
 交互式调试反而看得见，但一经过 ctest 就没了。
+
+### TSan 门禁
+
+`linux-test-tsan` 原来的问题是反过来的：Qt 不是 TSan-clean 的库（实测一轮 135 个用例产生 68 条竞态，
+SUMMARY 全在 `libQt6Core` / `libQt6Gui` 内部的引用计数、`QMetaType::destroy`、渐变光栅化里），
+测试进程以 66 退出 → 5 个测试常年红，真属于我们的竞争淹在里面没人看。
+
+现在 `TSAN_OPTIONS` 里加了 `exitcode=0`（噪声不再判红），判据移到 `TSan gate`，和 UBSan 是同一套
+`scripts/sanitizer_gate.py`，只是收窄方式不同：
+
+- **报告从哪来**：`VE_TSAN_LOG_DIR`（CI 是 `$GITHUB_WORKSPACE/build/tsan`），TSan 写
+  `tsan.<exe>.<pid>`。理由同 UBSan：测试通过时 ctest 不回显输出。
+- **判据按"访问点"收窄**：每个报告按 section 切分，取最内层一帧（跳过 libtsan 的拦截器帧）当访问点 ——
+  落在 `core/`、`ui/`、`infrastructure/`、`tests/` 里就红；落在 `/usr/include/c++` 或 Qt 头里就放行
+  （那是别人内联进我们 TU 的代码）。**分配点/建线程点不参与判定**：那 68 条 Qt 竞态的栈里几乎都有
+  我们的帧，但那是"我们调用了 Qt"，不是"冲突访问发生在我们的代码里"。
+- **自证不空转**：CI 里有两段探针，一个拿必然溢出的代码验 UBSan 的 `log_path`，一个拿必然竞态的
+  程序同时验 TSan 的 `log_path` 与 `exitcode=0`。报告去不了文件、或者 `exitcode` 没生效，job 直接红 ——
+  否则门禁最可能的失效方式是"静默变绿"。
+- **首轮摸底**：仓库变量 `TSAN_GATE_MODE=warn`，与 `UBSAN_GATE_MODE` 同语义。
+
+本机收集报告：
+
+```bash
+export VE_TSAN_LOG_DIR=/tmp/ve-tsan && mkdir -p "$VE_TSAN_LOG_DIR"
+ctest --preset linux-test-tsan
+python3 scripts/sanitizer_gate.py --kind tsan --log-dir "$VE_TSAN_LOG_DIR" --workspace "$PWD"
+```
+
+只有"abort 整个测试二进制"的那几种（QProcess fork、libtsan 线程注册表 CHECK）才用
+`tests/unit/SanitizerSkip.h` 的 `SKIP_UNDER_TSAN` 跳过；普通竞态一律走门禁，不许跳过。
+
+想验证门禁本身有没有判别力：`python3 scripts/test_sanitizer_gate.py`（CI 的 layering job 也在跑）。
