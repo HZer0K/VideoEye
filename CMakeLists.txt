@@ -289,7 +289,18 @@ endif()
 # ============================================================
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+# 不用 REQUIRED：找不到时官方只报一句 "Could not find FindQt6.cmake"，
+# 看不出该跑哪条命令。背景：build/release、build/test-release 的 CMakeCache 里
+# VCPKG_MANIFEST_INSTALL=OFF（依赖由 scripts/run-vcpkg-install.ps1 预装），
+# 此时 configure 不会自动补装，只在 VCPKG_INSTALLED_DIR 里翻 Qt6Config.cmake。
+find_package(Qt6 QUIET COMPONENTS Widgets)
+if(NOT Qt6_FOUND)
+    message(FATAL_ERROR
+        "未找到 Qt6 —— vcpkg 依赖没装好。\n"
+        "  安装树: ${VCPKG_INSTALLED_DIR}（应存在 share/Qt6/Qt6Config.cmake）\n"
+        "  Windows 修法: powershell -File scripts/run-vcpkg-install.ps1 -Config release -Feature tests\n"
+        "  或让 configure 自己装: cmake -DVCPKG_MANIFEST_INSTALL=ON -S . -B <build 目录>")
+endif()
 include(cmake/deps/FFmpegPrebuilt.cmake)
 include(cmake/deps/FfmpegTool.cmake)
 include(cmake/deps/RuntimeDeploy.cmake)

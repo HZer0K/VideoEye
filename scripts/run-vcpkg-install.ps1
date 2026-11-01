@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet("release", "debug")]
     [string]$Config = "release",
     # 单元测试需要的额外 feature (vcpkg.json 里的 "tests" -> gtest)
