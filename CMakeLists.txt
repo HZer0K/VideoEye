@@ -95,13 +95,35 @@ endif()
 # 编译边，而不是个位数。
 # ============================================================
 if(MSVC AND CMAKE_GENERATOR MATCHES "Ninja")
+    # ---- Windows 侧可选的 sccache ----
+    #
+    # Linux 那边由 VIDEOEYE_USE_CCACHE 兜住（直接挂在 launcher 上就行）；Windows
+    # 不能直接套同一个写法，因为下面这层 launcher 是用来把 cl 的输出钉成英文的
+    #（见文件顶部依赖追踪那段）—— 覆盖了它，头文件依赖追踪就废了。
+    #
+    # 正确做法是**串在 env 之后**（而不是替换）：
+    #   cmake -E env VSLANG=1033  ->  sccache  ->  cl.exe
+    # `cmake -E env` 先设好环境再 exec sccache，sccache 再原样 exec cl，
+    # 环境变量一路继承下去，两条要求同时满足。
+    option(VIDEOEYE_USE_SCCACHE "MSVC 下用 sccache 做编译缓存（需要 PATH 里有 sccache）" OFF)
+    set(_ve_msvc_launcher "${CMAKE_COMMAND};-E;env;VSLANG=1033")
+    if(VIDEOEYE_USE_SCCACHE)
+        find_program(VIDEOEYE_SCCACHE_PROGRAM sccache)
+        if(VIDEOEYE_SCCACHE_PROGRAM)
+            list(APPEND _ve_msvc_launcher "${VIDEOEYE_SCCACHE_PROGRAM}")
+            message(STATUS "sccache 已贯穿到 VSLANG launcher 之后: ${VIDEOEYE_SCCACHE_PROGRAM}")
+        else()
+            message(WARNING "VIDEOEYE_USE_SCCACHE=ON 但没找到 sccache，按未启用处理")
+        endif()
+    endif()
+
     # 不覆盖用户自己配的 launcher（ccache / sccache 等）：只有空着才填。
     if(NOT CMAKE_C_COMPILER_LAUNCHER)
-        set(CMAKE_C_COMPILER_LAUNCHER "${CMAKE_COMMAND};-E;env;VSLANG=1033"
+        set(CMAKE_C_COMPILER_LAUNCHER "${_ve_msvc_launcher}"
             CACHE STRING "强制 cl 输出英文消息，见 CMakeLists 顶部依赖追踪说明" FORCE)
     endif()
     if(NOT CMAKE_CXX_COMPILER_LAUNCHER)
-        set(CMAKE_CXX_COMPILER_LAUNCHER "${CMAKE_COMMAND};-E;env;VSLANG=1033"
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${_ve_msvc_launcher}"
             CACHE STRING "强制 cl 输出英文消息，见 CMakeLists 顶部依赖追踪说明" FORCE)
     endif()
 
@@ -131,6 +153,100 @@ if(MSVC AND CMAKE_GENERATOR MATCHES "Ninja")
             "或直接删掉整个构建目录重配（CMakeLists 顶部已把 VSLANG 钉成 1033，重配即可自愈）。")
     endif()
 endif()
+
+# ============================================================
+# 预编译头（PCH）
+#
+# 背景：全量构建约 10100s CPU，其中编译占 8883s；ui 层单 TU 均值 11.8s、
+# core 7.1s，成本大头是反复解析同一批 Qt / 标准库头文件。PCH 是这类成本唯一
+# 能一次性摊薄的手段。
+#
+# 为什么默认**关闭**：收益依赖"每个目标有多少 TU"和"PCH 命中率"，两者都得实测。
+# 显然不合算的一类已经排除 —— 给只有 1~3 个 TU 的目标单独生成一份 PCH 是净亏
+# （129 个测试 exe 平均才 3.7 TU），所以下面按 VIDEOEYE_PCH_MIN_SOURCES 卡阈值，
+# 只给大目标加。开启前应在 CI 里 A/B 一次：(a) 全量墙钟 (b) ccache/sccache 命中率。
+#
+# 源码不需要改一行：CMake 在 MSVC 下用 /FI 把 cmake_pch.hxx 强制注入每个 TU
+# （实测确认），GCC/Clang 下用 -include，语义等价。
+#
+# 用哪个头由"该目标的依赖闭包里有没有 Qt6::Widgets / Qt6::Core"决定：
+# 闭包扫描是必要的，因为 Qt 经常是间接依赖（例：VideoEyePlayback 经由
+# VideoEyeQtAdapters 才碰到 Qt6::Core），只看 LINK_LIBRARIES 会漏判成"不用 Qt"，
+# 于是白白丢掉大头收益。
+# ============================================================
+option(VIDEOEYE_USE_PCH "启用预编译头（默认关闭：收益需按目标实测，见上方注释）" OFF)
+set(VIDEOEYE_PCH_MIN_SOURCES 6 CACHE STRING "少于该数量的编译单元的目标不生成 PCH（得不偿失）")
+set(VIDEOEYE_PCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/cmake/pch")
+
+# 递归判断目标的依赖闭包里有没有某个 Qt 模块
+function(_videoeye_closure_has_lib _result _target _needle)
+    set(_queue "${_target}")
+    set(_visited "")
+    while(_queue)
+        list(POP_FRONT _queue _cur)
+        if(NOT TARGET "${_cur}")
+            continue()
+        endif()
+        if("${_cur}" IN_LIST _visited)
+            continue()
+        endif()
+        list(APPEND _visited "${_cur}")
+        get_target_property(_libs "${_cur}" LINK_LIBRARIES)
+        get_target_property(_ilibs "${_cur}" INTERFACE_LINK_LIBRARIES)
+        foreach(_lib IN LISTS _libs _ilibs)
+            if("${_lib}" STREQUAL "${_needle}" OR "${_lib}" MATCHES "^${_needle}::")
+                set(${_result} TRUE PARENT_SCOPE)
+                return()
+            endif()
+            list(APPEND _queue "${_lib}")
+        endforeach()
+    endwhile()
+    set(${_result} FALSE PARENT_SCOPE)
+endfunction()
+
+# 登记候选目标：由 videoeye_add_module / videoeye_add_test 各自登记，
+# 在所有目标都定义完之后统一处理 —— 那时 LINK_LIBRARIES 才齐全。
+function(videoeye_register_pch_candidate name)
+    set_property(GLOBAL APPEND PROPERTY VIDEOEYE_PCH_CANDIDATES "${name}")
+endfunction()
+
+# 统一开 PCH。必须在所有 add_subdirectory 之后调用。
+function(videoeye_apply_pch)
+    if(NOT VIDEOEYE_USE_PCH)
+        return()
+    endif()
+    get_property(_candidates GLOBAL PROPERTY VIDEOEYE_PCH_CANDIDATES)
+    list(REMOVE_DUPLICATES _candidates)
+    list(LENGTH _candidates _candidates_count)
+    set(_applied 0)
+    foreach(_t IN LISTS _candidates)
+        if(NOT TARGET "${_t}")
+            continue()
+        endif()
+        get_target_property(_srcs "${_t}" SOURCES)
+        set(_n 0)
+        foreach(_s IN LISTS _srcs)
+            if("${_s}" MATCHES "\\.(c|cc|cpp|cxx)$")
+                math(EXPR _n "${_n} + 1")
+            endif()
+        endforeach()
+        if(_n LESS VIDEOEYE_PCH_MIN_SOURCES)
+            continue()
+        endif()
+        _videoeye_closure_has_lib(_has_widgets "${_t}" "Qt6::Widgets")
+        _videoeye_closure_has_lib(_has_core "${_t}" "Qt6::Core")
+        if(_has_widgets)
+            set(_h "${VIDEOEYE_PCH_DIR}/videoeye_pch_qtwidgets.h")
+        elseif(_has_core)
+            set(_h "${VIDEOEYE_PCH_DIR}/videoeye_pch_qt.h")
+        else()
+            set(_h "${VIDEOEYE_PCH_DIR}/videoeye_pch_std.h")
+        endif()
+        target_precompile_headers(${_t} PRIVATE "${_h}")
+        math(EXPR _applied "${_applied} + 1")
+    endforeach()
+    message(STATUS "PCH: ${_applied}/${_candidates_count} 个目标启用（阈值 ${VIDEOEYE_PCH_MIN_SOURCES} 个编译单元）")
+endfunction()
 
 # ============================================================
 # Fuzz 入口开关（阶段 3.3）
@@ -352,6 +468,7 @@ function(videoeye_add_module name)
         ${VIDEOEYE_GENERATED_INCLUDE_DIR}
     )
     set_target_properties(${name} PROPERTIES AUTOMOC ON)
+    videoeye_register_pch_candidate(${name})
 endfunction()
 
 # --- domain: 结果类型 / 值对象，谁都能用，自己不依赖任何人 ---
@@ -949,6 +1066,10 @@ endif()
 if(VIDEOEYE_ENABLE_FUZZERS)
     add_subdirectory(tests/fuzz)
 endif()
+
+# PCH 统一在这里发：此刻所有 add_subdirectory 都跑完了，每个 target 的
+# LINK_LIBRARIES 已齐全，才能按"闭包里有没有 Qt"挑对应的头。
+videoeye_apply_pch()
 
 # Windows 运行时部署要等所有可执行文件都登记完才能组装。
 # 但 add_custom_target 必须在所有目标存在之后 —— 放这里是最后一步。

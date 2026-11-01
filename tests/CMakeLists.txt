@@ -285,6 +285,9 @@ function(videoeye_add_test name)
     add_executable(${name} ${ARG_UNPARSED_ARGUMENTS})
     target_include_directories(${name} PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(${name} PRIVATE GTest::gtest_main)
+    # 登记给 PCH 候选名单：真正的启用在顶层 CMakeLists 末尾统一处理，那时
+    # 所有 target 的 LINK_LIBRARIES 才齐全（要据此判断它到底用不用 Qt）。
+    videoeye_register_pch_candidate(${name})
     # "${name}" 必须带引号展开: 不加引号时 CMake 会把 name 当字符串常量，
     # 结果整个名单判定恒为假（实测过）
     if("${name}" IN_LIST VIDEOEYE_TESTS_NEEDING_AUTOMOC OR ARG_AUTOMOC)
