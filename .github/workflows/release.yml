@@ -108,6 +108,16 @@ jobs:
           key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'CMakePresets.json', 'scripts/triplets/**', 'scripts/overlay-ports/**') }}
           restore-keys: vcpkg-${{ runner.os }}-
 
+      # FFmpeg 预编译包与 build.yml 共用同一个缓存命名空间（key 只认锁定的
+      # cmake/ffmpeg-version.json），恢复后 fetch-ffmpeg.ps1 直接跳过下载。
+      - name: Cache FFmpeg prebuilt
+        uses: actions/cache@v4
+        with:
+          path: third_party/prebuilt/windows-x64/ffmpeg
+          key: ffmpeg-${{ runner.os }}-${{ hashFiles('cmake/ffmpeg-version.json') }}
+          restore-keys: |
+            ffmpeg-${{ runner.os }}-
+
       - name: Install vcpkg dependencies
         shell: pwsh
         run: |

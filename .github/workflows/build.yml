@@ -317,6 +317,19 @@ jobs:
           restore-keys: |
             vcpkg-${{ runner.os }}-
 
+      # FFmpeg 预编译包（约 100MB）: build.bat 每次都会调 fetch-ffmpeg.ps1，但目录里
+      # 带 .videoeye-ffmpeg.json stamp —— 只要它与 cmake/ffmpeg-version.json 的
+      # 版本 / variant / sha256 对得上就不联网。缓存恢复后这一步退化成几次文件检查。
+      # key 只认锁定配置: 换 FFmpeg 版本或 URL 时 hash 变化，缓存自动失效重下。
+      - name: Cache FFmpeg prebuilt (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: third_party/prebuilt/windows-x64/ffmpeg
+          key: ffmpeg-${{ runner.os }}-${{ hashFiles('cmake/ffmpeg-version.json') }}
+          restore-keys: |
+            ffmpeg-${{ runner.os }}-
+
       # 与开发者本机同一入口 (scripts/run-vcpkg-install.ps1)，避免在 CI 里再抄一份参数
       - name: Install vcpkg dependencies (Windows)
         if: runner.os == 'Windows'
@@ -451,6 +464,16 @@ jobs:
           key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'CMakePresets.json', 'scripts/triplets/**', 'scripts/overlay-ports/**') }}
           restore-keys: |
             vcpkg-${{ runner.os }}-
+
+      # 同 build job: 避免每个测试运行都重新下载/解包一遍 FFmpeg 预编译包。
+      - name: Cache FFmpeg prebuilt (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: third_party/prebuilt/windows-x64/ffmpeg
+          key: ffmpeg-${{ runner.os }}-${{ hashFiles('cmake/ffmpeg-version.json') }}
+          restore-keys: |
+            ffmpeg-${{ runner.os }}-
 
       # Windows 上 gtest 由 preset 的 VCPKG_MANIFEST_FEATURES=tests 带来，
       # 所以这里必须显式带 -Feature tests 装上，否则 configure 才去装、链路绕一圈。

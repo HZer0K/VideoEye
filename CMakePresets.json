@@ -12,6 +12,8 @@
       "ide-note": "windows-base 上的 architecture/toolset（strategy=external）是给 IDE 用的：Visual Studio 与 Qt Creator 打开本目录时不会先跑 vcvars，直接调 CMake 会因 PATH 里没有 ninja/cl 而报 'CMAKE_MAKE_PROGRAM is not set' / 'CMAKE_C_COMPILER not set'。带上这两个字段后 VS 会自己注入 MSVC 开发环境（Microsoft 文档里 Ninja preset 的标准写法）。命令行/CI 不受影响。若 IDE 仍以 win-* 通用 preset 报错，请在 IDE 里改选本机 preset（CMakeUserPresets.json 里的 release / debug / test-release / test-debug）。",
       "example-local-overrides": "CMakeUserPresets.json 里 inherits \"win-release\"，再覆盖 environment 与 CMAKE_MAKE_PROGRAM / CMAKE_C_COMPILER / CMAKE_CXX_COMPILER 即可。",
       "naming": "win-* 是 Windows(MSVC+vcpkg)，linux-* 是 Linux/macOS(系统 Qt 与系统 FFmpeg)。*-test-* 额外打开 BUILD_TESTING，并在 Windows 上启用 vcpkg 的 tests feature(gtest)。",
+      "test-config-note": "win-test-release 用 RelWithDebInfo 而不是 Release：两者的编译选项完全相同(/O2 /Ob2 /DNDEBUG，仍然用 release triplet)，唯一区别是 RelWithDebInfo 带 /Zi + 链接 /DEBUG，产物里才有 .pdb。以前用纯 Release 时 build/test-release 里 pdb 数量为 0，CI 上测试一崩(0xc0000374 这类)只剩裸地址，栈根本反不出来。确实不需要符号时可在 configure 时 -DCMAKE_BUILD_TYPE=Release 覆盖。",
+      "test-jobs-note": "三个 test preset 都带 execution.jobs=4：本机实测 139 个用例串行 144s、-j4 51.8s(全绿)，CI runner 是 4 vCPU。sanitizer preset 不设 jobs —— CI 那边显式 -j 1，preset 里写了也会被命令行覆盖。",
       "vslang-note": "windows-base 里的 CMAKE_{C,CXX}_COMPILER_LAUNCHER=cmake;-E;env;VSLANG=1033 不要删。cl.exe 的 /showIncludes 输出语言跟着 VS 语言资源走（默认中文'注意: 包含文件: '，VSLANG=1033 时英文'Note: including file: '），CMake 在 try_compile 阶段把这句前缀探测进 CMakeFiles/<ver>/CMake{C,CXX}Compiler.cmake，ninja 再拿它剥 /showIncludes 还原头文件依赖。启动器把语言钉成英文，探测值与构建值才不会漂；一旦两者不一致，ninja 剥壳静默失败 -> 改了头文件不重编 -> 链接陈旧对象（Windows 上表现为 0xc0000409 / 0xc0000374 这类看似代码写坏的崩溃）。附带好处是编译日志变纯 ASCII，不再需要 grep -a 读 GB18030。守卫见 scripts/check_msvc_showincludes_prefix.py（ctest: MsvcShowIncludesPrefixTests）。"
     }
   },
@@ -66,11 +68,11 @@
     },
     {
       "name": "win-test-release",
-      "displayName": "Windows Release + Unit Tests (推荐/CI 用: 复用 release triplet)",
+      "displayName": "Windows Release + 调试符号 + Unit Tests (推荐/CI 用: 复用 release triplet)",
       "inherits": "windows-test-base",
       "binaryDir": "${sourceDir}/build/test-release",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release"
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
       }
     },
     {
@@ -214,6 +216,7 @@
         "outputOnFailure": true
       },
       "execution": {
+        "jobs": 4,
         "noTestsAction": "error",
         "stopOnFailure": true
       }
@@ -225,6 +228,7 @@
         "outputOnFailure": true
       },
       "execution": {
+        "jobs": 4,
         "noTestsAction": "error",
         "stopOnFailure": true
       }
@@ -236,6 +240,7 @@
         "outputOnFailure": true
       },
       "execution": {
+        "jobs": 4,
         "noTestsAction": "error",
         "stopOnFailure": true
       }

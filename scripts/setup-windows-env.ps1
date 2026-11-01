@@ -314,6 +314,42 @@ $presetJson = @"
         "CMAKE_MAKE_PROGRAM": "ninja.exe"
       }
     }
+  ],
+  "buildPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "test-release",
+      "configurePreset": "test-release"
+    },
+    {
+      "name": "test-debug",
+      "configurePreset": "test-debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "test-release",
+      "inherits": "win-test-release",
+      "configurePreset": "test-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "test-debug",
+      "inherits": "win-test-debug",
+      "configurePreset": "test-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
   ]
 }
 "@

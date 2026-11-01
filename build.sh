@@ -104,12 +104,6 @@ if [[ -n "${JOBS:-}" ]]; then
     BUILD_ARGS=(--parallel "$JOBS")
 fi
 
-# Windows: 系统里的 VCPKG_ROOT 可能指向 Visual Studio 自带的 vcpkg，
-# 会覆盖 CMakeUserPresets.json 里配置好的那个 —— 必须让 preset 说话。
-if [[ "$PLATFORM" == "windows" ]]; then
-    unset VCPKG_ROOT
-fi
-
 # ============ preset 名解析 ============
 # 通用 preset(win-* / linux-*) 一定存在；短名只在本机有 CMakeUserPresets.json 时才有。
 # 先问 cmake 实际列出什么，再决定用哪个 —— 不靠猜。
@@ -191,7 +185,28 @@ looks_like_missing_deps() {
 }
 
 # ============ 主流程 ============
+# Windows 的 VCPKG_ROOT 处理要跟着 preset 走，不能无条件 unset:
+#   * 用本机短名 preset(release / test-release...) 时，那个 preset 里已经钉好了
+#     vcpkg 根目录；系统里的 VCPKG_ROOT 往往指向 VS 自带的 vcpkg，会把它覆盖掉，
+#     所以要 unset，让 preset 说话。
+#   * 用通用 win-* preset 时，windows-base 的 CMAKE_TOOLCHAIN_FILE 正是从
+#     $env{VCPKG_ROOT} 展开的。以前这里是无条件 unset，于是「没有
+#     CMakeUserPresets.json 的机器」上匹配出来的恰好是 win-*，toolchain 路径
+#     直接变成 "/scripts/buildsystems/vcpkg.cmake"，报错只说找不到 toolchain，
+#     看不出跟 VCPKG_ROOT 有关。现在缺它就提前给出可执行的提示。
 PRESET="$(resolve_preset)"
+if [[ "$PLATFORM" == "windows" ]]; then
+    if [[ "$PRESET" == "$SHORT" ]]; then
+        unset VCPKG_ROOT
+    elif [[ -z "${VCPKG_ROOT:-}" ]]; then
+        echo "[ERROR] 没有本机 preset($SHORT)，只能用通用 $GENERIC；" >&2
+        echo "        但 VCPKG_ROOT 未设置 —— 它的 toolchain 路径由这个变量展开。" >&2
+        echo "        二选一:" >&2
+        echo "          * 改用 build.bat（它会自己 vswhere + vcvars 注入 MSVC/vcpkg 环境）" >&2
+        echo "          * 或先跑 scripts/setup-windows-env.ps1 生成本机 CMakeUserPresets.json" >&2
+        exit 1
+    fi
+fi
 STEPS=2
 if [[ "$IS_TEST" == "1" ]]; then STEPS=3; fi
 

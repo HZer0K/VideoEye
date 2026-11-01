@@ -2315,3 +2315,26 @@ target_link_libraries(test_elided_label PRIVATE
 add_test(NAME ElidedLabelTests COMMAND test_elided_label)
 set_tests_properties(ElidedLabelTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 全局兜底超时（必须留在本文件最末尾）
+#
+# 以前只有 CorpusRobustnessTests 显式设了 TIMEOUT 300（它的解析器历史上失去过
+# 循环上界）。其余 138 个用例没有上限：任何一个挂死（等一个永远不来的信号、
+# 死锁在 TaskManager 上）都会把本地 ctest 和 CI 作业一起拖到作业级超时
+# （默认 6 小时）才失败，而且看不出到底卡在哪个用例。
+#
+# 实测基线（本机 -j4 跑完 139 个用例共 51.8s，最慢的单例约 10s），300s 留了
+# 30 倍余量，只有真挂死才会撞上，正常用例不受影响。
+#
+# 只补"没有显式 TIMEOUT 的"用例：目录属性 TESTS 列出本目录全部用例，
+# get_test_property 能读回上面对某个用例单独设置的值，避免这里把它们覆盖掉。
+# 需要更长的用例请在上面显式设置 TIMEOUT（顺序无所谓，这里不会动它）。
+# =================================================
+get_property(_videoeye_all_tests DIRECTORY PROPERTY TESTS)
+foreach(_videoeye_test IN LISTS _videoeye_all_tests)
+    get_test_property(${_videoeye_test} TIMEOUT _videoeye_test_timeout)
+    if(NOT _videoeye_test_timeout MATCHES "^[0-9]+$")
+        set_tests_properties(${_videoeye_test} PROPERTIES TIMEOUT 300)
+    endif()
+endforeach()
