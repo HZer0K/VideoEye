@@ -39,6 +39,7 @@ void SceneChangePage::SetupUi() {
         QHBoxLayout* rl = new QHBoxLayout(row);
         rl->setContentsMargins(0, 0, 0, 0);
         QLabel* title = new QLabel(tr("场景切换检测（镜头边界）"), row);
+        title->setObjectName(QStringLiteral("PageTitle"));
         rl->addWidget(title);
         rl->addStretch();
         QCheckBox* toggle = new QCheckBox(tr("启用分析"), row);
@@ -53,6 +54,7 @@ void SceneChangePage::SetupUi() {
     }
 
     summary_label_ = new QLabel(tr("开启分析后播放视频，将在此列出检测到的镜头切换点（时间戳 + 切换强度）。"));
+    summary_label_->setObjectName(QStringLiteral("HintLabel"));
     summary_label_->setWordWrap(true);
     layout->addWidget(summary_label_);
 

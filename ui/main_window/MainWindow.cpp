@@ -542,6 +542,8 @@ void MainWindow::SetupStatusBar() {
     // 实时码流统计常驻区 (右端): 用 permanent widget 而非 showMessage,
     // 否则每 10 帧一次的统计会把“已打开 xx”这类临时提示冲掉。
     stats_label_ = new QLabel(bar);
+    // 字号由 QSS（QLabel#StatusStats）给到 12px，等宽族仍由 monoFont 提供
+    stats_label_->setObjectName("StatusStats");
     stats_label_->setFont(theme::font::monoFont(9));
     stats_label_->setStyleSheet(QStringLiteral("color: #8b949e; padding-right: 8px;"));
     stats_label_->setTextInteractionFlags(Qt::NoTextInteraction);

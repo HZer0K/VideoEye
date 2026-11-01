@@ -86,6 +86,8 @@ void PacketTableWidget::SetupUi() {
     packet_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     packet_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     packet_table_->setSelectionMode(QAbstractItemView::SingleSelection);
+    // QSS 里已定义 alternate-background-color，但只有显式开启交替行色才会生效
+    packet_table_->setAlternatingRowColors(true);
     packet_table_->setSortingEnabled(false);
     packet_table_->horizontalHeader()->setStretchLastSection(true);
     packet_table_->horizontalHeader()->setMinimumSectionSize(50);

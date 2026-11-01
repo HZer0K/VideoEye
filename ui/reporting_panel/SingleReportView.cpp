@@ -1,11 +1,11 @@
 #include "ui/reporting_panel/SingleReportView.h"
 
-#include <QFont>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 
 #include "core/domain/model/QcReport.h"
+#include "ui/theme/AppTheme.h"
 
 namespace videoeye {
 namespace ui {
@@ -54,10 +54,9 @@ void SingleReportView::SetupUi() {
 
     QHBoxLayout* verdict_row = new QHBoxLayout();
     verdict_label_ = new QLabel(tr("尚无结果"), single_box);
-    QFont verdict_font = verdict_label_->font();
-    verdict_font.setPointSize(verdict_font.pointSize() + 6);
-    verdict_font.setBold(true);
-    verdict_label_->setFont(verdict_font);
+    // 字号/加粗写在 QSS（QLabel#ReportVerdict）：全局 QWidget{font-size:13px}
+    // 在样式表里的优先级高于 setFont()，这里 setPointSize(+6) 会被压平。
+    verdict_label_->setObjectName("ReportVerdict");
     verdict_row->addWidget(verdict_label_);
     issue_count_label_ = new QLabel(QString(), single_box);
     verdict_row->addWidget(issue_count_label_);
@@ -75,16 +74,17 @@ void SingleReportView::SetCurrentFile(const QString& path) {
 void SingleReportView::ShowResult(const qc::QcRunResult& result) {
     if (!result.ok) {
         verdict_label_->setText(tr("分析未完成"));
-        verdict_label_->setStyleSheet("color: #b3261e;");
+        verdict_label_->setStyleSheet(QStringLiteral("color: %1;").arg(QString::fromLatin1(theme::color::kDanger)));
         issue_count_label_->setText(QString::fromStdString(result.error));
         return;
     }
     verdict_label_->setText(QString::number(result.report.score, 'f', 1) + " / 100  " +
                             QString::fromStdString(result.report.verdict));
-    const QString color = (result.report.score >= 90.0)   ? "#1b7f3b"
-                          : (result.report.score >= 70.0) ? "#b26a00"
-                                                          : "#b3261e";
-    verdict_label_->setStyleSheet("color: " + color + ";");
+    // 用主题色而不是浅色主题时代的硬编码色：#b3261e 在 #0D1117 上对比度仅约 2.9:1。
+    const QString color = (result.report.score >= 90.0)   ? QString::fromLatin1(theme::color::kSuccess)
+                          : (result.report.score >= 70.0) ? QString::fromLatin1(theme::color::kWarning)
+                                                          : QString::fromLatin1(theme::color::kDanger);
+    verdict_label_->setStyleSheet(QStringLiteral("color: %1;").arg(color));
     issue_count_label_->setText(tr("致命 %1 ｜ 错误 %2 ｜ 警告 %3 ｜ 提示 %4")
                                     .arg(result.report.CountBySeverity(model::IssueSeverity::Critical))
                                     .arg(result.report.CountBySeverity(model::IssueSeverity::Error))

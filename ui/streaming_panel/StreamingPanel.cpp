@@ -6,6 +6,7 @@
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QSplitter>
+#include <QStringList>
 #include <QTabWidget>
 #include <QVBoxLayout>
 
@@ -24,21 +25,28 @@ StreamingPanel::StreamingPanel(QWidget* parent) : QWidget(parent) {
     root_layout->setContentsMargins(8, 8, 8, 8);
     root_layout->setSpacing(6);
 
-    summary_label_ = new QLabel(tr("尚未分析流媒体包"), this);
-    summary_label_->setWordWrap(true);
-    summary_label_->setStyleSheet("QLabel { font-weight: bold; }");
-    root_layout->addWidget(summary_label_);
+    // ---- 页头: 标题 + 工具按钮 ----
+    auto* title_row = new QHBoxLayout();
+    QLabel* title = new QLabel(tr("流媒体包"), this);
+    title->setObjectName(QStringLiteral("PageTitle"));
+    title->setToolTip(tr("HLS / DASH 清单解析：结构树、码率阶梯、分片时间轴对齐与问题清单"));
+    title_row->addWidget(title);
+    title_row->addStretch();
 
-    // ---- 工具栏 ----
-    auto* toolbar = new QHBoxLayout();
     refresh_button_ = new QPushButton(tr("开始分析"), this);
     copy_json_button_ = new QPushButton(tr("复制 JSON"), this);
     export_json_button_ = new QPushButton(tr("导出 JSON"), this);
-    toolbar->addWidget(refresh_button_);
-    toolbar->addWidget(copy_json_button_);
-    toolbar->addWidget(export_json_button_);
-    toolbar->addStretch();
-    root_layout->addLayout(toolbar);
+    title_row->addWidget(refresh_button_);
+    title_row->addWidget(copy_json_button_);
+    title_row->addWidget(export_json_button_);
+    root_layout->addLayout(title_row);
+
+    // ---- 摘要: 主行（类型/点播|直播/档位/分片/问题）+ 换行后的附加提示 ----
+    // 原先十几段提示全拼成一条加粗长句，分析完会折成 3~5 行，读不出主次。
+    summary_label_ = new QLabel(tr("尚未分析流媒体包"), this);
+    summary_label_->setObjectName(QStringLiteral("HintLabel"));
+    summary_label_->setWordWrap(true);
+    root_layout->addWidget(summary_label_);
 
     connect(refresh_button_, &QPushButton::clicked, this, &StreamingPanel::OnRefreshClicked);
     connect(copy_json_button_, &QPushButton::clicked, this, &StreamingPanel::OnCopyJsonClicked);
@@ -119,7 +127,7 @@ void StreamingPanel::UpdateSummary(const model::StreamingPackageResult& result) 
     const int warnings = result.CountIssues(model::IssueSeverity::Warning);
     const int infos = result.CountIssues(model::IssueSeverity::Info);
 
-    QString text = QString("%1 | %2 | %3 个码率层 | %4 个分片 | 问题: %5 错误 / %6 警告 / %7 提示")
+    QString text = QString("%1 ｜ %2 ｜ %3 个码率层 ｜ %4 个分片 ｜ 问题: %5 错误 / %6 警告 / %7 提示")
                        .arg(kind)
                        .arg(live)
                        .arg(result.ladder.size())
@@ -127,48 +135,50 @@ void StreamingPanel::UpdateSummary(const model::StreamingPackageResult& result) 
                        .arg(errors)
                        .arg(warnings)
                        .arg(infos);
+    // 附加提示单独一行（原来全部拼在主行后面，分析完会折成 3~5 行参差短行）
+    QStringList extras;
     if (result.remote) {
-        text += tr(" | 含远端 URI（远端清单/分片不下载）");
+        extras << tr("含远端 URI（远端清单/分片不下载）");
     }
     // 探测覆盖度：清单里声称 N 个分片，这一轮真探过的只有 M 个（探测有上限）。
     // 不写出来的话，"N 个分片"会被读成"N 个都验过"，抽样结果就变成了假的全量结论。
     const auto probed = static_cast<qulonglong>(result.ProbedSegments());
     const auto total = static_cast<qulonglong>(result.TotalSegments());
     if (total > 0 && probed < total) {
-        text += tr(" | 分片抽查 %1/%2，其余未探测").arg(probed).arg(total);
+        extras << tr("分片抽查 %1/%2，其余未探测").arg(probed).arg(total);
     }
     if (result.truncated) {
-        text += tr(" | 输出已按上限截断");
+        extras << tr("输出已按上限截断");
     }
     // 加密 / 广告标记 / 快进档：这三样决定了"这份清单能做哪些业务"，
     // 摘要里不写的话，用户只能从结构树里一条条点开看。
     if (result.IsEncrypted()) {
-        text += tr(" | 已加密（分片载荷不可读，码流类结论仅供参考）");
+        extras << tr("已加密（分片载荷不可读，码流类结论仅供参考）");
     }
     const auto dr_count = static_cast<qulonglong>(result.DateRangeCount());
     if (dr_count > 0) {
-        text += tr(" | %1 个广告/章节标记").arg(dr_count);
+        extras << tr("%1 个广告/章节标记").arg(dr_count);
     }
     const auto iframe_count = static_cast<qulonglong>(result.IframeVariantCount());
     if (iframe_count > 0) {
-        text += tr(" | %1 档快进(I-FRAME)").arg(iframe_count);
+        extras << tr("%1 档快进(I-FRAME)").arg(iframe_count);
     }
     const auto event_count = static_cast<qulonglong>(result.EventCount());
     if (event_count > 0) {
-        text += tr(" | %1 个事件").arg(event_count);
+        extras << tr("%1 个事件").arg(event_count);
     }
     if (result.IsLive()) {
         // 直播包只是一次快照：清单会随服务端滚动而变化，我们不重拉、不轮询。
-        text += tr(" | 单次快照（不持续轮询）");
+        extras << tr("单次快照（不持续轮询）");
         if (result.IsDash()) {
             if (result.has_minimum_update_period) {
-                text += tr(" | minimumUpdatePeriod=%1 s").arg(StreamingSeconds(result.minimum_update_period_s));
+                extras << tr("minimumUpdatePeriod=%1 s").arg(StreamingSeconds(result.minimum_update_period_s));
             }
             if (result.has_time_shift_buffer_depth) {
-                text += tr(" | 时移窗口=%1 s").arg(StreamingSeconds(result.time_shift_buffer_depth_s));
+                extras << tr("时移窗口=%1 s").arg(StreamingSeconds(result.time_shift_buffer_depth_s));
             }
             if (!result.has_availability_start_time) {
-                text += tr(" | 缺 availabilityStartTime");
+                extras << tr("缺 availabilityStartTime");
             }
         } else {
             int live_playlists = 0;
@@ -180,9 +190,11 @@ void StreamingPanel::UpdateSummary(const model::StreamingPackageResult& result) 
                 if (pl.WindowSeconds() > window)
                     window = pl.WindowSeconds();
             }
-            text += tr(" | %1 条直播清单，窗口=%2 s").arg(live_playlists).arg(StreamingSeconds(window));
+            extras << tr("%1 条直播清单，窗口=%2 s").arg(live_playlists).arg(StreamingSeconds(window));
         }
     }
+    if (!extras.isEmpty())
+        text += QLatin1Char('\n') + extras.join(tr(" ｜ "));
     summary_label_->setText(text);
 }
 

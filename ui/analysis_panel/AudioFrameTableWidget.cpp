@@ -73,6 +73,8 @@ void AudioFrameTableWidget::SetupUi() {
     audio_frame_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     audio_frame_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     audio_frame_table_->setSelectionMode(QAbstractItemView::SingleSelection);
+    // QSS 里已定义 alternate-background-color，但只有显式开启交替行色才会生效
+    audio_frame_table_->setAlternatingRowColors(true);
     audio_frame_table_->setSortingEnabled(false);
     audio_frame_table_->horizontalHeader()->setStretchLastSection(true);
     audio_frame_table_->horizontalHeader()->setMinimumSectionSize(50);

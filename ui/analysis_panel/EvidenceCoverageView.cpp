@@ -19,6 +19,7 @@ void EvidenceCoverageView::SetupUi() {
     hint_ = new QLabel(tr("「结论可用」是唯一权威口径：只有该维度确实执行、能力完整、无失败且覆盖达标时才为「是」。"
                           "未执行的行会写明原因，据此判断报告里的「未发现问题」是「真的没问题」还是「没证据」。"),
                        this);
+    hint_->setObjectName(QStringLiteral("HintLabel"));
     hint_->setWordWrap(true);
     layout->addWidget(hint_);
 

@@ -54,9 +54,11 @@ void VisualDefectPage::SetupUi() {
         QWidget* row = new QWidget(this);
         QHBoxLayout* rl = new QHBoxLayout(row);
         rl->setContentsMargins(0, 0, 0, 0);
-        QLabel* title =
-            new QLabel(tr("画面质量（黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 过曝欠曝 / 色偏 / 隔行梳齿 / 黑边）"), row);
-        title->setWordWrap(true);
+        // 标题只留页名：缺陷清单塞进括号会让标题在窄窗下折成两行，和下面的
+        // 参数行、提示文字糊成一片（清单改放 tooltip）。
+        QLabel* title = new QLabel(tr("画面质量"), row);
+        title->setObjectName(QStringLiteral("PageTitle"));
+        title->setToolTip(tr("黑场 / 冻结 / 马赛克 / 模糊 / 闪烁 / 过曝欠曝 / 色偏 / 隔行梳齿 / 黑边"));
         rl->addWidget(title);
         rl->addStretch();
         QCheckBox* toggle = new QCheckBox(tr("启用分析"), row);
@@ -75,12 +77,22 @@ void VisualDefectPage::SetupUi() {
     {
         QHBoxLayout* ol = new QHBoxLayout();
         ol->setContentsMargins(0, 0, 0, 0);
+        // 字段名统一弱色（QLabel#FieldLabel），控件之间留够间距，避免一长排
+        // "标签:值" 挤在一起读不出分组
+        ol->setSpacing(10);
+        auto field = [this](const QString& text) {
+            QLabel* label = new QLabel(text, this);
+            label->setObjectName(QStringLiteral("FieldLabel"));
+            return label;
+        };
 
-        ol->addWidget(new QLabel(tr("采样档位:"), this));
+        ol->addWidget(field(tr("采样档位:")));
         preset_combo_ = new QComboBox(this);
         // objectName: UI 单测靠 findChild() 精确定位（页面里 QComboBox / QDoubleSpinBox
         // 都不止一个），不给名字就只能靠创建顺序猜，猜中了也是假绿。
         preset_combo_->setObjectName(QStringLiteral("VisualDefectPreset"));
+        // 档位名较长（"离线全帧 (逐帧，不丢帧)"），给个下限宽度免得被压成省略号
+        preset_combo_->setMinimumWidth(150);
         preset_combo_->addItem(tr("快速 (1 帧/秒)"), static_cast<int>(model::VisualSamplingPreset::Fast));
         preset_combo_->addItem(tr("标准 (2 帧/秒)"), static_cast<int>(model::VisualSamplingPreset::Standard));
         preset_combo_->addItem(tr("精细 (5 帧/秒)"), static_cast<int>(model::VisualSamplingPreset::Fine));
@@ -98,9 +110,10 @@ void VisualDefectPage::SetupUi() {
                 &VisualDefectPage::OnOptionChanged);
         ol->addWidget(preset_combo_);
 
-        ol->addWidget(new QLabel(tr("模糊阈值:"), this));
+        ol->addWidget(field(tr("模糊阈值:")));
         blur_spin_ = new QDoubleSpinBox(this);
         blur_spin_->setObjectName(QStringLiteral("VisualDefectBlurThreshold"));
+        blur_spin_->setMinimumWidth(90);
         blur_spin_->setRange(0.05, 50.0);
         blur_spin_->setDecimals(2);
         blur_spin_->setSingleStep(0.25);
@@ -110,9 +123,10 @@ void VisualDefectPage::SetupUi() {
                 &VisualDefectPage::OnOptionChanged);
         ol->addWidget(blur_spin_);
 
-        ol->addWidget(new QLabel(tr("冻结阈值:"), this));
+        ol->addWidget(field(tr("冻结阈值:")));
         freeze_spin_ = new QDoubleSpinBox(this);
         freeze_spin_->setObjectName(QStringLiteral("VisualDefectFreezeThreshold"));
+        freeze_spin_->setMinimumWidth(90);
         freeze_spin_->setRange(0.001, 0.2);
         freeze_spin_->setDecimals(3);
         freeze_spin_->setSingleStep(0.001);
@@ -133,10 +147,9 @@ void VisualDefectPage::SetupUi() {
         layout->addLayout(ol);
     }
 
-    summary_label_ = new QLabel(tr("开启分析后播放视频，将在此列出人眼可见的画面问题（黑场、冻结、马赛克、模糊、闪烁、"
-                                   "曝光、色偏、梳齿、黑边）。"
-                                   "点击列表行可跳转播放器。"),
-                                this);
+    summary_label_ =
+        new QLabel(tr("开启分析后播放视频，检测到的画面问题会列在下表；点击任意一行可跳转到对应播放位置。"), this);
+    summary_label_->setObjectName(QStringLiteral("HintLabel"));
     summary_label_->setWordWrap(true);
     layout->addWidget(summary_label_);
 

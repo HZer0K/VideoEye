@@ -45,6 +45,7 @@ void StreamOverviewView::SetupUi() {
         QHBoxLayout* rl = new QHBoxLayout(row);
         rl->setContentsMargins(0, 0, 0, 0);
         QLabel* title = new QLabel(tr("流概览"), row);
+        title->setObjectName(QStringLiteral("PageTitle"));
         rl->addWidget(title);
         rl->addStretch();
 

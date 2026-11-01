@@ -71,10 +71,8 @@ void DiagnosticsPage::SetupUi() {
         QHBoxLayout* rl = new QHBoxLayout(row);
         rl->setContentsMargins(0, 0, 0, 0);
         QLabel* title = new QLabel(tr("诊断与报告（全文件扫描）"), row);
-        QFont title_font = title->font();
-        title_font.setBold(true);
-        title_font.setPointSize(title_font.pointSize() + 1);
-        title->setFont(title_font);
+        // 页头标题统一走 QSS（QLabel#PageTitle）：setFont(+1) 的字号会被全局 13px 压平
+        title->setObjectName(QStringLiteral("PageTitle"));
         rl->addWidget(title);
         rl->addStretch();
 
@@ -116,6 +114,7 @@ void DiagnosticsPage::SetupUi() {
     layout->addWidget(progress_bar_);
 
     summary_label_ = new QLabel(tr("点击「开始分析」对当前文件做一次完整扫描，将按内置 QC 规则输出问题清单与评分。"));
+    summary_label_->setObjectName(QStringLiteral("HintLabel"));
     summary_label_->setWordWrap(true);
     layout->addWidget(summary_label_);
 

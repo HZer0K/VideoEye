@@ -86,6 +86,8 @@ void VideoFrameTableWidget::SetupUi() {
     frame_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     frame_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     frame_table_->setSelectionMode(QAbstractItemView::SingleSelection);
+    // QSS 里已定义 alternate-background-color，但只有显式开启交替行色才会生效
+    frame_table_->setAlternatingRowColors(true);
     frame_table_->setSortingEnabled(false);
     frame_table_->horizontalHeader()->setStretchLastSection(true);
     frame_table_->horizontalHeader()->setMinimumSectionSize(40);
@@ -121,6 +123,7 @@ void VideoFrameTableWidget::SetupUi() {
     gop_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     gop_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     gop_table_->setSelectionMode(QAbstractItemView::SingleSelection);
+    gop_table_->setAlternatingRowColors(true);
     gop_table_->setSortingEnabled(false);
     gop_table_->horizontalHeader()->setStretchLastSection(true);
     gop_table_->setMinimumWidth(500);

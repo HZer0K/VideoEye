@@ -20,6 +20,7 @@ void QcRuleTableView::SetupUi() {
 
     QLabel* hint =
         new QLabel(tr("勾选启用列可开关规则，双击阈值可直接修改；修改后会立即用当前扫描结果重算报告。"), this);
+    hint->setObjectName(QStringLiteral("HintLabel"));
     hint->setWordWrap(true);
     layout->addWidget(hint);
 

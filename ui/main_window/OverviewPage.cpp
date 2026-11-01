@@ -64,10 +64,9 @@ void OverviewPage::BuildUi() {
     // ---- 文件头：文件名 + 状态徽章 ----
     QHBoxLayout* header_row = new QHBoxLayout();
     file_name_label_ = new QLabel(tr("未打开文件"), this);
-    QFont name_font = file_name_label_->font();
-    name_font.setPointSize(name_font.pointSize() + 3);
-    name_font.setBold(true);
-    file_name_label_->setFont(name_font);
+    // 放大字号写在 QSS（QLabel#OverviewFileName）：全局 QWidget{font-size:13px}
+    // 在样式表里的优先级高于 setFont()，这里 setPointSize(+3) 会被压平。
+    file_name_label_->setObjectName("OverviewFileName");
     file_name_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     header_row->addWidget(file_name_label_, 1);
 

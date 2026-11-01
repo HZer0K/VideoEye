@@ -98,6 +98,39 @@ QLabel#MediaPath {
     font-size: 13px;
 }
 
+/* 页内"视觉重心"的字号统一写在这里：全局 QWidget{font-size:13px} 在样式表里的
+   优先级高于 setFont()，代码里 setPointSize(+3/+6) 会被压回 13px，会白写。 */
+QLabel#OverviewFileName {
+    font-size: 16px;
+    font-weight: 700;
+}
+
+QLabel#ReportVerdict {
+    font-size: 20px;
+    font-weight: 700;
+}
+
+/* 状态栏实时统计：比正文小一号，避免挤压左侧临时提示（等宽族仍由 setFont 提供） */
+QLabel#StatusStats {
+    font-size: 12px;
+}
+
+/* 页头标题：所有分析页共用同一套字号，避免各页 setFont(+1) 被全局 13px 压平 */
+QLabel#PageTitle {
+    font-size: 15px;
+    font-weight: 700;
+}
+
+/* 参数行的字段名：比正文弱一档，让输入控件成为视觉主体 */
+QLabel#FieldLabel {
+    color: #A5B1BD;
+}
+
+/* 页内小节标题（如子页里的「章节时间线」）：比页头弱、比正文强 */
+QLabel#SectionLabel {
+    font-weight: 700;
+}
+
 /* ==== 扫描任务条 ====
    全文件扫描期间常驻在应用栏下方，任何页面都能看到阶段 / 进度 / 取消入口。
    用强调色左边界区分"这是正在进行的后台任务"，而不是页内的一段说明文字。 */
@@ -333,8 +366,12 @@ QGroupBox::title {
     color: #A5B1BD;
 }
 
-/* ==== Table ==== */
-QTableWidget {
+/* ==== Table ====
+   选择器必须写 QTableView 而不是 QTableWidget：类型选择器只匹配该类及其子类，
+   而帧/包/音频帧三张明细表是 QTableView + 模型（QTableView 是 QTableWidget 的父类），
+   写成 QTableWidget 时它们拿不到边框、网格线、内边距与选中色，会跟其它页的表不一致。
+   QTableView 同时匹配 QTableWidget 子类，两类表一套规则即可。 */
+QTableView {
     background-color: #0D1117;
     alternate-background-color: #161B22;
     border: 1px solid #30363D;
@@ -344,12 +381,12 @@ QTableWidget {
     font-size: 12px;
 }
 
-QTableWidget::item {
+QTableView::item {
     padding: 4px 8px;
     color: #F0F6FC;
 }
 
-QTableWidget::item:selected {
+QTableView::item:selected {
     background-color: rgba(88, 166, 255, 0.15);
     color: #F0F6FC;
 }

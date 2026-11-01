@@ -39,8 +39,8 @@ void QcProfileView::SetupUi() {
     layout->addWidget(profile_box);
 
     description_ = new QLabel(this);
+    description_->setObjectName(QStringLiteral("HintLabel"));
     description_->setWordWrap(true);
-    description_->setStyleSheet("color: #6b7280;");
     layout->addWidget(description_);
 
     connect(profile_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,

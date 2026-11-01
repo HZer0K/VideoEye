@@ -24,6 +24,7 @@ void FrameOrderView::SetupUi() {
                           "后两种编码的帧头里都不区分 P/B；H.264 的 pic_order_cnt_type=1 与 VVC 不支持；"
                           "不重建参考帧列表。"),
                        this);
+    hint_->setObjectName(QStringLiteral("HintLabel"));
     hint_->setWordWrap(true);
     layout->addWidget(hint_);
 

@@ -61,6 +61,7 @@ void AudioVerdictView::SetupUi() {
     QLabel* hint = new QLabel(tr("判定阈值取自「诊断与报告 → 规则与阈值」，改完会立即重算；"
                                  "这些音频问题也会一并进入诊断报告的评分。"),
                               this);
+    hint->setObjectName(QStringLiteral("HintLabel"));
     hint->setWordWrap(true);
     layout->addWidget(hint);
 

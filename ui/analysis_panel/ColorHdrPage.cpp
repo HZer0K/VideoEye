@@ -42,10 +42,8 @@ void ColorHdrPage::SetupUi() {
         QHBoxLayout* rl = new QHBoxLayout(row);
         rl->setContentsMargins(0, 0, 0, 0);
         QLabel* title = new QLabel(tr("色彩与 HDR 元数据"), row);
-        QFont title_font = title->font();
-        title_font.setBold(true);
-        title_font.setPointSize(title_font.pointSize() + 1);
-        title->setFont(title_font);
+        // 页头标题统一走 QSS（QLabel#PageTitle）：setFont(+1) 的字号会被全局 13px 压平
+        title->setObjectName(QStringLiteral("PageTitle"));
         rl->addWidget(title);
         rl->addStretch();
 
@@ -93,6 +91,7 @@ void ColorHdrPage::SetupUi() {
         new QLabel(tr("点击「开始分析」读取当前视频流的色彩与 HDR 元数据。"
                       "正确的组合应为：BT.709 + BT.709 + BT.709（SDR）或 BT.2020 + PQ/HLG + BT.2020 NCL（HDR）。"),
                    this);
+    summary_label_->setObjectName(QStringLiteral("HintLabel"));
     summary_label_->setWordWrap(true);
     layout->addWidget(summary_label_);
 
@@ -139,6 +138,7 @@ void ColorHdrPage::SetupUi() {
         QLabel* hint = new QLabel(tr("下面列出的是由色彩/HDR 规则判定的异常组合，判定阈值取自"
                                      "「诊断与报告 → 规则与阈值」，这些项目同样计入诊断报告评分。"),
                                   page);
+        hint->setObjectName(QStringLiteral("HintLabel"));
         hint->setWordWrap(true);
         pl->addWidget(hint);
 

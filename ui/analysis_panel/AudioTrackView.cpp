@@ -22,6 +22,7 @@ void AudioTrackView::SetupUi() {
     hint_ = new QLabel(tr("前面几页的响度/静音/规则均为**主音轨**口径；本页给出全部参与分析的音轨，"
                           "用于多语言、评论轨与不同混音版本之间的横向对照。"),
                        this);
+    hint_->setObjectName(QStringLiteral("HintLabel"));
     hint_->setWordWrap(true);
     layout->addWidget(hint_);
 

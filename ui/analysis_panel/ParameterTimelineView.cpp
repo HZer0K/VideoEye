@@ -23,6 +23,7 @@ void ParameterTimelineView::SetupUi() {
         new QLabel(tr("按时间顺序列出 SPS/PPS/VPS/AV1 序列头的配置变化。"
                       "同一参数集 id 的内容被替换（标红）意味着前后帧不是同一套配置，是拼接或编码器重启的直接证据。"),
                    this);
+    hint_->setObjectName(QStringLiteral("HintLabel"));
     hint_->setWordWrap(true);
     layout->addWidget(hint_);
 

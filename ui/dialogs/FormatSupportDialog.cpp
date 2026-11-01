@@ -57,7 +57,7 @@ void FormatSupportDialog::SetupUi() {
                                "不是外部 ffmpeg 命令行；换了 FFmpeg 构建，这里的内容就会变。"),
                             this);
     hint->setWordWrap(true);
-    hint->setStyleSheet(QStringLiteral("color: #8B949E; font-size: 11px;"));
+    hint->setObjectName(QStringLiteral("HintLabel"));
     layout->addWidget(hint);
 
     tabs_ = new QTabWidget(this);
@@ -103,7 +103,7 @@ void FormatSupportDialog::SetupUi() {
     layout->addLayout(tools);
 
     summary_label_ = new QLabel(this);
-    summary_label_->setStyleSheet(QStringLiteral("color: #8B949E; font-size: 11px;"));
+    summary_label_->setObjectName(QStringLiteral("HintLabel"));
     layout->addWidget(summary_label_);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);

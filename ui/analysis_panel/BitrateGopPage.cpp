@@ -59,10 +59,8 @@ void BitrateGopPage::SetupUi() {
         QHBoxLayout* rl = new QHBoxLayout(row);
         rl->setContentsMargins(0, 0, 0, 0);
         QLabel* title = new QLabel(tr("码率与 GOP 深度分析"), row);
-        QFont title_font = title->font();
-        title_font.setBold(true);
-        title_font.setPointSize(title_font.pointSize() + 1);
-        title->setFont(title_font);
+        // 页头标题统一走 QSS（QLabel#PageTitle）：setFont(+1) 的字号会被全局 13px 压平
+        title->setObjectName(QStringLiteral("PageTitle"));
         rl->addWidget(title);
         rl->addStretch();
 
@@ -146,6 +144,7 @@ void BitrateGopPage::SetupUi() {
         new QLabel(tr("点击「开始分析」扫描当前文件：输出滑动窗口码率曲线、I/P/B 比例、GOP 列表与异常峰值，"
                       "并可与场景切换结果关联给出编码优化建议。"),
                    this);
+    summary_label_->setObjectName(QStringLiteral("HintLabel"));
     summary_label_->setWordWrap(true);
     layout->addWidget(summary_label_);
 
@@ -155,6 +154,7 @@ void BitrateGopPage::SetupUi() {
                                          "可选解码精确判定帧类型）；「码流分析」页的 GOP 摘要由播放期解码帧类型推导。"
                                          "两者统计口径不同，数值可能不一致。"),
                                       this);
+    caliber_note->setObjectName(QStringLiteral("HintLabel"));
     caliber_note->setWordWrap(true);
     layout->addWidget(caliber_note);
 

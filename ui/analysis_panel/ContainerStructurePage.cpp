@@ -15,6 +15,7 @@
 #include "infrastructure/logging/ScopedTimer.h"
 #include "ui/analysis_panel/AnalysisPageSupport.h"
 #include "ui/analysis_panel/Mp4SampleTableWidget.h"
+#include "ui/theme/AppTheme.h"
 
 #include "core/domain/model/ContainerStructureInfo.h"
 #include "core/domain/model/Mp4ConsistencyIssue.h"
@@ -44,7 +45,8 @@ void ContainerStructurePage::SetupUi() {
         QHBoxLayout* trl = new QHBoxLayout(titleRow);
         trl->setContentsMargins(0, 0, 0, 0);
         title_label_ = new QLabel(tr("未加载文件"), titleRow);
-        title_label_->setStyleSheet("font-size: 13px; font-weight: bold; color: #F0F6FC; padding: 2px 4px;");
+        // 字号/字重统一走 QSS 的 PageTitle，颜色按状态在 SetResult 里改（只覆盖 color）
+        title_label_->setObjectName(QStringLiteral("PageTitle"));
         title_label_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
         trl->addWidget(title_label_);
         trl->addStretch();
@@ -61,7 +63,7 @@ void ContainerStructurePage::SetupUi() {
 
     // 概要标签
     summary_label_ = new QLabel(tr("打开媒体文件后将自动分析容器结构"), this);
-    summary_label_->setStyleSheet("font-size: 12px; color: #8B949E; padding: 2px 4px;");
+    summary_label_->setObjectName(QStringLiteral("SectionLabel"));
     summary_label_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     layout->addWidget(summary_label_);
 
@@ -73,7 +75,7 @@ void ContainerStructurePage::SetupUi() {
     QVBoxLayout* leftLayout = new QVBoxLayout(leftPanel);
     leftLayout->setContentsMargins(0, 0, 0, 0);
     QLabel* treeLabel = new QLabel(tr("容器结构树:"), leftPanel);
-    treeLabel->setStyleSheet("font-weight: bold; font-size: 11px; padding: 2px;");
+    treeLabel->setObjectName(QStringLiteral("SectionLabel"));
     leftLayout->addWidget(treeLabel);
     tree_ = new QTreeWidget(leftPanel);
     tree_->setHeaderLabels({tr("名称"), tr("类型"), tr("大小"), tr("偏移"), tr("值/属性")});
@@ -107,7 +109,7 @@ void ContainerStructurePage::SetupUi() {
     generic_layout->setContentsMargins(0, 0, 0, 0);
 
     QLabel* stream_label = new QLabel(tr("流信息:"), generic_page);
-    stream_label->setStyleSheet("font-weight: bold; font-size: 11px; padding: 2px;");
+    stream_label->setObjectName(QStringLiteral("SectionLabel"));
     generic_layout->addWidget(stream_label);
     stream_table_ = new QTableWidget(0, 4, generic_page);
     stream_table_->setHorizontalHeaderLabels({tr("#"), tr("类型"), tr("编码"), tr("详情")});
@@ -117,7 +119,7 @@ void ContainerStructurePage::SetupUi() {
     generic_layout->addWidget(stream_table_);
 
     QLabel* meta_label = new QLabel(tr("元数据:"), generic_page);
-    meta_label->setStyleSheet("font-weight: bold; font-size: 11px; padding: 2px;");
+    meta_label->setObjectName(QStringLiteral("SectionLabel"));
     generic_layout->addWidget(meta_label);
     metadata_table_ = new QTableWidget(0, 2, generic_page);
     metadata_table_->setHorizontalHeaderLabels({tr("键"), tr("值")});
@@ -338,10 +340,10 @@ void ContainerStructurePage::SetError(const QString& message) {
     // 少了这条，分析器抛异常时页面会一直停在"打开媒体文件后将自动分析"，
     // 用户分不清是还没分析还是分析崩了。
     title_label_->setText(tr("文件结构"));
-    title_label_->setStyleSheet("font-size: 13px; font-weight: bold; color: #8B949E; padding: 2px 4px;");
+    title_label_->setStyleSheet(QStringLiteral("color: %1;").arg(QString::fromLatin1(theme::color::kTextSecondary)));
 
     summary_label_->setText(message.isEmpty() ? tr("无法分析该格式") : message);
-    summary_label_->setStyleSheet("font-size: 12px; color: #8B949E; padding: 2px 4px;");
+    summary_label_->setStyleSheet(QStringLiteral("color: %1;").arg(QString::fromLatin1(theme::color::kTextSecondary)));
     // 一并清掉上一段分析留下的结构树 / 详情表，别让旧内容冒充新结果
     tree_->clear();
     detail_stack_->setCurrentIndex(0);
@@ -352,23 +354,26 @@ void ContainerStructurePage::SetResult(const model::ContainerStructureResult& re
     VE_PERF("ContainerStructurePage::SetResult 总计");
     result_ = result;
 
-    // 更新动态标题
+    // 更新动态标题（用主题强调色/次文本色，不再用浅色主题时代的 #1a73e8）
     title_label_->setText(result.valid ? QString::fromStdString(result.format_name) + " " + tr("结构分析")
                                        : tr("文件结构"));
-    title_label_->setStyleSheet(result.valid ? "font-size: 13px; font-weight: bold; color: #1a73e8; padding: 2px 4px;"
-                                             : "font-size: 13px; font-weight: bold; color: #8B949E; padding: 2px 4px;");
+    const QString title_color =
+        result.valid ? QString::fromLatin1(theme::color::kAccent) : QString::fromLatin1(theme::color::kTextSecondary);
+    title_label_->setStyleSheet(QStringLiteral("color: %1;").arg(title_color));
 
     if (!result.valid) {
         summary_label_->setText(result.error_message.empty() ? tr("无法分析该格式")
                                                              : QString::fromStdString(result.error_message));
-        summary_label_->setStyleSheet("font-size: 12px; color: #8B949E; padding: 2px 4px;");
+        summary_label_->setStyleSheet(
+            QStringLiteral("color: %1;").arg(QString::fromLatin1(theme::color::kTextSecondary)));
         tree_->clear();
         detail_stack_->setCurrentIndex(0);
         return;
     }
 
     summary_label_->setText(QString::fromStdString(result.summary));
-    summary_label_->setStyleSheet("font-size: 12px; color: #F0F6FC; font-weight: bold; padding: 2px 4px;");
+    // 有结果时摘要用正文色（SectionLabel 自带粗体），不再额外设色
+    summary_label_->setStyleSheet(QString());
 
     // 注：流媒体清单页的联动不再由本页做 —— AnalysisPanel::OnContainerStructureReady
     // 收到同一份结果后会自己调 UpdateStreamingUi()，避免页面之间互相知道对方。

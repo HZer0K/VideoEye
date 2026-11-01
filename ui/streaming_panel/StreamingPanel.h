@@ -23,7 +23,7 @@ class StreamingIssueView;
 //    DashManifestAnalyzer，再经 SegmentQcAnalyzer 做分片级与 ladder 级校验）
 //
 // 布局:
-//   顶部  一行摘要（清单类型 / 码率层数 / 分片数 / 问题数）
+//   顶部  标题行 + 主摘要（清单类型 / 码率层数 / 分片数 / 问题数）+ 附加提示行
 //   中部  左侧 manifest 结构树，右侧「码率阶梯表 + 分片时间轴对齐表」
 //   底部  问题列表（级别着色）
 //

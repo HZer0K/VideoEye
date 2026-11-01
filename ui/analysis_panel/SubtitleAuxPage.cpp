@@ -80,21 +80,29 @@ void SubtitleAuxPage::SetupUi() {
     layout->setContentsMargins(4, 2, 4, 4);
     layout->setSpacing(4);
 
-    // 顶部: 汇总 + 开始分析
+    // 顶部: 标题行（标题 + 开始分析），摘要与明细各占一整行
+    // 原先把长摘要和按钮放在同一行，窄窗时摘要被挤窄提前折行，和按钮一起读成一片。
     {
-        QWidget* row = new QWidget(this);
-        QHBoxLayout* rl = new QHBoxLayout(row);
-        rl->setContentsMargins(0, 0, 0, 0);
-        summary_label_ = new QLabel(
-            tr("未分析：点「开始分析」对当前文件做一次全文件扫描（与「诊断与报告」共用同一次扫描结果）。"), row);
-        summary_label_->setWordWrap(true);
-        rl->addWidget(summary_label_, 1);
-        start_button_ = new QPushButton(tr("开始分析"), row);
+        QWidget* title_row = new QWidget(this);
+        QHBoxLayout* tl = new QHBoxLayout(title_row);
+        tl->setContentsMargins(0, 0, 0, 0);
+        QLabel* title = new QLabel(tr("字幕与辅助"), title_row);
+        title->setObjectName(QStringLiteral("PageTitle"));
+        tl->addWidget(title);
+        tl->addStretch();
+
+        start_button_ = new QPushButton(tr("开始分析"), title_row);
         start_button_->setToolTip(
             tr("字幕 cue、时码轨、章节、SCTE-35 与 metadata 都来自同一次全文件 demux，不额外读一遍文件。"));
         connect(start_button_, &QPushButton::clicked, this, &SubtitleAuxPage::OnStartAnalysis);
-        rl->addWidget(start_button_);
-        layout->addWidget(row);
+        tl->addWidget(start_button_);
+        layout->addWidget(title_row);
+
+        summary_label_ = new QLabel(
+            tr("未分析：点「开始分析」对当前文件做一次全文件扫描（与「诊断与报告」共用同一次扫描结果）。"), this);
+        summary_label_->setObjectName(QStringLiteral("HintLabel"));
+        summary_label_->setWordWrap(true);
+        layout->addWidget(summary_label_);
     }
 
     sub_tabs_ = new QTabWidget(this);
@@ -110,7 +118,10 @@ void SubtitleAuxPage::SetupUi() {
         QWidget* filter_row = new QWidget(page);
         QHBoxLayout* fl = new QHBoxLayout(filter_row);
         fl->setContentsMargins(0, 0, 0, 0);
-        fl->addWidget(new QLabel(tr("字幕流:"), filter_row));
+        fl->setSpacing(8);
+        QLabel* stream_field = new QLabel(tr("字幕流:"), filter_row);
+        stream_field->setObjectName(QStringLiteral("FieldLabel"));
+        fl->addWidget(stream_field);
         stream_combo_ = new QComboBox(filter_row);
         stream_combo_->setMinimumWidth(220);
         connect(stream_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
@@ -154,7 +165,9 @@ void SubtitleAuxPage::SetupUi() {
         timecode_table_->setMaximumHeight(200);
         pl->addWidget(timecode_table_);
 
-        pl->addWidget(new QLabel(tr("章节时间线"), page));
+        QLabel* chapter_title = new QLabel(tr("章节时间线"), page);
+        chapter_title->setObjectName(QStringLiteral("SectionLabel"));
+        pl->addWidget(chapter_title);
         chapter_table_ =
             MakeAuxTable({tr("#"), tr("起点"), tr("终点"), tr("时长"), tr("标题"), tr("语言"), tr("问题")}, page);
         pl->addWidget(chapter_table_, 1);
@@ -290,28 +303,30 @@ void SubtitleAuxPage::UpdateSummary() {
         return;
     }
 
-    QStringList parts;
-    parts << tr("字幕流 %1 条（文本 %2 / 图形 %3），cue %4 条，问题 %5 处")
-                 .arg(r.subtitle.streams.size())
-                 .arg(r.subtitle.text_stream_count)
-                 .arg(r.subtitle.bitmap_stream_count)
-                 .arg(r.subtitle.cues.size())
-                 .arg(r.subtitle.issues.size());
+    // 主行只留"字幕本身"的结论，其余维度另起一行：原来 5 段用「｜」拼成一条长句，
+    // 窄窗下会折成 2~3 行参差短行。
+    QString text = tr("字幕流 %1 条（文本 %2 / 图形 %3），cue %4 条，问题 %5 处")
+                       .arg(r.subtitle.streams.size())
+                       .arg(r.subtitle.text_stream_count)
+                       .arg(r.subtitle.bitmap_stream_count)
+                       .arg(r.subtitle.cues.size())
+                       .arg(r.subtitle.issues.size());
+    QStringList detail;
     if (r.DimensionExecuted(model::AnalysisDimension::Timecode)) {
-        parts << (r.timecode.has_primary ? tr("首帧时码 %1 @ %2 fps%3")
-                                               .arg(QString::fromStdString(r.timecode.primary.ToString()))
-                                               .arg(r.timecode.primary_frame_rate, 0, 'f', 3)
-                                               .arg(r.timecode.primary_drop_frame ? tr("（drop-frame）") : tr(""))
-                                         : tr("未找到时码"));
+        detail << (r.timecode.has_primary ? tr("首帧时码 %1 @ %2 fps%3")
+                                                .arg(QString::fromStdString(r.timecode.primary.ToString()))
+                                                .arg(r.timecode.primary_frame_rate, 0, 'f', 3)
+                                                .arg(r.timecode.primary_drop_frame ? tr("（drop-frame）") : tr(""))
+                                          : tr("未找到时码"));
     }
-    parts << tr("章节 %1 个，问题 %2 处").arg(r.timecode.chapters.size()).arg(r.timecode.chapter_issues.size());
-    parts << tr("SCTE-35 cue %1 条（OUT %2 / IN %3）")
-                 .arg(r.aux_data.scte35_cue_count)
-                 .arg(r.aux_data.scte35_out_count)
-                 .arg(r.aux_data.scte35_in_count);
-    parts << tr("metadata %1 条").arg(r.aux_data.metadata.size());
+    detail << tr("章节 %1 个，问题 %2 处").arg(r.timecode.chapters.size()).arg(r.timecode.chapter_issues.size());
+    detail << tr("SCTE-35 cue %1 条（OUT %2 / IN %3）")
+                  .arg(r.aux_data.scte35_cue_count)
+                  .arg(r.aux_data.scte35_out_count)
+                  .arg(r.aux_data.scte35_in_count);
+    detail << tr("metadata %1 条").arg(r.aux_data.metadata.size());
 
-    summary_label_->setText(parts.join(tr(" ｜ ")));
+    summary_label_->setText(text + QLatin1Char('\n') + detail.join(tr(" ｜ ")));
 }
 
 void SubtitleAuxPage::RebuildSubtitleStreamTable() {

@@ -53,11 +53,10 @@ void AudioQcPage::SetupUi() {
         QWidget* row = new QWidget(this);
         QHBoxLayout* rl = new QHBoxLayout(row);
         rl->setContentsMargins(0, 0, 0, 0);
-        QLabel* title = new QLabel(tr("音频 QC（响度 / 真峰值 / 削波 / 静音 / 相位）"), row);
-        QFont title_font = title->font();
-        title_font.setBold(true);
-        title_font.setPointSize(title_font.pointSize() + 1);
-        title->setFont(title_font);
+        // 标题只留页名，检测项清单放 tooltip：括号里塞一长串会让标题在窄窗下折行
+        QLabel* title = new QLabel(tr("音频 QC"), row);
+        title->setObjectName(QStringLiteral("PageTitle"));
+        title->setToolTip(tr("响度 / 真峰值 / 削波 / 静音 / 相位"));
         rl->addWidget(title);
         rl->addStretch();
 
@@ -90,8 +89,15 @@ void AudioQcPage::SetupUi() {
         QWidget* row = new QWidget(this);
         QHBoxLayout* rl = new QHBoxLayout(row);
         rl->setContentsMargins(0, 0, 0, 0);
+        // 字段名弱色 + 控件之间留间距：原来一串"标签:数值"挤在一起，读不出分组
+        rl->setSpacing(8);
+        auto field = [this](const QString& text) {
+            QLabel* label = new QLabel(text, this);
+            label->setObjectName(QStringLiteral("FieldLabel"));
+            return label;
+        };
 
-        rl->addWidget(new QLabel(tr("目标响度"), row));
+        rl->addWidget(field(tr("目标响度")));
         target_lufs_spin_ = new QDoubleSpinBox(row);
         target_lufs_spin_->setRange(-70.0, 0.0);
         target_lufs_spin_->setDecimals(1);
@@ -102,7 +108,7 @@ void AudioQcPage::SetupUi() {
         connect(target_lufs_spin_, &QDoubleSpinBox::valueChanged, this, &AudioQcPage::OnOptionChanged);
         rl->addWidget(target_lufs_spin_);
 
-        rl->addWidget(new QLabel(tr("静音阈值"), row));
+        rl->addWidget(field(tr("静音阈值")));
         silence_spin_ = new QDoubleSpinBox(row);
         silence_spin_->setRange(-120.0, 0.0);
         silence_spin_->setDecimals(0);
@@ -112,7 +118,7 @@ void AudioQcPage::SetupUi() {
         connect(silence_spin_, &QDoubleSpinBox::valueChanged, this, &AudioQcPage::OnOptionChanged);
         rl->addWidget(silence_spin_);
 
-        rl->addWidget(new QLabel(tr("最短静音"), row));
+        rl->addWidget(field(tr("最短静音")));
         min_silence_spin_ = new QDoubleSpinBox(row);
         min_silence_spin_->setRange(0.0, 60.0);
         min_silence_spin_->setDecimals(2);
@@ -122,7 +128,7 @@ void AudioQcPage::SetupUi() {
         connect(min_silence_spin_, &QDoubleSpinBox::valueChanged, this, &AudioQcPage::OnOptionChanged);
         rl->addWidget(min_silence_spin_);
 
-        rl->addWidget(new QLabel(tr("削波阈值"), row));
+        rl->addWidget(field(tr("削波阈值")));
         clip_spin_ = new QDoubleSpinBox(row);
         clip_spin_->setRange(0.5, 1.0);
         clip_spin_->setDecimals(4);
@@ -155,6 +161,7 @@ void AudioQcPage::SetupUi() {
         new QLabel(tr("点击「开始分析」对音频流做一次完整解码体检：Integrated / Short-term / Momentary LUFS、"
                       "LRA、真峰值、削波、静音段、声道相位与 metadata 一致性。"),
                    this);
+    summary_label_->setObjectName(QStringLiteral("HintLabel"));
     summary_label_->setWordWrap(true);
     layout->addWidget(summary_label_);
 

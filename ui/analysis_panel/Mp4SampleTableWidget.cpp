@@ -38,14 +38,17 @@ void Mp4SampleTableWidget::SetupUi() {
     // 顶部: 轨道选择 + 联动提示
     QHBoxLayout* top = new QHBoxLayout();
     top->setContentsMargins(0, 0, 0, 0);
-    top->addWidget(new QLabel(tr("轨道:"), this));
+    top->setSpacing(8);
+    QLabel* track_label = new QLabel(tr("轨道:"), this);
+    track_label->setObjectName(QStringLiteral("FieldLabel"));
+    top->addWidget(track_label);
     track_combo_ = new QComboBox(this);
     track_combo_->setMinimumWidth(240);
     track_combo_->setToolTip(tr("选择要展开样本的轨道（视频/音频/字幕等）"));
     top->addWidget(track_combo_);
     top->addStretch();
     focus_label_ = new QLabel(tr("点击左侧结构树的 stts/ctts/stss/stco/stsz 可联动本表"), this);
-    focus_label_->setStyleSheet("font-size: 11px; color: #8B949E;");
+    focus_label_->setObjectName(QStringLiteral("HintLabel"));
     top->addWidget(focus_label_);
     export_button_ = new QPushButton(tr("导出样本 CSV"), this);
     export_button_->setToolTip(tr("把当前轨道的样本表导出为 CSV（含偏移/DTS/PTS/大小/关键帧）"));
@@ -53,7 +56,7 @@ void Mp4SampleTableWidget::SetupUi() {
     layout->addLayout(top);
 
     summary_label_ = new QLabel(tr("样本表：未分析"), this);
-    summary_label_->setStyleSheet("font-size: 11px; color: #8B949E; padding: 2px;");
+    summary_label_->setObjectName(QStringLiteral("HintLabel"));
     summary_label_->setWordWrap(true);
     layout->addWidget(summary_label_);
 
@@ -64,9 +67,8 @@ void Mp4SampleTableWidget::SetupUi() {
     sample_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     sample_table_->setAlternatingRowColors(true);
     sample_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    sample_table_->setStyleSheet(
-        "QTableWidget { background-color: #0D1117; alternate-background-color: #12181F; color: #F0F6FC; }"
-        "QHeaderView::section { background-color: #161B22; color: #8B949E; padding: 3px; border: none; }");
+    // 样式交给全局 QSS（QTableView 规则）：就地再写一套会把交替行色/表头字号
+    // 改回更暗的本地值，与同页其它表不一致。
 
     // 底部: 一致性问题 + 分片列表
     QTabWidget* bottom = new QTabWidget(this);
@@ -143,7 +145,7 @@ void Mp4SampleTableWidget::UpdateSummary() {
     const auto& r = samples_;
     if (!r.valid) {
         summary_label_->setText(tr("样本表：未分析（文件不是 MP4/MOV，或容器解析失败）"));
-        summary_label_->setStyleSheet("font-size: 11px; color: #8B949E; padding: 2px;");
+        summary_label_->setStyleSheet(QString());
         return;
     }
 
@@ -173,9 +175,8 @@ void Mp4SampleTableWidget::UpdateSummary() {
             .arg(errors)
             .arg(warnings)
             .arg(infos));
-    summary_label_->setStyleSheet(errors > 0 ? "font-size: 11px; color: #F85149; padding: 2px;"
-                                             : (warnings > 0 ? "font-size: 11px; color: #D29922; padding: 2px;"
-                                                             : "font-size: 11px; color: #3FB950; padding: 2px;"));
+    summary_label_->setStyleSheet(errors > 0 ? "color: #F85149;"
+                                             : (warnings > 0 ? "color: #D29922;" : "color: #3FB950;"));
 }
 
 void Mp4SampleTableWidget::RebuildSampleTable() {
