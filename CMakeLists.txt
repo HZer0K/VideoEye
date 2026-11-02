@@ -892,6 +892,14 @@ if(QTADAPTER_SOURCES)
     target_link_libraries(${PROJECT_NAME} PRIVATE VideoEyeQtAdapters)
 endif()
 
+# Windows 可执行文件图标：资源管理器 / 任务栏 / Alt-Tab 取的是 exe 内嵌资源，
+# 这一步只有 Windows 有（.rc 交给资源编译器）；Linux/macOS 的窗口图标走 qrc，
+# 见 ui/app/main.cpp 的 setWindowIcon。图标产物由 scripts/gen_icon.py 从
+# ui/theme/assets/app_icon.svg 生成，别手改 .ico / .png。
+if(WIN32)
+    target_sources(${PROJECT_NAME} PRIVATE ui/theme/assets/app.rc)
+endif()
+
 # FFmpeg 运行时部署 (Windows 拷 DLL / Linux、macOS 拷 .so、.dylib 并设 rpath)
 videoeye_deploy_ffmpeg(${PROJECT_NAME})
 # 原生 ffmpeg 可执行程序 (Windows 随包分发时拷到可执行文件旁)

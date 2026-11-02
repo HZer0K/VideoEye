@@ -76,22 +76,6 @@ QWidget#AppBar {
     border-bottom: 1px solid #30363D;
 }
 
-QLabel#AppTitle {
-    color: #F0F6FC;
-    font-size: 15px;
-    font-weight: 600;
-}
-
-QLabel#VersionBadge {
-    color: #58A6FF;
-    background-color: rgba(88, 166, 255, 0.15);
-    border: 1px solid rgba(88, 166, 255, 0.3);
-    border-radius: 4px;
-    padding: 1px 6px;
-    font-size: 12px;
-    font-weight: 600;
-}
-
 QLabel#MediaPath {
     color: #8B949E;
     font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
@@ -774,6 +758,17 @@ void applyDarkTheme() {
         qApp->setPalette(palette);
         qApp->setStyleSheet(getDarkStylesheet());
     }
+}
+
+QIcon appIcon() {
+    // 逐尺寸登记：只给一张 256 时 Qt 会平滑缩放去凑标题栏(16)和任务栏(32)，
+    // 细描边会糊成一团。尺寸表必须与 theme.qrc 里登记的文件一致 ——
+    // 缺一个该尺寸就会静默回退到别的帧，看不出错误但会糊。
+    QIcon icon;
+    for (const int size : {16, 24, 32, 48, 64, 128, 256}) {
+        icon.addFile(QStringLiteral(":/videoeye/theme/assets/app_icon_%1.png").arg(size), QSize(size, size));
+    }
+    return icon;
 }
 
 } // namespace theme

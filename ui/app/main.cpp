@@ -10,6 +10,7 @@
 #include "infrastructure/logging/Logger.h"
 #include "ui/app/LogDirectory.h"
 #include "ui/main_window/MainWindow.h"
+#include "ui/theme/AppTheme.h"
 
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
@@ -17,6 +18,10 @@ int main(int argc, char* argv[]) {
     app.setApplicationName("VideoEye");
     app.setApplicationVersion("2.0.0");
     app.setOrganizationName("VideoEye Team");
+
+    // 应用图标：窗口图标与 AppBar 左上角 Logo 共用同一份来源，
+    // 避免"标题栏一个样、界面里另一个样"。
+    app.setWindowIcon(videoeye::ui::theme::appIcon());
 
     // 调试日志: 写用户级数据目录（Windows AppData\Local / Linux ~/.local/share /
     // macOS ~/Library/Application Support）。装到 Program Files 这类只读安装目录时

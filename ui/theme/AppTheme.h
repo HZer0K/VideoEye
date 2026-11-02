@@ -2,6 +2,7 @@
 
 #include <QColor>
 #include <QFont>
+#include <QIcon>
 #include <QString>
 
 namespace videoeye {
@@ -61,6 +62,16 @@ QString getDarkStylesheet();
 
 /// 应用深色主题到 QApplication
 void applyDarkTheme();
+
+// ============================================================================
+// Application Icon
+// ============================================================================
+
+/// 应用图标（逐尺寸登记的 QIcon）。
+/// 窗口图标、AppBar 左上角 Logo 都从这里取 —— 图标只有一份来源，
+/// 改图标只需重跑 scripts/gen_icon.py，不会出现"两个地方不一样"。
+/// PNG 与 exe 内嵌 ICO 同源，全部由 app_icon.svg 生成。
+QIcon appIcon();
 
 } // namespace theme
 } // namespace ui

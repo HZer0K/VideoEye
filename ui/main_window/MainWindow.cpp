@@ -28,7 +28,6 @@
 #include <QButtonGroup>
 #include <QDebug>
 #include <QFileDialog>
-#include <QFontDatabase>
 #include <QGroupBox>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -237,27 +236,12 @@ void MainWindow::SetupAppBar() {
     layout->setContentsMargins(16, 0, 16, 0);
     layout->setSpacing(12);
 
-    // Logo + 应用名
-    QLabel* logo_label = new QLabel(QStringLiteral("\xF0\x9F\x91\x81"), app_bar_); // eye emoji
-    logo_label->setFixedSize(24, 24);
-    logo_label->setAlignment(Qt::AlignCenter);
-    QFont logoFont;
-    logoFont.setPixelSize(16);
-    logo_label->setFont(logoFont);
-    layout->addWidget(logo_label);
-
-    QLabel* title_label = new QLabel("VideoEye", app_bar_);
-    title_label->setObjectName("AppTitle");
-    layout->addWidget(title_label);
-
-    QLabel* version_badge = new QLabel("2.0", app_bar_);
-    version_badge->setObjectName("VersionBadge");
-    layout->addWidget(version_badge);
+    // 这里不再重复画 Logo / 应用名 / 版本号：标题栏已经有图标和窗标题，
+    // 应用栏再放一遍是纯重复，还白占一行左侧最显眼的位置。
+    // 应用图标仍然只有一份来源（theme::appIcon()），窗口图标由 main.cpp 设置。
 
     // 布局段按钮：监看 / 分析 / 并排。
-    // 放在产品名旁边而不是藏在「视图」菜单里 —— 这是每天都要用几次的操作，
-    // 而且换页时它会自己变（见 ApplyLayoutForPage），放在显眼处才解释得清"界面为什么变了"。
-    layout->addSpacing(16);
+    // 换页时它会自己变（见 ApplyLayoutForPage），放在显眼处才解释得清"界面为什么变了"。
     QLabel* layout_hint = new QLabel(tr("布局"), app_bar_);
     layout_hint->setObjectName("HintLabel");
     layout->addWidget(layout_hint);

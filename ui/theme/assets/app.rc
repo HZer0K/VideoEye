@@ -1,0 +1,11 @@
+// VideoEye executable icon.
+//
+// Referenced by CMakeLists.txt on Windows only. The .ico is generated from
+// ui/theme/assets/app_icon.svg by scripts/gen_icon.py -- edit the SVG, then
+// re-run the script; never patch the .ico or the app_icon_*.png by hand.
+//
+// Path is resolved relative to this file's directory (rc.exe behaviour).
+
+#define IDI_VIDEOEYE_ICON 101
+
+IDI_VIDEOEYE_ICON ICON "app_icon.ico"

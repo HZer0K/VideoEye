@@ -3,5 +3,15 @@
     <qresource prefix="/videoeye/theme">
         <file>assets/checkbox_checked.png</file>
         <file>assets/checkbox_checked_disabled.png</file>
+        <!-- 应用图标：QIcon 需要逐尺寸登记，只给一张 256 会被平滑缩放，
+             标题栏/任务栏这些 16~32px 的场景就会糊。PNG 与 exe 图标同源，
+             都由 scripts/gen_icon.py 从 app_icon.svg 生成，别手改这些 PNG。 -->
+        <file>assets/app_icon_16.png</file>
+        <file>assets/app_icon_24.png</file>
+        <file>assets/app_icon_32.png</file>
+        <file>assets/app_icon_48.png</file>
+        <file>assets/app_icon_64.png</file>
+        <file>assets/app_icon_128.png</file>
+        <file>assets/app_icon_256.png</file>
     </qresource>
 </RCC>
