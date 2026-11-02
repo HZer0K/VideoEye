@@ -73,7 +73,11 @@ struct MediaPlayer::Impl {
         // 取消全部后台任务并等待退出。同理: 容器结构分析线程自己持有 AVFormatContext。
         task_manager_.CancelAll();
         task_manager_.WaitForAll(kShutdownWaitMs);
-        StopPlayback();
+        // notify_state_change=false：这里是析构收尾，还在清资源但**不能**再发 StateChanged。
+        // 走到这一步时宿主（MediaPlayer）与它的接收者（PlayerPanel/MainWindow）都已在析构，
+        // 信号落进 UI 槽就是野指针 —— 实测 exit 0xC0000005，崩点正是 Stop() 末尾那句 emit。
+        // 用户显式关窗时 ~MainWindow 已经 Stop 过一次（那次发信号是对的），本次只做清理。
+        StopPlayback(false);
         playback_session_.Release();
         avformat_network_deinit();
     }
@@ -95,7 +99,8 @@ struct MediaPlayer::Impl {
 
     // --- 播放收尾 ---
     // Stop() / 换媒体 / 析构共用的"停播放"三件套: 置中断、停会话、闭合未完成的缺陷段。
-    void StopPlayback();
+    // notify_state_change=false 只在析构路径用（见 ~Impl）：资源照清，但不发信号。
+    void StopPlayback(bool notify_state_change = true);
 
     // --- 分析开关分派 ---
     // SetAnalysisFeature() 的实现: 按 AnalysisFeature 落到各维度开关。新增维度只需在
@@ -389,11 +394,11 @@ bool MediaPlayer::Impl::OpenInternal(const QString& url, const AVInputFormat* in
     return CommitOpen(url, std::move(result));
 }
 
-void MediaPlayer::Impl::StopPlayback() {
+void MediaPlayer::Impl::StopPlayback(bool notify_state_change) {
     // 先置中断、再停会话：网络源此刻可能正卡在 avformat_open_input / av_read_frame 上，
     // 置位后那些阻塞 IO 会立刻退出，playback_session_.Stop() 的 join 才等得到返回。
     RequestCancel();
-    playback_session_.Stop();
+    playback_session_.Stop(notify_state_change);
     // 停止播放时闭合未结束的缺陷段（UI 立刻能看到最后一条）
     realtime_analysis_.FlushOnStop();
 }

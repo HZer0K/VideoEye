@@ -28,8 +28,11 @@ PlaybackSession::PlaybackSession(QObject* parent) : QObject(parent) {
 }
 
 PlaybackSession::~PlaybackSession() {
-    // 必须先停线程: 它持有 this 与 FFmpeg 上下文, 晚一步就是野指针
-    Stop();
+    // 必须先停线程: 它持有 this 与 FFmpeg 上下文, 晚一步就是野指针。
+    // 但析构期**不能**发 StateChanged：走到这里时宿主 MediaPlayer 与它的接收者
+    // 都在析构，信号打进 UI 槽就是野指针 —— 实测关窗 exit 0xC0000005。
+    // 用户主动关窗时 ~MainWindow 已经 Stop 过一次（那次发信号才是对的）。
+    Stop(/*notify_state_change=*/false);
     Release();
 }
 
@@ -129,7 +132,7 @@ void PlaybackSession::Pause() {
     }
 }
 
-void PlaybackSession::Stop() {
+void PlaybackSession::Stop(bool notify_state_change) {
     {
         // 状态迁移 + 唤醒进同一把锁: 解码线程要么在进阻塞前看到 new 状态,
         // 要么在阻塞中被这次唤醒叫醒 —— 不会再出现"通知打在没人的地方"。
@@ -152,7 +155,9 @@ void PlaybackSession::Stop() {
     drop_until_sec_.store(-1.0);
     audio_output_.reset();
     current_position_ms_.store(0);
-    emit StateChanged(state_.load());
+    if (notify_state_change) {
+        emit StateChanged(state_.load());
+    }
 }
 
 void PlaybackSession::Seek(int position_ms, model::SeekMode mode) {

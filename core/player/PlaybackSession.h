@@ -130,7 +130,10 @@ public:
     // --- 播放控制 ---
     bool Play(); // 返回 false 表示没有已打开的媒体
     void Pause();
-    void Stop(); // 停解码线程并 join
+    // 停解码线程并 join。
+    // notify_state_change=false 用于"对象正在析构"的收尾：此时仍要清资源，但不能发
+    // StateChanged —— 宿主与接收者都已进入半析构，信号落到 UI 槽就是野指针访问。
+    void Stop(bool notify_state_change = true);
     void Seek(int position_ms, model::SeekMode mode);
 
     // --- 状态 ---
