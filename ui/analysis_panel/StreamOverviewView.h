@@ -7,7 +7,9 @@
 // 让曲线一直可见）。接缝：
 //   - 数据进来：SetStreamStats()（播放期逐次回吐）、SetGopSummaries()（FramePacketView
 //     产出 GOP 摘要后经面板桥接过来，供「最大GOP大小」指标与 GOP 分布曲线共用）
-//   - 开关出去：面板通过 SetFeatureHooks 注入，视图只认自己的编号 0 = 流统计
+//   - 开关出去：面板通过 SetFeatureHooks 注入。本页头承载**整页**的聚合开关
+//     （编号 0..3 = 流统计 / 视频帧 / 音频帧 / 数据包），下方帧/包明细的采集项不再
+//     各自挂一个同名勾选框 —— 一个页面只有一处「启用分析」
 //   - 导出报告要用当前文件路径拼默认文件名 + 写进报告元信息
 //
 // 「最大 GOP」统一取 GopSummary 的口径（解码帧 pict_type 推导），不再使用
@@ -23,10 +25,10 @@
 #include <vector>
 
 #include "core/domain/model/StreamStats.h"
+#include "ui/analysis_panel/AggregateFeatureToggle.h"
 #include "ui/analysis_panel/StreamRecords.h"
 #include "ui/charts/MetricChartWidget.h"
 
-class QCheckBox;
 class QPushButton;
 
 namespace videoeye {
@@ -38,9 +40,10 @@ class StreamOverviewView : public QWidget {
 public:
     explicit StreamOverviewView(QWidget* parent = nullptr);
 
-    // 页面只认自己的开关编号（0 = 流统计）。编号到 AnalysisFeature 的映射、以及
-    // AnalysisFeatureToggled 的转发都由面板做。注入时会立即把真实开关状态回写到
-    // 「启用分析」勾选框：控件是在构造函数里建的，那时钩子还不存在。
+    // 面板注入 feature 读写钩子。视图内部编号固定为 4 项：
+    //   0 = 流统计、1 = 视频帧、2 = 音频帧、3 = 数据包
+    // 编号到 AnalysisFeature 的映射、以及 AnalysisFeatureToggled 的转发都由面板做。
+    // 注入时会立即把真实开关状态回写到页头那个唯一的「启用分析」勾选框（三态聚合）。
     void SetFeatureHooks(std::function<bool(int)> is_enabled, std::function<void(int, bool)> set_enabled);
 
     // 导出分析报告时写进报告元信息（当前文件路径）
@@ -57,6 +60,11 @@ public:
     // 换文件时配合「视频帧列表」一起清空曲线（原先由面板的 ResetVideoFrameList 触发）
     void ResetCharts();
 
+    // 追加一项导出动作。页头「导出」菜单由本视图持有（它在外部 stack 页的最顶部），
+    // 同页下方的视频帧 / 包 / GOP / 音频帧导出经此并入同一个菜单 —— 一个页面只留
+    // 一个「导出」入口，而不是上下各挂一个。
+    void AddExportAction(const QString& text, std::function<void()> handler, const QString& tooltip = QString());
+
     bool HasPending() const {
         return has_pending_stats_ || gop_dirty_;
     }
@@ -64,21 +72,18 @@ public:
 
 private:
     void SetupUi();
-    void SyncToggleFromHooks();
     void RefreshStatsUi();
     void UpdateBitrateChart();
     void UpdateFpsChart();
     void UpdateGopChart();
     void OnExportReport();
 
-    std::function<bool(int)> is_enabled_;
-    std::function<void(int, bool)> set_enabled_;
     QString source_path_;
 
     QTableWidget* stats_table_ = nullptr;
     QPushButton* export_button_ = nullptr;
-    // 必须留成员：SetFeatureHooks 注入钩子后要拿它把真实开关状态回写到界面
-    QCheckBox* toggle_ = nullptr;
+    // 页头唯一的「启用分析」：聚合本页 4 个采集项（全开 / 全关 / 半选）。
+    AggregateFeatureToggle toggle_;
 
     MetricChartWidget* bitrate_chart_ = nullptr;
     ChartSeries* bitrate_series_ = nullptr;

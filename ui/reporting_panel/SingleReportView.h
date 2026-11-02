@@ -1,10 +1,11 @@
 #pragma once
 
-// 「单文件报告」区：当前文件、导出格式、结论与问题计数、重新分析 / 导出。
+// 「单文件报告」区：当前文件、导出格式、结论与问题计数、重新分析。
 //
 // 从 ReportingPanel 拆出的展示型组件。分析怎么跑、导出的三条决策（新鲜就直接导 /
 // 不新鲜先挂起再分析 / 汇总重算）仍在面板与 ReportExportController 里；这里只把
-// qc::QcRunResult 翻译成"分数 + 结论 + 四类计数"的展示口径，并转发两个按钮请求。
+// qc::QcRunResult 翻译成"分数 + 结论 + 四类计数"的展示口径，并转发重新分析请求。
+// 导出入口统一在面板页头的「导出」菜单里（见 ReportingPanel），本区不再挂按钮。
 
 #include <vector>
 
@@ -39,15 +40,12 @@ public:
     void ShowInvalidated(bool has_file);
 
     void SetBusy(bool busy);
-    void SetExportEnabled(bool enabled);
-    bool IsExportEnabled() const;
 
     // 勾选的导出格式；一个都没勾退回 JSON（与原实现一致）
     std::vector<qc::QcReportFormat> SelectedFormats() const;
 
 signals:
     void AnalyzeRequested();
-    void ExportRequested();
 
 private:
     void SetupUi();
@@ -61,7 +59,6 @@ private:
     QCheckBox* format_pdf_ = nullptr;
     QCheckBox* format_txt_ = nullptr;
     QPushButton* analyze_button_ = nullptr;
-    QPushButton* export_button_ = nullptr;
 };
 
 } // namespace ui

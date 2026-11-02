@@ -50,6 +50,10 @@ void AnalysisPanel::AddScanClient(ScanClient* page) {
     scan_clients_.push_back(page);
 }
 
+QString AnalysisPanel::CurrentVideoPath() const {
+    return QString::fromStdString(current_video_path_);
+}
+
 void AnalysisPanel::SetCurrentVideoPath(const QString& path) {
     current_video_path_ = path.toStdString();
     // 切换文件后重置时间轴累计状态 (避免上一文件的数据混入)；
@@ -93,25 +97,29 @@ void AnalysisPanel::RegisterScanPage(PageT* page) {
 
 AnalysisPanel::AnalysisPanel(QWidget* parent) : QWidget(parent) {
 
-    // 播放期/打开期开关的默认值统一按「附加开销」分层（与界面文案、tooltip 一致）：
-    //   默认开 = 复用播放/打开本来就有的数据，几乎无额外开销（流统计、视频帧、容器结构）；
-    //   默认关 = 需要额外的解码、降采样或数据留存（音频帧、数据包、事件、同步、时间轴、
-    //            宏块、场景切换、画面质量），界面统一标注「按需开启」。
-    // 全文件扫描页（码率 GOP / 音频 QC / 色彩 HDR / 参数集 / 流媒体包 / 字幕 / 质量诊断）
-    // 不用常驻开关，统一由「开始分析」按钮触发共享扫描。
+    // 所有分析项一律默认关，由用户按需显式开启（零采集、零误读）。
+    //
+    // 之前的做法是按「附加开销」分层：复用播放数据的几项（流统计、视频帧、容器结构）
+    // 默认开，需要额外解码/留存的默认关。结果是同一个页面的聚合开关一打开就是
+    // **半选**状态 —— 三个页面的初始外观各不相同，用户也说不清"这页到底开没开"。
+    // 现在统一为全关：每页页头的分析入口初始都是未勾选，勾一下才真正开始采集。
+    // 代价是打开文件后各页先空着，这是有意的取舍 —— 空表至少不会让人误以为是
+    // "分析过、没问题"。
+    //
+    // Master 仍是总闸（不是用户可见的开关），保持开：它只负责在"某项关掉"之外
+    // 再提供一次整体闸断，若也置关则任何单项开启都不会有数据流出。
     feature_enabled_[AnalysisFeature::Master] = true;
-    feature_enabled_[AnalysisFeature::StreamStats] = true;
-    feature_enabled_[AnalysisFeature::VideoFrame] = true;
+    feature_enabled_[AnalysisFeature::StreamStats] = false;
+    feature_enabled_[AnalysisFeature::VideoFrame] = false;
     feature_enabled_[AnalysisFeature::AudioFrame] = false;
     feature_enabled_[AnalysisFeature::Packet] = false;
     feature_enabled_[AnalysisFeature::Event] = false;
     feature_enabled_[AnalysisFeature::SyncSample] = false;
     feature_enabled_[AnalysisFeature::Timeline] = false;
-    feature_enabled_[AnalysisFeature::ContainerStructure] = true;
+    feature_enabled_[AnalysisFeature::ContainerStructure] = false;
     feature_enabled_[AnalysisFeature::Macroblock] = false;
     feature_enabled_[AnalysisFeature::SceneChange] = false;
-    feature_enabled_[AnalysisFeature::Diagnostics] = true;
-    // 画面质量默认关: 播放时要额外做降采样与边缘统计，属于按需开启的重活
+    feature_enabled_[AnalysisFeature::Diagnostics] = false;
     feature_enabled_[AnalysisFeature::VisualDefect] = false;
 
     SetupUI();

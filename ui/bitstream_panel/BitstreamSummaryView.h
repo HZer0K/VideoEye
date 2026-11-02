@@ -1,16 +1,15 @@
 #pragma once
 
-// 码流页顶部：摘要行 + 「开始分析 / 复制 JSON / 导出 JSON」工具栏。
+// 码流页顶部摘要行（codec / 分辨率 / profile / level / 位深 / 参数集数量 /
+// 不一致数 / 能力徽标）。
 //
-// 从 BitstreamPanel 拆出的展示型组件。摘要口径（codec / 分辨率 / profile / level /
-// 位深 / 参数集数量 / 不一致数 / 能力徽标）在这里；JSON 的复制与落盘仍留在面板，
-// 因为那两步要用 current_result_ 与文件对话框。
+// 从 BitstreamPanel 拆出的展示型组件。工具栏（开始分析 / 导出 JSON）
+// 已上移到页头：整页只有页头那一行控制，不再由各子块各挂一套按钮。
 
 #include <QString>
 #include <QWidget>
 
 #include <QLabel>
-#include <QPushButton>
 
 #include "core/domain/model/BitstreamInfo.h"
 
@@ -27,21 +26,10 @@ public:
     void SetResult(const model::BitstreamAnalysisResult& result);
     void Clear();
 
-    // 全文件扫描进行中禁用「开始分析」，避免重复触发
-    void SetRefreshEnabled(bool enabled);
-
-signals:
-    void RefreshRequested();
-    void CopyJsonRequested();
-    void ExportJsonRequested();
-
 private:
     void SetupUi();
 
     QLabel* summary_label_ = nullptr;
-    QPushButton* refresh_button_ = nullptr;
-    QPushButton* copy_json_button_ = nullptr;
-    QPushButton* export_json_button_ = nullptr;
 };
 
 } // namespace ui

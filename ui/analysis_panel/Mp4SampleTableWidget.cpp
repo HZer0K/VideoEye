@@ -50,9 +50,6 @@ void Mp4SampleTableWidget::SetupUi() {
     focus_label_ = new QLabel(tr("点击左侧结构树的 stts/ctts/stss/stco/stsz 可联动本表"), this);
     focus_label_->setObjectName(QStringLiteral("HintLabel"));
     top->addWidget(focus_label_);
-    export_button_ = new QPushButton(tr("导出样本 CSV"), this);
-    export_button_->setToolTip(tr("把当前轨道的样本表导出为 CSV（含偏移/DTS/PTS/大小/关键帧）"));
-    top->addWidget(export_button_);
     layout->addLayout(top);
 
     summary_label_ = new QLabel(tr("样本表：未分析"), this);
@@ -99,7 +96,6 @@ void Mp4SampleTableWidget::SetupUi() {
 
     connect(track_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             &Mp4SampleTableWidget::OnTrackChanged);
-    connect(export_button_, &QPushButton::clicked, this, &Mp4SampleTableWidget::OnExportCsv);
 }
 
 void Mp4SampleTableWidget::SetSamples(const model::Mp4SampleTableResult& samples) {

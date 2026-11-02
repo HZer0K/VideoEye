@@ -88,20 +88,6 @@ void BitstreamSummaryView::SetupUi() {
     summary_label_->setWordWrap(true);
     summary_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(summary_label_);
-
-    QHBoxLayout* toolbar = new QHBoxLayout();
-    refresh_button_ = new QPushButton(tr("开始分析"), this);
-    copy_json_button_ = new QPushButton(tr("复制 JSON"), this);
-    export_json_button_ = new QPushButton(tr("导出 JSON"), this);
-    toolbar->addWidget(refresh_button_);
-    toolbar->addWidget(copy_json_button_);
-    toolbar->addWidget(export_json_button_);
-    toolbar->addStretch(1);
-    layout->addLayout(toolbar);
-
-    connect(refresh_button_, &QPushButton::clicked, this, &BitstreamSummaryView::RefreshRequested);
-    connect(copy_json_button_, &QPushButton::clicked, this, &BitstreamSummaryView::CopyJsonRequested);
-    connect(export_json_button_, &QPushButton::clicked, this, &BitstreamSummaryView::ExportJsonRequested);
 }
 
 void BitstreamSummaryView::SetResult(const model::BitstreamAnalysisResult& result) {
@@ -174,11 +160,6 @@ void BitstreamSummaryView::SetResult(const model::BitstreamAnalysisResult& resul
 
 void BitstreamSummaryView::Clear() {
     summary_label_->setText(tr("暂无码流解析结果。"));
-}
-
-void BitstreamSummaryView::SetRefreshEnabled(bool enabled) {
-    if (refresh_button_)
-        refresh_button_->setEnabled(enabled);
 }
 
 } // namespace ui

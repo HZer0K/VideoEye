@@ -1,7 +1,5 @@
 #include "ui/streaming_panel/StreamingPanel.h"
 
-#include <QApplication>
-#include <QClipboard>
 #include <QFile>
 #include <QFileDialog>
 #include <QHBoxLayout>
@@ -10,6 +8,7 @@
 #include <QTabWidget>
 #include <QVBoxLayout>
 
+#include "ui/analysis_panel/AnalysisPageSupport.h"
 #include "ui/streaming_panel/StreamingFormat.h"
 #include "ui/streaming_panel/StreamingIssueView.h"
 #include "ui/streaming_panel/StreamingLadderView.h"
@@ -34,11 +33,10 @@ StreamingPanel::StreamingPanel(QWidget* parent) : QWidget(parent) {
     title_row->addStretch();
 
     refresh_button_ = new QPushButton(tr("开始分析"), this);
-    copy_json_button_ = new QPushButton(tr("复制 JSON"), this);
-    export_json_button_ = new QPushButton(tr("导出 JSON"), this);
     title_row->addWidget(refresh_button_);
-    title_row->addWidget(copy_json_button_);
-    title_row->addWidget(export_json_button_);
+    // 页头唯一的「导出」入口
+    title_row->addWidget(MakeExportMenuButton(this, {{tr("清单与问题清单 JSON…"), [this]() { OnExportJsonClicked(); },
+                                                      tr("把清单解析结果与问题清单导出为 JSON 文件")}}));
     root_layout->addLayout(title_row);
 
     // ---- 摘要: 主行（类型/点播|直播/档位/分片/问题）+ 换行后的附加提示 ----
@@ -49,8 +47,6 @@ StreamingPanel::StreamingPanel(QWidget* parent) : QWidget(parent) {
     root_layout->addWidget(summary_label_);
 
     connect(refresh_button_, &QPushButton::clicked, this, &StreamingPanel::OnRefreshClicked);
-    connect(copy_json_button_, &QPushButton::clicked, this, &StreamingPanel::OnCopyJsonClicked);
-    connect(export_json_button_, &QPushButton::clicked, this, &StreamingPanel::OnExportJsonClicked);
 
     // ---- 主体：左结构树 / 右上 ladder / 右下时间轴+问题 ----
     auto* splitter = new QSplitter(Qt::Horizontal, this);
@@ -202,16 +198,8 @@ QString StreamingPanel::ExportToJson() const {
     return BuildStreamingPackageJson(current_result_);
 }
 
-void StreamingPanel::CopyJsonToClipboard() const {
-    QApplication::clipboard()->setText(ExportToJson());
-}
-
 void StreamingPanel::OnRefreshClicked() {
     emit RefreshRequested();
-}
-
-void StreamingPanel::OnCopyJsonClicked() {
-    CopyJsonToClipboard();
 }
 
 void StreamingPanel::OnExportJsonClicked() {

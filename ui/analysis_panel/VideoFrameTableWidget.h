@@ -86,11 +86,12 @@ public:
     bool HasPending() const;
     void FlushPending();
 
-    // 「启用分析」勾选框。必须外露：父页注入 SetFeatureHooks 后要拿它回写真实开关状态，
-    // 否则界面与实际行为不一致（评审 P1）。
-    QCheckBox* toggle() const {
-        return video_toggle_;
-    }
+    // 采集开关已上提到「播放统计与帧包」页头（整页一个聚合开关），本子页不再有
+    // 自己的「启用分析」勾选框 —— 同一页出现多个同名开关会让用户分不清层级。
+
+    // 导出入口：由父页的页头统一「导出」菜单调用，子页不再各放一个按钮。
+    void OnExportFrameCsv();
+    void OnExportGopCsv();
 
 signals:
     // gop_summaries_ 发生变化（新增 GOP 段 / 被裁剪 / 被清空）时发出，由 FlushPending
@@ -99,8 +100,6 @@ signals:
 
 private slots:
     void OnFrameFilterChanged();
-    void OnExportFrameCsv();
-    void OnExportGopCsv();
 
 private:
     void SetupUi();
@@ -124,8 +123,6 @@ private:
     QLabel* frame_summary_label_ = nullptr;
     QTableView* frame_table_ = nullptr;
     RecordTableModel<VideoFrameRecord>* frame_model_ = nullptr;
-    QPushButton* export_frame_csv_button_ = nullptr;
-    QCheckBox* video_toggle_ = nullptr;
     QTableWidget* gop_table_ = nullptr;
 
     // 帧记录的唯一所有者是模型；播放期回调先攒在这里，FlushPending 时批量交进去。

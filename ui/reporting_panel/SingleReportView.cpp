@@ -32,9 +32,6 @@ void SingleReportView::SetupUi() {
     connect(analyze_button_, &QPushButton::clicked, this, &SingleReportView::AnalyzeRequested);
     file_row->addWidget(analyze_button_);
 
-    export_button_ = new QPushButton(tr("导出报告…"), single_box);
-    connect(export_button_, &QPushButton::clicked, this, &SingleReportView::ExportRequested);
-    file_row->addWidget(export_button_);
     single_layout->addLayout(file_row);
 
     QHBoxLayout* format_row = new QHBoxLayout();
@@ -110,15 +107,6 @@ void SingleReportView::ShowInvalidated(bool has_file) {
 void SingleReportView::SetBusy(bool busy) {
     if (analyze_button_)
         analyze_button_->setEnabled(!busy);
-}
-
-void SingleReportView::SetExportEnabled(bool enabled) {
-    if (export_button_)
-        export_button_->setEnabled(enabled);
-}
-
-bool SingleReportView::IsExportEnabled() const {
-    return export_button_ && export_button_->isEnabled();
 }
 
 std::vector<qc::QcReportFormat> SingleReportView::SelectedFormats() const {

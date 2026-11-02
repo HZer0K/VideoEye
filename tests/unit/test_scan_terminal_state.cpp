@@ -41,6 +41,7 @@
 #include "ui/analysis_panel/ColorHdrPage.h"
 #include "ui/analysis_panel/DiagnosticsPage.h"
 #include "ui/analysis_panel/FramePacketView.h"
+#include "ui/analysis_panel/StreamOverviewView.h"
 #include "ui/analysis_panel/SubtitleAuxPage.h"
 #include "ui/analysis_panel/VideoFrameTableWidget.h"
 #include "ui/bitstream_panel/BitstreamPanel.h"
@@ -342,7 +343,22 @@ TEST(PlaybackLinkage, FrameTableRefreshesThenClearsAndDoesNotAccumulate) {
     auto* table = video_page->frameTable();
     ASSERT_TRUE(table != nullptr);
 
-    // 视频帧默认开启（Master && VideoFrame 默认开）—— 播放期回吐的帧必须进表。
+    // 所有采集项默认关：页头聚合开关初始必须是未勾选。
+    // 这条同时守着"默认关"这个约定 —— 以前视频帧默认开，界面一进来就是半选，
+    // 谁也不知道这页到底开没开。
+    auto* overview = stack.findChild<ui::StreamOverviewView*>();
+    ASSERT_TRUE(overview != nullptr);
+    auto* toggle = overview->findChild<QCheckBox*>(QStringLiteral("AnalysisFeatureToggle"));
+    ASSERT_TRUE(toggle != nullptr) << "页头找不到「启用分析」聚合开关";
+    EXPECT_EQ(toggle->checkState(), Qt::Unchecked) << "分析项应全部默认关";
+
+    // 默认关 -> 回吐不进表（不开就什么都不采，不产生误导性的半份数据）。
+    panel.AppendVideoFrameInfo(0, 1, true, 0, 0.0);
+    frame_view->FlushPending();
+    EXPECT_EQ(table->model()->rowCount(), 0) << "默认关的情况下仍在采集视频帧";
+
+    // 点一下页头聚合开关 = 四项全开，此后播放期回吐的帧必须进表。
+    toggle->click();
     panel.AppendVideoFrameInfo(0, 1, true, 0, 0.0);      // I 帧
     panel.AppendVideoFrameInfo(1, 2, false, 1000, 0.04); // P 帧
     panel.AppendVideoFrameInfo(2, 2, false, 2000, 0.08);
@@ -356,9 +372,11 @@ TEST(PlaybackLinkage, FrameTableRefreshesThenClearsAndDoesNotAccumulate) {
     EXPECT_EQ(table->model()->rowCount(), 5) << "新增帧没有继续进入帧表";
 
     // 关闭「启用分析」：新的回吐不再进表（旧数据保持不动）。
-    auto* toggle = video_page->toggle();
-    ASSERT_TRUE(toggle != nullptr);
-    toggle->setChecked(false);
+    // 开关在「播放统计与帧包」页头（整页一个聚合开关，click() = 一键全关），
+    // 子页里没有自己的勾选框了。
+    toggle->click();
+    EXPECT_FALSE(panel.IsFeatureEnabled(ui::AnalysisPanel::AnalysisFeature::VideoFrame))
+        << "点击聚合开关应把视频帧采集一并关掉";
     panel.AppendVideoFrameInfo(5, 2, false, 5000, 0.20);
     frame_view->FlushPending();
     EXPECT_EQ(table->model()->rowCount(), 5) << "关闭开关后仍在接收新帧";
@@ -369,10 +387,48 @@ TEST(PlaybackLinkage, FrameTableRefreshesThenClearsAndDoesNotAccumulate) {
     EXPECT_EQ(table->model()->rowCount(), 0) << "停止后旧帧数据没有被清空";
 
     // 重新启用：只应看到新回吐的帧，绝不把清空前的旧数据叠加回来。
-    toggle->setChecked(true);
+    toggle->click();
     panel.AppendVideoFrameInfo(6, 1, true, 6000, 0.24);
     frame_view->FlushPending();
     EXPECT_EQ(table->model()->rowCount(), 1) << "重新启用后叠加了旧数据或未接收新数据";
+}
+
+// ---------------------------------------------------------------------------
+// 2.3：所有分析项默认关（总闸 Master 除外）。
+//
+// 为什么需要这条：默认值写在一个构造函数里，散落各处地依赖它 —— 采集是否进表、
+// 页头聚合开关初始是勾选/半选/未勾选、打开文件后各页有没有内容。曾经按"附加开销"
+// 分层（流统计/视频帧/容器结构默认开），结果同一个页面的聚合开关一进来就是半选，
+// 页与页的初始外观各不相同。现在统一全关，这里把它钉死：新增一个 feature 却忘了
+// 给默认值，或者谁手一抖把某项改回 true，都会在这里红。
+// ---------------------------------------------------------------------------
+TEST(PlaybackLinkage, AllAnalysisFeaturesDefaultOffExceptMaster) {
+    ASSERT_TRUE(EnsureApp() != nullptr);
+
+    ui::AnalysisPanel panel;
+
+    // 除 Master 外的全部项。新增 feature 时这个数组必须同步加一项，
+    // 下面的数量断言就是提醒。
+    const model::AnalysisFeature kFeatures[] = {
+        model::AnalysisFeature::StreamStats, model::AnalysisFeature::VideoFrame,
+        model::AnalysisFeature::AudioFrame,  model::AnalysisFeature::Packet,
+        model::AnalysisFeature::Event,       model::AnalysisFeature::SyncSample,
+        model::AnalysisFeature::Timeline,    model::AnalysisFeature::ContainerStructure,
+        model::AnalysisFeature::Macroblock,  model::AnalysisFeature::SceneChange,
+        model::AnalysisFeature::Diagnostics, model::AnalysisFeature::VisualDefect,
+    };
+    constexpr size_t kExpectedCount = 12;
+    ASSERT_EQ(sizeof(kFeatures) / sizeof(kFeatures[0]), kExpectedCount)
+        << "AnalysisFeature 新增了项却忘了在这里登记（也别忘了给默认值）";
+
+    for (auto feature : kFeatures) {
+        EXPECT_FALSE(panel.IsFeatureEnabled(feature))
+            << "feature #" << static_cast<int>(feature) << " 不是默认关；默认值见 AnalysisPanel 构造函数";
+    }
+
+    // 总闸保持开：它只负责在单项之外再提供一次整体闸断，本身没有界面入口；
+    // 若也置关，则任何单项被用户打开都不会有数据流出。
+    EXPECT_TRUE(panel.IsFeatureEnabled(model::AnalysisFeature::Master)) << "总闸被关掉后所有单项开启都失效";
 }
 
 // ---------------------------------------------------------------------------

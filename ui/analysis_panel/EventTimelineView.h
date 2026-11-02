@@ -14,6 +14,7 @@
 #include "core/domain/model/AnalysisEvent.h"
 #include "core/domain/model/SyncSample.h"
 #include "core/domain/model/TimelineEvent.h"
+#include "ui/analysis_panel/AggregateFeatureToggle.h"
 #include "ui/charts/MetricChartWidget.h"
 
 namespace videoeye {
@@ -36,9 +37,9 @@ public:
     // feature 用本视图内部的 0/1/2 编号（Event/Sync/Timeline），由调用方映射到
     // AnalysisPanel::AnalysisFeature。
     //
-    // 注入后会立即按钩子的真实状态刷新三个 QCheckBox：控件是在构造函数里建的，
-    // 那时钩子还不存在，只能先按默认值创建；不同步的话界面会显示"启用分析"，
-    // 而面板里的 feature_enabled_ 其实是关的 —— 数据被过滤掉、界面却毫无提示。
+    // 页头只有一个「启用分析」聚合开关（三项全开 / 全关 / 半选），三个子页不再各挂
+    // 一个同名勾选框 —— 以前同页出现 3 个「启用分析」，而其它页的开关都在页头。
+    // 注入后会立即按钩子的真实状态回写该勾选框（控件建得比钩子早）。
     void SetFeatureHooks(std::function<bool(int)> is_enabled, std::function<void(int, bool)> set_enabled);
 
     // 同步样本的消费方由 AnalysisPanel 统一分发：本视图负责同步表/曲线，
@@ -103,7 +104,7 @@ private:
     void SetupSyncTab();
     void SetupTimelineTab();
 
-    // 按注入的钩子刷新三个"启用分析"勾选框（屏蔽信号，不触发用户操作语义）。
+    // 按注入的钩子刷新页头聚合勾选框（屏蔽信号，不触发用户操作语义）。
     void SyncTogglesFromHooks();
 
     void RebuildEventTable();
@@ -142,25 +143,21 @@ private:
     // 事件页控件
     QLabel* event_summary_label_ = nullptr;
     QTableWidget* event_table_ = nullptr;
-    QPushButton* export_event_csv_button_ = nullptr;
 
     // 同步页控件
     QLabel* sync_summary_label_ = nullptr;
     MetricChartWidget* sync_chart_ = nullptr;
     QTableWidget* sync_table_ = nullptr;
-    QPushButton* export_sync_csv_button_ = nullptr;
 
     // 时间轴页控件
     QLabel* timeline_summary_label_ = nullptr;
     MetricChartWidget* timeline_chart_ = nullptr;
     QTableWidget* timeline_table_ = nullptr;
-    QPushButton* export_timeline_csv_button_ = nullptr;
 
-    // 三个"启用分析"勾选框。必须留成员：SetFeatureHooks 注入钩子后要拿它们
-    // 把真实开关状态回写到界面，否则界面与实际行为不一致（评审 P1）。
-    QCheckBox* event_toggle_ = nullptr;
-    QCheckBox* sync_toggle_ = nullptr;
-    QCheckBox* timeline_toggle_ = nullptr;
+    // 三个"启用分析"勾选框已收敛成页头一个聚合开关。必须留成员：
+    // SetFeatureHooks 注入钩子后要拿它把真实开关状态回写到界面，否则界面与实际
+    // 行为不一致（评审 P1）。逐项采集开关不再暴露。
+    AggregateFeatureToggle toggle_;
 
     // 曲线系列与坐标轴
     ChartSeries* sync_series_ = nullptr;

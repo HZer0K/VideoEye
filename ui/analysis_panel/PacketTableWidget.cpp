@@ -51,12 +51,7 @@ void PacketTableWidget::SetupUi() {
     packet_filter_combo_->setCurrentIndex(0);
     p_toolbar->addWidget(packet_filter_combo_);
 
-    export_packet_csv_button_ = new QPushButton(tr("导出 CSV"), this);
-    p_toolbar->addWidget(export_packet_csv_button_);
-
-    packet_toggle_ = new QCheckBox(tr("启用分析"), this);
-    packet_toggle_->setToolTip(tr("播放时实时采集，需要额外的数据留存，默认关闭，按需开启。"));
-    p_toolbar->addWidget(packet_toggle_);
+    // 采集开关在「播放统计与帧包」页头（整页一个聚合开关），子页只留筛选与摘要。
     p_layout->addLayout(p_toolbar);
 
     QGroupBox* p_table_group = new QGroupBox(tr("数据包信息"), this);
@@ -103,12 +98,11 @@ void PacketTableWidget::SetupUi() {
     p_table_layout->addWidget(packet_table_);
     p_layout->addWidget(p_table_group);
 
-    // 筛选与导出是本子页内部的事（只依赖自己的记录缓存），就地连回。
+    // 筛选是本子页内部的事（只依赖自己的记录缓存），就地连回。
     connect(packet_filter_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
         packet_filter_mode_ = idx - 1; // 0->全部(-1), 1->视频(0), 2->音频(1), 3->其他(2)
         ApplyFilter();
     });
-    connect(export_packet_csv_button_, &QPushButton::clicked, this, &PacketTableWidget::OnExportPacketCsv);
 }
 
 const std::vector<PacketRecord>& PacketTableWidget::PacketRecords() const {

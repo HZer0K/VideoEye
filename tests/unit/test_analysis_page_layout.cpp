@@ -47,12 +47,16 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QLayout>
+#include <QPushButton>
 #include <QScrollArea>
+#include <QSet>
 #include <QTabWidget>
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -227,4 +231,124 @@ TEST(AnalysisPageLayout, EveryPageKeepsItsControlsInsideLayouts) {
         << "喂了容器结构却没多出任何可见控件（" << empty.visible_union << " -> " << with_data.visible_union
         << "）：要么 ContainerStructurePage::SetResult 不再渲染旧字段，要么 fixture 的字段被清空了。"
            "这一轮的覆盖已经退化成和空态一样，没有意义。";
+}
+
+// ---------------------------------------------------------------------------
+// 页头一致性：分析入口与「导出」在每一页的位置、个数都必须一样
+//
+// 现场（2026-11-02）：同样是"启用分析"，
+//   * 播放统计与帧包：页头一个 + 视频帧/包/音频帧子页各一个（同一页 4 个同名勾选框），
+//     而且页头那个其实只管流统计，看着却像整页总闸；
+//   * 事件与时间轴：页头只有「导出」，三个开关散在子页工具栏最右侧；
+//   * 编码参数集 / 字幕与辅助：页头是「开始分析」按钮，没有开关。
+// 于是用户每换一页都要重新找"分析开关在哪、导出在哪"。
+//
+// 规范（本用例钉住）：
+//   1) 播放期页（实时采集）页头**恰好一个**「启用分析」勾选框（多采集项页用聚合开关）；
+//   2) 全文件页（一次性扫描）页头**恰好一个**「开始分析」按钮，且没有「启用分析」；
+//   3) 任何页都不能同时出现两种入口，也不能一个都没有（工具页除外）；
+//   4) 每页恰好一个「导出」，且与分析入口同一行、位于其右侧。
+// 这几条都是"改了不报错、只是界面又乱了"的那类约束，只能靠断言守。
+// ---------------------------------------------------------------------------
+TEST(AnalysisPageHeader, AnalysisEntryAndExportSitOnTheSameHeaderRow) {
+    EnsureApp();
+    PageSet set;
+    ASSERT_TRUE(BuildAllPages(set));
+
+    // 按页面 id 声明口径（AnalysisPageCatalog 的 scope 字段对 event_timeline 是空的，
+    // 不能拿它当判据 —— 这里显式列，新增页面时也必须来这边选一边）。
+    const QSet<QString> playback_pages = {
+        QStringLiteral("playback_stats_packets"), QStringLiteral("event_timeline"), QStringLiteral("file_structure"),
+        QStringLiteral("motion_vectors"),         QStringLiteral("scene_change"),   QStringLiteral("visual_quality"),
+    };
+    const QSet<QString> full_file_pages = {
+        QStringLiteral("bitrate_gop"),         QStringLiteral("audio_qc"),          QStringLiteral("color_hdr"),
+        QStringLiteral("codec_parameters"),    QStringLiteral("streaming_packets"), QStringLiteral("subtitle_aux"),
+        QStringLiteral("quality_diagnostics"),
+    };
+
+    const auto& catalog = AnalysisPageCatalog();
+    ASSERT_EQ(catalog.size(), set.pages.size());
+
+    int playback_seen = 0;
+    int full_file_seen = 0;
+    int tool_seen = 0;
+
+    for (size_t i = 0; i < catalog.size(); ++i) {
+        const QString id = QString::fromUtf8(catalog[i].id);
+        auto* scroll = qobject_cast<QScrollArea*>(set.pages[i]);
+        ASSERT_TRUE(scroll != nullptr);
+        QWidget* page = scroll->widget();
+        ASSERT_TRUE(page != nullptr);
+
+        // 让布局真正算过一次，才能量同一行的坐标
+        set.layout->addWidget(set.pages[i]);
+        set.host.show();
+        set.pages[i]->show();
+        QApplication::processEvents();
+        QApplication::processEvents();
+
+        QList<QWidget*> entries;
+        for (QCheckBox* box : page->findChildren<QCheckBox*>()) {
+            if (box->text() == QStringLiteral("启用分析"))
+                entries.append(box);
+        }
+        for (QPushButton* button : page->findChildren<QPushButton*>()) {
+            if (button->text() == QStringLiteral("开始分析"))
+                entries.append(button);
+        }
+        const auto exports = page->findChildren<QPushButton*>(QStringLiteral("ExportMenuButton"));
+
+        const std::string where = id.toStdString() + "（" + QString::fromUtf8(catalog[i].title).toStdString() + "）";
+
+        EXPECT_EQ(exports.size(), 1) << where << " 的「导出」入口不是恰好一个";
+
+        if (playback_pages.contains(id)) {
+            ++playback_seen;
+            EXPECT_EQ(entries.size(), 1) << where << " 应恰好一个分析入口（播放期页 = 一个「启用分析」），实际 "
+                                         << entries.size();
+            if (entries.size() == 1) {
+                EXPECT_TRUE(qobject_cast<QCheckBox*>(entries.front()) != nullptr)
+                    << where << " 的播放期分析入口应是「启用分析」勾选框";
+            }
+            // 注意：objectName 不做统一要求 —— 画面质量页的勾选框叫 VisualDefectEnable，
+            // 已有测试按它定位。一致性靠"文本 + 数量 + 位置"判定。
+        } else if (full_file_pages.contains(id)) {
+            ++full_file_seen;
+            EXPECT_EQ(entries.size(), 1) << where << " 应恰好一个分析入口（全文件页 = 一个「开始分析」按钮），实际 "
+                                         << entries.size();
+            if (entries.size() == 1) {
+                EXPECT_TRUE(qobject_cast<QPushButton*>(entries.front()) != nullptr)
+                    << where << " 的全文件分析入口应是「开始分析」按钮";
+            }
+            for (QCheckBox* box : page->findChildren<QCheckBox*>()) {
+                EXPECT_NE(box->text(), QStringLiteral("启用分析"))
+                    << where << " 是全文件扫描页，不该出现常驻「启用分析」开关";
+            }
+        } else {
+            ++tool_seen;
+            EXPECT_TRUE(entries.isEmpty()) << where << " 是工具页，不该挂分析入口";
+        }
+
+        // 同一行 + 分析入口在导出左侧
+        if (entries.size() == 1 && exports.size() == 1) {
+            const QPoint entry_pos = entries.front()->mapTo(page, QPoint(0, 0));
+            const QPoint export_pos = exports.front()->mapTo(page, QPoint(0, 0));
+            EXPECT_LE(std::abs(entry_pos.y() - export_pos.y()), 6)
+                << where << " 的分析入口与「导出」不在同一行（y=" << entry_pos.y() << " / " << export_pos.y()
+                << "）—— 页头应当只有一行：[标题] … [分析入口] [导出]";
+            EXPECT_LT(entry_pos.x(), export_pos.x())
+                << where << " 的分析入口应位于「导出」左侧（x=" << entry_pos.x() << " / " << export_pos.x() << "）";
+        }
+
+        set.layout->removeWidget(set.pages[i]);
+        set.pages[i]->hide();
+    }
+
+    // 覆盖守护：三个集合一旦与实际页面脱钩（新增页没归类 / id 写错），上面的循环会
+    // 悄悄少查几页而不报错 —— 这三条把"少查了"变成失败。
+    EXPECT_EQ(playback_seen, playback_pages.size()) << "有播放期页没被检查到（id 与目录对不上？）";
+    EXPECT_EQ(full_file_seen, full_file_pages.size()) << "有全文件页没被检查到（id 与目录对不上？）";
+    EXPECT_EQ(playback_seen + full_file_seen + tool_seen, static_cast<int>(catalog.size()))
+        << "有页面既不属于播放期也不属于全文件，且没被当作工具页统计";
 }

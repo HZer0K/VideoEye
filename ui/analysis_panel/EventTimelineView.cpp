@@ -2,7 +2,6 @@
 
 #include "ui/analysis_panel/AnalysisPageSupport.h"
 
-#include <QCheckBox>
 #include <QDateTime>
 #include <QFile>
 #include <QFileDialog>
@@ -10,7 +9,6 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QMessageBox>
-#include <QSignalBlocker>
 #include <QTextStream>
 #include <QVBoxLayout>
 
@@ -25,6 +23,8 @@ namespace {
 constexpr size_t kMaxEventRecords = 5000;
 constexpr size_t kMaxSyncRecords = 5000;
 constexpr size_t kMaxTimelineRecords = 5000;
+// 页头聚合开关覆盖的采集项个数：异常事件 / 同步样本 / 时间轴（内部编号 0/1/2）。
+constexpr int kFeatureCount = 3;
 // 曲线窗口上限不再本地定义：统一用 ui/charts/ChartDecimation.h 的 kMaxRecentChartItems。
 } // namespace
 // 注：TrimRecords 原本在这里有一份匿名命名空间副本（与 FramePacketView 那份同语义），
@@ -41,6 +41,29 @@ EventTimelineView::EventTimelineView(QWidget* parent) : QWidget(parent) {
 
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
+
+    // 页头：统一标题 + 唯一的「启用分析」（聚合三项采集）+ 一个「导出」菜单。
+    // 三个子页的 CSV 都收进导出菜单，三个同名勾选框也收成这一个开关 —— 其它页的
+    // 分析入口都在页头的同一位置，只有本页把开关散在子页里，用户要先找按钮再猜它管哪项。
+    {
+        QWidget* row = new QWidget(this);
+        QHBoxLayout* rl = new QHBoxLayout(row);
+        rl->setContentsMargins(4, 2, 4, 0);
+        rl->setSpacing(8);
+        QLabel* title = new QLabel(tr("事件与时间轴"), row);
+        title->setObjectName(QStringLiteral("PageTitle"));
+        rl->addWidget(title);
+        rl->addStretch();
+        rl->addWidget(toggle_.Create(row,
+                                     tr("播放时实时采集异常事件、音视频同步样本与统一时间轴。部分开启时显示为半选；"
+                                        "点击可一键全开或全关。"),
+                                     kFeatureCount));
+        rl->addWidget(MakeExportMenuButton(
+            row, {{tr("异常事件 CSV"), [this]() { OnExportEventCsv(); }, tr("导出异常事件列表")},
+                  {tr("同步分析 CSV"), [this]() { OnExportSyncCsv(); }, tr("导出音视频同步样本与偏移")},
+                  {tr("统一时间轴 CSV"), [this]() { OnExportTimelineCsv(); }, tr("导出统一时间轴事件")}}));
+        root->addWidget(row);
+    }
     root->addWidget(event_analysis_sub_tabs_);
 }
 
@@ -48,36 +71,17 @@ EventTimelineView::~EventTimelineView() = default;
 
 void EventTimelineView::SetFeatureHooks(std::function<bool(int)> is_enabled,
                                         std::function<void(int, bool)> set_enabled) {
-    is_enabled_ = std::move(is_enabled);
-    set_enabled_ = std::move(set_enabled);
-    // 控件建得比钩子早，这里必须补一次回写（评审 P1-4）。
-    SyncTogglesFromHooks();
+    // 数据过滤仍按各项自己的开关走（见 Append*），所以这份 is_enabled 要留着；
+    // 界面只剩页头一个聚合勾选框，交给 AggregateFeatureToggle 维护三态。
+    is_enabled_ = is_enabled;
+    set_enabled_ = set_enabled;
+    toggle_.SetHooks(std::move(is_enabled), std::move(set_enabled), kFeatureCount);
 }
 
 void EventTimelineView::SyncTogglesFromHooks() {
-    // 三个 QCheckBox 在构造函数里就已建好，那时钩子还不存在，只能按默认值创建。
-    // 不回写的话界面显示"启用分析"，而面板 feature_enabled_ 里其实是关的 ——
-    // 数据处理被静默过滤，用户看到的界面与实际行为不一致。
-    const struct {
-        QCheckBox* box;
-        ViewFeature feature;
-    } toggles[] = {
-        {event_toggle_, ViewFeature::Event},
-        {sync_toggle_, ViewFeature::Sync},
-        {timeline_toggle_, ViewFeature::Timeline},
-    };
-
-    for (const auto& t : toggles) {
-        if (!t.box)
-            continue;
-        // 没有钩子（独立使用本视图时）就保持控件现状，不做无意义的改写。
-        const bool enabled = is_enabled_ ? is_enabled_(static_cast<int>(t.feature)) : t.box->isChecked();
-        // 必须屏蔽信号：setChecked() 会触发 toggled，而那个槽会回调 set_enabled_
-        // 改写面板的 feature_enabled_ 并转发 AnalysisFeatureToggled —— 那是"用户操作"
-        // 的语义，不该由一次初始化同步伪造出来。
-        const QSignalBlocker blocker(t.box);
-        t.box->setChecked(enabled);
-    }
+    // 控件建得比钩子早，注入后必须补一次回写，否则界面显示"已启用"而面板里其实是关的
+    // —— 数据处理被静默过滤，界面毫无提示。
+    toggle_.SyncFromHooks();
 }
 
 // ---------------------------------------------------------------------------
@@ -91,20 +95,9 @@ void EventTimelineView::SetupEventTab() {
     layout->setSpacing(4);
 
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
+    // 采集开关统一在页头（聚合三项），子页只留摘要 —— 子页不再挂同名勾选框。
     event_summary_label_ = new QLabel(tr("总事件数: 0 | 错误: 0 | 警告: 0 | 信息: 0"), event_tab_);
     toolbar_layout->addWidget(event_summary_label_, 1);
-
-    export_event_csv_button_ = new QPushButton(tr("导出 CSV"), event_tab_);
-    toolbar_layout->addWidget(export_event_csv_button_);
-
-    event_toggle_ = new QCheckBox(tr("启用分析"), event_tab_);
-    event_toggle_->setToolTip(tr("播放时实时采集，需要额外的数据留存，默认关闭，按需开启。"));
-    event_toggle_->setChecked(is_enabled_ ? is_enabled_(static_cast<int>(ViewFeature::Event)) : true);
-    connect(event_toggle_, &QCheckBox::toggled, this, [this](bool checked) {
-        if (set_enabled_)
-            set_enabled_(static_cast<int>(ViewFeature::Event), checked);
-    });
-    toolbar_layout->addWidget(event_toggle_);
     layout->addLayout(toolbar_layout);
 
     QGroupBox* table_group = new QGroupBox(tr("异常事件"), event_tab_);
@@ -132,8 +125,6 @@ void EventTimelineView::SetupEventTab() {
     table_layout->addWidget(event_table_);
     layout->addWidget(table_group);
 
-    connect(export_event_csv_button_, &QPushButton::clicked, this, &EventTimelineView::OnExportEventCsv);
-
     event_analysis_sub_tabs_->addTab(event_tab_, tr("异常事件"));
 }
 
@@ -144,20 +135,9 @@ void EventTimelineView::SetupSyncTab() {
     layout->setSpacing(4);
 
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
+    // 采集开关统一在页头（聚合三项），子页只留摘要。
     sync_summary_label_ = new QLabel(tr("样本数: 0 | 平均偏移: 0.00 ms | 最大偏移: 0.00 ms"), sync_tab_);
     toolbar_layout->addWidget(sync_summary_label_, 1);
-
-    export_sync_csv_button_ = new QPushButton(tr("导出 CSV"), sync_tab_);
-    toolbar_layout->addWidget(export_sync_csv_button_);
-
-    sync_toggle_ = new QCheckBox(tr("启用分析"), sync_tab_);
-    sync_toggle_->setToolTip(tr("播放时实时采集，需要额外的数据留存，默认关闭，按需开启。"));
-    sync_toggle_->setChecked(is_enabled_ ? is_enabled_(static_cast<int>(ViewFeature::Sync)) : true);
-    connect(sync_toggle_, &QCheckBox::toggled, this, [this](bool checked) {
-        if (set_enabled_)
-            set_enabled_(static_cast<int>(ViewFeature::Sync), checked);
-    });
-    toolbar_layout->addWidget(sync_toggle_);
     layout->addLayout(toolbar_layout);
 
     QGroupBox* chart_group = new QGroupBox(tr("音视频时间差"), sync_tab_);
@@ -198,8 +178,6 @@ void EventTimelineView::SetupSyncTab() {
     sync_axis_x_->SetTitleText(tr("样本序号"));
     sync_axis_y_->SetTitleText(tr("ms"));
 
-    connect(export_sync_csv_button_, &QPushButton::clicked, this, &EventTimelineView::OnExportSyncCsv);
-
     event_analysis_sub_tabs_->addTab(sync_tab_, tr("同步分析"));
 }
 
@@ -210,20 +188,9 @@ void EventTimelineView::SetupTimelineTab() {
     layout->setSpacing(4);
 
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
+    // 采集开关统一在页头（聚合三项），子页只留摘要。
     timeline_summary_label_ = new QLabel(tr("事件数: 0 | 视频关键帧: 0 | 音频采样: 0 | 异常事件: 0"), timeline_tab_);
     toolbar_layout->addWidget(timeline_summary_label_, 1);
-
-    export_timeline_csv_button_ = new QPushButton(tr("导出 CSV"), timeline_tab_);
-    toolbar_layout->addWidget(export_timeline_csv_button_);
-
-    timeline_toggle_ = new QCheckBox(tr("启用分析"), timeline_tab_);
-    timeline_toggle_->setToolTip(tr("播放时实时采集，需要额外的数据留存，默认关闭，按需开启。"));
-    timeline_toggle_->setChecked(is_enabled_ ? is_enabled_(static_cast<int>(ViewFeature::Timeline)) : true);
-    connect(timeline_toggle_, &QCheckBox::toggled, this, [this](bool checked) {
-        if (set_enabled_)
-            set_enabled_(static_cast<int>(ViewFeature::Timeline), checked);
-    });
-    toolbar_layout->addWidget(timeline_toggle_);
     layout->addLayout(toolbar_layout);
 
     QGroupBox* chart_group = new QGroupBox(tr("统一时间轴"), timeline_tab_);
@@ -267,8 +234,6 @@ void EventTimelineView::SetupTimelineTab() {
     timeline_axis_y_->SetRange(0.5, 3.5);
     timeline_axis_y_->SetTickCount(4);
     timeline_axis_x_->SetTitleText(tr("时间 (s)"));
-
-    connect(export_timeline_csv_button_, &QPushButton::clicked, this, &EventTimelineView::OnExportTimelineCsv);
 
     event_analysis_sub_tabs_->addTab(timeline_tab_, tr("统一时间轴"));
 }

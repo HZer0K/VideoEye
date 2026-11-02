@@ -491,7 +491,7 @@ TEST(BitstreamAnalyzerTest, VvcBitDepthUnknownDoesNotReportFalseMismatch) {
     EXPECT_FALSE(HasField(r, "Bit Depth"));
 }
 
-// 能力状态要进 JSON（面板"复制 JSON"与导出走的就是 ToJson）
+// 能力状态要进 JSON（面板「导出 JSON」走的就是 ToJson）
 TEST(BitstreamAnalyzerTest, CapabilityFieldsAreSerialized) {
     const BitstreamAnalysisResult r = AnalyzeWith(MakeContainer(1280, 720));
     const std::string json = r.ToJson();
@@ -516,7 +516,7 @@ TEST(BitstreamAnalyzerTest, ContainerSnapshotIsWrittenToResult) {
     EXPECT_EQ(r.container_color_range, 1);
 }
 
-// 结果里带的容器快照要能被序列化出来（面板的「复制 JSON」走的就是它）
+// 结果里带的容器快照要能被序列化出来（面板「导出 JSON」走的就是它）
 TEST(BitstreamAnalyzerTest, ContainerSnapshotIsSerialized) {
     const BitstreamAnalysisResult r = AnalyzeWith(MakeContainer(1280, 720));
     const std::string json = r.ToJson();

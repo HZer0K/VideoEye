@@ -24,6 +24,8 @@
 #include <thread>
 #include <vector>
 
+#include <QAction>
+#include <QPushButton>
 #include <QString>
 
 #include <QTextEdit>
@@ -65,7 +67,8 @@ public:
     // 成功后才恢复。导出永远只允许导出这份"新鲜"结果，杜绝把上一次结果导出去。
     bool HasFreshResult() const;
 
-    // 导出按钮当前是否可用（供状态回归测试查询，等价于 !busy_ && HasFreshResult()）。
+    // 页头「导出」菜单里「单文件分析报告」那一项的可用性（供状态回归测试查询，
+    // 等价于 !busy_ && HasFreshResult()）。
     bool IsExportEnabled() const;
 
 public slots:
@@ -143,6 +146,11 @@ private:
     SingleReportView* single_view_ = nullptr;
     BatchScanView* batch_view_ = nullptr;
     QTextEdit* log_view_ = nullptr;
+
+    // 页头统一的「导出」入口：单文件报告与批量汇总都收进这一个菜单，
+    // 不再由两个视图组件各挂一个导出按钮。
+    QPushButton* export_button_ = nullptr;
+    QAction* single_export_action_ = nullptr; // 菜单第一项，可用性跟着结果新鲜度
 
     // ---- 状态 ----
     // 报告页后台任务调度器：任务身份（TaskId）、取消令牌（CancelToken）、终态都在这里，

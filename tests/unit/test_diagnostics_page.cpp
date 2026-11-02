@@ -251,7 +251,7 @@ TEST(DiagnosticsPageTests, UnscannedPageShowsInitialStateAndRuleTable) {
 
     QPushButton* start_button = FindButton(&page, QStringLiteral("开始分析"));
     QPushButton* cancel_button = FindButton(&page, QStringLiteral("取消"));
-    QPushButton* export_button = FindButton(&page, QStringLiteral("导出报告"));
+    QPushButton* export_button = FindButton(&page, QStringLiteral("导出"));
     ASSERT_NE(start_button, nullptr);
     ASSERT_NE(cancel_button, nullptr);
     ASSERT_NE(export_button, nullptr);
@@ -320,7 +320,7 @@ TEST(DiagnosticsPageTests, FailedScanEmitsTerminalStateAndResetsControls) {
 
     EXPECT_TRUE(FindButton(&page, QStringLiteral("开始分析"))->isEnabled());
     EXPECT_FALSE(FindButton(&page, QStringLiteral("取消"))->isEnabled());
-    EXPECT_FALSE(FindButton(&page, QStringLiteral("导出报告"))->isEnabled());
+    EXPECT_FALSE(FindButton(&page, QStringLiteral("导出"))->isEnabled());
 }
 
 // 换文件复位：失败后再 ResetForNewFile -> 回到初始文案 / 进度 / 按钮态
@@ -348,7 +348,7 @@ TEST(DiagnosticsPageTests, ResetForNewFileRestoresInitialState) {
     EXPECT_EQ(progress->value(), 0);
     EXPECT_EQ(progress->format(), QStringLiteral("未开始"));
     EXPECT_EQ(TableInTab(&page, 0, QStringLiteral("严重度"))->rowCount(), 0);
-    EXPECT_FALSE(FindButton(&page, QStringLiteral("导出报告"))->isEnabled());
+    EXPECT_FALSE(FindButton(&page, QStringLiteral("导出"))->isEnabled());
 }
 
 // 成功路径（HLS 清单）：终态 Completed、导出恢复、问题表与 qcReport() 逐行一致、
@@ -389,7 +389,7 @@ TEST(DiagnosticsPageTests, SuccessfulManifestScanFillsIssueTableAndEnablesExport
 
     EXPECT_TRUE(FindButton(&page, QStringLiteral("开始分析"))->isEnabled());
     EXPECT_FALSE(FindButton(&page, QStringLiteral("取消"))->isEnabled());
-    EXPECT_TRUE(FindButton(&page, QStringLiteral("导出报告"))->isEnabled());
+    EXPECT_TRUE(FindButton(&page, QStringLiteral("导出"))->isEnabled());
 
     // 问题表与报告逐行一致：严重度文案 / 标题 / 位置 / 类别
     const QcReport& report = page.qcReport();

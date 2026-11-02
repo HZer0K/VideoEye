@@ -99,9 +99,11 @@ void DiagnosticsPage::SetupUi() {
         connect(cancel_watchdog_, &QTimer::timeout, this, &DiagnosticsPage::OnCancelWatchdog);
         rl->addWidget(cancel_button_);
 
-        export_button_ = new QPushButton(tr("导出报告"), row);
+        // 页头唯一的「导出」入口：诊断报告按所选扩展名决定格式
+        export_button_ =
+            MakeExportMenuButton(row, {{tr("诊断报告（HTML / JSON / CSV / TXT）…"), [this]() { OnExportClicked(); },
+                                        tr("按所选格式导出这次全文件扫描的诊断报告")}});
         export_button_->setEnabled(false);
-        connect(export_button_, &QPushButton::clicked, this, &DiagnosticsPage::OnExportClicked);
         rl->addWidget(export_button_);
         layout->addWidget(row);
     }

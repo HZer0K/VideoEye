@@ -50,6 +50,9 @@ void SceneChangePage::SetupUi() {
             emit FeatureToggled(checked);
         });
         rl->addWidget(toggle);
+        // 页头唯一的「导出」入口（原来是表格下方单独一个按钮）
+        rl->addWidget(MakeExportMenuButton(
+            row, {{tr("切换点 CSV…"), [this]() { OnExportCsv(); }, tr("导出检测到的镜头切换点与切换强度")}}));
         layout->addWidget(row);
     }
 
@@ -81,11 +84,6 @@ void SceneChangePage::SetupUi() {
     table_->horizontalHeader()->setStretchLastSection(true);
     table_->setMinimumHeight(200);
     layout->addWidget(table_);
-
-    // 导出按钮
-    QPushButton* export_btn = new QPushButton(tr("导出切换点 CSV"), this);
-    connect(export_btn, &QPushButton::clicked, this, &SceneChangePage::OnExportCsv);
-    layout->addWidget(export_btn, 0, Qt::AlignRight);
 
     // 建好之后由 AnalysisPanel::AddPageWithScroll 收进外部 stack
 }

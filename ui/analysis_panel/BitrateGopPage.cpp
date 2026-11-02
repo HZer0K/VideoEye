@@ -74,6 +74,12 @@ void BitrateGopPage::SetupUi() {
         cancel_button_->setEnabled(false);
         connect(cancel_button_, &QPushButton::clicked, this, &BitrateGopPage::OnCancelAnalysis);
         rl->addWidget(cancel_button_);
+
+        // 页头唯一的「导出」入口：GOP 列表 / 异常 / 码率曲线三个子页的 CSV 都收进这里
+        rl->addWidget(MakeExportMenuButton(
+            row, {{tr("GOP 列表 CSV…"), [this]() { OnExportGopCsv(); }, tr("导出 GOP 分段统计")},
+                  {tr("异常 CSV…"), [this]() { OnExportAnomalyCsv(); }, tr("导出码率异常峰值清单")},
+                  {tr("码率曲线 CSV…"), [this]() { OnExportCurveCsv(); }, tr("导出滑动窗口码率曲线")}}));
         layout->addWidget(row);
     }
 
@@ -207,9 +213,6 @@ void BitrateGopPage::SetupUi() {
         gop_table_->setMinimumHeight(220);
         connect(gop_table_, &QTableWidget::cellClicked, this, &BitrateGopPage::OnGopCellClicked);
         pl->addWidget(gop_table_);
-        QPushButton* export_btn = new QPushButton(tr("导出 GOP CSV"), page);
-        connect(export_btn, &QPushButton::clicked, this, &BitrateGopPage::OnExportGopCsv);
-        pl->addWidget(export_btn, 0, Qt::AlignRight);
         sub_tabs_->addTab(page, tr("GOP 列表"));
     }
     {
@@ -225,9 +228,6 @@ void BitrateGopPage::SetupUi() {
         anomaly_table_->setMinimumHeight(220);
         connect(anomaly_table_, &QTableWidget::cellClicked, this, &BitrateGopPage::OnAnomalyCellClicked);
         pl->addWidget(anomaly_table_);
-        QPushButton* export_btn = new QPushButton(tr("导出异常 CSV"), page);
-        connect(export_btn, &QPushButton::clicked, this, &BitrateGopPage::OnExportAnomalyCsv);
-        pl->addWidget(export_btn, 0, Qt::AlignRight);
         sub_tabs_->addTab(page, tr("异常"));
     }
     {
@@ -238,9 +238,6 @@ void BitrateGopPage::SetupUi() {
         suggestion_list_->setWordWrap(true);
         suggestion_list_->setMinimumHeight(220);
         pl->addWidget(suggestion_list_);
-        QPushButton* export_btn = new QPushButton(tr("导出码率曲线 CSV"), page);
-        connect(export_btn, &QPushButton::clicked, this, &BitrateGopPage::OnExportCurveCsv);
-        pl->addWidget(export_btn, 0, Qt::AlignRight);
         sub_tabs_->addTab(page, tr("优化建议"));
     }
     layout->addWidget(sub_tabs_);

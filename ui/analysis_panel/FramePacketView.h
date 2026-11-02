@@ -7,8 +7,8 @@
 // （顶部固定、底部可伸展）。四个子页已全部抽成独立组件，本页只负责：
 //   - tab 容器：按原顺序 addTab（0 视频帧 / 1 包 / 2 GOP 摘要 / 3 音频帧），tab 序号
 //     是帧表↔包表互跳 setCurrentIndex(0/1) 的依据，不能因搬家而变
-//   - 开关路由：SetFeatureHooks 注入的编号（0 = 视频帧、1 = 音频帧、2 = 数据包）
-//     映射到三个子页组件各自的 toggle()
+//   - 采集开关：本页不再有自己的开关。整页（含上方流概览）由页头那一个聚合
+//     「启用分析」统一控制，逐项过滤仍在 AnalysisPanel 按 feature 做
 //   - 跨表联动：帧表 ↔ 包表按 PTS 互跳要同时碰两张表，协调留在本页
 //   - 转发：数据 Reset*/Append*、刷新 HasPending()/FlushPending()（面板 120ms 节拍
 //     驱动，避免逐行 insertRow 在主线程上触发 O(n²) 卡顿）、GopSummariesChanged
@@ -46,11 +46,8 @@ class FramePacketView : public QWidget {
 public:
     explicit FramePacketView(QWidget* parent = nullptr);
 
-    // 页面只认自己的开关编号（0 = 视频帧、1 = 音频帧、2 = 数据包）。编号到
-    // AnalysisFeature 的映射、以及 AnalysisFeatureToggled 的转发都由面板做。
-    // 注入时会立即把真实开关状态回写到三个「启用分析」勾选框：控件是在子页组件
-    // 的构造函数里建的，那时钩子还不存在。
-    void SetFeatureHooks(std::function<bool(int)> is_enabled, std::function<void(int, bool)> set_enabled);
+    // 本页没有自己的采集开关：整页由「播放统计与帧包」页头那一个聚合「启用分析」
+    // 控制（见 StreamOverviewView::SetFeatureHooks）。子页不再挂同名勾选框。
 
     // GOP 摘要的最新快照（面板在收到 GopSummariesChanged 后转给「流概览」区）
     // 视频帧记录与 GOP 推导都在 VideoFrameTableWidget 里，本页只转发快照。
@@ -59,6 +56,13 @@ public:
 
     bool HasPending() const;
     void FlushPending();
+
+    // 导出入口：本页页头只有 StreamOverviewView 那一个「导出」菜单，四个子页各自的
+    // CSV 导出经这里并入同一菜单（子页内部不再各放一个导出按钮）。
+    void ExportVideoFrameCsv();
+    void ExportGopCsv();
+    void ExportAudioFrameCsv();
+    void ExportPacketCsv();
 
 signals:
     // gop_summaries 发生变化（新增 GOP 段 / 被裁剪 / 被清空）时发出，由
@@ -80,14 +84,10 @@ public slots:
 
 private:
     void SetupUi();
-    void SyncTogglesFromHooks();
 
     // 包表选中 → 帧表按 PTS 跳转；帧表选中 → 包表按 PTS 跳转
     void OnPacketTableSelectionChanged();
     void OnVideoFrameTableSelectionChanged();
-
-    std::function<bool(int)> is_enabled_;
-    std::function<void(int, bool)> set_enabled_;
 
     QTabWidget* sub_tabs_ = nullptr;
     // 四个子页已全部抽为独立组件，本页只持有指针并转发数据。

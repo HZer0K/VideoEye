@@ -90,8 +90,6 @@ private:
     QTableWidget* ebml_cue_table_ = nullptr;
     QTableWidget* ebml_block_table_ = nullptr;
 
-    QPushButton* export_button_ = nullptr;
-
     model::ContainerStructureResult result_;
 };
 

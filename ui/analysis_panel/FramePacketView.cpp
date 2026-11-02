@@ -5,10 +5,8 @@
 #include "ui/analysis_panel/VideoFrameTableWidget.h"
 
 #include <QAbstractItemView>
-#include <QCheckBox>
 #include <QHeaderView>
 #include <QItemSelectionModel>
-#include <QSignalBlocker>
 #include <QTabWidget>
 #include <QTableView>
 #include <QVBoxLayout>
@@ -83,52 +81,6 @@ void FramePacketView::SetupUi() {
     }
 }
 
-void FramePacketView::SetFeatureHooks(std::function<bool(int)> is_enabled, std::function<void(int, bool)> set_enabled) {
-    is_enabled_ = std::move(is_enabled);
-    set_enabled_ = std::move(set_enabled);
-
-    SyncTogglesFromHooks();
-
-    const struct {
-        QCheckBox* box;
-        int id;
-    } toggles[] = {
-        {video_page_->toggle(), 0},
-        {audio_page_->toggle(), 1},
-        {packet_page_->toggle(), 2},
-    };
-    for (const auto& t : toggles) {
-        if (!t.box)
-            continue;
-        const int id = t.id;
-        connect(t.box, &QCheckBox::toggled, this, [this, id](bool checked) {
-            if (set_enabled_)
-                set_enabled_(id, checked);
-        });
-    }
-}
-
-void FramePacketView::SyncTogglesFromHooks() {
-    const struct {
-        QCheckBox* box;
-        int id;
-    } toggles[] = {
-        {video_page_->toggle(), 0},
-        {audio_page_->toggle(), 1},
-        {packet_page_->toggle(), 2},
-    };
-    for (const auto& t : toggles) {
-        if (!t.box)
-            continue;
-        // 没有钩子时按控件当前值保留（组件可脱离面板单独构造）
-        const bool enabled = is_enabled_ ? is_enabled_(t.id) : t.box->isChecked();
-        if (enabled == t.box->isChecked())
-            continue;
-        const QSignalBlocker blocker(t.box);
-        t.box->setChecked(enabled);
-    }
-}
-
 bool FramePacketView::HasPending() const {
     return video_page_->HasPending() || audio_page_->HasPending() || packet_page_->HasPending();
 }
@@ -139,6 +91,22 @@ void FramePacketView::FlushPending() {
     video_page_->FlushPending();
     packet_page_->FlushPending();
     audio_page_->FlushPending();
+}
+
+void FramePacketView::ExportVideoFrameCsv() {
+    video_page_->OnExportFrameCsv();
+}
+
+void FramePacketView::ExportGopCsv() {
+    video_page_->OnExportGopCsv();
+}
+
+void FramePacketView::ExportAudioFrameCsv() {
+    audio_page_->OnExportAudioFrameCsv();
+}
+
+void FramePacketView::ExportPacketCsv() {
+    packet_page_->OnExportPacketCsv();
 }
 
 void FramePacketView::ResetVideoFrames() {

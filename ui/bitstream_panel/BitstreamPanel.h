@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QPushButton>
 #include <QString>
 #include <QWidget>
 
@@ -21,7 +22,8 @@ class BitstreamInconsistencyView;
 // 结果由 QtAnalysisController 汇总到 AnalysisResult::bitstream_analysis。
 //
 // 布局已按职责拆成四个视图组件（见 ui/bitstream_panel/Bitstream*View.h）：
-//   顶部  摘要行 + 复制/导出 JSON 工具栏（BitstreamSummaryView）
+//   页头  标题 + 开始分析 + 统一「导出」菜单（全页唯一入口）
+//   顶部  摘要行（BitstreamSummaryView）
 //   中部  左侧参数集结构树 + 右侧「容器值 vs 码流值」对比表（BitstreamStructureView /
 //         BitstreamComparisonView，装进同一个 QSplitter）
 //   底部  不一致项表格（BitstreamInconsistencyView）
@@ -53,9 +55,8 @@ public:
         return scan_active_;
     }
 
-    // 序列化：复制 JSON / 导出 JSON 文件共用
+    // 序列化：导出 JSON 文件用
     QString ExportToJson() const;
-    void CopyJsonToClipboard() const;
 
 signals:
     // 用户点了「开始分析」：由外层决定重新跑一次全文件扫描
@@ -63,12 +64,12 @@ signals:
 
 private slots:
     void OnRefreshClicked();
-    void OnCopyJsonClicked();
     void OnExportJsonClicked();
 
 private:
     void BuildUi();
 
+    QPushButton* refresh_button_ = nullptr;
     BitstreamSummaryView* summary_view_ = nullptr;
     BitstreamStructureView* structure_view_ = nullptr;
     BitstreamComparisonView* comparison_view_ = nullptr;

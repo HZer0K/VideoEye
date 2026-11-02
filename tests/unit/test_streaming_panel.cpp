@@ -10,8 +10,7 @@
 //   4) 问题表：按严重度倒序排列并整行着色，IssueCount 的口径就是行数。
 //
 // 另加 Clear / 解析失败 / 扫描态三处状态复位。只构造控件、不渲染（offscreen）；
-// 「导出 JSON」会弹 QFileDialog，不点它，复制 JSON 也不走剪贴板 —— 只测
-// ExportToJson() 的序列化结果。
+// 「导出 JSON」会弹 QFileDialog，不点它 —— 只测 ExportToJson() 的序列化结果。
 
 #include <gtest/gtest.h>
 

@@ -3,6 +3,9 @@
 #include <algorithm>
 
 #include <QFileDialog>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QMenu>
 #include <QMessageBox>
 #include <QStringList>
 #include <QVBoxLayout>
@@ -14,6 +17,7 @@
 
 #include "infrastructure/logging/Logger.h"
 
+#include "ui/analysis_panel/AnalysisPageSupport.h"
 #include "ui/reporting_panel/BatchScanView.h"
 #include "ui/reporting_panel/QcProfileView.h"
 #include "ui/reporting_panel/SingleReportView.h"
@@ -91,6 +95,28 @@ void ReportingPanel::BuildUi() {
     root->setContentsMargins(8, 6, 8, 8);
     root->setSpacing(8);
 
+    // ---- 页头: 标题 + 统一「导出」菜单 ----
+    // 这一页的两条导出路径（单文件报告 / 批量汇总）在数据形态上不同，但入口
+    // 统一收进这一个菜单，不再由两个视图组件各挂一个导出按钮。
+    {
+        QWidget* row = new QWidget(this);
+        QHBoxLayout* rl = new QHBoxLayout(row);
+        rl->setContentsMargins(0, 0, 0, 0);
+        QLabel* title = new QLabel(tr("报告与批量 QC"), row);
+        title->setObjectName(QStringLiteral("PageTitle"));
+        rl->addWidget(title);
+        rl->addStretch();
+        export_button_ =
+            MakeExportMenuButton(row, {{tr("单文件分析报告（按上方所选格式）…"), [this]() { OnExportSingleReport(); },
+                                        tr("把当前文件的 QC 报告按所选 JSON / CSV / HTML / TXT / PDF 格式导出")},
+                                       {tr("批量扫描汇总…"), [this]() { OnExportBatchSummary(); },
+                                        tr("把批量扫描结果导出为 CSV / JSON / HTML 汇总")}});
+        // 第一项（单文件报告）的可用性跟着结果新鲜度走，第二项由控制器判空
+        single_export_action_ = export_button_->menu()->actions().value(0);
+        rl->addWidget(export_button_);
+        root->addWidget(row);
+    }
+
     // 三个视图组件与原来的三段独立版面一一对应：模板区（含说明）、单文件报告、批量扫描。
     profile_view_ = new QcProfileView(this);
     profile_view_->SetDescription(QString::fromStdString(profile_.description));
@@ -113,12 +139,10 @@ void ReportingPanel::BuildUi() {
     connect(profile_view_, &QcProfileView::LoadRequested, this, &ReportingPanel::OnLoadProfileFile);
     connect(profile_view_, &QcProfileView::SaveRequested, this, &ReportingPanel::OnSaveProfile);
     connect(single_view_, &SingleReportView::AnalyzeRequested, this, &ReportingPanel::OnAnalyzeCurrentFile);
-    connect(single_view_, &SingleReportView::ExportRequested, this, &ReportingPanel::OnExportSingleReport);
     connect(batch_view_, &BatchScanView::StartRequested, this, &ReportingPanel::OnStartBatch);
     connect(batch_view_, &BatchScanView::CancelRequested, this, &ReportingPanel::OnCancelBatch);
-    connect(batch_view_, &BatchScanView::ExportSummaryRequested, this, &ReportingPanel::OnExportBatchSummary);
 
-    // 初始没有结果：导出按钮必须是禁用的（BuildUi 里创建的控件默认 enabled）。
+    // 初始没有结果：单文件报告那一项必须是禁用的（菜单项默认 enabled）。
     UpdateExportEnabled();
 }
 
@@ -472,7 +496,9 @@ void ReportingPanel::InvalidateResult() {
 }
 
 void ReportingPanel::UpdateExportEnabled() {
-    single_view_->SetExportEnabled(!busy_ && HasFreshResult());
+    // 只有「单文件分析报告」这一项依赖结果新鲜度；「批量扫描汇总」在控制器里判空。
+    if (single_export_action_)
+        single_export_action_->setEnabled(!busy_ && HasFreshResult());
 }
 
 bool ReportingPanel::HasFreshResult() const {
@@ -480,7 +506,7 @@ bool ReportingPanel::HasFreshResult() const {
 }
 
 bool ReportingPanel::IsExportEnabled() const {
-    return single_view_ && single_view_->IsExportEnabled();
+    return single_export_action_ && single_export_action_->isEnabled();
 }
 
 qc::QcProfile ReportingPanel::CurrentProfile() const {

@@ -161,10 +161,6 @@ void BatchScanView::SetupUi() {
     batch_progress_ = new QProgressBar(batch_box);
     batch_progress_->setRange(0, 100);
     action_row->addWidget(batch_progress_, 1);
-
-    summary_button_ = new QPushButton(tr("导出汇总…"), batch_box);
-    connect(summary_button_, &QPushButton::clicked, this, &BatchScanView::ExportSummaryRequested);
-    action_row->addWidget(summary_button_);
     batch_layout->addLayout(action_row);
 
     batch_summary_label_ = new QLabel(tr("尚未扫描"), batch_box);

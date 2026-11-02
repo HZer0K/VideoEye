@@ -1,15 +1,17 @@
-// 拆出来的三个页面组件（StreamOverviewView / FramePacketView / MacroblockView）
-// 的「启用分析」开关同步，以及 FramePacketView → StreamOverviewView 的 GOP 桥接。
+// 拆出来的页面组件（StreamOverviewView / FramePacketView / MacroblockView）的
+// 「启用分析」开关同步，以及 FramePacketView → StreamOverviewView 的 GOP 桥接。
 //
 // 为什么值得单独测：
-//   1. 和 EventTimelineView（评审 P1-4）同一类坑 —— 「启用分析」QCheckBox 是在组件
-//      构造函数里建的，而面板注入 feature 钩子发生在那之后。若 SetFeatureHooks 只记下
-//      钩子、不回写控件，界面会显示「已启用」而面板里 feature_enabled_ 其实是关的，
-//      结果是数据被静默丢弃、界面毫无提示。这里守住三条：
+//   1. 和 EventTimelineView 同一类坑 —— 「启用分析」QCheckBox 是在组件构造函数里建的，
+//      而面板注入 feature 钩子发生在那之后。若 SetFeatureHooks 只记下钩子、不回写控件，
+//      界面会显示「已启用」而面板里 feature_enabled_ 其实是关的，结果是数据被静默丢弃、
+//      界面毫无提示。这里守住三条：
 //        a. 注入钩子后控件状态立刻等于钩子返回的真实状态；
-//        b. 回写过程不发 toggled（否则会被钩子当成用户点击，把状态再翻回去）；
-//        c. 点控件时钩子收到的是本组件自己的编号（0/1/2），不是面板的枚举值。
-//   2. GOP 摘要在 FramePacketView 产出、StreamOverviewView 消费，两者不互相认识，
+//        b. 回写过程不发 clicked/toggled（否则会被钩子当成用户点击，把状态再翻回去）；
+//        c. 点控件时钩子收到的是本组件自己的编号（0/1/2/3），不是面板的枚举值。
+//   2. 「播放统计与帧包」页头只有一个聚合开关（流统计 / 视频帧 / 音频帧 / 数据包），
+//      下方四张明细子表不再各挂一个同名勾选框 —— 一条断言守住"一页一个分析入口"。
+//   3. GOP 摘要在 FramePacketView 产出、StreamOverviewView 消费，两者不互相认识，
 //      全靠面板接信号。这条链断了不会崩，只会让「最大GOP大小」与 GOP 分布曲线永远
 //      停在上一次的值 —— 属于最难在界面上发现的那类回归。
 //
@@ -72,79 +74,101 @@ std::function<bool(int)> StatesHook(const std::vector<bool>& states, bool fallba
 } // namespace
 
 // ---------------------------------------------------------------------------
-// StreamOverviewView（流统计，组件内编号 0）
+// StreamOverviewView（页头聚合开关，覆盖 0..3 = 流统计 / 视频帧 / 音频帧 / 数据包）
 // ---------------------------------------------------------------------------
 
-TEST(StreamViewsToggleTests, StreamOverviewToggleFollowsInjectedFeatureState) {
+TEST(StreamViewsToggleTests, PlaybackHeaderToggleAggregatesFourFeatures) {
     EnsureApp();
     StreamOverviewView view;
     ToggleRecorder rec;
 
-    QCheckBox* toggle = view.findChild<QCheckBox*>();
-    ASSERT_TRUE(toggle != nullptr);
+    QCheckBox* toggle = view.findChild<QCheckBox*>(QStringLiteral("AnalysisFeatureToggle"));
+    ASSERT_TRUE(toggle != nullptr) << "页头找不到「启用分析」聚合开关";
 
-    // 面板里 StreamStats 默认是启用的；先按「关」注入，验证控件被回写
-    view.SetFeatureHooks(StatesHook({false}), rec.Sink());
-    EXPECT_FALSE(toggle->isChecked());
+    // 面板默认: StreamStats=开, VideoFrame=开, AudioFrame=关, Packet=关 -> 半选
+    bool states[4] = {true, true, false, false};
+    view.SetFeatureHooks([&states](int id) { return states[id]; },
+                         [&states, &rec](int id, bool enabled) {
+                             states[id] = enabled;
+                             rec.calls.emplace_back(id, enabled);
+                         });
+    EXPECT_EQ(toggle->checkState(), Qt::PartiallyChecked);
     // 回写不应该被当成用户操作
     EXPECT_TRUE(rec.calls.empty());
 
-    // 反向再验一次：注入「开」
-    StreamOverviewView view2;
-    ToggleRecorder rec2;
-    view2.SetFeatureHooks(StatesHook({true}), rec2.Sink());
-    QCheckBox* toggle2 = view2.findChild<QCheckBox*>();
-    ASSERT_TRUE(toggle2 != nullptr);
-    EXPECT_TRUE(toggle2->isChecked());
-    EXPECT_TRUE(rec2.calls.empty());
+    // 全开 -> 勾选；全关 -> 未勾选（反向验证，排除"恒半选"的假通过）
+    for (bool& s : states)
+        s = true;
+    view.SetFeatureHooks([&states](int id) { return states[id]; },
+                         [&states, &rec](int id, bool enabled) {
+                             states[id] = enabled;
+                             rec.calls.emplace_back(id, enabled);
+                         });
+    EXPECT_EQ(toggle->checkState(), Qt::Checked);
 
-    // 用户点击 -> 钩子收到本组件的编号 0
-    toggle->setChecked(true);
-    ASSERT_EQ(rec.calls.size(), 1u);
-    EXPECT_EQ(rec.calls[0].first, 0);
-    EXPECT_TRUE(rec.calls[0].second);
+    for (bool& s : states)
+        s = false;
+    view.SetFeatureHooks([&states](int id) { return states[id]; },
+                         [&states, &rec](int id, bool enabled) {
+                             states[id] = enabled;
+                             rec.calls.emplace_back(id, enabled);
+                         });
+    EXPECT_EQ(toggle->checkState(), Qt::Unchecked);
+    EXPECT_TRUE(rec.calls.empty()) << "初始化同步不该伪造用户操作";
+}
+
+// 点击聚合开关 = 一键全开 / 全关，四个采集项一起变。
+TEST(StreamViewsToggleTests, PlaybackHeaderToggleFlipsAllItems) {
+    EnsureApp();
+    StreamOverviewView view;
+    ToggleRecorder rec;
+
+    bool states[4] = {true, true, false, false};
+    view.SetFeatureHooks([&states](int id) { return states[id]; },
+                         [&states, &rec](int id, bool enabled) {
+                             states[id] = enabled;
+                             rec.calls.emplace_back(id, enabled);
+                         });
+
+    QCheckBox* toggle = view.findChild<QCheckBox*>(QStringLiteral("AnalysisFeatureToggle"));
+    ASSERT_TRUE(toggle != nullptr);
+
+    // 当前有开着的项 -> 点击全关
+    toggle->click();
+    ASSERT_EQ(rec.calls.size(), 4u);
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_EQ(rec.calls[static_cast<std::size_t>(i)].first, i);
+        EXPECT_FALSE(rec.calls[static_cast<std::size_t>(i)].second);
+    }
+    EXPECT_EQ(toggle->checkState(), Qt::Unchecked);
+
+    // 全关 -> 点击全开
+    rec.calls.clear();
+    toggle->click();
+    ASSERT_EQ(rec.calls.size(), 4u);
+    for (const auto& call : rec.calls)
+        EXPECT_TRUE(call.second);
+    EXPECT_EQ(toggle->checkState(), Qt::Checked);
 }
 
 // ---------------------------------------------------------------------------
-// FramePacketView（视频帧 0 / 音频帧 1 / 数据包 2）
+// FramePacketView：四张明细子表不再各挂一个「启用分析」（整页一个开关在页头）
 // ---------------------------------------------------------------------------
 
-TEST(StreamViewsToggleTests, FramePacketTogglesFollowInjectedFeatureState) {
+TEST(StreamViewsToggleTests, FramePacketSubPagesHaveNoAnalysisToggle) {
     EnsureApp();
     FramePacketView view;
-    ToggleRecorder rec;
 
     QTabWidget* tabs = view.findChild<QTabWidget*>();
     ASSERT_TRUE(tabs != nullptr);
     ASSERT_EQ(tabs->count(), 4); // 视频帧 / 包 / GOP 摘要 / 音频帧
-    // 子页顺序与 SetupUi 的 addTab 顺序一致
-    QCheckBox* video = tabs->widget(0)->findChild<QCheckBox*>();
-    QCheckBox* packet = tabs->widget(1)->findChild<QCheckBox*>();
-    QCheckBox* audio = tabs->widget(3)->findChild<QCheckBox*>();
-    ASSERT_TRUE(video != nullptr);
-    ASSERT_TRUE(packet != nullptr);
-    ASSERT_TRUE(audio != nullptr);
-
-    // 面板默认: VideoFrame=开, AudioFrame=关, Packet=关。
-    // 用 (false, false, true) 这种非默认组合注入 —— 若编号映射错位，断言会立刻失败。
-    view.SetFeatureHooks(StatesHook({false, false, true}, /*fallback=*/false), rec.Sink());
-
-    EXPECT_FALSE(video->isChecked());
-    EXPECT_FALSE(audio->isChecked());
-    EXPECT_TRUE(packet->isChecked());
-    EXPECT_TRUE(rec.calls.empty()); // 回写不触发 toggled
-
-    // 逐个点击，验证钩子收到的编号与本组件的内部编号一致
-    video->setChecked(true);
-    audio->setChecked(true);
-    packet->setChecked(false);
-    ASSERT_EQ(rec.calls.size(), 3u);
-    EXPECT_EQ(rec.calls[0].first, 0); // 视频帧
-    EXPECT_EQ(rec.calls[1].first, 1); // 音频帧
-    EXPECT_EQ(rec.calls[2].first, 2); // 数据包
-    EXPECT_TRUE(rec.calls[0].second);
-    EXPECT_TRUE(rec.calls[1].second);
-    EXPECT_FALSE(rec.calls[2].second);
+    for (int i = 0; i < tabs->count(); ++i) {
+        for (QCheckBox* box : tabs->widget(i)->findChildren<QCheckBox*>()) {
+            EXPECT_NE(box->text(), QStringLiteral("启用分析"))
+                << "子页「" << tabs->tabText(i).toStdString() << "」里又出现了同名勾选框，"
+                << "与「一页一个分析入口」的规范冲突";
+        }
+    }
 }
 
 // GOP 摘要从 FramePacketView 产出，经 GopSummariesChanged 交给面板再转给流概览区。

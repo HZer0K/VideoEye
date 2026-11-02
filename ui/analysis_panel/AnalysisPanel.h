@@ -89,6 +89,11 @@ public:
     // 声明（见 AnalysisPageFactory.h），不能在这里内联。
     void SetCurrentVideoPath(const QString& path);
 
+    // 当前文件路径。主窗口在用户「事后打开」文件结构分析时要用它补跑一次解析
+    // （容器结构只在打开/打开失败时解析，开关晚于打开就必须显式再请求一次，
+    // 否则勾了永远是空表 —— 见 MainWindow 的 AnalysisFeatureToggled 处理）。
+    QString CurrentVideoPath() const;
+
     // 重新发射所有启用状态的开关信号 (用于文件打开后同步播放器状态)
     void EmitInitialFeatureStates();
 

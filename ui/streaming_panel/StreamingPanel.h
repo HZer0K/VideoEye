@@ -57,9 +57,8 @@ public:
         return scan_active_;
     }
 
-    // 序列化：复制 JSON / 导出 JSON 文件共用
+    // 序列化：导出 JSON 文件用
     QString ExportToJson() const;
-    void CopyJsonToClipboard() const;
 
 signals:
     // 用户点了「开始分析」：由外层决定重新跑一次全文件扫描
@@ -67,7 +66,6 @@ signals:
 
 private slots:
     void OnRefreshClicked();
-    void OnCopyJsonClicked();
     void OnExportJsonClicked();
 
 private:
@@ -79,8 +77,6 @@ private:
     StreamingTimelineView* timeline_view_ = nullptr;
     StreamingIssueView* issue_view_ = nullptr;
     QPushButton* refresh_button_ = nullptr;
-    QPushButton* copy_json_button_ = nullptr;
-    QPushButton* export_json_button_ = nullptr;
 
     model::StreamingPackageResult current_result_;
     bool has_result_ = false;

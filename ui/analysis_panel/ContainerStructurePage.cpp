@@ -50,14 +50,23 @@ void ContainerStructurePage::SetupUi() {
         title_label_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
         trl->addWidget(title_label_);
         trl->addStretch();
-        QCheckBox* toggle = new QCheckBox(tr("启用分析（打开文件时解析）"), titleRow);
+        // 开关文案与其它播放页统一为「启用分析」，具体时机写进 tooltip
+        QCheckBox* toggle = new QCheckBox(tr("启用分析"), titleRow);
         toggle->setChecked(feature_checked_);
-        toggle->setToolTip(tr("打开文件时解析容器结构，结果同时供「流媒体包」页使用，默认开启。"));
+        toggle->setToolTip(tr("打开文件时解析容器结构，结果同时供「流媒体包」页使用。默认关闭，按需开启。"));
         connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
             feature_checked_ = checked;
             emit FeatureToggled(checked);
         });
         trl->addWidget(toggle);
+
+        // 页头唯一的「导出」入口：结构数据（文本）+ MP4 样本表 CSV 都收进这个菜单，
+        // 不再让页尾和 Sample Table 子页各挂一个导出按钮。
+        trl->addWidget(
+            MakeExportMenuButton(titleRow, {{tr("结构数据（TXT）…"), [this]() { OnExportContainerStructure(); },
+                                             tr("将容器结构树和表格数据导出为文本文件")},
+                                            {tr("MP4 样本表 CSV…"), [this]() { mp4_sample_widget_->OnExportCsv(); },
+                                             tr("把当前轨道的样本表导出为 CSV（含偏移/DTS/PTS/大小/关键帧）")}}));
         layout->addWidget(titleRow);
     }
 
@@ -232,12 +241,6 @@ void ContainerStructurePage::SetupUi() {
 
     layout->addWidget(splitter, 1);
 
-    // 导出按钮
-    export_button_ = new QPushButton(tr("导出结构数据"), this);
-    export_button_->setToolTip(tr("将容器结构树和表格数据导出为文本文件"));
-    layout->addWidget(export_button_, 0, Qt::AlignRight);
-
-    connect(export_button_, &QPushButton::clicked, this, &ContainerStructurePage::OnExportContainerStructure);
     // 结构树点击 stts/ctts/stss/stco/stsz/elst/moof 等样本表相关 box 时联动到 Sample Table
     connect(tree_, &QTreeWidget::itemSelectionChanged, this, &ContainerStructurePage::OnContainerTreeSelectionChanged);
 }

@@ -70,6 +70,10 @@ void VisualDefectPage::SetupUi() {
             emit FeatureToggled(checked);
         });
         rl->addWidget(toggle);
+        // 页头唯一的「导出」入口：缺陷清单 CSV 与证据缩略图都收进这个菜单
+        rl->addWidget(MakeExportMenuButton(
+            row, {{tr("缺陷清单 CSV…"), [this]() { OnExportCsv(); }, tr("导出检测到的画面缺陷与时间点")},
+                  {tr("证据缩略图…"), [this]() { OnExportEvidence(); }, tr("导出所选缺陷的证据帧缩略图")}}));
         layout->addWidget(row);
     }
 
@@ -206,19 +210,6 @@ void VisualDefectPage::SetupUi() {
         el->addStretch();
         dl->addLayout(el);
         layout->addLayout(dl, 1);
-    }
-
-    // 导出
-    {
-        QHBoxLayout* bl = new QHBoxLayout();
-        bl->addStretch();
-        QPushButton* export_csv = new QPushButton(tr("导出缺陷 CSV"), this);
-        connect(export_csv, &QPushButton::clicked, this, &VisualDefectPage::OnExportCsv);
-        bl->addWidget(export_csv);
-        QPushButton* export_png = new QPushButton(tr("导出证据缩略图"), this);
-        connect(export_png, &QPushButton::clicked, this, &VisualDefectPage::OnExportEvidence);
-        bl->addWidget(export_png);
-        layout->addLayout(bl);
     }
 
     // 建好之后由 AnalysisPanel::AddPageWithScroll 收进外部 stack

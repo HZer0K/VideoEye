@@ -5,7 +5,8 @@
 //
 // 从 ReportingPanel 拆出的展示型组件。扫描与导出的执行仍在面板里（BatchQcRunner、
 // BatchQcCallbacks、导出路径计算）；这里只负责把条目铺进表格、维护行与
-// batch_results_ 下标的绑定，以及两个筛选口径的行可见性。
+// batch_results_ 下标的绑定，以及两个筛选口径的行可见性。汇总导出入口统一在
+// 面板页头的「导出」菜单里（见 ReportingPanel），本区不再挂按钮。
 
 #include <string>
 #include <vector>
@@ -66,7 +67,6 @@ public:
 signals:
     void StartRequested();
     void CancelRequested();
-    void ExportSummaryRequested();
 
 private slots:
     void OnFilterChanged();
@@ -94,7 +94,6 @@ private:
     QComboBox* batch_status_filter_ = nullptr;
     QComboBox* batch_severity_filter_ = nullptr;
     QTableWidget* batch_table_ = nullptr;
-    QPushButton* summary_button_ = nullptr;
     // 选中行详情: 表格十列装不下失败原因/问题清单，选中后在这里展开
     QLabel* batch_detail_ = nullptr;
     QPushButton* open_report_button_ = nullptr;

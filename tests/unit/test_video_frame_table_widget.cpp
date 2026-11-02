@@ -119,8 +119,10 @@ TEST(VideoFrameTableWidgetTests, SetupCreatesFrameAndGopTables) {
     // 宿主组件自身不可见：它只是两个子页的容器，由父页 addTab
     EXPECT_TRUE(widget.isHidden());
 
-    ASSERT_TRUE(widget.toggle() != nullptr);
-    EXPECT_FALSE(widget.toggle()->isChecked());
+    // 采集开关已上提到「播放统计与帧包」页头（整页一个聚合开关），
+    // 子页不再挂同名勾选框 —— 同页多个「启用分析」正是这次要消灭的不一致。
+    for (QCheckBox* box : widget.findChildren<QCheckBox*>())
+        EXPECT_NE(box->text(), QStringLiteral("启用分析"));
 }
 
 // ---------------------------------------------------------------------------

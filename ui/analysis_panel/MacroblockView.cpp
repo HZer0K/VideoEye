@@ -41,18 +41,31 @@ void MacroblockView::SetupUi() {
     layout->setContentsMargins(4, 2, 4, 4);
     layout->setSpacing(4);
 
+    // 页头：标题 + 启用分析 + 统一「导出」菜单（与原工具栏里的导出按钮同一能力，
+    // 只是收进标准位置）
+    {
+        QWidget* row = new QWidget(this);
+        QHBoxLayout* rl = new QHBoxLayout(row);
+        rl->setContentsMargins(0, 0, 0, 0);
+        QLabel* title = new QLabel(tr("运动矢量与块分析"), row);
+        title->setObjectName(QStringLiteral("PageTitle"));
+        rl->addWidget(title);
+        rl->addStretch();
+
+        toggle_ = new QCheckBox(tr("启用分析"), row);
+        toggle_->setToolTip(tr("播放时实时采集运动矢量与块统计，需要额外解码残差，默认关闭，按需开启。"));
+        rl->addWidget(toggle_);
+
+        rl->addWidget(MakeExportMenuButton(row, {{tr("运动矢量与块统计 CSV…"), [this]() { OnExportCsv(); },
+                                                  tr("导出当前帧的运动矢量、块大小分布与幅度分布")}}));
+        layout->addWidget(row);
+    }
+
     // 工具栏
     QHBoxLayout* toolbar = new QHBoxLayout();
     summary_label_ =
         new QLabel(tr("帧: -- | 块总数: 0 | 前向: 0 | 后向: 0 | 帧内: 0 | 平均MV: 0.0 | 最大MV: 0.0"), this);
     toolbar->addWidget(summary_label_, 1);
-
-    export_csv_button_ = new QPushButton(tr("导出 CSV"), this);
-    toolbar->addWidget(export_csv_button_);
-
-    toggle_ = new QCheckBox(tr("启用分析"), this);
-    toggle_->setToolTip(tr("播放时实时采集运动矢量与块统计，需要额外解码残差，默认关闭，按需开启。"));
-    toolbar->addWidget(toggle_);
     layout->addLayout(toolbar);
 
     // 运动矢量表格 + 可视化预览 (水平分割)
@@ -123,8 +136,6 @@ void MacroblockView::SetupUi() {
     dist_layout->addWidget(mag_group);
 
     layout->addLayout(dist_layout);
-
-    connect(export_csv_button_, &QPushButton::clicked, this, &MacroblockView::OnExportCsv);
 }
 
 void MacroblockView::SetFeatureHooks(std::function<bool(int)> is_enabled, std::function<void(int, bool)> set_enabled) {

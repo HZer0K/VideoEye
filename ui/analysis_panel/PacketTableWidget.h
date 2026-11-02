@@ -63,11 +63,11 @@ public:
     }
     const std::vector<PacketRecord>& PacketRecords() const;
 
-    // 「启用分析」勾选框。必须外露：面板注入 SetFeatureHooks 后要拿它回写真实开关状态，
-    // 否则界面与实际行为不一致（评审 P1）。
-    QCheckBox* toggle() const {
-        return packet_toggle_;
-    }
+    // 采集开关已上提到「播放统计与帧包」页头（整页一个聚合开关），本子页不再有
+    // 自己的「启用分析」勾选框。
+
+    // 导出入口：由父页的页头统一「导出」菜单调用，子页不再各放一个按钮。
+    void OnExportPacketCsv();
 
 private:
     void SetupUi();
@@ -81,14 +81,10 @@ private:
 
     void FlushPendingPacketTableUpdates();
 
-    void OnExportPacketCsv();
-
     QLabel* packet_summary_label_ = nullptr;
     QComboBox* packet_filter_combo_ = nullptr;
     QTableView* packet_table_ = nullptr;
     RecordTableModel<PacketRecord>* packet_model_ = nullptr;
-    QPushButton* export_packet_csv_button_ = nullptr;
-    QCheckBox* packet_toggle_ = nullptr;
 
     int packet_filter_mode_ = -1; // -1=全部, 0=视频流, 1=音频流, 2=其他流
 

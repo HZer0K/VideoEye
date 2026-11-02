@@ -58,21 +58,18 @@ public:
     // 记录缓存的唯一所有者是模型；这里只是转发，避免外部再拿一份副本。
     const std::vector<AudioFrameRecord>& AudioFrameRecords() const;
 
-    // 「启用分析」勾选框。必须外露：面板注入 SetFeatureHooks 后要拿它回写真实开关状态，
-    // 否则界面与实际行为不一致（评审 P1）。
-    QCheckBox* toggle() const {
-        return audio_toggle_;
-    }
+    // 采集开关已上提到「播放统计与帧包」页头（整页一个聚合开关），本子页不再有
+    // 自己的「启用分析」勾选框。
+
+    // 导出入口：由父页的页头统一「导出」菜单调用，子页不再各放一个按钮。
+    void OnExportAudioFrameCsv();
 
 private:
     void SetupUi();
     void UpdateAudioFrameSummary();
     void FlushPendingAudioFrameTableUpdates();
-    void OnExportAudioFrameCsv();
 
     QLabel* audio_frame_summary_label_ = nullptr;
-    QPushButton* export_audio_frame_csv_button_ = nullptr;
-    QCheckBox* audio_toggle_ = nullptr;
     QTableView* audio_frame_table_ = nullptr;
     RecordTableModel<AudioFrameRecord>* audio_frame_model_ = nullptr;
 

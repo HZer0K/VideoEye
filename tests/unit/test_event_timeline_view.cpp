@@ -1,15 +1,15 @@
-// EventTimelineView 开关初始化回归测试（对应评审 P1-4）
+// EventTimelineView 页头「启用分析」聚合开关的初始化回归测试。
 //
-// 根因: 三个「启用分析」QCheckBox 在构造函数里就已建好，那时 AnalysisPanel 还没注入
-// 功能开关钩子，控件只能按默认值创建；SetFeatureHooks() 注入之后又不回写，于是
-// 界面显示「启用分析」，而面板 feature_enabled_ 里其实是关的 —— 数据处理被静默过滤，
-// 用户看到的界面与实际行为不一致。
+// 根因: 勾选框在构造函数里就已建好，那时 AnalysisPanel 还没注入功能开关钩子，控件只能
+// 按默认值创建；SetFeatureHooks() 注入之后若不回写，界面显示「启用分析」而面板
+// feature_enabled_ 里其实是关的 —— 数据处理被静默过滤，界面与实际行为不一致。
 //
-// 本测试直接用 QApplication(offscreen) 构造视图并注入钩子，断言：
-//   1) 三个勾选框的勾选态 == 钩子里的真实状态（而不是构造函数留下的默认值）；
-//   2) 注入时的回写属于"初始化同步"，不能伪造出 FeatureToggled / set_enabled 回调
-//      （那是用户点开关才该有的语义）；
-//   3) 真实状态为开时控件也跟着开 —— 反向验证，排除"恒为未勾选"的假通过。
+// 两个页面曾经各挂 3 个同名「启用分析」（异常事件 / 同步分析 / 统一时间轴），
+// 与其它页"页头一个开关"对不上。现在收敛成页头一个聚合开关，本测试同时守住：
+//   1) 三态（全开 / 全关 / 部分开启）如实反映钩子里的真实状态；
+//   2) 注入时的回写属于"初始化同步"，不能伪造出 set_enabled 回调；
+//   3) 子页里不再有同名勾选框（否则又退回"一页多开关"）；
+//   4) 点击 = 一键全开 / 全关。
 
 #include <gtest/gtest.h>
 
@@ -38,25 +38,14 @@ QApplication* EnsureApp() {
     return app;
 }
 
-// 按子页标题定位该页的「启用分析」勾选框。
-// 之所以不按 findChildren 的顺序取：页签的创建顺序（异常事件 / 统一时间轴 / 同步分析）
-// 与侧边栏期望顺序（Event / Sync / Timeline）并不一致，靠下标会写出一条脆弱的测试。
-QCheckBox* ToggleOf(EventTimelineView& view, const QString& tab_text) {
-    auto* tabs = view.findChild<QTabWidget*>();
-    if (!tabs)
-        return nullptr;
-    for (int i = 0; i < tabs->count(); ++i) {
-        if (tabs->tabText(i) != tab_text)
-            continue;
-        QWidget* page = tabs->widget(i);
-        return page ? page->findChild<QCheckBox*>() : nullptr;
-    }
-    return nullptr;
+// 页头那个唯一的聚合勾选框（objectName 由 AggregateFeatureToggle 统一设置）。
+QCheckBox* HeaderToggle(EventTimelineView& view) {
+    return view.findChild<QCheckBox*>(QStringLiteral("AnalysisFeatureToggle"));
 }
 
 } // namespace
 
-TEST(EventTimelineViewToggleInit, TogglesFollowInjectedFeatureState) {
+TEST(EventTimelineViewToggleInit, HeaderToggleFollowsInjectedFeatureState) {
     EnsureApp();
 
     // AnalysisPanel 构造函数的默认值：Event / Sync / Timeline 三个都是关的。
@@ -73,38 +62,63 @@ TEST(EventTimelineViewToggleInit, TogglesFollowInjectedFeatureState) {
                              ++set_enabled_calls;
                          });
 
-    QCheckBox* event_box = ToggleOf(view, QStringLiteral("异常事件"));
-    QCheckBox* sync_box = ToggleOf(view, QStringLiteral("同步分析"));
-    QCheckBox* timeline_box = ToggleOf(view, QStringLiteral("统一时间轴"));
-    ASSERT_TRUE(event_box != nullptr) << "找不到「异常事件」页的启用开关";
-    ASSERT_TRUE(sync_box != nullptr) << "找不到「同步分析」页的启用开关";
-    ASSERT_TRUE(timeline_box != nullptr) << "找不到「统一时间轴」页的启用开关";
+    QCheckBox* box = HeaderToggle(view);
+    ASSERT_TRUE(box != nullptr) << "页头找不到「启用分析」聚合开关";
 
     // 1) 注入钩子后必须按真实状态回写 —— 默认全关时界面就应该是未勾选。
-    //    修复前这里三条全是 checked（构造函数里 is_enabled_ 还是空的，落到默认 true）。
-    EXPECT_FALSE(event_box->isChecked());
-    EXPECT_FALSE(sync_box->isChecked());
-    EXPECT_FALSE(timeline_box->isChecked());
+    EXPECT_EQ(box->checkState(), Qt::Unchecked);
 
     // 2) 回写只能改控件外观，不能反过来调用 set_enabled 或发 FeatureToggled。
     EXPECT_EQ(set_enabled_calls, 0) << "初始化同步不该被当成用户操作回写开关状态";
     EXPECT_EQ(toggled_signals, 0) << "初始化同步不该触发 FeatureToggled";
 
-    // 3) 反向验证：真实状态为开时，控件必须跟着勾上。
-    //    否则上面三条 EXPECT_FALSE 用"恒不勾选"也能过，测试就失去意义了。
-    bool all_on[3] = {true, true, true};
-    EventTimelineView view_on;
-    view_on.SetFeatureHooks([&all_on](int feature) { return all_on[feature]; }, [](int, bool) {});
+    // 3) 子页里不该再有同名勾选框：一页一个分析入口。
+    auto* tabs = view.findChild<QTabWidget*>();
+    ASSERT_TRUE(tabs != nullptr);
+    for (int i = 0; i < tabs->count(); ++i) {
+        for (QCheckBox* inner : tabs->widget(i)->findChildren<QCheckBox*>()) {
+            EXPECT_NE(inner->text(), QStringLiteral("启用分析"))
+                << "子页「" << tabs->tabText(i).toStdString() << "」里又出现了同名勾选框";
+        }
+    }
+}
 
-    QCheckBox* event_on = ToggleOf(view_on, QStringLiteral("异常事件"));
-    QCheckBox* sync_on = ToggleOf(view_on, QStringLiteral("同步分析"));
-    QCheckBox* timeline_on = ToggleOf(view_on, QStringLiteral("统一时间轴"));
-    ASSERT_TRUE(event_on != nullptr);
-    ASSERT_TRUE(sync_on != nullptr);
-    ASSERT_TRUE(timeline_on != nullptr);
-    EXPECT_TRUE(event_on->isChecked());
-    EXPECT_TRUE(sync_on->isChecked());
-    EXPECT_TRUE(timeline_on->isChecked());
+// 三态语义：全开勾选、全关未勾选、部分开启半选；点击按"还有开着的就全关"收口。
+TEST(EventTimelineViewToggleInit, AggregateToggleShowsTriStateAndTogglesAllItems) {
+    EnsureApp();
+
+    bool states[3] = {true, false, false};
+    int calls = 0;
+    EventTimelineView view;
+    view.SetFeatureHooks([&states](int feature) { return states[feature]; },
+                         [&states, &calls](int feature, bool enabled) {
+                             states[feature] = enabled;
+                             ++calls;
+                         });
+
+    QCheckBox* box = HeaderToggle(view);
+    ASSERT_TRUE(box != nullptr);
+    // 只开了一项 -> 半选（界面要如实说明"正开着几项"）
+    EXPECT_EQ(box->checkState(), Qt::PartiallyChecked);
+
+    // 还有一项开着 -> 点击 = 全关
+    box->click();
+    EXPECT_FALSE(states[0]);
+    EXPECT_FALSE(states[1]);
+    EXPECT_FALSE(states[2]);
+    EXPECT_EQ(calls, 3) << "聚合开关应把三项一起关掉";
+    EXPECT_EQ(box->checkState(), Qt::Unchecked);
+
+    // 全关 -> 点击 = 全开
+    box->click();
+    EXPECT_TRUE(states[0]);
+    EXPECT_TRUE(states[1]);
+    EXPECT_TRUE(states[2]);
+    EXPECT_EQ(box->checkState(), Qt::Checked);
+
+    // 全开 -> 点击 = 全关
+    box->click();
+    EXPECT_EQ(box->checkState(), Qt::Unchecked);
 }
 
 // 分类枚举驱动表格文本与摘要分组（对应评审 P1：时间轴分类改 enum）。

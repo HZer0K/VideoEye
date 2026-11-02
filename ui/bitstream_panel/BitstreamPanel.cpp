@@ -1,13 +1,15 @@
 #include "ui/bitstream_panel/BitstreamPanel.h"
 
-#include <QApplication>
-#include <QClipboard>
 #include <QFile>
 #include <QFileDialog>
+#include <QHBoxLayout>
+#include <QLabel>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QSplitter>
 #include <QVBoxLayout>
 
+#include "ui/analysis_panel/AnalysisPageSupport.h"
 #include "ui/bitstream_panel/BitstreamComparisonView.h"
 #include "ui/bitstream_panel/BitstreamInconsistencyView.h"
 #include "ui/bitstream_panel/BitstreamStructureView.h"
@@ -27,7 +29,29 @@ void BitstreamPanel::BuildUi() {
     main_layout->setContentsMargins(8, 8, 8, 8);
     main_layout->setSpacing(6);
 
-    // ---- 顶部：摘要 + 工具栏 ----
+    // ---- 页头：标题 + 开始分析 + 统一「导出」菜单 ----
+    {
+        QWidget* row = new QWidget(this);
+        QHBoxLayout* rl = new QHBoxLayout(row);
+        rl->setContentsMargins(0, 0, 0, 0);
+        QLabel* title = new QLabel(tr("编码参数集"), row);
+        title->setObjectName(QStringLiteral("PageTitle"));
+        rl->addWidget(title);
+        rl->addStretch();
+
+        refresh_button_ = new QPushButton(tr("开始分析"), row);
+        refresh_button_->setToolTip(tr("读取视频流的参数集（只读 extradata，不解码）"));
+        connect(refresh_button_, &QPushButton::clicked, this, &BitstreamPanel::OnRefreshClicked);
+        rl->addWidget(refresh_button_);
+
+        // 不再提供「复制 JSON」：同一份序列化结果已在「导出」菜单里落盘，
+        // 多一个按钮只是把页头挤宽、且与其它页的「分析入口 + 导出」两件套不一致。
+        rl->addWidget(MakeExportMenuButton(row, {{tr("码流解析结果 JSON…"), [this]() { OnExportJsonClicked(); },
+                                                  tr("把当前参数集解析结果导出为 JSON 文件")}}));
+        main_layout->addWidget(row);
+    }
+
+    // ---- 顶部：摘要 ----
     summary_view_ = new BitstreamSummaryView(this);
     main_layout->addWidget(summary_view_);
 
@@ -45,10 +69,6 @@ void BitstreamPanel::BuildUi() {
     // ---- 底部：不一致项 ----
     inconsistency_view_ = new BitstreamInconsistencyView(this);
     main_layout->addWidget(inconsistency_view_);
-
-    connect(summary_view_, &BitstreamSummaryView::RefreshRequested, this, &BitstreamPanel::OnRefreshClicked);
-    connect(summary_view_, &BitstreamSummaryView::CopyJsonRequested, this, &BitstreamPanel::OnCopyJsonClicked);
-    connect(summary_view_, &BitstreamSummaryView::ExportJsonRequested, this, &BitstreamPanel::OnExportJsonClicked);
 }
 
 // --------------------------------------------------------------------------
@@ -80,29 +100,16 @@ int BitstreamPanel::IssueCount() const {
 void BitstreamPanel::SetScanActive(bool active) {
     scan_active_ = active;
     // 参数集只读 extradata，跟着全文件扫描一起跑；扫描中禁用按钮避免重复触发。
-    summary_view_->SetRefreshEnabled(!active);
+    if (refresh_button_)
+        refresh_button_->setEnabled(!active);
 }
 
 QString BitstreamPanel::ExportToJson() const {
     return QString::fromStdString(current_result_.ToJson());
 }
 
-void BitstreamPanel::CopyJsonToClipboard() const {
-    if (QClipboard* clipboard = QApplication::clipboard()) {
-        clipboard->setText(ExportToJson());
-    }
-}
-
 void BitstreamPanel::OnRefreshClicked() {
     emit RefreshRequested();
-}
-
-void BitstreamPanel::OnCopyJsonClicked() {
-    if (!has_result_) {
-        QMessageBox::information(this, tr("码流解析"), tr("还没有可导出的解析结果。"));
-        return;
-    }
-    CopyJsonToClipboard();
 }
 
 void BitstreamPanel::OnExportJsonClicked() {

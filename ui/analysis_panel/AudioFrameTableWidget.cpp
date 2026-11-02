@@ -49,15 +49,9 @@ void AudioFrameTableWidget::SetupUi() {
     a_layout->setSpacing(4);
 
     QHBoxLayout* a_toolbar = new QHBoxLayout();
+    // 采集开关在「播放统计与帧包」页头（整页一个聚合开关），子页只留摘要。
     audio_frame_summary_label_ = new QLabel(tr("总音频帧数: 0 | 总样本数: 0 | 总字节数: 0"), this);
     a_toolbar->addWidget(audio_frame_summary_label_, 1);
-
-    export_audio_frame_csv_button_ = new QPushButton(tr("导出 CSV"), this);
-    a_toolbar->addWidget(export_audio_frame_csv_button_);
-
-    audio_toggle_ = new QCheckBox(tr("启用分析"), this);
-    audio_toggle_->setToolTip(tr("播放时实时采集，需要额外的数据留存，默认关闭，按需开启。"));
-    a_toolbar->addWidget(audio_toggle_);
     a_layout->addLayout(a_toolbar);
 
     QGroupBox* a_table_group = new QGroupBox(tr("音频帧信息"), this);
@@ -88,9 +82,6 @@ void AudioFrameTableWidget::SetupUi() {
     audio_frame_table_->setMinimumHeight(120);
     a_table_layout->addWidget(audio_frame_table_);
     a_layout->addWidget(a_table_group);
-
-    // 导出按钮是本子页内部的事（只依赖自己的记录缓存），就地连回。
-    connect(export_audio_frame_csv_button_, &QPushButton::clicked, this, &AudioFrameTableWidget::OnExportAudioFrameCsv);
 }
 
 const std::vector<AudioFrameRecord>& AudioFrameTableWidget::AudioFrameRecords() const {

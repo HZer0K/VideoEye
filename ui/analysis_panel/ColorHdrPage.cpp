@@ -59,9 +59,9 @@ void ColorHdrPage::SetupUi() {
         connect(cancel_button_, &QPushButton::clicked, this, &ColorHdrPage::OnCancelAnalysis);
         rl->addWidget(cancel_button_);
 
-        QPushButton* export_btn = new QPushButton(tr("导出 CSV"), row);
-        connect(export_btn, &QPushButton::clicked, this, &ColorHdrPage::OnExportCsv);
-        rl->addWidget(export_btn);
+        // 页头唯一的「导出」入口
+        rl->addWidget(MakeExportMenuButton(
+            row, {{tr("色彩与 HDR CSV…"), [this]() { OnExportCsv(); }, tr("导出色彩参数、HDR 元数据与一致性检查")}}));
         layout->addWidget(row);
     }
 

@@ -61,7 +61,6 @@ private:
     std::function<void(int, bool)> set_enabled_;
 
     QLabel* summary_label_ = nullptr;
-    QPushButton* export_csv_button_ = nullptr;
     // 必须留成员：SetFeatureHooks 注入钩子后要拿它把真实开关状态回写到界面
     QCheckBox* toggle_ = nullptr;
 

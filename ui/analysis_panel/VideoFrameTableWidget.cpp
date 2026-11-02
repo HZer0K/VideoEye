@@ -53,14 +53,8 @@ void VideoFrameTableWidget::SetupUi() {
     v_toolbar->addWidget(frame_filter_combo_);
 
     frame_summary_label_ = new QLabel(tr("总帧数: 0 | 显示: 0 | GOP: 0"), video_sub_);
+    // 采集开关在「播放统计与帧包」页头（整页一个聚合开关），子页只留筛选与摘要。
     v_toolbar->addWidget(frame_summary_label_, 1);
-
-    export_frame_csv_button_ = new QPushButton(tr("导出 CSV"), video_sub_);
-    v_toolbar->addWidget(export_frame_csv_button_);
-
-    video_toggle_ = new QCheckBox(tr("启用分析"), video_sub_);
-    video_toggle_->setToolTip(tr("播放时实时采集，复用播放所需数据，几乎无额外开销，默认开启。"));
-    v_toolbar->addWidget(video_toggle_);
     v_layout->addLayout(v_toolbar);
 
     QGroupBox* table_group = new QGroupBox(tr("视频帧信息"), video_sub_);
@@ -109,8 +103,6 @@ void VideoFrameTableWidget::SetupUi() {
 
     QHBoxLayout* g_toolbar = new QHBoxLayout();
     g_toolbar->addWidget(new QLabel(tr("按解码帧 pict_type 统计的 GOP 摘要"), gop_sub_), 1);
-    QPushButton* g_export_btn = new QPushButton(tr("导出 CSV"), gop_sub_);
-    g_toolbar->addWidget(g_export_btn);
     g_layout->addLayout(g_toolbar);
 
     QGroupBox* g_table_group = new QGroupBox(tr("GOP 分段统计"), gop_sub_);
@@ -132,8 +124,6 @@ void VideoFrameTableWidget::SetupUi() {
     g_layout->addWidget(g_table_group);
 
     connect(frame_filter_combo_, &QComboBox::currentIndexChanged, this, [this](int) { OnFrameFilterChanged(); });
-    connect(export_frame_csv_button_, &QPushButton::clicked, this, &VideoFrameTableWidget::OnExportFrameCsv);
-    connect(g_export_btn, &QPushButton::clicked, this, &VideoFrameTableWidget::OnExportGopCsv);
     // 帧表的 itemSelectionChanged 不在这里连：帧表 ↔ 包表按 PTS 互跳要同时碰两张表，
     // 连线留在 FramePacketView（它持有两侧）。
 }

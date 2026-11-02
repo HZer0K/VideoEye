@@ -96,6 +96,13 @@ void SubtitleAuxPage::SetupUi() {
             tr("字幕 cue、时码轨、章节、SCTE-35 与 metadata 都来自同一次全文件 demux，不额外读一遍文件。"));
         connect(start_button_, &QPushButton::clicked, this, &SubtitleAuxPage::OnStartAnalysis);
         tl->addWidget(start_button_);
+
+        // 页头唯一的「导出」入口：四个子页的 CSV 都收进这里
+        tl->addWidget(MakeExportMenuButton(
+            title_row, {{tr("字幕 cue CSV…"), [this]() { OnExportSubtitleCsv(); }, tr("导出字幕流与 cue 明细")},
+                        {tr("时码与章节 CSV…"), [this]() { OnExportTimecodeCsv(); }, tr("导出时码轨参数与章节列表")},
+                        {tr("SCTE-35 CSV…"), [this]() { OnExportScte35Csv(); }, tr("导出 SCTE-35 splice 标记")},
+                        {tr("metadata CSV…"), [this]() { OnExportMetadataCsv(); }, tr("导出容器 / 流级 metadata")}}));
         layout->addWidget(title_row);
 
         summary_label_ = new QLabel(
@@ -133,9 +140,6 @@ void SubtitleAuxPage::SetupUi() {
         fl->addWidget(issues_only_check_);
 
         fl->addStretch();
-        QPushButton* export_csv = new QPushButton(tr("导出 cue CSV"), filter_row);
-        connect(export_csv, &QPushButton::clicked, this, &SubtitleAuxPage::OnExportSubtitleCsv);
-        fl->addWidget(export_csv);
         pl->addWidget(filter_row);
 
         stream_table_ = MakeAuxTable({tr("流"), tr("编码"), tr("格式"), tr("承载"), tr("语言"), tr("handler"),
@@ -171,10 +175,6 @@ void SubtitleAuxPage::SetupUi() {
         chapter_table_ =
             MakeAuxTable({tr("#"), tr("起点"), tr("终点"), tr("时长"), tr("标题"), tr("语言"), tr("问题")}, page);
         pl->addWidget(chapter_table_, 1);
-
-        QPushButton* export_csv = new QPushButton(tr("导出时码与章节 CSV"), page);
-        connect(export_csv, &QPushButton::clicked, this, &SubtitleAuxPage::OnExportTimecodeCsv);
-        pl->addWidget(export_csv, 0, Qt::AlignLeft);
 
         sub_tabs_->addTab(page, tr("时码与章节"));
     }
@@ -212,10 +212,6 @@ void SubtitleAuxPage::SetupUi() {
         scte35_table_->setMinimumHeight(200);
         pl->addWidget(scte35_table_, 1);
 
-        QPushButton* export_csv = new QPushButton(tr("导出 SCTE-35 CSV"), page);
-        connect(export_csv, &QPushButton::clicked, this, &SubtitleAuxPage::OnExportScte35Csv);
-        pl->addWidget(export_csv, 0, Qt::AlignLeft);
-
         sub_tabs_->addTab(page, tr("辅助数据与 SCTE-35"));
     }
 
@@ -228,10 +224,6 @@ void SubtitleAuxPage::SetupUi() {
 
         metadata_table_ = MakeAuxTable({tr("作用域"), tr("键"), tr("值")}, page);
         pl->addWidget(metadata_table_, 1);
-
-        QPushButton* export_csv = new QPushButton(tr("导出 metadata CSV"), page);
-        connect(export_csv, &QPushButton::clicked, this, &SubtitleAuxPage::OnExportMetadataCsv);
-        pl->addWidget(export_csv, 0, Qt::AlignLeft);
 
         sub_tabs_->addTab(page, tr("metadata"));
     }

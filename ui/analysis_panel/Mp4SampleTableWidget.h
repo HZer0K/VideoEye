@@ -46,6 +46,9 @@ public:
         track_combo_->setCurrentIndex(index);
     }
 
+    // 导出入口：由所属页的页头统一「导出」菜单调用，本子页不再单放按钮。
+    void OnExportCsv();
+
 private:
     void SetupUi();
     void UpdateSummary();
@@ -53,7 +56,6 @@ private:
     void RebuildIssueTable();
     void RebuildFragmentTable();
     void OnTrackChanged(int index);
-    void OnExportCsv();
 
     QComboBox* track_combo_ = nullptr;
     QLabel* summary_label_ = nullptr;
@@ -61,7 +63,6 @@ private:
     QTableWidget* sample_table_ = nullptr;
     QTableWidget* issue_table_ = nullptr;
     QTableWidget* fragment_table_ = nullptr;
-    QPushButton* export_button_ = nullptr;
 
     model::Mp4SampleTableResult samples_;
     QString focus_box_; // 结构树点击的 box 名（"" = 不过滤）

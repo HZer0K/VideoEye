@@ -674,6 +674,16 @@ void MainWindow::SetupConnections() {
         // MediaPlayer 直接认 model::AnalysisFeature（面板的 AF 就是它的别名），
         // 所以这里不再需要一个逐个翻译的 switch —— 只剩转发。
         player_->SetAnalysisFeature(feat, enabled);
+
+        // 容器结构是「打开时解析一次」的：所有分析项默认关之后，用户几乎总在文件
+        // 打开之后才勾上它，而那时 open 早已跑完 —— 只翻一个 session 标志位不会
+        // 触发任何解析，页面会永远停在空表，看着像"这文件没结构信息"。
+        // 因此在这里补一次请求（必须在 SetAnalysisFeature 之后，请求内部要读该标志）。
+        if (feat == AF::ContainerStructure && enabled) {
+            const QString path = analysis_panel_->CurrentVideoPath();
+            if (!path.isEmpty())
+                player_->RequestContainerStructureAnalysis(path);
+        }
     });
 
     // MV 叠加开关 -> 宏块分析（叠加需要分析，但"需要"与"用户启用"分开记，

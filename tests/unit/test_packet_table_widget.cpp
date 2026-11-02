@@ -124,8 +124,9 @@ TEST(PacketTableWidgetTests, SetupCreatesSevenColumnTableAndFilterOptions) {
     ASSERT_TRUE(summary != nullptr);
     EXPECT_EQ(QStringLiteral("总包数: 0 | 视频包: 0 | 音频包: 0 | 其他包: 0"), summary->text());
 
-    ASSERT_TRUE(widget.toggle() != nullptr);
-    EXPECT_FALSE(widget.toggle()->isChecked());
+    // 采集开关已上提到「播放统计与帧包」页头（整页一个聚合开关），子页不再有同名开关。
+    for (QCheckBox* box : widget.findChildren<QCheckBox*>())
+        EXPECT_NE(box->text(), QStringLiteral("启用分析"));
 }
 
 // ---------------------------------------------------------------------------

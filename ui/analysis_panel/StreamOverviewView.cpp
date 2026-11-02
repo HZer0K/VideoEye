@@ -4,7 +4,6 @@
 #include "infrastructure/logging/Logger.h"
 #include "ui/analysis_panel/AnalysisPageSupport.h"
 
-#include <QCheckBox>
 #include <QColor>
 #include <QDateTime>
 #include <QFileDialog>
@@ -16,7 +15,6 @@
 #include <QMessageBox>
 #include <QPair>
 #include <QPushButton>
-#include <QSignalBlocker>
 #include <QStringList>
 #include <QVBoxLayout>
 
@@ -26,6 +24,11 @@
 
 namespace videoeye {
 namespace ui {
+
+// 本页头聚合的采集项个数：流统计 + 视频帧 + 音频帧 + 数据包。
+// 编号约定见 StreamOverviewView::SetFeatureHooks 的注释，与 AnalysisPageFactory
+// 注入的 feature 表必须一致（那张表由 InjectIndexedHooks 传入）。
+constexpr int kPlaybackFeatureCount = 4;
 
 // 曲线窗口上限不再本地定义：统一用 ui/charts/ChartDecimation.h 的 kMaxRecentChartItems
 // （滚动窗口语义，与"抽稀"的 kMaxChartPoints 是两回事，别混用）。
@@ -39,22 +42,28 @@ void StreamOverviewView::SetupUi() {
     layout->setContentsMargins(4, 2, 4, 4);
     layout->setSpacing(4);
 
-    // 第一行: 标题 + 流概览启用 toggle + 导出按钮
+    // 第一行: 标题 + 本页唯一的「启用分析」（聚合 4 个采集项） + 导出按钮
     {
         QWidget* row = new QWidget(this);
         QHBoxLayout* rl = new QHBoxLayout(row);
         rl->setContentsMargins(0, 0, 0, 0);
-        QLabel* title = new QLabel(tr("流概览"), row);
+        rl->setSpacing(8);
+        QLabel* title = new QLabel(tr("播放统计与帧包"), row);
         title->setObjectName(QStringLiteral("PageTitle"));
         rl->addWidget(title);
         rl->addStretch();
 
-        toggle_ = new QCheckBox(tr("启用分析"), row);
-        toggle_->setToolTip(tr("播放时实时采集，复用播放所需数据，几乎无额外开销，默认开启。"));
-        rl->addWidget(toggle_);
+        // 一个页面只有一个分析开关：下方「视频帧 / 包 / 音频帧」子页不再各挂一个同名
+        // 勾选框（原来同页出现 4 个「启用分析」，层级与其它页也对不上）。
+        // 半选 = 只开了一部分采集项，点击由 AggregateFeatureToggle 统一成全开 / 全关。
+        rl->addWidget(toggle_.Create(row,
+                                     tr("播放时实时采集本页的流统计、视频帧、音频帧与数据包。部分开启时显示为半选；"
+                                        "点击可一键全开或全关。"),
+                                     kPlaybackFeatureCount));
 
-        export_button_ = new QPushButton(tr("导出分析报告"), row);
-        export_button_->setToolTip(tr("将当前流统计信息导出为 HTML/JSON/TXT 报告"));
+        export_button_ =
+            MakeExportMenuButton(row, {{tr("分析报告（HTML / JSON / TXT）…"), [this]() { OnExportReport(); },
+                                        tr("将当前流统计信息导出为 HTML/JSON/TXT 报告")}});
         rl->addWidget(export_button_);
 
         layout->addWidget(row);
@@ -121,33 +130,11 @@ void StreamOverviewView::SetupUi() {
     gop_axis_y_->SetLabelFormat("%d");
     gop_axis_x_->SetTitleText(tr("GOP 序号"));
     gop_axis_y_->SetTitleText(tr("帧数"));
-
-    connect(export_button_, &QPushButton::clicked, this, &StreamOverviewView::OnExportReport);
 }
 
 void StreamOverviewView::SetFeatureHooks(std::function<bool(int)> is_enabled,
                                          std::function<void(int, bool)> set_enabled) {
-    is_enabled_ = std::move(is_enabled);
-    set_enabled_ = std::move(set_enabled);
-
-    SyncToggleFromHooks();
-    if (toggle_) {
-        connect(toggle_, &QCheckBox::toggled, this, [this](bool checked) {
-            if (set_enabled_)
-                set_enabled_(0, checked);
-        });
-    }
-}
-
-void StreamOverviewView::SyncToggleFromHooks() {
-    if (!toggle_)
-        return;
-    // 没有钩子时按控件当前值保留（组件可脱离面板单独构造）
-    const bool enabled = is_enabled_ ? is_enabled_(0) : toggle_->isChecked();
-    if (enabled == toggle_->isChecked())
-        return;
-    const QSignalBlocker blocker(toggle_);
-    toggle_->setChecked(enabled);
+    toggle_.SetHooks(std::move(is_enabled), std::move(set_enabled), kPlaybackFeatureCount);
 }
 
 void StreamOverviewView::SetStreamStats(const model::StreamStats& stats) {
@@ -286,6 +273,17 @@ void StreamOverviewView::UpdateGopChart() {
     }
     gop_axis_x_->SetRange(0, std::max(1, static_cast<int>(gop_summaries_.size())));
     gop_axis_y_->SetRange(0, std::max(1, max_frames));
+}
+
+void StreamOverviewView::AddExportAction(const QString& text, std::function<void()> handler, const QString& tooltip) {
+    if (!export_button_ || !export_button_->menu())
+        return;
+    QMenu* menu = export_button_->menu();
+    QAction* item = menu->addAction(text);
+    if (!tooltip.isEmpty())
+        item->setToolTip(tooltip);
+    if (handler)
+        connect(item, &QAction::triggered, this, [handler]() { handler(); });
 }
 
 void StreamOverviewView::OnExportReport() {

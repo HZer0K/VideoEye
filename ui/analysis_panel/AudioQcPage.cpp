@@ -72,9 +72,9 @@ void AudioQcPage::SetupUi() {
         connect(cancel_button_, &QPushButton::clicked, this, &AudioQcPage::OnCancelAnalysis);
         rl->addWidget(cancel_button_);
 
-        QPushButton* export_btn = new QPushButton(tr("导出响度 CSV"), row);
-        connect(export_btn, &QPushButton::clicked, this, &AudioQcPage::OnExportCsv);
-        rl->addWidget(export_btn);
+        // 页头唯一的「导出」入口
+        rl->addWidget(MakeExportMenuButton(
+            row, {{tr("响度与真峰值 CSV…"), [this]() { OnExportCsv(); }, tr("导出响度、真峰值与事件明细")}}));
         layout->addWidget(row);
     }
 

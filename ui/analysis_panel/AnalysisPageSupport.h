@@ -7,12 +7,15 @@
 // AudioQcPage / ColorHdrPage / SubtitleAuxPage ...）都要用，所以单独成头，
 // 避免每拆一个页面就抄一份。导出 CSV 的统一写入端也在这里（见文件末尾）。
 
+#include <QAction>
 #include <QCoreApplication>
 #include <QFile>
 #include <QFileDialog>
 #include <QFont>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPointF>
+#include <QPushButton>
 #include <QString>
 #include <QTableWidget>
 #include <QTextStream>
@@ -221,6 +224,41 @@ inline bool ExportCsvStream(QWidget* parent, const QString& dialog_title, const 
         parent, QCoreApplication::translate("AnalysisPageSupport", "成功"),
         QCoreApplication::translate("AnalysisPageSupport", "已导出 %1 行到:\n%2").arg(exported_rows).arg(path));
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// 统一的页头「导出」入口
+//
+// 各页原先各写一个导出按钮：文案有「导出分析报告」「导出 CSV」「导出 JSON」
+// 「导出结构数据」，位置有的在页头、有的在表格下方，个别页没有导出。同一个软件
+// 里"导出"这件事长得不一样，用户要先找按钮、再猜它导什么。
+//
+// 现在每页只保留一个「导出」按钮，按下弹出菜单，菜单项按本页的数据形态列出
+// （报告 / CSV / JSON / 证据图）。文案与位置统一，能力差异只在菜单项里体现。
+// ---------------------------------------------------------------------------
+struct ExportAction {
+    QString text;
+    std::function<void()> handler;
+    QString tooltip;
+};
+
+// 菜单按钮的宿主父对象同时是菜单动作的 QObject 上下文：动作回调在目标页对象
+// 销毁后不会继续触发（菜单与按钮都是页面的子对象，随页面一起销毁）。
+inline QPushButton* MakeExportMenuButton(QWidget* parent, const QVector<ExportAction>& actions) {
+    QPushButton* button = new QPushButton(QCoreApplication::translate("AnalysisPageSupport", "导出"), parent);
+    button->setObjectName(QStringLiteral("ExportMenuButton"));
+    button->setToolTip(QCoreApplication::translate("AnalysisPageSupport", "导出本页的分析报告或明细数据"));
+    QMenu* menu = new QMenu(button);
+    for (const ExportAction& action : actions) {
+        QAction* item = menu->addAction(action.text);
+        if (!action.tooltip.isEmpty())
+            item->setToolTip(action.tooltip);
+        if (action.handler) {
+            QObject::connect(item, &QAction::triggered, parent, [handler = action.handler]() { handler(); });
+        }
+    }
+    button->setMenu(menu);
+    return button;
 }
 
 } // namespace ui

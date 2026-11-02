@@ -236,7 +236,7 @@ MPD 元素上的四个 live 属性现在都会解析（`StreamingPackageResult` 
   与参考层偏差超过 50 ms 的单元格标红
 - **问题表**：按严重度排序并着色（与 QC 页同一套配色）
 
-工具栏支持「开始分析」「复制 JSON」「导出 JSON」。导出的 JSON 里，DASH 侧多一节
+工具栏支持「开始分析」「导出 JSON」。导出的 JSON 里，DASH 侧多一节
 `dash_descriptors`（`encrypted` / `content_protection[]` / `utc_timing[]`）与
 `event_streams[]`；HLS 侧每个 playlist 多 `program_date_time` / `start` / `skip` / `date_ranges[]`，
 另加顶层 `iframe_variants[]`。**这些字段只描述清单里写了什么**，
