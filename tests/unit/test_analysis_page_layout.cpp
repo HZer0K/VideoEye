@@ -108,7 +108,11 @@ bool BuildAllPages(PageSet& set) {
     deps.set_feature = [](AnalysisFeature, bool) {};
     deps.add_page = [&set](QWidget* widget, const QString& title, const QString& page_id, const QString&, int,
                            const QString&) {
-        set.pages.push_back(widget);
+        auto* scroll = new QScrollArea(&set.host);
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setWidget(widget);
+        set.pages.push_back(scroll);
         set.names.push_back(page_id.toStdString() + "(" + title.toStdString() + ")");
     };
     deps.current_path = [] { return QString(); };
@@ -172,6 +176,21 @@ constexpr int kMinImprovedPages = 6;
 constexpr int kMinVisibleUnion = 400;
 
 } // namespace
+
+TEST(AnalysisPageLayout, PagesRemainScrollableAfterShrinkingAndGrowing) {
+    EnsureApp();
+    PageSet set;
+    ASSERT_TRUE(BuildAllPages(set));
+    videoeye_test::FeedContainerData(set.handles, videoeye_test::MakeRichContainerStructure());
+
+    for (const QSize& size : {QSize(900, 300), QSize(1200, 760), QSize(900, 300)}) {
+        set.host.resize(size);
+        const ScanOutcome outcome = ScanAllPages(set);
+        for (const std::string& finding : outcome.findings)
+            ADD_FAILURE() << size.width() << "x" << size.height() << ": " << finding;
+        EXPECT_EQ(set.host.size(), size);
+    }
+}
 
 // 一、空态；二、喂一份容器结构再来一遍。两轮都要干净，且第二轮必须真的看到更多控件。
 TEST(AnalysisPageLayout, EveryPageKeepsItsControlsInsideLayouts) {

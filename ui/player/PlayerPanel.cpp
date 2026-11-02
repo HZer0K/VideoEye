@@ -308,13 +308,8 @@ void PlayerPanel::ApplyPresetSizes() {
     splitter_->setStretchFactor(content_index, 3);
     splitter_->setStretchFactor(player_index, side_by_side ? 1 : 3);
 
-    // 真实可用尺寸优先用 splitter 自身的宽/高：切朝向后 sizes() 里还是旧轴上的像素值，
-    // 求和得到的是"上一轮的高度"，拿它算新轴比例会把播放区一次压到很小。
-    // 兜底取两者的较大值 —— 窗口还没完成布局时 height()/width() 可能是陈旧的小值，
-    // 此时 sizes() 里的初值（SetupContentArea 的 480/320）反而更接近真实可用空间。
-    const QList<int> current_sizes = splitter_->sizes();
-    int total = side_by_side ? splitter_->width() : splitter_->height();
-    total = std::max(total, current_sizes.value(0, 0) + current_sizes.value(1, 0));
+    const QRect available = splitter_->contentsRect();
+    const int total = (side_by_side ? available.width() : available.height()) - splitter_->handleWidth();
     if (total <= 0)
         return;
 
@@ -327,13 +322,16 @@ void PlayerPanel::ApplyPresetSizes() {
     }
 
     if (side_by_side) {
-        const int player_min = video_widget_ ? video_widget_->minimumWidth() : 0;
-        const int content_min = std::max(content->minimumWidth(), kSideBySideContentMinWidth);
+        const int player_min = minimumSizeHint().expandedTo(minimumSize()).width();
+        const int content_min =
+            std::max(content->minimumSizeHint().expandedTo(content->minimumSize()).width(), kSideBySideContentMinWidth);
+        if (total < player_min + content_min)
+            return;
         player_share = std::max(player_share, player_min);
         player_share = std::min(player_share, total - content_min);
     } else {
         const int player_min = MinimumHeightHint();
-        const int content_min = std::max(content->minimumHeight(), 0);
+        const int content_min = std::max(content->minimumSizeHint().height(), content->minimumHeight());
         player_share = std::max(player_share, player_min);
         player_share = std::min(player_share, total - content_min);
         // 内容区再挤也要留一点：窗口被压得很矮时（total 接近 player_min），

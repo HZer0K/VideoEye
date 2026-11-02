@@ -469,12 +469,22 @@ void MainWindow::UpdateMinimumWindowSize() {
     metrics.content_min_height = content_stack_ ? content_stack_->minimumHeight() : 250;
     metrics.player_min_height = player_panel_ ? player_panel_->MinimumHeightHint() : 0;
     metrics.sidebar_width = sidebar_ ? sidebar_->width() : 0;
+    if (content_stack_) {
+        const QSize content_min = content_stack_->minimumSizeHint().expandedTo(content_stack_->minimumSize());
+        metrics.content_min_height = std::max(metrics.content_min_height, content_min.height());
+        metrics.content_min_width = content_min.width();
+    }
+    if (player_panel_ && player_panel_->IsPlayerAreaVisible()) {
+        metrics.player_min_width = player_panel_->minimumSizeHint().expandedTo(player_panel_->minimumSize()).width();
+        metrics.content_handle_extent = content_splitter_ ? content_splitter_->handleWidth() : 0;
+    }
+    metrics.sidebar_handle_width = main_splitter_ ? main_splitter_->handleWidth() : 0;
+    metrics.side_by_side = content_splitter_ && content_splitter_->orientation() == Qt::Horizontal;
 
     const QSize min_sz = ui::MinimumWindowSize(metrics);
-    setMinimumSize(min_sz);
-    // 本机 WM 在拖拽中完全无视 Qt 的 minimumSize，必须同时告诉原生窗口句柄，
-    // 否则拖边框时仍能把窗口缩成一条（见 resizeEvent 里的兜底）。
-    if (windowHandle()) {
+    if (minimumSize() != min_sz)
+        setMinimumSize(min_sz);
+    if (windowHandle() && windowHandle()->minimumSize() != min_sz) {
         windowHandle()->setMinimumSize(min_sz);
     }
 }
@@ -503,13 +513,7 @@ void MainWindow::showEvent(QShowEvent* event) {
 
 void MainWindow::resizeEvent(QResizeEvent* event) {
     QMainWindow::resizeEvent(event);
-    // 本机 WM 在拖拽中完全无视所有尺寸约束，必须强制 resize 阻止缩成一线
     UpdateMinimumWindowSize();
-    const QSize min_sz = minimumSize();
-    const QSize cur_sz = size();
-    if (ui::IsBelowMinimum(cur_sz, min_sz)) {
-        resize(cur_sz.expandedTo(min_sz));
-    }
 }
 
 void MainWindow::SetupMenuBar() {
@@ -734,6 +738,7 @@ void MainWindow::SetupConnections() {
             menu_actions_.layout_sidebyside->blockSignals(false);
         }
         SyncLayoutSegments(target);
+        UpdateMinimumWindowSize();
     });
 
     // ---- 首页（总览）接线 ----

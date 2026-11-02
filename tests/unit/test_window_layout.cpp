@@ -66,6 +66,44 @@ TEST(WindowLayoutTests, EmptyMetricsStillProduceAUsableSize) {
     EXPECT_GE(min.height(), 0);
 }
 
+TEST(WindowLayoutTests, SideBySideUsesTheTallerPaneAndCombinesPaneWidths) {
+    WindowLayoutMetrics metrics = Metrics(24, 250, 300);
+    metrics.app_bar_height = 48;
+    metrics.status_bar_height = 22;
+    metrics.scan_bar_height = 36;
+    metrics.sidebar_width = 200;
+    metrics.sidebar_handle_width = 4;
+    metrics.content_min_width = 650;
+    metrics.player_min_width = 450;
+    metrics.content_handle_extent = 4;
+    metrics.side_by_side = true;
+
+    EXPECT_EQ(MinimumWindowSize(metrics), QSize(1308, 430));
+    metrics.content_min_height = 400;
+    EXPECT_EQ(MinimumWindowSize(metrics).height(), 530);
+}
+
+TEST(WindowLayoutTests, VerticalLayoutIncludesTheHandleAndWidestPane) {
+    WindowLayoutMetrics metrics = Metrics(24, 250, 300);
+    metrics.content_handle_extent = 4;
+    metrics.content_min_width = 1050;
+    metrics.player_min_width = 450;
+    metrics.sidebar_width = 200;
+    metrics.sidebar_handle_width = 4;
+
+    EXPECT_EQ(MinimumWindowSize(metrics), QSize(1254, 578));
+}
+
+TEST(WindowLayoutTests, CollapsedSideBySidePlayerReleasesItsWidth) {
+    WindowLayoutMetrics metrics = Metrics(24, 250, 0);
+    metrics.content_min_width = 650;
+    metrics.sidebar_width = 200;
+    metrics.sidebar_handle_width = 4;
+    metrics.side_by_side = true;
+
+    EXPECT_EQ(MinimumWindowSize(metrics), QSize(1104, 274));
+}
+
 TEST(WindowLayoutTests, SmallScreensStartInTheAnalysisPreset) {
     // 860 是 1366x768 笔记本减掉任务栏后的典型可用高度，阈值以下必须走「分析」。
     EXPECT_EQ(InitialLayoutPreset(kSmallScreenHeightThreshold - 1), WindowLayoutPreset::Analysis);

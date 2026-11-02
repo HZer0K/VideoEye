@@ -20,8 +20,12 @@
 
 #include <QApplication>
 #include <QLabel>
+#include <QMenu>
 #include <QPushButton>
 #include <QSlider>
+#include <QToolButton>
+#include <QVBoxLayout>
+#include <QWidgetAction>
 
 #include "core/player/MediaPlayer.h"
 #include "ui/player/ControlBarWidget.h"
@@ -180,4 +184,124 @@ TEST(ControlBarWidgetTests, VolumeChangeIsForwardedToInjectedPlayer) {
 
     bar.volumeButton()->click();
     EXPECT_EQ(42, player.GetVolume());
+}
+
+TEST(ControlBarWidgetTests, RepeatedResizesKeepControlsVisibleAndInsideTheBar) {
+    EnsureApp();
+    QWidget host;
+    auto* layout = new QVBoxLayout(&host);
+    layout->setContentsMargins(0, 0, 0, 0);
+    auto* bar = new ControlBarWidget(&host);
+    layout->addWidget(bar);
+    host.resize(1600, 100);
+    host.show();
+    QApplication::processEvents();
+
+    auto* overflow = bar->findChild<QToolButton*>(QStringLiteral("OverflowButton"));
+    ASSERT_NE(overflow, nullptr);
+    const int compact_width = bar->minimumSizeHint().width() + 8;
+    const int full_width = bar->layout()->minimumSize().width();
+    ASSERT_LT(compact_width, full_width);
+
+    for (int cycle = 0; cycle < 5; ++cycle) {
+        for (const int width : {compact_width, 1600}) {
+            host.resize(width, 100);
+            QApplication::processEvents();
+            QApplication::processEvents();
+            ASSERT_EQ(bar->width(), width);
+            const bool compact = width == compact_width;
+            EXPECT_EQ(overflow->isVisible(), compact);
+            EXPECT_EQ(bar->timecodeLabel()->isVisible(), !compact);
+            EXPECT_EQ(bar->volumeSlider()->isVisible(), !compact);
+            EXPECT_EQ(bar->mvOverlayButton()->isVisible(), !compact);
+            EXPECT_EQ(bar->timecodeLabel()->parentWidget(), bar);
+            EXPECT_EQ(bar->volumeSlider()->parentWidget(), bar);
+            EXPECT_EQ(bar->mvOverlayButton()->parentWidget(), bar);
+
+            QList<QWidget*> visible;
+            for (int index = 0; index < bar->layout()->count(); ++index) {
+                QWidget* widget = bar->layout()->itemAt(index)->widget();
+                if (!widget || !widget->isVisible())
+                    continue;
+                EXPECT_TRUE(bar->rect().contains(widget->geometry())) << widget->objectName().toStdString();
+                for (QWidget* previous : visible)
+                    EXPECT_FALSE(previous->geometry().intersects(widget->geometry()));
+                visible.append(widget);
+            }
+        }
+    }
+}
+
+TEST(ControlBarWidgetTests, OverflowMenuKeepsWorkingAfterRepeatedResizes) {
+    EnsureApp();
+    QWidget host;
+    auto* layout = new QVBoxLayout(&host);
+    layout->setContentsMargins(0, 0, 0, 0);
+    auto* bar = new ControlBarWidget(&host);
+    layout->addWidget(bar);
+    host.resize(1600, 100);
+    host.show();
+    QApplication::processEvents();
+
+    auto* overflow = bar->findChild<QToolButton*>(QStringLiteral("OverflowButton"));
+    ASSERT_NE(overflow, nullptr);
+    QMenu* menu = overflow->menu();
+    ASSERT_NE(menu, nullptr);
+    ASSERT_EQ(menu->actions().size(), 3);
+    auto* timecode_action = qobject_cast<QWidgetAction*>(menu->actions().at(0));
+    auto* volume_action = qobject_cast<QWidgetAction*>(menu->actions().at(1));
+    ASSERT_NE(timecode_action, nullptr);
+    ASSERT_NE(volume_action, nullptr);
+    auto* menu_timecode = qobject_cast<QLabel*>(timecode_action->defaultWidget());
+    auto* menu_volume = qobject_cast<QSlider*>(volume_action->defaultWidget());
+    ASSERT_NE(menu_timecode, nullptr);
+    ASSERT_NE(menu_volume, nullptr);
+
+    for (int cycle = 0; cycle < 4; ++cycle) {
+        host.resize(bar->minimumSizeHint().width() + 8, 100);
+        QApplication::processEvents();
+        ASSERT_TRUE(overflow->isVisible());
+        bar->timecodeLabel()->setText(QStringLiteral("时码 01:02:03:%1").arg(cycle));
+        menu->popup(overflow->mapToGlobal(QPoint(0, overflow->height())));
+        QApplication::processEvents();
+        EXPECT_TRUE(menu_timecode->isVisible());
+        EXPECT_TRUE(menu_volume->isVisible());
+        EXPECT_EQ(menu_timecode->text(), bar->timecodeLabel()->text());
+        menu_volume->setValue(30 + cycle);
+        EXPECT_EQ(bar->volumeSlider()->value(), 30 + cycle);
+        bar->volumeSlider()->setValue(60 + cycle);
+        EXPECT_EQ(menu_volume->value(), 60 + cycle);
+        menu->actions().at(2)->trigger();
+        EXPECT_EQ(bar->mvOverlayButton()->isChecked(), menu->actions().at(2)->isChecked());
+        menu->hide();
+
+        host.resize(1600, 100);
+        QApplication::processEvents();
+        EXPECT_TRUE(bar->volumeSlider()->isVisible());
+        EXPECT_TRUE(bar->mvOverlayButton()->isVisible());
+    }
+}
+
+TEST(ControlBarWidgetTests, ResizingReevaluatesTimecodeWidthWhileInCompactMode) {
+    EnsureApp();
+    QWidget host;
+    auto* layout = new QVBoxLayout(&host);
+    layout->setContentsMargins(0, 0, 0, 0);
+    auto* bar = new ControlBarWidget(&host);
+    layout->addWidget(bar);
+    host.resize(1600, 100);
+    host.show();
+    QApplication::processEvents();
+
+    auto* overflow = bar->findChild<QToolButton*>(QStringLiteral("OverflowButton"));
+    ASSERT_NE(overflow, nullptr);
+    EXPECT_FALSE(overflow->isVisible());
+    bar->timecodeLabel()->setText(QString(300, QLatin1Char('8')));
+    host.resize(1599, 100);
+    QApplication::processEvents();
+    EXPECT_TRUE(overflow->isVisible());
+    bar->timecodeLabel()->setText(QStringLiteral("时码 --:--:--:--"));
+    host.resize(1600, 100);
+    QApplication::processEvents();
+    EXPECT_FALSE(overflow->isVisible());
 }

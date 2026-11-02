@@ -16,6 +16,8 @@
 #include <QSize>
 #include <QString>
 
+#include <algorithm>
+
 namespace videoeye {
 namespace ui {
 
@@ -44,18 +46,27 @@ struct WindowLayoutMetrics {
     int content_min_height = 0; // 内容栈的最小高度（分析页自己报）
     int player_min_height = 0;  // 播放区的最小高度（收起时为 0）
     int sidebar_width = 0;      // 侧栏当前宽度（0 表示还没有侧栏）
+    int content_min_width = 0;
+    int player_min_width = 0;
+    int sidebar_handle_width = 0;
+    int content_handle_extent = 0;
+    bool side_by_side = false;
 };
 
 // 基础最小宽度：侧栏之外的主内容区。低于这个宽度分析表格就横着滚了。
 constexpr int kBaseMinimumWidth = 900;
 
 inline QSize MinimumWindowSize(const WindowLayoutMetrics& metrics) {
-    // 高度是「上面几条栏 + 内容区最小 + 播放区最小」的硬加总；播放区收起时
-    // player_min_height 为 0，于是窗口可以缩得更矮（这是刻意的）。
-    // 任务条按可见高度计入：漏了它，扫描一起窗口就比内容矮一截，底部分析页被裁掉。
+    const int pane_height =
+        metrics.side_by_side ? std::max(metrics.content_min_height, metrics.player_min_height)
+                             : metrics.content_min_height + metrics.player_min_height + metrics.content_handle_extent;
+    const int pane_width = metrics.side_by_side
+                               ? metrics.content_min_width + metrics.player_min_width + metrics.content_handle_extent
+                               : std::max(metrics.content_min_width, metrics.player_min_width);
     const int min_height = metrics.app_bar_height + metrics.menu_bar_height + metrics.status_bar_height +
-                           metrics.scan_bar_height + metrics.content_min_height + metrics.player_min_height;
-    return QSize(kBaseMinimumWidth + metrics.sidebar_width, min_height);
+                           metrics.scan_bar_height + pane_height;
+    return QSize(std::max(kBaseMinimumWidth, pane_width) + metrics.sidebar_width + metrics.sidebar_handle_width,
+                 min_height);
 }
 
 // 首次显示时用哪个布局预设。
@@ -68,7 +79,7 @@ inline WindowLayoutPreset InitialLayoutPreset(int available_height) {
     return WindowLayoutPreset::Monitor;
 }
 
-// 窗口当前尺寸是否已经低于最小尺寸（resizeEvent 里据此强制拉回）。
+// 窗口当前尺寸是否已经低于最小尺寸。
 inline bool IsBelowMinimum(const QSize& current, const QSize& minimum) {
     return current.width() < minimum.width() || current.height() < minimum.height();
 }
