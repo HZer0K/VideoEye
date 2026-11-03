@@ -411,8 +411,8 @@ TEST(FormatDetectorExtensionsTest, tablesAreConsistent) {
     }
 }
 
-TEST(FormatDetectorExtensionsTest, coversEveryDocumentedFormat) {
-    // 这张断言表就是 README「容器结构分析」那一行的代码版：新增格式时如果只改了
+TEST(FormatDetectorExtensionsTest,
+     coversEveryDocumentedFormat) { // 这张断言表就是 README「容器结构分析」那一行的代码版：新增格式时如果只改了
     // DetectByMagic 却忘了登记扩展名，这里会红。
     const auto& all = videoeye::FormatDetector::SupportedExtensions();
     const std::set<std::string> exts(all.begin(), all.end());
@@ -420,6 +420,41 @@ TEST(FormatDetectorExtensionsTest, coversEveryDocumentedFormat) {
                               "opus", "mpg", "vob", "mxf",  "h264", "h265", "av1", "obu",  "m3u8", "mpd"};
     for (const char* ext : required) {
         EXPECT_TRUE(exts.count(ext) > 0) << "缺少扩展名: " << ext;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 纯音频扩展名: 「打开媒体文件」过滤器必须能选中它们
+//
+// 这些格式没有专用容器解析器（走 FFmpeg 通用路径），所以不在
+// `扩展名 -> 容器格式` 表里 —— 但对话框的过滤器必须包含它们，否则用户得切到
+// "所有文件"才能选，等同于"不支持"。MainWindow 的过滤器直接引用这张表，
+// 因此守住这份数据就守住了对话框。
+// ---------------------------------------------------------------------------
+TEST(FormatDetectorExtensionsTest, audioExtensionsCoverNonContainerAudioFormats) {
+    const auto& audio = videoeye::FormatDetector::AudioExtensions();
+    ASSERT_FALSE(audio.empty());
+
+    const std::set<std::string> audio_set(audio.begin(), audio.end());
+    // 用户实测能正常打开/探测/解码、但以前在对话框里看不见的格式
+    const char* required[] = {"mp3", "aac", "wav", "flac", "aif", "aiff", "ac3", "eac3", "dts", "caf", "wv", "ape"};
+    for (const char* ext : required) {
+        EXPECT_TRUE(audio_set.count(ext) > 0) << "「媒体文件」过滤器漏了 ." << ext;
+    }
+
+    // 与容器表不能重复: 重复项会让过滤器里出现两次同样的模式
+    const auto& media = videoeye::FormatDetector::MediaExtensions();
+    const std::set<std::string> media_set(media.begin(), media.end());
+    for (const std::string& ext : audio) {
+        EXPECT_EQ(0u, media_set.count(ext)) << "." << ext << " 已在容器表里, 不该在 AudioExtensions 重复登记";
+    }
+
+    // 格式: 无点、全小写（对话框模式是大小写敏感的）
+    for (const std::string& ext : audio) {
+        EXPECT_EQ(std::string::npos, ext.find('.')) << ext;
+        for (const char c : ext) {
+            EXPECT_FALSE(c >= 'A' && c <= 'Z') << "扩展名必须小写: " << ext;
+        }
     }
 }
 

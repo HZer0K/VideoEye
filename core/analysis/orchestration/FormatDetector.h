@@ -41,6 +41,15 @@ public:
 
     /// 流媒体清单扩展名（m3u8/m3u/mpd）
     static const std::vector<std::string>& ManifestExtensions();
+
+    /// 纯音频容器/编码扩展名（无点、小写）。
+    ///
+    /// 这些格式在解析层走 FFmpeg 通用路径（没有专用容器解析器，所以不进
+    /// `扩展名 -> 容器格式` 表），但用户显然认为它们是"媒体文件"：
+    /// flac / aiff / ac3 / eac3 / dts / caf / wv / ape 早就能打开、探测、解码，
+    /// 只是「打开媒体文件」对话框的过滤器漏了它们 —— 用户得切到"所有文件"才能选，
+    /// 效果等同于"不支持"。
+    static const std::vector<std::string>& AudioExtensions();
 };
 
 } // namespace videoeye

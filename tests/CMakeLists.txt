@@ -336,6 +336,21 @@ target_link_libraries(test_format_detector PRIVATE Qt6::Core)
 add_test(NAME FormatDetectorTests COMMAND test_format_detector)
 
 # ============================================================
+# 测试 1b: 「打开媒体文件」对话框的过滤器 (ui/main_window/media_file_filter.h)
+#
+# 回归点: 过滤器原来只从容器扩展名表派生，flac / aiff / ac3 / eac3 / dts / caf /
+# wv / ape 这些走 FFmpeg 通用路径的纯音频不在那张表里 —— 用户在对话框里选不中
+# 自己的文件，只能切「所有文件」，观感等同于"格式不支持"。
+# 纯字符串比对，FormatDetector 只需 Qt6::Core，不必链 VideoEyeUi。
+# ============================================================
+videoeye_add_test(test_media_file_filter
+    unit/test_media_file_filter.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/orchestration/FormatDetector.cpp
+)
+target_link_libraries(test_media_file_filter PRIVATE Qt6::Core)
+add_test(NAME MediaFileFilterTests COMMAND test_media_file_filter)
+
+# ============================================================
 # 测试 2: PerfMetrics (长期性能指标口径)
 #
 # 只链 infrastructure（纯 stdlib，不碰 Qt 业务逻辑），不整层拉 core ——
@@ -461,6 +476,34 @@ target_link_libraries(test_open_controller_cover_art PRIVATE
     Qt6::Core Qt6::Gui
 )
 add_test(NAME OpenControllerCoverArtTests COMMAND test_open_controller_cover_art)
+
+# =================================================
+# 测试 4e-2：OpenController::Commit 的信号顺序
+#   说明: 带封面的纯音频要先发 MediaModeChanged(has_video=false)、再发 FrameReady(封面)。
+#       反过来发时，封面会先画进视频区、随即被切模式那一手 Clear() 清掉 ——
+#       用户既看不到可视化也看不到封面，而代码里没有任何地方报错。
+#       只需一个已经准备好的 OpenResult，不需要真实媒体样本。
+# =================================================
+videoeye_add_test(test_open_controller_commit_order unit/test_open_controller_commit_order.cpp)
+target_link_libraries(test_open_controller_commit_order PRIVATE
+    VideoEyePlayback
+    Qt6::Core Qt6::Gui
+)
+add_test(NAME OpenControllerCommitOrderTests COMMAND test_open_controller_commit_order)
+
+# =================================================
+# 测试 4c：S16Converter（源 S16 → 设备格式）
+#   说明: Windows 共享模式只接受设备 mix format；设备拒绝源采样率/声道数时，
+#       AudioOutput 出口必须把解码器产出的 S16 转换过去，否则 44.1 kHz 素材在
+#       48 kHz 设备上变调、S16 字节喂 float32 设备变杂音/静音。
+#       覆盖: 格式一致直通 / 升采样帧数与电平 / 声道增减 / S16→float32 量程 /
+#       小输出缓冲不丢样本 / 非法配置 / Reset。纯计算，不需要声卡。
+# =================================================
+videoeye_add_test(test_s16_converter unit/test_s16_converter.cpp)
+target_link_libraries(test_s16_converter PRIVATE
+    VideoEyePlayback
+)
+add_test(NAME S16ConverterTests COMMAND test_s16_converter)
 
 # ============================================================
 # 测试 4b: AnalysisSession (依赖 FFmpeg) —— 评审 Phase 3 抽取的分析会话类

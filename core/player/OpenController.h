@@ -62,6 +62,19 @@ namespace player {
 // 不需要真实媒体样本。
 bool IsCoverArtStream(const AVFormatContext* format, int video_index);
 
+// "视频流"的三件套结论：可播放视频流索引、是不是封面图、以及界面该不该按视频模式显示。
+//
+// 抽出来是因为 has_video 与 video_index 必须**同时**从"封面降级之后"的状态推导。
+// 曾经 has_video 在降级之前取，带专辑封面的纯音频（MP3/M4A/FLAC 很常见）被判成
+// 有视频: 封面流已经摘掉了，界面却仍按视频模式布局，音频可视化永远不出现。
+// 把三者收进一个函数的返回值，"先取 has_video 再降级"这种顺序错误写不出来。
+struct VideoStreamDecision {
+    int video_stream_index = -1; // 降级后的可播放视频流（封面图算 -1）
+    bool is_cover_art = false;   // 命中的流是 ATTACHED_PIC 封面
+    bool has_video = false;      // 有没有**可播放的**视频轨（封面不算）
+};
+VideoStreamDecision ClassifyVideoStream(const AVFormatContext* format, int video_index);
+
 // 一次打开尝试的中断/取消状态。
 //
 // 为什么按"每次尝试"独立分配而不是复用 MediaPlayer 上的一个固定成员: 上一次打开的
@@ -107,7 +120,7 @@ struct OpenResult {
 
     int video_stream_index = -1; // 已按封面图降级后的可播放视频流
     int audio_stream_index = -1;
-    bool has_video = false; // 文件里有没有视频轨(含封面图)
+    bool has_video = false; // 有没有**可播放的**视频轨（只有封面图的纯音频文件为 false）
     model::StreamInfo stream_info;
     // 媒体信息文本: 在后台探测时顺带从同一个上下文格式化（MediaInfoAnalyzer::
     // FormatFromContext），UI 不再为它单独跑一次 avformat 打开/探测。

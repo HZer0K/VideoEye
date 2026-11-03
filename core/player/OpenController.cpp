@@ -132,12 +132,13 @@ bool OpenController::Commit(OpenResult&& result, model::StreamInfo& out_info, QS
     playback_.SetIdle();
 
     out_info = result.stream_info;
-    // 信号顺序与拆分前一致: 封面图先于媒体模式。
+    // 信号顺序: 媒体模式必须**先**发。界面收到 has_video=false 才把自己切进
+    // 纯音频模式，之后到达的封面图才会被当作"专辑封面"存进音频可视化层；
+    // 反过来发（曾经的顺序）封面会先画进视频区，随即被切模式的 Clear() 抹掉 ——
+    // 带封面的纯音频文件既没有可视化、也看不到封面。
+    emit MediaModeChanged(result.has_video);
     if (!result.cover_art.isNull())
         emit FrameReady(result.cover_art);
-    // has_video 是"文件里有没有视频轨"—— 封面图也算有（界面据此切布局），
-    // 与降级后的 video_index（"有没有可播放的视频流"）是两件事。
-    emit MediaModeChanged(result.has_video);
     // 媒体信息文本: Prepare 阶段已从同一个上下文格式化好, 这里回 UI 线程。
     // 空文本不发（避免把界面上的"正在解析…"占位覆盖成空）。
     if (!result.media_info_text.empty()) {
@@ -187,20 +188,22 @@ OpenResult OpenController::Prepare(const OpenPrepareParams& params) {
     if (!FindStreams(fmt, video_index, audio_index, best_video_codec, result.error))
         return result;
 
-    result.has_video = (video_index >= 0);
-
     // 封面图: 解出后作为一帧画面(提交时随 FrameReady 发出)，并把视频流降级为 -1
     // （封面不是可播放的视频轨）。**只要**带 ATTACHED_PIC 就降级 —— 解不解得出来都不该
     // 把它当可播放的视频流去初始化解码器。
-    if (IsCoverArtStream(fmt, video_index)) {
+    //
+    // has_video 与 video_index 必须由同一个结论函数给出: 以前 has_video 是降级**之前**
+    // 取的，带专辑封面的纯音频因此仍报"有视频"，界面不进音频可视化模式。
+    const VideoStreamDecision video = ClassifyVideoStream(fmt, video_index);
+    if (video.is_cover_art) {
         result.cover_art = DecodeCoverArt(fmt->streams[video_index]);
-        video_index = -1;
     }
-    result.video_stream_index = video_index;
+    result.video_stream_index = video.video_stream_index;
+    result.has_video = video.has_video;
     result.audio_stream_index = audio_index;
 
-    if (video_index >= 0 &&
-        !PrepareVideoDecoder(params, fmt, video_index, best_video_codec, result.video_decoder, result.error)) {
+    if (result.video_stream_index >= 0 && !PrepareVideoDecoder(params, fmt, result.video_stream_index, best_video_codec,
+                                                               result.video_decoder, result.error)) {
         return result;
     }
     if (audio_index >= 0 &&
@@ -208,9 +211,9 @@ OpenResult OpenController::Prepare(const OpenPrepareParams& params) {
         return result;
     }
 
-    // 提取流信息
+    // 提取流信息：传**降级后**的视频流索引（封面流不是可播放视频轨，不能进流信息）。
     StreamInfoExtractor extractor;
-    const auto extract_result = extractor.Extract(fmt, video_index, audio_index, params.url);
+    const auto extract_result = extractor.Extract(fmt, result.video_stream_index, audio_index, params.url);
     result.stream_info = extract_result.info;
     result.duration_ms = extract_result.duration_ms;
 
@@ -303,6 +306,27 @@ bool IsCoverArtStream(const AVFormatContext* format, int video_index) {
     }
     const AVStream* vs = format->streams[video_index];
     return vs != nullptr && (vs->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0;
+}
+
+VideoStreamDecision ClassifyVideoStream(const AVFormatContext* format, int video_index) {
+    VideoStreamDecision decision; // 默认值就是"没有视频": index=-1, has_video=false
+
+    // 先自证索引合法，再谈"是不是封面"。以前这里信任入参，只要 >=0 就原样透传，
+    // 于是一个越界/指向音频流的索引会被当成可播放视频轨去初始化解码器：
+    // 前者越界读 streams[]，后者拿音频参数去找视频解码器。
+    if (format == nullptr || video_index < 0 || video_index >= static_cast<int>(format->nb_streams)) {
+        return decision;
+    }
+    const AVStream* stream = format->streams[video_index];
+    if (stream == nullptr || stream->codecpar == nullptr || stream->codecpar->codec_type != AVMEDIA_TYPE_VIDEO) {
+        return decision;
+    }
+
+    decision.is_cover_art = IsCoverArtStream(format, video_index);
+    // 封面不是可播放的视频轨: 降级成 -1, 与"这个文件没有视频"完全同义。
+    decision.video_stream_index = decision.is_cover_art ? -1 : video_index;
+    decision.has_video = decision.video_stream_index >= 0;
+    return decision;
 }
 
 QImage OpenController::DecodeCoverArt(AVStream* vs) {
@@ -440,7 +464,10 @@ bool OpenController::PrepareAudioDecoder(const OpenPrepareParams& params, AVForm
     // 初始化音频输出设备（平台原生后端: WASAPI / ALSA / AudioQueue）:
     // 解码后的 PCM 由音频线程主动 pull。
     // 走异步打开: Windows(WASAPI) 首次打开音频设备实测 ~1s，
-    // 同步调用会把"打开文件"整段卡住。设备就绪前音频帧丢弃, 视频不受影响。
+    // 同步调用会把"打开文件"整段卡住。设备就绪前送进来的 PCM 由 Enqueue()
+    // 短暂等待设备（有上限），不再直接丢弃 —— 否则短音频会整段无声。
+    // 传进去的是**源**采样率/声道数: 设备要是只接受自己的格式（混音器常见
+    // 48 kHz / float32），由 AudioOutput 出口处转换，解码链路不用跟着改。
     auto audio_output = std::make_unique<AudioOutput>();
     audio_output->SetVolume(params.volume_percent / 100.0);
     audio_output->OpenAsync(out_decoder->GetSampleRate(), out_decoder->GetChannels());

@@ -9,6 +9,7 @@
 #include "ui/main_window/OpenSessionController.h"
 #include "ui/main_window/OverviewPage.h"
 #include "ui/main_window/ScanTaskBar.h"
+#include "ui/main_window/media_file_filter.h"
 #include "ui/main_window/menu_bar.h"
 #include "ui/main_window/navigation_model.h"
 #include "ui/main_window/overview_analysis.h"
@@ -78,31 +79,9 @@ namespace ui {
 
 namespace {
 
-// 「打开媒体文件」对话框的过滤器。
-//
-// 扩展名不在这里手写：一律从 FormatDetector 的扩展名表派生（那是全项目唯一事实源）。
-// 这份清单以前是硬编码的 `*.mp4 *.avi *.mkv *.flv *.ts ...`，比解析能力少了
-// mov / webm / m2ts / mts / wmv / asf / ogg / ogv / opus / mpg / vob / m2p / mxf /
-// m4v / h264 / h265 / hevc / vvc / av1 / obu —— 这些格式早就能解析，但用户在对话框
-// 里看不到，等于以为不支持。新增格式只改 FormatDetector，这里跟着自动更新。
-QString BuildMediaFileFilter() {
-    const auto join_patterns = [](const std::vector<std::string>& extensions) {
-        QStringList patterns;
-        patterns.reserve(static_cast<int>(extensions.size()));
-        for (const std::string& ext : extensions) {
-            patterns << QStringLiteral("*.") + QString::fromStdString(ext);
-        }
-        return patterns.join(QLatin1Char(' '));
-    };
-
-    // 两类扩展名不在 FormatDetector 的表里，但「打开」对话框必须能选中：
-    //   * 纯音频（mp3/aac/wav/pcm）走 FFmpeg 通用路径，没有专用容器解析；
-    //   * 原始图像/像素序列由播放器直接按宽高打开，与容器无关。
-    const QString extra = QStringLiteral("*.mp3 *.aac *.wav *.pcm *.yuv *.nv12 *.rgb *.bgr *.yuy2 *.raw");
-    return MainWindow::tr("媒体文件 (%1 %2);;流媒体清单 (%3);;所有文件 (*)")
-        .arg(join_patterns(FormatDetector::MediaExtensions()), extra,
-             join_patterns(FormatDetector::ManifestExtensions()));
-}
+// 「打开媒体文件」对话框的过滤器已抽到 ui/main_window/media_file_filter.h：
+// 那段逻辑留在匿名命名空间里就没法被测到，而它出错的形态（漏一批能打开的扩展名）
+// 只能靠用户投诉发现。
 
 // 两套同义枚举之间的映射（window_layout.h 的 WindowLayoutPreset 与
 // PlayerPanel::LayoutPreset）。集中在两个函数里，增删预设值时只会漏改这里一处，

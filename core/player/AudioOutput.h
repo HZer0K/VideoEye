@@ -10,6 +10,8 @@
 #include <thread>
 #include <vector>
 
+#include "core/player/S16Converter.h"
+
 // 音频输出。
 //
 // 实现: 平台原生后端 (Windows WASAPI / Linux ALSA / macOS AudioQueue)，
@@ -25,12 +27,41 @@ namespace player {
 
 class AudioOutput {
 public:
+    // 一路交错 PCM 的完整格式描述。
+    //
+    // 「请求格式」与「设备实际格式」是两件事：解码器永远按源的
+    // rate/channels 产出 S16，而设备（尤其是 Windows 共享模式）可能只接受自己的
+    // mix format（常见 48 kHz / float32）。两者不一致时由 Pull() 里的
+    // S16Converter 负责转换，而不是把 S16 字节硬塞给 float32 设备。
+    struct PcmFormat {
+        int sample_rate = 0;
+        int channels = 0;
+        PcmSampleFormat sample = PcmSampleFormat::S16;
+
+        int BytesPerSample() const {
+            return PcmBytesPerSample(sample);
+        }
+        int FrameBytes() const {
+            return channels * BytesPerSample();
+        }
+        bool operator==(const PcmFormat& other) const {
+            return sample_rate == other.sample_rate && channels == other.channels && sample == other.sample;
+        }
+        bool operator!=(const PcmFormat& other) const {
+            return !(*this == other);
+        }
+    };
+
     // 平台后端的统一接口（实现在 .cpp，每个平台一份）
     class Backend {
     public:
+        // 平台后端要能写 `PcmFormat`，而 AudioOutput 的嵌套类名不会自动对派生类可见
+        using PcmFormat = AudioOutput::PcmFormat;
+
         virtual ~Backend() = default;
-        // 打开设备；sample_rate/channels 为入参，可能被后端调整为设备实际支持值
-        virtual bool Open(int& sample_rate, int& channels) = 0;
+        // 打开设备。requested 是调用方希望的格式，actual 回填设备最终使用的格式
+        // （设备可能拒绝 requested 而改用 mix format —— 由调用方负责转换）
+        virtual bool Open(const PcmFormat& requested, PcmFormat& actual) = 0;
         virtual void Start() = 0; // 开始播放（拉取数据）
         virtual void Stop() = 0;  // 暂停（保留设备）
         virtual void Close() = 0; // 停止线程并释放设备
@@ -43,10 +74,13 @@ public:
     AudioOutput& operator=(const AudioOutput&) = delete;
 
     /// 以指定采样率/声道数打开音频设备（S16 交错）。成功返回 true。
+    /// 注意: 设备可能不接受这两个参数而回退到自己的格式，此后 Enqueue() 送进来的
+    /// 源格式 PCM 由 Pull() 负责转换成设备格式（见 S16Converter）。
     bool Open(int sample_rate, int channels);
 
     /// 后台线程打开音频设备，主线程立即返回。
-    /// 设备就绪前 Enqueue() 直接丢弃 PCM（视频照常播放），
+    /// 设备就绪前 Enqueue() 会等待（有上限），而不是直接丢弃 —— 否则短音频
+    /// 会在设备初始化完成前就被解码线程整段扔掉，表现为整段无声。
     /// 就绪后若期间调用过 Play() 会自动补上，不需要调用方轮询。
     void OpenAsync(int sample_rate, int channels);
 
@@ -72,6 +106,18 @@ private:
     // 由平台音频线程调用：从环形缓冲取数据，不足时补静音
     size_t Pull(uint8_t* dst, size_t max_bytes);
 
+    // 从环形缓冲读出至多 max_bytes（按源帧对齐），只读不等待。
+    size_t ReadRing(uint8_t* dst, size_t max_bytes);
+
+    // 源格式 → 设备格式的转换路径（converter_ 未激活时不会走到）。
+    size_t PullConverted(uint8_t* dst, size_t max_bytes);
+
+    // 按设备格式写静音（8bit 无符号是 0x80，其余全 0）
+    void FillSilence(uint8_t* dst, size_t bytes);
+
+    // 标记"打开流程已结束"（成功或失败），唤醒等待中的 Enqueue()
+    void MarkOpenFinished();
+
     // 当前线程是不是本对象的异步打开线程（open_thread_）本身。
     // Open() 会在 open_thread_ 上被调用（OpenAsync 路径），此时 Stop() 若去
     // join open_thread_ 就是「线程 join 自己」，MSVC 会抛
@@ -87,8 +133,16 @@ private:
     std::mutex device_mutex_; // 保护 backend_ 的创建/销毁/控制
 
     std::atomic<bool> opened_{false};
-    int sample_rate_ = 0;
-    int channels_ = 0;
+    // 打开流程是否已经"有结论"（成功或失败）。Enqueue() 在设备就绪前等待的依据:
+    // 只等"正在打开"的这段时间，打开已失败就不再白等。
+    std::atomic<bool> open_finished_{true};
+
+    // 源格式（解码器产出、Enqueue 送入的格式）与设备实际格式。
+    // ring_ 里存的是**源格式**字节（S16 交错），Pull() 出口才是设备格式。
+    PcmFormat src_format_;
+    PcmFormat device_format_;
+    S16Converter converter_;
+    std::vector<uint8_t> conv_in_; // 转换用的源字节暂存（一次读一环）
 
     // 环形缓冲
     std::vector<uint8_t> ring_;

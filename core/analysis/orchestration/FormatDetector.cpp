@@ -538,4 +538,29 @@ const std::vector<std::string>& FormatDetector::ManifestExtensions() {
     return kManifest;
 }
 
+const std::vector<std::string>& FormatDetector::AudioExtensions() {
+    // 与 m4a / wma / ogg / opus / mka 这一类"有容器解析器"的音频格式互补:
+    // 那些已经在 ExtensionTable() 里，这里只列走 FFmpeg 通用路径的纯音频格式。
+    // 顺序大致按使用频度排，方便对话框里靠前显示。
+    static const std::vector<std::string> kAudio = {
+        "mp3",                           // 裸 MPEG-1/2 Layer III
+        "aac",                           // 裸 ADTS AAC
+        "wav",                           // RIFF/WAVE
+        "flac", "aif",   "aiff", "aifc", // AIFF 家族
+        "ac3",  "eac3",                  // Dolby Digital / Digital Plus 裸流
+        "dts",  "dtshd",                 // DTS 裸流
+        "caf",                           // Apple Core Audio Format
+        "wv",                            // WavPack
+        "ape",                           // Monkey's Audio
+        "tta",  "tak",                   // TTA / TAK 无损
+        "m4b",  "m4p",                   // 有声书 / DRM 标记的 AAC
+        "mp2",  "mp1",                   // 早期 MPEG 音频
+        "amr",  "awb",                   // AMR-NB / AMR-WB
+        "au",   "snd",                   // Sun/NeXT AU
+        "w64",                           // Sony Wave64
+        "dsf",  "dff",                   // DSD (DSD Stream File / DSDIFF)
+    };
+    return kAudio;
+}
+
 } // namespace videoeye

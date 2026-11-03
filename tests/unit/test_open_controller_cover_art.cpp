@@ -94,3 +94,63 @@ TEST(OpenControllerCoverArt, AttachedPicStreamIsCoverArt) {
 
     EXPECT_TRUE(IsCoverArtStream(ctx.get(), 0));
 }
+
+// ===========================================================================
+// ClassifyVideoStream: has_video 与 video_stream_index 必须是同一个结论
+//
+// 回归点: has_video 曾经在封面降级**之前**取。带专辑封面的纯音频（MP3/M4A/FLAC
+// 极常见）于是报 has_video=true —— 封面流明明已经摘掉了，界面却仍按视频模式布局，
+// 音频可视化永远不出现，用户看到一块黑掉的视频区。
+// ===========================================================================
+
+// 只有封面图 = 纯音频: 必须 has_video=false，且不能留下去初始化解码器的视频索引。
+TEST(OpenControllerCoverArt, ClassifyCoverOnlyFileIsAudioOnly) {
+    auto ctx = MakeContext();
+    ASSERT_NE(ctx, nullptr);
+    AVStream* audio = avformat_new_stream(ctx.get(), nullptr);
+    ASSERT_NE(audio, nullptr);
+    audio->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
+    AVStream* cover = avformat_new_stream(ctx.get(), nullptr);
+    ASSERT_NE(cover, nullptr);
+    cover->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
+    cover->disposition = AV_DISPOSITION_ATTACHED_PIC;
+
+    const auto decision = videoeye::player::ClassifyVideoStream(ctx.get(), 1);
+    EXPECT_TRUE(decision.is_cover_art);
+    EXPECT_FALSE(decision.has_video) << "带封面的纯音频被判成有视频, 界面不会进音频可视化模式";
+    EXPECT_EQ(-1, decision.video_stream_index) << "封面流不能被当成可播放视频轨";
+}
+
+// 真视频流: 原样保留索引，has_video=true。
+TEST(OpenControllerCoverArt, ClassifyRealVideoKeepsIndex) {
+    auto ctx = MakeContext();
+    ASSERT_NE(ctx, nullptr);
+    ASSERT_NE(avformat_new_stream(ctx.get(), nullptr), nullptr);
+    AVStream* video = avformat_new_stream(ctx.get(), nullptr);
+    ASSERT_NE(video, nullptr);
+    video->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
+    video->disposition = 0;
+
+    const auto decision = videoeye::player::ClassifyVideoStream(ctx.get(), 1);
+    EXPECT_FALSE(decision.is_cover_art);
+    EXPECT_TRUE(decision.has_video);
+    EXPECT_EQ(1, decision.video_stream_index);
+}
+
+// 纯音频（没有视频流）: 与空上下文/越界索引一样，结论必须是"没有视频"，且不越界读。
+TEST(OpenControllerCoverArt, ClassifyAudioOnlyAndInvalidIndexHaveNoVideo) {
+    auto ctx = MakeContext();
+    ASSERT_NE(ctx, nullptr);
+    ASSERT_NE(avformat_new_stream(ctx.get(), nullptr), nullptr);
+
+    for (const int index : {-1, 1, 99}) {
+        const auto decision = videoeye::player::ClassifyVideoStream(ctx.get(), index);
+        EXPECT_FALSE(decision.has_video) << "index=" << index;
+        EXPECT_EQ(-1, decision.video_stream_index) << "index=" << index;
+        EXPECT_FALSE(decision.is_cover_art) << "index=" << index;
+    }
+
+    const auto null_decision = videoeye::player::ClassifyVideoStream(nullptr, 0);
+    EXPECT_FALSE(null_decision.has_video);
+    EXPECT_EQ(-1, null_decision.video_stream_index);
+}

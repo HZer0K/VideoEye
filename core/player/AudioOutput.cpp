@@ -40,24 +40,71 @@ namespace player {
 
 using PullFn = std::function<size_t(uint8_t*, size_t)>;
 
+// Enqueue() 等设备就绪的上限。WASAPI 后端自己的初始化等待是 5 s，超过它说明
+// 打开流程已经卡死或失败，继续等只会把整条解码线程（含视频）一起拖住。
+constexpr std::chrono::milliseconds kDeviceOpenWait{5000};
+
 #if defined(VIDEOEYE_AUDIO_WIN)
 
 // KSDATAFORMAT_SUBTYPE_PCM / KSDATAFORMAT_SUBTYPE_IEEE_FLOAT。
 // 直接把 GUID 写死，省得为两个常量引入 ksmedia.h（WDK 头）。
 static const GUID kSubtypePcm = {0x00000001, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}};
-// 设备的 mix format 是不是 16bit PCM。
-// 只有这一种情况可以直接拿 mix format 去 Initialize —— 它的字节布局和
-// Pull() 产出的 S16 交错 PCM 完全一致，不需要任何转换。
-bool IsS16Pcm(const WAVEFORMATEX* wfx) {
-    if (wfx == nullptr || wfx->wBitsPerSample != 16)
+static const GUID kSubtypeFloat = {0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}};
+
+// 把 WAVEFORMATEX 映射成本项目的采样格式。
+//
+// 只接受"解码链路能产出来"的线性 PCM：压缩格式（AC3/DTS 的 SPDIF 直通等）和
+// 奇怪位宽一律拒绝 —— 明知产不出来还硬开，播出来就是杂音。
+bool MapWaveFormat(const WAVEFORMATEX* wfx, PcmSampleFormat& out) {
+    if (wfx == nullptr)
         return false;
-    if (wfx->wFormatTag == WAVE_FORMAT_PCM)
-        return true;
-    if (wfx->wFormatTag == WAVE_FORMAT_EXTENSIBLE && wfx->cbSize >= 22) {
-        const WAVEFORMATEXTENSIBLE* ext = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(wfx);
-        return IsEqualGUID(ext->SubFormat, kSubtypePcm) != FALSE;
+
+    bool is_float = false;
+    if (wfx->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) {
+        is_float = true;
+    } else if (wfx->wFormatTag == WAVE_FORMAT_EXTENSIBLE && wfx->cbSize >= 22) {
+        const auto* ext = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(wfx);
+        if (IsEqualGUID(ext->SubFormat, kSubtypePcm)) {
+            is_float = false;
+        } else if (IsEqualGUID(ext->SubFormat, kSubtypeFloat)) {
+            is_float = true;
+        } else {
+            return false;
+        }
+    } else if (wfx->wFormatTag != WAVE_FORMAT_PCM) {
+        return false;
     }
-    return false;
+
+    if (is_float) {
+        if (wfx->wBitsPerSample == 32) {
+            out = PcmSampleFormat::F32;
+            return true;
+        }
+        if (wfx->wBitsPerSample == 64) {
+            out = PcmSampleFormat::F64;
+            return true;
+        }
+        return false;
+    }
+
+    switch (wfx->wBitsPerSample) {
+    case 8:
+        out = PcmSampleFormat::U8;
+        return true;
+    case 16:
+        out = PcmSampleFormat::S16;
+        return true;
+    case 24:
+        // FFmpeg 8 已删掉 AV_SAMPLE_FMT_S24（3 字节紧凑打包），产不出这种布局。
+        // Windows 的 mix format 实际几乎不会出现 24bit 打包（要么 float32，要么
+        // 24-in-32 的 EXTENSIBLE 32 位容器），真遇到就放弃本次播放。
+        return false;
+    case 32:
+        out = PcmSampleFormat::S32;
+        return true;
+    default:
+        return false;
+    }
 }
 
 class WasapiBackend final : public AudioOutput::Backend {
@@ -68,9 +115,14 @@ public:
         Close();
     }
 
-    bool Open(int& sample_rate, int& channels) override {
-        want_rate_ = sample_rate > 0 ? sample_rate : 44100;
-        want_channels_ = channels > 0 ? channels : 2;
+    bool Open(const PcmFormat& requested, PcmFormat& actual) override {
+        want_ = requested;
+        if (want_.sample_rate <= 0)
+            want_.sample_rate = 44100;
+        if (want_.channels <= 0)
+            want_.channels = 2;
+        // 默认按请求格式打开；InitDevice 只有在设备拒绝时才会改写它
+        actual_ = want_;
         running_.store(true);
         finished_.store(false);
         thread_ = std::thread([this]() {
@@ -101,8 +153,7 @@ public:
                 thread_.join();
             return false;
         }
-        sample_rate = actual_rate_;
-        channels = actual_channels_;
+        actual = actual_;
         return true;
     }
 
@@ -130,14 +181,18 @@ private:
         HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         const bool com_ok = SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE;
 
+        // 先按"请求值"填，再由 InitDevice 覆盖成设备实际值。
+        // ❗ 顺序不能反: 以前是在 InitDevice 之后无条件写回 want_*，于是设备回退
+        // （源 44.1 kHz → 设备 48 kHz）得到的实际值被当场抹掉，Open() 拿到的还是
+        // 请求值 —— 环形缓冲按错格式算容量，且下游根本不知道需要转换。
+        actual_ = want_;
+
         bool ok = false;
         std::string err;
         if (com_ok)
             ok = InitDevice(err);
 
         // 通知 Open() 结果；失败也要通知，否则调用方会卡满 5 s
-        actual_rate_ = want_rate_;
-        actual_channels_ = want_channels_;
         ok_.store(ok);
         ready_.store(true);
         ready_cv_.notify_all();
@@ -185,52 +240,49 @@ private:
 
         WAVEFORMATEX wfx{};
         wfx.wFormatTag = WAVE_FORMAT_PCM;
-        wfx.nChannels = static_cast<WORD>(want_channels_);
-        wfx.nSamplesPerSec = static_cast<DWORD>(want_rate_);
+        wfx.nChannels = static_cast<WORD>(want_.channels);
+        wfx.nSamplesPerSec = static_cast<DWORD>(want_.sample_rate);
         wfx.wBitsPerSample = 16;
-        wfx.nBlockAlign = static_cast<WORD>(want_channels_ * 2);
-        wfx.nAvgBytesPerSec = static_cast<DWORD>(want_rate_ * want_channels_ * 2);
+        wfx.nBlockAlign = static_cast<WORD>(want_.channels * 2);
+        wfx.nAvgBytesPerSec = static_cast<DWORD>(want_.sample_rate * want_.channels * 2);
         wfx.cbSize = 0;
         block_align_ = wfx.nBlockAlign;
 
         hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, kBufferDuration, 0, &wfx,
                                  nullptr);
         if (hr == AUDCLNT_E_UNSUPPORTED_FORMAT) {
-            // 设备不接受「16bit PCM + 源的采样率」。常见原因是声卡跑在 48 kHz 而我们按
-            // 源的 44.1 kHz 请求。
+            // 设备不接受「S16 + 源的采样率/声道数」。共享模式的规则是只能用设备的
+            // mix format（实测常见 48 kHz / float32），所以这里直接拿 mix format 原样
+            // 重开，并把它的**完整格式**记进 actual_ —— 由 AudioOutput 那一层把
+            // 解码器产出的 S16 转成设备格式。
             //
-            // 关键约束: Pull() 只产出 S16 交错 PCM。所以回退时**不能**直接把设备 mix
-            // format 拿来 Initialize —— mix format 常常是 float32，那样会把 S16 的字节流
-            // 当浮点播，表现为杂音或静音。先只对齐采样率/声道数、保持 S16。
+            // ❗ 旧实现只对齐采样率/声道数、仍坚持 16bit，于是两条路都错：mix 是
+            // float32 时 Initialize 再次失败（整段无声），即便成功也会把 S16 字节
+            // 当浮点播（杂音）。
             WAVEFORMATEX* mix = nullptr;
             if (SUCCEEDED(client_->GetMixFormat(&mix)) && mix) {
-                WAVEFORMATEX retry{};
-                retry.wFormatTag = WAVE_FORMAT_PCM;
-                retry.nChannels = mix->nChannels;
-                retry.nSamplesPerSec = mix->nSamplesPerSec;
-                retry.wBitsPerSample = 16;
-                retry.nBlockAlign = static_cast<WORD>(mix->nChannels * 2);
-                retry.nAvgBytesPerSec = retry.nSamplesPerSec * retry.nBlockAlign;
-                retry.cbSize = 0;
-                hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, kBufferDuration,
-                                         0, &retry, nullptr);
-                if (SUCCEEDED(hr)) {
-                    actual_rate_ = static_cast<int>(retry.nSamplesPerSec);
-                    actual_channels_ = retry.nChannels;
-                    block_align_ = retry.nBlockAlign;
-                    LOG_INFO("AudioOutput(WASAPI): 16bit PCM 未受支持, 已按设备采样率 " + std::to_string(actual_rate_) +
-                             " Hz / " + std::to_string(actual_channels_) + " ch 重新打开");
-                } else if (IsS16Pcm(mix)) {
-                    // 兜底: mix format 本身就是 16bit PCM，字节布局与 Pull() 一致，可以直用
-                    hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                                             kBufferDuration, 0, mix, nullptr);
-                    if (SUCCEEDED(hr)) {
-                        actual_rate_ = static_cast<int>(mix->nSamplesPerSec);
-                        actual_channels_ = mix->nChannels;
-                        block_align_ = mix->nBlockAlign;
-                    }
+                PcmSampleFormat mix_sample{};
+                if (!MapWaveFormat(mix, mix_sample)) {
+                    CoTaskMemFree(mix);
+                    client_->Release();
+                    client_ = nullptr;
+                    err = "设备 mix format 不是可直接播的线性 PCM";
+                    return false;
                 }
-                // 其余情况（mix 是 float32 / 24bit ...）宁可没有声音，也不要把 S16 当别的格式播
+                hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, kBufferDuration,
+                                         0, mix, nullptr);
+                if (SUCCEEDED(hr)) {
+                    actual_.sample_rate = static_cast<int>(mix->nSamplesPerSec);
+                    actual_.channels = mix->nChannels;
+                    actual_.sample = mix_sample;
+                    block_align_ = mix->nBlockAlign;
+                    LOG_INFO(
+                        "AudioOutput(WASAPI): 设备不接受源格式, 已按设备格式 " + std::to_string(actual_.sample_rate) +
+                        " Hz / " + std::to_string(actual_.channels) + " ch / " + std::to_string(mix->wBitsPerSample) +
+                        "bit" +
+                        (mix_sample == PcmSampleFormat::F32 || mix_sample == PcmSampleFormat::F64 ? " (浮点)" : "") +
+                        " 重新打开");
+                }
                 CoTaskMemFree(mix);
             }
         }
@@ -322,10 +374,8 @@ private:
     HANDLE event_ = nullptr;
     UINT32 buffer_frames_ = 0;
     UINT32 block_align_ = 4;
-    int want_rate_ = 44100;
-    int want_channels_ = 2;
-    int actual_rate_ = 44100;
-    int actual_channels_ = 2;
+    PcmFormat want_;   // 请求格式
+    PcmFormat actual_; // 设备最终使用的格式
 };
 
 #elif defined(VIDEOEYE_AUDIO_MAC)
@@ -338,9 +388,14 @@ public:
         Close();
     }
 
-    bool Open(int& sample_rate, int& channels) override {
-        rate_ = sample_rate > 0 ? sample_rate : 44100;
-        channels_ = channels > 0 ? channels : 2;
+    bool Open(const PcmFormat& requested, PcmFormat& actual) override {
+        rate_ = requested.sample_rate > 0 ? requested.sample_rate : 44100;
+        channels_ = requested.channels > 0 ? requested.channels : 2;
+        // AudioQueue 不做格式协商: 要么按请求格式开成功，要么失败
+        actual = requested;
+        actual.sample_rate = rate_;
+        actual.channels = channels_;
+        actual.sample = PcmSampleFormat::S16;
 
         AudioStreamBasicDescription fmt{};
         fmt.mSampleRate = static_cast<Float64>(rate_);
@@ -421,13 +476,18 @@ public:
         Close();
     }
 
-    bool Open(int& sample_rate, int& channels) override {
+    bool Open(const PcmFormat& requested, PcmFormat& actual) override {
         if (!LoadAlsa()) {
             LOG_WARN("AudioOutput(ALSA): 未找到 libasound.so.2, 音频输出不可用");
             return false;
         }
-        rate_ = sample_rate > 0 ? sample_rate : 44100;
-        channels_ = channels > 0 ? channels : 2;
+        rate_ = requested.sample_rate > 0 ? requested.sample_rate : 44100;
+        channels_ = requested.channels > 0 ? requested.channels : 2;
+        // ALSA 的 "default" 走 plug 层，自己会重采样/混音，所以报回请求格式即可
+        actual = requested;
+        actual.sample_rate = rate_;
+        actual.channels = channels_;
+        actual.sample = PcmSampleFormat::S16;
         frame_bytes_ = static_cast<size_t>(channels_) * 2;
 
         if (snd_pcm_open(&pcm_, "default", SND_PCM_STREAM_PLAYBACK, 0) != 0) {
@@ -572,13 +632,15 @@ bool AudioOutput::OnOpenThread() const {
     return t_open_thread_owner == this;
 }
 
-size_t AudioOutput::Pull(uint8_t* dst, size_t max_bytes) {
+size_t AudioOutput::ReadRing(uint8_t* dst, size_t max_bytes) {
     if (!dst || max_bytes == 0)
         return 0;
 
     size_t copied = 0;
     {
         std::lock_guard<std::mutex> lock(ring_mutex_);
+        if (ring_capacity_ == 0)
+            return 0;
         copied = std::min<size_t>(max_bytes, filled_);
         if (copied > 0) {
             const size_t first = std::min<size_t>(copied, ring_capacity_ - read_pos_);
@@ -591,15 +653,13 @@ size_t AudioOutput::Pull(uint8_t* dst, size_t max_bytes) {
             ring_cv_.notify_one();
         }
     }
-    if (copied < max_bytes) {
-        std::memset(dst + copied, 0, max_bytes - copied); // 缓冲空: 补静音
-    }
 
-    // 音量缩放（S16 交错）
+    // 音量缩放（S16 交错）。放在**源格式**这一侧做: 一旦需要转换，出口就是设备的
+    // float32/S32 布局，那时再按 int16 去乘会写坏数据。静音补零不受音量影响。
     const double vol = volume_.load();
-    if (vol != 1.0) {
+    if (vol != 1.0 && copied > 0) {
         auto* samples = reinterpret_cast<int16_t*>(dst);
-        const size_t n = max_bytes / 2;
+        const size_t n = copied / 2;
         for (size_t i = 0; i < n; ++i) {
             int v = static_cast<int>(static_cast<double>(samples[i]) * vol);
             if (v > 32767)
@@ -609,16 +669,83 @@ size_t AudioOutput::Pull(uint8_t* dst, size_t max_bytes) {
             samples[i] = static_cast<int16_t>(v);
         }
     }
+    return copied;
+}
+
+void AudioOutput::FillSilence(uint8_t* dst, size_t bytes) {
+    // 8bit 无符号 PCM 的静音是 0x80；其余（S16/S32/浮点）都是全 0。
+    std::memset(dst, device_format_.sample == PcmSampleFormat::U8 ? 0x80 : 0x00, bytes);
+}
+
+size_t AudioOutput::PullConverted(uint8_t* dst, size_t max_bytes) {
+    const size_t src_frame = src_format_.FrameBytes();
+    const size_t dst_frame = device_format_.FrameBytes();
+    if (src_frame == 0 || dst_frame == 0 || conv_in_.empty())
+        return 0;
+
+    // 设备缓冲容量未必是整数帧（AudioQueue 给的是字节容量），余数交给补静音 ——
+    // 但输出必须在帧边界上结束，否则下一帧会整体错位半个样本。
+    const size_t usable = max_bytes - max_bytes % dst_frame;
+    size_t produced = 0;
+    bool drained = false;
+    while (produced + dst_frame <= usable) {
+        // ❗ 每次喂给 swr 的源帧数按**这次能产出多少**反算（且带余数累积），
+        // 不能把手上的整块塞进去 —— swr 不丢输入，吃不下的会存进内部 FIFO，
+        // 于是每轮多喂一点就一路堆积（实测 2000 次回调后压了 320 万帧 ≈ 65 秒），
+        // 表现为声音越来越滞后、环形缓冲永远满着、A/V 越拖越开。
+        const size_t out_cap_frames = (usable - produced) / dst_frame;
+        const size_t want_frames = converter_.NextFeedFrames(out_cap_frames);
+        // ❗ 用 std::min<size_t> 而不是 std::min: 本文件 include 了 windows.h，
+        // 它的 min 宏会把 std::min( 里的 '(' 当非法 token。
+        const size_t cap_frames = std::min<size_t>(conv_in_.size() / src_frame, want_frames);
+        const size_t got_src = cap_frames > 0 ? ReadRing(conv_in_.data(), cap_frames * src_frame) : 0;
+        size_t got = 0;
+        if (got_src > 0) {
+            got = converter_.Convert(conv_in_.data(), got_src, dst + produced, usable - produced);
+        } else if (!drained) {
+            // 环形缓冲空了（或这轮不该再喂）: 先把 swr 里压着的尾巴（重采样滤波器
+            // 延迟）吐干净，之后才允许补静音。
+            drained = true;
+            got = converter_.Drain(dst + produced, usable - produced);
+        } else {
+            break; // 环空 + 已冲刷: 剩下的补静音
+        }
+        if (got > 0) {
+            produced += got;
+        } else if (got_src == 0) {
+            break;
+        }
+        // got == 0 但还有源数据: swr 在攒够一帧，继续读
+    }
+    return produced;
+}
+
+size_t AudioOutput::Pull(uint8_t* dst, size_t max_bytes) {
+    if (!dst || max_bytes == 0)
+        return 0;
+
+    const size_t produced = converter_.Active() ? PullConverted(dst, max_bytes) : ReadRing(dst, max_bytes);
+    if (produced < max_bytes) {
+        FillSilence(dst + produced, max_bytes - produced); // 缓冲空: 补静音
+    }
     return max_bytes;
+}
+
+void AudioOutput::MarkOpenFinished() {
+    open_finished_.store(true);
+    ring_cv_.notify_all();
 }
 
 bool AudioOutput::Open(int sample_rate, int channels) {
     Stop();
     stopping_.store(false);
+    open_finished_.store(false);
 
     std::lock_guard<std::mutex> lock(device_mutex_);
-    const int want_rate = sample_rate > 0 ? sample_rate : 44100;
-    const int want_channels = channels > 0 ? channels : 2;
+    PcmFormat requested;
+    requested.sample_rate = sample_rate > 0 ? sample_rate : 44100;
+    requested.channels = channels > 0 ? channels : 2;
+    requested.sample = PcmSampleFormat::S16; // 解码链路（AudioDecoder）恒定产出 S16 交错
 
     auto pull = [this](uint8_t* dst, size_t n) { return Pull(dst, n); };
 #if defined(VIDEOEYE_AUDIO_WIN)
@@ -629,28 +756,55 @@ bool AudioOutput::Open(int sample_rate, int channels) {
     backend_ = std::make_unique<AlsaBackend>(pull);
 #endif
 
-    int actual_rate = want_rate;
-    int actual_channels = want_channels;
+    PcmFormat actual = requested;
     {
         VE_PERF("音频设备打开");
-        if (!backend_->Open(actual_rate, actual_channels)) {
+        if (!backend_->Open(requested, actual)) {
             backend_.reset();
             LOG_WARN("AudioOutput: 打开音频设备失败, 本次播放无声音");
+            MarkOpenFinished();
             return false;
         }
     }
 
-    sample_rate_ = actual_rate;
-    channels_ = actual_channels;
+    src_format_ = requested;
+    device_format_ = actual;
 
-    // 约 400 ms 的缓冲：够抗抖动，又不会让 seek 后的残留声音拖太久
-    ring_capacity_ = static_cast<size_t>(actual_rate) * static_cast<size_t>(actual_channels) * 2 * 2 / 5;
+    // 设备格式与源格式不一致时（典型: Windows 共享模式只给 48 kHz / float32），
+    // 必须在这里补一层转换。不做的话 44.1 kHz 素材会变调、S16 字节喂给 float32
+    // 设备直接是杂音或静音。
+    const bool need_convert = (src_format_ != device_format_);
+    if (!converter_.Configure(src_format_.sample_rate, src_format_.channels, device_format_.sample_rate,
+                              device_format_.channels, device_format_.sample) ||
+        (need_convert && !converter_.Active())) {
+        LOG_ERROR("AudioOutput: 源格式与设备格式不一致但转换器初始化失败, 放弃本次播放 (避免杂音)");
+        backend_->Close();
+        backend_.reset();
+        MarkOpenFinished();
+        return false;
+    }
+    if (need_convert) {
+        LOG_INFO("AudioOutput: 源格式 " + std::to_string(src_format_.sample_rate) + " Hz / " +
+                 std::to_string(src_format_.channels) + " ch 与设备格式不一致, 已启用重采样");
+    }
+
+    // 转换时的源字节暂存: 一次进一环，源帧对齐
+    const size_t src_frame_bytes = static_cast<size_t>(src_format_.FrameBytes());
+    const size_t scratch =
+        (src_frame_bytes > 0) ? std::max<size_t>(src_frame_bytes, 8192 / src_frame_bytes * src_frame_bytes) : 0;
+    conv_in_.assign(scratch, 0);
+
+    // 约 400 ms 的缓冲：够抗抖动，又不会让 seek 后的残留声音拖太久。
+    // 容量按**源**格式算: 环形缓冲里装的是解码器产出的字节。
+    ring_capacity_ =
+        static_cast<size_t>(src_format_.sample_rate) * static_cast<size_t>(src_format_.channels) * 2 * 2 / 5;
     ring_.assign(ring_capacity_, 0);
     write_pos_ = read_pos_ = filled_ = 0;
 
     opened_.store(true);
-    LOG_INFO("AudioOutput: 音频设备已打开 " + std::to_string(actual_rate) + " Hz / " + std::to_string(actual_channels) +
-             " ch");
+    MarkOpenFinished(); // 唤醒可能在 Enqueue() 里等设备就绪的解码线程
+    LOG_INFO("AudioOutput: 音频设备已打开 " + std::to_string(device_format_.sample_rate) + " Hz / " +
+             std::to_string(device_format_.channels) + " ch");
     if (pending_play_.exchange(false)) {
         backend_->Start();
     }
@@ -664,6 +818,11 @@ void AudioOutput::OpenAsync(int sample_rate, int channels) {
         open_thread_.join(); // 上一轮还没开完就先收尾
     }
     stopping_.store(false);
+    // ❗ 必须在起线程之前就把"打开中"标上。Open() 自己也置了一次，但那是新线程
+    // 跑起来之后的事：这中间的窗口里 Enqueue() 会看到一个"上次已结束"的
+    // open_finished_=true，判定设备永远不会就绪，直接把开头几帧音频扔掉 ——
+    // 正是 P1「设备未就绪时丢弃已解码音频」的残留形态。
+    open_finished_.store(false);
     open_thread_ = std::thread([this, sample_rate, channels]() {
         t_open_thread_owner = this;
         const auto clear_owner = task::MakeScopeExit([]() { t_open_thread_owner = nullptr; });
@@ -677,13 +836,25 @@ void AudioOutput::OpenAsync(int sample_rate, int channels) {
         if (failure) {
             LOG_ERROR(std::string("AudioOutput: 异步打开音频设备异常: ") + *failure);
             pending_play_.store(false);
+            MarkOpenFinished();
         }
     });
 }
 
 void AudioOutput::Enqueue(const uint8_t* data, int len) {
-    if (!opened_.load() || !data || len <= 0)
-        return; // 异步打开未完成: 丢弃
+    if (!data || len <= 0)
+        return;
+
+    // 设备还在异步打开（Windows 首次打开实测 ~1 s）。这时候**不能直接丢**：
+    // 解码线程不会等设备，短音频在设备就绪前就被整段扔掉 —— 表现出来就是
+    // "点了播放却没声音"。只等"正在打开"的那段时间；打开已有结论（失败/已停止）
+    // 就立刻放弃，绝不为此卡住解码线程。
+    if (!opened_.load()) {
+        std::unique_lock<std::mutex> lock(ring_mutex_);
+        ring_cv_.wait_for(lock, kDeviceOpenWait, [this]() { return opened_.load() || open_finished_.load(); });
+        if (!opened_.load())
+            return;
+    }
 
     // 分片写入。旧实现先等「整个 len 都能放下」再写，一旦单次 PCM 块大于
     // ring_capacity_（高采样率 / 多声道 / 大 AAC 帧解码出来很容易超），
@@ -764,9 +935,11 @@ void AudioOutput::Stop() {
         std::lock_guard<std::mutex> lock(device_mutex_);
         opened_.store(false);
         if (backend_) {
-            backend_->Close();
+            backend_->Close(); // 内部 join 音频线程, 之后才能安全释放转换器
             backend_.reset();
         }
+        // 转换器只在音频线程里用（Pull），线程停了才能安全释放
+        converter_.Reset();
     }
 
     {
@@ -775,7 +948,8 @@ void AudioOutput::Stop() {
         ring_.clear();
         ring_capacity_ = 0;
     }
-    ring_cv_.notify_all(); // 唤醒可能在 Enqueue 中阻塞的解码线程
+    open_finished_.store(true); // 让还在等设备就绪的 Enqueue() 立刻放弃，别白等
+    ring_cv_.notify_all();      // 唤醒可能在 Enqueue 中阻塞的解码线程
 }
 
 } // namespace player

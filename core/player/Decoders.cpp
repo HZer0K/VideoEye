@@ -598,6 +598,11 @@ bool AudioDecoder::RebuildSwr(const AVChannelLayout& in_layout, AVSampleFormat i
 
     AVChannelLayout out_layout{};
     av_channel_layout_default(&out_layout, channels_);
+    // 输出恒为「源的采样率/声道数 + S16 交错」。这是一条刻意的契约：
+    // 解码器不关心音频设备长什么样（设备可能只接受 48 kHz / 浮点），
+    // 设备侧格式差异由 AudioOutput 的 S16Converter 在出口处补转换。
+    // 曾经两边各按各的格式走 —— 设备回退到 mix format 后没人转换，44.1 kHz 素材
+    // 在 48 kHz 设备上快 8.8%（变调），S16 喂给 float32 设备直接是杂音。
     const int out_rate = sample_rate_ > 0 ? sample_rate_ : (in_rate > 0 ? in_rate : 44100);
     const int ret = swr_alloc_set_opts2(&swr_ctx_, &out_layout, AV_SAMPLE_FMT_S16, out_rate, &in_layout, in_fmt,
                                         in_rate > 0 ? in_rate : out_rate, 0, nullptr);
