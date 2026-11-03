@@ -3,6 +3,7 @@
 #include "core/domain/model/ContainerStructureInfo.h"
 #include "core/domain/model/MacroblockInfo.h"
 #include "core/exporter/MediaExporter.h"
+#include "core/ffmpeg_io/AvOptions.h"
 #include "core/player/AnalysisSession.h"
 #include "core/player/ContainerInspectionController.h"
 #include "core/player/ExportController.h"
@@ -17,6 +18,7 @@
 #include <algorithm>
 #include <atomic>
 #include <memory>
+#include <string>
 #include <utility>
 
 extern "C" {
@@ -311,7 +313,12 @@ bool MediaPlayer::OpenRawPcm(const QString& url, const QString& demuxer_name, in
     }
     AVDictionary* input_options = nullptr;
     av_dict_set(&input_options, "sample_rate", QByteArray::number(sample_rate).constData(), 0);
-    av_dict_set(&input_options, "channels", QByteArray::number(channels).constData(), 0);
+    // 声道走 ch_layout（FFmpeg 8 的 pcm demuxer 不再认 "channels", 传了静默忽略）。
+    // 与 MediaInfoAnalyzer 共用同一个构造函数, 免得两边各写一份再漂移。
+    const std::string ch_layout = ffmpeg_io::ChannelLayoutOption(channels);
+    if (!ch_layout.empty()) {
+        av_dict_set(&input_options, "ch_layout", ch_layout.c_str(), 0);
+    }
     return impl_->OpenInternal(url, input_format, input_options);
 }
 

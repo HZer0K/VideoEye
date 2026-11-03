@@ -505,10 +505,14 @@ StreamInfoExtractor::ExtractResult StreamInfoExtractor::Extract(AVFormatContext*
                 audio_bit_rate = static_cast<int64_t>(ap->sample_rate) * ap->ch_layout.nb_channels * bits_per_sample;
         }
         info.audio.bit_rate = FormatBitrate(audio_bit_rate);
+        // 这两个字段只放数值, 单位交给展示层拼（OverviewPage 会补 ", 2 ch" / ", 48000 Hz"）。
+        // 它们曾经自带 " kHz" / " channels", 于是首页摘要显示成
+        //   "aac, 2 channels ch, 48.000000 kHz Hz"
+        // —— 单位写了两遍, 采样率还带 std::to_string(double) 的六位小数。
         if (ap->sample_rate > 0)
-            info.audio.sampling_rate = std::to_string(ap->sample_rate / 1000.0) + " kHz";
+            info.audio.sampling_rate = std::to_string(ap->sample_rate);
         if (ap->ch_layout.nb_channels > 0) {
-            info.audio.channels = std::to_string(ap->ch_layout.nb_channels) + " channels";
+            info.audio.channels = std::to_string(ap->ch_layout.nb_channels);
             char buf[128];
             if (av_channel_layout_describe(&ap->ch_layout, buf, sizeof(buf)) > 0)
                 info.audio.channel_layout = buf;

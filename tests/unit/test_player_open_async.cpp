@@ -4,11 +4,13 @@
 // 网络源/大文件/异常设备会把界面整段冻住。现在拆成两阶段事务:
 //   Prepare (后台线程) 产出自我持有的 OpenResult  ->  Commit (UI 线程) 一次性采用或整体丢弃。
 //
-// 本文件锁定三条契约:
+// 本文件锁定四条契约:
 //   1. OpenResult 的事务语义 —— Commit 采用则资源进会话; 失败则整体丢弃且会话归零。
 //   2. OpenAsync 的终态 —— 无论成功失败都恰好发一次 OpenFinished(bool)。
 //   3. 过期结果必须被丢弃 —— 被后续打开取代的旧结果不得发 OpenFinished（否则界面会
 //      按上一个媒体收尾）。
+//   4. 裸 PCM 的采参必须真的落到 demuxer 上 —— 用户选的采样格式/采样率/声道数,
+//      打开后读回来的必须一模一样（格式名写错 = 打不开；选项名写错 = 参数被静默忽略）。
 //
 // 需要事件循环（OpenAsync 的结果经 Qt::QueuedConnection 排回 UI 线程）,
 // 不需要 QPA 平台插件。
@@ -17,11 +19,14 @@
 
 #include <functional>
 #include <memory>
+#include <ostream>
+#include <string>
 
 extern "C" {
 #include <libavformat/avformat.h>
 }
 
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
@@ -31,9 +36,11 @@ extern "C" {
 #include <QThread>
 
 #include "BlockingTcpEndpoint.h"
+#include "core/analysis/orchestration/MediaInfoAnalyzer.h"
 #include "core/player/MediaPlayer.h"
 #include "core/player/OpenController.h"
 #include "core/player/PlaybackSession.h"
+#include "core/player/RawPcmFormats.h"
 #include "infrastructure/logging/PerfMetrics.h"
 #include "tests/support/TestMediaFactory.h"
 
@@ -90,6 +97,92 @@ QString MissingPath(const QString& name) {
 }
 
 } // namespace
+
+// ===========================================================================
+// 裸 PCM: 采样格式 / 采样率 / 声道数必须真的落到 demuxer 上
+//
+// 这条链路在 2026-11 之前是"能点但打不开", 而且是两处独立的断点:
+//   * 下拉框里填的是 FFmpeg 的*编码器*名 pcm_s16le, av_find_input_format 找不到
+//     → 打开在"找不到裸流 demuxer"处直接失败（见下面的 RawPcmFormatCatalog 用例）;
+//   * 声道用 "channels" 选项, FFmpeg 8 的 pcm demuxer 已不认（静默忽略）
+//     → 一律按单声道解码, 时长随之被算成 1/N（见参数化用例的时长断言）。
+// ===========================================================================
+struct RawPcmCase {
+    const char* demuxer;
+    int bytes_per_sample;
+    int sample_rate;
+    int channels;
+};
+
+// 默认的参数打印是 "24-byte object <B4-9A ...>", 失败时看不出是哪个格式。
+void PrintTo(const RawPcmCase& param, std::ostream* os) {
+    *os << param.demuxer << ' ' << param.sample_rate << " Hz " << param.channels << " ch " << param.bytes_per_sample * 8
+        << " bit";
+}
+
+// 用例名: s16le_48k_2ch / s24be_44k_2ch ...
+std::string RawPcmCaseName(const testing::TestParamInfo<RawPcmCase>& info) {
+    const RawPcmCase& param = info.param;
+    return std::string(param.demuxer) + "_" + std::to_string(param.sample_rate / 1000) + "k_" +
+           std::to_string(param.channels) + "ch";
+}
+
+class PlayerOpenRawPcm : public testing::TestWithParam<RawPcmCase> {};
+
+TEST_P(PlayerOpenRawPcm, OpensWithSelectedParametersAndReportsMatchingInfo) {
+    AppScope app_scope;
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+
+    const RawPcmCase& params = GetParam();
+    const QString path = directory.filePath(QStringLiteral("audio.pcm"));
+    // 0.1 秒的样本: 时长一旦按错的声道数算, 偏差是几百毫秒级, 拦得住。
+    const int sample_count = params.sample_rate / 10;
+    const QByteArray samples(sample_count * params.channels * params.bytes_per_sample,
+                             params.bytes_per_sample == 1 ? '\x80' : '\0');
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    ASSERT_EQ(samples.size(), file.write(samples));
+    file.close();
+
+    player::MediaPlayer player;
+    ASSERT_TRUE(player.OpenRawPcm(path, QString::fromLatin1(params.demuxer), params.sample_rate, params.channels))
+        << player.GetLastError().toStdString();
+    const auto info = player.GetStreamInfo();
+    // 读回来的必须是"用户选的那一份", 而不是 FFmpeg 的默认值（单声道 / 44.1 kHz）。
+    EXPECT_EQ(std::to_string(params.channels), info.audio.channels) << "声道数没落到 demuxer 上";
+    EXPECT_EQ(std::to_string(params.sample_rate), info.audio.sampling_rate) << "采样率没落到 demuxer 上";
+    EXPECT_NEAR(100, player.GetDuration(), 1) << "时长按错的声道数算出来了";
+
+    // 分析链路是另一份独立代码（MediaInfoAnalyzer）, 参数同样要到位。
+    MediaInfoAnalyzer analyzer;
+    analyzer.SetRawPcmHints(params.demuxer, params.sample_rate, params.channels);
+    ASSERT_TRUE(analyzer.Open(path.toStdString())) << analyzer.GetLastError();
+    const std::string text = analyzer.GetCompleteInfo();
+    const std::string sample_rate_line = "Sample rate                : " + std::to_string(params.sample_rate) + " Hz";
+    EXPECT_NE(std::string::npos, text.find(sample_rate_line)) << text;
+    const std::string channels_line = "Channels                   : " + std::to_string(params.channels);
+    EXPECT_NE(std::string::npos, text.find(channels_line)) << text;
+}
+
+INSTANTIATE_TEST_SUITE_P(SupportedFormats, PlayerOpenRawPcm,
+                         testing::Values(RawPcmCase{"s16le", 2, 48000, 2}, RawPcmCase{"s16be", 2, 44100, 1},
+                                         RawPcmCase{"u8", 1, 48000, 2}, RawPcmCase{"s24le", 3, 48000, 6},
+                                         RawPcmCase{"s24be", 3, 44100, 2}, RawPcmCase{"s32le", 4, 96000, 8},
+                                         RawPcmCase{"f32le", 4, 48000, 2}, RawPcmCase{"f32be", 4, 44100, 2}),
+                         RawPcmCaseName);
+
+// 格式表本身也是被测对象: 它同时决定"下拉框显示什么"和"用哪个 demuxer 打开"。
+// 名字与 FFmpeg 对不上时, 用户看到的是"选了格式却提示不支持" —— 靠这条用例当场暴露。
+TEST(RawPcmFormatCatalog, EveryEntryResolvesToAnFfmpegDemuxer) {
+    const auto& options = player::RawPcmFormatOptions();
+    ASSERT_FALSE(options.empty());
+    for (const auto& option : options) {
+        EXPECT_NE(nullptr, av_find_input_format(option.demuxer)) << "不是 FFmpeg 的输入格式名: " << option.demuxer;
+        EXPECT_NE(std::string::npos, std::string(option.label).find(option.demuxer))
+            << "label 与 demuxer 不一致: " << option.label;
+    }
+}
 
 // ===========================================================================
 // 事务的提交侧: 采用 vs 丢弃

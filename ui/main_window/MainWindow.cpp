@@ -23,6 +23,7 @@
 #include "core/player/AnalysisBus.h"
 #include "core/player/ContainerBus.h"
 #include "core/player/MediaPlayer.h"
+#include "core/player/RawPcmFormats.h"
 #include <QActionGroup>
 #include <QApplication>
 #include <QButtonGroup>
@@ -919,19 +920,10 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
 }
 
 bool MainWindow::PromptForPcmSettings(QString& demuxer_name, int& sample_rate, int& channels) {
-    struct PcmFormatOption {
-        const char* label;
-        const char* demuxer;
-    };
-
-    const std::vector<PcmFormatOption> formats = {{"s16le (16-bit little-endian)", "pcm_s16le"},
-                                                  {"s16be (16-bit big-endian)", "pcm_s16be"},
-                                                  {"u8 (8-bit unsigned)", "pcm_u8"},
-                                                  {"s24le (24-bit little-endian)", "pcm_s24le"},
-                                                  {"s24be (24-bit big-endian)", "pcm_s24be"},
-                                                  {"s32le (32-bit little-endian)", "pcm_s32le"},
-                                                  {"f32le (32-bit float little-endian)", "pcm_f32le"},
-                                                  {"f32be (32-bit float big-endian)", "pcm_f32be"}};
+    // 格式表在 core/player/RawPcmFormats（唯一事实源）: 这里再抄一份就会漂移 ——
+    // 以前抄的是 FFmpeg 的*编码器*名 "pcm_s16le"，av_find_input_format 找不到，
+    // 于是裸 PCM 一次都没能打开过。
+    const auto& formats = player::RawPcmFormatOptions();
 
     QStringList labels;
     for (const auto& format : formats) {

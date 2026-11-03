@@ -1,5 +1,6 @@
 #include "core/analysis/orchestration/MediaInfoAnalyzer.h"
 #include "core/analysis/detail/AnalysisTextUtil.h" // Fixed / StrCat
+#include "core/ffmpeg_io/AvOptions.h"              // 共享 FFmpeg 输入选项构造
 #include "core/ffmpeg_io/FfmpegInterrupt.h"        // 共享 FFmpeg 中断回调
 #include "core/media/streaming/ManifestText.h"     // videoeye::manifest::FileSizeOf
 
@@ -228,8 +229,11 @@ bool MediaInfoAnalyzer::Open(const std::string& filePath, std::shared_ptr<std::a
         if (impl_->pcm_sample_rate > 0) {
             av_dict_set_int(&opts, "sample_rate", impl_->pcm_sample_rate, 0);
         }
-        if (impl_->pcm_channels > 0) {
-            av_dict_set_int(&opts, "channels", impl_->pcm_channels, 0);
+        // 声道必须走 ch_layout: FFmpeg 8 的 pcm demuxer 已移除 "channels" 选项,
+        // 传了既不报错也不生效（打开后一律单声道, 时长随之被算成 1/N）。
+        const std::string ch_layout = ffmpeg_io::ChannelLayoutOption(impl_->pcm_channels);
+        if (!ch_layout.empty()) {
+            av_dict_set(&opts, "ch_layout", ch_layout.c_str(), 0);
         }
     }
 

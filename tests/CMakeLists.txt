@@ -1227,6 +1227,7 @@ videoeye_add_test(test_player_open_async
 )
 target_link_libraries(test_player_open_async PRIVATE
     VideoEyePlayback
+    VideoEyeAnalysis
     VideoEyeInfrastructure
     videoeye_test_media_factory
     Qt6::Core Qt6::Gui)
