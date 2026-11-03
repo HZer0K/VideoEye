@@ -19,7 +19,7 @@ if(WIN32 AND "${CMAKE_GENERATOR}" MATCHES "Ninja")
     set(ENV{VSLANG} "1033")
 endif()
 
-project(VideoEye VERSION 2.0.0 LANGUAGES C CXX)
+project(VideoEye VERSION 2.0.1 LANGUAGES C CXX)
 
 # Windows 下只能走 MSVC（vcpkg triplet 是 x64-windows）。
 # 若 PATH 里混了 MSYS2/MinGW，CMake 会静默选中 c++.exe，之后链接 .lib 时才炸出

@@ -723,7 +723,7 @@ std::string QcReportExporter::BuildJson(const QcExportBundle& bundle) {
 
     JsonValue tool = JsonValue::MakeObject();
     tool.Set("name", JText("VideoEye"));
-    tool.Set("version", JText("2.0.0"));
+    tool.Set("version", JText("2.0.1"));
     root.Set("tool", tool);
 
     JsonValue profile = JsonValue::MakeObject();

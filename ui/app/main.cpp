@@ -16,7 +16,7 @@ int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
 
     app.setApplicationName("VideoEye");
-    app.setApplicationVersion("2.0.0");
+    app.setApplicationVersion("2.0.1");
     app.setOrganizationName("VideoEye Team");
 
     // 应用图标：窗口图标与 AppBar 左上角 Logo 共用同一份来源，
