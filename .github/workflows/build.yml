@@ -788,7 +788,17 @@ jobs:
           # （--output-on-failure 的字面含义）。命中之后进程照常返回 0、测试算通过,
           # 那段 runtime error / data race 直接被吞掉。实测 --test-output-size-passed
           # 也救不回来, 日志里仍然只有框架行。所以判据主要靠 sanitizer 自己写的文件。
-          ctest --preset ${{ matrix.preset }} -j 1 --output-on-failure 2>&1 | tee ctest-sanitizer.log
+          #
+          # ASan 那一路排掉 slow 标签的用例（目前只有 ContainerCancelPathTests）。
+          # 它按时间落位找取消点，一遍要跑 ~88 次完整解析，实测同一条用例：
+          #   普通 ubuntu 27.6s / TSan 112.5s / **ASan 3611s（63 分钟，比 TSan 慢 32 倍）**
+          # 慢是 ASan 分配器在几十万次小对象分配下的开销，不是用例写错了，也不是我们要
+          # 查的内存问题 —— ASan 的价值在"有没有越界/悬垂"，与按时间落位的探测无关。
+          # 取消契约本身由常规 Ubuntu / Windows 单测覆盖（这条在那边是全跑的）。
+          # 排除理由写在 tests/CMakeLists.txt 的 set_tests_properties 旁边。
+          exclude_label=""
+          if [ "${{ matrix.sanitizer }}" = "asan" ]; then exclude_label="-LE slow"; fi
+          ctest --preset ${{ matrix.preset }} -j 1 $exclude_label --output-on-failure 2>&1 | tee ctest-sanitizer.log
 
       # UBSan 判据（只对 asan 那一路，因为 preset 里是 ASan+UBSan 一起开的）。
       #

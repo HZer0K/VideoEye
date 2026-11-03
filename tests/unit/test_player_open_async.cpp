@@ -219,6 +219,10 @@ TEST(PlayerOpenTransaction, CommitAdoptsResultAtomically) {
     EXPECT_EQ(videoeye::model::PlayerState::Idle, session.state());
 
     // OpenResult 已被取走所有权: 其析构不得再关掉已交给会话的上下文。
+    // 下面几处断言**故意**读 moved-from 对象的 format_ctx: OpenResult 手写的移动把
+    // 它置空, "源已交出所有权"正是要验的契约, 不是误用 moved-from 对象 —— clang-tidy
+    // 看不到这个契约, 所以按行关掉 bugprone-use-after-move。
+    // NOLINTNEXTLINE(bugprone-use-after-move)
     EXPECT_EQ(nullptr, result.format_ctx);
     EXPECT_NE(nullptr, session.format_ctx());
 }
@@ -241,6 +245,7 @@ TEST(PlayerOpenTransaction, MoveTransfersContextOwnership) {
 
     player::OpenResult moved(std::move(source));
     EXPECT_TRUE(moved.format_ctx == ctx) << "移动构造: 目标必须拿到同一个上下文";
+    // NOLINTNEXTLINE(bugprone-use-after-move) —— 同上, 验的就是"源被置空"
     EXPECT_TRUE(source.format_ctx == nullptr) << "移动构造: 源必须交出所有权, 否则它的析构会关掉目标手里的上下文";
 
     // 源在此析构: 目标手里的上下文必须还在(不能被顺手关掉)
@@ -251,6 +256,7 @@ TEST(PlayerOpenTransaction, MoveTransfersContextOwnership) {
     player::OpenResult target;
     target = std::move(moved);
     EXPECT_TRUE(target.format_ctx == ctx);
+    // NOLINTNEXTLINE(bugprone-use-after-move) —— 同上, 验的就是"源被置空"
     EXPECT_TRUE(moved.format_ctx == nullptr) << "移动赋值: 源必须交出所有权";
 
     // 走到这里不崩 => 只有 target 析构时关闭唯一那一份, 没有 double free。

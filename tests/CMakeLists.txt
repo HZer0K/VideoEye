@@ -1517,6 +1517,20 @@ videoeye_add_test(test_container_cancel_paths
 target_link_libraries(test_container_cancel_paths PRIVATE VideoEyeAnalysis Qt6::Core)
 add_test(NAME ContainerCancelPathTests COMMAND test_container_cancel_paths)
 
+# 这条用例是唯一跑不过 300s 兜底上限的：它按时间落位找取消点，4 条路径每条要
+# 跑二十来次完整解析（50000 box 的 MP4 / 20000 元素的 MKV / 3000 段的 HLS /
+# 20000 段的 MPD），一次 ctest 里合计约 88 次解析。实测（同一份代码）：
+#   普通 ubuntu 单测      27.6s
+#   TSan(Debug)          112.5s
+#   ASan+UBSan(Debug)   3611s  ← 63 分钟，比 TSan 慢 32 倍
+# ASan 那一路之所以塌方式变慢是它自己的分配器在几十万次小对象分配下的开销，不是用例
+# 写错了。300s 的全局兜底（见文件末尾）一加上，它就必然超时 —— 之前能"绿"只是因为
+# 没有上限。所以给它显式 TIMEOUT 兜真挂死，同时打上 slow 标签，由 CI 的 ASan 作业
+# 用 -LE slow 排除（TSan 只要 112s，照旧全跑）。
+set_tests_properties(ContainerCancelPathTests PROPERTIES
+    TIMEOUT 4200
+    LABELS "slow")
+
 # =================================================
 # 测试 33：取消 / 异常 / 畸形码流的回归（VVC QP 表无上界、容器解析器不传取消令牌、
 #孤儿线程不计并发预算、Qt worker 异常逃逸）
