@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "core/domain/io/Utf8Path.h"
 #include "core/domain/model/AnalysisOptions.h"
 #include "core/domain/model/AnalysisTypes.h"
 
@@ -50,11 +51,16 @@ struct FileVersionStamp {
 // 取本地文件版本指纹。只做 stat，不读内容；任何失败（含网络 URI）都返回 valid=false。
 inline FileVersionStamp QueryFileVersion(const std::string& path) {
     FileVersionStamp stamp;
+    // 路径是 UTF-8（Qt/FFmpeg/清单文件都是），必须显式转成原生路径再 stat：
+    // 直接把 std::string 交给 filesystem，在 Windows 上会按当前 ANSI 代码页解释，
+    // 中文目录在非中文区域设置下直接取不到指纹。ToNativePath 对非法 UTF-8 只软回退，
+    // 不抛异常，失败统一落到下面的 ec 分支。
+    const std::filesystem::path native_path = ToNativePath(path);
     std::error_code ec;
-    const auto size = std::filesystem::file_size(path, ec);
+    const auto size = std::filesystem::file_size(native_path, ec);
     if (ec)
         return stamp;
-    const auto mtime = std::filesystem::last_write_time(path, ec);
+    const auto mtime = std::filesystem::last_write_time(native_path, ec);
     if (ec)
         return stamp;
     stamp.size = static_cast<std::uint64_t>(size);

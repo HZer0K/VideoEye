@@ -349,6 +349,16 @@ TEST(ReportingPanelLifecycle, ExportDisabledWithoutFreshResult) {
     delete panel;
 }
 
+TEST(ReportingPanelLifecycle, SwitchingToUnicodePathKeepsExportDisabled) {
+    const App app;
+    auto* panel = new videoeye::ui::ReportingPanel;
+    const QString path = QString::fromUtf8(u8"C:/全坏图片、全坏曲与全坏视频/已损坏MIB02--Dele_middle_🎵.mp3");
+    EXPECT_NO_THROW(panel->SetCurrentFile(path));
+    EXPECT_FALSE(panel->HasFreshResult());
+    EXPECT_FALSE(panel->IsExportEnabled());
+    delete panel;
+}
+
 // ---------- 9. 分析失败不产生新鲜结果，导出保持禁用 ----------
 TEST(ReportingPanelLifecycle, FailedAnalysisLeavesExportDisabled) {
     const App app;

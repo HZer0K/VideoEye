@@ -885,6 +885,42 @@ TEST(QueryFileVersionTest, MissingFileAndNetworkUriHaveNoVersion) {
     EXPECT_FALSE(QueryFileVersion("http://127.0.0.1:9/live.m3u8").valid) << "网络源没有本地指纹，默认重新分析";
 }
 
+TEST(QueryFileVersionTest, Utf8DirectoryAndFileNameYieldConsistentVersion) {
+    const ChainScratch scratch;
+    const auto dir = scratch.dir / fs::u8path(u8"全坏图片、全坏曲与全坏视频");
+    std::error_code error;
+    fs::create_directory(dir, error);
+    ASSERT_FALSE(error);
+    const auto file = dir / fs::u8path(u8"已损坏MIB02--Dele_middle_🎵.mp3");
+    {
+        std::ofstream output(file, std::ios::binary);
+        ASSERT_TRUE(output.is_open());
+        output << "not an MP3";
+        ASSERT_TRUE(output.good());
+    }
+
+    const std::string path = file.generic_u8string();
+    FileVersionStamp version;
+    ASSERT_NO_THROW(version = QueryFileVersion(path));
+    ASSERT_TRUE(version.valid);
+    EXPECT_EQ(version.size, 10u);
+    EXPECT_TRUE(version == QueryFileVersion(path));
+    EXPECT_TRUE(version == QueryFileVersion(file.u8string()));
+
+    ResultStamp stamp{path, "general", true};
+    stamp.version = version;
+    EXPECT_TRUE(IsResultFresh(stamp, path, "general"));
+    EXPECT_FALSE(IsResultFresh(ResultStamp{}, path, "general"));
+}
+
+TEST(QueryFileVersionTest, InvalidUtf8PathHasNoVersion) {
+    const ChainScratch scratch;
+    const std::string path = scratch.dir.u8string() + "/invalid_" + std::string("\xff\xfe", 2);
+    FileVersionStamp version;
+    EXPECT_NO_THROW(version = QueryFileVersion(path));
+    EXPECT_FALSE(version.valid);
+}
+
 // ---------------------------------------------------------------------------
 // 批量表格筛选口径：状态 / 严重度两个下拉框的纯判定。
 // UI 只负责把 combo 的 itemData 传进来，这里守住各口径的边界 ——
