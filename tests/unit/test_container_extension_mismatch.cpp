@@ -60,6 +60,8 @@ const std::vector<ExtensionFamily>& Families() {
         // MPEG-1/2 视频裸流走 mpegvideo，与 PS 的 "mpeg" 是两个解复用器。
         {"mpegvideo", {"m2v", "m1v", "mpv"}},
         {"mxf", {"mxf"}},
+        // RealMedia：rmvb 与 rm 共用 FFmpeg 的 "rm" 解复用器。
+        {"rm", {"rm", "rmvb"}},
         {"h264", {"h264", "264", "avc"}},
         {"hevc", {"hevc", "h265", "265", "hvc"}},
         {"vvc", {"vvc", "266", "h266"}},

@@ -42,6 +42,15 @@ TEST(MediaFileFilter, includesReportedAudioExtensions) {
     }
 }
 
+TEST(MediaFileFilter, includesRealMediaExtensions) {
+    const QString media = FilterSection(0);
+    for (const char* ext : {"rm", "rmvb"}) {
+        const QString pattern = QStringLiteral("*.") + QString::fromLatin1(ext);
+        EXPECT_TRUE(media.contains(pattern + QLatin1Char(' ')) || media.endsWith(pattern + QLatin1Char(')')))
+            << "媒体文件过滤器缺少完整模式 " << pattern.toStdString();
+    }
+}
+
 // 过滤器必须**真的从探测器派生**，而不是又手写一份清单。
 //
 // ⚠️ 这条用例的判别力有明确边界：它的期望值取自同一张扩展名表，所以"表里漏了某个

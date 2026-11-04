@@ -14,6 +14,38 @@
 
 namespace {
 
+TEST(FormatDetectorTest, detectsRealMediaMagicBeforeExtensionAndTsSync) {
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+
+    // 前 4 字节是 RealMedia 的 ".RMF" 文件头；同时在第 10/198/386 字节埋下 TS 同步字节，
+    // 证明 ".RMF" 判定确实排在 TS 弱魔数之前。扩展名故意写 .ts / .mp4 / 无扩展名。
+    QByteArray data(188 * 3, '\0');
+    data.replace(0, 4, ".RMF");
+    data[10] = static_cast<char>(0x47);
+    data[198] = static_cast<char>(0x47);
+    data[386] = static_cast<char>(0x47);
+    for (const char* name : {"sample.bin", "sample.ts", "sample.mp4"}) {
+        const QString path = dir.filePath(QString::fromLatin1(name));
+        QFile file(path);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        ASSERT_EQ(file.write(data), static_cast<qint64>(data.size()));
+        file.close();
+
+        EXPECT_EQ(videoeye::model::ContainerFormat::FFmpeg_Generic,
+                  videoeye::FormatDetector::DetectByMagic(path.toStdString()));
+        EXPECT_EQ(videoeye::model::ContainerFormat::FFmpeg_Generic,
+                  videoeye::FormatDetector::Detect(path.toStdString()));
+    }
+}
+
+TEST(FormatDetectorTest, recognizesRealMediaExtensions) {
+    for (const char* path : {"sample.rm", "sample.rmvb", "sample.RM", "sample.RMVB"}) {
+        EXPECT_EQ(videoeye::model::ContainerFormat::FFmpeg_Generic, videoeye::FormatDetector::DetectByExtension(path))
+            << path;
+    }
+}
+
 TEST(FormatDetectorTest, detectsMpegTsSyncPattern) {
     QTemporaryFile file;
     ASSERT_TRUE(file.open());
@@ -416,8 +448,8 @@ TEST(FormatDetectorExtensionsTest,
     // DetectByMagic 却忘了登记扩展名，这里会红。
     const auto& all = videoeye::FormatDetector::SupportedExtensions();
     const std::set<std::string> exts(all.begin(), all.end());
-    const char* required[] = {"mp4",  "mov", "mkv", "webm", "avi",  "flv",  "ts",  "m2ts", "asf",  "wmv", "ogg",
-                              "opus", "mpg", "vob", "mxf",  "h264", "h265", "av1", "obu",  "m3u8", "mpd"};
+    const char* required[] = {"mp4", "mov", "mkv", "webm", "avi",  "flv", "ts",  "m2ts", "asf", "wmv", "ogg", "opus",
+                              "mpg", "vob", "mxf", "h264", "h265", "av1", "obu", "m3u8", "mpd", "rm",  "rmvb"};
     for (const char* ext : required) {
         EXPECT_TRUE(exts.count(ext) > 0) << "缺少扩展名: " << ext;
     }

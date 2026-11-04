@@ -67,6 +67,9 @@ const std::vector<ExtensionEntry>& ExtensionTable() {
         {"ps", ContainerFormat::MPEG_PS},
         {"m2v", ContainerFormat::MPEG_PS},
         {"mxf", ContainerFormat::MXF},
+        // RealMedia：没有专用容器解析器，走 FFmpeg 通用分析；rmvb 与 rm 是同一种容器
+        {"rm", ContainerFormat::FFmpeg_Generic},
+        {"rmvb", ContainerFormat::FFmpeg_Generic},
         // 裸流：没有容器层，结构页走 FFmpeg 通用分析
         {"h264", ContainerFormat::RAW_ES},
         {"264", ContainerFormat::RAW_ES},
@@ -240,6 +243,12 @@ model::ContainerFormat FormatDetector::DetectByMagic(const std::string& file_pat
     // OGG / ASF / PS / MXF 前面，一个 Ogg 或 WMV 文件有近 1% 的概率被 TS 抢走。
     // 所以：带多字节签名的格式一律先判，TS 留到最后。
     // ---------------------------------------------------------------------
+
+    // RealMedia: 文件头以 ".RMF" 起头（后面跟 chunk 长度与版本）。
+    // 先于 MP4/TS 判定：RM 文件的扩展名可能被改掉，甚至根本没有扩展名。
+    if (header.compare(0, 4, ".RMF") == 0) {
+        return model::ContainerFormat::FFmpeg_Generic;
+    }
 
     // MP4/MOV: offset 4-7 = "ftyp"
     if (header.size() >= 8 && header.compare(4, 4, "ftyp") == 0) {
@@ -541,6 +550,8 @@ const std::vector<std::string>& FormatDetector::ManifestExtensions() {
 const std::vector<std::string>& FormatDetector::AudioExtensions() {
     // 与 m4a / wma / ogg / opus / mka 这一类"有容器解析器"的音频格式互补:
     // 那些已经在 ExtensionTable() 里，这里只列走 FFmpeg 通用路径的纯音频格式。
+    // 视频类通用格式（如 rm/rmvb）不在这里，而是以 FFmpeg_Generic 登记进
+    // ExtensionTable()，这样扩展名识别与「打开媒体文件」过滤器都不会漏。
     // 顺序大致按使用频度排，方便对话框里靠前显示。
     static const std::vector<std::string> kAudio = {
         "mp3",                           // 裸 MPEG-1/2 Layer III
