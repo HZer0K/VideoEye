@@ -410,6 +410,34 @@ TEST(SubtitleAuxPageTests, SubtitleTablesAndFilters) {
     EXPECT_EQ(cue->rowCount(), 3);
 }
 
+// 换文件后旧字幕 / 时码 / 辅助数据必须全部清掉，流下拉回到「全部字幕流」
+TEST(SubtitleAuxPageTests, ClearResultRestoresUnanalyzedState) {
+    EnsureApp();
+    SubtitleAuxPage page;
+    AnalysisResult result;
+    FillSubtitle(result);
+    FillTimecode(result);
+    FillAux(result);
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
+
+    QTableWidget* cue = TableInTab(&page, 0, QStringLiteral("#"));
+    QTableWidget* metadata = TableInTab(&page, 3, QStringLiteral("作用域"));
+    ASSERT_NE(cue, nullptr);
+    ASSERT_NE(metadata, nullptr);
+    ASSERT_EQ(cue->rowCount(), 3);
+    ASSERT_EQ(metadata->rowCount(), 2);
+
+    page.ClearResult();
+
+    EXPECT_EQ(cue->rowCount(), 0);
+    EXPECT_EQ(metadata->rowCount(), 0);
+    auto* combo = page.findChild<QComboBox*>();
+    ASSERT_NE(combo, nullptr);
+    EXPECT_EQ(combo->count(), 1);
+    EXPECT_EQ(combo->itemData(0).toInt(), -1);
+    EXPECT_NE(FindLabelContaining(&page, QStringLiteral("未分析：点「开始分析」")), nullptr);
+}
+
 // 时码表 / 章节表 + StartTimecodeReady 冒泡规则
 TEST(SubtitleAuxPageTests, TimecodeChapterTablesAndStartTimecodeSignal) {
     EnsureApp();

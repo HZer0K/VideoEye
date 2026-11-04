@@ -177,6 +177,28 @@ TEST(ColorHdrPageTests, SetResultFillsTablesAndMarksMissingValues) {
     EXPECT_TRUE(summary->text().contains(QStringLiteral("存在待核查项")));
 }
 
+// 换文件后旧色彩 / HDR / 异常数据必须清空（切到不再扫描的裸图像 / PCM 不会再刷新）
+TEST(ColorHdrPageTests, ClearResultRestoresEmptyState) {
+    EnsureApp();
+    ColorHdrPage page;
+    const ColorHdrAnalysis analysis = MakeHdr10Analysis();
+    page.SetResult(std::make_shared<const AnalysisResult>(MakeResultWith(analysis)), QcReport{});
+
+    QTableWidget* color_table = TableInTab(&page, 0);
+    ASSERT_TRUE(color_table != nullptr);
+    ASSERT_GT(color_table->rowCount(), 0);
+
+    page.ClearResult();
+
+    for (int tab = 0; tab < 3; ++tab) {
+        QTableWidget* table = TableInTab(&page, tab);
+        ASSERT_TRUE(table != nullptr);
+        EXPECT_EQ(table->rowCount(), 0);
+    }
+    EXPECT_EQ(page.IssueCount(), 0);
+    EXPECT_TRUE(FindLabelContaining(&page, QStringLiteral("暂无色彩/HDR 结果")) != nullptr);
+}
+
 // 异常表只收 category=ColorHdr 的问题；只换报告时色彩表不受影响、空报告落占位行。
 TEST(ColorHdrPageTests, IssueTableOnlyKeepsColorHdrCategory) {
     EnsureApp();

@@ -45,6 +45,10 @@ public:
     // 全文件诊断扫描也跑了样本表时，只刷新样本相关的四张表（不重建结构树）
     void ApplySampleTable(const model::Mp4SampleTableResult& samples);
 
+    // 换文件时回到"未加载文件"：清掉上一文件的结构树 / 详情表 / 样本表。
+    // 裸图像 / PCM 这类不会再走容器分析的类型，否则会一直显示上一个视频的结构。
+    void Clear();
+
     const model::ContainerStructureResult& result() const {
         return result_;
     }

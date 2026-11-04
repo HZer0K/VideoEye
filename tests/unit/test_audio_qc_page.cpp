@@ -311,6 +311,32 @@ TEST(AudioQcPageTests, ResultFillsClipSilenceAndMetadataTables) {
     EXPECT_EQ(Cell(metadata, 10, 1), QStringLiteral("无"));
 }
 
+// 换文件后旧音频数据必须清空：子视图、异常计数、判定表都不能留在新文件上。
+// 切到裸图像 / PCM 这类不会再起扫描的入口时，没有别的事件会刷新本页。
+TEST(AudioQcPageTests, ClearResultRestoresUnanalyzedState) {
+    EnsureApp();
+    AudioQcPage page;
+    AnalysisResult result;
+    result.audio_qc = MakeAudioQc();
+    page.SetResult(std::make_shared<const AnalysisResult>(result), QcReport{});
+
+    QTableWidget* clip = TableInTab(&page, 1, QStringLiteral("起始"), 5);
+    QTableWidget* verdict = TableInTab(&page, 3, QStringLiteral("规则"));
+    ASSERT_NE(clip, nullptr);
+    ASSERT_NE(verdict, nullptr);
+    ASSERT_EQ(clip->rowCount(), 2);
+    ASSERT_GT(page.IssueCount(), 0);
+
+    page.ClearResult();
+
+    EXPECT_EQ(clip->rowCount(), 0);
+    // 判定表必须清空而不是显示一屏「通过」：空报告走 SetQcReport 会把每条规则判成通过，
+    // 看起来像已经分析过。
+    EXPECT_EQ(verdict->rowCount(), 0);
+    EXPECT_EQ(page.IssueCount(), 0);
+    EXPECT_NE(FindLabelContaining(&page, QStringLiteral("暂无音频 QC 结果")), nullptr);
+}
+
 // 削波表上限 2000 行：超出的记录只影响表格，不影响其它列
 TEST(AudioQcPageTests, ClipTableCapsAt2000Rows) {
     EnsureApp();

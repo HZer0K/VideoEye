@@ -28,12 +28,18 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QLabel>
 #include <QStackedWidget>
 #include <QString>
 #include <QStringList>
 #include <QThread>
 
 #include "core/domain/model/AnalysisFeature.h"
+#include "core/domain/model/AnalysisResult.h"
+#include "core/domain/model/AudioQcResult.h"
+#include "core/domain/model/BitrateGopResult.h"
+#include "core/domain/model/DiagnosticIssue.h"
+#include "core/domain/model/QcReport.h"
 #include "core/domain/model/StreamStats.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/analysis_panel/AudioQcPage.h"
@@ -183,6 +189,17 @@ TEST(ScanTerminalState, FailedScanRestoresAllSharedPages) {
                          ++terminal_count;
                      });
 
+    // 首页「分析状态」区靠面板的 DiagnosticsStateChanged 刷新。失败分支以前直接
+    // return、不发这个信号，于是首页永远停在「分析中…」，看不到失败原因。
+    int state_changes = 0;
+    bool running_at_signal = true;
+    QString error_at_signal;
+    QObject::connect(&panel, &ui::AnalysisPanel::DiagnosticsStateChanged, &panel, [&]() {
+        ++state_changes;
+        running_at_signal = panel.IsScanRunning();
+        error_at_signal = panel.DiagnosticsError();
+    });
+
     diagnostics->SetSourcePath(corrupt);
     diagnostics->StartScan(diagnostics->options());
 
@@ -207,6 +224,18 @@ TEST(ScanTerminalState, FailedScanRestoresAllSharedPages) {
     EXPECT_FALSE(subtitle->IsScanActive()) << "字幕辅助页仍停在扫描中";
     EXPECT_FALSE(streaming->IsScanActive()) << "流媒体包页仍停在扫描中";
     EXPECT_FALSE(bitstream->IsScanActive()) << "编码参数集页仍停在扫描中";
+
+    // 失败终态也要通知首页：最后一次状态变化必须已经退出扫描态并带上失败原因，
+    // 否则首页会一直显示「分析中…」，用户不知道这个文件为什么没有结果。
+    EXPECT_GE(state_changes, 2) << "扫描开始与失败终态各应产生一次 DiagnosticsStateChanged";
+    EXPECT_FALSE(running_at_signal) << "失败后首页仍被通知为「扫描中」";
+    EXPECT_FALSE(error_at_signal.isEmpty()) << "失败终态没有把失败原因带给首页";
+
+    // 换文件后上一文件的失败原因必须立刻清掉：裸图像 / PCM 这类不会再起扫描的入口
+    // 没有别的事件能刷新首页，不清就会把旧文件的"扫描失败"一直挂在新文件上。
+    panel.SetCurrentVideoPath(corrupt + QStringLiteral(".next"));
+    EXPECT_TRUE(panel.DiagnosticsError().isEmpty()) << "换文件后仍带着上一文件的失败原因";
+    EXPECT_FALSE(panel.IsScanRunning()) << "换文件后仍处于扫描态";
 
     QFile::remove(corrupt);
 }
@@ -244,6 +273,76 @@ TEST(ScanTerminalState, ReopenFileClearsPreviousScanResult) {
 
     QFile::remove(manifest_a);
     QFile::remove(manifest_b);
+}
+
+// ---------------------------------------------------------------------------
+// 2.2：换文件必须清掉共用页的数据层结果（表格/曲线），不只是扫描态。
+// 切到裸图像 / PCM 这类不再起扫描的入口时，没有别的事件会刷新这些页。
+// ---------------------------------------------------------------------------
+TEST(ScanTerminalState, SwitchingFileClearsSharedPageResults) {
+    ASSERT_TRUE(EnsureApp() != nullptr);
+
+    ui::AnalysisPanel panel;
+    QStackedWidget stack;
+    panel.PopulateStackedWidget(&stack);
+    const ScanPages pages = FindScanPages(stack);
+    ASSERT_TRUE(pages.AllFound());
+
+    // 造一份"上一文件已扫描完成"的页面状态。
+    auto result = std::make_shared<model::AnalysisResult>();
+
+    model::BitrateAnomaly anomaly;
+    anomaly.type = model::BitrateAnomalyType::LongGop;
+    anomaly.start_seconds = 0.0;
+    anomaly.end_seconds = 12.0;
+    anomaly.value = 12.0;
+    anomaly.threshold = 10.0;
+    anomaly.unit = "s";
+    result->bitrate_gop.gop_count = 1;
+    result->bitrate_gop.anomalies = {anomaly, anomaly};
+    pages.bitrate_gop->SetResult(result);
+
+    result->audio_qc.analyzed = true;
+    model::AudioClipEvent clip;
+    clip.start_seconds = 0.0;
+    clip.end_seconds = 0.1;
+    clip.sample_count = 10;
+    result->audio_qc.clipping_events = {clip};
+    pages.audio_qc->SetResult(result, model::QcReport{});
+
+    result->color_hdr.analyzed = true;
+    model::DiagnosticIssue color_issue;
+    color_issue.category = model::IssueCategory::ColorHdr;
+    color_issue.severity = model::IssueSeverity::Warning;
+    color_issue.rule_id = "colorhdr.transfer_mismatch";
+    model::QcReport color_report;
+    color_report.issues = {color_issue};
+    pages.color_hdr->SetResult(result, color_report);
+
+    model::SubtitleCue cue;
+    cue.start_seconds = 1.0;
+    cue.end_seconds = 2.0;
+    cue.text = "旧文件的字幕";
+    result->subtitle.cues = {cue};
+    pages.subtitle->SetResult(result);
+
+    EXPECT_GT(pages.bitrate_gop->IssueCount(), 0);
+    EXPECT_GT(pages.audio_qc->IssueCount(), 0);
+    EXPECT_GT(pages.color_hdr->IssueCount(), 0);
+
+    // 换文件（裸图像 / PCM 的路径都会走到这里）：表格与计数必须立刻清空。
+    panel.SetCurrentVideoPath(QStringLiteral("/tmp/videoeye_next_input.bin"));
+
+    EXPECT_EQ(pages.bitrate_gop->IssueCount(), 0) << "换文件后码率/GOP 异常表仍留着旧数据";
+    EXPECT_EQ(pages.audio_qc->IssueCount(), 0) << "换文件后音频 QC 事件表仍留着旧数据";
+    EXPECT_EQ(pages.color_hdr->IssueCount(), 0) << "换文件后色彩/HDR 异常表仍留着旧数据";
+
+    bool subtitle_hint = false;
+    for (QLabel* label : pages.subtitle->findChildren<QLabel*>()) {
+        if (label->text().contains(QStringLiteral("未分析：点「开始分析」")))
+            subtitle_hint = true;
+    }
+    EXPECT_TRUE(subtitle_hint) << "换文件后字幕辅助页仍停留在旧的扫描结论上";
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +387,48 @@ TEST(ScanTerminalState, CancelScanRestoresSharedPagesWithinBudget) {
     EXPECT_EQ(terminal_count, 1) << "一次扫描只应产生一个终态事件";
     EXPECT_TRUE(last_reason == ui::DiagnosticsPage::ScanEndReason::Cancelled) << "取消必须走 Cancelled 终态";
     EXPECT_TRUE(pages.AllInactive()) << "取消后共用页必须回到 Idle（按钮恢复可用）";
+}
+
+// ---------------------------------------------------------------------------
+// 2.2：扫描中途换文件（典型场景是改开裸图像 / PCM —— 这两类不会再起新扫描）
+//      旧扫描必须立即作废，不能让新文件一直显示「分析中…」或继承旧结论。
+// ---------------------------------------------------------------------------
+TEST(ScanTerminalState, SwitchingFileDuringScanAbandonsPreviousScan) {
+    ASSERT_TRUE(EnsureApp() != nullptr);
+
+    videoeye_test::BlockingTcpEndpoint endpoint;
+    ASSERT_TRUE(endpoint.valid()) << "无法建立本地阻塞端口，本用例无法运行";
+    const QString next = WriteHlsManifest("videoeye_scan_switch_mid.m3u8");
+    ASSERT_FALSE(next.isEmpty());
+
+    ui::AnalysisPanel panel;
+    QStackedWidget stack;
+    panel.PopulateStackedWidget(&stack);
+    const ScanPages pages = FindScanPages(stack);
+    ASSERT_TRUE(pages.AllFound());
+
+    int terminal_count = 0;
+    QObject::connect(pages.diagnostics, &ui::DiagnosticsPage::ScanEnded, pages.diagnostics,
+                     [&](ui::DiagnosticsPage::ScanEndReason) { ++terminal_count; });
+
+    panel.SetCurrentVideoPath(QString::fromStdString(endpoint.tcp_url()));
+    pages.diagnostics->StartScan(pages.diagnostics->options());
+
+    ASSERT_TRUE(PumpUntil([&] { return pages.bitrate_gop->IsScanActive(); }, 3000)) << "扫描没有进入扫描态";
+    if (PumpUntil([&] { return terminal_count > 0; }, 200)) {
+        GTEST_SKIP() << "阻塞输入瞬间就回终态（端口未真正阻塞），本轮不算测到扫描中换文件";
+    }
+
+    // 换文件：旧扫描此刻已经不属于任何页面。修复前它会在后台继续跑，
+    // 而裸图像 / PCM 不会再起新扫描，旧结论迟早被当成新文件的结果。
+    panel.SetCurrentVideoPath(next);
+    EXPECT_FALSE(panel.IsScanRunning()) << "换文件后首页仍停留在「分析中…」";
+    EXPECT_FALSE(pages.diagnostics->hasResult()) << "换文件后仍保留上一文件的扫描结果";
+    EXPECT_TRUE(panel.DiagnosticsError().isEmpty()) << "换文件后仍带着上一文件的失败原因";
+    EXPECT_TRUE(pages.AllInactive()) << "换文件后共用页仍停在扫描态";
+
+    // 把旧任务迟到的终态/退出事件在测试内消化掉，析构时不必再等协作退出预算
+    PumpUntil([] { return false; }, 300);
 }
 
 // ---------------------------------------------------------------------------

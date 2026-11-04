@@ -312,6 +312,11 @@ void OverviewPage::SetMediaInfoText(const QString& text) {
 }
 
 void OverviewPage::SetFileSummary(const model::StreamInfo& info) {
+    // 这是一份新打开文件的摘要：上一文件的评分/异常/失败原因全部作废。
+    // 随后的扫描会通过 SetAnalysisSummary 重新填充；裸图像 / PCM 这类不会再起
+    // 扫描的入口没有后续填充，若不清就会一直挂着上一个文件的结论。
+    summary_ = AnalysisSummary{};
+    summary_.has_file = true;
     const QString file_name = QString::fromStdString(info.filename);
     const QFileInfo file_info(file_name);
     file_name_label_->setText(file_info.fileName().isEmpty() ? file_name : file_info.fileName());
@@ -356,10 +361,8 @@ void OverviewPage::SetFileSummary(const model::StreamInfo& info) {
         summary_audio_->setText(audio_text);
     }
 
-    if (!summary_.has_file) {
-        summary_.has_file = true;
-        RefreshUi();
-    }
+    // 摘要换成了新文件，徽章/结论/异常表必须按"未分析"重画（不能保留上一文件的画面）
+    RefreshUi();
 }
 
 void OverviewPage::ClearFileSummary() {
@@ -379,6 +382,9 @@ void OverviewPage::ClearFileSummary() {
 }
 
 void OverviewPage::SetOpenedFileWithoutSummary(const QString& path) {
+    // 同 SetFileSummary：新文件登记时先作废上一文件的分析状态。
+    summary_ = AnalysisSummary{};
+    summary_.has_file = true;
     const QFileInfo file_info(path);
     file_name_label_->setText(file_info.fileName().isEmpty() ? path : file_info.fileName());
     file_path_label_->setText(path);
@@ -388,10 +394,7 @@ void OverviewPage::SetOpenedFileWithoutSummary(const QString& path) {
     summary_bitrate_->setText(QStringLiteral("—"));
     summary_video_->setText(QStringLiteral("—"));
     summary_audio_->setText(QStringLiteral("—"));
-    if (!summary_.has_file) {
-        summary_.has_file = true;
-        RefreshUi();
-    }
+    RefreshUi();
 }
 
 void OverviewPage::SetAnalysisSummary(const AnalysisSummary& summary) {

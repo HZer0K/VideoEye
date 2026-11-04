@@ -44,6 +44,9 @@ public:
 
     void FillScanOptions(videoeye::AnalysisOptions& options) override;
 
+    // 换文件时作废上一文件的色彩 / HDR 与异常组合
+    void ClearResult() override;
+
     void SetScanActive(bool active) override;
     // 侧栏导航标记：异常组合表的行数
     int IssueCount() const override;

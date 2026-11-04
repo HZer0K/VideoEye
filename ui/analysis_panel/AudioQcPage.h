@@ -64,6 +64,9 @@ public:
     // 面板发起扫描前调用：把 UI 上的阈值同步进 AnalysisOptions
     void FillScanOptions(videoeye::AnalysisOptions& options) override;
 
+    // 换文件时作废上一文件的响度/事件/声道/判定/音轨数据
+    void ClearResult() override;
+
     // 扫描生命周期由面板驱动（与码率/GOP、色彩/HDR、诊断页保持同步）
     void SetScanActive(bool active) override;
     // 侧栏导航标记：削波 + 静音两表的行数

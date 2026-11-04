@@ -748,5 +748,10 @@ void SubtitleAuxPage::SetResult(std::shared_ptr<const model::AnalysisResult> res
     RefreshUi();
 }
 
+void SubtitleAuxPage::ClearResult() {
+    result_ = std::make_shared<const model::AnalysisResult>();
+    RefreshUi();
+}
+
 } // namespace ui
 } // namespace videoeye

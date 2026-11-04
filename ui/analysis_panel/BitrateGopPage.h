@@ -62,6 +62,9 @@ public:
     // 面板发起扫描前调用：把 UI 上的窗口 / 阈值同步进 AnalysisOptions
     void FillScanOptions(videoeye::AnalysisOptions& options) override;
 
+    // 换文件时作废上一文件的码率曲线 / GOP / 异常 / 建议
+    void ClearResult() override;
+
     // 扫描生命周期由面板驱动（与诊断页、音频 QC、色彩/HDR 保持同步）
     void SetScanActive(bool active) override;
     // 侧栏导航标记：异常表的行数（码率/GOP 异常）

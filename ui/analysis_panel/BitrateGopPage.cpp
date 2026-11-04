@@ -321,8 +321,13 @@ void BitrateGopPage::Refresh() {
 void BitrateGopPage::UpdateSummary() {
     if (!summary_label_)
         return;
-    if (!has_result_)
+    if (!has_result_) {
+        // 换文件后回到"未分析"的初始提示，别让上一份摘要留在页面上
+        summary_label_->setText(
+            tr("点击「开始分析」扫描当前文件：输出滑动窗口码率曲线、I/P/B 比例、GOP 列表与异常峰值，"
+               "并可与场景切换结果关联给出编码优化建议。"));
         return;
+    }
 
     const auto& bg = result_->bitrate_gop;
     if (bg.total_frames == 0) {
@@ -607,6 +612,13 @@ void BitrateGopPage::OnExportAnomalyCsv() {
 void BitrateGopPage::SetResult(std::shared_ptr<const model::AnalysisResult> result) {
     result_ = std::move(result);
     has_result_ = true;
+    Refresh();
+}
+
+void BitrateGopPage::ClearResult() {
+    result_ = std::make_shared<const model::AnalysisResult>();
+    has_result_ = false;
+    scene_changes_.clear();
     Refresh();
 }
 

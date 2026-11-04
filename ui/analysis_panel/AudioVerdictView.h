@@ -23,6 +23,10 @@ public:
     // 按报告里的 issues / rules 重建判定表（顺序见 RuleCount 对应的固定规则 id 列表）
     void SetQcReport(const model::QcReport& report);
 
+    // 清空判定表（换文件 / 结果作废时用；空报告不能走 SetQcReport —— 那会把每条规则
+    // 都显示成"通过"，看起来像分析过了）
+    void Clear();
+
     // 固定展示的音频规则条数（页面对外暴露 VerdictRuleCount 的口径）
     static int RuleCount();
 

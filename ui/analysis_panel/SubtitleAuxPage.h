@@ -40,6 +40,8 @@ public:
     // ScanClient：本页与码率/音频/HDR 共用诊断页发起的那次全文件扫描，
     // 扫描中「开始分析」按钮跟着禁用，终态一起复位。
     void SetScanActive(bool active) override;
+    // 换文件时作废上一文件的字幕 / 时码 / 章节 / SCTE-35 / metadata
+    void ClearResult() override;
     bool IsScanActive() const {
         return scan_active_;
     }

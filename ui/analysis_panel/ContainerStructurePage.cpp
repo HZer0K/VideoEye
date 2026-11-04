@@ -338,6 +338,22 @@ static void PopulateMp4BoxTablesInContainer(const model::Mp4BoxAnalysisResult& r
     }
 }
 
+void ContainerStructurePage::Clear() {
+    result_ = model::ContainerStructureResult{};
+    title_label_->setText(tr("未加载文件"));
+    title_label_->setStyleSheet(QString());
+    summary_label_->setText(tr("打开媒体文件后将自动分析容器结构"));
+    summary_label_->setStyleSheet(QString());
+    tree_->clear();
+    detail_stack_->setCurrentIndex(0);
+    for (QTableWidget* table : {stream_table_, metadata_table_, stts_table_, stco_table_, stsc_table_, stsz_table_,
+                                co64_table_, stss_table_, ebml_track_table_, ebml_cue_table_, ebml_block_table_}) {
+        table->setRowCount(0);
+    }
+    if (mp4_sample_widget_)
+        mp4_sample_widget_->SetSamples(model::Mp4SampleTableResult{});
+}
+
 void ContainerStructurePage::SetError(const QString& message) {
     // 与 SetResult 里 !valid 那条分支同一套表现：不画结构树，只留一条原因。
     // 少了这条，分析器抛异常时页面会一直停在"打开媒体文件后将自动分析"，

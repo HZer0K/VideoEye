@@ -221,6 +221,8 @@ void AudioQcPage::Refresh() {
     channel_view_->SetResult(has_result_ ? result_.get() : nullptr);
     if (has_result_)
         verdict_view_->SetQcReport(qc_report_);
+    else
+        verdict_view_->Clear();
     track_view_->SetResult(has_result_ ? result_.get() : nullptr);
 }
 
@@ -315,6 +317,13 @@ void AudioQcPage::SetResult(std::shared_ptr<const model::AnalysisResult> result,
 
 void AudioQcPage::SetQcReport(const model::QcReport& qc_report) {
     qc_report_ = qc_report;
+    Refresh();
+}
+
+void AudioQcPage::ClearResult() {
+    result_ = std::make_shared<const model::AnalysisResult>();
+    qc_report_ = model::QcReport{};
+    has_result_ = false;
     Refresh();
 }
 

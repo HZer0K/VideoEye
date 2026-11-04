@@ -42,6 +42,11 @@ public:
     // 清空面板（关闭文件 / 开始新一次扫描时）
     void Clear();
 
+    // ScanClient：换文件时作废上一文件的参数集（等价于 Clear）
+    void ClearResult() override {
+        Clear();
+    }
+
     bool HasResult() const {
         return has_result_;
     }

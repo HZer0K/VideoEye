@@ -461,7 +461,30 @@ void DiagnosticsPage::OnExportClicked() {
 // ---------------------------------------------------------------------------
 
 void DiagnosticsPage::ResetForNewFile() {
+    // 换文件 = 上一文件的扫描作废。
+    //
+    // 只清界面不够：旧任务还在后台跑时，它的终态（成功/失败/取消）迟早会回来。
+    // 若 generation_ 仍是旧任务的号，这些回调会被当成"当前文件的扫描结果"接收，
+    // 于是裸图像 / PCM 这类**不会再起新扫描**的入口，首页与各分析页会一直挂着
+    // 上一个视频的结论。这里先把事件代际清零（排队中的旧终态也会被丢弃），
+    // 再请求取消仍在跑的后台任务。
+    generation_ = 0;
+    if (facade_->IsRunning())
+        facade_->Cancel();
+    // 旧扫描被放弃，不再属于"用户取消"的延迟统计
+    cancel_pending_ = false;
+    if (cancel_watchdog_)
+        cancel_watchdog_->stop();
+    cancel_probe_.Abandon();
+
     has_result_ = false;
+    // 上一文件的失败原因同样作废：否则打开下一个文件（尤其是不会自动扫描的
+    // 裸图像 / PCM）时，首页会把旧文件的"扫描失败"红字当成新文件的状态。
+    last_error_.clear();
+    // 报告快照也要清，避免 hasResult() 之外有人直接读 qcReport() 拿到旧结论
+    report_ = model::QcReport{};
+    // 若上一任务仍在收尾，按钮必须回到空闲态（开始可用 / 取消不可用）
+    SetScanButtonState(false);
     issue_view_->Clear();
     progress_bar_->setValue(0);
     progress_bar_->setFormat(tr("未开始"));

@@ -288,6 +288,33 @@ TEST(BitrateGopPageTests, ResultFillsGopTableAndHighlightsLongGop) {
     EXPECT_EQ(suggestions->item(0)->text(), QStringLiteral("GOP #2 超长：建议把关键帧间隔压到 10 s 内"));
 }
 
+// 换文件后旧结果不能留在页面上：表格 / 异常 / 建议 / 汇总全部回到未分析态。
+// 切到裸图像 / PCM 这类不会再起扫描的入口时，没有别的事件会刷新本页。
+TEST(BitrateGopPageTests, ClearResultRestoresUnanalyzedState) {
+    EnsureApp();
+    BitrateGopPage page;
+    AnalysisResult result;
+    result.bitrate_gop = MakeBg();
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
+
+    QTableWidget* gop = TableInTab(&page, 0, QStringLiteral("序号"));
+    QTableWidget* anomaly = TableInTab(&page, 1, QStringLiteral("类型"));
+    ASSERT_NE(gop, nullptr);
+    ASSERT_NE(anomaly, nullptr);
+    ASSERT_EQ(gop->rowCount(), 2);
+    ASSERT_EQ(page.IssueCount(), 2);
+
+    page.ClearResult();
+
+    EXPECT_EQ(gop->rowCount(), 0);
+    EXPECT_EQ(anomaly->rowCount(), 0);
+    EXPECT_EQ(page.IssueCount(), 0);
+    auto* suggestions = page.findChild<QTabWidget*>()->widget(2)->findChild<QListWidget*>();
+    ASSERT_NE(suggestions, nullptr);
+    EXPECT_EQ(suggestions->count(), 0);
+    EXPECT_NE(FindLabelContaining(&page, QStringLiteral("点击「开始分析」扫描当前文件")), nullptr);
+}
+
 // 汇总的三处开关：帧类型未解析 / 目标峰值手动 / 无视频帧兜底
 TEST(BitrateGopPageTests, SummarySwitchesOnFrameTypesAndTargetPeak) {
     EnsureApp();

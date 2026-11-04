@@ -321,3 +321,36 @@ TEST(OverviewPageLayout, IssueRowClickCarriesIssueIdentity) {
     EXPECT_LT(captured.start, 0.0) << "文件级问题应传负起点（诊断页据此禁用跳转）";
     EXPECT_EQ(captured.stream, -1);
 }
+
+// 7) 换文件时首页必须把上一文件的分析状态一起清掉。
+//    裸图像 / PCM 打开后不会再起全文件扫描，没有任何后续信号能覆盖这一屏；
+//    若 SetOpenedFileWithoutSummary 只改文件名，用户会在新文件的首页上继续看到
+//    上一个视频的「扫描失败」与红字原因。
+TEST(OverviewPageLayout, OpeningNewFileClearsPreviousAnalysisState) {
+    EnsureApp();
+    OverviewPage page;
+    page.SetOpenedFileWithoutSummary(QStringLiteral("D:/tmp/previous_video.ts"));
+
+    OverviewPage::AnalysisSummary failed;
+    failed.has_file = true;
+    failed.failed = true;
+    failed.error = QStringLiteral("旧文件的失败原因");
+    page.SetAnalysisSummary(failed);
+    ShowAtRealisticSize(page);
+
+    auto has_visible_text = [&page](const QString& text) {
+        for (QLabel* label : page.findChildren<QLabel*>()) {
+            if (label->isVisible() && label->text() == text)
+                return true;
+        }
+        return false;
+    };
+    EXPECT_TRUE(has_visible_text(QStringLiteral("扫描失败")));
+    EXPECT_TRUE(has_visible_text(QStringLiteral("旧文件的失败原因")));
+
+    // 裸图像 / PCM 走的就是这条"只有文件名、没有摘要和自动扫描"的路径
+    page.SetOpenedFileWithoutSummary(QStringLiteral("D:/tmp/next_frame.yuv"));
+    EXPECT_FALSE(has_visible_text(QStringLiteral("旧文件的失败原因")));
+    EXPECT_FALSE(has_visible_text(QStringLiteral("扫描失败")));
+    EXPECT_TRUE(has_visible_text(QStringLiteral("未分析"))) << "新文件应回到未分析态";
+}

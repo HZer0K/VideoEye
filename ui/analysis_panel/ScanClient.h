@@ -55,6 +55,12 @@ public:
     virtual void FillScanOptions(AnalysisOptions& options) {
         (void)options;
     }
+
+    // 换文件时作废上一文件的结果：表格 / 曲线 / 图表一律回到"未分析"。
+    // 默认什么也不做 —— 没有结果缓存的页面不必实现。共用扫描的页面必须覆盖：
+    // 否则切到不再起扫描的类型（裸图像 / PCM）时，页面会一直显示上一个视频的数据。
+    virtual void ClearResult() {
+    }
 };
 
 } // namespace ui

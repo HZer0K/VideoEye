@@ -372,6 +372,13 @@ void ColorHdrPage::SetQcReport(const model::QcReport& qc_report) {
     Refresh();
 }
 
+void ColorHdrPage::ClearResult() {
+    result_ = std::make_shared<const model::AnalysisResult>();
+    qc_report_ = model::QcReport{};
+    has_result_ = false;
+    Refresh();
+}
+
 void ColorHdrPage::FillScanOptions(videoeye::AnalysisOptions& options) {
     ApplyOptionsFromUi();
     options.color_hdr_options = options_;

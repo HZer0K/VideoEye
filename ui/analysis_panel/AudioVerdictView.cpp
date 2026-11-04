@@ -112,6 +112,11 @@ void AudioVerdictView::SetQcReport(const model::QcReport& report) {
     }
 }
 
+void AudioVerdictView::Clear() {
+    if (verdict_table_)
+        verdict_table_->setRowCount(0);
+}
+
 int AudioVerdictView::RuleCount() {
     return static_cast<int>(sizeof(kAudioQcRuleIds) / sizeof(kAudioQcRuleIds[0]));
 }

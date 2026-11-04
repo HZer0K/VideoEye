@@ -57,24 +57,43 @@ QString AnalysisPanel::CurrentVideoPath() const {
 void AnalysisPanel::SetCurrentVideoPath(const QString& path) {
     current_video_path_ = path.toStdString();
     // 切换文件后重置时间轴累计状态 (避免上一文件的数据混入)；
-    // 时间轴与 facade 都在诊断页里，由它自己清空
+    // 时间轴与 facade 都在诊断页里，由它自己清空（其中包含作废/取消上一文件的扫描）
     if (pages_.diagnostics)
         pages_.diagnostics->ResetForNewFile();
+    // 旧扫描被作废后，面板自己与共用页的扫描态也必须立刻收掉：
+    // 否则旧任务迟迟不退出时，刚打开的新文件（尤其是不再起新扫描的裸图像 / PCM）
+    // 会一直显示「分析中…」。
+    if (scan_running_) {
+        scan_running_ = false;
+        for (ScanClient* page : scan_clients_) {
+            page->SetScanActive(false);
+            page->SetProgress(0);
+            page->SetProgressFormat(tr("未开始"));
+        }
+    }
     // 报告与批量 QC 页需要当前文件来"按模板重新分析"
     if (pages_.reporting)
         pages_.reporting->SetCurrentFile(path);
     // 拆出去的页面用当前路径拼导出 CSV 的默认文件名
     if (pages_.scene_change)
         pages_.scene_change->SetSourcePath(path);
-    // 共用同一次扫描的页面统一走注册表（码率 GOP / 音频 QC / 色彩 HDR）
-    for (ScanClient* page : scan_clients_)
+    // 共用同一次扫描的页面统一走注册表（码率 GOP / 音频 QC / 色彩 HDR / 字幕辅助 /
+    // 参数集 / 流媒体包）：同步导出路径，并作废上一文件的数据层结果。
+    // 只清扫描态不够 —— 表格/曲线若留着旧文件的数据，切到裸图像 / PCM 这类不再起
+    // 扫描的入口就永远不会刷新，看起来像是新文件的结论。
+    for (ScanClient* page : scan_clients_) {
         page->SetSourcePath(path);
+        page->ClearResult();
+    }
     // 扫描总控在诊断页，换文件要同步它手里的当前路径
     if (pages_.diagnostics)
         pages_.diagnostics->SetSourcePath(path);
     // 场景切换记录是播放期的累计结果，换文件必须清零（与帧/包那几页一致）
     if (pages_.scene_change)
         pages_.scene_change->Reset();
+    // 容器结构同理：新文件未必再走容器分析（裸图像 / PCM），旧结构树与样本表不能留着
+    if (pages_.container)
+        pages_.container->Clear();
     // 换文件 = 上一文件的分析结论全部作废：通知首页重置「分析状态」区
     emit DiagnosticsStateChanged();
 }
@@ -628,8 +647,13 @@ void AnalysisPanel::OnScanEnded(ScanEndReason reason) {
     }
 
     // 失败没有可用结果: 状态恢复完就结束, 不要用空结果盖掉页面上的旧内容。
-    if (failed)
+    // 但失败同样是一次状态变化，必须通知出去：首页「分析状态」区、侧栏扫描标记和
+    // 顶部扫描任务条都靠这个信号刷新。漏掉它时首页会永远停在「分析中…」——
+    // 打不开的文件（如只有 styp/moof 的 fMP4 分片）扫完也不显示失败原因。
+    if (failed) {
+        emit DiagnosticsStateChanged();
         return;
+    }
 
     // ---- 以下把同一次扫描的结果分发给各页（失败的路径已在上面返回）----
     if (!pages_.diagnostics)

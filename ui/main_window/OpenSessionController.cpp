@@ -56,9 +56,21 @@ bool OpenSessionController::OpenRawImage(const QString& source) {
     deps_.player_panel->SetRawImageMode(true);
     deps_.player_panel->SetCurrentSource(QString());
     current_media_url_.clear();
+    // 裸图像没有全文件扫描：把分析面板切到空文件，作废上一视频的扫描结果/失败状态，
+    // 否则首页与分析页会继续显示上一个视频的结论（图像不会被自动扫描，也就永远不会刷新）。
+    if (deps_.analysis_panel)
+        deps_.analysis_panel->SetCurrentVideoPath(QString());
+    if (deps_.ffmpeg_panel)
+        deps_.ffmpeg_panel->SetCurrentFile(QString());
 
     if (!deps_.player_panel->LoadRawImageFile(source)) {
         emit StatusMessage(tr("打开失败: %1").arg(source));
+        // 打开失败时播放面板已被清空，首页必须同步回到"未打开文件"，
+        // 不能继续显示上一个文件的摘要与分析结论。
+        if (deps_.overview_page) {
+            deps_.overview_page->ClearFileSummary();
+            deps_.overview_page->SetMediaInfoText(tr("请打开一个媒体文件以查看详细信息"));
+        }
         return false;
     }
     emit StatusMessage(tr("已打开图像: %1").arg(source));
@@ -91,6 +103,16 @@ bool OpenSessionController::OpenPcm(const QString& source, bool autoplay) {
     deps_.player_panel->SetCurrentSource(source);
     if (!deps_.player->OpenRawPcm(source, demuxer_name, sample_rate, channels)) {
         emit StatusMessage(tr("打开 PCM 失败: %1").arg(source));
+        // 打开失败：播放面板已经指向这个失败的 PCM，首页与分析面板不能继续挂着
+        // 上一个媒体文件的摘要/扫描结论（PCM 失败不会触发任何分析扫描去刷新它们）。
+        if (deps_.analysis_panel)
+            deps_.analysis_panel->SetCurrentVideoPath(QString());
+        if (deps_.ffmpeg_panel)
+            deps_.ffmpeg_panel->SetCurrentFile(QString());
+        if (deps_.overview_page) {
+            deps_.overview_page->ClearFileSummary();
+            deps_.overview_page->SetMediaInfoText(tr("请打开一个媒体文件以查看详细信息"));
+        }
         return false;
     }
 
