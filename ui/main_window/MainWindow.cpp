@@ -16,6 +16,7 @@
 #include "ui/main_window/sidebar_navigation.h"
 #include "ui/main_window/window_layout.h"
 #include "ui/player/PlayerPanel.h"
+#include "ui/repair_panel/RepairPanel.h"
 #include "ui/theme/AppTheme.h"
 
 #include "core/analysis/orchestration/FormatDetector.h"
@@ -50,6 +51,7 @@
 #include <QStyledItemDelegate>
 #include <QTabBar>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QWindow>
 #include <algorithm>
@@ -370,6 +372,25 @@ void MainWindow::SetupContentArea() {
     ffmpeg_panel_->setProperty("pageScope", QString());
     content_stack_->addWidget(ffmpeg_panel_);
 
+    // Page N+1: 视频修复
+    // 与 FFmpeg 工作台同属"报告 / 工具"分组；页面自己管理文件选择与结果展示，
+    // 修复本体不依赖当前是否已打开媒体。
+    // 本页由「配置 + 操作 + 进度 + 结果表」几段组成，自然高度明显大于内容区
+    // 常见高度；不套滚动层时 QVBoxLayout 会把分组框压到最小尺寸以下，出现
+    // 标签与输入框叠字。与总览页、分析页一致，用 QScrollArea 保住自然高度。
+    repair_panel_ = new ui::RepairPanel();
+    QScrollArea* repair_scroll = new QScrollArea(content_stack_);
+    repair_scroll->setObjectName("RepairScroll");
+    repair_scroll->setWidgetResizable(true);
+    repair_scroll->setFrameShape(QFrame::NoFrame);
+    repair_scroll->setWidget(repair_panel_);
+    repair_scroll->setProperty("pageTitle", tr("视频修复"));
+    repair_scroll->setProperty("pageId", QStringLiteral("video_repair"));
+    repair_scroll->setProperty("pageGroup", QStringLiteral("report_tools"));
+    repair_scroll->setProperty("pageOrder", 2);
+    repair_scroll->setProperty("pageScope", QString());
+    content_stack_->addWidget(repair_scroll);
+
     // 页面全部注册完毕后才生成侧边栏条目，保证行号 == stack 下标
     PopulateSidebarItems();
 
@@ -547,6 +568,14 @@ void MainWindow::SetupOpenSession() {
     // 事务式异步打开完成: 收尾在控制器里做 (状态栏/标签/自动播放/诊断扫描)。
     // 过期结果 (期间又开了新文件) 由"没有待收尾登记"判掉, 见 open_session.h。
     connect(player_, &player::MediaPlayer::OpenFinished, open_session_, &OpenSessionController::OnPlayerOpenFinished);
+    // 打开成功后把本地路径同步给修复页；远程 URL 不自动填入（修复引擎只处理本地文件）。
+    connect(player_, &player::MediaPlayer::OpenFinished, this, [this](bool ok) {
+        if (!ok || !repair_panel_ || !open_session_)
+            return;
+        const QUrl url(open_session_->current_media_url());
+        if (url.isLocalFile())
+            repair_panel_->SetCurrentFile(url.toLocalFile());
+    });
 }
 
 void MainWindow::SetupConnections() {

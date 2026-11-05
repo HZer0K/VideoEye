@@ -9,6 +9,8 @@
   media         不能 include core/analysis、core/player、core/qc、core/reporting
   analysis      不能 include core/player、core/qc、core/reporting
   qc            不能 include core/player、core/reporting
+  repair        不能 include core/player、core/qc、core/reporting、core/ffmpeg、core/qt
+                （报告由表现层单独导出，repair 只产出 domain 结果）
   reporting     不能 include core/player、core/analysis（遗留 ReportExporter 除外）
   ui            可以 include 一切（界面本来就横跨多层）
 """
@@ -44,6 +46,7 @@ RULES = {
     # 不需要把 infrastructure/ 列进禁区: 其它 core 层都没列, 本来就允许依赖它 ——
     # core/qc 既用 infrastructure/logging, 也用 infrastructure/concurrency(TaskManager)。
     "core/qc": ["core/player", "core/reporting"],
+    "core/repair": ["core/player", "core/qc", "core/reporting", "core/ffmpeg", "core/qt"],
     "core/reporting": ["core/player", "core/analysis", "core/qt"],
     "core/ffmpeg": ["core/analysis", "core/player", "core/qc"],
     "core/qt": ["core/player", "core/qc", "core/reporting"],

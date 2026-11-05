@@ -56,6 +56,21 @@ struct TestMedia {
 TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
                           const TestMediaSpec& spec = TestMediaSpec());
 
+// ---- fMP4 媒体分片（初始化段与媒体分片分离）----
+// 生成一份 fragmented MP4，然后按"第一个 moof"切成两半：
+//   init_path    = ftyp + moov（初始化段，相当于 DASH 的 init.mp4）
+//   segment_path = moof/mdat 序列（媒体分片，相当于 dsa.ts 这类只有分片的文件）
+// segment_path 单独交给 FFmpeg 会打不开 —— 这正是"缺少初始化段"的场景。
+struct FragmentedTestMedia {
+    std::string init_path;
+    std::string segment_path;
+    bool ok = false;
+    std::string error;
+};
+
+FragmentedTestMedia CreateFragmentedTestMedia(const std::string& directory, const std::string& name,
+                                              const TestMediaSpec& spec = TestMediaSpec());
+
 // ---- 产物校验 ----
 struct MediaProbe {
     bool opened = false; // FFmpeg 能否重新打开

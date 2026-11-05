@@ -427,6 +427,10 @@ file(GLOB_RECURSE QC_EXECUTOR_SOURCES CONFIGURE_DEPENDS "core/qc/*.cpp" "core/qc
 list(FILTER QC_SOURCES EXCLUDE REGEX "core/qc/(QcRunner|BatchQcRunner)\\.")
 list(FILTER QC_EXECUTOR_SOURCES INCLUDE REGEX "core/qc/(QcRunner|BatchQcRunner)\\.")
 file(GLOB_RECURSE REPORTING_SOURCES CONFIGURE_DEPENDS "core/reporting/*.cpp" "core/reporting/*.h")
+# --- repair: 视频修复（诊断 / 规划 / 执行 / 验证）---
+# 只依赖 domain（值类型）、media（ISOBMFF 解析）、ffmpeg_io（打开/读取超时）与
+# FFmpeg 动态库；报告由 core/reporting 单独导出，所以 repair 不链报告层。
+file(GLOB_RECURSE REPAIR_SOURCES CONFIGURE_DEPENDS "core/repair/*.cpp" "core/repair/*.h")
 file(GLOB_RECURSE FFMPEGTOOL_SOURCES CONFIGURE_DEPENDS "core/ffmpeg/*.cpp" "core/ffmpeg/*.h")
 file(GLOB_RECURSE QTADAPTER_SOURCES CONFIGURE_DEPENDS "core/qt/*.cpp" "core/qt/*.h")
 file(GLOB_RECURSE FFMPEG_IO_SOURCES CONFIGURE_DEPENDS "core/ffmpeg_io/*.cpp" "core/ffmpeg_io/*.h")
@@ -647,6 +651,21 @@ target_link_libraries(VideoEyeExporter
             VideoEyeFfmpegIo
 )
 
+# --- repair: 视频修复（诊断 / 规划 / 执行 / 验证）---
+# 公共头只出现 domain 值类型与 std::，所以 FFmpeg / media / ffmpeg_io 全部挂
+# PRIVATE：链它的目标不需要拿到 libav 的 include 目录（只在 .cpp 里用）。
+# 报告不在这一层生成 —— repair 不认识 reporting，由表现层单独调用导出器。
+videoeye_add_module(VideoEyeRepair ${REPAIR_SOURCES})
+target_link_libraries(VideoEyeRepair
+    PUBLIC VideoEyeDomain
+    PRIVATE VideoEyeMedia
+            VideoEyeInfrastructure
+            VideoEyeFfmpegIo
+            FFmpeg::avcodec
+            FFmpeg::avformat
+            FFmpeg::avutil
+)
+
 # --- qc-rules: 规则引擎 / 默认规则 / 模板映射 / 报告格式 ---
 # 这一层只吃 domain 与 infrastructure（模板 JSON），不链分析层：QcRuleEngine 的输入是
 # 已经算好的 model::AnalysisResult，它自己不打开任何文件、不碰 FFmpeg。
@@ -708,6 +727,8 @@ if(QTADAPTER_SOURCES)
                Qt6::Core
         PRIVATE VideoEyeAnalysis
                 VideoEyeInfrastructure
+                # RepairController 把 VideoEyeRepair 的引擎接进 TaskManager。
+                VideoEyeRepair
     )
 endif()
 
@@ -837,6 +858,7 @@ if(UI_SOURCES)
                 VideoEyePlayback
                 VideoEyeExporter
                 VideoEyeReporting
+                VideoEyeRepair
                 VideoEyeQc
                 VideoEyeUiCharts
                 VideoEyeUiTheme
@@ -879,6 +901,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     VideoEyePlayback
     VideoEyeExporter
     VideoEyeReporting
+    VideoEyeRepair
     VideoEyeQc
     VideoEyeReportingPanel
     VideoEyeFfmpegTools

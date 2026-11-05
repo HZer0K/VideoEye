@@ -33,6 +33,7 @@ class OpenSessionController;
 class ElidedLabel;
 class OverviewPage;
 class PlayerPanel;
+class RepairPanel;
 class ScanTaskBar;
 
 // 主窗口: 菜单 / 侧边栏 / 分析内容栈。
@@ -135,6 +136,9 @@ protected:
 
     // FFmpeg 命令工作台 (原生 ffmpeg 的图形入口; 不依赖当前是否打开了媒体)
     ui::FfmpegPanel* ffmpeg_panel_ = nullptr;
+
+    // 视频修复页 (诊断 -> 计划 -> 执行 -> 验证 -> 报告; 同样不依赖已打开媒体)
+    ui::RepairPanel* repair_panel_ = nullptr;
 
     // 导出协调器: 三个导出入口 + 十条播放器导出信号接线 (构造时自连), 菜单动作
     // 接收者就是它。对话框 parent 与状态查询在构造时注入; 查询 lambda 读本窗口

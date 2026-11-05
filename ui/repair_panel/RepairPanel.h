@@ -1,0 +1,79 @@
+#pragma once
+
+// 「视频修复」页：配置 → 进度 → 结论 / 证据 → 报告。
+//
+// 界面只负责收集参数、展示结果和落报告；诊断 / 执行 / 验证全在 core/repair。
+// 报告写入放在这里，是因为 core/qt 与 core/reporting 之间不允许建边。
+
+#include <QWidget>
+
+#include "core/domain/model/RepairTypes.h"
+#include "core/qt/RepairController.h"
+
+class QComboBox;
+class QLabel;
+class QLineEdit;
+class QProgressBar;
+class QPushButton;
+class QTableWidget;
+
+namespace videoeye {
+namespace ui {
+
+class RepairPanel : public QWidget {
+    Q_OBJECT
+
+public:
+    explicit RepairPanel(QWidget* parent = nullptr);
+
+    // 主窗口打开新文件时同步过来（不影响正在运行的修复）。
+    void SetCurrentFile(const QString& path);
+
+private slots:
+    void OnBrowseSource();
+    void OnBrowseReference();
+    void OnBrowseOutput();
+    void OnStart();
+    void OnCancel();
+    void OnOpenOutput();
+    void OnOpenReport();
+    void OnProgress(quint64 task_id, int percent, const QString& stage, const QString& detail);
+    void OnFinished(quint64 task_id, const QString& status_text, const QString& summary);
+
+private:
+    void BuildUi();
+    void SetRunning(bool running);
+    void ResetForNewRun();
+    void ShowResult();
+    void UpdateOutputs(const model::RepairResult& result);
+    void SetMetric(int index, const QString& value, const QString& color);
+    void PopulateFindings(const std::vector<model::DamageFinding>& findings);
+
+    qt::RepairController* controller_ = nullptr;
+
+    QLineEdit* source_edit_ = nullptr;
+    QLineEdit* reference_edit_ = nullptr;
+    QLineEdit* output_edit_ = nullptr;
+    QComboBox* mode_combo_ = nullptr;
+    QComboBox* level_combo_ = nullptr;
+
+    QPushButton* start_button_ = nullptr;
+    QPushButton* cancel_button_ = nullptr;
+    QPushButton* open_output_button_ = nullptr;
+    QPushButton* open_report_button_ = nullptr;
+
+    QProgressBar* progress_bar_ = nullptr;
+    QLabel* stage_label_ = nullptr;
+    QLabel* status_badge_ = nullptr;
+    QLabel* summary_label_ = nullptr;
+    QLabel* metric_labels_[4] = {nullptr, nullptr, nullptr, nullptr};
+    QLabel* report_label_ = nullptr;
+    QTableWidget* findings_table_ = nullptr;
+
+    QString last_output_path_;
+    QString last_report_html_path_;
+    QString last_report_json_path_;
+};
+
+} // namespace ui
+} // namespace videoeye

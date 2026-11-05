@@ -2375,6 +2375,22 @@ set_tests_properties(ElidedLabelTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # =================================================
+# 测试 51：视频修复引擎（诊断 → 计划 → 重封装/尾部抢救 → V2 验证 → 报告）
+# 说明: 全部样本由 videoeye_test_media_factory 现场生成，不把二进制放进仓库。
+#       用例覆盖完整 MP4、尾部截断、moov 丢失、垃圾文件、源路径保护、取消与报告三件套。
+# =================================================
+videoeye_add_test(test_repair_engine
+    unit/test_repair_engine.cpp
+)
+target_link_libraries(test_repair_engine PRIVATE
+    VideoEyeRepair
+    VideoEyeReporting
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    videoeye_test_media_factory)
+add_test(NAME RepairEngineTests COMMAND test_repair_engine)
+
+# =================================================
 # 全局兜底超时（必须留在本文件最末尾）
 #
 # 以前只有 CorpusRobustnessTests 显式设了 TIMEOUT 300（它的解析器历史上失去过

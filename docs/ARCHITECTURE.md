@@ -25,6 +25,7 @@ targe —— 目录只是命名习惯，编译器不认识；能被机器检查�
 | `core/exporter/` | `VideoEyeExporter` | 转码 / remux 导出 | domain、infrastructure、ffmpeg_io、FFmpeg |
 | `core/player/` | `VideoEyePlayback` | 播放会话、解码、抽帧 | domain、media、analysis、exporter、infrastructure、ffmpeg_io、qt、FFmpeg |
 | `core/qc/` | `VideoEyeQcRules`（规则表 / 模板映射 / 对比 / 报告格式 / 批量结果类型）<br>`VideoEyeQc`（单文件 / 批量执行器） | 规则判定口径；执行器负责打开文件并把结果交给规则 | rules：domain、infrastructure<br>executor：domain、analysis、infrastructure |
+| `core/repair/` | `VideoEyeRepair` | 视频修复：诊断 → 规划 → 执行 → 验证 → 发布；证据（`DamageFinding`）与结论（`RepairResult.status`）分离 | domain、media、infrastructure、ffmpeg_io、FFmpeg（**不链 reporting**，报告由 UI 侧调用 `VideoEyeReporting` 写出） |
 | `core/reporting/` | `VideoEyeReporting` | 报告导出（JSON / CSV / HTML / PDF / TXT） | domain、qc-rules、infrastructure（不链执行器，链接闭包里没有 FFmpeg） |
 | `core/ffmpeg/` | `VideoEyeFfmpegTools` | 原生 ffmpeg 命令行工作台 | infrastructure、Qt Core |
 | `core/qt/` | `VideoEyeQtAdapters` | 把不带 Qt 的执行引擎接进信号 / 线程；`QtWorkerOwner` 是所有自带 `QThread` 的后台 worker 的统一所有者 | domain、analysis、Qt Core |
@@ -71,10 +72,15 @@ graph TD
     PLAYBACK --> QTADAPTER
     QC[core/qc] --> ANALYSIS
     REPORTING[core/reporting] --> QC
+    REPAIR[core/repair<br/>诊断/规划/执行/验证] --> MEDIA
+    REPAIR --> INFRA
+    REPAIR --> FFIO
     QTADAPTER[core/qt] --> ANALYSIS
+    QTADAPTER --> REPAIR
     UI[ui] --> REPORTING
     UI --> QC
     UI --> PLAYBACK
+    UI --> REPAIR
 ```
 
 三条硬规则：

@@ -3,6 +3,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -299,6 +300,123 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
         return finish(false, "写入文件尾失败");
 
     return finish(true, std::string());
+}
+
+FragmentedTestMedia CreateFragmentedTestMedia(const std::string& directory, const std::string& name,
+                                              const TestMediaSpec& spec) {
+    FragmentedTestMedia result;
+    result.init_path = JoinPath(directory, name + "_init.mp4");
+    result.segment_path = JoinPath(directory, name + "_seg.ts");
+
+    const TestMedia media = CreateTestMedia(directory, name + "_full", spec);
+    if (!media.ok) {
+        result.error = "生成基础素材失败: " + media.error;
+        return result;
+    }
+
+    const std::string fragmented_path = JoinPath(directory, name + "_frag.mp4");
+    AVFormatContext* in = nullptr;
+    if (avformat_open_input(&in, media.path.c_str(), nullptr, nullptr) < 0 || !in) {
+        result.error = "无法打开基础素材";
+        return result;
+    }
+    if (avformat_find_stream_info(in, nullptr) < 0) {
+        avformat_close_input(&in);
+        result.error = "基础素材流信息探测失败";
+        return result;
+    }
+
+    AVFormatContext* out = nullptr;
+    if (avformat_alloc_output_context2(&out, nullptr, "mp4", fragmented_path.c_str()) < 0 || !out) {
+        avformat_close_input(&in);
+        result.error = "无法创建分片输出上下文";
+        return result;
+    }
+    auto cleanup = [&](bool ok, const std::string& error) {
+        if (out) {
+            if (out->pb)
+                avio_closep(&out->pb);
+            avformat_free_context(out);
+            out = nullptr;
+        }
+        if (in) {
+            avformat_close_input(&in);
+            in = nullptr;
+        }
+        result.ok = ok;
+        if (!ok)
+            result.error = error;
+        return result;
+    };
+
+    for (unsigned i = 0; i < in->nb_streams; ++i) {
+        AVStream* dst = avformat_new_stream(out, nullptr);
+        if (!dst || avcodec_parameters_copy(dst->codecpar, in->streams[i]->codecpar) < 0) {
+            return cleanup(false, "复制流参数失败");
+        }
+        dst->time_base = in->streams[i]->time_base;
+    }
+    // empty_moov：moov 里不写样本表，样本全部由 moof/trun 描述；
+    // default_base_moof：trun 的 data_offset 相对 moof 起点，截断前缀后仍然有效。
+    av_opt_set(out->priv_data, "movflags", "empty_moov+default_base_moof+frag_keyframe", 0);
+    if (!(out->oformat->flags & AVFMT_NOFILE) && avio_open(&out->pb, fragmented_path.c_str(), AVIO_FLAG_WRITE) < 0) {
+        return cleanup(false, "无法创建分片输出文件");
+    }
+    if (avformat_write_header(out, nullptr) < 0)
+        return cleanup(false, "写入分片文件头失败");
+
+    AVPacket* pkt = av_packet_alloc();
+    if (!pkt)
+        return cleanup(false, "无法分配包");
+    while (av_read_frame(in, pkt) >= 0) {
+        AVStream* src_stream = in->streams[pkt->stream_index];
+        AVStream* dst_stream = out->streams[pkt->stream_index];
+        av_packet_rescale_ts(pkt, src_stream->time_base, dst_stream->time_base);
+        pkt->pos = -1;
+        const int write_ret = av_interleaved_write_frame(out, pkt);
+        av_packet_unref(pkt);
+        if (write_ret < 0) {
+            av_packet_free(&pkt);
+            return cleanup(false, "写入分片失败");
+        }
+    }
+    av_packet_free(&pkt);
+    if (av_write_trailer(out) < 0)
+        return cleanup(false, "写入分片文件尾失败");
+
+    // ---- 按第一个 moof 切分：前半是初始化段，后半是媒体分片 ----
+    std::ifstream fragmented(fragmented_path, std::ios::binary);
+    std::vector<char> bytes((std::istreambuf_iterator<char>(fragmented)), std::istreambuf_iterator<char>());
+    if (bytes.size() < 16)
+        return cleanup(false, "分片文件为空");
+    std::size_t split = bytes.size();
+    std::size_t pos = 0;
+    while (pos + 8 <= bytes.size()) {
+        const uint32_t box_size = (static_cast<uint32_t>(static_cast<unsigned char>(bytes[pos])) << 24) |
+                                  (static_cast<uint32_t>(static_cast<unsigned char>(bytes[pos + 1])) << 16) |
+                                  (static_cast<uint32_t>(static_cast<unsigned char>(bytes[pos + 2])) << 8) |
+                                  static_cast<uint32_t>(static_cast<unsigned char>(bytes[pos + 3]));
+        const std::string type(bytes.begin() + static_cast<std::ptrdiff_t>(pos) + 4,
+                               bytes.begin() + static_cast<std::ptrdiff_t>(pos) + 8);
+        if (type == "moof") {
+            split = pos;
+            break;
+        }
+        if (box_size < 8)
+            break;
+        pos += box_size;
+    }
+    if (split == 0 || split >= bytes.size())
+        return cleanup(false, "分片文件里找不到 moof");
+
+    std::ofstream init_out(result.init_path, std::ios::binary | std::ios::trunc);
+    init_out.write(bytes.data(), static_cast<std::streamsize>(split));
+    std::ofstream segment_out(result.segment_path, std::ios::binary | std::ios::trunc);
+    segment_out.write(bytes.data() + split, static_cast<std::streamsize>(bytes.size() - split));
+    if (!init_out || !segment_out)
+        return cleanup(false, "写出初始化段/分片失败");
+
+    return cleanup(true, std::string());
 }
 
 MediaProbe ProbeMediaFile(const std::string& path) {
