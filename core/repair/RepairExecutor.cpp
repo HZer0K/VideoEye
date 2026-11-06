@@ -145,6 +145,105 @@ bool AssembleWithInitSegment(const std::string& source_path, const std::vector<u
     return true;
 }
 
+// 逐流时间轴状态：只用于"有证据的重写"（重复 / 回退），不用于伪造缺失时间戳。
+struct StreamTimingState {
+    bool has_last_dts = false;
+    int64_t last_dts = 0;
+    int64_t last_pts = 0;
+    int64_t nominal_duration = 0; // 源时间基下的单帧时长（用于重写步进）
+};
+
+int64_t NominalFrameDuration(const AVStream* stream) {
+    const AVRational fps = stream->avg_frame_rate;
+    if (fps.num <= 0 || fps.den <= 0 || stream->time_base.num <= 0)
+        return 0;
+    const int64_t ticks = av_rescale_q(1, AVRational{fps.den, fps.num}, stream->time_base);
+    return ticks > 0 ? ticks : 0;
+}
+
+bool CheckpointOrStop(const std::atomic<bool>* cancel, const RepairRunBudget* budget, bool* canceled, bool* timed_out) {
+    if (budget != nullptr) {
+        if (!budget->Checkpoint())
+            return false;
+        *canceled = budget->Canceled();
+        *timed_out = !*canceled;
+        return true;
+    }
+    if (infrastructure::Checkpoint(cancel)) {
+        *canceled = true;
+        return true;
+    }
+    return false;
+}
+
+// 跳段恢复：从损坏点之后按递增步长寻找可解码恢复点。
+//
+// 关键约束：
+//  - 只接受时间戳明确大于损坏点之后的新包，避免 seek 原地打转；
+//  - 有输出视频轨时优先要关键帧，宁可跳过恢复点前的少量音频，也不从半截 GOP 开始；
+//  - 恢复失败由调用方记为"读取失败点之后未参与修复"，不能假装成功。
+bool TryResync(AVFormatContext* in, double from_seconds, double duration_seconds, int first_video_input_index,
+               const std::vector<int>& stream_map, const std::atomic<bool>* cancel, const RepairRunBudget* budget,
+               AVPacket* packet, double* resync_seconds, std::string* detail, bool* canceled, bool* timed_out) {
+    static const double kStepsSeconds[] = {0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 25.6, 51.2};
+    const bool require_keyframe = first_video_input_index >= 0;
+    const double end_limit = duration_seconds > 0.0 ? duration_seconds - 0.05 : std::numeric_limits<double>::infinity();
+
+    for (double step : kStepsSeconds) {
+        const double target = from_seconds + step;
+        if (target >= end_limit)
+            break;
+        if (CheckpointOrStop(cancel, budget, canceled, timed_out))
+            return false;
+
+        const int64_t target_us = static_cast<int64_t>(target * AV_TIME_BASE);
+        if (av_seek_frame(in, -1, target_us, AVSEEK_FLAG_BACKWARD | AVSEEK_FLAG_ANY) < 0) {
+            avformat_flush(in);
+            continue;
+        }
+        avformat_flush(in);
+
+        // 单次恢复点探测窗口有界：避免在损坏文件上无限读包。
+        const int64_t probe_deadline_us = av_gettime() + 2 * 1000 * 1000;
+        for (int probe = 0; probe < 128; ++probe) {
+            if (av_gettime() > probe_deadline_us)
+                break;
+            if (CheckpointOrStop(cancel, budget, canceled, timed_out))
+                return false;
+
+            const int read_ret = av_read_frame(in, packet);
+            if (read_ret < 0)
+                break;
+
+            const int in_index = packet->stream_index;
+            if (in_index < 0 || in_index >= static_cast<int>(stream_map.size()) ||
+                stream_map[static_cast<std::size_t>(in_index)] < 0) {
+                av_packet_unref(packet);
+                continue;
+            }
+
+            const AVStream* stream = in->streams[in_index];
+            const std::optional<double> seconds = PacketSeconds(packet, stream);
+            if (!seconds.has_value() || *seconds < from_seconds + 0.001) {
+                av_packet_unref(packet);
+                continue;
+            }
+            const bool is_video = stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO;
+            // 有视频轨时必须从关键帧恢复：音频包先跳过，避免从半截 GOP 开始解码。
+            if (require_keyframe && (!is_video || (packet->flags & AV_PKT_FLAG_KEY) == 0)) {
+                av_packet_unref(packet);
+                continue;
+            }
+
+            *resync_seconds = *seconds;
+            *detail = "av_seek_frame(" + FormatSeconds(target) + " s) 恢复到 " + FormatSeconds(*seconds) + " s";
+            return true;
+        }
+        avformat_flush(in);
+    }
+    return false;
+}
+
 } // namespace
 
 RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& request,
@@ -243,8 +342,18 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
     std::set<int> requested;
     for (int index : request.target_streams)
         requested.insert(index);
+    // S09 单轨抢救：只剔除诊断阶段拿到"全部样本越界"证据的轨道。
+    const std::set<int> dropped_inputs(plan.dropped_input_streams.begin(), plan.dropped_input_streams.end());
     for (unsigned i = 0; i < in->nb_streams; ++i) {
         const AVStream* stream = in->streams[i];
+        if (dropped_inputs.count(static_cast<int>(i)) > 0) {
+            const char* type_name = av_get_media_type_string(stream->codecpar->codec_type);
+            outcome.omitted_items.push_back("流 #" + std::to_string(i) + " (" + (type_name ? type_name : "unknown") +
+                                            ") 经诊断判定无可用样本，单轨抢救已省略该轨");
+            // 告诉 demuxer 直接丢弃该流，避免为了跳过它继续读坏样本数据。
+            in->streams[i]->discard = AVDISCARD_ALL;
+            continue;
+        }
         if (!IsMediaStream(stream)) {
             const char* type_name = av_get_media_type_string(stream->codecpar->codec_type);
             outcome.omitted_items.push_back("流 #" + std::to_string(i) + " (" + (type_name ? type_name : "unknown") +
@@ -305,6 +414,9 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
     bool header_written = false;
     std::string failure;
     std::vector<uint64_t> per_output_packets(mapped_streams.size(), 0);
+    // 这些统计在 do 块内累加、在 do 块之后的执行记录里使用，必须提升到函数作用域。
+    uint64_t resync_count = 0;
+    double skipped_total_seconds = 0.0;
 
     do {
         for (std::size_t i = 0; i < mapped_streams.size(); ++i) {
@@ -367,6 +479,69 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
         bool write_failed = false;
         std::string write_error;
 
+        // 时间轴状态：源侧修复 + 输出侧单调保护。
+        std::vector<StreamTimingState> stream_timing(in->nb_streams);
+        std::vector<StreamTimingState> output_timing(mapped_streams.size());
+
+        // 多段恢复 / 时间轴修复的实测记录。
+        std::vector<model::RepairRecoveredSegment> segments;
+        model::RepairRecoveredSegment current_segment;
+        bool current_segment_active = false;
+        bool next_segment_resumed = false;
+        std::string next_segment_recovery_point;
+        double next_segment_skipped_before = 0.0;
+        bool merge_active = false;
+        double merge_shift_seconds = 0.0;
+        double removed_gap_total = 0.0;
+        bool gap_removed = false;
+        uint64_t timestamp_regressions = 0;
+        uint64_t timestamp_duplicates = 0;
+        uint64_t missing_timestamps = 0;
+        uint64_t rewritten_timestamps = 0;
+        // 跳段恢复已经读到的恢复点包，需要在下一轮直接处理而不是重新读包。
+        bool packet_ready = false;
+
+        // 逐输入流已读包数与最后时间戳：用于识别"某个轨提前结束"这种无报错的
+        // 中间损坏（例如 MP4 的样本偏移越界时 demuxer 直接对该轨返回 EOF）。
+        std::vector<uint64_t> stream_read_packets(in->nb_streams, 0);
+        std::vector<std::optional<double>> stream_last_seconds(in->nb_streams);
+        // 已经写入产物的时间上界，以及跳段恢复后需要丢弃的重叠包上界。
+        std::vector<double> stream_covered_seconds(in->nb_streams, -1.0);
+        std::vector<double> stream_skip_until_seconds(in->nb_streams, -1.0);
+
+        // 提前结束判定：声明帧数没读完，且最后时间戳明显短于该轨声明时长。
+        // 两个条件同时成立才认定损坏，避免把"时就短"或声明不准的文件误判成损坏。
+        auto detect_premature_end = [&](double* from_seconds, std::string* detail) {
+            bool premature = false;
+            double frontier = std::numeric_limits<double>::max();
+            for (unsigned i = 0; i < in->nb_streams; ++i) {
+                if (stream_map[i] < 0)
+                    continue;
+                const AVStream* stream = in->streams[i];
+                double declared = duration_seconds;
+                if (stream->duration > 0)
+                    declared = static_cast<double>(stream->duration) * stream->time_base.num / stream->time_base.den;
+                const double last = stream_last_seconds[i].value_or(0.0);
+                const bool short_by_time = declared > 0.0 && last + 0.15 < declared;
+                const bool short_by_count =
+                    stream->nb_frames > 0 && stream_read_packets[i] < static_cast<uint64_t>(stream->nb_frames);
+                if (!(short_by_time && short_by_count))
+                    continue;
+                premature = true;
+                frontier = std::min(frontier, last);
+                if (detail != nullptr) {
+                    if (!detail->empty())
+                        *detail += "; ";
+                    *detail += "流 #" + std::to_string(i) + " 已读 " + std::to_string(stream_read_packets[i]) + "/" +
+                               std::to_string(stream->nb_frames) + " 帧，止于 " + FormatSeconds(last) + " s" +
+                               "（声明时长 " + FormatSeconds(declared) + " s）";
+                }
+            }
+            if (premature && from_seconds != nullptr)
+                *from_seconds = frontier;
+            return premature;
+        };
+
         for (;;) {
             if (budget != nullptr) {
                 if (budget->Checkpoint()) {
@@ -386,32 +561,126 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                 }
             }
 
-            const int read_ret = av_read_frame(in, packet);
-            if (read_ret == AVERROR_EOF)
-                break;
-            if (read_ret < 0) {
-                if (packets_seen == 0) {
-                    failure = "读取首个包失败: " + AvErrorText(read_ret);
-                    write_failed = true;
-                } else {
-                    outcome.read_error = true;
-                    model::DamageFinding finding;
-                    finding.code = "container.read_error_after_data";
-                    finding.detector = "repair.executor";
-                    finding.layer = model::DamageLayer::Container;
-                    finding.severity = model::IssueSeverity::Warning;
-                    finding.confidence = model::DamageConfidence::Confirmed;
-                    finding.location.precision = model::DamagePrecision::Bounded;
-                    finding.location.estimated_seconds = last_seconds;
-                    finding.location.provenance = "av_read_frame after packets";
-                    finding.evidence = "已读取 " + std::to_string(packets_seen) + " 个包后在 " +
-                                       FormatSeconds(last_seconds) + " s 附近读取失败: " + AvErrorText(read_ret);
-                    finding.limitations.push_back("读取失败点之后的载荷未参与修复");
-                    finding.candidate_actions.push_back(model::RepairAction::S02_TailSalvage);
-                    outcome.residual_findings.push_back(std::move(finding));
+            if (!packet_ready) {
+                const int read_ret = av_read_frame(in, packet);
+                // demuxer 对越界样本不一定报错：常见表现是只让该轨提前 EOF，
+                // 其余轨继续读完后再整体返回 EOF。因此 EOF 也要做"提前结束"判定。
+                bool premature_eof = false;
+                std::string premature_detail;
+                double resync_from_seconds = last_seconds;
+                if (read_ret == AVERROR_EOF && packets_seen > 0)
+                    premature_eof = detect_premature_end(&resync_from_seconds, &premature_detail);
+                if (read_ret == AVERROR_EOF && !premature_eof)
+                    break;
+                if (read_ret < 0) {
+                    if (packets_seen == 0) {
+                        failure = "读取首个包失败: " + AvErrorText(read_ret);
+                        write_failed = true;
+                        break;
+                    }
+
+                    if (!premature_eof)
+                        outcome.read_error = true;
+
+                    // S04：损坏点之后继续找恢复点。尾部截断（salvage_end 已确认）不再尝试，
+                    // 因为越界边界之后没有可读内容。
+                    double resync_seconds = 0.0;
+                    std::string resync_detail;
+                    bool canceled_resync = false;
+                    bool timed_out_resync = false;
+                    const double resync_from = premature_eof ? resync_from_seconds : last_seconds;
+                    const bool resumed =
+                        request.allow_segment_salvage && !salvage_end.has_value() &&
+                        TryResync(in, resync_from, duration_seconds, first_video_input_index, stream_map, cancel,
+                                  budget, packet, &resync_seconds, &resync_detail, &canceled_resync, &timed_out_resync);
+                    if (canceled_resync) {
+                        outcome.canceled = true;
+                        break;
+                    }
+                    if (timed_out_resync) {
+                        outcome.timed_out = true;
+                        break;
+                    }
+
+                    if (!resumed) {
+                        model::DamageFinding finding;
+                        finding.code =
+                            premature_eof ? "container.ended_before_declared_end" : "container.read_error_after_data";
+                        finding.detector = "repair.executor";
+                        finding.layer = model::DamageLayer::Container;
+                        finding.severity = model::IssueSeverity::Warning;
+                        finding.confidence = model::DamageConfidence::Confirmed;
+                        finding.location.precision = model::DamagePrecision::Bounded;
+                        finding.location.estimated_seconds = resync_from;
+                        if (premature_eof) {
+                            finding.location.provenance = "av_read_frame EOF vs stream duration/nb_frames";
+                            finding.evidence = "轨道提前结束且未找到后续恢复点: " + premature_detail;
+                            finding.limitations.push_back("提前结束点之后的内容未参与修复");
+                        } else {
+                            finding.location.provenance = "av_read_frame after packets";
+                            finding.evidence = "已读取 " + std::to_string(packets_seen) + " 个包后在 " +
+                                               FormatSeconds(last_seconds) +
+                                               " s 附近读取失败: " + AvErrorText(read_ret);
+                            finding.limitations.push_back("读取失败点之后的载荷未参与修复");
+                        }
+                        finding.candidate_actions.push_back(model::RepairAction::S02_TailSalvage);
+                        finding.candidate_actions.push_back(model::RepairAction::S04_SegmentSalvage);
+                        outcome.residual_findings.push_back(std::move(finding));
+                        break;
+                    }
+
+                    ++resync_count;
+                    if (current_segment_active) {
+                        segments.push_back(current_segment);
+                        current_segment_active = false;
+                    }
+                    next_segment_resumed = true;
+                    next_segment_recovery_point = resync_detail;
+                    next_segment_skipped_before = std::max(0.0, resync_seconds - resync_from);
+                    skipped_total_seconds += next_segment_skipped_before;
+
+                    // 跳段前已写入的内容继续有效：恢复后按轨丢弃重叠包，避免同一段
+                    // 音频/视频被写成两份（尤其是只有单轨提前结束、其它轨已读完的情况）。
+                    for (unsigned i = 0; i < in->nb_streams; ++i) {
+                        if (stream_covered_seconds[static_cast<std::size_t>(i)] >= 0.0)
+                            stream_skip_until_seconds[static_cast<std::size_t>(i)] =
+                                stream_covered_seconds[static_cast<std::size_t>(i)];
+                    }
+
+                    if (request.gap_policy == model::RepairGapPolicy::MergeContiguous) {
+                        const double previous_end = outcome.output_end_seconds.value_or(0.0);
+                        const double gap = resync_seconds - previous_end;
+                        // 只有确实存在空洞时才平移；重叠（resync 点早于已写内容）时
+                        // 时间轴本来就是连续的，平移反而会把音画错位。
+                        if (gap > 0.001) {
+                            removed_gap_total += gap;
+                            gap_removed = true;
+                            merge_active = true;
+                            merge_shift_seconds = -gap;
+                        }
+                    }
+
+                    model::DamageFinding skipped;
+                    skipped.code = "container.damaged_segment_skipped";
+                    skipped.detector = "repair.executor";
+                    skipped.layer = model::DamageLayer::Container;
+                    skipped.severity = model::IssueSeverity::Info;
+                    skipped.confidence = model::DamageConfidence::Confirmed;
+                    skipped.location.precision = model::DamagePrecision::Bounded;
+                    skipped.location.estimated_seconds = resync_from;
+                    skipped.location.provenance = "av_seek_frame resync";
+                    skipped.evidence = "在 " + FormatSeconds(resync_from) + " s 附近无法继续读取" +
+                                       (premature_eof ? "（" + premature_detail + "）" : "") + "；已跳段并于 " +
+                                       FormatSeconds(resync_seconds) + " s 继续恢复（" + resync_detail + "）";
+                    skipped.limitations.push_back("被跳过区间的载荷未参与修复，内容无法找回");
+                    skipped.candidate_actions.push_back(model::RepairAction::S04_SegmentSalvage);
+                    outcome.residual_findings.push_back(std::move(skipped));
+
+                    packet_ready = true;
                 }
-                break;
             }
+
+            packet_ready = false;
 
             const int in_index = packet->stream_index;
             int out_index = -1;
@@ -425,11 +694,22 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
             const AVStream* src_stream = in->streams[in_index];
             AVStream* dst_stream = out->streams[out_index];
 
-            const std::optional<double> seconds = PacketSeconds(packet, src_stream);
-            if (seconds.has_value())
-                last_seconds = std::max(last_seconds, *seconds);
+            const std::optional<double> input_seconds = PacketSeconds(packet, src_stream);
+            ++stream_read_packets[static_cast<std::size_t>(in_index)];
+            if (input_seconds.has_value()) {
+                stream_last_seconds[static_cast<std::size_t>(in_index)] =
+                    std::max(stream_last_seconds[static_cast<std::size_t>(in_index)].value_or(-1.0), *input_seconds);
+                last_seconds = std::max(last_seconds, *input_seconds);
+            }
 
-            if (salvage_end.has_value() && seconds.has_value() && *seconds >= *salvage_end + 0.001) {
+            // 跳段恢复后，丢弃已经被前一段覆盖的时间区间，避免重叠内容重复写入。
+            if (input_seconds.has_value() && stream_skip_until_seconds[static_cast<std::size_t>(in_index)] >= 0.0 &&
+                *input_seconds <= stream_skip_until_seconds[static_cast<std::size_t>(in_index)] + 0.000001) {
+                av_packet_unref(packet);
+                continue;
+            }
+
+            if (salvage_end.has_value() && input_seconds.has_value() && *input_seconds >= *salvage_end + 0.001) {
                 // 到达诊断确认的越界边界：停止继续读尾部，保留已经写入的可读前缀。
                 outcome.salvage_truncated = true;
                 av_packet_unref(packet);
@@ -443,7 +723,72 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                 ++outcome.input_video_packet_count;
             }
 
+            // ---- S03 时间轴修复：只处理重复 / 回退，缺失只统计不伪造 ----
+            int64_t dts = packet->dts;
+            int64_t pts = packet->pts;
+            if (request.repair_timeline) {
+                StreamTimingState& timing = stream_timing[static_cast<std::size_t>(in_index)];
+                if (dts == AV_NOPTS_VALUE && pts != AV_NOPTS_VALUE)
+                    dts = pts; // 有 PTS 无 DTS：补齐 DTS，不改动实际展示时间
+                if (dts == AV_NOPTS_VALUE && pts == AV_NOPTS_VALUE) {
+                    ++missing_timestamps;
+                } else {
+                    const int64_t step = timing.nominal_duration > 0 ? timing.nominal_duration : 1;
+                    if (timing.has_last_dts && dts <= timing.last_dts) {
+                        if (dts == timing.last_dts)
+                            ++timestamp_duplicates;
+                        else
+                            ++timestamp_regressions;
+                        // 只把回退点推进到"上一帧 + 一帧时长"，不改变整体速度。
+                        const int64_t delta = timing.last_dts + step - dts;
+                        dts += delta;
+                        if (pts != AV_NOPTS_VALUE)
+                            pts += delta;
+                        ++rewritten_timestamps;
+                    }
+                    timing.last_dts = dts;
+                    timing.has_last_dts = true;
+                    if (pts != AV_NOPTS_VALUE)
+                        timing.last_pts = pts;
+                }
+                if (packet->duration > 0)
+                    timing.nominal_duration = packet->duration;
+                else if (timing.nominal_duration == 0)
+                    timing.nominal_duration = NominalFrameDuration(src_stream);
+                packet->dts = dts;
+                packet->pts = pts;
+            }
+
             av_packet_rescale_ts(packet, src_stream->time_base, dst_stream->time_base);
+
+            // ---- 缺口策略：连续播放时把后续片段平移到前一段末尾 ----
+            if (merge_active && merge_shift_seconds != 0.0) {
+                const int64_t shift_ticks =
+                    av_rescale_q(static_cast<int64_t>(std::llround(merge_shift_seconds * AV_TIME_BASE)), AV_TIME_BASE_Q,
+                                 dst_stream->time_base);
+                if (packet->dts != AV_NOPTS_VALUE)
+                    packet->dts += shift_ticks;
+                if (packet->pts != AV_NOPTS_VALUE)
+                    packet->pts += shift_ticks;
+            }
+
+            // 输出侧逐流单调保护：seek 恢复与时间戳重写都可能在片段边界留下 1 tick 回退。
+            {
+                StreamTimingState& out_timing = output_timing[static_cast<std::size_t>(out_index)];
+                if (packet->dts == AV_NOPTS_VALUE && packet->pts != AV_NOPTS_VALUE)
+                    packet->dts = packet->pts;
+                if (packet->dts != AV_NOPTS_VALUE) {
+                    if (out_timing.has_last_dts && packet->dts <= out_timing.last_dts) {
+                        const int64_t delta = out_timing.last_dts + 1 - packet->dts;
+                        packet->dts += delta;
+                        if (packet->pts != AV_NOPTS_VALUE)
+                            packet->pts += delta;
+                    }
+                    out_timing.last_dts = packet->dts;
+                    out_timing.has_last_dts = true;
+                }
+            }
+
             packet->stream_index = out_index;
             packet->pos = -1;
 
@@ -463,10 +808,35 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
             if (out_index >= 0 && out_index < static_cast<int>(per_output_packets.size()))
                 ++per_output_packets[static_cast<std::size_t>(out_index)];
             outcome.bytes_written += static_cast<uint64_t>(std::max(written_size, 0));
-            if (seconds.has_value()) {
+
+            if (input_seconds.has_value()) {
+                stream_covered_seconds[static_cast<std::size_t>(in_index)] =
+                    std::max(stream_covered_seconds[static_cast<std::size_t>(in_index)], *input_seconds);
+                double output_seconds = *input_seconds;
+                if (merge_active && merge_shift_seconds != 0.0)
+                    output_seconds += merge_shift_seconds;
+
+                if (!current_segment_active) {
+                    current_segment = model::RepairRecoveredSegment{};
+                    current_segment.index = static_cast<uint32_t>(segments.size());
+                    current_segment.input_start_seconds = *input_seconds;
+                    current_segment.output_start_seconds = output_seconds;
+                    current_segment.resumed_after_damage = next_segment_resumed;
+                    current_segment.recovery_point = next_segment_recovery_point;
+                    current_segment.skipped_before_seconds = next_segment_skipped_before;
+                    current_segment_active = true;
+                    next_segment_resumed = false;
+                    next_segment_recovery_point.clear();
+                    next_segment_skipped_before = 0.0;
+                }
+                current_segment.input_end_seconds = std::max(current_segment.input_end_seconds, *input_seconds);
+                current_segment.output_end_seconds = std::max(current_segment.output_end_seconds, output_seconds);
+                ++current_segment.packets_written;
+
                 if (!outcome.output_start_seconds.has_value())
-                    outcome.output_start_seconds = *seconds;
-                outcome.output_end_seconds = *seconds;
+                    outcome.output_start_seconds = output_seconds;
+                outcome.output_end_seconds =
+                    std::max(outcome.output_end_seconds.value_or(output_seconds), output_seconds);
             }
 
             if (max_bytes > 0 && outcome.bytes_written >= max_bytes) {
@@ -485,8 +855,35 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
             av_packet_unref(packet);
         }
 
+        if (current_segment_active)
+            segments.push_back(current_segment);
+
         av_packet_free(&packet);
         outcome.packets_read = packets_seen;
+        outcome.recovered_segments = segments;
+        outcome.timeline_repair.attempted = request.repair_timeline;
+        outcome.timeline_repair.gap_removed = gap_removed;
+        outcome.timeline_repair.removed_gap_seconds = removed_gap_total;
+        outcome.timeline_repair.timestamp_regressions = timestamp_regressions;
+        outcome.timeline_repair.timestamp_duplicates = timestamp_duplicates;
+        outcome.timeline_repair.missing_timestamps = missing_timestamps;
+        outcome.timeline_repair.rewritten_timestamps = rewritten_timestamps;
+        if (rewritten_timestamps > 0 && gap_removed)
+            outcome.timeline_repair.status = "rebuilt";
+        else if (rewritten_timestamps > 0 || gap_removed)
+            outcome.timeline_repair.status = "adjusted";
+        else
+            outcome.timeline_repair.status = "unchanged";
+        if (gap_removed) {
+            outcome.timeline_repair.note = "删除 " + FormatSeconds(removed_gap_total) +
+                                           " s 损坏区间，后续片段已平移到前一段末尾；片段内部未改变播放速度";
+        } else if (rewritten_timestamps > 0) {
+            outcome.timeline_repair.note = "重写 " + std::to_string(rewritten_timestamps) +
+                                           " 个重复/回退时间戳，逐流恢复单调；未改变片段内部播放速度";
+        } else if (missing_timestamps > 0) {
+            outcome.timeline_repair.note =
+                "检测到 " + std::to_string(missing_timestamps) + " 个缺失时间戳，缺少可靠依据，未伪造";
+        }
 
         if (write_failed && failure.empty()) {
             failure = "写入数据包失败: " + write_error;
@@ -551,7 +948,10 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                    std::to_string(outcome.bytes_written) + " 字节";
     if (use_reference_init)
         remux.detail = "已前置参考初始化段 " + std::to_string(reference_init->init_size) + " 字节；" + remux.detail;
-    if (outcome.read_error)
+    if (resync_count > 0)
+        remux.detail += "；跳段恢复 " + std::to_string(resync_count) + " 次，产物由 " +
+                        std::to_string(outcome.recovered_segments.size()) + " 段组成";
+    else if (outcome.read_error)
         remux.detail += "；尾部读取失败后停止";
     outcome.executions.push_back(std::move(remux));
 
@@ -570,6 +970,48 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
         salvage.detail = "诊断边界 " + FormatSeconds(*plan.salvage_end_seconds) + " s；实际于 " +
                          FormatSeconds(outcome.output_end_seconds.value_or(0.0)) + " s 结束";
         outcome.executions.push_back(std::move(salvage));
+    }
+
+    if (request.allow_segment_salvage) {
+        model::RepairActionExecution segment;
+        segment.action = model::RepairAction::S04_SegmentSalvage;
+        segment.attempted = resync_count > 0;
+        segment.succeeded = segment.attempted && outcome.ok;
+        segment.packets_read = outcome.packets_read;
+        segment.packets_written = outcome.packets_written;
+        segment.bytes_written = outcome.bytes_written;
+        segment.output_start_seconds = outcome.output_start_seconds;
+        segment.output_end_seconds = outcome.output_end_seconds;
+        segment.detail = "产物由 " + std::to_string(outcome.recovered_segments.size()) + " 段组成；跳段恢复 " +
+                         std::to_string(resync_count) + " 次；跳过区间的原始时长 " +
+                         FormatSeconds(skipped_total_seconds) +
+                         " s；处理策略: " + model::DisplayName(request.gap_policy);
+        outcome.executions.push_back(std::move(segment));
+    }
+
+    if (request.repair_timeline) {
+        model::RepairActionExecution timeline;
+        timeline.action = model::RepairAction::S03_TimelineRepair;
+        timeline.attempted = true;
+        timeline.succeeded = outcome.ok;
+        timeline.detail = std::string("状态 ") + outcome.timeline_repair.status + "；重写 " +
+                          std::to_string(outcome.timeline_repair.rewritten_timestamps) + " 个时间戳（重复 " +
+                          std::to_string(outcome.timeline_repair.timestamp_duplicates) + " / 回退 " +
+                          std::to_string(outcome.timeline_repair.timestamp_regressions) + "）；缺失 " +
+                          std::to_string(outcome.timeline_repair.missing_timestamps) + " 个（未伪造）";
+        if (!outcome.timeline_repair.note.empty())
+            timeline.detail += "；" + outcome.timeline_repair.note;
+        outcome.executions.push_back(std::move(timeline));
+    }
+
+    if (!plan.dropped_input_streams.empty()) {
+        model::RepairActionExecution single;
+        single.action = model::RepairAction::S09_SingleTrack;
+        single.attempted = true;
+        single.succeeded = outcome.ok;
+        single.detail =
+            "已省略 " + std::to_string(plan.dropped_input_streams.size()) + " 条无可用样本的轨道，仅输出仍可恢复的轨道";
+        outcome.executions.push_back(std::move(single));
     }
 
     Emit(progress, 89, "重封装完成");

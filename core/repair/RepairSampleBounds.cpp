@@ -213,6 +213,9 @@ RepairTrackBounds AnalyzeTrackBounds(const IsobmffTrack& track, uint64_t file_si
                     }
                 }
                 ++bounds.bad_sample_count;
+            } else if (bounds.bad_sample_count > 0) {
+                // 越界之后重新出现文件范围内的样本 → 中间损坏而不是尾部截断。
+                bounds.has_valid_after_bad = true;
             }
 
             offset_in_chunk += sample_size;

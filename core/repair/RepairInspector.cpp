@@ -115,6 +115,17 @@ bool HasMediaStream(const AVFormatContext* fmt) {
     return false;
 }
 
+// 容器轨道 id → FFmpeg 流下标。用于把「哪条轨不可抢救」映射到执行层可剔除的流。
+int FindInputStreamByTrackId(const AVFormatContext* fmt, uint32_t track_id) {
+    if (!fmt)
+        return -1;
+    for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+        if (fmt->streams[i] && fmt->streams[i]->id == static_cast<int64_t>(track_id))
+            return static_cast<int>(i);
+    }
+    return -1;
+}
+
 int PickTargetStream(const AVFormatContext* fmt, const std::vector<int>& requested) {
     for (int index : requested) {
         if (index >= 0 && index < static_cast<int>(fmt->nb_streams))
@@ -791,6 +802,28 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
                     any_bad = true; // 声明不可信 / 没查完，不能说成"全部样本位于文件范围内"
                     bad_detail << " track=" << track.track_id << " incomplete_check=1";
                 }
+                // 逐轨可抢救证据：只有"全部样本都越界"才允许后续规划剔除该轨；
+                // 检查不完整时一律按可用处理，不能靠猜测放弃一条轨。
+                model::RepairTrackSalvageInfo salvage;
+                salvage.track_id = track.track_id;
+                salvage.input_stream_index = FindInputStreamByTrackId(fmt, track.track_id);
+                salvage.kind = track.handler == "vide" ? "video" : "audio";
+                if (bounds.declaration_implausible || bounds.truncated_by_budget) {
+                    salvage.salvageable = true;
+                    salvage.evidence = "样本边界检查不完整（声明不可信或被预算截断），不能判定该轨不可用";
+                } else if (bounds.sample_count > 0 && bounds.bad_sample_count >= bounds.sample_count) {
+                    salvage.salvageable = false;
+                    salvage.evidence = "全部 " + std::to_string(bounds.sample_count) + " 个样本越过文件尾";
+                } else if (bounds.bad_sample_count > 0) {
+                    salvage.salvageable = true;
+                    salvage.evidence = std::to_string(bounds.bad_sample_count) + "/" +
+                                       std::to_string(bounds.sample_count) + " 个样本越界，仍有可用样本";
+                } else {
+                    salvage.salvageable = true;
+                    salvage.evidence = "全部 " + std::to_string(bounds.sample_count) + " 个样本位于文件范围内";
+                }
+                diagnosis.track_salvage.push_back(std::move(salvage));
+
                 if (bounds.bad_sample_count == 0)
                     continue;
                 any_bad = true;
@@ -817,10 +850,18 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
                 finding.evidence = evidence.str();
                 if (bounds.salvage_seconds.has_value()) {
                     finding.location.estimated_seconds = bounds.salvage_seconds;
-                    earliest_salvage = std::min(earliest_salvage, *bounds.salvage_seconds);
+                    // 只有"越界样本之后不再有可用样本"才是真正的尾部截断；
+                    // 中间损坏的后续样本仍可读取，不能在此提前设置截断边界，
+                    // 否则执行层会误判为"边界之后没有内容"而放弃多段恢复。
+                    if (!bounds.has_valid_after_bad)
+                        earliest_salvage = std::min(earliest_salvage, *bounds.salvage_seconds);
                 }
                 finding.candidate_actions.push_back(model::RepairAction::S02_TailSalvage);
                 finding.limitations.push_back("样本表的边界只说明字节缺失，不代表缺失区之前的样本一定可解码");
+                if (bounds.has_valid_after_bad) {
+                    finding.candidate_actions.push_back(model::RepairAction::S04_SegmentSalvage);
+                    finding.limitations.push_back("越界样本之后仍有可用样本，按中间损坏处理，不视为尾部截断");
+                }
                 diagnosis.findings.push_back(std::move(finding));
 
                 bad_detail << " track=" << track.track_id << " bad=" << bounds.bad_sample_count;
@@ -954,10 +995,27 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
         avformat_close_input(&fmt);
 
     // ---- 候选策略 / 摘要 ----
-    if ((diagnosis.openable && is_isobmff && diagnosis.moov_present) || outcome.reference_init.has_value())
+    if ((diagnosis.openable && is_isobmff && diagnosis.moov_present) || outcome.reference_init.has_value()) {
         diagnosis.candidate_actions.push_back(model::RepairAction::S01_Remux);
+        if (request.allow_segment_salvage)
+            diagnosis.candidate_actions.push_back(model::RepairAction::S04_SegmentSalvage);
+        if (request.repair_timeline)
+            diagnosis.candidate_actions.push_back(model::RepairAction::S03_TimelineRepair);
+    }
     if (outcome.salvage_end_seconds.has_value())
         diagnosis.candidate_actions.push_back(model::RepairAction::S02_TailSalvage);
+    if (request.allow_single_track) {
+        std::size_t unsalvageable = 0;
+        std::size_t salvageable = 0;
+        for (const auto& track : diagnosis.track_salvage) {
+            if (track.salvageable)
+                ++salvageable;
+            else
+                ++unsalvageable;
+        }
+        if (unsalvageable > 0 && salvageable > 0)
+            diagnosis.candidate_actions.push_back(model::RepairAction::S09_SingleTrack);
+    }
 
     // 只在本次诊断确实落下对应证据时挂载能力边界；无事实不得输出空壳契约。
     diagnosis.capability_boundaries = BuildCapabilityBoundaries(diagnosis);
@@ -979,6 +1037,13 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
         summary << "存在 " << diagnosis.blocking_reasons.size() << " 条能力阻断；";
     if (!diagnosis.capability_boundaries.empty())
         summary << "命中 " << diagnosis.capability_boundaries.size() << " 条未实现能力边界；";
+    std::size_t unsalvageable_tracks = 0;
+    for (const auto& track : diagnosis.track_salvage) {
+        if (!track.salvageable)
+            ++unsalvageable_tracks;
+    }
+    if (unsalvageable_tracks > 0)
+        summary << "有 " << unsalvageable_tracks << " 条轨道无可用样本（可单轨抢救）；";
     summary << "证据 " << diagnosis.findings.size() << " 条";
     diagnosis.summary = summary.str();
 

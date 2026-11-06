@@ -34,6 +34,10 @@ struct RepairTrackBounds {
     uint64_t bad_sample_count = 0;
     uint64_t first_bad_offset = 0;
     std::optional<double> salvage_seconds;
+    // 首个越界样本之后是否还存在落在文件范围内的样本：
+    //   * false → 越界一路延伸到文件尾（典型尾部截断，只能截取前缀）；
+    //   * true  → 中间损坏，后续仍有可读样本（应交给多段恢复继续读）。
+    bool has_valid_after_bad = false;
     bool overflowed = false;
     bool truncated_by_budget = false;
     bool declaration_implausible = false;

@@ -1,6 +1,6 @@
 #pragma once
 
-// 执行器：M1 只做"保留码流重封装 + 尾部抢救"。
+// 执行器：保留码流重封装 + 尾部抢救 + 多段恢复 + 时间轴修复 + 单轨抢救。
 //
 // 它不验证产物（那是 RepairVerifier 的职责），也不发布产物（那是 RepairOutputWriter）。
 // 所有写操作都落在 <final>.part，执行器失败时由引擎负责清理。
@@ -46,6 +46,10 @@ struct RepairExecutionOutcome {
 
     std::vector<model::RepairActionExecution> executions;
     std::vector<model::DamageFinding> residual_findings;
+
+    // S04 / S03 的实测结果，交给引擎写进最终报告。
+    std::vector<model::RepairRecoveredSegment> recovered_segments;
+    model::RepairTimelineRepair timeline_repair;
 
     // 输入 → 输出轨道映射与逐轨写入包数（R04 / R07）。
     std::vector<model::RepairTrackVerificationTarget> verification_targets;

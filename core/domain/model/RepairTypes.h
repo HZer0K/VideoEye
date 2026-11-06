@@ -30,6 +30,16 @@ enum class RepairMode {
     PlaybackCompatibility, // 播放兼容：为指定播放器 / 分发场景做封装或编码调整
 };
 
+// ---- 损坏区间的时间轴处理策略 ----
+//
+// 「保留原时间间隔」与「删除损坏区间后连续播放」是两种语义不同的产物：
+// 前者保留源时间轴（中间有空洞），后者主动改写时间戳让播放连续。
+// 不能用一个隐式默认把两者混在一起，否则报告无法解释时间轴到底动了什么。
+enum class RepairGapPolicy {
+    PreserveOriginalTimeline, // 保留原始时间间隔（默认）
+    MergeContiguous,          // 删除损坏区间，把后续片段平移到前一段末尾
+};
+
 // ---- 业务状态（终态之外的"修复结果"语义）----
 enum class RepairBusinessStatus {
     Repaired,             // 修复完成，且指定验证通过、未发现内容缺失
@@ -82,6 +92,7 @@ enum class RepairAction {
     S01_Remux,             // 保留码流重新封装（重建索引）
     S02_TailSalvage,       // 截断尾部后抢救可读前缀
     S03_TimelineRepair,    // 时间轴修复（重复 / 回退 / 断裂）
+    S04_SegmentSalvage,    // 多段恢复：跳过损坏区间后继续提取后续可解码内容
     S08_TolerantTranscode, // 容忍式转码
     S09_SingleTrack,       // 单轨降级
 };
@@ -101,6 +112,7 @@ enum class RepairFidelityStatus {
 };
 
 const char* ToString(RepairMode value);
+const char* ToString(RepairGapPolicy value);
 const char* ToString(RepairBusinessStatus value);
 const char* ToString(RepairCheckStatus value);
 const char* ToString(DamageLayer value);
@@ -114,6 +126,7 @@ const char* ToString(RepairFidelityStatus value);
 // 前者允许以后改文案而不破坏 JSON 契约。
 const char* DisplayName(RepairBusinessStatus value);
 const char* DisplayName(RepairAction value);
+const char* DisplayName(RepairGapPolicy value);
 const char* DisplayName(RepairVerificationLevel value);
 
 // ---- 字节区间（半开区间 [begin, end)）----
@@ -252,6 +265,18 @@ struct RepairExpectedTrack {
     std::string provenance;
 };
 
+// ---- 逐轨可抢救证据（S09 单轨抢救的判定依据）----
+//
+// "省略一条轨"必须是来自事实的降级，而不是静默放弃：这里显式记录每条媒体轨
+// 是否还有可交付的样本证据、依据是什么，规划层才允许把它从输出里剔除。
+struct RepairTrackSalvageInfo {
+    uint32_t track_id = 0;
+    int input_stream_index = -1;
+    std::string kind; // "video" / "audio"
+    bool salvageable = true;
+    std::string evidence; // 判定依据（越界样本数 / 样本总数 / 未检查）
+};
+
 // ---- 诊断结果 ----
 struct RepairDiagnosis {
     std::string diagnosis_id;
@@ -268,6 +293,8 @@ struct RepairDiagnosis {
     std::vector<DamageFinding> findings;
     RepairCoverage coverage;
     std::vector<RepairExpectedTrack> expected_tracks; // 源侧样本数（守恒基线）
+    // 逐轨可抢救证据：只有跑过样本边界检查的轨道才会填。
+    std::vector<RepairTrackSalvageInfo> track_salvage;
     // 本次诊断命中的「当前版本未实现能力」边界契约；只在有证据时填充。
     std::vector<RepairCapabilityBoundary> capability_boundaries;
 
@@ -303,6 +330,11 @@ struct RepairPlan {
 
     // 执行边界（由诊断推出）：超过这个时间的内容已被确认不可读。
     std::optional<double> salvage_end_seconds;
+
+    // 由诊断判定为「没有可交付样本」而必须在输出里剔除的输入流 / 轨道。
+    // 只有用户允许单轨抢救（RepairRequest::allow_single_track）时才会非空。
+    std::vector<int> dropped_input_streams;
+    std::vector<uint32_t> dropped_track_ids;
 };
 
 // ---- 动作执行记录 ----
@@ -455,9 +487,44 @@ struct RepairVerification {
     std::string evidence;
 };
 
+// ---- 恢复区间（S04 多段恢复的实测记录）----
+//
+// 一次修复可能由多个连续可读片段拼成。每个片段都记录输入侧时间范围与产物侧
+// 时间范围：只有这样才能解释"为什么这一段保留、为什么另一段被丢弃"，也才能
+// 区分「保留原间隔」与「连续拼接」两种产物的时间轴含义。
+struct RepairRecoveredSegment {
+    uint32_t index = 0;
+    double input_start_seconds = 0.0;
+    double input_end_seconds = 0.0;
+    double output_start_seconds = 0.0;
+    double output_end_seconds = 0.0;
+    uint64_t packets_written = 0;
+    bool resumed_after_damage = false;   // 是否由跳段恢复得到（第一段为 false）
+    double skipped_before_seconds = 0.0; // 本段之前被跳过的输入时长
+    std::string recovery_point;          // 恢复点依据，如 "av_seek_frame resync"
+};
+
+// ---- 时间轴修复记录（S03）----
+//
+// 只做有证据的修复：重复 / 回退的时间戳会被显式重写并计数；缺失时间戳只统计，
+// 不在没有依据时伪造。缺口消除（MergeContiguous）单独标记，避免和"改了播放速度"
+// 混为一谈。
+struct RepairTimelineRepair {
+    bool attempted = false;
+    bool gap_removed = false;
+    double removed_gap_seconds = 0.0;
+    uint64_t timestamp_regressions = 0;
+    uint64_t timestamp_duplicates = 0;
+    uint64_t missing_timestamps = 0;
+    uint64_t rewritten_timestamps = 0;
+    // unchanged / adjusted / rebuilt / unknown
+    std::string status = "unchanged";
+    std::string note;
+};
+
 // ---- 产物 ----
 struct RepairArtifact {
-    std::string role; // "output" / "report_json" / "report_text" / "report_html"
+    std::string role; // "output" / "report_json" / "report_text" / "report_html";
     std::string path;
     std::string mime;
     std::string stored_range; // 如 "bytes [0, N)"
@@ -489,6 +556,9 @@ struct RepairResult {
 
     std::vector<RepairActionExecution> executions;
     std::vector<RepairTrackConservation> track_conservation;
+    // S04 / S03 的实测记录：报告必须能解释保留了哪些区间、时间轴改了什么。
+    std::vector<RepairRecoveredSegment> recovered_segments;
+    RepairTimelineRepair timeline_repair;
     std::vector<RepairArtifact> artifacts;
     std::vector<DamageFinding> residual_findings;
 

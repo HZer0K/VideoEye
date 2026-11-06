@@ -41,6 +41,22 @@ struct RepairRequest {
     RepairMode mode = RepairMode::PreserveBitstream;
     RepairVerificationLevel verification_level = RepairVerificationLevel::V2_FullDecode;
 
+    // ---- 第一阶段恢复能力开关（默认全部开启，单轨抢救需显式允许）----
+
+    // 读到损坏区间后是否继续向后寻找恢复点，把后半段一起抢救回来。
+    // false 时退化为"读到错误就停"（旧行为）。
+    bool allow_segment_salvage = true;
+
+    // 跳段恢复得到多个片段时，产物时间轴如何处理。
+    RepairGapPolicy gap_policy = RepairGapPolicy::PreserveOriginalTimeline;
+
+    // 是否对有证据的时间戳重复 / 回退做显式重写（只统计缺失，不伪造）。
+    bool repair_timeline = true;
+
+    // 允许把"全部样本都不可读"的轨道从输出里剔除（单轨抢救）。
+    // 诊断层只有在拿到越界样本证据时才会给出该轨不可抢救的结论。
+    bool allow_single_track = true;
+
     RepairLimits limits;
 
     bool write_report = true;

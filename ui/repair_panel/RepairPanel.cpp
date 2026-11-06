@@ -1,5 +1,6 @@
 #include "ui/repair_panel/RepairPanel.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QDir>
@@ -192,6 +193,40 @@ void RepairPanel::BuildUi() {
     level_row->addWidget(level_combo_, 1);
     grid->addLayout(level_row, row, 2);
 
+    ++row;
+    grid->addWidget(new QLabel(QStringLiteral("损坏区间处理"), config_group), row, 0);
+    gap_combo_ = new QComboBox(config_group);
+    gap_combo_->addItem(QStringLiteral("保留原时间间隔（默认）"),
+                        static_cast<int>(model::RepairGapPolicy::PreserveOriginalTimeline));
+    gap_combo_->addItem(QStringLiteral("删除损坏区间，连续播放"),
+                        static_cast<int>(model::RepairGapPolicy::MergeContiguous));
+    gap_combo_->setToolTip(QStringLiteral("跳段恢复得到多段内容时，产物时间轴如何处理。\n"
+                                          "保留间隔：时间轴与源一致，中间存在空洞；\n"
+                                          "连续播放：把后段平移到前段末尾，产物时长变短。"));
+    grid->addWidget(gap_combo_, row, 1);
+
+    ++row;
+    grid->addWidget(new QLabel(QStringLiteral("恢复能力"), config_group), row, 0);
+    auto* capability_row = new QHBoxLayout();
+    capability_row->setSpacing(12);
+    segment_check_ = new QCheckBox(QStringLiteral("跳段继续恢复"), config_group);
+    segment_check_->setChecked(true);
+    segment_check_->setToolTip(
+        QStringLiteral("读到损坏区间后继续向后寻找可解码恢复点，抢救后半段内容；关闭则读到错误即停止。"));
+    timeline_check_ = new QCheckBox(QStringLiteral("启用时间轴修复"), config_group);
+    timeline_check_->setChecked(true);
+    timeline_check_->setToolTip(QStringLiteral("对重复 / 回退的时间戳做显式单调重写；缺失时间戳只统计、不伪造。"));
+    single_track_check_ = new QCheckBox(QStringLiteral("允许单轨抢救"), config_group);
+    single_track_check_->setChecked(true);
+    single_track_check_->setToolTip(
+        QStringLiteral("仅当某条轨的全部样本都确认不可读时，把它从产物中剔除，保证其余轨道仍可播放；"
+                       "被剔除轨道的内容不可找回。"));
+    capability_row->addWidget(segment_check_);
+    capability_row->addWidget(timeline_check_);
+    capability_row->addWidget(single_track_check_);
+    capability_row->addStretch(1);
+    grid->addLayout(capability_row, row, 1, 1, 2);
+
     root->addWidget(config_group);
 
     // ---------------- 操作 + 进度 ----------------
@@ -253,8 +288,8 @@ void RepairPanel::BuildUi() {
     auto* metrics = new QGridLayout();
     metrics->setHorizontalSpacing(18);
     metrics->setVerticalSpacing(6);
-    const char* captions[4] = {"可播放性", "内容损失", "编码变化", "验证覆盖"};
-    for (int i = 0; i < 4; ++i) {
+    const char* captions[6] = {"播放验证", "内容保留", "时间轴变化", "画质风险", "编码变化", "验证覆盖"};
+    for (int i = 0; i < 6; ++i) {
         auto* caption = new QLabel(QString::fromUtf8(captions[i]), result_group);
         caption->setStyleSheet(QStringLiteral("color:%1;").arg(QString::fromLatin1(theme::color::kTextMuted)));
         metric_labels_[i] = new QLabel(QStringLiteral("—"), result_group);
@@ -351,6 +386,10 @@ void RepairPanel::OnStart() {
     request.reference_path = reference_edit_->text().trimmed().toStdString();
     request.mode = static_cast<model::RepairMode>(mode_combo_->currentData().toInt());
     request.verification_level = static_cast<model::RepairVerificationLevel>(level_combo_->currentData().toInt());
+    request.gap_policy = static_cast<model::RepairGapPolicy>(gap_combo_->currentData().toInt());
+    request.allow_segment_salvage = segment_check_->isChecked();
+    request.repair_timeline = timeline_check_->isChecked();
+    request.allow_single_track = single_track_check_->isChecked();
     request.write_report = true;
     // write_report 的契约由界面落实：引擎只负责命名路径，不写报告。
     last_write_report_ = request.write_report;
@@ -413,6 +452,10 @@ void RepairPanel::SetRunning(bool running) {
     output_edit_->setEnabled(idle);
     mode_combo_->setEnabled(idle);
     level_combo_->setEnabled(idle);
+    gap_combo_->setEnabled(idle);
+    segment_check_->setEnabled(idle);
+    timeline_check_->setEnabled(idle);
+    single_track_check_->setEnabled(idle);
     if (running) {
         open_output_button_->setEnabled(false);
         open_report_button_->setEnabled(false);
@@ -564,11 +607,51 @@ void RepairPanel::UpdateOutputs(const model::RepairResult& result) {
     } else {
         content = QStringLiteral("未知（未产出可核对内容）");
     }
+    if (!result.recovered_segments.empty())
+        content += QStringLiteral(" · 恢复 %1 段").arg(result.recovered_segments.size());
+    if (!result.plan.dropped_input_streams.empty())
+        content += QStringLiteral(" · 省略 %1 条轨").arg(result.plan.dropped_input_streams.size());
     SetMetric(1, content,
-              result.fidelity.content_completeness == "complete_for_selected_checks"
+              result.fidelity.content_completeness == "complete_for_selected_checks" &&
+                      result.recovered_segments.empty() && result.plan.dropped_input_streams.empty()
                   ? QString::fromLatin1(theme::color::kSuccess)
-              : result.fidelity.content_completeness == "partial" ? QString::fromLatin1(theme::color::kWarning)
-                                                                  : QString::fromLatin1(theme::color::kTextSecondary));
+              : result.fidelity.content_completeness == "partial" || !result.recovered_segments.empty() ||
+                      !result.plan.dropped_input_streams.empty()
+                  ? QString::fromLatin1(theme::color::kWarning)
+                  : QString::fromLatin1(theme::color::kTextSecondary));
+
+    QString timeline;
+    if (result.fidelity.timeline_status == "unchanged") {
+        timeline = QStringLiteral("未改写（时基已核验）");
+    } else if (result.fidelity.timeline_status == "adjusted") {
+        timeline = QStringLiteral("已主动调整");
+        if (result.timeline_repair.rewritten_timestamps > 0)
+            timeline += QStringLiteral(" · 重写 %1 个时间戳").arg(result.timeline_repair.rewritten_timestamps);
+        if (result.timeline_repair.gap_removed)
+            timeline += QStringLiteral(" · 合并缺口 %1s")
+                            .arg(QString::number(result.timeline_repair.removed_gap_seconds, 'f', 3));
+    } else if (result.fidelity.timeline_status == "modified") {
+        timeline = QStringLiteral("实测不符，播放速度可能已变");
+    } else {
+        timeline = QStringLiteral("无法判定（时基未核验）");
+    }
+    SetMetric(2, timeline,
+              result.fidelity.timeline_status == "modified"   ? QString::fromLatin1(theme::color::kDanger)
+              : result.fidelity.timeline_status == "adjusted" ? QString::fromLatin1(theme::color::kWarning)
+                                                              : QString::fromLatin1(theme::color::kTextSecondary));
+
+    QString quality;
+    if (result.fidelity.video_reencoded || result.fidelity.audio_reencoded) {
+        quality = QStringLiteral("存在重编码 · 画质风险需人工复核");
+    } else if (result.output_published) {
+        quality = QStringLiteral("保码流 · 画质风险未量化");
+    } else {
+        quality = QStringLiteral("无产物");
+    }
+    SetMetric(3, quality,
+              (result.fidelity.video_reencoded || result.fidelity.audio_reencoded)
+                  ? QString::fromLatin1(theme::color::kWarning)
+                  : QString::fromLatin1(theme::color::kTextSecondary));
 
     QString encoding;
     if (result.fidelity.video_reencoded || result.fidelity.audio_reencoded) {
@@ -582,7 +665,7 @@ void RepairPanel::UpdateOutputs(const model::RepairResult& result) {
     } else {
         encoding = QStringLiteral("无产物");
     }
-    SetMetric(2, encoding,
+    SetMetric(4, encoding,
               (result.fidelity.video_reencoded || result.fidelity.audio_reencoded ||
                result.fidelity.video == model::RepairFidelityStatus::Failed)
                   ? QString::fromLatin1(theme::color::kDanger)
@@ -595,13 +678,13 @@ void RepairPanel::UpdateOutputs(const model::RepairResult& result) {
                            .arg(result.verification.seek_checks);
     if (result.verification.decode_errors > 0)
         coverage += QStringLiteral(" · 错误 %1").arg(result.verification.decode_errors);
-    SetMetric(3, coverage,
+    SetMetric(5, coverage,
               result.verification.decode_errors > 0 ? QString::fromLatin1(theme::color::kWarning)
                                                     : QString::fromLatin1(theme::color::kTextPrimary));
 }
 
 void RepairPanel::SetMetric(int index, const QString& value, const QString& color) {
-    if (index < 0 || index >= 4 || !metric_labels_[index])
+    if (index < 0 || index >= 6 || !metric_labels_[index])
         return;
     metric_labels_[index]->setText(value);
     metric_labels_[index]->setStyleSheet(QStringLiteral("color:%1;").arg(color));

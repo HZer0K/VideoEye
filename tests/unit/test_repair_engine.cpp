@@ -30,6 +30,9 @@
 
 #include "core/domain/model/RepairRequest.h"
 #include "core/repair/RepairEngine.h"
+#include "core/repair/RepairExecutor.h"
+#include "core/repair/RepairOutputWriter.h"
+#include "core/repair/RepairPlanner.h"
 #include "core/repair/RepairUtils.h"
 #include "core/reporting/RepairReportExporter.h"
 #include "tests/support/TestMediaFactory.h"
@@ -90,6 +93,83 @@ RepairRequest MakeRequest(const std::string& source, const std::string& output_d
     request.verification_level = level;
     request.write_report = true;
     return request;
+}
+
+uint32_t ReadBe32(const std::vector<char>& bytes, std::size_t offset) {
+    return (static_cast<uint32_t>(static_cast<unsigned char>(bytes[offset])) << 24) |
+           (static_cast<uint32_t>(static_cast<unsigned char>(bytes[offset + 1])) << 16) |
+           (static_cast<uint32_t>(static_cast<unsigned char>(bytes[offset + 2])) << 8) |
+           static_cast<uint32_t>(static_cast<unsigned char>(bytes[offset + 3]));
+}
+
+void WriteBe32(std::vector<char>& bytes, std::size_t offset, uint32_t value) {
+    bytes[offset] = static_cast<char>((value >> 24) & 0xFF);
+    bytes[offset + 1] = static_cast<char>((value >> 16) & 0xFF);
+    bytes[offset + 2] = static_cast<char>((value >> 8) & 0xFF);
+    bytes[offset + 3] = static_cast<char>(value & 0xFF);
+}
+
+// 把每条轨的 stco 中同一比例的条目改成远超文件大小的偏移，模拟"录制中途
+// 存储区域损坏、但文件结构与后续数据仍在"。
+//
+// 必须两条轨都改：只坏一条轨时，demuxer 会让该轨提前 EOF，另一条轨仍能读到
+// 文件尾，时间轴并未真正中断，无法验证"整段中断 → 跳段恢复"的行为。
+bool PatchStcoChunkOffset(const std::string& source, const std::string& target, double ratio,
+                          std::string* error = nullptr) {
+    std::ifstream in(source, std::ios::binary);
+    if (!in) {
+        if (error)
+            *error = "open failed";
+        return false;
+    }
+    std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    // stco 布局: size(4) + type(4) + version/flags(4) + entry_count(4) + entries...
+    std::size_t patched_tables = 0;
+    std::string detail;
+    std::size_t offset = 0;
+    while (offset + 8 <= bytes.size()) {
+        if (offset + 4 > bytes.size())
+            break;
+        const std::size_t type_offset = offset + 4;
+        if (type_offset + 12 <= bytes.size() && bytes[type_offset] == 's' && bytes[type_offset + 1] == 't' &&
+            bytes[type_offset + 2] == 'c' && bytes[type_offset + 3] == 'o') {
+            const uint32_t size = ReadBe32(bytes, offset);
+            const uint32_t entry_count = ReadBe32(bytes, type_offset + 8);
+            if (size >= 16 && offset + size <= bytes.size() && entry_count >= 4 &&
+                offset + 16 + static_cast<std::size_t>(entry_count) * 4 <= bytes.size()) {
+                std::size_t index = static_cast<std::size_t>(entry_count * ratio);
+                if (index >= entry_count)
+                    index = entry_count - 1;
+                WriteBe32(bytes, offset + 16 + index * 4, 0x7F000000u);
+                ++patched_tables;
+                detail += " stco#" + std::to_string(patched_tables) + "(count=" + std::to_string(entry_count) +
+                          ",index=" + std::to_string(index) + ")";
+                offset += size;
+                continue;
+            }
+        }
+        ++offset;
+    }
+    if (patched_tables == 0) {
+        if (error)
+            *error = "stco not found, bytes=" + std::to_string(bytes.size());
+        return false;
+    }
+    std::ofstream out(target, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        if (error)
+            *error = "output open failed: " + target;
+        return false;
+    }
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!out) {
+        if (error)
+            *error = "write failed";
+        return false;
+    }
+    if (error)
+        *error = "ok tables=" + std::to_string(patched_tables) + detail;
+    return true;
 }
 
 } // namespace
@@ -497,4 +577,170 @@ TEST(RepairEngine, ManualRealSampleInspection) {
         std::filesystem::remove_all(request.output_directory, ec);
     }
     std::cout << "===== END =====\n";
+}
+
+bool HasResidualFinding(const RepairResult& result, const std::string& code) {
+    for (const auto& finding : result.residual_findings) {
+        if (finding.code == code)
+            return true;
+    }
+    return false;
+}
+
+const RepairActionExecution* FindExecution(const RepairResult& result, RepairAction action) {
+    for (const auto& execution : result.executions) {
+        if (execution.action == action)
+            return &execution;
+    }
+    return nullptr;
+}
+
+// 「中间损坏后只能保留前半段」是本轮要解决的核心问题：
+// 把样本表里的一个中间 chunk offset 改成文件外偏移（结构仍合法，读到那里才会失败），
+// 要求修复流程跳过损坏点、继续提取后续内容，并把跳段范围写进产物记录。
+TEST(RepairEngine, MidFileChunkOffsetDamageResumesAfterReadError) {
+    const std::string dir = MakeTempDir("midfile");
+    const auto media = videoeye_test::CreateTestMedia(dir, "mid_src");
+    ASSERT_TRUE(media.ok) << media.error;
+
+    const std::string broken = dir + "/mid_broken.mp4";
+    std::string patch_error;
+    ASSERT_TRUE(PatchStcoChunkOffset(media.path, broken, 0.5, &patch_error))
+        << "测试样本没有可改写的 stco: path=" << media.path << " size=" << std::filesystem::file_size(media.path)
+        << " reason=" << patch_error;
+
+    const RepairResult result = repair::RepairEngine::Run(MakeRequest(broken, dir + "/out"), nullptr, nullptr);
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+    EXPECT_EQ(result.status, RepairBusinessStatus::PartiallyRecovered) << ToString(result.status);
+
+    // 至少两段：损坏点之前 + 跳段恢复之后。只保留前半段会让这里保持 1。
+    ASSERT_GE(result.recovered_segments.size(), 2u) << result.summary;
+    EXPECT_TRUE(result.recovered_segments.front().resumed_after_damage == false);
+    EXPECT_TRUE(result.recovered_segments.back().resumed_after_damage);
+    EXPECT_GT(result.recovered_segments.back().skipped_before_seconds, 0.0);
+
+    const RepairActionExecution* segment = FindExecution(result, RepairAction::S04_SegmentSalvage);
+    ASSERT_NE(segment, nullptr);
+    EXPECT_TRUE(segment->attempted) << segment->detail;
+    EXPECT_TRUE(segment->succeeded) << segment->detail;
+
+    // 诊断阶段确认的越界边界之外不应再继续读；跳段记录必须落在残留问题里。
+    EXPECT_TRUE(HasResidualFinding(result, "container.damaged_segment_skipped")) << result.summary;
+
+    const auto probe = videoeye_test::ProbeMediaFile(result.output_path);
+    EXPECT_TRUE(probe.opened) << probe.error;
+    EXPECT_GT(probe.frame_count, 0);
+    // 保留原时间间隔：不做缺口合并。
+    EXPECT_FALSE(result.timeline_repair.gap_removed);
+}
+
+// 同样的损坏，选择「删除损坏区间后连续播放」：产物时间轴必须被主动平移，
+// 且报告要明确这是缺口合并，而不是播放速度被改变。
+TEST(RepairEngine, MergeGapPolicyProducesContinuousTimeline) {
+    const std::string dir = MakeTempDir("mergegap");
+    const auto media = videoeye_test::CreateTestMedia(dir, "merge_src");
+    ASSERT_TRUE(media.ok) << media.error;
+
+    const std::string broken = dir + "/merge_broken.mp4";
+    std::string patch_error;
+    ASSERT_TRUE(PatchStcoChunkOffset(media.path, broken, 0.5, &patch_error)) << patch_error;
+
+    RepairRequest request = MakeRequest(broken, dir + "/out");
+    request.gap_policy = RepairGapPolicy::MergeContiguous;
+    const RepairResult result = repair::RepairEngine::Run(request, nullptr, nullptr);
+
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+    ASSERT_GE(result.recovered_segments.size(), 2u) << result.summary;
+    EXPECT_TRUE(result.timeline_repair.gap_removed);
+    EXPECT_GT(result.timeline_repair.removed_gap_seconds, 0.0);
+    EXPECT_EQ(result.fidelity.timeline_status, "adjusted");
+    EXPECT_TRUE(result.fidelity.timeline_modified);
+
+    const auto probe = videoeye_test::ProbeMediaFile(result.output_path);
+    EXPECT_TRUE(probe.opened) << probe.error;
+    EXPECT_GT(probe.frame_count, 0);
+    // 跳过的损坏区间不应出现在产物时长里。
+    EXPECT_LT(probe.duration_seconds, media.duration_seconds - 0.05);
+}
+
+// 单轨抢救必须是"有证据的降级"：只有诊断明确某条轨全部样本不可读、
+// 且还有其它轨道可用时，规划器才允许剔除该轨。
+TEST(RepairPlanner, SingleTrackSalvageRequiresUnsalvageableEvidence) {
+    RepairDiagnosis diagnosis;
+    diagnosis.container_known = true;
+    diagnosis.moov_present = true;
+    RepairTrackSalvageInfo video;
+    video.track_id = 1;
+    video.input_stream_index = 0;
+    video.kind = "video";
+    video.salvageable = true;
+    video.evidence = "0/40 越界";
+    RepairTrackSalvageInfo audio;
+    audio.track_id = 2;
+    audio.input_stream_index = 1;
+    audio.kind = "audio";
+    audio.salvageable = false;
+    audio.evidence = "全部 40 个样本越过文件尾";
+    diagnosis.track_salvage = {video, audio};
+
+    RepairRequest request;
+    const auto outcome = repair::RepairPlanner::MakePlan(request, diagnosis, std::nullopt, 0, nullptr);
+    ASSERT_TRUE(outcome.can_execute) << outcome.plan.infeasible_reason;
+    EXPECT_EQ(outcome.plan.dropped_input_streams.size(), 1u);
+    EXPECT_EQ(outcome.plan.dropped_input_streams.front(), 1);
+    const RepairActionPlan* single = nullptr;
+    for (const auto& action : outcome.plan.actions) {
+        if (action.action == RepairAction::S09_SingleTrack)
+            single = &action;
+    }
+    ASSERT_NE(single, nullptr);
+    EXPECT_TRUE(single->available);
+
+    // 用户关闭单轨抢救：不剔除任何轨道。
+    RepairRequest conservative;
+    conservative.allow_single_track = false;
+    const auto conservative_outcome =
+        repair::RepairPlanner::MakePlan(conservative, diagnosis, std::nullopt, 0, nullptr);
+    EXPECT_TRUE(conservative_outcome.plan.dropped_input_streams.empty());
+
+    // 没有"全部不可读"的证据：不许剔除。
+    diagnosis.track_salvage[1].salvageable = true;
+    diagnosis.track_salvage[1].evidence = "2/40 越界，仍有可用样本";
+    const auto no_evidence = repair::RepairPlanner::MakePlan(request, diagnosis, std::nullopt, 0, nullptr);
+    EXPECT_TRUE(no_evidence.plan.dropped_input_streams.empty());
+}
+
+// 执行层的单轨行为：plan 指定剔除某条输入流后，产物必须真的不含该流，
+// 且剩余轨道仍能解码。
+TEST(RepairExecutor, DroppedInputStreamIsOmittedFromOutput) {
+    const std::string dir = MakeTempDir("dropout");
+    const auto media = videoeye_test::CreateTestMedia(dir, "drop_src");
+    ASSERT_TRUE(media.ok) << media.error;
+
+    RepairRequest request = MakeRequest(media.path, dir + "/out", RepairVerificationLevel::V1_FrameSample);
+    request.write_report = false;
+    const auto paths = repair::RepairOutputWriter::Resolve(request, "execdrop");
+    ASSERT_TRUE(paths.valid) << paths.error;
+    std::string reserve_error;
+    ASSERT_TRUE(repair::RepairOutputWriter::Reserve(paths, &reserve_error)) << reserve_error;
+
+    RepairDiagnosis diagnosis;
+    diagnosis.container_known = true;
+    diagnosis.moov_present = true;
+    RepairPlan plan;
+    plan.feasible = true;
+    plan.dropped_input_streams = {1}; // 测试样本：0=视频，1=音频
+    plan.dropped_track_ids = {2};
+
+    const auto outcome =
+        repair::RepairExecutor::Execute(request, diagnosis, plan, paths, nullptr, nullptr, {}, nullptr);
+    ASSERT_TRUE(outcome.ok) << outcome.error;
+    EXPECT_FALSE(outcome.omitted_items.empty());
+
+    const auto probe = videoeye_test::ProbeMediaFile(outcome.part_path);
+    EXPECT_TRUE(probe.opened) << probe.error;
+    EXPECT_EQ(probe.video_streams, 1);
+    EXPECT_EQ(probe.audio_streams, 0);
+    EXPECT_GT(probe.frame_count, 0);
+    repair::RepairOutputWriter::Discard(outcome.part_path);
 }

@@ -15,6 +15,16 @@ const char* ToString(RepairMode value) {
     return "unknown";
 }
 
+const char* ToString(RepairGapPolicy value) {
+    switch (value) {
+    case RepairGapPolicy::PreserveOriginalTimeline:
+        return "preserve_original_timeline";
+    case RepairGapPolicy::MergeContiguous:
+        return "merge_contiguous";
+    }
+    return "unknown";
+}
+
 const char* ToString(RepairBusinessStatus value) {
     switch (value) {
     case RepairBusinessStatus::Repaired:
@@ -109,6 +119,8 @@ const char* ToString(RepairAction value) {
         return "S02_tail_salvage";
     case RepairAction::S03_TimelineRepair:
         return "S03_timeline_repair";
+    case RepairAction::S04_SegmentSalvage:
+        return "S04_segment_salvage";
     case RepairAction::S08_TolerantTranscode:
         return "S08_tolerant_transcode";
     case RepairAction::S09_SingleTrack:
@@ -173,12 +185,24 @@ const char* DisplayName(RepairAction value) {
         return "尾部抢救";
     case RepairAction::S03_TimelineRepair:
         return "时间轴修复";
+    case RepairAction::S04_SegmentSalvage:
+        return "多段恢复";
     case RepairAction::S08_TolerantTranscode:
         return "容忍式转码";
     case RepairAction::S09_SingleTrack:
         return "单轨降级";
     }
     return "未知策略";
+}
+
+const char* DisplayName(RepairGapPolicy value) {
+    switch (value) {
+    case RepairGapPolicy::PreserveOriginalTimeline:
+        return "保留原时间间隔";
+    case RepairGapPolicy::MergeContiguous:
+        return "删除损坏区间，连续播放";
+    }
+    return "未知";
 }
 
 const char* DisplayName(RepairVerificationLevel value) {

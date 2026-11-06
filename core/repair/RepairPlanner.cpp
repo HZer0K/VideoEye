@@ -30,6 +30,63 @@ void AddUnavailable(model::RepairPlan& plan, model::RepairAction action, const s
     plan.actions.push_back(std::move(entry));
 }
 
+// 第一阶段能力：多段恢复 + 时间轴修复 + 单轨抢救。
+// 三者都可以和 S01 叠加执行，因此统一在这里追加，避免 fMP4 分支提前 return
+// 把可用策略漏掉（那会让报告显示"只做重封装"，与执行实际行为不符）。
+void AddFirstStageActions(model::RepairPlan& plan, const model::RepairRequest& request,
+                          const model::RepairDiagnosis& diagnosis) {
+    if (request.allow_segment_salvage) {
+        model::RepairActionPlan segment =
+            MakeAction(model::RepairAction::S04_SegmentSalvage,
+                       "读到损坏区间后向后寻找可解码恢复点，跳过不可读区间继续提取后续内容",
+                       "产物可能由多个连续片段组成；不完整的前半段与损坏区间会明确记账",
+                       "跳段点之后的解码起点可能不是关键帧，恢复点附近可能有短时花屏；被跳过的区间无法找回");
+        segment.depends_on.push_back(model::RepairAction::S01_Remux);
+        plan.actions.push_back(std::move(segment));
+        plan.global_preconditions.push_back(std::string("损坏区间时间轴处理: ") +
+                                            model::DisplayName(request.gap_policy) +
+                                            (request.gap_policy == model::RepairGapPolicy::PreserveOriginalTimeline
+                                                 ? "（保留源时间间隔，中间缺口不补齐）"
+                                                 : "（把后续片段平移到前一段末尾，产物时间轴会主动改写）"));
+    }
+
+    if (request.repair_timeline) {
+        plan.actions.push_back(
+            MakeAction(model::RepairAction::S03_TimelineRepair,
+                       "对重复 / 回退的时间戳做显式单调重写；缺失时间戳只统计，不在无依据时伪造",
+                       "产物逐流时间戳单调递增；改写数量与缺口消除量写入报告",
+                       "重写会改变原始时间戳；没有可靠依据时不会改变播放速度，缺口是否补齐由间隔策略决定"));
+    }
+
+    if (request.allow_single_track) {
+        std::size_t salvageable = 0;
+        for (const auto& track : diagnosis.track_salvage) {
+            if (track.salvageable)
+                ++salvageable;
+        }
+        // 证据要求：至少一条轨确认不可用、至少一条轨仍有可用样本、且能映射到输入流。
+        std::vector<model::RepairTrackSalvageInfo> dropped;
+        for (const auto& track : diagnosis.track_salvage) {
+            if (!track.salvageable && track.input_stream_index >= 0)
+                dropped.push_back(track);
+        }
+        if (!dropped.empty() && salvageable > 0) {
+            model::RepairActionPlan single = MakeAction(model::RepairAction::S09_SingleTrack,
+                                                        "把没有可交付样本的轨道从输出中剔除，只保留仍可恢复的轨道",
+                                                        "产物只包含可恢复轨道，避免整份文件因单轨损坏而不可用",
+                                                        "被剔除轨道的内容不可找回；音画同步与整体语义可能改变");
+            single.depends_on.push_back(model::RepairAction::S01_Remux);
+            plan.actions.push_back(std::move(single));
+            for (const auto& track : dropped) {
+                plan.dropped_input_streams.push_back(track.input_stream_index);
+                plan.dropped_track_ids.push_back(track.track_id);
+                plan.global_preconditions.push_back("单轨抢救: 剔除轨道 " + std::to_string(track.track_id) + "（" +
+                                                    track.kind + "，" + track.evidence + "）");
+            }
+        }
+    }
+}
+
 } // namespace
 
 RepairPlanOutcome RepairPlanner::MakePlan(const model::RepairRequest& request, const model::RepairDiagnosis& diagnosis,
@@ -68,6 +125,9 @@ RepairPlanOutcome RepairPlanner::MakePlan(const model::RepairRequest& request, c
                            "前置参考初始化段补全 ftyp+moov，解析源媒体分片并重建索引，重新封装为 MP4",
                            "产物具备完整 moov/样本表，时间轴连续",
                            "参考初始化段与源分片编码参数不匹配时产物无法解码；无法恢复编码层损坏的帧"));
+            AddFirstStageActions(plan, request, diagnosis);
+            AddUnavailable(plan, model::RepairAction::S08_TolerantTranscode, "容忍式转码（解码可读帧后重新编码）",
+                           "需要解码-编码链与画质评估，当前版本未实现");
             plan.feasible = true;
             outcome.can_execute = true;
             outcome.early_status = model::RepairBusinessStatus::Repaired;
@@ -127,12 +187,9 @@ RepairPlanOutcome RepairPlanner::MakePlan(const model::RepairRequest& request, c
         plan.actions.push_back(std::move(salvage));
     }
 
-    AddUnavailable(plan, model::RepairAction::S03_TimelineRepair, "时间戳重复/回退/断裂的显式重写",
-                   "当前版本按容器时间基原样复制时间戳，尚未实现时间轴重写");
+    AddFirstStageActions(plan, request, diagnosis);
     AddUnavailable(plan, model::RepairAction::S08_TolerantTranscode, "容忍式转码（解码可读帧后重新编码）",
                    "需要解码-编码链与画质评估，当前版本未实现");
-    AddUnavailable(plan, model::RepairAction::S09_SingleTrack, "多轨文件降级为单轨输出",
-                   "当前版本按轨道原样复制，尚未实现选择性单轨降级");
 
     plan.feasible = true;
     outcome.can_execute = true;

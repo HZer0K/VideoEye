@@ -44,6 +44,19 @@ std::string BuildSummary(const model::RepairResult& result) {
         summary << "；时间轴未核验";
     else if (result.fidelity.timeline_status == "modified")
         summary << "；时间轴实测不符";
+    else if (result.fidelity.timeline_status == "adjusted")
+        summary << "；时间轴已调整";
+    if (!result.recovered_segments.empty()) {
+        summary << "；恢复区间 " << result.recovered_segments.size() << " 段";
+        double skipped = 0.0;
+        for (const auto& segment : result.recovered_segments)
+            skipped += std::max(0.0, segment.skipped_before_seconds);
+        if (skipped > 0.0) {
+            summary << "（跳过约 " << FormatSeconds(skipped) << " s）";
+        }
+    }
+    if (!result.plan.dropped_input_streams.empty())
+        summary << "；单轨抢救省略 " << result.plan.dropped_input_streams.size() << " 条轨";
     if (!result.verification.per_track.empty())
         summary << "；逐轨 " << result.verification.per_track.size() << " 条";
     if (!result.residual_findings.empty())
@@ -173,6 +186,8 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     result.ffmpeg_version = execution.ffmpeg_version;
     result.residual_findings = execution.residual_findings;
     result.track_conservation = execution.track_conservation;
+    result.recovered_segments = execution.recovered_segments;
+    result.timeline_repair = execution.timeline_repair;
     result.fidelity.omitted_items = execution.omitted_items;
 
     if (execution.canceled || (budget.Checkpoint() && budget.Canceled()))
@@ -268,8 +283,12 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     if (verified.verification.status == model::RepairCheckStatus::Failed)
         return finish_failed(model::RepairBusinessStatus::Failed, "产物验证未通过: " + verified.verification.evidence);
 
-    const bool content_lost =
-        execution.read_error || execution.salvage_truncated || planning.plan.salvage_end_seconds.has_value();
+    // 多段恢复 / 单轨抢救本身就是"有内容损失"的证据：产物虽然能播放，
+    // 但至少跳过了损坏区间，或省略了一整条轨。不能因为可播放就宣称完整。
+    const bool segment_split = execution.recovered_segments.size() > 1;
+    const bool track_dropped = !planning.plan.dropped_input_streams.empty();
+    const bool content_lost = execution.read_error || execution.salvage_truncated ||
+                              planning.plan.salvage_end_seconds.has_value() || segment_split || track_dropped;
     const bool inconclusive = verified.verification.status == model::RepairCheckStatus::Inconclusive ||
                               verified.verification.decode_errors > 0 || verified.verification.corrupt_frames > 0 ||
                               verified.verification.error_recovery_frames > 0;
@@ -323,12 +342,22 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     fidelity.synthetic_frame_count = 0;
     // timeline_modified 只表示「引擎主动重写了时间戳」。旧实现在这里恒写 false，
     // 于是借用未核验参考时基导致播放时长改变时，报告仍声称「时间轴改写: no」。
-    fidelity.timeline_modified = timeline_mismatch;
+    const bool timeline_adjusted =
+        execution.timeline_repair.gap_removed || execution.timeline_repair.rewritten_timestamps > 0;
+    fidelity.timeline_modified = timeline_mismatch || timeline_adjusted;
     if (timeline_mismatch) {
         fidelity.timeline_status = "modified";
         fidelity.timeline_note = "产物实测时长 " + FormatSeconds(verified.verification.observed_duration_seconds) +
                                  "s 与源侧估算 " + FormatSeconds(verified.verification.expected_duration_seconds) +
                                  "s 不符；播放时长 / 速度可能已被借用的参考时基改变";
+    } else if (timeline_adjusted) {
+        // 「adjusted」与「modified」区分开：这里是逐流单调重写 / 缺口合并造成的主动调整，
+        // 不是全区段播放速度改变。报告必须能解释改动的来源。
+        fidelity.timeline_status = "adjusted";
+        fidelity.timeline_note = execution.timeline_repair.note;
+        if (execution.timeline_repair.gap_removed)
+            fidelity.timeline_note += "；本次按「" + std::string(model::DisplayName(request.gap_policy)) +
+                                      "」生成产物，片段内部时间关系保持不变";
     } else if (timeline_unknown) {
         fidelity.timeline_status = "unknown";
         fidelity.timeline_note = "时间戳仅按输出容器时间基缩放，未主动补齐 / 合成；但本次借用了参考初始化段的时基，"
@@ -360,6 +389,35 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
         fidelity.limitations.push_back("借用的参考时基未经源侧独立证据核验，时间轴是否改变无法确定");
     if (reference_unverified)
         fidelity.limitations.push_back("参考段兼容性未核验，完整性结论只覆盖实际写入并被验证的包");
+    if (segment_split) {
+        double skipped = 0.0;
+        for (const auto& segment : execution.recovered_segments)
+            skipped += std::max(0.0, segment.skipped_before_seconds);
+        fidelity.limitations.push_back("产物由 " + std::to_string(execution.recovered_segments.size()) +
+                                       " 段组成，中间约 " + FormatSeconds(skipped) +
+                                       " s 损坏区间未参与修复；只证明跳过区间之外的内容可播放");
+    }
+    if (track_dropped) {
+        fidelity.limitations.push_back("已按单轨抢救省略 " +
+                                       std::to_string(planning.plan.dropped_input_streams.size()) +
+                                       " 条无可用样本的轨道，产物不包含这部分内容");
+        model::DamageFinding finding;
+        finding.code = "track.salvaged_single_track";
+        finding.detector = "repair.engine";
+        finding.layer = model::DamageLayer::Container;
+        finding.severity = model::IssueSeverity::Warning;
+        finding.confidence = model::DamageConfidence::Confirmed;
+        finding.location.precision = model::DamagePrecision::Bounded;
+        finding.location.provenance = "sample bounds all out of range vs per-track output";
+        finding.evidence = "诊断判定 " + std::to_string(planning.plan.dropped_input_streams.size()) +
+                           " 条轨道的全部样本不可读，已从产物中省略以保证其余轨道可播放";
+        finding.limitations.push_back("被省略轨道的内容无法从本文件找回；音画关系已改变");
+        finding.candidate_actions.push_back(model::RepairAction::S09_SingleTrack);
+        result.residual_findings.push_back(std::move(finding));
+    }
+    if (timeline_adjusted)
+        fidelity.limitations.push_back("时间轴经主动调整（" + execution.timeline_repair.note +
+                                       "）；片段内部时间关系未被改变");
     for (const auto& omitted : execution.omitted_items)
         fidelity.limitations.push_back("未保留: " + omitted);
     if (!verified.verification.timeline_checks.empty()) {
@@ -369,7 +427,8 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
 
     model::RepairBusinessStatus status = model::RepairBusinessStatus::Repaired;
     if (inconclusive || content_lost || conservation_loss || conservation_unknown ||
-        verified.verification.structure_only || reference_unverified || timeline_unknown || timeline_mismatch)
+        verified.verification.structure_only || reference_unverified || timeline_unknown || timeline_mismatch ||
+        timeline_adjusted)
         status = model::RepairBusinessStatus::PartiallyRecovered;
 
     // ---- R03：参考段借用参数与时间轴风险 ----

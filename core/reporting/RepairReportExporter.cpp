@@ -20,6 +20,9 @@ constexpr const char* kRepairSchemaVersion = "1.0";
 
 JsonValue BuildTrackConservationArray(const std::vector<model::RepairTrackConservation>& records);
 JsonValue BuildTrackVerificationArray(const std::vector<model::RepairTrackVerification>& tracks);
+JsonValue BuildTrackSalvageArray(const std::vector<model::RepairTrackSalvageInfo>& tracks);
+JsonValue BuildRecoveredSegments(const std::vector<model::RepairRecoveredSegment>& segments);
+JsonValue BuildTimelineRepair(const model::RepairTimelineRepair& repair);
 
 JsonValue JText(const std::string& value) {
     return JsonValue(value);
@@ -224,6 +227,7 @@ JsonValue BuildDiagnosis(const model::RepairDiagnosis& diagnosis) {
     object.Set("findings", BuildFindings(diagnosis.findings));
     object.Set("coverage", BuildCoverage(diagnosis.coverage));
     object.Set("expected_tracks", BuildExpectedTracks(diagnosis.expected_tracks));
+    object.Set("track_salvage", BuildTrackSalvageArray(diagnosis.track_salvage));
     object.Set("capability_boundaries", BuildCapabilityBoundaryArray(diagnosis.capability_boundaries));
     JsonValue candidates = JsonValue::MakeArray();
     for (model::RepairAction action : diagnosis.candidate_actions)
@@ -332,6 +336,52 @@ JsonValue BuildFidelity(const model::RepairFidelity& fidelity) {
     return object;
 }
 
+JsonValue BuildTrackSalvageArray(const std::vector<model::RepairTrackSalvageInfo>& tracks) {
+    JsonValue array = JsonValue::MakeArray();
+    for (const auto& track : tracks) {
+        JsonValue node = JsonValue::MakeObject();
+        node.Set("track_id", JsonValue(static_cast<int>(track.track_id)));
+        node.Set("input_stream_index", JsonValue(track.input_stream_index));
+        node.Set("kind", JText(track.kind));
+        node.Set("salvageable", JsonValue(track.salvageable));
+        node.Set("evidence", JText(track.evidence));
+        array.PushBack(node);
+    }
+    return array;
+}
+
+JsonValue BuildRecoveredSegments(const std::vector<model::RepairRecoveredSegment>& segments) {
+    JsonValue array = JsonValue::MakeArray();
+    for (const auto& segment : segments) {
+        JsonValue node = JsonValue::MakeObject();
+        node.Set("index", JsonValue(static_cast<int>(segment.index)));
+        node.Set("input_start_seconds", JNum(segment.input_start_seconds));
+        node.Set("input_end_seconds", JNum(segment.input_end_seconds));
+        node.Set("output_start_seconds", JNum(segment.output_start_seconds));
+        node.Set("output_end_seconds", JNum(segment.output_end_seconds));
+        node.Set("packets_written", J64(segment.packets_written));
+        node.Set("resumed_after_damage", JsonValue(segment.resumed_after_damage));
+        node.Set("skipped_before_seconds", JNum(segment.skipped_before_seconds));
+        node.Set("recovery_point", JOptString(segment.recovery_point));
+        array.PushBack(node);
+    }
+    return array;
+}
+
+JsonValue BuildTimelineRepair(const model::RepairTimelineRepair& repair) {
+    JsonValue object = JsonValue::MakeObject();
+    object.Set("attempted", JsonValue(repair.attempted));
+    object.Set("status", JText(repair.status));
+    object.Set("gap_removed", JsonValue(repair.gap_removed));
+    object.Set("removed_gap_seconds", JNum(repair.removed_gap_seconds));
+    object.Set("timestamp_regressions", J64(repair.timestamp_regressions));
+    object.Set("timestamp_duplicates", J64(repair.timestamp_duplicates));
+    object.Set("missing_timestamps", J64(repair.missing_timestamps));
+    object.Set("rewritten_timestamps", J64(repair.rewritten_timestamps));
+    object.Set("note", JText(repair.note));
+    return object;
+}
+
 JsonValue BuildTrackConservationArray(const std::vector<model::RepairTrackConservation>& records) {
     JsonValue array = JsonValue::MakeArray();
     for (const auto& record : records) {
@@ -422,6 +472,8 @@ JsonValue BuildResultJson(const model::RepairResult& result) {
     root.Set("verification", BuildVerification(result.verification));
     root.Set("fidelity", BuildFidelity(result.fidelity));
     root.Set("track_conservation", BuildTrackConservationArray(result.track_conservation));
+    root.Set("recovered_segments", BuildRecoveredSegments(result.recovered_segments));
+    root.Set("timeline_repair", BuildTimelineRepair(result.timeline_repair));
     root.Set("artifacts", BuildArtifacts(result.artifacts));
     root.Set("residual_findings", BuildFindings(result.residual_findings));
     return root;
@@ -491,6 +543,24 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
     conclusion.rows.emplace_back("验证等级", model::DisplayName(result.verification.level));
     conclusion.rows.emplace_back("逐轨验证条数", std::to_string(result.verification.per_track.size()));
     conclusion.rows.emplace_back("残留问题条数", std::to_string(result.residual_findings.size()));
+
+    // 四项结论：避免用单一"修复成功"掩盖内容、时间轴与画质三方面的差异。
+    conclusion.rows.emplace_back("播放验证", std::string(model::ToString(result.verification.status)) +
+                                                 (result.verification.structure_only ? "（仅结构验证，尚未验证播放）"
+                                                                                     : "（已做播放 / 解码验证）"));
+    conclusion.rows.emplace_back(
+        "内容保留", result.fidelity.content_completeness +
+                        (result.fidelity.original_content_recovery_ratio.has_value()
+                             ? "（恢复比例 " + FixedSeconds(*result.fidelity.original_content_recovery_ratio) + "）"
+                             : "（恢复比例未量化）"));
+    conclusion.rows.emplace_back(
+        "时间轴变化", result.fidelity.timeline_status + " — " +
+                          (result.fidelity.timeline_note.empty() ? "无记录" : result.fidelity.timeline_note));
+    conclusion.rows.emplace_back("画质风险", (result.fidelity.video_reencoded || result.fidelity.audio_reencoded
+                                                  ? "存在重编码；画质风险需人工复核"
+                                                  : "保码流重建；未观察到编码层损坏证据不等于无失真") +
+                                                 std::string("（感知保真度: ") + result.fidelity.perceptual_fidelity +
+                                                 "）");
     sections.push_back(std::move(conclusion));
 
     ReportSection input;
@@ -524,6 +594,9 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
     for (const auto& expected : result.diagnosis.expected_tracks)
         diagnosis.items.push_back("源侧样本数基线: 轨道 " + std::to_string(expected.track_id) + "=" +
                                   std::to_string(expected.sample_count) + " (" + expected.provenance + ")");
+    for (const auto& track : result.diagnosis.track_salvage)
+        diagnosis.items.push_back("逐轨可抢救证据: 轨道 " + std::to_string(track.track_id) + " (" + track.kind + ") " +
+                                  (track.salvageable ? "可用" : "不可用") + " — " + track.evidence);
     for (const auto& reason : result.diagnosis.blocking_reasons)
         diagnosis.items.push_back("能力阻断: " + reason);
     for (const auto& limitation : result.diagnosis.coverage.limitations)
@@ -575,6 +648,42 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
             execution.items.push_back("  " + action.detail);
     }
     sections.push_back(std::move(execution));
+
+    // 恢复区间与时间轴：必须让读者看到"保留了哪些区间、改动了哪些时间"，而不是只看一个总时长。
+    ReportSection recovery;
+    recovery.title = "恢复区间与时间轴";
+    recovery.rows.emplace_back("恢复区间数量", std::to_string(result.recovered_segments.size()));
+    if (result.recovered_segments.empty()) {
+        recovery.items.push_back("未发生跳段恢复：产物由单一连续区段组成");
+    } else {
+        for (const auto& segment : result.recovered_segments) {
+            std::ostringstream line;
+            line << "段 " << segment.index << ": 输入 " << FixedSeconds(segment.input_start_seconds) << "–"
+                 << FixedSeconds(segment.input_end_seconds) << "s → 产物 " << FixedSeconds(segment.output_start_seconds)
+                 << "–" << FixedSeconds(segment.output_end_seconds) << "s，写入 " << segment.packets_written << " 包";
+            if (segment.resumed_after_damage) {
+                line << "（跳段恢复";
+                if (segment.skipped_before_seconds > 0.0)
+                    line << "，跳过 " << FixedSeconds(segment.skipped_before_seconds) << "s";
+                if (!segment.recovery_point.empty())
+                    line << "，" << segment.recovery_point;
+                line << "）";
+            }
+            recovery.items.push_back(line.str());
+        }
+    }
+    recovery.rows.emplace_back("时间轴修复状态", result.timeline_repair.status);
+    recovery.rows.emplace_back("重写时间戳", std::to_string(result.timeline_repair.rewritten_timestamps) + "（重复 " +
+                                                 std::to_string(result.timeline_repair.timestamp_duplicates) +
+                                                 " / 回退 " +
+                                                 std::to_string(result.timeline_repair.timestamp_regressions) + "）");
+    recovery.rows.emplace_back("缺失时间戳",
+                               std::to_string(result.timeline_repair.missing_timestamps) + "（缺少依据时不伪造）");
+    recovery.rows.emplace_back("缺口消除", (result.timeline_repair.gap_removed ? "yes" : "no") + std::string("（") +
+                                               FixedSeconds(result.timeline_repair.removed_gap_seconds) + "s）");
+    if (!result.timeline_repair.note.empty())
+        recovery.rows.emplace_back("说明", result.timeline_repair.note);
+    sections.push_back(std::move(recovery));
 
     ReportSection conservation;
     conservation.title = "逐轨样本守恒";
@@ -653,11 +762,13 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
     fidelity.rows.emplace_back("感知保真度", result.fidelity.perceptual_fidelity);
     // R03：三态展示。旧实现只看引擎是否主动重写时间戳，借用未经核验的参考时基时
     // 会写「时间轴改写: no」，把「无法判定」冒充成「已证明没变」。
-    const std::string timeline_display =
-        result.fidelity.timeline_status == "unchanged"
-            ? "no（时基已核验且时长一致）"
-            : (result.fidelity.timeline_status == "modified" ? "yes（实测时长不符，播放速度可能已变）"
-                                                             : "unknown（不能断言未改写）");
+    const std::string timeline_display = result.fidelity.timeline_status == "unchanged"
+                                             ? "no（时基已核验且时长一致）"
+                                             : (result.fidelity.timeline_status == "modified"
+                                                    ? "yes（实测时长不符，播放速度可能已变）"
+                                                    : (result.fidelity.timeline_status == "adjusted"
+                                                           ? "yes（主动重写时间戳 / 合并缺口，片段内部速度未变）"
+                                                           : "unknown（不能断言未改写）"));
     fidelity.rows.emplace_back("时间轴改写", timeline_display);
     fidelity.rows.emplace_back("时间轴结论", result.fidelity.timeline_status);
     fidelity.rows.emplace_back("时间轴说明", result.fidelity.timeline_note);

@@ -15,6 +15,7 @@
 #include "core/reporting/RepairReportExporter.h"
 
 class QComboBox;
+class QCheckBox;
 class QTimer;
 class QLabel;
 class QLineEdit;
@@ -65,6 +66,10 @@ private:
     QLineEdit* output_edit_ = nullptr;
     QComboBox* mode_combo_ = nullptr;
     QComboBox* level_combo_ = nullptr;
+    QComboBox* gap_combo_ = nullptr;
+    QCheckBox* segment_check_ = nullptr;
+    QCheckBox* timeline_check_ = nullptr;
+    QCheckBox* single_track_check_ = nullptr;
 
     QPushButton* start_button_ = nullptr;
     QPushButton* cancel_button_ = nullptr;
@@ -75,7 +80,7 @@ private:
     QLabel* stage_label_ = nullptr;
     QLabel* status_badge_ = nullptr;
     QLabel* summary_label_ = nullptr;
-    QLabel* metric_labels_[4] = {nullptr, nullptr, nullptr, nullptr};
+    QLabel* metric_labels_[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
     QLabel* report_label_ = nullptr;
     QTableWidget* findings_table_ = nullptr;
 
