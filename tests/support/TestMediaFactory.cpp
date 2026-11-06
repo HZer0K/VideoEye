@@ -1,5 +1,6 @@
 #include "TestMediaFactory.h"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -11,6 +12,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/frame.h>
 #include <libavutil/opt.h>
 }
 
@@ -139,12 +141,20 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
 
     // ---- 视频编码器 ----
     // libx264 是 GPL 组件；LGPL 构建里没有它，逐级降级到 OpenH264 / MPEG-4。
+    // 指定 video_codec 时不许静默降级 —— 需要 MPEG-4 错误隐藏的样本拿到 H.264
+    // 会变成「根本没有帧标记」的假样本。
     const char* video_candidates[] = {"libx264", "libopenh264", "mpeg4"};
     const AVCodec* vcodec = nullptr;
-    for (const char* candidate : video_candidates) {
-        vcodec = avcodec_find_encoder_by_name(candidate);
-        if (vcodec)
-            break;
+    if (!spec.video_codec.empty()) {
+        vcodec = avcodec_find_encoder_by_name(spec.video_codec.c_str());
+        if (!vcodec)
+            return finish(false, "指定的视频编码器不可用: " + spec.video_codec);
+    } else {
+        for (const char* candidate : video_candidates) {
+            vcodec = avcodec_find_encoder_by_name(candidate);
+            if (vcodec)
+                break;
+        }
     }
     if (!vcodec)
         vcodec = avcodec_find_encoder(AV_CODEC_ID_H264);
@@ -465,6 +475,16 @@ MediaProbe ProbeMediaFile(const std::string& path) {
     // 完整解码一遍视频流。只用容器层的 nb_frames / duration 是不够的 —— 那两个都是
     // 元数据，写坏了照样读得出来；真解码数出来的帧数才是"产物能不能播"的证据。
     if (video_index >= 0) {
+        // 帧级损坏标记与「解出帧」分开记：FFmpeg 8.x 上 AV_FRAME_FLAG_CORRUPT
+        // 多数解码器恒 0，而 decode_error_flags 由错误隐藏填充。
+        auto count_frame = [&probe](AVFrame* f) {
+            ++probe.frame_count;
+            if (f->decode_error_flags != 0)
+                ++probe.marked_frames;
+            if (f->flags & AV_FRAME_FLAG_CORRUPT)
+                ++probe.corrupt_frames;
+            av_frame_unref(f);
+        };
         const AVCodec* codec = avcodec_find_decoder(fmt->streams[video_index]->codecpar->codec_id);
         AVCodecContext* dec = codec ? avcodec_alloc_context3(codec) : nullptr;
         if (dec && avcodec_parameters_to_context(dec, fmt->streams[video_index]->codecpar) >= 0 &&
@@ -485,8 +505,7 @@ MediaProbe ProbeMediaFile(const std::string& path) {
                         const int rr = avcodec_receive_frame(dec, frame);
                         if (rr == AVERROR(EAGAIN) || rr == AVERROR_EOF || rr < 0)
                             break;
-                        ++probe.frame_count;
-                        av_frame_unref(frame);
+                        count_frame(frame);
                     }
                 }
                 av_packet_unref(pkt);
@@ -497,8 +516,7 @@ MediaProbe ProbeMediaFile(const std::string& path) {
                 const int rr = avcodec_receive_frame(dec, frame);
                 if (rr == AVERROR(EAGAIN) || rr == AVERROR_EOF || rr < 0)
                     break;
-                ++probe.frame_count;
-                av_frame_unref(frame);
+                count_frame(frame);
             }
             if (frame)
                 av_frame_free(&frame);
@@ -522,6 +540,74 @@ std::string CreateCorruptMediaFile(const std::string& directory, const std::stri
     if (out.is_open())
         out.write(junk.data(), static_cast<std::streamsize>(junk.size()));
     return path;
+}
+
+ConcealmentMedia CreateConcealmentMedia(const std::string& directory, const std::string& name) {
+    ConcealmentMedia result;
+    TestMediaSpec spec;
+    spec.with_audio = false;
+    spec.video_codec = "mpeg4"; // MPEG-4 Part 2 的错误隐藏会吐出带 decode_error_flags 的帧
+    spec.frame_count = 40;
+    const TestMedia media = CreateTestMedia(directory, name, spec);
+    if (!media.ok) {
+        result.error = "生成 MPEG-4 基础素材失败: " + media.error;
+        return result;
+    }
+    result.path = media.path;
+
+    std::ifstream in(media.path, std::ios::binary);
+    const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::size_t type = bytes.find("mdat");
+    if (type == std::string::npos || type < 4 || bytes.size() < 512) {
+        result.error = "找不到 mdat 或样本过小，无法做载荷损坏";
+        return result;
+    }
+    const auto read_be32 = [&bytes](std::size_t at) -> uint32_t {
+        return (static_cast<uint32_t>(static_cast<unsigned char>(bytes[at])) << 24) |
+               (static_cast<uint32_t>(static_cast<unsigned char>(bytes[at + 1])) << 16) |
+               (static_cast<uint32_t>(static_cast<unsigned char>(bytes[at + 2])) << 8) |
+               static_cast<uint32_t>(static_cast<unsigned char>(bytes[at + 3]));
+    };
+    const uint32_t box_size = read_be32(type - 4);
+    const std::size_t payload_begin = type + 4;
+    const std::size_t payload_end =
+        box_size >= 8 ? std::min<std::size_t>(payload_begin + box_size - 8, bytes.size()) : bytes.size();
+    if (payload_end <= payload_begin + 32) {
+        result.error = "mdat 载荷过短";
+        return result;
+    }
+
+    // 稀疏位翻转：容器 / stsz / stco 全部保持完好，demuxer 仍能逐包交付，
+    // 但码流被持续破坏，解码器只能靠错误隐藏吐出带标记的帧。
+    std::string damaged = bytes;
+    const std::size_t end = payload_end - 16;
+    for (std::size_t i = payload_begin + 16; i < end; i += 19)
+        damaged[i] = static_cast<char>(static_cast<unsigned char>(damaged[i]) ^ 0xFF);
+    std::ofstream out(media.path, std::ios::binary | std::ios::trunc);
+    out.write(damaged.data(), static_cast<std::streamsize>(damaged.size()));
+    // ❗ 必须显式 close：moov 在文件尾，流缓冲没刷盘时自检会读到半截文件，
+    // demuxer 报 "unknown codec"、一帧都解不出，看起来像「样本没触发帧标记」。
+    out.close();
+    if (!out) {
+        result.error = "写回损坏样本失败";
+        return result;
+    }
+
+    // 自检：拿不到真实带标记帧就判失败，绝不把假样本交给用例。
+    const MediaProbe probe = ProbeMediaFile(result.path);
+    if (!probe.opened) {
+        result.error = "损坏后的样本无法被 FFmpeg 打开: " + probe.error;
+        return result;
+    }
+    result.decoded_frames = static_cast<uint64_t>(probe.frame_count);
+    result.marked_frames = static_cast<uint64_t>(probe.marked_frames);
+    if (result.marked_frames == 0) {
+        result.error = "样本未触发 decode_error_flags：实测 " + std::to_string(probe.frame_count) +
+                       " 帧全部无标记，不能用作帧分类正例";
+        return result;
+    }
+    result.ok = true;
+    return result;
 }
 
 } // namespace videoeye_test

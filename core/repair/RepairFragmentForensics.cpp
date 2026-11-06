@@ -294,6 +294,7 @@ RepairFragmentEvidence RepairFragmentForensics::Analyze(const std::string& path,
                 track.track_id = fragment->track_id;
                 track.sample_count += fragment->sample_count;
                 track.declared_payload_bytes += fragment->total_size;
+                track.declared_duration_ticks += fragment->duration;
                 if (fragment->has_tfdt)
                     decode_times[fragment->track_id].push_back(fragment->base_media_decode_time);
             }

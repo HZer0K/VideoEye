@@ -5,12 +5,17 @@
 // 界面只负责收集参数、展示结果和落报告；诊断 / 执行 / 验证全在 core/repair。
 // 报告写入放在这里，是因为 core/qt 与 core/reporting 之间不允许建边。
 
+#include <future>
+#include <string>
+
 #include <QWidget>
 
 #include "core/domain/model/RepairTypes.h"
 #include "core/qt/RepairController.h"
+#include "core/reporting/RepairReportExporter.h"
 
 class QComboBox;
+class QTimer;
 class QLabel;
 class QLineEdit;
 class QProgressBar;
@@ -25,6 +30,7 @@ class RepairPanel : public QWidget {
 
 public:
     explicit RepairPanel(QWidget* parent = nullptr);
+    ~RepairPanel() override;
 
     // 主窗口打开新文件时同步过来（不影响正在运行的修复）。
     void SetCurrentFile(const QString& path);
@@ -45,6 +51,9 @@ private:
     void SetRunning(bool running);
     void ResetForNewRun();
     void ShowResult();
+    void StartReportWrite(const std::shared_ptr<const model::RepairResult>& result);
+    void PollReportWrite();
+    void ClearPendingReport();
     void UpdateOutputs(const model::RepairResult& result);
     void SetMetric(int index, const QString& value, const QString& color);
     void PopulateFindings(const std::vector<model::DamageFinding>& findings);
@@ -69,6 +78,13 @@ private:
     QLabel* metric_labels_[4] = {nullptr, nullptr, nullptr, nullptr};
     QLabel* report_label_ = nullptr;
     QTableWidget* findings_table_ = nullptr;
+
+    // R13：报告落盘放到后台线程，UI 线程只轮询 future；结果写入与产物发布分开显示。
+    QTimer* report_timer_ = nullptr;
+    std::future<reporting::RepairReportWriteResult> report_future_;
+    bool last_write_report_ = true;
+    QString pending_report_html_;
+    QString pending_report_json_;
 
     QString last_output_path_;
     QString last_report_html_path_;

@@ -11,6 +11,7 @@
 // 也绝不会碰已经销毁的 QObject。
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -21,6 +22,7 @@
 #include "core/domain/model/RepairRequest.h"
 #include "core/domain/model/RepairTypes.h"
 #include "core/domain/task/TaskProtocol.h"
+#include "core/repair/RepairProgress.h"
 #include "infrastructure/concurrency/TaskManager.h"
 
 class QTimer;
@@ -45,6 +47,12 @@ public:
         return tasks_.State(kSlot);
     }
 
+    // 仅供单测：替换后台实际调用的引擎入口，用来验证"引擎抛异常 / 结果构造失败"
+    // 时控制器仍有终态。nullptr（默认）= 使用 repair::RepairEngine::Run。
+    using RepairEngineRunner = std::function<model::RepairResult(const model::RepairRequest&, const std::atomic<bool>*,
+                                                                 const repair::RepairProgress&)>;
+    static void SetEngineRunnerForTesting(RepairEngineRunner runner);
+
     // 完成后的结果快照；任务未完成时为空。返回 shared_ptr 以避免在 UI 线程深拷贝
     // 诊断 / 证据 / 覆盖等大对象。
     std::shared_ptr<const model::RepairResult> result() const;
@@ -65,6 +73,9 @@ private:
         std::string detail;
         std::atomic<int> percent{0};
         std::atomic<bool> finished{false};
+        // TaskManager 在线程启动失败时会把任务直接标为终态，body 根本不会执行；
+        // Poll 用这个计数确认"终态已持续"后再兜底收尾。
+        std::atomic<int> terminal_polls{0};
 
         std::mutex result_mutex;
         std::shared_ptr<const model::RepairResult> result;

@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <sstream>
 
+#include "core/repair/RepairBudget.h"
 #include "core/repair/RepairExecutor.h"
 #include "core/repair/RepairInspector.h"
 #include "core/repair/RepairOutputWriter.h"
@@ -33,12 +34,47 @@ std::string BuildSummary(const model::RepairResult& result) {
     summary << model::DisplayName(result.status);
     if (!result.output_path.empty())
         summary << "；产物: " << result.output_path;
-    if (result.executions.size() > 0) {
+    if (!result.executions.empty())
         summary << "；写入 " << result.executions.front().packets_written << " 个包";
-    }
     if (result.verification.status != model::RepairCheckStatus::NotRun)
         summary << "；" << model::DisplayName(result.verification.level) << " " << ToString(result.verification.status);
+    if (result.verification.structure_only)
+        summary << "（仅结构验证，尚未验证播放）";
+    if (result.fidelity.timeline_status == "unknown")
+        summary << "；时间轴未核验";
+    else if (result.fidelity.timeline_status == "modified")
+        summary << "；时间轴实测不符";
+    if (!result.verification.per_track.empty())
+        summary << "；逐轨 " << result.verification.per_track.size() << " 条";
+    if (!result.residual_findings.empty())
+        summary << "；残留问题 " << result.residual_findings.size() << " 条";
     return summary.str();
+}
+
+// 临时产物的所有权守卫：Reserve 成功后，任何失败 / 取消 / 异常路径都会清理它。
+// 只有 Publish 成功才解除，避免"失败清理"误删用户文件（它一定是我们自己创建的）。
+class PartGuard {
+public:
+    explicit PartGuard(std::string path) : path_(std::move(path)) {
+    }
+    ~PartGuard() {
+        if (!released_)
+            RepairOutputWriter::Discard(path_);
+    }
+    PartGuard(const PartGuard&) = delete;
+    PartGuard& operator=(const PartGuard&) = delete;
+    void Release() {
+        released_ = true;
+    }
+
+private:
+    std::string path_;
+    bool released_ = false;
+};
+
+// 预算命中时区分"用户取消"与"超出时间预算"。
+model::RepairBusinessStatus BudgetTerminal(const RepairRunBudget& budget) {
+    return budget.Canceled() ? model::RepairBusinessStatus::Canceled : model::RepairBusinessStatus::TimedOut;
 }
 
 } // namespace
@@ -52,33 +88,47 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     result.ffmpeg_version.clear();
     result.fidelity.perceptual_fidelity = "unknown_without_reference";
 
-    // ---- 0. 请求预检 + 产物路径解析 ----
+    // R10：一次修复只有一个共享截止时间，从入口一直贯穿到发布提交。
+    const RepairRunBudget budget(cancel, request.limits.max_seconds);
+    result.input_check_method = "size+mtime+内容摘要（方法在发布前复核时回填）";
+
+    // ---- 0. 请求预检 + 产物路径解析 + 独占预留（R01）----
     Emit(progress, 0, stage::Inspecting(), "检查请求与产物路径");
     const std::string run_id = result.result_id.substr(std::string("result-").size());
-    RepairOutputPaths paths = RepairOutputWriter::Resolve(request, run_id);
+    const RepairOutputPaths paths = RepairOutputWriter::Resolve(request, run_id);
     result.report_json_path = paths.report_json_path;
     result.report_text_path = paths.report_text_path;
     result.report_html_path = paths.report_html_path;
     if (!paths.valid) {
-        result.status = model::RepairBusinessStatus::Failed;
-        result.error = paths.error;
-        result.summary = "请求无效: " + paths.error;
-        FinishEarly(result, model::RepairBusinessStatus::Failed, result.summary);
+        FinishEarly(result, model::RepairBusinessStatus::Failed, "请求无效: " + paths.error);
         result.error = paths.error;
         return result;
     }
+    std::string reserve_error;
+    if (!RepairOutputWriter::Reserve(paths, &reserve_error)) {
+        FinishEarly(result, model::RepairBusinessStatus::Failed, "无法预留临时产物: " + reserve_error);
+        result.error = reserve_error;
+        return result;
+    }
+    PartGuard part_guard(paths.part_path);
+
+    auto finish_failed = [&](model::RepairBusinessStatus status, const std::string& message) {
+        FinishEarly(result, status, message);
+        if (status == model::RepairBusinessStatus::Failed)
+            result.error = message;
+        return result;
+    };
 
     // ---- 1. 诊断 ----
-    RepairInspectOutcome inspect = RepairInspector::Inspect(request, cancel, progress);
+    const RepairInspectOutcome inspect = RepairInspector::Inspect(request, cancel, progress, &budget);
     result.diagnosis = inspect.diagnosis;
     result.diagnosis_id = inspect.diagnosis.diagnosis_id;
     result.input = inspect.diagnosis.input;
+    result.reference_input = inspect.reference_snapshot;
+    result.reference_snapshot_valid = inspect.reference_snapshot_valid;
 
-    if (inspect.canceled) {
-        result.summary = "诊断阶段被取消";
-        FinishEarly(result, model::RepairBusinessStatus::Canceled, result.summary);
-        return result;
-    }
+    if (inspect.canceled || budget.Checkpoint())
+        return finish_failed(BudgetTerminal(budget), budget.Canceled() ? "诊断阶段被取消" : "诊断阶段超出本次修复预算");
 
     // ---- 2. 规划 ----
     Emit(progress, 72, stage::Planning(), "制定修复计划");
@@ -92,60 +142,106 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
         const std::string reason =
             planning.plan.infeasible_reason.empty() ? "没有可执行的修复策略" : planning.plan.infeasible_reason;
         result.error = reason;
-        // 分片取证的实测结论也要进结果摘要：否则界面只看到一句"需要参考样片"，
-        // 看不到已经查明了多少段、什么编码、缺哪几个参数集。
-        result.summary = reason;
+        std::string summary = reason;
         if (!result.diagnosis.summary.empty())
-            result.summary += "；" + result.diagnosis.summary;
-        FinishEarly(result, planning.early_status, result.summary);
-        return result;
+            summary += "；" + result.diagnosis.summary;
+        return finish_failed(planning.early_status, summary);
     }
+    if (budget.Checkpoint())
+        return finish_failed(BudgetTerminal(budget), "规划阶段被取消或超出本次修复预算");
 
-    // ---- 3. 执行 ----
+    // ---- 3. 执行前复核输入快照（R08：源 + 参考）----
     Emit(progress, 75, stage::Executing(), "开始重封装");
     std::string source_error;
-    if (!RepairOutputWriter::SourceUnchanged(inspect.diagnosis.input, &source_error)) {
-        result.summary = source_error;
-        FinishEarly(result, model::RepairBusinessStatus::Failed, source_error);
-        result.error = source_error;
-        return result;
+    std::string source_method;
+    if (!RepairOutputWriter::SourceUnchanged(inspect.diagnosis.input, &source_error, &source_method))
+        return finish_failed(model::RepairBusinessStatus::Failed, source_error);
+    result.input_check_method = "源文件: " + source_method;
+    if (inspect.reference_snapshot_valid) {
+        std::string reference_error;
+        std::string reference_method;
+        if (!RepairOutputWriter::SourceUnchanged(inspect.reference_snapshot, &reference_error, &reference_method))
+            return finish_failed(model::RepairBusinessStatus::Failed, reference_error);
+        result.input_check_method += "；参考文件: " + reference_method;
     }
+    result.input_check_method += "；摘要是发现改动的证据，不是密码学完整性证明；单次解码调用可能越过时间预算";
 
     RepairExecutionOutcome execution =
-        RepairExecutor::Execute(request, inspect.diagnosis, planning.plan, paths.part_path,
-                                inspect.reference_init ? &*inspect.reference_init : nullptr, cancel, progress);
+        RepairExecutor::Execute(request, inspect.diagnosis, planning.plan, paths,
+                                inspect.reference_init ? &*inspect.reference_init : nullptr, cancel, progress, &budget);
     result.executions = execution.executions;
     result.ffmpeg_version = execution.ffmpeg_version;
     result.residual_findings = execution.residual_findings;
+    result.track_conservation = execution.track_conservation;
+    result.fidelity.omitted_items = execution.omitted_items;
 
-    if (execution.canceled) {
-        RepairOutputWriter::Discard(paths.part_path);
-        result.summary = "执行阶段被取消，未发布产物";
-        FinishEarly(result, model::RepairBusinessStatus::Canceled, result.summary);
-        return result;
-    }
-    if (execution.timed_out) {
-        RepairOutputWriter::Discard(paths.part_path);
-        result.summary = "超出本次修复预算，未发布产物";
-        FinishEarly(result, model::RepairBusinessStatus::TimedOut, result.summary);
-        result.error = execution.error;
-        return result;
-    }
+    if (execution.canceled || (budget.Checkpoint() && budget.Canceled()))
+        return finish_failed(model::RepairBusinessStatus::Canceled, "执行阶段被取消，未发布产物");
+    if (execution.timed_out || (budget.Checkpoint() && !budget.Canceled()))
+        return finish_failed(model::RepairBusinessStatus::TimedOut, "超出本次修复预算，未发布产物");
     if (!execution.ok) {
-        RepairOutputWriter::Discard(paths.part_path);
         result.error = execution.error.empty() ? "执行失败" : execution.error;
-        result.summary = result.error;
+        std::string summary = result.error;
         if (result.error.find("没有写入任何数据包") != std::string::npos ||
             result.error.find("没有可复制") != std::string::npos)
-            FinishEarly(result, model::RepairBusinessStatus::NoRecoverableContent, result.summary);
-        else if (result.error.find("无法打开源文件") != std::string::npos)
-            FinishEarly(result, model::RepairBusinessStatus::Unsupported, result.summary);
-        else
-            FinishEarly(result, model::RepairBusinessStatus::Failed, result.summary);
-        return result;
+            return finish_failed(model::RepairBusinessStatus::NoRecoverableContent, summary);
+        if (result.error.find("无法打开源文件") != std::string::npos)
+            return finish_failed(model::RepairBusinessStatus::Unsupported, summary);
+        return finish_failed(model::RepairBusinessStatus::Failed, summary);
     }
 
-    // ---- 4. 验证 ----
+    // ---- 3b. 逐轨样本守恒（R07）----
+    // 不再用「全轨合计 + 5% 容差」：一条大轨会把小轨整轨丢失掩盖掉。
+    bool conservation_loss = false;
+    bool conservation_unknown = false;
+    if (inspect.reference_init.has_value() && !result.diagnosis.expected_tracks.empty()) {
+        for (auto& record : result.track_conservation) {
+            const model::RepairExpectedTrack* expected = nullptr;
+            for (const auto& candidate : result.diagnosis.expected_tracks) {
+                if (candidate.track_id != 0 && candidate.track_id == record.track_id) {
+                    expected = &candidate;
+                    break;
+                }
+            }
+            if (expected == nullptr && result.diagnosis.expected_tracks.size() == 1 &&
+                result.track_conservation.size() == 1)
+                expected = &result.diagnosis.expected_tracks.front();
+            if (expected == nullptr) {
+                record.status = "unmapped";
+                record.note = "无法把输出轨映射到源侧 track_id，本轨样本守恒无法判定";
+                conservation_unknown = true;
+                continue;
+            }
+            record.expected_samples = expected->sample_count;
+            record.status = EvaluateTrackConservation(record.expected_samples, record.packets_written);
+            record.relation = ConservationRelation(record.expected_samples, record.packets_written);
+            if (record.status == "loss") {
+                conservation_loss = true;
+                model::DamageFinding finding;
+                finding.code = "container.track_samples_dropped_by_demuxer";
+                finding.detector = "repair.engine";
+                finding.layer = model::DamageLayer::Container;
+                finding.severity = model::IssueSeverity::Error;
+                finding.confidence = model::DamageConfidence::Confirmed;
+                finding.location.precision = model::DamagePrecision::Bounded;
+                finding.location.track_id = record.track_id;
+                finding.location.stream_index = record.output_stream_index;
+                finding.location.provenance = "moof/trun declared samples vs per-track av_interleaved_write_frame";
+                finding.evidence = "轨道 " + std::to_string(record.track_id) + " 源侧声明 " +
+                                   std::to_string(record.expected_samples) + " 个样本，实际只写入 " +
+                                   std::to_string(record.packets_written) + " 个包（少 " +
+                                   std::to_string(record.expected_samples - record.packets_written) + " 个）";
+                finding.limitations.push_back("只能证明包数不足，不能定位丢失的是哪一段");
+                finding.limitations.push_back("载荷哈希只覆盖实际写入的包，不能证明源内容完整");
+                result.residual_findings.push_back(std::move(finding));
+            } else if (record.status == "excess" || record.status == "unmapped") {
+                conservation_unknown = true;
+                record.note = "写入包数多于源侧声明，可能是访问单元拆分，也可能是重复写入；无法判定完整";
+            }
+        }
+    }
+
+    // ---- 4. 验证（逐目标轨，R04 / R05 / R09）----
     std::optional<uint64_t> expected_hash;
     for (const auto& action : execution.executions) {
         if (action.action == model::RepairAction::S01_Remux && action.input_video_payload_hash.has_value()) {
@@ -154,53 +250,70 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
         }
     }
     Emit(progress, 89, stage::Verifying(), "开始验证产物");
-    RepairVerifyOutcome verified =
-        RepairVerifier::Verify(paths.part_path, request.verification_level, expected_hash, cancel, progress);
+    RepairVerifyOutcome verified = RepairVerifier::Verify(paths.part_path, request.verification_level, expected_hash,
+                                                          cancel, progress, execution.verification_targets, &budget,
+                                                          inspect.source_evidence.estimated_duration_seconds);
     result.verification = verified.verification;
-    result.fidelity = verified.fidelity;
+    result.fidelity.video = verified.fidelity.video;
+    result.fidelity.audio = verified.fidelity.audio;
+    for (const auto& limitation : verified.fidelity.limitations)
+        result.fidelity.limitations.push_back(limitation);
     result.residual_findings.insert(result.residual_findings.end(), verified.verification.residual_findings.begin(),
                                     verified.verification.residual_findings.end());
 
-    if (verified.canceled) {
-        RepairOutputWriter::Discard(paths.part_path);
-        result.summary = "验证阶段被取消，未发布产物";
-        FinishEarly(result, model::RepairBusinessStatus::Canceled, result.summary);
-        return result;
-    }
-    if (verified.verification.status == model::RepairCheckStatus::Failed) {
-        RepairOutputWriter::Discard(paths.part_path);
-        result.error = "产物验证未通过: " + verified.verification.evidence;
-        result.summary = result.error;
-        FinishEarly(result, model::RepairBusinessStatus::Failed, result.summary);
-        return result;
-    }
+    if (verified.canceled || (budget.Checkpoint() && budget.Canceled()))
+        return finish_failed(model::RepairBusinessStatus::Canceled, "验证阶段被取消，未发布产物");
+    if (verified.timed_out || (budget.Checkpoint() && !budget.Canceled()))
+        return finish_failed(model::RepairBusinessStatus::TimedOut, "超出本次修复预算，未发布产物");
+    if (verified.verification.status == model::RepairCheckStatus::Failed)
+        return finish_failed(model::RepairBusinessStatus::Failed, "产物验证未通过: " + verified.verification.evidence);
 
     const bool content_lost =
         execution.read_error || execution.salvage_truncated || planning.plan.salvage_end_seconds.has_value();
     const bool inconclusive = verified.verification.status == model::RepairCheckStatus::Inconclusive ||
-                              verified.verification.decode_errors > 0;
+                              verified.verification.decode_errors > 0 || verified.verification.corrupt_frames > 0 ||
+                              verified.verification.error_recovery_frames > 0;
 
-    // ---- 5. 发布 ----
+    // R03：借用参考初始化段就是借用了 mdhd 时基。只有「源侧有独立时基证据 +
+    // 产物时长可比对 + 没有偏差」才能说时间轴未变；否则必须标不确定。
+    const bool borrowed_reference = inspect.reference_init.has_value();
+    const bool reference_unverified = borrowed_reference && inspect.reference_init->compatibility != "verified";
+    const bool timeline_mismatch = verified.verification.timeline_mismatch;
+    const bool timeline_unknown = borrowed_reference && !timeline_mismatch &&
+                                  (reference_unverified || !verified.verification.timeline_comparable);
+
+    // ---- 5. 发布（R06：提交前的最后一个取消/预算检查点）----
     Emit(progress, 97, stage::Publishing(), "发布产物");
-    if (!RepairOutputWriter::SourceUnchanged(inspect.diagnosis.input, &source_error)) {
-        RepairOutputWriter::Discard(paths.part_path);
-        result.summary = source_error;
-        FinishEarly(result, model::RepairBusinessStatus::Failed, source_error);
-        result.error = source_error;
-        return result;
+    if (budget.Checkpoint()) {
+        const model::RepairBusinessStatus status = BudgetTerminal(budget);
+        return finish_failed(status, status == model::RepairBusinessStatus::Canceled
+                                         ? "发布前收到取消，未发布产物"
+                                         : "发布前超出本次修复预算，未发布产物");
     }
-    if (!RepairOutputWriter::Publish(paths.part_path, paths.final_path, &source_error)) {
-        result.summary = source_error;
-        FinishEarly(result, model::RepairBusinessStatus::Failed, source_error);
-        result.error = source_error;
-        return result;
+    std::string publish_error;
+    if (!RepairOutputWriter::SourceUnchanged(inspect.diagnosis.input, &publish_error, &source_method))
+        return finish_failed(model::RepairBusinessStatus::Failed, publish_error);
+    result.input_check_method = "源文件: " + source_method;
+    if (inspect.reference_snapshot_valid) {
+        std::string reference_method;
+        if (!RepairOutputWriter::SourceUnchanged(inspect.reference_snapshot, &publish_error, &reference_method))
+            return finish_failed(model::RepairBusinessStatus::Failed, publish_error);
+        result.input_check_method += "；参考文件: " + reference_method;
     }
+    result.input_check_method += "；摘要是发现改动的证据，不是密码学完整性证明；单次解码调用可能越过时间预算";
+
+    // 提交边界：从这里起不再检查取消 —— rename 之后产物已经对外可见，
+    // 再撤回会留下"界面说取消、磁盘上却有成品"的不一致状态。
+    if (!RepairOutputWriter::Publish(paths.part_path, paths.final_path, &publish_error))
+        return finish_failed(model::RepairBusinessStatus::Failed, publish_error);
+    part_guard.Release();
 
     result.output_path = paths.final_path;
     result.output_published = true;
-    result.artifacts.push_back(
-        model::RepairArtifact{"output", paths.final_path, "video/mp4",
-                              "bytes [0, " + std::to_string(std::filesystem::file_size(paths.final_path)) + ")"});
+    std::error_code size_ec;
+    const uint64_t output_size = std::filesystem::file_size(paths.final_path, size_ec);
+    result.artifacts.push_back(model::RepairArtifact{"output", paths.final_path, "video/mp4",
+                                                     "bytes [0, " + std::to_string(size_ec ? 0 : output_size) + ")"});
 
     // ---- 6. 保真度 / 业务状态 ----
     model::RepairFidelity& fidelity = result.fidelity;
@@ -208,53 +321,88 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     fidelity.audio_reencoded = false;
     fidelity.synthetic_frames_inserted = false;
     fidelity.synthetic_frame_count = 0;
-    fidelity.timeline_modified = false;
-    fidelity.timeline_note = "时间戳仅按输出容器时间基缩放，未补齐 / 未合成";
-    if (content_lost || execution.timed_out)
+    // timeline_modified 只表示「引擎主动重写了时间戳」。旧实现在这里恒写 false，
+    // 于是借用未核验参考时基导致播放时长改变时，报告仍声称「时间轴改写: no」。
+    fidelity.timeline_modified = timeline_mismatch;
+    if (timeline_mismatch) {
+        fidelity.timeline_status = "modified";
+        fidelity.timeline_note = "产物实测时长 " + FormatSeconds(verified.verification.observed_duration_seconds) +
+                                 "s 与源侧估算 " + FormatSeconds(verified.verification.expected_duration_seconds) +
+                                 "s 不符；播放时长 / 速度可能已被借用的参考时基改变";
+    } else if (timeline_unknown) {
+        fidelity.timeline_status = "unknown";
+        fidelity.timeline_note = "时间戳仅按输出容器时间基缩放，未主动补齐 / 合成；但本次借用了参考初始化段的时基，"
+                                 "源侧缺少可核验的独立证据，不能断言时间轴未改变";
+    } else {
+        fidelity.timeline_status = "unchanged";
+        fidelity.timeline_note = "时间戳仅按输出容器时间基缩放，未补齐 / 未合成";
+        if (borrowed_reference)
+            fidelity.timeline_note += "；参考段时基已与源侧独立证据核对，产物实测时长与源侧估算一致";
+    }
+    if (content_lost || execution.timed_out || conservation_loss)
         fidelity.content_completeness = "partial";
+    else if (conservation_unknown || verified.verification.structure_only || timeline_unknown || timeline_mismatch)
+        fidelity.content_completeness = "unknown";
     else
         fidelity.content_completeness = "complete_for_selected_checks";
+
     if (!content_lost)
         fidelity.limitations.push_back("未与原始完整内容比对（输入本身已是损坏文件）");
     if (inconclusive)
-        fidelity.limitations.push_back("验证未完全通过，不能断言全部内容可解码");
+        fidelity.limitations.push_back("验证未完全通过，不能断言全部内容可解码或画面干净");
+    if (verified.verification.structure_only)
+        fidelity.limitations.push_back("V0 只验证容器结构，尚未验证播放与音画完整性");
+    if (conservation_unknown)
+        fidelity.limitations.push_back("至少一条轨道的样本守恒无法判定，完整性结论受限");
+    if (timeline_mismatch)
+        fidelity.limitations.push_back("时间轴实测与源侧估算不符，播放时长 / 速度可能已被改变");
+    if (timeline_unknown)
+        fidelity.limitations.push_back("借用的参考时基未经源侧独立证据核验，时间轴是否改变无法确定");
+    if (reference_unverified)
+        fidelity.limitations.push_back("参考段兼容性未核验，完整性结论只覆盖实际写入并被验证的包");
+    for (const auto& omitted : execution.omitted_items)
+        fidelity.limitations.push_back("未保留: " + omitted);
+    if (!verified.verification.timeline_checks.empty()) {
+        for (const auto& line : verified.verification.timeline_checks)
+            fidelity.limitations.push_back("时间轴实测: " + line);
+    }
 
     model::RepairBusinessStatus status = model::RepairBusinessStatus::Repaired;
-    if (inconclusive || content_lost)
-        status = model::RepairBusinessStatus::PartiallyRecovered;
-    else if (execution.read_error || execution.salvage_truncated)
+    if (inconclusive || content_lost || conservation_loss || conservation_unknown ||
+        verified.verification.structure_only || reference_unverified || timeline_unknown || timeline_mismatch)
         status = model::RepairBusinessStatus::PartiallyRecovered;
 
-    // ---- 源侧样本守恒（只覆盖"前置参考初始化段"这条路径）----
-    // 该路径的源侧样本数是从 moof/trun 逐段数出来的精确值。参考段与源分片
-    // 解码参数不匹配时，FFmpeg 会在 demuxer 层静默丢弃访问单元：av_read_frame
-    // 根本不返回它们，于是载荷哈希也照样"一致"，单靠 V2 验证看不出内容缺失。
-    // 这里用源侧声明数挡住这种"看起来修好了、其实丢了大半"的结果。
-    if (inspect.reference_init.has_value() && !result.diagnosis.expected_tracks.empty()) {
-        uint64_t expected = 0;
-        for (const auto& track : result.diagnosis.expected_tracks)
-            expected += track.sample_count;
-        const uint64_t written = execution.packets_written;
-        if (SampleLossExceedsTolerance(expected, written)) {
+    // ---- R03：参考段借用参数与时间轴风险 ----
+    if (inspect.reference_init.has_value()) {
+        const RepairInitSegment& init = *inspect.reference_init;
+        fidelity.reference_compatibility = init.compatibility;
+        fidelity.borrowed_parameters = init.borrowed_parameters;
+        fidelity.timeline_note += "；本次借用了参考初始化段的 ftyp+moov/mvex/trex 与 mdhd 时基";
+        if (init.compatibility != "verified") {
+            fidelity.timeline_note += "；兼容性=" + init.compatibility + "（" + init.compatibility_reason + "）";
+            fidelity.limitations.push_back("参考初始化段兼容性=" + init.compatibility + "：" +
+                                           init.compatibility_reason);
             model::DamageFinding finding;
-            finding.code = "container.samples_dropped_by_demuxer";
+            finding.code = "reference.parameters_unverified";
             finding.detector = "repair.engine";
-            finding.layer = model::DamageLayer::Container;
-            finding.severity = model::IssueSeverity::Error;
-            finding.confidence = model::DamageConfidence::Confirmed;
+            finding.layer = model::DamageLayer::Timing;
+            finding.severity = model::IssueSeverity::Warning;
+            finding.confidence = model::DamageConfidence::Possible;
             finding.location.precision = model::DamagePrecision::Bounded;
-            finding.location.provenance = "moof/trun declared samples vs av_interleaved_write_frame count";
-            finding.evidence = "源容器声明 " + std::to_string(expected) + " 个样本，实际只写入 " +
-                               std::to_string(written) + " 个包（少 " + std::to_string(expected - written) +
-                               " 个）；参考初始化段的解码参数很可能与源分片不匹配";
-            finding.limitations.push_back("只能证明包数不足，不能定位丢失的是哪一段或哪一轨");
-            finding.limitations.push_back("载荷哈希只覆盖了实际写入的包，不能证明源内容完整");
+            finding.location.provenance = "sidx timescale / mdat NAL vs reference mdhd/stsd";
+            finding.evidence = "产物借用了参考文件 " + FileName(init.reference_path) + " 的解码参数与时基（" +
+                               init.compatibility + "）: " + init.compatibility_reason;
+            finding.limitations.push_back("track_id 相同不能证明同源，错误时基会保留全部帧却改变播放时长");
+            finding.limitations.push_back("没有原始完整视频，无法给出确定的无失真结论或恢复百分比");
             result.residual_findings.push_back(std::move(finding));
-            fidelity.content_completeness = "partial";
-            fidelity.video = model::RepairFidelityStatus::PartiallyVerified;
-            fidelity.limitations.push_back("源侧样本数守恒未通过，产物只包含部分访问单元");
-            status = model::RepairBusinessStatus::PartiallyRecovered;
         }
+    }
+
+    // 逐轨守恒失败必须落到状态与保真度上，不能被大轨道掩盖。
+    if (conservation_loss) {
+        fidelity.video = model::RepairFidelityStatus::PartiallyVerified;
+        fidelity.limitations.push_back("逐轨样本数守恒未通过，产物只包含部分访问单元");
+        status = model::RepairBusinessStatus::PartiallyRecovered;
     }
 
     result.status = status;

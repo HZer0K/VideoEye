@@ -15,11 +15,15 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QTableWidget>
+#include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <chrono>
+#include <future>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 #include "core/qt/RepairController.h"
@@ -112,7 +116,20 @@ RepairPanel::RepairPanel(QWidget* parent) : QWidget(parent), controller_(new qt:
     BuildUi();
     connect(controller_, &qt::RepairController::ProgressReported, this, &RepairPanel::OnProgress);
     connect(controller_, &qt::RepairController::RepairFinished, this, &RepairPanel::OnFinished);
+
+    // 报告写入不占 UI 线程：worker 只持有结果快照与路径，完成后由主线程轮询落地。
+    report_timer_ = new QTimer(this);
+    report_timer_->setInterval(50);
+    connect(report_timer_, &QTimer::timeout, this, [this]() { PollReportWrite(); });
     SetRunning(false);
+}
+
+RepairPanel::~RepairPanel() {
+    if (report_timer_)
+        report_timer_->stop();
+    // std::async 的 future 析构会等待任务结束；显式等一次，避免析构点隐式阻塞。
+    if (report_future_.valid())
+        report_future_.wait();
 }
 
 void RepairPanel::BuildUi() {
@@ -335,6 +352,8 @@ void RepairPanel::OnStart() {
     request.mode = static_cast<model::RepairMode>(mode_combo_->currentData().toInt());
     request.verification_level = static_cast<model::RepairVerificationLevel>(level_combo_->currentData().toInt());
     request.write_report = true;
+    // write_report 的契约由界面落实：引擎只负责命名路径，不写报告。
+    last_write_report_ = request.write_report;
 
     ResetForNewRun();
     const quint64 task_id = controller_->StartRepair(request);
@@ -400,7 +419,18 @@ void RepairPanel::SetRunning(bool running) {
     }
 }
 
+void RepairPanel::ClearPendingReport() {
+    if (report_timer_)
+        report_timer_->stop();
+    if (report_future_.valid())
+        report_future_.wait();
+    pending_report_html_.clear();
+    pending_report_json_.clear();
+}
+
 void RepairPanel::ResetForNewRun() {
+    ClearPendingReport();
+    open_report_button_->setEnabled(false);
     progress_bar_->setValue(0);
     stage_label_->setText(QStringLiteral("准备中…"));
     status_badge_->setText(QStringLiteral("诊断中"));
@@ -409,7 +439,8 @@ void RepairPanel::ResetForNewRun() {
     for (auto* label : metric_labels_)
         label->setText(QStringLiteral("—"));
     findings_table_->setRowCount(0);
-    report_label_->setText(QStringLiteral("修复结束后会自动写入 JSON / TXT / HTML 报告"));
+    report_label_->setText(last_write_report_ ? QStringLiteral("修复结束后会自动异步写入 JSON / TXT / HTML 报告")
+                                              : QStringLiteral("本次请求不生成报告"));
     last_output_path_.clear();
     last_report_html_path_.clear();
     last_report_json_path_.clear();
@@ -425,26 +456,16 @@ void RepairPanel::ShowResult() {
 
     progress_bar_->setValue(100);
 
-    // 报告在界面层落盘（core/qt 不依赖 core/reporting）。
-    QString report_error;
-    if (!result->report_json_path.empty()) {
-        const reporting::RepairReportWriteResult written = reporting::RepairReportExporter::WriteAll(
-            *result, result->report_json_path, result->report_text_path, result->report_html_path);
-        if (written.AllOk()) {
-            last_report_html_path_ = QString::fromStdString(result->report_html_path);
-            last_report_json_path_ = QString::fromStdString(result->report_json_path);
-            report_label_->setStyleSheet(
-                QStringLiteral("color:%1;").arg(QString::fromLatin1(theme::color::kTextSecondary)));
-            report_label_->setText(
-                QStringLiteral("报告已写入：%1（JSON: %2）").arg(last_report_html_path_, last_report_json_path_));
-            report_label_->setToolTip(report_label_->text());
-        } else {
-            report_error = QString::fromStdString(written.error);
-            report_label_->setStyleSheet(QStringLiteral("color:%1;").arg(QString::fromLatin1(theme::color::kDanger)));
-            report_label_->setText(QStringLiteral("报告写入失败：%1").arg(report_error));
-        }
+    // 报告在界面层落盘（core/qt 不依赖 core/reporting），且走后台线程：
+    // 报告体积增大或存储慢时不再卡住 UI 线程。产物发布与报告保存是两个独立结果。
+    if (!last_write_report_) {
+        report_label_->setText(QStringLiteral("本次请求不生成报告（write_report=false）"));
+        open_report_button_->setEnabled(false);
+    } else if (!result->report_json_path.empty()) {
+        StartReportWrite(result);
     } else {
         report_label_->setText(QStringLiteral("没有报告输出路径"));
+        open_report_button_->setEnabled(false);
     }
 
     UpdateOutputs(*result);
@@ -456,7 +477,6 @@ void RepairPanel::ShowResult() {
         last_output_path_.clear();
         open_output_button_->setEnabled(false);
     }
-    open_report_button_->setEnabled(!last_report_html_path_.isEmpty());
 
     status_badge_->setText(QString::fromStdString(model::DisplayName(result->status)));
     status_badge_->setStyleSheet(QStringLiteral("color:%1;").arg(StatusColor(result->status)));
@@ -471,12 +491,59 @@ void RepairPanel::ShowResult() {
     PopulateFindings(findings);
 }
 
+void RepairPanel::StartReportWrite(const std::shared_ptr<const model::RepairResult>& result) {
+    ClearPendingReport();
+    const std::string json_path = result->report_json_path;
+    const std::string text_path = result->report_text_path;
+    const std::string html_path = result->report_html_path;
+    pending_report_html_ = QString::fromStdString(html_path);
+    pending_report_json_ = QString::fromStdString(json_path);
+
+    report_label_->setStyleSheet(QStringLiteral("color:%1;").arg(QString::fromLatin1(theme::color::kTextSecondary)));
+    report_label_->setText(QStringLiteral("报告写入中…（产物发布结果单独显示）"));
+
+    // 只捕获只读结果快照与路径，不捕获 this —— worker 不接触任何 QWidget。
+    report_future_ = std::async(std::launch::async, [result, json_path, text_path, html_path]() {
+        return reporting::RepairReportExporter::WriteAll(*result, json_path, text_path, html_path);
+    });
+    report_timer_->start();
+}
+
+void RepairPanel::PollReportWrite() {
+    if (!report_future_.valid())
+        return;
+    if (report_future_.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+        return;
+    report_timer_->stop();
+    const reporting::RepairReportWriteResult written = report_future_.get();
+    if (written.AllOk()) {
+        last_report_html_path_ = pending_report_html_;
+        last_report_json_path_ = pending_report_json_;
+        report_label_->setStyleSheet(
+            QStringLiteral("color:%1;").arg(QString::fromLatin1(theme::color::kTextSecondary)));
+        report_label_->setText(
+            QStringLiteral("报告已写入：%1（JSON: %2）").arg(last_report_html_path_, last_report_json_path_));
+        report_label_->setToolTip(report_label_->text());
+        open_report_button_->setEnabled(true);
+    } else {
+        report_label_->setStyleSheet(QStringLiteral("color:%1;").arg(QString::fromLatin1(theme::color::kDanger)));
+        report_label_->setText(
+            QStringLiteral("报告写入失败：%1（产物不受影响）").arg(QString::fromStdString(written.error)));
+        open_report_button_->setEnabled(false);
+    }
+    pending_report_html_.clear();
+    pending_report_json_.clear();
+}
+
 void RepairPanel::UpdateOutputs(const model::RepairResult& result) {
     const bool verify_ok = result.verification.status == model::RepairCheckStatus::Passed;
     const bool verify_bad = result.verification.status == model::RepairCheckStatus::Failed;
 
     QString playability;
-    if (result.verification.status == model::RepairCheckStatus::NotRun) {
+    if (result.verification.structure_only) {
+        // V0 只做结构验证，不能显示"通过"或暗示可播放。
+        playability = QStringLiteral("结构有效，尚未验证播放");
+    } else if (result.verification.status == model::RepairCheckStatus::NotRun) {
         playability = QStringLiteral("未验证（未产出可验证内容）");
     } else {
         playability = QStringLiteral("%1 %2").arg(QString::fromUtf8(model::DisplayName(result.verification.level)),

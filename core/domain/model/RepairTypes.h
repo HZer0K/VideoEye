@@ -180,6 +180,23 @@ struct DamageFinding {
     std::vector<std::string> limitations;        // 这条证据不能证明什么
 };
 
+// ---- 未实现能力的边界契约 ----
+//
+// 这类能力最容易被「提供个参考文件就能修」的笼统文案掩盖：用户看不出哪些内容
+// 物理上拿不回来、时间轴会不会变、画质会损失什么。所以每条都单独定义前提、
+// 不可恢复范围、时间轴变化与质量风险，并附判定依据。
+// ⚠️ 只在诊断命中对应证据时挂载 —— 没有事实依据时不得输出「当前不支持」的空壳。
+struct RepairCapabilityBoundary {
+    std::string code;                             // moov_rebuild / parameter_set_recovery / decodable_gop_transcode
+    std::string status;                           // unsupported（当前版本未实现）/ deferred
+    std::vector<std::string> preconditions;       // 满足才谈得上「可恢复」
+    std::vector<std::string> unrecoverable_scope; // 即使实现也拿不回来的东西
+    std::string timeline_impact;                  // 时间轴变化：必然改写 / 需核验 / 未知
+    std::vector<std::string> quality_risks;       // 画质、音画同步、语义风险
+    std::string evidence;                         // 判定依据（实测或结构论证）
+    std::vector<std::string> trigger_findings;    // 本次命中它的诊断证据 code
+};
+
 // ---- 覆盖范围 ----
 //
 // "没发现问题"必须能回答"到底看了多少、跳过了什么、为什么停"。
@@ -206,11 +223,21 @@ struct RepairCheck {
 };
 
 // ---- 输入快照（执行前后比对，防止"修复过程中源文件被改"）----
+//
+// ⚠️ size 只是最弱的一层证据：同大小改写（原位补丁、勒索软件加密、替换同长片段）
+// 完全可能在大小不变的情况下发生。所以除 size 外还要记 mtime 与内容摘要，
+// 并把"用什么方法核对的"写进结果，避免把"没发现变化"说成"已证明没变"。
 struct RepairInputSnapshot {
     std::string path;
     uint64_t size_bytes = 0;
     int64_t mtime_epoch_seconds = 0;
     std::string signature; // 首个盒 / 探测到的封装特征
+
+    // 内容摘要（FNV-1a 64）：空串表示没有取到，不能当作"内容一致"。
+    std::string content_hash;
+    // full / head_tail / unavailable：说明摘要的覆盖范围（大文件只取头尾时是弱证据）。
+    std::string hash_method;
+    uint64_t hashed_bytes = 0;
 };
 
 // 源容器逐段声明的样本数（守恒校验基线）。
@@ -241,6 +268,8 @@ struct RepairDiagnosis {
     std::vector<DamageFinding> findings;
     RepairCoverage coverage;
     std::vector<RepairExpectedTrack> expected_tracks; // 源侧样本数（守恒基线）
+    // 本次诊断命中的「当前版本未实现能力」边界契约；只在有证据时填充。
+    std::vector<RepairCapabilityBoundary> capability_boundaries;
 
     std::vector<std::string> blocking_reasons; // 当前能力无法继续的原因
     std::vector<RepairAction> candidate_actions;
@@ -255,6 +284,9 @@ struct RepairActionPlan {
     std::string unavailable_reason;
     std::string expected_effect;
     std::string risk;
+    // 不可用时指向诊断里的能力边界契约 code，让「为什么做不到」可追溯，
+    // 而不是一句「当前版本未实现」。
+    std::string capability_boundary;
     std::vector<RepairAction> depends_on;
 };
 
@@ -301,7 +333,11 @@ struct RepairFidelity {
     bool audio_reencoded = false;
     bool synthetic_frames_inserted = false;
     uint64_t synthetic_frame_count = 0;
+    // timeline_modified 只表示「引擎是否主动重写时间戳」，不等于「产物时间轴相对源未变」：
+    // 借用参考初始化段时，未核验的 mdhd 时基会悄悄改变播放时长。
     bool timeline_modified = false;
+    // unchanged / modified / unknown。默认 unknown —— 没有证据时不能先声称没改写。
+    std::string timeline_status = "unknown";
     std::string timeline_note;
 
     // complete_for_selected_checks / partial / unknown / no_content
@@ -311,6 +347,71 @@ struct RepairFidelity {
     // 感知保真度：没有参考样片时只能是 unknown_without_reference
     std::string perceptual_fidelity = "unknown_without_reference";
     std::vector<std::string> limitations;
+
+    // R03：参考段借来的参数必须逐项列出；时基没有源侧证据时不能写"兼容"。
+    // verified / unverified / rejected / not_applicable
+    std::string reference_compatibility = "not_applicable";
+    std::vector<std::string> borrowed_parameters;
+    // R11：被省略的轨道 / 元数据 / 章节，逐项列出而不是静默丢掉。
+    std::vector<std::string> omitted_items;
+};
+
+// ---- 逐轨样本守恒（R07）----
+//
+// "全轨合计 + 统一容差"会让一条大轨道把小轨道整轨丢失掩盖过去：1000/951
+// 也能算出 95% 的"通过"。所以基线必须按轨道逐条比对。样本和包不总是 1:1
+// （访问单元可能被拆分或合并），差值要显式记成关系，不能静默当容差消化掉。
+struct RepairTrackConservation {
+    uint32_t track_id = 0;
+    int input_stream_index = -1;
+    int output_stream_index = -1;
+    std::string kind; // "video" / "audio"
+    uint64_t expected_samples = 0;
+    uint64_t packets_written = 0;
+    // conserved / loss / excess / unmapped / unknown
+    std::string status;
+    // one_to_one / split / merged / unknown
+    std::string relation;
+    std::string note;
+};
+
+// ---- 逐轨验证目标（R04）----
+//
+// "保留轨道"是执行器实际写进产物的轨；"要求验证轨道"是必须逐轨给出解码结论的轨。
+// 用户 request.target_streams 不再被诊断层拿去选一条主轨、执行层却复制全部轨，
+// 而是显式映射到输出流下标：第二视频轨 / 音频轨损坏不再被整体 Passed 盖住。
+struct RepairTrackVerificationTarget {
+    uint32_t track_id = 0;
+    int input_stream_index = -1;
+    int output_stream_index = -1;
+    std::string kind; // "video" / "audio" / "attached_pic"
+    bool required = false;
+    // R04 覆盖守护：产物里真实存在该轨，但执行器没有把它写进「保留轨 → 输出流」契约。
+    // 验证器不能擅自替这份契约背书，只能留痕并让结论变成不确定。
+    bool coverage_gap = false;
+    std::string note;
+};
+
+// ---- 逐轨验证结果（R04）----
+//
+// "验证器固定挑第一条视频轨"时，第二视频轨 / 音频轨损坏会被整体 Passed 盖住。
+// 覆盖范围是结果的一部分：verified=false 明确表示这一轨没有实际解码过。
+struct RepairTrackVerification {
+    uint32_t track_id = 0;
+    int output_stream_index = -1;
+    std::string kind; // "video" / "audio" / "attached_pic" / "unknown"
+    RepairCheckStatus status = RepairCheckStatus::NotRun;
+    bool verified = false; // 是否真的跑过解码
+    uint64_t packets = 0;
+    uint64_t frames = 0;
+    uint64_t errors = 0;
+    uint64_t corrupt_packets = 0; // R05：逐轨也要能看到损坏包，不能只汇总到全局
+    uint64_t corrupt_frames = 0;
+    uint64_t error_recovery_frames = 0;
+    uint64_t valid_frames = 0;
+    double duration_seconds = 0.0;
+    std::string scope;
+    std::string detail;
 };
 
 // ---- 验证结果 ----
@@ -321,9 +422,34 @@ struct RepairVerification {
     std::vector<RepairCheck> checks;
     uint64_t decoded_frames = 0;
     uint64_t decode_errors = 0;
+    // R05：API 返回成功但帧被标记损坏 / 解码器做了错误隐藏，都不等于"画面干净"。
+    // 这几项分开记账，不能揉进一个 decode_errors。
+    uint64_t corrupt_packets = 0;
+    uint64_t corrupt_frames = 0;
+    uint64_t error_recovery_frames = 0;
+    uint64_t valid_frames = 0;
+    // R05：帧级损坏标记是「解码器能力」，不是「画面干净度」的全集。
+    // observed（至少一帧带标记）/ not_observed（解出帧但没有任何标记）/ not_run（未解码）。
+    // ⚠️ not_observed 不能推出画面干净：项目锁定 FFmpeg 8.1 的可用解码器上
+    // AV_FRAME_FLAG_CORRUPT 实测恒 0，字节损坏只走 API 错误 / decode_error_flags。
+    std::string frame_marker_evidence = "not_run";
+    uint64_t marked_frames = 0;                        // 实测带标记帧数 = corrupt_frames + error_recovery_frames
+    std::vector<std::string> frame_marker_limitations; // 恒 0 的成因，必须随结论一起输出
     uint64_t seek_checks = 0;
     uint64_t seek_passes = 0;
-    std::string decode_scope; // "video#0, all packets"
+    std::string decode_scope; // "video#0, audio#1, all packets"
+
+    // R09：V0 只做容器层检查，绝不能把 structure_only=false 的路径和它混为一谈。
+    bool structure_only = false;
+    std::vector<RepairTrackVerification> per_track;
+    std::vector<std::string> timeline_checks; // 逐轨时长 / 时间戳跨度对比（可读明细）
+    // R03：时长证据必须结构化，不能只打印成文字行却不参与结论。
+    // 错误时基可以「全部帧都解码成功、播放时长却变了一半」。
+    double expected_duration_seconds = 0.0; // 源侧 sidx/tfdt 估算，0 = 无证据
+    double observed_duration_seconds = 0.0; // 产物逐轨实测（取第一条可比的轨）
+    double duration_delta_seconds = 0.0;
+    bool timeline_comparable = false; // 两侧都有实测值才叫「比对过」
+    bool timeline_mismatch = false;   // 偏差超阈值，必须拉低结论
 
     std::vector<DamageFinding> residual_findings;
     std::string evidence;
@@ -354,10 +480,15 @@ struct RepairResult {
     RepairFidelity fidelity;
 
     RepairInputSnapshot input;
+    // R08：参考文件同样要快照 —— 诊断读到的初始化段与执行时拼进去的可能不是同一份。
+    RepairInputSnapshot reference_input;
+    bool reference_snapshot_valid = false;
+    std::string input_check_method; // 说明发布前到底核对了什么、有什么局限
     std::string output_path;
     bool output_published = false;
 
     std::vector<RepairActionExecution> executions;
+    std::vector<RepairTrackConservation> track_conservation;
     std::vector<RepairArtifact> artifacts;
     std::vector<DamageFinding> residual_findings;
 

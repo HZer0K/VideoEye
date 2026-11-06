@@ -116,6 +116,8 @@ TEST(RepairEngine, IntactMp4IsRemuxedAndVerified) {
     EXPECT_EQ(result.fidelity.video, RepairFidelityStatus::VerifiedMatch);
     EXPECT_FALSE(result.fidelity.video_reencoded);
     EXPECT_FALSE(result.fidelity.timeline_modified);
+    EXPECT_EQ(result.fidelity.timeline_status, "unchanged")
+        << "没有借用任何外部解码参数 / 时基时，时间轴结论才可以是 unchanged";
     EXPECT_EQ(result.fidelity.content_completeness, "complete_for_selected_checks");
 
     ASSERT_FALSE(result.executions.empty());
@@ -230,8 +232,23 @@ TEST(RepairEngine, FragmentedSegmentsRepairedWithReferenceInit) {
     request.reference_path = media.init_path;
     const RepairResult result = repair::RepairEngine::Run(request, nullptr, nullptr);
 
-    ASSERT_EQ(result.status, RepairBusinessStatus::Repaired)
+    // R03 结论口径：测试工厂生成的分片序列不带 sidx，源侧没有独立时基证据，
+    // 参考段只能标 unverified。产物仍然完整可解码，但「借来的时基是否改了播放时长」
+    // 无法证明，所以业务状态必须是 PartiallyRecovered，不能再报 Repaired。
+    // 这里不是放宽断言：下面几条把「不确定」的落地范围一起钉死。
+    ASSERT_EQ(result.status, RepairBusinessStatus::PartiallyRecovered)
         << "summary=" << result.summary << " error=" << result.error;
+    EXPECT_EQ(result.fidelity.reference_compatibility, "unverified");
+    EXPECT_EQ(result.fidelity.timeline_status, "unknown");
+    EXPECT_EQ(result.fidelity.content_completeness, "unknown");
+    EXPECT_FALSE(result.fidelity.timeline_modified) << "引擎确实没有主动重写时间戳，但这不等于时间轴未变";
+    bool has_unverified_reference = false;
+    for (const auto& finding : result.residual_findings) {
+        if (finding.code == "reference.parameters_unverified")
+            has_unverified_reference = true;
+    }
+    EXPECT_TRUE(has_unverified_reference) << "未核验的借用参数必须作为残留问题上报";
+
     EXPECT_TRUE(result.output_published);
     ASSERT_FALSE(result.output_path.empty());
     EXPECT_TRUE(std::filesystem::exists(result.output_path));

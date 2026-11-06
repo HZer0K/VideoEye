@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <sstream>
+#include <utility>
+#include <vector>
 
 #include "core/reporting/QcReportExporterInternal.h"
 #include "infrastructure/serialization/Json.h"
@@ -14,6 +17,9 @@ namespace {
 using JsonValue = videoeye::JsonValue;
 
 constexpr const char* kRepairSchemaVersion = "1.0";
+
+JsonValue BuildTrackConservationArray(const std::vector<model::RepairTrackConservation>& records);
+JsonValue BuildTrackVerificationArray(const std::vector<model::RepairTrackVerification>& tracks);
 
 JsonValue JText(const std::string& value) {
     return JsonValue(value);
@@ -36,6 +42,13 @@ JsonValue JNum(double value) {
 
 JsonValue JSeconds(const std::optional<double>& value) {
     return value.has_value() ? JNum(*value) : JsonValue();
+}
+
+// TXT / HTML 里的秒数统一三位小数，避免不同格式把同一个实测值显示成不同精度。
+std::string FixedSeconds(double value) {
+    char buffer[32] = {};
+    std::snprintf(buffer, sizeof(buffer), "%.3f", value);
+    return std::string(buffer);
 }
 
 JsonValue JOptString(const std::string& value) {
@@ -175,7 +188,27 @@ JsonValue BuildInput(const model::RepairInputSnapshot& input) {
     object.Set("size_bytes", J64(input.size_bytes));
     object.Set("mtime_epoch_seconds", J64(input.mtime_epoch_seconds));
     object.Set("signature", JOptString(input.signature));
+    object.Set("content_hash", JOptString(input.content_hash));
+    object.Set("hash_method", JText(input.hash_method));
+    object.Set("hashed_bytes", J64(input.hashed_bytes));
     return object;
+}
+
+JsonValue BuildCapabilityBoundaryArray(const std::vector<model::RepairCapabilityBoundary>& boundaries) {
+    JsonValue array = JsonValue::MakeArray();
+    for (const auto& boundary : boundaries) {
+        JsonValue node = JsonValue::MakeObject();
+        node.Set("code", JText(boundary.code));
+        node.Set("status", JText(boundary.status));
+        node.Set("preconditions", BuildStringArray(boundary.preconditions));
+        node.Set("unrecoverable_scope", BuildStringArray(boundary.unrecoverable_scope));
+        node.Set("timeline_impact", JText(boundary.timeline_impact));
+        node.Set("quality_risks", BuildStringArray(boundary.quality_risks));
+        node.Set("evidence", JText(boundary.evidence));
+        node.Set("trigger_findings", BuildStringArray(boundary.trigger_findings));
+        array.PushBack(node);
+    }
+    return array;
 }
 
 JsonValue BuildDiagnosis(const model::RepairDiagnosis& diagnosis) {
@@ -191,6 +224,7 @@ JsonValue BuildDiagnosis(const model::RepairDiagnosis& diagnosis) {
     object.Set("findings", BuildFindings(diagnosis.findings));
     object.Set("coverage", BuildCoverage(diagnosis.coverage));
     object.Set("expected_tracks", BuildExpectedTracks(diagnosis.expected_tracks));
+    object.Set("capability_boundaries", BuildCapabilityBoundaryArray(diagnosis.capability_boundaries));
     JsonValue candidates = JsonValue::MakeArray();
     for (model::RepairAction action : diagnosis.candidate_actions)
         candidates.PushBack(JText(model::ToString(action)));
@@ -217,6 +251,7 @@ JsonValue BuildPlan(const model::RepairPlan& plan) {
         node.Set("description", JText(action.description));
         node.Set("available", JsonValue(action.available));
         node.Set("unavailable_reason", JOptString(action.unavailable_reason));
+        node.Set("capability_boundary", JOptString(action.capability_boundary));
         node.Set("expected_effect", JText(action.expected_effect));
         node.Set("risk", JText(action.risk));
         JsonValue deps = JsonValue::MakeArray();
@@ -253,6 +288,21 @@ JsonValue BuildVerification(const model::RepairVerification& verification) {
     object.Set("checks", BuildChecks(verification.checks));
     object.Set("decoded_frames", J64(verification.decoded_frames));
     object.Set("decode_errors", J64(verification.decode_errors));
+    object.Set("corrupt_packets", J64(verification.corrupt_packets));
+    object.Set("corrupt_frames", J64(verification.corrupt_frames));
+    object.Set("error_recovery_frames", J64(verification.error_recovery_frames));
+    object.Set("valid_frames", J64(verification.valid_frames));
+    object.Set("frame_marker_evidence", JText(verification.frame_marker_evidence));
+    object.Set("marked_frames", J64(verification.marked_frames));
+    object.Set("frame_marker_limitations", BuildStringArray(verification.frame_marker_limitations));
+    object.Set("structure_only", JsonValue(verification.structure_only));
+    object.Set("expected_duration_seconds", JNum(verification.expected_duration_seconds));
+    object.Set("observed_duration_seconds", JNum(verification.observed_duration_seconds));
+    object.Set("duration_delta_seconds", JNum(verification.duration_delta_seconds));
+    object.Set("timeline_comparable", JsonValue(verification.timeline_comparable));
+    object.Set("timeline_mismatch", JsonValue(verification.timeline_mismatch));
+    object.Set("timeline_checks", BuildStringArray(verification.timeline_checks));
+    object.Set("per_track", BuildTrackVerificationArray(verification.per_track));
     object.Set("seek_checks", J64(verification.seek_checks));
     object.Set("seek_passes", J64(verification.seek_passes));
     object.Set("decode_scope", JText(verification.decode_scope));
@@ -270,12 +320,58 @@ JsonValue BuildFidelity(const model::RepairFidelity& fidelity) {
     object.Set("synthetic_frames_inserted", JsonValue(fidelity.synthetic_frames_inserted));
     object.Set("synthetic_frame_count", J64(fidelity.synthetic_frame_count));
     object.Set("timeline_modified", JsonValue(fidelity.timeline_modified));
+    object.Set("timeline_status", JText(fidelity.timeline_status));
     object.Set("timeline_note", JText(fidelity.timeline_note));
     object.Set("content_completeness", JText(fidelity.content_completeness));
     object.Set("original_content_recovery_ratio", JSeconds(fidelity.original_content_recovery_ratio));
     object.Set("perceptual_fidelity", JText(fidelity.perceptual_fidelity));
+    object.Set("reference_compatibility", JText(fidelity.reference_compatibility));
+    object.Set("borrowed_parameters", BuildStringArray(fidelity.borrowed_parameters));
+    object.Set("omitted_items", BuildStringArray(fidelity.omitted_items));
     object.Set("limitations", BuildStringArray(fidelity.limitations));
     return object;
+}
+
+JsonValue BuildTrackConservationArray(const std::vector<model::RepairTrackConservation>& records) {
+    JsonValue array = JsonValue::MakeArray();
+    for (const auto& record : records) {
+        JsonValue node = JsonValue::MakeObject();
+        node.Set("track_id", JsonValue(static_cast<int>(record.track_id)));
+        node.Set("input_stream_index", JsonValue(record.input_stream_index));
+        node.Set("output_stream_index", JsonValue(record.output_stream_index));
+        node.Set("kind", JText(record.kind));
+        node.Set("expected_samples", J64(record.expected_samples));
+        node.Set("packets_written", J64(record.packets_written));
+        node.Set("status", JText(record.status));
+        node.Set("relation", JText(record.relation));
+        node.Set("note", JOptString(record.note));
+        array.PushBack(node);
+    }
+    return array;
+}
+
+JsonValue BuildTrackVerificationArray(const std::vector<model::RepairTrackVerification>& tracks) {
+    JsonValue array = JsonValue::MakeArray();
+    for (const auto& track : tracks) {
+        JsonValue node = JsonValue::MakeObject();
+        node.Set("track_id", JsonValue(static_cast<int>(track.track_id)));
+        node.Set("output_stream_index", JsonValue(track.output_stream_index));
+        node.Set("kind", JText(track.kind));
+        node.Set("status", JText(model::ToString(track.status)));
+        node.Set("verified", JsonValue(track.verified));
+        node.Set("packets", J64(track.packets));
+        node.Set("frames", J64(track.frames));
+        node.Set("errors", J64(track.errors));
+        node.Set("corrupt_packets", J64(track.corrupt_packets));
+        node.Set("corrupt_frames", J64(track.corrupt_frames));
+        node.Set("error_recovery_frames", J64(track.error_recovery_frames));
+        node.Set("valid_frames", J64(track.valid_frames));
+        node.Set("duration_seconds", JNum(track.duration_seconds));
+        node.Set("scope", JOptString(track.scope));
+        node.Set("detail", JOptString(track.detail));
+        array.PushBack(node);
+    }
+    return array;
 }
 
 JsonValue BuildArtifacts(const std::vector<model::RepairArtifact>& artifacts) {
@@ -312,6 +408,9 @@ JsonValue BuildResultJson(const model::RepairResult& result) {
     root.Set("output", output);
 
     root.Set("input", BuildInput(result.input));
+    root.Set("reference_input", BuildInput(result.reference_input));
+    root.Set("reference_snapshot_valid", JsonValue(result.reference_snapshot_valid));
+    root.Set("input_check_method", JText(result.input_check_method));
     root.Set("diagnosis", BuildDiagnosis(result.diagnosis));
     root.Set("plan", BuildPlan(result.plan));
 
@@ -322,6 +421,7 @@ JsonValue BuildResultJson(const model::RepairResult& result) {
 
     root.Set("verification", BuildVerification(result.verification));
     root.Set("fidelity", BuildFidelity(result.fidelity));
+    root.Set("track_conservation", BuildTrackConservationArray(result.track_conservation));
     root.Set("artifacts", BuildArtifacts(result.artifacts));
     root.Set("residual_findings", BuildFindings(result.residual_findings));
     return root;
@@ -352,6 +452,227 @@ std::string LocationText(const model::DamageLocation& location) {
     return out.str();
 }
 
+// ---- R13：统一的报告视图模型 ----
+//
+// 以前 JSON / TXT / HTML 各写各的：TXT 和 HTML 只遍历诊断阶段 findings，
+// 结果级的 residual_findings（修复/验证后才发现的内容缺失、损坏帧、参考段风险）
+// 只有 JSON 有；HTML 还少了保真度限制与执行明细。现在三种格式都从同一个
+// sections 视图渲染，任何一条残留问题都不会在人类可读报告里凭空消失。
+struct ReportSection {
+    std::string title;
+    std::vector<std::pair<std::string, std::string>> rows;
+    std::vector<std::string> items;
+};
+
+std::string FindingLine(const model::DamageFinding& finding) {
+    std::ostringstream line;
+    line << finding.code << " [" << model::ToString(finding.layer) << "/" << model::ToString(finding.severity) << "] "
+         << finding.evidence;
+    const std::string location = LocationText(finding.location);
+    if (!location.empty())
+        line << " @ " << location;
+    for (const auto& limitation : finding.limitations)
+        line << " | 限制: " << limitation;
+    return line.str();
+}
+
+std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
+    std::vector<ReportSection> sections;
+
+    ReportSection conclusion;
+    conclusion.title = "结论";
+    conclusion.rows.emplace_back("状态", std::string(model::DisplayName(result.status)) + " (" +
+                                             model::ToString(result.status) + ")");
+    conclusion.rows.emplace_back("摘要", result.summary);
+    if (!result.error.empty())
+        conclusion.rows.emplace_back("错误", result.error);
+    conclusion.rows.emplace_back("产物", result.output_path.empty() ? "（未发布）" : result.output_path);
+    conclusion.rows.emplace_back("已发布", result.output_published ? "yes" : "no");
+    conclusion.rows.emplace_back("验证等级", model::DisplayName(result.verification.level));
+    conclusion.rows.emplace_back("逐轨验证条数", std::to_string(result.verification.per_track.size()));
+    conclusion.rows.emplace_back("残留问题条数", std::to_string(result.residual_findings.size()));
+    sections.push_back(std::move(conclusion));
+
+    ReportSection input;
+    input.title = "输入与快照";
+    input.rows.emplace_back("源路径", result.input.path);
+    input.rows.emplace_back("源大小", std::to_string(result.input.size_bytes) + " bytes");
+    input.rows.emplace_back("源签名", result.input.signature.empty() ? "unknown" : result.input.signature);
+    input.rows.emplace_back("源内容摘要", result.input.content_hash.empty()
+                                              ? "unavailable"
+                                              : result.input.content_hash + " (" + result.input.hash_method + ")");
+    if (result.reference_snapshot_valid) {
+        input.rows.emplace_back("参考路径", result.reference_input.path);
+        input.rows.emplace_back("参考内容摘要", result.reference_input.content_hash.empty()
+                                                    ? "unavailable"
+                                                    : result.reference_input.content_hash + " (" +
+                                                          result.reference_input.hash_method + ")");
+    }
+    input.rows.emplace_back("发布前核对方法", result.input_check_method);
+    sections.push_back(std::move(input));
+
+    ReportSection diagnosis;
+    diagnosis.title = "诊断";
+    for (const auto& check : result.diagnosis.checks)
+        diagnosis.items.push_back("[" + std::string(model::ToString(check.status)) + "] " + check.name + " — " +
+                                  check.detail);
+    for (const auto& finding : result.diagnosis.findings)
+        diagnosis.items.push_back(FindingLine(finding));
+    diagnosis.items.push_back("覆盖: bytes=" + std::to_string(result.diagnosis.coverage.bytes_scanned) +
+                              " packets=" + std::to_string(result.diagnosis.coverage.packets_scanned) +
+                              " reached_eof=" + (result.diagnosis.coverage.reached_eof ? "yes" : "no"));
+    for (const auto& expected : result.diagnosis.expected_tracks)
+        diagnosis.items.push_back("源侧样本数基线: 轨道 " + std::to_string(expected.track_id) + "=" +
+                                  std::to_string(expected.sample_count) + " (" + expected.provenance + ")");
+    for (const auto& reason : result.diagnosis.blocking_reasons)
+        diagnosis.items.push_back("能力阻断: " + reason);
+    for (const auto& limitation : result.diagnosis.coverage.limitations)
+        diagnosis.items.push_back("覆盖限制: " + limitation);
+    sections.push_back(std::move(diagnosis));
+
+    // 命中才输出的边界契约：前提 / 不可恢复范围 / 时间轴变化 / 质量风险逐条可见，
+    // 三种格式都从这一份 sections 视图渲染。
+    if (!result.diagnosis.capability_boundaries.empty()) {
+        ReportSection boundaries;
+        boundaries.title = "未实现能力边界（本次命中）";
+        boundaries.rows.emplace_back("命中条数", std::to_string(result.diagnosis.capability_boundaries.size()));
+        for (const auto& boundary : result.diagnosis.capability_boundaries) {
+            std::string triggers;
+            for (const auto& code : boundary.trigger_findings) {
+                if (!triggers.empty())
+                    triggers += ", ";
+                triggers += code;
+            }
+            boundaries.items.push_back(boundary.code + " [" + boundary.status +
+                                       "] 触发证据: " + (triggers.empty() ? "（无）" : triggers));
+            for (const auto& item : boundary.preconditions)
+                boundaries.items.push_back("  前提: " + item);
+            for (const auto& item : boundary.unrecoverable_scope)
+                boundaries.items.push_back("  不可恢复范围: " + item);
+            boundaries.items.push_back("  时间轴变化: " + boundary.timeline_impact);
+            for (const auto& item : boundary.quality_risks)
+                boundaries.items.push_back("  质量风险: " + item);
+            boundaries.items.push_back("  判定依据: " + boundary.evidence);
+        }
+        sections.push_back(std::move(boundaries));
+    }
+
+    ReportSection execution;
+    execution.title = "方案与执行";
+    for (const auto& action : result.plan.actions) {
+        std::string line = std::string(model::ToString(action.action)) + " (" + model::DisplayName(action.action) +
+                           ") " + (action.available ? "可用" : "不可用: " + action.unavailable_reason);
+        if (!action.capability_boundary.empty())
+            line += " [边界契约: " + action.capability_boundary + "]";
+        execution.items.push_back(line);
+    }
+    for (const auto& action : result.executions) {
+        execution.items.push_back(
+            std::string("执行 ") + model::ToString(action.action) + ": attempted=" + (action.attempted ? "yes" : "no") +
+            " succeeded=" + (action.succeeded ? "yes" : "no") + " packets=" + std::to_string(action.packets_written) +
+            " bytes=" + std::to_string(action.bytes_written));
+        if (!action.detail.empty())
+            execution.items.push_back("  " + action.detail);
+    }
+    sections.push_back(std::move(execution));
+
+    ReportSection conservation;
+    conservation.title = "逐轨样本守恒";
+    if (result.track_conservation.empty()) {
+        conservation.items.push_back("本次没有源侧逐轨声明基线（普通 MP4 路径），未做逐轨守恒判定");
+    } else {
+        for (const auto& record : result.track_conservation) {
+            conservation.items.push_back(
+                "轨道 " + std::to_string(record.track_id) + " (" + record.kind + ") 输出流#" +
+                std::to_string(record.output_stream_index) + ": 声明 " + std::to_string(record.expected_samples) +
+                " / 写入 " + std::to_string(record.packets_written) + "，关系=" + record.relation +
+                "，判定=" + record.status + (record.note.empty() ? "" : "（" + record.note + "）"));
+        }
+    }
+    sections.push_back(std::move(conservation));
+
+    ReportSection verification;
+    verification.title = "验证（" + std::string(model::DisplayName(result.verification.level)) + "）";
+    verification.rows.emplace_back("状态", model::ToString(result.verification.status));
+    verification.rows.emplace_back("证据", result.verification.evidence);
+    verification.rows.emplace_back(
+        "解码范围", result.verification.decode_scope.empty() ? "（未记录）" : result.verification.decode_scope);
+    verification.rows.emplace_back("结构验证专用", result.verification.structure_only ? "yes（尚未验证播放）" : "no");
+    verification.rows.emplace_back("帧统计", "解码 " + std::to_string(result.verification.decoded_frames) + " / 有效 " +
+                                                 std::to_string(result.verification.valid_frames) + " / 损坏 " +
+                                                 std::to_string(result.verification.corrupt_frames) + " / 错误恢复 " +
+                                                 std::to_string(result.verification.error_recovery_frames) +
+                                                 " / API 错误 " + std::to_string(result.verification.decode_errors));
+    // R05：把「帧标记恒 0」显式写成能力证据，避免把 0 读成「画面干净」。
+    const std::string marker_note =
+        result.verification.frame_marker_evidence == "observed"
+            ? "解码器确实给出帧级损坏标记"
+            : (result.verification.frame_marker_evidence == "not_run" ? "未解码，不存在帧级证据"
+                                                                      : "未观察到帧级标记，不能据此断言画面干净");
+    verification.rows.emplace_back("帧标记证据", result.verification.frame_marker_evidence + "（带标记帧 " +
+                                                     std::to_string(result.verification.marked_frames) + "；" +
+                                                     marker_note + "）");
+    for (const auto& limitation : result.verification.frame_marker_limitations)
+        verification.items.push_back("帧标记限制: " + limitation);
+    verification.rows.emplace_back("跳转", std::to_string(result.verification.seek_passes) + "/" +
+                                               std::to_string(result.verification.seek_checks));
+    verification.rows.emplace_back("时间轴实测",
+                                   "源侧估算=" + FixedSeconds(result.verification.expected_duration_seconds) +
+                                       "s / 产物实测=" + FixedSeconds(result.verification.observed_duration_seconds) +
+                                       "s / 差值=" + FixedSeconds(result.verification.duration_delta_seconds) +
+                                       "s / 可比对=" + (result.verification.timeline_comparable ? "yes" : "no") +
+                                       " / 偏差超阈值=" + (result.verification.timeline_mismatch ? "yes" : "no"));
+    for (const auto& track : result.verification.per_track)
+        verification.items.push_back("逐轨 " + track.kind + "#" + std::to_string(track.output_stream_index) + " [" +
+                                     model::ToString(track.status) + "] verified=" + (track.verified ? "yes" : "no") +
+                                     " frames=" + std::to_string(track.frames) +
+                                     " corrupt_packets=" + std::to_string(track.corrupt_packets) +
+                                     " corrupt=" + std::to_string(track.corrupt_frames) + " — " + track.detail);
+    for (const auto& check : result.verification.checks)
+        verification.items.push_back("[" + std::string(model::ToString(check.status)) + "] " + check.name + " — " +
+                                     check.detail);
+    for (const auto& line : result.verification.timeline_checks)
+        verification.items.push_back("时间轴实测: " + line);
+    sections.push_back(std::move(verification));
+
+    ReportSection residual;
+    residual.title = "修复 / 验证后的残留问题";
+    if (result.residual_findings.empty()) {
+        residual.items.push_back("本次未记录到残留问题（注意：这不等于已证明无失真）");
+    } else {
+        for (const auto& finding : result.residual_findings)
+            residual.items.push_back(FindingLine(finding));
+    }
+    sections.push_back(std::move(residual));
+
+    ReportSection fidelity;
+    fidelity.title = "保真度与已知限制";
+    fidelity.rows.emplace_back("视频", model::ToString(result.fidelity.video));
+    fidelity.rows.emplace_back("音频", model::ToString(result.fidelity.audio));
+    fidelity.rows.emplace_back("内容完整性", result.fidelity.content_completeness);
+    fidelity.rows.emplace_back("感知保真度", result.fidelity.perceptual_fidelity);
+    // R03：三态展示。旧实现只看引擎是否主动重写时间戳，借用未经核验的参考时基时
+    // 会写「时间轴改写: no」，把「无法判定」冒充成「已证明没变」。
+    const std::string timeline_display =
+        result.fidelity.timeline_status == "unchanged"
+            ? "no（时基已核验且时长一致）"
+            : (result.fidelity.timeline_status == "modified" ? "yes（实测时长不符，播放速度可能已变）"
+                                                             : "unknown（不能断言未改写）");
+    fidelity.rows.emplace_back("时间轴改写", timeline_display);
+    fidelity.rows.emplace_back("时间轴结论", result.fidelity.timeline_status);
+    fidelity.rows.emplace_back("时间轴说明", result.fidelity.timeline_note);
+    fidelity.rows.emplace_back("参考段兼容性", result.fidelity.reference_compatibility);
+    for (const auto& borrowed : result.fidelity.borrowed_parameters)
+        fidelity.items.push_back("借用参数: " + borrowed);
+    for (const auto& omitted : result.fidelity.omitted_items)
+        fidelity.items.push_back("未保留: " + omitted);
+    for (const auto& limitation : result.fidelity.limitations)
+        fidelity.items.push_back("限制 / 未知项: " + limitation);
+    sections.push_back(std::move(fidelity));
+
+    return sections;
+}
+
 std::string BuildTextReport(const model::RepairResult& result) {
     std::ostringstream out;
     out << "VideoEye 视频修复报告\n";
@@ -359,85 +680,15 @@ std::string BuildTextReport(const model::RepairResult& result) {
     out << "结果 ID: " << result.result_id << "\n";
     out << "请求 ID: " << result.request_id << "\n";
     out << "生成时间: " << result.created_at_iso8601 << "\n";
-    out << "FFmpeg: " << result.ffmpeg_version << "\n\n";
-
-    out << "结论\n----\n";
-    out << "状态: " << model::DisplayName(result.status) << " (" << model::ToString(result.status) << ")\n";
-    out << "摘要: " << result.summary << "\n";
-    if (!result.error.empty())
-        out << "错误: " << result.error << "\n";
-    out << "产物: " << (result.output_path.empty() ? "（未发布）" : result.output_path) << "\n\n";
-
-    out << "输入\n----\n";
-    out << "路径: " << result.input.path << "\n";
-    out << "大小: " << result.input.size_bytes << " bytes\n";
-    out << "签名: " << (result.input.signature.empty() ? "unknown" : result.input.signature) << "\n\n";
-
-    out << "诊断（" << result.diagnosis.checks.size() << " 项检查 / " << result.diagnosis.findings.size()
-        << " 条证据）\n--------------------------------\n";
-    for (const auto& check : result.diagnosis.checks) {
-        out << "[" << model::ToString(check.status) << "] " << check.name << " — " << check.detail << "\n";
+    out << "FFmpeg: " << result.ffmpeg_version << "\n";
+    for (const auto& section : BuildSections(result)) {
+        out << "\n" << section.title << "\n";
+        out << std::string(section.title.size(), '-') << "\n";
+        for (const auto& row : section.rows)
+            out << row.first << ": " << row.second << "\n";
+        for (const auto& item : section.items)
+            out << "- " << item << "\n";
     }
-    for (const auto& finding : result.diagnosis.findings) {
-        out << "- " << finding.code << " [" << model::ToString(finding.layer) << "/"
-            << model::ToString(finding.severity) << "] " << finding.evidence;
-        const std::string location = LocationText(finding.location);
-        if (!location.empty())
-            out << " @ " << location;
-        out << "\n";
-        if (!finding.limitations.empty()) {
-            for (const auto& limitation : finding.limitations)
-                out << "    限制: " << limitation << "\n";
-        }
-    }
-    out << "\n覆盖: bytes=" << result.diagnosis.coverage.bytes_scanned
-        << " packets=" << result.diagnosis.coverage.packets_scanned
-        << " reached_eof=" << (result.diagnosis.coverage.reached_eof ? "yes" : "no") << "\n";
-    if (!result.diagnosis.expected_tracks.empty()) {
-        out << "源侧样本数基线: ";
-        for (const auto& expected : result.diagnosis.expected_tracks) {
-            out << "轨道 " << expected.track_id << "=" << expected.sample_count << " (" << expected.provenance << ") ";
-        }
-        out << "\n";
-    }
-    for (const auto& limitation : result.diagnosis.coverage.limitations)
-        out << "  限制: " << limitation << "\n";
-    out << "\n";
-
-    out << "方案与执行\n----------\n";
-    for (const auto& action : result.plan.actions) {
-        out << "- " << model::ToString(action.action) << " (" << model::DisplayName(action.action) << ") "
-            << (action.available ? "可用" : "不可用: " + action.unavailable_reason) << "\n";
-    }
-    for (const auto& execution : result.executions) {
-        out << "  执行 " << model::ToString(execution.action) << ": attempted=" << (execution.attempted ? "yes" : "no")
-            << " succeeded=" << (execution.succeeded ? "yes" : "no") << " packets=" << execution.packets_written
-            << " bytes=" << execution.bytes_written << "\n";
-        if (!execution.detail.empty())
-            out << "    " << execution.detail << "\n";
-    }
-    out << "\n";
-
-    out << "验证（" << model::DisplayName(result.verification.level) << "）\n------------------------\n";
-    out << "状态: " << model::ToString(result.verification.status) << "；帧=" << result.verification.decoded_frames
-        << " 错误=" << result.verification.decode_errors << " 跳转=" << result.verification.seek_passes << "/"
-        << result.verification.seek_checks << "\n";
-    out << result.verification.evidence << "\n";
-    for (const auto& check : result.verification.checks)
-        out << "[" << model::ToString(check.status) << "] " << check.name << " — " << check.detail << "\n";
-    out << "\n";
-
-    out << "保真度\n------\n";
-    out << "视频: " << model::ToString(result.fidelity.video) << "；音频: " << model::ToString(result.fidelity.audio)
-        << "\n";
-    out << "重编码: video=" << (result.fidelity.video_reencoded ? "yes" : "no")
-        << " audio=" << (result.fidelity.audio_reencoded ? "yes" : "no")
-        << "；合成帧: " << (result.fidelity.synthetic_frames_inserted ? "yes" : "no")
-        << "；时间轴改写: " << (result.fidelity.timeline_modified ? "yes" : "no") << "\n";
-    out << "内容完整性: " << result.fidelity.content_completeness
-        << "；感知保真度: " << result.fidelity.perceptual_fidelity << "\n";
-    for (const auto& limitation : result.fidelity.limitations)
-        out << "  限制: " << limitation << "\n";
     return out.str();
 }
 
@@ -475,45 +726,30 @@ std::string BuildHtmlReport(const model::RepairResult& result) {
          << "h1{font-size:22px;margin:0 0 8px}h2{font-size:16px;margin:0 0 12px;color:#57606a}"
          << "table{border-collapse:collapse;width:100%;font-size:13px}td,th{border-bottom:1px solid "
             "#eaeef2;padding:6px 8px;text-align:left;vertical-align:top}"
+         << "th{width:180px;color:#57606a;font-weight:500}"
          << ".ok{color:#1a7f37}.fail{color:#cf222e}.warn{color:#9a6700}.muted{color:#57606a}"
+         << "li{font-size:13px;margin:4px 0}"
          << "code{background:#f0f2f4;border-radius:4px;padding:1px 4px}"
          << "</style></head><body>";
     html << "<div class=\"card\"><h1>VideoEye 视频修复报告</h1>"
          << "<p class=\"muted\">" << EscapeHtml(result.result_id) << " · " << EscapeHtml(result.created_at_iso8601)
-         << "</p><h2>结论</h2><p><strong>" << EscapeHtml(model::DisplayName(result.status)) << "</strong> ("
-         << EscapeHtml(model::ToString(result.status)) << ")</p><p>" << EscapeHtml(result.summary) << "</p>";
-    if (!result.output_path.empty())
-        html << "<p>产物: <code>" << EscapeHtml(result.output_path) << "</code></p>";
-    html << "</div>";
-
-    html << "<div "
-            "class=\"card\"><h2>诊断证据</h2><table><tr><th>代码</th><th>层/严重度</th><th>证据</th><th>定位</th></tr>";
-    for (const auto& finding : result.diagnosis.findings) {
-        const char* cls =
-            finding.severity == model::IssueSeverity::Critical || finding.severity == model::IssueSeverity::Error
-                ? "fail"
-                : "warn";
-        html << "<tr><td><code>" << EscapeHtml(finding.code) << "</code></td><td class=\"" << cls << "\">"
-             << EscapeHtml(model::ToString(finding.layer)) << " / " << EscapeHtml(model::ToString(finding.severity))
-             << "</td><td>" << EscapeHtml(finding.evidence) << "</td><td class=\"muted\">"
-             << EscapeHtml(LocationText(finding.location)) << "</td></tr>";
+         << " · " << EscapeHtml(result.ffmpeg_version) << "</p></div>";
+    for (const auto& section : BuildSections(result)) {
+        html << "<div class=\"card\"><h2>" << EscapeHtml(section.title) << "</h2>";
+        if (!section.rows.empty()) {
+            html << "<table>";
+            for (const auto& row : section.rows)
+                html << "<tr><th>" << EscapeHtml(row.first) << "</th><td>" << EscapeHtml(row.second) << "</td></tr>";
+            html << "</table>";
+        }
+        if (!section.items.empty()) {
+            html << "<ul>";
+            for (const auto& item : section.items)
+                html << "<li>" << EscapeHtml(item) << "</li>";
+            html << "</ul>";
+        }
+        html << "</div>";
     }
-    html << "</table></div>";
-
-    html << "<div class=\"card\"><h2>验证（" << EscapeHtml(model::DisplayName(result.verification.level)) << "）</h2>"
-         << "<p class=\"" << (result.verification.status == model::RepairCheckStatus::Passed ? "ok" : "warn") << "\">"
-         << EscapeHtml(result.verification.evidence) << "</p><table><tr><th>检查</th><th>状态</th><th>说明</th></tr>";
-    for (const auto& check : result.verification.checks)
-        html << "<tr><td>" << EscapeHtml(check.name) << "</td><td>" << EscapeHtml(model::ToString(check.status))
-             << "</td><td class=\"muted\">" << EscapeHtml(check.detail) << "</td></tr>";
-    html << "</table></div>";
-
-    html << "<div class=\"card\"><h2>保真度</h2><p>视频: " << EscapeHtml(model::ToString(result.fidelity.video))
-         << "；音频: " << EscapeHtml(model::ToString(result.fidelity.audio))
-         << "；内容完整性: " << EscapeHtml(result.fidelity.content_completeness)
-         << "；感知保真度: " << EscapeHtml(result.fidelity.perceptual_fidelity) << "</p><p class=\"muted\">"
-         << EscapeHtml(result.fidelity.timeline_note) << "</p></div>";
-
     html << "</body></html>";
     return html.str();
 }

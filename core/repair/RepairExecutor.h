@@ -13,7 +13,9 @@
 
 #include "core/domain/model/RepairRequest.h"
 #include "core/domain/model/RepairTypes.h"
+#include "core/repair/RepairBudget.h"
 #include "core/repair/RepairInitSegment.h"
+#include "core/repair/RepairOutputWriter.h"
 #include "core/repair/RepairProgress.h"
 
 namespace videoeye {
@@ -26,6 +28,8 @@ struct RepairExecutionOutcome {
     std::string error;
 
     std::string part_path;
+    // 拼接"参考初始化段 + 源分片"用的临时文件（预留与清理都受保护）。
+    std::string assembled_path;
 
     uint64_t packets_read = 0;
     uint64_t packets_written = 0;
@@ -42,6 +46,12 @@ struct RepairExecutionOutcome {
 
     std::vector<model::RepairActionExecution> executions;
     std::vector<model::DamageFinding> residual_findings;
+
+    // 输入 → 输出轨道映射与逐轨写入包数（R04 / R07）。
+    std::vector<model::RepairTrackVerificationTarget> verification_targets;
+    std::vector<model::RepairTrackConservation> track_conservation;
+    // 被省略的轨道 / 元数据 / 章节，逐项列出（R11）。
+    std::vector<std::string> omitted_items;
     std::string ffmpeg_version;
 };
 
@@ -51,9 +61,9 @@ public:
     // ftyp+moov。非空时执行器会先拼一个"初始化段 + 源分片"的临时文件再重封装，
     // 临时文件在本次执行结束时删除。
     static RepairExecutionOutcome Execute(const model::RepairRequest& request, const model::RepairDiagnosis& diagnosis,
-                                          const model::RepairPlan& plan, const std::string& part_path,
+                                          const model::RepairPlan& plan, const RepairOutputPaths& paths,
                                           const RepairInitSegment* reference_init, const std::atomic<bool>* cancel,
-                                          const RepairProgress& progress);
+                                          const RepairProgress& progress, const RepairRunBudget* budget = nullptr);
 };
 
 } // namespace repair

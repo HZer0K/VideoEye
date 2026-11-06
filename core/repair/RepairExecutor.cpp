@@ -8,11 +8,13 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <vector>
 
 #include "core/domain/io/Utf8Path.h"
 #include "core/ffmpeg_io/FfmpegInterrupt.h"
+#include "core/repair/RepairOutputWriter.h"
 #include "core/repair/RepairUtils.h"
 #include "infrastructure/concurrency/Cancellation.h"
 
@@ -20,6 +22,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
+#include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/opt.h>
 }
@@ -81,13 +84,22 @@ private:
     std::string path_;
 };
 
-bool CopyFileInto(std::ofstream& out, const std::string& source_path, const std::atomic<bool>* cancel, bool* canceled) {
+bool CopyFileInto(std::ofstream& out, const std::string& source_path, const std::atomic<bool>* cancel,
+                  const RepairRunBudget* budget, bool* canceled, bool* timed_out) {
     std::ifstream in(ToNativePath(source_path), std::ios::binary);
     if (!in)
         return false;
     std::vector<char> buffer(4u * 1024u * 1024u);
     while (in) {
-        if (infrastructure::Checkpoint(cancel)) {
+        if (budget != nullptr) {
+            if (budget->Checkpoint()) {
+                if (budget->Canceled())
+                    *canceled = true;
+                else
+                    *timed_out = true;
+                return false;
+            }
+        } else if (infrastructure::Checkpoint(cancel)) {
             *canceled = true;
             return false;
         }
@@ -104,8 +116,10 @@ bool CopyFileInto(std::ofstream& out, const std::string& source_path, const std:
 
 // 生成"参考初始化段 + 源媒体分片"的临时文件，供 FFmpeg 按普通 fMP4 读取。
 bool AssembleWithInitSegment(const std::string& source_path, const std::vector<uint8_t>& init_bytes,
-                             const std::string& target_path, const std::atomic<bool>* cancel, bool* canceled,
-                             std::string* error) {
+                             const std::string& target_path, const std::atomic<bool>* cancel,
+                             const RepairRunBudget* budget, bool* canceled, bool* timed_out, std::string* error) {
+    // target_path 必须已由调用方用 CreateExclusiveFile 独占预留；这里只负责写，
+    // 不能在未确认所有权的情况下 trunc/删除可能属于用户的文件（R01）。
     std::ofstream out(ToNativePath(target_path), std::ios::binary | std::ios::trunc);
     if (!out) {
         *error = "无法创建临时组装文件: " + target_path;
@@ -118,8 +132,8 @@ bool AssembleWithInitSegment(const std::string& source_path, const std::vector<u
             return false;
         }
     }
-    if (!CopyFileInto(out, source_path, cancel, canceled)) {
-        if (!*canceled)
+    if (!CopyFileInto(out, source_path, cancel, budget, canceled, timed_out)) {
+        if (!*canceled && !*timed_out)
             *error = "复制源媒体分片失败: " + source_path;
         return false;
     }
@@ -135,11 +149,19 @@ bool AssembleWithInitSegment(const std::string& source_path, const std::vector<u
 
 RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& request,
                                                const model::RepairDiagnosis& diagnosis, const model::RepairPlan& plan,
-                                               const std::string& part_path, const RepairInitSegment* reference_init,
-                                               const std::atomic<bool>* cancel, const RepairProgress& progress) {
+                                               const RepairOutputPaths& paths, const RepairInitSegment* reference_init,
+                                               const std::atomic<bool>* cancel, const RepairProgress& progress,
+                                               const RepairRunBudget* budget) {
     (void)diagnosis;
+    const std::string& part_path = paths.part_path;
     RepairExecutionOutcome outcome;
     outcome.part_path = part_path;
+    outcome.assembled_path = paths.assembled_path;
+    if (budget != nullptr && budget->Checkpoint()) {
+        outcome.canceled = budget->Canceled();
+        outcome.timed_out = !outcome.canceled;
+        return outcome;
+    }
     outcome.ffmpeg_version = av_version_info();
 
     // 缺少初始化段的 fMP4 媒体分片：先拼出 init + 分片的临时文件，之后整条
@@ -149,14 +171,23 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
     std::unique_ptr<TempFileGuard> assembled_guard;
     if (use_reference_init) {
         Emit(progress, 76, "前置参考初始化段并组装源媒体分片");
-        const std::string assembled_path = part_path + ".src.mp4";
+        const std::string assembled_path = paths.assembled_path;
+        if (!CreateExclusiveFile(assembled_path)) {
+            outcome.error = "无法独占创建临时组装文件（已存在或不可创建）: " + assembled_path;
+            return outcome;
+        }
         assembled_guard = std::make_unique<TempFileGuard>(assembled_path);
         bool canceled_copy = false;
+        bool timed_out_copy = false;
         std::string assemble_error;
-        if (!AssembleWithInitSegment(request.source_path, reference_init->bytes, assembled_path, cancel, &canceled_copy,
-                                     &assemble_error)) {
+        if (!AssembleWithInitSegment(request.source_path, reference_init->bytes, assembled_path, cancel, budget,
+                                     &canceled_copy, &timed_out_copy, &assemble_error)) {
             if (canceled_copy) {
                 outcome.canceled = true;
+                return outcome;
+            }
+            if (timed_out_copy) {
+                outcome.timed_out = true;
                 return outcome;
             }
             outcome.error = assemble_error;
@@ -180,28 +211,67 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                                            : "无法打开源文件: " + AvErrorText(open_ret);
         return outcome;
     }
-    interrupt.deadline_us.store(av_gettime() + ffmpeg_io::kProbeTimeoutUs);
+    int64_t probe_timeout_us = ffmpeg_io::kProbeTimeoutUs;
+    if (budget != nullptr && budget->HasDeadline()) {
+        const int64_t left = budget->RemainingUs();
+        if (left <= 0) {
+            outcome.timed_out = true;
+            avformat_close_input(&in);
+            return outcome;
+        }
+        probe_timeout_us = std::min<int64_t>(probe_timeout_us, left);
+    }
+    interrupt.deadline_us.store(av_gettime() + probe_timeout_us);
     if (avformat_find_stream_info(in, nullptr) < 0) {
         // 探测失败时仍允许尝试复制：坏文件经常就是探测阶段失败，但包本身可读。
     }
     interrupt.deadline_us.store(0);
 
-    if (infrastructure::Checkpoint(cancel)) {
-        outcome.canceled = true;
+    if (budget != nullptr ? budget->Checkpoint() : infrastructure::Checkpoint(cancel)) {
+        outcome.canceled = budget != nullptr ? budget->Canceled() : true;
+        outcome.timed_out = budget != nullptr && !outcome.canceled;
         avformat_close_input(&in);
         return outcome;
     }
 
+    // R04 契约：保留轨 = 实际写进产物的全部音视频轨（用户 target_streams 不裁剪输出，
+    // 避免静默丢内容）；要求验证轨 = 全部保留轨，target_streams 用来强制标记关注轨。
+    // 封面图片（attached_pic）不算视频内容验证对象。
     std::vector<int> stream_map(in->nb_streams, -1);
     std::vector<const AVStream*> mapped_streams;
     int first_video_input_index = -1;
+    std::set<int> requested;
+    for (int index : request.target_streams)
+        requested.insert(index);
     for (unsigned i = 0; i < in->nb_streams; ++i) {
-        if (!IsMediaStream(in->streams[i]))
+        const AVStream* stream = in->streams[i];
+        if (!IsMediaStream(stream)) {
+            const char* type_name = av_get_media_type_string(stream->codecpar->codec_type);
+            outcome.omitted_items.push_back("流 #" + std::to_string(i) + " (" + (type_name ? type_name : "unknown") +
+                                            ") 不是音视频轨，产物未保留（字幕 / 数据 / 章节可能丢失）");
             continue;
+        }
+        const bool attached_pic = (stream->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0;
+        const bool is_video = stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO;
+        model::RepairTrackVerificationTarget target;
+        target.track_id = stream->id > 0 ? static_cast<uint32_t>(stream->id) : 0;
+        target.input_stream_index = static_cast<int>(i);
+        target.output_stream_index = static_cast<int>(mapped_streams.size());
+        target.kind = attached_pic ? "attached_pic" : (is_video ? "video" : "audio");
+        target.required = requested.count(static_cast<int>(i)) > 0 || (request.target_streams.empty() && !attached_pic);
+        if (attached_pic)
+            target.note = "封面图片不是视频内容轨，不参与可播放性结论";
+        outcome.verification_targets.push_back(std::move(target));
+
         stream_map[i] = static_cast<int>(mapped_streams.size());
-        mapped_streams.push_back(in->streams[i]);
-        if (first_video_input_index < 0 && in->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
+        mapped_streams.push_back(stream);
+        if (first_video_input_index < 0 && is_video && !attached_pic)
             first_video_input_index = static_cast<int>(i);
+    }
+    for (int index : requested) {
+        if (index < 0 || index >= static_cast<int>(in->nb_streams) || stream_map[static_cast<std::size_t>(index)] < 0)
+            outcome.omitted_items.push_back("请求指定的流 #" + std::to_string(index) +
+                                            " 不是可保留的音视频轨，无法按要求验证");
     }
 
     if (mapped_streams.empty()) {
@@ -220,9 +290,21 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
         return outcome;
     }
 
+    // R11：格式级 metadata 尽量保留；MP4 重封装不保留章节，必须逐项说明。
+    if (in->metadata && av_dict_count(in->metadata) > 0) {
+        if (av_dict_copy(&out->metadata, in->metadata, 0) < 0)
+            outcome.omitted_items.push_back("格式级 metadata 复制失败，产物未保留");
+    }
+    if (in->nb_chapters > 0)
+        outcome.omitted_items.push_back("源容器含 " + std::to_string(in->nb_chapters) + " 个章节，MP4 重封装未保留");
+    if (in->nb_streams > mapped_streams.size())
+        outcome.omitted_items.push_back("共 " + std::to_string(in->nb_streams - mapped_streams.size()) +
+                                        " 条非音视频轨未保留");
+
     bool opened_io = false;
     bool header_written = false;
     std::string failure;
+    std::vector<uint64_t> per_output_packets(mapped_streams.size(), 0);
 
     do {
         for (std::size_t i = 0; i < mapped_streams.size(); ++i) {
@@ -237,6 +319,9 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                 break;
             }
             dst->codecpar->codec_tag = 0; // 让封装器选择合法的 tag
+            // R11：语言标签 / disposition / 轨道级 metadata 一并带上。
+            av_dict_copy(&dst->metadata, src->metadata, 0);
+            dst->disposition = src->disposition;
             dst->time_base = src->time_base;
             dst->avg_frame_rate = src->avg_frame_rate;
             dst->sample_aspect_ratio = src->sample_aspect_ratio;
@@ -283,14 +368,22 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
         std::string write_error;
 
         for (;;) {
-            if (infrastructure::Checkpoint(cancel)) {
-                outcome.canceled = true;
-                break;
-            }
-            if (max_seconds > 0 &&
-                std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - started).count() >= max_seconds) {
-                outcome.timed_out = true;
-                break;
+            if (budget != nullptr) {
+                if (budget->Checkpoint()) {
+                    outcome.canceled = budget->Canceled();
+                    outcome.timed_out = !outcome.canceled;
+                    break;
+                }
+            } else {
+                if (infrastructure::Checkpoint(cancel)) {
+                    outcome.canceled = true;
+                    break;
+                }
+                if (max_seconds > 0 &&
+                    std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - started).count() >= max_seconds) {
+                    outcome.timed_out = true;
+                    break;
+                }
             }
 
             const int read_ret = av_read_frame(in, packet);
@@ -367,6 +460,8 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
 
             ++packets_seen;
             ++outcome.packets_written;
+            if (out_index >= 0 && out_index < static_cast<int>(per_output_packets.size()))
+                ++per_output_packets[static_cast<std::size_t>(out_index)];
             outcome.bytes_written += static_cast<uint64_t>(std::max(written_size, 0));
             if (seconds.has_value()) {
                 if (!outcome.output_start_seconds.has_value())
@@ -426,6 +521,20 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
     }
 
     outcome.ok = true;
+
+    for (const auto& target : outcome.verification_targets) {
+        model::RepairTrackConservation record;
+        record.track_id = target.track_id;
+        record.input_stream_index = target.input_stream_index;
+        record.output_stream_index = target.output_stream_index;
+        record.kind = target.kind;
+        if (target.output_stream_index >= 0 && target.output_stream_index < static_cast<int>(per_output_packets.size()))
+            record.packets_written = per_output_packets[static_cast<std::size_t>(target.output_stream_index)];
+        record.status = "unknown"; // expected_samples 需引擎用源侧基线逐轨填
+        record.relation = "unknown";
+        record.note = target.note;
+        outcome.track_conservation.push_back(std::move(record));
+    }
 
     model::RepairActionExecution remux;
     remux.action = model::RepairAction::S01_Remux;

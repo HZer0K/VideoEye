@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "core/repair/RepairCapabilityContracts.h"
 #include "core/repair/RepairUtils.h"
 
 namespace videoeye {
@@ -23,6 +24,9 @@ void AddUnavailable(model::RepairPlan& plan, model::RepairAction action, const s
     model::RepairActionPlan entry = MakeAction(action, description, "（当前版本未实现）", "无法评估");
     entry.available = false;
     entry.unavailable_reason = reason;
+    const char* boundary = BoundaryCodeForAction(action);
+    if (boundary)
+        entry.capability_boundary = boundary;
     plan.actions.push_back(std::move(entry));
 }
 
@@ -75,6 +79,16 @@ RepairPlanOutcome RepairPlanner::MakePlan(const model::RepairRequest& request, c
                                      ? "源文件是 fMP4 媒体分片序列，缺少初始化段（ftyp+moov）；"
                                        "需要同源的初始化段或参考样片才能重建索引"
                                      : "缺少 moov，需要参考样片/初始化段才能重建索引（当前版本未实现）";
+        // 用户已经给了参考文件但被判定不可用时，不能只说「需要同源初始化段」——
+        // 那会让人以为自己没提供文件，把真正的不兼容原因（例如借用的 mdhd 时基
+        // 与源侧 trun/tfdt 时长不符）藏起来。诊断里已有 Reader 的具体拒绝理由。
+        for (const auto& check : diagnosis.checks) {
+            if (check.name == "reference.init_segment" && check.status == model::RepairCheckStatus::Failed &&
+                !check.detail.empty()) {
+                plan.infeasible_reason = check.detail + "；请改用与源分片同源且时基一致的初始化段";
+                break;
+            }
+        }
         outcome.early_status = model::RepairBusinessStatus::NeedsReference;
         return outcome;
     }

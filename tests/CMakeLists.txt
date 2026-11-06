@@ -2391,6 +2391,27 @@ target_link_libraries(test_repair_engine PRIVATE
 add_test(NAME RepairEngineTests COMMAND test_repair_engine)
 
 # =================================================
+# 测试 52：修复模块安全 / 结论可信度回归（R01-R13）
+# 说明: 每个用例都对着修复前的具体错误行为写断言（.part 源文件别名、UINT32_MAX
+#       样本计数、错误时基参考段、951/1000 丢包、发布期取消、V0 冒充可播放、
+#       UI 线程异常终态、三格式报告不一致）。R12 用例需要 RepairController，
+#       因此额外链 VideoEyeQtAdapters / Qt6::Core；测试文件自身没有 Q_OBJECT
+#       子类，不需要加入 VIDEOEYE_TESTS_NEEDING_AUTOMOC。
+# =================================================
+videoeye_add_test(test_repair_safety
+    unit/test_repair_safety.cpp
+)
+target_link_libraries(test_repair_safety PRIVATE
+    VideoEyeRepair
+    VideoEyeReporting
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    VideoEyeQtAdapters
+    Qt6::Core
+    videoeye_test_media_factory)
+add_test(NAME RepairSafetyTests COMMAND test_repair_safety)
+
+# =================================================
 # 全局兜底超时（必须留在本文件最末尾）
 #
 # 以前只有 CorpusRobustnessTests 显式设了 TIMEOUT 300（它的解析器历史上失去过

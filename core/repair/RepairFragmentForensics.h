@@ -28,6 +28,10 @@ struct RepairFragmentTrackEvidence {
     uint32_t track_id = 0;
     uint64_t sample_count = 0;           // moof/trun 声明的样本总数（源侧期望值）
     uint64_t declared_payload_bytes = 0; // trun sample_size 之和
+    // moof/trun（含 tfhd default_sample_duration）声明的时长累加，单位是该轨 mdhd timescale。
+    // 这是**独立于参考文件**的源侧证据：把它除以借用的参考段 timescale，就能核对
+    // 那条轨的时基有没有被改写（R03）。0 = 分片没给出时长，不能据此核对。
+    uint64_t declared_duration_ticks = 0;
     uint64_t nal_units_scanned = 0;
     uint32_t nal_length_size = 0; // 探测到的 NAL 长度前缀宽度；0 = 不是这种布局
     std::string payload_layout;   // "nal_length_prefixed" / "raw_access_units" / "unknown"

@@ -18,6 +18,7 @@
 // "文件存在且大于 0 字节"会把"写了个打不开的空壳"判成成功。
 // ============================================================
 
+#include <cstdint>
 #include <string>
 
 namespace videoeye_test {
@@ -35,6 +36,9 @@ struct TestMediaSpec {
     // 打开后 zerolatency 会被关掉 —— 那个 tune 会强制把 B 帧数清零，
     // 留着它会导致"设了 3 却一个 B 帧都没有"，且错误毫无征兆。
     int max_b_frames = 0;
+    // 非空时强制使用该编码器（如 "mpeg4"）；默认空走 libx264 → mpeg4 降级链。
+    // 需要构造「解码器会做错误隐藏」的样本时必须指定，因为 H.264 不设帧标记。
+    std::string video_codec;
 };
 
 struct TestMedia {
@@ -86,6 +90,8 @@ struct MediaProbe {
     long long video_nb_frames = 0;       // 容器声明的帧数（元数据，可能与真解码结果不同）
     int frame_count = 0;                 // **真实解码**出来的帧数
     int video_packet_count = 0;
+    int marked_frames = 0;  // 实测 decode_error_flags != 0 的帧数（错误隐藏帧）
+    int corrupt_frames = 0; // 实测 AV_FRAME_FLAG_CORRUPT 的帧数（FFmpeg 8.x 上常为 0）
     std::string error;
 };
 
@@ -95,5 +101,22 @@ MediaProbe ProbeMediaFile(const std::string& path);
 // 生成一个确定内容的"损坏"媒体：字节是递增填充，没有合法魔数。
 // 用来触发"打开失败 / 探测失败"的分支。
 std::string CreateCorruptMediaFile(const std::string& directory, const std::string& name);
+
+// ---- 带帧级损坏标记的真实受损媒体 ----
+//
+// FFmpeg 8.x 的 H.264/HEVC/AAC 对字节损坏只返回 API 错误，不给帧打
+// AV_FRAME_FLAG_CORRUPT / decode_error_flags；MPEG-4 Part 2 的错误隐藏则会
+// 在「容器/样本表完好、载荷被稀疏翻转」时输出带 decode_error_flags 的帧。
+// 这里生成这样一份样本，并**实测回读**带标记帧数 —— 自检为 0 就判定失败，
+// 避免用例拿一份「看起来损坏、其实没触发分类」的假样本骗过断言。
+struct ConcealmentMedia {
+    std::string path;
+    uint64_t marked_frames = 0;  // 实测 decode_error_flags != 0 的帧数
+    uint64_t decoded_frames = 0; // 实测解出的总帧数
+    bool ok = false;
+    std::string error;
+};
+
+ConcealmentMedia CreateConcealmentMedia(const std::string& directory, const std::string& name);
 
 } // namespace videoeye_test

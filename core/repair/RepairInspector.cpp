@@ -13,7 +13,11 @@
 #include "core/ffmpeg_io/FfmpegInterrupt.h"
 #include "core/media/container/IsobmffParser.h"
 #include "core/media/probe/FileProbe.h"
+#include "core/repair/RepairBudget.h"
+#include "core/repair/RepairCapabilityContracts.h"
 #include "core/repair/RepairFragmentForensics.h"
+#include "core/repair/RepairOutputWriter.h"
+#include "core/repair/RepairSampleBounds.h"
 #include "core/repair/RepairUtils.h"
 #include "infrastructure/concurrency/Cancellation.h"
 #include "infrastructure/logging/Logger.h"
@@ -32,6 +36,11 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr const char* kInspector = "repair.inspector";
+
+// R10：优先使用引擎入口创建的共享截止时间；独立调用（无 budget）时退回取消标志。
+bool CheckStop(const std::atomic<bool>* cancel, const RepairRunBudget* budget) {
+    return budget != nullptr ? budget->Checkpoint() : infrastructure::Checkpoint(cancel);
+}
 
 int64_t ElapsedMs(Clock::time_point start) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count();
@@ -75,17 +84,8 @@ model::RepairCheckStatus WorstStatus(const std::vector<model::RepairCheck>& chec
 }
 
 model::RepairInputSnapshot SnapshotFile(const std::string& path) {
-    model::RepairInputSnapshot snapshot;
-    snapshot.path = path;
-    std::error_code ec;
-    snapshot.size_bytes = std::filesystem::exists(path, ec) ? std::filesystem::file_size(path, ec) : 0;
-    if (std::filesystem::exists(path, ec)) {
-        const auto mtime = std::filesystem::last_write_time(path, ec);
-        if (!ec) {
-            snapshot.mtime_epoch_seconds = static_cast<int64_t>(
-                std::chrono::duration_cast<std::chrono::seconds>(mtime.time_since_epoch()).count());
-        }
-    }
+    // size + mtime + 内容摘要一起取；只比大小挡不住同大小原位改写（R08）。
+    model::RepairInputSnapshot snapshot = RepairOutputWriter::MakeSnapshot(path);
     const FileHeaderInfo header = ProbeFileHeader(path);
     snapshot.signature = header.first_box_type;
     return snapshot;
@@ -141,7 +141,7 @@ int PickTargetStream(const AVFormatContext* fmt, const std::vector<int>& request
 // 取证不改变业务结论 —— 可修 / 不可修仍由 RepairPlanner 决定。
 bool ApplyFragmentForensics(const model::RepairRequest& request, const IsobmffFile& parsed,
                             const std::atomic<bool>* cancel, const RepairProgress& progress,
-                            model::RepairDiagnosis& diagnosis) {
+                            model::RepairDiagnosis& diagnosis, RepairSourceCompatibilityEvidence* source_evidence) {
     const auto start = Clock::now();
     Emit(progress, 52, stage::Inspecting(), "取证媒体分片结构与码流参数集");
     const RepairFragmentEvidence ev = RepairFragmentForensics::Analyze(request.source_path, parsed, cancel);
@@ -350,102 +350,30 @@ bool ApplyFragmentForensics(const model::RepairRequest& request, const IsobmffFi
     spec << "参考样片须为同源 ftyp+moov 初始化段（含 mvex/trex 与上述解码配置），或含它的完整分片 MP4；"
          << "普通 MP4 的 moov 没有 mvex，当前版本还不能直接复用";
     diagnosis.blocking_reasons.push_back(spec.str());
+
+    // 把源侧实测证据交回诊断结果：参考初始化段的时基 / 编码参数必须拿它交叉核对，
+    // 不能只凭 track_id 判定兼容（R03）。
+    if (source_evidence) {
+        source_evidence->sidx_timescale = ev.sidx_timescale;
+        source_evidence->sample_count = declared_samples;
+        source_evidence->estimated_duration_seconds = ev.estimated_duration_seconds;
+        for (const auto& track : ev.tracks) {
+            source_evidence->track_ids.push_back(track.track_id);
+            // 逐轨 trun 时长是独立于参考段的证据：用它除以借来的 mdhd timescale，
+            // 才能发现「只改了非首轨时基」造成的播放时长改写（R03）。
+            RepairSourceTrackTiming timing;
+            timing.track_id = track.track_id;
+            timing.declared_duration_ticks = track.declared_duration_ticks;
+            source_evidence->track_timings.push_back(timing);
+            if (source_evidence->bitstream.empty() && !track.bitstream.empty() && track.bitstream != "unknown")
+                source_evidence->bitstream = track.bitstream;
+        }
+        source_evidence->provenance = "moof/trun + sidx + mdat NAL (" + std::to_string(ev.segment_count) + " segments)";
+    }
     return true;
 }
 
-// ---------------- 样本表边界分析 ----------------
-struct TrackBounds {
-    bool checked = false;
-    uint64_t sample_count = 0;
-    uint64_t first_bad_sample = 0;
-    uint64_t bad_sample_count = 0;
-    uint64_t first_bad_offset = 0;
-    std::optional<double> salvage_seconds;
-    bool overflowed = false;
-};
-
-uint32_t SamplesPerChunk(const std::vector<StscEntry>& entries, uint32_t chunk_index_1based) {
-    uint32_t result = 0;
-    for (const auto& entry : entries) {
-        if (entry.first_chunk > chunk_index_1based)
-            break;
-        result = entry.samples_per_chunk;
-    }
-    return result;
-}
-
-TrackBounds AnalyzeTrackBounds(const IsobmffTrack& track, uint64_t file_size) {
-    TrackBounds bounds;
-    if (!track.has_stsz && !track.has_stz2)
-        return bounds;
-    if (!track.has_stco && !track.has_co64)
-        return bounds;
-    if (track.chunk_offsets.empty())
-        return bounds;
-
-    const uint64_t total = track.stsz.sample_count;
-    if (total == 0)
-        return bounds;
-
-    std::vector<uint64_t> dts(total, 0);
-    if (track.has_stts && !track.stts.empty()) {
-        uint64_t t = 0;
-        uint64_t index = 0;
-        for (const auto& entry : track.stts) {
-            for (uint32_t i = 0; i < entry.sample_count && index < total; ++i, ++index) {
-                dts[index] = t;
-                t += entry.sample_delta;
-            }
-            if (index >= total)
-                break;
-        }
-        for (; index < total; ++index)
-            dts[index] = t;
-    }
-
-    bounds.checked = true;
-    bounds.sample_count = total;
-
-    uint64_t sample_index = 0;
-    for (std::size_t chunk = 0; chunk < track.chunk_offsets.size() && sample_index < total; ++chunk) {
-        const uint64_t chunk_offset = track.chunk_offsets[chunk];
-        const uint32_t spc = SamplesPerChunk(track.stsc, static_cast<uint32_t>(chunk + 1));
-        if (spc == 0)
-            continue;
-
-        uint64_t offset_in_chunk = 0;
-        for (uint32_t j = 0; j < spc && sample_index < total; ++j, ++sample_index) {
-            const uint32_t sample_size =
-                track.stsz.default_size != 0
-                    ? track.stsz.default_size
-                    : (sample_index < track.stsz.sizes.size() ? track.stsz.sizes[sample_index] : 0);
-            const uint64_t sample_offset = chunk_offset + offset_in_chunk;
-            bool bad = false;
-            if (sample_offset > file_size) {
-                bad = true;
-            } else if (sample_size > 0 && sample_size > file_size - sample_offset) {
-                bad = true;
-            }
-
-            if (bad) {
-                if (bounds.bad_sample_count == 0) {
-                    bounds.first_bad_sample = sample_index;
-                    bounds.first_bad_offset = sample_offset;
-                    if (track.media_timescale > 0 && sample_index > 0) {
-                        bounds.salvage_seconds = static_cast<double>(dts[static_cast<std::size_t>(sample_index)]) /
-                                                 static_cast<double>(track.media_timescale);
-                    } else if (sample_index == 0) {
-                        bounds.salvage_seconds = 0.0;
-                    }
-                }
-                bounds.bad_sample_count++;
-            }
-            offset_in_chunk += sample_size;
-        }
-    }
-
-    return bounds;
-}
+// 样本表边界分析已移到 core/repair/RepairSampleBounds（R02：stts 游标 + 声明数校验 + 预算）。
 
 // ---------------- 抽样解码 ----------------
 struct DecodeProbe {
@@ -457,7 +385,8 @@ struct DecodeProbe {
     std::string detail;
 };
 
-DecodeProbe ProbeDecode(AVFormatContext* fmt, int stream_index, const std::atomic<bool>* cancel) {
+DecodeProbe ProbeDecode(AVFormatContext* fmt, int stream_index, const std::atomic<bool>* cancel,
+                        const RepairRunBudget* budget) {
     DecodeProbe probe;
     if (stream_index < 0 || stream_index >= static_cast<int>(fmt->nb_streams)) {
         probe.detail = "无可用媒体轨";
@@ -489,7 +418,7 @@ DecodeProbe ProbeDecode(AVFormatContext* fmt, int stream_index, const std::atomi
     bool read_error = false;
     if (packet && frame) {
         while (probe.packets < kMaxPackets) {
-            if (infrastructure::Checkpoint(cancel)) {
+            if (CheckStop(cancel, budget)) {
                 probe.detail = "抽样解码被取消";
                 break;
             }
@@ -552,7 +481,7 @@ DecodeProbe ProbeDecode(AVFormatContext* fmt, int stream_index, const std::atomi
 } // namespace
 
 RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& request, const std::atomic<bool>* cancel,
-                                              const RepairProgress& progress) {
+                                              const RepairProgress& progress, const RepairRunBudget* budget) {
     RepairInspectOutcome outcome;
     model::RepairDiagnosis& diagnosis = outcome.diagnosis;
     diagnosis.request_id = request.request_id;
@@ -583,7 +512,7 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
         return outcome;
     }
 
-    if (infrastructure::Checkpoint(cancel)) {
+    if (CheckStop(cancel, budget)) {
         outcome.canceled = true;
         diagnosis.summary = "诊断被取消";
         return outcome;
@@ -638,7 +567,7 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
         outcome.target_stream_index = PickTargetStream(fmt, request.target_streams);
     }
 
-    if (infrastructure::Checkpoint(cancel)) {
+    if (CheckStop(cancel, budget)) {
         outcome.canceled = true;
         diagnosis.summary = "诊断被取消";
         if (fmt)
@@ -650,6 +579,7 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
     model::RepairCoverage& coverage = diagnosis.coverage;
     bool init_segment_missing = false;
     bool fragment_forensics_applied = false;
+    RepairSourceCompatibilityEvidence source_evidence;
     if (is_isobmff) {
         Emit(progress, 35, stage::Inspecting(), "解析 MP4/MOV 盒结构与样本表");
         const auto parse_start = Clock::now();
@@ -746,6 +676,12 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
             }
             init_segment_missing = media_segment_sequence;
 
+            // 先取证：源侧 sidx 时基 / 逐 NAL 码流是核对参考段的独立证据（R03）。
+            // 旧顺序把取证放在参考段之后，Reader 只能看到 track_id。
+            fragment_forensics_applied =
+                ApplyFragmentForensics(request, parsed, cancel, progress, diagnosis, &source_evidence);
+            outcome.source_evidence = source_evidence;
+
             AddCheck(diagnosis, "container.structure", model::DamageLayer::Container, model::RepairCheckStatus::Failed,
                      media_segment_sequence ? "缺少 ftyp+moov 初始化段（媒体分片序列）" : "缺少 moov（索引/元数据）",
                      ElapsedMs(parse_start));
@@ -806,13 +742,18 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
                 } else {
                     const auto reference_start = Clock::now();
                     Emit(progress, 55, stage::Inspecting(), "校验参考样片/初始化段");
-                    RepairInitSegment init =
-                        RepairInitSegmentReader::Read(request.reference_path, required_track_ids, cancel);
+                    RepairInitSegment init = RepairInitSegmentReader::Read(request.reference_path, required_track_ids,
+                                                                           source_evidence, cancel);
                     if (init.ok) {
                         AddCheck(diagnosis, "reference.init_segment", model::DamageLayer::Container,
-                                 model::RepairCheckStatus::Passed,
-                                 "初始化段 " + std::to_string(init.init_size) + " 字节，含 " + init.codec_summary,
+                                 init.compatibility == "verified" ? model::RepairCheckStatus::Passed
+                                                                  : model::RepairCheckStatus::Inconclusive,
+                                 "初始化段 " + std::to_string(init.init_size) + " 字节，含 " + init.codec_summary +
+                                     "；兼容性=" + init.compatibility + "（" + init.compatibility_reason + "）",
                                  ElapsedMs(reference_start));
+                        // R08：执行时拼进去的必须是诊断时读到的同一份参考文件。
+                        outcome.reference_snapshot = RepairOutputWriter::MakeSnapshot(request.reference_path);
+                        outcome.reference_snapshot_valid = true;
                         outcome.reference_init = std::move(init);
                     } else {
                         AddCheck(diagnosis, "reference.init_segment", model::DamageLayer::Container,
@@ -823,9 +764,6 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
                 }
             }
 
-            // 无论参考样片是否可用，都要留下实测的分片级证据：
-            // "分片里没有解码参数"以前是硬编码假设，现在必须能给出逐 NAL 的计数。
-            fragment_forensics_applied = ApplyFragmentForensics(request, parsed, cancel, progress, diagnosis);
         } else {
             AddCheck(diagnosis, "container.structure", model::DamageLayer::Container, model::RepairCheckStatus::Passed,
                      "moov 位于 " + std::to_string(parsed.moov_offset) + ", 大小 " + std::to_string(parsed.moov_size) +
@@ -842,10 +780,17 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
             for (const auto& track : parsed.tracks) {
                 if (track.handler != "vide" && track.handler != "soun")
                     continue;
-                TrackBounds bounds = AnalyzeTrackBounds(track, diagnosis.input.size_bytes);
+                RepairTrackBounds bounds = AnalyzeTrackBounds(track, diagnosis.input.size_bytes, budget);
                 if (!bounds.checked)
                     continue;
                 any_checked = true;
+                if (!bounds.note.empty())
+                    coverage.limitations.push_back("轨道 " + std::to_string(track.track_id) +
+                                                   " 样本边界检查: " + bounds.note);
+                if (bounds.declaration_implausible || bounds.truncated_by_budget) {
+                    any_bad = true; // 声明不可信 / 没查完，不能说成"全部样本位于文件范围内"
+                    bad_detail << " track=" << track.track_id << " incomplete_check=1";
+                }
                 if (bounds.bad_sample_count == 0)
                     continue;
                 any_bad = true;
@@ -905,7 +850,7 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
         diagnosis.blocking_reasons.push_back("当前版本的结构级修复只支持 MP4/MOV；该输入未识别为 ISOBMFF");
     }
 
-    if (infrastructure::Checkpoint(cancel)) {
+    if (CheckStop(cancel, budget)) {
         outcome.canceled = true;
         diagnosis.summary = "诊断被取消";
         if (fmt)
@@ -936,7 +881,7 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
     // ---- 抽样解码 ----
     Emit(progress, 65, stage::Inspecting(), "抽样解码首段");
     if (fmt && outcome.target_stream_index >= 0) {
-        DecodeProbe probe = ProbeDecode(fmt, outcome.target_stream_index, cancel);
+        DecodeProbe probe = ProbeDecode(fmt, outcome.target_stream_index, cancel, budget);
         if (!probe.ran) {
             AddCheck(diagnosis, "decode.sample", model::DamageLayer::Decode, model::RepairCheckStatus::NotRun,
                      probe.detail);
@@ -1014,6 +959,9 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
     if (outcome.salvage_end_seconds.has_value())
         diagnosis.candidate_actions.push_back(model::RepairAction::S02_TailSalvage);
 
+    // 只在本次诊断确实落下对应证据时挂载能力边界；无事实不得输出空壳契约。
+    diagnosis.capability_boundaries = BuildCapabilityBoundaries(diagnosis);
+
     std::ostringstream summary;
     summary << (is_isobmff ? "ISOBMFF" : "未知容器") << "，" << (diagnosis.openable ? "可打开" : "无法打开") << "；";
     if (init_segment_missing) {
@@ -1029,11 +977,13 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
         summary << "缺少 moov；";
     if (!diagnosis.blocking_reasons.empty())
         summary << "存在 " << diagnosis.blocking_reasons.size() << " 条能力阻断；";
+    if (!diagnosis.capability_boundaries.empty())
+        summary << "命中 " << diagnosis.capability_boundaries.size() << " 条未实现能力边界；";
     summary << "证据 " << diagnosis.findings.size() << " 条";
     diagnosis.summary = summary.str();
 
     Emit(progress, 75, stage::Inspecting(), diagnosis.summary);
-    if (infrastructure::Checkpoint(cancel))
+    if (CheckStop(cancel, budget))
         outcome.canceled = true;
     return outcome;
 }
