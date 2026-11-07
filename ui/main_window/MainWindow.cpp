@@ -362,15 +362,22 @@ void MainWindow::SetupContentArea() {
     analysis_panel_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     // Page N: FFmpeg 命令工作台
-    // 与上面的分析页不同，这一页不套 QScrollArea —— 它自己内部就有 splitter 与滚动条，
-    // 再套一层会让"输出区"拿不到剩余高度。
-    ffmpeg_panel_ = new ui::FfmpegPanel(content_stack_);
-    ffmpeg_panel_->setProperty("pageTitle", tr("FFmpeg 命令"));
-    ffmpeg_panel_->setProperty("pageId", QStringLiteral("ffmpeg_command"));
-    ffmpeg_panel_->setProperty("pageGroup", QStringLiteral("report_tools"));
-    ffmpeg_panel_->setProperty("pageOrder", 1);
-    ffmpeg_panel_->setProperty("pageScope", QString());
-    content_stack_->addWidget(ffmpeg_panel_);
+    // 同样套 QScrollArea：本页自然最小高度约 482，而 QStackedWidget 的最小高度取
+    // 所有页的最大值 —— 不包一层的话，默认预设想给播放区的 58% 会被这个下限顶掉，
+    // 两种预设算出的播放区几乎一样高。widgetResizable 下页面仍会撑满视口，「输出区
+    // 拿剩余高度」不受影响，只有真正放不下时才出现滚动条。
+    ffmpeg_panel_ = new ui::FfmpegPanel();
+    QScrollArea* ffmpeg_scroll = new QScrollArea(content_stack_);
+    ffmpeg_scroll->setObjectName("FfmpegScroll");
+    ffmpeg_scroll->setWidgetResizable(true);
+    ffmpeg_scroll->setFrameShape(QFrame::NoFrame);
+    ffmpeg_scroll->setWidget(ffmpeg_panel_);
+    ffmpeg_scroll->setProperty("pageTitle", tr("FFmpeg 命令"));
+    ffmpeg_scroll->setProperty("pageId", QStringLiteral("ffmpeg_command"));
+    ffmpeg_scroll->setProperty("pageGroup", QStringLiteral("report_tools"));
+    ffmpeg_scroll->setProperty("pageOrder", 1);
+    ffmpeg_scroll->setProperty("pageScope", QString());
+    content_stack_->addWidget(ffmpeg_scroll);
 
     // Page N+1: 视频修复
     // 与 FFmpeg 工作台同属"报告 / 工具"分组；页面自己管理文件选择与结果展示，

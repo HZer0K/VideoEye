@@ -350,6 +350,14 @@ QGroupBox::title {
     color: #A5B1BD;
 }
 
+/* 可勾选分组框（如总览页「完整媒体信息」）的复选框画在标题行内。QCheckBox
+   那套 16px 指示器比 12px 字号算出的标题行高 15px 还高，顶边会被标题行裁掉
+   1px（看起来像被横线盖住）。标题里单独收小到 14px，留出余量。 */
+QGroupBox::indicator {
+    width: 14px;
+    height: 14px;
+}
+
 /* ==== Table ====
    选择器必须写 QTableView 而不是 QTableWidget：类型选择器只匹配该类及其子类，
    而帧/包/音频帧三张明细表是 QTableView + 模型（QTableView 是 QTableWidget 的父类），
