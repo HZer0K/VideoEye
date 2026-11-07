@@ -524,6 +524,8 @@ struct RepairTimelineRepair {
     uint64_t timestamp_regressions = 0;
     uint64_t timestamp_duplicates = 0;
     uint64_t missing_timestamps = 0;
+    // 完全缺失时间戳的包中，实际按标称帧时长合成并写入产物的数量。
+    uint64_t synthesized_timestamps = 0;
     uint64_t rewritten_timestamps = 0;
     // unchanged / adjusted / rebuilt / unknown
     std::string status = "unchanged";

@@ -183,10 +183,17 @@ bool CheckpointOrStop(const std::atomic<bool>* cancel, const RepairRunBudget* bu
 //  - 有输出视频轨时优先要关键帧，宁可跳过恢复点前的少量音频，也不从半截 GOP 开始；
 //  - 恢复失败由调用方记为"读取失败点之后未参与修复"，不能假装成功。
 bool TryResync(AVFormatContext* in, double from_seconds, double duration_seconds, int first_video_input_index,
-               const std::vector<int>& stream_map, const std::atomic<bool>* cancel, const RepairRunBudget* budget,
-               AVPacket* packet, double* resync_seconds, std::string* detail, bool* canceled, bool* timed_out) {
+               int first_audio_input_index, int preferred_stream_index, const std::vector<int>& stream_map,
+               const std::atomic<bool>* cancel, const RepairRunBudget* budget, AVPacket* packet, double* resync_seconds,
+               std::string* detail, bool* canceled, bool* timed_out) {
     static const double kStepsSeconds[] = {0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 25.6, 51.2};
+    // 只要产物里有视频轨，恢复点就必须是关键帧；否则会从半截 GOP 开始解码。
     const bool require_keyframe = first_video_input_index >= 0;
+    // seek 锚点优先用"实际提前结束的那条轨"，让 demuxer 走该轨的索引；
+    // 没有明确锚点时退回视频轨，再退回音频轨。
+    const int anchor_stream = preferred_stream_index >= 0
+                                  ? preferred_stream_index
+                                  : (first_video_input_index >= 0 ? first_video_input_index : first_audio_input_index);
     const double end_limit = duration_seconds > 0.0 ? duration_seconds - 0.05 : std::numeric_limits<double>::infinity();
 
     for (double step : kStepsSeconds) {
@@ -197,7 +204,18 @@ bool TryResync(AVFormatContext* in, double from_seconds, double duration_seconds
             return false;
 
         const int64_t target_us = static_cast<int64_t>(target * AV_TIME_BASE);
-        const int seek_ret = av_seek_frame(in, -1, target_us, AVSEEK_FLAG_BACKWARD);
+        // 优先按具体流的时间基做 seek：demuxer 可以直接使用该轨的关键帧索引，
+        // 比全局 AV_TIME_BASE seek 更精确；索引不可用时退回全局 seek。
+        int seek_ret = AVERROR(ENOSYS);
+        if (anchor_stream >= 0 && anchor_stream < static_cast<int>(in->nb_streams)) {
+            const AVStream* anchor = in->streams[anchor_stream];
+            if (anchor->time_base.num > 0 && anchor->time_base.den > 0) {
+                const int64_t target_ticks = av_rescale_q(target_us, AV_TIME_BASE_Q, anchor->time_base);
+                seek_ret = av_seek_frame(in, anchor_stream, target_ticks, AVSEEK_FLAG_BACKWARD);
+            }
+        }
+        if (seek_ret < 0)
+            seek_ret = av_seek_frame(in, -1, target_us, AVSEEK_FLAG_BACKWARD);
         if (seek_ret < 0) {
             avformat_flush(in);
             continue;
@@ -513,6 +531,7 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
         uint64_t timestamp_regressions = 0;
         uint64_t timestamp_duplicates = 0;
         uint64_t missing_timestamps = 0;
+        uint64_t synthesized_timestamps = 0;
         uint64_t rewritten_timestamps = 0;
         // 跳段恢复已经读到的恢复点包，需要在下一轮直接处理而不是重新读包。
         bool packet_ready = false;
@@ -527,9 +546,10 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
 
         // 提前结束判定：声明帧数没读完，且最后时间戳明显短于该轨声明时长。
         // 两个条件同时成立才认定损坏，避免把"时就短"或声明不准的文件误判成损坏。
-        auto detect_premature_end = [&](double* from_seconds, std::string* detail) {
+        auto detect_premature_end = [&](double* from_seconds, std::string* detail, int* stream_index_out) {
             bool premature = false;
             double frontier = std::numeric_limits<double>::max();
+            int premature_stream = -1;
             for (unsigned i = 0; i < in->nb_streams; ++i) {
                 if (stream_map[i] < 0)
                     continue;
@@ -543,6 +563,9 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                     stream->nb_frames > 0 && stream_read_packets[i] < static_cast<uint64_t>(stream->nb_frames);
                 if (!(short_by_time && short_by_count))
                     continue;
+                // 记录"最靠前的提前结束轨"：它就是跳段恢复最该锚定的流。
+                if (!premature || last < frontier)
+                    premature_stream = static_cast<int>(i);
                 premature = true;
                 frontier = std::min(frontier, last);
                 if (detail != nullptr) {
@@ -555,6 +578,8 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
             }
             if (premature && from_seconds != nullptr)
                 *from_seconds = frontier;
+            if (stream_index_out != nullptr)
+                *stream_index_out = premature_stream;
             return premature;
         };
 
@@ -584,8 +609,9 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                 bool premature_eof = false;
                 std::string premature_detail;
                 double resync_from_seconds = last_seconds;
+                int premature_stream = -1;
                 if (read_ret == AVERROR_EOF && packets_seen > 0)
-                    premature_eof = detect_premature_end(&resync_from_seconds, &premature_detail);
+                    premature_eof = detect_premature_end(&resync_from_seconds, &premature_detail, &premature_stream);
                 if (read_ret == AVERROR_EOF && !premature_eof)
                     break;
                 if (read_ret < 0) {
@@ -607,8 +633,9 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                     const double resync_from = premature_eof ? resync_from_seconds : last_seconds;
                     const bool resumed =
                         request.allow_segment_salvage && !salvage_end.has_value() &&
-                        TryResync(in, resync_from, duration_seconds, first_video_input_index, stream_map, cancel,
-                                  budget, packet, &resync_seconds, &resync_detail, &canceled_resync, &timed_out_resync);
+                        TryResync(in, resync_from, duration_seconds, first_video_input_index, first_audio_input_index,
+                                  premature_stream, stream_map, cancel, budget, packet, &resync_seconds, &resync_detail,
+                                  &canceled_resync, &timed_out_resync);
                     if (canceled_resync) {
                         outcome.canceled = true;
                         break;
@@ -756,7 +783,8 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                 ++outcome.input_audio_packet_count;
             }
 
-            // ---- S03 时间轴修复：只处理重复 / 回退，缺失只统计不伪造 ----
+            // ---- S03 时间轴修复：重复 / 回退按证据重写；缺失时间戳仅在显式开启
+            // fill_missing_timestamps 时按标称帧时长合成，避免无依据地伪造。----
             int64_t dts = packet->dts;
             int64_t pts = packet->pts;
             if (request.repair_timeline) {
@@ -765,6 +793,19 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                     dts = pts; // 有 PTS 无 DTS：补齐 DTS，不改动实际展示时间
                 if (dts == AV_NOPTS_VALUE && pts == AV_NOPTS_VALUE) {
                     ++missing_timestamps;
+                    if (request.fill_missing_timestamps) {
+                        // 合成依据：同流上一帧 DTS + 标称帧时长；首帧从 0 开始。
+                        // 这是外推值，不是源侧真实时间，报告会标记为 adjusted。
+                        int64_t step =
+                            timing.nominal_duration > 0 ? timing.nominal_duration : NominalFrameDuration(src_stream);
+                        if (step <= 0)
+                            step = 1;
+                        dts = timing.has_last_dts ? timing.last_dts + step : 0;
+                        pts = dts;
+                        timing.last_dts = dts;
+                        timing.has_last_dts = true;
+                        ++synthesized_timestamps;
+                    }
                 } else {
                     const int64_t step = timing.nominal_duration > 0 ? timing.nominal_duration : 1;
                     if (timing.has_last_dts && dts <= timing.last_dts) {
@@ -903,10 +944,11 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
         outcome.timeline_repair.timestamp_regressions = timestamp_regressions;
         outcome.timeline_repair.timestamp_duplicates = timestamp_duplicates;
         outcome.timeline_repair.missing_timestamps = missing_timestamps;
+        outcome.timeline_repair.synthesized_timestamps = synthesized_timestamps;
         outcome.timeline_repair.rewritten_timestamps = rewritten_timestamps;
         if (rewritten_timestamps > 0 && gap_removed)
             outcome.timeline_repair.status = "rebuilt";
-        else if (rewritten_timestamps > 0 || gap_removed)
+        else if (rewritten_timestamps > 0 || gap_removed || synthesized_timestamps > 0)
             outcome.timeline_repair.status = "adjusted";
         else
             outcome.timeline_repair.status = "unchanged";
@@ -916,6 +958,10 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
         } else if (rewritten_timestamps > 0) {
             outcome.timeline_repair.note = "重写 " + std::to_string(rewritten_timestamps) +
                                            " 个重复/回退时间戳，逐流恢复单调；未改变片段内部播放速度";
+        } else if (synthesized_timestamps > 0) {
+            outcome.timeline_repair.note = "按同流上一帧 + 标称帧时长合成了 " + std::to_string(synthesized_timestamps) +
+                                           " 个缺失时间戳（共检测到 " + std::to_string(missing_timestamps) +
+                                           " 个）；合成值是外推值，可能与源侧真实时间存在偏差";
         } else if (missing_timestamps > 0) {
             outcome.timeline_repair.note =
                 "检测到 " + std::to_string(missing_timestamps) + " 个缺失时间戳，缺少可靠依据，未伪造";

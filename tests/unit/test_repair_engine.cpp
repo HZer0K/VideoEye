@@ -806,6 +806,64 @@ TEST(RepairEngine, MergeGapPolicyProducesContinuousTimeline) {
     EXPECT_LT(probe.duration_seconds, media.duration_seconds - 0.05);
 }
 
+// 非 ISOBMFF 容器没有盒/样本表证据，但只要能探测到可读媒体轨，就必须允许
+// 通用重封装兜底；结构级结论缺失只能降级报告，不能冒充阻断理由。
+TEST(RepairPlanner, NonIsobmffContainerFallsBackToGenericRemux) {
+    RepairDiagnosis diagnosis;
+    diagnosis.openable = true;
+    diagnosis.container_known = false;
+
+    const auto outcome = repair::RepairPlanner::MakePlan(RepairRequest{}, diagnosis, std::nullopt, 0, nullptr);
+    ASSERT_TRUE(outcome.can_execute) << outcome.plan.infeasible_reason;
+    EXPECT_EQ(outcome.early_status, RepairBusinessStatus::Repaired);
+
+    bool has_remux = false;
+    for (const auto& action : outcome.plan.actions) {
+        if (action.action == RepairAction::S01_Remux)
+            has_remux = true;
+    }
+    EXPECT_TRUE(has_remux);
+    bool boundary_documented = false;
+    for (const auto& note : outcome.plan.global_preconditions) {
+        if (note.find("通用重封装") != std::string::npos)
+            boundary_documented = true;
+    }
+    EXPECT_TRUE(boundary_documented) << "必须把结构级检查缺失写进计划前置条件";
+
+    // 没有可读轨道时仍应判为没有可恢复内容，而不是执行空重封装。
+    const auto no_stream = repair::RepairPlanner::MakePlan(RepairRequest{}, diagnosis, std::nullopt, -1, nullptr);
+    EXPECT_FALSE(no_stream.can_execute);
+    EXPECT_EQ(no_stream.early_status, RepairBusinessStatus::NoRecoverableContent);
+}
+
+// 缺失时间戳的合成必须是显式开关：关闭时计划仍写明"不伪造"。
+TEST(RepairPlanner, MissingTimestampSynthesisIsExplicit) {
+    RepairDiagnosis diagnosis;
+    diagnosis.container_known = true;
+    diagnosis.moov_present = true;
+
+    auto find_timeline = [](const videoeye::repair::RepairPlanOutcome& outcome) -> const RepairActionPlan* {
+        for (const auto& action : outcome.plan.actions) {
+            if (action.action == RepairAction::S03_TimelineRepair)
+                return &action;
+        }
+        return nullptr;
+    };
+
+    const auto conservative = repair::RepairPlanner::MakePlan(RepairRequest{}, diagnosis, std::nullopt, 0, nullptr);
+    const RepairActionPlan* action = find_timeline(conservative);
+    ASSERT_NE(action, nullptr);
+    EXPECT_NE(action->description.find("不"), std::string::npos) << action->description;
+
+    RepairRequest request;
+    request.fill_missing_timestamps = true;
+    const auto filled = repair::RepairPlanner::MakePlan(request, diagnosis, std::nullopt, 0, nullptr);
+    action = find_timeline(filled);
+    ASSERT_NE(action, nullptr);
+    EXPECT_NE(action->description.find("外推合成"), std::string::npos) << action->description;
+    EXPECT_NE(action->risk.find("外推"), std::string::npos) << action->risk;
+}
+
 // 单轨抢救必须是"有证据的降级"：只有诊断明确某条轨全部样本不可读、
 // 且还有其它轨道可用时，规划器才允许剔除该轨。
 TEST(RepairPlanner, SingleTrackSalvageRequiresUnsalvageableEvidence) {

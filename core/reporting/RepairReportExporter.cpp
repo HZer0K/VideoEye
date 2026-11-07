@@ -382,6 +382,7 @@ JsonValue BuildTimelineRepair(const model::RepairTimelineRepair& repair) {
     object.Set("timestamp_regressions", J64(repair.timestamp_regressions));
     object.Set("timestamp_duplicates", J64(repair.timestamp_duplicates));
     object.Set("missing_timestamps", J64(repair.missing_timestamps));
+    object.Set("synthesized_timestamps", J64(repair.synthesized_timestamps));
     object.Set("rewritten_timestamps", J64(repair.rewritten_timestamps));
     object.Set("note", JText(repair.note));
     return object;
@@ -682,8 +683,9 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
                                                  std::to_string(result.timeline_repair.timestamp_duplicates) +
                                                  " / 回退 " +
                                                  std::to_string(result.timeline_repair.timestamp_regressions) + "）");
-    recovery.rows.emplace_back("缺失时间戳",
-                               std::to_string(result.timeline_repair.missing_timestamps) + "（缺少依据时不伪造）");
+    recovery.rows.emplace_back("缺失时间戳", std::to_string(result.timeline_repair.missing_timestamps) + "（已合成 " +
+                                                 std::to_string(result.timeline_repair.synthesized_timestamps) +
+                                                 "，其余未伪造）");
     recovery.rows.emplace_back("缺口消除", (result.timeline_repair.gap_removed ? "yes" : "no") + std::string("（") +
                                                FixedSeconds(result.timeline_repair.removed_gap_seconds) + "s）");
     if (!result.timeline_repair.note.empty())

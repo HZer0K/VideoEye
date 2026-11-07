@@ -53,6 +53,11 @@ struct RepairRequest {
     // 是否对有证据的时间戳重复 / 回退做显式重写（只统计缺失，不伪造）。
     bool repair_timeline = true;
 
+    // 是否对完全缺失的时间戳做合成填充（PTS/DTS 都为 NOPTS 的包）。
+    // 默认关闭：合成时间戳是按上一帧 + 标称帧时长外推的，不是源侧真实时间；
+    // 开启后才能把这些包写进产物，但报告的 timeline_status 会标记为 adjusted。
+    bool fill_missing_timestamps = false;
+
     // 允许把"全部样本都不可读"的轨道从输出里剔除（单轨抢救）。
     // 诊断层只有在拿到越界样本证据时才会给出该轨不可抢救的结论。
     bool allow_single_track = true;

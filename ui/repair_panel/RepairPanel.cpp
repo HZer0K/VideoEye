@@ -214,7 +214,13 @@ void RepairPanel::BuildUi() {
         QStringLiteral("读到损坏区间后继续向后寻找可解码恢复点，抢救后半段内容；关闭则读到错误即停止。"));
     timeline_check_ = new QCheckBox(QStringLiteral("启用时间轴修复"), config_group);
     timeline_check_->setChecked(true);
-    timeline_check_->setToolTip(QStringLiteral("对重复 / 回退的时间戳做显式单调重写；缺失时间戳只统计、不伪造。"));
+    timeline_check_->setToolTip(
+        QStringLiteral("对重复 / 回退的时间戳做显式单调重写；完全缺失的时间戳默认只统计、不伪造。"));
+    fill_missing_check_ = new QCheckBox(QStringLiteral("合成缺失时间戳"), config_group);
+    fill_missing_check_->setChecked(false);
+    fill_missing_check_->setToolTip(
+        QStringLiteral("PTS/DTS 同时缺失时，按同流上一帧 + 标称帧时长外推合成，才能写入产物。\n"
+                       "合成值不是源侧真实时间，播放时长可能偏差；默认关闭。需同时启用时间轴修复。"));
     single_track_check_ = new QCheckBox(QStringLiteral("允许单轨抢救"), config_group);
     single_track_check_->setChecked(true);
     single_track_check_->setToolTip(
@@ -222,9 +228,15 @@ void RepairPanel::BuildUi() {
                        "被剔除轨道的内容不可找回。"));
     capability_row->addWidget(segment_check_);
     capability_row->addWidget(timeline_check_);
+    capability_row->addWidget(fill_missing_check_);
     capability_row->addWidget(single_track_check_);
     capability_row->addStretch(1);
     grid->addLayout(capability_row, row, 1, 1, 2);
+    // 合成时间戳属于时间轴修复的扩展；未启用时间轴修复时该项无意义，直接禁用。
+    connect(timeline_check_, &QCheckBox::toggled, this, [this](bool checked) {
+        if (fill_missing_check_)
+            fill_missing_check_->setEnabled(checked && start_button_ != nullptr && start_button_->isEnabled());
+    });
 
     root->addWidget(config_group);
 
@@ -388,6 +400,7 @@ void RepairPanel::OnStart() {
     request.gap_policy = static_cast<model::RepairGapPolicy>(gap_combo_->currentData().toInt());
     request.allow_segment_salvage = segment_check_->isChecked();
     request.repair_timeline = timeline_check_->isChecked();
+    request.fill_missing_timestamps = request.repair_timeline && fill_missing_check_->isChecked();
     request.allow_single_track = single_track_check_->isChecked();
     request.write_report = true;
     // write_report 的契约由界面落实：引擎只负责命名路径，不写报告。
@@ -454,6 +467,7 @@ void RepairPanel::SetRunning(bool running) {
     gap_combo_->setEnabled(idle);
     segment_check_->setEnabled(idle);
     timeline_check_->setEnabled(idle);
+    fill_missing_check_->setEnabled(idle && timeline_check_->isChecked());
     single_track_check_->setEnabled(idle);
     if (running) {
         open_output_button_->setEnabled(false);

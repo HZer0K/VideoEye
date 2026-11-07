@@ -290,6 +290,9 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     // 但至少跳过了损坏区间，或省略了一整条轨。不能因为可播放就宣称完整。
     const bool segment_split = execution.recovered_segments.size() > 1;
     const bool track_dropped = !planning.plan.dropped_input_streams.empty();
+    // 非 ISOBMFF：整条结构级检查链路未参与，完整性只能靠运行时读取与产物解码，
+    // 不能宣称"已按结构核对完整"。
+    const bool container_limits = !inspect.diagnosis.container_known;
     const bool content_lost = execution.read_error || execution.salvage_truncated ||
                               execution.premature_end_unrecovered || planning.plan.salvage_end_seconds.has_value() ||
                               segment_split || track_dropped || execution.output_size_capped;
@@ -346,8 +349,9 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     fidelity.synthetic_frame_count = 0;
     // timeline_modified 只表示「引擎主动重写了时间戳」。旧实现在这里恒写 false，
     // 于是借用未核验参考时基导致播放时长改变时，报告仍声称「时间轴改写: no」。
-    const bool timeline_adjusted =
-        execution.timeline_repair.gap_removed || execution.timeline_repair.rewritten_timestamps > 0;
+    const bool timeline_adjusted = execution.timeline_repair.gap_removed ||
+                                   execution.timeline_repair.rewritten_timestamps > 0 ||
+                                   execution.timeline_repair.synthesized_timestamps > 0;
     fidelity.timeline_modified = timeline_mismatch || timeline_adjusted;
     if (timeline_mismatch) {
         fidelity.timeline_status = "modified";
@@ -374,7 +378,8 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     }
     if (content_lost || execution.timed_out || conservation_loss)
         fidelity.content_completeness = "partial";
-    else if (conservation_unknown || verified.verification.structure_only || timeline_unknown || timeline_mismatch)
+    else if (conservation_unknown || verified.verification.structure_only || timeline_unknown || timeline_mismatch ||
+             container_limits)
         fidelity.content_completeness = "unknown";
     else
         fidelity.content_completeness = "complete_for_selected_checks";
@@ -440,6 +445,9 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
         }
     }
 
+    if (container_limits)
+        fidelity.limitations.push_back(
+            "源容器未识别为 ISOBMFF，未做盒/样本表级结构校验；损伤定位与完整性结论仅覆盖运行时读取与产物解码");
     if (!content_lost)
         fidelity.limitations.push_back("未与原始完整内容比对（输入本身已是损坏文件）");
     if (execution.premature_end_unrecovered)
@@ -485,6 +493,10 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     if (timeline_adjusted)
         fidelity.limitations.push_back("时间轴经主动调整（" + execution.timeline_repair.note +
                                        "）；片段内部时间关系未被改变");
+    if (execution.timeline_repair.synthesized_timestamps > 0)
+        fidelity.limitations.push_back(
+            "合成了 " + std::to_string(execution.timeline_repair.synthesized_timestamps) +
+            " 个完全缺失的时间戳（按上一帧 + 标称帧时长外推），播放时长可能与源侧真实时间存在偏差");
     for (const auto& omitted : execution.omitted_items)
         fidelity.limitations.push_back("未保留: " + omitted);
     if (!verified.verification.timeline_checks.empty()) {

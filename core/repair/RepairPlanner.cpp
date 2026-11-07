@@ -53,9 +53,11 @@ void AddFirstStageActions(model::RepairPlan& plan, const model::RepairRequest& r
     if (request.repair_timeline) {
         plan.actions.push_back(
             MakeAction(model::RepairAction::S03_TimelineRepair,
-                       "对重复 / 回退的时间戳做显式单调重写；缺失时间戳只统计，不在无依据时伪造",
-                       "产物逐流时间戳单调递增；改写数量与缺口消除量写入报告",
-                       "重写会改变原始时间戳；没有可靠依据时不会改变播放速度，缺口是否补齐由间隔策略决定"));
+                       request.fill_missing_timestamps
+                           ? "对重复 / 回退的时间戳做显式单调重写；完全缺失的时间戳按同流上一帧 + 标称帧时长外推合成"
+                           : "对重复 / 回退的时间戳做显式单调重写；缺失时间戳只统计，不在无依据时伪造",
+                       "产物逐流时间戳单调递增；改写 / 合成数量写入报告",
+                       "重写会改变原始时间戳；合成的缺失时间戳是外推值，播放时长可能与源侧真实时间存在偏差"));
     }
 
     if (request.allow_single_track) {
@@ -162,11 +164,14 @@ RepairPlanOutcome RepairPlanner::MakePlan(const model::RepairRequest& request, c
         return outcome;
     }
 
-    if (!diagnosis.container_known) {
-        plan.feasible = false;
-        plan.infeasible_reason = "当前版本的结构级修复只支持 ISOBMFF（MP4/MOV/M4V/3GP）";
-        outcome.early_status = model::RepairBusinessStatus::Unsupported;
-        return outcome;
+    // 非 ISOBMFF（或盒结构无法解析）：结构级检查不可用，但 FFmpeg 已探测到可读流，
+    // 仍可执行通用重封装 + 运行时跳段兜底。计划里必须显式写出这条能力边界，
+    // 不能把"没有结构证据"说成"已经做过结构级校验"。
+    const bool generic_remux_only = !diagnosis.container_known;
+    if (generic_remux_only) {
+        plan.global_preconditions.push_back(
+            "源容器未识别为 ISOBMFF：跳过盒/样本表级修复，仅执行通用重封装（产物统一为 MP4）；"
+            "损伤只能通过运行时读取错误暴露");
     }
 
     if (request.mode == model::RepairMode::RecoverContent) {

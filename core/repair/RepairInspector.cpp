@@ -899,10 +899,25 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
         if (!fragment_forensics_applied)
             coverage.reached_eof = parse_ok && parsed.found_moov;
     } else {
+        // 非 ISOBMFF 不再阻断：结构级检查（盒/样本表交叉校验）确实不可用，但只要
+        // FFmpeg 能打开并探测到媒体轨，执行层仍可做通用重封装 + 运行时跳段兜底。
+        // 边界必须写进覆盖范围，不能让报告看起来像"做过结构级检查"。
         AddCheck(diagnosis, "container.structure", model::DamageLayer::Container, model::RepairCheckStatus::Unsupported,
-                 "当前版本的结构级诊断/修复只覆盖 ISOBMFF（MP4/MOV/M4V/3GP）");
-        coverage.unsupported_items.push_back("非 ISOBMFF 容器的结构级检查与重封装");
-        diagnosis.blocking_reasons.push_back("当前版本的结构级修复只支持 MP4/MOV；该输入未识别为 ISOBMFF");
+                 "非 ISOBMFF 容器：跳过盒/样本表级检查，仅按 FFmpeg 探测到的流做通用重封装");
+        coverage.unsupported_items.push_back("非 ISOBMFF 容器的盒/样本表结构级检查");
+        coverage.limitations.push_back("通用重封装依赖 FFmpeg 解复用，无法给出样本表级损伤定位");
+        if (open_ok && fmt && HasMediaStream(fmt)) {
+            diagnosis.candidate_actions.push_back(model::RepairAction::S01_Remux);
+            if (request.allow_segment_salvage)
+                diagnosis.candidate_actions.push_back(model::RepairAction::S04_SegmentSalvage);
+            if (request.repair_timeline)
+                diagnosis.candidate_actions.push_back(model::RepairAction::S03_TimelineRepair);
+            AddCheck(diagnosis, "container.remux_fallback", model::DamageLayer::Container,
+                     model::RepairCheckStatus::Inconclusive,
+                     "通用重封装兜底：结构级证据缺失，损伤只能在读取阶段被运行时错误暴露");
+        } else {
+            diagnosis.blocking_reasons.push_back("非 ISOBMFF 容器无法通过 FFmpeg 探测到可读媒体轨");
+        }
     }
 
     if (CheckStop(cancel, budget)) {
@@ -1051,9 +1066,14 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
     // 分片取证已按 NAL 链实扫 mdat 载荷，不能再写"未逐字节扫描"，
     // 也不能把"顶层盒大小之和"当成 bytes_scanned。
     if (!fragment_forensics_applied) {
-        coverage.limitations.push_back("样本表检查基于 stsz/stsc/stco 交叉计算，未逐字节读取 mdat");
+        if (is_isobmff) {
+            coverage.limitations.push_back("样本表检查基于 stsz/stsc/stco 交叉计算，未逐字节读取 mdat");
+            coverage.skipped_ranges.push_back("mdat 载荷（未逐字节扫描）");
+        } else {
+            // 非 ISOBMFF 没有样本表可查，不能沿用上面的措辞冒充做过结构级检查。
+            coverage.limitations.push_back("非 ISOBMFF 容器未做样本表级检查；仅按 FFmpeg 解复用结果统计");
+        }
         coverage.limitations.push_back("解码检查只覆盖首/中/尾抽样点，未做全片解码");
-        coverage.skipped_ranges.push_back("mdat 载荷（未逐字节扫描）");
         coverage.time_scanned_seconds = 0.0;
         coverage.truncated_by_budget = false;
     } else {

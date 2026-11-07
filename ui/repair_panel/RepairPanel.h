@@ -69,6 +69,7 @@ private:
     QComboBox* gap_combo_ = nullptr;
     QCheckBox* segment_check_ = nullptr;
     QCheckBox* timeline_check_ = nullptr;
+    QCheckBox* fill_missing_check_ = nullptr;
     QCheckBox* single_track_check_ = nullptr;
 
     QPushButton* start_button_ = nullptr;
