@@ -40,8 +40,8 @@ class RawImageSequence; // 前向声明：Raw 图像序列 (见 ui/player/RawIma
 //   - 不拥有: MediaPlayer (分析侧共用, 生命周期归 MainWindow), 只持裸指针
 //   - 与 MainWindow 通信一律走信号 (状态栏/错误提示), 不反向持有主窗口指针
 //
-// 布局预设（监看 / 分析 / 并排）：一次性的分割比例命令，与"收起播放区"（显隐开关）
-// 正交。监看 = 上下分割、播放区 58%；分析 = 上下分割、播放区 30%（且不低于播放区
+// 布局预设（默认 / 分析 / 并排）：一次性的分割比例命令，与"收起播放区"（显隐开关）
+// 正交。默认 = 上下分割、播放区 58%；分析 = 上下分割、播放区 30%（且不低于播放区
 // 最小高度），让 1366x768 这类小屏默认给分析区让路；并排 = 左右分割、预览在右，
 // 宽屏下把纵向空间全让给分析内容。预设持久化在 QSettings。
 class PlayerPanel : public QWidget {
@@ -51,7 +51,7 @@ public:
     // 播放区布局预设（⚠️ 与 ui/main_window/window_layout.h 的 WindowLayoutPreset
     // 一一对应，MainWindow 在两处之间手工映射，增删值要一起改）
     enum class LayoutPreset {
-        Monitor,    // 监看：上下分割，播放区占大头
+        Monitor,    // 默认：上下分割，播放区占大头
         Analysis,   // 分析：上下分割，分析区占大头
         SideBySide, // 并排：左右分割，预览在右、分析在左
     };

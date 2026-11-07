@@ -222,7 +222,7 @@ void MainWindow::SetupAppBar() {
     // 应用栏再放一遍是纯重复，还白占一行左侧最显眼的位置。
     // 应用图标仍然只有一份来源（theme::appIcon()），窗口图标由 main.cpp 设置。
 
-    // 布局段按钮：监看 / 分析 / 并排。
+    // 布局段按钮：默认 / 分析 / 并排。
     // 换页时它会自己变（见 ApplyLayoutForPage），放在显眼处才解释得清"界面为什么变了"。
     QLabel* layout_hint = new QLabel(tr("布局"), app_bar_);
     layout_hint->setObjectName("HintLabel");
@@ -238,7 +238,7 @@ void MainWindow::SetupAppBar() {
         QPushButton** slot;
     };
     const LayoutButtonSpec layout_buttons[] = {
-        {tr("监看"), tr("播放区占大头，适合盯画面 / 逐帧定位"), ui::WindowLayoutPreset::Monitor,
+        {tr("默认"), tr("播放区占大头，适合盯画面 / 逐帧定位"), ui::WindowLayoutPreset::Monitor,
          &layout_monitor_button_},
         {tr("分析"), tr("分析区占大头，适合看表格与扫描结果"), ui::WindowLayoutPreset::Analysis,
          &layout_analysis_button_},
@@ -497,7 +497,7 @@ void MainWindow::showEvent(QShowEvent* event) {
                                 : PlayerPanel::LayoutPreset::Monitor;
         player_panel_->RestoreLayoutPreset(preset);
         // 恢复完之后才允许"换页自动分配空间"接手：否则启动时第一页（总览）会把
-        // 用户存在 QSettings 里的布局顶成监看。
+        // 用户存在 QSettings 里的布局顶成默认。
         layout_auto_ready_ = true;
         SyncLayoutSegments(ToWindowPreset(player_panel_->layoutPreset()));
     }

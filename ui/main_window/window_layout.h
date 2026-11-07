@@ -70,7 +70,7 @@ inline QSize MinimumWindowSize(const WindowLayoutMetrics& metrics) {
 }
 
 // 首次显示时用哪个布局预设。
-// available_height <= 0 表示拿不到屏幕信息（离屏/无屏），退回默认的「监看」——
+// available_height <= 0 表示拿不到屏幕信息（离屏/无屏），退回常规的「默认」布局 ——
 // 宁可按常规尺寸起手，也不要因为读不到屏幕就把播放区压成一条。
 inline WindowLayoutPreset InitialLayoutPreset(int available_height) {
     if (available_height > 0 && available_height < kSmallScreenHeightThreshold) {

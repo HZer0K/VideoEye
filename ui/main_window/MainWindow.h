@@ -89,7 +89,7 @@ private:
     // 换页时按页面内容分配播放区/分析区空间（口径见 ui::PreferredLayoutForPage）。
     // 只在"自动布局就绪"之后生效：启动时用户存的预设优先。
     void ApplyLayoutForPage(const QString& page_id);
-    // 应用栏里的布局段按钮（监看 / 分析 / 并排）与菜单勾选双向同步
+    // 应用栏里的布局段按钮（默认 / 分析 / 并排）与菜单勾选双向同步
     void SyncLayoutSegments(WindowLayoutPreset preset);
     void ApplyLayoutPresetFromUi(WindowLayoutPreset preset);
     // 把各分析页的异常数 / 级别 / 扫描态写进侧栏 item 的徽标角色，
@@ -156,7 +156,7 @@ protected:
     bool layout_preset_applied_ = false;
     // 自动布局（换页按页面内容分配空间）是否已就绪。
     // 启动那一次切页要跳过它：用户在 QSettings 里存的布局必须能被恢复，
-    // 不能被"第一页是总览 -> 切成监看"顶掉。
+    // 不能被"第一页是总览 -> 切成默认"顶掉。
     bool layout_auto_ready_ = false;
 
     // 跨页面可见的扫描任务条（阶段 / 进度 / 取消）。扫描结束即隐藏。
@@ -166,7 +166,7 @@ protected:
     double scan_progress_percent_ = 0.0;
     QString scan_progress_stage_;
 
-    // 应用栏的布局段按钮（监看 / 分析 / 并排）
+    // 应用栏的布局段按钮（默认 / 分析 / 并排）
     QPushButton* layout_monitor_button_ = nullptr;
     QPushButton* layout_analysis_button_ = nullptr;
     QPushButton* layout_sidebyside_button_ = nullptr;

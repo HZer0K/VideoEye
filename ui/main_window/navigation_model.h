@@ -48,7 +48,7 @@ struct NavRow {
 //     （曾出现「概览」与「媒体信息」长得一样、却只有后者可点）；
 //   * 页面标题只保留标题本身，不再拼「（播放期）/（全文件）」后缀；口径上提到分组标题，
 //     由组内已声明口径的页面汇总（见 group_scope）：若组内口径一致就把「（口径）」并入
-//     分组标题（如「播放监看（播放期）」「全片质量（全文件）」），既区分了两种 GOP 统计
+//     分组标题（如「播放（播放期）」「全片质量（全文件）」），既区分了两种 GOP 统计
 //     （播放期摘要 vs 全文件「码率与 GOP」），又不必在每个页面标题里重复；
 //   * 未登记分组的页面排到最后，保持 stack 顺序，不加标题头。
 inline QVector<NavRow> BuildNavigationRows(const QVector<PageNavigation>& pages, const QVector<NavGroup>& groups) {

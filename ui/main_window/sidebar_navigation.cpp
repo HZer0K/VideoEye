@@ -145,7 +145,7 @@ QVector<PageNavigation> CollectPageNavigation(QStackedWidget* stack) {
 QVector<NavGroup> DefaultNavGroups() {
     return {
         {QStringLiteral("overview"), QObject::tr("概览")},
-        {QStringLiteral("playback"), QObject::tr("播放监看")},
+        {QStringLiteral("playback"), QObject::tr("播放")},
         {QStringLiteral("file_parse"), QObject::tr("文件解析")},
         {QStringLiteral("full_quality"), QObject::tr("全片质量")},
         {QStringLiteral("report_tools"), QObject::tr("报告与工具")},

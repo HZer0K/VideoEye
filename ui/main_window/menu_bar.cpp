@@ -70,13 +70,13 @@ MenuBarActions BuildMenuBar(QMenuBar* bar, const MenuBarDeps& deps) {
     }
     view_menu->addAction(actions.toggle_player);
 
-    // 播放区布局预设: 监看 = 上下、播放区 58%; 分析 = 上下、播放区 30%;
+    // 播放区布局预设: 默认 = 上下、播放区 58%; 分析 = 上下、播放区 30%;
     // 并排 = 左右、预览在右（宽屏专用）。与上面的显隐开关正交 —— 预设管比例与朝向,
     // 显隐管在不在。同样的三个选项也在应用栏里（那一处更显眼，这里是可发现性兜底）。
     QMenu* layout_menu = view_menu->addMenu(QObject::tr("播放区布局"));
     QActionGroup* layout_ag = new QActionGroup(layout_menu);
     layout_ag->setExclusive(true);
-    actions.layout_monitor = layout_ag->addAction(QObject::tr("监看布局"));
+    actions.layout_monitor = layout_ag->addAction(QObject::tr("默认布局"));
     actions.layout_monitor->setCheckable(true);
     actions.layout_monitor->setStatusTip(QObject::tr("播放区占大头，适合盯画面 / 逐帧定位"));
     actions.layout_analysis = layout_ag->addAction(QObject::tr("分析布局"));

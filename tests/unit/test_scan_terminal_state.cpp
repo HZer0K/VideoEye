@@ -789,7 +789,7 @@ TEST(NavigationModelTest, UnknownGroupPagesGoLastWithoutHeader) {
 }
 
 // 集成：AnalysisPanel 的 15 个分析页都登记了 pageId / 分组 / 排序 / 口径，
-// 按分组顺序排出来正好是目标导航（播放监看 -> 文件解析 -> 全片质量 -> 报告与工具）。
+// 按分组顺序排出来正好是目标导航（播放 -> 文件解析 -> 全片质量 -> 报告与工具）。
 // 直接对拍字符串，等于把「每个入口指向哪个页面」钉死。
 // 注意：该测试只有 AnalysisPanel 的页面，report_tools 组内只有一个页面，
 // 按「单页分组不显示标题」的规则它没有标题（真机上 FFmpeg 页也在该组，标题才会出现）。
@@ -822,7 +822,7 @@ TEST(NavigationModelTest, AnalysisPanelPagesMapToExpectedNavigation) {
 
     const QVector<ui::NavGroup> groups = {
         {QStringLiteral("overview"), QStringLiteral("概览")},
-        {QStringLiteral("playback"), QStringLiteral("播放监看")},
+        {QStringLiteral("playback"), QStringLiteral("播放")},
         {QStringLiteral("file_parse"), QStringLiteral("文件解析")},
         {QStringLiteral("full_quality"), QStringLiteral("全片质量")},
         {QStringLiteral("report_tools"), QStringLiteral("报告与工具")},
@@ -838,11 +838,11 @@ TEST(NavigationModelTest, AnalysisPanelPagesMapToExpectedNavigation) {
             texts << row.text;
     }
 
-    const QStringList expected_headers{QStringLiteral("播放监看（播放期）"), QStringLiteral("文件解析（全文件）"),
+    const QStringList expected_headers{QStringLiteral("播放（播放期）"), QStringLiteral("文件解析（全文件）"),
                                        QStringLiteral("全片质量（全文件）")};
     EXPECT_EQ(headers, expected_headers);
 
-    // 页面标题只留标题本身；口径已上提到分组标题（播放监看/全片质量）。
+    // 页面标题只留标题本身；口径已上提到分组标题（播放/全片质量）。
     // 「全片质量」组内次序是 (group, order) 决定的展示次序，与 stack 下标无关：
     // 质量诊断是这一组的结论页，排首位；码率 / 音频 / 色彩是它的分项，按需下钻。
     const QStringList expected_texts{

@@ -26,7 +26,7 @@ namespace ui {
 struct MenuBarActions {
     QAction* export_frames = nullptr;     // 需要按当前是否有 raw 序列启用/禁用
     QAction* toggle_player = nullptr;     // 视图菜单：显示播放区，勾选态跟播放区显隐
-    QAction* layout_monitor = nullptr;    // 视图菜单：监看布局
+    QAction* layout_monitor = nullptr;    // 视图菜单：默认布局
     QAction* layout_analysis = nullptr;   // 视图菜单：分析布局
     QAction* layout_sidebyside = nullptr; // 视图菜单：并排布局（宽屏）
 };

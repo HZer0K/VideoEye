@@ -237,7 +237,7 @@ bool PlayerPanel::IsPlayerAreaVisible() const {
 }
 
 // ----------------------------------------------------------------------------
-// 布局预设（监看 / 分析）
+// 布局预设（默认 / 分析）
 // ----------------------------------------------------------------------------
 
 void PlayerPanel::ApplyLayoutPreset(LayoutPreset preset, bool persist) {
@@ -313,7 +313,7 @@ void PlayerPanel::ApplyPresetSizes() {
     if (total <= 0)
         return;
 
-    // 监看 58% / 分析 30% / 并排 42%（宽度）
+    // 默认 58% / 分析 30% / 并排 42%（宽度）
     int player_share = 0;
     if (side_by_side) {
         player_share = total * kSideBySidePlayerShare / 100;
