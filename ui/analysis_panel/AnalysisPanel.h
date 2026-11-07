@@ -111,6 +111,11 @@ public:
     // 页面切换本身由 MainWindow 做（它才知道 stack 与侧栏），面板只管选中。
     bool FocusDiagnosticIssue(const QString& rule_id, double start_seconds, int stream_index);
 
+    // 文件结构图谱双击节点：切到「文件结构」页并选中同名节点。定位用身份
+    // （面包屑路径 + offset + size）而不是行号 —— 图谱按绘制预算裁剪过，
+    // 行号在两页之间并不对应。页面切换由 MainWindow::ShowPageById 做，面板只管选中。
+    bool FocusStructureNode(const QString& path, quint64 offset, quint64 size);
+
     // ---- 诊断状态只读快照（供首页「分析状态」区拉取）----
     // 扫描起止 / 报告重算 / 换文件都会发 DiagnosticsStateChanged，MainWindow 收到后
     // 再调这几个取数刷新首页 —— 页面不互相持有指针，快照式读取与容器结构页等一致。
@@ -157,6 +162,10 @@ signals:
 
     // 报告与批量 QC 页把状态（"已导出报告…""模板已加载"等）冒泡给主窗口状态栏
     void StatusMessage(const QString& text);
+
+    // 图谱页请求跳到结构树页。MainWindow 才知道 content_stack_ 与侧栏选中态，
+    // 所以这里只上抛意图，由它切页后回调 FocusStructureNode 完成定位。
+    void StructureNodeJumpRequested(const QString& path, quint64 offset, quint64 size);
 
 public slots:
     // 以下播放期回吐的槽都只做两件事：套用 Master/功能开关的过滤，再转发给

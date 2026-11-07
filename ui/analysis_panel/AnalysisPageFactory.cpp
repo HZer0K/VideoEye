@@ -13,6 +13,7 @@
 #include "ui/analysis_panel/ContainerStructurePage.h"
 #include "ui/analysis_panel/DiagnosticsPage.h"
 #include "ui/analysis_panel/EventTimelineView.h"
+#include "ui/analysis_panel/FileStructureMapPage.h"
 #include "ui/analysis_panel/FramePacketView.h"
 #include "ui/analysis_panel/MacroblockView.h"
 #include "ui/analysis_panel/SceneChangePage.h"
@@ -122,6 +123,14 @@ QWidget* BuildFileStructurePage(AnalysisPages& pages, const PageBuildDeps& deps,
     return pages.container;
 }
 
+// 「文件结构图谱」：与容器结构页共用 ContainerStructure 这个 feature 的初值，
+// 但开关只 gate 本页绘制（见 FileStructureMapPage.h 的说明），不往面板发信号。
+QWidget* BuildFileStructureMapPage(AnalysisPages& pages, const PageBuildDeps& deps, const QString&) {
+    pages.structure_map =
+        new FileStructureMapPage(deps.is_feature_on(model::AnalysisFeature::ContainerStructure), deps.parent);
+    return pages.structure_map;
+}
+
 QWidget* BuildMotionVectorsPage(AnalysisPages& pages, const PageBuildDeps& deps, const QString&) {
     pages.macroblock = new MacroblockView(deps.parent);
     InjectIndexedHooks(pages.macroblock, deps, {model::AnalysisFeature::Macroblock});
@@ -208,6 +217,7 @@ const PageBuilderEntry kPageBuilders[] = {
     {"subtitle_aux", &BuildSubtitleAuxPage},
     {"quality_diagnostics", &BuildQualityDiagnosticsPage},
     {"report_batch_qc", &BuildReportBatchQcPage},
+    {"file_structure_map", &BuildFileStructureMapPage},
 };
 
 PageBuilder FindPageBuilder(const QString& id) {

@@ -258,8 +258,15 @@ TEST(AnalysisPageHeader, AnalysisEntryAndExportSitOnTheSameHeaderRow) {
     // 按页面 id 声明口径（AnalysisPageCatalog 的 scope 字段对 event_timeline 是空的，
     // 不能拿它当判据 —— 这里显式列，新增页面时也必须来这边选一边）。
     const QSet<QString> playback_pages = {
-        QStringLiteral("playback_stats_packets"), QStringLiteral("event_timeline"), QStringLiteral("file_structure"),
-        QStringLiteral("motion_vectors"),         QStringLiteral("scene_change"),   QStringLiteral("visual_quality"),
+        QStringLiteral("playback_stats_packets"),
+        QStringLiteral("event_timeline"),
+        QStringLiteral("file_structure"),
+        QStringLiteral("motion_vectors"),
+        QStringLiteral("scene_change"),
+        QStringLiteral("visual_quality"),
+        // file_structure_map 在目录里的 scope 是「全文件」，但它复用打开文件时已有的
+        // 容器解析结果、页头用「启用分析」勾选框 —— 白名单按控件形态归类，不看 scope。
+        QStringLiteral("file_structure_map"),
     };
     const QSet<QString> full_file_pages = {
         QStringLiteral("bitrate_gop"),         QStringLiteral("audio_qc"),          QStringLiteral("color_hdr"),

@@ -1612,6 +1612,29 @@ add_test(NAME ContainerStructurePageTests COMMAND test_container_structure_page)
 set_tests_properties(ContainerStructurePageTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# ================================================================
+# 测试 49b：文件结构图谱页（切片 1）
+#
+# 说明: 与「文件结构」页共用同一份 ContainerStructureResult，这里守的是
+#       "错了也看不出来"的那一类：层级递归少走一层、字节区间塌成等宽、
+#       绘制预算裁剪没标注、空 CSV 被当成"文件真没有节点"、换文件/失败后
+#       旧图还留在页面上。纯构造 + 数据变换断言，链 VideoEyeUiAnalysisPages
+#       即可（页面源在那里编一份，AUTOMOC 也只跑一次），offscreen 运行。
+# ================================================================
+videoeye_add_test(test_file_structure_map_page
+    unit/test_file_structure_map_page.cpp
+)
+target_link_libraries(test_file_structure_map_page PRIVATE
+    VideoEyeUiAnalysisPages
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    VideoEyeReporting
+    VideoEyeUiCharts
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME FileStructureMapPageTests COMMAND test_file_structure_map_page)
+set_tests_properties(FileStructureMapPageTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # =================================================
 # 测试 50：播放控制栏（音量/静音本地 handler + 控件初值）
 # 说明: ControlBarWidget 从 PlayerPanel 抽出后只保留音量/静音两个纯本地 handler，

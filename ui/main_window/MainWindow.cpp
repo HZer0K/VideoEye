@@ -776,6 +776,14 @@ void MainWindow::SetupConnections() {
                 if (analysis_panel_)
                     analysis_panel_->FocusDiagnosticIssue(rule_id, start_seconds, stream_index);
             });
+    // 3.5) 文件结构图谱双击节点：切到「文件结构」树页并按身份选中。
+    // 与首页异常直达同一套切页入口（ShowPageById 会同步侧栏高亮），不另造一份切栈逻辑。
+    connect(analysis_panel_, &ui::AnalysisPanel::StructureNodeJumpRequested, this,
+            [this](const QString& path, quint64 offset, quint64 size) {
+                ShowPageById(QStringLiteral("file_structure"));
+                if (analysis_panel_)
+                    analysis_panel_->FocusStructureNode(path, offset, size);
+            });
     connect(overview_page_, &OverviewPage::RescanRequested, this, [this]() {
         if (analysis_panel_)
             analysis_panel_->StartDiagnosticsScanForCurrentFile();

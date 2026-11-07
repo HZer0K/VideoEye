@@ -60,6 +60,7 @@ TEST(AnalysisPageCatalogTest, PageOrderMatchesStackContract) {
         QStringLiteral("subtitle_aux"),
         QStringLiteral("quality_diagnostics"),
         QStringLiteral("report_batch_qc"),
+        QStringLiteral("file_structure_map"),
     };
     EXPECT_EQ(expected, Ids());
 }

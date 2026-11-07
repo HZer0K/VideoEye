@@ -16,6 +16,7 @@
 #include "ui/analysis_panel/ContainerStructurePage.h"
 #include "ui/analysis_panel/DiagnosticsPage.h"
 #include "ui/analysis_panel/EventTimelineView.h"
+#include "ui/analysis_panel/FileStructureMapPage.h"
 #include "ui/analysis_panel/FramePacketView.h"
 #include "ui/analysis_panel/MacroblockView.h"
 #include "ui/analysis_panel/SceneChangePage.h"
@@ -94,6 +95,9 @@ void AnalysisPanel::SetCurrentVideoPath(const QString& path) {
     // 容器结构同理：新文件未必再走容器分析（裸图像 / PCM），旧结构树与样本表不能留着
     if (pages_.container)
         pages_.container->Clear();
+    // 图谱页消费同一份结果，换文件必须一起清 —— 否则旧文件的字节布局会留在图上
+    if (pages_.structure_map)
+        pages_.structure_map->Clear();
     // 换文件 = 上一文件的分析结论全部作废：通知首页重置「分析状态」区
     emit DiagnosticsStateChanged();
 }
@@ -424,6 +428,10 @@ void AnalysisPanel::WireAnalysisPages() {
         feature_enabled_[AnalysisFeature::ContainerStructure] = enabled;
         emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::ContainerStructure), enabled);
     });
+    // ---- 文件结构图谱：双击节点请求跨页定位 ----
+    // 页面不认识 MainWindow，也不认识树页；面板只上抛意图，切页与侧栏同步由主窗口做。
+    connect(pages_.structure_map, &FileStructureMapPage::StructureNodeJumpRequested, this,
+            &AnalysisPanel::StructureNodeJumpRequested);
 
     // ---- 场景切换 ----
     connect(pages_.scene_change, &SceneChangePage::FeatureToggled, this, [this](bool enabled) {
@@ -513,6 +521,9 @@ void AnalysisPanel::OnContainerStructureReady(const model::ContainerStructureRes
         return;
     if (pages_.container)
         pages_.container->SetResult(result);
+    // 结构图谱：同一份 ContainerStructureResult 的图形视图，不另跑解析
+    if (pages_.structure_map)
+        pages_.structure_map->SetResult(result);
     // 流媒体清单：顺手把「流媒体包」页也喂上（同一份结果，只是换了个视图）
     if (pages_.streaming)
         UpdateStreamingUi();
@@ -524,6 +535,10 @@ void AnalysisPanel::OnContainerStructureFailed(const QString& message) {
         return;
     if (pages_.container)
         pages_.container->SetError(message);
+    // 图谱页要显示同一条原因：否则会一直停在"打开媒体文件后将自动生成…"，
+    // 用户分不清是没分析还是分析崩了
+    if (pages_.structure_map)
+        pages_.structure_map->SetError(message);
 }
 
 void AnalysisPanel::OnSceneChangeDetected(const model::SceneChangeResult& result) {
@@ -803,6 +818,12 @@ bool AnalysisPanel::FocusDiagnosticIssue(const QString& rule_id, double start_se
     if (!pages_.diagnostics)
         return false;
     return pages_.diagnostics->FocusIssue(rule_id, start_seconds, stream_index);
+}
+
+bool AnalysisPanel::FocusStructureNode(const QString& path, quint64 offset, quint64 size) {
+    if (!pages_.container)
+        return false;
+    return pages_.container->SelectElement(path, offset, size);
 }
 
 } // namespace ui

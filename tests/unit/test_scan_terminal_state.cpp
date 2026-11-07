@@ -788,7 +788,7 @@ TEST(NavigationModelTest, UnknownGroupPagesGoLastWithoutHeader) {
     EXPECT_EQ(rows[3].stack_index, 9);
 }
 
-// 集成：AnalysisPanel 的 14 个分析页都登记了 pageId / 分组 / 排序 / 口径，
+// 集成：AnalysisPanel 的 15 个分析页都登记了 pageId / 分组 / 排序 / 口径，
 // 按分组顺序排出来正好是目标导航（播放监看 -> 文件解析 -> 全片质量 -> 报告与工具）。
 // 直接对拍字符串，等于把「每个入口指向哪个页面」钉死。
 // 注意：该测试只有 AnalysisPanel 的页面，report_tools 组内只有一个页面，
@@ -799,7 +799,7 @@ TEST(NavigationModelTest, AnalysisPanelPagesMapToExpectedNavigation) {
     ui::AnalysisPanel panel;
     QStackedWidget stack;
     panel.PopulateStackedWidget(&stack);
-    ASSERT_EQ(stack.count(), 14);
+    ASSERT_EQ(stack.count(), 15);
 
     QVector<ui::PageNavigation> pages;
     QStringList ids;
@@ -849,7 +849,7 @@ TEST(NavigationModelTest, AnalysisPanelPagesMapToExpectedNavigation) {
         QStringLiteral("播放统计与帧包"), QStringLiteral("运动矢量与块分析"), QStringLiteral("场景切换"),
         QStringLiteral("画面质量"),       QStringLiteral("事件与时间轴"),     QStringLiteral("文件结构"),
         QStringLiteral("编码参数集"),     QStringLiteral("流媒体包"),         QStringLiteral("字幕与辅助数据"),
-        QStringLiteral("质量诊断"),       QStringLiteral("码率与 GOP"),       QStringLiteral("音频 QC"),
-        QStringLiteral("色彩与 HDR"),     QStringLiteral("报告与批量 QC")};
+        QStringLiteral("文件结构图谱"),   QStringLiteral("质量诊断"),         QStringLiteral("码率与 GOP"),
+        QStringLiteral("音频 QC"),        QStringLiteral("色彩与 HDR"),       QStringLiteral("报告与批量 QC")};
     EXPECT_EQ(texts, expected_texts);
 }

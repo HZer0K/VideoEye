@@ -24,7 +24,10 @@
 #include <QDateTime>
 #include <QSignalBlocker>
 #include <QSplitter>
+#include <QStringList>
 #include <QTreeWidget>
+
+#include <functional>
 
 namespace videoeye {
 namespace ui {
@@ -352,6 +355,66 @@ void ContainerStructurePage::Clear() {
     }
     if (mp4_sample_widget_)
         mp4_sample_widget_->SetSamples(model::Mp4SampleTableResult{});
+}
+
+bool ContainerStructurePage::SelectElement(const QString& path, quint64 offset, quint64 size) {
+    if (!tree_ || !result_.valid)
+        return false;
+    // 先用「叶名 + offset + size」精确定位：图谱页按绘制预算裁剪过，行号对不上，
+    // 但这三个字段是结构树里原本就逐项写入的身份，不会随视图变化。
+    const QString leaf = path.section(QStringLiteral(" › "), -1, -1).trimmed();
+    const QString offset_text = QStringLiteral("0x%1").arg(offset, 0, 16);
+    const QString size_text = QString::number(size);
+    QTreeWidgetItem* match = nullptr;
+    std::function<void(QTreeWidgetItem*)> walk = [&](QTreeWidgetItem* item) {
+        if (!item || match)
+            return;
+        if (!leaf.isEmpty() && item->text(0) == leaf && item->text(3) == offset_text && item->text(2) == size_text) {
+            match = item;
+            return;
+        }
+        for (int i = 0; i < item->childCount() && !match; ++i)
+            walk(item->child(i));
+    };
+    for (int i = 0; i < tree_->topLevelItemCount() && !match; ++i)
+        walk(tree_->topLevelItem(i));
+
+    // HLS / DASH 清单节点没有 offset / size，精确身份会落空 —— 退到面包屑逐级匹配。
+    if (!match && !path.isEmpty()) {
+        const QStringList parts = path.split(QStringLiteral(" › "));
+        QTreeWidgetItem* cursor = nullptr;
+        for (const QString& part : parts) {
+            QTreeWidgetItem* next = nullptr;
+            if (!cursor) {
+                for (int i = 0; i < tree_->topLevelItemCount(); ++i) {
+                    if (tree_->topLevelItem(i)->text(0) == part) {
+                        next = tree_->topLevelItem(i);
+                        break;
+                    }
+                }
+            } else {
+                for (int i = 0; i < cursor->childCount(); ++i) {
+                    if (cursor->child(i)->text(0) == part) {
+                        next = cursor->child(i);
+                        break;
+                    }
+                }
+            }
+            if (!next) {
+                cursor = nullptr;
+                break;
+            }
+            cursor = next;
+        }
+        match = cursor;
+    }
+    if (!match)
+        return false;
+    for (QTreeWidgetItem* parent = match->parent(); parent; parent = parent->parent())
+        parent->setExpanded(true);
+    tree_->setCurrentItem(match);
+    tree_->scrollToItem(match, QAbstractItemView::PositionAtCenter);
+    return true;
 }
 
 void ContainerStructurePage::SetError(const QString& message) {

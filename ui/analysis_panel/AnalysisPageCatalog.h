@@ -52,6 +52,8 @@ inline const std::vector<AnalysisPageDescriptor>& AnalysisPageCatalog() {
         {"subtitle_aux", "字幕与辅助数据", "file_parse", 3, "全文件"},
         {"quality_diagnostics", "质量诊断", "full_quality", 0, "全文件"},
         {"report_batch_qc", "报告与批量 QC", "report_tools", 0, ""},
+        // 表尾追加：插在中间会让后续页的 stack 下标整体 +1，而那些下标是 ctest 的硬契约。
+        {"file_structure_map", "文件结构图谱", "file_parse", 4, "全文件"},
     };
     return kCatalog;
 }

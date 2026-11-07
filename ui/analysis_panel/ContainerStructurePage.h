@@ -49,6 +49,11 @@ public:
     // 裸图像 / PCM 这类不会再走容器分析的类型，否则会一直显示上一个视频的结构。
     void Clear();
 
+    // 由「文件结构图谱」页的双击跳转调用：按身份（面包屑路径 + offset + size）
+    // 在通用结构树里定位并选中。图谱按绘制预算裁剪过，所以不能用行号对齐；
+    // 找不到返回 false，调用方仍停留在树页（用户至少已经在正确页面上了）。
+    bool SelectElement(const QString& path, quint64 offset, quint64 size);
+
     const model::ContainerStructureResult& result() const {
         return result_;
     }

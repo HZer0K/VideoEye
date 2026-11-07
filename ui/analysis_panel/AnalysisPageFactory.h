@@ -40,6 +40,7 @@ class ColorHdrPage;
 class ContainerStructurePage;
 class DiagnosticsPage;
 class EventTimelineView;
+class FileStructureMapPage;
 class FramePacketView;
 class MacroblockView;
 class SceneChangePage;
@@ -86,6 +87,8 @@ struct AnalysisPages {
     MacroblockView* macroblock = nullptr;
     EventTimelineView* event_timeline = nullptr;
     ContainerStructurePage* container = nullptr;
+    // 与「文件结构」页消费同一份 ContainerStructureResult，只是换成图形视图
+    FileStructureMapPage* structure_map = nullptr;
     SceneChangePage* scene_change = nullptr;
     VisualDefectPage* visual_defect = nullptr;
     BitrateGopPage* bitrate_gop = nullptr;
