@@ -36,6 +36,8 @@ struct RepairExecutionOutcome {
     uint64_t bytes_written = 0;
     bool read_error = false;
     bool salvage_truncated = false;
+    // 检测到"轨道提前结束"但跳段恢复失败：产物必然缺失中间内容，不能按完整修复上报。
+    bool premature_end_unrecovered = false;
 
     std::optional<double> output_start_seconds;
     std::optional<double> output_end_seconds;

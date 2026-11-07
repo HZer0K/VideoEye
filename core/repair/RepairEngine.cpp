@@ -288,7 +288,8 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     const bool segment_split = execution.recovered_segments.size() > 1;
     const bool track_dropped = !planning.plan.dropped_input_streams.empty();
     const bool content_lost = execution.read_error || execution.salvage_truncated ||
-                              planning.plan.salvage_end_seconds.has_value() || segment_split || track_dropped;
+                              execution.premature_end_unrecovered || planning.plan.salvage_end_seconds.has_value() ||
+                              segment_split || track_dropped;
     const bool inconclusive = verified.verification.status == model::RepairCheckStatus::Inconclusive ||
                               verified.verification.decode_errors > 0 || verified.verification.corrupt_frames > 0 ||
                               verified.verification.error_recovery_frames > 0;
@@ -377,6 +378,8 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
 
     if (!content_lost)
         fidelity.limitations.push_back("未与原始完整内容比对（输入本身已是损坏文件）");
+    if (execution.premature_end_unrecovered)
+        fidelity.limitations.push_back("检测到轨道提前结束且未找到可恢复的关键帧，中断点之后的内容未参与修复");
     if (inconclusive)
         fidelity.limitations.push_back("验证未完全通过，不能断言全部内容可解码或画面干净");
     if (verified.verification.structure_only)

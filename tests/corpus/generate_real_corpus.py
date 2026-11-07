@@ -216,12 +216,15 @@ def drop_top_level_box(data, target):
     return bytes(out)
 
 
-def patch_chunk_offsets(data, ratio):
-    r"""把每条轨 stco/co64 中同一比例的 chunk offset 改成远超文件大小的值。
+def patch_chunk_offsets(data, ratio, only_first_track=False):
+    r"""把 stco/co64 中同一比例的 chunk offset 改成远超文件大小的值。
 
     模拟"录制中途存储区域损坏、文件结构与后续数据仍在"—— 这是修复模块跳段恢复
-    的真实触发条件。必须两条轨都改：只坏一条时另一条仍能读到文件尾，时间轴没有
-    真正中断，测不到跳段行为。
+    的真实触发条件。默认改写所有轨；only_first_track 只坏第一条轨（视频轨）。
+
+    注意：若音频轨的 chunk offset 也损坏，FFmpeg 的音频索引会整体失效，
+    即使 seek 到损坏点之后也读不到任何音频包，跳段恢复在音频侧永远无法收敛。
+    因此验证"多段恢复"的样本只破坏视频轨，保留音频索引可读。
     """
     out = bytearray(data)
     patched = 0
@@ -243,6 +246,8 @@ def patch_chunk_offsets(data, ratio):
                     else:
                         out[at:at + 8] = struct.pack(">Q", value)
                     patched += 1
+                    if only_first_track:
+                        return bytes(out)
             idx = out.find(tag, idx + 4)
     if patched == 0:
         raise RuntimeError("没有可改写的 stco/co64（源样本不是 faststart MP4？）")
@@ -604,7 +609,9 @@ register("container/real_h264_aac_missing_moov.mp4", "mp4_missing_moov",
          derive=lambda d: drop_top_level_box(d, b"moov"))
 register("container/real_h264_aac_mid_damaged.mp4", "mp4_mid_damaged",
          derived="container/real_h264_aac_faststart.mp4",
-         derive=lambda d: patch_chunk_offsets(d, 0.5))
+         # 0.45 命中第 13 个视频 chunk（约 0.52 s），避开 0.6 s 的关键帧；
+         # 只破坏视频轨，保留音频索引，跳段后才能读到损坏点之后的关键帧与音频。
+         derive=lambda d: patch_chunk_offsets(d, 0.45, only_first_track=True))
 register("container/real_h264_aac_frag_orphan.mp4", "fmp4_orphan",
          derived="container/real_h264_aac_frag.mp4",
          derive=lambda d: drop_top_level_box(drop_top_level_box(d, b"ftyp"), b"moov"))

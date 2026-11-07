@@ -197,7 +197,8 @@ bool TryResync(AVFormatContext* in, double from_seconds, double duration_seconds
             return false;
 
         const int64_t target_us = static_cast<int64_t>(target * AV_TIME_BASE);
-        if (av_seek_frame(in, -1, target_us, AVSEEK_FLAG_BACKWARD | AVSEEK_FLAG_ANY) < 0) {
+        const int seek_ret = av_seek_frame(in, -1, target_us, AVSEEK_FLAG_BACKWARD);
+        if (seek_ret < 0) {
             avformat_flush(in);
             continue;
         }
@@ -413,6 +414,8 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
     bool opened_io = false;
     bool header_written = false;
     std::string failure;
+    double last_resync_seconds = -1.0;
+    double last_resync_from = -1.0;
     std::vector<uint64_t> per_output_packets(mapped_streams.size(), 0);
     // 这些统计在 do 块内累加、在 do 块之后的执行记录里使用，必须提升到函数作用域。
     uint64_t resync_count = 0;
@@ -603,6 +606,8 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                     }
 
                     if (!resumed) {
+                        if (premature_eof)
+                            outcome.premature_end_unrecovered = true;
                         model::DamageFinding finding;
                         finding.code =
                             premature_eof ? "container.ended_before_declared_end" : "container.read_error_after_data";
@@ -629,6 +634,15 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                         break;
                     }
 
+                    // 同一损坏点反复恢复到同一位置 = 没有任何进展（例如某条轨的索引已失效），
+                    // 必须终止，否则会在"EOF → seek → 再 EOF"之间无限循环。
+                    if (last_resync_seconds >= 0.0 && resync_seconds <= last_resync_seconds + 1e-6 &&
+                        resync_from <= last_resync_from + 1e-6) {
+                        failure = "跳段恢复未取得进展";
+                        break;
+                    }
+                    last_resync_seconds = resync_seconds;
+                    last_resync_from = resync_from;
                     ++resync_count;
                     if (current_segment_active) {
                         segments.push_back(current_segment);
