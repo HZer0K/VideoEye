@@ -689,7 +689,10 @@ void EbmlAnalyzer::ParseLeafValue(model::EbmlElementNode& node, const std::strin
     }
     case 0x83: {
         uint8_t v = readBeUInt(data, 1);
-        node.value = TrackTypeName(v);
+        // value 必须保留原始数值：ExtractTrackInfo 依赖它设置 track_type，
+        // 若这里写成可读名称（如“视频 (Video)”），后续 ParseInt 会得到 0。
+        node.value = std::to_string(v);
+        node.extra = TrackTypeName(v);
         return;
     }
     case 0xB9:

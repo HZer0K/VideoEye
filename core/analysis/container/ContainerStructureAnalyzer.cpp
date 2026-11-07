@@ -552,7 +552,22 @@ bool ContainerStructureAnalyzer::ExtractEbmlStreamInfo(const model::EbmlAnalysis
             return false;
         model::ContainerStreamInfo si;
         si.index = track.track_number;
-        si.type = track.track_type_name;
+        // ContainerStreamInfo::type 的契约是 video/audio/subtitle/data，
+        // 不能直接用 EBML 的展示名（如“视频 (Video)”），否则下游按 type 分支会失效。
+        switch (track.track_type) {
+        case 1:
+            si.type = "video";
+            break;
+        case 2:
+            si.type = "audio";
+            break;
+        case 0x11:
+            si.type = "subtitle";
+            break;
+        default:
+            si.type = "data";
+            break;
+        }
         si.codec = track.codec_name;
 
         // 构建丰富的 details 字符串

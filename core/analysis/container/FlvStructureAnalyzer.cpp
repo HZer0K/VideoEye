@@ -279,8 +279,10 @@ bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
         result.streams.push_back(as);
     }
 
-    // 跳过 PreviousTagSize0
-    file.Seek(header_size);
+    // 跳过 PreviousTagSize0（FLV Header 之后紧跟 4 字节 PreviousTagSize0，
+    // 第一个 tag 从 header_size + 4 开始；只跳过 header 会让整条 tag 链错位 4 字节，
+    // 表现为"正常文件缺 metadata / 缺 AVC 序列头 / 凭空多出 truncated_tags"）。
+    file.Seek(static_cast<int64_t>(header_size) + 4);
 
     // 遍历 Tag 序列
     uint64_t tag_count = 0;
