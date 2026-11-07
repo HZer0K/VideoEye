@@ -506,3 +506,182 @@ TEST(QcRunnerTest, MkvContainerFactsReachTheQcResult) {
         EXPECT_NE(0u, issue.rule_id.rfind("container.mkv.", 0)) << "干净 MKV 被误判: " << issue.rule_id;
     }
 }
+
+// ==========================================================================
+// 真实语料的正常 / 异常回归（FLV / ASF / MOV / TS 损伤 / AVI 截断 / 扩展名不符）
+//
+// 这些样本由 tests/corpus/generate_real_corpus.py 生成：正常样本是 ffmpeg 真实
+// muxer 产物，异常样本从同一份正常样本派生（只破坏具体那一段），因此既能验证
+// "干净文件不误报"，也能验证"真实坏文件确实被检出"。
+// ==========================================================================
+namespace {
+
+fs::path CorpusSample(const char* name) {
+    return fs::path(VIDEOEYE_CONTAINER_CORPUS_DIR) / name;
+}
+
+bool HasRule(const QcRunResult& result, const std::string& rule_id) {
+    for (const auto& issue : result.report.issues) {
+        if (issue.rule_id == rule_id)
+            return true;
+    }
+    return false;
+}
+
+int CountSevereIssues(const QcRunResult& result) {
+    int count = 0;
+    for (const auto& issue : result.report.issues) {
+        if (issue.severity == videoeye::model::IssueSeverity::Error ||
+            issue.severity == videoeye::model::IssueSeverity::Critical) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+} // namespace
+
+// 以前只有手工拼的坏 FLV；真实 FLV 的 tag 链一旦解析偏一位，干净文件会凭空
+// 长出"截断 tag / 时间戳回退"。这里端到端确认事实到了 AnalysisResult。
+TEST(QcRunnerTest, FlvContainerFactsReachTheQcResult) {
+    const fs::path flv = CorpusSample("real_h264_aac.flv");
+    if (!fs::exists(flv)) {
+        GTEST_SKIP() << "缺真实样本 real_h264_aac.flv，先跑 tests/corpus/generate_real_corpus.py";
+    }
+
+    QcRunner runner;
+    const QcRunResult result = runner.AnalyzeFile(flv.string(), FastProfile());
+    ASSERT_TRUE(result.ok) << result.error;
+
+    const videoeye::model::FlvDiagnostics& diag = result.analysis.container_diagnostics.flv;
+    ASSERT_TRUE(diag.analyzed) << "FLV 容器体检没跑到 —— container.flv.* 规则会集体静默";
+    EXPECT_TRUE(diag.header_has_video);
+    EXPECT_TRUE(diag.header_has_audio);
+    EXPECT_TRUE(diag.has_metadata);
+    EXPECT_TRUE(diag.video_sequence_header_seen);
+    EXPECT_EQ(0u, diag.truncated_tags);
+    EXPECT_EQ(0u, diag.timestamp_backwards);
+
+    EXPECT_FALSE(HasRule(result, "container.flv.missing_metadata")) << "ffmpeg 写的 onMetaData 被漏判";
+    EXPECT_FALSE(HasRule(result, "container.flv.missing_avc_sequence_header"));
+    EXPECT_FALSE(HasRule(result, "container.flv.truncated_tags"));
+}
+
+// 真实 WMV：Data Object 必须被找到；Header Object 大小与时长都合法。
+TEST(QcRunnerTest, AsfContainerFactsReachTheQcResult) {
+    const fs::path asf = CorpusSample("real_wmv2_wma.wmv");
+    if (!fs::exists(asf)) {
+        GTEST_SKIP() << "缺真实样本 real_wmv2_wma.wmv，先跑 tests/corpus/generate_real_corpus.py";
+    }
+
+    QcRunner runner;
+    const QcRunResult result = runner.AnalyzeFile(asf.string(), FastProfile());
+    ASSERT_TRUE(result.ok) << result.error;
+
+    const videoeye::model::AsfDiagnostics& diag = result.analysis.container_diagnostics.asf;
+    ASSERT_TRUE(diag.analyzed) << "ASF 容器体检没跑到 —— container.asf.* 规则会集体静默";
+    EXPECT_TRUE(diag.has_data_object);
+    EXPECT_GT(diag.declared_header_objects, 0u);
+    EXPECT_LE(diag.parsed_header_objects, diag.declared_header_objects);
+
+    EXPECT_FALSE(HasRule(result, "container.asf.missing_data_object"));
+    EXPECT_FALSE(HasRule(result, "container.asf.header_object_size_invalid"));
+    EXPECT_FALSE(HasRule(result, "container.asf.header_size_exceeds_file"));
+    EXPECT_FALSE(HasRule(result, "container.asf.duration_invalid"));
+}
+
+// MOV 由 QuickTime muxer 写出，走 ISO BMFF 分派。干净样本不得出现
+// Error/Critical 级容器问题（Warning 允许，例如音轨起点差一帧）。
+TEST(QcRunnerTest, RealMovHasNoSevereContainerIssues) {
+    const fs::path mov = CorpusSample("real_h264_aac.mov");
+    if (!fs::exists(mov)) {
+        GTEST_SKIP() << "缺真实样本 real_h264_aac.mov，先跑 tests/corpus/generate_real_corpus.py";
+    }
+
+    QcRunner runner;
+    const QcRunResult result = runner.AnalyzeFile(mov.string(), FastProfile());
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_EQ(0, CountSevereIssues(result)) << "干净 MOV 被误判为 Error/Critical";
+    EXPECT_FALSE(HasRule(result, "container.extension_mismatch")) << ".mov 被当成扩展名不符";
+}
+
+// 连续计数错误：同一 PID 的 CC 跳号，必须被传输层事实与规则同时看到。
+TEST(QcRunnerTest, TsContinuityErrorIsDetectedEndToEnd) {
+    const fs::path ts = CorpusSample("real_h264_aac_cc_error.ts");
+    if (!fs::exists(ts)) {
+        GTEST_SKIP() << "缺真实样本 real_h264_aac_cc_error.ts，先跑 tests/corpus/generate_real_corpus.py";
+    }
+
+    QcRunner runner;
+    const QcRunResult result = runner.AnalyzeFile(ts.string(), FastProfile());
+    ASSERT_TRUE(result.ok) << result.error;
+
+    const auto& transport = result.analysis.ts_transport;
+    EXPECT_TRUE(transport.analyzed);
+    EXPECT_GT(transport.continuity_errors, 0u) << "派生样本的 CC 跳号没有进入传输层事实";
+    EXPECT_TRUE(HasRule(result, "container.ts.continuity_error"));
+}
+
+// 失步：同步字节被破坏，必须被检出；否则"拼接缝 / 传输错误"在报告里不可见。
+TEST(QcRunnerTest, TsSyncLossIsDetectedEndToEnd) {
+    const fs::path ts = CorpusSample("real_h264_aac_sync_loss.ts");
+    if (!fs::exists(ts)) {
+        GTEST_SKIP() << "缺真实样本 real_h264_aac_sync_loss.ts，先跑 tests/corpus/generate_real_corpus.py";
+    }
+
+    QcRunner runner;
+    const QcRunResult result = runner.AnalyzeFile(ts.string(), FastProfile());
+    ASSERT_TRUE(result.ok) << result.error;
+
+    const auto& transport = result.analysis.ts_transport;
+    EXPECT_TRUE(transport.analyzed);
+    EXPECT_GT(transport.sync_loss, 0u) << "派生样本的失步没有进入传输层事实";
+    EXPECT_TRUE(HasRule(result, "container.ts.sync_loss"));
+}
+
+// FLV 在最后一个 tag 的载荷中间被截断：truncated_tags 必须 > 0。
+TEST(QcRunnerTest, TruncatedFlvIsDetectedEndToEnd) {
+    const fs::path flv = CorpusSample("real_h264_aac_truncated.flv");
+    if (!fs::exists(flv)) {
+        GTEST_SKIP() << "缺真实样本 real_h264_aac_truncated.flv，先跑 tests/corpus/generate_real_corpus.py";
+    }
+
+    QcRunner runner;
+    const QcRunResult result = runner.AnalyzeFile(flv.string(), FastProfile());
+    ASSERT_TRUE(result.ok) << result.error;
+
+    const videoeye::model::FlvDiagnostics& diag = result.analysis.container_diagnostics.flv;
+    ASSERT_TRUE(diag.analyzed);
+    EXPECT_GT(diag.truncated_tags, 0u) << "真实截断 FLV 没有被识别为越界 tag";
+    EXPECT_TRUE(HasRule(result, "container.flv.truncated_tags"));
+}
+
+// AVI 尾部被截断但 RIFF 头仍声明原长度：riff_size_exceeds_file 必须为真。
+TEST(QcRunnerTest, TruncatedAviRiffOverrunIsDetectedEndToEnd) {
+    const fs::path avi = CorpusSample("real_mpeg4_mp3_truncated.avi");
+    if (!fs::exists(avi)) {
+        GTEST_SKIP() << "缺真实样本 real_mpeg4_mp3_truncated.avi，先跑 tests/corpus/generate_real_corpus.py";
+    }
+
+    QcRunner runner;
+    const QcRunResult result = runner.AnalyzeFile(avi.string(), FastProfile());
+    ASSERT_TRUE(result.ok) << result.error;
+
+    const videoeye::model::AviDiagnostics& diag = result.analysis.container_diagnostics.avi;
+    ASSERT_TRUE(diag.analyzed);
+    EXPECT_TRUE(diag.riff_size_exceeds_file) << "截断后 RIFF 声明长度仍小于实际文件，说明派生样本没坏到点上";
+    EXPECT_TRUE(HasRule(result, "container.avi.riff_size_exceeds_file"));
+}
+
+// 内容是 TS、扩展名是 .mp4：container.extension_mismatch 的端到端样本。
+TEST(QcRunnerTest, TsContentWithMp4ExtensionIsReportedAsMismatch) {
+    const fs::path disguised = CorpusSample("real_h264_aac_as.mp4");
+    if (!fs::exists(disguised)) {
+        GTEST_SKIP() << "缺真实样本 real_h264_aac_as.mp4，先跑 tests/corpus/generate_real_corpus.py";
+    }
+
+    QcRunner runner;
+    const QcRunResult result = runner.AnalyzeFile(disguised.string(), FastProfile());
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_TRUE(HasRule(result, "container.extension_mismatch")) << "TS 内容伪装成 .mp4 没有被扩展名比对规则检出";
+}

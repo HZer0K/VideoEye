@@ -51,11 +51,13 @@ AUDIO = "sine=frequency=440:sample_rate=44100:duration=1"
 # 相对 CORPUS_DIR 的路径 -> 生成方式
 #   kind: 校验时按哪种容器比对
 #   build: 生成函数（返回字节）；derived 的样本从另一个样本派生，保证两者内容同源
+#   derive: 派生函数（输入源字节，返回产物）；不填时沿用历史上的 M2TS 派生
 SAMPLES = {}
 
 
-def register(rel, kind, build=None, derived=None):
-    SAMPLES[rel] = {"kind": kind, "build": build, "derived": derived}
+def register(rel, kind, build=None, derived=None, derive=None):
+    SAMPLES[rel] = {"kind": kind, "build": build, "derived": derived,
+                    "derive": derive}
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +167,152 @@ def build_m2ts(ts_bytes):
     return bytes(out)
 
 
+# ---- 从真实样本派生"真实损伤" --------------------------------------------
+#
+# 修复 / QC 的异常样本如果全靠手工拼字节，只能证明"解析器不崩"；派生损伤保留了
+# 真实 muxer 写出的 moov / 样本表 / tag 链，坏掉的只有具体那一段。
+
+
+def truncate_tail(data, ratio):
+    """尾部截断：模拟录制中断 / 下载不全。"""
+    if ratio <= 0.0 or ratio >= 1.0:
+        raise ValueError("截断比例必须在 (0, 1) 内")
+    return data[:int(len(data) * ratio)]
+
+
+def mp4_box_ranges(data):
+    """返回顶层 box [(type, start, end)]，支持 64 位 largesize 与 size==0。"""
+    boxes = []
+    pos = 0
+    while pos + 8 <= len(data):
+        size = struct.unpack(">I", data[pos:pos + 4])[0]
+        name = data[pos + 4:pos + 8]
+        header = 8
+        if size == 1:
+            if pos + 16 > len(data):
+                break
+            size = struct.unpack(">Q", data[pos + 8:pos + 16])[0]
+            header = 16
+        elif size == 0:
+            size = len(data) - pos
+        if size < header or pos + size > len(data):
+            break
+        boxes.append((name, pos, pos + size))
+        pos += size
+    return boxes
+
+
+def drop_top_level_box(data, target):
+    """删掉指定顶层 box（用于派生"缺 moov"与"孤立分片"）。"""
+    ranges = mp4_box_ranges(data)
+    if not any(name == target for name, _start, _end in ranges):
+        raise RuntimeError("找不到顶层 box %r" % target)
+    out = bytearray()
+    for name, start, end in ranges:
+        if name != target:
+            out += data[start:end]
+    if ranges:
+        out += data[ranges[-1][2]:]
+    return bytes(out)
+
+
+def patch_chunk_offsets(data, ratio):
+    r"""把每条轨 stco/co64 中同一比例的 chunk offset 改成远超文件大小的值。
+
+    模拟"录制中途存储区域损坏、文件结构与后续数据仍在"—— 这是修复模块跳段恢复
+    的真实触发条件。必须两条轨都改：只坏一条时另一条仍能读到文件尾，时间轴没有
+    真正中断，测不到跳段行为。
+    """
+    out = bytearray(data)
+    patched = 0
+    for tag, entry_size in ((b"stco", 4), (b"co64", 8)):
+        idx = out.find(tag)
+        while idx != -1:
+            if idx >= 4:
+                size = struct.unpack(">I", bytes(out[idx - 4:idx]))[0]
+                count = struct.unpack(">I", bytes(out[idx + 8:idx + 12]))[0]
+                table_end = idx - 4 + size
+                if count > 0 and idx + 12 + count * entry_size <= table_end:
+                    entry = int(count * ratio)
+                    if entry >= count:
+                        entry = count - 1
+                    at = idx + 12 + entry * entry_size
+                    value = 0x7F000000
+                    if entry_size == 4:
+                        out[at:at + 4] = struct.pack(">I", value)
+                    else:
+                        out[at:at + 8] = struct.pack(">Q", value)
+                    patched += 1
+            idx = out.find(tag, idx + 4)
+    if patched == 0:
+        raise RuntimeError("没有可改写的 stco/co64（源样本不是 faststart MP4？）")
+    return bytes(out)
+
+
+def _ts_pid(packet):
+    return ((packet[1] & 0x1F) << 8) | packet[2]
+
+
+def _ts_has_payload(packet):
+    return ((packet[3] >> 4) & 0x03) in (1, 3)
+
+
+def corrupt_ts_continuity(data):
+    """把后半段某个非 PSI PID 的 continuity_counter 跳 +2，制造连续的计数错误。"""
+    if len(data) % 188 != 0:
+        raise RuntimeError("源 TS 长度不是 188 的整数倍")
+    total = len(data) // 188
+    for index in range(total - 2, total // 2, -1):
+        packet = data[index * 188:(index + 1) * 188]
+        if _ts_pid(packet) not in (0, 0x1FFF) and _ts_has_payload(packet):
+            cc = packet[3] & 0x0F
+            patched = bytes([(packet[3] & 0xF0) | ((cc + 2) & 0x0F)])
+            offset = index * 188 + 3
+            return data[:offset] + patched + data[offset + 1:]
+    raise RuntimeError("没有可制造连续计数错误的包")
+
+
+def break_ts_sync(data, breaks=2):
+    """把若干个包首的 0x47 改成 0x00：下一个包能立刻重新对齐，sync_loss 会 +1/处。"""
+    if len(data) % 188 != 0:
+        raise RuntimeError("源 TS 长度不是 188 的整数倍")
+    total = len(data) // 188
+    out = bytearray(data)
+    for i in range(breaks):
+        index = total // 3 + i
+        out[index * 188] = 0x00
+    return bytes(out)
+
+
+def flv_tag_spans(data):
+    """返回 [(data_start, data_end, tag_type, timestamp)]，忽略 PreviousTagSize 校验。"""
+    spans = []
+    # FLV header: "FLV"(3) + version(1) + flags(1) + DataOffset(4，通常是 9)
+    pos = struct.unpack(">I", data[5:9])[0] + 4  # DataOffset + PreviousTagSize0
+    if pos > len(data):
+        return spans
+    while pos + 11 <= len(data):
+        tag_type = data[pos] & 0x1F
+        size = int.from_bytes(data[pos + 1:pos + 4], "big")
+        timestamp = int.from_bytes(data[pos + 4:pos + 7], "big")
+        start = pos + 11
+        end = start + size
+        spans.append((start, end, tag_type, timestamp))
+        if end > len(data):
+            break
+        pos = end + 4
+    return spans
+
+
+def truncate_flv_mid_tag(data):
+    """在最后一个完整 tag 的载荷中间截断，保证 truncated_tags > 0。"""
+    spans = flv_tag_spans(data)
+    for start, end, _tag_type, _ts in reversed(spans):
+        if end <= len(data) and end - start > 1:
+            return data[:start + (end - start) // 2]
+    raise RuntimeError("找不到可截断的 FLV tag")
+
+
 def build_mxf(ffmpeg):
     r"""MXF（SMPTE 377M / KLV）：MPEG-2 422P@ML 50Mbps + 48kHz PCM。
 
@@ -203,6 +351,99 @@ def build_ps(ffmpeg):
         "-c:a", "mp2", "-b:a", "96k", "-ar", "48000",
         "-f", "vob",
     ], ".mpg")
+
+
+def build_flv(ffmpeg):
+    r"""FLV：H.264 + AAC。语料里此前只有手工拼的坏 FLV（bad_header / wrong_size），
+    没有一份能正常播放的样本 —— container.flv.* 的正面结论从没在真实 muxer 产物上验过。"""
+    return run_ffmpeg(ffmpeg, [
+        "-f", "lavfi", "-i", VIDEO,
+        "-f", "lavfi", "-i", AUDIO,
+        "-c:v", "libx264", "-preset", "ultrafast", "-g", "5",
+        "-c:a", "aac", "-b:a", "64k",
+        "-f", "flv",
+    ], ".flv")
+
+
+def build_asf(ffmpeg):
+    r"""ASF / WMV：WMV2 + WMA2。同理，只有手工造的坏 Header，缺正常样本。"""
+    return run_ffmpeg(ffmpeg, [
+        "-f", "lavfi", "-i", VIDEO,
+        "-f", "lavfi", "-i", AUDIO,
+        "-c:v", "wmv2", "-c:a", "wmav2", "-b:a", "64k",
+        "-f", "asf",
+    ], ".wmv")
+
+
+def build_mov(ffmpeg):
+    r"""MOV：H.264 + AAC 的 QuickTime 变体。与 MP4 共用 ISO BMFF 解析器，
+    但 ftyp brand / 顶层 box 顺序由另一套 muxer 写出，用来验证 MOv 分派没有走错。"""
+    return run_ffmpeg(ffmpeg, [
+        "-f", "lavfi", "-i", VIDEO,
+        "-f", "lavfi", "-i", AUDIO,
+        "-c:v", "libx264", "-preset", "ultrafast", "-g", "5",
+        "-c:a", "aac", "-b:a", "64k",
+        "-f", "mov",
+    ], ".mov")
+
+
+def build_audio_sample(ffmpeg, codec_args, suffix):
+    """纯音频样本的统一入口：没有视频轨，验证"只开音频"不会被打回。"""
+    return run_ffmpeg(ffmpeg, [
+        "-f", "lavfi", "-i", AUDIO,
+    ] + codec_args + ["-f", suffix.lstrip(".").replace("m4a", "ipod")], suffix)
+
+
+def build_m4a(ffmpeg):
+    return build_audio_sample(ffmpeg, ["-c:a", "aac", "-b:a", "96k"], ".m4a")
+
+
+def build_mp3(ffmpeg):
+    return build_audio_sample(ffmpeg, ["-c:a", "libmp3lame", "-b:a", "96k"], ".mp3")
+
+
+def build_flac(ffmpeg):
+    return build_audio_sample(ffmpeg, ["-c:a", "flac"], ".flac")
+
+
+def build_wav(ffmpeg):
+    return build_audio_sample(ffmpeg, ["-c:a", "pcm_s16le"], ".wav")
+
+
+def build_opus(ffmpeg):
+    return build_audio_sample(ffmpeg, ["-c:a", "libopus", "-b:a", "64k"], ".opus")
+
+
+def build_mp4_faststart(ffmpeg):
+    r"""H.264 + AAC 的 faststart MP4：**moov 前置**。
+
+    它是本组异常样本的"健康原片"：只有 moov 在前，才能从文件头拿到完整样本表，
+    再去派生"尾部截断 / 中间 chunk 越界 / 缺 moov"三种损伤 —— 这三种正是修复模块
+    实际会遇到的真实故障形态。编码沿用 build_h264_bframes 的参数（两个 GOP）。"""
+    return run_ffmpeg(ffmpeg, [
+        "-f", "lavfi", "-i", "testsrc2=size=320x176:rate=25:duration=1.2",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1.2",
+        "-c:v", "libx264", "-preset", "ultrafast", "-g", "15", "-bf", "3",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "64k",
+        "-movflags", "+faststart",
+        "-f", "mp4",
+    ], ".mp4")
+
+
+def build_fmp4(ffmpeg):
+    r"""分片 MP4（fMP4）：empty_moov + 每个关键帧一个 moof/mdat。
+
+    实际用于 DASH/HLS 的媒体分片就是这个结构。语料里此前没有真实分片样本，
+    "缺初始化段需要参考片"这条修复分支只在合成字节上验过。"""
+    return run_ffmpeg(ffmpeg, [
+        "-f", "lavfi", "-i", "testsrc2=size=320x176:rate=25:duration=1.2",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1.2",
+        "-c:v", "libx264", "-preset", "ultrafast", "-g", "15",
+        "-c:a", "aac", "-b:a", "64k",
+        "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+        "-f", "mp4",
+    ], ".mp4")
 
 
 def build_h264_bframes(ffmpeg):
@@ -343,6 +584,43 @@ register("container/real_vorbis.ogg", "ogg", build=build_ogg)
 register("container/real_h264_aac.mkv", "mkv", build=build_mkv)
 register("container/real_mpeg2_pcm.mxf", "mxf", build=build_mxf)
 register("container/real_mpeg2_mp2.mpg", "ps", build=build_ps)
+register("container/real_h264_aac.flv", "flv", build=build_flv)
+register("container/real_wmv2_wma.wmv", "asf", build=build_asf)
+register("container/real_h264_aac.mov", "mov", build=build_mov)
+register("container/real_h264_aac_faststart.mp4", "mp4", build=build_mp4_faststart)
+register("container/real_h264_aac_frag.mp4", "fmp4", build=build_fmp4)
+register("audio/real_aac.m4a", "audio", build=build_m4a)
+register("audio/real_mp3.mp3", "audio", build=build_mp3)
+register("audio/real_flac.flac", "audio", build=build_flac)
+register("audio/real_pcm.wav", "audio", build=build_wav)
+register("audio/real_opus.opus", "audio", build=build_opus)
+
+# ---- 异常样本：全部从上面的真实样本派生，保留真实 moov / 索引 / tag 链 ----
+register("container/real_h264_aac_tail_truncated.mp4", "mp4_tail_truncated",
+         derived="container/real_h264_aac_faststart.mp4",
+         derive=lambda d: truncate_tail(d, 0.7))
+register("container/real_h264_aac_missing_moov.mp4", "mp4_missing_moov",
+         derived="container/real_h264_aac_faststart.mp4",
+         derive=lambda d: drop_top_level_box(d, b"moov"))
+register("container/real_h264_aac_mid_damaged.mp4", "mp4_mid_damaged",
+         derived="container/real_h264_aac_faststart.mp4",
+         derive=lambda d: patch_chunk_offsets(d, 0.5))
+register("container/real_h264_aac_frag_orphan.mp4", "fmp4_orphan",
+         derived="container/real_h264_aac_frag.mp4",
+         derive=lambda d: drop_top_level_box(drop_top_level_box(d, b"ftyp"), b"moov"))
+register("container/real_h264_aac_cc_error.ts", "ts_continuity",
+         derived="container/real_h264_aac.ts", derive=corrupt_ts_continuity)
+register("container/real_h264_aac_sync_loss.ts", "ts_sync_loss",
+         derived="container/real_h264_aac.ts", derive=break_ts_sync)
+register("container/real_h264_aac_truncated.flv", "flv_truncated",
+         derived="container/real_h264_aac.flv", derive=truncate_flv_mid_tag)
+register("container/real_mpeg4_mp3_truncated.avi", "avi_truncated",
+         derived="container/real_mpeg4_mp3.avi",
+         derive=lambda d: truncate_tail(d, 0.75))
+# 扩展名与实际容器不符：内容是 TS，文件名是 .mp4（container.extension_mismatch 的端到端样本）
+register("container/real_h264_aac_as.mp4", "ts_mismatch",
+         derived="container/real_h264_aac.ts", derive=lambda d: d)
+
 register("codec/real_x264_bframes_gop.mp4", "mp4", build=build_h264_bframes)
 register("codec/real_x265_bframes_gop.mp4", "mp4", build=build_hevc_bframes)
 register("codec/real_vp9_altref_gop.webm", "mkv", build=build_vp9_altref)
@@ -401,14 +679,131 @@ def mp4_top_level_boxes(data):
     return boxes
 
 
+def mp4_box_ranges_lenient(data):
+    """同 mp4_box_ranges，但允许最后一个 box 声明长度越过文件末尾（截断样本要用）。"""
+    boxes = []
+    pos = 0
+    while pos + 8 <= len(data):
+        size = struct.unpack(">I", data[pos:pos + 4])[0]
+        name = data[pos + 4:pos + 8]
+        if size == 1:
+            if pos + 16 > len(data):
+                break
+            size = struct.unpack(">Q", data[pos + 8:pos + 16])[0]
+        elif size == 0:
+            size = len(data) - pos
+        boxes.append((name, pos, pos + size))
+        if size < 8 or pos + size > len(data):
+            break
+        pos += size
+    return boxes
+
+
+def mp4_chunk_offsets(data):
+    """读出 stco/co64 的全部 chunk offset（用于确认"中间损坏"样本真的越界）。"""
+    offsets = []
+    for tag, entry_size in ((b"stco", 4), (b"co64", 8)):
+        idx = data.find(tag)
+        while idx != -1:
+            if idx >= 4:
+                size = struct.unpack(">I", data[idx - 4:idx])[0]
+                count = struct.unpack(">I", data[idx + 8:idx + 12])[0]
+                if idx + 12 + count * entry_size <= idx - 4 + size:
+                    for i in range(count):
+                        at = idx + 12 + i * entry_size
+                        if entry_size == 4:
+                            offsets.append(struct.unpack(">I", data[at:at + 4])[0])
+                        else:
+                            offsets.append(struct.unpack(">Q", data[at:at + 8])[0])
+            idx = data.find(tag, idx + 4)
+    return offsets
+
+
+def flv_tag_stats(data):
+    """FLV tag 链的语义统计：tag 数、越过文件尾的 tag、同类时间戳回退。"""
+    stats = {"tags": 0, "truncated": 0, "timestamp_backwards": 0}
+    if data[0:3] != b"FLV":
+        return stats
+    pos = struct.unpack(">I", data[5:9])[0] + 4
+    last_ts = {}
+    while pos + 11 <= len(data):
+        tag_type = data[pos] & 0x1F
+        size = int.from_bytes(data[pos + 1:pos + 4], "big")
+        timestamp = int.from_bytes(data[pos + 4:pos + 7], "big")
+        if pos + 11 + size > len(data):
+            stats["truncated"] += 1
+            return stats
+        if tag_type in (8, 9):
+            if tag_type in last_ts and timestamp < last_ts[tag_type]:
+                stats["timestamp_backwards"] += 1
+            last_ts[tag_type] = timestamp
+        stats["tags"] += 1
+        pos = pos + 11 + size + 4
+    if pos < len(data) and len(data) - pos > 0:
+        stats["truncated"] += 1
+    return stats
+
+
+def ts_continuity_error_count(data, stride=188, offset=0):
+    """按 PID 重算 continuity_counter 错误（discontinuity_indicator 置位时跳过）。"""
+    last_cc = {}
+    errors = 0
+    for pos in range(offset, len(data) - stride + 1, stride):
+        packet = data[pos:pos + stride]
+        if packet[0] != 0x47:
+            continue
+        pid = _ts_pid(packet)
+        if pid == 0x1FFF:
+            continue
+        afc = (packet[3] >> 4) & 0x03
+        if afc not in (1, 3):
+            continue
+        if afc == 3:
+            af_len = packet[4]
+            if af_len > 0 and (packet[5] & 0x80):
+                last_cc.pop(pid, None)
+                continue
+        cc = packet[3] & 0x0F
+        previous = last_cc.get(pid)
+        if previous is not None and (previous + 1) % 16 != cc:
+            errors += 1
+        last_cc[pid] = cc
+    return errors
+
+
+def check_audio(data, rel):
+    problems = []
+    ext = os.path.splitext(rel)[1].lower()
+    if ext == ".m4a":
+        boxes = mp4_top_level_boxes(data)
+        names = [name for name, _start, _end in boxes]
+        if not names or names[0] != b"ftyp" or b"moov" not in names:
+            problems.append("%s: 不是完整的 M4A（顶层 box: %s）" % (rel, names))
+    elif ext == ".mp3":
+        if data[0:3] != b"ID3" and not (len(data) > 1 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0):
+            problems.append("%s: 不是 MP3（开头 %r）" % (rel, data[0:3]))
+    elif ext == ".flac":
+        if data[0:4] != b"fLaC":
+            problems.append("%s: 不是 FLAC（开头 %r）" % (rel, data[0:4]))
+    elif ext == ".wav":
+        if data[0:4] != b"RIFF" or data[8:12] != b"WAVE":
+            problems.append("%s: 不是 WAVE（开头 %r）" % (rel, data[0:12]))
+    elif ext == ".opus":
+        if data[0:4] != b"OggS" or data.find(b"OpusHead") < 0:
+            problems.append("%s: 不是 Ogg Opus（缺 OggS / OpusHead）" % rel)
+    else:
+        problems.append("%s: 未知音频扩展名 %s" % (rel, ext))
+    return problems
+
+
 def check(data, rel):
     """返回问题列表（空 = 合格）。"""
     kind = SAMPLES[rel]["kind"]
     problems = []
 
-    if kind == "ts" or kind == "m2ts":
-        stride = 188 if kind == "ts" else 192
-        offset = 0 if kind == "ts" else 4   # M2TS 的同步字节落在 TP_extra 之后
+    if kind in ("ts", "m2ts", "ts_mismatch", "ts_continuity", "ts_sync_loss"):
+        stride = 192 if kind == "m2ts" else 188
+        offset = 4 if kind == "m2ts" else 0   # M2TS 的同步字节落在 TP_extra 之后
         if len(data) < stride * 8:
             problems.append("%s: 太小（%d 字节），装不下 8 个包" % (rel, len(data)))
             return problems
@@ -416,10 +811,50 @@ def check(data, rel):
             problems.append("%s: 长度 %d 不是步长 %d 的整数倍（可能被截断）"
                             % (rel, len(data), stride))
         bad = [i for i in range(offset, len(data), stride) if data[i] != 0x47]
-        if bad:
+        if kind == "ts_sync_loss":
+            # 这份样本的全部意义就是"同步字节被破坏"，必须至少有 1 处。
+            if not bad:
+                problems.append("%s: 没有人为破坏的同步字节，测不到失步路径" % rel)
+        elif bad:
             problems.append("%s: %d 个位置没有同步字节 0x47（步长 %d 不对？）"
                             % (rel, len(bad), stride))
+        if kind == "ts_continuity":
+            if ts_continuity_error_count(data, stride, offset) == 0:
+                problems.append("%s: 没有连续计数错误，测不到 container.ts.continuity_error" % rel)
         return problems
+
+    if kind in ("flv", "flv_truncated"):
+        if data[0:3] != b"FLV":
+            problems.append("%s: 不是 FLV（开头 %r）" % (rel, data[0:3]))
+            return problems
+        stats = flv_tag_stats(data)
+        if stats["tags"] < 4:
+            problems.append("%s: 只解析到 %d 个 tag，样本太小" % (rel, stats["tags"]))
+        if kind == "flv":
+            if stats["truncated"] != 0:
+                problems.append("%s: 正常样本里出现了 %d 个越界 tag"
+                                % (rel, stats["truncated"]))
+            if stats["timestamp_backwards"] != 0:
+                problems.append("%s: 正常样本里出现 %d 次时间戳回退"
+                                % (rel, stats["timestamp_backwards"]))
+        else:
+            if stats["truncated"] == 0:
+                problems.append("%s: 没有越界 tag，测不到 container.flv.truncated_tags" % rel)
+        return problems
+
+    if kind == "asf":
+        header_guid = bytes.fromhex("3026B2758E66CF11A6D900AA0062CE6C")
+        data_guid = bytes.fromhex("3626B2758E66CF11A6D900AA0062CE6C")
+        if data[0:16] != header_guid:
+            problems.append("%s: 不是 ASF Header Object（开头 %r）"
+                            % (rel, data[0:16]))
+            return problems
+        if data.find(data_guid) < 0:
+            problems.append("%s: 找不到 Data Object，ASF 结构不完整" % rel)
+        return problems
+
+    if kind == "audio":
+        return check_audio(data, rel)
 
     if kind == "avi":
         if data[0:4] != b"RIFF":
@@ -428,6 +863,16 @@ def check(data, rel):
             problems.append("%s: RIFF form 不是 'AVI '（%r）" % (rel, data[8:12]))
         if b"movi" not in data:
             problems.append("%s: 没有 movi 块，AVI 结构不完整" % rel)
+        return problems
+
+    if kind == "avi_truncated":
+        if data[0:4] != b"RIFF" or data[8:12] != b"AVI ":
+            problems.append("%s: 不是 AVI（开头 %r）" % (rel, data[0:12]))
+            return problems
+        declared = struct.unpack("<I", data[4:8])[0] + 8
+        if declared <= len(data):
+            problems.append("%s: RIFF 声明长度 %d 未超过实际 %d 字节，没有真正截断"
+                            % (rel, declared, len(data)))
         return problems
 
     if kind == "ogg":
@@ -511,7 +956,7 @@ def check(data, rel):
                                 % (rel, name, types.get(nal_type, 0), minimum))
         return problems
 
-    if kind == "mp4":
+    if kind in ("mp4", "mov"):
         # 只走顶层 box（递归进 moov 没必要：这里要证明的是"这是个能解的视频文件"，
         # 帧层面的东西由 C++ 用例去断言）。
         boxes = mp4_top_level_boxes(data)
@@ -529,6 +974,58 @@ def check(data, rel):
                                    ", ".join(n.decode("ascii") for n in names)))
         # 带 B 帧的样本必须能被解出 B 帧，否则帧顺序用例是恒真空跑。
         # 这里用 avcC 之外的信息判不了，交给 C++ 用例的 ASSERT_GT(b_count, 0) 兜底。
+        return problems
+
+    if kind == "mp4_tail_truncated":
+        boxes = mp4_box_ranges_lenient(data)
+        names = [name for name, _start, _end in boxes]
+        if b"ftyp" not in names or b"moov" not in names:
+            problems.append("%s: 截断后必须保留 ftyp + moov（顶层只有 %s）"
+                            % (rel, "、".join(n.decode("ascii") for n in names)))
+        elif boxes[-1][0] != b"mdat" or boxes[-1][2] <= len(data):
+            problems.append("%s: 最后一个 mdat 声明 %d 字节，未越过实际 %d 字节 —— "
+                            "没有真正截断" % (rel, boxes[-1][2] - boxes[-1][1], len(data)))
+        return problems
+
+    if kind == "mp4_missing_moov":
+        boxes = mp4_top_level_boxes(data)
+        names = [name for name, _start, _end in boxes]
+        if b"moov" in names:
+            problems.append("%s: moov 还在，不是「缺 moov」样本" % rel)
+        if b"mdat" not in names:
+            problems.append("%s: 只剩 %s，修复模块测不到「无元数据」路径"
+                            % (rel, "、".join(n.decode("ascii") for n in names)))
+        return problems
+
+    if kind == "mp4_mid_damaged":
+        boxes = mp4_top_level_boxes(data)
+        names = [name for name, _start, _end in boxes]
+        for required in (b"ftyp", b"moov", b"mdat"):
+            if required not in names:
+                problems.append("%s: 缺 %s box，结构损坏不止「中间一段」"
+                                % (rel, required.decode("ascii")))
+        offsets = mp4_chunk_offsets(data)
+        if not any(offset >= len(data) for offset in offsets):
+            problems.append("%s: 没有越界的 chunk offset，测不到跳段恢复" % rel)
+        return problems
+
+    if kind == "fmp4":
+        boxes = mp4_top_level_boxes(data)
+        names = [name for name, _start, _end in boxes]
+        if b"ftyp" not in names or b"moov" not in names:
+            problems.append("%s: 分片 MP4 缺 ftyp/moov 初始化段" % rel)
+        if not any(name == b"moof" for name in names):
+            problems.append("%s: 没有 moof 媒体分片" % rel)
+        return problems
+
+    if kind == "fmp4_orphan":
+        boxes = mp4_box_ranges_lenient(data)
+        names = [name for name, _start, _end in boxes]
+        if b"moov" in names or b"ftyp" in names:
+            problems.append("%s: 初始化段还在，不是孤立媒体分片" % rel)
+        if not names or names[0] != b"moof":
+            problems.append("%s: 第一个顶层 box 是 %r，不是 moof"
+                            % (rel, names[0] if names else b""))
         return problems
 
     problems.append("%s: 未知样本类型 %s" % (rel, kind))
@@ -581,7 +1078,8 @@ def main():
     for rel in sorted(SAMPLES):
         spec = SAMPLES[rel]
         if spec["derived"] is not None:
-            produced[rel] = build_m2ts(produced[spec["derived"]])
+            source = produced[spec["derived"]]
+            produced[rel] = spec["derive"](source) if spec["derive"] else build_m2ts(source)
 
     for rel, data in sorted(produced.items()):
         problems = check(data, rel)
@@ -596,7 +1094,7 @@ def main():
             fh.write(data)
 
     print("已生成 %d 个真实样本 -> %s"
-          % (len(produced), os.path.join(CORPUS_DIR, "container")))
+          % (len(produced), CORPUS_DIR))
     return 0
 
 

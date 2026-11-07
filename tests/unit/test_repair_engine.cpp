@@ -287,6 +287,104 @@ TEST(RepairEngine, MissingMoovIsReportedAsNeedsReference) {
     EXPECT_FALSE(result.diagnosis.blocking_reasons.empty());
 }
 
+// ============================================================
+// 真实语料修复回归（阶段一验收：真实 ffmpeg 产物 + 真实损伤）
+//
+// 上面几个用例的"健康原片"由 TestMediaFactory 现场生成；这里换成 ffmpeg 真实
+// muxer 写出的 faststart MP4（moov 前置、含 B 帧与 AAC），再由
+// tests/corpus/generate_real_corpus.py 派生三种损伤。两者实现路径不同，
+// 能照出"只对测试工厂产物成立"的假设。
+// ============================================================
+namespace {
+
+std::string RealCorpusSample(const char* name) {
+    return (std::filesystem::path(VIDEOEYE_CONTAINER_CORPUS_DIR) / name).string();
+}
+
+} // namespace
+
+TEST(RepairEngine, RealCorpusHealthyMp4RemuxesCleanly) {
+    const std::string source = RealCorpusSample("real_h264_aac_faststart.mp4");
+    if (!std::filesystem::exists(source)) {
+        GTEST_SKIP() << "缺真实样本 real_h264_aac_faststart.mp4，先跑 tests/corpus/generate_real_corpus.py";
+    }
+
+    const std::string dir = MakeTempDir("real_healthy");
+    const RepairResult result = repair::RepairEngine::Run(
+        MakeRequest(source, dir + "/out", RepairVerificationLevel::V1_FrameSample), nullptr, nullptr);
+
+    EXPECT_TRUE(result.output_published) << result.summary << " | " << result.error;
+    EXPECT_TRUE(std::filesystem::exists(result.output_path));
+    EXPECT_TRUE(result.status == RepairBusinessStatus::Repaired ||
+                result.status == RepairBusinessStatus::PartiallyRecovered)
+        << ToString(result.status);
+    const auto probe = videoeye_test::ProbeMediaFile(result.output_path);
+    EXPECT_TRUE(probe.opened) << result.output_path;
+    EXPECT_GT(probe.frame_count, 0);
+}
+
+TEST(RepairEngine, RealCorpusTailTruncatedMp4RecoversAfterDamage) {
+    const std::string source = RealCorpusSample("real_h264_aac_tail_truncated.mp4");
+    if (!std::filesystem::exists(source)) {
+        GTEST_SKIP() << "缺真实样本 real_h264_aac_tail_truncated.mp4，先跑 tests/corpus/generate_real_corpus.py";
+    }
+
+    const std::string dir = MakeTempDir("real_tail");
+    const RepairResult result = repair::RepairEngine::Run(
+        MakeRequest(source, dir + "/out", RepairVerificationLevel::V1_FrameSample), nullptr, nullptr);
+
+    EXPECT_TRUE(result.diagnosis.openable);
+    EXPECT_TRUE(result.diagnosis.moov_present);
+    EXPECT_TRUE(HasFinding(result, "track.sample_out_of_bounds") || HasFinding(result, "container.box_out_of_bounds"))
+        << result.diagnosis.summary;
+    EXPECT_TRUE(result.output_published) << result.summary << " | " << result.error;
+    EXPECT_TRUE(result.status == RepairBusinessStatus::PartiallyRecovered ||
+                result.status == RepairBusinessStatus::Repaired)
+        << ToString(result.status);
+    EXPECT_GT(result.verification.decoded_frames, 0u);
+    const auto probe = videoeye_test::ProbeMediaFile(result.output_path);
+    EXPECT_TRUE(probe.opened) << result.output_path;
+    EXPECT_GT(probe.frame_count, 0);
+}
+
+TEST(RepairEngine, RealCorpusMissingMoovMp4NeedsReference) {
+    const std::string source = RealCorpusSample("real_h264_aac_missing_moov.mp4");
+    if (!std::filesystem::exists(source)) {
+        GTEST_SKIP() << "缺真实样本 real_h264_aac_missing_moov.mp4，先跑 tests/corpus/generate_real_corpus.py";
+    }
+
+    const std::string dir = MakeTempDir("real_moov");
+    const RepairResult result = repair::RepairEngine::Run(MakeRequest(source, dir + "/out"), nullptr, nullptr);
+
+    EXPECT_TRUE(HasFinding(result, "container.moov_missing") || HasFinding(result, "container.structure_unparsable"))
+        << result.diagnosis.summary;
+    EXPECT_EQ(result.status, RepairBusinessStatus::NeedsReference) << ToString(result.status);
+    EXPECT_FALSE(result.output_published);
+    EXPECT_TRUE(result.output_path.empty());
+}
+
+// 中段 chunk offset 越界：必须跳段续采，产物至少两段 —— 只保留前半段是本轮修复前的缺陷。
+TEST(RepairEngine, RealCorpusMidFileDamageResumesIntoSegments) {
+    const std::string source = RealCorpusSample("real_h264_aac_mid_damaged.mp4");
+    if (!std::filesystem::exists(source)) {
+        GTEST_SKIP() << "缺真实样本 real_h264_aac_mid_damaged.mp4，先跑 tests/corpus/generate_real_corpus.py";
+    }
+
+    const std::string dir = MakeTempDir("real_mid");
+    const RepairResult result = repair::RepairEngine::Run(MakeRequest(source, dir + "/out"), nullptr, nullptr);
+
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+    EXPECT_EQ(result.status, RepairBusinessStatus::PartiallyRecovered) << ToString(result.status);
+    ASSERT_GE(result.recovered_segments.size(), 2u) << result.summary;
+    EXPECT_FALSE(result.recovered_segments.front().resumed_after_damage);
+    EXPECT_TRUE(result.recovered_segments.back().resumed_after_damage);
+    EXPECT_GT(result.recovered_segments.back().skipped_before_seconds, 0.0);
+
+    const auto probe = videoeye_test::ProbeMediaFile(result.output_path);
+    EXPECT_TRUE(probe.opened) << result.output_path;
+    EXPECT_GT(probe.frame_count, 0);
+}
+
 TEST(RepairEngine, FragmentedSegmentsWithoutInitNeedReference) {
     const std::string dir = MakeTempDir("fmp4_noref");
     const auto media = videoeye_test::CreateFragmentedTestMedia(dir, "fmp4");

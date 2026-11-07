@@ -27,6 +27,7 @@
 #include "core/analysis/container/AsfStructureAnalyzer.h"
 #include "core/analysis/container/AviStructureAnalyzer.h"
 #include "core/analysis/container/FlvStructureAnalyzer.h"
+#include "core/analysis/container/Mp4SampleTableAnalyzer.h"
 #include "core/analysis/container/MpegPsStructureAnalyzer.h"
 #include "core/analysis/container/MxfStructureAnalyzer.h"
 #include "core/analysis/container/OggStructureAnalyzer.h"
@@ -712,6 +713,77 @@ TEST(RealContainerSampleTest, RealOggHasPageChain) {
     EXPECT_TRUE(result.valid);
     EXPECT_FALSE(result.element_tree.empty());
     EXPECT_FALSE(result.summary.empty());
+}
+
+// ffmpeg 的 FLV muxer 会写 onMetaData + AVC sequence header。以前语料里只有手工拼的
+// bad_header / wrong_size 坏样本，container.flv.* 的"正常文件不该报"从没在真实
+// tag 链上验过 —— 解析器把 tag 边界算错一点，正常文件就会凭空长出截断/回退。
+TEST(RealContainerSampleTest, RealFlvHasMetadataAndHealthyTagChain) {
+    const std::string path = RealSample("real_h264_aac.flv");
+    SkipIfMissing(path, "real_h264_aac.flv");
+
+    model::ContainerStructureResult result;
+    ASSERT_TRUE(FlvStructureAnalyzer().Analyze(path, result)) << result.error_message;
+    EXPECT_EQ(result.format, model::ContainerFormat::FLV);
+    EXPECT_TRUE(result.valid);
+
+    const model::FlvDiagnostics& flv = result.diagnostics.flv;
+    EXPECT_TRUE(flv.analyzed);
+    EXPECT_TRUE(flv.header_has_video);
+    EXPECT_TRUE(flv.header_has_audio);
+    EXPECT_TRUE(flv.has_metadata);
+    EXPECT_TRUE(flv.video_sequence_header_seen);
+    // 干净样本：时间戳单调、没有越过文件尾的 tag。
+    EXPECT_EQ(flv.timestamp_backwards, 0u);
+    EXPECT_EQ(flv.truncated_tags, 0u);
+}
+
+// ASF 的 Header Object 里含 File Properties / Stream Properties；
+// WMV 的 Data Object 一定在 Header 之后。真实文件能同时验证这两条。
+TEST(RealContainerSampleTest, RealAsfParsesHeaderAndDataObjects) {
+    const std::string path = RealSample("real_wmv2_wma.wmv");
+    SkipIfMissing(path, "real_wmv2_wma.wmv");
+
+    model::ContainerStructureResult result;
+    ASSERT_TRUE(AsfStructureAnalyzer().Analyze(path, result)) << result.error_message;
+    EXPECT_EQ(result.format, model::ContainerFormat::ASF);
+    EXPECT_TRUE(result.valid);
+
+    const model::AsfDiagnostics& asf = result.diagnostics.asf;
+    EXPECT_TRUE(asf.analyzed);
+    EXPECT_TRUE(asf.has_data_object);
+    EXPECT_GT(asf.declared_header_objects, 0u);
+    EXPECT_LE(asf.parsed_header_objects, asf.declared_header_objects);
+    EXPECT_FALSE(result.streams.empty());
+}
+
+// MOV 与 MP4 共用 ISO BMFF 解析器，但由 QuickTime muxer 写出。
+// 这里验证自研 IsobmffParser 能解 QuickTime 的 moov/stbl，而不是靠 FFmpeg 兜底。
+TEST(RealContainerSampleTest, RealMovIsParsedByIsobmff) {
+    const std::string path = RealSample("real_h264_aac.mov");
+    SkipIfMissing(path, "real_h264_aac.mov");
+
+    model::Mp4SampleTableResult result;
+    ASSERT_TRUE(Mp4SampleTableAnalyzer().AnalyzeFile(path, result)) << result.error_message;
+    EXPECT_TRUE(result.valid);
+    EXPECT_FALSE(result.fragmented);
+    ASSERT_FALSE(result.tracks.empty());
+    EXPECT_GT(result.tracks.front().SampleCount(), 0u);
+    EXPECT_EQ(0, result.CountIssues(model::IssueSeverity::Critical));
+}
+
+// 分片 MP4（empty_moov + moof/mdat）：DASH/HLS 的实际媒体分片结构。
+// 真实分片产物能验证"没有传统 stbl 表时也能按 moof/traf/trun 展开样本"。
+TEST(RealContainerSampleTest, RealFragmentedMp4ExposesMoofSamples) {
+    const std::string path = RealSample("real_h264_aac_frag.mp4");
+    SkipIfMissing(path, "real_h264_aac_frag.mp4");
+
+    model::Mp4SampleTableResult result;
+    ASSERT_TRUE(Mp4SampleTableAnalyzer().AnalyzeFile(path, result)) << result.error_message;
+    EXPECT_TRUE(result.valid);
+    EXPECT_TRUE(result.fragmented) << "真实 fMP4 的分片结构没有被识别";
+    ASSERT_FALSE(result.fragments.empty()) << "moof/traf/trun 没有展开出样本";
+    EXPECT_GT(result.fragments.front().sample_count, 0u);
 }
 
 } // namespace

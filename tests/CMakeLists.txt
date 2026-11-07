@@ -2388,6 +2388,11 @@ target_link_libraries(test_repair_engine PRIVATE
     VideoEyeDomain
     VideoEyeInfrastructure
     videoeye_test_media_factory)
+# 真实 ffmpeg 产物 + 由它派生的三种损伤（尾截断 / 缺 moov / 中段 chunk 越界）。
+# 测试工厂生成的 MP4 与这些样本的 muxer 路径不同，只有真实样本能照出
+# "只对测试工厂产物成立"的假设。
+target_compile_definitions(test_repair_engine PRIVATE
+    VIDEOEYE_CONTAINER_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus/container")
 add_test(NAME RepairEngineTests COMMAND test_repair_engine)
 
 # =================================================
