@@ -12,6 +12,13 @@
 namespace videoeye {
 namespace ui {
 
+namespace {
+
+// 占位文字为中央播放圆盘让出的纵向距离（圆盘半径 36 + 文字半高 + 间隙）
+constexpr int kCenterPlayDodge = 56;
+
+} // namespace
+
 // ============================================================================
 // VideoOverlayWidget
 // ============================================================================
@@ -29,6 +36,10 @@ void VideoOverlayWidget::SetOverlayInfo(const VideoOverlayInfo& info) {
 void VideoOverlayWidget::SetCenterPlayButtonVisible(bool visible) {
     show_center_play_ = visible;
     update();
+}
+
+bool VideoOverlayWidget::IsCenterPlayVisible() const {
+    return show_center_play_ && !info_.is_playing && info_.has_video;
 }
 
 void VideoOverlayWidget::SetMotionVectors(const model::MacroblockFrameAnalysis& analysis) {
@@ -124,7 +135,7 @@ void VideoOverlayWidget::paintEvent(QPaintEvent* /*event*/) {
     }
 
     // === 中央播放按钮 ===
-    if (show_center_play_ && !info_.is_playing && info_.has_video) {
+    if (IsCenterPlayVisible()) {
         int btn_d = 72;
         int cx = w / 2;
         int cy = h / 2;
@@ -421,7 +432,11 @@ void VideoWidget::paintEvent(QPaintEvent* event) {
         QFont font;
         font.setPixelSize(std::max(14, std::min(height() / 30, 30)));
         painter.setFont(font);
-        painter.drawText(rect(), Qt::AlignCenter, tr("视频显示区域"));
+        // 中央播放按钮（直径 72）画在同一中心，占位文字要让开，否则字被三角压住
+        QRect text_rect = rect();
+        if (overlay_ && overlay_->IsCenterPlayVisible())
+            text_rect.translate(0, -kCenterPlayDodge);
+        painter.drawText(text_rect, Qt::AlignCenter, tr("视频显示区域"));
         return;
     }
 

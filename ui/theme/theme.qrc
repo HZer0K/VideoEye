@@ -3,6 +3,9 @@
     <qresource prefix="/videoeye/theme">
         <file>assets/checkbox_checked.png</file>
         <file>assets/checkbox_checked_disabled.png</file>
+        <!-- QSS 无法用 border 拼出下拉三角（image:none 时只剩一条灰线），
+             统一用这张 12x8 的小图标，颜色与次要文本 #8B949E 一致。 -->
+        <file>assets/arrow_down.png</file>
         <!-- 应用图标：QIcon 需要逐尺寸登记，只给一张 256 会被平滑缩放，
              标题栏/任务栏这些 16~32px 的场景就会糊。PNG 与 exe 图标同源，
              都由 scripts/gen_icon.py 从 app_icon.svg 生成，别手改这些 PNG。 -->

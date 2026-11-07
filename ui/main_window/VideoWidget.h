@@ -36,6 +36,9 @@ public:
     explicit VideoOverlayWidget(QWidget* parent = nullptr);
     void SetOverlayInfo(const VideoOverlayInfo& info);
     void SetCenterPlayButtonVisible(bool visible);
+    // 中央播放按钮当前是否真的会画出来（可见性 + 未播放 + 有视频）。
+    // 底层的占位文字要靠它避让，否则两个"居中"会叠在同一个点上。
+    bool IsCenterPlayVisible() const;
 
     // 运动矢量叠加
     void SetMotionVectors(const model::MacroblockFrameAnalysis& analysis);

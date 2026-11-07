@@ -89,7 +89,8 @@ void BitrateGopPage::SetupUi() {
     progress_bar_->setFormat(tr("未开始"));
     layout->addWidget(progress_bar_);
 
-    // 参数行
+    // 参数行：拆成两行。单行放 7 个控件时最小宽度超过内容视口，
+    // 窄窗口下会把右侧控件推出可视区并逼出横向滚动条。
     {
         QWidget* row = new QWidget(this);
         QHBoxLayout* rl = new QHBoxLayout(row);
@@ -129,6 +130,14 @@ void BitrateGopPage::SetupUi() {
         max_gop_frames_spin_->setValue(options_.max_gop_frames);
         connect(max_gop_frames_spin_, &QSpinBox::valueChanged, this, &BitrateGopPage::OnOptionChanged);
         rl->addWidget(max_gop_frames_spin_);
+
+        rl->addStretch();
+        layout->addWidget(row);
+    }
+    {
+        QWidget* row = new QWidget(this);
+        QHBoxLayout* rl = new QHBoxLayout(row);
+        rl->setContentsMargins(0, 0, 0, 0);
 
         decode_types_check_ = new QCheckBox(tr("精确帧类型（解码，较慢）"), row);
         decode_types_check_->setChecked(false);

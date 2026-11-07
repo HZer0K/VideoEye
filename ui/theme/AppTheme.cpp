@@ -516,12 +516,9 @@ QComboBox::drop-down {
 }
 
 QComboBox::down-arrow {
-    image: none;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid #8B949E;
-    width: 0;
-    height: 0;
+    image: url(:/videoeye/theme/assets/arrow_down.png);
+    width: 12px;
+    height: 8px;
     margin-right: 8px;
 }
 

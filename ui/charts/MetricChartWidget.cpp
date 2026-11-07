@@ -31,12 +31,16 @@ constexpr int kMaxXTicks = 6;
 
 // 支持 "%d" / "%.1f" 等 printf 风格格式；%d 时按整型取值，避免 double 传入 %d 的未定义行为。
 QString FormatTick(double value, const QString& format) {
-    if (format.isEmpty()) {
+    // 默认格式（"%g"）按 6 位有效数字输出，长尾会把刻度写成 264.695 / 66.1739。
+    // 统一压到 4 位并消掉 -0，读数更干净。
+    if (format.isEmpty() || format == QLatin1String("%g")) {
+        if (std::abs(value) < 5e-5)
+            value = 0.0;
         return QString::number(value, 'g', 4);
     }
     const QByteArray fmt = format.toUtf8();
     if (format.contains(QLatin1Char('d')) || format.contains(QLatin1Char('i'))) {
-        return QString::asprintf(fmt.constData(), static_cast<long long>(std::llround(value)));
+        return QString::asprintf(fmt.constData(), static_cast<int>(std::llround(value)));
     }
     return QString::asprintf(fmt.constData(), value);
 }
@@ -45,17 +49,80 @@ bool FinitePoint(const QPointF& p) {
     return std::isfinite(p.x()) && std::isfinite(p.y());
 }
 
+bool UsesIntegerFormat(const QString& format) {
+    return format.contains(QLatin1Char('d')) || format.contains(QLatin1Char('i'));
+}
+
+// 格式能表达的最小变化量：%d → 1，%.0f → 1，%.1f → 0.1，%g → 0（不限制）。
+// 刻度步长必须不小于它，否则 0.5 会被 %.0f 写成 "1" 却画在中间。
+double TickResolution(const QString& format) {
+    if (UsesIntegerFormat(format))
+        return 1.0;
+    const int dot = format.indexOf(QLatin1Char('.'));
+    if (dot < 0)
+        return 0.0;
+    int end = dot + 1;
+    while (end < format.size() && format.at(end).isDigit())
+        ++end;
+    bool ok = false;
+    const int decimals = format.mid(dot + 1, end - dot - 1).toInt(&ok);
+    if (!ok)
+        return 0.0;
+    return std::pow(10.0, -decimals);
+}
+
+// 把"大致步长"收敛到 1 / 2 / 5 × 10^n，刻度落在整数位上（0、50、100…），
+// 而不是按像素等分后得到 264.7 / 198.5 这种刻度。
+double NiceStep(double rough) {
+    if (!(rough > 0.0) || !std::isfinite(rough))
+        return 1.0;
+    const double base = std::pow(10.0, std::floor(std::log10(rough)));
+    const double f = rough / base;
+    const double nice = (f <= 1.5) ? 1.0 : (f <= 3.0) ? 2.0 : (f <= 7.0) ? 5.0 : 10.0;
+    return nice * base;
+}
+
+// 生成刻度值。对齐到步长而不是硬等分，避免粗格式把相邻刻度写成同一个字；
+// 步长按格式精度取下限，0~1 区间用 %d / %.0f 时只会得到 0 和 1 两个刻度。
+//
+// 可放置的整数刻度不足 2 个时退回等分刻度，并通过 label_format 让调用方
+// 改用默认格式，避免满屏重复的 0 / 1。
+QVector<double> TickValues(double lo, double hi, int count, const QString& format, QString* label_format) {
+    const int n = std::max(2, count);
+    QVector<double> values;
+    const double span = hi - lo;
+    if (span > 0.0) {
+        double step = NiceStep(span / (n - 1));
+        step = std::max(step, TickResolution(format));
+        const double first = std::ceil(lo / step - 1e-9) * step;
+        for (double v = first; v <= hi + 1e-9 && values.size() < 64; v += step)
+            values.append(v);
+        if (values.size() >= 2) {
+            if (label_format)
+                *label_format = format;
+            return values;
+        }
+        values.clear();
+    }
+    values.reserve(n);
+    for (int i = 0; i < n; ++i)
+        values.append(lo + (hi - lo) * i / (n - 1));
+    if (label_format)
+        *label_format = TickResolution(format) > 0.0 ? QString() : format;
+    return values;
+}
+
 // 某个 Y 轴在当前量程下，所有刻度文本里最宽的那个有多宽。
 //
 // 边距必须按"实际要写的字"来算：左轴写 191.25 这种 6 字符刻度，右轴只写 0.75，
 // 写死一个常数不是太挤（叠字）就是太空（绘图区白白变窄）。量程定了刻度值就定了，
 // 所以这里能把每个刻度格式化一遍取最大宽度。
 int TickLabelMaxWidth(const ChartAxis& axis, double lo, double hi, const QFontMetrics& fm) {
-    const int ticks = std::max(2, axis.TickCount());
+    QString label_format;
+    const QVector<double> values = TickValues(lo, hi, axis.TickCount(), axis.LabelFormat(), &label_format);
     int width = 0;
-    for (int i = 0; i < ticks; ++i) {
-        const double value = lo + (hi - lo) * i / (ticks - 1);
-        width = std::max(width, fm.horizontalAdvance(FormatTick(value, axis.LabelFormat())));
+    for (double value : values) {
+        width = std::max(width, fm.horizontalAdvance(FormatTick(value, label_format)));
     }
     return width;
 }
@@ -346,14 +413,24 @@ void MetricChartWidget::DrawAxisAndGrid(QPainter& painter, const Geometry& geo) 
     const int right_tick_w = geo.right_tick_width > 0 ? geo.right_tick_width : kLeftMargin;
 
     // 横向网格 + 左轴刻度
-    const int y_ticks = std::max(2, axis_y_->TickCount());
-    for (int i = 0; i < y_ticks; ++i) {
-        const double value = geo.y_min + (geo.y_max - geo.y_min) * i / (y_ticks - 1);
+    //
+    // 标签去重：格式较粗（如空图上 "%d"）时相邻刻度会算成同一个字，
+    // 以前会画出 "1 1 1 0" 这种重复刻度。网格线保留，只压掉重复文本。
+    QString y_label_format;
+    const QVector<double> y_values =
+        TickValues(geo.y_min, geo.y_max, axis_y_->TickCount(), axis_y_->LabelFormat(), &y_label_format);
+    QString last_y_label;
+    bool has_last_y = false;
+    for (double value : y_values) {
         const qreal y = to_py(value, 0);
         painter.setPen(QPen(grid_color, 1, Qt::SolidLine));
         painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
+        const QString label = FormatTick(value, y_label_format);
+        if (has_last_y && label == last_y_label)
+            continue;
+        last_y_label = label;
+        has_last_y = true;
         painter.setPen(text_color);
-        const QString label = FormatTick(value, axis_y_->LabelFormat());
         painter.drawText(QRect(plot.left() - left_tick_w, static_cast<int>(y) - fm.height() / 2, left_tick_w - kTickPad,
                                fm.height()),
                          Qt::AlignRight | Qt::AlignVCenter, label);
@@ -361,14 +438,22 @@ void MetricChartWidget::DrawAxisAndGrid(QPainter& painter, const Geometry& geo) 
 
     // 右轴（仅刻度，不画网格，避免与左轴网格打架）
     if (axis_y2_visible_) {
-        const int y2_ticks = std::max(2, axis_y2_->TickCount());
-        for (int i = 0; i < y2_ticks; ++i) {
-            const double value = geo.y2_min + (geo.y2_max - geo.y2_min) * i / (y2_ticks - 1);
+        QString y2_label_format;
+        const QVector<double> y2_values =
+            TickValues(geo.y2_min, geo.y2_max, axis_y2_->TickCount(), axis_y2_->LabelFormat(), &y2_label_format);
+        QString last_y2_label;
+        bool has_last_y2 = false;
+        for (double value : y2_values) {
             const qreal y = to_py(value, 1);
+            const QString label = FormatTick(value, y2_label_format);
+            if (has_last_y2 && label == last_y2_label)
+                continue;
+            last_y2_label = label;
+            has_last_y2 = true;
             painter.setPen(text_color);
             painter.drawText(QRect(plot.right() + kTickPad, static_cast<int>(y) - fm.height() / 2,
                                    right_tick_w - kTickPad, fm.height()),
-                             Qt::AlignLeft | Qt::AlignVCenter, FormatTick(value, axis_y2_->LabelFormat()));
+                             Qt::AlignLeft | Qt::AlignVCenter, label);
         }
     }
 
@@ -376,14 +461,22 @@ void MetricChartWidget::DrawAxisAndGrid(QPainter& painter, const Geometry& geo) 
     const QStringList& categories = axis_x_->Categories();
     painter.setPen(QPen(grid_color, 1, Qt::SolidLine));
     if (categories.isEmpty()) {
-        const int x_ticks = std::min(kMaxXTicks, std::max(2, plot.width() / 90));
-        for (int i = 0; i < x_ticks; ++i) {
-            const double value = geo.x_min + span_x * i / (x_ticks - 1);
+        const int x_tick_cap = std::min(kMaxXTicks, std::max(2, plot.width() / 90));
+        QString x_label_format;
+        const QVector<double> x_values =
+            TickValues(geo.x_min, geo.x_max, x_tick_cap, axis_x_->LabelFormat(), &x_label_format);
+        QString last_x_label;
+        bool has_last_x = false;
+        for (double value : x_values) {
             const qreal x = to_px(value);
             painter.setPen(QPen(grid_color, 1, Qt::SolidLine));
             painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
+            const QString label = FormatTick(value, x_label_format);
+            if (has_last_x && label == last_x_label)
+                continue;
+            last_x_label = label;
+            has_last_x = true;
             painter.setPen(text_color);
-            const QString label = FormatTick(value, axis_x_->LabelFormat());
             painter.drawText(QRect(static_cast<int>(x) - 45, plot.bottom() + 4, 90, fm.height()),
                              Qt::AlignHCenter | Qt::AlignTop, label);
         }
@@ -418,8 +511,10 @@ void MetricChartWidget::DrawAxisAndGrid(QPainter& painter, const Geometry& geo) 
         painter.translate(title_x, plot.center().y());
         painter.rotate(-90);
         painter.setPen(text_color);
+        // 竖排标题超过绘图区高度时按可用长度省略，避免在文字中间被硬切
+        const QString title_text = fm.elidedText(axis->Title(), Qt::ElideRight, plot.height() - 4);
         painter.drawText(QRect(-plot.height() / 2, -fm.height() / 2, plot.height(), fm.height()), Qt::AlignCenter,
-                         axis->Title());
+                         title_text);
         painter.restore();
     }
 

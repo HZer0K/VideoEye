@@ -137,6 +137,17 @@ void AudioQcPage::SetupUi() {
         connect(clip_spin_, &QDoubleSpinBox::valueChanged, this, &AudioQcPage::OnOptionChanged);
         rl->addWidget(clip_spin_);
 
+        rl->addStretch();
+        layout->addWidget(row);
+    }
+    // 检测项单独一行：与 4 个数值控件挤在同一行时，窄窗口下最右的
+    // 「声道相关性」会被裁掉，并让整页出现横向滚动条。
+    {
+        QWidget* row = new QWidget(this);
+        QHBoxLayout* rl = new QHBoxLayout(row);
+        rl->setContentsMargins(0, 0, 0, 0);
+        rl->setSpacing(8);
+
         loudness_check_ = new QCheckBox(tr("响度(BS.1770)"), row);
         loudness_check_->setChecked(options_.enable_loudness);
         connect(loudness_check_, &QCheckBox::toggled, this, &AudioQcPage::OnOptionChanged);
